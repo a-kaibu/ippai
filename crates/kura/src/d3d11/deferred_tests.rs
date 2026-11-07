@@ -329,3 +329,71 @@ fn deferred_update_sizes() {
     release(c.imm);
     release(c.dev);
 }
+
+/// ID3D11Device3/4/5 and ID3D11DeviceContext3/4 (Windows 10's, which AdvHD's engine asks for
+/// right after D3D11CreateDevice and uses unchecked): the same objects answer, the newer
+/// creation methods make what the old ones make.
+#[test]
+fn newer_interfaces() {
+    let _g = setup();
+    let c = Ctx::new();
+    let guid = |d: [u32; 4]| {
+        let p = mem(4);
+        put(p, &d);
+        p
+    };
+    let dev3 = guid([0xa05c8c37, 0x4732d2c6, 0xa342a0b3, 0xc59a2aa5]);
+    let dev4 = guid([0x8992ab71, 0x4b8d02e6, 0xb048ba48, 0xc442dadc]);
+    let dev5 = guid([0x8ffde202, 0x45dfa0e7, 0x37e8019e, 0xa05e1b80]);
+    let ctx3 = guid([0xb4e3c01d, 0x4637e79e, 0x0e51b291, 0x8f9b4c9f]);
+    let ctx4 = guid([0x917600da, 0x4c33f58c, 0x153ed898, 0x24fa90b3]);
+    for iid in [dev3, dev4, dev5] {
+        assert_eq!(call1(m(IF_DEVICE, 0), &[c.dev, iid, c.o]), 0);
+        assert_eq!(rd1(c.o), c.dev);
+        release(c.dev);
+    }
+    for iid in [ctx3, ctx4] {
+        assert_eq!(call1(m(IF_CONTEXT, 0), &[c.imm, iid, c.o]), 0);
+        assert_eq!(rd1(c.o), c.imm);
+        release(c.imm);
+    }
+    // GetImmediateContext3: the immediate context, referenced
+    call1(m(IF_DEVICE, 61), &[c.dev, c.o]);
+    assert_eq!(rd1(c.o), c.imm);
+    release(c.imm);
+    // CreateDeferredContext3
+    assert_eq!(call1(m(IF_DEVICE, 62), &[c.dev, 0, c.o]), 0);
+    let def = rd1(c.o);
+    assert_ne!(def, c.imm);
+    assert_eq!(release(def), 0);
+    // CreateTexture2D1: D3D11_TEXTURE2D_DESC1 (the old description, then TextureLayout)
+    let td = mem(12);
+    put(td, &[64, 32, 1, 1, 28, 1, 0, 0, 0x8, 0, 0, 0]);
+    assert_eq!(call1(m(IF_DEVICE, 54), &[c.dev, td, 0, c.o]), 0);
+    let tex = rd1(c.o);
+    assert_eq!(iface_of(tex), IF_TEX2D);
+    let got = mem(11);
+    call1(m(IF_TEX2D, 10), &[tex, got]);
+    assert_eq!((rd1(got), rd1(got + 4), rd1(got + 16)), (64, 32, 28));
+    // CreateShaderResourceView1 with no description: the whole texture
+    assert_eq!(call1(m(IF_DEVICE, 57), &[c.dev, tex, 0, c.o]), 0);
+    assert_eq!(release(rd1(c.o)), 0);
+    assert_eq!(release(tex), 0);
+    // CreateQuery1: D3D11_QUERY_DESC1 (query, misc flags, context type)
+    let qd = mem(3);
+    put(qd, &[0, 0, 0]);
+    assert_eq!(call1(m(IF_DEVICE, 60), &[c.dev, qd, c.o]), 0);
+    assert_eq!(release(rd1(c.o)), 0);
+    // RegisterDeviceRemovedEvent: a cookie; no event, no cookie: E_INVALIDARG
+    put(c.o, &[0xdead]);
+    assert_eq!(call1(m(IF_DEVICE, 65), &[c.dev, 0x40, c.o]), 0);
+    assert_eq!(rd1(c.o), 0);
+    assert_eq!(call1(m(IF_DEVICE, 65), &[c.dev, 0, c.o]), E_INVALIDARG);
+    // ID3D11DeviceContext3: no hardware protection; Flush1 flushes
+    put(c.o, &[0xdead]);
+    call1(m(IF_CONTEXT, 146), &[c.imm, c.o]);
+    assert_eq!(rd1(c.o), 0);
+    call1(m(IF_CONTEXT, 144), &[c.imm, 0, 0]);
+    release(c.imm);
+    release(c.dev);
+}

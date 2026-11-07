@@ -1,7 +1,9 @@
 // msvcp140's C-style threads support (x64, as std::mutex / condition_variable / thread call it):
 // plain and recursive mutexes across threads, a condition variable handing 1000 items between
 // two threads, a timed wait that times out, the thread id, the clocks, random_device,
-// the error maps and _Throw_Cpp_error caught as a C++ exception. Prints only what any Windows
+// the error maps and _Throw_Cpp_error caught as a C++ exception, and vcruntime140's
+// __intrinsic_setjmp / longjmp (no frame: a plain register restore), and the PPL's thread
+// pool chores (_Schedule_chore / _Reschedule_chore / _Release_chore, as ppltasks call them). Prints only what any Windows
 // gives. Built by build-msvc64.sh (clang, MSVC ABI, no SDK).
 extern "C" {
 typedef void *HANDLE;
@@ -10,6 +12,8 @@ __declspec(dllimport) HANDLE __stdcall GetStdHandle(DWORD);
 __declspec(dllimport) int __stdcall WriteFile(HANDLE, const void *, DWORD, DWORD *, void *);
 __declspec(dllimport) HANDLE __stdcall CreateThread(void *, unsigned long long, DWORD(__stdcall *)(void *), void *, DWORD, DWORD *);
 __declspec(dllimport) DWORD __stdcall WaitForSingleObject(HANDLE, DWORD);
+__declspec(dllimport) void __stdcall Sleep(DWORD);
+long _InterlockedIncrement(volatile long *);
 __declspec(dllimport) DWORD __stdcall GetCurrentThreadId(void);
 __declspec(dllimport) int __stdcall QueryPerformanceFrequency(long long *);
 __declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(unsigned long long *);
@@ -79,6 +83,56 @@ static DWORD __stdcall consumer(void *) {
     }
 }
 
+extern "C" {
+__declspec(dllimport) int __intrinsic_setjmp(unsigned long long *, void *);
+__declspec(dllimport) void longjmp(unsigned long long *, int);
+}
+namespace Concurrency { namespace details {
+struct _Threadpool_chore {
+    void *_M_work;
+    void (*_M_callback)(void *);
+    void *_M_data;
+};
+__declspec(dllimport) int __cdecl _Schedule_chore(_Threadpool_chore *);
+__declspec(dllimport) int __cdecl _Reschedule_chore(const _Threadpool_chore *);
+__declspec(dllimport) void __cdecl _Release_chore(_Threadpool_chore *);
+} }
+static volatile long chore_runs;
+static void chore_cb(void *data) {
+    _InterlockedIncrement(&chore_runs);
+    *(volatile int *)data = 7;
+}
+static void chore_test() {
+    using namespace Concurrency::details;
+    int data = 0;
+    _Threadpool_chore ch{nullptr, chore_cb, &data};
+    num("schedule chore", _Schedule_chore(&ch));
+    num("chore has work", ch._M_work != nullptr);
+    for (int i = 0; i < 5000 && chore_runs < 1; i++) Sleep(1);
+    num("reschedule chore", _Reschedule_chore(&ch));
+    for (int i = 0; i < 5000 && chore_runs < 2; i++) Sleep(1);
+    num("chore runs", chore_runs);
+    num("chore data", data);
+    _Release_chore(&ch);
+    num("released work", ch._M_work == nullptr);
+}
+alignas(16) static unsigned long long jb[32];
+static volatile int hops;
+__declspec(noinline) static void jump_back(int v) {
+    hops = hops + 1;
+    longjmp(jb, v);
+}
+static void setjmp_test() {
+    volatile int local = 5;
+    int r = __intrinsic_setjmp(jb, 0);
+    if (r < 3) {
+        local = local + 1;
+        jump_back(r == 0 ? 0 : r + 1);
+    }
+    num("setjmp result", r);
+    num("setjmp hops", hops);
+    num("setjmp local", local);
+}
 int main() {
     _Mtx_init_in_situ(mtx, 1); // _Mtx_plain
     _Mtx_init_in_situ(rmtx, 1 | 0x100); // _Mtx_recursive
@@ -143,5 +197,7 @@ int main() {
         caught = 1;
     }
     num("caught", caught);
+    setjmp_test();
+    chore_test();
     ExitProcess(0);
 }

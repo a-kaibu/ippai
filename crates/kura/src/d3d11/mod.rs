@@ -109,8 +109,13 @@ const IIDS: &[(u32, &[u32])] = &[
     (0xdb6f6ddb, &[IF_DEVICE]),
     (0xa04bfb29, &[IF_DEVICE]), // ID3D11Device1
     (0x9d06dffa, &[IF_DEVICE]), // ID3D11Device2
+    (0xa05c8c37, &[IF_DEVICE]), // ID3D11Device3
+    (0x8992ab71, &[IF_DEVICE]), // ID3D11Device4
+    (0x8ffde202, &[IF_DEVICE]), // ID3D11Device5
     (0xbb2c6faa, &[IF_CONTEXT]), // ID3D11DeviceContext1
     (0x420d5b32, &[IF_CONTEXT]), // ID3D11DeviceContext2
+    (0xb4e3c01d, &[IF_CONTEXT]), // ID3D11DeviceContext3
+    (0x917600da, &[IF_CONTEXT]), // ID3D11DeviceContext4
     (0xcc86fabe, &[IF_BLEND]), // ID3D11BlendState1
     (0x1217d7a6, &[IF_RASTER]), // ID3D11RasterizerState1
     (0x5c1e0d8a, &[IF_LINKAGE]), // ID3DDeviceContextState (a device child like the linkage)
@@ -1786,8 +1791,8 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         41 => S_OK,
         42 => 0,
         // ID3D11Device1/2 (Direct2D uses these)
-        43 | 50 => device_call(d, 40, this, a),
-        44 | 51 => deferred::create(d, a(1), a(2)), // CreateDeferredContext1/2
+        43 | 50 | 61 => device_call(d, 40, this, a), // GetImmediateContext1/2/3
+        44 | 51 | 62 => deferred::create(d, a(1), a(2)), // CreateDeferredContext1/2/3
         45 => {
             // CreateBlendState1(desc, out): render targets of 10 dwords (LogicOpEnable, LogicOp)
             // to the 8 of D3D11_BLEND_DESC
@@ -1829,6 +1834,30 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         }
         48 | 49 => E_NOTIMPL,
         52 => 0,
+        // ID3D11Device3: the *1 / *2 descriptions extend the old ones at their ends (texture
+        // layout, conservative rasterization, plane slices of planar formats, a query's
+        // context type), which this device does not have: the old creation reads its prefix
+        54 => device_call(d, 5, this, a),  // CreateTexture2D1
+        55 => device_call(d, 6, this, a),  // CreateTexture3D1
+        56 => device_call(d, 22, this, a), // CreateRasterizerState2
+        57 => device_call(d, 7, this, a),  // CreateShaderResourceView1
+        58 => device_call(d, 8, this, a),  // CreateUnorderedAccessView1
+        59 => device_call(d, 9, this, a),  // CreateRenderTargetView1
+        60 => device_call(d, 24, this, a), // CreateQuery1
+        // Write / ReadFromSubresource: only for textures mapped with a CPU-visible layout,
+        // which none here is
+        63 | 64 => 0,
+        // ID3D11Device4: the device is never removed (cookie 0 is valid)
+        65 => {
+            if a(1) == 0 || a(2) == 0 {
+                return E_INVALIDARG;
+            }
+            wr(a(2), 0, 0);
+            S_OK
+        }
+        66 => 0,
+        // ID3D11Device5: fences
+        67 | 68 => E_NOTIMPL,
         53 => {
             // CheckMultisampleQualityLevels1(format, count, flags, out)
             if a(4) == 0 {
@@ -2465,6 +2494,16 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         // ID3D11DeviceContext2: tiled resources and annotations
         134..=139 | 141..=143 => {}
         140 => return 0, // IsAnnotationEnabled
+        // ID3D11DeviceContext3: Flush1(type, event); hardware protection (none: off)
+        144 => return context_call2(d, st, 111, a, after),
+        145 => {}
+        146 => {
+            if a(1) != 0 {
+                wr(a(1), 0, 0);
+            }
+        }
+        // ID3D11DeviceContext4: Signal / Wait on fences (CreateFence gives none)
+        147 | 148 => return E_INVALIDARG,
         _ => return E_NOTIMPL,
     }
     S_OK

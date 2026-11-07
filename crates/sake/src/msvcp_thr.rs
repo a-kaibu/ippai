@@ -340,26 +340,25 @@ fn chore_run(c: &mut Ctx) -> u32 {
     c.call(f, &[data]);
     0
 }
-/// ?_Schedule_chore@details@Concurrency@@YAHPEAU_Threadpool_chore@12@@Z
+/// ?_Schedule_chore@details@Concurrency@@YAHPEAU_Threadpool_chore@12@@Z: a new work item for
+/// the chore, submitted; 0, or the error CreateThreadpoolWork left (taskscheduler.cpp: the
+/// tasks throw invalid_operation on anything else than 0)
 fn schedule_chore(c: &mut Ctx) -> u32 {
     let chore = c.a(0);
-    if rp(chore) == 0 {
-        let cb = host_fn("msvcp::chore", chore_run, 0);
-        let w = k32(c, "CreateThreadpoolWork", &[cb, chore, 0]);
-        if w == 0 {
-            return 0;
-        }
-        wp(chore, w);
+    let cb = host_fn("msvcp::chore", chore_run, 0);
+    let w = k32(c, "CreateThreadpoolWork", &[cb, chore, 0]);
+    wp(chore, w);
+    if w == 0 {
+        return k32(c, "GetLastError", &[]);
     }
-    let w = rp(chore);
-    k32(c, "SubmitThreadpoolWork", &[w]);
-    1
+    reschedule_chore(c)
 }
-/// ?_Reschedule_chore@details@Concurrency@@YAHPEBU_Threadpool_chore@12@@Z
+/// ?_Reschedule_chore@details@Concurrency@@YAHPEBU_Threadpool_chore@12@@Z: submits its work
+/// item again; 0
 fn reschedule_chore(c: &mut Ctx) -> u32 {
     let w = rp(c.a(0));
     k32(c, "SubmitThreadpoolWork", &[w]);
-    1
+    0
 }
 /// ?_Release_chore@details@Concurrency@@YAXPEAU_Threadpool_chore@12@@Z
 fn release_chore(c: &mut Ctx) -> u32 {

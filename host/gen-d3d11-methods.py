@@ -8,7 +8,7 @@ import os, re, sys
 
 IFACES = [  # (number, interface whose vtable is used)
     (64, 'IDXGIFactory2'), (65, 'IDXGIAdapter1'), (66, 'IDXGIOutput'), (67, 'IDXGISwapChain1'),
-    (68, 'IDXGIDevice3'), (69, 'IDXGISurface1'), (70, 'ID3D11Device2'), (71, 'ID3D11DeviceContext2'),
+    (68, 'IDXGIDevice3'), (69, 'IDXGISurface1'), (70, 'ID3D11Device5'), (71, 'ID3D11DeviceContext4'),
     (72, 'ID3D11Buffer'), (73, 'ID3D11Texture1D'), (74, 'ID3D11Texture2D'), (75, 'ID3D11Texture3D'),
     (76, 'ID3D11ShaderResourceView'), (77, 'ID3D11RenderTargetView'), (78, 'ID3D11DepthStencilView'),
     (79, 'ID3D11UnorderedAccessView'), (80, 'ID3D11VertexShader'), (81, 'ID3D11PixelShader'),
@@ -27,11 +27,11 @@ IFACES = [  # (number, interface whose vtable is used)
     (112, 'IDXGIResource'),
 ]
 # methods returning a float (x87): their own stub returns 0.0
-FLOAT = {('ID3D11DeviceContext2', 'GetResourceMinLOD')}
+FLOAT = {('ID3D11DeviceContext4', 'GetResourceMinLOD')}
 
 inc = sys.argv[1] if len(sys.argv) > 1 else '/usr/share/mingw-w64/include'
 here = os.path.dirname(os.path.abspath(__file__))
-src = ''.join(open(f'{inc}/{f}').read() for f in ['d3d10.h', 'd3d10_1.h', 'dxgi.h', 'dxgi1_2.h', 'dxgi1_3.h', 'd3d11.h', 'd3d11_1.h', 'd3d11_2.h'])
+src = ''.join(open(f'{inc}/{f}').read() for f in ['d3d10.h', 'd3d10_1.h', 'dxgi.h', 'dxgi1_2.h', 'dxgi1_3.h', 'd3d11.h', 'd3d11_1.h', 'd3d11_2.h', 'd3d11_3.h', 'd3d11_4.h'])
 vt = {}
 for m in re.finditer(r'typedef struct (\w+)Vtbl \{\s*BEGIN_INTERFACE(.*?)END_INTERFACE', src, re.S):
     name, body = m.groups()

@@ -303,6 +303,15 @@ pub(super) unsafe fn call(d: &mut D11, this: u32, m: u32, a: &dyn Fn(usize) -> u
         }
         134..=139 | 141..=143 => S_OK,
         140 => 0,
+        // Flush1 / hardware protection on a deferred context: nothing to do
+        144 | 145 => 0,
+        146 => {
+            if a(1) != 0 {
+                wr(a(1), 0, 0);
+            }
+            0
+        }
+        147 | 148 => E_INVALIDARG,
         _ => E_NOTIMPL,
     }
 }

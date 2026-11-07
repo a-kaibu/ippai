@@ -77,6 +77,7 @@ mod msvcp_loc;
 mod msvcp_thr;
 pub mod sound;
 pub mod xaudio2;
+mod mmdevapi;
 pub mod mmio;
 pub mod gl;
 pub mod gl_sigs;

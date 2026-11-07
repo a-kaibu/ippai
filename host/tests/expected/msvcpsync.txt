@@ -18,3 +18,12 @@ random 1
 invalid argument
 winerror 5 13
 caught 1
+setjmp result 3
+setjmp hops 3
+setjmp local 8
+schedule chore 0
+chore has work 1
+reschedule chore 0
+chore runs 2
+chore data 7
+released work 1

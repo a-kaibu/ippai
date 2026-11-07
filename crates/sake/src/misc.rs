@@ -1102,6 +1102,10 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         mem::putp(c.a(4), obj);
         return 0;
     }
+    if let Some(obj) = crate::mmdevapi::create_instance(clsid) {
+        mem::putp(c.a(4), obj);
+        return 0;
+    }
     if let Some(obj) = crate::com::create_instance(clsid) {
         mem::putp(c.a(4), obj);
         return 0;
@@ -1479,6 +1483,48 @@ fn VariantClear(c: &mut Ctx) -> u32 {
         bstr_free(r32(v + 8));
     }
     mem::fill(v, 16, 0);
+    0
+}
+/// PropVariantClear: frees what the value owns (CoTaskMem strings, BSTRs, blobs, CLSIDs and
+/// interfaces) and empties it (a PROPVARIANT is 8 bytes of header and two pointers' worth)
+fn PropVariantClear(c: &mut Ctx) -> u32 {
+    let v = c.a(0);
+    if v == 0 {
+        return 0;
+    }
+    let p = mem::ps();
+    let t = r16(v);
+    match t {
+        // VT_LPSTR, VT_LPWSTR, VT_CLSID, VT_CF
+        30 | 31 | 72 | 71 => {
+            let q = mem::rp(v + 8);
+            if q != 0 {
+                mem::heap_free(q);
+            }
+        }
+        8 => bstr_free(mem::rp(v + 8)),
+        // VT_BLOB, VT_BLOB_OBJECT: { ULONG size, BYTE* data }
+        65 | 70 => {
+            let q = mem::rp(v + 8 + p);
+            if q != 0 {
+                mem::heap_free(q);
+            }
+        }
+        // VT_UNKNOWN, VT_DISPATCH, VT_STREAM, VT_STORAGE...: Release
+        9 | 13 | 66..=69 => {
+            let o = mem::rp(v + 8);
+            if o != 0 {
+                let release = mem::rp(mem::rp(o) + 2 * p);
+                c.call(release, &[o]);
+            }
+        }
+        _ if t > 0x0fff && t & 0x4000 == 0 => {
+            // (vectors and arrays: not made here)
+            crate::com::warn_once(&format!("PropVariantClear: vt {t:#x} left as it is"));
+        }
+        _ => {}
+    }
+    mem::fill(v, 8 + 2 * p, 0);
     0
 }
 fn variant_copy(dst: u32, src: u32) -> u32 {
@@ -2920,7 +2966,7 @@ pub fn init() {
     implement("rpcrt4", "UuidCreateSequential", UuidCreate);
     implement("rpcrt4", "RpcStringFreeW", RpcStringFreeA);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
-        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
+        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
         RegisterDragDrop, RevokeDragDrop);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,

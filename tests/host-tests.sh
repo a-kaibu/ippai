@@ -6,7 +6,8 @@
 # Tests in X64 are also built for x86-64 (mingw-w64: msvcrt) and must print the same: sake's
 # C runtime has to behave alike in both. CLANG64 are x86-64 programs clang builds (SEH, and
 # x64crt: an MSVC-ABI program on ucrtbase/vcruntime140; msvcpsync: msvcp140 threads/sync;
-# msvcstream: its iostreams and locale facets, built against Microsoft's STL headers), each with its own expected file.
+# msvcstream: its iostreams and locale facets, built against Microsoft's STL headers; mmdev:
+# the audio device enumerator), each with its own expected file.
 #
 #   tests/host-tests.sh [name ...]      SAKE=path/to/sake.js (default /home/user/work/sake-out/sake.js)
 set -uo pipefail
@@ -15,7 +16,7 @@ SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
 TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit}
 X64=" struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit "
-CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream}
+CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream mmdev}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
 GXX=${GXX-gxxunwind}
 # Tests in VEX are also built with -mavx (the VEX forms of their SSE instructions)

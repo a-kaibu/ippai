@@ -865,4 +865,11 @@ pub fn register() {
     implement("ntdll", "_setjmp", setjmp);
     implement("ntdll", "_setjmpex", setjmp);
     implement("ntdll", "longjmp", longjmp);
+    // (what MSVC calls for setjmp: the same jump buffer, vcruntime140's longjmp)
+    for d in ["vcruntime140", "msvcrt"] {
+        implement(d, "__intrinsic_setjmp", setjmp);
+        implement(d, "__intrinsic_setjmpex", setjmp);
+    }
+    implement("vcruntime140", "longjmp", longjmp);
+    implement("vcruntime140", "_setjmp", setjmp);
 }
