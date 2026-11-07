@@ -360,6 +360,85 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// The server's store has game a, a save and a favorite; another machine's store (the same
+    /// bucket and key, its own database) adds a again (the same files) and b, a newer revision
+    /// of the save and a play session, and backs up. The server merges that backup: b shows up
+    /// (entry, tree, every chunk reads back), a's chunks stay the server's objects and the other
+    /// copies are retired, a's catalog files are the other's, the save is at the newer revision,
+    /// the favorite stays, the session is added. gc then leaves the bucket holding what the
+    /// server names plus the other machine's backup; a second merge adds nothing.
+    #[tokio::test]
+    async fn merge_another_stores_backup() {
+        let (f, s, dir) = serve(0).await;
+        let pc_db = Library::new(&dir.join("pc")).unwrap();
+        let pc = Storage {
+            db: pc_db.clone(),
+            bucket: s.bucket.clone(),
+            config: Config { keys: s.config.keys.clone(), active_key: s.config.active_key.clone(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into() },
+            cache: Default::default(),
+            inflight: Default::default(),
+            requests: tokio::sync::Semaphore::new(8),
+        };
+        let shared: Vec<u8> = (0..600_000u32).map(|i| (i * 13 % 251) as u8).collect();
+        for (name, own) in [("a", 1u8), ("b", 2)] {
+            let d = dir.join(format!("files-{name}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("game.exe"), [b'M', b'Z', own]).unwrap();
+            std::fs::write(d.join("shared.dat"), &shared).unwrap();
+        }
+        let (server_store, pc_store) = (dir.join("server"), dir.join("pc"));
+        crate::pack::add_for_test(&server_store, &dir.join("files-a"), "a", vec![]).unwrap();
+        s.push_store(&server_store).await.unwrap();
+        s.db.set_profile("a", &crate::library::Profile { favorite: true, note: "server".into() }).unwrap();
+        let saves = |db: &Library, rev: i64| {
+            let c = db.connect().unwrap();
+            c.execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);").unwrap();
+            c.execute("INSERT INTO saves(name,revision,data) VALUES('a',?,NULL) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision", [rev]).unwrap();
+        };
+        s.put("saves/a/1", b"save 1").await.unwrap();
+        saves(&s.db, 1);
+        crate::pack::add_for_test(&pc_store, &dir.join("files-a"), "a", vec![]).unwrap();
+        crate::pack::add_for_test(&pc_store, &dir.join("files-b"), "b", vec![]).unwrap();
+        pc.push_store(&pc_store).await.unwrap();
+        pc.put("saves/a/2", b"save 2").await.unwrap();
+        saves(&pc_db, 2);
+        pc_db.connect().unwrap().execute("INSERT INTO sessions(id,game,started_ms,elapsed_ms) VALUES('s1','b',1,60000)", []).unwrap();
+        pc.db.set_profile("a", &crate::library::Profile { favorite: false, note: "pc".into() }).unwrap();
+        let server_a_chunk = |l: &str| s.db.connect().unwrap().query_row("SELECT envelope FROM objects WHERE logical=?", [l], |r| r.get::<_, String>(0)).unwrap();
+        let a_chunks: Vec<String> = s.db.connect().unwrap().prepare("SELECT logical FROM objects WHERE logical LIKE 'chunks/%'").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let before: Vec<String> = a_chunks.iter().map(|l| server_a_chunk(l)).collect();
+        let backup = pc.backup().await.unwrap();
+
+        let m = s.merge(backup, &server_store).await.unwrap();
+        assert!(m.added > 0 && m.replaced >= 2 && m.kept >= a_chunks.len(), "{m:?}");
+        assert_eq!((m.saves, m.records), (1, 1), "{m:?}");
+        assert!(server_store.join("games/b.json").exists() && server_store.join("trees/b.tsv").exists());
+        assert_eq!(a_chunks.iter().map(|l| server_a_chunk(l)).collect::<Vec<_>>(), before, "a's chunks stay the server's objects");
+        *s.cache.lock().unwrap() = Default::default();
+        for line in std::fs::read_to_string(server_store.join("trees/b.tsv")).unwrap().lines().filter(|l| l.starts_with("f\t")) {
+            for c in line.split('\t').nth(5).unwrap().split(',').filter(|c| c.len() > 2) {
+                assert!(s.get(&format!("chunks/{}/{c}", &c[..2])).await.unwrap().is_some(), "b's chunk {c}");
+            }
+        }
+        let rev: i64 = s.db.connect().unwrap().query_row("SELECT revision FROM saves WHERE name='a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rev, 2);
+        assert_eq!(&*s.get("saves/a/2").await.unwrap().unwrap(), b"save 2");
+        assert_eq!(s.db.profile("a").unwrap().note, "server");
+        let sessions: i64 = s.db.connect().unwrap().query_row("SELECT COUNT(*) FROM sessions WHERE id='s1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(sessions, 1);
+
+        s.gc(std::time::Duration::ZERO, None).await.unwrap();
+        let pc_backup: std::collections::BTreeSet<String> = {
+            let snapshot: String = pc_db.connect().unwrap().query_row("SELECT snapshot FROM backups", [], |r| r.get(0)).unwrap();
+            [backup.to_string(), snapshot].into()
+        };
+        assert_eq!(names(&f), named(&s).union(&pc_backup).cloned().collect(), "the bucket: what the server names, and the other's backup");
+        let again = s.merge(backup, &server_store).await.unwrap();
+        assert_eq!(again.added, 0, "{again:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Two games pushed, with chunks in common: removing one drops its entry, tree and own
     /// chunks from the store's rows (the other's all stay and read back); a backup taken before
     /// keeps the objects in the bucket until it goes; then gc deletes exactly them, and a fresh
@@ -602,6 +681,23 @@ where
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+/// What [`Storage::merge`] did.
+#[derive(Debug, Default, PartialEq)]
+pub struct Merged {
+    /// objects only the other store named
+    pub added: usize,
+    /// catalog files taken from the other store
+    pub replaced: usize,
+    /// named by both, kept as this store had them (the other's copy retired)
+    pub kept: usize,
+    /// the same object in both
+    pub same: usize,
+    /// saves added or moved to the other's higher revision
+    pub saves: usize,
+    /// profiles, play sessions and game settings added
+    pub records: usize,
 }
 
 /// What [`Storage::gc`] did.
@@ -1016,6 +1112,81 @@ impl Storage {
         })();
         let _ = std::fs::remove_file(&temp);
         result
+    }
+
+    /// Merges another store's backup `id` (`ippai storage backup` there, the same bucket and
+    /// keys) into this store's database, so games added and pushed elsewhere show up here:
+    /// - objects only the other names are added (rewrapped with the active key, as `restore`);
+    /// - a catalog file (games/, trees/) both name differently is taken from the other, this
+    ///   one's object retired: what was added there last wins;
+    /// - anything else both name (chunks: the same content; saves) stays this one's, and the
+    ///   other's object is retired (`gc` deletes it);
+    /// - a save takes the higher of the two revisions; profiles, play sessions and game settings
+    ///   only the other has are added. Backups and the retired list stay this one's.
+    ///
+    /// Then `hydrate_catalog` brings the new games' entries and trees here.
+    pub async fn merge(&self, id: Uuid, store: &Path) -> Result<Merged> {
+        let other = self.db.0.with_file_name(format!(".merge-{}.sqlite3", Uuid::new_v4()));
+        self.restore(id, &other).await?;
+        let mut replaced = Vec::new();
+        let result = (|| -> Result<Merged> {
+            let mut out = Merged::default();
+            let mut c = self.db.connect()?;
+            c.execute("ATTACH DATABASE ? AS other", [other.to_str().context("non-UTF8 path")?])?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let rows: Vec<(String, String, i64, Option<String>)> = {
+                let mut q = tx.prepare("SELECT o.logical,o.envelope,o.size,m.envelope FROM other.objects o LEFT JOIN main.objects m ON m.logical=o.logical")?;
+                let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            for (logical, theirs, size, ours) in rows {
+                let object = |e: &str| -> Result<Uuid> { Ok(serde_json::from_str::<Envelope>(e)?.object) };
+                match ours {
+                    None => {
+                        tx.execute("INSERT INTO main.objects(logical,envelope,size) VALUES(?,?,?)", rusqlite::params![logical, theirs, size])?;
+                        out.added += 1;
+                    }
+                    Some(ours) if object(&ours)? == object(&theirs)? => out.same += 1,
+                    Some(ours) if logical.starts_with("games/") || logical.starts_with("trees/") => {
+                        tx.execute("UPDATE main.objects SET envelope=?,size=? WHERE logical=?", rusqlite::params![theirs, size, logical])?;
+                        retire(&tx, object(&ours)?)?;
+                        replaced.push(logical.clone());
+                        out.replaced += 1;
+                    }
+                    Some(_) => {
+                        retire(&tx, object(&theirs)?)?;
+                        out.kept += 1;
+                    }
+                }
+            }
+            let has = |t: &str| -> rusqlite::Result<bool> {
+                tx.query_row("SELECT EXISTS(SELECT 1 FROM other.sqlite_master WHERE type='table' AND name=?)", [t], |r| r.get(0))
+            };
+            if has("saves")? {
+                tx.execute_batch("CREATE TABLE IF NOT EXISTS main.saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);")?;
+                out.saves = tx.execute(
+                    "INSERT INTO main.saves(name,revision,data) SELECT name,revision,data FROM other.saves WHERE true
+                     ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data WHERE excluded.revision>main.saves.revision",
+                    [],
+                )?;
+            }
+            for t in ["profiles", "sessions", "game_settings"] {
+                if has(t)? {
+                    out.records += tx.execute(&format!("INSERT OR IGNORE INTO main.{t} SELECT * FROM other.{t}"), [])?;
+                }
+            }
+            tx.commit()?;
+            c.execute("DETACH DATABASE other", [])?;
+            Ok(out)
+        })();
+        let _ = std::fs::remove_file(&other);
+        let out = result?;
+        // (the old copies here go: hydrate_catalog fetches what is not here)
+        for l in &replaced {
+            let _ = std::fs::remove_file(store.join(l));
+        }
+        self.hydrate_catalog(store).await?;
+        Ok(out)
     }
 
     pub fn rotate_objects(&self) -> Result<()> {

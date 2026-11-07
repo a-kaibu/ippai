@@ -89,6 +89,9 @@ enum StorageCmd {
     Backup,
     /// Restore a backup to a new database path, never over an existing database.
     Restore { backup: uuid::Uuid, output: PathBuf },
+    /// Merge another store's backup (its `storage backup` UUID, same bucket and keys) into this
+    /// store: the games it added show up here (see Storage::merge for who wins).
+    Merge { backup: uuid::Uuid },
     /// Rewrap current object keys with the configured active key.
     Rotate,
     /// Rewrap an existing backup envelope without rewriting its ciphertext.
@@ -112,6 +115,14 @@ fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Resul
             StorageCmd::Push => storage.push_store(store).await,
             StorageCmd::Backup => { println!("{}", storage.backup().await?); Ok(()) },
             StorageCmd::Restore { backup, output } => storage.restore(backup, &output).await,
+            StorageCmd::Merge { backup } => {
+                let m = storage.merge(backup, store).await?;
+                println!(
+                    "merged: {} objects added, {} catalog files taken, {} kept as here, {} the same; {} saves, {} records",
+                    m.added, m.replaced, m.kept, m.same, m.saves, m.records
+                );
+                Ok(())
+            }
             StorageCmd::Rotate => storage.rotate_objects(),
             StorageCmd::RotateBackup { backup } => storage.rotate_backup(backup).await,
             StorageCmd::Gc { grace_days, keep_backups } => {
