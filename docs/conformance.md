@@ -75,9 +75,11 @@ register: koji's x87 is f64 by design) and flags (only the exception flags);
 `tests/diff/fpu-expected.tsv` has the counts. x87 transcendental results differ between CPU
 vendors in their last bits, so a runner with another CPU can move those counts.
 
-Found (2026-11-06), not fixed yet: the MXCSR rounding mode and FTZ/DAZ are ignored (every SSE op
-rounds to nearest); the x87 precision control (PC24, as set by Direct3D 9) and rounding control
-are ignored for arithmetic; no exception flags are raised anywhere (MXCSR, x87 status); NaN
+Found (2026-11-06), not fixed yet: FTZ/DAZ are ignored; no exception flags are raised anywhere (MXCSR, x87 status); NaN
 operand rules (the first operand's NaN for SSE, sNaN quieting on fld, the negative default NaN
 of fsqrt of a negative number), fsin/fcos/fptan of |x| >= 2^63 (x86 leaves them and sets C2),
-f2xm1 of zeros and tiny values, fscale and fprem special cases.
+f2xm1 of zeros and tiny values, fscale and fprem special cases. Fixed (2026-11-07, koji::round):
+the MXCSR rounding mode for SSE arithmetic and conversions, and the x87 rounding and precision
+controls (PC24 at the x87's exponent range; products and quotients below f64's normal range
+rounded twice, as the FPU's register and then its store do), in the interpreter and both JITs
+(translated code checks the mode and calls the `round` import when it isn't round to nearest).

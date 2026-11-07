@@ -110,12 +110,15 @@ jobs:
       - name: Differential test (new seed per run)
         working-directory: tools/jit64test
         run: cargo run --release --locked -- 20000 ${{ github.run_number }}
+      - name: Interpreter against the runner's CPU, one instruction at a time
+        working-directory: tools/jit64test
+        run: cargo run --release --locked -- native 30000 ${{ github.run_number }}
 
   # koji's 32-bit JIT (regions and function mode, through its dispatcher) against its
   # interpreter (random x86 integer/MMX/SSE/x87 code, run by wasmtime)
   jit32:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/cache@v6.1.0
@@ -129,6 +132,11 @@ jobs:
       - name: Differential test (new seed per run)
         working-directory: tools/jit32test
         run: cargo run --release --locked -- 10000 ${{ github.run_number }}
+      - name: Against the runner's CPU (random rounding modes and precisions)
+        working-directory: tools/jit32test
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
+          cargo run --release --locked -- native 3000 ${{ github.run_number }}
 
   rustfs:
     runs-on: ubuntu-24.04

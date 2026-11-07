@@ -248,7 +248,7 @@ impl<'a, M: Memory> X<'a, M> {
                 tryf!(self.write_v(0, v));
                 self.done()
             }
-            Movdqa | Movdqu | Movaps | Movups | Movapd | Movupd | Movntdq | Movntps | Movntpd | Movntq | Lddqu
+            Movdqa | Movdqu | Movaps | Movups | Movapd | Movupd | Movntdq | Movntdqa | Movntps | Movntpd | Movntq | Lddqu
             | Movnti => {
                 let v = tryf!(self.read_v(1));
                 tryf!(self.write_v(0, v));
@@ -508,8 +508,13 @@ impl<'a, M: Memory> X<'a, M> {
                         Minss | Minps => if sse_min(x as f64, y as f64) { x } else { y },
                         Maxss | Maxps => if (x as f64) > (y as f64) { x } else { y },
                         Sqrtss | Sqrtps => if y.is_nan() { f32::from_bits(y.to_bits() | 0x40_0000) } else if y < 0.0 { f32::from_bits(0xffc0_0000) } else { round::sse32(Op::Sqrt, y, 0.0, mx) },
-                        Rcpss | Rcpps => 1.0 / y,
-                        _ => 1.0 / libm::sqrtf(y),
+                        // (the approximations: denormal operands as 0, tiny results 0, as x86)
+                        Rcpss | Rcpps => {
+                            let y = if y.is_subnormal() { 0.0f32.copysign(y) } else { y };
+                            let r = 1.0 / y;
+                            if r.is_subnormal() { 0.0f32.copysign(r) } else { r }
+                        }
+                        _ => 1.0 / libm::sqrtf(if y.is_subnormal() { 0.0f32.copysign(y) } else { y }),
                     };
                     r = set32(r, i, v.to_bits());
                 }

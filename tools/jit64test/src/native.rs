@@ -76,7 +76,7 @@ fn codes() -> Vec<Code> {
                         | M::Movntpd | M::Movntps | M::Bound | M::Lahf | M::Sahf | M::Wait | M::Lar | M::Lsl
                         | M::Verr | M::Verw | M::Rdpid | M::Ud0 | M::Ud1 | M::Ud2 | M::Int | M::Int3 | M::Into | M::Hlt
                         | M::Syscall | M::Sysret | M::Iret | M::Leave | M::Enter | M::Popf | M::Popfq | M::Popfd | M::Cwd
-                        | M::Smsw | M::Str | M::Sldt | M::Sgdt | M::Sidt | M::Cbw | M::Vzeroupper | M::Vzeroall | M::Vldmxcsr | M::Vstmxcsr | M::Vmaskmovdqu
+                        | M::Lea | M::Lgs | M::Lfs | M::Lss | M::Smsw | M::Str | M::Sldt | M::Sgdt | M::Sidt | M::Cbw | M::Vzeroupper | M::Vzeroall | M::Vldmxcsr | M::Vstmxcsr | M::Vmaskmovdqu
                 )
                 && (0..op.op_count()).all(|i| maker(op.op_kind(i)).is_some())
                 && (0..op.op_count()).all(|i| !matches!(op.op_kind(i), K::seg_reg | K::mm_reg | K::mm_or_mem | K::mm_rm | K::st0 | K::sti_opcode | K::cr_reg | K::dr_reg | K::tr_reg | K::bnd_reg | K::bnd_or_mem_mpx | K::k_reg))
@@ -426,10 +426,33 @@ pub fn run(args: &[String]) {
         if std::env::var_os("NONAT").is_some() {
             continue;
         }
+        // shifts and rotates: OF is defined for a count of 1 only; SHLD/SHRD of 16 bits by more
+        // than 16: the result too (CPUs differ)
+        use iced_x86::Mnemonic as Mn;
+        let count = || {
+            let n = if ins.op_kinds().any(|k| k == iced_x86::OpKind::Immediate8) { ins.immediate8() as u64 } else { s.gpr[1] };
+            n & if ins.op0_register().size() == 8 || ins.memory_size().size() == 8 { 63 } else { 31 }
+        };
+        let shift = matches!(ins.mnemonic(), Mn::Rcl | Mn::Rcr | Mn::Rol | Mn::Ror | Mn::Shl | Mn::Sal | Mn::Shr | Mn::Sar | Mn::Shld | Mn::Shrd);
+        let wide16 = ins.op0_register().size() == 2 || (ins.op0_kind() == iced_x86::OpKind::Memory && ins.memory_size().size() == 2);
+        if matches!(ins.mnemonic(), Mn::Shld | Mn::Shrd) && wide16 && count() > 16 {
+            continue;
+        }
         unsafe { native(&bytes, &mut ns, page) };
         cpu.materialize();
         // compare
-        let undef: u64 = FLAG_MAP.iter().filter(|(b, _)| ins.rflags_undefined() & b != 0).map(|(_, f)| *f).sum();
+        let mut undef: u64 = FLAG_MAP.iter().filter(|(b, _)| ins.rflags_undefined() & b != 0).map(|(_, f)| *f).sum();
+        if shift && count() != 1 {
+            undef |= 0x800;
+        }
+        // RCP/RSQRT: approximations, each vendor's own (within 1.5 * 2^-12 of the exact value)
+        let approx = matches!(ins.mnemonic(), Mn::Rcpps | Mn::Rcpss | Mn::Rsqrtps | Mn::Rsqrtss | Mn::Vrcpps | Mn::Vrcpss | Mn::Vrsqrtps | Mn::Vrsqrtss);
+        let near = |a: u128, b: u128| {
+            (0..4).all(|k| {
+                let (x, y) = (f32::from_bits((a >> (32 * k)) as u32), f32::from_bits((b >> (32 * k)) as u32));
+                x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan()) || ((x - y).abs() as f64) <= (y.abs() as f64) * 3.0 / 4096.0
+            })
+        };
         let mut d = Vec::new();
         for i in 0..16 {
             if ptrs.contains(&i) {
@@ -448,7 +471,7 @@ pub fn run(args: &[String]) {
             d.push(format!("flags interp {:#x} cpu {:#x}", cpu.eflags as u64 & fm, ns.flags & fm));
         }
         for i in 0..16 {
-            if cpu.xmm(i) != ns.xmm[i] {
+            if cpu.xmm(i) != ns.xmm[i] && !(approx && near(cpu.xmm(i), ns.xmm[i])) {
                 d.push(format!("xmm{i} interp {:#034x} cpu {:#034x}", cpu.xmm(i), ns.xmm[i]));
             }
         }
@@ -478,4 +501,7 @@ pub fn run(args: &[String]) {
     u.sort_by_key(|x| std::cmp::Reverse(x.1));
     println!("interpreter exits on: {}", u.iter().map(|(c, n)| format!("{c:?} x{n}")).collect::<Vec<_>>().join(", "));
     println!("{} codes failing", v.len());
+    if !v.is_empty() {
+        std::process::exit(1);
+    }
 }
