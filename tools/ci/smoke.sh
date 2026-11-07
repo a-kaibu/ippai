@@ -7,7 +7,7 @@
 set -euo pipefail
 BIN=$(realpath "$1")
 case "${2:-}" in
-  "" | "$(uname -m)"-*) ;;
+  "" | "$(uname -m)"-unknown-linux-*) ;;  # (another CPU, or Windows: not run here)
   *) echo "smoke: skip $2"; exit 0 ;;
 esac
 export HOME=$(mktemp -d) XDG_RUNTIME_DIR= 
