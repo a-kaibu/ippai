@@ -2,7 +2,8 @@
  * (_open, _read, _write, _lseeki64, _chsize, _dup, _dup2, _setmode, _get_osfhandle,
  * _open_osfhandle, _fileno, _fdopen), _stat64 / _fstat64, _access, _unlink, the current
  * directory, the environment (_putenv, _wputenv, getenv, _wgetenv, _environ), multibyte
- * conversion in code page 932, strerror's messages, and the C99 math sake's CRT added. */
+ * conversion in the user's locale, ".932" and "C" (with WideCharToMultiByte's default
+ * character), strerror's messages and buffers, and the C99 math sake's CRT added. */
 #include "../probe.h"
 #include <io.h>
 #include <fcntl.h>
@@ -56,6 +57,29 @@ static void mb(const char *t) {
     printf("%swcrtomb %d %02x%02x\n", t, n, (unsigned char)back[0], (unsigned char)back[1]);
     printf("%sbtowc %04x %04x %04x\n", t, btowc('A'), btowc(0x82), btowc(0xb1));
     printf("%swctob %d %d %d\n", t, wctob(L'A'), wctob(0x3042), wctob(0xff71));
+    printf("%s_mbstrlen %d\n", t, (int)_mbstrlen(sj));
+    /* fgetwc in text mode reads the locale's characters */
+    FILE *f = fopen("io_mb.txt", "wb");
+    fputs(sj, f);
+    fclose(f);
+    f = fopen("io_mb.txt", "r");
+    wint_t c0 = fgetwc(f);
+    wint_t c1 = fgetwc(f);
+    wint_t c2 = fgetwc(f);
+    wint_t c3 = fgetwc(f);
+    printf("%sfgetwc %04x %04x %04x %04x\n", t, c0, c1, c2, c3);
+    fclose(f);
+    _unlink("io_mb.txt");
+}
+
+/* strerror's buffer in another thread: its pointer, and its text copied before the thread ends
+ * (the CRT frees a thread's buffers when it exits) */
+struct other { char *p; char text[64]; };
+static DWORD WINAPI other_strerror(void *arg) {
+    struct other *o = arg;
+    o->p = strerror(EACCES);
+    strcpy(o->text, o->p);
+    return 0;
 }
 
 int main(void) {
@@ -91,7 +115,11 @@ int main(void) {
     printf("dup %d\n", d > fd);
     _lseek(fd, 0, SEEK_SET);
     printf("dup shares position %ld\n", _tell(d));
+    r = _setmode(d, _O_BINARY);  /* (the copy keeps fd's binary mode) */
+    printf("dup mode %#x\n", r);
     printf("dup2 %d\n", _dup2(fd, 40));
+    r = _setmode(40, _O_BINARY);
+    printf("dup2 mode %#x\n", r);
     r = _close(40);
     printf("close dup2 %d close dup %d\n", r, _close(d));
     r = _setmode(fd, _O_TEXT);
@@ -149,6 +177,15 @@ int main(void) {
     st("stat missing", _stat64("io_missing.bin", &s), &s);
     st("stat wildcard", _stat64("io_*.bin", &s), &s);
     st("stat exe", _stat64("..\\..\\..\\..\\..\\nonexistent.exe", &s), &s);
+    st("stat parent slash", _stat64("..\\", &s), &s);
+    st("stat parent", _stat64("..", &s), &s);
+    /* roots keep their separator (only the result: what a root holds differs per machine) */
+    static const char *roots[] = { "\\", "/", "C:\\", "C:/", "C:" };
+    for (unsigned i = 0; i < sizeof roots / sizeof *roots; i++) {
+        errno = 0;
+        r = _stat64(roots[i], &s);
+        printf("stat root %s %d errno %d dir %d\n", roots[i], r, errno, r == 0 && (s.st_mode & _S_IFDIR) != 0);
+    }
 #ifndef _WIN64  /* (x64's msvcrt has no _stat32) */
     struct _stat32 s32;
     r = _stat32("io_b.txt", &s32);
@@ -162,6 +199,11 @@ int main(void) {
     printf("access %d %d\n", _access("io_a.bin", 0), _access("io_a.bin", 6));
     PR("access missing", _access("io_missing.bin", 0));
     PR("access bad mode", _access("io_a.bin", 1));
+    for (int m = 0; m < 8; m++) {
+        errno = 0;
+        r = _access("io_a.bin", m);
+        printf("access mode %d %d errno %d\n", m, r, errno);
+    }
     _chmod("io_b.txt", _S_IREAD);
     PR("access readonly", _access("io_b.txt", 2));
     _chmod("io_b.txt", _S_IREAD | _S_IWRITE);
@@ -232,6 +274,41 @@ int main(void) {
     }
     printf("strerror %s | %s\n", strerror(ENOENT), strerror(200));
     printf("wcserror %d\n", wcscmp(_wcserror(EACCES), L"Permission denied") == 0);
+    /* one buffer per thread (and per kind): the next call overwrites it */
+    char *p1 = strerror(ENOENT);
+    char *p2 = strerror(EINVAL);
+    printf("strerror same buffer %d now %s\n", p1 == p2, p1);
+    wchar_t *pw = _wcserror(ENOENT);
+    p2 = strerror(EACCES);
+    printf("wcserror own buffer %d\n", wcscmp(pw, L"No such file or directory") == 0);
+    p1 = strerror(ENOENT);
+    struct other o = { NULL, "" };
+    HANDLE th = CreateThread(NULL, 0, other_strerror, &o, 0, NULL);
+    WaitForSingleObject(th, INFINITE);
+    CloseHandle(th);
+    printf("strerror other thread %d %s | %s\n", o.p != p1, o.text, p1);
+
+    /* kernel32's conversions the CRT's rest on: the default character and whether it was used */
+    {
+        char a[8];
+        BOOL used = -1;
+        int k = WideCharToMultiByte(1252, 0, L"a\x3042", 2, a, 8, "*", &used);
+        printf("w2m default 1252 %d used %d %02x%02x\n", k, used, (unsigned char)a[0], (unsigned char)a[1]);
+        used = -1;
+        k = WideCharToMultiByte(932, 0, L"\x3042\x20ac", 2, a, 8, "#", &used);
+        printf("w2m default 932 %d used %d %02x%02x%02x\n", k, used, (unsigned char)a[0], (unsigned char)a[1], (unsigned char)a[2]);
+        used = -1;
+        k = WideCharToMultiByte(932, 0, L"\x3042", 1, a, 8, NULL, &used);
+        printf("w2m 932 none missing %d used %d\n", k, used);
+        used = -1;
+        SetLastError(0);
+        k = WideCharToMultiByte(CP_UTF8, 0, L"a", 1, a, 8, NULL, &used);
+        printf("w2m utf8 with used %d err %lu\n", k, GetLastError());
+        SetLastError(0);
+        k = WideCharToMultiByte(CP_UTF8, 0, L"a", 1, a, 8, "*", NULL);
+        printf("w2m utf8 with default %d err %lu\n", k, GetLastError());
+        printf("IsDBCSLeadByteEx 932 %d 1252 %d 932 trail %d\n", IsDBCSLeadByteEx(932, 0x82) != 0, IsDBCSLeadByteEx(1252, 0x82) != 0, IsDBCSLeadByteEx(932, 0x40) != 0);
+    }
     r = strerror_s(buf, 5, 2);
     printf("strerror_s small %d '%s'\n", r, buf);
 

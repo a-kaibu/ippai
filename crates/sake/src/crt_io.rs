@@ -538,26 +538,27 @@ fn fstat(c: &mut Ctx, k: StatKind) -> u32 {
     0
 }
 
+/// Whether _stat may look `path` up at all: never an empty name or wildcards, and a trailing
+/// separator only on a root ("X:\\", "\\"): "dir\\" and ".\\" are ENOENT on Windows
+fn stat_name_ok(path: &str) -> bool {
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    !path.is_empty() && !path.contains(['*', '?']) && (trimmed.len() == path.len() || trimmed.is_empty() || trimmed.ends_with(':'))
+}
 fn stat(c: &mut Ctx, k: StatKind, wide: bool) -> u32 {
     let (path, p) = (path_arg(c.a(0), wide), c.a(1));
     if p == 0 {
         set_errno(EINVAL);
         return u32::MAX;
     }
-    // (a trailing separator is allowed only on a root such as "X:\\" or "\\", wildcards never)
-    let trimmed = path.trim_end_matches(['\\', '/']);
-    if path.contains(['*', '?']) || path.is_empty() {
+    if !stat_name_ok(&path) {
         set_errno(ENOENT);
         return u32::MAX;
     }
+    let trimmed = path.trim_end_matches(['\\', '/']);
     let Some((host, m)) = crate::files::resolve(if trimmed.is_empty() || trimmed.ends_with(':') { &path } else { trimmed }).and_then(|h| Some((h.clone(), kura::fs::metadata(h).ok()?))) else {
         set_errno(ENOENT);
         return u32::MAX;
     };
-    if trimmed.len() != path.len() && !trimmed.is_empty() && !trimmed.ends_with(':') {
-        set_errno(ENOENT);
-        return u32::MAX;
-    }
     put_stat(p, k, &info_of(&m, &host));
     0
 }
@@ -1000,10 +1001,6 @@ static LC_NAMES: Mutex<[Option<String>; 5]> = Mutex::new([None, None, None, None
 pub(super) fn lc_cp() -> u32 {
     LC_CP.load(Ordering::Relaxed)
 }
-fn c_locale() -> bool {
-    LC_CP.load(Ordering::Relaxed) == 0
-}
-
 /// The locale a setlocale string names: (name, code page), "C" as code page 0; None if unknown
 fn locale_of(s: &str) -> Option<(String, u32)> {
     let acp = crate::text::acp();
@@ -1087,19 +1084,31 @@ fn _wsetlocale(c: &mut Ctx) -> u32 {
 
 /// a lead byte of the locale's code page (none in "C")
 fn lead(b: u8) -> bool {
-    !c_locale() && crate::text::is_lead_cp(lc_cp(), b)
+    lead_in(lc_cp(), b)
 }
 /// bytes of the locale as UTF-16 ("C": each byte its value)
 fn to_wide(b: &[u8]) -> Vec<u16> {
-    if c_locale() { b.iter().map(|&x| x as u16).collect() } else { crate::text::mb2w(lc_cp(), b) }
+    to_wide_in(lc_cp(), b)
 }
-/// a character's bytes in the locale, None when it has none ("C": above 0xff; else what the
-/// code page lacks, which conversion would make the default '?')
+/// a character's bytes in the locale, None when it has none
 fn wc_bytes(u: u16) -> Option<Vec<u8>> {
-    if c_locale() {
+    wc_bytes_in(lc_cp(), u)
+}
+/// lead() in code page `cp` (0: "C")
+fn lead_in(cp: u32, b: u8) -> bool {
+    cp != 0 && crate::text::is_lead_cp(cp, b)
+}
+/// to_wide() in code page `cp` (0: "C", each byte its value)
+fn to_wide_in(cp: u32, b: &[u8]) -> Vec<u16> {
+    if cp == 0 { b.iter().map(|&x| x as u16).collect() } else { crate::text::mb2w(cp, b) }
+}
+/// wc_bytes() in code page `cp`: "C" has the characters up to 0xff; a code page lacks what
+/// conversion has to make its default character
+fn wc_bytes_in(cp: u32, u: u16) -> Option<Vec<u8>> {
+    if cp == 0 {
         return (u <= 0xff).then(|| vec![u as u8]);
     }
-    let (b, used) = crate::text::w2mb_def(lc_cp(), &[u], b"?");
+    let (b, used) = crate::text::w2mb_def(cp, &[u], b"?");
     (!used && !b.is_empty()).then_some(b)
 }
 
@@ -1969,3 +1978,7 @@ fn _wmakepath_s(c: &mut Ctx) -> u32 {
 pub(super) fn init2() {
     reg!(_mbstrlen, _memicmp, _wmakepath_s);
 }
+
+#[cfg(test)]
+#[path = "crt_io_tests.rs"]
+mod tests;

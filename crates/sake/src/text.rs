@@ -70,26 +70,22 @@ pub fn w2mb_def(cp: u32, s: &[u16], def: &[u8]) -> (Vec<u8>, bool) {
     // (encoding_rs's encode() would write HTML character references)
     let mut encoder = e.new_encoder();
     let src: Vec<u16> = st.encode_utf16().collect();
-    let mut out = vec![0u8; src.len() * 4 + 16];
-    let (mut read, mut written, mut used) = (0, 0, false);
+    // (in chunks of 64 bytes: OutputFull just means the next chunk)
+    let (mut out, mut buf) = (Vec::with_capacity(src.len() * 2), [0u8; 64]);
+    let (mut read, mut used) = (0, false);
     loop {
-        let (r, n, w) = encoder.encode_from_utf16_without_replacement(&src[read..], &mut out[written..], true);
+        let (r, n, w) = encoder.encode_from_utf16_without_replacement(&src[read..], &mut buf, true);
         read += n;
-        written += w;
+        out.extend_from_slice(&buf[..w]);
         match r {
             encoding_rs::EncoderResult::InputEmpty => break,
             encoding_rs::EncoderResult::Unmappable(_) => {
-                if out.len() < written + def.len() {
-                    out.resize(out.len() * 2 + def.len(), 0);
-                }
-                out[written..written + def.len()].copy_from_slice(def);
-                written += def.len();
+                out.extend_from_slice(def);
                 used = true;
             }
-            encoding_rs::EncoderResult::OutputFull => out.resize(out.len() * 2, 0),
+            encoding_rs::EncoderResult::OutputFull => {}
         }
     }
-    out.truncate(written);
     (out, used)
 }
 
