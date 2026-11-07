@@ -183,23 +183,30 @@ mod proptests {
         assert_eq!(lower16(0xd800), 0xd800); // (a lone surrogate)
     }
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(512))]
-
-        /// Case mapping never leaves the BMP, ASCII stays ASCII, and a letter with a 1:1 mapping
-        /// round-trips (lower of upper of a lower-case letter is itself).
-        #[test]
-        fn case_maps(c in any::<u16>()) {
+    /// Every BMP code point (not a sample): case mapping never leaves the BMP, ASCII stays
+    /// ASCII, mapping twice is mapping once, and only letters change. No round trip through the
+    /// other case: case pairs are not one to one (U+1C80 CYRILLIC SMALL LETTER ROUNDED VE
+    /// upper-cases to U+0412, which lower-cases to U+0432; ſ, ς, µ, ı, ϐ the same; ϴ U+03F4
+    /// lower-cases to θ, which upper-cases to Θ U+0398). Which letter maps to which is Windows'
+    /// table, the winref probe casemap (tests/winref/probes/casemap.c), and case_tables.
+    #[test]
+    fn case_maps_every_code_point() {
+        for c in 0..=0xffffu16 {
             let (l, u) = (lower16(c), upper16(c));
             if c < 0x80 {
-                prop_assert!(l < 0x80 && u < 0x80);
+                assert!(l < 0x80 && u < 0x80, "{c:x}");
             }
-            if let Some(ch) = char::from_u32(c as u32) {
-                if ch.is_lowercase() && u != c && c != 0x131 && c != 0x17f && c != 0x3c2 && c != 0xb5 {
-                    prop_assert_eq!(lower16(u), c, "{:x}", c);
-                }
+            assert_eq!(upper16(u), u, "upper twice {c:x}");
+            assert_eq!(lower16(l), l, "lower twice {c:x}");
+            // (only letters change)
+            if u != c || l != c {
+                assert!(char::from_u32(c as u32).is_some_and(char::is_alphabetic), "{c:x}");
             }
         }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
 
         /// Text a Japanese game writes (ASCII, kana, kanji, full-width, half-width katakana; the
         /// wave dash is U+FF5E in Windows-31J, U+301C has no code; NEC/IBM extensions included)

@@ -668,11 +668,14 @@ fn watch_child(job: &Job, watch: &Path, base: (u64, u64, u64), mut c: Child, nam
             job.add_bytes(b)?;
             return Ok(s);
         }
+        let t = Instant::now();
         check(&mut c)?;
+        let took = t.elapsed();
         std::thread::sleep(wait);
         // (often at first: a small archive is done in milliseconds; a big one is walked every
-        // half second)
-        wait = (wait * 2).min(Duration::from_millis(500));
+        // half second, and never more than a tenth of the time: a look at 100000 files takes
+        // ~90 ms, du_cost)
+        wait = (wait * 2).min(Duration::from_millis(500)).max(took * 10);
     }
 }
 
@@ -685,39 +688,53 @@ fn failures(log: &str) -> String {
     pick.iter().take(20).map(|l| l.chars().take(300).collect::<String>()).collect::<Vec<_>>().join(" / ")
 }
 
+/// How much of a tool's output is kept: its end (what failed is near the end).
+const LOG_KEEP: usize = 64 << 10;
+
+/// Reads `r` to its end keeping only the last `LOG_KEEP` bytes: a tool printing on and on uses
+/// no disk and no more memory than that.
+fn keep_tail(mut r: impl Read) -> Vec<u8> {
+    let (mut tail, mut buf) = (Vec::with_capacity(2 * LOG_KEEP), vec![0; 16 << 10]);
+    loop {
+        match r.read(&mut buf) {
+            Ok(0) | Err(_) => return tail,
+            Ok(n) => {
+                tail.extend_from_slice(&buf[..n]);
+                if tail.len() > 2 * LOG_KEEP {
+                    tail.drain(..tail.len() - LOG_KEEP);
+                }
+            }
+        }
+    }
+}
+
 /// Runs `c` (its output to `stdout` if given) under `watch_child`; a missing tool is not ok.
 fn run_cmd(job: &Job, watch: &Path, mut c: Command, stdout: Option<File>) -> Result<Ran> {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let name = c.get_program().to_string_lossy().into_owned();
-    // (the output goes to a file outside `watch`, its end read back; a tool printing on and on
-    // is stopped by the time cap)
-    let log_path = std::env::temp_dir().join(format!("ippai-unpack-{}-{}.log", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-    let log = File::create(&log_path)?;
+    // (its output through a pipe into keep_tail on a thread of its own: no file, nothing
+    // that grows with what it prints)
+    let (rd, wr) = io::pipe()?;
     let out = match stdout {
         Some(f) => Stdio::from(f),
-        None => Stdio::from(log.try_clone()?),
+        None => Stdio::from(wr.try_clone()?),
     };
-    c.env("LC_ALL", "C.UTF-8").stdin(Stdio::null()).stdout(out).stderr(log);
+    c.env("LC_ALL", "C.UTF-8").stdin(Stdio::null()).stdout(out).stderr(wr);
     let base = du(watch);
-    let child = match c.spawn() {
+    let spawned = c.spawn();
+    // (the pipe's write ends live in `c`: gone, the reader sees the end once the tool exits)
+    drop(c);
+    let child = match spawned {
         Ok(ch) => ch,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let _ = fs::remove_file(&log_path);
-            return Ok(Ran { ok: false, status: "not installed".into(), log: String::new() });
-        }
-        Err(e) => {
-            let _ = fs::remove_file(&log_path);
-            return Err(anyhow::Error::from(e).context(name));
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Ran { ok: false, status: "not installed".into(), log: String::new() }),
+        Err(e) => return Err(anyhow::Error::from(e).context(name)),
     };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(keep_tail(rd));
+    });
     let r = watch_child(job, watch, base, child, &name);
-    let mut text = vec![];
-    if let Ok(mut f) = File::open(&log_path) {
-        let len = f.metadata().map_or(0, |m| m.len());
-        let _ = f.seek(SeekFrom::Start(len.saturating_sub(64 << 10)));
-        let _ = f.read_to_end(&mut text);
-    }
-    let _ = fs::remove_file(&log_path);
+    // (a process the tool left behind may hold the pipe open: not waited for long)
+    let text = rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
     let s = r?;
     Ok(Ran { ok: s.success(), status: s.to_string(), log: String::from_utf8_lossy(&text).into_owned() })
 }
@@ -1600,6 +1617,57 @@ mod tests {
         // not installed
         assert_eq!(run(&job, "ippai-no-such-tool", &[], &d).unwrap().status, "not installed");
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn tool_output_is_bounded() {
+        // 64 MiB of output: only its end is kept (no log file; keep_tail's bound below)
+        let d = tmp("logcap");
+        let job = Job::new(small());
+        let r = run_cmd(&job, &d, sh("head -c 67108864 /dev/zero | tr '\\0' x; echo; echo 'ERROR: the last file' >&2; exit 1"), None).unwrap();
+        assert!(!r.ok);
+        assert!(r.log.len() <= 2 * LOG_KEEP, "{}", r.log.len());
+        assert!(r.log.ends_with("ERROR: the last file\n"));
+        assert_eq!(failures(&r.log), "ERROR: the last file");
+        assert_eq!(written(&d), (0, 0));
+        // a tool leaving a process behind that holds the output open: still returns
+        let t = Instant::now();
+        let r = run_cmd(&job, &d, sh("(sleep 20 &) ; echo done"), None).unwrap();
+        assert!(r.ok);
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// What one look of watch_child costs on a big unpack (`cargo test --release -p ippai
+    /// du_cost -- --ignored --nocapture`): 100000 files in 1000 folders.
+    #[test]
+    #[ignore]
+    fn du_cost() {
+        let d = tmp("ducost");
+        for i in 0..1000 {
+            let s = d.join(format!("d{i}"));
+            fs::create_dir_all(&s).unwrap();
+            for j in 0..100 {
+                fs::write(s.join(format!("f{j}")), b"x").unwrap();
+            }
+        }
+        let _ = du(&d);
+        let t = Instant::now();
+        for _ in 0..10 {
+            assert_eq!(du(&d), (101_000, 100_000, 1));
+        }
+        eprintln!("du of 100000 files: {:?} a look", t.elapsed() / 10);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn keep_tail_keeps_the_end() {
+        let data: Vec<u8> = (0..1_000_000u32).map(|i| (i % 251) as u8).collect();
+        let t = keep_tail(&data[..]);
+        assert!(t.len() >= LOG_KEEP && t.len() <= 2 * LOG_KEEP);
+        assert!(data.ends_with(&t));
+        assert_eq!(keep_tail(&b"short"[..]), b"short");
+        assert_eq!(keep_tail(&b""[..]), b"");
     }
 
     #[test]
