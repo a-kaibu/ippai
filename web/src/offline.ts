@@ -15,29 +15,51 @@ export function gameTrees(g: GameEntry): string[] {
   return [...new Set(["prefix32", ...g.mounts.map((m) => m.slice(m.indexOf("=") + 1))])].filter(Boolean);
 }
 
+/**
+ * Where saving a game to the device got to: "saving" (started and not finished: on a page closed
+ * meanwhile it stays so, and reads as "stopped"), "done" (the app's files and every chunk
+ * fetched), "stopped" (中止), "failed" (an error). "none": never saved (chunks the game read
+ * while playing may still be here).
+ */
+export type SaveStatus = "none" | "saving" | "done" | "stopped" | "failed";
+
 export interface OfflineState {
   /** chunks of the game, and of them on the device */
   total: number;
   have: number;
   /** about the bytes of all (decoded) */
   bytes: number;
+  status: SaveStatus;
+  /** whether the game starts with no connection: saved to the end, and every chunk still here */
+  complete: boolean;
 }
 
-// The games saved to the device (by id: their trees), in this browser: chunks one of them needs
-// stay when another is removed, and when the cache is trimmed (net.ts trimChunks).
+// The games saved to the device (by id: their trees and how far the save got), in this browser:
+// chunks one of them needs stay when another is removed, and when the cache is trimmed (net.ts
+// trimChunks), a save stopped half-way too (until removed).
 const SAVED = "ippai-offline";
 
-function savedGames(): Record<string, string[]> {
+export interface Saved {
+  trees: string[];
+  status: Exclude<SaveStatus, "none">;
+}
+
+function savedGames(): Record<string, Saved> {
   try {
-    return JSON.parse(localStorage.getItem(SAVED) ?? "{}") as Record<string, string[]>;
+    const all = JSON.parse(localStorage.getItem(SAVED) ?? "{}") as Record<string, Saved | string[]>;
+    // (before the status was kept: a list of trees, the save then finished or not; the chunks
+    // tell, see stateOf)
+    return Object.fromEntries(
+      Object.entries(all).map(([id, v]) => [id, Array.isArray(v) ? { trees: v, status: "done" } : v]),
+    );
   } catch {
     return {};
   }
 }
 
-function setSaved(id: string, trees: string[] | null): void {
+function setSaved(id: string, saved: Saved | null): void {
   const all = savedGames();
-  if (trees) all[id] = trees;
+  if (saved) all[id] = saved;
   else delete all[id];
   try {
     localStorage.setItem(SAVED, JSON.stringify(all));
@@ -45,6 +67,24 @@ function setSaved(id: string, trees: string[] | null): void {
     // (storage blocked: removing a game then keeps nothing for the others)
   }
 }
+
+/**
+ * What `saved` (the game's record, if any) and the chunks on the device (`have` of `total`) say.
+ * A save cut short with the page closed ("saving" not running here) is a stopped one; a finished
+ * one whose chunks were since removed (the browser's storage cleared in part) is not complete.
+ */
+export function stateOf(
+  saved: Saved | undefined,
+  running: boolean,
+  have: number,
+  total: number,
+): Pick<OfflineState, "status" | "complete"> {
+  const status = !saved ? "none" : saved.status === "saving" && !running ? "stopped" : saved.status;
+  return { status, complete: status === "done" && have >= total };
+}
+
+// the games being saved by this page now
+const running = new Set<string>();
 
 async function chunksOfTrees(trees: string[]): Promise<{ hashes: string[]; chunk: number }> {
   const seen = new Set<string>();
@@ -64,7 +104,7 @@ const chunksOf = (g: GameEntry) => chunksOfTrees(gameTrees(g));
 /** The chunks of the games saved to the device except `but` (their tree lists: sw.ts has them offline). */
 export async function savedChunks(but?: string): Promise<Set<string>> {
   const keep = new Set<string>();
-  for (const [id, trees] of Object.entries(savedGames()))
+  for (const [id, { trees }] of Object.entries(savedGames()))
     if (id !== but) for (const h of (await chunksOfTrees(trees)).hashes) keep.add(h);
   return keep;
 }
@@ -78,11 +118,13 @@ async function onDevice(): Promise<Set<string>> {
 /** How much of `g` is on the device (null: no chunk cache here). */
 export async function offlineState(g: GameEntry): Promise<OfflineState | null> {
   if (!(await chunkCache())) return null;
-  const [{ hashes, chunk }, have] = await Promise.all([chunksOf(g), onDevice()]);
+  const [{ hashes, chunk }, on] = await Promise.all([chunksOf(g), onDevice()]);
+  const have = hashes.filter((h) => on.has(h)).length;
   return {
     total: hashes.length,
-    have: hashes.filter((h) => have.has(h)).length,
+    have,
     bytes: hashes.length * chunk,
+    ...stateOf(savedGames()[g.id], running.has(g.id), have, hashes.length),
   };
 }
 
@@ -132,20 +174,37 @@ export async function saveOffline(
   void navigator.storage?.persist?.().catch(() => false);
   const cache = await chunkCache();
   if (!cache) throw new Error("この環境では端末に保存できません");
-  setSaved(g.id, gameTrees(g));
-  await saveApp(g, signal);
-  const [{ hashes }, have] = await Promise.all([chunksOf(g), onDevice()]);
-  const missing = hashes.filter((h) => !have.has(h));
-  let done = hashes.length - missing.length;
-  progress(done, hashes.length);
-  let next = 0;
-  const one = async () => {
-    while (next < missing.length && !signal.aborted) {
-      await getChunk(store(), missing[next++]!, { cache, priority: "low", signal });
-      progress(++done, hashes.length);
-    }
-  };
-  await Promise.all(Array.from({ length: 4 }, one));
+  const trees = gameTrees(g);
+  // (first: its chunks are kept from here on, and a page closed meanwhile shows a stopped save)
+  setSaved(g.id, { trees, status: "saving" });
+  running.add(g.id);
+  try {
+    await saveApp(g, signal);
+    const [{ hashes }, have] = await Promise.all([chunksOf(g), onDevice()]);
+    const missing = hashes.filter((h) => !have.has(h));
+    let done = hashes.length - missing.length;
+    progress(done, hashes.length);
+    let next = 0;
+    const one = async () => {
+      while (next < missing.length && !signal.aborted) {
+        await getChunk(store(), missing[next++]!, { cache, priority: "low", signal });
+        progress(++done, hashes.length);
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, one));
+    if (signal.aborted) throw signal.reason;
+    // done only when every chunk is on the device now (the browser may have dropped some)
+    const now = await onDevice();
+    const lost = hashes.filter((h) => !now.has(h)).length;
+    if (lost) throw new Error(`${lost} 個のチャンクが端末に残りませんでした（空き容量を確認してください）`);
+    setSaved(g.id, { trees, status: "done" });
+  } catch (e) {
+    // (unless removed meanwhile)
+    if (savedGames()[g.id]) setSaved(g.id, { trees, status: signal.aborted ? "stopped" : "failed" });
+    throw e;
+  } finally {
+    running.delete(g.id);
+  }
 }
 
 /**

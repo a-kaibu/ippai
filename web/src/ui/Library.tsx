@@ -145,7 +145,8 @@ function Offline({ game }: { game: GameEntry }) {
         refresh();
       });
   };
-  const all = state.have >= state.total;
+  const all = state.complete;
+  const pct = Math.floor((state.have / Math.max(1, state.total)) * 100);
   return (
     <div className="grid gap-2 rounded-lg border p-3 text-sm">
       <div className="flex items-center gap-2">
@@ -155,9 +156,15 @@ function Offline({ game }: { game: GameEntry }) {
             ? `端末に保存中 ${Math.floor((saving.have / Math.max(1, saving.total)) * 100)}%`
             : all
               ? `端末に保存済み（約 ${mb(state.bytes)}）`
-              : state.have
-                ? `一部を端末に保存済み（${Math.floor((state.have / state.total) * 100)}%、全体 約 ${mb(state.bytes)}）`
-                : `端末に保存すると、モバイル回線でも読み込みで止まりません（約 ${mb(state.bytes)}）`}
+              : state.status === "stopped"
+                ? `端末への保存を中止しました（${pct}%、全体 約 ${mb(state.bytes)}）。続きから保存できます`
+                : state.status === "failed"
+                  ? `端末への保存が途中で失敗しました（${pct}%、全体 約 ${mb(state.bytes)}）`
+                  : state.status === "done"
+                    ? `端末に保存したデータの一部が消えています（${pct}%、全体 約 ${mb(state.bytes)}）`
+                    : state.have
+                      ? `一部を端末に保存済み（${pct}%、全体 約 ${mb(state.bytes)}）`
+                      : `端末に保存すると、モバイル回線でも読み込みで止まりません（約 ${mb(state.bytes)}）`}
         </span>
       </div>
       {error && <p className="text-destructive">{error}</p>}
@@ -173,7 +180,7 @@ function Offline({ game }: { game: GameEntry }) {
             </Button>
           )
         )}
-        {!saving && state.have > 0 && (
+        {!saving && (state.have > 0 || state.status !== "none") && (
           <Button size="sm" variant="ghost" onClick={() => void dropOffline(game).finally(refresh)}>
             <Trash2 /> 端末から削除
           </Button>
