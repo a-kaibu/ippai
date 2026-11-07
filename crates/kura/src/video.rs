@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Frames decoded ahead of the newest request (and so slots per stream).
@@ -273,7 +273,7 @@ fn ring() {
 }
 
 /// How `frame` lays out the guest's pixels (B, G, R, A bytes per pixel).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Out {
     /// Y, Cb, Cr, alpha (255 without an alpha track): the game converts on the GPU
     Ycc,
@@ -386,7 +386,77 @@ fn stat(waited: Duration, n: i32, late: bool) {
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, _sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+    let c = &layout[0];
+    if tracks == 1 && matches!(c[0], I420 | NV12) && out == Out::Rgb601 {
+        return to_rgb(buf, c, dst, pitch, w, h, out);
+    }
+    convert_any(buf, layout, tracks, sw, sh, dst, pitch, w, h, out)
+}
+
+/// The terms of ycc_to_rgb / ycc601_to_rgb by byte, in fixed point (FRAC bits): Y, Cr's in
+/// red, Cb's and Cr's in green, Cb's in blue. Rounded (601) or truncated as those functions
+/// are, they give the same bytes for every Y, Cb, Cr (terms_as_the_functions checks all).
+struct Terms {
+    y: [i32; 256],
+    rv: [i32; 256],
+    gu: [i32; 256],
+    gv: [i32; 256],
+    bu: [i32; 256],
+}
+const FRAC: u32 = 21;
+fn terms(out: Out) -> &'static Terms {
+    static T: OnceLock<[Terms; 2]> = OnceLock::new();
+    let t = T.get_or_init(|| {
+        let make = |video: bool| {
+            let mut t = Terms { y: [0; 256], rv: [0; 256], gu: [0; 256], gv: [0; 256], bu: [0; 256] };
+            let f = |x: f64| (x * (1 << FRAC) as f64).round() as i32;
+            for i in 0..256 {
+                let x = i as f64;
+                let (y, u) = if video { ((x - 16.0) * 255.0 / 219.0, (x - 128.0) * 255.0 / 224.0) } else { (x, x - 128.0) };
+                let (gu, gv) = if video { (0.344136, 0.714136) } else { (0.34414, 0.71414) };
+                (t.y[i], t.rv[i], t.gu[i], t.gv[i], t.bu[i]) = (f(y), f(1.402 * u), f(gu * u), f(gv * u), f(1.772 * u));
+            }
+            t
+        };
+        [make(false), make(true)]
+    });
+    &t[(out == Out::Rgb601) as usize]
+}
+
+/// [`convert_any`] of one I420 / NV12 track to BGRX: the same bytes, in fixed point from
+/// tables (a movie frame's conversion, every frame).
+unsafe fn to_rgb(buf: *const u8, c: &[u32; 7], dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+    let t = terms(out);
+    let p = |i: usize| buf.add(c[1 + 2 * i] as usize);
+    let st = |i: usize| c[2 + 2 * i] as usize;
+    let nv12 = c[0] == NV12;
+    // (rounding: half added; truncating: none, values below 0 clamp either way)
+    let half = if out == Out::Rgb601 { 1 << (FRAC - 1) } else { 0 };
+    let q = |x: i32| ((x + half) >> FRAC).clamp(0, 255) as u8;
+    for y in 0..h as usize {
+        let row = dst.add(y * pitch);
+        let yr = p(0).add(y * st(0));
+        let (ur, vr, step) = if nv12 {
+            let uv = p(1).add((y / 2) * st(1));
+            (uv, uv.add(1), 2)
+        } else {
+            (p(1).add((y / 2) * st(1)), p(2).add((y / 2) * st(2)), 1)
+        };
+        for x in 0..w as usize {
+            let k = (x / 2) * step;
+            let (u, v) = (*ur.add(k) as usize, *vr.add(k) as usize);
+            let yy = t.y[*yr.add(x) as usize];
+            let o = row.add(x * 4);
+            *o = q(yy + t.bu[u]);
+            *o.add(1) = q(yy - t.gu[u] - t.gv[v]);
+            *o.add(2) = q(yy + t.rv[v]);
+            *o.add(3) = 255;
+        }
+    }
+}
+
+unsafe fn convert_any(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, _sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
     let _ = sw;
     let c = &layout[0];
     let a = (tracks > 1).then_some(&layout[1]);
@@ -991,6 +1061,70 @@ mod tests {
             )
         };
         (buf, dst)
+    }
+
+    proptest::proptest! {
+        /// The table path gives the general loop's bytes: any planes, sizes (odd ones too),
+        /// strides, I420 / NV12, both RGB outputs.
+        #[test]
+        fn to_rgb_as_any(seed in proptest::prelude::any::<u64>(), w in 1u32..40, h in 1u32..12, pad in 0u32..5, nv12 in proptest::prelude::any::<bool>(), r601 in proptest::prelude::any::<bool>()) {
+            let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+            let ys = w + pad;
+            let layout = if nv12 { [NV12, 0, ys, ys * h, 2 * cw + pad, 0, 0] } else { [I420, 0, ys, ys * h, cw + pad, ys * h + (cw + pad) * ch, cw + pad] };
+            let n = (ys * h + 2 * (cw + pad) * ch) as usize;
+            let mut x = seed | 1;
+            let buf: Vec<u8> = (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect();
+            let out = if r601 { Out::Rgb601 } else { Out::Rgb };
+            let pitch = 4 * w as usize + 8;
+            let (mut a, mut b) = (vec![0xeeu8; pitch * h as usize], vec![0xeeu8; pitch * h as usize]);
+            unsafe {
+                convert(buf.as_ptr(), &[layout, [0; 7]], 1, w, h, a.as_mut_ptr(), pitch, w, h, out);
+                convert_any(buf.as_ptr(), &[layout, [0; 7]], 1, w, h, b.as_mut_ptr(), pitch, w, h, out);
+            }
+            proptest::prop_assert_eq!(a, b);
+        }
+    }
+
+    /// Every Y, Cb, Cr: the fixed-point tables as ycc601_to_rgb, but for a sum within a hair of
+    /// a half (where f64's own rounding of the terms decides): those within 1, and few.
+    #[test]
+    fn terms_as_the_function() {
+        let mut off = 0;
+        for cb in 0..=255u8 {
+            for cr in 0..=255u8 {
+                // (a 256x1 NV12 picture of every Y, its chroma row that pair repeated)
+                let mut b: Vec<u8> = (0..=255u8).collect();
+                b.extend((0..128).flat_map(|_| [cb, cr]));
+                let mut d = vec![0u8; 1024];
+                unsafe { to_rgb(b.as_ptr(), &[NV12, 0, 256, 256, 256, 0, 0], d.as_mut_ptr(), 1024, 256, 1, Out::Rgb601) };
+                for y in 0..256 {
+                    let (r, g, bl) = ycc601_to_rgb(y as u8, cb, cr);
+                    for (got, want) in d[4 * y..4 * y + 3].iter().zip([bl, g, r]) {
+                        assert!(got.abs_diff(want) <= 1, "{y} {cb} {cr}: {got} for {want}");
+                        off += (*got != want) as u32;
+                    }
+                }
+            }
+        }
+        eprintln!("{off} of {} bytes off by 1", 3 << 24);
+        assert!(off < 3 << 14, "{off}");
+    }
+
+    /// (cargo test -p kura --release -- --ignored --nocapture rgb_speed)
+    #[test]
+    #[ignore]
+    fn rgb_speed() {
+        let (w, h) = (1280u32, 720u32);
+        let buf: Vec<u8> = (0..w * h * 3 / 2).map(|i| (i * 37 % 251) as u8).collect();
+        let layout = [[I420, 0, w, w * h, w / 2, w * h * 5 / 4, w / 2], [0; 7]];
+        let mut d = vec![0u8; (4 * w * h) as usize];
+        for (name, f) in [("table", convert as unsafe fn(_, _, _, _, _, _, _, _, _, _)), ("general", convert_any)] {
+            let t = Instant::now();
+            for _ in 0..20 {
+                unsafe { f(buf.as_ptr(), &layout, 1, w, h, d.as_mut_ptr(), 4 * w as usize, w, h, Out::Rgb601) };
+            }
+            eprintln!("{name}: {:.2} ms a 1280x720 frame", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+        }
     }
 
     #[test]
