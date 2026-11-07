@@ -220,10 +220,23 @@ fn GdipCreateHBITMAPFromBitmap(c: &mut Ctx) -> u32 {
     if hb != 0 { OK } else { 1 }
 }
 
+/// GdipAlloc(size) / GdipFree(p): GDI+'s operator new and delete
+fn GdipAlloc(c: &mut Ctx) -> u32 {
+    crate::mem::heap_alloc(c.a(0).max(1), false)
+}
+fn GdipFree(c: &mut Ctx) -> u32 {
+    if c.a(0) != 0 {
+        crate::mem::heap_free(c.a(0));
+    }
+    0
+}
+
 pub fn init() {
     let fns: &[(&str, Handler)] = &[
         ("GdiplusStartup", GdiplusStartup),
         ("GdiplusShutdown", ok),
+        ("GdipAlloc", GdipAlloc),
+        ("GdipFree", GdipFree),
         ("GdipCreateBitmapFromStream", from_stream),
         ("GdipCreateBitmapFromStreamICM", from_stream),
         ("GdipLoadImageFromStream", from_stream),

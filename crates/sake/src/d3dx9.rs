@@ -374,6 +374,41 @@ pub fn buffer(data: &[u8]) -> u32 {
     o
 }
 
+/// A 32-bit BMP file of top-down BGRA rows.
+pub(crate) fn bmp32(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
+    let size = 54 + w * h * 4;
+    let mut f = Vec::with_capacity(size as usize);
+    f.extend_from_slice(b"BM");
+    for v in [size, 0, 54, 40, w] {
+        f.extend_from_slice(&v.to_le_bytes());
+    }
+    // (a negative height: top-down)
+    f.extend_from_slice(&(-(h as i32)).to_le_bytes());
+    f.extend_from_slice(&1u16.to_le_bytes());
+    f.extend_from_slice(&32u16.to_le_bytes());
+    for v in [0u32, w * h * 4, 2835, 2835, 0, 0] {
+        f.extend_from_slice(&v.to_le_bytes());
+    }
+    f.extend_from_slice(&px[..(w * h * 4) as usize]);
+    f
+}
+
+/// D3DXSave{Texture,Surface}ToFileInMemory(out buffer, format, source, palette): a BMP (any
+/// format asked: the games read it back with D3DXCreateTextureFromFileInMemory, which takes
+/// any), black when the source can't be read.
+fn save_in_memory(c: &mut Ctx, surface: bool) -> u32 {
+    let (out, src) = (c.a(0), c.a(2));
+    let (w, h, px) = crate::d3d9::read_bgra(src, surface).unwrap_or((1, 1, vec![0, 0, 0, 255]));
+    mem::putp(out, buffer(&bmp32(w, h, &px)));
+    0
+}
+fn D3DXSaveTextureToFileInMemory(c: &mut Ctx) -> u32 {
+    save_in_memory(c, false)
+}
+fn D3DXSaveSurfaceToFileInMemory(c: &mut Ctx) -> u32 {
+    save_in_memory(c, true)
+}
+
 fn D3DXCreateBuffer(c: &mut Ctx) -> u32 {
     mem::putp(c.a(1), buffer(&vec![0; c.a(0) as usize]));
     0
@@ -968,6 +1003,8 @@ fn D3DXCheckVersion(_: &mut Ctx) -> u32 {
 pub fn init() {
     let fns: &[(&str, Handler)] = &[
         ("D3DXCreateEffect", D3DXCreateEffect),
+        ("D3DXSaveTextureToFileInMemory", D3DXSaveTextureToFileInMemory),
+        ("D3DXSaveSurfaceToFileInMemory", D3DXSaveSurfaceToFileInMemory),
         ("D3DXCreateMatrixStack", D3DXCreateMatrixStack),
         ("D3DXCreateTexture", D3DXCreateTexture),
         ("D3DXCheckTextureRequirements", D3DXCheckTextureRequirements),
@@ -1039,5 +1076,34 @@ pub fn init() {
         for (n, f) in fns {
             implement(&dll, n, *f);
         }
+    }
+}
+
+#[cfg(test)]
+mod save_tests {
+    use super::bmp32;
+    use crate::d3d9::widen_bgra;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// what D3DXSaveTextureToFileInMemory writes reads back the same (a BI_RGB BMP: opaque)
+        #[test]
+        fn bmp32_round_trip(w in 1u32..20, h in 1u32..20, seed in any::<u64>()) {
+            let px: Vec<u8> = (0..w * h * 4).map(|i| (seed.wrapping_mul(i as u64 + 7) >> 13) as u8).collect();
+            let (rw, rh, back) = crate::picture::decode_bgra(&bmp32(w, h, &px)).unwrap();
+            prop_assert_eq!((rw, rh), (w, h));
+            let opaque: Vec<u8> = px.chunks(4).flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+            prop_assert_eq!(back, opaque);
+        }
+    }
+
+    #[test]
+    fn widen_formats() {
+        // X8R8G8B8 opaque, R5G6B5 white and pure red, A1R5G5B5 transparent black
+        assert_eq!(widen_bgra(&[1, 2, 3, 0], 22), [1, 2, 3, 255]);
+        assert_eq!(widen_bgra(&[0xff, 0xff], 23), [255, 255, 255, 255]);
+        assert_eq!(widen_bgra(&[0x00, 0xf8], 23), [0, 0, 255, 255]);
+        assert_eq!(widen_bgra(&[0x00, 0x00], 25), [0, 0, 0, 0]);
+        assert_eq!(widen_bgra(&[0x1f, 0x80], 25), [255, 0, 0, 255]);
     }
 }

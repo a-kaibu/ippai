@@ -163,6 +163,15 @@ fn CreateStreamOnHGlobal(c: &mut Ctx) -> u32 {
     put32(out, new_stream(h, size, del != 0 || c.a(0) == 0));
     0
 }
+/// SHCreateMemStream(data, size): an IStream over a copy of the data.
+fn SHCreateMemStream(c: &mut Ctx) -> u32 {
+    let (p, n) = (c.a(0), c.a(1));
+    let h = mem::heap_alloc(n.max(64), true);
+    if p != 0 && n != 0 {
+        mem::write(h, &mem::slice(p, n));
+    }
+    new_stream(h, if p != 0 { n } else { 0 }, true)
+}
 fn GetHGlobalFromStream(c: &mut Ctx) -> u32 {
     let (s, out) = (c.a(0), c.a(1));
     if r32(s) != stream_vtbl() {
@@ -321,6 +330,7 @@ fn OleLoadPictureEx(c: &mut Ctx) -> u32 {
 
 pub fn init() {
     implement("ole32", "CreateStreamOnHGlobal", CreateStreamOnHGlobal);
+    implement("shlwapi", "SHCreateMemStream", SHCreateMemStream);
     implement("ole32", "GetHGlobalFromStream", GetHGlobalFromStream);
     implement("oleaut32", "OleLoadPicture", OleLoadPicture);
     implement("oleaut32", "OleLoadPictureEx", OleLoadPictureEx);

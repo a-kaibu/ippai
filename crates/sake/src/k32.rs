@@ -1626,15 +1626,19 @@ fn LocalHandle(c: &mut Ctx) -> u32 {
     c.a(0)
 }
 
-const PHYS: u32 = 256 << 20;
+/// Physical memory reported to the game: 4 GB, like a modest PC (games check a minimum: 256 MB
+/// made Debonosu's 神楽黎明記 quit at startup). GlobalMemoryStatus clamps to 2 GB as Windows
+/// does for a 32-bit process.
+const PHYS: u64 = 4 << 30;
 fn GlobalMemoryStatus(c: &mut Ctx) -> u32 {
     let p = c.a(0);
+    let clamp = |v: u64| v.min(0x7fff_ffff) as u32;
     w32(p, 32);
     w32(p + 4, 30);
-    w32(p + 8, PHYS);
-    w32(p + 12, PHYS / 4 * 3);
-    w32(p + 16, 2 * PHYS);
-    w32(p + 20, 2 * PHYS);
+    w32(p + 8, clamp(PHYS));
+    w32(p + 12, clamp(PHYS / 4 * 3));
+    w32(p + 16, clamp(2 * PHYS));
+    w32(p + 20, clamp(2 * PHYS));
     w32(p + 24, 0x7ffe_0000);
     w32(p + 28, 0x6000_0000);
     0
@@ -1647,10 +1651,10 @@ fn GlobalMemoryStatusEx(c: &mut Ctx) -> u32 {
         w32(p + o, v as u32);
         w32(p + o + 4, (v >> 32) as u32);
     };
-    q(8, PHYS as u64);
-    q(16, PHYS as u64 / 4 * 3);
-    q(24, 2 * PHYS as u64);
-    q(32, 2 * PHYS as u64);
+    q(8, PHYS);
+    q(16, PHYS / 4 * 3);
+    q(24, 2 * PHYS);
+    q(32, 2 * PHYS);
     q(40, 0x7ffe_0000);
     q(48, 0x6000_0000);
     q(56, 0);
@@ -3420,6 +3424,14 @@ fn WriteFile(c: &mut Ctx) -> u32 {
         put32(pw, 0);
         last_error(998);
         return 0;
+    }
+    if crate::env_on!("SAKE_TRACE_WRITES") {
+        let b = mem::slice(buf, n.min(400));
+        eprintln!("sake: WriteFile({h:x}, {n}): {:?}", String::from_utf16_lossy(&if b.len() > 2 && b[1] == 0 {
+            b.chunks(2).map(|x| u16::from_le_bytes([x[0], *x.get(1).unwrap_or(&0)])).collect::<Vec<_>>()
+        } else {
+            a2s(b).encode_utf16().collect()
+        }));
     }
     let kind = obj::with(|t| match t.objs.get(&h) {
         Some((Obj::Other(k), _)) => Some(*k),
