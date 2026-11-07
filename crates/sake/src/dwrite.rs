@@ -418,11 +418,7 @@ fn GetClusterMetrics(c: &mut Ctx) -> u32 {
         w32(p, laid.adv[i].to_bits());
         mem::w16(p + 4, units(k) as u16);
         // canWrapLineAfter 1, isWhitespace 2, isNewline 4
-        let nl = k == 10 || k == 13;
-        let space = is_space(k as u16) || nl;
-        // (a break goes after white space, never before it; between CJK characters; after the
-        // last cluster)
-        let wrap_after = space || ch.get(i + 1).is_none_or(|&n| !is_space(n as u16) && (k > 0x2e7f || n > 0x2e7f));
+        let (wrap_after, space, nl) = cluster_flags(&ch, i);
         mem::w16(p + 6, wrap_after as u16 | (space as u16) << 1 | (nl as u16) << 2);
     }
     0
@@ -445,19 +441,100 @@ pub struct Run {
     pub x: f32,
     pub y: f32,
 }
+/// The cluster flags of character `i` as DirectWrite gives them: (can wrap after, white space,
+/// newline). A newline is LF, or a CR not before LF (CR LF is one break: its CR is
+/// white space only). A break goes after white space unless more white space or a newline
+/// follows, never before a newline, between CJK characters, and after the last cluster.
+fn cluster_flags(ch: &[u32], i: usize) -> (bool, bool, bool) {
+    let k = ch[i];
+    let next = ch.get(i + 1).copied();
+    let nl = k == 10 || (k == 13 && next != Some(10));
+    let space = is_space(k as u16) || k == 10 || k == 13;
+    let wrap = match next {
+        None => true,
+        _ if nl => true,
+        Some(n) if n == 10 || n == 13 => false,
+        Some(n) if space => !is_space(n as u16),
+        Some(n) => !is_space(n as u16) && (k > 0x2e7f || n > 0x2e7f),
+    };
+    (wrap, space, nl)
+}
+
+/// The script of a character for splitting runs: 0 for characters any script takes (white
+/// space, ASCII punctuation and digits, CJK punctuation, the long vowel mark), which join the run
+/// before them.
+fn script(k: u32) -> u8 {
+    match k {
+        0x41..=0x5a | 0x61..=0x7a | 0xc0..=0x24f => 1,
+        0x3005 => 2,
+        0..=0x7f | 0x80..=0xbf | 0x3000..=0x303f | 0x30fb | 0x30fc | 0xff01..=0xff20 | 0xff3b..=0xff40 | 0xff5b..=0xff65 => 0,
+        0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x3ffff => 2,
+        0x3040..=0x309f => 3,
+        0x30a0..=0x30ff | 0x31f0..=0x31ff | 0xff66..=0xff9f => 4,
+        0x2600..=0x27bf | 0x1f000.. => 5,
+        0xff21..=0xff3a | 0xff41..=0xff5a => 1,
+        _ => 6,
+    }
+}
+
+/// [from, to) split where the script changes (a character of script 0 joins the run before it,
+/// or the one after it at the start).
+fn split_scripts(ch: &[u32], from: usize, to: usize) -> Vec<(usize, usize)> {
+    let mut v = Vec::new();
+    let (mut start, mut cur) = (from, 0u8);
+    for i in from..to {
+        let s = script(ch[i]);
+        if s == 0 || s == cur {
+            continue;
+        }
+        if cur != 0 {
+            v.push((start, i));
+            start = i;
+        }
+        cur = s;
+    }
+    if start < to {
+        v.push((start, to));
+    }
+    v
+}
+
+/// The runs of each line as DirectWrite cuts them, [from, to) and the run's x within the
+/// layout: the text split by script, the trailing white space a run of its own, and the newline
+/// characters a run of no glyphs (`to` past the line's).
+pub fn run_spans<'a>(ch: &[u32], laid: &'a Laid) -> Vec<(usize, usize, f32, &'a Line)> {
+    let mut v = Vec::new();
+    for l in &laid.lines {
+        let mut ws = l.to;
+        while ws > l.from && is_space(ch[ws - 1] as u16) {
+            ws -= 1;
+        }
+        let mut parts = split_scripts(ch, l.from, ws);
+        if ws < l.to {
+            parts.push((ws, l.to));
+        }
+        for (a, b) in parts {
+            v.push((a, b, l.x + laid.pen[a], l));
+        }
+        if l.nl > 0 {
+            v.push((l.to, (l.to + l.nl).min(ch.len()), l.x + l.width_ws, l));
+        }
+    }
+    v
+}
+
 pub fn runs(text: &[u16], laid: &Laid) -> Vec<Run> {
     let Some(font) = &laid.font else { return Vec::new() };
     let ch = chars(text);
-    let mut v = Vec::new();
-    for l in &laid.lines {
-        // (trailing white space stays in the run, as DirectWrite draws it: blank glyphs)
-        if l.to == l.from {
-            continue;
-        }
-        let glyphs = ch[l.from..l.to].iter().map(|&k| font.glyph_index(k)).collect();
-        v.push(Run { face: font.face(), glyphs, adv: laid.adv[l.from..l.to].to_vec(), from: l.from, to: l.to, x: l.x, y: l.baseline });
-    }
-    v
+    run_spans(&ch, laid)
+        .into_iter()
+        .map(|(a, b, x, l)| {
+            // (a newline run has no glyphs)
+            let e = if a >= l.to { a } else { b };
+            let glyphs = ch[a..e].iter().map(|&k| font.glyph_index(k)).collect();
+            Run { face: font.face(), glyphs, adv: laid.adv[a..e].to_vec(), from: a, to: b, x, y: l.baseline }
+        })
+        .collect()
 }
 
 fn Draw(c: &mut Ctx) -> u32 {
@@ -1135,6 +1212,79 @@ mod layout_tests {
             for l in &m {
                 proptest::prop_assert!(l.2 <= l.1 && l.1 <= l.0);
                 proptest::prop_assert_eq!((l.3, l.4), (12.0, 9.0));
+            }
+        }
+    }
+
+    fn spans(s: &str, w: f32) -> Vec<(usize, usize)> {
+        let t: Vec<u16> = s.encode_utf16().collect();
+        let mut f = fmt((0.0, 0.0, 0.0));
+        f.wrap = if w > 0.0 { 0 } else { 1 };
+        let laid = layout_with(&t, &f, w, 0.0, None);
+        run_spans(&chars(&t), &laid).iter().map(|r| (r.0, r.1)).collect()
+    }
+    fn flags(s: &str) -> Vec<(bool, bool, bool)> {
+        let ch = chars(&s.encode_utf16().collect::<Vec<_>>());
+        (0..ch.len()).map(|i| cluster_flags(&ch, i)).collect()
+    }
+
+    #[test]
+    fn clusters_as_windows() {
+        // (Windows 11, tests/winref/golden/dwritelayout-32: wrap, space, newline)
+        let (o, w, s, sw, nl, crlf) = ((false, false, false), (true, false, false), (false, true, false), (true, true, false), (true, true, true), (false, true, false));
+        assert_eq!(flags("ab cd"), vec![o, o, sw, o, w]);
+        assert_eq!(flags("ab\ncd  \r\nef\n"), vec![o, o, nl, o, o, s, s, crlf, nl, o, o, nl]);
+        assert_eq!(flags("世界を見"), vec![w; 4]);
+        assert_eq!(flags("a\u{1f600}b"), vec![w; 3]);
+        // a lone CR is a newline
+        assert_eq!(flags("a\rb"), vec![o, nl, w]);
+    }
+
+    #[test]
+    fn runs_as_windows() {
+        assert_eq!(spans("ab cd", 0.0), vec![(0, 5)]);
+        // text, the trailing white space, the newline (CR LF one run)
+        assert_eq!(spans("ab\ncd  \r\nef\n", 0.0), vec![(0, 2), (2, 3), (3, 5), (5, 7), (7, 9), (9, 11), (11, 12)]);
+        // split where the script changes: Han, Hiragana, Han; Latin, emoji, Latin
+        assert_eq!(spans("世界を見", 0.0), vec![(0, 2), (2, 3), (3, 4)]);
+        assert_eq!(spans("a\u{1f600}b", 0.0), vec![(0, 1), (1, 2), (2, 3)]);
+        // punctuation and the long vowel mark join the run before them; at the start, the one after
+        assert_eq!(spans("カー、あ", 0.0), vec![(0, 3), (3, 4)]);
+        assert_eq!(spans("「あ」ab", 0.0), vec![(0, 3), (3, 5)]);
+        assert_eq!(spans("", 0.0), vec![]);
+    }
+
+    proptest::proptest! {
+        /// The runs cover the text in order without gaps, each inside one line, and a run of
+        /// more than one script has none but script 0 between them.
+        #[test]
+        fn runs_cover_the_text(s in proptest::collection::vec(proptest::prop_oneof![
+            proptest::char::range('a', 'c'), proptest::char::range('あ', 'う'), proptest::char::range('亜', '亥'),
+            proptest::strategy::Just(' '), proptest::strategy::Just('、'), proptest::strategy::Just('\n'),
+            proptest::strategy::Just('\r'), proptest::strategy::Just('\u{1f600}')], 0..16), w in 0f32..60.0) {
+            let text: String = s.into_iter().collect();
+            let ch: Vec<u32> = text.chars().map(|c| c as u32).collect();
+            let r = spans(&text, w);
+            let mut at = 0;
+            for &(a, b) in &r {
+                proptest::prop_assert_eq!(a, at);
+                proptest::prop_assert!(b > a);
+                at = b;
+                let mut sc: Vec<u8> = ch[a..b].iter().map(|&k| script(k)).filter(|&x| x != 0).collect();
+                sc.dedup();
+                proptest::prop_assert!(sc.len() <= 1, "{:?} {:?}", &ch[a..b], sc);
+            }
+            proptest::prop_assert_eq!(at, ch.len());
+            // the newline flag as defined; never a break before a newline but after one
+            let f = flags(&text);
+            if let Some(last) = f.last() {
+                proptest::prop_assert!(last.0);
+            }
+            for (i, x) in f.iter().enumerate() {
+                proptest::prop_assert_eq!(x.2, ch[i] == 10 || (ch[i] == 13 && ch.get(i + 1) != Some(&10)));
+                if !x.2 && i + 1 < ch.len() && (ch[i + 1] == 10 || ch[i + 1] == 13) {
+                    proptest::prop_assert!(!x.0);
+                }
             }
         }
     }
