@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compares probe outputs (tests/winref/run.sh) of sake with the reference from real Windows.
 
-    compare.py <reference dir> <sake dir> [--known tests/winref/known.txt] [--png dir] [--report file.md]
+    compare.py <reference dir> <sake dir> [--known TODO.md] [--png dir] [--report file.md]
 
 The reference is run.sh's output on Windows or tests/winref/golden (Windows' answers kept in
 the repository, golden.py): then a probe whose source changed since its answer is reported as
@@ -10,8 +10,9 @@ stale, and one without an answer as new; neither fails the run.
 Line kinds (probe.h): plain lines must be equal; "ulp <n> <label> <hex>" doubles within n ulps;
 "image <name> <w> <h> <tol>" pictures within tol per channel (a PNG of reference / sake /
 difference goes to --png for each one that differs); "skip ..." as the first reference line
-skips the probe. known.txt lists differences already understood: "<probe glob> <regex>  # why",
-a diff line matching it does not fail the run (it is still reported, as known).
+skips the probe. The ```known blocks of TODO.md (section 2) list differences already understood:
+"<probe glob> <regex>  # why"; a diff line matching one does not fail the run (it is still
+reported, as known).
 Exits 1 on any other difference, a probe missing on the sake side or a different exit code.
 """
 import difflib
@@ -113,6 +114,23 @@ def image_diff(name, want, got, png_dir, probe):
     return f"image {name}: {bad} pixels off by more than {tol} (worst {worst}; first at {first[0]},{first[1]} want {first[2]} got {first[3]})"
 
 
+def known_rules(path):
+    """The ```known blocks of TODO.md: "<probe glob> <regex>" per line ("  #" starts a comment)."""
+    rules, inside = [], False
+    for l in open(path, encoding="utf-8"):
+        l = l.rstrip("\n")
+        if not inside:
+            inside = l.strip() == "```known"
+        elif l.strip() == "```":
+            inside = False
+        else:
+            l = l.split("  #")[0].strip()
+            if l and not l.startswith("#"):
+                g, rx = l.split(None, 1)
+                rules.append((g, rx))
+    return rules
+
+
 def main():
     args = sys.argv[1:]
     opt = {}
@@ -134,13 +152,7 @@ def main():
         golden.GOLDEN = os.path.abspath(ref)
         golden.expand(tmp)
         ref = tmp
-    known = []
-    if "--known" in opt:
-        for l in open(opt["--known"], encoding="utf-8"):
-            l = l.split("  #")[0].strip()
-            if l and not l.startswith("#"):
-                g, rx = l.split(None, 1)
-                known.append((g, re.compile(rx)))
+    known = [(g, re.compile(rx)) for g, rx in known_rules(opt["--known"])] if "--known" in opt else []
     report, failed, totals = [], [], {"ok": 0, "known": 0, "fail": 0, "skip": 0, "stale": 0, "new": 0}
     for probe in sorted(set(os.listdir(got)) - set(os.listdir(ref))):
         if os.path.isdir(os.path.join(got, probe)):
