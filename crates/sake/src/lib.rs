@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use koji::{Cpu, EAX, ESP};
 
 pub mod acm;
+pub mod mp3frame;
 pub mod apc;
 pub mod api;
 pub mod d3d9;

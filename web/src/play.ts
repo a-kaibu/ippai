@@ -20,6 +20,7 @@ import { startWebGame } from "./html";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./audio";
 import { Video } from "./video";
+import { AudioDecode } from "./adec";
 import { applyGame, coverUrl, fetchGames, type GameEntry } from "./launcher";
 import { getUi, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
@@ -86,6 +87,13 @@ interface SakeModule {
   _vnhost_video_begin(id: number, n: number, size: number): number;
   _vnhost_video_ready(id: number, buf: number, layout: number, ok: number): void;
   _vnhost_video_fail(id: number): void;
+  _free(ptr: number): void;
+  _vnhost_adec_doorbell(): number;
+  _vnhost_adec_list(out: number, max: number): number;
+  _vnhost_adec_chunk(id: number, gen: number, size: number, seq: number): number;
+  _vnhost_adec_pcm(id: number, gen: number, pcm: number, frames: number, channels: number): void;
+  _vnhost_adec_done(id: number, gen: number, seq: number): void;
+  _vnhost_adec_fail(id: number, gen: number): void;
   _vnhost_crashlog_info?(): number;
   _vnhost_crashlog_snapshot?(): number;
   wasmMemory: WebAssembly.Memory;
@@ -278,6 +286,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off
       ...(params.has("noload") ? {} : { IPPAI_LOAD: "1" }),
+      // the page decodes sound with WebCodecs (web/src/adec.ts: from its first frame on)
+      ...(typeof AudioDecoder !== "undefined" ? { IPPAI_ADEC: "1" } : {}),
       // (headless Chromium destroys a device that draws to a canvas: tests take shots instead)
       ...(params.has("headless") ? { IPPAI_HEADLESS: "1" } : {}),
       ...(params.has("d3dstats") ? { IPPAI_D3DSTATS: "1" } : {}),
@@ -538,6 +548,8 @@ function watch(sake: SakeModule): void {
   // Siglus movies: decoded here for the guest (web/src/video.ts)
   const video =
     typeof VideoDecoder !== "undefined" ? new Video(sake, (l) => (console.log(l), recorder?.note(l))) : null;
+  // sound in codecs sake has no decoder of its own for (MP3 through msacm32: web/src/adec.ts)
+  if (typeof AudioDecoder !== "undefined") new AudioDecode(sake, (l) => (console.log(l), recorder?.note(l)));
   const frame = () => {
     if (exited) return closeGame();
     video?.tick();
