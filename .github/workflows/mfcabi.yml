@@ -1,0 +1,46 @@
+# MFC's ABI from a real Visual Studio (tests/mfcabi): the x86 import libraries' ordinal -> name
+# tables and the classes' sizes, offsets and vtable slots, for sake's own MFC. Run when the
+# probe changes (or by hand); the answers are committed to tests/mfcabi/out on main.
+name: mfcabi
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/mfcabi/*.cpp'
+      - 'tests/mfcabi/*.ps1'
+      - '.github/workflows/mfcabi.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mfcabi
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Dump
+        shell: pwsh
+        run: tests/mfcabi/dump.ps1 "$env:RUNNER_TEMP\out"
+      - name: Commit the answers
+        shell: bash
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for i in 1 2 3 4 5 6; do
+            git fetch -q origin main && git reset -q --hard FETCH_HEAD
+            rm -rf tests/mfcabi/out && mkdir -p tests/mfcabi/out
+            cp "$RUNNER_TEMP"/out/* tests/mfcabi/out/
+            git add tests/mfcabi/out
+            if git diff --cached --quiet; then echo "no change"; exit 0; fi
+            git commit -qm "mfcabi: MFC's ABI from Visual Studio (${GITHUB_SHA::7})"
+            git push -q origin HEAD:main && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
