@@ -2493,6 +2493,49 @@ fn _setmaxstdio(c: &mut Ctx) -> u32 {
     if (20..=2048).contains(&n) { n } else { u32::MAX }
 }
 
+/// File descriptors handed out by _fileno: 0..2 the standard streams, then streams by
+/// first use (sake has no descriptor layer: _filelength is what they are asked for).
+static FDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// _fileno(stream)
+fn _fileno(c: &mut Ctx) -> u32 {
+    let fp = c.a(0);
+    if with_file(fp, |_| ()).is_none() {
+        set_errno(22);
+        return u32::MAX;
+    }
+    let base = data("_iob").unwrap_or(0);
+    if fp >= base && fp < base + 3 * file_size() && (fp - base) % file_size() == 0 {
+        return (fp - base) / file_size();
+    }
+    let mut g = FDS.lock().unwrap();
+    let i = g.iter().position(|&p| p == fp).unwrap_or_else(|| {
+        g.push(fp);
+        g.len() - 1
+    });
+    3 + i as u32
+}
+/// The length of descriptor `fd`'s file (None: not one, or no file behind it).
+fn fd_length(fd: u32) -> Option<u64> {
+    let fp = *FDS.lock().unwrap().get(fd.checked_sub(3)? as usize)?;
+    with_file(fp, |s| s.f.as_ref().map(|f| f.size())).flatten()
+}
+fn _filelength(c: &mut Ctx) -> u32 {
+    fd_length(c.a(0)).map_or_else(
+        || {
+            set_errno(9);
+            u32::MAX
+        },
+        |n| n.min(i32::MAX as u64) as u32,
+    )
+}
+fn _filelengthi64(c: &mut Ctx) -> u32 {
+    let n = fd_length(c.a(0)).unwrap_or_else(|| {
+        set_errno(9);
+        u64::MAX
+    });
+    c.ret64(n)
+}
+
 /// setlocale: only "C"
 fn setlocale(_: &mut Ctx) -> u32 {
     static C: OnceLock<u32> = OnceLock::new();
@@ -3453,7 +3496,7 @@ pub fn init() {
     reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
-    reg!(wcstombs, mbstowcs, _chdir, _wchdir, _setmaxstdio);
+    reg!(wcstombs, mbstowcs, _chdir, _wchdir, _setmaxstdio, _fileno, _filelength, _filelengthi64);
     reg!(wcsncmp, getenv, _ismbblead, memcpy_s, memmove_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp, remove, rename);
     implement("msvcrt", "_setjmp", _setjmp3);
     reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);

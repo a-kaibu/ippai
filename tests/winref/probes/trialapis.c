@@ -2,12 +2,13 @@
  * other cases and through the A and W calls, SHStrDupA/W, PathRenameExtensionA/W on paths with
  * and without extensions, dots in directory names and overflowing results, CharNextExA on
  * code page 932 lead bytes, and the msvcrt "C" locale's wcstombs/mbstowcs (counting, short
- * buffers, characters above 0xff), _chdir/_wchdir and _setmaxstdio.
+ * buffers, characters above 0xff), _chdir/_wchdir, _fileno/_filelength and _setmaxstdio.
  * libs: -lshlwapi -lole32 */
 #include "../probe.h"
 #include <shlwapi.h>
 #include <direct.h>
 #include <errno.h>
+#include <io.h>
 
 static void hexs(const char *s) { printf("["); for (; *s; s++) printf("%02x", (unsigned char)*s); printf("]"); }
 static void hexw(const WCHAR *s) { printf("["); for (; *s; s++) printf("%04x", *s); printf("]"); }
@@ -137,6 +138,19 @@ static void dirs(void) {
     GetCurrentDirectoryA(MAX_PATH, now);
     printf("wchdir up %d back %d\n", r, !strcmp(now, cwd));
     RemoveDirectoryA("winref_chdir");
+    FILE *f = fopen("winref_len.bin", "wb");
+    fwrite("0123456789", 1, 10, f);
+    fflush(f);
+    printf("fileno std %d %d %d file>2 %d len %ld len64 %d\n", _fileno(stdin), _fileno(stdout), _fileno(stderr), _fileno(f) > 2, _filelength(_fileno(f)),
+           (int)_filelengthi64(_fileno(f)));
+    fclose(f);
+    f = fopen("winref_len.bin", "rb");
+    printf("read len %ld len64 %d", _filelength(_fileno(f)), (int)_filelengthi64(_fileno(f)));
+    errno = 0;
+    long bad = _filelength(77);
+    printf(" bad %ld errno %d\n", bad, errno);
+    fclose(f);
+    DeleteFileA("winref_len.bin");
     printf("setmaxstdio %d %d %d %d %d\n", _setmaxstdio(512), _setmaxstdio(19), _setmaxstdio(20), _setmaxstdio(2048), _setmaxstdio(2049));
 }
 
