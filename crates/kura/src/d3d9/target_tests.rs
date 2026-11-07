@@ -143,9 +143,13 @@ fn every_texture_format_reaches_the_page() {
     use super::format as f;
     let fmts = [
         f::A8R8G8B8, f::X8R8G8B8, f::R5G6B5, f::A1R5G5B5, f::A4R4G4B4, f::A8, f::L8, f::A8L8, f::A8B8G8R8, f::A16B16G16R16F, f::A32B32G32R32F,
-        f::A2R10G10B10, f::A2B10G10R10, f::G16R16, f::A16B16G16R16, f::L16, f::V8U8, f::Q8W8V8U8, f::V16U16, f::X8L8V8U8, f::L6V5U5,
-        f::A2W10V10U10, f::Q16W16V16U16, f::R16F, f::G16R16F, f::R32F, f::G32R32F,
+        f::A2R10G10B10, f::A2B10G10R10, f::G16R16, f::A16B16G16R16, f::L16, f::V8U8, f::Q8W8V8U8, f::V16U16, f::Q16W16V16U16,
+        f::R16F, f::G16R16F, f::R32F, f::G32R32F,
     ];
+    // (those Windows has no textures of)
+    for fmt in [f::X8L8V8U8, f::L6V5U5, f::A2W10V10U10] {
+        assert_eq!(call(IF_DEVICE, 23, &[dev, 4, 4, 1, 0, fmt, 1, out(), 0]), 0x8876086c, "format {fmt}");
+    }
     for fmt in fmts {
         let from = model::with(|m| m.objs.len());
         let o = out();
@@ -202,5 +206,49 @@ fn every_texture_format_reaches_the_page() {
     }
     let e = errors();
     assert!(e.is_empty(), "{:?}", &e[..e.len().min(8)]);
+    gpu::set_pump(None);
+}
+
+/// Clear as Windows answers it (tests/winref/golden/d3d9clear-32), and a depth buffer smaller
+/// than the target in use (the pipelines test depth, the passes are valid WebGPU).
+#[test]
+fn clear_answers_and_a_smaller_depth_buffer() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    let dev = device();
+    errors();
+    const INVALIDCALL: u32 = 0x8876086c;
+    let clear = |count: u32, rects: u32, flags: u32| call(IF_DEVICE, 43, &[dev, count, rects, flags, 0x102030, 1f32.to_bits(), 0x105]);
+    let r = unsafe { alloc(16) as u32 };
+    put_bytes(r, &[4u32, 4, 8, 8].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>());
+    assert_eq!(clear(0, 0, 0), INVALIDCALL, "no flags");
+    assert_eq!(clear(0, 0, 0x10), INVALIDCALL, "no known flags");
+    assert_eq!(clear(0, 0, 0x11), 0);
+    assert_eq!(clear(1, 0, 1), 0, "a count without a list");
+    assert_eq!(clear(0, r, 1), 0, "a list with a count of 0");
+    assert_eq!(clear(1, r, 7), 0, "D24S8");
+    // (each with its own depth function: a pipeline of its own)
+    for (fmt, w, stencil, func) in [(format::D24X8, 64, false, 4), (format::D16, 32, false, 2), (format::D24S8, 32, true, 8)] {
+        let o = out();
+        assert_eq!(call(IF_DEVICE, 29, &[dev, w, w, fmt, 0, 0, 0, o, 0]), 0);
+        let z = rd(o);
+        assert_eq!(call(IF_DEVICE, 39, &[dev, z]), 0);
+        assert_eq!(clear(0, 0, 2), 0, "z {fmt}");
+        assert_eq!(clear(0, 0, 4), if stencil { 0 } else { INVALIDCALL }, "stencil {fmt}");
+        assert_eq!(clear(0, 0, 5), if stencil { 0 } else { INVALIDCALL }, "target and stencil {fmt}");
+        let from = model::with(|m| m.objs.len());
+        call(IF_DEVICE, 57, &[dev, 7, 1]);
+        call(IF_DEVICE, 57, &[dev, 23, func]);
+        quad(dev);
+        let depth = model::with(|m| m.objs[from..].iter().any(|o| matches!(o, model::Obj::Pipeline(p) if p.depth.is_some() && !p.clear_shader)));
+        assert!(depth, "{fmt} {w}x{w}: the draw tests depth");
+        let e = errors();
+        assert!(e.is_empty(), "{fmt} {w}x{w}: {:?}", &e[..e.len().min(8)]);
+        call(IF_DEVICE, 39, &[dev, 0]);
+        call(IF_SURFACE, 2, &[z]);
+    }
     gpu::set_pump(None);
 }

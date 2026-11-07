@@ -2358,14 +2358,20 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
     let vp = dev.st.viewport;
     let sc = dev.st.scissor;
     let scissor = dev.st.rs[174] != 0;
-    // (as Windows: a count without a list clears nothing; depth or stencil without a depth
-    // buffer is refused)
-    if count != 0 && rects == 0 {
+    // (as Windows: a list with a count of 0 clears nothing, a count without a list clears it
+    // all; no target, depth or stencil flag, depth or stencil without a depth buffer and stencil
+    // without stencil bits are refused)
+    if count == 0 && rects != 0 {
         return S_OK;
     }
-    if flags & 6 != 0 && ds == 0 {
+    if flags & 7 == 0 || flags & 6 != 0 && ds == 0 {
         return D3DERR_INVALIDCALL;
     }
+    if flags & 4 != 0 && !d.objs.get(&ds).is_some_and(|o| matches!(&o.data, Data::Surface(z) if fmt::has_stencil(z.fmt))) {
+        return D3DERR_INVALIDCALL;
+    }
+    // (stencil values past the 8 bits saturate, as Windows)
+    let stencil = stencil.min(0xff);
     let (Some(target), dsg) = (surface_gpu(d, rt), surface_gpu(d, ds)) else { return S_OK };
     ensure_target(d, rt, ds);
     let mut area = [vp[0] as i32, vp[1] as i32, (vp[0] + vp[2]) as i32, (vp[1] + vp[3]) as i32];
@@ -2373,7 +2379,7 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
         area = [area[0].max(sc[0]), area[1].max(sc[1]), area[2].min(sc[2]), area[3].min(sc[3])];
     }
     let mut list = Vec::new();
-    if count == 0 || rects == 0 {
+    if rects == 0 {
         list.push(area);
     } else {
         for i in 0..count as usize {
@@ -2422,7 +2428,9 @@ fn ensure_targets(d: &mut D3d, rt: u32, more: &[u32], ds: u32) {
         return ensure_target(d, rt, ds);
     }
     let Some(t) = surface_gpu(d, rt) else { return };
-    let z = surface_gpu(d, ds).filter(|z| z.2 >= t.2 && z.3 >= t.3);
+    // (a depth buffer of another size than the target: the page draws with one of the target's
+    // size, render/d3d.rs depth_for)
+    let z = surface_gpu(d, ds);
     let mut c = vec![gpu::SET_TARGETS2, 1 + more.len() as u32, t.0, t.1, 0];
     for &m in more {
         let g = surface_gpu(d, m).unwrap();
@@ -2439,8 +2447,8 @@ fn ensure_target(d: &mut D3d, rt: u32, ds: u32) {
     let t = surface_gpu(d, rt);
     let z = surface_gpu(d, ds);
     let Some(t) = t else { return };
-    // a depth buffer smaller than the target can't be used on the page
-    let z = z.filter(|z| z.2 >= t.2 && z.3 >= t.3);
+    // (a depth buffer of another size than the target: the page draws with one of the
+    // target's size, render/d3d.rs depth_for; Windows uses a smaller one too)
     let key = (t.0, t.1, z.map_or(0, |z| z.0));
     let gen = gpu::batch_gen();
     let dev = d.dev.as_mut().unwrap();
@@ -2739,7 +2747,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         None
     };
     let Some(target) = surface_gpu(d, rt) else { return S_OK };
-    let dsg = surface_gpu(d, ds).filter(|z| z.2 >= target.2 && z.3 >= target.3);
+    // (one of another size too: the page draws with one of the target's size, render/d3d.rs depth_for)
+    let dsg = surface_gpu(d, ds);
     // render targets 1-3 (in a row from 1, of the size of 0)
     let more: Vec<(u32, (u32, u32, u32, u32, u32))> = rts[1..]
         .iter()

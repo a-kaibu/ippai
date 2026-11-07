@@ -27,6 +27,8 @@ mod bind_tests;
 mod draw_tests;
 #[cfg(test)]
 mod deferred_tests;
+#[cfg(test)]
+mod desc_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -917,36 +919,93 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
 }
 
 /// A state description as the state object keeps it (what GetDesc gives and what two
-/// descriptions are compared by): fields the state ignores set as Windows sets them. Blend:
-/// without IndependentBlendEnable every target is the first's; a target that does not blend
-/// has ONE, ZERO, ADD. Depth stencil: no depth test, LESS and a full write mask; no stencil,
-/// masks 0xff and KEEP, KEEP, KEEP, ALWAYS; the bytes after the two stencil masks are padding.
-fn normalize_state(m: u32, desc: &mut [u32]) {
+/// descriptions are compared by), or None for one Windows refuses (E_INVALIDARG): fields the
+/// state ignores set as Windows sets them, BOOLs as 0 or 1 (tests/winref/golden/d3d11desc-32).
+/// Blend: the targets in use (all with IndependentBlendEnable, else the first, which every
+/// target then is) have masks of at most 0xf and, blending, blends of 1-11 or 14-19 (no color
+/// ones for alpha) and operations of 1-5; a target that does not blend has ONE, ZERO, ADD.
+/// Depth stencil: a write mask of 0 or 1 and, testing depth, a function of 1-8 (else LESS and a
+/// full write mask); with stencil, operations and functions of 1-8 (else masks 0xff and KEEP,
+/// KEEP, KEEP, ALWAYS); the bytes after the two stencil masks are padding. Rasterizer: fill
+/// 2-3, cull 1-3, a depth bias clamp that is a number. Sampler: one of the filters, addresses
+/// of 1-5, at most 16 anisotropy (0 without an anisotropic filter), a comparison of 1-8 with a
+/// comparison filter (else NEVER), a bias of -16 to 15.99 and LODs that are numbers; the
+/// border color is 0 without a BORDER address.
+fn normalize_state(m: u32, desc: &mut [u32]) -> Option<()> {
+    let b = |v: &mut u32| *v = (*v != 0) as u32;
+    let ok = |c: bool| c.then_some(());
+    let f = |v: u32| f32::from_bits(v);
     match m {
         20 => {
-            for t in 0..8 {
-                let src = if desc[1] != 0 { t } else { 0 };
-                let mut rt: Vec<u32> = desc[2 + src * 8..2 + src * 8 + 8].to_vec();
-                if rt[0] == 0 {
+            b(&mut desc[0]);
+            b(&mut desc[1]);
+            let used = if desc[1] != 0 { 8 } else { 1 };
+            let blend = |v: u32| matches!(v, 1..=11 | 14..=19);
+            let alpha = |v: u32| blend(v) && !matches!(v, 3 | 4 | 9 | 10 | 16 | 17);
+            for t in 0..used {
+                let rt = &mut desc[2 + t * 8..2 + t * 8 + 8];
+                rt[7] &= 0xff;
+                ok(rt[7] <= 0xf)?;
+                b(&mut rt[0]);
+                if rt[0] != 0 {
+                    ok(blend(rt[1]) && blend(rt[2]) && alpha(rt[4]) && alpha(rt[5]) && (1..=5).contains(&rt[3]) && (1..=5).contains(&rt[6]))?;
+                } else {
                     rt[1..7].copy_from_slice(&[2, 1, 1, 2, 1, 1]);
                 }
-                desc[2 + t * 8..2 + t * 8 + 8].copy_from_slice(&rt);
+            }
+            if used == 1 {
+                let rt0: Vec<u32> = desc[2..10].to_vec();
+                for t in 1..8 {
+                    desc[2 + t * 8..10 + t * 8].copy_from_slice(&rt0);
+                }
             }
         }
         21 => {
-            if desc[0] == 0 {
+            b(&mut desc[0]);
+            ok(desc[1] <= 1)?;
+            if desc[0] != 0 {
+                ok((1..=8).contains(&desc[2]))?;
+            } else {
                 (desc[1], desc[2]) = (1, 2);
             }
+            b(&mut desc[3]);
             desc[4] &= 0xffff;
-            if desc[3] == 0 {
+            if desc[3] != 0 {
+                ok(desc[5..13].iter().all(|v| (1..=8).contains(v)))?;
+            } else {
                 desc[4] = 0xffff;
                 for f in 0..2 {
                     desc[5 + 4 * f..9 + 4 * f].copy_from_slice(&[1, 1, 1, 8]);
                 }
             }
         }
+        22 => {
+            ok((2..=3).contains(&desc[0]) && (1..=3).contains(&desc[1]) && !f(desc[4]).is_nan())?;
+            b(&mut desc[2]);
+            for v in &mut desc[6..10] {
+                b(v);
+            }
+        }
+        23 => {
+            let filter = desc[0];
+            ok(filter & !0x1ff == 0 && matches!(filter & 0x7f, 0 | 1 | 4 | 5 | 0x10 | 0x11 | 0x14 | 0x15 | 0x55))?;
+            ok(desc[1..4].iter().all(|v| (1..=5).contains(v)) && desc[5] <= 16)?;
+            if filter & 0x7f != 0x55 {
+                desc[5] = 0;
+            }
+            if filter & 0x180 == 0x80 {
+                ok((1..=8).contains(&desc[6]))?;
+            } else {
+                desc[6] = 1;
+            }
+            ok((-16.0..=15.99).contains(&f(desc[4])) && !f(desc[11]).is_nan() && !f(desc[12]).is_nan())?;
+            if !desc[1..4].contains(&4) {
+                desc[7..11].fill(0);
+            }
+        }
         _ => {}
     }
+    Some(())
 }
 
 /// D3D10CreateDevice(AndSwapChain)(1): the D3D11 device's D3D10 face
@@ -1717,7 +1776,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return E_INVALIDARG;
             }
             let mut desc: Vec<u32> = (0..n).map(|i| rd(a(1), i)).collect();
-            normalize_state(m, &mut desc);
+            if normalize_state(m, &mut desc).is_none() {
+                return E_INVALIDARG;
+            }
             if a(2) == 0 {
                 return S_FALSE;
             }
@@ -1822,6 +1883,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 desc.push(rd(a(1), b));
                 desc.extend((3..9).map(|i| rd(a(1), b + i - 1)));
                 desc.push(rd(a(1), b + 9));
+            }
+            if normalize_state(20, &mut desc).is_none() {
+                return E_INVALIDARG;
             }
             if a(2) == 0 {
                 return S_FALSE;

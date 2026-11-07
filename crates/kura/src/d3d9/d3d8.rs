@@ -205,11 +205,13 @@ unsafe fn d3d8_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, af
             pp8(a(5), &p);
             d.d8 = State::default();
             // (Direct3D 8's own states: ZBIAS and the rest 0, PATCHSEGMENTS 1.0,
-            // SOFTWAREVERTEXPROCESSING as created)
+            // SOFTWAREVERTEXPROCESSING as created; POINTSIZE_MIN 0, POINTSIZE_MAX 8192.0 on
+            // either device: tests/winref/golden/d3d8state-32)
             if let Some(dev) = d.dev.as_mut().filter(|_| r == S_OK) {
-                for k in [10, 30, 40, 47] {
+                for k in [10, 30, 40, 47, 155] {
                     dev.st.rs[k] = 0;
                 }
+                dev.st.rs[166] = 8192f32.to_bits();
                 dev.st.rs[153] = (a(4) & 0x20 != 0) as u32;
                 dev.st.rs[164] = 1f32.to_bits();
             }
@@ -392,13 +394,16 @@ unsafe fn device_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, 
         33 => same(d, 40, after),
         51 => {
             // GetRenderState: Direct3D 8's states (LINEPATTERN, ZVISIBLE, EDGEANTIALIAS, ZBIAS,
-            // SOFTWAREVERTEXPROCESSING, PATCHSEGMENTS are not Direct3D 9's)
+            // SOFTWAREVERTEXPROCESSING, PATCHSEGMENTS are not Direct3D 9's); the unused and
+            // legacy ones, Direct3D 9's own among them, read 0xbaadcafe (as Windows:
+            // tests/winref/golden/d3d8state-32)
             let (st, out) = (a(1), a(2));
-            if out == 0 || !(device::rs_valid(st) || matches!(st, 10 | 30 | 153 | 164)) || matches!(st, 0 | 42 | 50 | 61..=63 | 96..=127 | 138 | 149 | 150 | 165 | 169 | 174..) {
+            let unset = matches!(st, 0 | 42 | 50 | 61..=63 | 96..=127 | 138 | 149 | 150 | 165 | 169 | 174..=255);
+            if out == 0 || !(unset || device::rs_valid(st) || matches!(st, 10 | 30 | 153 | 164)) {
                 return D3DERR_INVALIDCALL;
             }
             let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
-            wr(out, 0, dev.st.rs[st as usize]);
+            wr(out, 0, if unset { 0xbaad_cafe } else { dev.st.rs[st as usize] });
             S_OK
         }
         34..=50 => same(d, m + 7, after),

@@ -55,11 +55,17 @@ pub const DXT4: u32 = u32::from_le_bytes(*b"DXT4");
 pub const DXT5: u32 = u32::from_le_bytes(*b"DXT5");
 
 pub fn supported(fmt: u32) -> bool {
-    layout(fmt).is_some()
+    // (Windows has no X8L8V8U8, L6V5U5 and A2W10V10U10 textures: tests/winref/golden/d3d9-32)
+    layout(fmt).is_some() && !matches!(fmt, X8L8V8U8 | L6V5U5 | A2W10V10U10)
 }
 
 pub fn is_depth(fmt: u32) -> bool {
     matches!(fmt, D16_LOCKABLE | D32 | D15S1 | D24S8 | D24X8 | D24X4S4 | D16 | D32F_LOCKABLE | D24FS8)
+}
+
+/// Depth formats with stencil bits.
+pub fn has_stencil(fmt: u32) -> bool {
+    matches!(fmt, D15S1 | D24S8 | D24X4S4 | D24FS8)
 }
 
 /// Formats a render target can have.
@@ -172,6 +178,91 @@ pub fn texel(fmt: u32, p: &[u8]) -> [f32; 4] {
         G32R32F => [f(0), f(1), 1.0, 1.0],
         _ => [0.0, 0.0, 0.0, 1.0],
     }
+}
+
+/// Render targets of the format on the page: the channels drawing writes (a WebGPU write mask:
+/// red 1, green 2, blue 4, alpha 8; COLORWRITEENABLE's bits) and whether samplers read red as
+/// the luminance (rgb = r: the page's green and blue are not the texel's). What a format does
+/// not keep reads as `texel` reads it: A8's color 0, the rest 1 (clears write that).
+pub fn target_channels(fmt: u32) -> (u32, bool) {
+    match fmt {
+        A8 => (8, false),
+        L8 | L16 => (1, true),
+        A8L8 => (9, true),
+        R16F | R32F => (1, false),
+        G16R16 | G16R16F | G32R32F | V8U8 | V16U16 => (3, false),
+        _ => (0xf, false),
+    }
+}
+
+/// A D3DCOLOR as a clear of a render target of the format leaves it on the page
+/// (target_channels).
+pub fn target_color(fmt: u32, c: u32) -> u32 {
+    let (mask, lum) = target_channels(fmt);
+    let [b, g, r, a] = c.to_le_bytes();
+    let fill = if fmt == A8 { 0 } else { 0xff };
+    let pick = |bit: u32, v: u8| if mask & bit != 0 { v } else { fill };
+    let r = pick(1, r);
+    let (g, b) = if lum { (r, r) } else { (pick(2, g), pick(4, b)) };
+    let a = if mask & 8 != 0 { a } else { 0xff };
+    u32::from_le_bytes([b, g, r, a])
+}
+
+/// A page texel (`page_bpp` bytes: BGRA8, or 16- or 32-bit float RGBA) as R, G, B, A.
+pub fn page_texel(fmt: u32, p: &[u8]) -> [f32; 4] {
+    match page_format(fmt) {
+        FMT_RGBA16F => core::array::from_fn(|i| crate::d3d11::format::f16_to_f32(u16::from_le_bytes([p[i * 2], p[i * 2 + 1]]))),
+        FMT_RGBA32F => core::array::from_fn(|i| f32::from_le_bytes([p[i * 4], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3]])),
+        _ => [p[2], p[1], p[0], p[3]].map(|v| v as f32 / 255.0),
+    }
+}
+
+/// A texel of the format (`layout` bytes into `out`) from its R, G, B, A, as a GPU writes a
+/// render target: UNORM round(clamp(v, 0, 1) * (2^n - 1)), SNORM round(clamp(v, -1, 1) *
+/// (2^(n-1) - 1)), luminance from red, what the format has no bits for dropped. False for a
+/// format it does not know.
+pub fn pack(fmt: u32, c: [f32; 4], out: &mut [u8]) -> bool {
+    let u = |v: f32, bits: u32| {
+        let m = ((1u64 << bits) - 1) as f32;
+        if v.is_nan() { 0 } else { (v.clamp(0.0, 1.0) * m).round() as u32 }
+    };
+    let s = |v: f32, bits: u32| {
+        let m = ((1u32 << (bits - 1)) - 1) as f32;
+        let x = if v.is_nan() { 0 } else { (v.clamp(-1.0, 1.0) * m).round() as i32 };
+        (x as u32) & ((1u32 << bits) - 1)
+    };
+    let h = |v: f32| crate::d3d11::format::f16_bits(v);
+    let [r, g, b, a] = c;
+    let mut put = |bytes: &[u8]| out[..bytes.len()].copy_from_slice(bytes);
+    match fmt {
+        A8R8G8B8 | X8R8G8B8 => put(&[u(b, 8) as u8, u(g, 8) as u8, u(r, 8) as u8, u(a, 8) as u8]),
+        A8B8G8R8 | X8B8G8R8 => put(&[u(r, 8) as u8, u(g, 8) as u8, u(b, 8) as u8, u(a, 8) as u8]),
+        R8G8B8 => put(&[u(b, 8) as u8, u(g, 8) as u8, u(r, 8) as u8]),
+        R5G6B5 => put(&((u(r, 5) << 11 | u(g, 6) << 5 | u(b, 5)) as u16).to_le_bytes()),
+        X1R5G5B5 | A1R5G5B5 => put(&((u(a, 1) << 15 | u(r, 5) << 10 | u(g, 5) << 5 | u(b, 5)) as u16).to_le_bytes()),
+        A4R4G4B4 | X4R4G4B4 => put(&((u(a, 4) << 12 | u(r, 4) << 8 | u(g, 4) << 4 | u(b, 4)) as u16).to_le_bytes()),
+        A8 => put(&[u(a, 8) as u8]),
+        L8 => put(&[u(r, 8) as u8]),
+        A8L8 => put(&[u(r, 8) as u8, u(a, 8) as u8]),
+        A4L4 => put(&[(u(a, 4) << 4 | u(r, 4)) as u8]),
+        A2R10G10B10 => put(&(u(a, 2) << 30 | u(r, 10) << 20 | u(g, 10) << 10 | u(b, 10)).to_le_bytes()),
+        A2B10G10R10 => put(&(u(a, 2) << 30 | u(b, 10) << 20 | u(g, 10) << 10 | u(r, 10)).to_le_bytes()),
+        G16R16 => put(&(u(g, 16) << 16 | u(r, 16)).to_le_bytes()),
+        A16B16G16R16 => put(&[r, g, b, a].iter().flat_map(|&v| (u(v, 16) as u16).to_le_bytes()).collect::<Vec<u8>>()),
+        L16 => put(&(u(r, 16) as u16).to_le_bytes()),
+        V8U8 => put(&[s(r, 8) as u8, s(g, 8) as u8]),
+        Q8W8V8U8 => put(&[s(r, 8) as u8, s(g, 8) as u8, s(b, 8) as u8, s(a, 8) as u8]),
+        V16U16 => put(&(s(g, 16) << 16 | s(r, 16)).to_le_bytes()),
+        Q16W16V16U16 => put(&[r, g, b, a].iter().flat_map(|&v| (s(v, 16) as u16).to_le_bytes()).collect::<Vec<u8>>()),
+        R16F => put(&h(r).to_le_bytes()),
+        G16R16F => put(&((h(g) as u32) << 16 | h(r) as u32).to_le_bytes()),
+        A16B16G16R16F => put(&[r, g, b, a].iter().flat_map(|&v| h(v).to_le_bytes()).collect::<Vec<u8>>()),
+        R32F => put(&r.to_le_bytes()),
+        G32R32F => put(&[r, g].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()),
+        A32B32G32R32F => put(&[r, g, b, a].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()),
+        _ => return false,
+    }
+    true
 }
 
 /// Whether the format has no alpha (samplers then read alpha as 1). (DXT1 has: its 1-bit
@@ -406,6 +497,51 @@ mod tests {
         let mut out = Vec::new();
         unsafe { convert(fmt, padded.as_ptr(), pitch as usize, w, h, &mut out) };
         out
+    }
+
+    /// Reading a render target back: a texel through convert() to the page, page_texel and pack
+    /// is the texel again (what a format does not keep as pack writes it: X bits set, the most
+    /// negative SNORM value as -1's), for random texels of every format pack knows (random
+    /// floats: numbers only).
+    #[test]
+    fn pack_undoes_the_page() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let fmts = [
+            A8R8G8B8, X8R8G8B8, A8B8G8R8, X8B8G8R8, R8G8B8, R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, X4R4G4B4, A8, L8, A8L8, A2R10G10B10,
+            A2B10G10R10, G16R16, A16B16G16R16, L16, V8U8, Q8W8V8U8, V16U16, Q16W16V16U16, R16F, G16R16F, A16B16G16R16F, R32F, G32R32F,
+            A32B32G32R32F,
+        ];
+        for fmt in fmts {
+            let (bpp, _) = layout(fmt).unwrap();
+            for _ in 0..4000 {
+                let mut t: Vec<u8> = (0..bpp).map(|_| next() as u8).collect();
+                // (numbers only: no NaN halves or floats)
+                match fmt {
+                    R16F | G16R16F | A16B16G16R16F => t.chunks_exact_mut(2).for_each(|h| h[1] &= 0xbb),
+                    R32F | G32R32F | A32B32G32R32F => t.chunks_exact_mut(4).for_each(|f| f[3] &= 0xbf),
+                    _ => {}
+                }
+                let page = conv(fmt, &t, 1, 1);
+                let c = page_texel(fmt, &page);
+                let mut back = vec![0u8; bpp as usize];
+                assert!(pack(fmt, c, &mut back), "format {fmt}");
+                let mut want = t.clone();
+                match fmt {
+                    X1R5G5B5 => want[1] |= 0x80,
+                    X4R4G4B4 => want[1] |= 0xf0,
+                    V8U8 | Q8W8V8U8 => want.iter_mut().filter(|b| **b == 0x80).for_each(|b| *b = 0x81),
+                    V16U16 | Q16W16V16U16 => want.chunks_exact_mut(2).filter(|w| w == &[0, 0x80]).for_each(|w| w[0] = 1),
+                    _ => {}
+                }
+                assert_eq!(back, want, "format {fmt}: texel {t:02x?} page {page:02x?} as {c:?}");
+            }
+        }
     }
 
     /// Every value of every 16-bit format.
@@ -666,7 +802,7 @@ mod tests {
         let wide16 = [A2B10G10R10, A2R10G10B10, V8U8, L6V5U5, X8L8V8U8, Q8W8V8U8, A2W10V10U10, R16F, G16R16F];
         let wide32 = [G16R16, A16B16G16R16, V16U16, L16, Q16W16V16U16, R32F, G32R32F];
         for f in wide16.into_iter().chain(wide32) {
-            assert!(supported(f) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f), "{f}");
+            assert!(supported(f) != matches!(f, X8L8V8U8 | L6V5U5 | A2W10V10U10) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f), "{f}");
             let (page, bpp) = if wide16.contains(&f) { (FMT_RGBA16F, 8) } else { (FMT_RGBA32F, 16) };
             assert_eq!((page_format(f), page_bpp(f)), (page, bpp), "{f}");
         }

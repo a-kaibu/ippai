@@ -69,3 +69,75 @@ fn d3d9_new_device_state_is_windows() {
     assert!(bad.is_empty(), "{} of {n} differ from Windows:\n{}", bad.len(), bad.join("\n"));
     gpu::set_pump(None);
 }
+
+/// A new Direct3D 8 device's GetRenderState and GetTextureStageState, on a software and a
+/// hardware vertex processing device, and the Direct3D 8-only states read back after a set
+/// (d3d8state: result and value of every line).
+#[test]
+fn d3d8_new_device_state_is_windows() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    super::trace_tests::on_low_stack(|| {
+        unsafe {
+            let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+            vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+        }
+        const V8: u32 = 16;
+        let num = |s: &str| if let Some(h) = s.strip_prefix("0x") { u32::from_str_radix(h, 16).unwrap() } else { s.parse().unwrap() };
+        // (printf's "%#lx": 0 without the 0x)
+        let hx = |v: u32| if v == 0 { "0".to_string() } else { format!("{v:#x}") };
+        let text = golden("d3d8state-32");
+        let (mut n, mut bad) = (0, Vec::new());
+        for (f, flags) in [(0u32, 0x20u32), (1, 0x40)] {
+            attach_page();
+            let o = out();
+            assert_eq!(unsafe { vnhost_d3d9_call(super::d3d8::CREATE, [o].as_ptr(), &CALLS) }, 0);
+            let d3d = rd(o);
+            // (the probe's device: 64x64 X8R8G8B8, auto D24S8)
+            let pp = unsafe { alloc(52) as u32 };
+            for (i, x) in [64, 64, 22, 1, 0, 1, 1, 1, 1, 75, 0, 0, 0].into_iter().enumerate() {
+                unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
+            }
+            let o = out();
+            assert_eq!(call(IF_D3D9 + V8, 15, &[d3d, 0, 1, 1, flags, pp, o]), 0);
+            let dev = rd(o);
+            let get = |m: u32, a: &[u32]| {
+                let p = out();
+                unsafe { *(p as *mut u32) = 0xdead_beef };
+                let r = call(IF_DEVICE + V8, m, &[&[dev][..], a, &[p]].concat());
+                (r, rd(p))
+            };
+            for l in text.lines().filter(|l| l.starts_with(&format!("{f} "))) {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                let got = match (w[1], w.get(3).copied()) {
+                    // "0 rs 7 = 0x1" / "0 rs 1: Get 0x8876086c"
+                    ("rs", Some("=")) | ("rs", Some("Get")) => {
+                        let st = num(w[2].trim_end_matches(':'));
+                        let (r, v) = get(51, &[st]);
+                        if r == 0 { format!("{f} rs {st} = {}", hx(v)) } else { format!("{f} rs {st}: Get {}", hx(r)) }
+                    }
+                    // "0 tss 0 1: 0 = 0x4"
+                    ("tss", _) => {
+                        let (s, t) = (num(w[2]), num(w[3].trim_end_matches(':')));
+                        let (r, v) = get(62, &[s, t]);
+                        format!("{f} tss {s} {t}: {} = {}", hx(r), hx(v))
+                    }
+                    // "0 set rs 10 to 1: 0, reads 0 0x1"
+                    ("set", _) => {
+                        let st = num(w[3]);
+                        let s = call(IF_DEVICE + V8, 50, &[dev, st, 1]);
+                        let (g, v) = get(51, &[st]);
+                        format!("{f} set rs {st} to 1: {}, reads {} {}", hx(s), hx(g), hx(v))
+                    }
+                    _ => continue,
+                };
+                n += 1;
+                if got != l.trim_end() {
+                    bad.push(format!("want {l}\n  got  {got}"));
+                }
+            }
+        }
+        assert!(n > 600, "{n} answers checked");
+        assert!(bad.is_empty(), "{} of {n} differ from Windows:\n  {}", bad.len(), bad.join("\n  "));
+        gpu::set_pump(None);
+    });
+}

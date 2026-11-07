@@ -95,6 +95,18 @@ int main(void) {
         printf("SetFVF 0 %#lx\n", IDirect3DDevice9_SetFVF(dev, 0));
     }
     printf("Release device %lu\n", IDirect3DDevice9_Release(dev));
+    /* a hardware vertex processing device: its point size states */
+    hr = IDirect3D9_CreateDevice(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING, &pp, &dev);
+    printf("hardware device %#lx\n", hr);
+    if (SUCCEEDED(hr)) {
+        static const int ps[] = { D3DRS_POINTSIZE, D3DRS_POINTSIZE_MIN, D3DRS_POINTSIZE_MAX, D3DRS_POINTSCALEENABLE };
+        for (int k = 0; k < 4; k++) {
+            DWORD v = 0xdeadbeef;
+            HRESULT g = IDirect3DDevice9_GetRenderState(dev, ps[k], &v);
+            printf("hardware rs %d: %#lx = %#lx\n", ps[k], g, v);
+        }
+        printf("Release hardware device %lu\n", IDirect3DDevice9_Release(dev));
+    }
     IDirect3D9_Release(d3d);
     return 0;
 }
