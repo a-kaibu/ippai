@@ -28,12 +28,22 @@ if grep -q '^// msstl' "$src/$name.cpp"; then
   objs="$objs $t/glue.obj"
 fi
 $cxx -c "$src/$name.cpp" -o "$t/$name.obj"
-vcrt='__intrinsic_setjmp __intrinsic_setjmpex longjmp _CxxThrowException __CxxFrameHandler3 __CxxFrameHandler4 __C_specific_handler memset memcpy memmove memcmp __std_type_info_compare __std_terminate'
+# (where Windows' DLLs export them: vcruntime140 has the exception copies and the mem/str
+# search functions; printf, the STL's vector algorithms, _Facet_Register and type_info's
+# vftable are no DLL's: glue.cpp has them, as msvcrt.lib / msvcprt.lib do)
+vcrt='__intrinsic_setjmp __intrinsic_setjmpex longjmp _CxxThrowException __CxxFrameHandler3 __CxxFrameHandler4 __C_specific_handler memset memcpy memmove memcmp memchr strchr strrchr strstr wcschr wcsrchr wcsstr __std_type_info_compare __std_terminate __std_exception_copy __std_exception_destroy'
+defined=$(llvm-nm --defined-only $objs | awk '{print $NF}' | sort -u)
 for d in ucrtbase vcruntime140 kernel32 msvcp140; do printf 'LIBRARY %s.dll\nEXPORTS\n' "$d" > "$t/$d.def"; done
 llvm-nm -u $objs | awk '{print $NF}' | sort -u | while read -r s; do
   b=${s#__imp_}
   case "$b" in __chkstk|_fltused|_purecall|"??2@"*|"??3@"*|"??_U@"*|"??_V@"*) continue;; esac
-  case " $vcrt " in *" $b "*) echo "$b" >> "$t/vcruntime140.def"; continue;; esac
+  # (defined in one of the objects: glue.cpp's)
+  case "
+$defined
+" in *"
+$b
+"*) continue;; esac
+  case " $vcrt " in *" $b "*) echo "\"$b\"" >> "$t/vcruntime140.def"; continue;; esac
   case "$b" in
     _Mtx_*|_Cnd_*|_Thrd_*|_Query_perf_*|_Xtime_*|*@std@@*|*@Concurrency@@*|_Getctype|_Getcvt|_Getcoll|_Getwctype|_Getwctypes|_Tolower|_Toupper|_Towlower|_Towupper|_Strcoll|_Strxfrm|_Wcscoll|_Wcsxfrm|_Mbrtowc|_Wcrtomb|_Stod|_Stof|_Stold|_Getdays|_Getmonths|_Gettnames|_Strftime|_W_Get*|_Getdateorder|_Cosh|_Sinh|_Exp|_Dtest|_FDtest|_LDtest)
       echo "\"$b\"" >> "$t/msvcp140.def" ;;

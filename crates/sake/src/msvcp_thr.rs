@@ -26,6 +26,7 @@ const BUSY: u32 = 3;
 const MTX_SIZE: u32 = 80;
 const CND_SIZE: u32 = 72;
 // _Mtx_type bits
+const MTX_PLAIN: u32 = 0x1;
 const MTX_TRY: u32 = 0x2;
 const MTX_TIMED: u32 = 0x4;
 const MTX_RECURSIVE: u32 = 0x100;
@@ -51,31 +52,65 @@ fn owner_is_me(m: u32) -> bool {
     r32(m + COUNT) != 0 && r32(m + OWNER) == tid()
 }
 
-/// Locks `m`, waiting up to `ms` (u32::MAX: forever, 0: a try).
-fn mtx_lock(m: u32, ms: u32) -> u32 {
+/// How long `mtx_lock` may wait.
+#[derive(Clone, Copy, PartialEq)]
+enum Wait {
+    Forever,
+    /// _Mtx_trylock (a target time of exactly 0: busy when taken)
+    Try,
+    /// _Mtx_timedlock: up to so many ms (0: the target passed; timed out when taken)
+    Ms(u32),
+}
+
+/// Locks `m` as the STL's mtx_do_lock (mutex.cpp, VS 2022 17.11): a plain mutex (type 1,
+/// with or without the recursive bit) waits for it whatever is asked (a try too: Windows hangs
+/// there, tests/winref host_msvcpsync), and the thread holding it counts again; the others
+/// try or wait as asked, and the holder counts again only when it is recursive.
+fn mtx_lock(m: u32, wait: Wait) -> u32 {
     let ty = r32(m);
-    // (a plain mutex the thread holds again: counted, as the STL does; a recursive one alike)
-    if owner_is_me(m) {
-        if ty & MTX_RECURSIVE != 0 || ty & !MTX_RECURSIVE == 0 {
-            w32(m + COUNT, r32(m + COUNT) + 1);
-            return SUCCESS;
+    let me = owner_is_me(m);
+    if ty & !MTX_RECURSIVE == MTX_PLAIN {
+        if !me {
+            srw_acquire(m + LOCK, false);
+            w32(m + OWNER, tid());
         }
-        return BUSY;
+        w32(m + COUNT, r32(m + COUNT) + 1);
+        return SUCCESS;
     }
-    if ms == u32::MAX {
-        srw_acquire(m + LOCK, false);
-    } else {
-        let end = std::time::Instant::now() + std::time::Duration::from_millis(ms as u64);
-        while !srw_try(m + LOCK, false) {
-            if std::time::Instant::now() >= end {
-                return if ms == 0 { BUSY } else { TIMEDOUT };
+    let got = me
+        || match wait {
+            Wait::Forever => {
+                srw_acquire(m + LOCK, false);
+                true
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            Wait::Try | Wait::Ms(0) => srw_try(m + LOCK, false),
+            Wait::Ms(ms) => {
+                let end = std::time::Instant::now() + std::time::Duration::from_millis(ms as u64);
+                loop {
+                    if srw_try(m + LOCK, false) {
+                        break true;
+                    }
+                    if std::time::Instant::now() >= end {
+                        break false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        };
+    if got {
+        if me {
+            if ty & MTX_RECURSIVE == 0 {
+                // (not recursive: the count stays, and it is as if taken elsewhere)
+                return if matches!(wait, Wait::Forever | Wait::Try) { BUSY } else { TIMEDOUT };
+            }
+            w32(m + COUNT, r32(m + COUNT) + 1);
+        } else {
+            w32(m + OWNER, tid());
+            w32(m + COUNT, 1);
         }
+        return SUCCESS;
     }
-    w32(m + OWNER, tid());
-    w32(m + COUNT, 1);
-    SUCCESS
+    if wait == Wait::Try { BUSY } else { TIMEDOUT }
 }
 
 fn mtx_unlock(m: u32) {
@@ -116,16 +151,16 @@ fn _Mtx_destroy(c: &mut Ctx) -> u32 {
     0
 }
 fn _Mtx_lock(c: &mut Ctx) -> u32 {
-    mtx_lock(c.a(0), u32::MAX)
+    mtx_lock(c.a(0), Wait::Forever)
 }
 fn _Mtx_trylock(c: &mut Ctx) -> u32 {
-    mtx_lock(c.a(0), 0)
+    mtx_lock(c.a(0), Wait::Try)
 }
 /// _Mtx_timedlock(mtx, const _timespec64 *target)
 fn _Mtx_timedlock(c: &mut Ctx) -> u32 {
     let m = c.a(0);
     let _ = MTX_TRY | MTX_TIMED;
-    mtx_lock(m, ms_until(c.a(1)))
+    mtx_lock(m, Wait::Ms(ms_until(c.a(1))))
 }
 fn _Mtx_unlock(c: &mut Ctx) -> u32 {
     mtx_unlock(c.a(0));

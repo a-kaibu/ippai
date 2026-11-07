@@ -62,7 +62,7 @@ static void num(const char *label, long long v) {
     out(b);
 }
 
-alignas(8) static char mtx[80], rmtx[80], cnd[72];
+alignas(8) static char mtx[80], rmtx[80], pmtx[80], cnd[72];
 static volatile int queue, taken, done_producing;
 static int other_result;
 
@@ -134,11 +134,24 @@ static void setjmp_test() {
     num("setjmp local", local);
 }
 int main() {
-    _Mtx_init_in_situ(mtx, 1); // _Mtx_plain
-    _Mtx_init_in_situ(rmtx, 1 | 0x100); // _Mtx_recursive
+    // (as std::mutex and std::recursive_mutex make them: _Mtx_try, | _Mtx_recursive. A _Mtx_plain
+    // one is locked whatever is asked, a try too: Windows' msvcp140 waits there for ever)
+    _Mtx_init_in_situ(mtx, 2);
+    _Mtx_init_in_situ(rmtx, 2 | 0x100);
+    _Mtx_init_in_situ(pmtx, 1);
     _Cnd_init_in_situ(cnd);
     num("lock", _Mtx_lock(mtx));
     num("owns", _Mtx_current_owns(mtx));
+    // the thread that holds it, again: busy (not recursive)
+    num("self try", _Mtx_trylock(mtx));
+    num("self lock", _Mtx_lock(mtx));
+    // a plain one counts again (as a recursive one) whatever is asked
+    num("plain", _Mtx_lock(pmtx) + _Mtx_lock(pmtx) + _Mtx_trylock(pmtx));
+    _Mtx_unlock(pmtx);
+    _Mtx_unlock(pmtx);
+    num("plain owns", _Mtx_current_owns(pmtx));
+    _Mtx_unlock(pmtx);
+    num("plain released", _Mtx_current_owns(pmtx));
     HANDLE t = CreateThread(0, 0, try_other, 0, 0, 0);
     WaitForSingleObject(t, 0xffffffff);
     num("trylock held elsewhere", other_result);
