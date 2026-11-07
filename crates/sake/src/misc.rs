@@ -248,6 +248,20 @@ fn join(base: &str, sub: &str) -> String {
     }
 }
 
+/// RegCreateKeyEx: opens or creates, and says which (REG_CREATED_NEW_KEY 1, REG_OPENED_EXISTING_KEY 2).
+fn create_key_ex(h: u32, sub: &str, out: u32, disp: u32) -> u32 {
+    let existed = key_path(h).is_some_and(|base| {
+        let path = join(&base, sub);
+        let pre = format!("{path}\\");
+        root_name(h).is_some() && sub.trim_matches('\\').is_empty() || with_reg(|m| m.contains_key(&path) || m.keys().any(|k| k.starts_with(&pre)))
+    });
+    let r = open_key(h, sub, true, out);
+    if r == 0 {
+        put32(disp, if existed { 2 } else { 1 });
+    }
+    r
+}
+
 fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
     let Some(base) = key_path(h) else { return 6 };
     let path = join(&base, sub);
@@ -301,13 +315,11 @@ fn RegOpenKeyW(c: &mut Ctx) -> u32 {
 }
 fn RegCreateKeyExA(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(1), false);
-    put32(c.a(8), 1);
-    open_key(c.a(0), &s, true, c.a(7))
+    create_key_ex(c.a(0), &s, c.a(7), c.a(8))
 }
 fn RegCreateKeyExW(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(1), true);
-    put32(c.a(8), 1);
-    open_key(c.a(0), &s, true, c.a(7))
+    create_key_ex(c.a(0), &s, c.a(7), c.a(8))
 }
 fn RegCreateKeyA(c: &mut Ctx) -> u32 {
     let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
@@ -462,7 +474,11 @@ fn RegDeleteValueW(c: &mut Ctx) -> u32 {
 fn delete_key(key: u32, sub: &str) -> u32 {
     let Some(base) = key_path(key) else { return 6 };
     let p = join(&base, sub);
-    with_reg(|m| match m.remove(&p) {
+    let pre = format!("{p}\\");
+    with_reg(|m| match m.keys().any(|k| k.starts_with(&pre)) {
+        // a key with subkeys stays (ERROR_ACCESS_DENIED): RegDeleteTree removes those
+        true => 5,
+        false => match m.remove(&p) {
         Some(k) => {
             if k.ours {
                 save_reg(m);
@@ -470,7 +486,40 @@ fn delete_key(key: u32, sub: &str) -> u32 {
             0
         }
         None => 2,
+        },
     })
+}
+/// RegDeleteTree: `sub` with everything under it; with no `sub`, the key's subkeys and values.
+fn delete_tree(key: u32, sub: Option<&str>) -> u32 {
+    let Some(base) = key_path(key) else { return 6 };
+    let p = join(&base, sub.unwrap_or(""));
+    let pre = format!("{p}\\");
+    with_reg(|m| {
+        let doomed: Vec<String> = m.keys().filter(|k| k.starts_with(&pre) || sub.is_some() && **k == p).cloned().collect();
+        let exists = m.contains_key(&p) || !doomed.is_empty();
+        if !exists {
+            return 2;
+        }
+        for k in doomed {
+            m.remove(&k);
+        }
+        if sub.is_none() {
+            if let Some(k) = m.get_mut(&p) {
+                k.values.clear();
+                k.ours = true;
+            }
+        }
+        save_reg(m);
+        0
+    })
+}
+fn RegDeleteTreeA(c: &mut Ctx) -> u32 {
+    let s = (c.a(1) != 0).then(|| arg_str(c.a(1), false));
+    delete_tree(c.a(0), s.as_deref())
+}
+fn RegDeleteTreeW(c: &mut Ctx) -> u32 {
+    let s = (c.a(1) != 0).then(|| arg_str(c.a(1), true));
+    delete_tree(c.a(0), s.as_deref())
 }
 fn RegDeleteKeyA(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(1), false);
@@ -2431,7 +2480,7 @@ pub fn init() {
     reg!("advapi32";
         RegOpenKeyExA, RegOpenKeyExW, RegOpenKeyA, RegOpenKeyW, RegCreateKeyExA, RegCreateKeyExW, RegCreateKeyA,
         RegCreateKeyW, RegCloseKey, RegFlushKey, RegQueryValueExA, RegQueryValueExW, RegQueryValueA, RegGetValueA, RegGetValueW,
-        RegSetValueExA, RegSetValueExW, RegSetValueA, RegDeleteValueA, RegDeleteValueW, RegDeleteKeyA,
+        RegSetValueExA, RegSetValueExW, RegSetValueA, RegDeleteValueA, RegDeleteValueW, RegDeleteKeyA, RegDeleteTreeA, RegDeleteTreeW,
         RegDeleteKeyW, RegEnumKeyExA, RegEnumKeyExW, RegEnumKeyA, RegEnumKeyW, RegEnumValueA, RegEnumValueW,
         RegQueryInfoKeyA, RegQueryInfoKeyW, CryptAcquireContextA, CryptAcquireContextW, CryptReleaseContext,
         CryptGenRandom, CryptCreateHash, CryptHashData, CryptGetHashParam, CryptDestroyHash, CryptDeriveKey,

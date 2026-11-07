@@ -122,7 +122,7 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
             s
         }
         Obj::Mutex { owner, count } => {
-            if *owner == 0 || *owner == tid {
+            if *owner == 0 || *owner == tid || *owner == ABANDONED {
                 if take {
                     *owner = tid;
                     *count += 1;
@@ -150,6 +150,12 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
 }
 
 pub const WAIT_TIMEOUT: u32 = 0x102;
+/// a mutex whose owner thread ended holding it (until the next wait takes it)
+pub const ABANDONED: u32 = u32::MAX;
+
+fn abandoned(t: &Table, h: u32) -> bool {
+    matches!(t.objs.get(&h), Some((Obj::Mutex { owner: ABANDONED, .. }, _)))
+}
 pub const WAIT_FAILED: u32 = 0xffff_ffff;
 
 /// WaitForMultipleObjects; `extra` is an extra wake condition (the message queue), checked
@@ -170,20 +176,28 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
         if all {
             let ok: Option<Vec<bool>> = handles.iter().map(|&h| try_take(t, h, tid, false)).collect();
             match ok {
-                None => return WAIT_FAILED,
+                None => {
+                    crate::k32::last_error(6);
+                    return WAIT_FAILED;
+                }
                 Some(v) if v.iter().all(|&b| b) => {
+                    let ab = handles.iter().position(|&h| abandoned(t, h));
                     for &h in &handles {
                         try_take(t, h, tid, true);
                     }
-                    return 0;
+                    return ab.map_or(0, |_| 0x80);
                 }
                 _ => {}
             }
         } else {
             for (i, &h) in handles.iter().enumerate() {
+                let ab = abandoned(t, h);
                 match try_take(t, h, tid, true) {
-                    None => return WAIT_FAILED,
-                    Some(true) => return i as u32,
+                    None => {
+                        crate::k32::last_error(6);
+                        return WAIT_FAILED;
+                    }
+                    Some(true) => return i as u32 + if ab { 0x80 } else { 0 },
                     Some(false) => {}
                 }
             }

@@ -3491,8 +3491,32 @@ fn UnionRect(c: &mut Ctx) -> u32 {
     r.write(c.a(0));
     (!r.empty()) as u32
 }
+/// SubtractRect: src1 less src2 when src2 covers src1 entirely or one whole side of it (the rest
+/// would not be a rectangle: src1 unchanged).
 fn SubtractRect(c: &mut Ctx) -> u32 {
-    Rect::read(c.a(1)).write(c.a(0));
+    let (a, b) = (Rect::read(c.a(1)), Rect::read(c.a(2)));
+    let mut d = a;
+    let x = a.and(&b);
+    if a.empty() || !x.empty() && x.l == a.l && x.t == a.t && x.r == a.r && x.b == a.b {
+        Rect::default().write(c.a(0));
+        return 0;
+    }
+    if !x.empty() {
+        if x.t == a.t && x.b == a.b {
+            if x.l == a.l {
+                d.l = x.r;
+            } else if x.r == a.r {
+                d.r = x.l;
+            }
+        } else if x.l == a.l && x.r == a.r {
+            if x.t == a.t {
+                d.t = x.b;
+            } else if x.b == a.b {
+                d.b = x.t;
+            }
+        }
+    }
+    d.write(c.a(0));
     1
 }
 fn FillRect(c: &mut Ctx) -> u32 {

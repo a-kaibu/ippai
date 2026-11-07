@@ -242,6 +242,15 @@ pub fn exit_thread(code: u32) -> ! {
             *done = true;
             *c = code;
         }
+        // mutexes it still holds are abandoned: the next wait gets WAIT_ABANDONED
+        for (o, _) in tb.objs.values_mut() {
+            if let Obj::Mutex { owner, count } = o {
+                if *owner == t.tid {
+                    *owner = obj::ABANDONED;
+                    *count = 0;
+                }
+            }
+        }
     });
     obj::signal();
     if t.tid == 0x20 {
@@ -576,38 +585,64 @@ fn ReleaseMutex(c: &mut Ctx) -> u32 {
             if *count == 0 {
                 *owner = 0;
             }
-            true
+            Ok(())
         }
-        _ => false,
-    });
-    obj::signal();
-    ok(r)
-}
-fn CreateSemaphoreA(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(3), false), Obj::Semaphore { count: c.i(1), max: c.i(2) })
-}
-fn CreateSemaphoreW(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
-}
-fn ReleaseSemaphore(c: &mut Ctx) -> u32 {
-    let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
-        Some((Obj::Semaphore { count, max }, _)) => {
-            let prev = *count;
-            if *count + c.i(1) > *max {
-                return None;
-            }
-            *count += c.i(1);
-            Some(prev)
-        }
-        _ => None,
+        Some((Obj::Mutex { .. }, _)) => Err(288), // ERROR_NOT_OWNER
+        _ => Err(6),
     });
     obj::signal();
     match r {
-        Some(p) => {
+        Ok(()) => 1,
+        Err(e) => {
+            last_error(e);
+            0
+        }
+    }
+}
+fn CreateSemaphoreA(c: &mut Ctx) -> u32 {
+    if !semaphore_counts(c.i(1), c.i(2)) {
+        return 0;
+    }
+    create_named(named(c.a(3), false), Obj::Semaphore { count: c.i(1), max: c.i(2) })
+}
+/// CreateSemaphore's counts: 0 <= initial <= maximum, maximum > 0 (else ERROR_INVALID_PARAMETER).
+fn semaphore_counts(init: i32, max: i32) -> bool {
+    let good = max > 0 && (0..=max).contains(&init);
+    if !good {
+        last_error(87);
+    }
+    good
+}
+fn CreateSemaphoreW(c: &mut Ctx) -> u32 {
+    if !semaphore_counts(c.i(1), c.i(2)) {
+        return 0;
+    }
+    create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
+}
+fn ReleaseSemaphore(c: &mut Ctx) -> u32 {
+    let n = c.i(1);
+    let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
+        Some(_) if n <= 0 => Err(87),
+        Some((Obj::Semaphore { count, max }, _)) => {
+            let prev = *count;
+            if *count as i64 + n as i64 > *max as i64 {
+                return Err(298); // ERROR_TOO_MANY_POSTS
+            }
+            *count += n;
+            Ok(prev)
+        }
+        _ => Err(6),
+    });
+    obj::signal();
+    match r {
+        Ok(p) => {
             put32(c.a(2), p as u32);
             1
         }
-        None => 0,
+        Err(e) => {
+            last_error(e);
+            0
+        }
     }
 }
 fn WaitForSingleObject(c: &mut Ctx) -> u32 {
@@ -617,6 +652,10 @@ fn WaitForSingleObjectEx(c: &mut Ctx) -> u32 {
     WaitForSingleObject(c)
 }
 fn WaitForMultipleObjects(c: &mut Ctx) -> u32 {
+    if c.a(0) == 0 || c.a(0) > 64 {
+        last_error(87);
+        return obj::WAIT_FAILED;
+    }
     let hs: Vec<u32> = (0..c.a(0).min(64)).map(|i| r32(c.a(1) + 4 * i)).collect();
     obj::wait(&hs, c.a(2) != 0, c.a(3), None)
 }
@@ -718,6 +757,21 @@ fn InitializeCriticalSection(c: &mut Ctx) -> u32 {
 fn InitializeCriticalSectionAndSpinCount(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));
     cs_debug_info(c.a(0));
+    w32(c.a(0) + 20, c.a(1) & 0x00ff_ffff);
+    1
+}
+fn SetCriticalSectionSpinCount(c: &mut Ctx) -> u32 {
+    let old = r32(c.a(0) + 20);
+    w32(c.a(0) + 20, c.a(1) & 0x00ff_ffff);
+    old
+}
+fn GetHandleInformation(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if !obj::with(|t| t.objs.contains_key(&h)) {
+        last_error(6);
+        return 0;
+    }
+    put32(c.a(1), 0);
     1
 }
 fn InitializeCriticalSectionEx(c: &mut Ctx) -> u32 {
@@ -2820,16 +2874,129 @@ fn GetSystemTimePreciseAsFileTime(c: &mut Ctx) -> u32 {
 }
 fn FileTimeToSystemTime(c: &mut Ctx) -> u32 {
     let ft = get64(c.a(0));
+    if ft > i64::MAX as u64 {
+        last_error(87);
+        return 0;
+    }
     let secs = (ft / 10_000_000) as i64 - 11_644_473_600;
     write_systemtime(c.a(1), secs, ((ft / 10_000) % 1000) as u32);
     1
 }
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        2 if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+/// A SYSTEMTIME's FILETIME (day of week ignored), None for fields Windows rejects.
+fn systemtime_ft(p: u32) -> Option<u64> {
+    let f = |o| r16(p + o) as i64;
+    let (y, m, d, h, mi, s, ms) = (f(0), f(2), f(6), f(8), f(10), f(12), f(14));
+    if !(1601..=30827).contains(&y) || !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) || h > 23 || mi > 59 || s > 59 || ms > 999 {
+        return None;
+    }
+    let secs = days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60 + s;
+    Some(((secs + 11_644_473_600) as u64) * 10_000_000 + ms as u64 * 10_000)
+}
 fn SystemTimeToFileTime(c: &mut Ctx) -> u32 {
-    let p = c.a(0);
-    let days = days_from_civil(r16(p) as i64, r16(p + 2) as i64, r16(p + 6) as i64);
-    let secs = days * 86400 + r16(p + 8) as i64 * 3600 + r16(p + 10) as i64 * 60 + r16(p + 12) as i64;
-    let ft = ((secs + 11_644_473_600) as u64) * 10_000_000 + r16(p + 14) as u64 * 10_000;
+    let Some(ft) = systemtime_ft(c.a(0)) else {
+        last_error(87);
+        return 0;
+    };
     put64(c.a(1), ft);
+    1
+}
+/// The start of a TIME_ZONE_INFORMATION transition (StandardDate/DaylightDate at `p`) in `year`,
+/// as local FILETIME: wDay is the week (5: the last) of wDayOfWeek in wMonth; a nonzero wYear is
+/// an absolute date.
+fn tz_transition(p: u32, year: i64) -> Option<i64> {
+    let f = |o| r16(p + o) as i64;
+    let (m, dow, wk, h, mi, s, ms) = (f(2), f(4), f(6), f(8), f(10), f(12), f(14));
+    if m == 0 {
+        return None;
+    }
+    let day = if f(0) != 0 {
+        wk
+    } else {
+        let first = (days_from_civil(year, m, 1) + 4).rem_euclid(7);
+        let mut d = 1 + (dow - first).rem_euclid(7) + (wk - 1) * 7;
+        while d > days_in_month(year, m) {
+            d -= 7;
+        }
+        d
+    };
+    Some(((days_from_civil(year, m, day) * 86400 + h * 3600 + mi * 60 + s + 11_644_473_600) * 1000 + ms) * 10_000)
+}
+/// The bias (minutes, UTC = local + bias) in effect at `t` (a FILETIME, UTC or local).
+fn tz_bias_at(z: u32, t: i64, utc: bool) -> i64 {
+    let bias = r32(z) as i32 as i64;
+    let (std_b, dst_b) = (r32(z + 84) as i32 as i64, r32(z + 168) as i32 as i64);
+    let st = mem::heap_alloc(16, true);
+    write_systemtime(st, t.div_euclid(10_000_000) - 11_644_473_600, 0);
+    let year = r16(st) as i64;
+    mem::heap_free(st);
+    let (Some(dst_start), Some(std_start)) = (tz_transition(z + 152, year), tz_transition(z + 68, year)) else {
+        return bias + std_b;
+    };
+    // the transitions are in local time of the period before each
+    let (ds, ss) = if utc { (dst_start + (bias + std_b) * 600_000_000, std_start + (bias + dst_b) * 600_000_000) } else { (dst_start, std_start) };
+    let in_dst = if ds < ss { t >= ds && t < ss } else { !(t >= ss && t < ds) };
+    bias + if in_dst { dst_b } else { std_b }
+}
+fn tz_info(c: &mut Ctx) -> u32 {
+    let z = c.a(0);
+    if z != 0 {
+        return z;
+    }
+    let tmp = mem::heap_alloc(172, true);
+    w32(tmp, (-tz_bias() / 60) as i32 as u32);
+    tmp
+}
+fn SystemTimeToTzSpecificLocalTime(c: &mut Ctx) -> u32 {
+    let Some(ft) = systemtime_ft(c.a(1)) else {
+        last_error(87);
+        return 0;
+    };
+    let z = tz_info(c);
+    let t = ft as i64 - tz_bias_at(z, ft as i64, true) * 600_000_000;
+    if c.a(0) == 0 {
+        mem::heap_free(z);
+    }
+    if t < 0 {
+        last_error(87);
+        return 0;
+    }
+    write_systemtime(c.a(2), t.div_euclid(10_000_000) - 11_644_473_600, (t / 10_000 % 1000) as u32);
+    1
+}
+fn TzSpecificLocalTimeToSystemTime(c: &mut Ctx) -> u32 {
+    let Some(ft) = systemtime_ft(c.a(1)) else {
+        last_error(87);
+        return 0;
+    };
+    let z = tz_info(c);
+    let t = ft as i64 + tz_bias_at(z, ft as i64, false) * 600_000_000;
+    if c.a(0) == 0 {
+        mem::heap_free(z);
+    }
+    if t < 0 {
+        last_error(87);
+        return 0;
+    }
+    write_systemtime(c.a(2), t.div_euclid(10_000_000) - 11_644_473_600, (t / 10_000 % 1000) as u32);
+    1
+}
+fn DosDateTimeToFileTime(c: &mut Ctx) -> u32 {
+    let (d, t) = (c.a(0) as i64 & 0xffff, c.a(1) as i64 & 0xffff);
+    let (y, m, dd, h, mi, s) = (1980 + (d >> 9), (d >> 5) & 15, d & 31, t >> 11, (t >> 5) & 63, (t & 31) * 2);
+    if !(1..=12).contains(&m) || dd < 1 || dd > days_in_month(y, m) || h > 23 || mi > 59 || s > 59 {
+        last_error(87);
+        return 0;
+    }
+    let secs = days_from_civil(y, m, dd) * 86400 + h * 3600 + mi * 60 + s;
+    put64(c.a(2), ((secs + 11_644_473_600) as u64) * 10_000_000);
     1
 }
 fn FileTimeToLocalFileTime(c: &mut Ctx) -> u32 {
@@ -2847,8 +3014,12 @@ fn FileTimeToDosDateTime(c: &mut Ctx) -> u32 {
     write_systemtime(tmp, secs, 0);
     let (y, m, d, h, mi, s) = (r16(tmp), r16(tmp + 2), r16(tmp + 6), r16(tmp + 8), r16(tmp + 10), r16(tmp + 12));
     mem::heap_free(tmp);
+    if !(1980..=2107).contains(&y) || ft > i64::MAX as u64 {
+        last_error(87);
+        return 0;
+    }
     if c.a(1) != 0 {
-        w16(c.a(1), (y.saturating_sub(1980)) << 9 | m << 5 | d);
+        w16(c.a(1), (y - 1980) << 9 | m << 5 | d);
     }
     if c.a(2) != 0 {
         w16(c.a(2), h << 11 | mi << 5 | s / 2);
@@ -4537,7 +4708,8 @@ pub fn init() {
         OpenWaitableTimerA, OpenWaitableTimerW, SetWaitableTimer, CancelWaitableTimer, OpenEventA, OpenEventW, SetEvent, ResetEvent, PulseEvent,
         CreateMutexA, CreateMutexW, OpenMutexA, OpenMutexW, ReleaseMutex, CreateSemaphoreA, CreateSemaphoreW, ReleaseSemaphore,
         WaitForSingleObject, WaitForSingleObjectEx, WaitForMultipleObjects, WaitForMultipleObjectsEx, CloseHandle,
-        DuplicateHandle, InitializeCriticalSection, InitializeCriticalSectionAndSpinCount, InitializeCriticalSectionEx,
+        DuplicateHandle, InitializeCriticalSection, InitializeCriticalSectionAndSpinCount, SetCriticalSectionSpinCount, GetHandleInformation,
+        InitializeCriticalSectionEx,
         DeleteCriticalSection, EnterCriticalSection, LeaveCriticalSection, TryEnterCriticalSection,
         InterlockedIncrement, InterlockedDecrement, InterlockedExchange, InterlockedExchangeAdd, InterlockedCompareExchange,
         TlsAlloc, TlsFree, TlsGetValue, TlsSetValue, FlsAlloc, FlsFree, FlsGetValue, FlsSetValue,
@@ -4570,7 +4742,8 @@ pub fn init() {
         lstrcmpW, lstrcmpiW, GlobalAddAtomA, GlobalAddAtomW, AddAtomA, AddAtomW, GlobalFindAtomA, FindAtomA, GlobalFindAtomW, FindAtomW, GlobalDeleteAtom,
         DeleteAtom, GlobalGetAtomNameA,
         GetSystemTime, GetLocalTime, GetSystemTimeAsFileTime, GetSystemTimePreciseAsFileTime, FileTimeToSystemTime,
-        SystemTimeToFileTime, FileTimeToLocalFileTime, LocalFileTimeToFileTime, FileTimeToDosDateTime, CompareFileTime,
+        SystemTimeToFileTime, FileTimeToLocalFileTime, LocalFileTimeToFileTime, FileTimeToDosDateTime, DosDateTimeToFileTime, SystemTimeToTzSpecificLocalTime,
+        TzSpecificLocalTimeToSystemTime, CompareFileTime,
         GetTimeZoneInformation, GetTickCount, GetTickCount64, QueryPerformanceCounter, QueryPerformanceFrequency,
         GetProcessTimes, GetThreadTimes,
         GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA, GetModuleHandleW, GetModuleHandleExA,

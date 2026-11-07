@@ -720,7 +720,7 @@ mod tests {
     fn rmw32_unaligned_threads() {
         #[repr(align(8))]
         struct B([u8; 24]);
-        let b = Box::leak(Box::new(B([0; 24])));
+        let mut b = Box::new(B([0; 24]));
         let base = b.0.as_mut_ptr() as usize;
         for off in [1usize, 2, 6] {
             let p = base + off;
