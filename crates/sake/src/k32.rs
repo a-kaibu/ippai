@@ -1154,6 +1154,67 @@ fn OpenEventA(c: &mut Ctx) -> u32 {
 fn OpenEventW(c: &mut Ctx) -> u32 {
     open_named(c.a(2), true, 1)
 }
+// I/O completion ports: a manual-reset event (set while packets wait) and its packets. Only
+// PostQueuedCompletionStatus queues them (file I/O here completes synchronously).
+static PORTS: Mutex<Option<HashMap<u32, std::collections::VecDeque<(u32, u32, u32)>>>> = Mutex::new(None);
+/// CreateIoCompletionPort(file, port, key, threads): a new port, or `port` with the file joined
+fn CreateIoCompletionPort(c: &mut Ctx) -> u32 {
+    let (file, port) = (c.a(0), c.a(1));
+    if port != 0 {
+        if !PORTS.lock().unwrap().get_or_insert_with(HashMap::default).contains_key(&port) {
+            last_error(87);
+            return 0;
+        }
+        return port;
+    }
+    let _ = file;
+    let h = obj::add(Obj::Event { manual: true, set: false });
+    PORTS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Default::default());
+    h
+}
+fn PostQueuedCompletionStatus(c: &mut Ctx) -> u32 {
+    let (port, bytes, key, ov) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let ok = PORTS.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&port).map(|q| q.push_back((bytes, key, ov))).is_some();
+    if !ok {
+        last_error(6);
+        return 0;
+    }
+    event_set(port, true);
+    1
+}
+/// GetQueuedCompletionStatus(port, &bytes, &key, &overlapped, ms): the first packet; on a timeout
+/// FALSE, WAIT_TIMEOUT and a NULL overlapped (key and bytes as they were)
+fn GetQueuedCompletionStatus(c: &mut Ctx) -> u32 {
+    let (port, pbytes, pkey, pov, ms) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let deadline = (ms != 0xffff_ffff).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    loop {
+        let got = {
+            let mut g = PORTS.lock().unwrap();
+            let Some(q) = g.get_or_insert_with(HashMap::default).get_mut(&port) else {
+                drop(g);
+                last_error(6);
+                return 0;
+            };
+            let p = q.pop_front();
+            if q.is_empty() {
+                event_set(port, false);
+            }
+            p
+        };
+        if let Some((bytes, key, ov)) = got {
+            put32(pbytes, bytes);
+            mem::putp(pkey, key);
+            mem::putp(pov, ov);
+            return 1;
+        }
+        let left = deadline.map_or(0xffff_ffff, |d| d.saturating_duration_since(std::time::Instant::now()).as_millis() as u32);
+        if deadline.is_some() && left == 0 || obj::wait(&[port], false, left, None) != 0 {
+            mem::putp(pov, 0);
+            last_error(258);
+            return 0;
+        }
+    }
+}
 pub fn event_set(h: u32, v: bool) -> u32 {
     if let Some(id) = shared_id(h) {
         let r = crate::kern::with(|k| k.set_event(id, v)).0;
@@ -2087,27 +2148,41 @@ fn is_bad(p: u32, n: u32) -> bool {
     }
 }
 /// Read/WriteProcessMemory(process, addr, buffer, n, done): the one process; a write may patch
-/// code (Delphi programs hook their own functions this way: QLIE)
+/// code (Delphi programs hook their own functions this way: QLIE). As on Windows
+/// (tests/winref/probes/procmem.c): a source that is not all readable copies nothing (count 0,
+/// ERROR_PARTIAL_COPY); a destination that ends early takes what fits (that count, 299); a
+/// write whose first byte cannot be written is ERROR_NOACCESS with the count left alone.
+/// Executable pages take writes, read-only data does not. The count is a SIZE_T.
 fn ReadProcessMemory(c: &mut Ctx) -> u32 {
-    let (a, b, n) = (c.a(1), c.a(2), c.a(3));
-    if is_bad(a, n) || is_bad(b, n) {
+    let (a, b, n, done) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    if mem::accessible(a, n, false, false) < n {
+        mem::putp(done, 0);
         last_error(299);
         return 0;
     }
-    mem::copy(b, a, n);
-    // (the count is a SIZE_T: 8 bytes on x64)
-    mem::putp(c.a(4), n);
+    let k = mem::accessible(b, n, true, false);
+    mem::copy(b, a, k);
+    mem::putp(done, k);
+    if k < n {
+        last_error(299);
+        return 0;
+    }
     1
 }
 fn WriteProcessMemory(c: &mut Ctx) -> u32 {
-    let (a, b, n) = (c.a(1), c.a(2), c.a(3));
-    if is_bad(a, n) || is_bad(b, n) {
+    let (a, b, n, done) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    let k = mem::accessible(a, n, true, true).min(mem::accessible(b, n, false, false));
+    if k == 0 && n != 0 {
         last_error(998);
         return 0;
     }
-    mem::copy(a, b, n);
-    kura::jit::code_changed(a as usize, n.max(1) as usize);
-    mem::putp(c.a(4), n);
+    mem::copy(a, b, k);
+    kura::jit::code_changed(a as usize, k.max(1) as usize);
+    mem::putp(done, k);
+    if k < n {
+        last_error(299);
+        return 0;
+    }
     1
 }
 fn IsBadReadPtr(c: &mut Ctx) -> u32 {
@@ -2367,9 +2442,15 @@ fn LdrGetProcedureAddress(c: &mut Ctx) -> u32 {
 }
 /// NtProtectVirtualMemory(process, &base, &size, protect, &old)
 fn NtProtectVirtualMemory(c: &mut Ctx) -> u32 {
+    // (*base and *size are pointer-sized, and come back as the whole pages changed)
     let (pb, ps) = (c.a(1), c.a(2));
-    match mem::protect(r32(pb), r32(ps), c.a(3)) {
+    let (base, size) = (mem::rp(pb), mem::rp(ps));
+    match mem::protect(base, size, c.a(3)) {
         Some(old) => {
+            let start = base & !0xfff;
+            let end = (base as u64 + size.max(1) as u64 + 0xfff) & !0xfff;
+            mem::wp(pb, start);
+            mem::wp(ps, (end - start as u64) as u32);
             put32(c.a(4), old);
             0
         }
@@ -2537,21 +2618,27 @@ fn LocalHandle(c: &mut Ctx) -> u32 {
 /// does for a 32-bit process.
 pub(crate) const PHYS: u64 = 4 << 30;
 fn GlobalMemoryStatus(c: &mut Ctx) -> u32 {
+    // MEMORYSTATUS: two DWORDs, then six SIZE_Ts (x64: 8 bytes, 56 in all)
     let p = c.a(0);
-    let clamp = |v: u64| v.min(0x7fff_ffff) as u32;
-    w32(p, 32);
+    let x64 = mem::x64();
+    let clamp = |v: u64| if x64 { v } else { v.min(0x7fff_ffff) };
+    let ps = mem::ps();
+    w32(p, 8 + 6 * ps);
     w32(p + 4, 30);
-    w32(p + 8, clamp(PHYS));
-    w32(p + 12, clamp(PHYS / 4 * 3));
-    w32(p + 16, clamp(2 * PHYS));
-    w32(p + 20, clamp(2 * PHYS));
-    w32(p + 24, 0x7ffe_0000);
-    w32(p + 28, 0x6000_0000);
+    for (i, v) in [PHYS, PHYS / 4 * 3, 2 * PHYS, 2 * PHYS, 0x7ffe_0000, 0x6000_0000].into_iter().enumerate() {
+        let at = p + 8 + ps * i as u32;
+        if x64 { mem::w64(at, clamp(v)) } else { w32(at, clamp(v) as u32) }
+    }
     0
 }
+/// GlobalMemoryStatusEx: dwLength must be the structure's 64 (else ERROR_INVALID_PARAMETER,
+/// nothing written)
 fn GlobalMemoryStatusEx(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    w32(p, 64);
+    if r32(p) != 64 {
+        last_error(87);
+        return 0;
+    }
     w32(p + 4, 30);
     let q = |o: u32, v: u64| {
         w32(p + o, v as u32);
@@ -2860,7 +2947,7 @@ fn RegisterWaitForSingleObject(c: &mut Ctx) -> u32 {
     let (out, obj_h, cb, ctx, ms, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
     let h = mem::heap_alloc(16, true);
     tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
-    put32(out, h);
+    mem::putp(out, h);
     tp_spawn(false, h, 0, (obj_h, ms, flags | 0x8000_0000));
     1
 }
@@ -2879,7 +2966,7 @@ fn CreateTimerQueueTimer(c: &mut Ctx) -> u32 {
     let (out, cb, param, due, period) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5));
     let h = mem::heap_alloc(16, true);
     tp_with(|m| m.insert(h, Tp { cb, ctx: param, gen: 0, running: 0 }));
-    put32(out, h);
+    mem::putp(out, h);
     tp_spawn(true, h, 0, (due, period, 1));
     1
 }
@@ -3138,9 +3225,23 @@ pub fn os_version() -> OsVer {
     if w { OS_VERSION_REAL } else { OS_VERSION }
 }
 
+/// OSVERSIONINFO(EX): only its two sizes (A 148/156, W 276/284); another is
+/// ERROR_INSUFFICIENT_BUFFER and nothing written (W from 300 bytes on: no error set, as Windows)
 fn version_info(p: u32, wide: bool) -> u32 {
     let v = os_version();
     let size = r32(p);
+    let (base, ext) = if wide { (276, 284) } else { (148, 156) };
+    if size != base && size != ext {
+        // Windows 11 (winref sizes) leaves the error alone for W at exactly 300 bytes
+        if !(wide && size == 300) {
+            last_error(122);
+        }
+        return 0;
+    }
+    fill_version_info(p, wide, &v, size == ext);
+    1
+}
+fn fill_version_info(p: u32, wide: bool, v: &OsVer, ext: bool) {
     w32(p + 4, v.major);
     w32(p + 8, v.minor);
     w32(p + 12, v.build);
@@ -3150,15 +3251,13 @@ fn version_info(p: u32, wide: bool) -> u32 {
     } else {
         put_cstr(p + 20, 128, b"Service Pack 1");
     }
-    let ext = if wide { 284 } else { 156 };
-    if size >= ext {
+    if ext {
         let o = if wide { 276 } else { 148 };
         w16(p + o, v.sp_major);
         w16(p + o + 2, v.sp_minor);
         w16(p + o + 4, v.suite);
         w8(p + o + 6, v.product);
     }
-    1
 }
 fn GetVersionExA(c: &mut Ctx) -> u32 {
     version_info(c.a(0), false)
@@ -3179,7 +3278,11 @@ fn GetProductInfo(c: &mut Ctx) -> u32 {
 }
 fn RtlGetVersion(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    version_info(p, true);
+    let size = r32(p);
+    if size != 276 && size != 284 {
+        return 0xc000_000d; // STATUS_INVALID_PARAMETER
+    }
+    fill_version_info(p, true, &os_version(), size == 284);
     // the real version, as Windows 10 gives it to programs without a manifest
     w32(p + 4, OS_VERSION_REAL.major);
     w32(p + 8, OS_VERSION_REAL.minor);
@@ -3420,15 +3523,27 @@ fn GetUserDefaultUILanguage(_: &mut Ctx) -> u32 {
 /// Get{Thread,User,Process,System}PreferredUILanguages(flags, count, buffer, size): the one UI
 /// language, as an id (MUI_LANGUAGE_ID 4: "0411") or a name ("ja-JP"), in a double-NUL list.
 /// (Delphi's startup calls GetThreadPreferredUILanguages on Vista+ without checking it exists.)
+/// The process list is empty unless SetProcessPreferredUILanguages set one: only the double NUL,
+/// and the count left as it was (winref strapis)
 fn preferred_ui_languages(c: &mut Ctx) -> u32 {
+    ui_languages(c, false)
+}
+fn process_ui_languages(c: &mut Ctx) -> u32 {
+    ui_languages(c, true)
+}
+fn ui_languages(c: &mut Ctx, process: bool) -> u32 {
     let l = lcid();
-    let s = if c.a(0) & 4 != 0 {
+    let s = if process {
+        String::new()
+    } else if c.a(0) & 4 != 0 {
         format!("{l:04X}")
     } else {
         LOCALES.iter().find(|x| x.0 == l).map_or("en-US", |x| x.1).to_string()
     };
-    let w: Vec<u16> = s.encode_utf16().chain([0, 0]).collect();
-    w32(c.a(1), 1);
+    let w: Vec<u16> = if process { vec![0, 0] } else { s.encode_utf16().chain([0, 0]).collect() };
+    if !process {
+        w32(c.a(1), 1);
+    }
     let (buf, cap) = (c.a(2), r32(c.a(3)));
     w32(c.a(3), w.len() as u32);
     if buf == 0 {
@@ -3453,10 +3568,18 @@ fn ver_language_name(c: &mut Ctx, wide: bool) -> u32 {
         0x12 => "韓国語",
         _ => "言語ニュートラル",
     };
-    if c.a(1) == 0 || c.a(2) == 0 {
-        return if wide { name.encode_utf16().count() } else { crate::text::s2a(name).len() } as u32;
+    // (a short buffer gets what fits and a NUL, winref strapis; the returns there are a guess
+    // until the probe's "returns" line has Windows' answer)
+    let (buf, cap) = (c.a(1), c.a(2));
+    let full = if wide { name.encode_utf16().count() } else { crate::text::s2a(name).len() } as u32;
+    if buf == 0 || cap == 0 {
+        return full + 1;
     }
-    ret_str(c.a(1), c.a(2), name, wide)
+    if wide {
+        mem::put_wstr(buf, cap, &name.encode_utf16().collect::<Vec<_>>())
+    } else {
+        mem::put_cstr(buf, cap, &crate::text::s2a(name))
+    }
 }
 fn GetSystemDefaultUILanguage(_: &mut Ctx) -> u32 {
     lcid()
@@ -4456,13 +4579,13 @@ fn GetModuleHandleW(c: &mut Ctx) -> u32 {
 fn GetModuleHandleExW(c: &mut Ctx) -> u32 {
     let flags = c.a(0);
     let h = if flags & 4 != 0 { crate::pe::containing(c.a(1)).unwrap_or(0) } else { module_handle(c.a(1), true) };
-    put32(c.a(2), h);
+    mem::put_addr(c.a(2), h);
     ok(h != 0)
 }
 fn GetModuleHandleExA(c: &mut Ctx) -> u32 {
     let flags = c.a(0);
     let h = if flags & 4 != 0 { crate::pe::containing(c.a(1)).unwrap_or(0) } else { module_handle(c.a(1), false) };
-    put32(c.a(2), h);
+    mem::put_addr(c.a(2), h);
     ok(h != 0)
 }
 fn LoadLibraryA(c: &mut Ctx) -> u32 {
@@ -5160,8 +5283,8 @@ fn find_first_at(pat: u32, data: u32, wide: bool) -> u32 {
             obj::add(Obj::Find(std::sync::Arc::new(Mutex::new(f))))
         }
         None => {
-            // ("dir\": ERROR_INVALID_PARAMETER; a missing directory: ERROR_PATH_NOT_FOUND)
-            last_error(if pat.ends_with(['\\', '/']) { 87 } else { files::missing(&pat) });
+            // ("dir\": ERROR_INVALID_PARAMETER; "" and a missing directory: ERROR_PATH_NOT_FOUND)
+            last_error(if pat.is_empty() { 3 } else if pat.ends_with(['\\', '/']) { 87 } else { files::missing(&pat) });
             0xffff_ffff
         }
     }
@@ -5415,11 +5538,11 @@ fn full_path_name(c: &mut Ctx, wide: bool) -> u32 {
     let unc_root = full.strip_prefix("\\\\").is_some_and(|u| u.matches('\\').count() <= 1);
     if c.a(3) != 0 && r < c.a(1) && (full.ends_with('\\') || unc_root) {
         // (no file part in "C:\" or "dir\")
-        w32(c.a(3), 0);
+        mem::wp(c.a(3), 0);
     } else if c.a(3) != 0 && r < c.a(1) {
         let pos = full.rfind('\\').map_or(0, |i| i + 1);
         let off = if wide { full[..pos].encode_utf16().count() * 2 } else { crate::text::s2a(&full[..pos]).len() };
-        w32(c.a(3), c.a(2) + off as u32);
+        mem::wp(c.a(3), c.a(2) + off as u32);
     }
     r
 }
@@ -5639,25 +5762,46 @@ fn GetVolumeInformationW(c: &mut Ctx) -> u32 {
     }
     1
 }
-fn SearchPathA(c: &mut Ctx) -> u32 {
+/// SearchPath(path, name, ext, cap, buf, &file part): without a path, the exe's folder, the
+/// current one, system32 (where the DLLs we implement are), the Windows folder and PATH
+fn search_path(c: &mut Ctx, wide: bool) -> u32 {
     let (path, name, ext, cap, buf, part) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
-    let mut n = arg_str(name, false);
+    let mut n = arg_str(name, wide);
     if ext != 0 && !n.contains('.') {
-        n += &arg_str(ext, false);
+        n += &arg_str(ext, wide);
     }
-    let dirs: Vec<String> = if path != 0 { arg_str(path, false).split(';').map(String::from).collect() } else { vec![files::cwd()] };
-    for d in dirs {
+    let dirs: Vec<String> = if path != 0 {
+        arg_str(path, wide).split(';').map(String::from).collect()
+    } else {
+        let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
+        let exe_dir = exe.rfind('\\').map_or(String::new(), |i| exe[..i].to_string());
+        let mut v = vec![exe_dir, files::cwd(), "C:\\windows\\system32".into(), "C:\\windows".into()];
+        v.extend(env_get("PATH").unwrap_or_default().split(';').filter(|d| !d.is_empty()).map(String::from));
+        v
+    };
+    for d in dirs.iter().filter(|d| !d.is_empty()) {
         let w = files::full_path(&format!("{}\\{n}", d.trim_end_matches('\\')));
-        if files::resolve(&w).is_some() {
-            let r = ret_str(buf, cap, &w, false);
+        if files::resolve(&w).is_some() || is_system_dll_path(&w) {
+            let r = ret_str(buf, cap, &w, wide);
             if part != 0 {
-                w32(part, buf + w.rfind('\\').map_or(0, |i| i + 1) as u32);
+                let dir = &w[..w.rfind('\\').map_or(0, |i| i + 1)];
+                let off = if wide { 2 * dir.encode_utf16().count() } else { crate::text::s2a(dir).len() } as u32;
+                // (pointer-sized; only when the name fitted)
+                if r < cap {
+                    mem::putp(part, buf + off);
+                }
             }
             return r;
         }
     }
     last_error(2);
     0
+}
+fn SearchPathA(c: &mut Ctx) -> u32 {
+    search_path(c, false)
+}
+fn SearchPathW(c: &mut Ctx) -> u32 {
+    search_path(c, true)
 }
 // file mappings: views are copies (read-only use: archives)
 fn CreateFileMappingA(c: &mut Ctx) -> u32 {
@@ -6216,9 +6360,10 @@ pub fn init() {
     implement("ntdll", "NtQueryVirtualMemory", NtQueryVirtualMemory);
     implement("kernel32", "LCIDToLocaleName", LCIDToLocaleName);
     for d in ["kernel32", "kernelbase"] {
-        for n in ["GetThreadPreferredUILanguages", "GetUserPreferredUILanguages", "GetProcessPreferredUILanguages", "GetSystemPreferredUILanguages"] {
+        for n in ["GetThreadPreferredUILanguages", "GetUserPreferredUILanguages", "GetSystemPreferredUILanguages"] {
             implement(d, n, preferred_ui_languages);
         }
+        implement(d, "GetProcessPreferredUILanguages", process_ui_languages);
         implement(d, "SetThreadPreferredUILanguages", |_| 1);
         implement(d, "SetProcessPreferredUILanguages", |_| 1);
         implement(d, "GetThreadUILanguage", |_| lcid());
@@ -6295,7 +6440,7 @@ pub fn init() {
         GetTempFileNameA, GetTempFileNameW, GetWindowsDirectoryA, GetWindowsDirectoryW, GetSystemDirectoryA,
         GetSystemDirectoryW, GetSystemWindowsDirectoryA, GetDriveTypeA, GetDriveTypeW, GetLogicalDrives,
         GetDiskFreeSpaceA, GetDiskFreeSpaceExA, GetDiskFreeSpaceExW, GetVolumeInformationA, GetVolumeInformationW,
-        SearchPathA,
+        SearchPathA, SearchPathW, CreateIoCompletionPort, PostQueuedCompletionStatus, GetQueuedCompletionStatus,
         CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile,
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, OpenThread, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
         FormatMessageA, FormatMessageW, Beep, GetComputerNameA, GetComputerNameW, InitializeSListHead, GetCurrentPackageId,

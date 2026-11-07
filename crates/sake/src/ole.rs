@@ -317,7 +317,7 @@ fn OleLoadPicture(c: &mut Ctx) -> u32 {
     let (stm, size, out) = (c.a(0), c.a(1), c.a(4));
     put32(out, 0);
     // the stream's bytes (through its Read, whoever made it)
-    let read = r32(r32(stm) + 12);
+    let read = mem::rp(mem::rp(stm) + 3 * mem::ps());
     let buf = mem::heap_alloc(0x10000, false);
     let got = mem::heap_alloc(4, true);
     let mut data = Vec::new();
@@ -356,9 +356,9 @@ fn OleLoadPicture(c: &mut Ctx) -> u32 {
 fn OleLoadPictureEx(c: &mut Ctx) -> u32 {
     // (stream, size, runmode, riid, x, y, flags, out): as OleLoadPicture
     let (stm, size, out) = (c.a(0), c.a(1), c.a(7));
-    let tmp = mem::heap_alloc(4, true);
+    let tmp = mem::heap_alloc(8, true);
     let r = gcall(c, "oleaut32", "OleLoadPicture", &[stm, size, 0, 0, tmp]);
-    put32(out, r32(tmp));
+    mem::putp(out, mem::rp(tmp));
     mem::heap_free(tmp);
     r
 }

@@ -493,7 +493,7 @@ fn L_GetTypeInfoCount(c: &mut Ctx) -> u32 {
 fn L_GetTypeInfo(c: &mut Ctx) -> u32 {
     match info_block(lib_of(c), c.a(1) as usize) {
         Some(b) => {
-            put32(c.a(2), b);
+            mem::putp(c.a(2), b);
             S_OK
         }
         None => TYPE_E_ELEMENTNOTFOUND,
@@ -514,7 +514,7 @@ fn L_GetTypeInfoOfGuid(c: &mut Ctx) -> u32 {
     let hit = LIBS.lock().unwrap().get(li).and_then(|l| l.lib.infos.iter().position(|i| guid_eq(g, &i.guid)).map(|i| l.infos[i]));
     match hit {
         Some(b) => {
-            put32(c.a(2), b);
+            mem::putp(c.a(2), b);
             S_OK
         }
         None => {
@@ -534,7 +534,7 @@ fn L_GetLibAttr(c: &mut Ctx) -> u32 {
     w16(p + 24, ver as u16);
     w16(p + 26, (ver >> 16) as u16);
     w16(p + 28, flags as u16);
-    put32(c.a(1), p);
+    mem::putp(c.a(1), p);
     S_OK
 }
 fn put_bstr(p: u32, s: &str) {
@@ -599,7 +599,7 @@ fn I_GetTypeAttr(c: &mut Ctx) -> u32 {
     if let Some(a) = &i.alias {
         write_tdesc(p + 60, a);
     }
-    put32(c.a(1), p);
+    mem::putp(c.a(1), p);
     S_OK
 }
 
@@ -645,7 +645,7 @@ fn I_GetFuncDesc(c: &mut Ctx) -> u32 {
         write_tdesc(e, &a.td);
         w16(e + 12, a.flags);
     }
-    put32(c.a(2), p);
+    mem::putp(c.a(2), p);
     S_OK
 }
 fn free_func_desc(c: &mut Ctx) -> u32 {
@@ -773,7 +773,7 @@ fn I_GetRefTypeInfo(c: &mut Ctx) -> u32 {
     }
     match info_block(li, h as usize / 100) {
         Some(b) => {
-            put32(c.a(2), b);
+            mem::putp(c.a(2), b);
             S_OK
         }
         None => TYPE_E_ELEMENTNOTFOUND,
@@ -782,7 +782,7 @@ fn I_GetRefTypeInfo(c: &mut Ctx) -> u32 {
 fn I_GetContainingTypeLib(c: &mut Ctx) -> u32 {
     let (li, ii) = info_of(c);
     if let Some(b) = LIBS.lock().unwrap().get(li).map(|l| l.block) {
-        put32(c.a(1), b);
+        mem::putp(c.a(1), b);
     }
     put32(c.a(2), ii as u32);
     S_OK

@@ -262,6 +262,14 @@ pub const WAIT_FAILED: u32 = 0xffff_ffff;
 
 /// WaitForMultipleObjects; `extra` is an extra wake condition (the message queue), checked
 /// under the lock, which makes the result `handles.len()`.
+/// Whether every handle can be waited on (taking none of them)
+pub fn waitable(handles: &[u32]) -> bool {
+    let tid = crate::cur().tid;
+    let me = crate::cur().obj;
+    let mut g = lock();
+    let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
+    handles.iter().all(|&h| try_take(t, if h == CURRENT_THREAD { me } else { h }, tid, false).is_some())
+}
 pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
     let tid = crate::cur().tid;
     let me = crate::cur().obj;

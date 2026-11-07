@@ -885,7 +885,7 @@ fn D3DXAssembleShader(c: &mut Ctx) -> u32 {
 
 /// Calls a COM method of a guest object (slot `m`).
 pub(crate) fn com_call(c: &mut Ctx, obj: u32, m: u32, args: &[u32]) -> u32 {
-    let f = r32(r32(obj) + 4 * m);
+    let f = mem::rp(mem::rp(obj) + mem::ps() * m);
     let mut a = vec![obj];
     a.extend_from_slice(args);
     c.call(f, &a)

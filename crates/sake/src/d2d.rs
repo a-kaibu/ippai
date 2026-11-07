@@ -230,7 +230,7 @@ fn back_buffer(c: &mut Ctx, sc: u32) -> u32 {
     // IID_ID3D11Texture2D {6f15aaf2-d208-4e89-9ab4-489535d34f9c}
     let iid = mem::heap_alloc(24, true);
     mem::write(iid, &[0xf2, 0xaa, 0x15, 0x6f, 0x08, 0xd2, 0x89, 0x4e, 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c]);
-    c.call(r32(r32(sc) + 4 * 9), &[sc, 0, iid, iid + 16]);
+    c.call(mem::rp(mem::rp(sc) + mem::ps() * 9), &[sc, 0, iid, iid + 16]);
     let tex = r32(iid + 16);
     mem::heap_free(iid);
     new_bitmap(tex)
@@ -312,11 +312,11 @@ fn CreateCompatibleRenderTarget(c: &mut Ctx) -> u32 {
     }
     // ID3D11Device::CreateTexture2D(D3D11_TEXTURE2D_DESC: w, h, 1 mip, 1 layer, B8G8R8A8, 1
     // sample, default usage, render target | shader resource)
-    let desc = mem::heap_alloc(44 + 4, true);
+    let desc = mem::heap_alloc(44 + 8, true);
     for (o, v) in [(0, w), (4, h), (8, 1), (12, 1), (16, 87), (20, 1), (32, 0x28)] {
         w32(desc + o, v);
     }
-    c.call(r32(r32(d3d) + 4 * 5), &[d3d, desc, 0, desc + 44]);
+    c.call(mem::rp(mem::rp(d3d) + mem::ps() * 5), &[d3d, desc, 0, desc + 44]);
     let tex = r32(desc + 44);
     mem::heap_free(desc);
     if tex == 0 {
@@ -353,7 +353,7 @@ fn HwndEndDraw(c: &mut Ctx) -> u32 {
     let r = EndDraw(c);
     if let Some((sc, _)) = st(|s| s.hwnds.get(&c.a(0)).copied()) {
         // IDXGISwapChain::Present(sync 0, flags 0)
-        c.call(r32(r32(sc) + 4 * 8), &[sc, 0, 0]);
+        c.call(mem::rp(mem::rp(sc) + mem::ps() * 8), &[sc, 0, 0]);
     }
     r
 }
@@ -363,7 +363,7 @@ fn Resize(c: &mut Ctx) -> u32 {
     let Some((sc, _)) = st(|s| s.hwnds.get(&o).copied()) else { return 0x8007_0057 };
     flush(o);
     // IDXGISwapChain::ResizeBuffers(0 = keep the count, w, h, keep the format, flags)
-    c.call(r32(r32(sc) + 4 * 13), &[sc, 0, r32(p), r32(p + 4), 0, 0]);
+    c.call(mem::rp(mem::rp(sc) + mem::ps() * 13), &[sc, 0, r32(p), r32(p + 4), 0, 0]);
     let bmp = back_buffer(c, sc);
     set_target(o, bmp);
     0

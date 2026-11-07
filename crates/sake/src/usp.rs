@@ -28,15 +28,16 @@ fn cache_font(dc: u32, psc: u32) -> Option<u32> {
     }
     if dc != 0 {
         let f = gdi::dc_font_handle(dc);
-        let mut blk = r32(psc);
+        // (SCRIPT_CACHE is a pointer)
+        let mut blk = mem::rp(psc);
         if blk == 0 {
             blk = mem::heap_alloc(4, true);
-            w32(psc, blk);
+            mem::wp(psc, blk);
         }
         w32(blk, f);
         return Some(f);
     }
-    let blk = r32(psc);
+    let blk = mem::rp(psc);
     (blk != 0).then(|| r32(blk))
 }
 
@@ -132,11 +133,11 @@ fn ScriptGetProperties(c: &mut Ctx) -> u32 {
     static TABLE: OnceLock<u32> = OnceLock::new();
     let t = *TABLE.get_or_init(|| {
         let props = mem::heap_alloc(8, true);
-        let t = mem::heap_alloc(4, true);
-        w32(t, props);
+        let t = mem::heap_alloc(8, true);
+        mem::wp(t, props);
         t
     });
-    put32(c.a(0), t);
+    mem::putp(c.a(0), t);
     put32(c.a(1), 1);
     0
 }

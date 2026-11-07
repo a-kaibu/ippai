@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{implement, Ctx, Handler};
-use crate::mem::{self, put32, r32, w32};
+use crate::mem::{self, r32, w32};
 
 const KEYBOARD: u32 = 0x6F1D_2B61;
 const MOUSE: u32 = 0x6F1D_2B60;
@@ -91,7 +91,7 @@ fn release(_: &mut Ctx) -> u32 {
     0
 }
 fn no_interface(c: &mut Ctx) -> u32 {
-    put32(c.a(2), 0);
+    mem::putp(c.a(2), 0);
     0x8000_4002
 }
 
@@ -186,8 +186,8 @@ fn unsupported(_: &mut Ctx) -> u32 {
 
 fn create_di(out: u32, v7: bool) -> u32 {
     let o = mem::heap_alloc(8, true);
-    w32(o, di_vtbl(v7));
-    put32(out, o);
+    mem::wp(o, di_vtbl(v7));
+    mem::putp(out, o);
     0
 }
 
@@ -208,7 +208,7 @@ pub fn create_instance(clsid: u32) -> Option<u32> {
         0x25e6_09e4 => false,
         _ => return None,
     };
-    let out = mem::heap_alloc(4, true);
+    let out = mem::heap_alloc(8, true);
     create_di(out, v7);
     let o = mem::r32(out);
     mem::heap_free(out);
@@ -226,14 +226,14 @@ fn CreateDevice(c: &mut Ctx) -> u32 {
 fn create_device(guid: u32, out: u32) -> u32 {
     let kind = r32(guid);
     if kind != KEYBOARD && kind != MOUSE {
-        put32(out, 0);
+        mem::putp(out, 0);
         return 0x8007_0002;
     }
     let o = mem::heap_alloc(8, true);
-    w32(o, dev_vtbl());
+    mem::wp(o, dev_vtbl());
     let at = crate::user::cursor_pos();
     devices(|ds| ds.insert(o, Dev { kind, last: at, wheel: 0, cap: 0, buf: VecDeque::new(), at }));
-    put32(out, o);
+    mem::putp(out, o);
     0
 }
 

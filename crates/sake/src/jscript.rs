@@ -96,7 +96,7 @@ fn gcall(f: u32, args: &[u32]) -> u32 {
 fn com(obj: u32, slot: u32, args: &[u32]) -> u32 {
     let mut a = vec![obj];
     a.extend_from_slice(args);
-    gcall(r32(r32(obj) + 4 * slot), &a)
+    gcall(mem::rp(mem::rp(obj) + mem::ps() * slot), &a)
 }
 
 fn engine_ctx(id: u32) -> Option<&'static mut Context> {
@@ -845,7 +845,7 @@ fn GetScriptDispatch(c: &mut Ctx) -> u32 {
         let g = ctx.global_object();
         if let Some(p) = g.get(name, ctx).ok().and_then(|v| v.as_object()).and_then(|o| t(|t| t.hosts.get(&o).copied())) {
             enter(c, || com(p, 1, &[]));
-            put32(c.a(2), p);
+            mem::putp(c.a(2), p);
             return S_OK;
         }
         put32(c.a(2), 0);

@@ -77,6 +77,88 @@ impl Sid {
     }
 }
 
+/// "S-1-<authority>-<sub>...": the authority in decimal below 2^32, else 0x and 12 hex digits
+pub fn sid_to_string(s: &Sid) -> String {
+    let mut t = if s.0 < 1 << 32 { format!("S-1-{}", s.0) } else { format!("S-1-0x{:012X}", s.0) };
+    for x in &s.1 {
+        t += &format!("-{x}");
+    }
+    t
+}
+/// sid_to_string's text back (numbers in decimal or 0x hex, at most 15 sub-authorities), or a
+/// two-letter SDDL alias (BA, BU, WD, SY, AU, IU)
+pub fn parse_sid(t: &str) -> Option<Sid> {
+    match t {
+        "BA" => return Some(admins()),
+        "BU" => return Some(Sid(5, vec![32, 545])),
+        "WD" => return Some(everyone()),
+        "SY" => return Some(Sid(5, vec![18])),
+        "AU" => return Some(Sid(5, vec![11])),
+        "IU" => return Some(Sid(5, vec![4])),
+        _ => {}
+    }
+    let num = |p: &str| -> Option<u64> {
+        if let Some(h) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+            (!h.is_empty() && h.len() <= 12 && h.bytes().all(|b| b.is_ascii_hexdigit())).then(|| u64::from_str_radix(h, 16).ok())?
+        } else {
+            (!p.is_empty() && p.len() <= 20 && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse().ok())?
+        }
+    };
+    let mut parts = t.strip_prefix("S-").or_else(|| t.strip_prefix("s-"))?.split('-');
+    if parts.next()? != "1" {
+        return None;
+    }
+    let auth = num(parts.next()?).filter(|&a| a < 1 << 48)?;
+    let subs: Vec<u32> = parts.map(|p| num(p).and_then(|v| u32::try_from(v).ok())).collect::<Option<_>>()?;
+    (subs.len() <= 15).then_some(Sid(auth, subs))
+}
+fn ConvertSidToStringSidA(c: &mut Ctx) -> u32 {
+    sid_string(c, false)
+}
+fn ConvertSidToStringSidW(c: &mut Ctx) -> u32 {
+    sid_string(c, true)
+}
+fn sid_string(c: &mut Ctx, wide: bool) -> u32 {
+    let Some(sid) = Sid::read(c.a(0)) else {
+        last_error(ERROR_INVALID_SID);
+        return 0;
+    };
+    let t = sid_to_string(&sid);
+    let p = if wide {
+        let v: Vec<u16> = t.encode_utf16().chain([0]).collect();
+        let p = mem::heap_alloc(2 * v.len() as u32, false);
+        for (i, u) in v.iter().enumerate() {
+            w16(p + 2 * i as u32, *u);
+        }
+        p
+    } else {
+        let p = mem::heap_alloc(t.len() as u32 + 1, false);
+        mem::write(p, t.as_bytes());
+        w8(p + t.len() as u32, 0);
+        p
+    };
+    putp(c.a(1), p);
+    1
+}
+fn ConvertStringSidToSidA(c: &mut Ctx) -> u32 {
+    string_sid(c, String::from_utf8_lossy(&cstr(c.a(0))).into_owned())
+}
+fn ConvertStringSidToSidW(c: &mut Ctx) -> u32 {
+    string_sid(c, String::from_utf16_lossy(&wstr(c.a(0))))
+}
+fn string_sid(c: &mut Ctx, t: String) -> u32 {
+    if c.a(0) == 0 || c.a(1) == 0 {
+        last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    let Some(sid) = parse_sid(&t) else {
+        last_error(ERROR_INVALID_SID);
+        return 0;
+    };
+    putp(c.a(1), sid_alloc(&sid));
+    1
+}
+
 fn everyone() -> Sid {
     Sid(1, vec![0])
 }
@@ -1120,13 +1202,47 @@ pub fn init() {
         LookupPrivilegeNameW, AdjustTokenPrivileges, CheckTokenMembership, GetTokenInformation,
         OpenSCManagerA, OpenSCManagerW, OpenServiceA, OpenServiceW, CreateServiceA, CreateServiceW, StartServiceA,
         StartServiceW, ControlService, QueryServiceStatus, QueryServiceStatusEx, DeleteService, CloseServiceHandle,
-        QueryServiceConfigA, QueryServiceConfigW,
+        QueryServiceConfigA, QueryServiceConfigW, ConvertSidToStringSidA, ConvertSidToStringSidW,
+        ConvertStringSidToSidA, ConvertStringSidToSidW,
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn sid_strings() {
+        assert_eq!(sid_to_string(&admins()), "S-1-5-32-544");
+        assert_eq!(sid_to_string(&Sid(0x1234_5678_9abc, vec![1])), "S-1-0x123456789ABC-1");
+        assert_eq!(parse_sid("S-1-5-32-544"), Some(admins()));
+        assert_eq!(parse_sid("BA"), Some(admins()));
+        assert_eq!(parse_sid("S-1-0x5-0x20"), Some(Sid(5, vec![32])));
+        assert_eq!(parse_sid("S-1-5"), Some(Sid(5, vec![])));
+        for bad in ["", "S-", "S-1", "S-2-5-32", "S-1-5-", "S-1--5", "S-1-5-4294967296", "S-1-x", "S-1-281474976710656", "S-1-5-+1"] {
+            assert_eq!(parse_sid(bad), None, "{bad}");
+        }
+        assert_eq!(parse_sid(&format!("S-1-5{}", "-1".repeat(15))).map(|s| s.1.len()), Some(15));
+        assert_eq!(parse_sid(&format!("S-1-5{}", "-1".repeat(16))), None);
+    }
+
+    proptest! {
+        /// Every SID's text reads back as the same SID, and its bytes as Sid::read would see them
+        #[test]
+        fn sid_text_round_trips(auth in 0u64..1 << 48, subs in proptest::collection::vec(any::<u32>(), 0..=15)) {
+            let s = Sid(auth, subs);
+            prop_assert_eq!(parse_sid(&sid_to_string(&s)), Some(s.clone()));
+            prop_assert_eq!(s.bytes().len() as u32, s.len());
+        }
+        /// Text that is not a SID never panics, and what parses prints back to the same SID
+        #[test]
+        fn sid_text_any(t in "[Ss0-9xXa-fA-F-]{0,40}") {
+            if let Some(s) = parse_sid(&t) {
+                prop_assert_eq!(parse_sid(&sid_to_string(&s)), Some(s));
+            }
+        }
+    }
 
     #[test]
     fn sid_bytes() {

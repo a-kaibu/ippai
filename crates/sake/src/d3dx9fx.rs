@@ -1393,7 +1393,7 @@ fn Begin(c: &mut Ctx) -> u32 {
         w32(out, r.1);
     }
     if flags & 1 == 0 {
-        let p = mem::heap_alloc(4, true);
+        let p = mem::heap_alloc(8, true);
         // CreateStateBlock(D3DSBT_ALL)
         if com_call(c, r.0, 59, &[1, p]) == 0 {
             let b = r32(p);
@@ -1506,7 +1506,7 @@ pub fn create(c: &mut Ctx, device: u32, data: &[u8]) -> Result<u32, String> {
         }
         let code = mem::heap_alloc(o.data.len() as u32, false);
         mem::write(code, &o.data);
-        let out = mem::heap_alloc(4, true);
+        let out = mem::heap_alloc(8, true);
         let m = if o.ty == PT_VERTEXSHADER { 91 } else { 106 };
         if com_call(c, device, m, &[code, out]) == 0 {
             o.created = r32(out);

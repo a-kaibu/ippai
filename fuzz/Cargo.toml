@@ -36,6 +36,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "uuid"
+path = "fuzz_targets/uuid.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sid"
+path = "fuzz_targets/sid.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wsprintf"
+path = "fuzz_targets/wsprintf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "image"
 path = "fuzz_targets/image.rs"
 test = false

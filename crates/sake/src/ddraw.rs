@@ -517,7 +517,7 @@ fn S_GetDDInterface(c: &mut Ctx) -> u32 {
     let (id, kind) = this(c);
     let obj = surf(id).map_or(0, |s| s.dd);
     let b = dd_iface(obj, [0, 2, 3][kind as usize]);
-    put32(c.a(1), b);
+    mem::putp(c.a(1), b);
     if b == 0 { DDERR_INVALIDPARAMS } else { DD_OK }
 }
 fn S_GetUniqueness(c: &mut Ctx) -> u32 {
@@ -582,7 +582,7 @@ fn S_SetPalette(c: &mut Ctx) -> u32 {
 fn S_GetPalette(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let p = surf(id).map_or(0, |s| s.palette);
-    put32(c.a(1), p);
+    mem::putp(c.a(1), p);
     if p == 0 { DDERR_NOPALETTEATTACHED } else { DD_OK }
 }
 
@@ -961,7 +961,7 @@ fn C_GetClipList(c: &mut Ctx) -> u32 {
 }
 fn C_GetHWnd(c: &mut Ctx) -> u32 {
     let h = with(|s| s.clippers.get(&c.a(0)).copied()).unwrap_or(0);
-    put32(c.a(1), h);
+    mem::putp(c.a(1), h);
     DD_OK
 }
 fn C_IsClipListChanged(c: &mut Ctx) -> u32 {

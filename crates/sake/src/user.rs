@@ -145,6 +145,27 @@ pub struct Window {
     pub children: Vec<u32>,
     /// shown at least once (the first ShowWindow sends WM_SIZE and WM_MOVE)
     pub shown: bool,
+    /// SB_HORZ, SB_VERT and SB_CTL's range, page and position
+    pub scroll: [Scroll; 3],
+}
+
+/// A scroll bar's state (SCROLLINFO): (min, max, page, pos, track pos)
+#[derive(Clone, Copy, Default)]
+pub struct Scroll {
+    pub min: i32,
+    pub max: i32,
+    pub page: u32,
+    pub pos: i32,
+    pub track: i32,
+}
+impl Scroll {
+    /// the position within [min, max - max(page - 1, 0)], as Windows keeps it
+    fn clamp(&mut self) {
+        let span = (self.max as i64 - self.min as i64 + 1).max(0) as u64;
+        self.page = (self.page as u64).min(span) as u32;
+        let top = (self.max as i64 - (self.page as i64 - 1).max(0)).max(self.min as i64);
+        self.pos = (self.pos as i64).clamp(self.min as i64, top) as i32;
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -918,8 +939,16 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             0
         }
         // the edit control: typed characters (no caret, no selection)
-        0x102 | 0x201 | 0x87 if with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit"))) => {
+        0x7 | 0x8 | 0x102 | 0x201 | 0x87 if with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit"))) => {
             match m {
+                // EN_SETFOCUS / EN_KILLFOCUS to the parent (winref msgwait)
+                0x7 | 0x8 => {
+                    let (id, parent) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.id, w.parent)));
+                    if parent != 0 {
+                        let code = if m == 7 { 0x100 } else { 0x200 };
+                        send(c, parent, 0x111, code << 16 | (id & 0xffff), h);
+                    }
+                }
                 0x201 => {
                     set_focus(c, h);
                 }
@@ -1366,6 +1395,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
             surface: None,
             children: Vec::new(),
             shown: false,
+            scroll: Default::default(),
         };
         s.wins.insert(h, w);
         if child {
@@ -2680,11 +2710,17 @@ fn DdeInitializeA(c: &mut Ctx) -> u32 {
     0
 }
 static DDE_STR: Mutex<Vec<(u32, Vec<u16>)>> = Mutex::new(Vec::new());
+/// String handles are atoms: the same text in any case is the same handle (with the first text's case)
 fn dde_string(c: &mut Ctx, wide: bool) -> u32 {
-    let h = 0x100 + DDE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let p = c.a(1);
     let t = if p == 0 { Vec::new() } else if wide { wstr(p) } else { a2w(&cstr(p)) };
-    DDE_STR.lock().unwrap().push((h, t));
+    let low = |v: &[u16]| v.iter().map(|&ch| crate::text::lower16(ch)).collect::<Vec<_>>();
+    let mut g = DDE_STR.lock().unwrap();
+    if let Some(x) = g.iter().find(|x| low(&x.1) == low(&t)) {
+        return x.0;
+    }
+    let h = 0xc000 + g.len() as u32;
+    g.push((h, t));
     h
 }
 fn DdeCreateStringHandleA(c: &mut Ctx) -> u32 {
@@ -2693,22 +2729,21 @@ fn DdeCreateStringHandleA(c: &mut Ctx) -> u32 {
 fn DdeCreateStringHandleW(c: &mut Ctx) -> u32 {
     dde_string(c, true)
 }
-/// DdeQueryString(inst, hsz, buffer, cch, codepage): the length without the NUL
+/// DdeQueryString(inst, hsz, buffer, cch, codepage): with no buffer the length without the NUL;
+/// else the characters copied (at most cch-1, and a NUL)
 fn dde_query(c: &mut Ctx, wide: bool) -> u32 {
     let (h, buf, cch) = (c.a(1), c.a(2), c.a(3));
     let Some(t) = DDE_STR.lock().unwrap().iter().find(|x| x.0 == h).map(|x| x.1.clone()) else { return 0 };
-    if wide {
-        if buf != 0 && cch != 0 {
-            mem::put_wstr(buf, cch, &t);
-        }
-        t.len() as u32
-    } else {
-        let a = w2a(&t);
-        if buf != 0 && cch != 0 {
-            mem::put_cstr(buf, cch, &a);
-        }
-        a.len() as u32
+    let len = if wide { t.len() } else { w2a(&t).len() } as u32;
+    if buf == 0 || cch == 0 {
+        return len;
     }
+    if wide {
+        mem::put_wstr(buf, cch, &t);
+    } else {
+        mem::put_cstr(buf, cch, &w2a(&t));
+    }
+    len.min(cch - 1)
 }
 fn DdeQueryStringA(c: &mut Ctx) -> u32 {
     dde_query(c, false)
@@ -2716,10 +2751,9 @@ fn DdeQueryStringA(c: &mut Ctx) -> u32 {
 fn DdeQueryStringW(c: &mut Ctx) -> u32 {
     dde_query(c, true)
 }
+/// The handles' values (the same text is the same handle)
 fn DdeCmpStringHandles(c: &mut Ctx) -> u32 {
-    let g = DDE_STR.lock().unwrap();
-    let get = |h: u32| g.iter().find(|x| x.0 == h).map(|x| x.1.iter().map(|&ch| crate::text::lower16(ch)).collect::<Vec<_>>());
-    match get(c.a(0)).cmp(&get(c.a(1))) {
+    match c.a(0).cmp(&c.a(1)) {
         std::cmp::Ordering::Less => u32::MAX,
         std::cmp::Ordering::Equal => 0,
         _ => 1,
@@ -2959,11 +2993,7 @@ fn WaitMessage(_: &mut Ctx) -> u32 {
 fn MsgWaitForMultipleObjects(c: &mut Ctx) -> u32 {
     let (n, hs, all, ms, mask) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3), c.a(4));
     let hs: Vec<u32> = (0..n.min(64)).map(|i| mem::rp(hs + mem::ps() * i)).collect();
-    process_sent(c.cpu);
-    if has_work_of(mask) {
-        return n;
-    }
-    wait_msgs_of(&hs, all, ms, mask, false)
+    msg_wait(c, &hs, all, ms, mask, false)
 }
 fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     let (n, hs, ms, mask, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
@@ -2972,12 +3002,53 @@ fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     if alertable && crate::apc::run(c) {
         return crate::apc::WAIT_IO_COMPLETION;
     }
-    process_sent(c.cpu);
-    if has_work_of(mask) {
-        return n;
-    }
-    let r = wait_msgs_of(&hs, flags & 1 != 0, ms, mask, alertable);
+    let r = msg_wait(c, &hs, flags & 1 != 0, ms, mask, alertable);
     if alertable && r == n && crate::apc::run(c) { crate::apc::WAIT_IO_COMPLETION } else { r }
+}
+/// A due timer of this thread's (QS_TIMER: its WM_TIMER is as good as posted)
+fn timer_due() -> bool {
+    let me = crate::cur().tid;
+    let now = Instant::now();
+    with(|s| s.queues.get(&me).is_some_and(|q| q.timers.iter().any(|t| t.due <= now)))
+}
+/// MsgWaitForMultipleObjects(Ex): input of the `mask` kinds (a message ends the wait before a
+/// signaled handle, as on Windows) or a handle; with `all` (MWMO_WAITALL), every handle AND
+/// input, the handles taken only then (tests/winref/probes/msgwait.c). WAIT_OBJECT_0 + n for
+/// input; an APC (`apc`) also answers n, for the caller to run it.
+fn msg_wait(c: &mut Ctx, hs: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -> u32 {
+    const TIMEOUT: u32 = 0x102;
+    let n = hs.len() as u32;
+    let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
+    let me = crate::cur().tid;
+    if !crate::obj::waitable(hs) {
+        crate::k32::last_error(6);
+        return 0xffff_ffff;
+    }
+    loop {
+        process_sent(c.cpu);
+        if apc && crate::apc::pending(me) {
+            return n;
+        }
+        let input = has_work_of(mask) || mask & 0x10 != 0 && timer_due();
+        if input {
+            if !all {
+                return n;
+            }
+            let r = crate::obj::wait(hs, true, 0, None);
+            if r != TIMEOUT {
+                return r;
+            }
+        }
+        let left = deadline.map_or(0xffff_ffff, |d| d.saturating_duration_since(Instant::now()).as_millis() as u32);
+        if left == 0 {
+            return TIMEOUT;
+        }
+        // (with `all` the handles are looked at between short waits for input)
+        let r = if all { wait_msgs_of(&[], false, left.min(10), mask, apc) } else { wait_msgs_of(hs, false, left, mask, apc) };
+        if !all && r != TIMEOUT && r != n {
+            return r;
+        }
+    }
 }
 /// GetQueueStatus(flags): high word, the QS_* kinds in the queue; low word, those that came since
 /// the last call (posted and sent messages; input, timers and paint count while there)
@@ -3652,18 +3723,26 @@ fn spi(c: &mut Ctx, wide: bool) -> u32 {
             Rect { l: 0, t: 0, r: w, b: h }.write(p);
         }
         0x29 => {
-            // NONCLIENTMETRICS: sizes and fonts
+            // NONCLIENTMETRICS: sizes and fonts. cbSize must be the pre-Vista size (A 340,
+            // W 500) or the one with iPaddedBorderWidth (+4); else FALSE and no error set
             let lf = if wide { 92 } else { 60 };
+            let old = 40 + 5 * lf;
             let size = r32(p);
-            mem::fill(p + 4, size.saturating_sub(4), 0);
+            if size != old && size != old + 4 {
+                return 0;
+            }
+            mem::fill(p + 4, size - 4, 0);
+            // borders, scroll bars, caption buttons; small caption; menu (as GetSystemMetrics'
+            // SM_CXVSCROLL.., SM_CXSIZE/CYSIZE, SM_CXSMSIZE/CYSMSIZE, SM_CXMENUSIZE/CYMENUSIZE)
             for (k, v) in [1u32, 16, 16, 18, 19].iter().enumerate() {
                 w32(p + 4 + 4 * k as u32, *v);
             }
-            let fonts = [24, 24 + lf + 8, 24 + 2 * lf + 16, 24 + 3 * lf + 16, 24 + 4 * lf + 16];
-            for o in fonts {
-                if o + lf <= size {
-                    crate::gdi::default_logfont(p + o, wide);
-                }
+            w32(p + 24 + lf, metric(52) as u32);
+            w32(p + 28 + lf, metric(53) as u32);
+            w32(p + 32 + 2 * lf, metric(54) as u32);
+            w32(p + 36 + 2 * lf, metric(55) as u32);
+            for o in [24, 32 + lf, 40 + 2 * lf, 40 + 3 * lf, 40 + 4 * lf] {
+                crate::gdi::default_logfont(p + o, wide);
             }
         }
         0x1f => crate::gdi::default_logfont(p, wide),
@@ -3728,18 +3807,20 @@ fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
 }
 /// DEVMODE of mode `n` (ENUM_CURRENT_SETTINGS/ENUM_REGISTRY_SETTINGS: the screen's). The W
 /// layout has a 64-byte device name and a 64-byte form name: fields before dmFormName are 32
-/// bytes later, those after it 64.
+/// bytes later, those after it 64. Windows writes the Windows 95 DEVMODE (124 bytes, W 188)
+/// whatever dmSize says, and sets dmSize to that (tests/winref/probes/sizes.c): RealLive passes
+/// that short one on its stack, and the rest is its return address (e170d29).
 fn display_mode(n: u32, p: u32, wide: bool) -> u32 {
     let modes = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960)];
     let (w, h) = if n == 0xffff_ffff || n == 0xffff_fffe { screen() } else if (n as usize) < modes.len() { modes[n as usize] } else { return 0 };
     let (d, e) = if wide { (32, 64) } else { (0, 0) };
-    // only the caller's dmSize: older programs pass the 124-byte DEVMODEA of Windows 95 on
-    // their stack (RealLive), and the rest is their return address
-    let size = match r16(p + 36 + d) as u32 {
-        0 => 156 + e,
-        n => n.clamp(124 + e, 156 + e),
-    };
-    mem::fill(p + 36 + d, size - 36 - d, 0);
+    let size = 124 + e;
+    mem::fill(p, size, 0);
+    if wide {
+        mem::put_wstr(p, 32, &"sake".encode_utf16().collect::<Vec<_>>());
+    } else {
+        mem::put_cstr(p, 32, b"sake");
+    }
     w16(p + 36 + d, size as u16);
     w32(p + 40 + d, 0x5c0000);
     w32(p + 104 + e, 32);
@@ -3763,7 +3844,15 @@ fn EnumDisplaySettingsExW(c: &mut Ctx) -> u32 {
 /// One display adapter (and one monitor on it, when `device` names the adapter). Only the
 /// first `cb` bytes are written: programs pass shorter (older) DISPLAY_DEVICE layouts.
 fn display_device(device: u32, n: u32, p: u32, wide: bool) -> u32 {
-    if n != 0 || p == 0 {
+    if p == 0 {
+        return 0;
+    }
+    if n != 0 {
+        // (past the last device: the caller's bytes after cb are cleared, as on Windows)
+        let cb = r32(p);
+        if cb > 4 {
+            mem::fill(p + 4, cb - 4, 0);
+        }
         return 0;
     }
     let (name, desc) = if device == 0 { ("\\\\.\\DISPLAY1", "vnvm display") } else { ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor") };
@@ -3915,26 +4004,34 @@ fn MonitorFromPoint(_: &mut Ctx) -> u32 {
 fn MonitorFromRect(_: &mut Ctx) -> u32 {
     0x10001
 }
-fn GetMonitorInfoA(c: &mut Ctx) -> u32 {
-    let p = c.a(1);
+/// GetMonitorInfo(monitor, MONITORINFO(EX)*): cbSize must be MONITORINFO's 40 or MONITORINFOEX's
+/// (A 72, W 104), else ERROR_INVALID_PARAMETER with nothing written
+fn monitor_info(p: u32, wide: bool) -> u32 {
+    let ex = if wide { 104 } else { 72 };
+    let size = r32(p);
+    if size != 40 && size != ex {
+        crate::k32::last_error(87);
+        return 0;
+    }
     let (w, h) = screen();
     let r = Rect { l: 0, t: 0, r: w, b: h };
     r.write(p + 4);
     r.write(p + 20);
     w32(p + 36, 1);
-    if r32(p) >= 72 {
-        mem::put_cstr(p + 40, 32, b"\\\\.\\DISPLAY1");
+    if size == ex {
+        if wide {
+            mem::put_wstr(p + 40, 32, &"\\\\.\\DISPLAY1".encode_utf16().collect::<Vec<_>>());
+        } else {
+            mem::put_cstr(p + 40, 32, b"\\\\.\\DISPLAY1");
+        }
     }
     1
 }
+fn GetMonitorInfoA(c: &mut Ctx) -> u32 {
+    monitor_info(c.a(1), false)
+}
 fn GetMonitorInfoW(c: &mut Ctx) -> u32 {
-    let p = c.a(1);
-    let (w, h) = screen();
-    let r = Rect { l: 0, t: 0, r: w, b: h };
-    r.write(p + 4);
-    r.write(p + 20);
-    w32(p + 36, 1);
-    1
+    monitor_info(c.a(1), true)
 }
 fn EnumDisplayMonitors(c: &mut Ctx) -> u32 {
     let (f, lp) = (c.a(2), c.a(3));
@@ -4193,28 +4290,83 @@ fn ShowCaret(_: &mut Ctx) -> u32 {
 fn HideCaret(_: &mut Ctx) -> u32 {
     1
 }
+/// A window's scroll bar `bar` (SB_HORZ 0, SB_VERT 1, SB_CTL 2: the control's own)
+fn with_scroll<R>(h: u32, bar: u32, f: impl FnOnce(&mut Scroll) -> R) -> Option<R> {
+    let i = if bar == 2 { 2 } else { bar as usize };
+    with(|s| s.wins.get_mut(&h).and_then(|w| w.scroll.get_mut(i)).map(f))
+}
+/// GetScrollInfo(hwnd, bar, SCROLLINFO*): the fields fMask asks for (cbSize is not checked,
+/// tests/winref/probes/sizes.c)
 fn GetScrollInfo(c: &mut Ctx) -> u32 {
-    let p = c.a(2);
-    let size = r32(p);
-    mem::fill(p + 8, size.saturating_sub(8), 0);
-    0
+    let (h, bar, p) = (c.a(0), c.a(1), c.a(2));
+    let mask = r32(p + 4);
+    let Some(sc) = with_scroll(h, bar, |x| *x) else {
+        crate::k32::last_error(1400);
+        return 0;
+    };
+    if mask & 1 != 0 {
+        w32(p + 8, sc.min as u32);
+        w32(p + 12, sc.max as u32);
+    }
+    if mask & 2 != 0 {
+        w32(p + 16, sc.page);
+    }
+    if mask & 4 != 0 {
+        w32(p + 20, sc.pos as u32);
+    }
+    if mask & 0x10 != 0 {
+        w32(p + 24, sc.track as u32);
+    }
+    1
 }
-fn SetScrollInfo(_: &mut Ctx) -> u32 {
-    0
+/// SetScrollInfo(hwnd, bar, SCROLLINFO*, redraw): the new position
+fn SetScrollInfo(c: &mut Ctx) -> u32 {
+    let (h, bar, p) = (c.a(0), c.a(1), c.a(2));
+    let mask = r32(p + 4);
+    with_scroll(h, bar, |x| {
+        if mask & 1 != 0 {
+            x.min = r32(p + 8) as i32;
+            x.max = r32(p + 12) as i32;
+        }
+        if mask & 2 != 0 {
+            x.page = r32(p + 16);
+        }
+        if mask & 4 != 0 {
+            x.pos = r32(p + 20) as i32;
+        }
+        x.clamp();
+        x.pos as u32
+    })
+    .unwrap_or(0)
 }
-fn GetScrollPos(_: &mut Ctx) -> u32 {
-    0
+fn GetScrollPos(c: &mut Ctx) -> u32 {
+    with_scroll(c.a(0), c.a(1), |x| x.pos as u32).unwrap_or(0)
 }
-fn SetScrollPos(_: &mut Ctx) -> u32 {
-    0
+/// SetScrollPos(hwnd, bar, pos, redraw): the old position
+fn SetScrollPos(c: &mut Ctx) -> u32 {
+    let pos = c.a(2) as i32;
+    with_scroll(c.a(0), c.a(1), |x| {
+        let old = x.pos;
+        x.pos = pos;
+        x.clamp();
+        old as u32
+    })
+    .unwrap_or(0)
 }
 fn GetScrollRange(c: &mut Ctx) -> u32 {
-    put32(c.a(2), 0);
-    put32(c.a(3), 0);
+    let (lo, hi) = with_scroll(c.a(0), c.a(1), |x| (x.min, x.max)).unwrap_or((0, 0));
+    put32(c.a(2), lo as u32);
+    put32(c.a(3), hi as u32);
     1
 }
-fn SetScrollRange(_: &mut Ctx) -> u32 {
-    1
+fn SetScrollRange(c: &mut Ctx) -> u32 {
+    let (lo, hi) = (c.a(2) as i32, c.a(3) as i32);
+    with_scroll(c.a(0), c.a(1), |x| {
+        x.min = lo;
+        x.max = hi;
+        x.clamp();
+    })
+    .is_some() as u32
 }
 fn ShowScrollBar(_: &mut Ctx) -> u32 {
     1
@@ -4623,13 +4775,27 @@ fn LoadCursorW(_: &mut Ctx) -> u32 {
     fake_handle()
 }
 /// LoadCursorFromFile(name): a cursor when the file is there (its pictures are not used)
+/// Cursors' hotspots (from a .cur file's first entry; GetIconInfo gives them back)
+static HOTSPOTS: Mutex<Option<HashMap<u32, (u16, u16)>>> = Mutex::new(None);
 fn cursor_from_file(name: u32, wide: bool) -> u32 {
     let n = arg_str(name, wide);
-    if name == 0 || crate::files::resolve(&n).and_then(|h| kura::fs::metadata(&h).ok()).is_none() {
+    let data = if name == 0 { None } else { crate::files::resolve(&n).and_then(|h| kura::fs::read(h).ok()) };
+    let Some(data) = data else {
         crate::k32::last_error(if name == 0 { 87 } else { crate::files::missing(&n) });
         return 0;
+    };
+    let h = fake_handle();
+    if let Some(hot) = cur_hotspot(&data) {
+        HOTSPOTS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, hot);
     }
-    fake_handle()
+    h
+}
+/// A .cur file's hotspot: ICONDIR (reserved, type 2, count) then the first 16-byte entry, whose
+/// planes/bit-count words are the hotspot's x and y
+pub fn cur_hotspot(d: &[u8]) -> Option<(u16, u16)> {
+    let w = |o: usize| d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    (w(0)? == 0 && w(2)? == 2 && w(4)? > 0).then_some(())?;
+    Some((w(10)?, w(12)?))
 }
 fn LoadCursorFromFileA(c: &mut Ctx) -> u32 {
     cursor_from_file(c.a(0), false)
@@ -4681,6 +4847,10 @@ fn GetIconInfo(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     let (size, mask) = if mem::x64() { (32, 16) } else { (20, 12) };
     mem::fill(p, size, 0);
+    if let Some((x, y)) = HOTSPOTS.lock().unwrap().get_or_insert_with(HashMap::default).get(&c.a(0)) {
+        w32(p + 4, *x as u32);
+        w32(p + 8, *y as u32);
+    }
     mem::wp(p + mask, crate::gdi::new_bitmap(32, 64, 1));
     1
 }
@@ -5026,33 +5196,77 @@ fn IsCharLowerA(c: &mut Ctx) -> u32 {
 fn IsCharAlphaW(c: &mut Ctx) -> u32 {
     char::from_u32(c.a(0) & 0xffff).is_some_and(|x| x.is_alphabetic()) as u32
 }
-fn wsprintfA(c: &mut Ctx) -> u32 {
-    let (dst, fmt) = (c.a(0), c.a(1));
-    let out = crate::misc::format(&cstr(fmt), &mut crate::misc::VaArgs::arg(c, 2), false);
-    let out: Vec<u8> = out.into_iter().take(1023).collect();
-    mem::write(dst, &out);
+/// wsprintf's own dialect over the CRT's printf: a conversion it does not know (%f, %e, %g, %n..)
+/// prints its letter and takes no argument (winref strapis: "%f|%e" gives "f|e")
+pub fn wsprintf_format(f: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(f.len());
+    let mut i = 0;
+    while i < f.len() {
+        if f[i] != b'%' as u16 {
+            out.push(f[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        let is = |i: usize, set: &[u8]| f.get(i).is_some_and(|&ch| ch < 0x80 && set.contains(&(ch as u8)));
+        while is(i, b"-#0 +") {
+            i += 1;
+        }
+        while is(i, b"0123456789") {
+            i += 1;
+        }
+        if is(i, b".") {
+            i += 1;
+            while is(i, b"0123456789") {
+                i += 1;
+            }
+        }
+        if f[i..].starts_with(&[b'I' as u16, b'6' as u16, b'4' as u16]) {
+            i += 3;
+        } else if is(i, b"lhw") {
+            i += 1;
+        }
+        match f.get(i) {
+            None => {
+                out.extend_from_slice(&f[start..]);
+            }
+            Some(&t) if t < 0x80 && b"%cCdisSuxXp".contains(&(t as u8)) => out.extend_from_slice(&f[start..=i]),
+            Some(&t) => out.push(t),
+        }
+        i += 1;
+    }
+    out
+}
+/// The output: 1024 characters at most, and a NUL
+const WSPRINTF_MAX: usize = 1024;
+fn wsprintf_a(dst: u32, fmt: u32, va: &mut crate::misc::VaArgs) -> u32 {
+    let f: Vec<u8> = wsprintf_format(&cstr(fmt).iter().map(|&b| b as u16).collect::<Vec<_>>()).iter().map(|&u| u as u8).collect();
+    let out = crate::misc::format(&f, va, false);
+    let out = &out[..out.len().min(WSPRINTF_MAX)];
+    mem::write(dst, out);
     mem::w8(dst + out.len() as u32, 0);
     out.len() as u32
+}
+fn wsprintf_w(dst: u32, fmt: u32, va: &mut crate::misc::VaArgs) -> u32 {
+    let out = crate::misc::format_w(&wsprintf_format(&wstr(fmt)), va);
+    mem::put_wstr(dst, WSPRINTF_MAX as u32 + 1, &out)
+}
+fn wsprintfA(c: &mut Ctx) -> u32 {
+    let (dst, fmt) = (c.a(0), c.a(1));
+    wsprintf_a(dst, fmt, &mut crate::misc::VaArgs::arg(c, 2))
 }
 fn wvsprintfA(c: &mut Ctx) -> u32 {
     let (dst, fmt, va) = (c.a(0), c.a(1), c.a(2));
-    let out = crate::misc::format(&cstr(fmt), &mut crate::misc::VaArgs::stack(va), false);
-    let out: Vec<u8> = out.into_iter().take(1023).collect();
-    mem::write(dst, &out);
-    mem::w8(dst + out.len() as u32, 0);
-    out.len() as u32
+    wsprintf_a(dst, fmt, &mut crate::misc::VaArgs::stack(va))
 }
 fn wsprintfW(c: &mut Ctx) -> u32 {
     let (dst, fmt) = (c.a(0), c.a(1));
-    let f: Vec<u16> = wstr(fmt);
-    let out = crate::misc::format_w(&f, &mut crate::misc::VaArgs::arg(c, 2));
-    mem::put_wstr(dst, 1024, &out)
+    wsprintf_w(dst, fmt, &mut crate::misc::VaArgs::arg(c, 2))
 }
 fn wvsprintfW(c: &mut Ctx) -> u32 {
     let (dst, fmt, va) = (c.a(0), c.a(1), c.a(2));
-    let f: Vec<u16> = wstr(fmt);
-    let out = crate::misc::format_w(&f, &mut crate::misc::VaArgs::stack(va));
-    mem::put_wstr(dst, 1024, &out)
+    wsprintf_w(dst, fmt, &mut crate::misc::VaArgs::stack(va))
 }
 fn GetGUIThreadInfo(_: &mut Ctx) -> u32 {
     0
@@ -5309,23 +5523,17 @@ fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
     }
 }
 
-/// The control Enter presses in a dialog: a focused push button, else the default push button
+/// The control Enter presses in a dialog: a focused default push button, else the default push button
 /// (BS_DEFPUSHBUTTON), else IDOK. (id, its window)
 fn default_button(dlg: u32) -> (u32, u32) {
-    let found = with(|s| {
-        let push = |h: u32, def: bool| {
-            s.wins.get(&h).filter(|w| s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.visible && w.enabled).is_some_and(|w| {
-                let k = w.style & 0xf;
-                if def { k == 1 } else { k <= 1 }
-            })
-        };
-        let kids = s.wins.get(&dlg).map(|w| w.children.clone()).unwrap_or_default();
-        if kids.contains(&s.focus) && push(s.focus, false) {
-            return Some((s.wins[&s.focus].id & 0xffff, s.focus));
-        }
-        kids.iter().find(|&&k| push(k, true)).map(|&k| (s.wins[&k].id & 0xffff, k))
+    // (Wine's IsDialogMessage: the focused control if it is a default push button, else
+    // DM_GETDEFID's, else IDOK; winref msgwait: a plain push button with the focus is not taken)
+    let focused = with(|s| {
+        let w = s.wins.get(&s.focus)?;
+        let button = s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button"));
+        (w.parent == dlg && button && w.style & 0xf == 1).then(|| (w.id & 0xffff, s.focus))
     });
-    found.unwrap_or_else(|| (1, dlg_item(dlg, 1)))
+    focused.or_else(|| def_button(dlg)).unwrap_or_else(|| (1, dlg_item(dlg, 1)))
 }
 
 /// The dialog's BS_DEFPUSHBUTTON child: (id, window)
@@ -5819,5 +6027,50 @@ fn app_id_params() -> (u32, u32) {
     } else {
         let pp = r32(peb + 0x10);
         (pp + 0x68, pp + 0x70)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn u(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn wsprintf_drops_unknown_conversions() {
+        // (winref strapis: "%f|%e|%I64d" prints "f|e|" and the first double's bits)
+        assert_eq!(wsprintf_format(&u("%f|%e|%I64d")), u("f|e|%I64d"));
+        assert_eq!(wsprintf_format(&u("%-08.3ls %5lu %hc %% %ws %p")), u("%-08.3ls %5lu %hc %% %ws %p"));
+        assert_eq!(wsprintf_format(&u("%5.2g%n%q")), u("gnq"));
+        assert_eq!(wsprintf_format(&u("tail %")), u("tail %"));
+        assert_eq!(wsprintf_format(&u("%05")), u("%05"));
+    }
+
+    #[test]
+    fn cur_hotspots() {
+        let mut d = vec![0u8, 0, 2, 0, 1, 0, 32, 32, 0, 0, 3, 0, 4, 0];
+        d.extend([0; 8]);
+        assert_eq!(cur_hotspot(&d), Some((3, 4)));
+        d[2] = 1; // an icon
+        assert_eq!(cur_hotspot(&d), None);
+        assert_eq!(cur_hotspot(&d[..5]), None);
+    }
+
+    proptest! {
+        /// Text with no '%' passes as it is; the result never has more '%' than the format
+        #[test]
+        fn wsprintf_format_keeps_plain_text(s in "[^%]{0,40}", f in "[%a-zA-Z0-9.#+ -]{0,40}") {
+            prop_assert_eq!(wsprintf_format(&u(&s)), u(&s));
+            let count = |v: &[u16]| v.iter().filter(|&&c| c == b'%' as u16).count();
+            prop_assert!(count(&wsprintf_format(&u(&f))) <= count(&u(&f)));
+        }
+        /// Any bytes: no panic
+        #[test]
+        fn cur_hotspot_any(d in proptest::collection::vec(any::<u8>(), 0..32)) {
+            let _ = cur_hotspot(&d);
+        }
     }
 }

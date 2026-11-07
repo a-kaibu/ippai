@@ -88,7 +88,7 @@ fn begin(c: &mut Ctx) -> u32 {
     let (o, flags) = (c.a(0), c.a(1));
     w32(o + FLAGS, flags);
     if flags & DONOTSAVESTATE == 0 {
-        let sb = mem::heap_alloc(4, true);
+        let sb = mem::heap_alloc(8, true);
         // CreateStateBlock(D3DSBT_ALL): it holds the state of now
         if com_call(c, r32(o + DEV), 59, &[1, sb]) == 0 {
             w32(o + SB, r32(sb));

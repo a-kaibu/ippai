@@ -267,7 +267,7 @@ fn create_key_ex(h: u32, sub: &str, out: u32, disp: u32) -> u32 {
 fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
     let Some(base) = key_path(h) else { return 6 };
     if sub.starts_with('\\') {
-        put32(out, 0);
+        mem::putp(out, 0);
         return 161; // ERROR_BAD_PATHNAME
     }
     let path = join(&base, sub);
@@ -303,10 +303,10 @@ fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
         m.keys().any(|k| k.starts_with(&pre))
     });
     if !exists {
-        put32(out, 0);
+        mem::putp(out, 0);
         return 2;
     }
-    put32(out, obj::add(Obj::Key(Key { path })));
+    mem::putp(out, obj::add(Obj::Key(Key { path })));
     0
 }
 
@@ -407,9 +407,9 @@ fn RegQueryValueA(c: &mut Ctx) -> u32 {
     let (k, sub, d, l) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let mut h = k;
     if sub != 0 && r8(sub) != 0 {
-        let tmp = mem::heap_alloc(4, true);
+        let tmp = mem::heap_alloc(8, true);
         let r = open_key(k, &arg_str(sub, false), false, tmp);
-        h = r32(tmp);
+        h = mem::rp(tmp);
         mem::heap_free(tmp);
         if r != 0 {
             return r;
@@ -425,9 +425,9 @@ fn reg_get_value(c: &mut Ctx, wide: bool) -> u32 {
     let name = if name == 0 { String::new() } else { arg_str(name, wide) };
     let mut h = k;
     if sub != 0 && r8(sub) != 0 {
-        let tmp = mem::heap_alloc(4, true);
+        let tmp = mem::heap_alloc(8, true);
         let r = open_key(k, &arg_str(sub, wide), false, tmp);
-        h = r32(tmp);
+        h = mem::rp(tmp);
         mem::heap_free(tmp);
         if r != 0 {
             return r;
@@ -504,7 +504,7 @@ fn RegSetValueA(c: &mut Ctx) -> u32 {
     if sub != 0 && r8(sub) != 0 {
         let tmp = mem::heap_alloc(8, true);
         let r = open_key(k, &arg_str(sub, false), true, tmp);
-        h = r32(tmp);
+        h = mem::rp(tmp);
         mem::heap_free(tmp);
         if r != 0 {
             return r;
@@ -1269,12 +1269,14 @@ fn malloc_obj() -> u32 {
         }
         let m: [(crate::api::Handler, u32); 9] =
             [(qi, 12), (one, 4), (one, 4), (alloc, 8), (realloc, 12), (free, 8), (size, 8), (did, 8), (nothing, 4)];
-        let v = mem::heap_alloc(4 * m.len() as u32, true);
+        // (x64: a table of 8-byte entries, the object a pointer to it)
+        let ps = mem::ps();
+        let v = mem::heap_alloc(ps * m.len() as u32, true);
         for (i, (f, n)) in m.iter().enumerate() {
-            w32(v + 4 * i as u32, crate::api::host_fn(&format!("IMalloc::{i}"), *f, *n));
+            mem::wp(v + ps * i as u32, crate::api::host_fn(&format!("IMalloc::{i}"), *f, *n));
         }
-        let o = mem::heap_alloc(4, true);
-        w32(o, v);
+        let o = mem::heap_alloc(ps, true);
+        mem::wp(o, v);
         o
     })
 }
@@ -1282,11 +1284,11 @@ fn IsUserAnAdmin(_: &mut Ctx) -> u32 {
     1
 }
 fn SHGetMalloc(c: &mut Ctx) -> u32 {
-    put32(c.a(0), malloc_obj());
+    mem::putp(c.a(0), malloc_obj());
     0
 }
 fn CoGetMalloc(c: &mut Ctx) -> u32 {
-    put32(c.a(1), malloc_obj());
+    mem::putp(c.a(1), malloc_obj());
     0
 }
 fn CoCreateGuid(c: &mut Ctx) -> u32 {
@@ -1437,7 +1439,7 @@ fn uuid_to_string(c: &mut Ctx, wide: bool) -> u32 {
     for (i, b) in t.bytes().enumerate() {
         if wide { w16(p + 2 * i as u32, b as u16) } else { mem::w8(p + i as u32, b) }
     }
-    w32(out, p);
+    mem::wp(out, p);
     0
 }
 fn UuidToStringA(c: &mut Ctx) -> u32 {
@@ -1448,11 +1450,40 @@ fn UuidToStringW(c: &mut Ctx) -> u32 {
 }
 fn RpcStringFreeA(c: &mut Ctx) -> u32 {
     let pp = c.a(0);
-    if pp != 0 && r32(pp) != 0 {
-        mem::heap_free(r32(pp));
-        w32(pp, 0);
+    if pp != 0 && mem::rp(pp) != 0 {
+        mem::heap_free(mem::rp(pp));
+        mem::wp(pp, 0);
     }
     0
+}
+/// A UUID's text as rpcrt4 reads it: exactly 8-4-4-4-12 hex digits (either case), no braces,
+/// nothing before or after. The 16 bytes as they are in memory.
+pub fn parse_uuid(t: &[u16]) -> Option<[u8; 16]> {
+    if t.len() != 36 {
+        return None;
+    }
+    let mut digits = [0u8; 32];
+    let mut n = 0;
+    for (i, &ch) in t.iter().enumerate() {
+        if matches!(i, 8 | 13 | 18 | 23) {
+            if ch != u16::from(b'-') {
+                return None;
+            }
+            continue;
+        }
+        digits[n] = char::from_u32(ch.into()).and_then(|c| c.to_digit(16))? as u8;
+        n += 1;
+    }
+    let byte = |k: usize| digits[2 * k] << 4 | digits[2 * k + 1];
+    let mut u = [0u8; 16];
+    // Data1 (4 bytes), Data2, Data3 little-endian; Data4 as written
+    for (k, at) in [(0, 3), (1, 2), (2, 1), (3, 0), (4, 5), (5, 4), (6, 7), (7, 6)] {
+        u[at] = byte(k);
+    }
+    for k in 8..16 {
+        u[k] = byte(k);
+    }
+    Some(u)
 }
 fn uuid_from_string(c: &mut Ctx, wide: bool) -> u32 {
     let (s, out) = (c.a(0), c.a(1));
@@ -1460,18 +1491,14 @@ fn uuid_from_string(c: &mut Ctx, wide: bool) -> u32 {
         mem::fill(out, 16, 0);
         return 0;
     }
-    let t: String = crate::k32::arg_str(s, wide).chars().filter(|ch| ch.is_ascii_hexdigit()).collect();
-    if t.len() != 32 {
-        return 1705; // RPC_S_INVALID_STRING_UUID
+    let t: Vec<u16> = if wide { wstr(s) } else { cstr(s).into_iter().map(u16::from).collect() };
+    match parse_uuid(&t) {
+        Some(u) => {
+            mem::write(out, &u);
+            0
+        }
+        None => 1705, // RPC_S_INVALID_STRING_UUID
     }
-    let hex = |a: usize, n: usize| u32::from_str_radix(&t[a..a + n], 16).unwrap_or(0);
-    w32(out, hex(0, 8));
-    w16(out + 4, hex(8, 4) as u16);
-    w16(out + 6, hex(12, 4) as u16);
-    for i in 0..8 {
-        mem::w8(out + 8 + i as u32, hex(16 + 2 * i, 2) as u8);
-    }
-    0
 }
 fn UuidFromStringA(c: &mut Ctx) -> u32 {
     uuid_from_string(c, false)
@@ -1989,7 +2016,7 @@ fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
         _ => None,
     };
     let Some(p) = path else {
-        put32(out, 0);
+        mem::putp(out, 0);
         return 0x8007_0002;
     };
     let w: Vec<u16> = p.encode_utf16().chain([0]).collect();
@@ -1997,7 +2024,7 @@ fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
     for (i, &u) in w.iter().enumerate() {
         w16(b + 2 * i as u32, u);
     }
-    put32(out, b);
+    mem::putp(out, b);
     0
 }
 fn SHGetFolderPathW(c: &mut Ctx) -> u32 {
@@ -2017,7 +2044,7 @@ fn SHGetSpecialFolderLocation(c: &mut Ctx) -> u32 {
     w16(p, 8);
     w16(p + 2, 0x7676);
     w32(p + 4, csidl);
-    put32(out, p);
+    mem::putp(out, p);
     0
 }
 fn SHGetFolderLocation(c: &mut Ctx) -> u32 {
@@ -2026,7 +2053,7 @@ fn SHGetFolderLocation(c: &mut Ctx) -> u32 {
     w16(p, 8);
     w16(p + 2, 0x7676);
     w32(p + 4, csidl);
-    put32(out, p);
+    mem::putp(out, p);
     0
 }
 fn pidl_path(p: u32) -> Option<String> {
@@ -2155,7 +2182,7 @@ fn ImageList_Create(_: &mut Ctx) -> u32 {
 }
 /// Reads from an IStream (IStream::Read); whether all `n` bytes came.
 fn stream_read(c: &mut Ctx, stream: u32, buf: u32, n: u32) -> bool {
-    let read = r32(r32(stream) + 12);
+    let read = mem::rp(mem::rp(stream) + 3 * mem::ps());
     let got = mem::heap_alloc(4, true);
     let hr = c.call(read, &[stream, buf, n, got]);
     let k = r32(got);
@@ -2241,9 +2268,14 @@ fn timeBeginPeriod(_: &mut Ctx) -> u32 {
 fn timeEndPeriod(_: &mut Ctx) -> u32 {
     0
 }
+/// timeGetDevCaps(&caps, cb): TIMERR_NOCANDO for a TIMECAPS shorter than its 8 bytes
 fn timeGetDevCaps(c: &mut Ctx) -> u32 {
-    w32(c.a(0), 1);
-    w32(c.a(0) + 4, 1_000_000);
+    let (p, cb) = (c.a(0), c.a(1));
+    if p == 0 || cb < 8 {
+        return 97;
+    }
+    w32(p, 1);
+    w32(p + 4, 1_000_000);
     0
 }
 fn timeGetSystemTime(c: &mut Ctx) -> u32 {
@@ -2792,7 +2824,8 @@ enum Hasher {
     Sha256(sha2::Sha256),
 }
 
-static HASHES: Mutex<Option<HashMap<u32, Hasher>>> = Mutex::new(None);
+/// The hashes and whether HP_HASHVAL has finished them (more data then fails with NTE_BAD_HASH_STATE)
+static HASHES: Mutex<Option<HashMap<u32, (Hasher, bool)>>> = Mutex::new(None);
 static NEXT_HASH: AtomicU32 = AtomicU32::new(0x4a00_0000);
 
 /// The provider's default key length (bits): 40 for the Base provider asked by name, else 128
@@ -2801,7 +2834,7 @@ static KEY_BITS: AtomicU32 = AtomicU32::new(128);
 fn acquire(c: &mut Ctx, wide: bool) -> u32 {
     let name = if c.a(2) == 0 { String::new() } else { arg_str(c.a(2), wide) };
     KEY_BITS.store(if name.contains(" Base ") { 40 } else { 128 }, Ordering::Relaxed);
-    put32(c.a(0), 0x4a7f_0001);
+    mem::putp(c.a(0), 0x4a7f_0001); // (HCRYPTPROV: a ULONG_PTR)
     1
 }
 fn CryptAcquireContextA(c: &mut Ctx) -> u32 {
@@ -2814,14 +2847,15 @@ fn CryptReleaseContext(_: &mut Ctx) -> u32 {
     1
 }
 fn CryptGenRandom(c: &mut Ctx) -> u32 {
+    // (the host's random bytes, as RtlGenRandom)
     let (n, p) = (c.a(1), c.a(2));
-    let mut x = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1;
-    for i in 0..n {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        mem::w8(p + i, x as u8);
+    let mut buf = vec![0u8; n as usize];
+    for chunk in buf.chunks_mut(256) {
+        if unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0 {
+            return 0;
+        }
     }
+    mem::write(p, &buf);
     1
 }
 fn CryptCreateHash(c: &mut Ctx) -> u32 {
@@ -2835,26 +2869,36 @@ fn CryptCreateHash(c: &mut Ctx) -> u32 {
         }
     };
     let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
-    HASHES.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, h);
-    put32(c.a(4), id);
+    HASHES.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, (h, false));
+    mem::putp(c.a(4), id);
     1
 }
 fn CryptHashData(c: &mut Ctx) -> u32 {
     let data = mem::slice(c.a(1), c.a(2));
     let mut g = HASHES.lock().unwrap();
-    match g.get_or_insert_with(HashMap::default).get_mut(&c.a(0)) {
-        Some(Hasher::Md5(h)) => h.consume(data),
-        Some(Hasher::Sha1(h)) => h.update(data),
-        Some(Hasher::Sha256(h)) => sha2::Digest::update(h, data),
-        None => return 0,
+    let Some((h, done)) = g.get_or_insert_with(HashMap::default).get_mut(&c.a(0)) else {
+        crate::k32::last_error(87);
+        return 0;
+    };
+    if *done {
+        crate::k32::last_error(0x8009_000c);
+        return 0;
+    }
+    match h {
+        Hasher::Md5(h) => h.consume(data),
+        Hasher::Sha1(h) => h.update(data),
+        Hasher::Sha256(h) => sha2::Digest::update(h, data),
     }
     1
 }
 fn CryptGetHashParam(c: &mut Ctx) -> u32 {
     let (h, param, out, plen) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let mut g = HASHES.lock().unwrap();
-    let Some(hs) = g.get_or_insert_with(HashMap::default).get(&h) else { return 0 };
-    let (alg, digest): (u32, Vec<u8>) = match hs {
+    let Some((hs, done)) = g.get_or_insert_with(HashMap::default).get_mut(&h) else {
+        crate::k32::last_error(87);
+        return 0;
+    };
+    let (alg, digest): (u32, Vec<u8>) = match &*hs {
         Hasher::Md5(x) => (0x8003, x.clone().finalize().0.to_vec()),
         Hasher::Sha1(x) => (0x8004, x.clone().finish().to_vec()),
         Hasher::Sha256(x) => (0x800c, sha2::Digest::finalize(x.clone()).to_vec()),
@@ -2872,25 +2916,32 @@ fn CryptGetHashParam(c: &mut Ctx) -> u32 {
             return 0;
         }
         mem::write(out, &val);
+        *done |= param == 2;
     }
     put32(plen, val.len() as u32);
     1
 }
 fn CryptDestroyHash(c: &mut Ctx) -> u32 {
-    HASHES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some() as u32
+    let ok = HASHES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some();
+    if !ok {
+        crate::k32::last_error(87);
+    }
+    ok as u32
 }
 
 /// RC4 keys (CALG_RC4) made with CryptDeriveKey from a hash: the key's bytes and the cipher
 /// state, which a final CryptEncrypt/CryptDecrypt resets (SRPG Studio's data.dts)
 struct Rc4 {
+    /// the key's length in bits (KP_KEYLEN: without the salt)
+    bits: u32,
     key: Vec<u8>,
     s: [u8; 256],
     i: u8,
     j: u8,
 }
 impl Rc4 {
-    fn new(key: Vec<u8>) -> Rc4 {
-        let mut r = Rc4 { key, s: [0; 256], i: 0, j: 0 };
+    fn new(key: Vec<u8>, bits: u32) -> Rc4 {
+        let mut r = Rc4 { bits, key, s: [0; 256], i: 0, j: 0 };
         r.reset();
         r
     }
@@ -2927,10 +2978,13 @@ fn CryptDeriveKey(c: &mut Ctx) -> u32 {
     let digest = {
         let g = HASHES.lock().unwrap();
         match g.as_ref().and_then(|m| m.get(&hash)) {
-            Some(Hasher::Md5(x)) => x.clone().finalize().0.to_vec(),
-            Some(Hasher::Sha1(x)) => x.clone().finish().to_vec(),
-            Some(Hasher::Sha256(x)) => sha2::Digest::finalize(x.clone()).to_vec(),
-            None => return 0,
+            Some((Hasher::Md5(x), _)) => x.clone().finalize().0.to_vec(),
+            Some((Hasher::Sha1(x), _)) => x.clone().finish().to_vec(),
+            Some((Hasher::Sha256(x), _)) => sha2::Digest::finalize(x.clone()).to_vec(),
+            None => {
+                crate::k32::last_error(87);
+                return 0;
+            }
         }
     };
     let bits = match flags >> 16 {
@@ -2938,12 +2992,13 @@ fn CryptDeriveKey(c: &mut Ctx) -> u32 {
         b => b,
     };
     let mut key = digest[..((bits / 8) as usize).clamp(5, digest.len())].to_vec();
+    let bits = 8 * key.len() as u32;
     if key.len() == 5 && flags & 0x10 == 0 {
         key.resize(16, 0);
     }
     let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
-    KEYS.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, Rc4::new(key));
-    put32(out, id);
+    KEYS.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, Rc4::new(key, bits));
+    mem::putp(out, id);
     1
 }
 /// CryptEncrypt / CryptDecrypt(key, hash, final, flags, data, &len[, cap]): RC4 in place
@@ -2951,7 +3006,10 @@ fn rc4_call(c: &mut Ctx) -> u32 {
     let (key, fin, data, plen) = (c.a(0), c.a(2) != 0, c.a(4), c.a(5));
     let n = r32(plen);
     let mut g = KEYS.lock().unwrap();
-    let Some(k) = g.get_or_insert_with(HashMap::default).get_mut(&key) else { return 0 };
+    let Some(k) = g.get_or_insert_with(HashMap::default).get_mut(&key) else {
+        crate::k32::last_error(87);
+        return 0;
+    };
     if data != 0 && n != 0 {
         let mut buf = mem::slice(data, n).to_vec();
         k.apply(&mut buf);
@@ -2969,7 +3027,39 @@ fn CryptEncrypt(c: &mut Ctx) -> u32 {
     rc4_call(c)
 }
 fn CryptDestroyKey(c: &mut Ctx) -> u32 {
-    KEYS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some() as u32
+    let ok = KEYS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some();
+    if !ok {
+        crate::k32::last_error(87);
+    }
+    ok as u32
+}
+/// CryptGetKeyParam(key, param, out, &len, flags): KP_ALGID (7), KP_BLOCKLEN (8, 0 for a
+/// stream cipher), KP_KEYLEN (9)
+fn CryptGetKeyParam(c: &mut Ctx) -> u32 {
+    let (key, param, out, plen) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let Some(bits) = KEYS.lock().unwrap().get_or_insert_with(HashMap::default).get(&key).map(|k| k.bits) else {
+        crate::k32::last_error(87);
+        return 0;
+    };
+    let v = match param {
+        7 => 0x6801,
+        8 => 0,
+        9 => bits,
+        _ => {
+            crate::k32::last_error(0x8009_0015); // NTE_BAD_TYPE
+            return 0;
+        }
+    };
+    if out != 0 {
+        if r32(plen) < 4 {
+            put32(plen, 4);
+            crate::k32::last_error(234);
+            return 0;
+        }
+        w32(out, v);
+    }
+    put32(plen, 4);
+    1
 }
 
 /// SHA-1 (no crate for it here; small enough to keep).
@@ -3056,7 +3146,7 @@ pub fn init() {
         RegDeleteKeyW, RegEnumKeyExA, RegEnumKeyExW, RegEnumKeyA, RegEnumKeyW, RegEnumValueA, RegEnumValueW,
         RegQueryInfoKeyA, RegQueryInfoKeyW, CryptAcquireContextA, CryptAcquireContextW, CryptReleaseContext,
         CryptGenRandom, CryptCreateHash, CryptHashData, CryptGetHashParam, CryptDestroyHash, CryptDeriveKey,
-        CryptDecrypt, CryptEncrypt, CryptDestroyKey,
+        CryptDecrypt, CryptEncrypt, CryptDestroyKey, CryptGetKeyParam,
     );
     reg!("wintrust"; WinVerifyTrust);
     reg!("version"; GetFileVersionInfoSizeA, GetFileVersionInfoSizeW, GetFileVersionInfoA, GetFileVersionInfoW,
@@ -3392,6 +3482,71 @@ fn wts_init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UuidToString's layout of the 16 bytes (Data1-3 little-endian)
+    fn uuid_text_of(u: &[u8; 16], upper: bool) -> String {
+        let d1 = u32::from_le_bytes([u[0], u[1], u[2], u[3]]);
+        let d2 = u16::from_le_bytes([u[4], u[5]]);
+        let d3 = u16::from_le_bytes([u[6], u[7]]);
+        let t = format!("{d1:08x}-{d2:04x}-{d3:04x}-{:02x}{:02x}-{}", u[8], u[9], u[10..].iter().map(|b| format!("{b:02x}")).collect::<String>());
+        if upper { t.to_ascii_uppercase() } else { t }
+    }
+    fn w(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    // tests/winref/probes/crypt.c (the lenient parser took any 32 hex digits among anything)
+    #[test]
+    fn uuid_strings_parse_strictly() {
+        let u = parse_uuid(&w("6B29FC40-CA47-1067-B31D-00DD010662DA")).unwrap();
+        assert_eq!(u, [0x40, 0xfc, 0x29, 0x6b, 0x47, 0xca, 0x67, 0x10, 0xb3, 0x1d, 0, 0xdd, 1, 6, 0x62, 0xda]);
+        assert_eq!(parse_uuid(&w("6b29fc40-ca47-1067-b31d-00dd010662da")), Some(u));
+        for bad in [
+            "{6B29FC40-CA47-1067-B31D-00DD010662DA}",
+            "6B29FC40-CA47-1067-B31D-00DD010662D",
+            "6B29FC40CA47-1067-B31D-00DD010662DA",
+            "6B29FC40-CA47-1067-B31D-00DD010662DAX",
+            "G B29FC40-CA47-1067-B31D-00DD010662DA",
+            "6B29FC40-CA47-1067-B31D_00DD010662DA",
+            "+B29FC40-CA47-1067-B31D-00DD010662DA",
+            "",
+        ] {
+            assert_eq!(parse_uuid(&w(bad)), None, "{bad}");
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn uuid_text_round_trips(u in proptest::array::uniform16(proptest::prelude::any::<u8>()), upper in proptest::prelude::any::<bool>()) {
+            proptest::prop_assert_eq!(parse_uuid(&w(&uuid_text_of(&u, upper))), Some(u));
+        }
+
+        /// one character changed to anything else: a dash that is no longer one, a digit that
+        /// is no longer hex, or a dash where a digit was, is refused; another hex digit is a
+        /// different UUID
+        #[test]
+        fn uuid_text_one_change(u in proptest::array::uniform16(proptest::prelude::any::<u8>()), at in 0usize..36, ch in proptest::prelude::any::<u16>()) {
+            let mut t = w(&uuid_text_of(&u, false));
+            let was = t[at];
+            proptest::prop_assume!(ch != was && !(was != u16::from(b'-') && (ch as u8 as u16 == ch) && (ch as u8).is_ascii_hexdigit() && (ch as u8).to_ascii_lowercase() as u16 == was));
+            t[at] = ch;
+            let is_hex = ch < 0x80 && (ch as u8).is_ascii_hexdigit();
+            match parse_uuid(&t) {
+                None => proptest::prop_assert!(was == u16::from(b'-') || !is_hex),
+                Some(v) => {
+                    proptest::prop_assert!(was != u16::from(b'-') && is_hex);
+                    proptest::prop_assert_ne!(v, u);
+                }
+            }
+        }
+
+        #[test]
+        fn uuid_text_other_lengths(t in proptest::collection::vec(proptest::prelude::any::<u16>(), 0..80)) {
+            if t.len() != 36 {
+                proptest::prop_assert_eq!(parse_uuid(&t), None);
+            }
+        }
+    }
 
     // the answers of Windows (tests/winref/golden/shell-*)
     #[test]

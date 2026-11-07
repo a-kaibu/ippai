@@ -73,6 +73,13 @@ pub fn widen(a: u32) -> u64 {
     if n != 0 && a.wrapping_sub(lo) < n { a as u64 | (hi as u64) << 32 } else { a as u64 }
 }
 
+/// Writes guest address `v` as a pointer (x64: its 64-bit value, `widen`) if `a` is not NULL.
+pub fn put_addr(a: u32, v: u32) {
+    if a != 0 {
+        if x64() { w64(a, widen(v)) } else { w32(a, v) }
+    }
+}
+
 /// Writes `v` if `a` is not NULL.
 #[inline]
 pub fn put64(a: u32, v: u64) {
@@ -429,6 +436,28 @@ pub fn query(a: u32) -> Option<(u32, Region, u32, u32, u32, u32)> {
     }
     let state = if v & COMMITTED != 0 { 0x1000 } else { 0x2000 };
     Some((b, r, b + i as u32 * PAGE, (j - i) as u32 * PAGE, state, if v & COMMITTED != 0 { v & !COMMITTED } else { 0 }))
+}
+
+/// How many of the `n` bytes from `a` on can be read (`write` false) or written: committed pages
+/// whose protection allows it (no PAGE_GUARD). `code_too`: executable pages count as writable,
+/// as for WriteProcessMemory (it makes them writable for the copy; read-only data it refuses).
+pub fn accessible(a: u32, n: u32, write: bool, code_too: bool) -> u32 {
+    let mut at = a as u64;
+    let end = a as u64 + n as u64;
+    while at < end {
+        if at < LO as u64 {
+            break;
+        }
+        let Some((_, _, run, size, state, prot)) = query(at as u32) else { break };
+        let ok = state == 0x1000
+            && prot & 0x100 == 0
+            && if write { prot & 0xcc != 0 || code_too && prot & 0x30 != 0 } else { prot & 0xfe != 0 };
+        if !ok {
+            break;
+        }
+        at = run as u64 + size as u64;
+    }
+    (at.min(end) - a as u64) as u32
 }
 
 /// Protection of the page at `a` (VirtualProtect), changing it to `prot` for [a, a+n).
