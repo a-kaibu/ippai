@@ -1225,6 +1225,9 @@ unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option
     } else if let Some(v) = format::to_floats(f.conv, format::page_bpp(t.page) / 4, src, pitch as usize, w, h) {
         out = v;
         bpr = w * format::page_bpp(t.page);
+    } else if let Some(v) = format::bc67_texels(f.conv, src, pitch as usize, w, h) {
+        out = v;
+        bpr = w * format::page_bpp(t.page);
     } else if f.conv != 0 {
         crate::d3d9::format::convert(f.conv, src, pitch as usize, w, h, &mut out);
         bpr = w * format::page_bpp(t.page);

@@ -13,6 +13,54 @@ pub const BC4U: u32 = 0xbc41;
 pub const BC4S: u32 = 0xbc42;
 pub const BC5U: u32 = 0xbc51;
 pub const BC5S: u32 = 0xbc52;
+/// Format::conv codes of BC6H (to RGBA halves) and BC7 (to RGBA8) blocks: WebGPU's BC formats
+/// are optional (most phones lack them), so the page gets their texels
+pub const BC6U: u32 = 0xbc61;
+pub const BC6S: u32 = 0xbc62;
+pub const BC7: u32 = 0xbc70;
+
+/// BC6H / BC7 blocks of a w x h box (rows of 4x4 blocks `pitch` apart) as the page's texels:
+/// RGBA halves (alpha 1.0) for BC6H, RGBA8 for BC7. None: not one of them.
+///
+/// # Safety
+/// `src` must hold the box.
+pub unsafe fn bc67_texels(conv: u32, src: *const u8, pitch: usize, w: u32, h: u32) -> Option<Vec<u8>> {
+    if !matches!(conv, BC6U | BC6S | BC7) {
+        return None;
+    }
+    let (w, h) = (w as usize, h as usize);
+    let texel = if conv == BC7 { 4 } else { 8 };
+    let mut out = vec![0u8; w * h * texel];
+    for by in 0..h.div_ceil(4) {
+        for bx in 0..w.div_ceil(4) {
+            let b = std::slice::from_raw_parts(src.add(by * pitch + bx * 16), 16);
+            let mut px = [[0u8; 8]; 16];
+            if conv == BC7 {
+                let mut rgba = [0u8; 64];
+                bcdec_rs::bc7(b, &mut rgba, 16);
+                for (i, p) in px.iter_mut().enumerate() {
+                    p[..4].copy_from_slice(&rgba[4 * i..4 * i + 4]);
+                }
+            } else {
+                let mut rgb = [0u16; 48];
+                bcdec_rs::bc6h_half(b, &mut rgb, 12, conv == BC6S);
+                for (i, p) in px.iter_mut().enumerate() {
+                    for c in 0..3 {
+                        p[2 * c..2 * c + 2].copy_from_slice(&rgb[3 * i + c].to_le_bytes());
+                    }
+                    p[6..8].copy_from_slice(&0x3c00u16.to_le_bytes());
+                }
+            }
+            for (i, p) in px.iter().enumerate() {
+                let (x, y) = (bx * 4 + i % 4, by * 4 + i / 4);
+                if x < w && y < h {
+                    out[(y * w + x) * texel..][..texel].copy_from_slice(&p[..texel]);
+                }
+            }
+        }
+    }
+    Some(out)
+}
 
 /// Texels of a w x h box in the guest's layout (rows `pitch` apart; rows of 4x4 blocks for BC)
 /// as 32-bit floats, `n` channels a texel (conversions above). None: not one of them.
@@ -244,6 +292,10 @@ pub fn info(dxgi: u32) -> Option<Format> {
         81 => Format { page: P_R32F, bpp: 8, block: 4, conv: BC4S, no_alpha: false },
         82 | 83 => Format { page: P_RG32F, bpp: 16, block: 4, conv: BC5U, no_alpha: false },
         84 => Format { page: P_RG32F, bpp: 16, block: 4, conv: BC5S, no_alpha: false },
+        94 | 95 => Format { page: P_RGBA16F, bpp: 16, block: 4, conv: BC6U, no_alpha: false },
+        96 => Format { page: P_RGBA16F, bpp: 16, block: 4, conv: BC6S, no_alpha: false },
+        97 | 98 => Format { page: P_RGBA8, bpp: 16, block: 4, conv: BC7, no_alpha: false },
+        99 => Format { page: P_RGBA8_SRGB, bpp: 16, block: 4, conv: BC7, no_alpha: false },
         60 | 61 => f(P_R8, 1),
         63 => f(P_R8SN, 1),
         67 => f(P_RGB9E5, 4),
@@ -529,4 +581,70 @@ pub fn family(dxgi: u32) -> u32 {
 pub fn copy_compatible(a: u32, b: u32) -> bool {
     let (fa, fb) = (family(a), family(b));
     fa == fb || (a == 67 && fb == 39) || (b == 67 && fa == 39)
+}
+
+#[cfg(test)]
+mod bc67_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A mode 6 BC7 block with every other bit set: both endpoints 127 with p-bit 1 (255) and
+    /// index 15: opaque white
+    #[test]
+    fn bc7_mode6_white() {
+        let mut b = [0xffu8; 16];
+        b[0] = 0xc0;
+        let t = unsafe { bc67_texels(BC7, b.as_ptr(), 16, 4, 4) }.unwrap();
+        assert_eq!(t, vec![255u8; 64]);
+    }
+
+    /// A BC7 block of mode bits 0 (reserved) decodes to transparent black, as the spec says
+    #[test]
+    fn bc7_reserved_mode_is_zero() {
+        let mut b = [0x55u8; 16];
+        b[0] = 0;
+        let t = unsafe { bc67_texels(BC7, b.as_ptr(), 16, 4, 4) }.unwrap();
+        assert_eq!(t, vec![0u8; 64]);
+    }
+
+    #[test]
+    fn formats_map_to_the_page() {
+        for (dxgi, page, conv) in [(94, P_RGBA16F, BC6U), (95, P_RGBA16F, BC6U), (96, P_RGBA16F, BC6S), (97, P_RGBA8, BC7), (98, P_RGBA8, BC7), (99, P_RGBA8_SRGB, BC7)] {
+            let f = info(dxgi).unwrap();
+            assert_eq!((f.page, f.bpp, f.block, f.conv), (page, 16, 4, conv), "format {dxgi}");
+        }
+        assert!(unsafe { bc67_texels(BC4U, [0u8; 16].as_ptr(), 16, 4, 4) }.is_none());
+    }
+
+    proptest! {
+        /// Any box (sizes not multiples of 4, rows padded): each texel is its block's texel as
+        /// the decoder gives it, BC6H's alpha 1.0
+        #[test]
+        fn boxes_hold_their_blocks_texels(w in 1u32..13, h in 1u32..13, pad in 0usize..20, conv in prop::sample::select(vec![BC6U, BC6S, BC7]), seed in any::<u64>()) {
+            let (bw, bh) = (w.div_ceil(4) as usize, h.div_ceil(4) as usize);
+            let pitch = bw * 16 + pad;
+            let mut x = seed | 1;
+            let src: Vec<u8> = (0..pitch * bh).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect();
+            let t = unsafe { bc67_texels(conv, src.as_ptr(), pitch, w, h) }.unwrap();
+            let texel = if conv == BC7 { 4 } else { 8 };
+            prop_assert_eq!(t.len(), (w * h) as usize * texel);
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    let b = &src[(y / 4) * pitch + (x / 4) * 16..][..16];
+                    let i = (y % 4) * 4 + x % 4;
+                    let got = &t[(y * w as usize + x) * texel..][..texel];
+                    if conv == BC7 {
+                        let mut rgba = [0u8; 64];
+                        bcdec_rs::bc7(b, &mut rgba, 16);
+                        prop_assert_eq!(got, &rgba[4 * i..4 * i + 4]);
+                    } else {
+                        let mut rgb = [0u16; 48];
+                        bcdec_rs::bc6h_half(b, &mut rgb, 12, conv == BC6S);
+                        let want: Vec<u8> = [rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2], 0x3c00].iter().flat_map(|v| v.to_le_bytes()).collect();
+                        prop_assert_eq!(got, &want[..]);
+                    }
+                }
+            }
+        }
+    }
 }
