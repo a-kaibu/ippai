@@ -222,26 +222,26 @@ buf immutable_nodata inval
 buf null_sysmem inval
 buf null_desc inval
 buf null_out false
-view srv_null ok fmt 28 dim 4 0 3 0 0 texrefs 1->1
-view srv_same ok fmt 28 dim 4 0 3 0 0 texrefs 1->1
-view srv_fmt0 ok fmt 28 dim 4 0 3 0 0 texrefs 1->1
+view srv_null ok fmt 28 dim 4 0 3 texrefs 1->1
+view srv_same ok fmt 28 dim 4 0 3 texrefs 1->1
+view srv_fmt0 ok fmt 28 dim 4 0 3 texrefs 1->1
 view srv_srgb inval texrefs 1->1
-view srv_typeless_unorm ok fmt 28 dim 4 0 3 0 0 texrefs 1->1
-view srv_typeless_uint ok fmt 30 dim 4 0 3 0 0 texrefs 1->1
+view srv_typeless_unorm ok fmt 28 dim 4 0 3 texrefs 1->1
+view srv_typeless_uint ok fmt 30 dim 4 0 3 texrefs 1->1
 view srv_typeless_null inval texrefs 1->1
 view srv_typeless_typeless inval texrefs 1->1
 view srv_other_family inval texrefs 1->1
-view srv_bgra_typeless ok fmt 91 dim 4 0 3 0 0 texrefs 1->1
-view srv_r32_float_of_d32 ok fmt 41 dim 4 0 1 0 0 texrefs 1->1
+view srv_bgra_typeless ok fmt 91 dim 4 0 3 texrefs 1->1
+view srv_r32_float_of_d32 ok fmt 41 dim 4 0 1 texrefs 1->1
 view srv_d32_of_d32 inval texrefs 1->1
-view srv_r24x8 ok fmt 46 dim 4 0 1 0 0 texrefs 1->1
-view srv_x24g8 ok fmt 47 dim 4 0 1 0 0 texrefs 1->1
-view srv_mips_all ok fmt 28 dim 4 1 2 0 0 texrefs 1->1
+view srv_r24x8 ok fmt 46 dim 4 0 1 texrefs 1->1
+view srv_x24g8 ok fmt 47 dim 4 0 1 texrefs 1->1
+view srv_mips_all ok fmt 28 dim 4 1 2 texrefs 1->1
 view srv_mips_over inval texrefs 1->1
 view srv_mips0 inval texrefs 1->1
 view srv_mip3 inval texrefs 1->1
 view srv_array_of_single ok fmt 28 dim 5 0 1 0 1 texrefs 1->1
-view srv_2d_of_array ok fmt 28 dim 4 0 1 0 0 texrefs 1->1
+view srv_2d_of_array ok fmt 28 dim 4 0 1 texrefs 1->1
 view srv_array_range ok fmt 28 dim 5 0 1 1 3 texrefs 1->1
 view srv_array_over inval texrefs 1->1
 view srv_array_all ok fmt 28 dim 5 0 1 0 4 texrefs 1->1
@@ -249,36 +249,36 @@ view srv_array_none inval texrefs 1->1
 view srv_cube_of_2d inval texrefs 1->1
 view srv_3d_of_2d inval texrefs 1->1
 view srv_1d_of_2d inval texrefs 1->1
-view srv_ms_of_2d ok fmt 28 dim 6 0 0 0 0 texrefs 1->1
+view srv_ms_of_2d ok fmt 28 dim 6 texrefs 1->1
 view srv_dim0 inval texrefs 1->1
 view srv_nobind inval texrefs 1->1
-view rtv_null ok fmt 28 dim 4 0 0 0 texrefs 1->1
-view rtv_mip2 ok fmt 28 dim 4 2 0 0 texrefs 1->1
+view rtv_null ok fmt 28 dim 4 0 texrefs 1->1
+view rtv_mip2 ok fmt 28 dim 4 2 texrefs 1->1
 view rtv_mip3 inval texrefs 1->1
-view rtv_fmt0 ok fmt 28 dim 4 0 0 0 texrefs 1->1
+view rtv_fmt0 ok fmt 28 dim 4 0 texrefs 1->1
 view rtv_typeless_null inval texrefs 1->1
-view rtv_typeless_srgb ok fmt 29 dim 4 0 0 0 texrefs 1->1
-view rtv_typeless_snorm ok fmt 31 dim 4 0 0 0 texrefs 1->1
+view rtv_typeless_srgb ok fmt 29 dim 4 0 texrefs 1->1
+view rtv_typeless_snorm ok fmt 31 dim 4 0 texrefs 1->1
 view rtv_unorm_as_srgb inval texrefs 1->1
 view rtv_array_slice ok fmt 28 dim 5 0 3 1 texrefs 1->1
 view rtv_array_over inval texrefs 1->1
 view rtv_array_all ok fmt 28 dim 5 0 0 4 texrefs 1->1
 view rtv_of_srv_only inval texrefs 1->1
 view rtv_d24 inval texrefs 1->1
-view dsv_null ok fmt 45 dim 3 flags 0 0 0 0 texrefs 1->1
+view dsv_null ok fmt 45 dim 3 flags 0 0 texrefs 1->1
 view dsv_typeless_null inval texrefs 1->1
-view dsv_typeless_d24 ok fmt 45 dim 3 flags 0 0 0 0 texrefs 1->1
-view dsv_r32_typeless_d32 ok fmt 40 dim 3 flags 0 0 0 0 texrefs 1->1
+view dsv_typeless_d24 ok fmt 45 dim 3 flags 0 0 texrefs 1->1
+view dsv_r32_typeless_d32 ok fmt 40 dim 3 flags 0 0 texrefs 1->1
 view dsv_r32_float inval texrefs 1->1
-view dsv_fmt0 ok fmt 40 dim 3 flags 0 0 0 0 texrefs 1->1
-view dsv_flags_ro ok fmt 45 dim 3 flags 3 0 0 0 texrefs 1->1
+view dsv_fmt0 ok fmt 40 dim 3 flags 0 0 texrefs 1->1
+view dsv_flags_ro ok fmt 45 dim 3 flags 3 0 texrefs 1->1
 view dsv_flags_bad inval texrefs 1->1
 view dsv_d32_stencil_ro inval texrefs 1->1
 view dsv_of_rt inval texrefs 1->1
-view uav_null ok fmt 41 dim 4 0 0 0 texrefs 1->1
-view uav_typeless_r32_uint ok fmt 42 dim 4 0 0 0 texrefs 1->1
-view uav_rgba8_typeless_uint ok fmt 30 dim 4 0 0 0 texrefs 1->1
-view uav_rgba8_typeless_r32 ok fmt 42 dim 4 0 0 0 texrefs 1->1
+view uav_null ok fmt 41 dim 4 0 texrefs 1->1
+view uav_typeless_r32_uint ok fmt 42 dim 4 0 texrefs 1->1
+view uav_rgba8_typeless_uint ok fmt 30 dim 4 0 texrefs 1->1
+view uav_rgba8_typeless_r32 ok fmt 42 dim 4 0 texrefs 1->1
 view uav_of_srv inval texrefs 1->1
 query 0 ok pred inval size 4 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun ok
 query 1 ok pred inval size 8 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
