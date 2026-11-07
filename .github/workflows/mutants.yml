@@ -40,6 +40,14 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+      - name: Room on the runner
+        # (cargo-mutants builds in a copy of the tree per job, each with its own target: two of
+        # them and the baseline's filled the runner's free space in an hour, #83. The
+        # preinstalled SDKs take ~30 GB, as corpus.yml frees them)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h / | tail -1
       - id: mutants-bin
         uses: actions/cache/restore@v6.1.0
         with:
@@ -81,7 +89,10 @@ jobs:
         run: tools/ci/mutants.sh gate
       - name: Summary
         if: always()
-        run: cat target/mutants.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+        run: |
+          cat target/mutants.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          # (how much room the run left, #83)
+          df -h / | tail -1
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
