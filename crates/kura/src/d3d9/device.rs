@@ -233,7 +233,7 @@ fn default_state() -> State {
         (158, f1), // POINTSCALE_A
         (161, 1),  // MULTISAMPLEANTIALIAS
         (162, 0xffffffff),
-        (166, 8192f32.to_bits()), // POINTSIZE_MAX (a hardware device: its MaxPointSize)
+        (166, 8192f32.to_bits()), // POINTSIZE_MAX (software and hardware devices alike)
         (168, 0xf), // COLORWRITEENABLE
         (171, 1),  // BLENDOP add
         (172, 3),  // POSITIONDEGREE cubic
@@ -906,13 +906,11 @@ fn reset_buffers(d: &mut D3d) {
     dev.st = default_state();
     dev.st.rs[7] = (ds != 0) as u32;
     // (software vertex processing: 8192 float, 2048 integer and boolean vertex shader
-    // constants; a hardware device the caps' MaxPointSize)
+    // constants; POINTSIZE_MAX is 8192.0 on either kind of device, winref d3d9state)
     if dev.behavior & 0x20 != 0 {
         dev.st.vsf.resize(8192, [0.0; 4]);
         dev.st.vsi_more = vec![[0; 4]; 2048 - 16];
         dev.st.vsb_more = vec![0; 2048 - 16];
-    } else {
-        dev.st.rs[166] = 32f32.to_bits();
     }
     dev.st.viewport = [0, 0, p[0], p[1], 0, 1f32.to_bits()];
     dev.st.scissor = [0, 0, p[0] as i32, p[1] as i32];

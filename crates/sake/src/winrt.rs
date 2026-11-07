@@ -453,9 +453,9 @@ mod ui {
 }
 
 pub fn init() {
-    // (RoInitialize: S_OK; a second call on the thread would be S_FALSE, which callers treat alike)
-    implement("combase", "RoInitialize", |_| S_OK);
-    implement("combase", "RoUninitialize", |_| 0);
+    // (RoInitialize initializes COM on the thread as CoInitializeEx does: S_OK, then S_FALSE)
+    implement("combase", "RoInitialize", crate::misc::com_enter);
+    implement("combase", "RoUninitialize", crate::misc::com_leave);
     for (n, f) in [
         ("WindowsCreateString", WindowsCreateString as crate::api::Handler),
         ("WindowsCreateStringReference", WindowsCreateStringReference),

@@ -813,10 +813,14 @@ fn V_GetLight(c: &mut Ctx) -> u32 {
 fn V_LightEnable(c: &mut Ctx) -> u32 {
     set(c, Ch::LightOn(c.a(1), c.a(2) != 0))
 }
+/// GetLightEnable's answer for an enabled light is 128, not TRUE, as Direct3D 9's (winref ddrefs)
+fn light_on_value(on: bool) -> u32 {
+    if on { 128 } else { 0 }
+}
 fn V_GetLightEnable(c: &mut Ctx) -> u32 {
     let i = c.a(1);
     let Some(on) = dev(c, |d| d.lights.get(&i).map(|x| x.1)).flatten() else { return D3DERR_INVALIDCALL };
-    put32(c.a(2), on as u32);
+    put32(c.a(2), light_on_value(on));
     D3D_OK
 }
 fn V_SetRenderState(c: &mut Ctx) -> u32 {
@@ -1776,6 +1780,16 @@ mod tests {
     use super::*;
 
     const ARGB: Fmt = Fmt { ch: [(16, 255), (8, 255), (0, 255), (24, 255)] };
+
+    /// ddrefs: GetLightEnable of a light LightEnable turned on reads 128, of one off 0
+    #[test]
+    fn light_enable_reads_as_windows() {
+        let g = include_str!("../../../tests/winref/golden/ddrefs-32/stdout.txt");
+        let lines: Vec<&str> = g.lines().collect();
+        let after = |what: &str| lines[lines.iter().position(|l| l.starts_with(what)).unwrap() + 1].trim();
+        assert_eq!(after("GetLightEnable 150000 "), format!("on {}", light_on_value(true)));
+        assert_eq!(after("GetLightEnable 7 "), format!("on {}", light_on_value(false)));
+    }
 
     fn raster(buf: &mut [u32], w: i32, h: i32) -> Raster {
         Raster {

@@ -189,6 +189,11 @@ int main(void) {
     held("vsf", 255, set_vsf, get_vsf, 3, 4);
     held("psf", 0, set_psf, get_psf, 3, 4);
     held("psf", 223, set_psf, get_psf, 3, 4);
+    /* (where the held constants end: 255 and 223, the last ones, are not; each type's lines) */
+    static const int vsfs[] = { 1, 7, 8, 15, 16, 31, 32, 63, 64, 95, 96, 127, 128, 191, 192, 223, 224, 239, 240, 247, 248, 251, 252, 253, 254, 256, 1000, 8191 };
+    for (int i = 0; i < (int)(sizeof vsfs / sizeof *vsfs); i++) held("vsf", vsfs[i], set_vsf, get_vsf, 3, 4);
+    static const int psfs[] = { 1, 7, 8, 15, 16, 31, 32, 63, 64, 95, 96, 127, 128, 191, 192, 207, 208, 215, 216, 219, 220, 221, 222 };
+    for (int i = 0; i < (int)(sizeof psfs / sizeof *psfs); i++) held("psf", psfs[i], set_psf, get_psf, 3, 4);
     held("vsi", 0, set_vsi, get_vsi, 3, 4);
     held("psi", 15, set_psi, get_psi, 3, 4);
     held("vsb", 0, set_vsb, get_vsb, 1, 0);

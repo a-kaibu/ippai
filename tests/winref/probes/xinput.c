@@ -1,15 +1,19 @@
 /* XInput as games load it (AdvHD imports XINPUTUAP.dll; others xinput1_4 or xinput9_1_0, all
  * three in System32): each loads, and with no controller attached (the runner has none, nor does
  * sake) every user index answers ERROR_DEVICE_NOT_CONNECTED, an index past 3 ERROR_BAD_ARGUMENTS;
- * XInputEnable returns nothing and changes none of that. */
+ * XInputEnable returns nothing and changes none of that. XINPUTUAP (over Windows.Gaming.Input)
+ * first wants COM on the thread: without it every call is CO_E_NOTINITIALIZED; the "com:" part
+ * plays it all again after CoInitializeEx. xinput9_1_0 has no XInputEnable.
+ * libs: -lole32 */
 #include "../probe.h"
+#include <objbase.h>
 
 typedef DWORD(WINAPI *GetState)(DWORD, void *);
 typedef DWORD(WINAPI *SetState)(DWORD, void *);
 typedef DWORD(WINAPI *GetCaps)(DWORD, DWORD, void *);
 typedef void(WINAPI *Enable)(BOOL);
 
-int main(void) {
+static void play(void) {
     const char *dlls[] = { "xinput1_4.dll", "xinput9_1_0.dll", "XINPUTUAP.dll" };
     for (int d = 0; d < 3; d++) {
         HMODULE m = LoadLibraryA(dlls[d]);
@@ -30,5 +34,12 @@ int main(void) {
         }
         if (en) en(TRUE);
     }
+}
+
+int main(void) {
+    play();
+    printf("com: CoInitializeEx %08lx\n", (unsigned long)CoInitializeEx(NULL, COINIT_MULTITHREADED));
+    play();
+    CoUninitialize();
     return 0;
 }

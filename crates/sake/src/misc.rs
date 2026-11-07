@@ -868,6 +868,17 @@ static COM: Mutex<Option<HashMap<u32, (u32, u32)>>> = Mutex::new(None);
 fn com<R>(f: impl FnOnce(&mut (u32, u32)) -> R) -> R {
     f(COM.lock().unwrap().get_or_insert_with(HashMap::default).entry(crate::cur().tid).or_default())
 }
+/// Whether the current thread has COM (or WinRT, RoInitialize) initialized.
+pub fn com_initialized() -> bool {
+    com(|n| n.0 > 0)
+}
+/// RoInitialize / RoUninitialize count as CoInitializeEx / CoUninitialize.
+pub fn com_enter(c: &mut Ctx) -> u32 {
+    CoInitialize(c)
+}
+pub fn com_leave(c: &mut Ctx) -> u32 {
+    CoUninitialize(c)
+}
 fn CoInitialize(_: &mut Ctx) -> u32 {
     com(|n| {
         n.0 += 1;
@@ -3376,9 +3387,34 @@ fn WinVerifyTrust(_: &mut Ctx) -> u32 {
     0
 }
 
-/// XInput: no controller is ever connected (a user index past 3: ERROR_BAD_ARGUMENTS).
+/// XInput: each DLL's exports as Windows has them (xinput9_1_0 has no XInputEnable, xinputuap
+/// none of xinput1_4's undocumented ordinals)
+const XINPUT: &[(&str, &[&str])] = &[
+    ("xinput1_1", &["XInputEnable", "XInputGetCapabilities", "XInputGetDSoundAudioDeviceGuids", "XInputSetState", "XInputGetState"]),
+    ("xinput1_2", &["XInputEnable", "XInputGetCapabilities", "XInputGetDSoundAudioDeviceGuids", "XInputSetState", "XInputGetState"]),
+    ("xinput1_3", &["XInputEnable", "XInputGetCapabilities", "XInputGetDSoundAudioDeviceGuids", "XInputSetState", "XInputGetState", "XInputGetBatteryInformation", "XInputGetKeystroke", "XInputGetStateEx"]),
+    ("xinput1_4", &["XInputEnable", "XInputGetCapabilities", "XInputSetState", "XInputGetState", "XInputGetBatteryInformation", "XInputGetKeystroke", "XInputGetAudioDeviceIds", "XInputGetStateEx", "XInputWaitForGuideButton", "XInputCancelGuideButtonWait", "XInputPowerOffController", "XInputGetBaseBusInformation", "XInputGetCapabilitiesEx"]),
+    ("xinput9_1_0", &["XInputGetCapabilities", "XInputGetDSoundAudioDeviceGuids", "XInputSetState", "XInputGetState"]),
+    ("xinputuap", &["XInputEnable", "XInputGetCapabilities", "XInputSetState", "XInputGetState", "XInputGetBatteryInformation", "XInputGetKeystroke", "XInputGetAudioDeviceIds"]),
+];
+
+/// What an XInput call answers with no controller attached (winref xinput): every user index
+/// ERROR_DEVICE_NOT_CONNECTED, one past 3 ERROR_BAD_ARGUMENTS; XINPUTUAP (the Windows 10 one,
+/// over Windows.Gaming.Input) first wants COM / WinRT on the thread: CO_E_NOTINITIALIZED.
+fn xinput_answer(uap: bool, user: u32, com: bool) -> u32 {
+    if uap && !com {
+        0x8004_01F0
+    } else if user > 3 {
+        160
+    } else {
+        1167
+    }
+}
 fn xinput_none(c: &mut Ctx) -> u32 {
-    if c.a(0) > 3 { 160 } else { 1167 } // ERROR_DEVICE_NOT_CONNECTED
+    xinput_answer(false, c.a(0), true)
+}
+fn xinputuap_none(c: &mut Ctx) -> u32 {
+    xinput_answer(true, c.a(0), com_initialized())
 }
 fn xinput_ok(_: &mut Ctx) -> u32 {
     0
@@ -3389,14 +3425,10 @@ pub fn init() {
     wts_init();
     implement("shell32", "SHGetKnownFolderPath", SHGetKnownFolderPath);
     // (xinputuap: the Windows 10 one, AdvHD imports it)
-    for d in ["xinput1_1", "xinput1_2", "xinput1_3", "xinput1_4", "xinput9_1_0", "xinputuap"] {
-        for n in ["XInputGetState", "XInputGetStateEx", "XInputSetState", "XInputGetCapabilities", "XInputGetKeystroke", "XInputGetBatteryInformation", "XInputGetDSoundAudioDeviceGuids"] {
-            implement(d, n, xinput_none);
+    for &(d, names) in XINPUT {
+        for &n in names {
+            implement(d, n, if n == "XInputEnable" { xinput_ok } else if d == "xinputuap" { xinputuap_none } else { xinput_none });
         }
-        implement(d, "XInputEnable", xinput_ok);
-    }
-    for n in ["XInputGetAudioDeviceIds", "XInputWaitForGuideButton", "XInputCancelGuideButtonWait", "XInputPowerOffController", "XInputGetBaseBusInformation", "XInputGetCapabilitiesEx"] {
-        implement("xinput1_4", n, xinput_none);
     }
     reg!("advapi32";
         RegOpenKeyExA, RegOpenKeyExW, RegOpenKeyA, RegOpenKeyW, RegCreateKeyExA, RegCreateKeyExW, RegCreateKeyA,
@@ -3756,6 +3788,60 @@ mod tests {
     }
     fn w(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+
+    /// tests/winref/probes/xinput.c played on the table and the answers, line by line against
+    /// Windows' (the probe calls without COM on its thread, then with CoInitializeEx and
+    /// RoInitialize where Windows' answers have those lines)
+    fn xinput_probe(com: bool) -> Vec<String> {
+        let mut out = vec![];
+        for (dll, file) in [("xinput1_4", "xinput1_4.dll"), ("xinput9_1_0", "xinput9_1_0.dll"), ("xinputuap", "XINPUTUAP.dll")] {
+            let names = XINPUT.iter().find(|e| e.0 == dll).unwrap().1;
+            let has = |n: &str| names.contains(&n) as u32;
+            out.push(format!("{file}: loaded"));
+            out.push(format!("  exports: GetState {} SetState {} GetCapabilities {} Enable {}", has("XInputGetState"), has("XInputSetState"), has("XInputGetCapabilities"), has("XInputEnable")));
+            for pass in ["enabled", "disabled"] {
+                for i in 0..5 {
+                    let r = xinput_answer(dll == "xinputuap", i, com);
+                    out.push(format!("  {pass} user {i}: GetState {r} SetState {r} GetCapabilities {r}"));
+                }
+            }
+        }
+        out
+    }
+    #[test]
+    fn xinput_as_windows() {
+        for golden in [include_str!("../../../tests/winref/golden/xinput-32/stdout.txt"), include_str!("../../../tests/winref/golden/xinput-64/stdout.txt")] {
+            let lines: Vec<&str> = golden.lines().collect();
+            // the part without COM, then (once Windows answered them) the "com:" part
+            let (plain, with_com) = match lines.iter().position(|l| l.starts_with("com:")) {
+                Some(at) => (&lines[..at], Some(&lines[at + 1..])),
+                None => (&lines[..], None),
+            };
+            assert_eq!(xinput_probe(false), plain.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            if let Some(w) = with_com {
+                assert_eq!(xinput_probe(true), w.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            }
+        }
+        // every DLL's exports are in specs.txt (what the loader binds) and implemented
+        let specs = include_str!("specs.txt");
+        for &(d, names) in XINPUT {
+            for n in names {
+                assert!(specs.lines().any(|l| l.starts_with(&format!("{d} {n} "))), "{d}!{n} not in specs.txt");
+            }
+        }
+    }
+
+    proptest::proptest! {
+        /// the old XInput DLLs never look at COM; XINPUTUAP answers CO_E_NOTINITIALIZED for
+        /// every user index without it, and as the others with it
+        #[test]
+        fn xinput_answers(user in proptest::prelude::any::<u32>(), com in proptest::prelude::any::<bool>()) {
+            let plain = xinput_answer(false, user, com);
+            proptest::prop_assert_eq!(plain, if user > 3 { 160 } else { 1167 });
+            proptest::prop_assert_eq!(xinput_answer(false, user, !com), plain);
+            proptest::prop_assert_eq!(xinput_answer(true, user, com), if com { plain } else { 0x8004_01F0 });
+        }
     }
 
     // tests/winref/probes/crypt.c (the lenient parser took any 32 hex digits among anything)

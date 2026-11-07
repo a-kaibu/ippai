@@ -70,6 +70,40 @@ fn d3d9_new_device_state_is_windows() {
     gpu::set_pump(None);
 }
 
+/// A hardware vertex processing device's point size states (d3d9state's "hardware rs" lines:
+/// POINTSIZE_MAX is 8192.0 there as on the software device, not the caps' MaxPointSize).
+#[test]
+fn d3d9_hardware_device_point_states_are_windows() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    attach_page();
+    let o = out();
+    unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
+    let d3d = rd(o);
+    let pp = unsafe { alloc(56) as u32 };
+    for (i, x) in [64, 48, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0].into_iter().enumerate() {
+        unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
+    }
+    let o = out();
+    assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
+    let dev = rd(o);
+    let hx = |v: u32| if v == 0 { "0".to_string() } else { format!("{v:#x}") };
+    let mut n = 0;
+    for l in golden("d3d9state-32").lines().filter(|l| l.starts_with("hardware rs ")) {
+        let st: u32 = l[12..].split(':').next().unwrap().parse().unwrap();
+        let p = out();
+        let r = call(IF_DEVICE, 58, &[dev, st, p]);
+        assert_eq!(format!("hardware rs {st}: {} = {}", hx(r), hx(rd(p))), l.trim_end());
+        n += 1;
+    }
+    assert!(n >= 4, "{n} lines");
+    call(IF_DEVICE, 2, &[dev]);
+    gpu::set_pump(None);
+}
+
 /// A new Direct3D 8 device's GetRenderState and GetTextureStageState, on a software and a
 /// hardware vertex processing device, and the Direct3D 8-only states read back after a set
 /// (d3d8state: result and value of every line).
