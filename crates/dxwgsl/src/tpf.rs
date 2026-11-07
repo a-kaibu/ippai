@@ -295,9 +295,15 @@ pub fn decode(chunk: &[u8]) -> Result<Program, String> {
             _ => (usize::MAX, false),
         };
         let mut k = 0;
+        let mut last = r.p;
         while r.p < r.end && k < operands {
+            last = r.p;
             inst.ops.push(r.operand()?);
             k += 1;
+        }
+        // fxc ends samplepos with a zero word past its three operands (its length counts it)
+        if op == 0x6e && inst.ops.len() == 4 && r.p == r.end && r.end - last == 1 && r.w[last] == 0 {
+            inst.ops.pop();
         }
         if words {
             while r.p < r.end {
@@ -326,6 +332,21 @@ mod tests {
     fn compute_instructions_have_their_arity() {
         for (op, k) in [(0xa3, 3), (0xa4, 3), (0xa5, 3), (0xa6, 3), (0xa7, 4), (0xa8, 4), (0xbe, 0)] {
             assert_eq!(super::arity(op), Some(k), "{op:#x}");
+        }
+    }
+
+    /// fxc's own bytecode (D3DCompile on Windows, winref d3d11's MSAA shaders, ps_4_1):
+    /// samplepos carries a zero word past its operands; ld2dms and sampleinfo as documented
+    #[test]
+    fn fxc_multisample_shaders() {
+        for (name, code, want) in [
+            ("samplepos", &include_bytes!("fxc/ps41_samplepos.dxbc")[..], &["textureNumSamples", "d3d_samplepos"][..]),
+            ("ld2dms", &include_bytes!("fxc/ps41_ld2dms.dxbc")[..], &["textureLoad"][..]),
+        ] {
+            let w = crate::translate(code, true, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+            for s in want {
+                assert!(w.code.contains(s), "{name}: no {s} in\n{}", w.code);
+            }
         }
     }
 }
