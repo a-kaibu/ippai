@@ -340,6 +340,8 @@ pub(crate) struct Gl {
     pipelines: HashMap<Vec<u32>, u32>,
     pub(crate) shaders: HashMap<u32, glsl::Shader>,
     pub(crate) programs: HashMap<u32, glsl::Program>,
+    /// (the program of the context `with` took out of `ctxs`, for collect_programs)
+    pub(crate) ctxs_program_hint: Option<u32>,
 }
 
 static GL: Mutex<Option<Gl>> = Mutex::new(None);
@@ -369,6 +371,7 @@ fn lock() -> std::sync::MutexGuard<'static, Option<Gl>> {
             pipelines: HashMap::new(),
             shaders: HashMap::new(),
             programs: HashMap::new(),
+            ctxs_program_hint: None,
         });
     }
     g
@@ -418,6 +421,7 @@ pub extern "C" fn vngl_context_create(_share: u32) -> u32 {
 pub extern "C" fn vngl_context_destroy(id: u32) {
     let mut g = lock();
     g.as_mut().unwrap().ctxs.remove(&id);
+    g.as_mut().unwrap().collect_programs();
     CURRENT.with(|c| {
         if c.get() == id {
             c.set(0)
@@ -610,7 +614,7 @@ fn get(g: &Gl, c: &Ctx, pname: u32) -> Option<Vec<f64>> {
         0x821E => vec![0.0],
         0x80E8 | 0x80E9 => vec![65536.0],
         0x0D32 | 0x0D36 => vec![32.0],
-        0x0B8D => vec![c.program as f64],
+        0x8B8D => vec![c.program as f64], // GL_CURRENT_PROGRAM
         _ if c.caps.contains(&pname) => vec![1.0],
         0x0BE2 | 0x0B71 | 0x0BC0 | 0x0B44 | 0x0C11 | 0x0B90 | 0x0DE1 => vec![0.0],
         _ => {

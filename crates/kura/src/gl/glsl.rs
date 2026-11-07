@@ -14,6 +14,8 @@ pub(crate) struct Shader {
 
 #[derive(Default)]
 pub(crate) struct Program {
+    /// glDeleteProgram while current somewhere: goes when no context uses it
+    deleted: bool,
     shaders: Vec<u32>,
     bound_attribs: HashMap<String, u32>,
     linked: Option<Linked>,
@@ -43,8 +45,19 @@ struct Linked {
 const GL_VERTEX_SHADER: u32 = 0x8B31;
 
 fn link(g: &mut Gl, p: &mut Program) -> Result<Linked, String> {
-    let find = |pixel: bool| p.shaders.iter().copied().find(|s| g.shaders.get(s).is_some_and(|x| x.pixel == pixel));
-    let (vs, ps) = (find(false).ok_or("no vertex shader")?, find(true).ok_or("no fragment shader")?);
+    // (one compiled shader of each stage: several of one stage would need their sources linked
+    // together, which glwgsl does not do; ours each have a main)
+    let find = |pixel: bool| -> Result<u32, String> {
+        let v: Vec<u32> = p.shaders.iter().copied().filter(|s| g.shaders.get(s).is_some_and(|x| x.pixel == pixel)).collect();
+        let what = if pixel { "fragment" } else { "vertex" };
+        match v[..] {
+            [s] if g.shaders[&s].ok => Ok(s),
+            [_] => Err(format!("the {what} shader is not compiled")),
+            [] => Err(format!("no {what} shader")),
+            _ => Err(format!("several {what} shaders")),
+        }
+    };
+    let (vs, ps) = (find(false)?, find(true)?);
     let l = glwgsl::link(&g.shaders[&vs].source, &g.shaders[&ps].source, &p.bound_attribs)?;
     Ok(Linked {
         vs: Stage { shader: shader(&l.vs.wgsl), block: l.vs.block, samplers: l.vs.samplers },
@@ -75,6 +88,39 @@ fn gl() -> std::sync::MutexGuard<'static, Option<Gl>> {
     lock()
 }
 
+/// Sets the current context's error (call with the lock not held).
+fn fail(e: u32) {
+    with(|_, c| c.err(e))
+}
+
+/// What a name is (formal/tla/GlPrograms.tla): GL_INVALID_VALUE for no object,
+/// GL_INVALID_OPERATION for an object of the other kind.
+fn kind_err(g: &Gl, name: u32, want_shader: bool) -> Option<u32> {
+    let (is_s, is_p) = (g.shaders.contains_key(&name), g.programs.contains_key(&name));
+    if want_shader && is_s || !want_shader && is_p {
+        None
+    } else if is_s || is_p {
+        Some(GL_INVALID_OPERATION)
+    } else {
+        Some(GL_INVALID_VALUE)
+    }
+}
+
+impl Gl {
+    /// Shaders flagged for deletion that no program has any more go; programs flagged that no
+    /// context uses go, and so do their flagged shaders then.
+    pub(crate) fn collect_programs(&mut self) {
+        // (the context `with` runs: out of the table, its program in the hint)
+        let used: HashSet<u32> = self.ctxs.values().map(|c| c.program).chain(self.ctxs_program_hint).collect();
+        let gone: Vec<u32> = self.programs.iter().filter(|(id, p)| p.deleted && !used.contains(id)).map(|(id, _)| *id).collect();
+        for id in gone {
+            self.programs.remove(&id);
+        }
+        let attached: HashSet<u32> = self.programs.values().flat_map(|p| p.shaders.iter().copied()).collect();
+        self.shaders.retain(|id, s| !s.deleted || attached.contains(id));
+    }
+}
+
 extern "C" fn glCreateShader(ty: u32) -> u32 {
     let mut g = gl();
     let g = g.as_mut().unwrap();
@@ -86,6 +132,9 @@ extern "C" fn glCreateShaderObject(ty: u32) -> u32 {
     glCreateShader(ty)
 }
 unsafe extern "C" fn glShaderSource(sh: u32, count: i32, strings: *const *const c_char, lengths: *const i32) {
+    if let Some(e) = kind_err(gl().as_ref().unwrap(), sh, true).or((count < 0).then_some(GL_INVALID_VALUE)) {
+        return fail(e);
+    }
     let mut s = String::new();
     // (a 64-bit guest's array holds 8-byte pointers: their low halves are the addresses)
     let stride = crate::d3d9::device::ptr() as usize / 4;
@@ -107,6 +156,10 @@ unsafe extern "C" fn glGetShaderSource(sh: u32, max: i32, len: *mut i32, out: *m
 }
 extern "C" fn glCompileShader(sh: u32) {
     let mut g = gl();
+    if let Some(e) = kind_err(g.as_ref().unwrap(), sh, true) {
+        drop(g);
+        return fail(e);
+    }
     let Some(x) = g.as_mut().unwrap().shaders.get_mut(&sh) else { return };
     match glwgsl::check(&x.source, x.pixel) {
         Ok(()) => {
@@ -122,14 +175,23 @@ extern "C" fn glCompileShader(sh: u32) {
 }
 unsafe extern "C" fn glGetShaderiv(sh: u32, p: u32, out: *mut i32) {
     let g = gl();
-    let Some(x) = g.as_ref().unwrap().shaders.get(&sh) else { return };
+    if let Some(e) = kind_err(g.as_ref().unwrap(), sh, true) {
+        drop(g);
+        return fail(e);
+    }
+    let x = &g.as_ref().unwrap().shaders[&sh];
     *out = match p {
         0x8B4F => if x.pixel { 0x8B30 } else { 0x8B31 },
+        // (GL_OBJECT_TYPE_ARB: GL_SHADER_OBJECT_ARB)
+        0x8B4E => 0x8B48,
         0x8B80 => x.deleted as i32,
         0x8B81 => x.ok as i32,
         0x8B84 => x.log.len() as i32 + 1,
         0x8B88 => x.source.len() as i32 + 1,
-        _ => 0,
+        _ => {
+            drop(g);
+            return fail(GL_INVALID_ENUM);
+        }
     }
 }
 unsafe fn copy_str(s: &str, max: i32, len: *mut i32, out: *mut c_char) {
@@ -146,11 +208,19 @@ unsafe extern "C" fn glGetShaderInfoLog(sh: u32, max: i32, len: *mut i32, out: *
     let s = gl().as_ref().unwrap().shaders.get(&sh).map(|x| x.log.clone()).unwrap_or_default();
     copy_str(&s, max, len, out)
 }
+/// (a shader attached to a program is only flagged: it goes when no program has it)
 extern "C" fn glDeleteShader(sh: u32) {
-    let mut g = gl();
-    if let Some(x) = g.as_mut().unwrap().shaders.get_mut(&sh) {
-        x.deleted = true;
+    if sh == 0 {
+        return;
     }
+    let mut g = gl();
+    let g2 = g.as_mut().unwrap();
+    if let Some(e) = kind_err(g2, sh, true) {
+        drop(g);
+        return fail(e);
+    }
+    g2.shaders.get_mut(&sh).unwrap().deleted = true;
+    g2.collect_programs();
 }
 extern "C" fn glIsShader(sh: u32) -> u8 {
     gl().as_ref().unwrap().shaders.contains_key(&sh) as u8
@@ -166,21 +236,35 @@ extern "C" fn glCreateProgramObject() -> u32 {
     glCreateProgram()
 }
 extern "C" fn glAttachShader(p: u32, sh: u32) {
-    if let Some(x) = gl().as_mut().unwrap().programs.get_mut(&p) {
-        if !x.shaders.contains(&sh) {
-            x.shaders.push(sh);
-        }
+    let mut g = gl();
+    let g2 = g.as_mut().unwrap();
+    let e = kind_err(g2, p, false).or(kind_err(g2, sh, true));
+    let e = e.or_else(|| g2.programs[&p].shaders.contains(&sh).then_some(GL_INVALID_OPERATION));
+    if let Some(e) = e {
+        drop(g);
+        return fail(e);
     }
+    g2.programs.get_mut(&p).unwrap().shaders.push(sh);
 }
 extern "C" fn glAttachObject(p: u32, sh: u32) {
     glAttachShader(p, sh)
 }
 extern "C" fn glDetachShader(p: u32, sh: u32) {
-    if let Some(x) = gl().as_mut().unwrap().programs.get_mut(&p) {
-        x.shaders.retain(|&s| s != sh);
+    let mut g = gl();
+    let g2 = g.as_mut().unwrap();
+    let e = kind_err(g2, p, false).or(kind_err(g2, sh, true));
+    let e = e.or_else(|| (!g2.programs[&p].shaders.contains(&sh)).then_some(GL_INVALID_OPERATION));
+    if let Some(e) = e {
+        drop(g);
+        return fail(e);
     }
+    g2.programs.get_mut(&p).unwrap().shaders.retain(|&s| s != sh);
+    g2.collect_programs();
 }
 unsafe extern "C" fn glGetAttachedShaders(p: u32, max: i32, count: *mut i32, out: *mut u32) {
+    if let Some(e) = kind_err(gl().as_ref().unwrap(), p, false).or((max < 0).then_some(GL_INVALID_VALUE)) {
+        return fail(e);
+    }
     let v = gl().as_ref().unwrap().programs.get(&p).map(|x| x.shaders.clone()).unwrap_or_default();
     let n = v.len().min(max.max(0) as usize);
     for (k, s) in v.iter().take(n).enumerate() {
@@ -198,6 +282,10 @@ unsafe extern "C" fn glBindAttribLocation(p: u32, idx: u32, name: *const c_char)
 }
 extern "C" fn glLinkProgram(p: u32) {
     let mut g = gl();
+    if let Some(e) = kind_err(g.as_ref().unwrap(), p, false) {
+        drop(g);
+        return fail(e);
+    }
     let g = g.as_mut().unwrap();
     let Some(mut x) = g.programs.remove(&p) else { return };
     match link(g, &mut x) {
@@ -217,15 +305,25 @@ extern "C" fn glLinkProgram(p: u32) {
 extern "C" fn glValidateProgram(_p: u32) {}
 unsafe extern "C" fn glGetProgramiv(p: u32, pname: u32, out: *mut i32) {
     let g = gl();
-    let Some(x) = g.as_ref().unwrap().programs.get(&p) else { return };
+    if let Some(e) = kind_err(g.as_ref().unwrap(), p, false) {
+        drop(g);
+        return fail(e);
+    }
+    let x = &g.as_ref().unwrap().programs[&p];
     *out = match pname {
+        0x8B80 => x.deleted as i32,
+        // (GL_OBJECT_TYPE_ARB: GL_PROGRAM_OBJECT_ARB)
+        0x8B4E => 0x8B40,
         0x8B82 | 0x8B83 => x.linked.is_some() as i32,
         0x8B84 => x.log.len() as i32 + 1,
         0x8B85 => x.shaders.len() as i32,
         0x8B86 => x.linked.as_ref().map_or(0, |l| l.sizes.len() as i32),
         0x8B89 => x.linked.as_ref().map_or(0, |l| l.attribs.len() as i32),
         0x8B87 | 0x8B8A => 64,
-        _ => 0,
+        _ => {
+            drop(g);
+            return fail(GL_INVALID_ENUM);
+        }
     }
 }
 unsafe extern "C" fn glGetObjectParameteriv(obj: u32, pname: u32, out: *mut i32) {
@@ -248,16 +346,48 @@ unsafe extern "C" fn glGetInfoLog(obj: u32, max: i32, len: *mut i32, out: *mut c
         glGetProgramInfoLog(obj, max, len, out)
     }
 }
+/// (a program not linked, or no program: an error, the current one stays; leaving a program
+/// flagged for deletion deletes it)
 extern "C" fn glUseProgram(p: u32) {
-    with(|_, c| c.program = p)
+    with(|g, c| {
+        if p != 0 {
+            if let Some(e) = kind_err(g, p, false).or_else(|| g.programs[&p].linked.is_none().then_some(GL_INVALID_OPERATION)) {
+                return c.err(e);
+            }
+        }
+        c.program = p;
+        g.ctxs_program_hint = Some(p);
+        g.collect_programs();
+        g.ctxs_program_hint = None;
+    })
 }
 extern "C" fn glUseProgramObject(p: u32) {
     glUseProgram(p)
 }
+/// (a program current in a context is only flagged: it goes when no context uses it)
 extern "C" fn glDeleteProgram(p: u32) {
-    let _ = p;
+    if p == 0 {
+        return;
+    }
+    with(|g, c| {
+        if let Some(e) = kind_err(g, p, false) {
+            return c.err(e);
+        }
+        g.programs.get_mut(&p).unwrap().deleted = true;
+        g.ctxs_program_hint = Some(c.program);
+        g.collect_programs();
+        g.ctxs_program_hint = None;
+    })
 }
-extern "C" fn glDeleteObject(_o: u32) {}
+/// (GL_ARB_shader_objects: shaders and programs alike)
+extern "C" fn glDeleteObject(o: u32) {
+    let is_shader = gl().as_ref().unwrap().shaders.contains_key(&o);
+    if is_shader {
+        glDeleteShader(o)
+    } else {
+        glDeleteProgram(o)
+    }
+}
 extern "C" fn glIsProgram(p: u32) -> u8 {
     gl().as_ref().unwrap().programs.contains_key(&p) as u8
 }
@@ -570,3 +700,6 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
         q.cmd(&wds);
     });
 }
+
+#[cfg(test)]
+mod programs_tests;

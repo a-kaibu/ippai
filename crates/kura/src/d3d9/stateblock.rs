@@ -163,9 +163,15 @@ pub fn records(m: u32) -> bool {
 
 /// `dst`'s masked states = `src`'s (the bindings: the caller counts them).
 pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
-    for i in 0..256 {
-        if bit(&m.rs, i) {
-            dst.rs[i] = src.rs[i];
+    // (D3DSBT_ALL blocks are captured and applied hundreds of times a frame: Siglus around
+    // every draw; whole arrays at once there)
+    if m.rs == [!0; 4] {
+        dst.rs.clone_from(&src.rs);
+    } else {
+        for i in 0..256 {
+            if bit(&m.rs, i) {
+                dst.rs[i] = src.rs[i];
+            }
         }
     }
     for s in 0..8 {
@@ -211,6 +217,10 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
         dst.ps = src.ps;
     }
     for (bits, d, s) in [(&m.vsf, &mut dst.vsf, &src.vsf), (&m.psf, &mut dst.psf, &src.psf)] {
+        if bits.len() * 64 >= s.len() && bits.iter().all(|&w| w == !0) && d.len() == s.len() {
+            d.copy_from_slice(s);
+            continue;
+        }
         for i in 0..d.len().min(s.len()) {
             if bit(bits, i) {
                 d[i] = s[i];
