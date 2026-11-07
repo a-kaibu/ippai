@@ -240,6 +240,57 @@ static void url(const char *name, const unsigned char *d, DWORD len, DWORD per) 
     DeleteFileW(path);
 }
 
+/* how the MP3 source cuts a longer file into samples: the file's frames (after its ID3v2 tag)
+ * k times over (the bit reservoir glitches at the joins, which counting does not mind); the
+ * sample count, and the first samples' lengths in 1152-frame MPEG frames */
+static void long_mp3(int k) {
+    DWORD tag = 10 + ((file_mp3[6] & 0x7f) << 21 | (file_mp3[7] & 0x7f) << 14 | (file_mp3[8] & 0x7f) << 7 | (file_mp3[9] & 0x7f));
+    DWORD body = sizeof file_mp3 - tag, len = tag + k * body;
+    unsigned char *d = malloc(len);
+    memcpy(d, file_mp3, tag);
+    for (int i = 0; i < k; i++) memcpy(d + tag + i * body, file_mp3 + tag, body);
+    WCHAR dir[MAX_PATH], path[MAX_PATH];
+    GetTempPathW(MAX_PATH, dir);
+    swprintf(path, MAX_PATH, L"%lsmfreader-probe-long.mp3", dir);
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    DWORD w;
+    WriteFile(f, d, len, &w, NULL);
+    CloseHandle(f);
+    free(d);
+    IMFSourceReader *r = NULL;
+    HRESULT hr = MFCreateSourceReaderFromURL(path, NULL, &r);
+    if (r) {
+        IMFMediaType *t;
+        MFCreateMediaType(&t);
+        IMFMediaType_SetGUID(t, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+        IMFMediaType_SetGUID(t, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+        hr |= IMFSourceReader_SetCurrentMediaType(r, FIRST_AUDIO, NULL, t);
+        IMFMediaType_Release(t);
+    }
+    printf("mp3 x%d (%lu bytes): %#lx, samples of", k, len, hr);
+    DWORD n = 0, frames = 0;
+    while (r && n < 10000) {
+        IMFSample *s = NULL;
+        DWORD idx, flags = 0;
+        LONGLONG ts;
+        if (FAILED(IMFSourceReader_ReadSample(r, FIRST_AUDIO, 0, &idx, &flags, &ts, &s)) || (flags & MF_SOURCE_READERF_ENDOFSTREAM) || !s) {
+            if (s) IMFSample_Release(s);
+            break;
+        }
+        DWORD bytes = 0;
+        IMFSample_GetTotalLength(s, &bytes);
+        IMFSample_Release(s);
+        /* (16-bit stereo) */
+        long fr = lround(bytes / 4.0 / 1152);
+        if (n < 4) printf(" %ld", fr);
+        frames += bytes / 4;
+        n++;
+    }
+    printf(" ...: %lu samples, %ld frames of 1152\n", n, lround(frames / 1152.0));
+    if (r) IMFSourceReader_Release(r);
+    DeleteFileW(path);
+}
+
 int main(void) {
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
     if (FAILED(hr)) {
@@ -259,6 +310,8 @@ int main(void) {
         open_one("mp3 stream", r, 1152);
         IMFSourceReader_Release(r);
     }
+    long_mp3(10);
+    long_mp3(40);
     /* not a sound file */
     static const BYTE junk[4096] = { 1, 2, 3 };
     Mem j = { { &mem_vt }, 1, junk, sizeof junk, 0 };

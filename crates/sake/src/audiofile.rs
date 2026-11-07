@@ -72,8 +72,11 @@ fn u64be(b: &[u8], o: usize) -> Option<u64> {
     Some(u64::from_be_bytes(b.get(o..o + 8)?.try_into().ok()?))
 }
 
-/// PCM packets: this many frames each (the last one shorter)
-const PCM_FRAMES: u32 = 4096;
+/// PCM packets: a tenth of a second each (the last one shorter), as Windows' WAVE source hands
+/// out its samples (winref mfreader: 0.3 s at 22050 Hz in 3 samples of 2205 frames)
+fn pcm_frames(rate: u32) -> u64 {
+    (rate as u64 / 10).max(1)
+}
 
 fn wave(b: &[u8]) -> Option<Track> {
     let mut o = 12;
@@ -109,7 +112,7 @@ fn wave(b: &[u8]) -> Option<Track> {
                     let mut frames = Vec::new();
                     let mut at = 0u64;
                     while at < total {
-                        let n = (total - at).min(PCM_FRAMES as u64) as u32;
+                        let n = (total - at).min(pcm_frames(rate)) as u32;
                         packets.push((body as u64 + at * align as u64, n * align));
                         frames.push(n);
                         at += n as u64;
@@ -436,9 +439,11 @@ mod tests {
         let data: Vec<u8> = (0..4 * 5000).map(|i| i as u8).collect();
         let t = open(&wav(1, 2, 44100, 16, &data)).unwrap();
         assert_eq!((t.codec.clone(), t.rate, t.channels, t.avg), (Codec::Pcm { bits: 16, float: false }, 44100, 2, 176400));
-        assert_eq!(t.frames, [4096, 904]);
+        assert_eq!(t.frames, [4410, 590]);
         let body = wav(1, 2, 44100, 16, &[]).len() as u64;
-        assert_eq!(t.packets, [(body, 4096 * 4), (body + 4096 * 4, 904 * 4)]);
+        assert_eq!(t.packets, [(body, 4410 * 4), (body + 4410 * 4, 590 * 4)]);
+        // (a tenth of a second at any rate)
+        assert_eq!(open(&wav(1, 1, 22050, 16, &vec![0; 2 * 6615])).unwrap().frames, [2205, 2205, 2205]);
         assert_eq!(open(&wav(3, 1, 48000, 32, &[0; 8])).unwrap().codec, Codec::Pcm { bits: 32, float: true });
         // ADPCM, or no fmt chunk: not opened here
         assert_eq!(open(&wav(2, 1, 22050, 4, &[0; 8])), None);
