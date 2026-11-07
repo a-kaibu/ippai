@@ -226,6 +226,65 @@ static void startup_info(void) {
     printf("GetStartupInfoW: cb %lu beyond %d\n", *(DWORD *)buf, beyond(sizeof(STARTUPINFOW)));
 }
 
+/* Every size from 0 to `max`: the answers as runs of sizes that answer alike ("lo-hi: ret err
+ * size-field-after beyond"). A run's "beyond" is whether anything past max(size, 4) was written. */
+typedef BOOL (*sized_call)(void);
+static unsigned cur_size;
+static void sweep(const char *name, unsigned size_at, int width, unsigned max, sized_call f) {
+    char prev[96] = "", cur[96];
+    unsigned from = 0;
+    printf("sweep %s:", name);
+    for (unsigned s = 0; s <= max + 1; s++) {
+        if (s <= max) {
+            prep(size_at, s, width);
+            cur_size = s;
+            BOOL r = f();
+            unsigned long er = r ? 0 : err();
+            unsigned got = width == 2 ? *(WORD *)(buf + size_at) : *(DWORD *)(buf + size_at);
+            unsigned end = s < size_at + width ? size_at + width : s;
+            /* the size field as the caller's or another value (width 0: the size is an argument) */
+            if (width == 0) sprintf(cur, "ret %d err %lu beyond %d", r != 0, er, beyond(s));
+            else if (got == s) sprintf(cur, "ret %d err %lu size same beyond %d", r != 0, er, beyond(end));
+            else sprintf(cur, "ret %d err %lu size %u beyond %d", r != 0, er, got, beyond(end));
+        }
+        if (s > max || (s > 0 && strcmp(cur, prev))) {
+            printf(" %u-%u: %s;", from, s - 1, prev);
+            from = s;
+        }
+        strcpy(prev, cur);
+    }
+    printf("\n");
+}
+static HMONITOR primary;
+static BOOL c_dmA(void) { return EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, (DEVMODEA *)buf); }
+static BOOL c_dmW(void) { return EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, (DEVMODEW *)buf); }
+static BOOL c_ddA(void) { return EnumDisplayDevicesA(NULL, 0, (DISPLAY_DEVICEA *)buf, 0); }
+static BOOL c_ddW(void) { return EnumDisplayDevicesW(NULL, 0, (DISPLAY_DEVICEW *)buf, 0); }
+static BOOL c_miA(void) { return GetMonitorInfoA(primary, (MONITORINFO *)buf); }
+static BOOL c_miW(void) { return GetMonitorInfoW(primary, (MONITORINFO *)buf); }
+static BOOL c_ncA(void) { return SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, *(UINT *)buf, buf, 0); }
+static BOOL c_ncW(void) { return SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, *(UINT *)buf, buf, 0); }
+static BOOL c_vA(void) { return GetVersionExA((OSVERSIONINFOA *)buf); }
+static BOOL c_vW(void) { return GetVersionExW((OSVERSIONINFOW *)buf); }
+static BOOL c_ms(void) { return GlobalMemoryStatusEx((MEMORYSTATUSEX *)buf); }
+static BOOL c_tc(void) { return timeGetDevCaps((TIMECAPS *)buf, cur_size) == 0; }
+
+static void sweeps(void) {
+    primary = MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    sweep("EnumDisplaySettingsA dmSize", 36, 2, 200, c_dmA);
+    sweep("EnumDisplaySettingsW dmSize", 68, 2, 260, c_dmW);
+    sweep("EnumDisplayDevicesA cb", 0, 4, 450, c_ddA);
+    sweep("EnumDisplayDevicesW cb", 0, 4, 860, c_ddW);
+    sweep("GetMonitorInfoA cbSize", 0, 4, 120, c_miA);
+    sweep("GetMonitorInfoW cbSize", 0, 4, 120, c_miW);
+    sweep("SystemParametersInfoA NONCLIENTMETRICS cbSize=uiParam", 0, 4, 360, c_ncA);
+    sweep("SystemParametersInfoW NONCLIENTMETRICS cbSize=uiParam", 0, 4, 520, c_ncW);
+    sweep("GetVersionExA", 0, 4, 300, c_vA);
+    sweep("GetVersionExW", 0, 4, 300, c_vW);
+    sweep("GlobalMemoryStatusEx", 0, 4, 100, c_ms);
+    sweep("timeGetDevCaps cbtc", 0, 0, 24, c_tc);
+}
+
 int main(void) {
     devmode(0);
     devmode(1);
@@ -241,5 +300,6 @@ int main(void) {
     scroll_info();
     time_caps();
     startup_info();
+    sweeps();
     return 0;
 }
