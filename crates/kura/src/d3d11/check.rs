@@ -31,13 +31,17 @@ const MISC_STRUCTURED: u32 = 0x40;
 const MISC_KEYEDMUTEX: u32 = 0x100;
 const MISC_GDI: u32 = 0x200;
 
-/// Windows' row for a DXGI format (None: no such format). The video and palette formats
-/// (AYUV..A8P8, 100-115: optional, a device without video support answers E_FAIL for them)
-/// as that device has them: the page keeps none of them, and a texture said to work but kept
-/// nowhere would draw black.
+/// Windows' row for a DXGI format (None: no such format). The video formats of planes or of
+/// pixel pairs (NV12..IA44, 103-112: optional, a device without video support answers E_FAIL for
+/// them) as that device has them: the page keeps none of them, and a texture said to work but
+/// kept nowhere would draw black. (AYUV, Y410, Y416, P8, A8P8 and B4G4R4A4 it keeps: texels of
+/// one size, their bytes kept for Map and copies.)
 pub fn format(fmt: u32) -> Option<(bool, u32, bool, u32, [u8; 3], u32)> {
-    FORMATS.get(fmt as usize).copied().filter(|_| fmt != 0).map(|f| if (100..=115).contains(&fmt) { (false, 0, false, 0, [0; 3], f.5) } else { f })
+    FORMATS.get(fmt as usize).copied().filter(|_| fmt != 0).map(|f| if UNKEPT.contains(&fmt) { (false, 0, false, 0, [0; 3], f.5) } else { f })
 }
+
+/// The video formats the page keeps no texture of (see `format`)
+pub const UNKEPT: std::ops::RangeInclusive<u32> = 103..=112;
 
 /// CheckFormatSupport: the bits, or None (E_FAIL)
 pub fn support(fmt: u32) -> Option<u32> {
@@ -283,6 +287,21 @@ mod tests {
         assert!(texture(&Tex { dim: 2, w: 4, h: 4, layers: 1, mips: 1, fmt: 28, samples: 1, usage: 1, bind: 8, ..Tex::default() }, true).is_ok());
     }
 
+    /// Windows' answers (winref d3d11tex): a shader resource view of a video format's texture
+    /// in that format (NULL) is refused; in the formats of its texels it is made
+    #[test]
+    fn video_format_views() {
+        for (fmt, ok) in [(100u32, [28u32, 30]), (101, [24, 25]), (102, [11, 12])] {
+            let r = Res { dim: 2, fmt, mips: 1, layers: 1, bind: 8, cube: false, samples: 1, backbuffer: false };
+            assert!(view(SRV, &r, None).is_err(), "{fmt} NULL");
+            assert!(view(SRV, &r, Some(&[fmt, 4, 0, 1])).is_err(), "{fmt} as itself");
+            for v in ok {
+                assert!(view(SRV, &r, Some(&[v, 4, 0, 1])).is_ok(), "{fmt} as {v}");
+            }
+            assert!(view(SRV, &r, Some(&[87, 4, 0, 1])).is_err(), "{fmt} as B8G8R8A8");
+        }
+    }
+
     /// the probe's buffer cases
     #[test]
     fn cube_views() {
@@ -385,8 +404,8 @@ mod tests {
     fn format_rows() {
         for f in 1..=132u32 {
             let (_, _, _, _, _, cases) = format(f).unwrap();
-            // (the video and palette formats: a device without them makes no such texture)
-            let cases = if (100..=115).contains(&f) { 0 } else { cases };
+            // (the video formats the page keeps none of: a device without them makes no such texture)
+            let cases = if UNKEPT.contains(&f) { 0 } else { cases };
             let t = |bind, usage, cpu, misc, mips, layers, samples| texture(&Tex { dim: 2, w: 16, h: 16, layers, mips, fmt: f, samples, quality: 0, usage, bind, cpu, misc }, false).is_ok();
             let got = [
                 t(0, 0, 0, 0, 1, 1, 1),
@@ -571,6 +590,17 @@ pub struct View {
     pub layers: u32,
 }
 
+/// The formats a view of a texture of video (or palette) format `fmt` takes (None: not one).
+pub fn video_views(fmt: u32) -> Option<&'static [u32]> {
+    Some(match fmt {
+        100 => &[28, 30],
+        101 => &[24, 25],
+        102 => &[11, 12],
+        103..=114 => &[],
+        _ => return None,
+    })
+}
+
 pub const SRV: u32 = 0;
 pub const RTV: u32 = 1;
 pub const DSV: u32 = 2;
@@ -623,7 +653,13 @@ pub fn view(kind: u32, r: &Res, desc: Option<&[u32]>) -> Result<View, u32> {
     let r32_of_32 = kind == UAV && typeless(r.fmt) && texel_bytes(r.fmt) == 4 && matches!(fmt, 41..=43);
     let srgb_twin = |a: u32, b: u32| matches!((a.min(b), a.max(b)), (28, 29) | (87, 91) | (88, 93));
     let cast = r.backbuffer && srgb_twin(fmt, r.fmt);
-    if fmt != r.fmt && !same_family && !r32_of_32 && !cast {
+    // (views of video formats: of the formats of their texels, AYUV as R8G8B8A8, Y410 as
+    // R10G10B10A2, Y416 as R16G16B16A16, UNORM or UINT; none in the format itself)
+    if let Some(ok) = video_views(r.fmt) {
+        if !ok.contains(&fmt) {
+            return bad;
+        }
+    } else if fmt != r.fmt && !same_family && !r32_of_32 && !cast {
         return bad;
     }
     let cap = [0x100, 0x4000, 0x10000, 0x2000000][kind as usize & 3];

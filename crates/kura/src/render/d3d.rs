@@ -2225,6 +2225,9 @@ impl D3d {
 
     fn copy_rect(&mut self, a: [u32; 13]) {
         let [st, sl, sx, sy, sw, sh, dt, dl, dx, dy, dw, dh, filter] = a;
+        // (Direct3D 11's: level | layer (or 3D slice) << 16, filter | slices << 16)
+        let ((sl, sz), (dl, dz)) = ((sl & 0xffff, sl >> 16), (dl & 0xffff, dl >> 16));
+        let (filter, depth) = (filter & 0xffff, (filter >> 16).max(1));
         let (Some(s), Some(t)) = (self.textures.get(&st), self.textures.get(&dt)) else { return };
         if sw == 0 || sh == 0 || dw == 0 || dh == 0 || sw > 1 << 15 || dw > 1 << 15 {
             return;
@@ -2232,6 +2235,7 @@ impl D3d {
         // (levels and boxes inside the textures, as WebGPU wants them; Direct3D fails such a
         // StretchRect too)
         let size = |t: &Tex, l: u32| ((t.w >> l).max(1), (t.h >> l).max(1));
+        let slices = |t: &Tex, l: u32| if t.dim == "3d" { (t.layers >> l).max(1) } else { t.layers.max(1) };
         if sl >= s.levels || dl >= t.levels {
             return;
         }
@@ -2239,7 +2243,13 @@ impl D3d {
         if sx as u64 + sw as u64 > slw as u64 || sy as u64 + sh as u64 > slh as u64 || dx as u64 + dw as u64 > dlw as u64 || dy as u64 + dh as u64 > dlh as u64 {
             return;
         }
+        if sz as u64 + depth as u64 > slices(s, sl) as u64 || dz as u64 + depth as u64 > slices(t, dl) as u64 || ((sz | dz) != 0 || depth > 1) && filter != 0 && filter != 2 {
+            return;
+        }
         let (s_tex, s_fmt, s_w, s_h) = (s.tex, s.format, s.w, s.h);
+        // (WebGPU copies within one texture only between subresources: another level, or other
+        // array layers; a 3D level is one)
+        let apart = st != dt || sl != dl || (s.dim != "3d" && sz.abs_diff(dz) >= depth);
         let (t_tex, t_fmt) = (t.tex, t.format);
         // multisampled textures: copied whole into one of the same sample count and format
         // group (all Direct3D 11 copies of them; WebGPU neither samples nor partly copies them)
@@ -2258,9 +2268,9 @@ impl D3d {
         }
         self.end_pass();
         // (WebGPU copies no depth-stencil texture of depth24plus-stencil8)
-        if sw == dw && sh == dh && s_fmt == t_fmt && st != dt && s_fmt != DS {
+        if sw == dw && sh == dh && s_fmt == t_fmt && apart && s_fmt != DS {
             self.open = true;
-            gpu::copy_texture(s_tex, sl, [sx, sy, 0], t_tex, dl, [dx, dy, 0], [sw, sh, 1]);
+            gpu::copy_texture(s_tex, sl, [sx, sy, sz], t_tex, dl, [dx, dy, dz], [sw, sh, depth]);
             self.use_tex(st);
             self.use_tex(dt);
             return;
@@ -2273,16 +2283,18 @@ impl D3d {
             if sw != dw || sh != dh || is_depth(s_fmt) || is_depth(t_fmt) || bpp(s_fmt) != bpp(t_fmt) {
                 return;
             }
-            if st != dt && base(s_fmt) == base(t_fmt) {
+            if apart && base(s_fmt) == base(t_fmt) {
                 self.open = true;
-                gpu::copy_texture(s_tex, sl, [sx, sy, 0], t_tex, dl, [dx, dy, 0], [sw, sh, 1]);
+                gpu::copy_texture(s_tex, sl, [sx, sy, sz], t_tex, dl, [dx, dy, dz], [sw, sh, depth]);
             } else {
                 let bpr = (sw * bpp(s_fmt)).div_ceil(256) * 256;
-                let buf = gpu::buffer(bpr * sh, usage::COPY_SRC | usage::COPY_DST);
                 self.open = true;
-                gpu::copy_to_buffer(s_tex, sl, sx, sy, buf, bpr, sw, sh);
-                gpu::copy_from_buffer(buf, bpr, t_tex, dl, dx, dy, sw, sh);
-                self.doomed.push(buf);
+                for z in 0..depth {
+                    let buf = gpu::buffer(bpr * sh, usage::COPY_SRC | usage::COPY_DST);
+                    gpu::copy_layer_to_buffer(s_tex, sl, [sx, sy, sz + z], buf, bpr, sw, sh);
+                    gpu::copy_from_buffer(buf, bpr, t_tex, dl, dx, dy, dz + z, sw, sh);
+                    self.doomed.push(buf);
+                }
             }
             self.use_tex(st);
             self.use_tex(dt);
@@ -2321,8 +2333,11 @@ impl D3d {
 
     fn readback(&mut self, a: [u32; 9]) {
         let [req, id, level, x, y, w, h, dst, pitch] = a;
+        // (Direct3D 11's: level | layer (or 3D slice) << 16)
+        let (level, z) = (level & 0xffff, level >> 16);
         // (a box inside the level: WebGPU's copy wants it so)
-        let inside = |t: &Tex| level < t.levels && x as u64 + w as u64 <= (t.w >> level).max(1) as u64 && y as u64 + h as u64 <= (t.h >> level).max(1) as u64;
+        let slices = |t: &Tex| if t.dim == "3d" { (t.layers >> level).max(1) } else { t.layers.max(1) };
+        let inside = |t: &Tex| level < t.levels && x as u64 + w as u64 <= (t.w >> level).max(1) as u64 && y as u64 + h as u64 <= (t.h >> level).max(1) as u64 && z < slices(t);
         let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format) && t.samples == 1 && w > 0 && h > 0 && inside(t)) else {
             vnhost_d3d9_readback_done(req);
             return;
@@ -2333,7 +2348,7 @@ impl D3d {
         let bpr = (w * bpp).div_ceil(256) * 256;
         let buf = gpu::buffer(bpr * h, usage::COPY_DST | usage::MAP_READ);
         self.open = true;
-        gpu::copy_to_buffer(tex, level, x, y, buf, bpr, w, h);
+        gpu::copy_layer_to_buffer(tex, level, [x, y, z], buf, bpr, w, h);
         self.submit();
         let mut data = vec![0u8; (bpr * h) as usize];
         let token = self.next_token;

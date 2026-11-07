@@ -40,10 +40,15 @@ d3d9-* ^image surfaces:
 replay_d3d9-32-32 ^image (r307|r443|r1023|f0):
 # Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake answers WARP's
 # multisample quality levels (and draws 4x on WebGPU, which has no 2x/8x/16x: those run at 4x)
-# but has no video or palette formats (100-115: answered as a device without video support
-# does, E_FAIL; BC6H/BC7, 3-channel 32-bit, the 4:2:2 packed and XR_BIAS textures are decoded
-# or widened on upload)
+# but has none of the video formats of planes or pixel pairs (NV12, P010, P016, 420_OPAQUE,
+# YUY2, Y210, Y216, NV11, AI44, IA44: 103-112, answered as a device without video support does,
+# E_FAIL; AYUV, Y410, Y416, P8, A8P8 it keeps; BC6H/BC7, 3-channel 32-bit, the 4:2:2 packed and
+# XR_BIAS textures are decoded or widened on upload)
 d3d11-* ^(want|got) +format 
+d3d11api-* ^(want|got) +fmt 10[3-9] 
+# B4G4R4A4 is widened to 8 bits a channel (WebGPU has no 4-bit format): c * 17 / 255 on the GPU
+# is a float ulp off WARP's c / 15 in places
+d3d11tex-* ^(want|got) +format 115 row 
 # WARP flushes float denormals on every operation (abs(denormal) = 0, clamp to -0); WebGPU
 # leaves denormals to the GPU and sake does not flush them but in log; log2 just below 1 is
 # within the spec's 2^-21 absolute error, not the probe's ulps

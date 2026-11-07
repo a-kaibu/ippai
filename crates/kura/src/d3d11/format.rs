@@ -376,8 +376,17 @@ pub fn info(dxgi: u32) -> Option<Format> {
         86 => c(2, 1, f9::A1R5G5B5),
         87 | 90 => f(P_BGRA8, 4),
         88 | 92 => Format { page: P_BGRA8, bpp: 4, block: 1, conv: 0, no_alpha: true },
-        91 | 93 => f(P_BGRA8_SRGB, 4),
+        91 => f(P_BGRA8_SRGB, 4),
+        // (the X of B8G8R8X8 sampled as 1, sRGB or not)
+        93 => Format { page: P_BGRA8_SRGB, bpp: 4, block: 1, conv: 0, no_alpha: true },
         115 => c(2, 1, f9::A4R4G4B4),
+        // AYUV, Y410, Y416 (as the views of them Windows takes: R8G8B8A8 / R10G10B10A2 /
+        // R16G16B16A16 UNORM), P8, A8P8 (indexes, R8 / R8G8)
+        100 => f(P_RGBA8, 4),
+        101 => f(P_RGB10A2, 4),
+        102 => Format { page: P_RGBA32F, bpp: 8, block: 1, conv: U16N, no_alpha: false },
+        113 => f(P_R8, 1),
+        114 => f(P_RG8, 2),
         _ => return None,
     })
 }

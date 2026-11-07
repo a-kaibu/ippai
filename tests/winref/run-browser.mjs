@@ -33,15 +33,19 @@ mkdirSync(join(work, "probes"));
 for (const n of names) copyFileSync(join(exeDir, `${n}.exe`), join(work, "probes", `${n}.exe`));
 execFileSync(ippai, ["--store", store, "pack", join(work, "prefix"), "prefix32"], { stdio: "ignore" });
 execFileSync(ippai, ["--store", store, "pack", join(work, "probes"), "winref"], { stdio: "ignore" });
-const serveArgs = ["--store", store, "serve", "--foreground", "--trust-loopback", "--listen", `127.0.0.1:${port}`, "--logs", join(work, "logs")];
+const serveArgs = ["--store", store, "serve", "--foreground", "--listen", `127.0.0.1:${port}`, "--logs", join(work, "logs")];
 if (process.env.WEB) serveArgs.push("--web", process.env.WEB);
-const server = spawn(ippai, serveArgs, { stdio: "ignore" });
 const base = `http://127.0.0.1:${port}`;
+// (a server left on the port, e.g. by a run that was killed, would answer from its own store:
+// stale programs, wrong results)
+if (await fetch(`${base}/play.html`).then(() => true, () => false)) throw new Error(`port ${port} is already served (an old ippai serve? PORT= another)`);
+const server = spawn(ippai, serveArgs, { stdio: "ignore" });
+process.on("exit", () => server.kill());
 for (let i = 0; ; i++) {
   try {
     if ((await fetch(`${base}/play.html`)).ok) break;
   } catch {}
-  if (i > 100) throw new Error("ippai serve did not start");
+  if (i > 300) throw new Error("ippai serve did not start");
   await new Promise((r) => setTimeout(r, 100));
 }
 

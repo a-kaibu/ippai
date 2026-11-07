@@ -34,6 +34,8 @@ mod copy_tests;
 #[cfg(test)]
 mod msaa_tests;
 #[cfg(test)]
+mod bits_tests;
+#[cfg(test)]
 mod compute_tests;
 
 use crate::d3d9::gpu;
@@ -214,6 +216,33 @@ pub struct Texture {
     /// a staging texture's subresources whose map memory holds what the page has (since their
     /// last Unmap nothing wrote them): a Map reads no pixels back
     pub clean: Vec<u32>,
+    /// the guest's bytes of each subresource written (rows of `format::pitch_rows`, slice after
+    /// slice), for formats the page keeps converted (see `keeps_bits`): what Map and copies give
+    /// back, as Windows' are the bits written
+    pub bits: HashMap<u32, Vec<u8>>,
+}
+
+/// The page's texels are the guest's bytes (read back as they are).
+fn holds_bits(t: &Texture) -> bool {
+    match format::info(t.fmt) {
+        Some(f) => f.bpp == format::page_bpp(t.page) && f.block == 1 && f.conv == 0,
+        None => format::page_bpp(t.page) == 4,
+    }
+}
+
+/// The guest's bytes are kept beside the page's texels: a format the page converts (and
+/// 32-bit float RGBA, kept as halves on a device without float32-filterable), of a texture
+/// nothing but uploads and copies write (no render target, depth or UAV binding).
+fn keeps_bits(t: &Texture) -> bool {
+    (!holds_bits(t) || t.page == format::P_RGBA32F) && t.bind & 0xe0 == 0 && !format::is_depth(t.page)
+}
+
+/// A subresource's (level, layer or 0 for 3D, width, height, slices).
+fn sub_size(t: &Texture, sub: u32) -> (u32, u32, u32, u32, u32) {
+    let level = sub % t.mips.max(1);
+    let layer = if t.dim == 3 { 0 } else { sub / t.mips.max(1) };
+    let depth = if t.dim == 3 { (t.layers >> level).max(1) } else { 1 };
+    (level, layer, (t.w >> level).max(1), (t.h >> level).max(1), depth)
 }
 
 #[derive(Clone)]
@@ -387,7 +416,8 @@ static D11S: Mutex<Option<D11>> = Mutex::new(None);
 enum After {
     None,
     Present,
-    Readback(u32),
+    /// readbacks to wait for
+    Readback(Vec<u32>),
 }
 
 unsafe fn rd(p: u32, i: usize) -> u32 {
@@ -757,8 +787,10 @@ pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
     match after {
         After::None => {}
         After::Present => gpu::present(),
-        After::Readback(req) => {
-            gpu::wait_readback(req);
+        After::Readback(reqs) => {
+            for req in reqs {
+                gpu::wait_readback(req);
+            }
         }
     }
     r
@@ -1211,24 +1243,59 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
         gpu,
         maps: Vec::new(),
         clean: Vec::new(),
+        bits: HashMap::new(),
     }))
 }
 
-/// Uploads a subresource from guest memory (`pitch` bytes per row) to the page texture.
-unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option<[u32; 6]>) {
+/// Uploads a subresource (a box of it) from guest memory (`pitch` bytes per row, `slice` per 3D
+/// slice) to the page texture, and keeps the bytes for formats the page converts.
+unsafe fn upload_texture(t: &mut Texture, sub: u32, mem: u32, pitch: u32, slice: u32, bx: Option<[u32; 6]>) {
     if t.gpu == 0 || format::is_depth(t.page) || mem == 0 {
         return;
     }
-    let (level, layer) = (sub % t.mips, sub / t.mips);
-    let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
-    let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, lw, lh, 1]);
+    let (level, layer, lw, lh, ld) = sub_size(t, sub);
+    let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, lw, lh, ld]);
+    // (2D: one slice, whatever the box's front and back)
+    let (z0, z1) = if t.dim == 3 { (z0.min(ld), z1.min(ld)) } else { (0, 1) };
     let Some(f) = format::info(t.fmt) else { return };
     let (x0, y0) = (x0 / f.block * f.block, y0 / f.block * f.block);
     let (w, h) = (x1.min(lw).saturating_sub(x0), y1.min(lh).saturating_sub(y0));
-    if w == 0 || h == 0 {
+    if w == 0 || h == 0 || z1 <= z0 {
         return;
     }
-    let src = mem as *const u8;
+    keep_bits(t, sub, mem, pitch, slice, [x0, y0, z0, w, h, z1]);
+    for z in z0..z1 {
+        let src = (mem as *const u8).add(((z - z0) * slice) as usize);
+        let (out, bpr) = page_texels(t, &f, src, pitch, w, h);
+        let lz = if t.dim == 3 { z } else { layer };
+        gpu::record(|q| {
+            let off = q.blob(&out);
+            q.cmd(&[gpu::WRITE_TEXTURE2, t.gpu, level, lz, x0, y0, w, h, bpr, off]);
+        });
+    }
+}
+
+/// Keeps the bytes of a box (x, y, z, width, height, end z, inside the subresource, x and y on
+/// blocks) of guest texels for a format the page converts (see `keeps_bits`).
+unsafe fn keep_bits(t: &mut Texture, sub: u32, mem: u32, pitch: u32, slice: u32, b: [u32; 6]) {
+    let Some(f) = format::info(t.fmt).filter(|_| keeps_bits(t)) else { return };
+    let [x0, y0, z0, w, h, z1] = b;
+    let (_, _, lw, lh, ld) = sub_size(t, sub);
+    let (gp, rows) = format::pitch_rows(t.fmt, lw, lh);
+    let keep = t.bits.entry(sub).or_insert_with(|| vec![0; (gp * rows * ld) as usize]);
+    let (bx0, by0) = (x0 / f.block, y0 / f.block);
+    let (row, n) = format::pitch_rows(t.fmt, w, h);
+    for z in z0..z1 {
+        for r in 0..n {
+            let from = (mem as *const u8).add(((z - z0) * slice + r * pitch) as usize);
+            let at = ((z * rows + by0 + r) * gp + bx0 * f.bpp) as usize;
+            keep[at..at + row as usize].copy_from_slice(std::slice::from_raw_parts(from, row as usize));
+        }
+    }
+}
+
+/// A box of guest texels (`pitch` bytes per row) as the page's (and its bytes per row).
+unsafe fn page_texels(t: &Texture, f: &format::Format, src: *const u8, pitch: u32, w: u32, h: u32) -> (Vec<u8>, u32) {
     let mut out = Vec::new();
     let bpr;
     if f.conv == format::F32_TO_F16 {
@@ -1264,16 +1331,7 @@ unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option
         }
         bpr = row;
     }
-    for z in z0..z1.max(z0 + 1) {
-        let lz = if t.dim == 3 { z } else { layer };
-        gpu::record(|q| {
-            let off = q.blob(&out);
-            q.cmd(&[gpu::WRITE_TEXTURE2, t.gpu, level, lz, x0, y0, w, h, bpr, off]);
-        });
-        if t.dim != 3 {
-            break;
-        }
-    }
+    (out, bpr)
 }
 
 unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, after: &mut After) -> u32 {
@@ -1741,11 +1799,11 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 (x.cpu, x.misc, x.samples) = (t.cpu, misc, (t.samples, t.quality));
             }
             if a(2) != 0 {
-                let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return E_FAIL };
+                let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) else { return E_FAIL };
                 for sub in 0..t.mips * if dim == 3 { 1 } else { t.layers } {
                     // D3D11_SUBRESOURCE_DATA { pSysMem, SysMemPitch, SysMemSlicePitch }
                     let init = a(2) + sub * (ptr() + 8);
-                    upload_texture(t, sub, rdp(init, 0), rd(init + ptr(), 0), None);
+                    upload_texture(t, sub, rdp(init, 0), rd(init + ptr(), 0), rd(init + ptr(), 1), None);
                 }
             }
             wrp(a(3), 0, o);
@@ -2185,8 +2243,9 @@ fn buffer_view_sync(d: &mut D11, view: u32) {
     if d.trace {
         eprintln!("d3d11: buffer view {view} <- {} bytes of buffer {}", now.len(), b.buf);
     }
-    if let Some(Data::Texture(t)) = d.objs.get(&v.res).map(|o| &o.data) {
-        unsafe { upload_texture(t, 0, now.as_ptr() as u32, b.bytes, None) };
+    let (res, bytes) = (v.res, b.bytes);
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&res).map(|o| &mut o.data) {
+        unsafe { upload_texture(t, 0, now.as_ptr() as u32, bytes, 0, None) };
     }
     if let Some(Data::View(v)) = d.objs.get_mut(&view).map(|o| &mut o.data) {
         if let Some(b) = v.buf.as_mut() {
@@ -2514,7 +2573,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         46 => copy_region(d, a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8)),
         47 => copy_resource(d, a(1), a(2)),
         57 => resolve(d, a(1), a(2), a(3), a(4), a(5)),
-        48 => update_subresource(d, a(1), a(2), a(3), a(4), a(5)),
+        48 => update_subresource(d, a(1), a(2), a(3), a(4), a(5), a(6)),
         50 => {
             // ClearRenderTargetView(view, color)
             let v = d.id_of(a(1));
@@ -2768,7 +2827,7 @@ fn view_target(d: &D11, v: u32) -> Option<(u32, u32, u32)> {
 /// Map(resource, subresource, type, flags, out); `dxgi`: IDXGISurface::Map's DXGI_MAPPED_RECT
 unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, after: &mut After) -> u32 {
     let id = d.id_of(res);
-    let mut req = 0;
+    let mut reqs = Vec::new();
     // (what the runtime allows: staging resources read and write, dynamic ones write discard,
     // and buffers no overwrite too; default and immutable ones are not mapped)
     let usage = match d.objs.get(&id).map(|o| &o.data) {
@@ -2823,16 +2882,26 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
                 mem
             };
             if let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) {
-                // reading or writing part: the page's pixels (formats the page keeps as they are: the page writes
-                // lw * its bpp bytes a row, past the end of a smaller guest copy, e.g. A8 or BC)
-                // (D3D11_MAP_WRITE keeps what is there too: a part written goes back with the
-                // rest as the page has it, a copy into the texture included; ANGLE uploads every
-                // texture through a staging one mapped so, and the waits cost Godot seconds)
-                if ty != 4 && read_back(t) && !t.clean.contains(&sub) {
-                    d.next_gpu += 1;
-                    req = 0x4000_0000 | d.next_gpu;
-                    let (g, l) = (t.gpu, level);
-                    gpu::record(|q| q.cmd(&[gpu::READBACK, req, g, l, 0, 0, lw, lh, mem, pitch]));
+                // reading or writing part: what the texture holds (D3D11_MAP_WRITE keeps what is
+                // there too: a part written goes back with the rest), the page's pixels where they
+                // are the guest's bytes (one readback a slice), else the bytes kept of the last writes;
+                // nothing where the map memory holds them already (since the last Unmap nothing wrote
+                // the subresource: ANGLE uploads every texture through a staging one mapped so, and
+                // the waits cost Godot seconds)
+                let (_, layer, ..) = sub_size(t, sub);
+                if ty != 4 && holds_bits(t) && !keeps_bits(t) && !t.clean.contains(&sub) {
+                    for z in 0..depth {
+                        d.next_gpu += 1;
+                        let req = 0x4000_0000 | d.next_gpu;
+                        let (g, l) = (t.gpu, level | (layer + z) << 16);
+                        gpu::record(|q| q.cmd(&[gpu::READBACK, req, g, l, 0, 0, lw, lh, mem + z * pitch * rows, pitch]));
+                        reqs.push(req);
+                    }
+                } else if ty != 4 && !t.clean.contains(&sub) {
+                    match t.bits.get(&sub) {
+                        Some(b) => std::ptr::copy_nonoverlapping(b.as_ptr(), mem as *mut u8, b.len().min(size as usize)),
+                        None => std::ptr::write_bytes(mem as *mut u8, 0, size as usize),
+                    }
                 }
             }
             put_mapped(out, mem, pitch, pitch * rows, dxgi);
@@ -2840,8 +2909,8 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
         }
         _ => E_INVALIDARG,
     };
-    if req != 0 {
-        *after = After::Readback(req);
+    if !reqs.is_empty() {
+        *after = After::Readback(reqs);
     }
     r
 }
@@ -2859,24 +2928,17 @@ unsafe fn unmap(d: &mut D11, res: u32, sub: u32) {
     if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
         if let Some(&(_, mem, pitch, write)) = t.maps.iter().find(|m| m.0 == sub) {
             if write {
-                upload_texture(t, sub, mem, pitch, None);
+                let (_, _, lw, lh, _) = sub_size(t, sub);
+                let rows = format::pitch_rows(t.fmt, lw, lh).1;
+                upload_texture(t, sub, mem, pitch, pitch * rows, None);
             }
-            // (the memory holds what the page has now: read back at the Map, or sent up here)
-            if t.usage == 3 && read_back(t) && !t.clean.contains(&sub) {
+            // (the memory holds what the texture has now: read back or kept at the Map, or sent
+            // up here)
+            if t.usage == 3 && (holds_bits(t) || keeps_bits(t)) && !t.clean.contains(&sub) {
                 t.clean.push(sub);
             }
         }
     }
-}
-
-/// A Map of `t` reads the page's pixels back into the map memory: formats the page keeps as
-/// they are (bytes for bytes), not 3D.
-fn read_back(t: &Texture) -> bool {
-    let same = match format::info(t.fmt) {
-        Some(f) => f.bpp == format::page_bpp(t.page) && f.block == 1 && f.conv == 0,
-        None => format::page_bpp(t.page) == 4,
-    };
-    same && t.dim != 3
 }
 
 /// The page's copy of texture `id` changed (a copy or update into it): its map memory is stale.
@@ -2887,7 +2949,7 @@ fn texture_written(d: &mut D11, id: u32) {
 }
 
 /// UpdateSubresource(resource, subresource, box, data, row pitch, depth pitch)
-unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32, pitch: u32) {
+unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32, pitch: u32, slice: u32) {
     let id = d.id_of(res);
     let b = if bx != 0 { Some([rd(bx, 0), rd(bx, 1), rd(bx, 2), rd(bx, 3), rd(bx, 4), rd(bx, 5)]) } else { None };
     match d.objs.get_mut(&id).map(|o| &mut o.data) {
@@ -2906,11 +2968,10 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
         Some(Data::Texture(t)) => {
             // the box's texels start at `data`
             t.clean.clear();
-            let t: &Texture = t;
             match b {
                 // (upload_texture reads the box's rows from `data` on: the box's first texel)
-                Some(bb) => upload_texture(t, sub, data, pitch, Some(bb)),
-                None => upload_texture(t, sub, data, pitch, None),
+                Some(bb) => upload_texture(t, sub, data, pitch, slice, Some(bb)),
+                None => upload_texture(t, sub, data, pitch, slice, None),
             }
         }
         _ => {}
@@ -2929,23 +2990,14 @@ unsafe fn copy_resource(d: &mut D11, dst: u32, src: u32) {
             }
         }
         (Some(Data::Texture(a)), Some(Data::Texture(b))) => {
-            // (Windows copies nothing between formats of different typeless groups; between
-            // two of one group the bits)
-            if !format::copy_compatible(a.fmt, b.fmt) {
-                return;
-            }
-            let bits = if a.fmt != b.fmt { 2 } else { 0 };
-            let mut cmds = Vec::new();
-            for l in 0..a.mips.min(b.mips) {
-                let (w, h) = ((b.w >> l).max(1), (b.h >> l).max(1));
-                cmds.push([gpu::COPY, b.gpu, l, 0, 0, w, h, a.gpu, l, 0, 0, w, h, bits]);
-            }
-            gpu::record(|q| {
-                for c in &cmds {
-                    q.cmd(c);
+            // (every subresource both have: Windows wants them alike)
+            let (mips, layers) = (a.mips.min(b.mips), if a.dim == 3 { 1 } else { a.layers.min(b.layers) });
+            let (bm, am) = (b.mips, a.mips);
+            for layer in 0..layers {
+                for l in 0..mips {
+                    copy_sub(d, di, layer * am + l, [0; 3], si, layer * bm + l, None);
                 }
-            });
-            d.targets = None;
+            }
         }
         _ => {}
     }
@@ -2976,7 +3028,7 @@ unsafe fn resolve(d: &mut D11, dst: u32, dsub: u32, src: u32, ssub: u32, fmt: u3
 }
 
 /// CopySubresourceRegion(dst, dst sub, x, y, z, src, src sub, box)
-unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32, src: u32, ssub: u32, bx: u32) {
+unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, z: u32, src: u32, ssub: u32, bx: u32) {
     let (di, si) = (d.id_of(dst), d.id_of(src));
     texture_written(d, di);
     match (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) {
@@ -2989,21 +3041,119 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32,
                 a.stream = false;
             }
         }
-        (Some(Data::Texture(a)), Some(Data::Texture(b))) => {
-            if !format::copy_compatible(a.fmt, b.fmt) {
-                return;
-            }
-            let bits = if a.fmt != b.fmt { 2 } else { 0 };
-            let (sl, dl) = (ssub % b.mips, dsub % a.mips);
-            let (bw, bh) = ((b.w >> sl).max(1), (b.h >> sl).max(1));
-            let (x0, y0, x1, y1) = if bx != 0 { (rd(bx, 0), rd(bx, 1), rd(bx, 3), rd(bx, 4)) } else { (0, 0, bw, bh) };
-            let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
-            let c = [gpu::COPY, b.gpu, sl, x0, y0, w, h, a.gpu, dl, x, y, w, h, bits];
-            gpu::record(|q| q.cmd(&c));
-            d.targets = None;
+        (Some(Data::Texture(_)), Some(Data::Texture(_))) => {
+            let b = (bx != 0).then(|| [rd(bx, 0), rd(bx, 1), rd(bx, 2), rd(bx, 3), rd(bx, 4), rd(bx, 5)]);
+            copy_sub(d, di, dsub, [x, y, z], si, ssub, b);
         }
         _ => {}
     }
+}
+
+/// Copies a box of subresource `ssub` of texture `si` (all of it without one) to `at` in
+/// subresource `dsub` of `di`: the bits, between formats of one typeless group (Windows copies
+/// nothing between others, nor a box reaching outside either subresource). On the page where both
+/// textures' texels are the guest's bytes, or both are the same conversion of them; else through
+/// the bytes (those kept, or read back), uploaded as the destination converts them.
+unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub: u32, bx: Option<[u32; 6]>) {
+    let (Some(Data::Texture(a)), Some(Data::Texture(b))) = (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) else { return };
+    if !format::copy_compatible(a.fmt, b.fmt) || dsub >= a.mips * if a.dim == 3 { 1 } else { a.layers } || ssub >= b.mips * if b.dim == 3 { 1 } else { b.layers } {
+        return;
+    }
+    let (Some(fa), Some(fb)) = (format::info(a.fmt), format::info(b.fmt)) else { return };
+    let (sl, slayer, sw, sh, sd) = sub_size(b, ssub);
+    let (dl, dlayer, dw, dh, dd) = sub_size(a, dsub);
+    let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, sw, sh, sd]);
+    let (z0, z1) = if b.dim == 3 { (z0, z1) } else { (0, 1) };
+    let dz = if a.dim == 3 { at[2] } else { 0 };
+    // (block-compressed boxes: whole blocks, the last ones past a level's edge)
+    let pad = |v: u32, f: &format::Format| v.div_ceil(f.block) * f.block;
+    let (w, h, depth) = (x1.saturating_sub(x0), y1.saturating_sub(y0), z1.saturating_sub(z0));
+    if w == 0 || h == 0 || depth == 0 || x1 > pad(sw, &fb) || y1 > pad(sh, &fb) || z1 > sd || at[0] + w > pad(dw, &fa) || at[1] + h > pad(dh, &fa) || dz + depth > dd {
+        return;
+    }
+    texture_written(d, di);
+    let (Some(Data::Texture(a)), Some(Data::Texture(b))) = (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) else { return };
+    let bits = if a.fmt != b.fmt { 2 } else { 0 };
+    // (the page's texels of both the same function of the guest's bytes; 32-bit float RGBA
+    // possibly halves, of another size than the integer ones)
+    let f32x4 = |t: &Texture| t.page == format::P_RGBA32F;
+    let on_page = (holds_bits(a) && holds_bits(b) && f32x4(a) == f32x4(b)) || (a.page == b.page && fa.conv == fb.conv && fa.bpp == fb.bpp && fa.block == fb.block);
+    let (ag, bg, keeps, bfmt) = (a.gpu, b.gpu, keeps_bits(a), b.fmt);
+    let gpu_copy = |d: &mut D11| {
+        // (the page's boxes inside its levels)
+        let (cw, ch) = (w.min(sw.saturating_sub(x0)).min(dw.saturating_sub(at[0])), h.min(sh.saturating_sub(y0)).min(dh.saturating_sub(at[1])));
+        let c = [gpu::COPY, bg, sl | (slayer + z0) << 16, x0, y0, cw, ch, ag, dl | (dlayer + dz) << 16, at[0], at[1], cw, ch, bits | depth << 16];
+        gpu::record(|q| q.cmd(&c));
+        d.targets = None;
+    };
+    if on_page {
+        gpu_copy(d);
+        if !keeps {
+            return;
+        }
+    }
+    // the source's bytes of the box (kept ones, or the page's read back): the destination's kept
+    // ones, and its page texels as it converts them
+    let (pitch, rows) = format::pitch_rows(bfmt, w, h);
+    let Some(mem) = source_bytes(d, si, ssub, [x0, y0, z0, w, h, depth]) else {
+        if !on_page {
+            gpu_copy(d);
+        }
+        return;
+    };
+    if let Some(Data::Texture(a)) = d.objs.get_mut(&di).map(|o| &mut o.data) {
+        if on_page {
+            keep_bits(a, dsub, mem, pitch, pitch * rows, [at[0], at[1], dz, w, h, dz + depth]);
+        } else {
+            upload_texture(a, dsub, mem, pitch, pitch * rows, Some([at[0], at[1], dz, at[0] + w, at[1] + h, dz + depth]));
+        }
+    }
+    ((*d.calls).free)(mem as *mut u8);
+    d.targets = None;
+}
+
+/// A box (x, y, z, width, height, slices; x and y on blocks) of a texture's subresource as the
+/// guest's bytes (rows of `format::pitch_rows`, slice after slice) in memory from the host's
+/// allocator: those kept, or the page's read back where they are its texels. None: neither.
+unsafe fn source_bytes(d: &mut D11, id: u32, sub: u32, b: [u32; 6]) -> Option<u32> {
+    let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return None };
+    let f = format::info(t.fmt)?;
+    let [x0, y0, z0, w, h, depth] = b;
+    let (keeps, holds, g) = (keeps_bits(t), holds_bits(t), t.gpu);
+    if !keeps && !holds {
+        return None;
+    }
+    let (pitch, rows) = format::pitch_rows(t.fmt, w, h);
+    let size = pitch * rows * depth;
+    let mem = ((*d.calls).alloc)(size.max(16)) as u32;
+    // (what nothing wrote, and what a readback leaves alone: zeros)
+    std::ptr::write_bytes(mem as *mut u8, 0, size as usize);
+    let (level, layer, lw, lh, _) = sub_size(t, sub);
+    if keeps {
+        let (spitch, srows) = format::pitch_rows(t.fmt, lw, lh);
+        let (bx, by) = (x0 / f.block, y0 / f.block);
+        if let Some(kept) = t.bits.get(&sub) {
+            for z in 0..depth {
+                for r in 0..rows {
+                    let s0 = (((z0 + z) * srows + by + r) * spitch + bx * f.bpp) as usize;
+                    std::ptr::copy_nonoverlapping(kept.as_ptr().add(s0), (mem + (z * rows + r) * pitch) as *mut u8, pitch as usize);
+                }
+            }
+        }
+        return Some(mem);
+    }
+    let mut reqs = Vec::new();
+    for z in 0..depth {
+        d.next_gpu += 1;
+        let req = 0x4000_0000 | d.next_gpu;
+        let c = [gpu::READBACK, req, g, level | (layer + z0 + z) << 16, x0, y0, w, h, mem + z * pitch * rows, pitch];
+        gpu::record(|q| q.cmd(&c));
+        reqs.push(req);
+    }
+    for req in reqs {
+        gpu::wait_readback(req);
+    }
+    Some(mem)
 }
 
 // ---------------------------------------------------------------------------------------------

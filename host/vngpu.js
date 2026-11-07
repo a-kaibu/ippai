@@ -217,9 +217,9 @@ addToLibrary({
     VG.enc ??= VG.device.createCommandEncoder();
     VG.enc.copyBufferToBuffer(VG.objs[src], 0, VG.objs[dst], 0, size);
   },
-  vngpu_copy_from_buffer: (buf, bpr, tex, mip, x, y, w, h) => {
+  vngpu_copy_from_buffer: (buf, bpr, tex, mip, x, y, z, w, h) => {
     VG.enc ??= VG.device.createCommandEncoder();
-    VG.enc.copyBufferToTexture({ buffer: VG.objs[buf], bytesPerRow: bpr }, { texture: VG.objs[tex], mipLevel: mip, origin: { x, y } }, [w, h]);
+    VG.enc.copyBufferToTexture({ buffer: VG.objs[buf], bytesPerRow: bpr }, { texture: VG.objs[tex], mipLevel: mip, origin: { x, y, z } }, [w, h]);
   },
   vngpu_begin_pass: (ptr, len) => {
     VG.enc ??= VG.device.createCommandEncoder();

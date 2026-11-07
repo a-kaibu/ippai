@@ -46,7 +46,7 @@ execFileSync(bin, ["--store", store, "add", game, "--exe", "Game.exe", "--id", "
 const port = 18000 + Math.floor(Math.random() * 1000) * 2;
 const server = spawn(
   bin,
-  ["--store", store, "serve", "--foreground", "--web", "web/dist", "--listen", `127.0.0.1:${port}`, "--no-prerun", "--trust-loopback"],
+  ["--store", store, "serve", "--foreground", "--web", "web/dist", "--listen", `127.0.0.1:${port}`, "--no-prerun"],
   { stdio: "inherit", env: { ...process.env, XDG_RUNTIME_DIR: work } },
 );
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME, chromiumSandbox: false });

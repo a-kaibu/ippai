@@ -57,7 +57,7 @@ run("add-game", "a", "--title", "もうひとつのゲーム", "--tree", "a", "-
 const port = 8700 + Math.floor(Math.random() * 200) * 2;
 const server = spawn(
   bin,
-  ["serve", "--foreground", "--web", web, "--store", store, "--jit", join(work, "jit"), "--listen", `127.0.0.1:${port}`, "--no-prerun", "--trust-loopback"],
+  ["serve", "--foreground", "--web", web, "--store", store, "--jit", join(work, "jit"), "--listen", `127.0.0.1:${port}`, "--no-prerun"],
   { stdio: "inherit" },
 );
 const base = `http://127.0.0.1:${port}/`;
