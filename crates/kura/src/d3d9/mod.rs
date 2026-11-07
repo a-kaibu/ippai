@@ -302,6 +302,7 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
     if (crate::d3d11::INIT..=crate::d3d11::CREATE_FACTORY).contains(&id) || (64..0xffff).contains(&(id >> 8)) {
         return crate::d3d11::call(id, args, calls);
     }
+    crate::usage::d3d(id);
     match id {
         d3d8::INIT => return vnhost_d3d9_init(*args as *const u32, *args.add(1)),
         d3d8::CREATE => {

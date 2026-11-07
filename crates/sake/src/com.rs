@@ -137,6 +137,11 @@ pub fn release_obj(this: u32) -> u32 {
     })
 }
 
+/// Whether trap `a` is a COM method sake does not implement.
+pub fn is_stub(a: u32) -> bool {
+    STUBS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&a))
+}
+
 /// The vtable of `iface` with the methods `impls` names; built once per interface.
 pub fn vtable(iface: &'static str, impls: &[(&str, Handler)]) -> u32 {
     if let Some(&v) = VTBLS.lock().unwrap().get_or_insert_with(HashMap::new).get(iface) {

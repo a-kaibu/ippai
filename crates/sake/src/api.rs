@@ -333,6 +333,35 @@ pub fn dump_ring(why: &str) {
     });
 }
 
+/// (IPPAI_API_COUNTS: calls by trap index)
+static USAGE: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+fn usage(i: u32) {
+    {
+        let mut u = USAGE.lock().unwrap();
+        if u.is_empty() {
+            kura::usage::more(|| {
+                let u = USAGE.lock().unwrap().clone();
+                let e = ENTRIES.read().unwrap();
+                u.iter()
+                    .enumerate()
+                    .filter(|x| *x.1 > 0)
+                    .filter_map(|(i, &n)| {
+                        let x = e.get(i)?;
+                        let stub = x.f.is_none() || crate::com::is_stub(TRAP_LO + 4 * i as u32);
+                        Some((format!("{}:{}!{}", if stub { "stub" } else { "api" }, x.dll, x.name), n))
+                    })
+                    .collect()
+            });
+        }
+        if u.len() <= i as usize {
+            u.resize(i as usize + 1, 0);
+        }
+        u[i as usize] += 1;
+    }
+    kura::usage::tick();
+}
+
 pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     let i = (addr - TRAP_LO) / 4;
     let (f, bytes, cdecl, known) = {
@@ -342,6 +371,9 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         };
         (e.f, e.bytes, e.cdecl, e.known)
     };
+    if kura::usage::on() {
+        usage(i);
+    }
     if stats_on() {
         *COUNTS.lock().unwrap().get_or_insert_with(HashMap::default).entry(i).or_default() += 1;
     }

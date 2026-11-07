@@ -621,6 +621,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
 
 /// Entry from d3d9's dispatcher: ids INIT.. and interfaces 64+.
 pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
+    crate::usage::d3d(id);
     // (64-bit: the arguments are 8-byte slots; their low halves from here on)
     let mut low = [0u32; 16];
     let args = if ptr() == 8 {

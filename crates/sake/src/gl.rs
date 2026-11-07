@@ -50,7 +50,10 @@ fn dispatch(c: &mut Ctx) -> u32 {
         TRAPS.lock().unwrap().get_or_insert_with(HashMap::default).insert(c.trap, e);
         Some(e)
     });
-    let Some((f, sig)) = entry else { return 0 };
+    let Some((f, sig)) = entry else {
+        missing(c.trap);
+        return 0;
+    };
     let w: Vec<u32> = if mem::x64() {
         // x64: argument i in RCX/RDX/R8/R9 or XMM0-3 by position, then the stack; pointers
         // and GLsizeiptr pass their low half
@@ -184,8 +187,17 @@ fn wglGetProcAddress(c: &mut Ctx) -> u32 {
 fn one(_: &mut Ctx) -> u32 {
     1
 }
-fn nothing(_: &mut Ctx) -> u32 {
+fn nothing(c: &mut Ctx) -> u32 {
+    missing(c.trap);
     0
+}
+
+/// (IPPAI_API_COUNTS: a GL call kura has no function for)
+fn missing(trap: u32) {
+    if kura::usage::on() {
+        let n = crate::api::name_of(trap).unwrap_or_default();
+        kura::usage::named("glmissing", n.rsplit('!').next().unwrap_or(""));
+    }
 }
 fn wglGetExtensionsStringARB(_: &mut Ctx) -> u32 {
     static S: OnceLock<u32> = OnceLock::new();
