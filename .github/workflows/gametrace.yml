@@ -17,6 +17,9 @@ on:
     branches: [main]
     paths:
       - 'tests/replay/games.txt'
+  # (100 titles a run: each night takes the next until all of games.txt has a trace or a reason)
+  schedule:
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       only:
@@ -54,7 +57,7 @@ jobs:
         run: |
           python3 tests/replay/games_test.py
           pwsh -NoProfile -File tests/replay/ps1-parse.ps1
-          ids=$(python3 tests/replay/games.py todo ${AGAIN:+--again=$AGAIN} $ONLY)
+          ids=$(python3 tests/replay/games.py todo --max=100 ${AGAIN:+--again=$AGAIN} $ONLY)
           echo "ids=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' $ids)" >> "$GITHUB_OUTPUT"
           echo "to record: $ids"
 
@@ -113,7 +116,7 @@ jobs:
     timeout-minutes: 50
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 4
       matrix:
         id: ${{ fromJSON(needs.plan.outputs.ids) }}
     steps:

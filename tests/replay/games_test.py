@@ -72,6 +72,8 @@ with tempfile.TemporaryDirectory() as d:
     expect("todo: again", games.todo([], True, d, known), ["g0", "x", "new"])
     expect("todo: given", games.todo(["x"], False, d, known), ["x"])
     fails_with("todo: unknown", lambda: games.todo(["nope"], False, d, known))
+    expect("todo: at most", games.todo([], True, d, known, most=2), ["g0", "x"])
+    expect("todo: at most, more than there are", games.todo([], False, d, known, most=5), ["new"])
     # skipped.tsv: a skipped title is not tried again unless asked; one that took leaves it
     known = {"g0", "x", "new", "dd", "bad"}
     games.listed = lambda: ["g0", "x", "new", "dd", "bad"]
@@ -93,6 +95,12 @@ with tempfile.TemporaryDirectory() as d:
     fails_with("skipped.tsv: unknown reason", lambda: games.skipped(d))
     expect("names: skipped.tsv is no trace", "skipped" in " ".join(games.names(d)), False)
     games.listed = orig
+# (the real list: no id twice; at most 256 a run: gametrace.yml's --max)
+ids = games.listed()
+expect("games.txt: no id twice", sorted({i for i in ids if ids.count(i) > 1}), [])
+import re
+yml_max = re.search(r"games.py todo --max=(\d+)", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github/workflows/gametrace.yml"), encoding="utf-8").read())
+expect("gametrace.yml: todo --max under GitHub's 256 matrix jobs", bool(yml_max) and 0 < int(yml_max.group(1)) <= 256, True)
 # (the real list: every id a title; the real skipped.tsv reads)
 games.skipped()
 expect("games.txt", [i for i in games.listed() if i not in games.titles()], [])

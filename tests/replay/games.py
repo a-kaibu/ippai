@@ -4,7 +4,7 @@
 trace, zstd-compressed, in parts of at most 90 MiB (GitHub refuses a file over 100 MB):
 <id>-<bits>.trace.zst.000, .001, ...
 
-    games.py todo [--again=true] [id ...]     the titles to record: those given, else
+    games.py todo [--again=true] [--max N] [id ...]   the titles to record (at most N): those given, else
                                              tests/replay/games.txt's without a trace yet and not
                                              skipped (--again: all of them)
     games.py skip <id> <reason> [detail]      a title with no trace to keep (none: it names no
@@ -85,7 +85,7 @@ def names(d=GAMES):
     return sorted(os.path.basename(m)[:-4] for m in glob.glob(os.path.join(d, "*.txt")))
 
 
-def todo(ids, again, d=GAMES, known=None):
+def todo(ids, again, d=GAMES, known=None, most=None):
     known = titles() if known is None else known
     given = bool(ids)
     ids = ids or listed()
@@ -93,7 +93,9 @@ def todo(ids, again, d=GAMES, known=None):
     if bad:
         raise SystemExit(f"not in tests/corpus/titles.tsv: {' '.join(bad)}")
     have = {re.sub(r"-(32|64)$", "", n) for n in names(d)} | set(skipped(d))
-    return [i for i in ids if given or again or i not in have]
+    out = [i for i in ids if given or again or i not in have]
+    # (a run takes at most `most`: GitHub's matrix holds 256 jobs; the next run takes the rest)
+    return out[:most] if most else out
 
 
 def parts(prefix):
@@ -141,6 +143,7 @@ def main():
     s = a.add_subparsers(dest="cmd", required=True)
     t = s.add_parser("todo")
     t.add_argument("--again", default="false")
+    t.add_argument("--max", type=int, default=None)
     t.add_argument("ids", nargs="*")
     p = s.add_parser("pack")
     p.add_argument("trace")
@@ -164,7 +167,7 @@ def main():
     n.add_argument("dir", nargs="?", default=GAMES)
     o = a.parse_args()
     if o.cmd == "todo":
-        print(" ".join(todo(o.ids, o.again == "true")))
+        print(" ".join(todo(o.ids, o.again == "true", most=o.max)))
     elif o.cmd == "pack":
         k = pack(o.trace, o.prefix, o.api, o.exe, o.seconds, o.part)
         print(f"{o.prefix}: {k} part(s)")

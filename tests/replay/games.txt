@@ -1,20 +1,323 @@
 # Trial games whose Direct3D calls .github/workflows/gametrace.yml records on Windows and replays
-# on Windows and on sake (ids of tests/corpus/titles.tsv; tests/replay/gameapi.py finds the API,
-# a title that draws without D3D8/9/11 is listed as such and skipped). These: the corpus's smoke
-# titles (they reach their title screen on sake).
+# on Windows and on sake: every title of tests/corpus/titles.tsv (its order). tests/replay/gameapi.py
+# guesses the API, record-game.ps1 finds the one used; a title with no trace (no D3D8/9/11,
+# DirectDraw only, none made, not converted) is written down in testdata/apitrace/skipped.tsv.
+s2012_kaguya_sperman	# -
+s2016_kaguya_idol_pafupafu	# -
+s2017_inter_heart_glossy_hitozuma_ntr	# -
+s2019_lilim_shinmu	# -
+s2021_silkys_plus_fuyukuru	# -
+b2009_eushully	# AGE (Eushully)
+b2006_alcot	# AZ System (ARC)
+r1_advhd	# AdvHD
+b2013_ensemble	# AdvHD
+b2015_guilty	# AdvHD
+s2015_ensemble_sweet_yakimochi	# AdvHD
+s2019_guilty_harame	# AdvHD
+s2026_ensemble_sweet_ribichu	# AdvHD
 s2006_pulltop_haruka	# AdvWin32/WillPlus
+s2010_pulltop_lovekami	# AdvWin32/WillPlus
+b2018_tokohana	# AdvWin32/WillPlus
+b2025_ensemble_sweet	# AdvWin32/WillPlus
 b2012_alicesoft	# AliceSoft System4
+b2013_alicesoft	# AliceSoft System4
+s2013_alicesoft_drapeko	# AliceSoft System4
+b2016_evoll	# AnimeGameSystem (ags.exe, .pk)
+b2020_caramel_box_strawberry	# AnimeGameSystem (ags.exe, .pk)
+s2020_wonder_fool_maokatsu	# Artemis
+s2021_giga_fuyukiss	# Artemis
+s2023_j_studio_reaero_dt	# Artemis
 b2006_lumpofsugar	# BGI/Ethornell
+s2010_lumpofsugar_prismrhythm	# BGI/Ethornell
+s2011_lumpofsugar_gackoh	# BGI/Ethornell
+b2013_lumpofsugar	# BGI/Ethornell
+s2014_hooksoft_meltymoment	# BGI/Ethornell
+s2016_hooksoft_amenitys_life	# BGI/Ethornell
+b2019_sukerasparo	# BGI/Ethornell
+s2022_hooksoft_houkago2	# BGI/Ethornell
+s2015_silkys_plus_neyuki	# BGI?*
 dl_RJ01720376	# BGI?*
 b2007_bishop	# Bishop (BSA)
+b2008_bishop	# Bishop (BSA)
+b2010_bishop	# Bishop (BSA)
+b2011_bishop	# Bishop (BSA)
+b2012_bishop	# Bishop (BSA)
 s2008_clochette_suzunone7	# CatSystem2
+s2011_clochette_kamikaze	# CatSystem2
+b2014_azarashi_soft	# CatSystem2
+s2014_clochette_sakigake	# CatSystem2
+s2015_clochette_kokonatsu	# CatSystem2
 b2007_anim	# Crowd/Anim (PCK/GAX/EOG)
+b2009_anim	# Crowd/Anim (PCK/GAX/EOG)
+b2011_anim_team_mm	# Crowd/Anim (PCK/GAX/EOG)
+b2019_anim	# Crowd/Anim (PCK/GAX/EOG)
+b2026_anim	# Crowd/Anim (PCK/GAX/EOG)
+b2012_tinkerbell	# Cyberworks (Arc0x.dat)
+b2013_tinkerbell	# Cyberworks (Arc0x.dat)
+b2014_wendybell	# Cyberworks (Arc0x.dat)
+b2021_tinkerbell	# Cyberworks (Arc0x.dat)
+b2026_wendybell	# Cyberworks (Arc0x.dat)
+b2012_fudegaki_soft	# DxLib (MED)
+b2012_trois	# DxLib (MED)
+b2018_fudegaki_soft	# DxLib (MED)
 b2007_marmalade	# EntisGLS
+b2009_marmalade	# EntisGLS
+b2024_syrup_mm	# EntisGLS
+s2025_marmalade_bakaple	# EntisGLS
 b2008_escude	# Escude
+s2009_escude_prister	# Escude
+s2012_escude_gurenka	# Escude
+b2014_escude	# Escude
+s2014_escude_hanaou	# Escude
+s2010_eushully_ikusa_verita	# Eushully AGE
+s2016_eushully_sankaio	# Eushully AGE
+s2020_eushully_tenmei	# Eushully AGE
+s2024_eushully_hyakusen	# Eushully AGE
+b2008_interheart	# FVP
+b2009_smee	# FVP
+b2016_kaguya	# FVP
+b2018_ensemble	# FVP
+b2025_guilty	# FVP
+dl_RJ01720685	# HTML5
+b2006_interheart	# Interheart/CandySoft (FPK)
+b2016_inter_heart_glossy	# Interheart/CandySoft (FPK)
+b2017_inter_heart_glossy	# Interheart/CandySoft (FPK)
+b2018_hachimitsu_soft	# Interheart/CandySoft (FPK)
+b2026_dessert_soft	# Interheart/CandySoft (FPK)
+b2006_kaguya	# Kaguya
+b2007_kaguya	# Kaguya
+b2009_kaguya	# Kaguya
+b2010_kaguya	# Kaguya
+b2013_kaguya	# Kaguya
+b2006_ninetail	# KiriKiri
+b2008_akabeesoft	# KiriKiri
+b2010_grand_cru	# KiriKiri
+s2011_grand_cru_imostar	# KiriKiri
+s2012_ninetail_gears_of_dragoon	# KiriKiri
+b2013_hulotte	# KiriKiri
+b2014_undermoon	# KiriKiri
+b2015_mille_feuille	# KiriKiri
+s2015_hulotte_yomeyaba	# KiriKiri
+b2016_alcot	# KiriKiri
+s2017_akabeesoft3_tonofuta	# KiriKiri
+s2017_appetite_immorality_don	# KiriKiri
+s2017_nanawind_alice_gram	# KiriKiri
+s2018_pin_point_yakyurare	# KiriKiri
+s2019_appetite_dt_kyoiku	# KiriKiri
+b2020_akabeesoft3	# KiriKiri
+b2020_lass_pixy	# KiriKiri
+b2021_at_sakura	# KiriKiri
+s2021_dualtail_vbhi	# KiriKiri
+s2021_nanawind_kanade_gram_ch1	# KiriKiri
+s2022_akabeesoft2_roleplayer_tororo	# KiriKiri
 b2023_appetite	# KiriKiri
+s2026_poison_motion_sxs2_me	# KiriKiri
+r1_kag3	# KiriKiri2
+b2006_lilim	# Lilim (AOS)
+b2007_lilim	# Lilim (AOS)
 b2007_lilim_darkness	# Lilim (AOS)
+b2009_lilim	# Lilim (AOS)
+b2021_princess_sugar	# Lilim (AOS)
+s2008_kaguya_dc2	# LiveMaker
 s2011_waffle_sex_friend	# LiveMaker
+s2017_wendybell_oreyome	# LiveMaker
+s2019_alumi_soft_inuyome2	# LiveMaker
+b2011_empress	# Majiro
+s2012_empress_lewdness	# Majiro
+b2015_empress	# Majiro
+r1_majiro	# Majiro
+r1_musica	# Musica
 r1_naru2	# NScripter
+r1_higanbana	# NScripter
+r1_trt	# NScripter
+dl_RJ01612664	# NW.js/Tyrano
+dl_RJ01686418	# NW.js/Tyrano
+dl_RJ01706991	# NW.js/Tyrano
 s2006_giga_ab	# NeXAS
+s2006_lune_maimiko	# NeXAS
+s2007_giga_himesama	# NeXAS
+b2010_giga	# NeXAS
+s2011_marine_marching	# NeXAS
+s2012_marine_deka_ane	# NeXAS
+b2013_giga	# NeXAS
+s2014_lune_revenge_room	# NeXAS
+b2016_giga	# NeXAS
+s2016_marine_cospure_harem	# NeXAS
+s2019_lune_dogeza_saimin	# NeXAS
+b2015_minato_carnival	# NonColor (ACV1)
+b2018_mirai	# NonColor (ACV1)
+r1_saku	# PONScripter
+b2006_unisonshift	# Pajamas (GAMEDAT PAC2)
+b2007_propeller	# Propeller (MPK)
+b2007_clochette	# QLIE
+b2009_purplesoftware	# QLIE
+b2020_barista_lab	# QLIE
+r1_qlie	# QLIE
+r1_reallive_five	# RealLive
+b2007_hadashi	# RealLive
+b2007_sagaplanets	# RealLive
+s2008_sagaplanets_cominghumming	# RealLive
+s2010_sagaplanets_kisaragi	# RealLive
+r1_renpy	# Ren'Py
+dl_RJ01746340	# RenPy
+s2008_alcot_engagekinks	# ShiinaRio
+s2009_ensemble_hanaotome	# ShiinaRio
+b2011_guilty	# ShiinaRio
+b2017_onomatope_raspberry	# ShiinaRio
+b2011_catwalk	# SiglusEngine
+b2015_hamham	# SiglusEngine
+s2017_sagaplanets_kinkoi	# SiglusEngine
+dl_VJ01005112	# SiglusEngine
+b2014_silkys_plus	# Silky's (AI6WIN)
+b2016_silkys_sakura	# Silky's (AI6WIN)
+b2009_crossover	# Softpal
+b2011_marine	# Softpal
+s2014_erectlip_gyokumajyo	# Softpal
+s2014_qoobrand_majokoi	# Softpal
+b2015_erectlip	# Softpal
+b2018_erectlip	# Softpal
+b2020_erectlip	# Softpal
+s2020_amuse_craft_erotica_kinbaku	# Softpal
+s2022_amuse_craft_erotica_tsumamomi	# Softpal
+s2023_milimili_onaho_yokai	# Softpal
+b2024_milimili	# Softpal
+b2026_crystalia	# Softpal
+b2006_blackcyc	# System-NNN (BlackCyc)
+b2016_blackcyc	# System-NNN (BlackCyc)
+r1_tyrano	# TyranoScript
+s2017_dualtail_vbb	# Unity
+s2018_dualtail_vbl	# Unity
+b2020_hachimitsu_soft	# Unity
+b2024_ninetail	# Unity
+s2025_dualtail_vbv	# Unity
+b2010_waffle	# Waffle (.pak)
+b2012_waffle	# Waffle (.pak)
+b2014_waffle	# Waffle (.pak)
+b2016_waffle	# Waffle (.pak)
+b2017_waffle	# Waffle (.pak)
+dl_RJ01729227	# WolfRPG
+dl_RJ01705134	# WolfRPG
+dl_RJ01724124	# WolfRPG
+dl_RJ01598948	# WolfRPG*
 dl_RJ365650	# WolfRPG*
+b2007_whirlpool	# YU-RIS
+b2013_anim	# YU-RIS
+s2014_whirlpool_tearstilla	# YU-RIS
+s2020_casket_ayakashi03	# YU-RIS
+r1_yuris	# YU-RIS
+b2007_feng	# Yuka (YKC)
 b2008_hook	# Yuka (YKC)
+b2008_smee	# Yuka (YKC)
+b2011_hook	# Yuka (YKC)
+b2013_hooksoft	# Yuka (YKC)
+b2014_ensemble_sweet	# advhd
+b2014_guilty	# advhd
+s2011_purplesoftware_miranosu	# cmvs
+s2006_bishop_hkg2	# dat?*
+s2022_bishop_cs2	# dat?*
+s2023_anim_anetumami2	# dat?*
+s2026_bishop_tks	# dat?*
+dl_VJ01005807	# dat?*
+dl_VJ01000787	# debonosu
+s2017_marmalade_mashimaro	# entis
+b2006_pulltop	# livemaker
+dl_RJ01701406	# pak?*
+s2011_propeller_sukima	# propeller
+s2026_lump_of_sugar_tayutama_zero	# qlie
+dl_VJ01002468	# sakanagl
+dl_VJ01004064	# sakanagl
+s2008_guilty_wana2	# shiina
+s2023_hadashi_harem_shangrila	# siglus
+b2006_lune	# tmrhiro
+b2006_marine	# tmrhiro
+s2006_lune_sakuya	# tmrhiro
+b2007_lune	# tmrhiro
+b2008_marine	# tmrhiro
+b2012_atelier_gh	# unknown (Atelier GH .arc)
+b2023_fg_remake	# unknown (FG .arc + Loader*.dll)
+b2020_rikuzendo	# SRPG Studio (JScript)
+r1_artemis	# Artemis
+r1_sakana	# SakanaGL
+b2022_ba_ku	# Unity
+b2022_lunaprism	# html
+dl_RJ01698597	# NW.js/Tyrano
+dl_RJ01728583	# Unity
+dl_RJ01582557	# Unity
+dl_RJ01731048	# NW.js/Tyrano
+dl_RJ01731003	# LiveMaker
+dl_RJ01655345	# html
+dl_RJ01715225	# html
+dl_RJ01670163	# pak?*
+dl_RJ01683321	# -
+dl_RJ01714826	# LiveMaker
+dl_RJ01724681	# Unity
+dl_RJ01703015	# LiveMaker
+dl_RJ01604592	# NW.js/Tyrano
+dl_RJ01700416	# -
+dl_RJ01746276	# pak?*
+dl_RJ01669710	# LiveMaker
+dl_RJ01660695	# Unity
+dl_RJ01733667	# Unity
+dl_RJ01730521	# NW.js/Tyrano
+dl_RJ01648691	# NW.js/Tyrano
+dl_RJ01690707	# Unity
+dl_RJ01712071	# Electron
+dl_RJ01710833	# -
+dl_RJ01678959	# Unity
+dl_RJ357058	# NW.js/Tyrano
+dl_RJ01720493	# NW.js/Tyrano
+dl_RJ01618221	# NW.js/Tyrano
+dl_RJ01741863	# NW.js/Tyrano
+dl_RJ01722380	# NW.js/Tyrano
+dl_RJ01693441	# -
+dl_RJ01711994	# Unity
+dl_RJ01707379	# Electron
+dl_RJ01714047	# Unity
+dl_RJ01699765	# NW.js/Tyrano
+dl_RJ01684055	# Unity
+dl_RJ01740259	# Unity
+dl_RJ01736920	# Unity
+dl_RJ01610703	# Unity
+dl_RJ01732086	# -
+dl_RJ01618747	# NW.js/Tyrano
+dl_RJ01720958	# NW.js/Tyrano
+dl_RJ01727123	# NW.js/Tyrano
+dl_RJ01636335	# Unity
+dl_RJ01703802	# NW.js/Tyrano
+dl_RJ01700539	# Unity
+dl_RJ01695481	# Unity
+dl_RJ01691731	# Unity
+dl_RJ01701742	# NW.js/Tyrano
+dl_RJ01706994	# Electron
+dl_RJ01732951	# Unity
+dl_RJ01744242	# Electron
+dl_RJ01730784	# Unity
+dl_RJ01688926	# Unity
+dl_RJ01703385	# Unity
+dl_RJ01650072	# NW.js/Tyrano
+dl_RJ01696828	# Unity
+dl_RJ01699647	# NW.js/Tyrano
+dl_RJ01706267	# Unity
+dl_RJ01701172	# NW.js/Tyrano
+dl_RJ01746806	# Unity
+dl_RJ01707935	# -
+dl_RJ01747016	# Electron
+dl_RJ01623688	# NW.js/Tyrano
+dl_RJ01682755	# Unity
+dl_RJ01720600	# LiveMaker
+dl_RJ01729974	# Unity
+dl_RJ01704479	# -
+s2024_madosoft_selectoblige	# Artemis
+dl_RJ01696742	# NW.js/Tyrano
+dl_RJ01659367	# Unity
+dl_RJ01529614	# NW.js/Tyrano
+dl_RJ01735938	# Electron
+dl_RJ01726603	# Unity
+dl_RJ01728421	# Unity
+dl_RJ01641249	# Unity*
+s2025_j_studio_galsfiction	# artemis
+dl_RJ01728288	# Unity
+dl_RJ01734456	# Unity
+dl_RJ01721615	# Unity
+dl_RJ01705199	# Unity*
+dl_RJ01739908	# Unity*

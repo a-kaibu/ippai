@@ -60,7 +60,9 @@ replay (D3D8 CopyRects: apitrace records only its first rect).
 
 ## Trial games (CI)
 
-`tests/replay/games.txt` lists trial games (ids of `tests/corpus/titles.tsv`, free downloads).
+`tests/replay/games.txt` lists trial games: every title of `tests/corpus/titles.tsv` (free
+downloads). A run takes at most 100 of those with neither a trace nor a reason (GitHub's matrix
+holds 256 jobs); a nightly run takes the next 100 until none is left.
 `.github/workflows/gametrace.yml` (when games.txt changes, or by hand) records each one once on
 the Windows runner: the trial downloaded and unpacked (`tests/corpus-prep.sh`), its API and width
 found (`gameapi.py`: the D3D DLLs its exe or the DLLs beside it name), the DirectX 9 runtime
