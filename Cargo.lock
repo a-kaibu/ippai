@@ -1733,6 +1733,7 @@ dependencies = [
  "dxwgsl",
  "glwgsl",
  "half",
+ "hlslc",
  "koji",
  "libc",
  "naga",
