@@ -34,3 +34,40 @@ XINPUTUAP.dll: loaded
   disabled user 2: GetState 2147746288 SetState 2147746288 GetCapabilities 2147746288
   disabled user 3: GetState 2147746288 SetState 2147746288 GetCapabilities 2147746288
   disabled user 4: GetState 2147746288 SetState 2147746288 GetCapabilities 2147746288
+com: CoInitializeEx 00000000
+xinput1_4.dll: loaded
+  exports: GetState 1 SetState 1 GetCapabilities 1 Enable 1
+  enabled user 0: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 1: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 2: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 3: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 4: GetState 160 SetState 160 GetCapabilities 160
+  disabled user 0: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 1: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 2: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 3: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 4: GetState 160 SetState 160 GetCapabilities 160
+xinput9_1_0.dll: loaded
+  exports: GetState 1 SetState 1 GetCapabilities 1 Enable 0
+  enabled user 0: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 1: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 2: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 3: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 4: GetState 160 SetState 160 GetCapabilities 160
+  disabled user 0: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 1: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 2: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 3: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 4: GetState 160 SetState 160 GetCapabilities 160
+XINPUTUAP.dll: loaded
+  exports: GetState 1 SetState 1 GetCapabilities 1 Enable 1
+  enabled user 0: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 1: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 2: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 3: GetState 1167 SetState 1167 GetCapabilities 1167
+  enabled user 4: GetState 160 SetState 160 GetCapabilities 160
+  disabled user 0: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 1: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 2: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 3: GetState 1167 SetState 1167 GetCapabilities 1167
+  disabled user 4: GetState 160 SetState 160 GetCapabilities 160
