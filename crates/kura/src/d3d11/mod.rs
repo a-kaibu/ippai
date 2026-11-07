@@ -85,6 +85,8 @@ pub const IF_CMDLIST: u32 = 93;
 pub const IF_MULTITHREAD: u32 = 94;
 /// IDXGIResource, on every buffer and texture (crates/kura/src/d3d11/d3d10.rs has 95..=111)
 pub const IF_DXGIRES: u32 = 112;
+/// ID3DUserDefinedAnnotation, on every context (PIX events: nobody is listening)
+pub const IF_ANNOTATION: u32 = 113;
 
 // IIDs (first dword) and the interfaces that answer them
 const IIDS: &[(u32, &[u32])] = &[
@@ -105,6 +107,7 @@ const IIDS: &[(u32, &[u32])] = &[
     (0xcafcb56c, &[IF_SURFACE]),
     (0x4ae63092, &[IF_SURFACE]),
     (0x035f3ab4, &[IF_DXGIRES]), // IDXGIResource
+    (0xb2daad8b, &[IF_ANNOTATION]), // ID3DUserDefinedAnnotation
     (0x3d3e0379, &[IF_SWAPCHAIN, IF_SURFACE]),
     (0xdb6f6ddb, &[IF_DEVICE]),
     (0xa04bfb29, &[IF_DEVICE]), // ID3D11Device1
@@ -152,7 +155,7 @@ const IIDS: &[(u32, &[u32])] = &[
 /// Interfaces another face of the same object can answer (device <-> IDXGIDevice, 2D textures
 /// <-> IDXGISurface)
 fn other_face(primary: u32, want: u32) -> bool {
-    matches!((primary, want), (IF_DEVICE, IF_DXGIDEVICE) | (IF_TEX2D, IF_SURFACE) | (IF_DEVICE | IF_CONTEXT, IF_MULTITHREAD))
+    matches!((primary, want), (IF_DEVICE, IF_DXGIDEVICE) | (IF_TEX2D, IF_SURFACE) | (IF_DEVICE | IF_CONTEXT, IF_MULTITHREAD) | (IF_CONTEXT, IF_ANNOTATION))
         // (a D3D11 device has no ID3D10Device face to ask for: D3D10CreateDevice makes it)
         || (primary != IF_DEVICE && d3d10::ten(primary) == Some(want))
 }
@@ -285,7 +288,8 @@ pub struct Obj {
 
 #[derive(Clone)]
 pub struct State {
-    vbs: [(u32, u32, u32); 16],
+    /// (D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT: 32)
+    vbs: [(u32, u32, u32); 32],
     ib: (u32, u32, u32),
     layout: u32,
     topology: u32,
@@ -538,6 +542,12 @@ impl D11 {
                 self.destroy(id);
             }
             return 0;
+        }
+        if id == self.device && self.trace && r > 0 {
+            // (who still holds the device: device children the application has not let go of)
+            let mut left: Vec<String> = self.objs.iter().filter(|(_, o)| o.refs > 0 && holds_device(o.iface) && o.iface != IF_CONTEXT).map(|(&k, o)| format!("{}#{k}x{}", name(o.iface, 0).split(':').next().unwrap_or(""), o.refs)).collect();
+            left.sort();
+            eprintln!("d3d11: device released, {r} left: {}", left.join(" "));
         }
         if was == 1 && holds_device(iface) {
             self.release(self.device);
@@ -985,7 +995,7 @@ fn unbind_state(d: &mut D11, old: &State) {
 
 fn default_state() -> State {
     State {
-        vbs: [(0, 0, 0); 16],
+        vbs: [(0, 0, 0); 32],
         ib: (0, 0, 0),
         layout: 0,
         topology: 0,
@@ -1242,6 +1252,11 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                 S_OK
             }
             _ => E_NOTIMPL,
+        },
+        // BeginEvent / EndEvent: -1 (no tool attached); SetMarker; GetStatus: FALSE
+        IF_ANNOTATION => match m {
+            3 | 4 => 0xffff_ffff,
+            _ => 0,
         },
         IF_DXGIRES => match m {
             6 | 7 => parent(d, d.device, a(1), a(2)),
@@ -2141,6 +2156,10 @@ unsafe fn set_slots(d: &mut D11, slots: &mut [u32], start: u32, n: u32, p: u32) 
 
 /// Gets `n` slots from `start` into `p` (with references).
 unsafe fn get_slots(d: &mut D11, slots: &[u32], start: u32, n: u32, p: u32) {
+    // (no array: nothing asked for, no reference given)
+    if p == 0 {
+        return;
+    }
     for i in 0..n {
         let id = slots.get((start + i) as usize).copied().unwrap_or(0);
         if id != 0 {
@@ -2158,6 +2177,10 @@ unsafe fn set_one(d: &mut D11, slot: &mut u32, addr: u32) {
 }
 
 unsafe fn get_one(d: &mut D11, id: u32, out: u32) {
+    // (no out pointer: nothing asked for, no reference given)
+    if out == 0 {
+        return;
+    }
     if id != 0 {
         d.add_ref(id);
     }
@@ -2198,7 +2221,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             // IASetVertexBuffers(start, n, buffers, strides, offsets)
             for i in 0..a(2) {
                 let s = (a(1) + i) as usize;
-                if s >= 16 {
+                if s >= 32 {
                     break;
                 }
                 let new = if a(3) == 0 { 0 } else { d.id_of(rdp(a(3), i as usize)) };
@@ -2844,7 +2867,7 @@ fn buffer_gpu(d: &mut D11, id: u32) -> u32 {
 /// same stride and step become one (offsets moved into the attributes) where the attributes
 /// still fit in a vertex. `slots`: (slot, step, attributes [format, offset, location]); the
 /// result: (buffer, stride, offset) per slot index used in `slots` afterwards.
-fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 16], slots: &mut Vec<(u32, u32, Vec<[u32; 3]>)>) -> Vec<(u32, u32, u32)> {
+fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 32], slots: &mut Vec<(u32, u32, Vec<[u32; 3]>)>) -> Vec<(u32, u32, u32)> {
     let mut vbx = vbs.to_vec();
     if slots.len() <= 8 {
         return vbx;
@@ -3220,7 +3243,7 @@ mod vb_merge_tests {
     #[test]
     fn nine_slots_on_one_buffer_become_one() {
         // ANGLE: 9 float4 attributes, each its own slot on buffer 7 at offset 16*i, stride 144
-        let mut vbs = [(0u32, 0u32, 0u32); 16];
+        let mut vbs = [(0u32, 0u32, 0u32); 32];
         let mut slots = Vec::new();
         for i in 0..9u32 {
             vbs[i as usize] = (7, 144, 1000 + 16 * i);
@@ -3235,7 +3258,7 @@ mod vb_merge_tests {
 
     #[test]
     fn eight_or_fewer_stay() {
-        let mut vbs = [(0u32, 0u32, 0u32); 16];
+        let mut vbs = [(0u32, 0u32, 0u32); 32];
         vbs[0] = (1, 16, 0);
         vbs[1] = (1, 16, 4);
         let mut slots = vec![(0, 0, vec![[0, 0, 0]]), (1, 0, vec![[0, 0, 1]])];
@@ -3249,7 +3272,7 @@ mod vb_merge_tests {
         fn merging_keeps_each_attribute_address(n in 9usize..16, bufs in prop::collection::vec(1u32..4, 16),
             strides in prop::collection::vec(prop::sample::select(vec![0u32, 16, 32, 64]), 16),
             offs in prop::collection::vec(0u32..64, 16), fmts in prop::collection::vec(0u32..4, 16)) {
-            let mut vbs = [(0u32, 0u32, 0u32); 16];
+            let mut vbs = [(0u32, 0u32, 0u32); 32];
             let mut slots = Vec::new();
             for i in 0..n {
                 vbs[i] = (bufs[i], strides[i], offs[i]);

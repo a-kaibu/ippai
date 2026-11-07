@@ -51,4 +51,5 @@ pub const NAMES: &[(&str, &[&str])] = &[
     ("ID3D10RasterizerState", &["QueryInterface", "AddRef", "Release", "GetDevice", "GetPrivateData", "SetPrivateData", "SetPrivateDataInterface", "GetDesc"]),
     ("ID3D10Query", &["QueryInterface", "AddRef", "Release", "GetDevice", "GetPrivateData", "SetPrivateData", "SetPrivateDataInterface", "Begin", "End", "GetData", "GetDataSize", "GetDesc"]),
     ("IDXGIResource", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "GetDevice", "GetSharedHandle", "GetUsage", "SetEvictionPriority", "GetEvictionPriority"]),
+    ("ID3DUserDefinedAnnotation", &["QueryInterface", "AddRef", "Release", "BeginEvent", "EndEvent", "SetMarker", "GetStatus"]),
 ];

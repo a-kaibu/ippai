@@ -170,6 +170,18 @@ fn deferred_state() {
     let iid = mem(4);
     put(iid, &[0x9b7e4e00, 0, 0, 0]);
     assert_eq!(call1(m(IF_CONTEXT, 0), &[def, iid, c.o]), E_NOINTERFACE);
+    // both contexts are an ID3DUserDefinedAnnotation (Wine's test_user_defined_annotation)
+    put(iid, &[0xb2daad8b, 0x4dbf03d4, 0xab32eb95, 0xabd0634b]);
+    for ctx in [c.imm, def] {
+        assert_eq!(call1(m(IF_CONTEXT, 0), &[ctx, iid, c.o]), 0);
+        let an = rd1(c.o);
+        let name = mem(4);
+        assert_eq!(call1(m(IF_ANNOTATION, 3), &[an, name]), 0xffff_ffff);
+        assert_eq!(call1(m(IF_ANNOTATION, 4), &[an]), 0xffff_ffff);
+        call1(m(IF_ANNOTATION, 5), &[an, name]);
+        assert_eq!(call1(m(IF_ANNOTATION, 6), &[an]), 0);
+        release(an);
+    }
     assert_eq!(release(def), 0);
     c.set_ps_cb(c.imm, 0);
     assert_eq!(release(green), 0);
@@ -394,6 +406,121 @@ fn newer_interfaces() {
     call1(m(IF_CONTEXT, 146), &[c.imm, c.o]);
     assert_eq!(rd1(c.o), 0);
     call1(m(IF_CONTEXT, 144), &[c.imm, 0, 0]);
+    release(c.imm);
+    release(c.dev);
+}
+
+/// Wine's test_private_data on one device per process: "two" devices (the same one) with the
+/// one stored in the other's private data, a texture holding it too; everything goes at the end.
+#[test]
+fn device_in_its_own_private_data() {
+    let _g = setup();
+    let c = Ctx::new();
+    let (dev_out, level, ctx_out) = (mem(2), mem(2), mem(2));
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, 0, 0, dev_out, level, 0]), 0);
+    let _ = ctx_out;
+    let test_object = rd1(dev_out);
+    release(c.imm);
+    let guid = mem(4);
+    put(guid, &[0xfdb37466, 1, 2, 3]);
+    let td = mem(11);
+    put(td, &[512, 512, 1, 1, 28, 1, 0, 0, 0x20, 0, 0]);
+    assert_eq!(call1(m(IF_DEVICE, 5), &[c.dev, td, 0, c.o]), 0);
+    let tex = rd1(c.o);
+    let iid = mem(4);
+    put(iid, &[0xcafcb56c, 0, 0, 0]);
+    assert_eq!(call1(m(IF_TEX2D, 0), &[tex, iid, c.o]), 0);
+    let surface = rd1(c.o);
+    let base = refs(test_object);
+    // SetPrivateDataInterface(device, guid, test_object) twice, NULL, again, then data over it
+    let spdi = |o: u32, v: u32| call1(m(iface_of(o), if iface_of(o) == IF_DEVICE { 36 } else { 6 }), &[o, guid, v]);
+    assert_eq!(spdi(c.dev, test_object), 0);
+    assert_eq!(refs(test_object), base + 1);
+    assert_eq!(spdi(c.dev, test_object), 0);
+    assert_eq!(refs(test_object), base + 1);
+    assert_eq!(spdi(c.dev, 0), 0);
+    assert_eq!(refs(test_object), base);
+    assert_eq!(spdi(c.dev, test_object), 0);
+    let data = mem(4);
+    assert_eq!(call1(m(IF_DEVICE, 35), &[c.dev, guid, 16, data]), 0);
+    assert_eq!(refs(test_object), base);
+    assert_eq!(spdi(c.dev, test_object), 0);
+    // GetPrivateData gives one more
+    let (size, ptr_out) = (mem(1), mem(2));
+    put(size, &[8]);
+    assert_eq!(call1(m(IF_DEVICE, 34), &[c.dev, guid, size, ptr_out]), 0);
+    assert_eq!(refs(test_object), base + 2);
+    release(rd1(ptr_out));
+    // the texture holds it too; its surface face reads the same store
+    assert_eq!(spdi(tex, test_object), 0);
+    put(size, &[4]);
+    assert_eq!(call1(m(IF_SURFACE, 5), &[surface, guid, size, ptr_out]), 0);
+    release(rd1(ptr_out));
+    assert_eq!(refs(test_object), base + 2);
+    // ... and its D3D10 face
+    put(iid, &[0x9b7e4c04, 0, 0, 0]);
+    if call1(m(IF_TEX2D, 0), &[tex, iid, c.o]) == 0 {
+        let t10 = rd1(c.o);
+        put(size, &[4]);
+        assert_eq!(call1(m(d3d10::IF10_TEX2D, 4), &[t10, guid, size, ptr_out]), 0);
+        release(rd1(ptr_out));
+        release(t10);
+    }
+    assert_eq!(refs(test_object), base + 2);
+    release(surface);
+    // (the texture's own reference of the device and the one its private data held)
+    assert_eq!(release(tex), 0);
+    assert_eq!(refs(test_object), base);
+    // the device's two references and the one it holds of itself: after the second, gone
+    assert_eq!(release(c.dev), 2);
+    assert_eq!(release(test_object), 0);
+    // a device made again starts with nothing left
+    let c2 = Ctx::new();
+    assert_eq!(release(c2.imm), 0);
+    assert_eq!(release(c2.dev), 0);
+}
+
+/// Wine's test_clear_state: a blend and a depth stencil state set, read back, cleared and let
+/// go of leave nothing holding the device.
+#[test]
+fn state_objects_let_go() {
+    let _g = setup();
+    let c = Ctx::new();
+    let base = refs(c.dev);
+    let bd = mem(66);
+    put(bd, &[0; 66]);
+    put(bd + 8, &[0, 2, 1, 1, 2, 1, 1, 0xf]);
+    assert_eq!(call1(m(IF_DEVICE, 20), &[c.dev, bd, c.o]), 0);
+    let blend = rd1(c.o);
+    let dd = mem(13);
+    put(dd, &[1, 1, 2, 0, 0xff, 0xff, 1, 1, 1, 8, 1, 1, 1]);
+    assert_eq!(call1(m(IF_DEVICE, 21), &[c.dev, dd, c.o]), 0);
+    let ds = rd1(c.o);
+    assert_eq!(refs(c.dev), base + 2);
+    let factor = mem(4);
+    call1(m(IF_CONTEXT, 35), &[c.imm, blend, factor, 0xff00_ff00]);
+    call1(m(IF_CONTEXT, 36), &[c.imm, ds, 3]);
+    let (o, f, mask) = (mem(2), mem(4), mem(1));
+    call1(m(IF_CONTEXT, 91), &[c.imm, o, f, mask]);
+    assert_eq!(rd1(o), blend);
+    release(rd1(o));
+    call1(m(IF_CONTEXT, 91), &[c.imm, o, 0, 0]);
+    release(rd1(o));
+    call1(m(IF_CONTEXT, 92), &[c.imm, o, mask]);
+    release(rd1(o));
+    call1(m(IF_CONTEXT, 92), &[c.imm, o, 0]);
+    release(rd1(o));
+    // no out pointer: no reference (Wine's test asks with every pointer NULL in turn)
+    let before = (refs(blend), refs(ds));
+    call1(m(IF_CONTEXT, 91), &[c.imm, 0, 0, 0]);
+    call1(m(IF_CONTEXT, 91), &[c.imm, 0, f, mask]);
+    call1(m(IF_CONTEXT, 92), &[c.imm, 0, mask]);
+    call1(m(IF_CONTEXT, 81), &[c.imm, 0, 1, 0]);
+    assert_eq!((refs(blend), refs(ds)), before);
+    call1(m(IF_CONTEXT, 110), &[c.imm]);
+    assert_eq!(release(ds), 0);
+    assert_eq!(release(blend), 0);
+    assert_eq!(refs(c.dev), base);
     release(c.imm);
     release(c.dev);
 }
