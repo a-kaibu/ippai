@@ -1,0 +1,75 @@
+DWriteCreateFactory 0
+CreateTextFormat 0
+plain lines: too small 0x8007007a count 1
+plain line 0: length 5 trailing 0 newline 0 trimmed 0
+plain clusters: too small 0x8007007a count 5
+plain cluster 0: length 1 wrap 0 space 0 newline 0
+plain cluster 1: length 1 wrap 0 space 0 newline 0
+plain cluster 2: length 1 wrap 1 space 1 newline 0
+plain cluster 3: length 1 wrap 0 space 0 newline 0
+plain cluster 4: length 1 wrap 1 space 0 newline 0
+run 0 ctx 1 mode 0 glyphs 5 em 20 sideways 0 bidi 0 text 00610062002000630064 at 0 map 0 1 2 3 4 below 1 face 1
+plain Draw 0 runs 1
+newlines lines: too small 0x8007007a count 4
+newlines line 0: length 3 trailing 1 newline 1 trimmed 0
+newlines line 1: length 6 trailing 4 newline 2 trimmed 0
+newlines line 2: length 3 trailing 1 newline 1 trimmed 0
+newlines line 3: length 0 trailing 0 newline 0 trimmed 0
+newlines clusters: too small 0x8007007a count 12
+newlines cluster 0: length 1 wrap 0 space 0 newline 0
+newlines cluster 1: length 1 wrap 0 space 0 newline 0
+newlines cluster 2: length 1 wrap 1 space 1 newline 1
+newlines cluster 3: length 1 wrap 0 space 0 newline 0
+newlines cluster 4: length 1 wrap 0 space 0 newline 0
+newlines cluster 5: length 1 wrap 0 space 1 newline 0
+newlines cluster 6: length 1 wrap 0 space 1 newline 0
+newlines cluster 7: length 1 wrap 0 space 1 newline 0
+newlines cluster 8: length 1 wrap 1 space 1 newline 1
+newlines cluster 9: length 1 wrap 0 space 0 newline 0
+newlines cluster 10: length 1 wrap 0 space 0 newline 0
+newlines cluster 11: length 1 wrap 1 space 1 newline 1
+run 0 ctx 1 mode 0 glyphs 2 em 20 sideways 0 bidi 0 text 00610062 at 0 map 0 1 below 1 face 1
+run 1 ctx 1 mode 0 glyphs 0 em 20 sideways 0 bidi 0 text 000a at 2 map 0 below 0 face 1
+run 2 ctx 1 mode 0 glyphs 2 em 20 sideways 0 bidi 0 text 00630064 at 3 map 0 1 below 1 face 1
+run 3 ctx 1 mode 0 glyphs 2 em 20 sideways 0 bidi 0 text 00200020 at 5 map 0 1 below 0 face 1
+run 4 ctx 1 mode 0 glyphs 0 em 20 sideways 0 bidi 0 text 000d000a at 7 map 0 1 below 0 face 1
+run 5 ctx 1 mode 0 glyphs 2 em 20 sideways 0 bidi 0 text 00650066 at 9 map 0 1 below 1 face 1
+run 6 ctx 1 mode 0 glyphs 0 em 20 sideways 0 bidi 0 text 000a at 11 map 0 below 0 face 1
+newlines Draw 0 runs 7
+empty lines: too small 0x8007007a count 1
+empty line 0: length 0 trailing 0 newline 0 trimmed 0
+empty clusters: too small 0 count 0
+empty Draw 0 runs 0
+japanese lines: too small 0x8007007a count 1
+japanese line 0: length 4 trailing 0 newline 0 trimmed 0
+japanese clusters: too small 0x8007007a count 4
+japanese cluster 0: length 1 wrap 1 space 0 newline 0
+japanese cluster 1: length 1 wrap 1 space 0 newline 0
+japanese cluster 2: length 1 wrap 1 space 0 newline 0
+japanese cluster 3: length 1 wrap 1 space 0 newline 0
+run 0 ctx 1 mode 0 glyphs 2 em 20 sideways 0 bidi 0 text 4e16754c at 0 map 0 1 below 1 face 1
+run 1 ctx 1 mode 0 glyphs 1 em 20 sideways 0 bidi 0 text 3092 at 2 map 0 below 0 face 1
+run 2 ctx 1 mode 0 glyphs 1 em 20 sideways 0 bidi 0 text 898b at 3 map 0 below 0 face 1
+japanese Draw 0 runs 3
+surrogates lines: too small 0x8007007a count 1
+surrogates line 0: length 4 trailing 0 newline 0 trimmed 0
+surrogates clusters: too small 0x8007007a count 3
+surrogates cluster 0: length 1 wrap 1 space 0 newline 0
+surrogates cluster 1: length 2 wrap 1 space 0 newline 0
+surrogates cluster 2: length 1 wrap 1 space 0 newline 0
+run 0 ctx 1 mode 0 glyphs 1 em 20 sideways 0 bidi 0 text 0061 at 0 map 0 below 1 face 1
+run 1 ctx 1 mode 0 glyphs 1 em 20 sideways 0 bidi 0 text d83dde00 at 1 map 0 0 below 0 face 1
+run 2 ctx 1 mode 0 glyphs 1 em 20 sideways 0 bidi 0 text 0062 at 3 map 0 below 0 face 1
+surrogates Draw 0 runs 3
+SetCharacterSpacing 0 grows 9
+SetCharacterSpacing negative minimum 0x80070057
+CreateFontFace 0
+GetGlyphIndices 0 nonzero 1 1 differ 1
+TranslateColorGlyphRun 0x8898500c enumerator 0
+D2D1CreateFactory 0
+CreatePathGeometry 0
+Open 0
+GetGlyphRunOutline 0
+Close 0
+CreateTransformedGeometry 0
+CreateStrokeStyle 0

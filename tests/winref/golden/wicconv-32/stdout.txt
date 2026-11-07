@@ -1,4 +1,28 @@
 WICImagingFactory 0
+info BlackWhite qi 0 type 32 guid 1 clsid 1 bits 1 channels 1 transparency 0 numeric 2
+info 2bppGray qi 0 type 32 guid 1 clsid 1 bits 2 channels 1 transparency 0 numeric 2
+info 4bppGray qi 0 type 32 guid 1 clsid 1 bits 4 channels 1 transparency 0 numeric 2
+info 8bppGray qi 0 type 32 guid 1 clsid 1 bits 8 channels 1 transparency 0 numeric 2
+info 16bppGray qi 0 type 32 guid 1 clsid 1 bits 16 channels 1 transparency 0 numeric 2
+info 16bppBGR555 qi 0 type 32 guid 1 clsid 1 bits 16 channels 3 transparency 0 numeric 2
+info 16bppBGR565 qi 0 type 32 guid 1 clsid 1 bits 16 channels 3 transparency 0 numeric 2
+info 24bppBGR qi 0 type 32 guid 1 clsid 1 bits 24 channels 3 transparency 0 numeric 2
+info 24bppRGB qi 0 type 32 guid 1 clsid 1 bits 24 channels 3 transparency 0 numeric 2
+info 32bppBGR qi 0 type 32 guid 1 clsid 1 bits 32 channels 3 transparency 0 numeric 2
+info 32bppBGRA qi 0 type 32 guid 1 clsid 1 bits 32 channels 4 transparency 1 numeric 2
+info 32bppPBGRA qi 0 type 32 guid 1 clsid 1 bits 32 channels 4 transparency 1 numeric 2
+info 32bppRGB qi 0 type 32 guid 1 clsid 1 bits 32 channels 3 transparency 0 numeric 2
+info 32bppRGBA qi 0 type 32 guid 1 clsid 1 bits 32 channels 4 transparency 1 numeric 2
+info 32bppPRGBA qi 0 type 32 guid 1 clsid 1 bits 32 channels 4 transparency 1 numeric 2
+info 48bppRGB qi 0 type 32 guid 1 clsid 1 bits 48 channels 3 transparency 0 numeric 2
+info 64bppRGBA qi 0 type 32 guid 1 clsid 1 bits 64 channels 4 transparency 1 numeric 2
+info 32bppCMYK qi 0 type 32 guid 1 clsid 1 bits 32 channels 4 transparency 0 numeric 2
+info 8bppAlpha qi 0 type 32 guid 1 clsid 1 bits 8 channels 1 transparency 1 numeric 2
+info 1bppIndexed qi 0 type 32 guid 1 clsid 1 bits 1 channels 1 transparency 0 numeric 1
+info 2bppIndexed qi 0 type 32 guid 1 clsid 1 bits 2 channels 1 transparency 0 numeric 1
+info 4bppIndexed qi 0 type 32 guid 1 clsid 1 bits 4 channels 1 transparency 0 numeric 1
+info 8bppIndexed qi 0 type 32 guid 1 clsid 1 bits 8 channels 1 transparency 0 numeric 1
+info unknown 0x88982f50 out 0
 BlackWhite>32bppBGRA: can 1 000000ff000000ffffffffff000000ffffffffff000000ff000000ffffffffff000000ffffffffffffffffffffffffff000000ff000000ffffffffff000000ffffffffff000000ffffffffffffffffffffffffff000000ffffffffffffffffff000000ff000000ff000000ff000000ff000000ffffffffff000000ff000000ff
 2bppGray>32bppBGRA: can 1 555555ff000000ff555555ffaaaaaaffaaaaaaff000000ffffffffffffffffffffffffff555555ffaaaaaaff000000ff000000ffaaaaaaff000000ff555555ff555555ffaaaaaaffaaaaaaffaaaaaaffaaaaaaffffffffff000000ffffffffffffffffffffffffffffffffff000000ff555555ff000000ff555555ff555555ff
 4bppGray>32bppBGRA: can 1 666666ff333333ffaaaaaaffccccccffffffffff555555ff333333ffeeeeeeff888888ff777777ffddddddff000000ff111111ff999999ff666666ff222222ff333333ffccccccff666666ff333333ffaaaaaaffaaaaaaff111111ff111111ff555555ff888888ff888888ffffffffffffffffff666666ff333333ffddddddff

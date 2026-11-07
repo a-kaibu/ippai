@@ -304,4 +304,11 @@ query null_out false
 refs device 2 buffer 3 getdevice 4 context 3 (context 2) released 2
 refs view_of_buffer buffer 1 device 4 bound view 1 device 4 got_back 1 resource_is_buffer 1
 refs end device 2
+surface plain IDXGISurface ok IDXGISurface2 ok same 1 refs 3
+surface plain GetResource ok same 1 sub 0 resource ok same 1 sub 0 refs 5 desc ok 64x32 fmt 87
+surface plain released refs 1
+surface mips IDXGISurface noif IDXGISurface2 noif same 0 refs 1
+surface mips released refs 1
+surface array IDXGISurface noif IDXGISurface2 noif same 0 refs 1
+surface array released refs 1
 release device 0

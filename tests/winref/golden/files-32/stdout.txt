@@ -62,4 +62,15 @@ GetFullPathName 'trail. .' <cur>\trail part trail
 GetFullPathName 'C:\dir\..\..\..\file' \file part file
 GetFullPathName '\\server\share\x\..' \\server\share part (null)
 GetFullPathName 'a\\b' <cur>\a\b part b
+CreateFile2 exported 1
+cf2(L"cf2-missing.txt", GENERIC_READ, 0, OPEN_EXISTING, NULL) == INVALID_HANDLE_VALUE = 1 err 2
+CreateFile2 CREATE_NEW ok 1 err 0
+WriteFile(h, "abc", 3, &w, NULL)                             = 1 err 57005
+GetFileAttributesA("cf2.txt")                                = 34 err 57005
+cf2(L"cf2.txt", GENERIC_READ, 0, CREATE_NEW, NULL) == INVALID_HANDLE_VALUE = 1 err 80
+ReadFile(h, b, 8, &r, NULL)                                  = 1 err 57005
+CreateFile2 read 3 abc
+cf2(L"cf2.txt", GENERIC_WRITE, 0, OPEN_EXISTING, NULL) == INVALID_HANDLE_VALUE = 1 err 32
+CreateFile2 OPEN_ALWAYS existing ok 1 err 183
+DeleteFileA("cf2.txt")                                       = 1 err 57005
 GetFileAttributesA("wr-files")                               = 4294967295 err 2
