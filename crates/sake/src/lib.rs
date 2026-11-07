@@ -59,6 +59,7 @@ pub mod ole;
 pub mod picture;
 pub mod wic;
 pub mod wmi;
+pub mod winrt;
 pub mod pe;
 pub mod seh;
 pub mod seh64;
@@ -426,6 +427,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     ini::init();
     ddraw::init();
     ole::init();
+    winrt::init();
     usp::init();
     acm::init();
     dinput::init();

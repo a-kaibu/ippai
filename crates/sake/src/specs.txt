@@ -32509,3 +32509,15 @@ shcore SetCurrentProcessExplicitAppUserModelID stdcall 4 -
 shcore GetCurrentProcessExplicitAppUserModelID stdcall 4 -
 shcore SetProcessReference stdcall 4 -
 shcore GetProcessReference stdcall 4 -
+combase RoInitialize stdcall 4 -
+combase RoUninitialize stdcall 0 -
+combase RoGetActivationFactory stdcall 12 -
+combase RoActivateInstance stdcall 8 -
+combase WindowsCreateString stdcall 12 -
+combase WindowsCreateStringReference stdcall 16 -
+combase WindowsDeleteString stdcall 4 -
+combase WindowsDuplicateString stdcall 8 -
+combase WindowsGetStringRawBuffer stdcall 8 -
+combase WindowsGetStringLen stdcall 4 -
+combase WindowsIsStringEmpty stdcall 4 -
+combase WindowsCompareStringOrdinal stdcall 12 -

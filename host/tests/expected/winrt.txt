@@ -1,0 +1,41 @@
+combase loaded: 1
+RoInitialize: ok
+create: 00000000
+a: null=0 len=28/28 empty=0 text='Windows.Gaming.Input.Gamepad' terminated=1
+create empty: 00000000
+empty: null=1 len=0/0 empty=1 text='' terminated=1
+create NULL 0: 00000000
+create NULL 3: 80004003
+create part: 00000000
+b: null=0 len=3/3 empty=0 text='abc' terminated=1
+reference: 00000000
+r: null=0 len=17/17 empty=0 text='UI.ViewManagement' terminated=1
+reference unterminated: 80070057
+duplicate: 00000000
+duplicate is the same string: 1
+delete: 00000000
+duplicate after delete: null=0 len=28/28 empty=0 text='Windows.Gaming.Input.Gamepad' terminated=1
+duplicate reference: 00000000
+duplicate of a reference is a copy: 1
+copy: null=0 len=17/17 empty=0 text='UI.ViewManagement' terminated=1
+reference after change: null=0 len=17/17 empty=0 text='XI.ViewManagement' terminated=1
+delete NULL: 00000000
+cmp B a: -1
+cmp a ab: -1
+cmp ab ab: 0
+cmp NULL NULL: 0
+cmp ab NULL: 1
+activation factory of an unknown class: failed, out NULL
+offset  0: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  1: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  2: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  3: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  4: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  5: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  6: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  7: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  8: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset  9: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset 10: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset 11: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
+offset 12: 11223345 11223344 11223344 11223444 00000007 00000007 -> 00000009 neighbours kept
