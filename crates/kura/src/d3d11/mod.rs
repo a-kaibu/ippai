@@ -3199,9 +3199,19 @@ fn texture_written(d: &mut D11, id: u32) {
     }
 }
 
-/// UpdateSubresource(resource, subresource, box, data, row pitch, depth pitch)
+/// UpdateSubresource(resource, subresource, box, data, row pitch, depth pitch). Of a staging or
+/// immutable resource it does nothing (Windows: winref d3d11copy's "update" of a staging texture
+/// hashes as before it, every format, 2D and 3D).
 unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32, pitch: u32, slice: u32) {
     let id = d.id_of(res);
+    let usage = match d.objs.get(&id).map(|o| &o.data) {
+        Some(Data::Buffer(b)) => b.usage,
+        Some(Data::Texture(t)) => t.usage,
+        _ => 0,
+    };
+    if matches!(usage, 1 | 3) {
+        return;
+    }
     let b = if bx != 0 { Some([rd(bx, 0), rd(bx, 1), rd(bx, 2), rd(bx, 3), rd(bx, 4), rd(bx, 5)]) } else { None };
     match d.objs.get_mut(&id).map(|o| &mut o.data) {
         Some(Data::Buffer(buf)) => {
@@ -3346,6 +3356,14 @@ unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub:
     let (w, h, depth) = (x1.saturating_sub(x0), y1.saturating_sub(y0), z1.saturating_sub(z0));
     if w == 0 || h == 0 || depth == 0 || x1 > pad(sw, &fb) || y1 > pad(sh, &fb) || z1 > sd || at[0] + w > pad(dw, &fa) || at[1] + h > pad(dh, &fa) || dz + depth > dd {
         return;
+    }
+    // a depth-stencil or multisampled texture is copied whole subresources only (Windows: winref
+    // d3d11copy's box of R32_UINT into D32_FLOAT leaves it as it was)
+    let whole = at == [0, 0, 0] && [x0, y0, z0, x1, y1, z1] == [0, 0, 0, sw, sh, sd] && (sw, sh, sd) == (dw, dh, dd);
+    if (a.bind | b.bind) & 0x40 != 0 || a.samples.0 > 1 || b.samples.0 > 1 {
+        if !whole {
+            return;
+        }
     }
     texture_written(d, di);
     let (Some(Data::Texture(a)), Some(Data::Texture(b))) = (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) else { return };

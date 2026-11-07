@@ -365,7 +365,8 @@ fn d3d11_map_trace() {
 
 /// A staging texture's first Map: zeros when it was made without data and nothing wrote it
 /// (no readback then), its initial data when made with some, and what a CopyResource,
-/// CopySubresourceRegion or UpdateSubresource put there before (read back). ANGLE makes a
+/// CopySubresourceRegion put there before (read back); an UpdateSubresource of it does nothing
+/// (Windows: winref d3d11copy). ANGLE makes a
 /// staging texture per upload and maps it once to write; the rest of what it maps keeps.
 #[test]
 fn staging_first_map() {
@@ -420,7 +421,7 @@ fn staging_first_map() {
     assert_eq!(read(region), 0x11223344, "after CopySubresourceRegion");
     let updated = staging(None);
     call1(m(IF_CONTEXT, 48), &[ctx, updated, 0, 0, pixels(0x0a0b0c0d), 64, 0]);
-    assert_eq!(read(updated), 0x0a0b0c0d, "after UpdateSubresource");
+    assert_eq!(read(updated), 0, "UpdateSubresource of a staging texture: nothing");
     // written through a Map, then a copy over it: the copy's
     let o = mem(4);
     let again = staging(None);

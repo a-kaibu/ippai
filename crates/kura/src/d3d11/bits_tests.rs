@@ -248,21 +248,14 @@ fn every_subresource_keeps_the_bits() {
                 }
             }
             assert_eq!(got, want, "CopySubresourceRegion {f} -> {g}, {}", shape.0);
-            // UpdateSubresource of the same box into the staging copy's level 0
+            // UpdateSubresource of the same box into the staging copy's level 0: nothing (as
+            // Windows, winref d3d11copy: the staging texture hashes as CopyResource left it)
             let up = rng.bytes((row * n * depth) as usize);
             let p = mem(up.len() as u32);
             put_bytes(p, &up);
             put(bx, &[4, dy, z_src, 8, dy + 4, z_src + depth]);
             call1(m(IF_CONTEXT, 48), &[dev.ctx, dst, 0, bx, p, row, row * n]);
-            let mut want = data[0].clone();
-            for z in 0..depth {
-                for r in 0..n {
-                    let to = (((z_src + z) * rows + dy / fi.block + r) * pitch + bx0) as usize;
-                    let from = ((z * n + r) * row) as usize;
-                    want[to..to + row as usize].copy_from_slice(&up[from..from + row as usize]);
-                }
-            }
-            assert_eq!(dev.read(dst, shape, g, 0), want, "UpdateSubresource {g}, {}", shape.0);
+            assert_eq!(dev.read(dst, shape, g, 0), data[0], "UpdateSubresource {g}, {}", shape.0);
             for t in [src, dst, dst2] {
                 dev.release(t);
             }
@@ -574,8 +567,9 @@ fn depth_copies_keep_the_bits() {
             assert_eq!(dev.read(st, s, to, 0), bytes, "{color}'s bytes through depth {depth} to {to}");
             dev.release(st);
         }
-        // a box of an integer texture of the group (its bits) to another place of the depth one
-        // (R32_UINT, and R32_SINT whole)
+        // an integer texture of the group (its bits) whole into the depth one (R32_SINT); a box
+        // of one (R32_UINT) to another place of it does nothing, as on Windows (winref
+        // d3d11copy's "depth in01 R32_UINT box": a depth texture is copied whole subresources)
         if depth == 40 {
             let si = dev.tex(s, 43, false, Some(&[bytes.clone()]));
             let ds3 = dev.tex_bound(s, depth, 0x40, None);
@@ -586,16 +580,26 @@ fn depth_copies_keep_the_bits() {
             for t in [st, ds3, si] {
                 dev.release(t);
             }
-            // into level 1 of a depth texture of 2 levels (2x2): a box of 2x2 of the color one
+            // into level 1 of a depth texture of 2 levels (2x2): a box of 2x2 of the color one,
+            // nothing; level 0 of another 4x4 one whole, all of it
             let mips = Shape(2, 4, 4, 1, 2);
             let dm = dev.tex_bound(mips, depth, 0x40, None);
+            let st = dev.tex(mips, color, true, None);
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, st, dm]);
+            let was = dev.read(st, mips, color, 1);
+            dev.release(st);
             let bx = mem(24);
             put(bx, &[2, 2, 0, 4, 4, 1]);
             call1(m(IF_CONTEXT, 46), &[dev.ctx, dm, 1, 0, 0, 0, src, 0, bx]);
             let st = dev.tex(mips, color, true, None);
             call1(m(IF_CONTEXT, 47), &[dev.ctx, st, dm]);
-            let want: Vec<u8> = [10, 11, 14, 15].iter().flat_map(|&k| bytes[k * 4..k * 4 + 4].to_vec()).collect();
-            assert_eq!(dev.read(st, mips, color, 1), want, "a box into level 1 of D32_FLOAT");
+            assert_eq!(dev.read(st, mips, color, 1), was, "a box into level 1 of D32_FLOAT: nothing");
+            dev.release(st);
+            put(bx, &[0, 0, 0, 4, 4, 1]);
+            call1(m(IF_CONTEXT, 46), &[dev.ctx, dm, 0, 0, 0, 0, src, 0, bx]);
+            let st = dev.tex(mips, color, true, None);
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, st, dm]);
+            assert_eq!(dev.read(st, mips, color, 0), bytes, "the whole box into level 0 of D32_FLOAT");
             dev.release(st);
             dev.release(dm);
             let rev: Vec<u8> = (0..16u32).flat_map(|k| ((15 - k) as f32 / 30.0).to_bits().to_le_bytes()).collect();
@@ -605,12 +609,7 @@ fn depth_copies_keep_the_bits() {
             call1(m(IF_CONTEXT, 46), &[dev.ctx, ds2, 0, 2, 0, 0, u, 0, bx]);
             let st = dev.tex(s, color, true, None);
             call1(m(IF_CONTEXT, 47), &[dev.ctx, st, ds2]);
-            let mut want = bytes.clone();
-            for (y, x) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                let (from, to) = (((y + 1) * 4 + x + 1) * 4, (y * 4 + x + 2) * 4);
-                want[to..to + 4].copy_from_slice(&rev[from..from + 4]);
-            }
-            assert_eq!(dev.read(st, s, color, 0), want, "a box of R32_UINT into D32_FLOAT");
+            assert_eq!(dev.read(st, s, color, 0), bytes, "a box of R32_UINT into D32_FLOAT: nothing");
             dev.release(st);
             dev.release(u);
         }
@@ -677,4 +676,81 @@ fn depth_copies_the_page_refuses() {
         dev.release(t);
     }
     dev.done();
+}
+
+/// winref d3d11copy's subresources() on the same inputs, against Windows' hashes
+/// (tests/winref/golden/d3d11copy-32): every subresource after CopyResource, the
+/// CopySubresourceRegion box, and an UpdateSubresource of the staging copy (nothing on Windows).
+#[test]
+fn subresources_hash_as_windows() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let golden = std::fs::read_to_string(format!("{}/../../tests/winref/golden/d3d11copy-32/stdout.txt", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let dev = Dev::new();
+    // the probe's subfmts: (source, destination, name, bytes per block, block)
+    let fmts: [(u32, u32, &str); 18] = [
+        (28, 28, "R8G8B8A8_UNORM"), (41, 41, "R32_FLOAT"), (11, 11, "R16G16B16A16_UNORM"), (58, 58, "R16_SNORM"),
+        (85, 85, "B5G6R5_UNORM"), (65, 65, "A8_UNORM"), (71, 71, "BC1_UNORM"), (77, 77, "BC3_UNORM"), (98, 98, "BC7_UNORM"),
+        (2, 2, "R32G32B32A32_FLOAT"), (12, 11, "R16G16B16A16_UINT>UNORM"), (11, 12, "R16G16B16A16_UNORM>UINT"),
+        (57, 58, "R16_UINT>SNORM"), (58, 57, "R16_SNORM>UINT"), (10, 11, "R16G16B16A16_FLOAT>UNORM"), (71, 72, "BC1_UNORM>SRGB"),
+        (2, 3, "R32G32B32A32_FLOAT>UINT"), (0, 0, ""),
+    ];
+    let fnv = |v: &[u8], s: Shape, f: u32, sub: u32| {
+        let fi = format::info(f).unwrap();
+        let (pitch, rows, slices) = s.layout(f, sub);
+        let w = ((s.1 >> (sub % s.4)).max(1) + fi.block - 1) / fi.block * fi.bpp;
+        let mut h = 2166136261u32;
+        for z in 0..slices {
+            for y in 0..rows {
+                for x in 0..w {
+                    h = (h ^ v[((z * rows + y) * pitch + x) as usize] as u32).wrapping_mul(16777619);
+                }
+            }
+        }
+        h
+    };
+    let (mut n, mut bad) = (0, Vec::new());
+    for shape in [Shape(2, 8, 8, 3, 4), Shape(3, 8, 4, 4, 3)] {
+        let dim = shape.0;
+        for (i, &(f, g, name)) in fmts.iter().enumerate().filter(|(_, x)| x.0 != 0) {
+            let data: Vec<Vec<u8>> = (0..shape.subs())
+                .map(|s| {
+                    let (pitch, rows, slices) = shape.layout(f, s);
+                    (0..pitch * rows * slices).map(|k| ((k * 131 + s * 29 + 7) ^ (k >> 3) ^ (i as u32 * 17)) as u8).collect()
+                })
+                .collect();
+            let src = dev.tex(shape, f, false, Some(&data));
+            let (dst, dst2) = (dev.tex(shape, g, true, None), dev.tex(shape, g, true, None));
+            let mut check = |what: &str, t: u32, sub: u32| {
+                let line = format!("{what} {name} {dim}d sub {sub} {:08x}", fnv(&dev.read(t, shape, g, sub), shape, g, sub));
+                n += 1;
+                if !golden.lines().any(|l| l == line) {
+                    bad.push(line);
+                }
+            };
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, dst, src]);
+            for s in 0..shape.subs() {
+                check("resource", dst, s);
+            }
+            let (dy, ssub) = if dim == 3 { (0, 0) } else { (4, 8) };
+            let bx = mem(24);
+            put(bx, &[4, 0, if dim == 3 { 1 } else { 0 }, 8, 4, if dim == 3 { 3 } else { 1 }]);
+            call1(m(IF_CONTEXT, 46), &[dev.ctx, dst2, 0, 0, dy, 0, src, ssub, bx]);
+            check("region", dst2, 0);
+            let fi = format::info(f).unwrap();
+            let (z, depth, row, nrows) = (if dim == 3 { 1 } else { 0 }, if dim == 3 { 2 } else { 1 }, 4 / fi.block * fi.bpp, 4 / fi.block);
+            let up: Vec<u8> = (0..row * nrows * depth).map(|k| (k * 53 + i as u32) as u8).collect();
+            let p = mem(up.len() as u32);
+            put_bytes(p, &up);
+            put(bx, &[4, dy, z, 8, dy + 4, z + depth]);
+            call1(m(IF_CONTEXT, 48), &[dev.ctx, dst, 0, bx, p, row, row * nrows]);
+            check("update", dst, 0);
+            for t in [src, dst, dst2] {
+                dev.release(t);
+            }
+        }
+    }
+    dev.done();
+    assert!(n > 300, "{n} hashes");
+    assert!(bad.is_empty(), "{} of {n} differ from Windows (not in the golden):\n{}", bad.len(), bad.join("\n"));
 }
