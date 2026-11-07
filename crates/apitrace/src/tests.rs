@@ -150,6 +150,12 @@ fn d3d9_session() -> Vec<u8> {
     let n = w.enter(0, &ct, &[(0, Value::Opaque(0x2000)), (1, Value::UInt(4)), (2, Value::UInt(2)), (3, Value::UInt(1)), (4, Value::UInt(0)), (5, Value::UInt(21)), (6, Value::UInt(1))]);
     w.leave(n, &[(7, Value::Array(vec![Value::Opaque(0x3000)])), (8, Value::Null)], Some(&Value::UInt(0)), false);
 
+    let n = w.enter(0, &ct, &[(0, Value::Opaque(0x2000)), (1, Value::UInt(1)), (2, Value::UInt(1)), (3, Value::UInt(1)), (4, Value::UInt(0)), (5, Value::UInt(62)), (6, Value::UInt(1))]);
+    w.leave(n, &[], Some(&Value::SInt(-2005530516)), false);
+    let gds = f("IDirect3DDevice9::GetDepthStencilSurface", &["this", "ppZStencilSurface"]);
+    let n = w.enter(0, &gds, &[(0, Value::Opaque(0x2000))]);
+    w.leave(n, &[(1, Value::Null)], Some(&Value::SInt(-2005530522)), false);
+
     let lr = f("IDirect3DTexture9::LockRect", &["this", "Level", "pLockedRect", "pRect", "Flags"]);
     let n = w.enter(0, &lr, &[(0, Value::Opaque(0x3000)), (1, Value::UInt(0)), (3, Value::Null), (4, Value::UInt(0))]);
     let locked = st("D3DLOCKED_RECT", &["Pitch", "pBits"], vec![Value::UInt(16), Value::Opaque(0x9000)]);
@@ -202,7 +208,7 @@ fn d3d9_session() -> Vec<u8> {
 #[test]
 fn a_d3d9_session_converts() {
     let (out, stats) = replay::convert(&unpack(&d3d9_session()).unwrap()).unwrap();
-    assert_eq!(stats.calls, 15);
+    assert_eq!(stats.calls, 17);
     assert_eq!(stats.memcpys, 1);
     assert_eq!(stats.skipped.keys().collect::<Vec<_>>(), ["D3DPERF_BeginEvent", "IDirect3DDevice9::GetDeviceCaps"]);
     assert!(stats.dropped.is_empty());
@@ -222,6 +228,13 @@ fn a_d3d9_session_converts() {
     assert_eq!(pp[13 * 4..], 13u32.to_le_bytes());
     assert_eq!(a[6], Arg::OutObj(2));
     assert_eq!(call(2).2, vec![Arg::Handle(2), Arg::Word(4), Arg::Word(2), Arg::Word(1), Arg::Word(0), Arg::Word(21), Arg::Word(1), Arg::OutObj(3), Arg::Word(0)]);
+    assert_eq!(call(3).2[7..], [Arg::OutObj(0), Arg::Word(0)]);
+    assert_eq!(call(4).2, vec![Arg::Handle(2), Arg::OutObj(0)]);
+    let r: Vec<_> = r.into_iter().enumerate().filter(|(i, _)| !matches!(i, 3 | 4)).map(|(_, x)| x).collect();
+    let call = |i: usize| match &r[i] {
+        Record::Call { name, ret, args, .. } => (name.as_str(), *ret, args.clone()),
+        m => panic!("{m:?}"),
+    };
     assert_eq!(call(3).2, vec![Arg::Handle(3), Arg::Word(0), Arg::Lock(replay::LOCKRECT, 0), Arg::Word(0), Arg::Word(0)]);
     assert_eq!(r[4], Record::Memcpy { handle: 3, key: 0, offset: 0, pitch: 16, slice: 0, data: (0..32).collect() });
     assert_eq!(call(5).0, "IDirect3DTexture9::UnlockRect");

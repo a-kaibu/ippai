@@ -167,14 +167,16 @@ impl Converter {
 
     fn arg(&mut self, call: &Call, method: &str, i: usize, arg_name: &str, vin: Option<&Value>, vout: Option<&Value>) -> Result<Arg, String> {
         if vin.is_none() {
-            // an out argument
             // (neither in nor out: an argument apitrace does not record, e.g. pSharedHandle, which
             // a non-Ex device wants NULL)
-            let Some(v) = vout else { return Ok(Arg::Word(0)) };
-            // (an out pointer the caller passed as NULL)
-            if *v == Value::Null {
-                return Ok(Arg::Word(0));
-            }
+            // An out argument with nothing recorded, or recorded as NULL: an object's (pp...)
+            // after a failed call (a place to write is passed: the call may write NULL there), or
+            // a pointer the caller passed as NULL (pSharedHandle, which a non-Ex device wants NULL)
+            let pp = arg_name.starts_with("pp");
+            let v = match vout {
+                None | Some(Value::Null) => return Ok(if pp { Arg::OutObj(0) } else { Arg::Word(0) }),
+                Some(v) => v,
+            };
             let inner = v.deref();
             let level = call.arg("Level").and_then(|v| v.int()).unwrap_or(0) as u32;
             let face = call.arg("FaceType").and_then(|v| v.int()).map(|f| f as u32);
