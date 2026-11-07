@@ -65,3 +65,5 @@ dnsapi
 dxva2
 ncrypt
 dhcpcsvc
+iphlpapi
+ws2_32

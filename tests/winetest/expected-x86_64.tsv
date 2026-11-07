@@ -134,6 +134,7 @@ gdiplus:stringformat	fail	49	142
 imagehlp:image	fail	15	23
 imagehlp:integrity	ok	0	0
 imm32:imm32	fail	1	2
+iphlpapi:iphlpapi	fail	52	1005
 kernel32:actctx	timeout	19	0
 kernel32:atom	fail	557908	656511
 kernel32:change	fail	136	316
@@ -202,7 +203,7 @@ msvcrt:time	fail	136	314
 msvfw32:drawdib	fail	6	20
 msvfw32:mciwnd	fail	62	81
 msvfw32:msvfw	fail	142	161
-ncrypt:ncrypt	fail	129	305
+ncrypt:ncrypt	ok	0	438
 ntdll:alpc	fail	1372	1704
 ntdll:atom	crash	0	0
 ntdll:change	fail	46	82
@@ -385,4 +386,7 @@ winmm:mixer	ok	0	4
 winmm:mmio	crash	132	0
 winmm:timer	fail	8	88
 winmm:wave	fail	993	7688
-xaudio2_7:xaudio2	crash	22	0
+ws2_32:afd	timeout	707	0
+ws2_32:protocol	fail	1	7640
+ws2_32:sock	fail	477	720465
+xaudio2_7:xaudio2	fail	1	735

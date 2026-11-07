@@ -2575,31 +2575,6 @@ fn PathAddExtensionA(c: &mut Ctx) -> u32 {
 fn PathAddExtensionW(c: &mut Ctx) -> u32 {
     path_add_extension(c, true)
 }
-/// WSAStartup(version, WSADATA*): Winsock 2.2 without a network (sockets fail later). Lua's
-/// socket library checks the version it gets and stops the game otherwise.
-fn WSAStartup(c: &mut Ctx) -> u32 {
-    let d = c.a(1);
-    if d == 0 {
-        return 10014; // WSAEFAULT
-    }
-    let want = c.a(0) & 0xffff;
-    let v = if (want & 0xff, want >> 8) >= (2, 2) { 0x0202 } else { want };
-    for i in 0..400 {
-        crate::mem::w8(d + i, 0);
-    }
-    w16(d, v as u16);
-    w16(d + 2, 0x0202);
-    for (i, b) in b"WinSock 2.0".iter().enumerate() {
-        crate::mem::w8(d + 4 + i as u32, *b);
-    }
-    for (i, b) in b"Running".iter().enumerate() {
-        crate::mem::w8(d + 261 + i as u32, *b);
-    }
-    0
-}
-fn WSACleanup(_: &mut Ctx) -> u32 {
-    0
-}
 fn IsNetworkAlive(c: &mut Ctx) -> u32 {
     put32(c.a(0), 1);
     1
@@ -3196,7 +3171,7 @@ pub fn init() {
     reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW, SHStrDupA, SHStrDupW);
     reg!("shell32"; SHGetPropertyStoreForWindow);
     reg!("sensapi"; IsNetworkAlive);
-    reg!("ws2_32"; WSAStartup, WSACleanup);
+    // ws2_32 lives in ws2.rs
 }
 
 /// StrStr(I)A/W(haystack, needle): the first match (by UTF-16 unit, case folded for I), or 0

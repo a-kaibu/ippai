@@ -1,8 +1,8 @@
 //! XAPO effects (xaudio2_8 / xaudio2_9 CreateFX, CreateAudioVolumeMeter, CreateAudioReverb; the
 //! xapofx1_x CreateFX; xaudio2_7's AudioVolumeMeter and AudioReverb classes): objects with
 //! IXAPO and IXAPOParameters. The volume meter measures (peak and RMS per channel of each
-//! Process); the others keep their parameters and pass the audio through unchanged, as sake's
-//! voices do not run effect chains (SetEffectChain is accepted and ignored).
+//! Process); the others run fxdsp's EQ, limiter, echo and reverbs on the audio, whether a
+//! voice's effect chain runs them (process_builtin, in the engine) or the guest calls Process.
 //!
 //! The formats an XAPO takes are 32-bit float PCM (WAVE_FORMAT_IEEE_FLOAT, or EXTENSIBLE with
 //! the float subtype), the same for input and output.
@@ -38,8 +38,74 @@ struct Xapo {
     params: Vec<u8>,
     channels: u32,
     locked: bool,
+    /// FXEcho's FXECHO_INITDATA.MaxDelay (ms; 0: the largest)
+    max_delay: f32,
     peak: Vec<f32>,
     rms: Vec<f32>,
+    rate: u32,
+    dsp: Dsp,
+}
+
+/// The running state of an effect's DSP
+#[derive(Default)]
+enum Dsp {
+    #[default]
+    None,
+    Eq(crate::fxdsp::Eq),
+    Limiter(crate::fxdsp::Limiter),
+    Echo(crate::fxdsp::Echo),
+    Reverb(crate::fxdsp::Reverb),
+}
+
+impl Xapo {
+    /// Runs the effect on `buf` (interleaved, `ch` channels at `rate`); the meter measures
+    fn run(&mut self, buf: &mut [f32], ch: usize, rate: u32) {
+        use crate::fxdsp::*;
+        if matches!(self.dsp, Dsp::None) {
+            self.dsp = match self.kind {
+                Kind::Eq => Dsp::Eq(Eq::default()),
+                Kind::Limiter => Dsp::Limiter(Limiter::default()),
+                Kind::Echo => Dsp::Echo(Echo::with_max(self.max_delay)),
+                Kind::Reverb | Kind::AudioReverb => Dsp::Reverb(Reverb::default()),
+                Kind::VolumeMeter => Dsp::None,
+            };
+        }
+        let p = &self.params;
+        match &mut self.dsp {
+            Dsp::Eq(e) => e.run(p, buf, ch, rate),
+            Dsp::Limiter(l) => l.run(p, buf, ch, rate),
+            Dsp::Echo(e) => e.run(p, buf, ch, rate),
+            Dsp::Reverb(r) => {
+                let shape = if self.kind == Kind::Reverb { ReverbShape::fx(p) } else { ReverbShape::audio(p) };
+                r.run(&shape, buf, ch, rate)
+            }
+            Dsp::None => {
+                let (pk, rms) = levels(buf, ch);
+                self.peak = pk;
+                self.rms = rms;
+            }
+        }
+    }
+}
+
+/// Runs built-in effect `o` on a voice's audio (false: `o` is not one of sake's: the guest's
+/// own XAPO). A disabled effect passes the audio through (a meter then reads silence).
+pub fn process_builtin(o: u32, buf: &mut [f32], ch: usize, rate: u32, enabled: bool) -> bool {
+    with(o, |x| {
+        if enabled {
+            x.run(buf, ch, rate);
+        } else if x.kind == Kind::VolumeMeter {
+            x.peak.iter_mut().for_each(|v| *v = 0.0);
+            x.rms.iter_mut().for_each(|v| *v = 0.0);
+        }
+    })
+    .is_some()
+}
+
+/// The object behind either interface of a built-in effect, if `p` is one
+pub fn builtin(p: u32) -> Option<u32> {
+    let o = obj(p);
+    with(o, |_| o)
 }
 
 static XAPOS: Mutex<Option<HashMap<u32, Xapo>>> = Mutex::new(None);
@@ -231,21 +297,33 @@ fn IsFormatSupported(c: &mut Ctx) -> u32 {
     XAPO_E_FORMAT_UNSUPPORTED
 }
 
+/// Initialization data: FXEcho's is FXECHO_INITDATA { MaxDelay }; the others' their
+/// initial parameters
+fn init_data(x: &mut Xapo, data: Vec<u8>) {
+    if data.is_empty() {
+        return;
+    }
+    if x.kind == Kind::Echo {
+        if data.len() >= 4 {
+            x.max_delay = u32::from_le_bytes(data[..4].try_into().unwrap()) as f32;
+        }
+    } else {
+        x.params = data;
+    }
+}
+
 /// Initialize(pData, DataByteSize): the effect's initial parameters
 fn Initialize(c: &mut Ctx) -> u32 {
     let (this, p, n) = (c.a(0), c.a(1), c.a(2));
     let data = if p != 0 { mem::slice(p, n.min(4096)).to_vec() } else { Vec::new() };
-    with(obj(this), |x| {
-        if !data.is_empty() {
-            x.params = data;
-        }
-    });
+    with(obj(this), |x| init_data(x, data));
     0
 }
 fn Reset(c: &mut Ctx) -> u32 {
     with(obj(c.a(0)), |x| {
         x.peak.iter_mut().for_each(|v| *v = 0.0);
         x.rms.iter_mut().for_each(|v| *v = 0.0);
+        x.dsp = Dsp::None;
     });
     0
 }
@@ -260,9 +338,11 @@ fn LockForProcess(c: &mut Ctx) -> u32 {
     if !is_float(fi) || !is_float(fo) || r16(fi + 2) != r16(fo + 2) {
         return XAPO_E_FORMAT_UNSUPPORTED;
     }
-    let ch = r16(fi + 2) as u32;
+    let (ch, rate) = (r16(fi + 2) as u32, r32(fi + 4));
     with(obj(this), |x| {
         x.channels = ch;
+        x.rate = rate.max(1);
+        x.dsp = Dsp::None;
         x.locked = true;
         x.peak = vec![0.0; ch as usize];
         x.rms = vec![0.0; ch as usize];
@@ -291,39 +371,33 @@ pub fn levels(samples: &[f32], ch: usize) -> (Vec<f32>, Vec<f32>) {
 }
 
 /// Process(nIn, pIn, nOut, pOut, IsEnabled): XAPO_PROCESS_BUFFER_PARAMETERS { pBuffer,
-/// BufferFlags, ValidFrameCount }; the output is the input (copied unless in place)
+/// BufferFlags, ValidFrameCount }; the effect runs on the input into the output (in place
+/// or not); disabled, the input passes through. A silent input (XAPO_BUFFER_SILENT) is run as
+/// zeros (a reverb's or echo's tail goes on)
 fn Process(c: &mut Ctx) -> u32 {
-    let (this, nin, pin, nout, pout) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let (this, nin, pin, nout, pout, enabled) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5) != 0);
     if nin != 1 || nout != 1 || pin == 0 || pout == 0 {
         return 0;
     }
     let k = ps();
     let (ib, flags, frames) = (rp(pin), r32(pin + k), r32(pin + k + 4));
     let o = obj(this);
-    let Some((kind, ch)) = with(o, |x| (x.kind, x.channels)) else { return 0 };
+    let Some((ch, rate)) = with(o, |x| (x.channels, x.rate)) else { return 0 };
     let bytes = frames.saturating_mul(ch).saturating_mul(4);
     let ob = rp(pout);
-    if ob != ib && ob != 0 && ib != 0 {
-        if flags == 1 {
-            // XAPO_BUFFER_VALID
-            let v = mem::slice(ib, bytes).to_vec();
-            mem::write(ob, &v);
-        }
+    let mut s: Vec<f32> = if flags == 1 && ib != 0 {
+        mem::slice(ib, bytes).chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()
+    } else {
+        vec![0.0; (frames * ch) as usize]
+    };
+    process_builtin(o, &mut s, ch.max(1) as usize, rate, enabled);
+    if ob != 0 {
+        let v: Vec<u8> = s.iter().flat_map(|x| x.to_le_bytes()).collect();
+        mem::write(ob, &v);
     }
-    w32(pout + k, flags);
+    // (the output holds audio now)
+    w32(pout + k, if ob != 0 { 1 } else { flags });
     w32(pout + k + 4, frames);
-    if kind == Kind::VolumeMeter && ib != 0 {
-        let s: Vec<f32> = if flags == 1 {
-            mem::slice(ib, bytes).chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()
-        } else {
-            vec![0.0; (frames * ch) as usize] // silent buffer
-        };
-        let (p, r) = levels(&s, ch as usize);
-        with(o, |x| {
-            x.peak = p;
-            x.rms = r;
-        });
-    }
     0
 }
 fn CalcFrames(c: &mut Ctx) -> u32 {
@@ -399,7 +473,7 @@ pub fn create(g: &[u8; 16]) -> Option<u32> {
     let o = mem::heap_alloc(2 * k, true);
     wp(o, vx);
     wp(o + k, vp);
-    XAPOS.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, Xapo { kind, clsid: *g, refs: 1, params: Vec::new(), channels: 0, locked: false, peak: Vec::new(), rms: Vec::new() });
+    XAPOS.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, Xapo { kind, clsid: *g, refs: 1, params: Vec::new(), channels: 0, locked: false, max_delay: 0.0, peak: Vec::new(), rms: Vec::new(), rate: 48000, dsp: Dsp::None });
     Some(o)
 }
 
@@ -425,7 +499,7 @@ fn create_fx(c: &mut Ctx, init: bool) -> u32 {
     };
     if init && c.a(2) != 0 {
         let v = mem::slice(c.a(2), c.a(3).min(4096)).to_vec();
-        with(o, |x| x.params = v);
+        with(o, |x| init_data(x, v));
     }
     putp(out, o);
     0

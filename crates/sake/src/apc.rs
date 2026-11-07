@@ -9,8 +9,8 @@ use std::sync::Mutex;
 
 pub const WAIT_IO_COMPLETION: u32 = 0xc0;
 
-/// (thread id, function, argument), oldest first
-static QUEUE: Mutex<Vec<(u32, u32, u32)>> = Mutex::new(Vec::new());
+/// (thread id, function, arguments, argument count), oldest first
+static QUEUE: Mutex<Vec<(u32, u32, [u32; 4], usize)>> = Mutex::new(Vec::new());
 
 /// The thread id behind a thread handle (or the current-thread pseudo handle)
 fn tid_of(h: u32) -> Option<u32> {
@@ -25,7 +25,14 @@ fn tid_of(h: u32) -> Option<u32> {
 
 /// Queues `f(arg)` for thread `tid` and wakes it
 pub fn queue(tid: u32, f: u32, arg: u32) {
-    QUEUE.lock().unwrap().push((tid, f, arg));
+    queue_args(tid, f, &[arg]);
+}
+
+/// Queues `f(args...)` (up to four arguments: an IO completion routine's) for thread `tid`
+pub fn queue_args(tid: u32, f: u32, args: &[u32]) {
+    let mut a = [0; 4];
+    a[..args.len()].copy_from_slice(args);
+    QUEUE.lock().unwrap().push((tid, f, a, args.len()));
     obj::signal();
 }
 
@@ -35,19 +42,19 @@ pub fn pending(tid: u32) -> bool {
     QUEUE.lock().unwrap().iter().any(|&(t, ..)| t == tid)
 }
 
-fn take(tid: u32) -> Option<(u32, u32)> {
+fn take(tid: u32) -> Option<(u32, [u32; 4], usize)> {
     let mut q = QUEUE.lock().unwrap();
     let i = q.iter().position(|&(t, ..)| t == tid)?;
-    let (_, f, a) = q.remove(i);
-    Some((f, a))
+    let (_, f, a, n) = q.remove(i);
+    Some((f, a, n))
 }
 
 /// Runs this thread's APCs, in order (including ones they queue); whether there were any
 pub fn run(c: &mut Ctx) -> bool {
     let me = crate::cur().tid;
     let mut ran = false;
-    while let Some((f, a)) = take(me) {
-        c.call(f, &[a]);
+    while let Some((f, a, n)) = take(me) {
+        c.call(f, &a[..n]);
         ran = true;
     }
     ran

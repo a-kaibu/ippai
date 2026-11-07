@@ -1402,52 +1402,6 @@ fn MoDuplicateMediaType(c: &mut Ctx) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// ncrypt
-
-const NTE_NOT_SUPPORTED: u32 = 0x8009_0029;
-const NTE_INVALID_HANDLE: u32 = 0x8009_0026;
-const NTE_INVALID_PARAMETER: u32 = 0x8009_0027;
-static PROVIDERS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
-
-/// NCryptOpenStorageProvider(phProvider, name, flags): the software provider (the default, or
-/// "Microsoft Software Key Storage Provider")
-fn NCryptOpenStorageProvider(c: &mut Ctx) -> u32 {
-    let (out, name) = (c.a(0), c.a(1));
-    if out == 0 {
-        return NTE_INVALID_PARAMETER;
-    }
-    if name != 0 {
-        let n = String::from_utf16_lossy(&wstr(name));
-        if !n.eq_ignore_ascii_case("Microsoft Software Key Storage Provider") {
-            return 0x8009_0013; // NTE_BAD_PROV_TYPE... (no such provider)
-        }
-    }
-    let h = mem::heap_alloc(16, true);
-    w32(h, 0x5052_4f56); // "PROV"
-    PROVIDERS.lock().unwrap().push(h);
-    putp(out, h);
-    0
-}
-fn NCryptFreeObject(c: &mut Ctx) -> u32 {
-    let h = c.a(0);
-    let mut g = PROVIDERS.lock().unwrap();
-    match g.iter().position(|&x| x == h) {
-        Some(i) => {
-            g.remove(i);
-            mem::heap_free(h);
-            0
-        }
-        None => NTE_INVALID_HANDLE,
-    }
-}
-fn NCryptFreeBuffer(c: &mut Ctx) -> u32 {
-    if c.a(0) != 0 {
-        mem::heap_free(c.a(0));
-    }
-    0
-}
-
-// ---------------------------------------------------------------------------------------------
 // windowscodecs: the exports beside the COM classes
 
 /// The vtable slot and argument count (with `this`) of `iface::method` (com_methods.rs, from
@@ -1590,18 +1544,6 @@ pub fn init() {
     // tbs: no TPM
     for n in ["Tbsi_Context_Create", "Tbsi_GetDeviceInfo", "GetDeviceIDString"] {
         implement("tbs", n, |_| 0x8028_400f); // TBS_E_TPM_NOT_FOUND
-    }
-
-    // ncrypt: the provider opens; keys are not supported
-    implement("ncrypt", "NCryptOpenStorageProvider", NCryptOpenStorageProvider);
-    implement("ncrypt", "NCryptFreeObject", NCryptFreeObject);
-    implement("ncrypt", "NCryptFreeBuffer", NCryptFreeBuffer);
-    for n in [
-        "NCryptIsAlgSupported", "NCryptEnumAlgorithms", "NCryptEnumKeys", "NCryptOpenKey", "NCryptCreatePersistedKey", "NCryptImportKey",
-        "NCryptExportKey", "NCryptGetProperty", "NCryptSetProperty", "NCryptFinalizeKey", "NCryptEncrypt", "NCryptDecrypt",
-        "NCryptSignHash", "NCryptVerifySignature", "NCryptDeleteKey", "NCryptIsKeyHandle", "NCryptEnumStorageProviders",
-    ] {
-        implement("ncrypt", n, |_| NTE_NOT_SUPPORTED);
     }
 
     // dxva2

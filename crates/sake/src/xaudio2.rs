@@ -6,8 +6,15 @@
 //! of kura's audio output. The engine is one guest thread: each 10 ms pass it calls the
 //! voices' OnVoiceProcessingPassStart, mixes, delivers OnBufferStart / OnBufferEnd /
 //! OnLoopEnd / OnStreamEnd, then OnVoiceProcessingPassEnd (as XAudio2 calls them from its
-//! own thread). No effects, filters or output matrices; PCM and float formats only. x64: the
-//! same, with pointer-sized fields and the float arguments in XMM registers.
+//! own thread). Voices are mixed as a graph: each source voice renders its own buffer, runs
+//! its effect chain and volume, and adds into the voice it sends to; submix voices (deepest
+//! first) and then the mastering voice do the same with what they received. Effect chains
+//! hold XAPOs: sake's own (xapo.rs: EQ, limiter, echo, reverbs, meter) run directly; a game's
+//! own XAPO is locked for 32-bit float stereo and its Process called on the engine thread.
+//! Voices are processed newest first, each one's OnVoiceProcessingPassStart, buffer
+//! callbacks and OnVoiceProcessingPassEnd together (as 2.7 does). No filters or output
+//! matrices; PCM and float formats only. x64: the same, with pointer-sized fields and the
+//! float arguments in XMM registers.
 
 #![allow(non_snake_case)]
 
@@ -61,6 +68,20 @@ struct Voice {
     played: f64,
     /// callbacks to deliver on the next pass (buffers flushed)
     pending: Vec<(u32, u32, u32)>,
+    chain: Vec<Fx>,
+    /// creation order
+    seq: u64,
+}
+
+/// An effect of a voice's chain: its IXAPO (a reference held), whether it runs, and for a
+/// game's own XAPO the guest buffer it processes in place (frames, then its
+/// XAPO_PROCESS_BUFFER_PARAMETERS)
+#[derive(Clone)]
+struct Fx {
+    xapo: u32,
+    enabled: bool,
+    builtin: bool,
+    buf: u32,
 }
 
 struct Engine {
@@ -72,6 +93,7 @@ struct Engine {
     thread: bool,
     /// the 2.8 interfaces (XAudio2Create)
     v28: bool,
+    seq: u64,
 }
 
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
@@ -84,7 +106,7 @@ pub(crate) fn snap_wake() {
 
 fn with<R>(f: impl FnOnce(&mut Engine) -> R) -> R {
     let mut g = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| Engine { voices: HashMap::default(), master: 0, callbacks: Vec::new(), running: false, stream: -1, thread: false, v28: false }))
+    f(g.get_or_insert_with(|| Engine { voices: HashMap::default(), master: 0, callbacks: Vec::new(), running: false, stream: -1, thread: false, v28: false, seq: 0 }))
 }
 
 fn with_voice<R>(this: u32, f: impl FnOnce(&mut Voice) -> R) -> Option<R> {
@@ -120,77 +142,184 @@ fn callback(c: &mut Ctx, obj: u32, method: u32, arg: Option<u32>) {
     };
 }
 
-fn gain(e: &Engine, mut id: u32) -> f32 {
-    let mut g = 1.0;
-    for _ in 0..8 {
-        let Some(v) = e.voices.get(&id) else { break };
-        g *= v.volume;
-        if v.kind == Kind::Master {
-            break;
-        }
-        id = if v.dest == 0 { e.master } else { v.dest };
+/// Renders one pass of source voice `v` into `out` (stereo); the callbacks it produced
+/// (object, method, argument)
+fn render(v: &mut Voice, out: &mut [f32]) -> Vec<(u32, u32, u32)> {
+    let mut ev = std::mem::take(&mut v.pending);
+    if v.kind != Kind::Source || !v.started {
+        return ev;
     }
-    g
-}
-
-/// Mixes one pass of every started source voice into `out`; returns the callbacks
-/// (object, method, argument) the pass produced.
-fn mix(e: &mut Engine, out: &mut [f32]) -> Vec<(u32, u32, u32)> {
-    let mut ev = Vec::new();
-    let gains: HashMap<u32, f32> = e.voices.iter().filter(|(_, v)| v.kind == Kind::Source).map(|(&k, _)| (k, gain(e, k))).collect();
-    for (id, v) in e.voices.iter_mut() {
-        ev.append(&mut v.pending);
-        if v.kind != Kind::Source || !v.started {
-            continue;
+    let step = v.fmt.rate as f64 * v.ratio as f64 / RATE as f64;
+    for o in out.chunks_exact_mut(2) {
+        let Some(b) = v.queue.front_mut() else { break };
+        if !v.began {
+            v.began = true;
+            v.pos = b.begin as f64;
+            if v.cb != 0 {
+                ev.push((v.cb, ON_BUFFER_START, b.ctx));
+            }
         }
-        let g = gains[id];
-        let step = v.fmt.rate as f64 * v.ratio as f64 / RATE as f64;
-        for o in out.chunks_exact_mut(2) {
-            let Some(b) = v.queue.front_mut() else { break };
-            if !v.began {
-                v.began = true;
-                v.pos = b.begin as f64;
+        let i = v.pos as u32;
+        let t = (v.pos - i as f64) as f32;
+        let (l0, r0) = sample_at(b.data, &v.fmt, i as usize);
+        let (l1, r1) = if i + 1 < b.end { sample_at(b.data, &v.fmt, i as usize + 1) } else { (l0, r0) };
+        o[0] += l0 + (l1 - l0) * t;
+        o[1] += r0 + (r1 - r0) * t;
+        v.pos += step;
+        v.played += step;
+        // while loops remain the loop's end is where the buffer turns back (even past the
+        // play region's end, as 2.7 does); a loop region that ends before the play region
+        // begins is never taken
+        if b.looping() && v.pos >= b.loop_end as f64 {
+            v.pos -= (b.loop_end - b.loop_begin).max(1) as f64;
+            if b.loops != LOOP_INFINITE {
+                b.loops -= 1;
+            }
+            if v.cb != 0 {
+                ev.push((v.cb, ON_LOOP_END, b.ctx));
+            }
+        } else if !b.looping() && v.pos >= b.end as f64 {
+            let over = v.pos - b.end as f64;
+            let b = v.queue.pop_front().unwrap();
+            if v.cb != 0 {
+                ev.push((v.cb, ON_BUFFER_END, b.ctx));
+            }
+            if b.flags & END_OF_STREAM != 0 {
+                // (SamplesPlayed starts over after the end of a stream)
+                v.played = 0.0;
                 if v.cb != 0 {
-                    ev.push((v.cb, ON_BUFFER_START, b.ctx));
+                    ev.push((v.cb, ON_STREAM_END, u32::MAX));
                 }
             }
-            let i = v.pos as u32;
-            let t = (v.pos - i as f64) as f32;
-            let (l0, r0) = sample_at(b.data, &v.fmt, i as usize);
-            let (l1, r1) = if i + 1 < b.end { sample_at(b.data, &v.fmt, i as usize + 1) } else { (l0, r0) };
-            o[0] += (l0 + (l1 - l0) * t) * g;
-            o[1] += (r0 + (r1 - r0) * t) * g;
-            v.pos += step;
-            v.played += step;
-            if b.loops > 0 && v.pos >= b.loop_end as f64 {
-                v.pos -= (b.loop_end - b.loop_begin).max(1) as f64;
-                if b.loops != LOOP_INFINITE {
-                    b.loops -= 1;
-                }
+            v.began = false;
+            if let Some(n) = v.queue.front() {
+                v.began = true;
+                v.pos = n.begin as f64 + over;
                 if v.cb != 0 {
-                    ev.push((v.cb, ON_LOOP_END, b.ctx));
-                }
-            } else if v.pos >= b.end as f64 {
-                let over = v.pos - b.end as f64;
-                let b = v.queue.pop_front().unwrap();
-                if v.cb != 0 {
-                    ev.push((v.cb, ON_BUFFER_END, b.ctx));
-                    if b.flags & END_OF_STREAM != 0 {
-                        ev.push((v.cb, ON_STREAM_END, u32::MAX));
-                    }
-                }
-                v.began = false;
-                if let Some(n) = v.queue.front() {
-                    v.began = true;
-                    v.pos = n.begin as f64 + over;
-                    if v.cb != 0 {
-                        ev.push((v.cb, ON_BUFFER_START, n.ctx));
-                    }
+                    ev.push((v.cb, ON_BUFFER_START, n.ctx));
                 }
             }
         }
     }
     ev
+}
+
+impl XBuf {
+    fn looping(&self) -> bool {
+        self.loops > 0 && self.loop_end > self.begin && self.loop_begin < self.loop_end
+    }
+}
+
+/// The voice `id` sends to (its destination, or the mastering voice)
+fn dest_of(e: &Engine, id: u32) -> u32 {
+    match e.voices.get(&id) {
+        Some(v) if v.kind == Kind::Master => 0,
+        Some(v) if v.dest != 0 && e.voices.contains_key(&v.dest) => v.dest,
+        Some(_) => e.master,
+        None => 0,
+    }
+}
+/// Hops from `id` to the mastering voice
+fn depth(e: &Engine, mut id: u32) -> u32 {
+    let mut d = 0;
+    while d < 16 {
+        let n = dest_of(e, id);
+        if n == 0 {
+            break;
+        }
+        id = n;
+        d += 1;
+    }
+    d
+}
+
+/// One processing pass of the whole graph into `out` (stereo)
+fn pass(c: &mut Ctx, out: &mut [f32]) {
+    let n = out.len();
+    // the source voices, newest first: each one's pass-start, buffer callbacks and pass-end
+    let order: Vec<u32> = with(|e| {
+        let mut v: Vec<(u64, u32)> = e.voices.iter().filter(|(_, v)| v.kind == Kind::Source).map(|(&k, v)| (v.seq, k)).collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.into_iter().map(|x| x.1).collect()
+    });
+    let mut bufs: HashMap<u32, Vec<f32>> = HashMap::default();
+    for id in order {
+        let Some((cb, started, need)) = with_voice(id, |v| (v.cb, v.started, bytes_required(v))) else { continue };
+        let cbs = started && cb != 0;
+        if cbs {
+            callback(c, cb, ON_PASS_START, Some(need));
+        }
+        let Some((b, ev)) = with_voice(id, |v| {
+            let mut b = vec![0f32; n];
+            let ev = render(v, &mut b);
+            (b, ev)
+        }) else {
+            continue;
+        };
+        for (o, m, a) in ev {
+            callback(c, o, m, (a != u32::MAX).then_some(a));
+        }
+        if cbs {
+            callback(c, cb, ON_PASS_END, None);
+        }
+        if started {
+            bufs.insert(id, b);
+        }
+    }
+    // then the graph, from the voices furthest from the mastering voice: effects, volume, sum
+    let plan: Vec<(u32, u32, f32, bool)> = with(|e| {
+        let mut v: Vec<(u32, u32)> = e.voices.keys().map(|&k| (depth(e, k), k)).collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.into_iter().map(|(_, k)| { let x = &e.voices[&k]; (k, dest_of(e, k), x.volume, x.kind == Kind::Master) }).collect()
+    });
+    for (id, dest, vol, master) in plan {
+        let started = bufs.contains_key(&id);
+        let is_source = with_voice(id, |v| v.kind == Kind::Source).unwrap_or(true);
+        if is_source && !started {
+            continue;
+        }
+        let mut b = bufs.remove(&id).unwrap_or_else(|| vec![0.0; n]);
+        run_chain(c, id, &mut b);
+        if vol != 1.0 {
+            b.iter_mut().for_each(|x| *x *= vol);
+        }
+        if master {
+            out.copy_from_slice(&b);
+        } else if dest != 0 {
+            let d = bufs.entry(dest).or_insert_with(|| vec![0.0; n]);
+            d.iter_mut().zip(&b).for_each(|(a, x)| *a += x);
+        }
+    }
+}
+
+/// Runs voice `id`'s effect chain on `buf` (stereo frames at the engine's rate)
+fn run_chain(c: &mut Ctx, id: u32, buf: &mut [f32]) {
+    let chain = with_voice(id, |v| v.chain.clone()).unwrap_or_default();
+    let frames = (buf.len() / 2) as u32;
+    let k = ps();
+    for fx in chain {
+        if fx.builtin {
+            crate::xapo::process_builtin(crate::xapo::builtin(fx.xapo).unwrap_or(fx.xapo), buf, 2, RATE, fx.enabled);
+            continue;
+        }
+        // a game's XAPO: in place in its buffer
+        let bytes: Vec<u8> = buf.iter().flat_map(|x| x.to_le_bytes()).collect();
+        mem::write(fx.buf, &bytes);
+        let pp = fx.buf + 8 * STEP as u32;
+        mem::wp(pp, fx.buf);
+        w32(pp + k, 1); // XAPO_BUFFER_VALID
+        w32(pp + k + 4, frames);
+        let f = rp(rp(fx.xapo) + 10 * k);
+        c.call(f, &[fx.xapo, 1, pp, 1, pp, fx.enabled as u32]);
+        if r32(pp + k) == 1 {
+            for (i, x) in buf.iter_mut().enumerate() {
+                *x = f32::from_bits(r32(fx.buf + 4 * i as u32));
+            }
+        } else {
+            // XAPO_BUFFER_SILENT
+            buf.iter_mut().for_each(|x| *x = 0.0);
+        }
+    }
 }
 
 /// bytes the voice still needs for the next pass (OnVoiceProcessingPassStart)
@@ -222,24 +351,12 @@ fn engine_thread(c: &mut Ctx) -> u32 {
             crate::snap::point();
             continue;
         }
-        let (engine_cbs, starts): (Vec<u32>, Vec<(u32, u32)>) = with(|e| {
-            let s = e.voices.values().filter(|v| v.kind == Kind::Source && v.started && v.cb != 0).map(|v| (v.cb, bytes_required(v))).collect();
-            (e.callbacks.clone(), s)
-        });
+        let engine_cbs = with(|e| e.callbacks.clone());
         for &cb in &engine_cbs {
             callback(c, cb, 0, None);
         }
-        for &(cb, n) in &starts {
-            callback(c, cb, ON_PASS_START, Some(n));
-        }
         out.iter_mut().for_each(|x| *x = 0.0);
-        let ev = with(|e| mix(e, &mut out));
-        for (cb, m, a) in ev {
-            callback(c, cb, m, (a != u32::MAX).then_some(a));
-        }
-        for &(cb, _) in &starts {
-            callback(c, cb, ON_PASS_END, None);
-        }
+        pass(c, &mut out);
         for &cb in &engine_cbs {
             callback(c, cb, 1, None);
         }
@@ -373,12 +490,15 @@ fn X_Release(c: &mut Ctx) -> u32 {
     let n = r32(refs(this)).saturating_sub(1);
     w32(refs(this), n);
     if n == 0 {
-        with(|e| {
+        let chains: Vec<Vec<Fx>> = with(|e| {
             e.running = false;
-            e.voices.clear();
             e.callbacks.clear();
             e.master = 0;
+            e.voices.drain().map(|(_, v)| v.chain).collect()
         });
+        for ch in chains {
+            release_chain(c, ch);
+        }
     }
     n
 }
@@ -399,18 +519,19 @@ fn X_GetDeviceDetails(c: &mut Ctx) -> u32 {
     mem::put_wstr(p, 256, &w("sake"));
     mem::put_wstr(p + 512, 256, &w("sake WebAudio"));
     w32(p + 1024, 0xf); // GlobalDefaultDevice
+    // the device's mix format: 16-bit PCM stereo, as Windows reports it
     let f = p + 1028;
     w16(f, 0xfffe);
     w16(f + 2, 2);
     w32(f + 4, RATE);
-    w32(f + 8, RATE * 8);
-    w16(f + 12, 8);
-    w16(f + 14, 32);
+    w32(f + 8, RATE * 4);
+    w16(f + 12, 4);
+    w16(f + 14, 16);
     w16(f + 16, 22);
-    w16(f + 18, 32);
+    w16(f + 18, 16);
     w32(f + 20, 3); // SPEAKER_FRONT_LEFT | RIGHT
-    // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {00000003-0000-0010-8000-00aa00389b71}
-    for (i, b) in [3u8, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71].iter().enumerate() {
+    // KSDATAFORMAT_SUBTYPE_PCM {00000001-0000-0010-8000-00aa00389b71}
+    for (i, b) in [1u8, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71].iter().enumerate() {
         mem::w8(f + 24 + i as u32, *b);
     }
     0
@@ -438,7 +559,8 @@ fn first_send(sends: u32) -> u32 {
     if sends == 0 || r32(sends) == 0 {
         return 0;
     }
-    rp(rp(sends + ps()) + ps())
+    // (pack(1): the pointers follow the u32s at +4 on x64 too)
+    rp(rp(sends + 4) + 4)
 }
 
 fn new_voice(kind: Kind, fmt: Fmt, dest: u32, cb: u32) -> u32 {
@@ -451,8 +573,9 @@ fn new_voice(kind: Kind, fmt: Fmt, dest: u32, cb: u32) -> u32 {
     };
     let o = mem::heap_alloc(8, true);
     mem::wp(o, vt);
-    let v = Voice { kind, fmt, volume: 1.0, dest, cb, started: false, queue: VecDeque::new(), pos: 0.0, began: false, ratio: 1.0, played: 0.0, pending: Vec::new() };
     with(|e| {
+        e.seq += 1;
+        let v = Voice { kind, fmt, volume: 1.0, dest, cb, started: false, queue: VecDeque::new(), pos: 0.0, began: false, ratio: 1.0, played: 0.0, pending: Vec::new(), chain: Vec::new(), seq: e.seq };
         if v.kind == Kind::Master {
             e.master = o;
         }
@@ -463,7 +586,14 @@ fn new_voice(kind: Kind, fmt: Fmt, dest: u32, cb: u32) -> u32 {
 
 /// CreateSourceVoice(pp, format, flags, max ratio, callback, sends, effects)
 fn X_CreateSourceVoice(c: &mut Ctx) -> u32 {
-    let (pp, wf, cb, sends) = (c.a(1), c.a(2), c.a(5), c.a(6));
+    let (pp, wf, cb, sends, fx) = (c.a(1), c.a(2), c.a(5), c.a(6), c.a(7));
+    let chain = match read_chain(c, fx) {
+        Ok(ch) => ch,
+        Err(e) => {
+            putp(pp, 0);
+            return e;
+        }
+    };
     let tag = r16(wf);
     let sub = if tag == 0xfffe { r32(wf + 24) } else { tag as u32 };
     let bits = r16(wf + 14) as u32;
@@ -473,25 +603,45 @@ fn X_CreateSourceVoice(c: &mut Ctx) -> u32 {
         return E_INVALIDARG;
     }
     let fmt = Fmt { rate: r32(wf + 4), channels: (r16(wf + 2) as u32).max(1), bits, float: sub == 3 };
-    putp(pp, new_voice(Kind::Source, fmt, first_send(sends), cb));
+    let o = new_voice(Kind::Source, fmt, first_send(sends), cb);
+    with_voice(o, |v| v.chain = chain);
+    putp(pp, o);
     0
 }
 /// CreateSubmixVoice(pp, channels, rate, flags, stage, sends, effects)
 fn X_CreateSubmixVoice(c: &mut Ctx) -> u32 {
-    let (pp, ch, rate, sends) = (c.a(1), c.a(2), c.a(3), c.a(6));
+    let (pp, ch, rate, sends, fx) = (c.a(1), c.a(2), c.a(3), c.a(6), c.a(7));
+    let chain = match read_chain(c, fx) {
+        Ok(ch) => ch,
+        Err(e) => {
+            putp(pp, 0);
+            return e;
+        }
+    };
     let fmt = Fmt { rate: if rate == 0 { RATE } else { rate }, channels: ch.max(1), bits: 32, float: true };
-    putp(pp, new_voice(Kind::Submix, fmt, first_send(sends), 0));
+    let o = new_voice(Kind::Submix, fmt, first_send(sends), 0);
+    with_voice(o, |v| v.chain = chain);
+    putp(pp, o);
     0
 }
-/// CreateMasteringVoice(pp, channels, rate, flags, device, effects)
+/// CreateMasteringVoice(pp, channels, rate, flags, device, effects[, category])
 fn X_CreateMasteringVoice(c: &mut Ctx) -> u32 {
-    let (pp, ch, rate) = (c.a(1), c.a(2), c.a(3));
+    let (pp, ch, rate, fx) = (c.a(1), c.a(2), c.a(3), c.a(6));
     if with(|e| e.master != 0) {
         putp(pp, 0);
         return XAUDIO2_E_INVALID_CALL;
     }
+    let chain = match read_chain(c, fx) {
+        Ok(ch) => ch,
+        Err(e) => {
+            putp(pp, 0);
+            return e;
+        }
+    };
     let fmt = Fmt { rate: if rate == 0 { RATE } else { rate }, channels: if ch == 0 { 2 } else { ch }, bits: 32, float: true };
-    putp(pp, new_voice(Kind::Master, fmt, 0, 0));
+    let o = new_voice(Kind::Master, fmt, 0, 0);
+    with_voice(o, |v| v.chain = chain);
+    putp(pp, o);
     start_thread();
     with(|e| e.running = true);
     0
@@ -638,24 +788,163 @@ fn V_SetOutputVoices(c: &mut Ctx) -> u32 {
     with_voice(c.a(0), |v| v.dest = d);
     0
 }
-fn V_SetEffectChain(_: &mut Ctx) -> u32 {
+/// IID_IXAPO (2.8+) / IID_IXAPO of 2.7, and IXAPOParameters' of each
+const IID_IXAPO: [u8; 16] = [0x84, 0xb9, 0x10, 0xa4, 0x39, 0x98, 0x19, 0x48, 0xa0, 0xbe, 0x28, 0x56, 0xae, 0x6b, 0x3a, 0xdb];
+const IID_IXAPO27: [u8; 16] = [0x01, 0xc0, 0x0b, 0xa9, 0x97, 0xe8, 0x97, 0xe8, 0x55, 0xe4, 0x9e, 0x47, 0, 0, 0, 0];
+const IID_IXAPOPARAMS: [u8; 16] = [0x66, 0x5c, 0xd9, 0x26, 0xf2, 0x80, 0x9a, 0x49, 0xad, 0x54, 0x5a, 0xe7, 0xf0, 0x1c, 0x6d, 0x98];
+const IID_IXAPOPARAMS27: [u8; 16] = [0x01, 0xc0, 0x0b, 0xa9, 0x97, 0xe8, 0x97, 0xe8, 0x55, 0xe4, 0x9e, 0x47, 0, 0, 0, 1];
+
+/// QueryInterface(iid) on COM object `o`: the interface (a reference held), or 0
+fn query(c: &mut Ctx, o: u32, iid: &[u8; 16]) -> u32 {
+    let k = ps();
+    let m = mem::heap_alloc(16 + k, true);
+    mem::write(m, iid);
+    let hr = c.call(rp(rp(o)), &[o, m, m + 16]);
+    let r = if hr == 0 { rp(m + 16) } else { 0 };
+    mem::heap_free(m);
+    r
+}
+/// Method `i` of the object's vtable, called with `args` after `this`
+fn method(c: &mut Ctx, o: u32, i: u32, args: &[u32]) -> u32 {
+    let mut a = vec![o];
+    a.extend_from_slice(args);
+    c.call(rp(rp(o) + i * ps()), &a)
+}
+
+/// The float stereo format effects are locked for (a WAVEFORMATEXTENSIBLE, as XAudio2's)
+fn fx_format() -> u32 {
+    static F: OnceLock<u32> = OnceLock::new();
+    *F.get_or_init(|| {
+        let f = mem::heap_alloc(40, true);
+        w16(f, 0xfffe);
+        w16(f + 2, 2);
+        w32(f + 4, RATE);
+        w32(f + 8, RATE * 8);
+        w16(f + 12, 8);
+        w16(f + 14, 32);
+        w16(f + 16, 22);
+        w16(f + 18, 32);
+        w32(f + 20, 3);
+        mem::write(f + 24, &[3, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
+        f
+    })
+}
+
+/// XAUDIO2_EFFECT_CHAIN { EffectCount, pEffectDescriptors } of XAUDIO2_EFFECT_DESCRIPTOR
+/// { pEffect, InitialState, OutputChannels }: each effect's IXAPO, locked for processing (a
+/// missing effect, or one that is no IXAPO of this version, is XAUDIO2_E_INVALID_CALL)
+fn read_chain(c: &mut Ctx, chain: u32) -> Result<Vec<Fx>, u32> {
+    if chain == 0 || r32(chain) == 0 {
+        return Ok(Vec::new());
+    }
+    let k = ps();
+    // XAudio2 structs are pack(1): the descriptor pointer follows the count at +4
+    let (n, d) = (r32(chain), rp(chain + 4));
+    let iid = if with(|e| e.v28) { IID_IXAPO } else { IID_IXAPO27 };
+    let mut v = Vec::new();
+    for i in 0..n.min(64) {
+        let at = d + i * (k + 8);
+        let (unk, on) = (rp(at), r32(at + k) != 0);
+        let x = if unk == 0 { 0 } else { query(c, unk, &iid) };
+        if x == 0 {
+            release_chain(c, v);
+            return Err(XAUDIO2_E_INVALID_CALL);
+        }
+        let builtin = crate::xapo::builtin(x).is_some();
+        // XAPO_LOCKFORPROCESS_BUFFER_PARAMETERS { pFormat, MaxFrameCount }, in and out
+        let lp = mem::heap_alloc(2 * k, true);
+        mem::wp(lp, fx_format());
+        w32(lp + k, STEP as u32);
+        let hr = method(c, x, 8, &[1, lp, 1, lp]);
+        mem::heap_free(lp);
+        if hr != 0 {
+            method(c, x, 2, &[]);
+            release_chain(c, v);
+            return Err(XAUDIO2_E_INVALID_CALL);
+        }
+        let buf = if builtin { 0 } else { mem::heap_alloc(8 * STEP as u32 + 4 * k, true) };
+        v.push(Fx { xapo: x, enabled: on, builtin, buf });
+    }
+    Ok(v)
+}
+/// Unlocks and releases a chain's effects
+fn release_chain(c: &mut Ctx, chain: Vec<Fx>) {
+    for fx in chain {
+        method(c, fx.xapo, 9, &[]);
+        method(c, fx.xapo, 2, &[]);
+        if fx.buf != 0 {
+            mem::heap_free(fx.buf);
+        }
+    }
+}
+
+/// SetEffectChain(pEffectChain): the new chain replaces the old (NULL: none)
+fn V_SetEffectChain(c: &mut Ctx) -> u32 {
+    let (this, p) = (c.a(0), c.a(1));
+    let chain = match read_chain(c, p) {
+        Ok(ch) => ch,
+        Err(e) => return e,
+    };
+    let old = with_voice(this, |v| std::mem::replace(&mut v.chain, chain));
+    if let Some(old) = old {
+        release_chain(c, old);
+    }
     0
 }
-fn V_EnableEffect(_: &mut Ctx) -> u32 {
-    0
+/// EnableEffect / DisableEffect(EffectIndex, OperationSet)
+fn set_enabled(c: &mut Ctx, on: bool) -> u32 {
+    let (this, i) = (c.a(0), c.a(1) as usize);
+    with_voice(this, |v| match v.chain.get_mut(i) {
+        Some(fx) => {
+            fx.enabled = on;
+            0
+        }
+        None => E_INVALIDARG,
+    })
+    .unwrap_or(E_INVALIDARG)
 }
-fn V_DisableEffect(_: &mut Ctx) -> u32 {
-    0
+fn V_EnableEffect(c: &mut Ctx) -> u32 {
+    set_enabled(c, true)
 }
+fn V_DisableEffect(c: &mut Ctx) -> u32 {
+    set_enabled(c, false)
+}
+/// GetEffectState(EffectIndex, pEffectState): XAUDIO2_EFFECT_STATE { bEnabled }
 fn V_GetEffectState(c: &mut Ctx) -> u32 {
-    put32(c.a(2), 1);
+    let (this, i, p) = (c.a(0), c.a(1) as usize, c.a(2));
+    if let Some(Some(on)) = with_voice(this, |v| v.chain.get(i).map(|f| f.enabled)) {
+        put32(p, on as u32);
+    }
     0
 }
-fn V_SetEffectParameters(_: &mut Ctx) -> u32 {
+/// The IXAPOParameters of effect `i` of the voice (a reference held), or 0
+fn fx_params(c: &mut Ctx, this: u32, i: usize) -> u32 {
+    let Some(Some(x)) = with_voice(this, |v| v.chain.get(i).map(|f| f.xapo)) else { return 0 };
+    let iid = if with(|e| e.v28) { IID_IXAPOPARAMS } else { IID_IXAPOPARAMS27 };
+    query(c, x, &iid)
+}
+/// SetEffectParameters(EffectIndex, pParameters, ParametersByteSize, OperationSet): the
+/// effect's IXAPOParameters::SetParameters
+fn V_SetEffectParameters(c: &mut Ctx) -> u32 {
+    let (this, i, p, n) = (c.a(0), c.a(1) as usize, c.a(2), c.a(3));
+    let ip = fx_params(c, this, i);
+    if ip == 0 {
+        return E_INVALIDARG;
+    }
+    method(c, ip, 3, &[p, n]);
+    method(c, ip, 2, &[]);
     0
 }
-fn V_GetEffectParameters(_: &mut Ctx) -> u32 {
-    E_INVALIDARG
+/// GetEffectParameters(EffectIndex, pParameters, ParametersByteSize)
+fn V_GetEffectParameters(c: &mut Ctx) -> u32 {
+    let (this, i, p, n) = (c.a(0), c.a(1) as usize, c.a(2), c.a(3));
+    let ip = fx_params(c, this, i);
+    if ip == 0 {
+        return E_INVALIDARG;
+    }
+    method(c, ip, 4, &[p, n]);
+    method(c, ip, 2, &[]);
+    0
 }
 fn V_SetFilterParameters(_: &mut Ctx) -> u32 {
     0
@@ -710,14 +999,24 @@ fn V_GetOutputMatrix(c: &mut Ctx) -> u32 {
     }
     0
 }
+/// DestroyVoice: not while another voice sends to it (the mastering voice: while any other
+/// voice is left); its effects are released
 fn V_DestroyVoice(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    with(|e| {
-        e.voices.remove(&this);
+    let chain = with(|e| {
+        let busy = e.voices.keys().any(|&k| k != this && dest_of(e, k) == this);
+        if busy {
+            return None;
+        }
+        let v = e.voices.remove(&this)?;
         if e.master == this {
             e.master = 0;
         }
+        Some(v.chain)
     });
+    if let Some(ch) = chain {
+        release_chain(c, ch);
+    }
     0
 }
 
@@ -734,16 +1033,17 @@ fn S_Stop(c: &mut Ctx) -> u32 {
 /// LoopLength, LoopCount, pContext (x64: the pointers 8 bytes, aligned)
 fn S_SubmitSourceBuffer(c: &mut Ctx) -> u32 {
     let (this, p) = (c.a(0), c.a(1));
-    // (x64: the fields past pAudioData move by 4, pContext by 8)
+    // pack(1): on x64 the fields past the 8-byte pAudioData move by 4
     let k = ps() - 4;
-    let r = |o: u32| r32(p + if o <= 8 { o } else if o < 32 { o + k } else { o + 2 * k });
+    let r = |o: u32| if o == 8 || o == 32 { rp(p + o + if o == 32 { k } else { 0 }) } else { r32(p + if o <= 8 { o } else { o + k }) };
     with_voice(this, |v| {
         let frames = r(4) / v.fmt.block().max(1);
         let begin = r(12).min(frames);
         let end = if r(16) == 0 { frames } else { (begin + r(16)).min(frames) };
         let loops = r(28);
-        let loop_begin = if loops > 0 { r(20).clamp(begin, end) } else { begin };
-        let loop_end = if loops > 0 && r(24) != 0 { (loop_begin + r(24)).min(end) } else { end };
+        // the loop region: LoopLength 0 runs to the play region's end
+        let loop_begin = if loops > 0 { r(20).min(frames) } else { begin };
+        let loop_end = if loops > 0 && r(24) != 0 { (loop_begin + r(24)).min(frames) } else { end };
         v.queue.push_back(XBuf { flags: r(0), data: r(8), begin, end, loop_begin, loop_end, loops, ctx: r(32) });
     })
     .map_or(E_INVALIDARG, |_| 0)
@@ -779,22 +1079,21 @@ fn S_ExitLoop(c: &mut Ctx) -> u32 {
 fn S_GetState28(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     if c.a(2) & 0x100 != 0 {
-        let k = ps();
         let (ctx, n) = with_voice(c.a(0), |v| (v.queue.front().map_or(0, |b| b.ctx), v.queue.len() as u32)).unwrap_or((0, 0));
         mem::wp(p, ctx);
-        w32(p + k, n);
+        w32(p + ps(), n);
         return 0;
     }
     S_GetState(c)
 }
-/// XAUDIO2_VOICE_STATE: pCurrentBufferContext, BuffersQueued, SamplesPlayed (u64; 8-aligned)
+/// XAUDIO2_VOICE_STATE (pack(1)): pCurrentBufferContext, BuffersQueued, SamplesPlayed (u64)
 fn S_GetState(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     let (ctx, n, played) = with_voice(c.a(0), |v| (v.queue.front().map_or(0, |b| b.ctx), v.queue.len() as u32, v.played as u64)).unwrap_or((0, 0, 0));
     let k = ps();
     mem::wp(p, ctx);
     w32(p + k, n);
-    mem::w64(p + 8 + 2 * (k - 4), played);
+    mem::w64(p + k + 4, played);
     0
 }
 fn S_SetFrequencyRatio(c: &mut Ctx) -> u32 {

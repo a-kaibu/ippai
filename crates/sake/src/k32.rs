@@ -1398,6 +1398,9 @@ fn WaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
 }
 fn CloseHandle(c: &mut Ctx) -> u32 {
     let h = c.a(0);
+    if crate::ws2::is_socket(h) {
+        return ok(crate::ws2::close_socket(h) == 0);
+    }
     let r = obj::close(h) || h == obj::CURRENT_PROCESS || h == obj::CURRENT_THREAD;
     if !r {
         last_error(6);
@@ -1410,6 +1413,12 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
         obj::dup(crate::cur().obj)
     } else if src == obj::CURRENT_PROCESS {
         obj::add(Obj::Process { access: PROCESS_ALL_ACCESS, pid: crate::pid() })
+    } else if crate::ws2::is_socket(src) {
+        let h = crate::ws2::dup_socket(src).unwrap_or(0);
+        if c.a(6) & 1 != 0 {
+            crate::ws2::close_socket(src);
+        }
+        h
     } else if c.a(6) & 1 != 0 {
         // DUPLICATE_CLOSE_SOURCE: Windows hands out the number it just freed (the old handle
         // keeps working through the new one)
@@ -4941,10 +4950,28 @@ fn _llseek(c: &mut Ctx) -> u32 {
     };
     f.seek(pos).map_or(0xffff_ffff, |p| p as u32)
 }
+/// ReadFile / WriteFile on a socket: a recv / send, completed at once (with an IOCP packet)
+fn socket_io(h: u32, buf: u32, n: u32, done: u32, ov: u32, write: bool) -> u32 {
+    match crate::ws2::file_io(h, buf, n, write) {
+        Ok(got) => {
+            put32(done, got);
+            crate::iocp::complete(h, ov, 0, got, true);
+            1
+        }
+        Err(e) => {
+            put32(done, 0);
+            last_error(e);
+            0
+        }
+    }
+}
 fn ReadFile(c: &mut Ctx) -> u32 {
     let (h, buf, n, pread, ov) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     if let Some(p) = crate::pipe::handle(h) {
         return crate::pipe::read(c, h, p);
+    }
+    if crate::ws2::is_socket(h) {
+        return socket_io(h, buf, n, pread, ov, false);
     }
     let Some(f) = obj::file(h) else {
         last_error(6);
@@ -4968,6 +4995,9 @@ fn ReadFile(c: &mut Ctx) -> u32 {
 }
 fn WriteFile(c: &mut Ctx) -> u32 {
     let (h, buf, n, pw) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if crate::ws2::is_socket(h) {
+        return socket_io(h, buf, n, pw, c.a(4), true);
+    }
     // (a length of -1: krkrz's console log passes what failed to convert; Windows can't read
     // that much and fails with ERROR_NOACCESS)
     if n >= 0x8000_0000 {
@@ -6055,15 +6085,45 @@ fn FormatMessageW(c: &mut Ctx) -> u32 {
 fn Beep(_: &mut Ctx) -> u32 {
     1
 }
-fn GetComputerNameA(c: &mut Ctx) -> u32 {
-    put_cstr(c.a(0), r32(c.a(1)), b"SAKE");
-    w32(c.a(1), 5);
+/// Copies `name` into (buf, *size chars); a short buffer fails with `short_err` and the size
+/// needed (with the NUL), success leaves the length without it
+fn put_sized_name(buf: u32, sizep: u32, name: &str, wide: bool, short_err: u32) -> u32 {
+    if sizep == 0 {
+        last_error(87);
+        return 0;
+    }
+    let n = name.len() as u32;
+    if r32(sizep) <= n || buf == 0 {
+        w32(sizep, n + 1);
+        last_error(short_err);
+        return 0;
+    }
+    if wide {
+        put_wstr(buf, n + 1, &a2w(name.as_bytes()));
+    } else {
+        put_cstr(buf, n + 1, name.as_bytes());
+    }
+    w32(sizep, n);
     1
 }
+fn GetComputerNameA(c: &mut Ctx) -> u32 {
+    put_sized_name(c.a(0), c.a(1), "SAKE", false, 111)
+}
 fn GetComputerNameW(c: &mut Ctx) -> u32 {
-    put_wstr(c.a(0), r32(c.a(1)), &a2w(b"SAKE"));
-    w32(c.a(1), 4);
-    1
+    put_sized_name(c.a(0), c.a(1), "SAKE", true, 111)
+}
+/// GetComputerNameEx(type, buf, &size): the NetBIOS and DNS host names are "SAKE", with no
+/// DNS domain
+fn computer_name_ex(c: &mut Ctx, wide: bool) -> u32 {
+    let name = match c.a(0) {
+        0 | 1 | 3 | 4 | 5 | 7 => "SAKE",
+        2 | 6 => "",
+        _ => {
+            last_error(87);
+            return 0;
+        }
+    };
+    put_sized_name(c.a(1), c.a(2), name, wide, 234)
 }
 fn GetUserNameA(c: &mut Ctx) -> u32 {
     put_cstr(c.a(0), r32(c.a(1)), b"user");
@@ -6490,6 +6550,10 @@ pub fn init() {
     implement("mpr", "WNetGetUniversalNameW", WNetGetUniversalNameA);
     reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
     reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlVerifyVersionInfo, RtlFirstEntrySList);
+    for d in ["kernel32", "kernelbase"] {
+        implement(d, "GetComputerNameExA", |c| computer_name_ex(c, false));
+        implement(d, "GetComputerNameExW", |c| computer_name_ex(c, true));
+    }
     reg!("kernel32"; DeviceIoControl, QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW, GetProductInfo);
     reg!("ntdll"; RtlMultiByteToUnicodeN, RtlUnicodeToMultiByteN, RtlMultiByteToUnicodeSize, RtlUnicodeToMultiByteSize,
         RtlUpcaseUnicodeChar, RtlCompareUnicodeString, RtlEqualUnicodeString);

@@ -53,12 +53,21 @@ def list_tests(sake, exe, env):
     return names
 
 
+HOSTS = "".join(f"127.0.0.1 {n}\n" for n in (
+    "winehq.org", "test.winehq.org", "source.winehq.org", "www.kernel.org", "xn--zckzah.winehq.org"))
+
+
 def run_one(sake, exe, test, timeout, fonts):
     c = tempfile.mkdtemp(prefix="winetest-c-")
     for d in ("windows/temp", "windows/system32", "users/user/desktop"):
         os.makedirs(os.path.join(c, d), exist_ok=True)
     if fonts:
         os.symlink(fonts, os.path.join(c, "windows/Fonts"))
+    # sake has no DNS: the names the ws2_32 / iphlpapi tests look up resolve through the hosts
+    # file, to loopback (nonexistent / nxdomain names stay unresolved)
+    os.makedirs(os.path.join(c, "windows/system32/drivers/etc"), exist_ok=True)
+    with open(os.path.join(c, "windows/system32/drivers/etc/hosts"), "w") as f:
+        f.write(HOSTS)
     env = dict(os.environ, SAKE_C=c, SAKE_NO_EXEC="1", SAKE_PROC_STUBS="1")
     t0 = time.time()
     try:
