@@ -43,7 +43,7 @@ open backup 1 1 distinct 1
 ClearEventLogA(b, NULL): 0 6
 small buffer: 0 122 read 0 need>56 1
 read: 1 read==size 1 need 0
-backup has the record 0
+backup: has a record 1 same number 0 same length 1 same bytes 0
 OpenBackupEventLogA(NULL, backup): 0 1500
 props size 120
 start: no size 24
