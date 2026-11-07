@@ -45,6 +45,10 @@ pub fn int_to_f80(i: i64) -> [u8; 10] {
     b
 }
 
+/// Status word exception flags: invalid, denormal operand, precision.
+pub const IE: u16 = 1;
+pub const DE: u16 = 2;
+pub const PE: u16 = 0x20;
 pub const C0: u16 = 1 << 8;
 pub const C1: u16 = 1 << 9;
 pub const C2: u16 = 1 << 10;

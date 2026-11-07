@@ -453,15 +453,21 @@ fn _control87(c: &mut Ctx) -> u32 {
 fn fp_status(c: &mut Ctx) -> u32 {
     koji::jit::mx_read(0);
     let f = (c.cpu.mxcsr & 0x3f) | if mem::x64() { 0 } else { c.cpu.fpu.sw as u32 & 0x3f };
-    // IE ZE OE UE PE -> _SW_INVALID _SW_ZERODIVIDE _SW_OVERFLOW _SW_UNDERFLOW _SW_INEXACT, DE -> _SW_DENORMAL
+    sw_bits(f)
+}
+/// IE ZE OE UE PE -> _SW_INVALID _SW_ZERODIVIDE _SW_OVERFLOW _SW_UNDERFLOW _SW_INEXACT, DE -> _SW_DENORMAL
+fn sw_bits(f: u32) -> u32 {
     [(1, 0x10), (2, 0x80000), (4, 8), (8, 4), (0x10, 2), (0x20, 1)].iter().filter(|&&(b, _)| f & b != 0).fold(0, |a, &(_, s)| a | s)
 }
 fn _statusfp(c: &mut Ctx) -> u32 {
     fp_status(c)
 }
-/// The status word, then the flags cleared (FNCLEX also clears the x87's ES and B).
+/// The status word, then the flags cleared (FNCLEX also clears the x87's ES and B). 32-bit
+/// msvcrt's answers the x87's flags alone (Windows: 0 after SSE raised some, winref fpflags),
+/// though it clears MXCSR's too.
 fn _clearfp(c: &mut Ctx) -> u32 {
-    let s = fp_status(c);
+    let s = if mem::x64() { fp_status(c) } else { sw_bits(c.cpu.fpu.sw as u32 & 0x3f) };
+    koji::jit::mx_read(0);
     c.cpu.mxcsr &= !0x3f;
     if !mem::x64() {
         c.cpu.fpu.sw &= !0x80ff;

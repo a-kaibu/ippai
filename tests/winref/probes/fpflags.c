@@ -2,7 +2,9 @@
  * the flags (sake's JIT keeps them only from the program's first read: koji::jit::MX_EXACT;
  * what that loop raised is lost, so _clearfp's answer there isn't printed), then the flags
  * cleared and loops whose flags are read, in a loop of its own: the values all along, and the
- * flags from the clear on, as the CPU's. _statusfp, _clearfp and STMXCSR agree. */
+ * flags from the clear on, as the CPU's. _statusfp, _clearfp and STMXCSR agree. Then an x87
+ * FRNDINT's flags (what each of them answers), and MXCSR's FTZ and DAZ (0x9fc0): denormal
+ * operands and results read and come out as zero, with the flags those raise. */
 #include "../probe.h"
 #include <float.h>
 #include <emmintrin.h>
@@ -66,6 +68,34 @@ int main(void) {
             unsigned st = _statusfp() & SW;
             unsigned cl = _clearfp() & SW;
             printf("round %d k %d value %08x mxcsr flags %#x _statusfp %#x _clearfp %#x after %#x\n", round, k, v, m, st, cl, getcsr() & 0x3f);
+        }
+    {
+        volatile double half = 2.5, q;
+        unsigned short sw;
+        _clearfp();
+        setcsr(0x1f80);
+        __asm__ volatile("fldl %1\n\tfrndint\n\tfstpl %0" : "=m"(q) : "m"(half));
+        __asm__ volatile("fnstsw %0" : "=m"(sw));
+        unsigned mx = getcsr() & 0x3f;
+        unsigned st = _statusfp() & SW, cl = _clearfp() & SW;
+        (void)q;
+        printf("frndint 2.5: x87 flags %#x mxcsr flags %#x -> _statusfp %#x _clearfp %#x after %#x %#x\n", sw & 0x3f, mx, st, cl,
+               _statusfp() & SW, getcsr() & 0x3f);
+    }
+    static volatile unsigned den[] = { 1, 0x80000001, 0x007fffff, 0x00800000, 0x3f800000, 0x0d000000, 0x33000000 };
+    for (int i = 0; i < 7; i++)
+        for (int j = 0; j < 7; j++) {
+            setcsr(0x9fc0);
+            __m128 a = _mm_castsi128_ps(_mm_cvtsi32_si128(den[i])), b = _mm_castsi128_ps(_mm_cvtsi32_si128(den[j]));
+            unsigned r[4];
+            r[0] = _mm_cvtsi128_si32(_mm_castps_si128(_mm_add_ss(a, b)));
+            r[1] = _mm_cvtsi128_si32(_mm_castps_si128(_mm_mul_ss(a, b)));
+            r[2] = _mm_cvtsi128_si32(_mm_castps_si128(_mm_sub_ss(a, b)));
+            r[3] = _mm_cvtsi128_si32(_mm_castps_si128(_mm_sqrt_ss(a)));
+            unsigned m = getcsr() & 0x3f;
+            unsigned st = _statusfp() & (SW | 0x80000);
+            setcsr(0x1f80);
+            printf("ftz daz %08x %08x: add %08x mul %08x sub %08x sqrt %08x mxcsr flags %#x _statusfp %#x\n", den[i], den[j], r[0], r[1], r[2], r[3], m, st);
         }
     return 0;
 }

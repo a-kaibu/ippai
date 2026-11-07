@@ -23,10 +23,19 @@ fn st_index(r: Register) -> u32 {
 impl<'a, M: Memory> X<'a, M> {
     fn fload(&mut self) -> Result<f64, crate::Fault> {
         let a = self.addr();
+        // (an SNaN loads as its QNaN with IE, as the x87 converts it; a denormal with DE)
+        let ex = |snan: bool, den: bool| (if snan { fpu::IE } else { 0 }) | if den { fpu::DE } else { 0 };
         Ok(match self.ins.memory_size() {
-            // (an SNaN loads as its QNaN, as the x87 converts it)
-            MemorySize::Float32 => fpu::quiet(f32::from_bits(self.mem.read32(a)?) as f64),
-            MemorySize::Float64 => fpu::quiet(f64::from_bits(self.mem.read64(a)?)),
+            MemorySize::Float32 => {
+                let v = f32::from_bits(self.mem.read32(a)?);
+                self.cpu.fpu.sw |= ex(v.is_nan() && v.to_bits() & 0x40_0000 == 0, v.is_subnormal());
+                fpu::quiet(v as f64)
+            }
+            MemorySize::Float64 => {
+                let v = f64::from_bits(self.mem.read64(a)?);
+                self.cpu.fpu.sw |= ex(v.is_nan() && v.to_bits() & (1 << 51) == 0, v.is_subnormal());
+                fpu::quiet(v)
+            }
             MemorySize::Float80 => {
                 let mut b = [0u8; 10];
                 for (i, x) in b.iter_mut().enumerate() {
@@ -289,9 +298,15 @@ impl<'a, M: Memory> X<'a, M> {
             Frndint => {
                 if self.cpu.fpu.exact_int().is_none() {
                     let v = self.cpu.fpu.st(0);
-                    // (an SNaN comes out quiet)
+                    // (an SNaN comes out quiet); a fraction rounded off is PE, C1 when it
+                    // rounded away from zero
                     let r = fpu::quiet(self.cpu.fpu.round(v));
-                    self.cpu.fpu.set_st(0, r);
+                    let f = &mut self.cpu.fpu;
+                    f.sw &= !C1;
+                    if v.is_finite() && r != v {
+                        f.sw |= fpu::PE | if r.abs() > v.abs() { C1 } else { 0 };
+                    }
+                    f.set_st(0, r);
                 }
             }
             Fsin => { let v = self.cpu.fpu.st(0); self.cpu.fpu.set_st(0, libm::sin(v)); self.cpu.fpu.sw &= !C2; }
