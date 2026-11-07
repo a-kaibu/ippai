@@ -105,3 +105,6 @@ user-* ^(want|got) +ShowWindow\(h, SW_HIDE\)
 # the runner's ANSI code page is 1252: 0x95 0x5c is two characters there, one (表) in sake's 932
 shell-* ^(want|got) +(name|removespec|strip) .*(2e747874\]|955c|835c\]|835c5c95\]) 
 res-* ^(want|got) +item 0: 1 id \d+ type 0 state 0 sub 1 text \[&File\] cch 5$  # a popup's wID is its HMENU, whose number differs
+# not implemented yet (thread "ソフト電池をsakeで正常に動かす"): named pipes, then processes
+pipes-* .  # in progress
+procs-* .  # in progress
