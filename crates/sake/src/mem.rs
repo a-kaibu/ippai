@@ -345,9 +345,19 @@ const COMMITTED: u32 = 0x8000_0000;
 /// Tells the JIT which pages are writable and executable (Windows protection `prot`, 0: none):
 /// it interprets W|X pages outside the main exe and checks stores on the main exe's.
 fn jit_prot(a: u32, n: u32, prot: u32) {
-    // PAGE_NOACCESS, PAGE_GUARD: any access faults (prot 0: decommitted or released; reserved
-    // pages are not checked)
-    kura::jit::fault_pages(a, n, prot & 0xff == 0x01 || prot & 0x100 != 0);
+    // PAGE_NOACCESS, PAGE_GUARD: any access faults; PAGE_READONLY, PAGE_EXECUTE(_READ): a
+    // write (prot 0: decommitted or released, see decommit_range; reserved pages are not
+    // checked)
+    use kura::jit::{READ_FAULTS, WRITE_FAULTS};
+    let none = prot & 0xff == 0x01 || prot & 0x100 != 0;
+    let kind = if none {
+        READ_FAULTS | WRITE_FAULTS
+    } else if prot & 0xff != 0 && prot & 0xcc == 0 {
+        WRITE_FAULTS
+    } else {
+        0
+    };
+    kura::jit::fault_pages(a, n, kind, none);
     let wx = prot & (0x40 | 0x80) != 0;
     let p = if prot == 0 { 0 } else if wx { libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC } else { libc::PROT_READ };
     kura::jit::pages_protected(a as usize, n as usize, p);
@@ -395,6 +405,8 @@ pub fn decommit_range(a: u32, n: u32) -> bool {
     }
     drop(g);
     jit_prot(b + first * PAGE, (last - first) * PAGE, 0);
+    // an access to a decommitted page faults
+    kura::jit::fault_pages(b + first * PAGE, (last - first) * PAGE, kura::jit::READ_FAULTS | kura::jit::WRITE_FAULTS, false);
     true
 }
 

@@ -17,6 +17,9 @@ pub mod fpu;
 pub use iced_x86;
 pub use fpu::Fpu;
 
+/// The MXCSR exception flags of an SSE operation (for tests against the host CPU).
+#[doc(hidden)]
+pub use interp::sse::{flags32, flags64, narrow_flags, FOp};
 pub use interp::{cpuid, cpuid_mode, step, step_cached, step_flow, DecodeCache};
 
 impl Cpu {
@@ -272,6 +275,12 @@ pub enum Exit {
     Syscall,
     /// HLT (privileged in user mode; the embedder decides).
     Halt,
+    /// The single-step trap (#DB): an instruction that began with TF set completed (32/64-bit
+    /// modes); EIP is past it.
+    SingleStep,
+    /// #XM: an SSE floating-point exception whose MXCSR mask bit is clear. The MXCSR flags of
+    /// the instruction are set, its destination is not written and EIP points at it.
+    SimdException,
 }
 
 /// FXSAVE image (512 bytes) of the x87/SSE state at `a`.

@@ -6,7 +6,7 @@ use crate::{Cpu, Exit, Fault, Memory, ESP, EAX, ECX, EDX, EBP, ESI, EDI};
 use iced_x86::{ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
 mod x87;
-mod sse;
+pub(crate) mod sse;
 pub(crate) mod vex;
 
 macro_rules! tryf {
@@ -86,13 +86,16 @@ pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut Dec
         }
     };
     let branch = ins.flow_control() != iced_x86::FlowControl::Next;
+    // (TF at the start of an instruction: a #DB trap once it completed)
+    let tf = cpu.eflags & crate::flags::TF != 0 && cpu.mode16 == 0;
+    let single = |e: Exit| if tf && e == Exit::Continue { Exit::SingleStep } else { e };
     // Only LOCK and XCHG can require atomic memory handling. Most instructions need
     // no operand scan on this hot path.
     let locked_mem = (ins.has_lock_prefix() || ins.mnemonic() == Mnemonic::Xchg)
         && (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory);
     if !locked_mem {
         let mut x = X { cpu, mem, ins: &ins, lock: None };
-        return (x.exec(), branch);
+        return (single(x.exec()), branch || tf);
     }
     // a locked read-modify-write: its store is a compare-and-swap against what it read, and
     // the instruction runs again if another thread changed the memory in between
@@ -101,7 +104,7 @@ pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut Dec
         let mut x = X { cpu: &mut *cpu, mem: &mut *mem, ins: &ins, lock: Some(Lock::default()) };
         let exit = x.exec();
         if !x.lock.is_some_and(|l| l.lost) {
-            return (exit, branch);
+            return (single(exit), branch || tf);
         }
         cpu.regs = regs;
         cpu.hi = hi;

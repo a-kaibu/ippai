@@ -504,12 +504,26 @@ fn page_map() -> u32 {
 }
 
 /// Pushes whether [the address on local `t`, + `size`) touches a page marked in [`PAGE_MAP`]
-/// (nonzero: it does); `t` must be inside the guest range already.
-fn pages_marked(c: &mut Code, t: u32, size: u32) {
+/// for the access of `ins` (nonzero: it does); `t` must be inside the guest range already. A
+/// page byte has bit 0 where reads fault, bit 1 where writes do (kura's fault_pages).
+fn pages_marked(c: &mut Code, t: u32, size: u32, ins: &Instruction) {
     let map = page_map();
     c.get(t).i32c(12).shr_u().load8u(map);
     c.get(t).i32c(size.max(1) as i32 - 1).add().i32c(12).shr_u().load8u(map);
     c.or();
+    if !writes_memory(ins) {
+        c.i32c(1).and();
+    }
+}
+
+/// Whether `ins` may write its memory operand (a read-only page faults it).
+fn writes_memory(ins: &Instruction) -> bool {
+    use iced_x86::OpAccess::*;
+    iced_x86::InstructionInfoFactory::new()
+        .info(ins)
+        .used_memory()
+        .iter()
+        .any(|m| !matches!(m.access(), Read | CondRead | NoMemAccess | None))
 }
 
 const STATUS_BITS: u32 =
@@ -1090,7 +1104,8 @@ impl<'a> Gen<'a> {
         if !page_check() {
             return;
         }
-        pages_marked(&mut self.c, t, size);
+        let ins = self.ins;
+        pages_marked(&mut self.c, t, size, &ins);
         self.c.if_();
         self.depth += 1;
         self.bail();

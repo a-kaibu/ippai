@@ -194,6 +194,20 @@ impl<'a, M: Memory> X<'a, M> {
         use Mnemonic::*;
         let ins = self.ins;
         let mn = ins.mnemonic();
+        // With an exception unmasked, the instruction's MXCSR flags are found first (and a
+        // trap leaves the destination alone). Fully masked, nothing is tracked: the JIT does
+        // not track the sticky flags either.
+        if self.cpu.mxcsr & 0x1f80 != 0x1f80 {
+            if let Some((pre, post)) = self.mx_flags() {
+                let mask = (self.cpu.mxcsr >> 7) & 0x3f;
+                // an unmasked invalid, denormal or divide exception comes before the result
+                let f = if pre & !mask != 0 { pre } else { pre | post };
+                self.cpu.mxcsr |= f;
+                if f & !mask != 0 {
+                    return Exit::SimdException;
+                }
+            }
+        }
         let w = if ins.op_count() > 0 { self.vbits(0) } else { 128 };
         let w = if w == 32 { 128 } else { w }; // gpr destination: lane math on xmm source
         let wmask: u128 = if w == 64 { u64::MAX as u128 } else { u128::MAX };
@@ -978,6 +992,377 @@ impl<'a, M: Memory> X<'a, M> {
             }
             _ => Exit::InvalidOpcode,
         }
+    }
+}
+
+// ---- MXCSR exception flags
+const IE: u32 = 1;
+const DE: u32 = 2;
+const ZE: u32 = 4;
+const OE: u32 = 8;
+const UE: u32 = 0x10;
+const PE: u32 = 0x20;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Sqrt,
+    MinMax,
+}
+
+fn snan32(x: f32) -> bool {
+    x.is_nan() && x.to_bits() & 0x40_0000 == 0
+}
+fn snan64(x: f64) -> bool {
+    x.is_nan() && x.to_bits() & (1 << 51) == 0
+}
+
+/// s + e == a + b exactly (Knuth's TwoSum).
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let bb = s - a;
+    (s, (a - (s - bb)) + (b - bb))
+}
+
+/// a * b == c exactly, for finite values (on the integer significands, so that it holds
+/// where an FMA residual would underflow).
+fn product_is(a: f64, b: f64, c: f64) -> bool {
+    if a == 0.0 || b == 0.0 || c == 0.0 {
+        return (a == 0.0 || b == 0.0) && c == 0.0;
+    }
+    if (a.is_sign_negative() != b.is_sign_negative()) != c.is_sign_negative() {
+        return false;
+    }
+    let parts = |v: f64| {
+        let bits = v.to_bits();
+        let ex = ((bits >> 52) & 0x7ff) as i32;
+        let fr = (bits & ((1 << 52) - 1)) as u128;
+        if ex == 0 { (fr, -1074) } else { (fr | 1 << 52, ex - 1075) }
+    };
+    let norm = |(m, e): (u128, i32)| (m >> m.trailing_zeros(), e + m.trailing_zeros() as i32);
+    let ((ma, ea), (mb, eb)) = (parts(a), parts(b));
+    norm((ma * mb, ea + eb)) == norm(parts(c))
+}
+
+/// The flags before the result (invalid, denormal, divide by zero: the operands decide them)
+/// and after it (overflow, underflow, inexact), in the order of precedence the SDM gives:
+/// an SNaN operand, a QNaN operand (no flag), another invalid operation or a division by
+/// zero, a denormal operand, then the result. `x` and `y` are widened exactly from f32 when
+/// `single`; `sn`/`den` say whether an operand was a signaling NaN / denormal in its own
+/// format. For Sqrt the operand is `y`.
+fn arith_flags(op: FOp, x: f64, y: f64, single: bool, sn: bool, den: bool, ue_unmasked: bool) -> (u32, u32) {
+    let x = if op == FOp::Sqrt { y } else { x };
+    if x.is_nan() || y.is_nan() {
+        return (if sn || op == FOp::MinMax { IE } else { 0 }, 0);
+    }
+    let invalid = match op {
+        FOp::Add => x.is_infinite() && y.is_infinite() && x.is_sign_negative() != y.is_sign_negative(),
+        FOp::Sub => x.is_infinite() && y.is_infinite() && x.is_sign_negative() == y.is_sign_negative(),
+        FOp::Mul => (x == 0.0 && y.is_infinite()) || (y == 0.0 && x.is_infinite()),
+        FOp::Div => (x == 0.0 && y == 0.0) || (x.is_infinite() && y.is_infinite()),
+        FOp::Sqrt => y < 0.0,
+        FOp::MinMax => false,
+    };
+    if invalid {
+        return (IE, 0);
+    }
+    if op == FOp::Div && y == 0.0 && x.is_finite() {
+        return (ZE, 0);
+    }
+    let pre = if den { DE } else { 0 };
+    if op == FOp::MinMax || x.is_infinite() || y.is_infinite() {
+        return (pre, 0);
+    }
+    // the rounded result (to nearest, as the arithmetic itself) and whether it is exact
+    let (inf, sub, zero, inexact) = if single {
+        let (a, b) = (x as f32, y as f32);
+        let r = match op {
+            FOp::Add => a + b,
+            FOp::Sub => a - b,
+            FOp::Mul => a * b,
+            FOp::Div => a / b,
+            _ => libm::sqrtf(b),
+        };
+        let rd = r as f64;
+        let inexact = r.is_infinite()
+            || match op {
+                FOp::Add | FOp::Sub => {
+                    let (s, e) = two_sum(x, if op == FOp::Sub { -y } else { y });
+                    rd != s || e != 0.0
+                }
+                FOp::Mul => rd != x * y, // (24 x 24 bits: exact in f64)
+                FOp::Div => rd * y != x,
+                _ => rd * rd != y,
+            };
+        (r.is_infinite(), r.is_subnormal(), r == 0.0, inexact)
+    } else {
+        let r = match op {
+            FOp::Add => x + y,
+            FOp::Sub => x - y,
+            FOp::Mul => x * y,
+            FOp::Div => x / y,
+            _ => libm::sqrt(y),
+        };
+        let inexact = r.is_infinite()
+            || match op {
+                FOp::Add | FOp::Sub => two_sum(x, if op == FOp::Sub { -y } else { y }).1 != 0.0,
+                FOp::Mul => !product_is(x, y, r),
+                FOp::Div => !product_is(r, y, x),
+                _ => !product_is(r, r, y),
+            };
+        (r.is_infinite(), r.is_subnormal(), r == 0.0, inexact)
+    };
+    let mut post = 0;
+    if inf {
+        post = OE | PE;
+    } else {
+        let tiny = sub || (zero && inexact);
+        if tiny && (inexact || ue_unmasked) {
+            post |= UE;
+        }
+        if inexact {
+            post |= PE;
+        }
+    }
+    (pre, post)
+}
+
+/// arith_flags for f32 operands.
+pub fn flags32(op: FOp, x: f32, y: f32, ue_unmasked: bool) -> (u32, u32) {
+    let ops: &[f32] = if op == FOp::Sqrt { &[y] } else { &[x, y] };
+    let sn = ops.iter().any(|&v| snan32(v));
+    let den = ops.iter().any(|v| v.is_subnormal());
+    arith_flags(op, x as f64, y as f64, true, sn, den, ue_unmasked)
+}
+
+/// arith_flags for f64 operands.
+pub fn flags64(op: FOp, x: f64, y: f64, ue_unmasked: bool) -> (u32, u32) {
+    let ops: &[f64] = if op == FOp::Sqrt { &[y] } else { &[x, y] };
+    let sn = ops.iter().any(|&v| snan64(v));
+    let den = ops.iter().any(|v| v.is_subnormal());
+    arith_flags(op, x, y, false, sn, den, ue_unmasked)
+}
+
+/// f64 -> f32 (CVTSD2SS, CVTPD2PS).
+pub fn narrow_flags(x: f64, ue_unmasked: bool) -> (u32, u32) {
+    if x.is_nan() {
+        return (if snan64(x) { IE } else { 0 }, 0);
+    }
+    let pre = if x.is_subnormal() { DE } else { 0 };
+    if x.is_infinite() {
+        return (pre, 0);
+    }
+    let r = x as f32;
+    let inexact = r as f64 != x;
+    let post = if r.is_infinite() {
+        OE | PE
+    } else {
+        let tiny = r.is_subnormal() || (r == 0.0 && x != 0.0);
+        (if tiny && (inexact || ue_unmasked) { UE } else { 0 }) | if inexact { PE } else { 0 }
+    };
+    (pre, post)
+}
+
+/// A comparison: an SNaN operand is invalid, a QNaN too when `signaling` (COMISS, the
+/// ordered less/less-equal predicates of CMPPS); else a denormal operand.
+fn cmp_flags(nan: bool, sn: bool, den: bool, signaling: bool) -> u32 {
+    if nan {
+        if sn || signaling { IE } else { 0 }
+    } else if den {
+        DE
+    } else {
+        0
+    }
+}
+
+fn or2(a: (u32, u32), b: (u32, u32)) -> (u32, u32) {
+    (a.0 | b.0, a.1 | b.1)
+}
+
+impl<'a, M: Memory> X<'a, M> {
+    /// The MXCSR flags the current SSE instruction raises (before, after the result); None
+    /// for an instruction that raises none, or an operand that faults (the instruction then
+    /// faults when it runs).
+    fn mx_flags(&mut self) -> Option<(u32, u32)> {
+        use Mnemonic::*;
+        let mn = self.ins.mnemonic();
+        let ue = self.cpu.mxcsr & 0x800 == 0;
+        let mut f = (0u32, 0u32);
+        let op = |mn: Mnemonic| match mn {
+            Addss | Addps | Addsd | Addpd => FOp::Add,
+            Subss | Subps | Subsd | Subpd => FOp::Sub,
+            Mulss | Mulps | Mulsd | Mulpd => FOp::Mul,
+            Divss | Divps | Divsd | Divpd => FOp::Div,
+            Sqrtss | Sqrtps | Sqrtsd | Sqrtpd => FOp::Sqrt,
+            _ => FOp::MinMax,
+        };
+        // a conversion to an integer: NaN or out of range is invalid, else rounding inexact
+        let to_int = |x: &Self, v: f64, trunc: bool, bits: u32| -> (u32, u32) {
+            if v.is_nan() {
+                return (IE, 0);
+            }
+            let r = if trunc { fpu::trunc(v) } else { x.round_mx(v) };
+            let lim = if bits == 64 { 9223372036854775808.0 } else { 2147483648.0 };
+            if !(r >= -lim && r < lim) {
+                (IE, 0)
+            } else if r != v {
+                (0, PE)
+            } else {
+                (0, 0)
+            }
+        };
+        match mn {
+            Addss | Subss | Mulss | Divss | Minss | Maxss | Sqrtss | Addps | Subps | Mulps | Divps | Minps | Maxps
+            | Sqrtps => {
+                let n = if matches!(mn, Addss | Subss | Mulss | Divss | Minss | Maxss | Sqrtss) { 1 } else { 4 };
+                let a = self.read_v(0).ok()?;
+                let b = self.read_v(1).ok()?;
+                for i in 0..n {
+                    f = or2(f, flags32(op(mn), f32x(a, i), f32x(b, i), ue));
+                }
+            }
+            Addsd | Subsd | Mulsd | Divsd | Minsd | Maxsd | Sqrtsd | Addpd | Subpd | Mulpd | Divpd | Minpd | Maxpd
+            | Sqrtpd => {
+                let n = if matches!(mn, Addsd | Subsd | Mulsd | Divsd | Minsd | Maxsd | Sqrtsd) { 1 } else { 2 };
+                let a = self.read_v(0).ok()?;
+                let b = self.read_v(1).ok()?;
+                for i in 0..n {
+                    f = or2(f, flags64(op(mn), f64x(a, i), f64x(b, i), ue));
+                }
+            }
+            Haddps | Hsubps | Addsubps => {
+                let a = self.read_v(0).ok()?;
+                let b = self.read_v(1).ok()?;
+                for i in 0..4 {
+                    let (x, y, o) = match mn {
+                        Addsubps => (f32x(a, i), f32x(b, i), if i % 2 == 0 { FOp::Sub } else { FOp::Add }),
+                        _ => {
+                            let v = if i < 2 { a } else { b };
+                            let j = 2 * (i % 2);
+                            (f32x(v, j), f32x(v, j + 1), if mn == Hsubps { FOp::Sub } else { FOp::Add })
+                        }
+                    };
+                    f = or2(f, flags32(o, x, y, ue));
+                }
+            }
+            Haddpd | Hsubpd | Addsubpd => {
+                let a = self.read_v(0).ok()?;
+                let b = self.read_v(1).ok()?;
+                for i in 0..2 {
+                    let (x, y, o) = match mn {
+                        Addsubpd => (f64x(a, i), f64x(b, i), if i == 0 { FOp::Sub } else { FOp::Add }),
+                        _ => {
+                            let v = if i == 0 { a } else { b };
+                            (f64x(v, 0), f64x(v, 1), if mn == Hsubpd { FOp::Sub } else { FOp::Add })
+                        }
+                    };
+                    f = or2(f, flags64(o, x, y, ue));
+                }
+            }
+            Cmpss | Cmpps | Cmpsd | Cmppd | Comiss | Ucomiss | Comisd | Ucomisd => {
+                let a = self.read_v(0).ok()?;
+                let b = self.read_v(1).ok()?;
+                let signaling = match mn {
+                    Comiss | Comisd => true,
+                    Ucomiss | Ucomisd => false,
+                    _ => matches!(self.ins.immediate8() & 7, 1 | 2 | 5 | 6),
+                };
+                let (n, single) = match mn {
+                    Cmpss | Comiss | Ucomiss => (1, true),
+                    Cmpps => (4, true),
+                    Cmppd => (2, false),
+                    _ => (1, false),
+                };
+                for i in 0..n {
+                    f.0 |= if single {
+                        let (x, y) = (f32x(a, i), f32x(b, i));
+                        cmp_flags(x.is_nan() || y.is_nan(), snan32(x) || snan32(y), x.is_subnormal() || y.is_subnormal(), signaling)
+                    } else {
+                        let (x, y) = (f64x(a, i), f64x(b, i));
+                        cmp_flags(x.is_nan() || y.is_nan(), snan64(x) || snan64(y), x.is_subnormal() || y.is_subnormal(), signaling)
+                    };
+                }
+            }
+            Cvttss2si | Cvtss2si | Cvttsd2si | Cvtsd2si => {
+                let v = self.read_v(1).ok()?;
+                let x = if matches!(mn, Cvttss2si | Cvtss2si) { f32x(v, 0) as f64 } else { f64x(v, 0) };
+                let bits = if self.vbits(0) == 64 { 64 } else { 32 };
+                f = to_int(self, x, matches!(mn, Cvttss2si | Cvttsd2si), bits);
+            }
+            Cvtps2dq | Cvttps2dq | Cvtps2pi | Cvttps2pi => {
+                let v = self.read_v(1).ok()?;
+                let n = if matches!(mn, Cvtps2dq | Cvttps2dq) { 4 } else { 2 };
+                for i in 0..n {
+                    f = or2(f, to_int(self, f32x(v, i) as f64, matches!(mn, Cvttps2dq | Cvttps2pi), 32));
+                }
+            }
+            Cvtpd2dq | Cvttpd2dq | Cvtpd2pi | Cvttpd2pi => {
+                let v = self.read_v(1).ok()?;
+                for i in 0..2 {
+                    f = or2(f, to_int(self, f64x(v, i), matches!(mn, Cvttpd2dq | Cvttpd2pi), 32));
+                }
+            }
+            Cvtsi2ss | Cvtsi2sd | Cvtdq2ps | Cvtpi2ps => {
+                let raw = self.read_v(1).ok()?;
+                let vals: [i64; 4] = match mn {
+                    Cvtdq2ps => core::array::from_fn(|i| (raw >> (32 * i)) as u32 as i32 as i64),
+                    Cvtpi2ps => core::array::from_fn(|i| if i < 2 { (raw >> (32 * i)) as u32 as i32 as i64 } else { 0 }),
+                    _ if self.vbits(1) == 64 => [raw as u64 as i64, 0, 0, 0],
+                    _ => [raw as u32 as i32 as i64, 0, 0, 0],
+                };
+                for v in vals {
+                    let exact = if mn == Cvtsi2sd { (v as f64) as i128 == v as i128 } else { (v as f32) as i128 == v as i128 };
+                    if !exact {
+                        f.1 |= PE;
+                    }
+                }
+            }
+            Cvtss2sd | Cvtps2pd => {
+                let v = self.read_v(1).ok()?;
+                for i in 0..(if mn == Cvtss2sd { 1 } else { 2 }) {
+                    let x = f32x(v, i);
+                    f.0 |= if snan32(x) { IE } else if x.is_subnormal() { DE } else { 0 };
+                }
+            }
+            Cvtsd2ss | Cvtpd2ps => {
+                let v = self.read_v(1).ok()?;
+                for i in 0..(if mn == Cvtsd2ss { 1 } else { 2 }) {
+                    f = or2(f, narrow_flags(f64x(v, i), ue));
+                }
+            }
+            Roundss | Roundsd | Roundps | Roundpd => {
+                let imm = self.ins.immediate8() as u32;
+                let mode = if imm & 4 != 0 { (self.cpu.mxcsr >> 13) & 3 } else { imm & 3 };
+                let v = self.read_v(1).ok()?;
+                let single = matches!(mn, Roundss | Roundps);
+                let n = match mn {
+                    Roundss | Roundsd => 1,
+                    Roundps => 4,
+                    _ => 2,
+                };
+                for i in 0..n {
+                    let (x, sn) = if single { (f32x(v, i) as f64, snan32(f32x(v, i))) } else { (f64x(v, i), snan64(f64x(v, i))) };
+                    if x.is_nan() {
+                        f.0 |= if sn { IE } else { 0 };
+                        continue;
+                    }
+                    let r = match mode {
+                        0 => fpu::libm_round_even(x),
+                        1 => fpu::floor(x),
+                        2 => fpu::ceil(x),
+                        _ => fpu::trunc(x),
+                    };
+                    if imm & 8 == 0 && r != x {
+                        f.1 |= PE;
+                    }
+                }
+            }
+            _ => return None,
+        }
+        Some(f)
     }
 }
 

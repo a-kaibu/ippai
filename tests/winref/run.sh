@@ -20,7 +20,7 @@ for exe in "$EXE"/*.exe; do
   if [ -n "${SAKE:-}" ]; then
     # (sake writes the console to stderr, with its own "sake:" lines)
     (cd "$d/cwd" && timeout 300 node "$SAKE" "$exe" > ../stdout.raw 2>&1; echo $? > ../exit)
-    grep -v '^sake:' "$d/stdout.raw" > "$d/stdout.txt"; grep '^sake:' "$d/stdout.raw" > "$d/stderr.txt"; rm "$d/stdout.raw"
+    grep -Ev '^(sake|kura):' "$d/stdout.raw" > "$d/stdout.txt"; grep -E '^(sake|kura):' "$d/stdout.raw" > "$d/stderr.txt"; rm "$d/stdout.raw"
   else
     (cd "$d/cwd" && timeout 300 "$exe" > ../stdout.txt 2> ../stderr.txt; echo $? > ../exit)
   fi

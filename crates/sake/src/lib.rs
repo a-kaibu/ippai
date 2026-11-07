@@ -295,6 +295,28 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                 raise(cpu, 0xc000_0096, e, &[])
             }
             Stop::Syscall => fatal(cpu, "syscall"),
+            // STATUS_SINGLE_STEP after the instruction; the trap clears TF
+            Stop::SingleStep => {
+                cpu.eflags &= !koji::flags::TF;
+                let e = cpu.eip;
+                raise(cpu, 0x8000_0004, e, &[])
+            }
+            // the MXCSR as the trap left it in the second parameter; x86 Windows reports every
+            // SSE trap as STATUS_FLOAT_MULTIPLE_TRAPS, x64 by the first unmasked flag
+            Stop::SimdException => {
+                let e = cpu.eip;
+                let mx = cpu.mxcsr;
+                if mem::x64() {
+                    let fired = mx & 0x3f & !(mx >> 7);
+                    let code = [(1, 0xc000_0090), (4, 0xc000_008e), (2, 0xc000_008d), (8, 0xc000_0091), (0x10, 0xc000_0093)]
+                        .iter()
+                        .find(|(b, _)| fired & b != 0)
+                        .map_or(0xc000_008f, |&(_, c)| c);
+                    seh64::raise(cpu, code, 0, e, &[0, mx as u64]);
+                } else {
+                    seh::raise(cpu, 0xc000_02b5, 0, e, &[0, mx]);
+                }
+            }
         }
     }
 }

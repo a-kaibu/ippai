@@ -24,6 +24,11 @@ pub enum Stop {
     Halt,
     /// SYSCALL in long mode (x86-64 guests)
     Syscall,
+    /// The single-step trap after an instruction run with TF set; EIP is past it.
+    SingleStep,
+    /// An unmasked SSE floating-point exception (#XM); EIP at the instruction, the MXCSR
+    /// flags set.
+    SimdException,
 }
 
 /// The linear memory as the guest sees it.
@@ -43,7 +48,7 @@ fn mem_end() -> u64 {
 
 #[inline(always)]
 fn check(addr: u32, len: u32, write: bool) -> Result<*mut u8, Fault> {
-    if addr < NULL_PAGES || addr as u64 + len as u64 > mem_end() || crate::jit::faults(addr, len) {
+    if addr < NULL_PAGES || addr as u64 + len as u64 > mem_end() || crate::jit::faults(addr, len, write) {
         return Err(Fault { addr, write });
     }
     if write {
@@ -288,6 +293,8 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
             Some(Stop::Halt)
         }
         Exit::Syscall => Some(Stop::Syscall),
+        Exit::SingleStep => Some(Stop::SingleStep),
+        Exit::SimdException => Some(Stop::SimdException),
     }
 }
 
@@ -365,6 +372,15 @@ pub fn run(cpu: &mut Cpu) -> Stop {
     r
 }
 
+/// Once per process: code ran with an SSE exception unmasked, so the interpreter ran it (a
+/// program that keeps it so runs slowly: the logs of corpus runs show which do).
+fn unmasked_note(mx: u32) {
+    static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("kura: MXCSR {mx:#x} unmasks SSE exceptions: the interpreter runs the code meanwhile");
+    }
+}
+
 fn cpu_run(cpu: &mut Cpu) -> Stop {
     let mut mem = Linear;
     // long mode: IPPAI_JIT64=0 leaves it to the interpreter
@@ -372,7 +388,12 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
     crate::jit::count_entry(cpu.eip);
     loop {
         trace_call(cpu);
-        if jit {
+        // (with TF set every instruction traps, and with an SSE exception unmasked any SSE
+        // instruction may: the interpreter runs them one by one)
+        if jit && cpu.mxcsr & 0x1f80 != 0x1f80 {
+            unmasked_note(cpu.mxcsr);
+        }
+        if jit && cpu.eflags & koji::flags::TF == 0 && cpu.mxcsr & 0x1f80 == 0x1f80 {
             match crate::jit::run(cpu) {
                 crate::jit::Ran::Stopped => {
                     crate::jit::count_entry(cpu.eip | 0x8000_0000);

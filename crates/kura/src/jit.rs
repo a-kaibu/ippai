@@ -371,15 +371,25 @@ fn mark_code(code: &[(u32, u32)]) {
     }
 }
 
-/// A byte per guest page of [0, 2 GB): nonzero where an access faults (PAGE_NOACCESS,
-/// PAGE_GUARD); made with the first such page (koji's PAGE_MAP points at it from then on).
+/// A byte per guest page of [0, 2 GB): [`READ_FAULTS`] | [`WRITE_FAULTS`] where an access
+/// faults; made with the first such page (koji's PAGE_MAP points at it once a page that
+/// turns the checks on is marked).
 static FAULT_MAP: std::sync::OnceLock<&'static [std::sync::atomic::AtomicU8]> = std::sync::OnceLock::new();
 
-/// Marks (`on`) or clears the guest's pages `addr..addr + len` as faulting on any access. The
-/// first mark turns the page checks on for good: translations made without them are dropped,
-/// everyone's, and saved ones are no longer used.
-pub fn fault_pages(addr: u32, len: u32, on: bool) {
-    if len == 0 || addr >= 1 << 31 || (!on && FAULT_MAP.get().is_none()) {
+/// A read of the page faults (and a write: PAGE_NOACCESS, PAGE_GUARD, decommitted).
+pub const READ_FAULTS: u8 = 1;
+/// A write faults (PAGE_READONLY, PAGE_EXECUTE_READ).
+pub const WRITE_FAULTS: u8 = 2;
+
+/// Marks the guest's pages `addr..addr + len` as faulting on the accesses `kind` says (0:
+/// none). The interpreter checks every access against the marks; translated code only from
+/// the first mark with `checks` on (PAGE_NOACCESS, PAGE_GUARD: rare, and their faults are
+/// part of how programs work), which turns the page checks on for good: translations made
+/// without them are dropped, everyone's, and saved ones are no longer used. Read-only and
+/// decommitted pages don't turn them on (every program has read-only sections, and checked
+/// accesses cost the JIT), so translated code writes them only while the checks are off.
+pub fn fault_pages(addr: u32, len: u32, kind: u8, checks: bool) {
+    if len == 0 || addr >= 1 << 31 || (kind == 0 && FAULT_MAP.get().is_none()) {
         return;
     }
     let map = *FAULT_MAP.get_or_init(|| {
@@ -388,9 +398,9 @@ pub fn fault_pages(addr: u32, len: u32, on: bool) {
     });
     let (lo, hi) = (addr as usize >> 12, ((addr as usize + len as usize - 1) >> 12).min((1 << 19) - 1));
     for b in &map[lo..=hi] {
-        b.store(on as u8, Ordering::Relaxed);
+        b.store(kind, Ordering::Relaxed);
     }
-    if on && jit::PAGE_MAP.load(Ordering::Relaxed) == 0 {
+    if kind != 0 && checks && jit::PAGE_MAP.load(Ordering::Relaxed) == 0 {
         jit::PAGE_MAP.store(map.as_ptr() as usize, Ordering::SeqCst);
         drop_translations();
         if stats() {
@@ -399,12 +409,13 @@ pub fn fault_pages(addr: u32, len: u32, on: bool) {
     }
 }
 
-/// Whether the access [addr, + len) touches a page marked by [`fault_pages`].
+/// Whether the access [addr, + len) touches a page marked by [`fault_pages`] for it.
 #[inline(always)]
-pub(crate) fn faults(addr: u32, len: u32) -> bool {
+pub(crate) fn faults(addr: u32, len: u32, write: bool) -> bool {
     let Some(map) = FAULT_MAP.get() else { return false };
     let (lo, hi) = (addr as usize >> 12, (addr as usize + len.max(1) as usize - 1) >> 12);
-    map.get(lo).is_some_and(|b| b.load(Ordering::Relaxed) != 0) || map.get(hi).is_some_and(|b| b.load(Ordering::Relaxed) != 0)
+    let m = if write { READ_FAULTS | WRITE_FAULTS } else { READ_FAULTS };
+    map.get(lo).is_some_and(|b| b.load(Ordering::Relaxed) & m != 0) || map.get(hi).is_some_and(|b| b.load(Ordering::Relaxed) & m != 0)
 }
 
 /// Every thread drops its translations (at its next entry into the run loop).
@@ -1731,6 +1742,9 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
     match step(&mut *cpu, &mut Linear).0 {
         // (it rewrote translated code: the block leaves)
         Exit::Continue if GENERATION.load(Ordering::Relaxed) != g => 2,
+        // (POPF set TF, or LDMXCSR / FXRSTOR unmasked an SSE exception: from here on the
+        // interpreter runs the code, see cpu_run)
+        Exit::Continue if (*cpu).eflags & koji::flags::TF != 0 || (*cpu).mxcsr & 0x1f80 != 0x1f80 => 2,
         Exit::Continue => 0,
         e => {
             EXIT.with(|x| x.set(Some(e)));
