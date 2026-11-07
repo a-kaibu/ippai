@@ -75,6 +75,11 @@ seconds, the trace's sha256: `games.py`). The trace ends where the game was kill
 converter keeps the calls up to the last whole one (`-strict`, which build.sh uses for the
 probes' traces, refuses such a trace).
 
+A title with no trace goes to `testdata/apitrace/skipped.tsv` with why (`none`: it draws
+without D3D8/9/11; `notrace`: it made none, with how far winplay got; `noconvert`: its trace
+does not convert) and is not downloaded again; `again`, or naming it in `only`, tries it anew.
+A download that failed is tried again next time.
+
 From there it is a winref probe like the others: `build.sh` builds `replay_<id>-<bits>-<bits>.exe`
 (a frame in 900 read back), Windows answers once (its pictures go to `tests/winref/golden` as
 every probe's do), sake is checked against them on every push. Nobody runs the games again

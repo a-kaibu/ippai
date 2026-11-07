@@ -5,7 +5,12 @@ trace, zstd-compressed, in parts of at most 90 MiB (GitHub refuses a file over 1
 <id>-<bits>.trace.zst.000, .001, ...
 
     games.py todo [--again=true] [id ...]     the titles to record: those given, else
-                                             tests/replay/games.txt's without a trace yet
+                                             tests/replay/games.txt's without a trace yet and not
+                                             skipped (--again: all of them)
+    games.py skip <id> <reason> [detail]      a title with no trace to keep (none: it draws without
+                                             D3D8/9/11; notrace: it made none; noconvert: its trace
+                                             does not convert) in skipped.tsv, not tried again
+    games.py took <id>                        a title whose trace was committed: off skipped.tsv
     games.py pack <x.trace> <dir/name> --api A --exe E --seconds S [--part BYTES]
     games.py unpack <dir/name> <x.trace>      the parts put together, checked against the sha256
     games.py names [dir]                      the traces there (<id>-<bits>), for build.sh
@@ -32,6 +37,49 @@ def titles(path=TITLES):
     return {l.split("\t")[0] for l in open(path, encoding="utf-8").read().splitlines()[1:] if l}
 
 
+REASONS = ("none", "notrace", "noconvert")
+
+
+def skipped(d=GAMES):
+    """skipped.tsv: id -> (reason, detail)"""
+    f = os.path.join(d, "skipped.tsv")
+    if not os.path.exists(f):
+        return {}
+    out = {}
+    for l in open(f, encoding="utf-8").read().splitlines():
+        if not l or l.startswith("#"):
+            continue
+        i, r, *x = l.split("\t")
+        if r not in REASONS:
+            raise SystemExit(f"{f}: {i}: reason {r!r}")
+        out[i] = (r, x[0] if x else "")
+    return out
+
+
+def write_skipped(m, d=GAMES):
+    f = os.path.join(d, "skipped.tsv")
+    os.makedirs(d, exist_ok=True)
+    with open(f, "w", encoding="utf-8") as o:
+        o.write("# trial games with no trace, not recorded again unless asked (games.py; gametrace.yml's again)\n")
+        for i in sorted(m):
+            r, x = m[i]
+            o.write(f"{i}\t{r}\t{x}\n" if x else f"{i}\t{r}\n")
+
+
+def skip(i, reason, detail="", d=GAMES):
+    if reason not in REASONS:
+        raise SystemExit(f"reason {reason!r}: one of {' '.join(REASONS)}")
+    m = skipped(d)
+    m[i] = (reason, " ".join(detail.split()))
+    write_skipped(m, d)
+
+
+def took(i, d=GAMES):
+    m = skipped(d)
+    if m.pop(i, None) is not None:
+        write_skipped(m, d)
+
+
 def names(d=GAMES):
     return sorted(os.path.basename(m)[:-4] for m in glob.glob(os.path.join(d, "*.txt")))
 
@@ -43,7 +91,7 @@ def todo(ids, again, d=GAMES, known=None):
     bad = [i for i in ids if i not in known]
     if bad:
         raise SystemExit(f"not in tests/corpus/titles.tsv: {' '.join(bad)}")
-    have = {re.sub(r"-(32|64)$", "", n) for n in names(d)}
+    have = {re.sub(r"-(32|64)$", "", n) for n in names(d)} | set(skipped(d))
     return [i for i in ids if given or again or i not in have]
 
 
@@ -103,6 +151,14 @@ def main():
     u = s.add_parser("unpack")
     u.add_argument("prefix")
     u.add_argument("out")
+    k = s.add_parser("skip")
+    k.add_argument("id")
+    k.add_argument("reason")
+    k.add_argument("detail", nargs="?", default="")
+    k.add_argument("--dir", default=GAMES)
+    t2 = s.add_parser("took")
+    t2.add_argument("id")
+    t2.add_argument("--dir", default=GAMES)
     n = s.add_parser("names")
     n.add_argument("dir", nargs="?", default=GAMES)
     o = a.parse_args()
@@ -113,6 +169,10 @@ def main():
         print(f"{o.prefix}: {k} part(s)")
     elif o.cmd == "unpack":
         unpack(o.prefix, o.out)
+    elif o.cmd == "skip":
+        skip(o.id, o.reason, o.detail, o.dir)
+    elif o.cmd == "took":
+        took(o.id, o.dir)
     else:
         print("\n".join(names(o.dir)))
 

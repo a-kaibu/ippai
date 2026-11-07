@@ -126,9 +126,12 @@ jobs:
       - id: meta
         shell: bash
         run: |
-          [ -f game/meta.txt ] || { echo "no game (its download failed)"; echo "api=none" >> "$GITHUB_OUTPUT"; exit 0; }
+          [ -f game/meta.txt ] || { echo "no game (its download failed: tried again next time)"; echo "api=none" >> "$GITHUB_OUTPUT"; exit 0; }
           { read -r api; read -r bits; read -r exe; } < game/meta.txt
           echo "${{ matrix.id }}: $api $bits-bit $exe"
+          # (a title that draws without D3D8/9/11: skipped.tsv, not downloaded again)
+          mkdir -p pack
+          if [ "$api" = none ]; then printf 'none\t%s: no D3D8/9/11\n' "$exe" > "pack/${{ matrix.id }}.skip"; fi
           echo "api=$api" >> "$GITHUB_OUTPUT"
           echo "bits=$bits" >> "$GITHUB_OUTPUT"
           echo "exe=$exe" >> "$GITHUB_OUTPUT"
@@ -210,7 +213,9 @@ jobs:
         shell: pwsh
         run: python tests/corpus/winplay.py setup
       - name: Record ${{ matrix.id }}
+        id: rec
         if: steps.meta.outputs.api != 'none'
+        continue-on-error: true
         shell: pwsh
         timeout-minutes: 15
         env:
@@ -227,8 +232,9 @@ jobs:
           path: shots
           retention-days: 7
           if-no-files-found: ignore
+      # (no trace: skipped.tsv says so, with how far winplay got)
       - name: What was recorded
-        if: steps.meta.outputs.api != 'none'
+        if: ${{ !cancelled() && steps.meta.outputs.api != 'none' }}
         shell: bash
         env:
           ID: ${{ matrix.id }}
@@ -238,10 +244,15 @@ jobs:
           SECONDS_: ${{ inputs.seconds || '30' }}
         run: |
           mkdir -p pack
-          mv out/game.trace "pack/$ID-$BITS.trace"
-          printf '%s\n' "$API" "$EXE" "$SECONDS_" > "pack/$ID-$BITS.rec"
-          ls -l pack
-      - if: steps.meta.outputs.api != 'none'
+          if [ -f out/game.trace ]; then
+            mv out/game.trace "pack/$ID-$BITS.trace"
+            printf '%s\n' "$API" "$EXE" "$SECONDS_" > "pack/$ID-$BITS.rec"
+          else
+            how=$(python3 -c 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print("title screen at %ss" % round(r["title"]) if r.get("title") else "no title screen" + (", ended" if r.get("crashed") else ""))' shots/result.json 2>/dev/null || echo "winplay wrote nothing")
+            printf 'notrace\t%s: %s, %s\n' "$EXE" "$API" "$how" > "pack/$ID.skip"
+          fi
+          ls -l pack; cat pack/*.skip 2>/dev/null || true
+      - if: ${{ !cancelled() && hashFiles('pack/*') != '' }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: trace-${{ matrix.id }}
@@ -278,13 +289,16 @@ jobs:
               python3 tests/replay/games.py unpack "ok/$n" "$RUNNER_TEMP/check.trace" && cmp "$RUNNER_TEMP/check.trace" "pack/$n.trace"
             else
               echo "$n: does not convert, not committed"
+              printf 'noconvert\t%s: %s\n' "$exe" "$api" > "pack/${n%-*}.skip"
             fi
             rm -f "$RUNNER_TEMP/$n.rpl" "$RUNNER_TEMP/check.trace"
           done
           ls -l ok || true
       - name: Commit the traces
         run: |
-          ls ok/*.txt > /dev/null 2>&1 || { echo "nothing to commit"; exit 0; }
+          shopt -s nullglob
+          s=(pack/*.skip) o=(ok/*.txt)
+          [ $(( ${#s[@]} + ${#o[@]} )) -gt 0 ] || { echo "nothing to commit"; exit 0; }
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           M=$RUNNER_TEMP/main
@@ -293,17 +307,24 @@ jobs:
             git worktree remove --force "$M" 2>/dev/null || true
             git worktree add -q --detach "$M" FETCH_HEAD
             mkdir -p "$M/testdata/apitrace"
-            took=
-            for m in ok/*.txt; do
+            took= skip=
+            for m in "${o[@]}"; do
               n=$(basename "$m" .txt)
               # (a title recorded again: its old parts go)
               rm -f "$M/testdata/apitrace/$n".*
               cp ok/"$n".* "$M/testdata/apitrace/"
+              python3 tests/replay/games.py took "${n%-*}" --dir "$M/testdata/apitrace"
               took="$took $n"
+            done
+            for k in "${s[@]}"; do
+              i=$(basename "$k" .skip)
+              IFS=$'\t' read -r why what < "$k"
+              python3 tests/replay/games.py skip "$i" "$why" "$what" --dir "$M/testdata/apitrace"
+              skip="$skip $i"
             done
             git -C "$M" add -A testdata/apitrace
             if git -C "$M" diff --cached --quiet; then echo "no change"; exit 0; fi
-            git -C "$M" commit -qm "replay: apitrace traces of trial games:${took} (${GITHUB_SHA::7})"
+            git -C "$M" commit -qm "replay: apitrace traces of trial games:${took:- none}; skipped:${skip:- none} (${GITHUB_SHA::7})"
             git -C "$M" push -q origin HEAD:main && exit 0
             sleep $((i * 5))
           done

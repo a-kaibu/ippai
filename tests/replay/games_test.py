@@ -72,8 +72,28 @@ with tempfile.TemporaryDirectory() as d:
     expect("todo: again", games.todo([], True, d, known), ["g0", "x", "new"])
     expect("todo: given", games.todo(["x"], False, d, known), ["x"])
     fails_with("todo: unknown", lambda: games.todo(["nope"], False, d, known))
+    # skipped.tsv: a skipped title is not tried again unless asked; one that took leaves it
+    known = {"g0", "x", "new", "dd", "bad"}
+    games.listed = lambda: ["g0", "x", "new", "dd", "bad"]
+    games.skip("dd", "none", "a.exe:\tddraw  only", d)
+    games.skip("bad", "notrace", "", d)
+    expect("skipped", games.skipped(d), {"dd": ("none", "a.exe: ddraw only"), "bad": ("notrace", "")})
+    expect("todo: skipped left out", games.todo([], False, d, known), ["new"])
+    expect("todo: skipped again", games.todo([], True, d, known), ["g0", "x", "new", "dd", "bad"])
+    expect("todo: skipped given", games.todo(["bad"], False, d, known), ["bad"])
+    games.skip("bad", "noconvert", "", d)
+    expect("skip: a new reason replaces", games.skipped(d)["bad"], ("noconvert", ""))
+    games.took("bad", d)
+    games.took("never", d)
+    expect("took", sorted(games.skipped(d)), ["dd"])
+    expect("todo: took", games.todo([], False, d, known), ["new", "bad"])
+    fails_with("skip: unknown reason", lambda: games.skip("x", "lazy", "", d))
+    open(os.path.join(d, "skipped.tsv"), "a").write("y\tlazy\n")
+    fails_with("skipped.tsv: unknown reason", lambda: games.skipped(d))
+    expect("names: skipped.tsv is no trace", "skipped" in " ".join(games.names(d)), False)
     games.listed = orig
-# (the real list: every id a title)
+# (the real list: every id a title; the real skipped.tsv reads)
+games.skipped()
 expect("games.txt", [i for i in games.listed() if i not in games.titles()], [])
 # (the committed traces: each unpacks to its sha256)
 for n in games.names():
