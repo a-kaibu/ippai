@@ -1,0 +1,27 @@
+fgetc r 9: 61 0a 62 0d 63 0a 0d 0a 64
+  then feof 1 ftell 17
+fread r 9: 61 0a 62 0d 63 0a 0d 0a 64
+fread by 1 r 9: 61 0a 62 0d 63 0a 0d 0a 64
+fgets r: [a\n] at 7 [b\rc\n] at 12 [\r\n] at 15 [d] at 17
+after fseek 2 r: fgetc 10 ftell 7
+after fseek 1 r: fgetc 10 ftell 7
+fgetc rt 9: 61 0a 62 0d 63 0a 0d 0a 64
+  then feof 1 ftell 17
+fread rt 9: 61 0a 62 0d 63 0a 0d 0a 64
+fread by 1 rt 9: 61 0a 62 0d 63 0a 0d 0a 64
+fgets rt: [a\n] at 7 [b\rc\n] at 12 [\r\n] at 15 [d] at 17
+after fseek 2 rt: fgetc 10 ftell 7
+after fseek 1 rt: fgetc 10 ftell 7
+fgetc rb 17: 61 0d 0a 62 0d 63 0a 0d 0d 0a 64 1a 61 66 74 65 72
+  then feof 1 ftell 17
+fread rb 17: 61 0d 0a 62 0d 63 0a 0d 0d 0a 64 1a 61 66 74 65 72
+fread by 1 rb 17: 61 0d 0a 62 0d 63 0a 0d 0d 0a 64 1a 61 66 74 65 72
+fgets rb: [a\r\n] at 3 [b\rc\n] at 7 [\r\r\n] at 10 [dafter] at 17
+after fseek 2 rb: fgetc 10 ftell 3
+after fseek 1 rb: fgetc 13 ftell 2
+written w 16: 78 0d 0a 79 0d 0d 0a 0d 0a 70 0d 0a 71 37 0d 0a
+  fwrite returned 3 ftell 16
+written wt 16: 78 0d 0a 79 0d 0d 0a 0d 0a 70 0d 0a 71 37 0d 0a
+  fwrite returned 3 ftell 16
+written wb 11: 78 0a 79 0d 0a 0a 70 0a 71 37 0a
+  fwrite returned 3 ftell 11
