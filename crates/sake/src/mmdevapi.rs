@@ -152,6 +152,8 @@ static ENUM_REFS: AtomicU32 = AtomicU32::new(1);
 fn en_addref(_: &mut Ctx) -> u32 {
     ENUM_REFS.fetch_add(1, Ordering::Relaxed) + 1
 }
+// (fetch_update is try_update on newer toolchains, as in mem.rs)
+#[allow(deprecated)]
 fn en_release(_: &mut Ctx) -> u32 {
     let r = ENUM_REFS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| Some(r.saturating_sub(1).max(1)));
     r.unwrap_or(1).saturating_sub(1).max(1)
