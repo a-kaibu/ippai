@@ -18,6 +18,46 @@ use std::time::SystemTime;
 struct Entry {
     size: u64,
     chunks: Vec<String>,
+    /// where each chunk starts and, last, the size: content-defined chunks (a version 2 tree,
+    /// pack.rs); `None`: every chunk the tree's chunk size long
+    starts: Option<Vec<u64>>,
+}
+
+impl Entry {
+    /// The chunk that holds byte `at`.
+    fn index(&self, chunk: u64, at: u64) -> u64 {
+        match &self.starts {
+            None => at / chunk,
+            Some(s) => (s.partition_point(|&x| x <= at) - 1) as u64,
+        }
+    }
+
+    /// Where chunk `i` starts, and its length.
+    fn span(&self, chunk: u64, i: u64) -> (u64, u64) {
+        match &self.starts {
+            None => (i * chunk, chunk.min(self.size - i * chunk)),
+            Some(s) => (s[i as usize], s[i as usize + 1] - s[i as usize]),
+        }
+    }
+}
+
+/// A tree list's chunks of one file (`<hash>,...` or, version 2, `<hash>:<length>,...`): the
+/// hashes, and where each starts when lengths are given (`None` if they do not add up to `size`).
+fn parse_chunks(field: &str, size: u64) -> Option<(Vec<String>, Option<Vec<u64>>)> {
+    if field.is_empty() && size == 0 {
+        return Some((vec![], None));
+    }
+    if !field.contains(':') {
+        return Some((field.split(',').map(String::from).collect(), None));
+    }
+    let (mut hashes, mut starts, mut at) = (Vec::new(), vec![0u64], 0u64);
+    for c in field.split(',') {
+        let (h, n) = c.split_once(':')?;
+        at += n.parse::<u64>().ok().filter(|&n| n > 0)?;
+        hashes.push(h.to_string());
+        starts.push(at);
+    }
+    (at == size).then_some((hashes, Some(starts)))
 }
 
 struct Tree {
@@ -53,8 +93,9 @@ impl Trees {
         for l in lines {
             let f: Vec<&str> = l.split('\t').collect();
             if f.len() == 6 && f[0] == "f" {
-                let chunks = if f[5].is_empty() && f[4] == "0" { vec![] } else { f[5].split(',').map(String::from).collect() };
-                let e = Entry { size: f[4].parse().ok()?, chunks };
+                let size = f[4].parse().ok()?;
+                let (chunks, starts) = parse_chunks(f[5], size)?;
+                let e = Entry { size, chunks, starts };
                 files.insert(unesc(f[3]).to_lowercase(), Arc::new(e));
             }
         }
@@ -143,7 +184,7 @@ impl Trees {
     /// Chunk `i` of `e`, decoded.
     async fn chunk(&self, tree: &Tree, e: &Entry, i: u64) -> Result<Vec<u8>, StatusCode> {
         let hash = e.chunks.get(i as usize).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        let len = tree.chunk.min(e.size - i * tree.chunk) as usize;
+        let len = e.span(tree.chunk, i).1 as usize;
         if hash.is_empty() {
             return Ok(vec![0; len]);
         }
@@ -169,14 +210,15 @@ impl Trees {
     /// (from S3 each is a round trip).
     fn bytes(self, tree: Arc<Tree>, e: Arc<Entry>, a: u64, b: u64) -> impl futures_util::Stream<Item = std::io::Result<Vec<u8>>> {
         use futures_util::StreamExt;
-        let (first, last) = (a / tree.chunk, b / tree.chunk);
+        let (first, last) = (e.index(tree.chunk, a), e.index(tree.chunk, b));
         futures_util::stream::iter(first..=last)
             .map(move |i| {
                 let (t, tree, e) = (self.clone(), tree.clone(), e.clone());
                 async move {
                     let data = t.chunk(&tree, &e, i).await.map_err(|s| std::io::Error::other(s.to_string()))?;
-                    let from = if i == first { (a % tree.chunk) as usize } else { 0 };
-                    let to = if i == last { (b % tree.chunk) as usize + 1 } else { data.len() };
+                    let start = e.span(tree.chunk, i).0;
+                    let from = if i == first { (a - start) as usize } else { 0 };
+                    let to = if i == last { (b - start) as usize + 1 } else { data.len() };
                     Ok(data[from..to].to_vec())
                 }
             })

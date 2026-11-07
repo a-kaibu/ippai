@@ -423,7 +423,7 @@ pub(crate) mod gc_tests {
         assert_eq!(a_chunks.iter().map(|l| server_a_chunk(l)).collect::<Vec<_>>(), before, "a's chunks stay the server's objects");
         *s.cache.lock().unwrap() = Default::default();
         for line in std::fs::read_to_string(server_store.join("trees/b.tsv")).unwrap().lines().filter(|l| l.starts_with("f\t")) {
-            for c in line.split('\t').nth(5).unwrap().split(',').filter(|c| c.len() > 2) {
+            for c in line.split('\t').nth(5).unwrap().split(',').map(|c| c.split(':').next().unwrap()).filter(|c| c.len() > 2) {
                 assert!(s.get(&format!("chunks/{}/{c}", &c[..2])).await.unwrap().is_some(), "b's chunk {c}");
             }
         }
@@ -465,7 +465,7 @@ pub(crate) mod gc_tests {
         s.push_store(&store).await.unwrap();
         let mut b_files: Vec<String> = vec!["games/b.json".into(), "trees/b.tsv".into()];
         for line in std::fs::read_to_string(store.join("trees/b.tsv")).unwrap().lines().filter(|l| l.starts_with("f\t")) {
-            b_files.extend(line.split('\t').nth(5).unwrap().split(',').filter(|c| c.len() > 2).map(|c| format!("chunks/{}/{c}", &c[..2])));
+            b_files.extend(line.split('\t').nth(5).unwrap().split(',').map(|c| c.split(':').next().unwrap()).filter(|c| c.len() > 2).map(|c| format!("chunks/{}/{c}", &c[..2])));
         }
         let backup = s.backup().await.unwrap();
         let before = names(&f);

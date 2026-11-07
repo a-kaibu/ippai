@@ -15,8 +15,54 @@ type Hash = [u8; 16];
 
 enum Content {
     /// From the store; `None` chunks are all zero.
-    Lower { size: u64, chunk: u32, chunks: Arc<Vec<Option<Hash>>> },
+    Lower { size: u64, chunk: u32, chunks: Arc<Vec<Option<Hash>>>, starts: Option<Arc<Vec<u64>>> },
     Upper(Vec<u8>),
+}
+
+/// Where a store file's chunks lie: every one `chunk` long (a version 1 tree), or, content-
+/// defined chunks (version 2, ippai's cdc.rs), each starting where `starts` says (the size last).
+#[derive(Clone)]
+struct Layout {
+    size: u64,
+    chunk: u64,
+    starts: Option<Arc<Vec<u64>>>,
+}
+
+impl Layout {
+    /// The chunk that holds byte `at`.
+    fn index(&self, at: u64) -> usize {
+        match &self.starts {
+            None => (at / self.chunk) as usize,
+            Some(s) => s.partition_point(|&x| x <= at) - 1,
+        }
+    }
+
+    /// Where chunk `i` starts, and its length.
+    fn span(&self, i: usize) -> (u64, u64) {
+        match &self.starts {
+            None => (i as u64 * self.chunk, self.chunk.min(self.size - i as u64 * self.chunk)),
+            Some(s) => (s[i], s[i + 1] - s[i]),
+        }
+    }
+}
+
+/// A tree list's chunks of one file: `<hash>,...`, or (version 2) `<hash>:<length>,...` with
+/// where each starts; `None` when the lengths do not add up to `size`.
+fn parse_chunks(field: &str, size: u64) -> Option<(Vec<Option<Hash>>, Option<Arc<Vec<u64>>>)> {
+    if field.is_empty() {
+        return Some((Vec::new(), None));
+    }
+    if !field.contains(':') {
+        return Some((field.split(',').map(hex16).collect(), None));
+    }
+    let (mut hashes, mut starts, mut at) = (Vec::new(), vec![0u64], 0u64);
+    for c in field.split(',') {
+        let (h, n) = c.split_once(':')?;
+        at += n.parse::<u64>().ok().filter(|&n| n > 0)?;
+        hashes.push(hex16(h));
+        starts.push(at);
+    }
+    (at == size).then(|| (hashes, Some(Arc::new(starts))))
 }
 
 enum Data {
@@ -406,8 +452,8 @@ impl Fs {
                 "l" if f.len() > 4 => Data::Link(unesc(f[4])),
                 "f" if f.len() > 5 => {
                     let size = f[4].parse().unwrap_or(0);
-                    let chunks = if f[5].is_empty() { Vec::new() } else { f[5].split(',').map(hex16).collect() };
-                    Data::File(Content::Lower { size, chunk, chunks: Arc::new(chunks) })
+                    let Some((chunks, starts)) = parse_chunks(f[5], size) else { continue };
+                    Data::File(Content::Lower { size, chunk, chunks: Arc::new(chunks), starts })
                 }
                 _ => continue,
             };
@@ -939,8 +985,8 @@ const SEQ_AHEAD: usize = 8;
 /// The chunk numbers to fetch ahead for a read of `off..end` (end > off) of a file of `n`
 /// chunks `chunk` bytes each: the read's chunks after its first, then the next one, or the next
 /// SEQ_AHEAD when the read follows the file's last.
-fn ahead(off: u64, end: u64, chunk: u64, n: usize, sequential: bool) -> std::ops::Range<usize> {
-    let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize);
+fn ahead(off: u64, end: u64, l: &Layout, n: usize, sequential: bool) -> std::ops::Range<usize> {
+    let (first, last) = (l.index(off), l.index(end - 1));
     let more = if sequential { SEQ_AHEAD } else { 1 };
     (first + 1).min(n)..(last + 1 + more).min(n)
 }
@@ -954,14 +1000,17 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
             buf[..n].copy_from_slice(&v[start..start + n]);
             Ok(Err(n))
         }
-        Some(Data::File(Content::Lower { size, chunk, chunks })) => Ok(Ok((*size, *chunk as u64, chunks.clone()))),
+        Some(Data::File(Content::Lower { size, chunk, chunks, starts })) => {
+            Ok(Ok((Layout { size: *size, chunk: *chunk as u64, starts: starts.clone() }, chunks.clone())))
+        }
         Some(Data::Dir(_)) => Err(libc::EISDIR),
         _ => Err(libc::EBADF),
     })?;
-    let (size, chunk, chunks) = match lower {
+    let (layout, chunks) = match lower {
         Err(n) => return Ok(n),
         Ok(l) => l,
     };
+    let size = layout.size;
     // (a read of nothing: else end - 1 below wraps, and every chunk of the file is fetched ahead)
     if off >= size || buf.is_empty() {
         return Ok(0);
@@ -977,16 +1026,16 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
         }
         m.insert(ino, end) == Some(off)
     };
-    for i in ahead(off, end, chunk, chunks.len(), sequential) {
+    for i in ahead(off, end, &layout, chunks.len(), sequential) {
         if let Some(h) = chunks.get(i).copied().flatten() {
             fetch_ahead(&h);
         }
     }
     let mut at = off;
     while at < end {
-        let i = (at / chunk) as usize;
-        let cstart = i as u64 * chunk;
-        let clen = chunk.min(size - cstart) as usize;
+        let i = layout.index(at);
+        let (cstart, clen) = layout.span(i);
+        let clen = clen as usize;
         let from = (at - cstart) as usize;
         let n = ((end - at) as usize).min(clen - from);
         let dst = &mut buf[(at - off) as usize..(at - off) as usize + n];
@@ -1333,13 +1382,13 @@ pub(crate) fn h_prefetch(h: u32, off: u64, len: u64) {
     let Some((ino, _, _)) = handle(h) else { return };
     // (only the hashes wanted are copied out: the list of a big archive is long)
     let want: Vec<Hash> = with(|fs| match fs.node(ino).map(|n| &n.data) {
-        Some(Data::File(Content::Lower { size, chunk, chunks })) => {
-            let (size, chunk) = (*size, *chunk as u64);
-            let end = off.saturating_add(len).min(size);
-            if off >= end || chunk == 0 {
+        Some(Data::File(Content::Lower { size, chunk, chunks, starts })) => {
+            let l = Layout { size: *size, chunk: *chunk as u64, starts: starts.clone() };
+            let end = off.saturating_add(len).min(l.size);
+            if off >= end || l.chunk == 0 {
                 return Vec::new();
             }
-            let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize);
+            let (first, last) = (l.index(off), l.index(end - 1));
             chunks.iter().skip(first).take(last + 1 - first).filter_map(|c| *c).collect()
         }
         _ => Vec::new(),
@@ -1561,7 +1610,8 @@ mod tests {
         }
     }
 
-    /// Store files (chunks of 64 bytes, some all zero, the last short), then random writes,
+    /// Store files (chunks of 64 bytes, some all zero, the last short; every other file in
+    /// content-defined chunks of 1 to 150 bytes, `<hash>:<length>`), then random writes,
     /// truncations and reads against a model of each file's bytes. A truncation to 0 of a file
     /// still in the store fetches nothing; one to n only the chunks before n (and the next).
     #[test]
@@ -1582,9 +1632,19 @@ mod tests {
             let size = rnd(64 * 9) + 1;
             let data: Vec<u8> = (0..size).map(|i| if (i / 64) % 4 == 2 { 0 } else { 1 + rnd(255) as u8 }).collect();
             let mut names = Vec::new();
-            for c in data.chunks(64) {
+            // (odd files: chunks of any length, as content-defined ones)
+            let mut spans = Vec::new();
+            let mut at = 0usize;
+            while at < data.len() {
+                let n = if f % 2 == 1 { 1 + rnd(150) as usize } else { 64 };
+                let n = n.min(data.len() - at);
+                spans.push(&data[at..at + n]);
+                at += n;
+            }
+            for c in spans {
+                let len = if f % 2 == 1 { format!(":{}", c.len()) } else { String::new() };
                 if c.iter().all(|&b| b == 0) {
-                    names.push(String::new());
+                    names.push(len);
                     continue;
                 }
                 let h: String = (0..16).map(|_| format!("{:02x}", rnd(256))).collect();
@@ -1594,7 +1654,7 @@ mod tests {
                     stored.pop();
                 }
                 chunks.insert(format!("chunks/{}/{h}", &h[..2]), stored);
-                names.push(h);
+                names.push(format!("{h}{len}"));
             }
             tsv += &format!("f\t644\t0\tf{f}\t{size}\t{}\n", names.join(","));
             models.push(data);
@@ -1622,8 +1682,10 @@ mod tests {
             fetched();
             set_size(ino, n).unwrap();
             let got = fetched();
-            // (and the chunk after them, fetched ahead as after any read)
-            let need = (n.min(models[f].len() as u64)).div_ceil(64) as usize;
+            // (and the chunk after them, fetched ahead as after any read; odd files' chunks
+            // are 1 byte or more)
+            let unit = if f % 2 == 1 { 1 } else { 64 };
+            let need = (n.min(models[f].len() as u64)).div_ceil(unit) as usize;
             let need = if need == 0 { 0 } else { need + 1 };
             assert!(got.len() <= need, "f{f} cut to {n}: fetched {} chunks, needs {need}", got.len());
             models[f].resize(n as usize, 0);
@@ -1660,16 +1722,34 @@ mod tests {
 
     /// The chunks fetched ahead: past the read's first chunk, within the file, through the read's
     /// last chunk and then one more, or SEQ_AHEAD more for a sequential read.
+    const FIXED_1000: Layout = Layout { size: u64::MAX, chunk: 1000, starts: None };
+
+    /// A version 2 file's chunk lengths: the chunk of each byte, each chunk's span; a list whose
+    /// lengths do not add up to the size is refused.
+    #[test]
+    fn variable_chunks() {
+        let (h, s) = parse_chunks("00112233445566778899aabbccddeeff:3,:5,ffeeddccbbaa99887766554433221100:2", 10).unwrap();
+        assert_eq!((h.len(), h[1]), (3, None));
+        let l = Layout { size: 10, chunk: 4096, starts: s };
+        assert_eq!((0..10).map(|at| l.index(at)).collect::<Vec<_>>(), [0, 0, 0, 1, 1, 1, 1, 1, 2, 2]);
+        assert_eq!([l.span(0), l.span(1), l.span(2)], [(0, 3), (3, 5), (8, 2)]);
+        assert_eq!(ahead(4, 9, &l, 3, false), 2..3);
+        assert!(parse_chunks("00112233445566778899aabbccddeeff:3", 4).is_none());
+        assert!(parse_chunks("00112233445566778899aabbccddeeff:0", 0).is_none());
+        let (h, s) = parse_chunks("00112233445566778899aabbccddeeff,", 9).unwrap();
+        assert_eq!((h.len(), s), (2, None));
+    }
+
     #[test]
     fn ahead_cases() {
         // (a read inside chunk 0 of 10: chunk 1; sequential: 1..=8)
-        assert_eq!(ahead(0, 100, 1000, 10, false), 1..2);
-        assert_eq!(ahead(0, 100, 1000, 10, true), 1..9);
+        assert_eq!(ahead(0, 100, &FIXED_1000, 10, false), 1..2);
+        assert_eq!(ahead(0, 100, &FIXED_1000, 10, true), 1..9);
         // (over chunks 2..=4: 3, 4 and 5)
-        assert_eq!(ahead(2500, 4100, 1000, 10, false), 3..6);
+        assert_eq!(ahead(2500, 4100, &FIXED_1000, 10, false), 3..6);
         // (the file's end)
-        assert_eq!(ahead(9000, 9500, 1000, 10, true), 10..10);
-        assert_eq!(ahead(8999, 9500, 1000, 10, true), 9..10);
+        assert_eq!(ahead(9000, 9500, &FIXED_1000, 10, true), 10..10);
+        assert_eq!(ahead(8999, 9500, &FIXED_1000, 10, true), 9..10);
     }
 
     proptest::proptest! {
@@ -1678,7 +1758,7 @@ mod tests {
             let size = chunk * n as u64;
             let off = a % size;
             let end = (off + len).min(size);
-            let r = ahead(off, end, chunk, n, seq);
+            let r = ahead(off, end, &Layout { size: u64::MAX, chunk, starts: None }, n, seq);
             let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize);
             // within the file, never the read's first chunk (this thread fetches that one)
             proptest::prop_assert!(r.start == first + 1 || r.is_empty());

@@ -333,7 +333,7 @@ async fn rustfs_remove_game() -> Result<()> {
         assert!(fresh.join("games/b.json").exists() && !fresh.join("games/a.json").exists());
         *s.cache.lock().unwrap() = Default::default();
         for line in std::fs::read_to_string(fresh.join("trees/b.tsv"))?.lines().filter(|l| l.starts_with("f\t")) {
-            for c in line.split('\t').nth(5).unwrap().split(',').filter(|c| c.len() > 2) {
+            for c in line.split('\t').nth(5).unwrap().split(',').map(|c| c.split(':').next().unwrap()).filter(|c| c.len() > 2) {
                 assert!(s.get(&format!("chunks/{}/{c}", &c[..2])).await?.is_some(), "b's chunk {c}");
             }
         }

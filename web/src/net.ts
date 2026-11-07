@@ -273,7 +273,11 @@ export function treeChunks(tsv: string): string[] {
   for (const line of tsv.split("\n").slice(1)) {
     const f = line.split("\t");
     if (f[0] !== "f" || !f[5]) continue;
-    for (const h of f[5].split(",")) if (/^[0-9a-f]{32}$/.test(h)) out.push(h);
+    // (version 2 lists: <hash>:<length>)
+    for (const c of f[5].split(",")) {
+      const h = c.split(":")[0]!;
+      if (/^[0-9a-f]{32}$/.test(h)) out.push(h);
+    }
   }
   return out;
 }
