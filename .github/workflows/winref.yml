@@ -76,7 +76,8 @@ jobs:
         with:
           node-version: 22
       - run: tools/ci/rust-key.sh
-      - uses: actions/cache@v6.1.0
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/emsdk4
@@ -133,7 +134,18 @@ jobs:
           retention-days: 30
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target
+      # (saved when the tests fail too: the registry crates' builds are good either way)
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/emsdk4
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   windows:
     needs: probes

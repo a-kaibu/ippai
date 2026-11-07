@@ -41,7 +41,8 @@ jobs:
           echo "$TLC_SHA256  /tmp/tlc.tgz" | sha256sum -c
           mkdir -p ~/.local/bin && tar xzf /tmp/tlc.tgz -C ~/.local/bin tlc
       - run: tools/ci/rust-key.sh
-      - uses: actions/cache@v6.1.0
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -65,7 +66,17 @@ jobs:
           if-no-files-found: ignore
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target
+      # (saved when the tests fail too: the registry crates' builds are good either way)
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   kani:
     runs-on: ubuntu-24.04
@@ -108,7 +119,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: tools/ci/rust-key.sh
-      - uses: actions/cache@v6.1.0
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -122,7 +134,17 @@ jobs:
         run: IPPAI_MODEL_SEEDS=100000 cargo test --release -p kura --lib optimizations_draw_the_same -- --nocapture
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target
+      # (saved when the tests fail too: the registry crates' builds are good either way)
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   shaders:
     runs-on: ubuntu-24.04
@@ -133,7 +155,8 @@ jobs:
         with:
           node-version: 22
       - run: tools/ci/rust-key.sh
-      - uses: actions/cache@v6.1.0
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -186,4 +209,14 @@ jobs:
           retention-days: 14
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target
+      # (saved when the tests fail too: the registry crates' builds are good either way)
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
