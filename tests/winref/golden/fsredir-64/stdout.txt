@@ -1,0 +1,25 @@
+exports: Ex 1 Enable 1 Disable 1 Revert 1 k32 Enable 1
+first: Ex(0) status 0xc0000002 old 0xdeadbeef
+set 1: Ex(0x1) status 0xc0000002 old 0xdeadbeef
+again 1: Ex(0x1) status 0xc0000002 old 0xdeadbeef
+Enable(TRUE) 0xc0000002
+after Enable(TRUE): Ex(0x1) status 0xc0000002 old 0xdeadbeef
+123: Ex(0x7b) status 0xc0000002 old 0xdeadbeef
+deadbeef: Ex(0xdeadbeef) status 0xc0000002 old 0xdeadbeef
+Enable(FALSE) 0xc0000002
+after Enable(FALSE): Ex(0) status 0xc0000002 old 0xdeadbeef
+Ex(1, 0) status 0xc0000002
+Ex(1, 0x1) status 0xc0000002
+Ex(1, 0xdeadbeef) status 0xc0000002
+after bad pointers: Ex(0) status 0xc0000002 old 0xdeadbeef
+other thread: Ex(0) status 0xc0000002 old 0xdeadbeef
+this thread: Ex(0) status 0xc0000002 old 0xdeadbeef
+Disable 0 err 1 old 0000000000001234
+after Disable: Ex(0) status 0xc0000002 old 0xdeadbeef
+Revert 0 err 1
+after Revert: Ex(0) status 0xc0000002 old 0xdeadbeef
+Disable(NULL) 0 err 1
+Revert(5) 0 err 1
+after Revert(5): Ex(0) status 0xc0000002 old 0xdeadbeef
+k32 Enable(FALSE) 0 err 1
+after k32 Enable(FALSE): Ex(0) status 0xc0000002 old 0xdeadbeef
