@@ -5950,11 +5950,27 @@ fn MoveFileA(c: &mut Ctx) -> u32 {
 fn MoveFileW(c: &mut Ctx) -> u32 {
     mv(&arg_str(c.a(0), true), &arg_str(c.a(1), true), false)
 }
+/// MoveFileEx: MOVEFILE_DELAY_UNTIL_REBOOT (4) only records the move for the next boot, which
+/// never comes here (installers use it on files in use); NULL as the new name deletes.
+fn move_ex(c: &mut Ctx, wide: bool) -> u32 {
+    let (from, to, flags) = (c.a(0), c.a(1), c.a(2));
+    if from == 0 {
+        last_error(87);
+        return 0;
+    }
+    if flags & 4 != 0 {
+        return 1;
+    }
+    if to == 0 {
+        return del(&arg_str(from, wide));
+    }
+    mv(&arg_str(from, wide), &arg_str(to, wide), flags & 1 != 0)
+}
 fn MoveFileExA(c: &mut Ctx) -> u32 {
-    mv(&arg_str(c.a(0), false), &arg_str(c.a(1), false), c.a(2) & 1 != 0)
+    move_ex(c, false)
 }
 fn MoveFileExW(c: &mut Ctx) -> u32 {
-    mv(&arg_str(c.a(0), true), &arg_str(c.a(1), true), c.a(2) & 1 != 0)
+    move_ex(c, true)
 }
 fn copy_file(from: &str, to: &str, fail: bool) -> u32 {
     let Some(f) = files::resolve(from) else {

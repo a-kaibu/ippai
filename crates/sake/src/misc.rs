@@ -214,6 +214,11 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
             }
         }
         m.entry("hkcu\\software".into()).or_default();
+        // the event logs (eventlog.rs) and the event log service's own source
+        for l in ["Application", "Security", "System", "System\\EventLog"] {
+            let k = m.entry(format!("hklm\\system\\currentcontrolset\\services\\eventlog\\{}", l.to_lowercase())).or_default();
+            k.name = l.rsplit('\\').next().unwrap_or(l).into();
+        }
         load_reg(&mut m);
         m
     });
@@ -597,6 +602,17 @@ fn RegDeleteKeyA(c: &mut Ctx) -> u32 {
 fn RegDeleteKeyW(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(1), true);
     delete_key(c.a(0), &s)
+}
+
+/// Whether a key (a lower-case full path such as "hklm\\software") exists
+pub(crate) fn reg_key_exists(path: &str) -> bool {
+    let pre = format!("{path}\\");
+    with_reg(|m| m.contains_key(path) || m.keys().any(|k| k.starts_with(&pre)))
+}
+
+/// The subkeys of a key (a lower-case full path)
+pub(crate) fn reg_subkeys(path: &str) -> Vec<String> {
+    subkeys(path)
 }
 
 /// The subkeys' names as created, in Windows' order (case-insensitive, by UTF-16 upper case)

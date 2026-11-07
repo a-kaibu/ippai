@@ -5,7 +5,7 @@ advapi32:crypt_lmhash	fail	40	75
 advapi32:crypt_md4	fail	7	11
 advapi32:crypt_md5	fail	4	5
 advapi32:crypt_sha	fail	1	1
-advapi32:eventlog	fail	64	214
+advapi32:eventlog	ok	0	508
 advapi32:lsa	crash	0	0
 advapi32:perf	crash	12	0
 advapi32:registry	crash	865	0
