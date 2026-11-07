@@ -208,6 +208,11 @@ fn GetEnvironmentVariableA(c: &mut Ctx) -> u32 {
 }
 fn GetEnvironmentVariableW(c: &mut Ctx) -> u32 {
     match env_get(&arg_str(c.a(0), true)) {
+        // (a buffer too short gets an empty string, as Windows' W one: winref envvars)
+        Some(v) if v.encode_utf16().count() as u32 >= c.a(2) && c.a(1) != 0 && c.a(2) != 0 => {
+            w16(c.a(1), 0);
+            v.encode_utf16().count() as u32 + 1
+        }
         Some(v) => ret_str(c.a(1), c.a(2), &v, true),
         None => {
             last_error(203);
@@ -256,7 +261,13 @@ fn expand_env(s: &str) -> String {
 fn expand_env_strings(c: &mut Ctx, wide: bool) -> u32 {
     let s = expand_env(&arg_str(c.a(0), wide));
     let n = ret_str(c.a(1), c.a(2), &s, wide);
-    if n >= c.a(2) { n } else { n + 1 }
+    match (n >= c.a(2), wide) {
+        // (the ANSI one asks for a character more than it needs when the buffer is short, as
+        // Windows' does: winref envvars)
+        (true, false) => n + 1,
+        (true, true) => n,
+        (false, _) => n + 1,
+    }
 }
 fn ExpandEnvironmentStringsA(c: &mut Ctx) -> u32 {
     expand_env_strings(c, false)

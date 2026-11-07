@@ -426,6 +426,7 @@ impl Jit {
                 .status() as i32
             })
             .unwrap();
+        linker.func_wrap("env", "round", |k: u32, a: f64, b: f64, m: u32| -> f64 { koji::round::jit(k, a, b, m) }).unwrap();
         linker.func_wrap("env", "callmiss", |_: i32, _: i32, _: i32| -> i32 { 0 }).unwrap();
         linker
             .func_wrap("env", "x87", |_: i32, _: i32, _: i32, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64| {})
