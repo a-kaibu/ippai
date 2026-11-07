@@ -1,0 +1,98 @@
+ints [42 -7 0 123456789012345 18446744073709551615]
+bases [ff ffffffff 0xff 0XFF 010 10]
+showpos [+5 +0 -5]
+width [[    42][42    ][-   42][0x0000ff]]
+double [1.5 0.1 1e+21 1.23457e+06 3.14159 -0 100]
+fixed [1.500000 3.14 2 1.235e+04 1.230E-04]
+point [1.00000 100.000 0.3333333333 1.25 0x1.0000000000000p+0 0x1.0000000000000p-1]
+bool [1 0 true false    true]
+widths [-3 fffd 65535 4000000000 -2147483648 4294967295]
+chars [text     ab|x   |!xystr]
+tellp 23
+seekp [te##     ab|x   |!xystr]
+ints 42 -17 8 state 0
+bases 31 15 state 0
+too big 2147483647 state 2
+too small -2147483648 state 2
+not a number 0 state 2
+auto base 16 8 10 state 1
+doubles 3.25 -1000 0.5 state 0
+huge state 2
+float 7 state 1
+bools 1 0 state 0
+bool 2 1 state 2
+alpha 1 0 state 0
+short 32767 state 2
+ushort -5 65531 state 0
+more 65535 18446744073709551615 -9223372036854775808 state 0
+long 2147483647 state 3
+getline [line one] 9
+std::getline [line two]
+empty [] 1 state 0
+short buffer [la] 2 state 2
+at end [st] state 1
+peek a get a get b
+after putback/unget peek a state 0
+read [cde] 3 state 0
+short read 1 state 3
+tellg 1
+from end e
+ignore to end state 1
+get delim [abc] next d
+readsome 2
+words [word1] [word2] [word3] [] state 3
+ofstream open 1 good 1
+ifstream word [first]
+ifstream int 1
+ifstream second 2.5
+size 23
+tail [tail] state 0
+past end state 3
+fstream rewrite [FIRST]
+lines 4 last [appended]
+missing open 0 state 2
+wostringstream [wide 42 2.5 ff ....7]
+wistringstream 12 3.5 state 1
+wide word [word]
+wide getline [ab]
+codecvt<char> noconv 1 in 3 next 0 0 max 1 enc 1 len 2
+codecvt<char> out 3 unshift 3
+codecvt<wchar_t> noconv 0 in 0 00e9 5 5 max 1 enc 1
+in partial 1 2 2
+out error 2 at 2 2
+out partial 1 1 1
+unshift 0 0 length 3
+ctype<wchar_t> alpha 1 1 0 digit 1 0 space 1 1 upper 1 punct 1 1
+tolower 0061 00c0 03b1 toupper 0042 0391
+tolower range [mixed 1]
+toupper range [MIXED 1]
+widen 007a 00e9 narrow q ?
+narrow range [a#z] widen range [xyz]
+scan_is digit 3 scan_not alpha 2
+masks 1 1 1
+collate -1 1 -1 0
+transform [apple]
+collate<char> 1 -1
+put_time [2024-02-29 13:05:09 Thu Feb 060 % 01PM]
+time_put [2429<13|2|%|24>]
+put_time char [02/29/24 13:05:09|02/29/24|13:05:09]
+wregex 1 match [ABcab42]
+wregex classes 1 0
+regex 1 groups [user,host]
+wofstream good 1 after U+3042 state 4
+wifstream [wide file 7]
+failure caught state 2
+badbit caught
+iword 77 pword 1
+copyfmt iword 77 callbacks 33
+after imbue callbacks 56
+copied format [***a]
+flags 801 precision 6 width 4
+no buffer state 4
+shared buffer [via rdbuf]
+bool ops 1 0
+cout 1 2.5
+wcout 3
+printf between
+cout after printf
+cerr unitbuf 1 tie 1 cin tie 1
