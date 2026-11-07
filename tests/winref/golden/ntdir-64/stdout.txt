@@ -27,6 +27,36 @@ class 38 sub: size 0 attrs 10
 class 38 call: information is the end of the last entry 1
 class 38 end: 80000006, iosb status 80000006, calls 1, aligned 1
 class 38: . .. a.txt b.dat Long File Name.text sub
+class 60 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 60 sub: size 0 attrs 10
+class 60 call: information is the end of the last entry 1
+class 60 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 60: . .. a.txt b.dat Long File Name.text sub
+class 63 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 63 sub: size 0 attrs 10
+class 63 call: information is the end of the last entry 1
+class 63 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 63: . .. a.txt b.dat Long File Name.text sub
+class 78 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 78 sub: size 0 attrs 10
+class 78 call: information is the end of the last entry 1
+class 78 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 78: . .. a.txt b.dat Long File Name.text sub
+class 79 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 79 sub: size 0 attrs 10
+class 79 call: information is the end of the last entry 1
+class 79 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 79: . .. a.txt b.dat Long File Name.text sub
+class 80 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 80 sub: size 0 attrs 10
+class 80 call: information is the end of the last entry 1
+class 80 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 80: . .. a.txt b.dat Long File Name.text sub
+class 81 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 81 sub: size 0 attrs 10
+class 81 call: information is the end of the last entry 1
+class 81 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 81: . .. a.txt b.dat Long File Name.text sub
 class 1 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
 class 1 call: information is the end of the last entry 1
 class 1 end: 80000006, iosb status 80000006, calls 1, aligned 1
