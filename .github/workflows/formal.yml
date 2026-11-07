@@ -231,6 +231,15 @@ jobs:
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
           OUT: ${{ runner.temp }}/shaders-report.json
         run: node tests/shaders.mjs "$RUNNER_TEMP/cases.json"
+      # (compute shaders: the NVIDIA Image Scaling SDK's shader through hlslc and dxwgsl next to
+      # Slang's translation of it, tests/compute/slang, on the same inputs: within a byte)
+      - name: Compute shaders on WebGPU
+        if: always()
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
+        run: |
+          ./target/release/shaderconf --compute > "$RUNNER_TEMP/compute.json"
+          node tests/compute.mjs "$RUNNER_TEMP/compute.json"
       # (mutated DXBC and D3D9 bytecode with the reference interpreters' results as the
       # expected pixels: dxwgsl's WGSL must compute what the instructions do; a fixed seed,
       # then one that changes per run)

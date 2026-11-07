@@ -26,6 +26,10 @@ pub enum Obj {
     TexArr(u32),
     SampArr(u32),
     LegacyArr(u32, u32),
+    /// a typed unordered access view (RWTexture*)
+    Uav(u32),
+    /// groupshared memory g<n> at a dword offset (the value's type: what is there)
+    Shared(u32, C),
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +47,8 @@ impl Val {
 
 pub struct Opts {
     pub pixel: bool,
+    /// a compute shader (cs_5_0, cs_4_x)
+    pub compute: bool,
     pub major: u32,
     pub minor: u32,
     pub row_major: bool,
@@ -56,6 +62,24 @@ struct TexD {
     el: Ty,
     reg: Option<u32>,
     used: bool,
+}
+
+struct UavD {
+    name: String,
+    dim: Dim,
+    el: Ty,
+    reg: Option<u32>,
+    used: bool,
+}
+
+/// A place written through a copy, stored back once the write is done.
+enum Wb {
+    /// picked by a run-time index from a select chain: (the elements, the index, the copy)
+    Sel(Vec<Vec<C>>, C, Vec<C>, B),
+    /// groupshared g<n> at a dword offset
+    Shared(u32, C, Vec<C>),
+    /// a typed UAV at coordinates
+    Uav(u32, Vec<C>, Vec<C>),
 }
 
 struct SampD {
@@ -103,9 +127,16 @@ pub struct L<'a> {
     inputs: Vec<SigEl>,
     outputs: Vec<SigEl>,
     fns: Vec<FnCtx>,
-    /// places picked by a run-time index from a select chain: (the elements, the index, the
-    /// copy written to), stored back once the write is done
-    wbs: Vec<(Vec<Vec<C>>, C, Vec<C>, B)>,
+    /// places written through a copy, stored back once the write is done
+    wbs: Vec<Wb>,
+    uavs: Vec<UavD>,
+    /// groupshared variables: bytes of each
+    tgsm: Vec<u32>,
+    /// compute inputs read: (register type, mask)
+    sys_inputs: Vec<(u32, u8)>,
+    threads: Option<[u32; 3]>,
+    /// a place is wanted for a read too (compound assignment, ++/--): UAVs load it
+    place_reads: bool,
 }
 
 const TRUE: u32 = 0xffff_ffff;
@@ -384,6 +415,11 @@ impl<'a> L<'a> {
             inputs: Vec::new(),
             outputs: Vec::new(),
             fns: Vec::new(),
+            uavs: Vec::new(),
+            tgsm: Vec::new(),
+            sys_inputs: Vec::new(),
+            threads: None,
+            place_reads: false,
         }
     }
 
@@ -853,8 +889,9 @@ impl<'a> L<'a> {
                         self.texs[t as usize].used = true;
                         self.samps[s as usize].used = true;
                     }
+                    Obj::Uav(u) => self.uavs[u as usize].used = true,
                     // (arrays: the elements indexed are marked)
-                    Obj::None | Obj::TexArr(_) | Obj::SampArr(_) | Obj::LegacyArr(..) => {}
+                    Obj::None | Obj::TexArr(_) | Obj::SampArr(_) | Obj::LegacyArr(..) | Obj::Shared(..) => {}
                 }
                 // (bools of constant buffers are 0/1: canonical masks)
                 if self.cbvar.contains_key(name) && v.ty.base() == B::Bool && v.ty.numeric() {
@@ -1018,6 +1055,13 @@ impl<'a> L<'a> {
     fn add_object(&mut self, v: &Var) -> R<()> {
         let reg = v.reg.map(|r| r.1);
         let obj = match v.ty() {
+            Ty::RwTex(d, el) => {
+                if v.reg.is_some_and(|r| r.0 != 'u') {
+                    return Err(format!("line {}: a RWTexture's register is a u register", v.line));
+                }
+                self.uavs.push(UavD { name: v.name.clone(), dim: *d, el: (**el).clone(), reg, used: false });
+                Obj::Uav(self.uavs.len() as u32 - 1)
+            }
             Ty::Tex(d, el) => {
                 self.texs.push(TexD { name: v.name.clone(), dim: *d, el: (**el).clone(), reg, used: false });
                 Obj::Tex(self.texs.len() as u32 - 1)
@@ -1105,6 +1149,21 @@ impl<'a> L<'a> {
         for v in &prog.globals {
             if v.ty().is_object() {
                 self.add_object(v)?;
+            } else if v.shared {
+                if !self.o.compute {
+                    return Err(format!("line {}: groupshared outside a compute shader", v.line));
+                }
+                if v.init.is_some() {
+                    return Err(format!("line {}: groupshared variables cannot be initialized", v.line));
+                }
+                let bytes = 4 * ncomp(prog, v.ty()) as u32;
+                // (32 KB per thread group, as Direct3D 11 allows)
+                if self.tgsm.iter().sum::<u32>() + bytes > 32768 {
+                    return Err(format!("line {}: more than 32 KB of groupshared memory", v.line));
+                }
+                self.tgsm.push(bytes);
+                let g = self.tgsm.len() as u32 - 1;
+                self.globals.insert(v.name.clone(), Val { ty: v.ty().clone(), c: Vec::new(), obj: Obj::Shared(g, C::I(0)) });
             } else if matches!(v.ty(), Ty::Str) {
             } else if v.is_static {
                 statics.push(v.clone());
@@ -1178,6 +1237,32 @@ impl<'a> L<'a> {
         };
         let (name0, mut index) = split_sem(sem);
         let up = name0.to_ascii_uppercase();
+        if self.o.compute {
+            let ty = match up.as_str() {
+                "SV_DISPATCHTHREADID" => 32,
+                "SV_GROUPID" => 33,
+                "SV_GROUPTHREADID" => 34,
+                "SV_GROUPINDEX" => 35,
+                _ => return Err(format!("semantic {sem} is not a compute shader input")),
+            };
+            if output {
+                return Err(format!("{sem} is an input"));
+            }
+            let n = t.comps();
+            if n == 0 || n > if ty == 35 { 1 } else { 3 } || t.base() == B::Float || !t.numeric() {
+                return Err(format!("{sem} of type {t:?}"));
+            }
+            let mask = ((1u16 << n) - 1) as u8;
+            match self.sys_inputs.iter_mut().find(|s| s.0 == ty) {
+                Some(s) => s.1 |= mask,
+                None => self.sys_inputs.push((ty, mask)),
+            }
+            for c in 0..n {
+                out.push(C::R(Reg { f: RegF::Sys(ty), rel: None }, c as u8));
+            }
+            let _ = &mut index;
+            return Ok(());
+        }
         // (8 render targets, 4 in shader model 2/3; 32 input/output registers)
         let max = if matches!(up.as_str(), "SV_TARGET" | "COLOR") && pixel_out(self.o.pixel, output) {
             if self.sm3() { 4 } else { 8 }
@@ -1275,6 +1360,17 @@ impl<'a> L<'a> {
         }
         let is_bound = |p: &Var| bound.iter().any(|b| b.name == p.name);
         let uniforms: Vec<Var> = f.params.iter().filter(|p| p.uniform && !is_bound(p)).cloned().collect();
+        if self.o.compute {
+            let (_, a) = f.attrs.iter().find(|a| a.0.eq_ignore_ascii_case("numthreads")).ok_or(format!("{name}: a compute shader needs [numthreads(x, y, z)]"))?;
+            let n: Vec<i64> = a.iter().map(|e| super::parse::const_int(e).ok_or("numthreads: not a constant")).collect::<Result<_, _>>()?;
+            let [x, y, z] = n[..] else { return Err("numthreads takes 3 numbers".into()) };
+            // (Direct3D 11: x, y up to 1024, z up to 64, 1024 threads; shader model 4: 768, z 1)
+            let max = if self.o.major >= 5 { 1024 } else { 768 };
+            if x < 1 || y < 1 || z < 1 || x > 1024 || y > 1024 || z > if self.o.major >= 5 { 64 } else { 1 } || x * y * z > max {
+                return Err(format!("numthreads({x}, {y}, {z}) is out of range"));
+            }
+            self.threads = Some([x as u32, y as u32, z as u32]);
+        }
         self.scopes.push(HashMap::new());
         self.setup_globals(&uniforms)?;
         for (p, a) in bound.iter().zip(args) {
@@ -1431,7 +1527,43 @@ impl<'a> L<'a> {
             cb_map[n] = Some(cbs.len());
             cbs.push(sm4::Cb { name: c.name, slot, size: c.size, dynamic: c.dynamic, vars: c.vars });
         }
+        let mut utaken: Vec<u32> = self.uavs.iter().filter(|u| u.used).filter_map(|u| u.reg).collect();
+        let mut uav_map = vec![None; self.uavs.len()];
+        let mut uavs = Vec::new();
+        for (n, u) in self.uavs.iter().enumerate() {
+            if !u.used {
+                continue;
+            }
+            let slot = u.reg.unwrap_or_else(|| {
+                let mut k = 0;
+                while utaken.contains(&k) {
+                    k += 1;
+                }
+                utaken.push(k);
+                k
+            });
+            let dim = match u.dim {
+                Dim::Buffer => 1,
+                Dim::T1D => 2,
+                Dim::T2D => 3,
+                Dim::T3D => 5,
+                Dim::T1DArray => 7,
+                _ => 8,
+            };
+            let ret = match u.el.base() {
+                B::Int => 3,
+                B::Uint | B::Bool => 4,
+                B::Float => 5,
+            };
+            uav_map[n] = Some(uavs.len());
+            uavs.push(sm4::Uav { name: u.name.clone(), dim, ret, comps: u.el.comps().max(1) as u32, slot });
+        }
         Ok(sm4::Shader {
+            threads: self.threads,
+            sys_inputs: self.sys_inputs,
+            uavs,
+            uav_map,
+            tgsm: self.tgsm,
             pixel: self.o.pixel,
             major: self.o.major,
             minor: self.o.minor,
@@ -1736,7 +1868,10 @@ impl<'a> L<'a> {
             Expr::Int(v, u) => self.lit_int(*v, *u),
             Expr::Float(f) => Val::num(Ty::Scalar(B::Float), vec![C::I(fbits(*f as f32))]),
             Expr::Bool(b) => Val::num(Ty::Scalar(B::Bool), vec![C::I(if *b { self.tru() } else { 0 })]),
-            Expr::Var(n, line) => self.lookup(n, *line)?,
+            Expr::Var(n, line) => {
+                let v = self.lookup(n, *line)?;
+                self.shared_value(v)
+            }
             Expr::Comma(a, b) => {
                 self.expr(a)?;
                 self.expr(b)?
@@ -1801,7 +1936,10 @@ impl<'a> L<'a> {
                 }
                 Un::PreInc | Un::PreDec | Un::PostInc | Un::PostDec => {
                     let mark = self.wbs.len();
-                    let p = self.place(a)?;
+                    self.place_reads = true;
+                    let p = self.place(a);
+                    self.place_reads = false;
+                    let p = p?;
                     let old = self.copy(&p.c);
                     let fl = p.ty.base() == B::Float || self.sm3();
                     let one = if fl { fbits(1.0) } else { 1 };
@@ -1828,7 +1966,10 @@ impl<'a> L<'a> {
             }
             Expr::Assign(op, a, b) => {
                 let mark = self.wbs.len();
-                let p = self.place(a)?;
+                self.place_reads = op.is_some();
+                let p = self.place(a);
+                self.place_reads = false;
+                let p = p?;
                 let mut v = self.expr(b)?;
                 if let Some(op) = op {
                     let cur = Val::num(p.ty.clone(), p.c.clone());
@@ -1863,30 +2004,92 @@ impl<'a> L<'a> {
                 Val::num(t, r)
             }
             Expr::Member(a, name) => {
-                let v = self.expr(a)?;
-                self.member(v, name)?
+                let v = self.expr_place_or_value(a)?;
+                let v = self.member(v, name)?;
+                self.shared_value(v)
             }
             Expr::Index(a, i) => {
-                let v = self.expr(a)?;
+                let v = self.expr_place_or_value(a)?;
                 let iv = self.expr(i)?;
-                self.index(v, iv)?
+                let v = self.index(v, iv)?;
+                self.shared_value(v)
             }
             Expr::Call(name, args, line) => self.call(name, args, *line)?,
             Expr::Method(o, name, args) => self.method(o, name, args)?,
         })
     }
 
+    /// An expression that may name groupshared memory: not read yet when it does (indexing and
+    /// members pick a part first).
+    fn expr_place_or_value(&mut self, e: &Expr) -> R<Val> {
+        match e {
+            Expr::Var(n, line) => self.lookup(n, *line),
+            Expr::Index(a, i) => {
+                let v = self.expr_place_or_value(a)?;
+                let iv = self.expr(i)?;
+                self.index(v, iv)
+            }
+            Expr::Member(a, name) => {
+                let v = self.expr_place_or_value(a)?;
+                self.member(v, name)
+            }
+            e => self.expr(e),
+        }
+    }
+
     /// An lvalue: storage comps.
     fn place(&mut self, e: &Expr) -> R<Val> {
-        let v = match e {
+        let v = self.place_in(e)?;
+        let v = match v.obj {
+            // (groupshared memory: through a copy, stored back)
+            Obj::Shared(..) => self.shared_place(v)?,
+            _ => v,
+        };
+        if v.c.iter().any(|c| !matches!(c, C::R(Reg { f: RegF::Temp(_) | RegF::Output(_) | RegF::X(..) | RegF::Depth, .. }, _))) {
+            return Err("assignment to a constant, a uniform or an input".into());
+        }
+        Ok(v)
+    }
+
+    /// `place` without the last step: groupshared memory is still the memory (arrays and
+    /// structs there are indexed and picked from without reading them).
+    fn place_in(&mut self, e: &Expr) -> R<Val> {
+        Ok(match e {
             Expr::Var(n, line) => self.lookup(n, *line)?,
             Expr::Member(a, n) => {
-                let v = self.place(a)?;
-                self.member(v, n)?
+                let v = self.place_in(a)?;
+                match v.obj {
+                    Obj::Shared(..) if matches!(v.ty, Ty::Struct(_)) => self.shared_member(v, n)?,
+                    Obj::Shared(..) => {
+                        let p = self.shared_place(v)?;
+                        self.member(p, n)?
+                    }
+                    _ => self.member(v, n)?,
+                }
             }
             Expr::Index(a, i) => {
-                let v = self.place(a)?;
+                let v = self.place_in(a)?;
+                let v = match v.obj {
+                    Obj::Shared(..) if !matches!(v.ty, Ty::Array(..)) => self.shared_place(v)?,
+                    _ => v,
+                };
                 let mut iv = self.expr(i)?;
+                if let (Ty::RwTex(_, el), Obj::Uav(u)) = (&v.ty, v.obj) {
+                    // (written through a copy, stored when the write is done)
+                    let el = (**el).clone();
+                    let coord = self.uav_coord(u, iv)?;
+                    let cp = if self.place_reads {
+                        let cur = self.uav_load(u, &coord);
+                        self.copy(&cur.c)
+                    } else {
+                        self.storage(&el)
+                    };
+                    self.wbs.push(Wb::Uav(u, coord, cp.clone()));
+                    return Ok(Val::num(el, cp));
+                }
+                if let Obj::Shared(..) = v.obj {
+                    return self.index(v, iv);
+                }
                 if matches!(iv.c.first(), Some(C::I(_))) || !matches!(v.ty, Ty::Array(..) | Ty::Vec(..) | Ty::Mat(..)) {
                     self.index(v, iv)?
                 } else {
@@ -1906,7 +2109,7 @@ impl<'a> L<'a> {
                         let elems: Vec<Vec<C>> = v.c.chunks(k.max(1)).map(|e| e.to_vec()).collect();
                         // (the select may hand back an element itself: write to a copy)
                         let cp = if r.c.iter().any(|c| v.c.contains(c)) { self.copy(&r.c) } else { r.c.clone() };
-                        self.wbs.push((elems, iv.c[0], cp.clone(), r.ty.base()));
+                        self.wbs.push(Wb::Sel(elems, iv.c[0], cp.clone(), r.ty.base()));
                         Val::num(r.ty, cp)
                     } else {
                         r
@@ -1914,28 +2117,133 @@ impl<'a> L<'a> {
                 }
             }
             _ => return Err("assignment to something that is not a variable".into()),
-        };
-        if v.c.iter().any(|c| !matches!(c, C::R(Reg { f: RegF::Temp(_) | RegF::Output(_) | RegF::X(..) | RegF::Depth, .. }, _))) {
-            return Err("assignment to a constant, a uniform or an input".into());
-        }
-        Ok(v)
+        })
     }
 
     /// Stores the places picked by a run-time index since `mark` back (innermost first):
     /// element k = index == k ? the copy : element k.
     fn write_back(&mut self, mark: usize) {
         while self.wbs.len() > mark {
-            let (elems, iv, cp, b) = self.wbs.pop().unwrap();
-            for (k, e) in elems.iter().enumerate() {
-                let m = self.alu(sm4::IEQ, B::Bool, &[&[iv], &[C::I(self.ival(k as i64))]])[0];
-                let n = e.len();
-                let v = self.alu(sm4::MOVC, b, &[&vec![m; n], &cp, e]);
-                self.assign(e, &v);
+            match self.wbs.pop().unwrap() {
+                Wb::Sel(elems, iv, cp, b) => {
+                    for (k, e) in elems.iter().enumerate() {
+                        let m = self.alu(sm4::IEQ, B::Bool, &[&[iv], &[C::I(self.ival(k as i64))]])[0];
+                        let n = e.len();
+                        let v = self.alu(sm4::MOVC, b, &[&vec![m; n], &cp, e]);
+                        self.assign(e, &v);
+                    }
+                }
+                Wb::Shared(g, off, cp) => self.shared_store(g, off, &cp),
+                Wb::Uav(u, coord, cp) => {
+                    let a = self.opnd(&coord);
+                    let mut v = cp.clone();
+                    // (all four components are written: the view's format drops the rest)
+                    while v.len() < 4 {
+                        v.push(v[0]);
+                    }
+                    let s = self.opnd(&v);
+                    self.emit(sm4::STORE_UAV_TYPED, vec![Dst { r: Reg { f: RegF::Uav(u), rel: None }, mask: 0xf }], vec![a, s]);
+                }
             }
         }
     }
 
+    // ---- compute shader memory ----
+
+    /// A groupshared value (not an array) through a copy that is stored back.
+    fn shared_place(&mut self, v: Val) -> R<Val> {
+        let Obj::Shared(g, off) = v.obj else { unreachable!() };
+        if matches!(v.ty, Ty::Array(..)) {
+            return Err("a whole groupshared array as a value".into());
+        }
+        let cur = self.shared_load(g, off, ncomp(self.prog, &v.ty));
+        let cp = self.copy(&cur);
+        self.wbs.push(Wb::Shared(g, off, cp.clone()));
+        Ok(Val::num(v.ty, cp))
+    }
+
+    /// A groupshared value read now (arrays stay places).
+    fn shared_value(&mut self, v: Val) -> Val {
+        match v.obj {
+            Obj::Shared(g, off) if !matches!(v.ty, Ty::Array(..)) => {
+                let c = self.shared_load(g, off, ncomp(self.prog, &v.ty));
+                Val::num(v.ty, c)
+            }
+            _ => v,
+        }
+    }
+
+    /// `off` + `k` dwords as a byte address
+    fn shared_addr(&mut self, off: C, k: u32) -> C {
+        let b = self.alu(sm4::ISHL, B::Int, &[&[off], &[C::I(2)]])[0];
+        if k == 0 { b } else { self.alu(sm4::IADD, B::Int, &[&[b], &[C::I(4 * k)]])[0] }
+    }
+
+    fn shared_load(&mut self, g: u32, off: C, n: usize) -> Vec<C> {
+        let mut out = Vec::new();
+        for k in (0..n).step_by(4) {
+            let m = (n - k).min(4);
+            let a = self.shared_addr(off, k as u32);
+            let a = self.scalar_src(a);
+            let t = self.tmp();
+            self.emit(sm4::LD_RAW, vec![Dst { r: temp(t), mask: ((1u16 << m) - 1) as u8 }], vec![a, Src::G(g, [0, 1, 2, 3])]);
+            out.extend((0..m).map(|c| C::R(temp(t), c as u8)));
+        }
+        out
+    }
+
+    fn shared_store(&mut self, g: u32, off: C, v: &[C]) {
+        for (k, ch) in v.chunks(4).enumerate() {
+            let a = self.shared_addr(off, 4 * k as u32);
+            let a = self.scalar_src(a);
+            let s = self.opnd(ch);
+            self.emit(sm4::STORE_RAW, vec![Dst { r: Reg { f: RegF::G(g), rel: None }, mask: ((1u16 << ch.len()) - 1) as u8 }], vec![a, s]);
+        }
+    }
+
+    /// A member of a groupshared struct, as a place.
+    fn shared_member(&mut self, v: Val, name: &str) -> R<Val> {
+        let (Obj::Shared(g, off), Ty::Struct(i)) = (v.obj, &v.ty) else { unreachable!() };
+        let mut at = 0;
+        for f in &self.prog.structs[*i].fields {
+            let n = ncomp(self.prog, &f.ty);
+            if f.name == name {
+                let off = self.alu(sm4::IADD, B::Int, &[&[off], &[C::I(at as u32)]])[0];
+                return Ok(Val { ty: f.ty.clone(), c: Vec::new(), obj: Obj::Shared(g, off) });
+            }
+            at += n;
+        }
+        Err(format!("no member '{name}'"))
+    }
+
+    /// A UAV's coordinates (uint, as many as its dimension takes).
+    fn uav_coord(&mut self, u: u32, iv: Val) -> R<Vec<C>> {
+        let d = self.uavs[u as usize].dim;
+        let n = d.coords() + d.array() as usize;
+        let iv = self.cast(iv.clone(), &Ty::vec(B::Uint, iv.ty.comps().max(1)))?;
+        if iv.c.len() != n {
+            return Err(format!("{n} coordinates index this RWTexture"));
+        }
+        Ok(iv.c)
+    }
+
+    fn uav_load(&mut self, u: u32, coord: &[C]) -> Val {
+        let el = self.uavs[u as usize].el.clone();
+        let a = self.opnd(coord);
+        let t = self.tmp();
+        self.emit(sm4::LD_UAV_TYPED, vec![Dst { r: temp(t), mask: 0xf }], vec![a, Src::Uav(u, [0, 1, 2, 3])]);
+        let n = el.comps().max(1);
+        Val::num(el, (0..n).map(|k| C::R(temp(t), k as u8)).collect())
+    }
+
     fn member(&mut self, v: Val, name: &str) -> R<Val> {
+        if let Obj::Shared(..) = v.obj {
+            if matches!(v.ty, Ty::Struct(_)) {
+                return self.shared_member(v, name);
+            }
+            let v = self.shared_value(v);
+            return self.member(v, name);
+        }
         match &v.ty {
             Ty::Scalar(b) | Ty::Vec(b, _) => {
                 let n = v.c.len();
@@ -2040,6 +2348,26 @@ impl<'a> L<'a> {
     }
 
     fn index(&mut self, v: Val, iv: Val) -> R<Val> {
+        if let Obj::Shared(g, off) = v.obj {
+            let Ty::Array(e, n) = &v.ty else {
+                // (a vector or matrix in groupshared memory: read, then indexed)
+                let v = self.shared_value(v);
+                return self.index(v, iv);
+            };
+            let k = ncomp(self.prog, e) as u32;
+            let iv = self.cast(iv, &Ty::Scalar(B::Int))?;
+            if let C::I(i) = iv.c[0] {
+                if i as i32 as i64 >= *n as i64 || (i as i32) < 0 {
+                    return Err(format!("index {} out of range", i as i32));
+                }
+            }
+            let off = self.alu(sm4::IMAD, B::Int, &[&iv.c, &[C::I(k)], &[off]])[0];
+            return Ok(Val { ty: (**e).clone(), c: Vec::new(), obj: Obj::Shared(g, off) });
+        }
+        if let (Ty::RwTex(..), Obj::Uav(u)) = (&v.ty, v.obj) {
+            let coord = self.uav_coord(u, iv)?;
+            return Ok(self.uav_load(u, &coord));
+        }
         if let (Ty::Array(e, n), Obj::TexArr(_) | Obj::SampArr(_) | Obj::LegacyArr(..)) = (&v.ty, v.obj) {
             // an element of an array of textures/samplers: the index must be known when compiling
             let i = match iv.c.first() {
@@ -2345,6 +2673,9 @@ impl<'a> L<'a> {
     }
     pub(super) fn x_opnd(&mut self, cs: &[C]) -> Src {
         self.opnd(cs)
+    }
+    pub(super) fn x_last(&mut self) -> &mut Ins {
+        self.code.last_mut().unwrap()
     }
     pub(super) fn x_emit(&mut self, op: u32, dst: Vec<Dst>, src: Vec<Src>) -> &mut Ins {
         self.emit(op, dst, src)

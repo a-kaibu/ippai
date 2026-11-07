@@ -53,8 +53,18 @@ addToLibrary({
       const canvas = await vnvmCanvas;
       const adapter = await navigator.gpu?.requestAdapter();
       if (!adapter) throw new Error('no WebGPU adapter');
-      const features = ['rg11b10ufloat-renderable', 'timestamp-query', 'float32-filterable', 'float32-blendable', 'depth-clip-control'].filter((f) => adapter.features.has(f));
-      VG.device = await adapter.requestDevice({ requiredFeatures: features });
+      const features = ['rg11b10ufloat-renderable', 'timestamp-query', 'float32-filterable', 'float32-blendable', 'depth-clip-control', 'bgra8unorm-storage'].filter((f) => adapter.features.has(f));
+      // (Direct3D 11 compute shaders have 32 KB of groupshared memory and 1024 threads per group;
+      // WebGPU's defaults are 16 KB and 256: what the adapter has, up to those)
+      const L = adapter.limits;
+      const requiredLimits = {
+        maxComputeWorkgroupStorageSize: Math.min(L.maxComputeWorkgroupStorageSize, 32768),
+        maxComputeInvocationsPerWorkgroup: Math.min(L.maxComputeInvocationsPerWorkgroup, 1024),
+        maxComputeWorkgroupSizeX: Math.min(L.maxComputeWorkgroupSizeX, 1024),
+        maxComputeWorkgroupSizeY: Math.min(L.maxComputeWorkgroupSizeY, 1024),
+        maxComputeWorkgroupSizeZ: Math.min(L.maxComputeWorkgroupSizeZ, 64),
+      };
+      VG.device = await adapter.requestDevice({ requiredFeatures: features, requiredLimits });
       if (VG.device.features.has('timestamp-query')) {
         const PASSES = 256;
         VG.ts = {
@@ -113,6 +123,16 @@ addToLibrary({
   vngpu_bind_group_layout: (ptr, len) => VG.put(VG.device.createBindGroupLayout(VG.json(ptr, len))),
   vngpu_pipeline_layout: (ptr, len) => VG.put(VG.device.createPipelineLayout(VG.json(ptr, len))),
   vngpu_render_pipeline: (ptr, len) => VG.put(VG.device.createRenderPipeline(VG.json(ptr, len))),
+  vngpu_compute_pipeline: (ptr, len) => VG.put(VG.device.createComputePipeline(VG.json(ptr, len))),
+  // a compute pass of its own (Direct3D 11 Dispatch)
+  vngpu_dispatch: (p, g, x, y, z) => {
+    VG.enc ??= VG.device.createCommandEncoder();
+    const pass = VG.enc.beginComputePass();
+    pass.setPipeline(VG.objs[p]);
+    pass.setBindGroup(0, VG.objs[g]);
+    pass.dispatchWorkgroups(x, y, z);
+    pass.end();
+  },
   vngpu_pipeline_group_layout: (p, i) => VG.put(VG.objs[p].getBindGroupLayout(i)),
   // entries: 5 words each (binding, kind 0 buffer / 1 view or sampler, object, offset, size)
   vngpu_bind_group: (layout, ptr, n) => {

@@ -12,6 +12,8 @@ pub struct Parser {
     typedefs: Vec<(String, Ty)>,
     /// #pragma pack_matrix
     pack: Option<bool>,
+    /// [attributes] waiting for the function they come before
+    attrs: Vec<(String, Vec<Expr>)>,
 }
 
 fn scalar_base(s: &str) -> Option<B> {
@@ -65,7 +67,7 @@ const MODIFIERS: &[&str] = &[
 
 impl Parser {
     pub fn new(t: Vec<Token>) -> Self {
-        Parser { t, p: 0, prog: Program::default(), typedefs: Vec::new(), pack: None }
+        Parser { t, p: 0, prog: Program::default(), typedefs: Vec::new(), pack: None, attrs: Vec::new() }
     }
 
     fn peek(&self) -> Option<&Tok> {
@@ -141,6 +143,7 @@ impl Parser {
     fn is_type_name(&self, s: &str) -> bool {
         builtin_numeric(s).is_some()
             || tex_dim(s).is_some()
+            || s.strip_prefix("RW").and_then(tex_dim).is_some()
             || matches!(
                 s,
                 "void" | "vector" | "matrix" | "string" | "sampler" | "sampler1D" | "sampler2D" | "sampler3D" | "samplerCUBE"
@@ -172,6 +175,18 @@ impl Parser {
         }
         if let Some(i) = self.prog.structs.iter().position(|x| x.name == name) {
             return Ok(Ty::Struct(i));
+        }
+        if let Some(d) = name.strip_prefix("RW").and_then(tex_dim).filter(|d| !matches!(d, Dim::T2DMS | Dim::T2DMSArray | Dim::Cube | Dim::CubeArray)) {
+            let mut el = Ty::Vec(B::Float, 4);
+            if self.eat("<") {
+                // (unorm / snorm float4: the view's format says)
+                while self.is_id("unorm") || self.is_id("snorm") {
+                    self.p += 1;
+                }
+                el = self.ty()?;
+                self.expect(">")?;
+            }
+            return Ok(Ty::RwTex(d, Box::new(el)));
         }
         if let Some(d) = tex_dim(&name) {
             let mut el = Ty::Vec(B::Float, 4);
@@ -295,6 +310,7 @@ impl Parser {
             }
             match s.as_str() {
                 "static" => v.is_static = true,
+                "groupshared" => v.shared = true,
                 "const" => v.is_const = true,
                 "uniform" => v.uniform = true,
                 "row_major" => v.row_major = Some(true),
@@ -561,8 +577,26 @@ impl Parser {
         if self.eat(";") {
             return Ok(());
         }
-        if self.is("[") {
-            self.skip_group("[", "]")?;
+        if self.eat("[") {
+            // [name(args), ...]: kept for the function that follows
+            loop {
+                let name = self.ident()?;
+                let mut args = Vec::new();
+                if self.eat("(") && !self.eat(")") {
+                    loop {
+                        args.push(self.assign_expr()?);
+                        if !self.eat(",") {
+                            break;
+                        }
+                    }
+                    self.expect(")")?;
+                }
+                self.attrs.push((name, args));
+                if !self.eat(",") {
+                    break;
+                }
+            }
+            self.expect("]")?;
             return Ok(());
         }
         let line = self.line();
@@ -695,7 +729,8 @@ impl Parser {
         }
         // (a definition after a prototype replaces it)
         self.prog.funcs.retain(|f| !(f.name == name && f.params.len() == params.len() && f.body.is_none()));
-        self.prog.funcs.push(Func { name, ret, ret_sem: rv.sem, params, body });
+        let attrs = std::mem::take(&mut self.attrs);
+        self.prog.funcs.push(Func { name, ret, ret_sem: rv.sem, params, body, attrs });
         Ok(())
     }
 

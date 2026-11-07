@@ -7,6 +7,11 @@ exclude = ["fuzz"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
+# (naga validates every shader the tests translate: unoptimized, a big compute shader takes
+# seconds)
+[profile.dev.package.naga]
+opt-level = 2
+
 # cargo-mutants (.cargo/mutants.toml): quick to rebuild, fast enough for the exhaustive tests;
 # no overflow checks, as the release build CI tests (a debug-only panic is not a caught mutant).
 [profile.mutants]

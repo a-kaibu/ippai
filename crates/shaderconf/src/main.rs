@@ -5,12 +5,14 @@
 //! Dawn) into an rgba32float target and compares.
 //!
 //!   cargo run -p shaderconf > cases.json         (shaderconf --list: the case names)
+//!   cargo run -p shaderconf -- --compute > compute.json   (tests/compute.mjs: compute shaders)
 //!
 //! The references are written from the specs, independent of the translators: the Direct3D 11.3
 //! functional spec (float, integer and conversion rules), the D3D9 instruction reference
 //! (ps_3_0), the HLSL constant packing rules, the GLSL 1.20 spec and std140 for GL.
 
 mod cases;
+mod compute;
 mod fuzz;
 mod json;
 mod oracle;
@@ -57,6 +59,16 @@ pub struct Case {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--compute") {
+        match compute::cases() {
+            Ok(s) => print!("{s}"),
+            Err(e) => {
+                eprintln!("shaderconf: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let list = std::env::args().any(|a| a == "--list");
     let mut out = Vec::new();
     let mut errors = Vec::new();

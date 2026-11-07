@@ -14,6 +14,13 @@ pub enum RegF {
     X(u32, u32),
     Depth,
     Null,
+    /// compute shader inputs without an index: vThreadID (32), vThreadGroupID (33),
+    /// vThreadIDInGroup (34), vThreadIDInGroupFlattened (35)
+    Sys(u32),
+    /// a typed unordered access view (symbol): store_uav_typed's destination
+    Uav(u32),
+    /// thread group shared memory (symbol): store_raw's destination
+    G(u32),
 }
 
 /// A register operand with an optional relative index (a temp's component) added to the last
@@ -31,6 +38,12 @@ pub enum Src {
     /// texture t (symbol), with a swizzle of its result
     Tex(u32, [u8; 4]),
     Samp(u32),
+    /// a sampler with a component select (gather4: the channel gathered)
+    SampC(u32, u8),
+    /// a typed UAV (symbol) with a swizzle of its result (ld_uav_typed)
+    Uav(u32, [u8; 4]),
+    /// thread group shared memory (symbol) with a swizzle: the dwords ld_raw reads
+    G(u32, [u8; 4]),
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +150,12 @@ pub const FIRSTBIT_HI: u32 = 0x87;
 pub const FIRSTBIT_LO: u32 = 0x88;
 pub const FIRSTBIT_SHI: u32 = 0x89;
 pub const BFREV: u32 = 0x8d;
+pub const LD_UAV_TYPED: u32 = 0xa3;
+pub const STORE_UAV_TYPED: u32 = 0xa4;
+pub const LD_RAW: u32 = 0xa5;
+pub const STORE_RAW: u32 = 0xa6;
+/// sync: ctl 1 threads in the group, 2 shared memory, 4 UAVs (group), 8 UAVs (global)
+pub const SYNC: u32 = 0xbe;
 
 /// A signature element of the shader's interface.
 #[derive(Clone, Debug)]
@@ -161,6 +180,17 @@ pub struct Tex {
     /// 2dmsarray, 10 cubearray)
     pub dim: u32,
     /// 3 sint, 4 uint, 5 float
+    pub ret: u32,
+    pub comps: u32,
+    pub slot: u32,
+}
+
+/// A typed unordered access view (RWTexture*)
+pub struct Uav {
+    pub name: String,
+    /// resource dimension as `Tex::dim`
+    pub dim: u32,
+    /// 3 sint, 4 uint, 5 float (1 unorm, 2 snorm)
     pub ret: u32,
     pub comps: u32,
     pub slot: u32,
@@ -221,6 +251,14 @@ pub struct Shader {
     pub tex_map: Vec<Option<usize>>,
     pub samp_map: Vec<Option<usize>>,
     pub early_depth: bool,
+    /// compute shaders: [numthreads(x, y, z)]
+    pub threads: Option<[u32; 3]>,
+    /// compute inputs read: (register type, mask)
+    pub sys_inputs: Vec<(u32, u8)>,
+    pub uavs: Vec<Uav>,
+    pub uav_map: Vec<Option<usize>>,
+    /// thread group shared memory: bytes of each g register
+    pub tgsm: Vec<u32>,
 }
 
 // ---- register allocation ----
@@ -349,6 +387,8 @@ const T_CB: u32 = 8;
 const T_ICB: u32 = 9;
 const T_DEPTH: u32 = 12;
 const T_NULL: u32 = 13;
+const T_UAV: u32 = 30;
+const T_TGSM: u32 = 31;
 
 struct Enc<'a> {
     s: &'a Shader,
@@ -366,6 +406,9 @@ impl Enc<'_> {
             RegF::X(a, i) => (T_X, vec![a, i]),
             RegF::Depth => (T_DEPTH, vec![]),
             RegF::Null => (T_NULL, vec![]),
+            RegF::Sys(t) => (t, vec![]),
+            RegF::Uav(u) => (T_UAV, vec![self.s.uavs[self.s.uav_map[u as usize].unwrap()].slot]),
+            RegF::G(g) => (T_TGSM, vec![g]),
         }
     }
 
@@ -433,6 +476,20 @@ impl Enc<'_> {
                 out.push((T_SAMPLER << 12) | (1 << 20));
                 out.push(slot);
             }
+            Src::SampC(s, c) => {
+                let slot = self.s.samps[self.s.samp_map[*s as usize].unwrap()].slot;
+                out.push(2 | (2 << 2) | ((*c as u32) << 4) | (T_SAMPLER << 12) | (1 << 20));
+                out.push(slot);
+            }
+            Src::Uav(u, swz) | Src::G(u, swz) => {
+                let (ty, slot) = match s {
+                    Src::Uav(..) => (T_UAV, self.s.uavs[self.s.uav_map[*u as usize].unwrap()].slot),
+                    _ => (T_TGSM, *u),
+                };
+                let b = swz[0] as u32 | (swz[1] as u32) << 2 | (swz[2] as u32) << 4 | (swz[3] as u32) << 6;
+                out.push(2 | (1 << 2) | (b << 4) | (ty << 12) | (1 << 20));
+                out.push(slot);
+            }
         }
     }
 
@@ -473,7 +530,8 @@ fn program(s: &mut Shader) -> Vec<u32> {
     let temps = alloc(&mut s.code, &s.marks.clone());
     let s = &*s;
     let e = Enc { s };
-    let mut w = vec![((!s.pixel) as u32) << 16 | (s.major << 4) | s.minor, 0];
+    let kind = if s.threads.is_some() { 5 } else { (!s.pixel) as u32 };
+    let mut w = vec![kind << 16 | (s.major << 4) | s.minor, 0];
     // global flags: refactoring allowed (+ early depth stencil)
     decl(&mut w, 0x6a, 1 | ((s.early_depth as u32) << 2), &[]);
     if !s.icb.is_empty() {
@@ -494,6 +552,19 @@ fn program(s: &mut Shader) -> Vec<u32> {
         let r = t.ret;
         let ret = r | (r << 4) | (r << 8) | (r << 12);
         decl(&mut w, 0x58, t.dim, &[(T_RESOURCE << 12) | (1 << 20), t.slot, ret]);
+    }
+    for u in &s.uavs {
+        let r = u.ret;
+        let ret = r | (r << 4) | (r << 8) | (r << 12);
+        decl(&mut w, 0x9c, u.dim, &[(T_UAV << 12) | (1 << 20), u.slot, ret]);
+    }
+    for (g, &bytes) in s.tgsm.iter().enumerate() {
+        decl(&mut w, 0x9f, 0, &[(T_TGSM << 12) | (1 << 20), g as u32, bytes]);
+    }
+    for &(ty, mask) in &s.sys_inputs {
+        // (vThreadIDInGroupFlattened is one component)
+        let t = if ty == 35 { 1 | (ty << 12) } else { 2 | ((mask as u32) << 4) | (ty << 12) };
+        decl(&mut w, 0x5f, 0, &[t]);
     }
     let reg_tok = |ty: u32, mask: u8| 2 | ((mask as u32) << 4) | (ty << 12) | (1 << 20);
     for i in &s.inputs {
@@ -524,6 +595,9 @@ fn program(s: &mut Shader) -> Vec<u32> {
     }
     for (n, &size) in s.xs.iter().enumerate() {
         decl(&mut w, 0x69, 0, &[n as u32, size, 4]);
+    }
+    if let Some([x, y, z]) = s.threads {
+        decl(&mut w, 0x9b, 0, &[x, y, z]);
     }
     for i in &s.code {
         e.ins(&mut w, i);
@@ -598,6 +672,17 @@ fn rdef(s: &Shader) -> Vec<u8> {
         };
         binds.push((t.name.clone(), 2, t.ret, dim, t.slot, (t.comps - 1) << 2));
     }
+    for u in &s.uavs {
+        let dim = match u.dim {
+            1 => 1,
+            2 => 2,
+            3 => 4,
+            5 => 8,
+            7 => 3,
+            _ => 5,
+        };
+        binds.push((u.name.clone(), 4, u.ret, dim, u.slot, (u.comps - 1) << 2));
+    }
     for cb in &s.cbs {
         binds.push((cb.name.clone(), 0, 0, 0, cb.slot, 0));
     }
@@ -613,7 +698,7 @@ fn rdef(s: &Shader) -> Vec<u8> {
         set32(&mut b, at + 4, bd.1);
         set32(&mut b, at + 8, bd.2);
         set32(&mut b, at + 12, bd.3);
-        set32(&mut b, at + 16, if bd.1 == 2 { u32::MAX } else { 0 });
+        set32(&mut b, at + 16, if bd.1 == 2 || bd.1 == 4 { u32::MAX } else { 0 });
         set32(&mut b, at + 20, bd.4);
         set32(&mut b, at + 24, 1);
         set32(&mut b, at + 28, bd.5);
@@ -664,7 +749,7 @@ fn rdef(s: &Shader) -> Vec<u8> {
     set32(&mut b, 4, cb_at as u32);
     set32(&mut b, 8, binds.len() as u32);
     set32(&mut b, 12, bind_at as u32);
-    let kind = if s.pixel { 0xffff } else { 0xfffe };
+    let kind = if s.threads.is_some() { 0x4353 } else if s.pixel { 0xffff } else { 0xfffe };
     set32(&mut b, 16, (kind << 16) | (s.major << 8) | s.minor);
     set32(&mut b, 20, 0x100);
     set32(&mut b, 24, creator);

@@ -73,6 +73,12 @@ struct Res {
     depth: bool,
 }
 
+/// A typed UAV (dcl_uav_typed)
+struct UavDecl {
+    dim: u32,
+    ret: K,
+}
+
 struct InDecl {
     mask: u32,
     sysval: u32,
@@ -81,6 +87,23 @@ struct InDecl {
 
 struct W {
     pixel: bool,
+    /// a compute shader: [numthreads]
+    threads: Option<[u32; 3]>,
+    uavs: BTreeMap<u32, UavDecl>,
+    /// groupshared memory: dwords of each g register, and the structured ones' strides
+    tgsm: BTreeMap<u32, (u32, u32)>,
+    /// compute inputs (register types 32..35) read
+    sys_in: std::collections::BTreeSet<u32>,
+    used_u: std::collections::BTreeSet<u32>,
+    /// UAVs read (from a copy taken before the dispatch: binding 300 + n)
+    used_ur: std::collections::BTreeSet<u32>,
+    /// each UAV's WebGPU storage format
+    uav_formats: BTreeMap<u32, String>,
+    /// temporary registers as a variable per component (r1_x...), shader_main's own: WGSL's
+    /// uniformity analysis follows a function's variables through assignments, a whole
+    /// variable at a time (a loop counted in r0.x with r0.y written by each thread: a barrier
+    /// in that loop is in uniform control flow only when r0.x is a variable of its own)
+    split: bool,
     isgn: Vec<SigElement>,
     osgn: Vec<SigElement>,
     temps: u32,
@@ -149,6 +172,9 @@ fn declarations(w: &mut W, p: &Program) -> R<()> {
             tpf::OP_DCL_SAMPLER => {
                 w.samplers.insert(i.ops[0].reg(), i.ctl & 0xf == 1);
             }
+            tpf::OP_DCL_INPUT if (32..=35).contains(&i.ops[0].ty) && p.kind == tpf::COMPUTE => {
+                w.sys_in.insert(i.ops[0].ty);
+            }
             tpf::OP_DCL_INPUT..=tpf::OP_DCL_INPUT_PS_SIV => {
                 let o = &i.ops[0];
                 if o.ty != tpf::INPUT {
@@ -183,10 +209,50 @@ fn declarations(w: &mut W, p: &Program) -> R<()> {
                 }
             }
             tpf::OP_DCL_INDEX_RANGE => return Err("indexed input/output ranges".into()),
-            tpf::OP_DCL_RESOURCE_RAW | tpf::OP_DCL_RESOURCE_STRUCTURED | 0x9c..=0xa0 => {
+            0x9b if p.kind == tpf::COMPUTE => {
+                let [x, y, z] = i.extra[..] else { return Err("dcl_thread_group without 3 sizes".into()) };
+                if x == 0 || y == 0 || z == 0 || x > 1024 || y > 1024 || z > 64 || x * y * z > 1024 {
+                    return Err(format!("thread group {x}x{y}x{z} past Direct3D's limits"));
+                }
+                w.threads = Some([x, y, z]);
+            }
+            0x9c => {
+                // (dimension in the control bits, the globally coherent flag above it)
+                let ret = match i.extra.first().map(|r| r & 0xf) {
+                    Some(3) => K::I,
+                    Some(4) => K::U,
+                    _ => K::F,
+                };
+                let o = &i.ops[0];
+                if o.ty != tpf::UAV || o.reg() >= 64 {
+                    return Err("dcl_uav_typed of a bad register".into());
+                }
+                w.uavs.insert(o.reg(), UavDecl { dim: i.ctl & 0x1f, ret });
+            }
+            0x9f | 0xa0 => {
+                let o = &i.ops[0];
+                let (bytes, stride) = match (i.op, &i.extra[..]) {
+                    (0x9f, [b]) => (*b, 4),
+                    (0xa0, [s, n]) => (s.saturating_mul(*n), *s),
+                    _ => return Err("bad groupshared declaration".into()),
+                };
+                if o.ty != tpf::TGSM || bytes % 4 != 0 || stride % 4 != 0 || stride == 0 || bytes == 0 || bytes > 32768 {
+                    return Err("groupshared memory past Direct3D's limits".into());
+                }
+                w.tgsm.insert(o.reg(), (bytes / 4, stride));
+            }
+            tpf::OP_DCL_RESOURCE_RAW | tpf::OP_DCL_RESOURCE_STRUCTURED | 0x9d | 0x9e => {
                 return Err("raw/structured buffers and UAVs".into())
             }
             _ => {}
+        }
+    }
+    if p.kind == tpf::COMPUTE {
+        if w.threads.is_none() {
+            return Err("a compute shader without dcl_thread_group".into());
+        }
+        if w.tgsm.values().map(|t| t.0).sum::<u32>() > 8192 {
+            return Err("more than 32 KB of groupshared memory".into());
         }
     }
     check_registers(w, p)?;
@@ -270,6 +336,24 @@ fn check_registers(w: &W, p: &Program) -> R<()> {
                 1
             }
             tpf::IMM32 | tpf::NULL => 0,
+            tpf::UAV => {
+                if !w.uavs.contains_key(&o.reg()) {
+                    return Err(format!("u{} is not declared", o.reg()));
+                }
+                1
+            }
+            tpf::TGSM => {
+                if !w.tgsm.contains_key(&o.reg()) {
+                    return Err(format!("g{} is not declared", o.reg()));
+                }
+                1
+            }
+            32..=35 => {
+                if !w.sys_in.contains(&o.ty) {
+                    return Err(format!("compute input {} is not declared", o.ty));
+                }
+                0
+            }
             _ => return Ok(()),
         };
         if o.idx.len() != dims || (dims > 0 && !matches!(o.idx[0], Index::Imm(_)) && o.ty != tpf::IMM_CONSTANT_BUFFER) {
@@ -328,6 +412,14 @@ pub fn varyings(ps: &[u8]) -> R<Vec<Varying>> {
 impl W {
     fn new(pixel: bool, isgn: Vec<SigElement>, osgn: Vec<SigElement>) -> W {
         W {
+            threads: None,
+            uavs: BTreeMap::new(),
+            tgsm: BTreeMap::new(),
+            sys_in: Default::default(),
+            used_u: Default::default(),
+            used_ur: Default::default(),
+            uav_formats: BTreeMap::new(),
+            split: false,
             addr: Vec::new(),
             addr_used: Default::default(),
             pixel,
@@ -445,6 +537,10 @@ impl W {
                 let i = self.index(o.idx.first().ok_or("icb without index")?)?;
                 format!("icb[{i}]")
             }
+            32 => "vtid".into(),
+            33 => "vgid".into(),
+            34 => "vltid".into(),
+            35 => "vlidx".into(),
             t => return Err(format!("operand type {t}")),
         })
     }
@@ -473,7 +569,14 @@ impl W {
             }
         } else {
             let base = self.reg(o)?;
-            let sw = if pick == [0, 1, 2, 3] { base } else { format!("{base}.{}", letters(&pick)) };
+            let sw = if self.split && o.ty == tpf::TEMP {
+                let parts: Vec<String> = pick.iter().map(|&c| format!("{base}_{}", XYZW[c as usize])).collect();
+                if n == 1 { parts[0].clone() } else { format!("{}({})", vty(K::U, n), parts.join(", ")) }
+            } else if pick == [0, 1, 2, 3] {
+                base
+            } else {
+                format!("{base}.{}", letters(&pick))
+            };
             if k == K::U { sw } else { format!("bitcast<{}>({sw})", vty(k, n)) }
         };
         match o.modifier {
@@ -528,6 +631,20 @@ impl W {
             return Err(format!("register type {} as a destination", o.ty));
         }
         let place = self.reg(o)?;
+        if self.split && o.ty == tpf::TEMP {
+            if n == 1 {
+                self.line(&format!("{place}_{} = {b};", XYZW[comps[0] as usize]));
+            } else {
+                let t = self.fresh();
+                let mut s = format!("{{ let {t} = {b};");
+                for (i, c) in comps.iter().enumerate() {
+                    let _ = write!(s, " {place}_{} = {t}.{};", XYZW[*c as usize], XYZW[i]);
+                }
+                s.push_str(" }");
+                self.line(&s);
+            }
+            return Ok(());
+        }
         if comps.len() == 4 {
             self.line(&format!("{place} = {b};"));
         } else if comps.len() == 1 {
@@ -1093,6 +1210,20 @@ impl W {
                 }
             }
             0x6d | 0x7e => self.gather(i)?,
+            0xa3 => self.ld_uav(i)?,
+            0xa4 => self.store_uav(i)?,
+            0xa5 | 0xa7 => self.ld_tgsm(i)?,
+            0xa6 | 0xa8 => self.store_tgsm(i)?,
+            0xbe => {
+                if self.threads.is_none() {
+                    return Err("sync outside a compute shader".into());
+                }
+                // (a barrier with the group's threads: WGSL's; a memory fence alone has no WGSL
+                // statement and orders nothing more than WGSL's own rules here)
+                if i.ctl & 1 != 0 {
+                    self.line("workgroupBarrier();");
+                }
+            }
             0x79 => {
                 let (t, _, _, _) = self.texture(&i.ops[1])?;
                 let swz = i.ops[1].swizzle();
@@ -1133,6 +1264,126 @@ impl W {
                 }
             }
             op => return Err(format!("opcode {op:#x}")),
+        }
+        Ok(())
+    }
+
+    fn uav(&mut self, o: &Operand) -> R<(u32, u32, K)> {
+        if o.ty != tpf::UAV {
+            return Err(format!("UAV operand type {}", o.ty));
+        }
+        let n = o.reg();
+        let u = self.uavs.get(&n).ok_or(format!("u{n} not declared"))?;
+        Ok((n, u.dim, u.ret))
+    }
+
+    /// A typed UAV's coordinates (vecN<u32>, with the layer) and how many there are.
+    fn uav_coords(&mut self, o: &Operand, dim: u32) -> R<String> {
+        Ok(match dim {
+            // (1D views are 2D ones of height 1 on the page)
+            2 => format!("vec2<u32>({}, 0u)", self.src(o, K::U, &[0])?),
+            7 => format!("vec3<u32>({}, 0u, {})", self.src(o, K::U, &[0])?, self.src(o, K::U, &[1])?),
+            3 => self.src(o, K::U, &[0, 1])?,
+            8 => self.src(o, K::U, &[0, 1, 2])?,
+            5 => self.src(o, K::U, &[0, 1, 2])?,
+            d => return Err(format!("UAV dimension {d}")),
+        })
+    }
+
+    /// textureLoad/textureStore arguments: (coordinates, layer) of `c` and the in-bounds test
+    /// (Direct3D: out-of-bounds reads give 0, writes do nothing; WGSL may clamp them)
+    fn uav_access(&mut self, tex: &str, c: &str, dim: u32) -> (String, String) {
+        let t = self.fresh();
+        self.line(&format!("let {t} = {c};"));
+        match dim {
+            7 | 8 => (format!("{t}.xy, {t}.z"), format!("all({t}.xy < textureDimensions({tex})) && {t}.z < textureNumLayers({tex})")),
+            5 => (t.clone(), format!("all({t} < textureDimensions({tex}))")),
+            _ => (t.clone(), format!("all({t} < textureDimensions({tex}))")),
+        }
+    }
+
+    fn ld_uav(&mut self, i: &Inst) -> R<()> {
+        let (n, dim, k) = self.uav(&i.ops[2])?;
+        self.used_ur.insert(n);
+        let swz = i.ops[2].swizzle();
+        let c = self.uav_coords(&i.ops[1], dim)?;
+        let tex = format!("ur{n}");
+        let (args, inb) = self.uav_access(&tex, &c, dim);
+        let e = format!("select(vec4<{}>(), textureLoad({tex}, {args}, 0), {inb})", k.s());
+        self.vec4_result(i, e, k, swz)
+    }
+
+    fn store_uav(&mut self, i: &Inst) -> R<()> {
+        let (n, dim, k) = self.uav(&i.ops[0])?;
+        self.used_u.insert(n);
+        let c = self.uav_coords(&i.ops[1], dim)?;
+        let v = self.src(&i.ops[2], k, &[0, 1, 2, 3])?;
+        let tex = format!("u{n}");
+        let (args, inb) = self.uav_access(&tex, &c, dim);
+        self.line(&format!("if ({inb}) {{ textureStore({tex}, {args}, {v}); }}"));
+        Ok(())
+    }
+
+    /// The dword index in groupshared memory of ld/store_raw (byte address) or
+    /// ld/store_structured (index, byte offset), and the memory's name and size.
+    fn tgsm_addr(&mut self, i: &Inst, structured: bool, at: usize) -> R<(String, String, u32)> {
+        let g = &i.ops[if structured { at + 2 } else { at + 1 }];
+        if g.ty != tpf::TGSM {
+            return Err(format!("raw/structured access to register type {} (only groupshared memory is read so)", g.ty));
+        }
+        let n = g.reg();
+        let (dwords, stride) = *self.tgsm.get(&n).ok_or(format!("g{n} not declared"))?;
+        let a = if structured {
+            let idx = self.src(&i.ops[at], K::U, &[0])?;
+            let off = self.src(&i.ops[at + 1], K::U, &[0])?;
+            format!("(({idx}) * {}u + ({off} >> 2u))", stride / 4)
+        } else {
+            format!("({} >> 2u)", self.src(&i.ops[at], K::U, &[0])?)
+        };
+        let t = self.fresh();
+        self.line(&format!("let {t} = {a};"));
+        Ok((format!("g{n}"), t, dwords))
+    }
+
+    fn ld_tgsm(&mut self, i: &Inst) -> R<()> {
+        let structured = i.op == 0xa7;
+        let (g, a, dwords) = self.tgsm_addr(i, structured, 1)?;
+        let swz = i.ops[if structured { 3 } else { 2 }].swizzle();
+        // (out of range: 0, as Direct3D reads past the memory)
+        let word = |c: u8| format!("select(0u, {g}[min({a} + {c}u, {}u)], {a} + {c}u < {dwords}u)", dwords - 1);
+        let e = format!("vec4<u32>({}, {}, {}, {})", word(0), word(1), word(2), word(3));
+        self.vec4_result(i, e, K::U, swz)
+    }
+
+    fn store_tgsm(&mut self, i: &Inst) -> R<()> {
+        let structured = i.op == 0xa8;
+        let d = &i.ops[0];
+        let comps = bits(d.mask() as u32);
+        let (g, a, dwords) = {
+            let g = d.reg();
+            if d.ty != tpf::TGSM {
+                return Err(format!("raw/structured store to register type {} (only groupshared memory is written so)", d.ty));
+            }
+            let (dwords, stride) = *self.tgsm.get(&g).ok_or(format!("g{g} not declared"))?;
+            let a = if structured {
+                let idx = self.src(&i.ops[1], K::U, &[0])?;
+                let off = self.src(&i.ops[2], K::U, &[0])?;
+                format!("(({idx}) * {}u + ({off} >> 2u))", stride / 4)
+            } else {
+                format!("({} >> 2u)", self.src(&i.ops[1], K::U, &[0])?)
+            };
+            let t = self.fresh();
+            self.line(&format!("let {t} = {a};"));
+            (format!("g{g}"), t, dwords)
+        };
+        let vo = &i.ops[if structured { 3 } else { 2 }];
+        let v = self.src(vo, K::U, &comps)?;
+        let t = self.fresh();
+        self.line(&format!("let {t} = {v};"));
+        // (component c is the dword at address + 4c; out of range: not written)
+        for (k, &c) in comps.iter().enumerate() {
+            let val = if comps.len() == 1 { t.clone() } else { format!("{t}.{}", XYZW[k]) };
+            self.line(&format!("if ({a} + {c}u < {dwords}u) {{ {g}[{a} + {c}u] = {val}; }}"));
         }
         Ok(())
     }
@@ -1198,23 +1449,124 @@ pub fn translate_point_sprite(code: &[u8], ps: Option<&[u8]>, max_size: f32) -> 
     translate_with(code, false, ps, Some(max_size), &[])
 }
 
-fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f32>, addr: &[crate::addr::Addr]) -> R<Wgsl> {
+/// The typed UAVs a compute shader declares: (slot, dimension as dcl_uav_typed has it (2 1D,
+/// 3 2D, 5 3D, 7 1D array, 8 2D array), return type (1 unorm, 2 snorm, 3 sint, 4 uint, 5
+/// float)).
+pub fn uav_slots(code: &[u8]) -> R<Vec<(u32, u32, u32)>> {
+    let (_, p) = parse(code)?;
+    Ok(p.insts.iter().filter(|i| i.op == 0x9c && !i.ops.is_empty()).map(|i| (i.ops[0].reg(), i.ctl & 0x1f, i.extra.first().map_or(5, |r| r & 0xf))).collect())
+}
+
+/// A compute shader (cs_4_x/cs_5_0 DXBC) as a WGSL compute entry point `main`. Group 0:
+/// constant buffer b<n> at binding n, t<n> 16 + n, s<n> 160 + n, typed UAV u<n> 200 + n as a
+/// write-only storage texture of `uav_formats` (slot, WebGPU format; a UAV left out: by its
+/// return type, rgba32float/uint/sint), and, for UAVs the shader reads, 300 + n: a copy of
+/// u<n> taken before the dispatch (texture_2d.., read with textureLoad). Groupshared memory is
+/// var<workgroup>.
+pub fn translate_compute(code: &[u8], uav_formats: &[(u32, &str)]) -> R<Wgsl> {
     let (c, p) = parse(code)?;
-    if p.kind != if pixel { tpf::PIXEL } else { tpf::VERTEX } {
-        return Err(format!("program type {} for a {} shader", p.kind, if pixel { "pixel" } else { "vertex" }));
+    if p.kind != tpf::COMPUTE {
+        return Err(format!("program type {} for a compute shader", p.kind));
     }
-    let mut w = W::new(pixel, c.signature(false), c.signature(true));
-    w.addr = addr.to_vec();
+    let mut w = W::new(false, c.signature(false), c.signature(true));
+    w.split = true;
+    for &(n, f) in uav_formats {
+        w.uav_formats.insert(n, f.to_string());
+    }
     declarations(&mut w, &p)?;
+    if !w.inputs.is_empty() || !w.outputs.is_empty() {
+        return Err("a compute shader with input/output registers".into());
+    }
     for i in &p.insts {
+        if matches!(i.op, 0x0b | 0x0c | 0x7a..=0x7d | 0x0d | 0x45 | 0x4a | 0x46 | 0x7e..=0x80) && i.op != 0x7e {
+            // (no derivatives in a compute shader: implicit-level sampling and discard neither)
+            if !matches!(i.op, 0x7e | 0x7f) {
+                return Err(format!("instruction {:#x} in a compute shader", i.op));
+            }
+        }
         w.inst(i)?;
     }
     if !w.blocks.is_empty() {
         return Err("unclosed block".into());
     }
-    let group = pixel as u32;
-    let mut m = String::from("diagnostic(off, derivative_uniformity);\n\n");
+    let mut m = String::new();
     let mut bindings = Vec::new();
+    let mut temps = String::new();
+    module_decls(&mut w, &mut m, &mut bindings, 0, Some(&mut temps))?;
+    for &n in &w.used_u {
+        let u = &w.uavs[&n];
+        let (ty, vd) = storage_type(u.dim)?;
+        let fmt = w.uav_formats.get(&n).cloned().unwrap_or_else(|| match u.ret {
+            K::F => "rgba32float".into(),
+            K::U => "rgba32uint".into(),
+            K::I => "rgba32sint".into(),
+        });
+        if storage_kind(&fmt) != Some(u.ret) {
+            return Err(format!("u{n}: {fmt} views are not {} UAVs", u.ret.s()));
+        }
+        let _ = writeln!(m, "@group(0) @binding({}) var u{n}: {ty}<{fmt}, write>;", 200 + n);
+        bindings.push((200 + n, Binding::Storage(vd, fmt)));
+    }
+    for &n in &w.used_ur {
+        let u = &w.uavs[&n];
+        let (ty, vd) = texture_type(u.dim, u.ret, false)?;
+        let _ = writeln!(m, "@group(0) @binding({}) var ur{n}: {ty};", 300 + n);
+        let st = match u.ret {
+            K::U => 1,
+            K::I => 2,
+            K::F => 0,
+        };
+        bindings.push((300 + n, Binding::Texture(vd, st)));
+    }
+    for (g, &(dwords, _)) in &w.tgsm {
+        let _ = writeln!(m, "var<workgroup> g{g}: array<u32, {dwords}>;");
+    }
+    for (ty, name) in [(32, "vtid"), (33, "vgid"), (34, "vltid"), (35, "vlidx")] {
+        if w.sys_in.contains(&ty) {
+            let _ = writeln!(m, "var<private> {name}: vec4<u32>;");
+        }
+    }
+    let _ = write!(m, "\nfn shader_main() {{\n{temps}{}}}\n\n", w.body);
+    let [x, y, z] = w.threads.unwrap();
+    let _ = writeln!(
+        m,
+        "@compute @workgroup_size({x}, {y}, {z})\nfn main(@builtin(global_invocation_id) in_tid: vec3<u32>, @builtin(workgroup_id) in_gid: vec3<u32>, @builtin(local_invocation_id) in_ltid: vec3<u32>, @builtin(local_invocation_index) in_lidx: u32) {{"
+    );
+    for (ty, s) in [(32, "vtid = vec4<u32>(in_tid, 0u);"), (33, "vgid = vec4<u32>(in_gid, 0u);"), (34, "vltid = vec4<u32>(in_ltid, 0u);"), (35, "vlidx = vec4<u32>(in_lidx);")] {
+        if w.sys_in.contains(&ty) {
+            let _ = writeln!(m, "    {s}");
+        }
+    }
+    m.push_str("    shader_main();\n}\n");
+    Ok(Wgsl { code: m, bindings })
+}
+
+/// A typed UAV's storage texture type (WGSL, without the format) and view dimension.
+fn storage_type(dim: u32) -> R<(&'static str, u32)> {
+    Ok(match dim {
+        2 | 3 => ("texture_storage_2d", 1),
+        7 | 8 => ("texture_storage_2d_array", 2),
+        5 => ("texture_storage_3d", 5),
+        d => return Err(format!("UAV dimension {d}")),
+    })
+}
+
+/// The channel type of a WebGPU storage texture format.
+fn storage_kind(f: &str) -> Option<K> {
+    Some(match f {
+        "rgba8unorm" | "rgba8snorm" | "bgra8unorm" | "rgba16float" | "r32float" | "rg32float" | "rgba32float" | "r8unorm" | "rg8unorm" | "r16float" | "rg16float"
+        | "rgb10a2unorm" | "rg11b10ufloat" | "r16unorm" | "rg16unorm" | "rgba16unorm" | "r8snorm" | "rg8snorm" | "r16snorm" | "rg16snorm" | "rgba16snorm" => K::F,
+        "rgba8uint" | "rgba16uint" | "r32uint" | "rg32uint" | "rgba32uint" | "r8uint" | "rg8uint" | "r16uint" | "rg16uint" | "rgb10a2uint" => K::U,
+        "rgba8sint" | "rgba16sint" | "r32sint" | "rg32sint" | "rgba32sint" | "r8sint" | "rg8sint" | "r16sint" | "rg16sint" => K::I,
+        _ => return None,
+    })
+}
+
+/// The module's declarations of what the body uses: bindings, registers, helpers, the
+/// immediate constant buffer. `local`: the temporary registers are shader_main's own variables
+/// (`temps`), not the module's: WGSL's uniformity analysis follows a function's variables
+/// through assignments, not module ones (a barrier in a loop counted in a register).
+fn module_decls(w: &mut W, m: &mut String, bindings: &mut Vec<(u32, Binding)>, group: u32, temps: Option<&mut String>) -> R<()> {
     for &n in &w.used_cb {
         let size = w.cbs[&n];
         let _ = writeln!(m, "struct CB{n} {{ v: array<vec4<u32>, {size}> }}");
@@ -1241,11 +1593,19 @@ fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f3
         let _ = writeln!(m, "@group({group}) @binding({}) var s{n}: {};", 160 + n, if cmp { "sampler_comparison" } else { "sampler" });
         bindings.push((160 + n, Binding::Sampler(cmp)));
     }
+    let (local, out) = match temps {
+        Some(t) => ("    var", t),
+        None => ("var<private>", &mut *m),
+    };
     for r in 0..w.temps {
-        let _ = writeln!(m, "var<private> r{r}: vec4<u32>;");
+        if w.split {
+            let _ = writeln!(out, "{local} r{r}_x: u32; {local} r{r}_y: u32; {local} r{r}_z: u32; {local} r{r}_w: u32;");
+        } else {
+            let _ = writeln!(out, "{local} r{r}: vec4<u32>;");
+        }
     }
     for (x, n) in &w.xs {
-        let _ = writeln!(m, "var<private> x{x}: array<vec4<u32>, {n}>;");
+        let _ = writeln!(out, "{local} x{x}: array<vec4<u32>, {n}>;");
     }
     for r in w.inputs.keys() {
         let _ = writeln!(m, "var<private> v{r}: vec4<u32>;");
@@ -1280,6 +1640,27 @@ fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f3
         let items: Vec<String> = w.icb.chunks_exact(4).map(|c| format!("vec4<u32>({}u, {}u, {}u, {}u)", c[0], c[1], c[2], c[3])).collect();
         let _ = writeln!(m, "var<private> icb: array<vec4<u32>, {n}> = array<vec4<u32>, {n}>({});", items.join(", "));
     }
+    Ok(())
+}
+
+fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f32>, addr: &[crate::addr::Addr]) -> R<Wgsl> {
+    let (c, p) = parse(code)?;
+    if p.kind != if pixel { tpf::PIXEL } else { tpf::VERTEX } {
+        return Err(format!("program type {} for a {} shader", p.kind, if pixel { "pixel" } else { "vertex" }));
+    }
+    let mut w = W::new(pixel, c.signature(false), c.signature(true));
+    w.addr = addr.to_vec();
+    declarations(&mut w, &p)?;
+    for i in &p.insts {
+        w.inst(i)?;
+    }
+    if !w.blocks.is_empty() {
+        return Err("unclosed block".into());
+    }
+    let group = pixel as u32;
+    let mut m = String::from("diagnostic(off, derivative_uniformity);\n\n");
+    let mut bindings = Vec::new();
+    module_decls(&mut w, &mut m, &mut bindings, group, None)?;
     let _ = write!(m, "\nfn shader_main() {{\n{}}}\n\n", w.body);
     // the entry point
     let mut params = Vec::new();

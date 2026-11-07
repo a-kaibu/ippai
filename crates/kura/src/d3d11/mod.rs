@@ -31,6 +31,8 @@ mod deferred_tests;
 mod desc_tests;
 #[cfg(test)]
 mod copy_tests;
+#[cfg(test)]
+mod compute_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -1159,7 +1161,9 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
     let mips = if mips == 0 { max } else { mips.min(max) };
     let gpu = page_id();
     let layers = layers.max(1);
-    gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, gpu, w.max(1), h.max(1), layers, mips, page, match dim {
+    // (bit 8: bound for unordered access, a storage texture on the page)
+    let uav = if bind & 0x80 != 0 { 0x100 } else { 0 };
+    gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, gpu, w.max(1), h.max(1), layers, mips, page, uav | match dim {
         3 => 1,
         1 => 2,
         _ => 0,
@@ -2552,7 +2556,18 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             hazards::after_buffers(d, st);
         }
         49 | 51 | 52 | 55 | 57 => {}
-        38..=42 => {}
+        41 => dispatch(d, st, a(1), a(2), a(3)),
+        42 => {
+            // DispatchIndirect(args, offset): the group counts from the buffer
+            if let Some(Data::Buffer(b)) = d.objs.get(&d.id_of(a(1))).map(|o| &o.data) {
+                if a(2) as u64 + 12 <= b.size as u64 {
+                    let p = b.mem + a(2);
+                    let (x, y, z) = (rd(p, 0), rd(p, 1), rd(p, 2));
+                    dispatch(d, st, x, y, z);
+                }
+            }
+        }
+        38..=40 => {}
         72 | 77 => get_slots(d, &st.cbs[(m == 77) as usize], a(1), a(2), a(3)),
         73 | 84 => get_slots(d, &st.srvs[(m == 73) as usize], a(1), a(2), a(3)),
         74 => {
@@ -3314,6 +3329,8 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                     let key = sampler_key(&desc, *cmp);
                     entries.push([*bi, if *cmp { 3 } else { 2 }, key, desc[11], desc[12], 0, 0, 0]);
                 }
+                // (compute shaders only)
+                dxwgsl::Binding::Storage(..) => {}
             }
         }
         w.push(entries.len() as u32);
@@ -3377,6 +3394,123 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     }
     w.push(if known { h | 1 } else { 0 });
     gpu::record(|q| q.cmd(&w));
+}
+
+/// A compute shader's page shader and bindings for UAVs of these page formats (slot, format).
+fn compute_shader_for(d: &mut D11, cs: u32, fmts: &[(u32, u32)]) -> Option<(u32, Vec<(u32, dxwgsl::Binding)>)> {
+    let trace = d.trace;
+    let Some(Data::Shader(s)) = d.objs.get_mut(&cs).map(|o| &mut o.data) else { return None };
+    let key = fmts.iter().fold(0x811c_9dc5u32, |h, &(n, f)| (h ^ (n << 8 | f)).wrapping_mul(0x0100_0193));
+    let key = (key, Vec::new());
+    if let Some(r) = s.wgsl.get(&key) {
+        return r.clone();
+    }
+    let names: Vec<(u32, &str)> = fmts.iter().map(|&(n, f)| (n, crate::render::d3d::TEX_FORMATS.get(f as usize).copied().unwrap_or("rgba8unorm"))).collect();
+    let r = match dxwgsl::translate_compute(&s.code, &names) {
+        Ok(w) => {
+            let id = page_id();
+            gpu::record(|q| {
+                let off = q.blob(w.code.as_bytes());
+                q.cmd(&[gpu::CREATE_SHADER, id, off, w.code.len() as u32]);
+            });
+            if trace {
+                eprintln!("d3d11: compute shader {cs} -> {id} bindings {:?}", w.bindings);
+                if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
+                    eprintln!("{}", w.code);
+                }
+            }
+            Some((id, w.bindings))
+        }
+        Err(e) => {
+            eprintln!("d3d11: compute shader {cs}: {e}");
+            None
+        }
+    };
+    s.wgsl.insert(key, r.clone());
+    r
+}
+
+/// Dispatch(x, y, z): the compute shader on the page (render::d3d DISPATCH), its typed UAVs as
+/// storage textures. (D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION: 65535; more is
+/// invalid and runs nothing)
+unsafe fn dispatch(d: &mut D11, st: &State, x: u32, y: u32, z: u32) {
+    let cs = st.shaders[3];
+    if cs == 0 || x == 0 || y == 0 || z == 0 || x > 65535 || y > 65535 || z > 65535 {
+        return;
+    }
+    let code = match d.objs.get(&cs).map(|o| &o.data) {
+        Some(Data::Shader(s)) => s.code.clone(),
+        _ => return,
+    };
+    // the texture behind a view: (page texture, page format)
+    fn tex_of(d: &D11, v: u32) -> Option<(u32, u32, &View)> {
+        let Some(Data::View(vv)) = d.objs.get(&v).map(|o| &o.data) else { return None };
+        match d.objs.get(&vv.res).map(|o| &o.data) {
+            Some(Data::Texture(t)) if vv.buf.is_none() => Some((t.gpu, t.page, vv)),
+            _ => None,
+        }
+    }
+    let mut fmts = Vec::new();
+    for (n, _, _) in dxwgsl::uav_slots(&code).unwrap_or_default() {
+        let v = st.uavs[1].get(n as usize).copied().unwrap_or(0);
+        if let Some((_, page, _)) = tex_of(d, v) {
+            fmts.push((n, page));
+        }
+    }
+    let Some((sh, binds)) = compute_shader_for(d, cs, &fmts) else { return };
+    let mut w = vec![gpu::DISPATCH, sh, x, y, z, binds.len() as u32];
+    for (bi, kind) in &binds {
+        let e = match kind {
+            dxwgsl::Binding::Uniform(size) => {
+                let cb = st.cbs[5].get(*bi as usize).copied().unwrap_or(0);
+                let g = if cb != 0 { buffer_gpu(d, cb) } else { 0 };
+                [*bi, 0, g, 0, 0, *size, 0, 0]
+            }
+            dxwgsl::Binding::Storage(vdim, _) => {
+                let n = bi - 200;
+                let v = st.uavs[1].get(n as usize).copied().unwrap_or(0);
+                match tex_of(d, v) {
+                    Some((g, page, vv)) => [*bi, 7, g, *vdim, vv.mip, page, vv.layer, vv.layers.max(1)],
+                    // (no UAV bound: writes go nowhere, as in Direct3D; nothing to run then)
+                    None => return,
+                }
+            }
+            dxwgsl::Binding::Texture(vdim, sample) if *bi >= 300 => {
+                let n = bi - 300;
+                let v = st.uavs[1].get(n as usize).copied().unwrap_or(0);
+                match tex_of(d, v) {
+                    Some((g, _, vv)) => [*bi, 8, g, *vdim, vv.mip, *sample, vv.layer, vv.layers.max(1)],
+                    None => [*bi, 8, 0, *vdim, 0, *sample, 0, 1],
+                }
+            }
+            dxwgsl::Binding::Texture(vdim, sample) => {
+                let t = bi - 16;
+                let sv = st.srvs[5].get(t as usize).copied().unwrap_or(0);
+                buffer_view_sync(d, sv);
+                let mut e = match d.objs.get(&sv).map(|o| &o.data) {
+                    Some(Data::View(v)) => match d.objs.get(&v.res).map(|o| &o.data) {
+                        Some(Data::Texture(tx)) => [*bi, 1, tx.gpu, *vdim, v.mip, v.mips.min(tx.mips - v.mip.min(tx.mips - 1)).max(1), v.layer, v.layers.max(1)],
+                        _ => [*bi, 1, 0, *vdim, 0, 1, 0, 1],
+                    },
+                    _ => [*bi, 1, 0, *vdim, 0, 1, 0, 1],
+                };
+                if *sample != 0 {
+                    e[1] = 3 + *sample;
+                }
+                e
+            }
+            dxwgsl::Binding::Sampler(cmp) => {
+                let s = bi - 160;
+                let id = st.samplers[5].get(s as usize).copied().unwrap_or(0);
+                let desc = state_desc(d, id).cloned().unwrap_or_else(|| vec![0x15, 3, 3, 3, 0, 1, 8, 0, 0, 0, 0, 0, 0x7f7f_ffff]);
+                [*bi, if *cmp { 3 } else { 2 }, sampler_key(&desc, *cmp), desc[11], desc[12], 0, 0, 0]
+            }
+        };
+        w.extend_from_slice(&e);
+    }
+    gpu::record(|q| q.cmd(&w));
+    // (what the page drew to is not what kura thinks it last drew: targets set again)
+    d.targets = None;
 }
 
 /// D3D11_SAMPLER_DESC as the page's sampler key: address u v w (3 bits each), mag, min, mip

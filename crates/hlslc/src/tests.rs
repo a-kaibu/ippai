@@ -489,3 +489,148 @@ float4 ps(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target {\n\
     // no samplers with them: as translate
     assert_eq!(dxwgsl::translate_addr(&code, true, None, &[]).unwrap().code, dxwgsl::translate(&code, true, None).unwrap().code);
 }
+
+// ---- compute shaders ----
+
+fn cs(src: &str, defs: &[(&str, &str)], target: &str, fmts: &[(u32, &str)]) -> String {
+    let defs: Vec<(String, String)> = defs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+    let mut inc = |name: &str, _: bool| match name {
+        "NIS_Scaler.h" => Some(NIS_SCALER.to_string()),
+        _ => None,
+    };
+    let code = super::compile(src, &defs, &mut inc, "main", target, 0).unwrap_or_else(|e| panic!("{target} {defs:?}: {e}\n{src}"));
+    let w = dxwgsl::translate_compute(&code, fmts).unwrap_or_else(|e| panic!("translate {defs:?}: {e}\n{src}"));
+    let m = match naga::front::wgsl::parse_str(&w.code) {
+        Ok(m) => m,
+        Err(e) => panic!("{}\n{}", e.emit_to_string(&w.code), w.code),
+    };
+    if let Err(e) = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&m) {
+        panic!("invalid: {e:?}\n{}", w.code);
+    }
+    w.code
+}
+
+fn cs_err(src: &str, target: &str) -> String {
+    let mut inc = |_: &str, _: bool| None;
+    match super::compile(src, &[], &mut inc, "main", target, 0) {
+        Err(e) => e,
+        Ok(code) => match dxwgsl::translate_compute(&code, &[]) {
+            Err(e) => e,
+            Ok(w) => panic!("{target}: compiled and translated\n{src}\n{}", w.code),
+        },
+    }
+}
+
+const NIS_MAIN: &str = include_str!("../../../tests/compute/nis/NIS_Main.hlsl");
+const NIS_SCALER: &str = include_str!("../../../tests/compute/nis/NIS_Scaler.h");
+
+/// What compute shaders use: the four thread ID semantics, typed UAVs of every dimension and
+/// channel type (stores, loads, compound assignments, ++), groupshared arrays, structs and
+/// matrices with every barrier, numthreads at the limits, Gather of each channel, SampleLevel
+/// and Load, cs_4_0's limits.
+#[test]
+fn compute_shaders() {
+    let ids = "RWTexture2D<uint4> u : register(u0);\n\
+        [numthreads(4, 2, 1)] void main(uint3 t : SV_DispatchThreadID, uint3 g : SV_GroupID, uint3 l : SV_GroupThreadID, uint i : SV_GroupIndex) {\n\
+        u[t.xy] = uint4(g.x * 100 + l.x, g.y * 100 + l.y, i, t.z); }";
+    let w = cs(ids, &[], "cs_5_0", &[]);
+    assert!(w.contains("@compute @workgroup_size(4, 2, 1)"), "{w}");
+    assert!(w.contains("texture_storage_2d<rgba32uint, write>"), "{w}");
+    for (src, fmts, want) in [
+        // (1D textures are 2D ones of height 1 on the page, see render::d3d create_texture2)
+        ("RWTexture1D<float4> u : register(u2); [numthreads(64,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.x] = t.x / 64.0; }", vec![], "texture_storage_2d<rgba32float"),
+        ("RWTexture2DArray<int4> u : register(u1); [numthreads(8,8,1)] void main(uint3 t : SV_DispatchThreadID) { u[t] = int4(t, 1) - 4; }", vec![], "texture_storage_2d_array<rgba32sint"),
+        ("RWTexture3D<float> u : register(u0); [numthreads(4,4,4)] void main(uint3 t : SV_DispatchThreadID) { u[t] = dot(t, 1); }", vec![(0, "r32float")], "texture_storage_3d<r32float"),
+        ("RWTexture2D<unorm float4> u : register(u0); [numthreads(1,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = u[t.xy].yzwx * 0.5; }", vec![(0, "rgba8unorm")], "ur0"),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(8,8,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] += float4(1, 2, 3, 4); u[t.xy] *= 2; }", vec![(0, "rgba16float")], "rgba16float"),
+        ("RWTexture2D<uint> u : register(u0); [numthreads(8,8,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy]++; ++u[t.yx]; }", vec![(0, "r32uint")], "r32uint"),
+        ("RWTexture2D<snorm float4> u : register(u3); [numthreads(32,32,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = -1; }", vec![(3, "rgba8snorm")], "workgroup_size(32, 32, 1)"),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(1024,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 0; }", vec![], "workgroup_size(1024, 1, 1)"),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(1,1,64)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = t.z; }", vec![], "workgroup_size(1, 1, 64)"),
+    ] {
+        let w = cs(src, &[], "cs_5_0", &fmts);
+        assert!(w.contains(want), "{src}: no {want}\n{w}");
+    }
+    // groupshared
+    let shared = "struct P { float3 c; uint n; };\n\
+        groupshared float4 a[64]; groupshared P ps[16]; groupshared float2x2 m; groupshared uint total;\n\
+        Texture2D<float4> t : register(t0); SamplerState s : register(s0); cbuffer C : register(b0) { float4 k; uint pick; };\n\
+        RWTexture2D<float4> u : register(u0);\n\
+        [numthreads(8, 8, 1)] void main(uint3 id : SV_DispatchThreadID, uint i : SV_GroupIndex) {\n\
+          if (i == 0) { total = 0; m = float2x2(1, 2, 3, 4); }\n\
+          a[i] = t.SampleLevel(s, id.xy / 64.0, 0) + t.Load(int3(id.xy, 0)) * k;\n\
+          ps[i & 15].c = a[i].xyz; ps[i & 15].n = i;\n\
+          GroupMemoryBarrierWithGroupSync();\n\
+          float4 sum = 0; [unroll] for (int j = 0; j < 4; j++) sum += a[(i + j * 16) & 63];\n\
+          sum.xy = mul(m, sum.xy); sum.z += ps[pick & 15].c.x;\n\
+          GroupMemoryBarrier(); DeviceMemoryBarrier(); DeviceMemoryBarrierWithGroupSync(); AllMemoryBarrier(); AllMemoryBarrierWithGroupSync();\n\
+          u[id.xy] = sum + float4(t.GatherGreen(s, id.xy / 64.0).x, t.GatherBlue(s, id.xy / 64.0).y, t.GatherAlpha(s, id.xy / 64.0).z, t.GatherRed(s, id.xy / 64.0).w); }";
+    let w = cs(shared, &[], "cs_5_0", &[(0, "rgba8unorm")]);
+    assert!(w.contains("var<workgroup>") && w.contains("workgroupBarrier()"), "{w}");
+    assert!(w.contains("textureGather(1,") && w.contains("textureGather(2,") && w.contains("textureGather(3,"), "{w}");
+    // shader model 4 compute: 768 threads, z of 1
+    cs("RWTexture2D<float4> u : register(u0); [numthreads(768,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", &[], "cs_4_0", &[]);
+}
+
+#[test]
+fn compute_errors() {
+    for (src, target, want) in [
+        ("RWTexture2D<float4> u : register(u0); void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", "cs_5_0", "numthreads"),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(0,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", "cs_5_0", "numthreads"),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(33,32,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", "cs_5_0", "numthreads"),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(1,1,65)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", "cs_5_0", "numthreads"),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(1024,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", "cs_4_0", "numthreads"),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(1,1,2)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", "cs_4_0", "numthreads"),
+        ("RWTexture2D<float4> u : register(u0); groupshared float4 g[2049]; [numthreads(1,1,1)] void main(uint3 t : SV_DispatchThreadID) { g[t.x] = 1; u[t.xy] = g[0]; }", "cs_5_0", "groupshared"),
+        ("RWTexture2D<float4> u : register(u0); groupshared float g = 1; [numthreads(1,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = g; }", "cs_5_0", "groupshared"),
+        ("RWTexture2D<float4> u : register(t0); [numthreads(1,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", "cs_5_0", "register"),
+        ("Texture2D t : register(t0); SamplerState s : register(s0); RWTexture2D<float4> u : register(u0); [numthreads(1,1,1)] void main(uint3 i : SV_DispatchThreadID) { u[i.xy] = t.Sample(s, i.xy); }", "cs_5_0", ""),
+        ("RWTexture2D<float4> u : register(u0); [numthreads(1,1,1)] void main(uint3 i : SV_DispatchThreadID) { float x = i.x; u[i.xy] = ddx(x); }", "cs_5_0", ""),
+    ] {
+        let e = cs_err(src, target);
+        assert!(e.to_lowercase().contains(want), "{src}: {e}");
+    }
+    // a UAV's storage format of another channel type than the shader's: an error, not WGSL
+    // that WebGPU refuses; a pixel shader is no compute shader
+    let mut inc = |_: &str, _: bool| None;
+    let code = super::compile("RWTexture2D<uint4> u : register(u0); [numthreads(1,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", &[], &mut inc, "main", "cs_5_0", 0).unwrap();
+    assert!(dxwgsl::translate_compute(&code, &[(0, "rgba8unorm")]).is_err());
+    assert!(dxwgsl::translate_compute(&code, &[(0, "rgba8uint")]).is_ok());
+    assert_eq!(dxwgsl::uav_slots(&code).unwrap().len(), 1);
+    let ps = super::compile("float4 main() : SV_Target { return 1; }", &[], &mut inc, "main", "ps_5_0", 0).unwrap();
+    assert!(dxwgsl::translate_compute(&ps, &[]).is_err());
+    // compute-only things in a pixel shader
+    for src in [
+        "groupshared float g[4]; float4 main() : SV_Target { return g[0]; }",
+        "float4 main() : SV_Target { GroupMemoryBarrierWithGroupSync(); return 1; }",
+    ] {
+        assert!(super::compile(src, &[], &mut inc, "main", "ps_5_0", 0).is_err(), "{src}");
+    }
+}
+
+/// Every variant of the NVIDIA Image Scaling SDK's shader a game can compile (tests/compute/nis):
+/// scaler and sharpen-only, SDR / HDR linear / HDR PQ, half precision, viewport support, NV12
+/// input, thread groups of 128 and 256, the block sizes of the SDK's own config.
+#[test]
+fn nis_variants() {
+    let mut n = 0;
+    for scaler in [1, 0] {
+        for hdr in ["0", "1", "2"] {
+            for half in ["0", "1"] {
+                for vp in ["0", "1"] {
+                    for nv12 in ["0", "1"] {
+                        for tg in ["128", "256"] {
+                            let (bw, bh) = if scaler == 1 { ("32", "24") } else { ("32", "32") };
+                            let s = scaler.to_string();
+                            let defs = [("NIS_SCALER", s.as_str()), ("NIS_HDR_MODE", hdr), ("NIS_BLOCK_WIDTH", bw), ("NIS_BLOCK_HEIGHT", bh), ("NIS_THREAD_GROUP_SIZE", tg), ("NIS_USE_HALF_PRECISION", half), ("NIS_VIEWPORT_SUPPORT", vp), ("NIS_NV12_SUPPORT", nv12)];
+                            let w = cs(NIS_MAIN, &defs, "cs_5_0", &[(0, "rgba8unorm")]);
+                            assert!(w.contains(&format!("@workgroup_size({tg}, 1, 1)")), "{defs:?}");
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(n, 96);
+}

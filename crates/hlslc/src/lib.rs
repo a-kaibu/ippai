@@ -22,6 +22,7 @@ pub const IEEE_STRICTNESS: u32 = 1 << 13;
 
 pub struct Target {
     pub pixel: bool,
+    pub compute: bool,
     pub major: u32,
     pub minor: u32,
 }
@@ -32,9 +33,10 @@ pub fn parse_target(t: &str) -> Result<Target, String> {
     if v.len() < 3 {
         return Err(format!("unknown target {t}"));
     }
+    let compute = v[0] == "cs";
     let pixel = match v[0] {
         "ps" => true,
-        "vs" => false,
+        "vs" | "cs" => false,
         s => return Err(format!("{s} shaders are not supported")),
     };
     let major: u32 = v[1].parse().map_err(|_| format!("unknown target {t}"))?;
@@ -43,7 +45,11 @@ pub fn parse_target(t: &str) -> Result<Target, String> {
     } else {
         v[2].parse().unwrap_or(0)
     };
+    if compute && (major < 4 || v.len() > 3) {
+        return Err(format!("unknown target {t}"));
+    }
     Ok(Target {
+        compute,
         pixel,
         major,
         minor,
@@ -94,7 +100,7 @@ fn parse_program(
 fn lower_entry(prog: &ast::Program, pre: &ast::Program, entry: &str, args: &[ast::Expr], t: &Target, flags: u32) -> Result<sm4::Shader, String> {
     // (the prelude shares the program's struct table: it has no structs)
     let minor = if t.major >= 5 { 0 } else if t.major == 4 { t.minor.min(1) } else { t.minor };
-    let o = lower::Opts { pixel: t.pixel, major: t.major.min(5), minor, row_major: flags & PACK_MATRIX_ROW_MAJOR != 0, ieee: flags & IEEE_STRICTNESS != 0 };
+    let o = lower::Opts { pixel: t.pixel, compute: t.compute, major: t.major.min(5), minor, row_major: flags & PACK_MATRIX_ROW_MAJOR != 0, ieee: flags & IEEE_STRICTNESS != 0 };
     lower::L::new(o, prog, pre).entry(entry, args)
 }
 

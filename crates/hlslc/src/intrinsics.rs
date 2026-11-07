@@ -303,6 +303,22 @@ pub fn call(l: &mut L, name: &str, args: &[Expr], line: u32) -> R<Val> {
         return Ok(v);
     }
     Ok(match name {
+        "GroupMemoryBarrier" | "GroupMemoryBarrierWithGroupSync" | "DeviceMemoryBarrier" | "DeviceMemoryBarrierWithGroupSync" | "AllMemoryBarrier"
+        | "AllMemoryBarrierWithGroupSync" => {
+            need(0)?;
+            if !l.o.compute {
+                return Err(format!("line {line}: {name} outside a compute shader"));
+            }
+            // sync flags: 1 threads in the group, 2 groupshared memory, 8 UAV memory
+            let mem = match name.trim_end_matches("WithGroupSync") {
+                "GroupMemoryBarrier" => 2,
+                "DeviceMemoryBarrier" => 8,
+                _ => 10,
+            };
+            let ctl = mem | name.ends_with("WithGroupSync") as u32;
+            l.x_emit(SYNC, vec![], vec![]).ctl = ctl;
+            Val::num(Ty::Void, vec![])
+        }
         "sqrt" | "rsqrt" | "frac" | "floor" | "ceil" | "round" | "trunc" | "exp2" | "log2" | "ddx" | "ddy" | "ddx_coarse" | "ddy_coarse"
         | "ddx_fine" | "ddy_fine" => {
             need(1)?;
@@ -716,11 +732,21 @@ pub fn method(l: &mut L, o: Val, name: &str, args: &[Expr]) -> R<Val> {
             let off = l.offset_of(args.get(3))?;
             l.sample(if name == "SampleCmp" { SAMPLE_C } else { SAMPLE_C_LZ }, t, s, c, vec![r], off, true)?
         }
-        "Gather" | "GatherRed" => {
+        "Gather" | "GatherRed" | "GatherGreen" | "GatherBlue" | "GatherAlpha" => {
             let s = samp(l, 0)?;
             let c = arg(l, 1)?;
             let off = l.offset_of(args.get(2))?;
             let mut v = l.sample(GATHER4, t, s, c, vec![], off, false)?;
+            let ch = match name {
+                "GatherGreen" => 1,
+                "GatherBlue" => 2,
+                "GatherAlpha" => 3,
+                _ => 0,
+            };
+            if ch != 0 {
+                // (the channel: the sampler operand's component select)
+                l.x_last().src[2] = Src::SampC(s, ch);
+            }
             v.ty = Ty::Vec(B::Float, 4);
             let C::R(r, _) = v.c[0] else { unreachable!() };
             v.c = (0..4).map(|k| C::R(r, k)).collect();

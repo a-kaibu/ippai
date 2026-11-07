@@ -83,7 +83,7 @@ fn td_of(prog: &Program, t: &Ty, row_major: bool) -> Td {
             let members = st.fields.iter().map(|f| td_of(prog, &f.ty, f.row_major.unwrap_or(row_major)).named(&f.name)).collect();
             Td { class: PC_STRUCT, members, rows: 0, cols: 0, ..Td::scalar(PT_VOID) }
         }
-        Ty::Tex(d, _) => Td::object(match d {
+        Ty::Tex(d, _) | Ty::RwTex(d, _) => Td::object(match d {
             Dim::T1D => 6,
             Dim::T3D => 8,
             Dim::Cube => 9,

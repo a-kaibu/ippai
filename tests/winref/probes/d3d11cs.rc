@@ -1,0 +1,8 @@
+/* resources of the d3d11cs probe (tests/winref/build.sh compiles <probe>.rc in place of ja.rc):
+ * the NVIDIA Image Scaling SDK's shader and coefficients (tests/compute/nis) */
+#include <windows.h>
+1 24 "ja.manifest"
+NIS_MAIN RCDATA "../compute/nis/NIS_Main.hlsl"
+NIS_SCALER RCDATA "../compute/nis/NIS_Scaler.h"
+NIS_COEF_SCALE RCDATA "../compute/nis/coef_scale.f32"
+NIS_COEF_USM RCDATA "../compute/nis/coef_usm.f32"

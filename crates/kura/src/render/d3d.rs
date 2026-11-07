@@ -14,7 +14,7 @@ use crate::d3d9::gpu::*;
 const DATA: u32 = 0xffff_ffff;
 
 // (crates/kura/src/d3d11/format.rs P_*)
-const TEX_FORMATS: [&str; 41] = [
+pub(crate) const TEX_FORMATS: [&str; 41] = [
     "bgra8unorm",
     "depth24plus-stencil8",
     "rgba16float",
@@ -84,6 +84,14 @@ fn bpp(f: &str) -> u32 {
         "rgba32float" | "rgba32uint" | "rgba32sint" => 16,
         _ => 4,
     }
+}
+/// Whether a WebGPU texture of this format can be a storage texture (write-only; bgra8unorm
+/// with the bgra8unorm-storage feature).
+pub(crate) fn storable(f: &str) -> bool {
+    matches!(
+        f,
+        "rgba8unorm" | "rgba8snorm" | "rgba8uint" | "rgba8sint" | "rgba16uint" | "rgba16sint" | "rgba16float" | "r32uint" | "r32sint" | "r32float" | "rg32uint" | "rg32sint" | "rg32float" | "rgba32uint" | "rgba32sint" | "rgba32float"
+    ) || (f == "bgra8unorm" && gpu::has_feature("bgra8unorm-storage"))
 }
 /// Whether WebGPU draws to a color format (crates/kura/src/render/model.rs format_info).
 fn renderable(f: &str) -> bool {
@@ -240,6 +248,8 @@ struct Tex {
     zused: u32,
     /// 32-bit float texels kept as halves (see `halved`)
     halved: bool,
+    /// made for unordered access views: a storage texture too
+    storage: bool,
 }
 
 impl Tex {
@@ -449,6 +459,9 @@ pub struct D3d {
     /// land before the commands are submitted).
     bused: Vec<u32>,
     pipelines2: HashMap<u32, Pipe2>,
+    /// compute pipelines and their bind group layouts, by shader and binding kinds (see `dispatch`)
+    computes: HashMap<Vec<u32>, (Id, Id)>,
+    warned_dispatch: bool,
     targets2: Option<Vec<u32>>,
     dummies: HashMap<(u32, u32), Id>,
     zero_buf: Id,
@@ -524,6 +537,8 @@ impl D3d {
             doomed: Vec::new(),
             bused: Vec::new(),
             pipelines2: HashMap::new(),
+            computes: HashMap::new(),
+            warned_dispatch: false,
             targets2: None,
             dummies: HashMap::new(),
             zero_buf: 0,
@@ -721,7 +736,7 @@ impl D3d {
                     self.clear_groups2();
                     self.created.set(self.created.get() + 1);
                     let view = gpu::view(tex, "");
-                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format) });
+                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false });
                     i += 7;
                 }
                 DESTROY_TEXTURE => {
@@ -788,8 +803,19 @@ impl D3d {
                 CREATE_SHADER => {
                     let (id, off, len) = (a(1) as usize, a(2) as usize, a(3) as usize);
                     let code = String::from_utf8_lossy(&blob[off..off + len]);
+                    // (a storage texture of 32-bit floats, kept as halves: a module that says so)
+                    let halves = code.contains("@compute") && halved(P_RGBA32F);
+                    let code = if halves { code.replace("<rgba32float, write>", "<rgba16float, write>").into() } else { code };
                     if let Some(old) = self.shaders.insert(id as u32, gpu::shader(&code)) {
                         gpu::drop(old);
+                        self.computes.retain(|k, &mut (p, l)| {
+                            let keep = k[0] != id as u32;
+                            if !keep {
+                                gpu::drop(p);
+                                gpu::drop(l);
+                            }
+                            keep
+                        });
                     }
                     i += 4;
                 }
@@ -921,6 +947,7 @@ impl D3d {
                     i += 2 + n * 3 + 3;
                 }
                 DRAW2 => i = self.draw2(c, i),
+                DISPATCH => i = self.dispatch(c, i),
                 CLEAR_VIEW => {
                     let (tex, level, layer, flags) = (a(1), a(2), a(3), a(4));
                     let color = [f32of(a(5)), f32of(a(6)), f32of(a(7)), f32of(a(8))];
@@ -2210,6 +2237,8 @@ impl D3d {
 
     fn create_texture2(&mut self, a: [u32; 7]) {
         let [id, w, h, layers, mips, format, dim_code] = a;
+        // (bit 8: bound for unordered access)
+        let (uav, dim_code) = (dim_code & 0x100 != 0, dim_code & 0xff);
         let fmt = tex_format(format);
         // 1D textures are 2D ones of height 1: WebGPU's 1D textures have neither array layers
         // nor mips (dxwgsl declares Texture1D[Array] as texture_2d[_array] to match)
@@ -2225,7 +2254,8 @@ impl D3d {
         // (no more levels than the size has)
         let biggest = if dim == "3d" { w.max(h).max(layers) } else { w.max(h) };
         let levels = mips.max(1).min(32 - biggest.max(1).leading_zeros());
-        let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if renderable || (depth && dim == "2d") { usage::T_RENDER } else { 0 };
+        let storage = uav && storable(fmt);
+        let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if renderable || (depth && dim == "2d") { usage::T_RENDER } else { 0 } | if storage { usage::T_STORAGE } else { 0 };
         let tex = gpu::texture(&format!(
             r#"{{"size":[{w},{h},{}],"dimension":{},"format":{},"mipLevelCount":{levels},"usage":{u}}}"#,
             layers.max(1),
@@ -2249,7 +2279,7 @@ impl D3d {
             tex,
             &format!(r#"{{"dimension":{}{},"aspect":{}}}"#, q(dim), if dim == "2d" { r#","arrayLayerCount":1"# } else { "" }, q(if depth { "depth-only" } else { "all" })),
         );
-        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format) });
+        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage });
         // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
         // every LESS test), and the passes that clear rather than load an aspect no draw used
         // yet (see `zused`) start from that too.
@@ -2727,6 +2757,164 @@ impl D3d {
         p.kinds = kinds;
         p.zuse = zuse;
         true
+    }
+
+    /// DISPATCH shader x y z n entries: a compute pass of its own. Entries (8 words) as DRAW2's
+    /// (0 uniform, 1/4/5 texture, 2 sampler), and 7 a storage texture (binding 7 texture
+    /// view-dimension mip format layer layers: what a typed UAV writes), 8 a typed UAV the shader
+    /// reads (binding 8 texture view-dimension mip sample-type layer layers: what it held before
+    /// the dispatch, a copy, as WebGPU has no read-write storage textures of most formats).
+    fn dispatch(&mut self, c: &[u32], i: usize) -> usize {
+        let (sid, x, y, z, n) = (c[i + 1], c[i + 2], c[i + 3], c[i + 4], c[i + 5] as usize);
+        let next = i + 6 + n * 8;
+        let es = &c[i + 6..next];
+        let Some(&module) = self.shaders.get(&sid) else { return next };
+        if x == 0 || y == 0 || z == 0 {
+            return next;
+        }
+        self.end_pass();
+        for e in es.chunks(8) {
+            if matches!(e[1], 1 | 4 | 5 | 7 | 8) {
+                self.settle(e[2]);
+            }
+        }
+        // (storage textures as the shader declares them: else no dispatch, as an invalid one
+        // would take the command buffer with it)
+        let stored: Vec<u32> = es.chunks(8).filter(|e| e[1] == 7).map(|e| e[2]).collect();
+        for e in es.chunks(8).filter(|e| e[1] == 7) {
+            let ok = self.textures.get(&e[2]).is_some_and(|t| t.storage && t.format == tex_format(e[5]) && (t.dim == "3d") == (e[3] == 5));
+            if !ok {
+                if !self.warned_dispatch {
+                    self.warned_dispatch = true;
+                    eprintln!("d3d11: dispatch: UAV texture {} is not a {} storage texture", e[2], tex_format(e[5]));
+                }
+                return next;
+            }
+        }
+        let mut key = vec![sid];
+        for e in es.chunks(8) {
+            key.extend_from_slice(&[e[0], e[1], if matches!(e[1], 1 | 4 | 5 | 7 | 8) { e[3] } else { 0 }, if e[1] == 7 { e[5] } else { 0 }]);
+        }
+        let (pipe, layout) = match self.computes.get(&key) {
+            Some(&p) => {
+                gpu::pipeline_hit();
+                p
+            }
+            None => {
+                let mut entries = Vec::new();
+                for e in es.chunks(8) {
+                    let (binding, kind) = (e[0], e[1]);
+                    let vd = q(pick(&VIEW_DIM, e[3], "2d"));
+                    entries.push(match kind {
+                        0 => format!(r#"{{"binding":{binding},"visibility":4,"buffer":{{"type":"uniform"}}}}"#),
+                        2 => format!(r#"{{"binding":{binding},"visibility":4,"sampler":{{"type":"filtering"}}}}"#),
+                        3 => format!(r#"{{"binding":{binding},"visibility":4,"sampler":{{"type":"comparison"}}}}"#),
+                        7 => format!(r#"{{"binding":{binding},"visibility":4,"storageTexture":{{"access":"write-only","format":{},"viewDimension":{vd}}}}}"#, q(tex_format(e[5]))),
+                        _ => {
+                            let st = match (kind, e[5]) {
+                                (4, _) | (8, 1) => "uint",
+                                (5, _) | (8, 2) => "sint",
+                                (8, _) => "unfilterable-float",
+                                _ => "float",
+                            };
+                            format!(r#"{{"binding":{binding},"visibility":4,"texture":{{"sampleType":{},"viewDimension":{vd}}}}}"#, q(st))
+                        }
+                    });
+                }
+                let l = gpu::bind_group_layout(&format!(r#"{{"entries":[{}]}}"#, entries.join(",")));
+                let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{l}]}}"#));
+                let p = gpu::compute_pipeline(&format!(r#"{{"layout":{pl},"compute":{{"module":{module},"entryPoint":"main"}}}}"#));
+                gpu::drop(pl);
+                self.computes.insert(key, (p, l));
+                (p, l)
+            }
+        };
+        let mut entries = Vec::new();
+        let mut views = Vec::new();
+        for e in es.chunks(8) {
+            let (binding, kind, a, b, cc, dd, ee, ff) = (e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+            match kind {
+                0 => {
+                    let want = (dd.div_ceil(16) * 16).max(16);
+                    if !self.bused.contains(&a) {
+                        self.bused.push(a);
+                    }
+                    match self.buffers.get(&a).copied() {
+                        Some((buf, size)) if size >= want => entries.push((binding, Res::Buffer(buf, 0, size.min(65536)))),
+                        _ => {
+                            let zb = self.zero();
+                            entries.push((binding, Res::Buffer(zb, 0, want.min(65536))));
+                        }
+                    }
+                }
+                2 | 3 => {
+                    let s = self.sampler2(a, b, cc);
+                    entries.push((binding, Res::Obj(s)));
+                }
+                7 => {
+                    self.use_tex(a);
+                    self.touch(a);
+                    let v = self.view2(a, b.min(5) as u8, cc, 1, ee, ff, false);
+                    entries.push((binding, Res::Obj(v)));
+                }
+                8 => {
+                    // (what it held: a copy of that mip)
+                    let v = match self.textures.get(&a).filter(|t| t.dim != "3d" || b == 5) {
+                        Some(t) => {
+                            let m = cc.min(t.levels - 1);
+                            let (w, h, layers) = ((t.w >> m).max(1), (t.h >> m).max(1), if t.dim == "3d" { (t.layers >> m).max(1) } else { t.layers });
+                            let (src, dim, format) = (t.tex, t.dim, t.format);
+                            self.use_tex(a);
+                            let copy = gpu::texture(&format!(
+                                r#"{{"size":[{w},{h},{layers}],"dimension":{},"format":{},"usage":{}}}"#,
+                                q(dim),
+                                q(format),
+                                usage::T_BINDING | usage::T_COPY_DST
+                            ));
+                            gpu::copy_texture(src, m, [0, 0, 0], copy, 0, [0, 0, 0], [w, h, layers]);
+                            self.doomed.push(copy);
+                            let dname = pick(&VIEW_DIM, b, "2d");
+                            let count = if matches!(dname, "2d" | "3d") { 1 } else { ff.max(1).min(layers - ee.min(layers - 1)) };
+                            let v = gpu::view(
+                                copy,
+                                &format!(r#"{{"dimension":{},"baseArrayLayer":{},"arrayLayerCount":{count}}}"#, q(dname), if dname == "3d" { 0 } else { ee.min(layers - 1) }),
+                            );
+                            views.push(v);
+                            v
+                        }
+                        None => self.dummy(b, match dd { 1 => 4, 2 => 5, _ => 1 }),
+                    };
+                    entries.push((binding, Res::Obj(v)));
+                }
+                _ => {
+                    // (one it writes too: a validation error in WebGPU; Direct3D unbinds such
+                    // views, see d3d11::hazards)
+                    let ok = self.textures.get(&a).filter(|t| {
+                        !is_depth(t.format)
+                            && !stored.contains(&a)
+                            && (t.dim == "3d") == (b == 5)
+                            && (!matches!(b, 3 | 4) || (t.layers >= 6 && t.w == t.h))
+                            && (kind != 1 || !t.format.ends_with("int"))
+                            && (kind != 4 || t.format.ends_with("uint"))
+                            && (kind != 5 || t.format.ends_with("sint"))
+                    });
+                    let v = match ok {
+                        Some(_) => {
+                            self.use_tex(a);
+                            self.view2(a, b.min(5) as u8, cc, dd, ee, ff, false)
+                        }
+                        None => self.dummy(b, kind),
+                    };
+                    entries.push((binding, Res::Obj(v)));
+                }
+            }
+        }
+        let group = gpu::bind_group(layout, &entries);
+        gpu::dispatch(pipe, group, x, y, z);
+        gpu::drop(group);
+        views.into_iter().for_each(gpu::drop);
+        self.open = true;
+        next
     }
 
     fn draw2(&mut self, c: &[u32], i: usize) -> usize {

@@ -49,6 +49,8 @@ pub enum Ty {
     Tex(Dim, Box<Ty>),
     /// SamplerState / SamplerComparisonState (true)
     Sampler(bool),
+    /// RWTexture1D/2D/3D(Array)<el>: a typed unordered access view (compute shaders)
+    RwTex(Dim, Box<Ty>),
     /// sampler2D... of shader model 2/3 code: a texture and a sampler on one register
     Legacy(Dim),
     Str,
@@ -85,7 +87,7 @@ impl Ty {
     /// a texture or sampler, or an array of them
     pub fn is_object(&self) -> bool {
         match self {
-            Ty::Tex(..) | Ty::Sampler(_) | Ty::Legacy(_) => true,
+            Ty::Tex(..) | Ty::Sampler(_) | Ty::Legacy(_) | Ty::RwTex(..) => true,
             Ty::Array(e, _) => e.is_object(),
             _ => false,
         }
@@ -175,6 +177,8 @@ pub struct Var {
     pub packoffset: Option<u32>,
     pub is_static: bool,
     pub is_const: bool,
+    /// groupshared (compute shaders' thread group memory)
+    pub shared: bool,
     pub uniform: bool,
     /// row_major (Some(true)) / column_major
     pub row_major: Option<bool>,
@@ -278,6 +282,8 @@ pub struct Func {
     pub ret_sem: Option<String>,
     pub params: Vec<Var>,
     pub body: Option<Vec<Stmt>>,
+    /// [name(args)] attributes before it ([numthreads(x, y, z)])
+    pub attrs: Vec<(String, Vec<Expr>)>,
 }
 
 #[derive(Clone, Debug)]

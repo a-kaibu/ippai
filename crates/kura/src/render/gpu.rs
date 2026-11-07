@@ -23,6 +23,8 @@ mod ffi {
         pub fn vngpu_bind_group_layout(p: *const u8, n: usize) -> Id;
         pub fn vngpu_pipeline_layout(p: *const u8, n: usize) -> Id;
         pub fn vngpu_render_pipeline(p: *const u8, n: usize) -> Id;
+        pub fn vngpu_compute_pipeline(p: *const u8, n: usize) -> Id;
+        pub fn vngpu_dispatch(pipe: Id, group: Id, x: u32, y: u32, z: u32);
         pub fn vngpu_pipeline_group_layout(p: Id, i: u32) -> Id;
         pub fn vngpu_bind_group(layout: Id, entries: *const u32, n: u32) -> Id;
         pub fn vngpu_write_buffer(buf: Id, at: u32, p: *const u8, n: usize);
@@ -63,6 +65,7 @@ pub mod usage {
     pub const T_COPY_SRC: u32 = 0x1;
     pub const T_COPY_DST: u32 = 0x2;
     pub const T_BINDING: u32 = 0x4;
+    pub const T_STORAGE: u32 = 0x8;
     pub const T_RENDER: u32 = 0x10;
 }
 
@@ -204,6 +207,16 @@ mod pipeline_stats_tests {
         assert_eq!((s.quantile(0.5), s.quantile(1.0), s.max_us, s.made), (7, 7, 100, 100 + RECENT as u64));
         assert_eq!(s.total_us, 5050 + 7 * RECENT as u64);
     }
+}
+pub fn compute_pipeline(json: &str) -> Id {
+    let t = std::time::Instant::now();
+    let id = unsafe { ffi::vngpu_compute_pipeline(json.as_ptr(), json.len()) };
+    PIPELINES.lock().unwrap_or_else(|e| e.into_inner()).made(t.elapsed().as_micros() as u32);
+    id
+}
+/// A compute pass of its own: `pipe` with bind group 0 `group`, x*y*z workgroups.
+pub fn dispatch(pipe: Id, group: Id, x: u32, y: u32, z: u32) {
+    unsafe { ffi::vngpu_dispatch(pipe, group, x, y, z) }
 }
 pub fn pipeline_group_layout(p: Id, i: u32) -> Id {
     unsafe { ffi::vngpu_pipeline_group_layout(p, i) }

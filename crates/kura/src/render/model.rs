@@ -226,6 +226,14 @@ fn format_info(f: &str) -> Option<(u32, bool, bool, bool, char)> {
     })
 }
 
+/// Formats of storage textures (WebGPU core, write-only access).
+fn storable(f: &str) -> bool {
+    matches!(
+        f,
+        "rgba8unorm" | "rgba8snorm" | "rgba8uint" | "rgba8sint" | "rgba16uint" | "rgba16sint" | "rgba16float" | "r32uint" | "r32sint" | "r32float" | "rg32uint" | "rg32sint" | "rg32float" | "rgba32uint" | "rgba32sint" | "rgba32float"
+    )
+}
+
 fn has_stencil(f: &str) -> bool {
     f == "depth24plus-stencil8" || f == "stencil8" || f == "depth32float-stencil8"
 }
@@ -428,6 +436,8 @@ pub enum Obj {
     Layout(Vec<LayoutEntry>),
     PipelineLayout(Vec<usize>),
     Pipeline(Pipeline),
+    /// a compute pipeline: hash, bind group layouts
+    Compute(u64, Vec<usize>),
     Group(usize, Vec<(u32, Entry)>),
 }
 
@@ -474,6 +484,8 @@ enum Cmd {
     ToBuffer(usize, u32, u32, u32, usize, u32, u32, u32),
     FromBuffer(usize, u32, usize, u32, u32, u32, u32, u32),
     Pass(Vec<Attachment>, Option<Attachment>, Vec<Draw>),
+    /// a compute pass of one dispatch: pipeline hash, bind group, workgroups
+    Dispatch(u64, usize, [u32; 3]),
 }
 
 /// What the page would show or hand back.
@@ -640,6 +652,9 @@ impl Model {
             if usage & 0x10 != 0 && (!renderable || dim != "2d") {
                 self.err(format!("createTexture: {format} {dim} as a render attachment"));
             }
+            if usage & 0x8 != 0 && !storable(&format) {
+                self.err(format!("createTexture: {format} as a storage texture"));
+            }
             if dim == "1d" && (h != 1 || mips != 1) {
                 self.err("createTexture: a 1d texture with height or mips".into());
             }
@@ -762,6 +777,10 @@ impl Model {
                                 }
                                 let (kind, ty, vd) = match &m.types[g.ty].inner {
                                     naga::TypeInner::Image { dim, arrayed, class } => {
+                                        let storage = match class {
+                                            naga::ImageClass::Storage { format, .. } => Some(storage_format(*format)),
+                                            _ => None,
+                                        };
                                         let st = match class {
                                             naga::ImageClass::Depth { .. } => "depth",
                                             naga::ImageClass::Sampled { kind: naga::ScalarKind::Uint, .. } => "uint",
@@ -776,7 +795,10 @@ impl Model {
                                             (naga::ImageDimension::Cube, false) => "cube",
                                             (naga::ImageDimension::Cube, true) => "cube-array",
                                         };
-                                        ('t', st.to_string(), vd.to_string())
+                                        match storage {
+                                            Some(f) => ('w', f.to_string(), vd.to_string()),
+                                            None => ('t', st.to_string(), vd.to_string()),
+                                        }
                                     }
                                     naga::TypeInner::Sampler { comparison } => ('s', if *comparison { "comparison" } else { "filtering" }.to_string(), String::new()),
                                     _ => ('b', "uniform".to_string(), String::new()),
@@ -803,6 +825,15 @@ impl Model {
                 ('t', false, t.s("sampleType").unwrap_or("float").to_string(), t.s("viewDimension").unwrap_or("2d").to_string())
             } else if let Some(t) = e.get("sampler") {
                 ('s', false, t.s("type").unwrap_or("filtering").to_string(), String::new())
+            } else if let Some(t) = e.get("storageTexture") {
+                if t.s("access").unwrap_or("write-only") != "write-only" {
+                    self.err(format!("createBindGroupLayout: entry {binding}: storage access {:?}", t.s("access")));
+                }
+                let f = t.s("format").unwrap_or("").to_string();
+                if !storable(&f) {
+                    self.err(format!("createBindGroupLayout: entry {binding}: storage format {f}"));
+                }
+                ('w', false, f, t.s("viewDimension").unwrap_or("2d").to_string())
             } else {
                 self.err(format!("createBindGroupLayout: entry {binding} binds nothing"));
                 ('?', false, String::new(), String::new())
@@ -916,6 +947,7 @@ impl Model {
                         && match u.2 {
                             't' => (e.ty == u.3 || (u.3 == "float" && e.ty == "unfilterable-float") || (u.3 == "depth" && e.ty == "depth")) && e.view_dim == u.4,
                             's' => (u.3 == "comparison") == (e.ty == "comparison"),
+                            'w' => e.ty == u.3 && e.view_dim == u.4,
                             _ => true,
                         };
                     if !ok {
@@ -1069,9 +1101,95 @@ impl Model {
         self.put(Obj::Pipeline(p))
     }
 
+    pub fn compute_pipeline(&mut self, s: &str) -> u32 {
+        let what = "createComputePipeline";
+        let Some(j) = self.json(s, what) else { return self.put(Obj::Sampler(0)) };
+        let Some((mh, _, used)) = self.module(j.get("compute"), naga::ShaderStage::Compute, what) else { return self.put(Obj::Compute(0, Vec::new())) };
+        let groups = match j.get("layout") {
+            Some(J::Num(n)) => match self.at(*n as u32, what).map(|a| self.objs[a].clone()) {
+                Some(Obj::PipelineLayout(g)) => g,
+                _ => {
+                    self.err(format!("{what}: not a pipeline layout"));
+                    Vec::new()
+                }
+            },
+            _ => {
+                self.err(format!("{what}: no explicit layout"));
+                Vec::new()
+            }
+        };
+        for u in &used {
+            let e = groups.get(u.0 as usize).and_then(|&g| match &self.objs[g] {
+                Obj::Layout(es) => es.iter().find(|e| e.binding == u.1).cloned(),
+                _ => None,
+            });
+            match e {
+                None => self.err(format!("{what}: the shader uses @group({}) @binding({}), the layout has no such entry", u.0, u.1)),
+                Some(e) => {
+                    let ok = e.kind == u.2
+                        && match u.2 {
+                            't' => (e.ty == u.3 || (u.3 == "float" && e.ty == "unfilterable-float")) && e.view_dim == u.4,
+                            's' => (u.3 == "comparison") == (e.ty == "comparison"),
+                            'w' => e.ty == u.3 && e.view_dim == u.4,
+                            _ => true,
+                        };
+                    if !ok {
+                        self.err(format!("{what}: @group({}) @binding({}) is a {} {} {} in the shader, {} {} {} in the layout", u.0, u.1, u.2, u.3, u.4, e.kind, e.ty, e.view_dim));
+                    }
+                }
+            }
+        }
+        self.put(Obj::Compute(mix(hash_desc(&j), mh), groups))
+    }
+
+    /// beginComputePass, setPipeline, setBindGroup(0), dispatchWorkgroups, end.
+    pub fn dispatch(&mut self, p: u32, g: u32, n: [u32; 3]) {
+        let what = "dispatchWorkgroups";
+        self.no_pass(what);
+        let (Some(pa), Some(ga)) = (self.at(p, what), self.at(g, what)) else { return };
+        let Obj::Compute(h, groups) = self.objs[pa].clone() else {
+            self.err(format!("{what}: not a compute pipeline"));
+            return;
+        };
+        let Obj::Group(la, entries) = self.objs[ga].clone() else {
+            self.err(format!("{what}: not a bind group"));
+            return;
+        };
+        if groups.len() != 1 {
+            self.err(format!("{what}: a pipeline of {} bind groups, one set", groups.len()));
+            return;
+        }
+        let (Obj::Layout(a), Obj::Layout(b)) = (&self.objs[la], &self.objs[groups[0]]) else { return };
+        if la != groups[0] && format!("{a:?}") != format!("{b:?}") {
+            self.err(format!("{what}: bind group of another layout"));
+        }
+        if n.iter().any(|&k| k > 65535) {
+            self.err(format!("{what}: {n:?} workgroups"));
+        }
+        // (a subresource both written as storage and sampled: a usage conflict)
+        let Obj::Layout(es) = self.objs[la].clone() else { return };
+        let views: Vec<(bool, View)> = entries
+            .iter()
+            .filter_map(|(b, e)| match e {
+                Entry::View(v) => Some((es.iter().any(|x| x.binding == *b && x.kind == 'w'), self.view_of(*v).unwrap().clone())),
+                _ => None,
+            })
+            .collect();
+        for (i, (wa, va)) in views.iter().enumerate() {
+            for (wb, vb) in &views[i + 1..] {
+                let meet = |s0: u32, n0: u32, s1: u32, n1: u32| s0 < s1 + n1 && s1 < s0 + n0;
+                if (*wa || *wb) && va.tex == vb.tex && meet(va.mip, va.mips, vb.mip, vb.mips) && meet(va.layer, va.layers, vb.layer, vb.layers) {
+                    self.err(format!("{what}: a texture written as storage and bound again in the same dispatch"));
+                }
+            }
+        }
+        self.enc.push(Cmd::Dispatch(h, ga, n));
+    }
+
     pub fn pipeline_group_layout(&mut self, p: u32, i: u32) -> u32 {
         let l = match self.at(p, "getBindGroupLayout").map(|a| self.objs[a].clone()) {
             Some(Obj::Pipeline(p)) => p.groups.get(i as usize).map(|&g| self.objs[g].clone()),
+            Some(Obj::Compute(_, g)) => g.get(i as usize).map(|&g| self.objs[g].clone()),
             _ => None,
         };
         match l {
@@ -1117,6 +1235,16 @@ impl Model {
             } else {
                 let Some(a) = self.at(o, what) else { continue };
                 match self.objs[a].clone() {
+                    Obj::View(v) if e.kind == 'w' => {
+                        let t = self.tex(v.tex).clone();
+                        if t.usage & 0x8 == 0 {
+                            self.err(format!("{what}: binding {binding}: texture without STORAGE_BINDING usage"));
+                        }
+                        if v.format != e.ty || v.dim != e.view_dim || v.mips != 1 {
+                            self.err(format!("{what}: binding {binding}: a {} {} view of {} mips where the layout wants a {} {} storage texture", v.format, v.dim, v.mips, e.ty, e.view_dim));
+                        }
+                        entries.push((binding, Entry::View(a)));
+                    }
                     Obj::View(v) => {
                         let t = self.tex(v.tex).clone();
                         if e.kind != 't' {
@@ -1958,6 +2086,17 @@ impl Model {
                     texs.push(*t);
                     bufs.push(*b);
                 }
+                Cmd::Dispatch(_, g, _) => {
+                    if let Obj::Group(_, es) = &self.objs[*g] {
+                        for (_, e) in es {
+                            match e {
+                                Entry::Buffer(b, ..) => bufs.push(*b),
+                                Entry::View(v) => texs.push(self.view_of(*v).unwrap().tex),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
                 Cmd::Pass(cs, d, draws) => {
                     for a in cs.iter().chain(d.iter()) {
                         texs.push(self.view_of(a.view).unwrap().tex);
@@ -2045,6 +2184,50 @@ impl Model {
                     }
                 }
                 Cmd::Pass(cs, d, draws) => self.run_pass(&cs, &d, &draws),
+                Cmd::Dispatch(h, g, n) => self.run_dispatch(h, g, n),
+            }
+        }
+    }
+
+    /// A dispatch's meaning: each texel of each storage view gets a hash of everything the
+    /// dispatch reads (pipeline, workgroups, bound buffer bytes, sampled views' values) with its
+    /// own old value and place.
+    fn run_dispatch(&mut self, h: u64, g: usize, n: [u32; 3]) {
+        let Obj::Group(la, entries) = self.objs[g].clone() else { return };
+        let Obj::Layout(es) = self.objs[la].clone() else { return };
+        let mut x = mix(h, (n[0] as u64) << 40 | (n[1] as u64) << 20 | n[2] as u64);
+        let mut out = Vec::new();
+        for (b, e) in &entries {
+            match e {
+                Entry::Buffer(bf, off, size) => {
+                    if let Obj::Buffer(buf) = &self.objs[*bf] {
+                        x = hash_bytes(x, &buf.data[*off as usize..(*off + *size).min(buf.size) as usize]);
+                    }
+                }
+                Entry::View(v) => {
+                    let vw = self.view_of(*v).unwrap().clone();
+                    if es.iter().any(|l| l.binding == *b && l.kind == 'w') {
+                        out.push(vw);
+                    } else {
+                        x = mix(x, self.view_hash(&vw));
+                    }
+                }
+                Entry::Sampler(s) => {
+                    if let Obj::Sampler(k) = &self.objs[*s] {
+                        x = mix(x, *k);
+                    }
+                }
+            }
+        }
+        for v in out {
+            let Obj::Texture(t) = &mut self.objs[v.tex] else { continue };
+            for l in v.layer..v.layer + v.layers {
+                let si = t.sub(v.mip, l);
+                if let Some(s) = t.texels.get_mut(si) {
+                    for (k, val) in s.iter_mut().enumerate() {
+                        *val = mix(mix(x, *val), (si as u64) << 32 | k as u64);
+                    }
+                }
             }
         }
     }
@@ -2095,6 +2278,31 @@ impl Model {
 }
 
 /// Whether function `f` (or a function it calls) uses global `g`.
+/// A WGSL storage texel format's WebGPU name.
+fn storage_format(f: naga::StorageFormat) -> &'static str {
+    use naga::StorageFormat as F;
+    match f {
+        F::Rgba8Unorm => "rgba8unorm",
+        F::Rgba8Snorm => "rgba8snorm",
+        F::Rgba8Uint => "rgba8uint",
+        F::Rgba8Sint => "rgba8sint",
+        F::Bgra8Unorm => "bgra8unorm",
+        F::Rgba16Uint => "rgba16uint",
+        F::Rgba16Sint => "rgba16sint",
+        F::Rgba16Float => "rgba16float",
+        F::R32Uint => "r32uint",
+        F::R32Sint => "r32sint",
+        F::R32Float => "r32float",
+        F::Rg32Uint => "rg32uint",
+        F::Rg32Sint => "rg32sint",
+        F::Rg32Float => "rg32float",
+        F::Rgba32Uint => "rgba32uint",
+        F::Rgba32Sint => "rgba32sint",
+        F::Rgba32Float => "rgba32float",
+        _ => "?",
+    }
+}
+
 fn uses_global(m: &naga::Module, f: &naga::Function, g: naga::Handle<naga::GlobalVariable>) -> bool {
     let mut seen = Vec::new();
     uses_global_in(m, f, g, &mut seen)
@@ -2227,6 +2435,16 @@ pub extern "C" fn vngpu_pipeline_layout(p: *const u8, n: usize) -> u32 {
 pub extern "C" fn vngpu_render_pipeline(p: *const u8, n: usize) -> u32 {
     count("render_pipeline");
     with(|m| m.render_pipeline(s(p, n)))
+}
+#[no_mangle]
+pub extern "C" fn vngpu_compute_pipeline(p: *const u8, n: usize) -> u32 {
+    count("compute_pipeline");
+    with(|m| m.compute_pipeline(s(p, n)))
+}
+#[no_mangle]
+pub extern "C" fn vngpu_dispatch(p: u32, g: u32, x: u32, y: u32, z: u32) {
+    count("dispatch");
+    with(|m| m.dispatch(p, g, [x, y, z]))
 }
 #[no_mangle]
 pub extern "C" fn vngpu_pipeline_group_layout(p: u32, i: u32) -> u32 {

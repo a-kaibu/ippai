@@ -4,6 +4,7 @@
 /// Program types in the version token
 pub const PIXEL: u32 = 0;
 pub const VERTEX: u32 = 1;
+pub const COMPUTE: u32 = 5;
 
 // operand types
 pub const TEMP: u32 = 0;
@@ -20,6 +21,8 @@ pub const OUTPUT_DEPTH: u32 = 12;
 pub const NULL: u32 = 13;
 pub const OUTPUT_COVERAGE_MASK: u32 = 15;
 pub const OUTPUT_DEPTH_GE: u32 = 38;
+pub const UAV: u32 = 30;
+pub const TGSM: u32 = 31;
 pub const OUTPUT_DEPTH_LE: u32 = 39;
 
 #[derive(Clone, Debug, PartialEq)]

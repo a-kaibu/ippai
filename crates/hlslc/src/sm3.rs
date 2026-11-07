@@ -247,7 +247,7 @@ impl Gen<'_> {
                 let v = if *scalar { [v[0]; 4] } else { *v };
                 self.konst(v)
             }
-            Src::Samp(_) | Src::Tex(..) => return Err("texture operand".into()),
+            Src::Samp(_) | Src::Tex(..) | Src::SampC(..) | Src::Uav(..) | Src::G(..) => return Err("texture operand".into()),
         })
     }
 
