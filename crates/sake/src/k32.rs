@@ -620,7 +620,8 @@ fn psapi_module(process: u32, h: u32) -> Option<u32> {
     base
 }
 /// GetModuleInformation(process, module, MODULEINFO*, bytes): base, size, entry point
-/// (module 0: TRUE with a NULL base, not the exe's as for the names; winref modules)
+/// (module 0: TRUE with a NULL base, yet the size and entry point not 0: the exe's, as the
+/// names have it; winref modules)
 fn K32GetModuleInformation(c: &mut Ctx) -> u32 {
     let (p, cb) = (c.a(2), c.a(3));
     let Some(b) = psapi_module(c.a(0), c.a(1)) else { return 0 };
@@ -629,7 +630,8 @@ fn K32GetModuleInformation(c: &mut Ctx) -> u32 {
         last_error(122);
         return 0;
     }
-    let (b, size, entry) = if c.a(1) == 0 { (0, 0, 0) } else { crate::pe::with(b, |m| (b, m.size, m.entry)).unwrap() };
+    let (size, entry) = crate::pe::with(b, |m| (m.size, m.entry)).unwrap();
+    let (b, size, entry) = module_info(c.a(1), b, size, entry);
     mem::wp(p, b);
     w32(p + ps, size);
     if mem::x64() {
@@ -637,6 +639,18 @@ fn K32GetModuleInformation(c: &mut Ctx) -> u32 {
     }
     mem::wp(p + 2 * ps, entry);
     1
+}
+/// MODULEINFO for the module asked (0: the exe, `base` its base): the base as asked, the
+/// size and entry point the module's
+fn module_info(asked: u32, base: u32, size: u32, entry: u32) -> (u32, u32, u32) {
+    (if asked == 0 { 0 } else { base }, size, entry)
+}
+#[cfg(test)]
+#[test]
+fn module_info_of_module_0() {
+    // (winref modules: TRUE, base NULL, size and entry point not 0)
+    assert_eq!(module_info(0, 0x40_0000, 0x5000, 0x40_1000), (0, 0x5000, 0x40_1000));
+    assert_eq!(module_info(0x40_0000, 0x40_0000, 0x5000, 0x40_1000), (0x40_0000, 0x5000, 0x40_1000));
 }
 /// GetModuleBaseName / GetModuleFileNameEx(process, module, buffer, chars): as much of the name
 /// as fits, ended by a 0 when there is room for one; the characters copied. GetModuleFileNameEx

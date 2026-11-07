@@ -53,6 +53,8 @@ int main(void) {
     printf("module 0 info: %d, the exe %d, untouched %d, null %d, listed at %d, ntdll %d, kernel32 %d, size 0 %d, entry 0 %d\n", r, mi.lpBaseOfDll == exe,
            mi.lpBaseOfDll == (void *)(ULONG_PTR)0x5555555555555555ull, mi.lpBaseOfDll == 0, at, mi.lpBaseOfDll == nt, mi.lpBaseOfDll == k32,
            mi.SizeOfImage == 0, mi.EntryPoint == 0);
+    printf("module 0 info: size the exe's %d, entry the exe's %d, size untouched %d, entry untouched %d\n", mi.SizeOfImage == nh->OptionalHeader.SizeOfImage,
+           mi.EntryPoint == (char *)exe + nh->OptionalHeader.AddressOfEntryPoint, mi.SizeOfImage == 0x55555555, mi.EntryPoint == (void *)(ULONG_PTR)0x5555555555555555ull);
     SetLastError(0);
     r = GetModuleInformation(self, exe, &mi, sizeof mi - 1);
     printf("info, short: %d, error %lu\n", r, GetLastError());
