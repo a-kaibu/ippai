@@ -1284,13 +1284,19 @@ impl<'a> Gen<'a> {
         self.c.store8(field);
     }
 
-    /// Pushes the f32/f64 memory operand at checked address `a` as f64.
+    /// Pushes the f32/f64 memory operand at checked address `a` as f64. A signaling NaN comes
+    /// in quiet, as FLD makes it (#65: FLD m64 then FSTP m64 wrote the SNaN back): its bits get
+    /// the quiet bit 51 (uses L_W).
     fn fload_mem(&mut self, a: u32) {
         let o = self.mem_at(a);
         if self.ins.memory_size() == iced_x86::MemorySize::Float32 {
             self.c.f32load(o).op(0xbb /* f64.promote_f32 */);
         } else {
-            self.c.f64load(o);
+            // v | (|v| > +inf) << 51
+            self.c.load64(o).tee(L_W);
+            self.c.get(L_W).i64c(i64::MAX).op(0x83 /* i64.and */).i64c(0x7ff0_0000_0000_0000).op(0x56 /* i64.gt_u */);
+            self.c.op(0xad /* i64.extend_i32_u */).i64c(51).op(0x86 /* i64.shl */).op(0x84 /* i64.or */);
+            self.c.op(0xbf /* f64.reinterpret_i64 */);
         }
     }
 

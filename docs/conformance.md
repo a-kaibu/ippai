@@ -93,7 +93,8 @@ both after rounding: tininess on the value rounded with an unbounded exponent, s
 rounded toward zero just past MAX does not overflow), sums near f64::MAX (TwoSum's error term
 overflowed: Fast2Sum), FMA ignoring MXCSR.RC (koji::round::fma32/fma64), FILD m64 stored to
 m32/m64/m80 (rounded once from the exact integer; the JIT gives a 64-bit integer f64 can't hold
-to the interpreter), FLD of an f32/f64 SNaN and FRNDINT of one (quieted).
+to the interpreter), FLD of an f32/f64 SNaN and FRNDINT of one (quieted; in the JIT too, #65: jit32test's sweep
+runs FLD m64/m32 straight to FSTP over SNaNs).
 `crates/koji/tests/fp_regress.rs` keeps one case of each, and `diff_isa` now runs every case in
 a random MXCSR rounding mode against the host CPU.
 

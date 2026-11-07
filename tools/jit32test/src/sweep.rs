@@ -26,6 +26,10 @@ fn templates() -> Vec<(&'static str, bool, Template)> {
         (x("fmul st1,st0"), |a| { a.fld(qword_ptr(esi + 8))?; a.fld(qword_ptr(esi))?; a.fmul_2(st1, st0)?; a.fstp(st0)?; a.fstp(qword_ptr(edi)) }),
         (x("fadd m32"), |a| { a.fld(dword_ptr(esi))?; a.fadd(dword_ptr(esi + 4))?; a.fstp(qword_ptr(edi)) }),
         (x("fmul m32"), |a| { a.fld(dword_ptr(esi))?; a.fmul(dword_ptr(esi + 4))?; a.fstp(qword_ptr(edi)) }),
+        // a load passed straight to a store: an SNaN comes out quiet (#65)
+        (x("fld m64, fstp m64"), |a| { a.fld(qword_ptr(esi))?; a.fstp(qword_ptr(edi)) }),
+        (x("fld m32, fstp m64"), |a| { a.fld(dword_ptr(esi))?; a.fstp(qword_ptr(edi)) }),
+        (x("fld m32, fstp m32"), |a| { a.fld(dword_ptr(esi))?; a.fstp(dword_ptr(edi)) }),
         (x("fst m32"), |a| { a.fld(qword_ptr(esi))?; a.fst(dword_ptr(edi))?; a.fstp(dword_ptr(edi + 4)) }),
         (x("fadd, fst m32"), |a| { a.fld(qword_ptr(esi))?; a.fadd(qword_ptr(esi + 8))?; a.fstp(dword_ptr(edi)) }),
         // the mode changing inside the loop: FLDCW (translated) and LDMXCSR (the interpreter)
@@ -161,7 +165,8 @@ fn pair(rng: &mut Rng) -> (u64, u64) {
         }
         // specials against anything
         5 => {
-            let s = [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -f64::NAN, 0.0, -0.0, 1.0, p2(-1074)];
+            // (signaling NaNs too: quiet bit 0, a payload)
+            let s = [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -f64::NAN, 0.0, -0.0, 1.0, p2(-1074), f64::from_bits(0x7ff4_f3d1_14af_58e4), f64::from_bits(0xfff0_0000_0000_0001)];
             let a = rng.pick(&s);
             let b = if rng.below(2) == 0 { rng.pick(&s) } else { sign(rng) * sig(rng, 53) * p2(e) };
             if rng.below(2) == 0 { (f(a), f(b)) } else { (f(b), f(a)) }
@@ -180,7 +185,7 @@ fn pair(rng: &mut Rng) -> (u64, u64) {
         }
         // f32 range edges
         8 => {
-            let edge = [f32::MAX, f32::MIN_POSITIVE, f32::from_bits(1), f32::from_bits(0x7f_ffff), f32::powi(2.0, 127), 1.0, f32::INFINITY, f32::NAN];
+            let edge = [f32::MAX, f32::MIN_POSITIVE, f32::from_bits(1), f32::from_bits(0x7f_ffff), f32::powi(2.0, 127), 1.0, f32::INFINITY, f32::NAN, f32::from_bits(0x7fa0_0001)];
             let a = sign32(rng) * rng.pick(&edge);
             let b = sign32(rng) * rng.pick(&edge) * rng.pick(&[1.0, 0.5, 2.0, 1.5]);
             (h(a, b), f(sign(rng) * rng.pick(&[f32::MAX as f64 * (1.0 + p2(-25)), f32::MAX as f64 * (1.0 + p2(-24)), p2(-150), p2(-150) * 1.0000001, p2(-126) * (1.0 - p2(-25)), p2(128)])))
