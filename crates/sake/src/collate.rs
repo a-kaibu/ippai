@@ -59,9 +59,7 @@ fn kana_base(k: u16) -> (u16, u8, bool) {
         return (b, if m == 0xff9e { 1 } else { 2 }, false);
     }
     match k {
-        0x30a1 | 0x30a3 | 0x30a5 | 0x30a7 | 0x30a9 | 0x30c3 | 0x30e3 | 0x30e5 | 0x30e7 | 0x30ee => {
-            (k + 1, 0, true)
-        }
+        0x30a1 | 0x30a3 | 0x30a5 | 0x30a7 | 0x30a9 | 0x30c3 | 0x30e3 | 0x30e5 | 0x30e7 | 0x30ee => (k + 1, 0, true),
         0x30f5 => (0x30ab, 0, true),
         0x30f6 => (0x30b1, 0, true),
         _ => (k, 0, false),
@@ -95,19 +93,11 @@ fn weight(c: u16, flags: u32) -> Weight {
             if let Some(b) = ch.and_then(crate::text::best_fit) {
                 // (a Latin letter with marks: its letter, and the mark as the diacritic)
                 let up = b.is_ascii_uppercase();
-                return Weight::Char(
-                    p(G_LATIN, (b.to_ascii_lowercase() - b'a') as u32),
-                    (crate::text::lower16(c) & 0xff) as u8 | 1,
-                    if up { UPPER } else { 0 },
-                );
+                return Weight::Char(p(G_LATIN, (b.to_ascii_lowercase() - b'a') as u32), (crate::text::lower16(c) & 0xff) as u8 | 1, if up { UPPER } else { 0 });
             }
             if let Some((k, kind)) = kana(c) {
                 let (base, dia, small) = kana_base(k);
-                return Weight::Char(
-                    p(G_KANA, base as u32),
-                    dia,
-                    kind | if small { 0 } else { SMALL_NOT },
-                );
+                return Weight::Char(p(G_KANA, base as u32), dia, kind | if small { 0 } else { SMALL_NOT });
             }
             let lower = crate::text::lower16(c);
             let up = if lower != c { UPPER } else { 0 };
@@ -151,11 +141,7 @@ fn key(s: &[u16], flags: u32) -> (Vec<u32>, Vec<u8>, Vec<u8>, Vec<(usize, u8)>) 
                     te &= !HIRA;
                 }
                 p.push(pr);
-                d.push(if flags & NORM_IGNORENONSPACE != 0 {
-                    0
-                } else {
-                    di
-                });
+                d.push(if flags & NORM_IGNORENONSPACE != 0 { 0 } else { di });
                 t.push(te);
             }
         }
@@ -166,10 +152,7 @@ fn key(s: &[u16], flags: u32) -> (Vec<u32>, Vec<u8>, Vec<u8>, Vec<(usize, u8)>) 
 /// CompareString's answer for UTF-16 strings `a` and `b` under `flags`
 pub fn compare(a: &[u16], b: &[u16], flags: u32) -> Ordering {
     let (ka, kb) = (key(a, flags), key(b, flags));
-    ka.0.cmp(&kb.0)
-        .then_with(|| ka.1.cmp(&kb.1))
-        .then_with(|| ka.2.cmp(&kb.2))
-        .then_with(|| ka.3.iter().map(|x| x.1).cmp(kb.3.iter().map(|x| x.1)))
+    ka.0.cmp(&kb.0).then_with(|| ka.1.cmp(&kb.1)).then_with(|| ka.2.cmp(&kb.2)).then_with(|| ka.3.iter().map(|x| x.1).cmp(kb.3.iter().map(|x| x.1)))
 }
 
 #[cfg(test)]

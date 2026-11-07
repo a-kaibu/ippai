@@ -51,9 +51,7 @@ pub fn nt_name(name: &str, root: bool) -> Result<String, u32> {
     if root {
         return Ok(name.to_string());
     }
-    let Some(rest) = name.strip_prefix('\\') else {
-        return Err(STATUS_OBJECT_PATH_SYNTAX_BAD);
-    };
+    let Some(rest) = name.strip_prefix('\\') else { return Err(STATUS_OBJECT_PATH_SYNTAX_BAD) };
     if let Some(n) = rest.strip_prefix("BaseNamedObjects\\") {
         return Ok(n.to_string());
     }
@@ -133,20 +131,13 @@ fn state(h: u32) -> Option<State> {
     if let Some(id) = crate::k32::shared_id(h) {
         return crate::kern::with(|k| k.sync_state(id)).0.map(|s| match s {
             Sync::Event { manual, set } => State::Event(manual, set),
-            Sync::Mutex {
-                owner,
-                count,
-                abandoned,
-                ..
-            } => State::Mutex(owner, count, abandoned),
+            Sync::Mutex { owner, count, abandoned, .. } => State::Mutex(owner, count, abandoned),
             Sync::Semaphore { count, max } => State::Semaphore(count, max),
         });
     }
     obj::with(|t| match t.objs.get(&h) {
         Some((Obj::Event { manual, set }, _)) => Some(State::Event(*manual, *set)),
-        Some((Obj::Mutex { owner, count }, _)) => {
-            Some(State::Mutex(*owner, *count, *owner == obj::ABANDONED))
-        }
+        Some((Obj::Mutex { owner, count }, _)) => Some(State::Mutex(*owner, *count, *owner == obj::ABANDONED)),
         Some((Obj::Semaphore { count, max }, _)) => Some(State::Semaphore(*count, *max)),
         _ => None,
     })
@@ -234,9 +225,7 @@ fn signal(h: u32) -> Result<(), u32> {
             Ok(())
         }
         Some(State::Mutex(..)) => crate::k32::release_mutex(h).map_err(status_of),
-        Some(State::Semaphore(..)) => crate::k32::release_semaphore(h, 1)
-            .map(|_| ())
-            .map_err(status_of),
+        Some(State::Semaphore(..)) => crate::k32::release_semaphore(h, 1).map(|_| ()).map_err(status_of),
         None if obj::with(|t| t.objs.get(&h).is_some()) => Err(STATUS_OBJECT_TYPE_MISMATCH),
         None => Err(STATUS_INVALID_HANDLE),
     }
@@ -249,25 +238,14 @@ pub fn init() {
             return STATUS_INVALID_PARAMETER;
         }
         // (type 0: a notification (manual-reset) event, 1: a synchronization one)
-        create(
-            c.a(0),
-            c.a(2),
-            Obj::Event {
-                manual: c.a(3) == 0,
-                set: c.a(4) & 0xff != 0,
-            },
-        )
+        create(c.a(0), c.a(2), Obj::Event { manual: c.a(3) == 0, set: c.a(4) & 0xff != 0 })
     });
     implement(d, "NtOpenEvent", |c| open(c.a(0), c.a(2), 1));
     implement(d, "NtSetEvent", |c| set_event(c.a(0), c.a(1), Some(true)));
-    implement(d, "NtResetEvent", |c| {
-        set_event(c.a(0), c.a(1), Some(false))
-    });
+    implement(d, "NtResetEvent", |c| set_event(c.a(0), c.a(1), Some(false)));
     implement(d, "NtClearEvent", |c| set_event(c.a(0), 0, Some(false)));
     implement(d, "NtPulseEvent", |c| set_event(c.a(0), c.a(1), None));
-    implement(d, "NtSetEventBoostPriority", |c| {
-        set_event(c.a(0), 0, Some(true))
-    });
+    implement(d, "NtSetEventBoostPriority", |c| set_event(c.a(0), 0, Some(true)));
     // NtQueryEvent(h, class, EVENT_BASIC_INFORMATION { type, state }, length, &length)
     implement(d, "NtQueryEvent", |c| {
         let (h, class, buf, len, ret) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
@@ -285,14 +263,7 @@ pub fn init() {
     implement(d, "NtCreateMutant", |c| {
         let own = c.a(3) & 0xff != 0;
         let tid = crate::cur().tid;
-        create(
-            c.a(0),
-            c.a(2),
-            Obj::Mutex {
-                owner: if own { tid } else { 0 },
-                count: own as u32,
-            },
-        )
+        create(c.a(0), c.a(2), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 })
     });
     implement(d, "NtOpenMutant", |c| open(c.a(0), c.a(2), 2));
     // NtReleaseMutant(h, &previous count): the count is 1 free, 0 held once, -1 twice...
@@ -371,13 +342,7 @@ pub fn init() {
     });
     // NtWaitForMultipleObjects(count, handles, WaitAll 0 / WaitAny 1, alertable, timeout)
     implement(d, "NtWaitForMultipleObjects", |c| {
-        let (n, p, ty, alertable, ms) = (
-            c.a(0),
-            c.a(1),
-            c.a(2),
-            c.a(3) & 0xff != 0,
-            timeout_ms(c.a(4)),
-        );
+        let (n, p, ty, alertable, ms) = (c.a(0), c.a(1), c.a(2), c.a(3) & 0xff != 0, timeout_ms(c.a(4)));
         if n == 0 || n > 64 || ty > 1 {
             return STATUS_INVALID_PARAMETER;
         }
@@ -396,11 +361,7 @@ pub fn init() {
         let (alertable, ms) = (c.a(0) & 0xff != 0, timeout_ms(c.a(1)));
         if alertable {
             let r = crate::apc::wait(c, &[], false, ms);
-            return if r == crate::apc::WAIT_IO_COMPLETION {
-                STATUS_USER_APC
-            } else {
-                STATUS_SUCCESS
-            };
+            return if r == crate::apc::WAIT_IO_COMPLETION { STATUS_USER_APC } else { STATUS_SUCCESS };
         }
         if ms == 0 {
             std::thread::yield_now();
@@ -421,11 +382,7 @@ pub fn init() {
             });
             return obj::WAIT_FAILED;
         }
-        if alertable {
-            crate::apc::wait(c, &[h], false, ms)
-        } else {
-            obj::wait(&[h], false, ms, None)
-        }
+        if alertable { crate::apc::wait(c, &[h], false, ms) } else { obj::wait(&[h], false, ms, None) }
     });
     crate::iocp::init_nt();
 }
@@ -438,20 +395,11 @@ mod tests {
     #[test]
     fn names() {
         assert_eq!(nt_name("\\BaseNamedObjects\\ev", false), Ok("ev".into()));
-        assert_eq!(
-            nt_name("\\Sessions\\1\\BaseNamedObjects\\Local\\x", false),
-            Ok("Local\\x".into())
-        );
+        assert_eq!(nt_name("\\Sessions\\1\\BaseNamedObjects\\Local\\x", false), Ok("Local\\x".into()));
         assert_eq!(nt_name("ev", false), Err(STATUS_OBJECT_PATH_SYNTAX_BAD));
         assert_eq!(nt_name("ev", true), Ok("ev".into()));
-        assert_eq!(
-            nt_name("\\Nowhere\\ev", false),
-            Err(STATUS_OBJECT_PATH_NOT_FOUND)
-        );
-        assert_eq!(
-            nt_name("\\Sessions\\x\\BaseNamedObjects\\ev", false),
-            Err(STATUS_OBJECT_PATH_NOT_FOUND)
-        );
+        assert_eq!(nt_name("\\Nowhere\\ev", false), Err(STATUS_OBJECT_PATH_NOT_FOUND));
+        assert_eq!(nt_name("\\Sessions\\x\\BaseNamedObjects\\ev", false), Err(STATUS_OBJECT_PATH_NOT_FOUND));
     }
 
     #[test]

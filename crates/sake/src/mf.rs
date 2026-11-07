@@ -41,9 +41,7 @@ fn guid_at(p: u32) -> Guid {
 }
 /// The first fields of a GUID: (Data1, Data2, Data3)
 fn is(g: &Guid, d1: u32, d2: u16, d3: u16) -> bool {
-    u32::from_le_bytes(g[0..4].try_into().unwrap()) == d1
-        && u16::from_le_bytes([g[4], g[5]]) == d2
-        && u16::from_le_bytes([g[6], g[7]]) == d3
+    u32::from_le_bytes(g[0..4].try_into().unwrap()) == d1 && u16::from_le_bytes([g[4], g[5]]) == d2 && u16::from_le_bytes([g[6], g[7]]) == d3
 }
 fn is_unknown(g: &Guid) -> bool {
     g == &[0, 0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46]
@@ -69,19 +67,11 @@ fn release(c: &mut Ctx, o: u32) {
 
 /// A double argument: x86 stack slots `slot`, `slot + 1`; x64 argument `arg`.
 fn dbl(c: &Ctx, slot: u32, arg: u32) -> f64 {
-    if mem::x64() {
-        f64::from_bits(c.xmm(arg))
-    } else {
-        c.f64(slot)
-    }
+    if mem::x64() { f64::from_bits(c.xmm(arg)) } else { c.f64(slot) }
 }
 /// A 64-bit integer argument: x86 slots `slot`, `slot + 1`; x64 argument `arg`.
 fn u64_arg(c: &Ctx, slot: u32, arg: u32) -> u64 {
-    if mem::x64() {
-        c.a64(arg)
-    } else {
-        c.a(slot) as u64 | (c.a(slot + 1) as u64) << 32
-    }
+    if mem::x64() { c.a64(arg) } else { c.a(slot) as u64 | (c.a(slot + 1) as u64) << 32 }
 }
 
 fn ok(_: &mut Ctx) -> u32 {
@@ -166,10 +156,7 @@ impl Store {
             0 => self.within(other),
             1 => other.within(self),
             2 => self.items.len() == other.items.len() && self.within(other),
-            3 => self
-                .items
-                .iter()
-                .all(|(k, v)| other.get(k).is_none_or(|w| w == v)),
+            3 => self.items.iter().all(|(k, v)| other.get(k).is_none_or(|w| w == v)),
             4 => {
                 if self.items.len() <= other.items.len() {
                     self.within(other)
@@ -186,12 +173,7 @@ impl Store {
 static ATTRS: Mutex<Option<HashMap<u32, (u32, Store)>>> = Mutex::new(None);
 
 fn attrs<R>(b: u32, f: impl FnOnce(&mut (u32, Store)) -> R) -> Option<R> {
-    ATTRS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .get_mut(&b)
-        .map(f)
+    ATTRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get_mut(&b).map(f)
 }
 /// A copy of store `b` (None: not one of ours).
 pub fn store_of(b: u32) -> Option<Store> {
@@ -201,11 +183,7 @@ pub fn store_of(b: u32) -> Option<Store> {
 fn new_attrs() -> u32 {
     static VT: OnceLock<u32> = OnceLock::new();
     let b = object(*VT.get_or_init(attrs_vtable), 1);
-    ATTRS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(b, (1, Store::default()));
+    ATTRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, (1, Store::default()));
     b
 }
 
@@ -262,9 +240,7 @@ fn value(c: &Ctx) -> Result<Val, u32> {
         return Err(E_POINTER);
     }
     let k = guid_at(c.a(1));
-    attrs(c.a(0), |a| a.1.get(&k).cloned())
-        .flatten()
-        .ok_or(MF_E_ATTRIBUTENOTFOUND)
+    attrs(c.a(0), |a| a.1.get(&k).cloned()).flatten().ok_or(MF_E_ATTRIBUTENOTFOUND)
 }
 /// Sets key (argument 1) of this store; the value it replaces is released.
 fn set_value(c: &mut Ctx, v: Val) -> u32 {
@@ -337,11 +313,7 @@ fn at_release(c: &mut Ctx) -> u32 {
     })
     .unwrap_or(0);
     if n == 0 {
-        let gone = ATTRS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_or_insert_with(HashMap::new)
-            .remove(&b);
+        let gone = ATTRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
         if let Some((_, s)) = gone {
             for (_, v) in s.items {
                 if let Val::Unk(u) = v {
@@ -398,9 +370,7 @@ fn at_compare(c: &mut Ctx) -> u32 {
     if theirs == 0 || out == 0 {
         return E_POINTER;
     }
-    let (Some(a), Some(b)) = (store_of(c.a(0)), store_of(theirs)) else {
-        return E_NOTIMPL;
-    };
+    let (Some(a), Some(b)) = (store_of(c.a(0)), store_of(theirs)) else { return E_NOTIMPL };
     match a.matches(&b, how) {
         Some(m) => {
             w32(out, m as u32);
@@ -564,11 +534,7 @@ fn at_set_blob(c: &mut Ctx) -> u32 {
     if p == 0 && n != 0 {
         return E_POINTER;
     }
-    let b = if n == 0 {
-        Vec::new()
-    } else {
-        mem::slice(p, n).to_vec()
-    };
+    let b = if n == 0 { Vec::new() } else { mem::slice(p, n).to_vec() };
     set_value(c, Val::Blob(b))
 }
 fn at_set_unknown(c: &mut Ctx) -> u32 {
@@ -579,18 +545,13 @@ fn at_count(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    put32(
-        c.a(1),
-        attrs(c.a(0), |a| a.1.items.len() as u32).unwrap_or(0),
-    );
+    put32(c.a(1), attrs(c.a(0), |a| a.1.items.len() as u32).unwrap_or(0));
     0
 }
 /// GetItemByIndex(index, GUID *key, PROPVARIANT *v)
 fn at_by_index(c: &mut Ctx) -> u32 {
     let (i, key, out) = (c.a(1), c.a(2), c.a(3));
-    let Some((k, v)) = attrs(c.a(0), |a| a.1.items.get(i as usize).cloned()).flatten() else {
-        return E_INVALIDARG;
-    };
+    let Some((k, v)) = attrs(c.a(0), |a| a.1.items.get(i as usize).cloned()).flatten() else { return E_INVALIDARG };
     if key != 0 {
         mem::write(key, &k);
     }
@@ -605,9 +566,7 @@ fn at_copy_all(c: &mut Ctx) -> u32 {
     if to == 0 {
         return E_POINTER;
     }
-    let Some(s) = store_of(c.a(0)) else {
-        return E_FAIL;
-    };
+    let Some(s) = store_of(c.a(0)) else { return E_FAIL };
     if store_of(to).is_none() {
         return E_NOTIMPL;
     }
@@ -687,12 +646,7 @@ struct Manager {
 static MANAGERS: Mutex<Option<HashMap<u32, Manager>>> = Mutex::new(None);
 
 fn manager<R>(b: u32, f: impl FnOnce(&mut Manager) -> R) -> Option<R> {
-    MANAGERS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .get_mut(&b)
-        .map(f)
+    MANAGERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get_mut(&b).map(f)
 }
 
 fn mg_qi(c: &mut Ctx) -> u32 {
@@ -724,14 +678,7 @@ fn mg_release(c: &mut Ctx) -> u32 {
         (m.refs, m.device)
     })
     .unwrap_or((0, 0));
-    if n == 0
-        && MANAGERS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_or_insert_with(HashMap::new)
-            .remove(&b)
-            .is_some()
-    {
+    if n == 0 && MANAGERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b).is_some() {
         release(c, dev);
         mem::heap_free(b);
     }
@@ -743,16 +690,7 @@ fn mg_reset(c: &mut Ctx) -> u32 {
     if dev == 0 {
         return E_INVALIDARG;
     }
-    let Some(old) = manager(b, |m| {
-        if m.token == token {
-            Some(m.device)
-        } else {
-            None
-        }
-    })
-    .flatten() else {
-        return E_INVALIDARG;
-    };
+    let Some(old) = manager(b, |m| if m.token == token { Some(m.device) } else { None }).flatten() else { return E_INVALIDARG };
     add_ref(c, dev);
     manager(b, |m| m.device = dev);
     release(c, old);
@@ -810,18 +748,7 @@ fn MFCreateDXGIDeviceManager(c: &mut Ctx) -> u32 {
     let b = object(vt, 1);
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x2b6d_7a01);
     let t = NEXT.fetch_add(0x101, std::sync::atomic::Ordering::Relaxed);
-    MANAGERS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(
-            b,
-            Manager {
-                refs: 1,
-                token: t,
-                device: 0,
-            },
-        );
+    MANAGERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Manager { refs: 1, token: t, device: 0 });
     w32(token, t);
     putp(out, b);
     0
@@ -879,18 +806,7 @@ fn new_error(code: u16, hr: u32) -> u32 {
     }
     static VT: OnceLock<u32> = OnceLock::new();
     let vt = *VT.get_or_init(|| {
-        vtable(
-            "IMFMediaError",
-            &[
-                (er_qi as Handler, 12),
-                (er_add_ref, 4),
-                (er_release, 4),
-                (er_code, 4),
-                (er_hr, 4),
-                (er_set_code, 8),
-                (er_set_hr, 8),
-            ],
-        )
+        vtable("IMFMediaError", &[(er_qi as Handler, 12), (er_add_ref, 4), (er_release, 4), (er_code, 4), (er_hr, 4), (er_set_code, 8), (er_set_hr, 8)])
     });
     let b = object(vt, 3);
     w16(b + ps(), code);
@@ -1099,12 +1015,7 @@ struct Engine {
 static ENGINES: Mutex<Option<HashMap<u32, Engine>>> = Mutex::new(None);
 
 fn engine<R>(b: u32, f: impl FnOnce(&mut Engine) -> R) -> Option<R> {
-    ENGINES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .get_mut(&b)
-        .map(f)
+    ENGINES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get_mut(&b).map(f)
 }
 fn shut(b: u32) -> bool {
     engine(b, |e| e.shut).unwrap_or(true)
@@ -1113,31 +1024,14 @@ fn shut(b: u32) -> bool {
 /// Where the movie of engine `b` is: (position, frames per second, frames, stream, w, h).
 fn position(b: u32) -> Option<(u64, (u32, u32), u32, u32, u32, u32)> {
     let t = now();
-    play::with(|m| {
-        m.get(&b).map(|p| {
-            (
-                p.tl.position(t),
-                p.movie.rate,
-                p.movie.frames,
-                p.movie.stream,
-                p.movie.w,
-                p.movie.h,
-            )
-        })
-    })
+    play::with(|m| m.get(&b).map(|p| (p.tl.position(t), p.movie.rate, p.movie.frames, p.movie.stream, p.movie.w, p.movie.h)))
 }
 /// The movie's volume as IBasicAudio's (1/100 dB).
 fn centibels(v: f64, muted: bool) -> i32 {
-    if muted || v <= 0.0 || v.is_nan() {
-        -10000
-    } else {
-        (2000.0 * v.min(1.0).log10()).round().max(-10000.0) as i32
-    }
+    if muted || v <= 0.0 || v.is_nan() { -10000 } else { (2000.0 * v.min(1.0).log10()).round().max(-10000.0) as i32 }
 }
 fn apply_volume(b: u32) {
-    let Some(v) = engine(b, |e| centibels(e.st.volume, e.st.muted)) else {
-        return;
-    };
+    let Some(v) = engine(b, |e| centibels(e.st.volume, e.st.muted)) else { return };
     play::with(|m| {
         if let Some(p) = m.get_mut(&b) {
             p.volume = v;
@@ -1177,13 +1071,7 @@ pub fn ended(k: u32) -> bool {
 fn events_thread(c: &mut Ctx) -> u32 {
     let b = c.a(0);
     loop {
-        let next = engine(b, |e| {
-            if e.shut {
-                Err(())
-            } else {
-                Ok((e.notify, e.st.events.pop_front()))
-            }
-        });
+        let next = engine(b, |e| if e.shut { Err(()) } else { Ok((e.notify, e.st.events.pop_front())) });
         match next {
             Some(Ok((n, Some((code, p1, p2))))) => {
                 com(c, n, 3, &[code, p1, p2]);
@@ -1219,17 +1107,13 @@ fn en_qi(c: &mut Ctx) -> u32 {
     }
     let g = guid_at(c.a(1));
     // IMFMediaEngine {98a1b0bb-03eb-4935-ae7c-93c1fa0e1c93}, IMFMediaEngineEx {83015ead-b1e6-40d0-...}
-    if is_unknown(&g) || is(&g, 0x98a1_b0bb, 0x03eb, 0x4935) || is(&g, 0x8301_5ead, 0xb1e6, 0x40d0)
-    {
+    if is_unknown(&g) || is(&g, 0x98a1_b0bb, 0x03eb, 0x4935) || is(&g, 0x8301_5ead, 0xb1e6, 0x40d0) {
         en_add_ref(c);
         putp(out, this);
         return 0;
     }
     if crate::env_on!("SAKE_TRACE_COM") {
-        eprintln!(
-            "sake: IMFMediaEngine QueryInterface {:08x}: no",
-            r32(c.a(1))
-        );
+        eprintln!("sake: IMFMediaEngine QueryInterface {:08x}: no", r32(c.a(1)));
     }
     putp(out, 0);
     E_NOINTERFACE
@@ -1260,11 +1144,7 @@ fn shutdown(c: &mut Ctx, b: u32) {
         e.shut = true;
         e.st.events.clear();
         // (no thread to let the callback go: here)
-        let n = if e.thread {
-            0
-        } else {
-            std::mem::take(&mut e.notify)
-        };
+        let n = if e.thread { 0 } else { std::mem::take(&mut e.notify) };
         (had, n)
     });
     if let Some((true, n)) = had {
@@ -1281,10 +1161,7 @@ fn en_shutdown(c: &mut Ctx) -> u32 {
 /// A guest path of a source URL ("file:///C:/x.mp4" or a path).
 fn source_path(u: &[u16]) -> String {
     let s = String::from_utf16_lossy(u);
-    let s = match s
-        .strip_prefix("file:///")
-        .or_else(|| s.strip_prefix("file://"))
-    {
+    let s = match s.strip_prefix("file:///").or_else(|| s.strip_prefix("file://")) {
         Some(p) => p.replace('/', "\\"),
         None => s,
     };
@@ -1303,37 +1180,18 @@ fn load(b: u32) {
         return;
     };
     let w = src.as_deref().map(source_path).unwrap_or_default();
-    let vnv = if w.is_empty() {
-        None
-    } else {
-        crate::files::resolve(&format!("{w}.vnv"))
-    };
-    let movie = vnv
-        .and_then(|p| play::Movie::open(&p))
-        .filter(|m| kura::video::decodable(m.stream));
+    let vnv = if w.is_empty() { None } else { crate::files::resolve(&format!("{w}.vnv")) };
+    let movie = vnv.and_then(|p| play::Movie::open(&p)).filter(|m| kura::video::decodable(m.stream));
     let Some(movie) = movie else {
         let there = !w.is_empty() && crate::files::resolve(&w).is_some();
         if there {
             eprintln!("sake: movie {w}: not played (no .vnv to decode, see ippai pack)");
         }
-        engine(b, |e| {
-            e.st.failed(if there {
-                MF_E_UNSUPPORTED_BYTESTREAM_TYPE
-            } else {
-                0x8007_0002
-            })
-        });
+        engine(b, |e| e.st.failed(if there { MF_E_UNSUPPORTED_BYTESTREAM_TYPE } else { 0x8007_0002 }));
         return;
     };
-    eprintln!(
-        "sake: movie {w}: {}x{} {} frames (Media Engine)",
-        movie.w, movie.h, movie.frames
-    );
-    let (dur, video, audio) = (
-        movie.duration as f64 / SEC as f64,
-        Some((movie.w, movie.h)),
-        movie.sound.is_some(),
-    );
+    eprintln!("sake: movie {w}: {}x{} {} frames (Media Engine)", movie.w, movie.h, movie.frames);
+    let (dur, video, audio) = (movie.duration as f64 / SEC as f64, Some((movie.w, movie.h)), movie.sound.is_some());
     let mut p = Play::new(movie);
     p.place.visible = false;
     play::start(b, p);
@@ -1460,11 +1318,7 @@ fn seek_to(b: u32, to: f64) -> u32 {
     }) else {
         return MF_E_INVALIDREQUEST;
     };
-    let to = if to.is_nan() {
-        0.0
-    } else {
-        to.clamp(0.0, if dur.is_nan() { 0.0 } else { dur })
-    };
+    let to = if to.is_nan() { 0.0 } else { to.clamp(0.0, if dur.is_nan() { 0.0 } else { dur }) };
     timeline(b, |tl, t| tl.seek(t, (to * SEC as f64) as u64));
     0
 }
@@ -1557,9 +1411,7 @@ fn en_balance(c: &mut Ctx) -> u32 {
 /// GetNativeVideoSize(DWORD *cx, DWORD *cy) / GetVideoAspectRatio (the picture's, reduced)
 fn video_size(c: &mut Ctx, aspect: bool) -> u32 {
     let (cx, cy) = (c.a(1), c.a(2));
-    let Some((w, h)) = engine(c.a(0), |e| e.st.video).flatten() else {
-        return E_FAIL;
-    };
+    let Some((w, h)) = engine(c.a(0), |e| e.st.video).flatten() else { return E_FAIL };
     let (w, h) = if aspect {
         let g = gcd(w, h).max(1);
         (w / g, h / g)
@@ -1571,11 +1423,7 @@ fn video_size(c: &mut Ctx, aspect: bool) -> u32 {
     0
 }
 fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
-    }
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 fn en_native_size(c: &mut Ctx) -> u32 {
     video_size(c, false)
@@ -1590,9 +1438,7 @@ fn en_tick(c: &mut Ctx) -> u32 {
     if out == 0 {
         return E_POINTER;
     }
-    let Some((pos, rate, frames, ..)) = position(b) else {
-        return S_FALSE;
-    };
+    let Some((pos, rate, frames, ..)) = position(b) else { return S_FALSE };
     let n = frame_at(pos, rate, frames);
     if engine(b, |e| e.ticked.replace(n) == Some(n)).unwrap_or(true) {
         return S_FALSE;
@@ -1609,26 +1455,13 @@ fn src_rect(p: u32, w: u32, h: u32) -> play::R {
         return (0, 0, w as i32, h as i32);
     }
     let f = |i: u32| f32::from_bits(r32(p + 4 * i)).clamp(0.0, 1.0);
-    let (l, t, r, bt) = (
-        (f(0) * w as f32) as i32,
-        (f(1) * h as f32) as i32,
-        (f(2) * w as f32).round() as i32,
-        (f(3) * h as f32).round() as i32,
-    );
+    let (l, t, r, bt) = ((f(0) * w as f32) as i32, (f(1) * h as f32) as i32, (f(2) * w as f32).round() as i32, (f(3) * h as f32).round() as i32);
     (l, t, (r - l).max(0), (bt - t).max(0))
 }
 
 /// The frame shown now, letterboxed onto `dst` (w x h) with `border` around it: rows of
 /// B, G, R, A pixels (`rgba`: R, G, B, A).
-pub fn compose(
-    frame: &[u32],
-    fw: u32,
-    fh: u32,
-    src: play::R,
-    dst: (u32, u32),
-    border: u32,
-    rgba: bool,
-) -> Vec<u32> {
+pub fn compose(frame: &[u32], fw: u32, fh: u32, src: play::R, dst: (u32, u32), border: u32, rgba: bool) -> Vec<u32> {
     let (dw, dh) = (dst.0 as i32, dst.1 as i32);
     let mut out = vec![border; (dw * dh) as usize];
     let lb = letterbox((0, 0, dw, dh), src.2, src.3);
@@ -1637,8 +1470,7 @@ pub fn compose(
         play::blit(frame, fw as i32, fh as i32, src, &mut part, lb, lb);
         for y in 0..lb.3 {
             let o = ((lb.1 + y) * dw + lb.0) as usize;
-            out[o..o + lb.2 as usize]
-                .copy_from_slice(&part[(y * lb.2) as usize..((y + 1) * lb.2) as usize]);
+            out[o..o + lb.2 as usize].copy_from_slice(&part[(y * lb.2) as usize..((y + 1) * lb.2) as usize]);
         }
     }
     if rgba {
@@ -1659,27 +1491,14 @@ fn en_transfer(c: &mut Ctx) -> u32 {
     if surf == 0 {
         return E_POINTER;
     }
-    let Some((pos, rate, frames, stream, w, h)) = position(b) else {
-        return MF_E_INVALIDREQUEST;
-    };
-    let Some((tw, th, fmt)) = kura::d3d11::texture_desc(surf) else {
-        return E_INVALIDARG;
-    };
+    let Some((pos, rate, frames, stream, w, h)) = position(b) else { return MF_E_INVALIDREQUEST };
+    let Some((tw, th, fmt)) = kura::d3d11::texture_desc(surf) else { return E_INVALIDARG };
     let rgba = match fmt {
         87 | 88 | 91 | 93 => false, // B8G8R8A8 / X8 (UNORM, SRGB)
         28 | 29 => true,            // R8G8B8A8
         _ => return MF_E_INVALIDTYPE,
     };
-    let (l, t, r, bt) = if dst == 0 {
-        (0, 0, tw as i32, th as i32)
-    } else {
-        (
-            r32(dst) as i32,
-            r32(dst + 4) as i32,
-            r32(dst + 8) as i32,
-            r32(dst + 12) as i32,
-        )
-    };
+    let (l, t, r, bt) = if dst == 0 { (0, 0, tw as i32, th as i32) } else { (r32(dst) as i32, r32(dst + 4) as i32, r32(dst + 8) as i32, r32(dst + 12) as i32) };
     let (l, t, r, bt) = (l.max(0), t.max(0), r.min(tw as i32), bt.min(th as i32));
     if r <= l || bt <= t {
         return E_INVALIDARG;
@@ -1689,55 +1508,21 @@ fn en_transfer(c: &mut Ctx) -> u32 {
     // (the page may not have the frame's bytes or picture yet: the movie thread draws it a turn
     // later, the game wants it now)
     let mut tries = 0;
-    while !unsafe {
-        kura::video::frame(
-            stream,
-            n as i32,
-            px.as_mut_ptr() as *mut u8,
-            4 * w as usize,
-            w,
-            h,
-            kura::video::Out::Rgb601,
-        )
-    } {
+    while !unsafe { kura::video::frame(stream, n as i32, px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h, kura::video::Out::Rgb601) } {
         tries += 1;
         if tries > FRAME_TRIES || kura::video::failed(stream) {
             return E_FAIL;
         }
         kura::snap::sleep(std::time::Duration::from_millis(5));
     }
-    let border = if border == 0 {
-        0xff00_0000
-    } else {
-        r32(border)
-    };
-    let out = compose(
-        &px,
-        w,
-        h,
-        src_rect(src, w, h),
-        ((r - l) as u32, (bt - t) as u32),
-        border,
-        rgba,
-    );
-    let bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(out.as_ptr() as *const u8, out.len() * 4) };
+    let border = if border == 0 { 0xff00_0000 } else { r32(border) };
+    let out = compose(&px, w, h, src_rect(src, w, h), ((r - l) as u32, (bt - t) as u32), border, rgba);
+    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(out.as_ptr() as *const u8, out.len() * 4) };
     let g = mem::heap_alloc(bytes.len() as u32, false);
     mem::write(g, bytes);
-    let done = unsafe {
-        kura::d3d11::write_texture(
-            surf,
-            g,
-            4 * (r - l) as u32,
-            [l as u32, t as u32, r as u32, bt as u32],
-        )
-    };
+    let done = unsafe { kura::d3d11::write_texture(surf, g, 4 * (r - l) as u32, [l as u32, t as u32, r as u32, bt as u32]) };
     mem::heap_free(g);
-    if done {
-        0
-    } else {
-        E_INVALIDARG
-    }
+    if done { 0 } else { E_INVALIDARG }
 }
 /// GetResourceCharacteristics(DWORD *): it can seek and pause
 fn en_characteristics(c: &mut Ctx) -> u32 {
@@ -1797,15 +1582,8 @@ fn en_can_play(c: &mut Ctx) -> u32 {
     if c.a(2) == 0 {
         return E_POINTER;
     }
-    let t = if c.a(1) == 0 {
-        String::new()
-    } else {
-        String::from_utf16_lossy(&mem::wstr(c.a(1)))
-    };
-    put32(
-        c.a(2),
-        (t.starts_with("video/") || t.starts_with("audio/")) as u32,
-    );
+    let t = if c.a(1) == 0 { String::new() } else { String::from_utf16_lossy(&mem::wstr(c.a(1))) };
+    put32(c.a(2), (t.starts_with("video/") || t.starts_with("audio/")) as u32);
     0
 }
 
@@ -1834,8 +1612,8 @@ fn engine_methods() -> Vec<(Handler, u32)> {
         (hr!(en_set_source), 8),
         (hr!(en_get_source), 8),
         (en_network, 4),
-        (zero, 4),         // GetPreload
-        (hr!(ok), 8),      // SetPreload
+        (zero, 4),       // GetPreload
+        (hr!(ok), 8),    // SetPreload
         (hr!(notimpl), 8), // GetBuffered
         (hr!(en_load), 4),
         (hr!(en_can_play), 12),
@@ -1875,37 +1653,37 @@ fn engine_methods() -> Vec<(Handler, u32)> {
         (hr!(notimpl), 12), // GetStatistics
         (hr!(ok), 16),      // UpdateVideoStream
         (en_balance, 4),
-        (hr!(ok), 12),     // SetBalance
-        (en_true, 12),     // IsPlaybackRateSupported
+        (hr!(ok), 12), // SetBalance
+        (en_true, 12), // IsPlaybackRateSupported
         (hr!(notimpl), 8), // FrameStep
         (hr!(en_characteristics), 8),
         (hr!(notimpl), 12), // GetPresentationAttribute
         (hr!(en_streams), 8),
-        (hr!(notimpl), 16),     // GetStreamAttribute
-        (hr!(notimpl), 12),     // GetStreamSelection
-        (hr!(ok), 12),          // SetStreamSelection
-        (hr!(ok), 4),           // ApplyStreamSelections
+        (hr!(notimpl), 16), // GetStreamAttribute
+        (hr!(notimpl), 12), // GetStreamSelection
+        (hr!(ok), 12),      // SetStreamSelection
+        (hr!(ok), 4),       // ApplyStreamSelections
         (hr!(en_false_out), 8), // IsProtected
-        (hr!(notimpl), 12),     // InsertVideoEffect
-        (hr!(notimpl), 12),     // InsertAudioEffect
-        (hr!(ok), 4),           // RemoveAllEffects
-        (hr!(ok), 12),          // SetTimelineMarkerTimer
-        (hr!(notimpl), 8),      // GetTimelineMarkerTimer
-        (hr!(ok), 4),           // CancelTimelineMarkerTimer
-        (zero, 4),              // IsStereo3D
+        (hr!(notimpl), 12), // InsertVideoEffect
+        (hr!(notimpl), 12), // InsertAudioEffect
+        (hr!(ok), 4),       // RemoveAllEffects
+        (hr!(ok), 12),      // SetTimelineMarkerTimer
+        (hr!(notimpl), 8),  // GetTimelineMarkerTimer
+        (hr!(ok), 4),       // CancelTimelineMarkerTimer
+        (zero, 4),          // IsStereo3D
         (hr!(en_false_out), 8), // GetStereo3DFramePackingMode
-        (hr!(ok), 8),           // SetStereo3DFramePackingMode
+        (hr!(ok), 8),       // SetStereo3DFramePackingMode
         (hr!(en_false_out), 8), // GetStereo3DRenderMode
-        (hr!(ok), 8),           // SetStereo3DRenderMode
-        (hr!(ok), 8),           // EnableWindowlessSwapchainMode
-        (hr!(notimpl), 8),      // GetVideoSwapchainHandle
-        (hr!(ok), 8),           // EnableHorizontalMirrorMode
+        (hr!(ok), 8),       // SetStereo3DRenderMode
+        (hr!(ok), 8),       // EnableWindowlessSwapchainMode
+        (hr!(notimpl), 8),  // GetVideoSwapchainHandle
+        (hr!(ok), 8),       // EnableHorizontalMirrorMode
         (hr!(en_get_category), 8),
         (hr!(en_set_category), 8),
         (hr!(en_get_role), 8),
         (hr!(en_set_role), 8),
         (hr!(en_false_out), 8), // GetRealTimeMode
-        (hr!(ok), 8),           // SetRealTimeMode
+        (hr!(ok), 8),       // SetRealTimeMode
         (hr!(en_seek_ex), 16),
         (hr!(ok), 8), // EnableTimeUpdateTimer
     ]
@@ -1938,52 +1716,19 @@ fn fa_create(c: &mut Ctx) -> u32 {
     if attr == 0 {
         return E_POINTER;
     }
-    let Some(s) = store_of(attr) else {
-        return E_INVALIDARG;
-    };
+    let Some(s) = store_of(attr) else { return E_INVALIDARG };
     let notify = s.items.iter().find_map(|(k, v)| match v {
         Val::Unk(u) if is_callback(k) && *u != 0 => Some(*u),
         _ => None,
     });
-    let Some(notify) = notify else {
-        return E_INVALIDARG;
-    };
-    let u32_of = |f: fn(&Guid) -> bool| {
-        s.items.iter().find_map(|(k, v)| {
-            if let (true, Val::U32(x)) = (f(k), v) {
-                Some(*x)
-            } else {
-                None
-            }
-        })
-    };
-    let (category, role) = (
-        u32_of(is_category).unwrap_or(0),
-        u32_of(is_role).unwrap_or(0),
-    );
+    let Some(notify) = notify else { return E_INVALIDARG };
+    let u32_of = |f: fn(&Guid) -> bool| s.items.iter().find_map(|(k, v)| if let (true, Val::U32(x)) = (f(k), v) { Some(*x) } else { None });
+    let (category, role) = (u32_of(is_category).unwrap_or(0), u32_of(is_role).unwrap_or(0));
     add_ref(c, notify);
     static VT: OnceLock<u32> = OnceLock::new();
-    let b = object(
-        *VT.get_or_init(|| vtable("IMFMediaEngine", &engine_methods())),
-        1,
-    );
-    let e = Engine {
-        refs: 1,
-        st: State::default(),
-        notify,
-        shut: false,
-        src: None,
-        movie: false,
-        ticked: None,
-        category,
-        role,
-        thread: false,
-    };
-    ENGINES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(b, e);
+    let b = object(*VT.get_or_init(|| vtable("IMFMediaEngine", &engine_methods())), 1);
+    let e = Engine { refs: 1, st: State::default(), notify, shut: false, src: None, movie: false, ticked: None, category, role, thread: false };
+    ENGINES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, e);
     start_events(b);
     putp(out, b);
     0
@@ -2025,17 +1770,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
     }
     static F: OnceLock<u32> = OnceLock::new();
     Some(*F.get_or_init(|| {
-        let vt = vtable(
-            "IMFMediaEngineClassFactory",
-            &[
-                (fa_qi as Handler, 12),
-                (one, 4),
-                (one, 4),
-                (fa_create, 16),
-                (notimpl, 8),
-                (fa_create_error, 8),
-            ],
-        );
+        let vt = vtable("IMFMediaEngineClassFactory", &[(fa_qi as Handler, 12), (one, 4), (one, 4), (fa_create, 16), (notimpl, 8), (fa_create_error, 8)]);
         object(vt, 1)
     }))
 }
@@ -2061,11 +1796,7 @@ pub fn init() {
     implement("mfplat", "MFStartup", MFStartup);
     implement("mfplat", "MFShutdown", MFShutdown);
     implement("mfplat", "MFCreateAttributes", MFCreateAttributes);
-    implement(
-        "mfplat",
-        "MFCreateDXGIDeviceManager",
-        MFCreateDXGIDeviceManager,
-    );
+    implement("mfplat", "MFCreateDXGIDeviceManager", MFCreateDXGIDeviceManager);
     implement("mfplat", "MFCreateSourceResolver", |c| none(c, 0));
     implement("mf", "MFCreateMediaSession", |c| none(c, 1));
     implement("mf", "MFCreateTopology", |c| none(c, 0));
@@ -2073,9 +1804,7 @@ pub fn init() {
     implement("mf", "MFGetService", |c| none(c, 3));
     implement("mf", "MFCreateVideoRendererActivate", |c| none(c, 1));
     implement("mf", "MFCreateAudioRendererActivate", |c| none(c, 0));
-    implement("mfreadwrite", "MFCreateSourceReaderFromMediaSource", |c| {
-        none(c, 2)
-    });
+    implement("mfreadwrite", "MFCreateSourceReaderFromMediaSource", |c| none(c, 2));
     reader::init();
 }
 

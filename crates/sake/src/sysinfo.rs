@@ -41,14 +41,7 @@ fn system_information(class: u32, ptr: u32) -> Option<Vec<u8>> {
                 u(&mut v, 0);
             }
             p(&mut v, 0x10000);
-            p(
-                &mut v,
-                if ptr == 8 {
-                    0x7fff_fffe_ffff
-                } else {
-                    0x7ffe_ffff
-                },
-            );
+            p(&mut v, if ptr == 8 { 0x7fff_fffe_ffff } else { 0x7ffe_ffff });
             p(&mut v, mask());
             v.push(ncpu() as u8);
             while v.len() % ptr as usize != 0 {
@@ -242,28 +235,19 @@ fn GetPhysicallyInstalledSystemMemory(c: &mut Ctx) -> u32 {
 const SCHEMES: [([u8; 16], &str, &str); 3] = [
     // {381b4222-f694-41f0-9685-ff5bb260df2e}
     (
-        [
-            0x22, 0x42, 0x1b, 0x38, 0x94, 0xf6, 0xf0, 0x41, 0x96, 0x85, 0xff, 0x5b, 0xb2, 0x60,
-            0xdf, 0x2e,
-        ],
+        [0x22, 0x42, 0x1b, 0x38, 0x94, 0xf6, 0xf0, 0x41, 0x96, 0x85, 0xff, 0x5b, 0xb2, 0x60, 0xdf, 0x2e],
         "Balanced",
         "Automatically balances performance with energy consumption on capable hardware.",
     ),
     // {8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c}
     (
-        [
-            0xda, 0x7f, 0x5e, 0x8c, 0xbf, 0xe8, 0x96, 0x4a, 0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c,
-            0x63, 0x5c,
-        ],
+        [0xda, 0x7f, 0x5e, 0x8c, 0xbf, 0xe8, 0x96, 0x4a, 0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c],
         "High performance",
         "Favors performance, but may use more energy.",
     ),
     // {a1841308-3541-4fab-bc81-f71556f20b4a}
     (
-        [
-            0x08, 0x13, 0x84, 0xa1, 0x41, 0x35, 0xab, 0x4f, 0xbc, 0x81, 0xf7, 0x15, 0x56, 0xf2,
-            0x0b, 0x4a,
-        ],
+        [0x08, 0x13, 0x84, 0xa1, 0x41, 0x35, 0xab, 0x4f, 0xbc, 0x81, 0xf7, 0x15, 0x56, 0xf2, 0x0b, 0x4a],
         "Power saver",
         "Saves energy by reducing your computer's performance where possible.",
     ),
@@ -378,9 +362,6 @@ mod tests {
         assert_eq!(system_information(0, 4).unwrap().len(), 44);
         assert_eq!(system_information(0, 8).unwrap().len(), 64);
         assert_eq!(system_information(1, 4).unwrap().len(), 12);
-        assert_eq!(
-            system_information(0x67, 4).unwrap(),
-            [8, 0, 0, 0, 1, 0, 0, 0]
-        );
+        assert_eq!(system_information(0x67, 4).unwrap(), [8, 0, 0, 0, 1, 0, 0, 0]);
     }
 }

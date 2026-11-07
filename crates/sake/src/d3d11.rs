@@ -27,12 +27,7 @@ fn calls() -> &'static kura::d3d9::HostCalls {
 }
 
 fn method(c: &mut Ctx) -> u32 {
-    let (id, float) = IDS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|m| m.get(&c.trap).copied())
-        .unwrap_or((0, false));
+    let (id, float) = IDS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied()).unwrap_or((0, false));
     if float {
         c.st0 = Some(0.0);
         return 0;
@@ -89,71 +84,26 @@ fn D3D11CreateDeviceAndSwapChain(c: &mut Ctx) -> u32 {
     host(CREATE_DEVICE, &a)
 }
 fn D3D11CreateDevice(c: &mut Ctx) -> u32 {
-    let a = [
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        0,
-        0,
-        c.a(7),
-        c.a(8),
-        c.a(9),
-    ];
+    let a = [c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), 0, 0, c.a(7), c.a(8), c.a(9)];
     host(CREATE_DEVICE, &a)
 }
 /// (factory, adapter, flags, levels, count, device)
 fn D3D11CoreCreateDevice(c: &mut Ctx) -> u32 {
-    let a = [
-        c.a(1),
-        (c.a(1) == 0) as u32,
-        0,
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        7,
-        0,
-        0,
-        c.a(5),
-        0,
-        0,
-    ];
+    let a = [c.a(1), (c.a(1) == 0) as u32, 0, c.a(2), c.a(3), c.a(4), 7, 0, 0, c.a(5), 0, 0];
     host(CREATE_DEVICE, &a)
 }
 /// d3d10.dll / d3d10_1.dll: the D3D11 device's D3D10 face (crates/kura/src/d3d11/d3d10.rs)
 /// (adapter, driver type, software, flags, sdk, out)
 fn D3D10CreateDevice(c: &mut Ctx) -> u32 {
-    host(
-        CREATE_DEVICE10,
-        &[c.a(0), c.a(1), c.a(2), c.a(3), 0xa000, c.a(4), 0, 0, c.a(5)],
-    )
+    host(CREATE_DEVICE10, &[c.a(0), c.a(1), c.a(2), c.a(3), 0xa000, c.a(4), 0, 0, c.a(5)])
 }
 /// (adapter, driver type, software, flags, sdk, swap chain desc, swap chain, device)
 fn D3D10CreateDeviceAndSwapChain(c: &mut Ctx) -> u32 {
-    host(
-        CREATE_DEVICE10,
-        &[
-            c.a(0),
-            c.a(1),
-            c.a(2),
-            c.a(3),
-            0xa000,
-            c.a(4),
-            c.a(5),
-            c.a(6),
-            c.a(7),
-        ],
-    )
+    host(CREATE_DEVICE10, &[c.a(0), c.a(1), c.a(2), c.a(3), 0xa000, c.a(4), c.a(5), c.a(6), c.a(7)])
 }
 /// (adapter, driver type, software, flags, level, sdk, out)
 fn D3D10CreateDevice1(c: &mut Ctx) -> u32 {
-    host(
-        CREATE_DEVICE10,
-        &[c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), 0, 0, c.a(6)],
-    )
+    host(CREATE_DEVICE10, &[c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), 0, 0, c.a(6)])
 }
 /// (adapter, driver type, software, flags, level, sdk, swap chain desc, swap chain, device)
 fn D3D10CreateDeviceAndSwapChain1(c: &mut Ctx) -> u32 {
@@ -181,33 +131,17 @@ fn zero(_: &mut Ctx) -> u32 {
 }
 
 pub fn register() {
-    implement(
-        "d3d11",
-        "D3D11CreateDeviceAndSwapChain",
-        D3D11CreateDeviceAndSwapChain,
-    );
+    implement("d3d11", "D3D11CreateDeviceAndSwapChain", D3D11CreateDeviceAndSwapChain);
     implement("d3d11", "D3D11CreateDevice", D3D11CreateDevice);
     implement("d3d11", "D3D11CoreCreateDevice", D3D11CoreCreateDevice);
     implement("d3d11", "D3D11On12CreateDevice", D3D11On12CreateDevice);
-    for n in [
-        "D3D11CoreCreateLayeredDevice",
-        "D3D11CoreGetLayeredDeviceSize",
-        "D3D11CoreRegisterLayers",
-    ] {
+    for n in ["D3D11CoreCreateLayeredDevice", "D3D11CoreGetLayeredDeviceSize", "D3D11CoreRegisterLayers"] {
         implement("d3d11", n, not_impl);
     }
     implement("d3d10", "D3D10CreateDevice", D3D10CreateDevice);
-    implement(
-        "d3d10",
-        "D3D10CreateDeviceAndSwapChain",
-        D3D10CreateDeviceAndSwapChain,
-    );
+    implement("d3d10", "D3D10CreateDeviceAndSwapChain", D3D10CreateDeviceAndSwapChain);
     implement("d3d10_1", "D3D10CreateDevice1", D3D10CreateDevice1);
-    implement(
-        "d3d10_1",
-        "D3D10CreateDeviceAndSwapChain1",
-        D3D10CreateDeviceAndSwapChain1,
-    );
+    implement("d3d10_1", "D3D10CreateDeviceAndSwapChain1", D3D10CreateDeviceAndSwapChain1);
     implement("dxgi", "CreateDXGIFactory", CreateDXGIFactory);
     implement("dxgi", "CreateDXGIFactory1", CreateDXGIFactory);
     implement("dxgi", "CreateDXGIFactory2", CreateDXGIFactory2);

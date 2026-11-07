@@ -27,19 +27,8 @@ fn store_keeps_the_order_and_replaces_in_place() {
 #[test]
 fn value_types_are_mf_attribute_types() {
     // MF_ATTRIBUTE_UINT32 .. MF_ATTRIBUTE_IUNKNOWN
-    let vs = [
-        Val::U32(0),
-        Val::U64(0),
-        Val::F64(0.0),
-        Val::Guid([0; 16]),
-        Val::Str(vec![]),
-        Val::Blob(vec![]),
-        Val::Unk(0),
-    ];
-    assert_eq!(
-        vs.iter().map(Val::vt).collect::<Vec<_>>(),
-        [19, 21, 5, 72, 31, 0x1011, 13]
-    );
+    let vs = [Val::U32(0), Val::U64(0), Val::F64(0.0), Val::Guid([0; 16]), Val::Str(vec![]), Val::Blob(vec![]), Val::Unk(0)];
+    assert_eq!(vs.iter().map(Val::vt).collect::<Vec<_>>(), [19, 21, 5, 72, 31, 0x1011, 13]);
 }
 
 #[test]
@@ -81,13 +70,7 @@ enum Op {
 }
 
 fn arb_ops() -> impl Strategy<Value = Vec<Op>> {
-    prop::collection::vec(
-        prop_oneof![
-            (0u8..6, arb_val()).prop_map(|(k, v)| Op::Set(k, v)),
-            (0u8..6).prop_map(Op::Delete)
-        ],
-        0..40,
-    )
+    prop::collection::vec(prop_oneof![(0u8..6, arb_val()).prop_map(|(k, v)| Op::Set(k, v)), (0u8..6).prop_map(Op::Delete)], 0..40)
 }
 
 proptest! {
@@ -155,22 +138,8 @@ fn load_events_in_order() {
     st.reset();
     assert!(!st.loaded(2.0, Some((64, 48)), false));
     use ev::*;
-    assert_eq!(
-        names(&mut st),
-        [
-            LOADSTART,
-            DURATIONCHANGE,
-            LOADEDMETADATA,
-            LOADEDDATA,
-            FIRSTFRAMEREADY,
-            CANPLAY,
-            CANPLAYTHROUGH
-        ]
-    );
-    assert_eq!(
-        (st.ready, st.network, st.paused, st.ended),
-        (4, 1, true, false)
-    );
+    assert_eq!(names(&mut st), [LOADSTART, DURATIONCHANGE, LOADEDMETADATA, LOADEDDATA, FIRSTFRAMEREADY, CANPLAY, CANPLAYTHROUGH]);
+    assert_eq!((st.ready, st.network, st.paused, st.ended), (4, 1, true, false));
     assert_eq!(st.duration, 2.0);
     // a second source: emptied first
     st.reset();
@@ -184,10 +153,7 @@ fn a_source_that_fails() {
     let mut st = State::default();
     st.reset();
     st.failed(0x8007_0002);
-    assert_eq!(
-        st.events.iter().copied().collect::<Vec<_>>(),
-        [(ev::LOADSTART, 0, 0), (ev::ERROR, 4, 0x8007_0002)]
-    );
+    assert_eq!(st.events.iter().copied().collect::<Vec<_>>(), [(ev::LOADSTART, 0, 0), (ev::ERROR, 4, 0x8007_0002)]);
     assert_eq!((st.error, st.network, st.ready), ((4, 0x8007_0002), 3, 0));
     // nothing to seek in or play
     assert!(!st.seek());
@@ -202,43 +168,15 @@ fn a_source_that_fails() {
 #[test]
 fn autoplay_and_play_before_load() {
     use ev::*;
-    let mut st = State {
-        autoplay: true,
-        ..State::default()
-    };
+    let mut st = State { autoplay: true, ..State::default() };
     st.reset();
     assert!(st.loaded(1.0, Some((2, 2)), true));
-    assert_eq!(
-        names(&mut st),
-        [
-            LOADSTART,
-            DURATIONCHANGE,
-            LOADEDMETADATA,
-            LOADEDDATA,
-            FIRSTFRAMEREADY,
-            CANPLAY,
-            PLAY,
-            PLAYING,
-            CANPLAYTHROUGH
-        ]
-    );
+    assert_eq!(names(&mut st), [LOADSTART, DURATIONCHANGE, LOADEDMETADATA, LOADEDDATA, FIRSTFRAMEREADY, CANPLAY, PLAY, PLAYING, CANPLAYTHROUGH]);
     let mut st = State::default();
     st.reset();
     st.play();
     assert!(st.loaded(1.0, None, true));
-    assert_eq!(
-        names(&mut st),
-        [
-            LOADSTART,
-            PLAY,
-            DURATIONCHANGE,
-            LOADEDMETADATA,
-            LOADEDDATA,
-            CANPLAY,
-            PLAYING,
-            CANPLAYTHROUGH
-        ]
-    );
+    assert_eq!(names(&mut st), [LOADSTART, PLAY, DURATIONCHANGE, LOADEDMETADATA, LOADEDDATA, CANPLAY, PLAYING, CANPLAYTHROUGH]);
 }
 
 #[test]
@@ -367,10 +305,7 @@ fn volume_as_centibels() {
 fn source_urls_as_paths() {
     let w = |s: &str| s.encode_utf16().collect::<Vec<_>>();
     assert_eq!(source_path(&w("C:\\game\\op.mp4")), "C:\\game\\op.mp4");
-    assert_eq!(
-        source_path(&w("file:///C:/game/my%20op.mp4")),
-        "C:\\game\\my op.mp4"
-    );
+    assert_eq!(source_path(&w("file:///C:/game/my%20op.mp4")), "C:\\game\\my op.mp4");
     assert_eq!(source_path(&w("movie/op.wmv")), "movie/op.wmv");
 }
 

@@ -49,24 +49,16 @@ fn refs(a: u32) -> u32 {
 fn desc1(ad: u32) -> (String, u32, u32, u32) {
     let p = mem(80);
     assert_eq!(call1(m(IF_ADAPTER, 10), &[ad, p]), 0);
-    let name: String = (0..128)
-        .map(|i| unsafe { *((p + 2 * i) as *const u16) })
-        .take_while(|&c| c != 0)
-        .map(|c| char::from_u32(c as u32).unwrap())
-        .collect();
+    let name: String = (0..128).map(|i| unsafe { *((p + 2 * i) as *const u16) }).take_while(|&c| c != 0).map(|c| char::from_u32(c as u32).unwrap()).collect();
     let vendor = rd1(p + 256);
     let luid = rd1(p + 284);
     let flags = rd1(p + 292);
     (name, vendor, luid, flags)
 }
 
-const FACTORIES: [u32; 8] = [
-    0x7b7166ec, 0x770aae78, 0x50c83a1c, 0x25483823, 0x1bc6ea02, 0x7632e1f5, 0xc1b6694f, 0xa4966eed,
-];
+const FACTORIES: [u32; 8] = [0x7b7166ec, 0x770aae78, 0x50c83a1c, 0x25483823, 0x1bc6ea02, 0x7632e1f5, 0xc1b6694f, 0xa4966eed];
 const ADAPTERS: [u32; 5] = [0x2411e7e1, 0x29038f61, 0x0aa1ae0a, 0x645967a4, 0x3c8d99d1];
-const OUTPUTS: [u32; 7] = [
-    0xae02eedb, 0x00cddea8, 0x595e39d1, 0x8a6bb301, 0xdc7dca35, 0x80a07424, 0x068346e8,
-];
+const OUTPUTS: [u32; 7] = [0xae02eedb, 0x00cddea8, 0x595e39d1, 0x8a6bb301, 0xdc7dca35, 0x80a07424, 0x068346e8];
 const DXGI_OBJECT: u32 = 0xaec22fb8;
 
 /// dl_RJ365650's start on Windows: CreateDXGIFactory2(IDXGIFactory2), QueryInterface
@@ -117,12 +109,7 @@ fn trial_games_start_as_on_windows() {
         for i in 0..3 {
             let o = mem(2);
             let r = call1(m(IF_FACTORY, e), &[f, i, o]);
-            assert_eq!(
-                r,
-                if i < 2 { 0 } else { DXGI_ERROR_NOT_FOUND },
-                "EnumAdapters{} {i}",
-                if e == 12 { "1" } else { "" }
-            );
+            assert_eq!(r, if i < 2 { 0 } else { DXGI_ERROR_NOT_FOUND }, "EnumAdapters{} {i}", if e == 12 { "1" } else { "" });
             if r == 0 {
                 assert_eq!(desc1(rd1(o)).0 == "Microsoft Basic Render Driver", i == 1);
                 call1(m(IF_ADAPTER, 2), &[rd1(o)]);
@@ -140,13 +127,7 @@ fn trial_games_start_as_on_windows() {
         call1(m(IF_ADAPTER, 2), &[ad]);
     }
     let (dev_out, level, ctx_out) = (mem(2), mem(2), mem(2));
-    assert_eq!(
-        call1(
-            CREATE_DEVICE,
-            &[ad, 0, 0, 0, 0, 0, 7, 0, 0, dev_out, level, ctx_out]
-        ),
-        0
-    );
+    assert_eq!(call1(CREATE_DEVICE, &[ad, 0, 0, 0, 0, 0, 7, 0, 0, dev_out, level, ctx_out]), 0);
     call1(m(IF_CONTEXT, 2), &[rd1(ctx_out)]);
     call1(m(IF_DEVICE, 2), &[rd1(dev_out)]);
     assert_eq!(call1(m(IF_ADAPTER, 2), &[ad]), 0);
@@ -163,11 +144,7 @@ fn every_dxgi_interface() {
         let f = factory(x);
         for y in FACTORIES.iter().chain(&[DXGI_OBJECT, 0]) {
             let q = mem(2);
-            assert_eq!(
-                call1(m(IF_FACTORY, 0), &[f, iid(*y), q]),
-                0,
-                "factory {x:08x} as {y:08x}"
-            );
+            assert_eq!(call1(m(IF_FACTORY, 0), &[f, iid(*y), q]), 0, "factory {x:08x} as {y:08x}");
             call1(m(IF_FACTORY, 2), &[rd1(q)]);
         }
         for y in ADAPTERS.iter().chain(&OUTPUTS) {
@@ -180,24 +157,15 @@ fn every_dxgi_interface() {
         assert_eq!(call1(m(IF_FACTORY, 27), &[f, iid(0x3c8d99d1), o]), 0);
         let w = rd1(o);
         let (name, vendor, luid, flags) = desc1(w);
-        assert_eq!(
-            (name.as_str(), vendor, flags),
-            ("Microsoft Basic Render Driver", 0x1414, 2)
-        );
+        assert_eq!((name.as_str(), vendor, flags), ("Microsoft Basic Render Driver", 0x1414, 2));
         // EnumAdapterByLuid of each adapter's LUID: a new object of that adapter (as on Windows,
         // every enumeration makes one)
         let q = mem(2);
-        assert_eq!(
-            call1(m(IF_FACTORY, 26), &[f, luid, 0, iid(0x2411e7e1), q]),
-            0
-        );
+        assert_eq!(call1(m(IF_FACTORY, 26), &[f, luid, 0, iid(0x2411e7e1), q]), 0);
         assert_ne!(rd1(q), w);
         assert_eq!(desc1(rd1(q)), desc1(w));
         call1(m(IF_ADAPTER, 2), &[rd1(q)]);
-        assert_eq!(
-            call1(m(IF_FACTORY, 26), &[f, 0x777, 0, iid(0x2411e7e1), q]),
-            DXGI_ERROR_NOT_FOUND
-        );
+        assert_eq!(call1(m(IF_FACTORY, 26), &[f, 0x777, 0, iid(0x2411e7e1), q]), DXGI_ERROR_NOT_FOUND);
         assert_eq!(rd1(q), 0);
         assert_eq!(call1(m(IF_ADAPTER, 7), &[w, 0, q]), DXGI_ERROR_NOT_FOUND);
         call1(m(IF_ADAPTER, 2), &[w]);
@@ -206,10 +174,7 @@ fn every_dxgi_interface() {
         put(b, &[7]);
         assert_eq!(call1(m(IF_FACTORY, 28), &[f, 0, b, 4]), 0);
         assert_eq!(rd1(b), 0);
-        assert_eq!(
-            call1(m(IF_FACTORY, 28), &[f, 0, b, 8]),
-            DXGI_ERROR_INVALID_CALL
-        );
+        assert_eq!(call1(m(IF_FACTORY, 28), &[f, 0, b, 8]), DXGI_ERROR_INVALID_CALL);
         // (a preference past HIGH_PERFORMANCE: enumerated as UNSPECIFIED)
         assert_eq!(call1(m(IF_FACTORY, 29), &[f, 0, 3, iid(0x2411e7e1), q]), 0);
         call1(m(IF_ADAPTER, 2), &[rd1(q)]);
@@ -234,11 +199,7 @@ fn every_dxgi_interface() {
     let out = rd1(o);
     for y in OUTPUTS.iter().chain(&[DXGI_OBJECT]) {
         let q = mem(2);
-        assert_eq!(
-            call1(m(IF_OUTPUT, 0), &[out, iid(*y), q]),
-            0,
-            "output as {y:08x}"
-        );
+        assert_eq!(call1(m(IF_OUTPUT, 0), &[out, iid(*y), q]), 0, "output as {y:08x}");
         assert_eq!(rd1(q), out);
         call1(m(IF_OUTPUT, 2), &[out]);
     }
@@ -283,17 +244,8 @@ fn adapter_enumeration_model() {
             let (res, want) = match r.below(6) {
                 0 => (call1(m(IF_FACTORY, 7), &[f, i, o]), i),
                 1 => (call1(m(IF_FACTORY, 12), &[f, i, o]), i),
-                2 => (
-                    call1(
-                        m(IF_FACTORY, 29),
-                        &[f, i, r.below(3) as u32, iid(ADAPTERS[r.below(5)]), o],
-                    ),
-                    i,
-                ),
-                3 => (
-                    call1(m(IF_FACTORY, 27), &[f, iid(ADAPTERS[r.below(5)]), o]),
-                    1,
-                ),
+                2 => (call1(m(IF_FACTORY, 29), &[f, i, r.below(3) as u32, iid(ADAPTERS[r.below(5)]), o]), i),
+                3 => (call1(m(IF_FACTORY, 27), &[f, iid(ADAPTERS[r.below(5)]), o]), 1),
                 4 if !held.is_empty() => {
                     let (a, _) = held[r.below(held.len())];
                     let (_, _, luid, _) = desc1(a);
@@ -326,10 +278,7 @@ fn adapter_enumeration_model() {
             if seen[want as usize] == 0 {
                 seen[want as usize] = luid;
             }
-            assert_eq!(
-                luid, seen[want as usize],
-                "seed {seed}: adapter {want}'s LUID"
-            );
+            assert_eq!(luid, seen[want as usize], "seed {seed}: adapter {want}'s LUID");
             assert_eq!(desc1(a).3, if want == 1 { 2 } else { 0 });
             assert_eq!(refs(a), 1, "seed {seed}");
             held.push((a, want as usize));

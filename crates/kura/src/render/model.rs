@@ -104,9 +104,7 @@ fn value(b: &[u8], i: &mut usize) -> Result<J, String> {
             }
             loop {
                 ws(b, i);
-                let J::Str(k) = value(b, i)? else {
-                    return Err(bad(*i));
-                };
+                let J::Str(k) = value(b, i)? else { return Err(bad(*i)) };
                 ws(b, i);
                 if b.get(*i) != Some(&b':') {
                     return Err(bad(*i));
@@ -183,11 +181,7 @@ fn value(b: &[u8], i: &mut usize) -> Result<J, String> {
             }
             let t = std::str::from_utf8(&b[st..*i]).unwrap_or("");
             // (JSON numbers: no NaN, no inf; what num() in render/ writes)
-            t.parse::<f64>()
-                .ok()
-                .filter(|f| f.is_finite() && !t.is_empty())
-                .map(J::Num)
-                .ok_or_else(|| bad(st))
+            t.parse::<f64>().ok().filter(|f| f.is_finite() && !t.is_empty()).map(J::Num).ok_or_else(|| bad(st))
         }
         None => Err(bad(*i)),
     }
@@ -200,9 +194,7 @@ fn format_info(f: &str) -> Option<(u32, bool, bool, bool, char)> {
     Some(match f {
         "r8unorm" => (1, true, true, true, 'f'),
         "rg8unorm" => (2, true, true, true, 'f'),
-        "rgba8unorm" | "rgba8unorm-srgb" | "bgra8unorm" | "bgra8unorm-srgb" | "rgb10a2unorm" => {
-            (4, true, true, true, 'f')
-        }
+        "rgba8unorm" | "rgba8unorm-srgb" | "bgra8unorm" | "bgra8unorm-srgb" | "rgb10a2unorm" => (4, true, true, true, 'f'),
         "rgba8snorm" => (4, false, false, true, 'f'),
         "r16float" => (2, true, true, true, 'f'),
         "rg16float" => (4, true, true, true, 'f'),
@@ -238,22 +230,7 @@ fn format_info(f: &str) -> Option<(u32, bool, bool, bool, char)> {
 fn storable(f: &str) -> bool {
     matches!(
         f,
-        "rgba8unorm"
-            | "rgba8snorm"
-            | "rgba8uint"
-            | "rgba8sint"
-            | "rgba16uint"
-            | "rgba16sint"
-            | "rgba16float"
-            | "r32uint"
-            | "r32sint"
-            | "r32float"
-            | "rg32uint"
-            | "rg32sint"
-            | "rg32float"
-            | "rgba32uint"
-            | "rgba32sint"
-            | "rgba32float"
+        "rgba8unorm" | "rgba8snorm" | "rgba8uint" | "rgba8sint" | "rgba16uint" | "rgba16sint" | "rgba16float" | "r32uint" | "r32sint" | "r32float" | "rg32uint" | "rg32sint" | "rg32float" | "rgba32uint" | "rgba32sint" | "rgba32float"
     )
 }
 
@@ -275,11 +252,9 @@ fn has_stencil(f: &str) -> bool {
 
 fn vertex_format_size(f: &str) -> Option<u32> {
     Some(match f {
-        "float32" | "uint32" | "sint32" | "unorm8x4" | "snorm8x4" | "uint8x4" | "sint8x4"
-        | "unorm16x2" | "snorm16x2" | "uint16x2" | "sint16x2" | "float16x2" | "unorm10-10-10-2"
-        | "unorm8x4-bgra" => 4,
-        "float32x2" | "uint32x2" | "sint32x2" | "unorm16x4" | "snorm16x4" | "uint16x4"
-        | "sint16x4" | "float16x4" => 8,
+        "float32" | "uint32" | "sint32" | "unorm8x4" | "snorm8x4" | "uint8x4" | "sint8x4" | "unorm16x2" | "snorm16x2" | "uint16x2" | "sint16x2" | "float16x2"
+        | "unorm10-10-10-2" | "unorm8x4-bgra" => 4,
+        "float32x2" | "uint32x2" | "sint32x2" | "unorm16x4" | "snorm16x4" | "uint16x4" | "sint16x4" | "float16x4" => 8,
         "float32x3" | "uint32x3" | "sint32x3" => 12,
         "float32x4" | "uint32x4" | "sint32x4" => 16,
         "unorm8x2" | "uint8x2" | "snorm8x2" | "sint8x2" => 2,
@@ -290,10 +265,7 @@ fn vertex_format_size(f: &str) -> Option<u32> {
 // ---- hashing ----
 
 fn mix(h: u64, v: u64) -> u64 {
-    let mut x = h ^ v
-        .wrapping_add(0x9e37_79b9_7f4a_7c15)
-        .wrapping_add(h << 6)
-        .wrapping_add(h >> 2);
+    let mut x = h ^ v.wrapping_add(0x9e37_79b9_7f4a_7c15).wrapping_add(h << 6).wrapping_add(h >> 2);
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x ^= x >> 27;
@@ -324,10 +296,7 @@ fn hash_desc(j: &J) -> u64 {
         J::Num(n) => mix(4, n.to_bits()),
         J::Str(s) => mix(5, hash_str(s)),
         J::Arr(a) => a.iter().fold(6, |h, x| mix(h, hash_desc(x))),
-        J::Obj(o) => o
-            .iter()
-            .filter(|(k, _)| !matches!(k.as_str(), "module" | "layout"))
-            .fold(7, |h, (k, v)| mix(mix(h, hash_str(k)), hash_desc(v))),
+        J::Obj(o) => o.iter().filter(|(k, _)| !matches!(k.as_str(), "module" | "layout")).fold(7, |h, (k, v)| mix(mix(h, hash_str(k)), hash_desc(v))),
     }
 }
 
@@ -345,13 +314,7 @@ fn clear_value(color: [f32; 4]) -> u64 {
 /// bytes hold the bytes (the color in the format, as writes do: a readback gives them back and
 /// uploading those bytes gives the same value), others the value of the color.
 pub(crate) fn clear_texel(format: &str, c: [f32; 4]) -> u64 {
-    let u = |x: f32| {
-        if x.is_nan() {
-            0
-        } else {
-            (x.clamp(0.0, 1.0) * 255.0).round() as u64
-        }
-    };
+    let u = |x: f32| if x.is_nan() { 0 } else { (x.clamp(0.0, 1.0) * 255.0).round() as u64 };
     let h = |i: usize| crate::d3d11::format::f16_bits(c[i]) as u64;
     let f = |i: usize| c[i].to_bits() as u64;
     match format {
@@ -448,11 +411,7 @@ pub struct Texture {
 
 impl Texture {
     fn size(&self, mip: u32) -> (u32, u32, u32) {
-        let d = if self.dim == "3d" {
-            (self.layers >> mip).max(1)
-        } else {
-            self.layers
-        };
+        let d = if self.dim == "3d" { (self.layers >> mip).max(1) } else { self.layers };
         ((self.w >> mip).max(1), (self.h >> mip).max(1), d)
     }
     fn sub(&self, mip: u32, layer: u32) -> usize {
@@ -548,11 +507,7 @@ pub enum Obj {
 /// (group, binding, kind, texture sample type / view dimension, dynamic unknown)
 #[derive(Clone, Default)]
 pub struct Shader {
-    pub entries: Vec<(
-        String,
-        naga::ShaderStage,
-        Vec<(u32, u32, char, String, String)>,
-    )>,
+    pub entries: Vec<(String, naga::ShaderStage, Vec<(u32, u32, char, String, String)>)>,
     pub clear: bool,
     /// one of the save states' sample copies (d3d/snap.rs): writes what binding 0 holds at the
     /// fragment's pixel
@@ -620,13 +575,7 @@ pub struct Model {
     pub objs: Vec<Obj>,
     pub errors: Vec<String>,
     enc: Vec<Cmd>,
-    pass: Option<(
-        Vec<Attachment>,
-        Option<Attachment>,
-        Vec<Draw>,
-        DrawState,
-        (u32, u32),
-    )>,
+    pass: Option<(Vec<Attachment>, Option<Attachment>, Vec<Draw>, DrawState, (u32, u32))>,
     bounds: Option<[u32; 4]>,
     /// the open pass's sample count
     pass_samples: u32,
@@ -646,12 +595,7 @@ thread_local! {
 
 /// A fresh model for this thread.
 pub fn reset() {
-    M.with(|m| {
-        *m.borrow_mut() = Model {
-            table: vec![None],
-            ..Default::default()
-        }
-    });
+    M.with(|m| *m.borrow_mut() = Model { table: vec![None], ..Default::default() });
 }
 
 pub fn with<R>(f: impl FnOnce(&mut Model) -> R) -> R {
@@ -689,9 +633,7 @@ impl Model {
         match self.table.get(i as usize).copied().flatten() {
             Some(a) => Some(a),
             None => {
-                self.err(format!(
-                    "{what}: object {i} is not in the table (dropped or never made)"
-                ));
+                self.err(format!("{what}: object {i} is not in the table (dropped or never made)"));
                 None
             }
         }
@@ -754,20 +696,10 @@ impl Model {
     // ---- creation ----
 
     pub fn texture(&mut self, s: &str) -> u32 {
-        let Some(j) = self.json(s, "createTexture") else {
-            return self.put(Obj::Sampler(0));
-        };
+        let Some(j) = self.json(s, "createTexture") else { return self.put(Obj::Sampler(0)) };
         let samples = j.u("sampleCount").unwrap_or(1);
-        let size: Vec<u32> = j
-            .arr("size")
-            .iter()
-            .map(|n| if let J::Num(n) = n { *n as u32 } else { 0 })
-            .collect();
-        let (w, h, d) = (
-            size.first().copied().unwrap_or(0),
-            size.get(1).copied().unwrap_or(1),
-            size.get(2).copied().unwrap_or(1),
-        );
+        let size: Vec<u32> = j.arr("size").iter().map(|n| if let J::Num(n) = n { *n as u32 } else { 0 }).collect();
+        let (w, h, d) = (size.first().copied().unwrap_or(0), size.get(1).copied().unwrap_or(1), size.get(2).copied().unwrap_or(1));
         let format = j.s("format").unwrap_or("").to_string();
         let usage = j.u("usage").unwrap_or(0);
         let mips = j.u("mipLevelCount").unwrap_or(1);
@@ -792,9 +724,7 @@ impl Model {
         }
         if let Some((_, renderable, ..)) = info {
             if usage & 0x10 != 0 && (!renderable || dim != "2d") {
-                self.err(format!(
-                    "createTexture: {format} {dim} as a render attachment"
-                ));
+                self.err(format!("createTexture: {format} {dim} as a render attachment"));
             }
             if usage & 0x8 != 0 && !storable(&format) {
                 self.err(format!("createTexture: {format} as a storage texture"));
@@ -808,14 +738,7 @@ impl Model {
         if samples != 1 && samples != 4 {
             self.err(format!("createTexture: sampleCount {samples}"));
         }
-        if samples > 1
-            && (dim != "2d"
-                || mips != 1
-                || d != 1
-                || usage & 0x10 == 0
-                || usage & 0x8 != 0
-                || !multisamplable(&format))
-        {
+        if samples > 1 && (dim != "2d" || mips != 1 || d != 1 || usage & 0x10 == 0 || usage & 0x8 != 0 || !multisamplable(&format)) {
             self.err(format!("createTexture: {samples}x {format} {dim} {w}x{h}x{d}, {mips} mips, usage {usage:#x}"));
         }
         let layers = d;
@@ -823,50 +746,20 @@ impl Model {
         let mut texels = Vec::new();
         for m in 0..mips.min(32) {
             for _ in 0..layers {
-                texels.push(vec![
-                    0u64;
-                    (((w >> m).max(1)) * ((h >> m).max(1))).min(n as u32)
-                        as usize
-                ]);
+                texels.push(vec![0u64; (((w >> m).max(1)) * ((h >> m).max(1))).min(n as u32) as usize]);
             }
         }
-        let stencil = if has_stencil(&format) {
-            texels.clone()
-        } else {
-            Vec::new()
-        };
-        self.put(Obj::Texture(Texture {
-            w,
-            h,
-            layers,
-            mips,
-            format,
-            usage,
-            dim,
-            samples,
-            destroyed: false,
-            texels,
-            stencil,
-        }))
+        let stencil = if has_stencil(&format) { texels.clone() } else { Vec::new() };
+        self.put(Obj::Texture(Texture { w, h, layers, mips, format, usage, dim, samples, destroyed: false, texels, stencil }))
     }
 
     pub fn view(&mut self, tex: u32, s: &str) -> u32 {
-        let Some(t) = self.texture_of(tex, "createView") else {
-            return self.put(Obj::Sampler(0));
-        };
-        let j = if s.is_empty() {
-            J::Obj(Vec::new())
-        } else {
-            self.json(s, "createView").unwrap_or(J::Null)
-        };
+        let Some(t) = self.texture_of(tex, "createView") else { return self.put(Obj::Sampler(0)) };
+        let j = if s.is_empty() { J::Obj(Vec::new()) } else { self.json(s, "createView").unwrap_or(J::Null) };
         let tx = self.tex(t).clone();
         let mip = j.u("baseMipLevel").unwrap_or(0);
         let mips = j.u("mipLevelCount").unwrap_or(tx.mips.saturating_sub(mip));
-        let default_dim = if tx.dim == "2d" && tx.layers > 1 {
-            "2d-array"
-        } else {
-            &tx.dim
-        };
+        let default_dim = if tx.dim == "2d" && tx.layers > 1 { "2d-array" } else { &tx.dim };
         let dim = j.s("dimension").unwrap_or(default_dim).to_string();
         let layer = j.u("baseArrayLayer").unwrap_or(0);
         let tl = if tx.dim == "3d" { 1 } else { tx.layers };
@@ -891,61 +784,33 @@ impl Model {
         if !ok_dim {
             self.err(format!("createView: a {dim} view of a {} texture", tx.dim));
         }
-        if (dim == "2d" && layers != 1)
-            || (dim == "cube" && layers != 6)
-            || (dim == "cube-array" && layers % 6 != 0)
-        {
+        if (dim == "2d" && layers != 1) || (dim == "cube" && layers != 6) || (dim == "cube-array" && layers % 6 != 0) {
             self.err(format!("createView: {dim} with {layers} layers"));
         }
         if tx.samples > 1 && dim != "2d" {
-            self.err(format!(
-                "createView: a {dim} view of a multisampled texture"
-            ));
+            self.err(format!("createView: a {dim} view of a multisampled texture"));
         }
         if matches!(dim.as_str(), "cube" | "cube-array") && tx.w != tx.h {
             self.err("createView: a cube view of a texture that is not square".into());
         }
         let base = |f: &str| f.trim_end_matches("-srgb").to_string();
         if format != tx.format && base(&format) != base(&tx.format) {
-            self.err(format!(
-                "createView: format {format} of a {} texture",
-                tx.format
-            ));
+            self.err(format!("createView: format {format} of a {} texture", tx.format));
         }
-        if aspect != "all"
-            && !(tx.format.starts_with("depth")
-                && matches!(aspect.as_str(), "depth-only" | "stencil-only"))
-        {
+        if aspect != "all" && !(tx.format.starts_with("depth") && matches!(aspect.as_str(), "depth-only" | "stencil-only")) {
             self.err(format!("createView: aspect {aspect} of {}", tx.format));
         }
-        self.put(Obj::View(View {
-            tex: t,
-            mip,
-            mips,
-            layer,
-            layers,
-            dim,
-            aspect,
-            format,
-        }))
+        self.put(Obj::View(View { tex: t, mip, mips, layer, layers, dim, aspect, format }))
     }
 
     pub fn buffer(&mut self, size: u32, usage: u32) -> u32 {
         if usage == 0 || (usage & 1 != 0 && usage & !(1 | 8) != 0) {
-            self.err(format!(
-                "createBuffer: usage {usage:#x} (MAP_READ goes only with COPY_DST)"
-            ));
+            self.err(format!("createBuffer: usage {usage:#x} (MAP_READ goes only with COPY_DST)"));
         }
         if size > 1 << 28 {
             self.err(format!("createBuffer: size {size}"));
         }
-        self.put(Obj::Buffer(Buffer {
-            size,
-            usage,
-            data: vec![0; size.min(1 << 28) as usize],
-            destroyed: false,
-            mapped: false,
-        }))
+        self.put(Obj::Buffer(Buffer { size, usage, data: vec![0; size.min(1 << 28) as usize], destroyed: false, mapped: false }))
     }
 
     pub fn sampler(&mut self, s: &str) -> u32 {
@@ -964,53 +829,27 @@ impl Model {
                 }
             }
         }
-        let (lo, hi) = (
-            j.num("lodMinClamp").unwrap_or(0.0),
-            j.num("lodMaxClamp").unwrap_or(32.0),
-        );
+        let (lo, hi) = (j.num("lodMinClamp").unwrap_or(0.0), j.num("lodMaxClamp").unwrap_or(32.0));
         if lo < 0.0 || hi < lo {
             self.err(format!("createSampler: lod clamps {lo} {hi}"));
         }
         if let Some(a) = j.u("maxAnisotropy") {
-            if a > 1
-                && (j.s("magFilter") != Some("linear")
-                    || j.s("minFilter") != Some("linear")
-                    || j.s("mipmapFilter") != Some("linear"))
-            {
+            if a > 1 && (j.s("magFilter") != Some("linear") || j.s("minFilter") != Some("linear") || j.s("mipmapFilter") != Some("linear")) {
                 self.err("createSampler: anisotropy without linear filters".into());
             }
         }
         let h = hash_str(s);
         // (a comparison sampler binds as "comparison", a filtering one as "filtering")
-        let kind = if j.get("compare").is_some() {
-            2
-        } else if j.s("magFilter") == Some("linear")
-            || j.s("minFilter") == Some("linear")
-            || j.s("mipmapFilter") == Some("linear")
-        {
-            1
-        } else {
-            0
-        };
+        let kind = if j.get("compare").is_some() { 2 } else if j.s("magFilter") == Some("linear") || j.s("minFilter") == Some("linear") || j.s("mipmapFilter") == Some("linear") { 1 } else { 0 };
         self.put(Obj::Sampler(h << 2 | kind))
     }
 
     pub fn shader(&mut self, code: &str) -> u32 {
-        let mut sh = Shader {
-            clear: code == super::d3d::CLEAR_SHADER,
-            copy: code.starts_with(super::d3d::SAMPLE_COPY),
-            zwrite: code.starts_with(super::d3d::ZWRITE),
-            ..Default::default()
-        };
+        let mut sh = Shader { clear: code == super::d3d::CLEAR_SHADER, copy: code.starts_with(super::d3d::SAMPLE_COPY), zwrite: code.starts_with(super::d3d::ZWRITE), ..Default::default() };
         match naga::front::wgsl::parse_str(code) {
             Err(e) => self.err(format!("createShaderModule: {}", e.emit_to_string(code))),
             Ok(m) => {
-                match naga::valid::Validator::new(
-                    naga::valid::ValidationFlags::all(),
-                    naga::valid::Capabilities::empty(),
-                )
-                .validate(&m)
-                {
+                match naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&m) {
                     Err(e) => self.err(format!("createShaderModule: {e:?}")),
                     Ok(_) => {
                         for ep in &m.entry_points {
@@ -1022,32 +861,16 @@ impl Model {
                                     continue;
                                 }
                                 let (kind, ty, vd) = match &m.types[g.ty].inner {
-                                    naga::TypeInner::Image {
-                                        dim,
-                                        arrayed,
-                                        class,
-                                    } => {
-                                        let multi = matches!(
-                                            class,
-                                            naga::ImageClass::Sampled { multi: true, .. }
-                                                | naga::ImageClass::Depth { multi: true }
-                                        );
+                                    naga::TypeInner::Image { dim, arrayed, class } => {
+                                        let multi = matches!(class, naga::ImageClass::Sampled { multi: true, .. } | naga::ImageClass::Depth { multi: true });
                                         let storage = match class {
-                                            naga::ImageClass::Storage { format, .. } => {
-                                                Some(storage_format(*format))
-                                            }
+                                            naga::ImageClass::Storage { format, .. } => Some(storage_format(*format)),
                                             _ => None,
                                         };
                                         let st = match class {
                                             naga::ImageClass::Depth { .. } => "depth",
-                                            naga::ImageClass::Sampled {
-                                                kind: naga::ScalarKind::Uint,
-                                                ..
-                                            } => "uint",
-                                            naga::ImageClass::Sampled {
-                                                kind: naga::ScalarKind::Sint,
-                                                ..
-                                            } => "sint",
+                                            naga::ImageClass::Sampled { kind: naga::ScalarKind::Uint, .. } => "uint",
+                                            naga::ImageClass::Sampled { kind: naga::ScalarKind::Sint, .. } => "sint",
                                             _ => "float",
                                         };
                                         let vd = match (dim, arrayed) {
@@ -1058,26 +881,13 @@ impl Model {
                                             (naga::ImageDimension::Cube, false) => "cube",
                                             (naga::ImageDimension::Cube, true) => "cube-array",
                                         };
-                                        let vd = if multi {
-                                            format!("{vd}-ms")
-                                        } else {
-                                            vd.to_string()
-                                        };
+                                        let vd = if multi { format!("{vd}-ms") } else { vd.to_string() };
                                         match storage {
                                             Some(f) => ('w', f.to_string(), vd),
                                             None => ('t', st.to_string(), vd),
                                         }
                                     }
-                                    naga::TypeInner::Sampler { comparison } => (
-                                        's',
-                                        if *comparison {
-                                            "comparison"
-                                        } else {
-                                            "filtering"
-                                        }
-                                        .to_string(),
-                                        String::new(),
-                                    ),
+                                    naga::TypeInner::Sampler { comparison } => ('s', if *comparison { "comparison" } else { "filtering" }.to_string(), String::new()),
                                     _ => ('b', "uniform".to_string(), String::new()),
                                 };
                                 used.push((b.group, b.binding, kind, ty, vd));
@@ -1097,17 +907,9 @@ impl Model {
         for e in j.arr("entries") {
             let binding = e.u("binding").unwrap_or(u32::MAX);
             let (kind, dynamic, ty, view_dim) = if let Some(b) = e.get("buffer") {
-                (
-                    'b',
-                    b.b("hasDynamicOffset").unwrap_or(false),
-                    b.s("type").unwrap_or("uniform").to_string(),
-                    String::new(),
-                )
+                ('b', b.b("hasDynamicOffset").unwrap_or(false), b.s("type").unwrap_or("uniform").to_string(), String::new())
             } else if let Some(t) = e.get("texture") {
-                let (ty, vd) = (
-                    t.s("sampleType").unwrap_or("float").to_string(),
-                    t.s("viewDimension").unwrap_or("2d").to_string(),
-                );
+                let (ty, vd) = (t.s("sampleType").unwrap_or("float").to_string(), t.s("viewDimension").unwrap_or("2d").to_string());
                 // (multisampled: "2d" views, of any sample type but filterable float; kept as
                 // view dimension "2d-ms")
                 if t.b("multisampled").unwrap_or(false) {
@@ -1119,47 +921,24 @@ impl Model {
                     ('t', false, ty, vd)
                 }
             } else if let Some(t) = e.get("sampler") {
-                (
-                    's',
-                    false,
-                    t.s("type").unwrap_or("filtering").to_string(),
-                    String::new(),
-                )
+                ('s', false, t.s("type").unwrap_or("filtering").to_string(), String::new())
             } else if let Some(t) = e.get("storageTexture") {
                 if t.s("access").unwrap_or("write-only") != "write-only" {
-                    self.err(format!(
-                        "createBindGroupLayout: entry {binding}: storage access {:?}",
-                        t.s("access")
-                    ));
+                    self.err(format!("createBindGroupLayout: entry {binding}: storage access {:?}", t.s("access")));
                 }
                 let f = t.s("format").unwrap_or("").to_string();
                 if !storable(&f) {
-                    self.err(format!(
-                        "createBindGroupLayout: entry {binding}: storage format {f}"
-                    ));
+                    self.err(format!("createBindGroupLayout: entry {binding}: storage format {f}"));
                 }
-                (
-                    'w',
-                    false,
-                    f,
-                    t.s("viewDimension").unwrap_or("2d").to_string(),
-                )
+                ('w', false, f, t.s("viewDimension").unwrap_or("2d").to_string())
             } else {
-                self.err(format!(
-                    "createBindGroupLayout: entry {binding} binds nothing"
-                ));
+                self.err(format!("createBindGroupLayout: entry {binding} binds nothing"));
                 ('?', false, String::new(), String::new())
             };
             if v.iter().any(|x: &LayoutEntry| x.binding == binding) {
                 self.err(format!("createBindGroupLayout: binding {binding} twice"));
             }
-            v.push(LayoutEntry {
-                binding,
-                kind,
-                dynamic,
-                ty,
-                view_dim,
-            });
+            v.push(LayoutEntry { binding, kind, dynamic, ty, view_dim });
         }
         self.put(Obj::Layout(v))
     }
@@ -1184,12 +963,7 @@ impl Model {
         self.put(Obj::PipelineLayout(g))
     }
 
-    fn module(
-        &mut self,
-        j: Option<&J>,
-        stage: naga::ShaderStage,
-        what: &str,
-    ) -> Option<(u64, Shader, Vec<(u32, u32, char, String, String)>)> {
+    fn module(&mut self, j: Option<&J>, stage: naga::ShaderStage, what: &str) -> Option<(u64, Shader, Vec<(u32, u32, char, String, String)>)> {
         let j = j?;
         let m = j.u("module")?;
         let a = self.at(m, what)?;
@@ -1209,9 +983,7 @@ impl Model {
 
     pub fn render_pipeline(&mut self, s: &str) -> u32 {
         let what = "createRenderPipeline";
-        let Some(j) = self.json(s, what) else {
-            return self.put(Obj::Sampler(0));
-        };
+        let Some(j) = self.json(s, what) else { return self.put(Obj::Sampler(0)) };
         let vs = self.module(j.get("vertex"), naga::ShaderStage::Vertex, what);
         let fs = self.module(j.get("fragment"), naga::ShaderStage::Fragment, what);
         let mut used = Vec::new();
@@ -1241,17 +1013,7 @@ impl Model {
                         if es.iter().any(|e| e.binding == u.1) {
                             continue;
                         }
-                        es.push(LayoutEntry {
-                            binding: u.1,
-                            kind: u.2,
-                            dynamic: false,
-                            ty: if u.2 == 't' && u.3 == "float" {
-                                "float".into()
-                            } else {
-                                u.3.clone()
-                            },
-                            view_dim: u.4.clone(),
-                        });
+                        es.push(LayoutEntry { binding: u.1, kind: u.2, dynamic: false, ty: if u.2 == 't' && u.3 == "float" { "float".into() } else { u.3.clone() }, view_dim: u.4.clone() });
                     }
                     self.objs.push(Obj::Layout(es));
                     gs.push(self.objs.len() - 1);
@@ -1280,19 +1042,11 @@ impl Model {
                 _ => None,
             });
             match e {
-                None => self.err(format!(
-                    "{what}: the shaders use @group({}) @binding({}), the layout has no such entry",
-                    u.0, u.1
-                )),
+                None => self.err(format!("{what}: the shaders use @group({}) @binding({}), the layout has no such entry", u.0, u.1)),
                 Some(e) => {
                     let ok = e.kind == u.2
                         && match u.2 {
-                            't' => {
-                                (e.ty == u.3
-                                    || (u.3 == "float" && e.ty == "unfilterable-float")
-                                    || (u.3 == "depth" && e.ty == "depth"))
-                                    && e.view_dim == u.4
-                            }
+                            't' => (e.ty == u.3 || (u.3 == "float" && e.ty == "unfilterable-float") || (u.3 == "depth" && e.ty == "depth")) && e.view_dim == u.4,
                             's' => (u.3 == "comparison") == (e.ty == "comparison"),
                             'w' => e.ty == u.3 && e.view_dim == u.4,
                             _ => true,
@@ -1322,13 +1076,8 @@ impl Model {
                     match vertex_format_size(f) {
                         None => self.err(format!("{what}: vertex format {f}")),
                         Some(sz) => {
-                            if off % sz.min(4) != 0
-                                || (stride != 0 && off + sz > stride)
-                                || (stride == 0 && off + sz > 2048)
-                            {
-                                self.err(format!(
-                                    "{what}: attribute {f} at {off} in a stride of {stride}"
-                                ));
+                            if off % sz.min(4) != 0 || (stride != 0 && off + sz > stride) || (stride == 0 && off + sz > 2048) {
+                                self.err(format!("{what}: attribute {f} at {off} in a stride of {stride}"));
                             }
                         }
                     }
@@ -1370,29 +1119,14 @@ impl Model {
                             continue;
                         };
                         let op = x.s("operation").unwrap_or("add");
-                        let (sf, df) = (
-                            x.s("srcFactor").unwrap_or("one"),
-                            x.s("dstFactor").unwrap_or("zero"),
-                        );
+                        let (sf, df) = (x.s("srcFactor").unwrap_or("one"), x.s("dstFactor").unwrap_or("zero"));
                         if (op == "min" || op == "max") && (sf != "one" || df != "one") {
                             self.err(format!("{what}: blend {op} with factors {sf} {df}"));
                         }
                         for f in [sf, df] {
                             if !matches!(
                                 f,
-                                "zero"
-                                    | "one"
-                                    | "src"
-                                    | "one-minus-src"
-                                    | "src-alpha"
-                                    | "one-minus-src-alpha"
-                                    | "dst"
-                                    | "one-minus-dst"
-                                    | "dst-alpha"
-                                    | "one-minus-dst-alpha"
-                                    | "src-alpha-saturated"
-                                    | "constant"
-                                    | "one-minus-constant"
+                                "zero" | "one" | "src" | "one-minus-src" | "src-alpha" | "one-minus-src-alpha" | "dst" | "one-minus-dst" | "dst-alpha" | "one-minus-dst-alpha" | "src-alpha-saturated" | "constant" | "one-minus-constant"
                             ) {
                                 self.err(format!("{what}: blend factor {f}"));
                             }
@@ -1404,27 +1138,14 @@ impl Model {
                 }
                 // (one, zero, add: the old color does not count)
                 let reads = t.get("blend").is_some_and(|b| {
-                    ["color", "alpha"].iter().any(|c| {
-                        b.get(c).is_some_and(|x| {
-                            (
-                                x.s("srcFactor").unwrap_or("one"),
-                                x.s("dstFactor").unwrap_or("zero"),
-                                x.s("operation").unwrap_or("add"),
-                            ) != ("one", "zero", "add")
-                        })
-                    })
+                    ["color", "alpha"].iter().any(|c| b.get(c).is_some_and(|x| (x.s("srcFactor").unwrap_or("one"), x.s("dstFactor").unwrap_or("zero"), x.s("operation").unwrap_or("add")) != ("one", "zero", "add")))
                 });
                 targets.push((format, mask, reads));
             }
         }
         let prim = j.get("primitive");
-        let topo = prim
-            .and_then(|p| p.s("topology"))
-            .unwrap_or("triangle-list");
-        if !matches!(
-            topo,
-            "point-list" | "line-list" | "line-strip" | "triangle-list" | "triangle-strip"
-        ) {
+        let topo = prim.and_then(|p| p.s("topology")).unwrap_or("triangle-list");
+        if !matches!(topo, "point-list" | "line-list" | "line-strip" | "triangle-list" | "triangle-strip") {
             self.err(format!("{what}: topology {topo}"));
         }
         if let Some(sf) = prim.and_then(|p| p.s("stripIndexFormat")) {
@@ -1437,27 +1158,10 @@ impl Model {
                 self.err(format!("{what}: cullMode {c}"));
             }
         }
-        let cmp_ok = |c: &str| {
-            matches!(
-                c,
-                "never"
-                    | "less"
-                    | "equal"
-                    | "less-equal"
-                    | "greater"
-                    | "not-equal"
-                    | "greater-equal"
-                    | "always"
-            )
-        };
+        let cmp_ok = |c: &str| matches!(c, "never" | "less" | "equal" | "less-equal" | "greater" | "not-equal" | "greater-equal" | "always");
         let depth = j.get("depthStencil").map(|d| {
             let f = d.s("format").unwrap_or("").to_string();
-            (
-                f,
-                d.b("depthWriteEnabled").unwrap_or(false),
-                d.s("depthCompare").unwrap_or("always").to_string(),
-                d.clone(),
-            )
+            (f, d.b("depthWriteEnabled").unwrap_or(false), d.s("depthCompare").unwrap_or("always").to_string(), d.clone())
         });
         if let Some((f, _, c, d)) = &depth {
             if format_info(f).map(|i| i.4) != Some('d') {
@@ -1470,10 +1174,7 @@ impl Model {
                 if let Some(s) = d.get(face) {
                     if !has_stencil(f) {
                         // (allowed when it is the default: "always"/"keep")
-                        let defaults = s.s("compare").unwrap_or("always") == "always"
-                            && ["failOp", "depthFailOp", "passOp"]
-                                .iter()
-                                .all(|k| s.s(k).unwrap_or("keep") == "keep");
+                        let defaults = s.s("compare").unwrap_or("always") == "always" && ["failOp", "depthFailOp", "passOp"].iter().all(|k| s.s(k).unwrap_or("keep") == "keep");
                         if !defaults {
                             self.err(format!("{what}: stencil state with {f}"));
                         }
@@ -1486,11 +1187,7 @@ impl Model {
             if !f.starts_with("depth") {
                 // (nothing)
             }
-            if (d.num("depthBias").unwrap_or(0.0) != 0.0
-                || d.num("depthBiasSlopeScale").unwrap_or(0.0) != 0.0)
-                && topo != "triangle-list"
-                && topo != "triangle-strip"
-            {
+            if (d.num("depthBias").unwrap_or(0.0) != 0.0 || d.num("depthBiasSlopeScale").unwrap_or(0.0) != 0.0) && topo != "triangle-list" && topo != "triangle-strip" {
                 self.err(format!("{what}: depth bias on {topo}"));
             }
         }
@@ -1503,24 +1200,11 @@ impl Model {
         if samples != 1 && samples != 4 {
             self.err(format!("{what}: multisample count {samples}"));
         }
-        if samples > 1
-            && (targets.iter().any(|t| !multisamplable(&t.0))
-                || depth.as_ref().is_some_and(|d| !multisamplable(&d.0)))
-        {
-            self.err(format!(
-                "{what}: {samples} samples of targets {:?}",
-                targets.iter().map(|t| &t.0).collect::<Vec<_>>()
-            ));
+        if samples > 1 && (targets.iter().any(|t| !multisamplable(&t.0)) || depth.as_ref().is_some_and(|d| !multisamplable(&d.0))) {
+            self.err(format!("{what}: {samples} samples of targets {:?}", targets.iter().map(|t| &t.0).collect::<Vec<_>>()));
         }
-        if ms
-            .and_then(|m| m.b("alphaToCoverageEnabled"))
-            .unwrap_or(false)
-            && (samples == 1 || targets.is_empty())
-        {
-            self.err(format!(
-                "{what}: alphaToCoverage with {samples} samples and {} targets",
-                targets.len()
-            ));
+        if ms.and_then(|m| m.b("alphaToCoverageEnabled")).unwrap_or(false) && (samples == 1 || targets.is_empty()) {
+            self.err(format!("{what}: alphaToCoverage with {samples} samples and {} targets", targets.len()));
         }
         if let Some(m) = ms.and_then(|m| m.num("mask")) {
             if m < 0.0 || m > u32::MAX as f64 || m.fract() != 0.0 {
@@ -1530,48 +1214,18 @@ impl Model {
         if fs.is_none() && j.get("fragment").is_some() {
             // (the error was given)
         }
-        let strip_format = prim
-            .and_then(|p| p.s("stripIndexFormat"))
-            .map(str::to_string);
+        let strip_format = prim.and_then(|p| p.s("stripIndexFormat")).map(str::to_string);
         let uses_stencil = depth.as_ref().is_some_and(|d| {
-            ["stencilFront", "stencilBack"]
-                .iter()
-                .filter_map(|f| d.3.get(f))
-                .any(|s| {
-                    s.s("compare").unwrap_or("always") != "always"
-                        || ["failOp", "depthFailOp", "passOp"]
-                            .iter()
-                            .any(|k| s.s(k).unwrap_or("keep") != "keep")
-                })
+            ["stencilFront", "stencilBack"].iter().filter_map(|f| d.3.get(f)).any(|s| s.s("compare").unwrap_or("always") != "always" || ["failOp", "depthFailOp", "passOp"].iter().any(|k| s.s(k).unwrap_or("keep") != "keep"))
         });
-        let p = Pipeline {
-            hash: h,
-            groups,
-            targets,
-            depth: depth.map(|d| (d.0, d.1, d.2)),
-            buffers,
-            attrs,
-            per_instance,
-            topology: topo.to_string(),
-            strip_format,
-            clear_shader: clear,
-            copy_shader: copy,
-            zwrite_shader: zwrite,
-            uses_stencil,
-            samples,
-        };
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, copy_shader: copy, zwrite_shader: zwrite, uses_stencil, samples };
         self.put(Obj::Pipeline(p))
     }
 
     pub fn compute_pipeline(&mut self, s: &str) -> u32 {
         let what = "createComputePipeline";
-        let Some(j) = self.json(s, what) else {
-            return self.put(Obj::Sampler(0));
-        };
-        let Some((mh, _, used)) = self.module(j.get("compute"), naga::ShaderStage::Compute, what)
-        else {
-            return self.put(Obj::Compute(0, Vec::new()));
-        };
+        let Some(j) = self.json(s, what) else { return self.put(Obj::Sampler(0)) };
+        let Some((mh, _, used)) = self.module(j.get("compute"), naga::ShaderStage::Compute, what) else { return self.put(Obj::Compute(0, Vec::new())) };
         let groups = match j.get("layout") {
             Some(J::Num(n)) => match self.at(*n as u32, what).map(|a| self.objs[a].clone()) {
                 Some(Obj::PipelineLayout(g)) => g,
@@ -1591,17 +1245,11 @@ impl Model {
                 _ => None,
             });
             match e {
-                None => self.err(format!(
-                    "{what}: the shader uses @group({}) @binding({}), the layout has no such entry",
-                    u.0, u.1
-                )),
+                None => self.err(format!("{what}: the shader uses @group({}) @binding({}), the layout has no such entry", u.0, u.1)),
                 Some(e) => {
                     let ok = e.kind == u.2
                         && match u.2 {
-                            't' => {
-                                (e.ty == u.3 || (u.3 == "float" && e.ty == "unfilterable-float"))
-                                    && e.view_dim == u.4
-                            }
+                            't' => (e.ty == u.3 || (u.3 == "float" && e.ty == "unfilterable-float")) && e.view_dim == u.4,
                             's' => (u.3 == "comparison") == (e.ty == "comparison"),
                             'w' => e.ty == u.3 && e.view_dim == u.4,
                             _ => true,
@@ -1619,9 +1267,7 @@ impl Model {
     pub fn dispatch(&mut self, p: u32, g: u32, n: [u32; 3]) {
         let what = "dispatchWorkgroups";
         self.no_pass(what);
-        let (Some(pa), Some(ga)) = (self.at(p, what), self.at(g, what)) else {
-            return;
-        };
+        let (Some(pa), Some(ga)) = (self.at(p, what), self.at(g, what)) else { return };
         let Obj::Compute(h, groups) = self.objs[pa].clone() else {
             self.err(format!("{what}: not a compute pipeline"));
             return;
@@ -1631,15 +1277,10 @@ impl Model {
             return;
         };
         if groups.len() != 1 {
-            self.err(format!(
-                "{what}: a pipeline of {} bind groups, one set",
-                groups.len()
-            ));
+            self.err(format!("{what}: a pipeline of {} bind groups, one set", groups.len()));
             return;
         }
-        let (Obj::Layout(a), Obj::Layout(b)) = (&self.objs[la], &self.objs[groups[0]]) else {
-            return;
-        };
+        let (Obj::Layout(a), Obj::Layout(b)) = (&self.objs[la], &self.objs[groups[0]]) else { return };
         if la != groups[0] && format!("{a:?}") != format!("{b:?}") {
             self.err(format!("{what}: bind group of another layout"));
         }
@@ -1647,30 +1288,19 @@ impl Model {
             self.err(format!("{what}: {n:?} workgroups"));
         }
         // (a subresource both written as storage and sampled: a usage conflict)
-        let Obj::Layout(es) = self.objs[la].clone() else {
-            return;
-        };
+        let Obj::Layout(es) = self.objs[la].clone() else { return };
         let views: Vec<(bool, View)> = entries
             .iter()
             .filter_map(|(b, e)| match e {
-                Entry::View(v) => Some((
-                    es.iter().any(|x| x.binding == *b && x.kind == 'w'),
-                    self.view_of(*v).unwrap().clone(),
-                )),
+                Entry::View(v) => Some((es.iter().any(|x| x.binding == *b && x.kind == 'w'), self.view_of(*v).unwrap().clone())),
                 _ => None,
             })
             .collect();
         for (i, (wa, va)) in views.iter().enumerate() {
             for (wb, vb) in &views[i + 1..] {
                 let meet = |s0: u32, n0: u32, s1: u32, n1: u32| s0 < s1 + n1 && s1 < s0 + n0;
-                if (*wa || *wb)
-                    && va.tex == vb.tex
-                    && meet(va.mip, va.mips, vb.mip, vb.mips)
-                    && meet(va.layer, va.layers, vb.layer, vb.layers)
-                {
-                    self.err(format!(
-                        "{what}: a texture written as storage and bound again in the same dispatch"
-                    ));
+                if (*wa || *wb) && va.tex == vb.tex && meet(va.mip, va.mips, vb.mip, vb.mips) && meet(va.layer, va.layers, vb.layer, vb.layers) {
+                    self.err(format!("{what}: a texture written as storage and bound again in the same dispatch"));
                 }
             }
         }
@@ -1678,10 +1308,7 @@ impl Model {
     }
 
     pub fn pipeline_group_layout(&mut self, p: u32, i: u32) -> u32 {
-        let l = match self
-            .at(p, "getBindGroupLayout")
-            .map(|a| self.objs[a].clone())
-        {
+        let l = match self.at(p, "getBindGroupLayout").map(|a| self.objs[a].clone()) {
             Some(Obj::Pipeline(p)) => p.groups.get(i as usize).map(|&g| self.objs[g].clone()),
             Some(Obj::Compute(_, g)) => g.get(i as usize).map(|&g| self.objs[g].clone()),
             _ => None,
@@ -1697,9 +1324,7 @@ impl Model {
 
     pub fn bind_group(&mut self, layout: u32, words: &[u32]) -> u32 {
         let what = "createBindGroup";
-        let Some(la) = self.at(layout, what) else {
-            return self.put(Obj::Group(0, Vec::new()));
-        };
+        let Some(la) = self.at(layout, what) else { return self.put(Obj::Group(0, Vec::new())) };
         let Obj::Layout(es) = self.objs[la].clone() else {
             self.err(format!("{what}: not a layout"));
             return self.put(Obj::Group(la, Vec::new()));
@@ -1715,32 +1340,17 @@ impl Model {
                 self.err(format!("{what}: binding {binding} twice"));
             }
             if kind == 0 {
-                let Some(b) = self.buffer_of(o, what) else {
-                    continue;
-                };
-                let Obj::Buffer(buf) = &self.objs[b] else {
-                    continue;
-                };
+                let Some(b) = self.buffer_of(o, what) else { continue };
+                let Obj::Buffer(buf) = &self.objs[b] else { continue };
                 let (bs, bu) = (buf.size, buf.usage);
                 if e.kind != 'b' {
-                    self.err(format!(
-                        "{what}: a buffer at binding {binding}, a {} in the layout",
-                        e.kind
-                    ));
+                    self.err(format!("{what}: a buffer at binding {binding}, a {} in the layout", e.kind));
                 }
                 if bu & 0x40 == 0 {
-                    self.err(format!(
-                        "{what}: buffer without UNIFORM usage at binding {binding}"
-                    ));
+                    self.err(format!("{what}: buffer without UNIFORM usage at binding {binding}"));
                 }
-                if off % 256 != 0
-                    || size == 0
-                    || off as u64 + size as u64 > bs as u64
-                    || size > 65536
-                {
-                    self.err(format!(
-                        "{what}: binding {binding}: {size} bytes at {off} of a {bs}-byte buffer"
-                    ));
+                if off % 256 != 0 || size == 0 || off as u64 + size as u64 > bs as u64 || size > 65536 {
+                    self.err(format!("{what}: binding {binding}: {size} bytes at {off} of a {bs}-byte buffer"));
                 }
                 entries.push((binding, Entry::Buffer(b, off, size)));
             } else {
@@ -1749,9 +1359,7 @@ impl Model {
                     Obj::View(v) if e.kind == 'w' => {
                         let t = self.tex(v.tex).clone();
                         if t.usage & 0x8 == 0 {
-                            self.err(format!(
-                                "{what}: binding {binding}: texture without STORAGE_BINDING usage"
-                            ));
+                            self.err(format!("{what}: binding {binding}: texture without STORAGE_BINDING usage"));
                         }
                         if v.format != e.ty || v.dim != e.view_dim || v.mips != 1 {
                             self.err(format!("{what}: binding {binding}: a {} {} view of {} mips where the layout wants a {} {} storage texture", v.format, v.dim, v.mips, e.ty, e.view_dim));
@@ -1761,23 +1369,13 @@ impl Model {
                     Obj::View(v) => {
                         let t = self.tex(v.tex).clone();
                         if e.kind != 't' {
-                            self.err(format!(
-                                "{what}: a texture view at binding {binding}, a {} in the layout",
-                                e.kind
-                            ));
+                            self.err(format!("{what}: a texture view at binding {binding}, a {} in the layout", e.kind));
                         }
                         if t.usage & 0x4 == 0 {
-                            self.err(format!(
-                                "{what}: binding {binding}: texture without TEXTURE_BINDING usage"
-                            ));
+                            self.err(format!("{what}: binding {binding}: texture without TEXTURE_BINDING usage"));
                         }
-                        let (_, _, _, filterable, k) =
-                            format_info(&v.format).unwrap_or((4, false, false, false, '?'));
-                        let kind = if v.aspect == "depth-only" || k == 'd' {
-                            'd'
-                        } else {
-                            k
-                        };
+                        let (_, _, _, filterable, k) = format_info(&v.format).unwrap_or((4, false, false, false, '?'));
+                        let kind = if v.aspect == "depth-only" || k == 'd' { 'd' } else { k };
                         let ok = match e.ty.as_str() {
                             "float" => kind == 'f' && filterable,
                             "unfilterable-float" => kind == 'f' || kind == 'd',
@@ -1790,30 +1388,18 @@ impl Model {
                             self.err(format!("{what}: binding {binding}: a {} view ({}) where the layout wants {}", v.format, v.aspect, e.ty));
                         }
                         if has_stencil(&v.format) && v.aspect == "all" {
-                            self.err(format!(
-                                "{what}: binding {binding}: a depth-stencil view with both aspects"
-                            ));
+                            self.err(format!("{what}: binding {binding}: a depth-stencil view with both aspects"));
                         }
                         // (a view of a multisampled texture is a "2d-ms" one)
-                        let vd = if t.samples > 1 {
-                            format!("{}-ms", v.dim)
-                        } else {
-                            v.dim.clone()
-                        };
+                        let vd = if t.samples > 1 { format!("{}-ms", v.dim) } else { v.dim.clone() };
                         if vd != e.view_dim {
-                            self.err(format!(
-                                "{what}: binding {binding}: a {vd} view where the layout wants {}",
-                                e.view_dim
-                            ));
+                            self.err(format!("{what}: binding {binding}: a {vd} view where the layout wants {}", e.view_dim));
                         }
                         entries.push((binding, Entry::View(a)));
                     }
                     Obj::Sampler(s) => {
                         if e.kind != 's' {
-                            self.err(format!(
-                                "{what}: a sampler at binding {binding}, a {} in the layout",
-                                e.kind
-                            ));
+                            self.err(format!("{what}: a sampler at binding {binding}, a {} in the layout", e.kind));
                         }
                         let ok = match e.ty.as_str() {
                             "filtering" => s & 3 != 2,
@@ -1822,11 +1408,7 @@ impl Model {
                             _ => false,
                         };
                         if !ok {
-                            self.err(format!(
-                                "{what}: binding {binding}: sampler kind {} for {}",
-                                s & 3,
-                                e.ty
-                            ));
+                            self.err(format!("{what}: binding {binding}: sampler kind {} for {}", s & 3, e.ty));
                         }
                         entries.push((binding, Entry::Sampler(a)));
                     }
@@ -1847,47 +1429,22 @@ impl Model {
 
     pub fn write_buffer(&mut self, buf: u32, at: u32, bytes: &[u8]) {
         let what = "writeBuffer";
-        let Some(b) = self.buffer_of(buf, what) else {
-            return;
-        };
-        let Obj::Buffer(bf) = &mut self.objs[b] else {
-            return;
-        };
+        let Some(b) = self.buffer_of(buf, what) else { return };
+        let Obj::Buffer(bf) = &mut self.objs[b] else { return };
         let (size, usage, mapped) = (bf.size, bf.usage, bf.mapped);
-        if usage & 8 == 0
-            || mapped
-            || at % 4 != 0
-            || bytes.len() % 4 != 0
-            || at as u64 + bytes.len() as u64 > size as u64
-        {
+        if usage & 8 == 0 || mapped || at % 4 != 0 || bytes.len() % 4 != 0 || at as u64 + bytes.len() as u64 > size as u64 {
             self.err(format!("{what}: {} bytes at {at} of a {size}-byte buffer (usage {usage:#x}, mapped {mapped})", bytes.len()));
             return;
         }
-        let Obj::Buffer(bf) = &mut self.objs[b] else {
-            return;
-        };
+        let Obj::Buffer(bf) = &mut self.objs[b] else { return };
         bf.data[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
     }
 
-    pub fn write_texture(
-        &mut self,
-        tex: u32,
-        mip: u32,
-        o: [u32; 3],
-        p: *const u8,
-        n: usize,
-        bpr: u32,
-        rows: u32,
-        size: [u32; 3],
-    ) {
+    pub fn write_texture(&mut self, tex: u32, mip: u32, o: [u32; 3], p: *const u8, n: usize, bpr: u32, rows: u32, size: [u32; 3]) {
         let what = "writeTexture";
-        let Some(t) = self.texture_of(tex, what) else {
-            return;
-        };
+        let Some(t) = self.texture_of(tex, what) else { return };
         let tx = self.tex(t).clone();
-        let Some((bpp, ..)) = format_info(&tx.format) else {
-            return;
-        };
+        let Some((bpp, ..)) = format_info(&tx.format) else { return };
         if tx.usage & 2 == 0 {
             self.err(format!("{what}: texture without COPY_DST"));
         }
@@ -1895,10 +1452,7 @@ impl Model {
             self.err(format!("{what}: into a multisampled texture"));
             return;
         }
-        if matches!(
-            tx.format.as_str(),
-            "depth24plus" | "depth24plus-stencil8" | "depth32float"
-        ) {
+        if matches!(tx.format.as_str(), "depth24plus" | "depth24plus-stencil8" | "depth32float") {
             self.err(format!("{what}: into {}", tx.format));
             return;
         }
@@ -1908,9 +1462,7 @@ impl Model {
         }
         let (lw, lh, ld) = tx.size(mip);
         if o[0] + size[0] > lw || o[1] + size[1] > lh || o[2] + size[2] > ld {
-            self.err(format!(
-                "{what}: box {o:?}+{size:?} outside mip {mip} ({lw}x{lh}x{ld})"
-            ));
+            self.err(format!("{what}: box {o:?}+{size:?} outside mip {mip} ({lw}x{lh}x{ld})"));
             return;
         }
         let row = size[0] * bpp;
@@ -1922,37 +1474,26 @@ impl Model {
             self.err(format!("{what}: rowsPerImage {rows} under {}", size[1]));
             return;
         }
-        let need = if size[0] * size[1] * size[2] == 0 {
-            0
-        } else {
-            (bpr as u64) * (rows as u64) * (size[2] as u64 - 1)
-                + bpr as u64 * (size[1] as u64 - 1)
-                + row as u64
-        };
+        let need = if size[0] * size[1] * size[2] == 0 { 0 } else { (bpr as u64) * (rows as u64) * (size[2] as u64 - 1) + bpr as u64 * (size[1] as u64 - 1) + row as u64 };
         if (n as u64) < need {
             self.err(format!("{what}: {n} bytes for a box that needs {need}"));
             return;
         }
         let data = unsafe { std::slice::from_raw_parts(p, n) };
-        let Obj::Texture(tm) = &mut self.objs[t] else {
-            return;
-        };
+        let Obj::Texture(tm) = &mut self.objs[t] else { return };
         for z in 0..size[2] {
             let s = tm.sub(mip, o[2] + z);
             for y in 0..size[1] {
                 for x in 0..size[0] {
                     let at = (z * rows * bpr + y * bpr + x * bpp) as usize;
-                    tm.texels[s][((o[1] + y) * lw + o[0] + x) as usize] =
-                        write_texel(&data[at..at + bpp as usize]);
+                    tm.texels[s][((o[1] + y) * lw + o[0] + x) as usize] = write_texel(&data[at..at + bpp as usize]);
                 }
             }
         }
     }
 
     pub fn destroy(&mut self, i: u32) {
-        let Some(a) = self.at(i, "destroy") else {
-            return;
-        };
+        let Some(a) = self.at(i, "destroy") else { return };
         match &mut self.objs[a] {
             Obj::Texture(t) => t.destroyed = true,
             Obj::Buffer(b) => b.destroyed = true,
@@ -1981,105 +1522,51 @@ impl Model {
         }
     }
 
-    pub fn copy_texture(
-        &mut self,
-        src: u32,
-        smip: u32,
-        so: [u32; 3],
-        dst: u32,
-        dmip: u32,
-        d: [u32; 3],
-        size: [u32; 3],
-    ) {
+    pub fn copy_texture(&mut self, src: u32, smip: u32, so: [u32; 3], dst: u32, dmip: u32, d: [u32; 3], size: [u32; 3]) {
         let what = "copyTextureToTexture";
         self.no_pass(what);
-        let (Some(s), Some(t)) = (self.texture_of(src, what), self.texture_of(dst, what)) else {
-            return;
-        };
+        let (Some(s), Some(t)) = (self.texture_of(src, what), self.texture_of(dst, what)) else { return };
         let (st, dt) = (self.tex(s).clone(), self.tex(t).clone());
         if st.usage & 1 == 0 || dt.usage & 2 == 0 {
-            self.err(format!(
-                "{what}: usage (source COPY_SRC, destination COPY_DST)"
-            ));
+            self.err(format!("{what}: usage (source COPY_SRC, destination COPY_DST)"));
         }
         let base = |f: &str| f.trim_end_matches("-srgb").to_string();
         if base(&st.format) != base(&dt.format) {
             self.err(format!("{what}: {} to {}", st.format, dt.format));
         }
         if smip >= st.mips || dmip >= dt.mips {
-            self.err(format!(
-                "{what}: mip {smip} of {} / {dmip} of {}",
-                st.mips, dt.mips
-            ));
+            self.err(format!("{what}: mip {smip} of {} / {dmip} of {}", st.mips, dt.mips));
             return;
         }
         // (multisampled textures: to one of the same sample count, whole)
-        if st.samples != dt.samples
-            || st.samples > 1 && (so != [0; 3] || d != [0; 3] || [size[0], size[1]] != [st.w, st.h])
-        {
-            self.err(format!(
-                "{what}: {}x to {}x, {so:?}+{size:?} to {d:?}",
-                st.samples, dt.samples
-            ));
+        if st.samples != dt.samples || st.samples > 1 && (so != [0; 3] || d != [0; 3] || [size[0], size[1]] != [st.w, st.h]) {
+            self.err(format!("{what}: {}x to {}x, {so:?}+{size:?} to {d:?}", st.samples, dt.samples));
             return;
         }
         let (sw, sh, sd) = st.size(smip);
         let (dw, dh, dd) = dt.size(dmip);
-        if so[0] + size[0] > sw
-            || so[1] + size[1] > sh
-            || so[2] + size[2] > sd
-            || d[0] + size[0] > dw
-            || d[1] + size[1] > dh
-            || d[2] + size[2] > dd
-        {
-            self.err(format!(
-                "{what}: {so:?}+{size:?} of {sw}x{sh}x{sd} to {d:?} of {dw}x{dh}x{dd}"
-            ));
+        if so[0] + size[0] > sw || so[1] + size[1] > sh || so[2] + size[2] > sd || d[0] + size[0] > dw || d[1] + size[1] > dh || d[2] + size[2] > dd {
+            self.err(format!("{what}: {so:?}+{size:?} of {sw}x{sh}x{sd} to {d:?} of {dw}x{dh}x{dd}"));
             return;
         }
-        if st.format.starts_with("depth")
-            && (st.format == "depth24plus"
-                || st.format == "depth24plus-stencil8"
-                || size[0] != sw
-                || size[1] != sh)
-        {
-            self.err(format!(
-                "{what}: {} (depth formats: whole subresources of copyable ones)",
-                st.format
-            ));
+        if st.format.starts_with("depth") && (st.format == "depth24plus" || st.format == "depth24plus-stencil8" || size[0] != sw || size[1] != sh) {
+            self.err(format!("{what}: {} (depth formats: whole subresources of copyable ones)", st.format));
         }
         if s == t && smip == dmip && so[2] < d[2] + size[2] && d[2] < so[2] + size[2] {
-            self.err(format!(
-                "{what}: source and destination are the same subresource"
-            ));
+            self.err(format!("{what}: source and destination are the same subresource"));
         }
         self.enc.push(Cmd::Copy(s, smip, so, t, dmip, d, size));
     }
 
-    pub fn copy_to_buffer(
-        &mut self,
-        tex: u32,
-        mip: u32,
-        o: [u32; 3],
-        buf: u32,
-        bpr: u32,
-        w: u32,
-        h: u32,
-    ) {
+    pub fn copy_to_buffer(&mut self, tex: u32, mip: u32, o: [u32; 3], buf: u32, bpr: u32, w: u32, h: u32) {
         let [x, y, z] = o;
         let what = "copyTextureToBuffer";
         self.no_pass(what);
-        let (Some(t), Some(b)) = (self.texture_of(tex, what), self.buffer_of(buf, what)) else {
-            return;
-        };
+        let (Some(t), Some(b)) = (self.texture_of(tex, what), self.buffer_of(buf, what)) else { return };
         let tx = self.tex(t).clone();
-        let Obj::Buffer(bf) = &self.objs[b] else {
-            return;
-        };
+        let Obj::Buffer(bf) = &self.objs[b] else { return };
         let (bs, bu) = (bf.size, bf.usage);
-        let Some((bpp, ..)) = format_info(&tx.format) else {
-            return;
-        };
+        let Some((bpp, ..)) = format_info(&tx.format) else { return };
         if tx.usage & 1 == 0 || bu & 8 == 0 {
             self.err(format!("{what}: usage"));
         }
@@ -2097,9 +1584,7 @@ impl Model {
         }
         let (lw, lh, ld) = tx.size(mip);
         if x + w > lw || y + h > lh || z >= ld {
-            self.err(format!(
-                "{what}: {x},{y},{z}+{w}x{h} outside {lw}x{lh}x{ld}"
-            ));
+            self.err(format!("{what}: {x},{y},{z}+{w}x{h} outside {lw}x{lh}x{ld}"));
             return;
         }
         if bpr % 256 != 0 || (h > 1 && bpr < w * bpp) {
@@ -2110,19 +1595,14 @@ impl Model {
             self.err(format!("{what}: {w}x{h} into a {bs}-byte buffer"));
             return;
         }
-        self.enc
-            .push(Cmd::ToBuffer(t, mip, [x, y, z], b, bpr, w, h));
+        self.enc.push(Cmd::ToBuffer(t, mip, [x, y, z], b, bpr, w, h));
     }
 
     pub fn copy_buffer(&mut self, src: u32, dst: u32, size: u32) {
         let what = "copyBufferToBuffer";
         self.no_pass(what);
-        let (Some(s), Some(d)) = (self.buffer_of(src, what), self.buffer_of(dst, what)) else {
-            return;
-        };
-        let (Obj::Buffer(a), Obj::Buffer(b)) = (&self.objs[s], &self.objs[d]) else {
-            return;
-        };
+        let (Some(s), Some(d)) = (self.buffer_of(src, what), self.buffer_of(dst, what)) else { return };
+        let (Obj::Buffer(a), Obj::Buffer(b)) = (&self.objs[s], &self.objs[d]) else { return };
         let (au, asz, bu, bsz) = (a.usage, a.size, b.usage, b.size);
         if au & 4 == 0 || bu & 8 == 0 {
             self.err(format!("{what}: usage (COPY_SRC, COPY_DST)"));
@@ -2135,31 +1615,14 @@ impl Model {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn copy_from_buffer(
-        &mut self,
-        buf: u32,
-        bpr: u32,
-        tex: u32,
-        mip: u32,
-        x: u32,
-        y: u32,
-        z: u32,
-        w: u32,
-        h: u32,
-    ) {
+    pub fn copy_from_buffer(&mut self, buf: u32, bpr: u32, tex: u32, mip: u32, x: u32, y: u32, z: u32, w: u32, h: u32) {
         let what = "copyBufferToTexture";
         self.no_pass(what);
-        let (Some(b), Some(t)) = (self.buffer_of(buf, what), self.texture_of(tex, what)) else {
-            return;
-        };
+        let (Some(b), Some(t)) = (self.buffer_of(buf, what), self.texture_of(tex, what)) else { return };
         let tx = self.tex(t).clone();
-        let Obj::Buffer(bf) = &self.objs[b] else {
-            return;
-        };
+        let Obj::Buffer(bf) = &self.objs[b] else { return };
         let (bs, bu) = (bf.size, bf.usage);
-        let Some((bpp, ..)) = format_info(&tx.format) else {
-            return;
-        };
+        let Some((bpp, ..)) = format_info(&tx.format) else { return };
         if tx.usage & 2 == 0 || bu & 4 == 0 {
             self.err(format!("{what}: usage (buffer COPY_SRC, texture COPY_DST)"));
         }
@@ -2178,9 +1641,7 @@ impl Model {
         }
         let (lw, lh, ld) = tx.size(mip);
         if x + w > lw || y + h > lh || z >= ld {
-            self.err(format!(
-                "{what}: {x},{y},{z}+{w}x{h} outside {lw}x{lh}x{ld}"
-            ));
+            self.err(format!("{what}: {x},{y},{z}+{w}x{h} outside {lw}x{lh}x{ld}"));
             return;
         }
         if bpr % 256 != 0 || (h > 1 && bpr < w * bpp) {
@@ -2191,8 +1652,7 @@ impl Model {
             self.err(format!("{what}: {w}x{h} from a {bs}-byte buffer"));
             return;
         }
-        self.enc
-            .push(Cmd::FromBuffer(b, bpr, t, mip, x, y, z, w, h));
+        self.enc.push(Cmd::FromBuffer(b, bpr, t, mip, x, y, z, w, h));
     }
 
     pub fn begin_pass(&mut self, s: &str) {
@@ -2218,25 +1678,16 @@ impl Model {
                 m.err(format!("{what}: texture without RENDER_ATTACHMENT"));
             }
             if vw.mips != 1 || vw.layers != 1 || !matches!(vw.dim.as_str(), "2d" | "2d-array") {
-                m.err(format!(
-                    "{what}: attachment view of {} mips {} layers ({})",
-                    vw.mips, vw.layers, vw.dim
-                ));
+                m.err(format!("{what}: attachment view of {} mips {} layers ({})", vw.mips, vw.layers, vw.dim));
             }
             let k = format_info(&vw.format).map(|i| i.4);
             if color != (k != Some('d')) {
-                m.err(format!(
-                    "{what}: {} as a {} attachment",
-                    vw.format,
-                    if color { "color" } else { "depth" }
-                ));
+                m.err(format!("{what}: {} as a {} attachment", vw.format, if color { "color" } else { "depth" }));
             }
             let (w, h, _) = t.size(vw.mip);
             match size {
                 None => size = Some((w, h)),
-                Some(s) if s != (w, h) => {
-                    m.err(format!("{what}: attachments of {s:?} and {w}x{h}"))
-                }
+                Some(s) if s != (w, h) => m.err(format!("{what}: attachments of {s:?} and {w}x{h}")),
                 _ => {}
             }
             if subs.contains(&(vw.tex, vw.mip, vw.layer)) {
@@ -2246,10 +1697,7 @@ impl Model {
             // (every attachment of one sample count)
             match pass_samples {
                 None => pass_samples = Some(t.samples),
-                Some(n) if n != t.samples => m.err(format!(
-                    "{what}: attachments of {n} and {} samples",
-                    t.samples
-                )),
+                Some(n) if n != t.samples => m.err(format!("{what}: attachments of {n} and {} samples", t.samples)),
                 _ => {}
             }
             Some(a)
@@ -2266,54 +1714,26 @@ impl Model {
                 self.err(format!("{what}: color attachment without a view"));
                 continue;
             };
-            let Some(a) = check_view(self, v, true) else {
-                continue;
-            };
+            let Some(a) = check_view(self, v, true) else { continue };
             let load = c.s("loadOp").unwrap_or("");
             let store = c.s("storeOp").unwrap_or("");
             if !matches!(load, "load" | "clear") || !matches!(store, "store" | "discard") {
                 self.err(format!("{what}: loadOp {load} storeOp {store}"));
             }
-            let cv: Vec<f32> = c
-                .arr("clearValue")
-                .iter()
-                .map(|x| if let J::Num(n) = x { *n as f32 } else { 0.0 })
-                .collect();
-            let color = [
-                cv.first().copied().unwrap_or(0.0),
-                cv.get(1).copied().unwrap_or(0.0),
-                cv.get(2).copied().unwrap_or(0.0),
-                cv.get(3).copied().unwrap_or(0.0),
-            ];
-            let format = self
-                .view_of(a)
-                .map(|v| self.tex(v.tex).format.clone())
-                .unwrap_or_default();
+            let cv: Vec<f32> = c.arr("clearValue").iter().map(|x| if let J::Num(n) = x { *n as f32 } else { 0.0 }).collect();
+            let color = [cv.first().copied().unwrap_or(0.0), cv.get(1).copied().unwrap_or(0.0), cv.get(2).copied().unwrap_or(0.0), cv.get(3).copied().unwrap_or(0.0)];
+            let format = self.view_of(a).map(|v| self.tex(v.tex).format.clone()).unwrap_or_default();
             // resolveTarget: a 1x view of one subresource of a resolvable format, the same as
             // the attachment's and of its size, for a multisampled attachment
             let mut resolve = None;
             if let Some(r) = c.u("resolveTarget") {
                 let av = self.view_of(a).cloned().unwrap();
                 let at = self.tex(av.tex).clone();
-                match self
-                    .at(r, what)
-                    .and_then(|ra| self.view_of(ra).cloned().map(|v| (ra, v)))
-                {
+                match self.at(r, what).and_then(|ra| self.view_of(ra).cloned().map(|v| (ra, v))) {
                     None => self.err(format!("{what}: resolveTarget {r} is not a view")),
                     Some((ra, rv)) => {
                         let rt = self.tex(rv.tex).clone();
-                        if rt.destroyed
-                            || at.samples == 1
-                            || rt.samples != 1
-                            || rt.usage & 0x10 == 0
-                            || rv.mips != 1
-                            || rv.layers != 1
-                            || !matches!(rv.dim.as_str(), "2d" | "2d-array")
-                            || rv.format != av.format
-                            || !resolvable(&rv.format)
-                            || rt.size(rv.mip).0 != at.size(av.mip).0
-                            || rt.size(rv.mip).1 != at.size(av.mip).1
-                        {
+                        if rt.destroyed || at.samples == 1 || rt.samples != 1 || rt.usage & 0x10 == 0 || rv.mips != 1 || rv.layers != 1 || !matches!(rv.dim.as_str(), "2d" | "2d-array") || rv.format != av.format || !resolvable(&rv.format) || rt.size(rv.mip).0 != at.size(av.mip).0 || rt.size(rv.mip).1 != at.size(av.mip).1 {
                             self.err(format!("{what}: resolve of a {}x {} {}x{} into a {}x {} {}x{} (mips {} layers {}, usage {:#x})", at.samples, av.format, at.w, at.h, rt.samples, rv.format, rt.size(rv.mip).0, rt.size(rv.mip).1, rv.mips, rv.layers, rt.usage));
                         }
                         rsubs.push((rv.tex, rv.mip, rv.layer));
@@ -2321,14 +1741,7 @@ impl Model {
                     }
                 }
             }
-            colors.push(Attachment {
-                view: a,
-                resolve,
-                load_clear: (load == "clear").then(|| fit(&format, clear_texel(&format, color))),
-                store: store == "store",
-                stencil_clear: None,
-                stencil_store: true,
-            });
+            colors.push(Attachment { view: a, resolve, load_clear: (load == "clear").then(|| fit(&format, clear_texel(&format, color))), store: store == "store", stencil_clear: None, stencil_store: true });
         }
         let mut depth = None;
         if let Some(d) = j.get("depthStencilAttachment") {
@@ -2336,13 +1749,8 @@ impl Model {
                 let vw = self.view_of(a).cloned().unwrap();
                 let ro = d.b("depthReadOnly").unwrap_or(false);
                 let (load, store) = (d.s("depthLoadOp"), d.s("depthStoreOp"));
-                if !ro
-                    && (!matches!(load, Some("load" | "clear"))
-                        || !matches!(store, Some("store" | "discard")))
-                {
-                    self.err(format!(
-                        "{what}: depthLoadOp {load:?} depthStoreOp {store:?}"
-                    ));
+                if !ro && (!matches!(load, Some("load" | "clear")) || !matches!(store, Some("store" | "discard"))) {
+                    self.err(format!("{what}: depthLoadOp {load:?} depthStoreOp {store:?}"));
                 }
                 let z = d.num("depthClearValue");
                 if load == Some("clear") && !z.is_some_and(|z| (0.0..=1.0).contains(&z)) {
@@ -2351,10 +1759,7 @@ impl Model {
                 let (sl, ss) = (d.s("stencilLoadOp"), d.s("stencilStoreOp"));
                 let sro = d.b("stencilReadOnly").unwrap_or(false);
                 if has_stencil(&vw.format) {
-                    if !sro
-                        && (!matches!(sl, Some("load" | "clear"))
-                            || !matches!(ss, Some("store" | "discard")))
-                    {
+                    if !sro && (!matches!(sl, Some("load" | "clear")) || !matches!(ss, Some("store" | "discard"))) {
                         self.err(format!("{what}: {} needs stencilLoadOp/StoreOp", vw.format));
                     }
                 } else if sl.is_some() || ss.is_some() {
@@ -2366,11 +1771,9 @@ impl Model {
                 depth = Some(Attachment {
                     view: a,
                     resolve: None,
-                    load_clear: (load == Some("clear"))
-                        .then(|| depth_value(&vw.format, z.unwrap_or(0.0) as f32)),
+                    load_clear: (load == Some("clear")).then(|| depth_value(&vw.format, z.unwrap_or(0.0) as f32)),
                     store: store != Some("discard"),
-                    stencil_clear: (sl == Some("clear"))
-                        .then(|| stencil_value(d.u("stencilClearValue").unwrap_or(0))),
+                    stencil_clear: (sl == Some("clear")).then(|| stencil_value(d.u("stencilClearValue").unwrap_or(0))),
                     stencil_store: ss != Some("discard"),
                 });
             }
@@ -2384,11 +1787,7 @@ impl Model {
             self.err(format!("{what}: no attachments"));
             return;
         };
-        let st = DrawState {
-            viewport: [0.0, 0.0, sz.0 as f32, sz.1 as f32, 0.0, 1.0],
-            scissor: [0, 0, sz.0, sz.1],
-            ..Default::default()
-        };
+        let st = DrawState { viewport: [0.0, 0.0, sz.0 as f32, sz.1 as f32, 0.0, 1.0], scissor: [0, 0, sz.0, sz.1], ..Default::default() };
         self.pass = Some((colors, depth, Vec::new(), st, sz));
         self.pass_samples = pass_samples.unwrap_or(1);
     }
@@ -2412,9 +1811,7 @@ impl Model {
         if !self.in_pass("setPipeline") {
             return;
         }
-        let Some(a) = self.at(p, "setPipeline") else {
-            return;
-        };
+        let Some(a) = self.at(p, "setPipeline") else { return };
         if !matches!(self.objs[a], Obj::Pipeline(_)) {
             self.err("setPipeline: not a pipeline".into());
             return;
@@ -2436,32 +1833,21 @@ impl Model {
             self.err(format!("{what}: not a bind group"));
             return;
         };
-        let Obj::Layout(es) = self.objs[la].clone() else {
-            return;
-        };
+        let Obj::Layout(es) = self.objs[la].clone() else { return };
         // dynamic offsets: one per dynamic buffer entry, in binding order
         let mut dynamic: Vec<&LayoutEntry> = es.iter().filter(|e| e.dynamic).collect();
         dynamic.sort_by_key(|e| e.binding);
         if dynamic.len() != offs.len() {
-            self.err(format!(
-                "{what}: {} dynamic offsets for {} dynamic bindings",
-                offs.len(),
-                dynamic.len()
-            ));
+            self.err(format!("{what}: {} dynamic offsets for {} dynamic bindings", offs.len(), dynamic.len()));
         }
         for (e, &o) in dynamic.iter().zip(offs) {
             if o % 256 != 0 {
                 self.err(format!("{what}: dynamic offset {o}"));
             }
-            if let Some((_, Entry::Buffer(b, off, size))) =
-                entries.iter().find(|x| x.0 == e.binding)
-            {
+            if let Some((_, Entry::Buffer(b, off, size))) = entries.iter().find(|x| x.0 == e.binding) {
                 if let Obj::Buffer(bf) = &self.objs[*b] {
                     if *off as u64 + o as u64 + *size as u64 > bf.size as u64 {
-                        self.err(format!(
-                            "{what}: binding {}: {size} bytes at {off}+{o} of a {}-byte buffer",
-                            e.binding, bf.size
-                        ));
+                        self.err(format!("{what}: binding {}: {size} bytes at {off}+{o} of a {}-byte buffer", e.binding, bf.size));
                     }
                 }
             }
@@ -2478,17 +1864,11 @@ impl Model {
         if !self.in_pass(what) {
             return;
         }
-        let Some(b) = self.buffer_of(buf, what) else {
-            return;
-        };
-        let Obj::Buffer(bf) = &self.objs[b] else {
-            return;
-        };
+        let Some(b) = self.buffer_of(buf, what) else { return };
+        let Obj::Buffer(bf) = &self.objs[b] else { return };
         let (u, s) = (bf.usage, bf.size);
         if u & 0x20 == 0 || off % 4 != 0 || off > s || slot >= 8 {
-            self.err(format!(
-                "{what}: slot {slot} offset {off} of {s} (usage {u:#x})"
-            ));
+            self.err(format!("{what}: slot {slot} offset {off} of {s} (usage {u:#x})"));
         }
         let st = &mut self.pass.as_mut().unwrap().3;
         if st.vbufs.len() <= slot as usize {
@@ -2502,12 +1882,8 @@ impl Model {
         if !self.in_pass(what) {
             return;
         }
-        let Some(b) = self.buffer_of(buf, what) else {
-            return;
-        };
-        let Obj::Buffer(bf) = &self.objs[b] else {
-            return;
-        };
+        let Some(b) = self.buffer_of(buf, what) else { return };
+        let Obj::Buffer(bf) = &self.objs[b] else { return };
         let (u, s) = (bf.usage, bf.size);
         if u & 0x10 == 0 || off % if u32_ { 4 } else { 2 } != 0 || off > s {
             self.err(format!("{what}: offset {off} of {s} (usage {u:#x})"));
@@ -2522,16 +1898,7 @@ impl Model {
         }
         let (w, h) = self.pass.as_ref().unwrap().4;
         let [x, y, vw, vh, z0, z1] = v;
-        if vw < 0.0
-            || vh < 0.0
-            || x < 0.0
-            || y < 0.0
-            || x + vw > w as f32
-            || y + vh > h as f32
-            || !(0.0..=1.0).contains(&z0)
-            || !(0.0..=1.0).contains(&z1)
-            || z0 > z1
-        {
+        if vw < 0.0 || vh < 0.0 || x < 0.0 || y < 0.0 || x + vw > w as f32 || y + vh > h as f32 || !(0.0..=1.0).contains(&z0) || !(0.0..=1.0).contains(&z1) || z0 > z1 {
             self.err(format!("{what}: {v:?} in a {w}x{h} pass"));
         }
         self.pass.as_mut().unwrap().3.viewport = v;
@@ -2571,46 +1938,27 @@ impl Model {
             self.err(format!("{what}: no pipeline"));
             return;
         };
-        let Obj::Pipeline(p) = self.objs[pa].clone() else {
-            return;
-        };
+        let Obj::Pipeline(p) = self.objs[pa].clone() else { return };
         // the pipeline's attachment formats are the pass's
-        let pass_colors: Vec<String> = colors
-            .iter()
-            .map(|c| self.view_of(c.view).unwrap().format.clone())
-            .collect();
+        let pass_colors: Vec<String> = colors.iter().map(|c| self.view_of(c.view).unwrap().format.clone()).collect();
         let pipe_colors: Vec<String> = p.targets.iter().map(|t| t.0.clone()).collect();
         if pass_colors != pipe_colors {
-            self.err(format!(
-                "{what}: pipeline targets {pipe_colors:?}, pass {pass_colors:?}"
-            ));
+            self.err(format!("{what}: pipeline targets {pipe_colors:?}, pass {pass_colors:?}"));
         }
         if p.samples != self.pass_samples {
-            self.err(format!(
-                "{what}: a pipeline of {} samples in a pass of {}",
-                p.samples, self.pass_samples
-            ));
+            self.err(format!("{what}: a pipeline of {} samples in a pass of {}", p.samples, self.pass_samples));
         }
-        let pass_depth = depth
-            .as_ref()
-            .map(|d| self.view_of(d.view).unwrap().format.clone());
+        let pass_depth = depth.as_ref().map(|d| self.view_of(d.view).unwrap().format.clone());
         if pass_depth != p.depth.as_ref().map(|d| d.0.clone()) {
-            self.err(format!(
-                "{what}: pipeline depth {:?}, pass {pass_depth:?}",
-                p.depth.as_ref().map(|d| &d.0)
-            ));
+            self.err(format!("{what}: pipeline depth {:?}, pass {pass_depth:?}", p.depth.as_ref().map(|d| &d.0)));
         }
         // bind groups: one compatible with each of the layout's
         for (gi, &lg) in p.groups.iter().enumerate() {
             match st.groups.get(gi).cloned().flatten() {
                 None => self.err(format!("{what}: bind group {gi} not set")),
                 Some((g, _)) => {
-                    let Obj::Group(la, entries) = self.objs[g].clone() else {
-                        continue;
-                    };
-                    let (Obj::Layout(a), Obj::Layout(b)) = (&self.objs[la], &self.objs[lg]) else {
-                        continue;
-                    };
+                    let Obj::Group(la, entries) = self.objs[g].clone() else { continue };
+                    let (Obj::Layout(a), Obj::Layout(b)) = (&self.objs[la], &self.objs[lg]) else { continue };
                     let same = la == lg || format!("{a:?}") == format!("{b:?}");
                     if !same {
                         self.err(format!("{what}: bind group {gi} of another layout"));
@@ -2619,21 +1967,10 @@ impl Model {
                     for (_, e) in &entries {
                         if let Entry::View(v) = e {
                             let vw = self.view_of(*v).unwrap().clone();
-                            for av in colors
-                                .iter()
-                                .chain(depth.iter())
-                                .flat_map(|att| std::iter::once(att.view).chain(att.resolve))
-                            {
+                            for av in colors.iter().chain(depth.iter()).flat_map(|att| std::iter::once(att.view).chain(att.resolve)) {
                                 let av = self.view_of(av).unwrap().clone();
-                                if av.tex == vw.tex
-                                    && av.mip >= vw.mip
-                                    && av.mip < vw.mip + vw.mips
-                                    && av.layer >= vw.layer
-                                    && av.layer < vw.layer + vw.layers
-                                {
-                                    self.err(format!(
-                                        "{what}: a texture sampled and attached in the same pass"
-                                    ));
+                                if av.tex == vw.tex && av.mip >= vw.mip && av.mip < vw.mip + vw.mips && av.layer >= vw.layer && av.layer < vw.layer + vw.layers {
+                                    self.err(format!("{what}: a texture sampled and attached in the same pass"));
                                 }
                             }
                         }
@@ -2648,14 +1985,9 @@ impl Model {
                 Some((b, off)) => {
                     if !indexed {
                         let need = (args[2] as u64 + args[0] as u64) * stride as u64;
-                        let Obj::Buffer(bf) = &self.objs[b] else {
-                            continue;
-                        };
+                        let Obj::Buffer(bf) = &self.objs[b] else { continue };
                         if args[0] > 0 && stride > 0 && off as u64 + need > bf.size as u64 {
-                            self.err(format!(
-                                "{what}: vertex buffer {k}: {need} bytes at {off} of {}",
-                                bf.size
-                            ));
+                            self.err(format!("{what}: vertex buffer {k}: {need} bytes at {off} of {}", bf.size));
                         }
                     }
                 }
@@ -2665,26 +1997,16 @@ impl Model {
             match st.ibuf {
                 None => self.err(format!("{what}: no index buffer")),
                 Some((b, u32_, off)) => {
-                    let Obj::Buffer(bf) = &self.objs[b] else {
-                        return;
-                    };
+                    let Obj::Buffer(bf) = &self.objs[b] else { return };
                     let need = (args[2] as u64 + args[0] as u64) * if u32_ { 4 } else { 2 };
                     if off as u64 + need > bf.size as u64 {
-                        self.err(format!(
-                            "{what}: {} indices at {off} of a {}-byte buffer",
-                            args[0], bf.size
-                        ));
+                        self.err(format!("{what}: {} indices at {off} of a {}-byte buffer", args[0], bf.size));
                     }
                 }
             }
         }
         let bounds = self.bounds;
-        self.pass.as_mut().unwrap().2.push(Draw {
-            st,
-            args,
-            indexed,
-            bounds,
-        });
+        self.pass.as_mut().unwrap().2.push(Draw { st, args, indexed, bounds });
     }
 
     /// The values of a texture's subresources a view sees, hashed.
@@ -2704,77 +2026,52 @@ impl Model {
     /// The primitives a draw assembles (WebGPU's vertex fetch and primitive assembly: index
     /// buffer, baseVertex, topology, strip restart), instance after instance.
     fn assemble(&self, d: &Draw) -> Vec<Vec<Vertex>> {
-        (d.args[4]..d.args[4].saturating_add(d.args[1]))
-            .flat_map(|i| self.assemble1(d, i))
-            .collect()
+        (d.args[4]..d.args[4].saturating_add(d.args[1])).flat_map(|i| self.assemble1(d, i)).collect()
     }
 
     fn assemble1(&self, d: &Draw, instance: u32) -> Vec<Vec<Vertex>> {
-        let Obj::Pipeline(p) = &self.objs[d.st.pipeline.unwrap()] else {
-            return Vec::new();
-        };
+        let Obj::Pipeline(p) = &self.objs[d.st.pipeline.unwrap()] else { return Vec::new() };
         let (n, first, base) = (d.args[0], d.args[2], d.args[3] as i32);
         // the vertex index of each invocation (None: a strip restart)
         let ids: Vec<Option<i64>> = if d.indexed {
-            let Some((b, u32_, off)) = d.st.ibuf else {
-                return Vec::new();
-            };
-            let Obj::Buffer(bf) = &self.objs[b] else {
-                return Vec::new();
-            };
+            let Some((b, u32_, off)) = d.st.ibuf else { return Vec::new() };
+            let Obj::Buffer(bf) = &self.objs[b] else { return Vec::new() };
             let sz = if u32_ { 4 } else { 2 };
             (0..n as usize)
                 .map(|i| {
                     let at = off as usize + (first as usize + i) * sz;
-                    let ix = bf.data.get(at..at + sz).map(|c| {
-                        if sz == 4 {
-                            u32::from_le_bytes(c.try_into().unwrap())
-                        } else {
-                            u16::from_le_bytes(c.try_into().unwrap()) as u32
-                        }
-                    });
+                    let ix = bf.data.get(at..at + sz).map(|c| if sz == 4 { u32::from_le_bytes(c.try_into().unwrap()) } else { u16::from_le_bytes(c.try_into().unwrap()) as u32 });
                     let ix = ix.unwrap_or(0);
-                    let restart =
-                        p.strip_format.is_some() && ix == if u32_ { u32::MAX } else { 0xffff };
+                    let restart = p.strip_format.is_some() && ix == if u32_ { u32::MAX } else { 0xffff };
                     (!restart).then_some(ix as i64 + base as i64)
                 })
                 .collect()
         } else {
             (0..n).map(|i| Some(first as i64 + i as i64)).collect()
         };
-        let vertex =
-            |v: i64| -> Vertex {
-                let mut out = Vec::new();
-                for (k, list) in p.attrs.iter().enumerate() {
-                    let stride = p.buffers[k] as i64;
-                    let v = if p.per_instance[k] {
-                        instance as i64
-                    } else {
-                        v
-                    };
-                    let src =
-                        d.st.vbufs.get(k).copied().flatten().and_then(|(b, off)| {
-                            match &self.objs[b] {
-                                Obj::Buffer(bf) => Some((bf, off)),
-                                _ => None,
-                            }
-                        });
-                    for &(aoff, size, loc) in list {
-                        let bytes = src
-                            .and_then(|(bf, off)| {
-                                let at = off as i64 + v * stride + aoff as i64;
-                                (at >= 0)
-                                    .then(|| bf.data.get(at as usize..at as usize + size as usize))
-                                    .flatten()
-                            })
-                            .map(|b| b.to_vec())
-                            .unwrap_or_default();
-                        out.push((loc, bytes));
-                    }
+        let vertex = |v: i64| -> Vertex {
+            let mut out = Vec::new();
+            for (k, list) in p.attrs.iter().enumerate() {
+                let stride = p.buffers[k] as i64;
+                let v = if p.per_instance[k] { instance as i64 } else { v };
+                let src = d.st.vbufs.get(k).copied().flatten().and_then(|(b, off)| match &self.objs[b] {
+                    Obj::Buffer(bf) => Some((bf, off)),
+                    _ => None,
+                });
+                for &(aoff, size, loc) in list {
+                    let bytes = src
+                        .and_then(|(bf, off)| {
+                            let at = off as i64 + v * stride + aoff as i64;
+                            (at >= 0).then(|| bf.data.get(at as usize..at as usize + size as usize)).flatten()
+                        })
+                        .map(|b| b.to_vec())
+                        .unwrap_or_default();
+                    out.push((loc, bytes));
                 }
-                out.sort_by_key(|x| x.0);
-                out
-            };
+            }
+            out.sort_by_key(|x| x.0);
+            out
+        };
         let mut prims = Vec::new();
         // (runs between restarts)
         for run in ids.split(|x| x.is_none()) {
@@ -2786,11 +2083,7 @@ impl Model {
                 "triangle-list" => prims.extend(vs.chunks_exact(3).map(|c| c.to_vec())),
                 _ => {
                     for (i, w) in vs.windows(3).enumerate() {
-                        prims.push(if i % 2 == 0 {
-                            w.to_vec()
-                        } else {
-                            vec![w[1].clone(), w[0].clone(), w[2].clone()]
-                        });
+                        prims.push(if i % 2 == 0 { w.to_vec() } else { vec![w[1].clone(), w[0].clone(), w[2].clone()] });
                     }
                 }
             }
@@ -2802,9 +2095,7 @@ impl Model {
     /// binding 0.
     fn copy_source(&self, d: &Draw) -> Option<(usize, usize, u32)> {
         let (g, _) = d.st.groups.first()?.as_ref()?;
-        let Obj::Group(_, entries) = &self.objs[*g] else {
-            return None;
-        };
+        let Obj::Group(_, entries) = &self.objs[*g] else { return None };
         let v = entries.iter().find_map(|(b, e)| match e {
             Entry::View(v) if *b == 0 => Some(*v),
             _ => None,
@@ -2818,21 +2109,13 @@ impl Model {
     fn zwrite_source(&self, d: &Draw) -> Option<(usize, usize, u32, u32, [i64; 2])> {
         let (tex, sub, w) = self.copy_source(d)?;
         let (g, _) = d.st.groups.first()?.as_ref()?;
-        let Obj::Group(_, entries) = &self.objs[*g] else {
-            return None;
-        };
+        let Obj::Group(_, entries) = &self.objs[*g] else { return None };
         let (b, off) = entries.iter().find_map(|(k, e)| match e {
             Entry::Buffer(b, off, _) if *k == 1 => Some((*b, *off as usize)),
             _ => None,
         })?;
-        let Obj::Buffer(bf) = &self.objs[b] else {
-            return None;
-        };
-        let f = |k: usize| {
-            bf.data
-                .get(off + 4 * k..off + 4 * k + 4)
-                .map(|x| f32::from_le_bytes(x.try_into().unwrap()) as i64)
-        };
+        let Obj::Buffer(bf) = &self.objs[b] else { return None };
+        let f = |k: usize| bf.data.get(off + 4 * k..off + 4 * k + 4).map(|x| f32::from_le_bytes(x.try_into().unwrap()) as i64);
         let h = self.tex(tex).texels[sub].len() as u32 / w.max(1);
         Some((tex, sub, w, h, [f(0)?, f(1)?]))
     }
@@ -2848,46 +2131,29 @@ impl Model {
         let mut clear = None;
         for (gi, g) in d.st.groups.iter().enumerate().take(p.groups.len()) {
             let Some((g, offs)) = g else { continue };
-            let Obj::Group(la, entries) = self.objs[*g].clone() else {
-                continue;
-            };
-            let Obj::Layout(es) = self.objs[la].clone() else {
-                continue;
-            };
-            let mut dynamic: Vec<u32> =
-                es.iter().filter(|e| e.dynamic).map(|e| e.binding).collect();
+            let Obj::Group(la, entries) = self.objs[*g].clone() else { continue };
+            let Obj::Layout(es) = self.objs[la].clone() else { continue };
+            let mut dynamic: Vec<u32> = es.iter().filter(|e| e.dynamic).map(|e| e.binding).collect();
             dynamic.sort();
             for (binding, e) in &entries {
                 h = mix(h, (gi as u64) << 32 | *binding as u64);
                 match e {
                     Entry::Buffer(b, off, size) => {
-                        let dynoff = dynamic
-                            .iter()
-                            .position(|x| x == binding)
-                            .and_then(|k| offs.get(k))
-                            .copied()
-                            .unwrap_or(0);
-                        let Obj::Buffer(bf) = &self.objs[*b] else {
-                            continue;
-                        };
+                        let dynoff = dynamic.iter().position(|x| x == binding).and_then(|k| offs.get(k)).copied().unwrap_or(0);
+                        let Obj::Buffer(bf) = &self.objs[*b] else { continue };
                         let lo = (*off + dynoff) as usize;
                         let hi = (lo + *size as usize).min(bf.data.len());
                         let bytes = &bf.data[lo.min(hi)..hi];
                         h = hash_bytes(h, bytes);
                         if p.clear_shader && bytes.len() >= 32 {
-                            let f = |k: usize| {
-                                f32::from_le_bytes(bytes[k * 4..k * 4 + 4].try_into().unwrap())
-                            };
+                            let f = |k: usize| f32::from_le_bytes(bytes[k * 4..k * 4 + 4].try_into().unwrap());
                             clear = Some(([f(0), f(1), f(2), f(3)], f(4)));
                         }
                     }
                     Entry::View(v) => {
                         let vw = self.view_of(*v).unwrap().clone();
                         if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
-                            {
-                                let t = self.tex(vw.tex);
-                                eprintln!("    view {gi}/{binding}: tex {} {}x{} mips {} (view mip {} n {}) {:x}", vw.tex, t.w, t.h, t.mips, vw.mip, vw.mips, self.view_hash(&vw));
-                            }
+                            { let t = self.tex(vw.tex); eprintln!("    view {gi}/{binding}: tex {} {}x{} mips {} (view mip {} n {}) {:x}", vw.tex, t.w, t.h, t.mips, vw.mip, vw.mips, self.view_hash(&vw)); }
                         }
                         h = mix(h, self.view_hash(&vw));
                     }
@@ -2900,14 +2166,11 @@ impl Model {
             }
         }
         // vertices and indices: the bytes it reads
-        let (n, inst, first, base, first_inst) =
-            (d.args[0], d.args[1], d.args[2], d.args[3] as i32, d.args[4]);
+        let (n, inst, first, base, first_inst) = (d.args[0], d.args[1], d.args[2], d.args[3] as i32, d.args[4]);
         let mut max_vertex = first as u64 + n as u64;
         if d.indexed {
             if let Some((b, u32_, off)) = d.st.ibuf {
-                let Obj::Buffer(bf) = &self.objs[b] else {
-                    unreachable!()
-                };
+                let Obj::Buffer(bf) = &self.objs[b] else { unreachable!() };
                 let sz = if u32_ { 4 } else { 2 };
                 let lo = off as usize + first as usize * sz;
                 let hi = (lo + n as usize * sz).min(bf.data.len());
@@ -2918,11 +2181,8 @@ impl Model {
         }
         for (k, &stride) in p.buffers.iter().enumerate() {
             if let Some((b, off)) = d.st.vbufs.get(k).copied().flatten() {
-                let Obj::Buffer(bf) = &self.objs[b] else {
-                    continue;
-                };
-                let hi =
-                    (off as u64 + max_vertex * stride as u64).min(bf.data.len() as u64) as usize;
+                let Obj::Buffer(bf) = &self.objs[b] else { continue };
+                let hi = (off as u64 + max_vertex * stride as u64).min(bf.data.len() as u64) as usize;
                 h = hash_bytes(h, &bf.data[(off as usize).min(hi)..hi]);
             }
         }
@@ -2941,10 +2201,7 @@ impl Model {
             h = mix(h, d.st.stencil_ref as u64);
         }
         if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
-            eprintln!(
-                "    sig parts: pipe {:x} after groups/verts/args {:x}",
-                p.hash, h
-            );
+            eprintln!("    sig parts: pipe {:x} after groups/verts/args {:x}", p.hash, h);
         }
         (h, clear)
     }
@@ -2957,24 +2214,11 @@ impl Model {
             (v.tex, t.sub(v.mip, v.layer), t.size(v.mip))
         };
         if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
-            eprintln!(
-                "  model pass {:?}",
-                colors
-                    .iter()
-                    .chain(depth.iter())
-                    .map(|a| (
-                        self.view_of(a.view).map(|v| (v.tex, v.mip)),
-                        a.load_clear,
-                        a.store
-                    ))
-                    .collect::<Vec<_>>()
-            );
+            eprintln!("  model pass {:?}", colors.iter().chain(depth.iter()).map(|a| (self.view_of(a.view).map(|v| (v.tex, v.mip)), a.load_clear, a.store)).collect::<Vec<_>>());
         }
         for a in colors.iter().chain(depth.iter()) {
             let (t, s, _) = sub(self, a);
-            let Obj::Texture(tx) = &mut self.objs[t] else {
-                continue;
-            };
+            let Obj::Texture(tx) = &mut self.objs[t] else { continue };
             if let Some(v) = a.load_clear {
                 tx.texels[s].fill(v);
             }
@@ -2993,41 +2237,20 @@ impl Model {
             if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
                 eprintln!("  model draw into {:?} {sig:x} vp {:?} sc {:?} bounds {:?} load {:?} zload {:?}", colors.iter().chain(depth.iter()).map(|a| self.view_of(a.view).map(|v| v.tex)).collect::<Vec<_>>(), d.st.viewport, d.st.scissor, d.bounds, colors.iter().map(|a| a.load_clear).collect::<Vec<_>>(), depth.as_ref().map(|a| a.load_clear));
             }
-            let Obj::Pipeline(p) = self.objs[d.st.pipeline.unwrap()].clone() else {
-                continue;
-            };
+            let Obj::Pipeline(p) = self.objs[d.st.pipeline.unwrap()].clone() else { continue };
             let [vx, vy, vw, vh, _, _] = d.st.viewport;
             let s = d.st.scissor;
-            let (cx0, cy0) = (
-                (vx - 0.5).ceil().max(0.0) as u32,
-                (vy - 0.5).ceil().max(0.0) as u32,
-            );
-            let (cx1, cy1) = (
-                (vx + vw - 0.5).ceil().max(0.0) as u32,
-                (vy + vh - 0.5).ceil().max(0.0) as u32,
-            );
-            let (mut x0, mut y0, mut x1, mut y1) = (
-                cx0.max(s[0]),
-                cy0.max(s[1]),
-                cx1.min(s[0] + s[2]),
-                cy1.min(s[1] + s[3]),
-            );
+            let (cx0, cy0) = ((vx - 0.5).ceil().max(0.0) as u32, (vy - 0.5).ceil().max(0.0) as u32);
+            let (cx1, cy1) = ((vx + vw - 0.5).ceil().max(0.0) as u32, (vy + vh - 0.5).ceil().max(0.0) as u32);
+            let (mut x0, mut y0, mut x1, mut y1) = (cx0.max(s[0]), cy0.max(s[1]), cx1.min(s[0] + s[2]), cy1.min(s[1] + s[3]));
             if let Some(b) = d.bounds {
                 (x0, y0, x1, y1) = (x0.max(b[0]), y0.max(b[1]), x1.min(b[2]), y1.min(b[3]));
             }
             let zatt = depth.as_ref().map(|a| sub(self, a));
             // (a sample copy: the texels of the view bound at 0/0, one value per pixel as the
             // model keeps of a multisampled one)
-            let copy_src = if p.copy_shader {
-                self.copy_source(d)
-            } else {
-                None
-            };
-            let zsrc = if p.zwrite_shader {
-                self.zwrite_source(d)
-            } else {
-                None
-            };
+            let copy_src = if p.copy_shader { self.copy_source(d) } else { None };
+            let zsrc = if p.zwrite_shader { self.zwrite_source(d) } else { None };
             for (ci, a) in colors.iter().enumerate() {
                 let (t, si, (w, h, _)) = sub(self, a);
                 let format = self.tex(t).format.clone();
@@ -3043,37 +2266,15 @@ impl Model {
                         let new = match clear {
                             _ if copy_src.is_some() => {
                                 let (st, ss, sw) = copy_src.unwrap();
-                                self.tex(st).texels[ss]
-                                    .get((y * sw + x) as usize)
-                                    .copied()
-                                    .unwrap_or(0)
+                                self.tex(st).texels[ss].get((y * sw + x) as usize).copied().unwrap_or(0)
                             }
                             Some((c, _)) if p.clear_shader => clear_texel(&self.tex(t).format, c),
-                            _ => mix(
-                                mix(
-                                    mix(sig, (x as u64) << 32 | y as u64),
-                                    if blends { old } else { 0 },
-                                ),
-                                if p.depth.as_ref().is_some_and(|d| d.2 != "always") {
-                                    oz
-                                } else {
-                                    0
-                                },
-                            ),
+                            _ => mix(mix(mix(sig, (x as u64) << 32 | y as u64), if blends { old } else { 0 }), if p.depth.as_ref().is_some_and(|d| d.2 != "always") { oz } else { 0 }),
                         };
                         if mask != 0 {
-                            let Obj::Texture(tx) = &mut self.objs[t] else {
-                                continue;
-                            };
+                            let Obj::Texture(tx) = &mut self.objs[t] else { continue };
                             // (a partial write mask keeps part of the old value)
-                            tx.texels[si][at] = fit(
-                                &format,
-                                if mask == 15 {
-                                    new
-                                } else {
-                                    mix(new, old ^ mask as u64)
-                                },
-                            );
+                            tx.texels[si][at] = fit(&format, if mask == 15 { new } else { mix(new, old ^ mask as u64) });
                         }
                     }
                 }
@@ -3089,30 +2290,14 @@ impl Model {
                                     // (the bits of a float, as depth holds them: in 0..1)
                                     let (st, ss, sw, sh, o) = zsrc.unwrap();
                                     let (sx, sy) = (x as i64 - o[0], y as i64 - o[1]);
-                                    let v = if (0..sw as i64).contains(&sx)
-                                        && (0..sh as i64).contains(&sy)
-                                    {
-                                        self.tex(st).texels[ss][(sy * sw as i64 + sx) as usize]
-                                    } else {
-                                        0
-                                    };
+                                    let v = if (0..sw as i64).contains(&sx) && (0..sh as i64).contains(&sy) { self.tex(st).texels[ss][(sy * sw as i64 + sx) as usize] } else { 0 };
                                     let f = f32::from_bits(v as u32);
-                                    depth_value(
-                                        &self.tex(zt).format,
-                                        if f.is_nan() { 0.0 } else { f },
-                                    )
+                                    depth_value(&self.tex(zt).format, if f.is_nan() { 0.0 } else { f })
                                 }
-                                Some((_, z)) if p.clear_shader => {
-                                    depth_value(&self.tex(zt).format, z)
-                                }
-                                _ => mix(
-                                    mix(mix(sig ^ 0xde, (x as u64) << 32 | y as u64), oz),
-                                    if pd.2 != "always" { 1 } else { 0 },
-                                ),
+                                Some((_, z)) if p.clear_shader => depth_value(&self.tex(zt).format, z),
+                                _ => mix(mix(mix(sig ^ 0xde, (x as u64) << 32 | y as u64), oz), if pd.2 != "always" { 1 } else { 0 }),
                             };
-                            let Obj::Texture(tx) = &mut self.objs[zt] else {
-                                continue;
-                            };
+                            let Obj::Texture(tx) = &mut self.objs[zt] else { continue };
                             tx.texels[zs][at] = nz;
                         }
                     }
@@ -3125,18 +2310,14 @@ impl Model {
             let (t, s, _) = sub(self, a);
             let vals = self.tex(t).texels[s].clone();
             let rv = self.view_of(r).unwrap().clone();
-            let Obj::Texture(rt) = &mut self.objs[rv.tex] else {
-                continue;
-            };
+            let Obj::Texture(rt) = &mut self.objs[rv.tex] else { continue };
             let rs = rt.sub(rv.mip, rv.layer);
             rt.texels[rs] = vals;
         }
         // stores
         for a in colors.iter().chain(depth.iter()) {
             let (t, s, _) = sub(self, a);
-            let Obj::Texture(tx) = &mut self.objs[t] else {
-                continue;
-            };
+            let Obj::Texture(tx) = &mut self.objs[t] else { continue };
             if !a.store {
                 tx.texels[s].fill(0);
             }
@@ -3204,10 +2385,7 @@ impl Model {
             for b in bufs {
                 if let Obj::Buffer(bf) = &self.objs[b] {
                     if bf.destroyed || bf.mapped {
-                        bad.push(format!(
-                            "a {} buffer",
-                            if bf.destroyed { "destroyed" } else { "mapped" }
-                        ));
+                        bad.push(format!("a {} buffer", if bf.destroyed { "destroyed" } else { "mapped" }));
                     }
                 }
             }
@@ -3225,11 +2403,8 @@ impl Model {
                     for z in 0..size[2] {
                         for y in 0..size[1] {
                             for x in 0..size[0] {
-                                let v = st.texels[st.sub(smip, so[2] + z)]
-                                    [((so[1] + y) * sw + so[0] + x) as usize];
-                                let Obj::Texture(tx) = &mut self.objs[t] else {
-                                    continue;
-                                };
+                                let v = st.texels[st.sub(smip, so[2] + z)][((so[1] + y) * sw + so[0] + x) as usize];
+                                let Obj::Texture(tx) = &mut self.objs[t] else { continue };
                                 let si = tx.sub(dmip, d[2] + z);
                                 tx.texels[si][((d[1] + y) * dw + d[0] + x) as usize] = v;
                             }
@@ -3237,13 +2412,9 @@ impl Model {
                     }
                 }
                 Cmd::BufCopy(a, b, n) => {
-                    let Obj::Buffer(src) = &self.objs[a] else {
-                        continue;
-                    };
+                    let Obj::Buffer(src) = &self.objs[a] else { continue };
                     let bytes = src.data[..n as usize].to_vec();
-                    let Obj::Buffer(dst) = &mut self.objs[b] else {
-                        continue;
-                    };
+                    let Obj::Buffer(dst) = &mut self.objs[b] else { continue };
                     dst.data[..n as usize].copy_from_slice(&bytes);
                 }
                 Cmd::ToBuffer(t, mip, [x, y, z], b, bpr, w, h) => {
@@ -3251,37 +2422,27 @@ impl Model {
                     let (bpp, ..) = format_info(&tx.format).unwrap();
                     let (lw, ..) = tx.size(mip);
                     let s = tx.sub(mip, z);
-                    let Obj::Buffer(bf) = &mut self.objs[b] else {
-                        continue;
-                    };
+                    let Obj::Buffer(bf) = &mut self.objs[b] else { continue };
                     for r in 0..h {
                         for c in 0..w {
-                            let v = texel_bytes(
-                                tx.texels[s][((y + r) * lw + x + c) as usize],
-                                bpp as usize,
-                            );
+                            let v = texel_bytes(tx.texels[s][((y + r) * lw + x + c) as usize], bpp as usize);
                             let at = (r * bpr + c * bpp) as usize;
                             bf.data[at..at + bpp as usize].copy_from_slice(&v);
                         }
                     }
                 }
                 Cmd::FromBuffer(b, bpr, t, mip, x, y, z, w, h) => {
-                    let Obj::Buffer(bf) = &self.objs[b] else {
-                        continue;
-                    };
+                    let Obj::Buffer(bf) = &self.objs[b] else { continue };
                     let data = bf.data.clone();
                     let tx = self.tex(t).clone();
                     let (bpp, ..) = format_info(&tx.format).unwrap();
                     let (lw, ..) = tx.size(mip);
                     let s = tx.sub(mip, z);
-                    let Obj::Texture(tm) = &mut self.objs[t] else {
-                        continue;
-                    };
+                    let Obj::Texture(tm) = &mut self.objs[t] else { continue };
                     for r in 0..h {
                         for c in 0..w {
                             let at = (r * bpr + c * bpp) as usize;
-                            tm.texels[s][((y + r) * lw + x + c) as usize] =
-                                write_texel(&data[at..at + bpp as usize]);
+                            tm.texels[s][((y + r) * lw + x + c) as usize] = write_texel(&data[at..at + bpp as usize]);
                         }
                     }
                 }
@@ -3295,22 +2456,15 @@ impl Model {
     /// dispatch reads (pipeline, workgroups, bound buffer bytes, sampled views' values) with its
     /// own old value and place.
     fn run_dispatch(&mut self, h: u64, g: usize, n: [u32; 3]) {
-        let Obj::Group(la, entries) = self.objs[g].clone() else {
-            return;
-        };
-        let Obj::Layout(es) = self.objs[la].clone() else {
-            return;
-        };
+        let Obj::Group(la, entries) = self.objs[g].clone() else { return };
+        let Obj::Layout(es) = self.objs[la].clone() else { return };
         let mut x = mix(h, (n[0] as u64) << 40 | (n[1] as u64) << 20 | n[2] as u64);
         let mut out = Vec::new();
         for (b, e) in &entries {
             match e {
                 Entry::Buffer(bf, off, size) => {
                     if let Obj::Buffer(buf) = &self.objs[*bf] {
-                        x = hash_bytes(
-                            x,
-                            &buf.data[*off as usize..(*off + *size).min(buf.size) as usize],
-                        );
+                        x = hash_bytes(x, &buf.data[*off as usize..(*off + *size).min(buf.size) as usize]);
                     }
                 }
                 Entry::View(v) => {
@@ -3329,9 +2483,7 @@ impl Model {
             }
         }
         for v in out {
-            let Obj::Texture(t) = &mut self.objs[v.tex] else {
-                continue;
-            };
+            let Obj::Texture(t) = &mut self.objs[v.tex] else { continue };
             for l in v.layer..v.layer + v.layers {
                 let si = t.sub(v.mip, l);
                 if let Some(s) = t.texels.get_mut(si) {
@@ -3345,17 +2497,11 @@ impl Model {
 
     pub fn read_buffer(&mut self, buf: u32, size: u32, dst: *mut u8, token: u32) {
         let what = "mapAsync";
-        let Some(b) = self.buffer_of(buf, what) else {
-            return;
-        };
-        let Obj::Buffer(bf) = &mut self.objs[b] else {
-            return;
-        };
+        let Some(b) = self.buffer_of(buf, what) else { return };
+        let Obj::Buffer(bf) = &mut self.objs[b] else { return };
         if bf.usage & 1 == 0 || bf.mapped || size > bf.size {
             let (u, m, s) = (bf.usage, bf.mapped, bf.size);
-            self.err(format!(
-                "{what}: usage {u:#x} mapped {m} size {size} of {s}"
-            ));
+            self.err(format!("{what}: usage {u:#x} mapped {m} size {size} of {s}"));
             return;
         }
         bf.mapped = true;
@@ -3367,15 +2513,11 @@ impl Model {
     pub fn finish_maps(&mut self) -> Vec<u32> {
         let mut tokens = Vec::new();
         for (b, size, dst, token) in std::mem::take(&mut self.pending_maps) {
-            let Obj::Buffer(bf) = &mut self.objs[b] else {
-                continue;
-            };
+            let Obj::Buffer(bf) = &mut self.objs[b] else { continue };
             let bytes = bf.data[..size as usize].to_vec();
             bf.mapped = false;
             if dst != 0 {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst as *mut u8, bytes.len())
-                };
+                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst as *mut u8, bytes.len()) };
             }
             self.obs.push(Obs::Read(bytes));
             tokens.push(token);
@@ -3385,12 +2527,8 @@ impl Model {
 
     /// The values a view sees (all its subresources, in order).
     pub fn view_values(&mut self, view: u32) -> Vec<u64> {
-        let Some(a) = self.at(view, "(test) view_values") else {
-            return Vec::new();
-        };
-        let Some(v) = self.view_of(a).cloned() else {
-            return Vec::new();
-        };
+        let Some(a) = self.at(view, "(test) view_values") else { return Vec::new() };
+        let Some(v) = self.view_of(a).cloned() else { return Vec::new() };
         let t = self.tex(v.tex);
         let mut out = Vec::new();
         for m in v.mip..v.mip + v.mips {
@@ -3428,21 +2566,12 @@ fn storage_format(f: naga::StorageFormat) -> &'static str {
     }
 }
 
-fn uses_global(
-    m: &naga::Module,
-    f: &naga::Function,
-    g: naga::Handle<naga::GlobalVariable>,
-) -> bool {
+fn uses_global(m: &naga::Module, f: &naga::Function, g: naga::Handle<naga::GlobalVariable>) -> bool {
     let mut seen = Vec::new();
     uses_global_in(m, f, g, &mut seen)
 }
 
-fn uses_global_in(
-    m: &naga::Module,
-    f: &naga::Function,
-    g: naga::Handle<naga::GlobalVariable>,
-    seen: &mut Vec<naga::Handle<naga::Function>>,
-) -> bool {
+fn uses_global_in(m: &naga::Module, f: &naga::Function, g: naga::Handle<naga::GlobalVariable>, seen: &mut Vec<naga::Handle<naga::Function>>) -> bool {
     for (_, e) in f.expressions.iter() {
         if let naga::Expression::GlobalVariable(h) = e {
             if *h == g {
@@ -3460,9 +2589,7 @@ fn uses_global_in(
                     calls(accept, out);
                     calls(reject, out);
                 }
-                naga::Statement::Loop {
-                    body, continuing, ..
-                } => {
+                naga::Statement::Loop { body, continuing, .. } => {
                     calls(body, out);
                     calls(continuing, out);
                 }
@@ -3600,20 +2727,7 @@ pub extern "C" fn vngpu_write_buffer(buf: u32, at: u32, p: *const u8, n: usize) 
     with(|m| m.write_buffer(buf, at, b))
 }
 #[no_mangle]
-pub extern "C" fn vngpu_write_texture(
-    tex: u32,
-    mip: u32,
-    x: u32,
-    y: u32,
-    z: u32,
-    p: *const u8,
-    n: usize,
-    bpr: u32,
-    rows: u32,
-    w: u32,
-    h: u32,
-    d: u32,
-) {
+pub extern "C" fn vngpu_write_texture(tex: u32, mip: u32, x: u32, y: u32, z: u32, p: *const u8, n: usize, bpr: u32, rows: u32, w: u32, h: u32, d: u32) {
     count("write_texture");
     with(|m| m.write_texture(tex, mip, [x, y, z], p, n, bpr, rows, [w, h, d]))
 }
@@ -3630,36 +2744,12 @@ pub extern "C" fn vngpu_read_buffer(buf: u32, size: u32, dst: *mut u8, token: u3
     with(|m| m.read_buffer(buf, size, dst, token))
 }
 #[no_mangle]
-pub extern "C" fn vngpu_copy_texture(
-    src: u32,
-    smip: u32,
-    sx: u32,
-    sy: u32,
-    sz: u32,
-    dst: u32,
-    dmip: u32,
-    dx: u32,
-    dy: u32,
-    dz: u32,
-    w: u32,
-    h: u32,
-    d: u32,
-) {
+pub extern "C" fn vngpu_copy_texture(src: u32, smip: u32, sx: u32, sy: u32, sz: u32, dst: u32, dmip: u32, dx: u32, dy: u32, dz: u32, w: u32, h: u32, d: u32) {
     count("copy_texture");
     with(|m| m.copy_texture(src, smip, [sx, sy, sz], dst, dmip, [dx, dy, dz], [w, h, d]))
 }
 #[no_mangle]
-pub extern "C" fn vngpu_copy_to_buffer(
-    tex: u32,
-    mip: u32,
-    x: u32,
-    y: u32,
-    z: u32,
-    buf: u32,
-    bpr: u32,
-    w: u32,
-    h: u32,
-) {
+pub extern "C" fn vngpu_copy_to_buffer(tex: u32, mip: u32, x: u32, y: u32, z: u32, buf: u32, bpr: u32, w: u32, h: u32) {
     count("copy_to_buffer");
     with(|m| m.copy_to_buffer(tex, mip, [x, y, z], buf, bpr, w, h))
 }
@@ -3670,17 +2760,7 @@ pub extern "C" fn vngpu_copy_buffer(src: u32, dst: u32, size: u32) {
 }
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
-pub extern "C" fn vngpu_copy_from_buffer(
-    buf: u32,
-    bpr: u32,
-    tex: u32,
-    mip: u32,
-    x: u32,
-    y: u32,
-    z: u32,
-    w: u32,
-    h: u32,
-) {
+pub extern "C" fn vngpu_copy_from_buffer(buf: u32, bpr: u32, tex: u32, mip: u32, x: u32, y: u32, z: u32, w: u32, h: u32) {
     count("copy_from_buffer");
     with(|m| m.copy_from_buffer(buf, bpr, tex, mip, x, y, z, w, h))
 }
@@ -3700,11 +2780,7 @@ pub extern "C" fn vngpu_set_pipeline(p: u32) {
 }
 #[no_mangle]
 pub extern "C" fn vngpu_set_bind_group(i: u32, g: u32, offs: *const u32, n: u32) {
-    let o = if n == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(offs, n as usize) }
-    };
+    let o = if n == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(offs, n as usize) } };
     with(|m| m.set_bind_group(i, g, o))
 }
 #[no_mangle]
@@ -3754,9 +2830,7 @@ mod ms_tests {
     use super::*;
 
     fn tex(m: &mut Model, f: &str, w: u32, h: u32, samples: u32, usage: u32) -> u32 {
-        m.texture(&format!(
-            r#"{{"size":[{w},{h},1],"format":"{f}","sampleCount":{samples},"usage":{usage}}}"#
-        ))
+        m.texture(&format!(r#"{{"size":[{w},{h},1],"format":"{f}","sampleCount":{samples},"usage":{usage}}}"#))
     }
     fn errs(m: &mut Model) -> Vec<String> {
         std::mem::take(&mut m.errors)
@@ -3764,10 +2838,7 @@ mod ms_tests {
 
     #[test]
     fn textures() {
-        let mut m = Model {
-            table: vec![None],
-            ..Default::default()
-        };
+        let mut m = Model { table: vec![None], ..Default::default() };
         // valid: 4x color and depth, render attachments (sampled and copied too)
         tex(&mut m, "bgra8unorm", 16, 16, 4, 0x17);
         tex(&mut m, "depth24plus-stencil8", 16, 16, 4, 0x14);
@@ -3786,21 +2857,11 @@ mod ms_tests {
             ("bgra8unorm", 4, 0x10, r#","mipLevelCount":2"#),
             ("bgra8unorm", 4, 0x10, r#","dimension":"3d""#),
         ] {
-            let size = if extra.contains("3d") {
-                "[16,16,2]"
-            } else {
-                "[16,16,1]"
-            };
-            m.texture(&format!(
-                r#"{{"size":{size},"format":"{f}","sampleCount":{s},"usage":{usage}{extra}}}"#
-            ));
-            assert!(
-                !errs(&mut m).is_empty(),
-                "{f} {s}x usage {usage:#x} {extra}"
-            );
+            let size = if extra.contains("3d") { "[16,16,2]" } else { "[16,16,1]" };
+            m.texture(&format!(r#"{{"size":{size},"format":"{f}","sampleCount":{s},"usage":{usage}{extra}}}"#));
+            assert!(!errs(&mut m).is_empty(), "{f} {s}x usage {usage:#x} {extra}");
         }
-        let layered =
-            m.texture(r#"{"size":[16,16,2],"format":"bgra8unorm","sampleCount":4,"usage":16}"#);
+        let layered = m.texture(r#"{"size":[16,16,2],"format":"bgra8unorm","sampleCount":4,"usage":16}"#);
         assert!(!errs(&mut m).is_empty());
         let _ = layered;
         // a view of a multisampled texture: 2d only
@@ -3813,15 +2874,8 @@ mod ms_tests {
 
     #[test]
     fn copies_and_writes() {
-        let mut m = Model {
-            table: vec![None],
-            ..Default::default()
-        };
-        let (a, b, c) = (
-            tex(&mut m, "rgba8unorm", 8, 8, 4, 0x13),
-            tex(&mut m, "rgba8unorm", 8, 8, 4, 0x13),
-            tex(&mut m, "rgba8unorm", 8, 8, 1, 0x13),
-        );
+        let mut m = Model { table: vec![None], ..Default::default() };
+        let (a, b, c) = (tex(&mut m, "rgba8unorm", 8, 8, 4, 0x13), tex(&mut m, "rgba8unorm", 8, 8, 4, 0x13), tex(&mut m, "rgba8unorm", 8, 8, 1, 0x13));
         m.copy_texture(a, 0, [0; 3], b, 0, [0; 3], [8, 8, 1]);
         assert!(errs(&mut m).is_empty());
         // part of one, between sample counts
@@ -3841,24 +2895,14 @@ mod ms_tests {
 
     #[test]
     fn passes_resolves_and_pipelines() {
-        let mut m = Model {
-            table: vec![None],
-            ..Default::default()
-        };
+        let mut m = Model { table: vec![None], ..Default::default() };
         let ms = tex(&mut m, "bgra8unorm", 8, 8, 4, 0x14);
         let one = tex(&mut m, "bgra8unorm", 8, 8, 1, 0x15);
         let other = tex(&mut m, "rgba8unorm", 8, 8, 1, 0x15);
         let small = tex(&mut m, "bgra8unorm", 4, 4, 1, 0x15);
         let z4 = tex(&mut m, "depth32float", 8, 8, 4, 0x10);
         let z1 = tex(&mut m, "depth32float", 8, 8, 1, 0x10);
-        let (vms, vone, vother, vsmall, vz4, vz1) = (
-            m.view(ms, ""),
-            m.view(one, ""),
-            m.view(other, ""),
-            m.view(small, ""),
-            m.view(z4, ""),
-            m.view(z1, ""),
-        );
+        let (vms, vone, vother, vsmall, vz4, vz1) = (m.view(ms, ""), m.view(one, ""), m.view(other, ""), m.view(small, ""), m.view(z4, ""), m.view(z1, ""));
         let pass = |m: &mut Model, color: u32, resolve: Option<u32>, z: Option<u32>| {
             let r = resolve.map_or(String::new(), |r| format!(r#","resolveTarget":{r}"#));
             let d = z.map_or(String::new(), |z| format!(r#","depthStencilAttachment":{{"view":{z},"depthLoadOp":"load","depthStoreOp":"store"}}"#));
@@ -3873,14 +2917,7 @@ mod ms_tests {
         assert_eq!(a, b);
         assert!(a.iter().all(|&x| x != 0));
         // sample counts that differ; resolves into another format, size, a 4x texture, from a 1x one
-        for (c, r, z) in [
-            (vms, None, Some(vz1)),
-            (vone, None, Some(vz4)),
-            (vms, Some(vother), None),
-            (vms, Some(vsmall), None),
-            (vms, Some(vms), None),
-            (vone, Some(vone), None),
-        ] {
+        for (c, r, z) in [(vms, None, Some(vz1)), (vone, None, Some(vz4)), (vms, Some(vother), None), (vms, Some(vsmall), None), (vms, Some(vms), None), (vone, Some(vone), None)] {
             pass(&mut m, c, r, z);
             assert!(!errs(&mut m).is_empty(), "{c} {r:?} {z:?}");
         }
@@ -3906,36 +2943,16 @@ mod ms_tests {
         // pipelines: count 1 or 4, alpha to coverage with 4, targets WebGPU multisamples
         let sh = m.shader("@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }\n@fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }");
         let pl = m.pipeline_layout(r#"{"bindGroupLayouts":[]}"#);
-        let pipe = |m: &mut Model, f: &str, ms: &str| {
-            m.render_pipeline(&format!(r#"{{"layout":{pl},"vertex":{{"module":{sh},"entryPoint":"vs"}},"fragment":{{"module":{sh},"entryPoint":"fs","targets":[{{"format":"{f}"}}]}}{ms}}}"#))
-        };
-        let p4 = pipe(
-            &mut m,
-            "bgra8unorm",
-            r#","multisample":{"count":4,"mask":15,"alphaToCoverageEnabled":true}"#,
-        );
+        let pipe = |m: &mut Model, f: &str, ms: &str| m.render_pipeline(&format!(r#"{{"layout":{pl},"vertex":{{"module":{sh},"entryPoint":"vs"}},"fragment":{{"module":{sh},"entryPoint":"fs","targets":[{{"format":"{f}"}}]}}{ms}}}"#));
+        let p4 = pipe(&mut m, "bgra8unorm", r#","multisample":{"count":4,"mask":15,"alphaToCoverageEnabled":true}"#);
         let p1 = pipe(&mut m, "bgra8unorm", "");
         assert!(errs(&mut m).is_empty());
-        for (f, ms) in [
-            ("bgra8unorm", r#","multisample":{"count":2}"#),
-            (
-                "bgra8unorm",
-                r#","multisample":{"count":1,"alphaToCoverageEnabled":true}"#,
-            ),
-            ("rg32float", r#","multisample":{"count":4}"#),
-        ] {
+        for (f, ms) in [("bgra8unorm", r#","multisample":{"count":2}"#), ("bgra8unorm", r#","multisample":{"count":1,"alphaToCoverageEnabled":true}"#), ("rg32float", r#","multisample":{"count":4}"#)] {
             pipe(&mut m, f, ms);
             assert!(!errs(&mut m).is_empty(), "{f} {ms}");
         }
-        for (p, color, bad) in [
-            (p4, vms, false),
-            (p1, vone, false),
-            (p1, vms, true),
-            (p4, vone, true),
-        ] {
-            m.begin_pass(&format!(
-                r#"{{"colorAttachments":[{{"view":{color},"loadOp":"load","storeOp":"store"}}]}}"#
-            ));
+        for (p, color, bad) in [(p4, vms, false), (p1, vone, false), (p1, vms, true), (p4, vone, true)] {
+            m.begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{color},"loadOp":"load","storeOp":"store"}}]}}"#));
             m.set_pipeline(p);
             m.draw([3, 1, 0, 0, 0], false);
             m.end_pass();

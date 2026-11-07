@@ -3,10 +3,10 @@
 //! procedures and the 32-bit window manager are converted by `to16` / `to32`.
 
 use crate::mem::{cstr, r16, r32, w16, w32, w8};
-use crate::w16::{self, call16, call32, h16, h32, lin, task, A, C16};
+use crate::w16::{self, call16, call32, h16, h32, lin, task, C16, A};
 use crate::HashMap;
-use koji::{Cpu, EAX, ECX, EDX, ESP};
 use std::sync::Mutex;
+use koji::{Cpu, EAX, ECX, EDX, ESP};
 
 /// (module.name, 32-bit dll!function, argument conversions, result conversion).
 /// Arguments, in the 16-bit order: w zero-extend, s sign-extend, l as is, h handle, p linear
@@ -25,12 +25,7 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("USER.GetClientRect", "user32!GetClientRect", "hR", "i"),
     ("USER.GetWindowRect", "user32!GetWindowRect", "hR", "i"),
     ("USER.GetWindowText", "user32!GetWindowTextA", "hps", "i"),
-    (
-        "USER.GetWindowTextLength",
-        "user32!GetWindowTextLengthA",
-        "h",
-        "i",
-    ),
+    ("USER.GetWindowTextLength", "user32!GetWindowTextLengthA", "h", "i"),
     ("USER.SetWindowText", "user32!SetWindowTextA", "hp", "i"),
     ("USER.ShowWindow", "user32!ShowWindow", "hw", "i"),
     ("USER.MoveWindow", "user32!MoveWindow", "hsssss", "i"),
@@ -58,12 +53,7 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("USER.GetDlgItemText", "user32!GetDlgItemTextA", "hspw", "i"),
     ("USER.SetDlgItemInt", "user32!SetDlgItemInt", "hsww", "i"),
     ("USER.CheckDlgButton", "user32!CheckDlgButton", "hsw", "i"),
-    (
-        "USER.IsDlgButtonChecked",
-        "user32!IsDlgButtonChecked",
-        "hs",
-        "i",
-    ),
+    ("USER.IsDlgButtonChecked", "user32!IsDlgButtonChecked", "hs", "i"),
     ("USER.GetSystemMetrics", "user32!GetSystemMetrics", "s", "i"),
     ("USER.GetSysColor", "user32!GetSysColor", "s", "l"),
     ("USER.MessageBeep", "user32!MessageBeep", "w", "i"),
@@ -98,12 +88,7 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("USER.CloseClipboard", "user32!CloseClipboard", "", "i"),
     ("GDI.TextOut", "gdi32!TextOutA", "hsspw", "i"),
     ("GDI.SelectObject", "gdi32!SelectObject", "hh", "h"),
-    (
-        "GDI.SetStretchBltMode",
-        "gdi32!SetStretchBltMode",
-        "hw",
-        "i",
-    ),
+    ("GDI.SetStretchBltMode", "gdi32!SetStretchBltMode", "hw", "i"),
     ("GDI.GetStockObject", "gdi32!GetStockObject", "w", "h"),
     ("GDI.SetTextColor", "gdi32!SetTextColor", "hl", "l"),
     ("GDI.SetBkColor", "gdi32!SetBkColor", "hl", "l"),
@@ -111,38 +96,13 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("GDI.SetTextAlign", "gdi32!SetTextAlign", "hw", "i"),
     ("GDI.SetROP2", "gdi32!SetROP2", "hw", "i"),
     ("GDI.CreatePalette", "gdi32!CreatePalette", "p", "h"),
-    (
-        "GDI.StretchDIBits",
-        "gdi32!StretchDIBits",
-        "hssssssssppwl",
-        "i",
-    ),
-    (
-        "GDI.SetDIBitsToDevice",
-        "gdi32!SetDIBitsToDevice",
-        "hsssssswwppw",
-        "i",
-    ),
+    ("GDI.StretchDIBits", "gdi32!StretchDIBits", "hssssssssppwl", "i"),
+    ("GDI.SetDIBitsToDevice", "gdi32!SetDIBitsToDevice", "hsssssswwppw", "i"),
     ("GDI.CreateSolidBrush", "gdi32!CreateSolidBrush", "l", "h"),
-    (
-        "GDI.CreatePatternBrush",
-        "gdi32!CreatePatternBrush",
-        "h",
-        "h",
-    ),
+    ("GDI.CreatePatternBrush", "gdi32!CreatePatternBrush", "h", "h"),
     ("GDI.CreatePen", "gdi32!CreatePen", "wsl", "h"),
-    (
-        "GDI.CreateCompatibleDC",
-        "gdi32!CreateCompatibleDC",
-        "h",
-        "h",
-    ),
-    (
-        "GDI.CreateCompatibleBitmap",
-        "gdi32!CreateCompatibleBitmap",
-        "hss",
-        "h",
-    ),
+    ("GDI.CreateCompatibleDC", "gdi32!CreateCompatibleDC", "h", "h"),
+    ("GDI.CreateCompatibleBitmap", "gdi32!CreateCompatibleBitmap", "hss", "h"),
     ("GDI.DeleteDC", "gdi32!DeleteDC", "h", "i"),
     ("GDI.BitBlt", "gdi32!BitBlt", "hsssshssl", "i"),
     ("GDI.StretchBlt", "gdi32!StretchBlt", "hsssshssssl", "i"),
@@ -162,84 +122,24 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("GDI.CreateDIBitmap", "gdi32!CreateDIBitmap", "hplppw", "h"),
     ("GDI.CreateRectRgn", "gdi32!CreateRectRgn", "ssss", "h"),
     ("GDI.SelectClipRgn", "gdi32!SelectClipRgn", "hh", "i"),
-    (
-        "GDI.IntersectClipRect",
-        "gdi32!IntersectClipRect",
-        "hssss",
-        "i",
-    ),
+    ("GDI.IntersectClipRect", "gdi32!IntersectClipRect", "hssss", "i"),
     ("GDI.SetMapMode", "gdi32!SetMapMode", "hw", "i"),
-    (
-        "GDI.SetPaletteEntries",
-        "gdi32!SetPaletteEntries",
-        "hwwp",
-        "i",
-    ),
-    (
-        "GDI.GetPaletteEntries",
-        "gdi32!GetPaletteEntries",
-        "hwwp",
-        "i",
-    ),
+    ("GDI.SetPaletteEntries", "gdi32!SetPaletteEntries", "hwwp", "i"),
+    ("GDI.GetPaletteEntries", "gdi32!GetPaletteEntries", "hwwp", "i"),
     ("GDI.AnimatePalette", "gdi32!AnimatePalette", "hwwp", "i"),
     ("GDI.GetNearestColor", "gdi32!GetNearestColor", "hl", "l"),
-    (
-        "GDI.CreateFontIndirect",
-        "gdi32!CreateFontIndirectA",
-        "F",
-        "h",
-    ),
+    ("GDI.CreateFontIndirect", "gdi32!CreateFontIndirectA", "F", "h"),
     ("KERNEL.lstrlen", "kernel32!lstrlenA", "p", "i"),
     ("KERNEL.GetTickCount", "kernel32!GetTickCount", "", "l"),
     ("KERNEL.GetCurrentTime", "kernel32!GetTickCount", "", "l"),
-    (
-        "KERNEL.GetPrivateProfileInt",
-        "kernel32!GetPrivateProfileIntA",
-        "ppsp",
-        "i",
-    ),
-    (
-        "KERNEL.GetPrivateProfileString",
-        "kernel32!GetPrivateProfileStringA",
-        "pppppwp",
-        "i",
-    ),
-    (
-        "KERNEL.WritePrivateProfileString",
-        "kernel32!WritePrivateProfileStringA",
-        "pppp",
-        "i",
-    ),
-    (
-        "KERNEL.GetProfileInt",
-        "kernel32!GetProfileIntA",
-        "pps",
-        "i",
-    ),
-    (
-        "KERNEL.GetProfileString",
-        "kernel32!GetProfileStringA",
-        "pppw",
-        "i",
-    ),
-    (
-        "KERNEL.WriteProfileString",
-        "kernel32!WriteProfileStringA",
-        "ppp",
-        "i",
-    ),
-    (
-        "KERNEL.OutputDebugString",
-        "kernel32!OutputDebugStringA",
-        "p",
-        "i",
-    ),
-    (
-        "MMSYSTEM.mciSendString",
-        "winmm!mciSendStringA",
-        "ppwh",
-        "l",
-    ),
+    ("KERNEL.GetPrivateProfileInt", "kernel32!GetPrivateProfileIntA", "ppsp", "i"),
+    ("KERNEL.GetPrivateProfileString", "kernel32!GetPrivateProfileStringA", "pppppwp", "i"),
+    ("KERNEL.WritePrivateProfileString", "kernel32!WritePrivateProfileStringA", "pppp", "i"),
+    ("KERNEL.GetProfileInt", "kernel32!GetProfileIntA", "pps", "i"),
+    ("KERNEL.GetProfileString", "kernel32!GetProfileStringA", "pppw", "i"),
+    ("KERNEL.WriteProfileString", "kernel32!WriteProfileStringA", "ppp", "i"),
+    ("KERNEL.OutputDebugString", "kernel32!OutputDebugStringA", "p", "i"),
+    ("MMSYSTEM.mciSendString", "winmm!mciSendStringA", "ppwh", "l"),
     ("MMSYSTEM.sndPlaySound", "winmm!sndPlaySoundA", "pw", "i"),
     ("MMSYSTEM.timeGetTime", "winmm!timeGetTime", "", "l"),
 ];
@@ -305,11 +205,7 @@ fn simple(c: &mut C16) -> u32 {
         }
         crate::mem::heap_free(p32);
     }
-    if ret == "h" {
-        h16(r) as u32
-    } else {
-        r
-    }
+    if ret == "h" { h16(r) as u32 } else { r }
 }
 
 pub fn rect_in(p16: u32, p32: u32) {
@@ -350,28 +246,16 @@ pub fn init() {
     reg("KERNEL.GetWinFlags", |_| 0x0413);
     reg("KERNEL.LockSegment", |c| c.a(0));
     reg("KERNEL.UnlockSegment", |c| c.a(0));
-    reg("KERNEL.GlobalAlloc", |c| {
-        w16::global_alloc(c.a(1), c.w(0) & 0x40 != 0) as u32
-    });
-    reg("KERNEL.GlobalReAlloc", |c| {
-        w16::global_realloc(c.w(0), c.a(1), c.w(2) & 0x40 != 0) as u32
-    });
+    reg("KERNEL.GlobalAlloc", |c| w16::global_alloc(c.a(1), c.w(0) & 0x40 != 0) as u32);
+    reg("KERNEL.GlobalReAlloc", |c| w16::global_realloc(c.w(0), c.a(1), c.w(2) & 0x40 != 0) as u32);
     reg("KERNEL.GlobalFree", |c| {
         w16::global_free(c.w(0));
         0
     });
-    reg("KERNEL.GlobalLock", |c| {
-        if w16::sel_base(c.w(0)).is_some() {
-            (c.a(0) & 0xffff) << 16
-        } else {
-            0
-        }
-    });
+    reg("KERNEL.GlobalLock", |c| if w16::sel_base(c.w(0)).is_some() { (c.a(0) & 0xffff) << 16 } else { 0 });
     reg("KERNEL.GlobalUnlock", |_| 1);
     reg("KERNEL.GlobalSize", |c| w16::global_size(c.w(0)));
-    reg("KERNEL.GlobalHandle", |c| {
-        (c.a(0) & 0xffff) << 16 | (c.a(0) & 0xffff)
-    });
+    reg("KERNEL.GlobalHandle", |c| (c.a(0) & 0xffff) << 16 | (c.a(0) & 0xffff));
     reg("KERNEL.GlobalFlags", |_| 0);
     reg("KERNEL.GlobalCompact", |_| 0x0100_0000);
     reg("KERNEL.GetFreeSpace", |_| 0x0100_0000);
@@ -444,10 +328,7 @@ pub fn init() {
     reg("KERNEL._lopen", |c| {
         let r = call32(c.cpu, "kernel32!_lopen", &[c.a(0), c.a(1) & 0xffff]);
         if r == u32::MAX {
-            eprintln!(
-                "sake w16: _lopen {:?} failed",
-                String::from_utf8_lossy(&cstr(c.a(0)))
-            );
+            eprintln!("sake w16: _lopen {:?} failed", String::from_utf8_lossy(&cstr(c.a(0))));
             0xffff
         } else {
             r
@@ -455,36 +336,18 @@ pub fn init() {
     });
     reg("KERNEL._lcreat", |c| {
         let r = call32(c.cpu, "kernel32!_lcreat", &[c.a(0), c.a(1) & 0xffff]);
-        if r == u32::MAX {
-            0xffff
-        } else {
-            r
-        }
+        if r == u32::MAX { 0xffff } else { r }
     });
     reg("KERNEL._lclose", |c| {
         call32(c.cpu, "kernel32!CloseHandle", &[c.a(0) & 0xffff]);
         0
     });
-    reg("KERNEL._lread", |c| {
-        file_read(c, c.a(0) & 0xffff, lin(c.a(1)), c.a(2) & 0xffff)
-    });
-    reg("KERNEL._hread", |c| {
-        file_read(c, c.a(0) & 0xffff, lin(c.a(1)), c.a(2))
-    });
+    reg("KERNEL._lread", |c| file_read(c, c.a(0) & 0xffff, lin(c.a(1)), c.a(2) & 0xffff));
+    reg("KERNEL._hread", |c| file_read(c, c.a(0) & 0xffff, lin(c.a(1)), c.a(2)));
     // (the buffer is a "p" in the spec, already linear; _lread's is a "g", a segmented pointer)
-    reg("KERNEL._lwrite", |c| {
-        file_write(c, c.a(0) & 0xffff, c.a(1), c.a(2) & 0xffff)
-    });
-    reg("KERNEL._hwrite", |c| {
-        file_write(c, c.a(0) & 0xffff, c.a(1), c.a(2))
-    });
-    reg("KERNEL._llseek", |c| {
-        call32(
-            c.cpu,
-            "kernel32!SetFilePointer",
-            &[c.a(0) & 0xffff, c.a(1), 0, c.a(2) & 0xffff],
-        )
-    });
+    reg("KERNEL._lwrite", |c| file_write(c, c.a(0) & 0xffff, c.a(1), c.a(2) & 0xffff));
+    reg("KERNEL._hwrite", |c| file_write(c, c.a(0) & 0xffff, c.a(1), c.a(2)));
+    reg("KERNEL._llseek", |c| call32(c.cpu, "kernel32!SetFilePointer", &[c.a(0) & 0xffff, c.a(1), 0, c.a(2) & 0xffff]));
     reg("KERNEL.OpenFile", open_file);
     reg("KERNEL.DOS3Call", |c| {
         dos(c.cpu);
@@ -492,12 +355,8 @@ pub fn init() {
     });
     reg("KERNEL.GetCurrentTask", |_| 0x1007);
     reg("KERNEL.Yield", |_| 0);
-    reg("KERNEL.GetWindowsDirectory", |c| {
-        crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS")
-    });
-    reg("KERNEL.GetSystemDirectory", |c| {
-        crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS\\SYSTEM")
-    });
+    reg("KERNEL.GetWindowsDirectory", |c| crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS"));
+    reg("KERNEL.GetSystemDirectory", |c| crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS\\SYSTEM"));
     reg("KERNEL.SetErrorMode", |_| 0);
     reg("KERNEL.GetProcAddress", |_| 0);
     reg("KERNEL.LoadLibrary", |_| 2);
@@ -522,11 +381,7 @@ pub fn init() {
         let mut prev = s;
         while q < p {
             prev = q;
-            q += if crate::text::is_lead(crate::mem::r8(q)) {
-                2
-            } else {
-                1
-            };
+            q += if crate::text::is_lead(crate::mem::r8(q)) { 2 } else { 1 };
         }
         c.a(1).wrapping_sub(p - prev)
     });
@@ -575,16 +430,8 @@ pub fn init() {
     });
     reg("USER.SetTimer", |c| {
         let proc = c.a(3);
-        let p32 = if proc == 0 {
-            0
-        } else {
-            proc_thunk(proc, Kind::Timer)
-        };
-        call32(
-            c.cpu,
-            "user32!SetTimer",
-            &[c.h(0), c.w(1) as u32, c.w(2) as u32, p32],
-        )
+        let p32 = if proc == 0 { 0 } else { proc_thunk(proc, Kind::Timer) };
+        call32(c.cpu, "user32!SetTimer", &[c.h(0), c.w(1) as u32, c.w(2) as u32, p32])
     });
     reg("USER.LoadCursor", |c| {
         let id = if c.w(0) == 0 { c.a(1) } else { 32512 };
@@ -645,64 +492,32 @@ pub fn init() {
         };
         r & 0xffff
     });
-    reg("USER.SetWindowWord", |c| {
-        call32(
-            c.cpu,
-            "user32!SetWindowLongA",
-            &[c.h(0), c.s(1) as u32, c.w(2) as u32],
-        )
-    });
+    reg("USER.SetWindowWord", |c| call32(c.cpu, "user32!SetWindowLongA", &[c.h(0), c.s(1) as u32, c.w(2) as u32]));
     reg("USER.GetWindowLong", |c| {
         let i = c.s(1);
         let r = call32(c.cpu, "user32!GetWindowLongA", &[c.h(0), i as u32]);
-        if i == -4 {
-            proc_back(r)
-        } else {
-            r
-        }
+        if i == -4 { proc_back(r) } else { r }
     });
     reg("USER.SetWindowLong", |c| {
         let i = c.s(1);
-        let v = if i == -4 {
-            proc_thunk(c.a(2), Kind::Wnd)
-        } else {
-            c.a(2)
-        };
+        let v = if i == -4 { proc_thunk(c.a(2), Kind::Wnd) } else { c.a(2) };
         let r = call32(c.cpu, "user32!SetWindowLongA", &[c.h(0), i as u32, v]);
-        if i == -4 {
-            proc_back(r)
-        } else {
-            r
-        }
+        if i == -4 { proc_back(r) } else { r }
     });
-    reg("USER.GetClassWord", |c| {
-        call32(c.cpu, "user32!GetClassLongA", &[c.h(0), c.s(1) as u32]) & 0xffff
-    });
-    reg("USER.GetClassLong", |c| {
-        call32(c.cpu, "user32!GetClassLongA", &[c.h(0), c.s(1) as u32])
-    });
-    reg("USER.GetDesktopWindow", |c| {
-        h16(call32(c.cpu, "user32!GetDesktopWindow", &[])) as u32
-    });
+    reg("USER.GetClassWord", |c| call32(c.cpu, "user32!GetClassLongA", &[c.h(0), c.s(1) as u32]) & 0xffff);
+    reg("USER.GetClassLong", |c| call32(c.cpu, "user32!GetClassLongA", &[c.h(0), c.s(1) as u32]));
+    reg("USER.GetDesktopWindow", |c| h16(call32(c.cpu, "user32!GetDesktopWindow", &[])) as u32);
     reg("USER.DrawText", |c| {
         let r = crate::mem::heap_alloc(16, true);
         rect_in(c.a(3), r);
-        let v = call32(
-            c.cpu,
-            "user32!DrawTextA",
-            &[c.h(0), c.a(1), c.s(2) as u32, r, c.w(4) as u32],
-        );
+        let v = call32(c.cpu, "user32!DrawTextA", &[c.h(0), c.a(1), c.s(2) as u32, r, c.w(4) as u32]);
         rect_out(r, c.a(3));
         crate::mem::heap_free(r);
         v
     });
     reg("USER.GetUpdateRect", |c| {
         let r = crate::mem::heap_alloc(16, true);
-        let v = call32(
-            c.cpu,
-            "user32!GetUpdateRect",
-            &[c.h(0), if c.a(1) == 0 { 0 } else { r }, c.w(2) as u32],
-        );
+        let v = call32(c.cpu, "user32!GetUpdateRect", &[c.h(0), if c.a(1) == 0 { 0 } else { r }, c.w(2) as u32]);
         if c.a(1) != 0 {
             rect_out(r, c.a(1));
         }
@@ -752,16 +567,8 @@ pub fn init() {
         let p = c.a(0);
         (r16(p + 4) as i16 <= r16(p) as i16 || r16(p + 6) as i16 <= r16(p + 2) as i16) as u32
     });
-    reg("USER.EndDialog", |c| {
-        call32(c.cpu, "user32!EndDialog", &[c.h(0), c.s(1) as u32])
-    });
-    reg("USER.GetSystemMenu", |c| {
-        h16(call32(
-            c.cpu,
-            "user32!GetSystemMenu",
-            &[c.h(0), c.w(1) as u32],
-        )) as u32
-    });
+    reg("USER.EndDialog", |c| call32(c.cpu, "user32!EndDialog", &[c.h(0), c.s(1) as u32]));
+    reg("USER.GetSystemMenu", |c| h16(call32(c.cpu, "user32!GetSystemMenu", &[c.h(0), c.w(1) as u32])) as u32);
     reg("USER.GetTextMetrics", |c| text_metrics(c));
     reg("GDI.GetTextMetrics", |c| text_metrics(c));
     reg("GDI.DeleteObject", |c| {
@@ -771,22 +578,14 @@ pub fn init() {
     });
     reg("GDI.GetTextExtent", |c| {
         let sz = crate::mem::heap_alloc(8, true);
-        call32(
-            c.cpu,
-            "gdi32!GetTextExtentPoint32A",
-            &[c.h(0), c.a(1), c.s(2) as u32, sz],
-        );
+        call32(c.cpu, "gdi32!GetTextExtentPoint32A", &[c.h(0), c.a(1), c.s(2) as u32, sz]);
         let r = (r32(sz) & 0xffff) | (r32(sz + 4) << 16);
         crate::mem::heap_free(sz);
         r
     });
     reg("GDI.MoveTo", |c| {
         let pt = crate::mem::heap_alloc(8, true);
-        call32(
-            c.cpu,
-            "gdi32!MoveToEx",
-            &[c.h(0), c.s(1) as u32, c.s(2) as u32, pt],
-        );
+        call32(c.cpu, "gdi32!MoveToEx", &[c.h(0), c.s(1) as u32, c.s(2) as u32, pt]);
         let r = (r32(pt) & 0xffff) | (r32(pt + 4) << 16);
         crate::mem::heap_free(pt);
         r
@@ -810,17 +609,7 @@ pub fn init() {
     });
     reg("GDI.CreateBitmap", |c| {
         let bits = if c.a(4) == 0 { 0 } else { c.a(4) };
-        h16(call32(
-            c.cpu,
-            "gdi32!CreateBitmap",
-            &[
-                c.s(0) as u32,
-                c.s(1) as u32,
-                c.w(2) as u32,
-                c.w(3) as u32,
-                bits,
-            ],
-        )) as u32
+        h16(call32(c.cpu, "gdi32!CreateBitmap", &[c.s(0) as u32, c.s(1) as u32, c.w(2) as u32, c.w(3) as u32, bits])) as u32
     });
     reg("COMMDLG.GetOpenFileName", |c| open_file_name(c));
     reg("KEYBOARD.AnsiToOem", |c| {
@@ -837,20 +626,12 @@ fn ansi_case(c: &mut C16, up: bool) -> u32 {
     if v >> 16 == 0 {
         let b = [v as u8];
         let mut s = b.to_vec();
-        if up {
-            crate::text::upper_a(&mut s)
-        } else {
-            crate::text::lower_a(&mut s)
-        }
+        if up { crate::text::upper_a(&mut s) } else { crate::text::lower_a(&mut s) }
         return s[0] as u32;
     }
     let p = lin(v);
     let mut s = cstr(p);
-    if up {
-        crate::text::upper_a(&mut s)
-    } else {
-        crate::text::lower_a(&mut s)
-    }
+    if up { crate::text::upper_a(&mut s) } else { crate::text::lower_a(&mut s) }
     crate::mem::write(p, &s);
     v
 }
@@ -860,11 +641,7 @@ fn file_read(c: &mut C16, h: u32, buf: u32, n: u32) -> u32 {
     let ok = call32(c.cpu, "kernel32!ReadFile", &[h, buf, n, got, 0]);
     let r = r32(got);
     crate::mem::heap_free(got);
-    if ok == 0 {
-        0xffff_ffff
-    } else {
-        r
-    }
+    if ok == 0 { 0xffff_ffff } else { r }
 }
 
 fn file_write(c: &mut C16, h: u32, buf: u32, n: u32) -> u32 {
@@ -875,11 +652,7 @@ fn file_write(c: &mut C16, h: u32, buf: u32, n: u32) -> u32 {
     let ok = call32(c.cpu, "kernel32!WriteFile", &[h, buf, n, got, 0]);
     let r = r32(got);
     crate::mem::heap_free(got);
-    if ok == 0 {
-        0xffff_ffff
-    } else {
-        r
-    }
+    if ok == 0 { 0xffff_ffff } else { r }
 }
 
 /// DOS handles 1 and 2 (stdout, stderr: _lwrite or INT 21h's write) go to the console, a line at
@@ -896,11 +669,7 @@ fn std_write(h: u32, buf: u32, n: u32) -> Option<u32> {
 /// OpenFile(name, OFSTRUCT*, mode): OFSTRUCT16 has the same layout as the 32-bit one.
 fn open_file(c: &mut C16) -> u32 {
     let r = call32(c.cpu, "kernel32!OpenFile", &[c.a(0), c.a(1), c.w(2) as u32]);
-    if r == u32::MAX {
-        0xffff
-    } else {
-        r & 0xffff
-    }
+    if r == u32::MAX { 0xffff } else { r & 0xffff }
 }
 
 thread_local! {
@@ -916,17 +685,7 @@ fn catch(c: &mut C16) -> u32 {
     let cpu = &*c.cpu;
     // (the far return address, then the pointer argument: both gone after the return)
     let sp = ((cpu.regs[ESP] & 0xffff) + 8) as u16;
-    let regs = [
-        r16(c.sp),
-        r16(c.sp + 2),
-        sp,
-        cpu.regs[koji::EBP] as u16,
-        cpu.regs[koji::ESI] as u16,
-        cpu.regs[koji::EDI] as u16,
-        cpu.sreg[3],
-        cpu.sreg[2],
-        0,
-    ];
+    let regs = [r16(c.sp), r16(c.sp + 2), sp, cpu.regs[koji::EBP] as u16, cpu.regs[koji::ESI] as u16, cpu.regs[koji::EDI] as u16, cpu.sreg[3], cpu.sreg[2], 0];
     for (i, v) in regs.iter().enumerate() {
         w16(buf + 2 * i as u32, *v);
     }
@@ -1025,10 +784,7 @@ pub fn proc_thunk(fp: u32, kind: Kind) -> u32 {
         return p32;
     }
     let mut g = PROCS.lock().unwrap();
-    let p = g.get_or_insert_with(|| Procs {
-        by_trap: HashMap::default(),
-        by_fp: HashMap::default(),
-    });
+    let p = g.get_or_insert_with(|| Procs { by_trap: HashMap::default(), by_fp: HashMap::default() });
     if let Some(&t) = p.by_fp.get(&(fp, kind as u8)) {
         return t;
     }
@@ -1041,12 +797,7 @@ pub fn proc_thunk(fp: u32, kind: Kind) -> u32 {
 /// The 16-bit procedure behind a 32-bit one (GetWindowLong(GWL_WNDPROC)): our thunk's, or
 /// one that calls the 32-bit procedure.
 pub fn proc_back(p32: u32) -> u32 {
-    if let Some(&(fp, _)) = PROCS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|p| p.by_trap.get(&p32))
-    {
+    if let Some(&(fp, _)) = PROCS.lock().unwrap().as_ref().and_then(|p| p.by_trap.get(&p32)) {
         return fp;
     }
     proc16_of(p32)
@@ -1070,36 +821,20 @@ fn proc16_of(p32: u32) -> u32 {
 }
 
 fn proc32_of(fp: u32) -> Option<u32> {
-    P32.lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|m| m.1.get(&fp).copied())
+    P32.lock().unwrap().as_ref().and_then(|m| m.1.get(&fp).copied())
 }
 
 fn proc_entry(c: &mut crate::api::Ctx) -> u32 {
-    let Some((fp, kind)) = PROCS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|p| p.by_trap.get(&c.trap).copied())
-    else {
+    let Some((fp, kind)) = PROCS.lock().unwrap().as_ref().and_then(|p| p.by_trap.get(&c.trap).copied()) else {
         return 0;
     };
     let (hwnd, msg, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     if kind == Kind::Timer {
-        return call16(
-            c.cpu,
-            fp,
-            &[A::W(h16(hwnd)), A::W(msg as u16), A::W(wp as u16), A::L(lp)],
-        );
+        return call16(c.cpu, fp, &[A::W(h16(hwnd)), A::W(msg as u16), A::W(wp as u16), A::L(lp)]);
     }
     let mark = w16::scratch_mark();
     let (m16, wp16, lp16, back) = to16(msg, wp, lp);
-    let r = call16(
-        c.cpu,
-        fp,
-        &[A::W(h16(hwnd)), A::W(m16), A::W(wp16), A::L(lp16)],
-    );
+    let r = call16(c.cpu, fp, &[A::W(h16(hwnd)), A::W(m16), A::W(wp16), A::L(lp16)]);
     let r = from16_done(back, r, kind);
     w16::scratch_reset(mark);
     r
@@ -1171,62 +906,19 @@ pub fn to16(msg: u32, wp: u32, lp: u32) -> (u16, u16, u32, Back) {
             (0x0d, n as u16, fp, Back::Text(lp, l))
         }
         // WM_COMMAND: (id, MAKELONG(hwnd, code))
-        0x111 => (
-            0x111,
-            lo(wp) as u16,
-            (h16(lp) as u32) | hi(wp) << 16,
-            Back::None,
-        ),
+        0x111 => (0x111, lo(wp) as u16, (h16(lp) as u32) | hi(wp) << 16, Back::None),
         // WM_ACTIVATE
-        0x06 => (
-            0x06,
-            lo(wp) as u16,
-            (h16(lp) as u32) | hi(wp) << 16,
-            Back::None,
-        ),
+        0x06 => (0x06, lo(wp) as u16, (h16(lp) as u32) | hi(wp) << 16, Back::None),
         // WM_HSCROLL, WM_VSCROLL: (code, MAKELONG(pos, hwnd))
-        0x114 | 0x115 => (
-            msg as u16,
-            lo(wp) as u16,
-            hi(wp) | (h16(lp) as u32) << 16,
-            Back::None,
-        ),
+        0x114 | 0x115 => (msg as u16, lo(wp) as u16, hi(wp) | (h16(lp) as u32) << 16, Back::None),
         // WM_MENUSELECT: (item, MAKELONG(flags, hmenu))
-        0x11f => (
-            0x11f,
-            lo(wp) as u16,
-            hi(wp) | (h16(lp) as u32) << 16,
-            Back::None,
-        ),
+        0x11f => (0x11f, lo(wp) as u16, hi(wp) | (h16(lp) as u32) << 16, Back::None),
         // WM_CTLCOLOR*: WM_CTLCOLOR (hdc, MAKELONG(hwnd, type))
-        0x132..=0x138 => (
-            0x19,
-            h16(wp),
-            (h16(lp) as u32) | (msg - 0x132) << 16,
-            Back::None,
-        ),
+        0x132..=0x138 => (0x19, h16(wp), (h16(lp) as u32) | (msg - 0x132) << 16, Back::None),
         // WM_PARENTNOTIFY
-        0x210 => (
-            0x210,
-            lo(wp) as u16,
-            if lo(wp) == 1 || lo(wp) == 2 {
-                (h16(lp) as u32) | hi(wp) << 16
-            } else {
-                lp
-            },
-            Back::None,
-        ),
+        0x210 => (0x210, lo(wp) as u16, if lo(wp) == 1 || lo(wp) == 2 { (h16(lp) as u32) | hi(wp) << 16 } else { lp }, Back::None),
         // messages whose wParam is a handle
-        0x0f | 0x14 | 0x07 | 0x08 | 0x20 | 0x0e => (
-            msg as u16,
-            if matches!(msg, 0x14 | 0x07 | 0x08 | 0x20) {
-                h16(wp)
-            } else {
-                wp as u16
-            },
-            lp,
-            Back::None,
-        ),
+        0x0f | 0x14 | 0x07 | 0x08 | 0x20 | 0x0e => (msg as u16, if matches!(msg, 0x14 | 0x07 | 0x08 | 0x20) { h16(wp) } else { wp as u16 }, lp, Back::None),
         _ => (msg as u16, wp as u16, lp, Back::None),
     }
 }
@@ -1319,18 +1011,10 @@ pub fn to32(msg: u16, wp: u16, lp: u32) -> (u32, u32, u32, Vec<(u32, u32, u8)>) 
             (msg as u32, wp as u32, b)
         }
         0x0c | 0x0d if lp != 0 => (msg as u32, wp as u32, lin(lp)),
-        0x111 => (0x111, wp as u32 | (lp >> 16) << 16, h32(lp as u16)),
+        0x111 => (0x111, wp as u32 | (lp >> 16) << 16, h32(lp as u16), ),
         0x06 => (0x06, wp as u32 | (lp >> 16) << 16, h32(lp as u16)),
-        0x114 | 0x115 => (
-            msg as u32,
-            wp as u32 | (lp & 0xffff) << 16,
-            h32((lp >> 16) as u16),
-        ),
-        0x11f => (
-            0x11f,
-            wp as u32 | (lp & 0xffff) << 16,
-            h32((lp >> 16) as u16),
-        ),
+        0x114 | 0x115 => (msg as u32, wp as u32 | (lp & 0xffff) << 16, h32((lp >> 16) as u16)),
+        0x11f => (0x11f, wp as u32 | (lp & 0xffff) << 16, h32((lp >> 16) as u16)),
         0x19 => (0x132 + (lp >> 16), h32(wp), h32(lp as u16)),
         0x14 | 0x07 | 0x08 | 0x20 => (msg as u32, h32(wp), lp),
         // (WM_USER and above, and the rest: as they are)
@@ -1390,11 +1074,7 @@ fn call_window_proc(c: &mut C16) -> u32 {
             to32_done(tmp);
             r
         }
-        None => call16(
-            c.cpu,
-            fp,
-            &[A::W(c.w(1)), A::W(c.w(2)), A::W(c.w(3)), A::L(c.a(4))],
-        ),
+        None => call16(c.cpu, fp, &[A::W(c.w(1)), A::W(c.w(2)), A::W(c.w(3)), A::L(c.a(4))]),
     }
 }
 
@@ -1422,11 +1102,7 @@ fn msg_out(m: u32, p: u32) {
     w16(p, h16(r32(m)));
     w16(p + 2, m16);
     w16(p + 4, wp16);
-    let lp16 = if msg == 0x113 && lp != 0 {
-        proc_back(lp)
-    } else {
-        lp16
-    };
+    let lp16 = if msg == 0x113 && lp != 0 { proc_back(lp) } else { lp16 };
     w32(p + 6, lp16);
     w32(p + 10, r32(m + 16));
     w16(p + 14, r32(m + 20) as u16);
@@ -1435,11 +1111,7 @@ fn msg_out(m: u32, p: u32) {
 
 fn get_message(c: &mut C16) -> u32 {
     let m = crate::mem::heap_alloc(28, true);
-    let r = call32(
-        c.cpu,
-        "user32!GetMessageA",
-        &[m, c.h(1), c.w(2) as u32, c.w(3) as u32],
-    );
+    let r = call32(c.cpu, "user32!GetMessageA", &[m, c.h(1), c.w(2) as u32, c.w(3) as u32]);
     msg_out(m, c.a(0));
     crate::mem::heap_free(m);
     r
@@ -1447,11 +1119,7 @@ fn get_message(c: &mut C16) -> u32 {
 
 fn peek_message(c: &mut C16) -> u32 {
     let m = crate::mem::heap_alloc(28, true);
-    let r = call32(
-        c.cpu,
-        "user32!PeekMessageA",
-        &[m, c.h(1), c.w(2) as u32, c.w(3) as u32, c.w(4) as u32],
-    );
+    let r = call32(c.cpu, "user32!PeekMessageA", &[m, c.h(1), c.w(2) as u32, c.w(3) as u32, c.w(4) as u32]);
     if r != 0 {
         msg_out(m, c.a(0));
     }
@@ -1480,16 +1148,8 @@ fn register_class(c: &mut C16) -> u32 {
     w32(wc + 36, name);
     let menu = r32(p + 18);
     if menu != 0 {
-        let key = if name < 0x10000 {
-            name.to_le_bytes().to_vec()
-        } else {
-            cstr(name).to_ascii_uppercase()
-        };
-        CLASS_MENU
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::default)
-            .insert(key, menu);
+        let key = if name < 0x10000 { name.to_le_bytes().to_vec() } else { cstr(name).to_ascii_uppercase() };
+        CLASS_MENU.lock().unwrap().get_or_insert_with(HashMap::default).insert(key, menu);
     }
     let r = call32(c.cpu, "user32!RegisterClassA", &[wc]);
     crate::mem::heap_free(wc);
@@ -1501,25 +1161,12 @@ fn create_window(c: &mut C16, ex: bool) -> u32 {
     let exstyle = if ex { c.a(0) } else { 0 };
     let cls = c.a(o);
     let cw = |v: i32| if v == -32768 { 0x8000_0000 } else { v as u32 };
-    let (x, y, w, h) = (
-        cw(c.s(o + 3)),
-        cw(c.s(o + 4)),
-        cw(c.s(o + 5)),
-        cw(c.s(o + 6)),
-    );
+    let (x, y, w, h) = (cw(c.s(o + 3)), cw(c.s(o + 4)), cw(c.s(o + 5)), cw(c.s(o + 6)));
     let mut menu = c.h(o + 8);
     let style = c.a(o + 2);
     if menu == 0 && style & 0x4000_0000 == 0 {
-        let key = if cls < 0x10000 {
-            cls.to_le_bytes().to_vec()
-        } else {
-            cstr(cls).to_ascii_uppercase()
-        };
-        let m = CLASS_MENU
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|m| m.get(&key).copied());
+        let key = if cls < 0x10000 { cls.to_le_bytes().to_vec() } else { cstr(cls).to_ascii_uppercase() };
+        let m = CLASS_MENU.lock().unwrap().as_ref().and_then(|m| m.get(&key).copied());
         if let Some(m) = m {
             menu = load_menu(c.cpu, lin(m));
         }
@@ -1527,24 +1174,7 @@ fn create_window(c: &mut C16, ex: bool) -> u32 {
     if style & 0x4000_0000 != 0 {
         menu = c.w(o + 8) as u32; // (a child's id)
     }
-    let r = call32(
-        c.cpu,
-        "user32!CreateWindowExA",
-        &[
-            exstyle,
-            cls,
-            c.a(o + 1),
-            style,
-            x,
-            y,
-            w,
-            h,
-            c.h(o + 7),
-            menu,
-            0,
-            c.a(o + 10),
-        ],
-    );
+    let r = call32(c.cpu, "user32!CreateWindowExA", &[exstyle, cls, c.a(o + 1), style, x, y, w, h, c.h(o + 7), menu, 0, c.a(o + 10)]);
     h16(r) as u32
 }
 
@@ -1648,11 +1278,7 @@ pub fn find_resource(ty: u32, id: u32) -> Option<(u32, u32)> {
         let hit = matches(tid, ty);
         for k in 0..n {
             let e = p + 12 * k;
-            let (off, len, rid) = (
-                u16::from_le_bytes([d[e], d[e + 1]]),
-                u16::from_le_bytes([d[e + 2], d[e + 3]]),
-                u16::from_le_bytes([d[e + 6], d[e + 7]]),
-            );
+            let (off, len, rid) = (u16::from_le_bytes([d[e], d[e + 1]]), u16::from_le_bytes([d[e + 2], d[e + 3]]), u16::from_le_bytes([d[e + 6], d[e + 7]]));
             if hit && matches(rid, id) {
                 let (o, l) = ((off as usize) << shift, (len as usize) << shift);
                 let data = &d[o..(o + l).min(d.len())];
@@ -1667,24 +1293,11 @@ pub fn find_resource(ty: u32, id: u32) -> Option<(u32, u32)> {
 
 /// A resource name argument (far pointer or MAKEINTRESOURCE) as `find_resource` takes it.
 fn res_id(v: u32) -> u32 {
-    if v >> 16 == 0 {
-        v | 0x8000_0000
-    } else {
-        lin(v)
-    }
+    if v >> 16 == 0 { v | 0x8000_0000 } else { lin(v) }
 }
 
 fn load_menu(cpu: &mut Cpu, name: u32) -> u32 {
-    let Some((d, _)) = find_resource(
-        4,
-        if name < 0x10000 {
-            name | 0x8000_0000
-        } else {
-            name
-        },
-    ) else {
-        return 0;
-    };
+    let Some((d, _)) = find_resource(4, if name < 0x10000 { name | 0x8000_0000 } else { name }) else { return 0 };
     let m = call32(cpu, "user32!CreateMenu", &[]);
     let mut p = d + 4;
     menu_items(cpu, m, &mut p);
@@ -1712,16 +1325,8 @@ fn menu_items(cpu: &mut Cpu, menu: u32, p: &mut u32) {
             menu_items(cpu, sub, p);
             call32(cpu, "user32!AppendMenuA", &[menu, f, sub, text]);
         } else {
-            let t = if crate::mem::r8(text) == 0 && id == 0 {
-                0
-            } else {
-                text
-            };
-            call32(
-                cpu,
-                "user32!AppendMenuA",
-                &[menu, if t == 0 { f | 0x800 } else { f }, id, t],
-            );
+            let t = if crate::mem::r8(text) == 0 && id == 0 { 0 } else { text };
+            call32(cpu, "user32!AppendMenuA", &[menu, if t == 0 { f | 0x800 } else { f }, id, t]);
         }
         if flags & 0x80 != 0 {
             return;
@@ -1777,14 +1382,7 @@ fn dialog32(t: u32) -> u32 {
         while out.len() % 4 != 0 {
             out.push(0);
         }
-        let (x, y, cx, cy, id, st) = (
-            r16(p),
-            r16(p + 2),
-            r16(p + 4),
-            r16(p + 6),
-            r16(p + 8),
-            r32(p + 10),
-        );
+        let (x, y, cx, cy, id, st) = (r16(p), r16(p + 2), r16(p + 4), r16(p + 6), r16(p + 8), r32(p + 10));
         p += 14;
         push32(&mut out, st);
         push32(&mut out, 0);
@@ -1823,11 +1421,7 @@ fn dialog_box(c: &mut C16, param: u32) -> u32 {
     };
     let t = dialog32(d);
     let proc = proc_thunk(c.a(3), Kind::Dlg);
-    let r = call32(
-        c.cpu,
-        "user32!DialogBoxIndirectParamA",
-        &[0, t, c.h(2), proc, param],
-    );
+    let r = call32(c.cpu, "user32!DialogBoxIndirectParamA", &[0, t, c.h(2), proc, param]);
     crate::mem::heap_free(t);
     crate::mem::heap_free(d);
     r
@@ -1925,11 +1519,7 @@ fn format16(fmt: u32, va: u32) -> Vec<u8> {
         let s: Vec<u8> = match conv {
             b'd' | b'i' => {
                 let v = take(long);
-                let v = if long {
-                    v as i32 as i64
-                } else {
-                    v as u16 as i16 as i64
-                };
+                let v = if long { v as i32 as i64 } else { v as u16 as i16 as i64 };
                 v.to_string().into_bytes()
             }
             b'u' => take(long).to_string().into_bytes(),
@@ -1978,8 +1568,7 @@ fn ds_dx(cpu: &Cpu) -> u32 {
 pub fn dos(cpu: &mut Cpu) {
     let ax = cpu.regs[EAX] & 0xffff;
     let ah = ax >> 8;
-    let set_ax =
-        |cpu: &mut Cpu, v: u32| cpu.regs[EAX] = (cpu.regs[EAX] & 0xffff_0000) | (v & 0xffff);
+    let set_ax = |cpu: &mut Cpu, v: u32| cpu.regs[EAX] = (cpu.regs[EAX] & 0xffff_0000) | (v & 0xffff);
     let ok = |cpu: &mut Cpu| cpu.eflags &= !1;
     let err = |cpu: &mut Cpu, e: u32| {
         cpu.eflags |= 1;
@@ -1999,10 +1588,8 @@ pub fn dos(cpu: &mut Cpu) {
         0x2c => {
             let ms = crate::k32::ticks_ms() as u64;
             let s = (ms / 1000) % 86400;
-            cpu.regs[ECX] =
-                (cpu.regs[ECX] & 0xffff_0000) | ((s / 3600) as u32) << 8 | ((s / 60) % 60) as u32;
-            cpu.regs[EDX] =
-                (cpu.regs[EDX] & 0xffff_0000) | ((s % 60) as u32) << 8 | ((ms / 10) % 100) as u32;
+            cpu.regs[ECX] = (cpu.regs[ECX] & 0xffff_0000) | ((s / 3600) as u32) << 8 | ((s / 60) % 60) as u32;
+            cpu.regs[EDX] = (cpu.regs[EDX] & 0xffff_0000) | ((s % 60) as u32) << 8 | ((ms / 10) % 100) as u32;
         }
         0x25 | 0x35 => {
             if ah == 0x35 {
@@ -2011,13 +1598,7 @@ pub fn dos(cpu: &mut Cpu) {
             }
         }
         0x1a => {
-            DOS.lock()
-                .unwrap()
-                .get_or_insert_with(|| Dos {
-                    dta: 0,
-                    finds: HashMap::default(),
-                })
-                .dta = ds_dx(cpu);
+            DOS.lock().unwrap().get_or_insert_with(|| Dos { dta: 0, finds: HashMap::default() }).dta = ds_dx(cpu);
         }
         0x3d | 0x3c => {
             let name = ds_dx(cpu);
@@ -2045,11 +1626,7 @@ pub fn dos(cpu: &mut Cpu) {
             let h = cpu.regs[3] & 0xffff;
             let (buf, n) = (ds_dx(cpu), cpu.regs[ECX] & 0xffff);
             let got = crate::mem::heap_alloc(4, true);
-            let f = if ah == 0x3f {
-                "kernel32!ReadFile"
-            } else {
-                "kernel32!WriteFile"
-            };
+            let f = if ah == 0x3f { "kernel32!ReadFile" } else { "kernel32!WriteFile" };
             let r = crate::w16::call32(cpu, f, &[h, buf, n, got, 0]);
             let g = r32(got);
             crate::mem::heap_free(got);
@@ -2074,12 +1651,7 @@ pub fn dos(cpu: &mut Cpu) {
         }
         0x44 => {
             // IOCTL: get device info -> a disk file
-            cpu.regs[EDX] = cpu.regs[EDX] & 0xffff_0000
-                | if cpu.regs[3] & 0xffff < 3 {
-                    0x80d3
-                } else {
-                    0x0002
-                };
+            cpu.regs[EDX] = cpu.regs[EDX] & 0xffff_0000 | if cpu.regs[3] & 0xffff < 3 { 0x80d3 } else { 0x0002 };
             ok(cpu);
         }
         0x47 => {
@@ -2107,24 +1679,15 @@ pub fn dos(cpu: &mut Cpu) {
         }
         0x41 => {
             let r = crate::w16::call32(cpu, "kernel32!DeleteFileA", &[ds_dx(cpu)]);
-            if r == 0 {
-                err(cpu, 2)
-            } else {
-                ok(cpu)
-            }
+            if r == 0 { err(cpu, 2) } else { ok(cpu) }
         }
-        0x4c => unsafe { libc::exit((ax & 0xff) as i32) },
+        0x4c => {
+            unsafe { libc::exit((ax & 0xff) as i32) }
+        }
         0x4e | 0x4f => {
             let mut g = DOS.lock().unwrap();
-            let dos = g.get_or_insert_with(|| Dos {
-                dta: 0,
-                finds: HashMap::default(),
-            });
-            let dta = if dos.dta == 0 {
-                w16::sel_base(task().psp).unwrap().0 + 0x80
-            } else {
-                dos.dta
-            };
+            let dos = g.get_or_insert_with(|| Dos { dta: 0, finds: HashMap::default() });
+            let dta = if dos.dta == 0 { w16::sel_base(task().psp).unwrap().0 + 0x80 } else { dos.dta };
             let fd = crate::mem::heap_alloc(320, true);
             let (h, r) = if ah == 0x4e {
                 drop(g);
@@ -2133,11 +1696,7 @@ pub fn dos(cpu: &mut Cpu) {
             } else {
                 let h = dos.finds.get(&dta).copied().unwrap_or(u32::MAX);
                 drop(g);
-                (
-                    h,
-                    h != u32::MAX
-                        && crate::w16::call32(cpu, "kernel32!FindNextFileA", &[h, fd]) != 0,
-                )
+                (h, h != u32::MAX && crate::w16::call32(cpu, "kernel32!FindNextFileA", &[h, fd]) != 0)
             };
             if r {
                 DOS.lock().unwrap().as_mut().unwrap().finds.insert(dta, h);
@@ -2159,12 +1718,7 @@ pub fn dos(cpu: &mut Cpu) {
         0x48 => {
             let paras = cpu.regs[3] & 0xffff;
             let s = w16::global_alloc(paras * 16, true);
-            if s == 0 {
-                err(cpu, 8)
-            } else {
-                ok(cpu);
-                set_ax(cpu, s as u32)
-            }
+            if s == 0 { err(cpu, 8) } else { ok(cpu); set_ax(cpu, s as u32) }
         }
         0x49 => {
             w16::global_free(cpu.sreg[0]);
@@ -2195,12 +1749,7 @@ pub fn int_other(cpu: &mut Cpu, n: u32) {
 pub fn date(cpu: &mut Cpu) -> (u32, u32, u32, u32) {
     let st = crate::mem::heap_alloc(16, true);
     call32(cpu, "kernel32!GetLocalTime", &[st]);
-    let r = (
-        r16(st) as u32,
-        r16(st + 2) as u32,
-        r16(st + 6) as u32,
-        r16(st + 4) as u32,
-    );
+    let r = (r16(st) as u32, r16(st + 2) as u32, r16(st + 6) as u32, r16(st + 4) as u32);
     crate::mem::heap_free(st);
     r
 }

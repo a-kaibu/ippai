@@ -66,14 +66,7 @@ pub fn save_context(cpu: &mut Cpu, ctx: u32) {
     crate::mem::fill(ctx, CONTEXT_SIZE, 0);
     w32(ctx + 0x30, 0x10_001f); // CONTEXT_FULL | SEGMENTS | DEBUG... (AMD64)
     w32(ctx + 0x34, cpu.mxcsr);
-    for (o, v) in [
-        (0x38u32, 0x33u16),
-        (0x3a, 0x2b),
-        (0x3c, 0x2b),
-        (0x3e, 0x53),
-        (0x40, 0x2b),
-        (0x42, 0x2b),
-    ] {
+    for (o, v) in [(0x38u32, 0x33u16), (0x3a, 0x2b), (0x3c, 0x2b), (0x3e, 0x53), (0x40, 0x2b), (0x42, 0x2b)] {
         crate::mem::w16(ctx + o, v);
     }
     w32(ctx + 0x44, cpu.flags());
@@ -117,12 +110,7 @@ static DYNAMIC: std::sync::Mutex<Vec<(u32, u32, u32)>> = std::sync::Mutex::new(V
 
 /// The RUNTIME_FUNCTION covering `pc` and its image's base: (entry, base).
 pub fn lookup(pc: u32) -> Option<(u32, u32)> {
-    let found = crate::pe::MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| pc.wrapping_sub(m.base) < m.size)
-        .map(|m| (m.base, m.pdata));
+    let found = crate::pe::MODULES.read().unwrap().iter().find(|m| pc.wrapping_sub(m.base) < m.size).map(|m| (m.base, m.pdata));
     let mut tables: Vec<(u32, u32, u32)> = Vec::new();
     if let Some((base, (t, n))) = found {
         tables.push((t, n, base));
@@ -158,12 +146,7 @@ fn virtual_unwind(kind: u32, base: u32, pc: u64, f: u32, ctx: u32) -> (u64, u32,
     let mut handler = (0u64, 0u32);
     loop {
         let info = base + r32(f + 8);
-        let (vf, prolog, count, fr) = (
-            r8(info) as u32,
-            r8(info + 1) as u32,
-            r8(info + 2) as u32,
-            r8(info + 3) as u32,
-        );
+        let (vf, prolog, count, fr) = (r8(info) as u32, r8(info + 1) as u32, r8(info + 2) as u32, r8(info + 3) as u32);
         let flags = vf >> 3;
         let (freg, foff) = ((fr & 15) as usize, fr >> 4);
         // inside the prolog: only the codes for the instructions already executed
@@ -203,11 +186,7 @@ fn virtual_unwind(kind: u32, base: u32, pc: u64, f: u32, ctx: u32) -> (u64, u32,
                 }
                 1 => {
                     // ALLOC_LARGE
-                    let size = if opi == 0 {
-                        next(1) * 8
-                    } else {
-                        next(1) | next(2) << 16
-                    };
+                    let size = if opi == 0 { next(1) * 8 } else { next(1) | next(2) << 16 };
                     set_reg(ctx, 4, sp + size);
                 }
                 2 => set_reg(ctx, 4, sp + (opi as u64 + 1) * 8), // ALLOC_SMALL
@@ -216,11 +195,7 @@ fn virtual_unwind(kind: u32, base: u32, pc: u64, f: u32, ctx: u32) -> (u64, u32,
                 5 => set_reg(ctx, opi, r64((frame + (next(1) | next(2) << 16)) as u32)), // SAVE_NONVOL_FAR
                 8 | 9 => {
                     // SAVE_XMM128(_FAR)
-                    let a = if op == 8 {
-                        frame + next(1) * 16
-                    } else {
-                        frame + (next(1) | next(2) << 16)
-                    };
+                    let a = if op == 8 { frame + next(1) * 16 } else { frame + (next(1) | next(2) << 16) };
                     let x = ctx + 0x1a0 + 16 * opi as u32;
                     w64(x, r64(a as u32));
                     w64(x + 8, r64(a as u32 + 8));
@@ -236,10 +211,7 @@ fn virtual_unwind(kind: u32, base: u32, pc: u64, f: u32, ctx: u32) -> (u64, u32,
             }
             i += n;
         }
-        if first
-            && flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) & kind != 0
-            && flags & UNW_FLAG_CHAININFO == 0
-        {
+        if first && flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) & kind != 0 && flags & UNW_FLAG_CHAININFO == 0 {
             let h = info + 4 + 2 * ((count + 1) & !1);
             handler = (crate::mem::widen(base + r32(h)), h + 4);
         }
@@ -275,13 +247,7 @@ fn op_slots(c: u16) -> u32 {
 /// function (no entry) just returns. None: no more frames (a host frame or garbage).
 /// `seen`: dispatcher frames passed so far (a handler's return to SEH64_TRAP leads to the
 /// context its exception happened in, the n-th dispatch from the top).
-fn step(
-    cpu: &mut Cpu,
-    kind: u32,
-    ctx: u32,
-    seen: &mut usize,
-    rec: u32,
-) -> Option<(u64, u32, u64, u32, u32)> {
+fn step(cpu: &mut Cpu, kind: u32, ctx: u32, seen: &mut usize, rec: u32) -> Option<(u64, u32, u64, u32, u32)> {
     let pc = rip(ctx);
     if pc == crate::api::SEH64_TRAP as u64 {
         let sp = rsp(ctx);
@@ -303,13 +269,7 @@ fn step(
     }
     if pc == UNWIND_TRAP as u64 {
         let sp = rsp(ctx);
-        if let Some(orig) = UNWINDS.with(|u| {
-            u.borrow()
-                .iter()
-                .rev()
-                .find(|e| e.handler_sp == sp)
-                .map(|e| e.orig)
-        }) {
+        if let Some(orig) = UNWINDS.with(|u| u.borrow().iter().rev().find(|e| e.handler_sp == sp).map(|e| e.orig)) {
             crate::mem::copy(ctx, orig, CONTEXT_SIZE);
             return Some((0, 0, sp, 0, 0));
         }
@@ -369,11 +329,7 @@ pub fn idle() -> bool {
 /// next guest code to run is the first handler (or the context again).
 pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u64]) {
     let a = cpu.eip as u64 | (cpu.rip_hi as u64) << 32;
-    let a = if a as u32 == addr {
-        a
-    } else {
-        crate::mem::widen(addr)
-    };
+    let a = if a as u32 == addr { a } else { crate::mem::widen(addr) };
     let sp = cpu.gpr(4) as u32;
     let rec = ((sp - 0x200) & !15) - RECORD_SIZE;
     crate::mem::fill(rec, RECORD_SIZE, 0);
@@ -425,16 +381,7 @@ fn dispatch(cpu: &mut Cpu, rec: u32, orig: u32) {
     crate::mem::copy(cur, orig, CONTEXT_SIZE);
     let teb = crate::cur().teb;
     let limit = r64(teb + 8);
-    STACK.with(|s| {
-        s.borrow_mut().push(Dispatch {
-            rec,
-            orig,
-            cur,
-            next,
-            disp,
-            limit,
-        })
-    });
+    STACK.with(|s| s.borrow_mut().push(Dispatch { rec, orig, cur, next, disp, limit }));
     walk(cpu);
 }
 
@@ -447,8 +394,7 @@ fn walk(cpu: &mut Cpu) {
     loop {
         crate::mem::copy(d.next, d.cur, CONTEXT_SIZE);
         let pc = rip(d.cur);
-        let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_EHANDLER, d.next, &mut 1, d.rec)
-        else {
+        let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_EHANDLER, d.next, &mut 1, d.rec) else {
             if trace() {
                 eprintln!("sake: x64 walk: no frame above pc {pc:#x}");
             }
@@ -487,11 +433,7 @@ fn walk(cpu: &mut Cpu) {
             return;
         }
         if trace() {
-            eprintln!(
-                "sake: x64 walk: pc {pc:#x} -> {:#x} rsp {:#x} (frame {frame:#x})",
-                rip(d.next),
-                rsp(d.next)
-            );
+            eprintln!("sake: x64 walk: pc {pc:#x} -> {:#x} rsp {:#x} (frame {frame:#x})", rip(d.next), rsp(d.next));
         }
         crate::mem::copy(d.cur, d.next, CONTEXT_SIZE);
     }
@@ -690,36 +632,12 @@ pub fn unwind(c: &mut Ctx, target: u64, ip: u64, rec_in: u32, retval: u64, ctx_i
         w64(recb + 0x10, rip(ctx));
         recb
     };
-    w32(
-        rec + 4,
-        r32(rec + 4)
-            | if target == 0 {
-                EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND
-            } else {
-                EXCEPTION_UNWINDING
-            },
-    );
+    w32(rec + 4, r32(rec + 4) | if target == 0 { EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND } else { EXCEPTION_UNWINDING });
     if trace() {
-        eprintln!(
-            "sake: x64 unwind to frame {target:#x} ip {ip:#x} code {:08x} from {:#x}",
-            r32(rec),
-            rip(ctx)
-        );
+        eprintln!("sake: x64 unwind to frame {target:#x} ip {ip:#x} code {:08x} from {:#x}", r32(rec), rip(ctx));
     }
     let _ = ctx_in;
-    let u = Unwind {
-        target,
-        ip,
-        rec,
-        retval,
-        ctx,
-        next,
-        disp,
-        orig,
-        seen: 0,
-        frame: 0,
-        handler_sp: 0,
-    };
+    let u = Unwind { target, ip, rec, retval, ctx, next, disp, orig, seen: 0, frame: 0, handler_sp: 0 };
     UNWINDS.with(|s| s.borrow_mut().push(u));
     c.jumped = true;
     unwind_go(c.cpu, false);
@@ -746,21 +664,11 @@ fn unwind_go(cpu: &mut Cpu, resumed: bool) {
     while !done {
         crate::mem::copy(next, ctx, CONTEXT_SIZE);
         let pc = rip(ctx);
-        let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_UHANDLER, next, &mut u.seen, rec)
-        else {
-            crate::fatal(
-                cpu,
-                &format!(
-                    "x64 unwind to {:#x}: ran out of frames at {pc:#x}",
-                    u.target
-                ),
-            );
+        let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_UHANDLER, next, &mut u.seen, rec) else {
+            crate::fatal(cpu, &format!("x64 unwind to {:#x}: ran out of frames at {pc:#x}", u.target));
         };
         if frame > limit || (u.target != 0 && frame > u.target) {
-            crate::fatal(
-                cpu,
-                &format!("x64 unwind to {:#x}: frame {frame:#x} beyond it", u.target),
-            );
+            crate::fatal(cpu, &format!("x64 unwind to {:#x}: frame {frame:#x} beyond it", u.target));
         }
         if frame == u.target {
             w32(rec + 4, r32(rec + 4) | EXCEPTION_TARGET_UNWIND);
@@ -827,17 +735,7 @@ fn restore_cpu(cpu: &mut Cpu, ctx: u32, rec: u32) {
     if code == STATUS_LONGJUMP && r32(rec + 0x18) >= 1 {
         // _JUMP_BUFFER: Frame, Rbx, Rsp, Rbp, Rsi, Rdi, R12-R15, Rip, MxCsr, FpCsr, Spare, Xmm6-15
         let jb = r64(rec + 0x20) as u32;
-        for (k, r) in [
-            (1u32, 3usize),
-            (2, 4),
-            (3, 5),
-            (4, 6),
-            (5, 7),
-            (6, 12),
-            (7, 13),
-            (8, 14),
-            (9, 15),
-        ] {
+        for (k, r) in [(1u32, 3usize), (2, 4), (3, 5), (4, 6), (5, 7), (6, 12), (7, 13), (8, 14), (9, 15)] {
             set_reg(ctx, r, r64(jb + 8 * k));
         }
         set_rip(ctx, r64(jb + 0x50));
@@ -929,16 +827,7 @@ pub fn setjmp(c: &mut Ctx) -> u32 {
     let (jb, frame) = (c.a(0), c.a64(1));
     let cpu = &*c.cpu;
     w64(jb, frame);
-    for (k, r) in [
-        (1u32, 3usize),
-        (3, 5),
-        (4, 6),
-        (5, 7),
-        (6, 12),
-        (7, 13),
-        (8, 14),
-        (9, 15),
-    ] {
+    for (k, r) in [(1u32, 3usize), (3, 5), (4, 6), (5, 7), (6, 12), (7, 13), (8, 14), (9, 15)] {
         w64(jb + 8 * k, cpu.gpr(r));
     }
     w64(jb + 0x10, c.esp as u64 + 8);
@@ -981,17 +870,9 @@ pub fn register() {
         return;
     }
     for d in ["ntdll", "kernelbase"] {
-        implement(
-            d,
-            "RtlAddGrowableFunctionTable",
-            RtlAddGrowableFunctionTable,
-        );
+        implement(d, "RtlAddGrowableFunctionTable", RtlAddGrowableFunctionTable);
         implement(d, "RtlGrowFunctionTable", RtlGrowFunctionTable);
-        implement(
-            d,
-            "RtlDeleteGrowableFunctionTable",
-            RtlDeleteGrowableFunctionTable,
-        );
+        implement(d, "RtlDeleteGrowableFunctionTable", RtlDeleteGrowableFunctionTable);
     }
     for d in ["ntdll", "kernel32"] {
         implement(d, "RtlCaptureContext", RtlCaptureContext);

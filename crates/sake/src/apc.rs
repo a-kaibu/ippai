@@ -18,12 +18,7 @@ fn tid_of(h: u32) -> Option<u32> {
         return Some(crate::cur().tid);
     }
     obj::with(|t| match t.objs.get(&h) {
-        Some((
-            Obj::Thread {
-                tid, done: false, ..
-            },
-            _,
-        )) if *tid != 0 => Some(*tid),
+        Some((Obj::Thread { tid, done: false, .. }, _)) if *tid != 0 => Some(*tid),
         _ => None,
     })
 }
@@ -72,11 +67,7 @@ pub fn wait(c: &mut Ctx, handles: &[u32], all: bool, ms: u32) -> u32 {
     }
     let me = crate::cur().tid;
     let r = obj::wait(handles, all, ms, Some(&|| pending(me)));
-    if r == handles.len() as u32 && run(c) {
-        WAIT_IO_COMPLETION
-    } else {
-        r
-    }
+    if r == handles.len() as u32 && run(c) { WAIT_IO_COMPLETION } else { r }
 }
 
 /// QueueUserAPC(f, thread, arg)

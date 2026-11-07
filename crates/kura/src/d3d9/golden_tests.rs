@@ -8,37 +8,18 @@ use super::trace_tests::{alloc, attach_page, CALLS, SERIAL};
 use super::*;
 
 fn golden(name: &str) -> String {
-    let p = format!(
-        "{}/../../tests/winref/golden/{name}/stdout.txt",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let p = format!("{}/../../tests/winref/golden/{name}/stdout.txt", env!("CARGO_MANIFEST_DIR"));
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"))
 }
 
 /// "rs 7 = 0x1", "rs 1: Get 0x8876086c", "tss 0 1: 0 = 0x4": (key, result, value)
 fn parse(l: &str) -> Option<(Vec<u32>, u32, Option<u32>)> {
-    let num = |s: &str| {
-        if let Some(h) = s.strip_prefix("0x") {
-            u32::from_str_radix(h, 16).ok()
-        } else {
-            s.parse().ok()
-        }
-    };
+    let num = |s: &str| if let Some(h) = s.strip_prefix("0x") { u32::from_str_radix(h, 16).ok() } else { s.parse().ok() };
     let w: Vec<&str> = l.split_whitespace().collect();
     match w.first()? {
         &"rs" if w.get(2) == Some(&"=") => Some((vec![0, num(w[1])?], 0, num(w[3]))),
-        &"rs" if w.get(2) == Some(&"Get") => {
-            Some((vec![0, num(w[1].trim_end_matches(':'))?], num(w[3])?, None))
-        }
-        &"tss" | &"ss" => Some((
-            vec![
-                if w[0] == "tss" { 1 } else { 2 },
-                num(w[1])?,
-                num(w[2].trim_end_matches(':'))?,
-            ],
-            num(w[3])?,
-            num(w[5]),
-        )),
+        &"rs" if w.get(2) == Some(&"Get") => Some((vec![0, num(w[1].trim_end_matches(':'))?], num(w[3])?, None)),
+        &"tss" | &"ss" => Some((vec![if w[0] == "tss" { 1 } else { 2 }, num(w[1])?, num(w[2].trim_end_matches(':'))?], num(w[3])?, num(w[5]))),
         _ => None,
     }
 }
@@ -56,10 +37,7 @@ fn d3d9_new_device_state_is_windows() {
     let d3d = rd(o);
     // (the probe's device: 64x48 X8R8G8B8, auto D24S8, software vertex processing)
     let pp = unsafe { alloc(56) as u32 };
-    for (i, x) in [64, 48, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, x) in [64, 48, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0].into_iter().enumerate() {
         unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
     }
     let o = out();
@@ -78,10 +56,7 @@ fn d3d9_new_device_state_is_windows() {
             _ => call(IF_DEVICE, 68, &[dev, k[1], k[2], p]),
         };
         // (sampler state 14 and stage 8 read past Windows' arrays: what they give is not an answer)
-        if k[0] == 2 && k[2] == 14
-            || k[0] == 1 && k[1] >= 8
-            || k[0] == 2 && matches!(k[1], 16 | 261)
-        {
+        if k[0] == 2 && k[2] == 14 || k[0] == 1 && k[1] >= 8 || k[0] == 2 && matches!(k[1], 16 | 261) {
             continue;
         }
         n += 1;
@@ -91,12 +66,7 @@ fn d3d9_new_device_state_is_windows() {
         }
     }
     assert!(n > 400, "{n} answers checked");
-    assert!(
-        bad.is_empty(),
-        "{} of {n} differ from Windows:\n{}",
-        bad.len(),
-        bad.join("\n")
-    );
+    assert!(bad.is_empty(), "{} of {n} differ from Windows:\n{}", bad.len(), bad.join("\n"));
     gpu::set_pump(None);
 }
 
@@ -114,34 +84,19 @@ fn d3d9_hardware_device_point_states_are_windows() {
     unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
     let d3d = rd(o);
     let pp = unsafe { alloc(56) as u32 };
-    for (i, x) in [64, 48, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, x) in [64, 48, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0].into_iter().enumerate() {
         unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
     }
     let o = out();
     assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
     let dev = rd(o);
-    let hx = |v: u32| {
-        if v == 0 {
-            "0".to_string()
-        } else {
-            format!("{v:#x}")
-        }
-    };
+    let hx = |v: u32| if v == 0 { "0".to_string() } else { format!("{v:#x}") };
     let mut n = 0;
-    for l in golden("d3d9state-32")
-        .lines()
-        .filter(|l| l.starts_with("hardware rs "))
-    {
+    for l in golden("d3d9state-32").lines().filter(|l| l.starts_with("hardware rs ")) {
         let st: u32 = l[12..].split(':').next().unwrap().parse().unwrap();
         let p = out();
         let r = call(IF_DEVICE, 58, &[dev, st, p]);
-        assert_eq!(
-            format!("hardware rs {st}: {} = {}", hx(r), hx(rd(p))),
-            l.trim_end()
-        );
+        assert_eq!(format!("hardware rs {st}: {} = {}", hx(r), hx(rd(p))), l.trim_end());
         n += 1;
     }
     assert!(n >= 4, "{n} lines");
@@ -161,37 +116,19 @@ fn d3d8_new_device_state_is_windows() {
             vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
         }
         const V8: u32 = 16;
-        let num = |s: &str| {
-            if let Some(h) = s.strip_prefix("0x") {
-                u32::from_str_radix(h, 16).unwrap()
-            } else {
-                s.parse().unwrap()
-            }
-        };
+        let num = |s: &str| if let Some(h) = s.strip_prefix("0x") { u32::from_str_radix(h, 16).unwrap() } else { s.parse().unwrap() };
         // (printf's "%#lx": 0 without the 0x)
-        let hx = |v: u32| {
-            if v == 0 {
-                "0".to_string()
-            } else {
-                format!("{v:#x}")
-            }
-        };
+        let hx = |v: u32| if v == 0 { "0".to_string() } else { format!("{v:#x}") };
         let text = golden("d3d8state-32");
         let (mut n, mut bad) = (0, Vec::new());
         for (f, flags) in [(0u32, 0x20u32), (1, 0x40)] {
             attach_page();
             let o = out();
-            assert_eq!(
-                unsafe { vnhost_d3d9_call(super::d3d8::CREATE, [o].as_ptr(), &CALLS) },
-                0
-            );
+            assert_eq!(unsafe { vnhost_d3d9_call(super::d3d8::CREATE, [o].as_ptr(), &CALLS) }, 0);
             let d3d = rd(o);
             // (the probe's device: 64x64 X8R8G8B8, auto D24S8)
             let pp = unsafe { alloc(52) as u32 };
-            for (i, x) in [64, 64, 22, 1, 0, 1, 1, 1, 1, 75, 0, 0, 0]
-                .into_iter()
-                .enumerate()
-            {
+            for (i, x) in [64, 64, 22, 1, 0, 1, 1, 1, 1, 75, 0, 0, 0].into_iter().enumerate() {
                 unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
             }
             let o = out();
@@ -210,11 +147,7 @@ fn d3d8_new_device_state_is_windows() {
                     ("rs", Some("=")) | ("rs", Some("Get")) => {
                         let st = num(w[2].trim_end_matches(':'));
                         let (r, v) = get(51, &[st]);
-                        if r == 0 {
-                            format!("{f} rs {st} = {}", hx(v))
-                        } else {
-                            format!("{f} rs {st}: Get {}", hx(r))
-                        }
+                        if r == 0 { format!("{f} rs {st} = {}", hx(v)) } else { format!("{f} rs {st}: Get {}", hx(r)) }
                     }
                     // "0 tss 0 1: 0 = 0x4"
                     ("tss", _) => {
@@ -238,12 +171,7 @@ fn d3d8_new_device_state_is_windows() {
             }
         }
         assert!(n > 600, "{n} answers checked");
-        assert!(
-            bad.is_empty(),
-            "{} of {n} differ from Windows:\n  {}",
-            bad.len(),
-            bad.join("\n  ")
-        );
+        assert!(bad.is_empty(), "{} of {n} differ from Windows:\n  {}", bad.len(), bad.join("\n  "));
         gpu::set_pump(None);
     });
 }

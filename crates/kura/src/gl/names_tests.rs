@@ -65,10 +65,7 @@ fn run(seed: u64) {
                 _ => 1,
             }
         };
-        let mut t = Step {
-            kind,
-            ..Default::default()
-        };
+        let mut t = Step { kind, ..Default::default() };
         match r.below(11) {
             0 | 1 => {
                 let n = if r.chance(5) { -1 } else { r.below(3) as i32 };
@@ -82,8 +79,7 @@ fn run(seed: u64) {
                 let n = if r.chance(5) { -1 } else { r.below(3) as i32 };
                 let ids: Vec<u32> = (0..n.max(0)).map(|_| name(&mut r, &seen)).collect();
                 unsafe { delete(kind, n, ids.as_ptr()) };
-                (t.op, t.v, t.names) =
-                    ("Delete", n as i64, ids.iter().map(|&x| x as i64).collect());
+                (t.op, t.v, t.names) = ("Delete", n as i64, ids.iter().map(|&x| x as i64).collect());
             }
             3 | 4 => {
                 let id = name(&mut r, &seen);
@@ -96,20 +92,12 @@ fn run(seed: u64) {
                         "tex"
                     }
                     1 => {
-                        let (tg, n) = if r.chance(50) {
-                            (GL_ARRAY_BUFFER, "array")
-                        } else {
-                            (GL_ELEMENT_ARRAY_BUFFER, "element")
-                        };
+                        let (tg, n) = if r.chance(50) { (GL_ARRAY_BUFFER, "array") } else { (GL_ELEMENT_ARRAY_BUFFER, "element") };
                         glBindBuffer(tg, id);
                         n
                     }
                     2 => {
-                        let (tg, n) = [
-                            (GL_FRAMEBUFFER, "both"),
-                            (GL_DRAW_FRAMEBUFFER, "draw"),
-                            (GL_READ_FRAMEBUFFER, "read"),
-                        ][r.below(3)];
+                        let (tg, n) = [(GL_FRAMEBUFFER, "both"), (GL_DRAW_FRAMEBUFFER, "draw"), (GL_READ_FRAMEBUFFER, "read")][r.below(3)];
                         glBindFramebuffer(tg, id);
                         n
                     }
@@ -129,13 +117,7 @@ fn run(seed: u64) {
                 // color: a texture, depth: a renderbuffer, on the draw framebuffer
                 let id = name(&mut r, &seen);
                 if r.chance(50) {
-                    glFramebufferTexture2D(
-                        GL_DRAW_FRAMEBUFFER,
-                        GL_COLOR_ATTACHMENT0,
-                        GL_TEXTURE_2D,
-                        id,
-                        0,
-                    );
+                    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, id, 0);
                     (t.op, t.t, t.v) = ("Attach", "color", id as i64);
                 } else {
                     glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, 0x8D41, id);
@@ -153,15 +135,7 @@ fn run(seed: u64) {
                 (t.op, t.v, t.got) = ("Is", id as i64, got as i64);
             }
             8 => {
-                let (p, n) = [
-                    (0x8069, "tex"),
-                    (0x8894, "array"),
-                    (0x8895, "element"),
-                    (0x8CA6, "draw"),
-                    (0x8CAA, "read"),
-                    (0x8CA7, "rb"),
-                    (0x84E0, "active"),
-                ][r.below(7)];
+                let (p, n) = [(0x8069, "tex"), (0x8894, "array"), (0x8895, "element"), (0x8CA6, "draw"), (0x8CAA, "read"), (0x8CA7, "rb"), (0x84E0, "active")][r.below(7)];
                 let mut v = get(p);
                 if n == "active" {
                     v -= GL_TEXTURE0 as i64;
@@ -174,18 +148,7 @@ fn run(seed: u64) {
                 }
                 let color = r.chance(50);
                 let mut v = 0;
-                unsafe {
-                    glGetFramebufferAttachmentParameteriv(
-                        GL_DRAW_FRAMEBUFFER,
-                        if color {
-                            GL_COLOR_ATTACHMENT0
-                        } else {
-                            GL_DEPTH_ATTACHMENT
-                        },
-                        0x8CD1,
-                        &mut v,
-                    )
-                };
+                unsafe { glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, if color { GL_COLOR_ATTACHMENT0 } else { GL_DEPTH_ATTACHMENT }, 0x8CD1, &mut v) };
                 (t.op, t.t, t.got) = ("GetAttach", if color { "color" } else { "depth" }, v as i64);
             }
             _ => {
@@ -197,12 +160,7 @@ fn run(seed: u64) {
     vngl_make_current(0, 0, 0, 0);
     vngl_context_destroy(ctx);
     let mut s = String::from("---- MODULE GlData ----\nEXTENDS Integers\nTrace == <<\n");
-    let seq = |v: &[i64]| {
-        v.iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let seq = |v: &[i64]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
     for (i, t) in steps.iter().enumerate() {
         let _ = write!(
             s,
@@ -242,9 +200,7 @@ fn check(steps: &[Step], seed: u64) {
                     set_err(0x501);
                 } else {
                     let fresh: HashSet<i64> = t.names.iter().copied().collect();
-                    if fresh.len() != t.names.len()
-                        || t.names.iter().any(|x| *x == 0 || used[k].contains(x))
-                    {
+                    if fresh.len() != t.names.len() || t.names.iter().any(|x| *x == 0 || used[k].contains(x)) {
                         fail(&format!("gave {:?}, in use {:?}", t.names, used[k]));
                     }
                     used[k].extend(fresh);

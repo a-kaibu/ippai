@@ -88,15 +88,7 @@ pub fn save_context(cpu: &mut Cpu, ctx: u32) {
     crate::mem::fill(ctx, CONTEXT_SIZE, 0);
     w32(ctx, 0x1003f);
     let r = &cpu.regs;
-    for (off, v) in [
-        (0x9c, r[EDI]),
-        (0xa0, r[ESI]),
-        (0xa4, r[EBX]),
-        (0xa8, r[EDX]),
-        (0xac, r[ECX]),
-        (0xb0, r[EAX]),
-        (0xb4, r[EBP]),
-    ] {
+    for (off, v) in [(0x9c, r[EDI]), (0xa0, r[ESI]), (0xa4, r[EBX]), (0xa8, r[EDX]), (0xac, r[ECX]), (0xb0, r[EAX]), (0xb4, r[EBP])] {
         w32(ctx + off, v);
     }
     w32(ctx + 0xb8, cpu.eip);
@@ -118,14 +110,7 @@ pub fn save_context(cpu: &mut Cpu, ctx: u32) {
 pub fn load_context(cpu: &mut Cpu, ctx: u32) {
     let flags = r32(ctx);
     if flags & 2 != 0 || flags == 0 {
-        for (off, i) in [
-            (0x9c, EDI),
-            (0xa0, ESI),
-            (0xa4, EBX),
-            (0xa8, EDX),
-            (0xac, ECX),
-            (0xb0, EAX),
-        ] {
+        for (off, i) in [(0x9c, EDI), (0xa0, ESI), (0xa4, EBX), (0xa8, EDX), (0xac, ECX), (0xb0, EAX)] {
             cpu.regs[i] = r32(ctx + off);
         }
     }
@@ -144,9 +129,7 @@ pub fn load_context(cpu: &mut Cpu, ctx: u32) {
 pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
     if crate::env_on!("SAKE_TRACE_SEH") {
         crate::api::dump_ring("the exception");
-        let st: Vec<String> = (0..8)
-            .map(|k| format!("{:x}", r32(cpu.regs[ESP] + 4 * k)))
-            .collect();
+        let st: Vec<String> = (0..8).map(|k| format!("{:x}", r32(cpu.regs[ESP] + 4 * k))).collect();
         eprintln!(
             "sake: exception {code:08x} at {addr:#x} params {params:x?} (esp {:#x}: {}; ebp {:#x})",
             cpu.regs[ESP],
@@ -224,11 +207,7 @@ pub fn add_veh(c: &mut Ctx) -> u32 {
     static NEXT: AtomicU32 = AtomicU32::new(0x7e00);
     let h = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut v = VEH.lock().unwrap();
-    if c.a(0) != 0 {
-        v.insert(0, (h, c.a(1)))
-    } else {
-        v.push((h, c.a(1)))
-    }
+    if c.a(0) != 0 { v.insert(0, (h, c.a(1))) } else { v.push((h, c.a(1))) }
     h
 }
 
@@ -373,11 +352,7 @@ fn continue_handler(c: &mut Ctx) -> u32 {
     static NEXT: AtomicU32 = AtomicU32::new(0x7f00);
     let h = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut v = VCH.lock().unwrap();
-    if c.a(0) != 0 {
-        v.insert(0, (h, c.a(1)))
-    } else {
-        v.push((h, c.a(1)))
-    }
+    if c.a(0) != 0 { v.insert(0, (h, c.a(1))) } else { v.push((h, c.a(1))) }
     h
 }
 
@@ -387,11 +362,7 @@ pub fn register() {
         let p = if d == "ntdll" { "Rtl" } else { "" };
         implement(d, &format!("{p}AddVectoredExceptionHandler"), add_veh);
         implement(d, &format!("{p}RemoveVectoredExceptionHandler"), remove_veh);
-        implement(
-            d,
-            &format!("{p}AddVectoredContinueHandler"),
-            continue_handler,
-        );
+        implement(d, &format!("{p}AddVectoredContinueHandler"), continue_handler);
         implement(d, &format!("{p}RemoveVectoredContinueHandler"), remove_vch);
     }
     for d in ["msvcrt", "ucrtbase"] {
@@ -441,11 +412,7 @@ fn local_unwind(c: &mut Ctx, frame: u32, table: u32, first: u32, none: u32, to: 
 fn except_handler(c: &mut Ctx, v4: bool) -> u32 {
     let k = if v4 { 2 } else { 0 };
     let (rec, frame, ctx) = (c.a(k), c.a(k + 1), c.a(k + 2));
-    let (table, first, none) = if v4 {
-        (r32(frame + 8) ^ r32(c.a(0)), 16, 0xffff_fffe)
-    } else {
-        (r32(frame + 8), 0, 0xffff_ffff)
-    };
+    let (table, first, none) = if v4 { (r32(frame + 8) ^ r32(c.a(0)), 16, 0xffff_fffe) } else { (r32(frame + 8), 0, 0xffff_ffff) };
     if r32(rec + 4) & 6 != 0 {
         // unwinding: this frame's __finally bodies
         local_unwind(c, frame, table, first, none, none);

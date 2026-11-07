@@ -269,15 +269,7 @@ pub struct Kern {
 /// A pipe path's name (lower case, without the `\\.\pipe\` part); None if it is not a pipe path.
 pub fn pipe_name(path: &str) -> Option<String> {
     let p = path.replace('/', "\\").to_ascii_lowercase();
-    [
-        "\\\\.\\pipe\\",
-        "\\\\?\\pipe\\",
-        "\\??\\pipe\\",
-        "\\device\\namedpipe\\",
-    ]
-    .iter()
-    .find_map(|pre| p.strip_prefix(pre))
-    .map(str::to_string)
+    ["\\\\.\\pipe\\", "\\\\?\\pipe\\", "\\??\\pipe\\", "\\device\\namedpipe\\"].iter().find_map(|pre| p.strip_prefix(pre)).map(str::to_string)
 }
 
 /// PIPE_UNLIMITED_INSTANCES
@@ -331,16 +323,7 @@ impl Kern {
             }
         } else {
             let timeout = if p.timeout == 0 { 50 } else { p.timeout };
-            let pipe = Pipe {
-                max: p.max,
-                instances: 0,
-                sharing,
-                msg_type: p.msg_type,
-                outsize: p.outsize,
-                insize: p.insize,
-                timeout,
-                listeners: Vec::new(),
-            };
+            let pipe = Pipe { max: p.max, instances: 0, sharing, msg_type: p.msg_type, outsize: p.outsize, insize: p.insize, timeout, listeners: Vec::new() };
             self.pipes.insert(name.to_string(), pipe);
         }
         let pipe = &self.pipes[name];
@@ -367,12 +350,8 @@ impl Kern {
 
     /// Opening pipe `name` (CreateFile): a client end connected to its first listening instance.
     pub fn open(&mut self, name: &str, read: bool, write: bool, pid: u32) -> Result<u32, u32> {
-        let Some(pipe) = self.pipes.get(name) else {
-            return Err(OBJECT_NAME_NOT_FOUND);
-        };
-        let Some(&server) = pipe.listeners.first() else {
-            return Err(PIPE_NOT_AVAILABLE);
-        };
+        let Some(pipe) = self.pipes.get(name) else { return Err(OBJECT_NAME_NOT_FOUND) };
+        let Some(&server) = pipe.listeners.first() else { return Err(PIPE_NOT_AVAILABLE) };
         if (read && pipe.sharing & 1 == 0) || (write && pipe.sharing & 2 == 0) {
             return Err(ACCESS_DENIED);
         }
@@ -403,21 +382,9 @@ impl Kern {
         let size = if size == 0 { 4096 } else { size };
         // (Windows' own names for them)
         let name = format!("win32pipes.{pid:08x}.{:08x}", self.next + 1);
-        let p = NewPipe {
-            access: 1,
-            msg_type: false,
-            msg_read: false,
-            nonblock: false,
-            max: 1,
-            outsize: size,
-            insize: size,
-            timeout: 0,
-            first: true,
-        };
+        let p = NewPipe { access: 1, msg_type: false, msg_read: false, nonblock: false, max: 1, outsize: size, insize: size, timeout: 0, first: true };
         let r = self.create(&name, &p, pid).expect("a new name");
-        let w = self
-            .open(&name, false, true, pid)
-            .expect("a listening pipe");
+        let w = self.open(&name, false, true, pid).expect("a listening pipe");
         (r, w)
     }
 
@@ -433,9 +400,7 @@ impl Kern {
 
     /// A handle object of `pid` referring to end `e` is gone; the end goes with its last one.
     pub fn release(&mut self, e: u32, pid: u32) {
-        let Some(end) = self.ends.get_mut(&e) else {
-            return;
-        };
+        let Some(end) = self.ends.get_mut(&e) else { return };
         if let Some(i) = end.refs.iter().position(|r| r.0 == pid) {
             end.refs[i].1 -= 1;
             if end.refs[i].1 == 0 {
@@ -449,12 +414,7 @@ impl Kern {
 
     /// Process `pid` ended: its references go.
     pub fn release_process(&mut self, pid: u32) {
-        let ids: Vec<u32> = self
-            .ends
-            .iter()
-            .filter(|(_, e)| e.refs.iter().any(|r| r.0 == pid))
-            .map(|(&i, _)| i)
-            .collect();
+        let ids: Vec<u32> = self.ends.iter().filter(|(_, e)| e.refs.iter().any(|r| r.0 == pid)).map(|(&i, _)| i).collect();
         for e in ids {
             let end = self.ends.get_mut(&e).unwrap();
             end.refs.retain(|r| r.0 != pid);
@@ -485,9 +445,7 @@ impl Kern {
     /// DISCONNECTED (DisconnectNamedPipe) drops what they had to read, BROKEN (an end closed)
     /// leaves it to read.
     fn disconnect_end(&mut self, e: u32, status: u32) {
-        let Some(end) = self.ends.get_mut(&e) else {
-            return;
-        };
+        let Some(end) = self.ends.get_mut(&e) else { return };
         let conn = end.conn.take();
         if status == PIPE_DISCONNECTED {
             end.state = State::Disconnected;
@@ -561,10 +519,7 @@ impl Kern {
             return Ok(0);
         }
         let c = end.conn.expect("a connected end");
-        self.ends.get_mut(&c).unwrap().queue.push_back(Msg {
-            data: data.to_vec(),
-            pos: 0,
-        });
+        self.ends.get_mut(&c).unwrap().queue.push_back(Msg { data: data.to_vec(), pos: 0 });
         self.changed();
         Ok(data.len() as u32)
     }
@@ -576,13 +531,7 @@ impl Kern {
             State::Connected => {}
             State::Closing if !end.queue.is_empty() => {}
             State::Closing => return Err(PIPE_BROKEN),
-            _ => {
-                return Err(if end.pipe.is_some() {
-                    INVALID_PIPE_STATE
-                } else {
-                    PIPE_DISCONNECTED
-                })
-            }
+            _ => return Err(if end.pipe.is_some() { INVALID_PIPE_STATE } else { PIPE_DISCONNECTED }),
         }
         let avail: usize = end.queue.iter().map(Msg::left).sum();
         let mut n = (max as usize).min(avail);
@@ -599,19 +548,13 @@ impl Kern {
                 break;
             }
         }
-        Ok(Peek {
-            data,
-            avail: avail as u32,
-            msg_len: msg_len as u32,
-        })
+        Ok(Peek { data, avail: avail as u32, msg_len: msg_len as u32 })
     }
 
     /// ConnectNamedPipe's start: PENDING while waiting for a client (`connected` then says when
     /// one came).
     pub fn listen(&mut self, e: u32) -> u32 {
-        let Ok(end) = self.end(e) else {
-            return INVALID_HANDLE;
-        };
+        let Ok(end) = self.end(e) else { return INVALID_HANDLE };
         if !end.server {
             return ILLEGAL_FUNCTION;
         }
@@ -646,9 +589,7 @@ impl Kern {
 
     /// DisconnectNamedPipe
     pub fn disconnect(&mut self, e: u32) -> u32 {
-        let Ok(end) = self.end(e) else {
-            return INVALID_HANDLE;
-        };
+        let Ok(end) = self.end(e) else { return INVALID_HANDLE };
         if !end.server {
             return ILLEGAL_FUNCTION;
         }
@@ -668,15 +609,9 @@ impl Kern {
 
     /// TransactNamedPipe's write (its read is an ordinary message read after it).
     pub fn transact(&mut self, e: u32, data: &[u8]) -> u32 {
-        let Ok(end) = self.end(e) else {
-            return INVALID_HANDLE;
-        };
+        let Ok(end) = self.end(e) else { return INVALID_HANDLE };
         let Some(c) = end.conn else {
-            return if end.pipe.is_some() {
-                INVALID_PIPE_STATE
-            } else {
-                PIPE_DISCONNECTED
-            };
+            return if end.pipe.is_some() { INVALID_PIPE_STATE } else { PIPE_DISCONNECTED };
         };
         if !end.msg_read {
             return INVALID_READ_MODE;
@@ -684,19 +619,14 @@ impl Kern {
         if !end.queue.is_empty() {
             return PIPE_BUSY;
         }
-        self.ends.get_mut(&c).unwrap().queue.push_back(Msg {
-            data: data.to_vec(),
-            pos: 0,
-        });
+        self.ends.get_mut(&c).unwrap().queue.push_back(Msg { data: data.to_vec(), pos: 0 });
         self.changed();
         SUCCESS
     }
 
     /// SetNamedPipeHandleState's mode (None: unchanged)
     pub fn set_mode(&mut self, e: u32, msg_read: Option<bool>, nonblock: Option<bool>) -> u32 {
-        let Ok(end) = self.end(e) else {
-            return INVALID_HANDLE;
-        };
+        let Ok(end) = self.end(e) else { return INVALID_HANDLE };
         if msg_read == Some(true) && !end.msg_type {
             return INVALID_PARAMETER;
         }
@@ -712,38 +642,20 @@ impl Kern {
 
     pub fn info(&self, e: u32) -> Result<Info, u32> {
         let end = self.ends.get(&e).ok_or(INVALID_HANDLE)?;
-        let instances = end
-            .pipe
-            .as_ref()
-            .map(|n| self.pipes.get(n).map_or(0, |p| p.instances));
-        Ok(Info {
-            server: end.server,
-            msg_type: end.msg_type,
-            outsize: end.outsize,
-            insize: end.insize,
-            max: end.max,
-            instances,
-            msg_read: end.msg_read,
-            nonblock: end.nonblock,
-        })
+        let instances = end.pipe.as_ref().map(|n| self.pipes.get(n).map_or(0, |p| p.instances));
+        Ok(Info { server: end.server, msg_type: end.msg_type, outsize: end.outsize, insize: end.insize, max: end.max, instances, msg_read: end.msg_read, nonblock: end.nonblock })
     }
 
     /// The bytes waiting for end `e` to read (GetFileSize of a pipe).
     pub fn avail(&self, e: u32) -> u32 {
-        self.ends.get(&e).map_or(0, |end| {
-            end.queue.iter().map(Msg::left).sum::<usize>() as u32
-        })
+        self.ends.get(&e).map_or(0, |end| end.queue.iter().map(Msg::left).sum::<usize>() as u32)
     }
 
     /// WaitNamedPipe: Ok(None) when an instance listens, Ok(Some(default wait ms)) while none
     /// does.
     pub fn wait_named(&self, name: &str) -> Result<Option<u32>, u32> {
         let p = self.pipes.get(name).ok_or(OBJECT_NAME_NOT_FOUND)?;
-        Ok(if p.listeners.is_empty() {
-            Some(p.timeout)
-        } else {
-            None
-        })
+        Ok(if p.listeners.is_empty() { Some(p.timeout) } else { None })
     }
 }
 
@@ -777,9 +689,7 @@ impl Kern {
     }
     /// ResumeThread of a process's first thread: the suspend count before.
     pub fn resume(&mut self, pid: u32) -> u32 {
-        let Some(p) = self.procs.get_mut(&pid) else {
-            return 0;
-        };
+        let Some(p) = self.procs.get_mut(&pid) else { return 0 };
         let n = p.suspend;
         p.suspend = n.saturating_sub(1);
         self.changed();
@@ -805,13 +715,7 @@ impl Kern {
         self.release_process(pid);
         // (its threads' mutexes are abandoned, its handles of named objects close)
         for o in self.sync.values_mut() {
-            if let Sync::Mutex {
-                owner,
-                pid: op,
-                count,
-                abandoned,
-            } = &mut o.sync
-            {
+            if let Sync::Mutex { owner, pid: op, count, abandoned } = &mut o.sync {
                 if *owner != 0 && *op == pid {
                     *owner = 0;
                     *count = 0;
@@ -821,22 +725,12 @@ impl Kern {
         }
         // (its windows go; what was sent to them is answered 0)
         self.wins.retain(|w| w.pid != pid);
-        let gone: Vec<u32> = self
-            .xmsgs
-            .iter()
-            .filter(|x| x.to == pid && x.send)
-            .map(|x| x.id)
-            .collect();
+        let gone: Vec<u32> = self.xmsgs.iter().filter(|x| x.to == pid && x.send).map(|x| x.id).collect();
         self.xmsgs.retain(|x| x.to != pid);
         for id in gone {
             self.replies.insert(id, 0);
         }
-        let ids: Vec<u32> = self
-            .sync
-            .iter()
-            .filter(|(_, o)| o.refs.iter().any(|r| r.0 == pid))
-            .map(|(&i, _)| i)
-            .collect();
+        let ids: Vec<u32> = self.sync.iter().filter(|(_, o)| o.refs.iter().any(|r| r.0 == pid)).map(|(&i, _)| i).collect();
         for id in ids {
             self.sync.get_mut(&id).unwrap().refs.retain(|r| r.0 != pid);
             self.drop_sync_if_unused(id);
@@ -858,9 +752,7 @@ impl Kern {
     }
     /// FindWindow among the windows of the processes other than `me` (class in lower case).
     pub fn find_win(&self, me: u32, class: Option<&str>, title: Option<&str>) -> Option<&KWin> {
-        self.wins.iter().find(|w| {
-            w.pid != me && class.is_none_or(|c| w.class == c) && title.is_none_or(|t| w.title == t)
-        })
+        self.wins.iter().find(|w| w.pid != me && class.is_none_or(|c| w.class == c) && title.is_none_or(|t| w.title == t))
     }
     pub fn win(&self, hwnd: u32) -> Option<&KWin> {
         self.wins.iter().find(|w| w.hwnd == hwnd)
@@ -882,9 +774,7 @@ impl Kern {
         if !self.xmsgs.iter().any(|x| x.to == pid) {
             return Vec::new();
         }
-        let (mine, rest) = std::mem::take(&mut self.xmsgs)
-            .into_iter()
-            .partition(|x| x.to == pid);
+        let (mine, rest) = std::mem::take(&mut self.xmsgs).into_iter().partition(|x| x.to == pid);
         self.xmsgs = rest;
         self.changed();
         mine
@@ -917,14 +807,7 @@ impl Kern {
         }
         self.next += 1;
         let id = self.next;
-        self.sync.insert(
-            id,
-            KObj {
-                sync: s,
-                name: name.to_string(),
-                refs: vec![(pid, 1)],
-            },
-        );
+        self.sync.insert(id, KObj { sync: s, name: name.to_string(), refs: vec![(pid, 1)] });
         self.sync_names.insert(name.to_string(), id);
         self.changed();
         Ok((id, false))
@@ -935,15 +818,11 @@ impl Kern {
         self.sync.get(&id).map(|o| o.sync.clone())
     }
     pub fn sync_kind(&self, name: &str) -> Option<u8> {
-        self.sync_names
-            .get(name)
-            .map(|id| self.sync[id].sync.kind())
+        self.sync_names.get(name).map(|id| self.sync[id].sync.kind())
     }
     /// OpenEvent / OpenMutex / OpenSemaphore: Err(ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE)
     pub fn open_sync(&mut self, name: &str, kind: u8, pid: u32) -> Result<u32, u32> {
-        let Some(&id) = self.sync_names.get(name) else {
-            return Err(2);
-        };
+        let Some(&id) = self.sync_names.get(name) else { return Err(2) };
         let o = self.sync.get_mut(&id).unwrap();
         if o.sync.kind() != kind {
             return Err(6);
@@ -960,9 +839,7 @@ impl Kern {
         }
     }
     pub fn release_sync(&mut self, id: u32, pid: u32) {
-        let Some(o) = self.sync.get_mut(&id) else {
-            return;
-        };
+        let Some(o) = self.sync.get_mut(&id) else { return };
         if let Some(i) = o.refs.iter().position(|r| r.0 == pid) {
             o.refs[i].1 -= 1;
             if o.refs[i].1 == 0 {
@@ -990,12 +867,7 @@ impl Kern {
                 }
                 (s, false)
             }
-            Sync::Mutex {
-                owner,
-                pid: op,
-                count,
-                abandoned,
-            } => {
+            Sync::Mutex { owner, pid: op, count, abandoned } => {
                 if *owner == 0 || *owner == tid {
                     let ab = *abandoned;
                     if take {
@@ -1067,13 +939,7 @@ impl Kern {
     pub fn abandon(&mut self, tid: u32) {
         let mut any = false;
         for o in self.sync.values_mut() {
-            if let Sync::Mutex {
-                owner,
-                count,
-                abandoned,
-                ..
-            } = &mut o.sync
-            {
+            if let Sync::Mutex { owner, count, abandoned, .. } = &mut o.sync {
                 if *owner == tid {
                     *owner = 0;
                     *count = 0;
@@ -1228,10 +1094,7 @@ pub fn wait_change(seen: u64, until: Option<Instant>) -> bool {
                 if now >= t {
                     return false;
                 }
-                g = CHANGED
-                    .wait_timeout(g, t - now)
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0;
+                g = CHANGED.wait_timeout(g, t - now).unwrap_or_else(|e| e.into_inner()).0;
             }
         }
     }
@@ -1239,11 +1102,7 @@ pub fn wait_change(seen: u64, until: Option<Instant>) -> bool {
 
 /// Runs `f` until it is no longer PENDING: Err(IO_TIMEOUT) after `until`, Err(CANCELLED) once
 /// `cancelled` says so.
-pub fn block<T>(
-    until: Option<Instant>,
-    cancelled: &dyn Fn() -> bool,
-    mut f: impl FnMut(&mut Kern) -> Result<T, u32>,
-) -> Result<T, u32> {
+pub fn block<T>(until: Option<Instant>, cancelled: &dyn Fn() -> bool, mut f: impl FnMut(&mut Kern) -> Result<T, u32>) -> Result<T, u32> {
     loop {
         let (r, gen) = with(&mut f);
         match r {
@@ -1280,12 +1139,7 @@ impl Enc for State {
 impl Enc for KRef {
     fn put(&self, w: &mut Vec<u8>) {
         match *self {
-            KRef::Pipe {
-                end,
-                read,
-                write,
-                ovl,
-            } => {
+            KRef::Pipe { end, read, write, ovl } => {
                 0u8.put(w);
                 (end, (read, (write, ovl))).put(w)
             }
@@ -1303,12 +1157,7 @@ impl Enc for KRef {
         Some(match u8::get(r)? {
             0 => {
                 let (end, (read, (write, ovl))) = Enc::get(r)?;
-                KRef::Pipe {
-                    end,
-                    read,
-                    write,
-                    ovl,
-                }
+                KRef::Pipe { end, read, write, ovl }
             }
             1 => {
                 let (pid, access) = Enc::get(r)?;
@@ -1329,51 +1178,14 @@ impl Enc for (u32, u32, u32) {
     }
 }
 crate::enc_struct!(Msg { data, pos });
-crate::enc_struct!(End {
-    server,
-    pipe,
-    state,
-    conn,
-    queue,
-    msg_type,
-    outsize,
-    insize,
-    max,
-    msg_read,
-    nonblock,
-    refs
-});
-crate::enc_struct!(Pipe {
-    max,
-    instances,
-    sharing,
-    msg_type,
-    outsize,
-    insize,
-    timeout,
-    listeners
-});
-crate::enc_struct!(Proc {
-    parent,
-    image,
-    cmdline,
-    cwd,
-    exit,
-    kill,
-    suspend,
-    inherit,
-    std
-});
+crate::enc_struct!(End { server, pipe, state, conn, queue, msg_type, outsize, insize, max, msg_read, nonblock, refs });
+crate::enc_struct!(Pipe { max, instances, sharing, msg_type, outsize, insize, timeout, listeners });
+crate::enc_struct!(Proc { parent, image, cmdline, cwd, exit, kill, suspend, inherit, std });
 impl Enc for Sync {
     fn put(&self, w: &mut Vec<u8>) {
         match *self {
             Sync::Event { manual, set } => (0u8, (manual, set)).put(w),
-            Sync::Mutex {
-                owner,
-                pid,
-                count,
-                abandoned,
-            } => (1u8, ((owner, pid), (count, abandoned))).put(w),
+            Sync::Mutex { owner, pid, count, abandoned } => (1u8, ((owner, pid), (count, abandoned))).put(w),
             Sync::Semaphore { count, max } => (2u8, (count, max)).put(w),
         }
     }
@@ -1385,12 +1197,7 @@ impl Enc for Sync {
             }
             1 => {
                 let ((owner, pid), (count, abandoned)) = Enc::get(r)?;
-                Sync::Mutex {
-                    owner,
-                    pid,
-                    count,
-                    abandoned,
-                }
+                Sync::Mutex { owner, pid, count, abandoned }
             }
             2 => {
                 let (count, max) = Enc::get(r)?;
@@ -1401,38 +1208,9 @@ impl Enc for Sync {
     }
 }
 crate::enc_struct!(KObj { sync, name, refs });
-crate::enc_struct!(KWin {
-    hwnd,
-    pid,
-    tid,
-    class,
-    title
-});
-crate::enc_struct!(XMsg {
-    id,
-    to,
-    hwnd,
-    msg,
-    w,
-    l,
-    data,
-    send
-});
-crate::enc_struct!(Kern {
-    gen,
-    next,
-    ends,
-    pipes,
-    procs,
-    next_pid,
-    sync,
-    sync_names,
-    dead_seen,
-    wins,
-    xmsgs,
-    replies,
-    next_msg
-});
+crate::enc_struct!(KWin { hwnd, pid, tid, class, title });
+crate::enc_struct!(XMsg { id, to, hwnd, msg, w, l, data, send });
+crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, next_msg });
 
 #[cfg(test)]
 mod tests;

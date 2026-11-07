@@ -11,11 +11,7 @@ const OPS: [&str; 6] = ["Begin", "Draw", "Push", "Pop", "Flush", "End"];
 
 /// (an HRESULT as the spec writes it: less 0x88990000)
 fn code(hr: u32) -> i64 {
-    if hr == 0 {
-        0
-    } else {
-        (hr - 0x8899_0000) as i64
-    }
+    if hr == 0 { 0 } else { (hr - 0x8899_0000) as i64 }
 }
 
 fn run(seed: u64) -> Vec<(usize, i64)> {
@@ -102,15 +98,7 @@ fn check(steps: &[(usize, i64)], seed: u64) {
                 }
             }
             _ => {
-                let r = if !drawing {
-                    1
-                } else if error != 0 {
-                    error
-                } else if clips != 0 {
-                    22
-                } else {
-                    0
-                };
+                let r = if !drawing { 1 } else if error != 0 { error } else if clips != 0 { 22 } else { 0 };
                 (drawing, error, clips) = (false, 0, 0);
                 r
             }
@@ -121,24 +109,14 @@ fn check(steps: &[(usize, i64)], seed: u64) {
 
 #[test]
 fn d2d_draw_trace() {
-    let seeds = std::env::var("IPPAI_TRACE_SEEDS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(20u64);
+    let seeds = std::env::var("IPPAI_TRACE_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20u64);
     for seed in 0..seeds {
         let steps = run(seed);
         check(&steps, seed);
-        let Some(dir) = std::env::var_os("IPPAI_TRACE_DIR") else {
-            continue;
-        };
+        let Some(dir) = std::env::var_os("IPPAI_TRACE_DIR") else { continue };
         let mut s = String::from("---- MODULE D2dData ----\nTrace == <<\n");
         for (i, (op, ret)) in steps.iter().enumerate() {
-            let _ = writeln!(
-                s,
-                "  [op |-> \"{}\", ret |-> {ret}]{}",
-                OPS[*op],
-                if i + 1 < steps.len() { "," } else { "" }
-            );
+            let _ = writeln!(s, "  [op |-> \"{}\", ret |-> {ret}]{}", OPS[*op], if i + 1 < steps.len() { "," } else { "" });
         }
         s.push_str(">>\n====\n");
         let dir = std::path::Path::new(&dir).join(format!("d2d-{seed}"));

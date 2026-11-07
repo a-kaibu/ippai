@@ -95,20 +95,10 @@ impl Rec {
             v[4 * i..4 * i + 4].copy_from_slice(&f.to_le_bytes());
         }
         v[20..24].copy_from_slice(&self.id.to_le_bytes());
-        for (i, h) in [self.ty, self.strings.len() as u16, self.category, 0]
-            .iter()
-            .enumerate()
-        {
+        for (i, h) in [self.ty, self.strings.len() as u16, self.category, 0].iter().enumerate() {
             v[24 + 2 * i..26 + 2 * i].copy_from_slice(&h.to_le_bytes());
         }
-        let rest = [
-            0u32,
-            strings_at as u32,
-            self.sid.len() as u32,
-            sid_at as u32,
-            self.data.len() as u32,
-            data_at as u32,
-        ];
+        let rest = [0u32, strings_at as u32, self.sid.len() as u32, sid_at as u32, self.data.len() as u32, data_at as u32];
         for (i, f) in rest.iter().enumerate() {
             v[32 + 4 * i..36 + 4 * i].copy_from_slice(&f.to_le_bytes());
         }
@@ -117,12 +107,8 @@ impl Rec {
 
     /// A record as encode(wide) wrote it (None: not one)
     pub fn decode(b: &[u8]) -> Option<Rec> {
-        let d = |o: usize| -> Option<u32> {
-            Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
-        };
-        let h = |o: usize| -> Option<u16> {
-            Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?))
-        };
+        let d = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?)) };
+        let h = |o: usize| -> Option<u16> { Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?)) };
         let len = d(0)? as usize;
         if len < HEADER + 4 || len > b.len() || d(4)? != SIGNATURE || d(len - 4)? as usize != len {
             return None;
@@ -194,40 +180,22 @@ impl Log {
         let end = 0x30 + recs.len() as u32;
         let (cur, old) = (self.next.max(1), self.oldest().max(1));
         let mut v = vec![];
-        for x in [
-            0x30, SIGNATURE, 1, 1, 0x30, end, cur, old, 0x8_0000, 0, 0, 0x30,
-        ] {
+        for x in [0x30, SIGNATURE, 1, 1, 0x30, end, cur, old, 0x8_0000, 0, 0, 0x30] {
             v.extend(u32::to_le_bytes(x));
         }
         v.extend(recs);
-        for x in [
-            0x28,
-            0x1111_1111,
-            0x2222_2222,
-            0x3333_3333,
-            0x4444_4444,
-            0x30,
-            end,
-            cur,
-            old,
-            0x28,
-        ] {
+        for x in [0x28, 0x1111_1111, 0x2222_2222, 0x3333_3333, 0x4444_4444, 0x30, end, cur, old, 0x28] {
             v.extend(u32::to_le_bytes(x));
         }
         v
     }
 
     pub fn from_evt(b: &[u8]) -> Option<Log> {
-        let d = |o: usize| -> Option<u32> {
-            Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
-        };
+        let d = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?)) };
         if d(0)? != 0x30 || d(4)? != SIGNATURE || d(44)? != 0x30 {
             return None;
         }
-        let mut log = Log {
-            recs: vec![],
-            next: d(24)?,
-        };
+        let mut log = Log { recs: vec![], next: d(24)? };
         let mut at = 0x30;
         loop {
             if d(at)? == 0x28 && d(at + 4)? == 0x1111_1111 && d(at + 36)? == 0x28 {
@@ -245,14 +213,7 @@ impl Log {
 pub struct Cursor(pub Option<usize>);
 
 /// What one ReadEventLog call returns: Ok(bytes) or Err((error, needed))
-pub fn read(
-    log: &Log,
-    cur: &mut Cursor,
-    flags: u32,
-    offset: u32,
-    size: usize,
-    wide: bool,
-) -> Result<Vec<u8>, (u32, usize)> {
+pub fn read(log: &Log, cur: &mut Cursor, flags: u32, offset: u32, size: usize, wide: bool) -> Result<Vec<u8>, (u32, usize)> {
     let n = log.recs.len();
     let fwd = flags & FORWARDS != 0;
     let mut i = if flags & SEEK != 0 {
@@ -262,11 +223,7 @@ pub fn read(
         }
     } else {
         let p = cur.0.unwrap_or(if fwd { 0 } else { n }).min(n) as isize;
-        if fwd {
-            p
-        } else {
-            p - 1
-        }
+        if fwd { p } else { p - 1 }
     };
     let mut out = vec![];
     while i >= 0 && (i as usize) < n {
@@ -289,9 +246,7 @@ pub fn read(
 
 /// The flags ReadEventLog accepts: one of SEQUENTIAL/SEEK and one of FORWARDS/BACKWARDS
 pub fn flags_ok(f: u32) -> bool {
-    f & !15 == 0
-        && (f & SEQUENTIAL != 0) != (f & SEEK != 0)
-        && (f & FORWARDS != 0) != (f & BACKWARDS != 0)
+    f & !15 == 0 && (f & SEQUENTIAL != 0) != (f & SEEK != 0) && (f & FORWARDS != 0) != (f & BACKWARDS != 0)
 }
 
 pub fn type_ok(t: u32) -> bool {
@@ -303,14 +258,7 @@ fn application_log() -> Log {
     let mut l = Log::default();
     let t = now();
     for _ in 0..4 {
-        l.report(Rec {
-            time: t,
-            id: 4625,
-            ty: 4,
-            source: "EventSystem".into(),
-            computer: COMPUTER.into(),
-            ..Default::default()
-        });
+        l.report(Rec { time: t, id: 4625, ty: 4, source: "EventSystem".into(), computer: COMPUTER.into(), ..Default::default() });
     }
     l
 }
@@ -322,36 +270,19 @@ fn system_log() -> Log {
     let t = now();
     for i in 0..16u32 {
         let id = [0x8000_1775, 0x8000_1779, 0x8000_177d, 0x8000_177d][i as usize % 4];
-        l.report(Rec {
-            time: t,
-            id,
-            ty: 4,
-            source: "EventLog".into(),
-            computer: COMPUTER.into(),
-            data: vec![0; 24],
-            ..Default::default()
-        });
+        l.report(Rec { time: t, id, ty: 4, source: "EventLog".into(), computer: COMPUTER.into(), data: vec![0; 24], ..Default::default() });
     }
     l
 }
 
 fn now() -> u32 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as u32)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
 }
 
 enum Handle {
     /// a live log, the source records are written as
-    Live {
-        log: String,
-        source: String,
-        cur: Cursor,
-    },
-    Backup {
-        log: Log,
-        cur: Cursor,
-    },
+    Live { log: String, source: String, cur: Cursor },
+    Backup { log: Log, cur: Cursor },
 }
 
 #[derive(Default)]
@@ -367,10 +298,7 @@ static ST: Mutex<Option<State>> = Mutex::new(None);
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     let mut g = ST.lock().unwrap();
     let s = g.get_or_insert_with(|| {
-        let mut s = State {
-            next: 0x6e10_0000,
-            ..Default::default()
-        };
+        let mut s = State { next: 0x6e10_0000, ..Default::default() };
         s.logs.insert("system".into(), system_log());
         s.logs.insert("application".into(), application_log());
         s
@@ -398,13 +326,7 @@ pub fn log_of(name: &str, is_key: impl Fn(&str) -> bool, logs: &[String]) -> Str
     if !n.is_empty() && !n.contains('\\') && is_key(&format!("{EVENTLOG_KEY}\\{n}")) {
         return n;
     }
-    logs.iter()
-        .find(|l| {
-            !n.is_empty()
-                && !n.contains('\\')
-                && is_key(&format!("{EVENTLOG_KEY}\\{}\\{n}", l.to_lowercase()))
-        })
-        .map_or("application".into(), |l| l.to_lowercase())
+    logs.iter().find(|l| !n.is_empty() && !n.contains('\\') && is_key(&format!("{EVENTLOG_KEY}\\{}\\{n}", l.to_lowercase()))).map_or("application".into(), |l| l.to_lowercase())
 }
 
 /// Server names: NULL, "" or this machine are local; any other is unreachable
@@ -414,10 +336,7 @@ fn server_ok(p: u32, wide: bool) -> bool {
     }
     let s = arg_str(p, wide);
     let s = s.trim_start_matches('\\');
-    s.is_empty()
-        || s.eq_ignore_ascii_case(COMPUTER)
-        || s == "."
-        || s.eq_ignore_ascii_case("localhost")
+    s.is_empty() || s.eq_ignore_ascii_case(COMPUTER) || s == "." || s.eq_ignore_ascii_case("localhost")
 }
 
 /// OpenEventLog(server, source) and RegisterEventSource(server, source)
@@ -436,20 +355,12 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
         s.logs.entry(log.clone()).or_default();
     });
     last_error(0);
-    add(Handle::Live {
-        log,
-        source,
-        cur: Cursor(None),
-    })
+    add(Handle::Live { log, source, cur: Cursor(None) })
 }
 
 /// CloseEventLog / DeregisterEventSource
 fn close(c: &mut Ctx) -> u32 {
-    if with(|s| s.handles.remove(&c.a(0))).is_some() {
-        1
-    } else {
-        fail(ERROR_INVALID_HANDLE)
-    }
+    if with(|s| s.handles.remove(&c.a(0))).is_some() { 1 } else { fail(ERROR_INVALID_HANDLE) }
 }
 
 /// The records a handle reads (a copy)
@@ -465,17 +376,8 @@ fn count(c: &mut Ctx, oldest: bool) -> u32 {
     if out == 0 {
         return fail(ERROR_INVALID_PARAMETER);
     }
-    let Some(l) = log_for(h) else {
-        return fail(ERROR_INVALID_HANDLE);
-    };
-    mem::w32(
-        out,
-        if oldest {
-            l.oldest()
-        } else {
-            l.recs.len() as u32
-        },
-    );
+    let Some(l) = log_for(h) else { return fail(ERROR_INVALID_HANDLE) };
+    mem::w32(out, if oldest { l.oldest() } else { l.recs.len() as u32 });
     1
 }
 
@@ -501,17 +403,7 @@ fn info(c: &mut Ctx) -> u32 {
 
 /// ReportEvent(h, type, category, id, sid, nstrings, datasize, strings, data)
 fn report(c: &mut Ctx, wide: bool) -> u32 {
-    let (h, ty, cat, id, sid, ns, dsize, strs, data) = (
-        c.a(0),
-        c.a(1) & 0xffff,
-        c.a(2) & 0xffff,
-        c.a(3),
-        c.a(4),
-        c.a(5) & 0xffff,
-        c.a(6),
-        c.a(7),
-        c.a(8),
-    );
+    let (h, ty, cat, id, sid, ns, dsize, strs, data) = (c.a(0), c.a(1) & 0xffff, c.a(2) & 0xffff, c.a(3), c.a(4), c.a(5) & 0xffff, c.a(6), c.a(7), c.a(8));
     let Some((log, source)) = with(|s| match s.handles.get(&h) {
         Some(Handle::Live { log, source, .. }) => Some((log.clone(), source.clone())),
         _ => None,
@@ -524,31 +416,10 @@ fn report(c: &mut Ctx, wide: bool) -> u32 {
     if ns != 0 && strs == 0 || dsize != 0 && data == 0 {
         return fail(ERROR_INVALID_PARAMETER);
     }
-    let strings = (0..ns)
-        .map(|i| arg_str(mem::rp(strs + i * mem::ps()), wide))
-        .collect();
-    let sid = if sid == 0 {
-        vec![]
-    } else {
-        mem::slice(sid, 8 + 4 * mem::r8(sid + 1) as u32).to_vec()
-    };
-    let data = if dsize == 0 {
-        vec![]
-    } else {
-        mem::slice(data, dsize).to_vec()
-    };
-    let r = Rec {
-        time: now(),
-        id,
-        ty: ty as u16,
-        category: cat as u16,
-        source,
-        computer: COMPUTER.into(),
-        sid,
-        strings,
-        data,
-        number: 0,
-    };
+    let strings = (0..ns).map(|i| arg_str(mem::rp(strs + i * mem::ps()), wide)).collect();
+    let sid = if sid == 0 { vec![] } else { mem::slice(sid, 8 + 4 * mem::r8(sid + 1) as u32).to_vec() };
+    let data = if dsize == 0 { vec![] } else { mem::slice(data, dsize).to_vec() };
+    let r = Rec { time: now(), id, ty: ty as u16, category: cat as u16, source, computer: COMPUTER.into(), sid, strings, data, number: 0 };
     with(|s| s.logs.entry(log).or_default().report(r));
     last_error(0);
     1
@@ -556,22 +427,14 @@ fn report(c: &mut Ctx, wide: bool) -> u32 {
 
 /// ReadEventLog(h, flags, offset, buffer, size, &read, &needed)
 fn read_log(c: &mut Ctx, wide: bool) -> u32 {
-    let (h, flags, offset, buf, size, pread, pneed) =
-        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let (h, flags, offset, buf, size, pread, pneed) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     if buf == 0 || pread == 0 || pneed == 0 || !flags_ok(flags) {
         return fail(ERROR_INVALID_PARAMETER);
     }
     let r = with(|s| {
         let State { logs, handles, .. } = s;
         Some(match handles.get_mut(&h)? {
-            Handle::Live { log, cur, .. } => read(
-                logs.get(log.as_str())?,
-                cur,
-                flags,
-                offset,
-                size as usize,
-                wide,
-            ),
+            Handle::Live { log, cur, .. } => read(logs.get(log.as_str())?, cur, flags, offset, size as usize, wide),
             Handle::Backup { log, cur } => read(log, cur, flags, offset, size as usize, wide),
         })
     });
@@ -606,9 +469,7 @@ fn backup(c: &mut Ctx, wide: bool) -> u32 {
     if f == 0 {
         return fail(ERROR_INVALID_PARAMETER);
     }
-    let Some(l) = log_for(h) else {
-        return fail(ERROR_INVALID_HANDLE);
-    };
+    let Some(l) = log_for(h) else { return fail(ERROR_INVALID_HANDLE) };
     match backup_to(&l, &arg_str(f, wide)) {
         Ok(()) => 1,
         Err(e) => fail(e),
@@ -644,16 +505,9 @@ fn open_backup(c: &mut Ctx, wide: bool) -> u32 {
         return fail(RPC_S_SERVER_UNAVAILABLE);
     }
     let name = arg_str(f, wide);
-    let Some(p) = crate::files::resolve(&name) else {
-        return fail(ERROR_FILE_NOT_FOUND);
-    };
-    let Some(log) = kura::fs::read(p).ok().and_then(|b| Log::from_evt(&b)) else {
-        return fail(ERROR_EVENTLOG_FILE_CORRUPT);
-    };
-    add(Handle::Backup {
-        log,
-        cur: Cursor(None),
-    })
+    let Some(p) = crate::files::resolve(&name) else { return fail(ERROR_FILE_NOT_FOUND) };
+    let Some(log) = kura::fs::read(p).ok().and_then(|b| Log::from_evt(&b)) else { return fail(ERROR_EVENTLOG_FILE_CORRUPT) };
+    add(Handle::Backup { log, cur: Cursor(None) })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -662,20 +516,10 @@ fn open_backup(c: &mut Ctx, wide: bool) -> u32 {
 // 120 bytes on x86 and x64.
 
 const PROPS: u32 = 120;
-const SYSTEM_TRACE_GUID: [u8; 16] = [
-    0xad, 0x4a, 0x81, 0x9e, 0x04, 0x32, 0xd2, 0x11, 0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39,
-];
+const SYSTEM_TRACE_GUID: [u8; 16] = [0xad, 0x4a, 0x81, 0x9e, 0x04, 0x32, 0xd2, 0x11, 0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39];
 
 /// The error StartTrace answers for these properties (0: it starts)
-pub fn trace_check(
-    buf: u32,
-    name_len: u32,
-    file_off: u32,
-    name_off: u32,
-    mode: u32,
-    guid: &[u8],
-    kernel: bool,
-) -> u32 {
+pub fn trace_check(buf: u32, name_len: u32, file_off: u32, name_off: u32, mode: u32, guid: &[u8], kernel: bool) -> u32 {
     if buf < PROPS {
         return ERROR_BAD_LENGTH;
     }
@@ -699,11 +543,7 @@ pub fn trace_check(
 }
 
 fn offs() -> (u32, u32) {
-    if mem::x64() {
-        (112, 116)
-    } else {
-        (108, 112)
-    }
+    if mem::x64() { (112, 116) } else { (108, 112) }
 }
 
 /// StartTrace(&handle, name, properties) -> error
@@ -713,21 +553,9 @@ fn start_trace(c: &mut Ctx, wide: bool) -> u32 {
         return ERROR_INVALID_PARAMETER;
     }
     let name = arg_str(pn, wide);
-    let len = if wide {
-        name.encode_utf16().count() as u32 * 2
-    } else {
-        crate::text::s2a(&name).len() as u32
-    };
+    let len = if wide { name.encode_utf16().count() as u32 * 2 } else { crate::text::s2a(&name).len() as u32 };
     let (fo, no) = offs();
-    let e = trace_check(
-        mem::r32(p),
-        len,
-        mem::r32(p + fo),
-        mem::r32(p + no),
-        mem::r32(p + 64),
-        mem::slice(p + 24, 16),
-        name == "NT Kernel Logger",
-    );
+    let e = trace_check(mem::r32(p), len, mem::r32(p + fo), mem::r32(p + no), mem::r32(p + 64), mem::slice(p + 24, 16), name == "NT Kernel Logger");
     if e != 0 {
         return e;
     }
@@ -744,11 +572,7 @@ fn start_trace(c: &mut Ctx, wide: bool) -> u32 {
 
 /// ControlTrace(handle, name, properties, control) / StopTrace(handle, name, properties)
 fn control_trace(h: u64, pn: u32, control: u32, wide: bool) -> u32 {
-    let name = if pn != 0 {
-        Some(arg_str(pn, wide).to_lowercase())
-    } else {
-        None
-    };
+    let name = if pn != 0 { Some(arg_str(pn, wide).to_lowercase()) } else { None };
     with(|s| {
         let key = name.or_else(|| s.traces.iter().find(|x| *x.1 == h).map(|x| x.0.clone()));
         match key.filter(|k| s.traces.contains_key(k)) {
@@ -764,11 +588,7 @@ fn control_trace(h: u64, pn: u32, control: u32, wide: bool) -> u32 {
 }
 
 fn trace_args(c: &mut Ctx) -> (u64, u32) {
-    if mem::x64() {
-        (c.a64(0), c.a(1))
-    } else {
-        (c.a(0) as u64 | (c.a(1) as u64) << 32, c.a(2))
-    }
+    if mem::x64() { (c.a64(0), c.a(1)) } else { (c.a(0) as u64 | (c.a(1) as u64) << 32, c.a(2)) }
 }
 
 pub fn init() {
@@ -792,13 +612,7 @@ pub fn init() {
     implement(d, "ClearEventLogW", |c| clear(c, true));
     implement(d, "OpenBackupEventLogA", |c| open_backup(c, false));
     implement(d, "OpenBackupEventLogW", |c| open_backup(c, true));
-    implement(d, "NotifyChangeEventLog", |c| {
-        if log_for(c.a(0)).is_some() {
-            1
-        } else {
-            fail(ERROR_INVALID_HANDLE)
-        }
-    });
+    implement(d, "NotifyChangeEventLog", |c| if log_for(c.a(0)).is_some() { 1 } else { fail(ERROR_INVALID_HANDLE) });
     implement(d, "StartTraceA", |c| start_trace(c, false));
     implement(d, "StartTraceW", |c| start_trace(c, true));
     // ControlTrace(TRACEHANDLE, name, props, control); StopTrace(TRACEHANDLE, name, props)
@@ -828,27 +642,13 @@ mod tests {
     use proptest::prelude::*;
 
     fn rec(src: &str, strings: &[&str], sid: usize, data: usize) -> Rec {
-        Rec {
-            time: 7,
-            id: 5,
-            ty: 2,
-            category: 1,
-            source: src.into(),
-            computer: COMPUTER.into(),
-            sid: vec![1; sid],
-            strings: strings.iter().map(|s| s.to_string()).collect(),
-            data: vec![9; data],
-            number: 0,
-        }
+        Rec { time: 7, id: 5, ty: 2, category: 1, source: src.into(), computer: COMPUTER.into(), sid: vec![1; sid], strings: strings.iter().map(|s| s.to_string()).collect(), data: vec![9; data], number: 0 }
     }
 
     #[test]
     fn record_layout() {
         // the service's start record: offsets to the SID, strings and data are all the same
-        let r = Rec {
-            data: vec![0; 24],
-            ..rec("EventLog", &[], 0, 0)
-        };
+        let r = Rec { data: vec![0; 24], ..rec("EventLog", &[], 0, 0) };
         let w = r.encode(true);
         let d = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let at = (56 + 18 + 10 + 7) & !7;
@@ -871,80 +671,33 @@ mod tests {
         let one = 200;
         let mut c = Cursor::default();
         // sequential: the offset is ignored; changing direction reads the last record again
-        assert_eq!(
-            num(&read(&l, &mut c, SEQUENTIAL | FORWARDS, 100, one, true).unwrap()),
-            1
-        );
-        assert_eq!(
-            num(&read(&l, &mut c, SEQUENTIAL | FORWARDS, 200, one, true).unwrap()),
-            2
-        );
-        assert_eq!(
-            num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 300, one, true).unwrap()),
-            2
-        );
-        assert_eq!(
-            num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 400, one, true).unwrap()),
-            1
-        );
-        assert_eq!(
-            read(&l, &mut c, SEQUENTIAL | BACKWARDS, 0, one, true),
-            Err((ERROR_HANDLE_EOF, 0))
-        );
-        assert_eq!(
-            read(&l, &mut c, SEEK | BACKWARDS, 0, one, true),
-            Err((ERROR_INVALID_PARAMETER, 0))
-        );
+        assert_eq!(num(&read(&l, &mut c, SEQUENTIAL | FORWARDS, 100, one, true).unwrap()), 1);
+        assert_eq!(num(&read(&l, &mut c, SEQUENTIAL | FORWARDS, 200, one, true).unwrap()), 2);
+        assert_eq!(num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 300, one, true).unwrap()), 2);
+        assert_eq!(num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 400, one, true).unwrap()), 1);
+        assert_eq!(read(&l, &mut c, SEQUENTIAL | BACKWARDS, 0, one, true), Err((ERROR_HANDLE_EOF, 0)));
+        assert_eq!(read(&l, &mut c, SEEK | BACKWARDS, 0, one, true), Err((ERROR_INVALID_PARAMETER, 0)));
         // a fresh backwards read starts at the newest
         let mut c = Cursor::default();
-        assert_eq!(
-            num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 100, one, true).unwrap()),
-            12
-        );
-        assert_eq!(
-            num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 100, one, true).unwrap()),
-            11
-        );
+        assert_eq!(num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 100, one, true).unwrap()), 12);
+        assert_eq!(num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 100, one, true).unwrap()), 11);
         // seek forwards then sequential: the record after the last one read
         let mut c = Cursor::default();
-        assert_eq!(
-            read(&l, &mut c, SEEK | FORWARDS, 13, one, true),
-            Err((ERROR_INVALID_PARAMETER, 0))
-        );
-        for (f, o, want) in [
-            (SEEK | FORWARDS, 2, 2),
-            (SEEK | FORWARDS, 4, 4),
-            (SEEK | FORWARDS, 3, 3),
-            (SEQUENTIAL | FORWARDS, 100, 4),
-            (SEEK | BACKWARDS, 10, 10),
-        ] {
+        assert_eq!(read(&l, &mut c, SEEK | FORWARDS, 13, one, true), Err((ERROR_INVALID_PARAMETER, 0)));
+        for (f, o, want) in [(SEEK | FORWARDS, 2, 2), (SEEK | FORWARDS, 4, 4), (SEEK | FORWARDS, 3, 3), (SEQUENTIAL | FORWARDS, 100, 4), (SEEK | BACKWARDS, 10, 10)] {
             assert_eq!(num(&read(&l, &mut c, f, o, one, true).unwrap()), want);
         }
         let mut c = Cursor::default();
-        for (f, o, want) in [
-            (SEEK | BACKWARDS, 5, 5),
-            (SEEK | BACKWARDS, 3, 3),
-            (SEEK | BACKWARDS, 4, 4),
-            (SEQUENTIAL | BACKWARDS, 100, 3),
-            (SEEK | FORWARDS, 10, 10),
-        ] {
+        for (f, o, want) in [(SEEK | BACKWARDS, 5, 5), (SEEK | BACKWARDS, 3, 3), (SEEK | BACKWARDS, 4, 4), (SEQUENTIAL | BACKWARDS, 100, 3), (SEEK | FORWARDS, 10, 10)] {
             assert_eq!(num(&read(&l, &mut c, f, o, one, true).unwrap()), want);
         }
         // a small buffer: the size of the record, and the position does not move
         let mut c = Cursor::default();
         let size = l.recs[0].encode(false).len();
-        assert_eq!(
-            read(&l, &mut c, SEQUENTIAL | FORWARDS, 0, 56, false),
-            Err((ERROR_INSUFFICIENT_BUFFER, size))
-        );
+        assert_eq!(read(&l, &mut c, SEQUENTIAL | FORWARDS, 0, 56, false), Err((ERROR_INSUFFICIENT_BUFFER, size)));
         assert_eq!(c, Cursor(None));
         // a big one: whole records
-        assert_eq!(
-            read(&l, &mut c, SEQUENTIAL | FORWARDS, 0, 3 * size + 1, false)
-                .unwrap()
-                .len(),
-            3 * size
-        );
+        assert_eq!(read(&l, &mut c, SEQUENTIAL | FORWARDS, 0, 3 * size + 1, false).unwrap().len(), 3 * size);
         assert_eq!(c, Cursor(Some(3)));
     }
 
@@ -968,14 +721,7 @@ mod tests {
 
     #[test]
     fn logs_and_sources() {
-        let keys = [
-            "application",
-            "system",
-            "system\\eventlog",
-            "wine",
-            "wine\\winesrc",
-        ]
-        .map(|k| format!("{EVENTLOG_KEY}\\{k}"));
+        let keys = ["application", "system", "system\\eventlog", "wine", "wine\\winesrc"].map(|k| format!("{EVENTLOG_KEY}\\{k}"));
         let is_key = |k: &str| keys.iter().any(|x| x == k);
         let logs = ["Application".to_string(), "System".into(), "Wine".into()];
         assert_eq!(log_of("SYSTEM", is_key, &logs), "system");
@@ -989,34 +735,13 @@ mod tests {
     fn trace_properties() {
         let g = [0u8; 16];
         let full = PROPS + 5 + 9;
-        assert_eq!(
-            trace_check(0, 4, PROPS + 5, PROPS, 0, &g, false),
-            ERROR_BAD_LENGTH
-        );
-        assert_eq!(
-            trace_check(full, 21, PROPS + 5, PROPS, 0, &g, false),
-            ERROR_BAD_LENGTH
-        );
-        assert_eq!(
-            trace_check(full, 4, 1, PROPS, 0, &g, false),
-            ERROR_INVALID_PARAMETER
-        );
-        assert_eq!(
-            trace_check(full, 4, PROPS + 5, 1, 0, &g, false),
-            ERROR_INVALID_PARAMETER
-        );
-        assert_eq!(
-            trace_check(full, 4, PROPS + 5, PROPS, 3, &g, false),
-            ERROR_INVALID_PARAMETER
-        );
-        assert_eq!(
-            trace_check(full, 4, PROPS + 5, PROPS, 0, &SYSTEM_TRACE_GUID, false),
-            ERROR_INVALID_PARAMETER
-        );
-        assert_eq!(
-            trace_check(full, 4, 0, PROPS, 0, &g, false),
-            ERROR_BAD_PATHNAME
-        );
+        assert_eq!(trace_check(0, 4, PROPS + 5, PROPS, 0, &g, false), ERROR_BAD_LENGTH);
+        assert_eq!(trace_check(full, 21, PROPS + 5, PROPS, 0, &g, false), ERROR_BAD_LENGTH);
+        assert_eq!(trace_check(full, 4, 1, PROPS, 0, &g, false), ERROR_INVALID_PARAMETER);
+        assert_eq!(trace_check(full, 4, PROPS + 5, 1, 0, &g, false), ERROR_INVALID_PARAMETER);
+        assert_eq!(trace_check(full, 4, PROPS + 5, PROPS, 3, &g, false), ERROR_INVALID_PARAMETER);
+        assert_eq!(trace_check(full, 4, PROPS + 5, PROPS, 0, &SYSTEM_TRACE_GUID, false), ERROR_INVALID_PARAMETER);
+        assert_eq!(trace_check(full, 4, 0, PROPS, 0, &g, false), ERROR_BAD_PATHNAME);
         assert_eq!(trace_check(full, 4, 0, PROPS, 0x100, &g, false), 0);
         assert_eq!(trace_check(full, 4, PROPS + 5, PROPS, 0, &g, false), 0);
     }

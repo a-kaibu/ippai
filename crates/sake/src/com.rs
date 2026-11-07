@@ -33,12 +33,7 @@ pub fn method_name(trap: u32) -> Option<&'static str> {
 }
 /// Its argument count (dwords, with `this` and a hidden result pointer).
 pub fn method_dwords(trap: u32) -> Option<u32> {
-    NAMES
-        .lock()
-        .unwrap()
-        .as_ref()?
-        .get(&trap)
-        .map(|m| m.1 as u32)
+    NAMES.lock().unwrap().as_ref()?.get(&trap).map(|m| m.1 as u32)
 }
 static VTBLS: Mutex<Option<HashMap<&'static str, u32>>> = Mutex::new(None);
 
@@ -46,17 +41,8 @@ fn objs<R>(f: impl FnOnce(&mut HashMap<u32, Obj>) -> R) -> R {
     f(OBJS.lock().unwrap().get_or_insert_with(HashMap::new))
 }
 
-fn table(
-    iface: &str,
-) -> &'static (
-    &'static str,
-    &'static [(&'static str, u8, u8)],
-    &'static [&'static str],
-) {
-    methods::IFACES
-        .iter()
-        .find(|t| t.0 == iface)
-        .unwrap_or_else(|| panic!("com: no interface {iface}"))
+fn table(iface: &str) -> &'static (&'static str, &'static [(&'static str, u8, u8)], &'static [&'static str]) {
+    methods::IFACES.iter().find(|t| t.0 == iface).unwrap_or_else(|| panic!("com: no interface {iface}"))
 }
 
 pub fn iid(iface: &str) -> Option<Guid> {
@@ -72,39 +58,18 @@ pub fn read_guid(p: u32) -> Guid {
 }
 
 fn fmt_guid(g: Guid) -> String {
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{}",
-        g.0,
-        g.1,
-        g.2,
-        g.3[0],
-        g.3[1],
-        g.3[2..]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    )
+    format!("{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{}", g.0, g.1, g.2, g.3[0], g.3[1], g.3[2..].iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
 pub fn warn_once(msg: &str) {
     static SEEN: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
-    if SEEN
-        .lock()
-        .unwrap()
-        .get_or_insert_with(Default::default)
-        .insert(msg.to_string())
-    {
+    if SEEN.lock().unwrap().get_or_insert_with(Default::default).insert(msg.to_string()) {
         eprintln!("{msg}");
     }
 }
 
 fn stub(c: &mut Ctx) -> u32 {
-    let (iface, name, kind) = STUBS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|m| m.get(&c.trap).copied())
-        .unwrap_or(("?", "?", 0));
+    let (iface, name, kind) = STUBS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied()).unwrap_or(("?", "?", 0));
     warn_once(&format!("sake: com {iface}::{name} not implemented"));
     match kind {
         1 => {
@@ -124,11 +89,7 @@ fn query_interface(c: &mut Ctx) -> u32 {
     let want = read_guid(riid);
     let found = objs(|m| {
         let o = m.get_mut(&this)?;
-        let hit = table(o.iface)
-            .2
-            .iter()
-            .any(|n| iid(n) == Some(want))
-            .then_some(this);
+        let hit = table(o.iface).2.iter().any(|n| iid(n) == Some(want)).then_some(this);
         if hit.is_some() {
             o.refs += 1;
         }
@@ -141,10 +102,7 @@ fn query_interface(c: &mut Ctx) -> u32 {
         }
         None => {
             let iface = objs(|m| m.get(&this).map_or("?", |o| o.iface));
-            warn_once(&format!(
-                "sake: com {iface}::QueryInterface {{{}}}: no",
-                fmt_guid(want)
-            ));
+            warn_once(&format!("sake: com {iface}::QueryInterface {{{}}}: no", fmt_guid(want)));
             mem::putp(out, 0);
             E_NOINTERFACE
         }
@@ -153,12 +111,10 @@ fn query_interface(c: &mut Ctx) -> u32 {
 
 fn add_ref(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    objs(|m| {
-        m.get_mut(&this).map_or(1, |o| {
-            o.refs += 1;
-            o.refs
-        })
-    })
+    objs(|m| m.get_mut(&this).map_or(1, |o| {
+        o.refs += 1;
+        o.refs
+    }))
 }
 
 fn release(c: &mut Ctx) -> u32 {
@@ -183,21 +139,12 @@ pub fn release_obj(this: u32) -> u32 {
 
 /// Whether trap `a` is a COM method sake does not implement.
 pub fn is_stub(a: u32) -> bool {
-    STUBS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|m| m.contains_key(&a))
+    STUBS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&a))
 }
 
 /// The vtable of `iface` with the methods `impls` names; built once per interface.
 pub fn vtable(iface: &'static str, impls: &[(&str, Handler)]) -> u32 {
-    if let Some(&v) = VTBLS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .get(iface)
-    {
+    if let Some(&v) = VTBLS.lock().unwrap().get_or_insert_with(HashMap::new).get(iface) {
         return v;
     }
     let t = table(iface);
@@ -213,24 +160,12 @@ pub fn vtable(iface: &'static str, impls: &[(&str, Handler)]) -> u32 {
         };
         let a = host_fn(&format!("{iface}::{i}:{name}"), f, 4 * dwords as u32);
         if i > 2 && !impls.iter().any(|m| m.0 == name) {
-            STUBS
-                .lock()
-                .unwrap()
-                .get_or_insert_with(HashMap::new)
-                .insert(a, (iface, name, kind));
+            STUBS.lock().unwrap().get_or_insert_with(HashMap::new).insert(a, (iface, name, kind));
         }
-        NAMES
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .insert(a, (name, dwords));
+        NAMES.lock().unwrap().get_or_insert_with(HashMap::new).insert(a, (name, dwords));
         mem::wp(v + k * i as u32, a);
     }
-    VTBLS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(iface, v);
+    VTBLS.lock().unwrap().get_or_insert_with(HashMap::new).insert(iface, v);
     v
 }
 

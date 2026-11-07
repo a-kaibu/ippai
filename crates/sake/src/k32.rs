@@ -75,11 +75,7 @@ pub fn ret_str(dst: u32, cap: u32, s: &str, wide: bool) -> u32 {
 /// on another (GetTickCount) would disagree by seconds; Date.now() is shared.
 pub fn clock_ns() -> u64 {
     static START: OnceLock<u128> = OnceLock::new();
-    let now = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    };
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let t0 = *START.get_or_init(now);
     now().saturating_sub(t0) as u64
 }
@@ -142,16 +138,9 @@ fn with_env<R>(f: impl FnOnce(&mut Vec<(String, String)>) -> R) -> R {
         .iter()
         .map(|&(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let mut extra: Vec<(String, String)> = std::env::vars()
-            .filter(|(k, _)| k.starts_with("WINETEST_"))
-            .collect();
+        let mut extra: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k.starts_with("WINETEST_")).collect();
         if let Ok(list) = std::env::var("SAKE_GUEST_ENV") {
-            extra.extend(
-                list.split(';')
-                    .filter_map(|kv| kv.split_once('='))
-                    .filter(|(k, _)| !k.is_empty())
-                    .map(|(k, v)| (k.to_string(), v.to_string())),
-            );
+            extra.extend(list.split(';').filter_map(|kv| kv.split_once('=')).filter(|(k, _)| !k.is_empty()).map(|(k, v)| (k.to_string(), v.to_string())));
         }
         for (k, v) in extra {
             env_put(&mut e, &k, Some(&v));
@@ -172,10 +161,7 @@ fn env_put(e: &mut Vec<(String, String)>, name: &str, value: Option<&str>) {
             e.remove(i);
         }
         (None, Some(v)) => {
-            let i = e
-                .iter()
-                .position(|(k, _)| k.to_ascii_uppercase() > key)
-                .unwrap_or(e.len());
+            let i = e.iter().position(|(k, _)| k.to_ascii_uppercase() > key).unwrap_or(e.len());
             e.insert(i, (name.to_string(), v.to_string()));
         }
         (None, None) => {}
@@ -183,11 +169,7 @@ fn env_put(e: &mut Vec<(String, String)>, name: &str, value: Option<&str>) {
 }
 
 fn env_block(wide: bool) -> u32 {
-    let s: String = with_env(|e| {
-        e.iter()
-            .map(|(k, v)| format!("{k}={v}\0"))
-            .collect::<String>()
-    }) + "\0";
+    let s: String = with_env(|e| e.iter().map(|(k, v)| format!("{k}={v}\0")).collect::<String>()) + "\0";
     if wide {
         let w: Vec<u16> = s.encode_utf16().collect();
         let p = mem::heap_alloc(2 * w.len() as u32, true);
@@ -228,11 +210,7 @@ pub(crate) fn env_vars() -> Vec<(String, String)> {
 }
 fn env_get(name: &str) -> Option<String> {
     let key = name.to_ascii_uppercase();
-    with_env(|e| {
-        e.iter()
-            .find(|(k, _)| k.to_ascii_uppercase() == key)
-            .map(|(_, v)| v.clone())
-    })
+    with_env(|e| e.iter().find(|(k, _)| k.to_ascii_uppercase() == key).map(|(_, v)| v.clone()))
 }
 fn GetEnvironmentVariableA(c: &mut Ctx) -> u32 {
     match env_get(&arg_str(c.a(0), false)) {
@@ -281,10 +259,7 @@ fn expand_env(s: &str) -> String {
     while let Some(i) = rest.find('%') {
         out += &rest[..i];
         let after = &rest[i + 1..];
-        match after
-            .find('%')
-            .and_then(|j| env_get(&after[..j]).map(|v| (j, v)))
-        {
+        match after.find('%').and_then(|j| env_get(&after[..j]).map(|v| (j, v))) {
             Some((j, v)) => {
                 out += &v;
                 rest = &after[j + 1..];
@@ -356,9 +331,7 @@ fn ExitProcess(c: &mut Ctx) -> u32 {
 use crate::process::PROCESS_ALL_ACCESS;
 /// The access a handle to this process has (GetCurrentProcess's: all), None for another handle
 pub fn self_process(h: u32) -> Option<u32> {
-    crate::process::of_handle(h)
-        .filter(|&(pid, _)| crate::process::is_self(pid))
-        .map(|(_, a)| a)
+    crate::process::of_handle(h).filter(|&(pid, _)| crate::process::is_self(pid)).map(|(_, a)| a)
 }
 fn TerminateProcess(c: &mut Ctx) -> u32 {
     match crate::process::of_handle(c.a(0)) {
@@ -424,22 +397,8 @@ fn ExitThread(c: &mut Ctx) -> u32 {
 /// _beginthread(start, stack, arg): a CRT thread (start is cdecl, returning ends it)
 fn _beginthread(c: &mut Ctx) -> u32 {
     let (start, stack, arg) = (c.a(0), c.a(1), c.a(2));
-    let h = obj::add(Obj::Thread {
-        tid: 0,
-        done: false,
-        code: 0x103,
-    });
-    let tid = crate::spawn_gated(
-        start,
-        arg,
-        if stack == 0 {
-            0x10_0000
-        } else {
-            stack.max(0x10000)
-        },
-        h,
-        false,
-    );
+    let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
+    let tid = crate::spawn_gated(start, arg, if stack == 0 { 0x10_0000 } else { stack.max(0x10000) }, h, false);
     obj::with(|t| {
         if let Some((Obj::Thread { tid: x, .. }, _)) = t.objs.get_mut(&h) {
             *x = tid;
@@ -489,29 +448,15 @@ fn K32GetProcessMemoryInfo(c: &mut Ctx) -> u32 {
 /// paged pool, nonpaged pool)
 fn perf_pages() -> [u32; 7] {
     let pages = (PHYS / 4096) as u32;
-    [
-        pages,
-        pages / 4 * 3,
-        pages / 4,
-        2 * pages,
-        pages / 4,
-        0x6000,
-        0x2000,
-    ]
+    [pages, pages / 4 * 3, pages / 4, 2 * pages, pages / 4, 0x6000, 0x2000]
 }
 /// The threads that run (by id) and the handles open
 fn counts() -> (Vec<u32>, u32) {
     obj::with(|t| {
-        let mut tids: Vec<u32> = t
-            .objs
-            .iter()
-            .filter_map(|(_, (o, _))| match o {
-                Obj::Thread {
-                    tid, done: false, ..
-                } => Some(*tid),
-                _ => None,
-            })
-            .collect();
+        let mut tids: Vec<u32> = t.objs.iter().filter_map(|(_, (o, _))| match o {
+            Obj::Thread { tid, done: false, .. } => Some(*tid),
+            _ => None,
+        }).collect();
         tids.sort();
         tids.dedup();
         (tids, t.objs.iter().count() as u32)
@@ -531,21 +476,7 @@ fn K32GetPerformanceInfo(c: &mut Ctx) -> u32 {
     w32(p, size);
     let [phys, avail, commit, limit, peak, paged, nonpaged] = perf_pages();
     let at = |i: u32| p + ps + i * ps; // the SIZE_T fields after cb
-    for (i, v) in [
-        commit,
-        limit,
-        peak,
-        phys,
-        avail,
-        phys / 8,
-        paged + nonpaged,
-        paged,
-        nonpaged,
-        4096,
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (i, v) in [commit, limit, peak, phys, avail, phys / 8, paged + nonpaged, paged, nonpaged, 4096].into_iter().enumerate() {
         mem::wp(at(i as u32), v);
     }
     let (tids, handles) = counts();
@@ -566,20 +497,9 @@ pub(crate) fn query_system_processes(c: &mut Ctx) -> u32 {
         2 => (312, false),
         5 => {
             let (tids, _) = counts();
-            let name = crate::pe::MODULES
-                .read()
-                .unwrap()
-                .iter()
-                .find(|m| !m.dll)
-                .map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string())
-                .unwrap_or_default();
+            let name = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string()).unwrap_or_default();
             let (fixed, ti) = if x64 { (0x100, 0x50) } else { (0xb8, 0x40) };
-            (
-                fixed
-                    + ti * tids.len().max(1) as u32
-                    + 2 * (name.encode_utf16().count() as u32 + 1),
-                false,
-            )
+            (fixed + ti * tids.len().max(1) as u32 + 2 * (name.encode_utf16().count() as u32 + 1), false)
         }
         _ => return 0xc000_0003,
     };
@@ -592,33 +512,14 @@ pub(crate) fn query_system_processes(c: &mut Ctx) -> u32 {
     mem::fill(p, need, 0);
     match class {
         2 => {
-            for (o, v) in [
-                (44, avail),
-                (48, commit),
-                (52, limit),
-                (56, peak),
-                (112, paged),
-                (116, nonpaged),
-            ] {
+            for (o, v) in [(44, avail), (48, commit), (52, limit), (56, peak), (112, paged), (116, nonpaged)] {
                 w32(p + o, v);
             }
         }
         _ => {
             let (tids, handles) = counts();
-            let tids = if tids.is_empty() {
-                vec![crate::cur().tid]
-            } else {
-                tids
-            };
-            let name: Vec<u16> = crate::pe::MODULES
-                .read()
-                .unwrap()
-                .iter()
-                .find(|m| !m.dll)
-                .map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string())
-                .unwrap_or_default()
-                .encode_utf16()
-                .collect();
+            let tids = if tids.is_empty() { vec![crate::cur().tid] } else { tids };
+            let name: Vec<u16> = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string()).unwrap_or_default().encode_utf16().collect();
             let (fixed, ti) = if x64 { (0x100, 0x50) } else { (0xb8, 0x40) };
             w32(p + 4, tids.len() as u32);
             let s = p + fixed + ti * tids.len() as u32;
@@ -650,12 +551,7 @@ pub(crate) fn query_system_processes(c: &mut Ctx) -> u32 {
 /// kernel32 and kernelbase (always there on Windows), then every DLL loaded (mono finds a
 /// P/Invoke into "__Internal" or an unmapped DLL by GetProcAddress on each)
 fn process_modules() -> Vec<u32> {
-    let exe = crate::pe::MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| !m.dll)
-        .map(|m| m.base);
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base);
     let mut v: Vec<u32> = exe.into_iter().collect();
     for d in ["ntdll", "kernel32", "kernelbase"] {
         let b = crate::pe::hle_module(d);
@@ -717,16 +613,7 @@ fn psapi_module(process: u32, h: u32) -> Option<u32> {
     if !psapi_access(process, true) {
         return None;
     }
-    let base = if h == 0 {
-        crate::pe::MODULES
-            .read()
-            .unwrap()
-            .iter()
-            .find(|m| !m.dll)
-            .map(|m| m.base)
-    } else {
-        crate::pe::by_base(h).map(|_| h)
-    };
+    let base = if h == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base) } else { crate::pe::by_base(h).map(|_| h) };
     if base.is_none() {
         last_error(6);
     }
@@ -737,9 +624,7 @@ fn psapi_module(process: u32, h: u32) -> Option<u32> {
 /// names have it; winref modules)
 fn K32GetModuleInformation(c: &mut Ctx) -> u32 {
     let (p, cb) = (c.a(2), c.a(3));
-    let Some(b) = psapi_module(c.a(0), c.a(1)) else {
-        return 0;
-    };
+    let Some(b) = psapi_module(c.a(0), c.a(1)) else { return 0 };
     let ps = mem::ps();
     if cb < 3 * ps {
         last_error(122);
@@ -764,46 +649,26 @@ fn module_info(asked: u32, base: u32, size: u32, entry: u32) -> (u32, u32, u32) 
 #[test]
 fn module_info_of_module_0() {
     // (winref modules: TRUE, base NULL, size and entry point not 0)
-    assert_eq!(
-        module_info(0, 0x40_0000, 0x5000, 0x40_1000),
-        (0, 0x5000, 0x40_1000)
-    );
-    assert_eq!(
-        module_info(0x40_0000, 0x40_0000, 0x5000, 0x40_1000),
-        (0x40_0000, 0x5000, 0x40_1000)
-    );
+    assert_eq!(module_info(0, 0x40_0000, 0x5000, 0x40_1000), (0, 0x5000, 0x40_1000));
+    assert_eq!(module_info(0x40_0000, 0x40_0000, 0x5000, 0x40_1000), (0x40_0000, 0x5000, 0x40_1000));
 }
 /// GetModuleBaseName / GetModuleFileNameEx(process, module, buffer, chars): as much of the name
 /// as fits, ended by a 0 when there is room for one; the characters copied. GetModuleFileNameEx
 /// cut short ends the buffer with a 0 as GetModuleFileName does (Wine's psapi test, Windows 10)
 fn psapi_name(c: &mut Ctx, base_only: bool, wide: bool) -> u32 {
     let (dst, cap) = (c.a(2), c.a(3));
-    let Some(b) = psapi_module(c.a(0), c.a(1)) else {
-        return 0;
-    };
+    let Some(b) = psapi_module(c.a(0), c.a(1)) else { return 0 };
     let path = crate::pe::with(b, |m| m.path.clone()).unwrap();
-    let name = if base_only {
-        path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string()
-    } else {
-        path
-    };
+    let name = if base_only { path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string() } else { path };
     if cap == 0 {
         last_error(122);
         return 0;
     }
     if !base_only {
-        let n = if wide {
-            name.encode_utf16().count()
-        } else {
-            crate::text::s2a(&name).len()
-        } as u32;
+        let n = if wide { name.encode_utf16().count() } else { crate::text::s2a(&name).len() } as u32;
         put_name(dst, cap, &name, wide);
         // (the ANSI one cut short counts what it kept before its 0, as Windows 10)
-        return if !wide && n >= cap {
-            cap - 1
-        } else {
-            n.min(cap)
-        };
+        return if !wide && n >= cap { cap - 1 } else { n.min(cap) };
     }
     if wide {
         let v: Vec<u16> = name.encode_utf16().collect();
@@ -848,18 +713,10 @@ static GATE_CV: Condvar = Condvar::new();
 
 fn CreateThread(c: &mut Ctx) -> u32 {
     let (stack, start, param, flags, ptid) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
-    let h = obj::add(Obj::Thread {
-        tid: 0,
-        done: false,
-        code: 0x103,
-    });
+    let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
     let suspended = flags & 4 != 0;
     // a suspended thread is started by its first ResumeThread
-    let stack = if stack == 0 {
-        0x10_0000
-    } else {
-        stack.max(0x10000)
-    };
+    let stack = if stack == 0 { 0x10_0000 } else { stack.max(0x10000) };
     if suspended {
         GATE.lock().unwrap().push((h, 1));
     }
@@ -935,25 +792,15 @@ fn ResumeThread(c: &mut Ctx) -> u32 {
 fn SuspendThread(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
     // a thread that has not started yet (created suspended): one more suspension
-    if let Some((_, n)) = GATE
-        .lock()
-        .unwrap()
-        .iter_mut()
-        .find(|(x, n)| *x == c.a(0) && *n > 0)
-    {
+    if let Some((_, n)) = GATE.lock().unwrap().iter_mut().find(|(x, n)| *x == c.a(0) && *n > 0) {
         *n += 1;
         return *n - 1;
     }
     let h = match c.a(0) {
         0xffff_fffe => obj::with(|t| {
-            t.objs.iter().find_map(|(&h, (o, _))| {
-                matches!(o, Obj::Thread { tid: x, .. } if *x == tid).then_some(h)
-            })
+            t.objs.iter().find_map(|(&h, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid).then_some(h))
         }),
-        h => obj::with(|t| {
-            matches!(t.objs.get(&h), Some((Obj::Thread { tid: x, .. }, _)) if *x == tid)
-                .then_some(h)
-        }),
+        h => obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Thread { tid: x, .. }, _)) if *x == tid).then_some(h)),
     };
     let Some(h) = h else { return 0 };
     let mut g = GATE.lock().unwrap();
@@ -998,20 +845,10 @@ fn TerminateThread(_: &mut Ctx) -> u32 {
 // thread priorities are kept (and answered) but change nothing: by thread handle
 static PRIORITY: Mutex<Option<HashMap<u32, i32>>> = Mutex::new(None);
 fn thread_key(h: u32) -> u32 {
-    if h == obj::CURRENT_THREAD {
-        crate::cur().obj
-    } else {
-        h
-    }
+    if h == obj::CURRENT_THREAD { crate::cur().obj } else { h }
 }
 fn GetThreadPriority(c: &mut Ctx) -> u32 {
-    PRIORITY
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::default)
-        .get(&thread_key(c.a(0)))
-        .copied()
-        .unwrap_or(0) as u32
+    PRIORITY.lock().unwrap().get_or_insert_with(HashMap::default).get(&thread_key(c.a(0))).copied().unwrap_or(0) as u32
 }
 fn SetThreadPriority(c: &mut Ctx) -> u32 {
     let p = c.i(1);
@@ -1019,11 +856,7 @@ fn SetThreadPriority(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    PRIORITY
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::default)
-        .insert(thread_key(c.a(0)), p);
+    PRIORITY.lock().unwrap().get_or_insert_with(HashMap::default).insert(thread_key(c.a(0)), p);
     1
 }
 fn SetPriorityClass(_: &mut Ctx) -> u32 {
@@ -1039,15 +872,10 @@ fn SetProcessAffinityMask(_: &mut Ctx) -> u32 {
     1
 }
 pub(crate) fn ncpu() -> u32 {
-    if let Some(n) = std::env::var("SAKE_NCPU")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-    {
+    if let Some(n) = std::env::var("SAKE_NCPU").ok().and_then(|v| v.parse::<u32>().ok()) {
         return n.clamp(1, 64);
     }
-    std::thread::available_parallelism()
-        .map_or(4, |n| n.get() as u32)
-        .clamp(1, 8)
+    std::thread::available_parallelism().map_or(4, |n| n.get() as u32).clamp(1, 8)
 }
 fn GetProcessAffinityMask(c: &mut Ctx) -> u32 {
     let m = (1u32 << ncpu()) - 1;
@@ -1071,8 +899,7 @@ fn Sleep(c: &mut Ctx) -> u32 {
 /// Sleeps `ms` (INFINITE: for good); a save state may be taken meanwhile (the call starts over
 /// in a restored copy).
 pub(crate) fn sleep_ms(ms: u32) {
-    let end = (ms != u32::MAX)
-        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    let end = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     loop {
         let left = match end {
             Some(e) => match e.checked_duration_since(std::time::Instant::now()) {
@@ -1122,8 +949,7 @@ pub(crate) fn wait_on_address(a: u32, cmp: u32, size: u32, ms: u32) -> Result<()
         return Ok(());
     }
     let start = *g;
-    let end = (ms != 0xffff_ffff)
-        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    let end = (ms != 0xffff_ffff).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     let mut g = g;
     while *g == start {
         if kura::snap::pausing() {
@@ -1139,10 +965,7 @@ pub(crate) fn wait_on_address(a: u32, cmp: u32, size: u32, ms: u32) -> Result<()
             },
             None => std::time::Duration::from_secs(3600),
         };
-        g = ADDR_CV
-            .wait_timeout(g, left)
-            .unwrap_or_else(|e| e.into_inner())
-            .0;
+        g = ADDR_CV.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner()).0;
     }
     Ok(())
 }
@@ -1158,11 +981,7 @@ fn SleepEx(c: &mut Ctx) -> u32 {
         return 0;
     }
     let r = crate::apc::wait(c, &[], false, c.a(0));
-    if r == crate::apc::WAIT_IO_COMPLETION {
-        r
-    } else {
-        0
-    }
+    if r == crate::apc::WAIT_IO_COMPLETION { r } else { 0 }
 }
 fn SwitchToThread(_: &mut Ctx) -> u32 {
     std::thread::yield_now();
@@ -1189,10 +1008,7 @@ fn kind(o: &Obj) -> u8 {
 }
 /// A kernel object name: "Local\\" / "Global\\" prefixes, no other backslash (ERROR_PATH_NOT_FOUND)
 fn name_ok(n: &str) -> bool {
-    let rest = n
-        .strip_prefix("Local\\")
-        .or_else(|| n.strip_prefix("Global\\"))
-        .unwrap_or(n);
+    let rest = n.strip_prefix("Local\\").or_else(|| n.strip_prefix("Global\\")).unwrap_or(n);
     !rest.contains('\\')
 }
 /// A named event, mutex or semaphore as the kernel keeps it (other processes open it by name)
@@ -1200,12 +1016,7 @@ fn kern_sync(o: &Obj) -> Option<crate::kern::Sync> {
     use crate::kern::Sync;
     Some(match *o {
         Obj::Event { manual, set } => Sync::Event { manual, set },
-        Obj::Mutex { owner, count } => Sync::Mutex {
-            owner,
-            pid: crate::pid(),
-            count,
-            abandoned: false,
-        },
+        Obj::Mutex { owner, count } => Sync::Mutex { owner, pid: crate::pid(), count, abandoned: false },
         Obj::Semaphore { count, max } => Sync::Semaphore { count, max },
         _ => return None,
     })
@@ -1222,11 +1033,7 @@ pub(crate) fn create_named(name: Option<String>, o: Obj) -> u32 {
             return match crate::kern::with(|kk| kk.create_sync(n, s, crate::pid())).0 {
                 Ok((id, existed)) => {
                     let h = obj::add(Obj::Shared(id));
-                    last_error(if existed {
-                        files::ERROR_ALREADY_EXISTS
-                    } else {
-                        0
-                    });
+                    last_error(if existed { files::ERROR_ALREADY_EXISTS } else { 0 });
                     h
                 }
                 Err(_) => {
@@ -1239,11 +1046,7 @@ pub(crate) fn create_named(name: Option<String>, o: Obj) -> u32 {
             last_error(6);
             return 0;
         }
-        let existing = obj::with(|t| {
-            t.names
-                .get(n)
-                .map(|h| (*h, t.objs.get(h).map_or(0, |(o, _)| kind(o))))
-        });
+        let existing = obj::with(|t| t.names.get(n).map(|h| (*h, t.objs.get(h).map_or(0, |(o, _)| kind(o)))));
         if let Some((h, hk)) = existing {
             if hk != k {
                 last_error(6); // ERROR_INVALID_HANDLE: another kind of object has the name
@@ -1279,11 +1082,7 @@ pub(crate) fn open_sync(n: String, want: u8) -> u32 {
             }
         };
     }
-    match obj::with(|t| {
-        t.names
-            .get(&n)
-            .map(|h| (*h, t.objs.get(h).map_or(0, |(o, _)| kind(o))))
-    }) {
+    match obj::with(|t| t.names.get(&n).map(|h| (*h, t.objs.get(h).map_or(0, |(o, _)| kind(o))))) {
         Some((_, k)) if k != want => {
             last_error(6);
             0
@@ -1296,39 +1095,16 @@ pub(crate) fn open_sync(n: String, want: u8) -> u32 {
     }
 }
 fn CreateEventA(c: &mut Ctx) -> u32 {
-    create_named(
-        named(c.a(3), false),
-        Obj::Event {
-            manual: c.a(1) != 0,
-            set: c.a(2) != 0,
-        },
-    )
+    create_named(named(c.a(3), false), Obj::Event { manual: c.a(1) != 0, set: c.a(2) != 0 })
 }
 fn CreateEventW(c: &mut Ctx) -> u32 {
-    create_named(
-        named(c.a(3), true),
-        Obj::Event {
-            manual: c.a(1) != 0,
-            set: c.a(2) != 0,
-        },
-    )
+    create_named(named(c.a(3), true), Obj::Event { manual: c.a(1) != 0, set: c.a(2) != 0 })
 }
 fn CreateEventExW(c: &mut Ctx) -> u32 {
-    create_named(
-        named(c.a(1), true),
-        Obj::Event {
-            manual: c.a(2) & 1 != 0,
-            set: c.a(2) & 2 != 0,
-        },
-    )
+    create_named(named(c.a(1), true), Obj::Event { manual: c.a(2) & 1 != 0, set: c.a(2) & 2 != 0 })
 }
 fn new_timer(manual: bool) -> Obj {
-    Obj::Timer {
-        manual,
-        set: false,
-        due: None,
-        period: std::time::Duration::ZERO,
-    }
+    Obj::Timer { manual, set: false, due: None, period: std::time::Duration::ZERO }
 }
 fn CreateWaitableTimerA(c: &mut Ctx) -> u32 {
     create_named(named(c.a(2), false), new_timer(c.a(1) != 0))
@@ -1358,15 +1134,7 @@ fn SetWaitableTimer(c: &mut Ctx) -> u32 {
     };
     let period = Duration::from_millis(c.a(2) as u64);
     let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
-        Some((
-            Obj::Timer {
-                set,
-                due,
-                period: p,
-                ..
-            },
-            _,
-        )) => {
+        Some((Obj::Timer { set, due, period: p, .. }, _)) => {
             *set = false;
             *due = Some(Instant::now() + after);
             *p = period;
@@ -1402,44 +1170,25 @@ fn OpenEventW(c: &mut Ctx) -> u32 {
 }
 // I/O completion ports: a manual-reset event (set while packets wait) and its packets. Only
 // PostQueuedCompletionStatus queues them (file I/O here completes synchronously).
-static PORTS: Mutex<Option<HashMap<u32, std::collections::VecDeque<(u32, u32, u32)>>>> =
-    Mutex::new(None);
+static PORTS: Mutex<Option<HashMap<u32, std::collections::VecDeque<(u32, u32, u32)>>>> = Mutex::new(None);
 /// CreateIoCompletionPort(file, port, key, threads): a new port, or `port` with the file joined
 fn CreateIoCompletionPort(c: &mut Ctx) -> u32 {
     let (file, port) = (c.a(0), c.a(1));
     if port != 0 {
-        if !PORTS
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::default)
-            .contains_key(&port)
-        {
+        if !PORTS.lock().unwrap().get_or_insert_with(HashMap::default).contains_key(&port) {
             last_error(87);
             return 0;
         }
         return port;
     }
     let _ = file;
-    let h = obj::add(Obj::Event {
-        manual: true,
-        set: false,
-    });
-    PORTS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::default)
-        .insert(h, Default::default());
+    let h = obj::add(Obj::Event { manual: true, set: false });
+    PORTS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Default::default());
     h
 }
 fn PostQueuedCompletionStatus(c: &mut Ctx) -> u32 {
     let (port, bytes, key, ov) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let ok = PORTS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::default)
-        .get_mut(&port)
-        .map(|q| q.push_back((bytes, key, ov)))
-        .is_some();
+    let ok = PORTS.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&port).map(|q| q.push_back((bytes, key, ov))).is_some();
     if !ok {
         last_error(6);
         return 0;
@@ -1451,8 +1200,7 @@ fn PostQueuedCompletionStatus(c: &mut Ctx) -> u32 {
 /// FALSE, WAIT_TIMEOUT and a NULL overlapped (key and bytes as they were)
 fn GetQueuedCompletionStatus(c: &mut Ctx) -> u32 {
     let (port, pbytes, pkey, pov, ms) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let deadline = (ms != 0xffff_ffff)
-        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    let deadline = (ms != 0xffff_ffff).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     loop {
         let got = {
             let mut g = PORTS.lock().unwrap();
@@ -1473,10 +1221,7 @@ fn GetQueuedCompletionStatus(c: &mut Ctx) -> u32 {
             mem::putp(pov, ov);
             return 1;
         }
-        let left = deadline.map_or(0xffff_ffff, |d| {
-            d.saturating_duration_since(std::time::Instant::now())
-                .as_millis() as u32
-        });
+        let left = deadline.map_or(0xffff_ffff, |d| d.saturating_duration_since(std::time::Instant::now()).as_millis() as u32);
         if deadline.is_some() && left == 0 || obj::wait(&[port], false, left, None) != 0 {
             mem::putp(pov, 0);
             last_error(258);
@@ -1519,24 +1264,12 @@ fn PulseEvent(c: &mut Ctx) -> u32 {
 fn CreateMutexA(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
     let own = c.a(1) != 0;
-    create_named(
-        named(c.a(2), false),
-        Obj::Mutex {
-            owner: if own { tid } else { 0 },
-            count: own as u32,
-        },
-    )
+    create_named(named(c.a(2), false), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 })
 }
 fn CreateMutexW(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
     let own = c.a(1) != 0;
-    create_named(
-        named(c.a(2), true),
-        Obj::Mutex {
-            owner: if own { tid } else { 0 },
-            count: own as u32,
-        },
-    )
+    create_named(named(c.a(2), true), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 })
 }
 fn OpenMutexA(c: &mut Ctx) -> u32 {
     open_named(c.a(2), false, 2)
@@ -1586,13 +1319,7 @@ fn CreateSemaphoreA(c: &mut Ctx) -> u32 {
     if !semaphore_counts(c.i(1), c.i(2)) {
         return 0;
     }
-    create_named(
-        named(c.a(3), false),
-        Obj::Semaphore {
-            count: c.i(1),
-            max: c.i(2),
-        },
-    )
+    create_named(named(c.a(3), false), Obj::Semaphore { count: c.i(1), max: c.i(2) })
 }
 /// CreateSemaphore's counts: 0 <= initial <= maximum, maximum > 0 (else ERROR_INVALID_PARAMETER).
 fn semaphore_counts(init: i32, max: i32) -> bool {
@@ -1606,13 +1333,7 @@ fn CreateSemaphoreW(c: &mut Ctx) -> u32 {
     if !semaphore_counts(c.i(1), c.i(2)) {
         return 0;
     }
-    create_named(
-        named(c.a(3), true),
-        Obj::Semaphore {
-            count: c.i(1),
-            max: c.i(2),
-        },
-    )
+    create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
 }
 fn ReleaseSemaphore(c: &mut Ctx) -> u32 {
     match release_semaphore(c.a(0), c.i(1)) {
@@ -1630,11 +1351,7 @@ fn ReleaseSemaphore(c: &mut Ctx) -> u32 {
 /// ERROR_TOO_MANY_POSTS, ERROR_INVALID_HANDLE)
 pub(crate) fn release_semaphore(h: u32, n: i32) -> Result<i32, u32> {
     if let Some(id) = shared_id(h) {
-        let r = if n <= 0 {
-            Err(87)
-        } else {
-            crate::kern::with(|k| k.release_semaphore(id, n)).0
-        };
+        let r = if n <= 0 { Err(87) } else { crate::kern::with(|k| k.release_semaphore(id, n)).0 };
         obj::signal();
         return r.map(|p| p as i32);
     }
@@ -1667,9 +1384,7 @@ fn WaitForMultipleObjects(c: &mut Ctx) -> u32 {
         last_error(87);
         return obj::WAIT_FAILED;
     }
-    let hs: Vec<u32> = (0..c.a(0))
-        .map(|i| mem::rp(c.a(1) + mem::ps() * i))
-        .collect();
+    let hs: Vec<u32> = (0..c.a(0)).map(|i| mem::rp(c.a(1) + mem::ps() * i)).collect();
     // (wait-all on the same object twice: ERROR_INVALID_PARAMETER)
     if c.a(2) != 0 && (1..hs.len()).any(|i| hs[..i].contains(&hs[i])) {
         last_error(87);
@@ -1704,10 +1419,7 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
     let h = if src == obj::CURRENT_THREAD {
         obj::dup(crate::cur().obj)
     } else if src == obj::CURRENT_PROCESS {
-        obj::add(Obj::Process {
-            access: PROCESS_ALL_ACCESS,
-            pid: crate::pid(),
-        })
+        obj::add(Obj::Process { access: PROCESS_ALL_ACCESS, pid: crate::pid() })
     } else if crate::ws2::is_socket(src) {
         let h = crate::ws2::dup_socket(src).unwrap_or(0);
         if c.a(6) & 1 != 0 {
@@ -1717,11 +1429,7 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
     } else if c.a(6) & 1 != 0 {
         // DUPLICATE_CLOSE_SOURCE: Windows hands out the number it just freed (the old handle
         // keeps working through the new one)
-        if obj::with(|t| t.objs.contains_key(&src)) {
-            src
-        } else {
-            0
-        }
+        if obj::with(|t| t.objs.contains_key(&src)) { src } else { 0 }
     } else {
         obj::dup(src)
     };
@@ -1752,11 +1460,7 @@ const OWNER: usize = 3;
 const SEM: usize = 4;
 const SPIN: usize = 5;
 fn cs_off(f: usize) -> u32 {
-    if mem::x64() {
-        [0, 8, 12, 16, 24, 32][f]
-    } else {
-        [0, 4, 8, 12, 16, 20][f]
-    }
+    if mem::x64() { [0, 8, 12, 16, 24, 32][f] } else { [0, 4, 8, 12, 16, 20][f] }
 }
 /// LockCount while owned (Vista and later: bit 0 clear = locked, no waiters counted)
 const CS_LOCKED: u32 = 0xffff_fffe;
@@ -1773,10 +1477,7 @@ pub fn cs_enter(cs: u32) {
     }
     let mut spins = 0;
     loop {
-        if own
-            .compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
+        if own.compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_ok() {
             w32(cs + cs_off(REC), 1);
             w32(cs + cs_off(LOCK), CS_LOCKED);
             return;
@@ -1798,10 +1499,7 @@ pub fn cs_enter(cs: u32) {
                 waiters.fetch_add(1, Ordering::SeqCst);
                 continue;
             }
-            g = CS_CV
-                .wait_timeout(g, std::time::Duration::from_millis(50))
-                .unwrap()
-                .0;
+            g = CS_CV.wait_timeout(g, std::time::Duration::from_millis(50)).unwrap().0;
         }
         waiters.fetch_sub(1, Ordering::SeqCst);
         drop(g);
@@ -1883,10 +1581,7 @@ fn TryEnterCriticalSection(c: &mut Ctx) -> u32 {
         w32(cs + cs_off(REC), r32(cs + cs_off(REC)) + 1);
         return 1;
     }
-    if own
-        .compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed)
-        .is_ok()
-    {
+    if own.compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_ok() {
         w32(cs + cs_off(REC), 1);
         w32(cs + cs_off(LOCK), CS_LOCKED);
         return 1;
@@ -1911,12 +1606,9 @@ pub(crate) fn srw_try(l: u32, shared: bool) -> bool {
     let a = atomic(l);
     let v = a.load(Ordering::SeqCst);
     if shared {
-        v & 1 == 0
-            && a.compare_exchange(v, v + 2, Ordering::SeqCst, Ordering::Relaxed)
-                .is_ok()
+        v & 1 == 0 && a.compare_exchange(v, v + 2, Ordering::SeqCst, Ordering::Relaxed).is_ok()
     } else {
-        a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed)
-            .is_ok()
+        a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed).is_ok()
     }
 }
 pub(crate) fn srw_acquire(l: u32, shared: bool) {
@@ -1937,10 +1629,7 @@ pub(crate) fn srw_acquire(l: u32, shared: bool) {
             g = SYNC.lock().unwrap();
             continue;
         }
-        g = SYNC_CV
-            .wait_timeout(g, std::time::Duration::from_millis(20))
-            .unwrap()
-            .0;
+        g = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20)).unwrap().0;
     }
     SRW_WAITERS.fetch_sub(1, Ordering::SeqCst);
 }
@@ -1995,27 +1684,13 @@ fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
 /// it again (plain functions: a save state taken meanwhile has a restored copy call
 /// `reacquire` and return `woken` from the API, a wake without a signal).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn cv_wait(
-    cv: u32,
-    ms: u32,
-    release: fn(u64, u64),
-    reacquire: fn(u64, u64),
-    a: u64,
-    b: u64,
-    woken: u32,
-) -> bool {
+pub(crate) fn cv_wait(cv: u32, ms: u32, release: fn(u64, u64), reacquire: fn(u64, u64), a: u64, b: u64, woken: u32) -> bool {
     // the generation is read before the lock is released (a wake in between is seen), but SYNC is
     // not held across `release` (srw_release takes it to notify: holding it deadlocked)
-    let gen0 = *SYNC
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::default)
-        .entry(cv)
-        .or_insert(0);
+    let gen0 = *SYNC.lock().unwrap().get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
     release(a, b);
     let mut g = SYNC.lock().unwrap();
-    let end = (ms != u32::MAX)
-        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    let end = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     let mut woke = true;
     while g.as_ref().unwrap().get(&cv).copied() == Some(gen0) {
         if kura::snap::pausing() {
@@ -2045,24 +1720,13 @@ pub(crate) fn cv_wait(
 }
 pub(crate) fn cv_wake(cv: u32) {
     let mut g = SYNC.lock().unwrap();
-    let e = g
-        .get_or_insert_with(HashMap::default)
-        .entry(cv)
-        .or_insert(0);
+    let e = g.get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
     *e = e.wrapping_add(1);
     SYNC_CV.notify_all();
 }
 fn SleepConditionVariableSRW(c: &mut Ctx) -> u32 {
     let (cv, l, ms, shared) = (c.a(0), c.a(1), c.a(2), c.a(3) & 1 != 0);
-    cv_wait(
-        cv,
-        ms,
-        |l, s| srw_release(l as u32, s != 0),
-        |l, s| srw_acquire(l as u32, s != 0),
-        l as u64,
-        shared as u64,
-        1,
-    ) as u32
+    cv_wait(cv, ms, |l, s| srw_release(l as u32, s != 0), |l, s| srw_acquire(l as u32, s != 0), l as u64, shared as u64, 1) as u32
 }
 fn SleepConditionVariableCS(c: &mut Ctx) -> u32 {
     let (cv, cs, ms) = (c.a(0), c.a(1), c.a(2));
@@ -2152,10 +1816,7 @@ fn InitOnceBeginInitialize(c: &mut Ctx) -> u32 {
             last_error(31); // ERROR_GEN_FAILURE: not done yet
             return 0;
         }
-        if v == 0
-            && a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-        {
+        if v == 0 && a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
             put32(pending, 1);
             return 1;
         }
@@ -2209,11 +1870,7 @@ pub fn tls_thread_init(_teb: u32) {}
 
 fn tls_slot(i: u32) -> u32 {
     let teb = crate::cur().teb;
-    let (slots, exp, k) = if mem::x64() {
-        (0x1480, 0x1780, 8)
-    } else {
-        (0xe10, 0xf94, 4)
-    };
+    let (slots, exp, k) = if mem::x64() { (0x1480, 0x1780, 8) } else { (0xe10, 0xf94, 4) };
     if i < 64 {
         return teb + slots + k * i;
     }
@@ -2390,15 +2047,10 @@ fn VirtualAlloc(c: &mut Ctx) -> u32 {
     // reserves twice each allocator region, runs out after a few (its regions are 64 MB here,
     // unity6.rs)
     let over = mem::over_reserved_block(size).filter(|_| addr == 0 && !commit);
-    let b = over
-        .and_then(|s| mem::reserve_aligned(s, s, prot, 0x20000))
-        .or_else(|| mem::reserve(addr, size, prot, 0x20000, ty & 0x10_0000 != 0));
+    let b = over.and_then(|s| mem::reserve_aligned(s, s, prot, 0x20000)).or_else(|| mem::reserve(addr, size, prot, 0x20000, ty & 0x10_0000 != 0));
     let Some(b) = b else {
         if crate::env_on!("SAKE_TRACE_MEM") {
-            eprintln!(
-                "sake: VirtualAlloc({addr:#x}, {size:#x}, {ty:#x}) failed; the address space:\n{}",
-                mem::dump()
-            );
+            eprintln!("sake: VirtualAlloc({addr:#x}, {size:#x}, {ty:#x}) failed; the address space:\n{}", mem::dump());
         }
         last_error(if addr != 0 { 487 } else { 8 });
         return 0;
@@ -2444,15 +2096,7 @@ fn VirtualQuery(c: &mut Ctx) -> u32 {
     }
     let page = a & !(mem::PAGE - 1);
     let (base, alloc, aprot, n, state, prot, kind) = match mem::query(a) {
-        Some((b, r, start, n, state, prot)) => (
-            start.max(page),
-            b,
-            r.alloc_prot,
-            n - (page - start),
-            state,
-            prot,
-            r.kind,
-        ),
+        Some((b, r, start, n, state, prot)) => (start.max(page), b, r.alloc_prot, n - (page - start), state, prot, r.kind),
         None => {
             let (lo, n) = mem::free_at(a);
             (lo.max(page), 0, 0, n - (page.max(lo) - lo), 0x10000, 1, 0)
@@ -2587,11 +2231,7 @@ fn RtlTimeToSecondsSince1970(c: &mut Ctx) -> u32 {
     1
 }
 fn locale_name() -> &'static str {
-    if crate::text::acp() == 932 {
-        "ja-JP"
-    } else {
-        "en-US"
-    }
+    if crate::text::acp() == 932 { "ja-JP" } else { "en-US" }
 }
 fn GetUserDefaultLocaleName(c: &mut Ctx) -> u32 {
     let (out, n) = (c.a(0), c.a(1));
@@ -2606,45 +2246,16 @@ fn GetUserDefaultLocaleName(c: &mut Ctx) -> u32 {
     w.len() as u32
 }
 const LOCALES: [(u32, &str); 16] = [
-    (0x409, "en-US"),
-    (0x411, "ja-JP"),
-    (0x804, "zh-CN"),
-    (0x404, "zh-TW"),
-    (0x412, "ko-KR"),
-    (0x809, "en-GB"),
-    (0x407, "de-DE"),
-    (0x40c, "fr-FR"),
-    (0x410, "it-IT"),
-    (0xc0a, "es-ES"),
-    (0x419, "ru-RU"),
-    (0x416, "pt-BR"),
-    (0x816, "pt-PT"),
-    (0x413, "nl-NL"),
-    (0x41d, "sv-SE"),
-    (0x7f, ""),
+    (0x409, "en-US"), (0x411, "ja-JP"), (0x804, "zh-CN"), (0x404, "zh-TW"), (0x412, "ko-KR"), (0x809, "en-GB"),
+    (0x407, "de-DE"), (0x40c, "fr-FR"), (0x410, "it-IT"), (0xc0a, "es-ES"), (0x419, "ru-RU"), (0x416, "pt-BR"),
+    (0x816, "pt-PT"), (0x413, "nl-NL"), (0x41d, "sv-SE"), (0x7f, ""),
 ];
 fn LocaleNameToLCID(c: &mut Ctx) -> u32 {
-    let n = if c.a(0) == 0 {
-        locale_name().to_string()
-    } else {
-        String::from_utf16_lossy(&wstr(c.a(0)))
-    };
+    let n = if c.a(0) == 0 { locale_name().to_string() } else { String::from_utf16_lossy(&wstr(c.a(0))) };
     let n = n.to_ascii_lowercase();
     match n.as_str() {
-        "" | "!x-sys-default-locale" => {
-            if crate::text::acp() == 932 {
-                0x411
-            } else {
-                0x409
-            }
-        }
-        _ => LOCALES
-            .iter()
-            .find(|l| {
-                l.1.eq_ignore_ascii_case(&n)
-                    || l.1.split('-').next() == Some(n.as_str()) && !n.is_empty()
-            })
-            .map_or(0x409, |l| l.0),
+        "" | "!x-sys-default-locale" => if crate::text::acp() == 932 { 0x411 } else { 0x409 },
+        _ => LOCALES.iter().find(|l| l.1.eq_ignore_ascii_case(&n) || l.1.split('-').next() == Some(n.as_str()) && !n.is_empty()).map_or(0x409, |l| l.0),
     }
 }
 /// GetLocaleInfoEx(name, type, buffer, count): GetLocaleInfoW of the name's LCID
@@ -2657,13 +2268,7 @@ fn GetLocaleInfoEx(c: &mut Ctx) -> u32 {
 /// (lcid, name, count, flags)
 fn LCIDToLocaleName(c: &mut Ctx) -> u32 {
     let lcid = match c.a(0) & 0xffff {
-        0x400 | 0x800 | 0 => {
-            if crate::text::acp() == 932 {
-                0x411
-            } else {
-                0x409
-            }
-        }
+        0x400 | 0x800 | 0 => if crate::text::acp() == 932 { 0x411 } else { 0x409 },
         l => l,
     };
     let Some(&(_, name)) = LOCALES.iter().find(|l| l.0 == lcid) else {
@@ -2686,19 +2291,11 @@ fn LCIDToLocaleName(c: &mut Ctx) -> u32 {
 /// LdrGetDllHandle(path, flags, UNICODE_STRING *name, HMODULE *out)
 fn LdrGetDllHandle(c: &mut Ctx) -> u32 {
     let us = c.a(2);
-    let h = if us == 0 {
-        0
-    } else {
-        module_handle(mem::rp(us + mem::ps()), true)
-    };
+    let h = if us == 0 { 0 } else { module_handle(mem::rp(us + mem::ps()), true) };
     if c.a(3) != 0 {
         mem::wp(c.a(3), h);
     }
-    if h == 0 {
-        0xc000_0135
-    } else {
-        0
-    }
+    if h == 0 { 0xc000_0135 } else { 0 }
 }
 // ntdll's counted strings: UNICODE_STRING / ANSI_STRING = { u16 Length, u16 MaximumLength, PTR Buffer }
 fn put_counted(us: u32, len: u32, max: u32, buf: u32) {
@@ -2742,38 +2339,23 @@ fn counted_out(us: u32, v: &[u16], unit: u32, alloc: bool) -> u32 {
         mem::rp(us + mem::ps())
     };
     for (i, &x) in v.iter().enumerate() {
-        if unit == 2 {
-            w16(buf + 2 * i as u32, x)
-        } else {
-            w8(buf + i as u32, x as u8)
-        }
+        if unit == 2 { w16(buf + 2 * i as u32, x) } else { w8(buf + i as u32, x as u8) }
     }
-    if unit == 2 {
-        w16(buf + n, 0)
-    } else {
-        w8(buf + n, 0)
-    }
+    if unit == 2 { w16(buf + n, 0) } else { w8(buf + n, 0) }
     0
 }
 fn counted_bytes(us: u32) -> Vec<u8> {
-    (0..r16(us) as u32)
-        .map(|i| mem::r8(mem::rp(us + mem::ps()) + i))
-        .collect()
+    (0..r16(us) as u32).map(|i| mem::r8(mem::rp(us + mem::ps()) + i)).collect()
 }
 fn counted_wide(us: u32) -> Vec<u16> {
-    (0..r16(us) as u32 / 2)
-        .map(|i| r16(mem::rp(us + mem::ps()) + 2 * i))
-        .collect()
+    (0..r16(us) as u32 / 2).map(|i| r16(mem::rp(us + mem::ps()) + 2 * i)).collect()
 }
 fn RtlAnsiStringToUnicodeString(c: &mut Ctx) -> u32 {
     let w = a2w(&counted_bytes(c.a(1)));
     counted_out(c.a(0), &w, 2, c.a(2) != 0)
 }
 fn RtlUnicodeStringToAnsiString(c: &mut Ctx) -> u32 {
-    let a: Vec<u16> = crate::text::w2a(&counted_wide(c.a(1)))
-        .into_iter()
-        .map(|b| b as u16)
-        .collect();
+    let a: Vec<u16> = crate::text::w2a(&counted_wide(c.a(1))).into_iter().map(|b| b as u16).collect();
     counted_out(c.a(0), &a, 1, c.a(2) != 0)
 }
 /// RtlMultiByteToUnicodeN(dst, dst bytes, &written bytes, src, src bytes): the ANSI code page's
@@ -2829,11 +2411,7 @@ fn RtlUpcaseUnicodeChar(c: &mut Ctx) -> u32 {
 /// RtlCompareUnicodeString(a, b, case insensitive): the difference of the first units that
 /// differ (in upper case when asked), else of the lengths
 fn RtlCompareUnicodeString(c: &mut Ctx) -> u32 {
-    let (a, b, ci) = (
-        counted_wide(c.a(0)),
-        counted_wide(c.a(1)),
-        c.a(2) & 0xff != 0,
-    );
+    let (a, b, ci) = (counted_wide(c.a(0)), counted_wide(c.a(1)), c.a(2) & 0xff != 0);
     let f = |u: u16| if ci { crate::nt::up(u) } else { u };
     for (x, y) in a.iter().zip(&b) {
         let (x, y) = (f(*x), f(*y));
@@ -2855,25 +2433,13 @@ fn RtlDosPathNameToNtPathName_U(c: &mut Ctx) -> u32 {
     let w: Vec<u16> = format!("\\??\\{full}").encode_utf16().collect();
     counted_out(nt, &w, 2, true);
     if part != 0 {
-        let at = w
-            .iter()
-            .rposition(|&x| x == b'\\' as u16)
-            .map_or(0, |i| i + 1);
-        mem::wp(
-            part,
-            if at < w.len() {
-                mem::rp(nt + mem::ps()) + 2 * at as u32
-            } else {
-                0
-            },
-        );
+        let at = w.iter().rposition(|&x| x == b'\\' as u16).map_or(0, |i| i + 1);
+        mem::wp(part, if at < w.len() { mem::rp(nt + mem::ps()) + 2 * at as u32 } else { 0 });
     }
     1
 }
 fn RtlFormatCurrentUserKeyPath(c: &mut Ctx) -> u32 {
-    let w: Vec<u16> = "\\REGISTRY\\USER\\S-1-5-21-0-0-0-1000"
-        .encode_utf16()
-        .collect();
+    let w: Vec<u16> = "\\REGISTRY\\USER\\S-1-5-21-0-0-0-1000".encode_utf16().collect();
     counted_out(c.a(0), &w, 2, true)
 }
 /// LdrGetProcedureAddress(module, ANSI_STRING* name, ordinal, &address)
@@ -2890,11 +2456,7 @@ fn LdrGetProcedureAddress(c: &mut Ctx) -> u32 {
     if out != 0 {
         mem::wp(out, r);
     }
-    if r == 0 {
-        0xc000_0139
-    } else {
-        0
-    }
+    if r == 0 { 0xc000_0139 } else { 0 }
 }
 /// NtProtectVirtualMemory(process, &base, &size, protect, &old)
 fn NtProtectVirtualMemory(c: &mut Ctx) -> u32 {
@@ -2928,11 +2490,7 @@ fn NtQueryVirtualMemory(c: &mut Ctx) -> u32 {
             if ret != 0 {
                 mem::wp(ret, n);
             }
-            if n == 0 {
-                0xc000_0004
-            } else {
-                0
-            }
+            if n == 0 { 0xc000_0004 } else { 0 }
         }
         2 => {
             // MemoryMappedFilenameInformation: MEMORY_SECTION_NAME, the name right after it
@@ -2969,40 +2527,22 @@ static HEAP_MAX: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 fn HeapCreate(c: &mut Ctx) -> u32 {
     let h = NEXT_HEAP.fetch_add(0x10000, Ordering::Relaxed);
     if c.a(2) != 0 {
-        HEAP_MAX
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::default)
-            .insert(h, c.a(2));
+        HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, c.a(2));
     }
     h
 }
 fn HeapDestroy(c: &mut Ctx) -> u32 {
-    HEAP_MAX
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::default)
-        .remove(&c.a(0));
+    HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
     1
 }
 /// Whether heap `h` can never hold a block of `size` bytes: a fixed heap's blocks fit in its
 /// maximum size, and no block reaches the top of the address space
 fn heap_refuses(h: u32, size: u32) -> bool {
     let max = if mem::x64() { 0x7fff_0000 } else { 0x7ffd_ffff };
-    size > max
-        || HEAP_MAX
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::default)
-            .get(&h)
-            .is_some_and(|&m| size > m)
+    size > max || HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).is_some_and(|&m| size > m)
 }
 fn HeapAlloc(c: &mut Ctx) -> u32 {
-    let p = if heap_refuses(c.a(0), c.a(2)) {
-        0
-    } else {
-        mem::heap_alloc_small(c.a(2), c.a(1) & 8 != 0)
-    };
+    let p = if heap_refuses(c.a(0), c.a(2)) { 0 } else { mem::heap_alloc_small(c.a(2), c.a(1) & 8 != 0) };
     if p == 0 {
         // (the error is ERROR_NOT_ENOUGH_MEMORY, which RtlAllocateHeap's caller sets)
         last_error(8);
@@ -3242,21 +2782,12 @@ pub(crate) fn global_free(h: u32) -> u32 {
 }
 /// GlobalReAlloc / LocalReAlloc (`global`: GlobalReAlloc refuses a locked block's discard)
 pub(crate) fn global_realloc(h: u32, size: u32, flags: u32, global: bool) -> u32 {
-    let (zero, moveable, modify, discardable) = (
-        flags & 0x40 != 0,
-        flags & 2 != 0,
-        flags & 0x80 != 0,
-        flags & 0x100 != 0,
-    );
+    let (zero, moveable, modify, discardable) = (flags & 0x40 != 0, flags & 2 != 0, flags & 0x80 != 0, flags & 0x100 != 0);
     if is_block(h) {
         if modify {
             if global && moveable {
                 // (GMEM_MODIFY | GMEM_MOVEABLE: the fixed block gets a handle)
-                let n = handles::new(
-                    handles::USED
-                        | handles::MOVEABLE
-                        | if discardable { handles::DISCARDABLE } else { 0 },
-                );
+                let n = handles::new(handles::USED | handles::MOVEABLE | if discardable { handles::DISCARDABLE } else { 0 });
                 let Some(e) = handles::entry(n) else {
                     last_error(8);
                     return 0;
@@ -3270,11 +2801,7 @@ pub(crate) fn global_realloc(h: u32, size: u32, flags: u32, global: bool) -> u32
             last_error(87);
             return 0;
         }
-        let n = if moveable || mem::heap_fits(h, size) {
-            mem::heap_realloc(h, size, zero)
-        } else {
-            0
-        };
+        let n = if moveable || mem::heap_fits(h, size) { mem::heap_realloc(h, size, zero) } else { 0 };
         if n == 0 {
             last_error(8);
         }
@@ -3389,11 +2916,7 @@ fn global_flags(h: u32) -> u32 {
     };
     let f = handles::flags(e);
     let mut r = f >> 16 & 0xff;
-    for (bit, g) in [
-        (handles::DISCARDABLE, 0x100),
-        (handles::DISCARDED, 0x4000),
-        (handles::DDESHARE, 0x2000),
-    ] {
+    for (bit, g) in [(handles::DISCARDABLE, 0x100), (handles::DISCARDED, 0x4000), (handles::DDESHARE, 0x2000)] {
         if f & bit != 0 {
             r |= g;
         }
@@ -3462,11 +2985,7 @@ fn LocalSize(c: &mut Ctx) -> u32 {
 /// LocalFlags: GlobalFlags with LMEM_DISCARDABLE (0xf00) for a discardable block
 fn LocalFlags(c: &mut Ctx) -> u32 {
     let f = global_flags(c.a(0));
-    if f != 0x8000 && f & 0x100 != 0 {
-        f | 0xf00
-    } else {
-        f
-    }
+    if f != 0x8000 && f & 0x100 != 0 { f | 0xf00 } else { f }
 }
 fn LocalHandle(c: &mut Ctx) -> u32 {
     global_handle(c.a(0))
@@ -3484,23 +3003,9 @@ fn GlobalMemoryStatus(c: &mut Ctx) -> u32 {
     let ps = mem::ps();
     w32(p, 8 + 6 * ps);
     w32(p + 4, 30);
-    for (i, v) in [
-        PHYS,
-        PHYS / 4 * 3,
-        2 * PHYS,
-        2 * PHYS,
-        0x7ffe_0000,
-        0x6000_0000,
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (i, v) in [PHYS, PHYS / 4 * 3, 2 * PHYS, 2 * PHYS, 0x7ffe_0000, 0x6000_0000].into_iter().enumerate() {
         let at = p + 8 + ps * i as u32;
-        if x64 {
-            mem::w64(at, clamp(v))
-        } else {
-            w32(at, clamp(v) as u32)
-        }
+        if x64 { mem::w64(at, clamp(v)) } else { w32(at, clamp(v) as u32) }
     }
     0
 }
@@ -3573,48 +3078,32 @@ fn GetLogicalProcessorInformationEx(c: &mut Ctx) -> u32 {
     let mut items: Vec<(u32, u32, Box<dyn Fn(u32)>)> = Vec::new();
     if all || rel == 0 {
         for i in 0..ncpu() {
-            items.push((
-                0,
-                44,
-                Box::new(move |p| {
-                    w16(p + 8 + 22, 1);
-                    group_affinity(p + 8 + 24, 1 << i);
-                }),
-            ));
+            items.push((0, 44, Box::new(move |p| {
+                w16(p + 8 + 22, 1);
+                group_affinity(p + 8 + 24, 1 << i);
+            })));
         }
     }
     if all || rel == 1 {
-        items.push((
-            1,
-            44,
-            Box::new(|p| {
-                w16(p + 8 + 22, 1);
-                group_affinity(p + 8 + 24, cpu_mask());
-            }),
-        ));
+        items.push((1, 44, Box::new(|p| {
+            w16(p + 8 + 22, 1);
+            group_affinity(p + 8 + 24, cpu_mask());
+        })));
     }
     if all || rel == 3 {
-        items.push((
-            3,
-            44,
-            Box::new(|p| {
-                w16(p + 8 + 22, 1);
-                group_affinity(p + 8 + 24, cpu_mask());
-            }),
-        ));
+        items.push((3, 44, Box::new(|p| {
+            w16(p + 8 + 22, 1);
+            group_affinity(p + 8 + 24, cpu_mask());
+        })));
     }
     if all || rel == 4 {
-        items.push((
-            4,
-            76,
-            Box::new(|p| {
-                w16(p + 8, 1);
-                w16(p + 10, 1);
-                w8(p + 8 + 24, ncpu() as u8);
-                w8(p + 8 + 25, ncpu() as u8);
-                w32(p + 8 + 24 + 40, cpu_mask());
-            }),
-        ));
+        items.push((4, 76, Box::new(|p| {
+            w16(p + 8, 1);
+            w16(p + 10, 1);
+            w8(p + 8 + 24, ncpu() as u8);
+            w8(p + 8 + 25, ncpu() as u8);
+            w32(p + 8 + 24 + 40, cpu_mask());
+        })));
     }
     let need: u32 = items.iter().map(|x| x.1).sum();
     if lenp == 0 || r32(lenp) < need || buf == 0 {
@@ -3679,11 +3168,7 @@ fn GetNumaNodeProcessorMask(c: &mut Ctx) -> u32 {
     1
 }
 fn GetActiveProcessorCount(c: &mut Ctx) -> u32 {
-    if matches!(c.a(0) & 0xffff, 0 | 0xffff) {
-        ncpu()
-    } else {
-        0
-    }
+    if matches!(c.a(0) & 0xffff, 0 | 0xffff) { ncpu() } else { 0 }
 }
 fn GetMaximumProcessorCount(c: &mut Ctx) -> u32 {
     GetActiveProcessorCount(c)
@@ -3724,17 +3209,7 @@ fn tp_with<R>(f: impl FnOnce(&mut HashMap<u32, Tp>) -> R) -> R {
 fn tp_new(c: &mut Ctx) -> u32 {
     let h = mem::heap_alloc(16, true);
     let (cb, ctx) = (c.a(0), c.a(1));
-    tp_with(|m| {
-        m.insert(
-            h,
-            Tp {
-                cb,
-                ctx,
-                gen: 0,
-                running: 0,
-            },
-        )
-    });
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
     h
 }
 fn tp_bump(h: u32) -> Option<(u32, u32, u32)> {
@@ -3801,9 +3276,7 @@ fn tp_timer_thread(c: &mut Ctx) -> u32 {
             if !tp_current(h, gen) {
                 break;
             }
-            let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else {
-                break;
-            };
+            let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else { break };
             tp_with(|m| m.get_mut(&h).map(|t| t.running += 1));
             match mode {
                 0 => c.call(cb, &[0, ctx, h]),
@@ -3834,9 +3307,7 @@ fn tp_wait_thread(c: &mut Ctx) -> u32 {
             if !tp_current(h, gen) {
                 break;
             }
-            let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else {
-                break;
-            };
+            let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else { break };
             if mode == 0 {
                 c.call(cb, &[0, ctx, h, if r == 0 { 0 } else { 0x102 }]);
                 break;
@@ -3853,17 +3324,7 @@ fn tp_wait_thread(c: &mut Ctx) -> u32 {
 fn RegisterWaitForSingleObject(c: &mut Ctx) -> u32 {
     let (out, obj_h, cb, ctx, ms, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
     let h = mem::heap_alloc(16, true);
-    tp_with(|m| {
-        m.insert(
-            h,
-            Tp {
-                cb,
-                ctx,
-                gen: 0,
-                running: 0,
-            },
-        )
-    });
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
     mem::putp(out, h);
     tp_spawn(false, h, 0, (obj_h, ms, flags | 0x8000_0000));
     1
@@ -3882,17 +3343,7 @@ fn DeleteTimerQueue(_: &mut Ctx) -> u32 {
 fn CreateTimerQueueTimer(c: &mut Ctx) -> u32 {
     let (out, cb, param, due, period) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5));
     let h = mem::heap_alloc(16, true);
-    tp_with(|m| {
-        m.insert(
-            h,
-            Tp {
-                cb,
-                ctx: param,
-                gen: 0,
-                running: 0,
-            },
-        )
-    });
+    tp_with(|m| m.insert(h, Tp { cb, ctx: param, gen: 0, running: 0 }));
     mem::putp(out, h);
     tp_spawn(true, h, 0, (due, period, 1));
     1
@@ -3900,9 +3351,7 @@ fn CreateTimerQueueTimer(c: &mut Ctx) -> u32 {
 /// ChangeTimerQueueTimer(queue, timer, due ms, period ms)
 fn ChangeTimerQueueTimer(c: &mut Ctx) -> u32 {
     let (h, due, period) = (c.a(1), c.a(2), c.a(3));
-    let Some((_, _, gen)) = tp_bump(h) else {
-        return 0;
-    };
+    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
     tp_spawn(true, h, gen, (due, period, 1));
     1
 }
@@ -3918,17 +3367,7 @@ fn DeleteTimerQueueTimer(c: &mut Ctx) -> u32 {
 fn QueueUserWorkItem(c: &mut Ctx) -> u32 {
     let (cb, ctx) = (c.a(0), c.a(1));
     let h = mem::heap_alloc(16, true);
-    tp_with(|m| {
-        m.insert(
-            h,
-            Tp {
-                cb,
-                ctx,
-                gen: 0,
-                running: 0,
-            },
-        )
-    });
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
     tp_spawn(true, h, 0, (0, 0, 2));
     1
 }
@@ -3946,17 +3385,7 @@ fn SubmitThreadpoolWork(c: &mut Ctx) -> u32 {
 fn TrySubmitThreadpoolCallback(c: &mut Ctx) -> u32 {
     let (cb, ctx) = (c.a(0), c.a(1));
     let h = mem::heap_alloc(16, true);
-    tp_with(|m| {
-        m.insert(
-            h,
-            Tp {
-                cb,
-                ctx,
-                gen: 0,
-                running: 0,
-            },
-        )
-    });
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
     tp_spawn(true, h, 0, (0, 0, 3));
     1
 }
@@ -3966,9 +3395,7 @@ fn WaitForThreadpoolWorkCallbacks(c: &mut Ctx) -> u32 {
     if c.a(1) != 0 {
         TP_ARGS.lock().unwrap().retain(|x| x.0 != h);
     }
-    while TP_ARGS.lock().unwrap().iter().any(|x| x.0 == h)
-        || tp_with(|m| m.get(&h).is_some_and(|t| t.running > 0))
-    {
+    while TP_ARGS.lock().unwrap().iter().any(|x| x.0 == h) || tp_with(|m| m.get(&h).is_some_and(|t| t.running > 0)) {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     0
@@ -3994,9 +3421,7 @@ fn CreateThreadpoolTimer(c: &mut Ctx) -> u32 {
 /// SetThreadpoolTimer(timer, due FILETIME* or NULL (cancel), period ms, window)
 fn SetThreadpoolTimer(c: &mut Ctx) -> u32 {
     let (h, due, period) = (c.a(0), c.a(1), c.a(2));
-    let Some((_, _, gen)) = tp_bump(h) else {
-        return 0;
-    };
+    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
     if due != 0 {
         tp_spawn(true, h, gen, (due_ms(due) as u32, period, 0));
     }
@@ -4021,15 +3446,9 @@ fn CreateThreadpoolWait(c: &mut Ctx) -> u32 {
 /// SetThreadpoolWait(wait, handle or NULL (cancel), timeout FILETIME* or NULL (infinite))
 fn SetThreadpoolWait(c: &mut Ctx) -> u32 {
     let (h, obj_h, due) = (c.a(0), c.a(1), c.a(2));
-    let Some((_, _, gen)) = tp_bump(h) else {
-        return 0;
-    };
+    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
     if obj_h != 0 {
-        let ms = if due == 0 {
-            u32::MAX
-        } else {
-            due_ms(due).min(u32::MAX as u64 - 1) as u32
-        };
+        let ms = if due == 0 { u32::MAX } else { due_ms(due).min(u32::MAX as u64 - 1) as u32 };
         tp_spawn(false, h, gen, (obj_h, ms, 0));
     }
     0
@@ -4048,13 +3467,7 @@ fn FreeLibraryWhenCallbackReturns(_: &mut Ctx) -> u32 {
     0
 }
 fn CreateSemaphoreExW(c: &mut Ctx) -> u32 {
-    create_named(
-        named(c.a(3), true),
-        Obj::Semaphore {
-            count: c.i(1),
-            max: c.i(2),
-        },
-    )
+    create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
 }
 fn SetThreadStackGuarantee(_: &mut Ctx) -> u32 {
     1
@@ -4193,22 +3606,8 @@ pub struct OsVer {
     pub suite: u16,
     pub product: u8,
 }
-pub const OS_VERSION: OsVer = OsVer {
-    major: 6,
-    minor: 1,
-    build: 7601,
-    platform: 2,
-    sp_major: 1,
-    sp_minor: 0,
-    suite: 0x100,
-    product: 1,
-};
-pub const OS_VERSION_REAL: OsVer = OsVer {
-    major: 10,
-    minor: 0,
-    build: 19045,
-    ..OS_VERSION
-};
+pub const OS_VERSION: OsVer = OsVer { major: 6, minor: 1, build: 7601, platform: 2, sp_major: 1, sp_minor: 0, suite: 0x100, product: 1 };
+pub const OS_VERSION_REAL: OsVer = OsVer { major: 10, minor: 0, build: 19045, ..OS_VERSION };
 
 /// The version GetVersionEx and VerifyVersionInfo answer with: Windows 10's to a program whose
 /// manifest declares it supports Windows 10 (supportedOS {8e0f7a12-...}; Ren'Py's launcher
@@ -4217,27 +3616,13 @@ pub fn os_version() -> OsVer {
     static WIN10: OnceLock<bool> = OnceLock::new();
     let exe = module_handle(0, false);
     let win10 = |exe: u32| {
-        let Some(e) =
-            crate::pe::find_resource(exe, &crate::pe::ResId::Int(24), &crate::pe::ResId::Int(1))
-        else {
-            return false;
-        };
+        let Some(e) = crate::pe::find_resource(exe, &crate::pe::ResId::Int(24), &crate::pe::ResId::Int(1)) else { return false };
         let (p, n) = crate::pe::resource_data(exe, e);
-        String::from_utf8_lossy(mem::slice(p, n.min(0x10000)))
-            .to_ascii_lowercase()
-            .contains("8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a")
+        String::from_utf8_lossy(mem::slice(p, n.min(0x10000))).to_ascii_lowercase().contains("8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a")
     };
     // (decided once the program is loaded)
-    let w = if exe == 0 {
-        false
-    } else {
-        *WIN10.get_or_init(|| win10(exe))
-    };
-    if w {
-        OS_VERSION_REAL
-    } else {
-        OS_VERSION
-    }
+    let w = if exe == 0 { false } else { *WIN10.get_or_init(|| win10(exe)) };
+    if w { OS_VERSION_REAL } else { OS_VERSION }
 }
 
 /// OSVERSIONINFO(EX): only its two sizes (A 148/156, W 276/284); another is
@@ -4262,11 +3647,7 @@ fn fill_version_info(p: u32, wide: bool, v: &OsVer, ext: bool) {
     w32(p + 12, v.build);
     w32(p + 16, v.platform);
     if wide {
-        put_wstr(
-            p + 20,
-            128,
-            &"Service Pack 1".encode_utf16().collect::<Vec<_>>(),
-        );
+        put_wstr(p + 20, 128, &"Service Pack 1".encode_utf16().collect::<Vec<_>>());
     } else {
         put_cstr(p + 20, 128, b"Service Pack 1");
     }
@@ -4421,18 +3802,7 @@ pub fn verify_version(cur: &OsVer, want: &OsVer, types: u32, cond: u64) -> Resul
 /// highest bit among those it checks first (product type, suite, service pack, ...).
 pub fn ver_set_condition_mask(mask: u64, types: u32, cond: u8) -> u64 {
     let c = (cond & 7) as u64;
-    let slot = [
-        (0x80, 7),
-        (0x40, 6),
-        (0x20, 5),
-        (0x10, 4),
-        (8, 3),
-        (4, 2),
-        (2, 1),
-        (1, 0),
-    ]
-    .into_iter()
-    .find(|&(b, _)| types & b != 0);
+    let slot = [(0x80, 7), (0x40, 6), (0x20, 5), (0x10, 4), (8, 3), (4, 2), (2, 1), (1, 0)].into_iter().find(|&(b, _)| types & b != 0);
     slot.map_or(mask, |(_, k)| mask | c << (3 * k))
 }
 
@@ -4452,19 +3822,10 @@ fn read_osver(p: u32, wide: bool) -> OsVer {
 }
 /// The condition mask argument (a 64-bit value: two stack slots on x86, after two 32-bit ones)
 fn cond_mask_arg(c: &Ctx) -> u64 {
-    if mem::x64() {
-        c.a64(2)
-    } else {
-        c.a(2) as u64 | (c.a(3) as u64) << 32
-    }
+    if mem::x64() { c.a64(2) } else { c.a(2) as u64 | (c.a(3) as u64) << 32 }
 }
 fn verify_version_info(c: &mut Ctx, wide: bool) -> u32 {
-    match verify_version(
-        &os_version(),
-        &read_osver(c.a(0), wide),
-        c.a(1),
-        cond_mask_arg(c),
-    ) {
+    match verify_version(&os_version(), &read_osver(c.a(0), wide), c.a(1), cond_mask_arg(c)) {
         Ok(()) => 1,
         Err(e) => {
             last_error(if e == VerFail::BadArgs { 160 } else { 1150 });
@@ -4481,23 +3842,14 @@ fn VerifyVersionInfoA(c: &mut Ctx) -> u32 {
 /// (against the real version; libcurl takes a missing one for Windows 9x and loads
 /// security.dll)
 fn RtlVerifyVersionInfo(c: &mut Ctx) -> u32 {
-    match verify_version(
-        &OS_VERSION_REAL,
-        &read_osver(c.a(0), true),
-        c.a(1),
-        cond_mask_arg(c),
-    ) {
+    match verify_version(&OS_VERSION_REAL, &read_osver(c.a(0), true), c.a(1), cond_mask_arg(c)) {
         Ok(()) => 0,
         Err(VerFail::Mismatch) => 0xc000_0059, // STATUS_REVISION_MISMATCH
-        Err(VerFail::BadArgs) => 0xc000_000d,  // STATUS_INVALID_PARAMETER
+        Err(VerFail::BadArgs) => 0xc000_000d, // STATUS_INVALID_PARAMETER
     }
 }
 fn VerSetConditionMask(c: &mut Ctx) -> u32 {
-    let (m, t, k) = if mem::x64() {
-        (c.a64(0), c.a(1), c.a(2))
-    } else {
-        (c.a(0) as u64 | (c.a(1) as u64) << 32, c.a(2), c.a(3))
-    };
+    let (m, t, k) = if mem::x64() { (c.a64(0), c.a(1), c.a(2)) } else { (c.a(0) as u64 | (c.a(1) as u64) << 32, c.a(2), c.a(3)) };
     let v = ver_set_condition_mask(m, t, k as u8);
     c.ret64(v)
 }
@@ -4509,10 +3861,7 @@ fn GetOEMCP(_: &mut Ctx) -> u32 {
     crate::text::acp()
 }
 fn IsValidCodePage(c: &mut Ctx) -> u32 {
-    ok(matches!(
-        c.a(0),
-        932 | 936 | 949 | 950 | 1250 | 1251 | 1252 | 65001 | 437 | 850
-    ))
+    ok(matches!(c.a(0), 932 | 936 | 949 | 950 | 1250 | 1251 | 1252 | 65001 | 437 | 850))
 }
 fn lcid() -> u32 {
     match crate::text::acp() {
@@ -4589,17 +3938,9 @@ fn ui_languages(c: &mut Ctx, process: bool) -> u32 {
     } else if c.a(0) & 4 != 0 {
         format!("{l:04X}")
     } else {
-        LOCALES
-            .iter()
-            .find(|x| x.0 == l)
-            .map_or("en-US", |x| x.1)
-            .to_string()
+        LOCALES.iter().find(|x| x.0 == l).map_or("en-US", |x| x.1).to_string()
     };
-    let w: Vec<u16> = if process {
-        vec![0, 0]
-    } else {
-        s.encode_utf16().chain([0, 0]).collect()
-    };
+    let w: Vec<u16> = if process { vec![0, 0] } else { s.encode_utf16().chain([0, 0]).collect() };
     if !process {
         w32(c.a(1), 1);
     }
@@ -4684,12 +4025,7 @@ fn locale_info(ty: u32) -> String {
         0x1d => "/".into(),
         0x1e => ":".into(),
         0x1f => if ja { "yyyy/MM/dd" } else { "M/d/yyyy" }.into(),
-        0x20 => if ja {
-            "yyyy'年'M'月'd'日'"
-        } else {
-            "dddd, MMMM dd, yyyy"
-        }
-        .into(),
+        0x20 => if ja { "yyyy'年'M'月'd'日'" } else { "dddd, MMMM dd, yyyy" }.into(),
         0x21 => if ja { "2" } else { "0" }.into(),
         0x22 => "0".into(),
         0x23 => "1".into(),
@@ -4705,38 +4041,10 @@ fn locale_info(ty: u32) -> String {
         0x1009 => "1".into(),
         0x100b => "1".into(),
         0x1014 => if ja { "¥" } else { "$" }.into(),
-        0x2a..=0x30 => [
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-            "Sunday",
-        ][(ty & 0xffff) as usize - 0x2a]
-            .into(),
-        0x31..=0x37 => {
-            ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][(ty & 0xffff) as usize - 0x31].into()
-        }
-        0x38..=0x43 => [
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        ][(ty & 0xffff) as usize - 0x38]
-            .into(),
-        0x44..=0x4f => [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ][(ty & 0xffff) as usize - 0x44]
-            .into(),
+        0x2a..=0x30 => ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][(ty & 0xffff) as usize - 0x2a].into(),
+        0x31..=0x37 => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][(ty & 0xffff) as usize - 0x31].into(),
+        0x38..=0x43 => ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][(ty & 0xffff) as usize - 0x38].into(),
+        0x44..=0x4f => ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(ty & 0xffff) as usize - 0x44].into(),
         0x50 => "".into(),
         0x51 => "-".into(),
         _ => "".into(),
@@ -4748,11 +4056,7 @@ fn locale_number(c: &mut Ctx, wide: bool) -> Option<u32> {
         return None;
     }
     let n = if wide { 2 } else { 4 };
-    let v = u32::from_str_radix(
-        &locale_info(c.a(1)),
-        if c.a(1) & 0xffff == 1 { 16 } else { 10 },
-    )
-    .unwrap_or(0);
+    let v = u32::from_str_radix(&locale_info(c.a(1)), if c.a(1) & 0xffff == 1 { 16 } else { 10 }).unwrap_or(0);
     if c.a(3) == 0 {
         return Some(n);
     }
@@ -4790,16 +4094,7 @@ fn GetCPInfo(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     mem::fill(p, 20, 0);
     let dbcs = crate::text::is_dbcs() && matches!(c.a(0), 0 | 1 | 3 | 932 | 936 | 949 | 950);
-    w32(
-        p,
-        if c.a(0) == 65001 {
-            4
-        } else if dbcs {
-            2
-        } else {
-            1
-        },
-    );
+    w32(p, if c.a(0) == 65001 { 4 } else if dbcs { 2 } else { 1 });
     w8(p + 4, b'?');
     if dbcs && crate::text::acp() == 932 {
         mem::write(p + 6, &[0x81, 0x9f, 0xe0, 0xfc]);
@@ -4826,13 +4121,7 @@ fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    let s = if n < 0 {
-        let mut v = cstr(src);
-        v.push(0);
-        v
-    } else {
-        mem::slice(src, n as u32).to_vec()
-    };
+    let s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
     let (w, bad) = crate::text::mb2w_checked(cp, &s);
     // MB_ERR_INVALID_CHARS: bytes that are no character (a lone lead byte) fail with
     // ERROR_NO_UNICODE_TRANSLATION (mingw's btowc relies on it, winref crt_io)
@@ -4872,11 +4161,7 @@ fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
     let (def, pused) = (c.a(6), c.a(7));
     let utf = matches!(cp, 65000 | 65001);
     let (def, pused) = if utf { (0, 0) } else { (def, pused) };
-    let d = if def != 0 {
-        vec![mem::r8(def)]
-    } else {
-        b"?".to_vec()
-    };
+    let d = if def != 0 { vec![mem::r8(def)] } else { b"?".to_vec() };
     // (WC_NO_BEST_FIT_CHARS: a character the code page lacks is the default one, never a
     // look-alike)
     let (a, used) = crate::text::w2mb_flags(cp, &s, &d, c.a(1) & 0x400 == 0);
@@ -4912,9 +4197,7 @@ pub(crate) fn ctype1(ch: u16) -> u16 {
             t |= 8;
         }
         // (and the non-ASCII marks: 、。「」・ー and full-width ！？)
-        if x.is_ascii_punctuation()
-            || (c >= 0x80 && !x.is_alphanumeric() && !x.is_whitespace() && !x.is_control())
-        {
+        if x.is_ascii_punctuation() || (c >= 0x80 && !x.is_alphanumeric() && !x.is_whitespace() && !x.is_control()) {
             t |= 0x10;
         }
         if x.is_control() {
@@ -4923,8 +4206,7 @@ pub(crate) fn ctype1(ch: u16) -> u16 {
         if x == ' ' || x == '\t' {
             t |= 0x40;
         }
-        if x.is_ascii_hexdigit() || matches!(c, 0xff10..=0xff19 | 0xff21..=0xff26 | 0xff41..=0xff46)
-        {
+        if x.is_ascii_hexdigit() || matches!(c, 0xff10..=0xff19 | 0xff21..=0xff26 | 0xff41..=0xff46) {
             t |= 0x80;
         }
         if x.is_alphabetic() {
@@ -4937,16 +4219,16 @@ pub(crate) fn ctype1(ch: u16) -> u16 {
 fn ctype2(ch: u16) -> u16 {
     let t = ctype1(ch);
     match ch {
-        _ if t & 0x100 != 0 => 1,       // C2_LEFTTORIGHT
-        _ if t & 4 != 0 => 3,           // C2_EUROPENUMBER
-        0x2b | 0x2d => 4,               // C2_EUROPESEPARATOR
-        0x23..=0x25 => 5,               // C2_EUROPETERMINATOR
-        0x2c | 0x2e | 0x2f | 0x3a => 7, // C2_COMMONSEPARATOR
-        0x0a | 0x0d | 0x1c..=0x1e => 8, // C2_BLOCKSEPARATOR
-        0x09 | 0x0b | 0x1f => 9,        // C2_SEGMENTSEPARATOR
-        _ if t & 8 != 0 => 10,          // C2_WHITESPACE
-        _ if t & 0x20 != 0 => 0,        // C2_NOTAPPLICABLE
-        _ => 11,                        // C2_OTHERNEUTRAL
+        _ if t & 0x100 != 0 => 1,             // C2_LEFTTORIGHT
+        _ if t & 4 != 0 => 3,                 // C2_EUROPENUMBER
+        0x2b | 0x2d => 4,                     // C2_EUROPESEPARATOR
+        0x23..=0x25 => 5,                     // C2_EUROPETERMINATOR
+        0x2c | 0x2e | 0x2f | 0x3a => 7,       // C2_COMMONSEPARATOR
+        0x0a | 0x0d | 0x1c..=0x1e => 8,       // C2_BLOCKSEPARATOR
+        0x09 | 0x0b | 0x1f => 9,              // C2_SEGMENTSEPARATOR
+        _ if t & 8 != 0 => 10,                // C2_WHITESPACE
+        _ if t & 0x20 != 0 => 0,              // C2_NOTAPPLICABLE
+        _ => 11,                              // C2_OTHERNEUTRAL
     }
 }
 
@@ -4967,20 +4249,14 @@ fn ctype3(ch: u16) -> u16 {
     let c = ch as u32;
     let t1 = ctype1(ch);
     let alpha = if t1 & 0x100 != 0 { ALPHA } else { 0 };
-    let symbol = if t1 & 0x10 != 0 || c == 0x20 || c == 0x3000 {
-        SYMBOL
-    } else {
-        0
-    };
+    let symbol = if t1 & 0x10 != 0 || c == 0x20 || c == 0x3000 { SYMBOL } else { 0 };
     match c {
         0x3099..=0x309a => NONSPACING | DIACRITIC | HIRAGANA,
         0x309b..=0x309c => DIACRITIC | SYMBOL,
         0x3041..=0x309f => HIRAGANA | ALPHA,
         0x30fb => SYMBOL,
         0x30a0..=0x30ff | 0x31f0..=0x31ff => KATAKANA | ALPHA,
-        0x3005..=0x3007 | 0x3021..=0x3029 | 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff => {
-            IDEOGRAPH | ALPHA
-        }
+        0x3005..=0x3007 | 0x3021..=0x3029 | 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff => IDEOGRAPH | ALPHA,
         0xd800..=0xdfff => 0,
         0x3000 => SYMBOL | FULLWIDTH,
         0x3001..=0x303f | 0x3200..=0x33ff | 0xfe30..=0xfe4f => symbol,
@@ -5009,11 +4285,7 @@ fn string_type(ty: u32, w: &[u16], out: u32) {
 }
 fn GetStringTypeA(c: &mut Ctx) -> u32 {
     let (ty, src, n, out) = (c.a(1), c.a(2), c.i(3), c.a(4));
-    let s = if n < 0 {
-        cstr(src)
-    } else {
-        mem::slice(src, n as u32).to_vec()
-    };
+    let s = if n < 0 { cstr(src) } else { mem::slice(src, n as u32).to_vec() };
     // one result per byte
     let mut w = Vec::new();
     let mut i = 0;
@@ -5036,31 +4308,19 @@ fn GetStringTypeExA(c: &mut Ctx) -> u32 {
 }
 fn GetStringTypeW(c: &mut Ctx) -> u32 {
     let (ty, src, n, out) = (c.a(0), c.a(1), c.i(2), c.a(3));
-    let w: Vec<u16> = if n < 0 {
-        wstr(src)
-    } else {
-        (0..n as u32).map(|i| r16(src + 2 * i)).collect()
-    };
+    let w: Vec<u16> = if n < 0 { wstr(src) } else { (0..n as u32).map(|i| r16(src + 2 * i)).collect() };
     string_type(ty, &w, out);
     1
 }
 fn GetStringTypeExW(c: &mut Ctx) -> u32 {
     let (ty, src, n, out) = (c.a(1), c.a(2), c.i(3), c.a(4));
-    let w: Vec<u16> = if n < 0 {
-        wstr(src)
-    } else {
-        (0..n as u32).map(|i| r16(src + 2 * i)).collect()
-    };
+    let w: Vec<u16> = if n < 0 { wstr(src) } else { (0..n as u32).map(|i| r16(src + 2 * i)).collect() };
     string_type(ty, &w, out);
     1
 }
 /// LCMapString's case, kana and width maps (no sort keys)
 fn lcmap(w: &[u16], flags: u32) -> Vec<u16> {
-    let mut w = if flags & 0xf00000 != 0 {
-        crate::text::map_kana_width(w, flags)
-    } else {
-        w.to_vec()
-    };
+    let mut w = if flags & 0xf00000 != 0 { crate::text::map_kana_width(w, flags) } else { w.to_vec() };
     for ch in w.iter_mut() {
         if flags & 0x100 != 0 {
             *ch = crate::text::lower16(*ch);
@@ -5074,13 +4334,7 @@ fn lcmap(w: &[u16], flags: u32) -> Vec<u16> {
 /// LCMapStringA: through Unicode in the ANSI code page (CharUpperA's rules for case)
 fn LCMapStringA(c: &mut Ctx) -> u32 {
     let (flags, src, n, dst, cap) = (c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
-    let mut s = if n < 0 {
-        let mut v = cstr(src);
-        v.push(0);
-        v
-    } else {
-        mem::slice(src, n as u32).to_vec()
-    };
+    let mut s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
     if flags & 0xf00000 != 0 {
         s = crate::text::w2a(&lcmap(&a2w(&s), flags));
     } else if flags & 0x300 != 0 {
@@ -5095,13 +4349,7 @@ fn LCMapStringA(c: &mut Ctx) -> u32 {
 }
 pub(crate) fn LCMapStringW(c: &mut Ctx) -> u32 {
     let (flags, src, n, dst, cap) = (c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
-    let w: Vec<u16> = if n < 0 {
-        let mut v = wstr(src);
-        v.push(0);
-        v
-    } else {
-        (0..n as u32).map(|i| r16(src + 2 * i)).collect()
-    };
+    let w: Vec<u16> = if n < 0 { let mut v = wstr(src); v.push(0); v } else { (0..n as u32).map(|i| r16(src + 2 * i)).collect() };
     let w = lcmap(&w, flags);
     if cap == 0 {
         return w.len() as u32;
@@ -5113,57 +4361,24 @@ pub(crate) fn LCMapStringW(c: &mut Ctx) -> u32 {
     k as u32
 }
 fn cmp_w(a: &[u16], b: &[u16], nocase: bool) -> std::cmp::Ordering {
-    crate::collate::compare(
-        a,
-        b,
-        if nocase {
-            crate::collate::NORM_IGNORECASE
-        } else {
-            0
-        },
-    )
+    crate::collate::compare(a, b, if nocase { crate::collate::NORM_IGNORECASE } else { 0 })
 }
 fn CompareStringA(c: &mut Ctx) -> u32 {
     let (flags, s1, n1, s2, n2) = (c.a(1), c.a(2), c.i(3), c.a(4), c.i(5));
-    let a = if n1 < 0 {
-        cstr(s1)
-    } else {
-        mem::cstrn(s1, n1 as u32)
-    };
-    let b = if n2 < 0 {
-        cstr(s2)
-    } else {
-        mem::cstrn(s2, n2 as u32)
-    };
+    let a = if n1 < 0 { cstr(s1) } else { mem::cstrn(s1, n1 as u32) };
+    let b = if n2 < 0 { cstr(s2) } else { mem::cstrn(s2, n2 as u32) };
     crate::collate::compare(&a2w(&a), &a2w(&b), flags) as i32 as u32 + 2
 }
 fn CompareStringW(c: &mut Ctx) -> u32 {
     let (flags, s1, n1, s2, n2) = (c.a(1), c.a(2), c.i(3), c.a(4), c.i(5));
-    let rd = |p: u32, n: i32| -> Vec<u16> {
-        if n < 0 {
-            wstr(p)
-        } else {
-            (0..n as u32)
-                .map(|i| r16(p + 2 * i))
-                .take_while(|&x| x != 0)
-                .collect()
-        }
-    };
+    let rd = |p: u32, n: i32| -> Vec<u16> { if n < 0 { wstr(p) } else { (0..n as u32).map(|i| r16(p + 2 * i)).take_while(|&x| x != 0).collect() } };
     crate::collate::compare(&rd(s1, n1), &rd(s2, n2), flags) as i32 as u32 + 2
 }
 /// A date/time picture (GetDateFormat/GetTimeFormat) into text: fields are runs of one letter,
 /// '...' is literal text ('' a quote). `skip` drops fields of those letters with the literal
 /// text before them (TIME_NOSECONDS and the like).
 fn format_picture(pic: &str, st: [u16; 8], ja: bool, skip: &str, h24: bool) -> String {
-    let (y, mo, dow, d, h, mi, sec) = (
-        st[0] as u32,
-        st[1] as u32,
-        st[2] as usize % 7,
-        st[3] as u32,
-        st[4] as u32,
-        st[5] as u32,
-        st[6] as u32,
-    );
+    let (y, mo, dow, d, h, mi, sec) = (st[0] as u32, st[1] as u32, st[2] as usize % 7, st[3] as u32, st[4] as u32, st[5] as u32, st[6] as u32);
     enum Item {
         Lit(String),
         Field(char, usize),
@@ -5222,29 +4437,8 @@ fn format_picture(pic: &str, st: [u16; 8], ja: bool, skip: &str, h24: bool) -> S
         }
     }
     const JA_DAYS: [&str; 7] = ["日", "月", "火", "水", "木", "金", "土"];
-    const EN_DAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    const EN_MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
+    const EN_DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const EN_MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     let mut out = String::new();
     for (k, it) in items.iter().enumerate() {
         if !keep[k] {
@@ -5254,76 +4448,26 @@ fn format_picture(pic: &str, st: [u16; 8], ja: bool, skip: &str, h24: bool) -> S
             Item::Lit(ref l) => out.push_str(l),
             Item::Field(ch, n) => {
                 let ch = if h24 && ch == 'h' { 'H' } else { ch };
-                let num = |v: u32| {
-                    if n >= 2 {
-                        format!("{v:02}")
-                    } else {
-                        v.to_string()
-                    }
-                };
+                let num = |v: u32| if n >= 2 { format!("{v:02}") } else { v.to_string() };
                 let am = h < 12;
                 let s = match ch {
-                    'd' if n >= 4 => {
-                        if ja {
-                            format!("{}曜日", JA_DAYS[dow])
-                        } else {
-                            EN_DAYS[dow].into()
-                        }
-                    }
-                    'd' if n == 3 => {
-                        if ja {
-                            JA_DAYS[dow].into()
-                        } else {
-                            EN_DAYS[dow][..3].into()
-                        }
-                    }
+                    'd' if n >= 4 => if ja { format!("{}曜日", JA_DAYS[dow]) } else { EN_DAYS[dow].into() },
+                    'd' if n == 3 => if ja { JA_DAYS[dow].into() } else { EN_DAYS[dow][..3].into() },
                     'd' => num(d),
-                    'M' if n >= 4 => {
-                        if ja {
-                            format!("{mo}月")
-                        } else {
-                            EN_MONTHS[(mo as usize + 11) % 12].into()
-                        }
-                    }
-                    'M' if n == 3 => {
-                        if ja {
-                            mo.to_string()
-                        } else {
-                            EN_MONTHS[(mo as usize + 11) % 12][..3].into()
-                        }
-                    }
+                    'M' if n >= 4 => if ja { format!("{mo}月") } else { EN_MONTHS[(mo as usize + 11) % 12].into() },
+                    'M' if n == 3 => if ja { mo.to_string() } else { EN_MONTHS[(mo as usize + 11) % 12][..3].into() },
                     'M' => num(mo),
                     'y' if n == 1 => (y % 100).to_string(),
                     'y' if n == 2 => format!("{:02}", y % 100),
                     'y' => y.to_string(),
-                    'g' => {
-                        if ja {
-                            "西暦".into()
-                        } else {
-                            "A.D.".into()
-                        }
-                    }
+                    'g' => if ja { "西暦".into() } else { "A.D.".into() },
                     'H' => num(h),
                     'h' => num(if h % 12 == 0 { 12 } else { h % 12 }),
                     'm' => num(mi),
                     's' => num(sec),
                     _ => {
-                        let m = if ja {
-                            if am {
-                                "午前"
-                            } else {
-                                "午後"
-                            }
-                        } else if am {
-                            "AM"
-                        } else {
-                            "PM"
-                        };
-                        if n == 1 {
-                            m.chars().next().unwrap().to_string()
-                        } else {
-                            m.into()
-                        }
+                        let m = if ja { if am { "午前" } else { "午後" } } else if am { "AM" } else { "PM" };
+                        if n == 1 { m.chars().next().unwrap().to_string() } else { m.into() }
                     }
                 };
                 out.push_str(&s);
@@ -5344,11 +4488,7 @@ fn read_systemtime(p: u32, date: bool) -> Option<[u16; 8]> {
         mem::heap_free(t);
     }
     let (y, m, d) = (st[0] as i64, st[1] as i64, st[3] as i64);
-    let good = if date {
-        (1601..=30827).contains(&y) && (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m)
-    } else {
-        st[4] < 24 && st[5] < 60 && st[6] < 60 && st[7] < 1000
-    };
+    let good = if date { (1601..=30827).contains(&y) && (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m) } else { st[4] < 24 && st[5] < 60 && st[6] < 60 && st[7] < 1000 };
     let mut st = st;
     if date {
         st[2] = (days_from_civil(y, m, d) + 4).rem_euclid(7) as u16;
@@ -5392,12 +4532,7 @@ fn date_time_format(c: &mut Ctx, date: bool, wide: bool) -> u32 {
         }
     }
     let text = format_picture(&picture, st, ja, &skip, !date && flags & 8 != 0);
-    let n = if wide {
-        text.encode_utf16().count()
-    } else {
-        crate::text::s2a(&text).len()
-    } as u32
-        + 1;
+    let n = if wide { text.encode_utf16().count() } else { crate::text::s2a(&text).len() } as u32 + 1;
     if cap == 0 {
         return n;
     }
@@ -5426,11 +4561,7 @@ fn MulDiv(c: &mut Ctx) -> u32 {
         return 0xffff_ffff;
     }
     let n = a * b;
-    let r = if (n < 0) != (d < 0) {
-        (n - d / 2) / d
-    } else {
-        (n + d / 2) / d
-    };
+    let r = if (n < 0) != (d < 0) { (n - d / 2) / d } else { (n + d / 2) / d };
     r as i32 as u32
 }
 
@@ -5503,11 +4634,7 @@ fn add_atom(s: String) -> u32 {
     0xc000 + a.len() as u32 - 1
 }
 pub fn atom_name(a: u32) -> Option<String> {
-    ATOMS
-        .lock()
-        .unwrap()
-        .get((a.checked_sub(0xc000)?) as usize)
-        .cloned()
+    ATOMS.lock().unwrap().get((a.checked_sub(0xc000)?) as usize).cloned()
 }
 pub fn atom(s: &str) -> u32 {
     add_atom(s.to_string())
@@ -5523,24 +4650,14 @@ fn AddAtomA(c: &mut Ctx) -> u32 {
 }
 fn GlobalFindAtomA(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(0), false).to_lowercase();
-    ATOMS
-        .lock()
-        .unwrap()
-        .iter()
-        .position(|x| x.to_lowercase() == s)
-        .map_or(0, |i| 0xc000 + i as u32)
+    ATOMS.lock().unwrap().iter().position(|x| x.to_lowercase() == s).map_or(0, |i| 0xc000 + i as u32)
 }
 fn FindAtomA(c: &mut Ctx) -> u32 {
     GlobalFindAtomA(c)
 }
 fn GlobalFindAtomW(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(0), true).to_lowercase();
-    ATOMS
-        .lock()
-        .unwrap()
-        .iter()
-        .position(|x| x.to_lowercase() == s)
-        .map_or(0, |i| 0xc000 + i as u32)
+    ATOMS.lock().unwrap().iter().position(|x| x.to_lowercase() == s).map_or(0, |i| 0xc000 + i as u32)
 }
 fn FindAtomW(c: &mut Ctx) -> u32 {
     GlobalFindAtomW(c)
@@ -5565,18 +4682,12 @@ fn GlobalGetAtomNameA(c: &mut Ctx) -> u32 {
 // time
 
 fn system_time(p: u32, local: bool) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs() as i64 + if local { tz_bias() } else { 0 };
     write_systemtime(p, secs, now.subsec_millis());
 }
 pub fn tz_bias() -> i64 {
-    if crate::text::acp() == 932 {
-        9 * 3600
-    } else {
-        0
-    }
+    if crate::text::acp() == 932 { 9 * 3600 } else { 0 }
 }
 fn write_systemtime(p: u32, secs: i64, ms: u32) {
     let days = secs.div_euclid(86400);
@@ -5654,15 +4765,7 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 fn systemtime_ft(p: u32) -> Option<u64> {
     let f = |o| r16(p + o) as i64;
     let (y, m, d, h, mi, s, ms) = (f(0), f(2), f(6), f(8), f(10), f(12), f(14));
-    if !(1601..=30827).contains(&y)
-        || !(1..=12).contains(&m)
-        || d < 1
-        || d > days_in_month(y, m)
-        || h > 23
-        || mi > 59
-        || s > 59
-        || ms > 999
-    {
+    if !(1601..=30827).contains(&y) || !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) || h > 23 || mi > 59 || s > 59 || ms > 999 {
         return None;
     }
     let secs = days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60 + s;
@@ -5695,11 +4798,7 @@ fn tz_transition(p: u32, year: i64) -> Option<i64> {
         }
         d
     };
-    Some(
-        ((days_from_civil(year, m, day) * 86400 + h * 3600 + mi * 60 + s + 11_644_473_600) * 1000
-            + ms)
-            * 10_000,
-    )
+    Some(((days_from_civil(year, m, day) * 86400 + h * 3600 + mi * 60 + s + 11_644_473_600) * 1000 + ms) * 10_000)
 }
 /// The bias (minutes, UTC = local + bias) in effect at `t` (a FILETIME, UTC or local).
 fn tz_bias_at(z: u32, t: i64, utc: bool) -> i64 {
@@ -5709,25 +4808,12 @@ fn tz_bias_at(z: u32, t: i64, utc: bool) -> i64 {
     write_systemtime(st, t.div_euclid(10_000_000) - 11_644_473_600, 0);
     let year = r16(st) as i64;
     mem::heap_free(st);
-    let (Some(dst_start), Some(std_start)) =
-        (tz_transition(z + 152, year), tz_transition(z + 68, year))
-    else {
+    let (Some(dst_start), Some(std_start)) = (tz_transition(z + 152, year), tz_transition(z + 68, year)) else {
         return bias + std_b;
     };
     // the transitions are in local time of the period before each
-    let (ds, ss) = if utc {
-        (
-            dst_start + (bias + std_b) * 600_000_000,
-            std_start + (bias + dst_b) * 600_000_000,
-        )
-    } else {
-        (dst_start, std_start)
-    };
-    let in_dst = if ds < ss {
-        t >= ds && t < ss
-    } else {
-        !(t >= ss && t < ds)
-    };
+    let (ds, ss) = if utc { (dst_start + (bias + std_b) * 600_000_000, std_start + (bias + dst_b) * 600_000_000) } else { (dst_start, std_start) };
+    let in_dst = if ds < ss { t >= ds && t < ss } else { !(t >= ss && t < ds) };
     bias + if in_dst { dst_b } else { std_b }
 }
 fn tz_info(c: &mut Ctx) -> u32 {
@@ -5753,11 +4839,7 @@ fn SystemTimeToTzSpecificLocalTime(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    write_systemtime(
-        c.a(2),
-        t.div_euclid(10_000_000) - 11_644_473_600,
-        (t / 10_000 % 1000) as u32,
-    );
+    write_systemtime(c.a(2), t.div_euclid(10_000_000) - 11_644_473_600, (t / 10_000 % 1000) as u32);
     1
 }
 fn TzSpecificLocalTimeToSystemTime(c: &mut Ctx) -> u32 {
@@ -5774,23 +4856,12 @@ fn TzSpecificLocalTimeToSystemTime(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    write_systemtime(
-        c.a(2),
-        t.div_euclid(10_000_000) - 11_644_473_600,
-        (t / 10_000 % 1000) as u32,
-    );
+    write_systemtime(c.a(2), t.div_euclid(10_000_000) - 11_644_473_600, (t / 10_000 % 1000) as u32);
     1
 }
 fn DosDateTimeToFileTime(c: &mut Ctx) -> u32 {
     let (d, t) = (c.a(0) as i64 & 0xffff, c.a(1) as i64 & 0xffff);
-    let (y, m, dd, h, mi, s) = (
-        1980 + (d >> 9),
-        (d >> 5) & 15,
-        d & 31,
-        t >> 11,
-        (t >> 5) & 63,
-        (t & 31) * 2,
-    );
+    let (y, m, dd, h, mi, s) = (1980 + (d >> 9), (d >> 5) & 15, d & 31, t >> 11, (t >> 5) & 63, (t & 31) * 2);
     if !(1..=12).contains(&m) || dd < 1 || dd > days_in_month(y, m) || h > 23 || mi > 59 || s > 59 {
         last_error(87);
         return 0;
@@ -5800,17 +4871,11 @@ fn DosDateTimeToFileTime(c: &mut Ctx) -> u32 {
     1
 }
 fn FileTimeToLocalFileTime(c: &mut Ctx) -> u32 {
-    put64(
-        c.a(1),
-        get64(c.a(0)).wrapping_add((tz_bias() * 10_000_000) as u64),
-    );
+    put64(c.a(1), get64(c.a(0)).wrapping_add((tz_bias() * 10_000_000) as u64));
     1
 }
 fn LocalFileTimeToFileTime(c: &mut Ctx) -> u32 {
-    put64(
-        c.a(1),
-        get64(c.a(0)).wrapping_sub((tz_bias() * 10_000_000) as u64),
-    );
+    put64(c.a(1), get64(c.a(0)).wrapping_sub((tz_bias() * 10_000_000) as u64));
     1
 }
 fn FileTimeToDosDateTime(c: &mut Ctx) -> u32 {
@@ -5818,14 +4883,7 @@ fn FileTimeToDosDateTime(c: &mut Ctx) -> u32 {
     let secs = (ft / 10_000_000) as i64 - 11_644_473_600;
     let tmp = mem::heap_alloc(16, true);
     write_systemtime(tmp, secs, 0);
-    let (y, m, d, h, mi, s) = (
-        r16(tmp),
-        r16(tmp + 2),
-        r16(tmp + 6),
-        r16(tmp + 8),
-        r16(tmp + 10),
-        r16(tmp + 12),
-    );
+    let (y, m, d, h, mi, s) = (r16(tmp), r16(tmp + 2), r16(tmp + 6), r16(tmp + 8), r16(tmp + 10), r16(tmp + 12));
     mem::heap_free(tmp);
     if !(1980..=2107).contains(&y) || ft > i64::MAX as u64 {
         last_error(87);
@@ -5887,26 +4945,12 @@ fn GetThreadTimes(c: &mut Ctx) -> u32 {
 // modules, resources
 
 fn module_name(h: u32, wide: bool, dst: u32, cap: u32) -> u32 {
-    let base = if h == 0 {
-        crate::pe::MODULES
-            .read()
-            .unwrap()
-            .iter()
-            .find(|m| !m.dll)
-            .map(|m| m.base)
-            .unwrap_or(0)
-    } else {
-        h
-    };
+    let base = if h == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base).unwrap_or(0) } else { h };
     let Some(path) = crate::pe::with(base, |m| m.path.clone()) else {
         last_error(126);
         return 0;
     };
-    let n = if wide {
-        path.encode_utf16().count()
-    } else {
-        crate::text::s2a(&path).len()
-    } as u32;
+    let n = if wide { path.encode_utf16().count() } else { crate::text::s2a(&path).len() } as u32;
     if n >= cap {
         // cut short: cap-1 characters and a 0, and cap (Windows Server 2025, winref fmt;
         // Windows XP left A without the 0)
@@ -5928,23 +4972,14 @@ fn GetModuleFileNameW(c: &mut Ctx) -> u32 {
 }
 pub fn module_handle(name: u32, wide: bool) -> u32 {
     if name == 0 {
-        return crate::pe::MODULES
-            .read()
-            .unwrap()
-            .iter()
-            .find(|m| !m.dll)
-            .map(|m| m.base)
-            .unwrap_or(0);
+        return crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base).unwrap_or(0);
     }
     let n = arg_str(name, wide);
     if let Some(b) = crate::pe::by_name(&n) {
         return b;
     }
     let k = crate::api::dll_key(&n);
-    if matches!(
-        k.as_str(),
-        "kernel32" | "ntdll" | "kernelbase" | "user32" | "gdi32" | "advapi32"
-    ) {
+    if matches!(k.as_str(), "kernel32" | "ntdll" | "kernelbase" | "user32" | "gdi32" | "advapi32") {
         return crate::pe::hle_module(&k);
     }
     last_error(126);
@@ -5958,21 +4993,13 @@ fn GetModuleHandleW(c: &mut Ctx) -> u32 {
 }
 fn GetModuleHandleExW(c: &mut Ctx) -> u32 {
     let flags = c.a(0);
-    let h = if flags & 4 != 0 {
-        crate::pe::containing(c.a(1)).unwrap_or(0)
-    } else {
-        module_handle(c.a(1), true)
-    };
+    let h = if flags & 4 != 0 { crate::pe::containing(c.a(1)).unwrap_or(0) } else { module_handle(c.a(1), true) };
     mem::put_addr(c.a(2), h);
     ok(h != 0)
 }
 fn GetModuleHandleExA(c: &mut Ctx) -> u32 {
     let flags = c.a(0);
-    let h = if flags & 4 != 0 {
-        crate::pe::containing(c.a(1)).unwrap_or(0)
-    } else {
-        module_handle(c.a(1), false)
-    };
+    let h = if flags & 4 != 0 { crate::pe::containing(c.a(1)).unwrap_or(0) } else { module_handle(c.a(1), false) };
     mem::put_addr(c.a(2), h);
     ok(h != 0)
 }
@@ -6034,19 +5061,13 @@ fn DisableThreadLibraryCalls(_: &mut Ctx) -> u32 {
 }
 fn GetProcAddress(c: &mut Ctx) -> u32 {
     let (h, p) = (c.a(0), c.a(1));
-    let imp = if p < 0x10000 {
-        crate::pe::Import::Ordinal(p)
-    } else {
-        crate::pe::Import::Name(Box::leak(a2s(&cstr(p)).into_boxed_str()))
-    };
+    let imp = if p < 0x10000 { crate::pe::Import::Ordinal(p) } else { crate::pe::Import::Name(Box::leak(a2s(&cstr(p)).into_boxed_str())) };
     let mut r = crate::pe::proc_address(h, imp).unwrap_or(0);
     // SAKE_PROC_STUBS (tests/winetest): a system DLL's function we know but don't implement
     // is found, as on Windows, and its trap returns 0; programs (games) otherwise see NULL
     // and take the way they have for older Windows
     if r == 0 && p >= 0x10000 && crate::env_on!("SAKE_PROC_STUBS") {
-        if let Some(dll) =
-            crate::pe::with(h, |m| m.name.clone()).filter(|d| crate::api::is_system(d))
-        {
+        if let Some(dll) = crate::pe::with(h, |m| m.name.clone()).filter(|d| crate::api::is_system(d)) {
             let name = a2s(&cstr(p));
             let trap = crate::api::export(&dll, &name);
             if crate::api::is_known(trap) {
@@ -6055,14 +5076,7 @@ fn GetProcAddress(c: &mut Ctx) -> u32 {
         }
     }
     if crate::env_on!("SAKE_TRACE_LOAD") {
-        eprintln!(
-            "sake: GetProcAddress({h:#x}, {}) = {r:#x}",
-            if p < 0x10000 {
-                format!("#{p}")
-            } else {
-                a2s(&cstr(p))
-            }
-        );
+        eprintln!("sake: GetProcAddress({h:#x}, {}) = {r:#x}", if p < 0x10000 { format!("#{p}") } else { a2s(&cstr(p)) });
     }
     if r == 0 {
         // (an ordinal not exported: ERROR_INVALID_ORDINAL, winref fmt)
@@ -6074,13 +5088,7 @@ fn GetProcAddress(c: &mut Ctx) -> u32 {
 /// DLL on first use and binds one delay-load IAT slot.
 fn ResolveDelayLoadedAPI(c: &mut Ctx) -> u32 {
     let (base, d, thunk) = (c.a(0), c.a(1), c.a(4));
-    let rva = |i: u32| {
-        if r32(d) & 1 != 0 {
-            base + r32(d + 4 * i)
-        } else {
-            r32(d + 4 * i)
-        }
-    };
+    let rva = |i: u32| if r32(d) & 1 != 0 { base + r32(d + 4 * i) } else { r32(d + 4 * i) };
     let name = a2s(&cstr(rva(1)));
     let hmod_at = rva(2);
     let mut h = r32(hmod_at);
@@ -6090,11 +5098,7 @@ fn ResolveDelayLoadedAPI(c: &mut Ctx) -> u32 {
     }
     let i = (thunk - rva(3)) / 4;
     let e = r32(rva(4) + 4 * i);
-    let what = if e & 0x8000_0000 != 0 {
-        format!("#{}", e & 0xffff)
-    } else {
-        a2s(&cstr(base + e + 2))
-    };
+    let what = if e & 0x8000_0000 != 0 { format!("#{}", e & 0xffff) } else { a2s(&cstr(base + e + 2)) };
     let r = if h == 0 {
         0
     } else if e & 0x8000_0000 != 0 {
@@ -6110,10 +5114,7 @@ fn ResolveDelayLoadedAPI(c: &mut Ctx) -> u32 {
         r
     };
     if r == 0 {
-        eprintln!(
-            "sake: delay-load import {name}!{what} failed ({})",
-            if h == 0 { "no DLL" } else { "no export" }
-        );
+        eprintln!("sake: delay-load import {name}!{what} failed ({})", if h == 0 { "no DLL" } else { "no export" });
     }
     w32(thunk, r);
     r
@@ -6146,14 +5147,8 @@ fn FindResourceExW(c: &mut Ctx) -> u32 {
 /// EnumResourceTypes/Names/Languages: the callback gets each id (a name as a temporary string)
 /// until it returns FALSE; ERROR_RESOURCE_DATA/TYPE/NAME_NOT_FOUND when there is nothing.
 fn enum_resources(c: &mut Ctx, level: usize, wide: bool) -> u32 {
-    let m = if c.a(0) == 0 {
-        module_handle(0, false)
-    } else {
-        c.a(0)
-    };
-    let path: Vec<crate::pe::ResId> = (0..level)
-        .map(|i| crate::pe::ResId::from_arg(c.a(1 + i as u32), wide))
-        .collect();
+    let m = if c.a(0) == 0 { module_handle(0, false) } else { c.a(0) };
+    let path: Vec<crate::pe::ResId> = (0..level).map(|i| crate::pe::ResId::from_arg(c.a(1 + i as u32), wide)).collect();
     let (cb, param) = (c.a(1 + level as u32), c.a(2 + level as u32));
     // (read before the callbacks: on x64 the arguments are registers a call clobbers)
     let given: Vec<u32> = (0..level).map(|i| c.a(1 + i as u32)).collect();
@@ -6220,11 +5215,7 @@ fn EnumResourceLanguagesW(c: &mut Ctx) -> u32 {
     enum_resources(c, 2, true)
 }
 fn LoadResource(c: &mut Ctx) -> u32 {
-    let m = if c.a(0) == 0 {
-        module_handle(0, false)
-    } else {
-        c.a(0)
-    };
+    let m = if c.a(0) == 0 { module_handle(0, false) } else { c.a(0) };
     if c.a(1) == 0 {
         last_error(87);
         return 0;
@@ -6250,13 +5241,7 @@ fn SizeofResource(c: &mut Ctx) -> u32 {
 
 /// The handle of standard stream `i` (0 in, 1 out, 2 error).
 pub(crate) fn std_handle(i: usize) -> u32 {
-    STD.get_or_init(|| {
-        [
-            obj::add(Obj::Other("stdin")),
-            obj::add(Obj::Other("stdout")),
-            obj::add(Obj::Other("stderr")),
-        ]
-    })[i]
+    STD.get_or_init(|| [obj::add(Obj::Other("stdin")), obj::add(Obj::Other("stdout")), obj::add(Obj::Other("stderr"))])[i]
 }
 static STD: OnceLock<[u32; 3]> = OnceLock::new();
 static STD_GIVEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -6280,13 +5265,11 @@ fn SetStdHandle(_: &mut Ctx) -> u32 {
 }
 fn GetFileType(c: &mut Ctx) -> u32 {
     // FILE_TYPE_DISK, CHAR (the console), PIPE
-    match obj::with(|t| {
-        t.objs.get(&c.a(0)).map(|(o, _)| match o {
-            Obj::Other(_) => 2,
-            Obj::Pipe(_) => 3,
-            _ => 1,
-        })
-    }) {
+    match obj::with(|t| t.objs.get(&c.a(0)).map(|(o, _)| match o {
+        Obj::Other(_) => 2,
+        Obj::Pipe(_) => 3,
+        _ => 1,
+    })) {
         Some(k) => k,
         None => 0,
     }
@@ -6339,11 +5322,7 @@ fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u3
         }
         Ok((f, existed)) => {
             // CREATE_ALWAYS / OPEN_ALWAYS of an existing file: ERROR_ALREADY_EXISTS
-            last_error(if existed && (disp == 2 || disp == 4) {
-                183
-            } else {
-                0
-            });
+            last_error(if existed && (disp == 2 || disp == 4) { 183 } else { 0 });
             // a file made (or remade) here takes the read-only / hidden / system attributes asked,
             // and the archive bit every new file has (winref files: CreateFile2 hidden is 0x22)
             if !f.dir && (!existed || disp == 2) && attrs & 7 != 0 {
@@ -6372,15 +5351,7 @@ fn CreateFile2(c: &mut Ctx) -> u32 {
 }
 fn _lopen(c: &mut Ctx) -> u32 {
     let name = arg_str(c.a(0), false);
-    match files::open(
-        &name,
-        if c.a(1) & 3 != 0 {
-            0xc000_0000
-        } else {
-            0x8000_0000
-        },
-        3,
-    ) {
+    match files::open(&name, if c.a(1) & 3 != 0 { 0xc000_0000 } else { 0x8000_0000 }, 3) {
         Ok(f) => obj::add(Obj::File(std::sync::Arc::new(f))),
         Err(_) => 0xffff_ffff,
     }
@@ -6401,9 +5372,7 @@ fn _lread(c: &mut Ctx) -> u32 {
     obj::file(c.a(0)).map_or(0xffff_ffff, |f| f.read_into(c.a(1), c.a(2)))
 }
 fn _llseek(c: &mut Ctx) -> u32 {
-    let Some(f) = obj::file(c.a(0)) else {
-        return 0xffff_ffff;
-    };
+    let Some(f) = obj::file(c.a(0)) else { return 0xffff_ffff };
     let pos = match c.a(2) {
         0 => SeekFrom::Start(c.a(1) as u64),
         1 => SeekFrom::Current(c.i(1) as i64),
@@ -6441,9 +5410,7 @@ fn ReadFile(c: &mut Ctx) -> u32 {
     // OVERLAPPED: Internal, InternalHigh (ULONG_PTRs), Offset, OffsetHigh, hEvent
     let k = mem::ps();
     if ov != 0 {
-        f.seek(SeekFrom::Start(
-            r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32,
-        ));
+        f.seek(SeekFrom::Start(r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32));
     }
     let got = f.read_into(buf, n);
     put32(pread, got);
@@ -6470,16 +5437,11 @@ fn WriteFile(c: &mut Ctx) -> u32 {
     }
     if crate::env_on!("SAKE_TRACE_WRITES") {
         let b = mem::slice(buf, n.min(400));
-        eprintln!(
-            "sake: WriteFile({h:x}, {n}): {:?}",
-            String::from_utf16_lossy(&if b.len() > 2 && b[1] == 0 {
-                b.chunks(2)
-                    .map(|x| u16::from_le_bytes([x[0], *x.get(1).unwrap_or(&0)]))
-                    .collect::<Vec<_>>()
-            } else {
-                a2s(b).encode_utf16().collect()
-            })
-        );
+        eprintln!("sake: WriteFile({h:x}, {n}): {:?}", String::from_utf16_lossy(&if b.len() > 2 && b[1] == 0 {
+            b.chunks(2).map(|x| u16::from_le_bytes([x[0], *x.get(1).unwrap_or(&0)])).collect::<Vec<_>>()
+        } else {
+            a2s(b).encode_utf16().collect()
+        }));
     }
     if let Some(p) = crate::pipe::handle(h) {
         return crate::pipe::write(c, h, p);
@@ -6522,13 +5484,7 @@ pub(crate) fn console_write(t: &str) {
 /// line at a time (a game's own log file: 吉里吉里2 writes Debug.message only to krkr.console.log)
 pub(crate) fn echo_write(path: &str, buf: u32, n: u32) {
     static NAME: OnceLock<Option<String>> = OnceLock::new();
-    let Some(name) = NAME.get_or_init(|| {
-        std::env::var("SAKE_ECHO_FILE")
-            .ok()
-            .map(|s| s.to_ascii_lowercase())
-    }) else {
-        return;
-    };
+    let Some(name) = NAME.get_or_init(|| std::env::var("SAKE_ECHO_FILE").ok().map(|s| s.to_ascii_lowercase())) else { return };
     if !path.to_ascii_lowercase().ends_with(name.as_str()) {
         return;
     }
@@ -6540,11 +5496,7 @@ pub(crate) fn echo_write(path: &str, buf: u32, n: u32) {
     }
     let zeros = b.iter().skip(1).step_by(2).filter(|&&x| x == 0).count();
     let t = if WIDE.load(Ordering::Relaxed) || (b.len() >= 2 && zeros * 2 >= b.len() / 2) {
-        let u: Vec<u16> = b
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .filter(|&c| c != 0xfeff)
-            .collect();
+        let u: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).filter(|&c| c != 0xfeff).collect();
         String::from_utf16_lossy(&u)
     } else {
         a2s(b)
@@ -6557,11 +5509,7 @@ fn SetFilePointer(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0xffff_ffff;
     };
-    let off = if phi != 0 {
-        (lo as u64 | (r32(phi) as u64) << 32) as i64
-    } else {
-        lo as i32 as i64
-    };
+    let off = if phi != 0 { (lo as u64 | (r32(phi) as u64) << 32) as i64 } else { lo as i32 as i64 };
     let pos = match how {
         0 => SeekFrom::Start(off as u64),
         1 => SeekFrom::Current(off),
@@ -6583,12 +5531,7 @@ fn SetFilePointerEx(c: &mut Ctx) -> u32 {
     let (h, off, out, how) = if mem::x64() {
         (c.a(0), c.a64(1) as i64, c.a(2), c.a(3))
     } else {
-        (
-            c.a(0),
-            (c.a(1) as u64 | (c.a(2) as u64) << 32) as i64,
-            c.a(3),
-            c.a(4),
-        )
+        (c.a(0), (c.a(1) as u64 | (c.a(2) as u64) << 32) as i64, c.a(3), c.a(4))
     };
     let Some(f) = obj::file(h) else { return 0 };
     let pos = match how {
@@ -6656,9 +5599,7 @@ fn SetFileTime(_: &mut Ctx) -> u32 {
 }
 fn GetFileInformationByHandle(c: &mut Ctx) -> u32 {
     let Some(f) = obj::file(c.a(0)) else { return 0 };
-    let Ok(m) = f.f.lock().unwrap().metadata() else {
-        return 0;
-    };
+    let Ok(m) = f.f.lock().unwrap().metadata() else { return 0 };
     let p = c.a(1);
     mem::fill(p, 52, 0);
     w32(p, files::attrs(&m));
@@ -6680,9 +5621,7 @@ fn GetFileInformationByHandleEx(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0;
     };
-    let Ok(m) = f.f.lock().unwrap().metadata() else {
-        return 0;
-    };
+    let Ok(m) = f.f.lock().unwrap().metadata() else { return 0 };
     let (class, p, size) = (c.a(1), c.a(2), c.a(3));
     let need = match class {
         0 => 40,
@@ -6717,9 +5656,7 @@ fn GetFileInformationByHandleEx(c: &mut Ctx) -> u32 {
         _ => {
             put64(p, 0x1234);
             // (a file id from the path: os.path.samefile compares them)
-            let h = f.path.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
-                (h ^ b.to_ascii_lowercase() as u64).wrapping_mul(0x100_0000_01b3)
-            });
+            let h = f.path.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b.to_ascii_lowercase() as u64).wrapping_mul(0x100_0000_01b3));
             put64(p + 8, h);
         }
     }
@@ -6732,16 +5669,9 @@ fn PathCchSkipRoot(c: &mut Ctx) -> u32 {
         return 0x8007_0057;
     }
     let w = mem::wstr(p);
-    let sep = |i: usize| {
-        w.get(i)
-            .is_some_and(|&ch| ch == b'\\' as u16 || ch == b'/' as u16)
-    };
+    let sep = |i: usize| w.get(i).is_some_and(|&ch| ch == b'\\' as u16 || ch == b'/' as u16);
     let n = if w.len() >= 2 && w[1] == b':' as u16 {
-        if sep(2) {
-            3
-        } else {
-            2
-        }
+        if sep(2) { 3 } else { 2 }
     } else if sep(0) && sep(1) {
         // \\server\share\ (or \\?\...)
         let mut i = 2;
@@ -6800,13 +5730,7 @@ fn find_first(c: &mut Ctx, wide: bool) -> u32 {
 fn find_first_at(pat: u32, data: u32, wide: bool) -> u32 {
     let pat = arg_str(pat, wide);
     if crate::env_on!("SAKE_TRACE_FILES") {
-        let r = files::find(&pat).map(|f| {
-            f.entries
-                .iter()
-                .map(|e| e.0.clone())
-                .collect::<Vec<_>>()
-                .join(" ")
-        });
+        let r = files::find(&pat).map(|f| f.entries.iter().map(|e| e.0.clone()).collect::<Vec<_>>().join(" "));
         eprintln!("sake: FindFirstFile({pat}) -> {r:?}");
     }
     match files::find(&pat) {
@@ -6819,13 +5743,7 @@ fn find_first_at(pat: u32, data: u32, wide: bool) -> u32 {
         }
         None => {
             // ("dir\": ERROR_INVALID_PARAMETER; "" and a missing directory: ERROR_PATH_NOT_FOUND)
-            last_error(if pat.is_empty() {
-                3
-            } else if pat.ends_with(['\\', '/']) {
-                87
-            } else {
-                files::missing(&pat)
-            });
+            last_error(if pat.is_empty() { 3 } else if pat.ends_with(['\\', '/']) { 87 } else { files::missing(&pat) });
             0xffff_ffff
         }
     }
@@ -6906,9 +5824,7 @@ fn GetFileAttributesW(c: &mut Ctx) -> u32 {
 }
 fn attrs_ex(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
-    let Some((h, m)) =
-        files::resolve(&name).and_then(|h| kura::fs::metadata(&h).ok().map(|m| (h, m)))
-    else {
+    let Some((h, m)) = files::resolve(&name).and_then(|h| kura::fs::metadata(&h).ok().map(|m| (h, m))) else {
         last_error(files::missing(&name));
         return 0;
     };
@@ -6952,11 +5868,7 @@ fn bad_dir_name(name: &str) -> Option<u32> {
     if name.is_empty() {
         return Some(3);
     }
-    let last = name
-        .trim_end_matches(['\\', '/'])
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or("");
+    let last = name.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or("");
     last.contains(['?', '*', '<', '>', '|', '"']).then_some(123)
 }
 pub fn mkdir(name: &str) -> u32 {
@@ -6968,11 +5880,7 @@ pub fn mkdir(name: &str) -> u32 {
     match kura::fs::create_dir(&h) {
         Ok(()) => 1,
         Err(e) => {
-            last_error(if e.kind() == std::io::ErrorKind::AlreadyExists {
-                183
-            } else {
-                3
-            });
+            last_error(if e.kind() == std::io::ErrorKind::AlreadyExists { 183 } else { 3 });
             0
         }
     }
@@ -7093,11 +6001,7 @@ fn copy_file(from: &str, to: &str, fail: bool) -> u32 {
     ok(r)
 }
 fn CopyFileA(c: &mut Ctx) -> u32 {
-    copy_file(
-        &arg_str(c.a(0), false),
-        &arg_str(c.a(1), false),
-        c.a(2) != 0,
-    )
+    copy_file(&arg_str(c.a(0), false), &arg_str(c.a(1), false), c.a(2) != 0)
 }
 fn CopyFileW(c: &mut Ctx) -> u32 {
     copy_file(&arg_str(c.a(0), true), &arg_str(c.a(1), true), c.a(2) != 0)
@@ -7106,19 +6010,13 @@ fn full_path_name(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
     let full = files::full_path(&name);
     let r = ret_str(c.a(2), c.a(1), &full, wide);
-    let unc_root = full
-        .strip_prefix("\\\\")
-        .is_some_and(|u| u.matches('\\').count() <= 1);
+    let unc_root = full.strip_prefix("\\\\").is_some_and(|u| u.matches('\\').count() <= 1);
     if c.a(3) != 0 && r < c.a(1) && (full.ends_with('\\') || unc_root) {
         // (no file part in "C:\" or "dir\")
         mem::wp(c.a(3), 0);
     } else if c.a(3) != 0 && r < c.a(1) {
         let pos = full.rfind('\\').map_or(0, |i| i + 1);
-        let off = if wide {
-            full[..pos].encode_utf16().count() * 2
-        } else {
-            crate::text::s2a(&full[..pos]).len()
-        };
+        let off = if wide { full[..pos].encode_utf16().count() * 2 } else { crate::text::s2a(&full[..pos]).len() };
         mem::wp(c.a(3), c.a(2) + off as u32);
     }
     r
@@ -7145,11 +6043,7 @@ fn GetLongPathNameW(c: &mut Ctx) -> u32 {
 }
 fn cur_dir(c: &mut Ctx, wide: bool) -> u32 {
     let d = files::cwd();
-    let d = if d.len() > 3 {
-        d.trim_end_matches('\\').to_string()
-    } else {
-        d
-    };
+    let d = if d.len() > 3 { d.trim_end_matches('\\').to_string() } else { d };
     ret_str(c.a(1), c.a(0), &d, wide)
 }
 fn GetCurrentDirectoryA(c: &mut Ctx) -> u32 {
@@ -7199,17 +6093,8 @@ static TEMP_N: AtomicU32 = AtomicU32::new(0x100);
 fn temp_name(c: &mut Ctx, wide: bool) -> u32 {
     let dir = arg_str(c.a(0), wide);
     let pre = arg_str(c.a(1), wide);
-    let n = if c.a(2) != 0 {
-        c.a(2)
-    } else {
-        TEMP_N.fetch_add(1, Ordering::Relaxed)
-    };
-    let p = format!(
-        "{}\\{}{:04X}.tmp",
-        dir.trim_end_matches('\\'),
-        pre.chars().take(3).collect::<String>(),
-        n
-    );
+    let n = if c.a(2) != 0 { c.a(2) } else { TEMP_N.fetch_add(1, Ordering::Relaxed) };
+    let p = format!("{}\\{}{:04X}.tmp", dir.trim_end_matches('\\'), pre.chars().take(3).collect::<String>(), n);
     if c.a(2) == 0 {
         let _ = kura::fs::File::create(files::resolve_new(&p));
     }
@@ -7239,19 +6124,11 @@ fn GetSystemWindowsDirectoryA(c: &mut Ctx) -> u32 {
 }
 fn GetDriveTypeA(c: &mut Ctx) -> u32 {
     let d = arg_str(c.a(0), false).to_ascii_uppercase();
-    if d.starts_with('C') || d.starts_with('Z') || c.a(0) == 0 {
-        3
-    } else {
-        1
-    }
+    if d.starts_with('C') || d.starts_with('Z') || c.a(0) == 0 { 3 } else { 1 }
 }
 fn GetDriveTypeW(c: &mut Ctx) -> u32 {
     let d = arg_str(c.a(0), true).to_ascii_uppercase();
-    if d.starts_with('C') || d.starts_with('Z') || c.a(0) == 0 {
-        3
-    } else {
-        1
-    }
+    if d.starts_with('C') || d.starts_with('Z') || c.a(0) == 0 { 3 } else { 1 }
 }
 fn GetLogicalDrives(_: &mut Ctx) -> u32 {
     (1 << 2) | (1 << 25)
@@ -7271,11 +6148,7 @@ fn query_dos_device(c: &mut Ctx, wide: bool) -> u32 {
         vec!["C:".into(), "Z:".into()]
     } else {
         let n = arg_str(name, wide);
-        let dev = n
-            .chars()
-            .next()
-            .filter(|_| n.len() == 2 && n.ends_with(':'))
-            .and_then(drive_device);
+        let dev = n.chars().next().filter(|_| n.len() == 2 && n.ends_with(':')).and_then(drive_device);
         match dev {
             Some(d) => vec![d.into()],
             None => {
@@ -7286,11 +6159,7 @@ fn query_dos_device(c: &mut Ctx, wide: bool) -> u32 {
     };
     let mut units: Vec<u16> = Vec::new();
     for x in &v {
-        if wide {
-            units.extend(x.encode_utf16())
-        } else {
-            units.extend(x.bytes().map(|b| b as u16))
-        }
+        if wide { units.extend(x.encode_utf16()) } else { units.extend(x.bytes().map(|b| b as u16)) }
         units.push(0);
     }
     units.push(0);
@@ -7299,11 +6168,7 @@ fn query_dos_device(c: &mut Ctx, wide: bool) -> u32 {
         return 0;
     }
     for (i, &u) in units.iter().enumerate() {
-        if wide {
-            w16(out + 2 * i as u32, u)
-        } else {
-            w8(out + i as u32, u as u8)
-        }
+        if wide { w16(out + 2 * i as u32, u) } else { w8(out + i as u32, u as u8) }
     }
     units.len() as u32
 }
@@ -7320,11 +6185,7 @@ fn logical_drive_strings(c: &mut Ctx, wide: bool) -> u32 {
         return s.len() as u32;
     }
     for (i, &b) in s.iter().enumerate() {
-        if wide {
-            w16(out + 2 * i as u32, b as u16)
-        } else {
-            w8(out + i as u32, b)
-        }
+        if wide { w16(out + 2 * i as u32, b as u16) } else { w8(out + i as u32, b) }
     }
     s.len() as u32 - 1
 }
@@ -7387,29 +6248,10 @@ fn search_path(c: &mut Ctx, wide: bool) -> u32 {
     let dirs: Vec<String> = if path != 0 {
         arg_str(path, wide).split(';').map(String::from).collect()
     } else {
-        let exe = crate::pe::MODULES
-            .read()
-            .unwrap()
-            .iter()
-            .find(|m| !m.dll)
-            .map(|m| m.path.clone())
-            .unwrap_or_default();
-        let exe_dir = exe
-            .rfind('\\')
-            .map_or(String::new(), |i| exe[..i].to_string());
-        let mut v = vec![
-            exe_dir,
-            files::cwd(),
-            "C:\\windows\\system32".into(),
-            "C:\\windows".into(),
-        ];
-        v.extend(
-            env_get("PATH")
-                .unwrap_or_default()
-                .split(';')
-                .filter(|d| !d.is_empty())
-                .map(String::from),
-        );
+        let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
+        let exe_dir = exe.rfind('\\').map_or(String::new(), |i| exe[..i].to_string());
+        let mut v = vec![exe_dir, files::cwd(), "C:\\windows\\system32".into(), "C:\\windows".into()];
+        v.extend(env_get("PATH").unwrap_or_default().split(';').filter(|d| !d.is_empty()).map(String::from));
         v
     };
     for d in dirs.iter().filter(|d| !d.is_empty()) {
@@ -7418,11 +6260,7 @@ fn search_path(c: &mut Ctx, wide: bool) -> u32 {
             let r = ret_str(buf, cap, &w, wide);
             if part != 0 {
                 let dir = &w[..w.rfind('\\').map_or(0, |i| i + 1)];
-                let off = if wide {
-                    2 * dir.encode_utf16().count()
-                } else {
-                    crate::text::s2a(dir).len()
-                } as u32;
+                let off = if wide { 2 * dir.encode_utf16().count() } else { crate::text::s2a(dir).len() } as u32;
                 // (pointer-sized; only when the name fitted)
                 if r < cap {
                     mem::putp(part, buf + off);
@@ -7444,11 +6282,7 @@ fn SearchPathW(c: &mut Ctx) -> u32 {
 fn CreateFileMappingA(c: &mut Ctx) -> u32 {
     let f = obj::file(c.a(0));
     let size = c.a(4);
-    obj::add(Obj::Mapping {
-        file: f,
-        size,
-        view: 0,
-    })
+    obj::add(Obj::Mapping { file: f, size, view: 0 })
 }
 fn CreateFileMappingW(c: &mut Ctx) -> u32 {
     CreateFileMappingA(c)
@@ -7459,9 +6293,7 @@ fn MapViewOfFile(c: &mut Ctx) -> u32 {
         Some((Obj::Mapping { file, size, view }, _)) => Some((file.clone(), *size, *view)),
         _ => None,
     });
-    let Some((file, size, view)) = info else {
-        return 0;
-    };
+    let Some((file, size, view)) = info else { return 0 };
     if file.is_none() && view != 0 {
         return view;
     }
@@ -7471,15 +6303,9 @@ fn MapViewOfFile(c: &mut Ctx) -> u32 {
         None => size,
     };
     let n = if n == 0 { total } else { n.min(total.max(n)) };
-    let Some(b) = mem::reserve(0, n.max(1), 4, 0x40000, false) else {
-        return 0;
-    };
+    let Some(b) = mem::reserve(0, n.max(1), 4, 0x40000, false) else { return 0 };
     mem::commit(b, 4);
-    VIEWS.lock().unwrap().push((
-        b,
-        n.max(1),
-        file.as_ref().map(|f| files::host_to_win(&f.path)),
-    ));
+    VIEWS.lock().unwrap().push((b, n.max(1), file.as_ref().map(|f| files::host_to_win(&f.path))));
     if let Some(f) = &file {
         let pos = f.seek(SeekFrom::Current(0)).unwrap_or(0);
         f.seek(SeekFrom::Start(off));
@@ -7499,11 +6325,7 @@ fn MapViewOfFileEx(c: &mut Ctx) -> u32 {
 }
 fn UnmapViewOfFile(c: &mut Ctx) -> u32 {
     let a = c.a(0);
-    let named_view = obj::with(|t| {
-        t.objs
-            .values()
-            .any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, .. } if *view == a))
-    });
+    let named_view = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, .. } if *view == a)));
     if !named_view {
         VIEWS.lock().unwrap().retain(|v| v.0 != a);
         mem::release(a);
@@ -7525,19 +6347,12 @@ fn mapped_file(a: u32) -> Result<String, u32> {
     if let Some(b) = crate::pe::containing(a) {
         return Ok(crate::pe::with(b, |m| m.path.clone()).unwrap());
     }
-    match VIEWS
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|v| a >= v.0 && a - v.0 < v.1)
-    {
+    match VIEWS.lock().unwrap().iter().find(|v| a >= v.0 && a - v.0 < v.1) {
         Some((_, _, Some(p))) => Ok(p.clone()),
         Some(_) => Err(1006),
         None => {
             // (a pagefile section a program shares by name)
-            let named = obj::with(|t| {
-                t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, size } if *view != 0 && a >= *view && a - *view < *size))
-            });
+            let named = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, size } if *view != 0 && a >= *view && a - *view < *size)));
             Err(if named { 1006 } else { 59 })
         }
     }
@@ -7555,11 +6370,7 @@ fn mapped_file_name(c: &mut Ctx, wide: bool) -> u32 {
     match mapped_file(a) {
         Ok(p) => {
             let p = device_path(&p);
-            let n = if wide {
-                p.encode_utf16().count()
-            } else {
-                crate::text::s2a(&p).len()
-            } as u32;
+            let n = if wide { p.encode_utf16().count() } else { crate::text::s2a(&p).len() } as u32;
             put_name(dst, cap, &p, wide);
             n.min(cap)
         }
@@ -7582,19 +6393,9 @@ fn image_file_name(c: &mut Ctx, wide: bool) -> u32 {
     if !psapi_access(h, false) {
         return 0;
     }
-    let exe = crate::pe::MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| !m.dll)
-        .map(|m| m.path.clone())
-        .unwrap_or_default();
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
     let p = device_path(&exe);
-    let n = if wide {
-        p.encode_utf16().count()
-    } else {
-        crate::text::s2a(&p).len()
-    } as u32;
+    let n = if wide { p.encode_utf16().count() } else { crate::text::s2a(&p).len() } as u32;
     if n >= cap || dst == 0 {
         last_error(122);
         return 0;
@@ -7603,18 +6404,8 @@ fn image_file_name(c: &mut Ctx, wide: bool) -> u32 {
 }
 /// The exe's path: its Windows path, or (`native`) the NT device path
 pub(crate) fn exe_path(native: bool) -> String {
-    let exe = crate::pe::MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| !m.dll)
-        .map(|m| m.path.clone())
-        .unwrap_or_default();
-    if native {
-        device_path(&exe)
-    } else {
-        exe
-    }
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
+    if native { device_path(&exe) } else { exe }
 }
 /// QueryFullProcessImageName(process, flags, buffer, size in/out): flags 0 the Windows path,
 /// PROCESS_NAME_NATIVE (1) the device path; *size the characters written, without the NUL
@@ -7628,11 +6419,7 @@ fn full_image_name(c: &mut Ctx, wide: bool) -> u32 {
         return 0;
     }
     let p = exe_path(flags == 1);
-    let n = if wide {
-        p.encode_utf16().count()
-    } else {
-        crate::text::s2a(&p).len()
-    } as u32;
+    let n = if wide { p.encode_utf16().count() } else { crate::text::s2a(&p).len() } as u32;
     if n >= r32(psize) || dst == 0 {
         last_error(122);
         return 0;
@@ -7666,9 +6453,7 @@ pub fn exec(file: &str, args: &str, dir: Option<&str>) -> bool {
     }
     let mut f = file.trim().to_string();
     if !f.to_ascii_lowercase().ends_with(".exe") {
-        if files::resolve(&files::full_path(&f)).is_none()
-            && files::resolve(&files::full_path(&format!("{f}.exe"))).is_some()
-        {
+        if files::resolve(&files::full_path(&f)).is_none() && files::resolve(&files::full_path(&format!("{f}.exe"))).is_some() {
             f += ".exe";
         } else {
             return false;
@@ -7676,10 +6461,7 @@ pub fn exec(file: &str, args: &str, dir: Option<&str>) -> bool {
     }
     let rel = !(f.starts_with('\\') || f.as_bytes().get(1) == Some(&b':'));
     let full = match dir.filter(|d| rel && !d.is_empty()) {
-        Some(d) => files::full_path(&format!(
-            "{}\\{f}",
-            files::full_path(d).trim_end_matches('\\')
-        )),
+        Some(d) => files::full_path(&format!("{}\\{f}", files::full_path(d).trim_end_matches('\\'))),
         None => files::full_path(&f),
     };
     // (the file's own spelling: KiriKiri restarts やきゅられ体験版.eXe as ….exe, and the page
@@ -7710,10 +6492,7 @@ fn OpenProcess(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    let h = obj::add(Obj::Process {
-        access: c.a(0) & PROCESS_ALL_ACCESS,
-        pid,
-    });
+    let h = obj::add(Obj::Process { access: c.a(0) & PROCESS_ALL_ACCESS, pid });
     if c.a(1) != 0 {
         obj::set_inherit(h, true);
     }
@@ -7745,11 +6524,7 @@ fn K32EnumProcesses(c: &mut Ctx) -> u32 {
 fn OpenThread(c: &mut Ctx) -> u32 {
     let tid = c.a(2);
     let h = obj::with(|t| {
-        t.objs
-            .iter()
-            .filter(|(_, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid && tid != 0))
-            .map(|(&h, (o, _))| (matches!(o, Obj::Thread { done: true, .. }), h))
-            .min()
+        t.objs.iter().filter(|(_, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid && tid != 0)).map(|(&h, (o, _))| (matches!(o, Obj::Thread { done: true, .. }), h)).min()
     });
     match h {
         Some((_, h)) => obj::dup(h),
@@ -7776,11 +6551,7 @@ fn startup_info(p: u32, wide: bool) -> u32 {
         }
         (a, w)
     });
-    let (size, flags, std) = if mem::x64() {
-        (104, 60, 80)
-    } else {
-        (68, 44, 56)
-    };
+    let (size, flags, std) = if mem::x64() { (104, 60, 80) } else { (68, 44, 56) };
     mem::fill(p, size, 0);
     w32(p, size);
     mem::wp(p + 2 * mem::ps(), if wide { dw } else { da });
@@ -7887,9 +6658,7 @@ fn BCryptGetProperty(_: &mut Ctx) -> u32 {
 }
 /// avrt (MMCSS): AvSetMmThreadCharacteristics(task, &index) -> a handle; the rest succeed.
 fn AvSetMmThreadCharacteristics(c: &mut Ctx) -> u32 {
-    let max = crate::api::name_of(c.trap)
-        .unwrap_or_default()
-        .contains("Max");
+    let max = crate::api::name_of(c.trap).unwrap_or_default().contains("Max");
     put32(c.a(if max { 2 } else { 1 }), 1);
     0x4d4d_4353
 }
@@ -7985,13 +6754,7 @@ fn CreateToolhelp32Snapshot(_: &mut Ctx) -> u32 {
 }
 fn process_entry(c: &mut Ctx, wide: bool) -> u32 {
     let p = c.a(1);
-    let exe = crate::pe::MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| !m.dll)
-        .map(|m| m.name.clone())
-        .unwrap_or_default();
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.name.clone()).unwrap_or_default();
     let size = if wide { 36 + 520 } else { 36 + 260 };
     mem::fill(p + 4, size - 4, 0);
     w32(p + 8, crate::pid());
@@ -8035,11 +6798,7 @@ fn MakeSureDirectoryPathExists(c: &mut Ctx) -> u32 {
 /// SearchTreeForFile(root, name, out): the first file called `name` under `root`, depth first.
 fn SearchTreeForFile(c: &mut Ctx) -> u32 {
     let (root, name, out) = (arg_str(c.a(0), false), arg_str(c.a(1), false), c.a(2));
-    let base = name
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&name)
-        .to_lowercase();
+    let base = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_lowercase();
     fn walk(host: &std::path::Path, guest: &str, base: &str, depth: u32) -> Option<String> {
         let mut dirs = Vec::new();
         for e in kura::fs::read_dir(host).ok()?.flatten() {
@@ -8107,21 +6866,14 @@ pub fn init() {
     implement("msvcrt", "_beginthread", _beginthread);
     implement("msvcrt", "_endthreadex", _endthreadex);
     implement("msvcrt", "_endthread", _endthread);
-    implement(
-        "kernel32",
-        "SetThreadExecutionState",
-        SetThreadExecutionState,
-    );
+    implement("kernel32", "SetThreadExecutionState", SetThreadExecutionState);
     implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
     for d in ["kernel32", "kernelbase"] {
         implement(d, "QueryFullProcessImageNameA", QueryFullProcessImageNameA);
         implement(d, "QueryFullProcessImageNameW", QueryFullProcessImageNameW);
     }
     for (n, f) in [
-        (
-            "EnumProcessModules",
-            K32EnumProcessModules as crate::api::Handler,
-        ),
+        ("EnumProcessModules", K32EnumProcessModules as crate::api::Handler),
         ("EnumProcessModulesEx", K32EnumProcessModulesEx),
         ("EnumProcesses", K32EnumProcesses),
         ("GetPerformanceInfo", K32GetPerformanceInfo),
@@ -8143,34 +6895,14 @@ pub fn init() {
     implement("kernel32", "IsBadStringPtrW", IsBadStringPtrW);
     reg!("ntdll"; RtlWow64EnableFsRedirection, RtlWow64EnableFsRedirectionEx);
     for d in ["kernel32", "kernelbase"] {
-        implement(
-            d,
-            "Wow64DisableWow64FsRedirection",
-            Wow64DisableWow64FsRedirection,
-        );
-        implement(
-            d,
-            "Wow64RevertWow64FsRedirection",
-            Wow64RevertWow64FsRedirection,
-        );
-        implement(
-            d,
-            "Wow64EnableWow64FsRedirection",
-            Wow64EnableWow64FsRedirection,
-        );
+        implement(d, "Wow64DisableWow64FsRedirection", Wow64DisableWow64FsRedirection);
+        implement(d, "Wow64RevertWow64FsRedirection", Wow64RevertWow64FsRedirection);
+        implement(d, "Wow64EnableWow64FsRedirection", Wow64EnableWow64FsRedirection);
     }
-    implement(
-        "kernel32",
-        "GetUserDefaultLocaleName",
-        GetUserDefaultLocaleName,
-    );
+    implement("kernel32", "GetUserDefaultLocaleName", GetUserDefaultLocaleName);
     implement("kernel32", "LocaleNameToLCID", LocaleNameToLCID);
     implement("ntdll", "NtQuerySystemTime", NtQuerySystemTime);
-    implement(
-        "ntdll",
-        "RtlTimeToSecondsSince1970",
-        RtlTimeToSecondsSince1970,
-    );
+    implement("ntdll", "RtlTimeToSecondsSince1970", RtlTimeToSecondsSince1970);
     // heap walks find no entries (sake's heaps keep no per-block list a program could walk)
     implement("ntdll", "RtlWalkHeap", |_| 0x8000_001a); // STATUS_NO_MORE_ENTRIES
     implement("kernel32", "HeapWalk", |_| {
@@ -8178,19 +6910,11 @@ pub fn init() {
         0
     });
     implement("ntdll", "LdrGetDllHandle", LdrGetDllHandle);
-    implement(
-        "ntdll",
-        "RtlFindExportedRoutineByName",
-        RtlFindExportedRoutineByName,
-    );
+    implement("ntdll", "RtlFindExportedRoutineByName", RtlFindExportedRoutineByName);
     implement("ntdll", "NtQueryVirtualMemory", NtQueryVirtualMemory);
     implement("kernel32", "LCIDToLocaleName", LCIDToLocaleName);
     for d in ["kernel32", "kernelbase"] {
-        for n in [
-            "GetThreadPreferredUILanguages",
-            "GetUserPreferredUILanguages",
-            "GetSystemPreferredUILanguages",
-        ] {
+        for n in ["GetThreadPreferredUILanguages", "GetUserPreferredUILanguages", "GetSystemPreferredUILanguages"] {
             implement(d, n, preferred_ui_languages);
         }
         implement(d, "GetProcessPreferredUILanguages", process_ui_languages);
@@ -8203,11 +6927,7 @@ pub fn init() {
         implement(d, "VerLanguageNameW", |c| ver_language_name(c, true));
     }
     implement("kernel32", "GetLocaleInfoEx", GetLocaleInfoEx);
-    implement(
-        "kernel32",
-        "GetSystemDefaultLocaleName",
-        GetUserDefaultLocaleName,
-    );
+    implement("kernel32", "GetSystemDefaultLocaleName", GetUserDefaultLocaleName);
     reg!("kernel32";
         GetCommandLineA, GetCommandLineW, GetEnvironmentStrings, GetEnvironmentStringsA, GetEnvironmentStringsW,
         FreeEnvironmentStringsA, FreeEnvironmentStringsW, GetEnvironmentVariableA, GetEnvironmentVariableW,
@@ -8300,12 +7020,10 @@ pub fn init() {
     implement("ntdll", "RtlWakeAddressAll", WakeByAddressAll);
     implement("ntdll", "RtlWakeAddressSingle", WakeByAddressAll);
     // RtlWaitOnAddress(address, &compare, size, timeout): STATUS_SUCCESS / TIMEOUT / INVALID_PARAMETER
-    implement("ntdll", "RtlWaitOnAddress", |c| {
-        match wait_on_address(c.a(0), c.a(1), c.a(2), crate::ntsync::timeout_ms(c.a(3))) {
-            Ok(()) => 0,
-            Err(87) => 0xc000_000d,
-            Err(_) => 0x102,
-        }
+    implement("ntdll", "RtlWaitOnAddress", |c| match wait_on_address(c.a(0), c.a(1), c.a(2), crate::ntsync::timeout_ms(c.a(3))) {
+        Ok(()) => 0,
+        Err(87) => 0xc000_000d,
+        Err(_) => 0x102,
     });
     implement("ntdll", "RtlWakeAddressSingle", WakeByAddressAll);
     implement("kernelbase", "VirtualProtectFromApp", VirtualProtect);
@@ -8313,38 +7031,19 @@ pub fn init() {
     for n in ["PdhOpenQueryA", "PdhOpenQueryW", "PdhOpenQuery"] {
         implement("pdh", n, PdhOpenQuery);
     }
-    for n in [
-        "PdhAddCounterA",
-        "PdhAddCounterW",
-        "PdhAddEnglishCounterA",
-        "PdhAddEnglishCounterW",
-    ] {
+    for n in ["PdhAddCounterA", "PdhAddCounterW", "PdhAddEnglishCounterA", "PdhAddEnglishCounterW"] {
         implement("pdh", n, PdhAddCounter);
     }
     for n in ["PdhCollectQueryData", "PdhRemoveCounter", "PdhCloseQuery"] {
         implement("pdh", n, pdh_ok);
     }
     reg!("pdh"; PdhGetFormattedCounterValue);
-    for n in [
-        "AvSetMmThreadCharacteristicsA",
-        "AvSetMmThreadCharacteristicsW",
-        "AvSetMmMaxThreadCharacteristicsA",
-        "AvSetMmMaxThreadCharacteristicsW",
-    ] {
+    for n in ["AvSetMmThreadCharacteristicsA", "AvSetMmThreadCharacteristicsW", "AvSetMmMaxThreadCharacteristicsA", "AvSetMmMaxThreadCharacteristicsW"] {
         implement("avrt", n, AvSetMmThreadCharacteristics);
     }
     implement("avrt", "AvRevertMmThreadCharacteristics", av_true);
     implement("avrt", "AvSetMmThreadPriority", av_true);
-    for n in [
-        "Process32Next",
-        "Process32NextW",
-        "Module32First",
-        "Module32FirstW",
-        "Module32Next",
-        "Module32NextW",
-        "Thread32First",
-        "Thread32Next",
-    ] {
+    for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
         implement("kernel32", n, no_more);
     }
     reg!("dbghelp"; MakeSureDirectoryPathExists, SearchTreeForFile);
@@ -8366,16 +7065,8 @@ pub fn init() {
     implement("ntdll", "RtlInitString", RtlInitAnsiString);
     implement("ntdll", "RtlFreeAnsiString", RtlFreeUnicodeString);
     implement("ntdll", "ZwProtectVirtualMemory", NtProtectVirtualMemory);
-    implement(
-        "ntdll",
-        "RtlInterlockedPushEntrySList",
-        InterlockedPushEntrySList,
-    );
-    implement(
-        "ntdll",
-        "RtlInterlockedPopEntrySList",
-        InterlockedPopEntrySList,
-    );
+    implement("ntdll", "RtlInterlockedPushEntrySList", InterlockedPushEntrySList);
+    implement("ntdll", "RtlInterlockedPopEntrySList", InterlockedPopEntrySList);
     implement("ntdll", "RtlInterlockedFlushSList", InterlockedFlushSList);
     implement("ntdll", "RtlQueryDepthSList", QueryDepthSList);
     implement("ntdll", "RtlInitializeSListHead", InitializeSListHead);
@@ -8408,7 +7099,7 @@ mod version_tests {
     /// 1 same, 2 minor+1, 3 SP minor+1, 4 SP major+1, 5 SP major-1, 6 major-1, 7 build+1,
     /// expected error (0: TRUE), VerSetConditionMask calls)
     const WINE: &[(u32, u32, u32, &[(u32, u8)])] = &[
-        // 49 cases
+    // 49 cases
         (0x33, 2, 0, &[(0x2, 1), (0x1, 4)]),
         (0x33, 2, 1150, &[(0x2, 3), (0x1, 4)]),
         (0x33, 1, 0, &[(0x2, 3), (0x1, 4)]),
@@ -8474,15 +7165,9 @@ mod version_tests {
                 7 => v.build += 1,
                 _ => {}
             }
-            let mask = conds
-                .iter()
-                .fold(0, |m, &(t, c)| ver_set_condition_mask(m, t, c));
+            let mask = conds.iter().fold(0, |m, &(t, c)| ver_set_condition_mask(m, t, c));
             let got = verify_version(&OS_VERSION, &v, types, mask);
-            let want = if err == 0 {
-                Ok(())
-            } else {
-                Err(VerFail::Mismatch)
-            };
+            let want = if err == 0 { Ok(()) } else { Err(VerFail::Mismatch) };
             assert_eq!(got, want, "case {i}");
         }
         // (the checks after the table)
@@ -8494,16 +7179,11 @@ mod version_tests {
         assert_eq!(verify_version(&OS_VERSION, &v, 0x33, mask), Ok(()));
         (v.sp_major, v.sp_minor) = (0, 10);
         assert_eq!(verify_version(&OS_VERSION, &v, 0x31, mask), Ok(()));
-        assert_eq!(
-            verify_version(&OS_VERSION, &v, 0, mask),
-            Err(VerFail::BadArgs)
-        );
+        assert_eq!(verify_version(&OS_VERSION, &v, 0, mask), Err(VerFail::BadArgs));
         assert_eq!(verify_version(&OS_VERSION, &v, 1, 0), Err(VerFail::BadArgs));
-        assert_eq!(
-            verify_version(&OS_VERSION, &v, 0x40, ver_set_condition_mask(0, 0x40, 1)),
-            Err(VerFail::BadArgs)
-        );
+        assert_eq!(verify_version(&OS_VERSION, &v, 0x40, ver_set_condition_mask(0, 0x40, 1)), Err(VerFail::BadArgs));
     }
+
 
     #[test]
     fn condition_mask_slots() {
@@ -8516,13 +7196,7 @@ mod version_tests {
     }
 
     fn ver() -> impl Strategy<Value = OsVer> {
-        (0u32..4, 0u32..4, 0u16..3, 0u16..3).prop_map(|(major, minor, sp_major, sp_minor)| OsVer {
-            major,
-            minor,
-            sp_major,
-            sp_minor,
-            ..OS_VERSION
-        })
+        (0u32..4, 0u32..4, 0u16..3, 0u16..3).prop_map(|(major, minor, sp_major, sp_minor)| OsVer { major, minor, sp_major, sp_minor, ..OS_VERSION })
     }
 
     proptest! {

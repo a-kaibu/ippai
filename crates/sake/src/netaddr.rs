@@ -74,12 +74,7 @@ pub fn v4_parse(s: &[u16], strict: bool, want_end: bool, want_port: bool) -> V4 
     let mut i = 0;
     let mut f = [0u32; 4];
     let mut n = 0;
-    let fail = |i| V4 {
-        ok: false,
-        addr: None,
-        end: i,
-        port: 0,
-    };
+    let fail = |i| V4 { ok: false, addr: None, end: i, port: 0 };
     loop {
         match v4_field(s, &mut i, strict) {
             Some(v) => f[n] = v,
@@ -99,15 +94,8 @@ pub fn v4_parse(s: &[u16], strict: bool, want_end: bool, want_port: bool) -> V4 
     }
     let a = match n {
         4 if f.iter().all(|&v| v <= 0xff) => [f[0] as u8, f[1] as u8, f[2] as u8, f[3] as u8],
-        3 if f[0] <= 0xff && f[1] <= 0xff && f[2] <= 0xffff => {
-            [f[0] as u8, f[1] as u8, (f[2] >> 8) as u8, f[2] as u8]
-        }
-        2 if f[0] <= 0xff && f[1] <= 0xff_ffff => [
-            f[0] as u8,
-            (f[1] >> 16) as u8,
-            (f[1] >> 8) as u8,
-            f[1] as u8,
-        ],
+        3 if f[0] <= 0xff && f[1] <= 0xff && f[2] <= 0xffff => [f[0] as u8, f[1] as u8, (f[2] >> 8) as u8, f[2] as u8],
+        2 if f[0] <= 0xff && f[1] <= 0xff_ffff => [f[0] as u8, (f[1] >> 16) as u8, (f[1] >> 8) as u8, f[1] as u8],
         1 => f[0].to_be_bytes(),
         _ => return fail(i),
     };
@@ -124,30 +112,13 @@ pub fn v4_parse(s: &[u16], strict: bool, want_end: bool, want_port: bool) -> V4 
                     }
                 }
             }
-            _ => {
-                return V4 {
-                    ok: false,
-                    addr: Some(a),
-                    end: i,
-                    port: 0,
-                }
-            }
+            _ => return V4 { ok: false, addr: Some(a), end: i, port: 0 },
         }
     }
     if !want_end && at(s, i) != 0 {
-        return V4 {
-            ok: false,
-            addr: Some(a),
-            end,
-            port,
-        };
+        return V4 { ok: false, addr: Some(a), end, port };
     }
-    V4 {
-        ok: true,
-        addr: Some(a),
-        end,
-        port,
-    }
+    V4 { ok: true, addr: Some(a), end, port }
 }
 
 /// An IPv6 component: like wcstoul (with the value capped at 0x7fffffff), but it must start
@@ -155,11 +126,7 @@ pub fn v4_parse(s: &[u16], strict: bool, want_end: bool, want_port: bool) -> V4 
 fn v6_field(s: &[u16], i: &mut usize, base: u32) -> Option<u32> {
     digit(at(s, *i))?;
     let mut j = *i;
-    if base == 16
-        && at(s, j) == b'0' as u16
-        && (at(s, j + 1) | 0x20) == b'x' as u16
-        && digit(at(s, j + 2)).is_some()
-    {
+    if base == 16 && at(s, j) == b'0' as u16 && (at(s, j + 1) | 0x20) == b'x' as u16 && digit(at(s, j + 2)).is_some() {
         j += 2;
     }
     let start = j;
@@ -193,12 +160,7 @@ pub fn v6_parse(s: &[u16], a: &mut [u8; 16], ex: bool, want_end: bool) -> V6 {
     let mut want_port = false;
     let (mut nb, mut n4, mut gap): (usize, usize, Option<usize>) = (0, 0, None);
     let (mut has_0x, mut too_big) = (false, false);
-    let fail = |i| V6 {
-        ok: false,
-        end: i,
-        scope: 0,
-        port: 0,
-    };
+    let fail = |i| V6 { ok: false, end: i, scope: 0, port: 0 };
     let c = |s: &[u16], i: usize, ch: u8| at(s, i) == ch as u16;
     if c(s, 0, b'[') {
         if !ex {
@@ -238,9 +200,7 @@ pub fn v6_parse(s: &[u16], a: &mut [u8; 16], ex: bool, want_end: bool) -> V6 {
             }
         }
         if n4 != 0 {
-            let Some(v) = v6_field(s, &mut i, 10) else {
-                return fail(i);
-            };
+            let Some(v) = v6_field(s, &mut i, 10) else { return fail(i) };
             if i - prev > 3 || v > 255 {
                 too_big = true;
             } else {
@@ -255,18 +215,11 @@ pub fn v6_parse(s: &[u16], a: &mut [u8; 16], ex: bool, want_end: bool) -> V6 {
             }
             n4 += 1;
         } else {
-            let Some(v) = v6_field(s, &mut i, 16) else {
-                return fail(i);
-            };
+            let Some(v) = v6_field(s, &mut i, 16) else { return fail(i) };
             if c(s, prev, b'0') && (at(s, prev + 1) | 0x20) == b'x' as u16 {
                 // the last group may be "0x" and any length; the "x" counts as the terminator
                 if nb < 14 && gap.is_none() {
-                    return V6 {
-                        ok: false,
-                        end: prev + 1,
-                        scope: 0,
-                        port: 0,
-                    };
+                    return V6 { ok: false, end: prev + 1, scope: 0, port: 0 };
                 }
                 a[nb..nb + 2].copy_from_slice(&(v as u16).to_be_bytes());
                 nb += 2;
@@ -336,19 +289,9 @@ pub fn v6_parse(s: &[u16], a: &mut [u8; 16], ex: bool, want_end: bool) -> V6 {
         }
     }
     if !want_end && at(s, i) != 0 {
-        return V6 {
-            ok: false,
-            end,
-            scope: 0,
-            port: 0,
-        };
+        return V6 { ok: false, end, scope: 0, port: 0 };
     }
-    V6 {
-        ok: true,
-        end,
-        scope,
-        port,
-    }
+    V6 { ok: true, end, scope, port }
 }
 
 /// "a.b.c.d[:port]" (port in network order, 0 for none)
@@ -443,11 +386,7 @@ fn v4_s2a(c: &mut Ctx, w: bool, ex: bool) -> u32 {
     }
     let s = if w { wide(p) } else { narrow(p) };
     let r = v4_parse(&s, strict, !ex, ex);
-    let (term, out, portp) = if ex {
-        (0, c.a(2), c.a(3))
-    } else {
-        (c.a(2), c.a(3), 0)
-    };
+    let (term, out, portp) = if ex { (0, c.a(2), c.a(3)) } else { (c.a(2), c.a(3), 0) };
     if let Some(a) = r.addr {
         if out != 0 {
             mem::write(out, &a);
@@ -459,21 +398,13 @@ fn v4_s2a(c: &mut Ctx, w: bool, ex: bool) -> u32 {
     if r.ok && portp != 0 {
         w16(portp, r.port);
     }
-    if r.ok {
-        STATUS_SUCCESS
-    } else {
-        STATUS_INVALID_PARAMETER
-    }
+    if r.ok { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
 fn v6_s2a(c: &mut Ctx, w: bool, ex: bool) -> u32 {
     // plain: (str, &terminator, &addr); Ex: (str, &addr, &scope, &port)
     let p = c.a(0);
-    let (term, out, scopep, portp) = if ex {
-        (0, c.a(1), c.a(2), c.a(3))
-    } else {
-        (c.a(1), c.a(2), 0, 0)
-    };
+    let (term, out, scopep, portp) = if ex { (0, c.a(1), c.a(2), c.a(3)) } else { (c.a(1), c.a(2), 0, 0) };
     if p == 0 || out == 0 || (ex && (scopep == 0 || portp == 0)) {
         return STATUS_INVALID_PARAMETER;
     }
@@ -488,11 +419,7 @@ fn v6_s2a(c: &mut Ctx, w: bool, ex: bool) -> u32 {
         w32(scopep, r.scope);
         w16(portp, r.port);
     }
-    if r.ok {
-        STATUS_SUCCESS
-    } else {
-        STATUS_INVALID_PARAMETER
-    }
+    if r.ok { STATUS_SUCCESS } else { STATUS_INVALID_PARAMETER }
 }
 
 /// Writes `s` (with its NUL) if `*size` holds it; `*size` becomes the length with the NUL.
@@ -501,11 +428,7 @@ fn put_text(s: &str, out: u32, sizep: u32, w: bool, strict_gt: bool) -> u32 {
     let need = s.len() as u32 + 1;
     let have = r32(sizep);
     w32(sizep, need);
-    let fits = if strict_gt {
-        have > need - 1
-    } else {
-        have >= need
-    };
+    let fits = if strict_gt { have > need - 1 } else { have >= need };
     if !fits {
         return STATUS_INVALID_PARAMETER;
     }
@@ -606,41 +529,23 @@ mod tests {
         let r = v4_parse(&u("1.2.3.4:80"), true, false, true);
         assert!(r.ok && r.port == 80u16.to_be());
         let r = v4_parse(&u("0x123456789"), false, false, true);
-        assert!(
-            r.ok && r.addr == Some([0x23, 0x45, 0x67, 0x89]),
-            "{:?}",
-            (r.ok, r.addr)
-        );
+        assert!(r.ok && r.addr == Some([0x23, 0x45, 0x67, 0x89]), "{:?}", (r.ok, r.addr));
         let r = v4_parse(&u("0x123456789"), false, true, false);
-        assert!(
-            r.ok && r.addr == Some([0x23, 0x45, 0x67, 0x89]),
-            "{:?}",
-            (r.ok, r.addr)
-        );
+        assert!(r.ok && r.addr == Some([0x23, 0x45, 0x67, 0x89]), "{:?}", (r.ok, r.addr));
     }
     fn p6(s: &str) -> Option<[u16; 8]> {
         let mut a = [0xab; 16];
         let r = v6_parse(&u(s), &mut a, false, true);
-        (r.ok && at(&u(s), r.end) == 0)
-            .then(|| std::array::from_fn(|i| u16::from_le_bytes([a[2 * i], a[2 * i + 1]])))
+        (r.ok && at(&u(s), r.end) == 0).then(|| std::array::from_fn(|i| u16::from_le_bytes([a[2 * i], a[2 * i + 1]])))
     }
     #[test]
     fn v6() {
         assert_eq!(p6("::1"), Some([0, 0, 0, 0, 0, 0, 0, 0x100]));
-        assert_eq!(
-            p6("1111:2222:3333:4444:5555:6666:123.123.123.123"),
-            Some([0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666, 0x7b7b, 0x7b7b])
-        );
-        assert_eq!(
-            p6("1::001.2.3.4"),
-            Some([0x100, 0, 0, 0, 0, 0, 0x201, 0x403])
-        );
+        assert_eq!(p6("1111:2222:3333:4444:5555:6666:123.123.123.123"), Some([0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666, 0x7b7b, 0x7b7b]));
+        assert_eq!(p6("1::001.2.3.4"), Some([0x100, 0, 0, 0, 0, 0, 0x201, 0x403]));
         assert_eq!(p6("1::0001.2.3.4"), None);
         assert_eq!(p6("1111:2222:3333:4444:5555::0x88"), None);
-        assert_eq!(
-            p6("::0:a:b:c:d:e:f"),
-            Some([0, 0, 0xa00, 0xb00, 0xc00, 0xd00, 0xe00, 0xf00])
-        );
+        assert_eq!(p6("::0:a:b:c:d:e:f"), Some([0, 0, 0xa00, 0xb00, 0xc00, 0xd00, 0xe00, 0xf00]));
         let mut a = [0; 16];
         let r = v6_parse(&u("[::1%5]:80"), &mut a, true, false);
         assert!(r.ok && r.scope == 5 && r.port == 80u16.to_be());

@@ -9,52 +9,24 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 pub enum Obj {
-    Event {
-        manual: bool,
-        set: bool,
-    },
+    Event { manual: bool, set: bool },
     /// a waitable timer: becomes set at `due`, then again every `period` if nonzero
-    Timer {
-        manual: bool,
-        set: bool,
-        due: Option<Instant>,
-        period: Duration,
-    },
-    Mutex {
-        owner: u32,
-        count: u32,
-    },
-    Semaphore {
-        count: i32,
-        max: i32,
-    },
-    Thread {
-        tid: u32,
-        done: bool,
-        code: u32,
-    },
+    Timer { manual: bool, set: bool, due: Option<Instant>, period: Duration },
+    Mutex { owner: u32, count: u32 },
+    Semaphore { count: i32, max: i32 },
+    Thread { tid: u32, done: bool, code: u32 },
     /// a process (this one: DuplicateHandle of GetCurrentProcess, OpenProcess of our id; or
     /// another, crate::process), and the access it was opened with
-    Process {
-        access: u32,
-        pid: u32,
-    },
+    Process { access: u32, pid: u32 },
     /// another process's thread (CreateProcess's hThread: its first)
-    RemoteThread {
-        pid: u32,
-        tid: u32,
-    },
+    RemoteThread { pid: u32, tid: u32 },
     File(Arc<crate::files::File>),
     /// an end of a pipe (crate::kern)
     Pipe(crate::pipe::Handle),
     /// a named event, mutex or semaphore (crate::kern: other processes open it too)
     Shared(u32),
     Find(Arc<Mutex<crate::files::Find>>),
-    Mapping {
-        file: Option<Arc<crate::files::File>>,
-        size: u32,
-        view: u32,
-    },
+    Mapping { file: Option<Arc<crate::files::File>>, size: u32, view: u32 },
     Key(crate::misc::Key),
     Other(&'static str),
 }
@@ -73,10 +45,7 @@ pub struct Objs {
 impl Objs {
     /// the object key of handle `h` (an object's key also finds it after its first handle closed)
     fn key(&self, h: &u32) -> Option<u32> {
-        self.handles
-            .get(h)
-            .copied()
-            .or_else(|| self.map.contains_key(h).then_some(*h))
+        self.handles.get(h).copied().or_else(|| self.map.contains_key(h).then_some(*h))
     }
     pub fn get(&self, h: &u32) -> Option<&(Obj, u32)> {
         self.map.get(&self.key(h)?)
@@ -103,10 +72,7 @@ impl Objs {
 impl Table {
     /// (handle, object) of every handle a child inherits
     pub fn inheritable(&self) -> impl Iterator<Item = (u32, &Obj)> {
-        self.objs
-            .inherit
-            .iter()
-            .filter_map(|h| Some((*h, &self.objs.get(h)?.0)))
+        self.objs.inherit.iter().filter_map(|h| Some((*h, &self.objs.get(h)?.0)))
     }
 }
 
@@ -157,12 +123,7 @@ pub fn lock() -> MutexGuard<'static, Option<Table>> {
 
 pub fn with<R>(f: impl FnOnce(&mut Table) -> R) -> R {
     let mut g = lock();
-    f(g.get_or_insert_with(|| Table {
-        objs: Objs::default(),
-        next: 0x100,
-        names: HashMap::default(),
-        gen: 0,
-    }))
+    f(g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 }))
 }
 
 pub const CURRENT_PROCESS: u32 = 0xffff_ffff;
@@ -193,9 +154,7 @@ pub fn dup(h: u32) -> u32 {
 /// Closes one handle; the object goes with its last one.
 pub fn close(h: u32) -> bool {
     let (r, gone) = with(|t| {
-        let Some(k) = t.objs.handles.remove(&h) else {
-            return (false, None);
-        };
+        let Some(k) = t.objs.handles.remove(&h) else { return (false, None) };
         t.objs.inherit.remove(&h);
         let rc = &mut t.objs.map.get_mut(&k).unwrap().1;
         *rc -= 1;
@@ -233,11 +192,7 @@ pub fn signal() {
 }
 
 pub fn new_thread_obj(tid: u32) -> u32 {
-    add(Obj::Thread {
-        tid,
-        done: false,
-        code: 0x103,
-    })
+    add(Obj::Thread { tid, done: false, code: 0x103 })
 }
 
 /// Whether `h` is signaled for thread `tid`; takes it (auto-reset event, mutex, semaphore).
@@ -251,12 +206,7 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
             }
             s
         }
-        Obj::Timer {
-            manual,
-            set,
-            due,
-            period,
-        } => {
+        Obj::Timer { manual, set, due, period } => {
             if let Some(d) = *due {
                 if Instant::now() >= d {
                     *set = true;
@@ -291,9 +241,7 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
             }
         }
         Obj::Thread { done, .. } => *done,
-        Obj::Shared(id) => crate::kern::with(|k| k.try_take(*id, crate::pid(), tid, take))
-            .0
-            .is_some_and(|r| r.0),
+        Obj::Shared(id) => crate::kern::with(|k| k.try_take(*id, crate::pid(), tid, take)).0.is_some_and(|r| r.0),
         Obj::Process { pid, .. } | Obj::RemoteThread { pid, .. } => crate::process::ended(*pid),
         // a completion port: while it holds packets (waiting on it takes none)
         Obj::Other("iocp") => crate::iocp::has_packets(h),
@@ -308,15 +256,8 @@ pub const ABANDONED: u32 = u32::MAX;
 
 fn abandoned(t: &Table, h: u32) -> bool {
     match t.objs.get(&h) {
-        Some((
-            Obj::Mutex {
-                owner: ABANDONED, ..
-            },
-            _,
-        )) => true,
-        Some((Obj::Shared(id), _)) => crate::kern::with(|k| k.try_take(*id, 0, 0, false))
-            .0
-            .is_some_and(|r| r.1),
+        Some((Obj::Mutex { owner: ABANDONED, .. }, _)) => true,
+        Some((Obj::Shared(id), _)) => crate::kern::with(|k| k.try_take(*id, 0, 0, false)).0.is_some_and(|r| r.1),
         _ => false,
     }
 }
@@ -329,23 +270,13 @@ pub fn waitable(handles: &[u32]) -> bool {
     let tid = crate::cur().tid;
     let me = crate::cur().obj;
     let mut g = lock();
-    let t = g.get_or_insert_with(|| Table {
-        objs: Objs::default(),
-        next: 0x100,
-        names: HashMap::default(),
-        gen: 0,
-    });
-    handles
-        .iter()
-        .all(|&h| try_take(t, if h == CURRENT_THREAD { me } else { h }, tid, false).is_some())
+    let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
+    handles.iter().all(|&h| try_take(t, if h == CURRENT_THREAD { me } else { h }, tid, false).is_some())
 }
 pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
     let tid = crate::cur().tid;
     let me = crate::cur().obj;
-    let handles: Vec<u32> = handles
-        .iter()
-        .map(|&h| if h == CURRENT_THREAD { me } else { h })
-        .collect();
+    let handles: Vec<u32> = handles.iter().map(|&h| if h == CURRENT_THREAD { me } else { h }).collect();
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
     let mut g = lock();
     loop {
@@ -355,22 +286,14 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
             crate::snap::point();
             g = lock();
         }
-        let t = g.get_or_insert_with(|| Table {
-            objs: Objs::default(),
-            next: 0x100,
-            names: HashMap::default(),
-            gen: 0,
-        });
+        let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
         if let Some(x) = extra {
             if x() {
                 return handles.len() as u32;
             }
         }
         if all {
-            let ok: Option<Vec<bool>> = handles
-                .iter()
-                .map(|&h| try_take(t, h, tid, false))
-                .collect();
+            let ok: Option<Vec<bool>> = handles.iter().map(|&h| try_take(t, h, tid, false)).collect();
             match ok {
                 None => {
                     crate::k32::last_error(6);
@@ -425,10 +348,7 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
                     }
                     return WAIT_TIMEOUT;
                 }
-                g = WAKE
-                    .wait_timeout(g, d - now)
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0;
+                g = WAKE.wait_timeout(g, d - now).unwrap_or_else(|e| e.into_inner()).0;
             }
         }
     }

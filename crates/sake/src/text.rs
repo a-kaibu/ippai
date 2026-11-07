@@ -5,20 +5,11 @@ use std::sync::OnceLock;
 
 pub fn acp() -> u32 {
     static ACP: OnceLock<u32> = OnceLock::new();
-    *ACP.get_or_init(|| {
-        std::env::var("SAKE_ACP")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(932)
-    })
+    *ACP.get_or_init(|| std::env::var("SAKE_ACP").ok().and_then(|s| s.parse().ok()).unwrap_or(932))
 }
 
 fn enc(cp: u32) -> &'static encoding_rs::Encoding {
-    match if cp == 0 || cp == 1 || cp == 3 {
-        acp()
-    } else {
-        cp
-    } {
+    match if cp == 0 || cp == 1 || cp == 3 { acp() } else { cp } {
         932 => encoding_rs::SHIFT_JIS,
         936 => encoding_rs::GBK,
         949 => encoding_rs::EUC_KR,
@@ -120,11 +111,7 @@ fn sjis_to_w(s: &[u8]) -> (Vec<u16>, bool) {
                 bad = true;
             }
             0xa0 | 0xfd..=0xff => {
-                out.push(if b == 0xa0 {
-                    0xf8f0
-                } else {
-                    0xf8f1 + (b - 0xfd) as u16
-                });
+                out.push(if b == 0xa0 { 0xf8f0 } else { 0xf8f1 + (b - 0xfd) as u16 });
                 bad = true;
             }
             _ => {
@@ -196,23 +183,19 @@ pub fn w2mb_flags(cp: u32, s: &[u16], def: &[u8], best_fit: bool) -> (Vec<u8>, b
             encoding_rs::EncoderResult::InputEmpty => break,
             // (932's user-defined area F040..F9FC is U+E000..U+E757 both ways on Windows; WHATWG
             // only decodes it)
-            encoding_rs::EncoderResult::Unmappable(ch)
-                if e == encoding_rs::SHIFT_JIS && ('\u{e000}'..='\u{e757}').contains(&ch) =>
-            {
+            encoding_rs::EncoderResult::Unmappable(ch) if e == encoding_rs::SHIFT_JIS && ('\u{e000}'..='\u{e757}').contains(&ch) => {
                 let p = 8836 + (ch as u32 - 0xe000);
                 let (lead, trail) = (p / 188, p % 188);
                 out.push((lead + if lead < 0x1f { 0x81 } else { 0xc1 }) as u8);
                 out.push((trail + if trail < 0x3f { 0x40 } else { 0x41 }) as u8);
             }
-            encoding_rs::EncoderResult::Unmappable(ch) => {
-                match best_fit.then(|| self::best_fit(ch)).flatten() {
-                    Some(b) => out.push(b),
-                    None => {
-                        out.extend_from_slice(def);
-                        used = true;
-                    }
+            encoding_rs::EncoderResult::Unmappable(ch) => match best_fit.then(|| self::best_fit(ch)).flatten() {
+                Some(b) => out.push(b),
+                None => {
+                    out.extend_from_slice(def);
+                    used = true;
                 }
-            }
+            },
             encoding_rs::EncoderResult::OutputFull => {}
         }
     }
@@ -247,22 +230,14 @@ pub fn s2a(s: &str) -> Vec<u8> {
 /// Unicode version: no Greek iota-subscript title pairs, µ ſ ı stay)
 pub fn upper16(c: u16) -> u16 {
     if c < 0x80 {
-        return if (0x61..=0x7a).contains(&c) {
-            c - 32
-        } else {
-            c
-        };
+        return if (0x61..=0x7a).contains(&c) { c - 32 } else { c };
     }
     case_tables().0[c as usize]
 }
 
 pub fn lower16(c: u16) -> u16 {
     if c < 0x80 {
-        return if (0x41..=0x5a).contains(&c) {
-            c + 32
-        } else {
-            c
-        };
+        return if (0x41..=0x5a).contains(&c) { c + 32 } else { c };
     }
     case_tables().1[c as usize]
 }
@@ -280,10 +255,7 @@ fn case_tables() -> &'static (Vec<u16>, Vec<u16>) {
             }
             t
         };
-        (
-            build(&crate::casemap_table::UPPER),
-            build(&crate::casemap_table::LOWER),
-        )
+        (build(&crate::casemap_table::UPPER), build(&crate::casemap_table::LOWER))
     })
 }
 
@@ -318,17 +290,9 @@ pub fn upper_a(s: &mut [u8]) {
 pub fn case_a(s: &mut [u8], upper: bool) {
     let mut i = 0;
     while i < s.len() {
-        let n = if is_lead(s[i]) && i + 1 < s.len() {
-            2
-        } else {
-            1
-        };
+        let n = if is_lead(s[i]) && i + 1 < s.len() { 2 } else { 1 };
         if n == 1 && s[i] < 0x80 {
-            s[i] = if upper {
-                s[i].to_ascii_uppercase()
-            } else {
-                s[i].to_ascii_lowercase()
-            };
+            s[i] = if upper { s[i].to_ascii_uppercase() } else { s[i].to_ascii_lowercase() };
         } else if let [w] = a2w(&s[i..i + n])[..] {
             let m = if upper { upper16(w) } else { lower16(w) };
             let b = w2a(&[m]);
@@ -342,14 +306,10 @@ pub fn case_a(s: &mut [u8], upper: bool) {
 
 /// The full-width forms of the half-width katakana U+FF61..U+FF9F (｡ ｢ ｣ ､ ･ ｦ ｧ ... ﾝ ﾞ ﾟ)
 const HALF_KANA: [u16; 63] = [
-    0x3002, 0x300c, 0x300d, 0x3001, 0x30fb, 0x30f2, 0x30a1, 0x30a3, 0x30a5, 0x30a7, 0x30a9, 0x30e3,
-    0x30e5, 0x30e7, 0x30c3, 0x30fc, //
-    0x30a2, 0x30a4, 0x30a6, 0x30a8, 0x30aa, 0x30ab, 0x30ad, 0x30af, 0x30b1, 0x30b3, 0x30b5, 0x30b7,
-    0x30b9, 0x30bb, 0x30bd, 0x30bf, //
-    0x30c1, 0x30c4, 0x30c6, 0x30c8, 0x30ca, 0x30cb, 0x30cc, 0x30cd, 0x30ce, 0x30cf, 0x30d2, 0x30d5,
-    0x30d8, 0x30db, 0x30de, 0x30df, //
-    0x30e0, 0x30e1, 0x30e2, 0x30e4, 0x30e6, 0x30e8, 0x30e9, 0x30ea, 0x30eb, 0x30ec, 0x30ed, 0x30ef,
-    0x30f3, 0x309b, 0x309c,
+    0x3002, 0x300c, 0x300d, 0x3001, 0x30fb, 0x30f2, 0x30a1, 0x30a3, 0x30a5, 0x30a7, 0x30a9, 0x30e3, 0x30e5, 0x30e7, 0x30c3, 0x30fc, //
+    0x30a2, 0x30a4, 0x30a6, 0x30a8, 0x30aa, 0x30ab, 0x30ad, 0x30af, 0x30b1, 0x30b3, 0x30b5, 0x30b7, 0x30b9, 0x30bb, 0x30bd, 0x30bf, //
+    0x30c1, 0x30c4, 0x30c6, 0x30c8, 0x30ca, 0x30cb, 0x30cc, 0x30cd, 0x30ce, 0x30cf, 0x30d2, 0x30d5, 0x30d8, 0x30db, 0x30de, 0x30df, //
+    0x30e0, 0x30e1, 0x30e2, 0x30e4, 0x30e6, 0x30e8, 0x30e9, 0x30ea, 0x30eb, 0x30ec, 0x30ed, 0x30ef, 0x30f3, 0x309b, 0x309c,
 ];
 
 /// A katakana with a (semi-)voiced mark as its plain kana and the mark: ガ -> (カ, ﾞ)
@@ -379,10 +339,7 @@ pub fn kana_voiced(c: u16) -> Option<(u16, u16)> {
 }
 
 fn half_of(c: u16) -> Option<u16> {
-    HALF_KANA
-        .iter()
-        .position(|&x| x == c)
-        .map(|i| 0xff61 + i as u16)
+    HALF_KANA.iter().position(|&x| x == c).map(|i| 0xff61 + i as u16)
 }
 
 /// LCMAP_HALFWIDTH: ASCII forms, the ideographic space, katakana (a voiced one as two)
@@ -395,9 +352,7 @@ fn to_half(w: &[u16]) -> Vec<u16> {
             // (the marks ゛ ゜ and the brackets keep their full forms: only kana narrow)
             0x30a1..=0x30fc => match (half_of(c), voiced(c)) {
                 (Some(h), _) => out.push(h),
-                (None, Some((b, m))) if half_of(b).is_some() => {
-                    out.extend([half_of(b).unwrap(), m])
-                }
+                (None, Some((b, m))) if half_of(b).is_some() => out.extend([half_of(b).unwrap(), m]),
                 _ => out.push(c),
             },
             _ => out.push(c),
@@ -418,9 +373,7 @@ fn to_full(w: &[u16]) -> Vec<u16> {
             0xff61..=0xff9f => {
                 let f = HALF_KANA[(c - 0xff61) as usize];
                 let next = w.get(i + 1).copied();
-                let joined = (0x30a1..=0x30fa)
-                    .flat_map(|v| voiced(v).map(|x| (v, x)))
-                    .find(|&(_, (b, m))| b == f && Some(m) == next);
+                let joined = (0x30a1..=0x30fa).flat_map(|v| voiced(v).map(|x| (v, x))).find(|&(_, (b, m))| b == f && Some(m) == next);
                 match joined {
                     Some((v, _)) => {
                         out.push(v);
@@ -468,21 +421,10 @@ mod proptests {
     use proptest::prelude::*;
 
     fn nls_golden() -> Vec<String> {
-        ["32", "64"]
-            .iter()
-            .filter_map(|b| {
-                std::fs::read_to_string(format!(
-                    "{}/../../tests/winref/golden/nls-{b}/stdout.txt",
-                    env!("CARGO_MANIFEST_DIR")
-                ))
-                .ok()
-            })
-            .collect()
+        ["32", "64"].iter().filter_map(|b| std::fs::read_to_string(format!("{}/../../tests/winref/golden/nls-{b}/stdout.txt", env!("CARGO_MANIFEST_DIR"))).ok()).collect()
     }
     fn hex(s: &str) -> Vec<u32> {
-        s.split_whitespace()
-            .map(|x| u32::from_str_radix(x, 16).unwrap())
-            .collect()
+        s.split_whitespace().map(|x| u32::from_str_radix(x, 16).unwrap()).collect()
     }
 
     /// Windows' MultiByteToWideChar / WideCharToMultiByte / LCMapStringW answers in the nls
@@ -498,10 +440,7 @@ mod proptests {
                     let (head, r) = r.split_once(" [").unwrap();
                     let (bytes, r) = r.split_once(" ] -> ").unwrap();
                     let (cp, fl) = head.split_once(' ').unwrap();
-                    let (cp, fl) = (
-                        cp.parse::<u32>().unwrap(),
-                        u32::from_str_radix(fl, 16).unwrap(),
-                    );
+                    let (cp, fl) = (cp.parse::<u32>().unwrap(), u32::from_str_radix(fl, 16).unwrap());
                     let b: Vec<u8> = hex(bytes).into_iter().map(|x| x as u8).collect();
                     let want = hex(r.split_once(": ").map_or("", |x| x.1));
                     let (w, bad) = mb2w_checked(cp, &b);
@@ -515,15 +454,9 @@ mod proptests {
                     let (head, r) = r.split_once(" [").unwrap();
                     let (units, r) = r.split_once(" ] -> ").unwrap();
                     let (cp, fl) = head.split_once(' ').unwrap();
-                    let (cp, fl) = (
-                        cp.parse::<u32>().unwrap(),
-                        u32::from_str_radix(fl, 16).unwrap(),
-                    );
+                    let (cp, fl) = (cp.parse::<u32>().unwrap(), u32::from_str_radix(fl, 16).unwrap());
                     let w: Vec<u16> = hex(units).into_iter().map(|x| x as u16).collect();
-                    let want: Vec<u8> = hex(r.split_once(": ").map_or("", |x| x.1))
-                        .into_iter()
-                        .map(|x| x as u8)
-                        .collect();
+                    let want: Vec<u8> = hex(r.split_once(": ").map_or("", |x| x.1)).into_iter().map(|x| x as u8).collect();
                     let (a, used) = w2mb_flags(cp, &w, b"?", fl & 0x400 == 0);
                     assert_eq!(a, want, "{l}");
                     if cp != 65001 {
@@ -536,18 +469,8 @@ mod proptests {
                         continue;
                     }
                     let want = hex(r.split_once(':').unwrap().1);
-                    let src = [
-                        0x61u16, 0x5a, 0x3042, 0x30ac, 0x304c, 0xff76, 0xff9e, 0xff21, 0x3000,
-                        0x20, 0x30fc, 0xff70, 0xe9, 0x430, 0,
-                    ];
-                    assert_eq!(
-                        map_kana_width(&src, fl)
-                            .iter()
-                            .map(|&x| x as u32)
-                            .collect::<Vec<_>>(),
-                        want,
-                        "{l}"
-                    );
+                    let src = [0x61u16, 0x5a, 0x3042, 0x30ac, 0x304c, 0xff76, 0xff9e, 0xff21, 0x3000, 0x20, 0x30fc, 0xff70, 0xe9, 0x430, 0];
+                    assert_eq!(map_kana_width(&src, fl).iter().map(|&x| x as u32).collect::<Vec<_>>(), want, "{l}");
                 }
             }
         }
@@ -558,22 +481,12 @@ mod proptests {
     #[test]
     fn case_maps_as_windows() {
         for b in ["32", "64"] {
-            let p = format!(
-                "{}/../../tests/winref/golden/casemap-{b}/stdout.txt",
-                env!("CARGO_MANIFEST_DIR")
-            );
+            let p = format!("{}/../../tests/winref/golden/casemap-{b}/stdout.txt", env!("CARGO_MANIFEST_DIR"));
             let out = std::fs::read_to_string(p).expect("casemap golden");
             let mut want: Vec<(u16, u16)> = (0..=0xffffu16).map(|c| (c, c)).collect();
-            for f in out
-                .lines()
-                .map(|l| l.split_whitespace().collect::<Vec<_>>())
-                .filter(|f| f.len() == 10)
-            {
+            for f in out.lines().map(|l| l.split_whitespace().collect::<Vec<_>>()).filter(|f| f.len() == 10) {
                 let c = u16::from_str_radix(f[0], 16).unwrap() as usize;
-                want[c] = (
-                    u16::from_str_radix(f[2], 16).unwrap(),
-                    u16::from_str_radix(f[4], 16).unwrap(),
-                );
+                want[c] = (u16::from_str_radix(f[2], 16).unwrap(), u16::from_str_radix(f[4], 16).unwrap());
             }
             for c in 1..=0xffffu16 {
                 assert_eq!((upper16(c), lower16(c)), want[c as usize], "{c:04x}");
@@ -606,11 +519,7 @@ mod proptests {
         for b in 0..=0xffu8 {
             let (w, bad) = mb2w_checked(932, &[b]);
             assert_eq!(w.len(), 1);
-            assert_eq!(
-                bad,
-                matches!(b, 0x80 | 0xa0 | 0xfd..=0xff) || is_lead_cp(932, b),
-                "{b:02x}"
-            );
+            assert_eq!(bad, matches!(b, 0x80 | 0xa0 | 0xfd..=0xff) || is_lead_cp(932, b), "{b:02x}");
         }
     }
 
@@ -625,22 +534,13 @@ mod proptests {
     #[test]
     fn case_tables() {
         // ASCII, Latin-1, Greek, Cyrillic, full-width, and the ones Windows keeps or maps simply
-        let pairs = [
-            (0x41, 0x61),
-            (0xc0, 0xe0),
-            (0xde, 0xfe),
-            (0x178, 0xff),
-            (0x391, 0x3b1),
-            (0x410, 0x430),
-            (0xff21, 0xff41),
-            (0x100, 0x101),
-        ];
+        let pairs = [(0x41, 0x61), (0xc0, 0xe0), (0xde, 0xfe), (0x178, 0xff), (0x391, 0x3b1), (0x410, 0x430), (0xff21, 0xff41), (0x100, 0x101)];
         for (u, l) in pairs {
             assert_eq!(lower16(u), l, "{u:x}");
             assert_eq!(upper16(l), u, "{l:x}");
         }
         assert_eq!(upper16(0xdf), 0xdf); // ß
-                                         // (Windows keeps the Turkish dotted/dotless i, µ and ſ: the casemap golden)
+        // (Windows keeps the Turkish dotted/dotless i, µ and ſ: the casemap golden)
         assert_eq!(lower16(0x130), 0x130); // İ
         assert_eq!(upper16(0x131), 0x131); // ı
         assert_eq!(upper16(0xb5), 0xb5); // µ
@@ -668,10 +568,7 @@ mod proptests {
             assert_eq!(lower16(l), l, "lower twice {c:x}");
             // (only letters change)
             if u != c || l != c {
-                assert!(
-                    char::from_u32(c as u32).is_some_and(char::is_alphabetic),
-                    "{c:x}"
-                );
+                assert!(char::from_u32(c as u32).is_some_and(char::is_alphabetic), "{c:x}");
             }
         }
     }

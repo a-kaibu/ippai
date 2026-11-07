@@ -13,10 +13,7 @@ use crate::api::{implement, Ctx};
 use crate::iocp::{self, STATUS_PENDING};
 use crate::mem::{self, ps, r16, r32, rp, w16, w32, wp};
 use crate::obj::{self, Obj};
-use crate::ws2name::{
-    self as names, read_sa, write_sa, Addr, AF_INET, AF_INET6, AF_UNSPEC, WSAEAFNOSUPPORT,
-    WSAEFAULT, WSAEINVAL, WSANOTINITIALISED,
-};
+use crate::ws2name::{self as names, read_sa, write_sa, Addr, AF_INET, AF_INET6, AF_UNSPEC, WSAEAFNOSUPPORT, WSAEFAULT, WSAEINVAL, WSANOTINITIALISED};
 use crate::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -100,13 +97,7 @@ fn WSAStartup(c: &mut Ctx) -> u32 {
     let (lo, hi) = (v & 0xff, v >> 8);
     // the version given back: 1.0 / 1.1, 2.0 - 2.2, else 2.2 (also for an unsupported 0.x)
     let ver = match lo {
-        1 => {
-            if hi == 0 {
-                0x0001
-            } else {
-                0x0101
-            }
-        }
+        1 => if hi == 0 { 0x0001 } else { 0x0101 },
         2 if hi <= 2 => v,
         _ => 0x0202,
     };
@@ -116,11 +107,7 @@ fn WSAStartup(c: &mut Ctx) -> u32 {
     // WSADATA: x86 { wVersion, wHighVersion, szDescription[257], szSystemStatus[129],
     // iMaxSockets, iMaxUdpDg, lpVendorInfo }; x64 puts the last three before the strings.
     // lpVendorInfo is left alone; the limits are only reported to 1.x callers.
-    let (desc, status, limits) = if mem::x64() {
-        (d + 16, d + 16 + 257, d + 4)
-    } else {
-        (d + 4, d + 4 + 257, d + 390)
-    };
+    let (desc, status, limits) = if mem::x64() { (d + 16, d + 16 + 257, d + 4) } else { (d + 4, d + 4 + 257, d + 390) };
     mem::write(desc, &[0; 257]);
     mem::write(status, &[0; 129]);
     w16(d, ver as u16);
@@ -165,22 +152,9 @@ enum Notify {
 
 enum PendKind {
     /// WSARecv / WSARecvFrom: the buffers, &flags, &from, &fromlen
-    Recv {
-        bufs: Vec<(u32, u32)>,
-        flags: u32,
-        from: u32,
-        fromlen: u32,
-        peek: bool,
-        msg: u32,
-    },
+    Recv { bufs: Vec<(u32, u32)>, flags: u32, from: u32, fromlen: u32, peek: bool, msg: u32 },
     /// AcceptEx: the socket to accept into, its buffer (data length, local and remote sizes)
-    Accept {
-        acc: u32,
-        buf: u32,
-        data: u32,
-        llen: u32,
-        rlen: u32,
-    },
+    Accept { acc: u32, buf: u32, data: u32, llen: u32, rlen: u32 },
     /// SIO_ADDRESS_LIST_CHANGE and the like: never completes (until cancelled)
     Forever,
 }
@@ -328,9 +302,7 @@ impl Sock {
         if self.listening && !self.queue.is_empty() {
             c |= FD_ACCEPT;
         }
-        if (self.stream() && self.connected && !self.connect_failed)
-            || (!self.stream() && self.local.is_some())
-        {
+        if (self.stream() && self.connected && !self.connect_failed) || (!self.stream() && self.local.is_some()) {
             c |= FD_WRITE;
         }
         if self.connect_result.is_some() {
@@ -379,10 +351,7 @@ fn with<R>(f: impl FnOnce(&mut State, &mut Vec<Act>) -> R) -> R {
     let mut acts = Vec::new();
     let (r, dirty) = {
         let mut g = ST.lock().unwrap_or_else(|e| e.into_inner());
-        let st = g.get_or_insert_with(|| State {
-            next_port: 49152,
-            ..Default::default()
-        });
+        let st = g.get_or_insert_with(|| State { next_port: 49152, ..Default::default() });
         let r = f(st, &mut acts);
         let d = std::mem::take(&mut st.dirty);
         if d {
@@ -420,11 +389,7 @@ fn run(acts: Vec<Act>) {
 
 /// Runs `f` until it gives a result, waiting for socket changes between tries; None on timeout.
 /// With a guest context the wait is alertable: queued APCs run and the wait goes on, as in Windows.
-fn block<R>(
-    mut c: Option<&mut Ctx>,
-    ms: u32,
-    mut f: impl FnMut(&mut State, &mut Vec<Act>) -> Option<R>,
-) -> Option<R> {
+fn block<R>(mut c: Option<&mut Ctx>, ms: u32, mut f: impl FnMut(&mut State, &mut Vec<Act>) -> Option<R>) -> Option<R> {
     let tid = crate::cur().tid;
     let deadline = (ms != u32::MAX).then(|| Instant::now() + Duration::from_millis(ms as u64));
     loop {
@@ -449,12 +414,7 @@ fn block<R>(
                 (d - now).as_millis().max(1) as u32
             }
         };
-        obj::wait(
-            &[],
-            false,
-            left,
-            Some(&|| GEN.load(Ordering::SeqCst) != g || (alert && crate::apc::pending(tid))),
-        );
+        obj::wait(&[], false, left, Some(&|| GEN.load(Ordering::SeqCst) != g || (alert && crate::apc::pending(tid))));
     }
 }
 
@@ -475,36 +435,18 @@ pub fn conn_rows() -> Vec<ConnRow> {
     with(|st, _| {
         let mut v = Vec::new();
         for s in st.socks.values() {
-            let Some(local) = s.local.clone() else {
-                continue;
-            };
+            let Some(local) = s.local.clone() else { continue };
             if s.stream() {
                 let state = if s.listening {
                     2
                 } else if s.conn.is_some() || s.connected {
-                    if s.eof {
-                        8
-                    } else {
-                        5
-                    }
+                    if s.eof { 8 } else { 5 }
                 } else {
                     continue;
                 };
-                v.push(ConnRow {
-                    tcp: true,
-                    af: s.af,
-                    local,
-                    remote: if s.listening { None } else { s.peer.clone() },
-                    state,
-                });
+                v.push(ConnRow { tcp: true, af: s.af, local, remote: if s.listening { None } else { s.peer.clone() }, state });
             } else if s.ty == SOCK_DGRAM {
-                v.push(ConnRow {
-                    tcp: false,
-                    af: s.af,
-                    local,
-                    remote: None,
-                    state: 0,
-                });
+                v.push(ConnRow { tcp: false, af: s.af, local, remote: None, state: 0 });
             }
         }
         v
@@ -538,10 +480,7 @@ impl State {
         self.handles.get(&h).copied().ok_or(WSAENOTSOCK)
     }
     fn port_free(&self, ty: u32, port: u16) -> bool {
-        !self
-            .socks
-            .values()
-            .any(|s| s.ty == ty && s.local.as_ref().is_some_and(|l| l.port == port))
+        !self.socks.values().any(|s| s.ty == ty && s.local.as_ref().is_some_and(|l| l.port == port))
     }
     fn ephemeral(&mut self, ty: u32) -> u16 {
         for _ in 0..16384 {
@@ -559,13 +498,9 @@ impl State {
     /// Whether a stream socket's sends must wait: the other end holds as much unread data as
     /// its receive buffer and this send buffer take
     fn full(&self, id: u32) -> bool {
-        let Some(s) = self.socks.get(&id) else {
-            return false;
-        };
+        let Some(s) = self.socks.get(&id) else { return false };
         match s.conn.and_then(|p| self.socks.get(&p)) {
-            Some(o) if s.stream() => {
-                o.rx.len() >= (o.rcvbuf.max(8192) + s.sndbuf.max(8192)) as usize
-            }
+            Some(o) if s.stream() => o.rx.len() >= (o.rcvbuf.max(8192) + s.sndbuf.max(8192)) as usize,
             _ => false,
         }
     }
@@ -580,9 +515,7 @@ impl State {
 
     fn refresh(&mut self, id: u32, acts: &mut Vec<Act>) {
         let full = self.full(id);
-        let Some(s) = self.socks.get_mut(&id) else {
-            return;
-        };
+        let Some(s) = self.socks.get_mut(&id) else { return };
         let new = s.conditions() & s.mask & !s.reported & if full { !FD_WRITE } else { !0 };
         if new == 0 || s.notify == Notify::None {
             return;
@@ -598,14 +531,7 @@ impl State {
         match s.notify {
             Notify::Event(e) => acts.push(Act::SetEvent(e)),
             Notify::Msg(w, m) => {
-                for (bit, i) in [
-                    (FD_CONNECT, 4),
-                    (FD_ACCEPT, 3),
-                    (FD_WRITE, 1),
-                    (FD_READ, 0),
-                    (FD_OOB, 2),
-                    (FD_CLOSE, 5),
-                ] {
+                for (bit, i) in [(FD_CONNECT, 4), (FD_ACCEPT, 3), (FD_WRITE, 1), (FD_READ, 0), (FD_OOB, 2), (FD_CLOSE, 5)] {
                     if new & bit != 0 {
                         acts.push(Act::Post(w, m, id, bit | s.neterr[i] << 16));
                     }
@@ -618,27 +544,11 @@ impl State {
     /// Completes the socket's waiting overlapped receives (and accepts) that can complete now
     fn serve(&mut self, id: u32, acts: &mut Vec<Act>) {
         loop {
-            let Some(s) = self.socks.get_mut(&id) else {
-                return;
-            };
-            let Some(i) = s
-                .pend
-                .iter()
-                .position(|p| !matches!(p.kind, PendKind::Forever))
-            else {
-                return;
-            };
+            let Some(s) = self.socks.get_mut(&id) else { return };
+            let Some(i) = s.pend.iter().position(|p| !matches!(p.kind, PendKind::Forever)) else { return };
             match &s.pend[i].kind {
-                PendKind::Recv {
-                    bufs,
-                    flags,
-                    from,
-                    fromlen,
-                    peek,
-                    msg,
-                } => {
-                    let (bufs, flags, from, fromlen, peek, msg) =
-                        (bufs.clone(), *flags, *from, *fromlen, *peek, *msg);
+                PendKind::Recv { bufs, flags, from, fromlen, peek, msg } => {
+                    let (bufs, flags, from, fromlen, peek, msg) = (bufs.clone(), *flags, *from, *fromlen, *peek, *msg);
                     let fl = if peek { MSG_PEEK } else { 0 };
                     match take_data(s, &bufs, fl) {
                         Ok(None) => return,
@@ -650,11 +560,7 @@ impl State {
                                         let _ = write_sa(from, fromlen, &a);
                                     }
                                     let fl = recv_flags(s, msg, trunc);
-                                    if fl != 0 {
-                                        (STATUS_BUFFER_OVERFLOW, n, fl)
-                                    } else {
-                                        (0, n, 0)
-                                    }
+                                    if fl != 0 { (STATUS_BUFFER_OVERFLOW, n, fl) } else { (0, n, 0) }
                                 }
                                 Err(e) => (wsa_to_nt(e), 0, 0),
                                 Ok(None) => unreachable!(),
@@ -663,9 +569,9 @@ impl State {
                                 w32(flags, outfl);
                             }
                             s.reported &= !FD_READ;
-                            if !s.readable() {
-                                s.netev &= !FD_READ; // (nothing left: the recorded FD_READ is gone too)
-                            }
+                if !s.readable() {
+                    s.netev &= !FD_READ; // (nothing left: the recorded FD_READ is gone too)
+                }
                             self.drained(id, acts);
                             // (WSARecvMsg reports its flags in the WSAMSG only)
                             let outfl = if msg != 0 { 0 } else { outfl };
@@ -682,16 +588,7 @@ impl State {
                         return;
                     }
                     let p = s.pend.remove(i);
-                    let PendKind::Accept {
-                        acc,
-                        buf,
-                        data,
-                        llen,
-                        rlen,
-                    } = p.kind
-                    else {
-                        unreachable!()
-                    };
+                    let PendKind::Accept { acc, buf, data, llen, rlen } = p.kind else { unreachable!() };
                     let r = self.accept_into(id, acc, acts);
                     let (status, n) = match r {
                         Ok(()) => {
@@ -700,10 +597,7 @@ impl State {
                         }
                         Err(e) => (wsa_to_nt(e), 0),
                     };
-                    let p = Pend {
-                        kind: PendKind::Forever,
-                        ..p
-                    };
+                    let p = Pend { kind: PendKind::Forever, ..p };
                     finish(&p, status, n, 0, acts);
                 }
                 PendKind::Forever => return,
@@ -714,9 +608,7 @@ impl State {
     /// Moves the first queued connection of listener `id` into socket handle `acc` (AcceptEx)
     fn accept_into(&mut self, id: u32, acc: u32, acts: &mut Vec<Act>) -> Result<(), u32> {
         let aid = self.id(acc)?;
-        let Some(q) = self.socks.get_mut(&id).unwrap().queue.pop_front() else {
-            return Err(WSAEWOULDBLOCK);
-        };
+        let Some(q) = self.socks.get_mut(&id).unwrap().queue.pop_front() else { return Err(WSAEWOULDBLOCK) };
         let mut new = self.socks.remove(&q).unwrap();
         // the accepted connection takes the place of the given socket
         let old = self.socks.remove(&aid).unwrap();
@@ -747,11 +639,7 @@ impl State {
 fn finish(p: &Pend, status: u32, bytes: u32, flags: u32, acts: &mut Vec<Act>) {
     acts.push(Act::Complete(p.handle, p.ov, status, bytes, false));
     if p.routine != 0 {
-        acts.push(Act::Apc(
-            p.tid,
-            p.routine,
-            [nt_to_wsa(status), bytes, p.ov, flags],
-        ));
+        acts.push(Act::Apc(p.tid, p.routine, [nt_to_wsa(status), bytes, p.ov, flags]));
     }
 }
 
@@ -785,7 +673,7 @@ pub fn nt_to_wsa(s: u32) -> u32 {
         return s >> 16 & 0x3fff;
     }
     match s {
-        0x00000103 => 996,   // PENDING
+        0x00000103 => 996, // PENDING
         0x80000005 => 10040, // BUFFER_OVERFLOW
         0xC0000002 => 10045, // NOT_IMPLEMENTED
         0xC0000005 => 10014, // ACCESS_VIOLATION
@@ -815,7 +703,7 @@ pub fn nt_to_wsa(s: u32) -> u32 {
         0xC00000C3 => 10050, // INVALID_NETWORK_RESPONSE
         0xC00000C4 => 10050, // UNEXPECTED_NETWORK_ERROR
         0xC00000D0 => 10035, // REQUEST_NOT_ACCEPTED
-        0xC0000120 => 995,   // CANCELLED
+        0xC0000120 => 995, // CANCELLED
         0xC000012D => 10055, // COMMITMENT_LIMIT
         0xC000013B => 10053, // LOCAL_DISCONNECT
         0xC000013C => 10054, // REMOTE_DISCONNECT
@@ -842,9 +730,9 @@ pub fn nt_to_wsa(s: u32) -> u32 {
         0xC0000241 => 10053, // CONNECTION_ABORTED
         0xC00002C5 => 10014, // DATATYPE_MISALIGNMENT_ERROR
         0xC0000350 => 10064, // HOST_DOWN
-        0x800703E4 => 996,   // 0x80070000|IO_INCOMPLETE
-        0xC00103E4 => 996,   // 0xc0010000|IO_INCOMPLETE
-        0xC00703E4 => 996,   // 0xc0070000|IO_INCOMPLETE
+        0x800703E4 => 996, // 0x80070000|IO_INCOMPLETE
+        0xC00103E4 => 996, // 0xc0010000|IO_INCOMPLETE
+        0xC00703E4 => 996, // 0xc0070000|IO_INCOMPLETE
         s if s >> 31 == 0 => 0,
         _ => WSAEINVAL,
     }
@@ -852,11 +740,7 @@ pub fn nt_to_wsa(s: u32) -> u32 {
 
 /// Takes received data for `bufs` (address, length): Ok(None) when there is none yet,
 /// Ok(Some((bytes, sender, truncated))), or the error the receive ends with
-fn take_data(
-    s: &mut Sock,
-    bufs: &[(u32, u32)],
-    flags: u32,
-) -> Result<Option<(u32, Option<Addr>, bool)>, u32> {
+fn take_data(s: &mut Sock, bufs: &[(u32, u32)], flags: u32) -> Result<Option<(u32, Option<Addr>, bool)>, u32> {
     let total: u32 = bufs.iter().map(|b| b.1).sum();
     let peek = flags & MSG_PEEK != 0;
     if s.stream() {
@@ -871,9 +755,7 @@ fn take_data(
             if s.opts.get(&(SOL_SOCKET, 0x100)).is_some_and(|&v| v != 0) || total == 0 {
                 return Err(WSAEINVAL);
             }
-            let Some(b) = (if peek { s.oob } else { s.oob.take() }) else {
-                return Err(WSAEINVAL);
-            };
+            let Some(b) = (if peek { s.oob } else { s.oob.take() }) else { return Err(WSAEINVAL) };
             scatter(bufs, &[b]);
             return Ok(Some((1, None, false)));
         }
@@ -890,11 +772,7 @@ fn take_data(
             return Ok(None);
         }
         let n = (s.rx.len() as u32).min(total);
-        let data: Vec<u8> = if peek {
-            s.rx.iter().take(n as usize).copied().collect()
-        } else {
-            s.rx.drain(..n as usize).collect()
-        };
+        let data: Vec<u8> = if peek { s.rx.iter().take(n as usize).copied().collect() } else { s.rx.drain(..n as usize).collect() };
         scatter(bufs, &data);
         return Ok(Some((n, None, false))); // (a stream receive reports no source address)
     }
@@ -905,11 +783,7 @@ fn take_data(
         s.udp_reset = false;
         return Err(WSAECONNRESET);
     }
-    let Some((from, d, dst)) = (if peek {
-        s.dgrams.front().cloned()
-    } else {
-        s.dgrams.pop_front()
-    }) else {
+    let Some((from, d, dst)) = (if peek { s.dgrams.front().cloned() } else { s.dgrams.pop_front() }) else {
         return Ok(None);
     };
     s.last_dst = Some(dst);
@@ -932,9 +806,7 @@ fn scatter(bufs: &[(u32, u32)], mut data: &[u8]) {
 /// WSABUF array { ULONG len; CHAR *buf }
 fn wsabufs(p: u32, n: u32) -> Vec<(u32, u32)> {
     let k = ps();
-    (0..n)
-        .map(|i| (rp(p + 2 * k * i + k), r32(p + 2 * k * i)))
-        .collect()
+    (0..n).map(|i| (rp(p + 2 * k * i + k), r32(p + 2 * k * i))).collect()
 }
 
 /// Whether a bound address `l` (of a socket with `v6only`) takes traffic for `dst`
@@ -944,9 +816,7 @@ fn takes(l: &Addr, v6only: bool, dst: &Addr) -> bool {
     }
     match (l.is_v6(), dst.is_v6()) {
         (false, false) => l.any() || l.ip == dst.ip,
-        (true, true) => {
-            l.any() || l.ip == dst.ip || (!v6only && l.as_v4().is_some() && l.ip == dst.ip)
-        }
+        (true, true) => l.any() || l.ip == dst.ip || (!v6only && l.as_v4().is_some() && l.ip == dst.ip),
         (true, false) => !v6only && (l.any() || l.as_v4() == dst.as_v4()),
         (false, true) => dst.as_v4().is_some_and(|d| l.any() || l.ip == d),
     }
@@ -983,14 +853,7 @@ fn source_for(s: &Sock, dst: &Addr) -> Addr {
                     Addr::v6(lo, 0)
                 }
             } else {
-                Addr::v4(
-                    if dst.ip[0] == 127 {
-                        dst.ip[..4].try_into().unwrap()
-                    } else {
-                        [127, 0, 0, 1]
-                    },
-                    0,
-                )
+                Addr::v4(if dst.ip[0] == 127 { dst.ip[..4].try_into().unwrap() } else { [127, 0, 0, 1] }, 0)
             }
         }
     };
@@ -1056,11 +919,7 @@ fn ret_socket(c: &mut Ctx, r: Result<u32, u32>) -> u32 {
         }
         Err(e) => {
             last(e);
-            if mem::x64() {
-                c.ret64(u64::MAX)
-            } else {
-                u32::MAX
-            }
+            if mem::x64() { c.ret64(u64::MAX) } else { u32::MAX }
         }
     }
 }
@@ -1105,9 +964,7 @@ fn WSASocket(c: &mut Ctx) -> u32 {
 /// Ends socket `id`: waiting IO is cancelled, the other end of a connection sees the close
 /// (a reset when unread data or a zero linger is left), queued connections are reset
 fn teardown(st: &mut State, id: u32, acts: &mut Vec<Act>) {
-    let Some(mut s) = st.socks.remove(&id) else {
-        return;
-    };
+    let Some(mut s) = st.socks.remove(&id) else { return };
     for p in s.pend.drain(..) {
         finish(&p, STATUS_CANCELLED, 0, 0, acts);
     }
@@ -1173,10 +1030,7 @@ fn closesocket(c: &mut Ctx) -> u32 {
 }
 
 /// Runs `f` on the socket behind handle `h` (WSANOTINITIALISED / WSAENOTSOCK first)
-fn on<R>(
-    h: u32,
-    f: impl FnOnce(&mut State, u32, &mut Vec<Act>) -> Result<R, u32>,
-) -> Result<R, u32> {
+fn on<R>(h: u32, f: impl FnOnce(&mut State, u32, &mut Vec<Act>) -> Result<R, u32>) -> Result<R, u32> {
     if !started() {
         return Err(WSANOTINITIALISED);
     }
@@ -1206,16 +1060,7 @@ fn res(r: Result<u32, u32>) -> u32 {
 /// SO_REUSEADDR (only the newcomer: WSAEACCES). A wildcard over a specific address (a
 /// dual-stack :: covers IPv4 too) clashes only through SO_EXCLUSIVEADDRUSE: on the holder's
 /// wildcard it is WSAEACCES, on the newcomer's WSAEADDRINUSE.
-fn bind_clash(
-    o: &Addr,
-    o_v6only: bool,
-    o_reuse: bool,
-    o_excl: bool,
-    n: &Addr,
-    n_v6only: bool,
-    n_reuse: bool,
-    n_excl: bool,
-) -> Result<(), u32> {
+fn bind_clash(o: &Addr, o_v6only: bool, o_reuse: bool, o_excl: bool, n: &Addr, n_v6only: bool, n_reuse: bool, n_excl: bool) -> Result<(), u32> {
     let norm = |a: &Addr| match a.as_v4() {
         Some(v) => (false, v.to_vec()),
         None => (true, a.ip.clone()),
@@ -1226,15 +1071,9 @@ fn bind_clash(
         if o_reuse && n_reuse {
             return Ok(());
         }
-        return Err(if n_reuse && !o_reuse {
-            WSAEACCES
-        } else {
-            WSAEADDRINUSE
-        });
+        return Err(if n_reuse && !o_reuse { WSAEACCES } else { WSAEADDRINUSE });
     }
-    let covers = |w6: bool, wip: &[u8], w_v6only: bool, x6: bool| {
-        any(wip) && (w6 == x6 || (w6 && !w_v6only && !x6))
-    };
+    let covers = |w6: bool, wip: &[u8], w_v6only: bool, x6: bool| any(wip) && (w6 == x6 || (w6 && !w_v6only && !x6));
     if covers(o6, &oip, o_v6only, n6) && o_excl {
         return Err(WSAEACCES);
     }
@@ -1284,13 +1123,7 @@ fn do_bind(st: &mut State, id: u32, a: Addr) -> Result<(), u32> {
 fn bind(c: &mut Ctx) -> u32 {
     let (h, sa, len) = (c.a(0), c.a(1), c.a(2));
     res(on(h, |st, id, acts| {
-        let a = read_sa(sa, len).map_err(|e| {
-            if e == WSAEAFNOSUPPORT {
-                WSAEAFNOSUPPORT
-            } else {
-                WSAEFAULT
-            }
-        })?;
+        let a = read_sa(sa, len).map_err(|e| if e == WSAEAFNOSUPPORT { WSAEAFNOSUPPORT } else { WSAEFAULT })?;
         do_bind(st, id, a)?;
         st.refresh(id, acts);
         Ok(0)
@@ -1311,24 +1144,14 @@ fn listen(c: &mut Ctx) -> u32 {
             return Err(WSAEINVAL);
         }
         s.listening = true;
-        s.backlog = if backlog <= 0 {
-            1
-        } else {
-            (backlog as usize).min(200)
-        };
+        s.backlog = if backlog <= 0 { 1 } else { (backlog as usize).min(200) };
         st.touch();
         Ok(0)
     }))
 }
 
 /// Connects stream socket `id` to `dst`: Ok when connected, or the error
-fn do_connect(
-    st: &mut State,
-    id: u32,
-    dst: Addr,
-    srv_h: u32,
-    acts: &mut Vec<Act>,
-) -> Result<(), u32> {
+fn do_connect(st: &mut State, id: u32, dst: Addr, srv_h: u32, acts: &mut Vec<Act>) -> Result<(), u32> {
     let s = &st.socks[&id];
     if s.listening {
         return Err(WSAEINVAL);
@@ -1350,44 +1173,23 @@ fn do_connect(
     let l = st
         .socks
         .iter()
-        .filter(|(_, o)| {
-            o.listening
-                && o.ty == SOCK_STREAM
-                && o.local.as_ref().is_some_and(|l| takes(l, o.v6only, &dst))
-        })
-        .max_by_key(|(_, o)| {
-            (
-                o.local.as_ref().is_some_and(|l| !l.any()),
-                std::cmp::Reverse(o.bind_seq),
-            )
-        })
+        .filter(|(_, o)| o.listening && o.ty == SOCK_STREAM && o.local.as_ref().is_some_and(|l| takes(l, o.v6only, &dst)))
+        .max_by_key(|(_, o)| (o.local.as_ref().is_some_and(|l| !l.any()), std::cmp::Reverse(o.bind_seq)))
         .map(|(k, _)| *k);
-    let Some(lid) = l else {
-        return Err(WSAECONNREFUSED);
-    };
+    let Some(lid) = l else { return Err(WSAECONNREFUSED) };
     if st.socks[&lid].queue.len() >= st.socks[&lid].backlog {
         return Err(WSAECONNREFUSED);
     }
     // bind the client if it is not yet
     if st.socks[&id].local.is_none() {
-        let mut lo = if dst.is_v6() {
-            Addr::v6([0; 16], 0)
-        } else {
-            Addr::v4([0; 4], 0)
-        };
+        let mut lo = if dst.is_v6() { Addr::v6([0; 16], 0) } else { Addr::v4([0; 4], 0) };
         lo.port = 0;
         do_bind(st, id, lo)?;
     }
     let src = source_for(&st.socks[&id], &dst);
     let lsock = &st.socks[&lid];
     let mut srv = Sock::new(lsock.af, SOCK_STREAM, 6);
-    srv.local = Some(seen_as(
-        &Addr {
-            port: lsock.local.as_ref().unwrap().port,
-            ..dst.clone()
-        },
-        lsock.af,
-    ));
+    srv.local = Some(seen_as(&Addr { port: lsock.local.as_ref().unwrap().port, ..dst.clone() }, lsock.af));
     srv.peer = Some(seen_as(&src, lsock.af));
     srv.connected = true;
     srv.conn = Some(id);
@@ -1436,11 +1238,7 @@ fn connect_to(h: u32, sa: u32, len: u32) -> u32 {
                 return Err(WSAEADDRNOTAVAIL);
             }
             if st.socks[&id].local.is_none() {
-                let lo = if st.socks[&id].af == AF_INET6 {
-                    Addr::v6([0; 16], 0)
-                } else {
-                    Addr::v4([0; 4], 0)
-                };
+                let lo = if st.socks[&id].af == AF_INET6 { Addr::v6([0; 16], 0) } else { Addr::v4([0; 4], 0) };
                 do_bind(st, id, lo)?;
             }
             let s = st.socks.get_mut(&id).unwrap();
@@ -1461,11 +1259,7 @@ fn connect_to(h: u32, sa: u32, len: u32) -> u32 {
             Ok(()) => {
                 s.connect_result = Some(0);
                 st.refresh(id, acts);
-                if nonblock {
-                    Err(WSAEWOULDBLOCK)
-                } else {
-                    Ok(true)
-                }
+                if nonblock { Err(WSAEWOULDBLOCK) } else { Ok(true) }
             }
             Err(e @ (WSAECONNREFUSED | WSAENETUNREACH | WSAETIMEDOUT)) if nonblock => {
                 s.so_error = e;
@@ -1478,8 +1272,7 @@ fn connect_to(h: u32, sa: u32, len: u32) -> u32 {
             Err(e) => Err(e),
         }
     });
-    let used = matches!(r, Ok(true))
-        || (matches!(r, Err(WSAEWOULDBLOCK)) && with(|st, _| st.socks.contains_key(&srv_h)));
+    let used = matches!(r, Ok(true)) || (matches!(r, Err(WSAEWOULDBLOCK)) && with(|st, _| st.socks.contains_key(&srv_h)));
     if !used {
         obj::close(srv_h);
     }
@@ -1493,27 +1286,12 @@ fn connect_to(h: u32, sa: u32, len: u32) -> u32 {
 /// reserved): looks the name up and connects to the first address that answers; the local
 /// address is given back without its port
 fn connect_by_name(c: &mut Ctx, wide: bool) -> u32 {
-    let (h, node, serv, llp, la, rlp, ra, reserved) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        c.a(8),
-    );
+    let (h, node, serv, llp, la, rlp, ra, reserved) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(8));
     let fail = |e: u32| {
         last(e);
         0
     };
-    let text = |p: u32| {
-        if wide {
-            String::from_utf16_lossy(&mem::wstr(p))
-        } else {
-            crate::text::a2s(&mem::cstr(p))
-        }
-    };
+    let text = |p: u32| if wide { String::from_utf16_lossy(&mem::wstr(p)) } else { crate::text::a2s(&mem::cstr(p)) };
     let info = match on(h, |st, id, _| Ok(st.socks[&id].info())) {
         Ok(i) => i,
         Err(e) => return fail(e),
@@ -1527,12 +1305,7 @@ fn connect_by_name(c: &mut Ctx, wide: bool) -> u32 {
             return fail(WSAEFAULT);
         }
     }
-    let hints = names::Hints {
-        flags: 0,
-        family: info.0,
-        socktype: SOCK_STREAM,
-        protocol: 6,
-    };
+    let hints = names::Hints { flags: 0, family: info.0, socktype: SOCK_STREAM, protocol: 6 };
     let addrs = match names::addrinfo(Some(&text(node)), Some(&text(serv)), &hints) {
         Ok((_, v)) => v,
         Err(e) => return fail(e),
@@ -1551,23 +1324,11 @@ fn connect_by_name(c: &mut Ctx, wide: bool) -> u32 {
     if r != 0 {
         return fail(r);
     }
-    let (local, peer) = with(|st, _| {
-        st.id(h)
-            .ok()
-            .map(|id| (st.socks[&id].local.clone(), st.socks[&id].peer.clone()))
-    })
-    .unwrap_or_default();
-    for (p, lp, a) in [
-        (
-            la,
-            llp,
-            local.map(|mut l| {
-                l.port = 0;
-                l
-            }),
-        ),
-        (ra, rlp, peer),
-    ] {
+    let (local, peer) = with(|st, _| st.id(h).ok().map(|id| (st.socks[&id].local.clone(), st.socks[&id].peer.clone()))).unwrap_or_default();
+    for (p, lp, a) in [(la, llp, local.map(|mut l| {
+        l.port = 0;
+        l
+    })), (ra, rlp, peer)] {
         let Some(a) = a else { continue };
         if lp != 0 {
             if p != 0 {
@@ -1602,18 +1363,12 @@ fn accept(c: &mut Ctx, wsa: bool) -> u32 {
         Ok(n) => n,
         Err(e) => {
             last(e);
-            return if mem::x64() {
-                c.ret64(u64::MAX)
-            } else {
-                u32::MAX
-            };
+            return if mem::x64() { c.ret64(u64::MAX) } else { u32::MAX };
         }
     };
     let take = |st: &mut State, acts: &mut Vec<Act>| -> Option<Result<u32, u32>> {
         // (closed while waiting: WSAEINTR, as in Windows)
-        let Ok(id) = st.id(h) else {
-            return Some(Err(10004));
-        };
+            let Ok(id) = st.id(h) else { return Some(Err(10004)) };
         let l = st.socks.get_mut(&id).unwrap();
         if !l.listening {
             return Some(Err(WSAEINVAL));
@@ -1637,9 +1392,7 @@ fn accept(c: &mut Ctx, wsa: bool) -> u32 {
     if wsa && cond != 0 {
         let peek = |st: &mut State, _: &mut Vec<Act>| -> Option<Result<(u32, Addr, Addr), u32>> {
             // (closed while waiting: WSAEINTR, as in Windows)
-            let Ok(id) = st.id(h) else {
-                return Some(Err(10004));
-            };
+            let Ok(id) = st.id(h) else { return Some(Err(10004)) };
             let l = &st.socks[&id];
             if !l.listening {
                 return Some(Err(WSAEINVAL));
@@ -1648,11 +1401,7 @@ fn accept(c: &mut Ctx, wsa: bool) -> u32 {
             let s = &st.socks[&q];
             Some(Ok((q, s.peer.clone().unwrap(), s.local.clone().unwrap())))
         };
-        let got = if nonblock {
-            with(peek).unwrap_or(Err(WSAEWOULDBLOCK))
-        } else {
-            block(Some(c), u32::MAX, peek).unwrap()
-        };
+        let got = if nonblock { with(peek).unwrap_or(Err(WSAEWOULDBLOCK)) } else { block(Some(c), u32::MAX, peek).unwrap() };
         let (q, peer, local) = match got {
             Ok(x) => x,
             Err(e) => return ret_socket(c, Err(e)),
@@ -1700,14 +1449,7 @@ fn accept(c: &mut Ctx, wsa: bool) -> u32 {
 // ---- data ----
 
 /// Sends `data` on socket `id` (to `to` for a datagram socket): the bytes sent
-fn send_data(
-    st: &mut State,
-    id: u32,
-    data: &[u8],
-    to: Option<Addr>,
-    flags: u32,
-    acts: &mut Vec<Act>,
-) -> Result<u32, u32> {
+fn send_data(st: &mut State, id: u32, data: &[u8], to: Option<Addr>, flags: u32, acts: &mut Vec<Act>) -> Result<u32, u32> {
     let s = st.socks.get_mut(&id).unwrap();
     if s.stream() {
         if !s.connected || s.connect_failed {
@@ -1733,10 +1475,7 @@ fn send_data(
         let nonblock = s.nonblock;
         let (cap, used) = {
             let o = &st.socks[&p];
-            (
-                (o.rcvbuf.max(8192) + st.socks[&id].sndbuf.max(8192)) as usize,
-                o.rx.len(),
-            )
+            ((o.rcvbuf.max(8192) + st.socks[&id].sndbuf.max(8192)) as usize, o.rx.len())
         };
         let room = cap.saturating_sub(used);
         let n = if room == 0 {
@@ -1791,19 +1530,14 @@ fn send_data(
     if dst.port == 0 {
         // (nothing listens on port 0: the datagram goes nowhere, and the send succeeds)
         if s.local.is_none() {
-            let lo = if s.af == AF_INET6 {
-                Addr::v6([0; 16], 0)
-            } else {
-                Addr::v4([0; 4], 0)
-            };
+            let lo = if s.af == AF_INET6 { Addr::v6([0; 16], 0) } else { Addr::v4([0; 4], 0) };
             do_bind(st, id, lo)?;
         }
         return Ok(data.len() as u32);
     }
     let v4 = dst.as_v4();
     let bcast = v4.is_some_and(|a| a == [255; 4] || a[3] == 255 && a[0] == 127);
-    let mcast = v4.is_some_and(|a| (224..240).contains(&a[0]))
-        || (dst.as_v4().is_none() && dst.ip[0] == 0xff);
+    let mcast = v4.is_some_and(|a| (224..240).contains(&a[0])) || (dst.as_v4().is_none() && dst.ip[0] == 0xff);
     if bcast && !s.broadcast {
         return Err(WSAEACCES);
     }
@@ -1811,11 +1545,7 @@ fn send_data(
         return Err(WSAENETUNREACH);
     }
     if s.local.is_none() {
-        let lo = if s.af == AF_INET6 {
-            Addr::v6([0; 16], 0)
-        } else {
-            Addr::v4([0; 4], 0)
-        };
+        let lo = if s.af == AF_INET6 { Addr::v6([0; 16], 0) } else { Addr::v4([0; 4], 0) };
         do_bind(st, id, lo)?;
     }
     let src = source_for(&st.socks[&id], &dst);
@@ -1826,25 +1556,13 @@ fn send_data(
             .filter(|(_, o)| {
                 o.ty == SOCK_DGRAM
                     && !o.shut_rd
-                    && o.local.as_ref().is_some_and(|l| {
-                        if bcast || mcast {
-                            l.port == dst.port && (l.any() || bcast)
-                        } else {
-                            takes(l, o.v6only, &dst)
-                        }
-                    })
-                    && o.peer
-                        .as_ref()
-                        .is_none_or(|p| seen_as(p, AF_INET6) == seen_as(&src, AF_INET6))
+                    && o.local.as_ref().is_some_and(|l| if bcast || mcast { l.port == dst.port && (l.any() || bcast) } else { takes(l, o.v6only, &dst) })
+                    && o.peer.as_ref().is_none_or(|p| seen_as(p, AF_INET6) == seen_as(&src, AF_INET6))
             })
             .map(|(k, o)| (o.bind_seq, *k))
             .collect();
         v.sort();
-        if bcast || mcast {
-            v.into_iter().map(|x| x.1).collect()
-        } else {
-            v.last().map(|x| x.1).into_iter().collect()
-        }
+        if bcast || mcast { v.into_iter().map(|x| x.1).collect() } else { v.last().map(|x| x.1).into_iter().collect() }
     };
     if targets.is_empty() && !bcast && !mcast {
         // the port unreachable reply: the next receive fails with WSAECONNRESET
@@ -1855,8 +1573,7 @@ fn send_data(
     }
     for t in targets {
         let o = st.socks.get_mut(&t).unwrap();
-        o.dgrams
-            .push_back((seen_as(&src, o.af), data.to_vec(), seen_as(&dst, o.af)));
+        o.dgrams.push_back((seen_as(&src, o.af), data.to_vec(), seen_as(&dst, o.af)));
         st.serve(t, acts);
         st.refresh(t, acts);
     }
@@ -1875,22 +1592,11 @@ fn gather(bufs: &[(u32, u32)]) -> Vec<u8> {
 /// send_data's "the pipe is full, wait for room" (not a Winsock error)
 const SEND_WAIT: u32 = 0xffff_fffe;
 
-fn send_common(
-    mut c: Option<&mut Ctx>,
-    h: u32,
-    bufs: &[(u32, u32)],
-    to: u32,
-    tolen: u32,
-    flags: u32,
-) -> Result<u32, u32> {
+fn send_common(mut c: Option<&mut Ctx>, h: u32, bufs: &[(u32, u32)], to: u32, tolen: u32, flags: u32) -> Result<u32, u32> {
     let data = gather(bufs);
     loop {
         let r = on(h, |st, id, acts| {
-            let to = if to != 0 && !st.socks[&id].stream() {
-                Some(read_sa(to, tolen)?)
-            } else {
-                None
-            };
+            let to = if to != 0 && !st.socks[&id].stream() { Some(read_sa(to, tolen)?) } else { None };
             send_data(st, id, &data, to, flags, acts)
         });
         if r != Err(SEND_WAIT) {
@@ -1915,37 +1621,29 @@ fn sendto(c: &mut Ctx) -> u32 {
 }
 
 /// A receive: (bytes, sender, truncated) or the error; blocks unless non-blocking
-fn recv_common(
-    c: Option<&mut Ctx>,
-    h: u32,
-    bufs: &[(u32, u32)],
-    flags: u32,
-) -> Result<(u32, Option<Addr>, bool), u32> {
+fn recv_common(c: Option<&mut Ctx>, h: u32, bufs: &[(u32, u32)], flags: u32) -> Result<(u32, Option<Addr>, bool), u32> {
     let (nonblock, timeo) = on(h, |st, id, _| {
         let s = &st.socks[&id];
         Ok((s.nonblock, s.rcvtimeo))
     })?;
-    let f =
-        |st: &mut State, acts: &mut Vec<Act>| -> Option<Result<(u32, Option<Addr>, bool), u32>> {
-            let Ok(id) = st.id(h) else {
-                return Some(Err(WSAEINTR));
-            };
-            let s = st.socks.get_mut(&id).unwrap();
-            match take_data(s, bufs, flags) {
-                Ok(None) => None,
-                Ok(Some(r)) => {
-                    s.reported &= !FD_READ;
-                    if !s.readable() {
-                        s.netev &= !FD_READ; // (nothing left: the recorded FD_READ is gone too)
-                    }
-                    st.touch();
-                    st.refresh(id, acts);
-                    st.drained(id, acts);
-                    Some(Ok(r))
+    let f = |st: &mut State, acts: &mut Vec<Act>| -> Option<Result<(u32, Option<Addr>, bool), u32>> {
+        let Ok(id) = st.id(h) else { return Some(Err(WSAEINTR)) };
+        let s = st.socks.get_mut(&id).unwrap();
+        match take_data(s, bufs, flags) {
+            Ok(None) => None,
+            Ok(Some(r)) => {
+                s.reported &= !FD_READ;
+                if !s.readable() {
+                    s.netev &= !FD_READ; // (nothing left: the recorded FD_READ is gone too)
                 }
-                Err(e) => Some(Err(e)),
+                st.touch();
+                st.refresh(id, acts);
+                st.drained(id, acts);
+                Some(Ok(r))
             }
-        };
+            Err(e) => Some(Err(e)),
+        }
+    };
     if nonblock {
         return with(|st, acts| f(st, acts)).unwrap_or(Err(WSAEWOULDBLOCK));
     }
@@ -1974,11 +1672,7 @@ fn recvfrom(c: &mut Ctx) -> u32 {
                     return err(WSAEFAULT);
                 }
             }
-            if trunc {
-                err(WSAEMSGSIZE)
-            } else {
-                res(Ok(n))
-            }
+            if trunc { err(WSAEMSGSIZE) } else { res(Ok(n)) }
         }
         Err(e) => err(e),
     }
@@ -1988,11 +1682,7 @@ fn recvfrom(c: &mut Ctx) -> u32 {
 /// waits, so an overlapped send completes at once
 fn wsa_send(c: &mut Ctx, to: bool) -> u32 {
     let (h, bp, n, sentp) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let (top, tolen, ov, routine) = if to {
-        (c.a(5), c.a(6), c.a(7), c.a(8))
-    } else {
-        (0, 0, c.a(5), c.a(6))
-    };
+    let (top, tolen, ov, routine) = if to { (c.a(5), c.a(6), c.a(7), c.a(8)) } else { (0, 0, c.a(5), c.a(6)) };
     ov_start(ov);
     let bufs = wsabufs(bp, n);
     let fl = c.a(4);
@@ -2007,13 +1697,7 @@ fn complete_now(h: u32, ov: u32, routine: u32, r: Result<(u32, u32), u32>, bytes
         Ok((n, fl)) => {
             mem::put32(bytesp, n);
             if ov != 0 {
-                let p = Pend {
-                    kind: PendKind::Forever,
-                    ov,
-                    routine,
-                    tid: crate::cur().tid,
-                    handle: h,
-                };
+                let p = Pend { kind: PendKind::Forever, ov, routine, tid: crate::cur().tid, handle: h };
                 let mut acts = Vec::new();
                 with(|st, _| {
                     st.ov_flags.insert(ov, fl);
@@ -2027,12 +1711,7 @@ fn complete_now(h: u32, ov: u32, routine: u32, r: Result<(u32, u32), u32>, bytes
             0
         }
         Err(e) => {
-            if ov != 0
-                && e != WSAENOTSOCK
-                && e != WSANOTINITIALISED
-                && e != WSAEFAULT
-                && e != WSAEWOULDBLOCK
-            {
+            if ov != 0 && e != WSAENOTSOCK && e != WSANOTINITIALISED && e != WSAEFAULT && e != WSAEWOULDBLOCK {
                 let k = ps();
                 wp(ov, wsa_to_nt(e));
                 wp(ov + k, 0);
@@ -2045,15 +1724,7 @@ fn complete_now(h: u32, ov: u32, routine: u32, r: Result<(u32, u32), u32>, bytes
 /// The flags a receive reports: MSG_PARTIAL for a datagram cut short; for WSARecvMsg (`msg`,
 /// its WSAMSG) the control data is written too, and MSG_CTRUNC if it did not fit
 fn recv_flags(s: &Sock, msg: u32, trunc: bool) -> u32 {
-    let mut fl = if trunc {
-        if msg != 0 {
-            MSG_TRUNC
-        } else {
-            MSG_PARTIAL
-        }
-    } else {
-        0
-    };
+    let mut fl = if trunc { if msg != 0 { MSG_TRUNC } else { MSG_PARTIAL } } else { 0 };
     if msg != 0 && write_control(msg, &control_msgs(s)) {
         fl |= MSG_CTRUNC;
     }
@@ -2071,10 +1742,7 @@ fn control_msgs(s: &Sock) -> Vec<(u32, u32, Vec<u8>)> {
         return v;
     }
     let on = |level: u32, opt: u32| s.opts.get(&(level, opt)).copied().unwrap_or(0) != 0;
-    let dst = s
-        .last_dst
-        .clone()
-        .unwrap_or_else(|| s.local.clone().unwrap_or(Addr::v4([0; 4], 0)));
+    let dst = s.last_dst.clone().unwrap_or_else(|| s.local.clone().unwrap_or(Addr::v4([0; 4], 0)));
     let ifindex = 1u32.to_le_bytes(); // (the loopback interface)
     if s.af == AF_INET6 {
         if on(41, 19) {
@@ -2109,11 +1777,7 @@ fn control_msgs(s: &Sock) -> Vec<(u32, u32, Vec<u8>)> {
 /// Returns whether some did not fit.
 fn write_control(m: u32, msgs: &[(u32, u32, Vec<u8>)]) -> bool {
     let k = ps();
-    let (lenp, bufp) = if k == 8 {
-        (m + 32, m + 40)
-    } else {
-        (m + 16, m + 20)
-    };
+    let (lenp, bufp) = if k == 8 { (m + 32, m + 40) } else { (m + 16, m + 20) };
     let (room, buf) = (r32(lenp), rp(bufp));
     let hdr = if k == 8 { 16 } else { 12 };
     let align = |n: u32| (n + k - 1) & !(k - 1);
@@ -2138,23 +1802,8 @@ fn write_control(m: u32, msgs: &[(u32, u32, Vec<u8>)]) -> bool {
 /// WSARecv / WSARecvFrom(s, bufs, n, &got, &flags, [from, &fromlen,] ov, routine)
 fn wsa_recv(c: &mut Ctx, from: bool) -> u32 {
     let (h, bp, n, gotp, flp) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let (fromp, lenp, ov, routine) = if from {
-        (c.a(5), c.a(6), c.a(7), c.a(8))
-    } else {
-        (0, 0, c.a(5), c.a(6))
-    };
-    recv_ex(
-        c,
-        h,
-        &wsabufs(bp, n),
-        gotp,
-        flp,
-        fromp,
-        lenp,
-        ov,
-        routine,
-        0,
-    )
+    let (fromp, lenp, ov, routine) = if from { (c.a(5), c.a(6), c.a(7), c.a(8)) } else { (0, 0, c.a(5), c.a(6)) };
+    recv_ex(c, h, &wsabufs(bp, n), gotp, flp, fromp, lenp, ov, routine, 0)
 }
 
 /// An overlapped operation starting: its event is reset (as Windows does)
@@ -2169,74 +1818,33 @@ fn ov_start(ov: u32) {
 
 /// A receive into `bufs` (`flp`: the in/out flags, `msg`: WSARecvMsg's WSAMSG or 0)
 #[allow(clippy::too_many_arguments)]
-fn recv_ex(
-    c: &mut Ctx,
-    h: u32,
-    bufs: &[(u32, u32)],
-    gotp: u32,
-    flp: u32,
-    fromp: u32,
-    lenp: u32,
-    ov: u32,
-    routine: u32,
-    msg: u32,
-) -> u32 {
+fn recv_ex(c: &mut Ctx, h: u32, bufs: &[(u32, u32)], gotp: u32, flp: u32, fromp: u32, lenp: u32, ov: u32, routine: u32, msg: u32) -> u32 {
     let flags = if flp != 0 { r32(flp) } else { 0 };
     let tid = crate::cur().tid;
     ov_start(ov);
     // done now if there is data; else a blocking call waits, an overlapped one is left pending
     let r = if ov == 0 {
-        recv_common(Some(c), h, bufs, flags).map(|(n, src, trunc)| {
-            Some((
-                n,
-                src,
-                with(|st, _| {
-                    st.id(h)
-                        .map(|id| recv_flags(&st.socks[&id], msg, trunc))
-                        .unwrap_or(0)
-                }),
-            ))
-        })
+        recv_common(Some(c), h, bufs, flags).map(|(n, src, trunc)| Some((n, src, with(|st, _| st.id(h).map(|id| recv_flags(&st.socks[&id], msg, trunc)).unwrap_or(0)))))
     } else {
         on(h, |st, id, acts| {
             let s = st.socks.get_mut(&id).unwrap();
-            let busy = s
-                .pend
-                .iter()
-                .any(|p| matches!(p.kind, PendKind::Recv { .. }));
-            let now = if busy {
-                Ok(None)
-            } else {
-                take_data(s, bufs, flags)
-            };
+            let busy = s.pend.iter().any(|p| matches!(p.kind, PendKind::Recv { .. }));
+            let now = if busy { Ok(None) } else { take_data(s, bufs, flags) };
             match now {
                 Ok(None) => {
                     let k = ps();
                     wp(ov, STATUS_PENDING);
                     wp(ov + k, 0);
-                    s.pend.push(Pend {
-                        kind: PendKind::Recv {
-                            bufs: bufs.to_vec(),
-                            flags: flp,
-                            from: fromp,
-                            fromlen: lenp,
-                            peek: flags & MSG_PEEK != 0,
-                            msg,
-                        },
-                        ov,
-                        routine,
-                        tid,
-                        handle: h,
-                    });
+                    s.pend.push(Pend { kind: PendKind::Recv { bufs: bufs.to_vec(), flags: flp, from: fromp, fromlen: lenp, peek: flags & MSG_PEEK != 0, msg }, ov, routine, tid, handle: h });
                     st.touch();
                     Ok(None)
                 }
                 Ok(Some((n, src, trunc))) => {
                     let fl = recv_flags(s, msg, trunc);
                     s.reported &= !FD_READ;
-                    if !s.readable() {
-                        s.netev &= !FD_READ; // (nothing left: the recorded FD_READ is gone too)
-                    }
+                if !s.readable() {
+                    s.netev &= !FD_READ; // (nothing left: the recorded FD_READ is gone too)
+                }
                     st.touch();
                     st.refresh(id, acts);
                     st.drained(id, acts);
@@ -2257,11 +1865,7 @@ fn recv_ex(
             }
             mem::put32(gotp, n);
             if fl == 0 {
-                return if ov == 0 {
-                    res(Ok(0))
-                } else {
-                    complete_now(h, ov, routine, Ok((n, 0)), gotp)
-                };
+                return if ov == 0 { res(Ok(0)) } else { complete_now(h, ov, routine, Ok((n, 0)), gotp) };
             }
             if ov == 0 {
                 return err(WSAEMSGSIZE);
@@ -2269,13 +1873,7 @@ fn recv_ex(
             // it did not all fit: an overlapped receive completes with STATUS_BUFFER_OVERFLOW
             // (a warning, so the call itself reports it pending)
             let mut acts = Vec::new();
-            let p = Pend {
-                kind: PendKind::Forever,
-                ov,
-                routine,
-                tid,
-                handle: h,
-            };
+            let p = Pend { kind: PendKind::Forever, ov, routine, tid, handle: h };
             let fl = if msg != 0 { 0 } else { fl };
             if msg == 0 {
                 with(|st, _| st.ov_flags.insert(ov, fl));
@@ -2314,10 +1912,7 @@ fn WSAGetOverlappedResult(c: &mut Ctx) -> u32 {
     }
     let k = ps();
     w32(bp, rp(ov + k));
-    w32(
-        flp,
-        with(|st, _| st.ov_flags.get(&ov).copied().unwrap_or(0)),
-    );
+    w32(flp, with(|st, _| st.ov_flags.get(&ov).copied().unwrap_or(0)));
     // NT_SUCCESS: done (no error); else the status's error
     let s = rp(ov);
     let e = nt_to_wsa(s);
@@ -2381,9 +1976,7 @@ fn getsockname(c: &mut Ctx) -> u32 {
     let (h, sa, lenp) = (c.a(0), c.a(1), c.a(2));
     res(on(h, |st, id, _| {
         let s = &st.socks[&id];
-        let Some(l) = &s.local else {
-            return Err(WSAEINVAL);
-        };
+        let Some(l) = &s.local else { return Err(WSAEINVAL) };
         write_sa(sa, lenp, l)?;
         Ok(0)
     }))
@@ -2436,9 +2029,7 @@ fn select(c: &mut Ctx) -> u32 {
         if tv == 0 {
             return err(WSAEINVAL);
         }
-        let ms = r32(tv)
-            .saturating_mul(1000)
-            .saturating_add(r32(tv + 4) / 1000);
+        let ms = r32(tv).saturating_mul(1000).saturating_add(r32(tv + 4) / 1000);
         std::thread::sleep(Duration::from_millis(ms.min(60_000) as u64));
         return err(WSAEINVAL);
     }
@@ -2446,22 +2037,11 @@ fn select(c: &mut Ctx) -> u32 {
     if bad {
         return err(WSAENOTSOCK);
     }
-    let ms = if tv == 0 {
-        u32::MAX
-    } else {
-        r32(tv)
-            .saturating_mul(1000)
-            .saturating_add(r32(tv + 4).div_ceil(1000))
-    };
+    let ms = if tv == 0 { u32::MAX } else { r32(tv).saturating_mul(1000).saturating_add(r32(tv + 4).div_ceil(1000)) };
     // one poll entry per set member (read, then write, then except); the ready ones go back
     // into their sets, each socket once per set (the sets may be the same memory: all are
     // cleared first), and the count is of what was added
-    let ents: Vec<(u32, u8, u32)> = r
-        .iter()
-        .map(|&h| (h, 0, rd))
-        .chain(w.iter().map(|&h| (h, 1, wr)))
-        .chain(e.iter().map(|&h| (h, 2, ex)))
-        .collect();
+    let ents: Vec<(u32, u8, u32)> = r.iter().map(|&h| (h, 0, rd)).chain(w.iter().map(|&h| (h, 1, wr))).chain(e.iter().map(|&h| (h, 2, ex))).collect();
     let check = |st: &mut State, _: &mut Vec<Act>| -> Option<Vec<bool>> {
         let ready: Vec<bool> = ents
             .iter()
@@ -2478,19 +2058,11 @@ fn select(c: &mut Ctx) -> u32 {
             .collect();
         ready.iter().any(|&b| b).then_some(ready)
     };
-    let got = if ms == 0 {
-        with(check)
-    } else {
-        block(Some(c), ms, check)
-    };
+    let got = if ms == 0 { with(check) } else { block(Some(c), ms, check) };
     let ready = got.unwrap_or_else(|| vec![false; ents.len()]);
     // a closed socket goes into the read set if it was asked for there, else it is an error
     let closed: Vec<bool> = with(|st, _| ents.iter().map(|&(h, ..)| st.id(h).is_err()).collect());
-    let gone = ents
-        .iter()
-        .zip(&ready)
-        .zip(&closed)
-        .any(|((&(h, kind, _), &rd_), &c)| rd_ && c && kind != 0 && !r.contains(&h));
+    let gone = ents.iter().zip(&ready).zip(&closed).any(|((&(h, kind, _), &rd_), &c)| rd_ && c && kind != 0 && !r.contains(&h));
     if gone {
         for p in [rd, wr, ex] {
             if p != 0 {
@@ -2539,9 +2111,7 @@ fn WSAPoll(c: &mut Ctx) -> u32 {
     }
     let k = ps();
     let size = 2 * k;
-    let ents: Vec<(u32, u16)> = (0..n)
-        .map(|i| (rp(fds + size * i), r16(fds + size * i + k)))
-        .collect();
+    let ents: Vec<(u32, u16)> = (0..n).map(|i| (rp(fds + size * i), r16(fds + size * i + k))).collect();
     if ents.iter().any(|e| e.1 & !0x0337 != 0) {
         return err(WSAEINVAL);
     }
@@ -2550,13 +2120,9 @@ fn WSAPoll(c: &mut Ctx) -> u32 {
             .iter()
             .map(|&(h, ev)| {
                 let full = st.id(h).is_ok_and(|id| st.full(id));
-                let Some(s) = st.id(h).ok().and_then(|id| st.socks.get(&id)) else {
-                    return 4;
-                }; // POLLNVAL
+                let Some(s) = st.id(h).ok().and_then(|id| st.socks.get(&id)) else { return 4 }; // POLLNVAL
                 let mut r = 0;
-                if s.readable()
-                    && !(s.stream() && s.connected && (s.eof || s.reset) && s.rx.is_empty())
-                {
+                if s.readable() && !(s.stream() && s.connected && (s.eof || s.reset) && s.rx.is_empty()) {
                     r |= ev & 0x0300;
                 }
                 if s.writable() && !full && !(s.stream() && s.connected && s.reset) {
@@ -2581,11 +2147,7 @@ fn WSAPoll(c: &mut Ctx) -> u32 {
         v.iter().any(|&r| r != 0).then_some(v)
     };
     let wait = if ms < 0 { u32::MAX } else { ms as u32 };
-    let got = if wait == 0 {
-        with(check)
-    } else {
-        block(Some(c), wait, check)
-    };
+    let got = if wait == 0 { with(check) } else { block(Some(c), wait, check) };
     let v = got.unwrap_or_else(|| vec![0; ents.len()]);
     for (i, r) in v.iter().enumerate() {
         w16(fds + size * i as u32 + k + 2, *r);
@@ -2612,15 +2174,7 @@ fn set_notify(h: u32, n: Notify, mask: u32) -> u32 {
 /// WSAEventSelect(s, event, mask)
 fn WSAEventSelect(c: &mut Ctx) -> u32 {
     let (h, ev, mask) = (c.a(0), c.a(1), c.a(2));
-    set_notify(
-        h,
-        if ev == 0 {
-            Notify::None
-        } else {
-            Notify::Event(ev)
-        },
-        if ev == 0 { 0 } else { mask },
-    )
+    set_notify(h, if ev == 0 { Notify::None } else { Notify::Event(ev) }, if ev == 0 { 0 } else { mask })
 }
 /// WSAAsyncSelect(s, hwnd, msg, mask)
 fn WSAAsyncSelect(c: &mut Ctx) -> u32 {
@@ -2663,11 +2217,7 @@ fn WSAWaitForMultipleEvents(c: &mut Ctx) -> u32 {
     }
     let k = ps();
     let v: Vec<u32> = (0..n).map(|i| rp(hs + k * i)).collect();
-    if alertable {
-        crate::apc::wait(c, &v, all, ms)
-    } else {
-        obj::wait(&v, all, ms, None)
-    }
+    if alertable { crate::apc::wait(c, &v, all, ms) } else { obj::wait(&v, all, ms, None) }
 }
 
 // ---- ioctls ----
@@ -2677,17 +2227,7 @@ const FIONREAD: u32 = 0x4004667f;
 const SIOCATMARK: u32 = 0x40047307;
 
 #[allow(clippy::too_many_arguments)]
-fn ioctl(
-    st: &mut State,
-    id: u32,
-    h: u32,
-    code: u32,
-    inp: u32,
-    inlen: u32,
-    out: u32,
-    outlen: u32,
-    retp: u32,
-) -> Result<u32, u32> {
+fn ioctl(st: &mut State, id: u32, h: u32, code: u32, inp: u32, inlen: u32, out: u32, outlen: u32, retp: u32) -> Result<u32, u32> {
     let k = ps();
     let s = st.socks.get_mut(&id).unwrap();
     let out32 = |v: u32| -> Result<u32, u32> {
@@ -2709,11 +2249,7 @@ fn ioctl(
             s.nonblock = v;
             Ok(0)
         }
-        FIONREAD => out32(if s.stream() {
-            s.rx.len() as u32
-        } else {
-            s.dgrams.iter().map(|d| d.1.len() as u32).sum()
-        }),
+        FIONREAD => out32(if s.stream() { s.rx.len() as u32 } else { s.dgrams.iter().map(|d| d.1.len() as u32).sum() }),
         // (FALSE: urgent data is waiting)
         SIOCATMARK => out32((s.oob.is_none() && !s.oob_inline) as u32),
         // SIO_GET_EXTENSION_FUNCTION_POINTER
@@ -2722,10 +2258,7 @@ fn ioctl(
                 return Err(WSAEFAULT);
             }
             let g = mem::slice(inp, 16).to_vec();
-            let f = EXTENSIONS
-                .iter()
-                .find(|e| e.0 == g.as_slice())
-                .ok_or(WSAEINVAL)?;
+            let f = EXTENSIONS.iter().find(|e| e.0 == g.as_slice()).ok_or(WSAEINVAL)?;
             wp(out, crate::api::host_fn(f.1, f.2, f.3));
             Ok(k)
         }
@@ -2852,17 +2385,7 @@ fn ioctlsocket(c: &mut Ctx) -> u32 {
 
 /// WSAIoctl(s, code, in, inlen, out, outlen, &returned, ov, routine)
 fn WSAIoctl(c: &mut Ctx) -> u32 {
-    let (h, code, inp, inlen, out, outlen, retp, ov, routine) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        c.a(7),
-        c.a(8),
-    );
+    let (h, code, inp, inlen, out, outlen, retp, ov, routine) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7), c.a(8));
     if !started() {
         return err(WSANOTINITIALISED);
     }
@@ -2880,20 +2403,8 @@ fn WSAIoctl(c: &mut Ctx) -> u32 {
     let base = matches!(code, 0x48000022 | 0x4800001b | 0x4800001c | 0x4800001d);
     let driver = !matches!(
         code,
-        FIONBIO
-            | FIONREAD
-            | SIOCATMARK
-            | 0xc8000006
-            | 0x48000016
-            | 0x98000004
-            | 0xc8000014
-            | 0x9800000c
-            | 0x9800000f
-            | 0x4004747b
-            | 0x98000010
-            | 0x98000017
-            | 0x28000002
-            | 0x28000017
+        FIONBIO | FIONREAD | SIOCATMARK | 0xc8000006 | 0x48000016 | 0x98000004 | 0xc8000014 | 0x9800000c | 0x9800000f | 0x4004747b | 0x98000010
+            | 0x98000017 | 0x28000002 | 0x28000017
     ) && !(base && ov == 0);
     if code == 0x28000017 && ov != 0 {
         // SIO_ADDRESS_LIST_CHANGE: pending until cancelled (no change ever comes)
@@ -2903,13 +2414,7 @@ fn WSAIoctl(c: &mut Ctx) -> u32 {
             let k = ps();
             wp(ov, STATUS_PENDING);
             wp(ov + k, 0);
-            st.socks.get_mut(&id).unwrap().pend.push(Pend {
-                kind: PendKind::Forever,
-                ov,
-                routine,
-                tid,
-                handle: h,
-            });
+            st.socks.get_mut(&id).unwrap().pend.push(Pend { kind: PendKind::Forever, ov, routine, tid, handle: h });
             st.touch();
             err(WSA_IO_PENDING)
         });
@@ -2986,22 +2491,8 @@ struct Shape {
     zero: bool,
 }
 
-const fn shape(
-    short: bool,
-    sizes: [u32; 3],
-    boolean: bool,
-    large: bool,
-    wide2: bool,
-    zero: bool,
-) -> Shape {
-    Shape {
-        short,
-        sizes,
-        boolean,
-        large,
-        wide2,
-        zero,
-    }
+const fn shape(short: bool, sizes: [u32; 3], boolean: bool, large: bool, wide2: bool, zero: bool) -> Shape {
+    Shape { short, sizes, boolean, large, wide2, zero }
 }
 /// a BOOLEAN: one byte
 const BYTE: Shape = shape(true, [1, 1, 1], false, true, false, false);
@@ -3177,14 +2668,8 @@ fn getsockopt(c: &mut Ctx) -> u32 {
                     names::protocol_info(val, e, wide, 0);
                     Ok(0)
                 }
-                0x700c => put(
-                    s.connect_time
-                        .map_or(u32::MAX, |t| t.elapsed().as_secs() as u32),
-                    4,
-                ),
-                0x0001 | 0x0008 | 0x0010 | 0x0100 | 0x3002 | 0x3005 | 0x3006 | 0x3007 => {
-                    put(s.opts.get(&(level, opt)).copied().unwrap_or(0), 4)
-                }
+                0x700c => put(s.connect_time.map_or(u32::MAX, |t| t.elapsed().as_secs() as u32), 4),
+                0x0001 | 0x0008 | 0x0010 | 0x0100 | 0x3002 | 0x3005 | 0x3006 | 0x3007 => put(s.opts.get(&(level, opt)).copied().unwrap_or(0), 4),
                 0x0040 | 0x1003 | 0x1004 => Err(WSAENOPROTOOPT),
                 _ => Err(WSAENOPROTOOPT),
             },
@@ -3193,9 +2678,7 @@ fn getsockopt(c: &mut Ctx) -> u32 {
                     return Err(WSAENOPROTOOPT);
                 }
                 match opt {
-                    1 | 2 | 10 | 11 | 12 | 13 | 15 | 18 => {
-                        put(s.opts.get(&(6, opt)).copied().unwrap_or(0), 4)
-                    }
+                    1 | 2 | 10 | 11 | 12 | 13 | 15 | 18 => put(s.opts.get(&(6, opt)).copied().unwrap_or(0), 4),
                     3 => put(s.opts.get(&(6, 3)).copied().unwrap_or(7200), 4),
                     4 => {
                         if !s.connected {
@@ -3215,20 +2698,14 @@ fn getsockopt(c: &mut Ctx) -> u32 {
                     return Err(WSAEINVAL);
                 }
                 let stream = s.stream();
-                let dgram_only: &[u32] = if v6 {
-                    &[9, 10, 11, 19, 21, 24, 25, 38, 40, 47, 50, 51, 60, 70, 75]
-                } else {
-                    &[
-                        9, 10, 11, 19, 21, 22, 24, 25, 38, 40, 47, 50, 51, 60, 70, 75,
-                    ]
-                };
+                let dgram_only: &[u32] = if v6 { &[9, 10, 11, 19, 21, 24, 25, 38, 40, 47, 50, 51, 60, 70, 75] } else { &[9, 10, 11, 19, 21, 22, 24, 25, 38, 40, 47, 50, 51, 60, 70, 75] };
                 if stream && dgram_only.contains(&opt) {
                     return Err(WSAEINVAL);
                 }
                 match opt {
-                    2 => Err(WSAEINVAL),            // HDRINCL: raw sockets only
+                    2 => Err(WSAEINVAL),        // HDRINCL: raw sockets only
                     12 | 13 => Err(WSAENOPROTOOPT), // ADD/DROP_MEMBERSHIP: set only
-                    33 => Err(WSAEINVAL),           // GET_IFLIST
+                    33 => Err(WSAEINVAL),       // GET_IFLIST
                     72 | 73 if !(s.connected || s.peer.is_some()) => Err(WSAENOTCONN),
                     72 | 73 => put(65535, 4),
                     4 => put(s.opts.get(&(level, 4)).copied().unwrap_or(128), 4),
@@ -3240,10 +2717,7 @@ fn getsockopt(c: &mut Ctx) -> u32 {
                         w32(lenp, 0);
                         Ok(0)
                     }
-                    3 | 9 | 14 | 19 | 21 | 22 | 23 | 24 | 25 | 28 | 31 | 32 | 38 | 39 | 40 | 47
-                    | 50 | 51 | 60 | 70 | 71 | 75 | 76 => {
-                        put(s.opts.get(&(level, opt)).copied().unwrap_or(0), 4)
-                    }
+                    3 | 9 | 14 | 19 | 21 | 22 | 23 | 24 | 25 | 28 | 31 | 32 | 38 | 39 | 40 | 47 | 50 | 51 | 60 | 70 | 71 | 75 | 76 => put(s.opts.get(&(level, opt)).copied().unwrap_or(0), 4),
                     _ => Err(WSAENOPROTOOPT),
                 }
             }
@@ -3327,10 +2801,7 @@ fn setsockopt(c: &mut Ctx) -> u32 {
                 0x700b | 0x7010 => Ok(0), // SO_UPDATE_ACCEPT/CONNECT_CONTEXT
                 0x0001 | 0x0008 | 0x0010 | 0x0100 | 0x2002 | 0x3002 | 0x3005 | 0x3006 | 0x3007 => {
                     let v = get()?;
-                    s.opts.insert(
-                        (level, opt),
-                        if opt == 0x2002 { v } else { (v != 0) as u32 },
-                    );
+                    s.opts.insert((level, opt), if opt == 0x2002 { v } else { (v != 0) as u32 });
                     Ok(0)
                 }
                 _ => Err(WSAENOPROTOOPT),
@@ -3359,13 +2830,7 @@ fn setsockopt(c: &mut Ctx) -> u32 {
                 if v6 != (s.af == AF_INET6) {
                     return Err(WSAEINVAL);
                 }
-                let dgram_only: &[u32] = if v6 {
-                    &[9, 10, 11, 19, 21, 24, 25, 38, 40, 47, 50, 51, 60, 70, 75]
-                } else {
-                    &[
-                        9, 10, 11, 19, 21, 22, 24, 25, 38, 40, 47, 50, 51, 60, 70, 75,
-                    ]
-                };
+                let dgram_only: &[u32] = if v6 { &[9, 10, 11, 19, 21, 24, 25, 38, 40, 47, 50, 51, 60, 70, 75] } else { &[9, 10, 11, 19, 21, 22, 24, 25, 38, 40, 47, 50, 51, 60, 70, 75] };
                 if s.stream() && dgram_only.contains(&opt) {
                     return Err(WSAEINVAL);
                 }
@@ -3395,8 +2860,7 @@ fn setsockopt(c: &mut Ctx) -> u32 {
                         Ok(0)
                     }
                     1 => Ok(0),
-                    3 | 4 | 9 | 10 | 11 | 14 | 19 | 21 | 22 | 23 | 24 | 25 | 28 | 31 | 32 | 38
-                    | 39 | 40 | 47 | 50 | 51 | 60 | 70 | 75 | 76 => {
+                    3 | 4 | 9 | 10 | 11 | 14 | 19 | 21 | 22 | 23 | 24 | 25 | 28 | 31 | 32 | 38 | 39 | 40 | 47 | 50 | 51 | 60 | 70 | 75 | 76 => {
                         let v = get()?;
                         s.opts.insert((level, opt), v);
                         Ok(0)
@@ -3433,16 +2897,7 @@ fn put_accept_addrs(st: &State, acc: u32, buf: u32, data: u32, llen: u32, rlen: 
 
 /// AcceptEx(listen, accept, buf, dataLen, localLen, remoteLen, &received, ov)
 fn AcceptEx(c: &mut Ctx) -> u32 {
-    let (lh, ah, buf, data, llen, rlen, recvp, ov) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        c.a(7),
-    );
+    let (lh, ah, buf, data, llen, rlen, recvp, ov) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
     ov_start(ov);
     let tid = crate::cur().tid;
     let r = on(lh, |st, id, acts| {
@@ -3462,12 +2917,7 @@ fn AcceptEx(c: &mut Ctx) -> u32 {
         if llen < min || rlen < min {
             return Err(WSAEINVAL);
         }
-        let now = !st.socks[&id].queue.is_empty()
-            && st.socks[&id]
-                .pend
-                .iter()
-                .all(|p| !matches!(p.kind, PendKind::Accept { .. }))
-            && data == 0;
+        let now = !st.socks[&id].queue.is_empty() && st.socks[&id].pend.iter().all(|p| !matches!(p.kind, PendKind::Accept { .. })) && data == 0;
         if now {
             st.accept_into(id, ah, acts)?;
             put_accept_addrs(st, ah, buf, data, llen, rlen);
@@ -3476,19 +2926,7 @@ fn AcceptEx(c: &mut Ctx) -> u32 {
         let k = ps();
         wp(ov, STATUS_PENDING);
         wp(ov + k, 0);
-        st.socks.get_mut(&id).unwrap().pend.push(Pend {
-            kind: PendKind::Accept {
-                acc: ah,
-                buf,
-                data,
-                llen,
-                rlen,
-            },
-            ov,
-            routine: 0,
-            tid,
-            handle: lh,
-        });
+        st.socks.get_mut(&id).unwrap().pend.push(Pend { kind: PendKind::Accept { acc: ah, buf, data, llen, rlen }, ov, routine: 0, tid, handle: lh });
         st.touch();
         st.serve(id, acts);
         Ok(false)
@@ -3512,16 +2950,7 @@ fn AcceptEx(c: &mut Ctx) -> u32 {
 
 /// GetAcceptExSockaddrs(buf, dataLen, localLen, remoteLen, &local, &localSize, &remote, &remoteSize)
 fn GetAcceptExSockaddrs(c: &mut Ctx) -> u32 {
-    let (buf, data, llen, _rlen, lp, lsp, rpp, rsp) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        c.a(7),
-    );
+    let (buf, data, llen, _rlen, lp, lsp, rpp, rsp) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
     let l = buf + data;
     let r = l + llen;
     if lp != 0 {
@@ -3575,11 +3004,7 @@ fn ConnectEx(c: &mut Ctx) -> u32 {
     }
     match r {
         Ok(()) => {
-            let n = if sb != 0 && sl != 0 {
-                send_common(Some(c), h, &[(sb, sl)], 0, 0, 0).unwrap_or(0)
-            } else {
-                0
-            };
+            let n = if sb != 0 && sl != 0 { send_common(Some(c), h, &[(sb, sl)], 0, 0, 0).unwrap_or(0) } else { 0 };
             mem::put32(sentp, n);
             iocp::complete(h, ov, 0, n, true);
             1
@@ -3647,9 +3072,7 @@ fn TransmitFile(c: &mut Ctx) -> u32 {
             return 0;
         };
         if ov != 0 {
-            f.seek(std::io::SeekFrom::Start(
-                r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32,
-            ));
+            f.seek(std::io::SeekFrom::Start(r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32));
         }
         let want = if n == 0 { u32::MAX } else { n };
         let tmp = mem::heap_alloc(65536, false);
@@ -3700,18 +3123,7 @@ fn WSARecvMsg(c: &mut Ctx) -> u32 {
     let (name, namelenp) = (rp(m), m + k);
     let bufs = wsabufs(rp(m + 2 * k), r32(m + 3 * k));
     let flags_at = if k == 8 { m + 48 } else { m + 24 };
-    recv_ex(
-        c,
-        h,
-        &bufs,
-        gotp,
-        flags_at,
-        name,
-        if name != 0 { namelenp } else { 0 },
-        ov,
-        routine,
-        m,
-    )
+    recv_ex(c, h, &bufs, gotp, flags_at, name, if name != 0 { namelenp } else { 0 }, ov, routine, m)
 }
 
 /// WSASendMsg(s, &WSAMSG, flags, &sent, ov, routine)
@@ -3730,69 +3142,13 @@ fn WSASendMsg(c: &mut Ctx) -> u32 {
 type Ext = (&'static [u8], &'static str, crate::api::Handler, u32);
 /// The SIO_GET_EXTENSION_FUNCTION_POINTER functions: (GUID, name, handler, stdcall bytes)
 static EXTENSIONS: &[Ext] = &[
-    (
-        &[
-            0xf1, 0x7d, 0x36, 0xb5, 0xac, 0xcb, 0xcf, 0x11, 0x95, 0xca, 0x00, 0x80, 0x5f, 0x48,
-            0xa1, 0x92,
-        ],
-        "ws2_AcceptEx",
-        AcceptEx,
-        32,
-    ),
-    (
-        &[
-            0xb9, 0x07, 0xa2, 0x25, 0xf3, 0xdd, 0x60, 0x46, 0x8e, 0xe9, 0x76, 0xe5, 0x8c, 0x74,
-            0x06, 0x3e,
-        ],
-        "ws2_ConnectEx",
-        ConnectEx,
-        28,
-    ),
-    (
-        &[
-            0x11, 0x2e, 0xda, 0x7f, 0x30, 0x86, 0x6f, 0x43, 0xa0, 0x31, 0xf5, 0x36, 0xa6, 0xee,
-            0xc1, 0x57,
-        ],
-        "ws2_DisconnectEx",
-        DisconnectEx,
-        16,
-    ),
-    (
-        &[
-            0xf2, 0x7d, 0x36, 0xb5, 0xac, 0xcb, 0xcf, 0x11, 0x95, 0xca, 0x00, 0x80, 0x5f, 0x48,
-            0xa1, 0x92,
-        ],
-        "ws2_GetAcceptExSockaddrs",
-        GetAcceptExSockaddrs,
-        32,
-    ),
-    (
-        &[
-            0xf0, 0x7d, 0x36, 0xb5, 0xac, 0xcb, 0xcf, 0x11, 0x95, 0xca, 0x00, 0x80, 0x5f, 0x48,
-            0xa1, 0x92,
-        ],
-        "ws2_TransmitFile",
-        TransmitFile,
-        28,
-    ),
-    (
-        &[
-            0xc8, 0xd7, 0x89, 0xf6, 0x1f, 0x6f, 0x6b, 0x43, 0x8a, 0x53, 0xe5, 0x4f, 0xe3, 0x51,
-            0xc3, 0x22,
-        ],
-        "ws2_WSARecvMsg",
-        WSARecvMsg,
-        20,
-    ),
-    (
-        &[
-            0x12, 0xe7, 0x41, 0xa4, 0x4f, 0x75, 0xca, 0x43, 0x84, 0xa7, 0x0d, 0xee, 0x44, 0xcf,
-            0x60, 0x6d,
-        ],
-        "ws2_WSASendMsg",
-        WSASendMsg,
-        24,
-    ),
+    (&[0xf1, 0x7d, 0x36, 0xb5, 0xac, 0xcb, 0xcf, 0x11, 0x95, 0xca, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92], "ws2_AcceptEx", AcceptEx, 32),
+    (&[0xb9, 0x07, 0xa2, 0x25, 0xf3, 0xdd, 0x60, 0x46, 0x8e, 0xe9, 0x76, 0xe5, 0x8c, 0x74, 0x06, 0x3e], "ws2_ConnectEx", ConnectEx, 28),
+    (&[0x11, 0x2e, 0xda, 0x7f, 0x30, 0x86, 0x6f, 0x43, 0xa0, 0x31, 0xf5, 0x36, 0xa6, 0xee, 0xc1, 0x57], "ws2_DisconnectEx", DisconnectEx, 16),
+    (&[0xf2, 0x7d, 0x36, 0xb5, 0xac, 0xcb, 0xcf, 0x11, 0x95, 0xca, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92], "ws2_GetAcceptExSockaddrs", GetAcceptExSockaddrs, 32),
+    (&[0xf0, 0x7d, 0x36, 0xb5, 0xac, 0xcb, 0xcf, 0x11, 0x95, 0xca, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92], "ws2_TransmitFile", TransmitFile, 28),
+    (&[0xc8, 0xd7, 0x89, 0xf6, 0x1f, 0x6f, 0x6b, 0x43, 0x8a, 0x53, 0xe5, 0x4f, 0xe3, 0x51, 0xc3, 0x22], "ws2_WSARecvMsg", WSARecvMsg, 20),
+    (&[0x12, 0xe7, 0x41, 0xa4, 0x4f, 0x75, 0xca, 0x43, 0x84, 0xa7, 0x0d, 0xee, 0x44, 0xcf, 0x60, 0x6d], "ws2_WSASendMsg", WSASendMsg, 24),
 ];
 
 /// WSADuplicateSocketA/W(s, pid, &info): a protocol info naming this socket
@@ -3872,12 +3228,7 @@ pub fn init() {
     implement(d, "WSAPoll", WSAPoll);
     implement(d, "WSAEventSelect", WSAEventSelect);
     implement(d, "WSAEnumNetworkEvents", WSAEnumNetworkEvents);
-    implement(d, "WSACreateEvent", |_| {
-        obj::add(Obj::Event {
-            manual: true,
-            set: false,
-        })
-    });
+    implement(d, "WSACreateEvent", |_| obj::add(Obj::Event { manual: true, set: false }));
     implement(d, "WSACloseEvent", |c| obj::close(c.a(0)) as u32);
     implement(d, "WSASetEvent", |c| {
         crate::k32::set_event(c.a(0));
@@ -3928,16 +3279,7 @@ pub fn init() {
         }
         res(Ok(0))
     });
-    let _ = (
-        FD_OOB,
-        MSG_TRUNC,
-        WSAEDESTADDRREQ,
-        WSAEPROTOTYPE,
-        WSAEALREADY,
-        WSAENOBUFS,
-        WSAESOCKTNOSUPPORT,
-        WSAEINTR,
-    );
+    let _ = (FD_OOB, MSG_TRUNC, WSAEDESTADDRREQ, WSAEPROTOTYPE, WSAEALREADY, WSAENOBUFS, WSAESOCKTNOSUPPORT, WSAEINTR);
 }
 
 #[cfg(test)]

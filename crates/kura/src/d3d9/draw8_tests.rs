@@ -53,16 +53,10 @@ fn run(seed: u64) {
     model::with(|m| m.prims = Some(Vec::new()));
     let o = out();
     let args = [o];
-    assert_eq!(
-        unsafe { vnhost_d3d9_call(d3d8::CREATE, args.as_ptr(), &CALLS) },
-        0
-    );
+    assert_eq!(unsafe { vnhost_d3d9_call(d3d8::CREATE, args.as_ptr(), &CALLS) }, 0);
     let d3d = rd(o);
     let pp = unsafe { alloc(52) as u32 };
-    for (i, x) in [64, 64, 22, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, x) in [64, 64, 22, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
         unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
     }
     let o = out();
@@ -77,9 +71,7 @@ fn run(seed: u64) {
         let vb = rd(o);
         let p = out();
         assert_eq!(call(IF_VB + V8, 11, &[vb, 0, 0, p, 0]), 0);
-        let bytes: Vec<u8> = (0..VB / 4)
-            .flat_map(|_| (((r.next() as u32) & 0x3fff_ffff) | 0x3000_0000).to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = (0..VB / 4).flat_map(|_| (((r.next() as u32) & 0x3fff_ffff) | 0x3000_0000).to_le_bytes()).collect();
         put_bytes(rd(p), &bytes);
         assert_eq!(call(IF_VB + V8, 12, &[vb]), 0);
         vbs.push((vb, bytes));
@@ -99,10 +91,7 @@ fn run(seed: u64) {
             }
             let t = decl_tokens(&l.elems);
             let p = unsafe { alloc(4 * t.len() as u32) as u32 };
-            put_bytes(
-                p,
-                &t.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>(),
-            );
+            put_bytes(p, &t.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
             let o = out();
             assert_eq!(devc(75, &[p, 0, o, 0]), 0);
             let h = rd(o);
@@ -111,12 +100,7 @@ fn run(seed: u64) {
             unsafe { *(size as *mut u32) = 4 * t.len() as u32 };
             assert_eq!(devc(81, &[h, data, size]), 0);
             assert_eq!(rd(size), 4 * t.len() as u32);
-            assert_eq!(
-                (0..t.len())
-                    .map(|i| rd(data + 4 * i as u32))
-                    .collect::<Vec<_>>(),
-                t
-            );
+            assert_eq!((0..t.len()).map(|i| rd(data + 4 * i as u32)).collect::<Vec<_>>(), t);
             h
         })
         .collect();
@@ -135,13 +119,7 @@ fn run(seed: u64) {
         streams.dedup();
         let mut stride = [0u32; 2];
         for &s in &streams {
-            let need = l
-                .elems
-                .iter()
-                .filter(|e| e.0 == s)
-                .map(|e| e.1 + type_bytes(e.2))
-                .max()
-                .unwrap();
+            let need = l.elems.iter().filter(|e| e.0 == s).map(|e| e.1 + type_bytes(e.2)).max().unwrap();
             stride[s as usize] = need + 4 * r.below(3) as u32;
         }
         let prim = 1 + r.below(6) as u32;
@@ -155,32 +133,17 @@ fn run(seed: u64) {
         let (min, num) = {
             let lo = ix.iter().min().unwrap();
             let hi = ix.iter().max().unwrap();
-            if r.chance(60) {
-                (*lo, hi - lo + 1)
-            } else {
-                (r.below(6) as u32, 1 + r.below(4) as u32)
-            }
+            if r.chance(60) { (*lo, hi - lo + 1) } else { (r.below(6) as u32, 1 + r.below(4) as u32) }
         };
         if kind == 3 {
             base = 0;
         }
         let first_vertex = r.below(10) as u32;
         let verts: Vec<i64> = match kind {
-            0 | 2 => (0..count as i64)
-                .map(|k| first_vertex as i64 * (kind == 0) as i64 + k)
-                .collect(),
+            0 | 2 => (0..count as i64).map(|k| first_vertex as i64 * (kind == 0) as i64 + k).collect(),
             _ => ix.iter().map(|&i| base + i as i64).collect(),
         };
-        let ibytes: Vec<u8> = ix
-            .iter()
-            .flat_map(|&v| {
-                if isz == 4 {
-                    v.to_le_bytes().to_vec()
-                } else {
-                    (v as u16).to_le_bytes().to_vec()
-                }
-            })
-            .collect();
+        let ibytes: Vec<u8> = ix.iter().flat_map(|&v| if isz == 4 { v.to_le_bytes().to_vec() } else { (v as u16).to_le_bytes().to_vec() }).collect();
         let res = match kind {
             0 | 1 => {
                 for &s in &streams {
@@ -212,19 +175,7 @@ fn run(seed: u64) {
                     devc(72, &[prim, n, up, stride[0]])
                 } else {
                     put_bytes(upi, &ibytes);
-                    devc(
-                        73,
-                        &[
-                            prim,
-                            min,
-                            num,
-                            n,
-                            upi,
-                            if isz == 4 { 102 } else { 101 },
-                            up,
-                            stride[0],
-                        ],
-                    )
+                    devc(73, &[prim, min, num, n, upi, if isz == 4 { 102 } else { 101 }, up, stride[0]])
                 }
             }
         };
@@ -237,27 +188,15 @@ fn run(seed: u64) {
                 .iter()
                 .map(|&(s, off, t, _, _)| {
                     let at = (v * stride[s as usize] as i64 + off as i64) as usize;
-                    vbs[s as usize]
-                        .1
-                        .get(at..at + type_bytes(t) as usize)
-                        .map(|b| b.to_vec())
-                        .unwrap_or_default()
+                    vbs[s as usize].1.get(at..at + type_bytes(t) as usize).map(|b| b.to_vec()).unwrap_or_default()
                 })
                 .collect();
             a.sort();
             a
         };
-        let want: Vec<Vec<Vec<Vec<u8>>>> = d3d_prims(prim, &verts, n)
-            .into_iter()
-            .map(|p| rotated(&p.iter().map(|&v| vertex(v)).collect::<Vec<_>>()))
-            .collect();
+        let want: Vec<Vec<Vec<Vec<u8>>>> = d3d_prims(prim, &verts, n).into_iter().map(|p| rotated(&p.iter().map(|&v| vertex(v)).collect::<Vec<_>>())).collect();
         let got = model::with(|m| m.prims.as_mut().unwrap().drain(..).collect::<Vec<_>>());
-        assert_eq!(
-            got.len(),
-            1,
-            "seed {seed} step {step}: {} draws on the page for one",
-            got.len()
-        );
+        assert_eq!(got.len(), 1, "seed {seed} step {step}: {} draws on the page for one", got.len());
         let got: Vec<Vec<Vec<Vec<u8>>>> = got[0]
             .iter()
             .map(|p| {
@@ -272,17 +211,8 @@ fn run(seed: u64) {
                 )
             })
             .collect();
-        let what = [
-            "DrawPrimitive",
-            "DrawIndexedPrimitive",
-            "DrawPrimitiveUP",
-            "DrawIndexedPrimitiveUP",
-        ][kind];
-        assert_eq!(
-            got.len(),
-            want.len(),
-            "seed {seed} step {step}: {what} prim {prim} x{n} layout {li} base {base}: primitives"
-        );
+        let what = ["DrawPrimitive", "DrawIndexedPrimitive", "DrawPrimitiveUP", "DrawIndexedPrimitiveUP"][kind];
+        assert_eq!(got.len(), want.len(), "seed {seed} step {step}: {what} prim {prim} x{n} layout {li} base {base}: primitives");
         for (k, (g, w)) in got.iter().zip(&want).enumerate() {
             assert!(g == w, "seed {seed} step {step}: {what} prim {prim} x{n} layout {li} base {base} min {min} num {num} start {start} isz {isz} index {ix:?}: primitive {k} differs\n got  {g:?}\n want {w:?}");
         }
@@ -292,11 +222,7 @@ fn run(seed: u64) {
     devc(35, &[]);
     gpu::set_pump(None);
     let errors = model::with(|m| std::mem::take(&mut m.errors));
-    assert!(
-        errors.is_empty(),
-        "seed {seed}: WebGPU errors {:?}",
-        &errors[..errors.len().min(10)]
-    );
+    assert!(errors.is_empty(), "seed {seed}: WebGPU errors {:?}", &errors[..errors.len().min(10)]);
     model::with(|m| m.prims = None);
 }
 

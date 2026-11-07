@@ -18,6 +18,7 @@ macro_rules! env_on {
     }};
 }
 
+
 /// `IPPAI_NOPACE` (tests/bench): frames as fast as the guest makes them. The first time it skips a
 /// wait it says so, so the benchmark harness knows this build honors it.
 pub fn nopace() -> bool {
@@ -31,18 +32,18 @@ pub fn nopace() -> bool {
 
 pub mod adec;
 pub mod audio;
-pub mod cpu;
-pub mod crashlog;
-pub mod d3d11;
-pub mod d3d9;
-pub mod display;
-pub mod fs;
-pub mod gl;
-pub mod jit;
-pub mod render;
-pub mod snap;
-pub mod usage;
-pub mod vfs;
 pub mod video;
 pub mod vnv;
+pub mod d3d9;
+pub mod d3d11;
+pub mod gl;
+pub mod cpu;
+pub mod crashlog;
+pub mod jit;
+pub mod display;
+pub mod render;
+pub mod vfs;
+pub mod fs;
 pub mod wrap;
+pub mod usage;
+pub mod snap;

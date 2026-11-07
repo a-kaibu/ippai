@@ -14,14 +14,13 @@ use std::collections::BTreeSet;
 
 /// (render states)
 const PIXEL_RS: &[u32] = &[
-    7, 8, 9, 14, 15, 16, 19, 20, 23, 24, 25, 26, 27, 36, 37, 38, 40, 52, 53, 54, 55, 56, 57, 58,
-    59, 60, 128, 129, 130, 131, 132, 133, 134, 135, 168, 171, 174, 175, 176, 185, 186, 187, 188,
-    189, 190, 191, 192, 193, 194, 195, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209,
+    7, 8, 9, 14, 15, 16, 19, 20, 23, 24, 25, 26, 27, 36, 37, 38, 40, 52, 53, 54, 55, 56, 57, 58, 59, 60, 128, 129, 130,
+    131, 132, 133, 134, 135, 168, 171, 174, 175, 176, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 198,
+    199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209,
 ];
 const VERTEX_RS: &[u32] = &[
-    9, 22, 28, 29, 34, 35, 36, 37, 38, 48, 136, 137, 139, 140, 141, 142, 143, 145, 146, 147, 148,
-    151, 152, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 166, 167, 170, 172, 173, 178, 179,
-    180, 181, 182, 183, 184,
+    9, 22, 28, 29, 34, 35, 36, 37, 38, 48, 136, 137, 139, 140, 141, 142, 143, 145, 146, 147, 148, 151, 152, 154,
+    155, 156, 157, 158, 159, 160, 161, 162, 163, 166, 167, 170, 172, 173, 178, 179, 180, 181, 182, 183, 184,
 ];
 /// (texture stage states)
 const PIXEL_TSS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 22, 23, 24, 26, 27, 28];
@@ -75,28 +74,17 @@ fn set_bit(b: &mut Vec<u64>, i: usize) {
 
 impl Mask {
     pub fn all(st: &State) -> Mask {
-        let mut m = Mask {
-            textures: !0,
-            streams: !0,
-            freq: !0,
-            npatch: true,
-            ..Default::default()
-        };
+        let mut m = Mask { textures: !0, streams: !0, freq: !0, npatch: true, ..Default::default() };
         for &r in PIXEL_RS.iter().chain(VERTEX_RS) {
             m.rs[r as usize / 64] |= 1 << (r % 64);
         }
         for t in m.tss.iter_mut() {
-            *t = PIXEL_TSS
-                .iter()
-                .chain(VERTEX_TSS)
-                .fold(0, |a, &s| a | 1 << s);
+            *t = PIXEL_TSS.iter().chain(VERTEX_TSS).fold(0, |a, &s| a | 1 << s);
         }
         for s in m.ss.iter_mut() {
             *s = ALL_SS.iter().fold(0, |a, &x| a | 1 << x);
         }
-        (
-            m.indices, m.decl, m.vs, m.ps, m.viewport, m.scissor, m.material,
-        ) = (true, true, true, true, true, true, true);
+        (m.indices, m.decl, m.vs, m.ps, m.viewport, m.scissor, m.material) = (true, true, true, true, true, true, true);
         m.vsf = vec![!0; st.vsf.len().div_ceil(64)];
         m.psf = vec![!0; st.psf.len().div_ceil(64)];
         (m.vsi, m.psi, m.vsb, m.psb) = (!0, !0, !0, !0);
@@ -171,14 +159,7 @@ impl Mask {
             107 => self.ps = true,
             94 | 109 => {
                 for r in range(a(1), a(3)).take(256) {
-                    set_bit(
-                        if m == 94 {
-                            &mut self.vsf
-                        } else {
-                            &mut self.psf
-                        },
-                        r as usize,
-                    );
+                    set_bit(if m == 94 { &mut self.vsf } else { &mut self.psf }, r as usize);
                 }
             }
             96 | 111 | 98 | 113 => {
@@ -201,34 +182,7 @@ impl Mask {
 
 /// Whether device method `m` is a Set* call a recording takes.
 pub fn records(m: u32) -> bool {
-    matches!(
-        m,
-        44 | 46
-            | 47
-            | 49
-            | 51
-            | 53
-            | 55
-            | 57
-            | 65
-            | 67
-            | 69
-            | 75
-            | 79
-            | 87
-            | 89
-            | 92
-            | 94
-            | 96
-            | 98
-            | 100
-            | 102
-            | 104
-            | 107
-            | 109
-            | 111
-            | 113
-    )
+    matches!(m, 44 | 46 | 47 | 49 | 51 | 53 | 55 | 57 | 65 | 67 | 69 | 75 | 79 | 87 | 89 | 92 | 94 | 96 | 98 | 100 | 102 | 104 | 107 | 109 | 111 | 113)
 }
 
 /// `dst`'s masked states = `src`'s (the bindings: the caller counts them).
@@ -269,10 +223,7 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
         if m.freq >> s & 1 != 0 {
             dst.freq[s] = src.freq[s];
         }
-        for (mask, d, sv) in [
-            (m.vsi, &mut dst.vsi, &src.vsi),
-            (m.psi, &mut dst.psi, &src.psi),
-        ] {
+        for (mask, d, sv) in [(m.vsi, &mut dst.vsi, &src.vsi), (m.psi, &mut dst.psi, &src.psi)] {
             if mask >> s & 1 != 0 {
                 d[s] = sv[s];
             }
@@ -292,10 +243,7 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
     if m.ps {
         dst.ps = src.ps;
     }
-    for (bits, d, s) in [
-        (&m.vsf, &mut dst.vsf, &src.vsf),
-        (&m.psf, &mut dst.psf, &src.psf),
-    ] {
+    for (bits, d, s) in [(&m.vsf, &mut dst.vsf, &src.vsf), (&m.psf, &mut dst.psf, &src.psf)] {
         if bits.len() * 64 >= s.len() && bits.iter().all(|&w| w == !0) && d.len() == s.len() {
             d.copy_from_slice(s);
             continue;

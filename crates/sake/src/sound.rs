@@ -39,33 +39,12 @@ impl Fmt {
         let tag = r16(p);
         let bits = r16(p + 14) as u32;
         let float = tag == 3 || (tag == 0xfffe && r32(p + 24) == 3);
-        let law = if matches!(tag, 6 | 7) {
-            tag as u8
-        } else if tag == 0xfffe && matches!(r32(p + 24), 6 | 7) {
-            r32(p + 24) as u8
-        } else {
-            0
-        };
+        let law = if matches!(tag, 6 | 7) { tag as u8 } else if tag == 0xfffe && matches!(r32(p + 24), 6 | 7) { r32(p + 24) as u8 } else { 0 };
         // (the real channel count: the stride; the mixer plays the first two)
-        Fmt {
-            rate: r32(p + 4),
-            channels: (r16(p + 2) as u32).max(1),
-            bits,
-            float,
-            law,
-        }
+        Fmt { rate: r32(p + 4), channels: (r16(p + 2) as u32).max(1), bits, float, law }
     }
     fn write(&self, p: u32) {
-        w16(
-            p,
-            if self.float {
-                3
-            } else if self.law != 0 {
-                self.law as u16
-            } else {
-                1
-            },
-        );
+        w16(p, if self.float { 3 } else if self.law != 0 { self.law as u16 } else { 1 });
         w16(p + 2, self.channels as u16);
         w32(p + 4, self.rate);
         w32(p + 8, self.rate * self.block());
@@ -105,25 +84,13 @@ static DEV: Mutex<Option<Dev>> = Mutex::new(None);
 
 fn with<R>(f: impl FnOnce(&mut Dev) -> R) -> R {
     let mut g = DEV.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| Dev {
-        bufs: HashMap::default(),
-        waves: HashMap::default(),
-        stream: -1,
-    }))
+    f(g.get_or_insert_with(|| Dev { bufs: HashMap::default(), waves: HashMap::default(), stream: -1 }))
 }
 
 fn gains(volume: i32, pan: i32) -> (f32, f32) {
     let v = 10f32.powf(volume.clamp(-10000, 0) as f32 / 2000.0);
-    let l = if pan > 0 {
-        10f32.powf(-pan.min(10000) as f32 / 2000.0)
-    } else {
-        1.0
-    };
-    let r = if pan < 0 {
-        10f32.powf(pan.max(-10000) as f32 / 2000.0)
-    } else {
-        1.0
-    };
+    let l = if pan > 0 { 10f32.powf(-pan.min(10000) as f32 / 2000.0) } else { 1.0 };
+    let r = if pan < 0 { 10f32.powf(pan.max(-10000) as f32 / 2000.0) } else { 1.0 };
     let v = if volume <= -10000 { 0.0 } else { v };
     (v * l, v * r)
 }
@@ -148,11 +115,7 @@ pub(crate) fn sample_at(data: u32, f: &Fmt, frame: usize) -> (f32, f32) {
         }
     };
     let l = one(at);
-    let r = if f.channels >= 2 {
-        one(at + f.bits / 8)
-    } else {
-        l
-    };
+    let r = if f.channels >= 2 { one(at + f.bits / 8) } else { l };
     (l, r)
 }
 
@@ -161,11 +124,7 @@ pub(crate) fn g711(code: u8, alaw: bool) -> i16 {
     if alaw {
         let v = code ^ 0x55;
         let (seg, mant) = ((v >> 4) & 7, (v & 15) as i32);
-        let mag = if seg == 0 {
-            (mant << 4) + 8
-        } else {
-            ((mant << 4) + 0x108) << (seg - 1)
-        };
+        let mag = if seg == 0 { (mant << 4) + 8 } else { ((mant << 4) + 0x108) << (seg - 1) };
         (if v & 0x80 != 0 { mag } else { -mag }) as i16
     } else {
         let v = !code;
@@ -180,16 +139,7 @@ pub(crate) fn g711(code: u8, alaw: bool) -> i16 {
 /// Non-extensible formats are PCM, float or G.711 (through the mapper only) of one or two
 /// channels; extensible ones need cbSize 22, nAvgBytesPerSec = nBlockAlign * rate and the
 /// valid bits to fit.
-pub(crate) fn wave_format_check(
-    tag: u16,
-    ch: u16,
-    rate: u32,
-    avg: u32,
-    align: u16,
-    bits: u16,
-    ext: Option<(u16, u16, [u8; 16])>,
-    direct: bool,
-) -> u32 {
+pub(crate) fn wave_format_check(tag: u16, ch: u16, rate: u32, avg: u32, align: u16, bits: u16, ext: Option<(u16, u16, [u8; 16])>, direct: bool) -> u32 {
     const BAD: u32 = 32;
     let soft = if direct { 11 } else { BAD };
     let (sub, valid) = match ext {
@@ -221,29 +171,11 @@ pub(crate) fn wave_format_check(
         1 if !ok_bits || (bits == 32 && (valid == 0 || valid > 32)) => BAD,
         1 if !matches!(bits, 8 | 16 | 24 | 32) => soft,
         1 if bits == 32 && valid == 24 => 0,
-        1 => {
-            if valid == bits {
-                0
-            } else {
-                BAD
-            }
-        }
+        1 => if valid == bits { 0 } else { BAD },
         3 if !ok_bits || valid == 0 || valid > bits => BAD,
         3 if !matches!(bits, 32 | 64) => soft,
-        3 => {
-            if bits == 32 && valid == 32 {
-                0
-            } else {
-                BAD
-            }
-        }
-        6 | 7 => {
-            if !direct && ext.is_none() && bits == 8 {
-                0
-            } else {
-                BAD
-            }
-        }
+        3 => if bits == 32 && valid == 32 { 0 } else { BAD },
+        6 | 7 => if !direct && ext.is_none() && bits == 8 { 0 } else { BAD },
         _ => BAD,
     }
 }
@@ -258,16 +190,7 @@ fn read_format_check(p: u32, direct: bool) -> u32 {
         }
         (cb, r16(p + 18), g)
     });
-    wave_format_check(
-        tag,
-        r16(p + 2),
-        r32(p + 4),
-        r32(p + 8),
-        r16(p + 12),
-        r16(p + 14),
-        ext,
-        direct,
-    )
+    wave_format_check(tag, r16(p + 2), r32(p + 4), r32(p + 8), r16(p + 12), r16(p + 14), ext, direct)
 }
 
 /// Mixes STEP frames of every playing buffer into `out`; fires notifications.
@@ -293,13 +216,7 @@ fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
             let i = b.pos as usize;
             let t = (b.pos - i as f64) as f32;
             let (l0, r0) = sample(b, i);
-            let next = if i + 1 < frames {
-                i + 1
-            } else if b.looping {
-                0
-            } else {
-                i
-            };
+            let next = if i + 1 < frames { i + 1 } else if b.looping { 0 } else { i };
             let (l1, r1) = sample(b, next);
             o[0] += (l0 + (l1 - l0) * t) * gl;
             o[1] += (r0 + (r1 - r0) * t) * gr;
@@ -393,10 +310,7 @@ fn mix_waves(d: &mut Dev, out: &mut [f32]) -> bool {
         }
         let block = w.fmt.block().max(1);
         let step = w.fmt.rate as f64 / RATE as f64;
-        let (gl, gr) = (
-            (w.volume & 0xffff) as f32 / 65535.0,
-            (w.volume >> 16) as f32 / 65535.0,
-        );
+        let (gl, gr) = ((w.volume & 0xffff) as f32 / 65535.0, (w.volume >> 16) as f32 / 65535.0);
         for o in out.chunks_exact_mut(2) {
             let Some(&h) = w.queue.front() else { break };
             let frames = (hlen(h) / block) as usize;
@@ -460,11 +374,7 @@ fn wave_thread(c: &mut Ctx) -> u32 {
             break;
         }
         if done.is_empty() {
-            drop(
-                WAVE_CV
-                    .wait_timeout(WAVE_LOCK.lock().unwrap(), Duration::from_millis(20))
-                    .unwrap(),
-            );
+            drop(WAVE_CV.wait_timeout(WAVE_LOCK.lock().unwrap(), Duration::from_millis(20)).unwrap());
             crate::snap::point();
         }
     }
@@ -516,9 +426,7 @@ fn wave_caps(c: &mut Ctx, wide: bool) -> u32 {
 }
 /// waveOutGetID(handle, &id)
 fn waveOutGetID(c: &mut Ctx) -> u32 {
-    let Some(dev) = with(|d| d.waves.get(&c.a(0)).map(|w| w.device)) else {
-        return 5;
-    };
+    let Some(dev) = with(|d| d.waves.get(&c.a(0)).map(|w| w.device)) else { return 5 };
     if c.a(1) == 0 {
         return 11;
     }
@@ -529,11 +437,7 @@ fn waveOutGetID(c: &mut Ctx) -> u32 {
 fn waveOutMessage(c: &mut Ctx) -> u32 {
     let (msg, p1, p2) = (c.a(1), c.a(2), c.a(3));
     // the device interface path (DRV_QUERYDEVICEINTERFACE*)
-    let path: Vec<u16> =
-        r"\\?\SWD#MMDEVAPI#{0.0.0.00000000}.{sake}#{e6327cad-dcec-4949-ae8a-991e976a79d2}"
-            .encode_utf16()
-            .chain([0])
-            .collect();
+    let path: Vec<u16> = r"\\?\SWD#MMDEVAPI#{0.0.0.00000000}.{sake}#{e6327cad-dcec-4949-ae8a-991e976a79d2}".encode_utf16().chain([0]).collect();
     match msg {
         // DRVM_MAPPER_PREFERRED_GET, DRVM_MAPPER_CONSOLEVOICECOM_GET: device 0, no flags
         0x2015 | 0x2017 => {
@@ -625,21 +529,7 @@ fn waveOutOpen(c: &mut Ctx) -> u32 {
     let hwo = NEXT_WAVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let cbk = (flags & 0x70000, cb, inst);
     with(|d| {
-        d.waves.insert(
-            hwo,
-            Wave {
-                fmt,
-                queue: Default::default(),
-                pos: 0.0,
-                done: Vec::new(),
-                paused: false,
-                closing: false,
-                played: 0,
-                cb: cbk,
-                volume: 0xffff_ffff,
-                device,
-            },
-        )
+        d.waves.insert(hwo, Wave { fmt, queue: Default::default(), pos: 0.0, done: Vec::new(), paused: false, closing: false, played: 0, cb: cbk, volume: 0xffff_ffff, device })
     });
     put32(ph, hwo);
     static ENTRY: OnceLock<u32> = OnceLock::new();
@@ -650,14 +540,10 @@ fn waveOutOpen(c: &mut Ctx) -> u32 {
 }
 fn waveOutClose(c: &mut Ctx) -> u32 {
     let hwo = c.a(0);
-    let Some(cb) = with(|d| {
-        d.waves.get_mut(&hwo).map(|w| {
-            w.closing = true;
-            w.cb
-        })
-    }) else {
-        return 5;
-    };
+    let Some(cb) = with(|d| d.waves.get_mut(&hwo).map(|w| {
+        w.closing = true;
+        w.cb
+    })) else { return 5 };
     WAVE_CV.notify_all();
     wave_notify(c, hwo, cb, WOM_CLOSE, 0);
     // (the device thread drops it on its next look)
@@ -666,11 +552,7 @@ fn waveOutClose(c: &mut Ctx) -> u32 {
 /// The flags waveOutPrepareHeader leaves: a prepared header is left alone, another one becomes
 /// prepared and neither done nor queued.
 pub(crate) fn prepared_flags(f: u32) -> u32 {
-    if f & WHDR_PREPARED != 0 {
-        f
-    } else {
-        (f | WHDR_PREPARED) & !(WHDR_DONE | WHDR_INQUEUE)
-    }
+    if f & WHDR_PREPARED != 0 { f } else { (f | WHDR_PREPARED) & !(WHDR_DONE | WHDR_INQUEUE) }
 }
 /// waveOutUnprepareHeader: Err(WAVERR_STILLPLAYING) for a queued prepared header; an
 /// unprepared one is left alone.
@@ -751,13 +633,7 @@ fn waveOutGetPosition(c: &mut Ctx) -> u32 {
     if t == 0 || size < 12 {
         return 1; // MMSYSERR_ERROR (an MMTIME is 12 bytes)
     }
-    let Some((bytes, fmt)) = with(|d| {
-        d.waves
-            .get(&hwo)
-            .map(|w| (w.played + (w.pos as u64) * w.fmt.block() as u64, w.fmt))
-    }) else {
-        return 5;
-    };
+    let Some((bytes, fmt)) = with(|d| d.waves.get(&hwo).map(|w| (w.played + (w.pos as u64) * w.fmt.block() as u64, w.fmt))) else { return 5 };
     let frames = bytes / fmt.block().max(1) as u64;
     match r32(t) {
         2 => w32(t + 4, frames as u32),
@@ -814,7 +690,7 @@ fn start_mixer() {
 }
 
 fn spawn_mixer(id: i32) {
-    std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("dsound mixer".into())
             .spawn(move || {
                 kura::snap::register("dsound mixer", false, 0);
@@ -924,17 +800,7 @@ fn buf_vtbl() -> u32 {
 
 fn notify_vtbl() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
-    *V.get_or_init(|| {
-        vtable(
-            "IDirectSoundNotify",
-            &[
-                (N_QueryInterface, 12),
-                (N_AddRef, 4),
-                (N_Release, 4),
-                (N_SetNotificationPositions, 12),
-            ],
-        )
-    })
+    *V.get_or_init(|| vtable("IDirectSoundNotify", &[(N_QueryInterface, 12), (N_AddRef, 4), (N_Release, 4), (N_SetNotificationPositions, 12)]))
 }
 
 fn new_object(vtbl: u32, extra: u32) -> u32 {
@@ -949,11 +815,7 @@ static DS_REFS: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 fn create_device() -> u32 {
     start_mixer();
     let o = new_object(ds_vtbl(), 0);
-    DS_REFS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::default)
-        .insert(o, 1);
+    DS_REFS.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, 1);
     o
 }
 
@@ -1030,19 +892,13 @@ fn DS_QueryInterface(c: &mut Ctx) -> u32 {
 }
 fn DS_AddRef(c: &mut Ctx) -> u32 {
     let mut g = DS_REFS.lock().unwrap();
-    let r = g
-        .get_or_insert_with(HashMap::default)
-        .entry(c.a(0))
-        .or_insert(1);
+    let r = g.get_or_insert_with(HashMap::default).entry(c.a(0)).or_insert(1);
     *r += 1;
     *r
 }
 fn DS_Release(c: &mut Ctx) -> u32 {
     let mut g = DS_REFS.lock().unwrap();
-    let r = g
-        .get_or_insert_with(HashMap::default)
-        .entry(c.a(0))
-        .or_insert(1);
+    let r = g.get_or_insert_with(HashMap::default).entry(c.a(0)).or_insert(1);
     *r = r.saturating_sub(1);
     *r
 }
@@ -1055,23 +911,9 @@ fn DS_CreateSoundBuffer(c: &mut Ctx) -> u32 {
     let primary = flags & 1 != 0;
     let bytes = r32(desc + 8);
     let wfx = r32(desc + 16);
-    let fmt = if wfx != 0 {
-        Fmt::read(wfx)
-    } else {
-        Fmt {
-            rate: 22050,
-            channels: 2,
-            bits: 16,
-            float: false,
-            law: 0,
-        }
-    };
+    let fmt = if wfx != 0 { Fmt::read(wfx) } else { Fmt { rate: 22050, channels: 2, bits: 16, float: false, law: 0 } };
     let size = if primary { 0 } else { bytes };
-    let data = if size > 0 {
-        mem::heap_alloc(size, true)
-    } else {
-        0
-    };
+    let data = if size > 0 { mem::heap_alloc(size, true) } else { 0 };
     let o = new_object(buf_vtbl(), 0);
     let gain = gains(0, 0);
     with(|d| {
@@ -1116,9 +958,7 @@ fn DS_DuplicateSoundBuffer(c: &mut Ctx) -> u32 {
     let (src, out) = (c.a(1), c.a(2));
     let o = new_object(buf_vtbl(), 0);
     let ok = with(|d| {
-        let Some(s) = d.bufs.get(&src) else {
-            return false;
-        };
+        let Some(s) = d.bufs.get(&src) else { return false };
         let b = Buf {
             data: s.data,
             size: s.size,
@@ -1203,8 +1043,7 @@ fn B_QueryInterface(c: &mut Ctx) -> u32 {
 fn listener3d_vtbl() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
     *V.get_or_init(|| {
-        let mut m: Vec<(Handler, u32)> =
-            vec![(N_QueryInterface, 12), (N_AddRef, 4), (N_Release, 4)];
+        let mut m: Vec<(Handler, u32)> = vec![(N_QueryInterface, 12), (N_AddRef, 4), (N_Release, 4)];
         // Get{AllParameters,DistanceFactor,DopplerFactor,Orientation,Position,RolloffFactor,Velocity},
         // Set{AllParameters,DistanceFactor,DopplerFactor,Orientation,Position,RolloffFactor,Velocity},
         // CommitDeferredSettings
@@ -1218,13 +1057,10 @@ fn listener3d_vtbl() -> u32 {
 fn buffer3d_vtbl() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
     *V.get_or_init(|| {
-        let mut m: Vec<(Handler, u32)> =
-            vec![(N_QueryInterface, 12), (N_AddRef, 4), (N_Release, 4)];
+        let mut m: Vec<(Handler, u32)> = vec![(N_QueryInterface, 12), (N_AddRef, 4), (N_Release, 4)];
         // Get{AllParameters,ConeAngles,ConeOrientation,ConeOutsideVolume,MaxDistance,MinDistance,
         // Mode,Position,Velocity}, Set{the same}
-        for b in [
-            8, 12, 8, 8, 8, 8, 8, 8, 8, 12, 16, 20, 12, 12, 12, 12, 20, 20,
-        ] {
+        for b in [8, 12, 8, 8, 8, 8, 8, 8, 8, 12, 16, 20, 12, 12, 12, 12, 20, 20] {
             m.push((ok3d, b));
         }
         vtable("IDirectSound3DBuffer", &m)
@@ -1244,9 +1080,7 @@ fn B_AddRef(c: &mut Ctx) -> u32 {
 fn B_Release(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let (left, data) = with(|d| {
-        let Some(b) = d.bufs.get_mut(&this) else {
-            return (0, None);
-        };
+        let Some(b) = d.bufs.get_mut(&this) else { return (0, None) };
         b.refs = b.refs.saturating_sub(1);
         if b.refs > 0 {
             return (b.refs, None);
@@ -1306,14 +1140,7 @@ fn B_GetFrequency(c: &mut Ctx) -> u32 {
     0
 }
 fn B_GetStatus(c: &mut Ctx) -> u32 {
-    let s = with_buf(c.a(0), |b| {
-        if b.playing {
-            1 | if b.looping { 4 } else { 0 }
-        } else {
-            0
-        }
-    })
-    .unwrap_or(0);
+    let s = with_buf(c.a(0), |b| if b.playing { 1 | if b.looping { 4 } else { 0 } } else { 0 }).unwrap_or(0);
     put32(c.a(1), s);
     0
 }
@@ -1321,16 +1148,7 @@ fn B_Initialize(_: &mut Ctx) -> u32 {
     0x8878_0082
 }
 fn B_Lock(c: &mut Ctx) -> u32 {
-    let (this, off, bytes, p1, n1, p2, n2, flags) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        c.a(7),
-    );
+    let (this, off, bytes, p1, n1, p2, n2, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
     let r = with_buf(this, |b| {
         if b.size == 0 {
             return None;
@@ -1340,11 +1158,7 @@ fn B_Lock(c: &mut Ctx) -> u32 {
         if flags & 1 != 0 {
             off = (b.pos as u32 * block + (b.freq / 100) * block) % b.size;
         }
-        let bytes = if flags & 2 != 0 {
-            b.size
-        } else {
-            bytes.min(b.size)
-        };
+        let bytes = if flags & 2 != 0 { b.size } else { bytes.min(b.size) };
         let off = off % b.size;
         let first = bytes.min(b.size - off);
         Some((b.data + off, first, b.data, bytes - first))
@@ -1403,13 +1217,7 @@ fn B_SetPan(c: &mut Ctx) -> u32 {
 }
 fn B_SetFrequency(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), c.a(1));
-    with_buf(this, |b| {
-        b.freq = if v == 0 {
-            b.fmt.rate
-        } else {
-            v.clamp(100, 200_000)
-        }
-    });
+    with_buf(this, |b| b.freq = if v == 0 { b.fmt.rate } else { v.clamp(100, 200_000) });
     0
 }
 fn B_Stop(c: &mut Ctx) -> u32 {
@@ -1417,11 +1225,7 @@ fn B_Stop(c: &mut Ctx) -> u32 {
         let was = b.playing;
         b.playing = false;
         if was {
-            b.notify
-                .iter()
-                .filter(|n| n.0 == 0xffff_ffff)
-                .map(|n| n.1)
-                .collect()
+            b.notify.iter().filter(|n| n.0 == 0xffff_ffff).map(|n| n.1).collect()
         } else {
             Vec::new()
         }
@@ -1468,9 +1272,7 @@ fn N_Release(_: &mut Ctx) -> u32 {
 fn N_SetNotificationPositions(c: &mut Ctx) -> u32 {
     let (this, n, p) = (c.a(0), c.a(1), c.a(2));
     let buf = r32(this + 4);
-    let list: Vec<(u32, u32)> = (0..n)
-        .map(|i| (r32(p + 8 * i), r32(p + 8 * i + 4)))
-        .collect();
+    let list: Vec<(u32, u32)> = (0..n).map(|i| (r32(p + 8 * i), r32(p + 8 * i + 4))).collect();
     with_buf(buf, |b| b.notify = list);
     0
 }
@@ -1509,20 +1311,13 @@ fn wave_chunks(b: &[u8]) -> Option<(usize, usize, usize)> {
 /// A RIFF WAVE image with MS or IMA ADPCM data as 16-bit PCM (PlaySound goes through ACM on
 /// Windows); others as they are.
 pub(crate) fn adpcm_to_pcm(image: Vec<u8>) -> Vec<u8> {
-    let Some((fmt, data, size)) = wave_chunks(&image) else {
-        return image;
-    };
+    let Some((fmt, data, size)) = wave_chunks(&image) else { return image };
     let f = &image[fmt..];
     if f.len() < 20 {
         return image;
     }
     let u16_at = |o: usize| u16::from_le_bytes([f[o], f[o + 1]]) as usize;
-    let (tag, ch, rate, align) = (
-        u16_at(0),
-        u16_at(2).max(1),
-        u32::from_le_bytes(f[4..8].try_into().unwrap()),
-        u16_at(12),
-    );
+    let (tag, ch, rate, align) = (u16_at(0), u16_at(2).max(1), u32::from_le_bytes(f[4..8].try_into().unwrap()), u16_at(12));
     if !matches!(tag, 2 | 0x11) || align == 0 {
         return image;
     }
@@ -1559,25 +1354,15 @@ pub(crate) fn adpcm_to_pcm(image: Vec<u8>) -> Vec<u8> {
 /// ".wav"; a name ending in a dot is not found).
 fn sound_image(name: u32, module: u32, flags: u32, wide: bool) -> Option<Vec<u8>> {
     if flags & SND_RESOURCE == SND_RESOURCE {
-        let m = if module == 0 {
-            crate::k32::module_handle(0, false)
-        } else {
-            module
-        };
-        let e = crate::pe::find_resource(
-            m,
-            &crate::pe::ResId::Name("WAVE".encode_utf16().collect()),
-            &crate::pe::ResId::from_arg(name, wide),
-        )?;
+        let m = if module == 0 { crate::k32::module_handle(0, false) } else { module };
+        let e = crate::pe::find_resource(m, &crate::pe::ResId::Name("WAVE".encode_utf16().collect()), &crate::pe::ResId::from_arg(name, wide))?;
         return Some(mem::slice(m + r32(e), r32(e + 4)).to_vec());
     }
     let path = crate::k32::arg_str(name, wide);
     let read = |p: &str| crate::files::resolve(p).and_then(|h| kura::fs::read(h).ok());
     read(&path).or_else(|| {
         let base = path.rsplit(['\\', '/']).next().unwrap_or("");
-        (!base.contains('.'))
-            .then(|| read(&format!("{path}.wav")))
-            .flatten()
+        (!base.contains('.')).then(|| read(&format!("{path}.wav"))).flatten()
     })
 }
 
@@ -1604,9 +1389,7 @@ fn play_sound(name: u32, module: u32, flags: u32, wide: bool) -> u32 {
         }
     };
     let image = adpcm_to_pcm(image);
-    let Some((fmt, data, size)) = wave_chunks(&image) else {
-        return 0;
-    };
+    let Some((fmt, data, size)) = wave_chunks(&image) else { return 0 };
     let p = mem::heap_alloc(image.len() as u32, false);
     mem::slice_mut(p, image.len() as u32).copy_from_slice(&image);
     let f = Fmt::read(p + fmt as u32);
@@ -1659,10 +1442,7 @@ fn sndPlaySoundW(c: &mut Ctx) -> u32 {
 
 pub fn init() {
     for (n, f) in [
-        (
-            "waveOutGetNumDevs",
-            waveOutGetNumDevs as crate::api::Handler,
-        ),
+        ("waveOutGetNumDevs", waveOutGetNumDevs as crate::api::Handler),
         ("waveOutGetDevCapsA", waveOutGetDevCapsA),
         ("waveOutGetDevCapsW", waveOutGetDevCapsW),
         ("waveOutOpen", waveOutOpen),
@@ -1719,21 +1499,11 @@ mod wave_tests {
     fn g711_is_odd_and_monotone() {
         for alaw in [false, true] {
             for code in 0..=255u8 {
-                assert_eq!(
-                    g711(code, alaw),
-                    -g711(code ^ 0x80, alaw),
-                    "code {code:#x} alaw {alaw}"
-                );
+                assert_eq!(g711(code, alaw), -g711(code ^ 0x80, alaw), "code {code:#x} alaw {alaw}");
             }
             // the magnitudes grow with the code's 7 magnitude bits (complemented for mu-law,
             // even bits flipped for A-law)
-            let mag = |m: u8| {
-                if alaw {
-                    g711((m ^ 0x55) | 0x80, true)
-                } else {
-                    g711(!m | 0x80, false)
-                }
-            };
+            let mag = |m: u8| if alaw { g711((m ^ 0x55) | 0x80, true) } else { g711(!m | 0x80, false) };
             let m: Vec<i16> = (0..128u8).map(|i| mag(i).abs()).collect();
             assert!(m.windows(2).all(|w| w[0] < w[1]), "alaw {alaw}: {m:?}");
         }
@@ -1749,9 +1519,7 @@ mod wave_tests {
 
     #[test]
     fn windows_format_rules() {
-        let pcm = |ch: u16, bits: u16| {
-            wave_format_check(1, ch, 48000, 0, ch * bits / 8, bits, None, false)
-        };
+        let pcm = |ch: u16, bits: u16| wave_format_check(1, ch, 48000, 0, ch * bits / 8, bits, None, false);
         assert_eq!(pcm(2, 16), 0);
         assert_eq!(pcm(0, 16), 32);
         assert_eq!(pcm(3, 16), 32);
@@ -1764,37 +1532,16 @@ mod wave_tests {
         assert_eq!(wave_format_check(3, 2, 48000, 0, 8, 32, None, false), 0);
         assert_eq!(wave_format_check(3, 2, 48000, 0, 16, 64, None, false), 32);
         assert_eq!(wave_format_check(2, 2, 48000, 0, 4, 16, None, false), 32); // ADPCM
-                                                                               // extensible: 6 channels are fine, the average rate must match
+        // extensible: 6 channels are fine, the average rate must match
         let ext = |ch: u16, avg: u32, valid: u16, sub: u32, direct: bool| {
-            wave_format_check(
-                0xfffe,
-                ch,
-                48000,
-                avg,
-                ch * 4,
-                32,
-                Some((22, valid, guid(sub))),
-                direct,
-            )
+            wave_format_check(0xfffe, ch, 48000, avg, ch * 4, 32, Some((22, valid, guid(sub))), direct)
         };
         assert_eq!(ext(6, 6 * 4 * 48000, 32, 3, false), 0);
         assert_eq!(ext(6, 6 * 4 * 48000, 24, 1, false), 0);
         assert_eq!(ext(6, 6 * 4 * 48000, 20, 1, false), 32);
         assert_eq!(ext(2, 0, 32, 3, true), 11);
         assert_eq!(ext(2, 0, 32, 3, false), 32);
-        assert_eq!(
-            wave_format_check(
-                0xfffe,
-                2,
-                48000,
-                384000,
-                8,
-                32,
-                Some((21, 32, guid(3))),
-                false
-            ),
-            32
-        );
+        assert_eq!(wave_format_check(0xfffe, 2, 48000, 384000, 8, 32, Some((21, 32, guid(3))), false), 32);
     }
 
     #[test]
@@ -1803,10 +1550,7 @@ mod wave_tests {
         // what is set
         assert_eq!(unprepared_flags(WHDR_DONE), Ok(WHDR_DONE));
         assert_eq!(prepared_flags(WHDR_DONE | WHDR_INQUEUE), WHDR_PREPARED);
-        assert_eq!(
-            prepared_flags(WHDR_PREPARED | WHDR_INQUEUE),
-            WHDR_PREPARED | WHDR_INQUEUE
-        );
+        assert_eq!(prepared_flags(WHDR_PREPARED | WHDR_INQUEUE), WHDR_PREPARED | WHDR_INQUEUE);
         assert_eq!(unprepared_flags(WHDR_PREPARED | WHDR_INQUEUE), Err(33));
         assert_eq!(unprepared_flags(WHDR_PREPARED | WHDR_DONE), Ok(WHDR_DONE));
     }

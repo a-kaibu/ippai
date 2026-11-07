@@ -32,11 +32,7 @@ fn bytes_per_pixel(fmt: u32) -> u32 {
 /// BGRA -> 16-bit pixel and back (5-bit channels widened by bit replication)
 fn pack16(fmt: u32, [b, g, r]: [u8; 3]) -> u16 {
     let (b, r) = ((b >> 3) as u16, (r >> 3) as u16);
-    if fmt == FMT_16RGB565 {
-        r << 11 | ((g >> 2) as u16) << 5 | b
-    } else {
-        r << 10 | ((g >> 3) as u16) << 5 | b
-    }
+    if fmt == FMT_16RGB565 { r << 11 | ((g >> 2) as u16) << 5 | b } else { r << 10 | ((g >> 3) as u16) << 5 | b }
 }
 fn unpack16(fmt: u32, v: u16) -> [u8; 3] {
     let x5 = |c: u16| ((c << 3) | (c >> 2)) as u8;
@@ -144,9 +140,7 @@ fn decoded_flags(pic: &crate::picture::Picture, data: &[u8], fmt: u32) -> u32 {
     let dpi = match pic.kind {
         Kind::Bmp => true,
         Kind::Png => data.windows(4).any(|w| w == b"pHYs"),
-        Kind::Jpeg => data
-            .get(13)
-            .is_some_and(|&u| data.get(6..10) == Some(b"JFIF") && u != 0),
+        Kind::Jpeg => data.get(13).is_some_and(|&u| data.get(6..10) == Some(b"JFIF") && u != 0),
         Kind::Gif => false,
     };
     let space = match (pic.kind, gray) {
@@ -154,17 +148,11 @@ fn decoded_flags(pic: &crate::picture::Picture, data: &[u8], fmt: u32) -> u32 {
         (Kind::Jpeg, false) => FLAG_YCBCR,
         _ => FLAG_RGB,
     };
-    FLAG_READ_ONLY
-        | FLAG_REAL_SIZE
-        | if dpi { FLAG_REAL_DPI } else { 0 }
-        | space
-        | if has_alpha(fmt) { FLAG_HAS_ALPHA } else { 0 }
+    FLAG_READ_ONLY | FLAG_REAL_SIZE | if dpi { FLAG_REAL_DPI } else { 0 } | space | if has_alpha(fmt) { FLAG_HAS_ALPHA } else { 0 }
 }
 
 fn new_image(data: &[u8], out: u32, bad: u32) -> u32 {
-    let Some(pic) = crate::picture::decode(data) else {
-        return bad;
-    };
+    let Some(pic) = crate::picture::decode(data) else { return bad };
     let fmt = pic.gdiplus_format();
     let flags = decoded_flags(&pic, data, fmt);
     let f = &pic.frames[0];
@@ -179,37 +167,15 @@ fn new_image(data: &[u8], out: u32, bad: u32) -> u32 {
         }
     }
     // (an indexed bitmap: its palette and indices, from a palette file)
-    let (palette, idx) = if indexed(fmt)
-        && matches!(
-            f.fmt,
-            crate::picture::Fmt::Idx1
-                | crate::picture::Fmt::Idx2
-                | crate::picture::Fmt::Idx4
-                | crate::picture::Fmt::Idx8
-        ) {
+    let (palette, idx) = if indexed(fmt) && matches!(f.fmt, crate::picture::Fmt::Idx1 | crate::picture::Fmt::Idx2 | crate::picture::Fmt::Idx4 | crate::picture::Fmt::Idx8) {
         let bits = f.fmt.bits();
         let stride = f.stride() as usize;
-        let idx = (0..h as usize)
-            .flat_map(|y| (0..w).map(move |x| (y, x)))
-            .map(|(y, x)| get_bits(&f.bits[y * stride..], x, bits) as u8)
-            .collect();
+        let idx = (0..h as usize).flat_map(|y| (0..w).map(move |x| (y, x))).map(|(y, x)| get_bits(&f.bits[y * stride..], x, bits) as u8).collect();
         (f.palette.clone(), idx)
     } else {
         (Vec::new(), Vec::new())
     };
-    add(
-        Bitmap {
-            w,
-            h,
-            px,
-            fmt,
-            flags,
-            palette,
-            idx,
-            locked: None,
-        },
-        out,
-    )
+    add(Bitmap { w, h, px, fmt, flags, palette, idx, locked: None }, out)
 }
 
 fn get_bits(row: &[u8], x: u32, bits: u32) -> u32 {
@@ -243,9 +209,7 @@ fn from_stream(c: &mut Ctx) -> u32 {
 /// GdipCreateBitmapFromFile / GdipLoadImageFromFile (+ICM)(wide path, &image)
 fn from_file(c: &mut Ctx) -> u32 {
     let name = String::from_utf16_lossy(&mem::wstr(c.a(0)));
-    let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
-        return FILE_NOT_FOUND;
-    };
+    let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else { return FILE_NOT_FOUND };
     new_image(&data, c.a(1), UNKNOWN_IMAGE_FORMAT)
 }
 
@@ -253,31 +217,23 @@ fn size_of(img: u32) -> Option<(u32, u32)> {
     with(|m| m.get(&img).map(|b| (b.w, b.h)))
 }
 fn GdipGetImageWidth(c: &mut Ctx) -> u32 {
-    let Some((w, _)) = size_of(c.a(0)) else {
-        return INVALID_PARAMETER;
-    };
+    let Some((w, _)) = size_of(c.a(0)) else { return INVALID_PARAMETER };
     put32(c.a(1), w);
     OK
 }
 fn GdipGetImageHeight(c: &mut Ctx) -> u32 {
-    let Some((_, h)) = size_of(c.a(0)) else {
-        return INVALID_PARAMETER;
-    };
+    let Some((_, h)) = size_of(c.a(0)) else { return INVALID_PARAMETER };
     put32(c.a(1), h);
     OK
 }
 fn GdipGetImageDimension(c: &mut Ctx) -> u32 {
-    let Some((w, h)) = size_of(c.a(0)) else {
-        return INVALID_PARAMETER;
-    };
+    let Some((w, h)) = size_of(c.a(0)) else { return INVALID_PARAMETER };
     put32(c.a(1), (w as f32).to_bits());
     put32(c.a(2), (h as f32).to_bits());
     OK
 }
 fn GdipGetImagePixelFormat(c: &mut Ctx) -> u32 {
-    let Some(f) = with(|m| m.get(&c.a(0)).map(|b| b.fmt)) else {
-        return INVALID_PARAMETER;
-    };
+    let Some(f) = with(|m| m.get(&c.a(0)).map(|b| b.fmt)) else { return INVALID_PARAMETER };
     put32(c.a(1), f);
     OK
 }
@@ -286,9 +242,7 @@ fn GdipGetImageType(c: &mut Ctx) -> u32 {
     OK
 }
 fn GdipGetImageFlags(c: &mut Ctx) -> u32 {
-    let Some(f) = with(|m| m.get(&c.a(0)).map(|b| b.flags)) else {
-        return INVALID_PARAMETER;
-    };
+    let Some(f) = with(|m| m.get(&c.a(0)).map(|b| b.flags)) else { return INVALID_PARAMETER };
     put32(c.a(1), f);
     OK
 }
@@ -297,16 +251,12 @@ fn palette_of(img: u32) -> Option<Vec<u32>> {
     with(|m| m.get(&img).map(|b| b.palette.clone()))
 }
 fn GdipGetImagePaletteSize(c: &mut Ctx) -> u32 {
-    let Some(p) = palette_of(c.a(0)) else {
-        return INVALID_PARAMETER;
-    };
+    let Some(p) = palette_of(c.a(0)) else { return INVALID_PARAMETER };
     put32(c.a(1), 8 + 4 * (p.len() as u32).max(1));
     OK
 }
 fn GdipGetImagePalette(c: &mut Ctx) -> u32 {
-    let Some(p) = palette_of(c.a(0)) else {
-        return INVALID_PARAMETER;
-    };
+    let Some(p) = palette_of(c.a(0)) else { return INVALID_PARAMETER };
     let (out, size) = (c.a(1), c.a(2));
     if out == 0 || size < 8 + 4 * (p.len() as u32).max(1) {
         return INVALID_PARAMETER;
@@ -323,51 +273,16 @@ fn GdipGetImagePalette(c: &mut Ctx) -> u32 {
 /// strings (name, DLL, description, extensions, MIME type), flags, version, signature count and
 /// size, signature patterns and masks
 const DECODERS: [(u32, &str, &str, &str, &str, &[u8]); 4] = [
-    (
-        0xb96b3cab,
-        "Built-in BMP Codec",
-        "BMP",
-        "*.BMP;*.DIB;*.RLE",
-        "image/bmp",
-        b"BM",
-    ),
-    (
-        0xb96b3cae,
-        "Built-in JPEG Codec",
-        "JPEG",
-        "*.JPG;*.JPEG;*.JPE;*.JFIF",
-        "image/jpeg",
-        b"\xff\xd8",
-    ),
-    (
-        0xb96b3cb0,
-        "Built-in GIF Codec",
-        "GIF",
-        "*.GIF",
-        "image/gif",
-        b"GIF8",
-    ),
-    (
-        0xb96b3caf,
-        "Built-in PNG Codec",
-        "PNG",
-        "*.PNG",
-        "image/png",
-        b"\x89PNG\r\n\x1a\n",
-    ),
+    (0xb96b3cab, "Built-in BMP Codec", "BMP", "*.BMP;*.DIB;*.RLE", "image/bmp", b"BM"),
+    (0xb96b3cae, "Built-in JPEG Codec", "JPEG", "*.JPG;*.JPEG;*.JPE;*.JFIF", "image/jpeg", b"\xff\xd8"),
+    (0xb96b3cb0, "Built-in GIF Codec", "GIF", "*.GIF", "image/gif", b"GIF8"),
+    (0xb96b3caf, "Built-in PNG Codec", "PNG", "*.PNG", "image/png", b"\x89PNG\r\n\x1a\n"),
 ];
 /// (bytes of the structs, bytes of the strings and signatures after them)
 fn decoders_size() -> (u32, u32) {
     let ps = mem::ps();
     let one = 32 + 7 * ps + 16;
-    let extra: u32 = DECODERS
-        .iter()
-        .map(|d| {
-            2 * (d.1.len() + 1 + d.2.len() + 1 + d.3.len() + 1 + d.4.len() + 1) as u32
-                + 2 * d.5.len() as u32
-                + 2
-        })
-        .sum();
+    let extra: u32 = DECODERS.iter().map(|d| 2 * (d.1.len() + 1 + d.2.len() + 1 + d.3.len() + 1 + d.4.len() + 1) as u32 + 2 * d.5.len() as u32 + 2).sum();
     (one * DECODERS.len() as u32, extra)
 }
 fn GdipGetImageDecodersSize(c: &mut Ctx) -> u32 {
@@ -394,13 +309,7 @@ fn GdipGetImageDecoders(c: &mut Ctx) -> u32 {
     };
     let mut strs = Vec::new();
     for d in DECODERS {
-        strs.push([
-            wstr(d.1),
-            wstr("gdiplus.dll"),
-            wstr(d.2),
-            wstr(d.3),
-            wstr(d.4),
-        ]);
+        strs.push([wstr(d.1), wstr("gdiplus.dll"), wstr(d.2), wstr(d.3), wstr(d.4)]);
     }
     // the GUIDs' common tail: {xxxxxxxx-1a04-11d3-9a73-0000f81ef32e} (codec) / formats {b96b3c..-0728-11d3-9d7b-0000f81ef32e}
     for (i, d) in DECODERS.iter().enumerate() {
@@ -410,29 +319,14 @@ fn GdipGetImageDecoders(c: &mut Ctx) -> u32 {
             mem::write(at + 4, &tail);
         };
         let codec = d.0 - 0xb96b3cab + 0x557cf400;
-        guid(
-            p,
-            codec,
-            [
-                0x04, 0x1a, 0xd3, 0x11, 0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e,
-            ],
-        );
-        guid(
-            p + 16,
-            d.0,
-            [
-                0x28, 0x07, 0xd3, 0x11, 0x9d, 0x7b, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e,
-            ],
-        );
+        guid(p, codec, [0x04, 0x1a, 0xd3, 0x11, 0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e]);
+        guid(p + 16, d.0, [0x28, 0x07, 0xd3, 0x11, 0x9d, 0x7b, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e]);
         for (k, &sp) in strs[i].iter().enumerate() {
             mem::wp(p + 32 + ps * k as u32, sp);
         }
         let q = p + 32 + 5 * ps;
         // flags: Decoder | SupportBitmap | Builtin; version 1; one signature
-        for (k, v) in [0x0001_0002 | 0x0000_0004, 1, 1, d.5.len() as u32]
-            .into_iter()
-            .enumerate()
-        {
+        for (k, v) in [0x0001_0002 | 0x0000_0004, 1, 1, d.5.len() as u32].into_iter().enumerate() {
             w32(q + 4 * k as u32, v);
         }
         mem::write(at, d.5);
@@ -455,20 +349,7 @@ fn GdipDisposeImage(c: &mut Ctx) -> u32 {
     OK
 }
 fn GdipCloneImage(c: &mut Ctx) -> u32 {
-    let Some(b) = with(|m| {
-        m.get(&c.a(0)).map(|b| Bitmap {
-            w: b.w,
-            h: b.h,
-            px: b.px.clone(),
-            fmt: b.fmt,
-            flags: b.flags,
-            palette: b.palette.clone(),
-            idx: b.idx.clone(),
-            locked: None,
-        })
-    }) else {
-        return INVALID_PARAMETER;
-    };
+    let Some(b) = with(|m| m.get(&c.a(0)).map(|b| Bitmap { w: b.w, h: b.h, px: b.px.clone(), fmt: b.fmt, flags: b.flags, palette: b.palette.clone(), idx: b.idx.clone(), locked: None })) else { return INVALID_PARAMETER };
     add(b, c.a(1))
 }
 
@@ -478,12 +359,7 @@ impl Bitmap {
         let p = &self.px[4 * i..4 * i + 4];
         match self.fmt {
             FMT_32RGB => [p[0], p[1], p[2], 0xff],
-            FMT_32PARGB => [
-                unpremul(p[0], p[3]),
-                unpremul(p[1], p[3]),
-                unpremul(p[2], p[3]),
-                p[3],
-            ],
+            FMT_32PARGB => [unpremul(p[0], p[3]), unpremul(p[1], p[3]), unpremul(p[2], p[3]), p[3]],
             _ => [p[0], p[1], p[2], p[3]],
         }
     }
@@ -507,9 +383,7 @@ impl Bitmap {
             let e = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
             e(cb, b) + e(cg, g) + e(cr, r) + e(ca, a)
         };
-        (0..self.palette.len())
-            .min_by_key(|&k| d(self.palette[k]))
-            .unwrap_or(0) as u8
+        (0..self.palette.len()).min_by_key(|&k| d(self.palette[k])).unwrap_or(0) as u8
     }
 }
 
@@ -529,9 +403,7 @@ fn GdipBitmapGetPixel(c: &mut Ctx) -> u32 {
 fn GdipBitmapSetPixel(c: &mut Ctx) -> u32 {
     let (x, y, v) = (c.a(1), c.a(2), c.a(3));
     with(|m| {
-        let Some(b) = m.get_mut(&c.a(0)) else {
-            return INVALID_PARAMETER;
-        };
+        let Some(b) = m.get_mut(&c.a(0)) else { return INVALID_PARAMETER };
         if x >= b.w || y >= b.h || indexed(b.fmt) {
             return INVALID_PARAMETER;
         }
@@ -557,11 +429,7 @@ fn GdipBitmapLockBits(c: &mut Ctx) -> u32 {
     let (bmp, rect, flags, mut fmt, out) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let r = with(|m| {
         let b = m.get_mut(&bmp).ok_or(INVALID_PARAMETER)?;
-        let (x, y, w, h) = if rect != 0 {
-            (r32(rect), r32(rect + 4), r32(rect + 8), r32(rect + 12))
-        } else {
-            (0, 0, b.w, b.h)
-        };
+        let (x, y, w, h) = if rect != 0 { (r32(rect), r32(rect + 4), r32(rect + 8), r32(rect + 12)) } else { (0, 0, b.w, b.h) };
         if x.checked_add(w).is_none_or(|e| e > b.w) || y.checked_add(h).is_none_or(|e| e > b.h) {
             return Err(INVALID_PARAMETER);
         }
@@ -569,17 +437,7 @@ fn GdipBitmapLockBits(c: &mut Ctx) -> u32 {
             return Err(WRONG_STATE);
         }
         let own_index = indexed(fmt) && fmt == b.fmt && !b.idx.is_empty();
-        if !own_index
-            && ![
-                FMT_24RGB,
-                FMT_32RGB,
-                FMT_32ARGB,
-                FMT_32PARGB,
-                FMT_16RGB555,
-                FMT_16RGB565,
-            ]
-            .contains(&fmt)
-        {
+        if !own_index && ![FMT_24RGB, FMT_32RGB, FMT_32ARGB, FMT_32PARGB, FMT_16RGB555, FMT_16RGB565].contains(&fmt) {
             fmt = FMT_32ARGB;
         }
         let bits = lock_bits(fmt);
@@ -600,21 +458,12 @@ fn GdipBitmapLockBits(c: &mut Ctx) -> u32 {
                 let d = (i * bits / 8) as usize;
                 match fmt {
                     FMT_24RGB => row[d..d + 3].copy_from_slice(&[bl, g, rd]),
-                    FMT_16RGB555 | FMT_16RGB565 => {
-                        row[d..d + 2].copy_from_slice(&pack16(fmt, [bl, g, rd]).to_le_bytes())
-                    }
+                    FMT_16RGB555 | FMT_16RGB565 => row[d..d + 2].copy_from_slice(&pack16(fmt, [bl, g, rd]).to_le_bytes()),
                     // (the fourth byte as the bitmap has it)
                     // (the fourth byte as the bitmap has it; a PARGB one's own bytes)
-                    FMT_32RGB | FMT_32PARGB if b.fmt == fmt => {
-                        row[d..d + 4].copy_from_slice(&b.px[4 * s..4 * s + 4])
-                    }
+                    FMT_32RGB | FMT_32PARGB if b.fmt == fmt => row[d..d + 4].copy_from_slice(&b.px[4 * s..4 * s + 4]),
                     FMT_32RGB => row[d..d + 4].copy_from_slice(&b.px[4 * s..4 * s + 4]),
-                    FMT_32PARGB => row[d..d + 4].copy_from_slice(&[
-                        premul(bl, a),
-                        premul(g, a),
-                        premul(rd, a),
-                        a,
-                    ]),
+                    FMT_32PARGB => row[d..d + 4].copy_from_slice(&[premul(bl, a), premul(g, a), premul(rd, a), a]),
                     _ => row[d..d + 4].copy_from_slice(&[bl, g, rd, a]),
                 }
             }
@@ -639,12 +488,8 @@ fn GdipBitmapLockBits(c: &mut Ctx) -> u32 {
 fn GdipBitmapUnlockBits(c: &mut Ctx) -> u32 {
     let (bmp, data) = (c.a(0), c.a(1));
     with(|m| {
-        let Some(b) = m.get_mut(&bmp) else {
-            return INVALID_PARAMETER;
-        };
-        let Some((buf, x, y, w, fmt)) = b.locked.take() else {
-            return WIN32_ERROR;
-        };
+        let Some(b) = m.get_mut(&bmp) else { return INVALID_PARAMETER };
+        let Some((buf, x, y, w, fmt)) = b.locked.take() else { return WIN32_ERROR };
         let (h, stride) = (r32(data + 4), r32(data + 8));
         let bits = lock_bits(fmt);
         for j in 0..h.min(b.h - y) {
@@ -671,19 +516,9 @@ fn GdipBitmapUnlockBits(c: &mut Ctx) -> u32 {
                     }
                     _ if fmt == FMT_32PARGB => {
                         let a = row[s + 3];
-                        [
-                            unpremul(row[s], a),
-                            unpremul(row[s + 1], a),
-                            unpremul(row[s + 2], a),
-                            a,
-                        ]
+                        [unpremul(row[s], a), unpremul(row[s + 1], a), unpremul(row[s + 2], a), a]
                     }
-                    _ => [
-                        row[s],
-                        row[s + 1],
-                        row[s + 2],
-                        if fmt == FMT_32RGB { 0xff } else { row[s + 3] },
-                    ],
+                    _ => [row[s], row[s + 1], row[s + 2], if fmt == FMT_32RGB { 0xff } else { row[s + 3] }],
                 };
                 if !b.idx.is_empty() {
                     let k = b.nearest(v);
@@ -705,12 +540,7 @@ fn GdipBitmapUnlockBits(c: &mut Ctx) -> u32 {
 /// stride that is no multiple of 4 is InvalidParameter (winref gdip).
 fn GdipCreateBitmapFromScan0(c: &mut Ctx) -> u32 {
     let (w, h, stride, fmt, scan0, out) = (c.a(0), c.a(1), c.a(2) as i32, c.a(3), c.a(4), c.a(5));
-    if w == 0
-        || h == 0
-        || out == 0
-        || w.checked_mul(h).is_none_or(|n| n > 1 << 26)
-        || scan0 != 0 && stride % 4 != 0
-    {
+    if w == 0 || h == 0 || out == 0 || w.checked_mul(h).is_none_or(|n| n > 1 << 26) || scan0 != 0 && stride % 4 != 0 {
         return INVALID_PARAMETER;
     }
     let alpha = if has_alpha(fmt) { 0 } else { 0xff };
@@ -718,16 +548,7 @@ fn GdipCreateBitmapFromScan0(c: &mut Ctx) -> u32 {
     for p in px.chunks_mut(4) {
         p[3] = alpha;
     }
-    let mut b = Bitmap {
-        w,
-        h,
-        px: Vec::new(),
-        fmt,
-        flags: if has_alpha(fmt) { FLAG_HAS_ALPHA } else { 0 },
-        palette: Vec::new(),
-        idx: Vec::new(),
-        locked: None,
-    };
+    let mut b = Bitmap { w, h, px: Vec::new(), fmt, flags: if has_alpha(fmt) { FLAG_HAS_ALPHA } else { 0 }, palette: Vec::new(), idx: Vec::new(), locked: None };
     if scan0 != 0 {
         let bpp = bytes_per_pixel(fmt);
         for j in 0..h {
@@ -766,7 +587,9 @@ fn GdipCreateHBITMAPFromBitmap(c: &mut Ctx) -> u32 {
     let Some((w, h, px)) = with(|m| {
         m.get(&c.a(0)).map(|b| {
             let px: Vec<u8> = (0..(b.w * b.h) as usize)
-                .flat_map(|i| over(b.straight(i), bg))
+                .flat_map(|i| {
+                    over(b.straight(i), bg)
+                })
                 .collect();
             (b.w, b.h, px)
         })
@@ -775,11 +598,7 @@ fn GdipCreateHBITMAPFromBitmap(c: &mut Ctx) -> u32 {
     };
     let hb = crate::gdi::dib_section_bgra(w, h, &px);
     put32(c.a(1), hb);
-    if hb != 0 {
-        OK
-    } else {
-        1
-    }
+    if hb != 0 { OK } else { 1 }
 }
 
 /// GdipAlloc(size) / GdipFree(p): GDI+'s operator new and delete
@@ -864,19 +683,8 @@ mod pack_tests {
         }
         // the probe's measured cases (winref gdip)
         assert_eq!([premul(1, 1), premul(128, 1), premul(255, 1)], [0, 1, 1]);
-        assert_eq!(
-            [premul(128, 127), premul(255, 127), premul(200, 254)],
-            [64, 127, 199]
-        );
-        assert_eq!(
-            [
-                unpremul(127, 127),
-                unpremul(64, 127),
-                unpremul(64, 128),
-                unpremul(1, 128)
-            ],
-            [254, 128, 127, 1]
-        );
+        assert_eq!([premul(128, 127), premul(255, 127), premul(200, 254)], [64, 127, 199]);
+        assert_eq!([unpremul(127, 127), unpremul(64, 127), unpremul(64, 128), unpremul(1, 128)], [254, 128, 127, 1]);
     }
 
     /// the probe's pixels over ff336699, and every (color, alpha) over any background
@@ -884,33 +692,11 @@ mod pack_tests {
     #[test]
     fn over_background() {
         let bg = 0xff33_6699u32.to_le_bytes();
-        let got: Vec<u32> = [
-            0x80ff_0000u32,
-            0x01ff_ff00,
-            0x7ffe_8000,
-            0x80ff_7f01,
-            0xff09_63c7,
-        ]
-        .iter()
-        .map(|&p| u32::from_le_bytes(over(p.to_le_bytes(), bg)))
-        .collect();
-        assert_eq!(
-            got,
-            [
-                0x8099_334c,
-                0x0134_6798,
-                0x7f99_734d,
-                0x8099_734d,
-                0xff09_63c7
-            ]
-        );
+        let got: Vec<u32> = [0x80ff_0000u32, 0x01ff_ff00, 0x7ffe_8000, 0x80ff_7f01, 0xff09_63c7].iter().map(|&p| u32::from_le_bytes(over(p.to_le_bytes(), bg))).collect();
+        assert_eq!(got, [0x8099_334c, 0x0134_6798, 0x7f99_734d, 0x8099_734d, 0xff09_63c7]);
         for a in 0..=255u8 {
             for c in 0..=255u8 {
-                assert_eq!(
-                    over([c, 0, 255, a], [c, 255, 0, 0])[..3],
-                    [c, 255 - a, a],
-                    "c {c} a {a}"
-                );
+                assert_eq!(over([c, 0, 255, a], [c, 255, 0, 0])[..3], [c, 255 - a, a], "c {c} a {a}");
             }
         }
     }

@@ -105,11 +105,7 @@ fn mtx_lock(m: u32, wait: Wait) -> u32 {
         if me {
             if ty & MTX_RECURSIVE == 0 {
                 // (not recursive: the count stays, and it is as if taken elsewhere)
-                return if matches!(wait, Wait::Forever | Wait::Try) {
-                    BUSY
-                } else {
-                    TIMEDOUT
-                };
+                return if matches!(wait, Wait::Forever | Wait::Try) { BUSY } else { TIMEDOUT };
             }
             w32(m + COUNT, r32(m + COUNT) + 1);
         } else {
@@ -118,11 +114,7 @@ fn mtx_lock(m: u32, wait: Wait) -> u32 {
         }
         return SUCCESS;
     }
-    if wait == Wait::Try {
-        BUSY
-    } else {
-        TIMEDOUT
-    }
+    if wait == Wait::Try { BUSY } else { TIMEDOUT }
 }
 
 fn mtx_unlock(m: u32) {
@@ -204,11 +196,7 @@ fn _Mtx_reset_owner(c: &mut Ctx) -> u32 {
 fn cnd_new(c: &mut Ctx) -> u32 {
     let p = mem::heap_alloc(CND_SIZE, true);
     wp(c.a(0), p);
-    if p == 0 {
-        NOMEM
-    } else {
-        SUCCESS
-    }
+    if p == 0 { NOMEM } else { SUCCESS }
 }
 fn cnd_free(c: &mut Ctx) -> u32 {
     if c.a(0) != 0 {
@@ -243,11 +231,7 @@ fn cnd_wait(cv: u32, m: u32, ms: u32) -> u32 {
         n as u64,
         SUCCESS,
     );
-    if woke {
-        SUCCESS
-    } else {
-        TIMEDOUT
-    }
+    if woke { SUCCESS } else { TIMEDOUT }
 }
 /// _Cnd_wait(cnd, mtx)
 fn _Cnd_wait(c: &mut Ctx) -> u32 {
@@ -271,10 +255,7 @@ fn _Cnd_signal(c: &mut Ctx) -> u32 {
 /// notify_all_at_thread_exit's registrations: (thread, cnd, mtx, int *done)
 static AT_EXIT: Mutex<Vec<(u32, u32, u32, u32)>> = Mutex::new(Vec::new());
 fn _Cnd_register_at_thread_exit(c: &mut Ctx) -> u32 {
-    AT_EXIT
-        .lock()
-        .unwrap()
-        .push((tid(), c.a(0), c.a(1), c.a(2)));
+    AT_EXIT.lock().unwrap().push((tid(), c.a(0), c.a(1), c.a(2)));
     0
 }
 fn _Cnd_unregister_at_thread_exit(c: &mut Ctx) -> u32 {
@@ -338,11 +319,7 @@ fn _Thrd_join(c: &mut Ctx) -> u32 {
 }
 fn _Thrd_detach(c: &mut Ctx) -> u32 {
     let h = rp(c.a(0));
-    if k32(c, "CloseHandle", &[h]) != 0 {
-        SUCCESS
-    } else {
-        4
-    }
+    if k32(c, "CloseHandle", &[h]) != 0 { SUCCESS } else { 4 }
 }
 /// _Thrd_sleep(const _timespec64 *until)
 fn _Thrd_sleep(c: &mut Ctx) -> u32 {
@@ -379,11 +356,7 @@ fn timespec_get(c: &mut Ctx) -> u32 {
     let t = ticks();
     w64(ts, t / 10_000_000);
     w32(ts + 8, (t % 10_000_000 * 100) as u32);
-    if base == 0 {
-        1
-    } else {
-        base
-    }
+    if base == 0 { 1 } else { base }
 }
 /// _Xtime_diff_to_millis2(const _timespec64 *a, const _timespec64 *b): a - b, 0 when negative
 fn _Xtime_diff_to_millis2(c: &mut Ctx) -> u32 {
@@ -472,10 +445,7 @@ fn unobserved(c: &mut Ctx) -> u32 {
     crate::fatal(c.cpu, "a PPL task's exception was never observed (Concurrency::details::_ReportUnobservedException)")
 }
 fn unhandled(c: &mut Ctx) -> u32 {
-    crate::fatal(
-        c.cpu,
-        "a PPL task's exception was never handled (_ExceptionHolder::ReportUnhandledError)",
-    )
+    crate::fatal(c.cpu, "a PPL task's exception was never handled (_ExceptionHolder::ReportUnhandledError)")
 }
 fn nothing(_: &mut Ctx) -> u32 {
     0
@@ -584,10 +554,7 @@ fn errno_msg(e: u32) -> u32 {
     if let Some(&(_, p)) = g.iter().find(|(k, _)| *k == e) {
         return p;
     }
-    let s = ERRNO_MSGS
-        .iter()
-        .find(|(k, _)| *k == e)
-        .map_or("unknown error", |(_, m)| m);
+    let s = ERRNO_MSGS.iter().find(|(k, _)| *k == e).map_or("unknown error", |(_, m)| m);
     let p = mem::heap_alloc(s.len() as u32 + 1, true);
     mem::write(p, s.as_bytes());
     g.push((e, p));
@@ -701,19 +668,8 @@ pub fn init() {
         implement("msvcp140", n, *f);
     }
     // the PPL task event logger (ETW): nothing logged
-    for n in [
-        "_LogScheduleTask@_TaskEventLogger@details@Concurrency@@QEAAX_N@Z",
-        "_LogCancelTask",
-        "_LogTaskCompleted",
-        "_LogTaskExecutionCompleted",
-        "_LogWorkItemCompleted",
-        "_LogWorkItemStarted",
-    ] {
-        let name = if n.contains('@') {
-            format!("?{n}")
-        } else {
-            format!("?{n}@_TaskEventLogger@details@Concurrency@@QEAAXXZ")
-        };
+    for n in ["_LogScheduleTask@_TaskEventLogger@details@Concurrency@@QEAAX_N@Z", "_LogCancelTask", "_LogTaskCompleted", "_LogTaskExecutionCompleted", "_LogWorkItemCompleted", "_LogWorkItemStarted"] {
+        let name = if n.contains('@') { format!("?{n}") } else { format!("?{n}@_TaskEventLogger@details@Concurrency@@QEAAXXZ") };
         implement("msvcp140", &name, nothing);
     }
 }

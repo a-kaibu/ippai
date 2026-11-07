@@ -68,12 +68,7 @@ fn state_descriptions_are_windows() {
     let sampler = vec![0x15, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0x7f7fffff];
     let mut bad = Vec::new();
     let mut n = 0;
-    for (what, m, base, table) in [
-        ("blend", 20, blend, "blends"),
-        ("depth", 21, depth, "depths"),
-        ("raster", 22, raster, "rasters"),
-        ("sampler", 23, sampler, "samplers"),
-    ] {
+    for (what, m, base, table) in [("blend", 20, blend, "blends"), ("depth", 21, depth, "depths"), ("raster", 22, raster, "rasters"), ("sampler", 23, sampler, "samplers")] {
         let mut made: Vec<(String, Vec<u32>)> = Vec::new();
         for (name, ch) in cases(&src, table) {
             let mut d = base.clone();
@@ -83,10 +78,7 @@ fn state_descriptions_are_windows() {
             let ok = normalize_state(m, &mut d).is_some();
             let got = if ok {
                 let words: Vec<String> = d.iter().map(|w| format!("{w:x}")).collect();
-                let same = made
-                    .iter()
-                    .find(|(_, x)| *x == d)
-                    .map_or("-".to_string(), |(n, _)| n.clone());
+                let same = made.iter().find(|(_, x)| *x == d).map_or("-".to_string(), |(n, _)| n.clone());
                 made.push((name.clone(), d.clone()));
                 format!("{what} {name} 0 {} same {same}", words.join(" "))
             } else {
@@ -100,10 +92,5 @@ fn state_descriptions_are_windows() {
         }
     }
     assert!(n > 100, "{n} cases");
-    assert!(
-        bad.is_empty(),
-        "{} of {n} cases differ:\n  {}",
-        bad.len(),
-        bad.join("\n  ")
-    );
+    assert!(bad.is_empty(), "{} of {n} cases differ:\n  {}", bad.len(), bad.join("\n  "));
 }

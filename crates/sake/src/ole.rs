@@ -77,9 +77,7 @@ fn s_write(c: &mut Ctx) -> u32 {
     if end > size {
         // (room for twice as much: writes in small pieces stay linear)
         let h = r32(this + 4);
-        if (crate::k32::global_ptr(h) == 0 || end > crate::k32::global_size(h))
-            && !grow(this, end.saturating_mul(2).max(64))
-        {
+        if (crate::k32::global_ptr(h) == 0 || end > crate::k32::global_size(h)) && !grow(this, end.saturating_mul(2).max(64)) {
             return E_OUTOFMEMORY;
         }
         w32(this + 8, end);
@@ -91,16 +89,8 @@ fn s_write(c: &mut Ctx) -> u32 {
 }
 fn s_seek(c: &mut Ctx) -> u32 {
     // (this, LARGE_INTEGER move, origin, ULARGE_INTEGER* new): the 8-byte argument is one on x64
-    let (this, mv, origin, out) = if mem::x64() {
-        (c.a(0), c.a64(1), c.a(2), c.a(3))
-    } else {
-        (
-            c.a(0),
-            (c.a(2) as u64) << 32 | c.a(1) as u64,
-            c.a(3),
-            c.a(4),
-        )
-    };
+    let (this, mv, origin, out) =
+        if mem::x64() { (c.a(0), c.a64(1), c.a(2), c.a(3)) } else { (c.a(0), (c.a(2) as u64) << 32 | c.a(1) as u64, c.a(3), c.a(4)) };
     let base = match origin {
         0 => 0,
         1 => r32(this + 12) as i64,
@@ -110,11 +100,7 @@ fn s_seek(c: &mut Ctx) -> u32 {
     let p = base + mv as i64;
     // a bad origin or a position before the start: STG_E_SEEKERROR, the position stays and
     // is what *new gets
-    let (p, hr) = if base < 0 || p < 0 || p > u32::MAX as i64 {
-        (r32(this + 12), 0x8003_0019)
-    } else {
-        (p as u32, 0)
-    };
+    let (p, hr) = if base < 0 || p < 0 || p > u32::MAX as i64 { (r32(this + 12), 0x8003_0019) } else { (p as u32, 0) };
     w32(this + 12, p);
     if out != 0 {
         w32(out, p);
@@ -154,17 +140,8 @@ fn s_stat(c: &mut Ctx) -> u32 {
 }
 /// CopyTo(this, dest, ULARGE_INTEGER cb, read*, written*): through the destination's Write
 fn s_copy_to(c: &mut Ctx) -> u32 {
-    let (this, dst, cb, rd, wr) = if mem::x64() {
-        (c.a(0), c.a(1), c.a64(2), c.a(3), c.a(4))
-    } else {
-        (
-            c.a(0),
-            c.a(1),
-            (c.a(3) as u64) << 32 | c.a(2) as u64,
-            c.a(4),
-            c.a(5),
-        )
-    };
+    let (this, dst, cb, rd, wr) =
+        if mem::x64() { (c.a(0), c.a(1), c.a64(2), c.a(3), c.a(4)) } else { (c.a(0), c.a(1), (c.a(3) as u64) << 32 | c.a(2) as u64, c.a(4), c.a(5)) };
     let (h, size, pos) = (r32(this + 4), r32(this + 8), r32(this + 12));
     let n = (cb.min(size.saturating_sub(pos) as u64)) as u32;
     let done = mem::heap_alloc(4, true);
@@ -231,11 +208,7 @@ fn CreateStreamOnHGlobal(c: &mut Ctx) -> u32 {
         return 0x8007_0057; // E_INVALIDARG
     }
     // (no HGLOBAL: a new moveable one, empty, as Windows)
-    let (h, size) = if h == 0 {
-        (crate::k32::global_alloc(2 | 0x2000, 0), 0)
-    } else {
-        (h, crate::k32::global_size(h))
-    };
+    let (h, size) = if h == 0 { (crate::k32::global_alloc(2 | 0x2000, 0), 0) } else { (h, crate::k32::global_size(h)) };
     mem::wp(out, new_stream(h, size, del != 0 || c.a(0) == 0));
     0
 }
@@ -308,24 +281,7 @@ fn p_render(c: &mut Ctx) -> u32 {
     let sh = -cys * h / hh.max(1);
     let dc = gcall(c, "gdi32", "CreateCompatibleDC", &[hdc]);
     let old = gcall(c, "gdi32", "SelectObject", &[dc, hbm]);
-    gcall(
-        c,
-        "gdi32",
-        "StretchBlt",
-        &[
-            hdc,
-            x,
-            y,
-            cx,
-            cy,
-            dc,
-            sx as u32,
-            sy as u32,
-            sw as u32,
-            sh as u32,
-            0x00cc_0020,
-        ],
-    );
+    gcall(c, "gdi32", "StretchBlt", &[hdc, x, y, cx, cy, dc, sx as u32, sy as u32, sw as u32, sh as u32, 0x00cc_0020]);
     gcall(c, "gdi32", "SelectObject", &[dc, old]);
     gcall(c, "gdi32", "DeleteDC", &[dc]);
     0
@@ -380,11 +336,7 @@ fn OleLoadPicture(c: &mut Ctx) -> u32 {
     let got = mem::heap_alloc(4, true);
     let mut data = Vec::new();
     loop {
-        let want = if size != 0 {
-            (size - data.len() as u32).min(0x10000)
-        } else {
-            0x10000
-        };
+        let want = if size != 0 { (size - data.len() as u32).min(0x10000) } else { 0x10000 };
         if want == 0 {
             break;
         }
@@ -399,16 +351,10 @@ fn OleLoadPicture(c: &mut Ctx) -> u32 {
     mem::heap_free(buf);
     mem::heap_free(got);
     let Some((w, h, px)) = decode(&data) else {
-        eprintln!(
-            "sake: OleLoadPicture: can't decode {} bytes ({:02x?})",
-            data.len(),
-            &data[..data.len().min(4)]
-        );
+        eprintln!("sake: OleLoadPicture: can't decode {} bytes ({:02x?})", data.len(), &data[..data.len().min(4)]);
         return E_FAIL;
     };
-    let Some(bits) = mem::alloc(w * h * 4) else {
-        return E_FAIL;
-    };
+    let Some(bits) = mem::alloc(w * h * 4) else { return E_FAIL };
     mem::write(bits, &px);
     let hbm = crate::gdi::bitmap_over(w as i32, h as i32, 32, bits, w * 4, false);
     let o = mem::heap_alloc(32, true);

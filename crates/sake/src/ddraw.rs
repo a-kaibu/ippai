@@ -118,11 +118,7 @@ fn unsupported(_: &mut Ctx) -> u32 {
 }
 
 fn guid_first(p: u32) -> u32 {
-    if p == 0 {
-        0
-    } else {
-        r32(p)
-    }
+    if p == 0 { 0 } else { r32(p) }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -317,32 +313,18 @@ fn surf_vtbl(kind: u8) -> u32 {
             (unsupported, 12),
         ];
         if kind >= 1 {
-            m.extend_from_slice(&[
-                (ok, 20),
-                (unsupported, 16),
-                (ok, 8),
-                (S_GetUniqueness, 8),
-                (ok, 4),
-            ]);
+            m.extend_from_slice(&[(ok, 20), (unsupported, 16), (ok, 8), (S_GetUniqueness, 8), (ok, 4)]);
         }
         if kind == 2 {
             m.extend_from_slice(&[(ok, 8), (S_GetZero, 8), (ok, 8), (S_GetZero, 8)]);
         }
-        vtable(
-            [
-                "IDirectDrawSurface",
-                "IDirectDrawSurface4",
-                "IDirectDrawSurface7",
-            ][kind as usize],
-            &m,
-        )
+        vtable(["IDirectDrawSurface", "IDirectDrawSurface4", "IDirectDrawSurface7"][kind as usize], &m)
     })
 }
 
 /// The guest interface for surface `id` as vtable kind `kind`.
 fn block(id: u32, kind: u8) -> u32 {
-    if let Some(b) = with(|s| s.surfs.get(&id).map(|x| x.blocks[kind as usize])).filter(|&b| b != 0)
-    {
+    if let Some(b) = with(|s| s.surfs.get(&id).map(|x| x.blocks[kind as usize])).filter(|&b| b != 0) {
         return b;
     }
     let b = mem::heap_alloc(8, true);
@@ -390,24 +372,20 @@ fn S_QueryInterface(c: &mut Ctx) -> u32 {
 }
 fn S_AddRef(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    with(|s| {
-        s.surfs.get_mut(&id).map_or(0, |x| {
-            x.refs += 1;
-            x.refs
-        })
-    })
+    with(|s| s.surfs.get_mut(&id).map_or(0, |x| {
+        x.refs += 1;
+        x.refs
+    }))
 }
 fn S_Release(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     release_surface(c, id)
 }
 fn release_surface(c: &mut Ctx, id: u32) -> u32 {
-    let left = with(|s| {
-        s.surfs.get_mut(&id).map_or(0, |x| {
-            x.refs = x.refs.saturating_sub(1);
-            x.refs
-        })
-    });
+    let left = with(|s| s.surfs.get_mut(&id).map_or(0, |x| {
+        x.refs = x.refs.saturating_sub(1);
+        x.refs
+    }));
     if left == 0 {
         // a flip chain goes with its front buffer
         let mut chain = vec![id];
@@ -457,9 +435,7 @@ fn free_surface(c: &mut Ctx, id: u32) {
 
 fn S_AddAttachedSurface(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    let Some((z, _)) = sid(c.a(1)) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some((z, _)) = sid(c.a(1)) else { return DDERR_INVALIDPARAMS };
     if surf(z).is_some_and(|x| x.caps & CAPS_ZBUFFER != 0) {
         with(|st| {
             st.surfs.get_mut(&z).map(|x| x.refs += 1);
@@ -473,11 +449,7 @@ fn S_DeleteAttachedSurface(c: &mut Ctx) -> u32 {
     let z = sid(c.a(2)).map(|x| x.0);
     let old = with(|st| {
         let x = st.surfs.get_mut(&id)?;
-        if x.zbuf != 0 && (z.is_none() || z == Some(x.zbuf)) {
-            Some(std::mem::take(&mut x.zbuf))
-        } else {
-            None
-        }
+        if x.zbuf != 0 && (z.is_none() || z == Some(x.zbuf)) { Some(std::mem::take(&mut x.zbuf)) } else { None }
     });
     if let Some(o) = old {
         release_surface(c, o);
@@ -488,9 +460,7 @@ fn S_DeleteAttachedSurface(c: &mut Ctx) -> u32 {
 fn S_GetAttachedSurface(c: &mut Ctx) -> u32 {
     let (id, kind) = this(c);
     let want = r32(c.a(1));
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
     if s.zbuf != 0 && want & CAPS_ZBUFFER != 0 {
         with(|st| st.surfs.get_mut(&s.zbuf).map(|x| x.refs += 1));
         put32(c.a(2), block(s.zbuf, kind));
@@ -507,9 +477,7 @@ fn S_GetAttachedSurface(c: &mut Ctx) -> u32 {
 
 fn S_EnumAttachedSurfaces(c: &mut Ctx) -> u32 {
     let (id, kind) = this(c);
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
     if s.next != 0 && s.caps & CAPS_FRONTBUFFER != 0 {
         if let Some(n) = surf(s.next) {
             let d = mem::heap_alloc(124, true);
@@ -526,9 +494,7 @@ fn S_EnumAttachedSurfaces(c: &mut Ctx) -> u32 {
 
 fn S_GetCaps(c: &mut Ctx) -> u32 {
     let (id, kind) = this(c);
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
     w32(c.a(1), s.caps);
     if kind == 2 {
         mem::fill(c.a(1) + 4, 12, 0);
@@ -537,17 +503,13 @@ fn S_GetCaps(c: &mut Ctx) -> u32 {
 }
 fn S_GetSurfaceDesc(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
     write_desc(c.a(1), Some(&s));
     DD_OK
 }
 fn S_GetPixelFormat(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
     write_pf(c.a(1), s.bpp, s.pf);
     DD_OK
 }
@@ -556,11 +518,7 @@ fn S_GetDDInterface(c: &mut Ctx) -> u32 {
     let obj = surf(id).map_or(0, |s| s.dd);
     let b = dd_iface(obj, [0, 2, 3][kind as usize]);
     mem::putp(c.a(1), b);
-    if b == 0 {
-        DDERR_INVALIDPARAMS
-    } else {
-        DD_OK
-    }
+    if b == 0 { DDERR_INVALIDPARAMS } else { DD_OK }
 }
 fn S_GetUniqueness(c: &mut Ctx) -> u32 {
     put32(c.a(1), 1);
@@ -574,11 +532,7 @@ fn S_GetZero(c: &mut Ctx) -> u32 {
 fn S_SetColorKey(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let (flags, ck) = (c.a(1), c.a(2));
-    let key = if ck == 0 {
-        None
-    } else {
-        Some((r32(ck), r32(ck + 4)))
-    };
+    let key = if ck == 0 { None } else { Some((r32(ck), r32(ck + 4))) };
     with(|s| {
         if let Some(x) = s.surfs.get_mut(&id) {
             if flags & 0x8 != 0 {
@@ -593,14 +547,8 @@ fn S_SetColorKey(c: &mut Ctx) -> u32 {
 }
 fn S_GetColorKey(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
-    let k = if c.a(1) & 0x8 != 0 {
-        s.ck_src
-    } else {
-        s.ck_dst
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
+    let k = if c.a(1) & 0x8 != 0 { s.ck_src } else { s.ck_dst };
     match k {
         Some((lo, hi)) => {
             w32(c.a(2), lo);
@@ -621,11 +569,7 @@ fn S_GetClipper(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let cl = surf(id).map_or(0, |s| s.clipper);
     put32(c.a(1), cl);
-    if cl == 0 {
-        DDERR_NOCLIPLIST
-    } else {
-        DD_OK
-    }
+    if cl == 0 { DDERR_NOCLIPLIST } else { DD_OK }
 }
 
 fn S_SetPalette(c: &mut Ctx) -> u32 {
@@ -639,11 +583,7 @@ fn S_GetPalette(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let p = surf(id).map_or(0, |s| s.palette);
     mem::putp(c.a(1), p);
-    if p == 0 {
-        DDERR_NOPALETTEATTACHED
-    } else {
-        DD_OK
-    }
+    if p == 0 { DDERR_NOPALETTEATTACHED } else { DD_OK }
 }
 
 /// Gives an 8-bit surface's bitmap its palette (its own, or the primary's).
@@ -653,11 +593,7 @@ fn apply_palette(id: u32) {
         if x.bpp != 8 {
             return None;
         }
-        let p = if x.palette != 0 {
-            x.palette
-        } else {
-            s.surfs.get(&s.primary).map_or(0, |p| p.palette)
-        };
+        let p = if x.palette != 0 { x.palette } else { s.surfs.get(&s.primary).map_or(0, |p| p.palette) };
         Some((x.hbm, *s.palettes.get(&p)?))
     }) else {
         return;
@@ -668,26 +604,12 @@ fn apply_palette(id: u32) {
 fn S_Lock(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let (rp, desc) = (c.a(1), c.a(2));
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
-    let r = if rp == 0 {
-        Rect {
-            l: 0,
-            t: 0,
-            r: s.w,
-            b: s.h,
-        }
-    } else {
-        Rect::read(rp)
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
+    let r = if rp == 0 { Rect { l: 0, t: 0, r: s.w, b: s.h } } else { Rect::read(rp) };
     write_desc(desc, Some(&s));
     w32(desc + 4, r32(desc + 4) | 0x800);
     let bpp = s.bpp as u32 / 8;
-    w32(
-        desc + 36,
-        s.bits + r.t.max(0) as u32 * s.pitch + r.l.max(0) as u32 * bpp,
-    );
+    w32(desc + 36, s.bits + r.t.max(0) as u32 * s.pitch + r.l.max(0) as u32 * bpp);
     with(|st| st.surfs.get_mut(&id).map(|x| x.lock = Some(r)));
     DD_OK
 }
@@ -702,9 +624,7 @@ fn S_Unlock(c: &mut Ctx) -> u32 {
 
 fn S_GetDC(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
     apply_palette(id);
     let dc = gcall(c, "gdi32", "CreateCompatibleDC", &[0]);
     gcall(c, "gdi32", "SelectObject", &[dc, s.hbm]);
@@ -714,31 +634,18 @@ fn S_GetDC(c: &mut Ctx) -> u32 {
 }
 fn S_ReleaseDC(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    let Some(s) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
     if s.dc != 0 {
         gcall(c, "gdi32", "DeleteDC", &[s.dc]);
         with(|st| st.surfs.get_mut(&id).map(|x| x.dc = 0));
     }
-    present_if_primary(
-        c,
-        id,
-        Rect {
-            l: 0,
-            t: 0,
-            r: s.w,
-            b: s.h,
-        },
-    );
+    present_if_primary(c, id, Rect { l: 0, t: 0, r: s.w, b: s.h });
     DD_OK
 }
 
 fn S_Flip(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    let Some(front) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
+    let Some(front) = surf(id) else { return DDERR_INVALIDPARAMS };
     let target = match sid(c.a(1)) {
         Some((t, _)) => t,
         None => front.next,
@@ -748,26 +655,13 @@ fn S_Flip(c: &mut Ctx) -> u32 {
     }
     // the pixels move, the interfaces stay
     with(|st| {
-        let (Some(mut a), Some(mut b)) =
-            (st.surfs.get(&id).cloned(), st.surfs.get(&target).cloned())
-        else {
-            return;
-        };
+        let (Some(mut a), Some(mut b)) = (st.surfs.get(&id).cloned(), st.surfs.get(&target).cloned()) else { return };
         std::mem::swap(&mut a.bits, &mut b.bits);
         std::mem::swap(&mut a.hbm, &mut b.hbm);
         st.surfs.insert(id, a);
         st.surfs.insert(target, b);
     });
-    present_if_primary(
-        c,
-        id,
-        Rect {
-            l: 0,
-            t: 0,
-            r: front.w,
-            b: front.h,
-        },
-    );
+    present_if_primary(c, id, Rect { l: 0, t: 0, r: front.w, b: front.h });
     DD_OK
 }
 
@@ -778,24 +672,15 @@ fn present_if_primary(c: &mut Ctx, id: u32, r: Rect) {
         return;
     }
     let (coop, exclusive) = with(|st| (st.hwnd, st.exclusive));
-    let hwnd = with(|st| st.clippers.get(&s.clipper).copied())
-        .filter(|&h| h != 0)
-        .unwrap_or(coop);
+    let hwnd = with(|st| st.clippers.get(&s.clipper).copied()).filter(|&h| h != 0).unwrap_or(coop);
     if hwnd == 0 {
         return;
     }
     apply_palette(id);
-    let Some(cr) = crate::user::client_rect_screen(hwnd) else {
-        return;
-    };
+    let Some(cr) = crate::user::client_rect_screen(hwnd) else { return };
     // windowed: the primary is the screen; exclusive: it is the window's client area
     let (ox, oy) = if exclusive { (0, 0) } else { (cr.l, cr.t) };
-    let r = Rect {
-        l: r.l.max(0),
-        t: r.t.max(0),
-        r: r.r.min(s.w),
-        b: r.b.min(s.h),
-    };
+    let r = Rect { l: r.l.max(0), t: r.t.max(0), r: r.r.min(s.w), b: r.b.min(s.h) };
     if r.r <= r.l || r.b <= r.t {
         return;
     }
@@ -806,17 +691,7 @@ fn present_if_primary(c: &mut Ctx, id: u32, r: Rect) {
         c,
         "gdi32",
         "BitBlt",
-        &[
-            dc,
-            (r.l - ox) as u32,
-            (r.t - oy) as u32,
-            (r.r - r.l) as u32,
-            (r.b - r.t) as u32,
-            mdc,
-            r.l as u32,
-            r.t as u32,
-            0x00cc_0020,
-        ],
+        &[dc, (r.l - ox) as u32, (r.t - oy) as u32, (r.r - r.l) as u32, (r.b - r.t) as u32, mdc, r.l as u32, r.t as u32, 0x00cc_0020],
     );
     gcall(c, "gdi32", "SelectObject", &[mdc, old]);
     gcall(c, "gdi32", "DeleteDC", &[mdc]);
@@ -830,12 +705,7 @@ fn rect_ok(r: Rect, w: i32, h: i32) -> bool {
 }
 
 fn clip_rect(r: Rect, w: i32, h: i32) -> Rect {
-    Rect {
-        l: r.l.max(0),
-        t: r.t.max(0),
-        r: r.r.min(w),
-        b: r.b.min(h),
-    }
+    Rect { l: r.l.max(0), t: r.t.max(0), r: r.r.min(w), b: r.b.min(h) }
 }
 
 fn read_px(p: *const u8, bpp: u32) -> u32 {
@@ -864,11 +734,7 @@ fn write_px(p: *mut u8, bpp: u32, v: u32) {
 }
 
 fn px_mask(bpp: u32) -> u32 {
-    if bpp >= 4 {
-        0x00ff_ffff
-    } else {
-        (1u32 << (bpp * 8)) - 1
-    }
+    if bpp >= 4 { 0x00ff_ffff } else { (1u32 << (bpp * 8)) - 1 }
 }
 
 /// The source pixel of destination pixel `i` of `d` stretched from `s`, as Windows' HEL steps:
@@ -893,26 +759,14 @@ fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>, mir
     let same = dw == sw && dh == sh && !mirror.0 && !mirror.1;
     // overlapping copies within one surface go bottom-up / right-to-left as needed
     let overlap = dst.bits == src.bits;
-    let rows: Box<dyn Iterator<Item = i32>> = if overlap && dr.t > sr.t {
-        Box::new((0..dh).rev())
-    } else {
-        Box::new(0..dh)
-    };
+    let rows: Box<dyn Iterator<Item = i32>> = if overlap && dr.t > sr.t { Box::new((0..dh).rev()) } else { Box::new(0..dh) };
     for y in rows {
         let dy = dr.t + y;
         let sy = if same {
             sr.t + y
         } else {
-            let k = if dh == sh {
-                y
-            } else {
-                stretch_pick(y, sh, dh, false)
-            };
-            if mirror.1 {
-                sr.b - 1 - k
-            } else {
-                sr.t + k
-            }
+            let k = if dh == sh { y } else { stretch_pick(y, sh, dh, false) };
+            if mirror.1 { sr.b - 1 - k } else { sr.t + k }
         };
         if dy < 0 || dy >= dst.h || sy < 0 || sy >= src.h {
             continue;
@@ -934,11 +788,7 @@ fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>, mir
             n = n.min(dst.w - x0).min(src.w - sx0);
             if n > 0 {
                 unsafe {
-                    std::ptr::copy(
-                        srow.add((sx0 as u32 * bpp) as usize),
-                        drow.add((x0 as u32 * bpp) as usize),
-                        (n as u32 * bpp) as usize,
-                    );
+                    std::ptr::copy(srow.add((sx0 as u32 * bpp) as usize), drow.add((x0 as u32 * bpp) as usize), (n as u32 * bpp) as usize);
                 }
             }
             continue;
@@ -948,16 +798,8 @@ fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>, mir
             let sx = if same {
                 sr.l + x
             } else {
-                let k = if dw == sw {
-                    x
-                } else {
-                    stretch_pick(x, sw, dw, true)
-                };
-                if mirror.0 {
-                    sr.r - 1 - k
-                } else {
-                    sr.l + k
-                }
+                let k = if dw == sw { x } else { stretch_pick(x, sw, dw, true) };
+                if mirror.0 { sr.r - 1 - k } else { sr.l + k }
             };
             if dx < 0 || dx >= dst.w || sx < 0 || sx >= src.w {
                 continue;
@@ -997,19 +839,7 @@ fn gdi_blit(c: &mut Ctx, dst: &Surf, dr: Rect, src: &Surf, sr: Rect) {
         c,
         "gdi32",
         "StretchBlt",
-        &[
-            d,
-            dr.l as u32,
-            dr.t as u32,
-            (dr.r - dr.l) as u32,
-            (dr.b - dr.t) as u32,
-            s,
-            sr.l as u32,
-            sr.t as u32,
-            (sr.r - sr.l) as u32,
-            (sr.b - sr.t) as u32,
-            0x00cc_0020,
-        ],
+        &[d, dr.l as u32, dr.t as u32, (dr.r - dr.l) as u32, (dr.b - dr.t) as u32, s, sr.l as u32, sr.t as u32, (sr.r - sr.l) as u32, (sr.b - sr.t) as u32, 0x00cc_0020],
     );
     gcall(c, "gdi32", "DeleteDC", &[s]);
     gcall(c, "gdi32", "DeleteDC", &[d]);
@@ -1019,19 +849,8 @@ fn gdi_blit(c: &mut Ctx, dst: &Surf, dr: Rect, src: &Surf, sr: Rect) {
 fn S_Blt(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let (drp, srcb, srp, flags, fx) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
-    let Some(dst) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
-    let dr = if drp == 0 {
-        Rect {
-            l: 0,
-            t: 0,
-            r: dst.w,
-            b: dst.h,
-        }
-    } else {
-        Rect::read(drp)
-    };
+    let Some(dst) = surf(id) else { return DDERR_INVALIDPARAMS };
+    let dr = if drp == 0 { Rect { l: 0, t: 0, r: dst.w, b: dst.h } } else { Rect::read(drp) };
     if flags & 0x400 != 0 {
         // COLORFILL
         let color = if fx != 0 { r32(fx + 80) } else { 0 };
@@ -1046,22 +865,9 @@ fn S_Blt(c: &mut Ctx) -> u32 {
         present_if_primary(c, id, dr);
         return DD_OK;
     }
-    let Some((sid_, _)) = sid(srcb) else {
-        return DDERR_INVALIDPARAMS;
-    };
-    let Some(src) = surf(sid_) else {
-        return DDERR_INVALIDPARAMS;
-    };
-    let sr = if srp == 0 {
-        Rect {
-            l: 0,
-            t: 0,
-            r: src.w,
-            b: src.h,
-        }
-    } else {
-        Rect::read(srp)
-    };
+    let Some((sid_, _)) = sid(srcb) else { return DDERR_INVALIDPARAMS };
+    let Some(src) = surf(sid_) else { return DDERR_INVALIDPARAMS };
+    let sr = if srp == 0 { Rect { l: 0, t: 0, r: src.w, b: src.h } } else { Rect::read(srp) };
     if (dst.clipper == 0 && !rect_ok(dr, dst.w, dst.h)) || !rect_ok(sr, src.w, src.h) {
         return DDERR_INVALIDRECT;
     }
@@ -1073,11 +879,7 @@ fn S_Blt(c: &mut Ctx) -> u32 {
         None
     };
     // DDBLT_DDFX: DDBLTFX_MIRRORLEFTRIGHT / MIRRORUPDOWN
-    let ddfx = if flags & 0x800 != 0 && fx != 0 {
-        r32(fx + 4)
-    } else {
-        0
-    };
+    let ddfx = if flags & 0x800 != 0 && fx != 0 { r32(fx + 4) } else { 0 };
     if src.bpp == dst.bpp {
         blit(&dst, dr, &src, sr, key, (ddfx & 2 != 0, ddfx & 4 != 0));
     } else {
@@ -1090,31 +892,11 @@ fn S_Blt(c: &mut Ctx) -> u32 {
 fn S_BltFast(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let (x, y, srcb, srp, trans) = (c.a(1) as i32, c.a(2) as i32, c.a(3), c.a(4), c.a(5));
-    let Some(dst) = surf(id) else {
-        return DDERR_INVALIDPARAMS;
-    };
-    let Some((sid_, _)) = sid(srcb) else {
-        return DDERR_INVALIDPARAMS;
-    };
-    let Some(src) = surf(sid_) else {
-        return DDERR_INVALIDPARAMS;
-    };
-    let sr = if srp == 0 {
-        Rect {
-            l: 0,
-            t: 0,
-            r: src.w,
-            b: src.h,
-        }
-    } else {
-        Rect::read(srp)
-    };
-    let dr = Rect {
-        l: x,
-        t: y,
-        r: x + sr.r - sr.l,
-        b: y + sr.b - sr.t,
-    };
+    let Some(dst) = surf(id) else { return DDERR_INVALIDPARAMS };
+    let Some((sid_, _)) = sid(srcb) else { return DDERR_INVALIDPARAMS };
+    let Some(src) = surf(sid_) else { return DDERR_INVALIDPARAMS };
+    let sr = if srp == 0 { Rect { l: 0, t: 0, r: src.w, b: src.h } } else { Rect::read(srp) };
+    let dr = Rect { l: x, t: y, r: x + sr.r - sr.l, b: y + sr.b - sr.t };
     if !rect_ok(dr, dst.w, dst.h) || !rect_ok(sr, src.w, src.h) {
         return DDERR_INVALIDRECT;
     }
@@ -1163,12 +945,7 @@ fn C_QueryInterface(c: &mut Ctx) -> u32 {
 fn C_GetClipList(c: &mut Ctx) -> u32 {
     // RGNDATA with the window's client rectangle
     let h = with(|s| s.clippers.get(&c.a(0)).copied()).unwrap_or(0);
-    let r = crate::user::client_rect_screen(h).unwrap_or(Rect {
-        l: 0,
-        t: 0,
-        r: 0,
-        b: 0,
-    });
+    let r = crate::user::client_rect_screen(h).unwrap_or(Rect { l: 0, t: 0, r: 0, b: 0 });
     let need = 32 + 16;
     if c.a(2) == 0 {
         put32(c.a(3), need);
@@ -1202,15 +979,7 @@ fn palette_vtbl() -> u32 {
     *V.get_or_init(|| {
         vtable(
             "IDirectDrawPalette",
-            &[
-                (C_QueryInterface, 12),
-                (one, 4),
-                (one, 4),
-                (P_GetCaps, 8),
-                (P_GetEntries, 20),
-                (ok, 16),
-                (P_SetEntries, 20),
-            ],
+            &[(C_QueryInterface, 12), (one, 4), (one, 4), (P_GetCaps, 8), (P_GetEntries, 20), (ok, 16), (P_SetEntries, 20)],
         )
     })
 }
@@ -1223,10 +992,7 @@ fn P_GetEntries(c: &mut Ctx) -> u32 {
     let pal = with(|s| s.palettes.get(&b).copied()).unwrap_or([0; 256]);
     for i in 0..n.min(256u32.saturating_sub(base)) {
         let v = pal[(base + i) as usize];
-        w32(
-            out + 4 * i,
-            (v >> 16 & 0xff) | (v & 0xff00) | (v & 0xff) << 16,
-        );
+        w32(out + 4 * i, (v >> 16 & 0xff) | (v & 0xff00) | (v & 0xff) << 16);
     }
     DD_OK
 }
@@ -1252,12 +1018,7 @@ fn P_SetEntries(c: &mut Ctx) -> u32 {
 
 /// The IDirectDraw vtable of interface version index 0..=3 (1, 2, 4, 7).
 fn dd_vtbl(v: usize) -> u32 {
-    static B: [OnceLock<u32>; 4] = [
-        OnceLock::new(),
-        OnceLock::new(),
-        OnceLock::new(),
-        OnceLock::new(),
-    ];
+    static B: [OnceLock<u32>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
     *B[v].get_or_init(|| {
         let mut m: Vec<(Handler, u32)> = vec![
             (D_QueryInterface, 12),
@@ -1281,39 +1042,19 @@ fn dd_vtbl(v: usize) -> u32 {
             (ok, 8),
             (D_RestoreDisplayMode, 4),
             (D_SetCooperativeLevel, 12),
-            (
-                if v == 0 {
-                    D_SetDisplayMode1
-                } else {
-                    D_SetDisplayMode
-                },
-                if v == 0 { 16 } else { 24 },
-            ),
+            (if v == 0 { D_SetDisplayMode1 } else { D_SetDisplayMode }, if v == 0 { 16 } else { 24 }),
             (ok, 12),
         ];
         if v >= 1 {
             m.push((D_GetAvailableVidMem, 16));
         }
         if v >= 2 {
-            m.extend_from_slice(&[
-                (D_GetSurfaceFromDC, 12),
-                (ok, 4),
-                (ok, 4),
-                (D_GetDeviceIdentifier, 12),
-            ]);
+            m.extend_from_slice(&[(D_GetSurfaceFromDC, 12), (ok, 4), (ok, 4), (D_GetDeviceIdentifier, 12)]);
         }
         if v == 3 {
             m.extend_from_slice(&[(unsupported, 16), (unsupported, 12)]);
         }
-        vtable(
-            [
-                "IDirectDraw",
-                "IDirectDraw2",
-                "IDirectDraw4",
-                "IDirectDraw7",
-            ][v],
-            &m,
-        )
+        vtable(["IDirectDraw", "IDirectDraw2", "IDirectDraw4", "IDirectDraw7"][v], &m)
     })
 }
 
@@ -1340,13 +1081,7 @@ fn dd_new() -> u32 {
     dds(|m, next| {
         let id = *next;
         *next += 1;
-        m.insert(
-            id,
-            DdObj {
-                refs: [0; 4],
-                blocks: [0; 5],
-            },
-        );
+        m.insert(id, DdObj { refs: [0; 4], blocks: [0; 5] });
         id
     })
 }
@@ -1354,9 +1089,7 @@ fn dd_new() -> u32 {
 /// The guest interface of object `obj` as version index `v` (4: IDirect3D7), one reference
 /// added (QueryInterface / create). 0 if the object is gone.
 fn dd_iface(obj: u32, v: usize) -> u32 {
-    let Some(b) = dds(|m, _| m.get(&obj).map(|o| o.blocks[v])) else {
-        return 0;
-    };
+    let Some(b) = dds(|m, _| m.get(&obj).map(|o| o.blocks[v])) else { return 0 };
     let b = if b != 0 {
         b
     } else {
@@ -1382,12 +1115,10 @@ fn dd_version(c: &Ctx) -> usize {
 
 fn dd_addref(b: u32) -> u32 {
     let (obj, v) = dd_of(b);
-    dds(|m, _| {
-        m.get_mut(&obj).map_or(0, |o| {
-            o.refs[v] += 1;
-            o.refs[v]
-        })
-    })
+    dds(|m, _| m.get_mut(&obj).map_or(0, |o| {
+        o.refs[v] += 1;
+        o.refs[v]
+    }))
 }
 
 /// Drops a reference of interface `b`; the object goes with its last one (the guest blocks
@@ -1457,11 +1188,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
         _ => 0,
     };
     let flags = r32(d + 4);
-    let mut caps = if flags & 1 != 0 {
-        r32(d + 104)
-    } else {
-        CAPS_OFFSCREENPLAIN
-    };
+    let mut caps = if flags & 1 != 0 { r32(d + 104) } else { CAPS_OFFSCREENPLAIN };
     let (mw, mh, mbpp) = display();
     let (mut bpp, mut r565) = (mbpp, mbpp == 16);
     let mut pfv = None;
@@ -1477,24 +1204,14 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
             bpp = r32(pf + 12) as u16;
             r565 = bpp == 16 && r32(pf + 20) == 0x07e0;
             let a = if pff & 1 != 0 { r32(pf + 28) } else { 0 };
-            pfv = Some([
-                0x40 | (a != 0) as u32,
-                r32(pf + 16),
-                r32(pf + 20),
-                r32(pf + 24),
-                a,
-            ]);
+            pfv = Some([0x40 | (a != 0) as u32, r32(pf + 16), r32(pf + 20), r32(pf + 24), a]);
         }
     } else if caps & CAPS_ZBUFFER != 0 {
         bpp = 16;
         pfv = Some([0x400, 0, 0xffff, 0, 0]);
     }
     let (w, h) = if caps & CAPS_PRIMARY != 0 {
-        if with(|s| s.exclusive) {
-            (mw, mh)
-        } else {
-            crate::user::screen()
-        }
+        if with(|s| s.exclusive) { (mw, mh) } else { crate::user::screen() }
     } else {
         (r32(d + 12) as i32, r32(d + 8) as i32)
     };
@@ -1504,20 +1221,12 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     if caps & CAPS_SYSTEMMEMORY == 0 {
         caps |= CAPS_VIDEOMEMORY | CAPS_LOCALVIDMEM;
     }
-    let backs = if flags & 0x20 != 0 && caps & CAPS_FLIP != 0 {
-        r32(d + 20).clamp(1, 3)
-    } else {
-        0
-    };
+    let backs = if flags & 0x20 != 0 && caps & CAPS_FLIP != 0 { r32(d + 20).clamp(1, 3) } else { 0 };
     if backs > 0 {
         caps |= CAPS_FRONTBUFFER;
     }
-    let pf = pfv
-        .filter(|p| p[1] | p[2] | p[3] != 0)
-        .unwrap_or_else(|| plain_pf(bpp, r565));
-    let Some(id) = new_surface_pf(w, h, bpp, r565, pf, caps) else {
-        return DDERR_OUTOFMEMORY;
-    };
+    let pf = pfv.filter(|p| p[1] | p[2] | p[3] != 0).unwrap_or_else(|| plain_pf(bpp, r565));
+    let Some(id) = new_surface_pf(w, h, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
     let owner = dd_of(c.a(0)).0;
     let held = if kind >= 1 { c.a(0) } else { 0 };
     if held != 0 {
@@ -1538,13 +1247,8 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     }
     let mut prev = id;
     for i in 0..backs {
-        let bc = (caps & !(CAPS_PRIMARY | CAPS_FRONTBUFFER))
-            | CAPS_BACKBUFFER * (i == 0) as u32
-            | CAPS_FLIP
-            | CAPS_COMPLEX;
-        let Some(b) = new_surface(w, h, bpp, r565, bc) else {
-            return DDERR_OUTOFMEMORY;
-        };
+        let bc = (caps & !(CAPS_PRIMARY | CAPS_FRONTBUFFER)) | CAPS_BACKBUFFER * (i == 0) as u32 | CAPS_FLIP | CAPS_COMPLEX;
+        let Some(b) = new_surface(w, h, bpp, r565, bc) else { return DDERR_OUTOFMEMORY };
         with(|s| {
             s.surfs.get_mut(&b).map(|x| x.dd = owner);
             s.surfs.get_mut(&prev).map(|x| x.next = b)
@@ -1558,13 +1262,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     DD_OK
 }
 
-const MODES: [(i32, i32); 5] = [
-    (640, 480),
-    (800, 600),
-    (1024, 768),
-    (1280, 720),
-    (1280, 960),
-];
+const MODES: [(i32, i32); 5] = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960)];
 
 fn D_EnumDisplayModes(c: &mut Ctx) -> u32 {
     let (filter, ctx, cb) = (c.a(2), c.a(3), c.a(4));
@@ -1572,10 +1270,7 @@ fn D_EnumDisplayModes(c: &mut Ctx) -> u32 {
     let d = mem::heap_alloc(124, true);
     'all: for bpp in [8u16, 16, 32] {
         for (w, h) in MODES {
-            if filter != 0
-                && r32(filter + 4) & 0x6 == 0x6
-                && (r32(filter + 12) as i32 != w || r32(filter + 8) as i32 != h)
-            {
+            if filter != 0 && r32(filter + 4) & 0x6 == 0x6 && (r32(filter + 12) as i32 != w || r32(filter + 8) as i32 != h) {
                 continue;
             }
             w32(d, size);
@@ -1597,10 +1292,7 @@ fn D_GetCaps(c: &mut Ctx) -> u32 {
         let size = r32(p).clamp(4, 380);
         mem::fill(p + 4, size - 4, 0);
         // BLT | BLTCOLORFILL | BLTSTRETCH | COLORKEY | PALETTE
-        w32(
-            p + 4,
-            0x40 | 0x0400_0000 | 0x200 | 0x0040_0000 | 0x0080_0000,
-        );
+        w32(p + 4, 0x40 | 0x0400_0000 | 0x200 | 0x0040_0000 | 0x0080_0000);
         w32(p + 12, 0x200); // CKEYCAPS_SRCBLT
         w32(p + 16, 0x0002_0000 | 0x0004_0000); // FXCAPS_BLTSTRETCHX/Y
         if size >= 68 {

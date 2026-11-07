@@ -44,10 +44,7 @@ fn wq(a: u32, v: u32) {
 fn table(name: &str, fs: &[Handler]) -> u32 {
     let t = mem::heap_alloc(8 * fs.len() as u32, true);
     for (i, f) in fs.iter().enumerate() {
-        wq(
-            t + 8 * i as u32,
-            host_fn(&format!("msvcp_loc::{name}::{i}"), *f, 0),
-        );
+        wq(t + 8 * i as u32, host_fn(&format!("msvcp_loc::{name}::{i}"), *f, 0));
     }
     t
 }
@@ -103,11 +100,7 @@ fn towlower(w: u16) -> u16 {
     if w as u32 == WEOF {
         w
     } else if w < 256 {
-        if (0x41..=0x5a).contains(&w) {
-            w + 32
-        } else {
-            w
-        }
+        if (0x41..=0x5a).contains(&w) { w + 32 } else { w }
     } else {
         crate::text::lower16(w)
     }
@@ -116,19 +109,13 @@ fn towupper(w: u16) -> u16 {
     if w as u32 == WEOF {
         w
     } else if w < 256 {
-        if (0x61..=0x7a).contains(&w) {
-            w - 32
-        } else {
-            w
-        }
+        if (0x61..=0x7a).contains(&w) { w - 32 } else { w }
     } else {
         crate::text::upper16(w)
     }
 }
 fn wslice(a: u32, end: u32) -> Vec<u16> {
-    (0..end.saturating_sub(a) / 2)
-        .map(|i| r16(a + 2 * i))
-        .collect()
+    (0..end.saturating_sub(a) / 2).map(|i| r16(a + 2 * i)).collect()
 }
 
 /// _Mbrtowc(pwc, s, n, state, cvtvec)
@@ -249,21 +236,7 @@ fn cc_length(c: &mut Ctx) -> u32 {
 fn cc_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
     *V.get_or_init(|| {
-        table(
-            "codecvt",
-            &[
-                facet_delete,
-                facet_incref,
-                facet_decref,
-                yes,
-                yes,
-                yes,
-                cc_noconv,
-                cc_noconv,
-                cc_unshift,
-                cc_length,
-            ],
-        )
+        table("codecvt", &[facet_delete, facet_incref, facet_decref, yes, yes, yes, cc_noconv, cc_noconv, cc_unshift, cc_length])
     })
 }
 fn new_cc() -> u32 {
@@ -381,21 +354,7 @@ fn wc_encoding(c: &mut Ctx) -> u32 {
 fn wc_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
     *V.get_or_init(|| {
-        table(
-            "wcodecvt",
-            &[
-                facet_delete,
-                facet_incref,
-                facet_decref,
-                no,
-                wc_max_length,
-                wc_encoding,
-                wc_in,
-                wc_out,
-                wc_unshift,
-                wc_length,
-            ],
-        )
+        table("wcodecvt", &[facet_delete, facet_incref, facet_decref, no, wc_max_length, wc_encoding, wc_in, wc_out, wc_unshift, wc_length])
     })
 }
 fn new_wc() -> u32 {
@@ -508,21 +467,8 @@ fn ct_vtable() -> u32 {
         table(
             "wctype",
             &[
-                facet_delete,
-                facet_incref,
-                facet_decref,
-                ct_is_range,
-                ct_is,
-                ct_scan_is,
-                ct_scan_not,
-                ct_tolower_range,
-                ct_tolower,
-                ct_toupper_range,
-                ct_toupper,
-                ct_widen_range,
-                ct_widen,
-                ct_narrow_range,
-                ct_narrow,
+                facet_delete, facet_incref, facet_decref, ct_is_range, ct_is, ct_scan_is, ct_scan_not, ct_tolower_range, ct_tolower, ct_toupper_range, ct_toupper,
+                ct_widen_range, ct_widen, ct_narrow_range, ct_narrow,
             ],
         )
     })
@@ -612,18 +558,10 @@ fn m_donarrow(c: &mut Ctx) -> u32 {
 // hidden result
 
 fn ch<const W: bool>(p: u32) -> u16 {
-    if W {
-        r16(p)
-    } else {
-        r8(p) as u16
-    }
+    if W { r16(p) } else { r8(p) as u16 }
 }
 const fn es<const W: bool>() -> u32 {
-    if W {
-        2
-    } else {
-        1
-    }
+    if W { 2 } else { 1 }
 }
 /// *it++ = v
 fn it_put<const W: bool>(c: &mut Ctx, it: u32, v: u16) {
@@ -636,8 +574,7 @@ fn it_put<const W: bool>(c: &mut Ctx, it: u32, v: u16) {
 /// do_put(this, result, it, ios_base&, fill, tm*, specifier, modifier): one field with
 /// _Strftime / _Wcsftime ("%x" / "%Ex"), badbit when it is not one
 fn tp_do_put<const W: bool>(c: &mut Ctx) -> u32 {
-    let (ret, it, ios, tm, spec, modi) =
-        (c.a(1), c.a(2), c.a(3), c.a(5), c.a(6) as u8, c.a(7) as u8);
+    let (ret, it, ios, tm, spec, modi) = (c.a(1), c.a(2), c.a(3), c.a(5), c.a(6) as u8, c.a(7) as u8);
     mem::copy(ret, it, 16);
     let mut fmt = vec![b'%' as u16];
     if modi != 0 {
@@ -646,11 +583,7 @@ fn tp_do_put<const W: bool>(c: &mut Ctx) -> u32 {
     fmt.push(spec as u16);
     match crate::crt::strftime_w(&fmt, tm) {
         Some(out) => {
-            let out: Vec<u16> = if W {
-                out
-            } else {
-                crate::text::w2a(&out).into_iter().map(u16::from).collect()
-            };
+            let out: Vec<u16> = if W { out } else { crate::text::w2a(&out).into_iter().map(u16::from).collect() };
             for v in out {
                 it_put::<W>(c, ret, v);
             }
@@ -661,12 +594,7 @@ fn tp_do_put<const W: bool>(c: &mut Ctx) -> u32 {
 }
 fn tp_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| {
-        table(
-            if W { "wtime_put" } else { "time_put" },
-            &[facet_delete, facet_incref, facet_decref, tp_do_put::<W>],
-        )
-    })
+    *V[W as usize].get_or_init(|| table(if W { "wtime_put" } else { "time_put" }, &[facet_delete, facet_incref, facet_decref, tp_do_put::<W>]))
 }
 fn new_tp<const W: bool>() -> u32 {
     new_facet(24, tp_vtable::<W>())
@@ -694,16 +622,7 @@ fn tp_put(c: &mut Ctx) -> u32 {
 /// put(this, result, it, ios, fill, tm, pattern, pattern end): literal text, and each %[EOQ#]x
 /// through do_put (<xloctime>'s loop: a trailing % or %E is copied as it is)
 fn tp_put_pattern<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, ret, it, ios, fill, tm, mut p, end) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a64(4),
-        c.a64(5),
-        c.a(6),
-        c.a(7),
-    );
+    let (this, ret, it, ios, fill, tm, mut p, end) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a64(4), c.a64(5), c.a(6), c.a(7));
     let e = es::<W>();
     let mut cur = mem::heap_alloc(16, false);
     mem::copy(cur, it, 16);
@@ -730,20 +649,7 @@ fn tp_put_pattern<const W: bool>(c: &mut Ctx) -> u32 {
                 spec = nar(ch::<W>(p));
             }
             let out = mem::heap_alloc(16, false);
-            vcall(
-                c,
-                this,
-                3,
-                &[
-                    mem::widen(out),
-                    mem::widen(cur),
-                    mem::widen(ios),
-                    fill,
-                    tm,
-                    spec as u64,
-                    modi as u64,
-                ],
-            );
+            vcall(c, this, 3, &[mem::widen(out), mem::widen(cur), mem::widen(ios), fill, tm, spec as u64, modi as u64]);
             mem::heap_free(cur);
             cur = out;
             if c.jumped {
@@ -777,14 +683,8 @@ pub fn init() {
         ("_Getcvt".into(), _Getcvt),
         ("_Getctype".into(), _Getctype),
         ("_Getcoll".into(), _Getcoll),
-        (
-            "?_Getcvt@_Locinfo@std@@QEBA?AU_Cvtvec@@XZ".into(),
-            locinfo_getcvt,
-        ),
-        (
-            "?_Getctype@_Locinfo@std@@QEBA?AU_Ctypevec@@XZ".into(),
-            locinfo_getctype,
-        ),
+        ("?_Getcvt@_Locinfo@std@@QEBA?AU_Cvtvec@@XZ".into(), locinfo_getcvt),
+        ("?_Getctype@_Locinfo@std@@QEBA?AU_Ctypevec@@XZ".into(), locinfo_getctype),
         ("_Getwctype".into(), _Getwctype),
         ("_Getwctypes".into(), _Getwctypes),
         ("_Towlower".into(), _Towlower),
@@ -842,22 +742,13 @@ pub fn init() {
         (format!("?is@{CT}QEBA_NF_W@Z"), m_is),
         (format!("?scan_is@{CT}QEBAPEB_WFPEB_W0@Z"), m_scan_is),
         (format!("?scan_not@{CT}QEBAPEB_WFPEB_W0@Z"), m_scan_not),
-        (
-            format!("?tolower@{CT}QEBAPEB_WPEA_WPEB_W@Z"),
-            m_tolower_range,
-        ),
+        (format!("?tolower@{CT}QEBAPEB_WPEA_WPEB_W@Z"), m_tolower_range),
         (format!("?tolower@{CT}QEBA_W_W@Z"), m_tolower),
-        (
-            format!("?toupper@{CT}QEBAPEB_WPEA_WPEB_W@Z"),
-            m_toupper_range,
-        ),
+        (format!("?toupper@{CT}QEBAPEB_WPEA_WPEB_W@Z"), m_toupper_range),
         (format!("?toupper@{CT}QEBA_W_W@Z"), m_toupper),
         (format!("?widen@{CT}QEBAPEBDPEBD0PEA_W@Z"), m_widen_range),
         (format!("?widen@{CT}QEBA_WD@Z"), m_widen),
-        (
-            format!("?narrow@{CT}QEBAPEB_WPEB_W0DPEAD@Z"),
-            m_narrow_range,
-        ),
+        (format!("?narrow@{CT}QEBAPEB_WPEB_W0DPEAD@Z"), m_narrow_range),
         (format!("?narrow@{CT}QEBAD_WD@Z"), m_narrow),
         (format!("?_Dowiden@{CT}IEBA_WD@Z"), m_dowiden),
         (format!("?_Donarrow@{CT}IEBAD_WD@Z"), m_donarrow),
@@ -865,69 +756,29 @@ pub fn init() {
         (format!("?do_is@{CT}MEBA_NF_W@Z"), ct_is),
         (format!("?do_scan_is@{CT}MEBAPEB_WFPEB_W0@Z"), ct_scan_is),
         (format!("?do_scan_not@{CT}MEBAPEB_WFPEB_W0@Z"), ct_scan_not),
-        (
-            format!("?do_tolower@{CT}MEBAPEB_WPEA_WPEB_W@Z"),
-            ct_tolower_range,
-        ),
+        (format!("?do_tolower@{CT}MEBAPEB_WPEA_WPEB_W@Z"), ct_tolower_range),
         (format!("?do_tolower@{CT}MEBA_W_W@Z"), ct_tolower),
-        (
-            format!("?do_toupper@{CT}MEBAPEB_WPEA_WPEB_W@Z"),
-            ct_toupper_range,
-        ),
+        (format!("?do_toupper@{CT}MEBAPEB_WPEA_WPEB_W@Z"), ct_toupper_range),
         (format!("?do_toupper@{CT}MEBA_W_W@Z"), ct_toupper),
-        (
-            format!("?do_widen@{CT}MEBAPEBDPEBD0PEA_W@Z"),
-            ct_widen_range,
-        ),
+        (format!("?do_widen@{CT}MEBAPEBDPEBD0PEA_W@Z"), ct_widen_range),
         (format!("?do_widen@{CT}MEBA_WD@Z"), ct_widen),
-        (
-            format!("?do_narrow@{CT}MEBAPEB_WPEB_W0DPEAD@Z"),
-            ct_narrow_range,
-        ),
+        (format!("?do_narrow@{CT}MEBAPEB_WPEB_W0DPEAD@Z"), ct_narrow_range),
         (format!("?do_narrow@{CT}MEBAD_WD@Z"), ct_narrow),
     ];
     for (w, tp, it, el) in [
-        (
-            false,
-            "?$time_put@DV?$ostreambuf_iterator@DU?$char_traits@D@std@@@std@@@std@@",
-            "?AV?$ostreambuf_iterator@DU?$char_traits@D@std@@@2@V32@",
-            "D",
-        ),
-        (
-            true,
-            TP,
-            "?AV?$ostreambuf_iterator@_WU?$char_traits@_W@std@@@2@V32@",
-            "_W",
-        ),
+        (false, "?$time_put@DV?$ostreambuf_iterator@DU?$char_traits@D@std@@@std@@@std@@", "?AV?$ostreambuf_iterator@DU?$char_traits@D@std@@@2@V32@", "D"),
+        (true, TP, "?AV?$ostreambuf_iterator@_WU?$char_traits@_W@std@@@2@V32@", "_W"),
     ] {
         let g = |n: Handler, m: Handler| if w { m } else { n };
-        list.push((
-            format!("?_Getcat@{tp}{GETCAT}"),
-            g(tp_getcat::<false>, tp_getcat::<true>),
-        ));
-        list.push((
-            format!("??0{tp}QEAA@_K@Z"),
-            g(tp_ctor::<false>, tp_ctor::<true>),
-        ));
-        list.push((
-            format!("??0{tp}QEAA@AEBV_Locinfo@1@_K@Z"),
-            g(tp_ctor_li::<false>, tp_ctor_li::<true>),
-        ));
+        list.push((format!("?_Getcat@{tp}{GETCAT}"), g(tp_getcat::<false>, tp_getcat::<true>)));
+        list.push((format!("??0{tp}QEAA@_K@Z"), g(tp_ctor::<false>, tp_ctor::<true>)));
+        list.push((format!("??0{tp}QEAA@AEBV_Locinfo@1@_K@Z"), g(tp_ctor_li::<false>, tp_ctor_li::<true>)));
         list.push((format!("??1{tp}MEAA@XZ"), crate::msvcp::nothing));
         list.push((format!("?_Init@{tp}IEAAXAEBV_Locinfo@2@@Z"), no));
-        list.push((
-            format!("?put@{tp}QEBA{it}AEAVios_base@2@{el}PEBUtm@@DD@Z"),
-            tp_put,
-        ));
+        list.push((format!("?put@{tp}QEBA{it}AEAVios_base@2@{el}PEBUtm@@DD@Z"), tp_put));
         let pat = if w { "PEB_W4" } else { "PEBD3" };
-        list.push((
-            format!("?put@{tp}QEBA{it}AEAVios_base@2@{el}PEBUtm@@{pat}@Z"),
-            g(tp_put_pattern::<false>, tp_put_pattern::<true>),
-        ));
-        list.push((
-            format!("?do_put@{tp}MEBA{it}AEAVios_base@2@{el}PEBUtm@@DD@Z"),
-            g(tp_do_put::<false>, tp_do_put::<true>),
-        ));
+        list.push((format!("?put@{tp}QEBA{it}AEAVios_base@2@{el}PEBUtm@@{pat}@Z"), g(tp_put_pattern::<false>, tp_put_pattern::<true>)));
+        list.push((format!("?do_put@{tp}MEBA{it}AEAVios_base@2@{el}PEBUtm@@DD@Z"), g(tp_do_put::<false>, tp_do_put::<true>)));
     }
     for (name, f) in list {
         implement("msvcp140", Box::leak(name.into_boxed_str()), f);

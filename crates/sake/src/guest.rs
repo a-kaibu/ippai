@@ -19,11 +19,7 @@ pub fn init() {
     if crate::env_on!("SAKE_NO_GUEST_CRT") {
         return;
     }
-    let (want, bytes) = if mem::x64() {
-        (code64::AT, code64::CODE)
-    } else {
-        (code::AT, code::CODE)
-    };
+    let (want, bytes) = if mem::x64() { (code64::AT, code64::CODE) } else { (code::AT, code::CODE) };
     let size = (bytes.len() as u32 + 0xfff) & !0xfff;
     let Some(at) = mem::reserve(want, size, 0x20, 0x20000, false) else {
         eprintln!("sake: no room for the guest C library at {want:#x}");
@@ -54,10 +50,7 @@ pub fn bind_host() {
         ] {
             mem::w64(sym(slot).unwrap(), crate::api::export(dll, name) as u64);
         }
-        mem::w64(
-            sym("host_cs_wake").unwrap(),
-            crate::api::host_fn("cs_wake64", cs_wake, 0) as u64,
-        );
+        mem::w64(sym("host_cs_wake").unwrap(), crate::api::host_fn("cs_wake64", cs_wake, 0) as u64);
         mem::w64(sym("slab_table").unwrap(), mem::slab_table() as u64);
         return;
     }
@@ -71,14 +64,7 @@ pub fn bind_host() {
         ("host_free", "free", true),
     ] {
         let trap = crate::api::export("msvcrt", name);
-        mem::w32(
-            sym(slot).unwrap(),
-            if stub {
-                crate::fast::bind("msvcrt", name, trap)
-            } else {
-                trap
-            },
-        );
+        mem::w32(sym(slot).unwrap(), if stub { crate::fast::bind("msvcrt", name, trap) } else { trap });
     }
 }
 
@@ -118,23 +104,10 @@ pub fn lookup(key: &str, name: &str) -> Option<u32> {
         if let Some(n) = x64_fast(key, name) {
             return sym(n);
         }
-    } else if matches!(
-        name,
-        "EnterCriticalSection"
-            | "LeaveCriticalSection"
-            | "GetLastError"
-            | "SetLastError"
-            | "TlsGetValue"
-            | "HeapAlloc"
-            | "HeapFree"
-            | "malloc"
-            | "free"
-            | "_errno"
-    ) {
+    } else if matches!(name, "EnterCriticalSection" | "LeaveCriticalSection" | "GetLastError" | "SetLastError" | "TlsGetValue" | "HeapAlloc" | "HeapFree" | "malloc" | "free" | "_errno") {
         return None;
     }
-    let crt = matches!(key, "msvcrt" | "ucrtbase" | "crtdll")
-        || (key.starts_with("msvcr") && key[5..].bytes().all(|b| b.is_ascii_digit()));
+    let crt = matches!(key, "msvcrt" | "ucrtbase" | "crtdll") || (key.starts_with("msvcr") && key[5..].bytes().all(|b| b.is_ascii_digit()));
     if !crt {
         return None;
     }

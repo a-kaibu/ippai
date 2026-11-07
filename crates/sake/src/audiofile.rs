@@ -16,11 +16,7 @@ pub enum Codec {
     /// little-endian PCM as it is: bits per sample (8 unsigned, 16/24/32 signed), or float
     Pcm { bits: u16, float: bool },
     /// for the page's AudioDecoder: WebCodecs' codec string and description
-    Page {
-        codec: String,
-        desc: Vec<u8>,
-        subtype: u32,
-    },
+    Page { codec: String, desc: Vec<u8>, subtype: u32 },
 }
 
 /// A file's sound: its packets (offset, bytes) and how many frames each holds.
@@ -119,10 +115,7 @@ fn wave(b: &[u8]) -> Option<Track> {
                         at += n as u64;
                     }
                     Some(Track {
-                        codec: Codec::Pcm {
-                            bits,
-                            float: tag as u32 == FLOAT,
-                        },
+                        codec: Codec::Pcm { bits, float: tag as u32 == FLOAT },
                         rate,
                         channels: ch as u32,
                         packets,
@@ -168,11 +161,7 @@ fn mp3(b: &[u8], from: usize, to: usize) -> Option<Track> {
         return None;
     }
     let secs = frames.iter().map(|&f| f as f64).sum::<f64>() / first.rate as f64;
-    let avg = if secs > 0.0 {
-        (bytes as f64 / secs) as u32
-    } else {
-        0
-    };
+    let avg = if secs > 0.0 { (bytes as f64 / secs) as u32 } else { 0 };
     Some(Track {
         codec: Codec::Page {
             codec: "mp3".into(),
@@ -217,10 +206,7 @@ fn boxes(b: &[u8], from: usize, to: usize) -> Vec<([u8; 4], usize, usize)> {
 }
 
 fn child(b: &[u8], from: usize, to: usize, kind: &[u8; 4]) -> Option<(usize, usize)> {
-    boxes(b, from, to)
-        .into_iter()
-        .find(|x| &x.0 == kind)
-        .map(|x| (x.1, x.2))
+    boxes(b, from, to).into_iter().find(|x| &x.0 == kind).map(|x| (x.1, x.2))
 }
 
 fn mp4(b: &[u8]) -> Option<Track> {
@@ -235,11 +221,7 @@ fn mp4(b: &[u8]) -> Option<Track> {
             continue;
         }
         let (mds, _) = child(b, ds, de, b"mdhd")?;
-        let timescale = if b[mds] == 1 {
-            u32be(b, mds + 20)?
-        } else {
-            u32be(b, mds + 12)?
-        };
+        let timescale = if b[mds] == 1 { u32be(b, mds + 20)? } else { u32be(b, mds + 12)? };
         let (ns, ne) = child(b, ds, de, b"minf")?;
         let (ss, se) = child(b, ns, ne, b"stbl")?;
         let mut t = sound_track(b, ss, se, timescale)?;
@@ -253,15 +235,11 @@ fn mp4(b: &[u8]) -> Option<Track> {
 fn movie_duration(b: &[u8], ms: usize, me: usize) -> Option<u64> {
     let (o, _) = child(b, ms, me, b"mvhd")?;
     let (scale, d) = if *b.get(o)? == 1 {
-        (
-            u32be(b, o + 20)?,
-            (u32be(b, o + 24)? as u64) << 32 | u32be(b, o + 28)? as u64,
-        )
+        (u32be(b, o + 20)?, (u32be(b, o + 24)? as u64) << 32 | u32be(b, o + 28)? as u64)
     } else {
         (u32be(b, o + 12)?, u32be(b, o + 16)? as u64)
     };
-    (scale != 0 && d != 0 && d != u32::MAX as u64 && d != u64::MAX)
-        .then(|| (d as u128 * 10_000_000 / scale as u128) as u64)
+    (scale != 0 && d != 0 && d != u32::MAX as u64 && d != u64::MAX).then(|| (d as u128 * 10_000_000 / scale as u128) as u64)
 }
 
 /// The descriptor at `o` in an esds: (tag, body start, body end); sizes are 7 bits a byte.
@@ -332,10 +310,7 @@ fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32) -> Option<Track> 
                     let aot = asc[0] >> 3;
                     // (the config's own rate and channels, where the entry's are placeholders)
                     let fi = ((asc[0] & 7) << 1 | asc[1] >> 7) as usize;
-                    const RATES: [u32; 13] = [
-                        96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000,
-                        11025, 8000, 7350,
-                    ];
+                    const RATES: [u32; 13] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
                     if let Some(&r) = RATES.get(fi) {
                         rate = r;
                     }
@@ -380,21 +355,15 @@ fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32) -> Option<Track> 
     let sizes: Vec<u32> = if fixed != 0 {
         vec![fixed; count]
     } else {
-        (0..count)
-            .map(|i| u32be(b, zs + 12 + 4 * i))
-            .collect::<Option<_>>()?
+        (0..count).map(|i| u32be(b, zs + 12 + 4 * i)).collect::<Option<_>>()?
     };
     let chunks: Vec<u64> = if let Some((cs, _)) = child(b, ss, se, b"stco") {
         let n = u32be(b, cs + 4)? as usize;
-        (0..n.min(b.len()))
-            .map(|i| u32be(b, cs + 8 + 4 * i).map(|v| v as u64))
-            .collect::<Option<_>>()?
+        (0..n.min(b.len())).map(|i| u32be(b, cs + 8 + 4 * i).map(|v| v as u64)).collect::<Option<_>>()?
     } else {
         let (cs, _) = child(b, ss, se, b"co64")?;
         let n = u32be(b, cs + 4)? as usize;
-        (0..n.min(b.len()))
-            .map(|i| u64be(b, cs + 8 + 8 * i))
-            .collect::<Option<_>>()?
+        (0..n.min(b.len())).map(|i| u64be(b, cs + 8 + 8 * i)).collect::<Option<_>>()?
     };
     let (scs, _) = child(b, ss, se, b"stsc")?;
     let runs: Vec<(u32, u32)> = (0..(u32be(b, scs + 4)? as usize).min(b.len()))
@@ -403,11 +372,7 @@ fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32) -> Option<Track> 
     let mut packets = Vec::with_capacity(count);
     let mut k = 0usize;
     for (ci, &off) in chunks.iter().enumerate() {
-        let per = runs
-            .iter()
-            .rev()
-            .find(|r| r.0 as usize <= ci + 1)
-            .map_or(0, |r| r.1);
+        let per = runs.iter().rev().find(|r| r.0 as usize <= ci + 1).map_or(0, |r| r.1);
         let mut o = off;
         for _ in 0..per {
             let Some(&s) = sizes.get(k) else { break };
@@ -425,19 +390,12 @@ fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32) -> Option<Track> 
         let (n, d) = (u32be(b, ts + 8 + 8 * i)?, u32be(b, ts + 12 + 8 * i)?);
         // (durations in the track's timescale; frames at the sound's rate)
         let f = (d as u64 * rate as u64 / timescale.max(1) as u64) as u32;
-        frames.extend(std::iter::repeat_n(
-            f,
-            (n as usize).min(count - frames.len()),
-        ));
+        frames.extend(std::iter::repeat_n(f, (n as usize).min(count - frames.len())));
     }
     frames.resize(count, *frames.last().unwrap_or(&1024));
     let secs = frames.iter().map(|&f| f as f64).sum::<f64>() / rate as f64;
     let bytes: u64 = sizes.iter().map(|&s| s as u64).sum();
-    let avg = if secs > 0.0 {
-        (bytes as f64 / secs) as u32
-    } else {
-        0
-    };
+    let avg = if secs > 0.0 { (bytes as f64 / secs) as u32 } else { 0 };
     Some(Track {
         codec,
         rate,
@@ -477,28 +435,11 @@ mod tests {
     fn wave_pcm_packets() {
         let data: Vec<u8> = (0..4 * 5000).map(|i| i as u8).collect();
         let t = open(&wav(1, 2, 44100, 16, &data)).unwrap();
-        assert_eq!(
-            (t.codec.clone(), t.rate, t.channels, t.avg),
-            (
-                Codec::Pcm {
-                    bits: 16,
-                    float: false
-                },
-                44100,
-                2,
-                176400
-            )
-        );
+        assert_eq!((t.codec.clone(), t.rate, t.channels, t.avg), (Codec::Pcm { bits: 16, float: false }, 44100, 2, 176400));
         assert_eq!(t.frames, [4096, 904]);
         let body = wav(1, 2, 44100, 16, &[]).len() as u64;
         assert_eq!(t.packets, [(body, 4096 * 4), (body + 4096 * 4, 904 * 4)]);
-        assert_eq!(
-            open(&wav(3, 1, 48000, 32, &[0; 8])).unwrap().codec,
-            Codec::Pcm {
-                bits: 32,
-                float: true
-            }
-        );
+        assert_eq!(open(&wav(3, 1, 48000, 32, &[0; 8])).unwrap().codec, Codec::Pcm { bits: 32, float: true });
         // ADPCM, or no fmt chunk: not opened here
         assert_eq!(open(&wav(2, 1, 22050, 4, &[0; 8])), None);
         assert_eq!(open(b"RIFF\0\0\0\0WAVEdata\x04\0\0\0abcd"), None);
@@ -521,21 +462,12 @@ mod tests {
         f.extend(b"TAG");
         f.extend([0u8; 125]);
         let t = open(&f).unwrap();
-        assert_eq!(
-            (t.rate, t.channels, t.packets.len(), t.total_frames()),
-            (44100, 2, 10, 11520)
-        );
+        assert_eq!((t.rate, t.channels, t.packets.len(), t.total_frames()), (44100, 2, 10, 11520));
         assert_eq!(t.packets[0], (start, 418));
         assert_eq!(t.packets[1], (start + 418, 417));
         assert!(matches!(t.codec, Codec::Page { ref codec, subtype: MP3, .. } if codec == "mp3"));
         // MP3 in a WAVE
-        let w = wav(
-            0x55,
-            2,
-            44100,
-            0,
-            &f[start as usize..start as usize + 417 * 2 + 1],
-        );
+        let w = wav(0x55, 2, 44100, 0, &f[start as usize..start as usize + 417 * 2 + 1]);
         let t = open(&w).unwrap();
         assert_eq!(t.packets.len(), 2);
         // junk is not an MP3
@@ -568,11 +500,7 @@ mod tests {
     fn m4a(sizes: &[u32], per: usize, ts: u32, asc: &[u8], co64: bool) -> (Vec<u8>, Vec<u64>) {
         let mut f = bx(b"ftyp", b"M4A \0\0\x02\0isomiso2");
         let mdat_at = f.len() + 8;
-        let body: Vec<u8> = sizes
-            .iter()
-            .enumerate()
-            .flat_map(|(i, &s)| vec![i as u8; s as usize])
-            .collect();
+        let body: Vec<u8> = sizes.iter().enumerate().flat_map(|(i, &s)| vec![i as u8; s as usize]).collect();
         f.extend(bx(b"mdat", &body));
         let mut offs = Vec::new();
         let mut o = mdat_at as u64;
@@ -584,11 +512,7 @@ mod tests {
         let mut entry = vec![0u8; 6];
         entry.extend([0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 16, 0, 0, 0, 0]);
         entry.extend((44100u32 << 16).to_be_bytes());
-        let dci = [
-            &[0x40u8, 0x15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0][..],
-            &desc(5, asc),
-        ]
-        .concat();
+        let dci = [&[0x40u8, 0x15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0][..], &desc(5, asc)].concat();
         let es = [&[0u8, 1, 0][..], &desc(4, &dci), &desc(6, &[2])].concat();
         entry.extend(full(b"esds", &desc(3, &es)));
         let stsd = full(b"stsd", &[&be(&[1])[..], &bx(b"mp4a", &entry)].concat());
@@ -596,45 +520,19 @@ mod tests {
         let stsc = full(b"stsc", &be(&[1, 1, per as u32, 1]));
         let stsz = full(b"stsz", &[be(&[0, sizes.len() as u32]), be(sizes)].concat());
         let stco = if co64 {
-            full(
-                b"co64",
-                &[
-                    be(&[chunk_offs.len() as u32]),
-                    chunk_offs.iter().flat_map(|v| v.to_be_bytes()).collect(),
-                ]
-                .concat(),
-            )
+            full(b"co64", &[be(&[chunk_offs.len() as u32]), chunk_offs.iter().flat_map(|v| v.to_be_bytes()).collect()].concat())
         } else {
-            full(
-                b"stco",
-                &[
-                    be(&[chunk_offs.len() as u32]),
-                    be(&chunk_offs.iter().map(|&v| v as u32).collect::<Vec<_>>()),
-                ]
-                .concat(),
-            )
+            full(b"stco", &[be(&[chunk_offs.len() as u32]), be(&chunk_offs.iter().map(|&v| v as u32).collect::<Vec<_>>())].concat())
         };
         let stbl = bx(b"stbl", &[stsd, stts, stsc, stsz, stco].concat());
         let minf = bx(b"minf", &stbl);
-        let hdlr = full(
-            b"hdlr",
-            &[&[0u8; 4][..], b"soun", &[0; 12], b"Sound\0"].concat(),
-        );
+        let hdlr = full(b"hdlr", &[&[0u8; 4][..], b"soun", &[0; 12], b"Sound\0"].concat());
         let mdhd = full(b"mdhd", &be(&[0, 0, ts, 0, 0]));
         let mdia = bx(b"mdia", &[mdhd, hdlr, minf].concat());
         // a video track first: skipped
         let vhdlr = full(b"hdlr", &[&[0u8; 4][..], b"vide", &[0; 12]].concat());
-        let vtrak = bx(
-            b"trak",
-            &bx(
-                b"mdia",
-                &[full(b"mdhd", &be(&[0, 0, 600, 0, 0])), vhdlr].concat(),
-            ),
-        );
-        f.extend(bx(
-            b"moov",
-            &[full(b"mvhd", &[0; 96]), vtrak, bx(b"trak", &mdia)].concat(),
-        ));
+        let vtrak = bx(b"trak", &bx(b"mdia", &[full(b"mdhd", &be(&[0, 0, 600, 0, 0])), vhdlr].concat()));
+        f.extend(bx(b"moov", &[full(b"mvhd", &[0; 96]), vtrak, bx(b"trak", &mdia)].concat()));
         (f, offs)
     }
 
@@ -653,13 +551,7 @@ mod tests {
             }
         );
         assert_eq!((t.rate, t.channels), (44100, 2));
-        assert_eq!(
-            t.packets,
-            offs.iter()
-                .zip(sizes)
-                .map(|(&o, s)| (o, s))
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(t.packets, offs.iter().zip(sizes).map(|(&o, s)| (o, s)).collect::<Vec<_>>());
         assert_eq!(t.frames, [1024; 5]);
         // the config's rate wins over the entry's: HE-AAC's core at 22.05 kHz mono (aot 5)
         let (f, _) = m4a(&sizes, 3, 22050, &[0x2b, 0x88], true);

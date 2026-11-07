@@ -102,8 +102,7 @@ pub fn validate_name(name: &[u16], format: u32) -> u32 {
         j += 1;
     }
     let n = name.len();
-    if n == 0 || n > 255 || state & (LONG_LABEL | DOT_DOT) != 0 || (name[0] == b'.' as u16 && n > 1)
-    {
+    if n == 0 || n > 255 || state & (LONG_LABEL | DOT_DOT) != 0 || (name[0] == b'.' as u16 && n > 1) {
         return ERROR_INVALID_NAME;
     }
     let numeric_only = state & NON_NUMERIC == 0 && state & NUMERIC != 0;
@@ -150,11 +149,7 @@ pub fn validate_name(name: &[u16], format: u32) -> u32 {
                 return DNS_ERROR_NON_RFC_NAME;
             }
             // (only the first label, the service, starts with '_')
-            if name
-                .windows(2)
-                .any(|w| w[0] == b'.' as u16 && w[1] == b'_' as u16)
-                || state & (EXTENDED | SPACE | INVALID) != 0
-            {
+            if name.windows(2).any(|w| w[0] == b'.' as u16 && w[1] == b'_' as u16) || state & (EXTENDED | SPACE | INVALID) != 0 {
                 return ERROR_INVALID_NAME;
             }
         }
@@ -165,23 +160,13 @@ pub fn validate_name(name: &[u16], format: u32) -> u32 {
 
 /// DnsNameCompare: case-insensitive, trailing dots ignored; two NULLs are equal
 pub fn names_equal(a: Option<&[u16]>, b: Option<&[u16]>) -> bool {
-    let (Some(a), Some(b)) = (a, b) else {
-        return a.is_none() && b.is_none();
-    };
+    let (Some(a), Some(b)) = (a, b) else { return a.is_none() && b.is_none() };
     let trim = |s: &[u16]| -> Vec<u16> {
         let mut v = s.to_vec();
         while v.last() == Some(&(b'.' as u16)) {
             v.pop();
         }
-        v.iter()
-            .map(|&c| {
-                if (b'a' as u16..=b'z' as u16).contains(&c) {
-                    c - 32
-                } else {
-                    c
-                }
-            })
-            .collect()
+        v.iter().map(|&c| if (b'a' as u16..=b'z' as u16).contains(&c) { c - 32 } else { c }).collect()
     };
     trim(a) == trim(b)
 }
@@ -191,9 +176,7 @@ pub fn ip_literal(s: &str) -> Option<Vec<u8>> {
     if let Ok(a) = s.parse::<std::net::Ipv4Addr>() {
         return Some(a.octets().to_vec());
     }
-    s.parse::<std::net::Ipv6Addr>()
-        .ok()
-        .map(|a| a.octets().to_vec())
+    s.parse::<std::net::Ipv6Addr>().ok().map(|a| a.octets().to_vec())
 }
 
 /// DnsQuery_A / _W / _UTF8(name, type, options, extra, ppResults, reserved)
@@ -205,20 +188,13 @@ fn dns_query(c: &mut Ctx, charset: u32) -> u32 {
     if np == 0 || out == 0 {
         return 87;
     }
-    let name: Vec<u16> = if charset == 1 {
-        wstr(np)
-    } else {
-        String::from_utf8_lossy(&cstr(np)).encode_utf16().collect()
-    };
+    let name: Vec<u16> = if charset == 1 { wstr(np) } else { String::from_utf8_lossy(&cstr(np)).encode_utf16().collect() };
     let s = String::from_utf16_lossy(&name);
     if s.starts_with(' ') || s.ends_with(' ') {
         return DNS_ERROR_INVALID_NAME_CHAR;
     }
     // the resolver answers IP literals and localhost itself
-    let local = names_equal(
-        Some(&name),
-        Some(&"localhost".encode_utf16().collect::<Vec<u16>>()),
-    );
+    let local = names_equal(Some(&name), Some(&"localhost".encode_utf16().collect::<Vec<u16>>()));
     let ip = match ip_literal(&s) {
         Some(ip) => ip,
         None if local && ty == 28 => std::net::Ipv6Addr::LOCALHOST.octets().to_vec(),
@@ -231,21 +207,9 @@ fn dns_query(c: &mut Ctx, charset: u32) -> u32 {
     if ty != want {
         return 9501; // DNS_INFO_NO_RECORDS
     }
-    let data = if ip.len() == 4 {
-        Data::A(ip[..4].try_into().unwrap())
-    } else {
-        Data::Aaaa(ip[..16].try_into().unwrap())
-    };
+    let data = if ip.len() == 4 { Data::A(ip[..4].try_into().unwrap()) } else { Data::Aaaa(ip[..16].try_into().unwrap()) };
     // Flags: section 0, the character set, Reserved 0x20 (as Windows sets them)
-    let r = Rec {
-        name: Some(s),
-        ty: want as u16,
-        data_len: ip.len() as u16,
-        flags: 0x20 << 8,
-        ttl: 604800,
-        reserved: 0,
-        data,
-    };
+    let r = Rec { name: Some(s), ty: want as u16, data_len: ip.len() as u16, flags: 0x20 << 8, ttl: 604800, reserved: 0, data };
     putp(out, dnsrec::write(&r, charset));
     0
 }
@@ -281,10 +245,7 @@ fn dns_extract(c: &mut Ctx, charset: u32) -> u32 {
 }
 
 fn set_copy(set: u32, cin: u32, cout: u32) -> u32 {
-    let v: Vec<u32> = dnsrec::list(set)
-        .into_iter()
-        .map(|r| dnsrec::copy(r, cin, cout))
-        .collect();
+    let v: Vec<u32> = dnsrec::list(set).into_iter().map(|r| dnsrec::copy(r, cin, cout)).collect();
     dnsrec::link(&v)
 }
 
@@ -390,12 +351,7 @@ fn dup_wstr(p: u32) -> u32 {
 fn svc_off() -> (u32, u32, u32, u32) {
     let k = ps();
     let keys = (4 * k + 12).next_multiple_of(k);
-    (
-        4 * k,
-        4 * k + 8,
-        keys,
-        (keys + 2 * k + 4).next_multiple_of(k),
-    )
+    (4 * k, 4 * k + 8, keys, (keys + 2 * k + 4).next_multiple_of(k))
 }
 
 /// DnsServiceConstructInstance(name, host, ip4, ip6, port, priority, weight, count, keys, values)
@@ -482,12 +438,7 @@ struct Manager {
 static MANAGERS: Mutex<Vec<Manager>> = Mutex::new(Vec::new());
 
 fn with_mgr<R>(this: u32, f: impl FnOnce(&mut Manager) -> R) -> Option<R> {
-    MANAGERS
-        .lock()
-        .unwrap()
-        .iter_mut()
-        .find(|m| m.obj == this)
-        .map(f)
+    MANAGERS.lock().unwrap().iter_mut().find(|m| m.obj == this).map(f)
 }
 
 /// IUnknown::AddRef / Release of a guest object
@@ -539,9 +490,7 @@ fn DM_Release(c: &mut Ctx) -> u32 {
 /// ResetDevice(device, token): a new device; every open handle is then stale
 fn DM_ResetDevice(c: &mut Ctx) -> u32 {
     let (this, dev, token) = (c.a(0), c.a(1), c.a(2));
-    let Some(ok) = with_mgr(this, |m| m.token == token) else {
-        return E_INVALIDARG;
-    };
+    let Some(ok) = with_mgr(this, |m| m.token == token) else { return E_INVALIDARG };
     if !ok || dev == 0 {
         return E_INVALIDARG;
     }
@@ -568,14 +517,10 @@ fn DM_OpenDeviceHandle(c: &mut Ctx) -> u32 {
         if m.device == 0 {
             return Err(DXVA2_E_NOT_INITIALIZED);
         }
-        let i = m
-            .handles
-            .iter()
-            .position(|h| h.is_none())
-            .unwrap_or_else(|| {
-                m.handles.push(None);
-                m.handles.len() - 1
-            });
+        let i = m.handles.iter().position(|h| h.is_none()).unwrap_or_else(|| {
+            m.handles.push(None);
+            m.handles.len() - 1
+        });
         m.handles[i] = Some(false);
         Ok(i as u32 + 1)
     });
@@ -642,13 +587,7 @@ fn DM_LockDevice(c: &mut Ctx) -> u32 {
     .unwrap_or(Err(E_HANDLE));
     match r {
         Ok(dev) => {
-            let sb = with_mgr(this, |m| {
-                m.saved
-                    .iter()
-                    .position(|s| s.0 == h)
-                    .map(|i| m.saved.remove(i).1)
-            })
-            .flatten();
+            let sb = with_mgr(this, |m| m.saved.iter().position(|s| s.0 == h).map(|i| m.saved.remove(i).1)).flatten();
             if let Some(sb) = sb {
                 com_call(c, sb, 5, &[]); // IDirect3DStateBlock9::Apply
                 release(c, sb);
@@ -688,11 +627,7 @@ fn DM_UnlockDevice(c: &mut Ctx) -> u32 {
         if com_call(c, dev, 59, &[1, out]) == 0 {
             let sb = rp(out);
             let old = with_mgr(this, |m| {
-                let old = m
-                    .saved
-                    .iter()
-                    .position(|s| s.0 == h)
-                    .map(|i| m.saved.remove(i).1);
+                let old = m.saved.iter().position(|s| s.0 == h).map(|i| m.saved.remove(i).1);
                 m.saved.push((h, sb));
                 old
             })
@@ -741,9 +676,7 @@ fn DM_GetVideoService(c: &mut Ctx) -> u32 {
 
 // ---- dxva2 video services: the software video processor (DXVA2_VideoProcSoftwareDevice) ----
 
-const DXVA2_SOFTWARE_DEVICE: [u8; 16] = [
-    0x7f, 0xd4, 0x53, 0x45, 0x7e, 0xee, 0x3f, 0x4e, 0x94, 0x75, 0xdb, 0xf1, 0x37, 0x6c, 0x48, 0x10,
-];
+const DXVA2_SOFTWARE_DEVICE: [u8; 16] = [0x7f, 0xd4, 0x53, 0x45, 0x7e, 0xee, 0x3f, 0x4e, 0x94, 0x75, 0xdb, 0xf1, 0x37, 0x6c, 0x48, 0x10];
 const D3DFMT_X8R8G8B8: u32 = 22;
 const D3DFMT_A8R8G8B8: u32 = 21;
 /// what the software processor takes: A8R8G8B8, X8R8G8B8, YUY2, AYUV
@@ -792,9 +725,7 @@ fn service_qi(o: u32, iid: u32, out: u32) -> u32 {
     let unknown = g == [0, 0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
     // IDirectXVideoAccelerationService {fc51a550-d5e7-11d9-af55-00054e43ff02}, the processor
     // service {fc51a552-...}; (no decoder service, fc51a551: sake has no video decoders)
-    let tail = [
-        0xe7, 0xd5, 0xd9, 0x11, 0xaf, 0x55, 0x00, 0x05, 0x4e, 0x43, 0xff, 0x02,
-    ];
+    let tail = [0xe7, 0xd5, 0xd9, 0x11, 0xaf, 0x55, 0x00, 0x05, 0x4e, 0x43, 0xff, 0x02];
     if unknown || (matches!(r32(iid), 0xfc51_a550 | 0xfc51_a552) && g[4..] == tail) {
         vs_ref(o, 1);
         putp(out, o);
@@ -844,16 +775,7 @@ fn VS_Release(c: &mut Ctx) -> u32 {
 /// CreateSurface(width, height, backbuffers, format, pool, usage, type, ppSurface, pShared):
 /// backbuffers + 1 offscreen plain surfaces of the device
 fn VS_CreateSurface(c: &mut Ctx) -> u32 {
-    let (o, w, h, back, fmt, pool, out, shared) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(8),
-        c.a(9),
-    );
+    let (o, w, h, back, fmt, pool, out, shared) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(8), c.a(9));
     let dev = svc_device(o);
     if out == 0 || dev == 0 || back > 64 {
         return E_INVALIDARG;
@@ -937,18 +859,7 @@ fn software_caps(p: u32) {
     // SoftwareDevice, D3DPOOL_SYSTEMMEM, no reference samples, Reserved, no deinterlacing, no
     // ProcAmp; YUV2RGB StretchX StretchY SubRects SubStreams SubStreamsExtended YUV2RGBExtended
     // PlanarAlpha; no noise or detail filters
-    let caps = [
-        4,
-        2,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0x1000 | 0x1 | 0x2 | 0x4 | 0x10 | 0x20 | 0x40 | 0x80,
-        0,
-        0,
-    ];
+    let caps = [4, 2, 0, 0, 0, 0, 0, 0x1000 | 0x1 | 0x2 | 0x4 | 0x10 | 0x20 | 0x40 | 0x80, 0, 0];
     for (i, v) in caps.iter().enumerate() {
         w32(p + 4 * i as u32, *v);
     }
@@ -982,10 +893,7 @@ fn VS_CreateVideoProcessor(c: &mut Ctx) -> u32 {
         return E_INVALIDARG;
     }
     // (substreams beside the reference stream: at most 15)
-    if max >= 16
-        || !SOFTWARE_INPUTS.contains(&desc_format(d))
-        || ![D3DFMT_X8R8G8B8, D3DFMT_A8R8G8B8].contains(&rt)
-    {
+    if max >= 16 || !SOFTWARE_INPUTS.contains(&desc_format(d)) || ![D3DFMT_X8R8G8B8, D3DFMT_A8R8G8B8].contains(&rt) {
         return E_INVALIDARG;
     }
     static VT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
@@ -1020,12 +928,7 @@ fn VP_QueryInterface(c: &mut Ctx) -> u32 {
     let (o, iid, out) = (c.a(0), c.a(1), c.a(2));
     // IUnknown, IDirectXVideoProcessor {8c3a39f0-916e-4690-804f-4c8001355d25}
     let g = guid(iid);
-    if g == [0, 0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46]
-        || g == [
-            0xf0, 0x39, 0x3a, 0x8c, 0x6e, 0x91, 0x90, 0x46, 0x80, 0x4f, 0x4c, 0x80, 0x01, 0x35,
-            0x5d, 0x25,
-        ]
-    {
+    if g == [0, 0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46] || g == [0xf0, 0x39, 0x3a, 0x8c, 0x6e, 0x91, 0x90, 0x46, 0x80, 0x4f, 0x4c, 0x80, 0x01, 0x35, 0x5d, 0x25] {
         w32(o + ps(), r32(o + ps()) + 1);
         putp(out, o);
         return 0;
@@ -1104,12 +1007,8 @@ fn VP_VideoProcessBlt(c: &mut Ctx) -> u32 {
         return E_FAIL;
     }
     let stretch = rp(rp(dev) + 34 * ps()); // IDirect3DDevice9::StretchRect
-                                           // DXVA2_VideoSample: Start, End (8 each), SampleFormat, SrcSurface, SrcRect, DstRect, ...
-    let (src_at, rect_at, size) = if mem::x64() {
-        (24, 32, 136)
-    } else {
-        (20, 24, 128)
-    };
+    // DXVA2_VideoSample: Start, End (8 each), SampleFormat, SrcSurface, SrcRect, DstRect, ...
+    let (src_at, rect_at, size) = if mem::x64() { (24, 32, 136) } else { (20, 24, 128) };
     for i in 0..n {
         let s = samples + size * i;
         let surf = rp(s + src_at);
@@ -1150,12 +1049,7 @@ fn DXVA2CreateDirect3DDeviceManager9(c: &mut Ctx) -> u32 {
     wp(o, vt);
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x1000);
     let token = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    MANAGERS.lock().unwrap().push(Manager {
-        obj: o,
-        refs: 1,
-        token,
-        ..Default::default()
-    });
+    MANAGERS.lock().unwrap().push(Manager { obj: o, refs: 1, token, ..Default::default() });
     put32(tok, token);
     putp(out, o);
     0
@@ -1223,13 +1117,7 @@ fn DMORegister(c: &mut Ctx) -> u32 {
     if np == 0 || clsid == 0 || cat == 0 || guid(cat) == [0; 16] {
         return E_INVALIDARG;
     }
-    let d = Dmo {
-        clsid: guid(clsid),
-        name: wstr(np).into_iter().take(79).collect(),
-        category: guid(cat),
-        inputs: read_types(c.a(4), c.a(5)),
-        outputs: read_types(c.a(6), c.a(7)),
-    };
+    let d = Dmo { clsid: guid(clsid), name: wstr(np).into_iter().take(79).collect(), category: guid(cat), inputs: read_types(c.a(4), c.a(5)), outputs: read_types(c.a(6), c.a(7)) };
     let mut g = DMOS.lock().unwrap();
     g.retain(|x| !(x.clsid == d.clsid && x.category == d.category));
     g.push(d);
@@ -1237,26 +1125,17 @@ fn DMORegister(c: &mut Ctx) -> u32 {
 }
 /// DMOUnregister(clsid, category): S_FALSE when nothing was registered (GUID_NULL: every category)
 fn DMOUnregister(c: &mut Ctx) -> u32 {
-    let (clsid, cat) = (
-        guid(c.a(0)),
-        if c.a(1) == 0 { [0; 16] } else { guid(c.a(1)) },
-    );
+    let (clsid, cat) = (guid(c.a(0)), if c.a(1) == 0 { [0; 16] } else { guid(c.a(1)) });
     let mut g = DMOS.lock().unwrap();
     let n = g.len();
     g.retain(|x| !(x.clsid == clsid && (cat == [0; 16] || x.category == cat)));
-    if g.len() == n {
-        S_FALSE
-    } else {
-        0
-    }
+    if g.len() == n { S_FALSE } else { 0 }
 }
 /// DMOGetName(clsid, WCHAR name[80])
 fn DMOGetName(c: &mut Ctx) -> u32 {
     let (clsid, out) = (guid(c.a(0)), c.a(1));
     let g = DMOS.lock().unwrap();
-    let Some(d) = g.iter().find(|x| x.clsid == clsid) else {
-        return E_FAIL;
-    };
+    let Some(d) = g.iter().find(|x| x.clsid == clsid) else { return E_FAIL };
     if out == 0 {
         return E_POINTER;
     }
@@ -1267,13 +1146,8 @@ fn DMOGetName(c: &mut Ctx) -> u32 {
 fn DMOGetTypes(c: &mut Ctx) -> u32 {
     let clsid = guid(c.a(0));
     let g = DMOS.lock().unwrap();
-    let Some(d) = g.iter().find(|x| x.clsid == clsid) else {
-        return E_FAIL;
-    };
-    for (n, pn, p, list) in [
-        (c.a(1), c.a(2), c.a(3), &d.inputs),
-        (c.a(4), c.a(5), c.a(6), &d.outputs),
-    ] {
+    let Some(d) = g.iter().find(|x| x.clsid == clsid) else { return E_FAIL };
+    for (n, pn, p, list) in [(c.a(1), c.a(2), c.a(3), &d.inputs), (c.a(4), c.a(5), c.a(6), &d.outputs)] {
         let k = (n as usize).min(list.len());
         if p != 0 {
             for (i, t) in list.iter().take(k).enumerate() {
@@ -1291,15 +1165,7 @@ fn DMOGetTypes(c: &mut Ctx) -> u32 {
 fn enum_dmo(items: &[([u8; 16], Vec<u16>)], pos: usize) -> u32 {
     static VT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *VT.get_or_init(|| {
-        let m: [(crate::api::Handler, u32); 7] = [
-            (ED_QueryInterface, 12),
-            (ED_AddRef, 4),
-            (ED_Release, 4),
-            (ED_Next, 20),
-            (ED_Skip, 8),
-            (ED_Reset, 4),
-            (ED_Clone, 8),
-        ];
+        let m: [(crate::api::Handler, u32); 7] = [(ED_QueryInterface, 12), (ED_AddRef, 4), (ED_Release, 4), (ED_Next, 20), (ED_Skip, 8), (ED_Reset, 4), (ED_Clone, 8)];
         crate::api::vtable("IEnumDMO", &m)
     });
     let k = ps();
@@ -1377,22 +1243,14 @@ fn ED_Next(c: &mut Ctx) -> u32 {
     if fetched != 0 {
         put32(fetched, got);
     }
-    if got == n {
-        0
-    } else {
-        S_FALSE
-    }
+    if got == n { 0 } else { S_FALSE }
 }
 fn ED_Skip(c: &mut Ctx) -> u32 {
     let (this, n) = (c.a(0), c.a(1));
     let (pos, count) = (r32(this + ps() + 4), r32(this + ps() + 8));
     let np = (pos + n).min(count);
     w32(this + ps() + 4, np);
-    if np - pos == n {
-        0
-    } else {
-        S_FALSE
-    }
+    if np - pos == n { 0 } else { S_FALSE }
 }
 fn ED_Reset(c: &mut Ctx) -> u32 {
     w32(c.a(0) + ps() + 4, 0);
@@ -1403,9 +1261,7 @@ fn ED_Clone(c: &mut Ctx) -> u32 {
     if out == 0 {
         return E_POINTER;
     }
-    let items: Vec<([u8; 16], Vec<u16>)> = (0..r32(this + ps() + 8))
-        .map(|i| (guid(ed_entry(this, i)), wstr(rp(ed_entry(this, i) + 16))))
-        .collect();
+    let items: Vec<([u8; 16], Vec<u16>)> = (0..r32(this + ps() + 8)).map(|i| (guid(ed_entry(this, i)), wstr(rp(ed_entry(this, i) + 16)))).collect();
     putp(out, enum_dmo(&items, r32(this + ps() + 4) as usize));
     0
 }
@@ -1414,11 +1270,7 @@ fn ED_Clone(c: &mut Ctx) -> u32 {
 /// all) that take every requested input type and give every requested output type
 fn DMOEnum(c: &mut Ctx) -> u32 {
     let cat = if c.a(0) == 0 { [0; 16] } else { guid(c.a(0)) };
-    let (ins, outs, out) = (
-        read_types(c.a(2), c.a(3)),
-        read_types(c.a(4), c.a(5)),
-        c.a(6),
-    );
+    let (ins, outs, out) = (read_types(c.a(2), c.a(3)), read_types(c.a(4), c.a(5)), c.a(6));
     if out == 0 {
         return E_POINTER;
     }
@@ -1428,12 +1280,7 @@ fn DMOEnum(c: &mut Ctx) -> u32 {
         if cat != [0; 16] && d.category != cat {
             continue;
         }
-        let ok = ins
-            .iter()
-            .all(|w| d.inputs.iter().any(|h| type_matches(w, h)))
-            && outs
-                .iter()
-                .all(|w| d.outputs.iter().any(|h| type_matches(w, h)));
+        let ok = ins.iter().all(|w| d.inputs.iter().any(|h| type_matches(w, h))) && outs.iter().all(|w| d.outputs.iter().any(|h| type_matches(w, h)));
         if ok && !items.iter().any(|(c, _)| *c == d.clsid) {
             items.push((d.clsid, d.name.clone()));
         }
@@ -1446,11 +1293,7 @@ fn DMOEnum(c: &mut Ctx) -> u32 {
 // DMO_MEDIA_TYPE (AM_MEDIA_TYPE): majortype, subtype, bFixedSizeSamples, bTemporalCompression,
 // lSampleSize, formattype, pUnk, cbFormat, pbFormat (x64: pUnk at 64, cbFormat 72, pbFormat 80)
 fn mt_off() -> (u32, u32, u32, u32) {
-    if mem::x64() {
-        (64, 72, 80, 88)
-    } else {
-        (60, 64, 68, 72)
-    }
+    if mem::x64() { (64, 72, 80, 88) } else { (60, 64, 68, 72) }
 }
 fn MoInitMediaType(c: &mut Ctx) -> u32 {
     let (p, cb) = (c.a(0), c.a(1));
@@ -1566,17 +1409,11 @@ fn MoDuplicateMediaType(c: &mut Ctx) -> u32 {
 /// The vtable slot and argument count (with `this`) of `iface::method` (com_methods.rs, from
 /// the IDL)
 fn slot(iface: &str, method: &str) -> Option<(u32, u32)> {
-    let (_, ms, _) = crate::com::methods::IFACES
-        .iter()
-        .find(|(n, _, _)| *n == iface)?;
-    ms.iter()
-        .position(|(m, _, _)| *m == method)
-        .map(|i| (i as u32, ms[i].1 as u32))
+    let (_, ms, _) = crate::com::methods::IFACES.iter().find(|(n, _, _)| *n == iface)?;
+    ms.iter().position(|(m, _, _)| *m == method).map(|i| (i as u32, ms[i].1 as u32))
 }
 fn call_method(c: &mut Ctx, obj: u32, iface: &str, method: &str, args: &[u32]) -> u32 {
-    let Some((i, _)) = slot(iface, method) else {
-        return E_FAIL;
-    };
+    let Some((i, _)) = slot(iface, method) else { return E_FAIL };
     let f = rp(rp(obj) + ps() * i);
     let mut a = vec![obj];
     a.extend_from_slice(args);
@@ -1586,13 +1423,9 @@ fn call_method(c: &mut Ctx, obj: u32, iface: &str, method: &str, args: &[u32]) -
 /// IWICxxx_Method_Proxy(this, ...): the method through the object's vtable (the proxies the
 /// DLL exports for C callers)
 fn wic_proxy(c: &mut Ctx) -> u32 {
-    let Some(full) = crate::api::name_of(c.trap) else {
-        return E_FAIL;
-    };
+    let Some(full) = crate::api::name_of(c.trap) else { return E_FAIL };
     let name = full.split('!').nth(1).unwrap_or("");
-    let Some(stem) = name.strip_suffix("_Proxy") else {
-        return E_FAIL;
-    };
+    let Some(stem) = name.strip_suffix("_Proxy") else { return E_FAIL };
     match stem {
         // WICCreateImagingFactory_Proxy(SDKVersion, ppFactory)
         "WICCreateImagingFactory" => {
@@ -1603,25 +1436,11 @@ fn wic_proxy(c: &mut Ctx) -> u32 {
             return 0;
         }
         // WICCreateColorContext_Proxy(factory, ppContext)
-        "WICCreateColorContext" => {
-            return call_method(
-                c,
-                c.a(0),
-                "IWICImagingFactory",
-                "CreateColorContext",
-                &[c.a(1)],
-            )
-        }
+        "WICCreateColorContext" => return call_method(c, c.a(0), "IWICImagingFactory", "CreateColorContext", &[c.a(1)]),
         _ => {}
     }
-    let stem = if stem == "IWICBitmapLock_GetDataPointer_STA" {
-        "IWICBitmapLock_GetDataPointer"
-    } else {
-        stem
-    };
-    let Some((iface, method)) = stem.split_once('_') else {
-        return E_FAIL;
-    };
+    let stem = if stem == "IWICBitmapLock_GetDataPointer_STA" { "IWICBitmapLock_GetDataPointer" } else { stem };
+    let Some((iface, method)) = stem.split_once('_') else { return E_FAIL };
     let Some((_, n)) = slot(iface, method) else {
         eprintln!("sake: {name}: no such method");
         return E_FAIL;
@@ -1653,13 +1472,7 @@ fn WICConvertBitmapSource(c: &mut Ctx) -> u32 {
     }
     let factory = crate::wic::factory();
     let pc = mem::heap_alloc(8, true);
-    let hr = call_method(
-        c,
-        factory,
-        "IWICImagingFactory",
-        "CreateFormatConverter",
-        &[pc],
-    );
+    let hr = call_method(c, factory, "IWICImagingFactory", "CreateFormatConverter", &[pc]);
     let conv = rp(pc);
     mem::heap_free(pc);
     release(c, factory);
@@ -1668,11 +1481,7 @@ fn WICConvertBitmapSource(c: &mut Ctx) -> u32 {
     }
     // Initialize(source, dstFormat, WICBitmapDitherTypeNone, NULL palette, 0.0 alpha threshold,
     // WICBitmapPaletteTypeCustom); the double is two zero words on x86, one zero slot on x64
-    let args: Vec<u32> = if mem::x64() {
-        vec![src, fmt, 0, 0, 0, 0]
-    } else {
-        vec![src, fmt, 0, 0, 0, 0, 0]
-    };
+    let args: Vec<u32> = if mem::x64() { vec![src, fmt, 0, 0, 0, 0] } else { vec![src, fmt, 0, 0, 0, 0, 0] };
     let hr = call_method(c, conv, "IWICFormatConverter", "Initialize", &args);
     if hr != 0 {
         release(c, conv);
@@ -1688,11 +1497,7 @@ static ETW_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 
 /// A 64-bit argument that starts at x86 stack slot `slot` (x64: argument `arg`)
 fn arg64(c: &Ctx, slot: u32, arg: u32) -> u64 {
-    if mem::x64() {
-        c.a64(arg)
-    } else {
-        c.a(slot) as u64 | (c.a(slot + 1) as u64) << 32
-    }
+    if mem::x64() { c.a64(arg) } else { c.a(slot) as u64 | (c.a(slot + 1) as u64) << 32 }
 }
 
 /// EventRegister(guid, callback, context, &handle)
@@ -1731,49 +1536,23 @@ fn etw_write_string(c: &mut Ctx) -> u32 {
 
 pub fn init() {
     for d in ["advapi32", "ntdll"] {
-        let n = |s: &str| {
-            if d == "ntdll" {
-                format!("Etw{s}")
-            } else {
-                s.to_string()
-            }
-        };
+        let n = |s: &str| if d == "ntdll" { format!("Etw{s}") } else { s.to_string() };
         implement(d, &n("EventRegister"), etw_register);
         implement(d, &n("EventUnregister"), etw_unregister);
         implement(d, &n("EventWriteString"), etw_write_string);
         // nobody listens: written events go nowhere, no provider is enabled
-        for f in [
-            "EventWrite",
-            "EventWriteEx",
-            "EventWriteTransfer",
-            "EventSetInformation",
-            "EventActivityIdControl",
-            "EventEnabled",
-            "EventProviderEnabled",
-        ] {
+        for f in ["EventWrite", "EventWriteEx", "EventWriteTransfer", "EventSetInformation", "EventActivityIdControl", "EventEnabled", "EventProviderEnabled"] {
             implement(d, &n(f), |_| 0);
         }
     }
     // dnsapi
-    implement("dnsapi", "DnsValidateName_W", |c| {
-        if c.a(0) == 0 {
-            ERROR_INVALID_NAME
-        } else {
-            validate_name(&wstr(c.a(0)), c.a(1))
-        }
-    });
-    for n in [
-        "DnsValidateName_A",
-        "DnsValidateName_UTF8",
-        "DnsValidateName",
-    ] {
+    implement("dnsapi", "DnsValidateName_W", |c| if c.a(0) == 0 { ERROR_INVALID_NAME } else { validate_name(&wstr(c.a(0)), c.a(1)) });
+    for n in ["DnsValidateName_A", "DnsValidateName_UTF8", "DnsValidateName"] {
         implement("dnsapi", n, |c| {
             if c.a(0) == 0 {
                 return ERROR_INVALID_NAME;
             }
-            let w: Vec<u16> = String::from_utf8_lossy(&cstr(c.a(0)))
-                .encode_utf16()
-                .collect();
+            let w: Vec<u16> = String::from_utf8_lossy(&cstr(c.a(0))).encode_utf16().collect();
             validate_name(&w, c.a(1))
         });
     }
@@ -1782,13 +1561,7 @@ pub fn init() {
         names_equal(s(c.a(0)).as_deref(), s(c.a(1)).as_deref()) as u32
     });
     implement("dnsapi", "DnsNameCompare_A", |c| {
-        let s = |p: u32| {
-            (p != 0).then(|| {
-                String::from_utf8_lossy(&cstr(p))
-                    .encode_utf16()
-                    .collect::<Vec<u16>>()
-            })
-        };
+        let s = |p: u32| (p != 0).then(|| String::from_utf8_lossy(&cstr(p)).encode_utf16().collect::<Vec<u16>>());
         names_equal(s(c.a(0)).as_deref(), s(c.a(1)).as_deref()) as u32
     });
     implement("dnsapi", "DnsQuery_W", |c| dns_query(c, 1));
@@ -1797,36 +1570,14 @@ pub fn init() {
     implement("dnsapi", "DnsRecordListFree", dns_free);
     implement("dnsapi", "DnsFree", dns_free);
     implement("dnsapi", "DnsFlushResolverCache", |_| 1);
-    for n in [
-        "DnsFlushResolverCacheEntry_A",
-        "DnsFlushResolverCacheEntry_W",
-        "DnsFlushResolverCacheEntry_UTF8",
-    ] {
+    for n in ["DnsFlushResolverCacheEntry_A", "DnsFlushResolverCacheEntry_W", "DnsFlushResolverCacheEntry_UTF8"] {
         implement("dnsapi", n, |c| (c.a(0) != 0) as u32);
     }
-    implement("dnsapi", "DnsExtractRecordsFromMessage_UTF8", |c| {
-        dns_extract(c, 2)
-    });
-    implement("dnsapi", "DnsExtractRecordsFromMessage_W", |c| {
-        dns_extract(c, 1)
-    });
-    implement("dnsapi", "DnsRecordCopyEx", |c| {
-        if c.a(0) == 0 {
-            0
-        } else {
-            dnsrec::copy(c.a(0), c.a(1), c.a(2))
-        }
-    });
-    implement("dnsapi", "DnsRecordSetCopyEx", |c| {
-        set_copy(c.a(0), c.a(1), c.a(2))
-    });
-    implement("dnsapi", "DnsRecordCompare", |c| {
-        if c.a(0) == 0 || c.a(1) == 0 {
-            0
-        } else {
-            record_compare(c.a(0), c.a(1)) as u32
-        }
-    });
+    implement("dnsapi", "DnsExtractRecordsFromMessage_UTF8", |c| dns_extract(c, 2));
+    implement("dnsapi", "DnsExtractRecordsFromMessage_W", |c| dns_extract(c, 1));
+    implement("dnsapi", "DnsRecordCopyEx", |c| if c.a(0) == 0 { 0 } else { dnsrec::copy(c.a(0), c.a(1), c.a(2)) });
+    implement("dnsapi", "DnsRecordSetCopyEx", |c| set_copy(c.a(0), c.a(1), c.a(2)));
+    implement("dnsapi", "DnsRecordCompare", |c| if c.a(0) == 0 || c.a(1) == 0 { 0 } else { record_compare(c.a(0), c.a(1)) as u32 });
     implement("dnsapi", "DnsRecordSetCompare", record_set_compare);
     implement("dnsapi", "DnsRecordSetDetach", record_set_detach);
     implement("dnsapi", "DnsGetCacheDataTable", cache_table);
@@ -1846,20 +1597,12 @@ pub fn init() {
     implement("dhcpcsvc", "DhcpRequestParams", |_| 87);
 
     // tbs: no TPM
-    for n in [
-        "Tbsi_Context_Create",
-        "Tbsi_GetDeviceInfo",
-        "GetDeviceIDString",
-    ] {
+    for n in ["Tbsi_Context_Create", "Tbsi_GetDeviceInfo", "GetDeviceIDString"] {
         implement("tbs", n, |_| 0x8028_400f); // TBS_E_TPM_NOT_FOUND
     }
 
     // dxva2
-    implement(
-        "dxva2",
-        "DXVA2CreateDirect3DDeviceManager9",
-        DXVA2CreateDirect3DDeviceManager9,
-    );
+    implement("dxva2", "DXVA2CreateDirect3DDeviceManager9", DXVA2CreateDirect3DDeviceManager9);
     implement("dxva2", "DXVA2CreateVideoService", |c| {
         let (dev, iid, out) = (c.a(0), c.a(1), c.a(2));
         if dev == 0 || out == 0 {
@@ -1872,66 +1615,25 @@ pub fn init() {
         c.call(f, &[o]);
         hr
     });
-    implement(
-        "dxva2",
-        "GetNumberOfPhysicalMonitorsFromHMONITOR",
-        GetNumberOfPhysicalMonitors,
-    );
-    implement(
-        "dxva2",
-        "GetNumberOfPhysicalMonitorsFromIDirect3DDevice9",
-        GetNumberOfPhysicalMonitors,
-    );
-    implement(
-        "dxva2",
-        "GetPhysicalMonitorsFromHMONITOR",
-        GetPhysicalMonitors,
-    );
-    implement(
-        "dxva2",
-        "GetPhysicalMonitorsFromIDirect3DDevice9",
-        GetPhysicalMonitors,
-    );
+    implement("dxva2", "GetNumberOfPhysicalMonitorsFromHMONITOR", GetNumberOfPhysicalMonitors);
+    implement("dxva2", "GetNumberOfPhysicalMonitorsFromIDirect3DDevice9", GetNumberOfPhysicalMonitors);
+    implement("dxva2", "GetPhysicalMonitorsFromHMONITOR", GetPhysicalMonitors);
+    implement("dxva2", "GetPhysicalMonitorsFromIDirect3DDevice9", GetPhysicalMonitors);
     implement("dxva2", "DestroyPhysicalMonitor", |_| 1);
     implement("dxva2", "DestroyPhysicalMonitors", |_| 1);
     for n in [
-        "GetMonitorBrightness",
-        "GetMonitorCapabilities",
-        "GetMonitorColorTemperature",
-        "GetMonitorContrast",
-        "GetMonitorDisplayAreaPosition",
-        "GetMonitorDisplayAreaSize",
-        "GetMonitorRedGreenOrBlueDrive",
-        "GetMonitorRedGreenOrBlueGain",
-        "GetMonitorTechnologyType",
-        "GetVCPFeatureAndVCPFeatureReply",
-        "GetCapabilitiesStringLength",
-        "CapabilitiesRequestAndCapabilitiesReply",
-        "GetTimingReport",
-        "SetMonitorBrightness",
-        "SetMonitorColorTemperature",
-        "SetMonitorContrast",
-        "SetMonitorDisplayAreaPosition",
-        "SetMonitorDisplayAreaSize",
-        "SetMonitorRedGreenOrBlueDrive",
-        "SetMonitorRedGreenOrBlueGain",
-        "SetVCPFeature",
-        "DegaussMonitor",
-        "RestoreMonitorFactoryColorDefaults",
-        "RestoreMonitorFactoryDefaults",
-        "SaveCurrentMonitorSettings",
-        "SaveCurrentSettings",
+        "GetMonitorBrightness", "GetMonitorCapabilities", "GetMonitorColorTemperature", "GetMonitorContrast", "GetMonitorDisplayAreaPosition",
+        "GetMonitorDisplayAreaSize", "GetMonitorRedGreenOrBlueDrive", "GetMonitorRedGreenOrBlueGain", "GetMonitorTechnologyType",
+        "GetVCPFeatureAndVCPFeatureReply", "GetCapabilitiesStringLength", "CapabilitiesRequestAndCapabilitiesReply", "GetTimingReport",
+        "SetMonitorBrightness", "SetMonitorColorTemperature", "SetMonitorContrast", "SetMonitorDisplayAreaPosition", "SetMonitorDisplayAreaSize",
+        "SetMonitorRedGreenOrBlueDrive", "SetMonitorRedGreenOrBlueGain", "SetVCPFeature", "DegaussMonitor", "RestoreMonitorFactoryColorDefaults",
+        "RestoreMonitorFactoryDefaults", "SaveCurrentMonitorSettings", "SaveCurrentSettings",
     ] {
         implement("dxva2", n, no_ddc);
     }
 
     // ksuser: no kernel-streaming devices
-    for n in [
-        "KsCreatePin",
-        "KsCreateAllocator",
-        "KsCreateClock",
-        "KsCreateTopologyNode",
-    ] {
+    for n in ["KsCreatePin", "KsCreateAllocator", "KsCreateClock", "KsCreateTopologyNode"] {
         implement("ksuser", n, |_| 2); // ERROR_FILE_NOT_FOUND
     }
 
@@ -1949,22 +1651,14 @@ pub fn init() {
     implement("msdmo", "MoDuplicateMediaType", MoDuplicateMediaType);
 
     // windowscodecs
-    implement(
-        "windowscodecs",
-        "WICConvertBitmapSource",
-        WICConvertBitmapSource,
-    );
+    implement("windowscodecs", "WICConvertBitmapSource", WICConvertBitmapSource);
     for n in crate::api::spec_names("windowscodecs") {
         if n.ends_with("_Proxy") {
             implement("windowscodecs", &n, wic_proxy);
         }
     }
     // (no metadata schemas or short names registered; sections: not mapped as bitmaps)
-    for n in [
-        "WICMapGuidToShortName",
-        "WICMapShortNameToGuid",
-        "WICMapSchemaToName",
-    ] {
+    for n in ["WICMapGuidToShortName", "WICMapShortNameToGuid", "WICMapSchemaToName"] {
         implement("windowscodecs", n, |_| 0x8898_2f40); // WINCODEC_ERR_PROPERTYNOTFOUND
     }
     for n in ["WICCreateBitmapFromSection", "WICCreateBitmapFromSectionEx"] {
@@ -1994,110 +1688,38 @@ mod tests {
         let long4 = [a63.as_str(); 4].join(".");
         let a64 = "a".repeat(64);
         let t: Vec<(&str, u32, u32)> = vec![
-            ("", 0, ERROR_INVALID_NAME),
-            (".", 0, 0),
-            ("..", 0, ERROR_INVALID_NAME),
-            (".a", 0, ERROR_INVALID_NAME),
-            ("a.", 0, 0),
-            ("a..", 0, ERROR_INVALID_NAME),
-            (&a64, 0, ERROR_INVALID_NAME),
-            (&long4, 0, ERROR_INVALID_NAME),
-            ("a.?", 0, DNS_ERROR_INVALID_NAME_CHAR),
-            ("a.*", 0, DNS_ERROR_INVALID_NAME_CHAR),
-            ("a ", 0, DNS_ERROR_INVALID_NAME_CHAR),
-            ("a._b", 0, DNS_ERROR_NON_RFC_NAME),
-            ("123", 0, 0),
-            ("123.456", 0, 0),
-            ("a.b", 0, 0),
-            ("", 1, ERROR_INVALID_NAME),
-            (".", 1, ERROR_INVALID_NAME),
-            ("..", 1, ERROR_INVALID_NAME),
-            (".c", 1, ERROR_INVALID_NAME),
-            ("c.", 1, ERROR_INVALID_NAME),
-            ("c..", 1, ERROR_INVALID_NAME),
-            (&a64, 1, ERROR_INVALID_NAME),
-            ("?", 1, DNS_ERROR_INVALID_NAME_CHAR),
-            ("*", 1, DNS_ERROR_INVALID_NAME_CHAR),
-            ("c ", 1, DNS_ERROR_INVALID_NAME_CHAR),
-            ("_c", 1, DNS_ERROR_NON_RFC_NAME),
-            ("456", 1, 0),
-            ("456.789", 1, ERROR_INVALID_NAME),
-            ("c.d", 1, ERROR_INVALID_NAME),
-            ("", 2, ERROR_INVALID_NAME),
-            (".", 2, 0),
-            ("..", 2, ERROR_INVALID_NAME),
-            (".e", 2, ERROR_INVALID_NAME),
-            ("e.", 2, 0),
-            ("e..", 2, ERROR_INVALID_NAME),
-            (&a64, 0, ERROR_INVALID_NAME),
-            (&long4, 2, ERROR_INVALID_NAME),
-            ("?", 3, DNS_ERROR_INVALID_NAME_CHAR),
-            ("e.?", 2, DNS_ERROR_INVALID_NAME_CHAR),
-            ("e.*", 2, DNS_ERROR_INVALID_NAME_CHAR),
-            ("e ", 2, DNS_ERROR_INVALID_NAME_CHAR),
-            ("e._f", 2, DNS_ERROR_NON_RFC_NAME),
-            ("789", 2, 0),
-            ("789.456", 2, 0),
-            ("e.f", 2, 0),
-            ("", 3, ERROR_INVALID_NAME),
-            (".", 3, ERROR_INVALID_NAME),
-            ("..", 3, ERROR_INVALID_NAME),
-            (".g", 3, ERROR_INVALID_NAME),
-            ("g.", 3, ERROR_INVALID_NAME),
-            ("g..", 3, ERROR_INVALID_NAME),
-            (&a64, 3, ERROR_INVALID_NAME),
-            ("*", 3, DNS_ERROR_INVALID_NAME_CHAR),
-            ("g ", 3, DNS_ERROR_INVALID_NAME_CHAR),
-            ("_g", 3, DNS_ERROR_NON_RFC_NAME),
-            ("123", 3, 0),
-            ("123.456", 3, ERROR_INVALID_NAME),
+            ("", 0, ERROR_INVALID_NAME), (".", 0, 0), ("..", 0, ERROR_INVALID_NAME), (".a", 0, ERROR_INVALID_NAME), ("a.", 0, 0),
+            ("a..", 0, ERROR_INVALID_NAME), (&a64, 0, ERROR_INVALID_NAME), (&long4, 0, ERROR_INVALID_NAME),
+            ("a.?", 0, DNS_ERROR_INVALID_NAME_CHAR), ("a.*", 0, DNS_ERROR_INVALID_NAME_CHAR), ("a ", 0, DNS_ERROR_INVALID_NAME_CHAR),
+            ("a._b", 0, DNS_ERROR_NON_RFC_NAME), ("123", 0, 0), ("123.456", 0, 0), ("a.b", 0, 0),
+            ("", 1, ERROR_INVALID_NAME), (".", 1, ERROR_INVALID_NAME), ("..", 1, ERROR_INVALID_NAME), (".c", 1, ERROR_INVALID_NAME),
+            ("c.", 1, ERROR_INVALID_NAME), ("c..", 1, ERROR_INVALID_NAME), (&a64, 1, ERROR_INVALID_NAME), ("?", 1, DNS_ERROR_INVALID_NAME_CHAR),
+            ("*", 1, DNS_ERROR_INVALID_NAME_CHAR), ("c ", 1, DNS_ERROR_INVALID_NAME_CHAR), ("_c", 1, DNS_ERROR_NON_RFC_NAME), ("456", 1, 0),
+            ("456.789", 1, ERROR_INVALID_NAME), ("c.d", 1, ERROR_INVALID_NAME),
+            ("", 2, ERROR_INVALID_NAME), (".", 2, 0), ("..", 2, ERROR_INVALID_NAME), (".e", 2, ERROR_INVALID_NAME), ("e.", 2, 0),
+            ("e..", 2, ERROR_INVALID_NAME), (&a64, 0, ERROR_INVALID_NAME), (&long4, 2, ERROR_INVALID_NAME), ("?", 3, DNS_ERROR_INVALID_NAME_CHAR),
+            ("e.?", 2, DNS_ERROR_INVALID_NAME_CHAR), ("e.*", 2, DNS_ERROR_INVALID_NAME_CHAR), ("e ", 2, DNS_ERROR_INVALID_NAME_CHAR),
+            ("e._f", 2, DNS_ERROR_NON_RFC_NAME), ("789", 2, 0), ("789.456", 2, 0), ("e.f", 2, 0),
+            ("", 3, ERROR_INVALID_NAME), (".", 3, ERROR_INVALID_NAME), ("..", 3, ERROR_INVALID_NAME), (".g", 3, ERROR_INVALID_NAME),
+            ("g.", 3, ERROR_INVALID_NAME), ("g..", 3, ERROR_INVALID_NAME), (&a64, 3, ERROR_INVALID_NAME), ("*", 3, DNS_ERROR_INVALID_NAME_CHAR),
+            ("g ", 3, DNS_ERROR_INVALID_NAME_CHAR), ("_g", 3, DNS_ERROR_NON_RFC_NAME), ("123", 3, 0), ("123.456", 3, ERROR_INVALID_NAME),
             ("g.h", 3, ERROR_INVALID_NAME),
-            ("", 4, ERROR_INVALID_NAME),
-            (".", 4, ERROR_INVALID_NAME),
-            ("..", 4, ERROR_INVALID_NAME),
-            (".j", 4, ERROR_INVALID_NAME),
-            ("j.", 4, ERROR_INVALID_NAME),
-            ("j..", 4, ERROR_INVALID_NAME),
-            (&a64, 4, ERROR_INVALID_NAME),
-            (&long4, 4, ERROR_INVALID_NAME),
-            ("?", 4, ERROR_INVALID_NAME),
-            ("i ", 4, ERROR_INVALID_NAME),
-            ("_i", 4, ERROR_INVALID_NAME),
-            ("123", 4, ERROR_INVALID_NAME),
-            ("123.456", 4, ERROR_INVALID_NAME),
-            ("i.j", 4, ERROR_INVALID_NAME),
-            ("*", 4, 0),
-            ("*j", 4, DNS_ERROR_INVALID_NAME_CHAR),
-            ("*.j", 4, 0),
-            ("i.*", 4, ERROR_INVALID_NAME),
-            ("", 5, ERROR_INVALID_NAME),
-            (".", 5, ERROR_INVALID_NAME),
-            ("..", 5, ERROR_INVALID_NAME),
-            (".k", 5, ERROR_INVALID_NAME),
-            ("k.", 5, ERROR_INVALID_NAME),
-            ("k..", 5, ERROR_INVALID_NAME),
-            (&a64, 5, ERROR_INVALID_NAME),
-            (&long4, 5, ERROR_INVALID_NAME),
-            ("?", 5, ERROR_INVALID_NAME),
-            ("k ", 5, ERROR_INVALID_NAME),
-            ("_k", 5, 0),
-            ("123", 5, ERROR_INVALID_NAME),
-            ("123.456", 5, ERROR_INVALID_NAME),
-            ("k.l", 5, ERROR_INVALID_NAME),
-            ("_", 5, DNS_ERROR_NON_RFC_NAME),
-            ("_k.l", 5, 0),
+            ("", 4, ERROR_INVALID_NAME), (".", 4, ERROR_INVALID_NAME), ("..", 4, ERROR_INVALID_NAME), (".j", 4, ERROR_INVALID_NAME),
+            ("j.", 4, ERROR_INVALID_NAME), ("j..", 4, ERROR_INVALID_NAME), (&a64, 4, ERROR_INVALID_NAME), (&long4, 4, ERROR_INVALID_NAME),
+            ("?", 4, ERROR_INVALID_NAME), ("i ", 4, ERROR_INVALID_NAME), ("_i", 4, ERROR_INVALID_NAME), ("123", 4, ERROR_INVALID_NAME),
+            ("123.456", 4, ERROR_INVALID_NAME), ("i.j", 4, ERROR_INVALID_NAME), ("*", 4, 0), ("*j", 4, DNS_ERROR_INVALID_NAME_CHAR),
+            ("*.j", 4, 0), ("i.*", 4, ERROR_INVALID_NAME),
+            ("", 5, ERROR_INVALID_NAME), (".", 5, ERROR_INVALID_NAME), ("..", 5, ERROR_INVALID_NAME), (".k", 5, ERROR_INVALID_NAME),
+            ("k.", 5, ERROR_INVALID_NAME), ("k..", 5, ERROR_INVALID_NAME), (&a64, 5, ERROR_INVALID_NAME), (&long4, 5, ERROR_INVALID_NAME),
+            ("?", 5, ERROR_INVALID_NAME), ("k ", 5, ERROR_INVALID_NAME), ("_k", 5, 0), ("123", 5, ERROR_INVALID_NAME),
+            ("123.456", 5, ERROR_INVALID_NAME), ("k.l", 5, ERROR_INVALID_NAME), ("_", 5, DNS_ERROR_NON_RFC_NAME), ("_k.l", 5, 0),
             ("k._l", 5, ERROR_INVALID_NAME),
         ];
         let bad: Vec<String> = t
             .iter()
             .filter_map(|&(n, f, want)| {
                 let got = validate_name(&w(n), f);
-                (got != want).then(|| {
-                    format!(
-                        "{:?} fmt {f}: got {got}, want {want}",
-                        &n[..n.len().min(12)]
-                    )
-                })
+                (got != want).then(|| format!("{:?} fmt {f}: got {got}, want {want}", &n[..n.len().min(12)]))
             })
             .collect();
         assert!(bad.is_empty(), "{}", bad.join("\n"));
@@ -2109,31 +1731,10 @@ mod tests {
         let eq = |a: &str, b: &str| names_equal(Some(&w(a)), Some(&w(b)));
         assert!(names_equal(None, None));
         assert!(!names_equal(Some(&w("a")), None) && !names_equal(None, Some(&w("a"))));
-        for (a, b) in [
-            ("", ""),
-            (".", ""),
-            ("", "."),
-            (".", ".."),
-            ("..", "."),
-            ("a", "a"),
-            ("a", "A"),
-            ("A", "a"),
-            ("a.b", "A.B"),
-            ("a.b", "a.b."),
-            ("a.b..", "a.b"),
-        ] {
+        for (a, b) in [("", ""), (".", ""), ("", "."), (".", ".."), ("..", "."), ("a", "a"), ("a", "A"), ("A", "a"), ("a.b", "A.B"), ("a.b", "a.b."), ("a.b..", "a.b")] {
             assert!(eq(a, b), "{a:?} {b:?}");
         }
-        for (a, b) in [
-            ("a", "b"),
-            ("a", "B"),
-            ("A", "b"),
-            ("a.b", "b.a"),
-            ("a.b", "B.A"),
-            ("a.b.", "b.a.."),
-            ("a.a", "a.b"),
-            ("a", "a.a"),
-        ] {
+        for (a, b) in [("a", "b"), ("a", "B"), ("A", "b"), ("a.b", "b.a"), ("a.b", "B.A"), ("a.b.", "b.a.."), ("a.a", "a.b"), ("a", "a.a")] {
             assert!(!eq(a, b), "{a:?} {b:?}");
         }
     }
@@ -2141,10 +1742,7 @@ mod tests {
     #[test]
     fn literals() {
         assert_eq!(ip_literal("192.168.111.11"), Some(vec![192, 168, 111, 11]));
-        assert_eq!(
-            ip_literal("2001:db8:3333:4444:5555:6666:7777:8888").map(|v| v.len()),
-            Some(16)
-        );
+        assert_eq!(ip_literal("2001:db8:3333:4444:5555:6666:7777:8888").map(|v| v.len()), Some(16));
         assert_eq!(ip_literal("winehq.org"), None);
         assert_eq!(ip_literal(" 192.168.111.11"), None);
     }

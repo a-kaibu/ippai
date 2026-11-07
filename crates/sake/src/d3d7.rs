@@ -92,9 +92,7 @@ enum Ch {
     LightOn(u32, bool),
 }
 
-const IDENT: [f32; 16] = [
-    1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-];
+const IDENT: [f32; 16] = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
 
 impl Dev {
     fn new(rt: u32, dd: u32) -> Dev {
@@ -141,20 +139,7 @@ impl Dev {
         }
         let mut mat = [0f32; 17];
         mat[..4].copy_from_slice(&[1., 1., 1., 1.]);
-        Dev {
-            rt,
-            dd,
-            d3d_held: 0,
-            vp: [0, 0, w, h],
-            zr: (0., 1.),
-            xf: [IDENT; 3],
-            rs,
-            tss,
-            tex: [0; 8],
-            mat,
-            lights: Default::default(),
-            rec: None,
-        }
+        Dev { rt, dd, d3d_held: 0, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], rs, tss, tex: [0; 8], mat, lights: Default::default(), rec: None }
     }
 
     /// Applies a change; a texture change takes a reference of the new texture and returns
@@ -250,12 +235,7 @@ static D: Mutex<Option<D3d>> = Mutex::new(None);
 
 fn d3d<R>(f: impl FnOnce(&mut D3d) -> R) -> R {
     let mut g = D.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| D3d {
-        devs: HashMap::default(),
-        vbs: HashMap::default(),
-        blocks: HashMap::default(),
-        next: 1,
-    }))
+    f(g.get_or_insert_with(|| D3d { devs: HashMap::default(), vbs: HashMap::default(), blocks: HashMap::default(), next: 1 }))
 }
 
 /// Runs `f` on the device `c` is called on (None if it is gone).
@@ -357,52 +337,16 @@ fn Q_QueryInterface(c: &mut Ctx) -> u32 {
 }
 
 const DEVICES: [(&str, &str, u32, u16, u16, [u8; 8], bool); 3] = [
-    (
-        "Microsoft Direct3D RGB Software Emulation",
-        "RGB Emulation",
-        0xa466_5c60,
-        0x2673,
-        0x11cf,
-        [0xa3, 0x1a, 0x00, 0xaa, 0x00, 0xb9, 0x33, 0x56],
-        false,
-    ),
-    (
-        "Microsoft Direct3D Hardware acceleration through Direct3D HAL",
-        "Direct3D HAL",
-        0x84e6_3de0,
-        0x46aa,
-        0x11cf,
-        [0x81, 0x6f, 0x00, 0x00, 0xc0, 0x20, 0x15, 0x6e],
-        false,
-    ),
-    (
-        "Microsoft Direct3D Hardware Transform and Lighting acceleration capable device",
-        "Direct3D T&L HAL",
-        0xf504_9e78,
-        0x4861,
-        0x11d2,
-        [0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8],
-        true,
-    ),
+    ("Microsoft Direct3D RGB Software Emulation", "RGB Emulation", 0xa466_5c60, 0x2673, 0x11cf, [0xa3, 0x1a, 0x00, 0xaa, 0x00, 0xb9, 0x33, 0x56], false),
+    ("Microsoft Direct3D Hardware acceleration through Direct3D HAL", "Direct3D HAL", 0x84e6_3de0, 0x46aa, 0x11cf, [0x81, 0x6f, 0x00, 0x00, 0xc0, 0x20, 0x15, 0x6e], false),
+    ("Microsoft Direct3D Hardware Transform and Lighting acceleration capable device", "Direct3D T&L HAL", 0xf504_9e78, 0x4861, 0x11d2, [0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8], true),
 ];
 
 /// D3DDEVICEDESC7
 fn write_caps(p: u32, dev: usize) {
     mem::fill(p, 236, 0);
     let (_, _, d1, d2, d3, d4, tnl) = DEVICES[dev];
-    w32(
-        p,
-        0x1 | 0x10
-            | 0x40
-            | 0x100
-            | 0x200
-            | 0x400
-            | 0x800
-            | 0x2000
-            | 0x8000
-            | 0x8_0000
-            | if tnl { 0x1_0000 } else { 0 },
-    );
+    w32(p, 0x1 | 0x10 | 0x40 | 0x100 | 0x200 | 0x400 | 0x800 | 0x2000 | 0x8000 | 0x8_0000 | if tnl { 0x1_0000 } else { 0 });
     for pc in [p + 4, p + 60] {
         w32(pc, 56);
         w32(pc + 4, 0x72); // MASKZ | CULLNONE | CULLCW | CULLCCW
@@ -571,9 +515,7 @@ fn Q_CreateVertexBuffer(c: &mut Ctx) -> u32 {
     if n == 0 {
         return D3DERR_INVALIDCALL;
     }
-    let Some(size) = vb_size(fvf, n) else {
-        return D3DERR_VBUF_CREATE_FAILED;
-    };
+    let Some(size) = vb_size(fvf, n) else { return D3DERR_VBUF_CREATE_FAILED };
     let m = mem::heap_alloc(size.max(4), true);
     if m == 0 {
         return D3DERR_VBUF_CREATE_FAILED;
@@ -643,17 +585,13 @@ fn vb_size(fvf: u32, n: u32) -> Option<u32> {
 const MAX_VB: u32 = 256 << 20;
 
 fn B_Lock(c: &mut Ctx) -> u32 {
-    let Some((m, fvf, n)) = vb(c) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some((m, fvf, n)) = vb(c) else { return D3DERR_INVALIDCALL };
     put32(c.a(2), m);
     put32(c.a(3), vb_size(fvf, n).unwrap_or(0));
     D3D_OK
 }
 fn B_GetVertexBufferDesc(c: &mut Ctx) -> u32 {
-    let Some((_, fvf, n)) = vb(c) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some((_, fvf, n)) = vb(c) else { return D3DERR_INVALIDCALL };
     let p = c.a(1);
     w32(p, 16);
     w32(p + 4, r32(c.a(0) + 4));
@@ -665,15 +603,9 @@ fn B_GetVertexBufferDesc(c: &mut Ctx) -> u32 {
 /// Transforms (and lights) source vertices into this XYZRHW buffer.
 fn process(c: &mut Ctx, src: Option<Src>, src_index: u32) -> u32 {
     let (dst_index, count, devb) = (c.a(2), c.a(3), c.a(6));
-    let Some((dm, dfvf, dn)) = vb(c) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let Some(src) = src else {
-        return D3DERR_INVALIDCALL;
-    };
-    let Some(d) = d3d(|d| d.devs.get(&r32(devb + 4)).cloned()) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some((dm, dfvf, dn)) = vb(c) else { return D3DERR_INVALIDCALL };
+    let Some(src) = src else { return D3DERR_INVALIDCALL };
+    let Some(d) = d3d(|d| d.devs.get(&r32(devb + 4)).cloned()) else { return D3DERR_INVALIDCALL };
     let dl = Layout::of(dfvf);
     let t = Xform::new(&d);
     for i in 0..count.min(dn.saturating_sub(dst_index)) {
@@ -774,16 +706,7 @@ fn V_EnumTextureFormats(c: &mut Ctx) -> u32 {
 fn V_EndScene(c: &mut Ctx) -> u32 {
     if let Some(rt) = dev(c, |d| d.rt) {
         if let Some(s) = surf(rt) {
-            present_if_primary(
-                c,
-                rt,
-                Rect {
-                    l: 0,
-                    t: 0,
-                    r: s.w,
-                    b: s.h,
-                },
-            );
+            present_if_primary(c, rt, Rect { l: 0, t: 0, r: s.w, b: s.h });
         }
     }
     D3D_OK
@@ -792,19 +715,11 @@ fn V_GetDirect3D(c: &mut Ctx) -> u32 {
     let obj = dev(c, |d| d.dd).unwrap_or(0);
     let b = dd_iface(obj, 4);
     put32(c.a(1), b);
-    if b == 0 {
-        D3DERR_INVALIDCALL
-    } else {
-        D3D_OK
-    }
+    if b == 0 { D3DERR_INVALIDCALL } else { D3D_OK }
 }
 fn V_SetRenderTarget(c: &mut Ctx) -> u32 {
-    let Some((rt, _)) = sid(c.a(1)) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let Some(s) = surf(rt) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some((rt, _)) = sid(c.a(1)) else { return D3DERR_INVALIDCALL };
+    let Some(s) = surf(rt) else { return D3DERR_INVALIDCALL };
     hold_surf(rt);
     let old = dev(c, |d| {
         let old = d.rt;
@@ -816,9 +731,7 @@ fn V_SetRenderTarget(c: &mut Ctx) -> u32 {
     D3D_OK
 }
 fn V_GetRenderTarget(c: &mut Ctx) -> u32 {
-    let Some(rt) = dev(c, |d| d.rt) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(rt) = dev(c, |d| d.rt) else { return D3DERR_INVALIDCALL };
     with(|st| st.surfs.get_mut(&rt).map(|x| x.refs += 1));
     put32(c.a(1), block(rt, 2));
     D3D_OK
@@ -833,15 +746,11 @@ fn xf_index(t: u32) -> Option<usize> {
     }
 }
 fn V_SetTransform(c: &mut Ctx) -> u32 {
-    let Some(i) = xf_index(c.a(1)) else {
-        return D3D_OK;
-    };
+    let Some(i) = xf_index(c.a(1)) else { return D3D_OK };
     set(c, Ch::Xf(i, matrix(c.a(2))))
 }
 fn V_GetTransform(c: &mut Ctx) -> u32 {
-    let m = xf_index(c.a(1))
-        .and_then(|i| dev(c, |d| d.xf[i]))
-        .unwrap_or(IDENT);
+    let m = xf_index(c.a(1)).and_then(|i| dev(c, |d| d.xf[i])).unwrap_or(IDENT);
     for (k, v) in m.iter().enumerate() {
         w32(c.a(2) + 4 * k as u32, v.to_bits());
     }
@@ -854,29 +763,18 @@ fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     })
 }
 fn V_MultiplyTransform(c: &mut Ctx) -> u32 {
-    let Some(i) = xf_index(c.a(1)) else {
-        return D3D_OK;
-    };
+    let Some(i) = xf_index(c.a(1)) else { return D3D_OK };
     let m = matrix(c.a(2));
-    let Some(cur) = dev(c, |d| d.xf[i]) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(cur) = dev(c, |d| d.xf[i]) else { return D3DERR_INVALIDCALL };
     set(c, Ch::Xf(i, mul(&m, &cur)))
 }
 fn V_SetViewport(c: &mut Ctx) -> u32 {
     let p = c.a(1);
-    let v = [
-        r32(p) as i32,
-        r32(p + 4) as i32,
-        r32(p + 8) as i32,
-        r32(p + 12) as i32,
-    ];
+    let v = [r32(p) as i32, r32(p + 4) as i32, r32(p + 8) as i32, r32(p + 12) as i32];
     set(c, Ch::Vp(v, (rf(p + 16), rf(p + 20))))
 }
 fn V_GetViewport(c: &mut Ctx) -> u32 {
-    let Some((v, z)) = dev(c, |d| (d.vp, d.zr)) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some((v, z)) = dev(c, |d| (d.vp, d.zr)) else { return D3DERR_INVALIDCALL };
     let p = c.a(1);
     for (k, x) in v.iter().enumerate() {
         w32(p + 4 * k as u32, *x as u32);
@@ -906,9 +804,7 @@ fn V_SetLight(c: &mut Ctx) -> u32 {
 }
 fn V_GetLight(c: &mut Ctx) -> u32 {
     let i = c.a(1);
-    let Some(l) = dev(c, |d| d.lights.get(&i).map(|x| x.0)).flatten() else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(l) = dev(c, |d| d.lights.get(&i).map(|x| x.0)).flatten() else { return D3DERR_INVALIDCALL };
     for (k, v) in l.iter().enumerate() {
         w32(c.a(2) + 4 * k as u32, *v);
     }
@@ -919,17 +815,11 @@ fn V_LightEnable(c: &mut Ctx) -> u32 {
 }
 /// GetLightEnable's answer for an enabled light is 128, not TRUE, as Direct3D 9's (winref ddrefs)
 fn light_on_value(on: bool) -> u32 {
-    if on {
-        128
-    } else {
-        0
-    }
+    if on { 128 } else { 0 }
 }
 fn V_GetLightEnable(c: &mut Ctx) -> u32 {
     let i = c.a(1);
-    let Some(on) = dev(c, |d| d.lights.get(&i).map(|x| x.1)).flatten() else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(on) = dev(c, |d| d.lights.get(&i).map(|x| x.1)).flatten() else { return D3DERR_INVALIDCALL };
     put32(c.a(2), light_on_value(on));
     D3D_OK
 }
@@ -942,10 +832,7 @@ fn V_SetRenderState(c: &mut Ctx) -> u32 {
 }
 fn V_GetRenderState(c: &mut Ctx) -> u32 {
     let k = c.a(1) as usize;
-    put32(
-        c.a(2),
-        dev(c, |d| d.rs.get(k).copied().unwrap_or(0)).unwrap_or(0),
-    );
+    put32(c.a(2), dev(c, |d| d.rs.get(k).copied().unwrap_or(0)).unwrap_or(0));
     D3D_OK
 }
 fn V_GetClipStatus(c: &mut Ctx) -> u32 {
@@ -973,14 +860,7 @@ fn V_SetTexture(c: &mut Ctx) -> u32 {
 }
 fn V_GetTextureStageState(c: &mut Ctx) -> u32 {
     let (s, k) = (c.a(1) as usize, c.a(2) as usize);
-    put32(
-        c.a(3),
-        if s < 8 && k < 32 {
-            dev(c, |d| d.tss[s][k]).unwrap_or(0)
-        } else {
-            0
-        },
-    );
+    put32(c.a(3), if s < 8 && k < 32 { dev(c, |d| d.tss[s][k]).unwrap_or(0) } else { 0 });
     D3D_OK
 }
 fn V_SetTextureStageState(c: &mut Ctx) -> u32 {
@@ -1007,39 +887,27 @@ fn new_block(v: Vec<Ch>) -> u32 {
     h
 }
 fn V_EndStateBlock(c: &mut Ctx) -> u32 {
-    let Some(v) = dev(c, |d| d.rec.take()).flatten() else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(v) = dev(c, |d| d.rec.take()).flatten() else { return D3DERR_INVALIDCALL };
     let h = new_block(v);
     put32(c.a(1), h);
     D3D_OK
 }
 fn V_CreateStateBlock(c: &mut Ctx) -> u32 {
-    let Some(all) = dev(c, |d| d.all()) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(all) = dev(c, |d| d.all()) else { return D3DERR_INVALIDCALL };
     let h = new_block(all);
     put32(c.a(2), h);
     D3D_OK
 }
 fn V_ApplyStateBlock(c: &mut Ctx) -> u32 {
-    let Some(v) = d3d(|d| d.blocks.get(&c.a(1)).cloned()) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let Some(old) = dev(c, |d| v.iter().map(|ch| d.apply(ch)).collect::<Vec<_>>()) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(v) = d3d(|d| d.blocks.get(&c.a(1)).cloned()) else { return D3DERR_INVALIDCALL };
+    let Some(old) = dev(c, |d| v.iter().map(|ch| d.apply(ch)).collect::<Vec<_>>()) else { return D3DERR_INVALIDCALL };
     release_surfs(c, &old);
     D3D_OK
 }
 fn V_CaptureStateBlock(c: &mut Ctx) -> u32 {
     let h = c.a(1);
-    let Some(v) = d3d(|d| d.blocks.get(&h).cloned()) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let Some(nv) = dev(c, |d| v.iter().map(|ch| d.capture(ch)).collect::<Vec<_>>()) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(v) = d3d(|d| d.blocks.get(&h).cloned()) else { return D3DERR_INVALIDCALL };
+    let Some(nv) = dev(c, |d| v.iter().map(|ch| d.capture(ch)).collect::<Vec<_>>()) else { return D3DERR_INVALIDCALL };
     store_block(h, nv);
     D3D_OK
 }
@@ -1063,33 +931,11 @@ fn V_GetInfo(_: &mut Ctx) -> u32 {
 
 /// Load(dst, dst point, src, src rect, flags): a copy between textures of one format.
 fn V_Load(c: &mut Ctx) -> u32 {
-    let (Some((d, _)), Some((s, _))) = (sid(c.a(1)), sid(c.a(3))) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let (Some(ds), Some(ss)) = (surf(d), surf(s)) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let sr = if c.a(4) == 0 {
-        Rect {
-            l: 0,
-            t: 0,
-            r: ss.w,
-            b: ss.h,
-        }
-    } else {
-        Rect::read(c.a(4))
-    };
-    let (x, y) = if c.a(2) == 0 {
-        (sr.l, sr.t)
-    } else {
-        (r32(c.a(2)) as i32, r32(c.a(2) + 4) as i32)
-    };
-    let dr = Rect {
-        l: x,
-        t: y,
-        r: x + sr.r - sr.l,
-        b: y + sr.b - sr.t,
-    };
+    let (Some((d, _)), Some((s, _))) = (sid(c.a(1)), sid(c.a(3))) else { return D3DERR_INVALIDCALL };
+    let (Some(ds), Some(ss)) = (surf(d), surf(s)) else { return D3DERR_INVALIDCALL };
+    let sr = if c.a(4) == 0 { Rect { l: 0, t: 0, r: ss.w, b: ss.h } } else { Rect::read(c.a(4)) };
+    let (x, y) = if c.a(2) == 0 { (sr.l, sr.t) } else { (r32(c.a(2)) as i32, r32(c.a(2) + 4) as i32) };
+    let dr = Rect { l: x, t: y, r: x + sr.r - sr.l, b: y + sr.b - sr.t };
     if ds.bpp == ss.bpp && rect_ok(dr, ds.w, ds.h) && rect_ok(sr, ss.w, ss.h) {
         blit(&ds, dr, &ss, sr, None, (false, false));
     }
@@ -1112,25 +958,13 @@ struct Fmt {
 impl Fmt {
     fn of(s: &Surf) -> Fmt {
         let m = [s.pf[1], s.pf[2], s.pf[3], s.pf[4]];
-        Fmt {
-            ch: m.map(|m| {
-                if m == 0 {
-                    (0, 0)
-                } else {
-                    (m.trailing_zeros(), m >> m.trailing_zeros())
-                }
-            }),
-        }
+        Fmt { ch: m.map(|m| if m == 0 { (0, 0) } else { (m.trailing_zeros(), m >> m.trailing_zeros()) }) }
     }
     #[inline]
     fn unpack(&self, v: u32) -> C4 {
         std::array::from_fn(|i| {
             let (sh, mx) = self.ch[i];
-            if mx == 0 {
-                1.
-            } else {
-                ((v >> sh) & mx) as f32 / mx as f32
-            }
+            if mx == 0 { 1. } else { ((v >> sh) & mx) as f32 / mx as f32 }
         })
     }
     #[inline]
@@ -1145,12 +979,7 @@ impl Fmt {
 }
 
 fn unpack_argb(v: u32) -> C4 {
-    [
-        (v >> 16 & 0xff) as f32 / 255.,
-        (v >> 8 & 0xff) as f32 / 255.,
-        (v & 0xff) as f32 / 255.,
-        (v >> 24) as f32 / 255.,
-    ]
+    [(v >> 16 & 0xff) as f32 / 255., (v >> 8 & 0xff) as f32 / 255., (v & 0xff) as f32 / 255., (v >> 24) as f32 / 255.]
 }
 fn pack(c: C4) -> u32 {
     let b = |x: f32| (x.clamp(0., 1.) * 255. + 0.5) as u32;
@@ -1182,16 +1011,7 @@ impl Layout {
             p if p >= 6 => 12 + 4 * ((p - 4) / 2),
             _ => 0,
         };
-        let mut l = Layout {
-            size: 0,
-            rhw: pos == FVF_XYZRHW,
-            normal: 0,
-            diffuse: 0,
-            specular: 0,
-            ntex: 0,
-            tex: [0; 8],
-            tsize: [2; 8],
-        };
+        let mut l = Layout { size: 0, rhw: pos == FVF_XYZRHW, normal: 0, diffuse: 0, specular: 0, ntex: 0, tex: [0; 8], tsize: [2; 8] };
         if fvf & FVF_NORMAL != 0 {
             l.normal = o;
             o += 12;
@@ -1245,13 +1065,7 @@ impl Src {
     /// D3DDRAWPRIMITIVESTRIDEDDATA
     fn strided(fvf: u32, p: u32) -> Src {
         let l = Layout::of(fvf);
-        let e = |i: u32, present: bool| {
-            if present {
-                (r32(p + 8 * i), r32(p + 8 * i + 4))
-            } else {
-                (0, 0)
-            }
-        };
+        let e = |i: u32, present: bool| if present { (r32(p + 8 * i), r32(p + 8 * i + 4)) } else { (0, 0) };
         Src {
             l,
             pos: e(0, true),
@@ -1265,10 +1079,8 @@ impl Src {
     fn fetch(&self, i: u32, d: &Dev, t: &Xform) -> Vtx {
         let p = self.pos.0 + i * self.pos.1;
         let (x, y, z) = (rf(p), rf(p + 4), rf(p + 8));
-        let diff =
-            (self.diffuse.0 != 0).then(|| unpack_argb(r32(self.diffuse.0 + i * self.diffuse.1)));
-        let spec =
-            (self.specular.0 != 0).then(|| unpack_argb(r32(self.specular.0 + i * self.specular.1)));
+        let diff = (self.diffuse.0 != 0).then(|| unpack_argb(r32(self.diffuse.0 + i * self.diffuse.1)));
+        let spec = (self.specular.0 != 0).then(|| unpack_argb(r32(self.specular.0 + i * self.specular.1)));
         let mut tex = [[0f32; 2]; 8];
         for k in 0..self.l.ntex {
             let a = self.tex[k].0 + i * self.tex[k].1;
@@ -1276,11 +1088,7 @@ impl Src {
         }
         if self.l.rhw {
             let rhw = rf(p + 12);
-            let rhw = if rhw.is_finite() && rhw != 0. {
-                rhw
-            } else {
-                1.
-            };
+            let rhw = if rhw.is_finite() && rhw != 0. { rhw } else { 1. };
             return Vtx {
                 clip: [x, y, z, 1. / rhw],
                 screen: true,
@@ -1300,13 +1108,7 @@ impl Src {
         };
         let v = [x, y, z, 1.];
         let clip = std::array::from_fn(|c| (0..4).map(|r| v[r] * t.wvp[r * 4 + c]).sum());
-        Vtx {
-            clip,
-            screen: false,
-            diff,
-            spec,
-            tex,
-        }
+        Vtx { clip, screen: false, diff, spec, tex }
     }
 }
 
@@ -1345,12 +1147,7 @@ impl Xform {
         Xform {
             wvp: mul(&mul(&world, &d.xf[1]), &d.xf[2]),
             world,
-            vp: [
-                d.vp[0] as f32,
-                d.vp[1] as f32,
-                d.vp[2] as f32,
-                d.vp[3] as f32,
-            ],
+            vp: [d.vp[0] as f32, d.vp[1] as f32, d.vp[2] as f32, d.vp[3] as f32],
             zr: d.zr,
         }
     }
@@ -1366,14 +1163,7 @@ impl Xform {
     }
 
     /// Fixed-function lighting in world space: (diffuse, specular).
-    fn light(
-        &self,
-        d: &Dev,
-        p: [f32; 3],
-        n: Option<[f32; 3]>,
-        vd: Option<C4>,
-        vs: Option<C4>,
-    ) -> (C4, C4) {
+    fn light(&self, d: &Dev, p: [f32; 3], n: Option<[f32; 3]>, vd: Option<C4>, vs: Option<C4>) -> (C4, C4) {
         let m = &d.mat;
         let mc = |i: usize| -> C4 { [m[i * 4], m[i * 4 + 1], m[i * 4 + 2], m[i * 4 + 3]] };
         let cv = d.rs[RS_COLORVERTEX] != 0;
@@ -1384,20 +1174,14 @@ impl Xform {
                 _ => mc(mat),
             }
         };
-        let (diff_m, amb_m, spec_m, emis_m) = (
-            src(RS_DIFFUSEMATERIALSOURCE, 0),
-            src(RS_AMBIENTMATERIALSOURCE, 1),
-            src(RS_SPECULARMATERIALSOURCE, 2),
-            src(RS_EMISSIVEMATERIALSOURCE, 3),
-        );
+        let (diff_m, amb_m, spec_m, emis_m) =
+            (src(RS_DIFFUSEMATERIALSOURCE, 0), src(RS_AMBIENTMATERIALSOURCE, 1), src(RS_SPECULARMATERIALSOURCE, 2), src(RS_EMISSIVEMATERIALSOURCE, 3));
         let amb = unpack_argb(d.rs[RS_AMBIENT]);
         let mut out: C4 = std::array::from_fn(|i| emis_m[i] + amb[i] * amb_m[i]);
         let w = &self.world;
-        let wp: [f32; 3] =
-            std::array::from_fn(|c| p[0] * w[c] + p[1] * w[4 + c] + p[2] * w[8 + c] + w[12 + c]);
+        let wp: [f32; 3] = std::array::from_fn(|c| p[0] * w[c] + p[1] * w[4 + c] + p[2] * w[8 + c] + w[12 + c]);
         let wn = n.map(|n| {
-            let v: [f32; 3] =
-                std::array::from_fn(|c| n[0] * w[c] + n[1] * w[4 + c] + n[2] * w[8 + c]);
+            let v: [f32; 3] = std::array::from_fn(|c| n[0] * w[c] + n[1] * w[4 + c] + n[2] * w[8 + c]);
             let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-12);
             v.map(|x| x / l)
         });
@@ -1419,12 +1203,8 @@ impl Xform {
                 let a = f(21) + f(22) * dist + f(23) * dist * dist;
                 (v, if a > 0. { 1. / a } else { 1. })
             };
-            let dl = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2])
-                .sqrt()
-                .max(1e-12);
-            let ndl = wn.map_or(0., |n| {
-                ((n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2]) / dl).max(0.)
-            });
+            let dl = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-12);
+            let ndl = wn.map_or(0., |n| ((n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2]) / dl).max(0.));
             for i in 0..3 {
                 out[i] += att * (lamb[i] * amb_m[i] + ndl * ldiff[i] * diff_m[i]);
             }
@@ -1453,13 +1233,7 @@ struct Tex {
 impl Tex {
     #[inline]
     fn raw(&self, x: i32, y: i32) -> u32 {
-        read_px(
-            unsafe {
-                self.bits
-                    .add(y as usize * self.pitch + x as usize * self.bpp)
-            },
-            self.bpp as u32,
-        )
+        read_px(unsafe { self.bits.add(y as usize * self.pitch + x as usize * self.bpp) }, self.bpp as u32)
     }
     #[inline]
     fn texel(&self, x: i32, y: i32, ck: bool) -> C4 {
@@ -1474,12 +1248,7 @@ impl Tex {
         match &self.pal {
             Some(p) => {
                 let e = p[v as usize & 0xff];
-                [
-                    (e >> 16 & 0xff) as f32 / 255.,
-                    (e >> 8 & 0xff) as f32 / 255.,
-                    (e & 0xff) as f32 / 255.,
-                    1.,
-                ]
+                [(e >> 16 & 0xff) as f32 / 255., (e >> 8 & 0xff) as f32 / 255., (e & 0xff) as f32 / 255., 1.]
             }
             None => self.fmt.unpack(v),
         }
@@ -1559,15 +1328,8 @@ impl Stage {
         let (x0, y0) = (gx.floor(), gy.floor());
         let (ax, ay) = (gx - x0, gy - y0);
         let (x0, y0) = (x0 as i32, y0 as i32);
-        let (a, b, c, d) = (
-            get(x0, y0),
-            get(x0 + 1, y0),
-            get(x0, y0 + 1),
-            get(x0 + 1, y0 + 1),
-        );
-        std::array::from_fn(|i| {
-            (a[i] * (1. - ax) + b[i] * ax) * (1. - ay) + (c[i] * (1. - ax) + d[i] * ax) * ay
-        })
+        let (a, b, c, d) = (get(x0, y0), get(x0 + 1, y0), get(x0, y0 + 1), get(x0 + 1, y0 + 1));
+        std::array::from_fn(|i| (a[i] * (1. - ax) + b[i] * ax) * (1. - ay) + (c[i] * (1. - ax) + d[i] * ax) * ay)
     }
 }
 
@@ -1589,18 +1351,7 @@ fn arg(a: u32, diff: &C4, cur: &C4, tex: &C4, tf: &C4, spec: &C4) -> C4 {
 }
 
 /// One texture operation on one channel set (`n` channels from `o`).
-fn op(
-    o: u32,
-    a1: &C4,
-    a2: &C4,
-    diff: &C4,
-    tex: &C4,
-    tf: &C4,
-    cur: &C4,
-    out: &mut C4,
-    from: usize,
-    to: usize,
-) {
+fn op(o: u32, a1: &C4, a2: &C4, diff: &C4, tex: &C4, tf: &C4, cur: &C4, out: &mut C4, from: usize, to: usize) {
     for i in from..to {
         let (x, y) = (a1[i], a2[i]);
         out[i] = match o {
@@ -1640,31 +1391,12 @@ impl Raster {
             return None;
         }
         let pal_of = |s: &Surf| with(|st| st.palettes.get(&s.palette).map(|p| Box::new(*p)));
-        let z = (d.rs[RS_ZENABLE] != 0)
-            .then(|| surf(rt.zbuf))
-            .flatten()
-            .map(|z| {
-                let bytes = (z.bpp as usize / 8).max(2);
-                let mask = if z.pf[2] != 0 {
-                    z.pf[2]
-                } else if bytes == 2 {
-                    0xffff
-                } else {
-                    0xff_ffff
-                };
-                (
-                    mem::slice_mut(z.bits, z.pitch * z.h as u32).as_mut_ptr(),
-                    z.pitch as usize,
-                    bytes,
-                    mask as f32,
-                )
-            });
-        let vp = [
-            d.vp[0].max(0),
-            d.vp[1].max(0),
-            (d.vp[0] + d.vp[2]).min(rt.w),
-            (d.vp[1] + d.vp[3]).min(rt.h),
-        ];
+        let z = (d.rs[RS_ZENABLE] != 0).then(|| surf(rt.zbuf)).flatten().map(|z| {
+            let bytes = (z.bpp as usize / 8).max(2);
+            let mask = if z.pf[2] != 0 { z.pf[2] } else if bytes == 2 { 0xffff } else { 0xff_ffff };
+            (mem::slice_mut(z.bits, z.pitch * z.h as u32).as_mut_ptr(), z.pitch as usize, bytes, mask as f32)
+        });
+        let vp = [d.vp[0].max(0), d.vp[1].max(0), (d.vp[0] + d.vp[2]).min(rt.w), (d.vp[1] + d.vp[3]).min(rt.h)];
         let mut stages = Vec::new();
         let mut ntc = 0;
         for i in 0..8 {
@@ -1672,22 +1404,16 @@ impl Raster {
             if t[TSS_COLOROP] <= 1 {
                 break;
             }
-            let tex = surf(d.tex[i])
-                .filter(|s| s.bpp >= 8 && s.w > 0 && s.h > 0)
-                .map(|s| Tex {
-                    bits: mem::slice(s.bits, s.pitch * s.h as u32).as_ptr(),
-                    w: s.w,
-                    h: s.h,
-                    pitch: s.pitch as usize,
-                    bpp: s.bpp as usize / 8,
-                    fmt: Fmt::of(&s),
-                    pal: if s.bpp == 8 {
-                        Some(pal_of(&s).unwrap_or_else(|| Box::new([0; 256])))
-                    } else {
-                        None
-                    },
-                    key: s.ck_src,
-                });
+            let tex = surf(d.tex[i]).filter(|s| s.bpp >= 8 && s.w > 0 && s.h > 0).map(|s| Tex {
+                bits: mem::slice(s.bits, s.pitch * s.h as u32).as_ptr(),
+                w: s.w,
+                h: s.h,
+                pitch: s.pitch as usize,
+                bpp: s.bpp as usize / 8,
+                fmt: Fmt::of(&s),
+                pal: if s.bpp == 8 { Some(pal_of(&s).unwrap_or_else(|| Box::new([0; 256]))) } else { None },
+                key: s.ck_src,
+            });
             let tci = (t[TSS_TEXCOORDINDEX] & 7) as usize;
             ntc = ntc.max(tci + 1);
             stages.push(Stage {
@@ -1716,8 +1442,7 @@ impl Raster {
                 13 => (6, 5),
                 s => (s, d.rs[RS_DESTBLEND]),
             }),
-            atest: (d.rs[RS_ALPHATESTENABLE] != 0)
-                .then(|| (d.rs[RS_ALPHAFUNC], (d.rs[RS_ALPHAREF] & 0xff) as f32 / 255.)),
+            atest: (d.rs[RS_ALPHATESTENABLE] != 0).then(|| (d.rs[RS_ALPHAFUNC], (d.rs[RS_ALPHAREF] & 0xff) as f32 / 255.)),
             ck: d.rs[RS_COLORKEYENABLE] != 0,
             flat: d.rs[RS_SHADEMODE] == 1,
             spec: d.rs[RS_SPECULARENABLE] != 0,
@@ -1733,17 +1458,10 @@ impl Raster {
     fn shade(&self, diff: &C4, spec: &C4, tc: &[[f32; 2]; 8]) -> Option<C4> {
         let mut cur = *diff;
         for s in &self.stages {
-            let uses_tex = |a: &[u32; 2], o: u32| {
-                (a[0] & 0xf == 2 && o != 3) || (a[1] & 0xf == 2 && o != 2) || matches!(o, 13 | 15)
-            };
+            let uses_tex = |a: &[u32; 2], o: u32| (a[0] & 0xf == 2 && o != 3) || (a[1] & 0xf == 2 && o != 2) || matches!(o, 13 | 15);
             let tex = if s.tex.is_some() {
                 let t = s.sample(tc[s.tci], self.ck);
-                if self.ck
-                    && s.tex.as_ref().is_some_and(|t| t.key.is_some())
-                    && t[3] < 0.5
-                    && t[0] + t[1] + t[2] == 0.
-                    && !s.linear
-                {
+                if self.ck && s.tex.as_ref().is_some_and(|t| t.key.is_some()) && t[3] < 0.5 && t[0] + t[1] + t[2] == 0. && !s.linear {
                     return None;
                 }
                 t
@@ -1753,47 +1471,14 @@ impl Raster {
             let mut out = cur;
             let (ctex, atex) = (uses_tex(&s.ca, s.cop), uses_tex(&s.aa, s.aop));
             if s.tex.is_some() || !ctex {
-                let (a1, a2) = (
-                    arg(s.ca[0], diff, &cur, &tex, &self.tfactor, spec),
-                    arg(s.ca[1], diff, &cur, &tex, &self.tfactor, spec),
-                );
-                op(
-                    s.cop,
-                    &a1,
-                    &a2,
-                    diff,
-                    &tex,
-                    &self.tfactor,
-                    &cur,
-                    &mut out,
-                    0,
-                    3,
-                );
+                let (a1, a2) = (arg(s.ca[0], diff, &cur, &tex, &self.tfactor, spec), arg(s.ca[1], diff, &cur, &tex, &self.tfactor, spec));
+                op(s.cop, &a1, &a2, diff, &tex, &self.tfactor, &cur, &mut out, 0, 3);
             }
             if s.aop > 1 && (s.tex.is_some() || !atex) {
-                let (a1, a2) = (
-                    arg(s.aa[0], diff, &cur, &tex, &self.tfactor, spec),
-                    arg(s.aa[1], diff, &cur, &tex, &self.tfactor, spec),
-                );
-                op(
-                    s.aop,
-                    &a1,
-                    &a2,
-                    diff,
-                    &tex,
-                    &self.tfactor,
-                    &cur,
-                    &mut out,
-                    3,
-                    4,
-                );
+                let (a1, a2) = (arg(s.aa[0], diff, &cur, &tex, &self.tfactor, spec), arg(s.aa[1], diff, &cur, &tex, &self.tfactor, spec));
+                op(s.aop, &a1, &a2, diff, &tex, &self.tfactor, &cur, &mut out, 3, 4);
             }
-            if self.ck
-                && s.linear
-                && s.tex.as_ref().is_some_and(|t| t.key.is_some())
-                && tex[3] < 0.5
-                && s.tex.as_ref().unwrap().fmt.ch[3].1 == 0
-            {
+            if self.ck && s.linear && s.tex.as_ref().is_some_and(|t| t.key.is_some()) && tex[3] < 0.5 && s.tex.as_ref().unwrap().fmt.ch[3].1 == 0 {
                 return None;
             }
             cur = out;
@@ -1813,27 +1498,15 @@ impl Raster {
 
     #[inline]
     fn put(&self, x: i32, y: i32, z: f32, diff: &C4, spec: &C4, tc: &[[f32; 2]; 8]) {
-        let zp = self.z.map(|(p, pitch, bytes, max)| {
-            (
-                unsafe { p.add(y as usize * pitch + x as usize * bytes) },
-                bytes,
-                max,
-            )
-        });
+        let zp = self.z.map(|(p, pitch, bytes, max)| (unsafe { p.add(y as usize * pitch + x as usize * bytes) }, bytes, max));
         let zv = zp.map(|(_, _, max)| (z.clamp(0., 1.) * max) as u32);
         if let (Some(f), Some((p, bytes, _)), Some(zv)) = (self.ztest, zp, zv) {
-            let old = if bytes == 2 {
-                read_px(p, 2)
-            } else {
-                read_px(p, 4) & if bytes == 3 { 0xff_ffff } else { !0 }
-            };
+            let old = if bytes == 2 { read_px(p, 2) } else { read_px(p, 4) & if bytes == 3 { 0xff_ffff } else { !0 } };
             if !cmp(f, zv as f32, old as f32) {
                 return;
             }
         }
-        let Some(c) = self.shade(diff, spec, tc) else {
-            return;
-        };
+        let Some(c) = self.shade(diff, spec, tc) else { return };
         let p = unsafe { self.rt.add(y as usize * self.pitch + x as usize * self.bpp) };
         let out = match self.blend {
             None => c,
@@ -1883,23 +1556,11 @@ impl Raster {
         if (self.cull == 2 && area > 0.) || (self.cull == 3 && area < 0.) {
             return;
         }
-        let (b, vb, c, vc, area) = if area < 0. {
-            (c, vc, b, vb, -area)
-        } else {
-            (b, vb, c, vc, area)
-        };
+        let (b, vb, c, vc, area) = if area < 0. { (c, vc, b, vb, -area) } else { (b, vb, c, vc, area) };
         let minx = a[0].min(b[0]).min(c[0]).ceil().max(self.clip[0] as f32) as i32;
-        let maxx = a[0]
-            .max(b[0])
-            .max(c[0])
-            .floor()
-            .min(self.clip[2] as f32 - 1.) as i32;
+        let maxx = a[0].max(b[0]).max(c[0]).floor().min(self.clip[2] as f32 - 1.) as i32;
         let miny = a[1].min(b[1]).min(c[1]).ceil().max(self.clip[1] as f32) as i32;
-        let maxy = a[1]
-            .max(b[1])
-            .max(c[1])
-            .floor()
-            .min(self.clip[3] as f32 - 1.) as i32;
+        let maxy = a[1].max(b[1]).max(c[1]).floor().min(self.clip[3] as f32 - 1.) as i32;
         if minx > maxx || miny > maxy {
             return;
         }
@@ -1933,26 +1594,16 @@ impl Raster {
                 let z = l[0] * a[2] + l[1] * b[2] + l[2] * c[2];
                 let pw = [l[0] * w[0], l[1] * w[1], l[2] * w[2]];
                 let s = pw[0] + pw[1] + pw[2];
-                let pw = if s != 0. && s.is_finite() {
-                    pw.map(|x| x / s)
-                } else {
-                    l
-                };
+                let pw = if s != 0. && s.is_finite() { pw.map(|x| x / s) } else { l };
                 let mix4 = |f: &dyn Fn(&Vtx) -> C4| -> C4 {
                     let (p, q, r) = (f(vs[0]), f(vs[1]), f(vs[2]));
                     std::array::from_fn(|i| pw[0] * p[i] + pw[1] * q[i] + pw[2] * r[i])
                 };
-                let (diff, spec) = if self.flat {
-                    (va.diff, va.spec)
-                } else {
-                    (mix4(&|v| v.diff), mix4(&|v| v.spec))
-                };
+                let (diff, spec) = if self.flat { (va.diff, va.spec) } else { (mix4(&|v| v.diff), mix4(&|v| v.spec)) };
                 let mut tc = [[0f32; 2]; 8];
                 for k in 0..nt {
                     for j in 0..2 {
-                        tc[k][j] = pw[0] * vs[0].tex[k][j]
-                            + pw[1] * vs[1].tex[k][j]
-                            + pw[2] * vs[2].tex[k][j];
+                        tc[k][j] = pw[0] * vs[0].tex[k][j] + pw[1] * vs[1].tex[k][j] + pw[2] * vs[2].tex[k][j];
                     }
                 }
                 self.put(x, y, z, &diff, &spec, &tc);
@@ -1968,11 +1619,7 @@ impl Raster {
     }
 
     fn line(&self, a: (&[f32; 4], &Vtx), b: (&[f32; 4], &Vtx)) {
-        let n = (b.0[0] - a.0[0])
-            .abs()
-            .max((b.0[1] - a.0[1]).abs())
-            .ceil()
-            .min(8192.) as i32;
+        let n = (b.0[0] - a.0[0]).abs().max((b.0[1] - a.0[1]).abs()).ceil().min(8192.) as i32;
         for i in 0..n.max(1) {
             let t = i as f32 / n.max(1) as f32;
             let p: [f32; 4] = std::array::from_fn(|k| a.0[k] + (b.0[k] - a.0[k]) * t);
@@ -2010,12 +1657,8 @@ fn clip_near(poly: Vec<Vtx>) -> Vec<Vtx> {
 /// Draws `prim` (1 points, 2 lines, 3 strip, 4 triangles, 5 strip, 6 fan) of vertices
 /// `idx` (or start..start+count) from `src`.
 fn draw(c: &mut Ctx, prim: u32, src: Src, idx: Option<(u32, u32)>, start: u32, count: u32) -> u32 {
-    let Some(d) = dev(c, |d| d.clone()) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let Some(r) = Raster::new(&d) else {
-        return D3D_OK;
-    };
+    let Some(d) = dev(c, |d| d.clone()) else { return D3DERR_INVALIDCALL };
+    let Some(r) = Raster::new(&d) else { return D3D_OK };
     let t = Xform::new(&d);
     let n = idx.map_or(count, |i| i.1);
     let n = n.min(1 << 20);
@@ -2027,13 +1670,7 @@ fn draw(c: &mut Ctx, prim: u32, src: Src, idx: Option<(u32, u32)>, start: u32, c
         };
         *cache.entry(i).or_insert_with(|| src.fetch(i, &d, &t))
     };
-    let scr = |v: &Vtx| {
-        if v.screen {
-            [v.clip[0], v.clip[1], v.clip[2], 1. / v.clip[3]]
-        } else {
-            t.screen(&v.clip)
-        }
-    };
+    let scr = |v: &Vtx| if v.screen { [v.clip[0], v.clip[1], v.clip[2], 1. / v.clip[3]] } else { t.screen(&v.clip) };
     let tri = |a: Vtx, b: Vtx, cc: Vtx| {
         if a.screen {
             let (sa, sb, sc) = (scr(&a), scr(&b), scr(&cc));
@@ -2052,11 +1689,7 @@ fn draw(c: &mut Ctx, prim: u32, src: Src, idx: Option<(u32, u32)>, start: u32, c
     match prim {
         4 => (0..n / 3).for_each(|i| tri(get(3 * i), get(3 * i + 1), get(3 * i + 2))),
         5 => (0..n.saturating_sub(2)).for_each(|i| {
-            if i % 2 == 0 {
-                tri(get(i), get(i + 1), get(i + 2))
-            } else {
-                tri(get(i + 1), get(i), get(i + 2))
-            }
+            if i % 2 == 0 { tri(get(i), get(i + 1), get(i + 2)) } else { tri(get(i + 1), get(i), get(i + 2)) }
         }),
         6 => {
             let f = get(0);
@@ -2069,11 +1702,7 @@ fn draw(c: &mut Ctx, prim: u32, src: Src, idx: Option<(u32, u32)>, start: u32, c
             }
         }),
         2 | 3 => {
-            let pairs: Vec<(u32, u32)> = if prim == 2 {
-                (0..n / 2).map(|i| (2 * i, 2 * i + 1)).collect()
-            } else {
-                (0..n.saturating_sub(1)).map(|i| (i, i + 1)).collect()
-            };
+            let pairs: Vec<(u32, u32)> = if prim == 2 { (0..n / 2).map(|i| (2 * i, 2 * i + 1)).collect() } else { (0..n.saturating_sub(1)).map(|i| (i, i + 1)).collect() };
             for (i, j) in pairs {
                 let (a, b) = (get(i), get(j));
                 if a.screen || (a.clip[3] > 0. && b.clip[3] > 0.) {
@@ -2105,50 +1734,29 @@ fn V_DrawIndexedPrimitiveStrided(c: &mut Ctx) -> u32 {
 }
 fn V_DrawPrimitiveVB(c: &mut Ctx) -> u32 {
     let (prim, vbb, start, n) = (c.a(1), c.a(2), c.a(3), c.a(4));
-    let Some((m, fvf, _)) = d3d(|d| d.vbs.get(&vbb).copied()) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some((m, fvf, _)) = d3d(|d| d.vbs.get(&vbb).copied()) else { return D3DERR_INVALIDCALL };
     draw(c, prim, Src::packed(fvf, m), None, start, n)
 }
 fn V_DrawIndexedPrimitiveVB(c: &mut Ctx) -> u32 {
     let (prim, vbb, start, idx, ni) = (c.a(1), c.a(2), c.a(3), c.a(5), c.a(6));
-    let Some((m, fvf, _)) = d3d(|d| d.vbs.get(&vbb).copied()) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some((m, fvf, _)) = d3d(|d| d.vbs.get(&vbb).copied()) else { return D3DERR_INVALIDCALL };
     draw(c, prim, Src::packed(fvf, m), Some((idx, ni)), start, 0)
 }
 
 /// Clear(count, rects, flags, color, z, stencil)
 fn V_Clear(c: &mut Ctx) -> u32 {
     let (n, rects, flags, color, z) = (c.a(1), c.a(2), c.a(3), c.a(4), f32::from_bits(c.a(5)));
-    let Some(d) = dev(c, |d| d.clone()) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(d) = dev(c, |d| d.clone()) else { return D3DERR_INVALIDCALL };
     let Some(rt) = surf(d.rt) else { return D3D_OK };
-    let vp = Rect {
-        l: d.vp[0],
-        t: d.vp[1],
-        r: d.vp[0] + d.vp[2],
-        b: d.vp[1] + d.vp[3],
-    };
+    let vp = Rect { l: d.vp[0], t: d.vp[1], r: d.vp[0] + d.vp[2], b: d.vp[1] + d.vp[3] };
     let mut rs = Vec::new();
     if n == 0 || rects == 0 {
         rs.push(vp);
     } else {
         for i in 0..n.min(4096) {
             let p = rects + 16 * i;
-            let r = Rect {
-                l: r32(p) as i32,
-                t: r32(p + 4) as i32,
-                r: r32(p + 8) as i32,
-                b: r32(p + 12) as i32,
-            };
-            rs.push(Rect {
-                l: r.l.max(vp.l),
-                t: r.t.max(vp.t),
-                r: r.r.min(vp.r),
-                b: r.b.min(vp.b),
-            });
+            let r = Rect { l: r32(p) as i32, t: r32(p + 4) as i32, r: r32(p + 8) as i32, b: r32(p + 12) as i32 };
+            rs.push(Rect { l: r.l.max(vp.l), t: r.t.max(vp.t), r: r.r.min(vp.r), b: r.b.min(vp.b) });
         }
     }
     let zs = surf(rt.zbuf);
@@ -2159,18 +1767,8 @@ fn V_Clear(c: &mut Ctx) -> u32 {
         }
         if flags & 2 != 0 {
             if let Some(zs) = &zs {
-                let max = if zs.pf[2] != 0 {
-                    zs.pf[2]
-                } else if zs.bpp == 16 {
-                    0xffff
-                } else {
-                    0xff_ffff
-                };
-                fill(
-                    zs,
-                    clip_rect(r, zs.w, zs.h),
-                    (z.clamp(0., 1.) * max as f32) as u32,
-                );
+                let max = if zs.pf[2] != 0 { zs.pf[2] } else if zs.bpp == 16 { 0xffff } else { 0xff_ffff };
+                fill(zs, clip_rect(r, zs.w, zs.h), (z.clamp(0., 1.) * max as f32) as u32);
             }
         }
     }
@@ -2181,25 +1779,16 @@ fn V_Clear(c: &mut Ctx) -> u32 {
 mod tests {
     use super::*;
 
-    const ARGB: Fmt = Fmt {
-        ch: [(16, 255), (8, 255), (0, 255), (24, 255)],
-    };
+    const ARGB: Fmt = Fmt { ch: [(16, 255), (8, 255), (0, 255), (24, 255)] };
 
     /// ddrefs: GetLightEnable of a light LightEnable turned on reads 128, of one off 0
     #[test]
     fn light_enable_reads_as_windows() {
         let g = include_str!("../../../tests/winref/golden/ddrefs-32/stdout.txt");
         let lines: Vec<&str> = g.lines().collect();
-        let after =
-            |what: &str| lines[lines.iter().position(|l| l.starts_with(what)).unwrap() + 1].trim();
-        assert_eq!(
-            after("GetLightEnable 150000 "),
-            format!("on {}", light_on_value(true))
-        );
-        assert_eq!(
-            after("GetLightEnable 7 "),
-            format!("on {}", light_on_value(false))
-        );
+        let after = |what: &str| lines[lines.iter().position(|l| l.starts_with(what)).unwrap() + 1].trim();
+        assert_eq!(after("GetLightEnable 150000 "), format!("on {}", light_on_value(true)));
+        assert_eq!(after("GetLightEnable 7 "), format!("on {}", light_on_value(false)));
     }
 
     fn raster(buf: &mut [u32], w: i32, h: i32) -> Raster {
@@ -2227,16 +1816,7 @@ mod tests {
     fn vtx(x: f32, y: f32, u: f32, v: f32, diff: C4) -> ([f32; 4], Vtx) {
         let mut tex = [[0.; 2]; 8];
         tex[0] = [u, v];
-        (
-            [x, y, 0.5, 1.],
-            Vtx {
-                clip: [x, y, 0.5, 1.],
-                screen: true,
-                diff,
-                spec: [0.; 4],
-                tex,
-            },
-        )
+        ([x, y, 0.5, 1.], Vtx { clip: [x, y, 0.5, 1.], screen: true, diff, spec: [0.; 4], tex })
     }
 
     fn quad(r: &Raster, x0: f32, y0: f32, x1: f32, y1: f32, diff: C4) {
@@ -2282,10 +1862,7 @@ mod tests {
                 let (p, q) = (&pts[i], &pts[(i + 1) % n as usize]);
                 r.tri([(&c.0, &c.1), (&p.0, &p.1), (&q.0, &q.1)]);
             }
-            assert!(
-                buf.iter().all(|&p| p >> 16 & 0xff <= 1),
-                "a pixel drawn twice"
-            );
+            assert!(buf.iter().all(|&p| p >> 16 & 0xff <= 1), "a pixel drawn twice");
         }
         let (w, h) = (16, 16);
         let mut buf = vec![0u32; 256];
@@ -2295,11 +1872,7 @@ mod tests {
         for y in 0..h {
             for x in 0..w {
                 let inside = (3..=9).contains(&x) && (4..=7).contains(&y);
-                assert_eq!(
-                    buf[(y * w + x) as usize] >> 16 & 0xff,
-                    inside as u32,
-                    "({x}, {y})"
-                );
+                assert_eq!(buf[(y * w + x) as usize] >> 16 & 0xff, inside as u32, "({x}, {y})");
             }
         }
     }
@@ -2309,9 +1882,7 @@ mod tests {
     #[test]
     fn one_to_one_texture_is_exact() {
         let (tw, th) = (8, 6);
-        let texels: Vec<u32> = (0..tw * th)
-            .map(|i| 0xff00_0000 | (i as u32 * 0x0103_07))
-            .collect();
+        let texels: Vec<u32> = (0..tw * th).map(|i| 0xff00_0000 | (i as u32 * 0x0103_07)).collect();
         for linear in [false, true] {
             let (w, h) = (12, 10);
             let mut buf = vec![0u32; (w * h) as usize];
@@ -2321,16 +1892,7 @@ mod tests {
                 ca: [2, 1],
                 aop: 2,
                 aa: [2, 1],
-                tex: Some(Tex {
-                    bits: texels.as_ptr() as *const u8,
-                    w: tw,
-                    h: th,
-                    pitch: tw as usize * 4,
-                    bpp: 4,
-                    fmt: ARGB,
-                    pal: None,
-                    key: None,
-                }),
+                tex: Some(Tex { bits: texels.as_ptr() as *const u8, w: tw, h: th, pitch: tw as usize * 4, bpp: 4, fmt: ARGB, pal: None, key: None }),
                 tci: 0,
                 addr: [3, 3],
                 border: [0.; 4],
@@ -2339,11 +1901,7 @@ mod tests {
             quad(&r, 1.5, 2.5, 1.5 + tw as f32, 2.5 + th as f32, [1.; 4]);
             for y in 0..th {
                 for x in 0..tw {
-                    assert_eq!(
-                        buf[((y + 3) * w + x + 2) as usize],
-                        texels[(y * tw + x) as usize],
-                        "linear {linear} ({x}, {y})"
-                    );
+                    assert_eq!(buf[((y + 3) * w + x + 2) as usize], texels[(y * tw + x) as usize], "linear {linear} ({x}, {y})");
                 }
             }
         }
@@ -2353,27 +1911,11 @@ mod tests {
     #[test]
     fn formats_round_trip() {
         for (bpp, _, r, g, b, a) in TEX_FORMATS {
-            let f = Fmt {
-                ch: [r, g, b, a].map(|m| {
-                    if m == 0 {
-                        (0, 0)
-                    } else {
-                        (m.trailing_zeros(), m >> m.trailing_zeros())
-                    }
-                }),
-            };
+            let f = Fmt { ch: [r, g, b, a].map(|m| if m == 0 { (0, 0) } else { (m.trailing_zeros(), m >> m.trailing_zeros()) }) };
             let all = r | g | b | a;
-            let vals: Box<dyn Iterator<Item = u32>> = if bpp == 16 {
-                Box::new(0..0x10000)
-            } else {
-                Box::new((0..0x10000u32).map(|i| i.wrapping_mul(0x9e37_79b9)))
-            };
+            let vals: Box<dyn Iterator<Item = u32>> = if bpp == 16 { Box::new(0..0x10000) } else { Box::new((0..0x10000u32).map(|i| i.wrapping_mul(0x9e37_79b9))) };
             for v in vals {
-                assert_eq!(
-                    f.pack(f.unpack(v)),
-                    v & all,
-                    "{v:#x} in {r:#x}/{g:#x}/{b:#x}/{a:#x}"
-                );
+                assert_eq!(f.pack(f.unpack(v)), v & all, "{v:#x} in {r:#x}/{g:#x}/{b:#x}/{a:#x}");
             }
         }
     }
@@ -2382,35 +1924,13 @@ mod tests {
     /// triangles wholly in front as they are.
     #[test]
     fn near_clip() {
-        let v = |x: f32, y: f32, z: f32, w: f32| Vtx {
-            clip: [x, y, z, w],
-            screen: false,
-            diff: [1.; 4],
-            spec: [0.; 4],
-            tex: [[0.; 2]; 8],
-        };
-        let p = clip_near(vec![
-            v(0., 0., 0.5, 1.),
-            v(1., 0., 0.5, 1.),
-            v(0., 1., 0.5, 1.),
-        ]);
+        let v = |x: f32, y: f32, z: f32, w: f32| Vtx { clip: [x, y, z, w], screen: false, diff: [1.; 4], spec: [0.; 4], tex: [[0.; 2]; 8] };
+        let p = clip_near(vec![v(0., 0., 0.5, 1.), v(1., 0., 0.5, 1.), v(0., 1., 0.5, 1.)]);
         assert_eq!(p.len(), 3);
-        let p = clip_near(vec![
-            v(0., 0., -1., 1.),
-            v(1., 0., 1., 1.),
-            v(0., 1., 1., 1.),
-        ]);
+        let p = clip_near(vec![v(0., 0., -1., 1.), v(1., 0., 1., 1.), v(0., 1., 1., 1.)]);
         assert_eq!(p.len(), 4);
         assert!(p.iter().all(|x| x.clip[2] >= -1e-6 && x.clip[3] > 0.));
-        assert!(
-            clip_near(vec![
-                v(0., 0., -1., 1.),
-                v(1., 0., -1., 1.),
-                v(0., 1., -2., 1.)
-            ])
-            .len()
-                < 3
-        );
+        assert!(clip_near(vec![v(0., 0., -1., 1.), v(1., 0., -1., 1.), v(0., 1., -2., 1.)]).len() < 3);
     }
 
     /// Vertex buffer sizes: counts whose byte size passes 32 bits (or the cap) and FVFs with
@@ -2425,19 +1945,11 @@ mod tests {
         assert_eq!(vb_size(tl, u32::MAX), None);
         assert_eq!(vb_size(tl, MAX_VB / 32), Some(MAX_VB));
         assert_eq!(vb_size(tl, MAX_VB / 32 + 1), None);
-        assert_eq!(
-            vb_size(FVF_DIFFUSE, 3),
-            Some(48),
-            "no position: sized as XYZ"
-        );
+        assert_eq!(vb_size(FVF_DIFFUSE, 3), Some(48), "no position: sized as XYZ");
         for fvf in (2..0x1000u32).step_by(2).filter(|f| f & 0xe != 0) {
             for n in [1u32, 7, 0x0010_0000, 0x7fff_ffff, u32::MAX] {
                 let want = Layout::of(fvf).size as u64 * n as u64;
-                assert_eq!(
-                    vb_size(fvf, n),
-                    (want <= MAX_VB as u64).then_some(want as u32),
-                    "{fvf:#x} x {n}"
-                );
+                assert_eq!(vb_size(fvf, n), (want <= MAX_VB as u64).then_some(want as u32), "{fvf:#x} x {n}");
             }
         }
     }
@@ -2456,10 +1968,7 @@ mod tests {
         assert_eq!(d.lights[&0xffff_fffe].0, l);
         assert!(!d.lights[&100_000].1);
         assert!(d.lights[&0x7fff_fff0].1);
-        assert_eq!(
-            d.lights[&0x7fff_fff0].0[0], 3,
-            "a default directional light"
-        );
+        assert_eq!(d.lights[&0x7fff_fff0].0[0], 3, "a default directional light");
         assert!(!d.lights.contains_key(&3));
         // the whole state round-trips through a state block
         let mut e = Dev::new(0, 0);

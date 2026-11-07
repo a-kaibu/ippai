@@ -60,10 +60,7 @@ fn path_of(oa: u32) -> Option<u32> {
     for d in ['C', 'Z'] {
         let dev = crate::k32::drive_device(d).unwrap();
         // (s may hold Japanese: compare bytes, the device name is ASCII)
-        if s.as_bytes()
-            .get(..dev.len())
-            .is_some_and(|p| p.eq_ignore_ascii_case(dev.as_bytes()))
-        {
+        if s.as_bytes().get(..dev.len()).is_some_and(|p| p.eq_ignore_ascii_case(dev.as_bytes())) {
             w.splice(0..dev.len(), [d as u16, b':' as u16]);
         }
     }
@@ -71,15 +68,11 @@ fn path_of(oa: u32) -> Option<u32> {
     let root = mem::rp(oa + mem::ps());
     if root != 0 {
         let dir = crate::obj::with(|t| match t.objs.get(&root) {
-            Some((crate::obj::Obj::File(f), _)) if f.dir => {
-                Some(crate::files::host_to_win(&f.path))
-            }
+            Some((crate::obj::Obj::File(f), _)) if f.dir => Some(crate::files::host_to_win(&f.path)),
             _ => None,
         });
         if let Some(d) = dir {
-            let pre: Vec<u16> = format!("{}\\", d.trim_end_matches('\\'))
-                .encode_utf16()
-                .collect();
+            let pre: Vec<u16> = format!("{}\\", d.trim_end_matches('\\')).encode_utf16().collect();
             w.splice(0..0, pre);
         }
     }
@@ -90,20 +83,8 @@ fn path_of(oa: u32) -> Option<u32> {
     Some(p)
 }
 
-fn create(
-    c: &mut Ctx,
-    out: u32,
-    access: u32,
-    oa: u32,
-    io: u32,
-    attrs: u32,
-    share: u32,
-    disp: u32,
-    opts: u32,
-) -> u32 {
-    let Some(path) = path_of(oa) else {
-        return 0xc000_0033;
-    };
+fn create(c: &mut Ctx, out: u32, access: u32, oa: u32, io: u32, attrs: u32, share: u32, disp: u32, opts: u32) -> u32 {
+    let Some(path) = path_of(oa) else { return 0xc000_0033 };
     // NT disposition -> CreateFile's
     let cd = match disp {
         0 | 5 => 2, // SUPERSEDE, OVERWRITE_IF: CREATE_ALWAYS
@@ -176,11 +157,7 @@ fn nt_open_file(c: &mut Ctx) -> u32 {
 }
 fn nt_close(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    if k32(c, "CloseHandle", &[h]) != 0 {
-        0
-    } else {
-        0xc000_0008
-    }
+    if k32(c, "CloseHandle", &[h]) != 0 { 0 } else { 0xc000_0008 }
 }
 
 /// Moves to the offset a read or write was given (none, or FILE_USE_FILE_POINTER_POSITION).
@@ -199,18 +176,7 @@ fn seek_to(c: &mut Ctx, h: u32, off: u32) {
 fn nt_read_file(c: &mut Ctx) -> u32 {
     let (h, io, buf, len, off) = (c.a(0), c.a(4), c.a(5), c.a(6), c.a(7));
     if let Some(p) = crate::pipe::handle(h) {
-        return crate::pipe::nt_read(
-            h,
-            p,
-            crate::pipe::NtIo {
-                iosb: io,
-                event: c.a(1),
-                apc: c.a(2),
-                ctx: c.a(3),
-            },
-            buf,
-            len,
-        );
+        return crate::pipe::nt_read(h, p, crate::pipe::NtIo { iosb: io, event: c.a(1), apc: c.a(2), ctx: c.a(3) }, buf, len);
     }
     seek_to(c, h, off);
     let n = mem::heap_alloc(4, true);
@@ -232,18 +198,7 @@ fn nt_read_file(c: &mut Ctx) -> u32 {
 fn nt_write_file(c: &mut Ctx) -> u32 {
     let (h, io, buf, len, off) = (c.a(0), c.a(4), c.a(5), c.a(6), c.a(7));
     if let Some(p) = crate::pipe::handle(h) {
-        return crate::pipe::nt_write(
-            h,
-            p,
-            crate::pipe::NtIo {
-                iosb: io,
-                event: c.a(1),
-                apc: c.a(2),
-                ctx: c.a(3),
-            },
-            buf,
-            len,
-        );
+        return crate::pipe::nt_write(h, p, crate::pipe::NtIo { iosb: io, event: c.a(1), apc: c.a(2), ctx: c.a(3) }, buf, len);
     }
     seek_to(c, h, off);
     let n = mem::heap_alloc(4, true);
@@ -309,9 +264,7 @@ fn nt_query_information_file(c: &mut Ctx) -> u32 {
         iosb(io, 0, 8);
         return 0;
     }
-    let Some(i) = by_handle(c, h) else {
-        return 0xc000_0008;
-    };
+    let Some(i) = by_handle(c, h) else { return 0xc000_0008 };
     let (attrs, size_hi, size_lo) = (r32(i), r32(i + 32), r32(i + 36));
     match class {
         4 => basic(out, i + 4, attrs),
@@ -366,9 +319,7 @@ fn nt_set_information_file(c: &mut Ctx) -> u32 {
 
 /// WIN32_FILE_ATTRIBUTE_DATA (36 bytes) of OBJECT_ATTRIBUTES' file, or the status.
 fn attr_data(c: &mut Ctx, oa: u32) -> Result<u32, u32> {
-    let Some(path) = path_of(oa) else {
-        return Err(0xc000_0033);
-    };
+    let Some(path) = path_of(oa) else { return Err(0xc000_0033) };
     let d = mem::heap_alloc(36, true);
     let ok = k32(c, "GetFileAttributesExW", &[path, 0, d]);
     mem::heap_free(path);
@@ -410,16 +361,10 @@ fn nt_query_full_attributes_file(c: &mut Ctx) -> u32 {
     }
 }
 fn nt_delete_file(c: &mut Ctx) -> u32 {
-    let Some(path) = path_of(c.a(0)) else {
-        return 0xc000_0033;
-    };
+    let Some(path) = path_of(c.a(0)) else { return 0xc000_0033 };
     let ok = k32(c, "DeleteFileW", &[path]);
     mem::heap_free(path);
-    if ok != 0 {
-        0
-    } else {
-        status()
-    }
+    if ok != 0 { 0 } else { status() }
 }
 
 /// NtSetInformationThread(h, class, buf, len): accepted (ThreadHideFromDebugger and the like).
@@ -430,10 +375,10 @@ fn nt_set_information_thread(_: &mut Ctx) -> u32 {
 fn nt_query_information_process(c: &mut Ctx) -> u32 {
     let (class, out, len, ret) = (c.a(1), c.a(2), c.a(3), c.a(4));
     let (need, st) = match class {
-        0 => (24, 0),             // ProcessBasicInformation
-        7 => (4, 0),              // ProcessDebugPort: none
+        0 => (24, 0),            // ProcessBasicInformation
+        7 => (4, 0),             // ProcessDebugPort: none
         0x1e => (4, 0xc000_0353), // ProcessDebugObjectHandle: STATUS_PORT_NOT_SET
-        0x1f => (4, 0),           // ProcessDebugFlags: not debugged
+        0x1f => (4, 0),          // ProcessDebugFlags: not debugged
         _ => return 0xc000_0003,
     };
     if len < need {
@@ -442,10 +387,7 @@ fn nt_query_information_process(c: &mut Ctx) -> u32 {
     mem::fill(out, need, 0);
     match class {
         0 => {
-            w32(
-                out + 4,
-                crate::PEB.load(std::sync::atomic::Ordering::Relaxed),
-            );
+            w32(out + 4, crate::PEB.load(std::sync::atomic::Ordering::Relaxed));
             w32(out + 8, 1);
             w32(out + 12, 8);
             w32(out + 16, 0x20);
@@ -491,23 +433,12 @@ fn entry_attrs(dir: &str, name: &str, m: &kura::fs::Metadata) -> u32 {
 /// or nothing at the end. ".." is matched as "." (Windows' answers in Wine's ntdll directory
 /// test).
 pub fn nt_match(expr: &[u16], name: &[u16]) -> bool {
-    let name = if name == [b'.' as u16, b'.' as u16] {
-        &name[..1]
-    } else {
-        name
-    };
+    let name = if name == [b'.' as u16, b'.' as u16] { &name[..1] } else { name };
     let (e, n) = (expr.len(), name.len());
     let lead = name.iter().take_while(|&&c| c == b'.' as u16).count();
     // memo[i][j]: expr[i..] against name[j..]
     let mut memo = vec![None::<bool>; (e + 1) * (n + 1)];
-    fn go(
-        i: usize,
-        j: usize,
-        x: &[u16],
-        s: &[u16],
-        lead: usize,
-        memo: &mut Vec<Option<bool>>,
-    ) -> bool {
+    fn go(i: usize, j: usize, x: &[u16], s: &[u16], lead: usize, memo: &mut Vec<Option<bool>>) -> bool {
         let (e, n) = (x.len(), s.len());
         if let Some(r) = memo[i * (n + 1) + j] {
             return r;
@@ -523,9 +454,7 @@ pub fn nt_match(expr: &[u16], name: &[u16]) -> bool {
                     // name whose periods all lead (".a"), also the whole name
                     let to = (j..n).rev().find(|&k| s[k] == dot).map_or(n, |k| k + 1);
                     let whole = j == 0 && !s[lead..].contains(&dot);
-                    (j..=to)
-                        .chain(whole.then_some(n))
-                        .any(|k| go(i + 1, k, x, s, lead, memo))
+                    (j..=to).chain(whole.then_some(n)).any(|k| go(i + 1, k, x, s, lead, memo))
                 }
                 0x3f => j < n && go(i + 1, j + 1, x, s, lead, memo),
                 0x3e => {
@@ -536,11 +465,7 @@ pub fn nt_match(expr: &[u16], name: &[u16]) -> bool {
                         while k < e && x[k] == 0x3e {
                             k += 1;
                         }
-                        if k == e {
-                            go(k, j + 1, x, s, lead, memo)
-                        } else {
-                            go(k, j, x, s, lead, memo)
-                        }
+                        if k == e { go(k, j + 1, x, s, lead, memo) } else { go(k, j, x, s, lead, memo) }
                     } else {
                         go(i + 1, j + 1, x, s, lead, memo)
                     }
@@ -565,12 +490,12 @@ pub fn nt_match(expr: &[u16], name: &[u16]) -> bool {
 /// FileNameLength is, where the name goes)
 fn dir_class(class: u32) -> Option<(u32, u32, u32)> {
     Some(match class {
-        1 => (64, 60, 64),    // FileDirectoryInformation
-        2 => (68, 60, 68),    // FileFullDirectoryInformation
-        3 => (94, 60, 94),    // FileBothDirectoryInformation
-        12 => (12, 8, 12),    // FileNamesInformation
+        1 => (64, 60, 64),   // FileDirectoryInformation
+        2 => (68, 60, 68),   // FileFullDirectoryInformation
+        3 => (94, 60, 94),   // FileBothDirectoryInformation
+        12 => (12, 8, 12),   // FileNamesInformation
         37 => (104, 60, 104), // FileIdBothDirectoryInformation
-        38 => (80, 60, 80),   // FileIdFullDirectoryInformation
+        38 => (80, 60, 80),  // FileIdFullDirectoryInformation
         // (ReFS's 128-bit ids and Windows 11's 64-bit + 128-bit ones, after EaSize and
         // ReparsePointTag; the Both ones with the short name between)
         60 => (88, 60, 88),   // FileIdExtdDirectoryInformation
@@ -618,11 +543,7 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
         // FileObjectIdInformation, FileQuotaInformation, FileReparsePointInformation: not for
         // a directory of files, once the buffer holds one
         return match class {
-            29 | 32 | 33
-                if len < [72, 56, 16][[29, 32, 33].iter().position(|&x| x == class).unwrap()] =>
-            {
-                0xc000_0004
-            }
+            29 | 32 | 33 if len < [72, 56, 16][[29, 32, 33].iter().position(|&x| x == class).unwrap()] => 0xc000_0004,
             29 | 32 | 33 => 0xc000_0003,
             // STATUS_INVALID_INFO_CLASS; WoW64's thunk has no conversion for the classes from
             // 76 on that are not a directory's (76, 84..100 and 99 in winref ntdir):
@@ -656,12 +577,8 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
             scan.as_ref().map_or(vec![b'*' as u16], |s| s.0.clone())
         };
         let win = crate::files::host_to_win(&f.path);
-        let all = crate::files::find(&format!("{}\\*", win.trim_end_matches('\\')))
-            .map_or(Vec::new(), |f| f.entries);
-        let mut entries: Vec<_> = all
-            .into_iter()
-            .filter(|(n, _)| nt_match(&mask, &n.encode_utf16().collect::<Vec<_>>()))
-            .collect();
+        let all = crate::files::find(&format!("{}\\*", win.trim_end_matches('\\'))).map_or(Vec::new(), |f| f.entries);
+        let mut entries: Vec<_> = all.into_iter().filter(|(n, _)| nt_match(&mask, &n.encode_utf16().collect::<Vec<_>>())).collect();
         // NTFS's order: "." and "..", then the names compared in upper case
         entries.sort_by_cached_key(|(n, _)| (n != ".", n != "..", upcase(n)));
         let none = entries.is_empty();
@@ -703,14 +620,7 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
         if let Some(p) = prev {
             w32(buf + p, at - p);
         }
-        dir_entry(
-            buf + at,
-            class,
-            name,
-            m,
-            entry_attrs(&f.path, name, m),
-            need,
-        );
+        dir_entry(buf + at, class, name, m, entry_attrs(&f.path, name, m), need);
         prev = Some(at);
         s.at += 1;
         at = (at + need + 7) & !7;
@@ -718,19 +628,14 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
             break;
         }
     }
-    let end = prev.map_or(0, |p| {
-        p + fixed + r32(buf + p + dir_class(class).unwrap().1)
-    });
+    let end = prev.map_or(0, |p| p + fixed + r32(buf + p + dir_class(class).unwrap().1));
     iosb(io, 0, end);
     0
 }
 
 pub fn init() {
     for (n, f) in [
-        (
-            "SetInformationThread",
-            nt_set_information_thread as crate::api::Handler,
-        ),
+        ("SetInformationThread", nt_set_information_thread as crate::api::Handler),
         ("QueryInformationProcess", nt_query_information_process),
     ] {
         implement("ntdll", &format!("Nt{n}"), f);
@@ -761,10 +666,7 @@ pub fn init() {
 mod tests {
     use super::nt_match;
     fn m(e: &str, n: &str) -> bool {
-        nt_match(
-            &e.encode_utf16().collect::<Vec<_>>(),
-            &n.encode_utf16().collect::<Vec<_>>(),
-        )
+        nt_match(&e.encode_utf16().collect::<Vec<_>>(), &n.encode_utf16().collect::<Vec<_>>())
     }
     #[test]
     fn nt_masks() {
@@ -836,96 +738,27 @@ mod dir_class_tests {
         name_len: u32,
     }
     #[repr(C)]
-    struct Dir {
-        h: Head,
-        name: u16,
-    }
+    struct Dir { h: Head, name: u16 }
     #[repr(C)]
-    struct Full {
-        h: Head,
-        ea: u32,
-        name: u16,
-    }
+    struct Full { h: Head, ea: u32, name: u16 }
     #[repr(C)]
-    struct Both {
-        h: Head,
-        ea: u32,
-        short_len: i8,
-        short: [u16; 12],
-        name: u16,
-    }
+    struct Both { h: Head, ea: u32, short_len: i8, short: [u16; 12], name: u16 }
     #[repr(C)]
-    struct IdBoth {
-        h: Head,
-        ea: u32,
-        short_len: i8,
-        short: [u16; 12],
-        id: i64,
-        name: u16,
-    }
+    struct IdBoth { h: Head, ea: u32, short_len: i8, short: [u16; 12], id: i64, name: u16 }
     #[repr(C)]
-    struct IdFull {
-        h: Head,
-        ea: u32,
-        id: i64,
-        name: u16,
-    }
+    struct IdFull { h: Head, ea: u32, id: i64, name: u16 }
     #[repr(C)]
-    struct IdExtd {
-        h: Head,
-        ea: u32,
-        tag: u32,
-        id: [u8; 16],
-        name: u16,
-    }
+    struct IdExtd { h: Head, ea: u32, tag: u32, id: [u8; 16], name: u16 }
     #[repr(C)]
-    struct IdExtdBoth {
-        h: Head,
-        ea: u32,
-        tag: u32,
-        id: [u8; 16],
-        short_len: i8,
-        short: [u16; 12],
-        name: u16,
-    }
+    struct IdExtdBoth { h: Head, ea: u32, tag: u32, id: [u8; 16], short_len: i8, short: [u16; 12], name: u16 }
     #[repr(C)]
-    struct Id64Extd {
-        h: Head,
-        ea: u32,
-        tag: u32,
-        id: i64,
-        name: u16,
-    }
+    struct Id64Extd { h: Head, ea: u32, tag: u32, id: i64, name: u16 }
     #[repr(C)]
-    struct Id64ExtdBoth {
-        h: Head,
-        ea: u32,
-        tag: u32,
-        id: i64,
-        short_len: i8,
-        short: [u16; 12],
-        name: u16,
-    }
+    struct Id64ExtdBoth { h: Head, ea: u32, tag: u32, id: i64, short_len: i8, short: [u16; 12], name: u16 }
     #[repr(C)]
-    struct IdAllExtd {
-        h: Head,
-        ea: u32,
-        tag: u32,
-        id: i64,
-        id128: [u8; 16],
-        name: u16,
-    }
+    struct IdAllExtd { h: Head, ea: u32, tag: u32, id: i64, id128: [u8; 16], name: u16 }
     #[repr(C)]
-    struct IdAllExtdBoth {
-        h: Head,
-        ea: u32,
-        tag: u32,
-        id: i64,
-        id128: [u8; 16],
-        short_len: i8,
-        short: [u16; 12],
-        name: u16,
-    }
+    struct IdAllExtdBoth { h: Head, ea: u32, tag: u32, id: i64, id128: [u8; 16], short_len: i8, short: [u16; 12], name: u16 }
 
     #[test]
     fn layouts_as_the_headers() {
@@ -944,11 +777,7 @@ mod dir_class_tests {
             (80, offset_of!(IdAllExtd, name) as u32),
             (81, offset_of!(IdAllExtdBoth, name) as u32),
         ] {
-            assert_eq!(
-                dir_class(class),
-                Some((name_at, len_at, name_at)),
-                "class {class}"
-            );
+            assert_eq!(dir_class(class), Some((name_at, len_at, name_at)), "class {class}");
         }
         assert_eq!(dir_class(12), Some((12, 8, 12)));
         // not a directory's, or past the classes

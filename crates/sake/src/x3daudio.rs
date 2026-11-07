@@ -24,11 +24,7 @@ fn dot(a: V3, b: V3) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 fn cross(a: V3, b: V3) -> V3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 fn scale(a: V3, k: f32) -> V3 {
     [a[0] * k, a[1] * k, a[2] * k]
@@ -44,26 +40,22 @@ pub const TWO_PI: f32 = 2.0 * PI;
 
 /// Speaker bits (SPEAKER_*) and their azimuths, in channel order.
 const SPEAKERS: [(u32, f32); 11] = [
-    (0x1, 7.0 * PI / 4.0),   // FRONT_LEFT
-    (0x2, PI / 4.0),         // FRONT_RIGHT
-    (0x4, 0.0),              // FRONT_CENTER
-    (0x8, TWO_PI),           // LOW_FREQUENCY
-    (0x10, 5.0 * PI / 4.0),  // BACK_LEFT
-    (0x20, 3.0 * PI / 4.0),  // BACK_RIGHT
+    (0x1, 7.0 * PI / 4.0), // FRONT_LEFT
+    (0x2, PI / 4.0),       // FRONT_RIGHT
+    (0x4, 0.0),            // FRONT_CENTER
+    (0x8, TWO_PI),         // LOW_FREQUENCY
+    (0x10, 5.0 * PI / 4.0), // BACK_LEFT
+    (0x20, 3.0 * PI / 4.0), // BACK_RIGHT
     (0x40, 15.0 * PI / 8.0), // FRONT_LEFT_OF_CENTER
-    (0x80, PI / 8.0),        // FRONT_RIGHT_OF_CENTER
-    (0x100, PI),             // BACK_CENTER
+    (0x80, PI / 8.0),      // FRONT_RIGHT_OF_CENTER
+    (0x100, PI),           // BACK_CENTER
     (0x200, 3.0 * PI / 2.0), // SIDE_LEFT
-    (0x400, PI / 2.0),       // SIDE_RIGHT
+    (0x400, PI / 2.0),     // SIDE_RIGHT
 ];
 
 /// The output channels of a speaker mask: (azimuth, is LFE), in channel order.
 pub fn layout(mask: u32) -> Vec<(f32, bool)> {
-    let mut v: Vec<(f32, bool)> = SPEAKERS
-        .iter()
-        .filter(|s| mask & s.0 != 0)
-        .map(|s| (s.1, s.0 == 0x8))
-        .collect();
+    let mut v: Vec<(f32, bool)> = SPEAKERS.iter().filter(|s| mask & s.0 != 0).map(|s| (s.1, s.0 == 0x8)).collect();
     // (bits past SPEAKER_SIDE_RIGHT: the top speakers, taken as centre)
     for b in 11..18 {
         if mask & (1 << b) != 0 {
@@ -143,20 +135,14 @@ pub struct Dsp {
 /// A piecewise-linear curve of normalized distance (points by increasing distance); past
 /// the last point, its value.
 pub fn curve(points: &[(f32, f32)], d: f32) -> f32 {
-    let Some(&first) = points.first() else {
-        return 1.0;
-    };
+    let Some(&first) = points.first() else { return 1.0 };
     if d <= first.0 {
         return first.1;
     }
     for w in points.windows(2) {
         let ((d0, v0), (d1, v1)) = (w[0], w[1]);
         if d <= d1 {
-            return if d1 > d0 {
-                v0 + (v1 - v0) * (d - d0) / (d1 - d0)
-            } else {
-                v1
-            };
+            return if d1 > d0 { v0 + (v1 - v0) * (d - d0) / (d1 - d0) } else { v1 };
         }
     }
     points[points.len() - 1].1
@@ -174,11 +160,7 @@ fn cone_at(c: &Cone, angle: f32) -> (f32, f32, f32) {
         (angle - hi) / (ho - hi)
     };
     let l = |a: f32, b: f32| a + (b - a) * t;
-    (
-        l(c.inner_volume, c.outer_volume),
-        l(c.inner_lpf, c.outer_lpf),
-        l(c.inner_reverb, c.outer_reverb),
-    )
+    (l(c.inner_volume, c.outer_volume), l(c.inner_lpf, c.outer_lpf), l(c.inner_reverb, c.outer_reverb))
 }
 
 fn angle_between(a: V3, b: V3) -> f32 {
@@ -219,11 +201,7 @@ pub fn pan(az: f32, spk: &[f32]) -> Vec<f32> {
     let signed = |a: f32| if a > PI { a - TWO_PI } else { a };
     let gap = (0..order.len()).map(|k| {
         let (a0, a1) = (spk[order[k]], spk[order[(k + 1) % order.len()]]);
-        if a1 > a0 {
-            a1 - a0
-        } else {
-            a1 + TWO_PI - a0
-        }
+        if a1 > a0 { a1 - a0 } else { a1 + TWO_PI - a0 }
     });
     if gap.fold(0.0f32, f32::max) > PI {
         let mut s = signed(az);
@@ -277,33 +255,14 @@ pub fn pan(az: f32, spk: &[f32]) -> Vec<f32> {
 /// X3DAudioCalculate
 pub fn calculate(mask: u32, speed: f32, l: &Listener, e: &Emitter, flags: u32, dst: usize) -> Dsp {
     let src = e.channels.max(1) as usize;
-    let scaler = if e.curve_scaler > 0.0 {
-        e.curve_scaler
-    } else {
-        1.0
-    };
+    let scaler = if e.curve_scaler > 0.0 { e.curve_scaler } else { 1.0 };
     let to_e = sub(e.pos, l.pos);
     let dist = len(to_e);
     let nd = dist / scaler;
     let default_volume = |d: f32| 1.0 / d.max(1.0);
-    let vol_at = |d: f32| {
-        e.volume_curve
-            .as_deref()
-            .map_or_else(|| default_volume(d), |c| curve(c, d))
-    };
-    let lfe_at = |d: f32| {
-        e.lfe_curve
-            .as_deref()
-            .map_or_else(|| vol_at(d), |c| curve(c, d))
-    };
-    let mut out = Dsp {
-        distance: dist,
-        doppler: 1.0,
-        lpf_direct: 1.0,
-        lpf_reverb: 1.0,
-        reverb: 0.0,
-        ..Default::default()
-    };
+    let vol_at = |d: f32| e.volume_curve.as_deref().map_or_else(|| default_volume(d), |c| curve(c, d));
+    let lfe_at = |d: f32| e.lfe_curve.as_deref().map_or_else(|| vol_at(d), |c| curve(c, d));
+    let mut out = Dsp { distance: dist, doppler: 1.0, lpf_direct: 1.0, lpf_reverb: 1.0, reverb: 0.0, ..Default::default() };
 
     // the cones: the emitter's (seen from the listener, single-channel emitters only) and the listener's
     let (mut cv, mut cl, mut cr) = (1.0, 1.0, 1.0);
@@ -327,9 +286,7 @@ pub fn calculate(mask: u32, speed: f32, l: &Listener, e: &Emitter, flags: u32, d
         let outs = &outs[..dst.min(outs.len())];
         let lfe = outs.iter().position(|o| o.1);
         let zero_center = flags & ZEROCENTER != 0;
-        let speakers: Vec<usize> = (0..outs.len())
-            .filter(|&i| !outs[i].1 && !(zero_center && outs[i].0 == 0.0 && outs.len() > 2))
-            .collect();
+        let speakers: Vec<usize> = (0..outs.len()).filter(|&i| !outs[i].1 && !(zero_center && outs[i].0 == 0.0 && outs.len() > 2)).collect();
         let azs: Vec<f32> = speakers.iter().map(|&i| outs[i].0).collect();
         let mut m = vec![0.0f32; dst * src];
         let eright = cross(e.top, e.front);
@@ -344,24 +301,14 @@ pub fn calculate(mask: u32, speed: f32, l: &Listener, e: &Emitter, flags: u32, d
             }
             // the channel's position: around the emitter at its radius
             let p = if src > 1 {
-                add(
-                    e.pos,
-                    add(
-                        scale(e.front, caz.cos() * e.channel_radius),
-                        scale(eright, caz.sin() * e.channel_radius),
-                    ),
-                )
+                add(e.pos, add(scale(e.front, caz.cos() * e.channel_radius), scale(eright, caz.sin() * e.channel_radius)))
             } else {
                 e.pos
             };
             let v = sub(p, l.pos);
             let d = len(v);
             let g = vol_at(d / scaler) * cv;
-            let mut gains = if d > f32::MIN_POSITIVE {
-                pan(azimuth(v, l.front, l.top), &azs)
-            } else {
-                vec![1.0 / (azs.len().max(1) as f32).sqrt(); azs.len()]
-            };
+            let mut gains = if d > f32::MIN_POSITIVE { pan(azimuth(v, l.front, l.top), &azs) } else { vec![1.0 / (azs.len().max(1) as f32).sqrt(); azs.len()] };
             // inside the inner radius the sound spreads to every speaker
             if e.inner_radius > 0.0 && d < e.inner_radius && !azs.is_empty() {
                 let t = 1.0 - d / e.inner_radius;
@@ -383,33 +330,17 @@ pub fn calculate(mask: u32, speed: f32, l: &Listener, e: &Emitter, flags: u32, d
         out.delays = vec![0.0; dst];
     }
     if flags & LPF_DIRECT != 0 {
-        out.lpf_direct = e
-            .lpf_direct_curve
-            .as_deref()
-            .map_or_else(|| curve(&[(0.0, 1.0), (1.0, 0.75)], nd), |c| curve(c, nd))
-            * cl;
+        out.lpf_direct = e.lpf_direct_curve.as_deref().map_or_else(|| curve(&[(0.0, 1.0), (1.0, 0.75)], nd), |c| curve(c, nd)) * cl;
     }
     if flags & LPF_REVERB != 0 {
-        out.lpf_reverb = e
-            .lpf_reverb_curve
-            .as_deref()
-            .map_or_else(|| curve(&[(0.0, 0.75), (1.0, 0.75)], nd), |c| curve(c, nd))
-            * cl;
+        out.lpf_reverb = e.lpf_reverb_curve.as_deref().map_or_else(|| curve(&[(0.0, 0.75), (1.0, 0.75)], nd), |c| curve(c, nd)) * cl;
     }
     if flags & REVERB != 0 {
-        out.reverb = e
-            .reverb_curve
-            .as_deref()
-            .map_or_else(|| curve(&[(0.0, 1.0), (1.0, 0.0)], nd), |c| curve(c, nd))
-            * cr;
+        out.reverb = e.reverb_curve.as_deref().map_or_else(|| curve(&[(0.0, 1.0), (1.0, 0.0)], nd), |c| curve(c, nd)) * cr;
     }
     if flags & DOPPLER != 0 {
         // velocities along the emitter -> listener direction
-        let u = if dist > f32::MIN_POSITIVE {
-            scale(e_to_l, 1.0 / dist)
-        } else {
-            [0.0; 3]
-        };
+        let u = if dist > f32::MIN_POSITIVE { scale(e_to_l, 1.0 / dist) } else { [0.0; 3] };
         let (ev, lv) = (dot(e.vel, u), dot(l.vel, u));
         out.emitter_velocity = ev;
         out.listener_velocity = lv;
@@ -497,16 +428,7 @@ fn read_curve(p: u32) -> Option<Vec<(f32, f32)>> {
     if pts == 0 || n == 0 {
         return None;
     }
-    Some(
-        (0..n)
-            .map(|i| {
-                (
-                    f32::from_bits(r32(pts + 8 * i)),
-                    f32::from_bits(r32(pts + 8 * i + 4)),
-                )
-            })
-            .collect(),
-    )
+    Some((0..n).map(|i| (f32::from_bits(r32(pts + 8 * i)), f32::from_bits(r32(pts + 8 * i + 4)))).collect())
 }
 
 /// X3DAudioCalculate(handle, pListener, pEmitter, Flags, pDSPSettings)
@@ -517,13 +439,7 @@ fn X3DAudioCalculate(c: &mut Ctx) -> u32 {
     }
     let (mask, speed) = (r32(h), f32::from_bits(r32(h + 4)));
     let mut r = Rd { p: lp };
-    let l = Listener {
-        front: r.v3(),
-        top: r.v3(),
-        pos: r.v3(),
-        vel: r.v3(),
-        cone: read_cone(r.ptr()),
-    };
+    let l = Listener { front: r.v3(), top: r.v3(), pos: r.v3(), vel: r.v3(), cone: read_cone(r.ptr()) };
     let mut r = Rd { p: ep };
     let cone = read_cone(r.ptr());
     let (front, top, pos, vel) = (r.v3(), r.v3(), r.v3(), r.v3());
@@ -533,13 +449,7 @@ fn X3DAudioCalculate(c: &mut Ctx) -> u32 {
     let paz = r.ptr();
     let curves: Vec<u32> = (0..5).map(|_| r.ptr()).collect();
     let (curve_scaler, doppler_scaler) = (r.f(), r.f());
-    let azimuths = if paz != 0 {
-        (0..channels.min(64))
-            .map(|i| f32::from_bits(r32(paz + 4 * i)))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let azimuths = if paz != 0 { (0..channels.min(64)).map(|i| f32::from_bits(r32(paz + 4 * i))).collect() } else { Vec::new() };
     let e = Emitter {
         cone,
         front,
@@ -567,18 +477,12 @@ fn X3DAudioCalculate(c: &mut Ctx) -> u32 {
     if flags & MATRIX != 0 && pm != 0 {
         let src = channels.max(1) as usize;
         for i in 0..dst * src {
-            w32(
-                pm + 4 * i as u32,
-                d.matrix.get(i).copied().unwrap_or(0.0).to_bits(),
-            );
+            w32(pm + 4 * i as u32, d.matrix.get(i).copied().unwrap_or(0.0).to_bits());
         }
     }
     if flags & DELAY != 0 && pd != 0 {
         for i in 0..dst {
-            w32(
-                pd + 4 * i as u32,
-                d.delays.get(i).copied().unwrap_or(0.0).to_bits(),
-            );
+            w32(pd + 4 * i as u32, d.delays.get(i).copied().unwrap_or(0.0).to_bits());
         }
     }
     let put = |o: u32, v: f32| w32(f + o, v.to_bits());
@@ -615,22 +519,10 @@ mod tests {
     use super::*;
 
     fn listener() -> Listener {
-        Listener {
-            front: [0.0, 0.0, 1.0],
-            top: [0.0, 1.0, 0.0],
-            ..Default::default()
-        }
+        Listener { front: [0.0, 0.0, 1.0], top: [0.0, 1.0, 0.0], ..Default::default() }
     }
     fn emitter(pos: V3) -> Emitter {
-        Emitter {
-            front: [0.0, 0.0, 1.0],
-            top: [0.0, 1.0, 0.0],
-            pos,
-            channels: 1,
-            curve_scaler: 1.0,
-            doppler_scaler: 1.0,
-            ..Default::default()
-        }
+        Emitter { front: [0.0, 0.0, 1.0], top: [0.0, 1.0, 0.0], pos, channels: 1, curve_scaler: 1.0, doppler_scaler: 1.0, ..Default::default() }
     }
     const STEREO: u32 = 0x3;
     const ALL: u32 = MATRIX | LPF_DIRECT | LPF_REVERB | REVERB | DOPPLER | EMITTER_ANGLE;
@@ -648,44 +540,15 @@ mod tests {
 
     #[test]
     fn right_is_right() {
-        let d = calculate(
-            STEREO,
-            343.5,
-            &listener(),
-            &emitter([5.0, 0.0, 0.0]),
-            MATRIX,
-            2,
-        );
-        assert!(
-            (d.matrix[1] - 0.2).abs() < 1e-6 && d.matrix[0] == 0.0,
-            "{:?}",
-            d.matrix
-        );
-        let d = calculate(
-            STEREO,
-            343.5,
-            &listener(),
-            &emitter([-5.0, 0.0, 0.0]),
-            MATRIX,
-            2,
-        );
-        assert!(
-            (d.matrix[0] - 0.2).abs() < 1e-6 && d.matrix[1] == 0.0,
-            "{:?}",
-            d.matrix
-        );
+        let d = calculate(STEREO, 343.5, &listener(), &emitter([5.0, 0.0, 0.0]), MATRIX, 2);
+        assert!((d.matrix[1] - 0.2).abs() < 1e-6 && d.matrix[0] == 0.0, "{:?}", d.matrix);
+        let d = calculate(STEREO, 343.5, &listener(), &emitter([-5.0, 0.0, 0.0]), MATRIX, 2);
+        assert!((d.matrix[0] - 0.2).abs() < 1e-6 && d.matrix[1] == 0.0, "{:?}", d.matrix);
     }
 
     #[test]
     fn ahead_is_centered_and_at_distance_one_full() {
-        let d = calculate(
-            STEREO,
-            343.5,
-            &listener(),
-            &emitter([0.0, 0.0, 1.0]),
-            MATRIX,
-            2,
-        );
+        let d = calculate(STEREO, 343.5, &listener(), &emitter([0.0, 0.0, 1.0]), MATRIX, 2);
         assert!((d.matrix[0] - d.matrix[1]).abs() < 1e-6);
         assert!((d.matrix[0] * d.matrix[0] + d.matrix[1] * d.matrix[1] - 1.0).abs() < 1e-5);
         assert_eq!(d.distance, 1.0);
@@ -694,14 +557,7 @@ mod tests {
     #[test]
     fn default_curve_is_inverse_distance() {
         for k in [2.0f32, 4.0, 10.0] {
-            let d = calculate(
-                STEREO,
-                343.5,
-                &listener(),
-                &emitter([0.0, 0.0, k]),
-                MATRIX,
-                2,
-            );
+            let d = calculate(STEREO, 343.5, &listener(), &emitter([0.0, 0.0, k]), MATRIX, 2);
             let p = (d.matrix[0].powi(2) + d.matrix[1].powi(2)).sqrt();
             assert!((p - 1.0 / k).abs() < 1e-5, "{k}: {p}");
         }
@@ -718,14 +574,7 @@ mod tests {
 
     #[test]
     fn stationary_doppler_is_one() {
-        let d = calculate(
-            STEREO,
-            343.5,
-            &listener(),
-            &emitter([3.0, 1.0, 2.0]),
-            DOPPLER,
-            2,
-        );
+        let d = calculate(STEREO, 343.5, &listener(), &emitter([3.0, 1.0, 2.0]), DOPPLER, 2);
         assert_eq!(d.doppler, 1.0);
     }
 
@@ -744,16 +593,7 @@ mod tests {
     fn cone_attenuates_behind() {
         let mut e = emitter([0.0, 0.0, 2.0]);
         e.front = [0.0, 0.0, 1.0]; // facing away from the listener
-        e.cone = Some(Cone {
-            inner_angle: PI / 2.0,
-            outer_angle: PI,
-            inner_volume: 1.0,
-            outer_volume: 0.25,
-            inner_lpf: 1.0,
-            outer_lpf: 0.5,
-            inner_reverb: 1.0,
-            outer_reverb: 1.0,
-        });
+        e.cone = Some(Cone { inner_angle: PI / 2.0, outer_angle: PI, inner_volume: 1.0, outer_volume: 0.25, inner_lpf: 1.0, outer_lpf: 0.5, inner_reverb: 1.0, outer_reverb: 1.0 });
         let d = calculate(STEREO, 343.5, &listener(), &e, MATRIX | LPF_DIRECT, 2);
         let p = (d.matrix[0].powi(2) + d.matrix[1].powi(2)).sqrt();
         assert!((p - 0.25 * 0.5).abs() < 1e-5, "{p}");
@@ -767,7 +607,7 @@ mod tests {
         e.azimuths = vec![0.0, TWO_PI];
         e.channel_radius = 0.0;
         let d = calculate(0x3f, 343.5, &listener(), &e, MATRIX, 6); // 5.1
-                                                                    // dst 3 = LFE gets src 1 only
+        // dst 3 = LFE gets src 1 only
         assert!(d.matrix[3 * 2 + 1] > 0.99);
         assert_eq!(d.matrix[3 * 2], 0.0);
         for dst in [0, 1, 2, 4, 5] {
@@ -787,38 +627,17 @@ mod tests {
             }
             let e = emitter(pos);
             let d = calculate(STEREO, 343.5, &listener(), &e, ALL, 2);
-            assert!(
-                d.matrix.iter().all(|x| x.is_finite() && *x >= 0.0),
-                "{pos:?} {:?}",
-                d.matrix
-            );
+            assert!(d.matrix.iter().all(|x| x.is_finite() && *x >= 0.0), "{pos:?} {:?}", d.matrix);
             let p = d.matrix[0].powi(2) + d.matrix[1].powi(2);
             let want = (1.0 / len(pos).max(1.0)).powi(2);
-            assert!(
-                (p - want).abs() < 1e-4 * want.max(1e-3),
-                "{pos:?}: {p} vs {want}"
-            );
-            let m = calculate(
-                STEREO,
-                343.5,
-                &listener(),
-                &emitter([-pos[0], pos[1], pos[2]]),
-                MATRIX,
-                2,
-            );
-            assert!(
-                (m.matrix[0] - d.matrix[1]).abs() < 1e-4
-                    && (m.matrix[1] - d.matrix[0]).abs() < 1e-4,
-                "{pos:?}"
-            );
+            assert!((p - want).abs() < 1e-4 * want.max(1e-3), "{pos:?}: {p} vs {want}");
+            let m = calculate(STEREO, 343.5, &listener(), &emitter([-pos[0], pos[1], pos[2]]), MATRIX, 2);
+            assert!((m.matrix[0] - d.matrix[1]).abs() < 1e-4 && (m.matrix[1] - d.matrix[0]).abs() < 1e-4, "{pos:?}");
             assert!(d.doppler == 1.0 && d.angle.is_finite() && (0.0..=PI).contains(&d.angle));
             // 5.1: power over the five full-range speakers is the same
             let s = calculate(0x3f, 343.5, &listener(), &e, MATRIX, 6);
             let p5: f32 = [0, 1, 2, 4, 5].iter().map(|&i| s.matrix[i].powi(2)).sum();
-            assert!(
-                (p5 - want).abs() < 1e-4 * want.max(1e-3),
-                "{pos:?}: 5.1 {p5}"
-            );
+            assert!((p5 - want).abs() < 1e-4 * want.max(1e-3), "{pos:?}: 5.1 {p5}");
             assert_eq!(s.matrix[3], 0.0);
         }
     }
@@ -839,13 +658,7 @@ mod tests {
 
     #[test]
     fn pan_covers_the_circle() {
-        let spk = [
-            7.0 * PI / 4.0,
-            PI / 4.0,
-            0.0,
-            5.0 * PI / 4.0,
-            3.0 * PI / 4.0,
-        ];
+        let spk = [7.0 * PI / 4.0, PI / 4.0, 0.0, 5.0 * PI / 4.0, 3.0 * PI / 4.0];
         for i in 0..3600 {
             let az = i as f32 * TWO_PI / 3600.0;
             let g = pan(az, &spk);

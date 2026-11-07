@@ -99,9 +99,7 @@ pub(super) fn file_of(fd: u32) -> Option<Arc<File>> {
 }
 
 pub(super) fn close_fd(fd: u32) -> bool {
-    let Some(d) = with_fds(|t| t.get_mut(fd as usize).and_then(Option::take)) else {
-        return false;
-    };
+    let Some(d) = with_fds(|t| t.get_mut(fd as usize).and_then(Option::take)) else { return false };
     if d.osf != 0 && !matches!(d.kind, Kind::Std(_)) {
         obj::close(d.osf);
     }
@@ -119,11 +117,7 @@ fn errno_for(e: u32) -> u32 {
 }
 
 fn path_arg(p: u32, wide: bool) -> String {
-    if wide {
-        String::from_utf16_lossy(&wstr(p))
-    } else {
-        a2s(&cstr(p))
-    }
+    if wide { String::from_utf16_lossy(&wstr(p)) } else { a2s(&cstr(p)) }
 }
 
 /// _open's work: the descriptor, or -1 with errno.
@@ -133,11 +127,7 @@ fn open(path: &str, oflag: u32) -> u32 {
         O_RDWR => 0xc000_0000,
         _ => 0x8000_0000,
     };
-    let disp = match (
-        oflag & O_CREAT != 0,
-        oflag & O_EXCL != 0,
-        oflag & O_TRUNC != 0,
-    ) {
+    let disp = match (oflag & O_CREAT != 0, oflag & O_EXCL != 0, oflag & O_TRUNC != 0) {
         (true, true, _) => 1,
         (true, false, true) => 2,
         (true, false, false) => 4,
@@ -184,11 +174,7 @@ fn sopen_s(c: &mut Ctx, wide: bool) -> u32 {
     }
     let fd = open(&path_arg(path, wide), c.a(2));
     w32(pfd, fd);
-    if fd == u32::MAX {
-        r32(super::_errno(c))
-    } else {
-        0
-    }
+    if fd == u32::MAX { r32(super::_errno(c)) } else { 0 }
 }
 fn _sopen_s(c: &mut Ctx) -> u32 {
     sopen_s(c, false)
@@ -201,11 +187,7 @@ fn bad() -> u32 {
     u32::MAX
 }
 fn _close(c: &mut Ctx) -> u32 {
-    if close_fd(c.a(0)) {
-        0
-    } else {
-        bad()
-    }
+    if close_fd(c.a(0)) { 0 } else { bad() }
 }
 /// _read(fd, buf, count): bytes read, 0 at the end (standard input: always at its end)
 fn _read(c: &mut Ctx) -> u32 {
@@ -297,9 +279,7 @@ fn _filelengthi64(c: &mut Ctx) -> u32 {
     c.ret64(r)
 }
 fn _eof(c: &mut Ctx) -> u32 {
-    let Some(f) = file_of(c.a(0)) else {
-        return bad();
-    };
+    let Some(f) = file_of(c.a(0)) else { return bad() };
     let pos = f.seek(SeekFrom::Current(0)).unwrap_or(0);
     (pos >= f.size()) as u32
 }
@@ -325,11 +305,7 @@ fn chsize(fd: u32, size: u64) -> u32 {
     }
 }
 fn _chsize(c: &mut Ctx) -> u32 {
-    if chsize(c.a(0), c.a(1) as u64) == 0 {
-        0
-    } else {
-        u32::MAX
-    }
+    if chsize(c.a(0), c.a(1) as u64) == 0 { 0 } else { u32::MAX }
 }
 fn _chsize_s(c: &mut Ctx) -> u32 {
     let mut a = Args(0);
@@ -337,18 +313,10 @@ fn _chsize_s(c: &mut Ctx) -> u32 {
     chsize(fd, size)
 }
 fn _commit(c: &mut Ctx) -> u32 {
-    if get(c.a(0)).is_some() {
-        0
-    } else {
-        bad()
-    }
+    if get(c.a(0)).is_some() { 0 } else { bad() }
 }
 fn _locking(c: &mut Ctx) -> u32 {
-    if get(c.a(0)).is_some() {
-        0
-    } else {
-        bad()
-    }
+    if get(c.a(0)).is_some() { 0 } else { bad() }
 }
 /// _isatty: no descriptor is a console here (the log is not one), so programs buffer as for a file
 fn _isatty(c: &mut Ctx) -> u32 {
@@ -468,19 +436,14 @@ struct StatInfo {
 }
 
 fn unix_time(t: std::io::Result<std::time::SystemTime>) -> i64 {
-    t.ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_secs() as i64)
+    t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64)
 }
 
 /// st_mode as the UCRT makes it: the type, read always, write unless read-only, execute for
 /// directories and .exe/.com/.bat/.cmd, copied to the group and other bits
 fn mode_of(dir: bool, readonly: bool, name: &str) -> u16 {
     let lower = name.to_ascii_lowercase();
-    let exec = dir
-        || [".exe", ".com", ".bat", ".cmd"]
-            .iter()
-            .any(|e| lower.ends_with(e));
+    let exec = dir || [".exe", ".com", ".bat", ".cmd"].iter().any(|e| lower.ends_with(e));
     let mut m: u16 = 0o400;
     if !readonly {
         m |= 0o200;
@@ -566,9 +529,7 @@ fn fstat(c: &mut Ctx, k: StatKind) -> u32 {
             ctime: 0,
         },
         Some(Kind::File(f)) => {
-            let Ok(m) = f.f.lock().unwrap().metadata() else {
-                return bad();
-            };
+            let Ok(m) = f.f.lock().unwrap().metadata() else { return bad() };
             info_of(&m, &f.path)
         }
         None => return bad(),
@@ -583,10 +544,7 @@ fn fstat(c: &mut Ctx, k: StatKind) -> u32 {
 fn stat_name_ok(path: &str) -> bool {
     let trimmed = path.trim_end_matches(['\\', '/']);
     let bare_drive = path.len() == 2 && path.ends_with(':');
-    !path.is_empty()
-        && !bare_drive
-        && !path.contains(['*', '?'])
-        && (trimmed.len() == path.len() || trimmed.is_empty() || trimmed.ends_with(':'))
+    !path.is_empty() && !bare_drive && !path.contains(['*', '?']) && (trimmed.len() == path.len() || trimmed.is_empty() || trimmed.ends_with(':'))
 }
 fn stat(c: &mut Ctx, k: StatKind, wide: bool) -> u32 {
     let (path, p) = (path_arg(c.a(0), wide), c.a(1));
@@ -599,12 +557,7 @@ fn stat(c: &mut Ctx, k: StatKind, wide: bool) -> u32 {
         return u32::MAX;
     }
     let trimmed = path.trim_end_matches(['\\', '/']);
-    let Some((host, m)) = crate::files::resolve(if trimmed.is_empty() || trimmed.ends_with(':') {
-        &path
-    } else {
-        trimmed
-    })
-    .and_then(|h| Some((h.clone(), kura::fs::metadata(h).ok()?))) else {
+    let Some((host, m)) = crate::files::resolve(if trimmed.is_empty() || trimmed.ends_with(':') { &path } else { trimmed }).and_then(|h| Some((h.clone(), kura::fs::metadata(h).ok()?))) else {
         set_errno(ENOENT);
         return u32::MAX;
     };
@@ -627,18 +580,10 @@ stats! {
 }
 /// msvcrt's _stat / _fstat / _wstat: _stat32 on x86, _stat64i32 on x64; _stati64: _stat32i64 / _stat64
 fn legacy_stat() -> StatKind {
-    if mem::x64() {
-        StatKind::S64i32
-    } else {
-        StatKind::S32
-    }
+    if mem::x64() { StatKind::S64i32 } else { StatKind::S32 }
 }
 fn legacy_stati64() -> StatKind {
-    if mem::x64() {
-        StatKind::S64
-    } else {
-        StatKind::S32i64
-    }
+    if mem::x64() { StatKind::S64 } else { StatKind::S32i64 }
 }
 fn _fstat(c: &mut Ctx) -> u32 {
     fstat(c, legacy_stat())
@@ -697,9 +642,7 @@ fn _wfdopen(c: &mut Ctx) -> u32 {
 fn access(c: &mut Ctx, wide: bool) -> u32 {
     // (msvcrt ignores mode bits other than 2: _access(f, 1) answers 0)
     let (path, mode) = (path_arg(c.a(0), wide), c.a(1));
-    let Some((host, m)) =
-        crate::files::resolve(&path).and_then(|h| Some((h.clone(), kura::fs::metadata(h).ok()?)))
-    else {
+    let Some((host, m)) = crate::files::resolve(&path).and_then(|h| Some((h.clone(), kura::fs::metadata(h).ok()?))) else {
         set_errno(ENOENT);
         return u32::MAX;
     };
@@ -721,10 +664,7 @@ fn unlink(c: &mut Ctx, wide: bool) -> u32 {
         set_errno(ENOENT);
         return u32::MAX;
     };
-    if kura::fs::metadata(&h).is_ok_and(|m| m.is_dir() || readonly(&m, &h))
-        || crate::files::delete_blocked(&h)
-        || kura::fs::remove_file(&h).is_err()
-    {
+    if kura::fs::metadata(&h).is_ok_and(|m| m.is_dir() || readonly(&m, &h)) || crate::files::delete_blocked(&h) || kura::fs::remove_file(&h).is_err() {
         set_errno(EACCES);
         return u32::MAX;
     }
@@ -809,11 +749,7 @@ fn put_or_alloc<T: Unit>(buf: u32, n: u32, s: &[T]) -> u32 {
 /// The current directory without its trailing separator (except a root's).
 fn cwd_string() -> String {
     let d = crate::files::cwd();
-    if d.len() > 3 {
-        d.trim_end_matches('\\').to_string()
-    } else {
-        d
-    }
+    if d.len() > 3 { d.trim_end_matches('\\').to_string() } else { d }
 }
 fn _getcwd(c: &mut Ctx) -> u32 {
     put_or_alloc::<u8>(c.a(0), c.a(1), &crate::text::s2a(&cwd_string()))
@@ -829,9 +765,7 @@ fn _fullpath(c: &mut Ctx) -> u32 {
     put_or_alloc::<u8>(c.a(0), n, &crate::text::s2a(&full))
 }
 fn _wfullpath(c: &mut Ctx) -> u32 {
-    let full: Vec<u16> = crate::files::full_path(&path_arg(c.a(1), true))
-        .encode_utf16()
-        .collect();
+    let full: Vec<u16> = crate::files::full_path(&path_arg(c.a(1), true)).encode_utf16().collect();
     let n = if c.a(0) == 0 { 0 } else { c.a(2) };
     put_or_alloc::<u16>(c.a(0), n, &full)
 }
@@ -864,11 +798,7 @@ fn with_crt_env<R>(f: impl FnOnce(&mut Vec<(String, String)>) -> R) -> R {
 }
 pub(super) fn env_get(name: &str) -> Option<String> {
     let key = name.to_ascii_uppercase();
-    with_crt_env(|e| {
-        e.iter()
-            .find(|(k, _)| k.to_ascii_uppercase() == key)
-            .map(|(_, v)| v.clone())
-    })
+    with_crt_env(|e| e.iter().find(|(k, _)| k.to_ascii_uppercase() == key).map(|(_, v)| v.clone()))
 }
 fn env_put(name: &str, value: Option<&str>) {
     let key = name.to_ascii_uppercase();
@@ -892,11 +822,7 @@ fn env_array(wide: bool) -> u32 {
         .into_iter()
         .map(|(k, v)| {
             let s = format!("{k}={v}");
-            if wide {
-                s.encode_utf16().flat_map(u16::to_le_bytes).collect()
-            } else {
-                crate::text::s2a(&s)
-            }
+            if wide { s.encode_utf16().flat_map(u16::to_le_bytes).collect() } else { crate::text::s2a(&s) }
         })
         .collect();
     string_array(words, if wide { 2 } else { 1 })
@@ -939,19 +865,11 @@ fn getenv_s(c: &mut Ctx, wide: bool) -> u32 {
             crate::text::s2a(v).into_iter().map(u16::from).collect()
         }
     });
-    let need = if v.is_some() {
-        units.len() as u32 + 1
-    } else {
-        0
-    };
+    let need = if v.is_some() { units.len() as u32 + 1 } else { 0 };
     putp(plen, need);
     if v.is_none() {
         if buf != 0 && n > 0 {
-            if wide {
-                w16(buf, 0)
-            } else {
-                w8(buf, 0)
-            }
+            if wide { w16(buf, 0) } else { w8(buf, 0) }
         }
         return 0;
     }
@@ -986,12 +904,7 @@ fn put_env(name: &str, value: &str) -> u32 {
 fn putenv(c: &mut Ctx, wide: bool) -> u32 {
     let s = path_arg(c.a(0), wide);
     // (a name may start with '=': the per-drive directories)
-    let Some(i) = s
-        .char_indices()
-        .skip(1)
-        .find(|&(_, ch)| ch == '=')
-        .map(|(i, _)| i)
-    else {
+    let Some(i) = s.char_indices().skip(1).find(|&(_, ch)| ch == '=').map(|(i, _)| i) else {
         set_errno(EINVAL);
         return u32::MAX;
     };
@@ -1009,11 +922,7 @@ fn putenv_s(c: &mut Ctx, wide: bool) -> u32 {
         set_errno(EINVAL);
         return EINVAL;
     }
-    if put_env(&path_arg(c.a(0), wide), &path_arg(c.a(1), wide)) == 0 {
-        0
-    } else {
-        EINVAL
-    }
+    if put_env(&path_arg(c.a(0), wide), &path_arg(c.a(1), wide)) == 0 { 0 } else { EINVAL }
 }
 fn _putenv_s(c: &mut Ctx) -> u32 {
     putenv_s(c, false)
@@ -1106,15 +1015,8 @@ fn locale_of(s: &str) -> Option<(String, u32)> {
     match l.as_str() {
         "c" => Some(("C".to_string(), 0)),
         "" | ".acp" => named(acp),
-        ".932" | "japanese" | "japanese_japan" | "japanese_japan.932" | "jpn" | "ja-jp" | "ja"
-        | "japan" => named(932),
-        ".1252"
-        | "english"
-        | "english_united states"
-        | "english_united states.1252"
-        | "american"
-        | "en-us"
-        | "us" => named(1252),
+        ".932" | "japanese" | "japanese_japan" | "japanese_japan.932" | "jpn" | "ja-jp" | "ja" | "japan" => named(932),
+        ".1252" | "english" | "english_united states" | "english_united states.1252" | "american" | "en-us" | "us" => named(1252),
         _ => None,
     }
 }
@@ -1129,18 +1031,12 @@ fn locale_name(cat: u32) -> String {
     if n.iter().all(|x| *x == n[0]) {
         return one(0);
     }
-    [
-        "LC_COLLATE",
-        "LC_CTYPE",
-        "LC_MONETARY",
-        "LC_NUMERIC",
-        "LC_TIME",
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, k)| format!("{k}={}", one(i)))
-    .collect::<Vec<_>>()
-    .join(";")
+    ["LC_COLLATE", "LC_CTYPE", "LC_MONETARY", "LC_NUMERIC", "LC_TIME"]
+        .iter()
+        .enumerate()
+        .map(|(i, k)| format!("{k}={}", one(i)))
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 /// setlocale(category, locale) / _wsetlocale: the locale's name in a static buffer per category,
@@ -1153,9 +1049,7 @@ fn set_locale(c: &mut Ctx, wide: bool) -> u32 {
         return 0;
     }
     if p != 0 {
-        let Some((name, cp)) = locale_of(&path_arg(p, wide)) else {
-            return 0;
-        };
+        let Some((name, cp)) = locale_of(&path_arg(p, wide)) else { return 0 };
         let mut n = LC_NAMES.lock().unwrap();
         for i in 0..5 {
             if cat == 0 || cat as usize == i + 1 {
@@ -1165,18 +1059,12 @@ fn set_locale(c: &mut Ctx, wide: bool) -> u32 {
         if cat == 0 || cat == 2 {
             LC_CP.store(cp, Ordering::Relaxed);
             let dbcs = cp != 0 && matches!(cp, 932 | 936 | 949 | 950);
-            w32(
-                super::data("__mb_cur_max").unwrap(),
-                if dbcs { 2 } else { 1 },
-            );
+            w32(super::data("__mb_cur_max").unwrap(), if dbcs { 2 } else { 1 });
         }
     }
     let name = locale_name(cat);
     let units: Vec<u8> = if wide {
-        name.encode_utf16()
-            .chain([0])
-            .flat_map(u16::to_le_bytes)
-            .collect()
+        name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()
     } else {
         name.bytes().chain([0]).collect()
     };
@@ -1214,11 +1102,7 @@ fn lead_in(cp: u32, b: u8) -> bool {
 }
 /// to_wide() in code page `cp` (0: "C", each byte its value)
 fn to_wide_in(cp: u32, b: &[u8]) -> Vec<u16> {
-    if cp == 0 {
-        b.iter().map(|&x| x as u16).collect()
-    } else {
-        crate::text::mb2w(cp, b)
-    }
+    if cp == 0 { b.iter().map(|&x| x as u16).collect() } else { crate::text::mb2w(cp, b) }
 }
 /// wc_bytes() in code page `cp`: "C" has the characters up to 0xff; a code page lacks what
 /// conversion has to make its default character
@@ -1387,10 +1271,7 @@ fn mbsrtowcs(c: &mut Ctx) -> u32 {
         w16(dst + 2 * k as u32, 0);
         putp(psrc, 0);
     } else {
-        let used: usize = w[..k]
-            .iter()
-            .map(|&u| wc_bytes(u).map_or(1, |b| b.len()))
-            .sum();
+        let used: usize = w[..k].iter().map(|&u| wc_bytes(u).map_or(1, |b| b.len())).sum();
         putp(psrc, src + used as u32);
     }
     k as u32
@@ -1474,12 +1355,7 @@ fn _get_invalid_parameter_handler(_: &mut Ctx) -> u32 {
 }
 /// _assert / _wassert (message, file, line)
 fn assert_fail(c: &mut Ctx, wide: bool) -> u32 {
-    eprintln!(
-        "sake: Assertion failed: {}, file {}, line {}",
-        path_arg(c.a(0), wide),
-        path_arg(c.a(1), wide),
-        c.a(2)
-    );
+    eprintln!("sake: Assertion failed: {}, file {}, line {}", path_arg(c.a(0), wide), path_arg(c.a(1), wide), c.a(2));
     unsafe { libc::exit(3) }
 }
 fn _assert(c: &mut Ctx) -> u32 {
@@ -1569,14 +1445,7 @@ fn errmsg(e: u32, wide: bool) -> u32 {
         }
     };
     let m = message(e);
-    let bytes: Vec<u8> = if wide {
-        m.encode_utf16()
-            .chain([0])
-            .flat_map(u16::to_le_bytes)
-            .collect()
-    } else {
-        m.bytes().chain([0]).collect()
-    };
+    let bytes: Vec<u8> = if wide { m.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect() } else { m.bytes().chain([0]).collect() };
     mem::write(p, &bytes);
     p
 }
@@ -1624,16 +1493,8 @@ fn __sys_nerr(_: &mut Ctx) -> u32 {
 /// perror(s): "s: message" to the log
 fn perror(c: &mut Ctx) -> u32 {
     let e = r32(super::_errno(c));
-    let s = if c.a(0) != 0 {
-        a2s(&cstr(c.a(0)))
-    } else {
-        String::new()
-    };
-    let line = if s.is_empty() {
-        format!("{}\n", message(e))
-    } else {
-        format!("{s}: {}\n", message(e))
-    };
+    let s = if c.a(0) != 0 { a2s(&cstr(c.a(0))) } else { String::new() };
+    let line = if s.is_empty() { format!("{}\n", message(e)) } else { format!("{s}: {}\n", message(e)) };
     crate::k32::console_write(&line);
     0
 }
@@ -1650,23 +1511,18 @@ fn rand_s(c: &mut Ctx) -> u32 {
 }
 fn getrandom_bytes(b: &mut [u8]) -> bool {
     use std::io::Read;
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(b))
-        .is_ok()
-        || {
-            // (no /dev/urandom: the clock, mixed)
-            let t = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos() as u64);
-            let mut x = t ^ 0x9e37_79b9_7f4a_7c15;
-            for v in b.iter_mut() {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                *v = x as u8;
-            }
-            true
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(b)).is_ok() || {
+        // (no /dev/urandom: the clock, mixed)
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+        let mut x = t ^ 0x9e37_79b9_7f4a_7c15;
+        for v in b.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *v = x as u8;
         }
+        true
+    }
 }
 fn zero(_: &mut Ctx) -> u32 {
     0
@@ -1687,9 +1543,7 @@ fn __isascii(c: &mut Ctx) -> u32 {
 /// iswctype(wc, mask) / _isctype_l: the ctype classes (_UPPER 1, _LOWER 2, _DIGIT 4, _SPACE 8,
 /// _PUNCT 0x10, _CONTROL 0x20, _BLANK 0x40, _HEX 0x80, _ALPHA 0x103)
 pub(super) fn wctype_bits(u: u32) -> u32 {
-    let Some(ch) = char::from_u32(u) else {
-        return 0;
-    };
+    let Some(ch) = char::from_u32(u) else { return 0 };
     let mut b = 0;
     if ch.is_uppercase() {
         b |= 1;
@@ -1703,9 +1557,7 @@ pub(super) fn wctype_bits(u: u32) -> u32 {
     if ch.is_whitespace() {
         b |= 8;
     }
-    if ch.is_ascii_punctuation()
-        || (!ch.is_alphanumeric() && !ch.is_whitespace() && !ch.is_control() && u >= 0x80)
-    {
+    if ch.is_ascii_punctuation() || (!ch.is_alphanumeric() && !ch.is_whitespace() && !ch.is_control() && u >= 0x80) {
         b |= 0x10;
     }
     if ch.is_control() {
@@ -1779,19 +1631,11 @@ fn wcsxfrm(c: &mut Ctx) -> u32 {
 }
 fn _tolower_l(c: &mut Ctx) -> u32 {
     let v = c.a(0);
-    if (b'A' as u32..=b'Z' as u32).contains(&v) {
-        v + 32
-    } else {
-        v
-    }
+    if (b'A' as u32..=b'Z' as u32).contains(&v) { v + 32 } else { v }
 }
 fn _toupper_l(c: &mut Ctx) -> u32 {
     let v = c.a(0);
-    if (b'a' as u32..=b'z' as u32).contains(&v) {
-        v - 32
-    } else {
-        v
-    }
+    if (b'a' as u32..=b'z' as u32).contains(&v) { v - 32 } else { v }
 }
 fn setbuf(_: &mut Ctx) -> u32 {
     0
@@ -1859,9 +1703,7 @@ fn putc(c: &mut Ctx) -> u32 {
     ch
 }
 fn wprintf(c: &mut Ctx) -> u32 {
-    let Some(s) = legacy::<u16>(c.a(0), &mut VaArgs::arg(c, 1)) else {
-        return u32::MAX;
-    };
+    let Some(s) = legacy::<u16>(c.a(0), &mut VaArgs::arg(c, 1)) else { return u32::MAX };
     crate::k32::console_write(&String::from_utf16_lossy(&s));
     s.len() as u32
 }
@@ -1869,16 +1711,8 @@ fn wprintf(c: &mut Ctx) -> u32 {
 fn __unDName(c: &mut Ctx) -> u32 {
     let (out, name, n) = (c.a(0), c.a(1), c.a(2));
     let s = cstr(name);
-    let dst = if out == 0 {
-        mem::heap_alloc(s.len() as u32 + 1, false)
-    } else {
-        out
-    };
-    let k = if out == 0 {
-        s.len()
-    } else {
-        s.len().min(n.saturating_sub(1) as usize)
-    };
+    let dst = if out == 0 { mem::heap_alloc(s.len() as u32 + 1, false) } else { out };
+    let k = if out == 0 { s.len() } else { s.len().min(n.saturating_sub(1) as usize) };
     mem::write(dst, &s[..k]);
     w8(dst + k as u32, 0);
     dst
@@ -1940,36 +1774,20 @@ fn rintf(c: &mut Ctx) -> u32 {
 }
 fn lrint(c: &mut Ctx) -> u32 {
     let x = c.f64(0).round_ties_even();
-    if x >= -2147483648.0 && x < 2147483648.0 {
-        x as i32 as u32
-    } else {
-        0x8000_0000
-    }
+    if x >= -2147483648.0 && x < 2147483648.0 { x as i32 as u32 } else { 0x8000_0000 }
 }
 fn lrintf(c: &mut Ctx) -> u32 {
     let x = Args(0).f32(c).round_ties_even();
-    if x >= -2147483648.0 && x < 2147483648.0 {
-        x as i32 as u32
-    } else {
-        0x8000_0000
-    }
+    if x >= -2147483648.0 && x < 2147483648.0 { x as i32 as u32 } else { 0x8000_0000 }
 }
 fn llrint(c: &mut Ctx) -> u32 {
     let x = c.f64(0).round_ties_even();
-    let v = if x >= -9.223372036854776e18 && x < 9.223372036854776e18 {
-        x as i64
-    } else {
-        i64::MIN
-    };
+    let v = if x >= -9.223372036854776e18 && x < 9.223372036854776e18 { x as i64 } else { i64::MIN };
     c.ret64(v as u64)
 }
 fn lroundf(c: &mut Ctx) -> u32 {
     let x = Args(0).f32(c).round();
-    if x >= -2147483648.0 && x < 2147483648.0 {
-        x as i32 as u32
-    } else {
-        0x8000_0000
-    }
+    if x >= -2147483648.0 && x < 2147483648.0 { x as i32 as u32 } else { 0x8000_0000 }
 }
 
 pub(super) fn init() {
@@ -2023,58 +1841,19 @@ pub(super) fn init() {
         _wstati64
     );
     reg!(
-        _fileno, _fdopen, _wfdopen, _access, _waccess, _chmod, _wchmod, _rmdir, _wrmdir, _unlink,
-        _wunlink, _wremove, _chdir, _wchdir, _getcwd, _wgetcwd, _fullpath, _wfullpath, _utime64,
-        _wutime64
+        _fileno, _fdopen, _wfdopen, _access, _waccess, _chmod, _wchmod, _rmdir, _wrmdir, _unlink, _wunlink, _wremove, _chdir, _wchdir, _getcwd, _wgetcwd, _fullpath, _wfullpath, _utime64, _wutime64
     );
     reg!(_wgetenv, _wgetenv_s, _wputenv, _putenv, _putenv_s, _wputenv_s);
     implement("msvcrt", "getenv_s", getenv_s_a);
-    reg!(
-        _tzset,
-        __timezone,
-        __daylight,
-        __dstbias,
-        __tzname,
-        _get_tzname,
-        _get_timezone,
-        _get_daylight,
-        _get_dstbias
-    );
-    reg!(
-        strerror,
-        _wcserror,
-        setlocale,
-        _wsetlocale,
-        _mbtowc_l,
-        mbrtowc,
-        mbrlen,
-        btowc,
-        wctob,
-        wcrtomb,
-        wcrtomb_s,
-        mbstowcs,
-        mbsrtowcs,
-        wcstombs
-    );
+    reg!(_tzset, __timezone, __daylight, __dstbias, __tzname, _get_tzname, _get_timezone, _get_daylight, _get_dstbias);
+    reg!(strerror, _wcserror, setlocale, _wsetlocale, _mbtowc_l, mbrtowc, mbrlen, btowc, wctob, wcrtomb, wcrtomb_s, mbstowcs, mbsrtowcs, wcstombs);
     implement("msvcrt", "mbtowc", _mbtowc_l);
     implement("msvcrt", "_mbstowcs_l", mbstowcs);
     implement("msvcrt", "_wcstombs_l", wcstombs);
-    for n in [
-        "_getch",
-        "_getche",
-        "_ungetch",
-        "_getch_nolock",
-        "_getche_nolock",
-    ] {
+    for n in ["_getch", "_getche", "_ungetch", "_getch_nolock", "_getche_nolock"] {
         implement("msvcrt", n, conio_eof);
     }
-    for n in [
-        "_getwch",
-        "_getwche",
-        "_ungetwch",
-        "_getwch_nolock",
-        "_getwche_nolock",
-    ] {
+    for n in ["_getwch", "_getwche", "_ungetwch", "_getwch_nolock", "_getwche_nolock"] {
         implement("msvcrt", n, conio_weof);
     }
     reg!(_kbhit, _putch, _putwch, _getpid, _popen);
@@ -2118,11 +1897,7 @@ pub(super) fn init() {
         _isctype_l,
         _isctype
     );
-    implement(
-        "msvcrt",
-        "_set_thread_local_invalid_parameter_handler",
-        _set_invalid_parameter_handler,
-    );
+    implement("msvcrt", "_set_thread_local_invalid_parameter_handler", _set_invalid_parameter_handler);
     implement("msvcrt", "_iswctype_l", iswctype);
     reg!(
         _iswalpha_l,
@@ -2153,10 +1928,7 @@ pub(super) fn init() {
     implement("msvcrt", "getwc", fgetwc);
     implement("msvcrt", "putwc", fputwc);
     implement("msvcrt", "__intrinsic_setjmpex", _setjmp3);
-    reg!(
-        erf, erfc, erff, erfcf, tgamma, lgamma, fma, fmaf, nextafter, nextafterf, rint, rintf,
-        lrint, lrintf, llrint, lroundf
-    );
+    reg!(erf, erfc, erff, erfcf, tgamma, lgamma, fma, fmaf, nextafter, nextafterf, rint, rintf, lrint, lrintf, llrint, lroundf);
     implement("msvcrt", "nearbyint", rint);
     implement("msvcrt", "nearbyintf", rintf);
     implement("msvcrt", "_nextafter", nextafter);

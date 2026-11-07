@@ -74,16 +74,7 @@ fn system_message(id: u32) -> Option<&'static str> {
 /// A module's RT_MESSAGETABLE entry for `id`: MESSAGE_RESOURCE_DATA {blocks, {low, high,
 /// offset}...}, entries {length, flags (1: UTF-16), text}.
 fn table_message(module: u32, id: u32) -> Option<Vec<u16>> {
-    let m = if module == 0 {
-        crate::pe::MODULES
-            .read()
-            .unwrap()
-            .iter()
-            .find(|m| !m.dll)
-            .map_or(0, |m| m.base)
-    } else {
-        module
-    };
+    let m = if module == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map_or(0, |m| m.base) } else { module };
     let e = crate::pe::find_resource(m, &crate::pe::ResId::Int(11), &crate::pe::ResId::Int(1))?;
     let (p, _) = crate::pe::resource_data(m, e);
     let blocks = r32(p);
@@ -100,16 +91,9 @@ fn table_message(module: u32, id: u32) -> Option<Vec<u16>> {
         let (len, flags) = (r16(q) as u32, r16(q + 2));
         let body = q + 4;
         let text: Vec<u16> = if flags & 1 != 0 {
-            (0..(len.saturating_sub(4)) / 2)
-                .map(|i| r16(body + 2 * i))
-                .take_while(|&c| c != 0)
-                .collect()
+            (0..(len.saturating_sub(4)) / 2).map(|i| r16(body + 2 * i)).take_while(|&c| c != 0).collect()
         } else {
-            a2w(&mem::slice(body, len.saturating_sub(4))
-                .iter()
-                .copied()
-                .take_while(|&c| c != 0)
-                .collect::<Vec<u8>>())
+            a2w(&mem::slice(body, len.saturating_sub(4)).iter().copied().take_while(|&c| c != 0).collect::<Vec<u8>>())
         };
         return Some(text);
     }
@@ -126,11 +110,7 @@ impl Args {
             return 0;
         }
         let a = self.base + i * mem::ps();
-        if mem::x64() {
-            mem::r64(a)
-        } else {
-            r32(a) as u64
-        }
+        if mem::x64() { mem::r64(a) } else { r32(a) as u64 }
     }
 }
 
@@ -201,26 +181,14 @@ fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u
     let v = if long64 { v } else { v & 0xffff_ffff };
     let (body, numeric): (Vec<u16>, bool) = match conv {
         'd' | 'i' => {
-            let n = if long64 {
-                v as i64
-            } else {
-                v as u32 as i32 as i64
-            };
+            let n = if long64 { v as i64 } else { v as u32 as i32 as i64 };
             let mut t = n.unsigned_abs().to_string();
             if let Some(p) = prec {
                 while t.len() < p {
                     t.insert(0, '0');
                 }
             }
-            let sign = if n < 0 {
-                "-"
-            } else if plus {
-                "+"
-            } else if space {
-                " "
-            } else {
-                ""
-            };
+            let sign = if n < 0 { "-" } else if plus { "+" } else if space { " " } else { "" };
             ((sign.to_string() + &t).encode_utf16().collect(), true)
         }
         'u' => (v.to_string().encode_utf16().collect(), true),
@@ -237,16 +205,7 @@ fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u
                 }
             }
             if alt && v != 0 && conv != 'p' {
-                t.insert_str(
-                    0,
-                    if conv == 'o' {
-                        "0"
-                    } else if conv == 'x' {
-                        "0x"
-                    } else {
-                        "0X"
-                    },
-                );
+                t.insert_str(0, if conv == 'o' { "0" } else if conv == 'x' { "0x" } else { "0X" });
             }
             (t.encode_utf16().collect(), true)
         }
@@ -257,13 +216,7 @@ fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u
         's' | 'S' => {
             let w = force_wide.unwrap_or((conv == 's') == wide);
             let p = v as u32;
-            let mut t = if p == 0 {
-                "(null)".encode_utf16().collect()
-            } else if w {
-                mem::wstr(p)
-            } else {
-                a2w(&mem::cstr(p))
-            };
+            let mut t = if p == 0 { "(null)".encode_utf16().collect() } else if w { mem::wstr(p) } else { a2w(&mem::cstr(p)) };
             if let Some(p) = prec {
                 t.truncate(p);
             }
@@ -281,10 +234,7 @@ fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u
         b
     } else if zero && numeric && prec.is_none() {
         // zeros after the sign
-        let sign = body
-            .first()
-            .is_some_and(|&c| c == b'-' as u16 || c == b'+' as u16 || c == b' ' as u16)
-            as usize;
+        let sign = body.first().is_some_and(|&c| c == b'-' as u16 || c == b'+' as u16 || c == b' ' as u16) as usize;
         let mut b = body[..sign].to_vec();
         b.extend(std::iter::repeat(b'0' as u16).take(pad));
         b.extend(&body[sign..]);
@@ -305,9 +255,7 @@ fn format(src: &[u16], flags: u32, args: &Args, wide: bool) -> Result<Vec<u16>, 
     while i < src.len() {
         let c = src[i];
         if c == ch('%') {
-            let Some(&n) = src.get(i + 1) else {
-                return Err(87);
-            };
+            let Some(&n) = src.get(i + 1) else { return Err(87) };
             if (ch('1')..=ch('9')).contains(&n) {
                 let start = i;
                 let mut idx = (n - ch('0')) as u32;
@@ -320,9 +268,7 @@ fn format(src: &[u16], flags: u32, args: &Args, wide: bool) -> Result<Vec<u16>, 
                 }
                 let mut spec: Vec<u16> = "s".encode_utf16().collect();
                 if src.get(i) == Some(&ch('!')) {
-                    let Some(end) = src[i + 1..].iter().position(|&x| x == ch('!')) else {
-                        return Err(87);
-                    };
+                    let Some(end) = src[i + 1..].iter().position(|&x| x == ch('!')) else { return Err(87) };
                     spec = src[i + 1..i + 1 + end].to_vec();
                     i += end + 2;
                 }
@@ -395,8 +341,7 @@ fn format(src: &[u16], flags: u32, args: &Args, wide: bool) -> Result<Vec<u16>, 
 
 /// FormatMessage(flags, source, id, language, buffer, size, va_list *args)
 pub fn format_message(c: &mut Ctx, wide: bool) -> u32 {
-    let (flags, source, id, lang, buf, size, va) =
-        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let (flags, source, id, lang, buf, size, va) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     let fail = |e: u32| {
         crate::k32::last_error(e);
         0
@@ -405,44 +350,22 @@ pub fn format_message(c: &mut Ctx, wide: bool) -> u32 {
         if source == 0 {
             return fail(87);
         }
-        if wide {
-            mem::wstr(source)
-        } else {
-            a2w(&mem::cstr(source))
-        }
+        if wide { mem::wstr(source) } else { a2w(&mem::cstr(source)) }
     } else if flags & (FROM_HMODULE | FROM_SYSTEM) != 0 {
         // a language other than neutral, English or Japanese: no such resource
         let primary = lang & 0x3ff;
         if lang != 0 && !matches!(primary, 0 | 0x09 | 0x11) {
             return fail(15100);
         }
-        let from_module = if flags & FROM_HMODULE != 0 {
-            table_message(source, id)
-        } else {
-            None
-        };
-        match from_module.or_else(|| {
-            if flags & FROM_SYSTEM != 0 {
-                system_message(id).map(|s| s.encode_utf16().collect())
-            } else {
-                None
-            }
-        }) {
+        let from_module = if flags & FROM_HMODULE != 0 { table_message(source, id) } else { None };
+        match from_module.or_else(|| if flags & FROM_SYSTEM != 0 { system_message(id).map(|s| s.encode_utf16().collect()) } else { None }) {
             Some(t) => t,
             None => return fail(if flags & FROM_SYSTEM != 0 { 317 } else { 1813 }),
         }
     } else {
         return fail(87);
     };
-    let args = Args {
-        base: if va == 0 {
-            0
-        } else if flags & ARGUMENT_ARRAY != 0 {
-            va
-        } else {
-            mem::rp(va)
-        },
-    };
+    let args = Args { base: if va == 0 { 0 } else if flags & ARGUMENT_ARRAY != 0 { va } else { mem::rp(va) } };
     let text = match format(&src, flags, &args, wide) {
         Ok(t) => t,
         Err(e) => return fail(e),
@@ -484,37 +407,19 @@ mod tests {
     /// The answers of Windows (tests/winref/golden/fmt-32) for messages without inserts.
     #[test]
     fn escapes_and_widths_follow_windows() {
-        assert_eq!(
-            f("line1%nline2%r%t|%0 after zero", 0),
-            Ok("line1\r\nline2\r\t|".into())
-        );
-        assert_eq!(
-            f("percent %% dot %. bang %!", 0),
-            Ok("percent % dot . bang !".into())
-        );
+        assert_eq!(f("line1%nline2%r%t|%0 after zero", 0), Ok("line1\r\nline2\r\t|".into()));
+        assert_eq!(f("percent %% dot %. bang %!", 0), Ok("percent % dot . bang !".into()));
         assert_eq!(f("end\r\n", 0), Ok("end\r\n".into()));
         assert_eq!(f("trailing %", 0), Err(87));
         assert_eq!(f("%1", IGNORE_INSERTS), Ok("%1".into()));
         assert_eq!(f("%1 and %2!d!", IGNORE_INSERTS), Ok("%1 and %2!d!".into()));
         assert_eq!(
-            f(
-                "the quick brown fox jumps over the lazy dog again and again",
-                20
-            ),
+            f("the quick brown fox jumps over the lazy dog again and again", 20),
             Ok("the quick brown fox\r\njumps over the lazy\r\ndog again and again".into())
         );
-        assert_eq!(
-            f("the quick brown fox\r\njumps", 0xff),
-            Ok("the quick brown fox jumps".into())
-        );
-        assert_eq!(
-            f("  spaced   words  ", 0xff),
-            Ok("  spaced   words  ".into())
-        );
-        assert_eq!(
-            f("verylongwordwithoutanyspaces here", 10),
-            Ok("verylongwo\r\nrdwithouta\r\nnyspaces\r\nhere".into())
-        );
+        assert_eq!(f("the quick brown fox\r\njumps", 0xff), Ok("the quick brown fox jumps".into()));
+        assert_eq!(f("  spaced   words  ", 0xff), Ok("  spaced   words  ".into()));
+        assert_eq!(f("verylongwordwithoutanyspaces here", 10), Ok("verylongwo\r\nrdwithouta\r\nnyspaces\r\nhere".into()));
     }
 
     /// Whatever the text and width, no line of a width-limited message is longer than the width
@@ -537,10 +442,7 @@ mod tests {
             let w = 1 + (seed >> 8) % 30;
             let out = f(&s, w).unwrap();
             for line in out.split("\r\n") {
-                assert!(
-                    line.chars().count() <= w as usize,
-                    "{s:?} width {w}: {out:?}"
-                );
+                assert!(line.chars().count() <= w as usize, "{s:?} width {w}: {out:?}");
             }
             let strip = |t: &str| t.chars().filter(|c| !c.is_whitespace()).collect::<String>();
             assert_eq!(strip(&out), strip(&s));

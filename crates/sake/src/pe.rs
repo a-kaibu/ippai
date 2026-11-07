@@ -34,11 +34,7 @@ pub fn alias() -> (u32, u32, u32) {
 
 /// The 64-bit address an image mapped at `base` (preferring `pref`) has.
 fn widen_base(base: u32, pref: u64) -> u64 {
-    if base as u64 != pref && base == pref as u32 {
-        pref
-    } else {
-        base as u64
-    }
+    if base as u64 != pref && base == pref as u32 { pref } else { base as u64 }
 }
 
 #[derive(Clone, Copy)]
@@ -61,39 +57,20 @@ pub fn by_base(base: u32) -> Option<usize> {
 
 pub fn by_name(name: &str) -> Option<u32> {
     let n = base_name(name);
-    MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| m.name == n || m.name.trim_end_matches(".dll") == n)
-        .map(|m| m.base)
+    MODULES.read().unwrap().iter().find(|m| m.name == n || m.name.trim_end_matches(".dll") == n).map(|m| m.base)
 }
 
 pub fn containing(a: u32) -> Option<u32> {
-    MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| a >= m.base && a < m.base + m.size)
-        .map(|m| m.base)
+    MODULES.read().unwrap().iter().find(|m| a >= m.base && a < m.base + m.size).map(|m| m.base)
 }
 
 pub fn with<R>(base: u32, f: impl FnOnce(&Module) -> R) -> Option<R> {
-    MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| m.base == base)
-        .map(f)
+    MODULES.read().unwrap().iter().find(|m| m.base == base).map(f)
 }
 
 /// "C:\foo\Bar.DLL" -> "bar.dll"
 pub fn base_name(path: &str) -> String {
-    let n = path
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(path)
-        .to_ascii_lowercase();
+    let n = path.rsplit(['\\', '/']).next().unwrap_or(path).to_ascii_lowercase();
     n
 }
 
@@ -105,29 +82,15 @@ pub enum Import<'a> {
 
 /// Whether the file at host path `path` is a 64-bit (x86-64) PE.
 pub fn is_64bit_file(path: &str) -> bool {
-    let Ok(d) = kura::fs::read(path) else {
-        return false;
-    };
-    let pe = d
-        .get(0x3c..0x40)
-        .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as usize;
+    let Ok(d) = kura::fs::read(path) else { return false };
+    let pe = d.get(0x3c..0x40).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as usize;
     d.get(pe + 4..pe + 6) == Some(&[0x64, 0x86])
 }
 
 /// Maps the image in `data`; `resolve(dll, import)` gives import addresses.
-pub fn load(
-    data: &[u8],
-    path: &str,
-    resolve: &mut dyn FnMut(&str, Import) -> u32,
-) -> Result<u32, String> {
-    let rd16 = |o: usize| -> u32 {
-        data.get(o..o + 2)
-            .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u32)
-    };
-    let rd32 = |o: usize| -> u32 {
-        data.get(o..o + 4)
-            .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    };
+pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u32) -> Result<u32, String> {
+    let rd16 = |o: usize| -> u32 { data.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u32) };
+    let rd32 = |o: usize| -> u32 { data.get(o..o + 4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) };
     if rd16(0) != 0x5a4d {
         return Err("not an MZ file".into());
     }
@@ -138,11 +101,7 @@ pub fn load(
     }
     let wide = machine == 0x8664;
     if wide != mem::x64() {
-        return Err(if wide {
-            "a 64-bit image in a 32-bit process".into()
-        } else {
-            "a 32-bit image in a 64-bit process".into()
-        });
+        return Err(if wide { "a 64-bit image in a 32-bit process".into() } else { "a 32-bit image in a 64-bit process".into() });
     }
     let nsec = rd16(pe + 6) as usize;
     let chars = rd16(pe + 22);
@@ -152,11 +111,7 @@ pub fn load(
         return Err("bad optional header".into());
     }
     let entry_rva = rd32(opt + 16);
-    let pref: u64 = if wide {
-        rd32(opt + 24) as u64 | (rd32(opt + 28) as u64) << 32
-    } else {
-        rd32(opt + 28) as u64
-    };
+    let pref: u64 = if wide { rd32(opt + 24) as u64 | (rd32(opt + 28) as u64) << 32 } else { rd32(opt + 28) as u64 };
     let size = rd32(opt + 56);
     let hdr_size = rd32(opt + 60);
     let dirs = opt + if wide { 112 } else { 96 };
@@ -165,22 +120,15 @@ pub fn load(
     let relocs = dir(5);
     let can_move = relocs.0 != 0 && chars & 1 == 0;
     let low = pref as u32;
-    let base = match (pref >> 32 == 0)
-        .then(|| mem::reserve(low, size, 0x80, 0x100_0000, false))
-        .flatten()
-    {
+    let base = match (pref >> 32 == 0).then(|| mem::reserve(low, size, 0x80, 0x100_0000, false)).flatten() {
         Some(b) => b,
         // (elsewhere when it can move: relocations, or a resource-only DLL with no code to fix)
-        None if can_move || (dll && entry_rva == 0) => {
-            mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?
-        }
+        None if can_move || (dll && entry_rva == 0) => mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?,
         // above 4G and fixed: memory is addressed modulo 4G, so the image lives at its base's
         // low half and RIP keeps the upper one (koji Cpu::rip_hi); addresses handed to the
         // program in that range get it back (mem::widen)
         None if pref >> 32 != 0 && alias().2 == 0 => {
-            let b = mem::reserve(low, size, 0x80, 0x100_0000, false).ok_or_else(|| {
-                format!("cannot map at {pref:#x} (its low alias {low:#x} is taken)")
-            })?;
+            let b = mem::reserve(low, size, 0x80, 0x100_0000, false).ok_or_else(|| format!("cannot map at {pref:#x} (its low alias {low:#x} is taken)"))?;
             *ALIAS.write().unwrap() = (b, (pref >> 32) as u32, size);
             b
         }
@@ -195,9 +143,7 @@ pub fn load(
         let va = rd32(s + 12);
         let raw = rd32(s + 16) as usize;
         let ptr = rd32(s + 20) as usize;
-        let n = raw
-            .min(if vsize != 0 { vsize as usize } else { raw })
-            .min(data.len().saturating_sub(ptr));
+        let n = raw.min(if vsize != 0 { vsize as usize } else { raw }).min(data.len().saturating_sub(ptr));
         if n > 0 {
             mem::write(base + va, &data[ptr..ptr + n]);
         }
@@ -238,12 +184,7 @@ pub fn load(
     // 0x48000000 functions, which Windows never reads because nothing looks them up)
     let fits = |rva: u32, n: u32, k: u32| (rva as u64) + (n as u64) * (k as u64) <= size as u64;
     let e = base + erva;
-    if erva != 0
-        && fits(erva, 40, 1)
-        && fits(r32(e + 28), r32(e + 20), 4)
-        && fits(r32(e + 32), r32(e + 24), 4)
-        && fits(r32(e + 36), r32(e + 24), 2)
-    {
+    if erva != 0 && fits(erva, 40, 1) && fits(r32(e + 28), r32(e + 20), 4) && fits(r32(e + 32), r32(e + 24), 4) && fits(r32(e + 36), r32(e + 24), 2) {
         let ord_base = r32(e + 16);
         let nfun = r32(e + 20);
         let nnames = r32(e + 24);
@@ -256,10 +197,7 @@ pub fn load(
                 let s = String::from_utf8_lossy(&mem::cstr(base + rva)).into_owned();
                 let (d, n) = s.split_once('.').unwrap_or((&s, ""));
                 if let Some(o) = n.strip_prefix('#') {
-                    resolve(
-                        &format!("{d}.dll"),
-                        Import::Ordinal(o.parse::<u32>().unwrap_or(0)),
-                    )
+                    resolve(&format!("{d}.dll"), Import::Ordinal(o.parse::<u32>().unwrap_or(0)))
                 } else {
                     resolve(&format!("{d}.dll"), Import::Name(n))
                 }
@@ -287,14 +225,7 @@ pub fn load(
     let tls = (trva != 0).then(|| {
         let t = base + trva;
         let k = mem::ps();
-        Tls {
-            start: r32(t),
-            end: r32(t + k),
-            index_addr: r32(t + 2 * k),
-            callbacks: r32(t + 3 * k),
-            zero_fill: r32(t + 4 * k),
-            index: 0,
-        }
+        Tls { start: r32(t), end: r32(t + k), index_addr: r32(t + 2 * k), callbacks: r32(t + 3 * k), zero_fill: r32(t + 4 * k), index: 0 }
     });
     MODULES.write().unwrap().push(Module {
         base,
@@ -309,11 +240,7 @@ pub fn load(
         resources: if dir(2).0 != 0 { base + dir(2).0 } else { 0 },
         refs: 1,
         hle: false,
-        pdata: if dir(3).0 != 0 {
-            (base + dir(3).0, dir(3).1 / 12)
-        } else {
-            (0, 0)
-        },
+        pdata: if dir(3).0 != 0 { (base + dir(3).0, dir(3).1 / 12) } else { (0, 0) },
     });
     // imports (after the module is listed: a DLL importing from itself, or a cycle)
     let (irva, _) = dir(1);
@@ -330,11 +257,7 @@ pub fn load(
             let ps = mem::ps();
             loop {
                 let v = r32(base + lookup + ps * k);
-                let ordinal = if wide {
-                    r32(base + lookup + ps * k + 4) & 0x8000_0000 != 0
-                } else {
-                    v & 0x8000_0000 != 0
-                };
+                let ordinal = if wide { r32(base + lookup + ps * k + 4) & 0x8000_0000 != 0 } else { v & 0x8000_0000 != 0 };
                 if v == 0 && !ordinal {
                     break;
                 }
@@ -392,11 +315,7 @@ impl ResId {
         if a < 0x10000 {
             return ResId::Int(a);
         }
-        let s: Vec<u16> = if wide {
-            mem::wstr(a)
-        } else {
-            crate::text::a2w(&mem::cstr(a))
-        };
+        let s: Vec<u16> = if wide { mem::wstr(a) } else { crate::text::a2w(&mem::cstr(a)) };
         if s.first() == Some(&('#' as u16)) {
             if let Ok(n) = String::from_utf16_lossy(&s[1..]).parse() {
                 return ResId::Int(n);
@@ -419,9 +338,7 @@ fn find_entry(root: u32, dir: u32, id: &ResId) -> Option<u32> {
                 n & 0x8000_0000 != 0 && {
                     let p = root + (n & 0x7fff_ffff);
                     let len = r16(p) as u32;
-                    len as usize == s.len()
-                        && (0..len)
-                            .all(|k| crate::text::upper16(r16(p + 2 + 2 * k)) == s[k as usize])
+                    len as usize == s.len() && (0..len).all(|k| crate::text::upper16(r16(p + 2 + 2 * k)) == s[k as usize])
                 }
             }
         };
@@ -434,22 +351,13 @@ fn find_entry(root: u32, dir: u32, id: &ResId) -> Option<u32> {
 
 /// The data entry of a resource in language `lang` (None or LANG_NEUTRAL 0: the first one), or
 /// the error Windows gives: ERROR_RESOURCE_TYPE/NAME/LANG_NOT_FOUND (1813/1814/1815).
-pub fn find_resource_lang(
-    module: u32,
-    ty: &ResId,
-    name: &ResId,
-    lang: Option<u32>,
-) -> Result<u32, u32> {
+pub fn find_resource_lang(module: u32, ty: &ResId, name: &ResId, lang: Option<u32>) -> Result<u32, u32> {
     let root = with(module, |m| m.resources).unwrap_or(0);
     if root == 0 {
         return Err(1812);
     }
-    let t = find_entry(root, root, ty)
-        .filter(|t| t & 0x8000_0000 != 0)
-        .ok_or(1813u32)?;
-    let n = find_entry(root, root + (t & 0x7fff_ffff), name)
-        .filter(|n| n & 0x8000_0000 != 0)
-        .ok_or(1814u32)?;
+    let t = find_entry(root, root, ty).filter(|t| t & 0x8000_0000 != 0).ok_or(1813u32)?;
+    let n = find_entry(root, root + (t & 0x7fff_ffff), name).filter(|n| n & 0x8000_0000 != 0).ok_or(1814u32)?;
     let langs = root + (n & 0x7fff_ffff);
     let e = match lang {
         None | Some(0) => r32(langs + 16 + 4),
@@ -572,13 +480,7 @@ pub fn exit_return() -> u32 {
 /// the headers finds an image).
 pub fn hle_module(dll: &str) -> u32 {
     let name = format!("{}.dll", crate::api::dll_key(dll));
-    if let Some(b) = MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .find(|m| m.name == name)
-        .map(|m| m.base)
-    {
+    if let Some(b) = MODULES.read().unwrap().iter().find(|m| m.name == name).map(|m| m.base) {
         return b;
     }
     // (32-bit) an export directory of every function the DLL has, each a jump to its trap:
@@ -586,21 +488,13 @@ pub fn hle_module(dll: &str) -> u32 {
     // walk its exports for GetProcAddress, and ASProtect runs the first instructions of the
     // APIs it imports (user32's too) from copies in its own code
     let key = crate::api::dll_key(dll);
-    let names = if !mem::x64() {
-        crate::api::spec_names(&key)
-    } else {
-        Vec::new()
-    };
+    let names = if !mem::x64() { crate::api::spec_names(&key) } else { Vec::new() };
     let strings: usize = names.iter().map(|n| n.len() + 1).sum::<usize>() + name.len() + 1;
     let n = names.len() as u32;
     let exp_size = 40 + 10 * n + strings as u32;
     // header page, then the export directory, then 16-byte thunks (the first: the exe's return)
     let thunks = 0x1000 + (exp_size + 15) / 16 * 16;
-    let size = if n == 0 {
-        0x1000
-    } else {
-        (thunks + 16 * (n + 1) + 0xfff) & !0xfff
-    };
+    let size = if n == 0 { 0x1000 } else { (thunks + 16 * (n + 1) + 0xfff) & !0xfff };
     let base = mem::reserve(0, size, 2, 0x100_0000, true).expect("module");
     mem::commit_range(base, size, 0x20);
     // MZ + PE headers with no sections
@@ -638,10 +532,7 @@ pub fn hle_module(dll: &str) -> u32 {
         w32(e + 32, nms - base);
         w32(e + 36, ords - base);
         // (stub 0: the exe's and threads' return address, on to EXIT_TRAP with EAX kept)
-        mem::write(
-            base + thunks,
-            &[0xb9, 0x20, 0x00, 0xff, 0xff, 0xff, 0xe1, 0xcc],
-        );
+        mem::write(base + thunks, &[0xb9, 0x20, 0x00, 0xff, 0xff, 0xff, 0xe1, 0xcc]);
         // each function: Windows' hot-patch prologue undone, then `mov ecx, trap; jmp ecx`:
         // ASProtect copies an API's first instructions into its own code and jumps past them, so
         // what follows the prologue must work anywhere (no relative jump)
@@ -696,11 +587,7 @@ pub static DLL_DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// DLL sake does not implement is missing there, as on a Windows without it (a C:\ that still
 /// has an old Wine prefix's PE builds in it is not read).
 fn find_dll_file(dll: &str) -> Option<(String, String)> {
-    let name = if dll.contains('.') {
-        dll.to_string()
-    } else {
-        format!("{dll}.dll")
-    };
+    let name = if dll.contains('.') { dll.to_string() } else { format!("{dll}.dll") };
     if name.contains('\\') || name.contains('/') || name.contains(':') {
         let w = crate::files::full_path(&name);
         if is_system_dir(w.rsplit_once('\\').map_or("", |x| x.0)) {
@@ -708,11 +595,7 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
         }
         return crate::files::resolve(&w).map(|h| (h, w));
     }
-    let exe_dir = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| {
-        m.path
-            .rsplit_once('\\')
-            .map_or(String::new(), |x| x.0.to_string())
-    });
+    let exe_dir = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit_once('\\').map_or(String::new(), |x| x.0.to_string()));
     let mut dirs: Vec<String> = exe_dir.into_iter().collect();
     dirs.extend(DLL_DIRS.lock().unwrap().iter().cloned());
     dirs.push(crate::files::cwd().trim_end_matches('\\').to_string());
@@ -744,6 +627,7 @@ fn is_system_dir(d: &str) -> bool {
     let d = d.trim_end_matches('\\');
     d == "c:\\windows\\system32" || d == "c:\\windows\\syswow64" || d == "c:\\windows\\system"
 }
+
 
 fn resolve_import(dll: &str, imp: Import) -> u32 {
     let hle = api::is_core(dll) || (api::is_system(dll) && find_dll_file(dll).is_none());
@@ -822,11 +706,7 @@ fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
     // import does: programs that look up a whole API by name call some unchecked (騎士見習いと村娘).
     // kernel32/ntdll keep answering NULL: the CRT looks up newer functions there and falls back
     // to older ones when they are missing
-    let kernel = !bind_known
-        && matches!(
-            api::dll_key(&name).as_str(),
-            "kernel32" | "kernelbase" | "ntdll"
-        );
+    let kernel = !bind_known && matches!(api::dll_key(&name).as_str(), "kernel32" | "kernelbase" | "ntdll");
     let known = api::is_known(a);
     if !(api::implemented(a) || (known && !kernel) || crate::env_on!("SAKE_ALL_EXPORTS")) {
         return None;
@@ -834,11 +714,7 @@ fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
     // a trap: the function's thunk in the module's image if it has one (kernel32 code at a
     // kernel32 address, which packers copy instructions from)
     match crate::fast::bind(&name, &n, a) {
-        b if b == a => Some(
-            with(base, |m| m.exports.get(&n).copied())
-                .flatten()
-                .unwrap_or(a),
-        ),
+        b if b == a => Some(with(base, |m| m.exports.get(&n).copied()).flatten().unwrap_or(a)),
         b => Some(b),
     }
 }
@@ -853,9 +729,7 @@ fn hle_data(dll: &str, name: &str) -> Option<u32> {
     if k == "crtdll" {
         return crate::crt::crtdll_data(name);
     }
-    (api::is_crt(&k) && !k.starts_with("vcruntime"))
-        .then(|| crate::crt::data(name))
-        .flatten()
+    (api::is_crt(&k) && !k.starts_with("vcruntime")).then(|| crate::crt::data(name)).flatten()
 }
 
 fn load_dll_file(dll: &str) -> Result<u32, String> {
@@ -917,9 +791,7 @@ pub fn load_exe(_cpu: &mut Cpu, host: &str, win: &str) -> Result<u32, String> {
 fn tls_module(base: u32) {
     let Some(i) = by_base(base) else { return };
     let mut mods = MODULES.write().unwrap();
-    let Some(t) = mods[i].tls.as_mut() else {
-        return;
-    };
+    let Some(t) = mods[i].tls.as_mut() else { return };
     t.index = TLS_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if t.index_addr != 0 {
         w32(t.index_addr, t.index);
@@ -937,9 +809,7 @@ fn tls_block(teb: u32, t: &Tls) {
 }
 
 fn tls_callbacks(cpu: &mut Cpu, base: u32, reason: u32) {
-    let Some(t) = with(base, |m| m.tls).flatten() else {
-        return;
-    };
+    let Some(t) = with(base, |m| m.tls).flatten() else { return };
     if t.callbacks == 0 {
         return;
     }
@@ -968,29 +838,16 @@ pub fn init_dlls(cpu: &mut Cpu) {
         let entry = with(base, |m| m.entry).unwrap_or(0);
         if entry != 0 {
             if crate::env_on!("SAKE_TRACE_LOAD") {
-                eprintln!(
-                    "sake: DllMain of {:#x} {} ...",
-                    base,
-                    with(base, |m| m.path.clone()).unwrap_or_default()
-                );
+                eprintln!("sake: DllMain of {:#x} {} ...", base, with(base, |m| m.path.clone()).unwrap_or_default());
             }
             let ok = crate::call(cpu, entry, &[base, 1, 0]);
             if crate::env_on!("SAKE_TRACE_LOAD") {
-                eprintln!(
-                    "sake: DllMain of {:#x} {}: {ok}",
-                    base,
-                    with(base, |m| m.name.clone()).unwrap_or_default()
-                );
+                eprintln!("sake: DllMain of {:#x} {}: {ok}", base, with(base, |m| m.name.clone()).unwrap_or_default());
             }
         }
     }
     if !EXE_DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        let exe = MODULES
-            .read()
-            .unwrap()
-            .iter()
-            .find(|m| !m.dll)
-            .map(|m| m.base);
+        let exe = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base);
         if let Some(b) = exe {
             tls_callbacks(cpu, b, 1);
         }
@@ -999,12 +856,8 @@ pub fn init_dlls(cpu: &mut Cpu) {
 
 /// A new thread: its TLS blocks, TLS callbacks and DllMain(THREAD_ATTACH).
 pub fn thread_attach(cpu: &mut Cpu) {
-    let mods: Vec<(u32, Option<Tls>, u32, bool)> = MODULES
-        .read()
-        .unwrap()
-        .iter()
-        .map(|m| (m.base, m.tls, m.entry, m.dll && !m.hle))
-        .collect();
+    let mods: Vec<(u32, Option<Tls>, u32, bool)> =
+        MODULES.read().unwrap().iter().map(|m| (m.base, m.tls, m.entry, m.dll && !m.hle)).collect();
     let teb = crate::cur().teb;
     for (_, t, _, _) in &mods {
         if let Some(t) = t {

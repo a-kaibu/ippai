@@ -25,10 +25,8 @@ fn m(iface: u32, m: u32) -> u32 {
     iface << 8 | m
 }
 
-const BITS: [u32; 16] = [
-    0xff0000ff, 0xff00ffff, 0xff00ff00, 0xffffff00, 0xffff0000, 0xffff00ff, 0xff000000, 0xff7f7f7f,
-    0x3f800000, 0x40490fdb, 0x12345678, 0x80000001, 0x7f7fffff, 0x00000001, 0xdeadbeef, 0x01020304,
-];
+const BITS: [u32; 16] =
+    [0xff0000ff, 0xff00ffff, 0xff00ff00, 0xffffff00, 0xffff0000, 0xffff00ff, 0xff000000, 0xff7f7f7f, 0x3f800000, 0x40490fdb, 0x12345678, 0x80000001, 0x7f7fffff, 0x00000001, 0xdeadbeef, 0x01020304];
 
 #[test]
 fn format_copies() {
@@ -40,13 +38,7 @@ fn format_copies() {
     let desc = mem(16);
     put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
     let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
-    assert_eq!(
-        call1(
-            CREATE_DEVICE,
-            &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]
-        ),
-        0
-    );
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
     let (sc, dev, ctx) = (rd1(sc_out), rd1(dev_out), rd1(ctx_out));
     let tex = |fmt: u32, data: &[u32]| -> u32 {
         let d = mem(11);
@@ -56,11 +48,7 @@ fn format_copies() {
         let init = mem(3);
         put(init, &[p, 16, 0]);
         let o = mem(2);
-        assert_eq!(
-            call1(m(IF_DEVICE, 5), &[dev, d, init, o]),
-            0,
-            "format {fmt}"
-        );
+        assert_eq!(call1(m(IF_DEVICE, 5), &[dev, d, init, o]), 0, "format {fmt}");
         rd1(o)
     };
     let gpu_of = |a: u32| {
@@ -82,19 +70,7 @@ fn format_copies() {
     };
     // (source, destination, whether the bits arrive): R8G8B8A8 UNORM / UINT / SRGB / SNORM /
     // SINT / TYPELESS, R32 FLOAT / UINT / SINT, R16G16 UINT / SINT, B8G8R8A8; across groups
-    let cases = [
-        (28, 30, true),
-        (28, 29, true),
-        (30, 32, true),
-        (31, 28, true),
-        (41, 42, true),
-        (42, 43, true),
-        (36, 38, true),
-        (28, 87, false),
-        (30, 36, false),
-        (41, 28, false),
-        (87, 91, true),
-    ];
+    let cases = [(28, 30, true), (28, 29, true), (30, 32, true), (31, 28, true), (41, 42, true), (42, 43, true), (36, 38, true), (28, 87, false), (30, 36, false), (41, 28, false), (87, 91, true)];
     for (s, d, copies) in cases {
         let src = tex(s, &BITS);
         let dst = tex(d, &[0; 16]);
@@ -106,15 +82,7 @@ fn format_copies() {
         let bx = mem(6);
         put(bx, &[0, 0, 0, 3, 3, 1]);
         call1(m(IF_CONTEXT, 46), &[ctx, dst2, 0, 1, 1, 0, src, 0, bx]);
-        let want: Vec<u32> = (0..16)
-            .map(|j| {
-                if copies && j % 4 >= 1 && j / 4 >= 1 {
-                    BITS[j - 5]
-                } else {
-                    0
-                }
-            })
-            .collect();
+        let want: Vec<u32> = (0..16).map(|j| if copies && j % 4 >= 1 && j / 4 >= 1 { BITS[j - 5] } else { 0 }).collect();
         assert_eq!(read(dst2), want, "CopySubresourceRegion {s} -> {d}");
         for t in [src, dst, dst2] {
             call1(m(IF_TEX2D, 2), &[t]);
@@ -126,9 +94,5 @@ fn format_copies() {
     call1(m(IF_DEVICE, 2), &[dev]);
     gpu::set_pump(None);
     let errors = model::with(|m| std::mem::take(&mut m.errors));
-    assert!(
-        errors.is_empty(),
-        "WebGPU errors {:?}",
-        &errors[..errors.len().min(10)]
-    );
+    assert!(errors.is_empty(), "WebGPU errors {:?}", &errors[..errors.len().min(10)]);
 }

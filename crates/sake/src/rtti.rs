@@ -42,11 +42,7 @@ fn locate(obj: u32) -> Option<(u32, u32, u32, Vec<Base>)> {
     }
     let x64 = mem::x64();
     // (x64: signature 1 and pSelf, the locator's RVA)
-    let base = if x64 {
-        col.wrapping_sub(r32(col + 20))
-    } else {
-        0
-    };
+    let base = if x64 { col.wrapping_sub(r32(col + 20)) } else { 0 };
     let at = |v: u32| if x64 { base.wrapping_add(v) } else { v };
     let (offset, cd_offset) = (r32(col + 4), r32(col + 8));
     let td = at(r32(col + 12));
@@ -93,9 +89,7 @@ fn adjust(obj: u32, b: &Base) -> u32 {
     let mut p = obj.wrapping_add(b.mdisp as u32);
     if b.pdisp >= 0 {
         let vbt = mem::rp(obj.wrapping_add(b.pdisp as u32));
-        p = p
-            .wrapping_add(r32(vbt.wrapping_add(b.vdisp as u32)))
-            .wrapping_add(b.pdisp as u32);
+        p = p.wrapping_add(r32(vbt.wrapping_add(b.vdisp as u32))).wrapping_add(b.pdisp as u32);
     }
     p
 }
@@ -107,12 +101,7 @@ const BCD_HIDDEN: u32 = 1 | 2 | 4;
 /// dynamic_cast's choice of the target subobject: `bases` is the hierarchy (the complete
 /// class first), `same` tells a base of the target type and `is_src` the source subobject (its
 /// type at the source pointer's offset). The result is the index of the target base.
-pub fn pick(
-    bases: &[Base],
-    attrs: u32,
-    same: &dyn Fn(&Base) -> bool,
-    is_src: &dyn Fn(&Base) -> bool,
-) -> Option<usize> {
+pub fn pick(bases: &[Base], attrs: u32, same: &dyn Fn(&Base) -> bool, is_src: &dyn Fn(&Base) -> bool) -> Option<usize> {
     if attrs & CHD_MULTINH == 0 {
         // single inheritance: the first base of the target type
         return bases.iter().position(same);
@@ -122,10 +111,7 @@ pub fn pick(
     // subobject's own bases
     let src = bases.iter().position(is_src);
     if src.is_none_or(|s| bases[s].attrs & (1 | 4) == 0) {
-        if let Some(i) = bases
-            .iter()
-            .position(|b| same(b) && b.attrs & BCD_HIDDEN == 0)
-        {
+        if let Some(i) = bases.iter().position(|b| same(b) && b.attrs & BCD_HIDDEN == 0) {
             return Some(i);
         }
     }
@@ -155,9 +141,7 @@ fn __RTDynamicCast(c: &mut Ctx) -> u32 {
         pick(&bases, attrs, &same, &is_src).map(|i| adjust(complete, &bases[i]))
     });
     if r.is_none() && is_ref != 0 {
-        crate::com::warn_once(
-            "sake: __RTDynamicCast of a reference failed (std::bad_cast not thrown)",
-        );
+        crate::com::warn_once("sake: __RTDynamicCast of a reference failed (std::bad_cast not thrown)");
     }
     ret_ptr(c, r.unwrap_or(0))
 }
@@ -165,22 +149,14 @@ fn __RTDynamicCast(c: &mut Ctx) -> u32 {
 /// __RTCastToVoid(object): its complete object
 fn __RTCastToVoid(c: &mut Ctx) -> u32 {
     let obj = c.a(0);
-    let r = if obj == 0 {
-        0
-    } else {
-        locate(obj).map_or(0, |l| l.0)
-    };
+    let r = if obj == 0 { 0 } else { locate(obj).map_or(0, |l| l.0) };
     ret_ptr(c, r)
 }
 
 /// __RTtypeid(object): the type descriptor of its complete class
 fn __RTtypeid(c: &mut Ctx) -> u32 {
     let obj = c.a(0);
-    let r = if obj == 0 {
-        0
-    } else {
-        locate(obj).map_or(0, |l| l.1)
-    };
+    let r = if obj == 0 { 0 } else { locate(obj).map_or(0, |l| l.1) };
     ret_ptr(c, r)
 }
 
@@ -197,32 +173,18 @@ mod tests {
     use super::*;
 
     fn b(name: &str, contained: u32, mdisp: i32, attrs: u32) -> Base {
-        Base {
-            td: 0,
-            name: name.as_bytes().to_vec(),
-            contained,
-            mdisp,
-            pdisp: -1,
-            vdisp: 0,
-            attrs,
-        }
+        Base { td: 0, name: name.as_bytes().to_vec(), contained, mdisp, pdisp: -1, vdisp: 0, attrs }
     }
     /// a cast from the subobject of type `src` at offset `off`
     fn run(bases: &[Base], attrs: u32, src: (&str, i32), target: &str) -> Option<usize> {
         let (t, s) = (target.as_bytes().to_vec(), src.0.as_bytes().to_vec());
-        pick(bases, attrs, &|x: &Base| x.name == t, &|x: &Base| {
-            x.name == s && x.mdisp == src.1
-        })
+        pick(bases, attrs, &|x: &Base| x.name == t, &|x: &Base| x.name == s && x.mdisp == src.1)
     }
 
     #[test]
     fn single_inheritance_takes_the_first_base_of_the_target() {
         // class C : B : A
-        let h = [
-            b(".?AVC@@", 3, 0, 0),
-            b(".?AVB@@", 2, 0, 0),
-            b(".?AVA@@", 1, 0, 0),
-        ];
+        let h = [b(".?AVC@@", 3, 0, 0), b(".?AVB@@", 2, 0, 0), b(".?AVA@@", 1, 0, 0)];
         assert_eq!(run(&h, 0, (".?AVA@@", 0), ".?AVB@@"), Some(1));
         assert_eq!(run(&h, 0, (".?AVA@@", 0), ".?AVC@@"), Some(0));
         assert_eq!(run(&h, 0, (".?AVA@@", 0), ".?AVX@@"), None);
@@ -231,12 +193,7 @@ mod tests {
     #[test]
     fn multiple_inheritance_cross_casts_and_refuses_hidden_bases() {
         // class C : A, B (B at 8); a private base P at 16
-        let h = [
-            b(".?AVC@@", 4, 0, 0),
-            b(".?AVA@@", 1, 0, 0),
-            b(".?AVB@@", 1, 8, 0),
-            b(".?AVP@@", 1, 16, 4),
-        ];
+        let h = [b(".?AVC@@", 4, 0, 0), b(".?AVA@@", 1, 0, 0), b(".?AVB@@", 1, 8, 0), b(".?AVP@@", 1, 16, 4)];
         // from A (offset 0) to B: the complete object's B
         assert_eq!(run(&h, CHD_MULTINH, (".?AVA@@", 0), ".?AVB@@"), Some(2));
         // a private base is not a target from outside
@@ -244,19 +201,10 @@ mod tests {
         // from a private base no downcast either
         assert_eq!(run(&h, CHD_MULTINH, (".?AVP@@", 16), ".?AVC@@"), None);
         // an ambiguous base neither
-        let amb = [
-            b(".?AVC@@", 3, 0, 0),
-            b(".?AVA@@", 1, 0, 2),
-            b(".?AVA@@", 1, 8, 2),
-        ];
+        let amb = [b(".?AVC@@", 3, 0, 0), b(".?AVA@@", 1, 0, 2), b(".?AVA@@", 1, 8, 2)];
         assert_eq!(run(&amb, CHD_MULTINH, (".?AVA@@", 0), ".?AVA@@"), None);
         // an upcast inside the source: from B (at 8) to its own base D, hidden from C
-        let up = [
-            b(".?AVC@@", 4, 0, 0),
-            b(".?AVA@@", 1, 0, 0),
-            b(".?AVB@@", 2, 8, 0),
-            b(".?AVD@@", 1, 8, 1),
-        ];
+        let up = [b(".?AVC@@", 4, 0, 0), b(".?AVA@@", 1, 0, 0), b(".?AVB@@", 2, 8, 0), b(".?AVD@@", 1, 8, 1)];
         assert_eq!(run(&up, CHD_MULTINH, (".?AVB@@", 8), ".?AVD@@"), Some(3));
     }
 }

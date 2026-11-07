@@ -91,11 +91,7 @@ impl<T: Enc> Enc for Option<T> {
         }
     }
     fn get(r: &mut &[u8]) -> Option<Self> {
-        Some(if bool::get(r)? {
-            Some(T::get(r)?)
-        } else {
-            None
-        })
+        Some(if bool::get(r)? { Some(T::get(r)?) } else { None })
     }
 }
 impl<A: Enc, B: Enc> Enc for (A, B) {

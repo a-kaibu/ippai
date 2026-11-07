@@ -11,9 +11,9 @@
 use crate::api::{self, Ctx, Handler};
 use crate::mem::{r16, r32, w16, w32, w8};
 use crate::HashMap;
-use koji::{Cpu, EAX, ECX, EDX, ESP};
 use std::cell::Cell;
 use std::sync::{Mutex, OnceLock};
+use koji::{Cpu, EAX, ECX, EDX, ESP};
 
 /// Base of the thunk segment (in the CPU's trap range): import i is at offset 4*i.
 pub const TRAP: u32 = 0xffc0_0000;
@@ -89,9 +89,7 @@ pub fn on() -> bool {
 }
 
 pub fn is_ne(path: &str) -> bool {
-    let Ok(d) = kura::fs::read(path) else {
-        return false;
-    };
+    let Ok(d) = kura::fs::read(path) else { return false };
     if d.len() < 0x40 || &d[..2] != b"MZ" {
         return false;
     }
@@ -129,10 +127,7 @@ pub fn sel_alloc_n(base: u32, size: u32, n: u32) -> u16 {
         }
         for k in 0..n {
             let b = base + k * 0x10000;
-            s.segs[(i + k) as usize] = Some(Seg {
-                base: b,
-                size: size.saturating_sub(k * 0x10000),
-            });
+            s.segs[(i + k) as usize] = Some(Seg { base: b, size: size.saturating_sub(k * 0x10000) });
             w32(s.ldt + 4 * (i + k), b);
         }
         sel_of(i)
@@ -158,12 +153,7 @@ pub fn sel_set_base(sel: u16, base: u32, size: u32) {
 }
 
 pub fn sel_base(sel: u16) -> Option<(u32, u32)> {
-    with(|s| {
-        s.segs
-            .get((sel >> 3) as usize)
-            .and_then(|x| x.as_ref())
-            .map(|x| (x.base, x.size))
-    })
+    with(|s| s.segs.get((sel >> 3) as usize).and_then(|x| x.as_ref()).map(|x| (x.base, x.size)))
 }
 
 /// Linear address of a far pointer (selector 0: the value itself, an integer resource id
@@ -195,11 +185,7 @@ pub fn h16(h: u32) -> u16 {
         return h as u16;
     }
     let mut g = HM.lock().unwrap();
-    let m = g.get_or_insert_with(|| HMap {
-        to16: HashMap::default(),
-        to32: HashMap::default(),
-        next: 0x8000,
-    });
+    let m = g.get_or_insert_with(|| HMap { to16: HashMap::default(), to32: HashMap::default(), next: 0x8000 });
     if let Some(&v) = m.to16.get(&h) {
         return v;
     }
@@ -216,9 +202,7 @@ pub fn h16(h: u32) -> u16 {
 
 pub fn h32(h: u16) -> u32 {
     let g = HM.lock().unwrap();
-    g.as_ref()
-        .and_then(|m| m.to32.get(&h).copied())
-        .unwrap_or(h as u32)
+    g.as_ref().and_then(|m| m.to32.get(&h).copied()).unwrap_or(h as u32)
 }
 
 /// The 32-bit handle is gone (DeleteObject, DestroyWindow...).
@@ -250,9 +234,7 @@ pub fn global_size(sel: u16) -> u32 {
 }
 
 pub fn global_free(sel: u16) {
-    let Some((b, size)) = sel_base(sel) else {
-        return;
-    };
+    let Some((b, size)) = sel_base(sel) else { return };
     for k in 0..size.div_ceil(0x10000).max(1) {
         sel_free(sel + 8 * k as u16);
     }
@@ -260,9 +242,7 @@ pub fn global_free(sel: u16) {
 }
 
 pub fn global_realloc(sel: u16, size: u32, zero: bool) -> u16 {
-    let Some((b, old)) = sel_base(sel) else {
-        return 0;
-    };
+    let Some((b, old)) = sel_base(sel) else { return 0 };
     let size = size.max(16);
     let (n_old, n_new) = (old.div_ceil(0x10000).max(1), size.div_ceil(0x10000).max(1));
     if n_new != n_old {
@@ -279,11 +259,7 @@ pub fn global_realloc(sel: u16, size: u32, zero: bool) -> u16 {
         return 0;
     }
     for k in 0..n_new {
-        sel_set_base(
-            sel + 8 * k as u16,
-            nb + k * 0x10000,
-            size.saturating_sub(k * 0x10000),
-        );
+        sel_set_base(sel + 8 * k as u16, nb + k * 0x10000, size.saturating_sub(k * 0x10000));
     }
     sel
 }
@@ -317,12 +293,7 @@ pub fn local_alloc(ds: u16, size: u16, zero: bool) -> u16 {
 }
 
 pub fn local_size(ds: u16, off: u16) -> u16 {
-    with(|s| {
-        s.heaps
-            .get(&ds)
-            .and_then(|h| h.get(&off).copied())
-            .unwrap_or(0)
-    })
+    with(|s| s.heaps.get(&ds).and_then(|h| h.get(&off).copied()).unwrap_or(0))
 }
 
 pub fn local_free(ds: u16, off: u16) {
@@ -367,14 +338,7 @@ pub fn call32_with(cpu: &mut Cpu, f: Handler, args: &[u32], trap: u32) -> (u32, 
         w32(sp + 4 + 4 * i as u32, a);
     }
     SCR32.with(|s| s.set(sp));
-    let mut c = Ctx {
-        cpu,
-        esp: sp,
-        edx: None,
-        jumped: false,
-        st0: None,
-        trap,
-    };
+    let mut c = Ctx { cpu, esp: sp, edx: None, jumped: false, st0: None, trap };
     let r = f(&mut c);
     let edx = c.edx.unwrap_or(0);
     SCR32.with(|s| s.set(top));
@@ -473,18 +437,13 @@ impl C16<'_> {
 
 /// Implements a 16-bit function (module as in specs16.txt).
 pub fn implement16(module: &str, name: &str, f: H16) {
-    IMPL16
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::default)
-        .insert(format!("{module}.{name}"), f);
+    IMPL16.lock().unwrap().get_or_insert_with(HashMap::default).insert(format!("{module}.{name}"), f);
 }
 
 static IMPL16: Mutex<Option<HashMap<String, H16>>> = Mutex::new(None);
 
 fn spec_line(module: &str, ord: u16) -> Option<(String, Conv, Vec<u8>, Option<u32>)> {
-    static SPECS: OnceLock<HashMap<(String, u16), (String, Conv, Vec<u8>, Option<u32>)>> =
-        OnceLock::new();
+    static SPECS: OnceLock<HashMap<(String, u16), (String, Conv, Vec<u8>, Option<u32>)>> = OnceLock::new();
     let m = SPECS.get_or_init(|| {
         let mut m = HashMap::default();
         for l in include_str!("specs16.txt").lines() {
@@ -502,13 +461,7 @@ fn spec_line(module: &str, ord: u16) -> Option<(String, Conv, Vec<u8>, Option<u3
                         "register" => Conv::Register,
                         _ => Conv::Pascal,
                     };
-                    let a = f.get(4).map_or(vec![], |a| {
-                        if *a == "-" {
-                            vec![]
-                        } else {
-                            a.bytes().collect()
-                        }
-                    });
+                    let a = f.get(4).map_or(vec![], |a| if *a == "-" { vec![] } else { a.bytes().collect() });
                     (conv, a, None)
                 }
             };
@@ -520,11 +473,7 @@ fn spec_line(module: &str, ord: u16) -> Option<(String, Conv, Vec<u8>, Option<u3
 }
 
 fn parse_num(s: &str) -> Option<u32> {
-    if let Some(h) = s.strip_prefix("0x") {
-        u32::from_str_radix(h, 16).ok()
-    } else {
-        s.parse().ok()
-    }
+    if let Some(h) = s.strip_prefix("0x") { u32::from_str_radix(h, 16).ok() } else { s.parse().ok() }
 }
 
 /// An ordinal's name in a system module.
@@ -548,23 +497,13 @@ fn import(module: &str, ord: u16) -> Result<u32, String> {
     if let Some(v) = eq {
         return Ok(v);
     }
-    let f = IMPL16
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|m| m.get(&format!("{module}.{name}")).copied());
+    let f = IMPL16.lock().unwrap().as_ref().and_then(|m| m.get(&format!("{module}.{name}")).copied());
     with(|s| {
         let i = match s.by_ord.get(&(module.clone(), ord)) {
             Some(&i) => i,
             None => {
                 let i = s.entries.len() as u32;
-                s.entries.push(Api {
-                    module: module.clone(),
-                    name,
-                    conv,
-                    args,
-                    f,
-                });
+                s.entries.push(Api { module: module.clone(), name, conv, args, f });
                 s.by_ord.insert((module.clone(), ord), i);
                 i
             }
@@ -575,12 +514,7 @@ fn import(module: &str, ord: u16) -> Result<u32, String> {
 
 fn trace() -> u32 {
     static T: OnceLock<u32> = OnceLock::new();
-    *T.get_or_init(|| {
-        std::env::var("SAKE_TRACE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0)
-    })
+    *T.get_or_init(|| std::env::var("SAKE_TRACE").ok().and_then(|s| s.parse().ok()).unwrap_or(0))
 }
 
 /// A far call reached the thunk segment at linear `a`. True: it is `call16`'s return.
@@ -592,24 +526,10 @@ pub fn dispatch(cpu: &mut Cpu, a: u32) -> bool {
     let i = off / 4;
     let (module, name, conv, types, f) = with(|s| {
         let e = &s.entries[i as usize];
-        (
-            e.module.clone(),
-            e.name.clone(),
-            e.conv,
-            e.args.clone(),
-            e.f,
-        )
+        (e.module.clone(), e.name.clone(), e.conv, e.args.clone(), e.f)
     });
     let sp = cpu.sbase[2].wrapping_add(cpu.regs[ESP] & 0xffff);
-    let size = |t: u8| {
-        if matches!(t, b'w' | b's') {
-            2
-        } else if t == b'd' {
-            8
-        } else {
-            4
-        }
-    };
+    let size = |t: u8| if matches!(t, b'w' | b's') { 2 } else if t == b'd' { 8 } else { 4 };
     let total: u32 = types.iter().map(|&t| size(t)).sum();
     let mut args = vec![0u32; types.len()];
     let mut va = 0;
@@ -637,34 +557,15 @@ pub fn dispatch(cpu: &mut Cpu, a: u32) -> bool {
     let tr = trace();
     if tr > 0 {
         let s: Vec<String> = args.iter().map(|v| format!("{v:x}")).collect();
-        eprintln!(
-            "w16 {module}.{name}({}) from {:04x}:{:04x}",
-            s.join(","),
-            r16(sp + 2),
-            r16(sp)
-        );
+        eprintln!("w16 {module}.{name}({}) from {:04x}:{:04x}", s.join(","), r16(sp + 2), r16(sp));
     }
-    let mut c = C16 {
-        cpu,
-        args,
-        sp,
-        va,
-        module: module.clone(),
-        name: name.clone(),
-        types,
-        raw,
-    };
+    let mut c = C16 { cpu, args, sp, va, module: module.clone(), name: name.clone(), types, raw };
     let r = match f {
         Some(f) => f(&mut c),
         None => {
             static SEEN: Mutex<Option<crate::HashSet<String>>> = Mutex::new(None);
             let key = format!("{module}.{name}");
-            if SEEN
-                .lock()
-                .unwrap()
-                .get_or_insert_with(Default::default)
-                .insert(key.clone())
-            {
+            if SEEN.lock().unwrap().get_or_insert_with(Default::default).insert(key.clone()) {
                 eprintln!("sake: unimplemented 16-bit {key} (returns 0)");
             }
             if conv == Conv::Stub || conv == Conv::Register {
@@ -704,11 +605,7 @@ thread_local! {
 /// Loads segment register `i` (ES CS SS DS FS GS).
 pub fn set_seg(cpu: &mut Cpu, i: usize, sel: u16) {
     cpu.sreg[i] = sel;
-    cpu.sbase[i] = if sel >> 3 == 0 {
-        0
-    } else {
-        sel_base(sel).map_or(0, |b| b.0)
-    };
+    cpu.sbase[i] = if sel >> 3 == 0 { 0 } else { sel_base(sel).map_or(0, |b| b.0) };
 }
 
 /// An argument for `call16`.
@@ -777,10 +674,7 @@ pub fn fatal16(cpu: &mut Cpu, msg: &str) -> ! {
         eprintln!("  code: {:02x?}", crate::mem::slice(pc, 12));
     }
     let sp = cpu.sbase[2] + (r[4] & 0xffff);
-    eprintln!(
-        "  stack: {:04x?}",
-        (0..12).map(|k| r16(sp + 2 * k)).collect::<Vec<_>>()
-    );
+    eprintln!("  stack: {:04x?}", (0..12).map(|k| r16(sp + 2 * k)).collect::<Vec<_>>());
     unsafe { libc::exit(3) }
 }
 
@@ -789,9 +683,7 @@ pub fn exception(cpu: &mut Cpu, stop: kura::cpu::Stop) {
     use kura::cpu::Stop;
     match stop {
         Stop::Int(0x21) => crate::w16api::dos(cpu),
-        Stop::Int(n @ (0x2f | 0x31 | 0x1a | 0x16 | 0x2a | 0x5c | 0x3f)) => {
-            crate::w16api::int_other(cpu, n)
-        }
+        Stop::Int(n @ (0x2f | 0x31 | 0x1a | 0x16 | 0x2a | 0x5c | 0x3f)) => crate::w16api::int_other(cpu, n),
         Stop::Int(n) => fatal16(cpu, &format!("int {n:#x}")),
         Stop::Fault { addr, write } => fatal16(cpu, &format!("fault at {addr:#x} (write {write})")),
         Stop::Divide => fatal16(cpu, "divide error"),
@@ -825,11 +717,7 @@ fn entry_point(d: &[u8], ne: usize, segs: &[u16], ord: u16) -> Option<u32> {
         let sz = if ty == 0xff { 6 } else { 3 };
         if ord < n + count {
             let e = p + sz * (ord - n) as usize;
-            let (seg, off) = if ty == 0xff {
-                (d[e + 3], u16at(d, e + 4))
-            } else {
-                (ty, u16at(d, e + 1))
-            };
+            let (seg, off) = if ty == 0xff { (d[e + 3], u16at(d, e + 4)) } else { (ty, u16at(d, e + 1)) };
             return Some((segs[seg as usize - 1] as u32) << 16 | off as u32);
         }
         n += count;
@@ -845,14 +733,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     {
         let mut segs = Vec::with_capacity(NSEL as usize);
         segs.resize_with(NSEL as usize, || None);
-        *ST.lock().unwrap() = Some(St {
-            ldt,
-            segs,
-            thunk: 0,
-            by_ord: HashMap::default(),
-            entries: vec![],
-            heaps: HashMap::default(),
-        });
+        *ST.lock().unwrap() = Some(St { ldt, segs, thunk: 0, by_ord: HashMap::default(), entries: vec![], heaps: HashMap::default() });
     }
     let thunk = sel_alloc(thunk_base, 0x10000);
     with(|s| s.thunk = thunk);
@@ -870,8 +751,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     let h = |o: usize| u16at(&d, ne + o);
     let (autodata, heap, mut stack) = (h(0x0e), h(0x10), h(0x12));
     let (ip, cs, mut sp, ss) = (h(0x14), h(0x16), h(0x18), h(0x1a));
-    let (nseg, nmod, segtab, modref, impnam, align) =
-        (h(0x1c), h(0x1e), h(0x22), h(0x28), h(0x2a), h(0x32));
+    let (nseg, nmod, segtab, modref, impnam, align) = (h(0x1c), h(0x1e), h(0x22), h(0x28), h(0x2a), h(0x32));
     if stack < 0x1400 {
         stack = 0x1400;
     }
@@ -885,29 +765,15 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     let mut info = vec![];
     for k in 0..nseg as usize {
         let e = ne + segtab as usize + 8 * k;
-        let (off, len, flags, min) = (
-            u16at(&d, e),
-            u16at(&d, e + 2),
-            u16at(&d, e + 4),
-            u16at(&d, e + 6),
-        );
+        let (off, len, flags, min) = (u16at(&d, e), u16at(&d, e + 2), u16at(&d, e + 4), u16at(&d, e + 6));
         let fofs = (off as usize) << align;
-        let flen = if len == 0 && off != 0 {
-            0x10000
-        } else {
-            len as usize
-        };
+        let flen = if len == 0 && off != 0 { 0x10000 } else { len as usize };
         let b = crate::mem::alloc(0x10000).expect("segment");
         if off != 0 {
             crate::mem::write(b, &d[fofs..(fofs + flen).min(d.len())]);
         }
         segs.push(sel_alloc(b, 0x10000));
-        info.push((
-            fofs,
-            flen,
-            flags,
-            if min == 0 { 0x10000u32 } else { min as u32 },
-        ));
+        info.push((fofs, flen, flags, if min == 0 { 0x10000u32 } else { min as u32 }));
     }
     // relocations
     for k in 0..nseg as usize {
@@ -920,13 +786,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
         let n = u16at(&d, p);
         p += 2;
         for _ in 0..n {
-            let (st, fl, so, a, b) = (
-                d[p],
-                d[p + 1],
-                u16at(&d, p + 2),
-                u16at(&d, p + 4),
-                u16at(&d, p + 6),
-            );
+            let (st, fl, so, a, b) = (d[p], d[p + 1], u16at(&d, p + 2), u16at(&d, p + 4), u16at(&d, p + 6));
             p += 8;
             let target: u32 = match fl & 3 {
                 0 => {
@@ -945,8 +805,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
                 },
                 2 => {
                     let q = ne + impnam as usize + b as usize;
-                    let name =
-                        String::from_utf8_lossy(&d[q + 1..q + 1 + d[q] as usize]).into_owned();
+                    let name = String::from_utf8_lossy(&d[q + 1..q + 1 + d[q] as usize]).into_owned();
                     let m = modname(a);
                     match spec_ordinal(&m.to_ascii_uppercase(), &name).map(|o| import(&m, o)) {
                         Some(Ok(v)) => v,
@@ -964,14 +823,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
                 let a = base + at;
                 let next = r16(a);
                 match st {
-                    0 => w8(
-                        a,
-                        if additive {
-                            crate::mem::r8(a).wrapping_add(target as u8)
-                        } else {
-                            target as u8
-                        },
-                    ),
+                    0 => w8(a, if additive { crate::mem::r8(a).wrapping_add(target as u8) } else { target as u8 }),
                     2 => w16(a, (target >> 16) as u16),
                     3 => {
                         if additive {
@@ -981,14 +833,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
                         }
                         w16(a + 2, (target >> 16) as u16);
                     }
-                    5 => w16(
-                        a,
-                        if additive {
-                            r16(a).wrapping_add(target as u16)
-                        } else {
-                            target as u16
-                        },
-                    ),
+                    5 => w16(a, if additive { r16(a).wrapping_add(target as u16) } else { target as u16 }),
                     _ => eprintln!("sake w16: relocation type {st}"),
                 }
                 if additive || next == 0xffff || next as u32 == at {
@@ -998,16 +843,8 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
             }
         }
     }
-    let dgroup = if autodata == 0 {
-        0
-    } else {
-        segs[autodata as usize - 1]
-    };
-    let dmin = if autodata == 0 {
-        0
-    } else {
-        info[autodata as usize - 1].3
-    };
+    let dgroup = if autodata == 0 { 0 } else { segs[autodata as usize - 1] };
+    let dmin = if autodata == 0 { 0 } else { info[autodata as usize - 1].3 };
     if sp == 0 {
         sp = (dmin + stack as u32).min(0xfffe) as u16;
     }
@@ -1035,16 +872,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     w8(pb + 0x80, n as u8);
     crate::mem::write(pb + 0x81, &tail[..n]);
     w8(pb + 0x81 + n as u32, 0); // (as Wine: NUL, not CR; WinMain's lpCmdLine points here)
-    let _ = TASK.set(Task {
-        path: wpath.to_string(),
-        hinst: dgroup,
-        psp,
-        env,
-        segs: segs.clone(),
-        file: d.clone(),
-        ne: ne as u32,
-        cmd_show: 1,
-    });
+    let _ = TASK.set(Task { path: wpath.to_string(), hinst: dgroup, psp, env, segs: segs.clone(), file: d.clone(), ne: ne as u32, cmd_show: 1 });
 
     // registers at the entry (Wine's NE_StartTask)
     cpu.mode16 = 1;
@@ -1054,15 +882,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     cpu.regs[7] = dgroup as u32;
     set_seg(cpu, 0, psp);
     set_seg(cpu, 3, dgroup);
-    set_seg(
-        cpu,
-        2,
-        if ss == 0 {
-            dgroup
-        } else {
-            segs[ss as usize - 1]
-        },
-    );
+    set_seg(cpu, 2, if ss == 0 { dgroup } else { segs[ss as usize - 1] });
     set_seg(cpu, 1, segs[cs as usize - 1]);
     cpu.regs[ESP] = sp as u32;
     cpu.eip = ip as u32;

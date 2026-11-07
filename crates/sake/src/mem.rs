@@ -38,11 +38,7 @@ pub fn set_x64() {
 /// Size of a pointer (4 or 8).
 #[inline(always)]
 pub fn ps() -> u32 {
-    if x64() {
-        8
-    } else {
-        4
-    }
+    if x64() { 8 } else { 4 }
 }
 
 /// Reads a pointer-sized field (its low half on x64).
@@ -74,21 +70,13 @@ pub fn putp(a: u32, v: u32) {
 #[inline]
 pub fn widen(a: u32) -> u64 {
     let (lo, hi, n) = crate::pe::alias();
-    if n != 0 && a.wrapping_sub(lo) < n {
-        a as u64 | (hi as u64) << 32
-    } else {
-        a as u64
-    }
+    if n != 0 && a.wrapping_sub(lo) < n { a as u64 | (hi as u64) << 32 } else { a as u64 }
 }
 
 /// Writes guest address `v` as a pointer (x64: its 64-bit value, `widen`) if `a` is not NULL.
 pub fn put_addr(a: u32, v: u32) {
     if a != 0 {
-        if x64() {
-            w64(a, widen(v))
-        } else {
-            w32(a, v)
-        }
+        if x64() { w64(a, widen(v)) } else { w32(a, v) }
     }
 }
 
@@ -125,9 +113,7 @@ fn guest(a: u32, n: u32) -> bool {
 #[inline(never)]
 fn refused(a: u32, n: u32) {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        eprintln!("sake: a write of {n} bytes to {a:#x} (not guest memory) was dropped")
-    });
+    ONCE.call_once(|| eprintln!("sake: a write of {n} bytes to {a:#x} (not guest memory) was dropped"));
 }
 
 #[inline(always)]
@@ -180,13 +166,7 @@ pub fn fill(a: u32, n: u32, v: u8) {
 }
 pub fn copy(dst: u32, src: u32, n: u32) {
     if guest(dst, n) {
-        unsafe {
-            std::ptr::copy(
-                src as usize as *const u8,
-                dst as usize as *mut u8,
-                n as usize,
-            )
-        }
+        unsafe { std::ptr::copy(src as usize as *const u8, dst as usize as *mut u8, n as usize) }
     }
 }
 pub fn write(dst: u32, data: &[u8]) {
@@ -308,10 +288,7 @@ pub fn reserve(want: u32, size: u32, prot: u32, kind: u32, top: bool) -> Option<
         if b < LO || end > HI {
             return None;
         }
-        let clash = sp
-            .range(..end)
-            .next_back()
-            .is_some_and(|(&a, r)| a + r.size > b);
+        let clash = sp.range(..end).next_back().is_some_and(|(&a, r)| a + r.size > b);
         if clash {
             return None;
         }
@@ -319,10 +296,7 @@ pub fn reserve(want: u32, size: u32, prot: u32, kind: u32, top: bool) -> Option<
     } else {
         let holes = holes(&sp, size);
         if top {
-            let &(_, hi) = holes
-                .iter()
-                .rev()
-                .find(|(lo, hi)| (hi - size) & !(GRAN - 1) >= *lo)?;
+            let &(_, hi) = holes.iter().rev().find(|(lo, hi)| (hi - size) & !(GRAN - 1) >= *lo)?;
             (hi - size) & !(GRAN - 1)
         } else {
             holes.first()?.0
@@ -349,21 +323,8 @@ fn holes(sp: &BTreeMap<u32, Region>, size: u32) -> Vec<(u32, u32)> {
 }
 
 fn insert(sp: &mut BTreeMap<u32, Region>, base: u32, size: u32, prot: u32, kind: u32) {
-    sp.insert(
-        base,
-        Region {
-            size,
-            prot,
-            state: 0x2000,
-            alloc_base: base,
-            alloc_prot: prot,
-            kind,
-        },
-    );
-    PAGES
-        .lock()
-        .unwrap()
-        .insert(base, vec![0; (size / PAGE) as usize]);
+    sp.insert(base, Region { size, prot, state: 0x2000, alloc_base: base, alloc_prot: prot, kind });
+    PAGES.lock().unwrap().insert(base, vec![0; (size / PAGE) as usize]);
 }
 
 /// Reserves `size` bytes at an `align`-aligned address (a power of two, at least GRAN), the
@@ -374,8 +335,7 @@ pub fn reserve_aligned(size: u32, align: u32, prot: u32, kind: u32) -> Option<u3
     let fit = |min: u32| {
         holes(&sp, min).into_iter().find_map(|(lo, hi)| {
             let b = (lo as u64 + align as u64 - 1) & !(align as u64 - 1);
-            (b + min as u64 <= hi as u64)
-                .then(|| (b as u32, (hi as u64 - b).min(size as u64) as u32))
+            (b + min as u64 <= hi as u64).then(|| (b as u32, (hi as u64 - b).min(size as u64) as u32))
         })
     };
     let (base, size) = fit(size).or_else(|| fit(size / 4))?;
@@ -412,13 +372,7 @@ fn jit_prot(a: u32, n: u32, prot: u32) {
     };
     kura::jit::fault_pages(a, n, kind, none);
     let wx = prot & (0x40 | 0x80) != 0;
-    let p = if prot == 0 {
-        0
-    } else if wx {
-        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC
-    } else {
-        libc::PROT_READ
-    };
+    let p = if prot == 0 { 0 } else if wx { libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC } else { libc::PROT_READ };
     kura::jit::pages_protected(a as usize, n as usize, p);
 }
 
@@ -452,11 +406,7 @@ pub fn commit_range(a: u32, n: u32, prot: u32) -> bool {
 pub fn decommit_range(a: u32, n: u32) -> bool {
     let Some((b, r)) = find(a) else { return false };
     let first = (a - b) / PAGE;
-    let last = if n == 0 {
-        r.size / PAGE
-    } else {
-        ((a - b + n + PAGE - 1) / PAGE).min(r.size / PAGE)
-    };
+    let last = if n == 0 { r.size / PAGE } else { ((a - b + n + PAGE - 1) / PAGE).min(r.size / PAGE) };
     let mut g = PAGES.lock().unwrap();
     if let Some(p) = g.get_mut(&b) {
         for i in first..last {
@@ -469,12 +419,7 @@ pub fn decommit_range(a: u32, n: u32) -> bool {
     drop(g);
     jit_prot(b + first * PAGE, (last - first) * PAGE, 0);
     // an access to a decommitted page faults
-    kura::jit::fault_pages(
-        b + first * PAGE,
-        (last - first) * PAGE,
-        kura::jit::READ_FAULTS | kura::jit::WRITE_FAULTS,
-        false,
-    );
+    kura::jit::fault_pages(b + first * PAGE, (last - first) * PAGE, kura::jit::READ_FAULTS | kura::jit::WRITE_FAULTS, false);
     true
 }
 
@@ -490,18 +435,7 @@ pub fn query(a: u32) -> Option<(u32, Region, u32, u32, u32, u32)> {
         j += 1;
     }
     let state = if v & COMMITTED != 0 { 0x1000 } else { 0x2000 };
-    Some((
-        b,
-        r,
-        b + i as u32 * PAGE,
-        (j - i) as u32 * PAGE,
-        state,
-        if v & COMMITTED != 0 {
-            v & !COMMITTED
-        } else {
-            0
-        },
-    ))
+    Some((b, r, b + i as u32 * PAGE, (j - i) as u32 * PAGE, state, if v & COMMITTED != 0 { v & !COMMITTED } else { 0 }))
 }
 
 /// How many of the `n` bytes from `a` on can be read (`write` false) or written: committed pages
@@ -514,16 +448,10 @@ pub fn accessible(a: u32, n: u32, write: bool, code_too: bool) -> u32 {
         if at < LO as u64 {
             break;
         }
-        let Some((_, _, run, size, state, prot)) = query(at as u32) else {
-            break;
-        };
+        let Some((_, _, run, size, state, prot)) = query(at as u32) else { break };
         let ok = state == 0x1000
             && prot & 0x100 == 0
-            && if write {
-                prot & 0xcc != 0 || code_too && prot & 0x30 != 0
-            } else {
-                prot & 0xfe != 0
-            };
+            && if write { prot & 0xcc != 0 || code_too && prot & 0x30 != 0 } else { prot & 0xfe != 0 };
         if !ok {
             break;
         }
@@ -561,9 +489,7 @@ pub fn guard_hit(a: u32) -> bool {
     let Some((b, _)) = find(a) else { return false };
     let i = ((a - b) / PAGE) as usize;
     let mut g = PAGES.lock().unwrap();
-    let Some(x) = g.get_mut(&b).and_then(|p| p.get_mut(i)) else {
-        return false;
-    };
+    let Some(x) = g.get_mut(&b).and_then(|p| p.get_mut(i)) else { return false };
     if *x & COMMITTED == 0 || *x & 0x100 == 0 {
         return false;
     }
@@ -603,9 +529,7 @@ pub fn release(base: u32) -> bool {
     // zeroed before it leaves the map: once out, another thread may reserve it (a new thread's
     // stack was zeroed under it)
     let mut sp = SPACE.lock().unwrap();
-    let Some(r) = sp.get(&base).copied() else {
-        return false;
-    };
+    let Some(r) = sp.get(&base).copied() else { return false };
     kura::jit::code_changed(base as usize, r.size as usize);
     jit_prot(base, r.size, 0);
     fill(base, r.size, 0);
@@ -622,22 +546,9 @@ pub fn dump() -> String {
     for (&b, r) in sp.iter() {
         // (pages committed, and the end of the last one, in KB from the start)
         let (n, top) = pages.get(&b).map_or((0, 0), |p| {
-            (
-                p.iter().filter(|&&x| x & COMMITTED != 0).count(),
-                p.iter()
-                    .rposition(|&x| x & COMMITTED != 0)
-                    .map_or(0, |i| i + 1),
-            )
+            (p.iter().filter(|&&x| x & COMMITTED != 0).count(), p.iter().rposition(|&x| x & COMMITTED != 0).map_or(0, |i| i + 1))
         });
-        out += &format!(
-            "  {b:08x}-{:08x} {:6} KB kind {:x} state {:x}, committed {} KB up to +{} KB\n",
-            b + r.size,
-            r.size >> 10,
-            r.kind,
-            r.state,
-            n * 4,
-            top * 4
-        );
+        out += &format!("  {b:08x}-{:08x} {:6} KB kind {:x} state {:x}, committed {} KB up to +{} KB\n", b + r.size, r.size >> 10, r.kind, r.state, n * 4, top * 4);
     }
     out
 }
@@ -691,8 +602,7 @@ unsafe impl dlmalloc::Allocator for Sys {
     }
 }
 
-static HEAP: Mutex<dlmalloc::Dlmalloc<Sys>> =
-    Mutex::new(dlmalloc::Dlmalloc::new_with_allocator(Sys));
+static HEAP: Mutex<dlmalloc::Dlmalloc<Sys>> = Mutex::new(dlmalloc::Dlmalloc::new_with_allocator(Sys));
 
 /// (16: x64 code keeps SSE values in heap blocks and expects them 16-byte aligned; the size the
 /// caller asked for is at p-8, the magic at p-4)
@@ -787,9 +697,7 @@ pub fn heap_free_small(p: u32) -> bool {
 }
 
 pub fn heap_alloc(size: u32, zero: bool) -> u32 {
-    let Some(total) = size.checked_add(HDR) else {
-        return 0;
-    };
+    let Some(total) = size.checked_add(HDR) else { return 0 };
     let p = unsafe { HEAP.lock().unwrap().malloc(total as usize, 16) } as usize as u32;
     if p == 0 {
         return 0;
@@ -834,11 +742,7 @@ pub fn heap_fits(p: u32, size: u32) -> bool {
         return false;
     }
     let old = heap_size(p);
-    if r32(p - 4) == SLAB {
-        size <= SLAB_MAX && slab_class(size) <= slab_class(old)
-    } else {
-        size <= old
-    }
+    if r32(p - 4) == SLAB { size <= SLAB_MAX && slab_class(size) <= slab_class(old) } else { size <= old }
 }
 
 pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
@@ -879,9 +783,7 @@ pub(crate) fn rmw32_at(p: usize, f: impl Fn(u32) -> u32) -> u32 {
     unsafe {
         if p % 4 == 0 {
             let a = &*(p as *const AtomicU32);
-            return a
-                .fetch_update(SeqCst, SeqCst, |v| Some(f(v)))
-                .unwrap_or_else(|v| v);
+            return a.fetch_update(SeqCst, SeqCst, |v| Some(f(v))).unwrap_or_else(|v| v);
         }
         let word = p & !7;
         if p - word <= 4 {
@@ -912,10 +814,7 @@ mod tests {
     fn guest_top_is_the_jits() {
         assert_eq!(GUEST_TOP, koji::jit::GUEST_HI);
         let build = include_str!("../build.sh");
-        assert!(
-            build.contains(&format!("-sGLOBAL_BASE={}", GUEST_TOP)),
-            "build.sh GLOBAL_BASE"
-        );
+        assert!(build.contains(&format!("-sGLOBAL_BASE={}", GUEST_TOP)), "build.sh GLOBAL_BASE");
     }
 
     #[test]
@@ -940,15 +839,8 @@ mod tests {
             b.0[off..off + 4].copy_from_slice(&0x1122_3344u32.to_le_bytes());
             let p = b.0.as_mut_ptr() as usize + off;
             assert_eq!(rmw32_at(p, |v| v.wrapping_add(0x0101_0101)), 0x1122_3344);
-            assert_eq!(
-                u32::from_le_bytes(b.0[off..off + 4].try_into().unwrap()),
-                0x1223_3445,
-                "offset {off}"
-            );
-            assert!(
-                b.0[..off].iter().chain(&b.0[off + 4..]).all(|&x| x == 0xaa),
-                "offset {off}"
-            );
+            assert_eq!(u32::from_le_bytes(b.0[off..off + 4].try_into().unwrap()), 0x1223_3445, "offset {off}");
+            assert!(b.0[..off].iter().chain(&b.0[off + 4..]).all(|&x| x == 0xaa), "offset {off}");
         }
     }
 
@@ -961,21 +853,9 @@ mod tests {
         let base = b.0.as_mut_ptr() as usize;
         for off in [1usize, 2, 6] {
             let p = base + off;
-            let hs: Vec<_> = (0..4)
-                .map(|_| {
-                    std::thread::spawn(move || {
-                        (0..20000).for_each(|_| {
-                            rmw32_at(p, |v| v + 1);
-                        })
-                    })
-                })
-                .collect();
+            let hs: Vec<_> = (0..4).map(|_| std::thread::spawn(move || (0..20000).for_each(|_| { rmw32_at(p, |v| v + 1); }))).collect();
             hs.into_iter().for_each(|h| h.join().unwrap());
-            assert_eq!(
-                unsafe { (p as *const u32).read_unaligned() },
-                80000,
-                "offset {off}"
-            );
+            assert_eq!(unsafe { (p as *const u32).read_unaligned() }, 80000, "offset {off}");
             unsafe { (p as *mut u32).write_unaligned(0) };
         }
     }

@@ -171,9 +171,7 @@ fn set_rect_empty() -> u32 {
     a.x(&[0x8b, 0x44, 0x24, 0x04, 0x85, 0xc0]) // mov eax,[esp+4]; test eax,eax; jz
         .j8(0x74, "null")
         .x(&[0x31, 0xc9]) // xor ecx,ecx
-        .x(&[
-            0x89, 0x08, 0x89, 0x48, 0x04, 0x89, 0x48, 0x08, 0x89, 0x48, 0x0c,
-        ])
+        .x(&[0x89, 0x08, 0x89, 0x48, 0x04, 0x89, 0x48, 0x08, 0x89, 0x48, 0x0c])
         .x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x04, 0x00])
         .label("null")
         .x(&[0xc2, 0x04, 0x00]);
@@ -186,63 +184,45 @@ fn set_rect() -> u32 {
     for k in 0..4u8 {
         a.x(&[0x8b, 0x4c, 0x24, 8 + 4 * k, 0x89, 0x48, 4 * k]); // mov ecx,[esp+8+4k]; mov [eax+4k],ecx
     }
-    a.x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x14, 0x00])
-        .label("null")
-        .x(&[0xc2, 0x14, 0x00]);
+    a.x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x14, 0x00]).label("null").x(&[0xc2, 0x14, 0x00]);
     a.place()
 }
 
 fn copy_rect() -> u32 {
     let mut a = Asm::default();
     a.x(&[0x8b, 0x44, 0x24, 0x04, 0x8b, 0x54, 0x24, 0x08]); // mov eax,[esp+4]; mov edx,[esp+8]
-                                                            // (a NULL rectangle: FALSE, as user32 answers; 肉牝Ｒ３０ copies from one)
-    a.x(&[0x85, 0xc0])
-        .j8(0x74, "null")
-        .x(&[0x85, 0xd2])
-        .j8(0x74, "null"); // test eax,eax; jz; test edx,edx; jz
+    // (a NULL rectangle: FALSE, as user32 answers; 肉牝Ｒ３０ copies from one)
+    a.x(&[0x85, 0xc0]).j8(0x74, "null").x(&[0x85, 0xd2]).j8(0x74, "null"); // test eax,eax; jz; test edx,edx; jz
     for k in 0..4u8 {
         a.x(&[0x8b, 0x4a, 4 * k, 0x89, 0x48, 4 * k]); // mov ecx,[edx+4k]; mov [eax+4k],ecx
     }
-    a.x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x08, 0x00])
-        .label("null")
-        .x(&[0x31, 0xc0, 0xc2, 0x08, 0x00]);
+    a.x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x08, 0x00]).label("null").x(&[0x31, 0xc0, 0xc2, 0x08, 0x00]);
     a.place()
 }
 
 fn offset_rect() -> u32 {
     let mut a = Asm::default();
-    a.x(&[
-        0x8b, 0x44, 0x24, 0x04, 0x8b, 0x4c, 0x24, 0x08, 0x8b, 0x54, 0x24, 0x0c,
-    ]) // eax=rc ecx=dx edx=dy
-    .x(&[0x85, 0xc0])
-    .j8(0x74, "null")
-    .x(&[
-        0x01, 0x08, 0x01, 0x50, 0x04, 0x01, 0x48, 0x08, 0x01, 0x50, 0x0c,
-    ]) // add [eax],ecx; [eax+4],edx; ...
-    .x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x0c, 0x00])
-    .label("null")
-    .x(&[0xc2, 0x0c, 0x00]);
+    a.x(&[0x8b, 0x44, 0x24, 0x04, 0x8b, 0x4c, 0x24, 0x08, 0x8b, 0x54, 0x24, 0x0c]) // eax=rc ecx=dx edx=dy
+        .x(&[0x85, 0xc0])
+        .j8(0x74, "null")
+        .x(&[0x01, 0x08, 0x01, 0x50, 0x04, 0x01, 0x48, 0x08, 0x01, 0x50, 0x0c]) // add [eax],ecx; [eax+4],edx; ...
+        .x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x0c, 0x00])
+        .label("null")
+        .x(&[0xc2, 0x0c, 0x00]);
     a.place()
 }
 
 fn intersect_rect() -> u32 {
     let mut a = Asm::default();
     a.x(&[0x56, 0x57]) // push esi; push edi
-        .x(&[
-            0x8b, 0x7c, 0x24, 0x0c, 0x8b, 0x54, 0x24, 0x10, 0x8b, 0x4c, 0x24, 0x14,
-        ]) // edi=dst edx=a ecx=b
+        .x(&[0x8b, 0x7c, 0x24, 0x0c, 0x8b, 0x54, 0x24, 0x10, 0x8b, 0x4c, 0x24, 0x14]) // edi=dst edx=a ecx=b
         .x(&[0x85, 0xff])
         .j8(0x74, "null")
         .x(&[0x85, 0xd2])
         .j8(0x74, "null")
         .x(&[0x85, 0xc9])
         .j8(0x74, "null");
-    for (off, max, l) in [
-        (0u8, true, "s0"),
-        (4, true, "s1"),
-        (8, false, "s2"),
-        (12, false, "s3"),
-    ] {
+    for (off, max, l) in [(0u8, true, "s0"), (4, true, "s1"), (8, false, "s2"), (12, false, "s3")] {
         a.x(&[0x8b, 0x42, off, 0x8b, 0x71, off, 0x39, 0xf0]) // mov eax,[edx+off]; mov esi,[ecx+off]; cmp eax,esi
             .j8(if max { 0x7d } else { 0x7e }, l)
             .x(&[0x89, 0xf0]) // mov eax,esi
@@ -255,10 +235,7 @@ fn intersect_rect() -> u32 {
         .j8(0x7e, "empty")
         .x(&[0xb8, 1, 0, 0, 0, 0x5f, 0x5e, 0xc2, 0x0c, 0x00])
         .label("empty")
-        .x(&[
-            0x31, 0xc0, 0x89, 0x07, 0x89, 0x47, 0x04, 0x89, 0x47, 0x08, 0x89, 0x47, 0x0c, 0x5f,
-            0x5e, 0xc2, 0x0c, 0x00,
-        ])
+        .x(&[0x31, 0xc0, 0x89, 0x07, 0x89, 0x47, 0x04, 0x89, 0x47, 0x08, 0x89, 0x47, 0x0c, 0x5f, 0x5e, 0xc2, 0x0c, 0x00])
         .label("null")
         .x(&[0x31, 0xc0, 0x5f, 0x5e, 0xc2, 0x0c, 0x00]);
     a.place()
@@ -279,11 +256,7 @@ fn errno_ptr(off: u32) -> u32 {
 
 /// Takes the lock word at `t`, using eax (`edx` false) or edx.
 fn spin_lock(a: &mut Asm, t: u32, edx: bool) {
-    let (mov, xchg, test) = if edx {
-        (0xba, 0x15, 0xd2)
-    } else {
-        (0xb8, 0x05, 0xc0)
-    };
+    let (mov, xchg, test) = if edx { (0xba, 0x15, 0xd2) } else { (0xb8, 0x05, 0xc0) };
     a.label("spin")
         .x(&[mov, 1, 0, 0, 0]) // mov reg,1
         .x(&[0x87, xchg])
@@ -369,9 +342,7 @@ fn slab_free(trap: u32, p_at: u8, ret: u16) -> u32 {
         .x(&[0x89, 0x04, 0x8d])
         .u32(t); // mov [ecx*4+t],eax
     unlock(&mut a, t);
-    a.label("done")
-        .x(&[0xb8, 1, 0, 0, 0, 0xc2])
-        .x(&ret.to_le_bytes());
+    a.label("done").x(&[0xb8, 1, 0, 0, 0, 0xc2]).x(&ret.to_le_bytes());
     a.label("slow").jmp(trap);
     a.place()
 }
@@ -422,23 +393,10 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
     if let Some(a) = crate::guest::lookup(&key, name) {
         return a;
     }
-    if !matches!(
-        key.as_str(),
-        "kernel32" | "kernelbase" | "ntdll" | "msvcrt" | "user32"
-    ) {
+    if !matches!(key.as_str(), "kernel32" | "kernelbase" | "ntdll" | "msvcrt" | "user32") {
         return trap;
     }
-    if key == "user32"
-        && !matches!(
-            name,
-            "IsRectEmpty"
-                | "SetRectEmpty"
-                | "IntersectRect"
-                | "SetRect"
-                | "CopyRect"
-                | "OffsetRect"
-        )
-    {
+    if key == "user32" && !matches!(name, "IsRectEmpty" | "SetRectEmpty" | "IntersectRect" | "SetRect" | "CopyRect" | "OffsetRect") {
         return trap;
     }
     if key == "msvcrt" && !matches!(name, "_errno" | "__doserrno" | "malloc" | "free") {
@@ -455,9 +413,7 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
     }
     let a = match name {
         "EnterCriticalSection" | "RtlEnterCriticalSection" => enter_cs(trap),
-        "LeaveCriticalSection" | "RtlLeaveCriticalSection" => {
-            leave_cs(crate::api::host_fn("cs_wake", cs_wake, 4))
-        }
+        "LeaveCriticalSection" | "RtlLeaveCriticalSection" => leave_cs(crate::api::host_fn("cs_wake", cs_wake, 4)),
         "IsDBCSLeadByte" => is_dbcs_lead_byte(),
         "GetLastError" | "RtlGetLastWin32Error" => get_last_error(),
         "SetLastError" | "RtlSetLastWin32Error" => set_last_error(),

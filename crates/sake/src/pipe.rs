@@ -52,12 +52,7 @@ pub fn open(name: &str, access: u32, flags: u32) -> u32 {
     match kw(|k| k.open(name, read, write, crate::pid())) {
         Ok(end) => {
             last_error(0);
-            obj::add(Obj::Pipe(Handle {
-                end,
-                read,
-                write,
-                ovl: flags & FILE_FLAG_OVERLAPPED != 0,
-            }))
+            obj::add(Obj::Pipe(Handle { end, read, write, ovl: flags & FILE_FLAG_OVERLAPPED != 0 }))
         }
         Err(s) => {
             fail(s);
@@ -69,18 +64,8 @@ pub fn open(name: &str, access: u32, flags: u32) -> u32 {
 /// CreatePipe(&read, &write, sa, size)
 fn CreatePipe(c: &mut Ctx) -> u32 {
     let (r, w) = kw(|k| k.create_anon(c.a(3), crate::pid()));
-    let hr = obj::add(Obj::Pipe(Handle {
-        end: r,
-        read: true,
-        write: false,
-        ovl: false,
-    }));
-    let hw = obj::add(Obj::Pipe(Handle {
-        end: w,
-        read: false,
-        write: true,
-        ovl: false,
-    }));
+    let hr = obj::add(Obj::Pipe(Handle { end: r, read: true, write: false, ovl: false }));
+    let hw = obj::add(Obj::Pipe(Handle { end: w, read: false, write: true, ovl: false }));
     // SECURITY_ATTRIBUTES.bInheritHandle
     if c.a(2) != 0 && r32(c.a(2) + 2 * mem::ps()) != 0 {
         obj::set_inherit(hr, true);
@@ -113,12 +98,7 @@ fn create_named(c: &mut Ctx, wide: bool) -> u32 {
     };
     match kw(|k| k.create(&name, &p, crate::pid())) {
         Ok(end) => {
-            let h = obj::add(Obj::Pipe(Handle {
-                end,
-                read: open & 1 != 0,
-                write: open & 2 != 0,
-                ovl: open & FILE_FLAG_OVERLAPPED != 0,
-            }));
+            let h = obj::add(Obj::Pipe(Handle { end, read: open & 1 != 0, write: open & 2 != 0, ovl: open & FILE_FLAG_OVERLAPPED != 0 }));
             if c.a(7) != 0 && r32(c.a(7) + 2 * mem::ps()) != 0 {
                 obj::set_inherit(h, true);
             }
@@ -188,17 +168,11 @@ pub fn pump() {
             return;
         }
         kern::with(|k| {
-            g.retain_mut(|p| {
-                match if p.cancel {
-                    Err(kern::CANCELLED)
-                } else {
-                    (p.op)(k)
-                } {
-                    Err(PENDING) => true,
-                    r => {
-                        done.push((p.done, p.tid, r));
-                        false
-                    }
+            g.retain_mut(|p| match if p.cancel { Err(kern::CANCELLED) } else { (p.op)(k) } {
+                Err(PENDING) => true,
+                r => {
+                    done.push((p.done, p.tid, r));
+                    false
                 }
             })
         });
@@ -253,13 +227,7 @@ fn io(h: u32, p: Handle, ov: u32, out: u32, mut op: Op) -> u32 {
     let mut r = kw(&mut op);
     if r == Err(PENDING) {
         if p.ovl && ov != 0 {
-            PENDING_IO.lock().unwrap().push(Pending {
-                h,
-                tid: crate::cur().tid,
-                done: Done::Ov(ov),
-                cancel: false,
-                op,
-            });
+            PENDING_IO.lock().unwrap().push(Pending { h, tid: crate::cur().tid, done: Done::Ov(ov), cancel: false, op });
             // (a change between the first try and now)
             pump();
             watch();
@@ -311,13 +279,7 @@ fn nt_io(h: u32, p: Handle, nt: NtIo, mut op: Op) -> u32 {
     let mut r = kw(&mut op);
     if r == Err(PENDING) {
         if p.ovl {
-            PENDING_IO.lock().unwrap().push(Pending {
-                h,
-                tid: crate::cur().tid,
-                done: Done::Nt(nt),
-                cancel: false,
-                op,
-            });
+            PENDING_IO.lock().unwrap().push(Pending { h, tid: crate::cur().tid, done: Done::Nt(nt), cancel: false, op });
             pump();
             watch();
             return PENDING;
@@ -346,10 +308,7 @@ pub fn nt_read(h: u32, p: Handle, nt: NtIo, buf: u32, n: u32) -> u32 {
         Box::new(move |k| {
             let (d, more) = k.read(e, n)?;
             mem::write(buf, &d);
-            Ok((
-                d.len() as u32,
-                if more { kern::BUFFER_OVERFLOW } else { SUCCESS },
-            ))
+            Ok((d.len() as u32, if more { kern::BUFFER_OVERFLOW } else { SUCCESS }))
         }),
     )
 }
@@ -359,12 +318,7 @@ pub fn nt_write(h: u32, p: Handle, nt: NtIo, buf: u32, n: u32) -> u32 {
         return kern::ACCESS_DENIED;
     }
     let (e, data) = (p.end, mem::slice(buf, n).to_vec());
-    nt_io(
-        h,
-        p,
-        nt,
-        Box::new(move |k| k.write(e, &data).map(|n| (n, SUCCESS))),
-    )
+    nt_io(h, p, nt, Box::new(move |k| k.write(e, &data).map(|n| (n, SUCCESS))))
 }
 
 /// ReadFile on a pipe handle
@@ -383,10 +337,7 @@ pub fn read(c: &mut Ctx, h: u32, p: Handle) -> u32 {
         Box::new(move |k| {
             let (d, more) = k.read(e, n)?;
             mem::write(buf, &d);
-            Ok((
-                d.len() as u32,
-                if more { kern::BUFFER_OVERFLOW } else { SUCCESS },
-            ))
+            Ok((d.len() as u32, if more { kern::BUFFER_OVERFLOW } else { SUCCESS }))
         }),
     )
 }
@@ -399,13 +350,7 @@ pub fn write(c: &mut Ctx, h: u32, p: Handle) -> u32 {
         return fail(kern::ACCESS_DENIED);
     }
     let (e, data) = (p.end, mem::slice(buf, n).to_vec());
-    io(
-        h,
-        p,
-        ov,
-        out,
-        Box::new(move |k| k.write(e, &data).map(|n| (n, SUCCESS))),
-    )
+    io(h, p, ov, out, Box::new(move |k| k.write(e, &data).map(|n| (n, SUCCESS))))
 }
 
 fn with_pipe(c: &Ctx, f: impl FnOnce(u32, Handle) -> u32) -> u32 {
@@ -418,18 +363,16 @@ fn with_pipe(c: &Ctx, f: impl FnOnce(u32, Handle) -> u32) -> u32 {
 /// PeekNamedPipe(h, buf, size, &read, &avail, &left this message)
 fn PeekNamedPipe(c: &mut Ctx) -> u32 {
     let (buf, size, pread, pavail, pleft) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
-    with_pipe(c, |_, p| {
-        match kw(|k| k.peek(p.end, if buf == 0 { 0 } else { size })) {
-            Ok(pk) => {
-                mem::write(buf, &pk.data);
-                let n = pk.data.len() as u32;
-                put32(pread, n);
-                put32(pavail, pk.avail);
-                put32(pleft, pk.msg_len.wrapping_sub(n));
-                1
-            }
-            Err(s) => fail(s),
+    with_pipe(c, |_, p| match kw(|k| k.peek(p.end, if buf == 0 { 0 } else { size })) {
+        Ok(pk) => {
+            mem::write(buf, &pk.data);
+            let n = pk.data.len() as u32;
+            put32(pread, n);
+            put32(pavail, pk.avail);
+            put32(pleft, pk.msg_len.wrapping_sub(n));
+            1
         }
+        Err(s) => fail(s),
     })
 }
 
@@ -486,10 +429,7 @@ fn TransactNamedPipe(c: &mut Ctx) -> u32 {
                 }
                 let (d, more) = k.read(e, cap)?;
                 mem::write(outp, &d);
-                Ok((
-                    d.len() as u32,
-                    if more { kern::BUFFER_OVERFLOW } else { SUCCESS },
-                ))
+                Ok((d.len() as u32, if more { kern::BUFFER_OVERFLOW } else { SUCCESS }))
             }),
         )
     })
@@ -610,10 +550,7 @@ fn call_named(c: &mut Ctx, wide: bool) -> u32 {
                     }
                     let (d, more) = k.read(e, cap)?;
                     mem::write(outp, &d);
-                    Ok((
-                        d.len() as u32,
-                        if more { kern::BUFFER_OVERFLOW } else { SUCCESS },
-                    ))
+                    Ok((d.len() as u32, if more { kern::BUFFER_OVERFLOW } else { SUCCESS }))
                 }),
             )
         }
@@ -694,12 +631,7 @@ fn overlapped_result(ov: u32, pn: u32, ms: u32) -> u32 {
 /// Cancels the pending I/O of handle `h` that `pick` picks; whether there was any.
 fn cancel(h: u32, pick: impl Fn(&Pending) -> bool) -> bool {
     let mut any = false;
-    for p in PENDING_IO
-        .lock()
-        .unwrap()
-        .iter_mut()
-        .filter(|p| p.h == h && pick(p))
-    {
+    for p in PENDING_IO.lock().unwrap().iter_mut().filter(|p| p.h == h && pick(p)) {
         p.cancel = true;
         any = true;
     }
@@ -710,13 +642,7 @@ fn cancel(h: u32, pick: impl Fn(&Pending) -> bool) -> bool {
 /// or anyone's (only that OVERLAPPED's, if given); whether there was any
 pub fn cancel_io(h: u32, ov: u32, this_thread: bool) -> bool {
     let tid = crate::cur().tid;
-    cancel(h, |p| {
-        if this_thread {
-            p.tid == tid
-        } else {
-            ov == 0 || matches!(p.done, Done::Ov(o) if o == ov)
-        }
-    })
+    cancel(h, |p| if this_thread { p.tid == tid } else { ov == 0 || matches!(p.done, Done::Ov(o) if o == ov) })
 }
 /// CancelIo(h): this thread's I/O on it
 fn CancelIo(c: &mut Ctx) -> u32 {
@@ -727,9 +653,7 @@ fn CancelIo(c: &mut Ctx) -> u32 {
 /// CancelIoEx(h, ov): anyone's (that one's, if given)
 fn CancelIoEx(c: &mut Ctx) -> u32 {
     let ov = c.a(1);
-    if cancel(c.a(0), |p| {
-        ov == 0 || matches!(p.done, Done::Ov(o) if o == ov)
-    }) {
+    if cancel(c.a(0), |p| ov == 0 || matches!(p.done, Done::Ov(o) if o == ov)) {
         1
     } else {
         last_error(1168); // ERROR_NOT_FOUND
@@ -768,9 +692,5 @@ pub fn register() {
         CancelIoEx,
         GetNamedPipeClientProcessId,
     );
-    implement(
-        "kernel32",
-        "GetNamedPipeServerProcessId",
-        GetNamedPipeClientProcessId,
-    );
+    implement("kernel32", "GetNamedPipeServerProcessId", GetNamedPipeClientProcessId);
 }

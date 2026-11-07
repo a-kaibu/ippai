@@ -32,11 +32,7 @@ fn header_size() -> u32 {
 /// (target window, 0 for the focus; whether legacy messages are off)
 pub fn registered(mouse: bool) -> Option<(u32, bool)> {
     let usage = if mouse { 2 } else { 6 };
-    REGS.lock()
-        .unwrap()
-        .iter()
-        .find(|r| r.0 == 1 && r.1 == usage)
-        .map(|r| (r.3, r.2 & RIDEV_NOLEGACY == RIDEV_NOLEGACY))
+    REGS.lock().unwrap().iter().find(|r| r.0 == 1 && r.1 == usage).map(|r| (r.3, r.2 & RIDEV_NOLEGACY == RIDEV_NOLEGACY))
 }
 
 fn record(ty: u32, device: u32, body: &[u8]) -> u32 {
@@ -147,10 +143,7 @@ fn GetRawInputDeviceList(c: &mut Ctx) -> u32 {
         last_error(122);
         return u32::MAX;
     }
-    for (i, (h, t)) in [(MOUSE, RIM_TYPEMOUSE), (KEYBOARD, RIM_TYPEKEYBOARD)]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, (h, t)) in [(MOUSE, RIM_TYPEMOUSE), (KEYBOARD, RIM_TYPEKEYBOARD)].into_iter().enumerate() {
         let d = p + i as u32 * size;
         mem::wp(d, h);
         w32(d + mem::ps(), t);
@@ -176,24 +169,14 @@ fn device_info(c: &mut Ctx, wide: bool) -> u32 {
                 "\\\\?\\HID#VID_046D&PID_C31C&MI_00#7&2b3c4d5e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}"
             };
             if wide {
-                (
-                    name.encode_utf16()
-                        .chain([0])
-                        .flat_map(|u| u.to_le_bytes())
-                        .collect(),
-                    2,
-                )
+                (name.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect(), 2)
             } else {
                 (name.bytes().chain([0]).collect(), 1)
             }
         }
         0x2000_000b => {
             // RIDI_DEVICEINFO: RID_DEVICE_INFO (32 bytes)
-            let v: [u32; 8] = if mouse {
-                [32, RIM_TYPEMOUSE, 2, 5, 60, 0, 0, 0]
-            } else {
-                [32, RIM_TYPEKEYBOARD, 4, 0, 1, 12, 3, 101]
-            };
+            let v: [u32; 8] = if mouse { [32, RIM_TYPEMOUSE, 2, 5, 60, 0, 0, 0] } else { [32, RIM_TYPEKEYBOARD, 4, 0, 1, 12, 3, 101] };
             (v.iter().flat_map(|x| x.to_le_bytes()).collect(), 1)
         }
         0x2000_0005 => (Vec::new(), 1), // RIDI_PREPARSEDDATA: none (not a HID device here)
@@ -239,11 +222,7 @@ fn GetRawInputData(c: &mut Ctx) -> u32 {
         last_error(6);
         return u32::MAX;
     };
-    let n = if cmd == 0x1000_0005 {
-        hsz
-    } else {
-        b.len() as u32
-    };
+    let n = if cmd == 0x1000_0005 { hsz } else { b.len() as u32 };
     if p == 0 {
         w32(ps, n);
         return 0;
@@ -271,10 +250,7 @@ fn GetRawInputBuffer(c: &mut Ctx) -> u32 {
 
 pub fn init() {
     for (n, f) in [
-        (
-            "RegisterRawInputDevices",
-            RegisterRawInputDevices as crate::api::Handler,
-        ),
+        ("RegisterRawInputDevices", RegisterRawInputDevices as crate::api::Handler),
         ("GetRegisteredRawInputDevices", GetRegisteredRawInputDevices),
         ("GetRawInputDeviceList", GetRawInputDeviceList),
         ("GetRawInputDeviceInfoA", GetRawInputDeviceInfoA),

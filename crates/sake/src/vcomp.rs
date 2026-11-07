@@ -4,9 +4,7 @@
 use crate::api::{implement, Ctx};
 use crate::mem::{r32, w32};
 
-const DLLS: &[&str] = &[
-    "vcomp", "vcomp90", "vcomp100", "vcomp110", "vcomp120", "vcomp140",
-];
+const DLLS: &[&str] = &["vcomp", "vcomp90", "vcomp100", "vcomp110", "vcomp120", "vcomp140"];
 
 /// _vcomp_fork(ifval, nargs, wrapper, ...): wrapper(args...) once, here.
 fn _vcomp_fork(c: &mut Ctx) -> u32 {
@@ -88,10 +86,7 @@ pub fn init() {
     for d in DLLS {
         for (name, f) in [
             ("_vcomp_fork", _vcomp_fork as crate::api::Handler),
-            (
-                "_vcomp_for_static_simple_init",
-                _vcomp_for_static_simple_init,
-            ),
+            ("_vcomp_for_static_simple_init", _vcomp_for_static_simple_init),
             ("_vcomp_for_static_init", _vcomp_for_static_init),
             ("_vcomp_for_static_end", zero),
             ("_vcomp_for_dynamic_init", _vcomp_for_dynamic_init),

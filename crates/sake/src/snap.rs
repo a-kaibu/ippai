@@ -81,9 +81,7 @@ pub const RESTARTABLE: &[&str] = &[
 ];
 
 fn restartable(trap: u32) -> bool {
-    let Some(n) = crate::api::name_of(trap) else {
-        return false;
-    };
+    let Some(n) = crate::api::name_of(trap) else { return false };
     let n = n.to_ascii_lowercase();
     RESTARTABLE.iter().any(|r| r.eq_ignore_ascii_case(&n))
         // (msvcp's condition variables: their waits are cv_wait's)
@@ -101,25 +99,14 @@ const HOST_CALL: u32 = 1 << 16;
 #[inline]
 pub fn enter_run(base: bool) -> u32 {
     DEPTH.with(|d| {
-        let n = d.get()
-            + if d.get() == 0 && !base {
-                HOST_CALL + 1
-            } else {
-                1
-            };
+        let n = d.get() + if d.get() == 0 && !base { HOST_CALL + 1 } else { 1 };
         d.set(n);
         n
     })
 }
 #[inline]
 pub fn leave_run() {
-    DEPTH.with(|d| {
-        d.set(if d.get() == HOST_CALL + 1 {
-            0
-        } else {
-            d.get().saturating_sub(1)
-        })
-    });
+    DEPTH.with(|d| d.set(if d.get() == HOST_CALL + 1 { 0 } else { d.get().saturating_sub(1) }));
 }
 
 /// Before each run of guest code: whether the run loop may stop there for a state.
@@ -182,9 +169,7 @@ fn park_as(kind: u64, a: u64, b: u64, c: u64) {
 /// A restartable wait, holding no lock: stands still if a state is being taken (a restored
 /// copy calls the API again). Returns whether it did (the caller looks again at what it waits for).
 pub fn point() -> bool {
-    let Some((trap, esp)) = restart_point() else {
-        return false;
-    };
+    let Some((trap, esp)) = restart_point() else { return false };
     park_as(RESTART, trap as u64, esp as u64, 0);
     true
 }
@@ -192,17 +177,10 @@ pub fn point() -> bool {
 /// A condition variable's wait (the lock released): stands still if a state is being taken;
 /// a restored copy calls `reacquire(a, b)` and returns `value` from the API.
 pub fn point_return(value: u32, reacquire: fn(u64, u64), a: u64, b: u64) -> bool {
-    let Some((trap, esp)) = restart_point() else {
-        return false;
-    };
+    let Some((trap, esp)) = restart_point() else { return false };
     // (the action and its arguments: in the record's extra words)
     let extra = Box::leak(Box::new([reacquire as usize as u64, a, b]));
-    park_as(
-        RETURN,
-        trap as u64 | (esp as u64) << 32,
-        value as u64,
-        extra.as_ptr() as usize as u64,
-    );
+    park_as(RETURN, trap as u64 | (esp as u64) << 32, value as u64, extra.as_ptr() as usize as u64);
     drop(unsafe { Box::from_raw(extra) });
     true
 }
@@ -258,9 +236,7 @@ pub fn init() {
     kura::snap::on_pause(crate::dshow_play::snap_wake);
     kura::snap::set_ranges(crate::mem::snap_ranges);
     // (the kernel other processes share is outside this memory, host/vnkern.js)
-    kura::snap::set_refuse(|| {
-        crate::kern::host::shared().then(|| "other processes run with this one".into())
-    });
+    kura::snap::set_refuse(|| crate::kern::host::shared().then(|| "other processes run with this one".into()));
     kura::snap::set_namer(|trap| crate::api::name_of(trap).unwrap_or_else(|| format!("{trap:#x}")));
     kura::snap::start();
 }

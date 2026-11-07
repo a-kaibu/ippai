@@ -33,8 +33,7 @@ fn m(iface: u32, m: u32) -> u32 {
 }
 
 const VS: &str = "float4 main(uint id : SV_VertexID) : SV_Position { float2 p = float2((id << 1) & 2, id & 2); return float4(p * 2 - 1, 0.5, 1); }";
-const PS: &str =
-    "float4 main(float4 p : SV_Position) : SV_Target { return float4(p.xy / 8, 0.5, 1); }";
+const PS: &str = "float4 main(float4 p : SV_Position) : SV_Target { return float4(p.xy / 8, 0.5, 1); }";
 const PS_MS: &str = "Texture2DMS<float4> t : register(t0);
 float4 main(float4 p : SV_Position) : SV_Target { uint w, h, n; t.GetDimensions(w, h, n); return t.Load(int2(p.xy), n - 1) + t.Load(int2(p.xy), 0) * w; }";
 
@@ -50,29 +49,18 @@ fn msaa() {
     let desc = mem(16);
     put(desc, &[8, 8, 60, 1, 28, 0, 0, 4, 0, 0x20, 1, 1, 1, 0, 0]);
     let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
-    assert_eq!(
-        call1(
-            CREATE_DEVICE,
-            &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]
-        ),
-        0
-    );
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
     let (sc, dev, ctx) = (rd1(sc_out), rd1(dev_out), rd1(ctx_out));
     let o = mem(2);
     let dc = |mm: u32, a: &[u32]| call1(m(IF_DEVICE, mm), &[&[dev][..], a].concat());
     let cc = |mm: u32, a: &[u32]| call1(m(IF_CONTEXT, mm), &[&[ctx][..], a].concat());
     // (count, quality) of a 2D texture, its bind flags
-    let tex =
-        |w: u32, h: u32, fmt: u32, samples: u32, quality: u32, bind: u32| -> Result<u32, u32> {
-            let d = mem(11);
-            put(d, &[w, h, 1, 1, fmt, samples, quality, 0, bind, 0, 0]);
-            let hr = dc(5, &[d, 0, o]);
-            if hr == 0 {
-                Ok(rd1(o))
-            } else {
-                Err(hr)
-            }
-        };
+    let tex = |w: u32, h: u32, fmt: u32, samples: u32, quality: u32, bind: u32| -> Result<u32, u32> {
+        let d = mem(11);
+        put(d, &[w, h, 1, 1, fmt, samples, quality, 0, bind, 0, 0]);
+        let hr = dc(5, &[d, 0, o]);
+        if hr == 0 { Ok(rd1(o)) } else { Err(hr) }
+    };
     let rtv = |t: u32, fmt: Option<u32>| -> u32 {
         let vd = fmt.map(|f| {
             let p = mem(4);
@@ -98,9 +86,7 @@ fn msaa() {
         unsafe { std::ptr::write_bytes(rb as *mut u8, 0xcd, (w * h * bpp) as usize) };
         gpu::record(|b| b.cmd(&[gpu::READBACK, req, gpu_of(t), 0, 0, 0, w, h, rb, w * bpp]));
         assert!(gpu::wait_readback(req));
-        (0..w * h * bpp)
-            .map(|i| unsafe { *((rb + i) as *const u8) })
-            .collect()
+        (0..w * h * bpp).map(|i| unsafe { *((rb + i) as *const u8) }).collect()
     };
     let color = mem(4);
     let clear = |v: u32, c: [f32; 4]| {
@@ -117,10 +103,7 @@ fn msaa() {
     assert_eq!(rd1(q), 1);
     assert_eq!(dc(30, &[28, 3, q]), 0);
     assert_eq!(rd1(q), 0);
-    assert!(
-        tex(8, 8, 28, 4, 1, 0x20).is_err(),
-        "quality past the levels"
-    );
+    assert!(tex(8, 8, 28, 4, 1, 0x20).is_err(), "quality past the levels");
     assert!(tex(8, 8, 28, 3, 0, 0x20).is_err(), "3 samples");
     let ms = tex(8, 8, 28, 4, 0, 0x28).unwrap();
     let ms_std = tex(8, 8, 28, 4, 0xffff_ffff, 0x20).unwrap();
@@ -162,11 +145,7 @@ fn msaa() {
     cc(57, &[bgra, 0, ms, 0, 87]);
     cc(57, &[fresh, 0, ms, 0, 87]);
     assert_eq!(read(fresh, 8, 8, 4), zero, "ignored resolves");
-    assert_eq!(
-        read(bgra, 8, 8, 4),
-        zero,
-        "a resolve across typeless groups"
-    );
+    assert_eq!(read(bgra, 8, 8, 4), zero, "a resolve across typeless groups");
 
     // a typeless 4x texture drawn as UNORM, resolved into its sRGB twin (the shader resolve)
     let ms_tl = tex(8, 8, 27, 4, 0, 0x20).unwrap();
@@ -186,8 +165,7 @@ fn msaa() {
 
     // draws into the 4x target with a 4x depth buffer, resolved; a draw that reads its samples
     let code = |src: &str, target: &str| {
-        let c = hlslc::compile(src, &[], &mut |_, _| None, "main", target, 0)
-            .unwrap_or_else(|e| panic!("{target}: {e}"));
+        let c = hlslc::compile(src, &[], &mut |_, _| None, "main", target, 0).unwrap_or_else(|e| panic!("{target}: {e}"));
         let p = unsafe { alloc(c.len() as u32) as u32 };
         put_bytes(p, &c);
         (p, c.len() as u32)
@@ -204,10 +182,7 @@ fn msaa() {
     cc(11, &[vs, 0, 0]);
     cc(24, &[4]);
     let vp = mem(6);
-    put(
-        vp,
-        &[0, 0, 8f32.to_bits(), 8f32.to_bits(), 0, 1f32.to_bits()],
-    );
+    put(vp, &[0, 0, 8f32.to_bits(), 8f32.to_bits(), 0, 1f32.to_bits()]);
     cc(44, &[1, vp]);
     let z4 = tex(8, 8, 45, 4, 0, 0x40).unwrap();
     assert_eq!(dc(10, &[z4, 0, o]), 0);
@@ -235,11 +210,7 @@ fn msaa() {
     let srv = rd1(o);
     let vdesc = mem(10);
     call1(m(IF_SRV, 8), &[srv, vdesc]);
-    assert_eq!(
-        rd1(vdesc + 4),
-        6,
-        "a NULL desc of a 4x texture views it as TEXTURE2DMS"
-    );
+    assert_eq!(rd1(vdesc + 4), 6, "a NULL desc of a 4x texture views it as TEXTURE2DMS");
     let out = tex(8, 8, 28, 1, 0, 0x28).unwrap();
     put(targets, &[rtv(out, None)]);
     let srvs = mem(1);
@@ -265,11 +236,7 @@ fn msaa() {
     cc(58, &[list, 0]);
     let want3 = tex(8, 8, 28, 1, 0, 0x28).unwrap();
     clear(rtv(want3, None), c2);
-    assert_eq!(
-        read(dst3, 8, 8, 4),
-        read(want3, 8, 8, 4),
-        "deferred resolve"
-    );
+    assert_eq!(read(dst3, 8, 8, 4), read(want3, 8, 8, 4), "deferred resolve");
 
     // the 4x swap chain: its buffer and description, cleared and presented
     let iid = mem(4);
@@ -301,9 +268,5 @@ fn msaa() {
     call1(m(IF_DEVICE, 2), &[dev]);
     gpu::set_pump(None);
     let errors = model::with(|m| std::mem::take(&mut m.errors));
-    assert!(
-        errors.is_empty(),
-        "WebGPU errors {:?}",
-        &errors[..errors.len().min(10)]
-    );
+    assert!(errors.is_empty(), "WebGPU errors {:?}", &errors[..errors.len().min(10)]);
 }

@@ -7,22 +7,11 @@ use proptest::prelude::*;
 const PID: u32 = 7;
 
 fn named(k: &mut Kern, name: &str, access: u32, msg: bool, max: u32) -> Result<u32, u32> {
-    let p = NewPipe {
-        access,
-        msg_type: msg,
-        msg_read: msg,
-        nonblock: false,
-        max,
-        outsize: 512,
-        insize: 512,
-        timeout: 0,
-        first: false,
-    };
+    let p = NewPipe { access, msg_type: msg, msg_read: msg, nonblock: false, max, outsize: 512, insize: 512, timeout: 0, first: false };
     k.create(name, &p, PID)
 }
 fn rd(k: &mut Kern, e: u32, n: u32) -> Result<(String, bool), u32> {
-    k.read(e, n)
-        .map(|(d, m)| (String::from_utf8(d).unwrap(), m))
+    k.read(e, n).map(|(d, m)| (String::from_utf8(d).unwrap(), m))
 }
 fn ok(s: &str, more: bool) -> Result<(String, bool), u32> {
     Ok((s.to_string(), more))
@@ -43,25 +32,11 @@ fn anonymous() {
     let mut k = Kern::default();
     let (r, w) = k.create_anon(0, PID);
     assert_eq!(k.write(w, b"abc"), Ok(3));
-    assert_eq!(
-        k.peek(r, 4),
-        Ok(Peek {
-            data: b"abc".to_vec(),
-            avail: 3,
-            msg_len: 0
-        })
-    );
+    assert_eq!(k.peek(r, 4), Ok(Peek { data: b"abc".to_vec(), avail: 3, msg_len: 0 }));
     assert_eq!(rd(&mut k, r, 2), ok("ab", false));
     assert_eq!(rd(&mut k, r, 10), ok("c", false));
     assert_eq!(k.write(w, b""), Ok(0));
-    assert_eq!(
-        k.peek(r, 4),
-        Ok(Peek {
-            data: vec![],
-            avail: 0,
-            msg_len: 0
-        })
-    );
+    assert_eq!(k.peek(r, 4), Ok(Peek { data: vec![], avail: 0, msg_len: 0 }));
     assert_eq!(k.read(r, 4), Err(PENDING));
     k.release(w, PID);
     assert_eq!(k.read(r, 4), Err(PIPE_BROKEN));
@@ -95,10 +70,7 @@ fn create_errors() {
 fn byte_mode() {
     let mut k = Kern::default();
     let s = named(&mut k, "byte", 3, false, 1).unwrap();
-    assert_eq!(
-        named(&mut k, "byte", 3, false, 1),
-        Err(INSTANCE_NOT_AVAILABLE)
-    );
+    assert_eq!(named(&mut k, "byte", 3, false, 1), Err(INSTANCE_NOT_AVAILABLE));
     assert_eq!(k.wait_named("byte"), Ok(None));
     assert_eq!(k.peek(s, 4), Err(INVALID_PIPE_STATE));
     assert_eq!(win32(INVALID_PIPE_STATE), 230);
@@ -109,26 +81,13 @@ fn byte_mode() {
     k.write(c, b"hello").unwrap();
     k.write(c, b"world").unwrap();
     let p = k.peek(s, 4).unwrap();
-    assert_eq!(
-        (p.data.as_slice(), p.avail, p.msg_len),
-        (&b"hell"[..], 10, 0)
-    );
+    assert_eq!((p.data.as_slice(), p.avail, p.msg_len), (&b"hell"[..], 10, 0));
     assert_eq!(rd(&mut k, s, 3), ok("hel", false));
     assert_eq!(rd(&mut k, s, 100), ok("loworld", false));
     k.write(s, b"reply").unwrap();
     assert_eq!(rd(&mut k, c, 100), ok("reply", false));
     let i = k.info(s).unwrap();
-    assert_eq!(
-        (
-            i.server,
-            i.msg_type,
-            i.outsize,
-            i.insize,
-            i.max,
-            i.instances
-        ),
-        (true, false, 512, 512, 1, Some(1))
-    );
+    assert_eq!((i.server, i.msg_type, i.outsize, i.insize, i.max, i.instances), (true, false, 512, 512, 1, Some(1)));
     assert!(!k.info(c).unwrap().server);
     assert_eq!(k.set_mode(c, Some(true), None), INVALID_PARAMETER);
     k.release(c, PID);
@@ -177,14 +136,8 @@ fn message_mode() {
     let mut k = Kern::default();
     let m1 = named(&mut k, "msg", 3, true, 2).unwrap();
     let m2 = named(&mut k, "msg", 3, true, 2).unwrap();
-    assert_eq!(
-        named(&mut k, "msg", 3, true, 2),
-        Err(INSTANCE_NOT_AVAILABLE)
-    );
-    assert_eq!(
-        named(&mut k, "msg", 3, false, UNLIMITED),
-        Err(INSTANCE_NOT_AVAILABLE)
-    );
+    assert_eq!(named(&mut k, "msg", 3, true, 2), Err(INSTANCE_NOT_AVAILABLE));
+    assert_eq!(named(&mut k, "msg", 3, false, UNLIMITED), Err(INSTANCE_NOT_AVAILABLE));
     let c1 = k.open("msg", true, true, PID).unwrap();
     let c2 = k.open("msg", true, true, PID).unwrap();
     assert_eq!(k.open("msg", true, true, PID), Err(PIPE_NOT_AVAILABLE));
@@ -192,27 +145,14 @@ fn message_mode() {
     k.write(c1, b"second").unwrap();
     k.write(c2, b"to two").unwrap();
     let p = k.peek(m1, 4).unwrap();
-    assert_eq!(
-        (p.data.as_slice(), p.avail, p.msg_len),
-        (&b"firs"[..], 19, 13)
-    );
+    assert_eq!((p.data.as_slice(), p.avail, p.msg_len), (&b"firs"[..], 19, 13));
     assert_eq!(rd(&mut k, m1, 5), ok("first", true));
     let p = k.peek(m1, 4).unwrap();
-    assert_eq!(
-        (p.data.as_slice(), p.avail, p.msg_len),
-        (&b" mes"[..], 14, 8)
-    );
+    assert_eq!((p.data.as_slice(), p.avail, p.msg_len), (&b" mes"[..], 14, 8));
     assert_eq!(rd(&mut k, m1, 100), ok(" message", false));
     assert_eq!(rd(&mut k, m1, 100), ok("second", false));
     assert_eq!(rd(&mut k, m2, 100), ok("to two", false));
-    assert_eq!(
-        k.peek(c1, 4),
-        Ok(Peek {
-            data: vec![],
-            avail: 0,
-            msg_len: 0
-        })
-    );
+    assert_eq!(k.peek(c1, 4), Ok(Peek { data: vec![], avail: 0, msg_len: 0 }));
     // clients read bytes until they ask for messages
     let i = k.info(c1).unwrap();
     assert_eq!((i.msg_read, i.instances), (false, Some(2)));
@@ -255,46 +195,17 @@ fn one_way() {
     assert!(k.open("out", true, false, PID).is_ok());
     let _ = s;
     // a second instance must share the same way
-    assert_eq!(
-        named(&mut k, "out", 3, false, 2),
-        Err(INSTANCE_NOT_AVAILABLE)
-    );
-    let p = NewPipe {
-        access: 3,
-        msg_type: false,
-        msg_read: false,
-        nonblock: false,
-        max: 2,
-        outsize: 0,
-        insize: 0,
-        timeout: 0,
-        first: false,
-    };
+    assert_eq!(named(&mut k, "out", 3, false, 2), Err(INSTANCE_NOT_AVAILABLE));
+    let p = NewPipe { access: 3, msg_type: false, msg_read: false, nonblock: false, max: 2, outsize: 0, insize: 0, timeout: 0, first: false };
     k.create("two", &p, PID).unwrap();
-    assert_eq!(
-        k.create("two", &NewPipe { access: 1, ..p }, PID),
-        Err(ACCESS_DENIED)
-    );
-    assert_eq!(
-        k.create("two", &NewPipe { first: true, ..p }, PID),
-        Err(ACCESS_DENIED)
-    );
+    assert_eq!(k.create("two", &NewPipe { access: 1, ..p }, PID), Err(ACCESS_DENIED));
+    assert_eq!(k.create("two", &NewPipe { first: true, ..p }, PID), Err(ACCESS_DENIED));
 }
 
 #[test]
 fn nonblocking() {
     let mut k = Kern::default();
-    let p = NewPipe {
-        access: 3,
-        msg_type: false,
-        msg_read: false,
-        nonblock: true,
-        max: 1,
-        outsize: 0,
-        insize: 0,
-        timeout: 0,
-        first: false,
-    };
+    let p = NewPipe { access: 3, msg_type: false, msg_read: false, nonblock: true, max: 1, outsize: 0, insize: 0, timeout: 0, first: false };
     let s = k.create("nb", &p, PID).unwrap();
     assert_eq!(k.listen(s), PIPE_LISTENING);
     let c = k.open("nb", true, true, PID).unwrap();
@@ -326,14 +237,7 @@ enum Op {
     Peek(u32),
 }
 fn ops() -> impl Strategy<Value = Vec<Op>> {
-    prop::collection::vec(
-        prop_oneof![
-            prop::collection::vec(any::<u8>(), 0..20).prop_map(Op::Write),
-            (0u32..30).prop_map(Op::Read),
-            (0u32..30).prop_map(Op::Peek),
-        ],
-        0..60,
-    )
+    prop::collection::vec(prop_oneof![prop::collection::vec(any::<u8>(), 0..20).prop_map(Op::Write), (0u32..30).prop_map(Op::Read), (0u32..30).prop_map(Op::Peek),], 0..60)
 }
 
 proptest! {
@@ -407,43 +311,10 @@ proptest! {
 #[test]
 fn named_objects() {
     let mut k = Kern::default();
-    let (m, existed) = k
-        .create_sync(
-            "m",
-            Sync::Mutex {
-                owner: 0x20,
-                pid: 1,
-                count: 1,
-                abandoned: false,
-            },
-            1,
-        )
-        .unwrap();
+    let (m, existed) = k.create_sync("m", Sync::Mutex { owner: 0x20, pid: 1, count: 1, abandoned: false }, 1).unwrap();
     assert!(!existed);
-    assert_eq!(
-        k.create_sync(
-            "m",
-            Sync::Event {
-                manual: false,
-                set: false
-            },
-            2
-        ),
-        Err(2)
-    );
-    assert_eq!(
-        k.create_sync(
-            "m",
-            Sync::Mutex {
-                owner: 0,
-                pid: 2,
-                count: 0,
-                abandoned: false
-            },
-            2
-        ),
-        Ok((m, true))
-    );
+    assert_eq!(k.create_sync("m", Sync::Event { manual: false, set: false }, 2), Err(2));
+    assert_eq!(k.create_sync("m", Sync::Mutex { owner: 0, pid: 2, count: 0, abandoned: false }, 2), Ok((m, true)));
     assert_eq!(k.open_sync("m", 1, 2), Err(6));
     assert_eq!(k.open_sync("none", 2, 2), Err(2));
     // held by process 1's thread: process 2's thread waits
@@ -466,24 +337,13 @@ fn named_objects() {
     k.release_sync(m, 1);
     assert_eq!(k.sync_kind("m"), None);
 
-    let (e, _) = k
-        .create_sync(
-            "e",
-            Sync::Event {
-                manual: false,
-                set: false,
-            },
-            1,
-        )
-        .unwrap();
+    let (e, _) = k.create_sync("e", Sync::Event { manual: false, set: false }, 1).unwrap();
     let e2 = k.open_sync("e", 1, 3).unwrap();
     assert_eq!(e, e2);
     assert!(k.set_event(e, true));
     assert_eq!(k.try_take(e, 3, 0x30020, true), Some((true, false)));
     assert_eq!(k.try_take(e, 1, 0x20, true), Some((false, false)));
-    let (s, _) = k
-        .create_sync("s", Sync::Semaphore { count: 1, max: 2 }, 1)
-        .unwrap();
+    let (s, _) = k.create_sync("s", Sync::Semaphore { count: 1, max: 2 }, 1).unwrap();
     assert_eq!(k.release_semaphore(s, 1), Ok(1));
     assert_eq!(k.release_semaphore(s, 1), Err(298));
     assert!(!k.set_event(s, true));
@@ -493,20 +353,7 @@ fn named_objects() {
 fn process_records() {
     let mut k = Kern::default();
     let (r, w) = k.create_anon(0, ROOT_PID);
-    let p = Proc {
-        parent: ROOT_PID,
-        suspend: 1,
-        inherit: vec![(
-            0x104,
-            KRef::Pipe {
-                end: w,
-                read: false,
-                write: true,
-                ovl: false,
-            },
-        )],
-        ..Proc::default()
-    };
+    let p = Proc { parent: ROOT_PID, suspend: 1, inherit: vec![(0x104, KRef::Pipe { end: w, read: false, write: true, ovl: false })], ..Proc::default() };
     let pid = k.new_process(p);
     assert_eq!(pid, ROOT_PID + PID_STEP);
     assert!(k.known(pid) && k.known(ROOT_PID) && !k.known(0xfffffff0));
@@ -528,94 +375,41 @@ fn process_records() {
 #[test]
 fn windows_of_other_processes() {
     let mut k = Kern::default();
-    let child = k.new_process(Proc {
-        parent: ROOT_PID,
-        ..Proc::default()
-    });
-    let w = KWin {
-        hwnd: 0x10020,
-        pid: ROOT_PID,
-        tid: 0x20,
-        class: "ippai_procs_class".into(),
-        title: "ippai procs".into(),
-    };
+    let child = k.new_process(Proc { parent: ROOT_PID, ..Proc::default() });
+    let w = KWin { hwnd: 0x10020, pid: ROOT_PID, tid: 0x20, class: "ippai_procs_class".into(), title: "ippai procs".into() };
     k.set_wins(ROOT_PID, vec![w.clone()]);
     // (the same list again changes nothing)
     let g = k.gen;
     k.set_wins(ROOT_PID, vec![w.clone()]);
     assert_eq!(k.gen, g);
     // FindWindow: not among its own windows; class and title match whole
-    assert_eq!(
-        k.find_win(child, Some("ippai_procs_class"), Some("ippai procs")),
-        Some(&w)
-    );
+    assert_eq!(k.find_win(child, Some("ippai_procs_class"), Some("ippai procs")), Some(&w));
     assert_eq!(k.find_win(child, None, Some("ippai procs")), Some(&w));
     assert_eq!(k.find_win(child, Some("ippai_procs"), None), None);
     assert_eq!(k.find_win(ROOT_PID, Some("ippai_procs_class"), None), None);
     // sent and posted, in order; the sender gets the result
-    let s1 = k.put_msg(XMsg {
-        to: ROOT_PID,
-        hwnd: w.hwnd,
-        msg: 0x4a,
-        data: Some((7, b"copy".to_vec())),
-        send: true,
-        ..XMsg::default()
-    });
-    k.put_msg(XMsg {
-        to: ROOT_PID,
-        hwnd: w.hwnd,
-        msg: 0x402,
-        w: 5,
-        l: 6,
-        ..XMsg::default()
-    });
+    let s1 = k.put_msg(XMsg { to: ROOT_PID, hwnd: w.hwnd, msg: 0x4a, data: Some((7, b"copy".to_vec())), send: true, ..XMsg::default() });
+    k.put_msg(XMsg { to: ROOT_PID, hwnd: w.hwnd, msg: 0x402, w: 5, l: 6, ..XMsg::default() });
     assert_eq!(k.take_reply(s1), Err(PENDING));
     assert!(k.take_msgs(child).is_empty());
     let got = k.take_msgs(ROOT_PID);
-    assert_eq!(
-        got.iter().map(|x| (x.msg, x.send)).collect::<Vec<_>>(),
-        [(0x4a, true), (0x402, false)]
-    );
+    assert_eq!(got.iter().map(|x| (x.msg, x.send)).collect::<Vec<_>>(), [(0x4a, true), (0x402, false)]);
     assert_eq!(got[0].data, Some((7, b"copy".to_vec())));
     assert!(k.take_msgs(ROOT_PID).is_empty());
     k.reply(s1, 99);
     assert_eq!(k.take_reply(s1), Ok(99));
     assert_eq!(k.take_reply(s1), Err(PENDING));
     // a process that ends: its windows go, what was sent to it is answered 0
-    let s2 = k.put_msg(XMsg {
-        to: ROOT_PID,
-        hwnd: w.hwnd,
-        msg: 0x401,
-        send: true,
-        ..XMsg::default()
-    });
+    let s2 = k.put_msg(XMsg { to: ROOT_PID, hwnd: w.hwnd, msg: 0x401, send: true, ..XMsg::default() });
     k.exited(ROOT_PID, 0);
     assert_eq!(k.take_reply(s2), Ok(0));
     assert_eq!(k.win(w.hwnd), None);
-    let s3 = k.put_msg(XMsg {
-        to: ROOT_PID,
-        hwnd: w.hwnd,
-        msg: 0x401,
-        send: true,
-        ..XMsg::default()
-    });
+    let s3 = k.put_msg(XMsg { to: ROOT_PID, hwnd: w.hwnd, msg: 0x401, send: true, ..XMsg::default() });
     assert_eq!(k.take_reply(s3), Ok(0));
     // (and all of it survives the trip through bytes)
     let mut k2 = Kern::default();
-    k2.set_wins(
-        child,
-        vec![KWin {
-            pid: child,
-            ..w.clone()
-        }],
-    );
-    k2.put_msg(XMsg {
-        to: child,
-        hwnd: 1,
-        data: Some((u64::MAX, vec![1, 2])),
-        send: true,
-        ..XMsg::default()
-    });
+    k2.set_wins(child, vec![KWin { pid: child, ..w.clone() }]);
+    k2.put_msg(XMsg { to: child, hwnd: 1, data: Some((u64::MAX, vec![1, 2])), send: true, ..XMsg::default() });
     let b = bytes(&k2);
     assert_eq!(bytes(&Kern::get(&mut &b[..]).unwrap()), b);
 }

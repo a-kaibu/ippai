@@ -15,10 +15,7 @@ use crate::HashMap;
 use boa_engine::object::builtins::JsProxyBuilder;
 use boa_engine::object::FunctionObjectBuilder;
 use boa_engine::property::PropertyDescriptor;
-use boa_engine::{
-    js_string, Context, JsError, JsNativeError, JsObject, JsResult, JsString, JsValue,
-    NativeFunction, Source,
-};
+use boa_engine::{js_string, Context, JsError, JsNativeError, JsObject, JsResult, JsString, JsValue, NativeFunction, Source};
 use std::cell::{Cell, RefCell};
 
 const S_OK: u32 = 0;
@@ -165,10 +162,7 @@ fn primitive(v: &JsValue) -> Option<Var> {
         return Some(Var::Bool(b));
     }
     if let Some(n) = v.as_number() {
-        let int = n.fract() == 0.
-            && n >= i32::MIN as f64
-            && n <= i32::MAX as f64
-            && !(n == 0. && n.is_sign_negative());
+        let int = n.fract() == 0. && n >= i32::MIN as f64 && n <= i32::MAX as f64 && !(n == 0. && n.is_sign_negative());
         return Some(if int { Var::I4(n as i32) } else { Var::R8(n) });
     }
     if let Some(s) = v.as_string() {
@@ -192,21 +186,9 @@ fn host_proxy(p: u32, ctx: &mut Context) -> Option<JsObject> {
     }
     let target = JsObject::with_null_proto();
     target
-        .define_property_or_throw(
-            js_string!(DISP_KEY),
-            PropertyDescriptor::builder()
-                .value(p as f64)
-                .writable(false)
-                .enumerable(false)
-                .configurable(false),
-            ctx,
-        )
+        .define_property_or_throw(js_string!(DISP_KEY), PropertyDescriptor::builder().value(p as f64).writable(false).enumerable(false).configurable(false), ctx)
         .ok()?;
-    let proxy = JsProxyBuilder::new(target)
-        .get(host_get)
-        .set(host_set)
-        .build(ctx)
-        .ok()?;
+    let proxy = JsProxyBuilder::new(target).get(host_get).set(host_set).build(ctx).ok()?;
     let o: JsObject = proxy.into();
     // the script holds the reference it was given
     t(|t| {
@@ -217,9 +199,7 @@ fn host_proxy(p: u32, ctx: &mut Context) -> Option<JsObject> {
 }
 
 fn proxied(target: &JsValue, ctx: &mut Context) -> JsResult<u32> {
-    let o = target
-        .as_object()
-        .ok_or_else(|| throw("not a host object".into()))?;
+    let o = target.as_object().ok_or_else(|| throw("not a host object".into()))?;
     Ok(o.get(js_string!(DISP_KEY), ctx)?.as_number().unwrap_or(0.) as u32)
 }
 
@@ -249,11 +229,7 @@ fn member(p: u32, name: &str) -> Option<(u32, bool)> {
         // a member a property get fails on is a method
         let dp = mem::heap_alloc(16, true);
         let res = mem::heap_alloc(16, true);
-        let hr = com(
-            p,
-            6,
-            &[id, iid_null(), 0x411, DISPATCH_PROPERTYGET, dp, res, 0, 0],
-        );
+        let hr = com(p, 6, &[id, iid_null(), 0x411, DISPATCH_PROPERTYGET, dp, res, 0, 0]);
         let method = hr != S_OK;
         if !method {
             clear_var(res);
@@ -286,14 +262,7 @@ fn clear_var(p: u32) {
 }
 
 /// Invoke on a host object with script arguments; the result as a script value.
-fn host_invoke(
-    p: u32,
-    id: u32,
-    flags: u32,
-    args: &[JsValue],
-    named_put: bool,
-    ctx: &mut Context,
-) -> JsResult<JsValue> {
+fn host_invoke(p: u32, id: u32, flags: u32, args: &[JsValue], named_put: bool, ctx: &mut Context) -> JsResult<JsValue> {
     let engine = current_engine();
     let n = args.len() as u32;
     let rg = mem::heap_alloc(16 * n.max(1), true);
@@ -331,51 +300,28 @@ fn host_invoke(
     mem::heap_free(res);
     mem::heap_free(exc);
     if hr != S_OK {
-        let msg = if desc != 0 {
-            String::from_utf16_lossy(&mem::wstr(desc))
-        } else {
-            String::new()
-        };
-        return Err(throw(format!(
-            "host call failed ({hr:#x}, {scode:#x}) {msg}"
-        )));
+        let msg = if desc != 0 { String::from_utf16_lossy(&mem::wstr(desc)) } else { String::new() };
+        return Err(throw(format!("host call failed ({hr:#x}, {scode:#x}) {msg}")));
     }
     Ok(out)
 }
 
 fn host_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let p = proxied(&args[0], ctx)?;
-    let Some(name) = key_name(&args[1], ctx)? else {
-        return Ok(JsValue::undefined());
-    };
+    let Some(name) = key_name(&args[1], ctx)? else { return Ok(JsValue::undefined()) };
     let Some((id, method)) = member(p, &name) else {
         return Ok(JsValue::undefined());
     };
     if !method {
         return host_invoke(p, id, DISPATCH_PROPERTYGET, &[], false, ctx);
     }
-    let f = NativeFunction::from_copy_closure(move |_this, args, ctx| {
-        host_invoke(
-            p,
-            id,
-            DISPATCH_METHOD | DISPATCH_PROPERTYGET,
-            args,
-            false,
-            ctx,
-        )
-    });
-    Ok(FunctionObjectBuilder::new(ctx.realm(), f)
-        .name(JsString::from(name.as_str()))
-        .length(0)
-        .build()
-        .into())
+    let f = NativeFunction::from_copy_closure(move |_this, args, ctx| host_invoke(p, id, DISPATCH_METHOD | DISPATCH_PROPERTYGET, args, false, ctx));
+    Ok(FunctionObjectBuilder::new(ctx.realm(), f).name(JsString::from(name.as_str())).length(0).build().into())
 }
 
 fn host_set(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let p = proxied(&args[0], ctx)?;
-    let Some(name) = key_name(&args[1], ctx)? else {
-        return Ok(JsValue::new(false));
-    };
+    let Some(name) = key_name(&args[1], ctx)? else { return Ok(JsValue::new(false)) };
     let Some((id, _)) = member(p, &name) else {
         return Err(throw(format!("host object has no member {name}")));
     };
@@ -466,22 +412,18 @@ fn X_QueryInterface(c: &mut Ctx) -> u32 {
 }
 fn X_AddRef(c: &mut Ctx) -> u32 {
     let b = c.a(0);
-    t(|t| {
-        t.objects.get_mut(&b).map_or(1, |x| {
-            x.2 += 1;
-            x.2
-        })
-    })
+    t(|t| t.objects.get_mut(&b).map_or(1, |x| {
+        x.2 += 1;
+        x.2
+    }))
 }
 fn X_Release(c: &mut Ctx) -> u32 {
     let b = c.a(0);
     // (the table's own reference stays: scripts hand the same objects out again)
-    t(|t| {
-        t.objects.get_mut(&b).map_or(0, |x| {
-            x.2 = x.2.saturating_sub(1).max(1);
-            x.2
-        })
-    })
+    t(|t| t.objects.get_mut(&b).map_or(0, |x| {
+        x.2 = x.2.saturating_sub(1).max(1);
+        x.2
+    }))
 }
 fn X_GetTypeInfoCount(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
@@ -522,34 +464,21 @@ fn X_InvokeEx(c: &mut Ctx) -> u32 {
 
 fn invoke_script(c: &mut Ctx, id: u32, flags: u32, dp: u32, result: u32, excep: u32) -> u32 {
     let b = c.a(0);
-    let Some((engine, o, _)) = t(|t| t.objects.get(&b).cloned()) else {
-        return E_UNEXPECTED;
-    };
-    let Some(ctx) = engine_ctx(engine) else {
-        return E_UNEXPECTED;
-    };
-    let (rg, n) = if dp == 0 {
-        (0, 0)
-    } else {
-        (r32(dp), r32(dp + 8))
-    };
+    let Some((engine, o, _)) = t(|t| t.objects.get(&b).cloned()) else { return E_UNEXPECTED };
+    let Some(ctx) = engine_ctx(engine) else { return E_UNEXPECTED };
+    let (rg, n) = if dp == 0 { (0, 0) } else { (r32(dp), r32(dp + 8)) };
     let r = enter(c, || -> JsResult<JsValue> {
         if t(|t| t.engines.get(&engine).is_some_and(|e| !e.items.is_empty())) {
             resolve_items(engine);
         }
-        let args: Vec<JsValue> = (0..n)
-            .rev()
-            .map(|i| to_js(&read_var(rg + 16 * i), ctx))
-            .collect();
+        let args: Vec<JsValue> = (0..n).rev().map(|i| to_js(&read_var(rg + 16 * i), ctx)).collect();
         if id == 0 {
             if flags & DISPATCH_METHOD != 0 && o.is_callable() {
                 return o.call(&JsValue::undefined(), &args, ctx);
             }
             return Ok(o.clone().into());
         }
-        let Some(name) = id_name(id) else {
-            return Err(throw("unknown member".into()));
-        };
+        let Some(name) = id_name(id) else { return Err(throw("unknown member".into())) };
         let key = JsString::from(name.as_str());
         if flags & (DISPATCH_PROPERTYPUT | 8) != 0 {
             o.set(key, args.last().cloned().unwrap_or_default(), true, ctx)?;
@@ -623,35 +552,10 @@ fn engine_vtbls() -> [u32; 4] {
             ),
             vtable(
                 "IActiveScriptParse32",
-                &[
-                    (Q_QueryInterface, 12),
-                    (Q_AddRef, 4),
-                    (Q_Release, 4),
-                    (ok, 4),
-                    (notimpl, 48),
-                    (ParseScriptText, 40),
-                ],
+                &[(Q_QueryInterface, 12), (Q_AddRef, 4), (Q_Release, 4), (ok, 4), (notimpl, 48), (ParseScriptText, 40)],
             ),
-            vtable(
-                "IObjectSafety",
-                &[
-                    (Q_QueryInterface, 12),
-                    (Q_AddRef, 4),
-                    (Q_Release, 4),
-                    (GetInterfaceSafetyOptions, 16),
-                    (ok, 16),
-                ],
-            ),
-            vtable(
-                "IActiveScriptProperty",
-                &[
-                    (Q_QueryInterface, 12),
-                    (Q_AddRef, 4),
-                    (Q_Release, 4),
-                    (GetProperty, 16),
-                    (ok, 16),
-                ],
-            ),
+            vtable("IObjectSafety", &[(Q_QueryInterface, 12), (Q_AddRef, 4), (Q_Release, 4), (GetInterfaceSafetyOptions, 16), (ok, 16)]),
+            vtable("IActiveScriptProperty", &[(Q_QueryInterface, 12), (Q_AddRef, 4), (Q_Release, 4), (GetProperty, 16), (ok, 16)]),
         ]
     })
 }
@@ -686,55 +590,24 @@ pub fn create_instance(clsid: u32) -> Option<u32> {
         b
     });
     t(|t| {
-        t.engines.insert(
-            id,
-            Engine {
-                ctx: Box::into_raw(ctx),
-                site: 0,
-                state: 0,
-                items: Vec::new(),
-                pending: Vec::new(),
-                blocks,
-                refs: 1,
-            },
-        )
+        t.engines.insert(id, Engine { ctx: Box::into_raw(ctx), site: 0, state: 0, items: Vec::new(), pending: Vec::new(), blocks, refs: 1 })
     });
     Some(blocks[0])
 }
 
 /// What JScript has beyond the language: CollectGarbage, ScriptEngine*.
 fn jscript_globals(ctx: &mut Context) {
-    let f = |v: JsValue| {
-        NativeFunction::from_copy_closure_with_captures(|_, _, v: &JsValue, _| Ok(v.clone()), v)
-    };
+    let f = |v: JsValue| NativeFunction::from_copy_closure_with_captures(|_, _, v: &JsValue, _| Ok(v.clone()), v);
     let _ = ctx.register_global_callable(js_string!("CollectGarbage"), 0, f(JsValue::undefined()));
-    let _ = ctx.register_global_callable(
-        js_string!("ScriptEngine"),
-        0,
-        f(JsValue::new(js_string!("JScript"))),
-    );
-    let _ = ctx.register_global_callable(
-        js_string!("ScriptEngineMajorVersion"),
-        0,
-        f(JsValue::new(9)),
-    );
-    let _ = ctx.register_global_callable(
-        js_string!("ScriptEngineMinorVersion"),
-        0,
-        f(JsValue::new(0)),
-    );
-    let _ = ctx.register_global_callable(
-        js_string!("ScriptEngineBuildVersion"),
-        0,
-        f(JsValue::new(16384)),
-    );
+    let _ = ctx.register_global_callable(js_string!("ScriptEngine"), 0, f(JsValue::new(js_string!("JScript"))));
+    let _ = ctx.register_global_callable(js_string!("ScriptEngineMajorVersion"), 0, f(JsValue::new(9)));
+    let _ = ctx.register_global_callable(js_string!("ScriptEngineMinorVersion"), 0, f(JsValue::new(0)));
+    let _ = ctx.register_global_callable(js_string!("ScriptEngineBuildVersion"), 0, f(JsValue::new(16384)));
 }
 
 fn Q_QueryInterface(c: &mut Ctx) -> u32 {
     let id = engine_of(c);
-    let Some(blocks) = t(|t| t.engines.get(&id).map(|e| e.blocks)) else {
-        return E_UNEXPECTED;
-    };
+    let Some(blocks) = t(|t| t.engines.get(&id).map(|e| e.blocks)) else { return E_UNEXPECTED };
     let k = match r32(c.a(1)) {
         0 | 0xbb1a_2ae1 => 0,
         0xbb1a_2ae2 => 1,
@@ -752,22 +625,18 @@ fn Q_QueryInterface(c: &mut Ctx) -> u32 {
 }
 fn Q_AddRef(c: &mut Ctx) -> u32 {
     let id = engine_of(c);
-    t(|t| {
-        t.engines.get_mut(&id).map_or(1, |e| {
-            e.refs += 1;
-            e.refs
-        })
-    })
+    t(|t| t.engines.get_mut(&id).map_or(1, |e| {
+        e.refs += 1;
+        e.refs
+    }))
 }
 fn Q_Release(c: &mut Ctx) -> u32 {
     let id = engine_of(c);
     // (the engine stays: host objects and script objects may still point into it)
-    t(|t| {
-        t.engines.get_mut(&id).map_or(0, |e| {
-            e.refs = e.refs.saturating_sub(1);
-            e.refs
-        })
-    })
+    t(|t| t.engines.get_mut(&id).map_or(0, |e| {
+        e.refs = e.refs.saturating_sub(1);
+        e.refs
+    }))
 }
 
 fn SetScriptSite(c: &mut Ctx) -> u32 {
@@ -775,14 +644,12 @@ fn SetScriptSite(c: &mut Ctx) -> u32 {
     if site != 0 {
         enter(c, || com(site, 1, &[]));
     }
-    t(|t| {
-        t.engines.get_mut(&id).map(|e| {
-            e.site = site;
-            if e.state == 0 {
-                e.state = INITIALIZED;
-            }
-        })
-    });
+    t(|t| t.engines.get_mut(&id).map(|e| {
+        e.site = site;
+        if e.state == 0 {
+            e.state = INITIALIZED;
+        }
+    }));
     S_OK
 }
 fn GetScriptSite(c: &mut Ctx) -> u32 {
@@ -805,16 +672,10 @@ fn SetScriptState(c: &mut Ctx) -> u32 {
     let pending = t(|t| {
         t.engines.get_mut(&id).map(|e| {
             e.state = state;
-            if state == STARTED || state == CONNECTED {
-                std::mem::take(&mut e.pending)
-            } else {
-                Vec::new()
-            }
+            if state == STARTED || state == CONNECTED { std::mem::take(&mut e.pending) } else { Vec::new() }
         })
     });
-    let Some(pending) = pending else {
-        return E_UNEXPECTED;
-    };
+    let Some(pending) = pending else { return E_UNEXPECTED };
     let site = t(|t| t.engines.get(&id).map_or(0, |e| e.site));
     enter(c, || {
         if site != 0 {
@@ -848,13 +709,7 @@ fn AddNamedItem(c: &mut Ctx) -> u32 {
 
 /// Makes the named items the site can give globals.
 fn resolve_items(id: u32) {
-    let Some((site, items)) = t(|t| {
-        t.engines
-            .get_mut(&id)
-            .map(|e| (e.site, std::mem::take(&mut e.items)))
-    }) else {
-        return;
-    };
+    let Some((site, items)) = t(|t| t.engines.get_mut(&id).map(|e| (e.site, std::mem::take(&mut e.items)))) else { return };
     if site == 0 {
         t(|t| t.engines.get_mut(&id).map(|e| e.items = items));
         return;
@@ -872,10 +727,7 @@ fn resolve_items(id: u32) {
         mem::heap_free(s);
         if hr != S_OK || unk == 0 {
             // (the host may not have it yet: asked again before the next script runs)
-            crate::com::warn_once(&format!(
-                "sake: jscript: no object for named item {} yet",
-                String::from_utf16_lossy(&name)
-            ));
+            crate::com::warn_once(&format!("sake: jscript: no object for named item {} yet", String::from_utf16_lossy(&name)));
             mem::heap_free(out);
             t(|t| t.engines.get_mut(&id).map(|e| e.items.push((name, flags))));
             continue;
@@ -883,11 +735,7 @@ fn resolve_items(id: u32) {
         // its IDispatch {00020400-0000-0000-c000-000000000046}
         let iid = mem::heap_alloc(16, true);
         mem::write(iid, &[0, 4, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
-        let disp = if com(unk, 0, &[iid, out]) == S_OK {
-            r32(out)
-        } else {
-            unk
-        };
+        let disp = if com(unk, 0, &[iid, out]) == S_OK { r32(out) } else { unk };
         mem::heap_free(iid);
         mem::heap_free(out);
         if flags & 8 != 0 {
@@ -895,15 +743,7 @@ fn resolve_items(id: u32) {
         }
         if let Some(p) = host_proxy(disp, ctx) {
             let key = JsString::from(&name[..]);
-            let _ = ctx.global_object().define_property_or_throw(
-                key,
-                PropertyDescriptor::builder()
-                    .value(p)
-                    .writable(true)
-                    .enumerable(true)
-                    .configurable(true),
-                ctx,
-            );
+            let _ = ctx.global_object().define_property_or_throw(key, PropertyDescriptor::builder().value(p).writable(true).enumerable(true).configurable(true), ctx);
         }
     }
 }
@@ -911,9 +751,7 @@ fn resolve_items(id: u32) {
 /// Runs script text in the engine's global scope; errors go to the site.
 fn run(id: u32, code: &[u16], expr: bool) -> Result<JsValue, u32> {
     resolve_items(id);
-    let Some(ctx) = engine_ctx(id) else {
-        return Err(E_UNEXPECTED);
-    };
+    let Some(ctx) = engine_ctx(id) else { return Err(E_UNEXPECTED) };
     let prev = ENGINE_NOW.with(|e| e.replace(id));
     let r = ctx.eval(Source::from_utf16(code));
     let _ = ctx.run_jobs();
@@ -937,17 +775,7 @@ fn report(id: u32, msg: &str) {
     }
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
-        vtable(
-            "IActiveScriptError",
-            &[
-                (E_QueryInterface, 12),
-                (one, 4),
-                (one, 4),
-                (E_GetExceptionInfo, 8),
-                (E_GetSourcePosition, 16),
-                (E_GetSourceLineText, 8),
-            ],
-        )
+        vtable("IActiveScriptError", &[(E_QueryInterface, 12), (one, 4), (one, 4), (E_GetExceptionInfo, 8), (E_GetSourcePosition, 16), (E_GetSourceLineText, 8)])
     });
     let w = wide(msg);
     let e = mem::heap_alloc(8 + 2 * w.len() as u32 + 2, true);
@@ -970,10 +798,7 @@ fn E_GetExceptionInfo(c: &mut Ctx) -> u32 {
     let n = r32(e + 4);
     let msg: Vec<u16> = (0..n).map(|i| r16(e + 8 + 2 * i)).collect();
     mem::fill(p, 32, 0);
-    w32(
-        p + 4,
-        crate::misc::bstr_alloc(&wide("Microsoft JScript runtime error")),
-    );
+    w32(p + 4, crate::misc::bstr_alloc(&wide("Microsoft JScript runtime error")));
     w32(p + 8, crate::misc::bstr_alloc(&msg));
     w32(p + 28, 0x800a_139e);
     S_OK
@@ -1014,18 +839,11 @@ fn ParseScriptText(c: &mut Ctx) -> u32 {
 /// GetScriptDispatch(item, &disp): the global object (or a named item's object).
 fn GetScriptDispatch(c: &mut Ctx) -> u32 {
     let id = engine_of(c);
-    let Some(ctx) = engine_ctx(id) else {
-        return E_UNEXPECTED;
-    };
+    let Some(ctx) = engine_ctx(id) else { return E_UNEXPECTED };
     if c.a(1) != 0 {
         let name = JsString::from(&mem::wstr(c.a(1))[..]);
         let g = ctx.global_object();
-        if let Some(p) = g
-            .get(name, ctx)
-            .ok()
-            .and_then(|v| v.as_object())
-            .and_then(|o| t(|t| t.hosts.get(&o).copied()))
-        {
+        if let Some(p) = g.get(name, ctx).ok().and_then(|v| v.as_object()).and_then(|o| t(|t| t.hosts.get(&o).copied())) {
             enter(c, || com(p, 1, &[]));
             mem::putp(c.a(2), p);
             return S_OK;
@@ -1063,10 +881,9 @@ fn GetProperty(c: &mut Ctx) -> u32 {
 /// CLSIDFromProgID for the script engines' names.
 pub fn progid(name: &str) -> Option<[u8; 16]> {
     match name.to_ascii_lowercase().as_str() {
-        "jscript" | "javascript" | "ecmascript" | "livescript" | "jscript.encode" => Some([
-            0x60, 0xc2, 0x14, 0xf4, 0xc0, 0x6a, 0xcf, 0x11, 0xb6, 0xd1, 0x00, 0xaa, 0x00, 0xbb,
-            0xbb, 0x58,
-        ]),
+        "jscript" | "javascript" | "ecmascript" | "livescript" | "jscript.encode" => {
+            Some([0x60, 0xc2, 0x14, 0xf4, 0xc0, 0x6a, 0xcf, 0x11, 0xb6, 0xd1, 0x00, 0xaa, 0x00, 0xbb, 0xbb, 0x58])
+        }
         _ => None,
     }
 }
@@ -1079,16 +896,10 @@ mod tests {
     fn numbers_to_variants() {
         assert_eq!(primitive(&JsValue::new(3)), Some(Var::I4(3)));
         assert_eq!(primitive(&JsValue::new(3.5)), Some(Var::R8(3.5)));
-        assert_eq!(
-            primitive(&JsValue::new(4_000_000_000.0)),
-            Some(Var::R8(4e9))
-        );
+        assert_eq!(primitive(&JsValue::new(4_000_000_000.0)), Some(Var::R8(4e9)));
         assert_eq!(primitive(&JsValue::new(-0.0)), Some(Var::R8(-0.0)));
         assert_eq!(primitive(&JsValue::undefined()), Some(Var::Empty));
-        assert_eq!(
-            primitive(&JsValue::new(js_string!("a"))),
-            Some(Var::Str(vec![97]))
-        );
+        assert_eq!(primitive(&JsValue::new(js_string!("a"))), Some(Var::Str(vec![97])));
     }
 
     /// JScript code SRPG Studio style scripts rely on: ES5 objects and closures, the JScript

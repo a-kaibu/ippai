@@ -15,14 +15,15 @@ macro_rules! env_on {
     }};
 }
 
+
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use koji::{Cpu, EAX, ESP};
 
 pub mod acm;
-pub mod audiofile;
 pub mod mp3frame;
+pub mod audiofile;
 /// Tests that run a page for kura::adec (one at a time: its streams are global).
 /// What the page or emscripten gives sake's file system, for the tests on the host that
 /// reach kura::fs: no store to fetch from, and a clock at 0
@@ -41,95 +42,95 @@ mod host_stubs {
 pub(crate) static ADEC_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub mod apc;
 pub mod api;
-mod casemap_table;
-pub mod cng;
-pub mod collate;
-pub mod com;
-pub mod crt;
-pub mod cryptstr;
-pub mod cxx;
-pub mod cxx64;
-pub mod d2d;
-pub mod d3d11;
 pub mod d3d9;
+pub mod d3d11;
+pub mod guest;
+pub mod crt;
+pub mod com;
+pub mod d2d;
+pub mod d3dx9;
 pub mod d3dcompiler;
 pub mod d3dreflect;
-pub mod d3dx9;
 pub mod d3dx9fx;
-pub mod d3dx9shader;
 pub mod d3dx9sprite;
-pub mod ddraw;
-pub mod dinput;
-pub mod diskspace;
-pub mod dnsrec;
-pub mod dshow;
-mod dshow_play;
+pub mod gdiplus;
+pub mod gdiplus_text;
+pub mod d3dx9shader;
+pub mod vcomp;
+pub mod nt;
 pub mod dwrite;
-pub mod eventlog;
+pub mod ddraw;
+pub mod typelib;
+pub mod jscript;
+pub mod ini;
+pub mod dinput;
 pub mod fast;
 pub mod files;
 pub mod fmtmsg;
-pub mod fxdsp;
 pub mod gdi;
 pub mod gdi_geom;
-pub mod gdiplus;
-pub mod gdiplus_text;
-pub mod gl;
-pub mod gl_sigs;
-pub mod glu;
-pub mod guest;
-pub mod ini;
-pub mod iocp;
-pub mod iphlp;
-pub mod jscript;
 pub mod k32;
 pub mod kern;
+pub mod pipe;
+pub mod process;
 pub mod mem;
-pub mod mf;
 pub mod misc;
-mod mmdevapi;
-pub mod mmio;
 pub mod movie;
+pub mod unity6;
+pub mod vorbis_hook;
+pub mod obj;
+pub mod dshow;
+mod dshow_play;
+pub mod mf;
+pub mod usp;
+pub mod ole;
+pub mod picture;
+pub mod wic;
+pub mod wmi;
+pub mod winrt;
+pub mod pe;
+pub mod rawinput;
+pub mod seh;
+pub mod seh64;
+pub mod cxx;
+pub mod cxx64;
+pub mod rtti;
 pub mod msvcp;
 mod msvcp_io;
 mod msvcp_loc;
 mod msvcp_thr;
-pub mod netaddr;
-pub mod nt;
-pub mod ntsync;
-pub mod obj;
-pub mod ole;
-pub mod pe;
-pub mod picture;
-pub mod pipe;
-pub mod process;
-pub mod rawinput;
-pub mod rtti;
-pub mod security;
-pub mod seh;
-pub mod seh64;
-pub mod smalldlls;
-pub mod snap;
 pub mod sound;
-pub mod sysinfo;
-pub mod text;
-pub mod typelib;
-pub mod unity6;
-pub mod user;
-pub mod usp;
-pub mod vcomp;
-pub mod vorbis_hook;
-pub mod w16;
-pub mod w16api;
-mod wasapi;
-pub mod wic;
-pub mod winrt;
-pub mod wmi;
-pub mod ws2;
-pub mod ws2name;
-pub mod x3daudio;
 pub mod xapo;
 pub mod xaudio2;
+mod mmdevapi;
+mod wasapi;
+pub mod x3daudio;
+pub mod mmio;
+pub mod gl;
+pub mod glu;
+pub mod cryptstr;
+pub mod diskspace;
+pub mod dnsrec;
+pub mod eventlog;
+pub mod smalldlls;
+pub mod security;
+pub mod sysinfo;
+pub mod cng;
+pub mod iphlp;
+pub mod netaddr;
+pub mod fxdsp;
+pub mod ws2;
+pub mod ws2name;
+pub mod iocp;
+pub mod ntsync;
+pub mod gl_sigs;
+pub mod text;
+pub mod collate;
+mod casemap_table;
+pub mod user;
+pub mod w16;
+pub mod w16api;
+pub mod snap;
 
 use mem::{r32, w32};
 
@@ -168,19 +169,11 @@ pub static PEB: AtomicU32 = AtomicU32::new(0);
 /// TEB offsets that differ between 32 and 64-bit programs.
 #[inline]
 pub fn teb_last_error() -> u32 {
-    if mem::x64() {
-        0x68
-    } else {
-        0x34
-    }
+    if mem::x64() { 0x68 } else { 0x34 }
 }
 #[inline]
 pub fn teb_tls_pointer() -> u32 {
-    if mem::x64() {
-        0x58
-    } else {
-        0x2c
-    }
+    if mem::x64() { 0x58 } else { 0x2c }
 }
 
 /// A TEB and a stack for a new thread; returns (teb, stack top, stack base).
@@ -232,15 +225,7 @@ fn enter(stack: u32) -> &'static mut Thread {
             (*cpu).fpu.cw = 0x27f;
         }
     }
-    let t = Box::leak(Box::new(Thread {
-        cpu,
-        tid,
-        teb,
-        obj: 0,
-        stack: st,
-        tls: [0; 8],
-        tp: None,
-    }));
+    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st, tls: [0; 8], tp: None }));
     adopt(t as *mut Thread);
     k32::tls_thread_init(teb);
     t
@@ -272,11 +257,7 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                     return;
                 }
             }
-            Stop::Fault { .. } | Stop::Divide | Stop::Invalid | Stop::Int(_) | Stop::Halt
-                if cpu.mode16 != 0 =>
-            {
-                w16::exception(cpu, stop)
-            }
+            Stop::Fault { .. } | Stop::Divide | Stop::Invalid | Stop::Int(_) | Stop::Halt if cpu.mode16 != 0 => w16::exception(cpu, stop),
             Stop::Trap(a) => {
                 if a == api::RET_TRAP {
                     if cpu.regs[ESP] >= until && until != 0 {
@@ -300,10 +281,7 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
             }
             Stop::Fault { addr, write } => {
                 if crate::env_on!("SAKE_TRACE_FAULT") {
-                    eprintln!(
-                        "sake: fault at {:#x} reading {addr:#x} (write {write})",
-                        cpu.eip
-                    );
+                    eprintln!("sake: fault at {:#x} reading {addr:#x} (write {write})", cpu.eip);
                 }
                 if addr >= api::TRAP_LO && cpu.eip == addr {
                     fatal(cpu, "fault at a trap address");
@@ -318,18 +296,11 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                 }
                 let code = if guard { 0x8000_0001 } else { 0xc000_0005 };
                 // (the kind: 0 read, 1 write, 8 executing at the address: DEP)
-                let kind = if addr == cpu.eip && !guard {
-                    8
-                } else {
-                    write as u32
-                };
+                let kind = if addr == cpu.eip && !guard { 8 } else { write as u32 };
                 if mem::x64() {
                     let e = cpu.eip;
                     // a non-canonical address is a general protection fault: read of -1
-                    if kind != 8
-                        && memory_operand(cpu)
-                            .is_some_and(|a| (a as i64) >> 47 != 0 && (a as i64) >> 47 != -1)
-                    {
+                    if kind != 8 && memory_operand(cpu).is_some_and(|a| (a as i64) >> 47 != 0 && (a as i64) >> 47 != -1) {
                         seh64::raise(cpu, code, 0, e, &[0, u64::MAX]);
                         continue;
                     }
@@ -342,11 +313,7 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
             Stop::Divide => {
                 // (a nonzero divisor whose quotient does not fit: STATUS_INTEGER_OVERFLOW)
                 let e = cpu.eip;
-                let code = if divisor_zero(cpu) == Some(false) {
-                    0xc000_0095
-                } else {
-                    0xc000_0094
-                };
+                let code = if divisor_zero(cpu) == Some(false) { 0xc000_0095 } else { 0xc000_0094 };
                 raise(cpu, code, e, &[])
             }
             Stop::Invalid => {
@@ -384,11 +351,7 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                     // reading address -1, as the general protection fault reaches the program
                     _ => {
                         cpu.eip = e - 2;
-                        let m = if mem::x64() {
-                            u64::MAX
-                        } else {
-                            u32::MAX as u64
-                        };
+                        let m = if mem::x64() { u64::MAX } else { u32::MAX as u64 };
                         if mem::x64() {
                             seh64::raise(cpu, 0xc000_0005, 0, e - 2, &[0, m]);
                         } else {
@@ -415,16 +378,10 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                 let mx = cpu.mxcsr;
                 if mem::x64() {
                     let fired = mx & 0x3f & !(mx >> 7);
-                    let code = [
-                        (1, 0xc000_0090),
-                        (4, 0xc000_008e),
-                        (2, 0xc000_008d),
-                        (8, 0xc000_0091),
-                        (0x10, 0xc000_0093),
-                    ]
-                    .iter()
-                    .find(|(b, _)| fired & b != 0)
-                    .map_or(0xc000_008f, |&(_, c)| c);
+                    let code = [(1, 0xc000_0090), (4, 0xc000_008e), (2, 0xc000_008d), (8, 0xc000_0091), (0x10, 0xc000_0093)]
+                        .iter()
+                        .find(|(b, _)| fired & b != 0)
+                        .map_or(0xc000_008f, |&(_, c)| c);
                     seh64::raise(cpu, code, 0, e, &[0, mx as u64]);
                 } else {
                     seh::raise(cpu, 0xc000_02b5, 0, e, &[0, mx]);
@@ -439,12 +396,7 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
 /// WRMSR/RDMSR, LGDT/LIDT/LMSW/INVLPG (0F 01 /2 /3 /6 /7).
 fn privileged(b: &[u8; 8]) -> bool {
     let mut i = 0;
-    while i < 4
-        && matches!(
-            b[i],
-            0x66 | 0x67 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x40..=0x4f
-        )
-    {
+    while i < 4 && matches!(b[i], 0x66 | 0x67 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x40..=0x4f) {
         if (0x40..=0x4f).contains(&b[i]) && !mem::x64() {
             break;
         }
@@ -466,13 +418,7 @@ fn instruction_at(cpu: &Cpu) -> koji::iced_x86::Instruction {
     use koji::iced_x86::{Decoder, DecoderOptions};
     let ip = cpu.eip as u64 | (cpu.rip_hi as u64) << 32;
     let bytes = mem::slice(cpu.eip, 15).to_vec();
-    Decoder::with_ip(
-        if mem::x64() { 64 } else { 32 },
-        &bytes,
-        ip,
-        DecoderOptions::NONE,
-    )
-    .decode()
+    Decoder::with_ip(if mem::x64() { 64 } else { 32 }, &bytes, ip, DecoderOptions::NONE).decode()
 }
 
 /// The full address of the memory operand of the instruction at EIP.
@@ -484,9 +430,7 @@ fn memory_operand(cpu: &Cpu) -> Option<u64> {
         Register::FS => Some(cpu.fs_base as u64),
         Register::GS => Some(cpu.gs_base as u64),
         Register::ES | Register::CS | Register::SS | Register::DS => Some(0),
-        Register::AH | Register::CH | Register::DH | Register::BH => {
-            Some(cpu.gpr(r as usize - Register::AH as usize) >> 8 & 0xff)
-        }
+        Register::AH | Register::CH | Register::DH | Register::BH => Some(cpu.gpr(r as usize - Register::AH as usize) >> 8 & 0xff),
         r => Some(cpu.gpr(r.full_register().number())),
     })
 }
@@ -520,11 +464,7 @@ fn divisor_zero(cpu: &Cpu) -> Option<bool> {
         }
         _ => return None,
     };
-    let m = if size >= 8 {
-        u64::MAX
-    } else {
-        (1u64 << (8 * size)) - 1
-    };
+    let m = if size >= 8 { u64::MAX } else { (1u64 << (8 * size)) - 1 };
     Some(v & m == 0)
 }
 
@@ -701,10 +641,7 @@ fn setup64(cpu: &mut Cpu, start: u32, param: u32) {
 
 /// The program: `exe` is its host path.
 pub fn main(exe: &str, args: &[String]) -> ! {
-    if let Some(p) = std::env::var("SAKE_PID")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-    {
+    if let Some(p) = std::env::var("SAKE_PID").ok().and_then(|s| s.parse::<u32>().ok()) {
         PID.store(p, Ordering::Relaxed);
         NEXT_TID.store(p + 0x10, Ordering::Relaxed);
     }
@@ -770,10 +707,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     snap::init();
     // SAKE_MEMINFO=<seconds>: sake's own heap (above the guest's 2 GB) now and then, on stderr
     #[cfg(target_os = "emscripten")]
-    if let Some(secs) = std::env::var("SAKE_MEMINFO")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-    {
+    if let Some(secs) = std::env::var("SAKE_MEMINFO").ok().and_then(|s| s.parse::<f64>().ok()) {
         std::thread::spawn(move || {
             let mut max = 0.0f64;
             loop {
@@ -781,12 +715,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
                 let mut m = [0f64; 2];
                 unsafe { kura::wrap::vnhost_mem_info(m.as_mut_ptr()) };
                 max = max.max(m[0]);
-                eprintln!(
-                    "sake: heap top {:.0} MB (max {:.0}), in use {:.0} MB",
-                    m[0] / 1048576.0,
-                    max / 1048576.0,
-                    m[1] / 1048576.0
-                );
+                eprintln!("sake: heap top {:.0} MB (max {:.0}), in use {:.0} MB", m[0] / 1048576.0, max / 1048576.0, m[1] / 1048576.0);
             }
         });
     }
@@ -799,9 +728,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     let cpu = unsafe { &mut *t.cpu };
     let wpath = files::host_to_win(exe);
     k32::set_command_line(&wpath, args);
-    let dir = wpath
-        .rsplit_once('\\')
-        .map_or(String::from("C:\\"), |(d, _)| format!("{d}\\"));
+    let dir = wpath.rsplit_once('\\').map_or(String::from("C:\\"), |(d, _)| format!("{d}\\"));
     files::set_cwd(&dir);
     // (a process another one started: what CreateProcess gave it, and maybe a wait for
     // ResumeThread)
@@ -865,11 +792,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     ustr(pp + img, 2 * wpath16.len() as u32, wp);
     ustr(pp + cmd, cmdlen, wcmd);
     // the window title (STARTUPINFO lpTitle) is the image path when the parent gave none
-    ustr(
-        pp + if x64 { 0xb0 } else { 0x70 },
-        2 * wpath16.len() as u32,
-        wp,
-    );
+    ustr(pp + if x64 { 0xb0 } else { 0x70 }, 2 * wpath16.len() as u32, wp);
     let entry = pe::with(base, |m| m.entry).unwrap();
     pe::init_dlls(cpu);
     if x64 {
@@ -887,13 +810,8 @@ pub fn main(exe: &str, args: &[String]) -> ! {
 /// C entry: `sake_main(argc, argv)`; argv[1] is the exe's host path.
 #[no_mangle]
 pub unsafe extern "C" fn sake_main(argc: i32, argv: *const *const libc::c_char) -> i32 {
-    let args: Vec<String> = (0..argc as usize)
-        .map(|i| {
-            std::ffi::CStr::from_ptr(*argv.add(i))
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
+    let args: Vec<String> =
+        (0..argc as usize).map(|i| std::ffi::CStr::from_ptr(*argv.add(i)).to_string_lossy().into_owned()).collect();
     if args.len() < 2 {
         eprintln!("usage: sake <program.exe> [args]");
         return 1;

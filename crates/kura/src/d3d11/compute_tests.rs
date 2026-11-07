@@ -52,19 +52,8 @@ impl Dev {
         let desc = mem(16);
         put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
         let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
-        assert_eq!(
-            call1(
-                CREATE_DEVICE,
-                &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]
-            ),
-            0
-        );
-        Dev {
-            dev: rd1(dev_out),
-            ctx: rd1(ctx_out),
-            sc: rd1(sc_out),
-            req: 0x5200_0000,
-        }
+        assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
+        Dev { dev: rd1(dev_out), ctx: rd1(ctx_out), sc: rd1(sc_out), req: 0x5200_0000 }
     }
     fn dc(&self, mm: u32, a: &[u32]) -> u32 {
         call1(m(IF_DEVICE, mm), &[&[self.dev][..], a].concat())
@@ -95,16 +84,11 @@ impl Dev {
         rd1(o)
     }
     fn cs(&self, src: &str) -> u32 {
-        let code = hlslc::compile(src, &[], &mut |_, _| None, "main", "cs_5_0", 0)
-            .unwrap_or_else(|e| panic!("cs: {e}"));
+        let code = hlslc::compile(src, &[], &mut |_, _| None, "main", "cs_5_0", 0).unwrap_or_else(|e| panic!("cs: {e}"));
         let p = unsafe { alloc(code.len() as u32) as u32 };
         unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), p as *mut u8, code.len()) };
         let o = mem(2);
-        assert_eq!(
-            self.dc(18, &[p, code.len() as u32, 0, o]),
-            0,
-            "CreateComputeShader"
-        );
+        assert_eq!(self.dc(18, &[p, code.len() as u32, 0, o]), 0, "CreateComputeShader");
         rd1(o)
     }
     fn cbuf(&self, v: [f32; 4]) -> u32 {
@@ -152,21 +136,13 @@ impl Dev {
         call1(m(IF_DEVICE, 2), &[self.dev]);
         gpu::set_pump(None);
         let errors = model::with(|m| std::mem::take(&mut m.errors));
-        assert!(
-            errors.is_empty(),
-            "WebGPU errors {:?}",
-            &errors[..errors.len().min(10)]
-        );
+        assert!(errors.is_empty(), "WebGPU errors {:?}", &errors[..errors.len().min(10)]);
     }
 }
 
 const RGBA8: u32 = 28;
 const RGBA32F: u32 = 2;
-const PATTERN: fn(u32) -> Vec<u32> = |s| {
-    (0..64)
-        .map(|i| (i * 0x01030507u32).wrapping_add(s))
-        .collect()
-};
+const PATTERN: fn(u32) -> Vec<u32> = |s| (0..64).map(|i| (i * 0x01030507u32).wrapping_add(s)).collect();
 
 #[test]
 fn dispatch_writes_by_what_it_reads() {
@@ -178,59 +154,38 @@ fn dispatch_writes_by_what_it_reads() {
     let (srv, srv2) = (d.srv(input), d.srv(input2));
     let (k1, k2) = (d.cbuf([1.0, 0.5, 0.25, 1.0]), d.cbuf([2.0, 0.5, 0.25, 1.0]));
     // a run of the shader into a fresh UAV texture: what it holds after
-    let run =
-        |d: &mut Dev, srv: u32, k: u32, groups: [u32; 3], indirect: bool| -> (Vec<u32>, Vec<u32>) {
-            let out = d.tex(RGBA8, 0x88, &PATTERN(9));
-            let before = d.read(out);
-            let uav = d.uav(out);
-            d.set(69, 0, cs);
-            d.set(67, 0, srv);
-            d.set(71, 0, k);
-            d.set(68, 0, uav);
-            if indirect {
-                let bd = mem(6);
-                // (D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS)
-                put(bd, &[16, 0, 0, 0, 0x10, 0]);
-                let p = mem(4);
-                put(p, &[0, groups[0], groups[1], groups[2]]);
-                let init = mem(3);
-                put(init, &[p, 0, 0]);
-                let o = mem(2);
-                assert_eq!(d.dc(3, &[bd, init, o]), 0);
-                d.cc(42, &[rd1(o), 4]);
-            } else {
-                d.cc(41, &groups.to_vec());
-            }
-            d.set(68, 0, 0);
-            (before, d.read(out))
-        };
+    let run = |d: &mut Dev, srv: u32, k: u32, groups: [u32; 3], indirect: bool| -> (Vec<u32>, Vec<u32>) {
+        let out = d.tex(RGBA8, 0x88, &PATTERN(9));
+        let before = d.read(out);
+        let uav = d.uav(out);
+        d.set(69, 0, cs);
+        d.set(67, 0, srv);
+        d.set(71, 0, k);
+        d.set(68, 0, uav);
+        if indirect {
+            let bd = mem(6);
+            // (D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS)
+            put(bd, &[16, 0, 0, 0, 0x10, 0]);
+            let p = mem(4);
+            put(p, &[0, groups[0], groups[1], groups[2]]);
+            let init = mem(3);
+            put(init, &[p, 0, 0]);
+            let o = mem(2);
+            assert_eq!(d.dc(3, &[bd, init, o]), 0);
+            d.cc(42, &[rd1(o), 4]);
+        } else {
+            d.cc(41, &groups.to_vec());
+        }
+        d.set(68, 0, 0);
+        (before, d.read(out))
+    };
     let (before, a) = run(&mut d, srv, k1, [2, 2, 1], false);
     assert_ne!(a, before, "Dispatch wrote nothing");
-    assert_eq!(
-        run(&mut d, srv, k1, [2, 2, 1], false).1,
-        a,
-        "the same dispatch wrote something else"
-    );
-    assert_eq!(
-        run(&mut d, srv, k1, [2, 2, 1], true).1,
-        a,
-        "DispatchIndirect with the same counts"
-    );
-    assert_ne!(
-        run(&mut d, srv, k2, [2, 2, 1], false).1,
-        a,
-        "other constants"
-    );
-    assert_ne!(
-        run(&mut d, srv2, k1, [2, 2, 1], false).1,
-        a,
-        "another shader resource"
-    );
-    assert_ne!(
-        run(&mut d, srv, k1, [1, 2, 1], false).1,
-        a,
-        "other group counts"
-    );
+    assert_eq!(run(&mut d, srv, k1, [2, 2, 1], false).1, a, "the same dispatch wrote something else");
+    assert_eq!(run(&mut d, srv, k1, [2, 2, 1], true).1, a, "DispatchIndirect with the same counts");
+    assert_ne!(run(&mut d, srv, k2, [2, 2, 1], false).1, a, "other constants");
+    assert_ne!(run(&mut d, srv2, k1, [2, 2, 1], false).1, a, "another shader resource");
+    assert_ne!(run(&mut d, srv, k1, [1, 2, 1], false).1, a, "other group counts");
     // no groups, or more than 65535 in a dimension: nothing runs
     let (before, after) = run(&mut d, srv, k1, [0, 2, 1], false);
     assert_eq!(after, before);
@@ -300,11 +255,7 @@ fn a_uav_unbinds_the_compute_shaders_srv_of_it() {
     d.set(68, 0, u);
     let o = mem(1);
     d.cc(105, &[0, 1, o]);
-    assert_eq!(
-        rd1(o),
-        0,
-        "CSGetShaderResources: the SRV of the UAV's texture stays bound"
-    );
+    assert_eq!(rd1(o), 0, "CSGetShaderResources: the SRV of the UAV's texture stays bound");
     // (and bound again while the UAV is: NULL)
     d.set(67, 0, s);
     d.cc(105, &[0, 1, o]);

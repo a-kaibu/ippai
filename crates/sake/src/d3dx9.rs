@@ -33,9 +33,7 @@ fn wv(p: u32, v: &[f32]) {
     }
 }
 
-const ID: M = [
-    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-];
+const ID: M = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 fn mul(a: &M, b: &M) -> M {
     std::array::from_fn(|k| {
@@ -48,70 +46,22 @@ fn inverse(m: &M) -> Option<(M, f32)> {
     let mut inv = [0f32; 16];
     let a = |i: usize| m[i] as f64;
     let r = [
-        a(5) * a(10) * a(15) - a(5) * a(11) * a(14) - a(9) * a(6) * a(15)
-            + a(9) * a(7) * a(14)
-            + a(13) * a(6) * a(11)
-            - a(13) * a(7) * a(10),
-        -a(1) * a(10) * a(15) + a(1) * a(11) * a(14) + a(9) * a(2) * a(15)
-            - a(9) * a(3) * a(14)
-            - a(13) * a(2) * a(11)
-            + a(13) * a(3) * a(10),
-        a(1) * a(6) * a(15) - a(1) * a(7) * a(14) - a(5) * a(2) * a(15)
-            + a(5) * a(3) * a(14)
-            + a(13) * a(2) * a(7)
-            - a(13) * a(3) * a(6),
-        -a(1) * a(6) * a(11) + a(1) * a(7) * a(10) + a(5) * a(2) * a(11)
-            - a(5) * a(3) * a(10)
-            - a(9) * a(2) * a(7)
-            + a(9) * a(3) * a(6),
-        -a(4) * a(10) * a(15) + a(4) * a(11) * a(14) + a(8) * a(6) * a(15)
-            - a(8) * a(7) * a(14)
-            - a(12) * a(6) * a(11)
-            + a(12) * a(7) * a(10),
-        a(0) * a(10) * a(15) - a(0) * a(11) * a(14) - a(8) * a(2) * a(15)
-            + a(8) * a(3) * a(14)
-            + a(12) * a(2) * a(11)
-            - a(12) * a(3) * a(10),
-        -a(0) * a(6) * a(15) + a(0) * a(7) * a(14) + a(4) * a(2) * a(15)
-            - a(4) * a(3) * a(14)
-            - a(12) * a(2) * a(7)
-            + a(12) * a(3) * a(6),
-        a(0) * a(6) * a(11) - a(0) * a(7) * a(10) - a(4) * a(2) * a(11)
-            + a(4) * a(3) * a(10)
-            + a(8) * a(2) * a(7)
-            - a(8) * a(3) * a(6),
-        a(4) * a(9) * a(15) - a(4) * a(11) * a(13) - a(8) * a(5) * a(15)
-            + a(8) * a(7) * a(13)
-            + a(12) * a(5) * a(11)
-            - a(12) * a(7) * a(9),
-        -a(0) * a(9) * a(15) + a(0) * a(11) * a(13) + a(8) * a(1) * a(15)
-            - a(8) * a(3) * a(13)
-            - a(12) * a(1) * a(11)
-            + a(12) * a(3) * a(9),
-        a(0) * a(5) * a(15) - a(0) * a(7) * a(13) - a(4) * a(1) * a(15)
-            + a(4) * a(3) * a(13)
-            + a(12) * a(1) * a(7)
-            - a(12) * a(3) * a(5),
-        -a(0) * a(5) * a(11) + a(0) * a(7) * a(9) + a(4) * a(1) * a(11)
-            - a(4) * a(3) * a(9)
-            - a(8) * a(1) * a(7)
-            + a(8) * a(3) * a(5),
-        -a(4) * a(9) * a(14) + a(4) * a(10) * a(13) + a(8) * a(5) * a(14)
-            - a(8) * a(6) * a(13)
-            - a(12) * a(5) * a(10)
-            + a(12) * a(6) * a(9),
-        a(0) * a(9) * a(14) - a(0) * a(10) * a(13) - a(8) * a(1) * a(14)
-            + a(8) * a(2) * a(13)
-            + a(12) * a(1) * a(10)
-            - a(12) * a(2) * a(9),
-        -a(0) * a(5) * a(14) + a(0) * a(6) * a(13) + a(4) * a(1) * a(14)
-            - a(4) * a(2) * a(13)
-            - a(12) * a(1) * a(6)
-            + a(12) * a(2) * a(5),
-        a(0) * a(5) * a(10) - a(0) * a(6) * a(9) - a(4) * a(1) * a(10)
-            + a(4) * a(2) * a(9)
-            + a(8) * a(1) * a(6)
-            - a(8) * a(2) * a(5),
+        a(5) * a(10) * a(15) - a(5) * a(11) * a(14) - a(9) * a(6) * a(15) + a(9) * a(7) * a(14) + a(13) * a(6) * a(11) - a(13) * a(7) * a(10),
+        -a(1) * a(10) * a(15) + a(1) * a(11) * a(14) + a(9) * a(2) * a(15) - a(9) * a(3) * a(14) - a(13) * a(2) * a(11) + a(13) * a(3) * a(10),
+        a(1) * a(6) * a(15) - a(1) * a(7) * a(14) - a(5) * a(2) * a(15) + a(5) * a(3) * a(14) + a(13) * a(2) * a(7) - a(13) * a(3) * a(6),
+        -a(1) * a(6) * a(11) + a(1) * a(7) * a(10) + a(5) * a(2) * a(11) - a(5) * a(3) * a(10) - a(9) * a(2) * a(7) + a(9) * a(3) * a(6),
+        -a(4) * a(10) * a(15) + a(4) * a(11) * a(14) + a(8) * a(6) * a(15) - a(8) * a(7) * a(14) - a(12) * a(6) * a(11) + a(12) * a(7) * a(10),
+        a(0) * a(10) * a(15) - a(0) * a(11) * a(14) - a(8) * a(2) * a(15) + a(8) * a(3) * a(14) + a(12) * a(2) * a(11) - a(12) * a(3) * a(10),
+        -a(0) * a(6) * a(15) + a(0) * a(7) * a(14) + a(4) * a(2) * a(15) - a(4) * a(3) * a(14) - a(12) * a(2) * a(7) + a(12) * a(3) * a(6),
+        a(0) * a(6) * a(11) - a(0) * a(7) * a(10) - a(4) * a(2) * a(11) + a(4) * a(3) * a(10) + a(8) * a(2) * a(7) - a(8) * a(3) * a(6),
+        a(4) * a(9) * a(15) - a(4) * a(11) * a(13) - a(8) * a(5) * a(15) + a(8) * a(7) * a(13) + a(12) * a(5) * a(11) - a(12) * a(7) * a(9),
+        -a(0) * a(9) * a(15) + a(0) * a(11) * a(13) + a(8) * a(1) * a(15) - a(8) * a(3) * a(13) - a(12) * a(1) * a(11) + a(12) * a(3) * a(9),
+        a(0) * a(5) * a(15) - a(0) * a(7) * a(13) - a(4) * a(1) * a(15) + a(4) * a(3) * a(13) + a(12) * a(1) * a(7) - a(12) * a(3) * a(5),
+        -a(0) * a(5) * a(11) + a(0) * a(7) * a(9) + a(4) * a(1) * a(11) - a(4) * a(3) * a(9) - a(8) * a(1) * a(7) + a(8) * a(3) * a(5),
+        -a(4) * a(9) * a(14) + a(4) * a(10) * a(13) + a(8) * a(5) * a(14) - a(8) * a(6) * a(13) - a(12) * a(5) * a(10) + a(12) * a(6) * a(9),
+        a(0) * a(9) * a(14) - a(0) * a(10) * a(13) - a(8) * a(1) * a(14) + a(8) * a(2) * a(13) + a(12) * a(1) * a(10) - a(12) * a(2) * a(9),
+        -a(0) * a(5) * a(14) + a(0) * a(6) * a(13) + a(4) * a(1) * a(14) - a(4) * a(2) * a(13) - a(12) * a(1) * a(6) + a(12) * a(2) * a(5),
+        a(0) * a(5) * a(10) - a(0) * a(6) * a(9) - a(4) * a(1) * a(10) + a(4) * a(2) * a(9) + a(8) * a(1) * a(6) - a(8) * a(2) * a(5),
     ];
     let det = a(0) * r[0] + a(1) * r[4] + a(2) * r[8] + a(3) * r[12];
     if det == 0.0 {
@@ -129,18 +79,10 @@ fn transform4(v: [f32; 4], m: &M) -> [f32; 4] {
 
 fn norm3(v: [f32; 3]) -> [f32; 3] {
     let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if l == 0.0 {
-        [0.0; 3]
-    } else {
-        v.map(|x| x / l)
-    }
+    if l == 0.0 { [0.0; 3] } else { v.map(|x| x / l) }
 }
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -215,31 +157,10 @@ fn D3DXMatrixRotationYawPitchRoll(c: &mut Ctx) -> u32 {
     out_m(c, mul(&mul(&rot(2, r), &rot(0, p)), &rot(1, y)))
 }
 fn look_at(eye: [f32; 3], at: [f32; 3], up: [f32; 3], lh: bool) -> M {
-    let z = norm3(if lh {
-        [at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]]
-    } else {
-        [eye[0] - at[0], eye[1] - at[1], eye[2] - at[2]]
-    });
+    let z = norm3(if lh { [at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]] } else { [eye[0] - at[0], eye[1] - at[1], eye[2] - at[2]] });
     let x = norm3(cross(up, z));
     let y = cross(z, x);
-    [
-        x[0],
-        y[0],
-        z[0],
-        0.0,
-        x[1],
-        y[1],
-        z[1],
-        0.0,
-        x[2],
-        y[2],
-        z[2],
-        0.0,
-        -dot3(x, eye),
-        -dot3(y, eye),
-        -dot3(z, eye),
-        1.0,
-    ]
+    [x[0], y[0], z[0], 0.0, x[1], y[1], z[1], 0.0, x[2], y[2], z[2], 0.0, -dot3(x, eye), -dot3(y, eye), -dot3(z, eye), 1.0]
 }
 fn D3DXMatrixLookAtLH(c: &mut Ctx) -> u32 {
     out_m(c, look_at(rv(c.a(1)), rv(c.a(2)), rv(c.a(3)), true))
@@ -267,13 +188,7 @@ fn D3DXMatrixPerspectiveFovRH(c: &mut Ctx) -> u32 {
 fn D3DXMatrixPerspectiveLH(c: &mut Ctx) -> u32 {
     let (w, h, zn, zf) = (fl(c, 1), fl(c, 2), fl(c, 3), fl(c, 4));
     let mut m = [0f32; 16];
-    (m[0], m[5], m[10], m[11], m[14]) = (
-        2.0 * zn / w,
-        2.0 * zn / h,
-        zf / (zf - zn),
-        1.0,
-        zn * zf / (zn - zf),
-    );
+    (m[0], m[5], m[10], m[11], m[14]) = (2.0 * zn / w, 2.0 * zn / h, zf / (zf - zn), 1.0, zn * zf / (zn - zf));
     out_m(c, m)
 }
 fn ortho_off_center(l: f32, r: f32, b: f32, t: f32, zn: f32, zf: f32, lh: bool) -> M {
@@ -288,75 +203,24 @@ fn ortho_off_center(l: f32, r: f32, b: f32, t: f32, zn: f32, zf: f32, lh: bool) 
 }
 fn D3DXMatrixOrthoLH(c: &mut Ctx) -> u32 {
     let (w, h) = (fl(c, 1), fl(c, 2));
-    out_m(
-        c,
-        ortho_off_center(
-            -w / 2.0,
-            w / 2.0,
-            -h / 2.0,
-            h / 2.0,
-            fl(c, 3),
-            fl(c, 4),
-            true,
-        ),
-    )
+    out_m(c, ortho_off_center(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, fl(c, 3), fl(c, 4), true))
 }
 fn D3DXMatrixOrthoRH(c: &mut Ctx) -> u32 {
     let (w, h) = (fl(c, 1), fl(c, 2));
-    out_m(
-        c,
-        ortho_off_center(
-            -w / 2.0,
-            w / 2.0,
-            -h / 2.0,
-            h / 2.0,
-            fl(c, 3),
-            fl(c, 4),
-            false,
-        ),
-    )
+    out_m(c, ortho_off_center(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, fl(c, 3), fl(c, 4), false))
 }
 fn D3DXMatrixOrthoOffCenterLH(c: &mut Ctx) -> u32 {
-    out_m(
-        c,
-        ortho_off_center(
-            fl(c, 1),
-            fl(c, 2),
-            fl(c, 3),
-            fl(c, 4),
-            fl(c, 5),
-            fl(c, 6),
-            true,
-        ),
-    )
+    out_m(c, ortho_off_center(fl(c, 1), fl(c, 2), fl(c, 3), fl(c, 4), fl(c, 5), fl(c, 6), true))
 }
 fn D3DXMatrixOrthoOffCenterRH(c: &mut Ctx) -> u32 {
-    out_m(
-        c,
-        ortho_off_center(
-            fl(c, 1),
-            fl(c, 2),
-            fl(c, 3),
-            fl(c, 4),
-            fl(c, 5),
-            fl(c, 6),
-            false,
-        ),
-    )
+    out_m(c, ortho_off_center(fl(c, 1), fl(c, 2), fl(c, 3), fl(c, 4), fl(c, 5), fl(c, 6), false))
 }
 
 /// D3DXMatrixTransformation2D(out, scaling center, scaling rotation, scaling, rotation center,
 /// rotation, translation)
 fn D3DXMatrixTransformation2D(c: &mut Ctx) -> u32 {
     let v2 = |p: u32, d: [f32; 2]| if p != 0 { rv::<2>(p) } else { d };
-    let (sc, sr, s, rc, r, t) = (
-        v2(c.a(1), [0.0; 2]),
-        fl(c, 2),
-        v2(c.a(3), [1.0; 2]),
-        v2(c.a(4), [0.0; 2]),
-        fl(c, 5),
-        v2(c.a(6), [0.0; 2]),
-    );
+    let (sc, sr, s, rc, r, t) = (v2(c.a(1), [0.0; 2]), fl(c, 2), v2(c.a(3), [1.0; 2]), v2(c.a(4), [0.0; 2]), fl(c, 5), v2(c.a(6), [0.0; 2]));
     let tr = |x: f32, y: f32| {
         let mut m = ID;
         (m[12], m[13]) = (x, y);
@@ -365,19 +229,9 @@ fn D3DXMatrixTransformation2D(c: &mut Ctx) -> u32 {
     let mut sm = ID;
     (sm[0], sm[5]) = (s[0], s[1]);
     // Msc^-1 * Msr^-1 * Ms * Msr * Msc * Mrc^-1 * Mr * Mrc * Mt
-    let m = [
-        tr(-sc[0], -sc[1]),
-        rot(2, -sr),
-        sm,
-        rot(2, sr),
-        tr(sc[0], sc[1]),
-        tr(-rc[0], -rc[1]),
-        rot(2, r),
-        tr(rc[0], rc[1]),
-        tr(t[0], t[1]),
-    ]
-    .iter()
-    .fold(ID, |a, b| mul(&a, b));
+    let m = [tr(-sc[0], -sc[1]), rot(2, -sr), sm, rot(2, sr), tr(sc[0], sc[1]), tr(-rc[0], -rc[1]), rot(2, r), tr(rc[0], rc[1]), tr(t[0], t[1])]
+        .iter()
+        .fold(ID, |a, b| mul(&a, b));
     out_m(c, m)
 }
 
@@ -446,18 +300,9 @@ fn D3DXVec3Project(c: &mut Ctx) -> u32 {
     let mut v = coord(rv(c.a(1)), &m);
     let vp = c.a(2);
     if vp != 0 {
-        let (x, y, w, h) = (
-            r32(vp) as f32,
-            r32(vp + 4) as f32,
-            r32(vp + 8) as f32,
-            r32(vp + 12) as f32,
-        );
+        let (x, y, w, h) = (r32(vp) as f32, r32(vp + 4) as f32, r32(vp + 8) as f32, r32(vp + 12) as f32);
         let (zn, zf) = (rf(vp, 4), rf(vp, 5));
-        v = [
-            x + (1.0 + v[0]) * w / 2.0,
-            y + (1.0 - v[1]) * h / 2.0,
-            zn + v[2] * (zf - zn),
-        ];
+        v = [x + (1.0 + v[0]) * w / 2.0, y + (1.0 - v[1]) * h / 2.0, zn + v[2] * (zf - zn)];
     }
     wv(c.a(0), &v);
     c.a(0)
@@ -465,24 +310,13 @@ fn D3DXVec3Project(c: &mut Ctx) -> u32 {
 /// D3DXVec3Unproject(out, v, viewport, proj, view, world)
 fn D3DXVec3Unproject(c: &mut Ctx) -> u32 {
     let m = world_view_proj(c.a(3), c.a(4), c.a(5));
-    let Some((inv, _)) = inverse(&m) else {
-        return 0;
-    };
+    let Some((inv, _)) = inverse(&m) else { return 0 };
     let mut v: [f32; 3] = rv(c.a(1));
     let vp = c.a(2);
     if vp != 0 {
-        let (x, y, w, h) = (
-            r32(vp) as f32,
-            r32(vp + 4) as f32,
-            r32(vp + 8) as f32,
-            r32(vp + 12) as f32,
-        );
+        let (x, y, w, h) = (r32(vp) as f32, r32(vp + 4) as f32, r32(vp + 8) as f32, r32(vp + 12) as f32);
         let (zn, zf) = (rf(vp, 4), rf(vp, 5));
-        v = [
-            2.0 * (v[0] - x) / w - 1.0,
-            1.0 - 2.0 * (v[1] - y) / h,
-            (v[2] - zn) / (zf - zn),
-        ];
+        v = [2.0 * (v[0] - x) / w - 1.0, 1.0 - 2.0 * (v[1] - y) / h, (v[2] - zn) / (zf - zn)];
     }
     wv(c.a(0), &coord(v, &inv));
     c.a(0)
@@ -529,18 +363,7 @@ pub(crate) fn release(c: &mut Ctx) -> u32 {
 /// A new ID3DXBuffer holding `data`.
 pub fn buffer(data: &[u8]) -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let vt = *V.get_or_init(|| {
-        vtable(
-            "ID3DXBuffer",
-            &[
-                (qi_no, 12),
-                (add_ref, 4),
-                (release, 4),
-                (buf_pointer, 4),
-                (buf_size, 4),
-            ],
-        )
-    });
+    let vt = *V.get_or_init(|| vtable("ID3DXBuffer", &[(qi_no, 12), (add_ref, 4), (release, 4), (buf_pointer, 4), (buf_size, 4)]));
     let o = mem::heap_alloc(16, true);
     let p = mem::heap_alloc((data.len() as u32).max(4), true);
     mem::write(p, data);
@@ -595,17 +418,7 @@ fn D3DXCreateBuffer(c: &mut Ctx) -> u32 {
 /// Ex form (.., include, skip constants, flags, ..): a compiled effect (crate::d3dx9fx) or effect
 /// source, compiled to fx_2_0 first (hlslc::compile_effect)
 #[allow(clippy::too_many_arguments)]
-fn effect_from(
-    c: &mut Ctx,
-    dev: u32,
-    data: &[u8],
-    name: &str,
-    defs: u32,
-    inc: u32,
-    flags: u32,
-    out: u32,
-    errs: u32,
-) -> u32 {
+fn effect_from(c: &mut Ctx, dev: u32, data: &[u8], name: &str, defs: u32, inc: u32, flags: u32, out: u32, errs: u32) -> u32 {
     if errs != 0 {
         mem::putp(errs, 0);
     }
@@ -616,20 +429,11 @@ fn effect_from(
         let src = String::from_utf8_lossy(data).into_owned();
         let defines = crate::d3dcompiler::defines(defs);
         let base = crate::d3dcompiler::dir_of(name);
-        let mut include =
-            |n: &str, sys: bool| crate::d3dcompiler::open_include(c, inc, &base, n, sys);
-        compiled = hlslc::compile_effect(
-            src.trim_end_matches('\0'),
-            &defines,
-            &mut include,
-            flags & hlslc::PACK_MATRIX_ROW_MAJOR,
-        );
+        let mut include = |n: &str, sys: bool| crate::d3dcompiler::open_include(c, inc, &base, n, sys);
+        compiled = hlslc::compile_effect(src.trim_end_matches('\0'), &defines, &mut include, flags & hlslc::PACK_MATRIX_ROW_MAJOR);
         match &compiled {
             Ok(b) => Ok(&b[..]),
-            Err(e) => Err(format!(
-                "{}: error X3000: {e}",
-                if name.is_empty() { "memory" } else { name }
-            )),
+            Err(e) => Err(format!("{}: error X3000: {e}", if name.is_empty() { "memory" } else { name })),
         }
     };
     match data.and_then(|d| crate::d3dx9fx::create(c, dev, d)) {
@@ -661,11 +465,7 @@ fn D3DXCreateEffectEx(c: &mut Ctx) -> u32 {
 /// and the Ex forms (.., include, skip, flags, pool, effect, errors)
 fn effect_file(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     let name = crate::k32::arg_str(c.a(1), wide);
-    let (flags, out, errs) = if ex {
-        (c.a(5), c.a(7), c.a(8))
-    } else {
-        (c.a(4), c.a(6), c.a(7))
-    };
+    let (flags, out, errs) = if ex { (c.a(5), c.a(7), c.a(8)) } else { (c.a(4), c.a(6), c.a(7)) };
     let Some(data) = crate::d3dcompiler::read_file(&name) else {
         mem::putp(out, 0);
         return 0x88760b59;
@@ -694,24 +494,10 @@ fn axis_rot(v: [f32; 3], a: f32) -> M {
     let [x, y, z] = norm3(v);
     let (s, co) = a.sin_cos();
     let t = 1.0 - co;
-    [
-        t * x * x + co,
-        t * x * y + s * z,
-        t * x * z - s * y,
-        0.0,
-        t * x * y - s * z,
-        t * y * y + co,
-        t * y * z + s * x,
-        0.0,
-        t * x * z + s * y,
-        t * y * z - s * x,
-        t * z * z + co,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-    ]
+    [t * x * x + co, t * x * y + s * z, t * x * z - s * y, 0.0,
+     t * x * y - s * z, t * y * y + co, t * y * z + s * x, 0.0,
+     t * x * z + s * y, t * y * z - s * x, t * z * z + co, 0.0,
+     0.0, 0.0, 0.0, 1.0]
 }
 fn ms_apply(c: &Ctx, m: M, local: bool) -> u32 {
     let o = c.a(0);
@@ -721,12 +507,7 @@ fn ms_apply(c: &Ctx, m: M, local: bool) -> u32 {
 }
 fn ms_pop(c: &mut Ctx) -> u32 {
     let o = c.a(0);
-    let m = STACKS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(Default::default)
-        .get_mut(&o)
-        .and_then(|v| v.pop());
+    let m = STACKS.lock().unwrap().get_or_insert_with(Default::default).get_mut(&o).and_then(|v| v.pop());
     if let Some(m) = m {
         wm(o + 16, &m);
     }
@@ -734,13 +515,7 @@ fn ms_pop(c: &mut Ctx) -> u32 {
 }
 fn ms_push(c: &mut Ctx) -> u32 {
     let o = c.a(0);
-    STACKS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(Default::default)
-        .entry(o)
-        .or_default()
-        .push(rm(o + 16));
+    STACKS.lock().unwrap().get_or_insert_with(Default::default).entry(o).or_default().push(rm(o + 16));
     0
 }
 fn ms_identity(c: &mut Ctx) -> u32 {
@@ -764,10 +539,7 @@ fn ms_rotate_axis_local(c: &mut Ctx) -> u32 {
     ms_apply(c, axis_rot(rv(c.a(1)), fl(c, 2)), true)
 }
 fn ypr(c: &Ctx) -> M {
-    mul(
-        &mul(&rot(2, fl(c, 3)), &rot(0, fl(c, 2))),
-        &rot(1, fl(c, 1)),
-    )
+    mul(&mul(&rot(2, fl(c, 3)), &rot(0, fl(c, 2))), &rot(1, fl(c, 1)))
 }
 fn ms_ypr(c: &mut Ctx) -> u32 {
     ms_apply(c, ypr(c), false)
@@ -802,13 +574,7 @@ fn ms_top(c: &mut Ctx) -> u32 {
 }
 /// D3DXIMAGE_INFO of a decoded image: (width, height, file format)
 fn image_info(data: &[u8]) -> Option<(u32, u32, Vec<u8>, u32)> {
-    let ff = if data.starts_with(b"\x89PNG") {
-        3
-    } else if data.starts_with(b"BM") {
-        0
-    } else {
-        1
-    };
+    let ff = if data.starts_with(b"\x89PNG") { 3 } else if data.starts_with(b"BM") { 0 } else { 1 };
     let (w, h, px) = crate::ole::decode(data)?;
     Some((w, h, px, ff))
 }
@@ -837,18 +603,7 @@ fn D3DXCheckTextureRequirements(c: &mut Ctx) -> u32 {
     let (pw, ph, pm, pf) = (c.a(1), c.a(2), c.a(3), c.a(5));
     let rd = |p: u32, d: u32| if p == 0 { d } else { r32(p) };
     let (w, h, m) = tex_req(rd(pw, 0), rd(ph, 0), rd(pm, 0xffff_ffff));
-    for (p, v) in [
-        (pw, w),
-        (ph, h),
-        (
-            pm,
-            if m == 0 {
-                1 + 31 - w.max(h).leading_zeros()
-            } else {
-                m
-            },
-        ),
-    ] {
+    for (p, v) in [(pw, w), (ph, h), (pm, if m == 0 { 1 + 31 - w.max(h).leading_zeros() } else { m })] {
         if p != 0 {
             w32(p, v);
         }
@@ -864,10 +619,7 @@ fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
     let [w, h, mips, usage, fmt, pool, _filter, _mipfilter, key, info, _pal, out] = a;
     mem::putp(out, 0);
     let Some((iw, ih, mut px, ff)) = image_info(data) else {
-        eprintln!(
-            "sake: D3DXCreateTexture: image not decoded ({:02x?})",
-            &data[..data.len().min(8)]
-        );
+        eprintln!("sake: D3DXCreateTexture: image not decoded ({:02x?})", &data[..data.len().min(8)]);
         return 0x88760b59;
     };
     write_info(info, iw, ih, ff);
@@ -878,11 +630,7 @@ fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
         v => v,
     };
     let (tw, th) = (size(w, iw), size(h, ih));
-    let fmt = if fmt == 0 || fmt == 0xffff_fffd {
-        21
-    } else {
-        fmt
-    };
+    let fmt = if fmt == 0 || fmt == 0xffff_fffd { 21 } else { fmt };
     let levels = match mips {
         0xffff_fffd | 0xffff_fffe => 1,
         v => v,
@@ -896,21 +644,7 @@ fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
         }
     }
     let pt = mem::heap_alloc(8, true);
-    let hr = com_call(
-        c,
-        dev,
-        23,
-        &[
-            tw,
-            th,
-            if levels == 0xffff_ffff { 0 } else { levels },
-            usage,
-            fmt,
-            pool,
-            pt,
-            0,
-        ],
-    );
+    let hr = com_call(c, dev, 23, &[tw, th, if levels == 0xffff_ffff { 0 } else { levels }, usage, fmt, pool, pt, 0]);
     let tex = r32(pt);
     mem::heap_free(pt);
     if hr != 0 || tex == 0 {
@@ -960,12 +694,7 @@ fn D3DXCreateTextureFromFileInMemoryEx(c: &mut Ctx) -> u32 {
 fn D3DXCreateTextureFromFileInMemory(c: &mut Ctx) -> u32 {
     let data = mem::slice(c.a(1), c.a(2)).to_vec();
     let (dev, out) = (c.a(0), c.a(3));
-    texture_from(
-        c,
-        dev,
-        &data,
-        [u32::MAX, u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, out],
-    )
+    texture_from(c, dev, &data, [u32::MAX, u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, out])
 }
 /// D3DXCreateTextureFromFile{A,W}(device, file, &texture) and the Ex forms (device, file, then
 /// the in-memory Ex arguments)
@@ -975,11 +704,7 @@ fn texture_file(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
         return 0x88760b59;
     };
     let dev = c.a(0);
-    let a = if ex {
-        std::array::from_fn(|k| c.a(2 + k as u32))
-    } else {
-        [u32::MAX, u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, c.a(2)]
-    };
+    let a = if ex { std::array::from_fn(|k| c.a(2 + k as u32)) } else { [u32::MAX, u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, c.a(2)] };
     texture_from(c, dev, &data, a)
 }
 fn D3DXCreateTextureFromFileA(c: &mut Ctx) -> u32 {
@@ -1005,20 +730,9 @@ fn rect_or(p: u32, w: u32, h: u32) -> (u32, u32, u32, u32) {
 /// D3DXLoadSurfaceFrom* for an image file: its `src` rectangle into the surface's `dst`
 /// rectangle (scaled, nearest), color key pixels transparent.
 #[allow(clippy::too_many_arguments)]
-fn surface_from(
-    c: &mut Ctx,
-    surf: u32,
-    dst: u32,
-    data: &[u8],
-    src: u32,
-    key: u32,
-    info: u32,
-) -> u32 {
+fn surface_from(c: &mut Ctx, surf: u32, dst: u32, data: &[u8], src: u32, key: u32, info: u32) -> u32 {
     let Some((iw, ih, px, ff)) = image_info(data) else {
-        eprintln!(
-            "sake: D3DXLoadSurface: image not decoded ({:02x?})",
-            &data[..data.len().min(8)]
-        );
+        eprintln!("sake: D3DXLoadSurface: image not decoded ({:02x?})", &data[..data.len().min(8)]);
         return 0x88760b59;
     };
     write_info(info, iw, ih, ff);
@@ -1050,11 +764,7 @@ fn surface_from(
                 a = 0;
             }
             let f = |v: u8| v as f32 / 255.0;
-            let (r, g, b) = if a == 0 && key != 0 {
-                (0, 0, 0)
-            } else {
-                (r, g, b)
-            };
+            let (r, g, b) = if a == 0 && key != 0 { (0, 0, 0) } else { (r, g, b) };
             if let Some((v, bpp)) = pack(fmt, [f(r), f(g), f(b), f(a)]) {
                 // (the locked bits start at the rectangle's corner)
                 let at = bits + y * pitch + x * bpp;
@@ -1126,29 +836,10 @@ fn D3DXGetImageInfoFromFileInMemory(c: &mut Ctx) -> u32 {
 fn D3DXCreateMatrixStack(c: &mut Ctx) -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
-        vtable(
-            "ID3DXMatrixStack",
-            &[
-                (qi_no, 12),
-                (add_ref, 4),
-                (release, 4),
-                (ms_pop, 4),
-                (ms_push, 4),
-                (ms_identity, 4),
-                (ms_load, 8),
-                (ms_mult, 8),
-                (ms_mult_local, 8),
-                (ms_rotate_axis, 12),
-                (ms_rotate_axis_local, 12),
-                (ms_ypr, 16),
-                (ms_ypr_local, 16),
-                (ms_scale, 16),
-                (ms_scale_local, 16),
-                (ms_translate, 16),
-                (ms_translate_local, 16),
-                (ms_top, 4),
-            ],
-        )
+        vtable("ID3DXMatrixStack", &[(qi_no, 12), (add_ref, 4), (release, 4), (ms_pop, 4), (ms_push, 4), (ms_identity, 4),
+            (ms_load, 8), (ms_mult, 8), (ms_mult_local, 8), (ms_rotate_axis, 12), (ms_rotate_axis_local, 12),
+            (ms_ypr, 16), (ms_ypr_local, 16), (ms_scale, 16), (ms_scale_local, 16), (ms_translate, 16),
+            (ms_translate_local, 16), (ms_top, 4)])
     });
     let o = mem::heap_alloc(16 + 64, true);
     w32(o, vt);
@@ -1224,13 +915,7 @@ fn D3DXFillTexture(c: &mut Ctx) -> u32 {
     let (tex, f, data) = (c.a(0), c.a(1), c.a(2));
     let levels = com_call(c, tex, 13, &[]);
     let scratch = mem::heap_alloc(64, true);
-    let (out, tc, ts, desc, lr) = (
-        scratch,
-        scratch + 16,
-        scratch + 24,
-        scratch + 32,
-        scratch + 32 + 32,
-    );
+    let (out, tc, ts, desc, lr) = (scratch, scratch + 16, scratch + 24, scratch + 32, scratch + 32 + 32);
     let lr_mem = mem::heap_alloc(8, true);
     for level in 0..levels.max(1) {
         if com_call(c, tex, 17, &[level, desc]) != 0 {
@@ -1248,10 +933,7 @@ fn D3DXFillTexture(c: &mut Ctx) -> u32 {
         wv(ts, &[1.0 / w as f32, 1.0 / h as f32]);
         for y in 0..h {
             for x in 0..w {
-                wv(
-                    tc,
-                    &[(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32],
-                );
+                wv(tc, &[(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32]);
                 wv(out, &[0.0; 4]);
                 c.call(f, &[out, tc, ts, data]);
                 let (v, n) = pack(fmt, rv(out)).unwrap_or((0, 4));
@@ -1295,35 +977,11 @@ fn D3DXCreateFont(c: &mut Ctx) -> u32 {
     // D3DXCreateFontA/W(device, height, width, weight, mips, italic, charset, precision,
     // quality, pitch, face, out); the Indirect forms (device, desc, out)
     let n = crate::api::name_of(c.trap).unwrap_or_default();
-    let (dev, out) = if n.contains("Indirect") {
-        (c.a(0), c.a(2))
-    } else {
-        (c.a(0), c.a(11))
-    };
+    let (dev, out) = if n.contains("Indirect") { (c.a(0), c.a(2)) } else { (c.a(0), c.a(11)) };
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
-        let mut m: Vec<(Handler, u32)> = vec![
-            (qi_no, 12),
-            (add_ref, 4),
-            (release, 4),
-            (font_device, 8),
-            (zero, 8),
-            (zero, 8),
-            (zero, 8),
-            (zero, 8),
-            (zero, 4),
-        ];
-        m.extend_from_slice(&[
-            (zero, 20),
-            (zero, 12),
-            (zero, 12),
-            (zero, 12),
-            (zero, 12),
-            (font_draw, 28),
-            (font_draw, 28),
-            (zero, 4),
-            (zero, 4),
-        ]);
+        let mut m: Vec<(Handler, u32)> = vec![(qi_no, 12), (add_ref, 4), (release, 4), (font_device, 8), (zero, 8), (zero, 8), (zero, 8), (zero, 8), (zero, 4)];
+        m.extend_from_slice(&[(zero, 20), (zero, 12), (zero, 12), (zero, 12), (zero, 12), (font_draw, 28), (font_draw, 28), (zero, 4), (zero, 4)]);
         vtable("ID3DXFont", &m)
     });
     let o = mem::heap_alloc(16, true);
@@ -1345,33 +1003,18 @@ fn D3DXCheckVersion(_: &mut Ctx) -> u32 {
 pub fn init() {
     let fns: &[(&str, Handler)] = &[
         ("D3DXCreateEffect", D3DXCreateEffect),
-        (
-            "D3DXSaveTextureToFileInMemory",
-            D3DXSaveTextureToFileInMemory,
-        ),
-        (
-            "D3DXSaveSurfaceToFileInMemory",
-            D3DXSaveSurfaceToFileInMemory,
-        ),
+        ("D3DXSaveTextureToFileInMemory", D3DXSaveTextureToFileInMemory),
+        ("D3DXSaveSurfaceToFileInMemory", D3DXSaveSurfaceToFileInMemory),
         ("D3DXCreateMatrixStack", D3DXCreateMatrixStack),
         ("D3DXCreateTexture", D3DXCreateTexture),
         ("D3DXCheckTextureRequirements", D3DXCheckTextureRequirements),
-        (
-            "D3DXCreateTextureFromFileInMemoryEx",
-            D3DXCreateTextureFromFileInMemoryEx,
-        ),
-        (
-            "D3DXCreateTextureFromFileInMemory",
-            D3DXCreateTextureFromFileInMemory,
-        ),
+        ("D3DXCreateTextureFromFileInMemoryEx", D3DXCreateTextureFromFileInMemoryEx),
+        ("D3DXCreateTextureFromFileInMemory", D3DXCreateTextureFromFileInMemory),
         ("D3DXCreateTextureFromFileA", D3DXCreateTextureFromFileA),
         ("D3DXCreateTextureFromFileW", D3DXCreateTextureFromFileW),
         ("D3DXCreateTextureFromFileExA", D3DXCreateTextureFromFileExA),
         ("D3DXCreateTextureFromFileExW", D3DXCreateTextureFromFileExW),
-        (
-            "D3DXGetImageInfoFromFileInMemory",
-            D3DXGetImageInfoFromFileInMemory,
-        ),
+        ("D3DXGetImageInfoFromFileInMemory", D3DXGetImageInfoFromFileInMemory),
         ("D3DXGetImageInfoFromFileA", D3DXGetImageInfoFromFileA),
         ("D3DXGetImageInfoFromFileW", D3DXGetImageInfoFromFileW),
         ("D3DXCreateEffectEx", D3DXCreateEffectEx),
@@ -1389,10 +1032,7 @@ pub fn init() {
         ("D3DXMatrixRotationX", D3DXMatrixRotationX),
         ("D3DXMatrixRotationY", D3DXMatrixRotationY),
         ("D3DXMatrixRotationZ", D3DXMatrixRotationZ),
-        (
-            "D3DXMatrixRotationYawPitchRoll",
-            D3DXMatrixRotationYawPitchRoll,
-        ),
+        ("D3DXMatrixRotationYawPitchRoll", D3DXMatrixRotationYawPitchRoll),
         ("D3DXMatrixLookAtLH", D3DXMatrixLookAtLH),
         ("D3DXMatrixLookAtRH", D3DXMatrixLookAtRH),
         ("D3DXMatrixPerspectiveFovLH", D3DXMatrixPerspectiveFovLH),
@@ -1427,10 +1067,7 @@ pub fn init() {
         ("D3DXCreateFontIndirectW", D3DXCreateFont),
         ("D3DXCheckVersion", D3DXCheckVersion),
         ("D3DXCreateSprite", crate::d3dx9sprite::D3DXCreateSprite),
-        (
-            "D3DXLoadSurfaceFromFileInMemory",
-            D3DXLoadSurfaceFromFileInMemory,
-        ),
+        ("D3DXLoadSurfaceFromFileInMemory", D3DXLoadSurfaceFromFileInMemory),
         ("D3DXLoadSurfaceFromFileA", D3DXLoadSurfaceFromFileA),
         ("D3DXLoadSurfaceFromFileW", D3DXLoadSurfaceFromFileW),
     ];

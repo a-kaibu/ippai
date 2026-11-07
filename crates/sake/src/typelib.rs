@@ -58,11 +58,7 @@ pub enum Var {
 /// Reads the VARIANT at `p` (through VT_BYREF).
 pub fn read_var(p: u32) -> Var {
     let vt = r16(p);
-    let (base, at) = if vt & VT_BYREF != 0 {
-        (vt & !VT_BYREF, r32(p + 8))
-    } else {
-        (vt, p + 8)
-    };
+    let (base, at) = if vt & VT_BYREF != 0 { (vt & !VT_BYREF, r32(p + 8)) } else { (vt, p + 8) };
     if vt & VT_BYREF != 0 && base == VT_VARIANT {
         return read_var(at);
     }
@@ -77,11 +73,7 @@ pub fn read_var(p: u32) -> Var {
         18 => Var::I4(r16(at) as i32),
         19 | 23 => {
             let v = r32(at);
-            if v <= i32::MAX as u32 {
-                Var::I4(v as i32)
-            } else {
-                Var::R8(v as f64)
-            }
+            if v <= i32::MAX as u32 { Var::I4(v as i32) } else { Var::R8(v as f64) }
         }
         20 | 21 => Var::R8(f64_at(at)),
         VT_R4 => Var::R8(f32::from_bits(r32(at)) as f64),
@@ -91,11 +83,7 @@ pub fn read_var(p: u32) -> Var {
         VT_ERROR => Var::Error(r32(at)),
         VT_BSTR => {
             let b = r32(at);
-            Var::Str(if b == 0 {
-                Vec::new()
-            } else {
-                (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect()
-            })
+            Var::Str(if b == 0 { Vec::new() } else { (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect() })
         }
         VT_DISPATCH => Var::Obj(r32(at), true),
         VT_UNKNOWN => Var::Obj(r32(at), false),
@@ -137,11 +125,7 @@ impl Var {
             Var::Error(e) => *e as i32,
             v => {
                 let f = v.num().round();
-                if f >= i32::MIN as f64 && f <= u32::MAX as f64 {
-                    f as i64 as u32 as i32
-                } else {
-                    0
-                }
+                if f >= i32::MIN as f64 && f <= u32::MAX as f64 { f as i64 as u32 as i32 } else { 0 }
             }
         }
     }
@@ -230,10 +214,8 @@ pub struct Lib {
 
 /// Parses an MSFT type library.
 pub fn parse(d: &[u8]) -> Option<Lib> {
-    let i32_at =
-        |o: usize| -> Option<i32> { Some(i32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?)) };
-    let i16_at =
-        |o: usize| -> Option<i16> { Some(i16::from_le_bytes(d.get(o..o + 2)?.try_into().ok()?)) };
+    let i32_at = |o: usize| -> Option<i32> { Some(i32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?)) };
+    let i16_at = |o: usize| -> Option<i16> { Some(i16::from_le_bytes(d.get(o..o + 2)?.try_into().ok()?)) };
     if d.get(..4)? != b"MSFT" {
         return None;
     }
@@ -248,42 +230,27 @@ pub fn parse(d: &[u8]) -> Option<Lib> {
         }
         let o = name_tab + off as usize;
         let len = *d.get(o + 8).unwrap_or(&0) as usize;
-        d.get(o + 12..o + 12 + len)
-            .map(|b| b.iter().map(|&c| c as char).collect())
-            .unwrap_or_default()
+        d.get(o + 12..o + 12 + len).map(|b| b.iter().map(|&c| c as char).collect()).unwrap_or_default()
     };
     let guid = |off: i32| -> [u8; 16] {
         if off < 0 {
             return [0; 16];
         }
         let o = guid_tab + off as usize;
-        d.get(o..o + 16)
-            .and_then(|b| b.try_into().ok())
-            .unwrap_or([0; 16])
+        d.get(o..o + 16).and_then(|b| b.try_into().ok()).unwrap_or([0; 16])
     };
     fn tdesc(d: &[u8], td_tab: usize, t: i32, depth: u32) -> Td {
         if t < 0 {
             return Td::Base((t & 0xfff) as u16);
         }
         let o = td_tab + t as usize;
-        let h = |k: usize| {
-            d.get(o + 2 * k..o + 2 * k + 2)
-                .map_or(0, |b| i16::from_le_bytes([b[0], b[1]]))
-        };
+        let h = |k: usize| d.get(o + 2 * k..o + 2 * k + 2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]));
         let (vt, a, b) = ((h(0) & 0xfff) as u16, h(2), h(3));
         let r = ((b as i32) << 16) | (a as u16 as i32);
         match vt {
             26 | 27 if depth < 16 => {
-                let inner = if b < 0 {
-                    Td::Base((a & 0xfff) as u16)
-                } else {
-                    tdesc(d, td_tab, r, depth + 1)
-                };
-                if vt == 26 {
-                    Td::Ptr(Box::new(inner))
-                } else {
-                    Td::Other(27)
-                }
+                let inner = if b < 0 { Td::Base((a & 0xfff) as u16) } else { tdesc(d, td_tab, r, depth + 1) };
+                if vt == 26 { Td::Ptr(Box::new(inner)) } else { Td::Other(27) }
             }
             29 => Td::User(r as u32),
             v => Td::Other(v),
@@ -345,21 +312,13 @@ pub fn parse(d: &[u8]) -> Option<Lib> {
                 let na = i16_at(ro + 20)?.max(0) as usize;
                 let invkind = fk >> 3 & 0xf;
                 let no = i32_at(tail + 4 * (nf + nv + f + 1))?;
-                let fname = if no == -1 && f > 0 {
-                    prev_name.clone()
-                } else {
-                    name(no)
-                };
+                let fname = if no == -1 && f > 0 { prev_name.clone() } else { name(no) };
                 prev_name = fname.clone();
                 let mut params = Vec::new();
                 let pbase = (ro + rl).checked_sub(na * 12)?;
                 for j in 0..na {
                     let p = pbase + j * 12;
-                    params.push(Param {
-                        td: td(i32_at(p)?),
-                        name: name(i32_at(p + 4)?),
-                        flags: i32_at(p + 8)? as u16,
-                    });
+                    params.push(Param { td: td(i32_at(p)?), name: name(i32_at(p + 4)?), flags: i32_at(p + 8)? as u16 });
                 }
                 info.funcs.push(Func {
                     memid: i32_at(tail + 4 * (f + 1))?,
@@ -376,10 +335,7 @@ pub fn parse(d: &[u8]) -> Option<Lib> {
                 ro += rl.max(4);
             }
             for v in 0..nv {
-                info.vars.push(Var_ {
-                    memid: i32_at(tail + 4 * (nf + v + 1))?,
-                    name: name(i32_at(tail + 4 * (2 * nf + nv + v + 1))?),
-                });
+                info.vars.push(Var_ { memid: i32_at(tail + 4 * (nf + v + 1))?, name: name(i32_at(tail + 4 * (2 * nf + nv + v + 1))?) });
             }
         }
         infos.push(info);
@@ -478,10 +434,7 @@ fn free_it(c: &mut Ctx) -> u32 {
 /// Registers a parsed library; its ITypeLib.
 pub fn add(lib: Lib) -> u32 {
     let mut libs = LIBS.lock().unwrap();
-    if let Some(l) = libs
-        .iter()
-        .find(|l| l.lib.guid == lib.guid && l.lib.guid != [0; 16])
-    {
+    if let Some(l) = libs.iter().find(|l| l.lib.guid == lib.guid && l.lib.guid != [0; 16]) {
         return l.block;
     }
     let li = libs.len() as u32;
@@ -514,10 +467,7 @@ fn with_info<R>(li: usize, ii: usize, f: impl FnOnce(&Lib, &Info) -> R) -> Optio
     l.lib.infos.get(ii).map(|i| f(&l.lib, i))
 }
 fn info_block(li: usize, ii: usize) -> Option<u32> {
-    LIBS.lock()
-        .unwrap()
-        .get(li)
-        .and_then(|l| l.infos.get(ii).copied())
+    LIBS.lock().unwrap().get(li).and_then(|l| l.infos.get(ii).copied())
 }
 
 fn guid_eq(p: u32, g: &[u8; 16]) -> bool {
@@ -538,10 +488,7 @@ fn L_QueryInterface(c: &mut Ctx) -> u32 {
     }
 }
 fn L_GetTypeInfoCount(c: &mut Ctx) -> u32 {
-    LIBS.lock()
-        .unwrap()
-        .get(lib_of(c))
-        .map_or(0, |l| l.lib.infos.len() as u32)
+    LIBS.lock().unwrap().get(lib_of(c)).map_or(0, |l| l.lib.infos.len() as u32)
 }
 fn L_GetTypeInfo(c: &mut Ctx) -> u32 {
     match info_block(lib_of(c), c.a(1) as usize) {
@@ -564,13 +511,7 @@ fn L_GetTypeInfoType(c: &mut Ctx) -> u32 {
 fn L_GetTypeInfoOfGuid(c: &mut Ctx) -> u32 {
     let li = lib_of(c);
     let g = c.a(1);
-    let hit = LIBS.lock().unwrap().get(li).and_then(|l| {
-        l.lib
-            .infos
-            .iter()
-            .position(|i| guid_eq(g, &i.guid))
-            .map(|i| l.infos[i])
-    });
+    let hit = LIBS.lock().unwrap().get(li).and_then(|l| l.lib.infos.iter().position(|i| guid_eq(g, &i.guid)).map(|i| l.infos[i]));
     match hit {
         Some(b) => {
             mem::putp(c.a(2), b);
@@ -583,12 +524,7 @@ fn L_GetTypeInfoOfGuid(c: &mut Ctx) -> u32 {
     }
 }
 fn L_GetLibAttr(c: &mut Ctx) -> u32 {
-    let Some((g, lcid, ver, flags)) = LIBS
-        .lock()
-        .unwrap()
-        .get(lib_of(c))
-        .map(|l| (l.lib.guid, l.lib.lcid, l.lib.version, l.lib.flags))
-    else {
+    let Some((g, lcid, ver, flags)) = LIBS.lock().unwrap().get(lib_of(c)).map(|l| (l.lib.guid, l.lib.lcid, l.lib.version, l.lib.flags)) else {
         return E_INVALIDARG;
     };
     let p = mem::heap_alloc(32, true);
@@ -603,25 +539,14 @@ fn L_GetLibAttr(c: &mut Ctx) -> u32 {
 }
 fn put_bstr(p: u32, s: &str) {
     if p != 0 {
-        put32(
-            p,
-            crate::misc::bstr_alloc(&s.encode_utf16().collect::<Vec<_>>()),
-        );
+        put32(p, crate::misc::bstr_alloc(&s.encode_utf16().collect::<Vec<_>>()));
     }
 }
 fn L_GetDocumentation(c: &mut Ctx) -> u32 {
     let li = lib_of(c);
     let idx = c.a(1) as i32;
-    let n = LIBS.lock().unwrap().get(li).and_then(|l| {
-        if idx < 0 {
-            Some(l.lib.name.clone())
-        } else {
-            l.lib.infos.get(idx as usize).map(|i| i.name.clone())
-        }
-    });
-    let Some(n) = n else {
-        return TYPE_E_ELEMENTNOTFOUND;
-    };
+    let n = LIBS.lock().unwrap().get(li).and_then(|l| if idx < 0 { Some(l.lib.name.clone()) } else { l.lib.infos.get(idx as usize).map(|i| i.name.clone()) });
+    let Some(n) = n else { return TYPE_E_ELEMENTNOTFOUND };
     put_bstr(c.a(2), &n);
     for p in [c.a(3), c.a(5)] {
         put32(p, 0);
@@ -632,10 +557,7 @@ fn L_GetDocumentation(c: &mut Ctx) -> u32 {
 fn L_IsName(c: &mut Ctx) -> u32 {
     let name = String::from_utf16_lossy(&mem::wstr(c.a(1)));
     let found = LIBS.lock().unwrap().get(lib_of(c)).is_some_and(|l| {
-        l.lib.infos.iter().any(|i| {
-            i.name.eq_ignore_ascii_case(&name)
-                || i.funcs.iter().any(|f| f.name.eq_ignore_ascii_case(&name))
-        })
+        l.lib.infos.iter().any(|i| i.name.eq_ignore_ascii_case(&name) || i.funcs.iter().any(|f| f.name.eq_ignore_ascii_case(&name)))
     });
     put32(c.a(3), if found { 0xffff } else { 0 });
     S_OK
@@ -658,9 +580,7 @@ fn I_QueryInterface(c: &mut Ctx) -> u32 {
 /// TYPEATTR
 fn I_GetTypeAttr(c: &mut Ctx) -> u32 {
     let (li, ii) = info_of(c);
-    let Some(i) = with_info(li, ii, |_, i| i.clone()) else {
-        return E_INVALIDARG;
-    };
+    let Some(i) = with_info(li, ii, |_, i| i.clone()) else { return E_INVALIDARG };
     let p = mem::heap_alloc(76, true);
     mem::write(p, &i.guid);
     w32(p + 16, 0);
@@ -707,9 +627,7 @@ fn write_tdesc(p: u32, t: &Td) {
 /// ReleaseFuncDesc (the TYPEDESCs pointed to stay: small and few).
 fn I_GetFuncDesc(c: &mut Ctx) -> u32 {
     let (li, ii) = info_of(c);
-    let Some(f) = with_info(li, ii, |_, i| i.funcs.get(c.a(1) as usize).cloned()).flatten() else {
-        return TYPE_E_ELEMENTNOTFOUND;
-    };
+    let Some(f) = with_info(li, ii, |_, i| i.funcs.get(c.a(1) as usize).cloned()).flatten() else { return TYPE_E_ELEMENTNOTFOUND };
     let n = f.params.len() as u32;
     let p = mem::heap_alloc(52 + 16 * n, true);
     w32(p, f.memid as u32);
@@ -747,9 +665,7 @@ fn find<R>(li: usize, ii: usize, f: &mut dyn FnMut(usize, &Info) -> Option<R>) -
         }
         // the base interface, if it is in this library
         match info.impls.first() {
-            Some(&h) if h & 1 == 0 && (h as usize) / 100 < l.lib.infos.len() && info.kind != 5 => {
-                at = h as usize / 100
-            }
+            Some(&h) if h & 1 == 0 && (h as usize) / 100 < l.lib.infos.len() && info.kind != 5 => at = h as usize / 100,
             _ => return None,
         }
     }
@@ -765,15 +681,9 @@ fn I_GetIDsOfNames(c: &mut Ctx) -> u32 {
     let first = String::from_utf16_lossy(&mem::wstr(r32(names)));
     let hit = find(li, ii, &mut |_, i| {
         if let Some(f) = i.funcs.iter().find(|f| f.name.eq_ignore_ascii_case(&first)) {
-            return Some((
-                f.memid,
-                f.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
-            ));
+            return Some((f.memid, f.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>()));
         }
-        i.vars
-            .iter()
-            .find(|v| v.name.eq_ignore_ascii_case(&first))
-            .map(|v| (v.memid, Vec::new()))
+        i.vars.iter().find(|v| v.name.eq_ignore_ascii_case(&first)).map(|v| (v.memid, Vec::new()))
     });
     let Some((id, params)) = hit else {
         for k in 0..n {
@@ -802,22 +712,12 @@ fn I_GetNames(c: &mut Ctx) -> u32 {
     let names = find(li, ii, &mut |_, i| {
         if let Some(f) = i.funcs.iter().find(|f| f.memid == memid) {
             let mut v = vec![f.name.clone()];
-            v.extend(
-                f.params
-                    .iter()
-                    .filter(|p| p.flags & 8 == 0 || f.invkind & 0xc == 0)
-                    .map(|p| p.name.clone()),
-            );
+            v.extend(f.params.iter().filter(|p| p.flags & 8 == 0 || f.invkind & 0xc == 0).map(|p| p.name.clone()));
             return Some(v);
         }
-        i.vars
-            .iter()
-            .find(|v| v.memid == memid)
-            .map(|v| vec![v.name.clone()])
+        i.vars.iter().find(|v| v.memid == memid).map(|v| vec![v.name.clone()])
     });
-    let Some(names) = names else {
-        return TYPE_E_ELEMENTNOTFOUND;
-    };
+    let Some(names) = names else { return TYPE_E_ELEMENTNOTFOUND };
     let k = (names.len() as u32).min(max);
     for (j, n) in names.iter().take(k as usize).enumerate() {
         put_bstr(out + 4 * j as u32, n);
@@ -832,22 +732,9 @@ fn I_GetDocumentation(c: &mut Ctx) -> u32 {
     let n = if memid == -1 {
         with_info(li, ii, |_, i| i.name.clone())
     } else {
-        find(li, ii, &mut |_, i| {
-            i.funcs
-                .iter()
-                .find(|f| f.memid == memid)
-                .map(|f| f.name.clone())
-                .or_else(|| {
-                    i.vars
-                        .iter()
-                        .find(|v| v.memid == memid)
-                        .map(|v| v.name.clone())
-                })
-        })
+        find(li, ii, &mut |_, i| i.funcs.iter().find(|f| f.memid == memid).map(|f| f.name.clone()).or_else(|| i.vars.iter().find(|v| v.memid == memid).map(|v| v.name.clone())))
     };
-    let Some(n) = n else {
-        return TYPE_E_ELEMENTNOTFOUND;
-    };
+    let Some(n) = n else { return TYPE_E_ELEMENTNOTFOUND };
     put_bstr(c.a(2), &n);
     put32(c.a(3), 0);
     put32(c.a(4), 0);
@@ -858,9 +745,7 @@ fn I_GetDocumentation(c: &mut Ctx) -> u32 {
 fn I_GetRefTypeOfImplType(c: &mut Ctx) -> u32 {
     let (li, ii) = info_of(c);
     let idx = c.a(1) as i32;
-    let Some((impls, flags)) = with_info(li, ii, |_, i| (i.impls.clone(), i.flags)) else {
-        return E_INVALIDARG;
-    };
+    let Some((impls, flags)) = with_info(li, ii, |_, i| (i.impls.clone(), i.flags)) else { return E_INVALIDARG };
     if idx == -1 && flags & 0x40 != 0 {
         // a dual interface's vtable side: this info again
         put32(c.a(2), (ii * 100) as u32);
@@ -915,14 +800,7 @@ fn user_kind(li: usize, h: u32) -> (u32, Option<Td>) {
 }
 
 /// The stack dwords for passing `v` as type `t` (temporaries to free after the call).
-fn to_arg(
-    li: usize,
-    t: &Td,
-    v: &Var,
-    src: u32,
-    temps: &mut Vec<u32>,
-    bstrs: &mut Vec<u32>,
-) -> Result<Vec<u32>, u32> {
+fn to_arg(li: usize, t: &Td, v: &Var, src: u32, temps: &mut Vec<u32>, bstrs: &mut Vec<u32>) -> Result<Vec<u32>, u32> {
     Ok(match t {
         Td::Base(vt) | Td::Other(vt) => match *vt {
             VT_R8 | 7 => {
@@ -976,11 +854,7 @@ fn to_arg(
         Td::Ptr(inner) => {
             // a VARIANT* gets the caller's VARIANT; other pointers a temporary holding the value
             if **inner == Td::Base(VT_VARIANT) && src != 0 {
-                return Ok(vec![if r16(src) == VT_BYREF | VT_VARIANT {
-                    r32(src + 8)
-                } else {
-                    src
-                }]);
+                return Ok(vec![if r16(src) == VT_BYREF | VT_VARIANT { r32(src + 8) } else { src }]);
             }
             if src != 0 && r16(src) & VT_BYREF != 0 {
                 return Ok(vec![r32(src + 8)]);
@@ -1004,11 +878,7 @@ fn from_out(li: usize, t: &Td, p: u32) -> Var {
             VT_BOOL => Var::Bool(r16(p) != 0),
             VT_BSTR => {
                 let b = r32(p);
-                Var::Str(if b == 0 {
-                    Vec::new()
-                } else {
-                    (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect()
-                })
+                Var::Str(if b == 0 { Vec::new() } else { (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect() })
             }
             VT_DISPATCH => Var::Obj(r32(p), true),
             VT_UNKNOWN => Var::Obj(r32(p), false),
@@ -1039,24 +909,14 @@ fn from_out(li: usize, t: &Td, p: u32) -> Var {
 /// ITypeInfo::Invoke(pvInstance, memid, wFlags, pDispParams, pVarResult, pExcepInfo, puArgErr)
 fn I_Invoke(c: &mut Ctx) -> u32 {
     let (li, ii) = info_of(c);
-    let (obj, memid, flags, dp, result, excep) =
-        (c.a(1), c.a(2) as i32, c.a(3) & 0xf, c.a(4), c.a(5), c.a(6));
-    let Some(f) = find(li, ii, &mut |_, i| {
-        i.funcs
-            .iter()
-            .find(|f| f.memid == memid && f.invkind & flags != 0)
-            .cloned()
-    }) else {
+    let (obj, memid, flags, dp, result, excep) = (c.a(1), c.a(2) as i32, c.a(3) & 0xf, c.a(4), c.a(5), c.a(6));
+    let Some(f) = find(li, ii, &mut |_, i| i.funcs.iter().find(|f| f.memid == memid && f.invkind & flags != 0).cloned()) else {
         return DISP_E_MEMBERNOTFOUND;
     };
     if f.funckind > 1 || obj == 0 {
         return DISP_E_MEMBERNOTFOUND;
     }
-    let (rgvarg, named, nargs, nnamed) = if dp == 0 {
-        (0, 0, 0, 0)
-    } else {
-        (r32(dp), r32(dp + 4), r32(dp + 8), r32(dp + 12))
-    };
+    let (rgvarg, named, nargs, nnamed) = if dp == 0 { (0, 0, 0, 0) } else { (r32(dp), r32(dp + 4), r32(dp + 8), r32(dp + 12)) };
     let npos = nargs.saturating_sub(nnamed);
     let mut args = vec![obj];
     let (mut temps, mut bstrs) = (Vec::new(), Vec::new());
@@ -1097,20 +957,14 @@ fn I_Invoke(c: &mut Ctx) -> u32 {
             None => None,
         };
         let (v, src) = match src {
-            Some(s) if !(r16(s) == VT_ERROR && r32(s + 8) == DISP_E_PARAMNOTFOUND) => {
-                (read_var(s), s)
-            }
+            Some(s) if !(r16(s) == VT_ERROR && r32(s + 8) == DISP_E_PARAMNOTFOUND) => (read_var(s), s),
             _ if p.flags & 0x30 != 0 => (Var::Error(DISP_E_PARAMNOTFOUND), 0),
             _ => {
                 err = DISP_E_BADPARAMCOUNT;
                 break;
             }
         };
-        let v = if matches!(v, Var::Error(_)) && p.td != Td::Base(VT_VARIANT) && src == 0 {
-            Var::Empty
-        } else {
-            v
-        };
+        let v = if matches!(v, Var::Error(_)) && p.td != Td::Base(VT_VARIANT) && src == 0 { Var::Empty } else { v };
         match to_arg(li, &p.td, &v, src, &mut temps, &mut bstrs) {
             Ok(d) => args.extend(d),
             Err(e) => {
@@ -1178,14 +1032,10 @@ fn I_Invoke(c: &mut Ctx) -> u32 {
 /// The TYPELIB resource (or the file) `path` names: "x.exe", "x.dll\\2", "x.tlb".
 fn load(path: &str) -> Option<Lib> {
     let (file, idx) = match path.rsplit_once('\\') {
-        Some((f, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
-            (f.to_string(), n.parse().unwrap_or(1))
-        }
+        Some((f, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => (f.to_string(), n.parse().unwrap_or(1)),
         _ => (path.to_string(), 1),
     };
-    if let Some(m) =
-        crate::pe::by_name(&file).or_else(|| crate::pe::by_name(&crate::files::full_path(&file)))
-    {
+    if let Some(m) = crate::pe::by_name(&file).or_else(|| crate::pe::by_name(&crate::files::full_path(&file))) {
         let ty = crate::pe::ResId::Name("TYPELIB".encode_utf16().collect());
         let e = crate::pe::find_resource(m, &ty, &crate::pe::ResId::Int(idx))?;
         let (a, n) = crate::pe::resource_data(m, e);
@@ -1218,18 +1068,9 @@ fn LoadTypeLibEx(c: &mut Ctx) -> u32 {
 /// LoadRegTypeLib(guid, major, minor, lcid, &lib): a library loaded before, by its GUID.
 fn LoadRegTypeLib(c: &mut Ctx) -> u32 {
     let g = c.a(0);
-    let hit = LIBS
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|l| guid_eq(g, &l.lib.guid))
-        .map(|l| l.block);
+    let hit = LIBS.lock().unwrap().iter().find(|l| guid_eq(g, &l.lib.guid)).map(|l| l.block);
     put32(c.a(4), hit.unwrap_or(0));
-    if hit.is_some() {
-        S_OK
-    } else {
-        TYPE_E_CANTLOADLIBRARY
-    }
+    if hit.is_some() { S_OK } else { TYPE_E_CANTLOADLIBRARY }
 }
 fn ok(_: &mut Ctx) -> u32 {
     S_OK
@@ -1271,20 +1112,10 @@ mod tests {
             }
             o
         };
-        let (n_lib, n_if, n_get, n_set, n_v, n_name) = (
-            name("Lib"),
-            name("IThing"),
-            name("getX"),
-            name("setName"),
-            name("v"),
-            name("name"),
-        );
+        let (n_lib, n_if, n_get, n_set, n_v, n_name) = (name("Lib"), name("IThing"), name("getX"), name("setName"), name("v"), name("name"));
         let guids: Vec<u8> = (0..48u8).collect();
         // typedesc 0: PTR to VT_I4
-        let tds: Vec<u8> = [26i16, 0, 3, -1]
-            .iter()
-            .flat_map(|x| x.to_le_bytes())
-            .collect();
+        let tds: Vec<u8> = [26i16, 0, 3, -1].iter().flat_map(|x| x.to_le_bytes()).collect();
         let mut members = Vec::new();
         let rec = |m: &mut Vec<u8>, dt: i32, vft: i16, params: &[(i32, i32, i32)]| {
             let len = 24 + 12 * params.len() as i32;
@@ -1304,20 +1135,14 @@ mod tests {
         };
         let mut recs = Vec::new();
         rec(&mut recs, 0x8000_0019u32 as i32, 28, &[(0, n_v, 0xa)]);
-        rec(
-            &mut recs,
-            0x8000_0019u32 as i32,
-            32,
-            &[(0x8000_0008u32 as i32, n_name, 1)],
-        );
+        rec(&mut recs, 0x8000_0019u32 as i32, 32, &[(0x8000_0008u32 as i32, n_name, 1)]);
         members.extend_from_slice(&(recs.len() as i32).to_le_bytes());
         members.extend_from_slice(&recs);
         for v in [0x6002_0000, 0x6002_0001, n_get, n_set, 0, 0] {
             members.extend_from_slice(&(v as i32).to_le_bytes());
         }
         let mut ti = vec![0u8; 100];
-        let tput =
-            |t: &mut Vec<u8>, o: usize, v: i32| t[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        let tput = |t: &mut Vec<u8>, o: usize, v: i32| t[o..o + 4].copy_from_slice(&v.to_le_bytes());
         tput(&mut ti, 0, 4);
         tput(&mut ti, 0x18, 2);
         tput(&mut ti, 0x2c, 16);
@@ -1327,12 +1152,7 @@ mod tests {
         ti[0x4e..0x50].copy_from_slice(&36i16.to_le_bytes());
         tput(&mut ti, 0x54, 1);
         let base = d.len();
-        let segs = [
-            (0, base),
-            (5, base + 100),
-            (7, base + 148),
-            (9, base + 148 + names.len()),
-        ];
+        let segs = [(0, base), (5, base + 100), (7, base + 148), (9, base + 148 + names.len())];
         for (k, o) in segs {
             put(&mut d, so + 16 * k, o as i32);
         }
@@ -1352,27 +1172,12 @@ mod tests {
         let l = parse(&sample()).unwrap();
         assert_eq!(l.name, "Lib");
         let i = &l.infos[0];
-        assert_eq!(
-            (i.name.as_str(), i.kind, i.cb_vft, i.impls.as_slice()),
-            ("IThing", 4, 36, &[1u32][..])
-        );
+        assert_eq!((i.name.as_str(), i.kind, i.cb_vft, i.impls.as_slice()), ("IThing", 4, 36, &[1u32][..]));
         assert_eq!(&i.guid[..], &(16..32u8).collect::<Vec<_>>()[..]);
         let f = &i.funcs;
-        assert_eq!(
-            (
-                f[0].name.as_str(),
-                f[0].memid,
-                f[0].ovft,
-                f[0].callconv,
-                f[0].funckind
-            ),
-            ("getX", 0x6002_0000, 28, 4, 1)
-        );
+        assert_eq!((f[0].name.as_str(), f[0].memid, f[0].ovft, f[0].callconv, f[0].funckind), ("getX", 0x6002_0000, 28, 4, 1));
         assert_eq!(f[0].params[0].td, Td::Ptr(Box::new(Td::Base(VT_I4))));
-        assert_eq!(
-            (f[0].params[0].flags, f[0].params[0].name.as_str()),
-            (0xa, "v")
-        );
+        assert_eq!((f[0].params[0].flags, f[0].params[0].name.as_str()), (0xa, "v"));
         assert_eq!(f[0].ret, Td::Base(25));
         assert_eq!((f[1].name.as_str(), f[1].ovft), ("setName", 32));
         assert_eq!(f[1].params[0].td, Td::Base(VT_BSTR));
@@ -1400,26 +1205,15 @@ mod tests {
     /// SAKE_TLB=path: a real library parses, and its first interface lists its functions.
     #[test]
     fn real_library() {
-        let Ok(p) = std::env::var("SAKE_TLB") else {
-            return;
-        };
+        let Ok(p) = std::env::var("SAKE_TLB") else { return };
         let l = parse(&std::fs::read(p).unwrap()).unwrap();
         for i in l.infos.iter().take(3) {
-            eprintln!(
-                "{} kind {} funcs {} impls {:?}",
-                i.name,
-                i.kind,
-                i.funcs.len(),
-                i.impls
-            );
+            eprintln!("{} kind {} funcs {} impls {:?}", i.name, i.kind, i.funcs.len(), i.impls);
             for f in i.funcs.iter().take(4) {
                 eprintln!("  {:#x} {} vft {} {:?}", f.memid, f.name, f.ovft, f.params);
             }
         }
-        assert!(l
-            .infos
-            .iter()
-            .all(|i| i.funcs.iter().all(|f| !f.name.is_empty())));
+        assert!(l.infos.iter().all(|i| i.funcs.iter().all(|f| !f.name.is_empty())));
     }
 
     #[test]

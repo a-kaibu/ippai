@@ -35,12 +35,7 @@ fn release(a: u32) {
     let iface = {
         let g = D11S.lock().unwrap();
         let d = g.as_ref().unwrap();
-        d.objs[&d.id_of(a)]
-            .faces
-            .iter()
-            .find(|f| f.1 == a)
-            .unwrap()
-            .0
+        d.objs[&d.id_of(a)].faces.iter().find(|f| f.1 == a).unwrap().0
     };
     call1(m(iface, 2), &[a]);
 }
@@ -64,13 +59,7 @@ fn run(seed: u64) -> Vec<Step> {
     let desc = mem(16);
     put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
     let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
-    assert_eq!(
-        call1(
-            CREATE_DEVICE,
-            &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]
-        ),
-        0
-    );
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
     let (sc, dev, ctx) = (rd1(sc_out), rd1(dev_out), rd1(ctx_out));
     let o = mem(2);
     let tex = |w: u32, mips: u32, fmt: u32, bind: u32| {
@@ -89,11 +78,7 @@ fn run(seed: u64) -> Vec<Step> {
     let view = |kind: u32, res: u32, words: &[u32]| {
         let d = mem(8);
         put(d, words);
-        assert_eq!(
-            call1(m(IF_DEVICE, kind), &[dev, res, d, o]),
-            0,
-            "view {kind} {words:?}"
-        );
+        assert_eq!(call1(m(IF_DEVICE, kind), &[dev, res, d, o]), 0, "view {kind} {words:?}");
         rd1(o)
     };
     let mut views = vec![0u32];
@@ -181,29 +166,10 @@ fn run(seed: u64) -> Vec<Step> {
 /// Binds11.tla in Rust (the test fails here too, with the step, when TLC is not run).
 fn check(steps: &[Step], seed: u64) {
     // per view: (resource, mip); 1..3 inputs, 4..8 outputs (7 read-only), 9 the buffer
-    let span = |v: u32| {
-        [
-            (0, 0),
-            (1, 0),
-            (1, 1),
-            (2, 0),
-            (1, 0),
-            (1, 1),
-            (2, 0),
-            (2, 0),
-            (1, 0),
-            (3, 0),
-        ][v as usize]
-    };
+    let span = |v: u32| [(0, 0), (1, 0), (1, 1), (2, 0), (1, 0), (1, 1), (2, 0), (2, 0), (1, 0), (3, 0)][v as usize];
     let mut slots = [0u32; 9];
     for (n, t) in steps.iter().enumerate() {
-        let outs = |slots: &[u32; 9]| -> Vec<(u32, u32)> {
-            [slots[4], if slots[5] == 7 { 0 } else { slots[5] }, slots[6]]
-                .into_iter()
-                .filter(|&v| v != 0)
-                .map(span)
-                .collect()
-        };
+        let outs = |slots: &[u32; 9]| -> Vec<(u32, u32)> { [slots[4], if slots[5] == 7 { 0 } else { slots[5] }, slots[6]].into_iter().filter(|&v| v != 0).map(span).collect() };
         let reads = |v: u32, slots: &[u32; 9]| v != 0 && outs(slots).contains(&span(v));
         match t.op {
             "SetSRV" => slots[t.s as usize] = if reads(t.v, &slots) { 0 } else { t.v },
@@ -226,11 +192,7 @@ fn check(steps: &[Step], seed: u64) {
                     slots[7] = 0;
                 }
             }
-            _ => assert_eq!(
-                t.got, slots[t.s as usize],
-                "seed {seed} step {n}: Get {}",
-                SLOTS[t.s as usize]
-            ),
+            _ => assert_eq!(t.got, slots[t.s as usize], "seed {seed} step {n}: Get {}", SLOTS[t.s as usize]),
         }
     }
 }
@@ -245,16 +207,7 @@ fn d3d11_bind_trace() {
         let steps = run(seed);
         let mut s = String::from("---- MODULE BindData ----\nTrace == <<\n");
         for (i, t) in steps.iter().enumerate() {
-            let _ = writeln!(
-                s,
-                "  [op |-> \"{}\", s |-> {}, v |-> {}, w |-> {}, got |-> {}]{}",
-                t.op,
-                t.s,
-                t.v,
-                t.w,
-                t.got,
-                if i + 1 < steps.len() { "," } else { "" }
-            );
+            let _ = writeln!(s, "  [op |-> \"{}\", s |-> {}, v |-> {}, w |-> {}, got |-> {}]{}", t.op, t.s, t.v, t.w, t.got, if i + 1 < steps.len() { "," } else { "" });
         }
         s.push_str(">>\n====\n");
         write_module(&format!("d3d11bind-{seed}"), "Binds11", "BindData", &s);

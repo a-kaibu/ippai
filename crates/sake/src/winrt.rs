@@ -44,19 +44,11 @@ fn create(s: &[u16]) -> Option<u32> {
 }
 
 fn len(h: u32) -> u32 {
-    if h == 0 {
-        0
-    } else {
-        r32(h + 4)
-    }
+    if h == 0 { 0 } else { r32(h + 4) }
 }
 
 fn chars(h: u32) -> Vec<u16> {
-    if h == 0 {
-        Vec::new()
-    } else {
-        mem::wstrn(rp(h + PTR), r32(h + 4))
-    }
+    if h == 0 { Vec::new() } else { mem::wstrn(rp(h + PTR), r32(h + 4)) }
 }
 
 /// WindowsCreateString(src, length, &string)
@@ -68,11 +60,7 @@ fn WindowsCreateString(c: &mut Ctx) -> u32 {
     if src == 0 && n != 0 {
         return E_POINTER;
     }
-    match create(&if n == 0 {
-        Vec::new()
-    } else {
-        mem::wstrn(src, n)
-    }) {
+    match create(&if n == 0 { Vec::new() } else { mem::wstrn(src, n) }) {
         Some(h) => {
             mem::putp(out, h);
             S_OK
@@ -143,11 +131,7 @@ fn WindowsGetStringRawBuffer(c: &mut Ctx) -> u32 {
     if n != 0 {
         w32(n, len(h));
     }
-    if h == 0 {
-        *EMPTY.get_or_init(|| mem::heap_alloc(4, true))
-    } else {
-        rp(h + PTR)
-    }
+    if h == 0 { *EMPTY.get_or_init(|| mem::heap_alloc(4, true)) } else { rp(h + PTR) }
 }
 
 fn WindowsGetStringLen(c: &mut Ctx) -> u32 {
@@ -186,10 +170,7 @@ fn RoGetActivationFactory(c: &mut Ctx) -> u32 {
         return ui::qi_into(f, c.a(1), c.a(2));
     }
     if crate::env_on!("SAKE_TRACE_COM") {
-        eprintln!(
-            "sake: RoGetActivationFactory {}: not registered",
-            class_name(c.a(0))
-        );
+        eprintln!("sake: RoGetActivationFactory {}: not registered", class_name(c.a(0)));
     }
     if c.a(2) != 0 {
         mem::putp(c.a(2), 0);
@@ -202,10 +183,7 @@ fn RoActivateInstance(c: &mut Ctx) -> u32 {
         return S_OK;
     }
     if crate::env_on!("SAKE_TRACE_COM") {
-        eprintln!(
-            "sake: RoActivateInstance {}: not registered",
-            class_name(c.a(0))
-        );
+        eprintln!("sake: RoActivateInstance {}: not registered", class_name(c.a(0)));
     }
     if c.a(1) != 0 {
         mem::putp(c.a(1), 0);
@@ -230,60 +208,21 @@ mod ui {
         (a, b, c, d)
     }
     const IUNKNOWN: Guid = g(0, 0, 0, [0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
-    const IINSPECTABLE: Guid = g(
-        0xaf86e2e0,
-        0xb12d,
-        0x4c6a,
-        [0x9c, 0x5a, 0xd7, 0xaa, 0x65, 0x10, 0x1e, 0x90],
-    );
-    const IAGILE: Guid = g(
-        0x94ea2b94,
-        0xe9cc,
-        0x49e0,
-        [0xc0, 0xff, 0xee, 0x64, 0xca, 0x8f, 0x5b, 0x90],
-    );
+    const IINSPECTABLE: Guid = g(0xaf86e2e0, 0xb12d, 0x4c6a, [0x9c, 0x5a, 0xd7, 0xaa, 0x65, 0x10, 0x1e, 0x90]);
+    const IAGILE: Guid = g(0x94ea2b94, 0xe9cc, 0x49e0, [0xc0, 0xff, 0xee, 0x64, 0xca, 0x8f, 0x5b, 0x90]);
     const IFACTORY: Guid = g(0x35, 0, 0, [0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
     /// IUISettings, IUISettings2..5 (slots 0..4 of a settings object)
     const SETTINGS: [Guid; 5] = [
-        g(
-            0x85361600,
-            0x1c63,
-            0x4627,
-            [0xbc, 0xb1, 0x3a, 0x89, 0xe0, 0xbc, 0x9c, 0x55],
-        ),
-        g(
-            0xbad82401,
-            0x2721,
-            0x44f9,
-            [0xbb, 0x91, 0x2b, 0xb2, 0x28, 0xbe, 0x44, 0x2f],
-        ),
-        g(
-            0x03021be4,
-            0x5254,
-            0x4781,
-            [0x81, 0x94, 0x51, 0x68, 0xf7, 0xd0, 0x6d, 0x7b],
-        ),
-        g(
-            0x52bb3002,
-            0x919b,
-            0x4d6b,
-            [0x9b, 0x78, 0x8d, 0xd6, 0x6f, 0xf4, 0xb9, 0x3b],
-        ),
-        g(
-            0x5349d588,
-            0x0cb5,
-            0x5f05,
-            [0xbd, 0x34, 0x70, 0x6b, 0x32, 0x31, 0xf0, 0xbd],
-        ),
+        g(0x85361600, 0x1c63, 0x4627, [0xbc, 0xb1, 0x3a, 0x89, 0xe0, 0xbc, 0x9c, 0x55]),
+        g(0xbad82401, 0x2721, 0x44f9, [0xbb, 0x91, 0x2b, 0xb2, 0x28, 0xbe, 0x44, 0x2f]),
+        g(0x03021be4, 0x5254, 0x4781, [0x81, 0x94, 0x51, 0x68, 0xf7, 0xd0, 0x6d, 0x7b]),
+        g(0x52bb3002, 0x919b, 0x4d6b, [0x9b, 0x78, 0x8d, 0xd6, 0x6f, 0xf4, 0xb9, 0x3b]),
+        g(0x5349d588, 0x0cb5, 0x5f05, [0xbd, 0x34, 0x70, 0x6b, 0x32, 0x31, 0xf0, 0xbd]),
     ];
 
     /// The object's interfaces: the factory has one, a settings object five.
     fn count(block: u32) -> u32 {
-        if rp(block) == factory_vtable() {
-            1
-        } else {
-            SETTINGS.len() as u32
-        }
+        if rp(block) == factory_vtable() { 1 } else { SETTINGS.len() as u32 }
     }
     /// (block, slot) of an interface pointer
     fn split(this: u32) -> (u32, u32) {
@@ -303,9 +242,7 @@ mod ui {
     /// QueryInterface on the object at `block` into `out`
     pub fn qi_into(block: u32, iid: u32, out: u32) -> u32 {
         let want = crate::com::read_guid(iid);
-        let k = if [IUNKNOWN, IINSPECTABLE, IAGILE].contains(&want)
-            || (count(block) == 1 && want == IFACTORY)
-        {
+        let k = if [IUNKNOWN, IINSPECTABLE, IAGILE].contains(&want) || (count(block) == 1 && want == IFACTORY) {
             Some(0)
         } else if count(block) > 1 {
             SETTINGS.iter().position(|s| *s == want).map(|k| k as u32)
@@ -354,14 +291,7 @@ mod ui {
         w32(c.a(1), 0);
         S_OK
     }
-    const INSPECTABLE: [(Handler, u32); 6] = [
-        (qi, 12),
-        (add_ref, 4),
-        (release, 4),
-        (get_iids, 12),
-        (class_name, 8),
-        (trust, 8),
-    ];
+    const INSPECTABLE: [(Handler, u32); 6] = [(qi, 12), (add_ref, 4), (release, 4), (get_iids, 12), (class_name, 8), (trust, 8)];
 
     /// A vtable of `methods` after IInspectable's, its slot `k` in the word before it.
     fn vtable(name: &str, k: u32, methods: &[(Handler, u32)]) -> u32 {
@@ -369,10 +299,7 @@ mod ui {
         let t = mem::heap_alloc(8 + ps() * all.len() as u32, true) + 8;
         w32(t - 4, k);
         for (i, (f, bytes)) in all.iter().enumerate() {
-            wp(
-                t + ps() * i as u32,
-                host_fn(&format!("winrt::{name}::{i}"), *f, *bytes),
-            );
+            wp(t + ps() * i as u32, host_fn(&format!("winrt::{name}::{i}"), *f, *bytes));
         }
         t
     }
@@ -502,19 +429,8 @@ mod ui {
                     "IUISettings",
                     0,
                     &[
-                        (hand, 8),
-                        (cursor, 8),
-                        (scrollbar, 8),
-                        (scrollbar, 8),
-                        (scrollbar, 8),
-                        (duration, 8),
-                        (yes, 8),
-                        (no, 8),
-                        (blink, 8),
-                        (one, 8),
-                        (dblclick, 8),
-                        (hover, 8),
-                        (element_color, 12),
+                        (hand, 8), (cursor, 8), (scrollbar, 8), (scrollbar, 8), (scrollbar, 8), (duration, 8), (yes, 8), (no, 8),
+                        (blink, 8), (one, 8), (dblclick, 8), (hover, 8), (element_color, 12),
                     ],
                 ),
                 vtable("IUISettings2", 1, &[(text_scale, 8), ev[0], ev[1]]),
@@ -541,10 +457,7 @@ pub fn init() {
     implement("combase", "RoInitialize", crate::misc::com_enter);
     implement("combase", "RoUninitialize", crate::misc::com_leave);
     for (n, f) in [
-        (
-            "WindowsCreateString",
-            WindowsCreateString as crate::api::Handler,
-        ),
+        ("WindowsCreateString", WindowsCreateString as crate::api::Handler),
         ("WindowsCreateStringReference", WindowsCreateStringReference),
         ("WindowsDeleteString", WindowsDeleteString),
         ("WindowsDuplicateString", WindowsDuplicateString),
@@ -559,22 +472,10 @@ pub fn init() {
     }
     // error origination (C++/WinRT reports each failed HRESULT): nothing kept; TRUE as "the
     // error was originated"
-    for n in [
-        "RoOriginateLanguageException",
-        "RoOriginateError",
-        "RoOriginateErrorW",
-        "RoTransformError",
-        "RoTransformErrorW",
-    ] {
+    for n in ["RoOriginateLanguageException", "RoOriginateError", "RoOriginateErrorW", "RoTransformError", "RoTransformErrorW"] {
         implement("combase", n, |_| 1);
     }
-    for n in [
-        "RoCaptureErrorContext",
-        "RoClearError",
-        "SetRestrictedErrorInfo",
-        "RoSetErrorReportingFlags",
-        "RoReportUnhandledError",
-    ] {
+    for n in ["RoCaptureErrorContext", "RoClearError", "SetRestrictedErrorInfo", "RoSetErrorReportingFlags", "RoReportUnhandledError"] {
         implement("combase", n, |_| S_OK);
     }
     // GetRestrictedErrorInfo(&info): none (S_FALSE); RoGetErrorReportingFlags(&flags): 0

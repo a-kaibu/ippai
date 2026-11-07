@@ -25,10 +25,7 @@ fn align(v: u32, a: u32) -> u32 {
 fn table(name: &str, fs: &[Handler]) -> u32 {
     let t = mem::heap_alloc(ps() * fs.len() as u32, true);
     for (i, f) in fs.iter().enumerate() {
-        wp(
-            t + ps() * i as u32,
-            host_fn(&format!("msvcp::{name}::{i}"), *f, 0),
-        );
+        wp(t + ps() * i as u32, host_fn(&format!("msvcp::{name}::{i}"), *f, 0));
     }
     t
 }
@@ -51,11 +48,7 @@ pub(crate) fn facet_decref(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let n = rp(refs(this)).wrapping_sub(1);
     wp(refs(this), n);
-    if n == 0 {
-        this
-    } else {
-        0
-    }
+    if n == 0 { this } else { 0 }
 }
 /// the scalar deleting destructor of the facets made here (flags bit 0: free it)
 pub(crate) fn facet_delete(c: &mut Ctx) -> u32 {
@@ -293,19 +286,7 @@ fn ctype_vtable() -> u32 {
     *V.get_or_init(|| {
         table(
             "ctype",
-            &[
-                facet_delete,
-                facet_incref,
-                facet_decref,
-                ct_tolower_range,
-                ct_tolower,
-                ct_toupper_range,
-                ct_toupper,
-                ct_widen_range,
-                ct_widen,
-                ct_narrow_range,
-                ct_narrow,
-            ],
+            &[facet_delete, facet_incref, facet_decref, ct_tolower_range, ct_tolower, ct_toupper_range, ct_toupper, ct_widen_range, ct_widen, ct_narrow_range, ct_narrow],
         )
     })
 }
@@ -413,11 +394,7 @@ fn throw_info(class: &Class) -> u32 {
     }
     let p = ps();
     let dtor = host_fn("msvcp::exception::dtor", ex_dtor, 0);
-    let copy = if class.size > 3 * p {
-        host_fn("msvcp::exception::copy32", copy32, 0)
-    } else {
-        host_fn("msvcp::exception::copy24", copy24, 0)
-    };
+    let copy = if class.size > 3 * p { host_fn("msvcp::exception::copy32", copy32, 0) } else { host_fn("msvcp::exception::copy24", copy24, 0) };
     let n = class.names.len() as u32;
     let array = mem::heap_alloc(4 + 4 * n, true);
     w32(array, n);
@@ -457,39 +434,11 @@ fn static_str(s: &str) -> u32 {
     p
 }
 
-const SYSTEM_ERROR: Class = Class {
-    names: &[
-        ".?AVsystem_error@std@@",
-        ".?AV_System_error@std@@",
-        ".?AVruntime_error@std@@",
-        ".?AVexception@std@@",
-    ],
-    size: 40,
-};
-const INVALID_ARGUMENT: Class = Class {
-    names: &[
-        ".?AVinvalid_argument@std@@",
-        ".?AVlogic_error@std@@",
-        ".?AVexception@std@@",
-    ],
-    size: 24,
-};
-const BAD_FUNCTION_CALL: Class = Class {
-    names: &[".?AVbad_function_call@std@@", ".?AVexception@std@@"],
-    size: 24,
-};
-const RUNTIME_ERROR: Class = Class {
-    names: &[".?AVruntime_error@std@@", ".?AVexception@std@@"],
-    size: 24,
-};
-const OVERFLOW_ERROR: Class = Class {
-    names: &[
-        ".?AVoverflow_error@std@@",
-        ".?AVruntime_error@std@@",
-        ".?AVexception@std@@",
-    ],
-    size: 24,
-};
+const SYSTEM_ERROR: Class = Class { names: &[".?AVsystem_error@std@@", ".?AV_System_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 40 };
+const INVALID_ARGUMENT: Class = Class { names: &[".?AVinvalid_argument@std@@", ".?AVlogic_error@std@@", ".?AVexception@std@@"], size: 24 };
+const BAD_FUNCTION_CALL: Class = Class { names: &[".?AVbad_function_call@std@@", ".?AVexception@std@@"], size: 24 };
+const RUNTIME_ERROR: Class = Class { names: &[".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 24 };
+const OVERFLOW_ERROR: Class = Class { names: &[".?AVoverflow_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 24 };
 
 /// generic_category() (an error_category: vtable, _Addr): what system_error's error_code points
 /// to; its virtual functions (name, message, ...) are not called by the programs here
@@ -497,13 +446,7 @@ fn generic_category() -> u32 {
     static C: OnceLock<u32> = OnceLock::new();
     *C.get_or_init(|| {
         let p = mem::heap_alloc(2 * ps(), true);
-        wp(
-            p,
-            table(
-                "error_category",
-                &[nothing, nothing, nothing, nothing, nothing, nothing],
-            ),
-        );
+        wp(p, table("error_category", &[nothing, nothing, nothing, nothing, nothing, nothing]));
         wp(p + ps(), 3);
         p
     })
@@ -515,25 +458,13 @@ fn iostream_category() -> u32 {
     static C: OnceLock<u32> = OnceLock::new();
     *C.get_or_init(|| {
         let p = mem::heap_alloc(2 * ps(), true);
-        wp(
-            p,
-            table(
-                "iostream_category",
-                &[nothing, nothing, nothing, nothing, nothing, nothing],
-            ),
-        );
+        wp(p, table("iostream_category", &[nothing, nothing, nothing, nothing, nothing, nothing]));
         wp(p + ps(), 5);
         p
     })
 }
 const FAILURE: Class = Class {
-    names: &[
-        ".?AVfailure@ios_base@std@@",
-        ".?AVsystem_error@std@@",
-        ".?AV_System_error@std@@",
-        ".?AVruntime_error@std@@",
-        ".?AVexception@std@@",
-    ],
+    names: &[".?AVfailure@ios_base@std@@", ".?AVsystem_error@std@@", ".?AV_System_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"],
     size: 40,
 };
 /// Throws ios_base::failure(msg) (error_code(io_errc::stream, iostream_category()); what() as
@@ -541,10 +472,7 @@ const FAILURE: Class = Class {
 pub fn throw_failure(c: &mut Ctx, msg: &str) {
     let o = mem::heap_alloc(FAILURE.size, true);
     wp(o, ex_vtable());
-    wp(
-        o + ps(),
-        static_str(&format!("{msg}: iostream stream error")),
-    );
+    wp(o + ps(), static_str(&format!("{msg}: iostream stream error")));
     w32(o + 3 * ps(), 1);
     wp(o + 4 * ps(), iostream_category());
     crate::cxx64::throw_object(c, o as u64, throw_info(&FAILURE));
@@ -579,34 +507,10 @@ fn x_bad_function_call(c: &mut Ctx) -> u32 {
     throw(c, &BAD_FUNCTION_CALL, static_str("bad function call"), 0)
 }
 
-const BAD_ALLOC: Class = Class {
-    names: &[".?AVbad_alloc@std@@", ".?AVexception@std@@"],
-    size: 24,
-};
-const LENGTH_ERROR: Class = Class {
-    names: &[
-        ".?AVlength_error@std@@",
-        ".?AVlogic_error@std@@",
-        ".?AVexception@std@@",
-    ],
-    size: 24,
-};
-const OUT_OF_RANGE: Class = Class {
-    names: &[
-        ".?AVout_of_range@std@@",
-        ".?AVlogic_error@std@@",
-        ".?AVexception@std@@",
-    ],
-    size: 24,
-};
-const REGEX_ERROR: Class = Class {
-    names: &[
-        ".?AVregex_error@std@@",
-        ".?AVruntime_error@std@@",
-        ".?AVexception@std@@",
-    ],
-    size: 32,
-};
+const BAD_ALLOC: Class = Class { names: &[".?AVbad_alloc@std@@", ".?AVexception@std@@"], size: 24 };
+const LENGTH_ERROR: Class = Class { names: &[".?AVlength_error@std@@", ".?AVlogic_error@std@@", ".?AVexception@std@@"], size: 24 };
+const OUT_OF_RANGE: Class = Class { names: &[".?AVout_of_range@std@@", ".?AVlogic_error@std@@", ".?AVexception@std@@"], size: 24 };
+const REGEX_ERROR: Class = Class { names: &[".?AVregex_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 32 };
 
 /// ?_Xbad_alloc@std@@YAXXZ
 fn x_bad_alloc(c: &mut Ctx) -> u32 {
@@ -669,41 +573,23 @@ pub fn init() {
         ("??1_Lockit@std@@QEAA@XZ", nothing),
         ("??0_Locinfo@std@@QEAA@PEBD@Z", locinfo_ctor),
         ("??1_Locinfo@std@@QEAA@XZ", nothing),
-        (
-            "?_Getcoll@_Locinfo@std@@QEBA?AU_Collvec@@XZ",
-            locinfo_getcoll,
-        ),
+        ("?_Getcoll@_Locinfo@std@@QEBA?AU_Collvec@@XZ", locinfo_getcoll),
         ("??0facet@locale@std@@IEAA@_K@Z", facet_ctor),
         ("??1facet@locale@std@@MEAA@XZ", nothing),
         ("?_Incref@facet@locale@std@@UEAAXXZ", facet_incref),
-        (
-            "?_Decref@facet@locale@std@@UEAAPEAV_Facet_base@3@XZ",
-            facet_decref,
-        ),
+        ("?_Decref@facet@locale@std@@UEAAPEAV_Facet_base@3@XZ", facet_decref),
         ("??Bid@locale@std@@QEAA_KXZ", locale_id),
         ("?_Init@locale@std@@CAPEAV_Locimp@12@_N@Z", locale_init),
-        (
-            "?_Getgloballocale@locale@std@@CAPEAV_Locimp@12@XZ",
-            locale_global,
-        ),
-        (
-            "?_Getcat@?$ctype@D@std@@SA_KPEAPEBVfacet@locale@2@PEBV42@@Z",
-            ctype_getcat,
-        ),
+        ("?_Getgloballocale@locale@std@@CAPEAV_Locimp@12@XZ", locale_global),
+        ("?_Getcat@?$ctype@D@std@@SA_KPEAPEBVfacet@locale@2@PEBV42@@Z", ctype_getcat),
         ("?tolower@?$ctype@D@std@@QEBADD@Z", ctype_tolower),
-        (
-            "?tolower@?$ctype@D@std@@QEBAPEBDPEADPEBD@Z",
-            ctype_tolower_range,
-        ),
+        ("?tolower@?$ctype@D@std@@QEBAPEBDPEADPEBD@Z", ctype_tolower_range),
         ("_Strcoll", _Strcoll),
         ("_Strxfrm", _Strxfrm),
         ("?_Xbad_alloc@std@@YAXXZ", x_bad_alloc),
         ("?_Xlength_error@std@@YAXPEBD@Z", x_length_error),
         ("?_Xout_of_range@std@@YAXPEBD@Z", x_out_of_range),
-        (
-            "?_Xregex_error@std@@YAXW4error_type@regex_constants@1@@Z",
-            x_regex_error,
-        ),
+        ("?_Xregex_error@std@@YAXW4error_type@regex_constants@1@@Z", x_regex_error),
         ("?_Xinvalid_argument@std@@YAXPEBD@Z", x_invalid_argument),
         ("?_Xruntime_error@std@@YAXPEBD@Z", x_runtime_error),
         ("?_Xoverflow_error@std@@YAXPEBD@Z", x_overflow_error),

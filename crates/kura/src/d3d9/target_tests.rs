@@ -14,10 +14,7 @@ fn device() -> u32 {
     unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
     let d3d = rd(o);
     let pp = unsafe { alloc(56) as u32 };
-    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0].into_iter().enumerate() {
         unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
     }
     let o = out();
@@ -54,9 +51,7 @@ fn targets(from: usize) -> Vec<Vec<(String, u32)>> {
         m.objs[from..]
             .iter()
             .filter_map(|o| match o {
-                model::Obj::Pipeline(p) if !p.clear_shader && !p.buffers.is_empty() => {
-                    Some(p.targets.iter().map(|t| (t.0.clone(), t.1)).collect())
-                }
+                model::Obj::Pipeline(p) if !p.clear_shader && !p.buffers.is_empty() => Some(p.targets.iter().map(|t| (t.0.clone(), t.1)).collect()),
                 _ => None,
             })
             .collect()
@@ -75,40 +70,15 @@ fn stencil_and_more_render_targets_are_valid_webgpu() {
     // the stencil test, one- and two-sided, every function and operation; with the depth
     // test off too (stencil still tests)
     for (k, (func, op)) in (1..=8).zip([1, 2, 3, 4, 5, 6, 7, 8]).enumerate() {
-        for (rs, v) in [
-            (52, 1),
-            (56, func),
-            (55, op),
-            (53, 9 - op),
-            (54, op),
-            (57, k as u32),
-            (58, 0x0f),
-            (59, 0xf0),
-            (185, (k & 1) as u32),
-            (189, 9 - func),
-            (188, op),
-            (7, (k & 2 != 0) as u32),
-        ] {
+        for (rs, v) in [(52, 1), (56, func), (55, op), (53, 9 - op), (54, op), (57, k as u32), (58, 0x0f), (59, 0xf0), (185, (k & 1) as u32), (189, 9 - func), (188, op), (7, (k & 2 != 0) as u32)] {
             call(IF_DEVICE, 57, &[dev, rs, v]);
         }
         // (a stencil clear in a part, then the whole)
         let r = unsafe { alloc(16) as u32 };
-        put_bytes(
-            r,
-            &[4u32, 4, 20, 20]
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<_>>(),
-        );
-        assert_eq!(
-            call(IF_DEVICE, 43, &[dev, 1, r, 4, 0, 1f32.to_bits(), 3]),
-            0
-        );
+        put_bytes(r, &[4u32, 4, 20, 20].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>());
+        assert_eq!(call(IF_DEVICE, 43, &[dev, 1, r, 4, 0, 1f32.to_bits(), 3]), 0);
         quad(dev);
-        assert_eq!(
-            call(IF_DEVICE, 43, &[dev, 0, 0, 7, 0, 1f32.to_bits(), 1]),
-            0
-        );
+        assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 7, 0, 1f32.to_bits(), 1]), 0);
         quad(dev);
     }
     call(IF_DEVICE, 57, &[dev, 52, 0]);
@@ -122,30 +92,14 @@ fn stencil_and_more_render_targets_are_valid_webgpu() {
     assert_eq!(call(IF_TEXTURE, 18, &[rd(o), 0, o2]), 0);
     let s1 = rd(o2);
     assert_eq!(call(IF_DEVICE, 37, &[dev, 1, s1]), 0);
-    let code: [u32; 8] = [
-        0xffff0200, 0x02000001, 0x800f0800, 0xa0e40000, 0x02000001, 0x800f0801, 0xa0e40001,
-        0x0000ffff,
-    ];
+    let code: [u32; 8] = [0xffff0200, 0x02000001, 0x800f0800, 0xa0e40000, 0x02000001, 0x800f0801, 0xa0e40001, 0x0000ffff];
     let c = unsafe { alloc(32) as u32 };
-    put_bytes(
-        c,
-        &code
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<_>>(),
-    );
+    put_bytes(c, &code.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>());
     let o = out();
     assert_eq!(call(IF_DEVICE, 106, &[dev, c, o]), 0);
     let ps = rd(o);
     let from = model::with(|m| m.objs.len());
-    assert_eq!(
-        call(
-            IF_DEVICE,
-            43,
-            &[dev, 0, 0, 7, 0x00ff_0000, 1f32.to_bits(), 0]
-        ),
-        0
-    );
+    assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 7, 0x00ff_0000, 1f32.to_bits(), 0]), 0);
     call(IF_DEVICE, 107, &[dev, ps]);
     call(IF_DEVICE, 57, &[dev, 190, 1]);
     quad(dev);
@@ -163,10 +117,7 @@ fn stencil_and_more_render_targets_are_valid_webgpu() {
         assert_eq!(p.len(), 2, "{t:?}");
     }
     assert_eq!(t[0][1].1, 1, "COLORWRITEENABLE1 red: {t:?}");
-    assert_eq!(
-        t[1][1].1, 0,
-        "fixed function writes no render target 1: {t:?}"
-    );
+    assert_eq!(t[1][1].1, 0, "fixed function writes no render target 1: {t:?}");
     // render target 1 unset: one target again
     call(IF_DEVICE, 37, &[dev, 1, 0]);
     let from = model::with(|m| m.objs.len());
@@ -191,47 +142,18 @@ fn every_texture_format_reaches_the_page() {
     errors();
     use super::format as f;
     let fmts = [
-        f::A8R8G8B8,
-        f::X8R8G8B8,
-        f::R5G6B5,
-        f::A1R5G5B5,
-        f::A4R4G4B4,
-        f::A8,
-        f::L8,
-        f::A8L8,
-        f::A8B8G8R8,
-        f::A16B16G16R16F,
-        f::A32B32G32R32F,
-        f::A2R10G10B10,
-        f::A2B10G10R10,
-        f::G16R16,
-        f::A16B16G16R16,
-        f::L16,
-        f::V8U8,
-        f::Q8W8V8U8,
-        f::V16U16,
-        f::Q16W16V16U16,
-        f::R16F,
-        f::G16R16F,
-        f::R32F,
-        f::G32R32F,
+        f::A8R8G8B8, f::X8R8G8B8, f::R5G6B5, f::A1R5G5B5, f::A4R4G4B4, f::A8, f::L8, f::A8L8, f::A8B8G8R8, f::A16B16G16R16F, f::A32B32G32R32F,
+        f::A2R10G10B10, f::A2B10G10R10, f::G16R16, f::A16B16G16R16, f::L16, f::V8U8, f::Q8W8V8U8, f::V16U16, f::Q16W16V16U16,
+        f::R16F, f::G16R16F, f::R32F, f::G32R32F,
     ];
     // (those Windows has no textures of)
     for fmt in [f::X8L8V8U8, f::L6V5U5, f::A2W10V10U10] {
-        assert_eq!(
-            call(IF_DEVICE, 23, &[dev, 4, 4, 1, 0, fmt, 1, out(), 0]),
-            0x8876086c,
-            "format {fmt}"
-        );
+        assert_eq!(call(IF_DEVICE, 23, &[dev, 4, 4, 1, 0, fmt, 1, out(), 0]), 0x8876086c, "format {fmt}");
     }
     for fmt in fmts {
         let from = model::with(|m| m.objs.len());
         let o = out();
-        assert_eq!(
-            call(IF_DEVICE, 23, &[dev, 4, 4, 1, 0, fmt, 1, o, 0]),
-            0,
-            "format {fmt}"
-        );
+        assert_eq!(call(IF_DEVICE, 23, &[dev, 4, 4, 1, 0, fmt, 1, o, 0]), 0, "format {fmt}");
         let tex = rd(o);
         let lr = out();
         assert_eq!(call(IF_TEXTURE, 19, &[tex, 0, lr, 0, 0]), 0, "format {fmt}");
@@ -241,16 +163,7 @@ fn every_texture_format_reaches_the_page() {
         // the top byte of each 4 stays 0x3c)
         let mut src = Vec::new();
         for y in 0..4u32 {
-            let row: Vec<u8> = (0..4 * bpp)
-                .map(|i| {
-                    [0x05, 0x21, 0x3e, 0x3c][(i % 4) as usize]
-                        ^ if i % 4 == 3 {
-                            0
-                        } else {
-                            (y * 4 * bpp + i) as u8 & 0x11
-                        }
-                })
-                .collect();
+            let row: Vec<u8> = (0..4 * bpp).map(|i| [0x05, 0x21, 0x3e, 0x3c][(i % 4) as usize] ^ if i % 4 == 3 { 0 } else { (y * 4 * bpp + i) as u8 & 0x11 }).collect();
             put_bytes(bits + y * pitch, &row);
             src.extend(row);
         }
@@ -262,34 +175,19 @@ fn every_texture_format_reaches_the_page() {
         unsafe { f::convert(fmt, src.as_ptr(), (4 * bpp) as usize, 4, 4, &mut want) };
         let got = model::with(|m| {
             m.objs[from..].iter().find_map(|o| match o {
-                model::Obj::Texture(t) if t.w == 4 && t.h == 4 => {
-                    Some((t.format.clone(), t.texels[0].clone()))
-                }
+                model::Obj::Texture(t) if t.w == 4 && t.h == 4 => Some((t.format.clone(), t.texels[0].clone())),
                 _ => None,
             })
         });
-        let Some((pf, texels)) = got else {
-            panic!("format {fmt}: no page texture")
-        };
-        assert!(
-            texels.iter().all(|&t| t != 0),
-            "format {fmt} ({pf}): texels not written {texels:x?}"
-        );
+        let Some((pf, texels)) = got else { panic!("format {fmt}: no page texture") };
+        assert!(texels.iter().all(|&t| t != 0), "format {fmt} ({pf}): texels not written {texels:x?}");
         let page = f::page_bpp(fmt) as usize;
         let want: Vec<u64> = match pf.as_str() {
             // (halves of the 32-bit floats when the page has no float32-filterable)
             "rgba16float" if page == 16 => want
                 .chunks_exact(16)
                 .map(|p| {
-                    let h: Vec<u8> = p
-                        .chunks_exact(4)
-                        .flat_map(|f| {
-                            crate::d3d11::format::f16_bits(f32::from_le_bytes(
-                                f.try_into().unwrap(),
-                            ))
-                            .to_le_bytes()
-                        })
-                        .collect();
+                    let h: Vec<u8> = p.chunks_exact(4).flat_map(|f| crate::d3d11::format::f16_bits(f32::from_le_bytes(f.try_into().unwrap())).to_le_bytes()).collect();
                     u64::from_le_bytes(h.try_into().unwrap())
                 })
                 .collect(),
@@ -323,21 +221,9 @@ fn clear_answers_and_a_smaller_depth_buffer() {
     let dev = device();
     errors();
     const INVALIDCALL: u32 = 0x8876086c;
-    let clear = |count: u32, rects: u32, flags: u32| {
-        call(
-            IF_DEVICE,
-            43,
-            &[dev, count, rects, flags, 0x102030, 1f32.to_bits(), 0x105],
-        )
-    };
+    let clear = |count: u32, rects: u32, flags: u32| call(IF_DEVICE, 43, &[dev, count, rects, flags, 0x102030, 1f32.to_bits(), 0x105]);
     let r = unsafe { alloc(16) as u32 };
-    put_bytes(
-        r,
-        &[4u32, 4, 8, 8]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>(),
-    );
+    put_bytes(r, &[4u32, 4, 8, 8].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>());
     assert_eq!(clear(0, 0, 0), INVALIDCALL, "no flags");
     assert_eq!(clear(0, 0, 0x10), INVALIDCALL, "no known flags");
     assert_eq!(clear(0, 0, 0x11), 0);
@@ -345,35 +231,19 @@ fn clear_answers_and_a_smaller_depth_buffer() {
     assert_eq!(clear(0, r, 1), 0, "a list with a count of 0");
     assert_eq!(clear(1, r, 7), 0, "D24S8");
     // (each with its own depth function: a pipeline of its own)
-    for (fmt, w, stencil, func) in [
-        (format::D24X8, 64, false, 4),
-        (format::D16, 32, false, 2),
-        (format::D24S8, 32, true, 8),
-    ] {
+    for (fmt, w, stencil, func) in [(format::D24X8, 64, false, 4), (format::D16, 32, false, 2), (format::D24S8, 32, true, 8)] {
         let o = out();
         assert_eq!(call(IF_DEVICE, 29, &[dev, w, w, fmt, 0, 0, 0, o, 0]), 0);
         let z = rd(o);
         assert_eq!(call(IF_DEVICE, 39, &[dev, z]), 0);
         assert_eq!(clear(0, 0, 2), 0, "z {fmt}");
-        assert_eq!(
-            clear(0, 0, 4),
-            if stencil { 0 } else { INVALIDCALL },
-            "stencil {fmt}"
-        );
-        assert_eq!(
-            clear(0, 0, 5),
-            if stencil { 0 } else { INVALIDCALL },
-            "target and stencil {fmt}"
-        );
+        assert_eq!(clear(0, 0, 4), if stencil { 0 } else { INVALIDCALL }, "stencil {fmt}");
+        assert_eq!(clear(0, 0, 5), if stencil { 0 } else { INVALIDCALL }, "target and stencil {fmt}");
         let from = model::with(|m| m.objs.len());
         call(IF_DEVICE, 57, &[dev, 7, 1]);
         call(IF_DEVICE, 57, &[dev, 23, func]);
         quad(dev);
-        let depth = model::with(|m| {
-            m.objs[from..].iter().any(
-                |o| matches!(o, model::Obj::Pipeline(p) if p.depth.is_some() && !p.clear_shader),
-            )
-        });
+        let depth = model::with(|m| m.objs[from..].iter().any(|o| matches!(o, model::Obj::Pipeline(p) if p.depth.is_some() && !p.clear_shader)));
         assert!(depth, "{fmt} {w}x{w}: the draw tests depth");
         let e = errors();
         assert!(e.is_empty(), "{fmt} {w}x{w}: {:?}", &e[..e.len().min(8)]);
@@ -404,87 +274,45 @@ fn render_targets_of_fewer_channels() {
     let cases: [(u32, u32, &[u8]); 11] = [
         (f::A8R8G8B8, 0xf, &[0x20, 0x60, 0x40, 0x80]),
         (f::R5G6B5, 0xf, &(8u16 << 11 | 24 << 5 | 4).to_le_bytes()),
-        (
-            f::A1R5G5B5,
-            0xf,
-            &(1u16 << 15 | 8 << 10 | 12 << 5 | 4).to_le_bytes(),
-        ),
+        (f::A1R5G5B5, 0xf, &(1u16 << 15 | 8 << 10 | 12 << 5 | 4).to_le_bytes()),
         (f::A4R4G4B4, 0xf, &0x8462u16.to_le_bytes()),
         (f::A8, 8, &[0x80]),
         (f::L8, 1, &[0x40]),
         (f::A8L8, 9, &[0x40, 0x80]),
         (f::A8B8G8R8, 0xf, &[0x40, 0x60, 0x20, 0x80]),
-        (
-            f::A2R10G10B10,
-            0xf,
-            &(2u32 << 30 | 257 << 20 | 385 << 10 | 128).to_le_bytes(),
-        ),
+        (f::A2R10G10B10, 0xf, &(2u32 << 30 | 257 << 20 | 385 << 10 | 128).to_le_bytes()),
         (f::R32F, 1, &[]),
         (f::V8U8, 3, &[0x20, 0x30]),
     ];
     call(IF_DEVICE, 57, &[dev, 27, 1]); // ALPHABLENDENABLE
     for (i, (fmt, mask, want)) in cases.into_iter().enumerate() {
         let o = out();
-        assert_eq!(
-            call(IF_DEVICE, 23, &[dev, 64, 64, 1, 1, fmt, 0, o, 0]),
-            0,
-            "format {fmt}"
-        );
+        assert_eq!(call(IF_DEVICE, 23, &[dev, 64, 64, 1, 1, fmt, 0, o, 0]), 0, "format {fmt}");
         let tex = rd(o);
         let o = out();
         assert_eq!(call(IF_TEXTURE, 18, &[tex, 0, o]), 0);
         let rt = rd(o);
         assert_eq!(call(IF_DEVICE, 37, &[dev, 0, rt]), 0, "format {fmt}");
-        assert_eq!(
-            call(
-                IF_DEVICE,
-                43,
-                &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]
-            ),
-            0
-        );
+        assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]), 0);
         let from = model::with(|m| m.objs.len());
         // (each with its own blend: a pipeline of its own)
         call(IF_DEVICE, 57, &[dev, 19, 1 + i as u32]);
         quad(dev);
         let t = targets(from);
-        assert!(
-            !t.is_empty() && t.iter().all(|p| p[0].1 == mask),
-            "format {fmt}: {t:?}"
-        );
+        assert!(!t.is_empty() && t.iter().all(|p| p[0].1 == mask), "format {fmt}: {t:?}");
         // the clear read back
         let o = out();
         assert_eq!(call(IF_DEVICE, 36, &[dev, 64, 64, fmt, 2, o, 0]), 0);
         let sys = rd(o);
         assert_eq!(call(IF_DEVICE, 37, &[dev, 0, back]), 0);
-        assert_eq!(
-            call(
-                IF_DEVICE,
-                43,
-                &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]
-            ),
-            0
-        );
+        assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]), 0);
         assert_eq!(call(IF_DEVICE, 37, &[dev, 0, rt]), 0);
-        assert_eq!(
-            call(
-                IF_DEVICE,
-                43,
-                &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]
-            ),
-            0
-        );
-        assert_eq!(
-            call(IF_DEVICE, 32, &[dev, rt, sys]),
-            0,
-            "format {fmt}: GetRenderTargetData"
-        );
+        assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]), 0);
+        assert_eq!(call(IF_DEVICE, 32, &[dev, rt, sys]), 0, "format {fmt}: GetRenderTargetData");
         let lr = out();
         assert_eq!(call(IF_SURFACE, 13, &[sys, lr, 0, 0x10]), 0);
         let bits = rd(lr + 4);
-        let got: Vec<u8> = (0..want.len().max(4))
-            .map(|i| unsafe { *((bits as usize + i) as *const u8) })
-            .collect();
+        let got: Vec<u8> = (0..want.len().max(4)).map(|i| unsafe { *((bits as usize + i) as *const u8) }).collect();
         if fmt == f::R32F {
             let v = f32::from_le_bytes(got[..4].try_into().unwrap());
             assert!((v - 64.0 / 255.0).abs() < 1e-3, "format {fmt}: {v}");

@@ -49,8 +49,8 @@ const MP: u32 = 4; // IMediaPosition
 const BA: u32 = 5; // IBasicAudio
 const VW: u32 = 6; // IVideoWindow
 const BV: u32 = 7; // IBasicVideo(2)
-                   // (the two as the graph hands them out when its renderer is windowless: every call
-                   // E_NOINTERFACE, as no filter of it has a window)
+// (the two as the graph hands them out when its renderer is windowless: every call
+// E_NOINTERFACE, as no filter of it has a window)
 const VW_NONE: u32 = 8;
 const BV_NONE: u32 = 9;
 const NI: u32 = 10;
@@ -201,11 +201,7 @@ fn nointerface(_: &mut Ctx) -> u32 {
 
 /// A double argument: x86 stack slots `slot`, `slot + 1`; x64 argument `arg` (its XMM register).
 fn dbl(c: &Ctx, slot: u32, arg: u32) -> f64 {
-    if mem::x64() {
-        f64::from_bits(c.xmm(arg))
-    } else {
-        c.f64(slot)
-    }
+    if mem::x64() { f64::from_bits(c.xmm(arg)) } else { c.f64(slot) }
 }
 fn put_dbl(p: u32, v: f64) -> u32 {
     if p == 0 {
@@ -227,11 +223,7 @@ fn enum_filters(c: &mut Ctx) -> u32 {
         fn qi(c: &mut Ctx) -> u32 {
             let ok = r32(c.a(1)) == 0x56a8_6893 || r32(c.a(1)) == 0;
             putp(c.a(2), if ok { c.a(0) } else { 0 });
-            if ok {
-                0
-            } else {
-                E_NOINTERFACE
-            }
+            if ok { 0 } else { E_NOINTERFACE }
         }
         fn one(_: &mut Ctx) -> u32 {
             1
@@ -248,11 +240,7 @@ fn enum_filters(c: &mut Ctx) -> u32 {
             if c.a(3) != 0 {
                 put32(c.a(3), got);
             }
-            if got == n {
-                0
-            } else {
-                S_FALSE
-            }
+            if got == n { 0 } else { S_FALSE }
         }
         /// Skip(n)
         fn skip(c: &mut Ctx) -> u32 {
@@ -261,28 +249,13 @@ fn enum_filters(c: &mut Ctx) -> u32 {
             if c.a(1) > 0 {
                 w32(e + 2 * ps(), 1);
             }
-            if c.a(1) <= left {
-                0
-            } else {
-                S_FALSE
-            }
+            if c.a(1) <= left { 0 } else { S_FALSE }
         }
         fn reset(c: &mut Ctx) -> u32 {
             w32(c.a(0) + 2 * ps(), 0);
             0
         }
-        vtable(
-            "IEnumFilters",
-            &[
-                (qi, 12),
-                (one, 4),
-                (one, 4),
-                (next, 16),
-                (skip, 8),
-                (reset, 4),
-                (notimpl, 8),
-            ],
-        )
+        vtable("IEnumFilters", &[(qi, 12), (one, 4), (one, 4), (next, 16), (skip, 8), (reset, 4), (notimpl, 8)])
     });
     let f = with(base(c, GB), |g| g.evr).unwrap_or(0);
     let e = mem::heap_alloc(3 * ps(), true);
@@ -321,9 +294,7 @@ fn add_filter(c: &mut Ctx) -> u32 {
 fn load(b: u32, w: &str) -> Result<(), u32> {
     play::end(b);
     let vnv = crate::files::resolve(&format!("{w}.vnv"));
-    let movie = vnv
-        .and_then(|p| play::Movie::open(&p))
-        .filter(|m| kura::video::decodable(m.stream));
+    let movie = vnv.and_then(|p| play::Movie::open(&p)).filter(|m| kura::video::decodable(m.stream));
     if movie.is_none() && crate::files::resolve(w).is_none() {
         return Err(NOT_FOUND);
     }
@@ -337,10 +308,7 @@ fn load(b: u32, w: &str) -> Result<(), u32> {
         });
         return Ok(());
     };
-    eprintln!(
-        "sake: movie {w}: {}x{} {} frames",
-        movie.w, movie.h, movie.frames
-    );
+    eprintln!("sake: movie {w}: {}x{} {} frames", movie.w, movie.h, movie.frames);
     with(b, |g| {
         g.done = false;
         g.playing = true;
@@ -424,11 +392,7 @@ fn run(c: &mut Ctx) -> u32 {
     if let Some(Some(n)) = run {
         end_later(b, n);
     }
-    if was == 0 {
-        S_FALSE
-    } else {
-        0
-    }
+    if was == 0 { S_FALSE } else { 0 }
 }
 
 /// How long a movie with nothing to play "plays". Not 0: CatSystem2 (ここなつ #48) stores its
@@ -451,9 +415,7 @@ fn due(v: &mut Vec<(std::time::Instant, u32, u32)>, t: std::time::Instant) -> Ve
 /// Graph `b`'s movie (nothing to play), run `n`, ends PLAY from now: unless a Stop or another
 /// Run came in between, or a real movie plays by then.
 fn end_later(b: u32, n: u32) {
-    ENDS.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((std::time::Instant::now() + PLAY, b, n));
+    ENDS.lock().unwrap_or_else(|e| e.into_inner()).push((std::time::Instant::now() + PLAY, b, n));
     ENDS_WAKE.notify_all();
     static T: OnceLock<()> = OnceLock::new();
     T.get_or_init(|| {
@@ -464,11 +426,7 @@ fn end_later(b: u32, n: u32) {
                 loop {
                     let t = std::time::Instant::now();
                     let now_due = due(&mut v, t);
-                    let wait = v
-                        .iter()
-                        .map(|e| e.0.saturating_duration_since(t))
-                        .min()
-                        .unwrap_or(std::time::Duration::from_secs(3600));
+                    let wait = v.iter().map(|e| e.0.saturating_duration_since(t)).min().unwrap_or(std::time::Duration::from_secs(3600));
                     drop(v);
                     for (b, n) in now_due {
                         if with(b, |g| g.runs == n && g.done && !g.playing) == Some(true) {
@@ -477,10 +435,7 @@ fn end_later(b: u32, n: u32) {
                     }
                     v = ENDS.lock().unwrap_or_else(|e| e.into_inner());
                     if v.iter().all(|e| e.0 > std::time::Instant::now()) {
-                        v = ENDS_WAKE
-                            .wait_timeout(v, wait)
-                            .unwrap_or_else(|e| e.into_inner())
-                            .0;
+                        v = ENDS_WAKE.wait_timeout(v, wait).unwrap_or_else(|e| e.into_inner()).0;
                     }
                 }
             })
@@ -492,11 +447,7 @@ fn pause(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
     let was = set_state(b, 1);
     queue(b, EC_PAUSED, 0);
-    if was == 0 {
-        S_FALSE
-    } else {
-        0
-    }
+    if was == 0 { S_FALSE } else { 0 }
 }
 fn stop(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
@@ -557,12 +508,7 @@ fn get_event(c: &mut Ctx) -> u32 {
     if pc == 0 || p1 == 0 || p2 == 0 {
         return E_POINTER;
     }
-    let until = std::time::Instant::now()
-        + std::time::Duration::from_millis(if ms == u32::MAX {
-            u64::MAX / 4
-        } else {
-            ms as u64
-        });
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(if ms == u32::MAX { u64::MAX / 4 } else { ms as u64 });
     loop {
         let e = with(b, |g| {
             let e = g.events.pop_front();
@@ -595,20 +541,9 @@ fn wait_for_completion(c: &mut Ctx) -> u32 {
     if pc == 0 {
         return E_POINTER;
     }
-    let until = std::time::Instant::now()
-        + std::time::Duration::from_millis(if ms == u32::MAX {
-            u64::MAX / 4
-        } else {
-            ms as u64
-        });
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(if ms == u32::MAX { u64::MAX / 4 } else { ms as u64 });
     loop {
-        let (done, running) = with(b, |g| {
-            (
-                g.events.iter().any(|e| e.0 == EC_COMPLETE),
-                g.state == 2 && !g.ended,
-            )
-        })
-        .unwrap_or((true, false));
+        let (done, running) = with(b, |g| (g.events.iter().any(|e| e.0 == EC_COMPLETE), g.state == 2 && !g.ended)).unwrap_or((true, false));
         if done {
             put32(pc, EC_COMPLETE);
             return 0;
@@ -657,17 +592,10 @@ fn timeline<R>(b: u32, f: impl FnOnce(&mut play::Timeline, u64) -> R) -> Option<
 }
 /// TIME_FORMAT_MEDIA_TIME {7b785574-8c82-11cf-bc0c-00aa00ac74f6}
 fn media_time(p: u32) -> bool {
-    p != 0
-        && r32(p) == 0x7b78_5574
-        && r32(p + 4) == 0x11cf_8c82
-        && r32(p + 8) == 0xaa00_0cbc
-        && r32(p + 12) == 0xf674_ac00
+    p != 0 && r32(p) == 0x7b78_5574 && r32(p + 4) == 0x11cf_8c82 && r32(p + 8) == 0xaa00_0cbc && r32(p + 12) == 0xf674_ac00
 }
 fn write_media_time(p: u32) {
-    for (i, v) in [0x7b78_5574u32, 0x11cf_8c82, 0xaa00_0cbc, 0xf674_ac00]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, v) in [0x7b78_5574u32, 0x11cf_8c82, 0xaa00_0cbc, 0xf674_ac00].into_iter().enumerate() {
         w32(p + 4 * i as u32, v);
     }
 }
@@ -700,11 +628,7 @@ fn ms_format_supported(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    if media_time(c.a(1)) {
-        0
-    } else {
-        S_FALSE
-    }
+    if media_time(c.a(1)) { 0 } else { S_FALSE }
 }
 fn ms_get_format(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
@@ -717,11 +641,7 @@ fn ms_set_format(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    if media_time(c.a(1)) {
-        0
-    } else {
-        E_INVALIDARG
-    }
+    if media_time(c.a(1)) { 0 } else { E_INVALIDARG }
 }
 fn ms_duration(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
@@ -741,20 +661,13 @@ fn ms_cur_pos(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    w64(
-        c.a(1),
-        timeline(base(c, MS), |tl, t| tl.position(t)).unwrap_or(0),
-    );
+    w64(c.a(1), timeline(base(c, MS), |tl, t| tl.position(t)).unwrap_or(0));
     0
 }
 /// ConvertTimeFormat(target, target format, source (by value), source format): one format
 fn ms_convert(c: &mut Ctx) -> u32 {
     let (out, tf) = (c.a(1), c.a(2));
-    let (v, sf) = if mem::x64() {
-        (c.a64(3), c.a(4))
-    } else {
-        (c.a(3) as u64 | (c.a(4) as u64) << 32, c.a(5))
-    };
+    let (v, sf) = if mem::x64() { (c.a64(3), c.a(4)) } else { (c.a(3) as u64 | (c.a(4) as u64) << 32, c.a(5)) };
     if out == 0 {
         return E_POINTER;
     }
@@ -837,10 +750,7 @@ fn ms_set_rate(c: &mut Ctx) -> u32 {
     set_rate(base(c, MS), r)
 }
 fn ms_get_rate(c: &mut Ctx) -> u32 {
-    put_dbl(
-        c.a(1),
-        timeline(base(c, MS), |tl, _| tl.rate).unwrap_or(1.0),
-    )
+    put_dbl(c.a(1), timeline(base(c, MS), |tl, _| tl.rate).unwrap_or(1.0))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -866,16 +776,10 @@ fn mp_put_cur(c: &mut Ctx) -> u32 {
     0
 }
 fn mp_get_cur(c: &mut Ctx) -> u32 {
-    put_dbl(
-        c.a(1),
-        secs(timeline(base(c, MP), |tl, t| tl.position(t)).unwrap_or(0)),
-    )
+    put_dbl(c.a(1), secs(timeline(base(c, MP), |tl, t| tl.position(t)).unwrap_or(0)))
 }
 fn mp_get_stop(c: &mut Ctx) -> u32 {
-    put_dbl(
-        c.a(1),
-        secs(timeline(base(c, MP), |tl, _| tl.stop).unwrap_or(0)),
-    )
+    put_dbl(c.a(1), secs(timeline(base(c, MP), |tl, _| tl.stop).unwrap_or(0)))
 }
 fn mp_put_stop(c: &mut Ctx) -> u32 {
     let s = dbl(c, 1, 1);
@@ -890,10 +794,7 @@ fn mp_put_rate(c: &mut Ctx) -> u32 {
     set_rate(base(c, MP), r)
 }
 fn mp_get_rate(c: &mut Ctx) -> u32 {
-    put_dbl(
-        c.a(1),
-        timeline(base(c, MP), |tl, _| tl.rate).unwrap_or(1.0),
-    )
+    put_dbl(c.a(1), timeline(base(c, MP), |tl, _| tl.rate).unwrap_or(1.0))
 }
 fn mp_can_seek(c: &mut Ctx) -> u32 {
     put32(c.a(1), OATRUE);
@@ -951,34 +852,15 @@ fn sync(b: u32) {
         if g.evr != 0 {
             if let Some(e) = evr_with(g.evr, |e| *e).filter(|e| e.windowless) {
                 // (a VMR-9 shows nothing until it is given a destination; the EVR fills the window)
-                let dst = if (e.dst.2 > 0 && e.dst.3 > 0) || e.vmr {
-                    e.dst
-                } else {
-                    crate::user::client_rect_screen(e.hwnd)
-                        .map_or((0, 0, 0, 0), |r| (0, 0, r.r - r.l, r.b - r.t))
-                };
+                let dst = if (e.dst.2 > 0 && e.dst.3 > 0) || e.vmr { e.dst } else { crate::user::client_rect_screen(e.hwnd).map_or((0, 0, 0, 0), |r| (0, 0, r.r - r.l, r.b - r.t)) };
                 // (the EVR's source as fractions of the picture)
                 let s = e.src;
                 let src = if e.vmr {
                     e.src_px.unwrap_or((0, 0, video.0, video.1))
                 } else {
-                    (
-                        (s[0] * video.0 as f32) as i32,
-                        (s[1] * video.1 as f32) as i32,
-                        ((s[2] - s[0]) * video.0 as f32) as i32,
-                        ((s[3] - s[1]) * video.1 as f32) as i32,
-                    )
+                    ((s[0] * video.0 as f32) as i32, (s[1] * video.1 as f32) as i32, ((s[2] - s[0]) * video.0 as f32) as i32, ((s[3] - s[1]) * video.1 as f32) as i32)
                 };
-                return (
-                    Place {
-                        hwnd: e.hwnd,
-                        dst,
-                        src,
-                        letterbox: e.mode & 1 != 0,
-                        visible: e.hwnd != 0 && (g.state != 0 || g.visible),
-                    },
-                    g.volume,
-                );
+                return (Place { hwnd: e.hwnd, dst, src, letterbox: e.mode & 1 != 0, visible: e.hwnd != 0 && (g.state != 0 || g.visible) }, g.volume);
             }
         }
         // the window's place (in its owner's client area, or on the screen), the picture in it
@@ -986,16 +868,7 @@ fn sync(b: u32) {
         let d = g.dst.unwrap_or((0, 0, w, h));
         let dst = (x + d.0, y + d.1, d.2, d.3);
         let dst = play::clip(dst, (x, y, w, h));
-        (
-            Place {
-                hwnd: g.owner,
-                dst,
-                src,
-                letterbox: false,
-                visible: g.visible,
-            },
-            g.volume,
-        )
+        (Place { hwnd: g.owner, dst, src, letterbox: false, visible: g.visible }, g.volume)
     }) else {
         return;
     };
@@ -1010,11 +883,7 @@ fn sync(b: u32) {
 /// IVideoWindow's properties: put_X(v) / get_X(*v), by index in the vtable's 15 pairs.
 fn vw_prop(c: &mut Ctx, i: u32) -> u32 {
     let b = base(c, VW);
-    let (put, prop) = if (26..30).contains(&i) {
-        (i % 2 == 1, i / 2)
-    } else {
-        (i % 2 == 0, i / 2)
-    };
+    let (put, prop) = if (26..30).contains(&i) { (i % 2 == 1, i / 2) } else { (i % 2 == 0, i / 2) };
     let v = c.a(1);
     if !put && v == 0 {
         return E_POINTER;
@@ -1123,14 +992,7 @@ fn vw_owner_msg(_: &mut Ctx) -> u32 {
 
 fn bv_avg_time(c: &mut Ctx) -> u32 {
     let r = with(base(c, BV), |g| if g.playing { g.rate } else { (0, 1) }).unwrap_or((0, 1));
-    put_dbl(
-        c.a(1),
-        if r.0 == 0 {
-            0.0
-        } else {
-            r.1 as f64 / r.0 as f64
-        },
-    )
+    put_dbl(c.a(1), if r.0 == 0 { 0.0 } else { r.1 as f64 / r.0 as f64 })
 }
 fn bv_width(c: &mut Ctx) -> u32 {
     put32(c.a(1), with(base(c, BV), |g| g.video.0).unwrap_or(0) as u32);
@@ -1149,11 +1011,7 @@ fn bv_prop(c: &mut Ctx, i: u32) -> u32 {
         return E_POINTER;
     }
     with(b, |g| {
-        let full = if dest {
-            (0, 0, g.window.2, g.window.3)
-        } else {
-            (0, 0, g.video.0, g.video.1)
-        };
+        let full = if dest { (0, 0, g.window.2, g.window.3) } else { (0, 0, g.video.0, g.video.1) };
         let r = if dest { &mut g.dst } else { &mut g.src };
         let mut cur = r.unwrap_or(full);
         let field = match f {
@@ -1180,25 +1038,12 @@ fn bv_set_rect(c: &mut Ctx, dest: bool) -> u32 {
     if r.2 <= 0 || r.3 <= 0 {
         return E_INVALIDARG;
     }
-    with(b, |g| {
-        if dest {
-            g.dst = Some(r)
-        } else {
-            g.src = Some(r)
-        }
-    });
+    with(b, |g| if dest { g.dst = Some(r) } else { g.src = Some(r) });
     sync(b);
     0
 }
 fn bv_get_rect(c: &mut Ctx, dest: bool) -> u32 {
-    let r = with(base(c, BV), |g| {
-        if dest {
-            g.dst.unwrap_or((0, 0, g.window.2, g.window.3))
-        } else {
-            g.src.unwrap_or((0, 0, g.video.0, g.video.1))
-        }
-    })
-    .unwrap_or_default();
+    let r = with(base(c, BV), |g| if dest { g.dst.unwrap_or((0, 0, g.window.2, g.window.3)) } else { g.src.unwrap_or((0, 0, g.video.0, g.video.1)) }).unwrap_or_default();
     for (i, v) in [r.0, r.1, r.2, r.3].into_iter().enumerate() {
         put32(c.a(1 + i as u32), v as u32);
     }
@@ -1211,19 +1056,8 @@ fn bv_default_rect(c: &mut Ctx, dest: bool) -> u32 {
     0
 }
 fn bv_is_default(c: &mut Ctx, dest: bool) -> u32 {
-    let d = with(base(c, BV), |g| {
-        if dest {
-            g.dst.is_none()
-        } else {
-            g.src.is_none()
-        }
-    })
-    .unwrap_or(true);
-    if d {
-        0
-    } else {
-        S_FALSE
-    }
+    let d = with(base(c, BV), |g| if dest { g.dst.is_none() } else { g.src.is_none() }).unwrap_or(true);
+    if d { 0 } else { S_FALSE }
 }
 fn bv_size(c: &mut Ctx) -> u32 {
     let v = with(base(c, BV), |g| g.video).unwrap_or_default();
@@ -1266,30 +1100,11 @@ fn bv_image(c: &mut Ctx) -> u32 {
 /// 4 * w * h bytes).
 fn put_dib(b: u32, img: u32) -> bool {
     let t = now();
-    let Some((stream, n, w, h)) = play::with(|m| {
-        m.get(&b).map(|p| {
-            (
-                p.movie.stream,
-                play::frame_at(p.tl.position(t), p.movie.rate, p.movie.frames),
-                p.movie.w,
-                p.movie.h,
-            )
-        })
-    }) else {
+    let Some((stream, n, w, h)) = play::with(|m| m.get(&b).map(|p| (p.movie.stream, play::frame_at(p.tl.position(t), p.movie.rate, p.movie.frames), p.movie.w, p.movie.h))) else {
         return false;
     };
     let mut px = vec![0u8; (4 * w * h) as usize];
-    if !unsafe {
-        kura::video::frame(
-            stream,
-            n as i32,
-            px.as_mut_ptr(),
-            4 * w as usize,
-            w,
-            h,
-            kura::video::Out::Rgb601,
-        )
-    } {
+    if !unsafe { kura::video::frame(stream, n as i32, px.as_mut_ptr(), 4 * w as usize, w, h, kura::video::Out::Rgb601) } {
         return false;
     }
     mem::fill(img, 40, 0);
@@ -1510,9 +1325,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         return evr(iid);
     }
     // CLSID_VideoMixingRenderer {b87beb7b-8d29-423f-ae4d-6582c10175ac}, ...9 {51b4abf3-748f-4e3b-...}
-    if (r32(clsid) == 0xb87b_eb7b && r32(clsid + 4) == 0x423f_8d29)
-        || (r32(clsid) == 0x51b4_abf3 && r32(clsid + 4) == 0x4e3b_748f)
-    {
+    if (r32(clsid) == 0xb87b_eb7b && r32(clsid + 4) == 0x423f_8d29) || (r32(clsid) == 0x51b4_abf3 && r32(clsid + 4) == 0x4e3b_748f) {
         return vmr(iid);
     }
     // CLSID_FilterGraph {e436ebb3-524f-11ce-9f53-0020af0ba770}, FilterGraphNoThread {e436ebb8-...}
@@ -1524,10 +1337,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
     for (k, v) in vtables().iter().enumerate() {
         wp(b + ps() * k as u32, *v);
     }
-    let event = crate::obj::add(crate::obj::Obj::Event {
-        manual: true,
-        set: false,
-    });
+    let event = crate::obj::add(crate::obj::Obj::Event { manual: true, set: false });
     let g = Graph {
         refs: 1,
         event,
@@ -1556,11 +1366,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         balance: 0,
         evr: 0,
     };
-    GRAPHS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(b, g);
+    GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, g);
     Some(b + ps() * s)
 }
 
@@ -1590,22 +1396,11 @@ struct Evr {
 static EVRS: Mutex<Option<HashMap<u32, Evr>>> = Mutex::new(None);
 
 fn evr_with<R>(b: u32, f: impl FnOnce(&mut Evr) -> R) -> Option<R> {
-    EVRS.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .get_mut(&b)
-        .map(f)
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get_mut(&b).map(f)
 }
 /// The graphs an EVR renders for take its new settings.
 fn evr_changed(e: u32) {
-    let gs: Vec<u32> = GRAPHS
-        .lock()
-        .unwrap_or_else(|x| x.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .iter()
-        .filter(|(_, g)| g.evr == e)
-        .map(|(&b, _)| b)
-        .collect();
+    let gs: Vec<u32> = GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).iter().filter(|(_, g)| g.evr == e).map(|(&b, _)| b).collect();
     for b in gs {
         sync(b);
     }
@@ -1654,14 +1449,7 @@ fn dc_block(c: &Ctx) -> u32 {
 }
 /// The picture size of the movie a graph renders into renderer `e` (0x0: none).
 fn native(e: u32) -> (i32, i32) {
-    GRAPHS
-        .lock()
-        .unwrap_or_else(|x| x.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .values()
-        .find(|g| g.evr == e && g.playing)
-        .map(|g| g.video)
-        .unwrap_or((0, 0))
+    GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).values().find(|g| g.evr == e && g.playing).map(|g| g.video).unwrap_or((0, 0))
 }
 /// GetNativeVideoSize(size, aspect): the movie's of a graph it renders for
 fn dc_native(c: &mut Ctx) -> u32 {
@@ -1686,12 +1474,7 @@ fn dc_set_pos(c: &mut Ctx) -> u32 {
             v.src = [0, 1, 2, 3].map(|i| f32::from_bits(r32(s + 4 * i)));
         }
         if d != 0 {
-            let (l, t, r, b) = (
-                r32(d) as i32,
-                r32(d + 4) as i32,
-                r32(d + 8) as i32,
-                r32(d + 12) as i32,
-            );
+            let (l, t, r, b) = (r32(d) as i32, r32(d + 4) as i32, r32(d + 8) as i32, r32(d + 12) as i32);
             v.dst = (l, t, r - l, b - t);
         }
     });
@@ -1708,10 +1491,7 @@ fn dc_get_pos(c: &mut Ctx) -> u32 {
         }
     }
     if d != 0 {
-        for (i, v) in [e.dst.0, e.dst.1, e.dst.0 + e.dst.2, e.dst.1 + e.dst.3]
-            .into_iter()
-            .enumerate()
-        {
+        for (i, v) in [e.dst.0, e.dst.1, e.dst.0 + e.dst.2, e.dst.1 + e.dst.3].into_iter().enumerate() {
             w32(d + 4 * i as u32, v as u32);
         }
     }
@@ -1757,30 +1537,14 @@ fn evr(iid: u32) -> Option<u32> {
         fn q2(c: &mut Ctx) -> u32 {
             evr_qi(c, 2)
         }
-        let unk = |q: Handler| -> Vec<(Handler, u32)> {
-            vec![(q, 12), (one as Handler, 4), (one as Handler, 4)]
-        };
+        let unk = |q: Handler| -> Vec<(Handler, u32)> { vec![(q, 12), (one as Handler, 4), (one as Handler, 4)] };
         let mut gs = unk(q1);
         gs.push((evr_get_service, 16));
         // IBaseFilter: GetClassID, Stop, Pause, Run, GetState, SetSyncSource, GetSyncSource,
         // EnumPins, FindPin, QueryFilterInfo, JoinFilterGraph, QueryVendorInfo
         let mut bf = unk(q0);
-        bf.extend([
-            (notimpl as Handler, 8),
-            (ok, 4),
-            (ok, 4),
-            (ok, 12),
-            (notimpl, 12),
-            (ok, 8),
-            (notimpl, 8),
-        ]);
-        bf.extend([
-            (notimpl as Handler, 8),
-            (notimpl, 12),
-            (notimpl, 8),
-            (ok, 12),
-            (notimpl, 8),
-        ]);
+        bf.extend([(notimpl as Handler, 8), (ok, 4), (ok, 4), (ok, 12), (notimpl, 12), (ok, 8), (notimpl, 8)]);
+        bf.extend([(notimpl as Handler, 8), (notimpl, 12), (notimpl, 8), (ok, 12), (notimpl, 8)]);
         // IMFVideoDisplayControl
         let mut dc = unk(q2);
         dc.extend([
@@ -1801,33 +1565,13 @@ fn evr(iid: u32) -> Option<u32> {
             (ok, 8),                    // SetFullscreen
             (get0, 8),                  // GetFullscreen
         ]);
-        [
-            vtable("EVR::IBaseFilter", &bf),
-            vtable("EVR::IMFGetService", &gs),
-            vtable("EVR::IMFVideoDisplayControl", &dc),
-        ]
+        [vtable("EVR::IBaseFilter", &bf), vtable("EVR::IMFGetService", &gs), vtable("EVR::IMFVideoDisplayControl", &dc)]
     });
     let b = mem::heap_alloc(8 * 3, true);
     for (k, t) in v.iter().enumerate() {
         wp(b + ps() * k as u32, *t);
     }
-    EVRS.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(
-            b,
-            Evr {
-                hwnd: 0,
-                src: [0.0, 0.0, 1.0, 1.0],
-                dst: (0, 0, 0, 0),
-                mode: 1,
-                vmr: false,
-                src_px: None,
-                windowless: true,
-                border: 0,
-                key: 0,
-            },
-        );
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 1, vmr: false, src_px: None, windowless: true, border: 0, key: 0 });
     Some(b + ps() * s)
 }
 
@@ -1851,7 +1595,7 @@ fn vmr_qi(c: &mut Ctx, k: u32) -> u32 {
     let windowless = evr_with(b, |e| e.windowless).unwrap_or(false);
     let s = match r32(c.a(1)) {
         0 | 0x56a8_6895 | 0x0000_010c | 0x56a8_6899 => Some(0), // IBaseFilter, IPersist, IMediaFilter
-        0x9e55_30c5 | 0x5a80_4648 => Some(VMR_CONFIG),          // IVMRFilterConfig(9)
+        0x9e55_30c5 | 0x5a80_4648 => Some(VMR_CONFIG),                    // IVMRFilterConfig(9)
         0x0eb1_088c | 0x8f53_7d09 if windowless => Some(VMR_WINDOWLESS), // IVMRWindowlessControl(9)
         _ => None,
     };
@@ -1918,12 +1662,7 @@ fn wl_max_ideal(c: &mut Ctx) -> u32 {
     0
 }
 fn rect_at(p: u32) -> (i32, i32, i32, i32) {
-    let (l, t, r, b) = (
-        r32(p) as i32,
-        r32(p + 4) as i32,
-        r32(p + 8) as i32,
-        r32(p + 12) as i32,
-    );
+    let (l, t, r, b) = (r32(p) as i32, r32(p + 4) as i32, r32(p + 8) as i32, r32(p + 12) as i32);
     (l, t, r - l, b - t)
 }
 fn put_rect(p: u32, r: (i32, i32, i32, i32)) {
@@ -1958,9 +1697,7 @@ fn wl_set_pos(c: &mut Ctx) -> u32 {
 }
 fn wl_get_pos(c: &mut Ctx) -> u32 {
     let b = wl_block(c);
-    let Some(e) = evr_with(b, |v| *v) else {
-        return E_POINTER;
-    };
+    let Some(e) = evr_with(b, |v| *v) else { return E_POINTER };
     let v = native(b);
     if c.a(1) != 0 {
         put_rect(c.a(1), e.src_px.unwrap_or((0, 0, v.0, v.1)));
@@ -1995,16 +1732,8 @@ fn wl_image(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    let g = GRAPHS
-        .lock()
-        .unwrap_or_else(|x| x.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .iter()
-        .find(|(_, g)| g.evr == e && g.playing)
-        .map(|(&b, g)| (b, g.video));
-    let Some((b, (w, h))) = g else {
-        return E_NOTIMPL;
-    };
+    let g = GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).iter().find(|(_, g)| g.evr == e && g.playing).map(|(&b, g)| (b, g.video));
+    let Some((b, (w, h))) = g else { return E_NOTIMPL };
     let img = mem::heap_alloc(40 + 4 * (w * h) as u32, false);
     if !put_dib(b, img) {
         mem::heap_free(img);
@@ -2051,26 +1780,10 @@ fn vmr(iid: u32) -> Option<u32> {
         fn q2(c: &mut Ctx) -> u32 {
             vmr_qi(c, VMR_WINDOWLESS)
         }
-        let unk = |q: Handler| -> Vec<(Handler, u32)> {
-            vec![(q, 12), (one as Handler, 4), (one as Handler, 4)]
-        };
+        let unk = |q: Handler| -> Vec<(Handler, u32)> { vec![(q, 12), (one as Handler, 4), (one as Handler, 4)] };
         let mut bf = unk(q0);
-        bf.extend([
-            (notimpl as Handler, 8),
-            (ok, 4),
-            (ok, 4),
-            (ok, 12),
-            (notimpl, 12),
-            (ok, 8),
-            (notimpl, 8),
-        ]);
-        bf.extend([
-            (notimpl as Handler, 8),
-            (notimpl, 12),
-            (notimpl, 8),
-            (ok, 12),
-            (notimpl, 8),
-        ]);
+        bf.extend([(notimpl as Handler, 8), (ok, 4), (ok, 4), (ok, 12), (notimpl, 12), (ok, 8), (notimpl, 8)]);
+        bf.extend([(notimpl as Handler, 8), (notimpl, 12), (notimpl, 8), (ok, 12), (notimpl, 8)]);
         let mut fc = unk(q1);
         fc.extend([
             (ok as Handler, 8), // SetImageCompositor
@@ -2099,11 +1812,7 @@ fn vmr(iid: u32) -> Option<u32> {
             (wl_set_key, 8), // (the VMR-7's)
             (wl_get_key, 8),
         ]);
-        [
-            vtable("VMR::IBaseFilter", &bf),
-            vtable("VMR::IVMRFilterConfig", &fc),
-            vtable("VMR::IVMRWindowlessControl", &wl),
-        ]
+        [vtable("VMR::IBaseFilter", &bf), vtable("VMR::IVMRFilterConfig", &fc), vtable("VMR::IVMRWindowlessControl", &wl)]
     });
     let s = match r32(iid) {
         0 | 0x56a8_6895 | 0x0000_010c | 0x56a8_6899 => 0,
@@ -2114,23 +1823,7 @@ fn vmr(iid: u32) -> Option<u32> {
     for (k, t) in v.iter().enumerate() {
         wp(b + ps() * k as u32, *t);
     }
-    EVRS.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(
-            b,
-            Evr {
-                hwnd: 0,
-                src: [0.0, 0.0, 1.0, 1.0],
-                dst: (0, 0, 0, 0),
-                mode: 0,
-                vmr: true,
-                src_px: None,
-                windowless: false,
-                border: 0,
-                key: 0,
-            },
-        );
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0 });
     Some(b + ps() * s)
 }
 
@@ -2142,11 +1835,7 @@ mod ends_tests {
     #[test]
     fn ends_are_taken_when_due_earliest_first() {
         let t = Instant::now();
-        let mut v = vec![
-            (t + Duration::from_secs(9), 1, 1),
-            (t, 2, 5),
-            (t - Duration::from_millis(3), 3, 7),
-        ];
+        let mut v = vec![(t + Duration::from_secs(9), 1, 1), (t, 2, 5), (t - Duration::from_millis(3), 3, 7)];
         assert_eq!(due(&mut v, t), [(3, 7), (2, 5)]);
         assert_eq!(v.len(), 1);
         assert!(due(&mut v, t).is_empty());

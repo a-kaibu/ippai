@@ -87,13 +87,7 @@ pub enum Hash {
     Sha512,
 }
 impl Hash {
-    pub const ALL: [Hash; 5] = [
-        Hash::Md5,
-        Hash::Sha1,
-        Hash::Sha256,
-        Hash::Sha384,
-        Hash::Sha512,
-    ];
+    pub const ALL: [Hash; 5] = [Hash::Md5, Hash::Sha1, Hash::Sha256, Hash::Sha384, Hash::Sha512];
     pub fn from_name(s: &str) -> Option<Hash> {
         Some(match s.to_ascii_uppercase().as_str() {
             "MD5" => Hash::Md5,
@@ -116,26 +110,11 @@ impl Hash {
     /// The DER DigestInfo prefix of a PKCS#1 v1.5 signature (RFC 8017 9.2 note 1)
     fn prefix(self) -> &'static [u8] {
         match self {
-            Hash::Md5 => &[
-                0x30, 0x20, 0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x05,
-                0x05, 0x00, 0x04, 0x10,
-            ],
-            Hash::Sha1 => &[
-                0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04,
-                0x14,
-            ],
-            Hash::Sha256 => &[
-                0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
-                0x01, 0x05, 0x00, 0x04, 0x20,
-            ],
-            Hash::Sha384 => &[
-                0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
-                0x02, 0x05, 0x00, 0x04, 0x30,
-            ],
-            Hash::Sha512 => &[
-                0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
-                0x03, 0x05, 0x00, 0x04, 0x40,
-            ],
+            Hash::Md5 => &[0x30, 0x20, 0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x05, 0x05, 0x00, 0x04, 0x10],
+            Hash::Sha1 => &[0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14],
+            Hash::Sha256 => &[0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20],
+            Hash::Sha384 => &[0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05, 0x00, 0x04, 0x30],
+            Hash::Sha512 => &[0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04, 0x40],
         }
     }
     fn pss(self, salt: usize) -> Pss {
@@ -230,9 +209,7 @@ impl Rsa {
         self.public().size()
     }
     pub fn generate(bits: u32) -> Result<Rsa, u32> {
-        RsaPrivateKey::new_with_exp(&mut Rng, bits as usize, &BigUint::from(65537u32))
-            .map(Rsa::Private)
-            .map_err(|_| NTE_INVALID_PARAMETER)
+        RsaPrivateKey::new_with_exp(&mut Rng, bits as usize, &BigUint::from(65537u32)).map(Rsa::Private).map_err(|_| NTE_INVALID_PARAMETER)
     }
 
     /// Parses a BCRYPT_RSAKEY_BLOB of the `want` kind (`any_private`: RSA2 or RSA3); the bit
@@ -253,20 +230,12 @@ impl Rsa {
             return Err(NTE_INVALID_PARAMETER);
         }
         let (bits, ne, nm, p1, p2) = (r(4) as u32, r(8), r(12), r(16), r(20));
-        let need = 24
-            + ne
-            + nm
-            + match kind {
-                Blob::Public => 0,
-                Blob::Private => p1 + p2,
-                Blob::FullPrivate => 2 * (p1 + p2) + p1 + nm,
-            };
-        if ne == 0
-            || ne > 8
-            || nm == 0
-            || b.len() != need
-            || (kind != Blob::Public && (p1 == 0 || p2 == 0))
-        {
+        let need = 24 + ne + nm + match kind {
+            Blob::Public => 0,
+            Blob::Private => p1 + p2,
+            Blob::FullPrivate => 2 * (p1 + p2) + p1 + nm,
+        };
+        if ne == 0 || ne > 8 || nm == 0 || b.len() != need || (kind != Blob::Public && (p1 == 0 || p2 == 0)) {
             return Err(NTE_BAD_DATA);
         }
         let mut at = 24;
@@ -277,9 +246,7 @@ impl Rsa {
         };
         let (e, n) = (take(ne), take(nm));
         let key = match kind {
-            Blob::Public => {
-                Rsa::Public(RsaPublicKey::new_with_max_size(n, e, 16384).map_err(|_| NTE_BAD_DATA)?)
-            }
+            Blob::Public => Rsa::Public(RsaPublicKey::new_with_max_size(n, e, 16384).map_err(|_| NTE_BAD_DATA)?),
             _ => {
                 let (p, q) = (take(p1), take(p2));
                 let k = if kind == Blob::FullPrivate {
@@ -314,14 +281,7 @@ impl Rsa {
         let np = (bits as usize).div_ceil(16).max(1);
         let mut out = Vec::new();
         let (p1, p2) = if priv_.is_some() { (np, np) } else { (0, 0) };
-        for v in [
-            kind.magic(),
-            bits,
-            e.len() as u32,
-            nm as u32,
-            p1 as u32,
-            p2 as u32,
-        ] {
+        for v in [kind.magic(), bits, e.len() as u32, nm as u32, p1 as u32, p2 as u32] {
             out.extend_from_slice(&v.to_le_bytes());
         }
         out.extend_from_slice(&e);
@@ -346,9 +306,7 @@ impl Rsa {
 
     /// Signs `digest` (its length must be the padding's hash's)
     pub fn sign(&self, pad: Pad, digest: &[u8]) -> Result<Vec<u8>, u32> {
-        let Rsa::Private(k) = self else {
-            return Err(NTE_NO_KEY);
-        };
+        let Rsa::Private(k) = self else { return Err(NTE_NO_KEY) };
         let r = match pad {
             Pad::Pkcs1(h) => k.sign(pkcs1_sign(h, digest)?, digest),
             Pad::Pss(h, salt) => {
@@ -385,9 +343,7 @@ impl Rsa {
                 if &m >= k.n() {
                     return Err(NTE_INVALID_PARAMETER);
                 }
-                return rsa::hazmat::rsa_encrypt(&k, &m)
-                    .map(|c| be(&c, k.size()))
-                    .map_err(|_| NTE_INVALID_PARAMETER);
+                return rsa::hazmat::rsa_encrypt(&k, &m).map(|c| be(&c, k.size())).map_err(|_| NTE_INVALID_PARAMETER);
             }
             Pad::Pkcs1(_) => k.encrypt(&mut Rng, Pkcs1v15Encrypt, data),
             Pad::Oaep(h) => k.encrypt(&mut Rng, h.oaep(label), data),
@@ -396,9 +352,7 @@ impl Rsa {
         r.map_err(|_| NTE_INVALID_PARAMETER)
     }
     pub fn decrypt(&self, pad: Pad, label: &[u8], data: &[u8]) -> Result<Vec<u8>, u32> {
-        let Rsa::Private(k) = self else {
-            return Err(NTE_NO_KEY);
-        };
+        let Rsa::Private(k) = self else { return Err(NTE_NO_KEY) };
         if data.len() != k.size() {
             return Err(NTE_INVALID_PARAMETER);
         }
@@ -408,9 +362,7 @@ impl Rsa {
                 if &c >= k.n() {
                     return Err(NTE_INVALID_PARAMETER);
                 }
-                return rsa::hazmat::rsa_decrypt_and_check(k, Some(&mut Rng), &c)
-                    .map(|m| be(&m, k.size()))
-                    .map_err(|_| NTE_INVALID_PARAMETER);
+                return rsa::hazmat::rsa_decrypt_and_check(k, Some(&mut Rng), &c).map(|m| be(&m, k.size())).map_err(|_| NTE_INVALID_PARAMETER);
             }
             Pad::Pkcs1(_) => k.decrypt(Pkcs1v15Encrypt, data),
             Pad::Oaep(h) => k.decrypt(h.oaep(label), data),
@@ -431,13 +383,11 @@ fn pkcs1_sign(h: Option<Hash>, digest: &[u8]) -> Result<Pkcs1v15Sign, u32> {
         None => Pkcs1v15Sign::new_unprefixed(),
         Some(h) => {
             check_len(h, digest)?;
-            Pkcs1v15Sign {
-                hash_len: Some(h.len()),
-                prefix: h.prefix().into(),
-            }
+            Pkcs1v15Sign { hash_len: Some(h.len()), prefix: h.prefix().into() }
         }
     })
 }
+
 
 // ---------------------------------------------------------------------------------------------
 // elliptic curves: ECDSA and ECDH on P-256 / P-384 / P-521
@@ -496,9 +446,7 @@ impl Curve {
         }
     }
     fn from_name(s: &str) -> Option<Curve> {
-        Curve::ALL
-            .into_iter()
-            .find(|c| c.name().eq_ignore_ascii_case(s))
+        Curve::ALL.into_iter().find(|c| c.name().eq_ignore_ascii_case(s))
     }
     /// The curve and ECDSA-ness (else ECDH) of an algorithm (the generic ECDSA / ECDH: None curve)
     fn of_alg(a: &str) -> Option<(Option<Curve>, bool)> {
@@ -604,9 +552,7 @@ impl Ecc {
             return Err(NTE_NOT_SUPPORTED);
         }
         let magic = u32::from_le_bytes(b[0..4].try_into().unwrap());
-        let Some((curve, ecdsa, is_priv)) = ecc_of_magic(magic) else {
-            return Err(NTE_INVALID_PARAMETER);
-        };
+        let Some((curve, ecdsa, is_priv)) = ecc_of_magic(magic) else { return Err(NTE_INVALID_PARAMETER) };
         if private.is_some_and(|p| p != is_priv) {
             return Err(NTE_INVALID_PARAMETER);
         }
@@ -614,13 +560,7 @@ impl Ecc {
         if n != curve.size() || b.len() != 8 + n * (2 + is_priv as usize) {
             return Err(NTE_NOT_SUPPORTED);
         }
-        let e = Ecc {
-            curve,
-            ecdsa,
-            x: b[8..8 + n].to_vec(),
-            y: b[8 + n..8 + 2 * n].to_vec(),
-            d: is_priv.then(|| b[8 + 2 * n..].to_vec()),
-        };
+        let e = Ecc { curve, ecdsa, x: b[8..8 + n].to_vec(), y: b[8 + n..8 + 2 * n].to_vec(), d: is_priv.then(|| b[8 + 2 * n..].to_vec()) };
         e.validate()?;
         Ok(e)
     }
@@ -628,9 +568,7 @@ impl Ecc {
         if private && self.d.is_none() {
             return Err(NTE_INVALID_PARAMETER);
         }
-        let mut out = ecc_magic(self.curve, self.ecdsa, private)
-            .to_le_bytes()
-            .to_vec();
+        let mut out = ecc_magic(self.curve, self.ecdsa, private).to_le_bytes().to_vec();
         out.extend_from_slice(&(self.curve.size() as u32).to_le_bytes());
         out.extend_from_slice(&self.x);
         out.extend_from_slice(&self.y);
@@ -645,9 +583,7 @@ impl Ecc {
     }
     /// ECDSA over a hash (randomized, as Windows'): r || s
     pub fn sign(&self, hash: &[u8]) -> Result<Vec<u8>, u32> {
-        let Some(d) = &self.d else {
-            return Err(NTE_NO_KEY);
-        };
+        let Some(d) = &self.d else { return Err(NTE_NO_KEY) };
         if !self.ecdsa {
             return Err(NTE_NOT_SUPPORTED);
         }
@@ -677,9 +613,7 @@ impl Ecc {
     }
     /// ECDH: the shared x coordinate (big-endian) with the peer's public key
     pub fn agree(&self, peer: &Ecc) -> Result<Vec<u8>, u32> {
-        let Some(d) = &self.d else {
-            return Err(NTE_INVALID_PARAMETER);
-        };
+        let Some(d) = &self.d else { return Err(NTE_INVALID_PARAMETER) };
         if peer.curve != self.curve || self.ecdsa || peer.ecdsa {
             return Err(NTE_INVALID_PARAMETER);
         }
@@ -739,35 +673,17 @@ pub enum Kdf {
     /// BCRYPT_KDF_RAW_SECRET ("TRUNCATE"): the secret, little-endian
     Raw,
     /// BCRYPT_KDF_HASH: hash(prepend || Z || append)
-    Hash {
-        hash: Hash,
-        prepend: Vec<u8>,
-        append: Vec<u8>,
-    },
+    Hash { hash: Hash, prepend: Vec<u8>, append: Vec<u8> },
     /// BCRYPT_KDF_HMAC: HMAC(key, prepend || Z || append); key None: Z itself
-    Hmac {
-        hash: Hash,
-        key: Option<Vec<u8>>,
-        prepend: Vec<u8>,
-        append: Vec<u8>,
-    },
+    Hmac { hash: Hash, key: Option<Vec<u8>>, prepend: Vec<u8>, append: Vec<u8> },
 }
 impl Kdf {
     /// The derived bytes from the big-endian secret `z`
     pub fn derive(&self, z: &[u8]) -> Vec<u8> {
         match self {
             Kdf::Raw => z.iter().rev().copied().collect(),
-            Kdf::Hash {
-                hash,
-                prepend,
-                append,
-            } => digest(*hash, &[prepend, z, append]),
-            Kdf::Hmac {
-                hash,
-                key,
-                prepend,
-                append,
-            } => hmac(*hash, key.as_deref().unwrap_or(z), &[prepend, z, append]),
+            Kdf::Hash { hash, prepend, append } => digest(*hash, &[prepend, z, append]),
+            Kdf::Hmac { hash, key, prepend, append } => hmac(*hash, key.as_deref().unwrap_or(z), &[prepend, z, append]),
         }
     }
 }
@@ -847,10 +763,7 @@ fn wname(a: u32) -> Option<String> {
     (a != 0).then(|| String::from_utf16_lossy(&wstr(a)))
 }
 fn w(s: &str) -> Vec<u8> {
-    s.encode_utf16()
-        .chain([0])
-        .flat_map(|u| u.to_le_bytes())
-        .collect()
+    s.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect()
 }
 fn bytes(a: u32, n: u32) -> Vec<u8> {
     if a == 0 || n == 0 {
@@ -945,17 +858,11 @@ fn NCryptEnumAlgorithms(c: &mut Ctx) -> u32 {
         return NTE_BAD_FLAGS;
     }
     // the named algorithms only (the generic ECDH / ECDSA are not listed)
-    let list: Vec<_> = ALGS
-        .iter()
-        .filter(|a| a.0 != "ECDH" && a.0 != "ECDSA" && (ops == 0 || a.2 & ops != 0))
-        .collect();
+    let list: Vec<_> = ALGS.iter().filter(|a| a.0 != "ECDH" && a.0 != "ECDSA" && (ops == 0 || a.2 & ops != 0)).collect();
     let k = ps();
     let ent = k + 12;
     let strs: Vec<Vec<u8>> = list.iter().map(|a| w(a.0)).collect();
-    let buf = mem::heap_alloc(
-        list.len() as u32 * ent + strs.iter().map(|s| s.len() as u32).sum::<u32>(),
-        true,
-    );
+    let buf = mem::heap_alloc(list.len() as u32 * ent + strs.iter().map(|s| s.len() as u32).sum::<u32>(), true);
     let mut sp = buf + list.len() as u32 * ent;
     for (i, (a, s)) in list.iter().zip(&strs).enumerate() {
         let e = buf + i as u32 * ent;
@@ -1000,9 +907,7 @@ fn NCryptCreatePersistedKey(c: &mut Ctx) -> u32 {
     if fl & !(SILENT | OVERWRITE | MACHINE_KEY) != 0 {
         return NTE_BAD_FLAGS;
     }
-    let Some(info) = alg(&wname(a).unwrap()) else {
-        return NTE_NOT_SUPPORTED;
-    };
+    let Some(info) = alg(&wname(a).unwrap()) else { return NTE_NOT_SUPPORTED };
     let name = wname(name);
     if let Some(n) = &name {
         if fl & OVERWRITE == 0 && with(|s| s.store.contains_key(&n.to_lowercase())) {
@@ -1010,18 +915,7 @@ fn NCryptCreatePersistedKey(c: &mut Ctx) -> u32 {
         }
     }
     let curve = Curve::of_alg(info.0).and_then(|c| c.0);
-    let k = Key {
-        prov: p,
-        alg: info.0,
-        bits: info.4,
-        finalized: false,
-        rsa: None,
-        ecc: None,
-        curve,
-        export: 0,
-        usage: 0x00ff_ffff,
-        name,
-    };
+    let k = Key { prov: p, alg: info.0, bits: info.4, finalized: false, rsa: None, ecc: None, curve, export: 0, usage: 0x00ff_ffff, name };
     putp(out, add_key(k));
     0
 }
@@ -1029,9 +923,7 @@ fn NCryptCreatePersistedKey(c: &mut Ctx) -> u32 {
 /// NCryptFinalizeKey(key, flags): generates the key (RSA); a key finalizes once
 fn NCryptFinalizeKey(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    let Some(mut k) = key(h) else {
-        return NTE_INVALID_HANDLE;
-    };
+    let Some(mut k) = key(h) else { return NTE_INVALID_HANDLE };
     if k.finalized {
         return NTE_INVALID_HANDLE;
     }
@@ -1044,9 +936,7 @@ fn NCryptFinalizeKey(c: &mut Ctx) -> u32 {
     if let Some((_, ecdsa)) = Curve::of_alg(k.alg) {
         if k.ecc.is_none() {
             // (the generic ECDSA / ECDH need ECCCurveName first)
-            let Some(curve) = k.curve else {
-                return NTE_INVALID_PARAMETER;
-            };
+            let Some(curve) = k.curve else { return NTE_INVALID_PARAMETER };
             k.ecc = Some(Ecc::generate(curve, ecdsa));
         }
     }
@@ -1083,9 +973,7 @@ fn NCryptOpenKey(c: &mut Ctx) -> u32 {
 /// NCryptDeleteKey(key, flags): forgets a named key and frees the handle
 fn NCryptDeleteKey(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    let Some(k) = with(|s| s.keys.remove(&h)) else {
-        return NTE_INVALID_HANDLE;
-    };
+    let Some(k) = with(|s| s.keys.remove(&h)) else { return NTE_INVALID_HANDLE };
     if let Some(n) = k.name {
         with(|s| s.store.remove(&n.to_lowercase()));
     }
@@ -1109,16 +997,9 @@ fn NCryptEnumKeys(c: &mut Ctx) -> u32 {
         putp(pstate, st);
     }
     let i = r32(st) as usize;
-    let mut names: Vec<(String, &str)> = with(|s| {
-        s.store
-            .values()
-            .map(|k| (k.name.clone().unwrap_or_default(), k.alg))
-            .collect()
-    });
+    let mut names: Vec<(String, &str)> = with(|s| s.store.values().map(|k| (k.name.clone().unwrap_or_default(), k.alg)).collect());
     names.sort();
-    let Some((n, a)) = names.get(i) else {
-        return NTE_NO_MORE_ITEMS;
-    };
+    let Some((n, a)) = names.get(i) else { return NTE_NO_MORE_ITEMS };
     w32(st, i as u32 + 1);
     let k = ps();
     let (sn, sa) = (w(n), w(a));
@@ -1134,16 +1015,7 @@ fn NCryptEnumKeys(c: &mut Ctx) -> u32 {
 
 /// NCryptImportKey(prov, importKey, blobType, params, &key, data, size, flags)
 fn NCryptImportKey(c: &mut Ctx) -> u32 {
-    let (p, wrap, bt, params, out, data, size, fl) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        c.a(7),
-    );
+    let (p, wrap, bt, params, out, data, size, fl) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
     if !is_prov(p) {
         return NTE_INVALID_HANDLE;
     }
@@ -1161,22 +1033,16 @@ fn NCryptImportKey(c: &mut Ctx) -> u32 {
     }
     let bname = wname(bt).unwrap();
     let raw = bytes(data, size);
-    let magic = raw
-        .get(..4)
-        .map_or(0, |m| u32::from_le_bytes(m.try_into().unwrap()));
+    let magic = raw.get(..4).map_or(0, |m| u32::from_le_bytes(m.try_into().unwrap()));
     let generic = matches!(bname.as_str(), "PUBLICBLOB" | "PRIVATEBLOB");
-    let (alg_name, bits, rsa, ecc) = if matches!(bname.as_str(), "ECCPUBLICBLOB" | "ECCPRIVATEBLOB")
-        || (generic && ecc_of_magic(magic).is_some())
-    {
+    let (alg_name, bits, rsa, ecc) = if matches!(bname.as_str(), "ECCPUBLICBLOB" | "ECCPRIVATEBLOB") || (generic && ecc_of_magic(magic).is_some()) {
         let private = !bname.contains("PUBLIC");
         match Ecc::from_blob(&raw, Some(private)) {
             Ok(e) => (e.curve.alg(e.ecdsa), e.curve.bits(), None, Some(e)),
             Err(e) => return e,
         }
     } else {
-        let Some((kind, any)) = Blob::from_name(&bname) else {
-            return NTE_NOT_SUPPORTED;
-        };
+        let Some((kind, any)) = Blob::from_name(&bname) else { return NTE_NOT_SUPPORTED };
         match Rsa::from_blob(kind, any, &raw) {
             Ok((r, bits)) => ("RSA", bits, Some(r), None),
             Err(e) => return e,
@@ -1196,18 +1062,7 @@ fn NCryptImportKey(c: &mut Ctx) -> u32 {
         }
     }
     let finalize = fl & DO_NOT_FINALIZE == 0;
-    let k = Key {
-        prov: p,
-        alg: alg_name,
-        bits,
-        finalized: finalize,
-        rsa,
-        ecc,
-        curve,
-        export: 0,
-        usage: 0x00ff_ffff,
-        name,
-    };
+    let k = Key { prov: p, alg: alg_name, bits, finalized: finalize, rsa, ecc, curve, export: 0, usage: 0x00ff_ffff, name };
     if finalize {
         if let Some(n) = &k.name {
             if fl & OVERWRITE == 0 && with(|s| s.store.contains_key(&n.to_lowercase())) {
@@ -1224,9 +1079,7 @@ fn NCryptImportKey(c: &mut Ctx) -> u32 {
 /// blob needs NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG in the export policy
 fn NCryptExportKey(c: &mut Ctx) -> u32 {
     let (h, wrap, bt, out, outlen, res) = (c.a(0), c.a(1), c.a(2), c.a(4), c.a(5), c.a(6));
-    let Some(k) = key(h) else {
-        return NTE_INVALID_HANDLE;
-    };
+    let Some(k) = key(h) else { return NTE_INVALID_HANDLE };
     if bt == 0 || res == 0 {
         return NULL_REF;
     }
@@ -1246,9 +1099,7 @@ fn NCryptExportKey(c: &mut Ctx) -> u32 {
         return NTE_NOT_SUPPORTED;
     }
     let blob = match (&k.rsa, &k.ecc) {
-        (Some(r), _) if !bname.starts_with("ECC") => {
-            r.to_blob(Blob::from_name(&bname).unwrap().0, k.bits)
-        }
+        (Some(r), _) if !bname.starts_with("ECC") => r.to_blob(Blob::from_name(&bname).unwrap().0, k.bits),
         (_, Some(e)) if !bname.starts_with("RSA") => e.to_blob(private),
         _ => return NTE_NOT_SUPPORTED,
     };
@@ -1271,44 +1122,25 @@ fn property(h: u32, name: &str) -> Result<Vec<u8>, u32> {
             _ => Err(NTE_NOT_SUPPORTED),
         };
     }
-    let Some(k) = key(h) else {
-        return Err(NTE_INVALID_HANDLE);
-    };
+    let Some(k) = key(h) else { return Err(NTE_INVALID_HANDLE) };
     let info = alg(k.alg).unwrap();
-    let block = if info.1 == 1 {
-        if k.alg == "AES" {
-            16
-        } else {
-            8
-        }
-    } else {
-        k.bits.div_ceil(8)
-    };
+    let block = if info.1 == 1 { if k.alg == "AES" { 16 } else { 8 } } else { k.bits.div_ceil(8) };
     match name {
         "Name" | "Unique Name" => k.name.as_deref().map(w).ok_or(NTE_NOT_SUPPORTED),
         "Algorithm Name" => Ok(w(k.alg)),
         "Algorithm Group" => Ok(w(info.3)),
         "Length" => Ok(dw(k.bits)),
-        "Lengths" => Ok([info.5[0], info.5[1], info.5[2], info.4]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect()),
+        "Lengths" => Ok([info.5[0], info.5[1], info.5[2], info.4].iter().flat_map(|v| v.to_le_bytes()).collect()),
         "Block Length" => Ok(dw(block)),
         "Export Policy" => Ok(dw(k.export)),
         "Key Usage" => Ok(dw(k.usage)),
         "Key Type" => Ok(dw(0)),
-        "Provider Handle" => Ok(if ps() == 8 {
-            (k.prov as u64).to_le_bytes().to_vec()
-        } else {
-            dw(k.prov)
-        }),
+        "Provider Handle" => Ok(if ps() == 8 { (k.prov as u64).to_le_bytes().to_vec() } else { dw(k.prov) }),
         "SignatureLength" if k.alg.starts_with("ECDSA") => Ok(dw(2 * k.bits.div_ceil(8))),
         "SignatureLength" if info.2 & 0x10 != 0 => Ok(dw(block)),
         "ECCCurveName" => k.curve.map(|c| w(c.name())).ok_or(NTE_NOT_SUPPORTED),
         "PublicKeyLength" if info.1 != 1 => Ok(dw(k.bits)),
-        "UI Policy" | "HWND Handle" | "Use Context" | "Modified" | "SmartCardKeyCertificate" => {
-            Err(NTE_NOT_FOUND)
-        }
+        "UI Policy" | "HWND Handle" | "Use Context" | "Modified" | "SmartCardKeyCertificate" => Err(NTE_NOT_FOUND),
         "Security Descr" => Err(NTE_BAD_FLAGS),
         _ => Err(NTE_NOT_SUPPORTED),
     }
@@ -1340,28 +1172,16 @@ fn NCryptSetProperty(c: &mut Ctx) -> u32 {
     }
     let name = wname(n).unwrap();
     if is_prov(h) {
-        return if matches!(name.as_str(), "HWND Handle" | "Use Context") {
-            0
-        } else {
-            NTE_NOT_SUPPORTED
-        };
+        return if matches!(name.as_str(), "HWND Handle" | "Use Context") { 0 } else { NTE_NOT_SUPPORTED };
     }
-    let dword = || {
-        if input == 0 || size < 4 {
-            None
-        } else {
-            Some(r32(input))
-        }
-    };
+    let dword = || if input == 0 || size < 4 { None } else { Some(r32(input)) };
     let set = |f: &dyn Fn(&mut Key)| {
         with(|s| s.keys.get_mut(&h).map(f));
         0
     };
     match name.as_str() {
         "Length" => {
-            let Some(v) = dword() else {
-                return NTE_INVALID_PARAMETER;
-            };
+            let Some(v) = dword() else { return NTE_INVALID_PARAMETER };
             let k = key(h).unwrap();
             if k.finalized {
                 return 0; // (a finalized key keeps its length)
@@ -1373,18 +1193,14 @@ fn NCryptSetProperty(c: &mut Ctx) -> u32 {
             set(&|k| k.bits = v)
         }
         "Export Policy" => {
-            let Some(v) = dword() else {
-                return NTE_INVALID_PARAMETER;
-            };
+            let Some(v) = dword() else { return NTE_INVALID_PARAMETER };
             if key(h).unwrap().finalized {
                 return NTE_PERM;
             }
             set(&|k| k.export = v)
         }
         "Key Usage" => {
-            let Some(v) = dword() else {
-                return NTE_INVALID_PARAMETER;
-            };
+            let Some(v) = dword() else { return NTE_INVALID_PARAMETER };
             set(&|k| k.usage = v)
         }
         // the generic ECDSA / ECDH's curve, before finalizing
@@ -1399,14 +1215,8 @@ fn NCryptSetProperty(c: &mut Ctx) -> u32 {
             if input == 0 {
                 return NTE_INVALID_PARAMETER;
             }
-            let units: Vec<u16> = mem::slice(input, size & !1)
-                .chunks(2)
-                .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                .take_while(|&u| u != 0)
-                .collect();
-            let Some(curve) = Curve::from_name(&String::from_utf16_lossy(&units)) else {
-                return NTE_NOT_SUPPORTED;
-            };
+            let units: Vec<u16> = mem::slice(input, size & !1).chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).take_while(|&u| u != 0).collect();
+            let Some(curve) = Curve::from_name(&String::from_utf16_lossy(&units)) else { return NTE_NOT_SUPPORTED };
             set(&|k| {
                 k.curve = Some(curve);
                 k.bits = curve.bits();
@@ -1440,10 +1250,7 @@ fn padding(fl: u32, info: u32, sign: bool) -> Result<(Pad, Vec<u8>), u32> {
         // BCRYPT_PSS_PADDING_INFO { pszAlgId, cbSalt }
         (PAD_PSS, true) => {
             let h = if info == 0 { None } else { alg_at(info)? };
-            (
-                Pad::Pss(h.ok_or(NTE_INVALID_PARAMETER)?, r32(info + ps()) as usize),
-                Vec::new(),
-            )
+            (Pad::Pss(h.ok_or(NTE_INVALID_PARAMETER)?, r32(info + ps()) as usize), Vec::new())
         }
         (PAD_NONE, false) => (Pad::None, Vec::new()),
         (PAD_PKCS1, false) => (Pad::Pkcs1(None), Vec::new()),
@@ -1487,9 +1294,7 @@ fn NCryptSecretAgreement(c: &mut Ctx) -> u32 {
     if fl & !SILENT != 0 {
         return NTE_BAD_FLAGS;
     }
-    let (Some(ka), Some(kb)) = (ecc_key(a), ecc_key(b)) else {
-        return NTE_INVALID_PARAMETER;
-    };
+    let (Some(ka), Some(kb)) = (ecc_key(a), ecc_key(b)) else { return NTE_INVALID_PARAMETER };
     let z = match ka.and_then(|ka| kb.and_then(|kb| ka.agree(&kb))) {
         Ok(z) => z,
         Err(e) => return e,
@@ -1505,17 +1310,12 @@ fn NCryptSecretAgreement(c: &mut Ctx) -> u32 {
 /// default SHA1; KDF_SECRET_PREPEND 1; KDF_SECRET_APPEND 2; KDF_HMAC_KEY 3). The output is cut to
 /// the buffer.
 fn NCryptDeriveKey(c: &mut Ctx) -> u32 {
-    let (h, kdf, params, out, outlen, res, fl) =
-        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
-    let Some(z) = with(|s| s.secrets.get(&h).cloned()) else {
-        return NTE_INVALID_HANDLE;
-    };
+    let (h, kdf, params, out, outlen, res, fl) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let Some(z) = with(|s| s.secrets.get(&h).cloned()) else { return NTE_INVALID_HANDLE };
     if res == 0 {
         return NULL_REF;
     }
-    let Some(kdf) = wname(kdf) else {
-        return NTE_INVALID_PARAMETER;
-    };
+    let Some(kdf) = wname(kdf) else { return NTE_INVALID_PARAMETER };
     if fl & !(1 | SILENT) != 0 {
         return NTE_BAD_FLAGS;
     }
@@ -1539,21 +1339,12 @@ fn NCryptDeriveKey(c: &mut Ctx) -> u32 {
     }
     let k = match kdf.as_str() {
         "TRUNCATE" => Kdf::Raw,
-        "HASH" => Kdf::Hash {
-            hash,
-            prepend,
-            append,
-        },
+        "HASH" => Kdf::Hash { hash, prepend, append },
         "HMAC" => {
             if hkey.is_none() && fl & 1 == 0 {
                 return NTE_INVALID_PARAMETER;
             }
-            Kdf::Hmac {
-                hash,
-                key: if fl & 1 != 0 { None } else { hkey },
-                prepend,
-                append,
-            }
+            Kdf::Hmac { hash, key: if fl & 1 != 0 { None } else { hkey }, prepend, append }
         }
         _ => return NTE_NOT_SUPPORTED,
     };
@@ -1565,11 +1356,7 @@ fn NCryptDeriveKey(c: &mut Ctx) -> u32 {
     // (cut to the buffer: a hash's first bytes; the raw secret's last, its high-order bytes, as
     // Windows)
     let n = v.len().min(outlen as usize);
-    let part = if k == Kdf::Raw {
-        &v[v.len() - n..]
-    } else {
-        &v[..n]
-    };
+    let part = if k == Kdf::Raw { &v[v.len() - n..] } else { &v[..n] };
     mem::write(out, part);
     put32(res, n as u32);
     0
@@ -1577,16 +1364,7 @@ fn NCryptDeriveKey(c: &mut Ctx) -> u32 {
 
 /// NCryptEncrypt / NCryptDecrypt(key, in, insize, padinfo, out, outlen, &result, flags)
 fn crypt(c: &mut Ctx, enc: bool) -> u32 {
-    let (h, input, insize, info, out, outlen, res, fl) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        c.a(7),
-    );
+    let (h, input, insize, info, out, outlen, res, fl) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
     if key(h).is_none() {
         return NTE_INVALID_HANDLE;
     }
@@ -1623,11 +1401,7 @@ fn crypt(c: &mut Ctx, enc: bool) -> u32 {
         return NULL_REF;
     }
     let data = bytes(input, insize);
-    let v = if enc {
-        r.encrypt(pad, &label, &data)
-    } else {
-        r.decrypt(pad, &label, &data)
-    };
+    let v = if enc { r.encrypt(pad, &label, &data) } else { r.decrypt(pad, &label, &data) };
     match v {
         Ok(v) => {
             if enc && (outlen as usize) < v.len() {
@@ -1644,10 +1418,7 @@ fn NCryptEncrypt(c: &mut Ctx) -> u32 {
     let (h, out, outlen, res) = (c.a(0), c.a(4), c.a(5), c.a(6));
     if out != 0 && res != 0 {
         if let Ok(r) = rsa_key(h) {
-            if c.a(7) & (PAD_PKCS1 | PAD_OAEP) != 0
-                && c.a(7) & !(PAD_NONE | PAD_PKCS1 | PAD_OAEP | SILENT) == 0
-                && (outlen as usize) < r.size()
-            {
+            if c.a(7) & (PAD_PKCS1 | PAD_OAEP) != 0 && c.a(7) & !(PAD_NONE | PAD_PKCS1 | PAD_OAEP | SILENT) == 0 && (outlen as usize) < r.size() {
                 put32(res, r.size() as u32);
                 return NTE_BUFFER_TOO_SMALL;
             }
@@ -1661,16 +1432,7 @@ fn NCryptDecrypt(c: &mut Ctx) -> u32 {
 
 /// NCryptSignHash(key, padinfo, hash, hashsize, sig, sigsize, &result, flags)
 fn NCryptSignHash(c: &mut Ctx) -> u32 {
-    let (h, info, hash, hsize, sig, siglen, res, fl) = (
-        c.a(0),
-        c.a(1),
-        c.a(2),
-        c.a(3),
-        c.a(4),
-        c.a(5),
-        c.a(6),
-        c.a(7),
-    );
+    let (h, info, hash, hsize, sig, siglen, res, fl) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
     if key(h).is_none() {
         return NTE_INVALID_HANDLE;
     }
@@ -1723,8 +1485,7 @@ fn NCryptSignHash(c: &mut Ctx) -> u32 {
 
 /// NCryptVerifySignature(key, padinfo, hash, hashsize, sig, sigsize, flags)
 fn NCryptVerifySignature(c: &mut Ctx) -> u32 {
-    let (h, info, hash, hsize, sig, siglen, fl) =
-        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let (h, info, hash, hsize, sig, siglen, fl) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     if key(h).is_none() {
         return NTE_INVALID_HANDLE;
     }
@@ -1755,26 +1516,14 @@ fn NCryptVerifySignature(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
-    implement(
-        "ncrypt",
-        "NCryptOpenStorageProvider",
-        NCryptOpenStorageProvider,
-    );
+    implement("ncrypt", "NCryptOpenStorageProvider", NCryptOpenStorageProvider);
     implement("ncrypt", "NCryptFreeObject", NCryptFreeObject);
     implement("ncrypt", "NCryptFreeBuffer", NCryptFreeBuffer);
     implement("ncrypt", "NCryptIsKeyHandle", NCryptIsKeyHandle);
     implement("ncrypt", "NCryptIsAlgSupported", NCryptIsAlgSupported);
     implement("ncrypt", "NCryptEnumAlgorithms", NCryptEnumAlgorithms);
-    implement(
-        "ncrypt",
-        "NCryptEnumStorageProviders",
-        NCryptEnumStorageProviders,
-    );
-    implement(
-        "ncrypt",
-        "NCryptCreatePersistedKey",
-        NCryptCreatePersistedKey,
-    );
+    implement("ncrypt", "NCryptEnumStorageProviders", NCryptEnumStorageProviders);
+    implement("ncrypt", "NCryptCreatePersistedKey", NCryptCreatePersistedKey);
     implement("ncrypt", "NCryptFinalizeKey", NCryptFinalizeKey);
     implement("ncrypt", "NCryptOpenKey", NCryptOpenKey);
     implement("ncrypt", "NCryptDeleteKey", NCryptDeleteKey);
@@ -1827,12 +1576,7 @@ mod tests {
         }
         // a private blob's public half is the public blob
         let pubb = k.to_blob(Blob::Public, 1024).unwrap();
-        let (pk, _) = Rsa::from_blob(
-            Blob::Private,
-            false,
-            &k.to_blob(Blob::Private, 1024).unwrap(),
-        )
-        .unwrap();
+        let (pk, _) = Rsa::from_blob(Blob::Private, false, &k.to_blob(Blob::Private, 1024).unwrap()).unwrap();
         assert_eq!(pk.to_blob(Blob::Public, 1024).unwrap(), pubb);
     }
 
@@ -1841,35 +1585,20 @@ mod tests {
         let k = key1024();
         let b = k.to_blob(Blob::Public, 1024).unwrap();
         // one byte short or long: bad data
-        assert_eq!(
-            Rsa::from_blob(Blob::Public, false, &b[..b.len() - 1]).unwrap_err(),
-            NTE_BAD_DATA
-        );
+        assert_eq!(Rsa::from_blob(Blob::Public, false, &b[..b.len() - 1]).unwrap_err(), NTE_BAD_DATA);
         let mut long = b.clone();
         long.push(0);
-        assert_eq!(
-            Rsa::from_blob(Blob::Public, false, &long).unwrap_err(),
-            NTE_BAD_DATA
-        );
+        assert_eq!(Rsa::from_blob(Blob::Public, false, &long).unwrap_err(), NTE_BAD_DATA);
         // a bad magic: invalid parameter
         let mut m = b.clone();
         m[0] = 0x75;
-        assert_eq!(
-            Rsa::from_blob(Blob::Public, false, &m).unwrap_err(),
-            NTE_INVALID_PARAMETER
-        );
+        assert_eq!(Rsa::from_blob(Blob::Public, false, &m).unwrap_err(), NTE_INVALID_PARAMETER);
         // a public blob where a private one is wanted
-        assert_eq!(
-            Rsa::from_blob(Blob::Private, false, &b).unwrap_err(),
-            NTE_INVALID_PARAMETER
-        );
+        assert_eq!(Rsa::from_blob(Blob::Private, false, &b).unwrap_err(), NTE_INVALID_PARAMETER);
         // a 9-byte exponent
         let mut e = b.clone();
         e[8] = 9;
-        assert_eq!(
-            Rsa::from_blob(Blob::Public, false, &e).unwrap_err(),
-            NTE_BAD_DATA
-        );
+        assert_eq!(Rsa::from_blob(Blob::Public, false, &e).unwrap_err(), NTE_BAD_DATA);
         // the header's bit length is kept even when it disagrees with the modulus
         let mut bl = b.clone();
         bl[5] = 3;
@@ -1878,10 +1607,7 @@ mod tests {
         let mut p = k.to_blob(Blob::Private, 1024).unwrap();
         let last = p.len() - 1;
         p[last] ^= 2;
-        assert_eq!(
-            Rsa::from_blob(Blob::Private, false, &p).unwrap_err(),
-            NTE_BAD_DATA
-        );
+        assert_eq!(Rsa::from_blob(Blob::Private, false, &p).unwrap_err(), NTE_BAD_DATA);
         // the public half of a public key cannot be exported as private
         let (pk, _) = Rsa::from_blob(Blob::Public, false, &b).unwrap();
         assert!(pk.to_blob(Blob::Private, 1024).is_err());
@@ -1894,10 +1620,7 @@ mod tests {
             let d = vec![0x5a; h.len()];
             // (PSS needs hash + salt + 2 bytes: SHA-512 with a 64-byte salt does not fit 1024 bits)
             let salt = h.len().min(128 - h.len() - 2);
-            assert_eq!(
-                k.sign(Pad::Pss(h, 128 - h.len() - 1), &d).unwrap_err(),
-                NTE_INVALID_PARAMETER
-            );
+            assert_eq!(k.sign(Pad::Pss(h, 128 - h.len() - 1), &d).unwrap_err(), NTE_INVALID_PARAMETER);
             for pad in [Pad::Pkcs1(Some(h)), Pad::Pss(h, salt)] {
                 let s = k.sign(pad, &d).unwrap();
                 assert_eq!(s.len(), 128);
@@ -1905,52 +1628,27 @@ mod tests {
                 let mut bad = s.clone();
                 bad[5] ^= 1;
                 assert_eq!(k.verify(pad, &d, &bad).unwrap_err(), NTE_BAD_SIGNATURE);
-                assert_eq!(
-                    k.verify(pad, &d, &s[..4]).unwrap_err(),
-                    NTE_INVALID_PARAMETER
-                );
+                assert_eq!(k.verify(pad, &d, &s[..4]).unwrap_err(), NTE_INVALID_PARAMETER);
             }
             // a digest of the wrong length
-            assert_eq!(
-                k.sign(Pad::Pkcs1(Some(h)), &[0; 4]).unwrap_err(),
-                NTE_INVALID_PARAMETER
-            );
-            assert_eq!(
-                k.verify(Pad::Pkcs1(Some(h)), &[0; 4], &[0; 128])
-                    .unwrap_err(),
-                NTE_INVALID_PARAMETER
-            );
+            assert_eq!(k.sign(Pad::Pkcs1(Some(h)), &[0; 4]).unwrap_err(), NTE_INVALID_PARAMETER);
+            assert_eq!(k.verify(Pad::Pkcs1(Some(h)), &[0; 4], &[0; 128]).unwrap_err(), NTE_INVALID_PARAMETER);
         }
         // PKCS1 v1.5 is deterministic; unprefixed signs the bytes as given
         let d = [7u8; 32];
-        assert_eq!(
-            k.sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap(),
-            k.sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap()
-        );
+        assert_eq!(k.sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap(), k.sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap());
         let mut info = Hash::Sha256.prefix().to_vec();
         info.extend_from_slice(&d);
-        assert_eq!(
-            k.sign(Pad::Pkcs1(None), &info).unwrap(),
-            k.sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap()
-        );
+        assert_eq!(k.sign(Pad::Pkcs1(None), &info).unwrap(), k.sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap());
         // a public key cannot sign
-        assert_eq!(
-            Rsa::Public(k.public())
-                .sign(Pad::Pkcs1(Some(Hash::Sha256)), &d)
-                .unwrap_err(),
-            NTE_NO_KEY
-        );
+        assert_eq!(Rsa::Public(k.public()).sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap_err(), NTE_NO_KEY);
     }
 
     #[test]
     fn encrypt_decrypt() {
         let k = key1024();
         let msg = b"Hello world\0";
-        for pad in [
-            Pad::Pkcs1(None),
-            Pad::Oaep(Hash::Sha1),
-            Pad::Oaep(Hash::Sha256),
-        ] {
+        for pad in [Pad::Pkcs1(None), Pad::Oaep(Hash::Sha1), Pad::Oaep(Hash::Sha256)] {
             let a = k.encrypt(pad, b"", msg).unwrap();
             let b = k.encrypt(pad, b"", msg).unwrap();
             assert_eq!(a.len(), 128);
@@ -1959,28 +1657,20 @@ mod tests {
         }
         // OAEP labels must match
         let c = k.encrypt(Pad::Oaep(Hash::Sha256), b"label", msg).unwrap();
-        assert_eq!(
-            k.decrypt(Pad::Oaep(Hash::Sha256), b"label", &c).unwrap(),
-            msg
-        );
+        assert_eq!(k.decrypt(Pad::Oaep(Hash::Sha256), b"label", &c).unwrap(), msg);
         assert!(k.decrypt(Pad::Oaep(Hash::Sha256), b"other", &c).is_err());
         // no padding: exactly the modulus' size, below the modulus
-        assert_eq!(
-            k.encrypt(Pad::None, b"", msg).unwrap_err(),
-            NTE_INVALID_PARAMETER
-        );
+        assert_eq!(k.encrypt(Pad::None, b"", msg).unwrap_err(), NTE_INVALID_PARAMETER);
         let mut m = vec![0u8; 128];
         m[127] = 42;
         let c = k.encrypt(Pad::None, b"", &m).unwrap();
         assert_eq!(k.decrypt(Pad::None, b"", &c).unwrap(), m);
-        assert_eq!(
-            k.encrypt(Pad::None, b"", &[0xff; 128]).unwrap_err(),
-            NTE_INVALID_PARAMETER
-        );
+        assert_eq!(k.encrypt(Pad::None, b"", &[0xff; 128]).unwrap_err(), NTE_INVALID_PARAMETER);
         // PKCS1 carries at most size - 11 bytes
         assert!(k.encrypt(Pad::Pkcs1(None), b"", &[1; 117]).is_ok());
         assert!(k.encrypt(Pad::Pkcs1(None), b"", &[1; 118]).is_err());
     }
+
 
     #[test]
     fn ecc_blobs() {
@@ -1998,36 +1688,21 @@ mod tests {
                 assert_eq!(tag(&privb), format!("{pre}{}", digit + 1));
                 assert_eq!(Ecc::from_blob(&privb, Some(true)).unwrap(), k);
                 let pk = Ecc::from_blob(&pubb, None).unwrap();
-                assert_eq!(
-                    (pk.x.clone(), pk.y.clone(), pk.d.clone()),
-                    (k.x.clone(), k.y.clone(), None)
-                );
+                assert_eq!((pk.x.clone(), pk.y.clone(), pk.d.clone()), (k.x.clone(), k.y.clone(), None));
                 // kinds, sizes, points, scalars
-                assert_eq!(
-                    Ecc::from_blob(&privb, Some(false)).unwrap_err(),
-                    NTE_INVALID_PARAMETER
-                );
-                assert_eq!(
-                    Ecc::from_blob(&pubb[..pubb.len() - 1], None).unwrap_err(),
-                    NTE_NOT_SUPPORTED
-                );
+                assert_eq!(Ecc::from_blob(&privb, Some(false)).unwrap_err(), NTE_INVALID_PARAMETER);
+                assert_eq!(Ecc::from_blob(&pubb[..pubb.len() - 1], None).unwrap_err(), NTE_NOT_SUPPORTED);
                 let mut off = pubb.clone();
                 off[8 + n] ^= 1; // y changed: not on the curve
                 assert_eq!(Ecc::from_blob(&off, None).unwrap_err(), NTE_NOT_SUPPORTED);
                 let mut wrong_d = privb.clone();
                 let last = wrong_d.len() - 1;
                 wrong_d[last] ^= 1; // a scalar of another point
-                assert_eq!(
-                    Ecc::from_blob(&wrong_d, None).unwrap_err(),
-                    NTE_NOT_SUPPORTED
-                );
+                assert_eq!(Ecc::from_blob(&wrong_d, None).unwrap_err(), NTE_NOT_SUPPORTED);
                 assert!(pk.to_blob(true).is_err());
             }
         }
-        assert_eq!(
-            Ecc::from_blob(b"RSA1\x20\0\0\0", None).unwrap_err(),
-            NTE_INVALID_PARAMETER
-        );
+        assert_eq!(Ecc::from_blob(b"RSA1\x20\0\0\0", None).unwrap_err(), NTE_INVALID_PARAMETER);
     }
 
     #[test]
@@ -2064,46 +1739,16 @@ mod tests {
     fn kdfs() {
         let z = b"Hi There".to_vec();
         assert_eq!(Kdf::Raw.derive(&[1, 2, 3]), [3, 2, 1]);
-        assert_eq!(
-            Kdf::Hash {
-                hash: Hash::Sha256,
-                prepend: b"a".to_vec(),
-                append: b"b".to_vec()
-            }
-            .derive(&z),
-            digest(Hash::Sha256, &[b"aHi Thereb"])
-        );
+        assert_eq!(Kdf::Hash { hash: Hash::Sha256, prepend: b"a".to_vec(), append: b"b".to_vec() }.derive(&z), digest(Hash::Sha256, &[b"aHi Thereb"]));
         // RFC 4231 test case 1 (HMAC-SHA256 and -SHA512)
         let key = Some(vec![0x0b; 20]);
-        let mac = Kdf::Hmac {
-            hash: Hash::Sha256,
-            key: key.clone(),
-            prepend: Vec::new(),
-            append: Vec::new(),
-        }
-        .derive(&z);
-        assert_eq!(
-            hex(&mac),
-            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
-        );
-        let mac = Kdf::Hmac {
-            hash: Hash::Sha512,
-            key,
-            prepend: Vec::new(),
-            append: Vec::new(),
-        }
-        .derive(&z);
-        assert!(hex(&mac)
-            .starts_with("87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cde"));
+        let mac = Kdf::Hmac { hash: Hash::Sha256, key: key.clone(), prepend: Vec::new(), append: Vec::new() }.derive(&z);
+        assert_eq!(hex(&mac), "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+        let mac = Kdf::Hmac { hash: Hash::Sha512, key, prepend: Vec::new(), append: Vec::new() }.derive(&z);
+        assert!(hex(&mac).starts_with("87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cde"));
         // FIPS 180 "abc" digests
-        assert_eq!(
-            hex(&digest(Hash::Sha1, &[b"a", b"bc"])),
-            "a9993e364706816aba3e25717850c26c9cd0d89d"
-        );
-        assert_eq!(
-            hex(&digest(Hash::Md5, &[b"abc"])),
-            "900150983cd24fb0d6963f7d28e17f72"
-        );
+        assert_eq!(hex(&digest(Hash::Sha1, &[b"a", b"bc"])), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(hex(&digest(Hash::Md5, &[b"abc"])), "900150983cd24fb0d6963f7d28e17f72");
     }
     fn hex(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
@@ -2184,166 +1829,54 @@ mod tests {
         };
         let ossl = |args: &[&str]| {
             let o = Command::new("openssl").args(args).output().unwrap();
-            assert!(
-                o.status.success(),
-                "openssl {args:?}: {}",
-                String::from_utf8_lossy(&o.stderr)
-            );
+            assert!(o.status.success(), "openssl {args:?}: {}", String::from_utf8_lossy(&o.stderr));
             o.stdout
         };
         let pem_s = pem.to_str().unwrap();
-        for (h, md) in [
-            (Hash::Sha1, "sha1"),
-            (Hash::Sha256, "sha256"),
-            (Hash::Sha384, "sha384"),
-            (Hash::Sha512, "sha512"),
-            (Hash::Md5, "md5"),
-        ] {
+        for (h, md) in [(Hash::Sha1, "sha1"), (Hash::Sha256, "sha256"), (Hash::Sha384, "sha384"), (Hash::Sha512, "sha512"), (Hash::Md5, "md5")] {
             let d: Vec<u8> = (0..h.len() as u8).collect();
             let salt = h.len().min(128 - h.len() - 2);
             let dp = file("d.bin", &d);
             let dps = dp.to_str().unwrap();
             let mdopt = format!("digest:{md}");
             // PKCS1: openssl's signature is ours, byte for byte
-            let theirs = ossl(&[
-                "pkeyutl", "-sign", "-inkey", pem_s, "-keyform", "DER", "-pkeyopt", &mdopt, "-in",
-                dps,
-            ]);
+            let theirs = ossl(&["pkeyutl", "-sign", "-inkey", pem_s, "-keyform", "DER", "-pkeyopt", &mdopt, "-in", dps]);
             assert_eq!(theirs, k.sign(Pad::Pkcs1(Some(h)), &d).unwrap(), "{md}");
             // PSS both ways
             let sp = file("s.bin", &k.sign(Pad::Pss(h, salt), &d).unwrap());
             let salt_opt = format!("rsa_pss_saltlen:{salt}");
-            ossl(&[
-                "pkeyutl",
-                "-verify",
-                "-inkey",
-                pem_s,
-                "-keyform",
-                "DER",
-                "-pkeyopt",
-                &mdopt,
-                "-pkeyopt",
-                "rsa_padding_mode:pss",
-                "-pkeyopt",
-                &salt_opt,
-                "-in",
-                dps,
-                "-sigfile",
-                sp.to_str().unwrap(),
-            ]);
-            let theirs = ossl(&[
-                "pkeyutl",
-                "-sign",
-                "-inkey",
-                pem_s,
-                "-keyform",
-                "DER",
-                "-pkeyopt",
-                &mdopt,
-                "-pkeyopt",
-                "rsa_padding_mode:pss",
-                "-pkeyopt",
-                &salt_opt,
-                "-in",
-                dps,
-            ]);
+            ossl(&["pkeyutl", "-verify", "-inkey", pem_s, "-keyform", "DER", "-pkeyopt", &mdopt, "-pkeyopt", "rsa_padding_mode:pss", "-pkeyopt", &salt_opt, "-in", dps, "-sigfile", sp.to_str().unwrap()]);
+            let theirs = ossl(&["pkeyutl", "-sign", "-inkey", pem_s, "-keyform", "DER", "-pkeyopt", &mdopt, "-pkeyopt", "rsa_padding_mode:pss", "-pkeyopt", &salt_opt, "-in", dps]);
             k.verify(Pad::Pss(h, salt), &d, &theirs).unwrap();
             // OAEP both ways (SHA-512's 2 * 64 + 2 bytes leave no room in 1024 bits)
             let msg = b"sake oaep";
             if 2 * h.len() + 2 + msg.len() > 128 {
-                assert_eq!(
-                    k.encrypt(Pad::Oaep(h), b"", msg).unwrap_err(),
-                    NTE_INVALID_PARAMETER
-                );
+                assert_eq!(k.encrypt(Pad::Oaep(h), b"", msg).unwrap_err(), NTE_INVALID_PARAMETER);
                 continue;
             }
             let cp = file("c.bin", &k.encrypt(Pad::Oaep(h), b"", msg).unwrap());
             let oaep_md = format!("rsa_oaep_md:{md}");
             let mgf = format!("rsa_mgf1_md:{md}");
-            let out = ossl(&[
-                "pkeyutl",
-                "-decrypt",
-                "-inkey",
-                pem_s,
-                "-keyform",
-                "DER",
-                "-pkeyopt",
-                "rsa_padding_mode:oaep",
-                "-pkeyopt",
-                &oaep_md,
-                "-pkeyopt",
-                &mgf,
-                "-in",
-                cp.to_str().unwrap(),
-            ]);
+            let out = ossl(&["pkeyutl", "-decrypt", "-inkey", pem_s, "-keyform", "DER", "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", &oaep_md, "-pkeyopt", &mgf, "-in", cp.to_str().unwrap()]);
             assert_eq!(out, msg);
             let mp = file("m.bin", msg);
-            let theirs = ossl(&[
-                "pkeyutl",
-                "-encrypt",
-                "-inkey",
-                pem_s,
-                "-keyform",
-                "DER",
-                "-pkeyopt",
-                "rsa_padding_mode:oaep",
-                "-pkeyopt",
-                &oaep_md,
-                "-pkeyopt",
-                &mgf,
-                "-in",
-                mp.to_str().unwrap(),
-            ]);
+            let theirs = ossl(&["pkeyutl", "-encrypt", "-inkey", pem_s, "-keyform", "DER", "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", &oaep_md, "-pkeyopt", &mgf, "-in", mp.to_str().unwrap()]);
             assert_eq!(k.decrypt(Pad::Oaep(h), b"", &theirs).unwrap(), msg);
         }
         // PKCS1 encryption both ways
         let msg = b"Hello world";
         let cp = file("c.bin", &k.encrypt(Pad::Pkcs1(None), b"", msg).unwrap());
-        assert_eq!(
-            ossl(&[
-                "pkeyutl",
-                "-decrypt",
-                "-inkey",
-                pem_s,
-                "-keyform",
-                "DER",
-                "-in",
-                cp.to_str().unwrap()
-            ]),
-            msg
-        );
+        assert_eq!(ossl(&["pkeyutl", "-decrypt", "-inkey", pem_s, "-keyform", "DER", "-in", cp.to_str().unwrap()]), msg);
         let mp = file("m.bin", msg);
-        let theirs = ossl(&[
-            "pkeyutl",
-            "-encrypt",
-            "-inkey",
-            pem_s,
-            "-keyform",
-            "DER",
-            "-in",
-            mp.to_str().unwrap(),
-        ]);
+        let theirs = ossl(&["pkeyutl", "-encrypt", "-inkey", pem_s, "-keyform", "DER", "-in", mp.to_str().unwrap()]);
         assert_eq!(k.decrypt(Pad::Pkcs1(None), b"", &theirs).unwrap(), msg);
         // the full private blob's CRT values are openssl's
-        let text = String::from_utf8(ossl(&[
-            "rsa", "-inform", "DER", "-in", pem_s, "-noout", "-text",
-        ]))
-        .unwrap();
+        let text = String::from_utf8(ossl(&["rsa", "-inform", "DER", "-in", pem_s, "-noout", "-text"])).unwrap();
         let b = k.to_blob(Blob::FullPrivate, 1024).unwrap();
         let hex_field = |name: &str| -> Vec<u8> {
             let s = text.split(&format!("{name}:")).nth(1).unwrap();
-            let h: String = s
-                .lines()
-                .skip(1)
-                .take_while(|l| l.starts_with(' '))
-                .collect::<String>()
-                .chars()
-                .filter(|c| c.is_ascii_hexdigit())
-                .collect();
-            let v: Vec<u8> = (0..h.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
-                .collect();
+            let h: String = s.lines().skip(1).take_while(|l| l.starts_with(' ')).collect::<String>().chars().filter(|c| c.is_ascii_hexdigit()).collect();
+            let v: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect();
             let skip = v.iter().take_while(|&&x| x == 0).count();
             v[skip..].to_vec()
         };
@@ -2366,33 +1899,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sake-cng-ecc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ossl = |args: &[&str]| {
-            let o = Command::new("openssl")
-                .args(args)
-                .current_dir(&dir)
-                .output()
-                .unwrap();
-            assert!(
-                o.status.success(),
-                "openssl {args:?}: {}",
-                String::from_utf8_lossy(&o.stderr)
-            );
+            let o = Command::new("openssl").args(args).current_dir(&dir).output().unwrap();
+            assert!(o.status.success(), "openssl {args:?}: {}", String::from_utf8_lossy(&o.stderr));
             o.stdout
         };
         // "priv:" / "pub:" hex blocks of `openssl ec -text`
         let field = |text: &str, name: &str| -> Vec<u8> {
             let s = text.split(&format!("{name}:")).nth(1).unwrap();
-            let h: String = s
-                .lines()
-                .skip(1)
-                .take_while(|l| l.starts_with(' '))
-                .collect::<String>()
-                .chars()
-                .filter(|c| c.is_ascii_hexdigit())
-                .collect();
-            (0..h.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
-                .collect()
+            let h: String = s.lines().skip(1).take_while(|l| l.starts_with(' ')).collect::<String>().chars().filter(|c| c.is_ascii_hexdigit()).collect();
+            (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect()
         };
         let load = |pem: &str, curve: Curve, ecdsa: bool| -> Ecc {
             let text = String::from_utf8(ossl(&["ec", "-in", pem, "-noout", "-text"])).unwrap();
@@ -2406,13 +1921,7 @@ mod tests {
             while d.len() < n {
                 d.insert(0, 0);
             }
-            let e = Ecc {
-                curve,
-                ecdsa,
-                x: pubk[1..1 + n].to_vec(),
-                y: pubk[1 + n..].to_vec(),
-                d: Some(d),
-            };
+            let e = Ecc { curve, ecdsa, x: pubk[1..1 + n].to_vec(), y: pubk[1 + n..].to_vec(), d: Some(d) };
             // through a blob, as a program imports it
             Ecc::from_blob(&e.to_blob(true).unwrap(), Some(true)).unwrap()
         };
@@ -2443,28 +1952,16 @@ mod tests {
             for _ in 0..2 {
                 assert_eq!(der[at], 2);
                 let len = der[at + 1] as usize;
-                let v: Vec<u8> = der[at + 2..at + 2 + len]
-                    .iter()
-                    .copied()
-                    .skip_while(|&b| b == 0)
-                    .collect();
+                let v: Vec<u8> = der[at + 2..at + 2 + len].iter().copied().skip_while(|&b| b == 0).collect();
                 out.extend(std::iter::repeat_n(0u8, n - v.len()));
                 out.extend(v);
                 at += 2 + len;
             }
             out
         };
-        for (curve, name) in [
-            (Curve::P256, "prime256v1"),
-            (Curve::P384, "secp384r1"),
-            (Curve::P521, "secp521r1"),
-        ] {
-            ossl(&[
-                "ecparam", "-name", name, "-genkey", "-noout", "-out", "a.pem",
-            ]);
-            ossl(&[
-                "ecparam", "-name", name, "-genkey", "-noout", "-out", "b.pem",
-            ]);
+        for (curve, name) in [(Curve::P256, "prime256v1"), (Curve::P384, "secp384r1"), (Curve::P521, "secp521r1")] {
+            ossl(&["ecparam", "-name", name, "-genkey", "-noout", "-out", "a.pem"]);
+            ossl(&["ecparam", "-name", name, "-genkey", "-noout", "-out", "b.pem"]);
             ossl(&["ec", "-in", "b.pem", "-pubout", "-out", "b.pub"]);
             ossl(&["ec", "-in", "a.pem", "-pubout", "-out", "a.pub"]);
             let a = load("a.pem", curve, true);
@@ -2472,24 +1969,13 @@ mod tests {
                 let d = digest(h, &[name.as_bytes()]);
                 std::fs::write(dir.join("d.bin"), &d).unwrap();
                 std::fs::write(dir.join("s.der"), to_der(&a.sign(&d).unwrap())).unwrap();
-                ossl(&[
-                    "pkeyutl", "-verify", "-pubin", "-inkey", "a.pub", "-in", "d.bin", "-sigfile",
-                    "s.der",
-                ]);
+                ossl(&["pkeyutl", "-verify", "-pubin", "-inkey", "a.pub", "-in", "d.bin", "-sigfile", "s.der"]);
                 let theirs = ossl(&["pkeyutl", "-sign", "-inkey", "a.pem", "-in", "d.bin"]);
                 a.verify(&d, &from_der(&theirs, curve.size())).unwrap();
             }
             let (ea, eb) = (load("a.pem", curve, false), load("b.pem", curve, false));
             let theirs = ossl(&["pkeyutl", "-derive", "-inkey", "a.pem", "-peerkey", "b.pub"]);
-            assert_eq!(
-                ea.agree(&Ecc {
-                    d: None,
-                    ..eb.clone()
-                })
-                .unwrap(),
-                theirs,
-                "{name}"
-            );
+            assert_eq!(ea.agree(&Ecc { d: None, ..eb.clone() }).unwrap(), theirs, "{name}");
         }
         std::fs::remove_dir_all(&dir).ok();
     }
