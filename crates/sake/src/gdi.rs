@@ -4242,33 +4242,46 @@ fn ExtTextOutW(c: &mut Ctx) -> u32 {
     ext_text_out(c, true)
 }
 
+/// lfPitchAndFamily of an enumerated face: FIXED_PITCH or VARIABLE_PITCH, with FF_ROMAN for
+/// the serif ones, else FF_MODERN (monospaced) or FF_SWISS, so face_index picks it back.
+fn face_pitch(fixed: bool, roman: bool) -> u8 {
+    match (fixed, roman) {
+        (true, true) => 0x11,
+        (true, false) => 0x31,
+        (false, true) => 0x12,
+        (false, false) => 0x22,
+    }
+}
+
 /// Calls an EnumFonts-style callback for each face: (LOGFONT, TEXTMETRIC, type, lparam).
 fn enum_fonts(c: &mut Ctx, filter: Option<String>, proc_: u32, lp: u32, wide: bool, ex: bool) -> u32 {
     let lfsize = if wide { 92 } else { 60 };
     let buf = mem::heap_alloc(1024, true);
     let tm = buf + 512;
     let mut ret = 1;
-    let mut names: Vec<String> = Vec::new();
+    // (name, lfPitchAndFamily as Windows reports it: games filter on FIXED_PITCH)
+    let mut names: Vec<(String, u8)> = Vec::new();
     for f in FACES {
+        let pitch = face_pitch(f.fixed, f.roman);
         for n in f.names {
-            names.push((*n).to_string());
+            names.push(((*n).to_string(), pitch));
         }
         if f.names[0].starts_with('Ｍ') {
-            names.push(format!("@{}", f.names[0]));
+            names.push((format!("@{}", f.names[0]), pitch));
         }
     }
     // (a font the game added under any of its names: Siglus asks for the Japanese one)
     for (n, _) in ADDED.lock().unwrap().iter() {
         let hit = filter.as_ref().and_then(|fl| n.iter().find(|x| x.eq_ignore_ascii_case(fl)));
-        names.push(hit.unwrap_or(&n[0]).clone());
+        names.push((hit.unwrap_or(&n[0]).clone(), face_pitch(false, false)));
     }
-    for name in names {
+    for (name, pitch) in names {
         if let Some(fl) = &filter {
             if !fl.is_empty() && !fl.eq_ignore_ascii_case(&name) {
                 continue;
             }
         }
-        let lf = LogFont { height: 16, weight: 400, pitch: 0, ..stock_font(&name, 16) };
+        let lf = LogFont { height: 16, weight: 400, pitch, ..stock_font(&name, 16) };
         mem::fill(buf, 1024, 0);
         write_logfont(buf, &lf, wide);
         if ex {
@@ -4452,6 +4465,20 @@ fn register() {
 #[cfg(test)]
 mod glyph_cache_tests {
     use super::*;
+
+    /// enumerated faces carry Windows' lfPitchAndFamily: games keep only FIXED_PITCH ones for
+    /// some lists (NonColor's font menu), and the pitch picks the same face back in face_index
+    #[test]
+    fn enumerated_pitch() {
+        for (i, f) in FACES.iter().enumerate() {
+            let p = face_pitch(f.fixed, f.roman);
+            assert_eq!(p & 3, if f.fixed { 1 } else { 2 }, "{}", f.names[1.min(f.names.len() - 1)]);
+            let lf = LogFont { pitch: p, ..stock_font("no such face", 16) };
+            if i < 4 {
+                assert_eq!(face_index(&lf), i);
+            }
+        }
+    }
 
     fn g(n: usize) -> Arc<Glyph> {
         Arc::new(Glyph { x0: 0, top: 0, w: 0, h: 0, cov: vec![0; n], adv: 0 })

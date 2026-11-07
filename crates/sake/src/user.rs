@@ -1405,7 +1405,16 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
 }
 fn DestroyWindow(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    destroy(c, h) as u32
+    let was_active = with(|s| s.active == h);
+    let ok = destroy(c, h);
+    // the active window gone: another visible top-level window takes over, as on Windows
+    if ok && was_active {
+        let next = with(|s| s.wins.iter().filter(|(&k, w)| k != DESKTOP && w.parent == 0 && w.visible).map(|(&k, _)| k).max());
+        if let Some(n) = next {
+            activate(c, n);
+        }
+    }
+    ok as u32
 }
 
 fn show(c: &mut Ctx, h: u32, cmd: u32) -> u32 {
@@ -1606,6 +1615,12 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
     }
     if flags & 0x40 != 0 {
         send(c, h, 0x18, 1, 0);
+    }
+    // without SWP_NOACTIVATE a shown top-level window becomes the active one (NonColor shows
+    // its main window this way after the startup dialog and only takes mouse input while active)
+    let top_vis = with(|s| s.wins.get(&h).is_some_and(|w| w.parent == 0 && w.visible));
+    if flags & 0x10 == 0 && top_vis && (flags & 0x40 != 0 || with(|s| s.active == 0)) {
+        activate(c, h);
     }
     crate::obj::signal();
     1
