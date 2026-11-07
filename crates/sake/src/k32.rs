@@ -1037,7 +1037,7 @@ fn RtlLeaveCriticalSection(c: &mut Ctx) -> u32 {
 static SYNC: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 static SYNC_CV: Condvar = Condvar::new();
 
-fn srw_try(l: u32, shared: bool) -> bool {
+pub(crate) fn srw_try(l: u32, shared: bool) -> bool {
     let a = atomic(l);
     let v = a.load(Ordering::SeqCst);
     if shared {
@@ -1046,7 +1046,7 @@ fn srw_try(l: u32, shared: bool) -> bool {
         a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed).is_ok()
     }
 }
-fn srw_acquire(l: u32, shared: bool) {
+pub(crate) fn srw_acquire(l: u32, shared: bool) {
     for _ in 0..50 {
         if srw_try(l, shared) {
             return;
@@ -1058,7 +1058,7 @@ fn srw_acquire(l: u32, shared: bool) {
         g = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20)).unwrap().0;
     }
 }
-fn srw_release(l: u32, shared: bool) {
+pub(crate) fn srw_release(l: u32, shared: bool) {
     let a = atomic(l);
     if shared {
         a.fetch_sub(2, Ordering::SeqCst);
@@ -1099,7 +1099,7 @@ fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
     0
 }
 /// Waits for a wake of `cv` (after `release`, before `reacquire`); false on timeout.
-fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl FnOnce()) -> bool {
+pub(crate) fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl FnOnce()) -> bool {
     // the generation is read before the lock is released (a wake in between is seen), but SYNC is
     // not held across `release` (srw_release takes it to notify: holding it deadlocked)
     let gen0 = *SYNC.lock().unwrap().get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
@@ -1127,7 +1127,7 @@ fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl FnOnce()) -
     }
     woke
 }
-fn cv_wake(cv: u32) {
+pub(crate) fn cv_wake(cv: u32) {
     let mut g = SYNC.lock().unwrap();
     let e = g.get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
     *e = e.wrapping_add(1);
@@ -3522,7 +3522,7 @@ fn GetTickCount64(c: &mut Ctx) -> u32 {
     let v = ticks_ms() as u64;
     c.ret64(v)
 }
-fn qpc() -> u64 {
+pub(crate) fn qpc() -> u64 {
     clock_ns() / 100 + 600_000_000
 }
 fn QueryPerformanceCounter(c: &mut Ctx) -> u32 {

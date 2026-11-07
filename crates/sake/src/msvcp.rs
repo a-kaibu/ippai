@@ -371,6 +371,50 @@ fn static_str(s: &str) -> u32 {
     p
 }
 
+const SYSTEM_ERROR: Class = Class { names: &[".?AVsystem_error@std@@", ".?AV_System_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 40 };
+const INVALID_ARGUMENT: Class = Class { names: &[".?AVinvalid_argument@std@@", ".?AVlogic_error@std@@", ".?AVexception@std@@"], size: 24 };
+const BAD_FUNCTION_CALL: Class = Class { names: &[".?AVbad_function_call@std@@", ".?AVexception@std@@"], size: 24 };
+const RUNTIME_ERROR: Class = Class { names: &[".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 24 };
+const OVERFLOW_ERROR: Class = Class { names: &[".?AVoverflow_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 24 };
+
+/// generic_category() (an error_category: vtable, _Addr): what system_error's error_code points
+/// to; its virtual functions (name, message, ...) are not called by the programs here
+fn generic_category() -> u32 {
+    static C: OnceLock<u32> = OnceLock::new();
+    *C.get_or_init(|| {
+        let p = mem::heap_alloc(2 * ps(), true);
+        wp(p, table("error_category", &[nothing, nothing, nothing, nothing, nothing, nothing]));
+        wp(p + ps(), 3);
+        p
+    })
+}
+/// Throws system_error(error_code(errno, generic_category())) with message `what`
+/// (runtime_error's data, then the error_code { int, const error_category * }).
+pub fn throw_system_error(c: &mut Ctx, errno: u32, what: u32) -> u32 {
+    let o = mem::heap_alloc(SYSTEM_ERROR.size, true);
+    wp(o, ex_vtable());
+    wp(o + ps(), what);
+    w32(o + 3 * ps(), errno);
+    wp(o + 4 * ps(), generic_category());
+    crate::cxx64::throw_object(c, o as u64, throw_info(&SYSTEM_ERROR));
+    0
+}
+fn x_invalid_argument(c: &mut Ctx) -> u32 {
+    let w = c.a(0);
+    throw(c, &INVALID_ARGUMENT, w, 0)
+}
+fn x_runtime_error(c: &mut Ctx) -> u32 {
+    let w = c.a(0);
+    throw(c, &RUNTIME_ERROR, w, 0)
+}
+fn x_overflow_error(c: &mut Ctx) -> u32 {
+    let w = c.a(0);
+    throw(c, &OVERFLOW_ERROR, w, 0)
+}
+fn x_bad_function_call(c: &mut Ctx) -> u32 {
+    throw(c, &BAD_FUNCTION_CALL, static_str("bad function call"), 0)
+}
+
 const BAD_ALLOC: Class = Class { names: &[".?AVbad_alloc@std@@", ".?AVexception@std@@"], size: 24 };
 const LENGTH_ERROR: Class = Class { names: &[".?AVlength_error@std@@", ".?AVlogic_error@std@@", ".?AVexception@std@@"], size: 24 };
 const OUT_OF_RANGE: Class = Class { names: &[".?AVout_of_range@std@@", ".?AVlogic_error@std@@", ".?AVexception@std@@"], size: 24 };
@@ -419,10 +463,17 @@ fn x_regex_error(c: &mut Ctx) -> u32 {
     throw(c, &REGEX_ERROR, w, e)
 }
 
+/// ?uncaught_exceptions@std@@YAHXZ: exceptions thrown and not yet caught (none: the dispatch
+/// runs to its catch before the program goes on)
+fn uncaught(_: &mut Ctx) -> u32 {
+    0
+}
+
 pub fn init() {
     if !mem::x64() {
         return;
     }
+    crate::msvcp_thr::init();
     for (name, f) in [
         ("??0_Lockit@std@@QEAA@H@Z", lockit_ctor as Handler),
         ("??1_Lockit@std@@QEAA@XZ", nothing),
@@ -445,6 +496,11 @@ pub fn init() {
         ("?_Xlength_error@std@@YAXPEBD@Z", x_length_error),
         ("?_Xout_of_range@std@@YAXPEBD@Z", x_out_of_range),
         ("?_Xregex_error@std@@YAXW4error_type@regex_constants@1@@Z", x_regex_error),
+        ("?_Xinvalid_argument@std@@YAXPEBD@Z", x_invalid_argument),
+        ("?_Xruntime_error@std@@YAXPEBD@Z", x_runtime_error),
+        ("?_Xoverflow_error@std@@YAXPEBD@Z", x_overflow_error),
+        ("?_Xbad_function_call@std@@YAXXZ", x_bad_function_call),
+        ("?uncaught_exceptions@std@@YAHXZ", uncaught),
     ] {
         implement("msvcp140", name, f);
     }

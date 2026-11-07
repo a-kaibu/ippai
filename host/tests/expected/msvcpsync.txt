@@ -1,0 +1,20 @@
+lock 0
+owns 1
+trylock held elsewhere 3
+unlock 0
+owns after 0
+trylock free 0
+recursive 0
+recursive owns 1
+recursive released 0
+taken 1000
+timedwait past 2
+owns after wait 1
+thread id 1
+frequency 1
+counter 1
+ticks 1
+random 1
+invalid argument
+winerror 5 13
+caught 1

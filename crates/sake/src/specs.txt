@@ -32548,3 +32548,15 @@ wmvcore WMCreateWriterFileSink stdcall 4 -
 wmvcore WMCreateWriterNetworkSink stdcall 4 -
 wmvcore WMCreateWriterPushSink stdcall 4 -
 wmvcore WMIsContentProtected stdcall 8 -
+combase RoOriginateLanguageException stdcall 12 -
+combase RoOriginateError stdcall 8 -
+combase RoOriginateErrorW stdcall 12 -
+combase RoTransformError stdcall 12 -
+combase RoTransformErrorW stdcall 16 -
+combase RoCaptureErrorContext stdcall 4 -
+combase RoClearError stdcall 0 -
+combase SetRestrictedErrorInfo stdcall 4 -
+combase GetRestrictedErrorInfo stdcall 4 -
+combase RoSetErrorReportingFlags stdcall 4 -
+combase RoGetErrorReportingFlags stdcall 4 -
+combase RoReportUnhandledError stdcall 4 -

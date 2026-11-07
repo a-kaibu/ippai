@@ -2,12 +2,14 @@
 //! Unity 2021+ initializes the Windows Runtime at startup and asks for a few runtime classes
 //! (gamepads, UI settings); none is registered here, which Unity takes as an older Windows.
 //!
-//! An HSTRING (NULL is the empty string) points at: flags (1: a reference string living in
-//! the caller's HSTRING_HEADER), length in UTF-16 units, the characters' address, and for the
-//! strings made here a reference count, then the characters and a terminating 0.
+//! An HSTRING (NULL is the empty string) points at Windows' header, which C++/WinRT programs
+//! also build themselves (its fast-pass and heap strings): flags (1: a reference string living
+//! in the caller's HSTRING_HEADER), length in UTF-16 units, two padding words, the characters'
+//! address (pointer-sized, +16), and for strings made on the heap a reference count after it,
+//! then the characters and a terminating 0.
 #![allow(non_snake_case)]
 use crate::api::{implement, Ctx};
-use crate::mem::{self, r32, w32};
+use crate::mem::{self, ps, r32, rp, w32, wp};
 
 const S_OK: u32 = 0;
 const E_INVALIDARG: u32 = 0x8007_0057;
@@ -15,6 +17,12 @@ const E_POINTER: u32 = 0x8000_4003;
 const E_OUTOFMEMORY: u32 = 0x8007_000e;
 const REGDB_E_CLASSNOTREG: u32 = 0x8004_0154;
 const REF: u32 = 1;
+/// the characters' address
+const PTR: u32 = 16;
+/// a heap string's reference count
+fn count(h: u32) -> u32 {
+    h + PTR + ps()
+}
 
 /// A new HSTRING holding `s` (empty: NULL)
 fn create(s: &[u16]) -> Option<u32> {
@@ -22,16 +30,16 @@ fn create(s: &[u16]) -> Option<u32> {
         return Some(0);
     }
     let n = u32::try_from(s.len()).ok().filter(|&n| n < 0x3fff_fff0)?;
-    let h = mem::heap_alloc(16 + 2 * (n + 1), false);
+    let at = PTR + ps() + 4;
+    let h = mem::heap_alloc(at + 2 * (n + 1), true);
     if h == 0 {
         return None;
     }
-    w32(h, 0);
     w32(h + 4, n);
-    w32(h + 8, h + 16);
-    w32(h + 12, 1);
+    wp(h + PTR, h + at);
+    w32(count(h), 1);
     let b: Vec<u8> = s.iter().chain(&[0]).flat_map(|c| c.to_le_bytes()).collect();
-    mem::write(h + 16, &b);
+    mem::write(h + at, &b);
     Some(h)
 }
 
@@ -40,7 +48,7 @@ fn len(h: u32) -> u32 {
 }
 
 fn chars(h: u32) -> Vec<u16> {
-    if h == 0 { Vec::new() } else { mem::wstrn(r32(h + 8), r32(h + 4)) }
+    if h == 0 { Vec::new() } else { mem::wstrn(rp(h + PTR), r32(h + 4)) }
 }
 
 /// WindowsCreateString(src, length, &string)
@@ -80,15 +88,16 @@ fn WindowsCreateStringReference(c: &mut Ctx) -> u32 {
     }
     w32(hdr, REF);
     w32(hdr + 4, n);
-    w32(hdr + 8, src);
+    w32(hdr + 8, 0);
     w32(hdr + 12, 0);
+    wp(hdr + PTR, src);
     mem::putp(out, hdr);
     S_OK
 }
 
 fn WindowsDeleteString(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    if h != 0 && r32(h) & REF == 0 && mem::atomic_rmw32(h + 12, |v| v.saturating_sub(1)) == 1 {
+    if h != 0 && r32(h) & REF == 0 && mem::atomic_rmw32(count(h), |v| v.saturating_sub(1)) == 1 {
         mem::heap_free(h);
     }
     S_OK
@@ -108,7 +117,7 @@ fn WindowsDuplicateString(c: &mut Ctx) -> u32 {
             None => return E_OUTOFMEMORY,
         }
     } else {
-        mem::atomic_rmw32(h + 12, |v| v + 1);
+        mem::atomic_rmw32(count(h), |v| v + 1);
         h
     };
     mem::putp(out, d);
@@ -122,7 +131,7 @@ fn WindowsGetStringRawBuffer(c: &mut Ctx) -> u32 {
     if n != 0 {
         w32(n, len(h));
     }
-    if h == 0 { *EMPTY.get_or_init(|| mem::heap_alloc(4, true)) } else { r32(h + 8) }
+    if h == 0 { *EMPTY.get_or_init(|| mem::heap_alloc(4, true)) } else { rp(h + PTR) }
 }
 
 fn WindowsGetStringLen(c: &mut Ctx) -> u32 {
@@ -152,9 +161,14 @@ fn class_name(h: u32) -> String {
     String::from_utf16_lossy(&chars(h))
 }
 
-/// RoGetActivationFactory(class, iid, &factory) / RoActivateInstance(class, &instance): no
-/// runtime class is registered
+/// RoGetActivationFactory(class, iid, &factory) / RoActivateInstance(class, &instance): only
+/// Windows.UI.ViewManagement.UISettings (AdvHD x64 reads the theme's colors; C++/WinRT throws,
+/// and the program terminates, when it is missing)
 fn RoGetActivationFactory(c: &mut Ctx) -> u32 {
+    if class_name(c.a(0)) == UI_SETTINGS && c.a(2) != 0 {
+        let f = ui::factory();
+        return ui::qi_into(f, c.a(1), c.a(2));
+    }
     if crate::env_on!("SAKE_TRACE_COM") {
         eprintln!("sake: RoGetActivationFactory {}: not registered", class_name(c.a(0)));
     }
@@ -164,6 +178,10 @@ fn RoGetActivationFactory(c: &mut Ctx) -> u32 {
     REGDB_E_CLASSNOTREG
 }
 fn RoActivateInstance(c: &mut Ctx) -> u32 {
+    if class_name(c.a(0)) == UI_SETTINGS && c.a(1) != 0 {
+        mem::putp(c.a(1), ui::settings());
+        return S_OK;
+    }
     if crate::env_on!("SAKE_TRACE_COM") {
         eprintln!("sake: RoActivateInstance {}: not registered", class_name(c.a(0)));
     }
@@ -171,6 +189,267 @@ fn RoActivateInstance(c: &mut Ctx) -> u32 {
         mem::putp(c.a(1), 0);
     }
     REGDB_E_CLASSNOTREG
+}
+
+const UI_SETTINGS: &str = "Windows.UI.ViewManagement.UISettings";
+
+/// Windows.UI.ViewManagement.UISettings: the light theme, default metrics, 100% text, no change
+/// events ever raised. One block per object: an interface's vtable pointer at word k (the
+/// interface pointer is block + k * pointer size), then the reference count.
+mod ui {
+    use super::*;
+    use crate::api::{host_fn, Handler};
+    use std::sync::OnceLock;
+
+    const E_NOINTERFACE: u32 = 0x8000_4002;
+
+    type Guid = (u32, u16, u16, [u8; 8]);
+    const fn g(a: u32, b: u16, c: u16, d: [u8; 8]) -> Guid {
+        (a, b, c, d)
+    }
+    const IUNKNOWN: Guid = g(0, 0, 0, [0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
+    const IINSPECTABLE: Guid = g(0xaf86e2e0, 0xb12d, 0x4c6a, [0x9c, 0x5a, 0xd7, 0xaa, 0x65, 0x10, 0x1e, 0x90]);
+    const IAGILE: Guid = g(0x94ea2b94, 0xe9cc, 0x49e0, [0xc0, 0xff, 0xee, 0x64, 0xca, 0x8f, 0x5b, 0x90]);
+    const IFACTORY: Guid = g(0x35, 0, 0, [0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
+    /// IUISettings, IUISettings2..5 (slots 0..4 of a settings object)
+    const SETTINGS: [Guid; 5] = [
+        g(0x85361600, 0x1c63, 0x4627, [0xbc, 0xb1, 0x3a, 0x89, 0xe0, 0xbc, 0x9c, 0x55]),
+        g(0xbad82401, 0x2721, 0x44f9, [0xbb, 0x91, 0x2b, 0xb2, 0x28, 0xbe, 0x44, 0x2f]),
+        g(0x03021be4, 0x5254, 0x4781, [0x81, 0x94, 0x51, 0x68, 0xf7, 0xd0, 0x6d, 0x7b]),
+        g(0x52bb3002, 0x919b, 0x4d6b, [0x9b, 0x78, 0x8d, 0xd6, 0x6f, 0xf4, 0xb9, 0x3b]),
+        g(0x5349d588, 0x0cb5, 0x5f05, [0xbd, 0x34, 0x70, 0x6b, 0x32, 0x31, 0xf0, 0xbd]),
+    ];
+
+    /// The object's interfaces: the factory has one, a settings object five.
+    fn count(block: u32) -> u32 {
+        if rp(block) == factory_vtable() { 1 } else { SETTINGS.len() as u32 }
+    }
+    /// (block, slot) of an interface pointer
+    fn split(this: u32) -> (u32, u32) {
+        // a vtable's first word after the IInspectable methods tells nothing; the slot is kept
+        // in the vtable's word -1 instead
+        let k = r32(rp(this) - 4);
+        (this - k * ps(), k)
+    }
+    fn refs(block: u32) -> u32 {
+        block + count(block) * ps()
+    }
+
+    fn qi(c: &mut Ctx) -> u32 {
+        let (this, iid, out) = (c.a(0), c.a(1), c.a(2));
+        qi_into(split(this).0, iid, out)
+    }
+    /// QueryInterface on the object at `block` into `out`
+    pub fn qi_into(block: u32, iid: u32, out: u32) -> u32 {
+        let want = crate::com::read_guid(iid);
+        let k = if [IUNKNOWN, IINSPECTABLE, IAGILE].contains(&want) || (count(block) == 1 && want == IFACTORY) {
+            Some(0)
+        } else if count(block) > 1 {
+            SETTINGS.iter().position(|s| *s == want).map(|k| k as u32)
+        } else {
+            None
+        };
+        let Some(k) = k else {
+            if crate::env_on!("SAKE_TRACE_COM") {
+                eprintln!("sake: UISettings: no interface {want:x?}");
+            }
+            mem::putp(out, 0);
+            return E_NOINTERFACE;
+        };
+        w32(refs(block), r32(refs(block)) + 1);
+        mem::putp(out, block + k * ps());
+        S_OK
+    }
+    fn add_ref(c: &mut Ctx) -> u32 {
+        let b = split(c.a(0)).0;
+        w32(refs(b), r32(refs(b)) + 1);
+        r32(refs(b))
+    }
+    /// (the objects stay: one or two per program)
+    fn release(c: &mut Ctx) -> u32 {
+        let b = split(c.a(0)).0;
+        let n = r32(refs(b)).saturating_sub(1);
+        w32(refs(b), n);
+        n
+    }
+    fn get_iids(c: &mut Ctx) -> u32 {
+        w32(c.a(1), 0);
+        mem::putp(c.a(2), 0);
+        S_OK
+    }
+    fn class_name(c: &mut Ctx) -> u32 {
+        let s: Vec<u16> = UI_SETTINGS.encode_utf16().collect();
+        match create(&s) {
+            Some(h) => {
+                mem::putp(c.a(1), h);
+                S_OK
+            }
+            None => E_OUTOFMEMORY,
+        }
+    }
+    fn trust(c: &mut Ctx) -> u32 {
+        w32(c.a(1), 0);
+        S_OK
+    }
+    const INSPECTABLE: [(Handler, u32); 6] = [(qi, 12), (add_ref, 4), (release, 4), (get_iids, 12), (class_name, 8), (trust, 8)];
+
+    /// A vtable of `methods` after IInspectable's, its slot `k` in the word before it.
+    fn vtable(name: &str, k: u32, methods: &[(Handler, u32)]) -> u32 {
+        let all: Vec<(Handler, u32)> = INSPECTABLE.iter().chain(methods).copied().collect();
+        let t = mem::heap_alloc(8 + ps() * all.len() as u32, true) + 8;
+        w32(t - 4, k);
+        for (i, (f, bytes)) in all.iter().enumerate() {
+            wp(t + ps() * i as u32, host_fn(&format!("winrt::{name}::{i}"), *f, *bytes));
+        }
+        t
+    }
+
+    fn activate(c: &mut Ctx) -> u32 {
+        mem::putp(c.a(1), settings());
+        S_OK
+    }
+    fn factory_vtable() -> u32 {
+        static V: OnceLock<u32> = OnceLock::new();
+        *V.get_or_init(|| vtable("UISettingsFactory", 0, &[(activate, 8)]))
+    }
+    pub fn factory() -> u32 {
+        static F: OnceLock<u32> = OnceLock::new();
+        *F.get_or_init(|| {
+            let b = mem::heap_alloc(ps() + 4, true);
+            wp(b, factory_vtable());
+            w32(b + ps(), 1);
+            b
+        })
+    }
+
+    fn out32(v: u32) -> impl Fn(&mut Ctx) -> u32 {
+        move |c: &mut Ctx| {
+            w32(c.a(1), v);
+            S_OK
+        }
+    }
+    fn hand(c: &mut Ctx) -> u32 {
+        out32(1)(c) // RightHanded
+    }
+    fn size(c: &mut Ctx, w: f32) -> u32 {
+        w32(c.a(1), w.to_bits());
+        w32(c.a(1) + 4, w.to_bits());
+        S_OK
+    }
+    fn cursor(c: &mut Ctx) -> u32 {
+        size(c, 32.0)
+    }
+    fn scrollbar(c: &mut Ctx) -> u32 {
+        size(c, 17.0)
+    }
+    fn duration(c: &mut Ctx) -> u32 {
+        out32(5)(c)
+    }
+    fn yes(c: &mut Ctx) -> u32 {
+        mem::write(c.a(1), &[1]);
+        S_OK
+    }
+    fn no(c: &mut Ctx) -> u32 {
+        mem::write(c.a(1), &[0]);
+        S_OK
+    }
+    fn blink(c: &mut Ctx) -> u32 {
+        out32(530)(c)
+    }
+    fn one(c: &mut Ctx) -> u32 {
+        out32(1)(c)
+    }
+    fn dblclick(c: &mut Ctx) -> u32 {
+        out32(500)(c)
+    }
+    fn hover(c: &mut Ctx) -> u32 {
+        out32(400)(c)
+    }
+    /// Color { A, R, G, B }
+    fn put_color(p: u32, (r, g, b): (u8, u8, u8)) -> u32 {
+        mem::write(p, &[255, r, g, b]);
+        S_OK
+    }
+    /// UIElementColor(type, &color): GetSysColor's, by UIElementType
+    fn element_color(c: &mut Ctx) -> u32 {
+        let rgb = match c.a(1) {
+            // ActiveCaption, Background, ButtonFace, ButtonText, CaptionText, GrayText,
+            // Highlight, HighlightText, Hotlight, InactiveCaption, InactiveCaptionText, Window,
+            // WindowText
+            0 => (0x99, 0xb4, 0xd1),
+            1 => (0, 0, 0),
+            2 => (0xf0, 0xf0, 0xf0),
+            3 | 4 | 12 => (0, 0, 0),
+            5 => (0x6d, 0x6d, 0x6d),
+            6 => (0, 0x78, 0xd7),
+            7 | 11 => (0xff, 0xff, 0xff),
+            8 => (0, 0x66, 0xcc),
+            9 => (0xbf, 0xcd, 0xdb),
+            10 => (0, 0, 0),
+            _ => (0xff, 0xff, 0xff),
+        };
+        put_color(c.a(2), rgb)
+    }
+    fn text_scale(c: &mut Ctx) -> u32 {
+        crate::mem::w64(c.a(1), 1.0f64.to_bits());
+        S_OK
+    }
+    /// add_*Changed(handler, &token): never raised
+    fn add_event(c: &mut Ctx) -> u32 {
+        crate::mem::w64(c.a(2), 1);
+        S_OK
+    }
+    fn remove_event(_: &mut Ctx) -> u32 {
+        S_OK
+    }
+    /// GetColorValue(UIColorType, &color): the light theme, Windows' default blue accent
+    fn color_value(c: &mut Ctx) -> u32 {
+        let rgb = match c.a(1) {
+            0 => (0xff, 0xff, 0xff),
+            1 => (0, 0, 0),
+            2 => (0x00, 0x26, 0x42),
+            3 => (0x00, 0x42, 0x75),
+            4 => (0x00, 0x5a, 0x9e),
+            5 => (0x00, 0x78, 0xd7),
+            6 => (0x42, 0x9c, 0xe3),
+            7 => (0x76, 0xb9, 0xed),
+            8 => (0xa6, 0xd8, 0xff),
+            _ => (0xff, 0xff, 0xff),
+        };
+        put_color(c.a(2), rgb)
+    }
+
+    fn vtables() -> &'static [u32; 5] {
+        static V: OnceLock<[u32; 5]> = OnceLock::new();
+        // (x86 argument bytes: this and the arguments; an event token is 8)
+        let ev: [(Handler, u32); 2] = [(add_event, 12), (remove_event, 12)];
+        V.get_or_init(|| {
+            [
+                vtable(
+                    "IUISettings",
+                    0,
+                    &[
+                        (hand, 8), (cursor, 8), (scrollbar, 8), (scrollbar, 8), (scrollbar, 8), (duration, 8), (yes, 8), (no, 8),
+                        (blink, 8), (one, 8), (dblclick, 8), (hover, 8), (element_color, 12),
+                    ],
+                ),
+                vtable("IUISettings2", 1, &[(text_scale, 8), ev[0], ev[1]]),
+                vtable("IUISettings3", 2, &[(color_value, 12), ev[0], ev[1]]),
+                vtable("IUISettings4", 3, &[(yes, 8), ev[0], ev[1]]),
+                vtable("IUISettings5", 4, &[(yes, 8), ev[0], ev[1]]),
+            ]
+        })
+    }
+    /// A new settings object (one reference), as its IInspectable.
+    pub fn settings() -> u32 {
+        let v = vtables();
+        let b = mem::heap_alloc(ps() * 5 + 4, true);
+        for (k, t) in v.iter().enumerate() {
+            wp(b + ps() * k as u32, *t);
+        }
+        w32(b + 5 * ps(), 1);
+        b
+    }
 }
 
 pub fn init() {
@@ -191,6 +470,27 @@ pub fn init() {
     ] {
         implement("combase", n, f);
     }
+    // error origination (C++/WinRT reports each failed HRESULT): nothing kept; TRUE as "the
+    // error was originated"
+    for n in ["RoOriginateLanguageException", "RoOriginateError", "RoOriginateErrorW", "RoTransformError", "RoTransformErrorW"] {
+        implement("combase", n, |_| 1);
+    }
+    for n in ["RoCaptureErrorContext", "RoClearError", "SetRestrictedErrorInfo", "RoSetErrorReportingFlags", "RoReportUnhandledError"] {
+        implement("combase", n, |_| S_OK);
+    }
+    // GetRestrictedErrorInfo(&info): none (S_FALSE); RoGetErrorReportingFlags(&flags): 0
+    implement("combase", "GetRestrictedErrorInfo", |c| {
+        if c.a(0) != 0 {
+            mem::putp(c.a(0), 0);
+        }
+        1
+    });
+    implement("combase", "RoGetErrorReportingFlags", |c| {
+        if c.a(0) != 0 {
+            w32(c.a(0), 0);
+        }
+        S_OK
+    });
 }
 
 #[cfg(test)]

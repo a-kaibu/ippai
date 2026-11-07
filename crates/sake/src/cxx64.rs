@@ -118,7 +118,7 @@ fn is_consolidate(rec: u32, n: u32) -> bool {
 // spare, mangled name }
 
 /// The image base that holds `addr` (the thrown type's RVAs are from it).
-fn image_base_of(addr: u32) -> u64 {
+pub fn image_base_of(addr: u32) -> u64 {
     crate::pe::MODULES.read().unwrap().iter().find(|m| addr.wrapping_sub(m.base) < m.size).map_or(0, |m| crate::mem::widen(m.base))
 }
 
@@ -231,6 +231,11 @@ thread_local! {
     static ACTIVE: RefCell<Vec<Active>> = const { RefCell::new(Vec::new()) };
     /// FH4's try level for the next handler call (-2: from the IP), as Wine's FLS slot
     static TRYLEVEL4: Cell<i32> = const { Cell::new(-2) };
+}
+
+/// The EXCEPTION_RECORD of the exception the thread is handling (0: none), for exception_ptr.
+pub fn current_record() -> u32 {
+    ACTIVE.with(|a| a.borrow().last().map_or(0, |a| a.rec))
 }
 
 /// The thread's current exception (__current_exception / _context) after a change of catches.

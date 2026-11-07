@@ -71,6 +71,7 @@ pub mod seh64;
 pub mod cxx;
 pub mod cxx64;
 pub mod msvcp;
+mod msvcp_thr;
 pub mod sound;
 pub mod xaudio2;
 pub mod mmio;
