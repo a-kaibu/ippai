@@ -355,6 +355,16 @@ sigma 315 0.618 0.872
 sigma 378 0.741 0.529
 sigma 441 0.865 0.164
 sigma 504 0.988 0.006
+sigma focus 0 count 256
+sigma 0 0.000 0.500
+sigma 64 0.251 0.428
+sigma 128 0.502 0.248
+sigma 192 0.753 0.070
+sigma focus 1 count 256
+sigma 0 0.000 0.000
+sigma 64 0.251 0.072
+sigma 128 0.502 0.252
+sigma 192 0.753 0.430
 linear blend 3: 0.000/0.000 0.250/0.500 1.000/0.000
 texture fill 0
 image texture 7 5 0
@@ -368,7 +378,7 @@ pathgrad 1: 3
 pathgrad 2: 3
 pathgrad 3: 0 center 10.000 13.333 rect 0.0 0.0 30.0 40.0 color ff000000 type 3 wrap 0 surround 3 got 0 1 ffffffff
 pathgrad 4: 0 center 10.000 22.500 rect 0.0 0.0 30.0 50.0 color ff000000 type 3 wrap 0 surround 4 got 0 1 ffffffff
-ellipse points 13 center 53.846 25.000 rect -0.000 -0.000 100.000 50.000
+ellipse points 13 center 53.846 25.000 rect 0.000 0.000 100.000 50.000
 rotate prepend: 0 2.366 3.732 2.098 2.464 5.000 6.000
 rotate append: 0 0.183 4.415 0.585 3.183 1.330 7.696
 scale prepend: 0 0.366 8.830 1.755 9.549 1.330 7.696
