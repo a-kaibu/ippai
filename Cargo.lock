@@ -1659,6 +1659,7 @@ dependencies = [
  "directories",
  "encoding_rs",
  "flate2",
+ "form_urlencoded",
  "futures-util",
  "koji",
  "proptest",

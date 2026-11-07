@@ -85,6 +85,11 @@ pub struct Args {
     /// No pre-runs (see prerun_games): a game's first run translates its code itself.
     #[arg(long)]
     no_prerun: bool,
+    /// Requests from this machine (a loopback address and name, no proxy headers) need no
+    /// token. Only where nothing proxies to this server: a reverse proxy here connects from
+    /// loopback too (see auth.rs) [default: trust_loopback in config.toml, else off]
+    #[arg(long)]
+    trust_loopback: bool,
     /// Run in this process (for systemd and the like) instead of in the background.
     #[arg(long)]
     pub foreground: bool,
@@ -546,6 +551,8 @@ struct Prerun {
     /// where the page is served (the browser opens it here)
     listen: SocketAddr,
     off: bool,
+    /// (its Chromium signs in with a ticket)
+    auth: Arc<crate::auth::Auth>,
     lock: tokio::sync::Mutex<()>,
 }
 
@@ -593,7 +600,9 @@ async fn prerun_games(p: Arc<Prerun>) {
     for (id, name) in todo {
         let profile = p.jit.join(".prerun-profile");
         let _ = tokio::fs::remove_dir_all(&profile).await;
-        let url = format!("http://{host}/play.html?game={id}&autostart&nosave&headless");
+        let page = format!("/play.html?game={id}&autostart&nosave&headless");
+        let next: String = form_urlencoded::byte_serialize(page.as_bytes()).collect();
+        let url = format!("http://{host}/login?ticket={}&next={next}", p.auth.ticket(120));
         let mut cmd = tokio::process::Command::new(&chrome);
         // --incognito: an in-memory HTTP cache (on worker2, Ubuntu 26.04, the disk cache never
         // opens and every page load stalls before connecting)
@@ -607,7 +616,7 @@ async fn prerun_games(p: Arc<Prerun>) {
         if std::fs::metadata("/proc/self").is_ok_and(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0) {
             cmd.arg("--no-sandbox");
         }
-        eprintln!("prerun {id}: {} for {PRERUN_SECS} s", url);
+        eprintln!("prerun {id}: {page} for {PRERUN_SECS} s");
         let t0 = std::time::Instant::now();
         match cmd.spawn() {
             Ok(mut child) => {
@@ -750,6 +759,7 @@ struct Resolved {
     game_listen: SocketAddr,
     game_url: Option<String>,
     no_prerun: bool,
+    trust_loopback: bool,
 }
 
 pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
@@ -768,6 +778,7 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
         }),
         game_url: a.game_url,
         no_prerun: a.no_prerun,
+        trust_loopback: a.trust_loopback || dirs.trust_loopback,
     };
     for d in [&dirs.store, &args.jit, &args.logs] {
         std::fs::create_dir_all(d)?;
@@ -780,7 +791,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     if let Some(storage) = crate::storage::Storage::configured(crate::library::Library::new(&store)?)? {
         storage.hydrate_catalog(&store).await?;
     }
-    let auth = crate::auth::Auth::load(&dirs.token)?;
+    let auth = crate::auth::Auth::load(&dirs.token, args.trust_loopback)?;
     let jit: Jit = Arc::new((args.jit.clone(), tokio::sync::Mutex::new(())));
     let pre = Arc::new(Prerun {
         store: store.clone(),
@@ -788,6 +799,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         jit: args.jit.clone(),
         listen: args.listen,
         off: args.no_prerun,
+        auth: auth.clone(),
         lock: Default::default(),
     });
     let logs = Arc::new(args.logs.clone());
@@ -844,11 +856,12 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     let url = format!("http://{}", args.listen);
     crate::daemon::listen(dirs, url.clone(), store.display().to_string()).await?;
     eprintln!(
-        "ippai {} on {url}, web games on http://{} (store {}, web {}; other devices sign in with `ippai token`)",
+        "ippai {} on {url}, web games on http://{} (store {}, web {}; {}sign in with `ippai token`)",
         env!("IPPAI_VERSION"),
         args.game_listen,
         store.display(),
-        args.web.display()
+        args.web.display(),
+        if args.trust_loopback { "this machine needs no token, others " } else { "" }
     );
     tokio::spawn(prerun_games(pre));
     use std::future::IntoFuture;

@@ -12,7 +12,7 @@
 //! ```
 //!
 //! config.toml (all optional): `store = "/data/ippai"`, `cache = "..."`, `logs = "..."`,
-//! `listen = "0.0.0.0:8656"`. `--store` and serve's flags win over it.
+//! `listen = "0.0.0.0:8656"`, `trust_loopback = true` (auth.rs). `--store` and serve's flags win over it.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -26,6 +26,7 @@ struct Config {
     cache: Option<PathBuf>,
     logs: Option<PathBuf>,
     listen: Option<SocketAddr>,
+    trust_loopback: Option<bool>,
 }
 
 pub struct Dirs {
@@ -38,6 +39,8 @@ pub struct Dirs {
     pub listen: SocketAddr,
     /// the key other devices' browsers sign in with (auth.rs)
     pub token: PathBuf,
+    /// requests from this machine need no token (serve's --trust-loopback; auth.rs)
+    pub trust_loopback: bool,
 }
 
 pub const DEFAULT_LISTEN: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 8656));
@@ -58,6 +61,7 @@ impl Dirs {
             logs: cfg.logs.unwrap_or_else(|| p.state_dir().unwrap_or(&data).join("logs")),
             listen: cfg.listen.unwrap_or(DEFAULT_LISTEN),
             token: p.config_dir().join("token"),
+            trust_loopback: cfg.trust_loopback.unwrap_or(false),
             cache,
             run,
         })

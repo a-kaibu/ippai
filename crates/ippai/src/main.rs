@@ -135,7 +135,8 @@ fn main() -> anyhow::Result<()> {
         Cmd::Token { new } => {
             let t = auth::token(&dirs.token, new)?;
             println!("{t}");
-            eprintln!("on another device, open <the server's URL>/login?token={t} once (http://{}/login?token={t} here)", dirs.listen);
+            // (the token after #: no request carries it, nor a log of the server's or a proxy's)
+            eprintln!("sign a browser in once: open <the server's URL>/login#{t} (http://{}/login#{t} on this machine)", dirs.listen);
             if new {
                 eprintln!("restart the server (ippai stop; ippai serve) for the new one");
             }

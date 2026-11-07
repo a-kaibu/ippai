@@ -85,6 +85,8 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/offline-browser.mjs target/debug/ippai
+      - name: Sign-in behind a reverse proxy that adds no forwarding header (auth.rs)
+        run: python3 tests/auth-proxy.py target/debug/ippai
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}

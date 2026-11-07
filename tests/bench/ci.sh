@@ -28,8 +28,10 @@ for name in new old; do
   "$dist/ippai" --store "$store" pack "$WORK/prefix" prefix32 >/dev/null
   "$dist/ippai" --store "$store" pack "$WORK/exe" bench >/dev/null
   mkdir -p "$WORK/jit-$name"
+  # (an older build trusts loopback without the flag, and does not know it)
+  trust=$("$dist/ippai" serve --help | grep -q -- --trust-loopback && echo --trust-loopback || true)
   "$dist/ippai" serve --foreground --web "$dist/web" --store "$store" --jit "$WORK/jit-$name" \
-    --listen "127.0.0.1:$port" --no-prerun > "$WORK/server-$name.log" 2>&1 &
+    --listen "127.0.0.1:$port" --no-prerun $trust > "$WORK/server-$name.log" 2>&1 &
   PIDS+=("$!")
   for _ in $(seq 60); do curl -fs "http://127.0.0.1:$port/play.html" >/dev/null && break; sleep 1; done
   curl -fs "http://127.0.0.1:$port/play.html" >/dev/null || { cat "$WORK/server-$name.log"; exit 1; }

@@ -19,6 +19,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tower-http = { version = "0.6", features = ["fs", "set-header", "compression-zstd"] }
 rust-s3 = { version = "0.38.0", default-features = false, features = ["with-tokio", "tokio-rustls-tls"] }
 blake3 = "1"
+form_urlencoded = "1"
 zstd = "0.13"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"

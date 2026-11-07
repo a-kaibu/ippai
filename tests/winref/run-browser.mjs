@@ -33,7 +33,7 @@ mkdirSync(join(work, "probes"));
 for (const n of names) copyFileSync(join(exeDir, `${n}.exe`), join(work, "probes", `${n}.exe`));
 execFileSync(ippai, ["--store", store, "pack", join(work, "prefix"), "prefix32"], { stdio: "ignore" });
 execFileSync(ippai, ["--store", store, "pack", join(work, "probes"), "winref"], { stdio: "ignore" });
-const serveArgs = ["--store", store, "serve", "--foreground", "--listen", `127.0.0.1:${port}`, "--logs", join(work, "logs")];
+const serveArgs = ["--store", store, "serve", "--foreground", "--trust-loopback", "--listen", `127.0.0.1:${port}`, "--logs", join(work, "logs")];
 if (process.env.WEB) serveArgs.push("--web", process.env.WEB);
 const server = spawn(ippai, serveArgs, { stdio: "ignore" });
 const base = `http://127.0.0.1:${port}`;
