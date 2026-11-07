@@ -491,7 +491,9 @@ fn sse_codes() -> &'static [Code] {
                 let m = format!("{:?}", c.mnemonic());
                 // (side effects outside the compared state, or not in CPUID)
                 let skip = ["Maskmov", "Vmaskmov", "Ldmxcsr", "Stmxcsr", "Aes", "Pclmul", "Sha", "Gf2p8", "Vcvtph2ps", "Vcvtps2ph", "Extrq", "Insertq", "Movnt", "Crc32", "Vfm", "Vfnm", "Vgather", "Vpgather", "Vpdpb", "Vpdpw", "Vpmadd52", "Kmov", "Vpbroadcast", "Vbroadcast", "Vperm", "Vtest", "Vpblendd", "Vpsllv", "Vpsrlv", "Vpsrav", "Vblendv", "Vpblendv", "Rdrand", "Rdseed", "Pconfig", "Bndc", "Bndm", "Senduipi"];
-                ok && any_x && !skip.iter().any(|p| m.starts_with(p))
+                // (JIT64_SSE=Movlps,Blendv: only these mnemonic prefixes, to focus a run)
+                let only = std::env::var("JIT64_SSE").map_or(true, |v| v.split(',').any(|p| m.starts_with(p)));
+                ok && any_x && only && !skip.iter().any(|p| m.starts_with(p))
             })
             .collect()
     })

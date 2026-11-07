@@ -171,6 +171,17 @@ fn supported(ins: &Instruction) -> bool {
             n == 2 && is_x(ins, 0) && (is_x(ins, 1) || mem(ins, 1)) && size_ok(ins, 8)
         }
         Pmovzxbd | Pmovzxwq | Pmovsxbd | Pmovsxwq => n == 2 && is_x(ins, 0) && (is_x(ins, 1) || mem(ins, 1)) && size_ok(ins, 4),
+        Movsldup | Movshdup => n == 2 && full(),
+        Movddup => n == 2 && is_x(ins, 0) && (is_x(ins, 1) || mem(ins, 1)) && size_ok(ins, 8),
+        Minss | Maxss | Minsd | Maxsd => {
+            n == 2 && is_x(ins, 0) && (is_x(ins, 1) || mem(ins, 1)) && size_ok(ins, if matches!(m, Minss | Maxss) { 4 } else { 8 })
+        }
+        // (the mask is XMM0, implicit in the legacy form)
+        Blendvps | Blendvpd | Pblendvb => {
+            n == 2 && is_x(ins, 0) && (is_x(ins, 1) || mem(ins, 1)) && size_ok(ins, 16)
+        }
+        Movlps | Movhps | Movlpd | Movhpd => n == 2 && size_ok(ins, 8) && ((is_x(ins, 0) && mem(ins, 1)) || (mem(ins, 0) && is_x(ins, 1))),
+        Movhlps | Movlhps => n == 2 && is_x(ins, 0) && is_x(ins, 1),
         Vzeroupper => true,
         _ => false,
     }
@@ -438,6 +449,20 @@ impl Gen<'_> {
             }
             Cvttss2si | Cvttsd2si | Cvtss2si | Cvtsd2si => self.to_int(),
             Comiss | Ucomiss | Comisd | Ucomisd => self.comi(src1),
+            Movlps | Movhps | Movlpd | Movhpd => {
+                // one quadword of the register (low: L, high: H) from or to memory
+                let high = matches!(m, Movhps | Movhpd);
+                if mem(&ins, 0) {
+                    let r = ins.op_register(1);
+                    self.c.get(L_A).get(L_CPU).load64(xoff(r) + if high { 8 } else { 0 }).store64(0);
+                } else {
+                    self.vfirst(src1);
+                    self.c.get(L_A).load64(0);
+                    self.c.lane(0x1e, high as u8); // i64x2.replace_lane
+                    self.c.set(L_V0);
+                    self.vput();
+                }
+            }
             _ => self.packed_op(src1),
         }
     }
@@ -523,7 +548,8 @@ impl Gen<'_> {
         // the operands into L_V0 (first source) and L_V1 (operand 1) where they are vectors
         let src_size = match m {
             Cvtps2pd | Cvtdq2pd | Pmovzxbw | Pmovzxwd | Pmovzxdq | Pmovsxbw | Pmovsxwd | Pmovsxdq => 8,
-            Pmovzxbd | Pmovzxwq | Pmovsxbd | Pmovsxwq => 4,
+            Pmovzxbd | Pmovzxwq | Pmovsxbd | Pmovsxwq | Minss | Maxss => 4,
+            Movddup | Minsd | Maxsd => 8,
             _ if is_mm(&ins, 0) => 8,
             _ => 16,
         };
@@ -597,6 +623,39 @@ impl Gen<'_> {
                     // the first operand where it is less (greater), else the second
                     let cmp = match m { Minps => 0x43, Maxps => 0x44, Minpd => 0x49, _ => 0x4a };
                     self.c.get(a).get(b).get(a).get(b).simd(cmp).simd(0x52);
+                }
+                Minss | Maxss | Minsd | Maxsd => {
+                    // element 0 as MINPS/MAXPS picks it (the second operand when unordered or
+                    // equal), the rest from the first source
+                    let (cmp, replace, extract) = match m {
+                        Minss => (0x43, 0x1c, 0x1b),
+                        Maxss => (0x44, 0x1c, 0x1b),
+                        Minsd => (0x49, 0x1e, 0x1d),
+                        _ => (0x4a, 0x1e, 0x1d),
+                    };
+                    self.c.get(a);
+                    self.c.get(a).get(b).get(a).get(b).simd(cmp).simd(0x52);
+                    self.c.lane(extract, 0).lane(replace, 0);
+                }
+                Movsldup | Movshdup | Movddup => {
+                    let pick: [u8; 4] = match m { Movsldup => [0, 0, 2, 2], Movshdup => [1, 1, 3, 3], _ => [0, 1, 0, 1] };
+                    let l: [u8; 16] = core::array::from_fn(|k| pick[k / 4] * 4 + (k % 4) as u8);
+                    self.c.get(b).get(b).shuffle(l);
+                }
+                Movhlps | Movlhps => {
+                    // MOVHLPS: the source's high quadword to the low one; MOVLHPS: its low one
+                    // to the high one
+                    let l: [u8; 16] = core::array::from_fn(|k| {
+                        (if m == Movhlps { if k < 8 { 16 + 8 + k } else { k } } else if k < 8 { k } else { 16 + k - 8 }) as u8
+                    });
+                    self.c.get(a).get(b).shuffle(l);
+                }
+                Blendvps | Blendvpd | Pblendvb => {
+                    // the second operand where XMM0's element has its top bit set
+                    let (shr, n) = match m { Blendvps => (0xac, 31), Blendvpd => (0xcc, 63), _ => (0x6c, 7) };
+                    self.c.get(b).get(a);
+                    self.c.get(L_CPU).v128load(xoff(Register::XMM0)).i32c(n).simd(shr);
+                    self.c.simd(0x52);
                 }
                 Pminsb => {
                     self.c.get(a).get(b).simd(0x76);
