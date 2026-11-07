@@ -47,6 +47,12 @@ const MAX_INS: usize = 200;
 // block return codes
 pub const RET_CONTINUE: i32 = 0;
 pub const RET_INTERP: i32 = 1;
+/// Whether translated code may run with this MXCSR: SSE exceptions masked and rounding to
+/// nearest (the JIT's SSE is the plain wasm ops; other modes are the interpreter's, and a step
+/// that changes MXCSR leaves the region: see the `step` import)
+pub fn sse_ok(mxcsr: u32) -> bool {
+    mxcsr & 0x7f80 == 0x1f80
+}
 /// Debugging (IPPAI_JIT_COUNT): counters of control transfers the generated code bumps
 /// (wasm32 only: their addresses are i32 constants). See [`COUNTER_NAMES`].
 pub static COUNT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -94,8 +100,6 @@ const F_STATUS: u32 = 2;
 const F_X87: u32 = 3; // (cpu, TOP, info, 8 f64): see x87_out
 const F_CALLMISS: u32 = 4; // (cpu, slot, target) -> entry: see call_fn
 const T_CALLMISS: u32 = 5;
-const F_ROUND: u32 = 5; // (kind, a, b, mode) -> f64: see rounding
-const T_ROUND: u32 = 6;
 /// Slots of a thread's call cache (Cpu::jit_calls).
 pub const CALL_CACHE: u32 = 1 << 12;
 
@@ -134,6 +138,16 @@ const L_SLOT: u32 = L_AB + 1; // N_SLOTS i32: stack slots kept in locals in a lo
 /// functions: ESP as the caller passed it (the third parameter once the locals are compacted)
 const L_ESPIN: u32 = L_SLOT + N_SLOTS;
 const N_SLOTS: u32 = 6;
+const L_RO: u32 = L_ESPIN + 1; // f64: a result jit::rounding rounds
+/// jit::rounding's locals: 6 f64, 3 i64, 4 i32
+const ROUND: rounding::Tmp = rounding::Tmp { f: L_RO + 1, i: L_RO + 7, n: L_RO + 10 };
+/// i32: whether x87 arithmetic / an f32 rounding of the x87 isn't the plain wasm op (see
+/// Gen::modes)
+const L_MX: u32 = L_ESPIN + 15;
+const L_MXR: u32 = L_ESPIN + 16;
+/// f64: x87 products and quotients at most this large take the slow path (f64::INFINITY when
+/// L_MX, else the largest subnormal: those are rounded twice)
+const L_MXT: u32 = L_ESPIN + 17;
 /// How many slots a loop keeps (at most N_SLOTS; IPPAI_JIT_SLOTS, default 0: slower on x64,
 /// where the extra live locals spill)
 pub static SLOTS_MAX: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -449,6 +463,10 @@ struct Gen<'a> {
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
+    /// whether L_MX, L_MXR and L_MXT hold the x87's modes, loaded at depth modes_depth (see
+    /// Gen::modes)
+    modes: bool,
+    modes_depth: u32,
     sizes: BTreeMap<String, (u32, u32)>,
     /// blocks done by [`Gen::hle`] instead of their guest code
     hle: BTreeMap<u32, Hle>,
@@ -862,11 +880,40 @@ impl<'a> Gen<'a> {
 
     /// Leaves the block so the interpreter runs the current instruction.
     fn x87_mode(&self) -> rounding::Mode {
-        rounding::Mode { f: F_ROUND, cpu: L_CPU, off: Off::fcw(), cw: true }
+        rounding::Mode { cpu: L_CPU, off: Off::fcw() }
     }
 
-    fn sse_mode(&self) -> rounding::Mode {
-        rounding::Mode { f: F_ROUND, cpu: L_CPU, off: Off::mxcsr(), cw: false }
+    /// Makes L_MX, L_MXR and L_MXT hold the x87's modes: loaded once per block, again after
+    /// the interpreter, a call or FLDCW (and inside nested code: what it loads there doesn't
+    /// hold after it). (SSE has none: the JIT runs only while MXCSR.RC is to nearest, see
+    /// [`sse_ok`].)
+    fn modes(&mut self) {
+        if self.modes && self.modes_depth == self.depth {
+            return;
+        }
+        let m = self.x87_mode();
+        m.arith_slow(&mut self.c);
+        self.c.set(L_MX);
+        m.rc_slow(&mut self.c);
+        self.c.set(L_MXR);
+        self.c.f64c(f64::INFINITY).f64c(f64::from_bits(0x000f_ffff_ffff_ffff)).get(L_MX).op(0x1b).set(L_MXT);
+        self.modes = true;
+        self.modes_depth = self.depth;
+    }
+
+    /// [] -> [i32]: whether the x87's rounding control isn't to nearest
+    fn rc_slow(&mut self) {
+        self.modes();
+        self.c.get(L_MXR);
+    }
+
+    /// Leaves for the interpreter when jit::rounding's emitters set Tmp::bad
+    fn bail_if_bad(&mut self) {
+        self.c.get(ROUND.bad()).if_();
+        self.depth += 1;
+        self.bail();
+        self.depth -= 1;
+        self.c.end();
     }
 
     fn bail(&mut self) {
@@ -1868,6 +1915,7 @@ impl<'a> Gen<'a> {
     /// block afterwards at whatever EIP the instruction produced.
     fn fallback(&mut self, ends: bool) {
         self.fell_back = true;
+        self.modes = false;
         self.fc_flush();
         self.fc = FCache::default();
         self.mmx = (0, 0);
@@ -2756,12 +2804,8 @@ impl<'a> Gen<'a> {
                     if ins.memory_size() == iced_x86::MemorySize::Float32 {
                         // (rounded as RC says)
                         self.c.set(L_F0);
-                        let m = self.x87_mode();
-                        m.rc_slow(&mut self.c);
-                        self.c.if_ty(F64).u32c(rounding::kind::X87_F32).get(L_F0).f64c(0.0);
-                        m.call(&mut self.c);
-                        self.c.else_().get(L_F0).end();
-                        self.c.op(0xb6 /* f32.demote_f64 */).f32store(o);
+                        self.round_f32(L_F0);
+                        self.c.f32store(o);
                     } else {
                         self.c.f64store(o);
                     }
@@ -2822,6 +2866,7 @@ impl<'a> Gen<'a> {
             Fldcw if fpu_neutral(ins) => {
                 let a = self.addr(2);
                 self.c.get(L_CPU).get(a).load16u(0).store16(Off::fcw());
+                self.modes = false;
             }
             Fnstcw | Fstcw if fpu_neutral(ins) => {
                 let a = self.addr(2);
@@ -2905,13 +2950,30 @@ impl<'a> Gen<'a> {
                 } else {
                     self.c.get(L_FREG + d).set(L_F0);
                 }
-                let (op, k) = match mn {
-                    Fadd | Faddp => (0xa0, 0),
-                    Fsub | Fsubp | Fsubr | Fsubrp => (0xa1, 1),
-                    Fmul | Fmulp => (0xa2, 2),
-                    _ => (0xa3, 3),
+                let op = match mn {
+                    Fadd | Faddp => rounding::Ar::Add,
+                    Fsub | Fsubp | Fsubr | Fsubrp => rounding::Ar::Sub,
+                    Fmul | Fmulp => rounding::Ar::Mul,
+                    _ => rounding::Ar::Div,
                 };
-                self.x87_mode().x87_op(&mut self.c, rounding::kind::X87 + k, op, L_F0, L_F1, L_FREG + d);
+                // to nearest, then (another mode, or a product or quotient below the normal
+                // range) rounded again
+                self.c.get(L_F0).get(L_F1).op(op.op()).set(L_RO);
+                let m = self.x87_mode();
+                self.modes();
+                if matches!(op, rounding::Ar::Mul | rounding::Ar::Div) {
+                    self.c.get(L_RO).op(0x99 /* f64.abs */).get(L_MXT).op(0x65); // f64.le
+                } else {
+                    self.c.get(L_MX);
+                }
+                self.c.if_();
+                m.setup(&mut self.c, ROUND, false);
+                rounding::arith(&mut self.c, ROUND, op, L_F0, L_F1, L_RO);
+                self.depth += 1;
+                self.bail_if_bad();
+                self.depth -= 1;
+                self.c.end();
+                self.c.get(L_RO).set(L_FREG + d);
                 self.fc_wrote(d);
                 if matches!(mn, Faddp | Fsubp | Fsubrp | Fmulp | Fdivp | Fdivrp) {
                     self.fc_pop();
@@ -3396,6 +3458,7 @@ impl<'a> Gen<'a> {
     /// when it returned there. Without a function there, nested too deep or out of budget,
     /// the dispatcher's way (leaving for `t`).
     fn call_fn(&mut self, t: u32, next: u32) {
+        self.modes = false;
         self.mmx_flush();
         self.xmm_flush();
         self.x87_flush();
@@ -4373,6 +4436,7 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
         }
     }
     g.fc = g.fc_in.get(&k).copied().unwrap_or_default();
+    g.modes = false;
     bump(&mut g.c, 14);
     if let Some(&at) = g.prof.get(k) {
         g.c.i32c(at as i32).i32c(at as i32).load32(0).i32c(1).add().store32(0);
@@ -4961,8 +5025,6 @@ fn translate<M: Memory>(
         module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32; 2] });
         module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32] });
         module.imports.push(Import::Func("callmiss", T_CALLMISS));
-        module.types.push(FuncType { params: alloc::vec![I32, F64, F64, I32], results: alloc::vec![F64] });
-        module.imports.push(Import::Func("round", T_ROUND));
     }
 
     let n = blocks.len() as u32;
@@ -5079,6 +5141,8 @@ fn translate<M: Memory>(
         notes: String::new(),
         fuse_zx: false,
         fell_back: false,
+        modes: false,
+        modes_depth: 0,
         sizes: Default::default(),
         hle,
         thunks,
@@ -5223,15 +5287,22 @@ fn translate<M: Memory>(
     locals.extend_from_slice(&[V128; 16]);
     locals.push(I32); // L_AB
     locals.extend_from_slice(&[I32; N_SLOTS as usize]);
+    // L_ESPIN (functions only, else unused), L_RO, ROUND
+    locals.push(I32);
+    locals.extend_from_slice(&[F64; 7]);
+    locals.extend_from_slice(&[I64; 3]);
+    locals.extend_from_slice(&[I32; 4]);
+    // L_MX, L_MXR, L_MXT
+    locals.extend_from_slice(&[I32, I32, F64]);
     if fnm {
-        assert_eq!(2 + locals.len() as u32, L_ESPIN);
-        locals.push(I32); // L_ESPIN
+        assert_eq!(2 + locals.len() as u32, L_ESPIN + 18);
         let (locals, body) = wasm::compact_locals_param(2, L_ESPIN, &locals, core::mem::take(&mut g.c));
         let at = module.funcs.len() as u32;
         module.funcs.push(fn_adapter());
         module.funcs.push(Func { ty: T_FN, locals, code: body });
         module.name_at = at + 1;
     } else {
+        debug_assert_eq!(N_PARAMS + locals.len() as u32, L_ESPIN + 18);
         let (locals, body) = wasm::compact_locals(N_PARAMS, &locals, core::mem::take(&mut g.c));
         module.funcs.push(Func { ty: 2, locals, code: body });
     }

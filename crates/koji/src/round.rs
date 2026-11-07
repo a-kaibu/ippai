@@ -130,22 +130,41 @@ enum Prec {
 
 /// The exact value (p + e) * 2^k (e of sign `es`) rounded as `prec` says
 fn place(p: f64, es: i32, k: i32, rc: Rc, prec: Prec) -> f64 {
-    let v = if prec == Prec::X87Single {
+    if prec == Prec::X87Single {
         // (24 bits on the significand)
         let (m, e) = libm::frexp(p);
         return place(f32_grid(m, es, rc), 0, e + k, rc, Prec::Sse);
-    } else if prec == Prec::X87 {
+    }
+    if prec == Prec::X87 {
         return place(regrid(p, es, rc, |x| x, next_up, next_down), 0, k, rc, Prec::Sse);
-    } else {
-        let at = |x: f64| libm::ldexp(x, k);
-        let back = |x: f64| libm::ldexp(x, -k);
-        if at(p).is_infinite() {
-            // (p rounded up to 2^1024 or past it: the exact value is past the threshold)
-            return overflowed(at(p), f64::MAX, rc);
+    }
+    // n: the nearest f64 (subnormals included) of p * 2^k, then moved as rc says; worked
+    // out at the result's scale (scaling n's neighbours back can overflow: 2^-1074 * 2^2000)
+    let n = libm::ldexp(p, k);
+    if n.is_infinite() {
+        // (p rounded up to 2^1024 or past it: the exact value is past the threshold)
+        return overflowed(n, f64::MAX, rc);
+    }
+    // d = p - n's value at p's scale (exact: the bits of p below n's grid)
+    let d = p - libm::ldexp(n, -k);
+    let s = if d != 0.0 { sign(d) } else { es };
+    match rc {
+        Rc::Near => {
+            // (p exactly between two grid points and e pushing away from n: the other one)
+            if d != 0.0 && es == sign(d) {
+                let o = if d > 0.0 { next_up(n) } else { next_down(n) };
+                if (libm::ldexp(n, -k) + libm::ldexp(o, -k)) * 0.5 == p {
+                    return o;
+                }
+            }
+            n
         }
-        regrid(p, es, rc, |x| back(at(x)), |x| back(next_up(at(x))), |x| back(next_down(at(x))))
-    };
-    libm::ldexp(v, k)
+        Rc::Down if s < 0 => next_down(n),
+        Rc::Up if s > 0 => next_up(n),
+        Rc::Zero if s < 0 && n > 0.0 => next_down(n),
+        Rc::Zero if s > 0 && n < 0.0 => next_up(n),
+        _ => n,
+    }
 }
 
 /// The exact sum's zero: -0 rounding down, else +0 (an exact zero of nonzero operands, or
@@ -334,48 +353,6 @@ pub fn i64_to_f32(v: i64, rc_bits: u32) -> f32 {
     to_f32(r, e.signum() as i32, Rc::from_bits(rc_bits))
 }
 
-/// Kinds of [`jit`] (the JIT's `round` import): an operation (+ [`Op`] as 0..4) or a conversion
-pub mod kind {
-    /// x87 arithmetic, mode = the control word
-    pub const X87: u32 = 0;
-    /// SSE double, mode = MXCSR
-    pub const SD: u32 = 8;
-    /// SSE single (operands and result f32 values), mode = MXCSR
-    pub const SS: u32 = 16;
-    /// f64 -> f32: an x87 store (mode = the control word)
-    pub const X87_F32: u32 = 24;
-    /// f64 -> f32: SSE (mode = MXCSR)
-    pub const F32: u32 = 25;
-    /// an i64 (`a`'s bits) -> f64, -> f32: SSE
-    pub const I64_F64: u32 = 26;
-    pub const I64_F32: u32 = 27;
-}
-
-/// The JIT's `round` import: what translated code does when the rounding mode isn't the one
-/// wasm has (see [`kind`])
-pub fn jit(k: u32, a: f64, b: f64, mode: u32) -> f64 {
-    let op = |n: u32| match n {
-        0 => Op::Add,
-        1 => Op::Sub,
-        2 => Op::Mul,
-        3 => Op::Div,
-        _ => Op::Sqrt,
-    };
-    match k {
-        0..=4 => x87(op(k), a, b, mode as u16),
-        // (SQRT's NaNs as the interpreter has them: the operand's quieted, else the default)
-        // (in f64 bits: `as` may not keep a NaN's sign; an f32's promoted, demoted after)
-        12 | 20 if a.is_nan() => f64::from_bits(a.to_bits() | 0x8_0000_0000_0000),
-        12 | 20 if a < 0.0 => f64::from_bits(0xfff8_0000_0000_0000),
-        8..=12 => sse64(op(k - 8), a, b, mode),
-        16..=20 => sse32(op(k - 16), a as f32, b as f32, mode) as f64,
-        kind::X87_F32 => f64_to_f32(a, mode >> 10) as f64,
-        kind::F32 => f64_to_f32(a, mode >> 13) as f64,
-        kind::I64_F64 => i64_to_f64(a.to_bits() as i64, mode >> 13),
-        _ => i64_to_f32(a.to_bits() as i64, mode >> 13) as f64,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,7 +367,10 @@ mod tests {
         }
         /// mostly ordinary numbers, some extremes
         fn f64(&mut self) -> f64 {
-            match self.next() % 8 {
+            match self.next() % 10 {
+                // (the smallest subnormals, and the normal range's edge)
+                8 => f64::from_bits(self.next() % 64 | (self.next() & 1) << 63),
+                9 => f64::MIN_POSITIVE * [1.0, -1.0, 0.5, 1.5][(self.next() % 4) as usize],
                 0 => f64::from_bits(self.next()),
                 1 => (self.next() % 1000) as f64 / 8.0,
                 2 => f64::from_bits(self.next() & 0x000f_ffff_ffff_ffff),
@@ -433,11 +413,24 @@ mod tests {
             _ => None,
         };
         let Some((n, ex)) = exact else { return };
-        let Some((mg, eg)) = bigval(got) else { return };
+        let Some((mg, eg)) = bigval(got) else {
+            // (infinite: only past f64::MAX)
+            let top = 128 - n.unsigned_abs().leading_zeros() as i32 + ex;
+            assert!(!got.is_infinite() || top >= 1024, "{op:?} {a:e} {b:e} {rc:?} -> {got:e}");
+            return;
+        };
         // compare got with exact: got - exact sign
         let cmp = |m: i128, e: i32| -> Option<i32> {
+            // (far apart in magnitude: the larger one's sign; tiny results of tiny operands)
+            let top = |v: i128, e: i32| 128 - v.unsigned_abs().leading_zeros() as i32 + e;
+            if m != 0 && n != 0 && (top(m, e) - top(n, ex)).abs() > 2 {
+                return Some(if top(m, e) > top(n, ex) { m.signum() as i32 } else { -n.signum() as i32 });
+            }
             let k = e.min(ex);
             let (s1, s2) = ((e - k) as u32, (ex - k) as u32);
+            if m == 0 || n == 0 {
+                return Some((m.signum() - n.signum()).signum() as i32);
+            }
             if s1 > 70 || s2 > 70 { return None; }
             let shl = |v: i128, s: u32| if v != 0 && v.unsigned_abs().leading_zeros() <= s + 1 { None } else { Some(v << s) };
             let d = shl(m, s1)?.checked_sub(shl(n, s2)?)?;
@@ -574,6 +567,12 @@ mod tests {
         assert_eq!(r.to_bits(), 0x8000_0000_0000_0001, "{r:e}");
         let r = sse64(Op::Div, f64::MAX, f64::from_bits(0x0000017b000001f3), 0x7f80);
         assert_eq!(r, f64::MAX);
+        // (jit32test native: a product of the smallest subnormals rounding up)
+        let t = f64::from_bits(1);
+        assert_eq!(sse64(Op::Mul, t, t, 0x5f80), t);
+        assert_eq!(sse64(Op::Mul, -t, t, 0x3f80), -t);
+        assert_eq!(sse64(Op::Div, t, f64::MAX, 0x5f80), t);
+        assert_eq!(x87(Op::Mul, t, t, 0x0a7f), t);
     }
 
     #[test]

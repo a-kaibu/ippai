@@ -20,7 +20,6 @@ addToLibrary({
       status: wasmExports.vnhost_jit_status,
       x87: wasmExports.vnhost_jit_x87,
       callmiss: wasmExports.vnhost_jit_callmiss,
-      round: wasmExports.vnhost_jit_round,
       table: VNJIT.table,
     };
   },

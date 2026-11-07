@@ -13,6 +13,7 @@ use koji::{Cpu, Exit, Fault};
 use std::sync::atomic::Ordering::Relaxed;
 use wasmtime::*;
 mod native;
+mod sweep;
 
 const CPU: u32 = 0x2000;
 const HASH: u32 = 0x8000;
@@ -519,6 +520,11 @@ fn random_sse(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
             }
         };
     }
+    if rng.below(30) == 0 {
+        // a new rounding mode
+        a.mov(dword_ptr(esp - 8), 0x1f80 | (rng.below(4) as u32) << 13)?;
+        return a.ldmxcsr(dword_ptr(esp - 8));
+    }
     match rng.below(44) {
         0 => two!(movaps),
         1 => a.movups(m, d)?,
@@ -571,6 +577,12 @@ fn random_sse(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
 /// x87 sequences that leave the stack as they found it (doubles and floats in DATA)
 fn random_x87(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
     let q = |rng: &mut Rng| qword_ptr(mem(rng, 8));
+    if rng.below(12) == 0 {
+        // a new rounding / precision control (53 or 24 bits: the CPU's 64 isn't koji's)
+        let cw = [0x027f, 0x007f][rng.below(2) as usize] | (rng.below(4) as u32) << 10;
+        a.mov(dword_ptr(esp - 8), cw)?;
+        return a.fldcw(word_ptr(esp - 8));
+    }
     match rng.below(10) {
         0 => {
             a.fld(q(rng))?;
@@ -879,6 +891,8 @@ impl Jit {
                 let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
                 match r {
+                    // (as kura: another MXCSR mode leaves the region)
+                    Exit::Continue if !koji::jit::sse_ok(c.mxcsr) => 2,
                     Exit::Continue => 0,
                     _ => 2,
                 }
@@ -891,15 +905,6 @@ impl Jit {
                 c.materialize();
                 unsafe { put_cpu(m, &c) };
                 c.eflags as i32
-            })
-            .unwrap();
-        linker
-            .func_wrap("env", "round", |k: u32, a: f64, b: f64, m: u32| -> f64 {
-                let r = koji::round::jit(k, a, b, m);
-                if std::env::var("JTRACE").is_ok() {
-                    println!("round {k} {:#x} {:#x} {m:#x} -> {:#x}", a.to_bits(), b.to_bits(), r.to_bits());
-                }
-                r
             })
             .unwrap();
         linker
@@ -1000,6 +1005,15 @@ impl Jit {
             if c.eip == END {
                 return Ok(());
             }
+            if !koji::jit::sse_ok(c.mxcsr) {
+                // (as kura: the interpreter while MXCSR isn't the JIT's)
+                let r = koji::step(&mut c, &mut Mem(m));
+                unsafe { put_cpu(m, &c) };
+                if r != Exit::Continue {
+                    return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
+                }
+                continue;
+            }
             c.jit_hash = HASH;
             c.jit_mask = HASH_N - 1;
             c.jit_ring = RING;
@@ -1025,6 +1039,8 @@ impl Jit {
                     }
                 }
                 koji::jit::RET_FN => {}
+                // (a step that changed MXCSR: on in the interpreter)
+                2 if !koji::jit::sse_ok(c.mxcsr) => {}
                 s => return Err(format!("status {s} at {:#x}", c.eip)),
             }
         }
@@ -1087,8 +1103,15 @@ fn initial(rng: &mut Rng) -> Cpu {
 fn random_data(rng: &mut Rng) -> Vec<u8> {
     let mut d: Vec<u8> = (0..DATA_LEN).map(|_| rng.next() as u8).collect();
     for k in 0..DATA_LEN as usize / 8 {
-        let v: u64 = match rng.below(4) {
+        let v: u64 = match rng.below(6) {
             0 => ((rng.next() as i32 >> rng.below(31)) as f64 / 4.0).to_bits(),
+            // 25 and 26-bit significands (ties at 24 bits: x87 single precision, SSE floats)
+            // and floats far apart (sums that need more than 24 bits)
+            3 => (((1u64 << 24 | rng.below(1 << 25)) as f64) * f64::powi(2.0, rng.below(40) as i32 - 30)).to_bits(),
+            4 => {
+                let f = |r: &mut Rng| ((1 + r.below(1 << 24)) as f32 * f32::powi(2.0, r.below(60) as i32 - 30)).to_bits() as u64;
+                f(rng) | f(rng) << 32
+            }
             1 => ((rng.next() as i16) as f32 / 2.0).to_bits() as u64 | ((rng.below(100) as f32).to_bits() as u64) << 32,
             2 => rng.below(1000) as u64 | (rng.below(1000) as u64) << 32,
             _ => continue,
@@ -1206,6 +1229,11 @@ fn main() {
                 }
             }
         }
+    }
+    // the rounding sweep (JSWEEP=<seeds>, 0 skips it)
+    let seeds = std::env::var("JSWEEP").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+    if seeds > 0 && std::env::var("JONLY").is_err() {
+        fails += sweep::run(&engine, &dispatch, &memory, base, seeds);
     }
     for t in 0..count {
         let mode = Mode {

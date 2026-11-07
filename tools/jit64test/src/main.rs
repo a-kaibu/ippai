@@ -115,6 +115,13 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
     use Code as C;
     let k = rng.below(40);
     if k >= 30 {
+        if rng.below(40) == 0 {
+            // a new MXCSR rounding mode (the region leaves: the interpreter runs on)
+            let at = MemoryOperand::with_base_displ(Register::RSP, -8);
+            out.push(Instruction::with2(Code::Mov_rm32_imm32, at, 0x1f80 | (rng.below(4) as u32) << 13).unwrap());
+            out.push(Instruction::with1(Code::Ldmxcsr_m32, at).unwrap());
+            return;
+        }
         if let Some(i) = random_sse(rng) {
             out.push(i);
         }
@@ -666,6 +673,8 @@ impl Jit {
                 let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
                 match r {
+                    // (as kura: another MXCSR mode leaves the region)
+                    Exit::Continue if !koji::jit::sse_ok(c.mxcsr) => 2,
                     Exit::Continue => 0,
                     _ => 2,
                 }
@@ -680,7 +689,6 @@ impl Jit {
                 c.eflags as i32
             })
             .unwrap();
-        linker.func_wrap("env", "round", |k: u32, a: f64, b: f64, m: u32| -> f64 { koji::round::jit(k, a, b, m) }).unwrap();
         linker
             .func_wrap("env", "status", |op: i32, a: i32, b: i32, r: i32, c: i32| -> i32 {
                 koji::lazy::Lazy { op: op as u32, a: a as u32 as u64, b: b as u32 as u64, r: r as u32 as u64, c: c as u32 }.status() as i32
@@ -749,6 +757,16 @@ impl Jit {
                 }
                 return Ok(regions);
             }
+            if !koji::jit::sse_ok(c.mxcsr) {
+                // (as kura: the interpreter while MXCSR isn't the JIT's)
+                let mut c = c;
+                let r = koji::step(&mut c, &mut Mem(m));
+                unsafe { put_cpu(m, &c) };
+                if r != Exit::Continue {
+                    return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
+                }
+                continue;
+            }
             if !self.entries.contains_key(&c.eip) {
                 self.translate(base, c.eip, c.rip_hi)?;
             }
@@ -770,6 +788,8 @@ impl Jit {
                         return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
                     }
                 }
+                // (a step that changed MXCSR: on in the interpreter)
+                2 if !koji::jit::sse_ok(unsafe { get_cpu(m) }.mxcsr) => {}
                 s => return Err(format!("status {s} at {:#x}", unsafe { get_cpu(m) }.eip)),
             }
         }

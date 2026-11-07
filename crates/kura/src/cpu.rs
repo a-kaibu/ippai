@@ -391,11 +391,12 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
     loop {
         trace_call(cpu);
         // (with TF set every instruction traps, and with an SSE exception unmasked any SSE
-        // instruction may: the interpreter runs them one by one)
+        // instruction may: the interpreter runs them one by one; so it does SSE rounding
+        // other than to nearest)
         if jit && cpu.mxcsr & 0x1f80 != 0x1f80 {
             unmasked_note(cpu.mxcsr);
         }
-        if jit && cpu.eflags & koji::flags::TF == 0 && cpu.mxcsr & 0x1f80 == 0x1f80 {
+        if jit && cpu.eflags & koji::flags::TF == 0 && koji::jit::sse_ok(cpu.mxcsr) {
             // (16-bit code: the JIT's eip is the linear CS:IP, see jit::to_linear16)
             let m16 = cpu.mode16 != 0;
             if m16 {

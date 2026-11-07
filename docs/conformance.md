@@ -82,4 +82,11 @@ f2xm1 of zeros and tiny values, fscale and fprem special cases. Fixed (2026-11-0
 the MXCSR rounding mode for SSE arithmetic and conversions, and the x87 rounding and precision
 controls (PC24 at the x87's exponent range; products and quotients below f64's normal range
 rounded twice, as the FPU's register and then its store do), in the interpreter and both JITs
-(translated code checks the mode and calls the `round` import when it isn't round to nearest).
+(x87: translated code does the plain wasm op and checks the mode, loaded once per block; outside
+PC53 and round to nearest, or for products/quotients below f64's normal range, an inline
+call-free path computes the exact error (TwoSum, Dekker's product, the division residual) and
+regrids the result; values near the range edges go to the interpreter. SSE: translated code
+runs only while MXCSR.RC is to nearest (koji::jit::sse_ok); a step that sets another mode leaves
+the region and the interpreter runs on.) `jit32test` sweeps 38 FP instruction sequences over
+crafted operands (ties at 24/53 bits, zero sums, odd products, range edges, specials) in every
+x87 PC/RC and MXCSR.RC, with FLDCW/LDMXCSR inside the loop, JIT against the interpreter.

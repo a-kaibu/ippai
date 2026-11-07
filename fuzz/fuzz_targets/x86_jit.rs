@@ -176,7 +176,10 @@ fuzz_target!(|data: &[u8]| {
         .func_wrap("env", "step", |mut c: Caller<'_, Host>, at: u32| -> i32 {
             let mem = c.data().mem.clone();
             let d = mem.data();
-            match koji::step(cpu_in(d, at), &mut Wasm(d)) {
+            let cpu = cpu_in(d, at);
+            match koji::step(cpu, &mut Wasm(d)) {
+                // (as kura: another MXCSR mode leaves the region)
+                Exit::Continue if !koji::jit::sse_ok(cpu.mxcsr) => 2,
                 Exit::Continue => 0,
                 e => {
                     c.data_mut().exit = Some(e);
@@ -207,7 +210,6 @@ fuzz_target!(|data: &[u8]| {
         )
         .unwrap();
     linker.func_wrap("env", "callmiss", |_: u32, _: u32, _: u32| -> u32 { 0 }).unwrap();
-    linker.func_wrap("env", "round", |k: u32, a: f64, b: f64, m: u32| -> f64 { koji::round::jit(k, a, b, m) }).unwrap();
     let blocks = linker.instantiate(&mut store, &module).unwrap();
     let n = module.exports().count() as u64;
     table.grow(&mut store, n, Ref::Func(None)).unwrap();

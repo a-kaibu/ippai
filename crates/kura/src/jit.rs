@@ -1886,9 +1886,9 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
     match r {
         // (it rewrote translated code: the block leaves)
         Exit::Continue if GENERATION.load(Ordering::Relaxed) != g => 2,
-        // (POPF set TF, or LDMXCSR / FXRSTOR unmasked an SSE exception: from here on the
-        // interpreter runs the code, see cpu_run)
-        Exit::Continue if (*cpu).eflags & koji::flags::TF != 0 || (*cpu).mxcsr & 0x1f80 != 0x1f80 => 2,
+        // (POPF set TF, or LDMXCSR / FXRSTOR unmasked an SSE exception or set a rounding mode
+        // other than to nearest: from here on the interpreter runs the code, see cpu_run)
+        Exit::Continue if (*cpu).eflags & koji::flags::TF != 0 || !jit::sse_ok((*cpu).mxcsr) => 2,
         Exit::Continue => 0,
         e => {
             EXIT.with(|x| x.set(Some(e)));
@@ -1910,12 +1910,6 @@ pub unsafe extern "C" fn vnhost_jit_eflags(cpu: u32) -> u32 {
 pub unsafe extern "C" fn vnhost_jit_x87(cpu: u32, top: u32, info: u32, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) {
     let cpu = cpu as usize as *mut Cpu;
     jit::x87_out(&mut (*cpu).fpu, top, info, [a, b, c, d, e, f, g, h]);
-}
-
-/// Arithmetic in a rounding mode wasm doesn't have (koji::round::jit).
-#[no_mangle]
-pub extern "C" fn vnhost_jit_round(kind: u32, a: f64, b: f64, mode: u32) -> f64 {
-    koji::round::jit(kind, a, b, mode)
 }
 
 #[no_mangle]
