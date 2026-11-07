@@ -261,9 +261,17 @@ pub struct State {
     topology: u32,
     vs: u32,
     ps: u32,
-    cbs: [[u32; 15]; 2],
-    srvs: [[u32; 128]; 2],
-    samplers: [[u32; 16]; 2],
+    /// per stage: VS, PS, GS, HS, DS, CS (only VS and PS draw)
+    cbs: [[u32; 15]; 6],
+    srvs: [[u32; 128]; 6],
+    samplers: [[u32; 16]; 6],
+    /// GS, HS, DS and CS shaders (kept for Get*)
+    shaders: [u32; 4],
+    /// unordered access views: the output merger's and the compute shader's (kept for Get*)
+    uavs: [[u32; 8]; 2],
+    /// OMSetBlendState's sample mask; SOSetTargets' buffers (kept for Get*)
+    sample_mask: u32,
+    so: [u32; 4],
     rtvs: [u32; 8],
     dsv: u32,
     viewport: [f32; 6],
@@ -275,9 +283,14 @@ pub struct State {
     raster: u32,
     /// SetPredication (predicate, value): kept for GetPredication, draws are not predicated
     predicate: (u32, u32),
+    /// how many viewports and scissor rects RSSet* gave (RSGet* report them)
+    nviewports: u32,
+    nscissors: u32,
 }
 
 pub struct D11 {
+    /// CreateDeviceContextState was called: QueryInterface gives the device's D3D10 faces
+    ten_faces: bool,
     /// (queries' End count: their timestamps)
     ticks: u64,
     vtbls: Vec<u32>,
@@ -562,6 +575,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
         Some(d) => d.vtbls = v,
         None => {
             *g = Some(D11 {
+                ten_faces: false,
                 ticks: 0,
                 vtbls: v,
                 objs: HashMap::new(),
@@ -673,7 +687,7 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
                 iface
             } else if ifs.contains(&primary) {
                 primary
-            } else if let Some(&f) = ifs.iter().find(|&&f| other_face(primary, f) || (d3d10::eleven(iface).is_some() && d3d10::ten(primary) == Some(f))) {
+            } else if let Some(&f) = ifs.iter().find(|&&f| other_face(primary, f) || ((d.ten_faces || d3d10::eleven(iface).is_some()) && d3d10::ten(primary) == Some(f))) {
                 f
             } else {
                 0
@@ -826,12 +840,25 @@ fn holds_device(iface: u32) -> bool {
     !matches!(iface, IF_DEVICE | IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN)
 }
 
+/// The stage (2 GS, 3 HS, 4 DS, 5 CS) of a context method of the other stages.
+fn stage_of(m: u32) -> usize {
+    match m {
+        22 | 23 | 31 | 32 | 81 | 82 | 87 | 88 => 2,
+        59..=62 | 97..=100 => 3,
+        63..=66 | 101..=104 => 4,
+        _ => 5,
+    }
+}
+
 /// Lets go of everything a state binds (ClearState, a new device).
 fn unbind_state(d: &mut D11, old: &State) {
     let mut held: Vec<u32> = Vec::new();
     held.extend(old.vbs.iter().map(|v| v.0));
     held.extend([old.ib.0, old.layout, old.vs, old.ps, old.dsv, old.blend, old.depth, old.raster, old.predicate.0]);
-    for s in 0..2 {
+    held.extend(old.shaders);
+    held.extend(old.uavs.iter().flatten());
+    held.extend(old.so);
+    for s in 0..6 {
         held.extend(old.cbs[s]);
         held.extend(old.srvs[s]);
         held.extend(old.samplers[s]);
@@ -850,9 +877,13 @@ fn default_state() -> State {
         topology: 0,
         vs: 0,
         ps: 0,
-        cbs: [[0; 15]; 2],
-        srvs: [[0; 128]; 2],
-        samplers: [[0; 16]; 2],
+        cbs: [[0; 15]; 6],
+        srvs: [[0; 128]; 6],
+        samplers: [[0; 16]; 6],
+        shaders: [0; 4],
+        uavs: [[0; 8]; 2],
+        sample_mask: 0xffff_ffff,
+        so: [0; 4],
         rtvs: [0; 8],
         dsv: 0,
         viewport: [0.0; 6],
@@ -863,6 +894,8 @@ fn default_state() -> State {
         stencil_ref: 0,
         raster: 0,
         predicate: (0, 0),
+        nviewports: 0,
+        nscissors: 0,
     }
 }
 
@@ -1542,9 +1575,15 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         46 => device_call(d, 22, this, a), // CreateRasterizerState1 (ForcedSampleCount ignored)
         47 => {
             // CreateDeviceContextState(flags, levels, count, sdk, iid, level_out, state_out)
-            if a(6) != 0 {
-                wr(a(6), 0, 0xb000);
-            }
+            let level = if a(2) != 0 { (0..a(3) as usize).map(|i| rd(a(2), i)).find(|&l| l <= 0xb000) } else { None };
+            let Some(level) = level else {
+                wr(a(6), 0, 0);
+                wrp(a(7), 0, 0);
+                return E_INVALIDARG;
+            };
+            wr(a(6), 0, level);
+            // (from now on the device answers for its D3D10 interfaces too, as Windows does)
+            d.ten_faces = true;
             if a(7) == 0 {
                 return S_FALSE;
             }
@@ -2031,7 +2070,13 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             }
         }
         33 | 34 => {
-            // OMSetRenderTargets(n, rtvs, dsv) (+ UAVs, ignored)
+            // OMSetRenderTargets(n, rtvs, dsv) (+ UAVs (start, n, uavs): kept, not drawn with)
+            if m == 34 && a(5) != 0xffff_ffff {
+                let mut u = st.uavs[0];
+                set_slots(d, &mut u, 0, 8, 0);
+                set_slots(d, &mut u, a(4), a(5).min(8), a(6));
+                st.uavs[0] = u;
+            }
             let n = if m == 34 && a(1) == 0xffff_ffff { u32::MAX } else { a(1) };
             if n != u32::MAX {
                 let mut rt = st.rtvs;
@@ -2039,6 +2084,11 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 set_slots(d, &mut rt, 0, n.min(8), a(2));
                 st.rtvs = rt;
                 set_one(d, &mut st.dsv, a(3));
+                if m == 33 {
+                    let mut u = st.uavs[0];
+                    set_slots(d, &mut u, 0, 8, 0);
+                    st.uavs[0] = u;
+                }
                 // the viewport follows the first target when the game never set one
                 if st.viewport[2] == 0.0 {
                     if let Some((w, h)) = view_size(d, st.rtvs[0]).or_else(|| view_size(d, st.dsv)) {
@@ -2050,6 +2100,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         35 => {
             set_one(d, &mut st.blend, a(1));
             st.blend_factor = if a(2) != 0 { [rdf(a(2), 0), rdf(a(2), 1), rdf(a(2), 2), rdf(a(2), 3)] } else { [1.0; 4] };
+            st.sample_mask = a(3);
         }
         36 => {
             set_one(d, &mut st.depth, a(1));
@@ -2057,6 +2108,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         }
         43 => set_one(d, &mut st.raster, a(1)),
         44 => {
+            st.nviewports = if a(2) != 0 { a(1).min(16) } else { 0 };
             if a(1) > 0 && a(2) != 0 {
                 for i in 0..6 {
                     st.viewport[i] = rdf(a(2), i);
@@ -2067,6 +2119,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             }
         }
         45 => {
+            st.nscissors = if a(2) != 0 { a(1).min(16) } else { 0 };
             if a(1) > 0 && a(2) != 0 {
                 for i in 0..4 {
                     st.scissor[i] = rd(a(2), i) as i32;
@@ -2120,7 +2173,20 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             get_one(d, st.predicate.0, a(1));
             wr(a(2), 0, st.predicate.1);
         }
-        22 | 23 | 31 | 32 | 37 | 49 | 51 | 52 | 55 | 57 | 58 | 59..=71 => {}
+        // GS, HS, DS, CS: constant buffers, resources, samplers, shaders (kept, not drawn with)
+        22 | 62 | 66 | 71 => set_slots(d, &mut st.cbs[stage_of(m)], a(1), a(2), a(3)),
+        31 | 59 | 63 | 67 => set_slots(d, &mut st.srvs[stage_of(m)], a(1), a(2), a(3)),
+        32 | 61 | 65 | 70 => set_slots(d, &mut st.samplers[stage_of(m)], a(1), a(2), a(3)),
+        23 | 60 | 64 | 69 => set_one(d, &mut st.shaders[stage_of(m) - 2], a(1)),
+        68 => set_slots(d, &mut st.uavs[1], a(1), a(2), a(3)),
+        37 => {
+            // SOSetTargets(n, buffers, offsets): kept, nothing streams out
+            let mut so = st.so;
+            set_slots(d, &mut so, 0, 4, 0);
+            set_slots(d, &mut so, 0, a(1).min(4), a(2));
+            st.so = so;
+        }
+        49 | 51 | 52 | 55 | 57 | 58 => {}
         38..=42 => {}
         72 | 77 => get_slots(d, &st.cbs[(m == 77) as usize], a(1), a(2), a(3)),
         73 | 84 => get_slots(d, &st.srvs[(m == 73) as usize], a(1), a(2), a(3)),
@@ -2151,18 +2217,15 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             wr(a(3), 0, st.ib.2);
         }
         82 | 98 | 102 | 107 => {
-            // other stages' shaders: none
-            wrp(a(1), 0, 0);
+            get_one(d, st.shaders[stage_of(m) - 2], a(1));
             if a(3) != 0 {
                 wr(a(3), 0, 0);
             }
         }
-        81 | 87 | 88 | 97..=109 => {
-            // other stages: nothing bound
-            for i in 0..a(2) {
-                wrp(a(3), i as usize, 0);
-            }
-        }
+        81 | 100 | 104 | 109 => get_slots(d, &st.cbs[stage_of(m)], a(1), a(2), a(3)),
+        87 | 97 | 101 | 105 => get_slots(d, &st.srvs[stage_of(m)], a(1), a(2), a(3)),
+        88 | 99 | 103 | 108 => get_slots(d, &st.samplers[stage_of(m)], a(1), a(2), a(3)),
+        106 => get_slots(d, &st.uavs[1], a(1), a(2), a(3)),
         83 => wr(a(1), 0, st.topology),
         89 | 90 => {
             if a(2) != 0 {
@@ -2170,6 +2233,9 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             }
             if a(3) != 0 {
                 get_one(d, st.dsv, a(3));
+            }
+            if m == 90 && a(6) != 0 {
+                get_slots(d, &st.uavs[0], a(4), a(5), a(6));
             }
         }
         91 => {
@@ -2179,36 +2245,29 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                     wr(a(2), i, st.blend_factor[i].to_bits());
                 }
             }
-            wr(a(3), 0, 0xffff_ffff);
+            wr(a(3), 0, st.sample_mask);
         }
         92 => {
             get_one(d, st.depth, a(1));
             wr(a(2), 0, st.stencil_ref);
         }
-        93 => {
-            for i in 0..a(1) {
-                wrp(a(2), i as usize, 0);
-            }
-        }
+        93 => get_slots(d, &st.so, 0, a(1), a(2)),
         94 => get_one(d, st.raster, a(1)),
-        95 => {
+        95 | 96 => {
+            // RSGetViewports/RSGetScissorRects(count, out): the count set; the array gets those
+            // (only the first is kept: the rest read as the first) and zeros after them
             if a(1) != 0 {
-                if a(2) != 0 && rd(a(1), 0) > 0 {
-                    for i in 0..6 {
-                        wr(a(2), i, st.viewport[i].to_bits());
+                let (have, words) = if m == 95 { (st.nviewports, 6) } else { (st.nscissors, 4) };
+                let room = rd(a(1), 0);
+                wr(a(1), 0, have);
+                if a(2) != 0 {
+                    for k in 0..room as usize {
+                        for i in 0..words {
+                            let v = if (k as u32) >= have { 0 } else if m == 95 { st.viewport[i].to_bits() } else { st.scissor[i] as u32 };
+                            wr(a(2), k * words + i, v);
+                        }
                     }
                 }
-                wr(a(1), 0, 1);
-            }
-        }
-        96 => {
-            if a(1) != 0 {
-                if a(2) != 0 && rd(a(1), 0) > 0 {
-                    for i in 0..4 {
-                        wr(a(2), i, st.scissor[i] as u32);
-                    }
-                }
-                wr(a(1), 0, 1);
             }
         }
         110 => {
@@ -2241,17 +2300,31 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
 /// it came from (or a new one for the context's own state) and `state`'s is loaded.
 unsafe fn swap_state(d: &mut D11, st: &mut State, state: u32, prev_out: u32) {
     let new = d.id_of(state);
-    let Some(Data::CtxState(slot)) = d.objs.get_mut(&new).map(|o| &mut o.data) else { return };
-    let Some(loaded) = slot.take() else { return }; // (already current)
+    let Some(Data::CtxState(slot)) = d.objs.get_mut(&new).map(|o| &mut o.data) else {
+        // (no state: nothing changes, and no previous one comes back)
+        wrp(prev_out, 0, 0);
+        return;
+    };
+    let Some(loaded) = slot.take() else {
+        // (already current: it is the previous one too)
+        if prev_out != 0 {
+            d.add_ref(new);
+            wrp(prev_out, 0, state);
+        }
+        return;
+    };
     let cur = std::mem::replace(st, *loaded);
     let old = d.st_owner;
     d.st_owner = new;
+    // (the context holds its current state privately: the application may let go of it)
+    d.bind(new);
     if let Some(Data::CtxState(slot)) = d.objs.get_mut(&old).map(|o| &mut o.data) {
         *slot = Some(Box::new(cur));
         if prev_out != 0 {
             d.add_ref(old);
             wrp(prev_out, 0, d.addr_of(old));
         }
+        d.unbind(old);
     } else {
         // the context's own state (or one whose object is gone): a new object
         let o = d.new_obj(IF_LINKAGE, Data::CtxState(Some(Box::new(cur))));
