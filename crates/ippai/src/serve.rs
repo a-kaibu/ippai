@@ -814,6 +814,9 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
     for d in [&dirs.store, &args.jit, &args.logs] {
         std::fs::create_dir_all(d)?;
     }
+    if crate::pack::ensure_prefix(&dirs.store, &dirs.fonts)? {
+        eprintln!("sake's C:\\ ({}) made from {}", crate::pack::PREFIX_TREE, dirs.fonts.display());
+    }
     serve(dirs, dirs.store.clone(), args)
 }
 

@@ -6,6 +6,8 @@
 # Puts the binary in ~/.local/bin (IPPAI_INSTALL_DIR to change) after checking it against the
 # release's checksums.txt, and adds that directory to PATH in the shell's rc file when it is not
 # on PATH yet. IPPAI_VERSION=v0.1.0 installs that release instead of the latest.
+# The release's fonts (sake's C:\) go to ~/.local/share/ippai/fonts, where `ippai serve` makes
+# the store's C:\ from them the first time.
 set -eu
 
 REPO=a-kaibu/ippai
@@ -44,13 +46,24 @@ want=$(grep " $file\$" "$tmp/checksums.txt" | cut -d' ' -f1)
 if command -v sha256sum >/dev/null; then got=$(sha256sum "$tmp/$file" | cut -d' ' -f1)
 else got=$(shasum -a 256 "$tmp/$file" | cut -d' ' -f1); fi
 [ -n "$want" ] && [ "$want" = "$got" ] || die "checksum mismatch for $file"
-tar -xzf "$tmp/$file" -C "$tmp" ippai
+tar -xzf "$tmp/$file" -C "$tmp"
 
 mkdir -p "$DIR"
 # (a running server keeps its old binary: replace the file instead of writing into it)
 mv -f "$tmp/ippai" "$DIR/ippai"
 chmod 755 "$DIR/ippai"
 echo "installed $DIR/ippai"
+
+# (what dirs.rs calls the data directory; a release from before fonts were in it has none)
+if [ -d "$tmp/fonts" ]; then
+  data=${XDG_DATA_HOME:-$HOME/.local/share}/ippai
+  mkdir -p "$data"
+  rm -rf "$data/fonts.new"
+  cp -R "$tmp/fonts" "$data/fonts.new"
+  rm -rf "$data/fonts"
+  mv "$data/fonts.new" "$data/fonts"
+  echo "installed sake's fonts in $data/fonts"
+fi
 
 case ":$PATH:" in
   *":$DIR:"*) ;;

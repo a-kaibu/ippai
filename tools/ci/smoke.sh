@@ -14,8 +14,17 @@ export HOME=$(mktemp -d) XDG_RUNTIME_DIR=
 trap '"$BIN" stop >/dev/null 2>&1 || true; rm -rf "$HOME"' EXIT
 PORT=$((20000 + RANDOM % 20000))
 "$BIN" --version
+# (the release's fonts, as install.sh puts them: serve makes sake's C:\ of the store from them)
+FONTS=${IPPAI_SMOKE_FONTS:-fonts}
+if [ -d "$FONTS" ]; then
+  mkdir -p "$HOME/.local/share/ippai"
+  cp -R "$FONTS" "$HOME/.local/share/ippai/fonts"
+fi
 "$BIN" serve --listen 127.0.0.1:$PORT --no-prerun
 "$BIN" status
+if [ -d "$FONTS" ]; then
+  grep -q 'drive_c/windows/Fonts/msgothic.ttf' "$HOME/.local/share/ippai/store/trees/prefix32.tsv" || { echo "smoke: no C:\ made from the fonts"; exit 1; }
+fi
 curl -fsS "http://127.0.0.1:$PORT/" | grep -qi '<html' || { echo "smoke: no page"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/games" | grep -q '^\[' || { echo "smoke: no game list"; exit 1; }
 # (a proxy that says it forwards: the token; auth.rs)

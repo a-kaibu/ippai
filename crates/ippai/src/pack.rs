@@ -497,6 +497,44 @@ static MOVIES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     ok
 });
 
+/// The tree every game mounts as sake's C:\ (web/src/play.ts: `/vnvm/prefix=prefix32`).
+pub const PREFIX_TREE: &str = "prefix32";
+
+/// Makes the tree [`PREFIX_TREE`] from the fonts in `fonts` (a release's fonts/, put in place by
+/// install.sh; tools/ci/sake-fonts.py) when the store has none: C:\windows\Fonts with those
+/// fonts and an empty C:\windows\temp, which is all of sake's C:\. True when it made one; a
+/// store that has the tree (made by hand with `ippai pack`, or earlier) keeps it.
+pub fn ensure_prefix(store: &Path, fonts: &Path) -> Result<bool> {
+    if store.join("trees").join(format!("{PREFIX_TREE}.tsv")).exists() {
+        return Ok(false);
+    }
+    let Ok(entries) = fs::read_dir(fonts) else { return Ok(false) };
+    let files: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.path())
+        .collect();
+    let font = |p: &PathBuf| p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["ttf", "ttc", "otf"].contains(&e.to_ascii_lowercase().as_str()));
+    if !files.iter().any(font) {
+        return Ok(false);
+    }
+    fs::create_dir_all(store)?;
+    let root = store.join(format!(".{PREFIX_TREE}.{}.tmp", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let made = (|| {
+        let dir = root.join("drive_c/windows/Fonts");
+        fs::create_dir_all(&dir)?;
+        fs::create_dir_all(root.join("drive_c/windows/temp"))?;
+        // (the license goes along with the fonts)
+        for f in &files {
+            fs::copy(f, dir.join(f.file_name().unwrap()))?;
+        }
+        tree(store, &root, PREFIX_TREE, false, 256 << 10)
+    })();
+    let _ = fs::remove_dir_all(&root);
+    made.map(|()| true)
+}
+
 /// Packs `root` as tree `name` and publishes its list.
 fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Result<()> {
     let list = pack_tree(store, root, name, follow, chunk)?;
@@ -729,6 +767,42 @@ mod tests {
         // a good add then replaces both
         add(&store, &game, "game.exe").unwrap();
         assert!(fs::read_to_string(&tsv).unwrap().contains("extra.dat"));
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    /// A store without sake's C:\ gets it from the fonts (a release's fonts/): the fonts under
+    /// drive_c/windows/Fonts, read back as written; a store that has one keeps it; no fonts,
+    /// no tree.
+    #[test]
+    fn prefix_from_the_fonts() {
+        let t = std::env::temp_dir().join(format!("ippai-prefix-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, fonts) = (t.join("store"), t.join("fonts"));
+        assert!(!ensure_prefix(&store, &fonts).unwrap(), "no fonts folder");
+        fs::create_dir_all(&fonts).unwrap();
+        fs::write(fonts.join("README.txt"), b"readme").unwrap();
+        assert!(!ensure_prefix(&store, &fonts).unwrap(), "no font in it");
+        let font: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        fs::write(fonts.join("msgothic.ttf"), &font).unwrap();
+        fs::write(fonts.join("IPA_Font_License.txt"), b"license").unwrap();
+        assert!(ensure_prefix(&store, &fonts).unwrap());
+        let tsv = store.join(format!("trees/{PREFIX_TREE}.tsv"));
+        let list = fs::read_to_string(&tsv).unwrap();
+        for f in ["drive_c/windows/Fonts/msgothic.ttf", "drive_c/windows/Fonts/IPA_Font_License.txt", "drive_c/windows/temp"] {
+            assert!(list.contains(f), "{f} in\n{list}");
+        }
+        let line = list.lines().find(|l| l.split('\t').nth(3) == Some("drive_c/windows/Fonts/msgothic.ttf")).unwrap();
+        let mut back = Vec::new();
+        for name in line.split('\t').nth(5).unwrap().split(',') {
+            let raw = fs::read(store.join("chunks").join(&name[..2]).join(name)).unwrap();
+            back.extend(zstd::decode_all(&raw[..]).unwrap());
+        }
+        assert_eq!(back, font);
+        assert!(fs::read_dir(&store).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
+        // (made once: the next start leaves it, even with other fonts)
+        fs::write(fonts.join("msmincho.ttf"), b"other").unwrap();
+        assert!(!ensure_prefix(&store, &fonts).unwrap());
+        assert_eq!(fs::read_to_string(&tsv).unwrap(), list);
         let _ = fs::remove_dir_all(&t);
     }
 

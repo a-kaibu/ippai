@@ -28,6 +28,10 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
+      # sake's C:\ fonts (release.yml makes them: tools/ci/sake-fonts.py); install.sh puts them
+      # where serve makes the store's C:\ from them (pack::ensure_prefix)
+      - src: fonts/*
+        dst: fonts
 
 checksum:
   name_template: checksums.txt

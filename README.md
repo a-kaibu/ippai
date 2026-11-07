@@ -72,6 +72,10 @@ flowchart TB
 curl -fsSL https://raw.githubusercontent.com/a-kaibu/ippai/main/install.sh | sh
 ```
 
+リリースには sake の C:\ のフォント (`fonts/`、IPA フォントを Windows の名前にしたもの) も入っていて、
+install.sh が `~/.local/share/ippai/fonts` に置きます。`ippai serve` はストアに C:\ の tree (`prefix32`) が
+なければ、起動時にそのフォントから作ります。
+
 ## 使い方
 
 ```sh
