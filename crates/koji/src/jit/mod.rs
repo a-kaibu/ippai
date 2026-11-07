@@ -29,6 +29,7 @@ pub mod long;
 
 use crate::lazy;
 use crate::{Cpu, Fpu, Memory};
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -253,6 +254,22 @@ pub fn set_watch(f: fn(u32) -> bool) {
     WATCH.set(f);
 }
 
+/// Where code may be rewritten by anyone, unseen (the host's choice: W|X memory outside the
+/// main executable, where runtimes such as Mono emit code and later repoint its call sites
+/// from their own code, or the host writes it): a translated block of code there first
+/// compares its code's bytes with those it was made from and, when they differ, leaves for
+/// the interpreter at its start with Cpu::jit_stale set; its own stores into its own bytes
+/// leave at the next instruction with Cpu::jit_smc set (see [`Gen::fresh_store`]).
+static FRESH: spin_once::Once = spin_once::Once::new();
+
+pub fn set_fresh(f: fn(u32) -> bool) {
+    FRESH.set(f);
+}
+
+fn fresh_at(a: u32) -> bool {
+    FRESH.get().is_some_and(|f| f(a))
+}
+
 /// Code never translated, inlined callees' too (the host's: pages the interpreter keeps, see
 /// kura's jit::debug_allowed).
 static DENY: spin_once::Once = spin_once::Once::new();
@@ -369,6 +386,9 @@ impl Off {
     fn smc() -> u32 {
         offset_of!(Cpu, jit_smc) as u32
     }
+    fn stale() -> u32 {
+        offset_of!(Cpu, jit_stale) as u32
+    }
     fn call_cache() -> u32 {
         offset_of!(Cpu, jit_calls) as u32
     }
@@ -413,6 +433,9 @@ pub struct Region {
     pub instructions: usize,
     /// the guest code it was translated from: (address, length)
     pub code: Vec<(u32, u32)>,
+    /// that code's bytes as the translator read them (None: some unreadable): what a build is
+    /// found by again, so code rewritten while it was translated is translated again
+    pub text: Option<Vec<u8>>,
     /// with [`LAYOUT`] on: the blocks in order (address, inline context) and the loops, then
     /// `SZ <mnemonic> <count> <bytes>` lines and the function's size
     pub layout: String,
@@ -522,6 +545,10 @@ struct Gen<'a> {
     flags_out: Vec<Option<u32>>,
     /// the block's stores are tested for rewriting translated code (see [`WATCH`])
     smc: bool,
+    /// per block, its code's bytes when it is checked on entry (see [`FRESH`]), and the
+    /// current block's (start, length) then
+    fresh_code: Vec<Option<Vec<u8>>>,
+    fresh: Option<(u32, u32)>,
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -948,6 +975,76 @@ impl<'a> Gen<'a> {
         self.c.if_();
         self.depth += 1;
         self.c.get(L_CPU).get(e).store32(Off::smc());
+        let next = self.ins.next_ip32();
+        self.c.u32c(next);
+        self.exit_with(RET_INTERP);
+        self.depth -= 1;
+        self.c.end();
+    }
+
+    /// The start of block `k`, code checked on entry ([`FRESH`]): unless its bytes are those it
+    /// was translated from, leaves for the interpreter there with Cpu::jit_stale = its address.
+    fn fresh_entry(&mut self, k: usize) {
+        let (a, n) = self.fresh.unwrap();
+        let bytes = self.fresh_code[k].take().unwrap();
+        // 8-byte compares (the last one ending at the end), or 4/2/1 for short code
+        let mut parts: Vec<(u32, u32)> = Vec::new();
+        let w = match n {
+            8.. => 8,
+            4..=7 => 4,
+            2..=3 => 2,
+            _ => 1,
+        };
+        let mut o = 0;
+        while o + w < n {
+            parts.push((o, w));
+            o += w;
+        }
+        parts.push((n - w, w));
+        for (i, &(o, w)) in parts.iter().enumerate() {
+            let at = a.wrapping_add(o);
+            let mut v = [0u8; 8];
+            v[..w as usize].copy_from_slice(&bytes[o as usize..(o + w) as usize]);
+            let v = u64::from_le_bytes(v);
+            self.c.u32c(at);
+            match w {
+                8 => {
+                    self.c.load64(0).i64c(v as i64).op(0x52); // i64.ne
+                }
+                4 => {
+                    self.c.load32(0).u32c(v as u32).ne();
+                }
+                2 => {
+                    self.c.load16u(0).u32c(v as u32).ne();
+                }
+                _ => {
+                    self.c.load8u(0).u32c(v as u32).ne();
+                }
+            }
+            if i > 0 {
+                self.c.or();
+            }
+        }
+        self.fresh_code[k] = Some(bytes);
+        self.c.if_();
+        self.depth += 1;
+        self.c.get(L_CPU).u32c(a).store32(Off::stale());
+        self.c.u32c(a);
+        self.exit_with(RET_INTERP);
+        self.depth -= 1;
+        self.c.end();
+    }
+
+    /// After a store of `size` bytes at local `e` (+ `off`) in a block of code checked on
+    /// entry: if it wrote into the block's own code, leaves at the next instruction with
+    /// Cpu::jit_smc set (the host then keeps the page to the interpreter, as smc_check).
+    fn fresh_store(&mut self, e: u32, off: u32, size: u32) {
+        let Some((a, n)) = self.fresh else { return };
+        // a + n > addr + off and addr + off + size > a: (addr + off + size - 1 - a) < n + size - 1
+        self.c.get(e).u32c(off.wrapping_add(size - 1).wrapping_sub(a)).add().u32c(n + size - 1).lt_u();
+        self.c.if_();
+        self.depth += 1;
+        self.c.get(L_CPU).u32c(a).store32(Off::smc());
         let next = self.ins.next_ip32();
         self.c.u32c(next);
         self.exit_with(RET_INTERP);
@@ -1548,6 +1645,13 @@ impl<'a> Gen<'a> {
                     let e = self.temp();
                     self.c.u32c(off).add().set(e);
                     self.smc_check(e);
+                    self.temps -= 1;
+                }
+                if self.fresh.is_some() {
+                    let off = self.mem_at(addr.unwrap());
+                    let e = self.temp();
+                    self.c.set(e);
+                    self.fresh_store(e, off, op_bits(ins, i) / 8);
                     self.temps -= 1;
                 }
             }
@@ -2215,7 +2319,7 @@ impl<'a> Gen<'a> {
             // ---- string ops (DS:ESI without a segment override, ES:EDI)
             Movsb | Movsw | Movsd | Stosb | Stosw | Stosd | Lodsb | Lodsw | Lodsd
                 if is_string(ins)
-                    && !(self.smc && !matches!(ins.mnemonic(), Lodsb | Lodsw | Lodsd))
+                    && !((self.smc || self.fresh.is_some()) && !matches!(ins.mnemonic(), Lodsb | Lodsw | Lodsd))
                     && ins.segment_prefix() == Register::None
                     && !ins.has_repne_prefix()
                     && !(ins.has_rep_prefix() && matches!(ins.mnemonic(), Lodsb | Lodsw | Lodsd)) =>
@@ -4531,6 +4635,7 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.safe[4] = Some(0); // see Gen::emit
     g.flags = Flags::Entry;
     g.smc = WATCH.get().is_some_and(|w| w(blocks[k].0));
+    g.fresh = g.fresh_code[k].as_ref().map(|b| (blocks[k].0, b.len() as u32));
     g.dirty = g.dirty_in.get(k).copied().unwrap_or(g.wregs);
     g.small = [None; 8];
     if let Some(&m) = g.safe_in.get(k) {
@@ -4561,6 +4666,10 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
         for l in L_FA..=L_FC {
             g.c.i32c(0).set(l);
         }
+    }
+    if g.fresh.is_some() {
+        g.ins = &list[0];
+        g.fresh_entry(k);
     }
     if let Some(&h) = g.hle.get(&blocks[k].0) {
         g.ins = &list[0];
@@ -4946,9 +5055,89 @@ pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u3
     translate(module, mem, &[entry], max_blocks, max_ins, accept, Some(trap), hints, ran)
 }
 
+/// The guest's memory as one translation sees it: each page read once, when first touched,
+/// so the instructions decoded, the bytes blocks check on entry ([`FRESH`]) and the region's
+/// text all agree although other threads may rewrite the code meanwhile.
+pub(crate) struct Snapshot<'m, M: Memory> {
+    mem: &'m mut M,
+    pages: BTreeMap<u32, (Box<[u8; 4096]>, usize)>,
+}
+
+impl<'m, M: Memory> Snapshot<'m, M> {
+    pub(crate) fn new(mem: &'m mut M) -> Self {
+        Snapshot { mem, pages: BTreeMap::new() }
+    }
+    fn page(&mut self, p: u32) -> &(Box<[u8; 4096]>, usize) {
+        let mem = &mut *self.mem;
+        self.pages.entry(p).or_insert_with(|| {
+            let mut b = Box::new([0u8; 4096]);
+            let n = mem.fetch(p << 12, &mut b[..]);
+            (b, n)
+        })
+    }
+}
+
+impl<M: Memory> Memory for Snapshot<'_, M> {
+    fn read8(&mut self, addr: u32) -> Result<u8, crate::Fault> {
+        let (b, n) = self.page(addr >> 12);
+        let o = (addr & 0xfff) as usize;
+        if o < *n { Ok(b[o]) } else { Err(crate::Fault { addr, write: false }) }
+    }
+    fn write8(&mut self, addr: u32, _: u8) -> Result<(), crate::Fault> {
+        Err(crate::Fault { addr, write: true })
+    }
+    fn fetch(&mut self, addr: u32, buf: &mut [u8]) -> usize {
+        let mut done = 0;
+        while done < buf.len() {
+            let a = addr.wrapping_add(done as u32);
+            let (b, n) = self.page(a >> 12);
+            let o = (a & 0xfff) as usize;
+            if o >= *n {
+                break;
+            }
+            let k = (*n - o).min(buf.len() - done);
+            buf[done..done + k].copy_from_slice(&b[o..o + k]);
+            done += k;
+            if o + k < 4096 {
+                break;
+            }
+        }
+        done
+    }
+}
+
+/// The bytes of `code` ranges (None if some are unreadable).
+fn code_text<M: Memory>(mem: &mut M, code: &[(u32, u32)]) -> Option<Vec<u8>> {
+    let mut text = Vec::new();
+    for &(a, n) in code {
+        let at = text.len();
+        text.resize(at + n as usize, 0);
+        if mem.fetch(a, &mut text[at..]) != n as usize {
+            return None;
+        }
+    }
+    Some(text)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn translate<M: Memory>(
     module: &mut Module,
     mem: &mut M,
+    roots: &[u32],
+    max_blocks: usize,
+    max_ins: usize,
+    accept: impl FnMut(u32) -> bool,
+    fn_trap: Option<(u32, u32)>,
+    hints: &dyn Fn(u32) -> Option<u32>,
+    ran: &dyn Fn(u32) -> bool,
+) -> Option<Region> {
+    translate_seen(module, Snapshot::new(mem), roots, max_blocks, max_ins, accept, fn_trap, hints, ran)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn translate_seen<M: Memory>(
+    module: &mut Module,
+    mut mem: Snapshot<'_, M>,
     roots: &[u32],
     max_blocks: usize,
     max_ins: usize,
@@ -4958,6 +5147,7 @@ fn translate<M: Memory>(
     ran: &dyn Fn(u32) -> bool,
 ) -> Option<Region> {
     let exact = mx_exact();
+    let mem = &mut mem;
     let fnm = fn_trap.is_some();
     // blocks of small callees to inline (functions)
     let mut forced: Vec<u32> = Vec::new();
@@ -4989,7 +5179,7 @@ fn translate<M: Memory>(
             queue.push_back(last.next_ip32());
             if fnm && last.op0_kind() == OpKind::NearBranch32 {
                 let f = last.near_branch32();
-                if let Some(j) = decode(mem, f).first().filter(|j| j.mnemonic() == Mnemonic::Jmp && j.op0_kind() == OpKind::Memory && j.memory_base() == Register::None && j.memory_index() == Register::None && j.memory_segment() == Register::DS) {
+                if let Some(j) = decode(mem, f).first().filter(|j| !fresh_at(f) && j.mnemonic() == Mnemonic::Jmp && j.op0_kind() == OpKind::Memory && j.memory_base() == Register::None && j.memory_index() == Register::None && j.memory_segment() == Register::DS) {
                     thunks.insert(f, j.memory_displacement32());
                     thunk_code.push((f, j.len() as u32));
                 }
@@ -5030,7 +5220,7 @@ fn translate<M: Memory>(
     if blocks.is_empty() {
         return None;
     }
-    let code = blocks
+    let code: Vec<(u32, u32)> = blocks
         .iter()
         .map(|(a, list)| {
             let last = list.last().unwrap();
@@ -5194,6 +5384,15 @@ fn translate<M: Memory>(
             }
         }
     }
+    // (read now, after decoding: code rewritten in between fails the check and is translated again)
+    let fresh_code = blocks
+        .iter()
+        .map(|(a, list)| {
+            let end = list.last().map_or(*a, |i| i.next_ip32());
+            let mut b = alloc::vec![0u8; end.wrapping_sub(*a) as usize];
+            (fresh_at(*a) && !b.is_empty() && mem.fetch(*a, &mut b) == b.len()).then_some(b)
+        })
+        .collect();
     let mut g = Gen {
         c: Code::default(),
         fnm,
@@ -5225,6 +5424,8 @@ fn translate<M: Memory>(
         preds: Vec::new(),
         flags_out: Vec::new(),
         smc: false,
+        fresh_code,
+        fresh: None,
         temps: 0,
         safe: [None; 8],
         safe2: Vec::new(),
@@ -5435,7 +5636,8 @@ fn translate<M: Memory>(
     } else {
         Vec::new()
     };
-    Some(Region { starts, instructions: count, code, layout, profile, sites, exact })
+    let text = code_text(mem, &code);
+    Some(Region { starts, instructions: count, code, text, layout, profile, sites, exact })
 }
 
 #[cfg(test)]

@@ -2212,5 +2212,5 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
         let end = b.ins.last().unwrap().next_ip();
         (b.start as u32, (end - b.start) as u32)
     }).collect();
-    Some(Region { starts, instructions: count, code, layout, profile: Vec::new(), sites: Vec::new(), exact })
+    Some(Region { starts, instructions: count, code, text: None, layout, profile: Vec::new(), sites: Vec::new(), exact })
 }

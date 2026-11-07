@@ -951,6 +951,11 @@ struct Mode {
     /// MXCSR flags kept from the start (koji::jit::MX_EXACT); else from the program's first
     /// read of them (STMXCSR, FXSAVE), as a program that never reads them runs
     exact: bool,
+    /// every block checks its code's bytes on entry (koji::jit::set_fresh)
+    fresh: bool,
+    /// (with `fresh`) another program, from this seed, put at the same address and translated
+    /// first: its translations, entered, must find the code changed (Cpu::jit_stale)
+    stale: u64,
 }
 
 /// The JIT's MXCSR flag mode switched (a step read the flags): translations are dropped.
@@ -1155,6 +1160,14 @@ impl Jit {
             if std::env::var("JTRACE").is_ok() {
                 eprintln!("run -> {r} eip {:#x} top {} empty {:#x}", c.eip, c.fpu.top, c.fpu.empty);
             }
+            if c.jit_stale != 0 || c.jit_smc != 0 {
+                // (as kura: every translation goes, made again from the code as it is now)
+                let mut c = c.clone();
+                c.jit_stale = 0;
+                c.jit_smc = 0;
+                unsafe { put_cpu(m, &c) };
+                self.drop_all(base);
+            }
             match r {
                 0 => {}
                 1 if c.eip == END => return Ok(()),
@@ -1305,7 +1318,20 @@ fn run_case(engine: &Engine, dispatch: &Module, memory: &SharedMemory, base: usi
     koji::jit::HOIST.store(mode.hoist, Relaxed);
     koji::jit::SLOTS_MAX.store(mode.slots, Relaxed);
     koji::jit::FN.store(mode.fns, Relaxed);
+    FRESH.store(mode.fresh, Relaxed);
     let mut jit = Jit::new(engine, dispatch, memory, base, mode);
+    if mode.stale != 0 {
+        let other = program(&mut Rng(mode.stale));
+        if let Some(oc) = encode(&other, CODE as u64) {
+            unsafe { std::ptr::copy_nonoverlapping(oc.as_ptr(), m.add(CODE as usize), oc.len()) };
+            let mut dec = iced_x86::Decoder::with_ip(32, &oc, CODE as u64, iced_x86::DecoderOptions::NONE);
+            let ips: Vec<u32> = (&mut dec).into_iter().map(|i| i.ip() as u32).collect();
+            for &ip in ips.iter().rev() {
+                let _ = jit.translate(base, ip);
+            }
+            setup();
+        }
+    }
     if mode.pre {
         let mut dec = iced_x86::Decoder::with_ip(32, &code, CODE as u64, iced_x86::DecoderOptions::NONE);
         let ips: Vec<u32> = (&mut dec).into_iter().map(|i| i.ip() as u32).collect();
@@ -1346,7 +1372,36 @@ fn run_case(engine: &Engine, dispatch: &Module, memory: &SharedMemory, base: usi
     (diffs, code)
 }
 
+/// A random program: a body of 5 to 45 instructions' worth of items, up to 2 subroutines.
+fn program(rng: &mut Rng) -> Vec<Instruction> {
+    let items = |rng: &mut Rng, n: usize| {
+        let mut v: Vec<Vec<Instruction>> = Vec::new();
+        while v.iter().map(|i| i.len()).sum::<usize>() < n {
+            let i = item(rng);
+            if !i.is_empty() {
+                v.push(i);
+            }
+        }
+        v
+    };
+    let n = 5 + rng.below(40) as usize;
+    let body = items(rng, n);
+    let mut subs = Vec::new();
+    for _ in 0..rng.below(3) {
+        let k = 1 + rng.below(8) as usize;
+        subs.push(items(rng, k));
+    }
+    structure(rng, body, subs)
+}
+
+/// koji::jit::set_fresh's answer: the mode's (one test at a time)
+static FRESH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn fresh(_: u32) -> bool {
+    FRESH.load(Relaxed)
+}
+
 fn main() {
+    koji::jit::set_fresh(fresh);
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s.as_str()) == Some("native") {
         return native::run(&args);
@@ -1366,7 +1421,7 @@ fn main() {
     for (name, list) in fixed().unwrap() {
         for fns in [false, true] {
             for blocks in [1, 2, koji::jit::MAX_BLOCKS] {
-                let mode = Mode { fns, blocks, hoist: true, slots: 0, pre: false, exact: !name.starts_with("mx ") };
+                let mode = Mode { fns, blocks, hoist: true, slots: 0, pre: false, exact: !name.starts_with("mx "), fresh: false, stale: 0 };
                 let data = random_data(&mut rng);
                 let cpu0 = initial(&mut rng);
                 let (diffs, _) = run_case(&engine, &dispatch, &memory, base, &list, &data, &cpu0, mode);
@@ -1390,25 +1445,12 @@ fn main() {
             slots: rng.pick(&[0, 0, 6]),
             pre: rng.below(4) == 0,
             exact: rng.below(3) != 0,
+            fresh: false,
+            stale: 0,
         };
-        let items = |rng: &mut Rng, n: usize| {
-            let mut v: Vec<Vec<Instruction>> = Vec::new();
-            while v.iter().map(|i| i.len()).sum::<usize>() < n {
-                let i = item(rng);
-                if !i.is_empty() {
-                    v.push(i);
-                }
-            }
-            v
-        };
-        let n = 5 + rng.below(40) as usize;
-        let body = items(&mut rng, n);
-        let mut subs = Vec::new();
-        for _ in 0..rng.below(3) {
-            let k = 1 + rng.below(8) as usize;
-            subs.push(items(&mut rng, k));
-        }
-        let mut list = structure(&mut rng, body, subs);
+        let fresh = rng.below(4) == 0;
+        let mode = Mode { fresh, stale: if fresh && rng.below(2) == 0 { rng.next() | 1 } else { 0 }, ..mode };
+        let mut list = program(&mut rng);
         let data = random_data(&mut rng);
         let cpu0 = initial(&mut rng);
         // (JONLY=<test>: that one alone)

@@ -36,16 +36,17 @@ fn threshold() -> u32 {
 /// Debugging a miscompile by bisection: IPPAI_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi),
 /// IPPAI_JIT_ONLY=!lo-hi all but that.
 fn debug_allowed(a: u32) -> bool {
-    if wx_page(a) || page_set(&SMC_PAGES, a) {
+    if interpreted_page(a) {
         return false;
     }
     debug_range(a)
 }
 
 /// Pages mapped or protected writable and executable at once, and the main executables' pages.
-/// Code on a W|X page outside a main exe (an unpacker's or a JS engine's) may be rewritten
-/// without a protection change, which `code_changed` can't see: the interpreter runs it
-/// (UPX-style packed exes keep the JIT; their stubs unpack before the code runs).
+/// Code on a W|X page outside a main exe (an unpacker's, Mono's, a JS engine's) may be
+/// rewritten without a protection change, which `code_changed` can't see: its translations
+/// check their code on entry (see [`wx_page`]). (UPX-style packed exes keep the JIT; their
+/// stubs unpack before the code runs.)
 static WX_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
 static EXE_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
 
@@ -68,15 +69,36 @@ fn page_set(map: &[AtomicU32], a: u32) -> bool {
     p < 1 << 19 && map[p >> 5].load(Ordering::Relaxed) & (1 << (p & 31)) != 0
 }
 
+/// W|X pages outside the exe, where runtimes (Mono, .NET, script JITs, protectors) put code
+/// and rewrite it from code elsewhere, unseen: translated with their code checked on entry
+/// (koji's jit::set_fresh), a block whose code changed going to the interpreter and translated
+/// again ([`stale_hit`]). IPPAI_JIT_WX=0: the interpreter runs them instead.
 fn wx_page(a: u32) -> bool {
-    page_set(&WX_PAGES, a) && !page_set(&EXE_PAGES, a) && !wx_jit()
+    page_set(&WX_PAGES, a) && !page_set(&EXE_PAGES, a)
 }
-/// Whether code on W|X pages outside the exe is translated too, its stores watched like the
-/// exe's (IPPAI_JIT_WX=1, or [`translate_wx_pages`]): stores into it from code elsewhere go
-/// unseen, so only for programs known to keep their code there (ASProtect's decryptors).
+/// Pages the interpreter keeps: rewritten by their own translated code, or W|X ones with
+/// IPPAI_JIT_WX=0.
+fn interpreted_page(a: u32) -> bool {
+    page_set(&SMC_PAGES, a) || (wx_page(a) && !wx_checked())
+}
+/// Whether code on W|X pages outside the exe is translated (checked on entry): by the 32-bit
+/// translator only (the long-mode one has no such checks: a 64-bit process, [`LONG`], keeps
+/// the interpreter there), and not with IPPAI_JIT_WX=0.
+fn wx_checked() -> bool {
+    !wx_interpreted() && !LONG.load(Ordering::Relaxed)
+}
+/// A thread ran 64-bit code (the process is a 64-bit one).
+static LONG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn wx_interpreted() -> bool {
+    static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENV.get_or_init(|| std::env::var("IPPAI_JIT_WX").is_ok_and(|v| v == "0"))
+}
+/// Whether W|X pages outside the exe also have their translations' stores watched like the
+/// exe's ([`translate_wx_pages`], IPPAI_JIT_WX=1: for programs that rewrite code there in
+/// place from code there, ASProtect's decryptors).
 fn wx_jit() -> bool {
     static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    WX_JIT.load(Ordering::Relaxed) || *ENV.get_or_init(|| std::env::var_os("IPPAI_JIT_WX").is_some())
+    WX_JIT.load(Ordering::Relaxed) || *ENV.get_or_init(|| std::env::var("IPPAI_JIT_WX").is_ok_and(|v| v != "0"))
 }
 static WX_JIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn translate_wx_pages() {
@@ -107,6 +129,39 @@ pub(crate) fn smc_hit(a: u32) {
     code_changed(a as usize, 1);
 }
 
+/// Code checked on entry (see [`wx_page`]) found rewritten at `a`, a block's start: the
+/// translations go (everyone's; builds of the code as it is now are made again or found by
+/// their bytes). A page whose code keeps changing ([`STALE_LIMIT`] times) goes to the
+/// interpreter, as one rewritten by its own code does.
+pub(crate) fn stale_hit(a: u32) {
+    note_stale(a, "since translated");
+    drop_states();
+}
+
+/// Code at `a` on a W|X page found changed since translated (`how`): counted per page, which
+/// the interpreter takes over at [`STALE_LIMIT`].
+fn note_stale(a: u32, how: &str) {
+    static COUNTS: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+    let n = {
+        let mut m = COUNTS.lock().unwrap();
+        let c = m.get_or_insert_with(HashMap::new).entry(a >> 12).or_insert(0);
+        *c += 1;
+        *c
+    };
+    if stats() {
+        eprintln!("vnjit: code at {a:#x} changed {how} ({n})");
+    }
+    if n == STALE_LIMIT {
+        set_pages(&SMC_PAGES, a as usize, 1, true);
+        if stats() {
+            eprintln!("vnjit: page of {a:#x} keeps changing: interpreted from now on");
+        }
+    }
+}
+/// (Mono repoints each call site once, from its trampoline: a page of its methods changes
+/// about once per call site in them; code rewriting itself all the time gets here fast)
+const STALE_LIMIT: u32 = 256;
+
 /// Whether code built from `code` may run (none of it on a page the interpreter keeps since
 /// a store rewrote translated code there): shared and saved builds are checked by their
 /// bytes, which data stores beside the code leave alone.
@@ -120,6 +175,10 @@ fn code_kept(code: &[(u32, u32)]) -> bool {
 pub(crate) fn interp_write(a: u32) -> bool {
     let p = (a >> 12) as usize;
     if p >= 1 << 19 || CODE_PAGES[p >> 5].load(Ordering::Relaxed) & (1 << (p & 31)) == 0 {
+        return false;
+    }
+    // (code there checks itself on entry: the page stays translated)
+    if wx_page(a) && wx_checked() {
         return false;
     }
     smc_hit(a);
@@ -373,6 +432,12 @@ fn code_bytes(mem: &mut Linear, code: &[(u32, u32)]) -> Option<Vec<u8>> {
     Some(text)
 }
 
+/// The bytes `region` was translated from: as its translator read them (code rewritten since
+/// then won't match them), else as they are now.
+fn region_text(mem: &mut Linear, region: &jit::Region) -> Option<Vec<u8>> {
+    region.text.clone().or_else(|| code_bytes(mem, &region.code))
+}
+
 /// A region for `roots` some thread built from the same code as ours.
 fn shared(mem: &mut Linear, roots: &[u32]) -> Option<Arc<Shared>> {
     let list = SHARED.lock().unwrap().as_ref()?.get(roots)?.clone();
@@ -385,7 +450,7 @@ fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) 
 }
 
 fn share_build(mem: &mut Linear, key: Vec<u32>, bytes: Vec<u8>, region: &jit::Region, build: u32) {
-    let Some(text) = code_bytes(mem, &region.code) else { return };
+    let Some(text) = region_text(mem, region) else { return };
     let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone(), exact: region.exact });
     SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(key).or_default().push(r);
 }
@@ -544,11 +609,7 @@ pub fn code_changed(addr: usize, len: usize) {
         }
     }
     if hit {
-        for w in &CODE_PAGES {
-            w.store(0, Ordering::Relaxed);
-        }
-        CODE_RANGES.lock().unwrap().clear();
-        GENERATION.fetch_add(1, Ordering::SeqCst);
+        drop_states();
         if stats() {
             eprintln!("vnjit code changed at {addr:#x}+{len:#x}: translations dropped");
         }
@@ -566,6 +627,16 @@ fn mx_check() -> bool {
     }
     drop_translations();
     true
+}
+
+/// Every thread's translations go (each drops its own at its next run, check_generation);
+/// shared builds stay, each found again only by its code's bytes.
+fn drop_states() {
+    for w in &CODE_PAGES {
+        w.store(0, Ordering::Relaxed);
+    }
+    CODE_RANGES.lock().unwrap().clear();
+    GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Drops this thread's translations if code changed since it made them.
@@ -687,7 +758,8 @@ fn init_flags() {
             }
         }
         jit::set_watch(exe_wx_page);
-        jit::set_deny(|a| wx_page(a) || page_set(&SMC_PAGES, a));
+        jit::set_fresh(wx_page);
+        jit::set_deny(interpreted_page);
         // function mode by default (IPPAI_JIT_FN=0: regions)
         // (a constant stored: the wasm build stored false for this flag when the value was
         // the expression's, and FN mode was off by default)
@@ -700,6 +772,9 @@ fn init_flags() {
 
 pub fn run(cpu: &mut Cpu) -> Ran {
     init_flags();
+    if cpu.mode64 != 0 && !LONG.load(Ordering::Relaxed) {
+        LONG.store(true, Ordering::Relaxed);
+    }
     check_generation();
     // (saves come after builds; this covers a run whose builds were all done early)
     thread_local! { static RUNS: Cell<u32> = const { Cell::new(0) }; }
@@ -762,6 +837,9 @@ pub fn run(cpu: &mut Cpu) -> Ran {
     cpu.jit_depth = depth;
     if cpu.jit_smc != 0 {
         smc_hit(std::mem::take(&mut cpu.jit_smc));
+    }
+    if cpu.jit_stale != 0 {
+        stale_hit(std::mem::take(&mut cpu.jit_stale));
     }
     #[cfg(not(target_os = "emscripten"))]
     let r = jit::RET_INTERP;
@@ -1859,6 +1937,11 @@ fn take_built(st: &mut State, mem: &mut Linear) {
             .iter()
             .map(|(_, _, b)| b.as_ref().is_none_or(|(_, r, text)| code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == *text)))
             .collect();
+        for ((eip, _, b), k) in items.iter().zip(&kept) {
+            if !k && b.is_some() && wx_page(*eip) {
+                note_stale(*eip, "while translated");
+            }
+        }
         // all of them at once when none was dropped
         let t0 = Instant::now();
         let mut base = match merged {
@@ -1913,7 +1996,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
     if crate::env_on!("IPPAI_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, translate {:?} build {build} part {part}", region.instructions, t0.elapsed());
     }
-    let text = code_bytes(mem, &region.code)?;
+    let text = region_text(mem, &region)?;
     Some((bytes, region, text))
 }
 

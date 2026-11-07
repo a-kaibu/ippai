@@ -641,6 +641,13 @@ impl Gen<'_> {
             self.smc_check(e);
             self.temps -= 1;
         }
+        if self.fresh.is_some() {
+            let off = self.mem_at(a);
+            let e = self.temp();
+            self.c.set(e);
+            self.fresh_store(e, off, size);
+            self.temps -= 1;
+        }
     }
 
     /// Leaves for the interpreter when the instruction may set an MXCSR flag (see mxguard).
