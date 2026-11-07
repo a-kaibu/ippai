@@ -49,5 +49,20 @@ then with room: 0, length 38
 nothing matches: c000000f, iosb c000000f
 again: 80000006
 bad class: c0000003
+class 76: c0000003
+class 80: 80000006
+class 84: c0000003
+class 88: c0000003
+class 92: c0000003
+class 96: c0000003
+class 100: c0000003
+nothing, class 1 single 0 restart 0: c000000f, iosb c000000f
+nothing, class 1 single 1 restart 0: c000000f, iosb c000000f
+nothing, class 1 single 0 restart 1: c000000f, iosb c000000f
+nothing, class 1 single 1 restart 1: c000000f, iosb c000000f
+nothing, class 3 single 0 restart 0: c000000f, iosb c000000f
+nothing, class 3 single 1 restart 0: c000000f, iosb c000000f
+nothing, class 3 single 0 restart 1: c000000f, iosb c000000f
+nothing, class 3 single 1 restart 1: c000000f, iosb c000000f
 a file, not a directory: c000000d
 bad handle: c0000008

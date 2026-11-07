@@ -18,7 +18,7 @@ RSMB size query: nonzero 1
 RSMB into 4 bytes: returns the size 1
 RSMB: got==size 1 calling method 0 major>=2 1 length==size-8 1
 RSMB walk: BIOS 1 system 1 baseboard 1 end-of-table 1 within 1
-RSMB table 1: 1280 err 0
+RSMB table 1: 1270 err 0
 EnumSystemFirmwareTables RSMB: 4 first 0
 GetPhysicallyInstalledSystemMemory 1 nonzero 1
 GetPhysicallyInstalledSystemMemory(NULL) 0 err 87

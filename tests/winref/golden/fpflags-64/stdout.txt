@@ -1,0 +1,29 @@
+before any read: k 0 value e0000000
+before any read: k 1 value 79aa80e1
+before any read: k 2 value e0000000
+before any read: k 3 value e0000000
+before any read: k 4 value e0000000
+before any read: k 5 value e0000000
+before any read: k 6 value 4305e000
+cleared: mxcsr 0x1f80 status 0
+round 0 k 0 value e0000000 mxcsr flags 0 _statusfp 0 _clearfp 0 after 0
+round 0 k 1 value 5acf82f6 mxcsr flags 0x22 _statusfp 0x1 _clearfp 0x1 after 0
+round 0 k 2 value e0000000 mxcsr flags 0x30 _statusfp 0x3 _clearfp 0x3 after 0
+round 0 k 3 value 60000000 mxcsr flags 0x24 _statusfp 0x9 _clearfp 0x9 after 0
+round 0 k 4 value a0000000 mxcsr flags 0x21 _statusfp 0x11 _clearfp 0x11 after 0
+round 0 k 5 value 60000000 mxcsr flags 0x28 _statusfp 0x5 _clearfp 0x5 after 0
+round 0 k 6 value 6ac97800 mxcsr flags 0x22 _statusfp 0x1 _clearfp 0x1 after 0
+round 1 k 0 value e0000000 mxcsr flags 0 _statusfp 0 _clearfp 0 after 0
+round 1 k 1 value 5acf82f6 mxcsr flags 0x22 _statusfp 0x1 _clearfp 0x1 after 0
+round 1 k 2 value e0000000 mxcsr flags 0x30 _statusfp 0x3 _clearfp 0x3 after 0
+round 1 k 3 value 60000000 mxcsr flags 0x24 _statusfp 0x9 _clearfp 0x9 after 0
+round 1 k 4 value a0000000 mxcsr flags 0x21 _statusfp 0x11 _clearfp 0x11 after 0
+round 1 k 5 value 60000000 mxcsr flags 0x28 _statusfp 0x5 _clearfp 0x5 after 0
+round 1 k 6 value 6ac97800 mxcsr flags 0x22 _statusfp 0x1 _clearfp 0x1 after 0
+round 2 k 0 value e0000000 mxcsr flags 0 _statusfp 0 _clearfp 0 after 0
+round 2 k 1 value 5acf82f6 mxcsr flags 0x22 _statusfp 0x1 _clearfp 0x1 after 0
+round 2 k 2 value e0000000 mxcsr flags 0x30 _statusfp 0x3 _clearfp 0x3 after 0
+round 2 k 3 value 60000000 mxcsr flags 0x24 _statusfp 0x9 _clearfp 0x9 after 0
+round 2 k 4 value a0000000 mxcsr flags 0x21 _statusfp 0x11 _clearfp 0x11 after 0
+round 2 k 5 value 60000000 mxcsr flags 0x28 _statusfp 0x5 _clearfp 0x5 after 0
+round 2 k 6 value 6ac97800 mxcsr flags 0x22 _statusfp 0x1 _clearfp 0x1 after 0

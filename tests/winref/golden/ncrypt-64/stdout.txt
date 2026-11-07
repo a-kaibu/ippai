@@ -1,0 +1,102 @@
+open: 0
+rsa import full: 0
+rsa length: 0 size 4 value 1024
+rsa signature length: 0 size 4 value 128
+rsa algorithm: 0 size 8 RSA
+export rsa public: 0 size 155
+export rsa private (policy 0): 0x80090029 size 0
+rsa public blob equal: 1
+rsa import public: 0
+rsa sign size: 0 128
+rsa sign short: 0x80090028 128
+rsa sign: 0 128
+rsa pkcs1 sha256 19c8b9629c50c91b889c5bd3b177e2fcbc91b503aee7d2721a45d3bafd10399b1a051ba9ecdb02fadd1fcc88792e75bc6a49525bd401591993dedfbd6eeb7e430880bc6eafa05fe40f50a89635e5dda404c70e2f00f302edff2de7848d762d12a28e1af391e70740799fe340f5438d6b55a5ecd87852edbe6c75f26f5a4ad289
+rsa verify (public key): 0
+rsa verify tampered: 0x80090006
+rsa sign with public: 0x8009000d
+rsa pss sign: 0 128
+rsa pss verify: 0
+rsa pss verify other salt: 0x80090006
+rsa oaep encrypt: 0 128
+rsa oaep decrypt: 0 6 secret
+rsa oaep decrypt other label: 0x80090027
+rsa pkcs1 encrypt: 0 128
+rsa pkcs1 decrypt size: 0 6
+rsa pkcs1 decrypt: 0 6 secret
+rsa raw encrypt: 0 128
+rsa raw decrypt: 0 128 last 5
+ecdsa p256 create: 0
+  length: 0 size 4 value 256
+  signature length: 0 size 4 value 64
+  group: 0 size 12 ECDSA
+export   public: 0 size 72
+export   private: 0 size 104
+  public magic ECS1
+  import public: 0
+  20-byte hash: sign 0 64 verify 0 other hash 0x80090006
+  32-byte hash: sign 0 64 verify 0 other hash 0x80090006
+  48-byte hash: sign 0 64 verify 0 other hash 0x80090006
+  64-byte hash: sign 0 64 verify 0 other hash 0x80090006
+  verify short signature: 0x80090027
+  sign with public: 0x8009000d
+ecdsa p384 create: 0
+  length: 0 size 4 value 384
+  signature length: 0 size 4 value 96
+  group: 0 size 12 ECDSA
+export   public: 0 size 104
+export   private: 0 size 152
+  public magic ECS3
+  import public: 0
+  20-byte hash: sign 0 96 verify 0 other hash 0x80090006
+  32-byte hash: sign 0 96 verify 0 other hash 0x80090006
+  48-byte hash: sign 0 96 verify 0 other hash 0x80090006
+  64-byte hash: sign 0 96 verify 0 other hash 0x80090006
+  verify short signature: 0x80090027
+  sign with public: 0x8009000d
+ecdsa p521 create: 0
+  length: 0 size 4 value 521
+  signature length: 0 size 4 value 132
+  group: 0 size 12 ECDSA
+export   public: 0 size 140
+export   private: 0 size 206
+  public magic ECS5
+  import public: 0
+  20-byte hash: sign 0 132 verify 0 other hash 0x80090006
+  32-byte hash: sign 0 132 verify 0 other hash 0x80090006
+  48-byte hash: sign 0 132 verify 0 other hash 0x80090006
+  64-byte hash: sign 0 132 verify 0 other hash 0x80090006
+  verify short signature: 0x80090027
+  sign with public: 0x8009000d
+ecdh import a: 0
+ecdh import b: 0
+ecdh import b public: 0
+ecdh algorithm: 0 size 20 ECDH_P256
+ecdh agreement: 0
+ecdh agreement (b, a): 0
+raw size: 0 32
+raw: 0 32
+raw secret bc1d087f88d370bb6aa640b99120ffac7cfc41730c02a2daee10394b33bb7499
+raw both ways equal: 1
+raw into 8 bytes: 0 8
+raw 8 ee10394b33bb7499
+hash (no parameters): 0 20
+hash default fc70b1925752859e6fcebc62155c54bc26bce117
+hash sha256 pre/post: 0 32
+hash sha256 ad2a0036d025716bbda0e3e3c13dfefd92ddcb0cf0a9695850fc21efcd0c22a4
+hmac sha256 key: 0 32
+hmac sha256 6ab6bacb695c435cdca1ca2f5ebb800c8333e0cb857304ec3b1362cf2c98b985
+hmac secret as key: 0 32
+hmac z 89b50a4e9fd2be59a5026e3c984c93b0453ee59a131903b9a7012f17f016ab02
+unknown kdf: 0x80090029
+free secret: 0
+free secret again: 0x80090026
+ecdsa384 import: 0
+ecdsa384 sign: 0 96
+ecdsa384 verify: 0
+ecdsa384 import mismatched scalar: 0x80090029
+ecdsa384 import short: 0x80090029
+generic ecdsa create: 0
+generic ecdsa curve: 0
+generic ecdsa finalize: 0
+generic ecdsa length: 0 size 4 value 384
+generic ecdsa curve name: 0 size 18 nistP384

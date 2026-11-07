@@ -5,15 +5,15 @@ Ex default: 1, same 1
 no process: 0, error 6
 SetThreadErrorMode found 1, kernel32's 1
 exe info: 1, base 1, size 1, entry 1
-module 0 info: 1, the exe 0
+module 0 info: 1, the exe 0, untouched 0, null 1, listed at -1, ntdll 0, kernel32 0
 info, short: 0, error 122
 info, no module: 0, error 6
 exe base name: 14 chars, the file name 1
 kernel32 base name: 12, 'kernel32.dll' ignoring case 1
-base name in 4: 4, copied 0, byte 4 untouched 1
+base name in 4: 4, copied 0, byte 4 untouched 1, bytes 0-3 are the name's 0-2 and a 0 1, same 0-2 1 1 1, byte 3 00
 base name W: 14 chars, ends 1
-file name Ex: 35, same as GetModuleFileName 1
-file name Ex W: 35 chars, same length 1
+file name Ex: same as GetModuleFileName 1
+file name Ex W: same length 1
 base name, no module: 0, error 6
 file name Ex in 4: 3, error dead, ends at 3 1
 OpenProcess self: 1 1
@@ -30,3 +30,6 @@ basic, long buffer: c0000004, needed 44
 basic: 0 44, page 4096, pages = GetPerformanceInfo's 1, granularity 1, lowest 1, highest 1, cpus 1, mask 1
 performance class: 0, 312 bytes, available ~ 1
 processes, no buffer: c0000004, needed some 1
+processes: 0
+ours: name is the exe 1, threads >= 1 1, this thread listed 1, handles > 0 1
+ours found 1

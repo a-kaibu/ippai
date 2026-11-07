@@ -1,0 +1,21 @@
+imm store              100000 200000 ok
+imm byte store         100000 300000 ok
+imm InterlockedExchange 100000 400000 ok
+imm memcpy             100000 500000 ok
+WriteProcessMemory 1 4
+imm WriteProcessMemory 100000 600000 ok
+call site repointed    100000 200000 ok
+call site back         100000 100000 ok
+trampoline runs 1
+trampoline round 0 runs 2
+trampoline target      300000 1000000 ok
+trampoline round 1 runs 3
+trampoline target      300000 1100000 ok
+trampoline round 2 runs 4
+trampoline target      300000 1200000 ok
+loop rewritten in call 300000 60499 ok
+loop after             300000 100000 ok
+same address 1
+freed and reused       700000 800000 ok
+own next instruction   199990000 599970000 ok
+own next, once         1000000 7 9 ok
