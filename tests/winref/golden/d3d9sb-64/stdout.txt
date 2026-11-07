@@ -436,6 +436,12 @@ psf 219 all 0 pixel 0 vertex 0
 psf 220 all 0 pixel 0 vertex 0
 psf 221 all 0 pixel 0 vertex 0
 psf 222 all 0 pixel 0 vertex 0
+vsf runs all 0-8191
+vsf runs pixel
+vsf runs vertex 0-8191
+psf runs all 0-223
+psf runs pixel 0-223
+psf runs vertex
 vsi 0 all 1 pixel 0 vertex 1
 psi 15 all 1 pixel 1 vertex 0
 vsb 0 all 1 pixel 0 vertex 1
