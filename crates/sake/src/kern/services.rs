@@ -57,6 +57,13 @@ impl Service {
             self.controls.clear();
         }
     }
+    /// The next control for the dispatcher in process `pid` (None: none yet), or Err once it has
+    /// no more to serve: the service stopped, or runs in another process (started again before
+    /// this dispatcher saw its STOPPED: the controls are the new process's)
+    pub fn control_for(&mut self, pid: u32) -> Result<Option<(u32, u32)>, ()> {
+        if self.pid != pid || self.status[1] == 1 && self.controls.is_empty() { return Err(()); }
+        Ok(self.controls.pop_front())
+    }
     pub fn removable(&self) -> bool { self.deleted && self.status[1] == 1 && self.refs.is_empty() }
 }
 crate::enc_struct!(Service { name, display, ty, start, path, dependencies, status, pid, args, connected,
@@ -89,6 +96,23 @@ mod tests {
         s.exited(9);
         assert_eq!(s.status[1], 1);
         assert_eq!(s.status[3], 1067);
+    }
+    #[test]
+    fn a_restart_takes_the_controls_from_the_old_dispatcher() {
+        let mut s = service(); s.begin_start(vec![]).unwrap(); s.pid = 7;
+        s.controls.push_back((1, 128));
+        assert_eq!(s.control_for(7), Ok(Some((1, 128))));
+        assert_eq!(s.control_for(7), Ok(None));
+        // (stopped, then started again before process 7's dispatcher looked)
+        s.report(7, vec![0x10, 1, 0, 0, 0, 0, 0]).unwrap();
+        s.begin_start(vec![]).unwrap(); s.pid = 9;
+        s.report(9, vec![0x10, 4, 1, 0, 0, 0, 0]).unwrap();
+        s.controls.push_back((2, 1));
+        assert_eq!(s.control_for(7), Err(()));
+        assert_eq!(s.controls.len(), 1);
+        assert_eq!(s.control_for(9), Ok(Some((2, 1))));
+        s.report(9, vec![0x10, 1, 0, 0, 0, 0, 0]).unwrap();
+        assert_eq!(s.control_for(9), Err(()));
     }
     #[test]
     fn deletion_waits_for_handles_and_process() {

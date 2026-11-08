@@ -315,10 +315,13 @@ fn dispatcher(c: &mut Ctx, wide: bool) -> u32 {
     loop {
         let (work, generation) = kern::with(|k| {
             let Some(s) = k.services.get_mut(&name) else { return (true, None) };
-            let stopped = s.status[1] == 1;
-            let request = s.controls.pop_front();
-            if request.is_some() { k.changed(); }
-            (stopped, request)
+            match s.control_for(crate::pid()) {
+                Err(()) => (true, None),
+                Ok(request) => {
+                    if request.is_some() { k.changed(); }
+                    (false, request)
+                }
+            }
         });
         if let Some((id, code)) = work.1 {
             let (handler, extended, context) = {

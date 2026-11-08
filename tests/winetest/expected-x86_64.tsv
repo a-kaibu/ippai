@@ -136,7 +136,7 @@ imagehlp:integrity	ok	0	0
 imm32:imm32	fail	1	2
 iphlpapi:iphlpapi	fail	52	1005
 kernel32:actctx	timeout	19	0
-kernel32:atom	fail	557908	656511
+kernel32:atom	ok	0	1049715
 kernel32:change	fail	136	316
 kernel32:codepage	fail	263184	394741
 kernel32:comm	fail	763	8842
@@ -334,7 +334,7 @@ ucrtbase:file	fail	32	59
 ucrtbase:misc	crash	273	0
 ucrtbase:printf	fail	228	1942
 ucrtbase:scanf	fail	19	381
-ucrtbase:string	fail	138360	787267
+ucrtbase:string	fail	79	787267
 ucrtbase:thread	crash	6	0
 user32:broadcast	fail	20	32
 user32:class	crash	75	0

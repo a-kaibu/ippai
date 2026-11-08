@@ -4645,62 +4645,221 @@ fn lstrcmpiW(c: &mut Ctx) -> u32 {
 }
 
 // atoms
-static ATOMS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-fn add_atom(s: String) -> u32 {
-    if let Some(n) = s.strip_prefix('#').and_then(|x| x.parse::<u32>().ok()) {
-        return n;
-    }
-    let mut a = ATOMS.lock().unwrap();
-    let low = s.to_lowercase();
-    if let Some(i) = a.iter().position(|x| x.to_lowercase() == low) {
-        return 0xc000 + i as u32;
-    }
-    a.push(s);
-    0xc000 + a.len() as u32 - 1
+/// An atom table: string atoms 0xc000 + index, each with its reference count (integer atoms,
+/// 1..=0xbfff, are their own value and are not stored).
+struct Atoms(Vec<Option<(String, u32)>>);
+/// GlobalAddAtom's and AddAtom's tables.
+static GLOBAL_ATOMS: Mutex<Atoms> = Mutex::new(Atoms(Vec::new()));
+static LOCAL_ATOMS: Mutex<Atoms> = Mutex::new(Atoms(Vec::new()));
+
+/// What an atom function was given: an integer atom (MAKEINTATOM, or "#1234"), a name, or the
+/// Win32 error (0: none, as for MAKEINTATOM(0))
+#[derive(Debug, PartialEq)]
+enum AtomArg {
+    Int(u32),
+    Name(String),
+    Bad(u32),
 }
+fn atom_arg(p: u32, wide: bool) -> AtomArg {
+    if p < 0x10000 {
+        return match p {
+            0 => AtomArg::Bad(0),
+            1..=0xbfff => AtomArg::Int(p),
+            _ => AtomArg::Bad(87),
+        };
+    }
+    atom_text(arg_str(p, wide))
+}
+fn atom_text(s: String) -> AtomArg {
+    if let Some(d) = s.strip_prefix('#').filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())) {
+        return match d.parse::<u32>() {
+            Ok(n @ 1..=0xbfff) => AtomArg::Int(n),
+            _ => AtomArg::Bad(87),
+        };
+    }
+    // (at most 255 characters)
+    if s.encode_utf16().count() > 255 {
+        return AtomArg::Bad(87);
+    }
+    AtomArg::Name(s)
+}
+impl Atoms {
+    fn find(&self, s: &str) -> Option<usize> {
+        let low = s.to_lowercase();
+        self.0.iter().position(|e| e.as_ref().is_some_and(|(n, _)| n.to_lowercase() == low))
+    }
+    fn add(&mut self, s: String) -> u32 {
+        if let Some(i) = self.find(&s) {
+            self.0[i].as_mut().unwrap().1 += 1;
+            return 0xc000 + i as u32;
+        }
+        let i = self.0.iter().position(|e| e.is_none()).unwrap_or(self.0.len());
+        if i >= 0x4000 {
+            return 0;
+        }
+        if i == self.0.len() {
+            self.0.push(None);
+        }
+        self.0[i] = Some((s, 1));
+        0xc000 + i as u32
+    }
+    /// 0 once deleted (or an integer atom), else the atom (not one)
+    fn delete(&mut self, a: u32) -> u32 {
+        if (1..0xc000).contains(&a) {
+            return 0;
+        }
+        let Some(e) = a.checked_sub(0xc000).and_then(|i| self.0.get_mut(i as usize)) else { return a };
+        match e {
+            Some((_, n)) if *n > 1 => *n -= 1,
+            Some(_) => *e = None,
+            None => return a,
+        }
+        0
+    }
+    fn name(&self, a: u32) -> Option<String> {
+        match a {
+            1..=0xbfff => Some(format!("#{a}")),
+            _ => self.0.get(a.checked_sub(0xc000)? as usize)?.as_ref().map(|(n, _)| n.clone()),
+        }
+    }
+}
+fn atoms(global: bool) -> std::sync::MutexGuard<'static, Atoms> {
+    if global { GLOBAL_ATOMS.lock().unwrap() } else { LOCAL_ATOMS.lock().unwrap() }
+}
+fn add_atom(c: &mut Ctx, wide: bool, global: bool) -> u32 {
+    match atom_arg(c.a(0), wide) {
+        AtomArg::Int(n) => n,
+        AtomArg::Name(s) => match atoms(global).add(s) {
+            0 => {
+                last_error(8);
+                0
+            }
+            a => a,
+        },
+        AtomArg::Bad(e) => {
+            if e != 0 {
+                last_error(e);
+            }
+            0
+        }
+    }
+}
+fn find_atom(c: &mut Ctx, wide: bool, global: bool) -> u32 {
+    match atom_arg(c.a(0), wide) {
+        AtomArg::Int(n) => n,
+        AtomArg::Name(s) => match atoms(global).find(&s) {
+            Some(i) => 0xc000 + i as u32,
+            None => {
+                last_error(2);
+                0
+            }
+        },
+        AtomArg::Bad(e) => {
+            last_error(if e != 0 { e } else { 87 });
+            0
+        }
+    }
+}
+/// The name of atom `a` into `buf` (`size` characters), as Windows' Get(Global)AtomName: a local
+/// atom's name is cut to size - 1 characters and a NUL (the count without it; none fitting:
+/// ERROR_INSUFFICIENT_BUFFER); GlobalGetAtomNameA cuts the same way but answers 0 with
+/// ERROR_MORE_DATA, GlobalGetAtomNameW copies up to `size` characters and adds the NUL only where
+/// it fits.
+fn atom_name_into(a: u32, buf: u32, size: u32, wide: bool, global: bool) -> u32 {
+    if a == 0 {
+        last_error(87);
+        return 0;
+    }
+    let Some(name) = atoms(global).name(a) else {
+        last_error(6);
+        return 0;
+    };
+    if size == 0 {
+        last_error(if global { 234 } else { 122 });
+        return 0;
+    }
+    let text: Vec<u16> = if wide { name.encode_utf16().collect() } else { crate::text::s2a(&name).into_iter().map(u16::from).collect() };
+    let put = |n: usize, nul: bool| {
+        for (i, &ch) in text[..n].iter().enumerate() {
+            if wide { mem::w16(buf + 2 * i as u32, ch) } else { w8(buf + i as u32, ch as u8) }
+        }
+        if nul {
+            if wide { mem::w16(buf + 2 * n as u32, 0) } else { w8(buf + n as u32, 0) }
+        }
+    };
+    let len = text.len();
+    if global && wide {
+        let n = len.min(size as usize);
+        put(n, n < size as usize);
+        return n as u32;
+    }
+    let n = len.min(size as usize - 1);
+    put(n, true);
+    if global && n < len {
+        last_error(234);
+        return 0;
+    }
+    if n == 0 && len != 0 {
+        last_error(122);
+    }
+    n as u32
+}
+/// The name of a global string atom (a window class's, a registered message's...).
 pub fn atom_name(a: u32) -> Option<String> {
-    ATOMS.lock().unwrap().get((a.checked_sub(0xc000)?) as usize).cloned()
+    if a < 0xc000 {
+        return None;
+    }
+    atoms(true).name(a)
 }
+/// A global atom for `s` ("#n": the integer atom n).
 pub fn atom(s: &str) -> u32 {
-    add_atom(s.to_string())
+    match atom_text(s.to_string()) {
+        AtomArg::Int(n) => n,
+        AtomArg::Name(s) => atoms(true).add(s),
+        AtomArg::Bad(_) => 0,
+    }
 }
 fn GlobalAddAtomA(c: &mut Ctx) -> u32 {
-    add_atom(arg_str(c.a(0), false))
+    add_atom(c, false, true)
 }
 fn GlobalAddAtomW(c: &mut Ctx) -> u32 {
-    add_atom(arg_str(c.a(0), true))
+    add_atom(c, true, true)
 }
 fn AddAtomA(c: &mut Ctx) -> u32 {
-    add_atom(arg_str(c.a(0), false))
-}
-fn GlobalFindAtomA(c: &mut Ctx) -> u32 {
-    let s = arg_str(c.a(0), false).to_lowercase();
-    ATOMS.lock().unwrap().iter().position(|x| x.to_lowercase() == s).map_or(0, |i| 0xc000 + i as u32)
-}
-fn FindAtomA(c: &mut Ctx) -> u32 {
-    GlobalFindAtomA(c)
-}
-fn GlobalFindAtomW(c: &mut Ctx) -> u32 {
-    let s = arg_str(c.a(0), true).to_lowercase();
-    ATOMS.lock().unwrap().iter().position(|x| x.to_lowercase() == s).map_or(0, |i| 0xc000 + i as u32)
-}
-fn FindAtomW(c: &mut Ctx) -> u32 {
-    GlobalFindAtomW(c)
+    add_atom(c, false, false)
 }
 fn AddAtomW(c: &mut Ctx) -> u32 {
-    add_atom(arg_str(c.a(0), true))
+    add_atom(c, true, false)
 }
-fn GlobalDeleteAtom(_: &mut Ctx) -> u32 {
-    0
+fn GlobalFindAtomA(c: &mut Ctx) -> u32 {
+    find_atom(c, false, true)
 }
-fn DeleteAtom(_: &mut Ctx) -> u32 {
-    0
+fn GlobalFindAtomW(c: &mut Ctx) -> u32 {
+    find_atom(c, true, true)
+}
+fn FindAtomA(c: &mut Ctx) -> u32 {
+    find_atom(c, false, false)
+}
+fn FindAtomW(c: &mut Ctx) -> u32 {
+    find_atom(c, true, false)
+}
+fn GlobalDeleteAtom(c: &mut Ctx) -> u32 {
+    atoms(true).delete(c.a(0) & 0xffff)
+}
+fn DeleteAtom(c: &mut Ctx) -> u32 {
+    atoms(false).delete(c.a(0) & 0xffff)
 }
 fn GlobalGetAtomNameA(c: &mut Ctx) -> u32 {
-    match atom_name(c.a(0)) {
-        Some(s) => ret_str(c.a(1), c.a(2), &s, false),
-        None => 0,
-    }
+    atom_name_into(c.a(0) & 0xffff, c.a(1), c.a(2), false, true)
+}
+fn GlobalGetAtomNameW(c: &mut Ctx) -> u32 {
+    atom_name_into(c.a(0) & 0xffff, c.a(1), c.a(2), true, true)
+}
+fn GetAtomNameA(c: &mut Ctx) -> u32 {
+    atom_name_into(c.a(0) & 0xffff, c.a(1), c.a(2), false, false)
+}
+fn GetAtomNameW(c: &mut Ctx) -> u32 {
+    atom_name_into(c.a(0) & 0xffff, c.a(1), c.a(2), true, false)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -7023,7 +7182,7 @@ pub fn init() {
         GetStringTypeExW, LCMapStringA, LCMapStringW, CompareStringA, CompareStringW, GetDateFormatA, GetTimeFormatA, GetDateFormatW, GetTimeFormatW,
         MulDiv, lstrlenA, lstrlenW, lstrcpyA, lstrcpyW, lstrcpynA, lstrcpynW, lstrcatA, lstrcatW, lstrcmpA, lstrcmpiA,
         lstrcmpW, lstrcmpiW, GlobalAddAtomA, GlobalAddAtomW, AddAtomA, AddAtomW, GlobalFindAtomA, FindAtomA, GlobalFindAtomW, FindAtomW, GlobalDeleteAtom,
-        DeleteAtom, GlobalGetAtomNameA,
+        DeleteAtom, GlobalGetAtomNameA, GlobalGetAtomNameW, GetAtomNameA, GetAtomNameW,
         GetSystemTime, GetLocalTime, GetSystemTimeAsFileTime, GetSystemTimePreciseAsFileTime, FileTimeToSystemTime,
         SystemTimeToFileTime, FileTimeToLocalFileTime, LocalFileTimeToFileTime, FileTimeToDosDateTime, DosDateTimeToFileTime, SystemTimeToTzSpecificLocalTime,
         TzSpecificLocalTimeToSystemTime, CompareFileTime,
@@ -7278,5 +7437,44 @@ mod version_tests {
                 prop_assert_eq!(r.is_ok(), ok);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod atom_tests {
+    use super::{atom_text, AtomArg, Atoms};
+
+    #[test]
+    fn names_integers_and_limits() {
+        assert_eq!(atom_text("#1".into()), AtomArg::Int(1));
+        assert_eq!(atom_text("#49151".into()), AtomArg::Int(0xbfff));
+        assert_eq!(atom_text("#32770".into()), AtomArg::Int(32770));
+        assert_eq!(atom_text("#49152".into()), AtomArg::Bad(87));
+        assert_eq!(atom_text("#0".into()), AtomArg::Bad(87));
+        assert_eq!(atom_text("#12a".into()), AtomArg::Name("#12a".into()));
+        assert_eq!(atom_text("#".into()), AtomArg::Name("#".into()));
+        assert_eq!(atom_text("a".repeat(255)), AtomArg::Name("a".repeat(255)));
+        assert_eq!(atom_text("a".repeat(256)), AtomArg::Bad(87));
+    }
+
+    #[test]
+    fn counted_case_blind_and_reused() {
+        let mut t = Atoms(Vec::new());
+        let a = t.add("foobar".into());
+        assert_eq!(a, 0xc000);
+        assert_eq!(t.add("FOOBAR".into()), a);
+        assert_eq!(t.find("FooBar"), Some(0));
+        assert_eq!(t.name(a).as_deref(), Some("foobar"));
+        assert_eq!(t.name(7).as_deref(), Some("#7"));
+        // (two references: the first delete keeps it)
+        assert_eq!(t.delete(a), 0);
+        assert_eq!(t.find("foobar"), Some(0));
+        assert_eq!(t.delete(a), 0);
+        assert_eq!(t.find("foobar"), None);
+        assert_eq!(t.name(a), None);
+        assert_eq!(t.delete(a), a);
+        assert_eq!(t.delete(5), 0);
+        // (the freed slot goes to the next name)
+        assert_eq!(t.add("other".into()), 0xc000);
     }
 }

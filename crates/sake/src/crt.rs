@@ -943,13 +943,34 @@ fn wcspbrk(c: &mut Ctx) -> u32 {
     let set = wstr(c.a(1));
     wstr(c.a(0)).iter().position(|u| set.contains(u)).map_or(0, |i| c.a(0) + 2 * i as u32)
 }
+/// towlower / towupper's answer for `u`: in the "C" locale (the CRT's own until setlocale) only
+/// A-Z / a-z change, as in Windows' CRTs; in another, the Unicode case mapping
+fn wcase(u: u32, upper: bool, c_locale: bool) -> u32 {
+    let u = u & 0xffff;
+    if c_locale {
+        let (lo, hi) = if upper { (b'a' as u32, b'z' as u32) } else { (b'A' as u32, b'Z' as u32) };
+        return if (lo..=hi).contains(&u) { u ^ 0x20 } else { u };
+    }
+    // (a character whose mapping is two, ß to SS, or out of the BMP stays as it is)
+    let Some(ch) = char::from_u32(u) else { return u };
+    let m: Vec<char> = if upper { ch.to_uppercase().collect() } else { ch.to_lowercase().collect() };
+    match m[..] {
+        [l] if (l as u32) < 0x10000 => l as u32,
+        _ => u,
+    }
+}
 fn towlower(c: &mut Ctx) -> u32 {
-    let u = c.a(0) & 0xffff;
-    char::from_u32(u).and_then(|ch| ch.to_lowercase().next()).map_or(u, |l| if (l as u32) < 0x10000 { l as u32 } else { u })
+    wcase(c.a(0), false, io::lc_cp() == 0)
 }
 fn towupper(c: &mut Ctx) -> u32 {
-    let u = c.a(0) & 0xffff;
-    char::from_u32(u).and_then(|ch| ch.to_uppercase().next()).map_or(u, |l| if (l as u32) < 0x10000 { l as u32 } else { u })
+    wcase(c.a(0), true, io::lc_cp() == 0)
+}
+/// _tolower / _toupper: the macros' arithmetic, for any value (c - 'A' + 'a', c - 'a' + 'A')
+fn _tolower(c: &mut Ctx) -> u32 {
+    c.a(0).wrapping_add(0x20)
+}
+fn _toupper(c: &mut Ctx) -> u32 {
+    c.a(0).wrapping_sub(0x20)
 }
 fn iswspace(c: &mut Ctx) -> u32 {
     char::from_u32(c.a(0) & 0xffff).is_some_and(|ch| ch.is_whitespace()) as u32
@@ -3976,7 +3997,7 @@ pub fn init() {
     }
     implement("msvcrt", "_strtod_l", strtod);
     reg!(_wcsicmp, _wcsnicmp, wcschr, wcsrchr, wcscat, wcsncat, wcsncpy, wcsstr, wcsspn, wcscspn, wcspbrk);
-    reg!(towlower, towupper, iswspace, iswdigit, iswalpha, wcstol, wcstoul, _wtoi, wcstod);
+    reg!(towlower, towupper, _tolower, _toupper, iswspace, iswdigit, iswalpha, wcstol, wcstoul, _wtoi, wcstod);
     implement("msvcrt", "_wtol", _wtoi);
     reg!(_wcsdup, _wcslwr, _wcsupr, wcstok_s, strtok_s, strtok, wcstok);
     // (ucrtbase's wcstok takes a context)
@@ -4272,5 +4293,26 @@ mod tests {
             let got: Vec<String> = split_words(line.as_bytes()).into_iter().map(|w| String::from_utf8(w).unwrap()).collect();
             prop_assert_eq!(got, words);
         }
+    }
+}
+
+#[cfg(test)]
+mod case_tests {
+    use super::wcase;
+
+    #[test]
+    fn c_locale_changes_ascii_letters_only() {
+        // (ucrtbase:string's table: every value in "C", and the Unicode mapping elsewhere)
+        for u in 0..=0xffffu32 {
+            let lo = if (0x41..=0x5a).contains(&u) { u + 0x20 } else { u };
+            let up = if (0x61..=0x7a).contains(&u) { u - 0x20 } else { u };
+            assert_eq!(wcase(u, false, true), lo, "{u:#x}");
+            assert_eq!(wcase(u, true, true), up, "{u:#x}");
+        }
+        assert_eq!(wcase(0xc9, false, false), 0xe9);
+        assert_eq!(wcase(0xff21, false, false), 0xff41);
+        assert_eq!(wcase(0x3b1, true, false), 0x391);
+        // (a mapping to two characters: left as it is)
+        assert_eq!(wcase(0xdf, true, false), 0xdf);
     }
 }

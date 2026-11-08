@@ -98,7 +98,10 @@ int main(int argc,char **argv) {
     hr=object->lpVtbl->QueryInterface(object,&IID_IUnknown,(void **)&unknown);
     CHECK("IUnknown identity",SUCCEEDED(hr)&&(void *)unknown==(void *)object);if(unknown)unknown->lpVtbl->Release(unknown);
     object->lpVtbl->Release(object);
-    SERVICE_STATUS s;CHECK("stop server",ControlService(service,SERVICE_CONTROL_STOP,&s));
+    /* (the object can be served before the service reports RUNNING: until then it takes no STOP,
+     * ERROR_SERVICE_CANNOT_ACCEPT_CTRL, on Windows as on sake) */
+    SERVICE_STATUS s;for(int i=0;i<500&&QueryServiceStatus(service,&s)&&s.dwCurrentState!=SERVICE_RUNNING;i++)Sleep(10);
+    CHECK("stop server",ControlService(service,SERVICE_CONTROL_STOP,&s));
     DeleteService(service);CloseServiceHandle(service);CloseServiceHandle(manager);CoUninitialize();
     return failed;
 }
