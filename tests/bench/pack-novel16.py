@@ -5,7 +5,7 @@ testdata/novel16's script in Shift_JIS, with the KiriKiri game's pictures (testd
 with a <name>m.bmp mask, black where they show) and its voices, next to novel16.exe
 (tests/bench/build-novel16.sh): OUT_DIR/novel16/.
 
-  python3 -I tests/bench/pack-novel16.py OUT_DIR BUILD_DIR    (BUILD_DIR: build-novel16.sh's)
+  python3 -E -P tests/bench/pack-novel16.py OUT_DIR BUILD_DIR    (BUILD_DIR: build-novel16.sh's)
 """
 import os, shutil, sys
 from PIL import Image

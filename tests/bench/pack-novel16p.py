@@ -6,7 +6,7 @@ sprite doesn't show) as .pic files (width, height: 16-bit words, then the rows t
 palette and a darkening table for the text window (pal.bin: 256 RGBQUADs, then 256 indices), and
 its voices: OUT_DIR/novel16p/.
 
-  python3 -I tests/bench/pack-novel16p.py OUT_DIR BUILD_DIR    (BUILD_DIR: build-novel16p.sh's)
+  python3 -E -P tests/bench/pack-novel16p.py OUT_DIR BUILD_DIR    (BUILD_DIR: build-novel16p.sh's)
 """
 import os, shutil, struct, sys
 from PIL import Image

@@ -59,8 +59,9 @@ for t in $TESTS; do
   fi
   # (the whole output kept: a process that fails shows its exit status and its last lines, sake's
   # own too, so that a rare failure can be understood from the log of the run it happened in)
-  run() { (cd "$(dirname "$SAKE")" && timeout 300 env "${test_env[@]}" "$@" node "$SAKE" "$OUT/$t.exe" > "$OUT/$t.log" 2>&1; s=$?; grep -v '^sake:' "$OUT/$t.log"; exit $s); }
-  failed_run() { echo "FAIL $t: $1 process failed or timed out (status $2):"; tail -20 "$OUT/$t.log" | sed 's/^/    /'; }
+  # (EXE: another build of the test; LOG: its own log)
+  run() { local log=$OUT/${LOG:-$t}.log; (cd "$(dirname "$SAKE")" && timeout 300 env "${test_env[@]}" "$@" node "$SAKE" "${EXE:-$OUT/$t.exe}" > "$log" 2>&1; s=$?; grep -v '^sake:' "$log"; exit $s); }
+  failed_run() { echo "FAIL $t: $1 process failed or timed out (status $2):"; tail -20 "$OUT/${LOG:-$t}.log" | sed 's/^/    /'; }
   jit=$(run IPPAI_JIT=1); st=$?
   if [ $st != 0 ]; then
     failed_run JIT $st
@@ -102,16 +103,22 @@ for t in $TESTS; do
     if ! x86_64-w64-mingw32-gcc -O2 "$ROOT/host/tests/$t.c" -o "$OUT/$t-64.exe" $libs; then
       echo "FAIL $t (x64): build"; fail=1; continue
     fi
-    t64=$( (cd "$(dirname "$SAKE")" && timeout 300 env "${test_env[@]}" node "$SAKE" "$OUT/$t-64.exe" 2>&1 | grep -v '^sake:') )
-    if [ "$t64" != "$(cat "$want")" ]; then
+    t64=$(EXE=$OUT/$t-64.exe LOG=$t-64 run); st=$?
+    if [ $st != 0 ]; then
+      LOG=$t-64 failed_run x64 $st
+      fail=1
+    elif [ "$t64" != "$(cat "$want")" ]; then
       echo "FAIL $t (x64):"; diff <(echo "$t64") "$want" | head -10; fail=1
     else
       echo "ok   $t (x64)"
     fi
     # (kura's merge_hot64 at the first hot jump, and reclaim after every load: regions are
     # merged into bigger ones and their own modules go while the program runs)
-    tm=$( (cd "$(dirname "$SAKE")" && timeout 300 env "${test_env[@]}" IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1 node "$SAKE" "$OUT/$t-64.exe" 2>&1 | grep -v '^sake:') )
-    if [ "$tm" != "$(cat "$want")" ]; then
+    tm=$(EXE=$OUT/$t-64.exe LOG=$t-64m run IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1); st=$?
+    if [ $st != 0 ]; then
+      LOG=$t-64m failed_run "x64 merging" $st
+      fail=1
+    elif [ "$tm" != "$(cat "$want")" ]; then
       echo "FAIL $t (x64, merging):"; diff <(echo "$tm") "$want" | head -10; fail=1
     else
       echo "ok   $t (x64, merging)"

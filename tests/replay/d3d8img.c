@@ -49,7 +49,7 @@ void d3d8_before(const char *iface, const char *method, W *a, int n, UINT no) {
 void d3d8_after(const char *iface, const char *method, W *a, int n, UINT no, HRESULT hr) {
     char img[32];
     if (FAILED(hr)) return;
-    if (!strcmp(iface, "IDirect3DSurface8") && !strcmp(method, "LockRect") && n >= 4 && (a[3] & D3DLOCK_READONLY)) {
+    if (!strcmp(iface, "IDirect3DSurface8") && !strcmp(method, "LockRect") && n >= 4 && (a[3] & D3DLOCK_READONLY) && read_wanted()) {
         /* (the lock is the recording's own: read it before its UnlockRect) */
         D3DSURFACE_DESC d;
         D3DLOCKED_RECT *lr = (D3DLOCKED_RECT *)a[1];

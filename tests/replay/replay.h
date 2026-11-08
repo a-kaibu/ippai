@@ -9,6 +9,7 @@ extern int opt_draws, opt_noimages, opt_tol;
 extern int frame;
 /* the frame being presented is one to show (-every / -from / -to) */
 int frame_wanted(void);
+int read_wanted(void);
 /* -draws, and the frame is in -from .. -to */
 int draws_wanted(void);
 

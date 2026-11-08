@@ -118,7 +118,7 @@ void ddraw_after(const char *iface, const char *method, W *a, int n, UINT no, HR
     char name[32];
     if (FAILED(hr) || !is_surface(iface)) return;
     int v2 = iface[strlen(iface) - 1] == '7' || iface[strlen(iface) - 1] == '4';
-    if (!strcmp(method, "Lock") && n >= 4 && (a[3] & DDLOCK_READONLY)) {
+    if (!strcmp(method, "Lock") && n >= 4 && (a[3] & DDLOCK_READONLY) && read_wanted()) {
         /* (the lock the recording made, as it is: its rect, the pixels this system handed back) */
         sprintf(name, "l%u", no);
         const RECT *r = (const RECT *)a[1];

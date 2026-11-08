@@ -39,9 +39,10 @@ python3 -I "$ROOT/tests/bench/pack-onscripter.py" "$OUT" "$ONS_CACHE" >/dev/null
 # (the Win16 game: testdata/novel16 built with Open Watcom, fetched into WATCOM_CACHE once)
 WATCOM_CACHE=${WATCOM_CACHE:-$ROOT/target/watcom}
 "$ROOT/tests/bench/build-novel16.sh" "$WATCOM_CACHE"
-python3 -I "$ROOT/tests/bench/pack-novel16.py" "$OUT" "$WATCOM_CACHE" >/dev/null
+# (-E -P, not -I: Pillow is pip install --user's, in the user site -I leaves out)
+python3 -E -P "$ROOT/tests/bench/pack-novel16.py" "$OUT" "$WATCOM_CACHE" >/dev/null
 # (the second Win16 game: testdata/novel16p with Free Pascal's Win16 compiler, built into FPC16_CACHE once)
 FPC16_CACHE=${FPC16_CACHE:-$ROOT/target/fpc16}
 "$ROOT/tests/bench/build-novel16p.sh" "$FPC16_CACHE" "$WATCOM_CACHE"
-python3 -I "$ROOT/tests/bench/pack-novel16p.py" "$OUT" "$FPC16_CACHE" >/dev/null
+python3 -E -P "$ROOT/tests/bench/pack-novel16p.py" "$OUT" "$FPC16_CACHE" >/dev/null
 ls "$OUT"

@@ -113,7 +113,7 @@ void d3d11_after(const char *iface, const char *method, W *a, int n, UINT no, HR
     } else if (!strcmp(method, "CopySubresourceRegion") && n >= 9) {
         const D3D11_BOX *b = (const D3D11_BOX *)a[8];
         copied((void *)a[1], (UINT)a[2], (UINT)a[3], (UINT)a[4], b ? b->right - b->left : 0, b ? b->bottom - b->top : 0);
-    } else if (!strcmp(method, "Map") && n >= 6 && SUCCEEDED(hr) && ((UINT)a[3] == D3D11_MAP_READ || (UINT)a[3] == D3D11_MAP_READ_WRITE)) {
+    } else if (!strcmp(method, "Map") && n >= 6 && SUCCEEDED(hr) && ((UINT)a[3] == D3D11_MAP_READ || (UINT)a[3] == D3D11_MAP_READ_WRITE) && read_wanted()) {
         ID3D11Resource *r = (ID3D11Resource *)a[1];
         UINT sub = (UINT)a[2];
         D3D11_MAPPED_SUBRESOURCE *m = (D3D11_MAPPED_SUBRESOURCE *)a[5];

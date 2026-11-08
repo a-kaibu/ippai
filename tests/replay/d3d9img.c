@@ -67,7 +67,7 @@ void d3d9_before(const char *iface, const char *method, W *a, int n, UINT no) {
 void d3d9_after(const char *iface, const char *method, W *a, int n, UINT no, HRESULT hr) {
     char img[32];
     if (FAILED(hr)) return;
-    if (!strcmp(method, "GetRenderTargetData") && n >= 3 && a[2]) {
+    if (!strcmp(method, "GetRenderTargetData") && n >= 3 && a[2] && read_wanted()) {
         sprintf(img, "r%u", no);
         dump_surface(img, (IDirect3DSurface9 *)a[2]);
     } else if (draws_wanted() && !strncmp(method, "Draw", 4) && strstr(iface, "Device9")) {

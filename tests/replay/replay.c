@@ -116,6 +116,9 @@ struct mapped { void *pData; UINT RowPitch, DepthPitch; };
 int opt_draws = DRAWS, opt_every = EVERY, opt_from = FROM, opt_to = TO, opt_tol = 2, opt_noimages;
 int frame;
 int frame_wanted(void) { return frame >= opt_from && frame <= opt_to && (frame - opt_from) % opt_every == 0; }
+/* (a readback the recording made: in a game's replay one in EVERY, as frames, from the first;
+ * an AdvHD game read its render target back every frame, 1.3 million times: 8 GB of images) */
+int read_wanted(void) { static int reads; return frame >= opt_from && frame <= opt_to && reads++ % opt_every == 0; }
 int draws_wanted(void) { return opt_draws && frame >= opt_from && frame <= opt_to; }
 /* the call being made (a draw's picture says which it was) */
 static const char *cur_name;
