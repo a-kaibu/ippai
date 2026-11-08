@@ -1,0 +1,320 @@
+# id	stage	why (tests/replay/status.py)
+b2006_alcot	-	not recorded yet
+b2006_blackcyc	-	not recorded yet
+b2006_interheart	-	not recorded yet
+b2006_kaguya	-	not recorded yet
+b2006_lilim	-	not recorded yet
+b2006_lumpofsugar	-	not recorded yet
+b2006_lune	-	not recorded yet
+b2006_marine	-	not recorded yet
+b2006_ninetail	-	not recorded yet
+b2006_pulltop	-	not recorded yet
+b2006_unisonshift	-	not recorded yet
+b2007_anim	-	not recorded yet
+b2007_bishop	-	not recorded yet
+b2007_clochette	-	not recorded yet
+b2007_feng	-	not recorded yet
+b2007_hadashi	-	not recorded yet
+b2007_kaguya	Convertible	no Windows answer yet
+b2007_lilim	-	not recorded yet
+b2007_lilim_darkness	-	not recorded yet
+b2007_lune	-	not recorded yet
+b2007_marmalade	-	not recorded yet
+b2007_propeller	-	not recorded yet
+b2007_sagaplanets	-	not recorded yet
+b2007_whirlpool	-	not recorded yet
+b2008_akabeesoft	-	not recorded yet
+b2008_bishop	-	not recorded yet
+b2008_escude	-	not recorded yet
+b2008_hook	-	not recorded yet
+b2008_interheart	-	not recorded yet
+b2008_marine	-	not recorded yet
+b2008_smee	-	not recorded yet
+b2009_anim	-	not recorded yet
+b2009_crossover	-	not recorded yet
+b2009_eushully	-	not recorded yet
+b2009_kaguya	-	notrace: さらさらささら（体験版）/GAME_SYS.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
+b2009_lilim	-	not recorded yet
+b2009_marmalade	-	not recorded yet
+b2009_purplesoftware	-	not recorded yet
+b2009_smee	-	not recorded yet
+b2010_bishop	-	notrace: gk3_trial/startup.exe: no title screen; tried d3d9; loaded: no graphics DLL
+b2010_giga	-	not recorded yet
+b2010_grand_cru	-	not recorded yet
+b2010_kaguya	-	not recorded yet
+b2010_waffle	-	not recorded yet
+b2011_anim_team_mm	Convertible	no Windows answer yet
+b2011_bishop	-	notrace: uk_trial/startup.exe: no title screen; tried d3d9; loaded: no graphics DLL
+b2011_catwalk	-	not recorded yet
+b2011_empress	-	not recorded yet
+b2011_guilty	-	not recorded yet
+b2011_hook	-	not recorded yet
+b2011_marine	-	not recorded yet
+b2012_alicesoft	-	notrace: dl/母娘乱館体験版/OyakorankanTrial.exe: title screen at 2s; tried d3d9; loaded: d3d9.dll
+b2012_atelier_gh	-	not recorded yet
+b2012_bishop	-	notrace: dl/startup.exe: no title screen; tried d3d9; loaded: no graphics DLL
+b2012_fudegaki_soft	Convertible	no Windows answer yet
+b2012_tinkerbell	-	not recorded yet
+b2012_trois	Convertible	no Windows answer yet
+b2012_waffle	-	not recorded yet
+b2013_alicesoft	-	notrace: dl/ランス01体験版/Rance01Trial.exe: no title screen; tried d3d9; loaded: d3d9.dll
+b2013_anim	-	not recorded yet
+b2013_ensemble	-	not recorded yet
+b2013_giga	-	not recorded yet
+b2013_hooksoft	-	not recorded yet
+b2013_hulotte	-	not recorded yet
+b2013_kaguya	-	not recorded yet
+b2013_lumpofsugar	-	notrace: sekachu_trial_WEB2/sekachu_trial_WEB2/sekachu_trial_WEB2.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
+b2013_tinkerbell	-	not recorded yet
+b2014_azarashi_soft	Convertible	no Windows answer yet
+b2014_ensemble_sweet	-	not recorded yet
+b2014_escude	-	notrace: dl/relord.exe: winplay wrote nothing; tried d3d9; loaded: no graphics DLL
+b2014_guilty	-	not recorded yet
+b2014_silkys_plus	-	not recorded yet
+b2014_undermoon	-	not recorded yet
+b2014_waffle	-	not recorded yet
+b2014_wendybell	-	not recorded yet
+b2015_empress	-	not recorded yet
+b2015_erectlip	-	not recorded yet
+b2015_guilty	Convertible	no Windows answer yet
+b2015_hamham	-	not recorded yet
+b2015_mille_feuille	-	not recorded yet
+b2015_minato_carnival	-	not recorded yet
+b2016_alcot	Convertible	no Windows answer yet
+b2016_blackcyc	-	not recorded yet
+b2016_evoll	-	not recorded yet
+b2016_giga	-	not recorded yet
+b2016_inter_heart_glossy	Convertible	no Windows answer yet
+b2016_kaguya	-	not recorded yet
+b2016_silkys_sakura	-	not recorded yet
+b2016_waffle	-	not recorded yet
+b2017_inter_heart_glossy	Convertible	no Windows answer yet
+b2017_onomatope_raspberry	-	not recorded yet
+b2017_waffle	-	not recorded yet
+b2018_ensemble	-	not recorded yet
+b2018_erectlip	-	not recorded yet
+b2018_fudegaki_soft	Convertible	no Windows answer yet
+b2018_hachimitsu_soft	Convertible	no Windows answer yet
+b2018_mirai	-	not recorded yet
+b2018_tokohana	-	not recorded yet
+b2019_anim	Convertible	no Windows answer yet
+b2019_sukerasparo	Convertible	no Windows answer yet
+b2020_akabeesoft3	Convertible	no Windows answer yet
+b2020_barista_lab	-	not recorded yet
+b2020_caramel_box_strawberry	-	not recorded yet
+b2020_erectlip	-	not recorded yet
+b2020_hachimitsu_soft	-	not recorded yet
+b2020_lass_pixy	-	not recorded yet
+b2020_rikuzendo	-	not recorded yet
+b2021_at_sakura	-	not recorded yet
+b2021_princess_sugar	-	not recorded yet
+b2021_tinkerbell	Convertible	no Windows answer yet
+b2022_ba_ku	-	not recorded yet
+b2022_lunaprism	-	not recorded yet
+b2023_appetite	-	not recorded yet
+b2023_fg_remake	-	not recorded yet
+b2024_milimili	-	not recorded yet
+b2024_ninetail	-	not recorded yet
+b2024_syrup_mm	-	notrace: 狙われた優等生体験版/yutosei.exe: title screen at 11s; tried d3d9; loaded: dinput.dll opengl32.dll
+b2025_ensemble_sweet	-	not recorded yet
+b2025_guilty	-	not recorded yet
+b2026_anim	Convertible	no Windows answer yet
+b2026_crystalia	-	not recorded yet
+b2026_dessert_soft	Convertible	no Windows answer yet
+b2026_wendybell	Convertible	no Windows answer yet
+dl_RJ01529614	-	not recorded yet
+dl_RJ01582557	-	not recorded yet
+dl_RJ01598948	-	not recorded yet
+dl_RJ01604592	-	not recorded yet
+dl_RJ01610703	-	not recorded yet
+dl_RJ01612664	-	not recorded yet
+dl_RJ01618221	-	not recorded yet
+dl_RJ01618747	-	not recorded yet
+dl_RJ01623688	-	not recorded yet
+dl_RJ01636335	-	not recorded yet
+dl_RJ01641249	-	not recorded yet
+dl_RJ01648691	-	not recorded yet
+dl_RJ01650072	-	not recorded yet
+dl_RJ01655345	-	not recorded yet
+dl_RJ01659367	-	not recorded yet
+dl_RJ01660695	-	not recorded yet
+dl_RJ01669710	-	not recorded yet
+dl_RJ01670163	-	not recorded yet
+dl_RJ01678959	-	not recorded yet
+dl_RJ01682755	-	not recorded yet
+dl_RJ01683321	-	not recorded yet
+dl_RJ01684055	-	not recorded yet
+dl_RJ01686418	-	not recorded yet
+dl_RJ01688926	-	not recorded yet
+dl_RJ01690707	-	not recorded yet
+dl_RJ01691731	-	not recorded yet
+dl_RJ01693441	-	not recorded yet
+dl_RJ01695481	-	not recorded yet
+dl_RJ01696742	-	not recorded yet
+dl_RJ01696828	-	not recorded yet
+dl_RJ01698597	-	not recorded yet
+dl_RJ01699647	-	not recorded yet
+dl_RJ01699765	-	not recorded yet
+dl_RJ01700416	-	not recorded yet
+dl_RJ01700539	-	not recorded yet
+dl_RJ01701172	-	not recorded yet
+dl_RJ01701406	-	not recorded yet
+dl_RJ01701742	-	not recorded yet
+dl_RJ01703015	-	not recorded yet
+dl_RJ01703385	-	not recorded yet
+dl_RJ01703802	-	not recorded yet
+dl_RJ01704479	-	not recorded yet
+dl_RJ01705134	-	not recorded yet
+dl_RJ01705199	-	not recorded yet
+dl_RJ01706267	-	not recorded yet
+dl_RJ01706991	-	not recorded yet
+dl_RJ01706994	-	not recorded yet
+dl_RJ01707379	-	not recorded yet
+dl_RJ01707935	-	not recorded yet
+dl_RJ01710833	-	not recorded yet
+dl_RJ01711994	-	not recorded yet
+dl_RJ01712071	-	not recorded yet
+dl_RJ01714047	-	not recorded yet
+dl_RJ01714826	-	not recorded yet
+dl_RJ01715225	-	not recorded yet
+dl_RJ01720376	Convertible	left out: CompatValue x10
+dl_RJ01720493	-	not recorded yet
+dl_RJ01720600	-	not recorded yet
+dl_RJ01720685	-	not recorded yet
+dl_RJ01720958	-	not recorded yet
+dl_RJ01721615	-	not recorded yet
+dl_RJ01722380	-	not recorded yet
+dl_RJ01724124	-	not recorded yet
+dl_RJ01724681	-	not recorded yet
+dl_RJ01726603	-	not recorded yet
+dl_RJ01727123	-	not recorded yet
+dl_RJ01728288	-	not recorded yet
+dl_RJ01728421	-	not recorded yet
+dl_RJ01728583	-	not recorded yet
+dl_RJ01729227	-	not recorded yet
+dl_RJ01729974	-	not recorded yet
+dl_RJ01730521	-	not recorded yet
+dl_RJ01730784	-	not recorded yet
+dl_RJ01731003	-	not recorded yet
+dl_RJ01731048	-	not recorded yet
+dl_RJ01732086	-	not recorded yet
+dl_RJ01732951	-	not recorded yet
+dl_RJ01733667	-	not recorded yet
+dl_RJ01734456	-	not recorded yet
+dl_RJ01735938	-	not recorded yet
+dl_RJ01736920	-	not recorded yet
+dl_RJ01739908	-	not recorded yet
+dl_RJ01740259	-	not recorded yet
+dl_RJ01741863	-	not recorded yet
+dl_RJ01744242	-	not recorded yet
+dl_RJ01746276	-	not recorded yet
+dl_RJ01746340	-	not recorded yet
+dl_RJ01746806	-	not recorded yet
+dl_RJ01747016	-	not recorded yet
+dl_RJ357058	-	not recorded yet
+dl_RJ365650	Convertible	left out: CompatValue x10
+dl_VJ01000787	-	not recorded yet
+dl_VJ01002468	-	not recorded yet
+dl_VJ01004064	-	not recorded yet
+dl_VJ01005112	-	not recorded yet
+dl_VJ01005807	-	not recorded yet
+r1_advhd	Convertible	no Windows answer yet
+r1_artemis	-	not recorded yet
+r1_higanbana	-	not recorded yet
+r1_kag3	-	not recorded yet
+r1_majiro	-	not recorded yet
+r1_musica	-	not recorded yet
+r1_naru2	-	not recorded yet
+r1_qlie	-	not recorded yet
+r1_reallive_five	-	not recorded yet
+r1_renpy	-	not recorded yet
+r1_sakana	-	not recorded yet
+r1_saku	-	not recorded yet
+r1_trt	-	not recorded yet
+r1_tyrano	-	not recorded yet
+r1_yuris	-	not recorded yet
+s2006_bishop_hkg2	-	not recorded yet
+s2006_giga_ab	-	notrace: angelbreath_trial/angelbreath.exe: no title screen, ended; tried d3d9; loaded: d3d9.dll dinput8.dll
+s2006_lune_maimiko	-	not recorded yet
+s2006_lune_sakuya	-	not recorded yet
+s2006_pulltop_haruka	-	not recorded yet
+s2007_giga_himesama	-	not recorded yet
+s2008_alcot_engagekinks	-	not recorded yet
+s2008_clochette_suzunone7	Faithful	not run on sake
+s2008_guilty_wana2	-	not recorded yet
+s2008_kaguya_dc2	-	not recorded yet
+s2008_sagaplanets_cominghumming	-	not recorded yet
+s2009_ensemble_hanaotome	-	not recorded yet
+s2009_escude_prister	-	not recorded yet
+s2010_eushully_ikusa_verita	Convertible	no Windows answer yet
+s2010_lumpofsugar_prismrhythm	-	not recorded yet
+s2010_pulltop_lovekami	-	not recorded yet
+s2010_sagaplanets_kisaragi	-	not recorded yet
+s2011_clochette_kamikaze	Convertible	no Windows answer yet
+s2011_grand_cru_imostar	-	not recorded yet
+s2011_lumpofsugar_gackoh	-	notrace: Gackoh_Trial/Gackoh.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
+s2011_marine_marching	-	not recorded yet
+s2011_propeller_sukima	-	not recorded yet
+s2011_purplesoftware_miranosu	-	not recorded yet
+s2011_waffle_sex_friend	Faithful	not run on sake
+s2012_empress_lewdness	-	not recorded yet
+s2012_escude_gurenka	-	not recorded yet
+s2012_kaguya_sperman	-	notrace: sperman_trial.exe.zip/スペルマン（体験版）/GAME_SYS.exe: no title screen; tried d3d9; loaded: d3d9.dll dinput8.dll
+s2012_marine_deka_ane	-	not recorded yet
+s2012_ninetail_gears_of_dragoon	-	not recorded yet
+s2013_alicesoft_drapeko	-	notrace: dl/どらぺこ！体験版/DrapekoTrial.exe: title screen at 1s; tried d3d9; loaded: d3d9.dll
+s2014_clochette_sakigake	Convertible	no Windows answer yet
+s2014_erectlip_gyokumajyo	-	not recorded yet
+s2014_escude_hanaou	-	notrace: 花嫁と魔王WEB専用体験版/hanaou.exe: winplay wrote nothing; tried d3d9; loaded: no graphics DLL
+s2014_hooksoft_meltymoment	-	notrace: MeltyMoment_体験版/BGI.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
+s2014_lune_revenge_room	-	not recorded yet
+s2014_qoobrand_majokoi	-	not recorded yet
+s2014_whirlpool_tearstilla	-	not recorded yet
+s2015_clochette_kokonatsu	Convertible	no Windows answer yet
+s2015_ensemble_sweet_yakimochi	Convertible	no Windows answer yet
+s2015_hulotte_yomeyaba	-	not recorded yet
+s2015_silkys_plus_neyuki	Convertible	no Windows answer yet
+s2016_eushully_sankaio	Convertible	no Windows answer yet
+s2016_hooksoft_amenitys_life	-	notrace: AmenitysLife_trial_02/AmenitysLife.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
+s2016_kaguya_idol_pafupafu	-	not recorded yet
+s2016_marine_cospure_harem	-	not recorded yet
+s2017_akabeesoft3_tonofuta	Convertible	no Windows answer yet
+s2017_appetite_immorality_don	-	not recorded yet
+s2017_dualtail_vbb	-	not recorded yet
+s2017_inter_heart_glossy_hitozuma_ntr	Convertible	no Windows answer yet
+s2017_marmalade_mashimaro	-	not recorded yet
+s2017_nanawind_alice_gram	Convertible	no Windows answer yet
+s2017_sagaplanets_kinkoi	-	not recorded yet
+s2017_wendybell_oreyome	-	not recorded yet
+s2018_dualtail_vbl	-	not recorded yet
+s2018_pin_point_yakyurare	-	not recorded yet
+s2019_alumi_soft_inuyome2	-	not recorded yet
+s2019_appetite_dt_kyoiku	-	not recorded yet
+s2019_guilty_harame	-	not recorded yet
+s2019_lilim_shinmu	-	not recorded yet
+s2019_lune_dogeza_saimin	-	not recorded yet
+s2020_amuse_craft_erotica_kinbaku	-	not recorded yet
+s2020_casket_ayakashi03	-	not recorded yet
+s2020_eushully_tenmei	-	not recorded yet
+s2020_wonder_fool_maokatsu	Convertible	no Windows answer yet
+s2021_dualtail_vbhi	-	not recorded yet
+s2021_giga_fuyukiss	Convertible	no Windows answer yet
+s2021_nanawind_kanade_gram_ch1	-	not recorded yet
+s2021_silkys_plus_fuyukuru	Convertible	no Windows answer yet
+s2022_akabeesoft2_roleplayer_tororo	-	not recorded yet
+s2022_amuse_craft_erotica_tsumamomi	-	not recorded yet
+s2022_bishop_cs2	-	not recorded yet
+s2022_hooksoft_houkago2	Convertible	no Windows answer yet
+s2023_anim_anetumami2	-	not recorded yet
+s2023_hadashi_harem_shangrila	-	not recorded yet
+s2023_j_studio_reaero_dt	Convertible	no Windows answer yet
+s2023_milimili_onaho_yokai	-	not recorded yet
+s2024_eushully_hyakusen	-	not recorded yet
+s2024_madosoft_selectoblige	-	not recorded yet
+s2025_dualtail_vbv	-	not recorded yet
+s2025_j_studio_galsfiction	-	not recorded yet
+s2025_marmalade_bakaple	-	not recorded yet
+s2026_bishop_tks	-	not recorded yet
+s2026_ensemble_sweet_ribichu	Convertible	no Windows answer yet
+s2026_lump_of_sugar_tayutama_zero	-	not recorded yet
+s2026_poison_motion_sxs2_me	-	not recorded yet
