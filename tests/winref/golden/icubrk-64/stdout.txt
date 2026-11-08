@@ -37,7 +37,7 @@ after the end: next -1 current 11 previous 8
 first 0 previous -1 current 0 last 11
 following 2: 8, 11: -1 current 11, -5: 0 current 0
 preceding 8: 2, 0: -1 current 0, 50: 11 current 11
-isBoundary 8: 225672193 current 8, 5: 0 current 8
+isBoundary 8: 1 current 8, 5: 0 current 8
 utext_openUChars on the stack: 0 same 1
 setUText: 0 0 3 4
 utext_close: same 1
