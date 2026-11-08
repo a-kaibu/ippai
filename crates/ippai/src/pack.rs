@@ -706,12 +706,14 @@ fn publish_tree(store: &Path, name: &str, list: &str) -> Result<()> {
     Ok(())
 }
 
-/// Stores the chunks of `root`'s files and returns the tree's list (not yet published: the
-/// chunks are named by their content, so a list never published leaves nothing wrong behind).
 /// The average chunk size of `ippai add` and `pack` (KiB). Measured with LOOPERS on Hugging
 /// Face Buckets: a push of 1.9 GB took 1723 s in 256 KiB chunks, 358 s in 1 MiB, 105 s in 4 MiB,
 /// 69 s in 16 MiB (the PUT rate limit); the game started as fast with any of 1 MiB and more.
-pub const DEFAULT_CHUNK_KIB: u64 = 16384;
+/// Played from the device (docs/chunk-size.md, tests/chunkbench, Android-like): scattered
+/// 64 KiB reads were 3x faster in 4 MiB chunks than in 16 MiB (p95 53 vs 187 ms) with the least
+/// memory; 2 MiB was as fast with twice the chunks, 8 MiB ~1.5x slower. So 4 MiB (user
+/// 2026-11-08), uploads ~1.5x longer.
+pub const DEFAULT_CHUNK_KIB: u64 = 4096;
 
 use crate::cdc::Params;
 
@@ -720,6 +722,8 @@ fn chunking(kib: u64) -> Params {
     Params::with_avg(kib.clamp(64, 1 << 16) << 10)
 }
 
+/// Stores the chunks of `root`'s files and returns the tree's list (not yet published: the
+/// chunks are named by their content, so a list never published leaves nothing wrong behind).
 fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Params) -> Result<String> {
     let root = root.canonicalize()?;
     let mut lines = Vec::new();

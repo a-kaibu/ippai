@@ -236,7 +236,7 @@ const KEEP_BYTES = 2 * 1024 ** 3;
  * with what else the origin keeps (saves and states in OPFS, the app) the whole under SHARE of the
  * quota, those never going. The oldest chunks go first, but not those `saved()` lists (games saved
  * to the device: offline.ts savedChunks; only asked when something must go). Sizes are the
- * chunks' own (x-ippai-size; FastCDC chunks are 16 MiB on average, 64 MiB at most). Also asks the
+ * chunks' own (x-ippai-size; FastCDC chunks are 4 MiB on average, 64 MiB at most). Also asks the
  * browser to keep this origin's data under storage pressure.
  */
 export async function trimChunks(saved: () => Promise<Set<string>> = async () => new Set()): Promise<void> {

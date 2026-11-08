@@ -25,6 +25,24 @@ Android-like:
 | 16 MiB | second | 2082 | 187 | 510 | 7914 | 442 | 1869 MiB |
 | 16 MiB | offline | 1361 | 210 | 440 | 8619 | 319 | 1825 MiB |
 
+A second run with 2, 4 and 8 MiB (asked 2026-11-08):
+
+| avg chunk | run | start to first line | random p95 | random max | 200 random reads | sequential 32 MiB | peak RSS |
+|---|---|---|---|---|---|---|---|
+| 2 MiB | first | 4658 | 256 | 432 | 8990 | 105 | 1343 MiB |
+| 2 MiB | second | 1919 | 56 | 197 | 3048 | 146 | 1415 MiB |
+| 2 MiB | offline | 1923 | 38 | 82 | 1926 | 155 | 1353 MiB |
+| 4 MiB | first | 3130 | 256 | 1073 | 9404 | 423 | 1433 MiB |
+| 4 MiB | second | 1623 | 59 | 119 | 2609 | 172 | 1519 MiB |
+| 4 MiB | offline | 1207 | 50 | 84 | 2722 | 134 | 1558 MiB |
+| 8 MiB | first | 2964 | 132 | 1657 | 11678 | 515 | 1491 MiB |
+| 8 MiB | second | 1944 | 75 | 277 | 4229 | 207 | 1583 MiB |
+| 8 MiB | offline | 2244 | 126 | 128 | 4179 | 426 | 1585 MiB |
+
+2 and 4 MiB are within run-to-run noise of each other (4 MiB's second run: 2673 then 2609 ms);
+8 MiB is ~1.5x slower on the device's copy. 4 MiB is the default: as fast as 2 MiB with half
+the chunks (requests, S3 objects, Cache Storage entries, tree lines).
+
 Unthrottled the order is the same (second run, 200 random reads: 1 MiB 5499, 4 MiB 1683,
 16 MiB 4708 ms).
 
