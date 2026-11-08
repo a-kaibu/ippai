@@ -114,10 +114,14 @@ static void t_cons_raise(void) {
     __try { cons_where = cons_target(); } __except (GetExceptionCode() == 0xE0000003) { cons_where = 3; }
 }
 int main(void) {
+    /* (stdout unbuffered, and each test named before it runs: the probe crashed on Windows with
+       no line out, issue #96) */
+    setvbuf(stdout, NULL, _IONBF, 0);
     AddVectoredExceptionHandler(1, veh);
     struct { const char *n; void (*f)(void); } t[] = {{"none", t_none}, {"seh", t_seh}, {"longjmp", t_jmp}, {"veh", t_veh}, {"consolidate", t_cons}, {"consolidate raise", t_cons_raise}};
     for (int i = 0; i < 6; i++) {
         int bad = 0, r = 0;
+        printf("start %s\n", t[i].n);
         for (int k = 0; k < 200; k++) if ((r = check_regs(t[i].f))) { bad++; if (bad == 1) printf("%s: first bad reg %d\n", t[i].n, r); }
         printf("%s: %d/200 bad", t[i].n, bad);
         if (i >= 4) printf(", went on at %d", cons_where);

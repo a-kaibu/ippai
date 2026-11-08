@@ -13,6 +13,7 @@ __declspec(dllimport) int __stdcall WriteFile(HANDLE, const void *, DWORD, DWORD
 __declspec(dllimport) HANDLE __stdcall CreateThread(void *, unsigned long long, DWORD(__stdcall *)(void *), void *, DWORD, DWORD *);
 __declspec(dllimport) DWORD __stdcall WaitForSingleObject(HANDLE, DWORD);
 __declspec(dllimport) void __stdcall Sleep(DWORD);
+__declspec(dllimport) int __stdcall CloseHandle(HANDLE);
 long _InterlockedIncrement(volatile long *);
 __declspec(dllimport) DWORD __stdcall GetCurrentThreadId(void);
 __declspec(dllimport) int __stdcall QueryPerformanceFrequency(long long *);
@@ -48,6 +49,18 @@ static void out(const char *s) {
     DWORD n = 0;
     while (s[n]) n++;
     WriteFile(GetStdHandle((DWORD)-11), s, n, &n, 0);
+}
+// (where the program is: a watchdog prints it when a step hangs, as one did on Windows for
+// 300 s after "kernel wait woken by _Cnd_broadcast", issue #96; nothing when none does)
+static const char *volatile stage = "start";
+static void out(const char *s);
+static DWORD __stdcall watchdog(void *) {
+    Sleep(60000);
+    out("watchdog: stuck at ");
+    out(stage);
+    out("\n");
+    ExitProcess(3);
+    return 0;
 }
 static void num(const char *label, long long v) {
     char b[64];
@@ -111,6 +124,7 @@ static DWORD __stdcall kernel_waker(void *) {
 static void mixed_test() {
     _Mtx_init_in_situ(xmtx, 2);
     _Cnd_init_in_situ(xcnd);
+    stage = "mixed: SleepConditionVariableSRW woken by _Cnd_broadcast";
     HANDLE t = CreateThread(0, 0, kernel_waiter, 0, 0, 0);
     Sleep(50);
     _Mtx_lock(xmtx);
@@ -120,6 +134,7 @@ static void mixed_test() {
     WaitForSingleObject(t, 0xffffffff);
     num("kernel wait woken by _Cnd_broadcast", x_kernel_woke);
     xflag = 0;
+    stage = "mixed: _Cnd_timedwait woken by WakeAllConditionVariable";
     t = CreateThread(0, 0, kernel_waker, 0, 0, 0);
     unsigned long long ft = 0;
     GetSystemTimeAsFileTime(&ft);
@@ -128,9 +143,12 @@ static void mixed_test() {
     _Mtx_lock(xmtx);
     int r = 0;
     while (xflag != 2 && r == 0) r = _Cnd_timedwait(xcnd, xmtx, &until);
+    stage = "mixed: _Cnd_timedwait returned";
     num("_Cnd_timedwait woken by WakeAllConditionVariable", r == 0 && xflag == 2);
     _Mtx_unlock(xmtx);
+    stage = "mixed: waiting for the waker thread";
     WaitForSingleObject(t, 0xffffffff);
+    stage = "mixed: done";
 }
 
 extern "C" {
@@ -184,6 +202,7 @@ static void setjmp_test() {
     num("setjmp local", local);
 }
 int main() {
+    CloseHandle(CreateThread(0, 0, watchdog, 0, 0, 0));
     // (as std::mutex and std::recursive_mutex make them: _Mtx_try, | _Mtx_recursive. A _Mtx_plain
     // one is locked whatever is asked, a try too: Windows' msvcp140 waits there for ever)
     _Mtx_init_in_situ(mtx, 2);
@@ -260,7 +279,9 @@ int main() {
         caught = 1;
     }
     num("caught", caught);
+    stage = "setjmp";
     setjmp_test();
+    stage = "chore";
     chore_test();
     mixed_test();
     ExitProcess(0);

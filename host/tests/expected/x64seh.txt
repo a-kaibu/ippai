@@ -1,6 +1,12 @@
+start none
 none: 0/200 bad
+start seh
 seh: 0/200 bad
+start longjmp
 longjmp: 0/200 bad
+start veh
 veh: 0/200 bad
+start consolidate
 consolidate: 0/200 bad, went on at 2
+start consolidate raise
 consolidate raise: 0/200 bad, went on at 3
