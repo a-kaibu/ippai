@@ -4132,12 +4132,22 @@ fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
     if cap == 0 {
         return w.len() as u32;
     }
+    // Conversion can fill the supplied buffer before discovering that the
+    // terminating NUL does not fit. MFC's ANSI CString -> CStringW conversion
+    // requests exactly the non-NUL length, ignores ERROR_INSUFFICIENT_BUFFER,
+    // and supplies its own terminator in ReleaseBuffer. Leaving the entire
+    // buffer untouched here silently turned its Automation strings into empty
+    // BSTRs. Preserve the failure result while retaining the converted prefix.
+    let mut written = w.len().min(cap as usize);
+    if written < w.len() && written > 0 && (0xd800..=0xdbff).contains(&w[written - 1]) && (0xdc00..=0xdfff).contains(&w[written]) {
+        written -= 1;
+    }
+    for (i, ch) in w[..written].iter().enumerate() {
+        w16(dst + 2 * i as u32, *ch);
+    }
     if w.len() as u32 > cap {
         last_error(122);
         return 0;
-    }
-    for (i, ch) in w.iter().enumerate() {
-        w16(dst + 2 * i as u32, *ch);
     }
     w.len() as u32
 }

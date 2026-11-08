@@ -33425,3 +33425,4 @@ icu ubrk_preceding cdecl 8 -
 icu ubrk_isBoundary cdecl 8 -
 icu utext_openUChars cdecl 20 -
 icu utext_close cdecl 4 -
+netapi32 Netbios stdcall 4 -

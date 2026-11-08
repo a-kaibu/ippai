@@ -1937,7 +1937,61 @@ fn CreateSortedAddressPairs(c: &mut Ctx) -> u32 {
     NO_ERROR
 }
 
+/// NetBIOS local adapter queries use the same virtual interfaces as IP Helper.
+/// Session/datagram transport is unavailable; never report those operations as successful.
+fn Netbios(c: &mut Ctx) -> u32 {
+    let ncb = c.a(0);
+    if ncb == 0 { return 0x39; } // NRC_INVADDRESS
+    let x64 = mem::x64();
+    let (buffer_off, length_off, call_off, lana_off, complete_off) = if x64 { (8, 16, 18, 64, 65) } else { (4, 8, 10, 48, 49) };
+    let command = mem::r8(ncb);
+    let buffer = mem::rp(ncb + buffer_off);
+    let capacity = r16(ncb + length_off) as usize;
+    let lana = mem::r8(ncb + lana_off) as usize;
+    let adapters: Vec<_> = ifaces().iter().filter(|f| !f.loopback() && f.mac.len() == 6).collect();
+    static RESET: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+    let code = if command & 0x80 != 0 { 3 } else { match command {
+        0x37 => { // NCBENUM
+            let needed = adapters.len() + 1;
+            if buffer == 0 || capacity < needed { 1 } else {
+                mem::fill(buffer, capacity as u32, 0);
+                w8(buffer, adapters.len() as u8);
+                for i in 0..adapters.len() { w8(buffer + 1 + i as u32, i as u8); }
+                w16(ncb + length_off, needed as u16);
+                0
+            }
+        }
+        0x32 => { // NCBRESET: no live sessions exist in this model.
+            if lana >= adapters.len() { 0x34 } else {
+                let mut reset = RESET.lock().unwrap();
+                if !reset.contains(&lana) { reset.push(lana); }
+                0
+            }
+        }
+        0x33 => { // NCBASTAT: only a query for this adapter's local status.
+            if lana >= adapters.len() || !RESET.lock().unwrap().contains(&lana) { 0x34 }
+            else if mem::r8(ncb + call_off) != b'*' { 0x17 }
+            else if buffer == 0 || capacity < 60 { 1 }
+            else {
+                mem::fill(buffer, 60, 0);
+                mem::write(buffer, adapters[lana].mac);
+                w8(buffer + 6, 3);
+                w8(buffer + 8, 0xfe); // Ethernet
+                w16(buffer + 48, 512);
+                w16(buffer + 56, 512);
+                w16(ncb + length_off, 60);
+                0
+            }
+        }
+        _ => 3, // NRC_ILLCMD
+    }};
+    w8(ncb + 1, code);
+    w8(ncb + complete_off, code);
+    code as u32
+}
+
 pub fn init() {
+    implement("netapi32", "Netbios", Netbios);
     let d = "iphlpapi";
     implement(d, "GetNumberOfInterfaces", GetNumberOfInterfaces);
     implement(d, "GetIfEntry", GetIfEntry);

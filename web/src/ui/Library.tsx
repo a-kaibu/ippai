@@ -3,7 +3,7 @@
 // and a dialog with the game's details and records. Picking a game starts it from that click
 // (audio and fullscreen need the user gesture).
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   BarChart3,
   Download,
@@ -16,6 +16,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Settings,
   Star,
   Trash2,
   TriangleAlert,
@@ -34,6 +35,7 @@ import { sortGames, visibleGames, when, type Filter } from "../library-view";
 import { dropOffline, offlineState, saveOffline, type OfflineState } from "../offline";
 import { useApp } from "../pwa";
 import { Backup, Note, Statistics, useProfile } from "./Personal";
+import { AccountSettings } from "./AccountSettings";
 import { renderShell } from "./Shell";
 
 /** The app's mark: the sake bottle (the same as the favicon and app icons). */
@@ -403,6 +405,8 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
   const [favoriteError, setFavoriteError] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [stats, setStats] = useState(false);
+  const [settings, setSettings] = useState(false);
+  const settingsButton = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState("");
   const [info, setInfo] = useState<GameEntry | null>(null);
   useEffect(() => {
@@ -447,6 +451,15 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
             </div>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-1.5" data-header-actions>
+            <Button
+              ref={settingsButton}
+              variant="outline"
+              size="sm"
+              onClick={() => setSettings(true)}
+              aria-label="設定"
+            >
+              <Settings aria-hidden="true" /> <span className="max-sm:hidden">設定</span>
+            </Button>
             {app.install && (
               <Button
                 variant="ghost"
@@ -554,6 +567,12 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
           </>
         )}
       </div>
+      {settings && (
+        <AccountSettings
+          onClose={() => setSettings(false)}
+          returnFocus={() => settingsButton.current?.focus()}
+        />
+      )}
       {stats && (
         <Dialog open onOpenChange={setStats}>
           <DialogContent className="max-w-xl gap-4 p-5">

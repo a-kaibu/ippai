@@ -68,6 +68,8 @@ fn routes(relay: Relay) -> Router {
 fn destination(target: &str) -> Option<(&'static str, u16)> {
     match target {
         "soft-denchi" => Some(("charge1.soft-denchi.jp", 443)),
+        "dmm-softdenchi" => Some(("dlsoft.dmm.co.jp", 443)),
+        "dmm-doujin-softdenchi" => Some(("softdenchi-doujin-api.dmm.co.jp", 443)),
         _ => None,
     }
 }
@@ -370,6 +372,8 @@ mod tests {
             destination("soft-denchi"),
             Some(("charge1.soft-denchi.jp", 443))
         );
+        assert_eq!(destination("dmm-softdenchi"), Some(("dlsoft.dmm.co.jp", 443)));
+        assert_eq!(destination("dmm-doujin-softdenchi"), Some(("softdenchi-doujin-api.dmm.co.jp", 443)));
         for name in [
             "example.com",
             "127.0.0.1:443",

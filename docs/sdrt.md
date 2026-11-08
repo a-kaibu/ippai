@@ -1,9 +1,10 @@
 # SDRT 5.0.9.0 compatibility
 
-Status: incomplete. Loading a runtime DLL or passing the host probes below is
-not evidence that a licensed title can be played. Completion requires the
-official runtime to authorize a purchased title and preserve its state across
-browser restarts.
+Status: playable in Chromium with a purchased title (MAJOKOI_DL). The official
+runtime authorizes the title against DMM, keeps that state across browser
+restarts, and the game's own save/load works across a page reload. Real Android
+devices, the official x64 runtime and fresh-prefix rejection without a license
+are still unverified (see "Open decisions and completion evidence").
 
 ## Verified inputs
 
@@ -31,7 +32,7 @@ companion program. The earlier localhost Node relay is a development fixture,
 not an accepted production prerequisite. The user authorized an opaque WebSocket/TCP relay in `ippai serve`; its design
 and tested protocol are documented in [tls-relay.md](tls-relay.md). Upstream TLS
 must be verified in browser/Wasm, so the relay does not terminate the connection
-or receive plaintext account credentials. The Wasm client is not integrated yet.
+or receive plaintext account credentials. The Wasm client uses rustls and the opaque relay; official HTTPS exchanges have been verified in Chromium.
 
 The official satxControler endpoint answered a credential-free HEAD request on
 2026-11-08 without Access-Control-Allow-Origin. Ordinary cross-origin browser
@@ -117,26 +118,96 @@ method (slot 40) through CLSID `{973558CA-B388-11D3-AEF6-0040264002C6}` / IID
 `{973558C7-B388-11D3-AEF6-0040264002C6}`. The level-6 image digest implementation now verifies the original vendor
 signature and rejects a separately copied executable with one modified code
 byte. Real in-process factory loading and OLE font support let the original
-SatX4 control display its DMM login dialog. This is not successful account
-verification, activation or gameplay; those remain unverified.
+SatX4 control display its DMM login dialog. In the browser, account settings
+reach the original form unchanged (checked by in-memory comparisons, without
+logging values). The official DMM endpoint returns HTTP 200 with a 22-byte
+response beginning `0:`; the remainder is sensitive and must not be logged.
+The charging stage originally failed with error 1 because the MFC conversion
+path supplied empty BSTR arguments. Its ANSI-to-wide conversion requests one
+fewer character than the queried size including NUL, then supplies its own
+terminator. MultiByteToWideChar now preserves the converted prefix on an
+insufficient buffer while returning zero and ERROR_INSUFFICIENT_BUFFER. The
+runtime's `%Ts`/`%Tc` formatter, Netbios adapter queries, and `_makepath_s` paths
+are implemented and covered by regression tests. Authorization decisions stay
+inside the original vendor code.
 
-Other observed gaps include Netbios, _mbsnbcpy_s, COM security, event logging,
+The original runtime now completes its charging exchanges with the official
+server. Reopening the protected launcher without account input reaches the
+actual game executable and Vorbis initialization. Browser child processes share
+the live VFS, including the executable created by the official launcher; no
+pre-decrypted executable is distributed or added to the streamed library.
+
+The browser stores installation changes in IndexedDB `ippai-installation`,
+AES-GCM encrypted with a non-extractable CryptoKey. The local key and ciphertext
+are one transaction. An installation lease prevents concurrent tabs overwriting
+one another's provider keys. This is same-origin browser storage, not protection
+against compromised same-origin scripts. Registry and CryptoAPI provider files
+are excluded from portable save exports; executable/DLL/OCX files are excluded
+from installation and portable exports. Memory states and detailed crash exports
+are disabled when account input, persisted provider keys, or the SDRT service
+makes the run sensitive.
+
+A Chromium test confirmed an encrypted installation record with a
+non-extractable key. First launch opened one DMM authentication connection;
+reloading the page reached the game initialization with zero new DMM connections.
+This verifies local installation continuity, not that the game can be played.
+
+Windows comparison isolated another startup blocker: a captioned hidden window
+receives posted WM_DWMNCRENDERINGCHANGED (enabled), which satisfies the input part
+of the game's wait for its audio initialization event. The same public Win32
+probe ran on Windows and sake; see
+[Windows reference run](https://github.com/a-kaibu/ippai/actions/runs/42493996944).
+The window creation notification and fractional-millisecond wait rounding now
+match that regression fixture. The game subsequently creates and shows its own
+window and sends Direct3D frames.
+
+Verified in Chromium on 2026-11-09 with the purchased MAJOKOI_DL: the title
+screen renders correctly; the prologue and the first voiced story scenes play
+with Japanese text, voice and scene changes; the in-game System/Save/Load screens
+work; a slot saved in the story survives a page reload and loads back to the same
+line, and the story continues from there. A phone-sized touch viewport also
+reached the title and prologue. Input sent while a loaded scene is still
+streaming its voice is ignored by the game itself; later input advances normally.
+
+The game's shipped `save/config.dat` places its 1280x720 window at (160,90), so
+on kura's default 1366x768 screen the window extends past the right and bottom
+edges, as it would on Windows. Add the title with
+`--env IPPAI_SCREEN=1920x1080` (any screen of at least about 1460x850 fits the
+window and its frame) to see the whole window.
+
+Other observed gaps include _mbsnbcpy_s, COM security, event logging,
 and MFC42 ordinal 1200. Their presence in an import/trace does not establish
-that each causes the current failure. The official x64 runtime and
+that each causes the current rendering failure. The official x64 runtime and
 cross-architecture interactions are untested.
 
 ## Open decisions and completion evidence
 
-The provider currently stores private key material in the installation prefix.
-Its protection and exclusion from portable library/save exports remain open. A
-browser reload must preserve one installation's keys; a library export or a
-cloned prefix must not silently become a second activated installation. Which
-files may participate in portable saves and S3 backup remains undecided until
-the vendor state can be identified. This blocks activation/storage integration,
-but does not block independent API probes.
+Provider keys and registry changes belong to the browser installation, with
+local encryption and portable-export exclusions described above. A library
+export or S3 save backup contains game saves rather than an activated copy of
+the installation. Cross-device restoration of licenses is not implemented.
 
-The user performs any required credential/serial entry in the runtime's UI;
-never embed these values or signed game-download URLs in source or trace logs.
+The library settings now supply account input to the original DMM dialog.
+Email is stored in a separate browser IndexedDB database; passwords stay in
+page memory unless the user explicitly selects encrypted persistence (AES-GCM
+with a non-exportable CryptoKey in the same browser). This does not isolate
+credentials from scripts of the app origin. Nothing is included in portable
+game-save exports or sent to a server for storage.
+
+An atomic, one-shot SharedArrayBuffer carries input to the guest UI thread.
+The receiver checks the DMM dialog layout and SHA-256 of the original SDRT
+5.0.9.0 UCOpgDlgRes.dll, UCOpgDlg.dll and SatX4.ocx before taking it. It uses
+WM_SETTEXT and queues the original Submit button; the vendor remember checkbox
+is left off. Shared and temporary input buffers are erased after use. ES_PASSWORD
+controls now draw masked characters. No licensing decision is replaced.
+
+Sensitive runs disable crash-log export and memory save states because the
+original runtime can retain plaintext in its guest heap/stack. Ordinary game
+saves are separate. Shared VFS visibility, encrypted browser restart
+persistence, visible story playback and normal game save/load across a page
+reload have been verified with the actual protected launcher.
+
+Never embed credentials, serials or signed game-download URLs in source or trace logs.
 Once dependencies are implemented, verify on a fresh prefix: official runtime
 installation, rejection without a license, purchased-license activation, game
 startup, actual play, save/load, browser restart and continued authorized play.

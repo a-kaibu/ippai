@@ -6,7 +6,7 @@ use std::{
 };
 #[cfg(target_os = "emscripten")]
 unsafe extern "C" {
-    fn sake_tls_open(timeout: u32) -> i32;
+    fn sake_tls_open(target: u32, timeout: u32) -> i32;
     fn sake_tls_write(id: i32, p: *const u8, n: usize, timeout: u32) -> i32;
     fn sake_tls_read(id: i32, p: *mut u8, n: usize, timeout: u32) -> i32;
     fn sake_tls_close(id: i32);
@@ -17,13 +17,19 @@ pub(crate) struct Socket {
     pending: VecDeque<u8>,
 }
 impl Socket {
-    pub fn open(timeout: u32) -> io::Result<Self> {
+    pub fn open(host: &str, timeout: u32) -> io::Result<Self> {
+        let target = match host {
+            "charge1.soft-denchi.jp" => 0,
+            "dlsoft.dmm.co.jp" => 1,
+            "softdenchi-doujin-api.dmm.co.jp" => 2,
+            _ => return Err(io::Error::new(io::ErrorKind::PermissionDenied, "TLS destination unavailable")),
+        };
         let timeout = timeout.clamp(100, 120000);
         #[cfg(target_os = "emscripten")]
-        let id = unsafe { sake_tls_open(timeout) };
+        let id = unsafe { sake_tls_open(target, timeout) };
         #[cfg(not(target_os = "emscripten"))]
         let id = {
-            let _ = timeout;
+            let _ = (target, timeout);
             -1
         };
         if id < 0 {

@@ -3,7 +3,7 @@
 //! (IPPAI_LOAD) around futex waits. sched_yield is in c/shim.c.
 
 use std::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use libc::{iovec, size_t, ssize_t};
 
@@ -125,17 +125,36 @@ fn load_key() -> libc::pthread_key_t {
 
 /// Every block of a thread here ends up in emscripten_futex_wait (pthread mutexes and condition
 /// variables, Rust's too); with IPPAI_LOAD set, the time outside it is counted per thread.
+static LOAD_ON: AtomicBool = AtomicBool::new(false);
+static LOAD_LOG: AtomicBool = AtomicBool::new(false);
+thread_local!(static IN_FUTEX_WRAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+/// Configure outside the futex wrapper: reading the environment or initializing
+/// OnceLock can itself wait on a futex (including from inside the allocator).
+pub fn load_init() {
+    let on = std::env::var_os("IPPAI_LOAD").is_some();
+    let log = std::env::var_os("IPPAI_LOAD_LOG").is_some();
+    if on { let _ = load_key(); }
+    LOAD_LOG.store(log, Ordering::Release);
+    LOAD_ON.store(on, Ordering::Release);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u32, max_ms: f64) -> c_int {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     extern "C" {
         fn emscripten_is_main_browser_thread() -> c_int;
     }
     // (not the page's own thread: it waits in its event loop, not here, so all of its time
     // would look busy)
-    if !*ON.get_or_init(|| std::env::var_os("IPPAI_LOAD").is_some()) || emscripten_is_main_browser_thread() != 0 || NO_LOAD.with(|c| c.get()) {
+    if !LOAD_ON.load(Ordering::Acquire) || emscripten_is_main_browser_thread() != 0 || NO_LOAD.with(|c| c.get()) {
         return __real_emscripten_futex_wait(addr, val, max_ms);
     }
+    if !IN_FUTEX_WRAP.try_with(|flag| !flag.replace(true)).unwrap_or(false) {
+        return __real_emscripten_futex_wait(addr, val, max_ms);
+    }
+    struct Reentry;
+    impl Drop for Reentry { fn drop(&mut self) { let _ = IN_FUTEX_WRAP.try_with(|flag| flag.set(false)); } }
+    let _reentry = Reentry;
     thread_local!(static SLOT: LoadSlot = {
         let i = LOAD_N.fetch_add(1, Ordering::Relaxed);
         let l = LOAD.get(i);
@@ -149,8 +168,7 @@ pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u3
     });
     // IPPAI_LOAD_LOG: every 5 s, the threads running for over a second (a check of the counting)
     static LOGGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    static LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *LOG.get_or_init(|| std::env::var_os("IPPAI_LOAD_LOG").is_some()) && !LOGGER.swap(true, Ordering::Relaxed) {
+    if LOAD_LOG.load(Ordering::Acquire) && !LOGGER.swap(true, Ordering::Relaxed) {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(5));
             let now = unsafe { emscripten_date_now() };

@@ -1371,7 +1371,12 @@ fn clock(_: &mut Ctx) -> u32 {
 fn pf<T: Unit>(fmt: u32, va: &mut VaArgs, m: crt::fmt::Mode) -> Option<Vec<T>> {
     match crate::misc::printf(&gstr::<T>(fmt), va, m) {
         Ok(s) => Some(s),
-        Err(_) => {
+        Err(error) => {
+            if crate::env_on!("SAKE_TRACE_CRT_FORMAT") {
+                let units = gstr::<T>(fmt);
+                let conversions: Vec<u32> = units.windows(2).filter(|w| w[0].code() == 37).map(|w| w[1].code()).collect();
+                eprintln!("sake: format failure {error:?} wide={} units={} conversions={conversions:?}", T::WIDE, units.len());
+            }
             set_errno(22);
             None
         }
@@ -3708,6 +3713,36 @@ fn _mbsrchr(c: &mut Ctx) -> u32 {
     }
     mb_chars(&s).iter().rev().find(|x| x.1 == ch).map_or(0, |x| p + x.0 as u32)
 }
+fn _mbsstr(c: &mut Ctx) -> u32 {
+    let (p, q) = (c.a(0), c.a(1));
+    if p == 0 || q == 0 { set_errno(22); return 0; }
+    let (haystack, needle) = (cstr(p), cstr(q));
+    if needle.is_empty() { return p; }
+    mb_chars(&haystack).into_iter().find(|(i, _)| haystack[*i..].starts_with(&needle))
+        .map_or(0, |(i, _)| p + i as u32)
+}
+fn _mbstok_s(c: &mut Ctx) -> u32 {
+    let (source, delimiters, context) = (c.a(0), c.a(1), c.a(2));
+    if delimiters == 0 || context == 0 { set_errno(22); return 0; }
+    let p = if source != 0 { source } else { mem::rp(context) };
+    if p == 0 { set_errno(22); return 0; }
+    let text = cstr(p);
+    let delimiters: Vec<u32> = mb_chars(&cstr(delimiters)).into_iter().map(|(_, ch)| ch).collect();
+    let chars = mb_chars(&text);
+    let Some(first) = chars.iter().position(|(_, ch)| !delimiters.contains(ch)) else {
+        mem::wp(context, p + text.len() as u32); return 0;
+    };
+    let start = chars[first].0;
+    if let Some(next) = (first..chars.len()).find(|&i| delimiters.contains(&chars[i].1)) {
+        let at = chars[next].0;
+        let end = chars.get(next + 1).map_or(text.len(), |(i, _)| *i);
+        mem::fill(p + at as u32, (end - at) as u32, 0);
+        mem::wp(context, p + end as u32);
+    } else {
+        mem::wp(context, p + text.len() as u32);
+    }
+    p + start as u32
+}
 fn _mbsinc(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     p + if crate::text::is_lead(r8(p)) && r8(p + 1) != 0 { 2 } else { 1 }
@@ -3913,7 +3948,7 @@ pub fn init() {
     reg!(strcpy_s, wcscpy_s, strcat_s, wcscat_s, wcsncpy_s);
     reg!(_itoa_s, _ultoa_s, _i64toa_s, _ui64toa_s);
     reg!(puts, putchar, setvbuf, _strrev, _ultoa, _i64toa, _ui64toa, _atoi64, div, _isnan, _finite, _fpclass, _hypot,
-        _ecvt, _fcvt, _gcvt, _mbslen, _mbschr, _mbsrchr, _mbsinc, _mbsnextc, _ismbcspace, _mbctohira, _mbctokata,
+        _ecvt, _fcvt, _gcvt, _mbslen, _mbschr, _mbsrchr, _mbsstr, _mbstok_s, _mbsinc, _mbsnextc, _ismbcspace, _mbctohira, _mbctokata,
         _mbcjistojms, _mbcjmstojis, _mbsupr, _mbslwr, _setmbcp, _getmbcp, asctime);
     implement("msvcrt", "ldiv", div);
     reg!(strncpy_s, _mbsnbcpy_s, ___lc_codepage_func, ___lc_locale_name_func, ___lc_handle_func, _seh_filter_exe);

@@ -1,8 +1,8 @@
 // This independent worker owns the WebSocket event loop while a guest pthread
 // blocks. It sees only TLS records, never HTTP requests or account credentials.
-function ippaiTlsSocketWorker() {
+function ippaiTlsSocketWorker(channel) {
   const node=typeof process==='object'&&!!process.versions?.node;
-  const port=node?require('worker_threads').parentPort:self;
+  const port=channel||(node?require('worker_threads').parentPort:self);
   let ws,ctl,rx,tx,pending=false,opening=true,closed=false,failed=false,queue=[],queued=0;
   const complete=(result)=>{Atomics.store(ctl,1,result);Atomics.add(ctl,0,1);Atomics.notify(ctl,0);};
   const receive=()=>{
@@ -30,5 +30,23 @@ function ippaiTlsSocketWorker() {
     if(d.op==='recv'){pending=true;receive();return;}
     if(d.op==='close'){closed=true;ws?.close();queue=[];queued=0;receive();}
   };
-  if(node)port.on('message',message);else self.onmessage=e=>message(e.data);
+  if(node)port.on('message',message);else port.onmessage=e=>message(e.data);
+}
+
+// Chromium needs the creating worker to yield while a nested worker boots.
+// Guest pthreads immediately Atomics.wait, so only the page creates workers.
+// Each pthread receives a broker port; each TLS socket gets its own channel.
+var ippaiTlsBroker = null;
+var ippaiTlsPort = null;
+function ippaiTlsConnect() {
+  if (!ippaiTlsBroker) {
+    const source = ippaiTlsSocketWorker.toString() +
+      ';self.onmessage=e=>{const port=e.data.port;port.onmessage=m=>ippaiTlsSocketWorker(m.data.port);};';
+    const blob = URL.createObjectURL(new Blob([source], {type:'text/javascript'}));
+    ippaiTlsBroker = new Worker(blob);
+    URL.revokeObjectURL(blob);
+  }
+  const channel = new MessageChannel();
+  ippaiTlsBroker.postMessage({port:channel.port1}, [channel.port1]);
+  return channel.port2;
 }

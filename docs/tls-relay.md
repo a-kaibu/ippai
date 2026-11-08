@@ -9,7 +9,7 @@ vendor runtime remains responsible for authentication and licensing.
 Expose `GET /net/tls/soft-denchi` as a WebSocket on the authenticated app listener.
 The client must select `ippai.tls.v1`. Binary messages carry a byte stream;
 message boundaries have no meaning to TLS. The server connects only to
-`charge1.soft-denchi.jp:443` and forwards bytes in both directions. DNS results
+one of the fixed official destinations listed below, on port 443, and forwards bytes in both directions. DNS results
 are checked before connecting to those exact resolved addresses. No HTTP proxy,
 HTTP header rewriting, upstream TLS termination or licensing responses live in
 the server. It cannot decrypt application data from a correctly verifying client.
@@ -33,8 +33,19 @@ Allow at most eight active/pending tunnels per server, 64 KiB WebSocket messages
 per tunnel. DNS/connect timeouts are bounded. Connections drop rather than retry
 or replay authentication writes. The server does not persist or log payloads.
 
-A later endpoint needs a separately reviewed fixed destination; accepting an
-arbitrary hostname or URL from the browser is out of scope.
+The fixed destinations are now:
+
+| Route target | Official host (port 443) |
+| --- | --- |
+| `soft-denchi` | `charge1.soft-denchi.jp` |
+| `dmm-softdenchi` | `dlsoft.dmm.co.jp` |
+| `dmm-doujin-softdenchi` | `softdenchi-doujin-api.dmm.co.jp` |
+
+The two DMM destinations are present in the original SDRT dialog modules (UCOpgDlg.dll and SatX4.ocx). The actual
+DMM login uses a different destination from the Soft Denchi controller, so
+the former single-destination transport rejected it before sending anything.
+Wasm selects an integer target from this allowlist and verifies TLS for that
+exact hostname. No browser-supplied hostname, port or URL is accepted by the server.
 
 ## Verification and remaining work
 
@@ -73,8 +84,35 @@ fixed official HTTPS destination. The earlier plaintext JSON relay is no
 longer linked into sake. ring's Emscripten RNG cfg fix is documented in
 `vendor/ring/IPPAI-PATCH.md`.
 
-This is a work-in-progress checkpoint requested for commit/push. Wasm builds
-are checked separately from functionality. End-to-end Wasm/browser TLS tests,
-HTTP framing edge-case coverage, cookie/session integration, and actual licensed
-play remain unverified or incomplete. Do not interpret this checkpoint as a
-working Android authentication release.
+This section described an earlier work-in-progress checkpoint. Licensed play
+through this transport has since been verified in Chromium (docs/sdrt.md).
+HTTP framing edge-case coverage and real Android devices remain unverified.
+
+## Browser transport verification after the checkpoint
+
+A real WinINet HEAD probe now completes in Chromium/Wasm through the ippai
+WebSocket route, with rustls verification, and receives HTTP 200 from the
+official controller. Node/Wasm does too. Creating a nested WebSocket worker
+and immediately blocking its parent pthread prevented Chromium from starting
+the nested worker. The page now creates a broker worker before guest threads
+block; each pthread receives a broker MessagePort and each TLS exchange its
+own channel. The broker still handles only ciphertext.
+
+This probe verifies communication, not an account or a license. Actual title
+authentication and subsequent play must be reported separately.
+
+## Account integration verification
+
+The actual MAJOKOI_DL title takes input saved in the React settings dialog,
+starts its real service/helper processes in Chromium, and sends authentication
+through the original runtime to the DMM endpoint. The earlier charge error 1 was
+traced to a compatibility bug in ANSI-to-wide buffer handling. After the API,
+formatter, Netbios and path corrections, the vendor runtime completes charging
+exchanges with the official server and starts the real game executable.
+
+The browser's encrypted installation state survives page reload: a test observed
+one DMM connection on first activation and none on reload while game
+initialization still proceeded. This verifies transport and installation
+continuity. Correct visible gameplay and Android testing remain incomplete; see
+[sdrt.md](sdrt.md) for current evidence and limitations. Credentials and response
+bodies are not recorded in application logs or source.

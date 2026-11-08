@@ -1924,7 +1924,13 @@ fn SysAllocString(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 {
         return 0;
     }
-    bstr_alloc(&wstr(c.a(0)))
+    let chars = wstr(c.a(0));
+    let b = bstr_alloc(&chars);
+    // Lengths only: Automation arguments can contain passwords or license tokens.
+    if crate::env_on!("SAKE_TRACE_AUTOMATION") {
+        eprintln!("sake: Automation allocate units={} bytes={} pointer={b:x}", chars.len(), r32(b - 4));
+    }
+    b
 }
 fn SysAllocStringLen(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
@@ -1963,7 +1969,11 @@ fn SysStringLen(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 {
         0
     } else {
-        r32(c.a(0) - 4) / 2
+        let len = r32(c.a(0) - 4) / 2;
+        if crate::env_on!("SAKE_TRACE_AUTOMATION") {
+            eprintln!("sake: Automation length units={len} pointer={:x}", c.a(0));
+        }
+        len
     }
 }
 fn SysStringByteLen(c: &mut Ctx) -> u32 {

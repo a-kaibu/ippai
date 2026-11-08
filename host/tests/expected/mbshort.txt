@@ -1,0 +1,4 @@
+short ascii: 0 122 1 1
+MFC BSTR: 5 1
+short dbcs: 0 122 1 1
+full: 3 1 1

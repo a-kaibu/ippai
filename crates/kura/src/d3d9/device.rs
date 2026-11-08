@@ -815,7 +815,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
     p[5] = 0;
     write_pp(pp, &p);
     if d.trace {
-        eprintln!("d3d9: device {}x{} format {:#x} window {:?}", p[0], p[1], p[2], rect);
+        eprintln!("d3d9: device {}x{} format {:#x} window {:?} windowed {}", p[0], p[1], p[2], rect, p[8]);
     }
     let obj_addr = d.new_obj(IF_DEVICE, 0, Data::Device);
     let obj = d.id_of(obj_addr);

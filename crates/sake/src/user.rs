@@ -905,6 +905,7 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         flags = 0x1 | 0x4 | 0x20;
     }
     let _ = id;
+    let text = if edit && style & 0x20 != 0 { vec![b'*' as u16; text.len()] } else { text };
     tr.write(rc);
     crate::gdi::draw_text(dc, &text, rc, flags);
     gcall(c, "user32", "EndPaint", &[h, ps]);
@@ -1551,6 +1552,14 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     }
     if style & 0x1000_0000 != 0 {
         show(c, h, 1);
+    }
+    // The compositor takes ownership of a caption's non-client rendering even
+    // for a hidden window. Windows posts WM_DWMNCRENDERINGCHANGED here (wParam
+    // TRUE), leaving input available to MsgWaitForMultipleObjects before ShowWindow.
+    // Reference: Windows startup probe, actions/runs/42493375958; the notification
+    // describes our composed window frame, independently of any guest wait.
+    if !child && style & 0x00c0_0000 == 0x00c0_0000 {
+        post(h, 0x31f, 1, 0);
     }
     h
 }
@@ -2597,6 +2606,9 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
         }
         0xc => {
             let t = if lp == 0 { Vec::new() } else if wide { wstr(lp) } else { a2w(&cstr(lp)) };
+            if let Some((parent, id)) = with(|s| s.wins.get(&h).map(|w| (w.parent, w.id))) {
+                sdrt_login::status(parent, id, &t);
+            }
             let top = with(|s| {
                 s.wins.get_mut(&h).is_some_and(|w| {
                     w.text = t;
@@ -3145,7 +3157,9 @@ fn msg_wait(c: &mut Ctx, hs: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -
                 return r;
             }
         }
-        let left = deadline.map_or(0xffff_ffff, |d| d.saturating_duration_since(Instant::now()).as_millis() as u32);
+        // Round remaining fractional milliseconds up: truncation made a 1 ms
+        // wait return immediately and turned startup waits into busy loops.
+        let left = deadline.map_or(0xffff_ffff, |d| d.saturating_duration_since(Instant::now()).as_nanos().div_ceil(1_000_000) as u32);
         if left == 0 {
             return TIMEOUT;
         }
@@ -5820,6 +5834,9 @@ fn du(x: i32, y: i32) -> (i32, i32) {
     ((x * 6 + 2) / 4, (y * 13 + 4) / 8)
 }
 
+#[path = "sdrt_login.rs"]
+mod sdrt_login;
+
 fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32, modal: bool) -> u32 {
     let ex = r16(t) == 1 && r16(t + 2) == 0xffff;
     let (style, exstyle, n, mut p) = if ex { (r32(t + 12), r32(t + 8), r16(t + 16) as u32, t + 18) } else { (r32(t), r32(t + 4), r16(t + 8) as u32, t + 10) };
@@ -5911,6 +5928,7 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
     if is_window(dlg) && (modal || style & 0x1000_0000 != 0) && !DLG_END.lock().unwrap().get_or_insert_with(HashMap::default).contains_key(&dlg) {
         show(c, dlg, 5);
     }
+    sdrt_login::fill(c, dlg, inst);
     dlg
 }
 
@@ -6047,6 +6065,7 @@ fn set_item_text(c: &mut Ctx, h: u32, id: u32, t: Vec<u16>) -> u32 {
     if ch == 0 {
         return 0;
     }
+    sdrt_login::status(h, id, &t);
     with(|s| s.wins.get_mut(&ch).map(|w| w.text = t));
     invalidate(ch, None, true);
     let _ = c;

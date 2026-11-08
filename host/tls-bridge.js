@@ -8,17 +8,24 @@ addToLibrary({
     return Atomics.load(socket.ctl,1);
   },
   sake_tls_open__deps:['$sakeTlsSockets','$sakeTlsWait'],
-  sake_tls_open__sig:'ii',
-  sake_tls_open:(timeout) => {
+  sake_tls_open__sig:'iii',
+  sake_tls_open:(target,timeout) => {
     try{
-      const url=ENVIRONMENT_IS_NODE?ENV.SAKE_TLS_RELAY:vnvmTlsRelay;
-      const address=new URL(url);if(!['ws:','wss:'].includes(address.protocol))return -1;
-      if(!ENVIRONMENT_IS_NODE){const expected=new URL(vnvmTlsRelay);if(address.origin!==expected.origin||address.pathname!=='/net/tls/soft-denchi')return -1;}
+      const name=['soft-denchi','dmm-softdenchi','dmm-doujin-softdenchi'][target];if(!name)return -1;
+      const address=new URL(ENVIRONMENT_IS_NODE?process.env.SAKE_TLS_RELAY:vnvmTlsRelay);if(!['ws:','wss:'].includes(address.protocol))return -1;
+      address.pathname='/net/tls/'+name;address.search='';address.hash='';const url=address.href;
+      if(!ENVIRONMENT_IS_NODE){const expected=new URL(vnvmTlsRelay);if(address.origin!==expected.origin)return -1;}
       const shared=new SharedArrayBuffer(16+2*65536),ctl=new Int32Array(shared,0,4);
       const source='('+ippaiTlsSocketWorker.toString()+')()';
-      let worker;if(ENVIRONMENT_IS_NODE){worker=new(require('worker_threads').Worker)(source,{eval:true});worker.on('error',() => {});}else{const blob=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));worker=new Worker(blob);URL.revokeObjectURL(blob);}
+      let worker;if(ENVIRONMENT_IS_NODE){worker=new(require('worker_threads').Worker)(source,{eval:true});worker.on('error',() => {});}else{
+        if(!ippaiTlsPort)return -1;
+        const channel=new MessageChannel();
+        ippaiTlsPort.postMessage({port:channel.port1},[channel.port1]);
+        worker=channel.port2;
+        worker.terminate=() => {worker.postMessage({op:'close'});worker.close();};
+      }
       const socket={worker,ctl,tx:new Uint8Array(shared,16,65536),rx:new Uint8Array(shared,16+65536,65536)};
-      worker.postMessage({op:'open',url,shared,origin:address.origin.replace(/^ws/,'http'),token:ENVIRONMENT_IS_NODE?ENV.SAKE_TLS_TOKEN:undefined});
+      worker.postMessage({op:'open',url,shared,origin:address.origin.replace(/^ws/,'http'),token:ENVIRONMENT_IS_NODE?process.env.SAKE_TLS_TOKEN:undefined});
       if(sakeTlsWait(socket,0,timeout)!==1){worker.terminate();return -1;}
       const id=sakeTlsSockets.next++;sakeTlsSockets.sockets.set(id,socket);return id;
     }catch{return -1;}

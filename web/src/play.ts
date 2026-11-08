@@ -67,6 +67,9 @@ import {
   type StateInfo,
 } from "./savestate";
 import { toast } from "sonner";
+import { accountInput } from "./account-settings";
+import { keepInstallation, loadInstallation } from "./installation";
+import { joinRecords, portablePath, selectRecords } from "./file-records";
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
@@ -267,7 +270,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     `build: ${WASM} ${version}, translator ${await jitVersion}, memory ${build.memory ? "4 GB fixed" : "growing from 2.06 GB (4 GB refused)"}`,
   );
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
-  const saved = nosave ? null : await loadSaves(saveName, (m) => (log(m), toast.warning(m)));
+  const installation = await loadInstallation();
+  const saved = nosave
+    ? null
+    : selectRecords(await loadSaves(saveName, (m) => (log(m), toast.warning(m))), portablePath);
   let stateMem: WebAssembly.Memory | undefined;
   if (stateFile) {
     stateMem = await stateMemory(stateFile, build.memory);
@@ -293,7 +299,29 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const sizes = new Map<string, number>();
   for (const b of Object.values(vnvmFiles)) treeChunkSizes(new TextDecoder().decode(b), sizes);
   treesRead(sizes);
+  // Credentials stay out of vnvmEnv, URLs and log metadata. Guest stacks may
+  // retain copies, so runs with credentials cannot export crash logs or states.
+  const vnvmAccount = await accountInput().catch(() => {
+    toast.error("DMM アカウントの設定を読み込めませんでした。ゲーム内で入力してください。");
+    return null;
+  });
+  let sensitiveRun = Boolean(
+    vnvmAccount ||
+    selectRecords(installation, (path) => path.toLowerCase().includes("/microsoft/crypto/"))?.length,
+  );
+  if (sensitiveRun) recorder.suppressSensitiveRun();
+  if (stateFile && sensitiveRun) {
+    throw new Error("認証情報を含むインストールではメモリステートを復元できません。通常起動してください。");
+  }
+  let activeModule: SakeModule | undefined;
+  let rootModule: SakeModule | undefined;
+  let rootExited = false;
+  let pendingChildren = 0;
   const moduleArg = {
+    vnvmAccount,
+    // SCM/COM local servers are actual guest processes, sharing the kernel and
+    // the one-shot account input, but each having its own address space.
+    vnvmSpawn: spawn,
     vnvmFiles,
     // (sake takes the host path: Z:\\x\\y.exe is /x/y.exe)
     arguments: [
@@ -329,7 +357,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       ),
     },
     // read by kura's file system as "@saves" (host/vnfs.js); a state has its files already
-    vnvmSaves: stateMem ? null : saved,
+    vnvmSaves: stateMem ? null : joinRecords(saved, installation),
     // the canvas: a thread of the module draws into it (crates/kura/src/render, host/vngpu.js)
     vnvmCanvas: canvas.transferControlToOffscreen(),
     vnvmJit: await jit,
@@ -348,7 +376,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     onExit: (code: number) => {
       console.log(`exit code ${code}`);
       stopPlay?.();
-      exited = true;
+      rootExited = true;
+      exited = childProcesses.size === 0 && pendingChildren === 0;
     },
     printErr: (line: string) => {
       console.warn(line);
@@ -360,13 +389,145 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       if (line.startsWith("d3d9 stats")) statsLine(1, line);
     },
   };
+  const childProcesses = new Set<SakeModule>();
+  function spawn(
+    request: { pid: number; exe: string },
+    kernel: SharedArrayBuffer,
+    sharedFs: SharedArrayBuffer,
+  ): void {
+    // A manually entered official login also leaves keys and credentials in
+    // guest memory. Disable memory exports before its service can authenticate.
+    if (/(?:^|[/\\])UCManSvc\.exe$/i.test(request.exe)) {
+      sensitiveRun = true;
+      recorder?.suppressSensitiveRun();
+      setUi({ states: null });
+    }
+    pendingChildren++;
+    const surface = document.createElement("canvas");
+    surface.className = "process-screen";
+    surface.dataset.pid = String(request.pid);
+    surface.style.display = "none";
+    surface.style.pointerEvents = "none";
+    canvas.after(surface);
+    let child: SakeModule | undefined;
+    let finished = false;
+    let settled = false;
+    let rect = 0;
+    let observer: ResizeObserver | undefined;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const settle = () => {
+      if (!settled) {
+        settled = true;
+        pendingChildren--;
+      }
+    };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearInterval(timer);
+      observer?.disconnect();
+      // onExit/onAbort run after Emscripten has stopped guest calls. Calling
+      // _free here would abort again and recursively enter this callback.
+      rect = 0;
+      surface.remove();
+      if (child) childProcesses.delete(child);
+      if (activeModule === child && rootModule && !rootExited) {
+        activeModule = rootModule;
+        (window as unknown as { vnvmSake: SakeModule }).vnvmSake = rootModule;
+        void audio.then((out) => out.attach(rootModule!));
+      }
+      if (rootExited && !childProcesses.size && !pendingChildren) exited = true;
+    };
+    void factory({
+      ...moduleArg,
+      arguments: [request.exe],
+      vnvmKernel: kernel,
+      vnvmFs: sharedFs,
+      vnvmCanvas: surface.transferControlToOffscreen(),
+      wasmMemory: build.memory
+        ? new WebAssembly.Memory({ initial: 65535, maximum: 65535, shared: true })
+        : undefined,
+      vnvmEnv: { ...moduleArg.vnvmEnv, SAKE_PID: String(request.pid) },
+      onExit: finish,
+      onAbort: () => {
+        finish();
+        toast.error("起動したプログラムが停止しました。");
+      },
+      quit: () => {},
+    })
+      .then((module) => {
+        settle();
+        child = module;
+        if (finished) {
+          if (rootExited && !childProcesses.size && !pendingChildren) exited = true;
+          return;
+        }
+        childProcesses.add(module);
+        module._vnhost_render_resize(
+          Math.floor(canvas.clientWidth * devicePixelRatio),
+          Math.floor(canvas.clientHeight * devicePixelRatio),
+        );
+        module._vnhost_render_start();
+        rect = module._malloc(16);
+        timer = setInterval(() => {
+          const windows = module._vnhost_display_windows?.(rect, 1) ?? 0;
+          surface.dataset.windows = String(windows);
+          if (!windows) return;
+          clearInterval(timer);
+          module._free(rect);
+          rect = 0;
+          surface.style.display = "block";
+          activeModule = module;
+          (window as unknown as { vnvmSake: SakeModule }).vnvmSake = module;
+          const resize = () =>
+            module._vnhost_render_resize(
+              Math.floor(canvas.clientWidth * devicePixelRatio),
+              Math.floor(canvas.clientHeight * devicePixelRatio),
+            );
+          resize();
+          observer = new ResizeObserver(resize);
+          observer.observe(canvas);
+          module._vnhost_render_start();
+          watch(
+            module,
+            () => activeModule === module,
+            () => !finished,
+          );
+          void audio.then((out) => out.attach(module));
+        }, 100);
+      })
+      .catch(() => {
+        settle();
+        finish();
+        toast.error("プログラムを起動できませんでした。");
+      });
+  }
   log(`${run} を起動中`);
   const sake = await factory(moduleArg);
+  rootModule = sake;
+  activeModule ??= sake;
+  keepInstallation(sake as unknown as SavesModule, installation, () =>
+    toast.error("インストール状態をこの端末に保存できませんでした。"),
+  );
+  if (vnvmAccount) {
+    const state = new Int32Array(vnvmAccount, 0, 1);
+    const until = Date.now() + 180_000;
+    const timer = setInterval(() => {
+      const result = Atomics.load(state, 0);
+      if (result < 0) {
+        toast.error(`ソフト電池の認証に失敗しました（公式ランタイムのエラーコード ${-result - 1}）。`);
+        clearInterval(timer);
+      } else if (Date.now() >= until || exited) {
+        clearInterval(timer);
+        new Uint8Array(vnvmAccount, 4).fill(0);
+      }
+    }, 500);
+  }
   if (!nosave && params.get("game")) stopPlay = trackPlay(params.get("game")!);
   recorder.attach(sake);
   if (!nosave) saveNow = keepSaving(sake as unknown as SavesModule, saveName, saveRoots, saved);
   // for tests/play.mjs (headless Chromium can't present WebGPU canvases)
-  (window as unknown as { vnvmSake: SakeModule }).vnvmSake = sake;
+  (window as unknown as { vnvmSake: SakeModule }).vnvmSake = activeModule;
   // (tests: &grow=<MiB> takes that much of sake's memory at once while the game runs, so that
   // sake-grow.wasm's memory grows mid-run; tests/bench/suite.mjs "memory-grow")
   const grow = Number(params.get("grow"));
@@ -377,7 +538,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     console.log(`sake memory: ${mib(before)} -> ${mib(sake.wasmMemory.buffer.byteLength)} MiB`);
   }
   ahead?.(sake);
-  attachInput(sake);
+  attachInput(() => activeModule ?? sake);
   const resize = () => {
     const dpr = window.devicePixelRatio || 1;
     memGate.run(
@@ -392,9 +553,13 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   resize();
   new ResizeObserver(resize).observe(canvas);
   sake._vnhost_render_start();
-  watch(sake);
+  watch(
+    sake,
+    () => activeModule === sake,
+    () => !rootExited,
+  );
   (await audio).attach(sake);
-  if (!nosave) attachStates(sake as unknown as SnapModule, saveName, build.name);
+  if (!nosave && !sensitiveRun) attachStates(sake as unknown as SnapModule, saveName, build.name);
 }
 
 /**
@@ -599,7 +764,7 @@ function readAhead(
 }
 
 /** With the module drawing: the page's events for its frames (vnvm-frame), and the exit. */
-function watch(sake: SakeModule): void {
+function watch(sake: SakeModule, active: () => boolean = () => true, live: () => boolean = () => true): void {
   const info = sake._malloc(32) >>> 0;
   let serial = 0;
   // Siglus movies: decoded here for the guest (web/src/video.ts)
@@ -609,12 +774,13 @@ function watch(sake: SakeModule): void {
   if (typeof AudioDecoder !== "undefined") new AudioDecode(sake, (l) => (console.log(l), recorder?.note(l)));
   const frame = () => {
     if (exited) return closeGame();
+    if (!live()) return;
     // (a state is being taken: the memory stays as it is)
     if (memGate.closed) return void requestAnimationFrame(frame);
     video?.tick();
     sake._vnhost_render_info(info);
     const [s, bits, width, height] = Array.from(new Uint32Array(sake.wasmMemory.buffer, info, 4));
-    if (s !== serial && width && height) {
+    if (active() && s !== serial && width && height) {
       serial = s!;
       // game.html looks at the frames
       dispatchEvent(new CustomEvent("vnvm-frame", { detail: { heap: sake.HEAPU8, bits, width, height } }));
@@ -625,10 +791,10 @@ function watch(sake: SakeModule): void {
   requestAnimationFrame(frame);
 }
 
-function attachInput(sake: SakeModule): void {
+function attachInput(current: () => SakeModule): void {
   // (a key pressed while a state is taken: given to the game after, memgate.ts)
   const push = (kind: number, x: number, y: number, data: number) =>
-    memGate.run(() => void sake._vnhost_render_input(kind, x, y, data));
+    memGate.run(() => void current()._vnhost_render_input(kind, x, y, data));
   // canvas pixels: the module maps them to the screen
   const toFrame = (e: { clientX: number; clientY: number }): [number, number] => {
     const b = canvas.getBoundingClientRect();

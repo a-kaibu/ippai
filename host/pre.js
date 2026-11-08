@@ -23,6 +23,8 @@ var IPPAI_KERNEL_BYTES = 32 << 20;
 var vnvmTrees = null;
 // The app origin, copied into pthreads whose location may be a blob URL.
 var vnvmTlsRelay = null;
+var vnvmAccount = null;
+var vnvmFs = null;
 Module.preInit = [].concat(Module.preInit || [], () => {
   if (ENVIRONMENT_IS_PTHREAD) return;
   const f = ENVIRONMENT_IS_NODE && process.env.IPPAI_JIT_FILE;
@@ -34,6 +36,8 @@ Module.preInit = [].concat(Module.preInit || [], () => {
       if (e.code != 'ENOENT') err(`vnjit: ${f}: ${e}`);
     }
   }
+  vnvmAccount = Module.vnvmAccount || null;
+  vnvmFs = Module.vnvmFs || (!ENVIRONMENT_IS_NODE ? new SharedArrayBuffer(64 << 20) : null);
   vnvmJitBundle = Module.vnvmJit || null;
   vnvmTrees = Module.vnvmFiles || null;
   if (!ENVIRONMENT_IS_NODE) { const u = new URL("/net/tls/soft-denchi", location.href); u.protocol = u.protocol === "https:" ? "wss:" : "ws:"; vnvmTlsRelay = u.href; }
@@ -51,14 +55,15 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     W.prototype.vnvmPost = W.prototype.postMessage;
     W.prototype.postMessage = function (m, ...rest) {
       if (m && m.cmd === 'load') {
-        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay };
+        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay, vnvmAccount, vnvmFs };
         // (what the thread asks of the host: to start a process)
-        const ask = (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel);
+        const ask = (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel, vnvmFs);
         if (ENVIRONMENT_IS_NODE) this.on('message', ask);
         else this.addEventListener('message', (e) => ask(e.data));
         if (!ENVIRONMENT_IS_NODE) {
           m.vnvmFetchPort = ippaiFetchConnect();
-          rest[0] = [...(rest[0] || []), m.vnvmFetchPort];
+          m.vnvmTlsPort = ippaiTlsConnect();
+          rest[0] = [...(rest[0] || []), m.vnvmFetchPort, m.vnvmTlsPort];
         }
       }
       return this.vnvmPost(m, ...rest);
@@ -72,8 +77,11 @@ if (!ENVIRONMENT_IS_PTHREAD) {
       vnvmKernel = d.vnvmKernel || null;
       vnvmCanSpawn = !!d.vnvmCanSpawn;
       vnvmTlsRelay = d.vnvmTlsRelay || null;
+      vnvmAccount = d.vnvmAccount || null;
+      vnvmFs = d.vnvmFs || null;
       if (d.vnvmTrees) Module.vnvmFiles = d.vnvmTrees;
       if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;
+      if (d.vnvmTlsPort) ippaiTlsPort = d.vnvmTlsPort;
     }
   };
   if (ENVIRONMENT_IS_NODE) require('worker_threads').parentPort.on('message', take);

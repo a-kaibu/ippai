@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use libc::size_t;
 
+mod shared;
+
 type Ino = u32;
 type Hash = [u8; 16];
 
@@ -64,6 +66,7 @@ struct Node {
     mode: u32,
     mtime: i64,
     nlink: u32,
+    open_refs: u32,
 }
 
 struct Handle {
@@ -80,6 +83,8 @@ struct Fs {
     next_handle: u32,
     /// free slots in `nodes`
     free: Vec<Ino>,
+    #[allow(dead_code)]
+    shared_generation: u32,
 }
 
 static FS: Mutex<Option<Fs>> = Mutex::new(None);
@@ -114,7 +119,7 @@ static CHANGES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 /// only then (an export holds the file system's lock and copies every written file).
 #[no_mangle]
 pub extern "C" fn vnhost_vfs_changes() -> u32 {
-    CHANGES.load(std::sync::atomic::Ordering::Relaxed)
+    CHANGES.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(shared::generation())
 }
 
 #[no_mangle]
@@ -122,8 +127,9 @@ pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_
     let roots = CStr::from_ptr(roots).to_string_lossy().into_owned();
     let mut out = Vec::new();
     {
-        let g = FS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(fs) = g.as_ref() {
+        let mut g = FS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(fs) = g.as_mut() {
+            let _shared = shared::Guard::enter(fs);
             for r in roots.split(':').filter(|r| !r.is_empty()) {
                 fs.export(&clean(r), &mut out);
             }
@@ -152,7 +158,11 @@ fn with<R>(f: impl FnOnce(&mut Fs) -> R) -> R {
         }
         g = FS.lock().unwrap_or_else(|e| e.into_inner());
     }
-    f(g.as_mut().unwrap())
+    let fs = g.as_mut().unwrap();
+    let shared = shared::Guard::enter(fs);
+    let result = f(fs);
+    shared.publish(fs);
+    result
 }
 
 static LOADING: Mutex<()> = Mutex::new(());
@@ -487,7 +497,7 @@ impl Fs {
 
     fn add(&mut self, data: Data, mode: u32, mtime: i64) -> Ino {
         CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let n = Node { nlink: if matches!(data, Data::Dir(_)) { 2 } else { 1 }, data, mode, mtime };
+        let n = Node { nlink: if matches!(data, Data::Dir(_)) { 2 } else { 1 }, data, mode, mtime, open_refs: 0 };
         if let Some(i) = self.free.pop() {
             self.nodes[i as usize] = Some(n);
             return i;
@@ -589,6 +599,10 @@ impl Fs {
         let id = self.next_handle;
         self.next_handle += 1;
         self.handles.insert(id, Handle { ino, pos: 0, flags });
+        if let Some(n) = self.node_mut(ino) {
+            n.open_refs += 1;
+            CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         id
     }
 
@@ -604,7 +618,7 @@ impl Fs {
     /// Frees a node once no name or open handle refers to it.
     fn gc(&mut self, ino: Ino) {
         let linked = self.node(ino).is_some_and(|n| n.nlink > 0 && !(matches!(n.data, Data::Dir(_)) && n.nlink < 2));
-        if !linked && !self.handles.values().any(|h| h.ino == ino) {
+        if !linked && self.node(ino).is_none_or(|n| n.open_refs == 0) {
             if let Some(slot @ Some(_)) = self.nodes.get_mut(ino as usize) {
                 *slot = None;
                 self.free.push(ino);
@@ -1380,6 +1394,10 @@ pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
 pub(crate) fn release(h: u32) {
     with(|fs| {
         if let Some(handle) = fs.handles.remove(&h) {
+            if let Some(n) = fs.node_mut(handle.ino) {
+                n.open_refs = n.open_refs.saturating_sub(1);
+                CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             fs.gc(handle.ino);
         }
     })

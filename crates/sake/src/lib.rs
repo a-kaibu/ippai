@@ -662,6 +662,8 @@ fn setup64(cpu: &mut Cpu, start: u32, param: u32) {
 
 /// The program: `exe` is its host path.
 pub fn main(exe: &str, args: &[String]) -> ! {
+    #[cfg(target_arch = "wasm32")]
+    kura::wrap::load_init();
     if let Some(p) = std::env::var("SAKE_PID").ok().and_then(|s| s.parse::<u32>().ok()) {
         PID.store(p, Ordering::Relaxed);
         NEXT_TID.store(p + 0x10, Ordering::Relaxed);

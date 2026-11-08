@@ -109,6 +109,8 @@ enum Size {
     Short,
     /// l/w with c/s: wide
     Long,
+    /// UCRT T with c/s: the output function's character width, even in ISO mode.
+    Tchar,
 }
 
 /// Formats `fmt` (units up to its end; the caller strips the NUL) with the arguments `a`.
@@ -182,6 +184,10 @@ pub fn format<T: Unit>(fmt: &[T], m: Mode, a: &mut impl Args) -> Result<Vec<T>, 
             b'l' | b'w' => {
                 i += 1;
                 Size::Long
+            }
+            b'T' if !m.legacy => {
+                i += 1;
+                Size::Tchar
             }
             b'L' | b'j' => {
                 i += 1;
@@ -535,7 +541,7 @@ fn int_bytes(s: Size) -> u32 {
     match s {
         Size::Bytes(b) => b,
         Size::Short => 2,
-        Size::None | Size::Long => 4,
+        Size::None | Size::Long | Size::Tchar => 4,
     }
 }
 
@@ -555,6 +561,7 @@ fn char_is_wide<T: Unit>(upper: bool, size: Size, m: Mode) -> bool {
     match size {
         Size::Short => false,
         Size::Long => true,
+        Size::Tchar => T::WIDE,
         _ => {
             let own = T::WIDE && (m.legacy_wide || m.legacy);
             if upper { !own } else { own }
@@ -1089,6 +1096,18 @@ mod tests {
             if !f.contains(&b'$') {
                 proptest::prop_assert_eq!(got, format(&f, Mode::ucrt(false, 0), &mut seq(&vals)));
             }
+        }
+    }
+
+    #[test]
+    fn tchar_modifier_follows_output_width_including_uppercase() {
+        for options in [0, 4, 0x24] {
+            let mode = Mode::ucrt(false, options);
+            let mut args = List { ints: vec![1, 2, 0x3042, 0x3044], strs: vec![vec![0x3046], vec![0x3048]], floats: vec![], stored: vec![] };
+            let fmt: Vec<u16> = "%Ts%TS%Tc%TC".encode_utf16().collect();
+            assert_eq!(format(&fmt, mode, &mut args).unwrap(), [0x3046, 0x3048, 0x3042, 0x3044]);
+            let mut args = List { ints: vec![1, 2, 65, 66], strs: vec![vec![67], vec![68]], floats: vec![], stored: vec![] };
+            assert_eq!(format(b"%Ts%TS%Tc%TC", mode, &mut args).unwrap(), b"CDAB");
         }
     }
 

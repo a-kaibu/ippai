@@ -317,6 +317,15 @@ export class FlightRecorder {
   private aborted = false;
   private t0 = Date.now();
   private perf = new Perf();
+  private sensitive = false;
+
+  /** Authentication can leave secrets in guest stacks; never export those logs. */
+  suppressSensitiveRun(): void {
+    this.sensitive = true;
+    this.wasm = null;
+    this.info = null;
+    this.page = [];
+  }
 
   constructor(game: string, meta: Record<string, string>) {
     const rand = Math.random().toString(36).slice(2, 6);
@@ -383,6 +392,7 @@ export class FlightRecorder {
 
   /** A line in the page's log. */
   note(line: string): void {
+    if (this.sensitive) return;
     this.page.push(`${clock()} ${line}`);
     if (this.page.length > 2000) this.page.splice(0, 500);
     this.dirty = true;
@@ -405,6 +415,7 @@ export class FlightRecorder {
   }
 
   attach(wasm: Wasm): void {
+    if (this.sensitive) return;
     this.wasm = wasm;
     meter.attach(wasm);
     const p = wasm._vnhost_crashlog_info?.();
@@ -532,6 +543,7 @@ export class FlightRecorder {
   /** Writes a report to OPFS and the server; returns its name. */
   async save(kind: string, reason: string, snap?: string): Promise<string> {
     const name = `${this.id}-${kind}`;
+    if (this.sensitive) return name;
     this.reports++;
     this.note(`report ${name}: ${reason.split("\n")[0]}`);
     const text = this.report(kind, reason, snap ?? this.snapshot());
@@ -547,7 +559,7 @@ export class FlightRecorder {
 
   /** The session file (what the next page load sends if this one dies). */
   private async persist(): Promise<void> {
-    if (this.ended) return;
+    if (this.ended || this.sensitive) return;
     const i = this.info;
     const heads =
       i && this.wasm

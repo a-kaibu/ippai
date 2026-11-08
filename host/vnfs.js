@@ -10,6 +10,37 @@
 // so the browser decompresses them.
 addToLibrary({
   $vnvmLastChunk: null,
+  $vnfsSharedH: () => vnvmFs ? new Int32Array(vnvmFs, 0, 8) : null,
+  vnhost_vfs_shared_lock__deps: ['$vnfsSharedH'],
+  vnhost_vfs_shared_lock: () => {
+    const h = vnfsSharedH();
+    if (!h) return 0;
+    while (Atomics.compareExchange(h, 0, 0, 1) !== 0) {
+      if (ENVIRONMENT_IS_PTHREAD) Atomics.wait(h, 0, 1);
+      // The page's export can only wait for a short in-memory transaction;
+      // tree loading and network reads happen outside this lock.
+    }
+    return 1;
+  },
+  vnhost_vfs_shared_unlock__deps: ['$vnfsSharedH'],
+  vnhost_vfs_shared_unlock: () => { const h = vnfsSharedH(); Atomics.store(h, 0, 0); Atomics.notify(h, 0); },
+  vnhost_vfs_shared_generation__deps: ['$vnfsSharedH'],
+  vnhost_vfs_shared_generation: () => { const h = vnfsSharedH(); return h ? Atomics.load(h, 1) : 0; },
+  vnhost_vfs_shared_get__deps: ['$vnfsSharedH'],
+  vnhost_vfs_shared_get__sig: 'ppp',
+  vnhost_vfs_shared_get: (dst, cap) => {
+    const n = Atomics.load(vnfsSharedH(), 2);
+    if (n && dst && cap >= n) HEAPU8.set(new Uint8Array(vnvmFs, 32, n), dst >>> 0);
+    return n;
+  },
+  vnhost_vfs_shared_put__deps: ['$vnfsSharedH'],
+  vnhost_vfs_shared_put__sig: 'ipp',
+  vnhost_vfs_shared_put: (src, len) => {
+    if (len > vnvmFs.byteLength - 32) return 0;
+    new Uint8Array(vnvmFs, 32, len).set(HEAPU8.subarray(src >>> 0, (src >>> 0) + len));
+    const h = vnfsSharedH(); Atomics.store(h, 2, len); Atomics.add(h, 1, 1);
+    return 1;
+  },
   vnvm_fetch__deps: ['malloc', '$vnvmLastChunk'],
   // pointers are above 2GB (GLOBAL_BASE): 'p' makes them unsigned
   vnvm_fetch__sig: 'ppp',

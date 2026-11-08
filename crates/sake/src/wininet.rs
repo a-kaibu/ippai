@@ -63,9 +63,152 @@ fn edit<T>(id: u32, f: impl FnOnce(&mut Handle) -> T) -> Option<T> {
     HANDLES.lock().unwrap().as_mut()?.get_mut(&id).map(f)
 }
 fn fail(error: u32) -> u32 {
+    if crate::env_on!("SAKE_TRACE_WININET") { eprintln!("sake: WinINet error {error}"); }
     crate::k32::last_error(error);
     0
 }
+// WinINet browser-mode canonicalization (Microsoft InternetCanonicalizeUrl).
+// Query/fragment bytes are preserved; only the path is normalized/escaped.
+fn canonical_url(input: &[u8], flags: u32) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(input.len());
+    let hex = |b: u8| (b as char).to_digit(16).map(|v| v as u8);
+    let mut i = 0;
+    while i < input.len() {
+        if flags & 0x1000_0000 != 0 && input[i] == b'%' && i + 2 < input.len() {
+            if let (Some(a), Some(b)) = (hex(input[i + 1]), hex(input[i + 2])) {
+                decoded.push(a * 16 + b); i += 3; continue;
+            }
+        }
+        decoded.push(input[i]); i += 1;
+    }
+    let tail = decoded.iter().position(|b| matches!(b, b'?' | b'#')).unwrap_or(decoded.len());
+    let (path, suffix) = decoded.split_at(tail);
+    let mut path = path.to_vec();
+    if path.starts_with(b"http:") || path.starts_with(b"https:") {
+        for b in &mut path { if *b == b'\\' { *b = b'/'; } }
+    }
+    if flags & 0x0800_0000 == 0 {
+        let start = path.windows(3).position(|s| s == b"://")
+            .and_then(|n| path[n + 3..].iter().position(|b| *b == b'/').map(|p| n + 3 + p))
+            .unwrap_or(0);
+        let prefix = path[..start].to_vec();
+        let mut segments: Vec<&[u8]> = Vec::new();
+        let trailing = path.ends_with(b"/.") || path.ends_with(b"/..");
+        for part in path[start..].split(|b| *b == b'/') {
+            match part {
+                b"." => (),
+                b".." => { if segments.last().is_some_and(|s| !s.is_empty()) { segments.pop(); } },
+                _ => segments.push(part),
+            }
+        }
+        let mut normal = prefix;
+        for (n, part) in segments.iter().enumerate() { if n != 0 { normal.push(b'/'); } normal.extend_from_slice(part); }
+        if trailing && !normal.ends_with(b"/") { normal.push(b'/'); }
+        path = normal;
+    }
+    let mut out = Vec::new();
+    for b in path {
+        let escape = flags & 0x2000_0000 == 0 && if flags & 0x0400_0000 != 0 {
+            b == b' '
+        } else {
+            b <= 0x20 || b >= 0x7f || b"<>\"{}|^`".contains(&b) || b == b'%' && flags & 0x1000 != 0
+        };
+        if escape { out.extend_from_slice(format!("%{b:02X}").as_bytes()); } else { out.push(b); }
+    }
+    out.extend_from_slice(suffix);
+    out
+}
+fn canonicalize(c: &mut Ctx, wide: bool) -> u32 {
+    let (src, dst, len, flags) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if src == 0 || len == 0 || flags & !0xfe00_1000 != 0 { return fail(87); }
+    let input = if wide { string(src, true).into_bytes() } else { mem::cstr(src) };
+    if input.len() > 32768 { return fail(12005); }
+    let result = canonical_url(&input, flags);
+    if wide {
+        let Ok(text) = String::from_utf8(result) else { return fail(12005) };
+        let words: Vec<u16> = text.encode_utf16().collect();
+        if dst == 0 || r32(len) as usize <= words.len() { w32(len, words.len() as u32 + 1); return fail(122); }
+        mem::put_wstr(dst, words.len() as u32 + 1, &words); w32(len, words.len() as u32);
+    } else {
+        if dst == 0 || r32(len) as usize <= result.len() { w32(len, result.len() as u32 + 1); return fail(122); }
+        mem::put_cstr(dst, result.len() as u32 + 1, &result); w32(len, result.len() as u32);
+    }
+    1
+}
+fn InternetCanonicalizeUrlA(c: &mut Ctx) -> u32 { canonicalize(c, false) }
+fn InternetCanonicalizeUrlW(c: &mut Ctx) -> u32 { canonicalize(c, true) }
+fn crack_url(c: &mut Ctx, wide: bool) -> u32 {
+    let (src, n, flags, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if src == 0 || out == 0 || n > 32768 || flags & !0x9000_0000 != 0 { return fail(87); }
+    let x64 = mem::x64();
+    if r32(out) != if x64 { 104 } else { 60 } { return fail(87); }
+    let units: Vec<u16> = if wide {
+        if n == 0 { mem::wstr(src) } else { mem::wstrn(src, n) }
+    } else {
+        let b = if n == 0 { mem::cstr(src) } else { mem::cstrn(src, n) };
+        b.into_iter().map(u16::from).collect()
+    };
+    let len = units.len();
+    let Some(colon) = units.iter().position(|u| *u == b':' as u16) else { return fail(12005) };
+    let scheme = String::from_utf16_lossy(&units[..colon]).to_ascii_lowercase();
+    let (kind, default_port) = match scheme.as_str() {
+        "http" => (3, 80), "https" => (4, 443), "ftp" => (1, 21), "file" => (5, 0), _ => (u32::MAX, 0),
+    };
+    let mut host = colon + 1;
+    let authority = units.get(host..host + 2) == Some(&[47, 47]);
+    if authority { host += 2; }
+    let end = if authority { (host..len).find(|&i| matches!(units[i], 47 | 63 | 35)).unwrap_or(len) } else { host };
+    let mut user = (host, host);
+    let mut password = user;
+    if let Some(at) = (host..end).rev().find(|&i| units[i] == 64) {
+        let sep = (host..at).find(|&i| units[i] == 58).unwrap_or(at);
+        user = (host, sep); password = (if sep < at { sep + 1 } else { at }, at); host = at + 1;
+    }
+    let mut host_end = end;
+    let mut port = default_port;
+    if let Some(sep) = (host..end).rev().find(|&i| units[i] == 58) {
+        let bracket = units.get(host) == Some(&91);
+        if !bracket || units.get(sep.wrapping_sub(1)) == Some(&93) {
+            let Ok(value) = String::from_utf16_lossy(&units[sep + 1..end]).parse::<u16>() else { return fail(12005) };
+            host_end = sep; port = value;
+        }
+    }
+    let extra = (end..len).find(|&i| matches!(units[i], 63 | 35)).unwrap_or(len);
+    let offsets = if x64 { [8, 24, 40, 56, 72, 88] } else { [4, 16, 28, 36, 44, 52] };
+    let fields = [(0, colon), (host, host_end), user, password, (end, extra), (extra, len)];
+    let mut copies = Vec::new();
+    for (offset, (start, end)) in offsets.into_iter().zip(fields) {
+        let (ptr, capacity) = (rp(out + offset), r32(out + offset + ps()));
+        if capacity == 0 { continue; }
+        let mut value = units[start..end].to_vec();
+        if flags != 0 {
+            if ptr == 0 { return fail(87); }
+            let mut decoded = Vec::new(); let mut i = 0;
+            while i < value.len() {
+                if value[i] == 37 && i + 2 < value.len() {
+                    if let (Some(a), Some(b)) = (char::from_u32(value[i + 1] as u32).and_then(|c| c.to_digit(16)), char::from_u32(value[i + 2] as u32).and_then(|c| c.to_digit(16))) {
+                        decoded.push((a * 16 + b) as u16); i += 3; continue;
+                    }
+                }
+                decoded.push(value[i]); i += 1;
+            }
+            value = decoded;
+        }
+        if ptr != 0 && capacity as usize <= value.len() { w32(out + offset + ps(), value.len() as u32 + 1); return fail(122); }
+        copies.push((offset, ptr, start, value));
+    }
+    for (offset, ptr, start, value) in copies {
+        if ptr == 0 { mem::wp(out + offset, if value.is_empty() { 0 } else { src + start as u32 * if wide { 2 } else { 1 } }); }
+        else if wide { mem::put_wstr(ptr, value.len() as u32 + 1, &value); }
+        else { mem::put_cstr(ptr, value.len() as u32 + 1, &value.iter().map(|u| *u as u8).collect::<Vec<_>>()); }
+        w32(out + offset + ps(), value.len() as u32);
+    }
+    w32(out + if x64 { 20 } else { 12 }, kind);
+    mem::w16(out + if x64 { 36 } else { 24 }, port);
+    1
+}
+fn InternetCrackUrlA(c: &mut Ctx) -> u32 { crack_url(c, false) }
+fn InternetCrackUrlW(c: &mut Ctx) -> u32 { crack_url(c, true) }
 fn string(p: u32, wide: bool) -> String {
     if p == 0 {
         String::new()
@@ -252,12 +395,11 @@ fn HttpAddRequestHeadersW(c: &mut Ctx) -> u32 {
 }
 fn transport(r: &Request) -> Result<Response, u32> {
     let connection = &r.connection;
-    if r.flags & 0x800000 == 0
-        || !connection
-            .host
-            .eq_ignore_ascii_case("charge1.soft-denchi.jp")
-        || !matches!(connection.port, 0 | 443)
-    {
+    let host = connection.host.to_ascii_lowercase();
+    if crate::env_on!("SAKE_TRACE_WININET") {
+        eprintln!("sake: WinINet target allowed={} port={} secure={}", matches!(host.as_str(), "charge1.soft-denchi.jp" | "dlsoft.dmm.co.jp" | "softdenchi-doujin-api.dmm.co.jp"), connection.port, r.flags & 0x800000 != 0);
+    }
+    if r.flags & 0x800000 == 0 || !matches!(host.as_str(), "charge1.soft-denchi.jp" | "dlsoft.dmm.co.jp" | "softdenchi-doujin-api.dmm.co.jp") || !matches!(connection.port, 0 | 443) {
         return Err(12029);
     }
     let mut headers = r.headers.clone();
@@ -265,13 +407,13 @@ fn transport(r: &Request) -> Result<Response, u32> {
         headers.push(("User-Agent".into(), connection.session.agent.clone()));
     }
     let request = ippai_tls::Request {
-        host: "charge1.soft-denchi.jp".into(),
+        host: host.clone(),
         method: r.method.clone(),
         path: r.path.clone(),
         headers,
         body: r.body.clone(),
     };
-    let io = crate::tls_socket::Socket::open(connection.session.timeout).map_err(|_| 12029u32)?;
+    let io = crate::tls_socket::Socket::open(&host, connection.session.timeout).map_err(|_| 12029u32)?;
     let response =
         ippai_tls::exchange(io, &request, ippai_tls::default_config()).map_err(|error| -> u32 {
             use ippai_tls::{
@@ -295,6 +437,9 @@ fn transport(r: &Request) -> Result<Response, u32> {
                 _ => 12152,
             }
         })?;
+    if crate::env_on!("SAKE_TRACE_WININET") {
+        eprintln!("sake: WinINet HTTP {} body bytes {}", response.status, response.body.len());
+    }
     Ok(Response {
         status: response.status as u32,
         text: response.text,
@@ -635,6 +780,10 @@ fn InternetSetStatusCallbackW(c: &mut Ctx) -> u32 {
 pub fn init() {
     macro_rules! reg{($($name:ident),*)=>{$(api::implement("wininet",stringify!($name),$name);)*}}
     reg!(
+        InternetCanonicalizeUrlA,
+        InternetCanonicalizeUrlW,
+        InternetCrackUrlA,
+        InternetCrackUrlW,
         InternetOpenA,
         InternetOpenW,
         InternetConnectA,

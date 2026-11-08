@@ -1,6 +1,7 @@
 import { SaveTransport } from "./save-transport";
 import { withRetries } from "./net";
 import { snapping } from "./savestate";
+import { portablePath, selectRecords } from "./file-records";
 // Saved games: what the game wrote (in kura's in-memory file system) survives the page.
 // The files written under the game's folders and the prefix's user folders go to the browser's
 // origin private file system (OPFS) as one blob per game, whenever they change (checked every
@@ -149,7 +150,7 @@ export async function loadSaves(
   return local;
 }
 
-function exportSaves(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
+export function exportFiles(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
   const s = new TextEncoder().encode(`${roots.join(":")}\0`);
   const sp = m._malloc(s.length + 8) >>> 0;
   new Uint8Array(m.wasmMemory.buffer).set(s, sp);
@@ -161,6 +162,10 @@ function exportSaves(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
   m._vnhost_free(p);
   m._vnhost_free(sp);
   return out;
+}
+
+function exportSaves(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
+  return selectRecords(exportFiles(m, roots), portablePath)!;
 }
 
 function same(a: Uint8Array | null, b: Uint8Array): boolean {

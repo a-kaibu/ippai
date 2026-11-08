@@ -61,7 +61,7 @@ fn find_program(prog: &str, app: bool) -> Result<(String, String), u32> {
     }
     for w in &tries {
         if let Some(h) = files::resolve(w) {
-            if std::path::Path::new(&h).is_file() {
+            if kura::fs::metadata(&h).is_ok_and(|m| m.is_file()) {
                 return Ok((files::host_to_win(&h), h));
             }
         }

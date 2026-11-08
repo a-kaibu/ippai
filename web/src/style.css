@@ -69,7 +69,8 @@
 }
 
 /* the game's screen (WebGPU), under the UI */
-#screen {
+#screen,
+.process-screen {
   position: fixed;
   inset: 0;
   width: 100%;

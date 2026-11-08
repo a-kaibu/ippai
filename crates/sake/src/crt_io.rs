@@ -1941,10 +1941,9 @@ fn _memicmp(c: &mut Ctx) -> u32 {
     a.cmp(&b) as i32 as u32
 }
 /// _wmakepath_s(path, size, drive, dir, fname, ext): errno
-fn _wmakepath_s(c: &mut Ctx) -> u32 {
-    let (dst, size) = (c.a(0), c.a(1));
-    let part = |p: u32| if p == 0 { Vec::new() } else { wstr(p) };
-    let (drive, dir, fname, ext) = (part(c.a(2)), part(c.a(3)), part(c.a(4)), part(c.a(5)));
+fn makepath_value(c: &Ctx, wide: bool, start: u32) -> Vec<u16> {
+    let part = |p: u32| if p == 0 { Vec::new() } else if wide { wstr(p) } else { crate::text::a2w(&cstr(p)) };
+    let (drive, dir, fname, ext) = (part(c.a(start)), part(c.a(start + 1)), part(c.a(start + 2)), part(c.a(start + 3)));
     let mut out = Vec::new();
     if let Some(&d) = drive.first() {
         out.extend([d, b':' as u16]);
@@ -1962,20 +1961,51 @@ fn _wmakepath_s(c: &mut Ctx) -> u32 {
         }
         out.extend(&ext);
     }
+    out
+}
+fn makepath_s(c: &mut Ctx, wide: bool) -> u32 {
+    let (dst, size) = (c.a(0), c.a(1));
+    let out = makepath_value(c, wide, 2);
     if dst == 0 || size == 0 {
+        set_errno(EINVAL);
         return EINVAL;
     }
-    if out.len() as u32 >= size {
-        w16(dst, 0);
+    let bytes = if wide { Vec::new() } else { crate::text::w2a(&out) };
+    if (if wide { out.len() } else { bytes.len() }) as u32 >= size {
+        if wide { w16(dst, 0); } else { mem::w8(dst, 0); }
+        set_errno(34);
         return 34;
     }
-    put_units(dst, &out);
-    w16(dst + 2 * out.len() as u32, 0);
+    if wide {
+        put_units(dst, &out);
+        w16(dst + 2 * out.len() as u32, 0);
+    } else {
+        mem::write(dst, &bytes);
+        mem::w8(dst + bytes.len() as u32, 0);
+    }
     0
 }
+fn _wmakepath_s(c: &mut Ctx) -> u32 { makepath_s(c, true) }
+fn _makepath_s(c: &mut Ctx) -> u32 { makepath_s(c, false) }
+fn makepath(c: &mut Ctx, wide: bool) -> u32 {
+    let dst = c.a(0);
+    if dst == 0 { set_errno(EINVAL); return 0; }
+    let out = makepath_value(c, wide, 1);
+    if wide {
+        put_units(dst, &out);
+        w16(dst + 2 * out.len() as u32, 0);
+    } else {
+        let bytes = crate::text::w2a(&out);
+        mem::write(dst, &bytes);
+        mem::w8(dst + bytes.len() as u32, 0);
+    }
+    0
+}
+fn _makepath(c: &mut Ctx) -> u32 { makepath(c, false) }
+fn _wmakepath(c: &mut Ctx) -> u32 { makepath(c, true) }
 
 pub(super) fn init2() {
-    reg!(_mbstrlen, _memicmp, _wmakepath_s);
+    reg!(_mbstrlen, _memicmp, _wmakepath_s, _makepath_s, _makepath, _wmakepath);
 }
 
 #[cfg(test)]
