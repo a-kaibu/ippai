@@ -1,8 +1,8 @@
 api d3d9
 exe 墓多ＤＹＩＮＧＺＯＭＢＩＥＳ_体験版/zombie.exe
 seconds 30
-bytes 3651207170
-sha256 428a114cb43183bbe739dc2051f2ff89e78c57b238a5f691bb334712ea177e69
+bytes 2731905026
+sha256 34a7d25bd35abd4bba452448c18733b37c12790409b5ec18fbc058d378e05a75
 ref ghcr.io/a-kaibu/ippai-traces:b2020_akabeesoft3-32
-zst sha256:47cfeeafa4c905d7dcbe2c35200980683513fcfca764b7255768bf3c14fd96db
-zbytes 825884895
+zst sha256:bf53fc804acccee4d926be104324416c35a02e6dfdedf20802aed02370a4135a
+zbytes 595394548

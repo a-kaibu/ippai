@@ -2,7 +2,7 @@ api d3d9
 exe dl/VeritaTrial.exe.is/戦女神VERITA体験版.msi.x/Program Files/Eushully/戦女神VERITA体験版/AGE.EXE
 seconds 30
 bytes 155650
-sha256 a933a90a1f0feec0ffffa44a3a088fec48baa7919be3c716c98cbc3509bab641
+sha256 cccb028c8e0540558ea65749621bc4a27420cfd530a353427379af1924406a05
 ref ghcr.io/a-kaibu/ippai-traces:s2010_eushully_ikusa_verita-32
-zst sha256:81a47d4baff87eb6fa76826783963d1e1b67c6aeab906d6fe3be39c80eb7076e
-zbytes 9968
+zst sha256:12d41f56dad4cb0985628d94e4393300ac489784d6c1d71e4354107837a2b038
+zbytes 9964

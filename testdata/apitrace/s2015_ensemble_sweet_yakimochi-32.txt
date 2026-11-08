@@ -1,8 +1,8 @@
 api d3d9
 exe Disk1/AdvHD.exe
 seconds 30
-bytes 1049051138
-sha256 e498017195f46a926e3804b57ecff269ff82567b766ff20b39f947d0f463de3b
+bytes 914980866
+sha256 c16fef764afc1b6be63bae7554a84b7dca36d8c194bb9aa02036b263aeb30d1e
 ref ghcr.io/a-kaibu/ippai-traces:s2015_ensemble_sweet_yakimochi-32
-zst sha256:b02b60204ea3bb5ddf371ab874b190108dcb95e333a9f729714ff93695b089bc
-zbytes 632713655
+zst sha256:6753ff79474a9d517a9f55b62c3cb9889c86f3e4a814f7eeedf8ae6b9a5c3c7a
+zbytes 553719613

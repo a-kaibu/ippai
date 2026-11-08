@@ -1,8 +1,8 @@
 api d3d9
 exe アマカノ体験版　甘えてくれる恋人とのエッチなひととき編/amakano_trial.exe
 seconds 30
-bytes 731193346
-sha256 b134afcb289196641e76a6ee3bfb31c4f8a8369a13075570b127b35c408c06bf
+bytes 922189826
+sha256 cf911a915c5de9efde8ed09d69b831031ccad6c9e7d5dc9f185efc595d7c1958
 ref ghcr.io/a-kaibu/ippai-traces:b2014_azarashi_soft-32
-zst sha256:6abd283e7c8ce4370bb5c8cd955f267634f0a3d9847d127338dbc322d584c970
-zbytes 243523169
+zst sha256:7624def2204301ec52da69eb05a458fcad8808b441d984ac424be3cebd61ede5
+zbytes 311972270

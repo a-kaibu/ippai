@@ -1,8 +1,8 @@
 api d3d9
 exe kamikaze_trial_WEB/カミカゼ☆エクスプローラー！WEB体験版/cs2.exe
 seconds 30
-bytes 25776130
-sha256 2e907e240d9acf7aad4593c393382282400e923826024f640bf8e16092f0f30f
+bytes 20688898
+sha256 35edccaeadf352958706a2f1a287daf0923556e1e027ca9fb4d6ea8ecebfe38b
 ref ghcr.io/a-kaibu/ippai-traces:s2011_clochette_kamikaze-32
-zst sha256:6292da9e896564e81fe6bd5c19b80d65bfdf144f084786dabb85f128931a569b
-zbytes 8873766
+zst sha256:652c2ec27e2a697f239aa6103e8ab36fc5cdcde2ed2eb7a84df8576cdcb1690e
+zbytes 7666013

@@ -1,8 +1,8 @@
 api dxgi
 exe yukanmadam_trialedition/有閑夫人倶楽部 -体験版-/AdvHD.exe
 seconds 30
-bytes 123170818
-sha256 e782cea930600e18e83afe80b2d01b6d001940880a9f3754956d10d57aaa3e71
+bytes 159612930
+sha256 2c4022b6b739b6d81a87008cca695746b19efbbfa5bc0b77abf6ce3ec835fe07
 ref ghcr.io/a-kaibu/ippai-traces:r1_advhd-64
-zst sha256:42e2ac3d57428482565edf8f2df6e56995f90a50a056f8655c35aa6aa4e33bcc
-zbytes 38948177
+zst sha256:354ae47b46f7d38e08055d53b68cba2af206d3213c329c0bdabb63033aebecce
+zbytes 42023871

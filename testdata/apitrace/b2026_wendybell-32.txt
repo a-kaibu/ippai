@@ -1,8 +1,8 @@
 api dxgi
 exe 友恵の探偵物語～のぞき魔な私の天職～体験版/tomoe.exe
 seconds 30
-bytes 8192002
-sha256 e05b2a2190a3da84b7ab02a1b9ca50145e9855dba42bb0e09114b34125dc9bc8
+bytes 8196098
+sha256 53dbf7b95b5ee0ac69134c59a47658159bbb7e72d6dd98ce544ede5528f84abb
 ref ghcr.io/a-kaibu/ippai-traces:b2026_wendybell-32
-zst sha256:e8dbdabd7859b5c7d7ca022a806e728fc4bcfd329f9f4fd3bc815e97769bec7d
-zbytes 3988402
+zst sha256:3542d5d087090baa8f3a9e80521d563f95700b2f8a38c46050fa157df11433e3
+zbytes 3989652

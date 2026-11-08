@@ -1,8 +1,8 @@
 api d3d9
 exe ここから夏のイノセンス！ WEB体験版/GameData/cs2.exe
 seconds 30
-bytes 31633410
-sha256 55af595fb6dfcfe7fdf6317f98c6a9428210be5921a6b589cc81cc6cbcb06a00
+bytes 28803074
+sha256 ac5376bf26174e0eb3295a66d4ffe110d3488098e358a6a688e01ac5c7eda5da
 ref ghcr.io/a-kaibu/ippai-traces:s2015_clochette_kokonatsu-32
-zst sha256:d01c1a7e646ee7d694a5852fb9917785f92ddfe78f3499fd6abefdc9eb384247
-zbytes 4979290
+zst sha256:9745feaa6824f63a84a62cda7b72621dbd92a5d7154a96c7e0977e3105f54ba7
+zbytes 4634517

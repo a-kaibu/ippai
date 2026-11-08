@@ -1,8 +1,8 @@
 api dxgi
 exe リアルエロゲシチュエーション！DT体験版_2/リアルエロゲシチュエーション！DT体験版.exe
 seconds 30
-bytes 19959810
-sha256 54ab8a581b2cac8b10219807857871fd56ab4c7ffba34b4dca1b115e1bdb74d9
+bytes 19931138
+sha256 62738c868332dd1874612d4dc5470fc0fe08cefb8d63e6db3446799fac1dfe08
 ref ghcr.io/a-kaibu/ippai-traces:s2023_j_studio_reaero_dt-64
-zst sha256:614a1e5d830f98c1cb460e37077e61c1fad1498b4b86f1ac99383a2b401b3a9d
-zbytes 7448451
+zst sha256:0b554bdb9c8ff72c3347cf04f5b86a0544af88680f2ef98cb672e02cfd0a42fb
+zbytes 7428347

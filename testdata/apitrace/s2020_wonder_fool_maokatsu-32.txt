@@ -1,8 +1,8 @@
 api d3d9
 exe まおかつ！_web体験版ver1.1/まおかつ！　体験版.exe
 seconds 30
-bytes 21196802
-sha256 6e685aa9e4bd4a3f37e7da757bc2e8c61d915705c3d8f8c2ce18cb837e6e19f4
+bytes 21024770
+sha256 3a65608fd77d10b091d4e940c4653d388c9a2c611d15e14e6bd1a92a8ad2d75c
 ref ghcr.io/a-kaibu/ippai-traces:s2020_wonder_fool_maokatsu-32
-zst sha256:4adf04700ad0b358752110486c2ed58b6e2654be8efb328b7ab6ca5ea0dd2efe
-zbytes 8694407
+zst sha256:4fa0688b6d9b3a0beeb9e063f2e1a6469999685018ec8ea65dc171cd02ac337b
+zbytes 8698180

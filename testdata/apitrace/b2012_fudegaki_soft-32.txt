@@ -1,8 +1,8 @@
 api d3d9
 exe つぼい君のスイッチ！体験版/TSUBOI_trial.exe
 seconds 30
-bytes 8200194
-sha256 5a6d5a6c78819dc97be5ae2cc30d2f3fcfce14824bae0fa0f01d57fc44f0f417
+bytes 7319554
+sha256 4cf92690705597dcf2a8c1b8f5fbd56a1ce2d23521ce52534b3035fb6d8a9d7f
 ref ghcr.io/a-kaibu/ippai-traces:b2012_fudegaki_soft-32
-zst sha256:76a90c39ac8e54714f2caed0ba44761b5b9fb38a3841a2ab8a825e5929348791
-zbytes 1970013
+zst sha256:7aa92d5e39165a89080bb10cee9c29ac75cf3ef1d1b13c13d84f4c74d8a44e36
+zbytes 1827925

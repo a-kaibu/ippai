@@ -2,7 +2,7 @@ api d3d9
 exe doinaka-trial/doinaka-trial.exe
 seconds 30
 bytes 782338
-sha256 612d46a40c481550f0c7c82eac1b19a6bea642290b9238b23b691535ed923c76
+sha256 98d33bc186d489d20f4b9062d6f18e0a9c8583f6b398f158ecc9a9ff1fd6420e
 ref ghcr.io/a-kaibu/ippai-traces:b2026_dessert_soft-32
-zst sha256:fa61db344a00c7f05b63f183cb86bce5716c37140c1616bc26df9a24d7b958b1
-zbytes 307281
+zst sha256:de17eeb453997b964d8f0fdac61fe212e47e31748b77249b5fbc1f99b668b49e
+zbytes 307301

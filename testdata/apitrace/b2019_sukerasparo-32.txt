@@ -1,8 +1,8 @@
 api d3d9
 exe 190412_kudan_trial/kudan_trial/BGI.exe
 seconds 30
-bytes 155340802
-sha256 1aada80cbe6ce6442a5d15a0275ed9936b220089b345294e76beea507fd55b6a
+bytes 156028930
+sha256 daab462950eab8bfebe0f3bbdb84fa3d27f3ffb031fb334d2f774944afd4070d
 ref ghcr.io/a-kaibu/ippai-traces:b2019_sukerasparo-32
-zst sha256:1b650e039371b280473423ddde88491bd822a17d949ef9d4a1489fbbe793cbee
-zbytes 12223954
+zst sha256:bd1e6914da395148c70b74bd61490fb588988a343dac798eb4e667555c87de6e
+zbytes 12070188

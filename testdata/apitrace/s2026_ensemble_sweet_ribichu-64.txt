@@ -1,8 +1,8 @@
 api dxgi
 exe ribichu_trial/リビドーアバンちゅ～る TRIAL EDITION/AdvHD.exe
 seconds 30
-bytes 33603586
-sha256 240368ef46429ec3869c3fd786a5732faa380cc5227e7992cf298817c210e08f
+bytes 34041858
+sha256 1c35db8c50e1601a97857014354c0663f833eb8fbea05fac3ff962470d291c40
 ref ghcr.io/a-kaibu/ippai-traces:s2026_ensemble_sweet_ribichu-64
-zst sha256:5bf4910389240f6fbde6dcd0f7a4f96becba9dd3431f0342c3ec3bd07518b5ad
-zbytes 12549487
+zst sha256:c2444161b32bc5a19d74c47abefcdd973c68579dc0c2b7d497281a2c3ca7c407
+zbytes 12573899
