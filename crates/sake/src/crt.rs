@@ -191,6 +191,36 @@ fn var(v: u32) -> u32 {
     p
 }
 
+/// The "C" locale's ctype bits of byte `b` (none above 0x7f).
+pub fn c_ctype(b: u8) -> u16 {
+    let mut v = 0u16;
+    if b.is_ascii_uppercase() {
+        v |= 0x1 | 0x100;
+    }
+    if b.is_ascii_lowercase() {
+        v |= 0x2 | 0x100;
+    }
+    if b.is_ascii_digit() {
+        v |= 0x4;
+    }
+    if matches!(b, b' ' | 9..=13) {
+        v |= 0x8;
+    }
+    if b.is_ascii_punctuation() {
+        v |= 0x10;
+    }
+    if b < 0x20 || b == 0x7f {
+        v |= 0x20;
+    }
+    if b == b' ' {
+        v |= 0x40;
+    }
+    if b.is_ascii_hexdigit() {
+        v |= 0x80;
+    }
+    v
+}
+
 /// msvcrt's ctype table (257 shorts, for EOF first).
 fn ctype_table() -> u32 {
     static T: Mutex<u32> = Mutex::new(0);
@@ -198,37 +228,60 @@ fn ctype_table() -> u32 {
     if *g == 0 {
         let t = mem::heap_alloc(2 * 257, true);
         for c in 0..256u32 {
-            let b = c as u8;
-            let mut v = 0u16;
-            if b.is_ascii_uppercase() {
-                v |= 0x1 | 0x100;
-            }
-            if b.is_ascii_lowercase() {
-                v |= 0x2 | 0x100;
-            }
-            if b.is_ascii_digit() {
-                v |= 0x4;
-            }
-            if matches!(b, b' ' | 9..=13) {
-                v |= 0x8;
-            }
-            if b.is_ascii_punctuation() {
-                v |= 0x10;
-            }
-            if b < 0x20 || b == 0x7f {
-                v |= 0x20;
-            }
-            if b == b' ' {
-                v |= 0x40;
-            }
-            if b.is_ascii_hexdigit() {
-                v |= 0x80;
-            }
-            w16(t + 2 + 2 * c, v);
+            w16(t + 2 + 2 * c, c_ctype(c as u8));
         }
         *g = t;
     }
     *g
+}
+
+/// A user locale's ctype table entry for byte `b` of code page `cp` (_create_locale(LC_ALL, "")
+/// and setlocale's: GetStringTypeA's C1 bits): the "C" table's bits and C1_DEFINED (0x200) below
+/// 0x80 (the tab blank too); above it _LEADBYTE (0x8000) alone for DBCS lead bytes, and the code page's characters
+/// (Windows' answers: crtlocale.c, 932 by ucrtbase, 1252 by msvcrt).
+pub fn user_ctype(cp: u32, b: u8) -> u16 {
+    if b < 0x80 {
+        // (GetStringTypeA has the tab blank, as the "C" table does not)
+        return c_ctype(b) | 0x200 | if b == b'\t' { 0x40 } else { 0 };
+    }
+    if crate::text::is_lead_cp(cp, b) {
+        return 0x8000;
+    }
+    match (cp, b) {
+        (932, 0x80) => 0x220,
+        (932, 0xa1..=0xa5) => 0x210,
+        (932, 0xa6..=0xdf) => 0x300,
+        (1252, _) => CP1252_CTYPE[b as usize - 0x80],
+        _ => 0x200,
+    }
+}
+
+/// cp1252's 0x80-0xff (msvcrt on Windows, crtlocale.c)
+#[rustfmt::skip]
+const CP1252_CTYPE: [u16; 128] = [
+    0x200, 0x220, 0x210, 0x302, 0x210, 0x210, 0x210, 0x210, 0x200, 0x210, 0x301, 0x210, 0x301, 0x220, 0x301, 0x220,
+    0x220, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x200, 0x200, 0x302, 0x210, 0x302, 0x220, 0x302, 0x301,
+    0x248, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x312, 0x210, 0x210, 0x230, 0x210, 0x210,
+    0x210, 0x210, 0x214, 0x214, 0x210, 0x312, 0x210, 0x210, 0x210, 0x214, 0x312, 0x210, 0x210, 0x210, 0x210, 0x210,
+    0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301,
+    0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x210, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x301, 0x302,
+    0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302,
+    0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x210, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302, 0x302,
+];
+
+/// The user locale's ctype table (EOF first), once a code page.
+fn user_ctype_table(cp: u32) -> u32 {
+    static T: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+    let mut g = T.lock().unwrap();
+    if let Some(&(_, t)) = g.iter().find(|x| x.0 == cp) {
+        return t;
+    }
+    let t = mem::heap_alloc(2 * 257, true);
+    for b in 0..=255u8 {
+        w16(t + 2 + 2 * b as u32, user_ctype(cp, b));
+    }
+    g.push((cp, t));
+    t
 }
 
 /// The command line split into words, as the CRT does (quotes group and are dropped).
@@ -2956,7 +3009,7 @@ fn make_locale(l: LocaleLayout) -> u32 {
         }
     }
     w32(li + l.mb_cur_max, if crate::text::is_dbcs() { 2 } else { 1 });
-    wp(li + l.pctype, rp(data("_pctype").unwrap()));
+    wp(li + l.pctype, user_ctype_table(cp) + 2);
     // pclmap / pcumap: ASCII case tables
     let (lo, up) = (mem::heap_alloc(256, true), mem::heap_alloc(256, true));
     for b in 0..=255u8 {
@@ -3911,6 +3964,57 @@ mod tests {
 
     /// _mbctype as _setmbcp(_MB_CP_ANSI) makes it (#58; the probe crtlocale finds a locale's
     /// mbctype on Windows by the _SBUP / _SBLOW of 'A' / 'a')
+    /// Windows' answers (crtlocale.c): _create_locale(LC_ALL, "")'s ctype table on 932
+    /// (ucrtbase) and 1252 (msvcrt), and the "C" table under it
+    mod user_ctype {
+        use super::super::{c_ctype, user_ctype};
+
+        fn row(cp: u32, from: u8) -> Vec<u16> {
+            (from..=from + 31).map(|b| user_ctype(cp, b)).collect()
+        }
+
+        #[test]
+        fn as_windows() {
+            let low: [&[u16]; 4] = [
+                &[0x220, 0x220, 0x220, 0x220, 0x220, 0x220, 0x220, 0x220, 0x220, 0x268, 0x228, 0x228, 0x228, 0x228, 0x220, 0x220],
+                &[0x248, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x210, 0x284],
+                &[0x210, 0x381, 0x381, 0x381, 0x381, 0x381, 0x381, 0x301],
+                &[0x210, 0x382, 0x382, 0x382, 0x382, 0x382, 0x382, 0x302],
+            ];
+            for cp in [932, 1252] {
+                for (k, want) in low.iter().enumerate() {
+                    assert_eq!(&row(cp, 0x20 * k as u8)[..want.len()], *want, "cp {cp} row {k}");
+                }
+                assert_eq!(user_ctype(cp, 0x7f), 0x220);
+            }
+            let mut r80 = vec![0x8000u16; 32];
+            r80[0] = 0x220;
+            assert_eq!(row(932, 0x80), r80);
+            let ra0: Vec<u16> = (0xa0..=0xbfu8).map(|b| match b { 0xa0 => 0x200, 0xa1..=0xa5 => 0x210, _ => 0x300 }).collect();
+            assert_eq!(row(932, 0xa0), ra0);
+            assert_eq!(row(932, 0xc0), vec![0x300; 32]);
+            let mut re0 = vec![0x8000u16; 32];
+            re0[29..].fill(0x200);
+            assert_eq!(row(932, 0xe0), re0);
+            assert_eq!(&row(1252, 0xc0)[22..25], [0x301, 0x210, 0x301]);
+            assert_eq!(user_ctype(1252, 0xa0), 0x248);
+        }
+
+        /// below 0x80 a user locale is the "C" table and C1_DEFINED; the "C" table has nothing
+        /// above it
+        #[test]
+        fn over_the_c_table() {
+            for b in 0..=255u8 {
+                if b < 0x80 {
+                    assert_eq!(user_ctype(932, b), c_ctype(b) | 0x200 | if b == 9 { 0x40 } else { 0 });
+                } else {
+                    assert_eq!(c_ctype(b), 0);
+                    assert_ne!(user_ctype(932, b) & 0x8200, 0, "{b:#x}");
+                }
+            }
+        }
+    }
+
     mod mbctype {
         use super::super::mbctype_flags;
         use proptest::prelude::*;
