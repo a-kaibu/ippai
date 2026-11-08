@@ -105,7 +105,7 @@ for t in $TESTS; do
     fi
     # (kura's merge_hot64 at the first hot jump, and reclaim after every load: regions are
     # merged into bigger ones and their own modules go while the program runs)
-    tm=$( (cd "$(dirname "$SAKE")" && timeout 300 env IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1 node "$SAKE" "$OUT/$t-64.exe" 2>&1 | grep -v '^sake:') )
+    tm=$( (cd "$(dirname "$SAKE")" && timeout 300 env "${test_env[@]}" IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1 node "$SAKE" "$OUT/$t-64.exe" 2>&1 | grep -v '^sake:') )
     if [ "$tm" != "$(cat "$want")" ]; then
       echo "FAIL $t (x64, merging):"; diff <(echo "$tm") "$want" | head -10; fail=1
     else
