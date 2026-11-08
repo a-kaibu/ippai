@@ -53,6 +53,7 @@ import { savedChunks } from "./offline";
 import {
   builds,
   getState,
+  keptApps,
   listStates,
   loadable,
   putState,
@@ -218,6 +219,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
           log("ステートを読み込み中");
           const info = (await listStates(saveName)).find((s) => s.slot === Number(slot));
           if (!info) throw new Error("ステートが見つかりません");
+          // (of another build: in the web app of its time, which the server keeps)
+          if (!loadable(await builds(), info)) {
+            const app = (await keptApps()).get(info.build);
+            if (app && !location.href.startsWith(app)) {
+              log("このステートを保存したバージョンで開いています");
+              location.replace(`${app}play.html${location.search}`);
+              return new Promise<never>(() => {});
+            }
+          }
           return getState(saveName, info);
         })()
       : undefined;
@@ -451,12 +461,20 @@ function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"]): 
   let slots: StateInfo[] = [];
   let busy = "";
   let ids = new Map<string, string>();
+  let kept = new Map<string, string>();
   const show = () =>
     setUi({
       states: {
         slots: Array.from({ length: SLOTS }, (_, i) => {
           const s = slots.find((x) => x.slot === i);
-          return s ? { created: s.created, thumb: s.thumb, size: s.size, old: !loadable(ids, s) } : null;
+          return s
+            ? {
+                created: s.created,
+                thumb: s.thumb,
+                size: s.size,
+                old: !loadable(ids, s) && !kept.has(s.build),
+              }
+            : null;
         }),
         busy,
         open: () => void refresh(),
@@ -466,6 +484,7 @@ function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"]): 
     });
   const refresh = async () => {
     ids = await builds();
+    kept = await keptApps();
     slots = await listStates(game).catch(() => slots);
     show();
   };

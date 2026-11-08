@@ -51,7 +51,9 @@ export function startApp(): void {
   });
   addEventListener("appinstalled", () => set({ install: null }));
   const params = new URLSearchParams(location.search);
-  if (!import.meta.env.PROD || !("serviceWorker" in navigator) || params.has("headless")) return;
+  // (a kept app of an older build, crates/ippai/src/apps.rs: the root's worker is the app's)
+  const kept = /\/apps\/[0-9a-f]{16}\/[^/]*$/.test(location.pathname);
+  if (!import.meta.env.PROD || !("serviceWorker" in navigator) || params.has("headless") || kept) return;
   const had = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.addEventListener("controllerchange", () => had && set({ updated: true }));
   navigator.serviceWorker

@@ -97,7 +97,8 @@ sw.addEventListener("fetch", (e) => {
   if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) return;
   if ((req.method !== "GET" && req.method !== "HEAD") || req.headers.has("range")) return;
   const path = url.pathname.slice(base.pathname.length);
-  if (PASS.test(path) || path === "sw.js") return;
+  // (a kept app's requests for the server's own routes, crates/ippai/src/apps.rs: as at the root)
+  if (PASS.test(path.replace(/^apps\/[0-9a-f]{16}\//, "")) || path === "sw.js") return;
   const done = (p: Promise<unknown>) => e.waitUntil(p.catch(() => undefined));
   if (req.method === "HEAD") e.respondWith(head(req, done));
   else if (url.searchParams.has("v") || path.startsWith("assets/")) e.respondWith(kept(req, path));

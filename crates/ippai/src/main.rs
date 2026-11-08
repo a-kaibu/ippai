@@ -11,6 +11,7 @@
 //! `ttc` (hidden) makes sake's font collections. `pack` and `add-game` (hidden) are the two halves of `add`, for trees that are no game
 //! (sake's C:\ with the fonts) and for scripts.
 
+mod apps;
 mod auth;
 mod cdc;
 #[cfg(unix)]

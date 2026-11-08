@@ -100,6 +100,14 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/chunk-trim-browser.mjs
+      - name: Save state slots from two devices at once (content-named files, merged index)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/savestate-slots-browser.mjs target/debug/ippai
+      - name: Web apps kept for older builds' states (apps.rs)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/apps-browser.mjs target/debug/ippai
       - name: The game list (name, icons, 統計 at the top right, favorites, statistics)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs

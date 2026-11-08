@@ -828,6 +828,29 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
     serve(dirs, dirs.store.clone(), args)
 }
 
+/// Removes the kept web apps no state needs (apps.rs prune; the states' builds from their
+/// indexes, `state.<game>.index` saves).
+async fn prune_apps(dir: PathBuf, current: Option<String>, saves: Arc<saves::Saves>) {
+    let names: Vec<String> = match saves.db.connect().and_then(|c| {
+        let mut q = c.prepare("SELECT name FROM saves WHERE name LIKE 'state.%.index'")?;
+        let v = q.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        Ok(v)
+    }) {
+        Ok(v) => v,
+        Err(e) => return eprintln!("apps: not pruned: {e}"),
+    };
+    let mut used = std::collections::HashSet::new();
+    for n in names {
+        match saves.read(&n).await {
+            Ok(Some((_, data))) => crate::apps::state_builds(&data, &mut used),
+            Ok(None) => {}
+            // (an index out of reach: nothing goes)
+            Err(e) => return eprintln!("apps: not pruned: {e}"),
+        }
+    }
+    let _ = tokio::task::spawn_blocking(move || crate::apps::prune(&dir, &used, current.as_deref())).await;
+}
+
 #[tokio::main]
 async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyhow::Result<()> {
     if let Some(storage) = crate::storage::Storage::configured(crate::library::Library::new(&store)?)? {
@@ -855,7 +878,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     let saves = saves::Saves::new(&store)?;
     let trees = crate::treefiles::Trees::new(store.clone())?;
     let game_origin = serde_json::json!({ "port": args.game_listen.port(), "url": args.game_url });
-    let app = Router::new()
+    let inner = Router::new()
         // (each write its own limit: a run's log, one run's new regions, a result line; the
         // rest axum's 2 MB, saves and packages their own)
         .route("/log-save/{name}", put(save_log).layer(DefaultBodyLimit::max(LOG_MAX)).with_state(logs.clone()))
@@ -866,7 +889,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .with_state(jit)
         .merge(crate::library_api::router(crate::library::Library::new(&store)?))
         .merge(saves::router(saves.clone()))
-        .merge(crate::portable::router(store.clone(), saves))
+        .merge(crate::portable::router(store.clone(), saves.clone()))
         .route("/games", get(games).with_state(pre.clone()))
         // (zstd on the way: a game's regions are ~15 MB of wasm, ~2.5 MB compressed, and on a
         // slow connection they held the start back)
@@ -880,7 +903,20 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(trees.clone()))
         .route("/game-origin", get(move || async move { axum::Json(game_origin) }))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())
-        .layer(middleware::from_fn(headers))
+        .layer(middleware::from_fn(headers));
+    // this web app kept for the states it takes, older ones while states need them (apps.rs)
+    let apps_dir = store.join("apps");
+    std::fs::create_dir_all(&apps_dir)?;
+    let current = crate::apps::keep(&apps_dir, &args.web).unwrap_or_else(|e| {
+        eprintln!("apps: this web app not kept: {e}");
+        None
+    });
+    tokio::spawn(prune_apps(apps_dir.clone(), current, saves));
+    let app = Router::new()
+        .route("/apps/builds", get(crate::apps::list))
+        .route("/apps/{key}/{*path}", axum::routing::any(crate::apps::file))
+        .with_state(crate::apps::Apps { dir: apps_dir, root: inner.clone() })
+        .fallback_service(inner)
         .layer(middleware::from_fn_with_state(auth.clone(), crate::auth::guard));
     let games = games_router(trees, &args.web).layer(middleware::from_fn_with_state(auth, crate::auth::guard));
     // without TCP_NODELAY a kept-alive connection waits out the peer's delayed ACK (~40ms) on

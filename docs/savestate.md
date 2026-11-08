@@ -79,15 +79,32 @@ build of sake (`build-id.txt`: each build's name and a hash of its .wasm): anoth
 load it. The page loads a state in the build it is of (a sake-grow state on a device that could
 have 4 GB too); a sake.wasm state needs the 4 GB memory.
 
+States of an older build load in that build's own web app (its sake and its page code, which
+change together): `ippai serve` keeps each web app it served in `<store>/apps/<key>/` (key: a hash
+of its build-id.txt) and serves it at `/apps/<key>/`, its own files from there and every other
+path as at the root (saves, store, jit, the API), so the old app's relative URLs reach the same
+server (crates/ippai/src/apps.rs). `/apps/builds` maps build ids to keys; the page opens a state
+of another build at `/apps/<key>/play.html?...&state=<slot>`. Kept: the apps the states' indexes
+name, and the 3 newest. Apps from before this (served by an ippai older than 2026-11-08) were
+never kept. tests/apps-browser.mjs.
+
 Sizes: the test program (host/tests/snaptest.c) 42 MiB of memory → 2.5 MiB, standing still
 0.15 s in Chromium (zstd level 1 in a worker, ~660 MB/s).
 
 ## Where states are kept
 
-* this browser: OPFS `states/<game>/<slot>.snap` and `index.json` (4 slots);
-* the server: `ippai serve` `/saves/state.<game>.<slot>` and `/saves/state.<game>.index` (the
+* this browser: OPFS `states/<game>/<hash>.snap` and `index.json` (4 slots);
+* the server: `ippai serve` `/saves/state.<game>.<hash>` and `/saves/state.<game>.index` (the
   same versioned saves as the game's own, in its S3 bucket when one is set up): another device
   lists and loads them too.
+
+A state file is named by its content (`hash`: 128 bits of SHA-256, in the index entry), written
+once and never over; only the index changes, with If-Match, merged again with the server's when
+another device wrote it meanwhile (the newer entry of each slot wins). So a slot saved from a PC
+and a phone at once never leaves the index naming a file that was replaced
+(tests/savestate-slots-browser.mjs, every order of the two uploads). States from before (no
+`hash`) are read from `<slot>.snap` / `state.<game>.<slot>`. Files no index names stay on the
+server (this browser removes its own).
 
 A state holds the game's own save files as they were then: loading one goes back to those.
 
