@@ -3242,6 +3242,32 @@ fn DispatchMessageA(c: &mut Ctx) -> u32 {
 fn DispatchMessageW(c: &mut Ctx) -> u32 {
     DispatchMessageA(c)
 }
+fn next_dialog_tab(dlg: u32, control: u32, previous: bool) -> u32 {
+    with(|s| {
+        fn visit(s: &State, parent: u32, list: &mut Vec<(u32, bool)>, depth: u32) {
+            if depth > 64 { return; }
+            let Some(parent) = s.wins.get(&parent) else { return };
+            for &h in &parent.children {
+                let Some(w) = s.wins.get(&h) else { continue };
+                let enabled = w.visible && w.enabled;
+                list.push((h, enabled && w.style & 0x10000 != 0));
+                if enabled && w.exstyle & 0x10000 != 0 { visit(s, h, list, depth + 1); }
+            }
+        }
+        let mut list = Vec::new(); visit(s, dlg, &mut list, 0);
+        if list.is_empty() { return 0; }
+        let n = list.len();
+        let start = if control == 0 { if previous { 0 } else { n - 1 } }
+            else { match list.iter().position(|x| x.0 == control) { Some(i) => i, None => return 0 } };
+        for offset in 1..=n {
+            let i = if previous { (start + n - offset) % n } else { (start + offset) % n };
+            if list[i].1 { return list[i].0; }
+        }
+        0
+    })
+}
+fn GetNextDlgTabItem(c: &mut Ctx) -> u32 { next_dialog_tab(c.a(0), c.a(1), c.a(2) != 0) }
+
 /// IsDialogMessage(dlg, msg): Enter / Escape pressed in the dialog become IDOK / IDCANCEL; its
 /// other messages are translated and dispatched (TRUE); messages of other windows are FALSE.
 fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
@@ -3267,6 +3293,18 @@ fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
         });
     if !inside {
         return 0;
+    }
+    if m == 0x100 && key == 9 {
+        let code = send(c, h, 0x87, key, msg); // WM_GETDLGCODE
+        if code & 6 == 0 {
+            let previous = key_states()[0x10] & 0x80 != 0;
+            let next = next_dialog_tab(dlg, h, previous);
+            if next != 0 {
+                set_focus(c, next);
+                if send(c, next, 0x87, 0, 0) & 8 != 0 { send(c, next, 0xb1, 0, u32::MAX); }
+            }
+            return 1;
+        }
     }
     if m != 0x100 || !(key == 0x0d || key == 0x1b) {
         // the dialog's other messages: translated and dispatched here, as Windows does (the
@@ -6101,7 +6139,7 @@ pub fn init() {
         DeferWindowPos, EndDeferWindowPos, GetWindowRect, GetClientRect, GetWindowPlacement, SetWindowPlacement,
         ClientToScreen, ScreenToClient, MapWindowPoints, AdjustWindowRect, AdjustWindowRectEx, GetParent,
         GetAncestor, SetParent, GetDesktopWindow, GetShellWindow, GetWindow, GetTopWindow, GetLastActivePopup,
-        GetDlgItem, GetDlgCtrlID, SendDlgItemMessageA, GetWindowThreadProcessId, EnumWindows, EnumThreadWindows,
+        GetDlgItem, GetNextDlgTabItem, GetDlgCtrlID, SendDlgItemMessageA, GetWindowThreadProcessId, EnumWindows, EnumThreadWindows,
         EnumChildWindows, FindWindowA, FindWindowW, FindWindowExA, FindWindowExW, WindowFromPoint, ChildWindowFromPoint,
         GetWindowLongA, GetWindowLongW, SetWindowLongA, SetWindowLongW, GetClassLongA, GetClassLongW,
         GetWindowLongPtrA, GetWindowLongPtrW, SetWindowLongPtrA, SetWindowLongPtrW, GetClassLongPtrA, GetClassLongPtrW,

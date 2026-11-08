@@ -575,6 +575,19 @@ fn realloc(c: &mut Ctx) -> u32 {
     }
     mem::heap_realloc(p, n, false)
 }
+/// _recalloc(ptr, count, size): preserve old bytes and zero only the extension.
+/// MFC uses this while initializing the official SDRT runtime.
+fn _recalloc(c: &mut Ctx) -> u32 {
+    let p = c.a(0);
+    let (count, unit) = if mem::x64() { (c.a64(1), c.a64(2)) } else { (c.a(1) as u64, c.a(2) as u64) };
+    let Some(n) = count.checked_mul(unit).filter(|n| *n <= (mem::HI - mem::LO) as u64) else {
+        set_errno(12); return 0;
+    };
+    if p != 0 && n == 0 { mem::heap_free_small(p); return 0; }
+    let out = if p == 0 { mem::heap_alloc(n.max(1) as u32, true) } else { mem::heap_realloc(p, n as u32, true) };
+    if out == 0 { set_errno(12); }
+    out
+}
 fn free(c: &mut Ctx) -> u32 {
     if c.a(0) != 0 {
         mem::heap_free_small(c.a(0));
@@ -2823,6 +2836,34 @@ fn ncopy_s<T: Unit>(c: &mut Ctx, append: bool) -> u32 {
 fn strncpy_s(c: &mut Ctx) -> u32 {
     ncopy_s::<u8>(c, false)
 }
+/// The byte-counted multibyte copy never leaves half of a DBCS character.
+fn _mbsnbcpy_s(c: &mut Ctx) -> u32 {
+    let (dst, capacity, src, count) = (c.a(0), size(c, 1), c.a(2), size(c, 3));
+    let result = (|| {
+        if dst == 0 || capacity == 0 { return 22; }
+        mem::w8(dst, 0);
+        if count == 0 { return 0; }
+        if src == 0 { return 22; }
+        let truncate = count == u32::MAX;
+        let limit = if truncate { capacity - 1 } else { count.min(capacity) };
+        let bytes = mem::cstrn(src, limit.saturating_add(1));
+        let mut at = 0usize;
+        while at < bytes.len() && at < limit as usize {
+            let n = if crate::text::is_lead(bytes[at]) { 2 } else { 1 };
+            if at + n > limit as usize { break; }
+            if at + n > bytes.len() { return 42; } // EILSEQ
+            at += n;
+        }
+        let cut = at < bytes.len();
+        if !truncate && (at >= capacity as usize || cut && count >= capacity && limit == capacity) { return 34; }
+        // count may stop at a lead byte; the partial character is discarded.
+        mem::write(dst, &bytes[..at]);
+        mem::w8(dst + at as u32, 0);
+        if truncate && cut { 80 } else { 0 }
+    })();
+    errno_of(result);
+    result as u32
+}
 fn wcsncpy_s(c: &mut Ctx) -> u32 {
     ncopy_s::<u16>(c, false)
 }
@@ -3875,7 +3916,7 @@ pub fn init() {
         _ecvt, _fcvt, _gcvt, _mbslen, _mbschr, _mbsrchr, _mbsinc, _mbsnextc, _ismbcspace, _mbctohira, _mbctokata,
         _mbcjistojms, _mbcjmstojis, _mbsupr, _mbslwr, _setmbcp, _getmbcp, asctime);
     implement("msvcrt", "ldiv", div);
-    reg!(strncpy_s, ___lc_codepage_func, ___lc_locale_name_func, ___lc_handle_func, _seh_filter_exe);
+    reg!(strncpy_s, _mbsnbcpy_s, ___lc_codepage_func, ___lc_locale_name_func, ___lc_handle_func, _seh_filter_exe);
     implement("ucrtbase", "__stdio_common_vsprintf_s", __stdio_common_vsprintf_s);
     implement("ucrtbase", "__stdio_common_vswprintf_s", __stdio_common_vswprintf_s);
     reg!(_libm_sse2_sin_precise, _libm_sse2_cos_precise, _libm_sse2_tan_precise, _libm_sse2_asin_precise,
@@ -3913,7 +3954,7 @@ pub fn init() {
         __p__environ, __p___initenv, __p__acmdln,
         __p___mb_cur_max, ___mb_cur_max_func, __pctype_func, _controlfp, _control87, _clearfp, _statusfp, _purecall,
         _XcptFilter, signal, _lock, _unlock, _errno, __doserrno,
-        malloc, calloc, realloc, free, _msize,
+        malloc, calloc, realloc, _recalloc, free, _msize,
         memcpy, memmove, memset, memcmp, memchr, strlen, strcpy, strncpy, strcat, strncat, strcmp, strncmp,
         _stricmp, _strnicmp, strchr, strrchr, strstr, strspn, strcspn, strpbrk, _strdup, _strlwr, _strupr, wcslen, wcscpy, wcscmp,
         toupper, tolower, isalpha, isupper, islower, isdigit, isspace, ispunct, isalnum, isxdigit, isprint, iscntrl, isgraph,

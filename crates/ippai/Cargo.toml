@@ -11,11 +11,11 @@ rusqlite = { version = "0.38", features = ["bundled", "backup"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 ring = "0.17"
 koji = { path = "../koji" }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "process", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "process", "time", "io-util", "sync"] }
 tower = "0.5"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 tower-http = { version = "0.6", features = ["fs", "set-header", "compression-zstd"] }
 rust-s3 = { version = "0.38.0", default-features = false, features = ["with-tokio", "tokio-rustls-tls"] }
 blake3 = "1"
@@ -38,3 +38,5 @@ ureq = { version = "2", features = ["json", "native-certs"] }
 proptest = "1"
 # (already in the tree through rust-s3) the 503 proxy in front of RustFS, storage/rustfs_tests.rs
 reqwest = { version = "0.12", default-features = false }
+tokio-tungstenite = "0.29"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

@@ -1,0 +1,16 @@
+dispatcher requires SCM: ok
+manager: ok
+create: ok
+initially stopped: ok
+start: ok
+running in child: ok
+reject duplicate start: ok
+control delivered: ok
+stop: ok
+stopped: ok
+restart: ok
+mark delete: ok
+reject marked service: ok
+stop marked service: ok
+close: ok
+deleted after close: ok

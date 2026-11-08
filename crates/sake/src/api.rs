@@ -437,6 +437,7 @@ fn usage(i: u32) {
 }
 
 pub fn dispatch(cpu: &mut Cpu, addr: u32) {
+    crate::comrpc::pump(cpu, false);
     let i = (addr - TRAP_LO) / 4;
     let (f, bytes, cdecl, known) = {
         let e = ENTRIES.read().unwrap();

@@ -1,0 +1,15 @@
+certificate header: ok
+preserve file position: ok
+enumerate all: ok
+filter type: ok
+certificate size: ok
+short certificate buffer: ok
+certificate bytes: ok
+reject invalid index: ok
+reject invalid handle: ok
+reject malformed certificate: ok
+digest selected bytes and order: ok
+digest preserves cursor: ok
+digest callback cancellation: ok
+unsupported digest fails closed: ok
+reject out of bounds digest: ok

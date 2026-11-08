@@ -1,0 +1,20 @@
+acquire: ok
+import: ok
+export size: ok
+short export: ok
+export roundtrip: ok
+algorithm: ok
+key length: ok
+block length: ok
+verify A: ok
+hash finalized: ok
+verify W: ok
+reject signature: ok
+reject changed data: ok
+reject short signature: ok
+reject flags: ok
+reject truncated blob: ok
+reject blob magic: ok
+destroy: ok
+reject destroyed key: ok
+release: ok

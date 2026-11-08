@@ -1,0 +1,3 @@
+concurrent registry processes: ok
+preserve independent registry writes: ok
+deleted registry value stays deleted: ok

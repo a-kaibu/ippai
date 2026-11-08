@@ -87,6 +87,75 @@ pub fn is_64bit_file(path: &str) -> bool {
     d.get(pe + 4..pe + 6) == Some(&[0x64, 0x86])
 }
 
+/// Read an integer-typed resource from an on-disk PE without mapping the image,
+/// resolving imports or running DllMain. Version queries also inspect executables
+/// that the caller has never loaded (SDRT's installed service, for example).
+pub fn file_resource(data: &[u8], ty: u32) -> Option<&[u8]> {
+    let u16_at = |o: usize| Some(u16::from_le_bytes(data.get(o..o.checked_add(2)?)?.try_into().ok()?));
+    let u32_at = |o: usize| Some(u32::from_le_bytes(data.get(o..o.checked_add(4)?)?.try_into().ok()?));
+    if data.get(..2)? != b"MZ" {
+        return None;
+    }
+    let pe = u32_at(0x3c)? as usize;
+    if data.get(pe..pe.checked_add(4)?)? != b"PE\0\0" {
+        return None;
+    }
+    let opt = pe.checked_add(24)?;
+    let optlen = u16_at(pe.checked_add(20)?)? as usize;
+    let dirs = match u16_at(opt)? {
+        0x10b => 96,
+        0x20b => 112,
+        _ => return None,
+    };
+    if optlen < dirs + 24 || u32_at(opt.checked_add(dirs - 4)?)? < 3 {
+        return None;
+    }
+    let sections = opt.checked_add(optlen)?;
+    let count = u16_at(pe.checked_add(6)?)? as usize;
+    data.get(sections..sections.checked_add(count.checked_mul(40)?)?)?;
+    let rva = |addr: u32, size: u32| -> Option<&[u8]> {
+        for i in 0..count {
+            let s = sections + i * 40;
+            let start = u32_at(s + 12)?;
+            let rawlen = u32_at(s + 16)?;
+            if let Some(off) = addr.checked_sub(start).filter(|off| off.checked_add(size).is_some_and(|end| end <= rawlen)) {
+                let at = u32_at(s + 20)?.checked_add(off)? as usize;
+                return data.get(at..at.checked_add(size as usize)?);
+            }
+        }
+        None
+    };
+    let root = rva(u32_at(opt + dirs + 16)?, u32_at(opt + dirs + 20)?)?;
+    let word = |o: usize| Some(u16::from_le_bytes(root.get(o..o.checked_add(2)?)?.try_into().ok()?));
+    let dword = |o: usize| Some(u32::from_le_bytes(root.get(o..o.checked_add(4)?)?.try_into().ok()?));
+    let entry = |dir: u32, id: Option<u32>| -> Option<u32> {
+        let at = (dir & 0x7fff_ffff) as usize;
+        let n = word(at.checked_add(12)?)? as usize + word(at.checked_add(14)?)? as usize;
+        let first = at.checked_add(16)?;
+        root.get(first..first.checked_add(n.checked_mul(8)?)?)?;
+        for i in 0..n {
+            let e = first + i * 8;
+            if id.is_none_or(|id| dword(e) == Some(id)) {
+                return dword(e + 4);
+            }
+        }
+        None
+    };
+    let t = entry(0, Some(ty))?;
+    if t & 0x8000_0000 == 0 {
+        return None;
+    }
+    let name = entry(t, Some(1)).or_else(|| entry(t, None))?;
+    if name & 0x8000_0000 == 0 {
+        return None;
+    }
+    let leaf = entry(name, None)?;
+    if leaf & 0x8000_0000 != 0 {
+        return None;
+    }
+    rva(dword(leaf as usize)?, dword((leaf as usize).checked_add(4)?)?)
+}
+
 /// Maps the image in `data`; `resolve(dll, import)` gives import addresses.
 pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u32) -> Result<u32, String> {
     let rd16 = |o: usize| -> u32 { data.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u32) };
@@ -582,15 +651,16 @@ use crate::mem::w16;
 /// The folders SetDllDirectory / AddDllDirectory added to the search (after the exe's).
 pub static DLL_DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// The guest file of a DLL the program ships (exe directory, then the current directory).
-/// C:\windows\system32 (and SysWOW64) never give one: the system's DLLs are sake's own, and a
-/// DLL sake does not implement is missing there, as on a Windows without it (a C:\ that still
-/// has an old Wine prefix's PE builds in it is not read).
+/// A guest DLL, including third-party runtimes installed in system32 / SysWOW64.
+/// Known Windows DLLs there remain sake's own: an old Wine prefix must not replace
+/// its system implementations. This restriction does not apply to vendor DLLs
+/// such as SDRT's UCUtil50.dll, which the official MSI installs in SystemFolder.
 fn find_dll_file(dll: &str) -> Option<(String, String)> {
     let name = if dll.contains('.') { dll.to_string() } else { format!("{dll}.dll") };
+    let system_dll = api::is_system(name.rsplit(['\\', '/']).next().unwrap_or(&name));
     if name.contains('\\') || name.contains('/') || name.contains(':') {
         let w = crate::files::full_path(&name);
-        if is_system_dir(w.rsplit_once('\\').map_or("", |x| x.0)) {
+        if system_dll && is_system_dir(w.rsplit_once('\\').map_or("", |x| x.0)) {
             return None;
         }
         return crate::files::resolve(&w).map(|h| (h, w));
@@ -607,7 +677,16 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
             }
         }
     }
-    for d in dirs.iter().filter(|d| !is_system_dir(d)) {
+    if !system_dll {
+        // A 32-bit runtime on a 64-bit prefix normally lives in SysWOW64;
+        // architecture checks below also allow a 32-bit-only system32 prefix.
+        if !mem::x64() {
+            dirs.push("C:\\windows\\SysWOW64".into());
+        }
+        dirs.push("C:\\windows\\system32".into());
+        dirs.push("C:\\windows\\system".into());
+    }
+    for d in dirs.iter().filter(|d| !system_dll || !is_system_dir(d)) {
         let w = format!("{d}\\{name}");
         if let Some(h) = crate::files::resolve(&w) {
             // (as Windows' loader, one of the other architecture is passed over: a 64-bit game

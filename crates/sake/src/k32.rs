@@ -253,7 +253,7 @@ fn SetEnvironmentVariableW(c: &mut Ctx) -> u32 {
     set_env(c, true)
 }
 /// %NAME% replaced by its value (unknown names stay as written)
-fn expand_env(s: &str) -> String {
+pub(crate) fn expand_env(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
     while let Some(i) = rest.find('%') {

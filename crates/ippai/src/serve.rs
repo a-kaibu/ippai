@@ -892,6 +892,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .route("/jit-save/{name}", put(save_jit).layer(DefaultBodyLimit::max(JIT_SAVE_MAX)))
         .route("/bench-log", put(bench_log).layer(DefaultBodyLimit::max(1 << 20)))
         .with_state(jit)
+        .merge(crate::tls_relay::router())
         .merge(crate::library_api::router(crate::library::Library::new(&store)?))
         .merge(saves::router(saves.clone()))
         .merge(crate::portable::router(store.clone(), saves.clone()))

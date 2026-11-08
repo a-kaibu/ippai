@@ -1,0 +1,5 @@
+load real inproc factory: ok
+factory executes guest code: ok
+inproc CoCreateInstance: ok
+factory rejects unsupported interface: ok
+missing class clears output: ok

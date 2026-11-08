@@ -1,0 +1,15 @@
+missing container: ok
+create container: ok
+reject duplicate container: ok
+missing key: ok
+generate RSA: ok
+export real public key: ok
+private export permission: ok
+hash: ok
+sign: ok
+import public: ok
+verify actual signature: ok
+reject changed signature: ok
+key survives process: ok
+delete container: ok
+deleted container missing: ok

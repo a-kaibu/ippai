@@ -1,0 +1,7 @@
+recalloc export: ok
+initial zero: ok
+preserve old bytes: ok
+zero extension: ok
+overflow preserves allocation: ok
+shrink: ok
+zero size frees: ok

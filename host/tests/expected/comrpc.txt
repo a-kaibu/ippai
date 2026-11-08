@@ -1,0 +1,10 @@
+register proxy metadata: ok
+create service: ok
+activate service: ok
+remote scalar call: ok
+parallel responses: ok
+binary BSTR roundtrip: ok
+null BSTR: ok
+remote error preserved: ok
+IUnknown identity: ok
+stop server: ok

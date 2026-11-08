@@ -36,6 +36,8 @@ png = "0.17"
 icu_segmenter = "2"
 boa_engine = { version = "0.22", default-features = false, features = ["annex-b"] }
 
+ippai-tls = { path = "../tls-client" }
+
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
 proptest = "1"

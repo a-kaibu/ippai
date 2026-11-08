@@ -21,6 +21,8 @@ var IPPAI_KERNEL_BYTES = 32 << 20;
 // the tree lists the page fetched before starting (`vnvmFiles`, host/vnfs.js): every thread gets
 // them, so a thread's first look at the file system needs no request
 var vnvmTrees = null;
+// The app origin, copied into pthreads whose location may be a blob URL.
+var vnvmTlsRelay = null;
 Module.preInit = [].concat(Module.preInit || [], () => {
   if (ENVIRONMENT_IS_PTHREAD) return;
   const f = ENVIRONMENT_IS_NODE && process.env.IPPAI_JIT_FILE;
@@ -34,6 +36,7 @@ Module.preInit = [].concat(Module.preInit || [], () => {
   }
   vnvmJitBundle = Module.vnvmJit || null;
   vnvmTrees = Module.vnvmFiles || null;
+  if (!ENVIRONMENT_IS_NODE) { const u = new URL("/net/tls/soft-denchi", location.href); u.protocol = u.protocol === "https:" ? "wss:" : "ws:"; vnvmTlsRelay = u.href; }
   vnvmKernel = Module.vnvmKernel || (typeof SharedArrayBuffer == 'function' ? new SharedArrayBuffer(IPPAI_KERNEL_BYTES) : null);
   vnvmCanSpawn = !!Module.vnvmSpawn;
   if (Module.vnvmSaves) {
@@ -48,7 +51,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     W.prototype.vnvmPost = W.prototype.postMessage;
     W.prototype.postMessage = function (m, ...rest) {
       if (m && m.cmd === 'load') {
-        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn };
+        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay };
         // (what the thread asks of the host: to start a process)
         const ask = (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel);
         if (ENVIRONMENT_IS_NODE) this.on('message', ask);
@@ -68,6 +71,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
       vnvmSaves = d.vnvmSaves || null;
       vnvmKernel = d.vnvmKernel || null;
       vnvmCanSpawn = !!d.vnvmCanSpawn;
+      vnvmTlsRelay = d.vnvmTlsRelay || null;
       if (d.vnvmTrees) Module.vnvmFiles = d.vnvmTrees;
       if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;
     }

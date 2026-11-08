@@ -29,6 +29,7 @@ mod pack;
 mod portable;
 mod saves;
 mod serve;
+mod tls_relay;
 mod treefiles;
 mod unpack;
 mod ttc;

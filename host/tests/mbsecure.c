@@ -1,0 +1,13 @@
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+static int failed;
+#define CHECK(label,expr) do{int ok=!!(expr);printf("%s: %s\n",label,ok?"ok":"FAIL");failed|=!ok;}while(0)
+int main(void){HMODULE m=LoadLibraryA("ucrtbase.dll");int (__cdecl *copy)(unsigned char *,size_t,const unsigned char *,size_t)=(void *)GetProcAddress(m,"_mbsnbcpy_s");if(!copy)return 1;unsigned char out[8],source[]={0x82,0xa0,'X',0};memset(out,0xa5,sizeof(out));
+ CHECK("secure multibyte ASCII",copy(out,sizeof(out),(unsigned char *)"abc",3)==0&&!strcmp((char *)out,"abc")&&out[4]==0xa5);
+ CHECK("complete multibyte character",copy(out,sizeof(out),source,2)==0&&out[0]==0x82&&out[1]==0xa0&&out[2]==0);
+ CHECK("discard split multibyte character",copy(out,sizeof(out),source,1)==0&&out[0]==0);
+ CHECK("secure multibyte overflow",copy(out,2,(unsigned char *)"abc",3)!=0&&out[0]==0);
+ CHECK("secure multibyte truncation",copy(out,3,source,(size_t)-1)==80&&out[0]==0x82&&out[1]==0xa0&&out[2]==0);
+ CHECK("zero count accepts null source",copy(out,sizeof(out),NULL,0)==0&&out[0]==0);
+ CHECK("secure multibyte null rejected",copy(out,sizeof(out),NULL,1)==22&&out[0]==0);return failed;}

@@ -1,0 +1,11 @@
+create OLE font: ok
+font description preserved: ok
+real GDI font: ok
+font handle references: ok
+bold weight coherence: ok
+font clone: ok
+independent font properties: ok
+font dispatch interface: ok
+font automation property: ok
+font COM identity: ok
+font rejects unknown interface: ok

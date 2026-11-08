@@ -153,11 +153,12 @@ fn hex(b: &[u8]) -> String {
 }
 
 /// The saved keys: "key" lines, then "key<TAB>name<TAB>type<TAB>hex" for each value.
-fn load_reg(m: &mut HashMap<String, KeyData>) {
-    let Some(h) = crate::files::resolve(REG_FILE) else { return };
-    let Ok(t) = kura::fs::read(h) else { return };
+fn load_reg(m: &mut HashMap<String, KeyData>) -> bool {
+    let Some(h) = crate::files::resolve(REG_FILE) else { return false };
+    let Ok(t) = kura::fs::read(h) else { return false };
     let t = String::from_utf8_lossy(&t);
     for l in t.lines() {
+        if l.is_empty() { continue; }
         let f: Vec<&str> = l.split('\t').collect();
         let k = m.entry(f[0].to_string()).or_default();
         k.ours = true;
@@ -168,9 +169,10 @@ fn load_reg(m: &mut HashMap<String, KeyData>) {
             k.values.push((name.to_string(), ty.parse().unwrap_or(3), bytes));
         }
     }
+    true
 }
 
-fn save_reg(m: &HashMap<String, KeyData>) {
+fn save_reg(m: &HashMap<String, KeyData>) -> bool {
     let mut keys: Vec<&String> = m.iter().filter(|(_, k)| k.ours).map(|(p, _)| p).collect();
     keys.sort();
     let mut t = String::new();
@@ -188,12 +190,18 @@ fn save_reg(m: &HashMap<String, KeyData>) {
     if let Some(d) = h.rsplit_once('/') {
         let _ = kura::fs::create_dir_all(d.0);
     }
-    let _ = kura::fs::write(h, t);
+    let temp = format!("{h}.{}.tmp", crate::pid());
+    if kura::fs::write(&temp, t).is_err() { return false; }
+    if kura::fs::rename(&temp, &h).is_err() { let _ = kura::fs::remove_file(&temp); return false; }
+    true
 }
 
 static REG: Mutex<Option<HashMap<String, KeyData>>> = Mutex::new(None);
 
 fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
+    // Serialize the read/modify/write transaction across the game, SCM and
+    // helper processes, not just across this process's Rust threads.
+    crate::kern::with(|_| {
     let mut g = REG.lock().unwrap();
     let m = g.get_or_insert_with(|| {
         let mut m = HashMap::default();
@@ -225,7 +233,48 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
         load_reg(&mut m);
         m
     });
+    let mut saved = HashMap::default();
+    if load_reg(&mut saved) {
+        m.retain(|_, k| !k.ours);
+        m.extend(saved);
+    }
     f(m)
+    }).0
+}
+
+/// Internal SCM / COM access to the same registry as guest Reg* calls. Refresh
+/// saved entries so a newly installed service is visible in another process.
+pub(crate) fn registry_value(path: &str, name: &str) -> Option<(u32, Vec<u8>)> {
+    with_reg(|m| {
+        let path = path.to_lowercase();
+        let find = |key: &str| m.get(key)?.values.iter().find(|v| v.0.eq_ignore_ascii_case(name)).map(|v| (v.1, v.2.clone()));
+        find(&path).or_else(|| path.strip_prefix("hkcr\\").and_then(|p|
+            find(&format!("hkcu\\software\\classes\\{p}")).or_else(|| find(&format!("hklm\\software\\classes\\{p}")))))
+    })
+}
+pub(crate) fn registry_values(path: &str, values: Vec<(String, u32, Vec<u8>)>) -> bool {
+    with_reg(|m| {
+        let k = m.entry(path.to_lowercase()).or_default();
+        for (name, ty, value) in values {
+            k.values.retain(|v| !v.0.eq_ignore_ascii_case(&name));
+            k.values.push((name, ty, value));
+        }
+        k.ours = true;
+        save_reg(m)
+    })
+}
+pub(crate) fn registry_remove_tree(path: &str) -> bool {
+    let path = path.to_lowercase();
+    with_reg(|m| {
+        m.retain(|k, _| k != &path && !k.starts_with(&(path.clone() + "\\")));
+        save_reg(m)
+    })
+}
+pub(crate) fn registry_string(path: &str, name: &str) -> Option<String> {
+    let (ty, bytes) = registry_value(path, name)?;
+    if !matches!(ty, 1 | 2) { return None; }
+    let words: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).take_while(|&c| c != 0).collect();
+    Some(String::from_utf16_lossy(&words))
 }
 
 fn root_name(h: u32) -> Option<&'static str> {
@@ -731,7 +780,18 @@ fn version_resource(path: &str) -> Option<Vec<u8>> {
     // a DLL we implement (no resources): a Japanese Windows 7 one (RealLive checks kernel32's
     // language)
     let ours = || name.strip_suffix(".dll").filter(|d| crate::api::is_system(d)).map(|_| system_version_info(&name));
-    let Some(base) = base else { return ours() };
+    let Some(base) = base else {
+        // Inspect the file as data: querying an installed runtime's version must
+        // neither require it to be loaded nor execute its initialization code.
+        if let Some(host) = crate::files::resolve(&full) {
+            if let Ok(data) = kura::fs::read(&host) {
+                if let Some(version) = crate::pe::file_resource(&data, 16) {
+                    return Some(version.to_vec());
+                }
+            }
+        }
+        return ours();
+    };
     let Some(e) = crate::pe::find_resource(base, &crate::pe::ResId::Int(16), &crate::pe::ResId::Int(1))
         .or_else(|| crate::pe::first_resource(base, 16))
     else {
@@ -1132,18 +1192,28 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
     if let Some(hr) = crate::vmr9::create_instance(c, clsid, c.a(1), iid, out) {
         return hr;
     }
-    create_object(c, clsid, iid, out)
+    let hr = create_object(c, clsid, iid, out);
+    if hr == 0x8004_0154 {
+        let (context, outer) = (c.a(2), c.a(1));
+        crate::comrpc::create(c.cpu, clsid, iid, out, context, outer)
+    } else { hr }
+}
+fn CoGetClassObject(c: &mut Ctx) -> u32 {
+    let (clsid, context, reserved, iid, out) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if out == 0 || clsid == 0 || iid == 0 { return 0x8000_4003; }
+    mem::putp(out, 0);
+    if reserved != 0 { return 0x8007_0057; }
+    let hr = crate::comrpc::get_class(c.cpu, clsid, iid, out, context);
+    if hr != 0 && crate::api::trace() != 0 {
+        eprintln!("sake: CoGetClassObject {} iid {} context {context:x}: {hr:08x}",
+            crate::comrpc::text(mem::slice(clsid, 16)), crate::comrpc::text(mem::slice(iid, 16)));
+    }
+    hr
 }
 
 /// The object of class `clsid` into *out (what CoCreateInstance and the class factories of
 /// DllGetClassObject make): S_OK, or REGDB_E_CLASSNOTREG with *out NULL.
 fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
-    let g = |p: u32| -> String {
-        if p == 0 {
-            return "null".into();
-        }
-        format!("{:08x}-{:04x}-{:04x}", r32(p), r16(p + 4), r16(p + 6))
-    };
     if r32(clsid) == 0xa65b_8071 {
         mem::putp(out, dxdiag_provider());
         return 0;
@@ -1191,7 +1261,6 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
         mem::putp(out, obj);
         return 0;
     }
-    eprintln!("sake: CoCreateInstance {{{}}} iid {{{}}}: not registered", g(clsid), g(iid));
     mem::putp(out, 0);
     0x8004_0154
 }
@@ -3118,19 +3187,179 @@ enum Hasher {
     Sha1(Sha1),
     Sha256(sha2::Sha256),
 }
+impl Hasher {
+    fn digest(&self) -> (crate::cng::Hash, Vec<u8>) {
+        use crate::cng::Hash;
+        match self {
+            Self::Md5(h) => (Hash::Md5, h.clone().finalize().0.to_vec()),
+            Self::Sha1(h) => (Hash::Sha1, h.clone().finish().to_vec()),
+            Self::Sha256(h) => (Hash::Sha256, sha2::Digest::finalize(h.clone()).to_vec()),
+        }
+    }
+}
+
+// CryptoAPI PUBLICKEYBLOBs use little-endian RSA integers and signatures, unlike
+// CNG. Keep the original blob for export; use CNG's real RSA implementation to
+// verify signatures (including the DigestInfo OID). SDRT's UCManSvc imports these
+// APIs; no runtime-specific result or key is substituted here.
+#[derive(Clone)]
+struct PublicRsa {
+    key: crate::cng::Rsa,
+    blob: Vec<u8>,
+    alg: u32,
+    bits: u32,
+    exportable: bool,
+}
+impl PublicRsa {
+    fn from_blob(b: &[u8]) -> Result<Self, u32> {
+        use rsa::{BigUint, RsaPublicKey};
+        let bad = crate::cng::NTE_BAD_DATA;
+        if b.len() < 20 || b[..4] != [6, 2, 0, 0] {
+            return Err(bad);
+        }
+        let word = |i| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        let (alg, magic, bits, exponent) = (word(4), word(8), word(12), word(16));
+        if !matches!(alg, 0x2400 | 0xa400) {
+            return Err(0x8009_0008); // NTE_BAD_ALGID
+        }
+        if magic != 0x3141_5352 || !(384..=16384).contains(&bits) || bits % 8 != 0 || b.len() != 20 + bits as usize / 8 {
+            return Err(bad);
+        }
+        let n = BigUint::from_bytes_le(&b[20..]);
+        if n.bits() != bits as usize {
+            return Err(bad);
+        }
+        let key = RsaPublicKey::new_with_max_size(n, BigUint::from(exponent), 16384).map_err(|_| bad)?;
+        Ok(Self { key: crate::cng::Rsa::Public(key), blob: b.to_vec(), alg, bits, exportable: false })
+    }
+    fn generated(key: crate::capi::Key, spec: u32) -> Result<Self, u32> {
+        use rsa::traits::PublicKeyParts;
+        let public = key.rsa.public();
+        let e = public.e().to_bytes_le();
+        if e.len() > 4 { return Err(crate::cng::NTE_BAD_DATA); }
+        let mut exponent = [0; 4]; exponent[..e.len()].copy_from_slice(&e);
+        let alg: u32 = if matches!(spec, 1 | 0xa400) { 0xa400 } else { 0x2400 };
+        let mut blob = vec![6, 2, 0, 0]; blob.extend(alg.to_le_bytes());
+        blob.extend(0x3141_5352u32.to_le_bytes()); blob.extend(key.bits.to_le_bytes()); blob.extend(exponent);
+        let n = public.n().to_bytes_le(); blob.extend(&n); blob.resize(20 + key.bits as usize / 8, 0);
+        Ok(Self { key: key.rsa, blob, alg, bits: key.bits, exportable: key.exportable })
+    }
+    fn private_blob(&self) -> Result<Vec<u8>, u32> {
+        if !self.exportable { return Err(crate::cng::NTE_BAD_KEY_STATE); }
+        let full = self.key.to_blob(crate::cng::Blob::FullPrivate, self.bits)?;
+        let e = u32::from_le_bytes(full[8..12].try_into().unwrap()) as usize;
+        let n = self.bits as usize / 8; let half = n / 2;
+        let mut result = self.blob.clone(); result[0] = 7; result[8..12].copy_from_slice(&0x3241_5352u32.to_le_bytes());
+        let mut at = 24 + e + n;
+        for size in [half,half,half,half,half,n] {
+            result.extend(full.get(at..at+size).ok_or(crate::cng::NTE_BAD_DATA)?.iter().rev()); at += size;
+        }
+        Ok(result)
+    }
+    fn verify(&self, hash: crate::cng::Hash, digest: &[u8], signature: &[u8], flags: u32) -> Result<(), u32> {
+        if flags & !1 != 0 {
+            return Err(crate::cng::NTE_BAD_FLAGS);
+        }
+        if signature.len() != self.bits as usize / 8 {
+            return Err(crate::cng::NTE_BAD_SIGNATURE);
+        }
+        let sig: Vec<u8> = signature.iter().rev().copied().collect();
+        self.key.verify(crate::cng::Pad::Pkcs1((flags & 1 == 0).then_some(hash)), digest, &sig)
+    }
+}
+static RSA_KEYS: Mutex<Option<HashMap<u32, PublicRsa>>> = Mutex::new(None);
+fn crypto_result(result: Result<(), u32>) -> u32 {
+    match result {
+        Ok(()) => 1,
+        Err(e) => {
+            crate::k32::last_error(e);
+            0
+        }
+    }
+}
+fn CryptImportKey(c: &mut Ctx) -> u32 {
+    if let Err(e) = crate::capi::provider(c.a(0)) { return crypto_result(Err(e)); }
+    if c.a(1) == 0 || c.a(5) == 0 {
+        return crypto_result(Err(87));
+    }
+    if c.a(3) != 0 || c.a(4) != 0 {
+        return crypto_result(Err(crate::cng::NTE_BAD_FLAGS));
+    }
+    match PublicRsa::from_blob(mem::slice(c.a(1), c.a(2))) {
+        Ok(key) => {
+            let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
+            RSA_KEYS.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, key);
+            mem::putp(c.a(5), id);
+            1
+        }
+        Err(e) => crypto_result(Err(e)),
+    }
+}
+fn CryptExportKey(c: &mut Ctx) -> u32 {
+    if c.a(5) == 0 {
+        return crypto_result(Err(87));
+    }
+    if c.a(1) != 0 || c.a(3) != 0 {
+        return crypto_result(Err(crate::cng::NTE_BAD_FLAGS));
+    }
+    if !matches!(c.a(2), 6 | 7) {
+        return crypto_result(Err(0x8009_000a)); // NTE_BAD_TYPE
+    }
+    let g = RSA_KEYS.lock().unwrap();
+    let Some(k) = g.as_ref().and_then(|m| m.get(&c.a(0))) else {
+        return crypto_result(Err(0x8009_0003)); // NTE_BAD_KEY
+    };
+    let blob = if c.a(2) == 7 { match k.private_blob() { Ok(b) => b, Err(e) => return crypto_result(Err(e)) } } else { k.blob.clone() };
+    let (out, len) = (c.a(4), c.a(5));
+    let cap = r32(len);
+    put32(len, blob.len() as u32);
+    if out != 0 {
+        if cap < blob.len() as u32 {
+            return crypto_result(Err(234));
+        }
+        mem::write(out, &blob);
+    }
+    1
+}
+fn CryptVerifySignatureA(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return crypto_result(Err(87));
+    }
+    if c.a(5) & !1 != 0 {
+        return crypto_result(Err(crate::cng::NTE_BAD_FLAGS));
+    }
+    let keys = RSA_KEYS.lock().unwrap();
+    let Some(k) = keys.as_ref().and_then(|m| m.get(&c.a(3))) else {
+        return crypto_result(Err(0x8009_0003));
+    };
+    let (alg, digest) = {
+        let mut hashes = HASHES.lock().unwrap();
+        let Some((h, done)) = hashes.as_mut().and_then(|m| m.get_mut(&c.a(0))) else {
+            return crypto_result(Err(0x8009_0002)); // NTE_BAD_HASH
+        };
+        *done = true;
+        h.digest()
+    };
+    crypto_result(k.verify(alg, &digest, mem::slice(c.a(1), c.a(2)), c.a(5)))
+}
+fn CryptVerifySignatureW(c: &mut Ctx) -> u32 {
+    CryptVerifySignatureA(c)
+}
 
 /// The hashes and whether HP_HASHVAL has finished them (more data then fails with NTE_BAD_HASH_STATE)
 static HASHES: Mutex<Option<HashMap<u32, (Hasher, bool)>>> = Mutex::new(None);
+static HASH_PROVIDERS: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 static NEXT_HASH: AtomicU32 = AtomicU32::new(0x4a00_0000);
 
 /// The provider's default key length (bits): 40 for the Base provider asked by name, else 128
 /// (no name is the Strong provider since Vista: SRPG Studio)
-static KEY_BITS: AtomicU32 = AtomicU32::new(128);
 fn acquire(c: &mut Ctx, wide: bool) -> u32 {
-    let name = if c.a(2) == 0 { String::new() } else { arg_str(c.a(2), wide) };
-    KEY_BITS.store(if name.contains(" Base ") { 40 } else { 128 }, Ordering::Relaxed);
-    mem::putp(c.a(0), 0x4a7f_0001); // (HCRYPTPROV: a ULONG_PTR)
-    1
+    let container = (c.a(1) != 0).then(|| arg_str(c.a(1), wide));
+    let name = (c.a(2) != 0).then(|| arg_str(c.a(2), wide));
+    if c.a(0) == 0 && c.a(4) & 16 == 0 { return crypto_result(Err(87)); }
+    match crate::capi::acquire(container.as_deref(), name.as_deref(), c.a(3), c.a(4)) {
+        Ok(id) => { if c.a(4) & 16 == 0 { mem::putp(c.a(0), id); } 1 }, Err(e) => crypto_result(Err(e)),
+    }
 }
 fn CryptAcquireContextA(c: &mut Ctx) -> u32 {
     acquire(c, false)
@@ -3138,10 +3367,41 @@ fn CryptAcquireContextA(c: &mut Ctx) -> u32 {
 fn CryptAcquireContextW(c: &mut Ctx) -> u32 {
     acquire(c, true)
 }
-fn CryptReleaseContext(_: &mut Ctx) -> u32 {
-    1
+fn CryptReleaseContext(c: &mut Ctx) -> u32 {
+    crypto_result(crate::capi::release(c.a(0), c.a(1)))
 }
+fn add_rsa(c: &mut Ctx, generated: bool) -> u32 {
+    let (provider, spec, out) = (c.a(0), c.a(1), if generated { c.a(3) } else { c.a(2) });
+    if out == 0 { return crypto_result(Err(87)); }
+    let key = if generated { crate::capi::generate(provider, spec, c.a(2)) } else { crate::capi::user_key(provider, spec) };
+    match key.and_then(|k| PublicRsa::generated(k, spec)) {
+        Ok(key) => { let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
+            RSA_KEYS.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, key); mem::putp(out, id); 1 },
+        Err(e) => crypto_result(Err(e)),
+    }
+}
+fn CryptGenKey(c: &mut Ctx) -> u32 { add_rsa(c, true) }
+fn CryptGetUserKey(c: &mut Ctx) -> u32 { add_rsa(c, false) }
+fn CryptSignHashA(c: &mut Ctx) -> u32 {
+    if c.a(5) == 0 { return crypto_result(Err(87)); }
+    if c.a(3) & !1 != 0 { return crypto_result(Err(crate::cng::NTE_BAD_FLAGS)); }
+    let provider = HASH_PROVIDERS.lock().unwrap().as_ref().and_then(|m| m.get(&c.a(0))).copied();
+    let Some(provider) = provider else { return crypto_result(Err(0x8009_0002)); };
+    let key = match crate::capi::user_key(provider, c.a(1)) { Ok(k) => k, Err(e) => return crypto_result(Err(e)) };
+    let (hash, digest) = { let mut g = HASHES.lock().unwrap();
+        let Some((h, done)) = g.as_mut().and_then(|m| m.get_mut(&c.a(0))) else { return crypto_result(Err(0x8009_0002)); };
+        *done = true; h.digest()
+    };
+    let (out, len) = (c.a(4), c.a(5)); let cap = r32(len); put32(len, key.bits / 8);
+    if out == 0 { return 1; }
+    if cap < key.bits / 8 { return crypto_result(Err(234)); }
+    match key.rsa.sign(crate::cng::Pad::Pkcs1((c.a(3) & 1 == 0).then_some(hash)), &digest) {
+        Ok(mut signature) => { signature.reverse(); mem::write(out, &signature); 1 }, Err(e) => crypto_result(Err(e)),
+    }
+}
+fn CryptSignHashW(c: &mut Ctx) -> u32 { CryptSignHashA(c) }
 fn CryptGenRandom(c: &mut Ctx) -> u32 {
+    if let Err(e) = crate::capi::provider(c.a(0)) { return crypto_result(Err(e)); }
     // (the host's random bytes, as RtlGenRandom)
     let (n, p) = (c.a(1), c.a(2));
     let mut buf = vec![0u8; n as usize];
@@ -3154,6 +3414,7 @@ fn CryptGenRandom(c: &mut Ctx) -> u32 {
     1
 }
 fn CryptCreateHash(c: &mut Ctx) -> u32 {
+    if let Err(e) = crate::capi::provider(c.a(0)) { return crypto_result(Err(e)); }
     let h = match c.a(1) {
         0x8003 => Hasher::Md5(md5::Context::new()),
         0x8004 => Hasher::Sha1(Sha1::default()),
@@ -3165,6 +3426,7 @@ fn CryptCreateHash(c: &mut Ctx) -> u32 {
     };
     let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
     HASHES.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, (h, false));
+    HASH_PROVIDERS.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, c.a(0));
     mem::putp(c.a(4), id);
     1
 }
@@ -3217,6 +3479,7 @@ fn CryptGetHashParam(c: &mut Ctx) -> u32 {
     1
 }
 fn CryptDestroyHash(c: &mut Ctx) -> u32 {
+    if let Some(m) = HASH_PROVIDERS.lock().unwrap().as_mut() { m.remove(&c.a(0)); }
     let ok = HASHES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some();
     if !ok {
         crate::k32::last_error(87);
@@ -3283,7 +3546,7 @@ fn CryptDeriveKey(c: &mut Ctx) -> u32 {
         }
     };
     let bits = match flags >> 16 {
-        0 => KEY_BITS.load(Ordering::Relaxed),
+        0 => match crate::capi::provider(c.a(0)) { Ok(p) => p.rc4_bits, Err(e) => return crypto_result(Err(e)) },
         b => b,
     };
     let mut key = digest[..((bits / 8) as usize).clamp(5, digest.len())].to_vec();
@@ -3322,7 +3585,8 @@ fn CryptEncrypt(c: &mut Ctx) -> u32 {
     rc4_call(c)
 }
 fn CryptDestroyKey(c: &mut Ctx) -> u32 {
-    let ok = KEYS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some();
+    let rsa = RSA_KEYS.lock().unwrap().as_mut().is_some_and(|m| m.remove(&c.a(0)).is_some());
+    let ok = rsa || KEYS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some();
     if !ok {
         crate::k32::last_error(87);
     }
@@ -3332,13 +3596,21 @@ fn CryptDestroyKey(c: &mut Ctx) -> u32 {
 /// stream cipher), KP_KEYLEN (9)
 fn CryptGetKeyParam(c: &mut Ctx) -> u32 {
     let (key, param, out, plen) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some(bits) = KEYS.lock().unwrap().get_or_insert_with(HashMap::default).get(&key).map(|k| k.bits) else {
+    if plen == 0 {
+        return crypto_result(Err(87));
+    }
+    if c.a(4) != 0 {
+        return crypto_result(Err(crate::cng::NTE_BAD_FLAGS));
+    }
+    let rsa = RSA_KEYS.lock().unwrap().as_ref().and_then(|m| m.get(&key)).map(|k| (k.alg, k.bits, k.bits));
+    let rc4 = || KEYS.lock().unwrap().get_or_insert_with(HashMap::default).get(&key).map(|k| (0x6801, 0, k.bits));
+    let Some((alg, block, bits)) = rsa.or_else(rc4) else {
         crate::k32::last_error(87);
         return 0;
     };
     let v = match param {
-        7 => 0x6801,
-        8 => 0,
+        7 => alg,
+        8 => block,
         9 => bits,
         _ => {
             crate::k32::last_error(0x8009_0015); // NTE_BAD_TYPE
@@ -3464,6 +3736,8 @@ pub fn init() {
         RegQueryInfoKeyA, RegQueryInfoKeyW, CryptAcquireContextA, CryptAcquireContextW, CryptReleaseContext,
         CryptGenRandom, CryptCreateHash, CryptHashData, CryptGetHashParam, CryptDestroyHash, CryptDeriveKey,
         CryptDecrypt, CryptEncrypt, CryptDestroyKey, CryptGetKeyParam,
+        CryptImportKey, CryptExportKey, CryptVerifySignatureA, CryptVerifySignatureW,
+        CryptGenKey, CryptGetUserKey, CryptSignHashA, CryptSignHashW,
     );
     reg!("wintrust"; WinVerifyTrust);
     reg!("version"; GetFileVersionInfoSizeA, GetFileVersionInfoSizeW, GetFileVersionInfoA, GetFileVersionInfoW,
@@ -3485,7 +3759,7 @@ pub fn init() {
     // (ole32 exports them too: mingw's libole32 imports them from there)
     implement("ole32", "GetErrorInfo", GetErrorInfo);
     implement("ole32", "SetErrorInfo", SetErrorInfo);
-    reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
+    reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance, CoGetClassObject,
         CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, CoMarshalInterface, CoUnmarshalInterface, CoReleaseMarshalData, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
         RegisterDragDrop, RevokeDragDrop, DoDragDrop);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,

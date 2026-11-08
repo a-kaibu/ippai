@@ -15,6 +15,8 @@ use std::time::Instant;
 
 pub mod enc;
 pub mod host;
+pub mod services;
+pub mod com;
 use enc::Enc;
 
 pub const SUCCESS: u32 = 0;
@@ -215,6 +217,8 @@ pub struct Proc {
     pub inherit: Vec<(u32, KRef)>,
     /// STARTF_USESTDHANDLES's input, output, error (else None)
     pub std: Option<(u32, u32, u32)>,
+    /// SCM-launched process: the service's canonical name.
+    pub service: Option<String>,
 }
 
 /// A top-level window of a process, for the others (FindWindow, messages to it)
@@ -264,6 +268,8 @@ pub struct Kern {
     xmsgs: Vec<XMsg>,
     replies: BTreeMap<u32, u32>,
     next_msg: u32,
+    pub services: BTreeMap<String, services::Service>,
+    pub com: com::Broker,
 }
 
 /// A pipe path's name (lower case, without the `\\.\pipe\` part); None if it is not a pipe path.
@@ -290,7 +296,7 @@ pub struct NewPipe {
 }
 
 impl Kern {
-    fn changed(&mut self) {
+    pub(crate) fn changed(&mut self) {
         self.gen += 1;
     }
     fn new_end(&mut self, e: End) -> u32 {
@@ -712,6 +718,9 @@ impl Kern {
             return;
         }
         p.exit = Some(p.kill.unwrap_or(code));
+        for s in self.services.values_mut() { s.exited(pid); }
+        self.services.retain(|_, s| !s.removable());
+        self.com.exited(pid);
         self.release_process(pid);
         // (its threads' mutexes are abandoned, its handles of named objects close)
         for o in self.sync.values_mut() {
@@ -1180,7 +1189,7 @@ impl Enc for (u32, u32, u32) {
 crate::enc_struct!(Msg { data, pos });
 crate::enc_struct!(End { server, pipe, state, conn, queue, msg_type, outsize, insize, max, msg_read, nonblock, refs });
 crate::enc_struct!(Pipe { max, instances, sharing, msg_type, outsize, insize, timeout, listeners });
-crate::enc_struct!(Proc { parent, image, cmdline, cwd, exit, kill, suspend, inherit, std });
+crate::enc_struct!(Proc { parent, image, cmdline, cwd, exit, kill, suspend, inherit, std, service });
 impl Enc for Sync {
     fn put(&self, w: &mut Vec<u8>) {
         match *self {
@@ -1210,7 +1219,7 @@ impl Enc for Sync {
 crate::enc_struct!(KObj { sync, name, refs });
 crate::enc_struct!(KWin { hwnd, pid, tid, class, title });
 crate::enc_struct!(XMsg { id, to, hwnd, msg, w, l, data, send });
-crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, next_msg });
+crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, next_msg, services, com });
 
 #[cfg(test)]
 mod tests;

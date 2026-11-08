@@ -41,7 +41,7 @@ link() {  # <output .js> <memory flags> <emcc flags...>
   shift 2
   local log="$OUT/link-$(basename "$(dirname "$out")")-$(basename "$out").log"
   emcc -O2 ${SAKE_LDEXTRA:-} -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" "$LIB" \
-    $WRAPFLAGS --pre-js "$HO/fetch-bridge.js" --pre-js "$HO/pre.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" --js-library "$HO/vnkern.js" \
+    $WRAPFLAGS --pre-js "$HO/fetch-bridge.js" --pre-js "$HO/pre.js" --pre-js "$HO/tls-worker.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" --js-library "$HO/vnkern.js" --js-library "$HO/tls-bridge.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
     -sGLOBAL_BASE=2147483648 $memory \
     -sSTACK_SIZE=1MB -sDEFAULT_PTHREAD_STACK_SIZE=1MB -sPTHREAD_POOL_SIZE=16 -sPTHREAD_POOL_SIZE_STRICT=0 \

@@ -9,10 +9,8 @@
 //!   (SeLoadDriverPrivilege, SeDebugPrivilege ...); AdjustTokenPrivileges enables them.
 //!   Programs that check "am I an administrator" (CPU-Z's AccessCheck on a descriptor that only
 //!   lets Administrators in) find they are.
-//! - Services: the manager opens, a service can be created, queried and deleted, but starting
-//!   one fails: a kernel driver with ERROR_DRIVER_BLOCKED (sake runs no kernel code), any other
-//!   with ERROR_SERVICE_DISABLED. Hardware tools take this path when their driver will not load
-//!   and carry on with what user mode can read.
+//! - User-mode service management is implemented in services.rs. Kernel drivers
+//!   remain unsupported because sake runs user-mode guest code.
 
 #![allow(non_snake_case)]
 
@@ -23,7 +21,6 @@ use crate::api::{implement, Ctx};
 use crate::k32::last_error;
 use crate::mem::{self, cstr, put32, putp, r16, r32, r8, w16, w32, w8, wstr};
 use crate::obj::{self, Obj};
-use crate::HashMap;
 
 macro_rules! reg {
     ($dll:literal; $($f:ident),* $(,)?) => { $( implement($dll, stringify!($f), $f); )* };
@@ -33,11 +30,6 @@ const ERROR_INVALID_HANDLE: u32 = 6;
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 const ERROR_NO_TOKEN: u32 = 1008;
-const ERROR_SERVICE_DISABLED: u32 = 1058;
-const ERROR_SERVICE_DOES_NOT_EXIST: u32 = 1060;
-const ERROR_SERVICE_NOT_ACTIVE: u32 = 1062;
-const ERROR_SERVICE_EXISTS: u32 = 1073;
-const ERROR_DRIVER_BLOCKED: u32 = 1275;
 const ERROR_NO_SUCH_PRIVILEGE: u32 = 1313;
 const ERROR_UNKNOWN_REVISION: u32 = 1305;
 const ERROR_INVALID_ACL: u32 = 1336;
@@ -994,219 +986,6 @@ fn GetTokenInformation(c: &mut Ctx) -> u32 {
 }
 
 
-// ---------------------------------------------------------------------------------------------
-// the service control manager
-
-struct Service {
-    display: String,
-    ty: u32,
-    start: u32,
-    path: String,
-}
-#[derive(Default)]
-struct Scm {
-    services: HashMap<String, Service>,
-    /// service handle -> service name
-    open: HashMap<u32, String>,
-    managers: HashSet<u32>,
-}
-static SCM: Mutex<Option<Scm>> = Mutex::new(None);
-fn scm<R>(f: impl FnOnce(&mut Scm) -> R) -> R {
-    f(SCM.lock().unwrap().get_or_insert_with(Scm::default))
-}
-fn arg(p: u32, wide: bool) -> Option<String> {
-    (p != 0).then(|| if wide { String::from_utf16_lossy(&wstr(p)) } else { crate::text::a2s(&cstr(p)) })
-}
-
-fn open_manager() -> u32 {
-    let h = obj::add(Obj::Other("service manager"));
-    scm(|s| s.managers.insert(h));
-    h
-}
-fn OpenSCManagerA(_: &mut Ctx) -> u32 {
-    open_manager()
-}
-fn OpenSCManagerW(_: &mut Ctx) -> u32 {
-    open_manager()
-}
-fn open_service(c: &mut Ctx, wide: bool) -> u32 {
-    let (m, name) = (c.a(0), arg(c.a(1), wide).unwrap_or_default());
-    if !scm(|s| s.managers.contains(&m)) {
-        last_error(ERROR_INVALID_HANDLE);
-        return 0;
-    }
-    let key = name.to_ascii_lowercase();
-    if !scm(|s| s.services.contains_key(&key)) {
-        last_error(ERROR_SERVICE_DOES_NOT_EXIST);
-        return 0;
-    }
-    let h = obj::add(Obj::Other("service"));
-    scm(|s| s.open.insert(h, key));
-    h
-}
-fn OpenServiceA(c: &mut Ctx) -> u32 {
-    open_service(c, false)
-}
-fn OpenServiceW(c: &mut Ctx) -> u32 {
-    open_service(c, true)
-}
-fn create_service(c: &mut Ctx, wide: bool) -> u32 {
-    let m = c.a(0);
-    if !scm(|s| s.managers.contains(&m)) {
-        last_error(ERROR_INVALID_HANDLE);
-        return 0;
-    }
-    let Some(name) = arg(c.a(1), wide).filter(|n| !n.is_empty()) else {
-        last_error(123); // ERROR_INVALID_NAME
-        return 0;
-    };
-    let key = name.to_ascii_lowercase();
-    if scm(|s| s.services.contains_key(&key)) {
-        last_error(ERROR_SERVICE_EXISTS);
-        return 0;
-    }
-    let display = arg(c.a(2), wide).unwrap_or_else(|| name.clone());
-    let (ty, start, path) = (c.a(4), c.a(5), arg(c.a(7), wide).unwrap_or_default());
-    if std::env::var("SAKE_TRACE_SERVICES").is_ok() {
-        eprintln!("sake: CreateService {name} type {ty:#x} start {start} {path}");
-    }
-    let h = obj::add(Obj::Other("service"));
-    scm(|s| {
-        s.services.insert(key.clone(), Service { display, ty, start, path });
-        s.open.insert(h, key);
-    });
-    put32(c.a(10), 0);
-    h
-}
-fn CreateServiceA(c: &mut Ctx) -> u32 {
-    create_service(c, false)
-}
-fn CreateServiceW(c: &mut Ctx) -> u32 {
-    create_service(c, true)
-}
-fn service_of(h: u32) -> Option<(u32, u32)> {
-    scm(|s| s.open.get(&h).and_then(|k| s.services.get(k)).map(|v| (v.ty, v.start)))
-}
-fn start_service(c: &mut Ctx) -> u32 {
-    let Some((ty, start)) = service_of(c.a(0)) else {
-        last_error(ERROR_INVALID_HANDLE);
-        return 0;
-    };
-    // SERVICE_KERNEL_DRIVER / SERVICE_FILE_SYSTEM_DRIVER: no kernel here
-    last_error(if ty & 3 != 0 { ERROR_DRIVER_BLOCKED } else if start == 4 { ERROR_SERVICE_DISABLED } else { ERROR_SERVICE_DISABLED });
-    0
-}
-fn StartServiceA(c: &mut Ctx) -> u32 {
-    start_service(c)
-}
-fn StartServiceW(c: &mut Ctx) -> u32 {
-    start_service(c)
-}
-/// SERVICE_STATUS: type, SERVICE_STOPPED, accepted 0, exit code, ...
-fn put_status(p: u32, ty: u32) {
-    mem::fill(p, 28, 0);
-    w32(p, ty);
-    w32(p + 4, 1);
-}
-fn ControlService(c: &mut Ctx) -> u32 {
-    let Some((ty, _)) = service_of(c.a(0)) else {
-        last_error(ERROR_INVALID_HANDLE);
-        return 0;
-    };
-    put_status(c.a(2), ty);
-    last_error(ERROR_SERVICE_NOT_ACTIVE);
-    0
-}
-fn QueryServiceStatus(c: &mut Ctx) -> u32 {
-    let Some((ty, _)) = service_of(c.a(0)) else {
-        last_error(ERROR_INVALID_HANDLE);
-        return 0;
-    };
-    put_status(c.a(1), ty);
-    1
-}
-fn QueryServiceStatusEx(c: &mut Ctx) -> u32 {
-    let (h, level, buf, len, need) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let Some((ty, _)) = service_of(h) else {
-        last_error(ERROR_INVALID_HANDLE);
-        return 0;
-    };
-    if level != 0 {
-        last_error(124); // ERROR_INVALID_LEVEL
-        return 0;
-    }
-    put32(need, 36);
-    if len < 36 {
-        last_error(ERROR_INSUFFICIENT_BUFFER);
-        return 0;
-    }
-    mem::fill(buf, 36, 0);
-    put_status(buf, ty);
-    1
-}
-fn DeleteService(c: &mut Ctx) -> u32 {
-    let h = c.a(0);
-    let ok = scm(|s| match s.open.get(&h).cloned() {
-        Some(k) => s.services.remove(&k).is_some(),
-        None => false,
-    });
-    if !ok {
-        last_error(ERROR_INVALID_HANDLE);
-    }
-    ok as u32
-}
-fn CloseServiceHandle(c: &mut Ctx) -> u32 {
-    let h = c.a(0);
-    let known = scm(|s| s.open.remove(&h).is_some() || s.managers.remove(&h));
-    if !known {
-        last_error(ERROR_INVALID_HANDLE);
-        return 0;
-    }
-    obj::close(h);
-    1
-}
-fn query_config(c: &mut Ctx, wide: bool) -> u32 {
-    let (h, buf, len, need) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some((ty, start, path, display)) = scm(|s| s.open.get(&h).and_then(|k| s.services.get(k)).map(|v| (v.ty, v.start, v.path.clone(), v.display.clone()))) else {
-        last_error(ERROR_INVALID_HANDLE);
-        return 0;
-    };
-    let ps = mem::ps();
-    let fixed = 4 * 3 + ps * 6;
-    let enc = |s: &str| -> Vec<u8> {
-        if wide {
-            s.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect()
-        } else {
-            let mut v = crate::text::w2a(&s.encode_utf16().collect::<Vec<_>>());
-            v.push(0);
-            v
-        }
-    };
-    let strs = [enc(&path), enc(""), enc(""), enc(""), enc(""), enc(&display)];
-    let total = fixed + strs.iter().map(|s| s.len() as u32).sum::<u32>();
-    put32(need, total);
-    if len < total || buf == 0 {
-        last_error(ERROR_INSUFFICIENT_BUFFER);
-        return 0;
-    }
-    w32(buf, ty);
-    w32(buf + 4, start);
-    w32(buf + 8, 1); // SERVICE_ERROR_NORMAL
-    let mut at = buf + fixed;
-    for (i, s) in strs.iter().enumerate() {
-        mem::wp(buf + 12 + ps * i as u32, at);
-        mem::write(at, s);
-        at += s.len() as u32;
-    }
-    1
-}
-fn QueryServiceConfigA(c: &mut Ctx) -> u32 {
-    query_config(c, false)
-}
-fn QueryServiceConfigW(c: &mut Ctx) -> u32 {
-    query_config(c, true)
-}
-
 pub fn init() {
     reg!("advapi32";
         AllocateAndInitializeSid, FreeSid, GetLengthSid, IsValidSid, EqualSid, CopySid, GetSidLengthRequired,
@@ -1218,9 +997,7 @@ pub fn init() {
         GetSecurityDescriptorControl, GetSecurityDescriptorLength, AccessCheck, OpenProcessToken, OpenThreadToken,
         ImpersonateSelf, RevertToSelf, DuplicateToken, DuplicateTokenEx, LookupPrivilegeValueA, LookupPrivilegeValueW,
         LookupPrivilegeNameW, AdjustTokenPrivileges, CheckTokenMembership, GetTokenInformation,
-        OpenSCManagerA, OpenSCManagerW, OpenServiceA, OpenServiceW, CreateServiceA, CreateServiceW, StartServiceA,
-        StartServiceW, ControlService, QueryServiceStatus, QueryServiceStatusEx, DeleteService, CloseServiceHandle,
-        QueryServiceConfigA, QueryServiceConfigW, ConvertSidToStringSidA, ConvertSidToStringSidW,
+        ConvertSidToStringSidA, ConvertSidToStringSidW,
         ConvertStringSidToSidA, ConvertStringSidToSidW,
     );
 }

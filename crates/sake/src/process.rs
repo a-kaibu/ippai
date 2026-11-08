@@ -166,6 +166,42 @@ pub fn first_tid(pid: u32) -> u32 {
     pid + 0x10
 }
 
+/// SCM starts the registered command as a real process of the shared kernel.
+/// Publish its ownership before spawning: ServiceMain may report status as soon
+/// as the host starts the instance.
+pub(crate) fn spawn_service(command: &str, service: &str) -> Result<u32, u32> {
+    let command = command.trim();
+    let (win, host, arguments) = if command.starts_with('"') {
+        let (program, arguments) = split_command(command);
+        let (win, host) = find_program(&program, false)?;
+        (win, host, arguments)
+    } else {
+        // SCM ImagePath may be an unquoted path containing spaces. Resolve the
+        // executable progressively, as CreateProcess does, then quote argv[0].
+        let mut found = None;
+        for end in command.char_indices().filter_map(|(i, c)| c.is_whitespace().then_some(i)).chain([command.len()]) {
+            if let Ok((win, host)) = find_program(&command[..end], false) {
+                found = Some((win, host, command[end..].trim().to_string())); break;
+            }
+        }
+        found.ok_or(2u32)?
+    };
+    if !kern::share() { return Err(1054); }
+    watch();
+    let p = Proc { parent: crate::pid(), image: win.clone(), cmdline: format!("\"{win}\" {arguments}"),
+        cwd: "C:\\windows\\system32\\".into(), service: Some(service.into()), ..Proc::default() };
+    let pid = kern::with(|k| {
+        let pid = k.new_process(p);
+        if let Some(s) = k.services.get_mut(service) { s.pid = pid; }
+        pid
+    }).0;
+    if !kern::host::spawn(pid, &host) {
+        kern::with(|k| k.exited(pid, 1));
+        return Err(2);
+    }
+    Ok(pid)
+}
+
 /// The process another one started: its record (None for the first process).
 pub fn record() -> Option<Proc> {
     if crate::pid() == kern::ROOT_PID {
@@ -216,6 +252,7 @@ pub fn watch() {
         obj::signal();
         crate::pipe::pump();
         crate::user::deliver_remote();
+        crate::comrpc::wake();
         kern::wait_change(gen, None);
     });
 }
