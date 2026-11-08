@@ -74,4 +74,6 @@ mp3 stream: select 0, selected 1; stream 5 0xc00d36b3
   current: audio 1 subtype 0x3 compressed 0 ch 2 rate 44100 bits 32 align 8 avg 352800 independent 1
   seek 0
   after the seek: 0 flags 0, at or before 250 ms: 1, within 100 ms of it: 1
+mp3 x10 (65892 bytes): 0, samples of 26 26 26 26 ...: 9 samples, 210 frames of 1152
+mp3 x40 (263382 bytes): 0, samples of 26 26 26 26 ...: 33 samples, 840 frames of 1152
 junk: failed 1
