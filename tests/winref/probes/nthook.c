@@ -30,10 +30,16 @@ static void flush(const char *what) {
     logbuf[0] = 0;
 }
 
-/* whether an NT name is \??\ and the full path of nthook-virtual.dat */
+/* whether an NT name is nthook-virtual.dat: a full \??\ path (root 0), or the bare name relative
+ * to a directory handle (Windows' CreateFile passes the current directory's handle as the root
+ * for a relative path) */
 static int ours(OA *oa) {
     static const WCHAR tail[] = L"\\nthook-virtual.dat";
     size_t n = oa->Name->Length / 2, k = wcslen(tail);
+    if (oa->Root && n == k - 1 && !_wcsnicmp(oa->Name->Buffer, tail + 1, n)) {
+        say(" name relative root 1 attrs %#lx", oa->Attributes);
+        return 1;
+    }
     if (n < k || _wcsnicmp(oa->Name->Buffer + n - k, tail, k)) return 0;
     say(" name %s%s root %d attrs %#lx", wcsncmp(oa->Name->Buffer, L"\\??\\", 4) ? "other" : "\\??\\", oa->Name->Buffer[5] == ':' ? "X:" : "?", oa->Root != 0, oa->Attributes);
     return 1;
