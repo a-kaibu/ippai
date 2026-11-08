@@ -39,9 +39,10 @@
 //!   sessions a killed tab left, ...), kept as `<logs>/<name>.txt`; `GET /log-list` lists them
 //!   (JSON, newest first), `/logs/<name>.txt` serves one
 //!
-//! - the web app's files are sent zstd-compressed to browsers that accept it: at the start the
+//! - the web app's files are sent zstd-compressed to browsers that accept it: once it listens the
 //!   server writes `<file>.zst` beside each script, wasm, page and style sheet of `--web` (again
-//!   when the file is newer), and `ServeDir` picks it (see `precompress`)
+//!   when the file is newer; an older `.zst` is removed before it listens), and `ServeDir` picks
+//!   it when there is one (see `precompress`)
 //!
 //! Every response carries COOP/COEP: the program's threads (wasm pthreads) need SharedArrayBuffer,
 //! which browsers only allow on cross-origin isolated pages.
@@ -747,14 +748,17 @@ async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
 }
 
 /// Writes `<file>.zst` beside every compressible file under `dir` that has none or an older one
-/// (sake.wasm: 8.1 MB, 2.3 MB compressed).
-fn precompress(dir: &std::path::Path) {
+/// (sake.wasm: 8.1 MB, 2.3 MB compressed). With `write` false it only removes the older ones:
+/// the server does that before it listens (nothing stale is ever served) and compresses after,
+/// in the background: level 19 over a web app with several sake builds took more than the
+/// 10 s tests/winetest/run-browser.mjs waits for the server (winetest-gpu, run 42445713214).
+fn precompress(dir: &std::path::Path, write: bool) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
         let Ok(meta) = e.metadata() else { continue };
         if meta.is_dir() {
-            precompress(&p);
+            precompress(&p, write);
             continue;
         }
         let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
@@ -768,6 +772,9 @@ fn precompress(dir: &std::path::Path) {
         }
         // (an old one must not be served meanwhile)
         let _ = std::fs::remove_file(&zst);
+        if !write {
+            continue;
+        }
         let Ok(data) = std::fs::read(&p) else { continue };
         match zstd::encode_all(&data[..], 19) {
             Ok(z) if z.len() < data.len() => {
@@ -839,15 +846,11 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     });
     let logs = Arc::new(args.logs.clone());
     let web = args.web.clone();
-    tokio::task::spawn_blocking({
-        let web = web.clone();
-        move || precompress(&web)
-    })
-    .await?;
-    // (again every few seconds: a deploy that replaces files under a running server)
+    precompress(&web, false);
+    // (then again every few seconds: a deploy that replaces files under a running server)
     std::thread::spawn(move || loop {
+        precompress(&web, true);
         std::thread::sleep(std::time::Duration::from_secs(3));
-        precompress(&web);
     });
     let saves = saves::Saves::new(&store)?;
     let trees = crate::treefiles::Trees::new(store.clone())?;
@@ -1082,5 +1085,55 @@ mod tests {
         assert!(!with("http://127.0.0.1:8657", &[("host", "127.0.0.1:8656")]), "the game listener's pages");
         assert!(!with("https://evil.example", &[("host", "box.ts.net")]));
         assert!(!with("null", &[("host", "box.ts.net")]));
+    }
+
+    /// The server's start only removes `.zst` files older than their source (it must not wait
+    /// for level 19, winetest-gpu); the background pass then writes the missing ones, each
+    /// decoding to its source, and leaves what is small, of another kind, or fresh alone.
+    #[test]
+    fn precompress_drops_stale_first_and_writes_after() {
+        use std::fs;
+        let d = scratch("precompress");
+        fs::create_dir_all(d.join("sub")).unwrap();
+        let big: String = (0..4000).map(|i| format!("let v{i} = {};\n", i % 7)).collect();
+        fs::write(d.join("a.js"), &big).unwrap();
+        fs::write(d.join("sub/b.wasm"), big.as_bytes()).unwrap();
+        fs::write(d.join("small.js"), "x").unwrap();
+        fs::write(d.join("c.png"), &big).unwrap();
+        // a stale one (older than its source) and a fresh one, set apart by their times
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+        fs::write(d.join("a.js.zst"), b"stale").unwrap();
+        fs::File::options().write(true).open(d.join("a.js.zst")).unwrap().set_modified(old).unwrap();
+        fs::write(d.join("sub/b.wasm.zst"), b"kept").unwrap();
+        fs::File::options().write(true).open(d.join("sub/b.wasm")).unwrap().set_modified(old).unwrap();
+
+        super::precompress(&d, false);
+        assert!(!d.join("a.js.zst").exists(), "a stale .zst is gone before the server listens");
+        assert_eq!(fs::read(d.join("sub/b.wasm.zst")).unwrap(), b"kept", "a fresh one stays");
+        let zst = |d: &std::path::Path| {
+            let mut n: Vec<_> = walk(d).into_iter().filter(|p| p.extension().is_some_and(|e| e == "zst")).collect();
+            n.sort();
+            n
+        };
+        assert_eq!(zst(&d), vec![d.join("sub/b.wasm.zst")], "and nothing is written yet");
+
+        super::precompress(&d, true);
+        assert_eq!(zstd::decode_all(&fs::read(d.join("a.js.zst")).unwrap()[..]).unwrap(), big.as_bytes());
+        assert_eq!(fs::read(d.join("sub/b.wasm.zst")).unwrap(), b"kept");
+        assert_eq!(zst(&d), vec![d.join("a.js.zst"), d.join("sub/b.wasm.zst")], "not small.js, not c.png");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    fn walk(d: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = vec![];
+        for e in std::fs::read_dir(d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push(p);
+            }
+        }
+        out
     }
 }

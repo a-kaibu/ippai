@@ -94,6 +94,8 @@ jobs:
         run: node tests/library-browser.mjs target/debug/ippai
       - name: Sign-in behind a reverse proxy that adds no forwarding header (auth.rs)
         run: python3 tests/auth-proxy.py target/debug/ippai
+      - name: The server answers before it has compressed the web app (serve.rs precompress)
+        run: python3 tests/serve-start.py target/debug/ippai
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
