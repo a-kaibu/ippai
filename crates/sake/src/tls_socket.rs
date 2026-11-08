@@ -132,5 +132,7 @@ impl Drop for Socket {
         unsafe {
             sake_tls_close(self.id)
         }
+        #[cfg(not(target_os = "emscripten"))]
+        let _ = self.id;
     }
 }
