@@ -1,0 +1,51 @@
+exports 1
+uloc_getDefault en_US@calendar=gregorian;currency=usd;fw=sun;hours=h12;measure=ussystem
+ja character: -127 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21
+ja word: -127 0 1 5 6 7 9 10 11 13 16 17 19 20 21
+ja line: -128 0 2 3 4 6 7 8 11 12 13 14 15 17 18 21
+ja sentence: -127 0 11 21
+ja long character: -127 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33
+ja long word: -127 0 2 3 4 5 7 8 10 11 13 15 16 18 19 21 23 26 28 29 30 31 32 33
+ja long line: -128 0 1 2 3 4 5 6 8 9 10 11 12 13 14 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 33
+ja long sentence: -127 0 8 16 33
+en character: -127 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79
+en word: -127 0 3 4 9 10 11 12 17 18 19 20 23 24 29 30 34 35 39 40 44 45 46 51 52 53 56 57 58 60 61 62 67 68 73 74 78 79
+en line: -128 0 4 10 20 24 30 35 40 46 53 58 62 68 74 79
+en sentence: -127 0 53 58 62 79
+mixed character: -127 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33
+mixed word: -127 0 5 6 10 11 15 16 19 20 22 23 27 28 30 31 32 33
+mixed line: -128 0 5 6 7 8 9 11 16 20 22 23 24 25 26 27 29 33
+mixed sentence: -127 0 16 33
+emoji character: -127 0 1 9 10 14 15 19 20 22
+emoji word: -127 0 1 9 10 14 15 19 20 22
+emoji line: -128 0 1 9 10 14 15 20 22
+emoji sentence: -127 0 22
+surrogates character: -127 0 2 4 5 6 8 9 10
+surrogates word: -127 0 2 4 5 6 8 10
+surrogates line: -128 0 2 4 6 8 9 10
+surrogates sentence: -127 0 10
+spaces character: -127 0 1 2 3 4 5 7 8 9 10 11 12 13 14
+spaces word: -127 0 2 3 5 7 8 9 10 11 12 13 14
+spaces line: -128 0 2 7 9 10 13 14
+spaces sentence: -127 0 7 9 10 14
+empty character: -127 0
+empty word: -127 0
+empty line: -128 0
+empty sentence: -127 0
+NUL-terminated: 0 0 2 8 11
+after the end: next -1 current 11 previous 8
+first 0 previous -1 current 0 last 11
+following 2: 8, 11: -1 current 11, -5: 0 current 0
+preceding 8: 2, 0: -1 current 0, 50: 11 current 11
+isBoundary 8: 893221889 current 8, 5: 0 current 8
+utext_openUChars on the stack: 0 same 1
+setUText: 0 0 3 4
+utext_close: same 1
+utext_openUChars NULL: 0 allocated 1
+setUText: 0 0 2 8 11
+utext_close: 1
+setText: 0 0 3 4
+open with a failure in: 0 status 7
+open kind 9: 0 status failed 1
+open without text: 1 status 0 current 0 next -1
+utext_openUChars with a failure in: 0 status 7
