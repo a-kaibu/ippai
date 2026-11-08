@@ -5436,6 +5436,11 @@ fn CharNextW(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     if r16(p) == 0 { p } else { p + 2 }
 }
+/// CharPrevW(start, current): the character before (a UTF-16 unit; start itself at the start)
+fn CharPrevW(c: &mut Ctx) -> u32 {
+    let (start, p) = (c.a(0), c.a(1));
+    if p <= start { start } else { p - 2 }
+}
 fn CharPrevA(c: &mut Ctx) -> u32 {
     char_prev(0, c.a(0), c.a(1))
 }
@@ -6230,7 +6235,7 @@ pub fn init() {
         LoadImageW, CreateIcon, CreateIconIndirect, CreateCursor, CopyIcon, DestroyCursor, DestroyIcon,
         GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA, LoadMenuW,
         CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharLowerBuffW, CharUpperBuffW, CharNextA, CharNextExA, CharNextW,
-        CharPrevA, CharPrevExA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
+        CharPrevA, CharPrevW, CharPrevExA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
         IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, wvsprintfW, GetGUIThreadInfo,
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,
         IsWindowUnicode, RegisterHotKey, UnregisterHotKey,

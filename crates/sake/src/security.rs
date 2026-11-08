@@ -985,9 +985,105 @@ fn GetTokenInformation(c: &mut Ctx) -> u32 {
     1
 }
 
+/// SetEntriesInAcl(count, EXPLICIT_ACCESS list, old ACL, &new ACL): a new ACL (LocalAlloc'd)
+/// from the old one's ACEs and the entries: SET_ACCESS and REVOKE_ACCESS drop the trustee's
+/// ACEs first, DENY_ACCESS puts a denied ACE before the allowed ones, GRANT_ACCESS and
+/// SET_ACCESS add an allowed one. Trustees by SID, or by the names CURRENT_USER, CREATOR OWNER
+/// and the well-known groups' (Everyone, SYSTEM, Administrators, Users).
+fn set_entries(c: &mut Ctx, wide: bool) -> u32 {
+    const ERROR_NONE_MAPPED: u32 = 1332;
+    let (count, list, old, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if out == 0 || count != 0 && list == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let x64 = mem::x64();
+    let (stride, trustee) = if x64 { (48, 16) } else { (32, 12) };
+    // (deny ACEs, then allowed ones: the order Windows' explicit entries get)
+    let mut denied: Vec<(u8, u8, u32, Sid)> = Vec::new();
+    let mut allowed: Vec<(u8, u8, u32, Sid)> = Vec::new();
+    if old != 0 {
+        for (ty, flags, mask, sid) in aces(old) {
+            let Some(sid) = sid else { continue };
+            if ty == 1 { denied.push((ty, flags, mask, sid)) } else { allowed.push((ty, flags, mask, sid)) }
+        }
+    }
+    for i in 0..count {
+        let e = list + i * stride;
+        let (mask, mode, inherit) = (r32(e), r32(e + 4), r32(e + 8));
+        let t = e + trustee;
+        let (form, name) = if x64 { (r32(t + 12), mem::rp(t + 24)) } else { (r32(t + 8), r32(t + 16)) };
+        let sid = match form {
+            0 => match Sid::read(name) { Some(s) => s, None => return ERROR_INVALID_SID },
+            1 => {
+                let n = if wide { String::from_utf16_lossy(&wstr(name)) } else { crate::text::a2s(&mem::cstr(name)) };
+                match n.to_ascii_uppercase().as_str() {
+                    "CURRENT_USER" => the_user(),
+                    "EVERYONE" => everyone(),
+                    "SYSTEM" | "NT AUTHORITY\\SYSTEM" => Sid(5, vec![18]),
+                    "ADMINISTRATORS" | "BUILTIN\\ADMINISTRATORS" => admins(),
+                    "USERS" | "BUILTIN\\USERS" => Sid(5, vec![32, 545]),
+                    "CREATOR OWNER" => Sid(3, vec![0]),
+                    _ => return ERROR_NONE_MAPPED,
+                }
+            }
+            _ => return ERROR_INVALID_PARAMETER,
+        };
+        let flags = (inherit & 0x1f) as u8;
+        match mode {
+            // NOT_USED_ACCESS
+            0 => {}
+            // GRANT_ACCESS, SET_ACCESS
+            1 | 2 => {
+                if mode == 2 {
+                    allowed.retain(|a| a.3 != sid);
+                    denied.retain(|a| a.3 != sid);
+                }
+                if let Some(a) = allowed.iter_mut().find(|a| a.0 == 0 && a.3 == sid && a.1 == flags) {
+                    a.2 |= mask;
+                } else {
+                    allowed.push((0, flags, mask, sid));
+                }
+            }
+            3 => denied.push((1, flags, mask, sid)),
+            4 => {
+                allowed.retain(|a| a.3 != sid);
+                denied.retain(|a| a.3 != sid);
+            }
+            _ => return ERROR_INVALID_PARAMETER,
+        }
+    }
+    let all: Vec<_> = denied.into_iter().chain(allowed).collect();
+    let size = 8 + all.iter().map(|a| 8 + a.3.len()).sum::<u32>();
+    // (LMEM_ZEROINIT: the caller frees it with LocalFree)
+    let acl = crate::k32::global_alloc(0x40, size);
+    if acl == 0 {
+        return 8;
+    }
+    w8(acl, 2);
+    w16(acl + 2, size as u16);
+    let mut at = acl + 8;
+    for (ty, flags, mask, sid) in &all {
+        w8(at, *ty);
+        w8(at + 1, *flags);
+        w16(at + 2, (8 + sid.len()) as u16);
+        w32(at + 4, *mask);
+        mem::write(at + 8, &sid.bytes());
+        at += 8 + sid.len();
+    }
+    w16(acl + 4, all.len() as u16);
+    mem::wp(out, acl);
+    0
+}
+fn SetEntriesInAclA(c: &mut Ctx) -> u32 {
+    set_entries(c, false)
+}
+fn SetEntriesInAclW(c: &mut Ctx) -> u32 {
+    set_entries(c, true)
+}
 
 pub fn init() {
     reg!("advapi32";
+        SetEntriesInAclA, SetEntriesInAclW,
         AllocateAndInitializeSid, FreeSid, GetLengthSid, IsValidSid, EqualSid, CopySid, GetSidLengthRequired,
         InitializeSid, GetSidSubAuthority, GetSidSubAuthorityCount, GetSidIdentifierAuthority, CreateWellKnownSid,
         IsWellKnownSid, InitializeAcl, AddAce, AddAccessAllowedAce, AddAccessAllowedAceEx, AddAccessDeniedAce,
