@@ -19,12 +19,13 @@ mod d3d7;
 
 const DD_OK: u32 = 0;
 const E_NOINTERFACE: u32 = 0x8000_4002;
+const E_INVALIDARG: u32 = 0x8007_0057;
 const DDERR_INVALIDPARAMS: u32 = 0x8007_0057;
 const DDERR_UNSUPPORTED: u32 = 0x8000_4001;
 const DDERR_NOTFOUND: u32 = 0x8876_00ff;
 const DDERR_OUTOFMEMORY: u32 = 0x8007_000e;
 const DDERR_NOCLIPLIST: u32 = 0x8876_00cd;
-const DDERR_NOPALETTEATTACHED: u32 = 0x8876_0230;
+const DDERR_NOPALETTEATTACHED: u32 = 0x8876_023c;
 const DDERR_NOCOLORKEY: u32 = 0x8876_00d7;
 const DDERR_INVALIDRECT: u32 = 0x8876_0096;
 const DDERR_INVALIDCAPS: u32 = 0x8876_0064;
@@ -35,11 +36,20 @@ const CAPS_FLIP: u32 = 0x10;
 const CAPS_FRONTBUFFER: u32 = 0x20;
 const CAPS_OFFSCREENPLAIN: u32 = 0x40;
 const CAPS_PRIMARY: u32 = 0x200;
+const CAPS_VISIBLE: u32 = 0x8000;
+const DDSCAPS2_CUBEMAP: u32 = 0x200;
+const DDSCAPS2_MIPMAPSUBLEVEL: u32 = 0x10000;
+/// DDSCAPS2_CUBEMAP_POSITIVEX .. NEGATIVEZ
+const CUBE_ORDER: [u32; 6] = [0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x8000];
+const CUBE_FACES: u32 = 0xfc00;
 const CAPS_SYSTEMMEMORY: u32 = 0x800;
 const CAPS_VIDEOMEMORY: u32 = 0x4000;
 const CAPS_LOCALVIDMEM: u32 = 0x1000_0000;
 const CAPS_ZBUFFER: u32 = 0x2_0000;
 const CAPS_3DDEVICE: u32 = 0x2000;
+const CAPS_TEXTURE: u32 = 0x1000;
+const CAPS_MIPMAP: u32 = 0x40_0000;
+const DDSD_MIPMAPCOUNT: u32 = 0x2_0000;
 
 #[derive(Clone)]
 struct Surf {
@@ -70,6 +80,24 @@ struct Surf {
     /// the IDirectDraw4/7 interface it holds a reference of (made through one of those, as on
     /// Windows; 0: none)
     dd_held: u32,
+    /// a mipmap: the next smaller level (0: the last), how many levels from this one down
+    /// (0: no mipmap), and whether it is a sublevel (it goes with the top level, not by its
+    /// own references)
+    mip: u32,
+    mips: u32,
+    sub: bool,
+    /// a back buffer CreateSurface made with its front buffer (it goes with the front)
+    implicit: bool,
+    /// AddAttachedSurface: the surface this one is attached to (its `next` is this one), and
+    /// the caps the attaching gave it (taken back when it is detached)
+    parent: u32,
+    added: u32,
+    /// DDSCAPS2: a cube map's face (and DDSCAPS2_MIPMAPSUBLEVEL below its top), and the root's
+    /// other faces, in the order EnumAttachedSurfaces gives them
+    caps2: u32,
+    faces: Vec<u32>,
+    /// SetPrivateData's: by GUID, the bytes and whether they are an IUnknown it holds
+    private: Vec<([u8; 16], Vec<u8>, bool)>,
 }
 
 struct State {
@@ -83,6 +111,11 @@ struct State {
     exclusive: bool,
     mode: Option<(i32, i32, u16)>,
     primary: u32,
+    /// the DirectDraw objects that set the display mode and the cooperative level: when one
+    /// goes, its mode and its exclusive mode go with it (as on Windows: ddraw1's tests create
+    /// and release one object after the other and expect the registry's mode back)
+    mode_by: u32,
+    coop_by: u32,
 }
 
 static ST: Mutex<Option<State>> = Mutex::new(None);
@@ -99,6 +132,8 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
         exclusive: false,
         mode: None,
         primary: 0,
+        mode_by: 0,
+        coop_by: 0,
     }))
 }
 
@@ -196,13 +231,22 @@ fn write_desc_mode(p: u32, s: Option<&Surf>, mode: (i32, i32, u16)) {
             w32(p + 64, lo);
             w32(p + 68, hi);
         }
-        if s.caps & CAPS_FLIP != 0 && s.caps & CAPS_FRONTBUFFER != 0 {
+        // (a chain CreateSurface made, with any attached into it; one made by
+        // AddAttachedSurface counts none: ddraw1's test_surface_attachment)
+        if s.caps & CAPS_FLIP != 0 && s.caps & CAPS_FRONTBUFFER != 0 && s.caps & CAPS_COMPLEX != 0 {
             w32(p + 4, r32(p + 4) | 0x20);
             w32(p + 20, chain_len(s) - 1);
+        }
+        if s.mips != 0 {
+            w32(p + 4, r32(p + 4) | DDSD_MIPMAPCOUNT);
+            w32(p + 24, s.mips);
         }
     }
     write_pf(p + 72, bpp, pf);
     w32(p + 104, caps);
+    if size == 124 {
+        w32(p + 108, s.map_or(0, |s| s.caps2));
+    }
 }
 
 fn chain_len(s: &Surf) -> u32 {
@@ -265,6 +309,15 @@ fn new_surface_pf(w: i32, h: i32, bpp: u16, r565: bool, pf: [u32; 5], caps: u32)
                 zbuf: 0,
                 dd: 0,
                 dd_held: 0,
+                mip: 0,
+                mips: 0,
+                sub: false,
+                implicit: false,
+                parent: 0,
+                added: 0,
+                caps2: 0,
+                faces: Vec::new(),
+                private: Vec::new(),
             },
         );
         id
@@ -279,11 +332,11 @@ fn surf_vtbl(kind: u8) -> u32 {
             (S_AddRef, 4),
             (S_Release, 4),
             (S_AddAttachedSurface, 8),
-            (S_DeleteAttachedSurface, 12),
+            (unsupported, 8),
             (S_Blt, 24),
             (unsupported, 16),
             (S_BltFast, 24),
-            (ok, 12),
+            (S_DeleteAttachedSurface, 12),
             (S_EnumAttachedSurfaces, 12),
             (unsupported, 16),
             (S_Flip, 12),
@@ -319,7 +372,7 @@ fn surf_vtbl(kind: u8) -> u32 {
             (unsupported, 12),
         ];
         if kind >= 1 {
-            m.extend_from_slice(&[(ok, 20), (unsupported, 16), (ok, 8), (S_GetUniqueness, 8), (ok, 4)]);
+            m.extend_from_slice(&[(S_SetPrivateData, 20), (S_GetPrivateData, 16), (S_FreePrivateData, 8), (S_GetUniqueness, 8), (ok, 4)]);
         }
         if kind == 2 {
             m.extend_from_slice(&[(ok, 8), (S_GetZero, 8), (ok, 8), (S_GetZero, 8)]);
@@ -362,11 +415,15 @@ fn this(c: &Ctx) -> (u32, u8) {
 
 fn S_QueryInterface(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
+    // (no IID: E_INVALIDARG; IUnknown is the IDirectDrawSurface: ddraw7's test_surface_qi)
+    if c.a(1) == 0 {
+        put32(c.a(2), 0);
+        return E_INVALIDARG;
+    }
     let kind = match guid_first(c.a(1)) {
-        0x6c14_db81 | 0x5780_5885 | 0xda04_4e00 => 0,
+        0x6c14_db81 | 0x5780_5885 | 0xda04_4e00 | 0 => 0,
         0x0b2b_8630 => 1,
         0x0667_5a80 => 2,
-        0 => 2,
         _ => {
             put32(c.a(2), 0);
             return E_NOINTERFACE;
@@ -393,15 +450,34 @@ fn release_surface(c: &mut Ctx, id: u32) -> u32 {
         x.refs
     }));
     if left == 0 {
-        // a flip chain goes with its front buffer
+        // (a mipmap's sublevel goes with its top level, a back buffer with its front buffer)
+        if surf(id).is_some_and(|x| x.sub || x.implicit) {
+            return 0;
+        }
+        // a flip chain goes with its front buffer, a mipmap's levels with the top one
         let mut chain = vec![id];
         with(|s| {
+            let faces = s.surfs.get(&id).map_or(vec![], |x| x.faces.clone());
+            for top in std::iter::once(id).chain(faces) {
+                if top != id {
+                    chain.push(top);
+                }
+                let mut at = s.surfs.get(&top).map_or(0, |x| x.mip);
+                while at != 0 && chain.len() < 256 {
+                    chain.push(at);
+                    at = s.surfs.get(&at).map_or(0, |x| x.mip);
+                }
+            }
             if let Some(f) = s.surfs.get(&id) {
                 if f.caps & CAPS_FRONTBUFFER != 0 {
+                    // (one attached into the chain is not of it: it is let go, below)
                     let mut at = f.next;
-                    while at != 0 && at != id && chain.len() < 8 {
-                        chain.push(at);
-                        at = s.surfs.get(&at).map_or(0, |x| x.next);
+                    for _ in 0..16 {
+                        let Some(x) = s.surfs.get(&at).filter(|_| at != id) else { break };
+                        if x.implicit {
+                            chain.push(at);
+                        }
+                        at = x.next;
                     }
                 }
             }
@@ -434,22 +510,116 @@ fn free_surface(c: &mut Ctx, id: u32) {
     if s.zbuf != 0 {
         release_surface(c, s.zbuf);
     }
+    // (a surface attached to this one: its reference goes, it is on its own again)
+    if s.next != 0 && surf(s.next).is_some_and(|x| x.parent == id) {
+        detach(s.next);
+        release_surface(c, s.next);
+    }
+    for (_, d, unk) in s.private {
+        if unk {
+            unk_release(c, &d);
+        }
+    }
     if s.dd_held != 0 {
         dd_release(s.dd_held);
     }
 }
 
+const DDERR_CANNOTATTACHSURFACE: u32 = 0x8876_000a;
+const DDERR_SURFACEALREADYATTACHED: u32 = 0x8876_019a;
+const DDERR_SURFACENOTATTACHED: u32 = 0x8876_01cc;
+const DDERR_CANNOTDETACHSURFACE: u32 = 0x8876_0014;
+
+/// The first surface of the chain `id` is attached in (itself when it is attached to none).
+fn chain_root(id: u32) -> u32 {
+    let mut at = id;
+    for _ in 0..16 {
+        match surf(at).map_or(0, |x| x.parent) {
+            0 => return at,
+            p => at = p,
+        }
+    }
+    at
+}
+
+/// Takes `x` off the surface it is attached to, with the caps the attaching gave it.
+fn detach(x: u32) {
+    with(|st| {
+        let Some((p, next)) = st.surfs.get(&x).map(|s| (s.parent, s.next)) else { return };
+        // (one put into a chain CreateSurface made: the chain closes up again)
+        let spliced = next != 0 && st.surfs.get(&next).map_or(true, |n| n.parent != x);
+        if let Some(ps) = st.surfs.get_mut(&p) {
+            if ps.next == x {
+                ps.next = if spliced { next } else { 0 };
+            }
+        }
+        if let Some(xs) = st.surfs.get_mut(&x) {
+            if spliced {
+                xs.next = 0;
+            }
+            xs.caps &= !(CAPS_FLIP | CAPS_FRONTBUFFER | xs.added);
+            xs.parent = 0;
+            xs.added = 0;
+        }
+    });
+}
+
+/// AddAttachedSurface(surface): a depth buffer to draw with, or a surface of the same size
+/// as the next of a flip chain (ddraw1's test_surface_attachment): the first surface becomes
+/// FLIP and FRONTBUFFER (unless it is a back buffer), the attached one FLIP, and BACKBUFFER when
+/// it is the first one's and was neither. It holds a reference of the attached surface. A
+/// surface of another chain, of another size, or the primary is DDERR_CANNOTATTACHSURFACE; one
+/// attached the other way round DDERR_SURFACEALREADYATTACHED.
 fn S_AddAttachedSurface(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
-    let Some((z, _)) = sid(c.a(1)) else { return DDERR_INVALIDPARAMS };
-    if surf(z).is_some_and(|x| x.caps & CAPS_ZBUFFER != 0) {
+    let Some((x, _)) = sid(c.a(1)) else { return DDERR_INVALIDPARAMS };
+    let (Some(s), Some(xs)) = (surf(id), surf(x)) else { return DDERR_INVALIDPARAMS };
+    if xs.caps & CAPS_ZBUFFER != 0 {
         with(|st| {
-            st.surfs.get_mut(&z).map(|x| x.refs += 1);
-            st.surfs.get_mut(&id).map(|x| x.zbuf = z)
+            st.surfs.get_mut(&x).map(|v| v.refs += 1);
+            st.surfs.get_mut(&id).map(|v| v.zbuf = x)
         });
+        return DD_OK;
     }
+    if x == id || xs.implicit {
+        return DDERR_CANNOTATTACHSURFACE;
+    }
+    if s.next == x || xs.next == id || chain_root(id) == x {
+        return DDERR_SURFACEALREADYATTACHED;
+    }
+    // (into a chain CreateSurface made, after this one: it flips with it, and the front buffer
+    // counts it as a back buffer; ddraw1's test_surface_attachment)
+    let into = in_made_chain(&s);
+    if xs.parent != 0 || xs.next != 0 || (s.next != 0 && !into) || xs.caps & CAPS_PRIMARY != 0 || (s.w, s.h, s.bpp) != (xs.w, xs.h, xs.bpp) {
+        return DDERR_CANNOTATTACHSURFACE;
+    }
+    let root = s.parent == 0 && !into;
+    with(|st| {
+        if let Some(v) = st.surfs.get_mut(&id) {
+            v.next = x;
+            v.caps |= CAPS_FLIP;
+            if root && v.caps & CAPS_BACKBUFFER == 0 {
+                v.caps |= CAPS_FRONTBUFFER;
+            }
+        }
+        if let Some(v) = st.surfs.get_mut(&x) {
+            v.parent = id;
+            v.next = if into { s.next } else { 0 };
+            v.refs += 1;
+            v.added = if root && v.caps & (CAPS_FRONTBUFFER | CAPS_BACKBUFFER) == 0 { CAPS_BACKBUFFER } else { 0 };
+            v.caps |= CAPS_FLIP | v.added;
+        }
+    });
     DD_OK
 }
+
+/// Whether `s` is of a flip chain CreateSurface made (a back buffer of one, or its front).
+fn in_made_chain(s: &Surf) -> bool {
+    s.implicit || (s.caps & CAPS_FRONTBUFFER != 0 && s.caps & CAPS_COMPLEX != 0 && s.next != 0)
+}
+/// DeleteAttachedSurface(flags, surface): a depth buffer, or a surface attached to this one
+/// (its reference goes); the surface this one is attached to is DDERR_CANNOTDETACHSURFACE, any
+/// other DDERR_SURFACENOTATTACHED.
 fn S_DeleteAttachedSurface(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let z = sid(c.a(2)).map(|x| x.0);
@@ -459,8 +629,19 @@ fn S_DeleteAttachedSurface(c: &mut Ctx) -> u32 {
     });
     if let Some(o) = old {
         release_surface(c, o);
+        return DD_OK;
     }
-    DD_OK
+    let Some(x) = z else { return DD_OK };
+    match surf(x) {
+        Some(xs) if xs.parent == id => {
+            detach(x);
+            release_surface(c, x);
+            DD_OK
+        }
+        Some(_) if surf(id).is_some_and(|s| s.parent == x) || chain_root(id) == x => DDERR_CANNOTDETACHSURFACE,
+        Some(xs) if xs.caps & CAPS_ZBUFFER == 0 => DDERR_SURFACENOTATTACHED,
+        _ => DD_OK,
+    }
 }
 
 fn S_GetAttachedSurface(c: &mut Ctx) -> u32 {
@@ -472,9 +653,36 @@ fn S_GetAttachedSurface(c: &mut Ctx) -> u32 {
         put32(c.a(2), block(s.zbuf, kind));
         return DD_OK;
     }
-    if s.next != 0 && want & (CAPS_BACKBUFFER | CAPS_FLIP) != 0 {
-        with(|st| st.surfs.get_mut(&s.next).map(|x| x.refs += 1));
-        put32(c.a(2), block(s.next, kind));
+    // (the next of a flip chain: asked for as a back buffer or a flip surface, or by caps it
+    // has, e.g. COMPLEX: ddraw7.c)
+    // (the last of a chain made by AddAttachedSurface flips to its first)
+    let next = if s.next == 0 && s.parent != 0 && s.caps & CAPS_FLIP != 0 { chain_root(id) } else { s.next };
+    let next_has = |w: u32| surf(next).is_some_and(|n| w != 0 && n.caps & w == w);
+    if next != 0 && (want & (CAPS_BACKBUFFER | CAPS_FLIP) != 0 || (s.mip == 0 && next_has(want))) {
+        with(|st| st.surfs.get_mut(&next).map(|x| x.refs += 1));
+        put32(c.a(2), block(next, kind));
+        return DD_OK;
+    }
+    // (a cube map's face, asked for by DDSCAPS2: the root gives its other faces' tops, a face
+    // its next level; ddraw7's test_getdc)
+    let face = if kind >= 1 { r32(c.a(1) + 4) & CUBE_FACES } else { 0 };
+    if face != 0 {
+        let at = s.faces.iter().copied().find(|f| surf(*f).is_some_and(|x| x.caps2 & face != 0));
+        let at = at.or((s.caps2 & face != 0 && s.mip != 0).then_some(s.mip));
+        let Some(at) = at else {
+            put32(c.a(2), 0);
+            return DDERR_NOTFOUND;
+        };
+        with(|st| st.surfs.get_mut(&at).map(|x| x.refs += 1));
+        put32(c.a(2), block(at, kind));
+        return DD_OK;
+    }
+    // (the next mipmap level: asked for as TEXTURE, MIPMAP or COMPLEX, which it is)
+    // (or by DDSCAPS2_MIPMAPSUBLEVEL alone: ddraw7's test_device_load)
+    let sublevel = kind >= 1 && r32(c.a(1) + 4) & DDSCAPS2_MIPMAPSUBLEVEL != 0;
+    if s.mip != 0 && (want & (CAPS_TEXTURE | CAPS_MIPMAP | CAPS_COMPLEX) != 0 || sublevel) && want & !(CAPS_TEXTURE | CAPS_MIPMAP | CAPS_COMPLEX) == 0 {
+        with(|st| st.surfs.get_mut(&s.mip).map(|x| x.refs += 1));
+        put32(c.a(2), block(s.mip, kind));
         return DD_OK;
     }
     put32(c.a(2), 0);
@@ -484,13 +692,15 @@ fn S_GetAttachedSurface(c: &mut Ctx) -> u32 {
 fn S_EnumAttachedSurfaces(c: &mut Ctx) -> u32 {
     let (id, kind) = this(c);
     let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
-    if s.next != 0 && s.caps & CAPS_FRONTBUFFER != 0 {
-        if let Some(n) = surf(s.next) {
+    // (a cube map's root: its other faces, then its own next level: dsurface's CubeMapTest)
+    let att = if s.next != 0 && s.caps & CAPS_FRONTBUFFER != 0 { s.next } else { s.mip };
+    for att in s.faces.iter().copied().chain(std::iter::once(att)).filter(|&a| a != 0) {
+        if let Some(n) = surf(att) {
             let d = mem::heap_alloc(124, true);
             w32(d, if kind == 0 { 108 } else { 124 });
             write_desc(d, Some(&n));
-            with(|st| st.surfs.get_mut(&s.next).map(|x| x.refs += 1));
-            let b = block(s.next, kind);
+            with(|st| st.surfs.get_mut(&att).map(|x| x.refs += 1));
+            let b = block(att, kind);
             c.call(c.a(2), &[b, d, c.a(1)]);
             mem::heap_free(d);
         }
@@ -526,6 +736,88 @@ fn S_GetDDInterface(c: &mut Ctx) -> u32 {
     mem::putp(c.a(1), b);
     if b == 0 { DDERR_INVALIDPARAMS } else { DD_OK }
 }
+const DDERR_MOREDATA: u32 = 0x8876_02b2;
+const DDSPD_IUNKNOWNPOINTER: u32 = 1;
+
+fn unk_release(c: &mut Ctx, d: &[u8]) {
+    let p = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+    c.call(r32(r32(p) + 8), &[p]);
+}
+/// Takes the private data of `guid` off surface `id` (the IUnknown it held goes); whether
+/// there was any.
+fn take_private(c: &mut Ctx, id: u32, guid: [u8; 16]) -> bool {
+    let old = with(|st| {
+        let v = &mut st.surfs.get_mut(&id)?.private;
+        let i = v.iter().position(|e| e.0 == guid)?;
+        Some(v.remove(i))
+    });
+    if let Some((_, d, true)) = &old {
+        unk_release(c, d);
+    }
+    old.is_some()
+}
+/// SetPrivateData(guid, data, size, flags): a copy of `size` bytes, or with
+/// DDSPD_IUNKNOWNPOINTER an interface pointer it holds a reference of (any other size is
+/// DDERR_INVALIDPARAMS, and takes off what was there, as ddraw4/7 do; ddraw4's
+/// test_private_data). Each mipmap level has its own.
+fn S_SetPrivateData(c: &mut Ctx) -> u32 {
+    let (id, _) = this(c);
+    let (data, size, flags) = (c.a(2), c.a(3), c.a(4));
+    if surf(id).is_none() || c.a(1) == 0 || data == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let guid: [u8; 16] = mem::slice(c.a(1), 16).try_into().unwrap();
+    let unk = flags & DDSPD_IUNKNOWNPOINTER != 0;
+    if unk && size != 4 {
+        if size != 0 {
+            take_private(c, id, guid);
+        }
+        return DDERR_INVALIDPARAMS;
+    }
+    if unk {
+        c.call(r32(r32(data) + 4), &[data]);
+    }
+    // (an interface: the pointer itself)
+    let bytes = if unk { data.to_le_bytes().to_vec() } else { mem::slice(data, size).to_vec() };
+    take_private(c, id, guid);
+    with(|st| st.surfs.get_mut(&id).map(|x| x.private.push((guid, bytes, unk))));
+    DD_OK
+}
+/// GetPrivateData(guid, buffer, size): DDERR_NOTFOUND (nothing written), DDERR_MOREDATA
+/// with the size it needs, or the data (an interface pointer without a reference).
+fn S_GetPrivateData(c: &mut Ctx) -> u32 {
+    let (id, _) = this(c);
+    let (buf, size) = (c.a(2), c.a(3));
+    if c.a(1) == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let guid: [u8; 16] = mem::slice(c.a(1), 16).try_into().unwrap();
+    let Some(d) = with(|st| st.surfs.get(&id)?.private.iter().find(|e| e.0 == guid).map(|e| e.1.clone())) else {
+        return DDERR_NOTFOUND;
+    };
+    if size == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    if r32(size) < d.len() as u32 {
+        w32(size, d.len() as u32);
+        return DDERR_MOREDATA;
+    }
+    if buf == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    mem::write(buf, &d);
+    w32(size, d.len() as u32);
+    DD_OK
+}
+fn S_FreePrivateData(c: &mut Ctx) -> u32 {
+    let (id, _) = this(c);
+    if c.a(1) == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let guid: [u8; 16] = mem::slice(c.a(1), 16).try_into().unwrap();
+    if take_private(c, id, guid) { DD_OK } else { DDERR_NOTFOUND }
+}
+
 fn S_GetUniqueness(c: &mut Ctx) -> u32 {
     put32(c.a(1), 1);
     DD_OK
@@ -538,6 +830,10 @@ fn S_GetZero(c: &mut Ctx) -> u32 {
 fn S_SetColorKey(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let (flags, ck) = (c.a(1), c.a(2));
+    // (a mipmap's sublevel has its top's: ddraw7's test_device_load)
+    if surf(id).is_some_and(|x| x.caps2 & DDSCAPS2_MIPMAPSUBLEVEL != 0) {
+        return 0x8876_025b;
+    }
     let key = if ck == 0 { None } else { Some((r32(ck), r32(ck + 4))) };
     with(|s| {
         if let Some(x) = s.surfs.get_mut(&id) {
@@ -578,8 +874,13 @@ fn S_GetClipper(c: &mut Ctx) -> u32 {
     if cl == 0 { DDERR_NOCLIPLIST } else { DD_OK }
 }
 
+/// SetPalette: a mipmap's sublevel takes none (DDERR_NOTONMIPMAPSUBLEVEL: dsurface.c)
 fn S_SetPalette(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
+    // (a cube map's other faces are not sublevels: their tops take one)
+    if surf(id).is_some_and(|x| x.caps2 & DDSCAPS2_MIPMAPSUBLEVEL != 0) {
+        return 0x8876_025b;
+    }
     let p = c.a(1);
     with(|s| s.surfs.get_mut(&id).map(|x| x.palette = p));
     apply_palette(id);
@@ -649,23 +950,57 @@ fn S_ReleaseDC(c: &mut Ctx) -> u32 {
     DD_OK
 }
 
+const DDERR_NOTFLIPPABLE: u32 = 0x8876_0246;
+const DDERR_NOEXCLUSIVEMODE: u32 = 0x8876_00e1;
+
+/// Which surface of a flip chain (front first) each one shows after a flip: with no target
+/// every one moves up (the front shows the first back buffer, the last back buffer the old
+/// front); with a target only the front and the target trade.
+fn flip_order(n: usize, target: Option<usize>) -> Vec<usize> {
+    match target {
+        Some(t) => (0..n).map(|i| if i == 0 { t } else if i == t { 0 } else { i }).collect(),
+        None => (0..n).map(|i| (i + 1) % n).collect(),
+    }
+}
+
+/// Flip(target, flags): only the front buffer of a chain flips, to a surface of its own chain
+/// (DDERR_NOTFLIPPABLE otherwise: a back buffer, an unrelated surface, the front itself), and a
+/// primary chain only in exclusive mode (ddraw2's test_flip). The pixels move, the interfaces
+/// stay. (Trading pixels with an unrelated surface left the front with that surface's memory
+/// once it was released: a later Lock wrote over the program's code.)
 fn S_Flip(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let Some(front) = surf(id) else { return DDERR_INVALIDPARAMS };
-    let target = match sid(c.a(1)) {
-        Some((t, _)) => t,
-        None => front.next,
-    };
-    if target == 0 || target == id {
-        return DDERR_INVALIDPARAMS;
+    if front.caps & CAPS_FRONTBUFFER == 0 || front.next == 0 {
+        return DDERR_NOTFLIPPABLE;
     }
-    // the pixels move, the interfaces stay
+    if front.caps & CAPS_PRIMARY != 0 && !with(|st| st.exclusive) {
+        return DDERR_NOEXCLUSIVEMODE;
+    }
+    let chain: Vec<u32> = with(|st| {
+        let mut v = vec![id];
+        let mut at = front.next;
+        while at != 0 && at != id && v.len() < 8 {
+            v.push(at);
+            at = st.surfs.get(&at).map_or(0, |x| x.next);
+        }
+        v
+    });
+    let target = match c.a(1) {
+        0 => None,
+        b => match sid(b).and_then(|(t, _)| chain.iter().position(|&x| x == t)) {
+            Some(i) if i != 0 => Some(i),
+            _ => return DDERR_NOTFLIPPABLE,
+        },
+    };
+    let order = flip_order(chain.len(), target);
     with(|st| {
-        let (Some(mut a), Some(mut b)) = (st.surfs.get(&id).cloned(), st.surfs.get(&target).cloned()) else { return };
-        std::mem::swap(&mut a.bits, &mut b.bits);
-        std::mem::swap(&mut a.hbm, &mut b.hbm);
-        st.surfs.insert(id, a);
-        st.surfs.insert(target, b);
+        let mem: Vec<(u32, u32)> = chain.iter().map(|k| st.surfs.get(k).map_or((0, 0), |x| (x.bits, x.hbm))).collect();
+        for (i, k) in chain.iter().enumerate() {
+            if let Some(x) = st.surfs.get_mut(k) {
+                (x.bits, x.hbm) = mem[order[i]];
+            }
+        }
     });
     present_if_primary(c, id, Rect { l: 0, t: 0, r: front.w, b: front.h });
     DD_OK
@@ -1140,15 +1475,29 @@ fn dd_addref(b: u32) -> u32 {
 /// memory).
 fn dd_release(b: u32) -> u32 {
     let (obj, v) = dd_of(b);
-    dds(|m, _| {
-        let Some(o) = m.get_mut(&obj) else { return 0 };
+    let (n, gone) = dds(|m, _| {
+        let Some(o) = m.get_mut(&obj) else { return (0, false) };
         o.refs[v] = o.refs[v].saturating_sub(1);
         let n = o.refs[v];
-        if o.refs == [0; 4] {
+        let gone = o.refs == [0; 4];
+        if gone {
             m.remove(&obj);
         }
-        n
-    })
+        (n, gone)
+    });
+    if gone {
+        with(|s| {
+            if s.mode_by == obj {
+                s.mode = None;
+                s.mode_by = 0;
+            }
+            if s.coop_by == obj {
+                s.exclusive = false;
+                s.coop_by = 0;
+            }
+        });
+    }
+    n
 }
 
 fn D_AddRef(c: &mut Ctx) -> u32 {
@@ -1246,6 +1595,38 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     if caps & CAPS_SYSTEMMEMORY == 0 {
         caps |= CAPS_VIDEOMEMORY | CAPS_LOCALVIDMEM;
     }
+    // (the primary is what is on the screen: DDSCAPS_VISIBLE, ddraw1's test_surface_attachment)
+    if caps & CAPS_PRIMARY != 0 {
+        caps |= CAPS_VISIBLE;
+    }
+    // a mipmap is a texture; a complex surface is a flip chain, a mipmap or a cube map; a
+    // mipmap count is of a complex one, and not 0; a complex mipmap without one goes down to
+    // 1x1 (ddraw7's test_mipmap)
+    let cube = kind == 2 && flags & 1 != 0 && r32(d + 108) & 0x200 != 0;
+    let mip = caps & CAPS_MIPMAP != 0;
+    if (mip && caps & CAPS_TEXTURE == 0) || (caps & CAPS_COMPLEX != 0 && !mip && caps & CAPS_FLIP == 0 && !cube) {
+        put32(out, 0);
+        return DDERR_INVALIDCAPS;
+    }
+    let faces = r32(d + 108) & CUBE_FACES;
+    if cube && faces == 0 {
+        put32(out, 0);
+        return DDERR_INVALIDPARAMS;
+    }
+    let levels = match (mip, caps & CAPS_COMPLEX != 0, flags & DDSD_MIPMAPCOUNT != 0) {
+        (false, ..) => 0,
+        (true, false, true) => {
+            put32(out, 0);
+            return DDERR_INVALIDCAPS;
+        }
+        (true, false, false) => 1,
+        (true, true, true) if r32(d + 24) == 0 => {
+            put32(out, 0);
+            return DDERR_INVALIDPARAMS;
+        }
+        (true, true, true) => r32(d + 24).min(mip_levels(w, h)),
+        (true, true, false) => mip_levels(w, h),
+    };
     let backs = if flags & 0x20 != 0 && caps & CAPS_FLIP != 0 { r32(d + 20).clamp(1, 3) } else { 0 };
     if backs > 0 {
         caps |= CAPS_FRONTBUFFER;
@@ -1270,12 +1651,52 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     if caps & CAPS_PRIMARY != 0 {
         with(|s| s.primary = id);
     }
+    // a cube map: the first face asked for (in +X -X +Y -Y +Z -Z) is the root, the others go
+    // with it, each with its own mipmap
+    let face_bits = if cube { CUBE_ORDER.iter().copied().filter(|f| faces & f != 0).collect() } else { vec![0] };
+    let mut tops = vec![id];
+    for _ in 1..face_bits.len() {
+        let Some(f) = new_surface_pf(w, h, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
+        with(|s| {
+            s.surfs.get_mut(&f).map(|x| {
+                x.dd = owner;
+                x.sub = true;
+            })
+        });
+        tops.push(f);
+    }
+    for (&top, &face) in tops.iter().zip(&face_bits) {
+        let cube2 = if cube { DDSCAPS2_CUBEMAP | face } else { 0 };
+        with(|s| s.surfs.get_mut(&top).map(|x| {
+            x.mips = levels;
+            x.caps2 = cube2;
+        }));
+        let mut up = top;
+        for i in 1..levels {
+            let (lw, lh) = ((w >> i).max(1), (h >> i).max(1));
+            let Some(m) = new_surface_pf(lw, lh, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
+            with(|s| {
+                s.surfs.get_mut(&m).map(|x| {
+                    x.dd = owner;
+                    x.sub = true;
+                    x.mips = levels - i;
+                    x.caps2 = cube2 | DDSCAPS2_MIPMAPSUBLEVEL;
+                });
+                s.surfs.get_mut(&up).map(|x| x.mip = m)
+            });
+            up = m;
+        }
+    }
+    with(|s| s.surfs.get_mut(&id).map(|x| x.faces = tops[1..].iter().rev().copied().collect()));
     let mut prev = id;
     for i in 0..backs {
         let bc = (caps & !(CAPS_PRIMARY | CAPS_FRONTBUFFER)) | CAPS_BACKBUFFER * (i == 0) as u32 | CAPS_FLIP | CAPS_COMPLEX;
         let Some(b) = new_surface(w, h, bpp, r565, bc) else { return DDERR_OUTOFMEMORY };
         with(|s| {
-            s.surfs.get_mut(&b).map(|x| x.dd = owner);
+            s.surfs.get_mut(&b).map(|x| {
+                x.dd = owner;
+                x.implicit = true;
+            });
             s.surfs.get_mut(&prev).map(|x| x.next = b)
         });
         prev = b;
@@ -1285,6 +1706,11 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     }
     put32(out, block(id, kind));
     DD_OK
+}
+
+/// The levels of a full mipmap of a w x h top level: halving down to 1x1 (128x32: 8)
+fn mip_levels(w: i32, h: i32) -> u32 {
+    32 - (w.max(h).max(1) as u32).leading_zeros()
 }
 
 const MODES: [(i32, i32); 5] = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960)];
@@ -1401,37 +1827,98 @@ fn D_RestoreDisplayMode(_: &mut Ctx) -> u32 {
 }
 fn D_SetCooperativeLevel(c: &mut Ctx) -> u32 {
     let (h, flags) = (c.a(1), c.a(2));
+    let by = dd_of(c.a(0)).0;
     with(|s| {
         s.hwnd = h;
         s.exclusive = flags & 0x10 != 0;
+        s.coop_by = by;
     });
     DD_OK
 }
-fn set_mode(w: u32, h: u32, bpp: u32) -> u32 {
+fn set_mode(c: &Ctx, w: u32, h: u32, bpp: u32) -> u32 {
     if !matches!(bpp, 8 | 16 | 24 | 32) {
         return DDERR_INVALIDPARAMS;
     }
-    with(|s| s.mode = Some((w as i32, h as i32, bpp as u16)));
+    let by = dd_of(c.a(0)).0;
+    with(|s| {
+        s.mode = Some((w as i32, h as i32, bpp as u16));
+        s.mode_by = by;
+    });
     DD_OK
 }
 fn D_SetDisplayMode1(c: &mut Ctx) -> u32 {
-    set_mode(c.a(1), c.a(2), c.a(3))
+    set_mode(c, c.a(1), c.a(2), c.a(3))
 }
 fn D_SetDisplayMode(c: &mut Ctx) -> u32 {
-    set_mode(c.a(1), c.a(2), c.a(3))
+    set_mode(c, c.a(1), c.a(2), c.a(3))
 }
 fn D_GetAvailableVidMem(c: &mut Ctx) -> u32 {
     put32(c.a(2), 256 << 20);
     put32(c.a(3), 240 << 20);
     DD_OK
 }
+/// The surface whose GetDC gave `dc`, with a reference more.
+fn surface_of_dc(dc: u32) -> Option<u32> {
+    if dc == 0 {
+        return None;
+    }
+    with(|st| {
+        let (&id, x) = st.surfs.iter_mut().find(|(_, x)| x.dc == dc)?;
+        x.refs += 1;
+        Some(id)
+    })
+}
+/// IDirectDraw4/7::GetSurfaceFromDC(dc, surface): IDirectDraw4's gives the IDirectDrawSurface
+/// (ddraw4's test_getdc), IDirectDraw7's the IDirectDrawSurface7.
 fn D_GetSurfaceFromDC(c: &mut Ctx) -> u32 {
-    put32(c.a(2), 0);
-    DDERR_NOTFOUND
+    if c.a(2) == 0 {
+        return E_INVALIDARG;
+    }
+    let kind = if dd_version(c) == 3 { 2 } else { 0 };
+    match surface_of_dc(c.a(1)) {
+        Some(id) => {
+            w32(c.a(2), block(id, kind));
+            DD_OK
+        }
+        None => {
+            w32(c.a(2), 0);
+            DDERR_NOTFOUND
+        }
+    }
+}
+/// GetSurfaceFromDC(dc, surface, device_dc) (ddraw.dll's export): the IDirectDrawSurface and
+/// the DC it draws with.
+fn GetSurfaceFromDC(c: &mut Ctx) -> u32 {
+    let (out, dev) = (c.a(1), c.a(2));
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    if dev == 0 {
+        w32(out, 0);
+        return E_INVALIDARG;
+    }
+    match surface_of_dc(c.a(0)) {
+        Some(id) => {
+            w32(out, block(id, 0));
+            w32(dev, c.a(0));
+            DD_OK
+        }
+        None => {
+            w32(out, 0);
+            w32(dev, 0);
+            DDERR_NOTFOUND
+        }
+    }
+}
+/// DDDEVICEIDENTIFIER's size (IDirectDraw4: two 512-byte names, the driver version, four ids
+/// and a GUID) or DDDEVICEIDENTIFIER2's (IDirectDraw7: and dwWHQLLevel). Writing more ran over
+/// the caller's stack: ddraw1's ddraw_get_identifier returned to 0.
+fn ident_size(v: usize) -> u32 {
+    512 + 512 + 8 + 16 + 16 + if v == 3 { 4 } else { 0 }
 }
 fn D_GetDeviceIdentifier(c: &mut Ctx) -> u32 {
     let p = c.a(1);
-    mem::fill(p, 0x448, 0);
+    mem::fill(p, ident_size(dd_version(c)), 0);
     mem::write(p, b"sake");
     mem::write(p + 512, b"sake DirectDraw");
     DD_OK
@@ -1452,23 +1939,34 @@ fn DirectDrawCreateClipper(c: &mut Ctx) -> u32 {
     crate::mem::putp(c.a(1), new_clipper());
     DD_OK
 }
-fn DirectDrawEnumerateA(c: &mut Ctx) -> u32 {
-    let (cb, ctx) = (c.a(0), c.a(1));
+/// DirectDrawEnumerate(Ex)A: the primary display only (a NULL GUID); a NULL callback, or flags
+/// other than DDENUM_ATTACHEDSECONDARYDEVICES / DETACHEDSECONDARYDEVICES / NONDISPLAYDEVICES,
+/// are DDERR_INVALIDPARAMS. The W ones are DDERR_UNSUPPORTED whatever they are given, and call
+/// nothing (ddrawmodes.c).
+fn enumerate(c: &mut Ctx, ex: bool) -> u32 {
+    let (cb, ctx, flags) = (c.a(0), c.a(1), if ex { c.a(2) } else { 0 });
+    if cb == 0 || flags & !7 != 0 {
+        return DDERR_INVALIDPARAMS;
+    }
     let d = mem::heap_alloc(64, true);
     mem::write(d, b"Primary Display Driver\0");
     mem::write(d + 32, b"display\0");
-    c.call(cb, &[0, d, d + 32, ctx]);
+    if ex {
+        c.call(cb, &[0, d, d + 32, ctx, 0]);
+    } else {
+        c.call(cb, &[0, d, d + 32, ctx]);
+    }
     mem::heap_free(d);
     DD_OK
 }
+fn DirectDrawEnumerateA(c: &mut Ctx) -> u32 {
+    enumerate(c, false)
+}
 fn DirectDrawEnumerateExA(c: &mut Ctx) -> u32 {
-    let (cb, ctx) = (c.a(0), c.a(1));
-    let d = mem::heap_alloc(64, true);
-    mem::write(d, b"Primary Display Driver\0");
-    mem::write(d + 32, b"display\0");
-    c.call(cb, &[0, d, d + 32, ctx, 0]);
-    mem::heap_free(d);
-    DD_OK
+    enumerate(c, true)
+}
+fn DirectDrawEnumerateW(_: &mut Ctx) -> u32 {
+    DDERR_UNSUPPORTED
 }
 
 /// CoCreateInstance of CLSID_DirectDraw / CLSID_DirectDraw7 (the game calls Initialize).
@@ -1491,13 +1989,41 @@ pub fn init() {
     implement("ddraw", "DirectDrawCreate", DirectDrawCreate);
     implement("ddraw", "DirectDrawCreateEx", DirectDrawCreateEx);
     implement("ddraw", "DirectDrawCreateClipper", DirectDrawCreateClipper);
+    implement("ddraw", "GetSurfaceFromDC", GetSurfaceFromDC);
     implement("ddraw", "DirectDrawEnumerateA", DirectDrawEnumerateA);
     implement("ddraw", "DirectDrawEnumerateExA", DirectDrawEnumerateExA);
+    implement("ddraw", "DirectDrawEnumerateW", DirectDrawEnumerateW);
+    implement("ddraw", "DirectDrawEnumerateExW", DirectDrawEnumerateW);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ddraw.h numbers its errors in decimal: MAKE_DDHRESULT(10) is 0x8876000a, not 0x8876006e
+    /// (AddAttachedSurface's "cannot attach" read as DDERR_INVALIDCLIPLIST; ddraw1's
+    /// test_surface_attachment).
+    #[test]
+    fn error_codes_are_ddraw_h_decimal_ones() {
+        let dd = |n: u32| 0x8876_0000 | n;
+        for (got, want) in [
+            (DDERR_CANNOTATTACHSURFACE, 10),
+            (DDERR_CANNOTDETACHSURFACE, 20),
+            (DDERR_INVALIDCAPS, 100),
+            (DDERR_INVALIDRECT, 150),
+            (DDERR_NOCLIPLIST, 205),
+            (DDERR_NOCOLORKEY, 215),
+            (DDERR_NOEXCLUSIVEMODE, 225),
+            (DDERR_NOTFOUND, 255),
+            (DDERR_SURFACEALREADYATTACHED, 410),
+            (DDERR_SURFACENOTATTACHED, 460),
+            (DDERR_NOPALETTEATTACHED, 572),
+            (DDERR_NOTFLIPPABLE, 582),
+            (DDERR_MOREDATA, 690),
+        ] {
+            assert_eq!(got, dd(want), "{want}");
+        }
+    }
 
     /// A 24-bit depth buffer is kept in 32 bits a pixel (Windows' pitch: Wine's d3d
     /// z_format_test, winref d3d7state) and still says 24; other formats say what they keep.
@@ -1508,5 +2034,40 @@ mod tests {
         assert_eq!(pf_bits(16, [0x400, 0, 0xffff, 0, 0]), 16);
         assert_eq!(pf_bits(32, [0x40, 0xff_0000, 0xff_ffff, 0xff, 0]), 32, "an RGB format is as it is");
         assert_eq!(stride(1024, 32), 4096);
+    }
+
+    #[test]
+    fn mipmap_levels_as_windows_counts_them() {
+        // ddraw7.c test_mipmap: 128x32 has 8, 32x64 7
+        assert_eq!(mip_levels(128, 32), 8);
+        assert_eq!(mip_levels(32, 64), 7);
+        assert_eq!(mip_levels(1, 1), 1);
+        assert_eq!(mip_levels(256, 256), 9);
+        assert_eq!(mip_levels(3, 1), 2);
+    }
+
+    #[test]
+    fn flips_move_every_buffer_up_or_trade_with_the_target() {
+        // front, b1, b2, b3: the front shows b1, b1 shows b2, b2 shows b3, b3 the old front
+        assert_eq!(flip_order(4, None), [1, 2, 3, 0]);
+        assert_eq!(flip_order(2, None), [1, 0]);
+        assert_eq!(flip_order(4, Some(2)), [2, 1, 0, 3]);
+        // n flips of an n-chain: every buffer back where it was
+        for n in 2..=8 {
+            let mut at: Vec<usize> = (0..n).collect();
+            for _ in 0..n {
+                let o = flip_order(n, None);
+                at = o.iter().map(|&i| at[i]).collect();
+            }
+            assert_eq!(at, (0..n).collect::<Vec<_>>());
+        }
+    }
+
+    /// sizeof(DDDEVICEIDENTIFIER) 1064 and sizeof(DDDEVICEIDENTIFIER2) 1068, as ddraw.h lays
+    /// them out (GetDeviceIdentifier writes no more than the version's struct)
+    #[test]
+    fn device_identifier_sizes() {
+        assert_eq!(ident_size(2), 1064);
+        assert_eq!(ident_size(3), 1068);
     }
 }

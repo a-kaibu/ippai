@@ -13,6 +13,7 @@ const D3DERR_INVALIDCALL: u32 = 0x8007_0057;
 const DDERR_INVALIDPIXELFORMAT: u32 = 0x8876_0091;
 const D3DERR_SCENE_IN_SCENE: u32 = 0x8876_02f8;
 const D3DERR_SCENE_NOT_IN_SCENE: u32 = 0x8876_02f9;
+/// (what Windows returns, winref ddrefs: 0x88760825, not d3d.h's MAKE_DDHRESULT(2061))
 const D3DERR_VBUF_CREATE_FAILED: u32 = 0x8876_0825;
 
 const RS_ZENABLE: usize = 7;
@@ -340,8 +341,16 @@ fn Q_QueryInterface(c: &mut Ctx) -> u32 {
             put32(c.a(2), dd_iface(obj, 4));
             D3D_OK
         }
-        0x15e6_5ec0 => {
-            put32(c.a(2), dd_iface(obj, 3));
+        // (the DirectDraw interfaces, each of its own version: ddraw7's test_texture_wrong_caps
+        // asks for IDirectDraw4)
+        g @ (0x15e6_5ec0 | 0x9c59_509a | 0xb3a6_f3e0 | 0x6c14_db80) => {
+            let v = match g {
+                0x6c14_db80 => 0,
+                0xb3a6_f3e0 => 1,
+                0x9c59_509a => 2,
+                _ => 3,
+            };
+            put32(c.a(2), dd_iface(obj, v));
             D3D_OK
         }
         _ => {
@@ -995,18 +1004,109 @@ fn V_GetInfo(_: &mut Ctx) -> u32 {
     1 // S_FALSE: no information
 }
 
-/// Load(dst, dst point, src, src rect, flags): a copy between textures of one format.
-fn V_Load(c: &mut Ctx) -> u32 {
-    let (Some((d, _)), Some((s, _))) = (sid(c.a(1)), sid(c.a(3))) else { return D3DERR_INVALIDCALL };
-    let (Some(ds), Some(ss)) = (surf(d), surf(s)) else { return D3DERR_INVALIDCALL };
-    let sr = if c.a(4) == 0 { Rect { l: 0, t: 0, r: ss.w, b: ss.h } } else { Rect::read(c.a(4)) };
-    let (x, y) = if c.a(2) == 0 { (sr.l, sr.t) } else { (r32(c.a(2)) as i32, r32(c.a(2) + 4) as i32) };
-    let dr = Rect { l: x, t: y, r: x + sr.r - sr.l, b: y + sr.b - sr.t };
-    if ds.bpp == ss.bpp && rect_ok(dr, ds.w, ds.h) && rect_ok(sr, ss.w, ss.h) {
-        blit(&ds, dr, &ss, sr, None, (false, false));
+/// What Load copies, given the sizes of the source's and the destination's mipmap levels: the
+/// destination's first level is the source's level of its size, and each level after it the
+/// next of both; the rect (of the source's top level, all of it when None) and the point (in
+/// the same scale, 0,0 when None) halve with each level. None (DDERR_INVALIDPARAMS): no source
+/// level of that size, more destination levels than the source has from there, an empty rect,
+/// or one off either surface (ddraw7's test_device_load).
+fn load_plan(src: &[(i32, i32)], dst: &[(i32, i32)], rect: Option<Rect>, point: Option<(i32, i32)>) -> Option<Vec<(usize, Rect, (i32, i32))>> {
+    let first = *dst.first()?;
+    let off = src.iter().position(|&s| s == first)?;
+    if dst.len() > src.len() - off {
+        return None;
     }
-    if ss.ck_src.is_some() {
-        with(|st| st.surfs.get_mut(&d).map(|x| x.ck_src = ss.ck_src));
+    let mut r = rect.unwrap_or(Rect { l: 0, t: 0, r: src[0].0, b: src[0].1 });
+    if !rect_ok(r, src[0].0, src[0].1) {
+        return None;
+    }
+    let mut p = point.unwrap_or((0, 0));
+    let half = |r: &mut Rect, p: &mut (i32, i32)| {
+        *r = Rect { l: r.l / 2, t: r.t / 2, r: (r.r + 1) / 2, b: (r.b + 1) / 2 };
+        *p = (p.0 / 2, p.1 / 2);
+    };
+    for _ in 0..off {
+        half(&mut r, &mut p);
+    }
+    let (w, h) = dst[0];
+    if p.0 < 0 || p.1 < 0 || p.0 + (r.r - r.l) > w || p.1 + (r.b - r.t) > h {
+        return None;
+    }
+    let mut plan = vec![];
+    for k in 0..dst.len() {
+        if k > 0 {
+            half(&mut r, &mut p);
+        }
+        plan.push((off + k, r, p));
+    }
+    Some(plan)
+}
+
+/// A surface and its mipmap levels below it.
+fn levels(top: u32) -> Vec<Surf> {
+    let mut v = vec![];
+    let mut at = top;
+    while let Some(x) = surf(at).filter(|_| v.len() < 16) {
+        at = x.mip;
+        v.push(x);
+    }
+    v
+}
+
+/// The top of a cube map's face `face` (the root, or one of its other faces).
+fn face_top(root: &Surf, root_id: u32, face: u32) -> Option<u32> {
+    if root.caps2 & face != 0 {
+        return Some(root_id);
+    }
+    root.faces.iter().copied().find(|&f| surf(f).is_some_and(|x| x.caps2 & face != 0))
+}
+
+/// Load(dst, dst point, src, src rect, flags): a copy between textures of one format, level by
+/// level (load_plan), of each cube map face `flags` names; the palette's colours and the source
+/// color key (its low value for both) go too.
+fn V_Load(c: &mut Ctx) -> u32 {
+    let (Some((d, _)), Some((s, _))) = (sid(c.a(1)), sid(c.a(3))) else { return DDERR_INVALIDPARAMS };
+    let (Some(ds), Some(ss)) = (surf(d), surf(s)) else { return DDERR_INVALIDPARAMS };
+    let rect = (c.a(4) != 0).then(|| Rect::read(c.a(4)));
+    let point = (c.a(2) != 0).then(|| (r32(c.a(2)) as i32, r32(c.a(2) + 4) as i32));
+    let faces = c.a(5) & CUBE_FACES;
+    let cube = |x: &Surf| x.caps2 & DDSCAPS2_CUBEMAP != 0;
+    if cube(&ds) != cube(&ss) || (faces != 0 && !cube(&ds)) {
+        return DDERR_INVALIDPARAMS;
+    }
+    let pairs: Vec<(u32, u32)> = if cube(&ds) {
+        let mut v = vec![];
+        for f in CUBE_ORDER.iter().copied().filter(|f| faces & f != 0) {
+            let (Some(a), Some(b)) = (face_top(&ds, d, f), face_top(&ss, s, f)) else { return DDERR_INVALIDPARAMS };
+            v.push((a, b));
+        }
+        v
+    } else {
+        vec![(d, s)]
+    };
+    let mut work = vec![];
+    for (a, b) in pairs {
+        let (dl, sl) = (levels(a), levels(b));
+        let size = |v: &[Surf]| v.iter().map(|x| (x.w, x.h)).collect::<Vec<_>>();
+        let Some(plan) = load_plan(&size(&sl), &size(&dl), rect, point) else { return DDERR_INVALIDPARAMS };
+        for (k, (si, r, (x, y))) in plan.into_iter().enumerate() {
+            work.push((dl[k].clone(), sl[si].clone(), r, x, y));
+        }
+    }
+    for (dx, sx, r, x, y) in work {
+        if dx.bpp == sx.bpp && r.l < r.r && r.t < r.b {
+            blit(&dx, Rect { l: x, t: y, r: x + r.r - r.l, b: y + r.b - r.t }, &sx, r, None, (false, false));
+        }
+    }
+    if ds.palette != 0 && ss.palette != 0 {
+        with(|st| {
+            if let Some(p) = st.palettes.get(&ss.palette).copied() {
+                st.palettes.insert(ds.palette, p);
+            }
+        });
+    }
+    if let Some((lo, _)) = ss.ck_src {
+        with(|st| st.surfs.get_mut(&d).map(|x| x.ck_src = Some((lo, lo))));
     }
     D3D_OK
 }
@@ -1889,6 +1989,44 @@ fn V_Clear(c: &mut Ctx) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ddraw7's test_device_load: the source level of the destination's size is where the copy
+    /// starts; the rect and point halve with each level; too many destination levels, an empty
+    /// rect or one off the destination is DDERR_INVALIDPARAMS.
+    #[test]
+    fn load_goes_level_by_level() {
+        let mips = |w: i32, n: usize| (0..n).map(|i| ((w >> i).max(1), (w >> i).max(1))).collect::<Vec<_>>();
+        let r = |l, t, r, b| Rect { l, t, r, b };
+        // (tests 0, 1, 4, 5, 9 of the table)
+        assert!(load_plan(&mips(128, 8), &mips(128, 8), Some(r(0, 0, 0, 0)), Some((0, 0))).is_none());
+        assert!(load_plan(&mips(128, 8), &mips(128, 8), Some(r(0, 0, 100, 100)), Some((50, 50))).is_none());
+        assert!(load_plan(&[(128, 128)], &[(256, 128)], None, None).is_none());
+        assert!(load_plan(&[(256, 128)], &[(128, 128)], None, None).is_none());
+        assert!(load_plan(&mips(128, 4), &mips(128, 8), Some(r(30, 20, 93, 52)), Some((31, 31))).is_none());
+        // (test 2: every level, halving)
+        let p = load_plan(&mips(128, 8), &mips(128, 8), Some(r(30, 20, 93, 52)), Some((31, 31))).unwrap();
+        assert_eq!(p.len(), 8);
+        assert_eq!(p[0], (0, r(30, 20, 93, 52), (31, 31)));
+        assert_eq!(p[1], (1, r(15, 10, 47, 26), (15, 15)));
+        assert_eq!(p[7], (7, r(0, 0, 1, 1), (0, 0)));
+        // (tests 10, 11: a smaller destination starts two levels down)
+        let p = load_plan(&mips(128, 8), &[(32, 32)], Some(r(32, 32, 96, 96)), Some((32, 32))).unwrap();
+        assert_eq!(p, vec![(2, r(8, 8, 24, 24), (8, 8))]);
+        let p = load_plan(&mips(128, 8), &mips(32, 4), Some(r(0, 0, 64, 64)), Some((0, 0))).unwrap();
+        assert_eq!(p.iter().map(|e| e.0).collect::<Vec<_>>(), vec![2, 3, 4, 5]);
+        assert_eq!(p[3].1, r(0, 0, 2, 2));
+        // (test 8: fewer destination levels than the source has)
+        assert_eq!(load_plan(&mips(128, 8), &mips(128, 4), None, None).unwrap().len(), 4);
+    }
+
+    /// d3d.h's numbers are decimal; CreateVertexBuffer's failure is what Windows returns
+    /// (winref ddrefs), not d3d.h's MAKE_DDHRESULT(2061).
+    #[test]
+    fn error_codes_are_d3d_h_decimal_ones() {
+        assert_eq!(D3DERR_SCENE_IN_SCENE, 0x8876_0000 | 760);
+        assert_eq!(D3DERR_SCENE_NOT_IN_SCENE, 0x8876_0000 | 761);
+        assert_eq!(D3DERR_VBUF_CREATE_FAILED, 0x8876_0825);
+    }
 
     const ARGB: Fmt = Fmt { ch: [(16, 255), (8, 255), (0, 255), (24, 255)] };
 
