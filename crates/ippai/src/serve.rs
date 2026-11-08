@@ -4,7 +4,8 @@
 //! - `/store/trees/<name>.tsv`: a packed tree's file list
 //! - `/store/chunks/ab/<hash>`: stored zstd-compressed, sent with
 //!   `Content-Encoding: zstd` so the browser decodes them natively, and marked
-//!   immutable so its HTTP cache keeps them.
+//!   immutable so its HTTP cache keeps them; with `Range`, those bytes of the decoded chunk
+//!   (206, as they are: store_api.rs; a game's read needs a few blocks of a chunk)
 //! - `?v=...` on any URL: kept by the browser for good (the page changes the version when
 //!   the content changes)
 //! - `/jit/...`: sent zstd-compressed on the way (CompressionLayer)
@@ -727,13 +728,17 @@ async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
     // asking again, and so keeps its compiled code (a revalidated .wasm loses it)
     let versioned = req.uri().query().is_some_and(|q| q.split('&').any(|p| p.starts_with("v=")));
     let mut res = next.run(req).await;
-    let ok = res.status().is_success();
+    let status = res.status();
+    let ok = status.is_success();
     let h = res.headers_mut();
     h.insert("cross-origin-opener-policy", HeaderValue::from_static("same-origin"));
     h.insert("cross-origin-embedder-policy", HeaderValue::from_static("require-corp"));
     h.insert("cross-origin-resource-policy", HeaderValue::from_static("same-origin"));
+    // (a range of a chunk, 206, is of its decoded bytes: store_api.rs)
     if chunk && ok {
-        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+        if status == StatusCode::OK {
+            h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+        }
         h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
     } else if log && ok {

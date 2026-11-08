@@ -28,15 +28,42 @@ globalThis.Worker = class {
       const tries = new Map();
       const body = (length) => Uint8Array.from({length}, (_, i) => i % 251).buffer;
       const NAMES = ${JSON.stringify(names)};
+      // Cache Storage as the browser's: bodies kept, Blob.slice reading only its bytes (counted)
+      IPPAI_RECENT_BYTES = 1;
+      const kept = new Map();
+      let fetches = 0, slices = 0;
+      globalThis.caches = {open: async () => ({
+        match: async (u) => {
+          const d = kept.get(u);
+          return d && {headers: {get: (k) => d.h[k] ?? null}, arrayBuffer: async () => d.b.slice().buffer,
+            blob: async () => ({slice: (a, b) => ({arrayBuffer: async () => (slices++, d.b.slice(a, b).buffer)})})};
+        },
+        put: async (u, r) => void kept.set(u, {b: new Uint8Array(await r.arrayBuffer()), h: Object.fromEntries(r.headers)}),
+        delete: async (u) => kept.delete(u),
+      })};
       globalThis.fetch = async (url, init) => {
         const n = (tries.get(url) ?? 0) + 1;
         tries.set(url, n);
+        // (how many chunk fetches and Cache Storage slices so far, as a body's length)
+        if (url === 'count' || url === 'slices') return {ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(url === 'count' ? fetches : slices)};
+        if (url.includes('/chunks/')) fetches++;
         // store chunks: the bytes their name says (the 262144-byte one damaged the first time,
         // and then only past the HTTP cache), any other name 1000 bytes that never match
         const chunk = /[/]chunks[/][0-9a-f]{2}[/]([0-9a-f]{32})$/.exec(url);
         if (chunk) {
           const length = NAMES[chunk[1]] ?? 1000;
           const data = new Uint8Array(body(length));
+          // ranges of the decoded chunk (ippai serve's store_api.rs), but from "old" (a server
+          // without them: the whole chunk); "bad" answers the wrong place the first time
+          const range = /^bytes=([0-9]+)-([0-9]+)$/.exec(init?.headers?.range ?? '');
+          if (range && !url.startsWith('https://old/')) {
+            const a = +range[1];
+            if (a >= length) return {ok: false, status: 416, headers: {get: () => null}};
+            const b = Math.min(+range[2], length - 1);
+            const off = url.startsWith('https://bad/') && n === 1 ? 1 : 0;
+            return {ok: true, status: 206, headers: {get: (k) => (k === 'content-range' ? 'bytes ' + (a + off) + '-' + (b + off) + '/' + length : null)},
+              arrayBuffer: async () => data.slice(a, b + 1).buffer};
+          }
           if (length === 262144 && (n === 1 || init?.cache !== 'reload')) data[1000] ^= 1;
           return {ok: true, status: 200, arrayBuffer: async () => data.buffer};
         }
@@ -59,7 +86,7 @@ globalThis.Worker = class {
 globalThis.Blob = class {};
 globalThis.URL = {createObjectURL: () => '', revokeObjectURL: () => {}};
 eval(workerData.source);
-try { const all = workerData.url.split('|').map((u) => Array.from(ippaiFetchSync(u))); parentPort.postMessage({data: all.length === 1 ? all[0] : all}); }
+try { const all = workerData.url.split('|').map((u) => Array.from(ippaiFetchSync(...ippaiRange(u)))); parentPort.postMessage({data: all.length === 1 ? all[0] : all}); }
 catch(e) { parentPort.postMessage({error: e.message}); }
 finally { ippaiFetchDispose(); }
 `;
@@ -117,4 +144,60 @@ test('a chunk is checked against its name: fetched again when damaged, a failure
   assert.ok(once.data.every((b, i) => b === i % 251), 'the second, undamaged copy');
   const never = await request('https://s/store/chunks/ab/00000000000000000000000000000000');
   assert.ok(never.error, 'a chunk that never matches its name fails');
+});
+const nameOf = (n) => vectors.find((v) => v[0] === 'p' && +v[1] === n)[2];
+const want = (from, len, n) => Array.from({length: Math.max(0, Math.min(from + len, n) - from)}, (_, i) => (from + i) % 251);
+test('block ranges of a chunk: only they cross the network, kept as blocks; a whole chunk kept is read by slices', async () => {
+  const c = `https://s/store/chunks/ab/${nameOf(262143)}`;
+  const B = 65536;
+  const r = await request([`${c}#0+100/${B}`, `${c}#65536+70000/${B}`, `${c}#196608+65535/${B}`, 'count', 'slices',
+    `${c}#65536+65536/${B}`, `${c}#0+262143/${B}`, 'count', c, 'count', `${c}#7+262136/${B}`, `${c}#300000+5/${B}`, 'count', 'slices'].join('|'));
+  assert.ok(!r.error, r.error);
+  const [a, b, e, n1, s1, f, g, n2, whole, n3, h, past, n4, s4] = r.data;
+  assert.deepEqual(a, want(0, 100, 262143));
+  assert.deepEqual(b, want(65536, 70000, 262143));
+  // (the chunk's last block, short)
+  assert.deepEqual(e, want(196608, 65535, 262143));
+  assert.equal(n1.length, 3, 'a request per range');
+  assert.equal(s1.length, 0);
+  // (blocks 1 and 0..3 kept alone: no network)
+  assert.deepEqual(f, want(65536, 65536, 262143));
+  assert.deepEqual(g, want(0, 262143, 262143));
+  assert.equal(n2.length, 3);
+  // the whole chunk (the page's): fetched and kept; its ranges then by slices
+  assert.deepEqual(whole, want(0, 262143, 262143));
+  assert.equal(n3.length, 4);
+  assert.deepEqual(h, want(7, 262136, 262143));
+  assert.deepEqual(past, []);
+  assert.equal(n4.length, 4);
+});
+test('a server without ranges: the whole chunk once (checked, kept), its other blocks from it', async () => {
+  const c = `https://old/store/chunks/ab/${nameOf(200000)}`;
+  const d = `https://old/store/chunks/ab/${nameOf(262143)}`;
+  const r = await request([`${c}#0+100/65536`, `${c}#100000+70000/65536`, `${c}#196608+65536/65536`, 'count', `${d}#5+10/65536`, `${c}#7+1000/65536`, 'count', 'slices'].join('|'));
+  assert.ok(!r.error, r.error);
+  const [a, b, e, n1, f, g, n2, s2] = r.data;
+  assert.deepEqual(a, want(0, 100, 200000));
+  assert.deepEqual(b, want(100000, 70000, 200000));
+  assert.deepEqual(e, want(196608, 65536, 200000));
+  assert.equal(n1.length, 1, 'one fetch for three ranges');
+  assert.deepEqual(f, want(5, 10, 262143));
+  // (the other chunk pushed this one out of the worker's memory: Cache Storage by a slice)
+  assert.deepEqual(g, want(7, 1000, 200000));
+  assert.equal(n2.length, 2);
+  assert.equal(s2.length, 1);
+});
+test('a range answered for another place is asked again', async () => {
+  const c = `https://bad/store/chunks/ab/${nameOf(200000)}`;
+  const r = await request([`${c}#65536+65536/65536`, 'count'].join('|'));
+  assert.ok(!r.error, r.error);
+  assert.deepEqual(r.data[0], want(65536, 65536, 200000));
+  assert.equal(r.data[1].length, 2);
+});
+test('ranges parse only at the end of a name', () => {
+  const ippaiRange = new Function(`${source}; return ippaiRange;`)();
+  assert.deepEqual(ippaiRange('chunks/ab/x#0+5'), ['chunks/ab/x', 0, 5, undefined]);
+  assert.deepEqual(ippaiRange('chunks/ab/x#262144+5/262144'), ['chunks/ab/x', 262144, 5, 262144]);
+  assert.deepEqual(ippaiRange('trees/a#b.tsv'), ['trees/a#b.tsv']);
+  assert.deepEqual(ippaiRange('chunks/ab/x#12+'), ['chunks/ab/x#12+']);
 });

@@ -642,16 +642,16 @@ fn join(cur: &[String]) -> String {
 /// a movie once: a long one read through no longer pushes the others out (it did when this was
 /// one queue in the order of the puts). `bytes` is the sum of the lengths of what `map` holds.
 #[derive(Default)]
-struct Cache {
-    map: HashMap<Hash, Entry>,
+struct Cache<K = Key> {
+    map: HashMap<K, Entry>,
     /// on probation and protected, by their tick (oldest first)
-    probation: BTreeMap<u64, Hash>,
-    protected: BTreeMap<u64, Hash>,
+    probation: BTreeMap<u64, K>,
+    protected: BTreeMap<u64, K>,
     bytes: usize,
     protected_bytes: usize,
     tick: u64,
     /// chunks dropped (the latest GONE_MAX or so), and how many reads fetched one again
-    gone: std::collections::HashSet<Hash>,
+    gone: std::collections::HashSet<K>,
     refetched: u64,
 }
 
@@ -668,10 +668,10 @@ struct Entry {
 /// The share of the limit protected chunks may hold.
 const PROTECTED: (usize, usize) = (3, 4);
 
-impl Cache {
+impl<K: Copy + Eq + std::hash::Hash> Cache<K> {
     /// Holds `data` as `h`, `read` if a read is what fetched it (in place of what `h` held: it
     /// keeps its place), then drops what is over `limit` (`h` itself last).
-    fn put(&mut self, h: &Hash, data: Arc<Vec<u8>>, read: bool, limit: usize) {
+    fn put(&mut self, h: &K, data: Arc<Vec<u8>>, read: bool, limit: usize) {
         let len = data.len();
         if let Some(e) = self.map.get_mut(h) {
             let had = e.data.len();
@@ -696,7 +696,7 @@ impl Cache {
     }
 
     /// A read of `h` (in `map`): protected from the second on, and the most recent.
-    fn read(&mut self, h: &Hash) {
+    fn read(&mut self, h: &K) {
         let Some(e) = self.map.get_mut(h) else { return };
         e.reads = e.reads.saturating_add(1);
         if !e.protected && e.reads < 2 {
@@ -715,7 +715,7 @@ impl Cache {
     }
 
     /// Back on probation (as read once), the most recent there.
-    fn demote(&mut self, h: &Hash) {
+    fn demote(&mut self, h: &K) {
         let Some(e) = self.map.get_mut(h) else { return };
         if !e.protected {
             return;
@@ -729,7 +729,7 @@ impl Cache {
         self.probation.insert(self.tick, *h);
     }
 
-    fn remove(&mut self, h: &Hash) {
+    fn remove(&mut self, h: &K) {
         if let Some(e) = self.map.remove(h) {
             if self.gone.len() >= GONE_MAX {
                 self.gone.clear();
@@ -746,13 +746,13 @@ impl Cache {
     }
 
     /// Drops what is over `limit`, `keep` last.
-    fn trim(&mut self, limit: usize, keep: &Hash) {
+    fn trim(&mut self, limit: usize, keep: &K) {
         while self.protected_bytes > limit / PROTECTED.1 * PROTECTED.0 {
             let Some((_, h)) = self.protected.first_key_value().map(|(t, h)| (*t, *h)) else { break };
             self.demote(&h);
         }
         while self.bytes > limit {
-            let first = |m: &BTreeMap<u64, Hash>| m.values().find(|h| *h != keep).copied();
+            let first = |m: &BTreeMap<u64, K>| m.values().find(|h| *h != keep).copied();
             let Some(h) = first(&self.probation).or_else(|| first(&self.protected)) else {
                 // only `keep` left
                 self.remove(&keep.clone());
@@ -764,7 +764,7 @@ impl Cache {
 
     /// Chunk `h` at `len` bytes (a read): one the page fetched ahead comes as stored (a file's
     /// last chunk short) and is padded in place (a copy only if someone holds it).
-    fn get(&mut self, h: &Hash, len: usize, limit: usize) -> Option<Arc<Vec<u8>>> {
+    fn get(&mut self, h: &K, len: usize, limit: usize) -> Option<Arc<Vec<u8>>> {
         let e = self.map.get_mut(h)?;
         let had = e.data.len();
         if had != len {
@@ -780,12 +780,12 @@ impl Cache {
         Some(d)
     }
 
-    fn contains(&self, h: &Hash) -> bool {
+    fn contains(&self, h: &K) -> bool {
         self.map.contains_key(h)
     }
 }
 
-static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+static CACHE: Mutex<Option<Cache<Key>>> = Mutex::new(None);
 
 fn cache_limit() -> usize {
     static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -813,16 +813,148 @@ fn note_read(h: &Hash) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// fetching ahead: a read of several chunks (a CG or a voice read whole) used to fetch them one
+// blocks: what is cached here and read from the device's copy is a BLOCK of a chunk, not the
+// chunk. A chunk (FastCDC, 4 MiB on average) is the store's unit: one S3 object, one request
+// over the network, one Cache Storage entry. Reading a whole chunk for every 64 KiB the game
+// asks for made big chunks slow once they were on the device (docs/chunk-size.md: a 16 MiB
+// chunk read from Cache Storage, copied three times and decoded for 64 KiB): Cache Storage's
+// Blob.slice reads only the bytes asked for (measured in Chromium: ~1.3 ms for 64 or 256 KiB
+// of a 1, 4, 16 or 64 MiB entry; the whole entry ~1.4 ms per MiB), so a read now fetches only
+// its blocks (host/fetch-bridge.js reads them out of the chunk; a chunk not on the device yet is
+// fetched whole once and kept, its blocks then come from there).
+
+/// A block of a chunk: the chunk and the block's number in it.
+type Key = (Hash, u32);
+
+/// Bytes in a block (IPPAI_VFS_BLOCK_KIB, default 256): small enough that a scattered read
+/// fetches little more than it needs, big enough that a long read is not a request per few KiB.
+/// (Tests: 24 bytes, so their small files have many blocks and blocks that are not a power of two.)
+fn block() -> u64 {
+    #[cfg(test)]
+    {
+        24
+    }
+    #[cfg(not(test))]
+    {
+        static B: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        *B.get_or_init(|| std::env::var("IPPAI_VFS_BLOCK_KIB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&k| k > 0).unwrap_or(256) << 10)
+    }
+}
+
+/// Blocks fetched in one request at most (by a fetcher thread, or by a read for its own first
+/// ones): 1 MiB at 256 KiB.
+const PIECE: u32 = 4;
+/// Blocks fetched ahead past a read's end: SEQ_AHEAD when it follows the file's last read (Godot
+/// reads its .pck front to back in small reads; a movie), else one.
+const SEQ_AHEAD: u64 = 32;
+const NEXT_AHEAD: u64 = 1;
+
+/// Block `b`'s length in a chunk of `clen` bytes.
+fn block_len(clen: u64, b: u32) -> usize {
+    (clen - b as u64 * block()).min(block()) as usize
+}
+
+/// Blocks `first..first + n` of chunk `h` (`clen` bytes long): fetched in one request.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Piece {
+    h: Hash,
+    clen: u64,
+    first: u32,
+    n: u32,
+}
+
+/// The pieces to fetch for a read of `off..end` of a file laid out as `l` with chunks
+/// `chunks`, and ahead of it to `ahead_end`: every block of a stored (not all-zero) chunk in
+/// `off..ahead_end`, in pieces of at most PIECE blocks of one chunk, in file order. With `own`,
+/// the read's first piece is left out (the reading thread fetches it itself while the fetcher
+/// threads fetch the rest).
+fn pieces(off: u64, end: u64, ahead_end: u64, l: &Layout, chunks: &[Option<Hash>], own: bool) -> Vec<Piece> {
+    let b = block();
+    let mut out = Vec::new();
+    if off >= ahead_end {
+        return out;
+    }
+    let (first, last) = (l.index(off), l.index(ahead_end - 1));
+    // (the read's first piece: in its first chunk, unless that one is all zero)
+    let mut skip = own && off < end && chunks.get(first).copied().flatten().is_some();
+    for i in first..=last.min(chunks.len().saturating_sub(1)) {
+        let (cstart, clen) = l.span(i);
+        let from = off.max(cstart) - cstart;
+        let to = ahead_end.min(cstart + clen) - cstart;
+        let Some(h) = chunks[i] else { continue };
+        let (b0, b1) = ((from / b) as u32, ((to - 1) / b) as u32);
+        let mut at = b0;
+        if skip {
+            skip = false;
+            at += own_blocks(off, end, l) as u32;
+        }
+        while at <= b1 {
+            let n = PIECE.min(b1 + 1 - at);
+            out.push(Piece { h, clen, first: at, n });
+            at += n;
+        }
+    }
+    out
+}
+
+/// The read's own first piece (pieces with `own`): this many blocks from `off`'s, the read's
+/// blocks in its first chunk, PIECE at most.
+fn own_blocks(off: u64, end: u64, l: &Layout) -> u64 {
+    let b = block();
+    let i = l.index(off);
+    let (cstart, clen) = l.span(i);
+    let last = (end.min(cstart + clen) - 1 - cstart) / b;
+    (last + 1 - (off - cstart) / b).min(PIECE as u64)
+}
+
+/// Bytes `from..from + len` of chunk `h` (decoded; fewer when the stored chunk ends short: its
+/// zero tail is cut). `from` is a block's start (host/fetch-bridge.js keeps what came over the
+/// network as blocks).
+fn fetch_range(h: &Hash, from: u64, len: u64) -> Option<Vec<u8>> {
+    let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
+    fetch(&format!("chunks/{}/{hex}#{from}+{len}/{}", &hex[..2], block()))
+}
+
+/// `data`, bytes from block `first` of chunk `h` on, as blocks (each padded to its length);
+/// kept when `keep(block)` says so (`read`: a read fetched them, as cache_put).
+fn put_blocks(h: &Hash, clen: u64, first: u32, n: u32, data: Vec<u8>, read: bool, keep: impl Fn(u32) -> bool) -> Vec<Arc<Vec<u8>>> {
+    let b = block() as usize;
+    let mut out = Vec::with_capacity(n as usize);
+    if n == 1 {
+        let mut data = data;
+        data.resize(block_len(clen, first), 0);
+        out.push(Arc::new(data));
+    } else {
+        for k in 0..n {
+            let len = block_len(clen, first + k);
+            let at = (k as usize * b).min(data.len());
+            let mut v = data[at..(at + len).min(data.len())].to_vec();
+            v.resize(len, 0);
+            out.push(Arc::new(v));
+        }
+    }
+    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let c = g.get_or_insert_with(Cache::default);
+    for (k, d) in out.iter().enumerate() {
+        let key = (*h, first + k as u32);
+        if keep(key.1) {
+            c.put(&key, d.clone(), read, cache_limit());
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------------
+// fetching ahead: a read of several pieces (a CG or a voice read whole) used to fetch them one
 // synchronous request after another on the game's thread; the ones after the first now go to
-// a few fetcher threads at once, and so does the chunk after the read.
+// a few fetcher threads at once, and so do the blocks after the read.
 
 const FETCHERS: usize = 3;
 
 struct Ahead {
-    queue: VecDeque<Hash>,
-    /// queued or being fetched
-    busy: std::collections::HashSet<Hash>,
+    queue: VecDeque<Piece>,
+    /// blocks queued or being fetched
+    busy: std::collections::HashSet<Key>,
     /// fetcher threads running (none when they could not be made: a thread limit, little
     /// memory; tried again at the next read)
     threads: usize,
@@ -843,14 +975,15 @@ static AHEAD: Mutex<Option<Ahead>> = Mutex::new(None);
 static AHEAD_WORK: std::sync::Condvar = std::sync::Condvar::new();
 static AHEAD_DONE: std::sync::Condvar = std::sync::Condvar::new();
 
-fn cached(h: &Hash) -> bool {
-    CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|c| c.contains(h))
-}
-
-/// Has chunk `h` fetched by a fetcher thread unless it is here already. With no fetcher
-/// thread (none could be made) nothing is queued: the read fetches it itself, as before.
-fn fetch_ahead(h: &Hash) {
-    if cached(h) {
+/// Has piece `p`'s blocks fetched by the fetcher threads, but those here already or on their
+/// way (the rest in runs, a piece each). With no fetcher thread (none could be made) nothing
+/// is queued: the read fetches them itself, as before.
+fn fetch_ahead(p: Piece) {
+    let have: Vec<bool> = {
+        let g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        (p.first..p.first + p.n).map(|b| g.as_ref().is_some_and(|c| c.contains(&(p.h, b)))).collect()
+    };
+    if have.iter().all(|&x| x) {
         return;
     }
     let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
@@ -861,11 +994,18 @@ fn fetch_ahead(h: &Hash) {
             return;
         }
     }
-    if !a.busy.insert(*h) {
-        return;
+    let mut run: Option<Piece> = None;
+    for (k, b) in (p.first..p.first + p.n).enumerate() {
+        let new = !have[k] && a.busy.insert((p.h, b));
+        match (&mut run, new) {
+            (Some(r), true) => r.n += 1,
+            (None, true) => run = Some(Piece { first: b, n: 1, ..p }),
+            (Some(_), false) => a.queue.push_back(run.take().unwrap()),
+            (None, false) => {}
+        }
     }
-    a.queue.push_back(*h);
-    AHEAD_WORK.notify_one();
+    a.queue.extend(run);
+    AHEAD_WORK.notify_all();
 }
 
 /// A restored save state: no fetcher of the old module is left (the next fetch ahead starts
@@ -882,101 +1022,112 @@ pub(crate) fn snap_wake() {
 fn fetcher() {
     crate::snap::register("vfs fetcher", false, 0);
     loop {
-        let h = loop {
+        let p = loop {
             crate::snap::idle();
             let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
             let got = loop {
                 if crate::snap::pausing() {
                     break None;
                 }
-                if let Some(h) = g.as_mut().and_then(|a| a.queue.pop_front()) {
-                    break Some(h);
+                if let Some(p) = g.as_mut().and_then(|a| a.queue.pop_front()) {
+                    break Some(p);
                 }
                 g = AHEAD_WORK.wait_timeout(g, std::time::Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0;
             };
             drop(g);
             // (while a state is taken: stands still there, the lock let go)
             crate::snap::busy();
-            if let Some(h) = got {
-                break h;
+            if let Some(p) = got {
+                break p;
             }
         };
-        if let Some(data) = fetch_chunk(&h) {
-            cache_put(&h, Arc::new(data), false);
+        let b = block();
+        let from = p.first as u64 * b;
+        let len = (p.clen - from).min(p.n as u64 * b);
+        if let Some(data) = fetch_range(&p.h, from, len) {
+            put_blocks(&p.h, p.clen, p.first, p.n, data, false, |_| true);
         }
         if let Some(a) = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            a.busy.remove(&h);
+            for k in p.first..p.first + p.n {
+                a.busy.remove(&(p.h, k));
+            }
         }
         AHEAD_DONE.notify_all();
     }
 }
 
-/// Waits while a fetcher has chunk `h` (queued or on its way).
-fn wait_ahead(h: &Hash) {
+/// Waits while a fetcher has block `k` (queued or on its way).
+fn wait_ahead(k: &Key) {
     let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
-    while g.as_ref().is_some_and(|a| a.busy.contains(h)) {
+    while g.as_ref().is_some_and(|a| a.busy.contains(k)) {
         g = AHEAD_DONE.wait(g).unwrap_or_else(|e| e.into_inner());
     }
 }
 
-fn fetch_chunk(h: &Hash) -> Option<Vec<u8>> {
-    let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
-    fetch(&format!("chunks/{}/{hex}", &hex[..2]))
-}
-
-fn chunk_data(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
+/// Blocks `b0..=b1` of chunk `h` (`clen` bytes long) for a read: from the cache, else (each run
+/// of missing ones) in one request.
+fn chunk_blocks(h: &Hash, clen: u64, b0: u32, b1: u32) -> Result<Vec<Arc<Vec<u8>>>, c_int> {
     let t = std::time::Instant::now();
-    let r = chunk_data_wait(h, len);
+    let r = chunk_blocks_wait(h, clen, b0, b1);
     if r.is_ok() {
         note_read(h);
     }
-    // (a chunk in the cache returns in a few us: only real waits count)
+    // (blocks in the cache return in a few us: only real waits count)
     if t.elapsed().as_micros() > 200 {
         net::stall(t);
     }
     r
 }
 
-fn chunk_data_wait(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
-    wait_ahead(h);
-    if let Some(d) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|c| c.get(h, len, cache_limit())) {
-        return Ok(d);
+fn chunk_blocks_wait(h: &Hash, clen: u64, b0: u32, b1: u32) -> Result<Vec<Arc<Vec<u8>>>, c_int> {
+    let busy = |b: u32| AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|a| a.busy.contains(&(*h, b)));
+    let get = |b: u32| CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Cache::default).get(&(*h, b), block_len(clen, b), cache_limit());
+    let mut out = Vec::with_capacity((b1 + 1 - b0) as usize);
+    let mut b = b0;
+    while b <= b1 {
+        // (a block a fetcher has: waited for; the ones no fetcher has: fetched here, a run of
+        // them in one request, while the fetchers fetch theirs)
+        if busy(b) {
+            wait_ahead(&(*h, b));
+        }
+        if let Some(d) = get(b) {
+            out.push(d);
+            b += 1;
+            continue;
+        }
+        let s = b;
+        b += 1;
+        while b <= b1 && !busy(b) && !cached(&(*h, b)) {
+            b += 1;
+        }
+        let from = s as u64 * block();
+        let len = (clen - from).min((b - s) as u64 * block());
+        let data = fetch_range(h, from, len).ok_or(libc::EIO)?;
+        out.extend(put_blocks(h, clen, s, b - s, data, true, |_| true));
     }
-    let mut data = fetch_chunk(h).ok_or(libc::EIO)?;
-    data.resize(len, 0);
-    Ok(cache_put(h, Arc::new(data), true))
+    Ok(out)
+}
+
+fn cached(k: &Key) -> bool {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|c| c.contains(k))
 }
 
 /// A chunk the page fetched ahead: `hash` (16 bytes) and the `data` it malloc'ed, which this
-/// takes (the system allocator is malloc).
+/// takes (the system allocator is malloc), kept as blocks (the chunk's length is not known
+/// here: the last block as stored, padded when read).
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_vfs_put_chunk(hash: *const u8, data: *mut u8, len: size_t) {
     let h: Hash = std::slice::from_raw_parts(hash, 16).try_into().unwrap();
-    cache_put(&h, Arc::new(Vec::from_raw_parts(data, len, len)), false);
+    let data = Vec::from_raw_parts(data, len, len);
+    let n = (len as u64).div_ceil(block()) as u32;
+    if n > 0 {
+        put_blocks(&h, len as u64, 0, n, data, false, |_| true);
+    }
 }
 
-/// `read`: a read fetched it (else fetched ahead, by a fetcher or the page).
-fn cache_put(h: &Hash, data: Arc<Vec<u8>>, read: bool) -> Arc<Vec<u8>> {
-    CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Cache::default).put(h, data.clone(), read, cache_limit());
-    data
-}
-
-/// Where each file's last read ended (a read that starts there reads on: SEQ_AHEAD chunks
+/// Where each file's last read ended (a read that starts there reads on: SEQ_AHEAD blocks
 /// are fetched ahead, not one).
 static LAST_END: Mutex<Option<HashMap<Ino, u64>>> = Mutex::new(None);
-
-/// Chunks fetched ahead for a sequential read: Godot reads its .pck front to back in small
-/// reads, one network round trip a chunk when only the next one was fetched ahead.
-const SEQ_AHEAD: usize = 8;
-
-/// The chunk numbers to fetch ahead for a read of `off..end` (end > off) of a file of `n`
-/// chunks `chunk` bytes each: the read's chunks after its first, then the next one, or the next
-/// SEQ_AHEAD when the read follows the file's last.
-fn ahead(off: u64, end: u64, l: &Layout, n: usize, sequential: bool) -> std::ops::Range<usize> {
-    let (first, last) = (l.index(off), l.index(end - 1));
-    let more = if sequential { SEQ_AHEAD } else { 1 };
-    (first + 1).min(n)..(last + 1 + more).min(n)
-}
 
 /// Reads file content at `off` (the lock is not held while chunks are fetched).
 fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
@@ -1001,7 +1152,7 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
         return Ok(0);
     }
     let end = (off + buf.len() as u64).min(size);
-    // the read's other chunks and the ones after it: fetched at once by the fetcher threads
+    // the read's other pieces and the blocks after it: fetched at once by the fetcher threads
     // while this one fetches the first
     let sequential = {
         let mut g = LAST_END.lock().unwrap_or_else(|e| e.into_inner());
@@ -1011,24 +1162,34 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
         }
         m.insert(ino, end) == Some(off)
     };
-    for i in ahead(off, end, &layout, chunks.len(), sequential) {
-        if let Some(h) = chunks.get(i).copied().flatten() {
-            fetch_ahead(&h);
-        }
+    let ahead_end = (end + block() * if sequential { SEQ_AHEAD } else { NEXT_AHEAD }).min(size);
+    for p in pieces(off, end, ahead_end, &layout, &chunks, true) {
+        fetch_ahead(p);
     }
+    let b = block();
     let mut at = off;
     while at < end {
         let i = layout.index(at);
         let (cstart, clen) = layout.span(i);
-        let clen = clen as usize;
-        let from = (at - cstart) as usize;
-        let n = ((end - at) as usize).min(clen - from);
-        let dst = &mut buf[(at - off) as usize..(at - off) as usize + n];
+        let from = at - cstart;
+        let n = (end - at).min(clen - from);
+        let dst = &mut buf[(at - off) as usize..(at - off + n) as usize];
         match chunks.get(i).copied().flatten() {
             None => dst.fill(0),
-            Some(h) => dst.copy_from_slice(&chunk_data(&h, clen)?[from..from + n]),
+            Some(h) => {
+                let (b0, b1) = ((from / b) as u32, ((from + n - 1) / b) as u32);
+                let blocks = chunk_blocks(&h, clen, b0, b1)?;
+                let mut d = 0usize;
+                for (k, blk) in blocks.iter().enumerate() {
+                    let bstart = (b0 as u64 + k as u64) * b;
+                    let s = (from + d as u64 - bstart) as usize;
+                    let m = (blk.len() - s).min(n as usize - d);
+                    dst[d..d + m].copy_from_slice(&blk[s..s + m]);
+                    d += m;
+                }
+            }
         }
-        at += n as u64;
+        at += n;
     }
     Ok((end - off) as usize)
 }
@@ -1361,25 +1522,20 @@ pub(crate) fn h_read(h: u32, buf: &mut [u8]) -> Result<usize, c_int> {
     Ok(n)
 }
 
-/// Has the store's chunks of bytes `off..off + len` of handle `h`'s file fetched by the fetcher
+/// Has the store's blocks of bytes `off..off + len` of handle `h`'s file fetched by the fetcher
 /// threads, without waiting for them (a movie's next seconds: kura::video).
 pub(crate) fn h_prefetch(h: u32, off: u64, len: u64) {
     let Some((ino, _, _)) = handle(h) else { return };
-    // (only the hashes wanted are copied out: the list of a big archive is long)
-    let want: Vec<Hash> = with(|fs| match fs.node(ino).map(|n| &n.data) {
+    let want = with(|fs| match fs.node(ino).map(|n| &n.data) {
         Some(Data::File(Content::Lower { size, chunks, starts })) => {
             let l = Layout { size: *size, starts: starts.clone() };
             let end = off.saturating_add(len).min(l.size);
-            if off >= end {
-                return Vec::new();
-            }
-            let (first, last) = (l.index(off), l.index(end - 1));
-            chunks.iter().skip(first).take(last + 1 - first).filter_map(|c| *c).collect()
+            pieces(off, end, end, &l, chunks, false)
         }
         _ => Vec::new(),
     });
-    for h in &want {
-        fetch_ahead(h);
+    for p in want {
+        fetch_ahead(p);
     }
 }
 
@@ -1577,6 +1733,9 @@ mod tests {
         assert_eq!(c.refetched, before + 1, "fetched ahead: not a read");
     }
 
+    /// The tests that mount files in the one file system (FS) and store, one at a time.
+    static TEST_FS: Mutex<()> = Mutex::new(());
+
     /// The store, for these tests: chunks by name, and the names fetched.
     static STORE: Mutex<Option<(HashMap<String, Vec<u8>>, Vec<String>)>> = Mutex::new(None);
 
@@ -1586,7 +1745,20 @@ mod tests {
         let mut g = STORE.lock().unwrap();
         let (m, log) = g.get_or_insert_with(Default::default);
         log.push(name.clone());
-        let Some(d) = m.get(&name) else { return std::ptr::null_mut() };
+        // (a range: `<name>#<from>+<len>`, as host/vnfs.js; fewer bytes past a short chunk's end)
+        let (key, range) = match name.split_once('#') {
+            Some((k, r)) => {
+                let (a, n) = r.split_once('+').unwrap();
+                let n = n.split('/').next().unwrap();
+                (k.to_string(), Some((a.parse::<usize>().unwrap(), n.parse::<usize>().unwrap())))
+            }
+            None => (name.clone(), None),
+        };
+        let Some(d) = m.get(&key) else { return std::ptr::null_mut() };
+        let d = match range {
+            Some((a, n)) => &d[a.min(d.len())..(a + n).min(d.len())],
+            None => &d[..],
+        };
         unsafe {
             let p = libc::malloc(d.len().max(1)) as *mut u8;
             std::ptr::copy_nonoverlapping(d.as_ptr(), p, d.len());
@@ -1601,6 +1773,7 @@ mod tests {
     /// still in the store fetches nothing; one to n only the chunks before n (and the next).
     #[test]
     fn store_files_written_and_cut() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
         let mut seed = 0x510e527fade682d1u64;
         let mut rnd = move |n: u64| {
             seed ^= seed << 13;
@@ -1666,7 +1839,7 @@ mod tests {
             let n = if f % 3 == 0 { 0 } else { rnd(models[f].len() as u64 + 100) };
             fetched();
             set_size(ino, n).unwrap();
-            let got = fetched();
+            let got: std::collections::HashSet<String> = fetched().into_iter().map(|n| n.split('#').next().unwrap().to_string()).collect();
             // (and the chunk after them, fetched ahead as after any read; odd files' chunks
             // are 1 byte or more)
             let unit = if f % 2 == 1 { 1 } else { 64 };
@@ -1719,45 +1892,130 @@ mod tests {
         let l = Layout { size: 10, starts: s };
         assert_eq!((0..10).map(|at| l.index(at)).collect::<Vec<_>>(), [0, 0, 0, 1, 1, 1, 1, 1, 2, 2]);
         assert_eq!([l.span(0), l.span(1), l.span(2)], [(0, 3), (3, 5), (8, 2)]);
-        assert_eq!(ahead(4, 9, &l, 3, false), 2..3);
         assert!(parse_chunks("00112233445566778899aabbccddeeff:3", 4).is_none());
         assert!(parse_chunks("00112233445566778899aabbccddeeff:0", 0).is_none());
         assert!(parse_chunks("00112233445566778899aabbccddeeff", 9).is_none());
         assert_eq!(parse_chunks("", 0).unwrap().0.len(), 0);
     }
 
-    /// The chunks fetched ahead: past the read's first chunk, within the file, through the read's
-    /// last chunk and then one more, or SEQ_AHEAD more for a sequential read.
+    /// The pieces fetched for a read (block() is 24 in tests, PIECE 4 blocks): every block of
+    /// the read and up to its ahead end, by chunk, in pieces of at most PIECE; the read's first
+    /// piece left to the reader; all-zero chunks none.
     #[test]
-    fn ahead_cases() {
-        // (a read inside chunk 0 of 10: chunk 1; sequential: 1..=8)
-        assert_eq!(ahead(0, 100, &even(1000, 10), 10, false), 1..2);
-        assert_eq!(ahead(0, 100, &even(1000, 10), 10, true), 1..9);
-        // (over chunks 2..=4: 3, 4 and 5)
-        assert_eq!(ahead(2500, 4100, &even(1000, 10), 10, false), 3..6);
-        // (the file's end)
-        assert_eq!(ahead(9000, 9500, &even(1000, 10), 10, true), 10..10);
-        assert_eq!(ahead(8999, 9500, &even(1000, 10), 10, true), 9..10);
+    fn pieces_cases() {
+        let h = |i: u8| Some([i; 16]);
+        let p = |c: u8, clen: u64, first: u32, n: u32| Piece { h: [c; 16], clen, first, n };
+        // one chunk of 1000 bytes (42 blocks): a read of 0..100 (blocks 0..=4), ahead to 124
+        // (block 5): the reader 0..=3, the fetchers 4 and 5
+        let l = even(1000, 1);
+        assert_eq!(pieces(0, 100, 124, &l, &[h(1)], true), [p(1, 1000, 4, 2)]);
+        assert_eq!(pieces(0, 100, 124, &l, &[h(1)], false), [p(1, 1000, 0, 4), p(1, 1000, 4, 2)]);
+        // a scattered read in a big chunk: only its blocks (20, 21: the reader's) and the next
+        assert_eq!(pieces(500, 520, 544, &l, &[h(1)], true), [p(1, 1000, 22, 1)]);
+        // over three chunks, the middle one all zero: the reader 3..=4 of the first, the third's
+        // blocks to the fetchers
+        let l = even(100, 3);
+        assert_eq!(pieces(90, 210, 210, &l, &[h(1), None, h(3)], true), [p(3, 100, 0, 1)]);
+        // a read starting in a zero chunk: no piece of its own
+        assert_eq!(pieces(110, 230, 230, &l, &[h(1), None, h(3)], true), [p(3, 100, 0, 2)]);
+        // the file's end
+        assert_eq!(pieces(299, 300, 300, &l, &[h(1), h(2), h(3)], true), []);
+        assert_eq!(pieces(300, 300, 300, &l, &[h(1), h(2), h(3)], false), []);
     }
 
     proptest::proptest! {
+        /// Any layout (chunks of 1 to 200 bytes, some all zero), any read and ahead window: the
+        /// pieces and the read's own first piece cover exactly the stored blocks of
+        /// off..ahead_end, once each, in pieces of one chunk of at most PIECE blocks, within
+        /// it; the reader's own piece holds the block of `off`.
         #[test]
-        fn ahead_bounds(chunk in 1u64..5000, n in 1usize..50, a in 0u64..250_000, len in 1u64..20_000, seq in proptest::bool::ANY) {
-            let size = chunk * n as u64;
+        fn pieces_cover(lens in proptest::collection::vec(1u64..200, 1..12), zero in proptest::collection::vec(proptest::bool::ANY, 12), a in 0u64..3000, len in 1u64..600, more in 0u64..300) {
+            let mut starts = vec![0u64];
+            for n in &lens { starts.push(starts.last().unwrap() + n); }
+            let size = *starts.last().unwrap();
+            let l = Layout { size, starts: Arc::new(starts) };
+            let chunks: Vec<Option<Hash>> = (0..lens.len()).map(|i| (!zero[i]).then_some([i as u8; 16])).collect();
             let off = a % size;
             let end = (off + len).min(size);
-            let r = ahead(off, end, &even(chunk, n), n, seq);
-            let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize);
-            // within the file, never the read's first chunk (this thread fetches that one)
-            proptest::prop_assert!(r.start == first + 1 || r.is_empty());
-            proptest::prop_assert!(r.end <= n);
-            // every other chunk the read needs
-            for i in first + 1..=last {
-                proptest::prop_assert!(r.contains(&i));
+            let ahead_end = (end + more).min(size);
+            let b = block();
+            let want: std::collections::BTreeSet<(u8, u32)> = (off..ahead_end).filter_map(|x| {
+                let i = l.index(x);
+                chunks[i].map(|h| (h[0], ((x - l.starts[i]) / b) as u32))
+            }).collect();
+            let all = pieces(off, end, ahead_end, &l, &chunks, false);
+            let own = pieces(off, end, ahead_end, &l, &chunks, true);
+            let mut got = std::collections::BTreeSet::new();
+            for p in &all {
+                let i = p.h[0] as usize;
+                proptest::prop_assert!(p.n >= 1 && p.n <= PIECE);
+                proptest::prop_assert_eq!(p.clen, lens[i]);
+                proptest::prop_assert!((p.first + p.n - 1) as u64 * b < p.clen);
+                for k in p.first..p.first + p.n {
+                    proptest::prop_assert!(got.insert((p.h[0], k)), "block twice");
+                }
             }
-            // and as many past it as the file has, up to the window
-            let past = if seq { SEQ_AHEAD } else { 1 };
-            proptest::prop_assert_eq!(r.end, (last + 1 + past).min(n));
+            proptest::prop_assert_eq!(&got, &want);
+            // (the reader's: the same but its own first blocks, the read's in its first chunk
+            // from `off`'s, PIECE at most)
+            let i = l.index(off);
+            let mut rest = std::collections::BTreeSet::new();
+            for p in &own {
+                for k in p.first..p.first + p.n {
+                    proptest::prop_assert!(rest.insert((p.h[0], k)));
+                }
+            }
+            let mine: std::collections::BTreeSet<(u8, u32)> = match chunks[i] {
+                Some(h) => {
+                    let b0 = ((off - l.starts[i]) / b) as u32;
+                    let last = ((end.min(l.starts[i + 1]) - 1 - l.starts[i]) / b) as u32;
+                    (b0..=last.min(b0 + PIECE - 1)).map(|k| (h[0], k)).collect()
+                }
+                None => Default::default(),
+            };
+            proptest::prop_assert!(rest.is_disjoint(&mine));
+            proptest::prop_assert_eq!(rest.union(&mine).copied().collect::<std::collections::BTreeSet<_>>(), want);
+        }
+    }
+
+    /// A scattered read of a big chunk fetches its own blocks and the next one, not the chunk
+    /// (the reason for blocks: docs/chunk-size.md), and the bytes are the chunk's.
+    #[test]
+    fn scattered_read_fetches_blocks() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let size = 24 * 1000u64;
+        let data: Vec<u8> = (0..size).map(|i| (i * 7 + 3) as u8 | 1).collect();
+        let h = "abababababababababababababababab";
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        fs.load_tree(root, &format!("vnvm-tree\t2\t64\nf\t644\t0\tbig\t{size}\t{h}:{size}\n"));
+        let ino = match fs.node(root).map(|n| &n.data) {
+            Some(Data::Dir(c)) => c["big"],
+            _ => unreachable!(),
+        };
+        *FS.lock().unwrap() = Some(fs);
+        let mut m = HashMap::new();
+        m.insert(format!("chunks/ab/{h}"), data.clone());
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        let mut seed = 77u64;
+        for _ in 0..50 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let off = (seed >> 33) % (size - 100);
+            let len = 1 + (seed >> 20) % 60;
+            let mut buf = vec![0; len as usize];
+            assert_eq!(read_at(ino, &mut buf, off), Ok(len as usize));
+            assert_eq!(&buf[..], &data[off as usize..(off + len) as usize]);
+            // (the fetchers done)
+            let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
+            while g.as_ref().is_some_and(|a| !a.busy.is_empty()) {
+                g = AHEAD_DONE.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            drop(g);
+            let log = std::mem::take(&mut STORE.lock().unwrap().as_mut().unwrap().1);
+            let bytes: u64 = log.iter().map(|n| n.rsplit('+').next().unwrap().split('/').next().unwrap().parse::<u64>().unwrap()).sum();
+            assert!(log.iter().all(|n| n.ends_with("/24")), "{log:?}");
+            // its blocks (len <= 60 spans 4 of 24 bytes at most) and NEXT_AHEAD more
+            assert!(bytes <= (4 + NEXT_AHEAD) * 24, "read {off}+{len} fetched {bytes} bytes: {log:?}");
         }
     }
 
@@ -1766,8 +2024,8 @@ mod tests {
     fn no_fetcher_threads_no_wait() {
         // (a thread limit, little memory: a read must not wait on a queue no thread takes)
         SPAWN_FAILS.store(true, std::sync::atomic::Ordering::Relaxed);
-        let h: Hash = *b"no-fetcher-test!";
-        fetch_ahead(&h);
+        let h: Key = (*b"no-fetcher-test!", 0);
+        fetch_ahead(Piece { h: h.0, clen: 10, first: 0, n: 1 });
         let busy = AHEAD.lock().unwrap().as_ref().is_some_and(|a| a.busy.contains(&h));
         SPAWN_FAILS.store(false, std::sync::atomic::Ordering::Relaxed);
         assert!(!busy, "queued with no thread to take it");

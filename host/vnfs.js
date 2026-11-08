@@ -1,5 +1,6 @@
 // vnvm_fetch(name, &len): one file of the store (trees/<name>.tsv or chunks/ab/<hash>, the
-// latter zstd-compressed), for crates/kura/src/vfs.rs; or "@saves", the saved games the page
+// latter zstd-compressed; "chunks/ab/<hash>#<from>+<len>/<block>": those bytes of the decoded
+// chunk, fewer past its stored end, asked for in blocks of <block> bytes), for crates/kura/src/vfs.rs; or "@saves", the saved games the page
 // passed (host/pre.js; node: the file $IPPAI_SAVES). Returns a malloc'ed buffer, or 0. The bytes
 // that came over the network (compressed; none from the browser's HTTP cache) go to vfs.rs's
 // counters (vnhost_net_wire).
@@ -8,7 +9,8 @@
 // store/ beside the directory of sake.js; the server sends chunks with "Content-Encoding: zstd",
 // so the browser decompresses them.
 addToLibrary({
-  vnvm_fetch__deps: ['malloc'],
+  $vnvmLastChunk: null,
+  vnvm_fetch__deps: ['malloc', '$vnvmLastChunk'],
   // pointers are above 2GB (GLOBAL_BASE): 'p' makes them unsigned
   vnvm_fetch__sig: 'ppp',
   vnvm_fetch: (name, lenp) => {
@@ -25,11 +27,19 @@ addToLibrary({
         data = ENVIRONMENT_IS_NODE ? (process.env.IPPAI_SAVES ? require('fs').readFileSync(process.env.IPPAI_SAVES) : null) : vnvmSaves;
         if (!data) return 0;
       } else if (ENVIRONMENT_IS_NODE) {
-        data = require('fs').readFileSync(require('path').join(store, name));
-        if (name.startsWith('chunks/')) data = require('zlib').zstdDecompressSync(data);
+        // (the chunk decoded last, kept: a read asks for its blocks one range at a time)
+        const [file, from, len] = ippaiRange(name);
+        if (vnvmLastChunk?.[0] === file) data = vnvmLastChunk[1];
+        else {
+          data = require('fs').readFileSync(require('path').join(store, file));
+          if (file.startsWith('chunks/')) vnvmLastChunk = [file, (data = require('zlib').zstdDecompressSync(data))];
+        }
+        if (from !== undefined) data = data.subarray(from, from + len);
       } else {
-        data = Module.vnvmFiles?.[name] ?? ippaiFetchSync(store + '/' + name);
+        const [file, from, len, block] = ippaiRange(name);
+        data = Module.vnvmFiles?.[file] ?? ippaiFetchSync(store + '/' + file, from, len, block);
         if (data.wire !== undefined) wasmExports.vnhost_net_wire(data.wire, data.cached);
+        else if (from !== undefined) data = data.subarray(from, from + len);
       }
     } catch (e) {
       if (!ENVIRONMENT_IS_NODE) err(`vnvm_fetch ${name}: ${e}`);

@@ -36,15 +36,21 @@ int main(void) {
   }
   double t1 = now_ms();
   printf("CHUNKREAD start_ms=%.1f\n", t1 - t0);
-  // scattered reads
-  enum { N = 200 };
-  static double lat[N];
+  // scattered reads: 200 of 64 KiB, or as n.txt says ("<reads> <bytes each>", at most 1000
+  // of 1 MiB: run.mjs's NET game)
+  int N = 200, len = 65536;
+  FILE *nf = fopen("n.txt", "r");
+  if (nf) {
+    if (fscanf(nf, "%d %d", &N, &len) != 2 || N < 1 || N > 1000 || len < 1 || len > (int)sizeof buf) N = 200, len = 65536;
+    fclose(nf);
+  }
+  static double lat[1000];
   for (int i = 0; i < N; i++) {
-    LONGLONG at = ((LONGLONG)rnd() << 8 ^ rnd()) % (size.QuadPart - 65536);
+    LONGLONG at = ((LONGLONG)rnd() << 8 ^ rnd()) % (size.QuadPart - len);
     LARGE_INTEGER p; p.QuadPart = at;
     double a = now_ms();
     SetFilePointerEx(f, p, NULL, FILE_BEGIN);
-    ReadFile(f, buf, 65536, &got, NULL);
+    ReadFile(f, buf, len, &got, NULL);
     lat[i] = now_ms() - a;
     sum += (unsigned char)buf[100];
   }

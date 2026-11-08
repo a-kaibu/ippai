@@ -27,8 +27,8 @@ function ippaiIsChunk(url) {
 
 /**
  * The first 16 bytes of `data`'s BLAKE3 hash, as hex: a store chunk's name (crates/ippai/src/pack.rs).
- * One-shot (chunks are 256 KiB at most), all of it in this function: the network worker gets
- * it as source.
+ * One-shot (a chunk at once: 4 MiB on average, 64 MiB at most), all of it in this function: the
+ * network worker gets it as source.
  */
 function ippaiBlake3(data) {
   const IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
@@ -149,14 +149,15 @@ async function ippaiPause(ms) {
 }
 
 /** One try: the body read in pieces; aborted when no byte arrives for `stallMs`. */
-async function ippaiFetchOnce(url, stallMs, reload) {
+async function ippaiFetchOnce(url, stallMs, reload, headers) {
   const abort = new AbortController();
   let last = Date.now();
   const watch = setInterval(() => {
     if (Date.now() - last > stallMs) abort.abort(new Error('stalled'));
   }, Math.min(1000, stallMs / 4));
   try {
-    const response = await fetch(url, reload ? { signal: abort.signal, cache: 'reload' } : { signal: abort.signal });
+    const init = { signal: abort.signal, ...(reload ? { cache: 'reload' } : {}), ...(headers ? { headers } : {}) };
+    const response = await fetch(url, init);
     last = Date.now();
     if (!response.ok) {
       response.body?.cancel?.().catch?.(() => {});
@@ -195,12 +196,107 @@ function ippaiNetReport(error) {
   } catch (_) {}
 }
 
-async function ippaiCache() {
-  try {
-    return typeof caches === 'undefined' ? null : await caches.open(IPPAI_CHUNKS);
-  } catch (_) {
-    return null;
+/** Cache Storage for chunks (opened once: every read of a block asks for it). */
+var ippaiCacheOpen;
+function ippaiCache() {
+  return (ippaiCacheOpen ??= (async () => {
+    try {
+      return typeof caches === 'undefined' ? null : await caches.open(IPPAI_CHUNKS);
+    } catch (_) {
+      return null;
+    }
+  })());
+}
+
+/**
+ * "<store path>#<from>+<len>/<block>" (vfs.rs asks for blocks of a chunk so, `block` bytes
+ * each): [path, from, len, block]; a plain path: [path].
+ */
+function ippaiRange(name) {
+  const m = /^(.*)#(\d+)\+(\d+)(?:\/(\d+))?$/.exec(name);
+  return m ? [m[1], +m[2], +m[3], m[4] === undefined ? undefined : +m[4]] : [name];
+}
+
+/**
+ * Whole chunks this worker fetched lately, newest last (IPPAI_RECENT_BYTES, and the newest one
+ * whatever its size): a read asks for a chunk's blocks one range after another, and the first
+ * fetched it whole (the network has no ranges of a zstd-coded chunk). They are answered from
+ * here until Cache Storage has the chunk (its put is not awaited), or where there is none.
+ */
+var IPPAI_RECENT_BYTES = 32 << 20;
+var ippaiRecent = new Map();
+function ippaiKeepRecent(url, data) {
+  ippaiRecent.delete(url);
+  ippaiRecent.set(url, data);
+  let bytes = 0;
+  for (const d of ippaiRecent.values()) bytes += d.length;
+  for (const [k, d] of ippaiRecent) {
+    if (bytes <= IPPAI_RECENT_BYTES || ippaiRecent.size === 1) break;
+    ippaiRecent.delete(k);
+    bytes -= d.length;
   }
+}
+/** Cache Storage's key for block `k` (of `block` bytes) of chunk `url`, kept alone. */
+function ippaiBlockKey(url, k, block) {
+  return `${url}?b=${k}&s=${block}`;
+}
+
+/**
+ * Bytes `from..from + len` of `url`'s (whole when `from` is undefined), as ippaiFetchRobust's
+ * result. Of a chunk, from the first place that has them: this worker's memory (a chunk it
+ * fetched whole lately), Cache Storage's copy of the whole chunk (checked when it was kept;
+ * Blob.slice reads only those bytes, whatever the chunk's size), its blocks kept alone (`block`
+ * bytes each, as vfs.rs asks for them: `from` is a block's start); else a range from the server
+ * (only what is read crosses the network, kept as blocks); a server without ranges sends the
+ * whole chunk, then checked and kept whole (and in this worker's memory for the next blocks).
+ */
+async function ippaiFetchPart(url, from, len, block) {
+  if (from === undefined) return ippaiFetchRobust(url);
+  const part = (d) => d.subarray(Math.min(from, d.length), Math.min(from + len, d.length));
+  const mem = ippaiRecent.get(url);
+  if (mem) return { data: part(mem), wire: 0, cached: 1 };
+  if (!ippaiIsChunk(url)) return ippaiFetchPart(url).then((r) => ({ ...r, data: part(r.data) }));
+  const cache = await ippaiCache();
+  block ||= len || 1;
+  const first = Math.floor(from / block);
+  const last = Math.max(first, Math.ceil((from + len) / block) - 1);
+  if (cache) {
+    const hit = await cache.match(url).catch(() => undefined);
+    if (hit && hit.headers.get(IPPAI_CHECKED) === '1') {
+      try {
+        const blob = await hit.blob();
+        return { data: new Uint8Array(await blob.slice(from, from + len).arrayBuffer()), wire: 0, cached: 1 };
+      } catch (_) {}
+    }
+    // (blocks kept alone: all of them, or the network)
+    const parts = [];
+    for (let k = first; k <= last; k++) {
+      const b = await cache.match(ippaiBlockKey(url, k, block)).catch(() => undefined);
+      if (!b) break;
+      parts.push(new Uint8Array(await b.arrayBuffer().catch(() => new ArrayBuffer(0))));
+      // (a chunk's last block: shorter, nothing after it)
+      if (parts.at(-1).length < block) break;
+    }
+    if (parts.length === last + 1 - first || (parts.length && parts.at(-1).length < block)) {
+      const all = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+      let at = 0;
+      for (const p of parts) all.set(p, (at += p.length) - p.length);
+      return { data: all.subarray(from - first * block, from - first * block + len), wire: 0, cached: 1 };
+    }
+  }
+  // (the whole blocks asked for: what is kept)
+  const at = first * block;
+  const r = await ippaiFetchRobust(url, { range: [at, (last + 1) * block - at] });
+  if (!r.partial) return { ...r, data: part(r.data) };
+  if (cache) {
+    for (let k = first; k <= last; k++) {
+      const d = r.data.subarray((k - first) * block, (k + 1 - first) * block);
+      // (a short block only at the chunk's end)
+      if (d.length === block || (r.total !== undefined && k * block + d.length === r.total))
+        cache.put(ippaiBlockKey(url, k, block), new Response(d.slice(), { headers: { 'x-ippai-size': String(d.length) } })).catch(() => {});
+    }
+  }
+  return { ...r, data: r.data.subarray(from - at, from - at + len) };
 }
 
 /**
@@ -212,7 +308,11 @@ async function ippaiFetchRobust(url, opt = {}) {
   const giveUpMs = opt.giveUpMs ?? IPPAI_GIVE_UP_MS;
   const chunk = ippaiIsChunk(url);
   const cache = chunk ? await ippaiCache() : null;
-  const hit = await cache?.match(url).catch(() => undefined);
+  // opt.range [from, len]: those bytes of the decoded chunk (ippaiFetchPart looked on the device
+  // already); the answer has `partial` (a 206 of them, ippai serve's store_api.rs) or is the
+  // whole chunk (a server without ranges), checked and kept as any
+  const range = opt.range;
+  const hit = range ? undefined : await cache?.match(url).catch(() => undefined);
   if (hit) {
     try {
       const data = new Uint8Array(await hit.arrayBuffer());
@@ -233,12 +333,22 @@ async function ippaiFetchRobust(url, opt = {}) {
       let error;
       try {
         // (after a chunk that did not match, past the browser's HTTP cache: it keeps chunks for good)
-        const { response, data } = await ippaiFetchOnce(url, stallMs, bad > 0);
+        const { response, data } = await ippaiFetchOnce(url, stallMs, bad > 0, range && { range: `bytes=${range[0]}-${range[0] + range[1] - 1}` });
+        if (data && range && response.status === 206) {
+          // (a range: its place and length checked; a block has no name of its own to check)
+          const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers?.get?.('content-range') ?? '');
+          if (m && +m[1] === range[0] && data.length === +m[2] - +m[1] + 1 && (data.length === range[1] || +m[2] === +m[3] - 1))
+            return { data, wire: data.length, cached: 0, partial: true, total: +m[3] };
+          if (++bad >= IPPAI_BAD_CHUNK) throw Object.assign(new Error(`range is not what was asked ${bad} times`), { final: true });
+          throw new Error('range is not what was asked');
+        }
+        if (range && response.status === 416) return { data: new Uint8Array(0), wire: 0, cached: 0, partial: true };
         if (data && !ippaiChunkOk(url, data)) {
           if (++bad >= IPPAI_BAD_CHUNK) throw Object.assign(new Error(`chunk does not match its name ${bad} times`), { final: true });
           throw new Error('chunk does not match its name');
         }
         if (data) {
+          if (chunk) ippaiKeepRecent(url, data);
           const timing = typeof performance !== 'undefined' && performance.getEntriesByName?.(url).at(-1);
           const wire = timing ? timing.transferSize : +(response.headers?.get?.('content-length') || data.length);
           const cached = timing && timing.transferSize === 0 && timing.decodedBodySize > 0 ? 1 : 0;
@@ -269,14 +379,15 @@ async function ippaiFetchRobust(url, opt = {}) {
  * part length, wire bytes, from the HTTP cache, body length) and IPPAI_BRIDGE_BYTES of body
  * at a time, one per thread. A/B (node workers, 400 reads, median of 5): a 256 KiB chunk took
  * 0.369 ms with 64 KiB parts copied twice (the old protocol), 0.342 ms copied once, 0.214 ms
- * in one 256 KiB part, 0.216 ms with 1 MiB; a 64 KiB read 0.135-0.139 ms with any. Chunks
- * are 256 KiB at most.
+ * in one 256 KiB part, 0.216 ms with 1 MiB; a 64 KiB read 0.135-0.139 ms with any. A read
+ * asks for 256 KiB blocks (crates/kura/src/vfs.rs), 1 MiB at most at a time; a whole chunk
+ * (the page's) goes in several parts.
  */
 var IPPAI_BRIDGE_HEADER = 32;
 var IPPAI_BRIDGE_BYTES = 262144;
 
 function ippaiFetchWorker(event) {
-  const { url, shared } = event.data;
+  const { url, shared, from, len, block } = event.data;
   const state = new Int32Array(shared, 0, 8);
   const output = new Uint8Array(shared, IPPAI_BRIDGE_HEADER);
   const publish = (status) => {
@@ -287,7 +398,7 @@ function ippaiFetchWorker(event) {
   const alive = setInterval(() => Atomics.notify(state, 0), 5000);
   (async () => {
     try {
-      const { data, wire, cached } = await ippaiFetchRobust(url);
+      const { data, wire, cached } = await ippaiFetchPart(url, from, len, block);
       Atomics.store(state, 2, wire);
       Atomics.store(state, 3, cached);
       Atomics.store(state, 4, data.length);
@@ -313,11 +424,12 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above, `main` its message handler. */
 function ippaiFetchWorkerSource(main) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiFetchRobust, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiFetchPart, ippaiFetchRobust, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
+    'var ippaiCacheOpen, ippaiRecent = new Map();',
     ...fns.map(String),
     main,
   ].join('\n');
@@ -342,7 +454,8 @@ function ippaiFetchDispose() {
 }
 
 var ippaiBridgeBuffer;
-function ippaiFetchSync(url) {
+/** `url`'s bytes (`from`, `len`: only those; ippaiFetchPart), on a thread that may block. */
+function ippaiFetchSync(url, from, len, block) {
   if (typeof document !== 'undefined') throw new Error('synchronous reads on the page must be preloaded');
   if (!ippaiFetchPort && !ippaiFetchWorkerInstance) {
     const blob = new Blob([ippaiFetchWorkerSource('self.onmessage = ippaiFetchWorker;')], {type: 'text/javascript'});
@@ -358,7 +471,7 @@ function ippaiFetchSync(url) {
   Atomics.store(state, 0, 0);
   let result;
   let length = 0;
-  (ippaiFetchPort || ippaiFetchWorkerInstance).postMessage({url, shared});
+  (ippaiFetchPort || ippaiFetchWorkerInstance).postMessage({url, shared, from, len, block});
   for (;;) {
     while (Atomics.load(state, 0) === 0) {
       if (Atomics.wait(state, 0, 0, 65000) === 'timed-out') {
