@@ -282,6 +282,54 @@ jobs:
 
   # Windows' answers into tests/winref/golden (a commit on main; text and small PNGs). They are
   # imported at this run's commit (src = the sources the probes were built from), then copied onto
+  # How far each trial game's replay goes (tests/replay/status.py: Captured, Convertible,
+  # Faithful on Windows, Compatible on sake), into tests/replay/status.tsv, and drill.txt narrowed
+  # toward the first draw sake does differently (its probes are built, answered and compared by
+  # the next run). A commit on main: drill.txt changing starts that run; status.tsv alone does not.
+  status:
+    needs: [probes, sake]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: winref-status-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-sake
+          path: sake
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-exe
+          path: exe
+      - name: The replays' status
+        run: |
+          python3 tests/replay/status_test.py
+          python3 tests/replay/status.py --sake sake/out/jit --convert exe/convert --report status.md --tsv tests/replay/status.tsv --drill
+          cat status.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit it
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          M=$RUNNER_TEMP/main
+          for i in 1 2 3 4 5 6; do
+            git fetch -q origin main
+            git worktree remove --force "$M" 2>/dev/null || true
+            git worktree add -q --detach "$M" FETCH_HEAD
+            cp tests/replay/status.tsv tests/replay/drill.txt "$M/tests/replay/"
+            git -C "$M" add tests/replay/status.tsv tests/replay/drill.txt
+            if git -C "$M" diff --cached --quiet; then echo "no change"; exit 0; fi
+            skip=; git -C "$M" diff --cached --quiet -- tests/replay/drill.txt && skip=" [skip ci]"
+            git -C "$M" commit -qm "replay: the trial games' replays as far as they go (${GITHUB_SHA::7})$skip"
+            git -C "$M" push -q origin HEAD:main && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
+
   # the newest main for each probe whose sources there are still the same (one changed since is
   # left stale for a later run); main moved on before the push -> again from a fresh main.
   golden:

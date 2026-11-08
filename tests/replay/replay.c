@@ -102,9 +102,23 @@ struct mapped { void *pData; UINT RowPitch, DepthPitch; };
 #ifndef EVERY
 #define EVERY 1
 #endif
-int opt_draws, opt_every = EVERY, opt_from = 0, opt_to = 0x7fffffff, opt_tol = 2, opt_noimages;
+/* (FROM, TO, DRAWS: a drill probe's defaults, tests/replay/drill.txt: the frames around where a
+ * game's replay on sake first differed from Windows', every draw of them) */
+#ifndef FROM
+#define FROM 0
+#endif
+#ifndef TO
+#define TO 0x7fffffff
+#endif
+#ifndef DRAWS
+#define DRAWS 0
+#endif
+int opt_draws = DRAWS, opt_every = EVERY, opt_from = FROM, opt_to = TO, opt_tol = 2, opt_noimages;
 int frame;
 int frame_wanted(void) { return frame >= opt_from && frame <= opt_to && (frame - opt_from) % opt_every == 0; }
+int draws_wanted(void) { return opt_draws && frame >= opt_from && frame <= opt_to; }
+/* the call being made (a draw's picture says which it was) */
+static const char *cur_name;
 
 static HWND hwnd;
 static int win_w = 640, win_h = 480;
@@ -125,6 +139,8 @@ static void win_size(int w, int h) {
 
 void image_out(const char *name, const void *bits, int w, int h, int pitch, int fmt) {
     if (opt_noimages) return;
+    /* (a draw's picture: which call made it, for tests/replay/status.py) */
+    if (name[0] == 'd' && name[1] >= '0' && name[1] <= '9' && cur_name) printf("draw %s %s\n", name + 1, cur_name);
     if (fmt == IMG_BGRX) { probe_image(name, bits, w, h, pitch, opt_tol); return; }
     DWORD *px = malloc((size_t)w * h * 4 + 4);
     for (int y = 0; y < h; y++)
@@ -349,6 +365,7 @@ static void call_record(void) {
         }
     }
     struct name *nm = id < nnames && names[id].s ? &names[id] : NULL;
+    cur_name = nm ? nm->s : NULL;
     HRESULT hr = 0;
     int made = 0;
     if (!nm) {

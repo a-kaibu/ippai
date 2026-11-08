@@ -1,0 +1,6 @@
+# Trial games' replays looked at closer: "<id>-<bits> <from> <to> <every>" (frames), one probe
+# each, replay_<id>-<bits>-f<from>-<bits> (build.sh): the frames from..to, one in <every>; with
+# <every> 0 each one and the render target after every draw in them. Windows' answers and sake's
+# are compared as any probe's. status.py --drill writes the lines: from where sake's replay
+# first differed (the frame before it to it), a 16th of the range a run, down to one frame's
+# draws.

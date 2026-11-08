@@ -8,7 +8,13 @@
 #                                  and one per trial game's trace in testdata/apitrace (games.py; recorded by
 #                                  .github/workflows/gametrace.yml), the same, showing one frame
 #                                  in GAME_EVERY (default 900: 15 s at 60 fps), its stream at most
-#                                  GAME_MAX bytes (default 256 MiB: the calls up to there)
+#                                  GAME_MAX bytes (default 256 MiB: the calls up to there);
+#                                  and for each line "<id>-<bits> <from> <to> <every>" of
+#                                  drill.txt, replay_<id>-<bits>-f<from>-<bits>: that game's
+#                                  frames <from>..<to>, one in <every> (0: each one, and the
+#                                  target after every draw in them; tests/replay/status.py
+#                                  narrows the range to the first draw that differs)
+#   convert/<name>.txt             what the converter said of each trace (status.py: Convertible)
 # The streams come from the apitrace crate (`cargo run -p apitrace`, or APITRACE=its binary).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -57,13 +63,23 @@ if [ $(( ${#traces[@]} + ${#games[@]} )) -gt 0 ]; then
   for n in "${games[@]}"; do
     bits=${n##*-}
     python3 "$HERE/games.py" unpack "$ROOT/testdata/apitrace/$n" "$OUT/$n.trace"
-    st=0; "$APITRACE" "-$bits" "-max=${GAME_MAX:-268435456}" "$OUT/$n.trace" "$OUT/$n.rpl" || st=$?
+    mkdir -p "$OUT/convert"
+    st=0; "$APITRACE" "-$bits" "-max=${GAME_MAX:-268435456}" "$OUT/$n.trace" "$OUT/$n.rpl" 2> "$OUT/convert/$n.txt" || st=$?
+    cat "$OUT/convert/$n.txt" >&2
+    echo "exit $st" >> "$OUT/convert/$n.txt"
     rm "$OUT/$n.trace"
     if [ $st = 3 ]; then echo "$n: not replayed yet"; continue; fi
     [ $st = 0 ] || exit $st
     cc "$bits" -DSTREAM="\"$OUT/$n.rpl\"" -DEVERY="${GAME_EVERY:-900}" -o "$OUT/replay_$n-$bits.exe"
-    rm "$OUT/$n.rpl"
     [ -f "$OUT/browser.txt" ] && echo "replay_$n-$bits" >> "$OUT/browser.txt"
+    # (drill.txt: frames of it drawn call by call)
+    while read -r g from to every; do
+      [ "$g" = "$n" ] || continue
+      if [ "${every:-0}" = 0 ]; then d=(-DEVERY=1 -DDRAWS=1); else d=(-DEVERY="$every"); fi
+      cc "$bits" -DSTREAM="\"$OUT/$n.rpl\"" -DFROM="$from" -DTO="$to" "${d[@]}" -o "$OUT/replay_$n-f$from-$bits.exe"
+      [ -f "$OUT/browser.txt" ] && echo "replay_$n-f$from-$bits" >> "$OUT/browser.txt"
+    done < <(grep -v '^#' "$HERE/drill.txt" 2>/dev/null || true)
+    rm "$OUT/$n.rpl"
   done
 fi
 rm "$OUT/replay32.res" "$OUT/replay64.res"

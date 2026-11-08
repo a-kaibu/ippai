@@ -56,7 +56,7 @@ void d3d8_after(const char *iface, const char *method, W *a, int n, UINT no, HRE
         if (opt_noimages || !lr || FAILED(IDirect3DSurface8_GetDesc((IDirect3DSurface8 *)a[0], &d))) return;
         sprintf(img, "l%u", no);
         dump_bits(img, d.Format, lr->pBits, d.Width, d.Height, lr->Pitch);
-    } else if (opt_draws && !strncmp(method, "Draw", 4) && !strcmp(iface, "IDirect3DDevice8")) {
+    } else if (draws_wanted() && !strncmp(method, "Draw", 4) && !strcmp(iface, "IDirect3DDevice8")) {
         IDirect3DSurface8 *rt = NULL;
         if (SUCCEEDED(IDirect3DDevice8_GetRenderTarget((IDirect3DDevice8 *)a[0], &rt))) {
             sprintf(img, "d%u", no);

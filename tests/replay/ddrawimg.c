@@ -162,7 +162,7 @@ void ddraw_after(const char *iface, const char *method, W *a, int n, UINT no, HR
             dump(name, dst, &r, dst);
         }
         frame++;
-    } else if (opt_draws) {
+    } else if (draws_wanted()) {
         sprintf(name, "d%u", no);
         dump(name, dst, NULL, NULL);
     }

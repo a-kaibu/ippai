@@ -47,9 +47,10 @@ def sources(probe):
         conv = os.path.join(ROOT, "crates", "apitrace", "src")
         # (a trial game's trace: its .txt, whose sha256 is the trace's; it is on ghcr.io,
         # tests/replay/games.py)
-        game = os.path.join(ROOT, "testdata", "apitrace", base[7:])
+        # (replay_<game>-f<from>: drill.txt's frames of that game, draw by draw)
+        game = os.path.join(ROOT, "testdata", "apitrace", re.sub(r"-f\d+$", "", base[7:]))
         trace = [game + ".txt"] if os.path.exists(game + ".txt") else [os.path.join(rep, "traces", base[7:] + ".trace")]
-        return trace + [os.path.join(rep, f) for f in ("replay.c", "replay.h", "d3d9img.c", "d3d8img.c", "d3d11img.c", "build.sh")] + [os.path.join(conv, f) for f in ("replay.rs", "layout.rs", "layouts.txt", "trace.rs", "snappy.rs")] + [os.path.join(HERE, f) for f in COMMON]
+        return trace + [os.path.join(rep, f) for f in ("replay.c", "replay.h", "d3d9img.c", "d3d8img.c", "d3d11img.c", "ddrawimg.c", "build.sh")] + [os.path.join(conv, f) for f in ("replay.rs", "layout.rs", "layouts.txt", "trace.rs", "snappy.rs")] + [os.path.join(HERE, f) for f in COMMON]
     else:
         main = os.path.join(HERE, "probes", base + ".c")
     # (a probe's data header, e.g. imaging_data.h)

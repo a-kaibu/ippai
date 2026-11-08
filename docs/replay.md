@@ -126,6 +126,29 @@ From there it is a winref probe like the others: `build.sh` builds `replay_<id>-
 every probe's do), sake is checked against them on every push. Nobody runs the games again
 unless asked (the workflow's `again`).
 
+## How far each game goes (status.py)
+
+Recording, converting and replaying are four steps, and a game can stop at any of them:
+
+| stage | means |
+|---|---|
+| Captured | apitrace recorded the calls (`testdata/apitrace/<id>-<bits>.txt`; else skipped.tsv says why) |
+| Convertible | the converter made a stream of them (build.sh's `convert/<name>.txt`; what it could not replay is listed) |
+| Faithful | the replay on Windows ran through: every HRESULT the recorded one, no call it could not make, every picture read back, nothing left out |
+| Compatible | that replay on sake drew what Windows' did (known.txt's differences aside) |
+
+Converting is not reproducing: a stream that plays to the end may still lack something the game
+did, so only a Faithful replay's differences on sake are sake's. `tests/replay/status.py`
+(winref's `status` job, after sake's run) writes the table to the job summary and
+`tests/replay/status.tsv`, and for a Faithful game sake draws differently it finds the first
+frame that differs and narrows it down with drill probes: `drill.txt` gets the frames from the
+last one that matched to it, one in a 16th of the range, and the next run builds that probe
+(`replay_<id>-<bits>-f<from>-<bits>`), Windows answers it, sake is compared; once the range is
+one frame, that frame is drawn call by call (`-draws`: the render target after each draw, a
+`draw <call> <method>` line before each picture) and the report names the first call after
+which sake's target differs ("the frame differs, no draw in it does" when none does: then it is
+what happens between draws, a Blt, a Present). `status_test.py` tests it.
+
 ## Games of your own (local)
 
 A game that is not a free trial is recorded on a Windows PC and never goes to GitHub:

@@ -9,6 +9,8 @@ extern int opt_draws, opt_noimages, opt_tol;
 extern int frame;
 /* the frame being presented is one to show (-every / -from / -to) */
 int frame_wanted(void);
+/* -draws, and the frame is in -from .. -to */
+int draws_wanted(void);
 
 /* a picture in the probe format: from rows of 4-byte pixels */
 enum { IMG_BGRX, /* B, G, R, x bytes (D3DFMT_X8R8G8B8, DXGI B8G8R8A8) */

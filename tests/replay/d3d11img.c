@@ -150,7 +150,7 @@ void d3d11_after(const char *iface, const char *method, W *a, int n, UINT no, HR
         } else {
             printf("image %s: dimension %u\n", img, (unsigned)dim);
         }
-    } else if (opt_draws && !strncmp(method, "Draw", 4)) {
+    } else if (draws_wanted() && !strncmp(method, "Draw", 4)) {
         ID3D11RenderTargetView *v = NULL;
         ID3D11DeviceContext_OMGetRenderTargets((ID3D11DeviceContext *)a[0], 1, &v, NULL);
         if (v) {
