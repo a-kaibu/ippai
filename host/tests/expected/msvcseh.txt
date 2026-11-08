@@ -4,7 +4,7 @@ same frame catch SE 1
 same frame calls 1
 pointers 1
 outer frame catch SE 1
-outer frame calls 1
+outer frame calls 2
 outer frame destructors 1
 no try block between 1
 no try block calls 1
@@ -15,43 +15,43 @@ C++ throw 1
 C++ throw calls 0
 nest depth 1 at 1: caught at 1
   code 1
-  calls 1
+  calls 2
   destructors 2
 nest depth 2 at 1: caught at 1
   code 1
-  calls 1
+  calls 2
   destructors 3
 nest depth 2 at 2: caught at 2
   code 1
-  calls 1
+  calls 3
   destructors 3
 nest depth 3 at 1: caught at 1
   code 1
-  calls 1
+  calls 2
   destructors 4
 nest depth 3 at 2: caught at 2
   code 1
-  calls 1
+  calls 3
   destructors 4
 nest depth 3 at 3: caught at 3
   code 1
-  calls 1
+  calls 4
   destructors 4
 nest depth 4 at 1: caught at 1
   code 1
-  calls 1
+  calls 2
   destructors 5
 nest depth 4 at 2: caught at 2
   code 1
-  calls 1
+  calls 3
   destructors 5
 nest depth 4 at 3: caught at 3
   code 1
-  calls 1
+  calls 4
   destructors 5
 nest depth 4 at 4: caught at 4
   code 1
-  calls 1
+  calls 5
   destructors 5
 access violation 1
 access violation calls 1

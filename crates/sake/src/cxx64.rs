@@ -211,7 +211,7 @@ fn copy_exception(c: &mut Ctx, object: u64, dest: u32, catch_flags: u32, ty: u32
 }
 
 /// Runs the thrown object's destructor (record `rec`, a C++ one).
-fn destroy(cpu: &mut koji::Cpu, rec: u32) {
+pub fn destroy(cpu: &mut koji::Cpu, rec: u32) {
     if !is_cxx(rec) || info(rec, 2) == 0 {
         return;
     }

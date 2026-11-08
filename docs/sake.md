@@ -121,11 +121,13 @@
   - _create_locale: msvcrt / msvcr* は threadlocinfo (x64 はポインタ幅で並べ直す)、UCRT は
     __crt_locale_data (先頭が pctype / mb_cur_max / コードページ)。winref crtlocale (#58)。
   - _set_se_translator (cxx.rs / cxx64.rs): try ブロックを持つ関数のフレームハンドラが構造化例外 (/EHs
-    でないもの) を受けると、スレッドの translator に飛ぶ (戻り先は TRANSLATE_TRAP)。x64 では
-    translator が投げた C++ 例外がそのまま上のフレームへ進む (seh64 の walk が TRANSLATE_TRAP から
-    ハンドラの呼び出し元へ抜ける)。x86 は MSVC の TranslatorGuardHandler と同じく、呼んだフレームでだけ
-    catch を探し、無ければ C++ 例外を捨てて元の例外の探索を続ける。テスト: host/tests/msvcseh.cpp
-    (x64 と x86、winref host_msvcseh-32/64)。
+    でないもの) を受けると、スレッドの translator に飛ぶ (戻り先は TRANSLATE_TRAP)。x64 も x86 も、
+    translator が投げた C++ 例外は呼んだフレームでだけ catch を探し、無ければ C++ 例外を捨てて元の
+    例外の探索を続ける (上の try ブロックを持つフレームでまた translator が呼ばれる。Windows の
+    vcruntime140 は catch するフレームまでの try ブロックを持つ関数の数だけ呼ぶ)。x64 は seh64 の walk
+    が TRANSLATE_TRAP を通ったら Dispatch.guard にそのフレームを覚え、それより内側のハンドラは呼ばず、
+    外側に出たら捨てる。x86 は MSVC の TranslatorGuardHandler と同じ形。テスト: host/tests/msvcseh.cpp
+    (x64 と x86、winref host_msvcseh-32/64 は Windows の答えと一致)。
   - 未対応: printf の位置指定引数 (%1$d)。x86 の msvcp は thiscall の橋渡しが要るので #30 で。
   - テスト: host/tests/x64crt.cpp (clang の x86_64-pc-windows-msvc、ucrtbase/vcruntime140 を
     import する /MD 相当のプログラム。printf/scanf/変換/_s/時刻/C++ 例外/SEH)、

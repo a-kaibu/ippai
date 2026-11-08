@@ -318,6 +318,11 @@ struct Dispatch {
     disp: u32,
     /// stack bounds: frames outside are not walked
     limit: u64,
+    /// a C++ exception an SE translator threw (the walk passed TRANSLATE_TRAP): the frame
+    /// whose handler called the translator. As vcruntime140 does, only that frame looks for a
+    /// catch; past it the C++ exception is dropped and the structured exception goes on to the
+    /// frames above (whose handlers call the translator again). 0: none
+    guard: u64,
 }
 
 thread_local! {
@@ -390,19 +395,24 @@ fn dispatch(cpu: &mut Cpu, rec: u32, orig: u32) {
     crate::mem::copy(cur, orig, CONTEXT_SIZE);
     let teb = crate::cur().teb;
     let limit = r64(teb + 8);
-    STACK.with(|s| s.borrow_mut().push(Dispatch { rec, orig, cur, next, disp, limit }));
+    STACK.with(|s| s.borrow_mut().push(Dispatch { rec, orig, cur, next, disp, limit, guard: 0 }));
     walk(cpu);
 }
 
 /// Goes up the frames of the topmost dispatch until one has a handler to call (it is called:
 /// SEH64_TRAP continues here) or none is left (unhandled).
 fn walk(cpu: &mut Cpu) {
-    let Some(d) = STACK.with(|s| s.borrow().last().copied()) else {
+    let Some(mut d) = STACK.with(|s| s.borrow().last().copied()) else {
         crate::fatal(cpu, "x64 exception walk without a dispatch");
     };
     loop {
         crate::mem::copy(d.next, d.cur, CONTEXT_SIZE);
         let pc = rip(d.cur);
+        if pc == crate::cxx64::TRANSLATE_TRAP as u64 && d.guard == 0 {
+            // (cxx64::translate's frame: the translator returns here, the frame argument above)
+            d.guard = r64(rsp(d.cur) as u32 - 8 + 0x48);
+            STACK.with(|s| s.borrow_mut().last_mut().unwrap().guard = d.guard);
+        }
         let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_EHANDLER, d.next, &mut 1, d.rec) else {
             if trace() {
                 eprintln!("sake: x64 walk: no frame above pc {pc:#x}");
@@ -415,7 +425,11 @@ fn walk(cpu: &mut Cpu) {
             }
             break;
         }
-        if h != 0 {
+        if d.guard != 0 && frame > d.guard {
+            translation_dropped(cpu, d);
+            return;
+        }
+        if h != 0 && guarded(d.guard, frame) {
             if trace() {
                 eprintln!("sake: x64 frame {frame:#x} (pc {pc:#x}): handler {h:#x}");
             }
@@ -447,6 +461,28 @@ fn walk(cpu: &mut Cpu) {
         crate::mem::copy(d.cur, d.next, CONTEXT_SIZE);
     }
     unhandled(cpu, d);
+}
+
+/// Whether a frame's handler is called for the dispatch's C++ exception: any, or (an SE
+/// translator's) only the frame that translated it (`guard`).
+fn guarded(guard: u64, frame: u64) -> bool {
+    guard == 0 || frame == guard
+}
+
+/// The C++ exception `d` an SE translator threw found no catch in the translating frame: it
+/// is destroyed and the structured exception goes on past that frame, as if its handler had
+/// said "continue search".
+fn translation_dropped(cpu: &mut Cpu, d: Dispatch) {
+    if trace() {
+        eprintln!("sake: x64 translated exception not caught in frame {:#x}: dropped", d.guard);
+    }
+    crate::cxx64::destroy(cpu, d.rec);
+    STACK.with(|s| s.borrow_mut().pop());
+    let Some(o) = STACK.with(|s| s.borrow().last().copied()) else {
+        crate::fatal(cpu, "x64 translated exception without the structured one");
+    };
+    crate::mem::copy(o.cur, o.next, CONTEXT_SIZE);
+    walk(cpu);
 }
 
 /// SEH64_TRAP: a language handler returned its verdict (EAX).
@@ -906,4 +942,28 @@ pub fn register() {
     }
     implement("vcruntime140", "longjmp", longjmp);
     implement("vcruntime140", "_setjmp", setjmp);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // An SE translator's C++ exception is looked for in the translating frame alone (Windows'
+    // answers: host/tests/expected/msvcseh.txt, one translator call per frame with try blocks)
+    #[test]
+    fn guarded_calls_only_the_translating_frame() {
+        assert!(guarded(0, 0x1000));
+        assert!(guarded(0x2000, 0x2000));
+        assert!(!guarded(0x2000, 0x1ff0));
+    }
+
+    proptest! {
+        #[test]
+        fn guarded_is_any_frame_or_exactly_the_guard(guard in any::<u64>(), frame in any::<u64>()) {
+            prop_assert_eq!(guarded(guard, frame), guard == 0 || frame == guard);
+            prop_assert!(guarded(0, frame));
+            prop_assert!(guarded(frame, frame));
+        }
+    }
 }
