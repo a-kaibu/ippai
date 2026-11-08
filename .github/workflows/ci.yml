@@ -490,8 +490,8 @@ jobs:
         run: tools/ci/no-npm.sh
       - name: Fetch ordering tests
         run: node tests/fetch-bridge.test.mjs
-      - name: Shared VFS and account bridge tests (host/vnfs.js, host/account-bridge.js)
-        run: node --test tests/vfs-shared.mjs tests/account-bridge.mjs
+      - name: Shared VFS, account bridge and node stdio tests (host/vnfs.js, host/account-bridge.js, host/node-stdio.js)
+        run: node --test tests/vfs-shared.mjs tests/account-bridge.mjs tests/node-stdio.mjs
       - wait: apt
       - if: steps.cache-5.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0

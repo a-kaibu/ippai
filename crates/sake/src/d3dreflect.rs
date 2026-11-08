@@ -48,6 +48,24 @@ struct BindR {
     name: String,
     name_p: u32,
     vals: [u32; 7],
+    space: u32,
+}
+
+/// RDEF's resource bindings: (name, D3D11 desc fields after Name, Space, uID). Shader model
+/// 5.1's entries are 40 bytes with Space and uID after the 32 of before; before 5.1 a binding's
+/// uID is its bind point and Space 0 (reflection.c's expected descs).
+fn bind_entries(b: &[u8]) -> Vec<(String, [u32; 7], u32, u32)> {
+    let (nb, boff) = (rd(b, 8) as usize, rd(b, 12) as usize);
+    let sm51 = (rd(b, 16) & 0xffff) >= 0x501;
+    let stride = if sm51 { 40 } else { 32 };
+    (0..nb.min(256))
+        .map(|i| {
+            let at = boff + stride * i;
+            let vals = [rd(b, at + 4), rd(b, at + 20), rd(b, at + 24), rd(b, at + 28), rd(b, at + 8), rd(b, at + 12), rd(b, at + 16)];
+            let (space, uid) = if sm51 { (rd(b, at + 32), rd(b, at + 36)) } else { (0, vals[4]) };
+            (cstr_at(b, rd(b, at) as usize), vals, space, uid)
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -296,20 +314,12 @@ fn parse(code: &[u8], fl: u8) -> Option<Refl> {
     if let Some(b) = cont.chunk(b"RDEF") {
         let ncb = rd(b, 0) as usize;
         let cboff = rd(b, 4) as usize;
-        let nb = rd(b, 8) as usize;
-        let boff = rd(b, 12) as usize;
         r.flags = rd(b, 20);
         r.creator = gstr(&cstr_at(b, rd(b, 24) as usize));
         let sm5 = (rd(b, 16) & 0xff00) >= 0x500;
         let vsize = if sm5 { 40 } else { 24 };
-        for i in 0..nb.min(256) {
-            let at = boff + 32 * i;
-            let name = cstr_at(b, rd(b, at) as usize);
-            r.binds.push(BindR {
-                name_p: gstr(&name),
-                name,
-                vals: [rd(b, at + 4), rd(b, at + 20), rd(b, at + 24), rd(b, at + 28), rd(b, at + 8), rd(b, at + 12), rd(b, at + 16)],
-            });
+        for (name, vals, space, _uid) in bind_entries(b) {
+            r.binds.push(BindR { name_p: gstr(&name), name, vals, space });
         }
         for i in 0..ncb.min(64) {
             let at = cboff + 24 * i;
@@ -412,9 +422,17 @@ fn refl_desc10(c: &mut Ctx) -> u32 {
     0
 }
 
+/// The dummy objects Windows hands for what is not there (one of each kind and flavor)
+static NULLS: Mutex<[u32; 8]> = Mutex::new([0; 8]);
+
+/// Whether `p` is a dummy: its GetDesc fails (E_FAIL), and a dummy type's member type name is
+/// "$Invalid" (reflection.c)
+fn is_dummy(p: u32) -> bool {
+    p != 0 && NULLS.lock().unwrap().contains(&p)
+}
+
 fn null_obj(which: u8) -> u32 {
-    static N: Mutex<[u32; 8]> = Mutex::new([0; 8]);
-    let mut n = N.lock().unwrap();
+    let mut n = NULLS.lock().unwrap();
     if n[which as usize] == 0 {
         let o = match which & 3 {
             1 => Obj::Cb(CbR { name: String::new(), name_p: 0, ty: 0, size: 0, flags: 0, vars: Vec::new() }),
@@ -447,6 +465,11 @@ fn refl_cb_name(c: &mut Ctx) -> u32 {
 
 fn put_bind(out: u32, b: &BindR) {
     put(out, &[(true, b.name_p), (false, b.vals[0]), (false, b.vals[1]), (false, b.vals[2]), (false, b.vals[3]), (false, b.vals[4]), (false, b.vals[5]), (false, b.vals[6])]);
+    // x64's D3D11 desc has 4 bytes of padding where D3D12's Space is, and Windows writes it
+    // (reflection.c: "Space field still gets the correct value on x64")
+    if mem::x64() {
+        w32(out + 36, b.space);
+    }
 }
 
 fn refl_bind(c: &mut Ctx) -> u32 {
@@ -546,6 +569,9 @@ fn refl_threads(c: &mut Ctx) -> u32 {
 
 fn cb_desc(c: &mut Ctx) -> u32 {
     let out = c.a(1);
+    if out == 0 {
+        return 0x8000_4005;
+    }
     let g = OBJS.lock().unwrap();
     let Obj::Cb(cb) = &g[id(c)] else { return 0x8000_4005 };
     if cb.name_p == 0 {
@@ -585,6 +611,9 @@ fn cb_var_name(c: &mut Ctx) -> u32 {
 
 fn var_desc(c: &mut Ctx) -> u32 {
     let out = c.a(1);
+    if out == 0 {
+        return 0x8000_4005;
+    }
     let g = OBJS.lock().unwrap();
     let Obj::Var(v, _) = &g[id(c)] else { return 0x8000_4005 };
     if v.name_p == 0 {
@@ -598,6 +627,9 @@ fn var_desc(c: &mut Ctx) -> u32 {
 /// D3D10_SHADER_VARIABLE_DESC: Name, StartOffset, Size, uFlags, DefaultValue
 fn var_desc10(c: &mut Ctx) -> u32 {
     let out = c.a(1);
+    if out == 0 {
+        return 0x8000_4005;
+    }
     let g = OBJS.lock().unwrap();
     let Obj::Var(v, _) = &g[id(c)] else { return 0x8000_4005 };
     if v.name_p == 0 {
@@ -629,6 +661,9 @@ fn var_buffer(c: &mut Ctx) -> u32 {
 
 fn type_desc(c: &mut Ctx) -> u32 {
     let out = c.a(1);
+    if out == 0 || is_dummy(c.a(0)) {
+        return 0x8000_4005;
+    }
     let g = OBJS.lock().unwrap();
     let Obj::Type(t) = &g[id(c)] else { return 0x8000_4005 };
     let f = [
@@ -648,6 +683,9 @@ fn type_desc(c: &mut Ctx) -> u32 {
 /// D3D10_SHADER_TYPE_DESC: D3D11's without the Name
 fn type_desc10(c: &mut Ctx) -> u32 {
     let out = c.a(1);
+    if out == 0 || is_dummy(c.a(0)) {
+        return 0x8000_4005;
+    }
     let g = OBJS.lock().unwrap();
     let Obj::Type(t) = &g[id(c)] else { return 0x8000_4005 };
     let f = [(false, t.class), (false, t.ty), (false, t.rows), (false, t.cols), (false, t.elems), (false, t.members.len() as u32), (false, t.offset)];
@@ -677,6 +715,14 @@ fn type_member_name(c: &mut Ctx) -> u32 {
 }
 fn type_member_tname(c: &mut Ctx) -> u32 {
     let i = c.a(1) as usize;
+    if is_dummy(c.a(0)) {
+        static INVALID: Mutex<u32> = Mutex::new(0);
+        let mut p = INVALID.lock().unwrap();
+        if *p == 0 {
+            *p = gstr("$Invalid");
+        }
+        return *p;
+    }
     let g = OBJS.lock().unwrap();
     match &g[id(c)] {
         Obj::Type(t) => t.members.get(i).map_or(0, |m| m.0),
@@ -684,7 +730,10 @@ fn type_member_tname(c: &mut Ctx) -> u32 {
     }
 }
 fn type_equal(c: &mut Ctx) -> u32 {
-    // S_OK when the same object, S_FALSE otherwise
+    // S_OK when the same object, S_FALSE otherwise; E_FAIL asked of a dummy
+    if is_dummy(c.a(0)) {
+        return 0x8000_4005;
+    }
     (c.a(0) != c.a(1)) as u32
 }
 
@@ -769,4 +818,33 @@ mod tests {
             assert_eq!(super::rd(o, 8 + 8), if d3d10 { 0 } else { 64 });
         }
     }
+
+    /// Shader model 5.1's bindings are 40 bytes (Space and uID follow), 5.0's and before 32
+    #[test]
+    fn sm51_bindings_are_40_bytes() {
+        for (ver, stride) in [(0xffff_0501u32, 40usize), (0xffff_0500, 32), (0xffff_0400, 32)] {
+            let at = 28usize;
+            let names = at + 2 * stride;
+            let mut b = vec![0u8; names + 8];
+            let w = |b: &mut Vec<u8>, o: usize, v: u32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+            w(&mut b, 8, 2);
+            w(&mut b, 12, at as u32);
+            w(&mut b, 16, ver);
+            b[names..names + 7].copy_from_slice(b"sam\0tx\0");
+            for (i, (n, ty, slot)) in [(names, 3u32, 0u32), (names + 4, 2, 5)].into_iter().enumerate() {
+                let e = at + stride * i;
+                w(&mut b, e, n as u32);
+                w(&mut b, e + 4, ty);
+                w(&mut b, e + 8, slot);
+                if stride == 40 {
+                    w(&mut b, e + 32, 7 + i as u32);
+                    w(&mut b, e + 36, 0x10 + i as u32);
+                }
+            }
+            let got: Vec<(String, u32, u32, u32, u32)> = super::bind_entries(&b).into_iter().map(|(n, v, s, u)| (n, v[0], v[4], s, u)).collect();
+            let want = if stride == 40 { [(7, 0x10), (8, 0x11)] } else { [(0, 0), (0, 5)] };
+            assert_eq!(got, [("sam".into(), 3, 0, want[0].0, want[0].1), ("tx".into(), 2, 5, want[1].0, want[1].1)], "{ver:#x}");
+        }
+    }
+
 }

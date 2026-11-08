@@ -51,7 +51,7 @@ link() {  # <output .js> <memory flags> <emcc flags...>
 }
 # (node: a factory too, run by host/node-main.js, so that the processes a program starts run as
 # instances of their own in the same node; host/snap.js: save states under node)
-NODE="-sNODERAWFS=1 -sENVIRONMENT=node -sMODULARIZE -sEXPORT_NAME=createSake --pre-js $HO/snap.js --extern-post-js $HO/node-main.js -sEXPORTED_FUNCTIONS=_main,$EXPORTS"
+NODE="-sNODERAWFS=1 -sENVIRONMENT=node -sMODULARIZE -sEXPORT_NAME=createSake --pre-js $HO/node-stdio.js --pre-js $HO/snap.js --extern-post-js $HO/node-main.js -sEXPORTED_FUNCTIONS=_main,$EXPORTS"
 # (the four links at once: each takes a core for a minute)
 # (SAKE_NODE=0: the page's two only, as the release builds: .github/workflows/release.yml)
 pids=()

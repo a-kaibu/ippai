@@ -204,6 +204,19 @@ enum Obj {
     /// points and PathPointTypes (0 start, 1 line, 3 Bezier; 0x80 closes the figure)
     Path { pts: Vec<[f32; 2]>, types: Vec<u8>, fill: u32 },
     Brush(Brush),
+    Cap(Cap),
+}
+
+/// A GpCustomLineCap, or a GpAdjustableArrowCap (`arrow`: height, width, middle inset, filled).
+/// Its settings only: lines are drawn without the cap's path.
+#[derive(Clone)]
+struct Cap {
+    base: u32,
+    inset: f32,
+    join: u32,
+    scale: f32,
+    caps: (u32, u32),
+    arrow: Option<(f32, f32, f32, bool)>,
 }
 
 static OBJS: Mutex<Option<HashMap<u32, Obj>>> = Mutex::new(None);
@@ -1623,8 +1636,216 @@ fn path_t(pts: &[[f32; 2]], c: [f32; 2], u: f32, v: f32) -> Option<(f32, usize, 
     (t <= 1.0 + 1e-6).then_some((t.min(1.0), k, s))
 }
 
+// ---------------------------------------------------------------------------------------------
+// custom line caps
+
+/// LineCapFlat, Square, Round, Triangle: what a base cap or a cap's stroke caps may be (the
+/// anchors are not)
+fn plain_cap(v: u32) -> bool {
+    v <= 3
+}
+fn on_cap(h: u32, f: impl FnOnce(&mut Cap) -> u32) -> u32 {
+    with(|m| match m.get_mut(&h) {
+        Some(Obj::Cap(c)) => f(c),
+        _ => INVALID_PARAMETER,
+    })
+}
+/// a getter: NULL cap or output is InvalidParameter
+fn cap_get(h: u32, out: u32, f: impl FnOnce(&Cap) -> u32) -> u32 {
+    if out == 0 {
+        return INVALID_PARAMETER;
+    }
+    on_cap(h, |c| {
+        w32(out, f(c));
+        OK
+    })
+}
+/// GdipCreateCustomLineCap(fillPath, strokePath, baseCap, baseInset, &cap)
+fn GdipCreateCustomLineCap(c: &mut Ctx) -> u32 {
+    let (fill, stroke, base, inset, out) = (c.a(0), c.a(1), c.a(2), c.f(3), c.a(4));
+    let h = if stroke != 0 { stroke } else { fill };
+    if h == 0 || out == 0 {
+        return INVALID_PARAMETER;
+    }
+    if !with(|m| matches!(m.get(&h), Some(Obj::Path { .. }))) {
+        return INVALID_PARAMETER;
+    }
+    new_obj(Obj::Cap(Cap { base, inset, join: 0, scale: 1.0, caps: (0, 0), arrow: None }), out)
+}
+/// GdipCreateAdjustableArrowCap(height, width, isFilled, &cap): a triangle base cap, inset
+/// height / width
+fn GdipCreateAdjustableArrowCap(c: &mut Ctx) -> u32 {
+    let (hgt, wid, filled, out) = (c.f(0), c.f(1), c.a(2), c.a(3));
+    let cap = Cap { base: 3, inset: hgt / wid, join: 0, scale: 1.0, caps: (0, 0), arrow: Some((hgt, wid, 0.0, filled != 0)) };
+    new_obj(Obj::Cap(cap), out)
+}
+fn GdipDeleteCustomLineCap(c: &mut Ctx) -> u32 {
+    delete_obj(c.a(0), |o| matches!(o, Obj::Cap(_)))
+}
+fn GdipCloneCustomLineCap(c: &mut Ctx) -> u32 {
+    let Some(cap) = with(|m| match m.get(&c.a(0)) {
+        Some(Obj::Cap(x)) => Some(x.clone()),
+        _ => None,
+    }) else {
+        return INVALID_PARAMETER;
+    };
+    new_obj(Obj::Cap(cap), c.a(1))
+}
+/// CustomLineCapTypeDefault 0, CustomLineCapTypeAdjustableArrow 1
+fn GdipGetCustomLineCapType(c: &mut Ctx) -> u32 {
+    cap_get(c.a(0), c.a(1), |x| x.arrow.is_some() as u32)
+}
+fn GdipGetCustomLineCapBaseCap(c: &mut Ctx) -> u32 {
+    cap_get(c.a(0), c.a(1), |x| x.base)
+}
+fn GdipSetCustomLineCapBaseCap(c: &mut Ctx) -> u32 {
+    let v = c.a(1);
+    on_cap(c.a(0), |x| {
+        if !plain_cap(v) {
+            return INVALID_PARAMETER;
+        }
+        x.base = v;
+        OK
+    })
+}
+fn GdipGetCustomLineCapBaseInset(c: &mut Ctx) -> u32 {
+    cap_get(c.a(0), c.a(1), |x| x.inset.to_bits())
+}
+fn GdipSetCustomLineCapBaseInset(c: &mut Ctx) -> u32 {
+    let v = c.f(1);
+    on_cap(c.a(0), |x| {
+        x.inset = v;
+        OK
+    })
+}
+fn GdipGetCustomLineCapStrokeJoin(c: &mut Ctx) -> u32 {
+    cap_get(c.a(0), c.a(1), |x| x.join)
+}
+fn GdipSetCustomLineCapStrokeJoin(c: &mut Ctx) -> u32 {
+    let v = c.a(1);
+    on_cap(c.a(0), |x| {
+        x.join = v;
+        OK
+    })
+}
+fn GdipGetCustomLineCapWidthScale(c: &mut Ctx) -> u32 {
+    cap_get(c.a(0), c.a(1), |x| x.scale.to_bits())
+}
+fn GdipSetCustomLineCapWidthScale(c: &mut Ctx) -> u32 {
+    let v = c.f(1);
+    on_cap(c.a(0), |x| {
+        x.scale = v;
+        OK
+    })
+}
+fn GdipGetCustomLineCapStrokeCaps(c: &mut Ctx) -> u32 {
+    let (s, e) = (c.a(1), c.a(2));
+    if s == 0 || e == 0 {
+        return INVALID_PARAMETER;
+    }
+    on_cap(c.a(0), |x| {
+        w32(s, x.caps.0);
+        w32(e, x.caps.1);
+        OK
+    })
+}
+fn GdipSetCustomLineCapStrokeCaps(c: &mut Ctx) -> u32 {
+    let (s, e) = (c.a(1), c.a(2));
+    on_cap(c.a(0), |x| {
+        if !plain_cap(s) || !plain_cap(e) {
+            return INVALID_PARAMETER;
+        }
+        x.caps = (s, e);
+        OK
+    })
+}
+/// an adjustable arrow's field: `f` reads it (as bits), `g` writes it; the base inset follows
+/// the height and the width
+fn on_arrow(h: u32, f: impl FnOnce(&mut (f32, f32, f32, bool)) -> u32) -> u32 {
+    on_cap(h, |x| match &mut x.arrow {
+        Some(a) => {
+            let r = f(a);
+            x.inset = a.0 / a.1;
+            r
+        }
+        None => INVALID_PARAMETER,
+    })
+}
+fn arrow_get(h: u32, out: u32, f: impl FnOnce(&(f32, f32, f32, bool)) -> u32) -> u32 {
+    if out == 0 {
+        return INVALID_PARAMETER;
+    }
+    on_arrow(h, |a| {
+        w32(out, f(a));
+        OK
+    })
+}
+fn GdipGetAdjustableArrowCapHeight(c: &mut Ctx) -> u32 {
+    arrow_get(c.a(0), c.a(1), |a| a.0.to_bits())
+}
+fn GdipGetAdjustableArrowCapWidth(c: &mut Ctx) -> u32 {
+    arrow_get(c.a(0), c.a(1), |a| a.1.to_bits())
+}
+fn GdipGetAdjustableArrowCapMiddleInset(c: &mut Ctx) -> u32 {
+    arrow_get(c.a(0), c.a(1), |a| a.2.to_bits())
+}
+fn GdipGetAdjustableArrowCapFillState(c: &mut Ctx) -> u32 {
+    arrow_get(c.a(0), c.a(1), |a| a.3 as u32)
+}
+fn GdipSetAdjustableArrowCapHeight(c: &mut Ctx) -> u32 {
+    let v = c.f(1);
+    on_arrow(c.a(0), |a| {
+        a.0 = v;
+        OK
+    })
+}
+fn GdipSetAdjustableArrowCapWidth(c: &mut Ctx) -> u32 {
+    let v = c.f(1);
+    on_arrow(c.a(0), |a| {
+        a.1 = v;
+        OK
+    })
+}
+fn GdipSetAdjustableArrowCapMiddleInset(c: &mut Ctx) -> u32 {
+    let v = c.f(1);
+    on_arrow(c.a(0), |a| {
+        a.2 = v;
+        OK
+    })
+}
+fn GdipSetAdjustableArrowCapFillState(c: &mut Ctx) -> u32 {
+    let v = c.a(1) != 0;
+    on_arrow(c.a(0), |a| {
+        a.3 = v;
+        OK
+    })
+}
+
 pub fn init() {
     let fns: &[(&str, Handler)] = &[
+        ("GdipCreateCustomLineCap", GdipCreateCustomLineCap),
+        ("GdipCreateAdjustableArrowCap", GdipCreateAdjustableArrowCap),
+        ("GdipDeleteCustomLineCap", GdipDeleteCustomLineCap),
+        ("GdipCloneCustomLineCap", GdipCloneCustomLineCap),
+        ("GdipGetCustomLineCapType", GdipGetCustomLineCapType),
+        ("GdipGetCustomLineCapBaseCap", GdipGetCustomLineCapBaseCap),
+        ("GdipSetCustomLineCapBaseCap", GdipSetCustomLineCapBaseCap),
+        ("GdipGetCustomLineCapBaseInset", GdipGetCustomLineCapBaseInset),
+        ("GdipSetCustomLineCapBaseInset", GdipSetCustomLineCapBaseInset),
+        ("GdipGetCustomLineCapStrokeJoin", GdipGetCustomLineCapStrokeJoin),
+        ("GdipSetCustomLineCapStrokeJoin", GdipSetCustomLineCapStrokeJoin),
+        ("GdipGetCustomLineCapWidthScale", GdipGetCustomLineCapWidthScale),
+        ("GdipSetCustomLineCapWidthScale", GdipSetCustomLineCapWidthScale),
+        ("GdipGetCustomLineCapStrokeCaps", GdipGetCustomLineCapStrokeCaps),
+        ("GdipSetCustomLineCapStrokeCaps", GdipSetCustomLineCapStrokeCaps),
+        ("GdipGetAdjustableArrowCapHeight", GdipGetAdjustableArrowCapHeight),
+        ("GdipGetAdjustableArrowCapWidth", GdipGetAdjustableArrowCapWidth),
+        ("GdipGetAdjustableArrowCapMiddleInset", GdipGetAdjustableArrowCapMiddleInset),
+        ("GdipGetAdjustableArrowCapFillState", GdipGetAdjustableArrowCapFillState),
+        ("GdipSetAdjustableArrowCapHeight", GdipSetAdjustableArrowCapHeight),
+        ("GdipSetAdjustableArrowCapWidth", GdipSetAdjustableArrowCapWidth),
+        ("GdipSetAdjustableArrowCapMiddleInset", GdipSetAdjustableArrowCapMiddleInset),
+        ("GdipSetAdjustableArrowCapFillState", GdipSetAdjustableArrowCapFillState),
         ("GdipCreateMatrix", GdipCreateMatrix),
         ("GdipCreateMatrix2", GdipCreateMatrix2),
         ("GdipCreateMatrix3", GdipCreateMatrix3),

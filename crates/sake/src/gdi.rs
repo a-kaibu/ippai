@@ -4685,13 +4685,19 @@ fn enum_fonts(c: &mut Ctx, filter: Option<String>, proc_: u32, lp: u32, wide: bo
                 mem::put_cstr(buf + lfsize + 64, 32, b"Regular");
             }
         }
-        if let Some(r) = realize(&lf) {
-            write_tm(tm, &r, &lf, wide);
-            let tmsize = if wide { 60 } else { 56 };
-            w32(tm + tmsize + 4, 2048);
-            w32(tm + tmsize + 8, (r.ascent + r.descent) as u32);
-            w32(tm + tmsize + 12, r.ave as u32);
-        }
+        // (NEWTEXTMETRIC's ntmSizeEM, ntmCellHeight, ntmAvgWidth; without the font's file, the
+        // em square and the LOGFONT's height: never 0, which programs divide by)
+        let tmsize = if wide { 60 } else { 56 };
+        let (cell, ave) = match realize(&lf) {
+            Some(r) => {
+                write_tm(tm, &r, &lf, wide);
+                ((r.ascent + r.descent) as u32, r.ave as u32)
+            }
+            None => (lf.height.unsigned_abs(), (lf.height.unsigned_abs() / 2).max(1)),
+        };
+        w32(tm + tmsize + 4, 2048);
+        w32(tm + tmsize + 8, cell);
+        w32(tm + tmsize + 12, ave);
         ret = c.call(proc_, &[buf, tm, 4, lp]);
         if ret == 0 {
             break;

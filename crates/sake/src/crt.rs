@@ -594,20 +594,30 @@ fn free(c: &mut Ctx) -> u32 {
     }
     0
 }
-/// _aligned_malloc(size, align): the block's start and size sit in the 8 bytes before it
-fn aligned_alloc(n: u32, align: u32) -> u32 {
-    let align = align.max(8).next_power_of_two();
-    let raw = mem::heap_alloc(n.saturating_add(align + 8), false);
-    if raw == 0 {
+/// _aligned_offset_malloc(size, align, offset): `p + offset` is a multiple of `align` (a power
+/// of two, or 0: pointer-sized); the block's start and size sit in the 8 bytes before `p`. A
+/// bad alignment, or an offset not inside the block, is EINVAL and NULL.
+fn aligned_alloc(n: u32, align: u32, offset: u32) -> u32 {
+    if align & align.wrapping_sub(1) != 0 || (offset != 0 && offset >= n) {
+        set_errno(22);
         return 0;
     }
-    let p = (raw + 8 + align - 1) & !(align - 1);
+    let align = align.max(8);
+    let raw = mem::heap_alloc(n.saturating_add(align + 8), false);
+    if raw == 0 {
+        set_errno(12);
+        return 0;
+    }
+    let p = ((raw + 8 + offset + align - 1) & !(align - 1)) - offset;
     w32(p - 8, raw);
     w32(p - 4, n);
     p
 }
 fn _aligned_malloc(c: &mut Ctx) -> u32 {
-    aligned_alloc(c.a(0), c.a(1))
+    aligned_alloc(c.a(0), c.a(1), 0)
+}
+fn _aligned_offset_malloc(c: &mut Ctx) -> u32 {
+    aligned_alloc(c.a(0), c.a(1), c.a(2))
 }
 fn _aligned_free(c: &mut Ctx) -> u32 {
     if c.a(0) != 0 {
@@ -615,21 +625,27 @@ fn _aligned_free(c: &mut Ctx) -> u32 {
     }
     0
 }
-fn _aligned_realloc(c: &mut Ctx) -> u32 {
-    let (p, n, align) = (c.a(0), c.a(1), c.a(2));
+/// (a new block, the old bytes copied: the alignment and the offset may change)
+fn aligned_realloc(p: u32, n: u32, align: u32, offset: u32) -> u32 {
     if p == 0 {
-        return aligned_alloc(n, align);
+        return aligned_alloc(n, align, offset);
     }
     if n == 0 {
         mem::heap_free(r32(p - 8));
         return 0;
     }
-    let q = aligned_alloc(n, align);
+    let q = aligned_alloc(n, align, offset);
     if q != 0 {
         mem::copy(q, p, n.min(r32(p - 4)));
         mem::heap_free(r32(p - 8));
     }
     q
+}
+fn _aligned_realloc(c: &mut Ctx) -> u32 {
+    aligned_realloc(c.a(0), c.a(1), c.a(2), 0)
+}
+fn _aligned_offset_realloc(c: &mut Ctx) -> u32 {
+    aligned_realloc(c.a(0), c.a(1), c.a(2), c.a(3))
 }
 fn _aligned_msize(c: &mut Ctx) -> u32 {
     r32(c.a(0) - 4)
@@ -2993,6 +3009,10 @@ struct LocaleLayout {
     pcumap: u32,
     refcount: u32,
     mbctype: u32,
+    /// lc_category[6] { locale, wlocale, refcount, wrefcount }
+    cat: u32,
+    /// ctype1 (the table pctype points one entry into)
+    ctype1: u32,
 }
 fn locale_layout(ucrt: bool, ps: u32) -> LocaleLayout {
     if ucrt {
@@ -3001,7 +3021,7 @@ fn locale_layout(ucrt: bool, ps: u32) -> LocaleLayout {
         // ctype1_refcount, ctype1, pclmap, pcumap
         let cat = (ps + 24 + ps - 1) & !(ps - 1);
         let after = cat + 6 * 4 * ps;
-        LocaleLayout { size: after + 12 * ps, cps: [ps + 4, ps + 12, ps + 16], handles: None, mb_cur_max: ps, pctype: 0, pclmap: after + 6 * ps, pcumap: after + 7 * ps, refcount: ps + 8, mbctype: 0x18 }
+        LocaleLayout { size: after + 12 * ps, cps: [ps + 4, ps + 12, ps + 16], handles: None, mb_cur_max: ps, pctype: 0, pclmap: after + 6 * ps, pcumap: after + 7 * ps, refcount: ps + 8, mbctype: 0x18, cat, ctype1: after + 5 * ps }
     } else {
         // refcount, lc_codepage, lc_collate_cp, lc_handle[6], lc_id[6] (6 bytes each),
         // lc_category[6] (as above), lc_clike, mb_cur_max, 3 lconv refcounts, lconv,
@@ -3009,7 +3029,7 @@ fn locale_layout(ucrt: bool, ps: u32) -> LocaleLayout {
         let cat = (0x48 + ps - 1) & !(ps - 1);
         let after = cat + 6 * 4 * ps;
         let p = |i: u32| after + 8 + i * ps;
-        LocaleLayout { size: p(10), cps: [4, 8, 8], handles: Some(0xc), mb_cur_max: after + 4, pctype: p(6), pclmap: p(7), pcumap: p(8), refcount: 0, mbctype: 0x1c }
+        LocaleLayout { size: p(10), cps: [4, 8, 8], handles: Some(0xc), mb_cur_max: after + 4, pctype: p(6), pclmap: p(7), pcumap: p(8), refcount: 0, mbctype: 0x1c, cat, ctype1: p(5) }
     }
 }
 const MB_SBUP: u8 = 0x10;
@@ -3056,6 +3076,7 @@ fn make_locale(l: LocaleLayout) -> u32 {
     }
     w32(li + l.mb_cur_max, if crate::text::is_dbcs() { 2 } else { 1 });
     wp(li + l.pctype, user_ctype_table(cp) + 2);
+    wp(li + l.ctype1, user_ctype_table(cp));
     // pclmap / pcumap: ASCII case tables
     let (lo, up) = (mem::heap_alloc(256, true), mem::heap_alloc(256, true));
     for b in 0..=255u8 {
@@ -3064,6 +3085,17 @@ fn make_locale(l: LocaleLayout) -> u32 {
     }
     wp(li + l.pclmap, lo);
     wp(li + l.pcumap, up);
+    // the categories' names (all the process's locale; msvcrt's "LC_ALL" form is the same)
+    let name = format!("Japanese_Japan.{cp}");
+    let (a, w) = (mem::heap_alloc(name.len() as u32 + 1, true), mem::heap_alloc(2 * name.len() as u32 + 2, true));
+    mem::write(a, name.as_bytes());
+    for (i, u) in name.encode_utf16().enumerate() {
+        w16(w + 2 * i as u32, u);
+    }
+    for i in 0..6 {
+        wp(li + l.cat + 4 * ps() * i, a);
+        wp(li + l.cat + 4 * ps() * i + ps(), w);
+    }
     let mb = mem::heap_alloc(0x220, true);
     w32(mb, 1);
     w32(mb + 4, cp);
@@ -3849,6 +3881,11 @@ pub fn init() {
         ("wcstoull", _wcstoui64),
         ("atoll", _atoi64),
         ("_wtoll", _wtoi64),
+        // (the locale argument last: sake's C locale compares the same)
+        ("_stricmp_l", _stricmp),
+        ("_strnicmp_l", _strnicmp),
+        ("_wcsicmp_l", _wcsicmp),
+        ("_wcsnicmp_l", _wcsnicmp),
         ("_strtol_l", strtol),
         ("_strtoul_l", strtoul),
         ("_strtoi64_l", _strtoi64),
@@ -3973,7 +4010,7 @@ pub fn init() {
     reg!(fgetpos, fsetpos, ___lc_collate_cp_func);
     implement("msvcrt", "_fsopen", fopen);
     implement("msvcrt", "_wfsopen", _wfopen);
-    reg!(_aligned_malloc, _aligned_free, _aligned_realloc, _aligned_msize, _mkdir, _wmkdir);
+    reg!(_aligned_malloc, _aligned_free, _aligned_realloc, _aligned_msize, _aligned_offset_malloc, _aligned_offset_realloc, _mkdir, _wmkdir);
     reg!(fread_s, _time64, _splitpath, _wsplitpath, _splitpath_s, _wsplitpath_s);
     reg!(_get_narrow_winmain_command_line, _get_wide_winmain_command_line);
     implement("msvcrt", "_time32", _time32);
@@ -4129,21 +4166,27 @@ mod tests {
         #[test]
         fn offsets_as_the_crt_headers() {
             let l = locale_layout(false, 4);
-            assert_eq!((l.cps, l.handles, l.mb_cur_max, l.pctype, l.pclmap, l.pcumap, l.mbctype), ([4, 8, 8], Some(0xc), 0xac, 0xc8, 0xcc, 0xd0, 0x1c));
+            assert_eq!((l.cps, l.handles, l.mb_cur_max, l.pctype, l.pclmap, l.pcumap, l.mbctype, l.cat), ([4, 8, 8], Some(0xc), 0xac, 0xc8, 0xcc, 0xd0, 0x1c, 0x48));
             let l = locale_layout(false, 8);
-            assert_eq!((l.mb_cur_max, l.pctype, l.pclmap, l.pcumap), (0x10c, 0x140, 0x148, 0x150));
+            assert_eq!((l.mb_cur_max, l.pctype, l.pclmap, l.pcumap, l.cat), (0x10c, 0x140, 0x148, 0x150, 0x48));
             let l = locale_layout(true, 4);
-            assert_eq!((l.pctype, l.mb_cur_max, l.cps, l.refcount, l.pclmap, l.pcumap, l.mbctype), (0, 4, [8, 0x10, 0x14], 0xc, 0x94, 0x98, 0x18));
+            assert_eq!((l.pctype, l.mb_cur_max, l.cps, l.refcount, l.pclmap, l.pcumap, l.mbctype, l.cat), (0, 4, [8, 0x10, 0x14], 0xc, 0x94, 0x98, 0x18, 0x1c));
             let l = locale_layout(true, 8);
-            assert_eq!((l.pctype, l.mb_cur_max, l.cps, l.refcount, l.pclmap, l.pcumap), (0, 8, [0xc, 0x14, 0x18], 0x10, 0x110, 0x118));
+            assert_eq!((l.pctype, l.mb_cur_max, l.cps, l.refcount, l.pclmap, l.pcumap, l.cat), (0, 8, [0xc, 0x14, 0x18], 0x10, 0x110, 0x118, 0x20));
+        }
+
+        #[test]
+        fn ctype1_one_entry_before_pctype() {
+            // (msvcrt x86 0xc4, x64 0x138; UCRT x86 0x90, x64 0x108: before pclmap there)
+            assert_eq!([locale_layout(false, 4).ctype1, locale_layout(false, 8).ctype1, locale_layout(true, 4).ctype1, locale_layout(true, 8).ctype1], [0xc4, 0x138, 0x90, 0x108]);
         }
 
         #[test]
         fn fields_are_aligned_apart_and_inside() {
             for ucrt in [false, true] {
                 for ps in [4, 8] {
-                    let LocaleLayout { size, cps, handles, mb_cur_max, pctype, pclmap, pcumap, refcount, .. } = locale_layout(ucrt, ps);
-                    let mut f: Vec<(u32, u32)> = vec![(mb_cur_max, 4), (pctype, ps), (pclmap, ps), (pcumap, ps), (refcount, 4)];
+                    let LocaleLayout { size, cps, handles, mb_cur_max, pctype, pclmap, pcumap, refcount, cat, ctype1, .. } = locale_layout(ucrt, ps);
+                    let mut f: Vec<(u32, u32)> = vec![(mb_cur_max, 4), (pctype, ps), (pclmap, ps), (pcumap, ps), (refcount, 4), (cat, 24 * ps), (ctype1, ps)];
                     f.extend(cps.iter().map(|&o| (o, 4)));
                     f.extend(handles.map(|h| (h, 24)));
                     f.sort();

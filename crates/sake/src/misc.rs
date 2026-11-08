@@ -2906,6 +2906,164 @@ fn PathStripToRootW(c: &mut Ctx) -> u32 {
 fn PathIsUNCA(c: &mut Ctx) -> u32 {
     arg_str(c.a(0), false).starts_with("\\\\") as u32
 }
+/// UrlApplyScheme's answer: the URL with the scheme it gets, or None (S_FALSE: left alone).
+/// URL_APPLY_DEFAULT 1 (http://), GUESSSCHEME 2 (by the host's first label, as the registry's
+/// URL\Prefixes), GUESSFILE 4 (a drive path or a UNC name), FORCEAPPLY 8 (a URL that has a
+/// scheme gets the default one in front all the same).
+pub(crate) fn url_apply_scheme(url: &str, flags: u32) -> Option<String> {
+    // (a scheme: a letter, then at least one more scheme character, then ':'; "u:" is a drive)
+    let scheme = url.find(':').is_some_and(|n| n >= 2 && url[..n].chars().enumerate().all(|(i, ch)| ch.is_ascii_alphabetic() || (i > 0 && (ch.is_ascii_digit() || "+-.".contains(ch)))));
+    if scheme {
+        return (flags & 9 == 9).then(|| format!("http://{url}"));
+    }
+    if flags & 4 != 0 {
+        let b = url.as_bytes();
+        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+            return Some(format!("file:///{}", url.replace('\\', "/")));
+        }
+        if let Some(rest) = url.strip_prefix("\\\\") {
+            return Some(format!("file://{}", rest.replace('\\', "/")));
+        }
+    }
+    if flags & 2 != 0 {
+        let first = url.split('.').next().unwrap_or("").to_ascii_lowercase();
+        let guess = match first.as_str() {
+            _ if !url.contains('.') => None,
+            "www" | "home" | "mosaic" => Some("http"),
+            "ftp" => Some("ftp"),
+            "gopher" => Some("gopher"),
+            _ => None,
+        };
+        if let Some(g) = guess {
+            return Some(format!("{g}://{url}"));
+        }
+    }
+    (flags & 1 != 0).then(|| format!("http://{url}"))
+}
+fn url_apply(c: &mut Ctx, wide: bool) -> u32 {
+    let (url, out, len, flags) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if url == 0 || out == 0 || len == 0 {
+        return 0x8007_0057;
+    }
+    let Some(new) = url_apply_scheme(&arg_str(url, wide), flags) else { return 1 };
+    let w: Vec<u16> = new.encode_utf16().collect();
+    let a = w2a(&w);
+    let n = if wide { w.len() } else { a.len() } as u32;
+    if n + 1 > r32(len) {
+        w32(len, n + 1);
+        return 0x8000_4003;
+    }
+    if wide {
+        mem::put_wstr(out, n + 1, &w);
+    } else {
+        mem::put_cstr(out, n + 1, &a);
+    }
+    w32(len, n);
+    0
+}
+/// UrlGetPart's answer: Ok(Some(part)), Ok(None) for S_FALSE (an empty part, or no scheme for
+/// URL_PART_SCHEME), Err(HRESULT). Parts: SCHEME 1, HOSTNAME 2, USERNAME 3, PASSWORD 4, PORT 5,
+/// QUERY 6; URL_PARTFLAG_KEEPSCHEME 1 puts "scheme:" in front of 2..5 (not for file:).
+pub(crate) fn url_part(url: &str, part: u32, flags: u32) -> Result<Option<String>, u32> {
+    const E_FAIL: u32 = 0x8000_4005;
+    const E_INVALIDARG: u32 = 0x8007_0057;
+    let some = |s: &str| Ok((!s.is_empty()).then(|| s.to_string()));
+    // (a scheme: a letter, at least one more of letters, digits, + - .; case folded)
+    let scheme = url.find(':').filter(|&n| n >= 2 && url[..n].chars().enumerate().all(|(i, ch)| ch.is_ascii_alphabetic() || (i > 0 && (ch.is_ascii_digit() || "+-.".contains(ch))))).map(|n| url[..n].to_ascii_lowercase());
+    let Some(scheme) = scheme else {
+        return if part == 1 { Ok(None) } else { Err(E_FAIL) };
+    };
+    if part == 1 {
+        return some(&scheme);
+    }
+    let rest = &url[scheme.len() + 1..];
+    let file = scheme == "file";
+    let hosted = matches!(scheme.as_str(), "file" | "ftp" | "gopher" | "http" | "https" | "news" | "nntp" | "snews" | "telnet");
+    // (the authority after "//", where either slash may be a backslash, up to / \ ? #)
+    let b = rest.as_bytes();
+    let auth = (b.len() >= 2 && matches!(b[0], b'/' | b'\\') && matches!(b[1], b'/' | b'\\')).then(|| {
+        let a = &rest[2..];
+        &a[..a.find(['/', '\\', '?', '#']).unwrap_or(a.len())]
+    });
+    if part == 6 {
+        let after = &rest[auth.map_or(0, |a| 2 + a.len())..];
+        let q = after.find('?').map(|i| &after[i + 1..]).unwrap_or("");
+        return some(&q[..q.find('#').unwrap_or(q.len())]);
+    }
+    if !hosted || !(2..=5).contains(&part) {
+        return Err(E_FAIL);
+    }
+    let Some(auth) = auth else {
+        return if file { Ok(None) } else { Err(E_FAIL) };
+    };
+    let keep = |s: &str| -> Result<Option<String>, u32> {
+        if flags & 1 != 0 && !file { Ok(Some(format!("{scheme}:{s}"))) } else { some(s) }
+    };
+    if file {
+        // (the whole authority is the host; a drive letter is none)
+        if part != 2 {
+            return Err(E_FAIL);
+        }
+        let drive = auth.len() == 2 && auth.as_bytes()[0].is_ascii_alphabetic() && auth.ends_with(':');
+        return some(if drive { "" } else { auth });
+    }
+    let (user, hostport) = match auth.split_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, auth),
+    };
+    let (host, port) = match hostport.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (hostport, None),
+    };
+    let v = match part {
+        2 => host,
+        3 => user.map(|u| u.split_once(':').map_or(u, |x| x.0)).ok_or(E_INVALIDARG)?,
+        4 => user.and_then(|u| u.split_once(':')).map(|x| x.1).ok_or(E_INVALIDARG)?,
+        _ => port.ok_or(E_INVALIDARG)?,
+    };
+    if v.is_empty() && !(part == 2 && flags & 1 != 0) {
+        return Ok(None);
+    }
+    keep(v)
+}
+fn url_get_part(c: &mut Ctx, wide: bool) -> u32 {
+    let (url, out, size, part, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if url == 0 || out == 0 || size == 0 || r32(size) == 0 {
+        return 0x8007_0057;
+    }
+    let got = url_part(&arg_str(url, wide), part, flags);
+    let v = match got {
+        Err(e) => return e,
+        Ok(None) => {
+            if wide { w16(out, 0) } else { mem::w8(out, 0) }
+            w32(size, 0);
+            return if wide { 0 } else { 1 };
+        }
+        Ok(Some(v)) => v,
+    };
+    let w: Vec<u16> = v.encode_utf16().collect();
+    let a = w2a(&w);
+    let n = if wide { w.len() } else { a.len() } as u32;
+    if n + 1 > r32(size) {
+        w32(size, n + 1);
+        return 0x8000_4003;
+    }
+    if wide { mem::put_wstr(out, n + 1, &w) } else { mem::put_cstr(out, n + 1, &a) };
+    w32(size, n);
+    0
+}
+fn UrlGetPartA(c: &mut Ctx) -> u32 {
+    url_get_part(c, false)
+}
+fn UrlGetPartW(c: &mut Ctx) -> u32 {
+    url_get_part(c, true)
+}
+fn UrlApplySchemeA(c: &mut Ctx) -> u32 {
+    url_apply(c, false)
+}
+fn UrlApplySchemeW(c: &mut Ctx) -> u32 {
+    url_apply(c, true)
+}
 fn PathIsUNCW(c: &mut Ctx) -> u32 {
     arg_str(c.a(0), true).starts_with("\\\\") as u32
 }
@@ -3792,7 +3950,7 @@ pub fn init() {
     reg!("winmm"; timeGetTime, timeBeginPeriod, timeEndPeriod, timeGetDevCaps, timeGetSystemTime, timeSetEvent,
         timeKillEvent, joyGetNumDevs, joyGetPosEx, joyGetPos, joyGetDevCapsA, joyGetDevCapsW, mciSendStringA,
         mciSendStringW, mciSendCommandA, midiOutGetNumDevs, auxGetNumDevs, mixerGetNumDevs);
-    reg!("shlwapi"; PathStripToRootA, PathStripToRootW, PathIsUNCA, PathIsUNCW);
+    reg!("shlwapi"; PathStripToRootA, PathStripToRootW, PathIsUNCA, PathIsUNCW, UrlApplySchemeA, UrlApplySchemeW, UrlGetPartA, UrlGetPartW);
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathCanonicalizeA, PathCanonicalizeW, PathFindFileNameA,
         PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathRenameExtensionA, PathRenameExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
@@ -4089,6 +4247,119 @@ fn wts_init() {
 
 #[cfg(test)]
 mod tests {
+    /// Windows' answers (Wine's shlwapi:url TEST_APPLY table, which passes on Windows): None is
+    /// S_FALSE
+    /// Windows' answers (Wine's shlwapi:url test_UrlGetPart rows): None is S_FALSE
+    #[test]
+    fn url_get_part_as_windows() {
+        const FAIL: Result<Option<String>, u32> = Err(0x8000_4005);
+        const INVAL: Result<Option<String>, u32> = Err(0x8007_0057);
+        let ok = |s: &str| Ok(Some(s.to_string()));
+        let (sch, host, user, pass, port, query) = (1, 2, 3, 4, 5, 6);
+        let full = "http://foo:bar@localhost:21/internal.php?query=x&return=y";
+        for (url, part, flags, want) in [
+            (full, host, 0, ok("localhost")),
+            (full, port, 0, ok("21")),
+            (full, query, 0, ok("query=x&return=y")),
+            ("http://foo:bar@localhost:21/internal.php#anchor", query, 0, Ok(None)),
+            (full, sch, 1, ok("http")),
+            (full, user, 1, ok("http:foo")),
+            (full, pass, 1, ok("http:bar")),
+            (full, host, 1, ok("http:localhost")),
+            (full, port, 1, ok("http:21")),
+            (full, query, 1, ok("query=x&return=y")),
+            ("http://localhost/", user, 0, INVAL),
+            ("http://localhost/", pass, 0, INVAL),
+            ("http://localhost/", port, 0, INVAL),
+            ("http://localhost/", query, 0, Ok(None)),
+            ("http://localhost:port/", port, 0, ok("port")),
+            ("http://:", host, 0, Ok(None)),
+            ("http://:", port, 0, Ok(None)),
+            ("http://user@localhost", user, 0, ok("user")),
+            ("http://user@localhost", pass, 0, INVAL),
+            ("http://@", user, 0, Ok(None)),
+            ("http://@", pass, 0, INVAL),
+            ("http://@", host, 0, Ok(None)),
+            ("http://:@", user, 0, Ok(None)),
+            ("http://:@", pass, 0, Ok(None)),
+            ("http://host:port:q", port, 0, ok("port:q")),
+            ("http://user:pass:q@host", pass, 0, ok("pass:q")),
+            ("http://user@host@q", host, 0, ok("host@q")),
+            ("http:localhost/index.html", host, 0, FAIL),
+            ("http:/localhost/index.html", host, 0, FAIL),
+            ("http://localhost\\index.html", host, 0, ok("localhost")),
+            ("http:/\\localhost/index.html", host, 0, ok("localhost")),
+            ("ftp:\\/localhost/index.html", host, 0, ok("localhost")),
+            ("http://host?a:b@c:d", host, 0, ok("host")),
+            ("http://host?a:b@c:d", query, 0, ok("a:b@c:d")),
+            ("http://host#a:b@c:d", query, 0, Ok(None)),
+            ("http:///index.html", host, 0, Ok(None)),
+            ("http:///index.html", host, 1, ok("http:")),
+            ("file://h o s t/c:/windows/file", host, 1, ok("h o s t")),
+            ("file://foo:bar@localhost:21/file?query=x", user, 0, FAIL),
+            ("file://foo:bar@localhost:21/file?query=x", host, 0, ok("foo:bar@localhost:21")),
+            ("file://foo:bar@localhost:21/file?query=x", port, 0, FAIL),
+            ("file://foo:bar@localhost:21/file?query=x", query, 0, ok("query=x")),
+            ("http://user:pass 123@www.wine hq.org", pass, 0, ok("pass 123")),
+            ("about:blank", sch, 0, ok("about")),
+            ("about:blank", host, 0, FAIL),
+            ("x-excid://36C00000/guid:{048B4E89}/Message.htm", sch, 0, ok("x-excid")),
+            ("x-excid://36C00000/guid:{048B4E89}/Message.htm", query, 0, Ok(None)),
+            ("ascheme:", sch, 0, ok("ascheme")),
+            ("file:///index.html", host, 1, Ok(None)),
+            ("file://c:\\index.htm", host, 0, Ok(None)),
+            ("file:some text", host, 0, Ok(None)),
+            ("index.htm", host, 0, FAIL),
+            ("sChEmE-.+:", sch, 0, ok("scheme-.+")),
+            ("scheme_:", sch, 0, Ok(None)),
+            ("sch eme:", sch, 0, Ok(None)),
+            (":", sch, 0, Ok(None)),
+            ("a:", sch, 0, Ok(None)),
+            ("0:", sch, 0, Ok(None)),
+            ("ab:", sch, 0, ok("ab")),
+            ("about://hostname/", host, 0, FAIL),
+            ("javascript://hostname/", host, 0, FAIL),
+            ("snews://hostname/", host, 1, ok("snews:hostname")),
+            ("file://hostname/", host, 1, ok("hostname")),
+        ] {
+            assert_eq!(super::url_part(url, part, flags), want, "{url} {part} {flags}");
+        }
+    }
+
+    #[test]
+    fn url_apply_scheme_as_windows() {
+        let (d, s, f, force) = (1, 2, 4, 8);
+        for (url, flags, want) in [
+            ("www.winehq.org", s | d, Some("http://www.winehq.org")),
+            ("www.winehq.org", s, Some("http://www.winehq.org")),
+            ("www.winehq.org", d, Some("http://www.winehq.org")),
+            ("ftp.winehq.org", s | d, Some("ftp://ftp.winehq.org")),
+            ("ftp.winehq.org", s, Some("ftp://ftp.winehq.org")),
+            ("ftp.winehq.org", d, Some("http://ftp.winehq.org")),
+            ("winehq.org", s | d, Some("http://winehq.org")),
+            ("winehq.org", s, None),
+            ("winehq.org", d, Some("http://winehq.org")),
+            ("http://www.winehq.org", s, None),
+            ("http://www.winehq.org", s | force, None),
+            ("http://www.winehq.org", s | force | d, Some("http://http://www.winehq.org")),
+            ("http://www.winehq.org", s | d, None),
+            ("", s | d, Some("http://")),
+            ("", s, None),
+            ("", d, Some("http://")),
+            ("u:\\windows", f | d, Some("file:///u:/windows")),
+            ("u:\\windows", f, Some("file:///u:/windows")),
+            ("u:\\windows", d, Some("http://u:\\windows")),
+            ("file:///c:/windows", f, None),
+            ("aa:\\windows", f, None),
+            ("\\\\server\\share", d, Some("http://\\\\server\\share")),
+            ("\\\\server\\share", f, Some("file://server/share")),
+            ("\\\\server\\share", s, None),
+            ("file://server/share", f, None),
+            ("file://server/share", s, None),
+        ] {
+            assert_eq!(super::url_apply_scheme(url, flags).as_deref(), want, "{url} {flags}");
+        }
+    }
     use super::*;
 
     /// UuidToString's layout of the 16 bytes (Data1-3 little-endian)

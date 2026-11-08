@@ -269,6 +269,8 @@ pub struct MenuItem {
     pub text: Vec<u16>,
     pub sub: u32,
     pub data: u32,
+    /// hbmpItem: MIIM_BITMAP's, or an MF_BITMAP item's handle (where the string would be)
+    pub bmp: u32,
 }
 
 pub struct State {
@@ -4770,7 +4772,12 @@ fn item_index(m: &Menu, item: u32, by_pos: bool) -> Option<usize> {
 fn insert_item(h: u32, pos: u32, by_pos: bool, it: MenuItem) -> u32 {
     with(|s| {
         let Some(m) = s.menus.get_mut(&h) else { return 0 };
-        let i = if pos == 0xffff_ffff { m.items.len() } else { item_index(m, pos, by_pos).unwrap_or(m.items.len()) };
+        let mut i = if pos == 0xffff_ffff { m.items.len() } else { item_index(m, pos, by_pos).unwrap_or(m.items.len()) };
+        // (an item appended goes in front of a last HBMMENU_SYSTEM bitmap item, which stays
+        // last: user32:menu test_InsertMenu, as Windows does)
+        if i == m.items.len() && m.items.last().is_some_and(|l| l.bmp == 1) {
+            i -= 1;
+        }
         m.items.insert(i, it);
         1
     })
@@ -4785,23 +4792,33 @@ fn menu_text(flags: u32, p: u32, wide: bool) -> Vec<u16> {
     }
 }
 fn InsertMenuA(c: &mut Ctx) -> u32 {
+    insert_menu(c, false)
+}
+fn InsertMenuW(c: &mut Ctx) -> u32 {
+    insert_menu(c, true)
+}
+fn insert_menu(c: &mut Ctx, wide: bool) -> u32 {
     let (h, pos, flags, id, p) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let sub = if flags & 0x10 != 0 { id } else { 0 };
-    insert_item(h, pos, flags & 0x400 != 0, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, false), sub, data: 0 })
+    insert_item(h, pos, flags & 0x400 != 0, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, wide), sub, data: 0, bmp: if flags & 0x904 == 4 { p } else { 0 } })
 }
 fn AppendMenuA(c: &mut Ctx) -> u32 {
     let (h, flags, id, p) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let sub = if flags & 0x10 != 0 { id } else { 0 };
-    insert_item(h, 0xffff_ffff, true, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, false), sub, data: 0 })
+    insert_item(h, 0xffff_ffff, true, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, false), sub, data: 0, bmp: if flags & 0x904 == 4 { p } else { 0 } })
 }
 fn AppendMenuW(c: &mut Ctx) -> u32 {
     let (h, flags, id, p) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let sub = if flags & 0x10 != 0 { id } else { 0 };
-    insert_item(h, 0xffff_ffff, true, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, true), sub, data: 0 })
+    insert_item(h, 0xffff_ffff, true, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, true), sub, data: 0, bmp: if flags & 0x904 == 4 { p } else { 0 } })
 }
 /// MENUITEMINFO offsets: (wID, hSubMenu, dwItemData, dwTypeData, cch); handles are 8 bytes on x64.
 fn mii() -> (u32, u32, u32, u32, u32) {
     if mem::x64() { (16, 24, 48, 56, 64) } else { (16, 20, 32, 36, 40) }
+}
+/// MENUITEMINFO's hbmpItem (after cch)
+fn mii_bmp() -> u32 {
+    if mem::x64() { 72 } else { 44 }
 }
 fn read_mii(p: u32, wide: bool) -> (u32, MenuItem) {
     let (o_id, o_sub, o_data, o_text, _) = mii();
@@ -4818,6 +4835,9 @@ fn read_mii(p: u32, wide: bool) -> (u32, MenuItem) {
     }
     if mask & 0x20 != 0 {
         it.data = r32(p + o_data);
+    }
+    if mask & 0x80 != 0 {
+        it.bmp = mem::rp(p + mii_bmp());
     }
     if mask & 0x40 != 0 || (mask & 0x10 != 0 && r32(p + 8) == 0) {
         let t = mem::rp(p + o_text);
@@ -4858,6 +4878,12 @@ fn set_menu_item_info(c: &mut Ctx, wide: bool) -> u32 {
         if mask & 4 != 0 {
             x.sub = it.sub;
         }
+        if mask & 0x20 != 0 {
+            x.data = it.data;
+        }
+        if mask & 0x80 != 0 {
+            x.bmp = it.bmp;
+        }
         if mask & 0x50 != 0 {
             x.text = it.text;
         }
@@ -4888,6 +4914,9 @@ fn get_menu_item_info(c: &mut Ctx, wide: bool) -> u32 {
     }
     if mask & 0x20 != 0 {
         mem::wp(p + o_data, it.data);
+    }
+    if mask & 0x80 != 0 {
+        mem::wp(p + mii_bmp(), it.bmp);
     }
     if mask & 0x50 != 0 {
         let cap = r32(p + o_cch);
@@ -4929,6 +4958,14 @@ fn GetMenuStringA(c: &mut Ctx) -> u32 {
         return a.len() as u32;
     }
     mem::put_cstr(buf, cap, &a)
+}
+fn GetMenuStringW(c: &mut Ctx) -> u32 {
+    let (h, item, buf, cap, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let t = with(|s| locate(&s.menus, h, item, flags & 0x400 != 0).map(|(m, i)| s.menus[&m].items[i].text.clone())).unwrap_or_default();
+    if buf == 0 {
+        return t.len() as u32;
+    }
+    mem::put_wstr(buf, cap, &t)
 }
 fn modify_flags(h: u32, item: u32, flags: u32, set: u32, clear: u32) -> u32 {
     with(|s| {
@@ -4975,12 +5012,18 @@ fn RemoveMenu(c: &mut Ctx) -> u32 {
     DeleteMenu(c)
 }
 fn ModifyMenuA(c: &mut Ctx) -> u32 {
+    modify_menu(c, false)
+}
+fn ModifyMenuW(c: &mut Ctx) -> u32 {
+    modify_menu(c, true)
+}
+fn modify_menu(c: &mut Ctx, wide: bool) -> u32 {
     let (h, pos, flags, id, p) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     with(|s| {
         let Some(m) = s.menus.get_mut(&h) else { return 0 };
         let Some(i) = item_index(m, pos, flags & 0x400 != 0) else { return 0 };
         let sub = if flags & 0x10 != 0 { id } else { 0 };
-        m.items[i] = MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, false), sub, data: 0 };
+        m.items[i] = MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, wide), sub, data: 0, bmp: if flags & 0x904 == 4 { p } else { 0 } };
         1
     })
 }
@@ -5302,9 +5345,9 @@ fn menu_items(h: u32, mut p: u32) -> u32 {
             let sub = new_menu();
             p = menu_items(sub, p);
             // (a popup's id is its menu handle)
-            insert_item(h, 0xffff_ffff, true, MenuItem { id: sub, flags, text, sub, data: 0 });
+            insert_item(h, 0xffff_ffff, true, MenuItem { id: sub, flags, text, sub, data: 0, bmp: 0 });
         } else {
-            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0 });
+            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0, bmp: 0 });
         }
         if f & 0x80 != 0 {
             return p;
@@ -5322,9 +5365,9 @@ fn menuex_items(h: u32, mut p: u32) -> u32 {
         if res & 1 != 0 {
             let sub = new_menu();
             p = menuex_items(sub, p + 4);
-            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub, data: 0 });
+            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub, data: 0, bmp: 0 });
         } else {
-            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0 });
+            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0, bmp: 0 });
         }
         if res & 0x80 != 0 {
             return p;
@@ -6254,7 +6297,7 @@ pub fn init() {
         SetScrollPos, GetScrollRange, SetScrollRange, ShowScrollBar, EnableScrollBar, OpenClipboard,
         CloseClipboard, EmptyClipboard, GetClipboardData, SetClipboardData, IsClipboardFormatAvailable,
         EnumClipboardFormats, GetPriorityClipboardFormat, RegisterClipboardFormatA, RegisterClipboardFormatW,
-        CreateMenu, CreatePopupMenu, DestroyMenu, InsertMenuA, AppendMenuA, AppendMenuW, InsertMenuItemA,
+        CreateMenu, CreatePopupMenu, DestroyMenu, InsertMenuA, InsertMenuW, ModifyMenuW, GetMenuStringW, AppendMenuA, AppendMenuW, InsertMenuItemA,
         InsertMenuItemW, SetMenuItemInfoA, SetMenuItemInfoW, GetMenuItemInfoA, GetMenuItemInfoW, GetMenuItemCount, GetMenuItemID, GetSubMenu,
         GetMenuState, GetMenuStringA, CheckMenuItem, CheckMenuRadioItem, EnableMenuItem, DeleteMenu, RemoveMenu, ModifyMenuA, GetMenu,
         SetMenu, GetSystemMenu, DrawMenuBar, TrackPopupMenu, TrackPopupMenuEx, GetMenuItemRect,
