@@ -515,9 +515,17 @@ fn resume_all(paused_at: Option<f64>) {
         add_offset(1, t - now);
     }
     VNHOST_SNAP.gpu.store(GPU_NONE, SeqCst);
-    let _g = GATE.lock().unwrap_or_else(|e| e.into_inner());
+    let g = GATE.lock().unwrap_or_else(|e| e.into_inner());
     VNHOST_SNAP.pause.store(0, SeqCst);
     GATE_CV.notify_all();
+    drop(g);
+    // every parked thread up before the next pause: one still waking from this one (counted in
+    // STIRS when it does) would stand as parked for the next and stir its copy (the snap test:
+    // "round 13: stirred left 3")
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_secs(2) && PARTS.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|p| p.state.load(SeqCst) == PARKED) {
+        std::thread::yield_now();
+    }
 }
 
 fn notify_page() {
@@ -771,6 +779,8 @@ mod tests {
             VNHOST_SNAP.cmd.store(CMD_RESUME, SeqCst);
             until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
             assert_eq!(VNHOST_SNAP.stirred.load(SeqCst), 0, "round {round}: stirred");
+            // (all up again before the next pause: one still waking would stand as parked in it)
+            assert!(!PARTS.lock().unwrap().iter().any(|p| p.state.load(SeqCst) == PARKED), "round {round}: parked after RUNNING");
         }
         STOP.store(1, SeqCst);
         threads.into_iter().for_each(|t| t.join().unwrap());
