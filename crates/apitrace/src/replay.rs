@@ -96,6 +96,8 @@ pub struct Stats {
     pub skipped: BTreeMap<String, u64>,
     /// calls this converter cannot replay (unknown functions, memcpy into no lock), by name
     pub dropped: BTreeMap<String, u64>,
+    /// the stream reached convert_max's limit: the calls after it are left out
+    pub limited: bool,
 }
 
 /// The pointer width of a trace: 64 when any object or region it saw lies above 4 GiB (64-bit
@@ -131,6 +133,14 @@ pub fn convert(events: &[u8], bits: Option<u32>) -> Result<(Vec<u8>, Stats), Str
 /// convert() of events that may stop in the middle of a call (`cut`: a trace of a program that
 /// was killed, trace::unpack_cut): the calls up to the last whole one
 pub fn convert_cut(events: &[u8], bits: Option<u32>, cut: bool) -> Result<(Vec<u8>, Stats), String> {
+    convert_max(events, bits, cut, usize::MAX)
+}
+
+/// convert_cut() that stops at the first call after which the stream holds `max` bytes or more
+/// (`Stats::limited`): a game's stream goes into a replay exe (tests/replay/build.sh), and a PE
+/// image of gigabytes is no image (b2020_akabeesoft3's 3.6 GB trace: i686-w64-mingw32-ld
+/// crashed on the object holding it)
+pub fn convert_max(events: &[u8], bits: Option<u32>, cut: bool, max: usize) -> Result<(Vec<u8>, Stats), String> {
     let seen = ptrbits_of(events, cut)?;
     let bits = bits.unwrap_or(seen);
     if bits != 32 && bits != 64 {
@@ -147,6 +157,10 @@ pub fn convert_cut(events: &[u8], bits: Option<u32>, cut: bool) -> Result<(Vec<u
     c.out.extend_from_slice(&bits.to_le_bytes());
     while let Some(call) = p.next_call()? {
         c.call(&call)?;
+        if c.out.len() >= max {
+            c.stats.limited = true;
+            break;
+        }
     }
     Ok((c.out, c.stats))
 }

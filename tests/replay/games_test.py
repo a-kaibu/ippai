@@ -201,6 +201,12 @@ for w in ("gametrace.yml", "winref.yml", "replay.yml"):
             expect(f"{w}: packages: read", "packages: read" in y, True)
         if re.search(r"games\.py (push|migrate)", job):
             expect(f"{w}: {job.split(':')[0]}: packages: write and GHCR_TOKEN", ("packages: write" in job, "GHCR_TOKEN: ${{ github.token }}" in job), (True, True))
+# (a game's stream goes into its replay exe at most GAME_MAX bytes: apitrace -max, under the 2 GB
+# a PE image and a 32-bit process hold; b2020_akabeesoft3's whole stream crashed the linker)
+bsh = open(os.path.join(root, "tests/replay/build.sh"), encoding="utf-8").read()
+gmax = re.search(r'"\$APITRACE" "-\$bits" "-max=\$\{GAME_MAX:-(\d+)\}" "\$OUT/\$n.trace"', bsh)
+expect("build.sh: games' streams through apitrace -max, under 2 GB", bool(gmax) and 0 < int(gmax.group(1)) < 1 << 31, True)
+expect("apitrace reads -max", "-max=" in open(os.path.join(root, "crates/apitrace/src/main.rs"), encoding="utf-8").read(), True)
 expect("record-game.ps1 asks winplay to close the game first", "$env:CLOSE_FIRST = '" in ps1 and "os.environ.get('CLOSE_FIRST'" in winplay, True)
 expect("prep writes winplay's meta.json", "winplay.py meta tests/corpus/titles.tsv \"$ID\" \"$e\" game/meta.json" in yml, True)
 

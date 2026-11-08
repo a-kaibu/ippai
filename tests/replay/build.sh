@@ -7,7 +7,8 @@
 #                                  with its exe dir; they draw, so they are listed in browser.txt)
 #                                  and one per trial game's trace in testdata/apitrace (games.py; recorded by
 #                                  .github/workflows/gametrace.yml), the same, showing one frame
-#                                  in GAME_EVERY (default 900: 15 s at 60 fps)
+#                                  in GAME_EVERY (default 900: 15 s at 60 fps), its stream at most
+#                                  GAME_MAX bytes (default 256 MiB: the calls up to there)
 # The streams come from the apitrace crate (`cargo run -p apitrace`, or APITRACE=its binary).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -50,11 +51,13 @@ if [ $(( ${#traces[@]} + ${#games[@]} )) -gt 0 ]; then
     rm "$OUT/$n.rpl"
     [ -f "$OUT/browser.txt" ] && echo "replay_$n-$bits" >> "$OUT/browser.txt"
   done
-  # (a game's trace ends where the game was killed: not -strict)
+  # (a game's trace ends where the game was killed: not -strict. Its stream goes into the exe:
+  # at most GAME_MAX bytes (default 256 MiB), the calls up to there; a stream of gigabytes made
+  # i686-w64-mingw32-ld crash, and a 32-bit process could not map such an image)
   for n in "${games[@]}"; do
     bits=${n##*-}
     python3 "$HERE/games.py" unpack "$ROOT/testdata/apitrace/$n" "$OUT/$n.trace"
-    st=0; "$APITRACE" "-$bits" "$OUT/$n.trace" "$OUT/$n.rpl" || st=$?
+    st=0; "$APITRACE" "-$bits" "-max=${GAME_MAX:-268435456}" "$OUT/$n.trace" "$OUT/$n.rpl" || st=$?
     rm "$OUT/$n.trace"
     if [ $st = 3 ]; then echo "$n: not replayed yet"; continue; fi
     [ $st = 0 ] || exit $st

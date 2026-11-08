@@ -746,3 +746,34 @@ fn a_cut_trace_keeps_its_whole_calls() {
     assert_eq!(prefix_of_whole(&ev), whole.len());
     assert!(unpack_cut(b"xx").is_err() && unpack_cut(b"at") == Ok((vec![], false)));
 }
+
+/// convert_max (tests/replay/build.sh's -max for games' streams, which go into a PE image): at
+/// every limit the stream is the whole one's records up to a call, the first call that reaches
+/// the limit is the last one in it, and a limit the whole stream stays under changes nothing.
+#[test]
+fn a_stream_limited_in_bytes_stops_after_the_call_that_reaches_it() {
+    let ev = unpack(&d3d9_session()).unwrap();
+    let (whole_b, whole_stats) = replay::convert(&ev, Some(32)).unwrap();
+    assert!(!whole_stats.limited);
+    let whole = replay::read(&whole_b).unwrap().1;
+    let mut sizes = std::collections::BTreeSet::new();
+    for max in 0..=whole_b.len() + 1 {
+        let (out, stats) = replay::convert_max(&ev, Some(32), false, max).unwrap();
+        let got = replay::read(&out).unwrap().1;
+        assert!(got.len() <= whole.len() && got[..] == whole[..got.len()], "max {max}");
+        assert!(whole_b.starts_with(&out), "max {max}: not a prefix of the whole stream");
+        if stats.limited {
+            assert!(out.len() >= max, "max {max}: stopped at {}", out.len());
+            // (one call less would be under the limit: the stream before its last call)
+            let (fewer, _) = replay::convert_max(&ev, Some(32), false, out.len()).unwrap();
+            assert_eq!(fewer, out, "max {max}");
+        } else {
+            assert_eq!(out, whole_b, "max {max}: not limited, so all of it");
+            assert_eq!(stats.calls, whole_stats.calls);
+        }
+        sizes.insert(out.len());
+    }
+    // (each call that writes something is a place the stream can stop)
+    assert!(sizes.len() > 3, "{sizes:?}");
+    assert!(replay::convert_max(&ev, Some(32), false, whole_b.len() + 1).unwrap().0 == whole_b);
+}
