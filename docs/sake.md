@@ -29,7 +29,7 @@
   ゲームはソフトウェア描画に回る。
 - D3D11 / DXGI (d3d11.rs): kura の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
   各メソッドはトラップで、`kura::d3d11::call` に引数を渡すだけ。メソッド表は
-  `host/gen-d3d11-methods.py` が d3d11_methods.rs として生成する。
+  `tools/win32md` (Microsoft の Win32 メタデータ) が d3d11_methods.rs として生成する。
 - D3D10 / 10.1 (d3d10.dll、d3d10_1.dll): D3D11 の同じオブジェクトの別の面 (kura の d3d11/d3d10.rs、
   インターフェース 95〜111)。メソッドは D3D11 のデバイス・コンテキスト・オブジェクトの呼び出しにして、違う
   構造体 (D3D10_BLEND_DESC、深度ステンシルビューの記述、整数のビューポート、バッファの記述、Map の結果)

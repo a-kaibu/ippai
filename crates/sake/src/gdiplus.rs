@@ -207,7 +207,7 @@ fn get_bits(row: &[u8], x: u32, bits: u32) -> u32 {
 }
 
 fn GdiplusStartup(c: &mut Ctx) -> u32 {
-    put32(c.a(0), 1);
+    crate::mem::putp(c.a(0), 1);
     if c.a(2) != 0 {
         mem::fill(c.a(2), 8, 0);
     }
@@ -619,7 +619,7 @@ fn GdipCreateHBITMAPFromBitmap(c: &mut Ctx) -> u32 {
         return INVALID_PARAMETER;
     };
     let hb = crate::gdi::dib_section_bgra(w, h, &px);
-    put32(c.a(1), hb);
+    crate::mem::putp(c.a(1), hb);
     if hb != 0 { OK } else { 1 }
 }
 

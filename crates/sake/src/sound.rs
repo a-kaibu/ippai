@@ -383,7 +383,7 @@ fn wave_thread(c: &mut Ctx) -> u32 {
 
 /// no mixer devices (MMSYSERR_BADDEVICEID)
 fn mixerOpen(c: &mut Ctx) -> u32 {
-    put32(c.a(0), 0);
+    crate::mem::putp(c.a(0), 0);
     2
 }
 fn mixerGetDevCaps(_: &mut Ctx) -> u32 {
@@ -830,18 +830,18 @@ fn no_sound() -> bool {
 
 fn DirectSoundCreate(c: &mut Ctx) -> u32 {
     if no_sound() {
-        put32(c.a(1), 0);
+        crate::mem::putp(c.a(1), 0);
         return 0x8878_0078;
     }
-    put32(c.a(1), create_device());
+    crate::mem::putp(c.a(1), create_device());
     0
 }
 fn DirectSoundCreate8(c: &mut Ctx) -> u32 {
     if no_sound() {
-        put32(c.a(1), 0);
+        crate::mem::putp(c.a(1), 0);
         return 0x8878_0078;
     }
-    put32(c.a(1), create_device());
+    crate::mem::putp(c.a(1), create_device());
     0
 }
 fn enumerate(c: &mut Ctx, wide: bool) -> u32 {

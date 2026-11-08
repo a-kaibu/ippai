@@ -1069,7 +1069,7 @@ fn LoadTypeLibEx(c: &mut Ctx) -> u32 {
 fn LoadRegTypeLib(c: &mut Ctx) -> u32 {
     let g = c.a(0);
     let hit = LIBS.lock().unwrap().iter().find(|l| guid_eq(g, &l.lib.guid)).map(|l| l.block);
-    put32(c.a(4), hit.unwrap_or(0));
+    crate::mem::putp(c.a(4), hit.unwrap_or(0));
     if hit.is_some() { S_OK } else { TYPE_E_CANTLOADLIBRARY }
 }
 fn ok(_: &mut Ctx) -> u32 {

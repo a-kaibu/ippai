@@ -2194,7 +2194,7 @@ fn VariantChangeType(c: &mut Ctx) -> u32 {
     variant_change(c.a(0), c.a(1), c.a(2), c.a(3) as u16)
 }
 fn GetErrorInfo(c: &mut Ctx) -> u32 {
-    put32(c.a(1), 0);
+    crate::mem::putp(c.a(1), 0);
     1
 }
 fn SetErrorInfo(_: &mut Ctx) -> u32 {
@@ -3482,6 +3482,9 @@ pub fn init() {
         implement(d, "DllUnregisterServer", |_| 0);
     }
     implement("rpcrt4", "RpcStringFreeW", RpcStringFreeA);
+    // (ole32 exports them too: mingw's libole32 imports them from there)
+    implement("ole32", "GetErrorInfo", GetErrorInfo);
+    implement("ole32", "SetErrorInfo", SetErrorInfo);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
         CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, CoMarshalInterface, CoUnmarshalInterface, CoReleaseMarshalData, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
         RegisterDragDrop, RevokeDragDrop, DoDragDrop);

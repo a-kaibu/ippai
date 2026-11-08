@@ -3705,7 +3705,7 @@ fn GetKeyboardLayout(_: &mut Ctx) -> u32 {
 }
 fn GetKeyboardLayoutList(c: &mut Ctx) -> u32 {
     if c.a(0) > 0 {
-        w32(c.a(1), if crate::text::acp() == 932 { 0x0411_0411 } else { 0x0409_0409 });
+        crate::mem::wp(c.a(1), if crate::text::acp() == 932 { 0x0411_0411 } else { 0x0409_0409 });
     }
     1
 }

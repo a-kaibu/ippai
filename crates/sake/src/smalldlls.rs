@@ -1407,7 +1407,7 @@ fn MoDuplicateMediaType(c: &mut Ctx) -> u32 {
 // windowscodecs: the exports beside the COM classes
 
 /// The vtable slot and argument count (with `this`) of `iface::method` (com_methods.rs, from
-/// the IDL)
+/// the Win32 metadata)
 fn slot(iface: &str, method: &str) -> Option<(u32, u32)> {
     let (_, ms, _) = crate::com::methods::IFACES.iter().find(|(n, _, _)| *n == iface)?;
     ms.iter().position(|(m, _, _)| *m == method).map(|i| (i as u32, ms[i].1 as u32))

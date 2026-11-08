@@ -1,5 +1,5 @@
-//! COM objects from the generated vtable tables (com_methods.rs, from Wine's d2d1, dwrite and
-//! wincodec IDL): an object names its interface and the methods it implements; every other slot is
+//! COM objects from the generated vtable tables (com_methods.rs, from Microsoft's Win32 metadata:
+//! tools/win32md): an object names its interface and the methods it implements; every other slot is
 //! a stub that logs "Iface::Method" once and fails (E_NOTIMPL, 0.0 for float results, the hidden
 //! result pointer for structure results). QueryInterface, AddRef and Release come for free:
 //! QueryInterface answers the interface and every interface it derives from.
@@ -202,5 +202,41 @@ pub fn create_instance(clsid: u32) -> Option<u32> {
         CLSID_WIC_FACTORY | CLSID_WIC_FACTORY2 => Some(crate::wic::factory()),
         0x4590_f811 => Some(crate::wmi::locator()), // CLSID_WbemLocator
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::methods::IFACES;
+
+    fn slot(iface: &str, m: &str) -> (u8, u8) {
+        let t = IFACES.iter().find(|t| t.0 == iface).unwrap();
+        t.1.iter().find(|x| x.0 == m).map(|x| (x.1, x.2)).unwrap()
+    }
+
+    /// Integers wider or narrower than a dword come back in EAX (EDX:EAX), not through a hidden
+    /// result pointer: the tables from Wine's IDL had these as structures, so their stubs popped
+    /// one dword too many.
+    #[test]
+    fn integer_results_are_not_structures() {
+        for (i, m) in [("IDWriteFontFace", "GetGlyphCount"), ("ID2D1Device", "GetMaximumTextureMemory"), ("ID2D1Device4", "GetMaximumColorGlyphCacheMemory"), ("IDWriteFontDownloadQueue", "GetGenerationCount"), ("IDWriteFontFaceReference", "GetFileSize"), ("IDWriteFontFaceReference", "GetLocalFileSize")] {
+            assert_eq!(slot(i, m), (1, 0), "{i}::{m}");
+        }
+        // (a structure result: the hidden pointer counts)
+        assert_eq!(slot("ID2D1RenderTarget", "GetSize"), (2, 2));
+        assert_eq!(slot("ID2D1StrokeStyle", "GetMiterLimit"), (1, 1));
+    }
+
+    /// Overloads in one interface keep distinct names (the earlier get "_"s) and the vtable
+    /// inherits every base method first.
+    #[test]
+    fn overloads_and_bases() {
+        let t = IFACES.iter().find(|t| t.0 == "IDWriteFontSet").unwrap();
+        let names: Vec<&str> = t.1.iter().map(|x| x.0).collect();
+        assert_eq!(&names[..3], &["QueryInterface", "AddRef", "Release"]);
+        assert_eq!(&names[7..10], &["GetPropertyValues__", "GetPropertyValues_", "GetPropertyValues"]);
+        let s = IFACES.iter().find(|t| t.0 == "IWICStream").unwrap();
+        assert_eq!(s.2, &["IWICStream", "IStream", "ISequentialStream", "IUnknown"]);
+        assert_eq!(s.1.len(), 18);
     }
 }

@@ -879,8 +879,8 @@ pub(crate) fn ncpu() -> u32 {
 }
 fn GetProcessAffinityMask(c: &mut Ctx) -> u32 {
     let m = (1u32 << ncpu()) - 1;
-    put32(c.a(1), m);
-    put32(c.a(2), m);
+    crate::mem::putp(c.a(1), m);
+    crate::mem::putp(c.a(2), m);
     1
 }
 fn SetThreadIdealProcessor(_: &mut Ctx) -> u32 {
@@ -1650,7 +1650,7 @@ pub(crate) fn srw_release(l: u32, shared: bool) {
     SYNC_CV.notify_all();
 }
 fn InitializeSRWLock(c: &mut Ctx) -> u32 {
-    w32(c.a(0), 0);
+    crate::mem::wp(c.a(0), 0);
     0
 }
 fn AcquireSRWLockExclusive(c: &mut Ctx) -> u32 {
@@ -1676,7 +1676,7 @@ fn TryAcquireSRWLockShared(c: &mut Ctx) -> u32 {
     srw_try(c.a(0), true) as u32
 }
 fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
-    w32(c.a(0), 0);
+    crate::mem::wp(c.a(0), 0);
     0
 }
 /// Waits for a wake of `cv` (after `release`, before `reacquire`); false on timeout.
@@ -1840,7 +1840,7 @@ fn InitOnceComplete(c: &mut Ctx) -> u32 {
     1
 }
 fn InitOnceInitialize(c: &mut Ctx) -> u32 {
-    w32(c.a(0), 0);
+    crate::mem::wp(c.a(0), 0);
     0
 }
 
@@ -6638,7 +6638,7 @@ fn SystemFunction036(c: &mut Ctx) -> u32 {
 /// BCryptOpenAlgorithmProvider(&alg, id, implementation, flags): any algorithm "opens"; only
 /// BCryptGenRandom does something with it.
 fn BCryptOpenAlgorithmProvider(c: &mut Ctx) -> u32 {
-    put32(c.a(0), mem::heap_alloc(16, true));
+    crate::mem::putp(c.a(0), mem::heap_alloc(16, true));
     0
 }
 fn BCryptCloseAlgorithmProvider(_: &mut Ctx) -> u32 {

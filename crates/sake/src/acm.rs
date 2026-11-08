@@ -273,11 +273,11 @@ fn acmDriverEnum(c: &mut Ctx) -> u32 {
     0
 }
 fn acmDriverID(c: &mut Ctx) -> u32 {
-    put32(c.a(1), DRIVER);
+    crate::mem::putp(c.a(1), DRIVER);
     0
 }
 fn acmDriverOpen(c: &mut Ctx) -> u32 {
-    put32(c.a(0), DRIVER);
+    crate::mem::putp(c.a(0), DRIVER);
     0
 }
 fn ok0(_: &mut Ctx) -> u32 {

@@ -1,0 +1,12 @@
+[package]
+name = "win32md"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Tables for sake's tests from Microsoft's Win32 metadata (microsoft/win32metadata's Windows.Win32.winmd)"
+
+# (its own workspace: the metadata reader stays out of the main one's builds)
+[workspace]
+
+[dependencies]
+windows-metadata = "=0.100.0"

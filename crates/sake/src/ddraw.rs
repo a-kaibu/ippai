@@ -1441,15 +1441,15 @@ fn D_GetDeviceIdentifier(c: &mut Ctx) -> u32 {
 // exports
 
 fn DirectDrawCreate(c: &mut Ctx) -> u32 {
-    put32(c.a(1), dd_iface(dd_new(), 0));
+    crate::mem::putp(c.a(1), dd_iface(dd_new(), 0));
     DD_OK
 }
 fn DirectDrawCreateEx(c: &mut Ctx) -> u32 {
-    put32(c.a(1), dd_iface(dd_new(), 3));
+    crate::mem::putp(c.a(1), dd_iface(dd_new(), 3));
     DD_OK
 }
 fn DirectDrawCreateClipper(c: &mut Ctx) -> u32 {
-    put32(c.a(1), new_clipper());
+    crate::mem::putp(c.a(1), new_clipper());
     DD_OK
 }
 fn DirectDrawEnumerateA(c: &mut Ctx) -> u32 {

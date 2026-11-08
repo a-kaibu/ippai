@@ -22,6 +22,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use koji::{Cpu, EAX, ESP};
 
 pub mod acm;
+#[cfg(test)]
+mod outptr_audit;
 pub mod mp3frame;
 pub mod audiofile;
 /// Tests that run a page for kura::adec (one at a time: its streams are global).
