@@ -19,6 +19,8 @@ pub mod sm4;
 /// D3DCOMPILE_* flags used here
 pub const PACK_MATRIX_ROW_MAJOR: u32 = 1 << 3;
 pub const IEEE_STRICTNESS: u32 = 1 << 13;
+/// (not a D3DCOMPILE flag) the blob as D3D10CompileShader writes it: `sm4::Shader::d3d10`
+pub const D3D10_BLOB: u32 = 1 << 31;
 
 pub struct Target {
     pub pixel: bool,
@@ -122,7 +124,9 @@ pub fn compile(
 ) -> Result<Vec<u8>, String> {
     let t = parse_target(target)?;
     let (prog, pre) = parse_program(src, defines, include)?;
-    finish(lower_entry(&prog, &pre, entry, &[], &t, flags)?, &t)
+    let mut sh = lower_entry(&prog, &pre, entry, &[], &t, flags)?;
+    sh.d3d10 = flags & D3D10_BLOB != 0;
+    finish(sh, &t)
 }
 
 /// Effect source (.fx) to a compiled fx_2_0 effect.

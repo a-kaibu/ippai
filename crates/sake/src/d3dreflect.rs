@@ -736,6 +736,37 @@ mod tests {
             assert_eq!((super::rd16(r, color), super::rd16(r, color + 6), super::rd16(r, color + 8)), (1, 4, 2));
             let inner = super::rd(r, m + 12 * 3 + 4) as usize;
             assert_eq!((super::rd16(r, inner), super::rd16(r, inner + 10)), (5, 2));
+            // a struct is one row of all its components: 3 + 1 + 8 + 3
+            assert_eq!((super::rd16(r, t + 4), super::rd16(r, t + 6)), (1, 15), "{profile}");
+        }
+    }
+
+    /// Windows' answers (d3d10refl.c): a register given is D3D_SIF_USERPACKED; the blob of
+    /// D3D10CompileShader has elements 1 for what is not an array, no texture component flags,
+    /// sample count 0, and SV_Target without a system value; D3DCompile's keeps them
+    #[test]
+    fn rdef_bindings_and_the_d3d10_blob() {
+        let src = "struct L { float3 dir; float power; };
+                   cbuffer S : register(b1) { L light; int mode[2]; };
+                   Texture2D tex : register(t2); SamplerState smp; 
+                   float4 main(float2 uv : TEXCOORD) : SV_Target { return tex.Sample(smp, uv) * light.power + mode[1]; }";
+        for d3d10 in [false, true] {
+            let mut inc = |_: &str, _: bool| None;
+            let b = hlslc::compile(src, &[], &mut inc, "main", "ps_4_0", if d3d10 { hlslc::D3D10_BLOB } else { 0 }).unwrap();
+            let c = dxwgsl::dxbc::Container::parse(&b).unwrap();
+            let r = c.chunk(b"RDEF").unwrap();
+            let (n, at) = (super::rd(r, 8) as usize, super::rd(r, 12) as usize);
+            // name, type, flags, samples
+            let binds: Vec<(String, u32, u32, u32)> =
+                (0..n).map(|i| at + 32 * i).map(|e| (super::cstr_at(r, super::rd(r, e) as usize), super::rd(r, e + 4), super::rd(r, e + 28), super::rd(r, e + 16))).collect();
+            let (tf, ts) = if d3d10 { (1, 0) } else { (0xd, u32::MAX) };
+            assert_eq!(binds, [("smp".into(), 3, 0, 0), ("tex".into(), 2, tf, ts), ("S".into(), 0, 1, 0)], "d3d10 {d3d10}");
+            let cb = super::rd(r, 4) as usize;
+            let vars = super::rd(r, cb + 8) as usize;
+            let elems: Vec<u32> = (0..2).map(|k| super::rd16(r, super::rd(r, vars + 24 * k + 16) as usize + 8)).collect();
+            assert_eq!(elems, if d3d10 { [1, 2] } else { [0, 2] });
+            let o = c.chunk(b"OSGN").unwrap();
+            assert_eq!(super::rd(o, 8 + 8), if d3d10 { 0 } else { 64 });
         }
     }
 }

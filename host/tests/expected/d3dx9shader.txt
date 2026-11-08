@@ -4,7 +4,7 @@ constants 6 version 0xffff0200
 tint: tint set 2 reg 8 count 1 class 1 type 3 1x4 elements 1 members 0 bytes 16
 wvp: wvp set 2 reg 0 count 4 class 3 type 3 4x4 elements 1 members 0 bytes 64
 wvp_r: wvp_r set 2 reg 4 count 4 class 2 type 3 4x4 elements 1 members 0 bytes 64
-lights: lights set 2 reg 10 count 4 class 5 type 0 1x1 elements 2 members 2 bytes 56
+lights: lights set 2 reg 10 count 4 class 5 type 0 1x7 elements 2 members 2 bytes 56
 lights[1].col: col set 2 reg 13 count 1 class 1 type 3 1x4 elements 1 members 0 bytes 16
 lights[1].dir: dir set 2 reg 12 count 1 class 1 type 3 1x3 elements 1 members 0 bytes 12
 tex: tex set 3 reg 1 count 1 class 4 type 12 1x1 elements 1 members 0 bytes 4

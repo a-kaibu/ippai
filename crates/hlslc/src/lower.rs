@@ -989,6 +989,18 @@ impl<'a> L<'a> {
         v
     }
 
+    /// The components of `t`, arrays and struct members counted in.
+    fn scalars(&self, t: &Ty) -> u32 {
+        match t {
+            Ty::Array(e, n) => self.scalars(e) * *n as u32,
+            Ty::Struct(i) => self.prog.structs[*i].fields.iter().map(|f| self.scalars(&f.ty)).sum(),
+            Ty::Scalar(_) => 1,
+            Ty::Vec(_, n) => *n as u32,
+            Ty::Mat(_, r, c) => *r as u32 * *c as u32,
+            _ => 0,
+        }
+    }
+
     fn rdef_var0(&self, name: &str, t: &Ty, row_major: bool, off: u32, end: u32) -> sm4::CbVar {
         let (el, elems) = match t {
             Ty::Array(e, n) => (&**e, *n as u16),
@@ -1004,7 +1016,8 @@ impl<'a> L<'a> {
             Ty::Scalar(_) => (0, 1, 1),
             Ty::Vec(_, n) => (1, 1, *n as u16),
             Ty::Mat(_, r, c) => (if row_major { 2 } else { 3 }, *r as u16, *c as u16),
-            _ => (5, 1, 1),
+            // (a struct: one row of all its members' components)
+            _ => (5, 1, self.scalars(el) as u16),
         };
         sm4::CbVar {
             name: name.into(),
@@ -1500,7 +1513,7 @@ impl<'a> L<'a> {
                 B::Float => 5,
             };
             tex_map[n] = Some(texs.len());
-            texs.push(sm4::Tex { name: t.name.clone(), dim, ret, comps: t.el.comps().max(1) as u32, slot });
+            texs.push(sm4::Tex { name: t.name.clone(), dim, ret, comps: t.el.comps().max(1) as u32, slot, explicit: t.reg.is_some() });
         }
         let mut staken: Vec<u32> = self.samps.iter().filter(|t| t.used).filter_map(|t| t.reg).collect();
         let mut samp_map = vec![None; self.samps.len()];
@@ -1523,7 +1536,7 @@ impl<'a> L<'a> {
             });
             staken.push(slot);
             samp_map[n] = Some(samps.len());
-            samps.push(sm4::Samp { name: s.name.clone(), cmp: s.cmp, slot });
+            samps.push(sm4::Samp { name: s.name.clone(), cmp: s.cmp, slot, explicit: s.reg.is_some() });
         }
         let mut ctaken: Vec<u32> = self.cbs.iter().filter(|c| c.used).filter_map(|c| c.reg).collect();
         let mut cb_map = vec![None; self.cbs.len()];
@@ -1541,7 +1554,7 @@ impl<'a> L<'a> {
                 k
             });
             cb_map[n] = Some(cbs.len());
-            cbs.push(sm4::Cb { name: c.name, slot, size: c.size, dynamic: c.dynamic, vars: c.vars });
+            cbs.push(sm4::Cb { name: c.name, slot, size: c.size, dynamic: c.dynamic, vars: c.vars, explicit: c.reg.is_some() });
         }
         let mut utaken: Vec<u32> = self.uavs.iter().filter(|u| u.used).filter_map(|u| u.reg).collect();
         let mut uav_map = vec![None; self.uavs.len()];
@@ -1572,7 +1585,7 @@ impl<'a> L<'a> {
                 B::Float => 5,
             };
             uav_map[n] = Some(uavs.len());
-            uavs.push(sm4::Uav { name: u.name.clone(), dim, ret, comps: u.el.comps().max(1) as u32, slot });
+            uavs.push(sm4::Uav { name: u.name.clone(), dim, ret, comps: u.el.comps().max(1) as u32, slot, explicit: u.reg.is_some() });
         }
         Ok(sm4::Shader {
             threads: self.threads,
@@ -1596,6 +1609,7 @@ impl<'a> L<'a> {
             tex_map,
             samp_map,
             early_depth: false,
+            d3d10: false,
         })
     }
 

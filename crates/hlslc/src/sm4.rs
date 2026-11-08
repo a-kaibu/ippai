@@ -186,6 +186,8 @@ pub struct Tex {
     pub ret: u32,
     pub comps: u32,
     pub slot: u32,
+    /// register(tN) given: D3D_SIF_USERPACKED
+    pub explicit: bool,
 }
 
 /// A typed unordered access view (RWTexture*)
@@ -196,13 +198,14 @@ pub struct Uav {
     /// 3 sint, 4 uint, 5 float (1 unorm, 2 snorm)
     pub ret: u32,
     pub comps: u32,
-    pub slot: u32,
+    pub slot: u32,    pub explicit: bool,
 }
 
 pub struct Samp {
     pub name: String,
     pub cmp: bool,
     pub slot: u32,
+    pub explicit: bool,
 }
 
 /// A constant buffer variable (RDEF)
@@ -232,6 +235,7 @@ pub struct Cb {
     pub size: u32,
     pub dynamic: bool,
     pub vars: Vec<CbVar>,
+    pub explicit: bool,
 }
 
 pub struct Shader {
@@ -262,6 +266,10 @@ pub struct Shader {
     pub uav_map: Vec<Option<usize>>,
     /// thread group shared memory: bytes of each g register
     pub tgsm: Vec<u32>,
+    /// the blob D3D10CompileShader (d3d10.dll's own compiler) writes: elements 1 for what is
+    /// not an array, no texture component flags nor sample count, SV_Target / SV_Depth without
+    /// a system value in the signature (d3d10refl.c)
+    pub d3d10: bool,
 }
 
 // ---- register allocation ----
@@ -624,7 +632,7 @@ fn set32(b: &mut [u8], at: usize, v: u32) {
     b[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-fn signature(els: &[SigEl], used_out: bool) -> Vec<u8> {
+fn signature(els: &[SigEl], used_out: bool, d3d10: bool) -> Vec<u8> {
     let mut b = Vec::new();
     w32(&mut b, els.len() as u32);
     w32(&mut b, 8);
@@ -635,7 +643,7 @@ fn signature(els: &[SigEl], used_out: bool) -> Vec<u8> {
         put_str(&mut names, &e.name);
         w32(&mut b, off);
         w32(&mut b, e.index);
-        w32(&mut b, e.sysval);
+        w32(&mut b, if d3d10 && e.sysval >= 64 { 0 } else { e.sysval });
         w32(&mut b, e.ctype);
         w32(&mut b, if e.depth { u32::MAX } else { e.reg });
         // mask, then the read/write mask (outputs: the complement of what is written)
@@ -653,9 +661,10 @@ fn signature(els: &[SigEl], used_out: bool) -> Vec<u8> {
 /// A variable's type record at the end of `b`, then its members' (name, type, offset) and
 /// their types: the record's offset. 16 bytes (class, type, rows, columns, elements, members,
 /// the members' offset), 36 in shader model 5 (then four words and the type name's offset, 0).
-fn rdef_type(b: &mut Vec<u8>, v: &CbVar, sm5: bool, fix_names: &mut Vec<(usize, String)>) -> u32 {
+fn rdef_type(b: &mut Vec<u8>, v: &CbVar, sm5: bool, d3d10: bool, fix_names: &mut Vec<(usize, String)>) -> u32 {
     let ta = b.len();
-    for x in [v.class, v.ty, v.rows, v.cols, v.elems, v.members.len() as u16] {
+    let elems = if d3d10 { v.elems.max(1) } else { v.elems };
+    for x in [v.class, v.ty, v.rows, v.cols, elems, v.members.len() as u16] {
         b.extend_from_slice(&x.to_le_bytes());
     }
     b.resize(ta + if sm5 { 36 } else { 16 }, 0);
@@ -666,7 +675,7 @@ fn rdef_type(b: &mut Vec<u8>, v: &CbVar, sm5: bool, fix_names: &mut Vec<(usize, 
         for (i, m) in v.members.iter().enumerate() {
             let at = ma + 12 * i;
             fix_names.push((at, m.name.clone()));
-            let t = rdef_type(b, m, sm5, fix_names);
+            let t = rdef_type(b, m, sm5, d3d10, fix_names);
             set32(b, at + 4, t);
             set32(b, at + 8, m.offset);
         }
@@ -682,7 +691,7 @@ fn rdef(s: &Shader) -> Vec<u8> {
     // bound resources: samplers, textures, cbuffers
     let mut binds: Vec<(String, u32, u32, u32, u32, u32)> = Vec::new(); // name, type, ret, dim, slot, flags
     for sm in &s.samps {
-        binds.push((sm.name.clone(), 3, 0, 0, sm.slot, sm.cmp as u32 * 2));
+        binds.push((sm.name.clone(), 3, 0, 0, sm.slot, sm.cmp as u32 * 2 | sm.explicit as u32));
     }
     for t in &s.texs {
         let dim = match t.dim {
@@ -697,7 +706,8 @@ fn rdef(s: &Shader) -> Vec<u8> {
             9 => 7,
             _ => 10,
         };
-        binds.push((t.name.clone(), 2, t.ret, dim, t.slot, (t.comps - 1) << 2));
+        let comps = if s.d3d10 { 0 } else { (t.comps - 1) << 2 };
+        binds.push((t.name.clone(), 2, t.ret, dim, t.slot, comps | t.explicit as u32));
     }
     for u in &s.uavs {
         let dim = match u.dim {
@@ -708,10 +718,10 @@ fn rdef(s: &Shader) -> Vec<u8> {
             7 => 3,
             _ => 5,
         };
-        binds.push((u.name.clone(), 4, u.ret, dim, u.slot, (u.comps - 1) << 2));
+        binds.push((u.name.clone(), 4, u.ret, dim, u.slot, (u.comps - 1) << 2 | u.explicit as u32));
     }
     for cb in &s.cbs {
-        binds.push((cb.name.clone(), 0, 0, 0, cb.slot, 0));
+        binds.push((cb.name.clone(), 0, 0, 0, cb.slot, cb.explicit as u32));
     }
     let cb_at = b.len();
     // constant buffer descriptions: name, vars, var offset, size, flags, type
@@ -725,7 +735,7 @@ fn rdef(s: &Shader) -> Vec<u8> {
         set32(&mut b, at + 4, bd.1);
         set32(&mut b, at + 8, bd.2);
         set32(&mut b, at + 12, bd.3);
-        set32(&mut b, at + 16, if bd.1 == 2 || bd.1 == 4 { u32::MAX } else { 0 });
+        set32(&mut b, at + 16, if (bd.1 == 2 || bd.1 == 4) && !s.d3d10 { u32::MAX } else { 0 });
         set32(&mut b, at + 20, bd.4);
         set32(&mut b, at + 24, 1);
         set32(&mut b, at + 28, bd.5);
@@ -746,7 +756,7 @@ fn rdef(s: &Shader) -> Vec<u8> {
             set32(&mut b, va + 8, v.size);
             set32(&mut b, va + 12, if v.used { 2 } else { 0 });
             // the type
-            let ta = rdef_type(&mut b, v, sm5, &mut fix_names);
+            let ta = rdef_type(&mut b, v, sm5, s.d3d10, &mut fix_names);
             set32(&mut b, va + 16, ta);
             if sm5 {
                 // texture start, size, sampler start, size
@@ -786,8 +796,8 @@ pub fn finish(mut s: Shader) -> Vec<u8> {
     let shdr: Vec<u8> = prog.iter().flat_map(|w| w.to_le_bytes()).collect();
     let chunks: Vec<([u8; 4], Vec<u8>)> = vec![
         (*b"RDEF", rdef(&s)),
-        (*b"ISGN", signature(&s.inputs, false)),
-        (*b"OSGN", signature(&s.outputs, true)),
+        (*b"ISGN", signature(&s.inputs, false, s.d3d10)),
+        (*b"OSGN", signature(&s.outputs, true, s.d3d10)),
         (if s.major >= 5 { *b"SHEX" } else { *b"SHDR" }, shdr),
     ];
     container(&chunks)

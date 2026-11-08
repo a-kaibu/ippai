@@ -320,7 +320,7 @@ fn D3D10CompileShader(c: &mut Ctx) -> u32 {
     let src = mem::slice(c.a(0), c.a(1)).to_vec();
     let name = if c.a(2) == 0 { String::new() } else { crate::k32::arg_str(c.a(2), false) };
     let (d, i, e, t, f, o, er) = (c.a(3), c.a(4), c.a(5), c.a(6), c.a(7), c.a(8), c.a(9));
-    compile(c, &src, &name, d, i, e, t, f, o, er)
+    compile(c, &src, &name, d, i, e, t, f | hlslc::D3D10_BLOB, o, er)
 }
 
 /// A string the guest keeps (the D3D10Get*ShaderProfile results).
