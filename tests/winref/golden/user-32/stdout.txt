@@ -29,7 +29,7 @@ CopyRect(&o, &b)                                                 = 1 err 57005
 copy 5,5,15,15
 RegisterClassA(&wc) != 0                                         = 1 err 57005
 RegisterClassA(&wc) != 0                                         = 0 err 1410
-GetClassInfoA(wc.hInstance, "ippai-winref", &got)                = 49478 err 57005
+GetClassInfoA(wc.hInstance, "ippai-winref", &got)                = 49488 err 57005
 GetClassInfoA(wc.hInstance, "ippai-nothere", &got)               = 0 err 1411
 -- create hidden
 WM_GETMINMAXINFO

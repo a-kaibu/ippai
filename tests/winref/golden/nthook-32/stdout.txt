@@ -1,0 +1,36 @@
+NtClose and ZwClose: one function
+NtCreateFile and ZwCreateFile: one function
+NtOpenFile and ZwOpenFile: one function
+NtReadFile and ZwReadFile: one function
+NtWriteFile and ZwWriteFile: one function
+NtQueryInformationFile and ZwQueryInformationFile: one function
+NtSetInformationFile and ZwSetInformationFile: one function
+NtQueryAttributesFile and ZwQueryAttributesFile: one function
+NtQueryFullAttributesFile and ZwQueryFullAttributesFile: one function
+NtQueryDirectoryFile and ZwQueryDirectoryFile: one function
+NtProtectVirtualMemory and ZwProtectVirtualMemory: one function
+NtQueryInformationProcess and ZwQueryInformationProcess: one function
+CreateFileA OPEN_EXISTING: -> INVALID_HANDLE_VALUE error 2
+GetFileSize: -> 4294967295 high 57005
+GetFileSizeEx: -> 0 0
+ReadFile 5: -> 0 read 0 ""
+SetFilePointer 7 FILE_BEGIN: -> 4294967295
+SetFilePointer 0 FILE_CURRENT: -> 4294967295
+SetFilePointer -5 FILE_END: -> 4294967295 high -1
+ReadFile 40: -> 0 read 0 ""
+ReadFile at the end: -> 0 read 0
+SetFilePointer -100 FILE_CURRENT: -> 0xffffffff error 6
+SetFilePointerEx 2 FILE_BEGIN: -> 0 0
+ReadFile 3 at OVERLAPPED 14: -> 0 read 0 "" Internal 0x103 InternalHigh 0
+CloseHandle: -> 1
+CreateFileW CREATE_ALWAYS: -> other error 0
+CreateFileA CREATE_NEW: -> INVALID_HANDLE_VALUE error 80
+CreateFileA OPEN_ALWAYS: -> other error 183
+GetFileAttributesA: name \??\X: root 0 attrs 0x40 NtQueryAttributesFile -> 0x21 error 57005
+GetFileAttributesW: name \??\X: root 0 attrs 0x40 NtQueryAttributesFile -> 0x21
+GetFileAttributesExA: -> 1 attrs 0x22 created 0x1dd6fd2706d2523 accessed 0x1dd6fd2706d2523 written 0x1dd6fd2706d2523 size 0 0
+real file: opened 1 wrote 1 6 size 6 read 4 "cdef"
+real file: closed 1 attrs 0x20 deleted 1
+missing file: 0xffffffff error 2
+missing folder: INVALID_HANDLE_VALUE error 3
+log left: ""
