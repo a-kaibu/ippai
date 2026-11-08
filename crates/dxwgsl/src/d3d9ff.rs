@@ -245,10 +245,12 @@ pub fn pixel(k: &PsKey) -> String {
     h.push_str("  return steps(out);\n}\n");
     h.push_str(
         "
-// (a render target of fewer bits, x[3]: R, G, B, A each rounded to its 2^bits - 1 steps; 0: as it is)
+// (a render target of fewer bits, x[3]: R, G, B, A each rounded to its 2^bits - 1 steps, 2^(bits-1) - 1 signed; 0: as it is)
 fn steps(c: vec4f) -> vec4f {
-  let m = vec4f(u.x[3]);
-  return select(c, round(clamp(c, vec4f(0.0), vec4f(1.0)) * m) / max(m, vec4f(1.0)), m > vec4f(0.0));
+  let m = vec4f(u.x[3] & vec4u(0x7fffffffu));
+  // (bit 31: SNORM, -1 to 1)
+  let lo = select(vec4f(0.0), vec4f(-1.0), (u.x[3] & vec4u(0x80000000u)) != vec4u(0u));
+  return select(c, round(clamp(c, lo, vec4f(1.0)) * m) / max(m, vec4f(1.0)), m > vec4f(0.0));
 }
 fn alpha_ok(a: f32, func: u32) -> bool {
   let r = bitcast<f32>(u.x[0].w);

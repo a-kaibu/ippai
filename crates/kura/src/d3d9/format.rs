@@ -126,10 +126,12 @@ pub fn page_bpp(fmt: u32) -> u32 {
 
 /// Formats of more than 8 bits a channel, signed ones, and those with missing channels: the
 /// page format they become (their texels as floats: 16-bit floats when those hold every value,
-/// 32-bit ones otherwise).
+/// 32-bit ones otherwise; SNORM's k / 127 too: in 16 bits 64 / 127 is 0.50390625, which
+/// shows as 0x80 where Windows' 0.50394 shows as 0x81, winref d3d9rtfmt V8U8).
 fn wide(fmt: u32) -> Option<u32> {
     Some(match fmt {
-        A2B10G10R10 | A2R10G10B10 | V8U8 | L6V5U5 | X8L8V8U8 | Q8W8V8U8 | A2W10V10U10 | R16F | G16R16F => FMT_RGBA16F,
+        A2B10G10R10 | A2R10G10B10 | R16F | G16R16F => FMT_RGBA16F,
+        V8U8 | L6V5U5 | X8L8V8U8 | Q8W8V8U8 | A2W10V10U10 => FMT_RGBA32F,
         G16R16 | A16B16G16R16 | V16U16 | L16 | Q16W16V16U16 | R32F | G32R32F => FMT_RGBA32F,
         _ => return None,
     })
@@ -202,8 +204,7 @@ pub fn target_channels(fmt: u32) -> (u32, bool) {
 
 /// The steps a render target of the format keeps a channel in where the page holds more (R, G,
 /// B, A: 2^bits - 1; 0, as the page keeps it): what a draw writes is rounded to them, as Windows
-/// writes R5G6B5 and the rest (winref d3d9rtfmt, #53). (The X bits keep what the page has:
-/// Windows' draws leave them 0, but DESTALPHA blending reads them as 1 here)
+/// writes R5G6B5 and the rest (winref d3d9rtfmt, #53). (The X bits: target_x)
 pub fn target_steps(fmt: u32) -> [u32; 4] {
     match fmt {
         R5G6B5 => [31, 63, 31, 0],
@@ -214,8 +215,21 @@ pub fn target_steps(fmt: u32) -> [u32; 4] {
         A2R10G10B10 | A2B10G10R10 => [1023, 1023, 1023, 3],
         G16R16 => [65535, 65535, 0, 0],
         A16B16G16R16 => [65535; 4],
+        // (SNORM, -1 to 1: bit 31; Windows samples 0x80 drawn to them as 0x81, 64 / 127)
+        V8U8 => [SIGNED | 127, SIGNED | 127, 0, 0],
+        Q8W8V8U8 => [SIGNED | 127; 4],
         _ => [0; 4],
     }
+}
+
+/// target_steps: a channel's steps go from -1 (SNORM)
+pub const SIGNED: u32 = 0x8000_0000;
+
+/// Render targets with X bits where the page keeps alpha (or with no alpha at all, R5G6B5):
+/// blending reads their alpha as 1, and a draw leaves the X bits 0 while a clear keeps the
+/// color's alpha there, as Windows (winref d3d9rtfmt: X8R8G8B8, X1R5G5B5, #53).
+pub fn target_x(fmt: u32) -> bool {
+    matches!(fmt, X8R8G8B8 | X1R5G5B5 | X4R4G4B4 | R5G6B5)
 }
 
 /// A D3DCOLOR as a clear of a render target of the format leaves it on the page
@@ -232,6 +246,16 @@ pub fn target_color(fmt: u32, c: u32) -> u32 {
     let st = target_steps(fmt);
     let q = |v: u8, m: u32| if m == 0 || m > 255 { v } else { ext((v as u32 * m + 127) / 255, m.trailing_ones()) as u8 };
     u32::from_le_bytes([q(b, st[2]), q(g, st[1]), q(r, st[0]), q(a, st[3])])
+}
+
+/// A clear's color of a render target of the format as R, G, B, A: target_color, and SNORM
+/// channels at their k / 127 (an 8-bit value cannot hold them: Windows' Q8W8V8U8 cleared with
+/// alpha 0x80 shows 0x81, 64 / 127).
+pub fn target_clear(fmt: u32, c: u32) -> [f32; 4] {
+    let tc = target_color(fmt, c);
+    let v = [(tc >> 16) & 0xff, (tc >> 8) & 0xff, tc & 0xff, tc >> 24].map(|v| v as f32 / 255.0);
+    let st = target_steps(fmt);
+    core::array::from_fn(|i| if st[i] & SIGNED != 0 { let m = (st[i] & !SIGNED) as f32; (v[i] * m).round() / m } else { v[i] })
 }
 
 /// A page texel (`page_bpp` bytes: BGRA8, or 16- or 32-bit float RGBA) as R, G, B, A.
@@ -611,6 +635,32 @@ mod tests {
                 }
             }
         }
+        // SNORM: every step k / 127 from -127 packs to k
+        for f in [V8U8, Q8W8V8U8] {
+            let mut out = [0u8; 8];
+            for (i, &m) in target_steps(f).iter().enumerate() {
+                if m == 0 {
+                    continue;
+                }
+                assert_eq!(m, SIGNED | 127);
+                for k in [-127i32, -64, -1, 0, 1, 64, 126, 127] {
+                    let mut c = [0.0f32; 4];
+                    c[i] = k as f32 / 127.0;
+                    assert!(pack(f, c, &mut out));
+                    assert_eq!(out[i] as i8 as i32, k, "format {f} channel {i} step {k}");
+                    let back = page_texel_of(f, &out)[i];
+                    assert_eq!((back * 127.0).round() as i32, k);
+                }
+            }
+        }
+        // (cleared with 0x80406020: Q8W8V8U8 is R, G, B, A 32 / 127, 48 / 127, 16 / 127, 64 / 127;
+        // V8U8's blue and alpha read 1; others as target_color's bytes)
+        assert_eq!(target_clear(Q8W8V8U8, 0x80406020), [32.0 / 127.0, 48.0 / 127.0, 16.0 / 127.0, 64.0 / 127.0]);
+        assert_eq!(target_clear(V8U8, 0x80406020), [32.0 / 127.0, 48.0 / 127.0, 1.0, 1.0]);
+        assert_eq!(target_clear(A8R8G8B8, 0x80406020), [64.0 / 255.0, 96.0 / 255.0, 32.0 / 255.0, 128.0 / 255.0]);
+        // (Windows' V8U8 / Q8W8V8U8 "color" line: 0x80 drawn is 64 / 127, shown as 0x81)
+        let g = (0x80 as f32 / 255.0 * 127.0).round() / 127.0;
+        assert_eq!((g * 255.0).round() as u32, 0x81);
         // formats the page keeps whole: no steps
         for f in [A8R8G8B8, X8R8G8B8, A8, L8, A8L8, A16B16G16R16F, R32F] {
             assert_eq!(target_steps(f), [0; 4]);
@@ -878,8 +928,9 @@ mod tests {
             (DXT4, false, false, false, false),
             (DXT5, false, false, false, false),
         ];
-        let wide16 = [A2B10G10R10, A2R10G10B10, V8U8, L6V5U5, X8L8V8U8, Q8W8V8U8, A2W10V10U10, R16F, G16R16F];
-        let wide32 = [G16R16, A16B16G16R16, V16U16, L16, Q16W16V16U16, R32F, G32R32F];
+        let wide16 = [A2B10G10R10, A2R10G10B10, R16F, G16R16F];
+        // (the signed ones too: k / 127 in 16 bits is off where 8 bits show it)
+        let wide32 = [G16R16, A16B16G16R16, V16U16, L16, Q16W16V16U16, R32F, G32R32F, V8U8, L6V5U5, X8L8V8U8, Q8W8V8U8, A2W10V10U10];
         for f in wide16.into_iter().chain(wide32) {
             assert!(supported(f) != matches!(f, X8L8V8U8 | L6V5U5 | A2W10V10U10) && !is_depth(f) && renderable(f) == matches!(f, A2R10G10B10 | A2B10G10R10 | G16R16 | A16B16G16R16 | L16 | R16F | G16R16F | R32F | G32R32F | V8U8 | Q8W8V8U8) && !no_alpha(f) && !same_on_page(f), "{f}");
             let (page, bpp) = if wide16.contains(&f) { (FMT_RGBA16F, 8) } else { (FMT_RGBA32F, 16) };

@@ -2413,8 +2413,7 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
         Vec::new()
     };
     // (a target of fewer channels: what it does not keep as it reads, format::target_color)
-    let tc = fmt::target_color(target.4, color);
-    let c = [(tc >> 16) & 0xff, (tc >> 8) & 0xff, tc & 0xff, tc >> 24].map(|v| f2u(v as f32 / 255.0));
+    let c = fmt::target_clear(target.4, color).map(f2u);
     for r in list {
         if r[2] <= r[0] || r[3] <= r[1] {
             continue;
@@ -2966,7 +2965,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     };
     let (vs_mod, ps_mod) = (module(vs_mod), module(ps_mod));
     let st = &dev.st;
-    let (blend, wmask) = blend_state(st);
+    let (blend, wmask) = blend_state(st, target.4);
     // WebGPU decides facing in framebuffer coordinates (y down) as D3D does on screen, so with
     // frontFace "ccw" (1 = cull "front", 2 = cull "back"): D3DCULL_CW culls the clockwise
     // faces ("back"), D3DCULL_CCW the counterclockwise ones ("front")
@@ -3328,16 +3327,20 @@ fn shader_module(dev: &mut Device, wgsl: String) -> u32 {
     id
 }
 
-/// [enable, src, dst, op, src alpha, dst alpha, op alpha] and the write mask
-fn blend_state(st: &State) -> ([u32; 7], u32) {
+/// [enable, src, dst, op, src alpha, dst alpha, op alpha] and the write mask, drawing to a
+/// render target of format `target`
+fn blend_state(st: &State, target: u32) -> ([u32; 7], u32) {
     let rs = &st.rs;
     let fix = |s: u32, d: u32| match s {
         12 => (5, 6), // BOTHSRCALPHA
         13 => (6, 5), // BOTHINVSRCALPHA
         _ => (s, d),
     };
+    let wmask = rs[168] & 0xf;
+    let x = fmt::target_x(target);
     if rs[27] == 0 {
-        return ([0, 2, 1, 1, 2, 1, 1], rs[168] & 0xf);
+        // (X bits: a draw leaves them 0 (blending ONE, ZERO is the draw as it is))
+        return (if x { [1, 2, 1, 1, 1, 1, 1] } else { [0, 2, 1, 1, 2, 1, 1] }, wmask);
     }
     let (s, d) = fix(rs[19], rs[20]);
     let (sa, da, opa) = if rs[206] != 0 {
@@ -3346,11 +3349,77 @@ fn blend_state(st: &State) -> ([u32; 7], u32) {
     } else {
         (s, d, rs[171])
     };
-    ([1, s, d, rs[171], sa, da, opa], rs[168] & 0xf)
+    if x {
+        // (a target without alpha has alpha 1 as blending reads it: DESTALPHA is ONE,
+        // INVDESTALPHA ZERO, SRCALPHASAT min(As, 1 - 1) ZERO; and its X bits end up 0)
+        let one = |f: u32| match f {
+            7 => 2,
+            8 | 11 => 1,
+            f => f,
+        };
+        return ([1, one(s), one(d), rs[171], 1, 1, 1], wmask);
+    }
+    ([1, s, d, rs[171], sa, da, opa], wmask)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{blend_state, default_state, fmt};
+    use proptest::prelude::*;
+
+    const RT: [u32; 4] = [fmt::X8R8G8B8, fmt::X1R5G5B5, fmt::X4R4G4B4, fmt::R5G6B5];
+
+    #[test]
+    fn x_targets_blend_with_alpha_one_and_write_x_zero() {
+        // (winref d3d9rtfmt: X8R8G8B8's opaque draw 0080ff00, SRCALPHA / INVSRCALPHA 90b02000)
+        let mut st = default_state();
+        for f in RT {
+            assert_eq!(blend_state(&st, f).0, [1, 2, 1, 1, 1, 1, 1], "{f}");
+        }
+        assert_eq!(blend_state(&st, fmt::A8R8G8B8).0[0], 0);
+        st.rs[27] = 1;
+        st.rs[19] = 7; // DESTALPHA
+        st.rs[20] = 8; // INVDESTALPHA
+        assert_eq!(blend_state(&st, fmt::X8R8G8B8).0, [1, 2, 1, 1, 1, 1, 1]);
+        assert_eq!(blend_state(&st, fmt::A8R8G8B8).0, [1, 7, 8, 1, 7, 8, 1]);
+        st.rs[19] = 11; // SRCALPHASAT: min(As, 1 - 1)
+        st.rs[20] = 6;
+        assert_eq!(blend_state(&st, fmt::R5G6B5).0, [1, 1, 6, 1, 1, 1, 1]);
+        // (BOTHINVSRCALPHA as it is)
+        st.rs[19] = 13;
+        assert_eq!(blend_state(&st, fmt::X1R5G5B5).0, [1, 6, 5, 1, 1, 1, 1]);
+    }
+
+    proptest! {
+        /// Any blend state: an X target's color never reads the page's alpha and its alpha
+        /// comes out 0; other targets get the state as it is; the write mask is COLORWRITEENABLE's.
+        #[test]
+        fn x_targets_never_read_destination_alpha(src in 1u32..16, dst in 1u32..16, op in 1u32..6, sep in 0u32..2,
+                                                  sa in 1u32..16, da in 1u32..16, opa in 1u32..6, en in 0u32..2, mask in 0u32..16) {
+            let mut st = default_state();
+            for (i, v) in [(27, en), (19, src), (20, dst), (171, op), (206, sep), (207, sa), (208, da), (209, opa), (168, mask)] {
+                st.rs[i] = v;
+            }
+            for f in RT {
+                let (b, m) = blend_state(&st, f);
+                prop_assert_eq!(m, mask);
+                prop_assert_eq!(b[0], 1);
+                prop_assert!(![7, 8, 11].contains(&b[1]) && ![7, 8, 11].contains(&b[2]));
+                prop_assert_eq!(&b[4..], &[1, 1, 1][..]);
+                if en == 0 {
+                    prop_assert_eq!(&b[1..4], &[2, 1, 1][..]);
+                } else {
+                    prop_assert_eq!(b[3], op);
+                }
+            }
+            let (b, m) = blend_state(&st, fmt::A8R8G8B8);
+            prop_assert_eq!(m, mask);
+            if en != 0 && src < 12 && (sep == 0 || sa < 12) {
+                prop_assert_eq!(b, [1, src, dst, op, if sep != 0 { sa } else { src }, if sep != 0 { da } else { dst }, if sep != 0 { opa } else { op }]);
+            }
+        }
+    }
+
     #[test]
     fn changed_box_finds_the_written_corner() {
         // 64x8 pixels of 4 bytes, pitch 300 bytes; the frame writes x 3..41, y 2..5
