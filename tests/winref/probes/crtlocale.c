@@ -19,7 +19,11 @@ static int readable(const void *p, size_t n) {
 
 /* (offsets within the first n bytes of s: DWORDs equal to v; pointers to a ctype table (pctype
  * 'A' and 'a' classes); pointers to a lower / upper case map) */
+/* the first ctype table scan() found: printed whole after the scan (index -1, EOF, first) */
+static const unsigned short *table;
+
 static void scan(const char *dll, const char *what, const unsigned char *s, int n) {
+    table = NULL;
     printf("%s %s acp at", dll, what);
     for (int o = 0; o + 4 <= n; o += 4)
         if (*(const DWORD *)(s + o) == GetACP()) printf(" %#x", o);
@@ -28,7 +32,10 @@ static void scan(const char *dll, const char *what, const unsigned char *s, int 
         const unsigned short *t = *(const unsigned short *const *)(s + o);
         /* (the classes but C1_DEFINED 0x200, which GetStringTypeA adds outside the "C" locale;
          * then what 'A' is there, with it) */
-        if (readable(t, 512) && (t['A'] & 0x1ff) == 0x181 && (t['a'] & 0x1ff) == 0x182 && (t['0'] & 0x1ff) == 0x84) printf(" %#x ('A' %#x)", o, t['A']);
+        if (readable(t, 512) && (t['A'] & 0x1ff) == 0x181 && (t['a'] & 0x1ff) == 0x182 && (t['0'] & 0x1ff) == 0x84) {
+            printf(" %#x ('A' %#x)", o, t['A']);
+            if (!table) table = t;
+        }
     }
     printf("\n%s %s lower map at", dll, what);
     for (int o = 0; o + (int)sizeof(void *) <= n; o += sizeof(void *)) {
@@ -41,6 +48,13 @@ static void scan(const char *dll, const char *what, const unsigned char *s, int 
         if (readable(t, 256) && t['a'] == 'A' && t['A'] == 'A' && t['z'] == 'Z') printf(" %#x", o);
     }
     printf("\n");
+    /* (the classes of every byte, 32 a line; the table starts one entry before index 0) */
+    for (int r = 0; table && r < 8; r++) {
+        printf("%s %s pctype %02x:", dll, what, r * 32);
+        for (int c = r * 32; c < r * 32 + 32; c++) printf(" %x", table[c]);
+        printf("\n");
+    }
+    if (table) printf("%s %s pctype EOF %x\n", dll, what, table[-1]);
 }
 
 int main(void) {
