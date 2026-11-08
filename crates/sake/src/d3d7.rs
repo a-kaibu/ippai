@@ -10,6 +10,9 @@ use super::*;
 
 const D3D_OK: u32 = 0;
 const D3DERR_INVALIDCALL: u32 = 0x8007_0057;
+const DDERR_INVALIDPIXELFORMAT: u32 = 0x8876_0091;
+const D3DERR_SCENE_IN_SCENE: u32 = 0x8876_02f8;
+const D3DERR_SCENE_NOT_IN_SCENE: u32 = 0x8876_02f9;
 const D3DERR_VBUF_CREATE_FAILED: u32 = 0x8876_0825;
 
 const RS_ZENABLE: usize = 7;
@@ -24,6 +27,14 @@ const RS_ALPHAREF: usize = 24;
 const RS_ALPHAFUNC: usize = 25;
 const RS_ALPHABLENDENABLE: usize = 27;
 const RS_SPECULARENABLE: usize = 29;
+const RS_FOGENABLE: usize = 28;
+const RS_FOGCOLOR: usize = 34;
+const RS_FOGTABLEMODE: usize = 35;
+const RS_FOGSTART: usize = 36;
+const RS_FOGEND: usize = 37;
+const RS_FOGDENSITY: usize = 38;
+const RS_RANGEFOGENABLE: usize = 48;
+const RS_FOGVERTEXMODE: usize = 140;
 const RS_COLORKEYENABLE: usize = 41;
 const RS_TEXTUREFACTOR: usize = 60;
 const RS_LIGHTING: usize = 137;
@@ -77,6 +88,8 @@ struct Dev {
     /// by the game's light index (any u32, as on Windows; only the ones set or enabled)
     lights: std::collections::BTreeMap<u32, ([u32; 26], bool)>,
     rec: Option<Vec<Ch>>,
+    /// between BeginScene and EndScene
+    scene: bool,
 }
 
 /// One recorded state change (state blocks).
@@ -112,6 +125,8 @@ impl Dev {
             (RS_ZFUNC, 4),
             (RS_ALPHAFUNC, 8),
             (RS_TEXTUREFACTOR, 0xffff_ffff),
+            (RS_FOGEND, 0x3f80_0000),
+            (RS_FOGDENSITY, 0x3f80_0000),
             (136, 1),
             (RS_LIGHTING, 1),
             (RS_COLORVERTEX, 1),
@@ -139,7 +154,7 @@ impl Dev {
         }
         let mut mat = [0f32; 17];
         mat[..4].copy_from_slice(&[1., 1., 1., 1.]);
-        Dev { rt, dd, d3d_held: 0, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], rs, tss, tex: [0; 8], mat, lights: Default::default(), rec: None }
+        Dev { rt, dd, d3d_held: 0, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], rs, tss, tex: [0; 8], mat, lights: Default::default(), rec: None, scene: false }
     }
 
     /// Applies a change; a texture change takes a reference of the new texture and returns
@@ -178,7 +193,7 @@ impl Dev {
                         let mut l = [0u32; 26];
                         l[0] = 3;
                         l[1..4].copy_from_slice(&[1f32.to_bits(); 3]);
-                        l[17] = 1f32.to_bits();
+                        l[18] = 1f32.to_bits();
                         (l, false)
                     })
                     .1 = *on
@@ -383,16 +398,31 @@ fn write_caps(p: u32, dev: usize) {
     w32(p + 216, 0x3b);
 }
 
+/// EnumDevices(callback, context): each device's description and name stay where they were
+/// handed after the call (Wine's d3d tests: D3D7EnumLifetimeTest), and any answer but
+/// DDENUMRET_OK stops it
 fn Q_EnumDevices(c: &mut Ctx) -> u32 {
     let (cb, ctx) = (c.a(1), c.a(2));
-    let m = mem::heap_alloc(236 + 256, true);
-    for (i, (desc, name, ..)) in DEVICES.iter().enumerate() {
+    if cb == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    static NAMES: OnceLock<u32> = OnceLock::new();
+    let names = *NAMES.get_or_init(|| {
+        let p = mem::heap_alloc(256 * DEVICES.len() as u32, true);
+        for (i, (desc, name, ..)) in DEVICES.iter().enumerate() {
+            let q = p + 256 * i as u32;
+            mem::write(q, desc.as_bytes());
+            mem::w8(q + desc.len() as u32, 0);
+            mem::write(q + 128, name.as_bytes());
+            mem::w8(q + 128 + name.len() as u32, 0);
+        }
+        p
+    });
+    let m = mem::heap_alloc(236, true);
+    for i in 0..DEVICES.len() {
         write_caps(m, i);
-        mem::write(m + 236, desc.as_bytes());
-        mem::w8(m + 236 + desc.len() as u32, 0);
-        mem::write(m + 236 + 128, name.as_bytes());
-        mem::w8(m + 236 + 128 + name.len() as u32, 0);
-        if c.call(cb, &[m + 236, m + 236 + 128, m, ctx]) == 0 {
+        let q = names + 256 * i as u32;
+        if c.call(cb, &[q, q + 128, m, ctx]) != 1 {
             break;
         }
     }
@@ -411,7 +441,7 @@ fn dev_vtbl() -> u32 {
                 (V_Release, 4),
                 (V_GetCaps, 8),
                 (V_EnumTextureFormats, 12),
-                (ok, 4),
+                (V_BeginScene, 4),
                 (V_EndScene, 4),
                 (V_GetDirect3D, 8),
                 (V_SetRenderTarget, 12),
@@ -593,7 +623,10 @@ fn B_Lock(c: &mut Ctx) -> u32 {
 fn B_GetVertexBufferDesc(c: &mut Ctx) -> u32 {
     let Some((_, fvf, n)) = vb(c) else { return D3DERR_INVALIDCALL };
     let p = c.a(1);
-    w32(p, 16);
+    if p == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    // (dwSize is left as the caller put it, whatever it is: Wine's d3d tests VertexBufferDescTest)
     w32(p + 4, r32(c.a(0) + 4));
     w32(p + 8, fvf);
     w32(p + 12, n);
@@ -677,6 +710,9 @@ fn V_Release(c: &mut Ctx) -> u32 {
     n
 }
 fn V_GetCaps(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
     write_caps(c.a(1), 2);
     D3D_OK
 }
@@ -703,7 +739,19 @@ fn V_EnumTextureFormats(c: &mut Ctx) -> u32 {
     mem::heap_free(p);
     D3D_OK
 }
+fn V_BeginScene(c: &mut Ctx) -> u32 {
+    match dev(c, |d| std::mem::replace(&mut d.scene, true)) {
+        None => D3DERR_INVALIDCALL,
+        Some(true) => D3DERR_SCENE_IN_SCENE,
+        Some(false) => D3D_OK,
+    }
+}
 fn V_EndScene(c: &mut Ctx) -> u32 {
+    match dev(c, |d| std::mem::replace(&mut d.scene, false)) {
+        None => return D3DERR_INVALIDCALL,
+        Some(false) => return D3DERR_SCENE_NOT_IN_SCENE,
+        Some(true) => {}
+    }
     if let Some(rt) = dev(c, |d| d.rt) {
         if let Some(s) = surf(rt) {
             present_if_primary(c, rt, Rect { l: 0, t: 0, r: s.w, b: s.h });
@@ -717,18 +765,20 @@ fn V_GetDirect3D(c: &mut Ctx) -> u32 {
     put32(c.a(1), b);
     if b == 0 { D3DERR_INVALIDCALL } else { D3D_OK }
 }
+/// SetRenderTarget(surface, flags), as Windows (Wine's d3d tests SetRenderTargetTest): a
+/// surface without DDSCAPS_3DDEVICE is refused; a depth buffer is taken (GetRenderTarget hands
+/// it back, nothing is drawn to it) but answered DDERR_INVALIDPIXELFORMAT; the viewport stays
+/// as it was.
 fn V_SetRenderTarget(c: &mut Ctx) -> u32 {
-    let Some((rt, _)) = sid(c.a(1)) else { return D3DERR_INVALIDCALL };
-    let Some(s) = surf(rt) else { return D3DERR_INVALIDCALL };
+    let Some((rt, _)) = sid(c.a(1)) else { return DDERR_INVALIDPARAMS };
+    let Some(s) = surf(rt) else { return DDERR_INVALIDPARAMS };
+    if s.caps & CAPS_3DDEVICE == 0 {
+        return DDERR_INVALIDCAPS;
+    }
     hold_surf(rt);
-    let old = dev(c, |d| {
-        let old = d.rt;
-        d.rt = rt;
-        d.vp = [0, 0, s.w, s.h];
-        old
-    });
+    let old = dev(c, |d| std::mem::replace(&mut d.rt, rt));
     release_surfs(c, &[old.unwrap_or(rt)]);
-    D3D_OK
+    if s.caps & CAPS_ZBUFFER != 0 { DDERR_INVALIDPIXELFORMAT } else { D3D_OK }
 }
 fn V_GetRenderTarget(c: &mut Ctx) -> u32 {
     let Some(rt) = dev(c, |d| d.rt) else { return D3DERR_INVALIDCALL };
@@ -785,6 +835,9 @@ fn V_GetViewport(c: &mut Ctx) -> u32 {
 }
 fn V_SetMaterial(c: &mut Ctx) -> u32 {
     let p = c.a(1);
+    if p == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
     set(c, Ch::Mat(std::array::from_fn(|i| rf(p + 4 * i as u32))))
 }
 fn V_GetMaterial(c: &mut Ctx) -> u32 {
@@ -800,7 +853,20 @@ fn V_SetLight(c: &mut Ctx) -> u32 {
         return D3DERR_INVALIDCALL;
     }
     let l = std::array::from_fn(|i| r32(p + 4 * i as u32));
+    if !light_ok(&l) {
+        return D3DERR_INVALIDCALL;
+    }
     set(c, Ch::Light(c.a(1), l))
+}
+/// What SetLight takes (Wine's d3d tests, as Windows): a point, spot or directional light
+/// (D3DLIGHTTYPE 1..=3), and a point or spot light's constant attenuation not below 0 (a NaN
+/// passes; a directional light's attenuation is not looked at)
+fn light_ok(l: &[u32; 26]) -> bool {
+    match l[0] {
+        3 => true,
+        1 | 2 => !(f32::from_bits(l[21]) < 0.),
+        _ => false,
+    }
 }
 fn V_GetLight(c: &mut Ctx) -> u32 {
     let i = c.a(1);
@@ -1108,8 +1174,35 @@ impl Src {
         };
         let v = [x, y, z, 1.];
         let clip = std::array::from_fn(|c| (0..4).map(|r| v[r] * t.wvp[r * 4 + c]).sum());
+        let mut spec = spec;
+        if let Some(f) = vertex_fog(d, &t.wv, v) {
+            spec[3] = f;
+        }
         Vtx { clip, screen: false, diff, spec, tex }
     }
+}
+
+/// The fog factor of an untransformed vertex at `v` (1: no fog, 0: all fog), when FOGENABLE and a
+/// vertex fog mode (or, as a stand-in, the table fog mode: the device does not offer table fog)
+/// are on: LINEAR (end - d) / (end - start), EXP e^-(density d), EXP2 e^-(density d)^2, of the
+/// eye space depth d (the distance with RANGEFOGENABLE). None: the specular alpha stays the fog
+/// factor, as Windows (Wine's ddraw visual tests fog_test).
+fn vertex_fog(d: &Dev, wv: &[f32; 16], v: [f32; 4]) -> Option<f32> {
+    if d.rs[RS_FOGENABLE] == 0 {
+        return None;
+    }
+    let mode = if d.rs[RS_FOGTABLEMODE] != 0 { d.rs[RS_FOGTABLEMODE] } else { d.rs[RS_FOGVERTEXMODE] };
+    let e: [f32; 3] = std::array::from_fn(|c| (0..4).map(|r| v[r] * wv[r * 4 + c]).sum());
+    let dist = if d.rs[RS_RANGEFOGENABLE] != 0 { (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt() } else { e[2] };
+    let (start, end, dens) = (f32::from_bits(d.rs[RS_FOGSTART]), f32::from_bits(d.rs[RS_FOGEND]), f32::from_bits(d.rs[RS_FOGDENSITY]));
+    let f = match mode {
+        1 => (-dens * dist).exp(),
+        2 => (-(dens * dist) * (dens * dist)).exp(),
+        3 if end != start => (end - dist) / (end - start),
+        3 => if dist < end { 1. } else { 0. },
+        _ => return None,
+    };
+    Some(f.clamp(0., 1.))
 }
 
 /// A vertex before rasterizing: clip-space position (or screen position and 1/rhw for
@@ -1136,6 +1229,8 @@ fn lerp_v(a: &Vtx, b: &Vtx, t: f32) -> Vtx {
 
 struct Xform {
     wvp: [f32; 16],
+    /// world * view (the eye space vertex fog is reckoned in)
+    wv: [f32; 16],
     world: [f32; 16],
     vp: [f32; 4],
     zr: (f32, f32),
@@ -1144,8 +1239,10 @@ struct Xform {
 impl Xform {
     fn new(d: &Dev) -> Xform {
         let world = d.xf[0];
+        let wv = mul(&world, &d.xf[1]);
         Xform {
-            wvp: mul(&mul(&world, &d.xf[1]), &d.xf[2]),
+            wvp: mul(&wv, &d.xf[2]),
+            wv,
             world,
             vp: [d.vp[0] as f32, d.vp[1] as f32, d.vp[2] as f32, d.vp[3] as f32],
             zr: d.zr,
@@ -1282,6 +1379,8 @@ struct Raster {
     ck: bool,
     flat: bool,
     spec: bool,
+    /// FOGENABLE: the fog colour, blended in by the specular alpha (the fog factor)
+    fog: Option<[f32; 3]>,
     cull: u32,
     stages: Vec<Stage>,
     tfactor: C4,
@@ -1387,7 +1486,7 @@ fn op(o: u32, a1: &C4, a2: &C4, diff: &C4, tex: &C4, tf: &C4, cur: &C4, out: &mu
 impl Raster {
     fn new(d: &Dev) -> Option<Raster> {
         let rt = surf(d.rt)?;
-        if rt.bpp < 16 {
+        if rt.bpp < 16 || rt.caps & CAPS_ZBUFFER != 0 {
             return None;
         }
         let pal_of = |s: &Surf| with(|st| st.palettes.get(&s.palette).map(|p| Box::new(*p)));
@@ -1446,6 +1545,10 @@ impl Raster {
             ck: d.rs[RS_COLORKEYENABLE] != 0,
             flat: d.rs[RS_SHADEMODE] == 1,
             spec: d.rs[RS_SPECULARENABLE] != 0,
+            fog: (d.rs[RS_FOGENABLE] != 0).then(|| {
+                let c = unpack_argb(d.rs[RS_FOGCOLOR]);
+                [c[0], c[1], c[2]]
+            }),
             cull: d.rs[RS_CULLMODE],
             stages,
             tfactor: unpack_argb(d.rs[RS_TEXTUREFACTOR]),
@@ -1486,6 +1589,12 @@ impl Raster {
         if self.spec {
             for i in 0..3 {
                 cur[i] = (cur[i] + spec[i]).min(1.);
+            }
+        }
+        if let Some(fc) = self.fog {
+            let f = spec[3].clamp(0., 1.);
+            for i in 0..3 {
+                cur[i] = f * cur[i] + (1. - f) * fc[i];
             }
         }
         if let Some((f, r)) = self.atest {
@@ -1631,7 +1740,9 @@ impl Raster {
 /// Clips a polygon of clip-space vertices to z >= 0 and w > 0.
 fn clip_near(poly: Vec<Vtx>) -> Vec<Vtx> {
     let mut p = poly;
-    for plane in [|v: &Vtx| v.clip[2], |v: &Vtx| v.clip[3] - 1e-6] {
+    // (near z >= 0, w > 0, and far z <= w: Windows draws nothing past the far plane, clipping
+    // on or off, Wine's ddraw visual tests depth_clamp_test)
+    for plane in [|v: &Vtx| v.clip[2], |v: &Vtx| v.clip[3] - 1e-6, |v: &Vtx| v.clip[3] - v.clip[2]] {
         if p.iter().all(|v| plane(v) >= 0.) {
             continue;
         }
@@ -1806,6 +1917,7 @@ mod tests {
             ck: false,
             flat: false,
             spec: false,
+            fog: None,
             cull: 1,
             stages: Vec::new(),
             tfactor: [1.; 4],
@@ -1931,6 +2043,94 @@ mod tests {
         assert_eq!(p.len(), 4);
         assert!(p.iter().all(|x| x.clip[2] >= -1e-6 && x.clip[3] > 0.));
         assert!(clip_near(vec![v(0., 0., -1., 1.), v(1., 0., -1., 1.), v(0., 1., -2., 1.)]).len() < 3);
+    }
+
+    /// The far plane too (z <= w), clipping on or off (Wine's ddraw visual depth_clamp_test):
+    /// a triangle wholly past it is gone, one across it is cut at z = w; and whatever is left of
+    /// any triangle lies between the planes.
+    #[test]
+    fn far_clip() {
+        let v = |x: f32, y: f32, z: f32, w: f32| Vtx { clip: [x, y, z, w], screen: false, diff: [1.; 4], spec: [0.; 4], tex: [[0.; 2]; 8] };
+        assert!(clip_near(vec![v(0., 0., 10., 1.), v(1., 0., 10., 1.), v(0., 1., 10., 1.)]).len() < 3);
+        let p = clip_near(vec![v(0., 0., 0.5, 1.), v(1., 0., 2., 1.), v(0., 1., 2., 1.)]);
+        assert_eq!(p.len(), 3);
+        assert!(p.iter().all(|x| x.clip[2] <= x.clip[3] + 1e-6));
+        let mut r = 0x9e37_79b9u32;
+        let mut f = || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            (r % 4000) as f32 / 1000. - 2.
+        };
+        for _ in 0..20_000 {
+            let t = [v(f(), f(), f(), f()), v(f(), f(), f(), f()), v(f(), f(), f(), f())];
+            for x in clip_near(t.to_vec()) {
+                assert!(x.clip[2] >= -1e-4 && x.clip[3] > 0. && x.clip[2] <= x.clip[3] + 1e-4, "{:?}", x.clip);
+            }
+        }
+    }
+
+    /// SetLight's checks (Wine's d3d LightTest, winref d3d7state)
+    #[test]
+    fn light_checks() {
+        let l = |t: u32, att0: f32| {
+            let mut l = [0u32; 26];
+            l[0] = t;
+            l[21] = att0.to_bits();
+            l
+        };
+        assert!(!light_ok(&l(0, 0.)) && !light_ok(&l(4, 0.)) && !light_ok(&l(12345, 0.)));
+        for t in [1, 2] {
+            assert!(!light_ok(&l(t, -1.)) && !light_ok(&l(t, f32::NEG_INFINITY)));
+            assert!(light_ok(&l(t, 0.)) && light_ok(&l(t, 1.)) && light_ok(&l(t, f32::INFINITY)) && light_ok(&l(t, f32::NAN)));
+        }
+        assert!(light_ok(&l(3, -1.)), "a directional light's attenuation is not looked at");
+        // enabling a light never set makes the default one: white, along +z
+        let mut d = Dev::new(0, 0);
+        assert_eq!(d.apply(&Ch::LightOn(20, true)), 0);
+        let mut want = [0u32; 26];
+        want[0] = 3;
+        want[1..4].copy_from_slice(&[1f32.to_bits(); 3]);
+        want[18] = 1f32.to_bits();
+        assert_eq!(d.lights[&20].0, want);
+    }
+
+    /// Vertex fog of untransformed vertices: the modes' formulas of the eye depth, clamped, and
+    /// nothing (the specular alpha stays) without FOGENABLE or a mode
+    #[test]
+    fn vertex_fog_modes() {
+        let mut d = Dev::new(0, 0);
+        let at = |d: &Dev, z: f32| vertex_fog(d, &IDENT, [0., 0., z, 1.]);
+        assert_eq!(at(&d, 0.5), None);
+        d.rs[RS_FOGENABLE] = 1;
+        assert_eq!(at(&d, 0.5), None);
+        d.rs[RS_FOGVERTEXMODE] = 3;
+        // (FOGSTART 0, FOGEND 1 by default)
+        assert_eq!(at(&d, 0.25), Some(0.75));
+        assert_eq!(at(&d, 1.5), Some(0.));
+        assert_eq!(at(&d, -1.), Some(1.));
+        d.rs[RS_FOGSTART] = 2f32.to_bits();
+        d.rs[RS_FOGEND] = 2f32.to_bits();
+        assert_eq!(at(&d, 1.), Some(1.));
+        assert_eq!(at(&d, 3.), Some(0.));
+        d.rs[RS_FOGVERTEXMODE] = 1;
+        d.rs[RS_FOGDENSITY] = 0.5f32.to_bits();
+        assert!((at(&d, 2.).unwrap() - (-1f32).exp()).abs() < 1e-6);
+        d.rs[RS_FOGVERTEXMODE] = 2;
+        assert!((at(&d, 2.).unwrap() - (-1f32).exp()).abs() < 1e-6);
+        assert!((at(&d, 4.).unwrap() - (-4f32).exp()).abs() < 1e-6);
+        // RANGEFOGENABLE: the distance, not the depth
+        d.rs[RS_FOGVERTEXMODE] = 3;
+        d.rs[RS_FOGSTART] = 0;
+        d.rs[RS_FOGEND] = 10f32.to_bits();
+        d.rs[RS_RANGEFOGENABLE] = 1;
+        assert!((vertex_fog(&d, &IDENT, [3., 4., 0., 1.]).unwrap() - 0.5).abs() < 1e-6);
+        // through the world and view transforms (eye z = 2 z + 1)
+        d.rs[RS_RANGEFOGENABLE] = 0;
+        let mut wv = IDENT;
+        wv[10] = 2.;
+        wv[14] = 1.;
+        assert!((vertex_fog(&d, &wv, [0., 0., 2., 1.]).unwrap() - 0.5).abs() < 1e-6);
     }
 
     /// Vertex buffer sizes: counts whose byte size passes 32 bits (or the cap) and FVFs with

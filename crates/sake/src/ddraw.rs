@@ -27,6 +27,7 @@ const DDERR_NOCLIPLIST: u32 = 0x8876_00cd;
 const DDERR_NOPALETTEATTACHED: u32 = 0x8876_0230;
 const DDERR_NOCOLORKEY: u32 = 0x8876_00d7;
 const DDERR_INVALIDRECT: u32 = 0x8876_0096;
+const DDERR_INVALIDCAPS: u32 = 0x8876_0064;
 
 const CAPS_BACKBUFFER: u32 = 0x4;
 const CAPS_COMPLEX: u32 = 0x8;
@@ -38,6 +39,7 @@ const CAPS_SYSTEMMEMORY: u32 = 0x800;
 const CAPS_VIDEOMEMORY: u32 = 0x4000;
 const CAPS_LOCALVIDMEM: u32 = 0x1000_0000;
 const CAPS_ZBUFFER: u32 = 0x2_0000;
+const CAPS_3DDEVICE: u32 = 0x2000;
 
 #[derive(Clone)]
 struct Surf {
@@ -147,11 +149,15 @@ fn plain_pf(bpp: u16, r565: bool) -> [u32; 5] {
 }
 
 /// DDPIXELFORMAT
+/// The bit count a pixel format says: a depth buffer of a 24-bit mask kept in 32 bits says 24
+fn pf_bits(bpp: u16, pf: [u32; 5]) -> u32 {
+    if pf[0] & 0x400 != 0 && bpp == 32 && pf[2] == 0xff_ffff { 24 } else { bpp as u32 }
+}
 fn write_pf(p: u32, bpp: u16, pf: [u32; 5]) {
     mem::fill(p, 32, 0);
     w32(p, 32);
     w32(p + 4, pf[0]);
-    w32(p + 12, bpp as u32);
+    w32(p + 12, pf_bits(bpp, pf));
     for i in 0..4 {
         w32(p + 16 + 4 * i as u32, pf[1 + i]);
     }
@@ -858,6 +864,14 @@ fn S_Blt(c: &mut Ctx) -> u32 {
         present_if_primary(c, id, dr);
         return DD_OK;
     }
+    if flags & 0x0200_0000 != 0 {
+        // DEPTHFILL: a depth buffer's own values, fx's dwFillDepth (the union of dwFillColor)
+        if dst.caps & CAPS_ZBUFFER == 0 || fx == 0 {
+            return DDERR_INVALIDPARAMS;
+        }
+        fill(&dst, clip_rect(dr, dst.w, dst.h), r32(fx + 80));
+        return DD_OK;
+    }
     if flags & 0x20000 != 0 && fx != 0 && srcb == 0 {
         // ROP without a source: BLACKNESS / WHITENESS
         let rop = r32(fx + 8);
@@ -1030,7 +1044,7 @@ fn dd_vtbl(v: usize) -> u32 {
             (D_CreateSurface, 16),
             (unsupported, 12),
             (D_EnumDisplayModes, 20),
-            (unsupported, 20),
+            (D_EnumSurfaces, 20),
             (ok, 4),
             (D_GetCaps, 12),
             (D_GetDisplayMode, 8),
@@ -1189,6 +1203,12 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     };
     let flags = r32(d + 4);
     let mut caps = if flags & 1 != 0 { r32(d + 104) } else { CAPS_OFFSCREENPLAIN };
+    // (cube map faces without DDSCAPS2_CUBEMAP: refused, as Windows, Wine's dsurface tests
+    // CubeMapTest)
+    if flags & 1 != 0 && kind == 2 && r32(d + 108) & 0xfc00 != 0 && r32(d + 108) & 0x200 == 0 {
+        put32(out, 0);
+        return DDERR_INVALIDCAPS;
+    }
     let (mw, mh, mbpp) = display();
     let (mut bpp, mut r565) = (mbpp, mbpp == 16);
     let mut pfv = None;
@@ -1198,7 +1218,12 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
         if pff & 0x20 != 0 {
             bpp = 8;
         } else if pff & 0x400 != 0 {
-            bpp = r32(pf + 12) as u16;
+            // (a 24-bit depth buffer is kept in 32 bits a pixel, as Windows pads it: Wine's d3d
+            // tests z_format_test, a pitch of 4 bytes a pixel; write_pf still says 24)
+            bpp = match r32(pf + 12) as u16 {
+                24 => 32,
+                b => b,
+            };
             pfv = Some([0x400, 0, r32(pf + 20), 0, 0]);
         } else if pff & 0x40 != 0 {
             bpp = r32(pf + 12) as u16;
@@ -1278,6 +1303,36 @@ fn D_EnumDisplayModes(c: &mut Ctx) -> u32 {
             if c.call(cb, &[d, ctx]) == 0 {
                 break 'all;
             }
+        }
+    }
+    mem::heap_free(d);
+    DD_OK
+}
+
+/// EnumSurfaces(flags, desc, context, callback): DDENUMSURFACES_DOESEXIST with ALL (or MATCH:
+/// the caps `desc` names, when it names them) hands each surface of this object to the callback
+/// with a reference it releases, and its description; CANBECREATED enumerates nothing.
+fn D_EnumSurfaces(c: &mut Ctx) -> u32 {
+    let (flags, want, ctx, cb) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    if cb == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    if flags & 0x10 == 0 {
+        return DD_OK;
+    }
+    let (obj, v) = dd_of(c.a(0));
+    let caps = if flags & 1 == 0 && want != 0 && r32(want + 4) & 1 != 0 { r32(want + 104) } else { 0 };
+    let mut ids: Vec<u32> = with(|s| s.surfs.iter().filter(|(_, x)| x.dd == obj && x.caps & caps == caps).map(|(&i, _)| i).collect());
+    ids.sort_unstable();
+    let kind = [0u8, 0, 1, 2][v];
+    let d = mem::heap_alloc(124, true);
+    for id in ids {
+        let Some(s) = surf(id) else { continue };
+        with(|st| st.surfs.get_mut(&id).map(|x| x.refs += 1));
+        w32(d, if v >= 2 { 124 } else { 108 });
+        write_desc(d, Some(&s));
+        if c.call(cb, &[block(id, kind), d, ctx]) == 0 {
+            break;
         }
     }
     mem::heap_free(d);
@@ -1438,4 +1493,20 @@ pub fn init() {
     implement("ddraw", "DirectDrawCreateClipper", DirectDrawCreateClipper);
     implement("ddraw", "DirectDrawEnumerateA", DirectDrawEnumerateA);
     implement("ddraw", "DirectDrawEnumerateExA", DirectDrawEnumerateExA);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 24-bit depth buffer is kept in 32 bits a pixel (Windows' pitch: Wine's d3d
+    /// z_format_test, winref d3d7state) and still says 24; other formats say what they keep.
+    #[test]
+    fn depth_bits() {
+        assert_eq!(pf_bits(32, [0x400, 0, 0xff_ffff, 0, 0]), 24);
+        assert_eq!(pf_bits(32, [0x400, 0, 0xffff_ffff, 0, 0]), 32);
+        assert_eq!(pf_bits(16, [0x400, 0, 0xffff, 0, 0]), 16);
+        assert_eq!(pf_bits(32, [0x40, 0xff_0000, 0xff_ffff, 0xff, 0]), 32, "an RGB format is as it is");
+        assert_eq!(stride(1024, 32), 4096);
+    }
 }
