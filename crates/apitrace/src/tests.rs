@@ -673,6 +673,34 @@ proptest! {
     }
 }
 
+/// A game killed before apitrace wrote its first chunk whole (run 42404988741: 15 trials, e.g.
+/// b2013_kaguya's 77826 bytes of a 79076-byte chunk): the calls in what of that chunk is there,
+/// one more the more of it there is, the same records as the whole trace's.
+#[test]
+fn a_trace_cut_in_its_only_chunk_keeps_its_whole_calls() {
+    let ev = unpack(&d3d9_session()).unwrap();
+    let mut file = b"at".to_vec();
+    let z = crate::snappy::compress(&ev);
+    file.extend_from_slice(&(z.len() as u32).to_le_bytes());
+    file.extend(&z);
+    let (whole, _) = replay::convert(&ev, Some(32)).unwrap();
+    let whole = replay::read(&whole).unwrap().1;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut last = 0;
+    for n in 6..file.len() {
+        let (cut_ev, cut) = unpack_cut(&file[..n]).unwrap();
+        assert!(cut && ev.starts_with(&cut_ev) && cut_ev.len() >= last);
+        last = cut_ev.len();
+        if let Ok((out, _)) = replay::convert_cut(&cut_ev, Some(32), true) {
+            let got = replay::read(&out).unwrap().1;
+            assert!(got[..] == whole[..got.len()]);
+            seen.insert(got.len());
+        }
+    }
+    let calls = whole.iter().filter(|r| matches!(r, Record::Call { .. })).count();
+    assert!(seen.len() >= calls, "{} record counts for {calls} calls: {seen:?}", seen.len());
+}
+
 /// A game's trace ends where the game was killed, in the middle of a chunk or of a call: what is
 /// converted is the calls up to the last whole one, the same records as the whole trace's up to
 /// there (at every byte it can be cut at); strictly read, a cut trace is an error.

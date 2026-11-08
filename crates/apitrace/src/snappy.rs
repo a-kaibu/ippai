@@ -4,9 +4,48 @@
 
 /// One snappy block -> its bytes
 pub fn decompress(src: &[u8]) -> Result<Vec<u8>, String> {
+    let (out, n) = decode(src)?;
+    if out.len() != n {
+        return Err(format!("snappy: {} bytes, the header says {n}", out.len()));
+    }
+    Ok(out)
+}
+
+/// The bytes a block cut short still holds (a trace's last chunk, written when the program was
+/// killed): those of its whole literals and copies, a prefix of the whole block's; a copy from
+/// before the start is still an error.
+pub fn decompress_prefix(src: &[u8]) -> Result<Vec<u8>, String> {
+    let mut i = 0;
+    if varint(src, &mut i).is_err() {
+        return Ok(vec![]);
+    }
+    let mut out = vec![];
+    match step_all(src, i, &mut out) {
+        Err(Cut::Short) | Ok(()) => Ok(out),
+        Err(Cut::Bad(e)) => Err(e),
+    }
+}
+
+enum Cut {
+    Short,
+    Bad(String),
+}
+
+fn decode(src: &[u8]) -> Result<(Vec<u8>, usize), String> {
     let mut i = 0;
     let n = varint(src, &mut i)? as usize;
     let mut out = Vec::with_capacity(n.min(1 << 26));
+    match step_all(src, i, &mut out) {
+        Ok(()) => Ok((out, n)),
+        Err(Cut::Short) => Err("snappy: past the end".into()),
+        Err(Cut::Bad(e)) => Err(e),
+    }
+}
+
+/// the elements from src[i..] onto out; an element the bytes stop inside is Cut::Short, and
+/// out keeps the elements before it
+fn step_all(src: &[u8], mut i: usize, out: &mut Vec<u8>) -> Result<(), Cut> {
+    let le = |i: usize, k: usize| src.get(i..i + k).map(|b| b.iter().rev().fold(0u64, |v, &x| v << 8 | x as u64)).ok_or(Cut::Short);
     while i < src.len() {
         let tag = src[i];
         i += 1;
@@ -15,33 +54,33 @@ pub fn decompress(src: &[u8]) -> Result<Vec<u8>, String> {
                 let mut len = (tag >> 2) as usize;
                 if len >= 60 {
                     let k = len - 59;
-                    len = le(src, i, k)? as usize;
+                    len = le(i, k)? as usize;
                     i += k;
                 }
                 let len = len + 1;
-                let lit = src.get(i..i + len).ok_or("snappy: literal past the end")?;
+                let lit = src.get(i..i + len).ok_or(Cut::Short)?;
                 out.extend_from_slice(lit);
                 i += len;
                 continue;
             }
             1 => {
-                let b = *src.get(i).ok_or("snappy: copy past the end")? as usize;
+                let b = *src.get(i).ok_or(Cut::Short)? as usize;
                 i += 1;
                 (4 + ((tag >> 2) & 7) as usize, ((tag as usize >> 5) << 8) | b)
             }
             2 => {
-                let o = le(src, i, 2)? as usize;
+                let o = le(i, 2)? as usize;
                 i += 2;
                 ((tag >> 2) as usize + 1, o)
             }
             _ => {
-                let o = le(src, i, 4)? as usize;
+                let o = le(i, 4)? as usize;
                 i += 4;
                 ((tag >> 2) as usize + 1, o)
             }
         };
         if off == 0 || off > out.len() {
-            return Err(format!("snappy: copy offset {off} with {} bytes out", out.len()));
+            return Err(Cut::Bad(format!("snappy: copy offset {off} with {} bytes out", out.len())));
         }
         // (the copy may overlap what it writes: byte by byte)
         let start = out.len() - off;
@@ -50,10 +89,7 @@ pub fn decompress(src: &[u8]) -> Result<Vec<u8>, String> {
             out.push(b);
         }
     }
-    if out.len() != n {
-        return Err(format!("snappy: {} bytes, the header says {n}", out.len()));
-    }
-    Ok(out)
+    Ok(())
 }
 
 fn varint(src: &[u8], i: &mut usize) -> Result<u64, String> {
@@ -67,11 +103,6 @@ fn varint(src: &[u8], i: &mut usize) -> Result<u64, String> {
         }
     }
     Err("snappy: length too long".into())
-}
-
-fn le(src: &[u8], i: usize, k: usize) -> Result<u64, String> {
-    let b = src.get(i..i + k).ok_or("snappy: past the end")?;
-    Ok(b.iter().rev().fold(0, |v, &x| v << 8 | x as u64))
 }
 
 /// A valid snappy block of `data` (literals and copies of earlier bytes found by a small hash
@@ -184,6 +215,38 @@ mod tests {
         #[test]
         fn garbage_never_panics(data in proptest::collection::vec(any::<u8>(), 0..200)) {
             let _ = decompress(&data);
+            let _ = decompress_prefix(&data);
         }
+
+        // (a block cut at any byte: a prefix of its bytes, all of them when whole, more the
+        // more of it there is; one cut where an element ends loses nothing before it)
+        #[test]
+        fn a_cut_block_is_a_prefix(parts in proptest::collection::vec((any::<u8>(), 1usize..80, any::<bool>()), 0..30)) {
+            let data: Vec<u8> = parts.iter().flat_map(|&(b, n, run)| (0..n).map(move |k| if run { b } else { b.wrapping_add((k as u8).wrapping_mul(31)) })).collect();
+            let z = compress(&data);
+            let mut last = 0;
+            for n in 0..=z.len() {
+                let got = decompress_prefix(&z[..n]).unwrap();
+                prop_assert!(data.starts_with(&got));
+                prop_assert!(got.len() >= last);
+                last = got.len();
+            }
+            prop_assert_eq!(decompress_prefix(&z).unwrap(), data.clone());
+        }
+    }
+
+    #[test]
+    fn a_cut_block_spec() {
+        // literal "abc", copy of 6: cut inside the copy keeps "abc"; inside the literal, nothing
+        let b = [9, 2 << 2, b'a', b'b', b'c', 2 | 5 << 2, 3, 0];
+        assert_eq!(decompress_prefix(&b[..6]).unwrap(), b"abc");
+        assert_eq!(decompress_prefix(&b[..7]).unwrap(), b"abc");
+        assert_eq!(decompress_prefix(&b[..4]).unwrap(), b"");
+        assert_eq!(decompress_prefix(&b).unwrap(), b"abcabcabc");
+        assert_eq!(decompress_prefix(&[]).unwrap(), b"");
+        assert_eq!(decompress_prefix(&[0x80]).unwrap(), b"");
+        // (a bad copy is still an error, cut or not; a cut block is not a whole one)
+        assert!(decompress_prefix(&[4, 1, 5]).is_err());
+        assert!(decompress(&b[..6]).is_err());
     }
 }

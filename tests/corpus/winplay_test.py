@@ -152,5 +152,38 @@ class Manifest(unittest.TestCase):
             self.assertEqual(acps(winplay.with_codepage(once))[1], ['ja-JP'], name)
 
 
+class End(unittest.TestCase):
+    """end(): closed first when asked, a "quit?" box answered once, the rest killed"""
+    def run_end(self, grace, exits_after=None, exits_on_confirm=False):
+        t, log, state = [0.0], [], {'up': True}
+        def sleep(s):
+            t[0] += s
+            if exits_after is not None and t[0] >= exits_after: state['up'] = False
+        def confirm():
+            log.append(('confirm', t[0]))
+            if exits_on_confirm: state['up'] = False
+        pids = lambda: {1, 2} if state['up'] else set()
+        ended = winplay.end(pids, grace, lambda pid: log.append(('close', pid)), confirm,
+                            lambda pid: log.append(('kill', pid)), lambda: state['up'], sleep, lambda: t[0])
+        return ended, log, t[0]
+
+    def test_no_grace_kills(self):
+        ended, log, t = self.run_end(0)
+        self.assertEqual((ended, sorted(log), t), (False, [('kill', 1), ('kill', 2)], 0.0))
+
+    def test_closes_and_waits(self):
+        ended, log, t = self.run_end(20, exits_after=1.5)
+        self.assertEqual((ended, sorted(log), t), (True, [('close', 1), ('close', 2)], 1.5))
+
+    def test_quit_box_answered_once(self):
+        ended, log, t = self.run_end(20, exits_on_confirm=True)
+        self.assertEqual((ended, [x for x in log if x[0] != 'close'], t), (True, [('confirm', 3.0)], 3.0))
+
+    def test_never_closes_killed_at_grace(self):
+        ended, log, t = self.run_end(10)
+        self.assertEqual((ended, [x[0] for x in log].count('confirm'), t, sorted(x for x in log if x[0] == 'kill')),
+                         (False, 1, 10.0, [('kill', 1), ('kill', 2)]))
+
+
 if __name__ == '__main__':
     unittest.main()

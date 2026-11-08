@@ -79,8 +79,11 @@ exe, seconds, the trace's size and sha256) and where (ref, the blob's digest and
 in CI the job's token with `packages: read`, otherwise) into `TRACES_CACHE` (default
 `~/.cache/ippai-traces`, cached in CI by the .txt files' hash) and checks both digests. Traces
 committed in parts before (the old way) still unpack, and gametrace.yml's `migrate` moves them.
-winref's answers for a game's replay go by the trace's sha256, not by where it is kept. The trace ends where the game was killed: the
-converter keeps the calls up to the last whole one (`-strict`, which build.sh uses for the
+winref's answers for a game's replay go by the trace's sha256, not by where it is kept. The game is asked to close first (winplay's
+`CLOSE_FIRST`: WM_CLOSE, Return for a "quit?" box, killed after 20 s) so apitrace writes out the
+chunk it holds; a trace still ends where the game was killed: the converter keeps the calls up
+to the last whole one, also inside a chunk cut short (snappy's elements up to the cut: run
+42404988741's kaguya trials had no whole chunk) (`-strict`, which build.sh uses for the
 probes' traces, refuses such a trace).
 
 gameapi.py's API is a guess from the DLL names a game carries: a watcher lists the graphics

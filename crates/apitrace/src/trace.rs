@@ -203,8 +203,9 @@ pub fn unpack(file: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// unpack() of a file that may end in the middle of a chunk (the program was killed while
-/// apitrace wrote it): the whole chunks, and whether one was cut off. A whole chunk that does
-/// not decompress is still an error.
+/// apitrace wrote it): the whole chunks and what of the cut one is whole (snappy's elements up
+/// to the cut: a game killed before its first chunk was out has only that), and whether one
+/// was cut off. A whole chunk that does not decompress is still an error.
 pub fn unpack_cut(file: &[u8]) -> Result<(Vec<u8>, bool), String> {
     if file.get(..2) != Some(b"at") {
         return Err("not a snappy apitrace file (\"at\"); `apitrace repack` can make one".into());
@@ -215,7 +216,11 @@ pub fn unpack_cut(file: &[u8]) -> Result<(Vec<u8>, bool), String> {
         let Some(n) = file.get(i..i + 4) else { return Ok((out, true)) };
         let n = u32::from_le_bytes(n.try_into().unwrap()) as usize;
         i += 4;
-        let Some(chunk) = file.get(i..i.saturating_add(n)) else { return Ok((out, true)) };
+        // (the chunk being written when the program was killed: what of it is whole)
+        let Some(chunk) = file.get(i..i.saturating_add(n)) else {
+            out.extend(crate::snappy::decompress_prefix(&file[i..])?);
+            return Ok((out, true));
+        };
         out.extend(crate::snappy::decompress(chunk)?);
         i += n;
     }

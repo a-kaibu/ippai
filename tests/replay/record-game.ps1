@@ -4,7 +4,7 @@
 # en-US one has no Japanese folder names), TRACE_FILE names the trace. The game is played as
 # corpusref.yml plays it (tests/corpus/winplay.py play: code page 932, Return or PRE clicks
 # through a launcher to the title screen, the title's steps, STORY seconds of story clicks), then
-# ended. The trace stops where the game did (the converter keeps its calls up to the last whole
+# ended (asked to close first, CLOSE_FIRST). The trace stops where the game did (the converter keeps its calls up to the last whole
 # one). winplay's pictures and result.json go to -Shots (what the game got to; not committed).
 #
 # The API gameapi.py guessed may not be the one the game draws with (a game naming d3d9 and d3d8
@@ -35,6 +35,9 @@ $gameapi = Join-Path $PSScriptRoot 'gameapi.py'
 $winplay = Join-Path $PSScriptRoot '..\corpus\winplay.py'
 $env:TRACE_FILE = $Out
 $env:STORY = "$Story"
+# (asked to close before it is killed, so apitrace writes out the chunk it holds: a game killed
+# outright left none, or part of one, run 42404988741)
+$env:CLOSE_FIRST = '20'
 
 # (the watcher: a process of the other width shows only its own kind of modules, so a 32-bit
 # game is watched from 32-bit PowerShell)

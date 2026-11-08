@@ -359,6 +359,25 @@ def mouse(flags):
 VK = {'Return': 0x0d, 'Space': 0x20, 'Escape': 0x1b, 'Down': 0x28, 'Up': 0x26, 'Ctrl': 0x11, 'z': 0x5a}
 
 
+def end(pids, grace, close, confirm, kill, alive, sleep=time.sleep, clock=time.time):
+    """Ends the game: with grace > 0, asks its processes to close (WM_CLOSE: taskkill without /F)
+    and waits up to grace seconds, answering a "quit?" box after 3 s with Return (its default
+    button), once; then kills what is left. True when it ended before the kill."""
+    if grace > 0:
+        for pid in pids():
+            close(pid)
+        t, asked = clock(), False
+        while alive() and clock() - t < grace:
+            sleep(0.5)
+            if not asked and clock() - t >= 3 and alive():
+                confirm()
+                asked = True
+    ended = not alive()
+    for pid in pids():
+        kill(pid)
+    return ended
+
+
 def run(exe, out, steps):
     exe = os.path.abspath(exe)
     d = os.path.dirname(exe)
@@ -475,9 +494,15 @@ def run(exe, out, steps):
         res['errors'].append(f'winplay: {type(e).__name__}: {e}')
     finally:
         res['end'] = now()
+        # (CLOSE_FIRST seconds: asked to close first, so a tracer in it writes out what it holds:
+        # tests/replay/record-game.ps1; then killed)
+        res['closed'] = end(lambda: pids_under(d) | ({p.pid} if p.poll() is None else set()),
+                            float(os.environ.get('CLOSE_FIRST', 0)),
+                            lambda pid: subprocess.run(['taskkill', '/T', '/PID', str(pid)], capture_output=True),
+                            lambda: key('Return'),
+                            lambda pid: subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)], capture_output=True),
+                            alive)
         save()
-        for pid in pids_under(d) | {p.pid}:
-            subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)], capture_output=True)
 
 
 if __name__ == '__main__':

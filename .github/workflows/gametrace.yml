@@ -336,6 +336,12 @@ jobs:
           for r in pack/*.rec; do
             n=$(basename "$r" .rec)
             { read -r api; read -r exe; read -r secs; } < "$r"
+            # (only its header: the game was killed before apitrace wrote anything)
+            if [ "$(stat -c %s "pack/$n.trace")" -le 2 ]; then
+              echo "$n: an empty trace"
+              printf 'notrace\t%s: %s, an empty trace\n' "$exe" "$api" > "pack/${n%-*}.skip"
+              continue
+            fi
             if target/release/apitrace "pack/$n.trace" "$RUNNER_TEMP/$n.rpl"; then
               python3 tests/replay/games.py push "pack/$n.trace" "ok/$n" --api "$api" --exe "$exe" --seconds "$secs"
               # (pulled back from the registry, not the cache: what winref will get)

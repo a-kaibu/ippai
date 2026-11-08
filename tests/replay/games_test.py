@@ -201,6 +201,7 @@ for w in ("gametrace.yml", "winref.yml", "replay.yml"):
             expect(f"{w}: packages: read", "packages: read" in y, True)
         if re.search(r"games\.py (push|migrate)", job):
             expect(f"{w}: {job.split(':')[0]}: packages: write and GHCR_TOKEN", ("packages: write" in job, "GHCR_TOKEN: ${{ github.token }}" in job), (True, True))
+expect("record-game.ps1 asks winplay to close the game first", "$env:CLOSE_FIRST = '" in ps1 and "os.environ.get('CLOSE_FIRST'" in winplay, True)
 expect("prep writes winplay's meta.json", "winplay.py meta tests/corpus/titles.tsv \"$ID\" \"$e\" game/meta.json" in yml, True)
 
 # (winref's answers for a game's replay are by its trace (golden.py's src_hash), not where it is
