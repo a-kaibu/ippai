@@ -375,7 +375,7 @@ impl Stream {
                 Ok(Some(p))
             }
             (Out::Pcm { bits, float, .. }, Codec::Page { codec, desc, .. }) => {
-                let per = t.frames.first().copied().unwrap_or(1152).max(1) as usize;
+                let per = out_frames(codec, t.frames.first().copied().unwrap_or(1152));
                 if self.dec.is_none() {
                     self.dec = Some(kura::adec::open(codec, t.rate, t.channels, desc).ok_or(MF_E_INVALIDMEDIATYPE)?);
                 }
@@ -417,6 +417,13 @@ impl Stream {
             }
         }
     }
+}
+
+/// The frames (per channel) of each PCM sample decoded from `codec` whose packets hold `frame`:
+/// Windows' MP3 decoder gives 26 MP3 frames a sample (0.68 s at 44.1 kHz; mfreader.c), its
+/// AAC decoder one packet.
+fn out_frames(codec: &str, frame: u32) -> usize {
+    frame.max(1) as usize * if codec == "mp3" { 26 } else { 1 }
 }
 
 /// PCM bytes as floats in [-1, 1).
@@ -1408,6 +1415,19 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    /// Windows' answers (mfreader.c): an MP3 of 21 frames reads as 1 sample, of 210 as 9 (8 of
+    /// 26 frames and the 2 left), of 840 as 33; AAC a packet a sample
+    #[test]
+    fn mp3_samples_hold_26_frames() {
+        let per = out_frames("mp3", 1152);
+        assert_eq!(per, 26 * 1152);
+        for (frames, samples) in [(21usize, 1usize), (210, 9), (840, 33)] {
+            assert_eq!((frames * 1152).div_ceil(per), samples);
+        }
+        assert_eq!(out_frames("aac", 1024), 1024);
+        assert_eq!(out_frames("aac", 0), 1);
+    }
+
     fn pcm_track(frames: u32, ch: u32) -> (Track, Arc<Vec<u8>>) {
         let data: Vec<u8> = (0..frames * ch).flat_map(|i| ((i as i16).wrapping_mul(7)).to_le_bytes()).collect();
         let mut packets = Vec::new();
@@ -1482,9 +1502,9 @@ mod tests {
         let data: Vec<u8> = (0..20u8).flat_map(|k| vec![k; 10]).collect();
         let t = Track {
             codec: Codec::Page {
-                codec: "mp3".into(),
+                codec: "aac".into(),
                 desc: vec![],
-                subtype: audiofile::MP3,
+                subtype: audiofile::AAC,
             },
             rate: 44100,
             channels: 2,
@@ -1507,6 +1527,29 @@ mod tests {
         s.seek(10 * 1152 * 10_000_000u64 / 44100 + 1);
         let p = s.read().unwrap().unwrap();
         assert_eq!(i16::from_le_bytes([p.bytes[0], p.bytes[1]]), 10 * 128);
+        // MP3: 26 frames a sample, as Windows' decoder (30 packets: 26 and 4)
+        let data: Vec<u8> = (0..30u8).flat_map(|k| vec![k; 10]).collect();
+        let t = Track {
+            codec: Codec::Page {
+                codec: "mp3".into(),
+                desc: vec![],
+                subtype: audiofile::MP3,
+            },
+            rate: 44100,
+            channels: 2,
+            packets: (0..30).map(|k| (k * 10, 10)).collect(),
+            frames: vec![1152; 30],
+            avg: 16000,
+            duration: None,
+        };
+        let mut s = Stream::new(t, Arc::new(data));
+        s.set_out(Out::pcm(&s.track.clone(), 16, false));
+        let a = s.read().unwrap().unwrap();
+        let b = s.read().unwrap().unwrap();
+        assert!(s.read().unwrap().is_none());
+        assert_eq!((a.bytes.len(), b.bytes.len()), (26 * 1152 * 4, 4 * 1152 * 4));
+        assert_eq!((a.time, b.time), (0, (26u128 * 1152 * 10_000_000 / 44100) as u64));
+        assert_eq!(i16::from_le_bytes([b.bytes[0], b.bytes[1]]), 26 * 128);
         stop.store(true, Ordering::Relaxed);
         page.join().unwrap();
     }
