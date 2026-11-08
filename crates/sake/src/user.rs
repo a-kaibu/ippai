@@ -237,10 +237,12 @@ struct Timer {
     due: Instant,
 }
 
-/// A SendMessage from another thread, waiting for its result.
+/// A SendMessage from another thread, waiting for its result (and the moment it may go on).
 struct Sent {
     msg: Msg,
-    result: Arc<(Mutex<Option<u32>>, std::sync::Condvar)>,
+    result: Arc<(Mutex<Option<(u32, Instant)>>, std::sync::Condvar)>,
+    /// the sending thread (0: another process)
+    from: u32,
     /// from another process: its message's id and the copy of WM_COPYDATA's data (freed after)
     remote: Option<(u32, u32)>,
 }
@@ -1232,19 +1234,22 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
     let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
     with(|s| {
         let q = s.queues.entry(tid).or_default();
-        q.sent.push_back(Sent { msg, result: result.clone(), remote: None });
+        q.sent.push_back(Sent { msg, result: result.clone(), from: crate::cur().tid, remote: None });
         q.fresh |= 0x40;
     });
     crate::obj::signal();
     // wait, handling messages sent to us meanwhile
     loop {
         {
-            let g = result.0.lock().unwrap();
-            if let Some(v) = *g {
-                return v;
+            let mut g = result.0.lock().unwrap();
+            if g.is_none() {
+                g = result.1.wait_timeout(g, Duration::from_millis(5)).unwrap().0;
             }
-            let (g, _) = result.1.wait_timeout(g, Duration::from_millis(5)).unwrap();
-            if let Some(v) = *g {
+            if let Some((v, at)) = *g {
+                drop(g);
+                if let Some(d) = at.checked_duration_since(Instant::now()) {
+                    std::thread::sleep(d);
+                }
                 return v;
             }
         }
@@ -1255,9 +1260,32 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
     }
 }
 
+/// How long a thread whose SendMessage this thread answered runs on before the next waiting
+/// thread is let go too. Windows answers them one after the other, the next only once this
+/// thread has handled its message too, at native speed. Here the senders' own code is much
+/// slower than that next window procedure (it runs for the first time: interpreted, then
+/// translated), so threads that waited together for a busy owner went on in lockstep and hit
+/// races native timing never shows. KiriKiri's sigcheck.dll (#82) is one: its two checking
+/// threads each register SHA-256 without a lock right after a SetWindowPos to the main
+/// thread's window, and the second one got slot 1, which it takes for an error.
+const HEAD_START: Duration = Duration::from_millis(4);
+
+/// When the sender `from` of a message answered `now` goes on, `last` being the sender let go
+/// before it in the same turn (and when): another thread waits a head start after that one.
+fn release_at(last: Option<(u32, Instant)>, from: u32, now: Instant) -> Instant {
+    match last {
+        Some((t, at)) if t != from => (at + HEAD_START).max(now),
+        // (never ahead of the one before)
+        Some((_, at)) => at.max(now),
+        None => now,
+    }
+}
+
 /// Runs messages other threads sent to this one.
 fn process_sent(cpu: &mut koji::Cpu) {
     let me = crate::cur().tid;
+    // the thread let go last here, and when it was
+    let mut last: Option<(u32, Instant)> = None;
     loop {
         let s = with(|s| s.queues.get_mut(&me).and_then(|q| q.sent.pop_front()));
         let Some(sent) = s else { return };
@@ -1267,7 +1295,9 @@ fn process_sent(cpu: &mut koji::Cpu) {
             Some(p) => crate::call(cpu, p, &[m.hwnd, m.msg, m.w, m.l]),
             None => 0,
         };
-        *sent.result.0.lock().unwrap() = Some(r);
+        let at = release_at(last, sent.from, Instant::now());
+        last = Some((sent.from, at));
+        *sent.result.0.lock().unwrap() = Some((r, at));
         sent.result.1.notify_all();
         if let Some((id, buf)) = sent.remote {
             if buf != 0 {
@@ -1364,7 +1394,7 @@ pub fn deliver_remote() {
         let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
         with(|s| {
             let q = s.queues.entry(tid).or_default();
-            q.sent.push_back(Sent { msg: m, result, remote: Some((x.id, buf)) });
+            q.sent.push_back(Sent { msg: m, result, from: 0, remote: Some((x.id, buf)) });
             q.fresh |= 0x40;
         });
         crate::obj::signal();
@@ -6225,7 +6255,41 @@ mod tests {
         (-20i32..20, -20i32..20, 0i32..30, 0i32..30).prop_map(|(l, t, w, h)| Rect { l, t, r: l + w, b: t + h })
     }
 
+    #[test]
+    fn release_at_staggers_other_threads() {
+        let t0 = Instant::now();
+        // the first one answered goes on at once, and so does the same thread again
+        assert_eq!(release_at(None, 7, t0), t0);
+        assert_eq!(release_at(Some((7, t0)), 7, t0), t0);
+        // another thread: a head start after the one before
+        assert_eq!(release_at(Some((7, t0)), 8, t0), t0 + HEAD_START);
+        // (no later than needed: its message took longer than that to handle)
+        let late = t0 + HEAD_START * 3;
+        assert_eq!(release_at(Some((7, t0)), 8, late), late);
+    }
+
     proptest! {
+        /// However the messages of a turn come from the senders, two different threads that
+        /// follow each other are let go at least HEAD_START apart, in the order answered, and
+        /// none before its answer
+        #[test]
+        fn release_at_keeps_threads_apart(from in proptest::collection::vec(0u32..4, 1..12), took in proptest::collection::vec(0u64..10_000, 12)) {
+            let t0 = Instant::now();
+            let (mut now, mut last) = (t0, None::<(u32, Instant)>);
+            for (i, &f) in from.iter().enumerate() {
+                now += Duration::from_micros(took[i]);
+                let at = release_at(last, f, now);
+                prop_assert!(at >= now);
+                if let Some((t, prev)) = last {
+                    prop_assert!(at >= prev);
+                    if t != f {
+                        prop_assert!(at >= prev + HEAD_START);
+                    }
+                }
+                last = Some((f, at));
+            }
+        }
+
         /// What validating leaves: inside the old update area, and every point not validated
         /// is still in it
         #[test]
