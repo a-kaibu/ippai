@@ -1,6 +1,6 @@
 /* UCRT printf's %T size (the output function's character width, even for %TS/%TC) and other
  * forms only ucrtbase has, through __stdio_common_vs(w)printf (the probes' printf is msvcrt's). */
-#include "probe.h"
+#include "../probe.h"
 #include <stdarg.h>
 #include <wchar.h>
 typedef int (__cdecl *vsp)(unsigned long long, char *, size_t, const char *, void *, va_list);
