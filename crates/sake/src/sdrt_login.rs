@@ -72,7 +72,16 @@ pub(super) fn fill(c: &mut Ctx, dlg: u32, inst: u32) {
             w.parent == dlg && w.enabled && s.classes[w.class].name.eq_ignore_ascii_case("button")
         })
     });
-    if !layout || !trusted(inst) { return; }
+    if !layout || crate::pe::by_name("ucopgdlgres.dll") != Some(inst) { return; }
+    if !trusted(inst) {
+        // (the dialog of another runtime build: nothing filled; the page says to type it in)
+        #[cfg(target_os = "emscripten")]
+        unsafe {
+            unsafe extern "C" { fn sake_account_unverified(); }
+            sake_account_unverified();
+        }
+        return;
+    }
     let mut packet = Credentials(vec![0; WORDS]);
     #[cfg(target_os = "emscripten")]
     let ready = unsafe {

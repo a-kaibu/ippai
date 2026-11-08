@@ -79,6 +79,22 @@ unsafe extern "C" {
     fn vnhost_vfs_shared_generation() -> u32;
     fn vnhost_vfs_shared_get(dst: *mut u8, cap: usize) -> usize;
     fn vnhost_vfs_shared_put(src: *const u8, len: usize) -> i32;
+    fn vnhost_vfs_shared_enable() -> i32;
+}
+/// Open handles changed (their nodes' counts): the namespace is published, but the files are
+/// as they were, so the saves' change count (CHANGES) stays.
+pub(super) static REFS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn dirt() -> u32 {
+    CHANGES.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(REFS.load(std::sync::atomic::Ordering::Relaxed))
+}
+/// Starts sharing the namespace with the child processes to come (the first CreateProcess);
+/// false where there is no shared buffer (node, tests).
+pub(super) fn enable() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    unsafe { return vnhost_vfs_shared_enable() != 0; }
+    #[cfg(not(target_arch = "wasm32"))]
+    false
 }
 pub(super) fn generation() -> u32 {
     #[cfg(target_arch = "wasm32")]
@@ -92,7 +108,7 @@ impl Guard {
         #[cfg(target_arch = "wasm32")]
         unsafe {
             if vnhost_vfs_shared_lock() == 0 { return Self { enabled: false, before: 0, empty: false }; }
-            let guard = Self { enabled: true, before: CHANGES.load(std::sync::atomic::Ordering::Relaxed), empty: vnhost_vfs_shared_get(std::ptr::null_mut(), 0) == 0 };
+            let guard = Self { enabled: true, before: dirt(), empty: vnhost_vfs_shared_get(std::ptr::null_mut(), 0) == 0 };
             let generation = vnhost_vfs_shared_generation();
             if !guard.empty && fs.shared_generation != generation {
                 let size = vnhost_vfs_shared_get(std::ptr::null_mut(), 0); let mut data = vec![0; size];
@@ -107,9 +123,20 @@ impl Guard {
     }
     pub(super) fn publish(&self, fs: &mut Fs) {
         #[cfg(target_arch = "wasm32")]
-        if self.enabled && (self.empty || self.before != CHANGES.load(std::sync::atomic::Ordering::Relaxed)) {
+        if self.enabled && (self.empty || self.before != dirt()) {
             let bytes = fs.shared_snapshot();
-            unsafe { assert_ne!(vnhost_vfs_shared_put(bytes.as_ptr(), bytes.len()), 0, "shared filesystem capacity exceeded"); fs.shared_generation = vnhost_vfs_shared_generation(); }
+            unsafe {
+                if vnhost_vfs_shared_put(bytes.as_ptr(), bytes.len()) != 0 {
+                    fs.shared_generation = vnhost_vfs_shared_generation();
+                } else {
+                    // (past the buffer's maximum: this process goes on with its own files; the
+                    // others keep the last namespace that fitted rather than the game stopping)
+                    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        eprintln!("kura: shared file system of {} bytes does not fit; the other processes keep the previous one", bytes.len());
+                    }
+                }
+            }
         }
         #[cfg(not(target_arch = "wasm32"))]
         { let _ = (self.enabled, self.before, self.empty, fs); }
@@ -131,6 +158,17 @@ mod tests {
         assert_ne!(child.walk(root, "next"), Some(ino));
         parent.apply_shared_snapshot(&child.shared_snapshot()).unwrap(); assert_eq!(parent.handles[&h].pos, 3);
         let handle = parent.handles.remove(&h).unwrap(); parent.node_mut(handle.ino).unwrap().open_refs -= 1; parent.gc(handle.ino); assert!(parent.node(ino).is_none());
+    }
+    #[test]
+    fn opening_counts_the_node_and_marks_the_namespace() {
+        let mut fs = Fs::default(); let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0); fs.mounts.push(("/".into(), root));
+        fs.put_file("/save.dat", b"x".to_vec(), 1);
+        let ino = fs.walk(root, "save.dat").unwrap();
+        let refs = REFS.load(std::sync::atomic::Ordering::Relaxed);
+        let h = fs.new_handle(ino, 0);
+        assert_eq!(fs.node(ino).unwrap().open_refs, 1);
+        assert_ne!(REFS.load(std::sync::atomic::Ordering::Relaxed), refs);
+        assert_eq!(fs.handles.remove(&h).map(|h| h.ino), Some(ino));
     }
     #[test]
     fn truncated_snapshots_do_not_mutate_the_receiver() {

@@ -1849,6 +1849,7 @@ dependencies = [
  "flate2",
  "form_urlencoded",
  "futures-util",
+ "ippai-tls",
  "koji",
  "proptest",
  "rayon",
@@ -1878,6 +1879,7 @@ name = "ippai-tls"
 version = "0.1.0"
 dependencies = [
  "httparse",
+ "proptest",
  "rustls",
  "webpki-roots 1.0.11",
 ]

@@ -138,14 +138,27 @@ the live VFS, including the executable created by the official launcher; no
 pre-decrypted executable is distributed or added to the streamed library.
 
 The browser stores installation changes in IndexedDB `ippai-installation`,
-AES-GCM encrypted with a non-extractable CryptoKey. The local key and ciphertext
-are one transaction. An installation lease prevents concurrent tabs overwriting
-one another's provider keys. This is same-origin browser storage, not protection
-against compromised same-origin scripts. Registry and CryptoAPI provider files
-are excluded from portable save exports; executable/DLL/OCX files are excluded
-from installation and portable exports. Memory states and detailed crash exports
-are disabled when account input, persisted provider keys, or the SDRT service
-makes the run sensitive.
+AES-GCM encrypted with a non-extractable CryptoKey. Nothing in it is specific to
+SDRT: it is this device's machine state, what the prefix keeps outside the user
+folders (C:\ProgramData, C:\windows, C:\Program Files) plus the CryptoAPI key
+containers (also those under the user folder), with executables, DLLs, OCXs and
+temporary folders left out. Everything else under C:\users, the registry file
+included, stays each game's own save as before 8ab1b50, so the two never hold one
+path and neither can override the other (web/src/file-records.ts, tested by
+file-records.test.ts). A registry that 8ab1b50-83ea93a kept only in the
+installation record is kept aside and given to any game whose saves have none.
+One tab writes the installation at a time; the lease is taken when a tab first has
+something to write, so games that never write machine state run in any number of
+tabs. This is same-origin browser storage, not protection against compromised
+same-origin scripts.
+
+A run becomes sensitive when the guest takes the account input or opens a
+persisted CryptoAPI key container (host/account-bridge.js `sake_mark_sensitive`);
+from then on it exports no crash logs and no memory states. Memory states are also
+off once a second process runs (a state holds one process). Saving an account in
+the settings or having key containers installed does not by itself affect other
+games. When the DMM dialog's layout matches but the runtime files are not the
+verified 5.0.9.0 build, nothing is filled and the page says to type the account in.
 
 A Chromium test confirmed an encrypted installation record with a
 non-extractable key. First launch opened one DMM authentication connection;

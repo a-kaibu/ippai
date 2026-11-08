@@ -72,6 +72,14 @@ pub(crate) fn acquire(container: Option<&str>, name: Option<&str>, ty: u32, flag
         })?;
         if deleted { return Ok(0); }
     }
+    if path.is_some() {
+        // (a persisted key container: the process may now hold private keys in memory)
+        #[cfg(target_os = "emscripten")]
+        unsafe {
+            unsafe extern "C" { fn sake_mark_sensitive(); }
+            sake_mark_sensitive();
+        }
+    }
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     PROVIDERS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id,
         Provider { path, generation, rc4_bits: if base { 40 } else { 128 }, rsa_bits: if base { 512 } else { 1024 }, keys: Arc::new(Mutex::new(HashMap::new())) });

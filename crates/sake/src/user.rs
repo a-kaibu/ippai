@@ -905,7 +905,7 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         flags = 0x1 | 0x4 | 0x20;
     }
     let _ = id;
-    let text = if edit && style & 0x20 != 0 { vec![b'*' as u16; text.len()] } else { text };
+    let text = match password_char(h) { Some(ch) if edit => vec![ch; text.len()], _ => text };
     tr.write(rc);
     crate::gdi::draw_text(dc, &text, rc, flags);
     gcall(c, "user32", "EndPaint", &[h, ps]);
@@ -2585,12 +2585,40 @@ fn SetWindowRgn(_: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // DefWindowProc
 
+const PASSWORD_CHAR: &str = "sake:passwordchar";
+fn is_edit(h: u32) -> bool {
+    with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit")))
+}
+/// The character an edit control draws for each one of its text (None: drawn as typed).
+fn password_char(h: u32) -> Option<u16> {
+    with(|s| {
+        let w = s.wins.get(&h)?;
+        if w.style & 0x20 == 0 { return None; }
+        Some(w.props.iter().find(|p| p.0 == PASSWORD_CHAR).map_or(b'*' as u16, |p| p.1 as u16))
+    })
+}
 fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     // text parameters are in the sender's encoding (sake translates no messages), whichever of
     // DefWindowProcA/W the window procedure calls
     let wide = msg_wide();
     match m {
+        // EM_SETPASSWORDCHAR / EM_GETPASSWORDCHAR (0: shown as typed; ES_PASSWORD's own is '*',
+        // as comctl32 5's)
+        0xcc | 0xd2 if is_edit(h) => {
+            if m == 0xd2 {
+                return password_char(h).unwrap_or(0) as u32;
+            }
+            with(|s| {
+                if let Some(w) = s.wins.get_mut(&h) {
+                    w.props.retain(|p| p.0 != PASSWORD_CHAR);
+                    w.props.push((PASSWORD_CHAR.into(), wp & 0xffff));
+                    if wp & 0xffff == 0 { w.style &= !0x20 } else { w.style |= 0x20 }
+                }
+            });
+            invalidate(h, None, true);
+            0
+        }
         0x81 => {
             // WM_NCCREATE: the title
             let name = r32(lp + 36);

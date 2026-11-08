@@ -397,13 +397,13 @@ fn transport(r: &Request) -> Result<Response, u32> {
     let connection = &r.connection;
     let host = connection.host.to_ascii_lowercase();
     if crate::env_on!("SAKE_TRACE_WININET") {
-        eprintln!("sake: WinINet target allowed={} port={} secure={}", matches!(host.as_str(), "charge1.soft-denchi.jp" | "dlsoft.dmm.co.jp" | "softdenchi-doujin-api.dmm.co.jp"), connection.port, r.flags & 0x800000 != 0);
+        eprintln!("sake: WinINet target allowed={} port={} secure={}", ippai_tls::target(&host).is_some(), connection.port, r.flags & 0x800000 != 0);
     }
-    if r.flags & 0x800000 == 0 || !matches!(host.as_str(), "charge1.soft-denchi.jp" | "dlsoft.dmm.co.jp" | "softdenchi-doujin-api.dmm.co.jp") || !matches!(connection.port, 0 | 443) {
+    if r.flags & 0x800000 == 0 || !ippai_tls::target(&host).is_some() || !matches!(connection.port, 0 | 443) {
         return Err(12029);
     }
     let mut headers = r.headers.clone();
-    if !connection.session.agent.is_empty() {
+    if !connection.session.agent.is_empty() && !headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("user-agent")) {
         headers.push(("User-Agent".into(), connection.session.agent.clone()));
     }
     let request = ippai_tls::Request {
@@ -639,6 +639,20 @@ fn output(text: &str, out: u32, len: u32, wide: bool) -> u32 {
     w32(len, bytes.len() as u32);
     1
 }
+/// The HTTP_QUERY_* header indices of wininet.h (empty: not a header line; 18-22, 34 and 45
+/// are answered above).
+const HEADER_NAMES: [&str; 70] = [
+    "mime-version", "content-type", "content-transfer-encoding", "content-id", "content-description",
+    "content-length", "content-language", "allow", "public", "date", "expires", "last-modified",
+    "message-id", "uri", "derived-from", "cost", "link", "pragma", "", "", "", "", "", "connection",
+    "accept", "accept-charset", "accept-encoding", "accept-language", "authorization", "content-encoding",
+    "forwarded", "from", "if-modified-since", "location", "", "referer", "retry-after", "server",
+    "title", "user-agent", "www-authenticate", "proxy-authenticate", "accept-ranges", "set-cookie",
+    "cookie", "", "refresh", "content-disposition", "age", "cache-control", "content-base",
+    "content-location", "content-md5", "content-range", "etag", "host", "if-match", "if-none-match",
+    "if-range", "if-unmodified-since", "max-forwards", "proxy-authorization", "range",
+    "transfer-encoding", "upgrade", "vary", "via", "warning", "expect", "proxy-connection",
+];
 fn query(c: &mut Ctx, wide: bool) -> u32 {
     let (id, info, out, len, index) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     if len == 0 {
@@ -647,35 +661,49 @@ fn query(c: &mut Ctx, wide: bool) -> u32 {
     let Some(Handle::Request(r)) = get(id) else {
         return fail(6);
     };
-    let Some(response) = r.response else {
-        return fail(12019);
-    };
     let kind = info & 0xffff;
+    // HTTP_QUERY_FLAG_REQUEST_HEADERS: the request's own headers, as this side sends them
+    // (before it is sent too); the response's only once there is one
+    let request_side = info & 0x8000_0000 != 0;
+    let response = match r.response.clone() {
+        Some(v) => v,
+        None if request_side => Response::default(),
+        None => return fail(12019),
+    };
+    let fields: Vec<(String, String)> = if request_side {
+        let mut h = r.headers.clone();
+        if !r.connection.session.agent.is_empty() && !h.iter().any(|(n, _)| n.eq_ignore_ascii_case("user-agent")) {
+            h.push(("User-Agent".into(), r.connection.session.agent.clone()));
+        }
+        h
+    } else {
+        response.headers.clone()
+    };
     let values = match kind {
-        19 => vec![response.status.to_string()],
-        20 => vec![response.text],
+        19 if !request_side => vec![response.status.to_string()],
+        20 if !request_side => vec![response.text],
         18 => vec!["HTTP/1.1".into()],
-        22 => {
-            let mut s = format!("HTTP/1.1 {} {}\r\n", response.status, response.text);
-            for (n, v) in &response.headers {
-                s += &format!("{n}: {v}\r\n")
+        45 if request_side => vec![r.method.clone()],
+        // RAW_HEADERS (each line ends in a NUL, the list in one more) and RAW_HEADERS_CRLF
+        21 | 22 => {
+            let (end, last) = if kind == 21 { ("\0", "\0") } else { ("\r\n", "\r\n") };
+            let mut s = if request_side { format!("{} {} HTTP/1.1{end}", r.method, r.path) } else { format!("HTTP/1.1 {} {}{end}", response.status, response.text) };
+            for (n, v) in &fields {
+                s += &format!("{n}: {v}{end}");
             }
-            s += "\r\n";
+            s += last;
             vec![s]
         }
         _ => {
-            let name = match kind {
-                1 => "content-type".into(),
-                5 => "content-length".into(),
-                21 => "connection".into(),
-                23 => "user-agent".into(),
-                28 => "location".into(),
-                43 => "set-cookie".into(),
-                65535 => string(out, wide),
-                _ => return fail(12150),
+            let name = if kind == 65535 {
+                string(out, wide)
+            } else {
+                match HEADER_NAMES.get(kind as usize).copied() {
+                    Some(n) if !n.is_empty() => n.to_string(),
+                    _ => return fail(12150),
+                }
             };
-            response
-                .headers
+            fields
                 .iter()
                 .filter(|(n, _)| n.eq_ignore_ascii_case(&name))
                 .map(|(_, v)| v.clone())

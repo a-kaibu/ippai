@@ -1,6 +1,7 @@
 // One browser installation: never uploaded with game saves or library exports.
+import { toast } from "sonner";
 import { exportFiles, type SavesModule } from "./saves";
-import { installationPath, selectRecords } from "./file-records";
+import { installationPath, legacyRegistry, selectRecords } from "./file-records";
 interface State {
   key: CryptoKey;
   iv: Uint8Array<ArrayBuffer>;
@@ -14,11 +15,11 @@ function database(): Promise<IDBDatabase> {
     request.onerror = () => reject(new Error("インストール状態の保存先を開けませんでした。"));
   });
 }
-async function read(): Promise<State | undefined> {
+async function read(name = "prefix32"): Promise<State | undefined> {
   const db = await database();
   try {
     return await new Promise((resolve, reject) => {
-      const r = db.transaction("state").objectStore("state").get("prefix32");
+      const r = db.transaction("state").objectStore("state").get(name);
       r.onsuccess = () => resolve(r.result as State | undefined);
       r.onerror = () => reject(r.error);
     });
@@ -26,12 +27,12 @@ async function read(): Promise<State | undefined> {
     db.close();
   }
 }
-async function write(state: State): Promise<void> {
+async function write(state: State, name = "prefix32"): Promise<void> {
   const db = await database();
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction("state", "readwrite");
-      tx.objectStore("state").put(state, "prefix32");
+      tx.objectStore("state").put(state, name);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
@@ -41,34 +42,54 @@ async function write(state: State): Promise<void> {
   }
 }
 let key: CryptoKey | undefined;
-let lease: Promise<void> | undefined;
-function ownInstallation(): Promise<void> {
-  return (lease ??= new Promise((resolve, reject) => {
-    if (!navigator.locks) {
-      reject(new Error("このブラウザではインストール状態を安全に共有できません。"));
-      return;
-    }
+let lease: Promise<boolean> | undefined;
+/**
+ * The installation's writer: one tab at a time, taken when this tab first has something to
+ * write (most games never write outside the user folders, so any number of them run at once).
+ */
+function ownInstallation(): Promise<boolean> {
+  return (lease ??= new Promise((resolve) => {
+    if (!navigator.locks) return resolve(false);
     void navigator.locks
       .request("ippai-installation", { ifAvailable: true }, async (lock) => {
-        if (!lock) {
-          reject(new Error("別のタブでゲームが動いています。先にそのタブを閉じてください。"));
-          return;
-        }
-        resolve();
-        // Browsing-context destruction releases the installation lease. Keeping
-        // it for the launch prevents independent VMs overwriting one key store.
-        await new Promise<void>(() => {});
+        resolve(!!lock);
+        // Browsing-context destruction releases the lease. Keeping it for the
+        // page prevents another tab overwriting this one's provider keys.
+        if (lock) await new Promise<void>(() => {});
       })
-      .catch(reject);
+      .catch(() => resolve(false));
   }));
 }
-export async function loadInstallation(): Promise<Uint8Array<ArrayBuffer> | null> {
-  await ownInstallation();
-  const state = await read();
+async function decrypt(state: State | undefined): Promise<Uint8Array<ArrayBuffer> | null> {
   if (!state) return null;
-  key = state.key;
-  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: state.iv }, key, state.encrypted);
-  return selectRecords(new Uint8Array(plain), installationPath);
+  key ??= state.key;
+  return new Uint8Array(
+    await crypto.subtle.decrypt({ name: "AES-GCM", iv: state.iv }, state.key, state.encrypted),
+  );
+}
+async function encrypt(data: Uint8Array<ArrayBuffer>): Promise<State> {
+  key ??= await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  return { key, iv, encrypted: await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data) };
+}
+/**
+ * This device's installation (file-records.ts installationPath), and the registry an older
+ * record kept for every game (8ab1b50-83ea93a: the saves had none), for saves still without one.
+ */
+export async function loadInstallation(): Promise<{
+  files: Uint8Array<ArrayBuffer> | null;
+  registry: Uint8Array<ArrayBuffer> | null;
+}> {
+  const plain = await decrypt(await read());
+  let registry = selectRecords(plain, legacyRegistry);
+  if (registry?.length) {
+    // (kept aside once: the record is rewritten without it at this tab's first write)
+    if (!(await read("legacy-registry")) && (await ownInstallation()))
+      await write(await encrypt(registry), "legacy-registry");
+  } else {
+    registry = await decrypt(await read("legacy-registry"));
+  }
+  return { files: selectRecords(plain, installationPath), registry };
 }
 export function keepInstallation(
   module: SavesModule,
@@ -79,6 +100,7 @@ export function keepInstallation(
   let revision = -1;
   let pending = false;
   let reported = false;
+  let busy = false;
   const save = async () => {
     if (pending) return;
     const current = module._vnhost_vfs_changes?.() ?? Date.now();
@@ -89,13 +111,15 @@ export function keepInstallation(
       revision = current;
       if (!data.length) return;
       if (previous?.length === data.length && previous.every((b, i) => data[i] === b)) return;
-      key ??= await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
-        "encrypt",
-        "decrypt",
-      ]);
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
-      await write({ key, iv, encrypted });
+      if (!(await ownInstallation())) {
+        // (another tab writes the installation: this one's changes stay in its memory)
+        if (!busy) {
+          busy = true;
+          toast.warning("別のタブがインストール状態を保存中のため、このタブの変更は保存しません。");
+        }
+        return;
+      }
+      await write(await encrypt(data));
       previous = data;
     } catch {
       revision = -1;
@@ -107,6 +131,7 @@ export function keepInstallation(
       pending = false;
     }
   };
-  setInterval(() => void save(), 1000);
+  // (as often as the game saves: saves.ts keepSaving)
+  setInterval(() => void save(), 5000);
   addEventListener("pagehide", () => void save());
 }

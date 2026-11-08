@@ -74,7 +74,10 @@ fn destination(target: &str) -> Option<(&'static str, u16)> {
     }
 }
 /// Browser WebSockets carry cookies on GET; the ordinary write guard is not
-/// enough. Check the Origin even for locally trusted ippai users.
+/// enough. Check the Origin even for locally trusted ippai users. The Origin may match the Host
+/// or, behind a reverse proxy, X-Forwarded-Host: a page cannot set either header on a
+/// WebSocket, and a non-browser client could forge the Origin anyway (the auth guard is what
+/// stops those).
 fn same_origin(headers: &HeaderMap) -> bool {
     if !headers
         .get("sec-fetch-site")
@@ -365,6 +368,17 @@ mod tests {
             Err(tungstenite::Error::Http(response)) => assert_eq!(response.status(), status),
             other => panic!("unexpected upgrade result: {other:?}"),
         }
+    }
+    #[test]
+    fn routes_match_the_wasm_transport_and_the_bridge() {
+        // (sake picks a target number from ippai_tls::DESTINATIONS; host/tls-bridge.js turns it
+        // into this route; each must reach the host the TLS client verifies)
+        for (route, host) in ippai_tls::DESTINATIONS {
+            assert_eq!(destination(route), Some((host, 443)));
+        }
+        let bridge = include_str!("../../../host/tls-bridge.js");
+        let names: Vec<String> = ippai_tls::DESTINATIONS.iter().map(|d| format!("'{}'", d.0)).collect();
+        assert!(bridge.contains(&format!("[{}][target]", names.join(","))), "host/tls-bridge.js routes differ from ippai_tls::DESTINATIONS");
     }
     #[test]
     fn destination_and_public_addresses_are_bounded() {

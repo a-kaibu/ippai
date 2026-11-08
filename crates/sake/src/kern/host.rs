@@ -124,7 +124,11 @@ pub fn dead(i: u32) -> Option<(u32, u32)> {
 /// Asks the host to start process `pid` from host file `exe` (its record is in the kernel).
 pub fn spawn(pid: u32, exe: &str) -> bool {
     #[cfg(target_os = "emscripten")]
-    return unsafe { sys::vnhost_spawn(pid, exe.as_ptr(), exe.len()) != 0 };
+    {
+        // (the child sees the files this process wrote, the exe the launcher made too)
+        kura::vfs::share();
+        return unsafe { sys::vnhost_spawn(pid, exe.as_ptr(), exe.len()) != 0 };
+    }
     #[cfg(not(target_os = "emscripten"))]
     {
         let _ = (pid, exe);

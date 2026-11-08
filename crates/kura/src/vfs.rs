@@ -165,6 +165,14 @@ fn with<R>(f: impl FnOnce(&mut Fs) -> R) -> R {
     result
 }
 
+/// Before the first child process starts: from here on the processes share one namespace
+/// (each with its own handles and offsets; vfs/shared.rs). A single process never pays for it.
+pub fn share() {
+    if shared::enable() {
+        with(|_| ());
+    }
+}
+
 static LOADING: Mutex<()> = Mutex::new(());
 
 extern "C" {
@@ -599,9 +607,9 @@ impl Fs {
         let id = self.next_handle;
         self.next_handle += 1;
         self.handles.insert(id, Handle { ino, pos: 0, flags });
-        if let Some(n) = self.node_mut(ino) {
+        if let Some(Some(n)) = self.nodes.get_mut(ino as usize) {
             n.open_refs += 1;
-            CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            shared::REFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         id
     }
@@ -1394,9 +1402,9 @@ pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
 pub(crate) fn release(h: u32) {
     with(|fs| {
         if let Some(handle) = fs.handles.remove(&h) {
-            if let Some(n) = fs.node_mut(handle.ino) {
+            if let Some(Some(n)) = fs.nodes.get_mut(handle.ino as usize) {
                 n.open_refs = n.open_refs.saturating_sub(1);
-                CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                shared::REFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             fs.gc(handle.ino);
         }

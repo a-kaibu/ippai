@@ -660,10 +660,11 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     let system_dll = api::is_system(name.rsplit(['\\', '/']).next().unwrap_or(&name));
     if name.contains('\\') || name.contains('/') || name.contains(':') {
         let w = crate::files::full_path(&name);
-        if system_dll && is_system_dir(w.rsplit_once('\\').map_or("", |x| x.0)) {
+        let system_dir = is_system_dir(w.rsplit_once('\\').map_or("", |x| x.0));
+        if system_dll && system_dir {
             return None;
         }
-        return crate::files::resolve(&w).map(|h| (h, w));
+        return crate::files::resolve(&w).filter(|h| !system_dir || !wine_builtin(h)).map(|h| (h, w));
     }
     let exe_dir = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit_once('\\').map_or(String::new(), |x| x.0.to_string()));
     let mut dirs: Vec<String> = exe_dir.into_iter().collect();
@@ -689,6 +690,11 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     for d in dirs.iter().filter(|d| !system_dll || !is_system_dir(d)) {
         let w = format!("{d}\\{name}");
         if let Some(h) = crate::files::resolve(&w) {
+            // (an old Wine prefix's own builds there are not a vendor's: sake has none of
+            // Wine's DLLs, and one it does not implement stays missing)
+            if is_system_dir(d) && wine_builtin(&h) {
+                continue;
+            }
             // (as Windows' loader, one of the other architecture is passed over: a 64-bit game
             // shipping a 32-bit d3dcompiler_47.dll gets the system's)
             if is_64bit_file(&h) == mem::x64() {
@@ -697,6 +703,19 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
         }
     }
     None
+}
+
+/// A PE build of Wine's own DLLs (winebuild writes "Wine builtin DLL" after the DOS header;
+/// "Wine placeholder DLL" for the fake ones a prefix keeps).
+pub(crate) fn wine_builtin(host: &str) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 0x60];
+    let Ok(mut f) = kura::fs::File::open(host) else { return false };
+    let n = f.read(&mut head).unwrap_or(0);
+    wine_stub(&head[..n])
+}
+fn wine_stub(head: &[u8]) -> bool {
+    head.get(0x40..0x60).is_some_and(|s| s.starts_with(b"Wine builtin DLL") || s.starts_with(b"Wine placeholder DLL"))
 }
 
 /// C:\windows\system32 or C:\windows\SysWOW64 (a game run from there, or one that adds it with
@@ -948,5 +967,23 @@ pub fn thread_attach(cpu: &mut Cpu) {
         if dll && entry != 0 {
             crate::call(cpu, entry, &[base, 2, 0]);
         }
+    }
+}
+
+#[cfg(test)]
+mod wine_tests {
+    #[test]
+    fn wine_builds_are_recognized_by_their_dos_stub() {
+        let mut head = vec![0u8; 0x60];
+        head[..2].copy_from_slice(b"MZ");
+        assert!(!super::wine_stub(&head));
+        head[0x40..0x50].copy_from_slice(b"Wine builtin DLL");
+        assert!(super::wine_stub(&head));
+        head[0x40..0x54].copy_from_slice(b"Wine placeholder DLL");
+        assert!(super::wine_stub(&head));
+        // (a vendor DLL's ordinary stub, and a short file)
+        head[0x40..0x60].copy_from_slice(b"This program cannot be run in DO");
+        assert!(!super::wine_stub(&head));
+        assert!(!super::wine_stub(b"MZ"));
     }
 }

@@ -24,7 +24,15 @@ var vnvmTrees = null;
 // The app origin, copied into pthreads whose location may be a blob URL.
 var vnvmTlsRelay = null;
 var vnvmAccount = null;
+var vnvmSensitive = null;
 var vnvmFs = null;
+function ippaiSharedFs() {
+  try {
+    const b = new SharedArrayBuffer(1 << 20, { maxByteLength: 1 << 30 });
+    if (b.growable) return b;
+  } catch {}
+  return new SharedArrayBuffer(64 << 20);
+}
 Module.preInit = [].concat(Module.preInit || [], () => {
   if (ENVIRONMENT_IS_PTHREAD) return;
   const f = ENVIRONMENT_IS_NODE && process.env.IPPAI_JIT_FILE;
@@ -37,7 +45,10 @@ Module.preInit = [].concat(Module.preInit || [], () => {
     }
   }
   vnvmAccount = Module.vnvmAccount || null;
-  vnvmFs = Module.vnvmFs || (!ENVIRONMENT_IS_NODE ? new SharedArrayBuffer(64 << 20) : null);
+  vnvmSensitive = Module.vnvmSensitive || null;
+  // (the processes' shared namespace: grown as needed where the browser can, else 64 MiB;
+  // used only once a child process starts, kura/src/vfs/shared.rs)
+  vnvmFs = Module.vnvmFs || (!ENVIRONMENT_IS_NODE ? ippaiSharedFs() : null);
   vnvmJitBundle = Module.vnvmJit || null;
   vnvmTrees = Module.vnvmFiles || null;
   if (!ENVIRONMENT_IS_NODE) { const u = new URL("/net/tls/soft-denchi", location.href); u.protocol = u.protocol === "https:" ? "wss:" : "ws:"; vnvmTlsRelay = u.href; }
@@ -55,7 +66,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     W.prototype.vnvmPost = W.prototype.postMessage;
     W.prototype.postMessage = function (m, ...rest) {
       if (m && m.cmd === 'load') {
-        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay, vnvmAccount, vnvmFs };
+        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay, vnvmAccount, vnvmSensitive, vnvmFs };
         // (what the thread asks of the host: to start a process)
         const ask = (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel, vnvmFs);
         if (ENVIRONMENT_IS_NODE) this.on('message', ask);
@@ -78,6 +89,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
       vnvmCanSpawn = !!d.vnvmCanSpawn;
       vnvmTlsRelay = d.vnvmTlsRelay || null;
       vnvmAccount = d.vnvmAccount || null;
+      vnvmSensitive = d.vnvmSensitive || null;
       vnvmFs = d.vnvmFs || null;
       if (d.vnvmTrees) Module.vnvmFiles = d.vnvmTrees;
       if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;

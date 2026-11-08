@@ -31,20 +31,42 @@ export function selectRecords(
   return out;
 }
 const prefix = "/vnvm/prefix/drive_c/";
+const users = `${prefix}users/`;
+export const registryPath = `${users}user/sake-registry.tsv`;
+const secret = (p: string) => p.includes("/microsoft/crypto/");
+const binary = (p: string) => /\.(exe|dll|ocx)$/i.test(p);
+/**
+ * This browser's machine: what the prefix keeps outside the user folders (C:\ProgramData,
+ * C:\windows, C:\Program Files: installed runtimes' data) and the CryptoAPI key containers,
+ * which never leave the device. The user folders (game saves, the registry) are each game's
+ * own saves; the two never hold the same path, so neither overrides the other.
+ */
 export function installationPath(path: string): boolean {
   const p = path.toLowerCase();
   return (
     p.startsWith(prefix) &&
     !p.split("/").includes("..") &&
-    !/\.(exe|dll|ocx)$/i.test(p) &&
-    !p.includes("/temp/")
+    !binary(p) &&
+    !p.includes("/temp/") &&
+    (!p.startsWith(users) || secret(p))
   );
 }
+/** A game's saves: everything it wrote but executables and key containers. */
 export function portablePath(path: string): boolean {
   const p = path.toLowerCase();
-  return (
-    !/\.(exe|dll|ocx)$/i.test(p) && !p.includes("/microsoft/crypto/") && !p.endsWith("/sake-registry.tsv")
-  );
+  return !binary(p) && !secret(p);
+}
+/** The registry of an older installation record (8ab1b50 kept it there, not in the saves). */
+export function legacyRegistry(path: string): boolean {
+  return path.toLowerCase() === registryPath;
+}
+/** The saves, with `registry` first when they have none of their own. */
+export function withRegistry(
+  saved: Uint8Array<ArrayBuffer> | null,
+  registry: Uint8Array<ArrayBuffer> | null,
+): Uint8Array<ArrayBuffer> | null {
+  if (!registry?.length || selectRecords(saved, legacyRegistry)?.length) return saved;
+  return joinRecords(registry, saved);
 }
 export function joinRecords(
   a: Uint8Array<ArrayBuffer> | null,

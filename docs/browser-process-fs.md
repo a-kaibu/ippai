@@ -20,14 +20,20 @@ in the streamed chunk store. Node's actual filesystem keeps its current behavior
 
 ## Decision and alternatives
 
-Use a per-launch shared memory region for the VFS namespace and file contents.
+Use a per-launch shared memory region for the VFS namespace and file contents,
+turned on by the first CreateProcess (crates/sake/src/kern/host.rs calls
+`kura::vfs::share()` before the host starts the child): a single-process game
+keeps its own file system and pays nothing for the sharing.
 Each process keeps its handles locally; nodes have a shared open-reference count.
 A lock covers importing the latest revision, a short in-memory operation, and
 publishing changed state. Network chunk fetches and initial tree loading occur
-outside this lock. Revision checks avoid copies for unchanged reads. Start with
-64 MiB of shared-state capacity; exceeding it must stop explicitly rather than
-silently acknowledge a lost update. Measure serialized state size and write cost
-with the title before accepting this bound for release.
+outside this lock. Revision checks avoid copies for unchanged reads. The region is a
+growable SharedArrayBuffer (1 MiB, up to 1 GiB; 64 MiB fixed where a browser
+cannot grow one). A namespace past that maximum is not published: the writing
+process goes on with its own files and logs it once, the others keep the last
+namespace that fitted, rather than the game stopping. Open/close reference counts
+publish the namespace through their own counter, not the saves' change count, so
+opening files makes no save or installation export.
 
 A snapshot only at spawn would fix the missing executable but would not share
 later registry/service writes. Periodic merging introduces races and cannot make
@@ -40,8 +46,8 @@ it remains an alternative if snapshot size/copying is excessive.
 Validate parent-to-child and child-to-parent writes, concurrent writers, rename,
 unlink with open handles, and handle offsets. Include inode reuse and malformed
 snapshot tests. Main-thread exports must not fetch trees while holding a lock.
-The 64 MiB limit and snapshot costs are accepted development constraints, not yet
-validated release limits. Shared files alone do not establish browser restart
+Snapshot costs (each change copies the namespace) remain a limitation of
+multi-process runs. Shared files alone do not establish browser restart
 persistence: installation state must be stored separately from portable game
 saves, and generated process images must not enter portable exports. Those are
 required follow-up implementation and tests before declaring browser play done.
@@ -54,6 +60,8 @@ seek offsets, and rejecting truncated shared snapshots without partial writes.
 The host bridge test uses four worker threads and checks 1,200 serialized
 read/modify/write operations plus capacity-failure behavior. Open/close reference
 changes publish a new revision, so another process cannot recycle a live inode.
+tests/vfs-shared.mjs also checks that sharing stays off until enabled and that the
+growable buffer grows to the namespace and refuses past its maximum.
 Process crashes can leave open references until the launch ends; crash cleanup
 and snapshot-copy costs remain limitations of this implementation.
 

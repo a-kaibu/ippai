@@ -18,11 +18,8 @@ pub(crate) struct Socket {
 }
 impl Socket {
     pub fn open(host: &str, timeout: u32) -> io::Result<Self> {
-        let target = match host {
-            "charge1.soft-denchi.jp" => 0,
-            "dlsoft.dmm.co.jp" => 1,
-            "softdenchi-doujin-api.dmm.co.jp" => 2,
-            _ => return Err(io::Error::new(io::ErrorKind::PermissionDenied, "TLS destination unavailable")),
+        let Some(target) = ippai_tls::target(host) else {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "TLS destination unavailable"));
         };
         let timeout = timeout.clamp(100, 120000);
         #[cfg(target_os = "emscripten")]

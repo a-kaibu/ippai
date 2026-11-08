@@ -4180,6 +4180,18 @@ fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
         return a.len() as u32;
     }
     if a.len() as u32 > cap {
+        // (as MultiByteToWideChar: the whole characters that fit are written before the failure)
+        let utf8 = cp == 65001 || matches!(cp, 0 | 1 | 3) && crate::text::acp() == 65001;
+        let mut fit = 0;
+        let mut at = 0;
+        while at < a.len() {
+            let n = if utf8 { 1 + a[at + 1..].iter().take_while(|b| **b & 0xc0 == 0x80).count() }
+                else if crate::text::is_lead_cp(cp, a[at]) { 2 } else { 1 };
+            if at + n > cap as usize { break; }
+            at += n;
+            fit = at;
+        }
+        mem::write(dst, &a[..fit]);
         last_error(122);
         return 0;
     }

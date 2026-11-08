@@ -69,7 +69,7 @@ import {
 import { toast } from "sonner";
 import { accountInput } from "./account-settings";
 import { keepInstallation, loadInstallation } from "./installation";
-import { joinRecords, portablePath, selectRecords } from "./file-records";
+import { joinRecords, portablePath, selectRecords, withRegistry } from "./file-records";
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
@@ -270,10 +270,13 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     `build: ${WASM} ${version}, translator ${await jitVersion}, memory ${build.memory ? "4 GB fixed" : "growing from 2.06 GB (4 GB refused)"}`,
   );
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
-  const installation = await loadInstallation();
+  const { files: installation, registry: legacyRegistry } = await loadInstallation();
   const saved = nosave
     ? null
-    : selectRecords(await loadSaves(saveName, (m) => (log(m), toast.warning(m))), portablePath);
+    : withRegistry(
+        selectRecords(await loadSaves(saveName, (m) => (log(m), toast.warning(m))), portablePath),
+        legacyRegistry,
+      );
   let stateMem: WebAssembly.Memory | undefined;
   if (stateFile) {
     stateMem = await stateMemory(stateFile, build.memory);
@@ -299,26 +302,43 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const sizes = new Map<string, number>();
   for (const b of Object.values(vnvmFiles)) treeChunkSizes(new TextDecoder().decode(b), sizes);
   treesRead(sizes);
-  // Credentials stay out of vnvmEnv, URLs and log metadata. Guest stacks may
-  // retain copies, so runs with credentials cannot export crash logs or states.
+  // Credentials stay out of vnvmEnv, URLs and log metadata. Only the verified original
+  // dialog takes them (crates/sake/src/sdrt_login.rs); the other games never read them.
   const vnvmAccount = await accountInput().catch(() => {
     toast.error("DMM アカウントの設定を読み込めませんでした。ゲーム内で入力してください。");
     return null;
   });
-  let sensitiveRun = Boolean(
-    vnvmAccount ||
-    selectRecords(installation, (path) => path.toLowerCase().includes("/microsoft/crypto/"))?.length,
-  );
-  if (sensitiveRun) recorder.suppressSensitiveRun();
-  if (stateFile && sensitiveRun) {
-    throw new Error("認証情報を含むインストールではメモリステートを復元できません。通常起動してください。");
-  }
+  // Set by the guest once it holds secrets: the account input taken, or a persisted CryptoAPI
+  // key container opened (host/account-bridge.js). Guest memory may then keep plaintext, so
+  // from that moment the run exports no crash logs and no memory states.
+  const vnvmSensitive = new SharedArrayBuffer(4);
+  let sensitiveRun = false;
+  // (memory states hold one process: none once a second process runs)
+  let statesOff = false;
+  const noStates = () => {
+    if (statesOff) return;
+    statesOff = true;
+    setUi({ states: null });
+  };
+  const markSensitive = () => {
+    if (sensitiveRun) return;
+    sensitiveRun = true;
+    recorder?.suppressSensitiveRun();
+    noStates();
+  };
+  const sensitiveTimer = setInterval(() => {
+    if (Atomics.load(new Int32Array(vnvmSensitive), 0)) {
+      markSensitive();
+      clearInterval(sensitiveTimer);
+    }
+  }, 200);
   let activeModule: SakeModule | undefined;
   let rootModule: SakeModule | undefined;
   let rootExited = false;
   let pendingChildren = 0;
   const moduleArg = {
     vnvmAccount,
+    vnvmSensitive,
     // SCM/COM local servers are actual guest processes, sharing the kernel and
     // the one-shot account input, but each having its own address space.
     vnvmSpawn: spawn,
@@ -395,13 +415,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     kernel: SharedArrayBuffer,
     sharedFs: SharedArrayBuffer,
   ): void {
-    // A manually entered official login also leaves keys and credentials in
-    // guest memory. Disable memory exports before its service can authenticate.
-    if (/(?:^|[/\\])UCManSvc\.exe$/i.test(request.exe)) {
-      sensitiveRun = true;
-      recorder?.suppressSensitiveRun();
-      setUi({ states: null });
-    }
+    noStates();
     pendingChildren++;
     const surface = document.createElement("canvas");
     surface.className = "process-screen";
@@ -517,6 +531,12 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       if (result < 0) {
         toast.error(`ソフト電池の認証に失敗しました（公式ランタイムのエラーコード ${-result - 1}）。`);
         clearInterval(timer);
+      } else if (result === 4) {
+        toast.warning(
+          "ソフト電池のランタイムが確認済みの版と違うため、アカウントを自動入力しませんでした。ゲーム内で入力してください。",
+        );
+        clearInterval(timer);
+        new Uint8Array(vnvmAccount, 4).fill(0);
       } else if (Date.now() >= until || exited) {
         clearInterval(timer);
         new Uint8Array(vnvmAccount, 4).fill(0);
@@ -559,7 +579,13 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     () => !rootExited,
   );
   (await audio).attach(sake);
-  if (!nosave && !sensitiveRun) attachStates(sake as unknown as SnapModule, saveName, build.name);
+  if (!nosave && !statesOff)
+    attachStates(
+      sake as unknown as SnapModule,
+      saveName,
+      build.name,
+      () => statesOff || sensitive(vnvmSensitive),
+    );
 }
 
 /**
@@ -622,7 +648,11 @@ const AHEAD_BEFORE_START = 32 << 20;
 const AHEAD_TOTAL = 64 << 20;
 
 /** The states dialog (ui/States.tsx) for the running game `game`. */
-function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"]): void {
+function sensitive(flag: SharedArrayBuffer): boolean {
+  return Atomics.load(new Int32Array(flag), 0) !== 0;
+}
+
+function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"], off: () => boolean): void {
   let slots: StateInfo[] = [];
   let busy = "";
   let ids = new Map<string, string>();
@@ -655,6 +685,8 @@ function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"]): 
   };
   const save = async (n: number) => {
     if (busy || snapping()) return;
+    // (the run came to hold secrets, or a second process, since the menu was drawn)
+    if (off()) return void toast.error("この実行ではメモリステートを保存できません。");
     busy = "セーブ中…";
     show();
     try {

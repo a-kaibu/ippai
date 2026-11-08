@@ -6,6 +6,18 @@ use std::{
     sync::{Arc, OnceLock},
 };
 const BODY_MAX: usize = 4 * 1024 * 1024;
+/// The only HTTPS hosts the browser transport reaches: (ippai serve's route, host), on 443. The
+/// index is the transport's target number (host/tls-bridge.js has the routes in this order;
+/// crates/ippai/src/tls_relay.rs the same routes, checked by its tests).
+pub const DESTINATIONS: [(&str, &str); 3] = [
+    ("soft-denchi", "charge1.soft-denchi.jp"),
+    ("dmm-softdenchi", "dlsoft.dmm.co.jp"),
+    ("dmm-doujin-softdenchi", "softdenchi-doujin-api.dmm.co.jp"),
+];
+/// The target number of `host` (lower case), if the transport reaches it.
+pub fn target(host: &str) -> Option<u32> {
+    DESTINATIONS.iter().position(|d| d.1 == host).map(|i| i as u32)
+}
 const HEADER_MAX: usize = 64 * 1024;
 #[derive(Debug)]
 pub enum Error {
@@ -72,14 +84,11 @@ fn encode(r: &Request) -> Result<Vec<u8>, Error> {
     {
         return Err(Error::InvalidRequest);
     }
-    let mut out = format!(
-        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
-        r.method,
-        r.path,
-        r.host,
-        r.body.len()
-    )
-    .into_bytes();
+    let mut out = format!("{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n", r.method, r.path, r.host).into_bytes();
+    // (as WinINet: a GET or HEAD without a body says nothing of its length)
+    if !r.body.is_empty() || !matches!(r.method.as_str(), "GET" | "HEAD") {
+        out.extend_from_slice(format!("Content-Length: {}\r\n", r.body.len()).as_bytes());
+    }
     for (n, v) in &r.headers {
         if !token(n) || v.bytes().any(|b| b == 0 || b == b'\r' || b == b'\n') {
             return Err(Error::InvalidRequest);
@@ -250,8 +259,9 @@ fn read_response<R: Read>(io: &mut R, method: &str) -> Result<Response, Error> {
         }
     } else if !lengths.is_empty() {
         let mut size = None;
-        for value in lengths {
-            let n = value.parse::<usize>().map_err(|_| Error::InvalidResponse)?;
+        // (RFC 9110 8.6: a list of one repeated value is that value)
+        for value in lengths.iter().flat_map(|v| v.split(',')) {
+            let n = value.trim().parse::<usize>().map_err(|_| Error::InvalidResponse)?;
             if n > BODY_MAX {
                 return Err(Error::TooLarge);
             }
@@ -270,7 +280,14 @@ fn read_response<R: Read>(io: &mut R, method: &str) -> Result<Response, Error> {
         }
         body = pending;
         loop {
-            let n = io.read(&mut temp).map_err(tls_error)?;
+            let n = match io.read(&mut temp) {
+                Ok(n) => n,
+                // (a body that ends with the connection: many servers close without TLS's
+                // close_notify, which rustls reports as an unexpected EOF; a truncation attack
+                // needs a body that has no length, which is what this one is)
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => 0,
+                Err(e) => return Err(tls_error(e)),
+            };
             if n == 0 {
                 break;
             }
@@ -316,6 +333,92 @@ fn line<R: Read>(io: &mut R, limit: usize) -> Result<Vec<u8>, Error> {
         if out.ends_with(b"\r\n") {
             out.truncate(out.len() - 2);
             return Ok(out);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    /// A server's bytes, read in pieces of `step`, then a clean end or (rustls without the
+    /// peer's close_notify) an unexpected EOF.
+    struct Wire { data: Vec<u8>, at: usize, step: usize, abrupt: bool }
+    impl Read for Wire {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            if self.at == self.data.len() {
+                return if self.abrupt { Err(io::ErrorKind::UnexpectedEof.into()) } else { Ok(0) };
+            }
+            let n = out.len().min(self.step).min(self.data.len() - self.at);
+            out[..n].copy_from_slice(&self.data[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+    fn parse(data: &[u8], step: usize, abrupt: bool, method: &str) -> Result<Response, Error> {
+        read_response(&mut Wire { data: data.to_vec(), at: 0, step, abrupt }, method)
+    }
+    fn request(method: &str, body: &[u8]) -> String {
+        let r = Request { host: "example.com".into(), method: method.into(), path: "/a".into(), headers: vec![("User-Agent".into(), "x".into()), ("Content-Length".into(), "9".into())], body: body.to_vec() };
+        String::from_utf8(encode(&r).unwrap()).unwrap()
+    }
+    #[test]
+    fn requests_say_their_length_unless_an_empty_get_or_head() {
+        assert!(!request("GET", b"").contains("Content-Length"));
+        assert!(!request("HEAD", b"").contains("Content-Length"));
+        assert!(request("POST", b"").contains("\r\nContent-Length: 0\r\n"));
+        assert!(request("POST", b"abc").ends_with("\r\nContent-Length: 3\r\nUser-Agent: x\r\nAccept-Encoding: identity\r\n\r\nabc"));
+        // (the caller's own Content-Length is dropped: one, computed here)
+        assert_eq!(request("POST", b"abc").matches("Content-Length").count(), 1);
+    }
+    #[test]
+    fn bodies_by_length_chunks_or_the_connection_end() {
+        let ok = |d: &[u8], abrupt| parse(d, 3, abrupt, "GET").unwrap().body;
+        assert_eq!(ok(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhiXX", false), b"hi");
+        assert_eq!(ok(b"HTTP/1.1 200 OK\r\nContent-Length: 2, 2\r\n\r\nhi", false), b"hi");
+        assert_eq!(ok(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2;x=y\r\nhi\r\n1\r\n!\r\n0\r\nT: v\r\n\r\n", false), b"hi!");
+        assert_eq!(ok(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n\r\nto the end", false), b"to the end");
+        // (the server closed TCP without TLS's close_notify)
+        assert_eq!(ok(b"HTTP/1.1 200 OK\r\n\r\nto the end", true), b"to the end");
+        assert_eq!(parse(b"HTTP/1.1 204 No Content\r\n\r\n", 1, true, "GET").unwrap().status, 204);
+        assert!(parse(b"HTTP/1.1 200 OK\r\n\r\n", 1, false, "HEAD").unwrap().body.is_empty());
+    }
+    #[test]
+    fn ambiguous_or_truncated_responses_fail() {
+        let bad = |d: &[u8], abrupt| parse(d, 4, abrupt, "GET").is_err();
+        assert!(bad(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nabc", false));
+        assert!(bad(b"HTTP/1.1 200 OK\r\nContent-Length: 2, 3\r\n\r\nabc", false));
+        assert!(bad(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n", false));
+        assert!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n", false));
+        // (a declared length or a chunk cut short is an error even when the server just closed)
+        assert!(bad(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab", true));
+        assert!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab", true));
+        assert!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n", false));
+        assert!(bad(b"HTTP/1.1 101 Switching\r\n\r\n", false));
+        assert!(bad(b"HTTP/1.1 200 OK\r\n", false));
+        let big = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY_MAX + 1);
+        assert!(matches!(parse(big.as_bytes(), 64, false, "GET"), Err(Error::TooLarge)));
+    }
+    proptest! {
+        // Any body, chunked any way and read in any piece size, comes back exactly.
+        #[test]
+        fn chunked_bodies_round_trip(body in proptest::collection::vec(any::<u8>(), 0..2000), cuts in proptest::collection::vec(1usize..300, 1..20), step in 1usize..64) {
+            let mut wire = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+            let (mut at, mut i) = (0, 0);
+            while at < body.len() {
+                let n = cuts[i % cuts.len()].min(body.len() - at);
+                wire.extend(format!("{n:x}\r\n").as_bytes()); wire.extend(&body[at..at + n]); wire.extend(b"\r\n");
+                at += n; i += 1;
+            }
+            wire.extend(b"0\r\n\r\n");
+            prop_assert_eq!(parse(&wire, step, true, "GET").unwrap().body, body);
+        }
+        // Arbitrary bytes never panic the parser.
+        #[test]
+        fn arbitrary_responses_never_panic(data in proptest::collection::vec(any::<u8>(), 0..600), step in 1usize..32, abrupt in any::<bool>()) {
+            let mut wire = b"HTTP/1.1 200 OK\r\n".to_vec(); wire.extend(&data);
+            let _ = parse(&wire, step, abrupt, "GET");
+            let _ = parse(&data, step, abrupt, "GET");
         }
     }
 }

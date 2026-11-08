@@ -14,7 +14,8 @@ addToLibrary({
   vnhost_vfs_shared_lock__deps: ['$vnfsSharedH'],
   vnhost_vfs_shared_lock: () => {
     const h = vnfsSharedH();
-    if (!h) return 0;
+    // (off until the first child process: a single process keeps its own file system)
+    if (!h || !Atomics.load(h, 3)) return 0;
     while (Atomics.compareExchange(h, 0, 0, 1) !== 0) {
       if (ENVIRONMENT_IS_PTHREAD) Atomics.wait(h, 0, 1);
       // The page's export can only wait for a short in-memory transaction;
@@ -24,6 +25,8 @@ addToLibrary({
   },
   vnhost_vfs_shared_unlock__deps: ['$vnfsSharedH'],
   vnhost_vfs_shared_unlock: () => { const h = vnfsSharedH(); Atomics.store(h, 0, 0); Atomics.notify(h, 0); },
+  vnhost_vfs_shared_enable__deps: ['$vnfsSharedH'],
+  vnhost_vfs_shared_enable: () => { const h = vnfsSharedH(); if (!h) return 0; Atomics.store(h, 3, 1); return 1; },
   vnhost_vfs_shared_generation__deps: ['$vnfsSharedH'],
   vnhost_vfs_shared_generation: () => { const h = vnfsSharedH(); return h ? Atomics.load(h, 1) : 0; },
   vnhost_vfs_shared_get__deps: ['$vnfsSharedH'],
@@ -36,7 +39,12 @@ addToLibrary({
   vnhost_vfs_shared_put__deps: ['$vnfsSharedH'],
   vnhost_vfs_shared_put__sig: 'ipp',
   vnhost_vfs_shared_put: (src, len) => {
-    if (len > vnvmFs.byteLength - 32) return 0;
+    if (len > vnvmFs.byteLength - 32) {
+      // a growable buffer takes what the namespace needs (up to its maximum)
+      const want = Math.min(32 + len + (len >>> 2), vnvmFs.maxByteLength ?? 0);
+      if (!vnvmFs.growable || want < 32 + len) return 0;
+      try { vnvmFs.grow(want); } catch { return 0; }
+    }
     new Uint8Array(vnvmFs, 32, len).set(HEAPU8.subarray(src >>> 0, (src >>> 0) + len));
     const h = vnfsSharedH(); Atomics.store(h, 2, len); Atomics.add(h, 1, 1);
     return 1;
