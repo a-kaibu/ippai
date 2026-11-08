@@ -1,0 +1,5 @@
+initial dialog tab item: FAIL
+skip hidden and disabled controls: ok
+dialog tab wrap: ok
+Tab moves keyboard focus: ok
+tab order reflects state changes: ok

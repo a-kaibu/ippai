@@ -1,0 +1,6 @@
+enum: 0 1 1
+reset: 0
+status: 0 1 1 1
+short: 1
+bad lana: 35
+unsupported: 35

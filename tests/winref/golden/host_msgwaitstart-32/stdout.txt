@@ -1,0 +1,6 @@
+empty queue: timeout 1, short waits consume time 1
+created hidden caption: 1
+notification alone: timeout 1
+notification and event: completed 1, consumed event 1
+composition notification: 1, enabled 1, reserved zero 1
+one notification: 1

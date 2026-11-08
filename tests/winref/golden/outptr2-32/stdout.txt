@@ -1,0 +1,19 @@
+GetProcessAffinityMask process: ret 1 half 0 null 0
+GetProcessAffinityMask system: half 0
+InitializeSRWLock: ret 0 half 0 null 1
+InitializeConditionVariable: ret 0 half 0 null 1
+InitOnceInitialize: ret 0 half 0 null 1
+GetKeyboardLayoutList: ret 1 half 0 null 0
+BCryptOpenAlgorithmProvider: ret 0 half 0 null 0
+GetErrorInfo: ret 1 half 0 null 1
+LoadRegTypeLib unregistered: ret 0 half 0 null 1
+GdiplusStartup: ret 0 half 0 null 0
+GdipCreateHBITMAPFromBitmap: ret 0 half 0 null 0
+DirectDrawCreate: ret 0 half 0 null 0
+DirectDrawCreateEx: ret 0 half 0 null 0
+DirectDrawCreateClipper: ret 0 half 0 null 0
+mixerOpen: half 0
+acmDriverOpen: ret 0 half 0
+acmDriverID: ret 0 half 0 same 1
+DirectSoundCreate: half 1
+DirectSoundCreate8: half 1

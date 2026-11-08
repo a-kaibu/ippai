@@ -1,0 +1,3 @@
+image f0 1280 720 2
+image r34193 256 256 2
+calls 125 frames 3

@@ -1,3 +1,2 @@
 image f0 800 600 2
-image f900 800 600 2
-calls 235394 frames 1375
+calls 18354 frames 233

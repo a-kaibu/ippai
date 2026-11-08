@@ -1,3 +1,5 @@
 image f0 640 480 2
 image f900 640 480 2
-calls 19113 frames 1543
+image f1800 640 480 2
+image f2700 640 480 2
+calls 38172 frames 3131

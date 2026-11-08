@@ -1,0 +1,6 @@
+image f0 800 600 2
+image f56 800 600 2
+image f112 800 600 2
+image f168 800 600 2
+image f224 800 600 2
+calls 18354 frames 233

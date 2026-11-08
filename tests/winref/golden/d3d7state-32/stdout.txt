@@ -1,0 +1,45 @@
+EnumDevices NULL 0x80070057
+EnumDevices stop 0 n 1
+surfaces at first 0
+CreateDevice ok
+surfaces with a render target 1
+GetCaps NULL 0x80070057
+SetMaterial NULL 0x80070057
+EndScene first 0x887602f9
+BeginScene 0
+BeginScene again 0x887602f8
+EndScene 0
+EndScene again 0x887602f9
+LightEnable 20 0
+GetLight 20 0
+  type 3 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0
+GetLight 21 (never set) 0x80070057
+SetLight type 0 0x80070057
+SetLight type 12345 0x80070057
+SetLight point att0 -1 0
+SetLight spot att0 -inf 0x80070057
+SetLight spot att0 0 0
+SetLight spot att0 +inf 0
+SetLight spot att0 nan 0
+SetLight directional att0 -1 0
+SetLight NULL 0x80070057
+CreateSurface z24 0x88760091
+CreateSurface z16 0
+DEPTHFILL 0
+depth row 3: 0000 1234 1234 0000
+DEPTHFILL of a plain surface 0x80070057
+CreateVertexBuffer 0
+GetVertexBufferDesc size 0: 0 size 0 fvf 0x2 n 7 after 0x12
+GetVertexBufferDesc size 16: 0 size 16 fvf 0x2 n 7 after 0x12
+GetVertexBufferDesc size 32: 0 size 32 fvf 0x2 n 7 after 0x12
+image fog 32 32 2
+image far 32 32 2
+CreateSurface z16 0
+SetRenderTarget plain 0x88760064
+  is plain 0 is rt 1
+SetRenderTarget depth buffer 0x88760091
+  is z 1 is rt 0
+SetRenderTarget rt2 0
+  viewport 2 3 20 21 0.25 0.75
+CreateSurface faces without CUBEMAP 0x88760064
+surfaces at the end 0

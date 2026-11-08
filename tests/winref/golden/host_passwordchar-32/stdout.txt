@@ -1,0 +1,6 @@
+ES_PASSWORD default character: ok
+plain edit has none: ok
+text stays as typed: ok
+set character: ok
+zero removes ES_PASSWORD: ok
+nonzero adds ES_PASSWORD: ok

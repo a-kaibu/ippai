@@ -1,0 +1,9 @@
+new ACL: ok
+grant and set: 2 aces [type 0 flags 0x3 mask 0x80000000 sub 0] [type 0 flags 0 mask 0x10000000 sub 18]
+deny added: ok
+deny first: 3 aces [type 1 flags 0 mask 0x10000 sub 0] [type 0 flags 0x3 mask 0x80000000 sub 0] [type 0 flags 0 mask 0x10000000 sub 18]
+revoke: ok
+revoked system: 2 aces [type 1 flags 0 mask 0x10000 sub 0] [type 0 flags 0x3 mask 0x80000000 sub 0]
+current user by name: ok
+no entries: FAIL
+CharPrevW: ok

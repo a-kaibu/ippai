@@ -1,0 +1,3 @@
+image f0 1280 720 2
+image r51884 1280 720 2
+calls 44181 frames 586

@@ -1,0 +1,7 @@
+ansi: 0 1
+wide: 0 1
+optional: 0 1
+short: 34 1 1
+null: 22 1
+legacy: 1
+legacy wide: 1

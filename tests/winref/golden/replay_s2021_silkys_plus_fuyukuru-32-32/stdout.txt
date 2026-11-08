@@ -1,0 +1,3 @@
+hr 67 ID3D11Device5::QueryInterface 0 want 0x80004002
+image f0 1280 720 2
+calls 431 frames 2

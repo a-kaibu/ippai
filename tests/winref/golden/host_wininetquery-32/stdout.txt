@@ -1,0 +1,12 @@
+0x2d: [POST] 4 next 0
+0x18: [text/plain] 10 next 1
+0x23: [https://example.com/r] 21 next 1
+0x1: [text/plain] 10 next 1
+0xffff: [one] 3 next 1
+0xffff: error 12150
+0x21: error 12150
+0x1c: error 12150
+FAIL line 38
+status before send: error 0
+indices: 21 23 28 33 39 43
+wininet query errors: 1

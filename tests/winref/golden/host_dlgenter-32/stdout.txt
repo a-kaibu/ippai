@@ -1,0 +1,7 @@
+windows 1 1 1
+DM_GETDEFID 00000000
+plain button, no IDOK: 1/0
+checkbox, no IDOK: 1/0
+plain button, IDOK button: 1/3
+default button focused: 10001/2
+checkbox, default button: 1/3

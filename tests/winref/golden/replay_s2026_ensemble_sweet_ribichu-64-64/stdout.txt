@@ -1,0 +1,13 @@
+hr 5 D3D11CreateDevice 0 want 0x1
+hr 27 D3D11CreateDevice 0 want 0x1
+hr 135 ID3D11Device5::QueryInterface 0 want 0x80004002
+image m3551 1280 720 2
+image m3551_alpha 1280 720 2
+image f0 1280 720 2
+image m805516 1280 720 2
+image m805516_alpha 1280 720 2
+image f900 1280 720 2
+image m1436082 1280 720 2
+image m1436082_alpha 1280 720 2
+image f1800 1280 720 2
+calls 1551165 frames 2546

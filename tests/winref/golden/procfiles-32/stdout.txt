@@ -1,0 +1,10 @@
+write parent: 1
+write big: 1
+child read: started 1 exit 0
+child wrote: 1 4, its sum matches: 1
+temporary gone: 1
+copy self: 1
+child made: started 1 exit 7
+child delete: started 1 exit 0
+held file after delete: 1 10 still here
+held file gone after close: 1
