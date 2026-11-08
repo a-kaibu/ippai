@@ -113,6 +113,8 @@ pub struct DcState {
     pub brush_org: (i32, i32),
     /// clip box in device coordinates
     pub clip: Option<Rect>,
+    /// when the clip is more than one rectangle: its id in `Dc::clips` (0: the box is all of it)
+    pub clip_rgn: u32,
     pub char_extra: i32,
     pub dc_brush: u32,
     pub dc_pen: u32,
@@ -133,6 +135,9 @@ pub struct Dc {
     pub vis: Option<Rect>,
     /// a released cache DC, or one of a destroyed window: it answers nothing
     pub disabled: bool,
+    /// the clip regions of more than one rectangle the state and the saved states name, by id
+    /// (device coordinates, banded)
+    pub clips: Vec<(u32, Vec<Rect>)>,
 }
 
 /// The kinds of window DC (user32's DCEs): a cache DC is lent by GetDC and reset by ReleaseDC;
@@ -571,7 +576,7 @@ fn new_dc(kind: Kind, paint: Option<Rect>) -> u32 {
 }
 
 fn dc_obj(kind: Kind, paint: Option<Rect>, dce: Dce) -> G {
-    G::Dc(Box::new(Dc { kind, paint, s: fresh_state(), saved: Vec::new(), dce, rgn: None, vis: None, disabled: false }))
+    G::Dc(Box::new(Dc { kind, paint, s: fresh_state(), saved: Vec::new(), dce, rgn: None, vis: None, disabled: false, clips: Vec::new() }))
 }
 
 fn fresh_state() -> DcState {
@@ -594,6 +599,7 @@ fn fresh_state() -> DcState {
         pos: (0, 0),
         brush_org: (0, 0),
         clip: None,
+        clip_rgn: 0,
         char_extra: 0,
         dc_brush: 0xffffff,
         dc_pen: 0,
@@ -859,8 +865,20 @@ fn canvas_clip(s: &DcState, v: &View, ox: i32, oy: i32, extra: Rect) -> Rect {
     c
 }
 
-/// Runs a draw op on DC `dc`; `f` returns the changed rectangle (view coordinates).
-fn draw(dc: u32, f: impl FnOnce(&Objs, &DcState, &mut Canvas) -> Rect) -> bool {
+/// The canvas clips a draw op takes a pass for: one, or one for each rectangle of the clip
+/// region.
+fn canvas_clips(d: &Dc, v: &View, ox: i32, oy: i32, extra: Rect) -> Vec<Rect> {
+    match clip_rects(d) {
+        Some(rs) if d.s.clip_rgn != 0 => {
+            rs.iter().map(|r| canvas_clip(&DcState { clip: Some(*r), ..d.s }, v, ox, oy, extra)).filter(|c| !c.empty()).collect()
+        }
+        _ => vec![canvas_clip(&d.s, v, ox, oy, extra)],
+    }
+}
+
+/// Runs a draw op on DC `dc`; `f` returns the changed rectangle (view coordinates). It runs once
+/// for each rectangle of a clip region, each time with `Canvas::clip` that rectangle.
+fn draw(dc: u32, mut f: impl FnMut(&Objs, &DcState, &mut Canvas) -> Rect) -> bool {
     let mut flush = None;
     {
         let mut g = objs();
@@ -871,18 +889,25 @@ fn draw(dc: u32, f: impl FnOnce(&Objs, &DcState, &mut Canvas) -> Rect) -> bool {
         let org = (s.vp.0 - s.win.0, s.vp.1 - s.win.1);
         match tg {
             Tgt::Bmp(v) => {
-                let clip = canvas_clip(&s, &v, org.0, org.1, v.bounds());
-                let mut c = Canvas { v, ox: org.0, oy: org.1, clip };
-                f(t, &s, &mut c);
+                let clips = canvas_clips(d, &v, org.0, org.1, v.bounds());
+                let mut c = Canvas { v, ox: org.0, oy: org.1, clip: Rect::default() };
+                for cl in clips {
+                    c.clip = cl;
+                    f(t, &s, &mut c);
+                }
             }
             Tgt::Win { surf, top, x, y, clip } => {
                 let mut sg = surf.lock().unwrap();
                 let (w, h) = (sg.w, sg.h);
                 let v = View::surface(&mut sg.px, w, h);
                 let (ox, oy) = (org.0 + x, org.1 + y);
-                let clip = canvas_clip(&s, &v, ox, oy, clip);
-                let mut c = Canvas { v, ox, oy, clip };
-                let r = f(t, &s, &mut c).and(&c.clip);
+                let clips = canvas_clips(d, &v, ox, oy, clip);
+                let mut c = Canvas { v, ox, oy, clip: Rect::default() };
+                let mut r = Rect::default();
+                for cl in clips {
+                    c.clip = cl;
+                    r = r.or(&f(t, &s, &mut c).and(&c.clip));
+                }
                 if !r.empty() {
                     flush = Some((top, r));
                 }
@@ -3426,7 +3451,7 @@ fn read_pts(p: u32, n: u32) -> Vec<(i32, i32)> {
 }
 fn polyline(dc: u32, pts: Vec<(i32, i32)>) -> u32 {
     draw(dc, |t, s, cv| match pen_of(t, s) {
-        Some(pen) => stroke(cv, s, pen, &[pts], false),
+        Some(pen) => stroke(cv, s, pen, &[pts.clone()], false),
         None => Rect::default(),
     }) as u32
 }
@@ -3643,26 +3668,6 @@ fn region_kind(r: &[Rect]) -> u32 {
 fn bound(r: &[Rect]) -> Rect {
     r.iter().fold(Rect::default(), |a, b| a.or(b))
 }
-fn sub_rect(a: Rect, b: Rect) -> Vec<Rect> {
-    let i = a.and(&b);
-    if i.empty() {
-        return vec![a];
-    }
-    let mut v = Vec::new();
-    if a.t < i.t {
-        v.push(Rect { b: i.t, ..a });
-    }
-    if i.b < a.b {
-        v.push(Rect { t: i.b, ..a });
-    }
-    if a.l < i.l {
-        v.push(Rect { l: a.l, t: i.t, r: i.l, b: i.b });
-    }
-    if i.r < a.r {
-        v.push(Rect { l: i.r, t: i.t, r: a.r, b: i.b });
-    }
-    v
-}
 
 fn region(h: u32) -> Option<Vec<Rect>> {
     with(|t| match t.m.get(&h) {
@@ -3817,23 +3822,72 @@ fn InvertRgn(c: &mut Ctx) -> u32 {
     }) as u32
 }
 
-/// Clip box from region `h` (device coordinates), combined by `mode`.
-fn select_clip(dc: u32, h: u32, mode: u32) -> u32 {
-    let r = if h == 0 { None } else { region(h).map(|r| bound(&r)) };
-    with_dc(dc, |d| {
-        d.s.clip = match (mode, r, d.s.clip) {
-            (5, r, _) => r,
-            (_, None, _) if h == 0 => None,
-            (1, Some(r), Some(c)) => Some(r.and(&c)),
-            (1, Some(r), None) => Some(r),
-            (2, Some(r), Some(c)) => Some(r.or(&c)),
-            (2, _, None) => None,
-            (_, _, c) => c,
-        };
-        match d.s.clip {
-            Some(c) if c.empty() => 1,
-            _ => 2,
+/// The DC's clip as rectangles (device coordinates); None: no clip.
+fn clip_rects(d: &Dc) -> Option<Vec<Rect>> {
+    let c = d.s.clip?;
+    Some(d.clips.iter().find(|x| x.0 == d.s.clip_rgn && d.s.clip_rgn != 0).map_or_else(|| vec![c], |x| x.1.clone()))
+}
+
+/// Makes `r` the DC's clip (None: no clip) and answers its kind (NULLREGION 1, SIMPLEREGION 2,
+/// COMPLEXREGION 3). The box goes in the state; a region of more than one rectangle in
+/// `Dc::clips`, which keeps only what the state and the saved states still name.
+fn set_clip(d: &mut Dc, r: Option<Vec<Rect>>) -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let r = r.map(|r| r.into_iter().filter(|q| !q.empty()).collect::<Vec<_>>());
+    d.s.clip = r.as_ref().map(|r| bound(r));
+    d.s.clip_rgn = 0;
+    let kind = r.as_ref().map_or(2, |r| region_kind(r));
+    if let Some(r) = r.filter(|r| r.len() > 1) {
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        d.s.clip_rgn = id;
+        d.clips.push((id, r));
+    }
+    let (s, saved) = (&d.s, &d.saved);
+    d.clips.retain(|x| x.0 == s.clip_rgn || saved.iter().any(|q| q.clip_rgn == x.0));
+    kind
+}
+
+/// What `mode` makes of the clip `cur` (None: none, all of `full`) and the region `r`
+/// (device coordinates): RGN_AND 1, RGN_OR 2, RGN_XOR 3, RGN_DIFF 4, RGN_COPY 5.
+fn clip_combine(cur: Option<Vec<Rect>>, r: &[Rect], mode: u32, full: Rect) -> Option<Vec<Rect>> {
+    match (mode, cur) {
+        (5, _) | (1, None) => Some(gdi_geom::combine(r, &[], 5)),
+        // (no clip is all of it: adding to it changes nothing)
+        (2, None) => None,
+        (_, cur) => Some(gdi_geom::combine(&cur.unwrap_or_else(|| vec![full]), r, mode)),
+    }
+}
+
+/// The DC's surface in device coordinates.
+fn dc_full(dc: u32) -> Rect {
+    with(|t| {
+        let Some(G::Dc(d)) = t.m.get(&dc) else { return None };
+        match target_of(t, d) {
+            Tgt::Bmp(v) => Some(v.bounds()),
+            Tgt::Win { clip, x, y, .. } => Some(clip.off(-x, -y)),
+            Tgt::None => None,
         }
+    })
+    .unwrap_or_else(|| {
+        let (w, h) = user::screen();
+        Rect { l: 0, t: 0, r: w, b: h }
+    })
+}
+
+/// Combines region `h` (device coordinates) into the clip by `mode`.
+fn select_clip(dc: u32, h: u32, mode: u32) -> u32 {
+    if h == 0 {
+        // (only RGN_COPY takes no region: it removes the clip)
+        return if mode == 5 { with_dc(dc, |d| set_clip(d, None)).unwrap_or(0) } else { 0 };
+    }
+    let Some(r) = region(h) else { return 0 };
+    if !(1..=5).contains(&mode) {
+        return 0;
+    }
+    let full = dc_full(dc);
+    with_dc(dc, |d| {
+        let n = clip_combine(clip_rects(d), &r, mode, full);
+        set_clip(d, n)
     })
     .unwrap_or(0)
 }
@@ -3843,60 +3897,31 @@ fn SelectClipRgn(c: &mut Ctx) -> u32 {
 fn ExtSelectClipRgn(c: &mut Ctx) -> u32 {
     select_clip(c.a(0), c.a(1), c.a(2))
 }
-fn IntersectClipRect(c: &mut Ctx) -> u32 {
-    let dc = c.a(0);
-    let r = Rect { l: c.i(1), t: c.i(2), r: c.i(3), b: c.i(4) };
+/// IntersectClipRect and ExcludeClipRect: the rectangle (logical coordinates) by `mode`.
+fn clip_rect(dc: u32, r: Rect, mode: u32) -> u32 {
+    let full = dc_full(dc);
     with_dc(dc, |d| {
         let rd = r.off(d.s.vp.0 - d.s.win.0, d.s.vp.1 - d.s.win.1);
-        let n = match d.s.clip {
-            Some(c) => c.and(&rd),
-            None => rd,
-        };
-        d.s.clip = Some(n);
-        if n.empty() {
-            1
-        } else {
-            2
-        }
+        let n = clip_combine(clip_rects(d), &[rd], mode, full);
+        set_clip(d, n)
     })
     .unwrap_or(0)
 }
+fn IntersectClipRect(c: &mut Ctx) -> u32 {
+    clip_rect(c.a(0), Rect { l: c.i(1), t: c.i(2), r: c.i(3), b: c.i(4) }, 1)
+}
 fn ExcludeClipRect(c: &mut Ctx) -> u32 {
-    let dc = c.a(0);
-    let r = Rect { l: c.i(1), t: c.i(2), r: c.i(3), b: c.i(4) };
-    let size = with(|t| {
-        let Some(G::Dc(d)) = t.m.get(&dc) else { return None };
-        match target_of(t, d) {
-            Tgt::Bmp(v) => Some(v.bounds()),
-            Tgt::Win { clip, x, y, .. } => Some(clip.off(-x, -y)),
-            Tgt::None => None,
-        }
-    });
-    with_dc(dc, |d| {
-        let rd = r.off(d.s.vp.0 - d.s.win.0, d.s.vp.1 - d.s.win.1);
-        let cur = d.s.clip.or(size).unwrap_or_default();
-        // only exclusions that cut a side off are kept exactly; others are ignored
-        let pieces = sub_rect(cur, rd);
-        if pieces.len() == 1 {
-            d.s.clip = Some(pieces[0]);
-        } else if pieces.is_empty() {
-            d.s.clip = Some(Rect::default());
-        }
-        if pieces.is_empty() {
-            1
-        } else {
-            2
-        }
-    })
-    .unwrap_or(0)
+    clip_rect(c.a(0), Rect { l: c.i(1), t: c.i(2), r: c.i(3), b: c.i(4) }, 4)
 }
 fn OffsetClipRgn(c: &mut Ctx) -> u32 {
     let (dc, x, y) = (c.a(0), c.i(1), c.i(2));
     with_dc(dc, |d| {
-        if let Some(cl) = d.s.clip {
-            d.s.clip = Some(cl.off(x, y));
+        let n = clip_rects(d).map(|r| r.iter().map(|q| q.off(x, y)).collect());
+        // (no clip stays none)
+        if n.is_none() {
+            return 2;
         }
-        2
+        set_clip(d, n)
     })
     .unwrap_or(0)
 }
@@ -3913,42 +3938,48 @@ fn GetClipBox(c: &mut Ctx) -> u32 {
                 Rect { l: 0, t: 0, r: w, b: h }
             }
         };
-        let r = match d.s.clip {
-            Some(c) => c.and(&full),
-            None => full,
+        let (r, kind) = match clip_rects(d) {
+            Some(rs) => {
+                let v = gdi_geom::combine(&rs, &[full], 1);
+                (bound(&v), region_kind(&v))
+            }
+            None => (full, region_kind(&[full])),
         };
-        Some(r.off(-org.0, -org.1))
+        Some((r.off(-org.0, -org.1), kind))
     });
     match r {
-        Some(r) => {
+        Some((r, kind)) => {
             r.write(p);
-            if r.empty() {
-                1
-            } else {
-                2
-            }
+            kind
         }
         None => 0,
     }
 }
 fn GetClipRgn(c: &mut Ctx) -> u32 {
     let (dc, h) = (c.a(0), c.a(1));
-    match dc_state(dc).and_then(|s| s.clip) {
+    match with_dc(dc, |d| clip_rects(d)).flatten() {
         Some(r) => {
-            set_region(h, vec![r]);
+            set_region(h, r);
             1
         }
         None => 0,
     }
 }
+/// Whether any of the clip (no clip: all of it) passes `hit` (device coordinates).
+fn clip_any(dc: u32, hit: impl Fn(&Rect, (i32, i32)) -> bool) -> u32 {
+    with_dc(dc, |d| {
+        let org = (d.s.vp.0 - d.s.win.0, d.s.vp.1 - d.s.win.1);
+        clip_rects(d).is_none_or(|rs| rs.iter().any(|q| hit(q, org)))
+    })
+    .unwrap_or(false) as u32
+}
 fn RectVisible(c: &mut Ctx) -> u32 {
-    let dc = c.a(0);
     let r = Rect::read(c.a(1));
-    dc_state(dc).is_some_and(|s| s.clip.is_none_or(|cl| !cl.and(&r.off(s.vp.0 - s.win.0, s.vp.1 - s.win.1)).empty())) as u32
+    clip_any(c.a(0), |q, o| !q.and(&r.off(o.0, o.1)).empty())
 }
 fn PtVisible(c: &mut Ctx) -> u32 {
-    let (dc, x, y) = (c.a(0), c.i(1), c.i(2));
-    dc_state(dc).is_some_and(|s| s.clip.is_none_or(|cl| cl.has(x + s.vp.0 - s.win.0, y + s.vp.1 - s.win.1))) as u32
+    let (x, y) = (c.i(1), c.i(2));
+    clip_any(c.a(0), |q, o| q.has(x + o.0, y + o.1))
 }
 
 // --- palettes
@@ -4891,5 +4922,103 @@ mod glyph_cache_tests {
         assert!(c.map.contains_key(&(0, 0, 99, false)));
         assert!(!c.map.contains_key(&(0, 0, 1, false)));
         assert!(c.bytes <= 1640);
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn dc() -> Dc {
+        Dc { kind: Kind::Mem, paint: None, s: fresh_state(), saved: Vec::new(), dce: Dce::None, rgn: None, vis: None, disabled: false, clips: Vec::new() }
+    }
+    const FULL: Rect = Rect { l: 0, t: 0, r: 32, b: 32 };
+    fn apply(d: &mut Dc, r: Rect, mode: u32) -> u32 {
+        let n = clip_combine(clip_rects(d), &[r], mode, FULL);
+        set_clip(d, n)
+    }
+    /// The pixels the passes of a draw over a 32x32 surface reach, and how often each.
+    fn reached(d: &Dc) -> Vec<u8> {
+        let mut px = vec![0u32; 32 * 32];
+        let v = View::surface(&mut px, 32, 32);
+        let mut n = vec![0u8; 32 * 32];
+        for c in canvas_clips(d, &v, 0, 0, v.bounds()) {
+            for y in c.t..c.b {
+                for x in c.l..c.r {
+                    n[(y * 32 + x) as usize] += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// gdi.c's clip: an exclusion through the middle of the clip leaves both sides (it used
+    /// to be dropped, the box kept), and IntersectClipRect cuts the rest
+    #[test]
+    fn exclude_through_the_middle() {
+        let mut d = dc();
+        assert_eq!(apply(&mut d, Rect { l: 4, t: 4, r: 28, b: 28 }, 5), 2);
+        assert_eq!(apply(&mut d, Rect { l: 12, t: 0, r: 16, b: 32 }, 4), 3);
+        assert_eq!(d.s.clip, Some(Rect { l: 4, t: 4, r: 28, b: 28 }));
+        assert_eq!(apply(&mut d, Rect { l: 0, t: 6, r: 32, b: 26 }, 1), 3);
+        let n = reached(&d);
+        for y in 0..32 {
+            for x in 0..32 {
+                let want = (4..28).contains(&x) && (6..26).contains(&y) && !(12..16).contains(&x);
+                assert_eq!(n[(y * 32 + x) as usize], want as u8, "{x},{y}");
+            }
+        }
+        // (excluding all of it: an empty clip, NULLREGION)
+        assert_eq!(apply(&mut d, FULL, 4), 1);
+        assert!(reached(&d).iter().all(|&k| k == 0));
+    }
+
+    /// SaveDC keeps the region a saved state names; a new clip drops the ones nothing names
+    #[test]
+    fn saved_regions_are_kept() {
+        let mut d = dc();
+        apply(&mut d, Rect { l: 4, t: 4, r: 28, b: 28 }, 5);
+        apply(&mut d, Rect { l: 12, t: 0, r: 16, b: 32 }, 4);
+        let before = reached(&d);
+        d.saved.push(d.s);
+        apply(&mut d, Rect { l: 0, t: 0, r: 8, b: 8 }, 3);
+        apply(&mut d, Rect { l: 0, t: 0, r: 2, b: 2 }, 4);
+        assert_eq!(d.clips.len(), 2);
+        d.s = d.saved.pop().unwrap();
+        assert_eq!(reached(&d), before);
+        set_clip(&mut d, None);
+        assert!(d.clips.is_empty());
+        assert!(reached(&d).iter().all(|&k| k == 1));
+    }
+
+    fn rect() -> impl Strategy<Value = Rect> {
+        (-8i32..40, -8i32..40, 0i32..30, 0i32..30).prop_map(|(l, t, w, h)| Rect { l, t, r: l + w, b: t + h })
+    }
+
+    proptest! {
+        /// Any run of ExtSelectClipRgn modes is what the same run does to each pixel, and a
+        /// draw reaches each pixel of the clip once: never twice (XOR and alpha would show it)
+        #[test]
+        fn clip_is_per_pixel(ops in prop::collection::vec((rect(), 1u32..=5), 1..8)) {
+            let mut d = dc();
+            let mut m = [true; 32 * 32];
+            for (r, mode) in ops {
+                apply(&mut d, r, mode);
+                for y in 0..32 {
+                    for x in 0..32 {
+                        let (p, q) = (m[(y * 32 + x) as usize], r.has(x, y));
+                        m[(y * 32 + x) as usize] = match mode { 1 => p && q, 2 => p || q, 3 => p != q, 4 => p && !q, _ => q };
+                    }
+                }
+                let n = reached(&d);
+                for i in 0..32 * 32 {
+                    prop_assert_eq!(n[i], m[i] as u8, "pixel {},{}", i % 32, i / 32);
+                }
+                if let Some(c) = d.s.clip {
+                    prop_assert!(m.iter().enumerate().all(|(i, &on)| !on || c.has(i as i32 % 32, i as i32 / 32)));
+                }
+            }
+        }
     }
 }

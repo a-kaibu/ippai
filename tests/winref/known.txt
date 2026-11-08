@@ -10,9 +10,12 @@ host_intops-32 ^(want|got) +(shifts|dshift)
 host_fileseek-32 ^(want|got) +(negative|origin) 
 # GDI drawing that matches in shape but not to the pixel: Windows flattens ellipses and Beziers
 # into paths (its own flattening), its round-rect/polygon regions round edges its own way, the
-# HALFTONE shrink filter is its own, and a region as clip area is kept as its bounding box
+# HALFTONE shrink filter is its own; its elliptic regions are flatter than its ellipses (clip's
+# CreateEllipticRgn(8,8,56,56) spans rows 9-53, sake's 8-54), so the clip image and its box
+# differ at the region's edge only (the clip region itself is exact: the excluded strip and
+# COMPLEXREGION match)
 gdi-* ^image (shapes|fills_nullpen|polyline_bezier|regions|pens|stretch_halftone|clip):
-gdi-* ^(want|got) +GetClipBox 
+gdi-* ^(want|got) +GetClipBox 3 8 (9|8) 55 (54|55)$
 # 8 and 1 bpp GetDIBits of a 32 bpp bitmap: Windows' nearest-color choice into its default table
 gdi-* ^(want|got) +GetDIBits (8|1) 
 # sake's console goes out as UTF-8 text (node's stderr): a lone byte >= 0x80 can't come through
