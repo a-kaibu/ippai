@@ -57,14 +57,19 @@ for t in $TESTS; do
   if ! i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 "$ROOT/host/tests/$t.c" -o "$OUT/$t.exe" $libs; then
     echo "FAIL $t: build"; fail=1; continue
   fi
-  run() { (cd "$(dirname "$SAKE")" && timeout 300 env "${test_env[@]}" "$@" node "$SAKE" "$OUT/$t.exe" 2>&1 | grep -v '^sake:'); }
-  if ! jit=$(run IPPAI_JIT=1); then
-    echo "FAIL $t: JIT process failed or timed out"
+  # (the whole output kept: a process that fails shows its exit status and its last lines, sake's
+  # own too, so that a rare failure can be understood from the log of the run it happened in)
+  run() { (cd "$(dirname "$SAKE")" && timeout 300 env "${test_env[@]}" "$@" node "$SAKE" "$OUT/$t.exe" > "$OUT/$t.log" 2>&1; s=$?; grep -v '^sake:' "$OUT/$t.log"; exit $s); }
+  failed_run() { echo "FAIL $t: $1 process failed or timed out (status $2):"; tail -20 "$OUT/$t.log" | sed 's/^/    /'; }
+  jit=$(run IPPAI_JIT=1); st=$?
+  if [ $st != 0 ]; then
+    failed_run JIT $st
     fail=1
     continue
   fi
-  if ! interp=$(run IPPAI_JIT=0); then
-    echo "FAIL $t: interpreter process failed or timed out"
+  interp=$(run IPPAI_JIT=0); st=$?
+  if [ $st != 0 ]; then
+    failed_run interpreter $st
     fail=1
     continue
   fi

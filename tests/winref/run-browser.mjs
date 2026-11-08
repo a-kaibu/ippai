@@ -55,20 +55,29 @@ const browser = await chromium.launch({ args: ["--enable-unsafe-webgpu"] });
 // page warnings that are not the program's (console.warn of the page itself)
 const pageNoise = /^(crashlog:|plugin error|package\.json:|saves:|sake:)/;
 let failed = 0;
+const KEEP_BYTES = 64 << 20;
 for (const n of names) {
   const out = join(outDir, n);
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   const page = await browser.newPage();
   const lines = [], sakeLines = [];
+  // (what is kept of a program's console: a game that writes a line every frame for minutes
+  // filled node's heap, 4 GB, and the whole run ended there: the rest counted, not kept)
+  let kept = 0, dropped = 0;
+  const keep = (a, t) => {
+    if (kept > KEEP_BYTES) return dropped++;
+    kept += t.length + 1;
+    a.push(t);
+  };
   let code = "?";
   const done = new Promise((ok) => {
     page.on("console", (m) => {
       const t = m.text();
-      if (process.env.DEBUG_CONSOLE) sakeLines.push(`[${m.type()}] ${t}`);
+      if (process.env.DEBUG_CONSOLE) keep(sakeLines, `[${m.type()}] ${t}`);
       if (m.type() === "warning") {
-        if (pageNoise.test(t)) sakeLines.push(t);
-        else lines.push(t);
+        if (pageNoise.test(t)) keep(sakeLines, t);
+        else keep(lines, t);
       } else if (m.type() === "log" && /^exit code (-?\d+)$/.test(t)) {
         code = t.match(/(-?\d+)$/)[1];
         ok();
@@ -81,11 +90,12 @@ for (const n of names) {
   await page.goto(`${base}/play.html?autostart&headless${env}&mount=/vnvm/game=winref&run=Z:\\vnvm\\game\\${n}.exe`);
   await Promise.race([done, new Promise((r) => setTimeout(r, Number(process.env.TIMEOUT ?? 180) * 1000))]);
   await page.close();
+  if (dropped) lines.push(`(winref: ${dropped} more console lines not kept)`);
   writeFileSync(join(out, "stdout.txt"), lines.map((l) => l + "\n").join(""));
   writeFileSync(join(out, "stderr.txt"), sakeLines.map((l) => l + "\n").join(""));
   writeFileSync(join(out, "exit"), `${code}\n`);
   if (code === "?") failed++;
-  console.log(`${n} exit ${code} ${((Date.now() - t0) / 1000).toFixed(0)}s ${lines.length} lines`);
+  console.log(`${n} exit ${code} ${((Date.now() - t0) / 1000).toFixed(0)}s ${lines.length} lines${dropped ? `, ${dropped} not kept` : ""}`);
 }
 await browser.close();
 server.kill();
