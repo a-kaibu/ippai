@@ -426,6 +426,9 @@ impl Off {
     fn ftop() -> u32 {
         Off::fpu(offset_of!(Fpu, top))
     }
+    fn fsw() -> u32 {
+        Off::fpu(offset_of!(Fpu, sw))
+    }
     fn xmm(r: Register) -> u32 {
         (offset_of!(Cpu, xmm) + 16 * (r as usize - Register::XMM0 as usize)) as u32
     }
@@ -1286,17 +1289,33 @@ impl<'a> Gen<'a> {
 
     /// Pushes the f32/f64 memory operand at checked address `a` as f64. A signaling NaN comes
     /// in quiet, as FLD makes it (#65: FLD m64 then FSTP m64 wrote the SNaN back): its bits get
-    /// the quiet bit 51 (uses L_W).
+    /// the quiet bit 51 (uses L_W). The status word gets IE for a signaling NaN and DE for a
+    /// denormal, as the interpreter's fload and the CPU (175d839: the JIT kept them clear, so
+    /// FNSTSW after FLD / FADD m64 of a denormal read 0 where the interpreter read DE).
     fn fload_mem(&mut self, a: u32) {
         let o = self.mem_at(a);
         if self.ins.memory_size() == iced_x86::MemorySize::Float32 {
-            self.c.f32load(o).op(0xbb /* f64.promote_f32 */);
+            let t = self.temp();
+            self.c.load32(o).tee(t).op(0xbe /* f32.reinterpret_i32 */).op(0xbb /* f64.promote_f32 */);
+            // sw |= (|v| > +inf && !quiet) | (|v| - 1 < 0x7fffff) << 1
+            self.c.get(L_CPU).get(L_CPU).load16u(Off::fsw());
+            self.c.get(t).i32c(0x7fff_ffff).and().i32c(0x7f80_0000).gt_u();
+            self.c.get(t).i32c(22).shr_u().i32c(1).and().eqz().and().or();
+            self.c.get(t).i32c(0x7fff_ffff).and().i32c(1).sub().i32c(0x7f_ffff).lt_u().i32c(1).shl().or();
+            self.c.store16(Off::fsw());
         } else {
             // v | (|v| > +inf) << 51
             self.c.load64(o).tee(L_W);
             self.c.get(L_W).i64c(i64::MAX).op(0x83 /* i64.and */).i64c(0x7ff0_0000_0000_0000).op(0x56 /* i64.gt_u */);
             self.c.op(0xad /* i64.extend_i32_u */).i64c(51).op(0x86 /* i64.shl */).op(0x84 /* i64.or */);
             self.c.op(0xbf /* f64.reinterpret_i64 */);
+            // sw |= (|v| > +inf && !quiet) | (|v| - 1 < 2^52 - 1) << 1
+            self.c.get(L_CPU).get(L_CPU).load16u(Off::fsw());
+            self.c.get(L_W).i64c(i64::MAX).op(0x83 /* i64.and */).i64c(0x7ff0_0000_0000_0000).op(0x56 /* i64.gt_u */);
+            self.c.get(L_W).i64c(51).op(0x88 /* i64.shr_u */).i64c(1).op(0x83 /* i64.and */).op(0x50 /* i64.eqz */).and().or();
+            self.c.get(L_W).i64c(i64::MAX).op(0x83 /* i64.and */).i64c(1).op(0x7d /* i64.sub */);
+            self.c.i64c(0x000f_ffff_ffff_ffff).op(0x54 /* i64.lt_u */).i32c(1).shl().or();
+            self.c.store16(Off::fsw());
         }
     }
 
