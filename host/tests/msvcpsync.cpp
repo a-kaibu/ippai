@@ -21,6 +21,8 @@ __declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(unsigned long long 
 __declspec(dllimport) void __stdcall ExitProcess(unsigned);
 __declspec(dllimport) int __stdcall SleepConditionVariableSRW(void *, void *, DWORD, DWORD);
 __declspec(dllimport) void __stdcall WakeAllConditionVariable(void *);
+__declspec(dllimport) void __stdcall AcquireSRWLockExclusive(void *);
+__declspec(dllimport) void __stdcall ReleaseSRWLockExclusive(void *);
 
 struct xt { long long sec; long nsec; };
 __declspec(dllimport) void _Mtx_init_in_situ(void *, int);
@@ -105,12 +107,15 @@ static DWORD __stdcall consumer(void *) {
 alignas(8) static char xmtx[80], xcnd[72];
 static volatile int xflag;
 static int x_kernel_woke;
+// (the waiter holds the SRW lock itself, as the inlined wait does: _Mtx_lock / _Mtx_unlock around
+// it would leave the _Mtx's owner and count to a thread that no longer has it, and on Windows the
+// next _Mtx_lock never returned)
 static DWORD __stdcall kernel_waiter(void *) {
-    _Mtx_lock(xmtx);
+    AcquireSRWLockExclusive(xmtx + 16);
     int r = 1;
     while (!xflag && r) r = SleepConditionVariableSRW(xcnd + 8, xmtx + 16, 10000, 0);
     x_kernel_woke = r != 0 && xflag;
-    _Mtx_unlock(xmtx);
+    ReleaseSRWLockExclusive(xmtx + 16);
     return 0;
 }
 static DWORD __stdcall kernel_waker(void *) {

@@ -57,9 +57,27 @@ static void t_seh(void) {
 static void t_jmp(void) {
     if (!setjmp(jb)) deepj(5);
 }
+/* where an exception none of the tests raises came from: code, the module and offset of the
+   address, the first parameters (issue #96: the longjmp test ends the process on Windows) */
+static void where(const char *what, EXCEPTION_POINTERS *p) {
+    EXCEPTION_RECORD *r = p->ExceptionRecord;
+    HMODULE m = NULL;
+    char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)r->ExceptionAddress, &m))
+        GetModuleFileNameA(m, name, sizeof name);
+    const char *base = strrchr(name, '\\') ? strrchr(name, '\\') + 1 : name;
+    printf("%s: %08lx at %s+%llx, parameters %llx %llx\n", what, r->ExceptionCode, base, (ULONG64)r->ExceptionAddress - (ULONG64)m,
+        r->NumberParameters > 0 ? (ULONG64)r->ExceptionInformation[0] : 0, r->NumberParameters > 1 ? (ULONG64)r->ExceptionInformation[1] : 0);
+}
 static LONG CALLBACK veh(EXCEPTION_POINTERS *p) {
-    if (p->ExceptionRecord->ExceptionCode == 0xE0000002) return EXCEPTION_CONTINUE_EXECUTION;
+    DWORD code = p->ExceptionRecord->ExceptionCode;
+    if (code == 0xE0000002) return EXCEPTION_CONTINUE_EXECUTION;
+    if (code != 0xE0000001 && code != 0xE0000003) where("exception", p);
     return EXCEPTION_CONTINUE_SEARCH;
+}
+static LONG WINAPI unhandled(EXCEPTION_POINTERS *p) {
+    where("unhandled", p);
+    return EXCEPTION_EXECUTE_HANDLER;
 }
 static void t_veh(void) { RaiseException(0xE0000002, 0, 0, NULL); }
 static void t_none(void) { Sleep(0); }
@@ -118,6 +136,7 @@ int main(void) {
        no line out, issue #96) */
     setvbuf(stdout, NULL, _IONBF, 0);
     AddVectoredExceptionHandler(1, veh);
+    SetUnhandledExceptionFilter(unhandled);
     struct { const char *n; void (*f)(void); } t[] = {{"none", t_none}, {"seh", t_seh}, {"longjmp", t_jmp}, {"veh", t_veh}, {"consolidate", t_cons}, {"consolidate raise", t_cons_raise}};
     for (int i = 0; i < 6; i++) {
         int bad = 0, r = 0;
