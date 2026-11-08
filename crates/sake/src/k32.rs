@@ -1404,6 +1404,9 @@ fn WaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     crate::apc::wait(c, &hs, c.a(2) != 0, c.a(3))
 }
 fn CloseHandle(c: &mut Ctx) -> u32 {
+    if let Some(r) = crate::nt::via::close(c) {
+        return r;
+    }
     let h = c.a(0);
     if crate::ws2::is_socket(h) {
         return ok(crate::ws2::close_socket(h) == 0);
@@ -5322,6 +5325,9 @@ fn WriteConsoleW(c: &mut Ctx) -> u32 {
 }
 fn create_file(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
+    if let Some(h) = crate::nt::via::create_file(c, &name) {
+        return h;
+    }
     open_file(name, c.a(1), c.a(2), c.a(4), c.a(5))
 }
 
@@ -5418,6 +5424,9 @@ fn socket_io(h: u32, buf: u32, n: u32, done: u32, ov: u32, write: bool) -> u32 {
     }
 }
 fn ReadFile(c: &mut Ctx) -> u32 {
+    if let Some(r) = crate::nt::via::io(c, false) {
+        return r;
+    }
     let (h, buf, n, pread, ov) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     if let Some(p) = crate::pipe::handle(h) {
         return crate::pipe::read(c, h, p);
@@ -5446,6 +5455,9 @@ fn ReadFile(c: &mut Ctx) -> u32 {
     1
 }
 fn WriteFile(c: &mut Ctx) -> u32 {
+    if let Some(r) = crate::nt::via::io(c, true) {
+        return r;
+    }
     let (h, buf, n, pw) = (c.a(0), c.a(1), c.a(2), c.a(3));
     if crate::ws2::is_socket(h) {
         return socket_io(h, buf, n, pw, c.a(4), true);
@@ -5526,6 +5538,9 @@ pub(crate) fn echo_write(path: &str, buf: u32, n: u32) {
     console_write(&t);
 }
 fn SetFilePointer(c: &mut Ctx) -> u32 {
+    if let Some(r) = crate::nt::via::set_file_pointer(c) {
+        return r;
+    }
     let (h, lo, phi, how) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let Some(f) = obj::file(h) else {
         last_error(6);
@@ -5549,6 +5564,9 @@ fn SetFilePointer(c: &mut Ctx) -> u32 {
     }
 }
 fn SetFilePointerEx(c: &mut Ctx) -> u32 {
+    if let Some(r) = crate::nt::via::set_file_pointer_ex(c) {
+        return r;
+    }
     // (x64: the LARGE_INTEGER is one argument)
     let (h, off, out, how) = if mem::x64() {
         (c.a(0), c.a64(1) as i64, c.a(2), c.a(3))
@@ -5572,6 +5590,9 @@ fn SetFilePointerEx(c: &mut Ctx) -> u32 {
     }
 }
 fn GetFileSize(c: &mut Ctx) -> u32 {
+    if let Some(r) = crate::nt::via::file_size(c, false) {
+        return r;
+    }
     // (a pipe: what there is to read)
     if let Some(p) = crate::pipe::handle(c.a(0)) {
         put32(c.a(1), 0);
@@ -5586,6 +5607,9 @@ fn GetFileSize(c: &mut Ctx) -> u32 {
     s as u32
 }
 fn GetFileSizeEx(c: &mut Ctx) -> u32 {
+    if let Some(r) = crate::nt::via::file_size(c, true) {
+        return r;
+    }
     let Some(f) = obj::file(c.a(0)) else { return 0 };
     put64(c.a(1), f.size());
     1
@@ -5839,13 +5863,18 @@ fn is_system_dll_path(name: &str) -> bool {
         .is_some_and(|d| !d.contains('\\') && crate::api::is_system(d))
 }
 fn GetFileAttributesA(c: &mut Ctx) -> u32 {
-    file_attrs(&arg_str(c.a(0), false))
+    let name = arg_str(c.a(0), false);
+    crate::nt::via::attributes(c, &name).unwrap_or_else(|| file_attrs(&name))
 }
 fn GetFileAttributesW(c: &mut Ctx) -> u32 {
-    file_attrs(&arg_str(c.a(0), true))
+    let name = arg_str(c.a(0), true);
+    crate::nt::via::attributes(c, &name).unwrap_or_else(|| file_attrs(&name))
 }
 fn attrs_ex(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
+    if let Some(r) = crate::nt::via::attributes_ex(c, &name) {
+        return r;
+    }
     let Some((h, m)) = files::resolve(&name).and_then(|h| kura::fs::metadata(&h).ok().map(|m| (h, m))) else {
         last_error(files::missing(&name));
         return 0;

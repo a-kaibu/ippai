@@ -6,7 +6,317 @@ use crate::mem::{self, put32, r16, r32, w32};
 
 fn k32(c: &mut Ctx, name: &str, args: &[u32]) -> u32 {
     let f = export("kernel32", name);
-    c.call(f, args)
+    // (kernel32 under ntdll here: it does the work, not the program's hook again)
+    IN_NT.with(|d| d.set(d.get() + 1));
+    let r = c.call(f, args);
+    IN_NT.with(|d| d.set(d.get() - 1));
+    r
+}
+
+thread_local! {
+    /// Inside one of ntdll's file functions (their kernel32 calls).
+    static IN_NT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The code of ntdll's `name` ("NtCreateFile"; ZwCreateFile is the same function) when the
+/// program has patched it, as Enigma Virtual Box does to serve the files packed into the exe.
+/// kernel32's file functions then go through it the way Windows' go through ntdll; while it is
+/// sake's own thunk (or from inside ntdll's work) they need not.
+pub fn hooked(name: &str) -> Option<u32> {
+    if mem::x64() || IN_NT.with(|d| d.get()) != 0 {
+        return None;
+    }
+    let base = crate::pe::by_name("ntdll.dll")?;
+    let t = crate::pe::with(base, |m| m.exports.get(name).copied())??;
+    // (the thunk: hot-patch prologue `mov edi, edi; push ebp; mov ebp, esp; pop ebp`, then
+    // `mov ecx, trap; jmp ecx`)
+    let same = mem::slice(t, 7) == [0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0xb9] && r32(t + 7) == export("ntdll", name) && mem::slice(t + 11, 2) == [0xff, 0xe1];
+    (!same).then_some(t)
+}
+
+/// Guest scratch for a call into ntdll: freed when dropped.
+struct Scratch(Vec<u32>);
+impl Scratch {
+    fn new() -> Self {
+        Scratch(Vec::new())
+    }
+    fn alloc(&mut self, n: u32) -> u32 {
+        let p = mem::heap_alloc(n.max(4), true);
+        self.0.push(p);
+        p
+    }
+    /// OBJECT_ATTRIBUTES (OBJ_CASE_INSENSITIVE, OBJ_INHERIT if asked) naming the NT path of a
+    /// Win32 one (RtlDosPathNameToNtPathName_U: \??\ and the full path)
+    fn attributes(&mut self, path: &str, inherit: bool) -> u32 {
+        let nt = nt_path(path);
+        let w: Vec<u16> = nt.encode_utf16().collect();
+        let buf = self.alloc(2 * w.len() as u32 + 2);
+        for (i, &x) in w.iter().enumerate() {
+            mem::w16(buf + 2 * i as u32, x);
+        }
+        let us = self.alloc(8);
+        mem::w16(us, 2 * w.len() as u16);
+        mem::w16(us + 2, 2 * w.len() as u16 + 2);
+        w32(us + 4, buf);
+        let oa = self.alloc(24);
+        w32(oa, 24);
+        w32(oa + 8, us);
+        w32(oa + 12, 0x40 | if inherit { 2 } else { 0 });
+        oa
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        for &p in &self.0 {
+            mem::heap_free(p);
+        }
+    }
+}
+
+/// The NT name of a Win32 path: "\??\" and its full path (\\?\ kept as it is, \\server
+/// as \??\UNC\server).
+pub fn nt_path(path: &str) -> String {
+    if let Some(r) = path.strip_prefix("\\\\?\\") {
+        return format!("\\??\\{r}");
+    }
+    let full = crate::files::full_path(path);
+    match full.strip_prefix("\\\\") {
+        Some(r) => format!("\\??\\UNC\\{r}"),
+        None => format!("\\??\\{full}"),
+    }
+}
+
+/// The Win32 error kernel32 gives for a file function's NTSTATUS (RtlNtStatusToDosError).
+pub fn file_error(st: u32) -> u32 {
+    match st {
+        0xc000_0034 => 2,   // OBJECT_NAME_NOT_FOUND: ERROR_FILE_NOT_FOUND
+        0xc000_003a => 3,   // OBJECT_PATH_NOT_FOUND
+        0xc000_0033 => 123, // OBJECT_NAME_INVALID
+        0xc000_0022 | 0xc000_00ba => 5, // ACCESS_DENIED, FILE_IS_A_DIRECTORY
+        0xc000_0043 => 32,  // SHARING_VIOLATION
+        0xc000_0035 => 183, // OBJECT_NAME_COLLISION: ERROR_ALREADY_EXISTS
+        0xc000_0008 => 6,   // INVALID_HANDLE
+        0xc000_0011 => 38,  // END_OF_FILE: ERROR_HANDLE_EOF
+        0xc000_0103 => 267, // NOT_A_DIRECTORY: ERROR_DIRECTORY
+        0xc000_000d => 87,
+        0xc000_0001 => 31,
+        st => crate::kern::win32(st),
+    }
+}
+
+/// kernel32's file functions as Windows' kernelbase makes them out of ntdll's, for a program that
+/// hooked ntdll (None: it did not, and kernel32 does the work itself).
+pub mod via {
+    use super::{file_error, hooked, Scratch};
+    use crate::api::Ctx;
+    use crate::k32::last_error;
+    use crate::mem::{self, put32, r32, w32};
+
+    /// CreateFileA/W(name, access, share, sa, disposition, flags and attributes, template)
+    pub fn create_file(c: &mut Ctx, name: &str) -> Option<u32> {
+        // (consoles, devices and pipes are not files kernel32 opens by NtCreateFile alone)
+        let l = name.to_ascii_lowercase();
+        if l.starts_with("\\\\.\\") || l == "conout$" || l == "conin$" || l == "con" || name.is_empty() {
+            return None;
+        }
+        let f = hooked("NtCreateFile")?;
+        let (access, share, sa, disp, fl) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+        // CREATE_NEW, CREATE_ALWAYS, OPEN_EXISTING, OPEN_ALWAYS, TRUNCATE_EXISTING
+        let nd = match disp {
+            1 => 2,
+            2 => 5,
+            3 => 1,
+            4 => 3,
+            5 => 4,
+            _ => {
+                last_error(87);
+                return Some(u32::MAX);
+            }
+        };
+        // FILE_FLAG_*: OVERLAPPED (else FILE_SYNCHRONOUS_IO_NONALERT), BACKUP_SEMANTICS (else
+        // FILE_NON_DIRECTORY_FILE), NO_BUFFERING, WRITE_THROUGH, RANDOM_ACCESS, SEQUENTIAL_SCAN,
+        // DELETE_ON_CLOSE
+        let mut opts = if fl & 0x4000_0000 == 0 { 0x20 } else { 0 };
+        opts |= if fl & 0x0200_0000 != 0 { 0x4000 } else { 0x40 };
+        for (bit, o) in [(0x2000_0000, 8), (0x8000_0000, 2), (0x1000_0000, 0x800), (0x0800_0000, 4), (0x0400_0000, 0x1000)] {
+            if fl & bit != 0 {
+                opts |= o;
+            }
+        }
+        let mut s = Scratch::new();
+        let inherit = sa != 0 && r32(sa + 8) != 0;
+        let oa = s.attributes(name, inherit);
+        let (out, io) = (s.alloc(4), s.alloc(8));
+        let delete = if fl & 0x0400_0000 != 0 { 0x0001_0000 } else { 0 };
+        let st = c.call(f, &[out, access | delete | 0x0010_0080, oa, io, 0, fl & 0x7fa7, share, nd, opts, 0, 0]);
+        if st >= 0xc000_0000 {
+            // (CREATE_NEW of a file there: ERROR_FILE_EXISTS)
+            last_error(if st == 0xc000_0035 && disp == 1 { 80 } else { file_error(st) });
+            return Some(u32::MAX);
+        }
+        // CREATE_ALWAYS / OPEN_ALWAYS of an existing file: ERROR_ALREADY_EXISTS
+        let info = r32(io + 4);
+        last_error(if (disp == 2 || disp == 4) && (info == 1 || info == 3) { 183 } else { 0 });
+        Some(r32(out))
+    }
+
+    /// ReadFile / WriteFile(h, buf, n, &done, overlapped)
+    pub fn io(c: &mut Ctx, write: bool) -> Option<u32> {
+        let f = hooked(if write { "NtWriteFile" } else { "NtReadFile" })?;
+        let (h, buf, n, done, ov) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+        put32(done, 0);
+        let mut s = Scratch::new();
+        // (an OVERLAPPED is the IO_STATUS_BLOCK, its offset and event)
+        let (io, off, ev) = if ov != 0 { (ov, ov + 8, r32(ov + 16)) } else { (s.alloc(8), 0, 0) };
+        if ov != 0 {
+            w32(ov, 0x103);
+        }
+        let st = c.call(f, &[h, ev, 0, if ov != 0 { ov } else { 0 }, io, buf, n, off, 0]);
+        if st == 0x103 {
+            last_error(997);
+            return Some(0);
+        }
+        if st == 0xc000_0011 && ov == 0 && !write {
+            return Some(1);
+        }
+        if st >= 0xc000_0000 {
+            last_error(file_error(st));
+            return Some(0);
+        }
+        put32(done, r32(io + 4));
+        Some(1)
+    }
+
+    fn query(c: &mut Ctx, h: u32, class: u32, len: u32, s: &mut Scratch) -> Result<u32, u32> {
+        let f = hooked("NtQueryInformationFile").unwrap_or(crate::api::export("ntdll", "NtQueryInformationFile"));
+        let (io, out) = (s.alloc(8), s.alloc(len));
+        let st = c.call(f, &[h, io, out, len, class]);
+        if st >= 0xc000_0000 { Err(st) } else { Ok(out) }
+    }
+
+    /// The new position of a SetFilePointer(Ex): FILE_BEGIN, FILE_CURRENT, FILE_END; Err: the
+    /// Win32 error
+    fn seek(c: &mut Ctx, h: u32, d: i64, how: u32) -> Result<u64, u32> {
+        let set = hooked("NtSetInformationFile").unwrap_or(crate::api::export("ntdll", "NtSetInformationFile"));
+        let mut s = Scratch::new();
+        let base = match how {
+            0 => 0,
+            // FilePositionInformation, FileStandardInformation's EndOfFile
+            1 => mem::r64(query(c, h, 14, 8, &mut s).map_err(file_error)?) as i64,
+            2 => mem::r64(query(c, h, 5, 24, &mut s).map_err(file_error)? + 8) as i64,
+            _ => return Err(87),
+        };
+        let p = base.wrapping_add(d);
+        if p < 0 {
+            return Err(131); // ERROR_NEGATIVE_SEEK
+        }
+        let (io, b) = (s.alloc(8), s.alloc(8));
+        mem::put64(b, p as u64);
+        let st = c.call(set, &[h, io, b, 8, 14]);
+        if st >= 0xc000_0000 {
+            return Err(file_error(st));
+        }
+        Ok(p as u64)
+    }
+
+    /// SetFilePointer(h, distance, &high, method)
+    pub fn set_file_pointer(c: &mut Ctx) -> Option<u32> {
+        hooked("NtSetInformationFile").or_else(|| hooked("NtQueryInformationFile"))?;
+        let (h, lo, phi, how) = (c.a(0), c.a(1), c.a(2), c.a(3));
+        let d = if phi != 0 { (lo as u64 | (r32(phi) as u64) << 32) as i64 } else { lo as i32 as i64 };
+        Some(match seek(c, h, d, how) {
+            Ok(p) => {
+                put32(phi, (p >> 32) as u32);
+                p as u32
+            }
+            Err(e) => {
+                last_error(e);
+                u32::MAX
+            }
+        })
+    }
+    /// SetFilePointerEx(h, distance (2 dwords), &new, method)
+    pub fn set_file_pointer_ex(c: &mut Ctx) -> Option<u32> {
+        hooked("NtSetInformationFile").or_else(|| hooked("NtQueryInformationFile"))?;
+        let (h, d, out, how) = (c.a(0), (c.a(1) as u64 | (c.a(2) as u64) << 32) as i64, c.a(3), c.a(4));
+        Some(match seek(c, h, d, how) {
+            Ok(p) => {
+                if out != 0 {
+                    mem::put64(out, p);
+                }
+                1
+            }
+            Err(e) => {
+                last_error(e);
+                0
+            }
+        })
+    }
+    /// GetFileSize(h, &high) / GetFileSizeEx(h, &size): FileStandardInformation's EndOfFile
+    pub fn file_size(c: &mut Ctx, ex: bool) -> Option<u32> {
+        hooked("NtQueryInformationFile")?;
+        let (h, p) = (c.a(0), c.a(1));
+        let mut s = Scratch::new();
+        Some(match query(c, h, 5, 24, &mut s) {
+            Ok(i) => {
+                let n = mem::r64(i + 8);
+                if ex {
+                    mem::put64(p, n);
+                    1
+                } else {
+                    put32(p, (n >> 32) as u32);
+                    n as u32
+                }
+            }
+            Err(st) => {
+                last_error(file_error(st));
+                if ex { 0 } else { u32::MAX }
+            }
+        })
+    }
+    /// CloseHandle(h): NtClose
+    pub fn close(c: &mut Ctx) -> Option<u32> {
+        let f = hooked("NtClose")?;
+        let st = c.call(f, &[c.a(0)]);
+        if st >= 0xc000_0000 {
+            last_error(file_error(st));
+            return Some(0);
+        }
+        Some(1)
+    }
+    /// GetFileAttributesA/W(name): NtQueryAttributesFile's FileAttributes
+    pub fn attributes(c: &mut Ctx, name: &str) -> Option<u32> {
+        let f = hooked("NtQueryAttributesFile")?;
+        let mut s = Scratch::new();
+        let (oa, out) = (s.attributes(name, false), s.alloc(40));
+        let st = c.call(f, &[oa, out]);
+        if st >= 0xc000_0000 {
+            last_error(file_error(st));
+            return Some(u32::MAX);
+        }
+        Some(r32(out + 32))
+    }
+    /// GetFileAttributesExA/W(name, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA*):
+    /// NtQueryFullAttributesFile's FILE_NETWORK_OPEN_INFORMATION
+    pub fn attributes_ex(c: &mut Ctx, name: &str) -> Option<u32> {
+        if c.a(1) != 0 {
+            return None;
+        }
+        let f = hooked("NtQueryFullAttributesFile")?;
+        let p = c.a(2);
+        let mut s = Scratch::new();
+        let (oa, out) = (s.attributes(name, false), s.alloc(56));
+        let st = c.call(f, &[oa, out]);
+        if st >= 0xc000_0000 {
+            last_error(file_error(st));
+            return Some(0);
+        }
+        w32(p, r32(out + 48));
+        mem::copy(p + 4, out, 24);
+        w32(p + 28, r32(out + 44));
+        w32(p + 32, r32(out + 40));
+        Some(1)
+    }
 }
 
 fn last_error() -> u32 {
@@ -99,6 +409,11 @@ fn create(c: &mut Ctx, out: u32, access: u32, oa: u32, io: u32, attrs: u32, shar
     }
     if opts & 0x1000 != 0 {
         flags |= 0x0400_0000; // FILE_DELETE_ON_CLOSE
+    }
+    // (a directory opens unless FILE_NON_DIRECTORY_FILE: CreateFile's FILE_FLAG_BACKUP_SEMANTICS,
+    // which kernel32 passes as FILE_OPEN_FOR_BACKUP_INTENT)
+    if opts & 0x40 == 0 {
+        flags |= 0x0200_0000;
     }
     let attrs_now = k32(c, "GetFileAttributesW", &[path]);
     let existed = attrs_now != u32::MAX;
@@ -658,6 +973,40 @@ pub fn init() {
         ] {
             implement(d, &format!("Nt{n}"), f);
             implement(d, &format!("Zw{n}"), f);
+        }
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::{file_error, nt_path};
+
+    #[test]
+    fn nt_names_of_win32_paths() {
+        // (RtlDosPathNameToNtPathName_U: \\?\ passes as it is, a share is under UNC)
+        assert_eq!(nt_path("C:\\game\\a.dat"), "\\??\\C:\\game\\a.dat");
+        assert_eq!(nt_path("\\\\?\\C:\\x"), "\\??\\C:\\x");
+        assert_eq!(nt_path("\\\\server\\share\\f"), "\\??\\UNC\\server\\share\\f");
+    }
+
+    #[test]
+    fn file_errors_as_rtl_nt_status_to_dos_error() {
+        for (st, e) in [
+            (0xc000_0034, 2),
+            (0xc000_003a, 3),
+            (0xc000_0033, 123),
+            (0xc000_0022, 5),
+            (0xc000_00ba, 5),
+            (0xc000_0043, 32),
+            (0xc000_0035, 183),
+            (0xc000_0008, 6),
+            (0xc000_0011, 38),
+            (0xc000_0103, 267),
+            (0xc000_000d, 87),
+            (0xc000_0001, 31),
+            (0x0000_0103, 997),
+        ] {
+            assert_eq!(file_error(st), e, "{st:#x}");
         }
     }
 }

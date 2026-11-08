@@ -607,6 +607,16 @@ pub fn hle_module(dll: &str) -> u32 {
         // what follows the prologue must work anywhere (no relative jump)
         for (i, f) in names.iter().enumerate() {
             let i = i as u32;
+            // (ntdll's Zw* are its Nt* functions, at the same address: a hook on one is on both)
+            if let Some(&t) = f.strip_prefix("Zw").filter(|_| key == "ntdll").and_then(|n| exports.get(&format!("Nt{n}"))) {
+                exports.insert(f.clone(), t);
+                w32(funs + 4 * i, t - base);
+                w32(nms + 4 * i, str_at - base);
+                w16(ords + 2 * i, i as u16);
+                mem::write(str_at, f.as_bytes());
+                str_at += f.len() as u32 + 1;
+                continue;
+            }
             let t = base + thunks + 16 * (i + 1);
             let trap = crate::api::export(&key, f);
             mem::write(t, &[0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0xb9]);
