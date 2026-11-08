@@ -2,16 +2,18 @@
 //! icu.dll, the ICU that Windows 10 1903 and later carry: the break iterators (ubrk_*) over
 //! UTF-16 text and the UText of utext_openUChars, which AdvHD (x64) uses to find where its
 //! lines may wrap (#51). The boundaries are ICU4X's (icu_segmenter: the same CLDR / UAX #14 and
-//! #29 rules as ICU4C; line breaking strict as ICU's default `line` rules, small kana not starting
-//! a line). Word breaking is the rule-based one: ICU4C splits runs of kanji and kana by its
-//! dictionary, sake by script. Windows' answers: tests/winref/probes/icubrk.c.
+//! #29 rules as ICU4C). Line breaking is strict as ICU's root `line` rules (small kana do not
+//! start a line); a Japanese locale takes ICU's `ja` rules, CSS's normal, where they may. Word
+//! breaking is the rule-based one: ICU4C splits runs of kanji and kana by its dictionary, sake by
+//! script (ICU4X's dictionary would match all but a word or two of icubrk.c, for 4 MB more wasm,
+//! and games wrap lines by the line kind). Windows' answers: tests/winref/probes/icubrk.c.
 //!
 //! The exports are cdecl and unversioned (ubrk_open, not ubrk_open_64).
 
 use crate::api::{implement, Ctx};
 use crate::mem::{self, ps, r16, r32, w32, w64, wp};
 use crate::HashMap;
-use icu_segmenter::options::{LineBreakOptions, SentenceBreakInvariantOptions, WordBreakInvariantOptions};
+use icu_segmenter::options::{LineBreakOptions, LineBreakStrictness, SentenceBreakInvariantOptions, WordBreakInvariantOptions};
 use icu_segmenter::{GraphemeClusterSegmenter, LineSegmenter, SentenceSegmenter, WordSegmenter};
 use std::sync::Mutex;
 
@@ -24,13 +26,34 @@ pub const WORD: u32 = 1;
 pub const LINE: u32 = 2;
 pub const SENTENCE: u32 = 3;
 
-/// The boundaries of `text` (UTF-16 offsets, 0 and its length among them) by `kind`; None: not
-/// a kind ICU has.
-pub fn boundaries(kind: u32, text: &[u16]) -> Option<Vec<i32>> {
+/// UErrorCode warnings ubrk_open leaves: the locale's rules were the root's
+/// (U_USING_DEFAULT_WARNING), or a parent's (U_USING_FALLBACK_WARNING: ja_JP's line rules are
+/// ja's)
+const USING_DEFAULT: i32 = -127;
+const USING_FALLBACK: i32 = -128;
+
+/// What ubrk_open's `locale` gives `kind`: whether its rules are Japanese, and the warning (0:
+/// none) Windows' icu.dll leaves; only `ja` has rules of its own there, for line breaking.
+pub fn locale_rules(kind: u32, locale: &str) -> (bool, i32) {
+    let lang = locale.split(['_', '-', '@']).next().unwrap_or("");
+    match (kind, lang) {
+        (_, "" | "root") => (false, 0),
+        (LINE, "ja") => (true, if locale == "ja" { 0 } else { USING_FALLBACK }),
+        _ => (false, USING_DEFAULT),
+    }
+}
+
+/// The boundaries of `text` (UTF-16 offsets, 0 and its length among them) by `kind`, by the
+/// Japanese rules if `ja`; None: not a kind ICU has.
+pub fn boundaries(kind: u32, text: &[u16], ja: bool) -> Option<Vec<i32>> {
     let mut b: Vec<i32> = match kind {
         CHARACTER => GraphemeClusterSegmenter::new().segment_utf16(text).map(|i| i as i32).collect(),
         WORD => WordSegmenter::new_for_non_complex_scripts(WordBreakInvariantOptions::default()).segment_utf16(text).map(|i| i as i32).collect(),
-        LINE => LineSegmenter::new_for_non_complex_scripts(LineBreakOptions::default()).segment_utf16(text).map(|i| i as i32).collect(),
+        LINE => {
+            let mut o = LineBreakOptions::default();
+            o.strictness = Some(if ja { LineBreakStrictness::Normal } else { LineBreakStrictness::Strict });
+            LineSegmenter::new_for_non_complex_scripts(o).segment_utf16(text).map(|i| i as i32).collect()
+        }
         SENTENCE => SentenceSegmenter::new(SentenceBreakInvariantOptions::default()).segment_utf16(text).map(|i| i as i32).collect(),
         _ => return None,
     };
@@ -46,16 +69,18 @@ pub fn boundaries(kind: u32, text: &[u16]) -> Option<Vec<i32>> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Brk {
     pub kind: u32,
+    /// the locale's rules are Japanese
+    pub ja: bool,
     pub bounds: Vec<i32>,
     pub at: usize,
 }
 
 impl Brk {
-    pub fn new(kind: u32) -> Brk {
-        Brk { kind, bounds: vec![0], at: 0 }
+    pub fn new(kind: u32, ja: bool) -> Brk {
+        Brk { kind, ja, bounds: vec![0], at: 0 }
     }
     pub fn set_text(&mut self, text: &[u16]) {
-        self.bounds = boundaries(self.kind, text).unwrap_or_else(|| vec![0]);
+        self.bounds = boundaries(self.kind, text, self.ja).unwrap_or_else(|| vec![0]);
         self.at = 0;
     }
     fn end(&self) -> usize {
@@ -232,7 +257,12 @@ fn ubrk_open(c: &mut Ctx) -> u32 {
         fail(status, ILLEGAL_ARGUMENT);
         return 0;
     }
-    let mut b = Brk::new(kind);
+    let locale = if c.a(1) == 0 { String::new() } else { String::from_utf8_lossy(&mem::cstr(c.a(1))).into_owned() };
+    let (ja, warn) = locale_rules(kind, &locale);
+    let mut b = Brk::new(kind, ja);
+    if warn != 0 {
+        w32(status, warn as u32);
+    }
     if text != 0 {
         b.set_text(&uchars(text, len as i64));
     }
@@ -332,25 +362,46 @@ mod tests {
     fn japanese_lines_keep_small_kana_and_closing_marks() {
         // 「ちょっと、待って。」: no break before ょ / っ (strict), 、 。 」, nor after 「
         let t = u("「ちょっと、待って。」");
-        let b = boundaries(LINE, &t).unwrap();
+        let b = boundaries(LINE, &t, false).unwrap();
         assert_eq!(b, [0, 4, 6, 8, 11]);
         // English: after the spaces
-        assert_eq!(boundaries(LINE, &u("a quick fox")).unwrap(), [0, 2, 8, 11]);
+        assert_eq!(boundaries(LINE, &u("a quick fox"), false).unwrap(), [0, 2, 8, 11]);
+    }
+
+    /// Windows' icu.dll (icubrk.c) with "ja_JP": line breaks before small kana and ー as ICU's
+    /// ja rules allow (not after 「 nor before 、。」！？), words by the dictionary, and the
+    /// warnings: line falls back to ja's rules, the rest to the root's
+    #[test]
+    fn japanese_locale_as_windows() {
+        let t = u("「ちょっと、待って。」あぁーッ ト・漢字！？".replace(' ', "").as_str());
+        assert_eq!(boundaries(LINE, &t, true).unwrap(), [0, 2, 3, 4, 6, 7, 8, 11, 12, 13, 14, 15, 17, 18, 21]);
+        // (Windows' dictionary: 0 1 5 6 7 9 10 11 13 16 17 19 20 21; by script, 待って is one)
+        assert_eq!(boundaries(WORD, &t, false).unwrap(), [0, 1, 5, 6, 9, 10, 11, 13, 16, 17, 19, 20, 21]);
+        assert_eq!(boundaries(SENTENCE, &t, false).unwrap(), [0, 11, 21]);
+        assert_eq!(locale_rules(LINE, "ja_JP"), (true, USING_FALLBACK));
+        assert_eq!(locale_rules(LINE, "ja"), (true, 0));
+        for k in [CHARACTER, WORD, SENTENCE] {
+            assert_eq!(locale_rules(k, "ja_JP"), (false, USING_DEFAULT));
+        }
+        assert_eq!(locale_rules(LINE, ""), (false, 0));
+        assert_eq!(locale_rules(LINE, "en_US"), (false, USING_DEFAULT));
+        // the root's line rules keep small kana: あっ。い breaks only before い
+        assert_eq!(boundaries(LINE, &u("あっ。い"), false).unwrap(), [0, 3, 4]);
     }
 
     #[test]
     fn characters_keep_surrogates_and_emoji_sequences() {
         // a surrogate pair, a flag (two regional indicators), a family ZWJ sequence, e + acute
         let t = u("𠀋🇯🇵👨‍👩‍👧e\u{301}");
-        let b = boundaries(CHARACTER, &t).unwrap();
+        let b = boundaries(CHARACTER, &t, false).unwrap();
         assert_eq!(b, [0, 2, 6, 14, 16]);
-        assert_eq!(boundaries(CHARACTER, &[]).unwrap(), [0]);
-        assert_eq!(boundaries(9, &t), None);
+        assert_eq!(boundaries(CHARACTER, &[], false).unwrap(), [0]);
+        assert_eq!(boundaries(9, &t, false), None);
     }
 
     #[test]
     fn iterator_moves_as_icu() {
-        let mut b = Brk::new(LINE);
+        let mut b = Brk::new(LINE, false);
         b.set_text(&u("a quick fox"));
         assert_eq!((b.current(), b.next(), b.next(), b.next(), b.next(), b.current()), (0, 2, 8, 11, DONE, 11));
         assert_eq!((b.previous(), b.first(), b.previous(), b.last()), (8, 0, DONE, 11));
@@ -362,9 +413,9 @@ mod tests {
     proptest! {
         /// Boundaries rise from 0 to the length, and never split a surrogate pair
         #[test]
-        fn boundaries_rise_and_keep_pairs(s in "\\PC{0,40}", kind in 0u32..4) {
+        fn boundaries_rise_and_keep_pairs(s in "\\PC{0,40}", kind in 0u32..4, ja: bool) {
             let t = u(&s);
-            let b = boundaries(kind, &t).unwrap();
+            let b = boundaries(kind, &t, ja).unwrap();
             prop_assert_eq!(b[0], 0);
             prop_assert_eq!(*b.last().unwrap(), t.len() as i32);
             prop_assert!(b.windows(2).all(|w| w[0] < w[1]));
@@ -378,7 +429,7 @@ mod tests {
         #[test]
         fn walking_visits_every_boundary(s in "\\PC{0,30}", kind in 0u32..4, off in -2i32..40) {
             let t = u(&s);
-            let mut b = Brk::new(kind);
+            let mut b = Brk::new(kind, false);
             b.set_text(&t);
             let mut seen = vec![b.current()];
             loop {
@@ -392,3 +443,4 @@ mod tests {
         }
     }
 }
+

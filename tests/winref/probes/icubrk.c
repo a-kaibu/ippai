@@ -107,7 +107,8 @@ int main(void) {
     printf("following 2: %d, 11: %d current %d, -5: %d current %d\n", f1, f2, c1, f3, c2);
     int p1 = ubrk_preceding(b, 8), p2 = ubrk_preceding(b, 0), c3 = ubrk_current(b), p3 = ubrk_preceding(b, 50), c4 = ubrk_current(b);
     printf("preceding 8: %d, 0: %d current %d, 50: %d current %d\n", p1, p2, c3, p3, c4);
-    int i1 = ubrk_isBoundary(b, 8), c5 = ubrk_current(b), i2 = ubrk_isBoundary(b, 5), c6 = ubrk_current(b);
+    /* (UBool is a byte: what lies above it in the register is not the answer) */
+    int i1 = (unsigned char)ubrk_isBoundary(b, 8), c5 = ubrk_current(b), i2 = (unsigned char)ubrk_isBoundary(b, 5), c6 = ubrk_current(b);
     printf("isBoundary 8: %d current %d, 5: %d current %d\n", i1, c5, i2, c6);
 
     /* a UText on the stack, then setUText */

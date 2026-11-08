@@ -202,3 +202,8 @@ crtlocale-* ^(want|got) +msvcrt\.dll (locinfo|mbcinfo) acp at
 # (32-bit ucrtbase holds the code page once more at 0xc4, past the fields inline code reads)
 crtlocale-32 ^want +ucrtbase\.dll locinfo acp at 0x8 0x10 0x14 0xc4$
 crtlocale-32 ^got +ucrtbase\.dll locinfo acp at 0x8 0x10 0x14$
+# icu.dll: the runner's default locale is en-US (sake plays a Japanese Windows: ja_JP), and
+# ICU4C splits runs of kanji and kana into words by its dictionary where sake goes by script
+# (ICU4X's dictionary is 4 MB more wasm; games wrap by the line kind, which matches)
+icubrk-* ^(want|got) +uloc_getDefault 
+icubrk-* ^(want|got) +(ja|ja long|mixed|surrogates) word: 
