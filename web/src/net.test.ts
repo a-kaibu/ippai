@@ -180,3 +180,99 @@ test("a big quota keeps a small chunk cache whole (the 2 GB cap is not negative)
   }
   g.caches = old;
 });
+
+/** trimChunks over a stand-in cache: `chunks` [size said, body bytes] oldest first; what stays. */
+async function trimmed(
+  chunks: [number | null, number][],
+  storage: { quota: number; usage?: number },
+  saved = new Set<string>(),
+): Promise<number[]> {
+  const { m, cache } = fakeCache();
+  (cache as unknown as { keys: () => Promise<Request[]> }).keys = async () =>
+    [...m.keys()].map((u) => new Request(u));
+  const hex = (i: number) => i.toString(16).padStart(32, "0");
+  for (const [i, [said, body]] of chunks.entries())
+    m.set(
+      `https://s/store/chunks/00/${hex(i)}`,
+      new Response(new Uint8Array(body), { headers: said === null ? {} : { "x-ippai-size": String(said) } }),
+    );
+  const g = globalThis as unknown as { caches?: unknown };
+  const old = g.caches;
+  g.caches = { open: async () => cache };
+  Object.defineProperty(navigator, "storage", {
+    value: { estimate: async () => storage, persist: async () => true },
+    configurable: true,
+  });
+  try {
+    await trimChunks(async () => saved);
+  } finally {
+    g.caches = old;
+  }
+  return [...m.keys()].map((u) => parseInt(u.slice(-32), 16));
+}
+
+test("16 MiB chunks are counted as 16 MiB: 100 of them (1.6 GiB) are trimmed to the limit", async () => {
+  const MiB = 1 << 20;
+  // quota 1 GiB: the chunks' share is 512 MiB, so 32 of 16 MiB stay (the newest)
+  const left = await trimmed(
+    Array.from({ length: 100 }, () => [16 * MiB, 16] as [number, number]),
+    { quota: 1024 * MiB },
+  );
+  expect(left.length).toBe(32);
+  expect(left[0]).toBe(68);
+});
+
+test("what else the origin keeps (saves, states) counts: chunks give way so the whole fits", async () => {
+  const MiB = 1 << 20;
+  // quota 1000 MiB, 600 MiB of states besides 20 chunks of 16 MiB (320 MiB): 800 MiB in all
+  // allowed, so 200 MiB of chunks (12) stay
+  const left = await trimmed(
+    Array.from({ length: 20 }, () => [16 * MiB, 16] as [number, number]),
+    { quota: 1000 * MiB, usage: 920 * MiB },
+  );
+  expect(left.length).toBe(12);
+});
+
+test("a chunk kept without its size (an older page's) is measured, not guessed", async () => {
+  // 3 chunks of 1 MiB with no header, quota 4 MiB (2 MiB for chunks): one goes
+  const left = await trimmed(
+    Array.from({ length: 3 }, () => [null, 1 << 20] as [null, number]),
+    { quota: 4 << 20 },
+  );
+  expect(left).toEqual([1, 2]);
+});
+
+test("property: after a trim the chunks fit their share, only the oldest unsaved went", async () => {
+  let seed = 99;
+  const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), seed % n);
+  for (let run = 0; run < 100; run++) {
+    const n = 1 + rnd(40);
+    const sizes = Array.from({ length: n }, () => (1 + rnd(64)) << 10);
+    const quota = (1 + rnd(4000)) << 10;
+    const others = rnd(2) ? rnd(quota) : 0;
+    const total = sizes.reduce((a, b) => a + b, 0);
+    const saved = new Set(
+      Array.from({ length: n }, (_, i) => i)
+        .filter(() => rnd(5) === 0)
+        .map((i) => i.toString(16).padStart(32, "0")),
+    );
+    const left = await trimmed(
+      sizes.map((s) => [s, 0] as [number, number]),
+      { quota, usage: others ? others + total : 0 },
+      saved,
+    );
+    const limit = Math.min(quota * 0.5, others ? quota * 0.8 - others : Infinity);
+    const isSaved = (i: number) => saved.has(i.toString(16).padStart(32, "0"));
+    const kept = left.reduce((a, i) => a + sizes[i]!, 0);
+    const savedBytes = sizes.reduce((a, s, i) => a + (isSaved(i) ? s : 0), 0);
+    // fits (unless the saved games' chunks alone are over)
+    expect(kept <= Math.max(limit, savedBytes) || kept === savedBytes, `run ${run}`).toBe(true);
+    // every saved chunk stays; what went is a prefix of the unsaved, oldest first
+    for (let i = 0; i < n; i++) if (isSaved(i)) expect(left).toContain(i);
+    const gone = sizes.map((_, i) => i).filter((i) => !left.includes(i));
+    const unsaved = sizes.map((_, i) => i).filter((i) => !isSaved(i));
+    expect(gone, `run ${run}`).toEqual(unsaved.slice(0, gone.length));
+    // and no more went than needed
+    if (gone.length) expect(kept + sizes[gone.at(-1)!]! > limit, `run ${run}`).toBe(true);
+  }
+});

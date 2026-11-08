@@ -96,6 +96,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/webcodecs-snap-browser.mjs
+      - name: The chunk cache trimmed by the chunks' real sizes (net.ts trimChunks)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/chunk-trim-browser.mjs
       - name: The game list (name, icons, 統計 at the top right, favorites, statistics)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs

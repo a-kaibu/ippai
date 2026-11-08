@@ -11,9 +11,8 @@ import { blake3Hex } from "./blake3";
 export const CHUNKS = "ippai-chunks-v1";
 const RETRY = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
 const CHECKED = "x-ippai-checked";
-/** A kept chunk's length (trimChunks; one kept without it counts as CHUNK_MAX). */
+/** A kept chunk's length (trimChunks; one kept without it, an older page's, is measured). */
 const SIZE = "x-ippai-size";
-const CHUNK_MAX = 256 << 10;
 /** Fetches of one chunk that may not match its name before it fails. */
 const BAD_CHUNK = 3;
 
@@ -233,28 +232,32 @@ export async function getChunk(
 const KEEP_BYTES = 2 * 1024 ** 3;
 
 /**
- * Keeps the chunk cache within its share of the origin's storage (and 2 GB): the oldest go
- * first, but not those `saved()` lists (games saved to the device: offline.ts savedChunks; only
- * asked when something must go). Also asks the browser to keep this origin's data (saves,
- * chunks) under storage pressure.
+ * Keeps the chunk cache within its share of the origin's storage: half the quota and 2 GB, and
+ * with what else the origin keeps (saves and states in OPFS, the app) the whole under SHARE of the
+ * quota, those never going. The oldest chunks go first, but not those `saved()` lists (games saved
+ * to the device: offline.ts savedChunks; only asked when something must go). Sizes are the
+ * chunks' own (x-ippai-size; FastCDC chunks are 16 MiB on average, 64 MiB at most). Also asks the
+ * browser to keep this origin's data under storage pressure.
  */
 export async function trimChunks(saved: () => Promise<Set<string>> = async () => new Set()): Promise<void> {
   void navigator.storage?.persist?.().catch(() => false);
   const cache = await chunkCache();
   if (!cache) return;
-  const { quota = 0 } = (await navigator.storage?.estimate?.().catch(() => undefined)) ?? {};
-  const limit = Math.min(KEEP_BYTES, quota ? quota * 0.5 : KEEP_BYTES);
+  const { quota = 0, usage = 0 } = (await navigator.storage?.estimate?.().catch(() => undefined)) ?? {};
   const keys = await cache.keys();
-  // (chunks are CHUNK_MAX at most: within the limit so counted, no need to look at each)
-  if (keys.length * CHUNK_MAX <= limit) return;
   const sizes = await Promise.all(
     keys.map(async (k) => {
       const r = await cache.match(k).catch(() => undefined);
-      const n = Number(r?.headers.get(SIZE));
-      return n > 0 && n <= CHUNK_MAX ? n : CHUNK_MAX;
+      if (!r) return 0;
+      const n = Number(r.headers.get(SIZE));
+      return n > 0 ? n : ((await r.blob().catch(() => null))?.size ?? 0);
     }),
   );
-  let over = sizes.reduce((a, b) => a + b, 0) - limit;
+  const chunks = sizes.reduce((a, b) => a + b, 0);
+  let limit = Math.min(KEEP_BYTES, quota ? quota * 0.5 : KEEP_BYTES);
+  // (usage counts the chunks too, as the browser last measured)
+  if (quota && usage) limit = Math.min(limit, quota * SHARE - Math.max(0, usage - chunks));
+  let over = chunks - limit;
   if (over <= 0) return;
   const keep = await saved().catch(() => null);
   // (the saved games' lists out of reach: nothing goes rather than their chunks)
@@ -266,6 +269,8 @@ export async function trimChunks(saved: () => Promise<Set<string>> = async () =>
     over -= sizes[i]!;
   }
 }
+/** Of the quota, what the origin may fill in all before chunks go (trimChunks). */
+const SHARE = 0.8;
 
 /** The store chunk hashes (hex) of a tree's file list (trees/<name>.tsv, crates/ippai/src/pack.rs). */
 export function treeChunks(tsv: string): string[] {
