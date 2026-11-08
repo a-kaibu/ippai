@@ -1,4 +1,4 @@
-# Records a game's Direct3D calls with apitrace on Windows (.github/workflows/gametrace.yml):
+# Records a game's Direct3D / DirectDraw calls with apitrace on Windows (.github/workflows/gametrace.yml):
 # apitrace's wrapper DLLs for the API go beside the game's exe (it loads them as the system's;
 # `apitrace trace`'s injector starts the game through the ANSI code page, and the runner's
 # en-US one has no Japanese folder names), TRACE_FILE names the trace. The game is played as
@@ -11,9 +11,10 @@
 # draws with d3d8, or with DirectDraw): a watcher lists the graphics DLLs the game loaded, and
 # when no trace was left the game is played again with the API whose system DLL it loaded
 # (gameapi.py next). <Out>.api names the API of the trace; with none, <Out>.why says why
-# ("ddraw: ..." when it drew with DirectDraw only, "notrace: ..." otherwise).
+# ("notrace: ..."). DirectDraw's wrapper is tests/replay/ddraw-wrapper.sh's (it keeps what GDI
+# drew on a surface), put in apitrace's wrappers folder by the workflow.
 #
-#   record-game.ps1 -Apitrace <apitrace.exe> -Api d3d9|d3d8|dxgi -Game <dir: meta.json, x/> -Out <x.trace> -Shots <dir> [-Story 30]
+#   record-game.ps1 -Apitrace <apitrace.exe> -Api d3d9|d3d8|dxgi|ddraw -Game <dir: meta.json, x/> -Out <x.trace> -Shots <dir> [-Story 30]
 param(
   [Parameter(Mandatory)] [string] $Apitrace,
   [Parameter(Mandatory)] [string] $Api,
@@ -64,7 +65,7 @@ while ($true) {
 
 # one play of the game with the wrapper of $a beside it; returns the watcher's log
 function Play([string] $a) {
-  $names = @{ d3d9 = @('d3d9.dll'); d3d8 = @('d3d8.dll'); dxgi = @('dxgi.dll', 'd3d11.dll', 'dxgitrace.dll') }[$a]
+  $names = @{ d3d9 = @('d3d9.dll'); d3d8 = @('d3d8.dll'); dxgi = @('dxgi.dll', 'd3d11.dll', 'dxgitrace.dll'); ddraw = @('ddraw.dll') }[$a]
   if (-not $names) { throw "api $a" }
   $copied = @()
   foreach ($n in $names) {
@@ -106,9 +107,9 @@ while ($true) {
   }
   $next = (python $gameapi next $log @tried | Out-String).Trim()
   Write-Host "no trace with $a; next: $(if ($next) { $next } else { 'nothing' })"
-  if ($next -and $next -ne 'ddraw') { $a = $next; continue }
+  if ($next) { $a = $next; continue }
   $sys = @(Get-Content -LiteralPath $log -Encoding utf8 -ErrorAction SilentlyContinue | ForEach-Object { ($_ -split '\\')[-1].ToLower() } | Sort-Object -Unique) -join ' '
-  $why = if ($next -eq 'ddraw') { "ddraw" } else { "notrace" }
+  $why = "notrace"
   Set-Content -LiteralPath "$Out.why" -Value "$why`ttried $($tried -join ', '); loaded: $(if ($sys) { $sys } else { 'no graphics DLL' })" -NoNewline -Encoding utf8
   Write-Host "no trace: $why"
   exit 1

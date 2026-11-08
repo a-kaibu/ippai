@@ -1,4 +1,4 @@
-/* Plays back a D3D8 / D3D9 / D3D11 call stream (the apitrace crate made it from an apitrace
+/* Plays back a D3D8 / D3D9 / D3D11 / DirectDraw (and Direct3D 7) call stream (the apitrace crate made it from an apitrace
  * trace, docs/replay.md) on this system, real Windows or sake, and prints what it drew in
  * tests/winref's probe format (probe.h), so that two systems' replays of one recording compare
  * line by line:
@@ -8,7 +8,11 @@
  *   image l<call>    (D3D8) a surface the recording locked to read (D3DLOCK_READONLY)
  *   image m<call>    (D3D11) a texture the recording mapped to read (its part last copied into
  *                    it), and m<call>_alpha; data m<call> ...: a buffer's first bytes
- *   image d<call>    (-draws) the render target after every draw
+ *   image d<call>    (-draws) the render target after every draw (DirectDraw: the surface after
+ *                    every Blt / BltFast, the render target after every Direct3D 7 draw)
+ *   DirectDraw (ddrawimg.c): image f<n> is the back buffer before a Flip, or the part of the
+ *   primary surface a Blt / BltFast drew to (each one a frame); image l<call> a surface locked to
+ *   read (DDLOCK_READONLY)
  *   hr <call> <method> <got> want <recorded>    a call whose HRESULT differs from the recording's
  *   unknown <name> / no object <name>           calls it could not make (once per name)
  *
@@ -104,6 +108,12 @@ int frame_wanted(void) { return frame >= opt_from && frame <= opt_to && (frame -
 
 static HWND hwnd;
 static int win_w = 640, win_h = 480;
+static void win_pos(int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    win_w = w;
+    win_h = h;
+    SetWindowPos(hwnd, HWND_TOP, x, y, w, h, 0);
+}
 static void win_size(int w, int h) {
     if (w <= 0 || h <= 0 || (w == win_w && h == win_h)) return;
     RECT r = { 0, 0, w, h };
@@ -247,8 +257,8 @@ static void callv_check(void) {
 
 /* an entry point by name, from the D3D DLLs */
 static void *entry(const char *name) {
-    static const char *dlls[] = { "d3d9.dll", "d3d8.dll", "d3d11.dll", "dxgi.dll" };
-    for (int i = 0; i < 4; i++) {
+    static const char *dlls[] = { "d3d9.dll", "d3d8.dll", "d3d11.dll", "dxgi.dll", "ddraw.dll" };
+    for (int i = 0; i < 5; i++) {
         HMODULE m = GetModuleHandleA(dlls[i]);
         if (!m) m = LoadLibraryA(dlls[i]);
         void *f = m ? (void *)GetProcAddress(m, name) : NULL;
@@ -267,13 +277,15 @@ static void warn(UINT id, int what, const char *fmt) {
 }
 
 enum { K_WORD, K_HANDLE, K_BLOB, K_OUTOBJ, K_LOCK, K_SCRATCH = 7, K_WINDOW, K_OUTARR };
-enum { L_BUF, L_RECT, L_BOX, L_MAP };
+enum { L_BUF, L_RECT, L_BOX, L_MAP, L_DDSD2, L_DDSD };
 
-/* which API's hooks a call's interface goes to */
+/* which API's hooks a call's interface goes to (7: DirectDraw and its Direct3D 7, whose
+ * interfaces' names have no 8 or 9) */
 static int api_of(const char *iface) {
     if (!strncmp(iface, "ID3D11", 6) || !strncmp(iface, "IDXGI", 5)) return 11;
-    size_t n = strlen(iface);
-    return n && iface[n - 1] == '8' && !strncmp(iface, "IDirect3D", 9) ? 8 : 9;
+    if (!strncmp(iface, "IDirectDraw", 11)) return 7;
+    if (strchr(iface, '8')) return 8;
+    return strchr(iface, '9') ? 9 : 7;
 }
 
 static void call_record(void) {
@@ -286,7 +298,7 @@ static void call_record(void) {
     W a[MAXARGS];
     BYTE *blob[MAXARGS] = { 0 };
     W out[MAXARGS] = { 0 };
-    union { struct locked_rect r; struct locked_box b; struct mapped m; } box[MAXARGS];
+    union { struct locked_rect r; struct locked_box b; struct mapped m; BYTE dd[160]; } box[MAXARGS];
     if (n > MAXARGS) { printf("stream: %u arguments\n", n); exit(2); }
     for (int i = 0; i < n; i++) {
         kind[i] = u8();
@@ -328,6 +340,7 @@ static void call_record(void) {
         case K_OUTOBJ: a[i] = (W)&out[i]; break;
         case K_LOCK:
             memset(&box[i], 0, sizeof box[i]);
+            if (lkind[i] == L_DDSD2 || lkind[i] == L_DDSD) ddraw_lock_prep(lkind[i] == L_DDSD2, box[i].dd);
             a[i] = lkind[i] == L_BUF ? (W)&out[i] : (W)&box[i];
             break;
         case K_SCRATCH: memset(scratch[i], 0, sizeof scratch[i]); a[i] = (W)scratch[i]; break;
@@ -361,6 +374,7 @@ static void call_record(void) {
     } else {
         int api = api_of(nm->iface);
         if (api == 9) d3d9_before(nm->iface, nm->method, a, n, no);
+        else if (api == 7) ddraw_before(nm->iface, nm->method, a, n, no);
         else if (api == 8) d3d8_before(nm->iface, nm->method, a, n, no);
         else d3d11_before(nm->iface, nm->method, a, n, no);
         void *fn = (*(void ***)a[0])[nm->index];
@@ -376,11 +390,19 @@ static void call_record(void) {
                     case L_RECT: lock_set(word32[i], key[i], box[i].r.pBits, box[i].r.Pitch, 0); break;
                     case L_BOX: lock_set(word32[i], key[i], box[i].b.pBits, box[i].b.RowPitch, box[i].b.SlicePitch); break;
                     case L_MAP: lock_set(word32[i], key[i], box[i].m.pData, box[i].m.RowPitch, box[i].m.DepthPitch); break;
+                    case L_DDSD2: case L_DDSD: {
+                        void *p;
+                        INT pitch;
+                        ddraw_lock_got(lkind[i] == L_DDSD2, box[i].dd, &p, &pitch);
+                        lock_set(word32[i], key[i], p, pitch, 0);
+                        break;
+                    }
                     }
                 }
             }
         }
         if (api == 9) d3d9_after(nm->iface, nm->method, a, n, no, hr);
+        else if (api == 7) ddraw_after(nm->iface, nm->method, a, n, no, hr);
         else if (api == 8) d3d8_after(nm->iface, nm->method, a, n, no, hr);
         else d3d11_after(nm->iface, nm->method, a, n, no, hr);
     }
@@ -389,7 +411,7 @@ static void call_record(void) {
 }
 
 static void memcpy_record(void) {
-    UINT h = u32(), key = u32(), off = u32(), pitch = u32(), slice = u32(), len = u32();
+    UINT h = u32(), key = u32(), off = u32(), pitch = u32(), slice = u32(), row = u32(), len = u32();
     BYTE *data = malloc(len ? len : 1);
     if (len && !rd(data, len)) truncated();
     struct lock *l = lock_get(h, key);
@@ -404,8 +426,10 @@ static void memcpy_record(void) {
             UINT o = off + pos, z = slice ? o / slice : 0, r = slice ? o % slice : o;
             UINT y = r / pitch, x = r % pitch, k = pitch - x;
             if (k > len - pos) k = len - pos;
-            if ((INT)x < l->pitch && (!l->slice || (INT)(y * l->pitch) < l->slice)) {
-                UINT c = k < (UINT)(l->pitch - x) ? k : (UINT)(l->pitch - x);
+            /* (row: only the locked region's bytes of each row, the rest are other pixels) */
+            UINT end = row && row < (UINT)l->pitch ? row : (UINT)l->pitch;
+            if (x < end && (!l->slice || (INT)(y * l->pitch) < l->slice)) {
+                UINT c = k < end - x ? k : end - x;
                 memcpy(l->p + z * l->slice + y * l->pitch + x, data + pos, c);
             }
             pos += k;
@@ -456,7 +480,7 @@ int main(int argc, char **argv) {
     if (!path) { printf("usage: replay <stream> [-draws] [-every N] [-from N] [-to N] [-tol N] [-noimages]\n"); return 2; }
     if (!mem && !(in = fopen(path, "rb"))) { printf("cannot open %s\n", path); return 2; }
     char magic[12];
-    if (!rd(magic, 12) || memcmp(magic, "IPRS\2\0\0\0", 8)) { printf("not a replay stream (version 2)\n"); return 2; }
+    if (!rd(magic, 12) || memcmp(magic, "IPRS\3\0\0\0", 8)) { printf("not a replay stream (version 3)\n"); return 2; }
     UINT bits;
     memcpy(&bits, magic + 8, 4);
     if (bits != sizeof(void *) * 8) { printf("a %u-bit stream: this replay is %u-bit\n", bits, (unsigned)sizeof(void *) * 8); return 2; }
@@ -475,6 +499,7 @@ int main(int argc, char **argv) {
         case 2: call_record(); calls++; break;
         case 3: memcpy_record(); break;
         case 4: { UINT w = u32(), h = u32(); win_size(w, h); break; }
+        case 5: { INT x = (INT)u32(), y = (INT)u32(); UINT w = u32(), h = u32(); win_pos(x, y, w, h); break; }
         default: printf("stream: record %d\n", c); return 2;
         }
         if (!(calls & 1023)) {

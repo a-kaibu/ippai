@@ -112,8 +112,33 @@ jobs:
           path: game
           retention-days: 2
 
+  # (apitrace's DirectDraw wrapper with tests/replay/apitrace-ddraw.patch: what GDI drew on a
+  # surface stays in the trace; built with mingw-w64, cached by its sources)
+  ddraw-wrapper:
+    needs: plan
+    if: needs.plan.outputs.ids != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: c
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/ddraw-wrapper
+          key: ddraw-wrapper-${{ hashFiles('tests/replay/ddraw-wrapper.sh', 'tests/replay/apitrace-ddraw.patch') }}
+      - if: steps.c.outputs.cache-hit != 'true'
+        run: |
+          tools/ci/cache-keys.sh
+          tools/ci/apt.sh g++-mingw-w64-i686 g++-mingw-w64-x86-64 ninja-build
+          tests/replay/ddraw-wrapper.sh ~/ddraw-wrapper
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ddraw-wrapper
+          path: ~/ddraw-wrapper
+          retention-days: 7
+
   record:
-    needs: [plan, prep]
+    needs: [plan, prep, ddraw-wrapper]
     if: ${{ !cancelled() && needs.plan.outputs.ids != '[]' }}
     runs-on: windows-2025
     timeout-minutes: 50
@@ -138,7 +163,7 @@ jobs:
           echo "${{ matrix.id }}: $api $bits-bit $exe"
           # (a title that draws without D3D8/9/11: skipped.tsv, not downloaded again)
           mkdir -p pack
-          if [ "$api" = none ]; then printf 'none\t%s: no D3D8/9/11\n' "$exe" > "pack/${{ matrix.id }}.skip"; fi
+          if [ "$api" = none ]; then printf 'none\t%s: no D3D8/9/11 nor DirectDraw\n' "$exe" > "pack/${{ matrix.id }}.skip"; fi
           echo "api=$api" >> "$GITHUB_OUTPUT"
           echo "bits=$bits" >> "$GITHUB_OUTPUT"
           echo "exe=$exe" >> "$GITHUB_OUTPUT"
@@ -165,6 +190,12 @@ jobs:
           if (-not $d.WaitForExit(300000)) { Stop-Process -Id $d.Id -Force; throw "DXSETUP did not finish" }
           "DXSETUP exit $($d.ExitCode)"
           Get-Item C:\Windows\SysWOW64\d3dx9_43.dll, C:\Windows\System32\d3dx9_43.dll -ErrorAction SilentlyContinue | Select-Object FullName, Length
+      - if: steps.meta.outputs.api != 'none'
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: ddraw-wrapper
+          path: ddraw-wrapper
+      # (its DirectDraw wrapper replaced by ours: tests/replay/ddraw-wrapper.sh)
       - name: apitrace
         if: steps.meta.outputs.api != 'none'
         shell: bash
@@ -179,6 +210,7 @@ jobs:
           (cd "$RUNNER_TEMP/at" && 7z x -y ./*-$a.7z > /dev/null)
           f=$(find "$RUNNER_TEMP/at" -name apitrace.exe | head -1)
           [ -n "$f" ] || { echo "no apitrace.exe in the $a build"; exit 1; }
+          cp ddraw-wrapper/$a/ddraw.dll "$(dirname "$f")/../lib/wrappers/ddraw.dll"
           echo "APITRACE=$(cygpath -w "$f")" >> "$GITHUB_ENV"
       # (as corpusref.yml: MS Gothic and the other Japanese fonts, a feature on demand on an English
       # Windows; a sound card, without which DirectSound fails and games stop at an error box:

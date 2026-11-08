@@ -1,5 +1,5 @@
 /* What replay.c (the stream, the calls) shares with the API parts that read pictures back
- * (d3d9img.c, d3d8img.c, d3d11img.c, each with its own D3D header: d3d8.h and d3d9.h do not go
+ * (d3d9img.c, d3d8img.c, d3d11img.c, ddrawimg.c, each with its own D3D header: d3d8.h and d3d9.h do not go
  * together). */
 #include <windows.h>
 
@@ -26,3 +26,8 @@ void d3d8_before(const char *iface, const char *method, W *a, int n, UINT no);
 void d3d8_after(const char *iface, const char *method, W *a, int n, UINT no, HRESULT hr);
 void d3d11_before(const char *iface, const char *method, W *a, int n, UINT no);
 void d3d11_after(const char *iface, const char *method, W *a, int n, UINT no, HRESULT hr);
+void ddraw_before(const char *iface, const char *method, W *a, int n, UINT no);
+void ddraw_after(const char *iface, const char *method, W *a, int n, UINT no, HRESULT hr);
+/* a DirectDraw Lock's DDSURFACEDESC2 (v2) or DDSURFACEDESC: made ready (dwSize), read back */
+void ddraw_lock_prep(int v2, void *desc);
+void ddraw_lock_got(int v2, const void *desc, void **bits, INT *pitch);

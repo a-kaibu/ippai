@@ -1,10 +1,10 @@
-//! A D3D8 / D3D9 / D3D11 trace (apitrace, 32- or 64-bit) as the call stream
+//! A D3D8 / D3D9 / D3D11 / DirectDraw (and its Direct3D 7) trace (apitrace, 32- or 64-bit) as the call stream
 //! tests/replay/replay.c plays back (on real Windows or on sake): every call that changes
 //! something, with its arguments ready to pass (objects as handles, pointed-to structs and arrays
 //! packed in the C layout of the trace's pointer width, from the headers' own layouts: layout.rs),
 //! and the bytes apitrace saw written into each locked or mapped region.
 //!
-//! File: "IPRS", u32 version (2), u32 pointer width (32 / 64), then records (little endian):
+//! File: "IPRS", u32 version (3), u32 pointer width (32 / 64), then records (little endian):
 //!   1 NAME     u32 id, u16 length, the name ("IDirect3DDevice9::Clear"), i32 vtable index (-1:
 //!              an entry point, found by name in the D3D DLLs), u8 flags (1: returns an HRESULT;
 //!              2: an entry point returning its object: the call's last argument is an OUTOBJ
@@ -16,14 +16,20 @@
 //!                window), u32 v; the pointer-width word at the offset is written |
 //!                OUTOBJ u32 handle (a pointer-width slot zeroed; what the call leaves there is
 //!                the object, or a D3D8 shader handle) | LOCK u8 type (0: void* of a buffer,
-//!                1: D3DLOCKED_RECT, 2: D3DLOCKED_BOX, 3: D3D11_MAPPED_SUBRESOURCE), u32 handle of
+//!                1: D3DLOCKED_RECT, 2: D3DLOCKED_BOX, 3: D3D11_MAPPED_SUBRESOURCE, 4: DDSURFACEDESC2,
+//!                5: DDSURFACEDESC: dwSize set, lpSurface and lPitch read back), u32 handle of
 //!                the locked object, u32 lock key | SCRATCH (4 KiB zeroed) | WINDOW (the
 //!                replay's) | OUTARR u32 n, n u32 handles (n pointer-width slots)
 //!              (a method's first argument is its object, a HANDLE)
 //!   3 MEMCPY   u32 handle, u32 lock key, u32 offset, u32 recorded row pitch (0: linear), u32
-//!              recorded slice pitch, u32 length, bytes
+//!              recorded slice pitch, u32 row: the bytes of each row that are the locked region's
+//!              (0: the whole pitch; a DirectDraw lock of a rect starts at its corner, and what
+//!              follows a row up to the pitch is the surface's other pixels), u32 length, bytes
 //!   4 WINSIZE  u32 width, u32 height: the back buffer size of the next call's device or swap
-//!              chain (the window becomes that big)
+//!              chain, or a DirectDraw display mode (the window becomes that big)
+//!   5 WINPOS   i32 x, i32 y, u32 width, u32 height: where a windowed DirectDraw program's window
+//!              was on the screen (what it blitted to the primary surface, which is the screen,
+//!              lay there): the replay's window goes there, at the start
 //! A lock key tells the locks of one object apart: a texture's level, a cube face + 6 * level,
 //! a D3D11 subresource. Calls without effects (Get*, Check*, ...) are left out unless they hand
 //! out objects; a replay compares what it draws.
@@ -33,12 +39,13 @@ use crate::trace::{Call, Parser, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MAGIC: &[u8; 4] = b"IPRS";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 pub const NAME: u8 = 1;
 pub const CALL: u8 = 2;
 pub const MEMCPY: u8 = 3;
 pub const WINSIZE: u8 = 4;
+pub const WINPOS: u8 = 5;
 
 pub const WORD: u8 = 0;
 pub const HANDLE: u8 = 1;
@@ -53,6 +60,8 @@ pub const LOCK_BUF: u8 = 0;
 pub const LOCK_RECT: u8 = 1;
 pub const LOCK_BOX: u8 = 2;
 pub const LOCK_MAP: u8 = 3;
+pub const LOCK_DDSD2: u8 = 4;
+pub const LOCK_DDSD: u8 = 5;
 
 pub const FIX_OBJ: u8 = 0;
 pub const FIX_PTR: u8 = 1;
@@ -155,6 +164,12 @@ pub fn convert_max(events: &[u8], bits: Option<u32>, cut: bool, max: usize) -> R
     c.out.extend_from_slice(MAGIC);
     c.out.extend_from_slice(&VERSION.to_le_bytes());
     c.out.extend_from_slice(&bits.to_le_bytes());
+    if let Some((x, y, w, h)) = ddraw_window(events, cut)? {
+        c.out.push(WINPOS);
+        for v in [x as u32, y as u32, w, h] {
+            c.out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
     while let Some(call) = p.next_call()? {
         c.call(&call)?;
         if c.out.len() >= max {
@@ -179,8 +194,8 @@ struct Converter {
     shaders: HashMap<u64, u32>,
     /// D3D11 buffers (mapped linearly)
     buffers: HashSet<u32>,
-    /// locked region address -> (handle, key, row pitch, slice pitch)
-    locks: BTreeMap<u64, (u32, u32, u32, u32)>,
+    /// locked region address -> (handle, key, row pitch, slice pitch, row bytes)
+    locks: BTreeMap<u64, (u32, u32, u32, u32, u32)>,
     winsize: Option<(u32, u32)>,
 }
 
@@ -193,7 +208,82 @@ fn no_effect(method: &str) -> bool {
     if ["GetRenderTargetData", "GetFrontBufferData", "GetDC"].contains(&method) {
         return false;
     }
-    ["Get", "Check", "Validate", "Enum", "TestCooperativeLevel", "SetPrivateData", "FreePrivateData", "SetFullscreenState", "QueryResourceResidency"].iter().any(|p| method.starts_with(p)) || method == "ShowCursor"
+    ["Get", "Check", "Validate", "Enum", "TestCooperativeLevel", "SetPrivateData", "FreePrivateData", "SetFullscreenState", "QueryResourceResidency"].iter().any(|p| method.starts_with(p)) || ["ShowCursor", "WaitForVerticalBlank"].contains(&method)
+}
+
+/// DDSCAPS_PRIMARYSURFACE in a CreateSurface's DDSURFACEDESC(2)
+fn primary_desc(call: &Call) -> bool {
+    let caps = call.arg("lpDDSurfaceDesc").and_then(|d| d.deref()).and_then(|d| d.member("ddsCaps")).and_then(|c| c.member("dwCaps")).and_then(|v| v.int());
+    caps.is_some_and(|c| c & 0x200 != 0)
+}
+
+/// A rect argument (RECT*: recorded as an array of one)
+fn rect(v: Option<&Value>) -> Option<(i64, i64, i64, i64)> {
+    let r = v?.deref()?;
+    Some((r.member("left")?.int()?, r.member("top")?.int()?, r.member("right")?.int()?, r.member("bottom")?.int()?))
+}
+
+/// Where a windowed DirectDraw program's window lay on the screen: the box of what it blitted to
+/// its primary surface (in a window that is the screen, and the blits are in screen
+/// coordinates). None when it took the screen (DDSCL_EXCLUSIVE) or blitted nothing there.
+pub fn ddraw_window(events: &[u8], cut: bool) -> Result<Option<(i32, i32, u32, u32)>, String> {
+    let mut p = Parser::new(events)?;
+    p.cut = cut;
+    let mut primaries = HashSet::new();
+    let mut sizes: HashMap<u64, (i64, i64)> = HashMap::new();
+    let mut boxed: Option<(i64, i64, i64, i64)> = None;
+    while let Some(c) = p.next_call()? {
+        let name = c.sig.name.as_str();
+        let Some((iface, method)) = name.split_once("::") else { continue };
+        if !iface.starts_with("IDirectDraw") {
+            continue;
+        }
+        let this = match c.args_in.first().and_then(|v| v.as_ref()) {
+            Some(Value::Opaque(a)) => *a,
+            _ => 0,
+        };
+        let ok = c.ret.as_ref().and_then(|r| r.int()).is_some_and(|r| r >= 0);
+        match method {
+            "SetCooperativeLevel" if c.arg("dwFlags").and_then(|v| v.int()).is_some_and(|f| f & 0x10 != 0) => return Ok(None),
+            "CreateSurface" if ok => {
+                let out = c.sig.args.iter().position(|a| a == "lplpDDSurface").and_then(|i| c.args_out.get(i)).and_then(|v| v.as_ref()).and_then(opaque);
+                let d = c.arg("lpDDSurfaceDesc").and_then(|d| d.deref());
+                if let Some(o) = out {
+                    if primary_desc(&c) {
+                        primaries.insert(o);
+                    } else if let Some(d) = d {
+                        if let (Some(w), Some(h)) = (d.member("dwWidth").and_then(|v| v.int()), d.member("dwHeight").and_then(|v| v.int())) {
+                            sizes.insert(o, (w, h));
+                        }
+                    }
+                }
+            }
+            "Blt" | "BltFast" if ok && primaries.contains(&this) => {
+                let r = if method == "Blt" {
+                    rect(c.arg("lpDestRect"))
+                } else {
+                    let (x, y) = (c.arg("dwX").and_then(|v| v.int()).unwrap_or(0), c.arg("dwY").and_then(|v| v.int()).unwrap_or(0));
+                    let src = match c.arg("lpDDSrcSurface") {
+                        Some(Value::Opaque(a)) => *a,
+                        _ => 0,
+                    };
+                    let (w, h) = match rect(c.arg("lpSrcRect")) {
+                        Some((l, t, r, b)) => (r - l, b - t),
+                        None => sizes.get(&src).copied().unwrap_or((0, 0)),
+                    };
+                    Some((x, y, x + w, y + h))
+                };
+                if let Some((l, t, r, b)) = r.filter(|(l, t, r, b)| r > l && b > t) {
+                    boxed = Some(match boxed {
+                        None => (l, t, r, b),
+                        Some((l0, t0, r0, b0)) => (l0.min(l), t0.min(t), r0.max(r), b0.max(b)),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(boxed.map(|(l, t, r, b)| (l as i32, t as i32, (r - l) as u32, (b - t) as u32)))
 }
 
 fn opaque(v: &Value) -> Option<u64> {
@@ -304,6 +394,18 @@ impl Converter {
                 }
             }
         }
+        // a display mode: the replay's window is the screen
+        if method == "SetDisplayMode" && iface.is_some_and(|i| i.starts_with("IDirectDraw")) {
+            if let (Some(Arg::Word(w)), Some(Arg::Word(h))) = (args.get(1), args.get(2)) {
+                self.winsize = Some((*w as u32, *h as u32));
+            }
+        }
+        // (no vsync: DDFLIP_NOVSYNC, which IDirectDrawSurface7 takes)
+        if name == "IDirectDrawSurface7::Flip" {
+            if let Some(Arg::Word(f)) = args.get_mut(2) {
+                *f |= 8;
+            }
+        }
         let ret = call.ret.as_ref();
         let mut flags = 0;
         let mut ret_word = None;
@@ -375,7 +477,8 @@ impl Converter {
             return Ok(match v {
                 Value::Null => Arg::Word(0),
                 Value::Opaque(a) => match self.objects.get(a) {
-                    Some(&h) if matches!(**inner, Ty::Obj(_) | Ty::Void) => Arg::Handle(h),
+                    // (an object, or a handle the recording got from a call: an HDC of GetDC)
+                    Some(&h) if matches!(&**inner, Ty::Obj(_) | Ty::Void) || matches!(&**inner, Ty::Rec(r) if r.ends_with("__")) => Arg::Handle(h),
                     _ => Arg::Word(0),
                 },
                 v => {
@@ -404,7 +507,7 @@ impl Converter {
         match (&**inner, v.deref()) {
             // a locked buffer: the address of its bytes
             (Ty::Ptr(_), Some(Value::Opaque(a))) if method == "Lock" => {
-                self.locks.insert(*a, (this, 0, 0, 0));
+                self.locks.insert(*a, (this, 0, 0, 0, 0));
                 return Ok(Arg::Lock { kind: LOCK_BUF, handle: this, key: 0 });
             }
             (Ty::Rec(r), Some(s @ Value::Struct(..))) if r.ends_with("LOCKED_RECT") || r.ends_with("LOCKED_BOX") => {
@@ -414,7 +517,7 @@ impl Converter {
                 let pitch = s.member(if rect { "Pitch" } else { "RowPitch" }).and_then(|v| v.int()).unwrap_or(0) as u32;
                 let slice = if rect { 0 } else { s.member("SlicePitch").and_then(|v| v.int()).unwrap_or(0) as u32 };
                 if let Some(Value::Opaque(a)) = s.member("pBits") {
-                    self.locks.insert(*a, (this, key, pitch, slice));
+                    self.locks.insert(*a, (this, key, pitch, slice, 0));
                 }
                 return Ok(Arg::Lock { kind: if rect { LOCK_RECT } else { LOCK_BOX }, handle: this, key });
             }
@@ -428,9 +531,27 @@ impl Converter {
                 let pitch = if linear { 0 } else { s.member("RowPitch").and_then(|v| v.int()).unwrap_or(0) as u32 };
                 let slice = if linear { 0 } else { s.member("DepthPitch").and_then(|v| v.int()).unwrap_or(0) as u32 };
                 if let Some(Value::Opaque(a)) = s.member("pData") {
-                    self.locks.insert(*a, (target, key, pitch, slice));
+                    self.locks.insert(*a, (target, key, pitch, slice, 0));
                 }
                 return Ok(Arg::Lock { kind: LOCK_MAP, handle: target, key });
+            }
+            // a DirectDraw surface: its pixels (at the rect's corner) and pitch in the
+            // DDSURFACEDESC; a row of the lock is the rect's width of pixels
+            (Ty::Rec(r), Some(s @ Value::Struct(..))) if method == "Lock" && (r.ends_with("_DDSURFACEDESC") || r.ends_with("_DDSURFACEDESC2")) => {
+                let pitch = s.member("lPitch").and_then(|v| v.int()).unwrap_or(0) as u32;
+                let pf = s.member("ddpfPixelFormat");
+                let rgb = pf.and_then(|p| p.member("dwFlags")).and_then(|v| v.int()).is_some_and(|f| f & 0x4 == 0);
+                let bpp = pf.and_then(|p| p.member("dwRGBBitCount")).and_then(|v| v.int()).unwrap_or(0);
+                let w = match rect(call.arg("lpDestRect")) {
+                    Some((l, _, r, _)) => r - l,
+                    None => s.member("dwWidth").and_then(|v| v.int()).unwrap_or(0),
+                };
+                // (a FOURCC surface's rows are not pixels of bpp bits: the whole pitch)
+                let row = if rgb && bpp % 8 == 0 && w > 0 { (w * bpp / 8) as u32 } else { 0 };
+                if let Some(Value::Opaque(a)) = s.member("lpSurface") {
+                    self.locks.insert(*a, (this, 0, pitch, 0, row.min(pitch)));
+                }
+                return Ok(Arg::Lock { kind: if r.ends_with('2') { LOCK_DDSD2 } else { LOCK_DDSD }, handle: this, key: 0 });
             }
             // a D3D8 shader's handle
             (Ty::Int(4), Some(h)) if iface.starts_with("IDirect3DDevice8") && method.starts_with("Create") && method.ends_with("Shader") => {
@@ -535,12 +656,12 @@ impl Converter {
             *self.stats.dropped.entry("memcpy (no destination or bytes)".into()).or_default() += 1;
             return Ok(());
         };
-        let Some((&base, &(h, key, pitch, slice))) = self.locks.range(..=*dest).next_back() else {
+        let Some((&base, &(h, key, pitch, slice, row))) = self.locks.range(..=*dest).next_back() else {
             *self.stats.dropped.entry("memcpy (into no lock)".into()).or_default() += 1;
             return Ok(());
         };
         self.out.push(MEMCPY);
-        for w in [h, key, (*dest - base) as u32, pitch, slice, data.len() as u32] {
+        for w in [h, key, (*dest - base) as u32, pitch, slice, row, data.len() as u32] {
             self.out.extend_from_slice(&w.to_le_bytes());
         }
         self.out.extend_from_slice(data);
@@ -729,8 +850,9 @@ fn write_arg(out: &mut Vec<u8>, a: &Arg) {
 pub enum Record {
     Name { id: u32, name: String, index: i32, flags: u8 },
     Call { no: u32, name: String, ret: Option<u32>, args: Vec<Arg> },
-    Memcpy { handle: u32, key: u32, offset: u32, pitch: u32, slice: u32, data: Vec<u8> },
+    Memcpy { handle: u32, key: u32, offset: u32, pitch: u32, slice: u32, row: u32, data: Vec<u8> },
     WinSize(u32, u32),
+    WinPos(i32, i32, u32, u32),
 }
 
 /// (pointer width, records)
@@ -795,11 +917,12 @@ pub fn read(b: &[u8]) -> Result<(u32, Vec<Record>), String> {
                 out.push(Record::Call { no, name, ret, args });
             }
             MEMCPY => {
-                let w: Vec<u32> = (0..6).map(|_| u32_(&mut i)).collect::<Result<_, _>>()?;
-                let data = bytes(&mut i, w[5] as usize)?;
-                out.push(Record::Memcpy { handle: w[0], key: w[1], offset: w[2], pitch: w[3], slice: w[4], data });
+                let w: Vec<u32> = (0..7).map(|_| u32_(&mut i)).collect::<Result<_, _>>()?;
+                let data = bytes(&mut i, w[6] as usize)?;
+                out.push(Record::Memcpy { handle: w[0], key: w[1], offset: w[2], pitch: w[3], slice: w[4], row: w[5], data });
             }
             WINSIZE => out.push(Record::WinSize(u32_(&mut i)?, u32_(&mut i)?)),
+            WINPOS => out.push(Record::WinPos(u32_(&mut i)? as i32, u32_(&mut i)? as i32, u32_(&mut i)?, u32_(&mut i)?)),
             t => return Err(format!("replay: record {t}")),
         }
     }

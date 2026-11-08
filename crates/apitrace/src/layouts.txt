@@ -1,3 +1,687 @@
+R 7.HDC__ 4 4 struct ddraw
+ 0 0 unused i4
+R 7._D3DCLIPSTATUS 32 32 struct ddraw
+ 0 0 dwFlags i4
+ 4 4 dwStatus i4
+ 8 8 minx f4
+ 12 12 maxx f4
+ 16 16 miny f4
+ 20 20 maxy f4
+ 24 24 minz f4
+ 28 28 maxz f4
+R 7._D3DCOLORVALUE 16 16 struct ddraw
+ 0 0 - S:7._D3DCOLORVALUE::@154_9
+ 4 4 - S:7._D3DCOLORVALUE::@158_9
+ 8 8 - S:7._D3DCOLORVALUE::@162_9
+ 12 12 - S:7._D3DCOLORVALUE::@166_9
+R 7._D3DCOLORVALUE::@154_9 4 4 union ddraw
+ 0 0 r f4
+ 0 0 dvR f4
+R 7._D3DCOLORVALUE::@158_9 4 4 union ddraw
+ 0 0 g f4
+ 0 0 dvG f4
+R 7._D3DCOLORVALUE::@162_9 4 4 union ddraw
+ 0 0 b f4
+ 0 0 dvB f4
+R 7._D3DCOLORVALUE::@166_9 4 4 union ddraw
+ 0 0 a f4
+ 0 0 dvA f4
+R 7._D3DDP_PTRSTRIDE 8 16 struct ddraw
+ 0 0 lpvData *v
+ 4 8 dwStride i4
+R 7._D3DDRAWPRIMITIVESTRIDEDDATA 96 192 struct ddraw
+ 0 0 position S:7._D3DDP_PTRSTRIDE
+ 8 16 normal S:7._D3DDP_PTRSTRIDE
+ 16 32 diffuse S:7._D3DDP_PTRSTRIDE
+ 24 48 specular S:7._D3DDP_PTRSTRIDE
+ 32 64 textureCoords [8]S:7._D3DDP_PTRSTRIDE
+R 7._D3DDeviceDesc 252 252 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwFlags i4
+ 8 8 dcmColorModel i4
+ 12 12 dwDevCaps i4
+ 16 16 dtcTransformCaps S:7._D3DTRANSFORMCAPS
+ 24 24 bClipping i4
+ 28 28 dlcLightingCaps S:7._D3DLIGHTINGCAPS
+ 44 44 dpcLineCaps S:7._D3dPrimCaps
+ 100 100 dpcTriCaps S:7._D3dPrimCaps
+ 156 156 dwDeviceRenderBitDepth i4
+ 160 160 dwDeviceZBufferBitDepth i4
+ 164 164 dwMaxBufferSize i4
+ 168 168 dwMaxVertexCount i4
+ 172 172 dwMinTextureWidth i4
+ 176 176 dwMinTextureHeight i4
+ 180 180 dwMaxTextureWidth i4
+ 184 184 dwMaxTextureHeight i4
+ 188 188 dwMinStippleWidth i4
+ 192 192 dwMaxStippleWidth i4
+ 196 196 dwMinStippleHeight i4
+ 200 200 dwMaxStippleHeight i4
+ 204 204 dwMaxTextureRepeat i4
+ 208 208 dwMaxTextureAspectRatio i4
+ 212 212 dwMaxAnisotropy i4
+ 216 216 dvGuardBandLeft f4
+ 220 220 dvGuardBandTop f4
+ 224 224 dvGuardBandRight f4
+ 228 228 dvGuardBandBottom f4
+ 232 232 dvExtentsAdjust f4
+ 236 236 dwStencilCaps i4
+ 240 240 dwFVFCaps i4
+ 244 244 dwTextureOpCaps i4
+ 248 248 wMaxTextureBlendStages i2
+ 250 250 wMaxSimultaneousTextures i2
+R 7._D3DDeviceDesc7 236 236 struct ddraw
+ 0 0 dwDevCaps i4
+ 4 4 dpcLineCaps S:7._D3dPrimCaps
+ 60 60 dpcTriCaps S:7._D3dPrimCaps
+ 116 116 dwDeviceRenderBitDepth i4
+ 120 120 dwDeviceZBufferBitDepth i4
+ 124 124 dwMinTextureWidth i4
+ 128 128 dwMinTextureHeight i4
+ 132 132 dwMaxTextureWidth i4
+ 136 136 dwMaxTextureHeight i4
+ 140 140 dwMaxTextureRepeat i4
+ 144 144 dwMaxTextureAspectRatio i4
+ 148 148 dwMaxAnisotropy i4
+ 152 152 dvGuardBandLeft f4
+ 156 156 dvGuardBandTop f4
+ 160 160 dvGuardBandRight f4
+ 164 164 dvGuardBandBottom f4
+ 168 168 dvExtentsAdjust f4
+ 172 172 dwStencilCaps i4
+ 176 176 dwFVFCaps i4
+ 180 180 dwTextureOpCaps i4
+ 184 184 wMaxTextureBlendStages i2
+ 186 186 wMaxSimultaneousTextures i2
+ 188 188 dwMaxActiveLights i4
+ 192 192 dvMaxVertexW f4
+ 196 196 deviceGUID S:7._GUID
+ 212 212 wMaxUserClipPlanes i2
+ 214 214 wMaxVertexBlendMatrices i2
+ 216 216 dwVertexProcessingCaps i4
+ 220 220 dwReserved1 i4
+ 224 224 dwReserved2 i4
+ 228 228 dwReserved3 i4
+ 232 232 dwReserved4 i4
+R 7._D3DEXECUTEDATA 48 48 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwVertexOffset i4
+ 8 8 dwVertexCount i4
+ 12 12 dwInstructionOffset i4
+ 16 16 dwInstructionLength i4
+ 20 20 dwHVertexOffset i4
+ 24 24 dsStatus S:7._D3DSTATUS
+R 7._D3DExecuteBufferDesc 20 24 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwFlags i4
+ 8 8 dwCaps i4
+ 12 12 dwBufferSize i4
+ 16 16 lpData *v
+R 7._D3DFINDDEVICERESULT 524 524 struct ddraw
+ 0 0 dwSize i4
+ 4 4 guid S:7._GUID
+ 20 20 ddHwDesc S:7._D3DDeviceDesc
+ 272 272 ddSwDesc S:7._D3DDeviceDesc
+R 7._D3DFINDDEVICESEARCH 92 92 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwFlags i4
+ 8 8 bHardware i4
+ 12 12 dcmColorModel i4
+ 16 16 guid S:7._GUID
+ 32 32 dwCaps i4
+ 36 36 dpcPrimCaps S:7._D3dPrimCaps
+R 7._D3DHVERTEX 16 16 struct ddraw
+ 0 0 dwFlags i4
+ 4 4 - S:7._D3DHVERTEX::@193_2
+ 8 8 - S:7._D3DHVERTEX::@197_3
+ 12 12 - S:7._D3DHVERTEX::@201_3
+R 7._D3DHVERTEX::@193_2 4 4 union ddraw
+ 0 0 hx f4
+ 0 0 dvHX f4
+R 7._D3DHVERTEX::@197_3 4 4 union ddraw
+ 0 0 hy f4
+ 0 0 dvHY f4
+R 7._D3DHVERTEX::@201_3 4 4 union ddraw
+ 0 0 hz f4
+ 0 0 dvHZ f4
+R 7._D3DLIGHT 76 76 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dltType i4
+ 8 8 dcvColor S:7._D3DCOLORVALUE
+ 24 24 dvPosition S:7._D3DVECTOR
+ 36 36 dvDirection S:7._D3DVECTOR
+ 48 48 dvRange f4
+ 52 52 dvFalloff f4
+ 56 56 dvAttenuation0 f4
+ 60 60 dvAttenuation1 f4
+ 64 64 dvAttenuation2 f4
+ 68 68 dvTheta f4
+ 72 72 dvPhi f4
+R 7._D3DLIGHT7 104 104 struct ddraw
+ 0 0 dltType i4
+ 4 4 dcvDiffuse S:7._D3DCOLORVALUE
+ 20 20 dcvSpecular S:7._D3DCOLORVALUE
+ 36 36 dcvAmbient S:7._D3DCOLORVALUE
+ 52 52 dvPosition S:7._D3DVECTOR
+ 64 64 dvDirection S:7._D3DVECTOR
+ 76 76 dvRange f4
+ 80 80 dvFalloff f4
+ 84 84 dvAttenuation0 f4
+ 88 88 dvAttenuation1 f4
+ 92 92 dvAttenuation2 f4
+ 96 96 dvTheta f4
+ 100 100 dvPhi f4
+R 7._D3DLIGHTDATA 20 40 struct ddraw
+ 0 0 dwSize i4
+ 4 8 lpIn *S:7._D3DLIGHTINGELEMENT
+ 8 16 dwInSize i4
+ 12 24 lpOut *S:7._D3DTLVERTEX
+ 16 32 dwOutSize i4
+R 7._D3DLIGHTINGCAPS 16 16 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwCaps i4
+ 8 8 dwLightingModel i4
+ 12 12 dwNumLights i4
+R 7._D3DLIGHTINGELEMENT 24 24 struct ddraw
+ 0 0 dvPosition S:7._D3DVECTOR
+ 12 12 dvNormal S:7._D3DVECTOR
+R 7._D3DMATERIAL 80 80 struct ddraw
+ 0 0 dwSize i4
+ 4 4 - S:7._D3DMATERIAL::@493_3
+ 20 20 - S:7._D3DMATERIAL::@497_3
+ 36 36 - S:7._D3DMATERIAL::@501_3
+ 52 52 - S:7._D3DMATERIAL::@505_3
+ 68 68 - S:7._D3DMATERIAL::@509_3
+ 72 72 hTexture i4
+ 76 76 dwRampSize i4
+R 7._D3DMATERIAL7 68 68 struct ddraw
+ 0 0 - S:7._D3DMATERIAL7::@518_3
+ 16 16 - S:7._D3DMATERIAL7::@522_3
+ 32 32 - S:7._D3DMATERIAL7::@526_3
+ 48 48 - S:7._D3DMATERIAL7::@530_3
+ 64 64 - S:7._D3DMATERIAL7::@534_3
+R 7._D3DMATERIAL7::@518_3 16 16 union ddraw
+ 0 0 diffuse S:7._D3DCOLORVALUE
+ 0 0 dcvDiffuse S:7._D3DCOLORVALUE
+R 7._D3DMATERIAL7::@522_3 16 16 union ddraw
+ 0 0 ambient S:7._D3DCOLORVALUE
+ 0 0 dcvAmbient S:7._D3DCOLORVALUE
+R 7._D3DMATERIAL7::@526_3 16 16 union ddraw
+ 0 0 specular S:7._D3DCOLORVALUE
+ 0 0 dcvSpecular S:7._D3DCOLORVALUE
+R 7._D3DMATERIAL7::@530_3 16 16 union ddraw
+ 0 0 emissive S:7._D3DCOLORVALUE
+ 0 0 dcvEmissive S:7._D3DCOLORVALUE
+R 7._D3DMATERIAL7::@534_3 4 4 union ddraw
+ 0 0 power f4
+ 0 0 dvPower f4
+R 7._D3DMATERIAL::@493_3 16 16 union ddraw
+ 0 0 diffuse S:7._D3DCOLORVALUE
+ 0 0 dcvDiffuse S:7._D3DCOLORVALUE
+R 7._D3DMATERIAL::@497_3 16 16 union ddraw
+ 0 0 ambient S:7._D3DCOLORVALUE
+ 0 0 dcvAmbient S:7._D3DCOLORVALUE
+R 7._D3DMATERIAL::@501_3 16 16 union ddraw
+ 0 0 specular S:7._D3DCOLORVALUE
+ 0 0 dcvSpecular S:7._D3DCOLORVALUE
+R 7._D3DMATERIAL::@505_3 16 16 union ddraw
+ 0 0 emissive S:7._D3DCOLORVALUE
+ 0 0 dcvEmissive S:7._D3DCOLORVALUE
+R 7._D3DMATERIAL::@509_3 4 4 union ddraw
+ 0 0 power f4
+ 0 0 dvPower f4
+R 7._D3DMATRIX 64 64 struct ddraw
+ 0 0 _11 f4
+ 4 4 _12 f4
+ 8 8 _13 f4
+ 12 12 _14 f4
+ 16 16 _21 f4
+ 20 20 _22 f4
+ 24 24 _23 f4
+ 28 28 _24 f4
+ 32 32 _31 f4
+ 36 36 _32 f4
+ 40 40 _33 f4
+ 44 44 _34 f4
+ 48 48 _41 f4
+ 52 52 _42 f4
+ 56 56 _43 f4
+ 60 60 _44 f4
+R 7._D3DPICKRECORD 12 12 struct ddraw
+ 0 0 bOpcode i1
+ 1 1 bPad i1
+ 4 4 dwOffset i4
+ 8 8 dvZ f4
+R 7._D3DRECT 16 16 struct ddraw
+ 0 0 - S:7._D3DRECT::@173_3
+ 4 4 - S:7._D3DRECT::@177_3
+ 8 8 - S:7._D3DRECT::@181_3
+ 12 12 - S:7._D3DRECT::@185_3
+R 7._D3DRECT::@173_3 4 4 union ddraw
+ 0 0 x1 i4
+ 0 0 lX1 i4
+R 7._D3DRECT::@177_3 4 4 union ddraw
+ 0 0 y1 i4
+ 0 0 lY1 i4
+R 7._D3DRECT::@181_3 4 4 union ddraw
+ 0 0 x2 i4
+ 0 0 lX2 i4
+R 7._D3DRECT::@185_3 4 4 union ddraw
+ 0 0 y2 i4
+ 0 0 lY2 i4
+R 7._D3DSTATUS 24 24 struct ddraw
+ 0 0 dwFlags i4
+ 4 4 dwStatus i4
+ 8 8 drExtent S:7._D3DRECT
+R 7._D3DTLVERTEX 32 32 struct ddraw
+ 0 0 - S:7._D3DTLVERTEX::@211_3
+ 4 4 - S:7._D3DTLVERTEX::@215_3
+ 8 8 - S:7._D3DTLVERTEX::@219_3
+ 12 12 - S:7._D3DTLVERTEX::@223_3
+ 16 16 - S:7._D3DTLVERTEX::@227_3
+ 20 20 - S:7._D3DTLVERTEX::@231_3
+ 24 24 - S:7._D3DTLVERTEX::@235_3
+ 28 28 - S:7._D3DTLVERTEX::@239_3
+R 7._D3DTLVERTEX::@211_3 4 4 union ddraw
+ 0 0 sx f4
+ 0 0 dvSX f4
+R 7._D3DTLVERTEX::@215_3 4 4 union ddraw
+ 0 0 sy f4
+ 0 0 dvSY f4
+R 7._D3DTLVERTEX::@219_3 4 4 union ddraw
+ 0 0 sz f4
+ 0 0 dvSZ f4
+R 7._D3DTLVERTEX::@223_3 4 4 union ddraw
+ 0 0 rhw f4
+ 0 0 dvRHW f4
+R 7._D3DTLVERTEX::@227_3 4 4 union ddraw
+ 0 0 color i4
+ 0 0 dcColor i4
+R 7._D3DTLVERTEX::@231_3 4 4 union ddraw
+ 0 0 specular i4
+ 0 0 dcSpecular i4
+R 7._D3DTLVERTEX::@235_3 4 4 union ddraw
+ 0 0 tu f4
+ 0 0 dvTU f4
+R 7._D3DTLVERTEX::@239_3 4 4 union ddraw
+ 0 0 tv f4
+ 0 0 dvTV f4
+R 7._D3DTRANSFORMCAPS 8 8 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwCaps i4
+R 7._D3DTRANSFORMDATA 52 80 struct ddraw
+ 0 0 dwSize i4
+ 4 8 lpIn *v
+ 8 16 dwInSize i4
+ 12 24 lpOut *v
+ 16 32 dwOutSize i4
+ 20 40 lpHOut *S:7._D3DHVERTEX
+ 24 48 dwClip i4
+ 28 52 dwClipIntersection i4
+ 32 56 dwClipUnion i4
+ 36 60 drExtent S:7._D3DRECT
+R 7._D3DVECTOR 12 12 struct ddraw
+ 0 0 - S:7._D3DVECTOR::@93_3
+ 4 4 - S:7._D3DVECTOR::@97_3
+ 8 8 - S:7._D3DVECTOR::@101_3
+R 7._D3DVECTOR::@101_3 4 4 union ddraw
+ 0 0 z f4
+ 0 0 dvZ f4
+R 7._D3DVECTOR::@93_3 4 4 union ddraw
+ 0 0 x f4
+ 0 0 dvX f4
+R 7._D3DVECTOR::@97_3 4 4 union ddraw
+ 0 0 y f4
+ 0 0 dvY f4
+R 7._D3DVERTEXBUFFERDESC 16 16 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwCaps i4
+ 8 8 dwFVF i4
+ 12 12 dwNumVertices i4
+R 7._D3DVIEWPORT 44 44 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwX i4
+ 8 8 dwY i4
+ 12 12 dwWidth i4
+ 16 16 dwHeight i4
+ 20 20 dvScaleX f4
+ 24 24 dvScaleY f4
+ 28 28 dvMaxX f4
+ 32 32 dvMaxY f4
+ 36 36 dvMinZ f4
+ 40 40 dvMaxZ f4
+R 7._D3DVIEWPORT2 44 44 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwX i4
+ 8 8 dwY i4
+ 12 12 dwWidth i4
+ 16 16 dwHeight i4
+ 20 20 dvClipX f4
+ 24 24 dvClipY f4
+ 28 28 dvClipWidth f4
+ 32 32 dvClipHeight f4
+ 36 36 dvMinZ f4
+ 40 40 dvMaxZ f4
+R 7._D3DVIEWPORT7 24 24 struct ddraw
+ 0 0 dwX i4
+ 4 4 dwY i4
+ 8 8 dwWidth i4
+ 12 12 dwHeight i4
+ 16 16 dvMinZ f4
+ 20 20 dvMaxZ f4
+R 7._D3dPrimCaps 56 56 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwMiscCaps i4
+ 8 8 dwRasterCaps i4
+ 12 12 dwZCmpCaps i4
+ 16 16 dwSrcBlendCaps i4
+ 20 20 dwDestBlendCaps i4
+ 24 24 dwAlphaCmpCaps i4
+ 28 28 dwShadeCaps i4
+ 32 32 dwTextureCaps i4
+ 36 36 dwTextureFilterCaps i4
+ 40 40 dwTextureBlendCaps i4
+ 44 44 dwTextureAddressCaps i4
+ 48 48 dwStippleWidth i4
+ 52 52 dwStippleHeight i4
+R 7._DDBLTBATCH 20 40 struct ddraw
+ 0 0 lprDest *S:7.tagRECT
+ 4 8 lpDDSSrc *O:IDirectDrawSurface
+ 8 16 lprSrc *S:7.tagRECT
+ 12 24 dwFlags i4
+ 16 32 lpDDBltFx *S:7._DDBLTFX
+R 7._DDBLTFX 100 128 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwDDFX i4
+ 8 8 dwROP i4
+ 12 12 dwDDROP i4
+ 16 16 dwRotationAngle i4
+ 20 20 dwZBufferOpCode i4
+ 24 24 dwZBufferLow i4
+ 28 28 dwZBufferHigh i4
+ 32 32 dwZBufferBaseDest i4
+ 36 36 dwZDestConstBitDepth i4
+ 40 40 - S:7._DDBLTFX::@1179_21
+ 44 48 dwZSrcConstBitDepth i4
+ 48 56 - S:7._DDBLTFX::@1184_21
+ 52 64 dwAlphaEdgeBlendBitDepth i4
+ 56 68 dwAlphaEdgeBlend i4
+ 60 72 dwReserved i4
+ 64 76 dwAlphaDestConstBitDepth i4
+ 68 80 - S:7._DDBLTFX::@1192_21
+ 72 88 dwAlphaSrcConstBitDepth i4
+ 76 96 - S:7._DDBLTFX::@1197_21
+ 80 104 - S:7._DDBLTFX::@1201_21
+ 84 112 ddckDestColorkey S:7._DDCOLORKEY
+ 92 120 ddckSrcColorkey S:7._DDCOLORKEY
+R 7._DDBLTFX::@1179_21 4 8 union ddraw
+ 0 0 dwZDestConst i4
+ 0 0 lpDDSZBufferDest *O:IDirectDrawSurface
+R 7._DDBLTFX::@1184_21 4 8 union ddraw
+ 0 0 dwZSrcConst i4
+ 0 0 lpDDSZBufferSrc *O:IDirectDrawSurface
+R 7._DDBLTFX::@1192_21 4 8 union ddraw
+ 0 0 dwAlphaDestConst i4
+ 0 0 lpDDSAlphaDest *O:IDirectDrawSurface
+R 7._DDBLTFX::@1197_21 4 8 union ddraw
+ 0 0 dwAlphaSrcConst i4
+ 0 0 lpDDSAlphaSrc *O:IDirectDrawSurface
+R 7._DDBLTFX::@1201_21 4 8 union ddraw
+ 0 0 dwFillColor i4
+ 0 0 dwFillDepth i4
+ 0 0 dwFillPixel i4
+ 0 0 lpDDSPattern *O:IDirectDrawSurface
+R 7._DDCAPS_DX7 380 380 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwCaps i4
+ 8 8 dwCaps2 i4
+ 12 12 dwCKeyCaps i4
+ 16 16 dwFXCaps i4
+ 20 20 dwFXAlphaCaps i4
+ 24 24 dwPalCaps i4
+ 28 28 dwSVCaps i4
+ 32 32 dwAlphaBltConstBitDepths i4
+ 36 36 dwAlphaBltPixelBitDepths i4
+ 40 40 dwAlphaBltSurfaceBitDepths i4
+ 44 44 dwAlphaOverlayConstBitDepths i4
+ 48 48 dwAlphaOverlayPixelBitDepths i4
+ 52 52 dwAlphaOverlaySurfaceBitDepths i4
+ 56 56 dwZBufferBitDepths i4
+ 60 60 dwVidMemTotal i4
+ 64 64 dwVidMemFree i4
+ 68 68 dwMaxVisibleOverlays i4
+ 72 72 dwCurrVisibleOverlays i4
+ 76 76 dwNumFourCCCodes i4
+ 80 80 dwAlignBoundarySrc i4
+ 84 84 dwAlignSizeSrc i4
+ 88 88 dwAlignBoundaryDest i4
+ 92 92 dwAlignSizeDest i4
+ 96 96 dwAlignStrideAlign i4
+ 100 100 dwRops [8]i4
+ 132 132 ddsOldCaps S:7._DDSCAPS
+ 136 136 dwMinOverlayStretch i4
+ 140 140 dwMaxOverlayStretch i4
+ 144 144 dwMinLiveVideoStretch i4
+ 148 148 dwMaxLiveVideoStretch i4
+ 152 152 dwMinHwCodecStretch i4
+ 156 156 dwMaxHwCodecStretch i4
+ 160 160 dwReserved1 i4
+ 164 164 dwReserved2 i4
+ 168 168 dwReserved3 i4
+ 172 172 dwSVBCaps i4
+ 176 176 dwSVBCKeyCaps i4
+ 180 180 dwSVBFXCaps i4
+ 184 184 dwSVBRops [8]i4
+ 216 216 dwVSBCaps i4
+ 220 220 dwVSBCKeyCaps i4
+ 224 224 dwVSBFXCaps i4
+ 228 228 dwVSBRops [8]i4
+ 260 260 dwSSBCaps i4
+ 264 264 dwSSBCKeyCaps i4
+ 268 268 dwSSBFXCaps i4
+ 272 272 dwSSBRops [8]i4
+ 304 304 dwMaxVideoPorts i4
+ 308 308 dwCurrVideoPorts i4
+ 312 312 dwSVBCaps2 i4
+ 316 316 dwNLVBCaps i4
+ 320 320 dwNLVBCaps2 i4
+ 324 324 dwNLVBCKeyCaps i4
+ 328 328 dwNLVBFXCaps i4
+ 332 332 dwNLVBRops [8]i4
+ 364 364 ddsCaps S:7._DDSCAPS2
+R 7._DDCOLORKEY 8 8 struct ddraw
+ 0 0 dwColorSpaceLowValue i4
+ 4 4 dwColorSpaceHighValue i4
+R 7._DDOVERLAYFX 56 72 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwAlphaEdgeBlendBitDepth i4
+ 8 8 dwAlphaEdgeBlend i4
+ 12 12 dwReserved i4
+ 16 16 dwAlphaDestConstBitDepth i4
+ 20 24 - S:7._DDOVERLAYFX::@1238_21
+ 24 32 dwAlphaSrcConstBitDepth i4
+ 28 40 - S:7._DDOVERLAYFX::@1243_21
+ 32 48 dckDestColorkey S:7._DDCOLORKEY
+ 40 56 dckSrcColorkey S:7._DDCOLORKEY
+ 48 64 dwDDFX i4
+ 52 68 dwFlags i4
+R 7._DDOVERLAYFX::@1238_21 4 8 union ddraw
+ 0 0 dwAlphaDestConst i4
+ 0 0 lpDDSAlphaDest *O:IDirectDrawSurface
+R 7._DDOVERLAYFX::@1243_21 4 8 union ddraw
+ 0 0 dwAlphaSrcConst i4
+ 0 0 lpDDSAlphaSrc *O:IDirectDrawSurface
+R 7._DDPIXELFORMAT 32 32 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwFlags i4
+ 8 8 dwFourCC i4
+ 12 12 - S:7._DDPIXELFORMAT::@777_21
+ 16 16 - S:7._DDPIXELFORMAT::@786_21
+ 20 20 - S:7._DDPIXELFORMAT::@794_21
+ 24 24 - S:7._DDPIXELFORMAT::@804_21
+ 28 28 - S:7._DDPIXELFORMAT::@810_21
+R 7._DDPIXELFORMAT::@777_21 4 4 union ddraw
+ 0 0 dwRGBBitCount i4
+ 0 0 dwYUVBitCount i4
+ 0 0 dwZBufferBitDepth i4
+ 0 0 dwAlphaBitDepth i4
+ 0 0 dwLuminanceBitCount i4
+ 0 0 dwBumpBitCount i4
+ 0 0 dwPrivateFormatBitCount i4
+R 7._DDPIXELFORMAT::@786_21 4 4 union ddraw
+ 0 0 dwRBitMask i4
+ 0 0 dwYBitMask i4
+ 0 0 dwStencilBitDepth i4
+ 0 0 dwLuminanceBitMask i4
+ 0 0 dwBumpDuBitMask i4
+ 0 0 dwOperations i4
+R 7._DDPIXELFORMAT::@794_21 4 4 union ddraw
+ 0 0 dwGBitMask i4
+ 0 0 dwUBitMask i4
+ 0 0 dwZBitMask i4
+ 0 0 dwBumpDvBitMask i4
+ 0 0 MultiSampleCaps S:7._DDPIXELFORMAT::@799_2
+R 7._DDPIXELFORMAT::@799_2 4 4 struct ddraw
+ 0 0 wFlipMSTypes i2
+ 2 2 wBltMSTypes i2
+R 7._DDPIXELFORMAT::@804_21 4 4 union ddraw
+ 0 0 dwBBitMask i4
+ 0 0 dwVBitMask i4
+ 0 0 dwStencilBitMask i4
+ 0 0 dwBumpLuminanceBitMask i4
+R 7._DDPIXELFORMAT::@810_21 4 4 union ddraw
+ 0 0 dwRGBAlphaBitMask i4
+ 0 0 dwYUVAlphaBitMask i4
+ 0 0 dwLuminanceAlphaBitMask i4
+ 0 0 dwRGBZBitMask i4
+ 0 0 dwYUVZBitMask i4
+R 7._DDSCAPS 4 4 struct ddraw
+ 0 0 dwCaps i4
+R 7._DDSCAPS2 16 16 struct ddraw
+ 0 0 dwCaps i4
+ 4 4 dwCaps2 i4
+ 8 8 dwCaps3 i4
+ 12 12 - S:7._DDSCAPS2::@403_18
+R 7._DDSCAPS2::@403_18 4 4 union ddraw
+ 0 0 dwCaps4 i4
+ 0 0 dwVolumeDepth i4
+R 7._DDSURFACEDESC 108 120 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwFlags i4
+ 8 8 dwHeight i4
+ 12 12 dwWidth i4
+ 16 16 - S:7._DDSURFACEDESC::@1025_18
+ 20 20 dwBackBufferCount i4
+ 24 24 - S:7._DDSURFACEDESC::@1030_18
+ 28 28 dwAlphaBitDepth i4
+ 32 32 dwReserved i4
+ 36 40 lpSurface *v
+ 40 48 ddckCKDestOverlay S:7._DDCOLORKEY
+ 48 56 ddckCKDestBlt S:7._DDCOLORKEY
+ 56 64 ddckCKSrcOverlay S:7._DDCOLORKEY
+ 64 72 ddckCKSrcBlt S:7._DDCOLORKEY
+ 72 80 ddpfPixelFormat S:7._DDPIXELFORMAT
+ 104 112 ddsCaps S:7._DDSCAPS
+R 7._DDSURFACEDESC2 124 136 struct ddraw
+ 0 0 dwSize i4
+ 4 4 dwFlags i4
+ 8 8 dwHeight i4
+ 12 12 dwWidth i4
+ 16 16 - S:7._DDSURFACEDESC2::@1052_18
+ 20 20 - S:7._DDSURFACEDESC2::@1056_18
+ 24 24 - S:7._DDSURFACEDESC2::@1060_18
+ 28 28 dwAlphaBitDepth i4
+ 32 32 dwReserved i4
+ 36 40 lpSurface *v
+ 40 48 - S:7._DDSURFACEDESC2::@1068_18
+ 48 56 ddckCKDestBlt S:7._DDCOLORKEY
+ 56 64 ddckCKSrcOverlay S:7._DDCOLORKEY
+ 64 72 ddckCKSrcBlt S:7._DDCOLORKEY
+ 72 80 - S:7._DDSURFACEDESC2::@1076_18
+ 104 112 ddsCaps S:7._DDSCAPS2
+ 120 128 dwTextureStage i4
+R 7._DDSURFACEDESC2::@1052_18 4 4 union ddraw
+ 0 0 lPitch i4
+ 0 0 dwLinearSize i4
+R 7._DDSURFACEDESC2::@1056_18 4 4 union ddraw
+ 0 0 dwBackBufferCount i4
+ 0 0 dwDepth i4
+R 7._DDSURFACEDESC2::@1060_18 4 4 union ddraw
+ 0 0 dwMipMapCount i4
+ 0 0 dwRefreshRate i4
+ 0 0 dwSrcVBHandle i4
+R 7._DDSURFACEDESC2::@1068_18 8 8 union ddraw
+ 0 0 ddckCKDestOverlay S:7._DDCOLORKEY
+ 0 0 dwEmptyFaceColor i4
+R 7._DDSURFACEDESC2::@1076_18 32 32 union ddraw
+ 0 0 ddpfPixelFormat S:7._DDPIXELFORMAT
+ 0 0 dwFVF i4
+R 7._DDSURFACEDESC::@1025_18 4 4 union ddraw
+ 0 0 lPitch i4
+ 0 0 dwLinearSize i4
+R 7._DDSURFACEDESC::@1030_18 4 4 union ddraw
+ 0 0 dwMipMapCount i4
+ 0 0 dwZBufferBitDepth i4
+ 0 0 dwRefreshRate i4
+R 7._GUID 16 16 struct ddraw
+ 0 0 Data1 i4
+ 4 4 Data2 i2
+ 6 6 Data3 i2
+ 8 8 Data4 [8]i1
+R 7._LARGE_INTEGER 8 8 union ddraw
+ 0 0 - S:7._LARGE_INTEGER::@516_20
+ 0 0 u S:7._LARGE_INTEGER::@520_5
+ 0 0 QuadPart i8
+R 7._LARGE_INTEGER::@516_20 8 8 struct ddraw
+ 0 0 LowPart i4
+ 4 4 HighPart i4
+R 7._LARGE_INTEGER::@520_5 8 8 struct ddraw
+ 0 0 LowPart i4
+ 4 4 HighPart i4
+R 7._RGNDATA 36 36 struct ddraw
+ 0 0 rdh S:7._RGNDATAHEADER
+ 32 32 Buffer [1]i1
+R 7._RGNDATAHEADER 32 32 struct ddraw
+ 0 0 dwSize i4
+ 4 4 iType i4
+ 8 8 nCount i4
+ 12 12 nRgnSize i4
+ 16 16 rcBound S:7.tagRECT
+R 7.tagDDDEVICEIDENTIFIER 1064 1064 struct ddraw
+ 0 0 szDriver [512]i1
+ 512 512 szDescription [512]i1
+ 1024 1024 liDriverVersion S:7._LARGE_INTEGER
+ 1032 1032 dwVendorId i4
+ 1036 1036 dwDeviceId i4
+ 1040 1040 dwSubSysId i4
+ 1044 1044 dwRevision i4
+ 1048 1048 guidDeviceIdentifier S:7._GUID
+R 7.tagDDDEVICEIDENTIFIER2 1072 1072 struct ddraw
+ 0 0 szDriver [512]i1
+ 512 512 szDescription [512]i1
+ 1024 1024 liDriverVersion S:7._LARGE_INTEGER
+ 1032 1032 dwVendorId i4
+ 1036 1036 dwDeviceId i4
+ 1040 1040 dwSubSysId i4
+ 1044 1044 dwRevision i4
+ 1048 1048 guidDeviceIdentifier S:7._GUID
+ 1064 1064 dwWHQLLevel i4
+R 7.tagPALETTEENTRY 4 4 struct ddraw
+ 0 0 peRed i1
+ 1 1 peGreen i1
+ 2 2 peBlue i1
+ 3 3 peFlags i1
+R 7.tagPOINT 8 8 struct ddraw
+ 0 0 x i4
+ 4 4 y i4
+R 7.tagRECT 16 16 struct ddraw
+ 0 0 left i4
+ 4 4 top i4
+ 8 8 right i4
+ 12 12 bottom i4
+R 7.tagSIZE 8 8 struct ddraw
+ 0 0 cx i4
+ 4 4 cy i4
 R 8.HMONITOR__ 4 4 struct d3d8
  0 0 unused i4
 R 8._D3DADAPTER_IDENTIFIER8 1068 1072 struct d3d8
@@ -2117,6 +2801,36 @@ V IDXGISwapChainMedia IUnknown
  3 GetFrameStatisticsMedia hr *S:DXGI_FRAME_STATISTICS_MEDIA
  4 SetPresentDuration hr i4
  5 CheckPresentDurationSupport hr i4,*i4,*i4
+V IDirect3D IUnknown
+ 3 Initialize hr *S:7._GUID
+ 4 EnumDevices hr p,*v
+ 5 CreateLight hr **O:IDirect3DLight,*O:IUnknown
+ 6 CreateMaterial hr **O:IDirect3DMaterial,*O:IUnknown
+ 7 CreateViewport hr **O:IDirect3DViewport,*O:IUnknown
+ 8 FindDevice hr *S:7._D3DFINDDEVICESEARCH,*S:7._D3DFINDDEVICERESULT
+V IDirect3D2 IUnknown
+ 3 EnumDevices hr p,*v
+ 4 CreateLight hr **O:IDirect3DLight,*O:IUnknown
+ 5 CreateMaterial hr **O:IDirect3DMaterial2,*O:IUnknown
+ 6 CreateViewport hr **O:IDirect3DViewport2,*O:IUnknown
+ 7 FindDevice hr *S:7._D3DFINDDEVICESEARCH,*S:7._D3DFINDDEVICERESULT
+ 8 CreateDevice hr *S:7._GUID,*O:IDirectDrawSurface,**O:IDirect3DDevice2
+V IDirect3D3 IUnknown
+ 3 EnumDevices hr p,*v
+ 4 CreateLight hr **O:IDirect3DLight,*O:IUnknown
+ 5 CreateMaterial hr **O:IDirect3DMaterial3,*O:IUnknown
+ 6 CreateViewport hr **O:IDirect3DViewport3,*O:IUnknown
+ 7 FindDevice hr *S:7._D3DFINDDEVICESEARCH,*S:7._D3DFINDDEVICERESULT
+ 8 CreateDevice hr *S:7._GUID,*O:IDirectDrawSurface4,**O:IDirect3DDevice3,*O:IUnknown
+ 9 CreateVertexBuffer hr *S:7._D3DVERTEXBUFFERDESC,**O:IDirect3DVertexBuffer,i4,*O:IUnknown
+ 10 EnumZBufferFormats hr *S:7._GUID,p,*v
+ 11 EvictManagedTextures hr 
+V IDirect3D7 IUnknown
+ 3 EnumDevices hr p,*v
+ 4 CreateDevice hr *S:7._GUID,*O:IDirectDrawSurface7,**O:IDirect3DDevice7
+ 5 CreateVertexBuffer hr *S:7._D3DVERTEXBUFFERDESC,**O:IDirect3DVertexBuffer7,i4
+ 6 EnumZBufferFormats hr *S:7._GUID,p,*v
+ 7 EvictManagedTextures hr 
 V IDirect3D8 IUnknown
  3 RegisterSoftwareDevice hr *v
  4 GetAdapterCount i4 
@@ -2175,6 +2889,144 @@ V IDirect3DCubeTexture9 IDirect3DBaseTexture9
  19 LockRect hr i4,i4,*S:_D3DLOCKED_RECT,*S:tagRECT,i4
  20 UnlockRect hr i4,i4
  21 AddDirtyRect hr i4,*S:tagRECT
+V IDirect3DDevice IUnknown
+ 3 Initialize hr *O:IDirect3D,*S:7._GUID,*S:7._D3DDeviceDesc
+ 4 GetCaps hr *S:7._D3DDeviceDesc,*S:7._D3DDeviceDesc
+ 5 SwapTextureHandles hr *O:IDirect3DTexture,*O:IDirect3DTexture
+ 6 CreateExecuteBuffer hr *S:7._D3DExecuteBufferDesc,**O:IDirect3DExecuteBuffer,*O:IUnknown
+ 7 GetStats hr *i4
+ 8 Execute hr *O:IDirect3DExecuteBuffer,*O:IDirect3DViewport,i4
+ 9 AddViewport hr *O:IDirect3DViewport
+ 10 DeleteViewport hr *O:IDirect3DViewport
+ 11 NextViewport hr *O:IDirect3DViewport,**O:IDirect3DViewport,i4
+ 12 Pick hr *O:IDirect3DExecuteBuffer,*O:IDirect3DViewport,i4,*S:7._D3DRECT
+ 13 GetPickRecords hr *i4,*S:7._D3DPICKRECORD
+ 14 EnumTextureFormats hr p,*v
+ 15 CreateMatrix hr *i4
+ 16 SetMatrix hr i4,*S:7._D3DMATRIX
+ 17 GetMatrix hr i4,*S:7._D3DMATRIX
+ 18 DeleteMatrix hr i4
+ 19 BeginScene hr 
+ 20 EndScene hr 
+ 21 GetDirect3D hr **O:IDirect3D
+V IDirect3DDevice2 IUnknown
+ 3 GetCaps hr *S:7._D3DDeviceDesc,*S:7._D3DDeviceDesc
+ 4 SwapTextureHandles hr *O:IDirect3DTexture2,*O:IDirect3DTexture2
+ 5 GetStats hr *i4
+ 6 AddViewport hr *O:IDirect3DViewport2
+ 7 DeleteViewport hr *O:IDirect3DViewport2
+ 8 NextViewport hr *O:IDirect3DViewport2,**O:IDirect3DViewport2,i4
+ 9 EnumTextureFormats hr p,*v
+ 10 BeginScene hr 
+ 11 EndScene hr 
+ 12 GetDirect3D hr **O:IDirect3D2
+ 13 SetCurrentViewport hr *O:IDirect3DViewport2
+ 14 GetCurrentViewport hr **O:IDirect3DViewport2
+ 15 SetRenderTarget hr *O:IDirectDrawSurface,i4
+ 16 GetRenderTarget hr **O:IDirectDrawSurface
+ 17 Begin hr i4,i4,i4
+ 18 BeginIndexed hr i4,i4,*v,i4,i4
+ 19 Vertex hr *v
+ 20 Index hr i2
+ 21 End hr i4
+ 22 GetRenderState hr i4,*i4
+ 23 SetRenderState hr i4,i4
+ 24 GetLightState hr i4,*i4
+ 25 SetLightState hr i4,i4
+ 26 SetTransform hr i4,*S:7._D3DMATRIX
+ 27 GetTransform hr i4,*S:7._D3DMATRIX
+ 28 MultiplyTransform hr i4,*S:7._D3DMATRIX
+ 29 DrawPrimitive hr i4,i4,*v,i4,i4
+ 30 DrawIndexedPrimitive hr i4,i4,*v,i4,*i2,i4,i4
+ 31 SetClipStatus hr *S:7._D3DCLIPSTATUS
+ 32 GetClipStatus hr *S:7._D3DCLIPSTATUS
+V IDirect3DDevice3 IUnknown
+ 3 GetCaps hr *S:7._D3DDeviceDesc,*S:7._D3DDeviceDesc
+ 4 GetStats hr *i4
+ 5 AddViewport hr *O:IDirect3DViewport3
+ 6 DeleteViewport hr *O:IDirect3DViewport3
+ 7 NextViewport hr *O:IDirect3DViewport3,**O:IDirect3DViewport3,i4
+ 8 EnumTextureFormats hr p,*v
+ 9 BeginScene hr 
+ 10 EndScene hr 
+ 11 GetDirect3D hr **O:IDirect3D3
+ 12 SetCurrentViewport hr *O:IDirect3DViewport3
+ 13 GetCurrentViewport hr **O:IDirect3DViewport3
+ 14 SetRenderTarget hr *O:IDirectDrawSurface4,i4
+ 15 GetRenderTarget hr **O:IDirectDrawSurface4
+ 16 Begin hr i4,i4,i4
+ 17 BeginIndexed hr i4,i4,*v,i4,i4
+ 18 Vertex hr *v
+ 19 Index hr i2
+ 20 End hr i4
+ 21 GetRenderState hr i4,*i4
+ 22 SetRenderState hr i4,i4
+ 23 GetLightState hr i4,*i4
+ 24 SetLightState hr i4,i4
+ 25 SetTransform hr i4,*S:7._D3DMATRIX
+ 26 GetTransform hr i4,*S:7._D3DMATRIX
+ 27 MultiplyTransform hr i4,*S:7._D3DMATRIX
+ 28 DrawPrimitive hr i4,i4,*v,i4,i4
+ 29 DrawIndexedPrimitive hr i4,i4,*v,i4,*i2,i4,i4
+ 30 SetClipStatus hr *S:7._D3DCLIPSTATUS
+ 31 GetClipStatus hr *S:7._D3DCLIPSTATUS
+ 32 DrawPrimitiveStrided hr i4,i4,*S:7._D3DDRAWPRIMITIVESTRIDEDDATA,i4,i4
+ 33 DrawIndexedPrimitiveStrided hr i4,i4,*S:7._D3DDRAWPRIMITIVESTRIDEDDATA,i4,*i2,i4,i4
+ 34 DrawPrimitiveVB hr i4,*O:IDirect3DVertexBuffer,i4,i4,i4
+ 35 DrawIndexedPrimitiveVB hr i4,*O:IDirect3DVertexBuffer,*i2,i4,i4
+ 36 ComputeSphereVisibility hr *S:7._D3DVECTOR,*f4,i4,i4,*i4
+ 37 GetTexture hr i4,**O:IDirect3DTexture2
+ 38 SetTexture hr i4,*O:IDirect3DTexture2
+ 39 GetTextureStageState hr i4,i4,*i4
+ 40 SetTextureStageState hr i4,i4,i4
+ 41 ValidateDevice hr *i4
+V IDirect3DDevice7 IUnknown
+ 3 GetCaps hr *S:7._D3DDeviceDesc7
+ 4 EnumTextureFormats hr p,*v
+ 5 BeginScene hr 
+ 6 EndScene hr 
+ 7 GetDirect3D hr **O:IDirect3D7
+ 8 SetRenderTarget hr *O:IDirectDrawSurface7,i4
+ 9 GetRenderTarget hr **O:IDirectDrawSurface7
+ 10 Clear hr i4,*S:7._D3DRECT,i4,i4,f4,i4
+ 11 SetTransform hr i4,*S:7._D3DMATRIX
+ 12 GetTransform hr i4,*S:7._D3DMATRIX
+ 13 SetViewport hr *S:7._D3DVIEWPORT7
+ 14 MultiplyTransform hr i4,*S:7._D3DMATRIX
+ 15 GetViewport hr *S:7._D3DVIEWPORT7
+ 16 SetMaterial hr *S:7._D3DMATERIAL7
+ 17 GetMaterial hr *S:7._D3DMATERIAL7
+ 18 SetLight hr i4,*S:7._D3DLIGHT7
+ 19 GetLight hr i4,*S:7._D3DLIGHT7
+ 20 SetRenderState hr i4,i4
+ 21 GetRenderState hr i4,*i4
+ 22 BeginStateBlock hr 
+ 23 EndStateBlock hr *i4
+ 24 PreLoad hr *O:IDirectDrawSurface7
+ 25 DrawPrimitive hr i4,i4,*v,i4,i4
+ 26 DrawIndexedPrimitive hr i4,i4,*v,i4,*i2,i4,i4
+ 27 SetClipStatus hr *S:7._D3DCLIPSTATUS
+ 28 GetClipStatus hr *S:7._D3DCLIPSTATUS
+ 29 DrawPrimitiveStrided hr i4,i4,*S:7._D3DDRAWPRIMITIVESTRIDEDDATA,i4,i4
+ 30 DrawIndexedPrimitiveStrided hr i4,i4,*S:7._D3DDRAWPRIMITIVESTRIDEDDATA,i4,*i2,i4,i4
+ 31 DrawPrimitiveVB hr i4,*O:IDirect3DVertexBuffer7,i4,i4,i4
+ 32 DrawIndexedPrimitiveVB hr i4,*O:IDirect3DVertexBuffer7,i4,i4,*i2,i4,i4
+ 33 ComputeSphereVisibility hr *S:7._D3DVECTOR,*f4,i4,i4,*i4
+ 34 GetTexture hr i4,**O:IDirectDrawSurface7
+ 35 SetTexture hr i4,*O:IDirectDrawSurface7
+ 36 GetTextureStageState hr i4,i4,*i4
+ 37 SetTextureStageState hr i4,i4,i4
+ 38 ValidateDevice hr *i4
+ 39 ApplyStateBlock hr i4
+ 40 CaptureStateBlock hr i4
+ 41 DeleteStateBlock hr i4
+ 42 CreateStateBlock hr i4,*i4
+ 43 Load hr *O:IDirectDrawSurface7,*S:7.tagPOINT,*O:IDirectDrawSurface7,*S:7.tagRECT,i4
+ 44 LightEnable hr i4,i4
+ 45 GetLightEnable hr i4,*i4
+ 46 SetClipPlane hr i4,*f4
+ 47 GetClipPlane hr i4,*f4
+ 48 GetInfo hr i4,*v,i4
 V IDirect3DDevice8 IUnknown
  3 TestCooperativeLevel hr 
  4 GetAvailableTextureMem i4 
@@ -2403,6 +3255,14 @@ V IDirect3DDevice9Ex IDirect3DDevice9
  131 CreateDepthStencilSurfaceEx hr i4,i4,i4,i4,i4,i4,**O:IDirect3DSurface9,**v,i4
  132 ResetEx hr *S:_D3DPRESENT_PARAMETERS_,*S:D3DDISPLAYMODEEX
  133 GetDisplayModeEx hr i4,*S:D3DDISPLAYMODEEX,*i4
+V IDirect3DExecuteBuffer IUnknown
+ 3 Initialize hr *O:IDirect3DDevice,*S:7._D3DExecuteBufferDesc
+ 4 Lock hr *S:7._D3DExecuteBufferDesc
+ 5 Unlock hr 
+ 6 SetExecuteData hr *S:7._D3DEXECUTEDATA
+ 7 GetExecuteData hr *S:7._D3DEXECUTEDATA
+ 8 Validate hr *i4,p,*v,i4
+ 9 Optimize hr i4
 V IDirect3DIndexBuffer8 IDirect3DResource8
  11 Lock hr i4,i4,**i1,i4
  12 Unlock hr 
@@ -2411,6 +3271,25 @@ V IDirect3DIndexBuffer9 IDirect3DResource9
  11 Lock hr i4,i4,**v,i4
  12 Unlock hr 
  13 GetDesc hr *S:_D3DINDEXBUFFER_DESC
+V IDirect3DLight IUnknown
+ 3 Initialize hr *O:IDirect3D
+ 4 SetLight hr *S:7._D3DLIGHT
+ 5 GetLight hr *S:7._D3DLIGHT
+V IDirect3DMaterial IUnknown
+ 3 Initialize hr *O:IDirect3D
+ 4 SetMaterial hr *S:7._D3DMATERIAL
+ 5 GetMaterial hr *S:7._D3DMATERIAL
+ 6 GetHandle hr *O:IDirect3DDevice,*i4
+ 7 Reserve hr 
+ 8 Unreserve hr 
+V IDirect3DMaterial2 IUnknown
+ 3 SetMaterial hr *S:7._D3DMATERIAL
+ 4 GetMaterial hr *S:7._D3DMATERIAL
+ 5 GetHandle hr *O:IDirect3DDevice2,*i4
+V IDirect3DMaterial3 IUnknown
+ 3 SetMaterial hr *S:7._D3DMATERIAL
+ 4 GetMaterial hr *S:7._D3DMATERIAL
+ 5 GetHandle hr *O:IDirect3DDevice3,*i4
 V IDirect3DPixelShader9 IUnknown
  3 GetDevice hr **O:IDirect3DDevice9
  4 GetFunction hr *v,*i4
@@ -2473,6 +3352,16 @@ V IDirect3DSwapChain9Ex IDirect3DSwapChain9
  10 GetLastPresentCount hr *i4
  11 GetPresentStats hr *S:_D3DPRESENTSTATS
  12 GetDisplayModeEx hr *S:D3DDISPLAYMODEEX,*i4
+V IDirect3DTexture IUnknown
+ 3 Initialize hr *O:IDirect3DDevice,*O:IDirectDrawSurface
+ 4 GetHandle hr *O:IDirect3DDevice,*i4
+ 5 PaletteChanged hr i4,i4
+ 6 Load hr *O:IDirect3DTexture
+ 7 Unload hr 
+V IDirect3DTexture2 IUnknown
+ 3 GetHandle hr *O:IDirect3DDevice2,*i4
+ 4 PaletteChanged hr i4,i4
+ 5 Load hr *O:IDirect3DTexture2
 V IDirect3DTexture8 IDirect3DBaseTexture8
  14 GetLevelDesc hr i4,*S:8._D3DSURFACE_DESC
  15 GetSurfaceLevel hr i4,**O:IDirect3DSurface8
@@ -2485,6 +3374,19 @@ V IDirect3DTexture9 IDirect3DBaseTexture9
  19 LockRect hr i4,*S:_D3DLOCKED_RECT,*S:tagRECT,i4
  20 UnlockRect hr i4
  21 AddDirtyRect hr *S:tagRECT
+V IDirect3DVertexBuffer IUnknown
+ 3 Lock hr i4,**v,*i4
+ 4 Unlock hr 
+ 5 ProcessVertices hr i4,i4,i4,*O:IDirect3DVertexBuffer,i4,*O:IDirect3DDevice3,i4
+ 6 GetVertexBufferDesc hr *S:7._D3DVERTEXBUFFERDESC
+ 7 Optimize hr *O:IDirect3DDevice3,i4
+V IDirect3DVertexBuffer7 IUnknown
+ 3 Lock hr i4,**v,*i4
+ 4 Unlock hr 
+ 5 ProcessVertices hr i4,i4,i4,*O:IDirect3DVertexBuffer7,i4,*O:IDirect3DDevice7,i4
+ 6 GetVertexBufferDesc hr *S:7._D3DVERTEXBUFFERDESC
+ 7 Optimize hr *O:IDirect3DDevice7,i4
+ 8 ProcessVerticesStrided hr i4,i4,i4,*S:7._D3DDRAWPRIMITIVESTRIDEDDATA,i4,*O:IDirect3DDevice7,i4
 V IDirect3DVertexBuffer8 IDirect3DResource8
  11 Lock hr i4,i4,**i1,i4
  12 Unlock hr 
@@ -2499,6 +3401,27 @@ V IDirect3DVertexDeclaration9 IUnknown
 V IDirect3DVertexShader9 IUnknown
  3 GetDevice hr **O:IDirect3DDevice9
  4 GetFunction hr *v,*i4
+V IDirect3DViewport IUnknown
+ 3 Initialize hr *O:IDirect3D
+ 4 GetViewport hr *S:7._D3DVIEWPORT
+ 5 SetViewport hr *S:7._D3DVIEWPORT
+ 6 TransformVertices hr i4,*S:7._D3DTRANSFORMDATA,i4,*i4
+ 7 LightElements hr i4,*S:7._D3DLIGHTDATA
+ 8 SetBackground hr i4
+ 9 GetBackground hr *i4,*i4
+ 10 SetBackgroundDepth hr *O:IDirectDrawSurface
+ 11 GetBackgroundDepth hr **O:IDirectDrawSurface,*i4
+ 12 Clear hr i4,*S:7._D3DRECT,i4
+ 13 AddLight hr *O:IDirect3DLight
+ 14 DeleteLight hr *O:IDirect3DLight
+ 15 NextLight hr *O:IDirect3DLight,**O:IDirect3DLight,i4
+V IDirect3DViewport2 IDirect3DViewport
+ 16 GetViewport2 hr *S:7._D3DVIEWPORT2
+ 17 SetViewport2 hr *S:7._D3DVIEWPORT2
+V IDirect3DViewport3 IDirect3DViewport2
+ 18 SetBackgroundDepth2 hr *O:IDirectDrawSurface4
+ 19 GetBackgroundDepth2 hr **O:IDirectDrawSurface4,*i4
+ 20 Clear2 hr i4,*S:7._D3DRECT,i4,i4,f4,i4
 V IDirect3DVolume8 IUnknown
  3 GetDevice hr **O:IDirect3DDevice8
  4 SetPrivateData hr *S:8._GUID,*v,i4,i4
@@ -2529,6 +3452,343 @@ V IDirect3DVolumeTexture9 IDirect3DBaseTexture9
  19 LockBox hr i4,*S:_D3DLOCKED_BOX,*S:_D3DBOX,i4
  20 UnlockBox hr i4
  21 AddDirtyBox hr *S:_D3DBOX
+V IDirectDraw IUnknown
+ 3 Compact hr 
+ 4 CreateClipper hr i4,**O:IDirectDrawClipper,*O:IUnknown
+ 5 CreatePalette hr i4,*S:7.tagPALETTEENTRY,**O:IDirectDrawPalette,*O:IUnknown
+ 6 CreateSurface hr *S:7._DDSURFACEDESC,**O:IDirectDrawSurface,*O:IUnknown
+ 7 DuplicateSurface hr *O:IDirectDrawSurface,**O:IDirectDrawSurface
+ 8 EnumDisplayModes hr i4,*S:7._DDSURFACEDESC,*v,p
+ 9 EnumSurfaces hr i4,*S:7._DDSURFACEDESC,*v,p
+ 10 FlipToGDISurface hr 
+ 11 GetCaps hr *S:7._DDCAPS_DX7,*S:7._DDCAPS_DX7
+ 12 GetDisplayMode hr *S:7._DDSURFACEDESC
+ 13 GetFourCCCodes hr *i4,*i4
+ 14 GetGDISurface hr **O:IDirectDrawSurface
+ 15 GetMonitorFrequency hr *i4
+ 16 GetScanLine hr *i4
+ 17 GetVerticalBlankStatus hr *i4
+ 18 Initialize hr *S:7._GUID
+ 19 RestoreDisplayMode hr 
+ 20 SetCooperativeLevel hr H,i4
+ 21 SetDisplayMode hr i4,i4,i4
+ 22 WaitForVerticalBlank hr i4,*v
+V IDirectDraw2 IUnknown
+ 3 Compact hr 
+ 4 CreateClipper hr i4,**O:IDirectDrawClipper,*O:IUnknown
+ 5 CreatePalette hr i4,*S:7.tagPALETTEENTRY,**O:IDirectDrawPalette,*O:IUnknown
+ 6 CreateSurface hr *S:7._DDSURFACEDESC,**O:IDirectDrawSurface,*O:IUnknown
+ 7 DuplicateSurface hr *O:IDirectDrawSurface,**O:IDirectDrawSurface
+ 8 EnumDisplayModes hr i4,*S:7._DDSURFACEDESC,*v,p
+ 9 EnumSurfaces hr i4,*S:7._DDSURFACEDESC,*v,p
+ 10 FlipToGDISurface hr 
+ 11 GetCaps hr *S:7._DDCAPS_DX7,*S:7._DDCAPS_DX7
+ 12 GetDisplayMode hr *S:7._DDSURFACEDESC
+ 13 GetFourCCCodes hr *i4,*i4
+ 14 GetGDISurface hr **O:IDirectDrawSurface
+ 15 GetMonitorFrequency hr *i4
+ 16 GetScanLine hr *i4
+ 17 GetVerticalBlankStatus hr *i4
+ 18 Initialize hr *S:7._GUID
+ 19 RestoreDisplayMode hr 
+ 20 SetCooperativeLevel hr H,i4
+ 21 SetDisplayMode hr i4,i4,i4,i4,i4
+ 22 WaitForVerticalBlank hr i4,*v
+ 23 GetAvailableVidMem hr *S:7._DDSCAPS,*i4,*i4
+V IDirectDraw3 IUnknown
+ 3 Compact hr 
+ 4 CreateClipper hr i4,**O:IDirectDrawClipper,*O:IUnknown
+ 5 CreatePalette hr i4,*S:7.tagPALETTEENTRY,**O:IDirectDrawPalette,*O:IUnknown
+ 6 CreateSurface hr *S:7._DDSURFACEDESC,**O:IDirectDrawSurface,*O:IUnknown
+ 7 DuplicateSurface hr *O:IDirectDrawSurface,**O:IDirectDrawSurface
+ 8 EnumDisplayModes hr i4,*S:7._DDSURFACEDESC,*v,p
+ 9 EnumSurfaces hr i4,*S:7._DDSURFACEDESC,*v,p
+ 10 FlipToGDISurface hr 
+ 11 GetCaps hr *S:7._DDCAPS_DX7,*S:7._DDCAPS_DX7
+ 12 GetDisplayMode hr *S:7._DDSURFACEDESC
+ 13 GetFourCCCodes hr *i4,*i4
+ 14 GetGDISurface hr **O:IDirectDrawSurface
+ 15 GetMonitorFrequency hr *i4
+ 16 GetScanLine hr *i4
+ 17 GetVerticalBlankStatus hr *i4
+ 18 Initialize hr *S:7._GUID
+ 19 RestoreDisplayMode hr 
+ 20 SetCooperativeLevel hr H,i4
+ 21 SetDisplayMode hr i4,i4,i4,i4,i4
+ 22 WaitForVerticalBlank hr i4,*v
+ 23 GetAvailableVidMem hr *S:7._DDSCAPS,*i4,*i4
+ 24 GetSurfaceFromDC hr *S:7.HDC__,**O:IDirectDrawSurface
+V IDirectDraw4 IUnknown
+ 3 Compact hr 
+ 4 CreateClipper hr i4,**O:IDirectDrawClipper,*O:IUnknown
+ 5 CreatePalette hr i4,*S:7.tagPALETTEENTRY,**O:IDirectDrawPalette,*O:IUnknown
+ 6 CreateSurface hr *S:7._DDSURFACEDESC2,**O:IDirectDrawSurface4,*O:IUnknown
+ 7 DuplicateSurface hr *O:IDirectDrawSurface4,**O:IDirectDrawSurface4
+ 8 EnumDisplayModes hr i4,*S:7._DDSURFACEDESC2,*v,p
+ 9 EnumSurfaces hr i4,*S:7._DDSURFACEDESC2,*v,p
+ 10 FlipToGDISurface hr 
+ 11 GetCaps hr *S:7._DDCAPS_DX7,*S:7._DDCAPS_DX7
+ 12 GetDisplayMode hr *S:7._DDSURFACEDESC2
+ 13 GetFourCCCodes hr *i4,*i4
+ 14 GetGDISurface hr **O:IDirectDrawSurface4
+ 15 GetMonitorFrequency hr *i4
+ 16 GetScanLine hr *i4
+ 17 GetVerticalBlankStatus hr *i4
+ 18 Initialize hr *S:7._GUID
+ 19 RestoreDisplayMode hr 
+ 20 SetCooperativeLevel hr H,i4
+ 21 SetDisplayMode hr i4,i4,i4,i4,i4
+ 22 WaitForVerticalBlank hr i4,*v
+ 23 GetAvailableVidMem hr *S:7._DDSCAPS2,*i4,*i4
+ 24 GetSurfaceFromDC hr *S:7.HDC__,**O:IDirectDrawSurface4
+ 25 RestoreAllSurfaces hr 
+ 26 TestCooperativeLevel hr 
+ 27 GetDeviceIdentifier hr *S:7.tagDDDEVICEIDENTIFIER,i4
+V IDirectDraw7 IUnknown
+ 3 Compact hr 
+ 4 CreateClipper hr i4,**O:IDirectDrawClipper,*O:IUnknown
+ 5 CreatePalette hr i4,*S:7.tagPALETTEENTRY,**O:IDirectDrawPalette,*O:IUnknown
+ 6 CreateSurface hr *S:7._DDSURFACEDESC2,**O:IDirectDrawSurface7,*O:IUnknown
+ 7 DuplicateSurface hr *O:IDirectDrawSurface7,**O:IDirectDrawSurface7
+ 8 EnumDisplayModes hr i4,*S:7._DDSURFACEDESC2,*v,p
+ 9 EnumSurfaces hr i4,*S:7._DDSURFACEDESC2,*v,p
+ 10 FlipToGDISurface hr 
+ 11 GetCaps hr *S:7._DDCAPS_DX7,*S:7._DDCAPS_DX7
+ 12 GetDisplayMode hr *S:7._DDSURFACEDESC2
+ 13 GetFourCCCodes hr *i4,*i4
+ 14 GetGDISurface hr **O:IDirectDrawSurface7
+ 15 GetMonitorFrequency hr *i4
+ 16 GetScanLine hr *i4
+ 17 GetVerticalBlankStatus hr *i4
+ 18 Initialize hr *S:7._GUID
+ 19 RestoreDisplayMode hr 
+ 20 SetCooperativeLevel hr H,i4
+ 21 SetDisplayMode hr i4,i4,i4,i4,i4
+ 22 WaitForVerticalBlank hr i4,*v
+ 23 GetAvailableVidMem hr *S:7._DDSCAPS2,*i4,*i4
+ 24 GetSurfaceFromDC hr *S:7.HDC__,**O:IDirectDrawSurface7
+ 25 RestoreAllSurfaces hr 
+ 26 TestCooperativeLevel hr 
+ 27 GetDeviceIdentifier hr *S:7.tagDDDEVICEIDENTIFIER2,i4
+ 28 StartModeTest hr *S:7.tagSIZE,i4,i4
+ 29 EvaluateMode hr i4,*i4
+V IDirectDrawClipper IUnknown
+ 3 GetClipList hr *S:7.tagRECT,*S:7._RGNDATA,*i4
+ 4 GetHWnd hr *H
+ 5 Initialize hr *O:IDirectDraw,i4
+ 6 IsClipListChanged hr *i4
+ 7 SetClipList hr *S:7._RGNDATA,i4
+ 8 SetHWnd hr i4,H
+V IDirectDrawColorControl IUnknown
+ 3 GetColorControls hr *i4
+ 4 SetColorControls hr *i4
+V IDirectDrawGammaControl IUnknown
+ 3 GetGammaRamp hr i4,*i4
+ 4 SetGammaRamp hr i4,*i4
+V IDirectDrawPalette IUnknown
+ 3 GetCaps hr *i4
+ 4 GetEntries hr i4,i4,i4,*S:7.tagPALETTEENTRY
+ 5 Initialize hr *O:IDirectDraw,i4,*S:7.tagPALETTEENTRY
+ 6 SetEntries hr i4,i4,i4,*S:7.tagPALETTEENTRY
+V IDirectDrawSurface IUnknown
+ 3 AddAttachedSurface hr *O:IDirectDrawSurface
+ 4 AddOverlayDirtyRect hr *S:7.tagRECT
+ 5 Blt hr *S:7.tagRECT,*O:IDirectDrawSurface,*S:7.tagRECT,i4,*S:7._DDBLTFX
+ 6 BltBatch hr *S:7._DDBLTBATCH,i4,i4
+ 7 BltFast hr i4,i4,*O:IDirectDrawSurface,*S:7.tagRECT,i4
+ 8 DeleteAttachedSurface hr i4,*O:IDirectDrawSurface
+ 9 EnumAttachedSurfaces hr *v,p
+ 10 EnumOverlayZOrders hr i4,*v,p
+ 11 Flip hr *O:IDirectDrawSurface,i4
+ 12 GetAttachedSurface hr *S:7._DDSCAPS,**O:IDirectDrawSurface
+ 13 GetBltStatus hr i4
+ 14 GetCaps hr *S:7._DDSCAPS
+ 15 GetClipper hr **O:IDirectDrawClipper
+ 16 GetColorKey hr i4,*S:7._DDCOLORKEY
+ 17 GetDC hr **S:7.HDC__
+ 18 GetFlipStatus hr i4
+ 19 GetOverlayPosition hr *i4,*i4
+ 20 GetPalette hr **O:IDirectDrawPalette
+ 21 GetPixelFormat hr *S:7._DDPIXELFORMAT
+ 22 GetSurfaceDesc hr *S:7._DDSURFACEDESC
+ 23 Initialize hr *O:IDirectDraw,*S:7._DDSURFACEDESC
+ 24 IsLost hr 
+ 25 Lock hr *S:7.tagRECT,*S:7._DDSURFACEDESC,i4,*v
+ 26 ReleaseDC hr *S:7.HDC__
+ 27 Restore hr 
+ 28 SetClipper hr *O:IDirectDrawClipper
+ 29 SetColorKey hr i4,*S:7._DDCOLORKEY
+ 30 SetOverlayPosition hr i4,i4
+ 31 SetPalette hr *O:IDirectDrawPalette
+ 32 Unlock hr *v
+ 33 UpdateOverlay hr *S:7.tagRECT,*O:IDirectDrawSurface,*S:7.tagRECT,i4,*S:7._DDOVERLAYFX
+ 34 UpdateOverlayDisplay hr i4
+ 35 UpdateOverlayZOrder hr i4,*O:IDirectDrawSurface
+V IDirectDrawSurface2 IUnknown
+ 3 AddAttachedSurface hr *O:IDirectDrawSurface2
+ 4 AddOverlayDirtyRect hr *S:7.tagRECT
+ 5 Blt hr *S:7.tagRECT,*O:IDirectDrawSurface2,*S:7.tagRECT,i4,*S:7._DDBLTFX
+ 6 BltBatch hr *S:7._DDBLTBATCH,i4,i4
+ 7 BltFast hr i4,i4,*O:IDirectDrawSurface2,*S:7.tagRECT,i4
+ 8 DeleteAttachedSurface hr i4,*O:IDirectDrawSurface2
+ 9 EnumAttachedSurfaces hr *v,p
+ 10 EnumOverlayZOrders hr i4,*v,p
+ 11 Flip hr *O:IDirectDrawSurface2,i4
+ 12 GetAttachedSurface hr *S:7._DDSCAPS,**O:IDirectDrawSurface2
+ 13 GetBltStatus hr i4
+ 14 GetCaps hr *S:7._DDSCAPS
+ 15 GetClipper hr **O:IDirectDrawClipper
+ 16 GetColorKey hr i4,*S:7._DDCOLORKEY
+ 17 GetDC hr **S:7.HDC__
+ 18 GetFlipStatus hr i4
+ 19 GetOverlayPosition hr *i4,*i4
+ 20 GetPalette hr **O:IDirectDrawPalette
+ 21 GetPixelFormat hr *S:7._DDPIXELFORMAT
+ 22 GetSurfaceDesc hr *S:7._DDSURFACEDESC
+ 23 Initialize hr *O:IDirectDraw,*S:7._DDSURFACEDESC
+ 24 IsLost hr 
+ 25 Lock hr *S:7.tagRECT,*S:7._DDSURFACEDESC,i4,*v
+ 26 ReleaseDC hr *S:7.HDC__
+ 27 Restore hr 
+ 28 SetClipper hr *O:IDirectDrawClipper
+ 29 SetColorKey hr i4,*S:7._DDCOLORKEY
+ 30 SetOverlayPosition hr i4,i4
+ 31 SetPalette hr *O:IDirectDrawPalette
+ 32 Unlock hr *v
+ 33 UpdateOverlay hr *S:7.tagRECT,*O:IDirectDrawSurface2,*S:7.tagRECT,i4,*S:7._DDOVERLAYFX
+ 34 UpdateOverlayDisplay hr i4
+ 35 UpdateOverlayZOrder hr i4,*O:IDirectDrawSurface2
+ 36 GetDDInterface hr **v
+ 37 PageLock hr i4
+ 38 PageUnlock hr i4
+V IDirectDrawSurface3 IUnknown
+ 3 AddAttachedSurface hr *O:IDirectDrawSurface3
+ 4 AddOverlayDirtyRect hr *S:7.tagRECT
+ 5 Blt hr *S:7.tagRECT,*O:IDirectDrawSurface3,*S:7.tagRECT,i4,*S:7._DDBLTFX
+ 6 BltBatch hr *S:7._DDBLTBATCH,i4,i4
+ 7 BltFast hr i4,i4,*O:IDirectDrawSurface3,*S:7.tagRECT,i4
+ 8 DeleteAttachedSurface hr i4,*O:IDirectDrawSurface3
+ 9 EnumAttachedSurfaces hr *v,p
+ 10 EnumOverlayZOrders hr i4,*v,p
+ 11 Flip hr *O:IDirectDrawSurface3,i4
+ 12 GetAttachedSurface hr *S:7._DDSCAPS,**O:IDirectDrawSurface3
+ 13 GetBltStatus hr i4
+ 14 GetCaps hr *S:7._DDSCAPS
+ 15 GetClipper hr **O:IDirectDrawClipper
+ 16 GetColorKey hr i4,*S:7._DDCOLORKEY
+ 17 GetDC hr **S:7.HDC__
+ 18 GetFlipStatus hr i4
+ 19 GetOverlayPosition hr *i4,*i4
+ 20 GetPalette hr **O:IDirectDrawPalette
+ 21 GetPixelFormat hr *S:7._DDPIXELFORMAT
+ 22 GetSurfaceDesc hr *S:7._DDSURFACEDESC
+ 23 Initialize hr *O:IDirectDraw,*S:7._DDSURFACEDESC
+ 24 IsLost hr 
+ 25 Lock hr *S:7.tagRECT,*S:7._DDSURFACEDESC,i4,*v
+ 26 ReleaseDC hr *S:7.HDC__
+ 27 Restore hr 
+ 28 SetClipper hr *O:IDirectDrawClipper
+ 29 SetColorKey hr i4,*S:7._DDCOLORKEY
+ 30 SetOverlayPosition hr i4,i4
+ 31 SetPalette hr *O:IDirectDrawPalette
+ 32 Unlock hr *v
+ 33 UpdateOverlay hr *S:7.tagRECT,*O:IDirectDrawSurface3,*S:7.tagRECT,i4,*S:7._DDOVERLAYFX
+ 34 UpdateOverlayDisplay hr i4
+ 35 UpdateOverlayZOrder hr i4,*O:IDirectDrawSurface3
+ 36 GetDDInterface hr **v
+ 37 PageLock hr i4
+ 38 PageUnlock hr i4
+ 39 SetSurfaceDesc hr *S:7._DDSURFACEDESC,i4
+V IDirectDrawSurface4 IUnknown
+ 3 AddAttachedSurface hr *O:IDirectDrawSurface4
+ 4 AddOverlayDirtyRect hr *S:7.tagRECT
+ 5 Blt hr *S:7.tagRECT,*O:IDirectDrawSurface4,*S:7.tagRECT,i4,*S:7._DDBLTFX
+ 6 BltBatch hr *S:7._DDBLTBATCH,i4,i4
+ 7 BltFast hr i4,i4,*O:IDirectDrawSurface4,*S:7.tagRECT,i4
+ 8 DeleteAttachedSurface hr i4,*O:IDirectDrawSurface4
+ 9 EnumAttachedSurfaces hr *v,p
+ 10 EnumOverlayZOrders hr i4,*v,p
+ 11 Flip hr *O:IDirectDrawSurface4,i4
+ 12 GetAttachedSurface hr *S:7._DDSCAPS2,**O:IDirectDrawSurface4
+ 13 GetBltStatus hr i4
+ 14 GetCaps hr *S:7._DDSCAPS2
+ 15 GetClipper hr **O:IDirectDrawClipper
+ 16 GetColorKey hr i4,*S:7._DDCOLORKEY
+ 17 GetDC hr **S:7.HDC__
+ 18 GetFlipStatus hr i4
+ 19 GetOverlayPosition hr *i4,*i4
+ 20 GetPalette hr **O:IDirectDrawPalette
+ 21 GetPixelFormat hr *S:7._DDPIXELFORMAT
+ 22 GetSurfaceDesc hr *S:7._DDSURFACEDESC2
+ 23 Initialize hr *O:IDirectDraw,*S:7._DDSURFACEDESC2
+ 24 IsLost hr 
+ 25 Lock hr *S:7.tagRECT,*S:7._DDSURFACEDESC2,i4,*v
+ 26 ReleaseDC hr *S:7.HDC__
+ 27 Restore hr 
+ 28 SetClipper hr *O:IDirectDrawClipper
+ 29 SetColorKey hr i4,*S:7._DDCOLORKEY
+ 30 SetOverlayPosition hr i4,i4
+ 31 SetPalette hr *O:IDirectDrawPalette
+ 32 Unlock hr *S:7.tagRECT
+ 33 UpdateOverlay hr *S:7.tagRECT,*O:IDirectDrawSurface4,*S:7.tagRECT,i4,*S:7._DDOVERLAYFX
+ 34 UpdateOverlayDisplay hr i4
+ 35 UpdateOverlayZOrder hr i4,*O:IDirectDrawSurface4
+ 36 GetDDInterface hr **v
+ 37 PageLock hr i4
+ 38 PageUnlock hr i4
+ 39 SetSurfaceDesc hr *S:7._DDSURFACEDESC2,i4
+ 40 SetPrivateData hr *S:7._GUID,*v,i4,i4
+ 41 GetPrivateData hr *S:7._GUID,*v,*i4
+ 42 FreePrivateData hr *S:7._GUID
+ 43 GetUniquenessValue hr *i4
+ 44 ChangeUniquenessValue hr 
+V IDirectDrawSurface7 IUnknown
+ 3 AddAttachedSurface hr *O:IDirectDrawSurface7
+ 4 AddOverlayDirtyRect hr *S:7.tagRECT
+ 5 Blt hr *S:7.tagRECT,*O:IDirectDrawSurface7,*S:7.tagRECT,i4,*S:7._DDBLTFX
+ 6 BltBatch hr *S:7._DDBLTBATCH,i4,i4
+ 7 BltFast hr i4,i4,*O:IDirectDrawSurface7,*S:7.tagRECT,i4
+ 8 DeleteAttachedSurface hr i4,*O:IDirectDrawSurface7
+ 9 EnumAttachedSurfaces hr *v,p
+ 10 EnumOverlayZOrders hr i4,*v,p
+ 11 Flip hr *O:IDirectDrawSurface7,i4
+ 12 GetAttachedSurface hr *S:7._DDSCAPS2,**O:IDirectDrawSurface7
+ 13 GetBltStatus hr i4
+ 14 GetCaps hr *S:7._DDSCAPS2
+ 15 GetClipper hr **O:IDirectDrawClipper
+ 16 GetColorKey hr i4,*S:7._DDCOLORKEY
+ 17 GetDC hr **S:7.HDC__
+ 18 GetFlipStatus hr i4
+ 19 GetOverlayPosition hr *i4,*i4
+ 20 GetPalette hr **O:IDirectDrawPalette
+ 21 GetPixelFormat hr *S:7._DDPIXELFORMAT
+ 22 GetSurfaceDesc hr *S:7._DDSURFACEDESC2
+ 23 Initialize hr *O:IDirectDraw,*S:7._DDSURFACEDESC2
+ 24 IsLost hr 
+ 25 Lock hr *S:7.tagRECT,*S:7._DDSURFACEDESC2,i4,*v
+ 26 ReleaseDC hr *S:7.HDC__
+ 27 Restore hr 
+ 28 SetClipper hr *O:IDirectDrawClipper
+ 29 SetColorKey hr i4,*S:7._DDCOLORKEY
+ 30 SetOverlayPosition hr i4,i4
+ 31 SetPalette hr *O:IDirectDrawPalette
+ 32 Unlock hr *S:7.tagRECT
+ 33 UpdateOverlay hr *S:7.tagRECT,*O:IDirectDrawSurface7,*S:7.tagRECT,i4,*S:7._DDOVERLAYFX
+ 34 UpdateOverlayDisplay hr i4
+ 35 UpdateOverlayZOrder hr i4,*O:IDirectDrawSurface7
+ 36 GetDDInterface hr **v
+ 37 PageLock hr i4
+ 38 PageUnlock hr i4
+ 39 SetSurfaceDesc hr *S:7._DDSURFACEDESC2,i4
+ 40 SetPrivateData hr *S:7._GUID,*v,i4,i4
+ 41 GetPrivateData hr *S:7._GUID,*v,*i4
+ 42 FreePrivateData hr *S:7._GUID
+ 43 GetUniquenessValue hr *i4
+ 44 ChangeUniquenessValue hr 
+ 45 SetPriority hr i4
+ 46 GetPriority hr *i4
+ 47 SetLOD hr i4
+ 48 GetLOD hr *i4
 V IUnknown -
  0 QueryInterface hr *S:_GUID,**v
  1 AddRef i4 
@@ -2541,3 +3801,6 @@ F D3D11CreateDeviceAndSwapChain hr *O:IDXGIAdapter,i4,*S:HINSTANCE__,i4,*i4,i4,i
 F Direct3DCreate8 *O:IDirect3D8 i4
 F Direct3DCreate9 *O:IDirect3D9 i4
 F Direct3DCreate9Ex hr i4,**O:IDirect3D9Ex
+F DirectDrawCreate hr *S:7._GUID,**O:IDirectDraw,*O:IUnknown
+F DirectDrawCreateClipper hr i4,**O:IDirectDrawClipper,*O:IUnknown
+F DirectDrawCreateEx hr *S:7._GUID,**v,*S:7._GUID,*O:IUnknown

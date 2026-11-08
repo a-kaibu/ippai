@@ -1,11 +1,36 @@
 # Replaying recorded D3D calls (apitrace)
 
-A game's (or a probe's) Direct3D 8, 9 or 11 calls are recorded on real Windows with
+A game's (or a probe's) Direct3D 8, 9 or 11 or DirectDraw (with its Direct3D 7) calls are recorded on real Windows with
 [apitrace](https://github.com/apitrace/apitrace), then the same calls are played back on Windows
 and on sake, and what each one drew is compared. The graphics layer is tested on what games
 really do, without running the games themselves: both sides play the same recording, so
 whatever the recording missed (a surface drawn with GDI through GetDC, say) is missing on both.
 32-bit and 64-bit programs both.
+
+## DirectDraw
+
+apitrace records DirectDraw (and the Direct3D 7 reached through it) but its own replayer does not
+play it; replay.c does, as it does the rest (through vtable indices, layouts.txt has ddraw.h and
+d3d.h). What it reads back (`ddrawimg.c`): `image f<n>` the back buffer before a Flip of the
+primary surface, or the part of the primary a Blt / BltFast drew to (each one a frame: a windowed
+game draws to the screen with blits); `image l<call>` a surface locked to read; `-draws`: the
+surface after every Blt / BltFast as `d<call>`. 8-bit surfaces show through their palette (or the
+primary's); `l<call>` shows indices as gray, as `tests/winref/probes/ddraw.c` does.
+
+A Lock's bytes are apitrace's memcpy at Unlock, from the corner of the locked rect: each row of
+it is the rect's width of pixels (MEMCPY's `row`), the rest of the recorded row is other pixels
+and is not written. GetDC hands out an HDC that ReleaseDC is given back (handles, as objects).
+What GDI drew on a surface between them is not in the calls: `tests/replay/ddraw-wrapper.sh`
+builds apitrace's ddraw.dll with `apitrace-ddraw.patch`, which after a ReleaseDC locks and unlocks
+the surface through the wrapper, so the trace holds its pixels at that point (not the primary's:
+in a window that is the screen). This checks how DirectDraw goes on from what GDI left, not GDI
+itself (tests/winref has GDI's probes). The workflows put that DLL in apitrace's wrappers folder.
+
+The replay keeps the program's cooperative level: an exclusive one takes the screen at the
+display mode it set (the window becomes that big, WINSIZE); a windowed one blits to the screen at
+its window's place, so the replay's window goes where those blits lay (WINPOS, the box of all of
+them). Flip goes without vsync (DDFLIP_NOVSYNC on IDirectDrawSurface7), WaitForVerticalBlank is
+left out.
 
 RenderDoc does not fit this: it has no D3D8/D3D9 (nor DirectDraw, nor GL's compatibility
 profile), which is what most of the games use. It is still useful by hand for D3D11 / GL core
@@ -92,7 +117,7 @@ it did load (`gameapi.py next`: run 42380412096 found suzunone7 naming d3d9 and 
 d3d8, and hook, haruka and appetite drawing with DirectDraw only).
 
 A title with no trace goes to `testdata/apitrace/skipped.tsv` with why (`none`: it names no
-D3D8/9/11; `ddraw`: it drew with DirectDraw, which the replay does not take; `notrace`: it made none, with how far winplay got; `noconvert`: its trace
+D3D8/9/11 nor DirectDraw; `ddraw`: from before DirectDraw was replayed, none left; `notrace`: it made none, with how far winplay got; `noconvert`: its trace
 does not convert) and is not downloaded again; `again`, or naming it in `only`, tries it anew.
 A download that failed is tried again next time.
 
@@ -117,5 +142,7 @@ play as far as wanted, quit, then
 and on sake, `replay-32.exe game.rpl -every 30` in the browser (run-browser.mjs, with the stream
 next to the exe), `tests/winref/compare.py` on the two outputs.
 
-Not yet: Direct3D 10 and 12, DirectDraw (apitrace records them; the converter refuses nothing but
-has no pictures for them), a D3D11 deferred context's command lists (replayed as they come).
+Not yet: Direct3D 10 and 12 (apitrace records them; the converter refuses nothing but has no
+pictures for them), a D3D11 deferred context's command lists (replayed as they come); with
+DirectDraw, surfaces apitrace hands out only to an EnumAttachedSurfaces callback (it does not
+wrap them: the calls on them find no object).

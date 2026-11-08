@@ -208,9 +208,9 @@ fn d3d9_session() -> Vec<u8> {
     w.file(100)
 }
 
-/// the calls of a stream (its NAME and WINSIZE records left out)
+/// the calls of a stream (its NAME, WINSIZE and WINPOS records left out)
 fn calls(out: &[u8]) -> Vec<Record> {
-    replay::read(out).unwrap().1.into_iter().filter(|r| !matches!(r, Record::Name { .. } | Record::WinSize(..))).collect()
+    replay::read(out).unwrap().1.into_iter().filter(|r| !matches!(r, Record::Name { .. } | Record::WinSize(..) | Record::WinPos(..))).collect()
 }
 
 fn call_of(r: &Record) -> (&str, Option<u32>, Vec<Arg>) {
@@ -265,7 +265,7 @@ fn a_d3d9_session_converts() {
         // a failed one: a place for its object still (WARP writes NULL there)
         assert_eq!(call_of(&r[3]).2[7..], [Arg::OutObj(0), Arg::Word(0)]);
         assert_eq!(call_of(&r[4]).2, vec![Arg::Handle(3), Arg::Word(0), Arg::Lock { kind: replay::LOCK_RECT, handle: 3, key: 0 }, Arg::Word(0), Arg::Word(0)]);
-        assert_eq!(r[5], Record::Memcpy { handle: 3, key: 0, offset: 0, pitch: 16, slice: 0, data: (0..32).collect() });
+        assert_eq!(r[5], Record::Memcpy { handle: 3, key: 0, offset: 0, pitch: 16, slice: 0, row: 0, data: (0..32).collect() });
         assert_eq!(call_of(&r[6]).0, "IDirect3DTexture9::UnlockRect");
         // two 8-byte elements and the D3DDECL_END apitrace left out
         let (_, _, a) = call_of(&r[7]);
@@ -308,7 +308,7 @@ fn locks_of_buffers_volumes_and_cube_faces() {
     let (out, stats) = replay::convert(&w.b, None).unwrap();
     assert_eq!(stats.dropped.get("memcpy (into no lock)"), Some(&1));
     let r = calls(&out);
-    let m: Vec<_> = r.iter().filter_map(|x| match x { Record::Memcpy { handle, key, offset, pitch, slice, data } => Some((*handle, *key, *offset, *pitch, *slice, data.len())), _ => None }).collect();
+    let m: Vec<_> = r.iter().filter_map(|x| match x { Record::Memcpy { handle, key, offset, pitch, slice, data, .. } => Some((*handle, *key, *offset, *pitch, *slice, data.len())), _ => None }).collect();
     assert_eq!(m, vec![(1, 0, 0, 0, 0, 8), (2, 3 + 2 * 6, 0, 8, 0, 16), (3, 1, 0, 8, 32, 64), (3, 1, 8, 8, 32, 4)]);
     assert_eq!(call_of(&r[0]).2[3], Arg::Lock { kind: replay::LOCK_BUF, handle: 1, key: 0 });
     assert_eq!(call_of(&r[2]).2[2], Arg::Lock { kind: replay::LOCK_BOX, handle: 3, key: 1 });
@@ -546,9 +546,9 @@ fn a_d3d11_session_converts() {
         assert_eq!(call_of(&r[1]).2[1], Arg::Blob(Blob::raw(le32(&[64, 2, 4, 0x10000, 0, 0]))));
         assert_eq!(call_of(&r[2]).2, vec![Arg::Handle(2), Arg::Handle(3), Arg::Word(0), Arg::Word(4), Arg::Word(0), Arg::Lock { kind: replay::LOCK_MAP, handle: 3, key: 0 }]);
         // (a buffer is linear)
-        assert_eq!(r[3], Record::Memcpy { handle: 3, key: 0, offset: 0, pitch: 0, slice: 0, data: vec![5; 64] });
+        assert_eq!(r[3], Record::Memcpy { handle: 3, key: 0, offset: 0, pitch: 0, slice: 0, row: 0, data: vec![5; 64] });
         assert_eq!(call_of(&r[4]).2[5], Arg::Lock { kind: replay::LOCK_MAP, handle: 4, key: 1 });
-        assert_eq!(r[5], Record::Memcpy { handle: 4, key: 1, offset: 0x40, pitch: 32, slice: 128, data: vec![6; 8] });
+        assert_eq!(r[5], Record::Memcpy { handle: 4, key: 1, offset: 0x40, pitch: 32, slice: 128, row: 0, data: vec![6; 8] });
         let ptr = bits / 8;
         assert_eq!(call_of(&r[6]).2[2], Arg::Blob(Blob { bytes: vec![0; 2 * ptr as usize], fix: vec![(0, replay::FIX_OBJ, 3)] }));
         assert_eq!(call_of(&r[7]).2[2..], [Arg::OutArr(vec![3, 0]), Arg::OutObj(0)]);
@@ -776,4 +776,135 @@ fn a_stream_limited_in_bytes_stops_after_the_call_that_reaches_it() {
     // (each call that writes something is a place the stream can stop)
     assert!(sizes.len() > 3, "{sizes:?}");
     assert!(replay::convert_max(&ev, Some(32), false, whole_b.len() + 1).unwrap().0 == whole_b);
+}
+
+/// st() whose signature lives on (the writer tells signatures apart by their address: one freed
+/// and made again at the same address would be taken for the first)
+fn fk(name: &str, args: &[&str]) -> Rc<FunctionSig> {
+    let s = f(name, args);
+    std::mem::forget(s.clone());
+    s
+}
+
+fn stk(name: &str, members: &[&str], v: Vec<Value>) -> Value {
+    let s = st(name, members, v);
+    if let Value::Struct(sig, _) = &s {
+        std::mem::forget(sig.clone());
+    }
+    s
+}
+
+/// DDSURFACEDESC2 as apitrace records it (its unions' members all named)
+fn ddsd2(w: u64, h: u64, caps: u64, pitch: u64, surface: u64, bpp: u64) -> Value {
+    let pf = stk("DDPIXELFORMAT", &["dwSize", "dwFlags", "dwFourCC", "dwRGBBitCount", "dwRBitMask", "dwGBitMask", "dwBBitMask", "dwRGBAlphaBitMask"], vec![Value::UInt(32), Value::UInt(0x40), Value::UInt(0), Value::UInt(bpp), Value::UInt(0xf800), Value::UInt(0x7e0), Value::UInt(0x1f), Value::UInt(0)]);
+    let caps = stk("DDSCAPS2", &["dwCaps", "dwCaps2", "dwCaps3", "dwCaps4"], vec![Value::UInt(caps), Value::UInt(0), Value::UInt(0), Value::UInt(0)]);
+    stk("DDSURFACEDESC2", &["dwSize", "dwFlags", "dwHeight", "dwWidth", "lPitch", "dwLinearSize", "dwBackBufferCount", "lpSurface", "ddpfPixelFormat", "ddsCaps"],
+        vec![Value::UInt(124), Value::UInt(0x100f), Value::UInt(h), Value::UInt(w), Value::UInt(pitch), Value::UInt(pitch), Value::UInt(0), if surface == 0 { Value::Null } else { Value::Opaque(surface) }, pf, caps])
+}
+
+fn rect_v(l: i64, t: i64, r: i64, b: i64) -> Value {
+    Value::Array(vec![stk("RECT", &["left", "top", "right", "bottom"], vec![Value::SInt(l), Value::SInt(t), Value::SInt(r), Value::SInt(b)])])
+}
+
+/// A windowed DirectDraw 7 session as apitrace records it (with tests/replay's wrapper: the
+/// Lock / memcpy / Unlock after ReleaseDC)
+fn ddraw_session(exclusive: bool) -> Vec<u8> {
+    let mut w = Writer::new(&[("process.arch", "x86")]);
+    let ok = Some(Value::UInt(0));
+    let cx = fk("DirectDrawCreateEx", &["lpGuid", "lplpDD", "iid", "pUnkOuter"]);
+    let n = w.enter(0, &cx, &[(0, Value::Null), (2, Value::Blob(vec![0; 16])), (3, Value::Null)]);
+    w.leave(n, &[(1, Value::Array(vec![Value::Opaque(0x1000)]))], ok.as_ref(), false);
+    let coop = fk("IDirectDraw7::SetCooperativeLevel", &["this", "hWnd", "dwFlags"]);
+    let n = w.enter(0, &coop, &[(0, Value::Opaque(0x1000)), (1, Value::Opaque(0x777)), (2, Value::UInt(if exclusive { 0x11 } else { 8 }))]);
+    w.leave(n, &[], ok.as_ref(), false);
+    if exclusive {
+        let mode = fk("IDirectDraw7::SetDisplayMode", &["this", "dwWidth", "dwHeight", "dwBPP", "dwRefreshRate", "dwFlags"]);
+        let n = w.enter(0, &mode, &[(0, Value::Opaque(0x1000)), (1, Value::UInt(800)), (2, Value::UInt(600)), (3, Value::UInt(16)), (4, Value::UInt(0)), (5, Value::UInt(0))]);
+        w.leave(n, &[], ok.as_ref(), false);
+    }
+    let cs = fk("IDirectDraw7::CreateSurface", &["this", "lpDDSurfaceDesc", "lplpDDSurface", "pUnkOuter"]);
+    let n = w.enter(0, &cs, &[(0, Value::Opaque(0x1000)), (1, Value::Array(vec![ddsd2(0, 0, 0x200, 0, 0, 0)])), (3, Value::Null)]);
+    w.leave(n, &[(2, Value::Array(vec![Value::Opaque(0x2000)]))], ok.as_ref(), false);
+    let n = w.enter(0, &cs, &[(0, Value::Opaque(0x1000)), (1, Value::Array(vec![ddsd2(40, 30, 0x840, 0, 0, 16)])), (3, Value::Null)]);
+    w.leave(n, &[(2, Value::Array(vec![Value::Opaque(0x3000)]))], ok.as_ref(), false);
+    // a rect locked: lpSurface at its corner, rows of 10 16-bit pixels in a pitch of 96
+    let lock = fk("IDirectDrawSurface7::Lock", &["this", "lpDestRect", "lpDDSurfaceDesc", "dwFlags", "hEvent"]);
+    let n = w.enter(0, &lock, &[(0, Value::Opaque(0x3000)), (1, rect_v(4, 2, 14, 5)), (3, Value::UInt(1)), (4, Value::Null)]);
+    w.leave(n, &[(2, Value::Array(vec![ddsd2(40, 30, 0x840, 96, 0x9000 + 2 * 96 + 8, 16)]))], ok.as_ref(), false);
+    let mc = fk("memcpy", &["dest", "src", "n"]);
+    let n = w.enter(0, &mc, &[(0, Value::Opaque(0x9000 + 2 * 96 + 8)), (1, Value::Blob(vec![7; 2 * 96 + 20])), (2, Value::UInt(2 * 96 + 20))]);
+    w.leave(n, &[], None, true);
+    let unlock = fk("IDirectDrawSurface7::Unlock", &["this", "lpRect"]);
+    let n = w.enter(0, &unlock, &[(0, Value::Opaque(0x3000)), (1, Value::Null)]);
+    w.leave(n, &[], ok.as_ref(), false);
+    // GDI on it: the DC handed out and given back, then the wrapper's snapshot
+    let gdc = fk("IDirectDrawSurface7::GetDC", &["this", "phDC"]);
+    let n = w.enter(0, &gdc, &[(0, Value::Opaque(0x3000))]);
+    w.leave(n, &[(1, Value::Array(vec![Value::Opaque(0x5a0)]))], ok.as_ref(), false);
+    let rdc = fk("IDirectDrawSurface7::ReleaseDC", &["this", "hDC"]);
+    let n = w.enter(0, &rdc, &[(0, Value::Opaque(0x3000)), (1, Value::Opaque(0x5a0))]);
+    w.leave(n, &[], ok.as_ref(), false);
+    let n = w.enter(0, &lock, &[(0, Value::Opaque(0x3000)), (1, Value::Null), (3, Value::UInt(1)), (4, Value::Null)]);
+    w.leave(n, &[(2, Value::Array(vec![ddsd2(40, 30, 0x840, 96, 0x9000, 16)]))], ok.as_ref(), false);
+    let n = w.enter(0, &mc, &[(0, Value::Opaque(0x9000)), (1, Value::Blob(vec![9; 96 * 30])), (2, Value::UInt(96 * 30))]);
+    w.leave(n, &[], None, true);
+    let n = w.enter(0, &unlock, &[(0, Value::Opaque(0x3000)), (1, Value::Null)]);
+    w.leave(n, &[], ok.as_ref(), false);
+    // to the screen: a Blt and a BltFast (screen coordinates: the window was at 100, 50)
+    let blt = fk("IDirectDrawSurface7::Blt", &["this", "lpDestRect", "lpDDSrcSurface", "lpSrcRect", "dwFlags", "lpDDBltFx"]);
+    let n = w.enter(0, &blt, &[(0, Value::Opaque(0x2000)), (1, rect_v(100, 50, 140, 80)), (2, Value::Opaque(0x3000)), (3, Value::Null), (4, Value::UInt(0x0100_0000)), (5, Value::Null)]);
+    w.leave(n, &[], ok.as_ref(), false);
+    let bf = fk("IDirectDrawSurface7::BltFast", &["this", "dwX", "dwY", "lpDDSrcSurface", "lpSrcRect", "dwTrans"]);
+    let n = w.enter(0, &bf, &[(0, Value::Opaque(0x2000)), (1, Value::UInt(130)), (2, Value::UInt(70)), (3, Value::Opaque(0x3000)), (4, Value::Null), (5, Value::UInt(0x10))]);
+    w.leave(n, &[], ok.as_ref(), false);
+    let vb = fk("IDirectDraw7::WaitForVerticalBlank", &["this", "dwFlags", "hEvent"]);
+    let n = w.enter(0, &vb, &[(0, Value::Opaque(0x1000)), (1, Value::UInt(1)), (2, Value::Null)]);
+    w.leave(n, &[], ok.as_ref(), false);
+    let flip = fk("IDirectDrawSurface7::Flip", &["this", "lpDDSurfaceTargetOverride", "dwFlags"]);
+    let n = w.enter(0, &flip, &[(0, Value::Opaque(0x2000)), (1, Value::Null), (2, Value::UInt(1))]);
+    w.leave(n, &[], ok.as_ref(), false);
+    w.file(100)
+}
+
+#[test]
+fn a_ddraw_session_converts() {
+    for bits in [32, 64] {
+        let (out, stats) = replay::convert(&unpack(&ddraw_session(false)).unwrap(), Some(bits)).unwrap();
+        assert!(stats.dropped.is_empty(), "{:?}", stats.dropped);
+        assert_eq!(stats.skipped.keys().collect::<Vec<_>>(), ["IDirectDraw7::WaitForVerticalBlank"]);
+        let (_, all) = replay::read(&out).unwrap();
+        // the window where the blits to the screen lay: (100, 50) to (146, 100) (the BltFast's
+        // source is the 40x30 surface)
+        assert_eq!(all.iter().find(|r| matches!(r, Record::WinPos(..))), Some(&Record::WinPos(100, 50, 70, 50)));
+        assert!(!all.iter().any(|r| matches!(r, Record::WinSize(..))));
+        let names: Vec<_> = all.iter().filter_map(|r| match r { Record::Name { name, index, flags, .. } => Some((name.as_str(), *index, *flags)), _ => None }).collect();
+        assert_eq!(names[0], ("DirectDrawCreateEx", -1, replay::NAME_HR));
+        assert!(names.contains(&("IDirectDrawSurface7::Lock", 25, 1)) && names.contains(&("IDirectDrawSurface7::BltFast", 7, 1)));
+        let r = calls(&out);
+        // handles: ddraw 1, primary 2, surface 3, the DC 4
+        assert_eq!(call_of(&r[0]).2[1], Arg::OutObj(1));
+        assert_eq!(call_of(&r[1]).2, vec![Arg::Handle(1), Arg::Window, Arg::Word(8)]);
+        assert_eq!(call_of(&r[4]).2[2], Arg::Lock { kind: replay::LOCK_DDSD2, handle: 3, key: 0 });
+        // the rect's rows: 10 pixels of 2 bytes each (the rest of a row is other pixels)
+        assert_eq!(r[5], Record::Memcpy { handle: 3, key: 0, offset: 0, pitch: 96, slice: 0, row: 20, data: vec![7; 2 * 96 + 20] });
+        assert_eq!(call_of(&r[7]).2, vec![Arg::Handle(3), Arg::OutObj(4)]);
+        assert_eq!(call_of(&r[8]).2, vec![Arg::Handle(3), Arg::Handle(4)]);
+        assert_eq!(r[10], Record::Memcpy { handle: 3, key: 0, offset: 0, pitch: 96, slice: 0, row: 80, data: vec![9; 96 * 30] });
+        assert_eq!(call_of(&r[12]).2[..3], [Arg::Handle(2), Arg::Blob(Blob::raw(le32(&[100, 50, 140, 80]))), Arg::Handle(3)]);
+        // Flip without vsync (DDFLIP_NOVSYNC: 8)
+        assert_eq!(call_of(&r[14]).2, vec![Arg::Handle(2), Arg::Word(0), Arg::Word(9)]);
+        assert_eq!(r.len(), 15);
+    }
+}
+
+#[test]
+fn an_exclusive_ddraw_session_takes_its_display_mode() {
+    let (out, _) = replay::convert(&unpack(&ddraw_session(true)).unwrap(), Some(32)).unwrap();
+    let (_, all) = replay::read(&out).unwrap();
+    // no window position (the screen is the program's), the display mode as the window's size
+    // before SetDisplayMode
+    assert!(!all.iter().any(|r| matches!(r, Record::WinPos(..))));
+    let ws = all.iter().position(|r| matches!(r, Record::WinSize(800, 600))).unwrap();
+    assert!(matches!(&all[ws + 1], Record::Call { name, .. } if name == "IDirectDraw7::SetDisplayMode"));
+    assert_eq!(replay::ddraw_window(&unpack(&ddraw_session(true)).unwrap(), false), Ok(None));
 }

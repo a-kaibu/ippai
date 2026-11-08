@@ -17,7 +17,7 @@ OUT=${1:-$ROOT/target/replay}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 (cd "$ROOT/tests/winref" && i686-w64-mingw32-windres ja.rc -O coff -o "$OUT/replay32.res" && x86_64-w64-mingw32-windres ja.rc -O coff -o "$OUT/replay64.res")
-SRC=("$HERE/replay.c" "$HERE/d3d9img.c" "$HERE/d3d8img.c" "$HERE/d3d11img.c")
+SRC=("$HERE/replay.c" "$HERE/d3d9img.c" "$HERE/d3d8img.c" "$HERE/d3d11img.c" "$HERE/ddrawimg.c")
 cc() {
   local bits=$1; shift
   if [ "$bits" = 64 ]; then

@@ -4,7 +4,7 @@
 
     tests/replay/layouts.py > crates/apitrace/src/layouts.txt     (the check: --check)
 
-Every struct and union d3d8.h, d3d9.h, d3d11_4.h and dxgi1_6.h declare, every COM interface's
+Every struct and union d3d8.h, d3d9.h, d3d11_4.h, dxgi1_6.h, ddraw.h and d3d.h (Direct3D 7) declare, every COM interface's
 vtable (the method index is its slot), and the D3D entry points:
 
     R <name> <size32> <size64> <struct|union> <header set>   a record, then its members:
@@ -25,11 +25,13 @@ TUS = {
     "d3d9": ["d3d9.h"],
     "d3d8": ["d3d8.h"],
     "d3d11": ["d3d11_4.h", "dxgi1_6.h"],
+    "ddraw": ["ddraw.h", "d3d.h"],
 }
 FUNCTIONS = {
     "d3d9": ["Direct3DCreate9", "Direct3DCreate9Ex"],
     "d3d8": ["Direct3DCreate8"],
     "d3d11": ["D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain", "CreateDXGIFactory", "CreateDXGIFactory1", "CreateDXGIFactory2"],
+    "ddraw": ["DirectDrawCreate", "DirectDrawCreateEx", "DirectDrawCreateClipper"],
 }
 INTS = {
     "char": "i1", "signed char": "i1", "unsigned char": "i1", "_Bool": "i1",
@@ -95,8 +97,15 @@ def ty(s, interfaces, pre=""):
         return "O:" + name if name in interfaces else "S:" + (pre if name != "HWND__" else "") + name
     if s in INTS:
         return INTS[s]
+    # (a struct or an enum declared "typedef struct { ... } NAME": clang names it by the
+    # typedef, and a method's parameter says NAME alone)
+    if re.fullmatch(r"[A-Z_][A-Z_0-9]*", s):
+        return "O:" + s if s in interfaces else "S:" + pre + s if s in NAMED else "i4"
     raise SystemExit(f"layouts.py: type {s!r}")
 
+
+# the records of the headers (by their names in the dump)
+NAMED = set()
 
 LINE = re.compile(r"^\s*(\d+)(?::(\d+)-(\d+))? \| (\s*)(.*)$")
 SIZE = re.compile(r"\[sizeof=(\d+), (?:dsize=\d+, )?align=(\d+)")
@@ -151,8 +160,9 @@ def main():
             for i, b in re.findall(r"DECLARE_INTERFACE_\(\s*(\w+)\s*,\s*(\w+)\s*\)", t) + re.findall(r"^\s*(?:interface\s+)?(\w+)\s*:\s*public\s+(\w+)", t, re.M):
                 bases.setdefault(i, b)
         r32, r64 = records(dump(tu, "i686-w64-mingw32")), records(dump(tu, "x86_64-w64-mingw32"))
+        NAMED.update(r32)
         interfaces = {n[:-4] for n in r32 if n.endswith("Vtbl")}
-        pre = "8." if tu == "d3d8" else ""
+        pre = {"d3d8": "8.", "ddraw": "7."}.get(tu, "")
         for name, (size, members, kind) in r32.items():
             if name.startswith("FN_") or name.endswith("Vtbl") or name in interfaces or pre + name in recs:
                 continue
@@ -164,7 +174,7 @@ def main():
             ms = [(o32, o64, n, f"b{bits}" if bits else (t, interfaces, pre)) for (o32, t, n, bits), (o64, _, _, _) in zip(members, members64)]
             recs[pre + name] = (size, size64, ms, kind, tu)
         for name, (size, members, _) in r32.items():
-            if not name.endswith("Vtbl") or name[:-4] in vtbls or not re.match(r"(IDirect3D|ID3D11|IDXGI|IUnknownVtbl)", name):
+            if not name.endswith("Vtbl") or name[:-4] in vtbls or not re.match(r"(IDirect3D|IDirectDraw|ID3D11|IDXGI|IUnknownVtbl)", name):
                 continue
             ms = []
             for i, (o32, t, n, _) in enumerate(members):

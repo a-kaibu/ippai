@@ -187,8 +187,8 @@ expect("winplay.py: play GAME OUT", "a[:1] == ['play'] and len(a) == 3" in winpl
 gapi = open(os.path.join(root, "tests/replay/gameapi.py"), encoding="utf-8").read()
 expect("gameapi.py: next", 'sys.argv[1:2] == ["next"]' in gapi, True)
 # (record-game.ps1's .why reasons are skipped.tsv's)
-why = re.findall(r'\$why = if .*\{ "(\w+)" \} else \{ "(\w+)" \}', ps1)
-expect("record-game.ps1: its reasons are skipped.tsv's", [r for r in (why[0] if why else ("?",)) if r not in games.REASONS], [])
+why = re.findall(r'\$why = "(\w+)"', ps1)
+expect("record-game.ps1: its reasons are skipped.tsv's", [r for r in (why or ["?"]) if r not in games.REASONS], [])
 # (the workflows call games.py's commands as they are; a workflow that builds the replays, which
 # pulls the games' traces, may read packages and gives build.sh the token; one that pushes may write)
 cmds = set(re.findall(r'add_parser\("(\w+)"\)', open(os.path.join(HERE, "games.py"), encoding="utf-8").read()))

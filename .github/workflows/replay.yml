@@ -15,6 +15,8 @@ on:
       - 'tests/winref/probe.h'
       - 'tests/replay/record.txt'
       - 'tests/replay/asset*.sh'
+      - 'tests/replay/ddraw-wrapper.sh'
+      - 'tests/replay/apitrace-ddraw.patch'
       - '.github/workflows/replay.yml'
   workflow_dispatch:
     inputs:
@@ -83,8 +85,31 @@ jobs:
           path: ${{ runner.temp }}/exe
           retention-days: 7
 
+  # (apitrace's DirectDraw wrapper with tests/replay/apitrace-ddraw.patch: what GDI drew on a
+  # surface stays in the trace; built with mingw-w64, cached by its sources)
+  ddraw-wrapper:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: c
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/ddraw-wrapper
+          key: ddraw-wrapper-${{ hashFiles('tests/replay/ddraw-wrapper.sh', 'tests/replay/apitrace-ddraw.patch') }}
+      - if: steps.c.outputs.cache-hit != 'true'
+        run: |
+          tools/ci/cache-keys.sh
+          tools/ci/apt.sh g++-mingw-w64-i686 g++-mingw-w64-x86-64 ninja-build
+          tests/replay/ddraw-wrapper.sh ~/ddraw-wrapper
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ddraw-wrapper
+          path: ~/ddraw-wrapper
+          retention-days: 7
+
   record:
-    needs: probes
+    needs: [probes, ddraw-wrapper]
     if: needs.probes.outputs.stale != ''
     runs-on: windows-2025
     timeout-minutes: 20
@@ -94,7 +119,12 @@ jobs:
         with:
           name: replay-exe
           path: exe
-      # (apitrace's latest release: its 32-bit build for 32-bit probes, its 64-bit one for -64)
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: ddraw-wrapper
+          path: ddraw-wrapper
+      # (apitrace's latest release: its 32-bit build for 32-bit probes, its 64-bit one for -64;
+      # its DirectDraw wrapper replaced by ours)
       - name: apitrace
         shell: bash
         env:
@@ -109,6 +139,7 @@ jobs:
             (cd "$RUNNER_TEMP/at-$a" && 7z x -y ./*-$a.7z > /dev/null)
             f=$(find "$RUNNER_TEMP/at-$a" -name apitrace.exe | head -1)
             [ -n "$f" ] || { echo "no apitrace.exe in the $a build"; exit 1; }
+            cp ddraw-wrapper/$a/ddraw.dll "$(dirname "$f")/../lib/wrappers/ddraw.dll"
             echo "APITRACE_$a=$f" >> "$GITHUB_ENV"
           done
       - name: Record

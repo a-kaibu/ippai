@@ -3,6 +3,7 @@
 named member's offset, asserted at compile time with mingw-w64's gcc for i686 and x86_64 (the
 compiler the replayer is built with; what the converter packs has to be what it reads)."""
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -24,13 +25,16 @@ for line in text.splitlines():
     else:
         cur = None
 fails, n = 0, 0
+heads = {tu: "".join(open(h, encoding="latin-1").read() for h in layouts.headers(tu)) for tu in layouts.TUS}
 for tu, hs in layouts.TUS.items():
     c = ["#define COBJMACROS", "#define CINTERFACE", "#include <stddef.h>"] + [f"#include <{h}>" for h in hs]
     for name, s32, s64, kind, rtu, ms in recs:
         if rtu != tu or "::" in name:
             continue
-        cname = name[2:] if name.startswith("8.") else name
-        ty = f"{kind} {cname}"
+        cname = name[2:] if name[:2] in ("8.", "7.") else name
+        # (a "typedef struct { ... } NAME" is named by its typedef: no tag to say "struct NAME" by;
+        # DECLARE_HANDLE makes "struct NAME__")
+        ty = f"{kind} {cname}" if cname.endswith("__") or re.search(rf"\b{kind}\s+{re.escape(cname)}\b", heads[tu]) else cname
         c.append(f"_Static_assert(sizeof({ty}) == (sizeof(void *) == 8 ? {s64} : {s32}), \"{name} size\");")
         for m, o32, o64, t in ms:
             if m == "-" or t.startswith("b"):

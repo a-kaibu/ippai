@@ -1,0 +1,28 @@
+diff --git a/wrappers/ddrawtrace.py b/wrappers/ddrawtrace.py
+index 4f02bca..aaf8aab 100644
+--- a/wrappers/ddrawtrace.py
++++ b/wrappers/ddrawtrace.py
+@@ -55,6 +55,23 @@ class DDrawTracer(DllTracer):
+ 
+         DllTracer.implementWrapperInterfaceMethodBody(self, interface, base, method)
+ 
++        # ippai (tests/replay): what GDI drew on a surface through GetDC is not in the calls;
++        # after ReleaseDC the surface is locked and unlocked through this wrapper, so the
++        # trace holds its pixels as they are then (a Lock, the fake memcpy, an Unlock). Not the
++        # primary's: in a window that is the screen.
++        if method.name == 'ReleaseDC' and interface.name.startswith('IDirectDrawSurface'):
++            v2 = interface.name[-1] in '47'
++            desc = 'DDSURFACEDESC2' if v2 else 'DDSURFACEDESC'
++            print('    if (SUCCEEDED(_result)) {')
++            print('        %s _sd = {}; _sd.dwSize = sizeof _sd;' % desc)
++            print('        if (SUCCEEDED(_this->GetSurfaceDesc(&_sd)) && !(_sd.ddsCaps.dwCaps & DDSCAPS_PRIMARYSURFACE)) {')
++            print('            %s _ld = {}; _ld.dwSize = sizeof _ld;' % desc)
++            print('            if (SUCCEEDED(Lock(NULL, &_ld, DDLOCK_WAIT, NULL))) {')
++            print('                Unlock(%s);' % ('NULL' if v2 else '_ld.lpSurface'))
++            print('            }')
++            print('        }')
++            print('    }')
++
+         if method.name == 'Lock':
+             # FIXME: handle recursive locks, directdraw allows simultaneous surface locks with different rects.
+             if interface.name.startswith("IDirectDrawSurface"):
