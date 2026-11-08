@@ -8,7 +8,6 @@
 
 #![allow(non_snake_case)]
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use crate::api::{host_fn, implement, Ctx, Handler};
@@ -165,12 +164,22 @@ pub fn locale_assign(c: &mut Ctx, dst: u32, src: u32) {
 fn locale_global(_: &mut Ctx) -> u32 {
     locimp()
 }
-/// ??Bid@locale@std@@QEAA_KXZ: the id's index, given on first use
+/// ?_Id_cnt@id@locale@std@@0HA: the int the ids are numbered from. Microsoft's headers inline
+/// locale::id's conversion (`if (_Id == 0) _Id = ++_Id_cnt;` under a _Lockit), so a program
+/// increments it itself: a data export (it was a trap address, written to by the program;
+/// msvcstream crashed reading it where that page is not memory: sake-grow).
+fn id_cnt() -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| mem::heap_alloc(4, true))
+}
+/// ??Bid@locale@std@@QEAA_KXZ: the id's index, given on first use (from _Id_cnt, as the
+/// headers' inline copy does)
 fn locale_id(c: &mut Ctx) -> u32 {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
     let this = c.a(0);
     if rp(this) == 0 {
-        wp(this, NEXT.fetch_add(1, Ordering::Relaxed) + 1);
+        let n = mem::r32(id_cnt()).wrapping_add(1);
+        w32(id_cnt(), n);
+        wp(this, n);
     }
     rp(this)
 }
@@ -178,6 +187,9 @@ fn locale_id(c: &mut Ctx) -> u32 {
 pub fn data(name: &str) -> Option<u32> {
     if let Some(a) = crate::msvcp_io::data(name) {
         return Some(a);
+    }
+    if name == "?_Id_cnt@id@locale@std@@0HA" {
+        return Some(id_cnt());
     }
     static IDS: std::sync::Mutex<Vec<(String, u32)>> = std::sync::Mutex::new(Vec::new());
     if !(name.starts_with("?id@?$") && name.ends_with("@std@@2V0locale@2@A")) {
