@@ -9,7 +9,8 @@
 # x64crt: an MSVC-ABI program on ucrtbase/vcruntime140; msvcpsync: msvcp140 threads/sync;
 # msvcstream: its iostreams and locale facets, built against Microsoft's STL headers; msvcrtti:
 # dynamic_cast and typeid (vcruntime140's __RTDynamicCast...); msvcseh: _set_se_translator
-# with /EHa; mmdev: the audio device enumerator), each with its own expected file. CLANG32 are
+# with /EHa; mmdev: the audio device enumerator; avx256: ymm forms, expected from a native
+# x86-64 Linux build), each with its own expected file. CLANG32 are
 # x86 MSVC-ABI programs on msvcrt.dll (build-msvc32.sh), expected in <name>-32.txt.
 #
 #   tests/host-tests.sh [name ...]      SAKE=path/to/sake.js (default /home/user/work/sake-out/sake.js)
@@ -19,7 +20,7 @@ SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
 TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops}
 X64=" hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout "
-CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream msvcrtti msvcseh mmdev}
+CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
 CLANG32=${CLANG32-msvcseh}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
 GXX=${GXX-gxxunwind}

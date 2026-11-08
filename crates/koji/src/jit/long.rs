@@ -199,6 +199,9 @@ struct Gen<'a> {
     mx_seen: [[Option<super::mxguard::Key>; 2]; 16],
     /// load_regs / store_regs so far: (offset in c.b, index in c.locs, store)
     marks: Vec<(usize, usize, bool)>,
+    /// YMM registers whose halves a VEX.256 translation has swapped (long/sse.rs): leaving for
+    /// the interpreter swaps them back first
+    hi_swapped: Vec<Register>,
 }
 
 /// The registers `code` reads or writes (bit i: register i's local, L_R + i), and the ones
@@ -884,6 +887,10 @@ impl<'a> Gen<'a> {
 
     /// Leaves so the interpreter runs the current instruction.
     fn bail(&mut self) {
+        if !self.hi_swapped.is_empty() {
+            let r = self.hi_swapped.clone();
+            self.swap_hi(&r);
+        }
         let ip = self.ins.ip();
         self.exit_to(ip, RET_INTERP);
     }
@@ -1041,8 +1048,9 @@ impl<'a> Gen<'a> {
                 // (what the instruction writes: checked no more)
                 use iced_x86::OpAccess;
                 for u in iced_x86::InstructionInfoFactory::new().info(&ins).used_registers() {
-                    if u.register().is_xmm() && !matches!(u.access(), OpAccess::Read | OpAccess::CondRead | OpAccess::None) {
-                        self.mx_seen[u.register() as usize - Register::XMM0 as usize] = [None; 2];
+                    // (a YMM register's lower half is the XMM register)
+                    if (u.register().is_xmm() || u.register().is_ymm()) && !matches!(u.access(), OpAccess::Read | OpAccess::CondRead | OpAccess::None) {
+                        self.mx_seen[u.register().number()] = [None; 2];
                     }
                 }
             }
@@ -2210,7 +2218,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     returns.sort_unstable();
     returns.dedup();
     returns.truncate(MAX_RETURNS);
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new() };
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new() };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();

@@ -28,11 +28,12 @@ macro_rules! tryf {
 }
 
 /// Per VEX `Code`: its legacy `Code` (INVALID: none), whether VEX.vvvv is the extra source,
-/// and the FMA kind (see [`fma_kind`]).
+/// the FMA kind (see [`fma_kind`]), and a VEX.256 one's VEX.128 form (INVALID: none).
 struct Tables {
     legacy: Vec<Code>,
     nds: Vec<bool>,
     fma: Vec<u8>,
+    xmm: Vec<Code>,
 }
 
 static TABLES: AtomicPtr<Tables> = AtomicPtr::new(core::ptr::null_mut());
@@ -61,11 +62,18 @@ fn build() -> Tables {
             by_name.insert(s, c);
         }
     }
-    let mut t = Tables { legacy: vec![Code::INVALID; n], nds: vec![false; n], fma: vec![0; n] };
+    let mut t = Tables { legacy: vec![Code::INVALID; n], nds: vec![false; n], fma: vec![0; n], xmm: vec![Code::INVALID; n] };
+    let vex128: BTreeMap<String, Code> = Code::values().map(|c| (format!("{c:?}"), c)).filter(|(s, _)| s.starts_with("VEX_V") && !s.contains("ymm")).collect();
     for c in Code::values() {
         let s = format!("{c:?}");
         let Some(rest) = s.strip_prefix("VEX_V") else { continue };
         if rest.contains("ymm") {
+            // (the same name with xmm registers and 128-bit memory: VEX_Vaddps_ymm_ymm_ymmm256
+            // is VEX_Vaddps_xmm_xmm_xmmm128; not those with xmm operands too, which cross lanes
+            // or narrow: vcvtpd2ps xmm, ymm, vpsllw ymm, ymm, xmm)
+            if let Some(&x) = (!rest.contains("xmm")).then(|| vex128.get(&s.replace("ymm", "xmm").replace("m256", "m128"))).flatten() {
+                t.xmm[c as usize] = x;
+            }
             continue;
         }
         // (the 0F11 register form of vmovss/vmovsd is the 0F10 one with its operands swapped
@@ -480,8 +488,47 @@ fn xi(r: Register) -> usize {
 /// The legacy form of a VEX 128-bit instruction that runs as one (see the module docs), and
 /// whether VEX.vvvv is its extra first source (`dst = src1 op src2`); None for the FMA and
 /// VEX-only ones and for 256-bit forms.
+/// A VEX.256 `code`'s VEX.128 form: the same name with xmm registers and m128.
+pub(crate) fn xmm_form(code: Code) -> Option<Code> {
+    let x = tables().xmm[code as usize];
+    (x != Code::INVALID).then_some(x)
+}
+
 pub(crate) fn legacy_of(code: Code) -> Option<(Code, bool)> {
     let t = tables();
     let c = code as usize;
     (t.fma[c] == 0 && t.legacy[c] != Code::INVALID && !vex_only(code.mnemonic())).then(|| (t.legacy[c], t.nds[c]))
+}
+
+#[cfg(test)]
+mod xmm_form_tests {
+    use super::xmm_form;
+    use iced_x86::Code;
+
+    /// VEX.256 codes and their VEX.128 forms (the JIT translates them a lane at a time):
+    /// none for those that cross lanes, narrow or widen, or take an XMM operand too.
+    #[test]
+    fn ymm_codes_and_their_xmm_forms() {
+        for (c, x) in [
+            (Code::VEX_Vaddps_ymm_ymm_ymmm256, Some(Code::VEX_Vaddps_xmm_xmm_xmmm128)),
+            (Code::VEX_Vpaddd_ymm_ymm_ymmm256, Some(Code::VEX_Vpaddd_xmm_xmm_xmmm128)),
+            (Code::VEX_Vmovups_ymmm256_ymm, Some(Code::VEX_Vmovups_xmmm128_xmm)),
+            (Code::VEX_Vpshufd_ymm_ymmm256_imm8, Some(Code::VEX_Vpshufd_xmm_xmmm128_imm8)),
+            (Code::VEX_Vblendps_ymm_ymm_ymmm256_imm8, Some(Code::VEX_Vblendps_xmm_xmm_xmmm128_imm8)),
+            (Code::VEX_Vcvtpd2ps_xmm_ymmm256, None),
+            (Code::VEX_Vcvtps2pd_ymm_xmmm128, None),
+            (Code::VEX_Vpsllw_ymm_ymm_xmmm128, None),
+            (Code::VEX_Vpermq_ymm_ymmm256_imm8, None),
+            (Code::VEX_Vmovddup_ymm_ymmm256, None),
+            (Code::VEX_Vaddps_xmm_xmm_xmmm128, None),
+        ] {
+            assert_eq!(xmm_form(c), x, "{c:?}");
+        }
+        // every form found has the same mnemonic and operand count
+        for c in Code::values() {
+            if let Some(x) = xmm_form(c) {
+                assert_eq!((c.mnemonic(), x.mnemonic()), (c.mnemonic(), c.mnemonic()), "{c:?} {x:?}");
+            }
+        }
+    }
 }

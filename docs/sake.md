@@ -146,8 +146,12 @@
   2 回 (2 回目は上半分を xmm に入れ替え、m256 は +16、レーンごとの即値は次のビット)、
   レーンをまたぐもの (broadcast、vperm*、vinsert/vextract128、vpmovsx/zx と cvt の拡大・縮小、
   movmsk、vptest) は直接。AVX2 の gather 全種、BMI1/BMI2 (interp/bmi.rs)、XGETBV (XCR0 = 7)。
-  JIT は 256 ビットを訳さずインタプリタに回す。CPUID は既定では AVX 系を報告しない (CPUID で
-  経路を選ぶ memcpy やコーデックが遅いインタプリタ経路に入るため)。IPPAI_CPUID_AVX を付けると
+  64 ビット JIT もレーンごとの VEX.256 (移動、算術、論理、per-lane のシャッフル・pack・unpack・
+  ブレンド、即値シフト、同じ幅の cvt) を同じやり方で訳す (jit/long/sse.rs の sse256: 両レーンの
+  MXCSR ガードを先に済ませ、途中でインタプリタに戻るときは入れ替えを戻す)。レーンをまたぐもの、
+  FMA、xmm の個数のシフトはインタプリタ。確認は tools/jit64test (ymm の形もインタプリタと照合) と
+  host/tests/avx256.c (ネイティブの x86-64 と同じチェックサム)。CPUID は既定では AVX 系を報告しない
+  (CPUID で経路を選ぶ memcpy やコーデックがインタプリタの命令に入るため)。IPPAI_CPUID_AVX を付けると
   AVX/AVX2/FMA/BMI1/BMI2/LZCNT/OSXSAVE と leaf 7 を報告する (koji::CPUID_AVX)。
   確認は crates/koji/tests/diff_isa.rs: MMX〜SSE4.2、AVX、AVX2、FMA3、BMI、POPCNT、LZCNT の
   iced の Code 全部 (1078) を各 48 回 (IPPAI_ISA_CASES で増やせる)、NaN や非正規数を含む値で

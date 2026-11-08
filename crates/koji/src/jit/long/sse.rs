@@ -3,10 +3,13 @@
 //! stores its result. A VEX instruction is translated as its legacy form (the interpreter's
 //! table, interp::vex): with VEX.vvvv as the first source, `dst = src1 op src2` reads src1
 //! where the legacy form reads its destination; then the destination's upper YMM half
-//! (`Cpu::ymmh`) is cleared, as VEX.128 does. 256-bit forms go to the interpreter.
+//! (`Cpu::ymmh`) is cleared, as VEX.128 does. VEX.256 forms that compute each 128-bit lane
+//! alike are their VEX.128 form twice: the lower lanes, then the upper ones with each register's
+//! halves swapped (and memory 16 bytes on); the rest go to the interpreter.
 
 use super::{Flags, Gen, I64Ops, I32_WRAP, I64_EXT_U, L_A, L_CPU, L_V0, L_V1, STATUS};
 use crate::jit::packed::{binop, farith, shift, unpack};
+use alloc::vec::Vec;
 use crate::Cpu;
 use core::mem::offset_of;
 use iced_x86::{EncodingKind, Instruction, Mnemonic, OpKind, Register};
@@ -112,6 +115,41 @@ pub(super) fn plan(ins: &Instruction) -> Option<(Instruction, Option<Register>)>
     supported(&li).then_some((li, src1))
 }
 
+/// A VEX.256 instruction whose lanes [`per_lane`] may compute alike: its VEX.128 form (the
+/// same operands, ymm registers as xmm).
+pub(super) fn lanes(ins: &Instruction) -> Option<Instruction> {
+    if ins.encoding() != EncodingKind::VEX || !(0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_ymm()) {
+        return None;
+    }
+    let mut x = *ins;
+    x.set_code(crate::interp::vex::xmm_form(ins.code())?);
+    for i in 0..ins.op_count() {
+        if ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_ymm() {
+            x.set_op_register(i, Register::try_from(Register::XMM0 as usize + ins.op_register(i).number()).ok()?);
+        }
+    }
+    Some(x)
+}
+
+/// Legacy forms whose VEX.256 form computes each 128-bit lane as the 128-bit form does, from
+/// the same lane of its operands (packs, unpacks, shuffles and byte shifts are per lane in
+/// AVX2; not shifts by an XMM count, which is one for both).
+fn per_lane(li: &Instruction) -> bool {
+    use Mnemonic::*;
+    let m = li.mnemonic();
+    match m {
+        Movdqu | Movdqa | Movups | Movaps | Movupd | Movapd | Lddqu => true,
+        Pandn | Andps | Andpd | Orps | Orpd | Xorps | Xorpd | Andnps | Andnpd | Pmulhw | Pmulhuw | Pmuludq | Packsswb | Packuswb
+        | Packssdw | Packusdw | Pshufb | Psadbw | Minps | Maxps | Minpd | Maxpd | Pminsb | Pmaxsb | Pminud | Pmaxud | Pminsd
+        | Pmaxsd | Pminuw | Pmaxuw | Pmulld | Pcmpeqq | Pcmpgtq | Pabsb | Pabsw | Pabsd | Cvtdq2ps | Cvttps2dq | Cvtps2dq => true,
+        _ if binop(m).is_some() || unpack(m).is_some() => true,
+        _ if farith(m).is_some_and(|f| f.1) => true,
+        _ if shift(m).is_some() => li.op_kind(1) == OpKind::Immediate8,
+        Pshufd | Pshuflw | Pshufhw | Shufps | Palignr | Pblendw | Blendps | Blendpd | Pslldq | Psrldq | Movsldup | Movshdup => true,
+        _ => false,
+    }
+}
+
 /// Memory operands of the size the form names, at most one.
 fn size_ok(ins: &Instruction, size: usize) -> bool {
     (0..ins.op_count()).all(|i| !mem(ins, i) || ins.memory_size().size() == size)
@@ -190,6 +228,9 @@ fn supported(ins: &Instruction) -> bool {
 impl Gen<'_> {
     /// Translates an instruction [`plan`] accepts; false (nothing emitted) if it can't.
     pub(super) fn sse(&mut self) -> bool {
+        if let Some(x) = lanes(&self.ins) {
+            return self.sse256(&x);
+        }
         let Some((li, src1)) = plan(&self.ins) else { return false };
         let ymmh = |r: usize| (offset_of!(Cpu, ymmh) + 16 * r) as u32;
         if li.mnemonic() == Mnemonic::Vzeroupper {
@@ -208,8 +249,27 @@ impl Gen<'_> {
         }
         let saved = self.ins;
         self.ins = li;
-        // (the MXCSR flags: the interpreter sets them, see mxguard)
-        if let Some(k) = crate::jit::mxguard::kind(&li) {
+        self.mx_guard(&li, src1, size, false);
+        self.emit_sse(src1);
+        self.ins = saved;
+        // VEX.128 clears the upper half of the YMM register it writes
+        use Mnemonic::*;
+        if saved.encoding() == EncodingKind::VEX
+            && is_x(&saved, 0)
+            && !matches!(saved.mnemonic(), Vcomiss | Vcomisd | Vucomiss | Vucomisd | Vptest | Vtestps | Vtestpd | Vmaskmovdqu)
+        {
+            let r = ymmh(saved.op0_register() as usize - Register::XMM0 as usize);
+            self.c.get(L_CPU).i64c(0).store64(r);
+            self.c.get(L_CPU).i64c(0).store64(r + 8);
+        }
+        true
+    }
+
+    /// The MXCSR flags: the interpreter sets them (mxguard): leaves for it when the operands
+    /// of `li` could raise one. `hi`: the operands are a VEX.256 instruction's upper lanes
+    /// (swapped in: nothing known about them).
+    fn mx_guard(&mut self, li: &Instruction, src1: Option<Register>, size: Option<u32>, hi: bool) {
+        if let Some(k) = crate::jit::mxguard::kind(li) {
             use crate::jit::mxguard;
             // (an XMM register checked for the same range earlier in the block and not written
             // since: not again)
@@ -217,7 +277,7 @@ impl Gen<'_> {
                 let r = if i == 0 { src1 } else { (li.op_kind(1) == OpKind::Register).then(|| li.op_register(1)) };
                 r.filter(|r| r.is_xmm()).map(|r| r as usize - Register::XMM0 as usize)
             };
-            let seen = |g: &Self, i: u32| reg(i).is_some_and(|r| mxguard::key(k, i).is_some_and(|w| g.mx_seen[r].contains(&Some(w))));
+            let seen = |g: &Self, i: u32| !hi && reg(i).is_some_and(|r| mxguard::key(k, i).is_some_and(|w| g.mx_seen[r].contains(&Some(w))));
             let (a, b) = (k.3 && !seen(self, 0), !seen(self, 1));
             if k.0 != mxguard::G::Inexact {
                 if a {
@@ -230,7 +290,7 @@ impl Gen<'_> {
                 }
             }
             let ops = mxguard::operands(&mut self.c, k, a.then_some(L_V0), b.then_some(L_V1), Some(super::L_V2));
-            for i in 0..2 {
+            for i in (0..2).filter(|_| !hi) {
                 if let (true, Some(r), Some(w)) = (i == 1 || k.3, reg(i), mxguard::key(k, i)) {
                     if !self.mx_seen[r].contains(&Some(w)) {
                         self.mx_seen[r] = [self.mx_seen[r][1], Some(w)];
@@ -254,19 +314,75 @@ impl Gen<'_> {
                 self.c.end();
             }
         }
-        self.emit_sse(src1);
-        self.ins = saved;
-        // VEX.128 clears the upper half of the YMM register it writes
-        use Mnemonic::*;
-        if saved.encoding() == EncodingKind::VEX
-            && is_x(&saved, 0)
-            && !matches!(saved.mnemonic(), Vcomiss | Vcomisd | Vucomiss | Vucomisd | Vptest | Vtestps | Vtestpd | Vmaskmovdqu)
-        {
-            let r = ymmh(saved.op0_register() as usize - Register::XMM0 as usize);
-            self.c.get(L_CPU).i64c(0).store64(r);
-            self.c.get(L_CPU).i64c(0).store64(r + 8);
+    }
+
+    /// A VEX.256 instruction as its VEX.128 form `x` on each lane: both lanes' MXCSR guards
+    /// before either is written, then the lower lanes, then the upper ones (`swap_hi`).
+    fn sse256(&mut self, x: &Instruction) -> bool {
+        let Some((li, src1)) = plan(x) else { return false };
+        if !per_lane(&li) {
+            return false;
         }
+        let size = (0..li.op_count()).find(|&i| mem(&li, i)).map(|_| li.memory_size().size() as u32);
+        if size.is_some() && !self.addr(32) {
+            return false;
+        }
+        // (the upper lanes of VBLENDPS / VBLENDPD take the immediate's upper bits)
+        let mut hi = li;
+        match li.mnemonic() {
+            Mnemonic::Blendps => hi.set_immediate8(li.immediate8() >> 4),
+            Mnemonic::Blendpd => hi.set_immediate8(li.immediate8() >> 2),
+            _ => {}
+        }
+        let mut regs: Vec<Register> = src1.into_iter().chain((0..li.op_count()).filter(|&i| is_x(&li, i)).map(|i| li.op_register(i))).collect();
+        regs.sort_unstable_by_key(|r| *r as u32);
+        regs.dedup();
+        let saved = self.ins;
+        // (the address kept apart: CVTPS2DQ's code takes L_A for the rounding mode)
+        let at = size.map(|_| {
+            let t = self.temp();
+            self.c.get(L_A).x(I64_EXT_U).set(t);
+            t
+        });
+        let upper = |g: &mut Self, on: bool| {
+            g.swap_hi(&regs);
+            if let Some(t) = at {
+                g.c.get(t).x(I32_WRAP);
+                if on {
+                    g.c.i32c(16).add();
+                }
+                g.c.set(L_A);
+            }
+        };
+        if crate::jit::mxguard::kind(&li).is_some() {
+            self.ins = li;
+            self.mx_guard(&li, src1, size, false);
+            upper(self, true);
+            self.ins = hi;
+            // (leaving from here: the halves back first)
+            self.hi_swapped = regs.clone();
+            self.mx_guard(&hi, src1, size, true);
+            self.hi_swapped.clear();
+            upper(self, false);
+        }
+        self.ins = li;
+        self.emit_sse(src1);
+        upper(self, true);
+        self.ins = hi;
+        self.emit_sse(src1);
+        upper(self, false);
+        self.ins = saved;
         true
+    }
+
+    /// Swaps the lower and upper halves of YMM registers `regs`.
+    pub(super) fn swap_hi(&mut self, regs: &[Register]) {
+        for &r in regs {
+            let (x, h) = (xoff(r), (offset_of!(Cpu, ymmh) + 16 * (r as usize - Register::XMM0 as usize)) as u32);
+            self.c.get(L_CPU).v128load(x).set(super::L_V2);
+            self.c.get(L_CPU).get(L_CPU).v128load(h).v128store(x);
+            self.c.get(L_CPU).get(super::L_V2).v128store(h);
+        }
     }
 
     /// Pushes XMM register `r`.
