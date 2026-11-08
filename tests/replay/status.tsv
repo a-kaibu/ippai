@@ -1,17 +1,17 @@
 # id	stage	why (tests/replay/status.py)
-b2006_alcot	-	not recorded yet
+b2006_alcot	-	ddraw: tri_trial/tri_trial.exe: no title screen, ended; tried d3d9; loaded: d3d10warp.dll ddraw.dll dxgi.dll
 b2006_blackcyc	-	not recorded yet
-b2006_interheart	-	not recorded yet
-b2006_kaguya	-	not recorded yet
+b2006_interheart	-	none: オイラは番台２体験版/Bandai2.exe: no D3D8/9/11
+b2006_kaguya	-	none: アマツ体験版/AMATU.exe: no D3D8/9/11
 b2006_lilim	-	not recorded yet
-b2006_lumpofsugar	-	not recorded yet
+b2006_lumpofsugar	-	none: 「いつか、届く、あの空に。」体験版/Itsusora.exe: no D3D8/9/11
 b2006_lune	-	not recorded yet
 b2006_marine	-	not recorded yet
-b2006_ninetail	-	not recorded yet
+b2006_ninetail	-	none: 機械仕掛けのイヴ＿0527体験版/tierra.exe: no D3D8/9/11
 b2006_pulltop	-	not recorded yet
 b2006_unisonshift	-	not recorded yet
-b2007_anim	-	not recorded yet
-b2007_bishop	-	not recorded yet
+b2007_anim	-	none: 必殺痴漢人 Web体験版/ck.exe: no D3D8/9/11
+b2007_bishop	-	none: hd_Trial2/demo.exe: no D3D8/9/11
 b2007_clochette	-	not recorded yet
 b2007_feng	-	not recorded yet
 b2007_hadashi	-	not recorded yet
@@ -19,29 +19,29 @@ b2007_kaguya	Convertible	no Windows answer yet
 b2007_lilim	-	not recorded yet
 b2007_lilim_darkness	-	not recorded yet
 b2007_lune	-	not recorded yet
-b2007_marmalade	-	not recorded yet
+b2007_marmalade	-	none: リリカル♪りりっく体験版/lyrical.exe: no D3D8/9/11
 b2007_propeller	-	not recorded yet
 b2007_sagaplanets	-	not recorded yet
 b2007_whirlpool	-	not recorded yet
-b2008_akabeesoft	-	not recorded yet
-b2008_bishop	-	not recorded yet
-b2008_escude	-	not recorded yet
+b2008_akabeesoft	-	none: WLO_WEB体験版/wlo_webtrial.exe: no D3D8/9/11
+b2008_bishop	-	none: kedamono_web_trial/startup.exe: no D3D8/9/11
+b2008_escude	-	none: 『ヴェルディア幻奏曲』体験版/verdia.exe: no D3D8/9/11
 b2008_hook	-	not recorded yet
-b2008_interheart	-	not recorded yet
+b2008_interheart	-	noconvert: ItazuraR-Trial/ItazuraR.exe: d3d9
 b2008_marine	-	not recorded yet
 b2008_smee	-	not recorded yet
-b2009_anim	-	not recorded yet
+b2009_anim	-	none: 愛娘という名の玩具 体験版/Evemine.exe: no D3D8/9/11
 b2009_crossover	-	not recorded yet
-b2009_eushully	-	not recorded yet
-b2009_kaguya	-	notrace: さらさらささら（体験版）/GAME_SYS.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
+b2009_eushully	-	noconvert: Himegari_Trial/HimeTrial.exe.is/姫狩りダンジョンマイスター体験版.msi.x/Program Files/Eushully/姫狩りダンジョンマイスター体験版/AGE.EXE: d3d9
+b2009_kaguya	-	notrace: さらさらささら（体験版）/GAME_SYS.exe: no title screen, ended; tried d3d9; loaded: d3d9.dll
 b2009_lilim	-	not recorded yet
-b2009_marmalade	-	not recorded yet
+b2009_marmalade	-	none: キスと魔王と紅茶_体験版/kisstea.exe: no D3D8/9/11
 b2009_purplesoftware	-	not recorded yet
-b2009_smee	-	not recorded yet
+b2009_smee	-	ddraw: らぶでれ～しょん！体験版/LoveDere.exe: title screen at 26s; tried d3d8; loaded: d3d10warp.dll d3d8.dll ddraw.dll dxgi.dll
 b2010_bishop	-	notrace: gk3_trial/startup.exe: no title screen; tried d3d9; loaded: no graphics DLL
 b2010_giga	-	not recorded yet
-b2010_grand_cru	-	not recorded yet
-b2010_kaguya	-	not recorded yet
+b2010_grand_cru	-	none: ReunionWEB体験版/reunion.exe: no D3D8/9/11
+b2010_kaguya	-	none: dl/キラリ☆南国小麦色 体験版/Start.exe: no D3D8/9/11
 b2010_waffle	-	not recorded yet
 b2011_anim_team_mm	Convertible	no Windows answer yet
 b2011_bishop	-	notrace: uk_trial/startup.exe: no title screen; tried d3d9; loaded: no graphics DLL
@@ -54,7 +54,7 @@ b2012_alicesoft	-	notrace: dl/母娘乱館体験版/OyakorankanTrial.exe: title 
 b2012_atelier_gh	-	not recorded yet
 b2012_bishop	-	notrace: dl/startup.exe: no title screen; tried d3d9; loaded: no graphics DLL
 b2012_fudegaki_soft	Convertible	no Windows answer yet
-b2012_tinkerbell	-	not recorded yet
+b2012_tinkerbell	-	noconvert: 籠女の繭Web体験版1.1/kagome.exe: d3d9
 b2012_trois	Convertible	no Windows answer yet
 b2012_waffle	-	not recorded yet
 b2013_alicesoft	-	notrace: dl/ランス01体験版/Rance01Trial.exe: no title screen; tried d3d9; loaded: d3d9.dll
@@ -62,49 +62,49 @@ b2013_anim	-	not recorded yet
 b2013_ensemble	-	not recorded yet
 b2013_giga	-	not recorded yet
 b2013_hooksoft	-	not recorded yet
-b2013_hulotte	-	not recorded yet
-b2013_kaguya	-	not recorded yet
+b2013_hulotte	-	none: 妹のおかげでモテすぎてヤバい。体験版/妹のおかげでモテすぎてヤバい。TR.exe: no D3D8/9/11
+b2013_kaguya	-	noconvert: 肉牝Ｒ３０（体験版）/GAME_SYS.exe: d3d9
 b2013_lumpofsugar	-	notrace: sekachu_trial_WEB2/sekachu_trial_WEB2/sekachu_trial_WEB2.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
-b2013_tinkerbell	-	not recorded yet
+b2013_tinkerbell	-	noconvert: ぜったいマジラブ！あまイチャはぷにんぐ！体験版/amaitya.exe: d3d9
 b2014_azarashi_soft	Convertible	no Windows answer yet
 b2014_ensemble_sweet	-	not recorded yet
 b2014_escude	-	notrace: dl/relord.exe: winplay wrote nothing; tried d3d9; loaded: no graphics DLL
 b2014_guilty	-	not recorded yet
 b2014_silkys_plus	-	not recorded yet
-b2014_undermoon	-	not recorded yet
+b2014_undermoon	-	ddraw: 奪われた学園～罠に落ちた優等生～ 体験版/UbawaretaGakuen_Trial.eXe: title screen at 5s; tried d3d9; loaded: d3d10warp.dll d3dim700.dll ddraw.dll dinput.dll dxgi.dll
 b2014_waffle	-	not recorded yet
-b2014_wendybell	-	not recorded yet
+b2014_wendybell	-	noconvert: こすぷれえっち体験版/cosplayh.exe: d3d9
 b2015_empress	-	not recorded yet
 b2015_erectlip	-	not recorded yet
 b2015_guilty	Convertible	no Windows answer yet
 b2015_hamham	-	not recorded yet
-b2015_mille_feuille	-	not recorded yet
+b2015_mille_feuille	-	ddraw: 極煌戦姫ミストルティア体験版/mistletear.exe: title screen at 7s; tried d3d9; loaded: d3d10warp.dll d3dim700.dll ddraw.dll dinput.dll dinput8.dll dxgi.dll
 b2015_minato_carnival	-	not recorded yet
 b2016_alcot	Convertible	no Windows answer yet
 b2016_blackcyc	-	not recorded yet
-b2016_evoll	-	not recorded yet
+b2016_evoll	-	none: dl/game/ags.exe: no D3D8/9/11
 b2016_giga	-	not recorded yet
 b2016_inter_heart_glossy	Convertible	no Windows answer yet
-b2016_kaguya	-	not recorded yet
+b2016_kaguya	-	noconvert: 小悪魔発育チュ～！（体験版）/GAME_SYS.exe: d3d9
 b2016_silkys_sakura	-	not recorded yet
 b2016_waffle	-	not recorded yet
 b2017_inter_heart_glossy	Convertible	no Windows answer yet
 b2017_onomatope_raspberry	-	not recorded yet
 b2017_waffle	-	not recorded yet
-b2018_ensemble	-	not recorded yet
+b2018_ensemble	-	noconvert: KOIHANA_WEB_TRIAL/ADVHD.EXE: dxgi
 b2018_erectlip	-	not recorded yet
 b2018_fudegaki_soft	Convertible	no Windows answer yet
 b2018_hachimitsu_soft	Convertible	no Windows answer yet
 b2018_mirai	-	not recorded yet
-b2018_tokohana	-	not recorded yet
+b2018_tokohana	-	noconvert: 僕と彼女のご奉仕同棲 体験版/AdvHD.exe: dxgi
 b2019_anim	Convertible	no Windows answer yet
 b2019_sukerasparo	Convertible	no Windows answer yet
 b2020_akabeesoft3	Convertible	no Windows answer yet
 b2020_barista_lab	-	not recorded yet
-b2020_caramel_box_strawberry	-	not recorded yet
+b2020_caramel_box_strawberry	-	none: hktrial/ags.exe: no D3D8/9/11
 b2020_erectlip	-	not recorded yet
 b2020_hachimitsu_soft	-	not recorded yet
-b2020_lass_pixy	-	not recorded yet
+b2020_lass_pixy	-	none: lsg3_tr/リトルシックガール 桃蜜は妹の香り 体験版/リトルシックガール 桃蜜は妹の香り 体験版.exe: no D3D8/9/11
 b2020_rikuzendo	-	not recorded yet
 b2021_at_sakura	-	not recorded yet
 b2021_princess_sugar	-	not recorded yet
@@ -115,9 +115,9 @@ b2023_appetite	-	not recorded yet
 b2023_fg_remake	-	not recorded yet
 b2024_milimili	-	not recorded yet
 b2024_ninetail	-	not recorded yet
-b2024_syrup_mm	-	notrace: 狙われた優等生体験版/yutosei.exe: title screen at 11s; tried d3d9; loaded: dinput.dll opengl32.dll
-b2025_ensemble_sweet	-	not recorded yet
-b2025_guilty	-	not recorded yet
+b2024_syrup_mm	-	notrace: 狙われた優等生体験版/yutosei.exe: title screen at 10s; tried d3d9; loaded: dinput.dll opengl32.dll
+b2025_ensemble_sweet	-	noconvert: dl/のーぶるバトラー TRIAL EDITION/AdvHD.exe: dxgi
+b2025_guilty	-	noconvert: torikonohomura_trial/虜ノ焔 ～淫欲の炎に満ちた地下闘技場～ 体験版/AdvHD.exe: dxgi
 b2026_anim	Convertible	no Windows answer yet
 b2026_crystalia	-	not recorded yet
 b2026_dessert_soft	Convertible	no Windows answer yet
@@ -245,24 +245,24 @@ s2008_guilty_wana2	-	not recorded yet
 s2008_kaguya_dc2	-	not recorded yet
 s2008_sagaplanets_cominghumming	-	not recorded yet
 s2009_ensemble_hanaotome	-	not recorded yet
-s2009_escude_prister	-	not recorded yet
+s2009_escude_prister	-	none: 乙女恋心プリスター 体験版/Prister.exe: no D3D8/9/11
 s2010_eushully_ikusa_verita	Convertible	no Windows answer yet
-s2010_lumpofsugar_prismrhythm	-	not recorded yet
-s2010_pulltop_lovekami	-	not recorded yet
+s2010_lumpofsugar_prismrhythm	-	none: PrismRhythm_trial_Web/PrismRhythm.exe: no D3D8/9/11
+s2010_pulltop_lovekami	-	ddraw: 恋神 -ラブカミ-（Web用体験版）/lovekami_t.exe: no title screen; tried d3d8; loaded: d3dim700.dll ddraw.dll dinput8.dll dxgi.dll
 s2010_sagaplanets_kisaragi	-	not recorded yet
 s2011_clochette_kamikaze	Convertible	no Windows answer yet
-s2011_grand_cru_imostar	-	not recorded yet
+s2011_grand_cru_imostar	-	none: しゅ～てぃんぐ妹スター体験版/sms.exe: no D3D8/9/11
 s2011_lumpofsugar_gackoh	-	notrace: Gackoh_Trial/Gackoh.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
 s2011_marine_marching	-	not recorded yet
 s2011_propeller_sukima	-	not recorded yet
 s2011_purplesoftware_miranosu	-	not recorded yet
 s2011_waffle_sex_friend	Faithful	not run on sake
 s2012_empress_lewdness	-	not recorded yet
-s2012_escude_gurenka	-	not recorded yet
+s2012_escude_gurenka	-	none: ネット体験版/gurenka.exe: no D3D8/9/11
 s2012_kaguya_sperman	-	notrace: sperman_trial.exe.zip/スペルマン（体験版）/GAME_SYS.exe: no title screen; tried d3d9; loaded: d3d9.dll dinput8.dll
 s2012_marine_deka_ane	-	not recorded yet
-s2012_ninetail_gears_of_dragoon	-	not recorded yet
-s2013_alicesoft_drapeko	-	notrace: dl/どらぺこ！体験版/DrapekoTrial.exe: title screen at 1s; tried d3d9; loaded: d3d9.dll
+s2012_ninetail_gears_of_dragoon	-	none: GoD_RPG_trial_100/uroboros.exe: no D3D8/9/11
+s2013_alicesoft_drapeko	-	notrace: dl/どらぺこ！体験版/DrapekoTrial.exe: title screen at 2s; tried d3d9; loaded: d3d9.dll
 s2014_clochette_sakigake	Convertible	no Windows answer yet
 s2014_erectlip_gyokumajyo	-	not recorded yet
 s2014_escude_hanaou	-	notrace: 花嫁と魔王WEB専用体験版/hanaou.exe: winplay wrote nothing; tried d3d9; loaded: no graphics DLL
@@ -272,14 +272,14 @@ s2014_qoobrand_majokoi	-	not recorded yet
 s2014_whirlpool_tearstilla	-	not recorded yet
 s2015_clochette_kokonatsu	Convertible	no Windows answer yet
 s2015_ensemble_sweet_yakimochi	Convertible	no Windows answer yet
-s2015_hulotte_yomeyaba	-	not recorded yet
+s2015_hulotte_yomeyaba	-	none: 嫁探しが捗りすぎてヤバい。体験版/嫁探しが捗りすぎてヤバい。TR.exe: no D3D8/9/11
 s2015_silkys_plus_neyuki	Convertible	no Windows answer yet
 s2016_eushully_sankaio	Convertible	no Windows answer yet
 s2016_hooksoft_amenitys_life	-	notrace: AmenitysLife_trial_02/AmenitysLife.exe: no title screen, ended; tried d3d9; loaded: no graphics DLL
-s2016_kaguya_idol_pafupafu	-	not recorded yet
+s2016_kaguya_idol_pafupafu	-	noconvert: アイドルパフパフマネージメント（体験版）/GAME_SYS.exe: d3d9
 s2016_marine_cospure_harem	-	not recorded yet
 s2017_akabeesoft3_tonofuta	Convertible	no Windows answer yet
-s2017_appetite_immorality_don	-	not recorded yet
+s2017_appetite_immorality_don	-	ddraw: apt090_tr/oyakodon_tr.exe: title screen at 7s; tried d3d9; loaded: d3d10warp.dll d3dim700.dll ddraw.dll dinput.dll dxgi.dll
 s2017_dualtail_vbb	-	not recorded yet
 s2017_inter_heart_glossy_hitozuma_ntr	Convertible	no Windows answer yet
 s2017_marmalade_mashimaro	-	not recorded yet
@@ -287,15 +287,15 @@ s2017_nanawind_alice_gram	Convertible	no Windows answer yet
 s2017_sagaplanets_kinkoi	-	not recorded yet
 s2017_wendybell_oreyome	-	not recorded yet
 s2018_dualtail_vbl	-	not recorded yet
-s2018_pin_point_yakyurare	-	not recorded yet
+s2018_pin_point_yakyurare	-	none: 彼女が野球部の性処理係に…体験版/やきゅられ体験版.eXe: no D3D8/9/11
 s2019_alumi_soft_inuyome2	-	not recorded yet
-s2019_appetite_dt_kyoiku	-	not recorded yet
-s2019_guilty_harame	-	not recorded yet
-s2019_lilim_shinmu	-	not recorded yet
+s2019_appetite_dt_kyoiku	-	ddraw: apt148_tr/DTkyoiku_trial.exe: title screen at 7s; tried d3d9; loaded: d3d10warp.dll d3dim700.dll ddraw.dll dinput.dll dxgi.dll
+s2019_guilty_harame	-	noconvert: 孕女～精子を欲しがる淫らな教え子～ 体験版/AdvHD.exe: dxgi
+s2019_lilim_shinmu	-	ddraw: sinmu_trial_1/風雷戦姫神夢web体験版01.exe: title screen at 15s; tried d3d9; loaded: d3d10warp.dll d3d9.dll d3dx9_43.dll ddraw.dll dinput.dll dxgi.dll
 s2019_lune_dogeza_saimin	-	not recorded yet
 s2020_amuse_craft_erotica_kinbaku	-	not recorded yet
 s2020_casket_ayakashi03	-	not recorded yet
-s2020_eushully_tenmei	-	not recorded yet
+s2020_eushully_tenmei	-	noconvert: 天冥のコンキスタ体験版/tenmei_trial.exe.is/天冥のコンキスタ体験版.msi.x/Program Files/Eushully/天冥のコンキスタ体験版/AGE.EXE: dxgi
 s2020_wonder_fool_maokatsu	Convertible	no Windows answer yet
 s2021_dualtail_vbhi	-	not recorded yet
 s2021_giga_fuyukiss	Convertible	no Windows answer yet
@@ -313,7 +313,7 @@ s2024_eushully_hyakusen	-	not recorded yet
 s2024_madosoft_selectoblige	-	not recorded yet
 s2025_dualtail_vbv	-	not recorded yet
 s2025_j_studio_galsfiction	-	not recorded yet
-s2025_marmalade_bakaple	-	not recorded yet
+s2025_marmalade_bakaple	-	noconvert: バカップルサプリメント体験版/bakaple.exe: d3d9
 s2026_bishop_tks	-	not recorded yet
 s2026_ensemble_sweet_ribichu	Convertible	no Windows answer yet
 s2026_lump_of_sugar_tayutama_zero	-	not recorded yet
