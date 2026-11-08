@@ -1,0 +1,394 @@
+#![allow(non_snake_case)]
+//! icu.dll, the ICU that Windows 10 1903 and later carry: the break iterators (ubrk_*) over
+//! UTF-16 text and the UText of utext_openUChars, which AdvHD (x64) uses to find where its
+//! lines may wrap (#51). The boundaries are ICU4X's (icu_segmenter: the same CLDR / UAX #14 and
+//! #29 rules as ICU4C; line breaking strict as ICU's default `line` rules, small kana not starting
+//! a line). Word breaking is the rule-based one: ICU4C splits runs of kanji and kana by its
+//! dictionary, sake by script. Windows' answers: tests/winref/probes/icubrk.c.
+//!
+//! The exports are cdecl and unversioned (ubrk_open, not ubrk_open_64).
+
+use crate::api::{implement, Ctx};
+use crate::mem::{self, ps, r16, r32, w32, w64, wp};
+use crate::HashMap;
+use icu_segmenter::options::{LineBreakOptions, SentenceBreakInvariantOptions, WordBreakInvariantOptions};
+use icu_segmenter::{GraphemeClusterSegmenter, LineSegmenter, SentenceSegmenter, WordSegmenter};
+use std::sync::Mutex;
+
+/// UErrorCode: U_ILLEGAL_ARGUMENT_ERROR (failures are > 0)
+const ILLEGAL_ARGUMENT: u32 = 1;
+const DONE: i32 = -1;
+/// UBreakIteratorType
+pub const CHARACTER: u32 = 0;
+pub const WORD: u32 = 1;
+pub const LINE: u32 = 2;
+pub const SENTENCE: u32 = 3;
+
+/// The boundaries of `text` (UTF-16 offsets, 0 and its length among them) by `kind`; None: not
+/// a kind ICU has.
+pub fn boundaries(kind: u32, text: &[u16]) -> Option<Vec<i32>> {
+    let mut b: Vec<i32> = match kind {
+        CHARACTER => GraphemeClusterSegmenter::new().segment_utf16(text).map(|i| i as i32).collect(),
+        WORD => WordSegmenter::new_for_non_complex_scripts(WordBreakInvariantOptions::default()).segment_utf16(text).map(|i| i as i32).collect(),
+        LINE => LineSegmenter::new_for_non_complex_scripts(LineBreakOptions::default()).segment_utf16(text).map(|i| i as i32).collect(),
+        SENTENCE => SentenceSegmenter::new(SentenceBreakInvariantOptions::default()).segment_utf16(text).map(|i| i as i32).collect(),
+        _ => return None,
+    };
+    // (an empty text has the one boundary 0)
+    if b.first() != Some(&0) {
+        b.insert(0, 0);
+    }
+    b.dedup();
+    Some(b)
+}
+
+/// A break iterator: its kind, the boundaries of its text, which one it is at.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Brk {
+    pub kind: u32,
+    pub bounds: Vec<i32>,
+    pub at: usize,
+}
+
+impl Brk {
+    pub fn new(kind: u32) -> Brk {
+        Brk { kind, bounds: vec![0], at: 0 }
+    }
+    pub fn set_text(&mut self, text: &[u16]) {
+        self.bounds = boundaries(self.kind, text).unwrap_or_else(|| vec![0]);
+        self.at = 0;
+    }
+    fn end(&self) -> usize {
+        self.bounds.len() - 1
+    }
+    pub fn current(&self) -> i32 {
+        self.bounds[self.at]
+    }
+    pub fn first(&mut self) -> i32 {
+        self.at = 0;
+        self.current()
+    }
+    pub fn last(&mut self) -> i32 {
+        self.at = self.end();
+        self.current()
+    }
+    /// The next boundary; DONE at the end (where it stays).
+    pub fn next(&mut self) -> i32 {
+        if self.at >= self.end() {
+            return DONE;
+        }
+        self.at += 1;
+        self.current()
+    }
+    pub fn previous(&mut self) -> i32 {
+        if self.at == 0 {
+            return DONE;
+        }
+        self.at -= 1;
+        self.current()
+    }
+    /// The first boundary past `off`; DONE (at the last one) when there is none.
+    pub fn following(&mut self, off: i32) -> i32 {
+        match self.bounds.iter().position(|&b| b > off) {
+            Some(i) => {
+                self.at = i;
+                self.current()
+            }
+            None => {
+                self.at = self.end();
+                DONE
+            }
+        }
+    }
+    /// The last boundary before `off`; DONE (at the first one) when there is none.
+    pub fn preceding(&mut self, off: i32) -> i32 {
+        match self.bounds.iter().rposition(|&b| b < off) {
+            Some(i) => {
+                self.at = i;
+                self.current()
+            }
+            None => {
+                self.at = 0;
+                DONE
+            }
+        }
+    }
+    /// Whether `off` is a boundary: there if so, else at the following one.
+    pub fn is_boundary(&mut self, off: i32) -> bool {
+        if let Some(i) = self.bounds.iter().position(|&b| b == off) {
+            self.at = i;
+            return true;
+        }
+        self.following(off);
+        false
+    }
+}
+
+static BRKS: Mutex<Option<HashMap<u32, Brk>>> = Mutex::new(None);
+
+fn with<R>(b: u32, f: impl FnOnce(&mut Brk) -> R) -> Option<R> {
+    BRKS.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&b).map(f)
+}
+
+fn failed(status: u32) -> bool {
+    status != 0 && r32(status) as i32 > 0
+}
+fn fail(status: u32, code: u32) {
+    if status != 0 {
+        w32(status, code);
+    }
+}
+
+/// UTF-16 text at `p`, `len` units (-1: up to its NUL)
+fn uchars(p: u32, len: i64) -> Vec<u16> {
+    if p == 0 {
+        return Vec::new();
+    }
+    if len >= 0 {
+        return (0..len as u32).map(|i| r16(p + 2 * i)).collect();
+    }
+    let mut v = Vec::new();
+    while r16(p + 2 * v.len() as u32) != 0 {
+        v.push(r16(p + 2 * v.len() as u32));
+    }
+    v
+}
+
+// ---------------------------------------------------------------------------------------------
+// UText (utext.h: public, a caller may hold it on its stack)
+
+const UTEXT_MAGIC: u32 = 0x345a_d82c;
+const UTEXT_HEAP_ALLOCATED: u32 = 1;
+/// (magic, flags, sizeOfStruct, chunkNativeLimit, nativeIndexingLimit, chunkLength,
+/// chunkContents, context, a) offsets; sizeof(UText)
+fn utext_layout() -> ([u32; 9], u32) {
+    if ps() == 8 { ([0, 4, 12, 16, 28, 44, 48, 72, 112], 160) } else { ([0, 4, 12, 16, 28, 44, 48, 60, 80], 128) }
+}
+
+/// The text a UText of utext_openUChars holds.
+fn utext_text(ut: u32) -> Option<Vec<u16>> {
+    let ([magic, _, _, _, _, _, _, context, a], _) = utext_layout();
+    if ut == 0 || r32(ut + magic) != UTEXT_MAGIC {
+        return None;
+    }
+    Some(uchars(mem::rp(ut + context), mem::r64(ut + a) as i64))
+}
+
+/// utext_openUChars(UText *ut, const UChar *s, int64_t length, UErrorCode *status)
+fn utext_openUChars(c: &mut Ctx) -> u32 {
+    let (ut, s) = (c.a(0), c.a(1));
+    let (len, status) = if mem::x64() { (c.a64(2) as i64, c.a(3)) } else { ((c.a(2) as u64 | (c.a(3) as u64) << 32) as i64, c.a(4)) };
+    if failed(status) {
+        return ut;
+    }
+    if (s == 0 && len != 0) || len < -1 {
+        fail(status, ILLEGAL_ARGUMENT);
+        return ut;
+    }
+    let n = uchars(s, len).len() as u64;
+    let ([magic, flags, size, limit, indexing, chunk_len, contents, context, a], sz) = utext_layout();
+    let (ut, heap) = if ut == 0 { (mem::heap_alloc(sz, true), UTEXT_HEAP_ALLOCATED) } else { (ut, r32(ut + flags) & UTEXT_HEAP_ALLOCATED) };
+    if heap == 0 && r32(ut + magic) != UTEXT_MAGIC {
+        fail(status, ILLEGAL_ARGUMENT);
+        return ut;
+    }
+    w32(ut + magic, UTEXT_MAGIC);
+    w32(ut + flags, heap);
+    w32(ut + size, sz);
+    w64(ut + limit, n);
+    w32(ut + indexing, n as u32);
+    w32(ut + chunk_len, n as u32);
+    wp(ut + contents, s);
+    wp(ut + context, s);
+    w64(ut + a, n);
+    ut
+}
+
+/// utext_close(UText *): NULL when it was allocated by the open, else `ut` itself
+fn utext_close(c: &mut Ctx) -> u32 {
+    let ut = c.a(0);
+    let ([magic, flags, ..], _) = utext_layout();
+    if ut == 0 || r32(ut + magic) != UTEXT_MAGIC {
+        return ut;
+    }
+    if r32(ut + flags) & UTEXT_HEAP_ALLOCATED != 0 {
+        w32(ut + magic, 0);
+        mem::heap_free(ut);
+        return 0;
+    }
+    ut
+}
+
+// ---------------------------------------------------------------------------------------------
+// ubrk_*
+
+/// ubrk_open(UBreakIteratorType, const char *locale, const UChar *text, int32_t length, UErrorCode *)
+fn ubrk_open(c: &mut Ctx) -> u32 {
+    let (kind, text, len, status) = (c.a(0), c.a(2), c.a(3) as i32, c.a(4));
+    if failed(status) {
+        return 0;
+    }
+    if kind > SENTENCE {
+        fail(status, ILLEGAL_ARGUMENT);
+        return 0;
+    }
+    let mut b = Brk::new(kind);
+    if text != 0 {
+        b.set_text(&uchars(text, len as i64));
+    }
+    let h = mem::heap_alloc(16, true);
+    BRKS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, b);
+    h
+}
+/// ubrk_setText(bi, const UChar *, int32_t, UErrorCode *)
+fn ubrk_setText(c: &mut Ctx) -> u32 {
+    let (b, text, len, status) = (c.a(0), c.a(1), c.a(2) as i32, c.a(3));
+    if failed(status) {
+        return 0;
+    }
+    let t = uchars(text, len as i64);
+    if with(b, |k| k.set_text(&t)).is_none() {
+        fail(status, ILLEGAL_ARGUMENT);
+    }
+    0
+}
+/// ubrk_setUText(bi, UText *, UErrorCode *)
+fn ubrk_setUText(c: &mut Ctx) -> u32 {
+    let (b, ut, status) = (c.a(0), c.a(1), c.a(2));
+    if failed(status) {
+        return 0;
+    }
+    match utext_text(ut) {
+        Some(t) if with(b, |k| k.set_text(&t)).is_some() => {}
+        _ => fail(status, ILLEGAL_ARGUMENT),
+    }
+    0
+}
+fn ubrk_close(c: &mut Ctx) -> u32 {
+    let b = c.a(0);
+    if BRKS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&b).is_some() {
+        mem::heap_free(b);
+    }
+    0
+}
+fn step(c: &mut Ctx, f: fn(&mut Brk) -> i32) -> u32 {
+    with(c.a(0), f).unwrap_or(DONE) as u32
+}
+fn ubrk_current(c: &mut Ctx) -> u32 {
+    step(c, |b| b.current())
+}
+fn ubrk_next(c: &mut Ctx) -> u32 {
+    step(c, Brk::next)
+}
+fn ubrk_previous(c: &mut Ctx) -> u32 {
+    step(c, Brk::previous)
+}
+fn ubrk_first(c: &mut Ctx) -> u32 {
+    step(c, Brk::first)
+}
+fn ubrk_last(c: &mut Ctx) -> u32 {
+    step(c, Brk::last)
+}
+fn ubrk_following(c: &mut Ctx) -> u32 {
+    let off = c.a(1) as i32;
+    with(c.a(0), |b| b.following(off)).unwrap_or(DONE) as u32
+}
+fn ubrk_preceding(c: &mut Ctx) -> u32 {
+    let off = c.a(1) as i32;
+    with(c.a(0), |b| b.preceding(off)).unwrap_or(DONE) as u32
+}
+fn ubrk_isBoundary(c: &mut Ctx) -> u32 {
+    let off = c.a(1) as i32;
+    with(c.a(0), |b| b.is_boundary(off)).unwrap_or(false) as u32
+}
+
+/// uloc_getDefault(): a Japanese Windows' "ja_JP"
+fn uloc_getDefault(_: &mut Ctx) -> u32 {
+    static S: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        let p = mem::heap_alloc(8, true);
+        mem::write(p, b"ja_JP\0");
+        p
+    })
+}
+
+pub fn init() {
+    macro_rules! reg {
+        ($($f:ident),*) => { $(implement("icu", stringify!($f), $f);)* };
+    }
+    reg!(utext_openUChars, utext_close, ubrk_open, ubrk_setText, ubrk_setUText, ubrk_close, ubrk_current, ubrk_next, ubrk_previous, ubrk_first, ubrk_last, ubrk_following, ubrk_preceding, ubrk_isBoundary, uloc_getDefault);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn u(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn japanese_lines_keep_small_kana_and_closing_marks() {
+        // 「ちょっと、待って。」: no break before ょ / っ (strict), 、 。 」, nor after 「
+        let t = u("「ちょっと、待って。」");
+        let b = boundaries(LINE, &t).unwrap();
+        assert_eq!(b, [0, 4, 6, 8, 11]);
+        // English: after the spaces
+        assert_eq!(boundaries(LINE, &u("a quick fox")).unwrap(), [0, 2, 8, 11]);
+    }
+
+    #[test]
+    fn characters_keep_surrogates_and_emoji_sequences() {
+        // a surrogate pair, a flag (two regional indicators), a family ZWJ sequence, e + acute
+        let t = u("𠀋🇯🇵👨‍👩‍👧e\u{301}");
+        let b = boundaries(CHARACTER, &t).unwrap();
+        assert_eq!(b, [0, 2, 6, 14, 16]);
+        assert_eq!(boundaries(CHARACTER, &[]).unwrap(), [0]);
+        assert_eq!(boundaries(9, &t), None);
+    }
+
+    #[test]
+    fn iterator_moves_as_icu() {
+        let mut b = Brk::new(LINE);
+        b.set_text(&u("a quick fox"));
+        assert_eq!((b.current(), b.next(), b.next(), b.next(), b.next(), b.current()), (0, 2, 8, 11, DONE, 11));
+        assert_eq!((b.previous(), b.first(), b.previous(), b.last()), (8, 0, DONE, 11));
+        assert_eq!((b.following(2), b.following(11), b.current()), (8, DONE, 11));
+        assert_eq!((b.preceding(8), b.preceding(0), b.current()), (2, DONE, 0));
+        assert_eq!((b.is_boundary(8), b.current(), b.is_boundary(5), b.current()), (true, 8, false, 8));
+    }
+
+    proptest! {
+        /// Boundaries rise from 0 to the length, and never split a surrogate pair
+        #[test]
+        fn boundaries_rise_and_keep_pairs(s in "\\PC{0,40}", kind in 0u32..4) {
+            let t = u(&s);
+            let b = boundaries(kind, &t).unwrap();
+            prop_assert_eq!(b[0], 0);
+            prop_assert_eq!(*b.last().unwrap(), t.len() as i32);
+            prop_assert!(b.windows(2).all(|w| w[0] < w[1]));
+            for &i in &b[1..b.len().max(2) - 1] {
+                prop_assert!(!(0xdc00..0xe000).contains(&t[i as usize]));
+            }
+        }
+
+        /// next() from the start visits every boundary in order, then DONE; following(x) is the
+        /// first boundary past x
+        #[test]
+        fn walking_visits_every_boundary(s in "\\PC{0,30}", kind in 0u32..4, off in -2i32..40) {
+            let t = u(&s);
+            let mut b = Brk::new(kind);
+            b.set_text(&t);
+            let mut seen = vec![b.current()];
+            loop {
+                let n = b.next();
+                if n == DONE { break; }
+                seen.push(n);
+            }
+            prop_assert_eq!(&seen, &b.bounds);
+            let want = b.bounds.iter().copied().find(|&x| x > off).unwrap_or(DONE);
+            prop_assert_eq!(b.following(off), want);
+        }
+    }
+}
