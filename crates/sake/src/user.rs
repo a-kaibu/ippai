@@ -955,6 +955,15 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
         }
         0x31 => ctl(h).font,
         0x87 if button => 0x2000,
+        // BM_SETSTYLE: the button type (BS_TYPEMASK), as Wine's button.c (a push button made
+        // the default one: Enter in IsDialogMessage then takes it, winref dlgenter)
+        0xf4 if button => {
+            with(|s| s.wins.get_mut(&h).map(|w| w.style = w.style & !0xf | wp & 0xf));
+            if lp != 0 {
+                invalidate(h, None, true);
+            }
+            0
+        }
         0x201 | 0x203 if button => {
             set_ctl(h, |t| t.pressed = true);
             with(|s| s.capture = h);
@@ -3264,11 +3273,11 @@ fn DispatchMessageA(c: &mut Ctx) -> u32 {
     if h == 0 {
         return 0;
     }
-    if (0x200..=0x20a).contains(&m) && m != 0x200 && crate::env_on!("SAKE_TRACE_INPUT") {
+    if ((0x200..=0x20a).contains(&m) && m != 0x200 || (0x100..=0x109).contains(&m)) && crate::env_on!("SAKE_TRACE_INPUT") {
         eprintln!("sake input: dispatch {h:x} msg {m:x} {wp:x} {lp:x}");
     }
     let r = send(c, h, m, wp, lp);
-    if (0x200..=0x20a).contains(&m) && m != 0x200 && crate::env_on!("SAKE_TRACE_INPUT") {
+    if ((0x200..=0x20a).contains(&m) && m != 0x200 || (0x100..=0x109).contains(&m)) && crate::env_on!("SAKE_TRACE_INPUT") {
         eprintln!("sake input: dispatched {m:x} -> {r:x}");
     }
     if m == 0xf {
@@ -3315,6 +3324,9 @@ fn GetNextDlgTabItem(c: &mut Ctx) -> u32 { next_dialog_tab(c.a(0), c.a(1), c.a(2
 fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
     let (dlg, msg) = (c.a(0), c.a(1));
     let (h, m, key, _) = msg_at(msg);
+    if (0x100..=0x109).contains(&m) && crate::env_on!("SAKE_TRACE_INPUT") {
+        eprintln!("sake input: IsDialogMessage({dlg:x}) {h:x} msg {m:x} key {key:x}");
+    }
     if dlg == 0 || h == 0 {
         return 0;
     }
@@ -3357,9 +3369,12 @@ fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
         c.call(d, &[msg]);
         return 1;
     }
-    let (id, b) = if key == 0x0d { default_button(dlg) } else { (2, dlg_item(dlg, 2)) };
+    let (id, b) = if key == 0x0d { default_button(c, dlg) } else { (2, dlg_item(dlg, 2)) };
     let f = crate::api::export("user32", if wide { "SendMessageW" } else { "SendMessageA" });
-    c.call(f, &[dlg, 0x111, id, b]);
+    let r = c.call(f, &[dlg, 0x111, id, b]);
+    if crate::env_on!("SAKE_TRACE_INPUT") {
+        eprintln!("sake input: IsDialogMessage({dlg:x}) WM_COMMAND {id:x} {b:x} -> {r:x}");
+    }
     1
 }
 fn IsDialogMessageA(c: &mut Ctx) -> u32 {
@@ -5728,6 +5743,12 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                     s.keys[vk] &= 1;
                 }
                 let target = if s.focus != 0 { s.focus } else { s.active };
+                if crate::env_on!("SAKE_TRACE_INPUT") {
+                    eprintln!("sake input: key {vk:x} kind {kind} -> {target:x} (focus {:x} active {:x})", s.focus, s.active);
+                    for (h, w) in s.wins.iter() {
+                        eprintln!("  win {h:x} parent {:x} id {} vis {} style {:x} ex {:x} tid {} rect {:?}", w.parent, w.id, w.visible, w.style, w.exstyle, w.tid, w.rect);
+                    }
+                }
                 let Some(w) = s.wins.get(&target) else { return };
                 let tid = w.tid;
                 let alt = s.keys[0x12] & 0x80 != 0;
@@ -5822,7 +5843,7 @@ fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
 
 /// The control Enter presses in a dialog: a focused default push button, else the default push button
 /// (BS_DEFPUSHBUTTON), else IDOK. (id, its window)
-fn default_button(dlg: u32) -> (u32, u32) {
+fn default_button(c: &mut Ctx, dlg: u32) -> (u32, u32) {
     // (Wine's IsDialogMessage: the focused control if it is a default push button, else
     // DM_GETDEFID's, else IDOK; winref msgwait: a plain push button with the focus is not taken)
     let focused = with(|s| {
@@ -5830,7 +5851,14 @@ fn default_button(dlg: u32) -> (u32, u32) {
         let button = s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button"));
         (w.parent == dlg && button && w.style & 0xf == 1).then(|| (w.id & 0xffff, s.focus))
     });
-    focused.or_else(|| def_button(dlg)).unwrap_or_else(|| (1, dlg_item(dlg, 1)))
+    if let Some(f) = focused {
+        return f;
+    }
+    // DM_GETDEFID: a dialog's procedure answers it, a game's own window (DefWindowProc) does
+    // not, and then it is IDOK even beside a BS_DEFPUSHBUTTON (host/tests/dlgenter)
+    let r = send(c, dlg, 0x400, 0, 0);
+    let id = if r >> 16 == 0x534b { r & 0xffff } else { 1 };
+    (id, dlg_item(dlg, id))
 }
 
 /// The dialog's BS_DEFPUSHBUTTON child: (id, window)
@@ -6012,7 +6040,7 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
             Some(m) => {
                 let mine = m.hwnd == dlg || with(|s| s.wins.get(&m.hwnd).is_some_and(|w| w.parent == dlg));
                 if m.msg == 0x100 && mine && (m.w == 0x0d || m.w == 0x1b) {
-                    let (id, b) = if m.w == 0x0d { default_button(dlg) } else { (2, dlg_item(dlg, 2)) };
+                    let (id, b) = if m.w == 0x0d { default_button(c, dlg) } else { (2, dlg_item(dlg, 2)) };
                     send(c, dlg, 0x111, id, b);
                 } else {
                     dispatch_msg(c, &m);
