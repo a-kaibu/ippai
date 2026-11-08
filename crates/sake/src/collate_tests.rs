@@ -79,7 +79,11 @@ proptest! {
     fn ignoring_coarsens(a in text(), b in text(), f in flags()) {
         let fine = compare(&a, &b, 0);
         let coarse = compare(&a, &b, f & !SORT_STRINGSORT);
-        if coarse != Ordering::Equal && f & NORM_IGNORESYMBOLS == 0 {
+        // (hyphens and apostrophes, full-width ones too, break only the ties case and width leave:
+        // once those are ignored they can decide the other way, as on Windows: a < -a < A, and
+        // -a > A ignoring case; the golden test above holds that)
+        let special = |s: &[u16]| s.iter().any(|&c| matches!(weight(c, 0), Weight::Special(_)));
+        if coarse != Ordering::Equal && f & NORM_IGNORESYMBOLS == 0 && !special(&a) && !special(&b) {
             prop_assert_eq!(coarse, fine);
         }
     }

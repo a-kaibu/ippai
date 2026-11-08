@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc e42c822504a36fc48455fa27825fd0a152ed1a3d3f5e1fb69da635fc222ff6c3 # shrinks to a = [305]
 cc a80352b5a59a9d0a37782213f2d67344920cac4d92acde87eb1e98d10ddec2ed # shrinks to a = [65377]
+cc 44b62a2a2b59a6ed382d0e6007fd5f32b7c643fc50a0cc5409eb81de5888c8d2 # shrinks to a = [922], b = [954, 65287], f = 196609
