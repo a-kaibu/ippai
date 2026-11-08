@@ -1,0 +1,8 @@
+api d3d9
+exe 珊海王の円環 体験版/sankai_trial.exe.is/珊海王の円環体験版.msi.x/Program Files/Eushully/珊海王の円環体験版/AGE.EXE
+seconds 30
+bytes 155650
+sha256 f47f6b32aec6900ac9ba4d5521851d977fc3890794b0396e2863065360f99e43
+ref ghcr.io/a-kaibu/ippai-traces:s2016_eushully_sankaio-32
+zst sha256:f87b7a0c94c24d0a64302c5884bc8e2c45b1fa94ee40af3d9ea695a7602b47c9
+zbytes 9997

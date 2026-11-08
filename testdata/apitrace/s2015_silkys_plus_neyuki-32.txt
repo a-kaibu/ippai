@@ -1,0 +1,8 @@
+api d3d9
+exe 根雪の幻影　白花荘の人々　体験版第2弾/neyuki.exe
+seconds 30
+bytes 287601
+sha256 941b72f41bf592d84b0fc29838b16cbd25f12729fdbca45e53afb5f2a5842893
+ref ghcr.io/a-kaibu/ippai-traces:s2015_silkys_plus_neyuki-32
+zst sha256:a3ea18be13e9840a94c1781874411a8283c5ddeb1c7c22e379cfe46f921d4364
+zbytes 47855

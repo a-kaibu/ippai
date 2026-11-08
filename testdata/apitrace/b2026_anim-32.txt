@@ -1,0 +1,8 @@
+api d3d9
+exe ママラブ！２体験版/mamalove2_trial.exe
+seconds 30
+bytes 30720002
+sha256 f0fbed0af29b0f137c00b0cec5b7e89c85fd228c501fdc11164737c7581dfc65
+ref ghcr.io/a-kaibu/ippai-traces:b2026_anim-32
+zst sha256:6e61cce53ea678ad2b9db13ef1f4fd429bb34ad33ae8d7fd85b48f3917a3da8d
+zbytes 5901044

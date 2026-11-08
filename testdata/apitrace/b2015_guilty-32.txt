@@ -1,0 +1,8 @@
+api d3d9
+exe 淫らに喘ぐ七人の夜這いする孕女　体験版/AdvHD.exe
+seconds 30
+bytes 64786434
+sha256 5eddab81c51894cd9d4d9f3deeb21271a88e6624f80f6fe3259417cf2aac69ea
+ref ghcr.io/a-kaibu/ippai-traces:b2015_guilty-32
+zst sha256:4d2b6599e9f3e0b6aa68c14290434231d099b0b688d05273febfa23bf77d3387
+zbytes 27049252

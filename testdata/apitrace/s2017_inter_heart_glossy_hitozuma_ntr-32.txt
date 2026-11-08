@@ -1,0 +1,8 @@
+api d3d9
+exe tsumanetori-trial/tsumanetori-trial.exe
+seconds 30
+bytes 548866
+sha256 a4b5ffcd97e448bd8bb90d5b7995dba9f95f80e577c92802fd65ae93892409c5
+ref ghcr.io/a-kaibu/ippai-traces:s2017_inter_heart_glossy_hitozuma_ntr-32
+zst sha256:40b07f63dd9e0f7b3a478df1e7958a9bd89bc533d6f31501b96af4672d5ab0a8
+zbytes 184764

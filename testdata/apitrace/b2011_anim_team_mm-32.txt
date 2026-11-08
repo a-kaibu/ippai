@@ -1,0 +1,8 @@
+api d3d9
+exe NTR彼女体験版_修正版/ntr_trial.exe
+seconds 30
+bytes 16908290
+sha256 38b3507749b99325f47ddb012690b122bb1ddbb833869fc67b890d8e0546b553
+ref ghcr.io/a-kaibu/ippai-traces:b2011_anim_team_mm-32
+zst sha256:512ae258626d3bd1c6284c8accc7421ca9b1ff4fd55faf8a080369a22f2c7e9d
+zbytes 7361663

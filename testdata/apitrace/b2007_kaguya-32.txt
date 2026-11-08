@@ -1,0 +1,8 @@
+api d3d9
+exe GAME_SYS.exe
+seconds 30
+bytes 54984706
+sha256 aefb01c1ecb337efa7eee982260b795476739d9541714046c1a14f72afa96c8e
+ref ghcr.io/a-kaibu/ippai-traces:b2007_kaguya-32
+zst sha256:b7241d8757637b37793f1cc39717875dcc1d12b70cd32fae34a1bf82651ac499
+zbytes 1891106

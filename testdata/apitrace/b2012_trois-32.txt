@@ -1,0 +1,8 @@
+api d3d9
+exe MOP2_TRIAL/MOP2_TRIAL.exe
+seconds 30
+bytes 8093698
+sha256 0a4d096f6cbd5d79cd65ac7f8d6d81c923a61722b3aa3cdcf2be9ab702dc9066
+ref ghcr.io/a-kaibu/ippai-traces:b2012_trois-32
+zst sha256:26c19236ed828608f94295f2ac5305dd1bdd3bdecd2ca66277a3dd33fff5fb32
+zbytes 1933622

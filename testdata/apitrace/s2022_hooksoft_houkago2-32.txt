@@ -1,0 +1,8 @@
+api d3d9
+exe HoukagoCinderella2_trialv1.01/放課後シンデレラ２.exe
+seconds 30
+bytes 539566082
+sha256 de4b28b840736752932ca7ce8733e1f3e962db016f500419f8d3fe76f3336a28
+ref ghcr.io/a-kaibu/ippai-traces:s2022_hooksoft_houkago2-32
+zst sha256:30c657c1b10f6bc279d9f8871fb8fe20ca86516674d647fa78f17474f2bf8ace
+zbytes 133588314

@@ -1,0 +1,8 @@
+api d3d9
+exe harakatsu-trial/harakatsu-trial.exe
+seconds 30
+bytes 516098
+sha256 c48a97ecc201f76f34f74407c5e5968f347cc9371dab096fc7b8d2036a97086b
+ref ghcr.io/a-kaibu/ippai-traces:b2016_inter_heart_glossy-32
+zst sha256:16b132d390e5604fe202893c2ade5a810bfd9f4003dfef9f1069346226151cae
+zbytes 155360

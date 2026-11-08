@@ -1,0 +1,8 @@
+api d3d9
+exe 春音アリス＊グラム　体験版/春音アリス＊グラム　体験版.exe
+seconds 30
+bytes 355147778
+sha256 5e94b40f05a2cbc66e70a50217b4b15d9ce2e8a04ab5de4311e9325f12c744f1
+ref ghcr.io/a-kaibu/ippai-traces:s2017_nanawind_alice_gram-32
+zst sha256:7aee2145d106188129b75f65e24ba6cf18237a0f96282f166e856af604cfa202
+zbytes 119787491

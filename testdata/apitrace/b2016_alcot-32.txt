@@ -1,0 +1,8 @@
+api d3d9
+exe よめがみ リコＨシーン体験版/よめがみ リコＨシーン体験版.exe
+seconds 30
+bytes 59674626
+sha256 b05aee3bd7e4066bcefc3d3cae5ee995bb8181a8ca1e12571223ba298dddbfbe
+ref ghcr.io/a-kaibu/ippai-traces:b2016_alcot-32
+zst sha256:aaed291ef6f262458082422f6b6fe387d2b8dfa8248b454ec507ee020feeda03
+zbytes 41808330

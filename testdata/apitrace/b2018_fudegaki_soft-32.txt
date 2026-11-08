@@ -1,0 +1,8 @@
+api dxgi
+exe 催眠学園１年生_体験版/催眠学園１年生体験版.exe
+seconds 30
+bytes 29007874
+sha256 88742b15b383d79f04588a5290d52f6fe554173a9c8b606959501f6c230e91e8
+ref ghcr.io/a-kaibu/ippai-traces:b2018_fudegaki_soft-32
+zst sha256:6dbc6e8759c8dbd83af16305074b85bbb58cf6efecfad13d9611b3bb7a8cf459
+zbytes 8220718

@@ -1,0 +1,8 @@
+api d3d9
+exe knotfiction-trial/knotfiction-trial.exe
+seconds 30
+bytes 638978
+sha256 8bfbe9d3184f4852e6d5f9edc2244a75fa03459153ccd14194463ba52e533c47
+ref ghcr.io/a-kaibu/ippai-traces:b2018_hachimitsu_soft-32
+zst sha256:2e418d85508d3ff55e4e31a6204866fc5db4b2da67c85c1c567da17f904b344d
+zbytes 236874

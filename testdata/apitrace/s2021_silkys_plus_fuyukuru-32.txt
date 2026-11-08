@@ -1,0 +1,8 @@
+api dxgi
+exe ふゆから、くるる。 体験版/fuyukuru.exe
+seconds 30
+bytes 573000
+sha256 c846d859bc6d874edd474f37ebeb39c567888bad5f07c722b06ee5b4154de439
+ref ghcr.io/a-kaibu/ippai-traces:s2021_silkys_plus_fuyukuru-32
+zst sha256:4811c3eaac37f58a6545fa4aa7033641e20525273c5370fc517ddaac6d7fffde
+zbytes 35903

@@ -1,0 +1,8 @@
+api d3d9
+exe フユキス　体験版/フユキス体験版.exe
+seconds 30
+bytes 41476098
+sha256 1c3d52f02988a29d9f4748befb2ab8266b23ee4813971d0b87979379bda7c140
+ref ghcr.io/a-kaibu/ippai-traces:s2021_giga_fuyukiss-32
+zst sha256:2ac15ac79ad080b613f60e5f9b997ba4994dd38d6e19005cf6027b334b58b2c1
+zbytes 19103974

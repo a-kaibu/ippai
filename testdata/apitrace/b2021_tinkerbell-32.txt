@@ -1,0 +1,8 @@
+api dxgi
+exe 淫妖蟲穢体験版01/inyou_w.exe
+seconds 30
+bytes 8519682
+sha256 8b8e3d4504524a08d17fdabcd7f3167ef328beeacd56aae6d6d9b8645a866173
+ref ghcr.io/a-kaibu/ippai-traces:b2021_tinkerbell-32
+zst sha256:05000a58f9ad72cac3147a9287c52c1989ddd6fdc0775b4e3cf6d6648dca0a1a
+zbytes 4959042

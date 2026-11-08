@@ -1,0 +1,8 @@
+api d3d9
+exe サキガケ⇒ジェネレーション！ WEB体験版/GameData/cs2.exe
+seconds 30
+bytes 9129986
+sha256 99926f4f29f9f4e94458fdb3cddcb2af3a0c7ae1e47b58a158717331b6c1656c
+ref ghcr.io/a-kaibu/ippai-traces:s2014_clochette_sakigake-32
+zst sha256:59dca7424ba38ad36bcaac3c29710cf47f59bde468ca75e8b3742e7a0ef15330
+zbytes 2124585

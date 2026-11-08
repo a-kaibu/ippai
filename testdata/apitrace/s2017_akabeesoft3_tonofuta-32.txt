@@ -1,0 +1,8 @@
+api d3d9
+exe 少女と年の差、ふたまわり。_体験版/difference.exe
+seconds 30
+bytes 272564226
+sha256 665701af872f58fb6ab67511975c656e52ea766d2fa762467d5d594e395c6700
+ref ghcr.io/a-kaibu/ippai-traces:s2017_akabeesoft3_tonofuta-32
+zst sha256:9da393c6baed4ffcb6b2a83bfb01b134a4b99ffbba24f89213c503855354a293
+zbytes 133534832

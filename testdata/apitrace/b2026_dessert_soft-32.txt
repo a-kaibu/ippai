@@ -1,0 +1,8 @@
+api d3d9
+exe doinaka-trial/doinaka-trial.exe
+seconds 30
+bytes 782338
+sha256 612d46a40c481550f0c7c82eac1b19a6bea642290b9238b23b691535ed923c76
+ref ghcr.io/a-kaibu/ippai-traces:b2026_dessert_soft-32
+zst sha256:fa61db344a00c7f05b63f183cb86bce5716c37140c1616bc26df9a24d7b958b1
+zbytes 307281
