@@ -15,7 +15,8 @@ if [ ! -x "$WATCOM/binl64/wcl" ]; then
   echo "$SHA  $DIR/ow.tar.xz" | sha256sum -c --quiet
   # (only what a 16-bit Windows program needs: the Linux tools, the headers, the 286 libraries)
   rm -rf "$WATCOM" && mkdir -p "$WATCOM"
-  tar -C "$WATCOM" -xJf "$DIR/ow.tar.xz" binl64 h lib286 license.txt
+  # (its members are named ./binl64/...: GNU tar finds no "binl64" in it)
+  tar -C "$WATCOM" -xJf "$DIR/ow.tar.xz" ./binl64 ./h ./lib286 ./license.txt
   rm "$DIR/ow.tar.xz"
 fi
 export PATH=$WATCOM/binl64:$PATH INCLUDE=$WATCOM/h:$WATCOM/h/win
