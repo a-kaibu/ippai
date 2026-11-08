@@ -12,6 +12,13 @@
 //! exception that leaves a catch block passes its CONSOLIDATE_TRAP frame: through_catch notes
 //! a rethrow (dispatch) or abandons the catch (unwind), as Wine's filter and __finally around
 //! its call of the funclet.
+//!
+//! _set_se_translator: a frame handler with try blocks that gets a structured exception (not
+//! /EHs) jumps into the thread's translator with TRANSLATE_TRAP as the return address. A C++
+//! exception it throws is dispatched on its own: seh64's walk goes from TRANSLATE_TRAP to the
+//! handler's caller and from there into the frames of the structured exception, so any frame
+//! from where that happened up can catch it. A translator that returns gets the handler called
+//! again, which goes on without it (catch (...) only).
 
 #![allow(non_snake_case)]
 
@@ -26,6 +33,7 @@ const MAGIC_VC6: u32 = 0x1993_0520;
 const MAGIC_VC8: u32 = 0x1993_0522;
 const STATUS_UNWIND_CONSOLIDATE: u32 = 0x8000_0029;
 const STATUS_LONGJUMP: u32 = 0x8000_0026;
+const STATUS_BREAKPOINT: u32 = 0x8000_0003;
 const EXCEPTION_NONCONTINUABLE: u32 = 1;
 const EXCEPTION_UNWINDING: u32 = 2;
 const EXCEPTION_EXIT_UNWIND: u32 = 4;
@@ -50,6 +58,18 @@ const FH4_PARAMS: u32 = 10;
 
 /// Where the current exception (record, context) is kept: the TEB's free page after errno.
 const CUR_EXC_TEB: u32 = crate::crt::ERRNO_TEB + 0x10;
+
+/// _set_se_translator's function, per thread (after the current exception)
+const SE_TRANSLATOR_TEB: u32 = crate::cxx::SE_TRANSLATOR_TEB;
+/// The exception (record u32, frame u64) whose translator returned: its handler, called again,
+/// goes on without it.
+const SE_TRANSLATED_TEB: u32 = SE_TRANSLATOR_TEB + 8;
+/// Where the translator returns to (seh64's walk passes it too).
+pub const TRANSLATE_TRAP: u32 = 0xffff_0060;
+/// The translator's call below the handler's return address: TRANSLATE_TRAP, the home space,
+/// EXCEPTION_POINTERS (record, context) at 0x30, the dispatcher context at 0x40 and the frame
+/// at 0x48.
+pub const TRANSLATE_FRAME: u32 = 0x50;
 
 fn trace() -> bool {
     static T: OnceLock<bool> = OnceLock::new();
@@ -580,6 +600,9 @@ fn frame_handler3(c: &mut Ctx) -> u32 {
         return CONTINUE_SEARCH;
     }
     let exc_type = if code(rec) == CXX_EXCEPTION { info(rec, 2) as u32 } else { 0 };
+    if exc_type == 0 && code(rec) != CXX_EXCEPTION && translate(c, rec, frame, ctx, dp) {
+        return 0;
+    }
     find_catch3(c, rec, ctx, frame, &d, &f, descr, exc_type, orig_frame);
     if c.jumped {
         return 0;
@@ -844,12 +867,76 @@ fn frame_handler4(c: &mut Ctx) -> u32 {
         return CONTINUE_SEARCH;
     }
     let exc_type = if code(rec) == CXX_EXCEPTION { info(rec, 2) as u32 } else { 0 };
+    if code(rec) != CXX_EXCEPTION && translate(c, rec, frame, ctx, dp) {
+        // (the handler runs again: the catch funclet's state with it)
+        TRYLEVEL4.with(|t| t.set(level));
+        return 0;
+    }
     find_catch4(c, rec, ctx, frame, &d, &f, exc_type, orig_frame, level);
     if c.jumped {
         return 0;
     }
     noexcept(c);
     CONTINUE_SEARCH
+}
+
+// ---------------------------------------------------------------------------------------------
+// _set_se_translator
+
+fn _set_se_translator(c: &mut Ctx) -> u32 {
+    let at = crate::cur().teb + SE_TRANSLATOR_TEB;
+    let old = r64(at);
+    w64(at, c.a64(0));
+    c.edx = Some((old >> 32) as u32);
+    old as u32
+}
+
+/// A frame handler with try blocks has the structured exception `rec`: calls the thread's
+/// translator (code, EXCEPTION_POINTERS*) in its place, unless there is none, the exception is
+/// a breakpoint, or it returned for this frame already. Whether it jumped there.
+fn translate(c: &mut Ctx, rec: u32, frame: u64, ctx: u32, dp: u32) -> bool {
+    let teb = crate::cur().teb;
+    let f = r64(teb + SE_TRANSLATOR_TEB);
+    if r32(teb + SE_TRANSLATED_TEB) == rec && r64(teb + SE_TRANSLATED_TEB + 8) == frame {
+        w32(teb + SE_TRANSLATED_TEB, 0);
+        return false;
+    }
+    if f == 0 || code(rec) == STATUS_BREAKPOINT {
+        return false;
+    }
+    if trace() {
+        eprintln!("sake: x64 SE translator {f:#x} for {:08x} (frame {frame:#x})", code(rec));
+    }
+    let sp = c.esp - TRANSLATE_FRAME;
+    w64(sp, TRANSLATE_TRAP as u64);
+    w64(sp + 0x30, rec as u64);
+    w64(sp + 0x38, ctx as u64);
+    w64(sp + 0x40, dp as u64);
+    w64(sp + 0x48, frame);
+    c.cpu.set_gpr(1, code(rec) as u64);
+    c.cpu.set_gpr(2, sp as u64 + 0x30);
+    c.cpu.set_gpr(4, sp as u64);
+    c.cpu.eip = f as u32;
+    c.cpu.rip_hi = (f >> 32) as u32;
+    c.jumped = true;
+    true
+}
+
+/// TRANSLATE_TRAP: the translator returned. The handler again (the dispatcher context's), with
+/// its arguments and stack as the dispatcher called it.
+pub fn translated(cpu: &mut koji::Cpu) {
+    let sp = cpu.gpr(4) as u32 - 8;
+    let (rec, ctx, dp, frame) = (r64(sp + 0x30), r64(sp + 0x38), r64(sp + 0x40), r64(sp + 0x48));
+    let teb = crate::cur().teb;
+    w32(teb + SE_TRANSLATED_TEB, rec as u32);
+    w64(teb + SE_TRANSLATED_TEB + 8, frame);
+    for (r, v) in [(1, rec), (2, frame), (8, ctx), (9, dp)] {
+        cpu.set_gpr(r, v);
+    }
+    cpu.set_gpr(4, (sp + TRANSLATE_FRAME) as u64);
+    let h = r64(dp as u32 + 0x30);
+    cpu.eip = h as u32;
+    cpu.rip_hi = (h >> 32) as u32;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -929,6 +1016,11 @@ pub fn register() {
         implement(d, "__current_exception", __current_exception);
         implement(d, "__current_exception_context", __current_exception_context);
         implement(d, "__uncaught_exceptions", __uncaught_exceptions);
+    }
+    implement("vcruntime140", "_set_se_translator", _set_se_translator);
+    implement("ucrtbase", "_set_se_translator", _set_se_translator);
+    for d in ["msvcrt", "msvcr70", "msvcr71", "msvcr80", "msvcr90", "msvcr100", "msvcr110", "msvcr120"] {
+        implement(d, "?_set_se_translator@@YAP6AXIPEAU_EXCEPTION_POINTERS@@@ZP6AXI0@Z@Z", _set_se_translator);
     }
     implement("ntdll", "__C_specific_handler", C_specific_handler);
     let _ = catch_trap();

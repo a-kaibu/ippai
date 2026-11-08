@@ -120,7 +120,13 @@
     throw)。iarsys64.dll (Artemis) が使う分。それ以外の msvcp140 の関数は未実装で呼ぶと止まる。
   - _create_locale: msvcrt / msvcr* は threadlocinfo (x64 はポインタ幅で並べ直す)、UCRT は
     __crt_locale_data (先頭が pctype / mb_cur_max / コードページ)。winref crtlocale (#58)。
-  - 未対応: printf の位置指定引数 (%1$d)、_set_se_translator。x86 の msvcp は thiscall の橋渡しが要るので #30 で。
+  - _set_se_translator (cxx.rs / cxx64.rs): try ブロックを持つ関数のフレームハンドラが構造化例外 (/EHs
+    でないもの) を受けると、スレッドの translator に飛ぶ (戻り先は TRANSLATE_TRAP)。x64 では
+    translator が投げた C++ 例外がそのまま上のフレームへ進む (seh64 の walk が TRANSLATE_TRAP から
+    ハンドラの呼び出し元へ抜ける)。x86 は MSVC の TranslatorGuardHandler と同じく、呼んだフレームでだけ
+    catch を探し、無ければ C++ 例外を捨てて元の例外の探索を続ける。テスト: host/tests/msvcseh.cpp
+    (x64 と x86、winref host_msvcseh-32/64)。
+  - 未対応: printf の位置指定引数 (%1$d)。x86 の msvcp は thiscall の橋渡しが要るので #30 で。
   - テスト: host/tests/x64crt.cpp (clang の x86_64-pc-windows-msvc、ucrtbase/vcruntime140 を
     import する /MD 相当のプログラム。printf/scanf/変換/_s/時刻/C++ 例外/SEH)、
     host/tests の crtstdio・crtfiles・fileseek・cmp64・x64seh を x86-64 でもビルドして

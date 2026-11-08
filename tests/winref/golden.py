@@ -31,11 +31,13 @@ def sources(probe):
     base = re.sub(r"-(32|64)$", "", probe)
     if base.startswith("host_"):
         main = os.path.join(ROOT, "host", "tests", base[5:] + ".c")
-        # (the C++ ones build-msvc64.sh makes: with it and, against MS STL, its shims)
+        # (the C++ ones build-msvc64.sh or, 32-bit, build-msvc32.sh makes: with it and, against
+        # MS STL, its shims)
         cpp = main + "pp"
         if os.path.exists(cpp):
             shim = os.path.join(ROOT, "host", "tests", "msstl-shim")
-            extra = [os.path.join(ROOT, "host", "tests", "build-msvc64.sh"), os.path.join(HERE, "build-msvc.sh")]
+            builder = "build-msvc32.sh" if probe.endswith("-32") else "build-msvc64.sh"
+            extra = [os.path.join(ROOT, "host", "tests", builder), os.path.join(HERE, "build-msvc.sh")]
             if "// msstl" in open(cpp).read():
                 extra += [os.path.join(shim, f) for f in sorted(os.listdir(shim))]
             return [cpp] + extra

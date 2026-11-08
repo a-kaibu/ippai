@@ -280,6 +280,12 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                     seh64::consolidated(cpu);
                 } else if a == seh64::UNWIND_TRAP {
                     seh64::unwind_handler_done(cpu);
+                } else if a == cxx64::TRANSLATE_TRAP {
+                    if mem::x64() {
+                        cxx64::translated(cpu);
+                    } else {
+                        cxx::translated(cpu);
+                    }
                 } else {
                     api::dispatch(cpu, a);
                 }

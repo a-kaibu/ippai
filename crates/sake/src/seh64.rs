@@ -267,6 +267,15 @@ fn step(cpu: &mut Cpu, kind: u32, ctx: u32, seen: &mut usize, rec: u32) -> Optio
         crate::mem::copy(ctx, consolidate_saved(sp as u32), CONTEXT_SIZE);
         return Some((0, 0, sp, 0, 0));
     }
+    if pc == crate::cxx64::TRANSLATE_TRAP as u64 {
+        // an SE translator's caller: the frame handler that called it, whose caller is the
+        // dispatcher (SEH64_TRAP, next)
+        let sp = rsp(ctx);
+        let entry = sp - 8 + crate::cxx64::TRANSLATE_FRAME as u64;
+        set_rip(ctx, r64(entry as u32));
+        set_reg(ctx, 4, entry + 8);
+        return Some((0, 0, sp, 0, 0));
+    }
     if pc == UNWIND_TRAP as u64 {
         let sp = rsp(ctx);
         if let Some(orig) = UNWINDS.with(|u| u.borrow().iter().rev().find(|e| e.handler_sp == sp).map(|e| e.orig)) {
