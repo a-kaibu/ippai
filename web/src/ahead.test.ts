@@ -24,26 +24,68 @@ test("pool: never more than width at once, results in order, every job once", as
   await expect(pool(2, [async () => 1, async () => Promise.reject(new Error("x"))])).rejects.toThrow("x");
 });
 
-test("budget: held bytes wait for start, the total ends it", async () => {
-  const b = new Budget(100, 250);
-  let fetched = 0;
-  const worker = async () => {
-    while (await b.room()) {
-      await tick(1);
-      b.add(30);
-      fetched++;
+/** `workers` side by side over `sizes` as play.ts readAhead: reserve, fetch (a random wait),
+ * hold (before the start) or hand over; the most ever reserved before and after the start. */
+async function readAhead(
+  b: Budget,
+  sizes: number[],
+  workers: number,
+  rnd: (n: number) => number,
+  startAt: number,
+) {
+  let next = 0;
+  let most = 0;
+  let mostBefore = 0;
+  let started = false;
+  const got: number[] = [];
+  const one = async () => {
+    while (next < sizes.length && !b.full()) {
+      const n = sizes[next++]!;
+      if (!(await b.reserve(n))) continue;
+      most = Math.max(most, b.spent);
+      if (!started) mostBefore = Math.max(mostBefore, b.spent);
+      await tick(rnd(3));
+      // (a failed fetch gives its bytes back)
+      if (rnd(10) === 0) {
+        b.release(n);
+        continue;
+      }
+      got.push(n);
     }
   };
-  const done = Promise.all([worker(), worker(), worker()]);
-  await tick(30);
-  // (each worker checks before it fetches: 3 may be past the line by one chunk each)
-  expect(b.spent).toBeGreaterThanOrEqual(100);
-  expect(b.spent).toBeLessThan(100 + 3 * 30);
-  const held = fetched;
-  await tick(20);
-  expect(fetched).toBe(held);
+  const run = Promise.all(Array.from({ length: workers }, one));
+  await tick(startAt);
+  started = true;
   b.start();
-  await done;
-  expect(b.spent).toBeGreaterThanOrEqual(250);
-  expect(b.spent).toBeLessThan(250 + 3 * 30);
+  await run;
+  return { most, mostBefore, got };
+}
+
+test("budget: 4 fetches of 64 MiB chunks side by side never hold more than the limit (577a146 review)", async () => {
+  const MiB = 1 << 20;
+  const b = new Budget(32 * MiB, 64 * MiB);
+  const { most, mostBefore, got } = await readAhead(b, Array(8).fill(64 * MiB), 4, () => 1, 20);
+  // (a 64 MiB chunk fits the total once started, never what may be held before)
+  expect(mostBefore).toBe(0);
+  expect(most).toBeLessThanOrEqual(64 * MiB);
+  expect(got.length).toBeLessThanOrEqual(1);
+  const c = new Budget(32 * MiB, 64 * MiB);
+  const r = await readAhead(c, Array(40).fill(16 * MiB), 4, () => 1, 20);
+  expect(r.mostBefore).toBe(32 * MiB);
+  expect(r.most).toBe(64 * MiB);
+});
+
+test("property: reservations never pass the limits, and the total is used when the chunks allow", async () => {
+  let seed = 3;
+  const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), seed % n);
+  for (let run = 0; run < 200; run++) {
+    const before = 1 + rnd(100);
+    const total = before + rnd(200);
+    const sizes = Array.from({ length: rnd(40) }, () => 1 + rnd(80));
+    const b = new Budget(before, total);
+    const { most, mostBefore, got } = await readAhead(b, sizes, 1 + rnd(6), rnd, rnd(10));
+    expect(mostBefore, `run ${run}`).toBeLessThanOrEqual(before);
+    expect(most, `run ${run}`).toBeLessThanOrEqual(total);
+    expect(b.spent, `run ${run}`).toBe(got.reduce((a, n) => a + n, 0));
+  }
 });

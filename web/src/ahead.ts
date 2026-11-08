@@ -18,7 +18,8 @@ export async function pool<T>(width: number, jobs: (() => Promise<T>)[]): Promis
 
 /**
  * Bytes fetched ahead: at most `before` until `start()` (they are held until then), `total` in
- * all.
+ * all. A fetch reserves its bytes before it starts (its length known from the tree lists), so
+ * fetches side by side never take more between them.
  */
 export class Budget {
   spent = 0;
@@ -29,13 +30,26 @@ export class Budget {
     readonly before: number,
     readonly total: number,
   ) {}
-  /** Waits while held bytes are at the limit; false once the total is spent. */
-  async room(): Promise<boolean> {
-    if (!this.started && this.spent >= this.before) await this.woken;
-    return this.spent < this.total;
+  /** Reserves `n` bytes, waiting while they would pass what may be held before the start;
+   * false (nothing reserved) when they would pass the total. */
+  async reserve(n: number): Promise<boolean> {
+    for (;;) {
+      if (this.spent + n > this.total) return false;
+      if (this.started || this.spent + n <= this.before) {
+        this.spent += n;
+        return true;
+      }
+      // (more than may ever be held: after the start)
+      await this.woken;
+    }
   }
-  add(n: number): void {
-    this.spent += n;
+  /** Gives back a reservation (the fetch failed), or the part of it not used. */
+  release(n: number): void {
+    this.spent -= n;
+  }
+  /** No reservation of `n` bytes can be had any more. */
+  full(n = 1): boolean {
+    return this.spent + n > this.total;
   }
   start(): void {
     this.started = true;

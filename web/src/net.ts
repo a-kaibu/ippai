@@ -287,6 +287,19 @@ export function treeChunks(tsv: string): string[] {
   return out;
 }
 
+/** The store chunks' lengths (hex -> bytes) of a tree's file list (as treeChunks). */
+export function treeChunkSizes(tsv: string, into = new Map<string, number>()): Map<string, number> {
+  for (const line of tsv.split("\n").slice(1)) {
+    const f = line.split("\t");
+    if (f[0] !== "f" || !f[5]) continue;
+    for (const c of f[5].split(",")) {
+      const [h, n] = c.split(":");
+      if (h && /^[0-9a-f]{32}$/.test(h) && Number(n) > 0) into.set(h, Number(n));
+    }
+  }
+  return into;
+}
+
 /** How many of the page's and the game's requests are being retried now (BroadcastChannel). */
 export function watchRetries(on: (retrying: number, error: string) => void): () => void {
   const by = new Map<string, number>();

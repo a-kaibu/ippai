@@ -27,7 +27,16 @@ import { getUi, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
-import { fetchRetry, getChunk, chunkCache, HttpError, trimChunks, watchRetries, withRetries } from "./net";
+import {
+  fetchRetry,
+  getChunk,
+  chunkCache,
+  HttpError,
+  treeChunkSizes,
+  trimChunks,
+  watchRetries,
+  withRetries,
+} from "./net";
 import {
   fileVersion,
   fnv,
@@ -235,7 +244,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         return parts.length ? { parts } : undefined;
       })
     : Promise.resolve(undefined);
-  const ahead = jitName ? readAhead(jitName, jit) : undefined;
+  // (the trees' chunk lengths, once their lists are here: the read-ahead's reservations)
+  let treesRead!: (sizes: Map<string, number>) => void;
+  const chunkSizes = new Promise<Map<string, number>>((r) => (treesRead = r));
+  const ahead = jitName ? readAhead(jitName, jit, chunkSizes) : undefined;
   // versioned too: the game's threads past the pool each start a worker from it, and a URL the
   // browser must revalidate fails while the link is down (the game then hangs)
   const scriptUrl = versioned(`${BASE}${build.name}.js`, await fileVersion(`${BASE}${build.name}.js`));
@@ -264,7 +276,13 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
           throw new Error(`mount ${tree}: ${e instanceof Error ? e.message : String(e)}`);
         });
       }),
-  );
+  ).catch((e: unknown) => {
+    treesRead(new Map());
+    throw e;
+  });
+  const sizes = new Map<string, number>();
+  for (const b of Object.values(vnvmFiles)) treeChunkSizes(new TextDecoder().decode(b), sizes);
+  treesRead(sizes);
   const moduleArg = {
     vnvmFiles,
     // (sake takes the host path: Z:\\x\\y.exe is /x/y.exe)
@@ -482,7 +500,11 @@ function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"]): 
   void refresh();
 }
 
-function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeModule) => void {
+function readAhead(
+  name: Promise<string>,
+  after: Promise<unknown>,
+  sizes: Promise<Map<string, number>>,
+): (sake: SakeModule) => void {
   const store = new URL("store/", location.href).href;
   const got: [Uint8Array, Uint8Array][] = [];
   let sake: SakeModule | undefined;
@@ -522,18 +544,26 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
     const list = new Uint8Array(all);
     if (!list.length) return;
     const cache = await chunkCache();
+    // (the chunks' lengths, from the trees' lists: each fetch reserves its bytes first, so the
+    // 4 side by side never pass the budget; a chunk of no listed length is left to the game)
+    const length = await sizes.catch(() => new Map<string, number>());
     let next = 0;
     const one = async () => {
-      while (next * 16 < list.length && (await budget.room())) {
-        // (the game's requests first)
-        while (sake?._vnhost_net_busy?.()) await new Promise((r) => setTimeout(r, 25));
+      while (next * 16 < list.length && !budget.full()) {
         const hash = list.subarray(next * 16, ++next * 16);
         const hex = Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
+        const n = length.get(hex);
+        if (!n || !(await budget.reserve(n))) continue;
+        // (the game's requests first)
+        while (sake?._vnhost_net_busy?.()) await new Promise((r) => setTimeout(r, 25));
         // (kept on the device from an earlier play: no network; a chunk that fails for good is
         // left to the game's own read)
         const c = await getChunk(store, hex, { cache, priority: "low" }).catch(() => null);
-        if (!c) continue;
-        budget.add(c.data.length);
+        if (!c) {
+          budget.release(n);
+          continue;
+        }
+        if (c.data.length !== n) budget.release(n - c.data.length);
         // (a save state is being taken: the memory stays as it is)
         while (snapping()) await new Promise((r) => setTimeout(r, 50));
         if (sake) put(sake, hash, c.data);

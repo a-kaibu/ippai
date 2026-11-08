@@ -276,3 +276,13 @@ test("property: after a trim the chunks fit their share, only the oldest unsaved
     if (gone.length) expect(kept + sizes[gone.at(-1)!]! > limit, `run ${run}`).toBe(true);
   }
 });
+
+test("a tree's chunk lengths, for the read-ahead's reservations", async () => {
+  const { treeChunkSizes } = await import("./net");
+  const h = (c: string) => c.repeat(32);
+  const tsv = `vnvm-tree\t2\t16777216\nd\t755\t0\tdir\nf\t644\t0\tdir/a\t16777236\t${h("a")}:16777216,:15,${h("b")}:5\nf\t644\t0\tempty\t0\t\nl\t777\t0\tlink\ta\n`;
+  expect([...treeChunkSizes(tsv)]).toEqual([
+    [h("a"), 16777216],
+    [h("b"), 5],
+  ]);
+});
