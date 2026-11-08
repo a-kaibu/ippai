@@ -635,9 +635,37 @@ fn du(d: &Path) -> (u64, u64, u64) {
     (n, b, big)
 }
 
+/// Starts the tool in a process group of its own (its pid is the group's id), so that what it
+/// starts goes with it: `sh -c "yes > big"` runs `yes` as a child of `sh`, and killing only
+/// `sh` left `yes` writing on past the caps, into a file already removed, until the disk was
+/// full. (The terminal's Ctrl-C no longer reaches the tool either: ippai stopped by hand leaves
+/// it to finish; a systemd stop still takes the whole cgroup.)
+fn own_group(c: &mut Command) {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(c, 0);
+    #[cfg(not(unix))]
+    let _ = c;
+}
+
+/// Kills the tool's whole process group (see `own_group`), then the tool itself. Gone already
+/// is fine. (The group's id stays the tool's while the tool is unreaped or anyone of the group
+/// lives: Linux hands out no pid still in use as a group's id.)
+fn kill_group(c: &mut Child) {
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        const SIGKILL: i32 = 9;
+        // SAFETY: kill(2) only takes integers; a negative pid names the process group
+        unsafe { kill(-(c.id() as i32), SIGKILL) };
+    }
+    let _ = c.kill();
+}
+
 /// Waits for `c` while what it adds under `watch` (to `base`, `du` before it started) stays
-/// within the job's caps and its time; kills it otherwise (an error). What it added is counted
-/// into the job.
+/// within the job's caps and its time; kills it otherwise (an error), and with it whatever it
+/// started (`kill_group`). What it added is counted into the job.
 fn watch_child(job: &Job, watch: &Path, base: (u64, u64, u64), mut c: Child, name: &str) -> Result<ExitStatus> {
     let start = Instant::now();
     let mut wait = Duration::from_millis(10);
@@ -656,7 +684,7 @@ fn watch_child(job: &Job, watch: &Path, base: (u64, u64, u64), mut c: Child, nam
             None
         };
         if let Some(w) = why {
-            let _ = c.kill();
+            kill_group(c);
             let _ = c.wait();
             return Err(over(w).into());
         }
@@ -664,6 +692,9 @@ fn watch_child(job: &Job, watch: &Path, base: (u64, u64, u64), mut c: Child, nam
     };
     loop {
         if let Some(s) = c.try_wait()? {
+            // (what it left running in the background goes too: it would write on after this
+            // last look, counted against no cap)
+            kill_group(&mut c);
             let (n, b) = check(&mut c)?;
             job.add_files(n)?;
             job.add_bytes(b)?;
@@ -720,6 +751,7 @@ fn run_cmd(job: &Job, watch: &Path, mut c: Command, stdout: Option<File>) -> Res
         None => Stdio::from(wr.try_clone()?),
     };
     c.env("LC_ALL", "C.UTF-8").stdin(Stdio::null()).stdout(out).stderr(wr);
+    own_group(&mut c);
     let base = du(watch);
     let spawned = c.spawn();
     // (the pipe's write ends live in `c`: gone, the reader sees the end once the tool exits)
@@ -1598,6 +1630,11 @@ mod tests {
         let e = limit_err(run_cmd(&Job::new(lim), &d, { let mut c = sh("yes > big"); c.current_dir(&d); c }, None));
         assert!(e.contains("sh:"), "{e}");
         assert!(t.elapsed() < Duration::from_secs(10));
+        // (and `yes`, a child of `sh`, with it: big grows no more. Killing only `sh` left `yes`
+        // writing on into the removed file until the disk was full)
+        let n = fs::metadata(d.join("big")).unwrap().len();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(fs::metadata(d.join("big")).unwrap().len(), n, "a child of the tool still writes");
         // (written between two looks: at most half a second's worth past the cap)
         fs::remove_file(d.join("big")).unwrap();
         // done before the first look: still counted, over the cap
@@ -1620,6 +1657,18 @@ mod tests {
         assert_eq!(job.mark(), (1, 3));
         // not installed
         assert_eq!(run(&job, "ippai-no-such-tool", &[], &d).unwrap().status, "not installed");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn what_a_tool_leaves_running_is_killed() {
+        // the tool exits at once; what it started in the background would write later, past
+        // the last look (uncounted, over no cap)
+        let d = tmp("leftover");
+        let r = run_cmd(&Job::new(small()), &d, { let mut c = sh("(sleep 0.3; : > late) &"); c.current_dir(&d); c }, None).unwrap();
+        assert!(r.ok, "{}", r.status);
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(!d.join("late").exists(), "a process the tool left behind ran on");
         fs::remove_dir_all(&d).unwrap();
     }
 
