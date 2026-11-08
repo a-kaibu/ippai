@@ -650,6 +650,30 @@ fn signature(els: &[SigEl], used_out: bool) -> Vec<u8> {
 }
 
 /// The resource definitions (what D3DReflect reads).
+/// A variable's type record at the end of `b`, then its members' (name, type, offset) and
+/// their types: the record's offset. 16 bytes (class, type, rows, columns, elements, members,
+/// the members' offset), 36 in shader model 5 (then four words and the type name's offset, 0).
+fn rdef_type(b: &mut Vec<u8>, v: &CbVar, sm5: bool, fix_names: &mut Vec<(usize, String)>) -> u32 {
+    let ta = b.len();
+    for x in [v.class, v.ty, v.rows, v.cols, v.elems, v.members.len() as u16] {
+        b.extend_from_slice(&x.to_le_bytes());
+    }
+    b.resize(ta + if sm5 { 36 } else { 16 }, 0);
+    if !v.members.is_empty() {
+        let ma = b.len();
+        set32(b, ta + 12, ma as u32);
+        b.resize(ma + 12 * v.members.len(), 0);
+        for (i, m) in v.members.iter().enumerate() {
+            let at = ma + 12 * i;
+            fix_names.push((at, m.name.clone()));
+            let t = rdef_type(b, m, sm5, fix_names);
+            set32(b, at + 4, t);
+            set32(b, at + 8, m.offset);
+        }
+    }
+    ta as u32
+}
+
 fn rdef(s: &Shader) -> Vec<u8> {
     let sm5 = s.major >= 5;
     let header = if sm5 { 60 } else { 28 };
@@ -722,20 +746,8 @@ fn rdef(s: &Shader) -> Vec<u8> {
             set32(&mut b, va + 8, v.size);
             set32(&mut b, va + 12, if v.used { 2 } else { 0 });
             // the type
-            let ta = b.len();
-            set32(&mut b, va + 16, ta as u32);
-            let mut t = Vec::new();
-            t.extend_from_slice(&v.class.to_le_bytes());
-            t.extend_from_slice(&v.ty.to_le_bytes());
-            t.extend_from_slice(&v.rows.to_le_bytes());
-            t.extend_from_slice(&v.cols.to_le_bytes());
-            t.extend_from_slice(&v.elems.to_le_bytes());
-            t.extend_from_slice(&0u16.to_le_bytes());
-            t.extend_from_slice(&0u32.to_le_bytes());
-            if sm5 {
-                t.extend_from_slice(&[0; 16]);
-            }
-            b.extend_from_slice(&t);
+            let ta = rdef_type(&mut b, v, sm5, &mut fix_names);
+            set32(&mut b, va + 16, ta);
             if sm5 {
                 // texture start, size, sampler start, size
                 set32(&mut b, va + 24, u32::MAX);

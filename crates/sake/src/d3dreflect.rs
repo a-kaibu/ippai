@@ -1,5 +1,8 @@
 //! D3DReflect: ID3D11ShaderReflection (and its constant buffer, variable and type objects) read
-//! from a DXBC blob's RDEF, ISGN/OSGN and SHDR/SHEX chunks.
+//! from a DXBC blob's RDEF, ISGN/OSGN and SHDR/SHEX chunks. D3D10ReflectShader: the same
+//! objects behind D3D10's interfaces (the same methods first, shorter descriptions:
+//! D3D10_SHADER_DESC ends at GSMaxOutputVertexCount, a variable has no texture / sampler slots,
+//! a type no name, a signature parameter no stream).
 
 #![allow(non_snake_case)]
 
@@ -101,7 +104,7 @@ fn gstr(s: &str) -> u32 {
 
 fn vt(which: u8) -> u32 {
     use crate::api::Handler;
-    static V: Mutex<[u32; 5]> = Mutex::new([0; 5]);
+    static V: Mutex<[u32; 8]> = Mutex::new([0; 8]);
     let mut v = V.lock().unwrap();
     if v[which as usize] == 0 {
         let k = 4 * mem::ps() / 4;
@@ -131,8 +134,12 @@ fn vt(which: u8) -> u32 {
                 (refl_threads, 16),
                 (zero, 4),
             ],
-            1 => vec![(cb_desc, 8), (cb_var_index, 8), (cb_var_name, 8)],
+            1 | 5 => vec![(cb_desc, 8), (cb_var_index, 8), (cb_var_name, 8)],
             2 => vec![(var_desc, 8), (var_type, 4), (var_buffer, 4), (zero, 8)],
+            // D3D10's
+            4 => vec![(refl_qi, 12), (refl_add_ref, 4), (refl_release, 4), (refl_desc10, 8), (refl_cb_index, 8), (refl_cb_name, 8), (refl_bind, 12), (refl_in, 12), (refl_out, 12)],
+            6 => vec![(var_desc10, 8), (var_type, 4)],
+            7 => vec![(type_desc10, 8), (type_member, 8), (type_member_name, 8), (type_member_tname, 8)],
             _ => vec![
                 (type_desc, 8),
                 (type_member, 8),
@@ -147,7 +154,17 @@ fn vt(which: u8) -> u32 {
                 (zero, 8),
             ],
         };
-        v[which as usize] = crate::api::vtable(["ID3D11ShaderReflection", "ID3D11ShaderReflectionConstantBuffer", "ID3D11ShaderReflectionVariable", "ID3D11ShaderReflectionType", ""][which as usize], &t);
+        let names = [
+            "ID3D11ShaderReflection",
+            "ID3D11ShaderReflectionConstantBuffer",
+            "ID3D11ShaderReflectionVariable",
+            "ID3D11ShaderReflectionType",
+            "ID3D10ShaderReflection",
+            "ID3D10ShaderReflectionConstantBuffer",
+            "ID3D10ShaderReflectionVariable",
+            "ID3D10ShaderReflectionType",
+        ];
+        v[which as usize] = crate::api::vtable(names[which as usize], &t);
     }
     v[which as usize]
 }
@@ -167,6 +184,12 @@ fn new_obj(which: u8, o: Obj) -> u32 {
 
 fn id(c: &Ctx) -> usize {
     r32(c.a(0) + 12) as usize
+}
+
+/// The interfaces `this` is behind: 0 D3D11's, 4 D3D10's (added to the object kind)
+fn flavor(c: &Ctx) -> u8 {
+    let v = mem::rp(c.a(0));
+    if (4..8).any(|w| vt(w) == v) { 4 } else { 0 }
 }
 
 fn zero(_c: &mut Ctx) -> u32 {
@@ -189,7 +212,7 @@ fn put(at: u32, fields: &[(bool, u32)]) {
     }
 }
 
-fn parse_type(b: &[u8], at: usize, sm5: bool) -> u32 {
+fn parse_type(b: &[u8], at: usize, sm5: bool, fl: u8) -> u32 {
     let mut t = TypeR {
         class: rd16(b, at),
         ty: rd16(b, at + 2),
@@ -209,14 +232,14 @@ fn parse_type(b: &[u8], at: usize, sm5: bool) -> u32 {
     for i in 0..nm.min(256) {
         let m = moff + 12 * i;
         let name = gstr(&cstr_at(b, rd(b, m) as usize));
-        let mt = parse_type(b, rd(b, m + 4) as usize, sm5);
+        let mt = parse_type(b, rd(b, m + 4) as usize, sm5, fl);
         let off = rd(b, m + 8);
         if let Obj::Type(x) = &mut OBJS.lock().unwrap()[r32(mt + 12) as usize] {
             x.offset = off;
         }
         t.members.push((name, mt));
     }
-    new_obj(3, Obj::Type(t))
+    new_obj(3 + fl, Obj::Type(t))
 }
 
 fn signature(b: Option<&[u8]>) -> Vec<SigR> {
@@ -239,7 +262,7 @@ fn signature(b: Option<&[u8]>) -> Vec<SigR> {
         .collect()
 }
 
-fn parse(code: &[u8]) -> Option<Refl> {
+fn parse(code: &[u8], fl: u8) -> Option<Refl> {
     let cont = dxwgsl::dxbc::Container::parse(code).ok()?;
     let shdr = cont.chunk(b"SHEX").or_else(|| cont.chunk(b"SHDR"));
     let mut r = Refl {
@@ -294,13 +317,13 @@ fn parse(code: &[u8]) -> Option<Refl> {
             let nv = rd(b, at + 4) as usize;
             let voff = rd(b, at + 8) as usize;
             let mut cb = CbR { name_p: gstr(&name), name, ty: rd(b, at + 20), size: rd(b, at + 12), flags: rd(b, at + 16), vars: Vec::new() };
-            let cb_obj = new_obj(1, Obj::Cb(cb.clone()));
+            let cb_obj = new_obj(1 + fl, Obj::Cb(cb.clone()));
             for k in 0..nv.min(1024) {
                 let va = voff + vsize * k;
                 let vname = cstr_at(b, rd(b, va) as usize);
-                let ty = parse_type(b, rd(b, va + 16) as usize, sm5);
+                let ty = parse_type(b, rd(b, va + 16) as usize, sm5, fl);
                 let v = VarR { name_p: gstr(&vname), name: vname, offset: rd(b, va + 4), size: rd(b, va + 8), flags: rd(b, va + 12), ty };
-                cb.vars.push(new_obj(2, Obj::Var(v, cb_obj)));
+                cb.vars.push(new_obj(2 + fl, Obj::Var(v, cb_obj)));
             }
             OBJS.lock().unwrap()[r32(cb_obj + 12) as usize] = Obj::Cb(cb);
             r.cbs.push(cb_obj);
@@ -312,13 +335,23 @@ fn parse(code: &[u8]) -> Option<Refl> {
 /// D3DReflect(data, size, iid, reflector)
 pub fn D3DReflect(c: &mut Ctx) -> u32 {
     let code = mem::slice(c.a(0), c.a(1)).to_vec();
-    match parse(&code) {
+    reflect(&code, 0, c.a(3))
+}
+
+/// D3D10ReflectShader(data, size, ID3D10ShaderReflection **)
+pub fn D3D10ReflectShader(c: &mut Ctx) -> u32 {
+    let code = mem::slice(c.a(0), c.a(1)).to_vec();
+    reflect(&code, 4, c.a(2))
+}
+
+fn reflect(code: &[u8], fl: u8, out: u32) -> u32 {
+    match parse(code, fl) {
         Some(r) => {
-            mem::putp(c.a(3), new_obj(0, Obj::Refl(r)));
+            mem::putp(out, new_obj(fl, Obj::Refl(r)));
             0
         }
         None => {
-            mem::putp(c.a(3), 0);
+            mem::putp(out, 0);
             0x8007_0057
         }
     }
@@ -364,12 +397,26 @@ fn refl_desc(c: &mut Ctx) -> u32 {
     put(out, &f);
     0
 }
+/// D3D10_SHADER_DESC: D3D11's up to GSMaxOutputVertexCount
+fn refl_desc10(c: &mut Ctx) -> u32 {
+    let out = c.a(1);
+    let Some(f) = with_refl(c, |r| {
+        let mut v = vec![(false, r.version), (true, r.creator), (false, r.flags), (false, r.cbs.len() as u32), (false, r.binds.len() as u32)];
+        v.extend([(false, r.ins.len() as u32), (false, r.outs.len() as u32), (false, r.insts), (false, r.temps)]);
+        v.extend(std::iter::repeat_n((false, 0), 19));
+        v
+    }) else {
+        return 0x8000_4005;
+    };
+    put(out, &f);
+    0
+}
 
 fn null_obj(which: u8) -> u32 {
-    static N: Mutex<[u32; 4]> = Mutex::new([0; 4]);
+    static N: Mutex<[u32; 8]> = Mutex::new([0; 8]);
     let mut n = N.lock().unwrap();
     if n[which as usize] == 0 {
-        let o = match which {
+        let o = match which & 3 {
             1 => Obj::Cb(CbR { name: String::new(), name_p: 0, ty: 0, size: 0, flags: 0, vars: Vec::new() }),
             2 => Obj::Var(VarR { name: String::new(), name_p: 0, offset: 0, size: 0, flags: 0, ty: 0 }, 0),
             _ => Obj::Type(TypeR::default()),
@@ -381,7 +428,7 @@ fn null_obj(which: u8) -> u32 {
 
 fn refl_cb_index(c: &mut Ctx) -> u32 {
     let i = c.a(1) as usize;
-    with_refl(c, |r| r.cbs.get(i).copied()).flatten().unwrap_or_else(|| null_obj(1))
+    with_refl(c, |r| r.cbs.get(i).copied()).flatten().unwrap_or_else(|| null_obj(1 + flavor(c)))
 }
 fn refl_cb_name(c: &mut Ctx) -> u32 {
     let n = crate::k32::arg_str(c.a(1), false);
@@ -395,7 +442,7 @@ fn refl_cb_name(c: &mut Ctx) -> u32 {
         }
     }
     drop(g);
-    null_obj(1)
+    null_obj(1 + flavor(c))
 }
 
 fn put_bind(out: u32, b: &BindR) {
@@ -423,19 +470,24 @@ fn refl_bind_name(c: &mut Ctx) -> u32 {
     }
 }
 
-fn put_sig(out: u32, s: &SigR) {
+/// D3D11_SIGNATURE_PARAMETER_DESC, or D3D10's (`d3d10`: no Stream, no MinPrecision)
+fn put_sig(out: u32, s: &SigR, d3d10: bool) {
     put(out, &[(true, s.name_p), (false, s.index), (false, s.reg), (false, s.sysval), (false, s.ctype)]);
     let o = out + if mem::x64() { 24 } else { 20 };
-    w32(o, s.mask as u32 | (s.rw as u32) << 8);
-    w32(o + 4, s.stream);
-    w32(o + 8, 0);
+    mem::w8(o, s.mask);
+    mem::w8(o + 1, s.rw);
+    if !d3d10 {
+        mem::w16(o + 2, 0);
+        w32(o + 4, s.stream);
+        w32(o + 8, 0);
+    }
 }
 
 fn refl_in(c: &mut Ctx) -> u32 {
     let (i, out) = (c.a(1) as usize, c.a(2));
     match with_refl(c, |r| r.ins.get(i).cloned()).flatten() {
         Some(s) => {
-            put_sig(out, &s);
+            put_sig(out, &s, flavor(c) == 4);
             0
         }
         None => 0x8007_0057,
@@ -445,7 +497,7 @@ fn refl_out(c: &mut Ctx) -> u32 {
     let (i, out) = (c.a(1) as usize, c.a(2));
     match with_refl(c, |r| r.outs.get(i).cloned()).flatten() {
         Some(s) => {
-            put_sig(out, &s);
+            put_sig(out, &s, flavor(c) == 4);
             0
         }
         None => 0x8007_0057,
@@ -471,7 +523,7 @@ fn refl_var_name(c: &mut Ctx) -> u32 {
         }
     }
     drop(g);
-    null_obj(2)
+    null_obj(2 + flavor(c))
 }
 
 fn refl_level(c: &mut Ctx) -> u32 {
@@ -512,7 +564,7 @@ fn cb_var_index(c: &mut Ctx) -> u32 {
         _ => None,
     };
     drop(g);
-    r.unwrap_or_else(|| null_obj(2))
+    r.unwrap_or_else(|| null_obj(2 + flavor(c)))
 }
 fn cb_var_name(c: &mut Ctx) -> u32 {
     let n = crate::k32::arg_str(c.a(1), false);
@@ -528,7 +580,7 @@ fn cb_var_name(c: &mut Ctx) -> u32 {
         }
     }
     drop(g);
-    r.unwrap_or_else(|| null_obj(2))
+    r.unwrap_or_else(|| null_obj(2 + flavor(c)))
 }
 
 fn var_desc(c: &mut Ctx) -> u32 {
@@ -543,6 +595,19 @@ fn var_desc(c: &mut Ctx) -> u32 {
     put(out, &f);
     0
 }
+/// D3D10_SHADER_VARIABLE_DESC: Name, StartOffset, Size, uFlags, DefaultValue
+fn var_desc10(c: &mut Ctx) -> u32 {
+    let out = c.a(1);
+    let g = OBJS.lock().unwrap();
+    let Obj::Var(v, _) = &g[id(c)] else { return 0x8000_4005 };
+    if v.name_p == 0 {
+        return 0x8000_4005;
+    }
+    let f = [(true, v.name_p), (false, v.offset), (false, v.size), (false, v.flags), (true, 0)];
+    drop(g);
+    put(out, &f);
+    0
+}
 fn var_type(c: &mut Ctx) -> u32 {
     let g = OBJS.lock().unwrap();
     let t = match &g[id(c)] {
@@ -550,7 +615,7 @@ fn var_type(c: &mut Ctx) -> u32 {
         _ => 0,
     };
     drop(g);
-    if t == 0 { null_obj(3) } else { t }
+    if t == 0 { null_obj(3 + flavor(c)) } else { t }
 }
 fn var_buffer(c: &mut Ctx) -> u32 {
     let g = OBJS.lock().unwrap();
@@ -559,7 +624,7 @@ fn var_buffer(c: &mut Ctx) -> u32 {
         _ => 0,
     };
     drop(g);
-    if b == 0 { null_obj(1) } else { b }
+    if b == 0 { null_obj(1 + flavor(c)) } else { b }
 }
 
 fn type_desc(c: &mut Ctx) -> u32 {
@@ -580,6 +645,16 @@ fn type_desc(c: &mut Ctx) -> u32 {
     put(out, &f);
     0
 }
+/// D3D10_SHADER_TYPE_DESC: D3D11's without the Name
+fn type_desc10(c: &mut Ctx) -> u32 {
+    let out = c.a(1);
+    let g = OBJS.lock().unwrap();
+    let Obj::Type(t) = &g[id(c)] else { return 0x8000_4005 };
+    let f = [(false, t.class), (false, t.ty), (false, t.rows), (false, t.cols), (false, t.elems), (false, t.members.len() as u32), (false, t.offset)];
+    drop(g);
+    put(out, &f);
+    0
+}
 fn type_member(c: &mut Ctx) -> u32 {
     let i = c.a(1) as usize;
     let g = OBJS.lock().unwrap();
@@ -588,7 +663,7 @@ fn type_member(c: &mut Ctx) -> u32 {
         _ => None,
     };
     drop(g);
-    r.unwrap_or_else(|| null_obj(3))
+    r.unwrap_or_else(|| null_obj(3 + flavor(c)))
 }
 fn type_member_name(c: &mut Ctx) -> u32 {
     let n = crate::k32::arg_str(c.a(1), false);
@@ -598,7 +673,7 @@ fn type_member_name(c: &mut Ctx) -> u32 {
         _ => None,
     };
     drop(g);
-    r.unwrap_or_else(|| null_obj(3))
+    r.unwrap_or_else(|| null_obj(3 + flavor(c)))
 }
 fn type_member_tname(c: &mut Ctx) -> u32 {
     let i = c.a(1) as usize;
@@ -634,5 +709,33 @@ mod tests {
         // m at 0 (64), v at 64 (12), s at 76, k at 80 (k[0] 80, k[1] 96: size 20)
         let off: Vec<(u32, u32)> = (0..4).map(|i| (super::rd(r, vars + 40 * i + 4), super::rd(r, vars + 40 * i + 8))).collect();
         assert_eq!(off, [(0, 64), (64, 12), (76, 4), (80, 20)]);
+    }
+
+    /// A struct's type record lists its members (name, type, offset), nested structs too, in
+    /// shader model 4 (16-byte types) and 5 (36-byte)
+    #[test]
+    fn rdef_struct_members() {
+        let src = "struct In { float a; float2 b; }; struct L { float3 dir; float power; float4 color[2]; In inner; };\n\
+                   cbuffer S { L light; };\n\
+                   float4 main() : SV_Target { return light.color[1] * light.power + light.inner.b.x; }";
+        for profile in ["ps_4_0", "ps_5_0"] {
+            let mut inc = |_: &str, _: bool| None;
+            let b = hlslc::compile(src, &[], &mut inc, "main", profile, 0).unwrap();
+            let c = dxwgsl::dxbc::Container::parse(&b).unwrap();
+            let r = c.chunk(b"RDEF").unwrap();
+            let cb = super::rd(r, 4) as usize;
+            let var = super::rd(r, cb + 8) as usize;
+            let t = super::rd(r, var + 16) as usize;
+            // class 5 (struct), 4 members
+            assert_eq!((super::rd16(r, t), super::rd16(r, t + 10)), (5, 4), "{profile}");
+            let m = super::rd(r, t + 12) as usize;
+            let members: Vec<(String, u32)> = (0..4).map(|i| (super::cstr_at(r, super::rd(r, m + 12 * i) as usize), super::rd(r, m + 12 * i + 8))).collect();
+            assert_eq!(members, [("dir".into(), 0), ("power".into(), 12), ("color".into(), 16), ("inner".into(), 48)], "{profile}");
+            // color: a float4 vector, 2 elements; inner: a struct of 2
+            let color = super::rd(r, m + 12 * 2 + 4) as usize;
+            assert_eq!((super::rd16(r, color), super::rd16(r, color + 6), super::rd16(r, color + 8)), (1, 4, 2));
+            let inner = super::rd(r, m + 12 * 3 + 4) as usize;
+            assert_eq!((super::rd16(r, inner), super::rd16(r, inner + 10)), (5, 2));
+        }
     }
 }

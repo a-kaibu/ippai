@@ -33,7 +33,8 @@
 - D3D10 / 10.1 (d3d10.dll、d3d10_1.dll): D3D11 の同じオブジェクトの別の面 (kura の d3d11/d3d10.rs、
   インターフェース 95〜111)。メソッドは D3D11 のデバイス・コンテキスト・オブジェクトの呼び出しにして、違う
   構造体 (D3D10_BLEND_DESC、深度ステンシルビューの記述、整数のビューポート、バッファの記述、Map の結果)
-  だけ変換する。D3D10CompileShader は hlslc。リフレクションと Effects 10 は未対応。テストは
+  だけ変換する。D3D10CompileShader は hlslc。D3D10ReflectShader は D3DReflect と同じオブジェクトを
+  D3D10 のインターフェース (短い記述の構造体) で返す (winref d3d10refl)。Effects 10 は未対応。テストは
   host/tests/d3d10test.c (tests/gfx.mjs)。
 - d3dcompiler_33〜47 (d3dcompiler.rs, d3dreflect.rs): 自前の HLSL コンパイラ (crates/hlslc:
   プリプロセッサ、構文解析、関数はすべてインライン展開、SM4/5 の DXBC を出す) で D3DCompile、

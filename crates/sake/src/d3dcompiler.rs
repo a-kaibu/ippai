@@ -349,11 +349,7 @@ fn D3D10DisassembleShader(c: &mut Ctx) -> u32 {
     mem::putp(c.a(4), text_blob("// (no disassembly in sake)\n"));
     0
 }
-/// Not done: shader reflection (ID3D10ShaderReflection) and effects (Effects 10)
-fn D3D10ReflectShader(c: &mut Ctx) -> u32 {
-    mem::putp(c.a(2), 0);
-    0x8000_4001
-}
+/// Not done: effects (Effects 10)
 fn D3D10CreateEffectFromMemory(c: &mut Ctx) -> u32 {
     mem::putp(c.a(5), 0);
     0x8000_4001
@@ -385,7 +381,7 @@ pub fn init() {
         ("D3D10GetPixelShaderProfile", D3D10GetPixelShaderProfile),
         ("D3D10GetGeometryShaderProfile", D3D10GetGeometryShaderProfile),
         ("D3D10DisassembleShader", D3D10DisassembleShader),
-        ("D3D10ReflectShader", D3D10ReflectShader),
+        ("D3D10ReflectShader", crate::d3dreflect::D3D10ReflectShader),
         ("D3D10CreateEffectFromMemory", D3D10CreateEffectFromMemory),
     ];
     for dll in ["d3d10", "d3d10_1"] {
