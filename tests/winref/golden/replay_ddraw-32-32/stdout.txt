@@ -1,0 +1,11 @@
+image l23 24 16 2
+image l27 24 16 2
+image l34 24 16 2
+image l57 24 16 2
+image l61 24 16 2
+image l68 24 16 2
+image l91 24 16 2
+image l95 24 16 2
+image l102 24 16 2
+image l118 24 16 2
+calls 112 frames 0

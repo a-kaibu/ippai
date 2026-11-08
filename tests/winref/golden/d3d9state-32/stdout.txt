@@ -450,3 +450,19 @@ SetRenderState 0 0 300 0
 SetTextureStageState 8 0 type 40 0
 SetSamplerState 16 0 type 20 0
 SetTexture 16 0 261 0
+SetStreamSource 16 0
+SetStreamSourceFreq 0 0 0x8876086c
+SetVertexShaderConstantF 255+2 0
+SetClipPlane 6 0
+LightEnable 1000 0
+GetLight 1000 after LightEnable 0 type 1431655765 range 1.46602e+013
+SetViewport past the target 0
+viewport now 60 40 32 32
+SetFVF 0 0
+Release device 0
+hardware device 0
+hardware rs 154: 0 = 0x3f800000
+hardware rs 155: 0 = 0x3f800000
+hardware rs 166: 0 = 0x46000000
+hardware rs 157: 0 = 0
+Release hardware device 0
