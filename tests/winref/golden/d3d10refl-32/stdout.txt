@@ -1,0 +1,57 @@
+vs: D3D10CompileShader 0
+D3D10ReflectShader 0
+desc 0: version 0x10040 creator 1 cbuffers 1 resources 1 inputs 3 outputs 3, past it kept 1
+cbuffer 0 Scene: type 0 vars 3 size 144 flags 0, past it kept 1
+  by name same 1
+  var 0 wvp: offset 0 size 64 flags 2 default 0, past it kept 1
+    type 0: class 2 type 3 4x4 elements 1 members 0 offset 0, past it kept 1
+  var 0 light: offset 64 size 48 flags 2 default 0, past it kept 1
+    type 0: class 5 type 0 1x12 elements 1 members 3 offset 0, past it kept 1
+    member 0 dir
+      type 0: class 1 type 3 1x3 elements 1 members 0 offset 0, past it kept 1
+    member 1 power
+      type 0: class 0 type 3 1x1 elements 1 members 0 offset 12, past it kept 1
+    member 2 color
+      type 0: class 1 type 3 1x4 elements 2 members 0 offset 16, past it kept 1
+  var 0 mode: offset 112 size 20 flags 0 default 0, past it kept 1
+    type 0: class 0 type 2 1x1 elements 2 members 0 offset 0, past it kept 1
+  missing variable: GetDesc failed 1
+cbuffer index 1: GetDesc failed 1
+resource 0 Scene: type 0 point 1 count 1 flags 1 return 0 dimension 0 samples 0, past it kept 1
+input 0 POSITION0: register 0 system value 0 component 3 mask 0x7, past it kept 1
+input 0 NORMAL0: register 1 system value 0 component 3 mask 0x7, past it kept 1
+input 0 TEXCOORD0: register 2 system value 0 component 3 mask 0x3, past it kept 1
+output 0 SV_Position0: register 0 system value 1 component 3 mask 0xf, past it kept 1
+output 0 NORMAL0: register 1 system value 0 component 3 mask 0x7, past it kept 1
+output 0 TEXCOORD0: register 2 system value 0 component 3 mask 0x3, past it kept 1
+input 3: 0x80070057
+released 0
+ps: D3D10CompileShader 0
+D3D10ReflectShader 0
+desc 0: version 0x40 creator 1 cbuffers 1 resources 3 inputs 3 outputs 1, past it kept 1
+cbuffer 0 Scene: type 0 vars 3 size 144 flags 0, past it kept 1
+  by name same 1
+  var 0 wvp: offset 0 size 64 flags 0 default 0, past it kept 1
+    type 0: class 2 type 3 4x4 elements 1 members 0 offset 0, past it kept 1
+  var 0 light: offset 64 size 48 flags 2 default 0, past it kept 1
+    type 0: class 5 type 0 1x12 elements 1 members 3 offset 0, past it kept 1
+    member 0 dir
+      type 0: class 1 type 3 1x3 elements 1 members 0 offset 0, past it kept 1
+    member 1 power
+      type 0: class 0 type 3 1x1 elements 1 members 0 offset 12, past it kept 1
+    member 2 color
+      type 0: class 1 type 3 1x4 elements 2 members 0 offset 16, past it kept 1
+  var 0 mode: offset 112 size 20 flags 2 default 0, past it kept 1
+    type 0: class 0 type 2 1x1 elements 2 members 0 offset 0, past it kept 1
+  missing variable: GetDesc failed 1
+cbuffer index 1: GetDesc failed 1
+resource 0 smp: type 3 point 1 count 1 flags 1 return 0 dimension 0 samples 0, past it kept 1
+resource 0 tex: type 2 point 2 count 1 flags 1 return 5 dimension 4 samples 0, past it kept 1
+resource 0 Scene: type 0 point 1 count 1 flags 1 return 0 dimension 0 samples 0, past it kept 1
+input 0 SV_Position0: register 0 system value 1 component 3 mask 0xf, past it kept 1
+input 0 NORMAL0: register 1 system value 0 component 3 mask 0x7, past it kept 1
+input 0 TEXCOORD0: register 2 system value 0 component 3 mask 0x3, past it kept 1
+output 0 SV_Target0: register 0 system value 0 component 3 mask 0xf, past it kept 1
+input 3: 0x80070057
+released 0
+junk: failed 1
