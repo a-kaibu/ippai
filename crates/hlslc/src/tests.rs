@@ -415,6 +415,11 @@ fn malformed_sources_are_errors() {
         ("float4 A : register(c0);\nfloat4 ps() : COLOR { float4 a[]; a[(int)A.x] = A; return a[1]; }\n", "ps_3_0"),
         ("float4 A : register(c0);\nfloat4 ps() : SV_Target { float4 a[]; a[(int)A.x] = A; return a[1]; }\n", "ps_4_0"),
         ("float4 A : register(c0);\nfloat4 ps() : COLOR { float a[2][]; return A; }\n", "ps_3_0"),
+        // (globals too: a static or a uniform array without a size)
+        ("float4 A : register(c0); static float4 a[];\nfloat4 ps() : COLOR { return A + a[(int)A.x]; }\n", "ps_3_0"),
+        ("float4 A : register(c0); static float4 a[];\nfloat4 ps() : SV_Target { return A + a[(int)A.x]; }\n", "ps_4_0"),
+        ("float4 A : register(c0); float4 a[];\nfloat4 ps() : COLOR { return A + a[(int)A.x]; }\n", "ps_3_0"),
+        ("float4 A : register(c0); float4 a[];\nfloat4 ps() : SV_Target { return A + a[(int)A.x]; }\n", "ps_4_0"),
     ] {
         assert!(super::compile(src, &[], &mut inc, "ps", t, 0).is_err(), "{src}");
     }
@@ -615,6 +620,11 @@ fn compute_errors() {
         // (shaderconf --fuzz: a swizzle of a groupshared array recursed until the stack ran out)
         ("RWTexture2D<uint> u : register(u0); groupshared uint a[4]; [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { a[i] = i; u[uint2(i, 0)] = a.wzyx[i]; }", "cs_5_0", "groupshared array"),
         ("RWTexture2D<uint> u : register(u0); groupshared uint a[4]; [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { a.x = i; u[uint2(i, 0)] = a[i]; }", "cs_5_0", "groupshared array"),
+        // (shaderconf --fuzz seed 447 #265534: NIS with `groupshared float shPixelsY[][38]`; fxc: X3074
+        // implicit array missing initial value. hlslc gave dxwgsl a 0-byte declaration)
+        ("RWTexture2D<uint> u : register(u0); groupshared uint a[][4]; [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { a[0][i] = i; u[uint2(i, 0)] = a[0][i]; }", "cs_5_0", "without a size"),
+        ("RWTexture2D<uint> u : register(u0); groupshared uint a[]; [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { u[uint2(i, 0)] = i; }", "cs_5_0", "without a size"),
+        ("RWTexture2D<uint> u : register(u0); groupshared uint a[4][]; [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { u[uint2(i, 0)] = i; }", "cs_5_0", "without a size"),
     ] {
         let e = cs_err(src, target);
         assert!(e.to_lowercase().contains(want), "{src}: {e}");

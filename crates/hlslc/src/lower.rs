@@ -150,6 +150,11 @@ fn flt(v: u32) -> f32 {
     f32::from_bits(v)
 }
 
+/// `T a[]` (any dimension) without an initializer to size it: fxc's X3074.
+fn no_size(t: &Ty) -> bool {
+    matches!(t, Ty::Array(e, n) if *n == 0 || no_size(e))
+}
+
 pub fn ncomp(prog: &Program, t: &Ty) -> usize {
     match t {
         Ty::Array(e, n) => ncomp(prog, e) * *n as usize,
@@ -1185,6 +1190,9 @@ impl<'a> L<'a> {
                 if v.init.is_some() {
                     return Err(format!("line {}: groupshared variables cannot be initialized", v.line));
                 }
+                if no_size(v.ty()) {
+                    return Err(format!("line {}: groupshared array {} without a size", v.line, v.name));
+                }
                 let bytes = 4 * ncomp(prog, v.ty()) as u32;
                 // (32 KB per thread group, as Direct3D 11 allows)
                 if self.tgsm.iter().sum::<u32>() + bytes > 32768 {
@@ -1690,9 +1698,6 @@ impl<'a> L<'a> {
                     };
                     let t = init.as_ref().map_or(t, |i| i.ty.clone());
                     // (`T a[];` takes its size from an initializer list; without one it has none)
-                    fn no_size(t: &Ty) -> bool {
-                        matches!(t, Ty::Array(e, n) if *n == 0 || no_size(e))
-                    }
                     if no_size(&t) {
                         return Err(format!("line {}: array {} without a size or an initializer", v.line, v.name));
                     }

@@ -302,6 +302,9 @@ struct Run<'a> {
     /// (robust access may return anything in range), or a float op that gave an infinity or
     /// NaN (WGSL leaves those indeterminate)
     taint: std::cell::RefCell<Option<String>>,
+    /// the other answer where WGSL lets the sign of a zero go: float results of -0 are +0, and
+    /// min/max of +0 and -0 give the other zero
+    zero_flip: bool,
 }
 
 /// Float ops whose results the oracle wants finite.
@@ -388,7 +391,14 @@ impl Run<'_> {
     /// Component-wise: d = g(a, b, c) on sources read as `k`.
     fn cw(&mut self, i: &Inst, k: K, g: impl Fn(&[u32]) -> u32) -> Result<(), String> {
         let s: Vec<V> = i.ops[1..].iter().map(|o| self.src(o, k)).collect::<Result<_, _>>()?;
-        let v: V = std::array::from_fn(|c| g(&s.iter().map(|x| x[c]).collect::<Vec<_>>()));
+        let mut v: V = std::array::from_fn(|c| g(&s.iter().map(|x| x[c]).collect::<Vec<_>>()));
+        if self.zero_flip && FLOAT_OUT.contains(&i.op) {
+            for x in &mut v {
+                if *x == 0x8000_0000 {
+                    *x = 0;
+                }
+            }
+        }
         // (float math or comparisons on a denormal: implementations may flush it)
         if (FLOAT_OUT.contains(&i.op) || matches!(i.op, 0x18 | 0x1d | 0x31 | 0x39)) && s.iter().flatten().any(|&x| f(x).is_subnormal()) {
             self.taint("a denormal operand");
@@ -525,8 +535,14 @@ impl Run<'_> {
                 0x2f => self.cw(i, F, |a| b(if f(a[0]).is_subnormal() { f32::NEG_INFINITY } else { f(a[0]).log2() }))?,
                 0x30 => blocks.push(pc - 1),
                 0x32 => self.cw(i, F, |a| b(f(a[0]) * f(a[1]) + f(a[2])))?,
-                0x33 => self.cw(i, F, |a| b(fmin(f(a[0]), f(a[1]))))?,
-                0x34 => self.cw(i, F, |a| b(fmax(f(a[0]), f(a[1]))))?,
+                0x33 => {
+                    let flip = self.zero_flip;
+                    self.cw(i, F, |a| b(if flip && f(a[0]) == 0.0 && f(a[1]) == 0.0 { fmax(f(a[0]), f(a[1])) } else { fmin(f(a[0]), f(a[1])) }))?
+                }
+                0x34 => {
+                    let flip = self.zero_flip;
+                    self.cw(i, F, |a| b(if flip && f(a[0]) == 0.0 && f(a[1]) == 0.0 { fmin(f(a[0]), f(a[1])) } else { fmax(f(a[0]), f(a[1])) }))?
+                }
                 0x36 => self.cw(i, F, |a| a[0])?,
                 0x37 => {
                     let c = self.src(&i.ops[1], U)?;
@@ -634,14 +650,24 @@ impl Run<'_> {
 /// Runs a pixel shader on constant buffers `cb`; returns o0..o7, and why they may not be what
 /// every implementation gives (see `Run::taint`).
 pub fn run(p: &Program, cb: &[Vec<V>]) -> Result<([V; 8], Option<String>), String> {
-    let mut r = Run {
-        p,
-        r: vec![[0; 4]; p.temps],
-        x: p.xs.iter().map(|&(n, s)| (n, vec![[0; 4]; s as usize])).collect(),
-        o: [[0; 4]; 8],
-        cb,
-        taint: Default::default(),
+    let go = |zero_flip| -> Result<([V; 8], Option<String>), String> {
+        let mut r = Run {
+            p,
+            r: vec![[0; 4]; p.temps],
+            x: p.xs.iter().map(|&(n, s)| (n, vec![[0; 4]; s as usize])).collect(),
+            o: [[0; 4]; 8],
+            cb,
+            taint: Default::default(),
+            zero_flip,
+        };
+        r.exec()?;
+        Ok((r.o, r.taint.into_inner()))
     };
-    r.exec()?;
-    Ok((r.o, r.taint.into_inner()))
+    let (o, t) = go(false)?;
+    // (WGSL may ignore the sign of a zero: when it reaches the outputs, through a movc, a bitwise
+    // op or a division, any answer is right; oracle seed 447 #587: max(-18, -0.0) into a movc)
+    if t.is_none() && go(true).map(|(o2, _)| o2 != o).unwrap_or(true) {
+        return Ok((o, Some("the sign of a zero decided the result".into())));
+    }
+    Ok((o, t))
 }
