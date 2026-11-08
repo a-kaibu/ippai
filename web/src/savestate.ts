@@ -12,6 +12,7 @@
 // ended by the address 0xffffffff.
 
 import type { Reply, Request } from "./snapz-worker";
+import { memGate } from "./memgate";
 import { sakeBase, type SakeBuild } from "./runtime";
 
 type SakeName = SakeBuild["name"];
@@ -55,9 +56,8 @@ const ST_RUNNING = 0,
   ST_READY = 2,
   ST_FAILED = 3;
 
-let busy = false;
-/** A state is being taken: nothing of the page may change the module's memory. */
-export const snapping = () => busy;
+/** A state is being taken: nothing of the page may change the module's memory (memgate.ts). */
+export const snapping = () => memGate.closed;
 
 let worker: Worker | undefined;
 function work(r: Request, transfer: Transferable[] = []): Promise<Reply> {
@@ -145,7 +145,8 @@ export async function takeState(
   const ctl = m._vnhost_snap_ctl() >>> 0;
   const i32 = new Int32Array(m.wasmMemory.buffer);
   const word = (off: number) => (ctl + off) >>> 2;
-  busy = true;
+  // (the page's own writes first: WebCodecs' copies under way end, later ones wait)
+  await memGate.close();
   let parts: { a: number; n: number; frame: Uint8Array }[];
   let raw: number;
   const t0 = performance.now();
@@ -183,7 +184,7 @@ export async function takeState(
     while (Atomics.load(i32, word(STATE)) !== ST_RUNNING && performance.now() - t1 < 5000) await wait(2);
     if (Atomics.load(i32, word(STIRRED))) throw new Stirred();
   } finally {
-    busy = false;
+    memGate.open();
   }
   const took = Math.round(performance.now() - t0);
   const created = new Date().toISOString();

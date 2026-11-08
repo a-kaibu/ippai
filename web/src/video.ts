@@ -4,7 +4,7 @@
 // them (a movie file is read a few seconds ahead of the frame shown). The guest asks for frame n; this decodes ahead of the newest request (hardware
 // first) and copies whole frames into the stream's slots, where the guest takes them.
 
-import { snapping } from "./savestate";
+import { memGate, type Gate } from "./memgate";
 
 export interface VideoWasm {
   wasmMemory: WebAssembly.Memory;
@@ -52,6 +52,8 @@ interface Stream {
   want: number;
   copying: Set<number>;
   broken: boolean;
+  /** keys of its work held while a state is taken (memgate.ts run) */
+  held: { serve: object; copy: object };
 }
 
 export class Video {
@@ -64,11 +66,13 @@ export class Video {
   constructor(
     private wasm: VideoWasm,
     private note: (line: string) => void,
+    private gate: Gate = memGate,
+    watch = true,
   ) {
     this.io = wasm._malloc(4 * 6 * 16 + 4) >>> 0;
     this.layoutBuf = wasm._malloc(14 * 4) >>> 0;
     this.doorbell = wasm._vnhost_video_doorbell() >>> 0;
-    void this.watch();
+    if (watch) void this.watch();
   }
 
   /** wakes at once when the guest asks for a frame (Atomics.waitAsync on the doorbell) */
@@ -91,8 +95,8 @@ export class Video {
 
   /** Called every frame (and on each request): new and closed streams, decoding ahead. */
   tick(): void {
-    // (a save state is being taken: the memory stays as it is)
-    if (snapping()) return;
+    // (a save state is being taken: the memory stays as it is; the next tick looks again)
+    if (this.gate.closed) return;
     const n = this.wasm._vnhost_video_list(this.io, 16);
     const u32 = new Uint32Array(this.wasm.wasmMemory.buffer, this.io, n * 6);
     const live = new Set<number>();
@@ -141,7 +145,17 @@ export class Video {
         out: new Map(),
       });
     }
-    const s: Stream = { id, w, h, frames, tracks, want: -1, copying: new Set(), broken: false };
+    const s: Stream = {
+      id,
+      w,
+      h,
+      frames,
+      tracks,
+      want: -1,
+      copying: new Set(),
+      broken: false,
+      held: { serve: {}, copy: {} },
+    };
     void this.configure(s, ptr);
     return s;
   }
@@ -158,7 +172,7 @@ export class Video {
       };
       if (!(await VideoDecoder.isConfigSupported(config)).supported) {
         this.note(`video ${s.id}: ${t.codec} not supported`);
-        this.fail(s);
+        this.gate.run(() => this.fail(s));
         return;
       }
       t.dec = new VideoDecoder({
@@ -166,11 +180,12 @@ export class Video {
           const n = Math.round(f.timestamp / 1000);
           if (n < s.want || t.out.has(n)) f.close();
           else t.out.set(n, f);
-          this.copyReady(s);
+          // (held while a state is taken: copied after)
+          this.gate.run(() => this.copyReady(s), s.held.copy);
         },
         error: (e) => {
           this.note(`video ${s.id}: ${String(e)}`);
-          this.fail(s);
+          this.gate.run(() => this.fail(s));
         },
       });
       t.config = config;
@@ -178,7 +193,7 @@ export class Video {
       this.note(`video ${s.id}: ${t.codec} ${s.w}x${s.h}`);
     }
     void ptr;
-    if (s.want >= 0) this.serve(s, s.want);
+    this.gate.run(() => s.want >= 0 && this.serve(s, s.want), s.held.serve);
   }
 
   /** Frame n of track t, or null while the guest has not read its bytes yet. */
@@ -195,6 +210,7 @@ export class Video {
   }
 
   private serve(s: Stream, want: number): void {
+    if (this.gate.closed) return this.gate.run(() => this.serve(s, s.want), s.held.serve);
     want = Math.min(want, s.frames - 1);
     s.want = want;
     if (s.tracks.some((t) => !t.dec || t.dec.state !== "configured")) return;
@@ -229,6 +245,7 @@ export class Video {
 
   /** Copies decoded frames (every track's) the guest has no slot of yet, oldest first. */
   private copyReady(s: Stream): void {
+    if (this.gate.closed) return this.gate.run(() => this.copyReady(s), s.held.copy);
     for (let n = s.want; n < s.want + AHEAD; n++) {
       if (n < 0 || s.copying.has(n)) continue;
       const fs = s.tracks.map((t) => t.out.get(n));
@@ -246,7 +263,9 @@ export class Video {
       const buf = this.wasm._vnhost_video_begin(s.id, n, sizeAt) >>> 0;
       if (!buf) return;
       s.copying.add(n);
-      void this.copy(s, n, fs as VideoFrame[], how, buf);
+      // (the copy writes into the memory when it ends: a state waits for it, memgate.ts)
+      this.gate.enter();
+      void this.copy(s, n, fs as VideoFrame[], how, buf).finally(() => this.gate.leave());
     }
   }
 
@@ -284,8 +303,9 @@ export class Video {
       f.close();
       s.tracks[t]!.out.delete(n);
     }
-    // more to decode and copy (the guest took the slot it waited for)
-    if (this.streams.has(s.id)) this.serve(s, s.want);
+    // more to decode and copy (the guest took the slot it waited for); after the state when one
+    // is waiting for this copy
+    if (this.streams.has(s.id)) this.gate.run(() => this.serve(s, s.want), s.held.serve);
   }
 
   /** The guest stops waiting for this stream's frames (it keeps its old pixels). */

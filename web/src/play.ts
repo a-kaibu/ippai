@@ -16,6 +16,7 @@ let stopPlay: (() => void) | undefined;
 //                                   destroys the device then, and Direct3D games need it)
 
 import { keepSaving, loadSaves, type SavesModule } from "./saves";
+import { memGate } from "./memgate";
 import { startWebGame } from "./html";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./audio";
@@ -244,7 +245,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     `build: ${WASM} ${version}, translator ${await jitVersion}, memory ${build.memory ? "4 GB fixed" : "growing from 2.06 GB (4 GB refused)"}`,
   );
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
-  const saved = nosave ? null : await loadSaves(saveName);
+  const saved = nosave ? null : await loadSaves(saveName, (m) => (log(m), toast.warning(m)));
   let stateMem: WebAssembly.Memory | undefined;
   if (stateFile) {
     stateMem = await stateMemory(stateFile, build.memory);
@@ -351,7 +352,14 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   attachInput(sake);
   const resize = () => {
     const dpr = window.devicePixelRatio || 1;
-    sake._vnhost_render_resize(Math.floor(canvas.clientWidth * dpr), Math.floor(canvas.clientHeight * dpr));
+    memGate.run(
+      () =>
+        sake._vnhost_render_resize(
+          Math.floor(canvas.clientWidth * dpr),
+          Math.floor(canvas.clientHeight * dpr),
+        ),
+      resize,
+    );
   };
   resize();
   new ResizeObserver(resize).observe(canvas);
@@ -552,6 +560,8 @@ function watch(sake: SakeModule): void {
   if (typeof AudioDecoder !== "undefined") new AudioDecode(sake, (l) => (console.log(l), recorder?.note(l)));
   const frame = () => {
     if (exited) return closeGame();
+    // (a state is being taken: the memory stays as it is)
+    if (memGate.closed) return void requestAnimationFrame(frame);
     video?.tick();
     sake._vnhost_render_info(info);
     const [s, bits, width, height] = Array.from(new Uint32Array(sake.wasmMemory.buffer, info, 4));
@@ -567,8 +577,9 @@ function watch(sake: SakeModule): void {
 }
 
 function attachInput(sake: SakeModule): void {
+  // (a key pressed while a state is taken: given to the game after, memgate.ts)
   const push = (kind: number, x: number, y: number, data: number) =>
-    sake._vnhost_render_input(kind, x, y, data);
+    memGate.run(() => void sake._vnhost_render_input(kind, x, y, data));
   // canvas pixels: the module maps them to the screen
   const toFrame = (e: { clientX: number; clientY: number }): [number, number] => {
     const b = canvas.getBoundingClientRect();

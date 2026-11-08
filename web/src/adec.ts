@@ -8,7 +8,7 @@
 // instead: MP3 and Opus give one per chunk, Vorbis none for its first; a chunk that gives none
 // (a bad frame) is let go once the decoder has nothing queued and nothing came for QUIET ms.
 
-import { snapping } from "./savestate";
+import { memGate, type Gate } from "./memgate";
 
 export interface AdecWasm {
   wasmMemory: WebAssembly.Memory;
@@ -76,6 +76,9 @@ export class AudioDecode {
   private scratch = 0;
   private scratchLen = 0;
   private doorbell: number;
+  /** outputs that came while a state was taken (memgate.ts), written after in order */
+  private held: [Stream, AudioData][] = [];
+  private heldKey = {};
 
   constructor(
     private wasm: AdecWasm,
@@ -83,6 +86,7 @@ export class AudioDecode {
     private kind: DecoderKind = AudioDecoder as unknown as DecoderKind,
     private chunk: Chunk = (i) => new EncodedAudioChunk(i),
     watch = true,
+    private gate: Gate = memGate,
   ) {
     this.io = wasm._malloc(4 * ROW * MAX) >>> 0;
     this.sizes = wasm._malloc(8) >>> 0;
@@ -108,8 +112,8 @@ export class AudioDecode {
 
   /** New and closed streams, and chunks to feed (on each doorbell). */
   tick(): void {
-    // (a save state is being taken: the memory stays as it is)
-    if (snapping()) return;
+    // (a save state is being taken: the memory stays as it is; the next doorbell looks again)
+    if (this.gate.closed) return;
     const n = this.wasm._vnhost_adec_list(this.io, MAX);
     const u32 = new Uint32Array(this.wasm.wasmMemory.buffer, this.io, n * ROW);
     const live = new Set<number>();
@@ -171,21 +175,22 @@ export class AudioDecode {
       this.note(
         `audio ${s.id}: ${config.codec} ${config.sampleRate} Hz ${config.numberOfChannels} ch not supported`,
       );
-      return this.fail(s);
+      return this.gate.run(() => this.fail(s));
     }
     s.dec = new this.kind({
       output: (d) => this.output(s, d),
       error: (e) => {
         this.note(`audio ${s.id}: ${String(e)}`);
-        this.fail(s);
+        this.gate.run(() => this.fail(s));
       },
     });
     s.dec.configure(config);
     this.note(`audio ${s.id}: ${config.codec} ${config.sampleRate} Hz ${config.numberOfChannels} ch`);
-    this.feed(s);
+    this.gate.run(() => this.feed(s));
   }
 
   private feed(s: Stream): void {
+    if (this.gate.closed) return this.gate.run(() => this.feed(s));
     if (s.pending || s.broken || !s.dec || s.dec.state !== "configured") return;
     const u32 = () => new Uint32Array(this.wasm.wasmMemory.buffer, this.sizes, 2);
     for (;;) {
@@ -201,6 +206,18 @@ export class AudioDecode {
   }
 
   private output(s: Stream, d: AudioData): void {
+    // (a state is being taken: kept, written once it is done, after any kept before)
+    if (this.gate.closed || this.held.length) {
+      this.held.push([s, d]);
+      this.gate.run(() => {
+        for (const [hs, hd] of this.held.splice(0)) this.write(hs, hd);
+      }, this.heldKey);
+      return;
+    }
+    this.write(s, d);
+  }
+
+  private write(s: Stream, d: AudioData): void {
     try {
       if (this.streams.get(s.id) !== s || s.broken) return;
       const ch = d.numberOfChannels;
@@ -236,8 +253,10 @@ export class AudioDecode {
     s.quiet = setTimeout(() => {
       s.quiet = null;
       if (this.streams.get(s.id) !== s || s.broken) return;
-      if (s.dec && s.dec.decodeQueueSize === 0) this.done(s);
-      else this.check(s);
+      this.gate.run(() => {
+        if (s.dec && s.dec.decodeQueueSize === 0) this.done(s);
+        else this.check(s);
+      });
     }, QUIET);
   }
 

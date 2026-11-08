@@ -38,6 +38,14 @@ wake) is counted: the module says `Ctl.stirred` after RESUME and the page drops 
 takes it again (`kura::snap` tests `nothing_runs_while_the_page_copies`, `a_wake_while_copied_is_told`,
 checked against mutants of each of these rules).
 
+The page writes into the memory too, outside any thread of the module: WebCodecs' decoded
+frames (`VideoFrame.copyTo` straight into a slot, ending later) and samples (web/src/video.ts,
+adec.ts), input, chunks read ahead. Before SAVE the page shuts `memGate` (web/src/memgate.ts):
+nothing new is written, the copies under way end first (a write across awaits holds the gate),
+and what comes while it is shut (a decoder's output, a key, a resize) is done after RESUME in the
+order it came. tests/webcodecs-snap-browser.mjs: real decoders, the first frame copy made late,
+the memory unchanged while shut and the frames and samples after it the same as a run without.
+
 A program that started other processes (their kernel is shared outside the memory,
 host/vnkern.js) can't be saved: "other processes run with this one".
 

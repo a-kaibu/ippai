@@ -88,6 +88,14 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/offline-browser.mjs target/debug/ippai
+      - name: Saves made offline survive the next online start (saves.ts sync state)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/saves-browser.mjs target/debug/ippai
+      - name: Save states wait for WebCodecs' writes (memgate.ts, real decoders)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/webcodecs-snap-browser.mjs
       - name: The game list (name, icons, 統計 at the top right, favorites, statistics)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs

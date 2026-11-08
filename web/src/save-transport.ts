@@ -24,8 +24,15 @@ export class SaveTransport {
    * copy): the first store later learns the server's revision, and writes over it only if the
    * server still has these same bytes (or nothing), so another device's newer save is not lost.
    */
-  startedOffline(url: string, data: Uint8Array | null): void {
-    this.bases.set(url, data ?? new Uint8Array());
+  startedOffline(url: string, data: Uint8Array | null, revision?: string | null): void {
+    // (the revision this browser's copy was last in step with, kept beside it (saves.ts): the
+    // server's If-Match then tells whether another device wrote since)
+    if (revision) this.revisions.set(url, revision);
+    else this.bases.set(url, data ?? new Uint8Array());
+  }
+  /** The server's revision this transport last saw for `url` (undefined: none yet). */
+  revision(url: string): string | undefined {
+    return this.revisions.get(url);
   }
   private async learnRevision(url: string): Promise<void> {
     const base = this.bases.get(url);
