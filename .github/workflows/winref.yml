@@ -261,7 +261,9 @@ jobs:
     needs: probes
     if: needs.probes.outputs.stale != ''
     runs-on: windows-2025
-    timeout-minutes: 20
+    # (the probes take ~7 min and the trial-game replays ~13 min more: 20 cut every run off
+    # before the answers were uploaded)
+    timeout-minutes: 45
     concurrency:
       group: winref-windows-${{ github.ref }}
       cancel-in-progress: false
