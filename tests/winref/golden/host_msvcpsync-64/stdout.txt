@@ -33,3 +33,4 @@ chore runs 2
 chore data 7
 released work 1
 kernel wait woken by _Cnd_broadcast 1
+_Cnd_timedwait woken by WakeAllConditionVariable 1
