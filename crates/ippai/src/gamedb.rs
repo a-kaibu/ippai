@@ -147,8 +147,18 @@ pub fn write(out: &Path, egs: &[(u32, meta::Row, Vec<meta::Row>)], vndb: &[serde
 
 /// `ippai gamedb build <out>`: from the sites (about 3 minutes of ErogameScape at its pace, 10 of
 /// VNDB at its).
-pub fn build(out: &Path) -> Result<()> {
-    let egs = egs_all(&meta::egs_rows).context("erogamescape")?;
+/// ErogameScape refuses many hosts (GitHub's runners too): its part then comes from `keep`, an
+/// earlier copy (the package's, or one built where it answers), or stays empty.
+pub fn build(out: &Path, keep: Option<&Path>) -> Result<()> {
+    let egs = match egs_all(&meta::egs_rows) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("erogamescape: {e:#}");
+            let kept = keep.filter(|p| p.is_file()).map(egs_rows_of).transpose()?.unwrap_or_default();
+            eprintln!("erogamescape: {} games kept from before", kept.len());
+            kept
+        }
+    };
     eprintln!("erogamescape: {} games", egs.len());
     let vndb = vndb_all(
         &|n| meta::vndb_page(serde_json::json!(["olang", "=", "ja"]), n).map(|(v, more)| (v.into_iter().map(prune_vndb).collect(), more)),
@@ -185,6 +195,14 @@ fn info_in(c: &Connection, id: &str) -> Option<meta::Info> {
         return None;
     };
     r.ok()
+}
+
+/// A copy's ErogameScape part, as `write` takes it.
+pub fn egs_rows_of(path: &Path) -> Result<Vec<(u32, meta::Row, Vec<meta::Row>)>> {
+    let c = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut q = c.prepare("SELECT id,row,more FROM egs ORDER BY id")?;
+    let rows = q.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter().map(|(id, r, m)| Ok((id, serde_json::from_str(&r)?, serde_json::from_str(&m)?))).collect()
 }
 
 /// ErogameScape's PC games (id, name, votes) in a copy, and when it was built (ms).
@@ -339,6 +357,7 @@ mod tests {
         let v = info("vndb:v17").unwrap();
         assert_eq!((v.title.as_str(), v.brand.as_str(), v.description.as_str()), ("Ever17 -the out of infinity-", "キッド", "LeMU"));
         assert!(info("egs:2").is_none() && info("vndb:v1").is_none() && info("x").is_none());
+        assert_eq!(egs_rows_of(&db).unwrap(), egs, "an earlier copy's part, as it was written");
         // the tags left out are ones vndb_info would not show
         let full = serde_json::json!({"id": "v9", "title": "T", "tags": (0..30).map(|k| serde_json::json!({"name": format!("t{k}"), "rating": (k % 7) as f64 * 0.5, "spoiler": (k % 5 == 0) as u8 as f64, "category": if k % 3 == 0 { "ero" } else { "cont" }})).collect::<Vec<_>>()});
         let pruned = prune_vndb(full.clone());

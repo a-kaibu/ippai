@@ -96,7 +96,14 @@ enum Cmd {
 #[derive(Subcommand)]
 enum GamedbCmd {
     /// Every ErogameScape game and Japanese VNDB VN into a new SQLite file (gamedb.yml).
-    Build { out: std::path::PathBuf },
+    Build {
+        out: std::path::PathBuf,
+        /// An earlier copy whose ErogameScape part to keep when ErogameScape does not answer.
+        #[arg(long)]
+        keep: Option<std::path::PathBuf>,
+    },
+    /// The published copy (ghcr.io/a-kaibu/ippai-gamedb:latest) into a file.
+    Pull { out: std::path::PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -181,7 +188,8 @@ fn main() -> anyhow::Result<()> {
         #[cfg(unix)]
         Cmd::Logs { follow, lines } => daemon::logs(&dirs, follow, lines),
         Cmd::Pack(c) => pack::run(&dirs.store, c),
-        Cmd::Gamedb { action: GamedbCmd::Build { out } } => gamedb::build(&out),
+        Cmd::Gamedb { action: GamedbCmd::Build { out, keep } } => gamedb::build(&out, keep.as_deref()),
+        Cmd::Gamedb { action: GamedbCmd::Pull { out } } => gamedb::pull(&out, None).map(|d| println!("{d}")),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),
     }
 }

@@ -255,6 +255,8 @@ impl Library {
         let digest = crate::gamedb::pull(&dest, have.as_deref())?;
         self.connect()?.execute("INSERT INTO kv(key,value) VALUES('gamedb_digest',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&digest])?;
         let (games, built) = crate::gamedb::egs_games(&dest)?;
+        // (one built where ErogameScape never answered has VNDB's part only: entries, no list)
+        ensure!(!games.is_empty(), "the game database has no ErogameScape games");
         // (a database not rebuilt for a week: its maker stopped; the sites themselves instead)
         ensure!(now_ms() - built < 7 * 24 * 3_600_000, "the game database is from {} days ago", (now_ms() - built) / 86_400_000);
         Ok(games)
