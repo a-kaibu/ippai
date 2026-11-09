@@ -4,7 +4,9 @@
  * by tests/host-tests.sh from msiinstall.wxs with wixl. Each is installed, has a feature
  * added and removed, is queried (MsiQueryProductState, MsiGetProductInfo,
  * MsiEnumRelatedProducts) and uninstalled (REMOVE=ALL): the files, registry values,
- * folders and registration come and go. */
+ * folders and registration come and go. AppSearch finds a REG_SZ starting with '#', a
+ * DWORD, a folder named in the registry and a file one folder down (DrLocator), and its
+ * results are written back as a registry value. */
 #include <windows.h>
 #include <msi.h>
 #include <shlobj.h>
@@ -53,6 +55,23 @@ static void registry(void) {
     n = sizeof v;
     r = RegQueryValueExA(k, "count", NULL, &ty, (BYTE *)&v, &n);
     printf("  count: %ld type %lu %lu\n", r, ty, v);
+    n = sizeof s;
+    r = RegQueryValueExA(k, "found", NULL, &ty, (BYTE *)s, &n);
+    if (!r) {
+        /* (the paths under Program Files as <PF>) */
+        char pf[MAX_PATH], out[2 * MAX_PATH] = "", *p = s;
+        SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, pf);
+        size_t l = strlen(pf);
+        while (*p) {
+            if (!_strnicmp(p, pf, l)) {
+                strcat(out, "<PF>");
+                p += l;
+            } else
+                strncat(out, p++, 1);
+        }
+        printf("  found: \"%s\"\n", out);
+    } else
+        printf("  found: %ld\n", r);
     RegCloseKey(k);
 }
 
@@ -105,9 +124,31 @@ static void run(const char *msi) {
     }
 }
 
+/* What AppSearch is to find. */
+static void search_setup(void) {
+    char pf[MAX_PATH], p[MAX_PATH];
+    SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, pf);
+    snprintf(p, sizeof p, "%s\\MsiSearch", pf);
+    CreateDirectoryA(p, NULL);
+    strcat(p, "\\deep");
+    CreateDirectoryA(p, NULL);
+    strcat(p, "\\probe.txt");
+    HANDLE h = CreateFileA(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    CloseHandle(h);
+    HKEY k;
+    RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\ippai\\search", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, NULL);
+    RegSetValueExA(k, "sz", 0, REG_SZ, (const BYTE *)"#hash", 6);
+    DWORD v = 0xfffffff6;
+    RegSetValueExA(k, "dw", 0, REG_DWORD, (const BYTE *)&v, 4);
+    snprintf(p, sizeof p, "%s\\MsiSearch", pf);
+    RegSetValueExA(k, "dir", 0, REG_SZ, (const BYTE *)p, strlen(p) + 1);
+    RegCloseKey(k);
+}
+
 int main(void) {
     SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, dir);
     strcat(dir, "\\MsiTest\\");
+    search_setup();
     printf("ui %d\n", MsiSetInternalUI(INSTALLUILEVEL_NONE, NULL));
     printf("ui %d\n", MsiSetInternalUI(INSTALLUILEVEL_NONE | INSTALLUILEVEL_ENDDIALOG, NULL));
     printf("ui %d\n", MsiSetInternalUI(6, NULL));

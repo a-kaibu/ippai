@@ -5,6 +5,11 @@
     <Package InstallerVersion="200" Compressed="COMPRESSED" InstallScope="perMachine"/>
     <Media Id="1" Cabinet="data.cab" EmbedCab="yes"/>
     <Property Id="TESTPROP" Value="value"/>
+    <!-- AppSearch: values msiinstall.c puts there first -->
+    <Property Id="FOUNDSZ"><RegistrySearch Id="sz" Root="HKCU" Key="Software\ippai\search" Name="sz" Type="raw"/></Property>
+    <Property Id="FOUNDDW"><RegistrySearch Id="dw" Root="HKCU" Key="Software\ippai\search" Name="dw" Type="raw"/></Property>
+    <Property Id="FOUNDDIR"><RegistrySearch Id="dir" Root="HKCU" Key="Software\ippai\search" Name="dir" Type="directory"/></Property>
+    <Property Id="NOTFOUND"><RegistrySearch Id="nf" Root="HKCU" Key="Software\ippai\nowhere" Name="x" Type="raw"/></Property>
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFilesFolder">
         <Directory Id="INSTALLDIR" Name="MsiTest">
@@ -12,6 +17,7 @@
             <File Id="a.txt" Name="a.txt" Source="a.txt" KeyPath="yes"/>
             <RegistryValue Root="HKCU" Key="Software\ippai\msitest" Name="path" Value="[INSTALLDIR]" Type="string"/>
             <RegistryValue Root="HKCU" Key="Software\ippai\msitest" Name="count" Value="7" Type="integer"/>
+            <RegistryValue Root="HKCU" Key="Software\ippai\msitest" Name="found" Value="sz=[FOUNDSZ] dw=[FOUNDDW] dir=[FOUNDDIR] file=[FOUNDFILE] none=[NOTFOUND]" Type="string"/>
           </Component>
           <Directory Id="SUBDIR" Name="sub">
             <Component Id="Data" Guid="{22222222-3333-4444-5555-666666666666}">

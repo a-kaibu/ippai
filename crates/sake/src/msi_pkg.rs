@@ -238,7 +238,15 @@ impl Package {
         if let Some(Prop::I4(v)) = summary.props.get(&msidb::suminfo::PID_PAGECOUNT) {
             props.insert("VersionDatabase".into(), v.to_string());
         }
-        props.insert("ProductState".into(), "-1".into());
+        // (a product registered already: Installed, ProductState 5, ProductToBeRegistered)
+        let code = props.get("ProductCode").cloned().unwrap_or_default();
+        if crate::msi_install::product_installed(&code) {
+            props.insert("Installed".into(), "1".into());
+            props.insert("ProductState".into(), "5".into());
+            props.insert("ProductToBeRegistered".into(), "1".into());
+        } else {
+            props.insert("ProductState".into(), "-1".into());
+        }
         props.entry("UILevel".into()).or_insert("5".into());
         let mut p = Package {
             db,

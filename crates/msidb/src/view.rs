@@ -718,8 +718,9 @@ fn check_row(t: &Table, row: &[Field]) -> R<()> {
             // (Windows allows a NULL key; inserting a second one then fails as a duplicate)
         }
         if c.ty & T_STRING == 0 && !c.is_binary() {
+            // (an empty string is a NULL)
             if let Field::Str(s) = f {
-                if crate::record::parse_int(s).is_none() {
+                if !s.is_empty() && crate::record::parse_int(s).is_none() {
                     return Err(ERROR_DATATYPE_MISMATCH);
                 }
             }
@@ -766,6 +767,18 @@ mod tests {
         assert_eq!(texts(&run(&mut db, "SELECT `Name`, `Type` FROM `_Columns`").unwrap()), ["id|13570", "name|7456", "number|7456"]);
         assert_eq!(View::new(&db, "SELECT * FROM `nope`").err(), Some(ERROR_BAD_QUERY_SYNTAX));
         assert_eq!(View::new(&db, "SELECT `nope` FROM `phone`").err(), Some(ERROR_BAD_QUERY_SYNTAX));
+    }
+
+    /// '' into an integer column is a NULL; other text is a type mismatch (Wine's package
+    /// tests insert Signature rows with '' sizes and dates).
+    #[test]
+    fn empty_string_in_int_column() {
+        let mut db = Database::new();
+        run(&mut db, "CREATE TABLE `S` (`k` CHAR(10) NOT NULL, `n` LONG, `m` SHORT PRIMARY KEY `k`)").unwrap();
+        run(&mut db, "INSERT INTO `S` (`k`, `n`, `m`) VALUES ('a', '', '')").unwrap();
+        run(&mut db, "INSERT INTO `S` (`k`, `n`, `m`) VALUES ('b', '12', 3)").unwrap();
+        assert_eq!(run(&mut db, "INSERT INTO `S` (`k`, `n`) VALUES ('c', 'x')"), Err(ERROR_DATATYPE_MISMATCH));
+        assert_eq!(texts(&run(&mut db, "SELECT * FROM `S`").unwrap()), ["a||", "b|12|3"]);
     }
 
     #[test]

@@ -71,6 +71,7 @@ pub mod jscript;
 pub mod ini;
 pub mod msi;
 pub mod msi_pkg;
+pub mod msi_search;
 pub mod msi_install;
 pub mod msi_ui;
 pub mod dinput;

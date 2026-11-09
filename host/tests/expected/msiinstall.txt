@@ -27,6 +27,7 @@ install: 0
   \: folder
   path: 0 type 1 "<INSTALLDIR>"
   count: 0 type 4 7
+  found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
   InstalledProductName: 0 "ippai msi test" 14
@@ -43,6 +44,7 @@ add Extras: 0
   \: folder
   path: 0 type 1 "<INSTALLDIR>"
   count: 0 type 4 7
+  found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
   InstalledProductName: 0 "ippai msi test" 14
@@ -59,6 +61,7 @@ remove Extras: 0
   \: folder
   path: 0 type 1 "<INSTALLDIR>"
   count: 0 type 4 7
+  found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
   InstalledProductName: 0 "ippai msi test" 14
@@ -106,6 +109,7 @@ install: 0
   \: folder
   path: 0 type 1 "<INSTALLDIR>"
   count: 0 type 4 7
+  found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
   InstalledProductName: 0 "ippai msi test" 14
@@ -122,6 +126,7 @@ add Extras: 0
   \: folder
   path: 0 type 1 "<INSTALLDIR>"
   count: 0 type 4 7
+  found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
   InstalledProductName: 0 "ippai msi test" 14
@@ -138,6 +143,7 @@ remove Extras: 0
   \: folder
   path: 0 type 1 "<INSTALLDIR>"
   count: 0 type 4 7
+  found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
   InstalledProductName: 0 "ippai msi test" 14

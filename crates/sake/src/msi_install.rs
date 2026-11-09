@@ -252,7 +252,7 @@ fn standard(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, _table: Option<&st
                 }
             }
             // (nothing left: the product is no longer installed)
-            if pk.features.iter().all(|f| !matches!(f.installed, INSTALLSTATE_LOCAL | INSTALLSTATE_SOURCE | INSTALLSTATE_ADVERTISED)) {
+            if pk.prop("REMOVE").eq_ignore_ascii_case("ALL") || pk.features.iter().all(|f| !matches!(f.installed, INSTALLSTATE_LOCAL | INSTALLSTATE_SOURCE | INSTALLSTATE_ADVERTISED)) {
                 unregister_product(&pk);
             } else {
                 register_features(&pk);
@@ -640,28 +640,7 @@ fn remove_folders(p: &Arc<Mutex<Package>>) -> u32 {
 
 /// AppSearch: properties from registry (RegLocator) and directory (DrLocator) searches.
 fn app_search(p: &Arc<Mutex<Package>>) -> u32 {
-    let mut pk = p.lock().unwrap();
-    let all = pk.prop("ALLUSERS") == "1";
-    for r in crate::msi_pkg::query(&pk.db, "SELECT `Property`, `Signature_` FROM `AppSearch`") {
-        let (prop, sig) = (r.get(1).text(), r.get(2).text());
-        let reg = crate::msi_pkg::query(&pk.db, &format!("SELECT `Root`, `Key`, `Name`, `Type` FROM `RegLocator` WHERE `Signature_` = '{}'", sig.replace('\'', "")));
-        if let Some(l) = reg.first() {
-            let key = format!("{}\\{}", root_path(l.get(1).int(), all), pk.format(&l.get(2).text()));
-            if let Some((ty, data)) = crate::misc::reg_get(&key, &pk.format(&l.get(3).text())) {
-                let v = match ty {
-                    4 if data.len() >= 4 => format!("#{}", u32::from_le_bytes(data[..4].try_into().unwrap()) as i32),
-                    1 | 2 | 7 => {
-                        let u: Vec<u16> = data.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
-                        String::from_utf16_lossy(&u)
-                    }
-                    _ => String::new(),
-                };
-                if !v.is_empty() {
-                    pk.set_prop(&prop, &v);
-                }
-            }
-        }
-    }
+    crate::msi_search::app_search(&mut p.lock().unwrap());
     ERROR_SUCCESS
 }
 
@@ -977,6 +956,19 @@ pub fn component_registration(code: &str, id: &str) -> (i32, i32) {
         Some(_) => INSTALLSTATE_LOCAL,
     };
     (st, clients)
+}
+
+/// Where a component is installed (MsiLocateComponent): its path for the first product
+/// that has it locally.
+pub fn locate_component(id: &str) -> Option<String> {
+    // (the machine's, then each user's)
+    const ROOT: &str = "hklm\\software\\microsoft\\windows\\currentversion\\installer\\userdata";
+    let mut sids = vec!["s-1-5-18".to_string()];
+    sids.extend(crate::misc::reg_subkeys(ROOT).into_iter().map(|s| s.to_lowercase()).filter(|s| s != "s-1-5-18"));
+    sids.iter().find_map(|sid| {
+        let key = format!("{ROOT}\\{sid}\\components\\{}", pack_guid(id));
+        crate::misc::reg_values(&key).into_iter().filter_map(|n| get_str(&key, &n)).find(|v| !v.is_empty() && !is_source_path(v))
+    })
 }
 
 fn is_source_path(v: &str) -> bool {
@@ -1698,6 +1690,29 @@ mod tests {
         );
         assert_eq!(decompose_descriptor("']gAVn-}f(ZXfeAR6.jiThisWillFailIfTheresMoreThanAGuidsChars>3w2x^IGfe?CxI5heAvk."), None);
         assert_eq!(decompose_descriptor("short"), None);
+    }
+
+    #[test]
+    fn guid85_known() {
+        // (the descriptors' GUIDs above, encoded back)
+        assert_eq!(encode_guid85("{90110409-6000-11D3-8CFE-0150048383C9}").as_deref(), Some("']gAVn-}f(ZXfeAR6.ji"));
+        assert_eq!(encode_guid85("{A7CD68DB-EF74-49C8-FBB2-A7C463B2AC24}").as_deref(), Some("3w2x^IGfe?CxI5heAvk."));
+        assert_eq!(encode_guid85("not a guid"), None);
+    }
+
+    proptest::proptest! {
+        /// Any GUID survives base 85 and back.
+        #[test]
+        fn guid85_round_trip(b in proptest::array::uniform16(0u8..)) {
+            let g = format!(
+                "{{{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+            );
+            let e = encode_guid85(&g).unwrap();
+            proptest::prop_assert_eq!(e.chars().count(), 20);
+            let c: Vec<char> = e.chars().collect();
+            proptest::prop_assert_eq!(decode_guid85(&c), Some(g));
+        }
     }
 
     #[test]

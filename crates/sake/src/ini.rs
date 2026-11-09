@@ -356,6 +356,11 @@ pub fn write_entry(file: &str, sec: &str, key: &str, val: &str) -> bool {
     modify(file, |ini| ini.set(sec, key, Some(val))) != 0
 }
 
+/// A key's value (msi's IniLocator).
+pub fn read_entry(file: &str, sec: &str, key: &str) -> Option<String> {
+    load(file)?.value(sec, key)
+}
+
 /// Deletes a key (msi's RemoveIniValues).
 pub fn delete_entry(file: &str, sec: &str, key: &str) -> bool {
     modify(file, |ini| ini.set(sec, key, None)) != 0

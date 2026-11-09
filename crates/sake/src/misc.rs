@@ -884,6 +884,28 @@ fn version_resource(path: &str) -> Option<Vec<u8>> {
     Some(mem::slice(p, n).to_vec())
 }
 
+/// A file's VS_FIXEDFILEINFO version (MS, LS) and its Translation languages (msi's
+/// signatures).
+pub(crate) fn file_version(path: &str) -> Option<(u32, u32, Vec<u16>)> {
+    let host = crate::files::resolve(&crate::files::full_path(path))?;
+    let data = kura::fs::read(&host).ok()?;
+    let v = crate::pe::file_resource(&data, 16)?;
+    let at = v.windows(4).position(|w| w == [0xbd, 0x04, 0xef, 0xfe])?;
+    let d = |k: usize| v.get(at + k..at + k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    let (ms, ls) = (d(8)?, d(12)?);
+    let key: Vec<u8> = "Translation".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut langs = Vec::new();
+    if let Some(k) = v.windows(key.len()).position(|w| w == key.as_slice()) {
+        // (the key, its NUL, padding to 4: then LANGID/codepage pairs; wValueLength before)
+        let start = (k + key.len() + 2 + 3) & !3;
+        let len = u16::from_le_bytes([v[k - 4], v[k - 3]]) as usize;
+        for c in v.get(start..start + len).unwrap_or(&[]).chunks_exact(4) {
+            langs.push(u16::from_le_bytes([c[0], c[1]]));
+        }
+    }
+    Some((ms, ls, langs))
+}
+
 /// One VS_VERSIONINFO node: header, key, value (`text`: UTF-16 string), children.
 fn ver_node(key: &str, value: &[u8], text: bool, children: &[Vec<u8>]) -> Vec<u8> {
     let mut v = vec![0u8; 6];

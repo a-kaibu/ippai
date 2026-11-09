@@ -47,6 +47,11 @@ for t in $TESTS; do
       printf 'extra\r\n' > "$d/extra.txt"
       sed 's/COMPRESSED/yes/' "$ROOT/host/tests/msiinstall.wxs" > "$d/t.wxs"
       (cd "$d" && wixl -o "$OUT/msiinstall.msi" t.wxs) || return 1
+      # (a folder search wixl cannot write: probe.txt one level under Program Files\MsiSearch)
+      msibuild "$OUT/msiinstall.msi" -q 'CREATE TABLE `DrLocator` (`Signature_` CHAR(72) NOT NULL, `Parent` CHAR(72), `Path` CHAR(255), `Depth` SHORT PRIMARY KEY `Signature_`, `Parent`, `Path`)' \
+        -q "INSERT INTO \`DrLocator\` (\`Signature_\`, \`Path\`, \`Depth\`) VALUES ('probe', '[ProgramFilesFolder]MsiSearch', 1)" \
+        -q "INSERT INTO \`Signature\` (\`Signature\`, \`FileName\`) VALUES ('probe', 'PROBE.TXT|probe.txt')" \
+        -q "INSERT INTO \`AppSearch\` (\`Property\`, \`Signature_\`) VALUES ('FOUNDFILE', 'probe')" || return 1
       cp "$OUT/msiinstall.msi" "$OUT/msiinstall-u.msi" && msibuild "$OUT/msiinstall-u.msi" -q "UPDATE File SET Attributes = 8192" || return 1
       cp "$d/a.txt" "$d/extra.txt" "$OUT/MsiTest/" && cp "$d/b.dat" "$OUT/MsiTest/sub/"
       return $?
