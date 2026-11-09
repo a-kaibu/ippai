@@ -25,6 +25,13 @@ pub struct Config {
     /// gateway a round trip, not the line, bounds one upload, so more at once go faster.
     #[serde(default)]
     uploads: Option<usize>,
+    /// Where objects read from the bucket are kept on this machine [default: <cache>/s3, e.g.
+    /// ~/.cache/ippai/s3], as the bucket has them (encrypted, checked again on every read).
+    #[serde(default)]
+    cache: Option<std::path::PathBuf>,
+    /// The most that may be kept there, in GiB [default: 64]; 0 keeps nothing.
+    #[serde(default)]
+    cache_gib: Option<u64>,
 }
 
 #[cfg(test)]
@@ -90,6 +97,8 @@ mod tests {
                 ("new".into(), "02".repeat(32)),
             ]),
             uploads: None,
+            cache: None,
+            cache_gib: None,
         };
         let bucket = Bucket::new(
             "test",
@@ -108,6 +117,7 @@ mod tests {
             cache: Default::default(),
             inflight: Default::default(),
             requests: tokio::sync::Semaphore::new(8),
+            disk: None,
         };
         s.put("chunks/test", b"game bytes").await.unwrap();
         let snapshot = s.backup().await.unwrap();
@@ -225,9 +235,11 @@ pub(crate) mod gc_tests {
             active_key: "k".into(),
             keys: BTreeMap::from([("k".into(), "03".repeat(32))]),
             uploads: None,
+            cache: None,
+            cache_gib: None,
         };
         let bucket = Bucket::new("test", Region::Custom { region: "us-east-1".into(), endpoint }, Credentials::new(Some("t"), Some("t"), None, None, None).unwrap()).unwrap().with_path_style();
-        let s = Storage { db: Library::new(&dir).unwrap(), bucket, config, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8) };
+        let s = Storage { db: Library::new(&dir).unwrap(), bucket, config, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8), disk: None };
         (f, s, dir)
     }
 
@@ -300,7 +312,7 @@ pub(crate) mod gc_tests {
         for (i, (b, then)) in backups.iter().enumerate() {
             let out = dir.join(format!("restored{i}.db"));
             s.restore(*b, &out).await.unwrap();
-            let r = Storage { db: Library(out), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None }, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8) };
+            let r = Storage { db: Library(out), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None, cache: None, cache_gib: None }, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8), disk: None };
             for (l, v) in then {
                 assert_eq!(&*r.get(l).await.unwrap().unwrap(), &v[..], "backup {i} {l}");
             }
@@ -380,10 +392,11 @@ pub(crate) mod gc_tests {
         let pc = Storage {
             db: pc_db.clone(),
             bucket: s.bucket.clone(),
-            config: Config { keys: s.config.keys.clone(), active_key: s.config.active_key.clone(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None },
+            config: Config { keys: s.config.keys.clone(), active_key: s.config.active_key.clone(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None, cache: None, cache_gib: None },
             cache: Default::default(),
             inflight: Default::default(),
             requests: tokio::sync::Semaphore::new(8),
+            disk: None,
         };
         let shared: Vec<u8> = (0..600_000u32).map(|i| (i * 13 % 251) as u8).collect();
         for (name, own) in [("a", 1u8), ("b", 2)] {
@@ -591,6 +604,140 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A chunk read once comes from the disk afterwards: a restarted server (a new Storage on
+    /// the same disk) and a big chunk (past the 1 MiB memory cache) ask the bucket once.
+    #[tokio::test]
+    async fn disk_keeps_what_the_bucket_gave() {
+        let (f, mut s, dir) = serve(0).await;
+        let disk = dir.join("s3");
+        s.disk = Some(Arc::new(Disk::open(disk.clone(), 64 << 20).unwrap()));
+        let big: Vec<u8> = (0..3u32 << 19).map(|i| (i * 7 + i / 991) as u8).collect();
+        s.put("chunks/big", &big).await.unwrap();
+        s.put("chunks/small", b"small").await.unwrap();
+        for _ in 0..3 {
+            assert_eq!(&*s.get("chunks/big").await.unwrap().unwrap(), &big[..]);
+            assert_eq!(&*s.get("chunks/small").await.unwrap().unwrap(), b"small");
+        }
+        // (the disk write does not hold the answer back: let it land)
+        for _ in 0..200 {
+            if s.disk.as_ref().unwrap().kept() >= big.len() as u64 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(f.gets.load(SeqCst), 2, "the big chunk once, the small once");
+        // a new server on the same disk: nothing from the bucket
+        let mut again = Storage { db: s.db.clone(), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None, cache: None, cache_gib: None }, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8), disk: None };
+        again.disk = Some(Arc::new(Disk::open(disk.clone(), 64 << 20).unwrap()));
+        assert_eq!(&*again.get("chunks/big").await.unwrap().unwrap(), &big[..]);
+        assert_eq!(&*again.get("chunks/small").await.unwrap().unwrap(), b"small");
+        assert_eq!(f.gets.load(SeqCst), 2);
+        // kept encrypted, as the bucket has it: no plain game bytes on the disk
+        let files = std::fs::read_dir(&disk).unwrap().flatten().flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten()).map(|e| std::fs::read(e.path()).unwrap()).collect::<Vec<_>>();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|b| !b.windows(5).any(|w| w == b"small") && b.len() != big.len()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A kept object damaged on the disk (a flipped byte, cut short, emptied) is noticed by its
+    /// envelope: read from the bucket again, and kept again whole.
+    #[tokio::test]
+    async fn damaged_disk_objects_are_read_again() {
+        let (f, mut s, dir) = serve(0).await;
+        let disk = dir.join("s3");
+        s.disk = Some(Arc::new(Disk::open(disk.clone(), 64 << 20).unwrap()));
+        s.put("chunks/x", b"payload bytes").await.unwrap();
+        let object = |s: &Storage| {
+            let e: String = s.db.connect().unwrap().query_row("SELECT envelope FROM objects WHERE logical='chunks/x'", [], |r| r.get(0)).unwrap();
+            serde_json::from_str::<Envelope>(&e).unwrap().object
+        };
+        let id = object(&s);
+        let path = s.disk.as_ref().unwrap().path(id);
+        let wait_kept = |p: std::path::PathBuf| async move {
+            for _ in 0..200 {
+                if p.exists() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("not kept");
+        };
+        assert_eq!(&*s.get("chunks/x").await.unwrap().unwrap(), b"payload bytes");
+        wait_kept(path.clone()).await;
+        let good = std::fs::read(&path).unwrap();
+        let mut gets = 1;
+        let damages: Vec<Box<dyn Fn(&mut Vec<u8>)>> = vec![Box::new(|b| b[20] ^= 1), Box::new(|b| b.truncate(b.len() - 1)), Box::new(|b| b.clear()), Box::new(|b| *b.last_mut().unwrap() ^= 0x80)];
+        for damage in damages {
+            let mut b = good.clone();
+            damage(&mut b);
+            std::fs::write(&path, &b).unwrap();
+            *s.cache.lock().unwrap() = Default::default();
+            assert_eq!(&*s.get("chunks/x").await.unwrap().unwrap(), b"payload bytes");
+            gets += 1;
+            assert_eq!(f.gets.load(SeqCst), gets);
+            for _ in 0..200 {
+                if std::fs::read(&path).is_ok_and(|b| b == good) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), good, "kept whole again");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Random writes and reads past the limit: the disk never holds more than the limit after a
+    /// write, what it says it holds is what is there, the least lately read go first, and a
+    /// write cut short (a .tmp left by a crash) is cleared when it opens.
+    #[test]
+    fn disk_bounds_and_order() {
+        let dir = std::env::temp_dir().join(format!("ippai-disk-{}", Uuid::new_v4()));
+        let limit = 10_000u64;
+        let d = Disk::open(dir.clone(), limit).unwrap();
+        let mut seed = 0x6a09e667f3bcc908u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let ids: Vec<Uuid> = (0..40).map(|_| Uuid::new_v4()).collect();
+        let on_disk = |d: &Disk| d.files().0.iter().map(|f| f.1).sum::<u64>();
+        for step in 0..600 {
+            let id = ids[rnd(40) as usize];
+            if rnd(3) == 0 {
+                if let Some(b) = d.read(id) {
+                    assert!(b.iter().all(|&x| x == id.as_bytes()[0]));
+                }
+            } else {
+                let n = rnd(1500) as usize + 1;
+                d.write(id, &vec![id.as_bytes()[0]; n]);
+            }
+            assert!(d.kept() <= limit, "step {step}");
+            assert_eq!(d.kept(), on_disk(&d), "step {step}");
+        }
+        // bigger than the whole limit: not kept
+        d.write(ids[0], &vec![0; limit as usize + 1]);
+        assert!(d.kept() <= limit);
+        // least lately read first: read one, write until a trim, the one read stays
+        let d = Disk::open(dir.join("order"), 3000).unwrap();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        d.write(a, &[1; 1000]);
+        d.write(b, &[2; 1000]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(d.read(a).is_some());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        d.write(Uuid::new_v4(), &[3; 1500]);
+        assert!(d.read(a).is_some() && d.read(b).is_none());
+        // a write cut short
+        let tmp = d.path(a).with_extension("abc.tmp");
+        std::fs::write(&tmp, b"half").unwrap();
+        let again = Disk::open(dir.join("order"), 3000).unwrap();
+        assert!(!tmp.exists());
+        assert_eq!(again.kept(), on_disk(&again));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn cache_counts_and_bounds() {
         let mut c = Cache::default();
@@ -628,6 +775,128 @@ pub struct Storage {
     /// one download per object at a time (the others wait for it and take it from the cache)
     inflight: std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     requests: tokio::sync::Semaphore,
+    /// objects downloaded, kept on the disk (None: storage.toml's cache_gib = 0)
+    disk: Option<std::sync::Arc<Disk>>,
+}
+
+/// Objects as the bucket has them (encrypted: [`Storage::get`] decrypts, so checks, them each
+/// time), in `<dir>/<2 hex>/<uuid>`, the least lately read dropped once past `limit` bytes.
+/// A game's chunks come from the bucket once, not on every start: from Hugging Face a chunk
+/// took 1-4 s to arrive, and a start read hundreds of them.
+pub(crate) struct Disk {
+    dir: std::path::PathBuf,
+    limit: u64,
+    bytes: std::sync::Mutex<u64>,
+}
+
+/// Disk::trim keeps this share of the limit (a little room, so not every write trims).
+const DISK_KEEP: f64 = 0.9;
+
+impl Disk {
+    pub(crate) fn open(dir: std::path::PathBuf, limit: u64) -> Result<Self> {
+        std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
+        let d = Disk { dir, limit, bytes: Default::default() };
+        let (files, _) = d.files();
+        *d.bytes.lock().unwrap() = files.iter().map(|f| f.1).sum();
+        d.trim();
+        Ok(d)
+    }
+
+    fn path(&self, id: Uuid) -> std::path::PathBuf {
+        let s = id.simple().to_string();
+        self.dir.join(&s[..2]).join(s)
+    }
+
+    /// Every object kept: (path, size, last read); writes cut short (`.tmp`) are removed.
+    fn files(&self) -> (Vec<(std::path::PathBuf, u64, std::time::SystemTime)>, usize) {
+        let (mut out, mut temps) = (Vec::new(), 0);
+        for sub in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+            for f in std::fs::read_dir(sub.path()).into_iter().flatten().flatten() {
+                let p = f.path();
+                if p.extension().is_some_and(|x| x == "tmp") {
+                    let _ = std::fs::remove_file(&p);
+                    temps += 1;
+                    continue;
+                }
+                if let Ok(m) = f.metadata() {
+                    if m.is_file() {
+                        out.push((p, m.len(), m.modified().unwrap_or(std::time::UNIX_EPOCH)));
+                    }
+                }
+            }
+        }
+        (out, temps)
+    }
+
+    /// Object `id` when kept (and marked as just read).
+    pub(crate) fn read(&self, id: Uuid) -> Option<Vec<u8>> {
+        let p = self.path(id);
+        let data = std::fs::read(&p).ok()?;
+        let _ = std::fs::File::options().write(true).open(&p).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        Some(data)
+    }
+
+    /// Keeps `bytes` as object `id` (written whole or not at all: a temporary file renamed).
+    pub(crate) fn write(&self, id: Uuid, bytes: &[u8]) {
+        if bytes.len() as u64 > self.limit {
+            return;
+        }
+        let p = self.path(id);
+        let tmp = p.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
+        // (kept already: replaced, counted once)
+        let old = std::fs::metadata(&p).map_or(0, |m| m.len());
+        let ok = std::fs::create_dir_all(p.parent().unwrap())
+            .and_then(|_| std::fs::write(&tmp, bytes))
+            .and_then(|_| std::fs::rename(&tmp, &p));
+        if let Err(e) = ok {
+            let _ = std::fs::remove_file(&tmp);
+            eprintln!("S3 cache: {}: {e}", p.display());
+            return;
+        }
+        let over = {
+            let mut b = self.bytes.lock().unwrap();
+            *b = (*b + bytes.len() as u64).saturating_sub(old);
+            *b > self.limit
+        };
+        if over {
+            self.trim();
+        }
+    }
+
+    /// Drops object `id` (it did not decrypt: damaged on the disk).
+    pub(crate) fn remove(&self, id: Uuid) {
+        let p = self.path(id);
+        if let Ok(m) = std::fs::metadata(&p) {
+            if std::fs::remove_file(&p).is_ok() {
+                let mut b = self.bytes.lock().unwrap();
+                *b = b.saturating_sub(m.len());
+            }
+        }
+    }
+
+    /// Down to DISK_KEEP of the limit, the least lately read first.
+    fn trim(&self) {
+        let (mut files, _) = self.files();
+        let mut total: u64 = files.iter().map(|f| f.1).sum();
+        let keep = (self.limit as f64 * DISK_KEEP) as u64;
+        if total > self.limit {
+            files.sort_by_key(|f| f.2);
+            for (p, len, _) in files {
+                if total <= keep {
+                    break;
+                }
+                if std::fs::remove_file(&p).is_ok() {
+                    total -= len;
+                }
+            }
+        }
+        *self.bytes.lock().unwrap() = total;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn kept(&self) -> u64 {
+        *self.bytes.lock().unwrap()
+    }
 }
 
 /// Decrypted objects of at most 1 MiB, 64 MiB of them, the oldest put dropped first.
@@ -803,6 +1072,16 @@ impl Storage {
         if config.endpoint.is_some() {
             bucket = bucket.with_path_style();
         }
+        let gib = config.cache_gib.unwrap_or(64);
+        let disk = if gib == 0 {
+            None
+        } else {
+            let dir = match &config.cache {
+                Some(d) => d.clone(),
+                None => directories::ProjectDirs::from("", "", "ippai").context("no home directory")?.cache_dir().join("s3"),
+            };
+            Some(std::sync::Arc::new(Disk::open(dir, gib << 30)?))
+        };
         let s = Self {
             db,
             bucket,
@@ -810,6 +1089,7 @@ impl Storage {
             cache: Default::default(),
             inflight: Default::default(),
             requests: tokio::sync::Semaphore::new(8),
+            disk,
         };
         s.key(&s.config.active_key)?;
         Ok(s)
@@ -1003,9 +1283,36 @@ impl Storage {
             if let Some(data) = self.cache.lock().unwrap().get(&e.object) {
                 return Ok(data);
             }
-            let _permit = self.requests.acquire().await?;
-            let ciphertext = self.download(e.object).await?;
-            let data = std::sync::Arc::<[u8]>::from(e.decrypt(&self.key(&e.key_id)?, &ciphertext)?);
+            let key = self.key(&e.key_id)?;
+            let kept = match &self.disk {
+                Some(d) => {
+                    let (d, id) = (d.clone(), e.object);
+                    tokio::task::spawn_blocking(move || d.read(id)).await.ok().flatten()
+                }
+                None => None,
+            };
+            // (kept but not decrypting: damaged on the disk; taken from the bucket again)
+            let plain = match kept.map(|c| e.decrypt(&key, &c)) {
+                Some(Ok(p)) => p,
+                bad => {
+                    if bad.is_some() {
+                        eprintln!("S3 cache: object {} damaged, read again", e.object);
+                        if let Some(d) = &self.disk {
+                            d.remove(e.object);
+                        }
+                    }
+                    let _permit = self.requests.acquire().await?;
+                    let ciphertext = self.download(e.object).await?;
+                    let plain = e.decrypt(&key, &ciphertext)?;
+                    if let Some(d) = &self.disk {
+                        let (d, id) = (d.clone(), e.object);
+                        // (the answer does not wait for the disk)
+                        tokio::task::spawn_blocking(move || d.write(id, &ciphertext));
+                    }
+                    plain
+                }
+            };
+            let data = std::sync::Arc::<[u8]>::from(plain);
             self.cache.lock().unwrap().put(e.object, data.clone(), CACHE_BYTES);
             Ok::<_, anyhow::Error>(data)
         }
