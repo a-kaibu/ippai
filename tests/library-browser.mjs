@@ -1,6 +1,6 @@
 // The game list (web/src/ui/Library.tsx) in Chromium, at a desktop and a phone size, on ippai
 // serve with a small store: the app's name and 🍶 icons everywhere (no "vnvm" left on screen,
-// favicon/manifest icons are PNGs that load), no debug switch and no log page, 設定 at the top
+// favicon/manifest icons are PNGs that load), no debug switch and no log page, the sidebar's button at the top
 // right opening the sidebar (not modal: the list beside it stays in use; tabs 詳細 / 統計 / 設定,
 // a game's (i) opening 詳細) with the server's version
 // and its update (a stand-in release page: 9.9.9 offered; a broken download says why; the
@@ -133,15 +133,17 @@ try {
     assert.equal(await page.getByRole("link", { name: /ログ/ }).count(), 0);
 
     // 設定 at the top right, the last control in the header; 統計 and アプリにする moved into it
-    const settingsButton = page.getByRole("button", { name: "設定", exact: true });
+    // (the sidebar's button: opens it on the tab last shown, 設定 at first; closes it)
+    const settingsButton = page.getByRole("button", { name: "サイドバー", exact: true });
     const box = await settingsButton.boundingBox();
-    assert.ok(box, "設定 button shown");
-    assert.ok(box.y + box.height <= 64, `${view.name}: 設定 at the top (y ${box.y})`);
-    assert.ok(view.width - (box.x + box.width) <= 24, `${view.name}: 設定 at the right (x ${box.x}+${box.width} of ${view.width})`);
+    assert.ok(box, "sidebar button shown");
+    assert.ok(box.y + box.height <= 64, `${view.name}: the sidebar button at the top (y ${box.y})`);
+    assert.ok(view.width - (box.x + box.width) <= 24, `${view.name}: the sidebar button at the right (x ${box.x}+${box.width} of ${view.width})`);
     const rightmost = await page.locator("header button, header a, header input").evaluateAll((els) =>
       els.map((e) => ({ label: e.getAttribute("aria-label") ?? e.textContent?.trim(), right: e.getBoundingClientRect().right })).sort((a, b) => b.right - a.right)[0].label,
     );
-    assert.equal(rightmost, "設定");
+    assert.equal(rightmost, "サイドバー");
+    assert.equal(await settingsButton.getAttribute("aria-expanded"), "false");
     assert.equal(await page.locator("header").getByRole("button", { name: /統計|アプリにする/ }).count(), 0, "統計 / アプリにする left the header");
     // no horizontal scrolling
     assert.ok(await page.evaluate(() => document.querySelector("main").scrollWidth <= innerWidth), `${view.name}: scrolls sideways`);
@@ -195,7 +197,16 @@ try {
     await shot("settings");
     await page.keyboard.press("Escape");
     await page.locator("[data-slot=sheet-content]").waitFor({ state: "detached" });
-    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "設定");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "サイドバー");
+    // the button again: the tab last shown (統計); once more: closed
+    await settingsButton.click();
+    await page.getByRole("dialog", { name: "統計" }).waitFor();
+    assert.equal(await settingsButton.getAttribute("aria-expanded"), "true");
+    // (on a phone the sidebar covers the whole page: its × closes it)
+    if (view.name === "desktop") await settingsButton.click();
+    else await page.getByRole("dialog", { name: "統計" }).getByRole("button", { name: "閉じる" }).click();
+    await page.locator("[data-slot=sheet-content]").waitFor({ state: "detached" });
+    assert.equal(await settingsButton.getAttribute("aria-expanded"), "false");
 
     // the game last played, to continue
     const cont = page.getByRole("region", { name: "続きから遊ぶ" });
@@ -222,7 +233,7 @@ try {
       const cardsRight = await page.locator("[data-game]").evaluateAll((l) => Math.max(...l.map((e) => e.getBoundingClientRect().right)));
       assert.ok(cardsRight <= ibox.x, `the cards stay beside the information (${cardsRight} > ${ibox.x})`);
       assert.equal(await page.locator("[data-slot=dialog-overlay]").count(), 0, "no overlay");
-      await page.getByRole("button", { name: "設定", exact: true }).click();
+      await info.getByRole("tab", { name: "設定" }).click();
       await page.getByRole("dialog", { name: "設定" }).waitFor();
       assert.equal(await info.count(), 0, "設定 took the sidebar");
       await page.getByRole("dialog", { name: "設定" }).getByRole("tab", { name: "統計" }).click();
@@ -303,7 +314,8 @@ try {
       assert.equal(await page.getByTestId("brand-filter").count(), 0);
     } else {
       // the update, on the real server: the stand-in's download is no archive, and it says so
-      await page.getByRole("button", { name: "設定", exact: true }).click();
+      await page.getByRole("button", { name: "サイドバー", exact: true }).click();
+      await page.getByRole("dialog", { name: "統計" }).getByRole("tab", { name: "設定" }).click();
       const side = page.getByRole("dialog", { name: "設定" });
       const upd = side.getByTestId("server-update");
       await upd.getByRole("button", { name: "v9.9.9 に更新" }).click();
@@ -325,7 +337,7 @@ try {
       await page.unrouteAll();
       // the reset, confirmed: the server forgets every session and the statistics are empty
       await page.getByRole("heading", { name: "ippai", level: 1 }).waitFor();
-      await page.getByRole("button", { name: "設定", exact: true }).click();
+      await page.getByRole("button", { name: "サイドバー", exact: true }).click();
       await page.getByRole("dialog", { name: "設定" }).getByRole("tab", { name: "統計" }).click();
       const stats = page.getByRole("dialog", { name: "統計" }).getByRole("region", { name: "プレイ統計" });
       await stats.getByRole("button", { name: "統計をリセット" }).click();

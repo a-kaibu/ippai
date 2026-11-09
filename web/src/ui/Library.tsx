@@ -15,7 +15,8 @@ import {
   Play,
   RefreshCw,
   Search,
-  Settings,
+  PanelRightClose,
+  PanelRightOpen,
   Star,
   Trash2,
   TriangleAlert,
@@ -731,8 +732,14 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
   const [favoriteError, setFavoriteError] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   // the sidebar's tab (null: closed)
-  const [side, setSide] = useState<SideTab | null>(null);
-  const settingsButton = useRef<HTMLButtonElement>(null);
+  const [side, setSideState] = useState<SideTab | null>(null);
+  // the tab the sidebar opens on again (the last one shown)
+  const [lastTab, setLastTab] = useState<SideTab>("settings");
+  const setSide = (t: SideTab | null) => {
+    setSideState(t);
+    if (t) setLastTab(t);
+  };
+  const sideButton = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState("");
   // the game the 詳細 tab shows (kept while another tab is open)
   const [info, setInfo] = useState<GameEntry | null>(null);
@@ -807,14 +814,15 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
           )}
           <div className="ml-auto flex shrink-0 items-center gap-1.5" data-header-actions>
             <Button
-              ref={settingsButton}
+              ref={sideButton}
               variant={side ? "secondary" : "outline"}
-              size="sm"
-              onClick={() => setSide((open) => (open === "settings" ? null : "settings"))}
-              aria-label="設定"
+              size="icon"
+              onClick={() => setSide(side ? null : lastTab)}
+              aria-label="サイドバー"
+              title={side ? "サイドバーを閉じる" : "サイドバーを開く"}
               aria-expanded={!!side}
             >
-              <Settings aria-hidden="true" /> <span className="max-sm:hidden">設定</span>
+              {side ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
             </Button>
           </div>
         </div>
@@ -971,7 +979,7 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
           build={build}
           game={info?.title ?? null}
           onClose={() => setSide(null)}
-          returnFocus={() => settingsButton.current?.focus()}
+          returnFocus={() => sideButton.current?.focus()}
         >
           {info && (
             <GameInfo

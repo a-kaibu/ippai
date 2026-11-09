@@ -16,7 +16,7 @@ try {
   page.on("request", (request) => sent.push(request.url() + (request.postData() ?? "")));
   await page.goto(new URL("play.html", process.argv[2] ?? "http://127.0.0.1:5173").href);
   const open = async () => {
-    await page.getByRole("button", { name: "設定", exact: true }).click();
+    await page.getByRole("button", { name: "サイドバー", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("fieldset")?.disabled === false);
   };
   const email = page.getByLabel("メールアドレス", { exact: true });
@@ -66,7 +66,7 @@ try {
   assert.equal(await email.inputValue(), "");
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
-  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "設定");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "サイドバー");
   assert.equal(sent.some((request) => request.includes("fixture-only-secret") || request.includes("fixture@example.invalid")), false);
   console.log("account settings: restore, encryption, opt-out, deletion, keyboard focus and no network disclosure passed");
 } finally {
