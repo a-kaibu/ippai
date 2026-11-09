@@ -9,6 +9,12 @@ SetDpi 48 72: 48 72
 image fills_aliased 64 64 0
 image fills_aa 64 64 24
 image outlines 64 64 0
+ID2D1DeviceContext 0
+CreateBitmapFromDxgiSurface 0
+CreateBitmapFromDxgiSurface ignore 0
+surface bitmap 8x8, ignore format 87 alpha 3
+image surface_bitmaps 64 64 2
+image surface_bitmap_updated 64 64 0
 image transforms 64 64 8
 CreateGradientStopCollection 0
 image gradient 64 64 3

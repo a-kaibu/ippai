@@ -27,9 +27,31 @@ SetRectEmpty(&o)                                                 = 1 err 57005
 empty 0,0,0,0
 CopyRect(&o, &b)                                                 = 1 err 57005
 copy 5,5,15,15
+maxtrack beyond screen 1 1
+maxtrack x != y 1
+create overlapped: tx x ty
+setpos overlapped: tx x ty
+move overlapped: tx x ty
+create overlappedwindow: tx x ty
+setpos overlappedwindow: tx x ty
+move overlappedwindow: tx x ty
+create popup: 5000 x 5000
+setpos popup: 5000 x 5000
+move popup: 5000 x 5000
+create popup-thickframe: tx x ty
+setpos popup-thickframe: tx x ty
+move popup-thickframe: tx x ty
+create popup-caption: 5000 x 5000
+setpos popup-caption: 5000 x 5000
+move popup-caption: 5000 x 5000
+create allowed: 5000 x 5000
+setpos allowed: 5500 x 5500
+create max 300: 300 x 300
+setpos max 300: 200 x 300
+nosize max 300: 200 x 300
 RegisterClassA(&wc) != 0                                         = 1 err 57005
 RegisterClassA(&wc) != 0                                         = 0 err 1410
-GetClassInfoA(wc.hInstance, "ippai-winref", &got)                = 49492 err 57005
+GetClassInfoA(wc.hInstance, "ippai-winref", &got)                = 49490 err 57005
 GetClassInfoA(wc.hInstance, "ippai-nothere", &got)               = 0 err 1411
 -- create hidden
 WM_GETMINMAXINFO
@@ -53,7 +75,7 @@ IsWindow((HWND)(ULONG_PTR)0x1234)                                = 0 err 57005
 -- SetWindowLong style
 WM_STYLECHANGING -16 4ca0000->80000000
 WM_STYLECHANGED -16 4ca0000->84000000
-SetWindowLongA(h, GWL_STYLE, WS_POPUP)                           = 80347136 err 0
+SetWindowLongA(h, GWL_STYLE, WS_POPUP)                           = 80347136 err 57005
 GetWindowLongA(h, GWL_STYLE)                                     = -2080374784 err 57005
 SetWindowLongA(h, GWLP_USERDATA, 0x1234)                         = 0 err 57005
 GetWindowLongA(h, GWLP_USERDATA)                                 = 4660 err 57005
