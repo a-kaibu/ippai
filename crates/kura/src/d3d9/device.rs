@@ -397,7 +397,7 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
         IF_D3D9 => d3d9_call(d, m, this, &a),
         IF_DEVICE => device_call(d, m, &a, after),
         IF_SWAPCHAIN => match m {
-            3 => present(d, after),
+            3 => present(d, after, a(1), a(2), a(3)),
             4 => D3DERR_INVALIDCALL,
             5 => get_backbuffer(d, a(3)),
             6 => raster_status(d, a(1)),
@@ -1055,7 +1055,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             reset_buffers(d);
             S_OK
         }
-        17 => present(d, after),
+        17 => present(d, after, a(1), a(2), a(3)),
         18 => get_backbuffer(d, a(4)),
         19 => raster_status(d, a(2)),
         20 => S_OK,
@@ -2513,7 +2513,36 @@ fn ensure_target(d: &mut D3d, rt: u32, ds: u32) {
     }
 }
 
-unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
+/// The rectangle at `p` (RECT: l t r b), None for NULL.
+unsafe fn rect_at(p: u32) -> Option<[i32; 4]> {
+    (p != 0).then(|| [rd(p, 0) as i32, rd(p, 1) as i32, rd(p, 2) as i32, rd(p, 3) as i32])
+}
+
+/// Where a windowed Present shows its frame: `dst` (Present's pDestRect, in the window's client
+/// coordinates) of the client area `client` (on the screen), all of it without one.
+pub fn present_dest(client: [i32; 4], dst: Option<[i32; 4]>) -> [i32; 4] {
+    match dst {
+        Some([l, t, r, b]) if r > l && b > t => [client[0] + l, client[1] + t, client[0] + r, client[1] + b],
+        _ => client,
+    }
+}
+
+/// Present's pSourceRect as PRESENT's source words (render/d3d.rs `present_src`): of a `w`x`h`
+/// back buffer, clipped to it; all of it (`w`, `h`) without one.
+pub fn present_src_words(src: Option<[i32; 4]>, w: u32, h: u32) -> (u32, u32) {
+    let clip = |v: i32, m: u32| v.clamp(0, m.min(0xffff) as i32) as u32;
+    match src {
+        Some([l, t, r, b]) if r > l && b > t && clip(r, w) > clip(l, w) && clip(b, h) > clip(t, h) && clip(b, h) > 0 => {
+            (clip(l, w) | clip(t, h) << 16, clip(r, w) | clip(b, h) << 16)
+        }
+        _ => (w, h),
+    }
+}
+
+/// Present (IDirect3DDevice9 and IDirect3DSwapChain9): `src`, `dst` its pSourceRect and
+/// pDestRect (windowed: the part of the back buffer shown, and where in the client area: 俺の姿が､
+/// 透明に! presents (0,0)-(1920,1080) of a bigger back buffer), `over` hDestWindowOverride.
+unsafe fn present(d: &mut D3d, after: &mut After, src: u32, dst: u32, over: u32) -> u32 {
     // IPPAI_D3D_TRACE_EVERY=n: trace one whole frame in n
     static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     let every = *EVERY.get_or_init(|| std::env::var("IPPAI_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
@@ -2521,23 +2550,26 @@ unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
         d.trace = (dev.frames + 1) % n == 0;
     }
     let Some(dev) = d.dev.as_mut() else { return D3DERR_INVALIDCALL };
-    let (bb, hwnd) = (dev.backbuffer, dev.hwnd);
+    let windowed = dev.pp[8] != 0;
+    let (bb, hwnd) = (dev.backbuffer, if over != 0 && windowed { over } else { dev.hwnd });
     dev.frames += 1;
     if d.trace && dev.frames % 100 == 1 {
         eprintln!("d3d9: present #{} backbuffer {bb} hwnd {hwnd:#x}", dev.frames);
     }
     let frames = dev.frames;
-    let mut rect = [0i32; 4];
-    (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
+    let mut client = [0i32; 4];
+    (d.calls().client_rect)(hwnd, client.as_mut_ptr());
+    // (the rectangles count only windowed: Windows refuses them otherwise)
+    let (src, dst) = if windowed { (rect_at(src), rect_at(dst)) } else { (None, None) };
+    let rect = present_dest(client, dst);
     // (always, the 1st, 60th and 600th: where the frames go, in every run's log)
     if matches!(frames, 1 | 60 | 600) {
         let size = surface_gpu(d, bb).map(|g| (g.2, g.3));
-        eprintln!("sake: d3d9 present {frames} of {size:?} to window {hwnd:#x} client {rect:?}");
+        eprintln!("sake: d3d9 present {frames} of {size:?} source {src:?} to window {hwnd:#x} client {client:?} at {rect:?}");
     }
     if let Some(g) = surface_gpu(d, bb) {
-        gpu::record(|b| {
-            b.cmd(&[gpu::PRESENT, g.0, rect[0] as u32, rect[1] as u32, rect[2] as u32, rect[3] as u32, g.2, g.3, hwnd])
-        });
+        let (s6, s7) = present_src_words(src, g.2, g.3);
+        gpu::record(|b| b.cmd(&[gpu::PRESENT, g.0, rect[0] as u32, rect[1] as u32, rect[2] as u32, rect[3] as u32, s6, s7, hwnd]));
     }
     let dev = d.dev.as_mut().unwrap();
     dev.batch_target = None;

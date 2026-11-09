@@ -139,7 +139,7 @@ async function click(x, y) {
       const [rx, ry, rw, rh, l, t, vr, vb] = Array.from(new Int32Array(m.wasmMemory.buffer, o, 10));
       m._free(o);
       const c = document.querySelector("#screen"), b = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-      const fx = Math.max(0, l) + sx + 0.5, fy = Math.max(0, t) + sy + 0.5;
+      const fx = l + sx + 0.5, fy = t + sy + 0.5;
       return [b.left + (rx + ((fx - l) * rw) / (vr - l)) / dpr, b.top + (ry + ((fy - t) * rh) / (vb - t)) / dpr];
     }, [x, y]);
   appendFileSync(logFile, `${stamp()} [click] page ${x.toFixed(1)},${y.toFixed(1)}\n`);

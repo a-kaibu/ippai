@@ -399,6 +399,23 @@ pub struct Overlay {
     pub flip: bool,
     /// the window it is shown in
     pub hwnd: u32,
+    /// the part of the texture shown (u0 v0 u1 v1, top row first): a Direct3D 9 Present's
+    /// source rectangle, all of it otherwise
+    pub src: [f32; 4],
+}
+
+/// PRESENT's source words (d3d9/gpu.rs): `a6` = l | t << 16 and `a7` = r | b << 16 of the
+/// texture's part shown (d3d9 Present's pSourceRect), or `a7` < 0x10000 (the texture's size,
+/// Direct3D 11, OpenGL): all of it. As u0 v0 u1 v1 of a `w`x`h` texture.
+pub fn present_src(a6: u32, a7: u32, w: u32, h: u32) -> [f32; 4] {
+    if a7 >> 16 == 0 || w == 0 || h == 0 {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+    let (l, t, r, b) = ((a6 & 0xffff).min(w), (a6 >> 16).min(h), (a7 & 0xffff).min(w), (a7 >> 16).min(h));
+    if r <= l || b <= t {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+    [l as f32 / w as f32, t as f32 / h as f32, r as f32 / w as f32, b as f32 / h as f32]
 }
 
 /// A clear of a whole view (flags 1 color, 2 depth, 4 stencil) not done yet: the next pass that
@@ -1011,7 +1028,9 @@ impl D3d {
                         if old != view {
                             self.tex_gen += 1;
                         }
-                        self.overlay = Some(Overlay { view, rect, flip: op == PRESENT_FLIP, hwnd: a(8) });
+                        let (w, h) = self.textures.get(&tex).map_or((0, 0), |t| (t.w, t.h));
+                        let src = present_src(a(6), a(7), w, h);
+                        self.overlay = Some(Overlay { view, rect, flip: op == PRESENT_FLIP, hwnd: a(8), src });
                         self.overlay_tex = tex;
                     }
                     self.frames += 1;

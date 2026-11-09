@@ -41,8 +41,8 @@ struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
 /// The canvas size in device pixels (the page's, `vnhost_render_resize`): w << 16 | h.
 static CANVAS: AtomicU32 = AtomicU32::new(0);
 /// Where the shown part of the screen is on the canvas, for pointer events: x, y, w, h, and
-/// the view l t r b, screen w h.
-static LAYOUT: Mutex<[i32; 10]> = Mutex::new([0, 0, 1, 1, 0, 0, 1, 1, 1, 1]);
+/// the view l t r b, what the screen's buffer holds l t r b (display.rs `vnhost_display_extent`).
+static LAYOUT: Mutex<[i32; 12]> = Mutex::new([0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1]);
 /// The drawing thread started in this run: the epoch it started in + 1 (save states: a restored
 /// module starts its own, see `snap_restore`), RESTORED before a restored module's main ran.
 static STARTED: Mutex<u32> = Mutex::new(0);
@@ -120,17 +120,26 @@ pub extern "C" fn vnhost_render_resize(w: u32, h: u32) {
 /// under it (kinds as `vnhost_input_push`; key events take no position).
 #[no_mangle]
 pub extern "C" fn vnhost_render_input(kind: u32, x: i32, y: i32, data: u32) -> i32 {
-    let [rx, ry, rw, rh, l, t, r, b, w, h] = *LAYOUT.lock().unwrap_or_else(|e| e.into_inner());
-    let fx = l + ((x - rx) as i64 * (r - l) as i64 / rw.max(1) as i64) as i32;
-    let fy = t + ((y - ry) as i64 * (b - t) as i64 / rh.max(1) as i64) as i32;
-    crate::display::vnhost_input_push(kind, fx.clamp(0, (w - 1).max(0)), fy.clamp(0, (h - 1).max(0)), data)
+    let layout = *LAYOUT.lock().unwrap_or_else(|e| e.into_inner());
+    let (fx, fy) = to_screen(&layout, x, y);
+    crate::display::vnhost_input_push(kind, fx, fy, data)
+}
+
+/// The screen pixel under canvas pixel (x, y) (`LAYOUT`): within what the screen's buffer
+/// holds (a game's window off the screen takes its clicks there too).
+fn to_screen(layout: &[i32; 12], x: i32, y: i32) -> (i32, i32) {
+    let [rx, ry, rw, rh, l, t, r, b, el, et, er, eb] = *layout;
+    let fx = l as i64 + ((x - rx) as i64 * (r - l) as i64).div_euclid(rw.max(1) as i64);
+    let fy = t as i64 + ((y - ry) as i64 * (b - t) as i64).div_euclid(rh.max(1) as i64);
+    (fx.clamp(el as i64, (er as i64 - 1).max(el as i64)) as i32, fy.clamp(et as i64, (eb as i64 - 1).max(et as i64)) as i32)
 }
 
 /// Where the shown part of the screen is on the canvas: `out` = x y w h (canvas pixels), the
-/// view l t r b, the screen's w h.
+/// view l t r b (screen pixels), the screen's buffer's w h.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_render_layout(out: *mut i32) {
-    std::slice::from_raw_parts_mut(out, 10).copy_from_slice(&*LAYOUT.lock().unwrap_or_else(|e| e.into_inner()));
+    let l = *LAYOUT.lock().unwrap_or_else(|e| e.into_inner());
+    std::slice::from_raw_parts_mut(out, 10).copy_from_slice(&[l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7], l[10] - l[8], l[11] - l[9]]);
 }
 
 /// Tests: asks for the picture shown (at the screen's pixels) and gives the last one taken:
@@ -223,6 +232,12 @@ struct Rect {
     h: f32,
 }
 
+/// The part of the screen's buffer (`e`: what it holds, l t r b) that view `v` is: u0 v0 u1 v1.
+fn screen_uv(v: [i32; 4], e: [i32; 4]) -> [f32; 4] {
+    let (fw, fh) = ((e[2] - e[0]).max(1) as f32, (e[3] - e[1]).max(1) as f32);
+    [(v[0] - e[0]) as f32 / fw, (v[1] - e[1]) as f32 / fh, (v[2] - e[0]) as f32 / fw, (v[3] - e[1]) as f32 / fh]
+}
+
 /// Where a frame of `width`×`height` goes on a canvas of `cw`×`ch`.
 fn letterbox(cw: u32, ch: u32, width: i32, height: i32) -> Rect {
     let (width, height) = (width.max(1) as f64, height.max(1) as f64);
@@ -259,6 +274,8 @@ struct Render {
     group_overlay: (Id, u64, Id),
     width: i32,
     height: i32,
+    /// the screen pixel at the corner of the screen's buffer (`width`x`height`)
+    origin: (i32, i32),
     /// view l t r b shown
     shown: [i32; 4],
     canvas: (u32, u32),
@@ -302,6 +319,7 @@ impl Render {
             group_overlay: (0, 0, 0),
             width: 1,
             height: 1,
+            origin: (0, 0),
             shown: [0, 0, 1, 1],
             canvas: (0, 0),
             rect: Rect::default(),
@@ -374,28 +392,29 @@ impl Render {
 
     fn frame(&mut self, t: f64) {
         self.stats(t);
-        let (mut w, mut h) = (0, 0);
-        unsafe { crate::display::vnhost_display_size(&mut w, &mut h) };
-        if (w, h) != (self.width, self.height) {
+        let mut e = [0i32; 4];
+        unsafe { crate::display::vnhost_display_extent(e.as_mut_ptr()) };
+        let (w, h, origin) = (e[2] - e[0], e[3] - e[1], (e[0], e[1]));
+        if (w, h, origin) != (self.width, self.height, self.origin) {
             self.serial = None;
         }
         let mut v = [0i32; 4];
         unsafe { crate::display::vnhost_display_view(v.as_mut_ptr()) };
-        let v = if v[2] > v[0] && v[3] > v[1] { v } else { [0, 0, w, h] };
+        let v = if v[2] > v[0] && v[3] > v[1] { v } else { e };
         let c = CANVAS.load(Relaxed);
         let canvas = ((c >> 16).max(1), (c & 0xffff).max(1));
         let mut redraw = false;
-        if v != self.shown || (w, h) != (self.width, self.height) || canvas != self.canvas {
+        if v != self.shown || (w, h, origin) != (self.width, self.height, self.origin) || canvas != self.canvas {
             self.width = w;
             self.height = h;
+            self.origin = origin;
             self.shown = v;
             self.canvas = canvas;
             gpu::canvas_size(canvas.0, canvas.1);
             self.rect = letterbox(canvas.0, canvas.1, v[2] - v[0], v[3] - v[1]);
             let r = self.rect;
-            *LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) = [r.x as i32, r.y as i32, r.w as i32, r.h as i32, v[0], v[1], v[2], v[3], w, h];
-            let (fw, fh) = (w.max(1) as f32, h.max(1) as f32);
-            write_f32(self.uv[0], &[v[0] as f32 / fw, v[1] as f32 / fh, v[2] as f32 / fw, v[3] as f32 / fh]);
+            *LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) = [r.x as i32, r.y as i32, r.w as i32, r.h as i32, v[0], v[1], v[2], v[3], e[0], e[1], e[2], e[3]];
+            write_f32(self.uv[0], &screen_uv(v, e));
             // (the sampler: nearest when the screen is scaled by a whole number)
             self.group_main = [0, 0];
             redraw = true;
@@ -536,7 +555,10 @@ impl Render {
             let y1 = (th as f32).min(r.y + (b - vt) as f32 * sy);
             if x1 > x0 && y1 > y0 && or > ol && ob > ot {
                 let (ow, oh) = ((or - ol) as f32, (ob - ot) as f32);
-                let mut uv = [(l - ol) as f32 / ow, (t - ot) as f32 / oh, (rr - ol) as f32 / ow, (b - ot) as f32 / oh];
+                // (of the part of the frame shown: a Present's source rectangle)
+                let [s0, t0, s1, t1] = o.src;
+                let (su, sv) = (s1 - s0, t1 - t0);
+                let mut uv = [s0 + su * (l - ol) as f32 / ow, t0 + sv * (t - ot) as f32 / oh, s0 + su * (rr - ol) as f32 / ow, t0 + sv * (b - ot) as f32 / oh];
                 // (OpenGL frames are stored bottom row first)
                 if o.flip {
                     uv[1] = 1.0 - uv[1];
@@ -562,7 +584,8 @@ impl Render {
                     continue;
                 }
                 let buf = self.uv[2 + k];
-                write_f32(buf, &[l as f32 / fw, t as f32 / fh, rr as f32 / fw, b as f32 / fh]);
+                let (ox, oy) = self.origin;
+                write_f32(buf, &[(l - ox) as f32 / fw, (t - oy) as f32 / fh, (rr - ox) as f32 / fw, (b - oy) as f32 / fh]);
                 let g = gpu::bind_group(layout, &[(0, Res::Obj(self.tex_view)), (1, Res::Obj(self.nearest)), (2, Res::Buffer(buf, 0, 16))]);
                 gpu::set_viewport(x0, y0, x1 - x0, y1 - y0, 0.0, 1.0);
                 gpu::set_bind_group(0, g, &[]);
@@ -577,8 +600,9 @@ impl Render {
     /// Draws what is shown at the screen's pixels into a texture and reads it.
     fn take_shot(&mut self) {
         let [vl, vt, vr, vb] = self.shown;
-        let (l, t) = (vl.max(0), vt.max(0));
-        let (r, b) = (vr.min(self.width), vb.min(self.height));
+        let (ox, oy) = self.origin;
+        let (l, t) = (vl.max(ox), vt.max(oy));
+        let (r, b) = (vr.min(ox + self.width), vb.min(oy + self.height));
         if r <= l || b <= t {
             return;
         }

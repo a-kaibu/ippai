@@ -26,6 +26,8 @@ mod draw8_tests;
 #[cfg(test)]
 mod golden_tests;
 #[cfg(test)]
+mod present_tests;
+#[cfg(test)]
 pub(crate) mod sb_tests;
 
 use std::collections::HashMap;

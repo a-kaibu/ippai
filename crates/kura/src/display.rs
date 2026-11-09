@@ -84,6 +84,9 @@ struct Display {
     /// where `screen` is behind its windows: the areas drawn `direct`ly since it was last made
     /// whole (see `sync`)
     stale: Rect,
+    /// what `screen` holds, in screen coordinates: the screen and every window shown on it,
+    /// whole (a game's window partly off the screen is shown whole: `extent_of`)
+    ext: Rect,
 }
 
 static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
@@ -109,6 +112,7 @@ fn with<R>(f: impl FnOnce(&mut Display) -> R) -> R {
             serial: 0,
             bands: Default::default(),
             stale: Rect::default(),
+            ext: Rect { l: 0, t: 0, r: w, b: h },
         }
     }))
 }
@@ -126,7 +130,7 @@ fn start_screenshots() {
                     d.sync();
                     (d.serial != written).then(|| {
                         written = d.serial;
-                        let mut out = format!("P6\n{} {}\n255\n", d.w, d.h).into_bytes();
+                        let mut out = format!("P6\n{} {}\n255\n", d.ext.w(), d.ext.h()).into_bytes();
                         out.reserve(d.screen.len() * 3);
                         for p in &d.screen {
                             out.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
@@ -181,9 +185,11 @@ fn start_scripted_input() {
 }
 
 impl Display {
-    /// What the page shows: the client area of the game's window (the shown window with the
-    /// biggest one: no title bar, frame or desktop around it), widened by the windows above it
-    /// that stick out (dialogs, menus); the whole screen without windows.
+    /// What the page shows: the client area of the game's window and nothing else (no title
+    /// bar, frame, desktop or other windows around it; windows over it show where they are over
+    /// it): the shown window with the biggest client area on the screen, whole, also what of it
+    /// is off the screen (a window placed where a bigger screen had it: AMBITIOUS MISSION's at
+    /// x 850 of 1366). The whole screen without windows.
     fn view(&self) -> Rect {
         let screen = self.screen_rect();
         let shown = |id: &u32| self.wins[id].visible && !self.wins[id].px().is_empty();
@@ -195,15 +201,45 @@ impl Display {
         if area(main) == 0 {
             return screen;
         }
-        let at = self.order.iter().position(|id| id == main).unwrap();
-        let mut v = self.wins[main].client.and(&screen);
-        for id in self.order[at + 1..].iter().filter(|id| shown(id)) {
-            let r = self.wins[id].rect.and(&screen);
-            if !r.empty() {
-                v = v.or(&r);
+        self.wins[main].client.and(&self.ext)
+    }
+
+    /// What `screen` holds: the screen, widened to the whole of every window shown with a part
+    /// on it (one wholly off the screen is hidden there: never shown), within `MAX_EXTENT`
+    /// pixels each way.
+    fn extent_of(&self) -> Rect {
+        let screen = self.screen_rect();
+        let mut e = screen;
+        for w in self.wins.values() {
+            if w.visible && !w.rect.empty() && !w.rect.and(&screen).empty() {
+                e = e.or(&w.rect);
             }
         }
-        v
+        // (around the screen: as much on each side as it allows)
+        let (mw, mh) = ((MAX_EXTENT - screen.w()).max(0), (MAX_EXTENT - screen.h()).max(0));
+        let l = e.l.max(-(mw / 2));
+        let t = e.t.max(-(mh / 2));
+        Rect { l, t, r: e.r.min(l + MAX_EXTENT).max(screen.r), b: e.b.min(t + MAX_EXTENT).max(screen.b) }
+    }
+
+    /// `screen`'s index of screen pixel (x, y) (inside `ext`)
+    fn at_index(&self, x: i32, y: i32) -> usize {
+        (y - self.ext.t) as usize * self.ext.w() as usize + (x - self.ext.l) as usize
+    }
+
+    /// `screen` made to hold `extent_of` when that changed (all of it composed again); whether
+    /// it did.
+    fn fit_extent(&mut self) -> bool {
+        let e = self.extent_of();
+        if e == self.ext {
+            return false;
+        }
+        self.ext = e;
+        self.screen = vec![0xff00_0000; (e.w() * e.h()) as usize];
+        self.bands.clear();
+        self.stale = Rect::default();
+        self.compose(e);
+        true
     }
 
     fn screen_rect(&self) -> Rect {
@@ -229,7 +265,7 @@ impl Display {
     }
 
     fn compose(&mut self, area: Rect) {
-        let area = area.and(&self.screen_rect());
+        let area = area.and(&self.ext);
         if area.empty() {
             return;
         }
@@ -254,15 +290,14 @@ impl Display {
 
     /// Composes `area` of `screen` from the windows.
     fn copy_in(&mut self, area: Rect) {
-        let sw = self.w as usize;
         // from the topmost window that covers the whole area (the black background otherwise)
         let shown = |w: &Win| w.visible && !w.px().is_empty();
         let covers = |w: &Win| shown(w) && w.rect.and(&area) == area;
         let first = self.order.iter().rposition(|id| covers(&self.wins[id]));
         if first.is_none() {
             for y in area.t..area.b {
-                let row = y as usize * sw;
-                self.screen[row + area.l as usize..row + area.r as usize].fill(0xff00_0000);
+                let row = self.at_index(area.l, y);
+                self.screen[row..row + area.w() as usize].fill(0xff00_0000);
             }
         }
         for id in &self.order[first.unwrap_or(0)..] {
@@ -274,13 +309,16 @@ impl Display {
             let ww = win.rect.w() as usize;
             for y in r.t..r.b {
                 let src = (y - win.rect.t) as usize * ww + (r.l - win.rect.l) as usize;
-                let dst = y as usize * sw + r.l as usize;
+                let dst = (y - self.ext.t) as usize * self.ext.w() as usize + (r.l - self.ext.l) as usize;
                 let n = r.w() as usize;
                 self.screen[dst..dst + n].copy_from_slice(&win.px()[src..src + n]);
             }
         }
     }
 }
+
+/// How big `screen` may get each way (it holds the screen and the windows on it).
+const MAX_EXTENT: i32 = 8192;
 
 /// A display mode change (ChangeDisplaySettings): the screen takes the new size.
 #[no_mangle]
@@ -307,6 +345,14 @@ pub unsafe extern "C" fn vnhost_display_windows(out: *mut i32, max: c_int) -> c_
 /// visible window of the display.
 pub fn windows_above(hwnd: u32, out: &mut [i32]) -> Option<usize> {
     with(|d| d.windows_above(hwnd, out))
+}
+
+/// What `vnhost_display_frame`'s buffer holds, in screen coordinates (l t r b): the screen and
+/// the windows shown on it, whole (a game's window partly off the screen too).
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_display_extent(out: *mut i32) {
+    let e = with(|d| d.ext);
+    std::slice::from_raw_parts_mut(out, 4).copy_from_slice(&[e.l, e.t, e.r, e.b]);
 }
 
 #[no_mangle]
@@ -337,10 +383,9 @@ impl Display {
         }
         self.w = w;
         self.h = h;
-        self.screen = vec![0xff00_0000; (w * h) as usize];
-        self.bands.clear();
-        self.stale = Rect::default();
-        self.compose(self.screen_rect());
+        // (made anew even when it holds the same: a whole frame)
+        self.ext = Rect::default();
+        self.fit_extent();
     }
 
     /// The visible windows' rects, topmost first, as many as `out` holds; how many.
@@ -398,7 +443,9 @@ impl Display {
             d.order.insert(at, hwnd);
         }
         let new = if visible { rect } else { Rect::default() };
-        d.compose(old.or(&new));
+        if !d.fit_extent() {
+            d.compose(old.or(&new));
+        }
     }
 }
 
@@ -620,14 +667,15 @@ impl Display {
     fn destroy(&mut self, hwnd: u32) {
         if let Some(win) = self.wins.remove(&hwnd) {
             self.order.retain(|&h| h != hwnd);
-            if win.visible {
+            if win.visible && !self.fit_extent() {
                 self.compose(win.rect);
             }
         }
     }
 }
 
-/// The screen for the page: returns the BGRA buffer (width*height pixels). `io[0]` is the
+/// The screen for the page: returns the BGRA buffer of `vnhost_display_extent` (its width *
+/// height pixels; rows and columns below count from its corner). `io[0]` is the
 /// serial of the frame the caller shows (anything else, such as -1, for none); stores the
 /// current serial there, which changes whenever the screen does, and the box that changed since
 /// (so a text cursor's blink doesn't upload the whole screen): rows `io[1]..io[2]`, columns
@@ -649,7 +697,7 @@ impl Display {
         let d = self;
         let n = d.serial.wrapping_sub(io[0]) as usize;
         let mut one = None;
-        let all = d.screen_rect();
+        let all = d.ext;
         let area = if n <= d.bands.len() {
             one = d.bands.iter().rev().take(n).next().map(|x| x.1).filter(|&id| id != 0);
             if d.bands.iter().rev().take(n).any(|x| Some(x.1) != one) {
@@ -659,18 +707,20 @@ impl Display {
         } else {
             all
         };
+        // (rows and columns of `screen`: from the extent's corner)
+        let (el, et) = (d.ext.l, d.ext.t);
         io[0] = d.serial;
-        io[1] = area.t.max(0) as u32;
-        io[2] = area.b.max(area.t).max(0) as u32;
-        io[10] = area.l.max(0) as u32;
-        io[11] = area.r.max(area.l).max(0) as u32;
+        io[1] = (area.t - et).max(0) as u32;
+        io[2] = (area.b.max(area.t) - et).max(0) as u32;
+        io[10] = (area.l - el).max(0) as u32;
+        io[11] = (area.r.max(area.l) - el).max(0) as u32;
         let win = one.filter(|_| direct_ok).and_then(|id| d.wins.get(&id)).filter(|w| w.shared != 0);
         match win {
             Some(w) => {
                 io[3] = 1;
                 io[4] = w.shared as u32;
                 io[5] = w.rect.w() as u32;
-                io[6..10].copy_from_slice(&[w.rect.l as u32, w.rect.t as u32, w.rect.r as u32, w.rect.b as u32]);
+                io[6..10].copy_from_slice(&[(w.rect.l - el) as u32, (w.rect.t - et) as u32, (w.rect.r - el) as u32, (w.rect.b - et) as u32]);
             }
             None => {
                 // (rows a direct draw changed may be among them)
@@ -805,14 +855,14 @@ mod tests {
     }
 
     fn disp(w: i32, h: i32) -> Display {
-        Display { w, h, wins: HashMap::new(), order: Vec::new(), screen: vec![0xff00_0000; (w * h) as usize], serial: 0, bands: Default::default(), stale: Rect::default() }
+        Display { w, h, wins: HashMap::new(), order: Vec::new(), screen: vec![0xff00_0000; (w * h) as usize], serial: 0, bands: Default::default(), stale: Rect::default(), ext: rect(0, 0, w, h) }
     }
 
     const BLACK: u32 = 0xff00_0000;
 
     impl Display {
         fn at(&self, x: i32, y: i32) -> u32 {
-            self.screen[(y * self.w + x) as usize]
+            self.screen[self.at_index(x, y)]
         }
         /// fills window `id` with `c` (a plain draw)
         fn fill(&mut self, id: u32, c: u32) {
@@ -962,15 +1012,15 @@ mod tests {
         d.pos(2, rect(70, 70, 75, 75), rect(70, 70, 75, 75), true, true, 1);
         assert_eq!(d.order, [2, 1]);
         assert_eq!(d.view(), rect(8, 10, 58, 48), "the biggest client area, without the frame; one below does not widen it");
-        // a dialog on top that sticks out widens it
+        // a dialog on top that sticks out: still only the game's window
         d.pos(3, rect(50, 40, 90, 70), rect(52, 42, 88, 68), true, false, 0);
-        assert_eq!(d.view(), rect(8, 10, 90, 70));
+        assert_eq!(d.view(), rect(8, 10, 58, 48));
         // hidden ones do not count
         d.pos(3, rect(50, 40, 90, 70), rect(52, 42, 88, 68), false, false, 0);
         assert_eq!(d.view(), rect(8, 10, 58, 48));
-        // clipped to the screen
+        // partly off the screen: all of it
         d.pos(1, rect(-10, -10, 60, 50), rect(-5, -5, 58, 48), true, false, 0);
-        assert_eq!(d.view(), rect(0, 0, 58, 48));
+        assert_eq!(d.view(), rect(-5, -5, 58, 48));
         // client areas off the screen: the screen
         d.pos(1, rect(200, 200, 260, 250), rect(200, 200, 260, 250), true, false, 0);
         d.pos(2, rect(70, 70, 75, 75), rect(170, 170, 175, 175), true, false, 0);
@@ -991,6 +1041,107 @@ mod tests {
         // zero-sized windows are not shown
         d.pos(5, rect(0, 0, 0, 0), rect(0, 0, 0, 0), true, false, 0);
         assert_eq!(d.view(), rect(8, 10, 58, 48));
+    }
+
+    /// AMBITIOUS MISSION after episode 1 on a phone: its 976x599 client at (850, 154), where a
+    /// bigger screen had it, on the 1366x768 screen. The page showed the 516x599 on the screen;
+    /// now all of it, its pixels off the screen too.
+    #[test]
+    fn a_window_partly_off_the_screen_is_shown_whole() {
+        let mut d = disp(1366, 768);
+        let (win, client) = (rect(842, 123, 1834, 761), rect(850, 154, 1826, 753));
+        d.pos(1, win, client, true, false, 0);
+        assert_eq!(d.ext, rect(0, 0, 1834, 768), "the screen and the window");
+        d.fill(1, 0xff12_3456);
+        assert_eq!(d.view(), client);
+        assert_eq!((d.at(1825, 752), d.at(850, 154), d.at(849, 100)), (0xff12_3456, 0xff12_3456, BLACK));
+        let (io, r) = d.take(u32::MAX, false);
+        assert_eq!(r, rect(0, 0, 1834, 768), "rows and columns of the buffer");
+        assert_eq!(io[3], 0);
+        // moved back onto the screen: the buffer is the screen again
+        d.pos(1, rect(0, 0, 992, 638), rect(8, 31, 984, 630), true, false, 0);
+        assert_eq!((d.ext, d.screen.len()), (rect(0, 0, 1366, 768), 1366 * 768));
+        assert_eq!((d.view(), d.at(8, 31)), (rect(8, 31, 984, 630), 0xff12_3456));
+        // up and left of the screen: the buffer starts there
+        d.pos(1, rect(-100, -50, 892, 588), rect(-92, -19, 884, 580), true, false, 0);
+        assert_eq!(d.ext, rect(-100, -50, 1366, 768));
+        assert_eq!((d.view(), d.at(-92, -19), d.at(883, 579)), (rect(-92, -19, 884, 580), 0xff12_3456, 0xff12_3456));
+        let (_, r) = d.take(u32::MAX, false);
+        assert_eq!(r, rect(0, 0, 1466, 818));
+        // a window with nothing on the screen is not shown (hidden there): the screen
+        d.pos(1, rect(2000, 0, 2100, 100), rect(2000, 0, 2100, 100), true, false, 0);
+        assert_eq!((d.ext, d.view()), (rect(0, 0, 1366, 768), rect(0, 0, 1366, 768)));
+        // windows far off are held to MAX_EXTENT around the screen
+        d.pos(1, rect(-9000, -9000, 9000, 9000), rect(-9000, -9000, 9000, 9000), true, false, 0);
+        assert!(d.ext.w() <= MAX_EXTENT && d.ext.h() <= MAX_EXTENT && d.ext.and(&d.screen_rect()) == d.screen_rect(), "{:?}", d.ext);
+    }
+
+    /// A game drawing its own surface (sake's shared surfaces) partly off the screen: the page
+    /// is told where it is in the buffer, from the buffer's corner.
+    #[test]
+    fn direct_frames_off_the_screen() {
+        let mut d = disp(40, 30);
+        d.pos(1, rect(-4, 20, 6, 36), rect(-4, 20, 6, 36), true, false, 0);
+        assert_eq!(d.ext, rect(-4, 0, 40, 36));
+        let s0 = d.serial;
+        let surf: Vec<u32> = (0..160).map(|i| 0xff00_0000 | i).collect();
+        unsafe { d.draw_shared(1, rect(0, 0, 10, 16), surf.as_ptr(), 10, 16) };
+        let (io, r) = d.take(s0, true);
+        assert_eq!(r, rect(0, 20, 10, 36));
+        assert_eq!(io[3..10], [1, surf.as_ptr() as usize as u32, 10, 0, 20, 10, 36]);
+        // composed instead: the pixel under the window's corner
+        let (_, _) = d.take(s0, false);
+        assert_eq!((d.at(-4, 20), d.at(5, 35)), (0xff00_0000, 0xff00_0000 | 159));
+    }
+
+    proptest::proptest! {
+        /// Any windows moved anywhere (on, partly off and wholly off the screen), shown, hidden,
+        /// restacked and drawn: the buffer holds the screen and every shown window with a part on
+        /// the screen, whole, each pixel the topmost window's there (black where none), and the
+        /// view is inside it.
+        #[test]
+        fn the_buffer_holds_the_windows_on_the_screen(ops in proptest::collection::vec((1u32..5, -50i32..70, -40i32..60, 1i32..40, 1i32..30, proptest::prelude::any::<bool>(), proptest::prelude::any::<bool>(), 0u32..6), 1..25)) {
+            let mut d = disp(40, 30);
+            // (bottom first: hwnd, rect, visible, colour)
+            let mut model: Vec<(u32, Rect, bool, u32)> = Vec::new();
+            for (k, (h, x, y, w, ht, vis, restack, above)) in ops.into_iter().enumerate() {
+                let r = rect(x, y, x + w, y + ht);
+                d.pos(h, r, r, vis, restack, above);
+                let colour = 0xff00_0000 | (k as u32 + 1) << 8 | h;
+                d.fill(h, colour);
+                let known = model.iter().any(|m| m.0 == h);
+                if restack || !known {
+                    model.retain(|m| m.0 != h);
+                    let at = model.iter().position(|m| m.0 == above).unwrap_or(model.len());
+                    model.insert(at, (h, r, vis, colour));
+                } else {
+                    let m = model.iter_mut().find(|m| m.0 == h).unwrap();
+                    (m.1, m.2, m.3) = (r, vis, colour);
+                }
+                d.sync();
+                let screen = rect(0, 0, 40, 30);
+                let mut want = screen;
+                for m in model.iter().filter(|m| m.2 && !m.1.and(&screen).empty()) {
+                    want = want.or(&m.1);
+                }
+                proptest::prop_assert_eq!(d.ext, want);
+                proptest::prop_assert_eq!(d.screen.len(), (want.w() * want.h()) as usize);
+                for y in want.t..want.b {
+                    for x in want.l..want.r {
+                        let top = model.iter().rev().find(|m| m.2 && x >= m.1.l && x < m.1.r && y >= m.1.t && y < m.1.b);
+                        // (one wholly off the screen is not composed)
+                        let top = top.filter(|m| !m.1.and(&screen).empty());
+                        let expect = top.map_or(BLACK, |m| m.3);
+                        let hidden_under = model.iter().rev().find(|m| m.2 && x >= m.1.l && x < m.1.r && y >= m.1.t && y < m.1.b).is_some_and(|m| m.1.and(&screen).empty());
+                        if !hidden_under {
+                            proptest::prop_assert_eq!(d.at(x, y), expect, "pixel {},{}", x, y);
+                        }
+                    }
+                }
+                let v = d.view();
+                proptest::prop_assert!(v.and(&d.ext) == v, "view {:?} in {:?}", v, d.ext);
+            }
+        }
     }
 
     #[test]
@@ -1186,7 +1337,7 @@ mod tests {
             vnhost_window_pos(8, [40, 30, 44, 34, 40, 30, 44, 34].as_ptr(), 1, 0, 0);
             let mut v = [0i32; 4];
             vnhost_display_view(v.as_mut_ptr());
-            assert_eq!(v, [5, 6, 44, 34], "the client area, widened by the window above");
+            assert_eq!(v, [5, 6, 11, 9], "the client area only, not the window above");
             let mut list = [0i32; 8];
             assert_eq!(vnhost_display_windows(list.as_mut_ptr(), 2), 2);
             assert_eq!(list, [40, 30, 44, 34, 4, 4, 12, 10]);

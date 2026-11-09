@@ -18,7 +18,7 @@ pub struct Saved {
     /// multisampled textures' samples: id, and per sample (bytes per row, the rows)
     ms: Vec<(u32, Samples)>,
     /// the texture the page showed, where, flipped, in which window
-    overlay: Option<(u32, [i32; 4], bool, u32)>,
+    overlay: Option<(u32, [i32; 4], bool, u32, [f32; 4])>,
 }
 
 /// A multisampled texture's samples read back: per sample, bytes per row and the rows.
@@ -196,7 +196,7 @@ impl D3d {
             c.push(SET_TARGETS2);
             c.extend_from_slice(t);
         }
-        let overlay = self.overlay.and_then(|o| self.textures.contains_key(&self.overlay_tex).then_some((self.overlay_tex, o.rect, o.flip, o.hwnd)));
+        let overlay = self.overlay.and_then(|o| self.textures.contains_key(&self.overlay_tex).then_some((self.overlay_tex, o.rect, o.flip, o.hwnd, o.src)));
         // (all four samples, or none: the texture comes back as zeros)
         ms.retain(|(_, v)| v.len() == 4);
         Saved { c, blob, ms, overlay }
@@ -208,11 +208,11 @@ impl D3d {
         for (id, samples) in &s.ms {
             self.samples_in(*id, samples);
         }
-        if let Some((id, rect, flip, hwnd)) = s.overlay {
+        if let Some((id, rect, flip, hwnd, src)) = s.overlay {
             if self.textures.contains_key(&id) {
                 // (a multisampled one shows its resolve: of zeros, until the game presents again)
                 let view = self.present_view(id);
-                self.overlay = Some(Overlay { view, rect, flip, hwnd });
+                self.overlay = Some(Overlay { view, rect, flip, hwnd, src });
                 self.overlay_tex = id;
                 self.tex_gen += 1;
             }
