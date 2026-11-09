@@ -201,6 +201,80 @@ int main(void) {
         if (ss) IDXGISurface_Release(ss);
         if (src) ID3D11Texture2D_Release(src);
     }
+    /* KiriKiri's DrawDeviceD2D (AMBITIOUS MISSION after episode 1): an ID2D1Factory1's device
+     * of the D3D11 device, a device context of its own (CreateDeviceContext(options, out): no
+     * render target properties; 96 DPI whatever lies after `out`), the target a bitmap of a
+     * texture, and the picture a DYNAMIC texture written through Map(WRITE_DISCARD) each frame */
+    {
+        enum { SW = 8, SH = 8 };
+        ID2D1Factory1 *f1 = NULL;
+        IDXGIDevice *xd = NULL;
+        ID2D1Device *d2dev = NULL;
+        /* (the context's pointer in an object, pointer-like fields after it, as a C++ class has) */
+        struct { ID2D1DeviceContext *dc; UINT_PTR more[6]; } holder = { NULL, { 0x0a0b0c0d, 0x0a0b0c0d, 0x40001000, 0x40001000, 0x1234, 0x5678 } };
+        ID3D11Texture2D *dyn = NULL;
+        IDXGISurface *ds = NULL, *ts = NULL;
+        ID2D1Bitmap1 *target = NULL, *pic = NULL;
+        D2D1_FACTORY_OPTIONS fo = { D2D1_DEBUG_LEVEL_NONE };
+        hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &IID_ID2D1Factory1, &fo, (void **)&f1);
+        printf("dc: ID2D1Factory1 %#lx\n", hr);
+        if (f1) ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice, (void **)&xd);
+        /* (by the vtable: ID2D1Factory1::CreateDevice 17, ID2D1Device::CreateDeviceContext 4,
+         * ID2D1DeviceContext::SetTarget 74) */
+        if (xd) hr = ((HRESULT(STDMETHODCALLTYPE *)(void *, IDXGIDevice *, ID2D1Device **))(*(void ***)f1)[17])(f1, xd, &d2dev);
+        printf("dc: CreateDevice %#lx\n", hr);
+        if (d2dev) hr = ((HRESULT(STDMETHODCALLTYPE *)(void *, D2D1_DEVICE_CONTEXT_OPTIONS, ID2D1DeviceContext **))(*(void ***)d2dev)[4])(d2dev, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &holder.dc);
+        printf("dc: CreateDeviceContext %#lx\n", hr);
+        D3D11_TEXTURE2D_DESC dd = { SW, SH, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, { 1, 0 }, D3D11_USAGE_DYNAMIC, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, 0 };
+        ID3D11Device_CreateTexture2D(dev, &dd, NULL, &dyn);
+        if (dyn) ID3D11Texture2D_QueryInterface(dyn, &IID_IDXGISurface, (void **)&ds);
+        ID3D11Texture2D_QueryInterface(tex, &IID_IDXGISurface, (void **)&ts);
+        ID2D1DeviceContext *dc = holder.dc;
+        if (dc && ds && ts) {
+            FLOAT dx = 0, dy = 0;
+            ID2D1RenderTarget_GetDpi((ID2D1RenderTarget *)dc, &dx, &dy);
+            printf("dc: dpi %g %g\n", dx, dy);
+            D2D1_BITMAP_PROPERTIES1 tp = { { DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE }, 96, 96, D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW, NULL };
+            hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface(dc, ts, &tp, &target);
+            printf("dc: target bitmap %#lx\n", hr);
+            D2D1_BITMAP_PROPERTIES1 pp = { { DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE }, 96, 96, D2D1_BITMAP_OPTIONS_NONE, NULL };
+            hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface(dc, ds, &pp, &pic);
+            printf("dc: picture bitmap %#lx\n", hr);
+        }
+        for (int frame = 0; frame < 2 && target && pic; frame++) {
+            D3D11_MAPPED_SUBRESOURCE m;
+            hr = ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)dyn, 0, D3D11_MAP_WRITE_DISCARD, 0, &m);
+            if (FAILED(hr)) { printf("dc: Map %#lx\n", hr); break; }
+            /* (alpha 0: ignored) frame 0 quadrants red, green, blue, gray; frame 1 all yellow */
+            for (int y = 0; y < SH; y++)
+                for (int x = 0; x < SW; x++)
+                    ((UINT *)((BYTE *)m.pData + y * m.RowPitch))[x] = frame ? 0x00ffff00 : y < 4 ? (x < 4 ? 0x00ff0000 : 0x0000ff00) : (x < 4 ? 0x000000ff : 0x00808080);
+            ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)dyn, 0);
+            ((void(STDMETHODCALLTYPE *)(void *, void *))(*(void ***)dc)[74])(dc, target);
+            ID2D1RenderTarget *r = (ID2D1RenderTarget *)dc;
+            ID2D1RenderTarget_BeginDraw(r);
+            D2D1_COLOR_F black = rgba(0, 0, 0, 1);
+            ID2D1RenderTarget_Clear(r, &black);
+            /* (scaled 8x8 -> 64x48 below a strip: KiriKiri's zoom) */
+            D2D1_MATRIX_3X2_F zoom = { { { 1, 0, 0, 1, 0, 8 } } };
+            ID2D1RenderTarget_SetTransform(r, &zoom);
+            D2D1_RECT_F d = rect(0, 0, W, 48), sr = rect(0, 0, SW, SH);
+            ID2D1RenderTarget_DrawBitmap(r, (ID2D1Bitmap *)pic, &d, 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, &sr);
+            ID2D1RenderTarget_SetTransform(r, &ident);
+            hr = ID2D1RenderTarget_EndDraw(r, NULL, NULL);
+            if (hr) printf("dc: EndDraw %#lx\n", hr);
+            shot(frame ? "device_context_frame2" : "device_context", 2);
+        }
+        if (pic) ID2D1Bitmap_Release((ID2D1Bitmap *)pic);
+        if (target) ID2D1Bitmap_Release((ID2D1Bitmap *)target);
+        if (dc) ID2D1RenderTarget_Release((ID2D1RenderTarget *)dc);
+        if (d2dev) ((ULONG(STDMETHODCALLTYPE *)(void *))(*(void ***)d2dev)[2])(d2dev);
+        if (ds) IDXGISurface_Release(ds);
+        if (ts) IDXGISurface_Release(ts);
+        if (dyn) ID3D11Texture2D_Release(dyn);
+        if (xd) IDXGIDevice_Release(xd);
+        if (f1) ((ULONG(STDMETHODCALLTYPE *)(void *))(*(void ***)f1)[2])(f1);
+    }
     /* transforms: translate+scale, rotation about a point, opacity of a brush, clips */
     {
         begin(rgba(0, 0, 0, 1));

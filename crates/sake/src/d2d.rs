@@ -472,16 +472,15 @@ fn zero(_: &mut Ctx) -> u32 {
     0
 }
 
+/// ID2D1Device::CreateDeviceContext(options, out): 96 DPI (there are no render target
+/// properties: what lies after `out` was read as DPI, KiriKiri's DrawDeviceD2D then drew its
+/// picture at 2/96 the size, AMBITIOUS MISSION's black screen; winref d2d device_context).
 fn CreateDeviceContext(c: &mut Ctx) -> u32 {
     let o = com::object(CONTEXT, &context_methods(), 8);
     let device = c.a(0);
-    // (D2D1_RENDER_TARGET_PROPERTIES: dpiX, dpiY after the type and pixel format; 0 is 96)
-    let props = c.a(2);
-    let dpi = if props != 0 { (rf(props, 3), rf(props, 4)) } else { (0.0, 0.0) };
-    let dpi = Some(dpi).filter(|&(x, y)| x > 0.0 && y > 0.0 && (x, y) != (96.0, 96.0));
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
+        s.dcs.insert(o, Dc { device, ..Default::default() })
     });
     mem::putp(c.a(2), o);
     0
@@ -496,13 +495,10 @@ fn D2D1CreateDeviceContext(c: &mut Ctx) -> u32 {
     let o = com::object(CONTEXT, &context_methods(), 8);
     let surface = c.a(0);
     let bmp = new_bitmap(surface);
-    // (D2D1_RENDER_TARGET_PROPERTIES: dpiX, dpiY after the type and pixel format; 0 is 96)
-    let props = c.a(2);
-    let dpi = if props != 0 { (rf(props, 3), rf(props, 4)) } else { (0.0, 0.0) };
-    let dpi = Some(dpi).filter(|&(x, y)| x > 0.0 && y > 0.0 && (x, y) != (96.0, 96.0));
+    // (D2D1_CREATION_PROPERTIES: threading, debug level, options; no DPI: 96)
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
+        s.dcs.insert(o, Dc { device, ..Default::default() })
     });
     set_target(o, bmp);
     mem::putp(c.a(2), o);
