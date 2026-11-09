@@ -1,0 +1,10 @@
+windows folder: ok "Windows" folder 1 filesystem 1
+text file: ok "shfileinfo" folder 0 filesystem 1
+program: ok "host_shfileinfo-32" folder 0 filesystem 1
+missing: 0
+missing, file attributes: ok "none" folder 0 filesystem 0
+missing folder, file attributes: ok "Folder" folder 0 filesystem 0
+system image list: 1, same for both 1
+exe type, GUI: 1
+exe type, text: 0
+IsOS: 0=0 1=1 2=0 3=1 4=1 5=0 6=0 7=1 8=0 9=0 10=0 11=0 12=1 13=0 14=0 15=1 16=0 17=0 18=1 19=0 20=0 21=1 22=0 23=0 24=0 25=0 26=1 27=0 29=1 31=0 32=0 33=0 34=1 35=0 36=0
