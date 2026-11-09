@@ -35,6 +35,7 @@ mod serve;
 mod tls_relay;
 mod treefiles;
 mod unpack;
+mod update;
 mod ttc;
 mod webassets;
 

@@ -333,6 +333,12 @@ impl Library {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Forgets every play session (the statistics' リセット); favorites and notes stay. How many
+    /// there were.
+    pub fn clear_sessions(&self) -> Result<usize> {
+        Ok(self.connect()?.execute("DELETE FROM sessions", [])?)
+    }
+
     pub fn snapshot(&self, path: &Path) -> Result<()> {
         ensure!(!path.exists(), "snapshot destination already exists");
         self.connect()?.backup("main", path, None)?;
@@ -354,6 +360,28 @@ mod tests {
             db.set_profile(g, &Profile { favorite: f, note: String::new() }).unwrap();
         }
         assert_eq!(db.favorites().unwrap(), ["a", "b"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The statistics' reset: every session goes (of every game), favorites and notes stay, and
+    /// recording goes on after it.
+    #[test]
+    fn sessions_reset() {
+        let dir = std::env::temp_dir().join(format!("ippai-test-{}", uuid::Uuid::new_v4()));
+        let db = Library::new(&dir).unwrap();
+        let s = |game: &str, at: i64| Session { id: uuid::Uuid::new_v4().to_string(), game: game.into(), started_ms: at, elapsed_ms: 1_000 };
+        for (g, at) in [("a", 1_000), ("b", 2_000), ("a", 3_000)] {
+            db.session(&s(g, at)).unwrap();
+        }
+        db.set_profile("a", &Profile { favorite: true, note: "メモ".into() }).unwrap();
+        assert_eq!(db.clear_sessions().unwrap(), 3);
+        assert!(db.sessions().unwrap().is_empty());
+        let p = db.profile("a").unwrap();
+        assert!(p.favorite && p.note == "メモ");
+        db.session(&s("b", 4_000)).unwrap();
+        assert_eq!(db.sessions().unwrap().len(), 1);
+        assert_eq!(db.clear_sessions().unwrap(), 1);
+        assert_eq!(db.clear_sessions().unwrap(), 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 

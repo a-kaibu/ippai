@@ -1,6 +1,7 @@
 //! The user's records (library.rs) over HTTP:
 //! - `GET`/`PUT /api/library/<game>`: favorite and note
-//! - `GET /api/favorites`, `GET`/`PUT /api/sessions`: play time
+//! - `GET /api/favorites`, `GET`/`PUT /api/sessions`: play time; `DELETE /api/sessions`
+//!   forgets it all (the statistics' reset: 204, favorites and notes stay)
 //! - `PUT /api/library/<game>/meta` `{"url": ...}`: fetch the game's metadata from the page the
 //!   user pasted (批評空間 / VNDB, meta_url.rs) in the background; 202 with the state, 400 when
 //!   the address names no game page, 404 for a game not in the store. `GET` gives the state
@@ -111,6 +112,11 @@ async fn session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn reset_stats(State(Api { db, .. }): State<Api>) -> Result<StatusCode, StatusCode> {
+    tokio::task::spawn_blocking(move || db.clear_sessions()).await.map_err(error)?.map_err(error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn stats(State(Api { db, .. }): State<Api>) -> Result<Json<Vec<Session>>, StatusCode> {
     tokio::task::spawn_blocking(move || db.sessions())
         .await
@@ -131,7 +137,7 @@ pub fn router_with(db: Library, fetch: Fetcher) -> Router {
         .route("/api/library/{game}/meta", get(meta_state).put(meta_fetch))
         .route("/api/library/{game}/cover", get(cover))
         .route("/api/library/{game}/candidates", get(candidates))
-        .route("/api/sessions", put(session).get(stats))
+        .route("/api/sessions", put(session).get(stats).delete(reset_stats))
         .with_state(Api { db, fetch })
 }
 
@@ -314,6 +320,27 @@ mod tests {
         g
     }
 
+    /// DELETE /api/sessions: the statistics empty, recording goes on.
+    #[tokio::test]
+    async fn statistics_reset() {
+        let dir = store();
+        let app = router_with(Library::new(&dir).unwrap(), Arc::new(|_: &str| unreachable!()));
+        for at in [1000, 2000] {
+            let id = uuid::Uuid::new_v4();
+            let body = format!(r#"{{"id":"{id}","game":"anemoi","started_ms":{at},"elapsed_ms":500}}"#);
+            assert_eq!(call(&app, "PUT", "/api/sessions", Some(&body)).await.0, StatusCode::NO_CONTENT);
+        }
+        let count = |b: Vec<u8>| serde_json::from_slice::<Vec<serde_json::Value>>(&b).unwrap().len();
+        assert_eq!(count(call(&app, "GET", "/api/sessions", None).await.1), 2);
+        assert_eq!(call(&app, "DELETE", "/api/sessions", None).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(count(call(&app, "GET", "/api/sessions", None).await.1), 0);
+        assert_eq!(call(&app, "DELETE", "/api/sessions", None).await.0, StatusCode::NO_CONTENT);
+        let body = format!(r#"{{"id":"{}","game":"anemoi","started_ms":3000,"elapsed_ms":500}}"#, uuid::Uuid::new_v4());
+        assert_eq!(call(&app, "PUT", "/api/sessions", Some(&body)).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(count(call(&app, "GET", "/api/sessions", None).await.1), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A pasted 批評空間 page: pending at once, then the game's entry in the list carries what it
     /// fetched (meta and cover), the cover served with its type.
     #[tokio::test]
@@ -425,7 +452,7 @@ mod tests {
     #[tokio::test]
     async fn candidates_from_the_kept_list() {
         let dir = store();
-        std::fs::write(dir.join("games/loopers.json"), r#"{"id":"loopers","title":"LOOPERS DL版","run":"Z:\\vnvm\\game\\SiglusEngine.exe","args":[],"mounts":[],"env":[]}"#).unwrap();
+        std::fs::write(dir.join("games/loopers.json"), r#"{"id":"loopers","title":"LOOPERS DL版","run":"Z:\\ippai\\game\\SiglusEngine.exe","args":[],"mounts":[],"env":[]}"#).unwrap();
         let db = Library::new(&dir).unwrap();
         db.set_egs_games(&[(1, "LOOPERS".into(), 800), (2, "LOOPERS+".into(), 40), (3, "アネモイ".into(), 500), (4, "サクラノ詩 -櫻の森の上を舞う-".into(), 5000), (5, "サクラノ詩 春ノ雪".into(), 30)]).unwrap();
         let app = router_with(db, Arc::new(|_: &str| anyhow::bail!("not here")));

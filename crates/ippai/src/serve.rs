@@ -870,6 +870,8 @@ async fn prune_apps(dir: PathBuf, current: Option<String>, saves: Arc<saves::Sav
 
 #[tokio::main]
 async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyhow::Result<()> {
+    // (before anything can replace it: /api/update)
+    let exe = std::env::current_exe()?;
     if let Some(storage) = crate::storage::Storage::configured(crate::library::Library::new(&store)?)? {
         storage.hydrate_catalog(&store).await?;
     }
@@ -906,6 +908,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .with_state(jit)
         .merge(crate::tls_relay::router())
         .merge(crate::library_api::router(crate::library::Library::new(&store)?))
+        .merge(crate::update::router(exe, dirs.fonts.clone()))
         .merge(saves::router(saves.clone()))
         .merge(crate::portable::router(store.clone(), saves.clone()))
         .route("/games", get(games).with_state(pre.clone()))
