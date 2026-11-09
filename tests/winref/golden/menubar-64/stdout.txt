@@ -1,0 +1,12 @@
+no menu: menu 0 items -1 bar none width 1 sizes 0
+empty menu at create: menu 1 items 0 bar none width 1 sizes 0
+an item added: menu 1 items 1 bar none width 1 sizes 0
+then DrawMenuBar: menu 1 items 1 bar one line width 1 sizes 1
+the item deleted: menu 1 items 0 bar one line width 1 sizes 0
+then DrawMenuBar: menu 1 items 0 bar none width 1 sizes 1
+resized: menu 1 items 0 bar none width 1 sizes 1
+one item at create: menu 1 items 1 bar one line width 1 sizes 0
+SetMenu empty: menu 1 items 0 bar none width 1 sizes 1
+SetMenu one item: menu 1 items 1 bar one line width 1 sizes 1
+SetMenu NULL: menu 0 items -1 bar none width 1 sizes 1
+SetMenu empty on no menu: menu 1 items 0 bar none width 1 sizes 0
