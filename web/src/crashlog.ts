@@ -17,6 +17,7 @@
 // - when the page goes to the background (the way out of a hung game on a phone): "<id>-hidden"
 // - Ctrl+Shift+L or a four-finger tap: "<id>-manual"
 // - when the game ends: "<id>-end"
+// - every minute while it runs: "<id>-live" (one file, replaced)
 //
 // ippai serve keeps the server's copies under --logs (GET /log-list, /logs/<name>.txt).
 
@@ -314,6 +315,7 @@ export class FlightRecorder {
   private crashes = 0;
   private reports = 0;
   private lastHidden = 0;
+  private lastLive = Date.now();
   private lastHeads = "";
   private dirty = true;
   private ended = false;
@@ -385,7 +387,7 @@ export class FlightRecorder {
       if (this.wasm && !this.ended) {
         const net = meterLine(meter.window(10));
         this.note(Perf.line(this.perf.sample(this.wasm)) + (net ? `, ${net}` : ""));
-        void this.screen();
+        void this.screen().then(() => this.live());
       } else if (!this.ended) {
         // (still starting: what it waits for shows in the network numbers)
         const net = meterLine(meter.window(10));
@@ -430,6 +432,17 @@ export class FlightRecorder {
     }
     this.note(this.info ? "crash log attached" : "this build has no crash log (old build)");
     this.memory();
+  }
+
+  /** Every minute of a running game, its log so far to the server as "<id>-live" (one file,
+   * replaced): what a game that runs on shows, before it ends or the page goes away. */
+  private async live(): Promise<void> {
+    if (this.sensitive || this.ended || Date.now() - this.lastLive < 60_000) return;
+    this.lastLive = Date.now();
+    await upload(
+      `${this.id}-live`,
+      this.report("live", "the latest state of a running game (sent every minute)"),
+    );
   }
 
   /** A line of what the page shows (screen-stats.ts): black or a picture. */
