@@ -1,5 +1,5 @@
 # Release from the GitHub web UI: Actions → Release → Run workflow, pick patch / minor / major:
-# svu takes the next version after the last v* tag and the workflow tags main with it. A v* tag
+# The next version after the last vX.Y.Z tag is taken and the workflow tags main with it. A v* tag
 # pushed by hand (git tag v0.1.0 && git push origin v0.1.0) releases that tag the same way. Only a
 # build and a release: no tests here (CI runs them on every push).
 #
@@ -63,9 +63,6 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-      - name: Setup svu
-        if: github.event_name == 'workflow_dispatch'
-        uses: freerangebytes/setup-svu@v0.2.1
       - id: v
         shell: bash
         env:
@@ -75,7 +72,18 @@ jobs:
         run: |
           set -euo pipefail
           case $EVENT in
-            workflow_dispatch) tag=$(svu "$BUMP_TYPE") ;;
+            workflow_dispatch)
+              # the next version after the highest vX.Y.Z tag (as svu did, without downloading it:
+              # its release asset once came back as an error page, run 42572919105)
+              last=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+              IFS=. read -r major minor patch <<< "${last:-v0.0.0}"
+              major=${major#v}
+              case $BUMP_TYPE in
+                major) tag=v$((major + 1)).0.0 ;;
+                minor) tag=v$major.$((minor + 1)).0 ;;
+                patch) tag=v$major.$minor.$((patch + 1)) ;;
+                *) echo "unknown bump type: $BUMP_TYPE" >&2; exit 1 ;;
+              esac ;;
             push) tag=$REF_NAME ;;
             *) tag=v0.0.0 ;;
           esac
@@ -278,7 +286,12 @@ jobs:
       # (a dispatch's tag is made here, on the commit the run built)
       - name: GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN may not make a tag on a commit whose workflow files differ from the
+          # last release's (HTTP 403 "Resource not accessible by integration": that needs the
+          # `workflow` scope, which GITHUB_TOKEN never has). RELEASE_TOKEN, when set, is a
+          # token that has it (fine-grained: Contents + Workflows read/write on this repo).
+          # Without it, push the tag by hand: git tag vX.Y.Z && git push origin vX.Y.Z.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail

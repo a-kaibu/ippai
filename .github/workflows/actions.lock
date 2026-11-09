@@ -52,7 +52,6 @@ workflows:
         - 'actions/download-artifact@v8.0.2'
         - 'actions/setup-node@v7.1.0'
         - 'actions/upload-artifact@v7.0.2'
-        - 'freerangebytes/setup-svu@v0.2.1'
     '.github/workflows/replay.yml':
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
@@ -98,13 +97,6 @@ dependencies:
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         owner_id: 44036562
         repo_id: 192625955
-    'freerangebytes/setup-svu@v0.2.1':
-        ref: 'v0.2.1'
-        commit: 'sha1-3dcc2ead4b6be1287f9bfe2ac4764a826c110a4f'
-        owner_id: 150510968
-        repo_id: 1116545252
-        uses:
-            - 'actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3'
     'taiki-e/install-action@v2.88.1':
         ref: 'v2.88.1'
         commit: 'sha1-68a389c788b2cd04016ce8c80ee23b80d2ab3d68'
