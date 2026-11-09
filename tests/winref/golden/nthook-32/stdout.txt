@@ -10,25 +10,25 @@ NtQueryFullAttributesFile and ZwQueryFullAttributesFile: one function
 NtQueryDirectoryFile and ZwQueryDirectoryFile: one function
 NtProtectVirtualMemory and ZwProtectVirtualMemory: one function
 NtQueryInformationProcess and ZwQueryInformationProcess: one function
-CreateFileA OPEN_EXISTING: -> INVALID_HANDLE_VALUE error 2
-GetFileSize: -> 4294967295 high 57005
-GetFileSizeEx: -> 0 0
-ReadFile 5: -> 0 read 0 ""
-SetFilePointer 7 FILE_BEGIN: -> 4294967295
-SetFilePointer 0 FILE_CURRENT: -> 4294967295
-SetFilePointer -5 FILE_END: -> 4294967295 high -1
-ReadFile 40: -> 0 read 0 ""
-ReadFile at the end: -> 0 read 0
-SetFilePointer -100 FILE_CURRENT: -> 0xffffffff error 6
-SetFilePointerEx 2 FILE_BEGIN: -> 0 0
-ReadFile 3 at OVERLAPPED 14: -> 0 read 0 "" Internal 0x103 InternalHigh 0
-CloseHandle: -> 1
-CreateFileW CREATE_ALWAYS: -> other error 0
-CreateFileA CREATE_NEW: -> INVALID_HANDLE_VALUE error 80
-CreateFileA OPEN_ALWAYS: -> other error 183
+CreateFileA OPEN_EXISTING: name relative root 1 attrs 0x40 NtCreateFile access 0x80100080 file attrs 0x80 share 1 disposition 1 options 0x60 alloc 0 ea 0 -> the hook's handle error 0
+GetFileSize: NtQueryInformationFile class 5 len 24 -> 20 high 0
+GetFileSizeEx: NtQueryInformationFile class 5 len 24 -> 1 20
+ReadFile 5: NtReadFile 5 event 0 apc 0 ctx 0 offset none key 0 -> 1 read 5 "hello"
+SetFilePointer 7 FILE_BEGIN: NtSetInformationFile class 14 len 8 to 7 -> 7
+SetFilePointer 0 FILE_CURRENT: NtQueryInformationFile class 14 len 8 NtSetInformationFile class 14 len 8 to 7 -> 7
+SetFilePointer -5 FILE_END: NtQueryInformationFile class 5 len 24 NtSetInformationFile class 14 len 8 to 15 -> 15 high 0
+ReadFile 40: NtReadFile 40 event 0 apc 0 ctx 0 offset none key 0 -> 1 read 5 "world"
+ReadFile at the end: NtReadFile 40 event 0 apc 0 ctx 0 offset none key 0 -> 1 read 0
+SetFilePointer -100 FILE_CURRENT: NtQueryInformationFile class 14 len 8 -> 0xffffffff error 131
+SetFilePointerEx 2 FILE_BEGIN: NtSetInformationFile class 14 len 8 to 2 -> 1 2
+ReadFile 3 at OVERLAPPED 14: NtReadFile 3 event 1 apc 0 ctx 1 offset given key 0 14 -> 1 read 3 " wo" Internal 0 InternalHigh 3
+CloseHandle: NtClose -> 1
+CreateFileW CREATE_ALWAYS: name relative root 1 attrs 0x40 NtCreateFile access 0xc0100080 file attrs 0x2 share 0 disposition 5 options 0x64 alloc 0 ea 0 -> the hook's handle error 0
+CreateFileA CREATE_NEW: name relative root 1 attrs 0x40 NtCreateFile access 0x80100080 file attrs 0 share 5 disposition 2 options 0x840 alloc 0 ea 0 -> INVALID_HANDLE_VALUE error 80
+CreateFileA OPEN_ALWAYS: name relative root 1 attrs 0x40 NtCreateFile access 0x80100080 file attrs 0 share 1 disposition 3 options 0x402a alloc 0 ea 0 -> the hook's handle error 183
 GetFileAttributesA: name \??\X: root 0 attrs 0x40 NtQueryAttributesFile -> 0x21 error 57005
 GetFileAttributesW: name \??\X: root 0 attrs 0x40 NtQueryAttributesFile -> 0x21
-GetFileAttributesExA: -> 1 attrs 0x22 created 0x1dd6fd2706d2523 accessed 0x1dd6fd2706d2523 written 0x1dd6fd2706d2523 size 0 0
+GetFileAttributesExA: name relative root 1 attrs 0x40 NtQueryFullAttributesFile -> 1 attrs 0x21 created 0x1d0000000000001 accessed 0x1d0000000000002 written 0x1d0000000000003 size 0 20
 real file: opened 1 wrote 1 6 size 6 read 4 "cdef"
 real file: closed 1 attrs 0x20 deleted 1
 missing file: 0xffffffff error 2
