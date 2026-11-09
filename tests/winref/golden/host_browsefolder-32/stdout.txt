@@ -1,0 +1,7 @@
+A path, OK: <cwd>\bff saves, name bff saves, initialized first 0, lParam 1234, dialog gone 1, last selchanged <cwd>\bff saves
+W path, OK: <cwd>\bff_other, name bff_other, initialized first 0, lParam 1234, dialog gone 1, last selchanged <cwd>\bff_other
+ID list, OK: <cwd>\bff saves, name bff saves, initialized first 0, lParam 1234, dialog gone 1, last selchanged <cwd>\bff saves
+A path, cancel: NULL, initialized first 0, lParam 1234, dialog gone 1, last selchanged <cwd>\bff saves
+missing path, OK: (no path), name This PC, initialized first 0, lParam 1234, dialog gone 1, last selchanged (no path)
+nothing selected, OK: (no path), name This PC, initialized first 0, lParam 1234, dialog gone 1, last selchanged (no path)
+missing folder made: 0

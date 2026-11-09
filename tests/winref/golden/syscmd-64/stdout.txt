@@ -1,0 +1,27 @@
+[overlapped]
+posted SC_MAXIMIZE: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SC_MAXIMIZE again: zoomed 1 style max sizes 0 kinds bigger 1 back 0
+SC_RESTORE: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
+SC_RESTORE again: zoomed 0 style - sizes 0 kinds bigger 0 back 1
+SW_MAXIMIZE: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SW_SHOWNORMAL: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
+SW_SHOWMAXIMIZED: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SW_RESTORE: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
+[popup]
+posted SC_MAXIMIZE: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SC_MAXIMIZE again: zoomed 1 style max sizes 0 kinds bigger 1 back 0
+SC_RESTORE: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
+SC_RESTORE again: zoomed 0 style - sizes 0 kinds bigger 0 back 1
+SW_MAXIMIZE: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SW_SHOWNORMAL: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
+SW_SHOWMAXIMIZED: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SW_RESTORE: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
+[popup with a menu]
+posted SC_MAXIMIZE: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SC_MAXIMIZE again: zoomed 1 style max sizes 0 kinds bigger 1 back 0
+SC_RESTORE: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
+SC_RESTORE again: zoomed 0 style - sizes 0 kinds bigger 0 back 1
+SW_MAXIMIZE: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SW_SHOWNORMAL: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
+SW_SHOWMAXIMIZED: zoomed 1 style max sizes 1 kinds 2 bigger 1 back 0
+SW_RESTORE: zoomed 0 style - sizes 1 kinds 0 bigger 0 back 1
