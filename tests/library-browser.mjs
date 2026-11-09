@@ -218,6 +218,14 @@ try {
     await search.fill("月");
     assert.deepEqual(await page.locator("[data-game]").evaluateAll((l) => l.map((e) => e.dataset.game)), ["tsuki"]);
     assert.equal(await cont.count(), 0, "no continue banner while searching");
+    // Japanese as typed: katakana / half-width for hiragana, full-width letters, a typo
+    const shown = () => page.locator("[data-game]").evaluateAll((l) => l.map((e) => e.dataset.game).sort());
+    for (const q of ["サクラ", "ｻｸﾗ", "さくらの話"]) {
+      await search.fill(q);
+      assert.deepEqual(await shown(), ["sakura"], q);
+    }
+    await search.fill("ＫＥＹ");
+    assert.deepEqual(await shown(), ["sakura", "tsuki"]);
     await search.fill("ありえない");
     await page.getByRole("button", { name: /検索をクリア/ }).click();
     assert.equal(await page.locator("[data-game]").count(), 3);

@@ -3,6 +3,7 @@
 
 import type { GameEntry } from "./launcher";
 import type { Session } from "./library-data";
+import { queryWords, searchScore, type Searchable } from "./search";
 
 export type Filter = "all" | "favorites";
 
@@ -109,19 +110,21 @@ export function sortGames(games: GameEntry[], last: Record<string, number>): Gam
   );
 }
 
-/** Every word of `query` in the title, reading, brand, series, engine, id or a tag (any case). */
-export function matches(g: GameEntry, query: string): boolean {
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
+/** What search.ts looks through for a game. */
+export function searchable(g: GameEntry): Searchable {
   const m = g.meta;
-  const key = [g.title, g.engine, g.id, m?.title, m?.furigana, m?.brand, m?.series, ...(m?.tags ?? [])]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return words.every((w) => key.includes(w));
+  return {
+    names: [g.title, m?.title, m?.furigana].filter((x): x is string => !!x),
+    other: [m?.brand, m?.series, g.engine, g.id, ...(m?.tags ?? [])].filter((x): x is string => !!x),
+  };
 }
 
-/** The games shown: matching the search, a favorite under お気に入り, and of `brand` when one
+/** Every word of `query` found (search.ts: full/half width, kana and small typos forgiven). */
+export function matches(g: GameEntry, query: string): boolean {
+  return searchScore(query, searchable(g)) > 0;
+}
+
+/** The games shown, best fits of the search first: matching the search, a favorite under お気に入り, and of `brand` when one
  * was picked (a brand's name clicked: brandOf's value, exactly). */
 export function visibleGames(
   sorted: GameEntry[],
@@ -130,12 +133,13 @@ export function visibleGames(
   favorites: readonly string[],
   brand: string | null = null,
 ): GameEntry[] {
-  return sorted.filter(
-    (g) =>
-      matches(g, query) &&
-      (filter === "all" || favorites.includes(g.id)) &&
-      (brand === null || brandOf(g) === brand),
-  );
+  const scored = sorted
+    .filter((g) => (filter === "all" || favorites.includes(g.id)) && (brand === null || brandOf(g) === brand))
+    .map((g) => ({ g, score: searchScore(query, searchable(g)) }))
+    .filter((x) => x.score > 0);
+  // (while searching, the best fits first; ties keep the list's order: sort is stable)
+  if (queryWords(query).length) scored.sort((a, b) => b.score - a.score);
+  return scored.map((x) => x.g);
 }
 
 export interface PlayTotal {
