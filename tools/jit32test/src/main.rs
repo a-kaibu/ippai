@@ -823,6 +823,104 @@ fn shrink(mut list: Vec<Instruction>, diffs: &[String], mut run: impl FnMut(&[In
 }
 
 /// Programs every run checks
+/// host/tests/ssecvt.c's inner loop over j as gcc -O2 made it (0x407f50-0x4080f0 of its exe):
+/// COMISD/UCOMISS into SETcc and JP, x87 FLD/FST/FSTS through the stack slots SSE reads back,
+/// FCOMIP's flags into the next block's JP/JE/JBE. The table at 0x409040 is DATA + 0x600, the
+/// loop's exit (0x4080f0) leaves for END; the program sets j (0x60(%esp)) to 0 and the table and
+/// d, f (0x28, 0x30(%esp), xmm1, xmm2) to ssecvt's values first.
+fn ssecvt_loop(i: usize) -> Result<Vec<Instruction>, IcedError> {
+    const BYTES: &str = "7a0c0f84800100000f866201000083f00469c093010001894424502e8d742600d9442430d9442448dff1ddd872118b44245083f00569c0930100018944245083442460018b44246083f8140f844f0100008b44246031ffdd04c54090400089f8dd542448f30f7e442448660f2fc10f97c089c731c0660f2fc8894424447a070f94c08944244431c0660f2ec8b901000000894c24400f97c031db660f2ec10f93c3660f2fc87a070f95c1894c2440d954244831f6f30f1044244889f10f2fc20f97c189ce31c90f2fd0894c243c7a070f94c1894c243c31d20f2ed0b9000000000f97c20f93c189542434ba01000000895424387a070f95c2895424388b542444c1e002c1e103dd442428d9c901d209d08b54243409c78d04dd000000008b5c245009f88b7c2440c1e202c1e70409f831d88b5c243c69c09301000101db09da09f209ca8b4c2438c1e10409ca31d069c093010001dff1ddd80f86a2feffff83f00169c09301000189442450e9b0feffff83f00369c09301000189442450e99efeffff8db60000000083f00269c09301000189442450e986feffff8db600000000";
+    const AT: u64 = 0x407f50;
+    const TO: u64 = LBASE + 0x10000;
+    let bytes: Vec<u8> = (0..BYTES.len()).step_by(2).map(|i| u8::from_str_radix(&BYTES[i..i + 2], 16).unwrap()).collect();
+    let dv = [0.0, -0.0, 1.5, -1.5, 2.5, -2.9, 2147483647.0, 2147483647.9, 2147483648.0, -2147483648.0, -2147483648.9, -2147483649.0, 1e300, -1e300, 3.4e38, 1e-310, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.1f64];
+    let mut a = CodeAssembler::new(32)?;
+    for (k, d) in dv.iter().enumerate() {
+        let b = d.to_bits();
+        a.mov(dword_ptr(ebx + 0x600 + 8 * k as i32), b as u32)?;
+        a.mov(dword_ptr(ebx + 0x604 + 8 * k as i32), (b >> 32) as u32)?;
+    }
+    a.finit()?;
+    a.mov(dword_ptr(esp + 0x60), 0)?;
+    a.mov(dword_ptr(esp + 0x50), 0x811c_9dc5u32)?;
+    let d = dv[i];
+    a.mov(dword_ptr(esp + 0x28), d.to_bits() as u32)?;
+    a.mov(dword_ptr(esp + 0x2c), (d.to_bits() >> 32) as u32)?;
+    a.mov(dword_ptr(esp + 0x30), (d as f32).to_bits())?;
+    a.movsd_2(xmm1, qword_ptr(esp + 0x28))?;
+    a.movss(xmm2, dword_ptr(esp + 0x30))?;
+    a.mov(eax, 0x811c_9dc5u32)?;
+    let mut list = a.take_instructions();
+    let mut go = Instruction::with_branch(Code::Jmp_rel32_32, TO + 0x407fa1 - AT)?;
+    go.set_ip(0);
+    list.push(go);
+    let mut dec = iced_x86::Decoder::with_ip(32, &bytes, AT, iced_x86::DecoderOptions::NONE);
+    while dec.can_decode() {
+        let mut i = dec.decode();
+        i.set_ip(TO + i.ip() - AT);
+        if i.op0_kind() == iced_x86::OpKind::NearBranch32 {
+            let t = i.near_branch32() as u64;
+            i.set_near_branch32((TO + t - AT) as u32);
+        }
+        if i.memory_displacement32() == 0x409040 && i.memory_base() == Register::None {
+            i.set_memory_base(Register::EBX);
+            i.set_memory_displacement32(0x600);
+        }
+        list.push(i);
+    }
+    let mut out = Instruction::with_branch(Code::Jmp_rel32_32, END as u64)?;
+    out.set_ip(TO + 0x4080f0 - AT);
+    list.push(out);
+    Ok(list)
+}
+
+/// The same program's end of that loop and what follows it (0x407f8f-0x407fa1, j's last
+/// increment and its JE, then 0x4080f0-0x40829a): CVTPS2PD, CVTPD2PS, CVTSS2SD, CVTSD2SS,
+/// SHUFPS and x87 stores into the stack slot that held j (0x60(%esp)) read back as integers.
+fn ssecvt_end(i: usize) -> Result<Vec<Instruction>, IcedError> {
+    const B1: &str = "83442460018b44246083f8140f844f010000";
+    const B2: &str = "d9442430f30f107c2430d9e0d95c2460f30f10442460dd4424280f14c7d9e00f16c50f5af80f117c24608b4424608b542464660f10fcdd5c2460f20f10442460d90590a0400089c18b44246889d3f30f5afa8b54246c0f117c2460660f164424280f10d389c68b442460660f5ac0f20f5ad189d78b542464dd5c24600f10c8894424388b4424680fc6c855895424348b54246c8944243c8b442460894424448b442464894424408b442428894424608b44242c894424488b442450f30f114424500f15c031c88b4c2450f30f114c245069c09301000131d88b5c243869c09301000131f08b74244469c09301000131f869c09301000131c88b4c2450f30f1144245069c09301000131c88b4c2450f30f115424500fc6d2ff69c09301000131c869c09301000131d88b5c243469c09301000131d88b5c243c69c09301000131d869c09301000131d08b542450f30f1154245069c09301000131d08b54245069c09301000131d069c09301000131f08b74244069c09301000131f069f8930100018b44246031c78b44244869ff9301000131c783442424018b44242469ff9301000183f8140f8536fcffff";
+    const TO: u64 = LBASE + 0x20000;
+    let dv = [0.0, -0.0, 1.5, -1.5, 2.5, -2.9, 2147483647.0, 2147483647.9, 2147483648.0, -2147483648.0, -2147483648.9, -2147483649.0, 1e300, -1e300, 3.4e38, 1e-310, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.1f64];
+    let hex = |s: &str| -> Vec<u8> { (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect() };
+    let mut a = CodeAssembler::new(32)?;
+    a.finit()?;
+    let d = dv[i];
+    a.mov(dword_ptr(esp + 0x60), 19)?;
+    a.mov(dword_ptr(esp + 0x24), 3)?;
+    a.mov(dword_ptr(esp + 0x28), d.to_bits() as u32)?;
+    a.mov(dword_ptr(esp + 0x2c), (d.to_bits() >> 32) as u32)?;
+    a.mov(dword_ptr(esp + 0x30), (d as f32).to_bits())?;
+    a.movsd_2(xmm1, qword_ptr(esp + 0x28))?;
+    a.movss(xmm2, dword_ptr(esp + 0x30))?;
+    // (the float constant at 0x40a090: 1.0 in the table's place)
+    a.mov(dword_ptr(ebx + 0x690), 1.0f32.to_bits())?;
+    let mut list = a.take_instructions();
+    let mut go = Instruction::with_branch(Code::Jmp_rel32_32, TO + 0x407f8f - 0x407f00)?;
+    go.set_ip(0);
+    list.push(go);
+    for (at, bytes) in [(0x407f8fu64, hex(B1)), (0x4080f0, hex(B2))] {
+        let mut dec = iced_x86::Decoder::with_ip(32, &bytes, at, iced_x86::DecoderOptions::NONE);
+        while dec.can_decode() {
+            let mut i = dec.decode();
+            i.set_ip(TO + i.ip() - 0x407f00);
+            if i.op0_kind() == iced_x86::OpKind::NearBranch32 {
+                let t = i.near_branch32() as u64;
+                i.set_near_branch32(if t == 0x4080f0 { (TO + t - 0x407f00) as u32 } else { END });
+            }
+            if i.memory_displacement32() == 0x40a090 && i.memory_base() == Register::None {
+                i.set_memory_base(Register::EBX);
+                i.set_memory_displacement32(0x690);
+            }
+            list.push(i);
+        }
+        let mut out = Instruction::with_branch(Code::Jmp_rel32_32, END as u64)?;
+        out.set_ip(TO + if at == 0x407f8f { 0x407fa1 } else { 0x40829a } - 0x407f00);
+        list.push(out);
+    }
+    Ok(list)
+}
+
 fn fixed() -> Result<Vec<(&'static str, Vec<Instruction>)>, IcedError> {
     let mut v = Vec::new();
     // x87 pushes in a loop (the stack grows across the back edge), popped after it
@@ -855,6 +953,12 @@ fn fixed() -> Result<Vec<(&'static str, Vec<Instruction>)>, IcedError> {
     a.jne(top)?;
     a.jmp(END as u64)?;
     v.push(("x87 loop pop", a.take_instructions()));
+    for k in 0..20 {
+        v.push(("ssecvt j loop", ssecvt_loop(k)?));
+        v.push(("mx ssecvt j loop", ssecvt_loop(k)?));
+        v.push(("ssecvt j loop end", ssecvt_end(k)?));
+        v.push(("mx ssecvt j loop end", ssecvt_end(k)?));
+    }
     // The MXCSR flags read first ("mx ": run without the flag checks until then, as a program
     // starts): the flags the translations made without them lost are cleared, so from there
     // on they are the CPU's, also in the region (and the loop) that read them.

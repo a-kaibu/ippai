@@ -16,6 +16,12 @@ static volatile int iv[] = {0, 1, -1, 0x7fffffff, (int)0x80000000, 16777217, -16
 
 int main(void) {
     int n = sizeof dv / sizeof dv[0];
+    /* (the flags are read before anything raises them: translated code keeps the MXCSR flags
+       only from a program's first read of them on, koji's jit::MX_EXACT; read first at the end
+       of the first rep, the flags its loops raised in translated code before it were lost or
+       not as the JIT's compile thread happened to be early or late) */
+    unsigned mx0;
+    __asm__ volatile("stmxcsr %0" : "=m"(mx0));
     for (int rep = 0; rep < 2000; rep++) {
         for (int i = 0; i < n; i++) {
             double d = dv[i];
