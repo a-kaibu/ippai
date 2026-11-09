@@ -175,8 +175,17 @@ fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Resul
     })
 }
 
+/// GHCR_TOKEN, or the GitHub CLI's own token (`gh auth token`; it needs the write:packages scope:
+/// `gh auth refresh -s write:packages`).
 fn ghcr_token() -> anyhow::Result<String> {
-    std::env::var("GHCR_TOKEN").ok().filter(|t| !t.is_empty()).ok_or_else(|| anyhow::anyhow!("GHCR_TOKEN: a token with write:packages"))
+    if let Some(t) = std::env::var("GHCR_TOKEN").ok().filter(|t| !t.is_empty()) {
+        return Ok(t);
+    }
+    let gh = std::process::Command::new("gh").args(["auth", "token"]).stderr(std::process::Stdio::inherit()).output();
+    match gh {
+        Ok(o) if o.status.success() && !o.stdout.trim_ascii().is_empty() => Ok(String::from_utf8(o.stdout)?.trim().to_string()),
+        _ => anyhow::bail!("GHCR_TOKEN (a token with write:packages), or gh signed in (gh auth login; gh auth refresh -s write:packages)"),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
