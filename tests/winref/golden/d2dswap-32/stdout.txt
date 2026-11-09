@@ -1,0 +1,16 @@
+factory 1
+CreateDevice 0
+discard: CreateSwapChainForHwnd 0
+discard: target bitmap 0
+discard: picture bitmap 0
+discard: target bitmap of its own 0
+image discard_frame0 64 48 2
+image discard_frame1 64 48 2
+image discard_frame2 64 48 2
+flip: CreateSwapChainForHwnd 0
+flip: target bitmap 0
+flip: picture bitmap 0
+flip: target bitmap of its own 0
+image flip_frame0 64 48 2
+image flip_frame1 64 48 2
+image flip_frame2 64 48 2

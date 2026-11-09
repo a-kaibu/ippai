@@ -1,0 +1,25 @@
+create: 0
+IPersistFile: 0
+IStream: 80004002
+class is CLSID_ShellLink: 1
+dirty when new: 1
+path when new: 1, empty 1
+show when new: 1
+dirty after setting: 0
+current file before saving: 1, NULL
+save: 0
+dirty after saving: 1
+current file: 0, the link 1
+release: 0
+file header: size 4c, CLSID_ShellLink 1
+load: 0
+dirty after loading: 1
+IShellLinkA: 0
+path: 0 <self>, find data name <self>
+arguments: /run "two words"
+directory: <dir>
+description: My Program
+icon: <self>, 2
+show 7, hot key 0650
+description into 6 chars: My Pr
+load what is not there: 80070002

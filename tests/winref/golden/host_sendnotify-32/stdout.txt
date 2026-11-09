@@ -1,0 +1,5 @@
+own window: 1, handled before returning: 1
+own window (W): 1, handled: 1
+other thread's window: 1, returned at once: 1, handled yet: 0
+order: 219 (the sent one first)
+no such window: 0, error 1400

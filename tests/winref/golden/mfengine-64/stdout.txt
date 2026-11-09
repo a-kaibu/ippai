@@ -45,13 +45,13 @@ playing event 1
 playing: paused 0 ended 0, time moved 1
 ended event 0 after the expected time 0
 pause event at the end 0
-ended: ready 4 paused 0 ended 0 seeking 0 time 7.2
+ended: ready 4 paused 0 ended 0 seeking 0 time 7.1
 ended: TransferVideoFrame 00000000 top frame 7 bottom frame 7
 Play again 00000000
 again: from the start 0, ended 0
 Pause 00000000
 pause event 1
-paused: ready 4 paused 1 ended 0 seeking 0 time 10.3
+paused: ready 4 paused 1 ended 0 seeking 0 time 10.1
 Pause again 00000000
 SetVolume 00000000
 volume 0.50

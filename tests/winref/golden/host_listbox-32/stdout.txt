@@ -1,0 +1,48 @@
+add: 0 0 1 1 4
+insert at 1: 1
+insert at end: 6
+insert past end: -1
+  7 items: Apple(5/5,0) zz(2/2,0) apricot(7/7,42) banana(6/6,0) cherry(6/6,0) Date(4/4,0) aa(2/2,0)
+find AP: 0
+find AP after it: 2
+exact BANANA: 3
+exact ban: -1
+find q: -1
+filling:
+cursel at first: -1
+setcursel 3: 3, cursel 3, sel(3) 1 sel(2) 0
+setcursel 50: -1, cursel 3
+selectstring ch: 4, cursel 4
+selcount on a single-selection list: -1
+selecting by message:
+clicked 1: cursel 1
+click: 10/1
+click the same item: 10/1
+down: cursel 2
+end: cursel 6
+home: cursel 0
+keys: 10/1 10/1 10/1
+delete 0: 6 left, cursel -1
+delete 40: -1
+delete (data 42 is on item 1): delete(type 2 id 10 item 0 data 0)
+reset: 0 items, cursel -1
+reset:
+quiet list: cursel 0
+quiet list:
+setsel 1, 4: 0 0, count 2
+selitems 2: 1 4
+setcursel on a multiple-selection list: -1
+select all: 6
+select none: 0
+range 2-4: 0, count 3, sel(1) 0 sel(3) 1
+click 3 toggles: sel(3) 0 count 2
+click 0 toggles: sel(0) 1 count 3
+multiple selection: 20/1 20/1
+owner-drawn created:
+owner-drawn added: measure(type 2 id 30 item 0 data 5) measure(type 2 id 30 item 1 data 7) measure(type 2 id 30 item 0 data 1)
+  heights 11 15 17, data 1 5 7
+  item 2 rect y 26-43
+  gettext 1: sizeof(ULONG_PTR), 5; textlen sizeof(ULONG_PTR)
+  find data 7: 2
+owner-drawn delete 1: delete(type 2 id 30 item 1 data 5)
+owner-drawn destroyed: delete(type 2 id 30 item 1 data 7) delete(type 2 id 30 item 0 data 1)

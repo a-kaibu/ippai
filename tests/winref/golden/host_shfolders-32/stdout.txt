@@ -1,0 +1,27 @@
+PROGRAMS: %APPDATA%\Microsoft\Windows\Start Menu\Programs, known folder the same
+COMMON_PROGRAMS: %ProgramData%\Microsoft\Windows\Start Menu\Programs, known folder the same
+STARTMENU: %APPDATA%\Microsoft\Windows\Start Menu, known folder the same
+COMMON_STARTMENU: %ProgramData%\Microsoft\Windows\Start Menu, known folder the same
+STARTUP: %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup, known folder the same
+COMMON_STARTUP: %ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup, known folder the same
+DESKTOPDIRECTORY: %USERPROFILE%\Desktop, known folder the same
+COMMON_DESKTOPDIRECTORY: %PUBLIC%\Desktop, known folder the same
+PERSONAL: %USERPROFILE%\Documents, known folder the same
+COMMON_DOCUMENTS: %PUBLIC%\Documents, known folder the same
+APPDATA: %APPDATA%, known folder the same
+LOCAL_APPDATA: %LOCALAPPDATA%, known folder the same
+COMMON_APPDATA: %ProgramData%, known folder the same
+FAVORITES: %USERPROFILE%\Favorites, known folder the same
+SENDTO: %APPDATA%\Microsoft\Windows\SendTo, known folder the same
+RECENT: %APPDATA%\Microsoft\Windows\Recent, known folder the same
+TEMPLATES: %APPDATA%\Microsoft\Windows\Templates, known folder the same
+MYMUSIC: %USERPROFILE%\Music, known folder the same
+MYVIDEO: %USERPROFILE%\Videos, known folder the same
+MYPICTURES: %USERPROFILE%\Pictures, known folder the same
+PROFILE: %USERPROFILE%, known folder the same
+ADMINTOOLS: %APPDATA%\Microsoft\Windows\Start Menu\Programs\Administrative Tools
+COMMON_ADMINTOOLS: %ProgramData%\Microsoft\Windows\Start Menu\Programs\Administrative Tools
+COMMON_TEMPLATES: %ProgramData%\Microsoft\Windows\Templates
+NETHOOD: %APPDATA%\Microsoft\Windows\Network Shortcuts
+PRINTHOOD: %APPDATA%\Microsoft\Windows\Printer Shortcuts
+UserProgramFiles: %LOCALAPPDATA%\Programs
