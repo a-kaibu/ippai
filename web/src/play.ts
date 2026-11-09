@@ -22,7 +22,7 @@ import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./audio";
 import { Video } from "./video";
 import { AudioDecode } from "./adec";
-import { applyGame, coverUrl, fetchGames, type GameEntry } from "./launcher";
+import { applyGame, coverUrl, fetchGames, nextRunUrl, type GameEntry } from "./launcher";
 import { getUi, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
@@ -967,11 +967,9 @@ function closeGame(): void {
   if (nextRun) {
     const { run, args } = nextRun;
     log(`${run} に切り替えます`);
-    const url = new URL(location.href);
-    url.searchParams.set("saves", params.get("saves")!);
-    url.searchParams.set("run", run);
-    url.searchParams.set("args", args.split(/\s+/).filter(Boolean).join(","));
-    if (!args.trim()) url.searchParams.delete("args");
+    // (from params, not the address bar: a game picked from the list has only ?game= there,
+    // and the next page would start without its mounts)
+    const url = nextRunUrl(location.href, params, run, args);
     void saveNow().finally(() => location.replace(url));
     return;
   }

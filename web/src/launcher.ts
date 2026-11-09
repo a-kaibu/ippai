@@ -82,3 +82,19 @@ export function applyGame(params: URLSearchParams, g: GameEntry): void {
   for (const e of g.env) params.append("env", e);
   markPlayed(g.id);
 }
+
+/** The page for the program a game started in its own place (a launcher's game: sake's
+ * k32::exec): the running page's parameters as they are now (`params`, which applyGame filled
+ * for a game picked from the list: its mounts, env, ...; the address bar may hold only ?game=),
+ * with that program and its arguments. A memory state stays with the program it was taken of. */
+export function nextRunUrl(href: string, params: URLSearchParams, run: string, args: string): URL {
+  const url = new URL(href);
+  const next = new URLSearchParams(params);
+  next.set("run", run);
+  const list = args.split(/\s+/).filter(Boolean);
+  if (list.length) next.set("args", list.join(","));
+  else next.delete("args");
+  next.delete("state");
+  url.search = `?${next}`;
+  return url;
+}

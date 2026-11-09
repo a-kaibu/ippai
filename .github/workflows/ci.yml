@@ -524,6 +524,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
           "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
           PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/savestate-browser.mjs target/release/ippai
+      - name: A launcher's chain from the list keeps its game's files (ShellExecuteEx in its place, play.ts closeGame)
+        run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/exec-browser.mjs target/release/ippai
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ippai
