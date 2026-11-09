@@ -897,6 +897,31 @@ fn watchdog(rt: tokio::runtime::Handle, every: std::time::Duration, limit: std::
     });
 }
 
+/// Every thread of the process prints its backtrace to stderr (the journal), each from a
+/// signal handler of its own: what a stuck server waits on. (Not signal-safe: only for a server
+/// about to be ended. A thread stuck holding the allocator or stderr prints nothing.)
+#[cfg(target_os = "linux")]
+fn dump_threads() {
+    extern "C" fn on_signal(_: libc::c_int) {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+        let name = std::thread::current().name().map(str::to_owned).unwrap_or_default();
+        eprintln!("ippai: thread {tid} {name}:\n{bt}");
+    }
+    unsafe { libc::signal(libc::SIGUSR2, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
+    let me = unsafe { libc::syscall(libc::SYS_gettid) };
+    let pid = std::process::id() as libc::c_long;
+    for e in std::fs::read_dir("/proc/self/task").into_iter().flatten().flatten() {
+        let Some(tid) = e.file_name().to_str().and_then(|t| t.parse::<libc::c_long>().ok()) else { continue };
+        if tid != me {
+            unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGUSR2) };
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn dump_threads() {}
+
 #[tokio::main]
 async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyhow::Result<()> {
     // (before anything can replace it: /api/update)
@@ -918,7 +943,9 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     let logs = Arc::new(args.logs.clone());
     // (a server that stops answering ends, for systemd to start it again: see `watchdog`)
     watchdog(tokio::runtime::Handle::current(), WATCH_EVERY, HANG_LIMIT, || {
-        eprintln!("ippai: the server answered nothing for {} s (its threads stuck): ending it, to be started again", HANG_LIMIT.as_secs());
+        eprintln!("ippai: the server answered nothing for {} s (its threads stuck): where each thread is, then ending it, to be started again", HANG_LIMIT.as_secs());
+        dump_threads();
+        std::thread::sleep(std::time::Duration::from_secs(3));
         std::process::abort()
     });
     let web = args.web.clone();
@@ -1006,6 +1033,43 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
 
 #[cfg(test)]
 mod tests {
+    /// What a stuck server prints: each thread's backtrace, a thread blocked on a lock among
+    /// them with the function it waits in (run in a child process: its stderr is looked at).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stuck_threads_print_where_they_wait() {
+        if std::env::var_os("IPPAI_DUMP_CHILD").is_some() {
+            let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+            let held = lock.lock().unwrap();
+            let l = lock.clone();
+            std::thread::Builder::new()
+                .name("stuck-one".into())
+                .spawn(move || {
+                    #[inline(never)]
+                    fn waits_for_the_lock(l: &std::sync::Mutex<()>) {
+                        let _g = l.lock();
+                    }
+                    waits_for_the_lock(&l)
+                })
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            super::dump_threads();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            drop(held);
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "serve::tests::stuck_threads_print_where_they_wait", "--nocapture", "--test-threads", "1"])
+            .env("IPPAI_DUMP_CHILD", "1")
+            .env("RUST_BACKTRACE", "1")
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{err}");
+        let stuck = err.split("ippai: thread ").find(|t| t.contains("stuck-one")).unwrap_or_else(|| panic!("no stuck thread in:\n{err}"));
+        assert!(stuck.contains("waits_for_the_lock"), "{stuck}");
+    }
+
     /// A runtime whose every thread is blocked (as worker2's was) is noticed, and once; one
     /// that is busy but runs its tasks is not.
     #[test]

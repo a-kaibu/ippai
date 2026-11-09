@@ -6,6 +6,7 @@ license.workspace = true
 description = "ippai: play visual novels in the browser. The server (web app built in) and the game store in one binary"
 
 [dependencies]
+libc = "0.2"
 anyhow = "1"
 rusqlite = { version = "0.38", features = ["bundled", "backup"] }
 uuid = { version = "1", features = ["v4", "serde"] }
