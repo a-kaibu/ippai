@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use msidb::record::{Field, Record};
 use msidb::*;
+use msidb::transform::ERROR_INSTALL_TRANSFORM_FAILURE;
 
 use crate::api::{implement, Ctx};
 use crate::k32::arg_str;
@@ -1044,10 +1045,23 @@ pub fn parse_props(cmd: &str) -> Vec<(String, String)> {
 /// MsiInstallProduct: opens the package, sets the command line's properties, runs the UI
 /// sequence (full or reduced UI) or the execute sequence.
 pub fn install_product(c: &mut Ctx, path: &str, cmdline: &str) -> u32 {
-    let p = match open_package(path) {
+    let mut p = match open_package(path) {
         Ok(p) => p,
         Err(e) => return e,
     };
+    // (TRANSFORMS: applied to the package before anything reads it)
+    let props = parse_props(cmdline);
+    if let Some((_, t)) = props.iter().rev().find(|(k, _)| k == "TRANSFORMS") {
+        let (db, full) = {
+            let pk = p.lock().unwrap();
+            (pk.db.clone(), pk.path.clone())
+        };
+        let e = apply_transforms(&db, &full, t);
+        if e != ERROR_SUCCESS {
+            return e;
+        }
+        p = Arc::new(Mutex::new(Package::open(db, &full)));
+    }
     let level = match UI.lock().unwrap().level & 0x1f {
         INSTALLUILEVEL_DEFAULT => INSTALLUILEVEL_BASIC,
         l => l,
@@ -1056,7 +1070,7 @@ pub fn install_product(c: &mut Ctx, path: &str, cmdline: &str) -> u32 {
         let mut pk = p.lock().unwrap();
         pk.ui_level = level;
         pk.props.insert("UILevel".into(), level.to_string());
-        for (k, v) in parse_props(cmdline) {
+        for (k, v) in props {
             pk.set_prop(&k, &v);
         }
         pk.props.entry("ACTION".into()).or_insert("INSTALL".into());
@@ -1091,6 +1105,37 @@ pub fn install_product(c: &mut Ctx, path: &str, cmdline: &str) -> u32 {
     r.f[0] = Field::Null;
     send(c, Some(&p), INSTALLMESSAGE_TERMINATE, &r);
     e
+}
+
+/// The TRANSFORMS list ("a.mst;:Embedded;@b.mst"): ':' a storage in the package, '@' and
+/// '|' (secured at the source / by full path) files; relative paths are the package's
+/// folder's.
+pub fn apply_transforms(db: &crate::msi::Db, package: &str, list: &str) -> u32 {
+    let dir = package.rsplit_once('\\').map_or(String::new(), |d| format!("{}\\", d.0));
+    for t in list.split(';').map(str::trim).filter(|t| !t.is_empty()) {
+        let r = apply_transform(db, &dir, t);
+        if r != ERROR_SUCCESS {
+            eprintln!("msi: transform {t} not applied ({r})");
+            return ERROR_INSTALL_TRANSFORM_FAILURE;
+        }
+    }
+    ERROR_SUCCESS
+}
+
+pub fn apply_transform(db: &crate::msi::Db, dir: &str, t: &str) -> u32 {
+    let mut o = db.lock().unwrap();
+    let data = if let Some(name) = t.strip_prefix(':') {
+        o.db.storage(name)
+    } else {
+        let f = t.trim_start_matches(['@', '|']);
+        let path = if f.contains(':') || f.starts_with('\\') { f.to_string() } else { format!("{dir}{f}") };
+        crate::files::resolve(&path).and_then(|h| kura::fs::read(h).ok())
+    };
+    let Some(data) = data else { return ERROR_OPEN_FAILED };
+    match o.db.apply_transform(&data) {
+        Ok(()) => ERROR_SUCCESS,
+        Err(e) => e,
+    }
 }
 
 fn table_exists(p: &Arc<Mutex<Package>>, t: &str) -> bool {
@@ -1458,6 +1503,28 @@ fn decompose_api(c: &mut Ctx, wide: bool) -> u32 {
     }
     ERROR_SUCCESS
 }
+/// MsiDatabaseApplyTransform(db, transform file or ":storage", error conditions)
+fn db_apply_transform(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, t) = (c.a(0), c.a(1));
+    let Some(db) = crate::msi::db_of(h) else { return ERROR_INVALID_HANDLE };
+    if t == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let t = arg_str(t, wide);
+    let full = if t.starts_with(':') { t.clone() } else { crate::files::full_path(&t) };
+    match apply_transform(&db, "", &full) {
+        ERROR_OPEN_FAILED => ERROR_OPEN_FAILED,
+        ERROR_SUCCESS => ERROR_SUCCESS,
+        _ => ERROR_INSTALL_TRANSFORM_FAILURE,
+    }
+}
+fn MsiDatabaseApplyTransformA(c: &mut Ctx) -> u32 {
+    db_apply_transform(c, false)
+}
+fn MsiDatabaseApplyTransformW(c: &mut Ctx) -> u32 {
+    db_apply_transform(c, true)
+}
+
 fn MsiDecomposeDescriptorA(c: &mut Ctx) -> u32 {
     decompose_api(c, false)
 }
@@ -1496,7 +1563,7 @@ fn MsiVerifyPackageW(c: &mut Ctx) -> u32 {
 pub fn init() {
     macro_rules! reg { ($($f:ident),* $(,)?) => { $( implement("msi", stringify!($f), $f); )* }; }
     reg!(
-        MsiInstallProductA, MsiInstallProductW, MsiQueryFeatureStateA, MsiQueryFeatureStateW, MsiDecomposeDescriptorA, MsiDecomposeDescriptorW, MsiDoActionA, MsiDoActionW, MsiSequenceA, MsiSequenceW, MsiSetInternalUI,
+        MsiInstallProductA, MsiInstallProductW, MsiQueryFeatureStateA, MsiQueryFeatureStateW, MsiDecomposeDescriptorA, MsiDecomposeDescriptorW, MsiDatabaseApplyTransformA, MsiDatabaseApplyTransformW, MsiDoActionA, MsiDoActionW, MsiSequenceA, MsiSequenceW, MsiSetInternalUI,
         MsiSetExternalUIA, MsiSetExternalUIW, MsiSetExternalUIRecord, MsiProcessMessage, MsiQueryProductStateA, MsiQueryProductStateW,
         MsiGetProductInfoA, MsiGetProductInfoW, MsiEnumProductsA, MsiEnumProductsW, MsiEnumRelatedProductsA, MsiEnumRelatedProductsW,
         MsiOpenProductA, MsiOpenProductW, MsiGetProductPropertyA, MsiGetProductPropertyW, MsiSourceListEnumSourcesA,

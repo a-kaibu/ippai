@@ -533,6 +533,19 @@ impl Database {
         Ok(())
     }
 
+    /// Adds a column at the end (its values NULL).
+    pub fn add_column(&mut self, ti: usize, col: Col) {
+        let persistent = self.tables[ti].persistent;
+        let tname = self.tables[ti].name.clone();
+        self.pool.add(&col.name, persistent);
+        self.pool.add(&tname, persistent);
+        self.tables[ti].cols.push(col);
+        for r in self.tables[ti].rows.iter_mut() {
+            r.v.push(0);
+        }
+        self.dirty |= persistent;
+    }
+
     pub fn drop_table(&mut self, ti: usize) {
         while !self.tables[ti].rows.is_empty() {
             self.delete(ti, 0);

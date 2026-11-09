@@ -528,17 +528,10 @@ impl View {
                 if db.tables[ti].cols.iter().any(|c| c.name == col.name) {
                     return Err(ERROR_BAD_QUERY_SYNTAX);
                 }
-                let persistent = db.tables[ti].persistent;
-                db.pool.add(&col.name, persistent);
-                db.pool.add(&table, persistent);
-                db.tables[ti].cols.push(Col { name: col.name.clone(), ty: col.ty });
-                for r in db.tables[ti].rows.iter_mut() {
-                    r.v.push(0);
-                }
+                db.add_column(ti, Col { name: col.name.clone(), ty: col.ty });
                 if hold {
                     db.tables[ti].hold += 1;
                 }
-                db.dirty |= persistent;
             }
             Stmt::Drop { table } => {
                 let ti = db.table_index(&table).ok_or(ERROR_BAD_QUERY_SYNTAX)?;

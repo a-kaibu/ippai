@@ -18,6 +18,7 @@ pub mod pool;
 pub mod record;
 pub mod sql;
 pub mod suminfo;
+pub mod transform;
 pub mod view;
 
 pub use db::{Col, Database, Table};
