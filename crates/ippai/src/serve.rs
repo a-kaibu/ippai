@@ -873,6 +873,30 @@ async fn prune_apps(dir: PathBuf, current: Option<String>, saves: Arc<saves::Sav
     let _ = tokio::task::spawn_blocking(move || crate::apps::prune(&dir, &used, current.as_deref())).await;
 }
 
+/// How often [`watchdog`] looks, and how long the runtime may run no task before it is taken
+/// for stuck. 2026-11-09 on worker2: every worker thread waited on a futex (none in epoll), 109
+/// connections stood unaccepted and S3 answers unread, until the server was restarted by hand.
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+const HANG_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A thread of its own that hands the runtime a task every `every` and calls `on_hang` (once)
+/// when none of them ran for `limit`: the runtime runs nothing at all (its threads blocked).
+fn watchdog(rt: tokio::runtime::Handle, every: std::time::Duration, limit: std::time::Duration, on_hang: impl FnOnce() + Send + 'static) {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    let t0 = std::time::Instant::now();
+    let last = Arc::new(AtomicU64::new(0));
+    std::thread::spawn(move || loop {
+        std::thread::sleep(every);
+        let l = last.clone();
+        rt.spawn(async move { l.store(t0.elapsed().as_millis() as u64, Relaxed) });
+        let since = t0.elapsed().saturating_sub(std::time::Duration::from_millis(last.load(Relaxed)));
+        if since > limit + every {
+            on_hang();
+            return;
+        }
+    });
+}
+
 #[tokio::main]
 async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyhow::Result<()> {
     // (before anything can replace it: /api/update)
@@ -892,6 +916,11 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         lock: Default::default(),
     });
     let logs = Arc::new(args.logs.clone());
+    // (a server that stops answering ends, for systemd to start it again: see `watchdog`)
+    watchdog(tokio::runtime::Handle::current(), WATCH_EVERY, HANG_LIMIT, || {
+        eprintln!("ippai: the server answered nothing for {} s (its threads stuck): ending it, to be started again", HANG_LIMIT.as_secs());
+        std::process::abort()
+    });
     let web = args.web.clone();
     precompress(&web, false);
     // (then again every few seconds: a deploy that replaces files under a running server)
@@ -977,6 +1006,46 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
 
 #[cfg(test)]
 mod tests {
+    /// A runtime whose every thread is blocked (as worker2's was) is noticed, and once; one
+    /// that is busy but runs its tasks is not.
+    #[test]
+    fn watchdog_notices_a_stuck_runtime() {
+        use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+        use std::time::Duration;
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        use std::sync::Arc;
+        let hangs = Arc::new(AtomicU32::new(0));
+        let h = hangs.clone();
+        super::watchdog(rt.handle().clone(), Duration::from_millis(20), Duration::from_millis(200), move || {
+            h.fetch_add(1, SeqCst);
+        });
+        // busy with tasks that await: fine
+        rt.block_on(async {
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        });
+        assert_eq!(hangs.load(SeqCst), 0, "a runtime that runs its tasks");
+        // every worker blocked on a lock nobody lets go of
+        let lock = Arc::new(std::sync::Mutex::new(()));
+        let held = lock.lock().unwrap();
+        for _ in 0..2 {
+            let l = lock.clone();
+            rt.spawn(async move {
+                let _g = l.lock();
+            });
+        }
+        let t = std::time::Instant::now();
+        while hangs.load(SeqCst) == 0 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(hangs.load(SeqCst), 1, "noticed");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(hangs.load(SeqCst), 1, "once");
+        drop(held);
+        rt.shutdown_timeout(Duration::from_secs(1));
+    }
+
     use axum::http::Request;
     use koji::jit::{saved, wasm};
 
