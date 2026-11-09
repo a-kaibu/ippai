@@ -1,5 +1,6 @@
 //! The game database: every ErogameScape (批評空間) game and every Japanese VN on VNDB in one
-//! SQLite file, built once a day on GitHub Actions (gamedb.yml: `ippai gamedb build`) and
+//! SQLite file, built once a day (`ippai gamedb update`: on worker2, which ErogameScape answers,
+//! and on GitHub Actions, gamedb.yml, which keeps that part: tools/gamedb/README.md) and
 //! published as a public package (ghcr.io/a-kaibu/ippai-gamedb:latest, zstd), so a server that
 //! cannot reach ErogameScape (it resets many hosts' connections) still identifies games and
 //! shows their information. The server keeps it as `<store>/gamedb.sqlite` (Library::egs_index
@@ -164,7 +165,19 @@ pub fn write(out: &Path, egs: &[(u32, meta::Row, Vec<meta::Row>)], vndb: &[serde
 /// ErogameScape refuses many hosts (GitHub's runners too): its part then comes from `keep`, an
 /// earlier copy (the package's, or one built where it answers), or stays empty.
 pub fn build(out: &Path, keep: Option<&Path>) -> Result<()> {
-    let egs = match egs_all(&meta::egs_rows) {
+    build_from(out, keep, egs_all(&meta::egs_rows), || {
+        vndb_all(
+            &|n| meta::vndb_page(serde_json::json!(["olang", "=", "ja"]), n).map(|(v, more)| (v.into_iter().map(prune_vndb).collect(), more)),
+            Duration::from_millis(2000),
+        )
+    })
+}
+
+type EgsGames = Vec<(u32, meta::Row, Vec<meta::Row>)>;
+
+/// ErogameScape's part as `egs` answered (or as `keep` had it), and VNDB's.
+fn build_from(out: &Path, keep: Option<&Path>, egs: Result<EgsGames>, vndb: impl FnOnce() -> Result<Vec<serde_json::Value>>) -> Result<()> {
+    let egs = match egs {
         Ok(e) => e,
         Err(e) => {
             eprintln!("erogamescape: {e:#}");
@@ -174,11 +187,7 @@ pub fn build(out: &Path, keep: Option<&Path>) -> Result<()> {
         }
     };
     eprintln!("erogamescape: {} games", egs.len());
-    let vndb = vndb_all(
-        &|n| meta::vndb_page(serde_json::json!(["olang", "=", "ja"]), n).map(|(v, more)| (v.into_iter().map(prune_vndb).collect(), more)),
-        Duration::from_millis(2000),
-    )
-    .context("vndb")?;
+    let vndb = vndb().context("vndb")?;
     eprintln!("vndb: {} VNs", vndb.len());
     write(out, &egs, &vndb)
 }
@@ -234,59 +243,112 @@ fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new().timeout(Duration::from_secs(300)).try_proxy_from_env(true).redirects(0).build()
 }
 
-/// A GET on the registry: with the anonymous token its 401 asks for (a public package), and a
-/// redirect (a blob's signed URL) followed without it.
-fn registry_get(base: &str, repo: &str, path: &str, accept: &str) -> Result<ureq::Response> {
-    let a = agent();
-    let url = format!("{base}/v2/{repo}/{path}");
-    let mut token: Option<String> = None;
-    for _ in 0..2 {
-        let mut req = a.get(&url).set("Accept", accept);
-        if let Some(t) = &token {
-            req = req.set("Authorization", &format!("Bearer {t}"));
-        }
-        match req.call() {
-            Ok(r) if (300..400).contains(&r.status()) => {
-                let loc = r.header("location").ok_or_else(|| anyhow!("{url}: redirect without a location"))?.to_string();
-                return Ok(a.get(&loc).call()?);
-            }
-            Ok(r) => return Ok(r),
-            Err(ureq::Error::Status(401, r)) if token.is_none() => {
-                let ch = r.header("www-authenticate").unwrap_or("").to_string();
-                let f: HashMap<String, String> = regex::Regex::new(r#"(\w+)="([^"]*)""#)
-                    .unwrap()
-                    .captures_iter(&ch)
-                    .map(|c| (c[1].to_string(), c[2].to_string()))
-                    .collect();
-                let realm = f.get("realm").ok_or_else(|| anyhow!("{url}: 401 without a realm"))?;
-                let scope = f.get("scope").cloned().unwrap_or_else(|| format!("repository:{repo}:pull"));
-                let j: serde_json::Value =
-                    a.get(realm).query("service", f.get("service").map_or("", |s| s.as_str())).query("scope", &scope).call()?.into_json()?;
-                token = Some(j["token"].as_str().or(j["access_token"].as_str()).ok_or_else(|| anyhow!("{realm}: no token"))?.to_string());
-            }
-            Err(e) => return Err(anyhow!("{url}: {e}")),
-        }
+/// A package registry's repository (ghcr.io and the OCI distribution API): requests with the
+/// token its 401 asks for, anonymous (a public package's pull) or with the secret as Basic (a
+/// push: GHCR_TOKEN, write:packages), and a redirect (a blob's signed URL) followed without it.
+struct Registry {
+    a: ureq::Agent,
+    base: String,
+    repo: String,
+    secret: Option<String>,
+    token: Option<String>,
+}
+
+impl Registry {
+    /// For `reference` (host/repo[:tag]): the registry and the tag (latest when none).
+    fn new(reference: &str, secret: Option<String>) -> Result<(Registry, String)> {
+        let name = package(reference);
+        let tag = reference.get(name.len() + 1..).unwrap_or("latest");
+        let (host, repo) = name.split_once('/').ok_or_else(|| anyhow!("{reference}: no repository"))?;
+        let local = host.split(':').next().is_some_and(|h| h == "127.0.0.1" || h == "localhost");
+        let base = format!("{}{host}", if local { "http://" } else { "https://" });
+        Ok((Registry { a: agent(), base, repo: repo.into(), secret, token: None }, tag.into()))
     }
-    bail!("{url}: refused")
+
+    /// `method` on `path` (under /v2/<repo>/, or a whole URL such as an upload's location).
+    fn call(&mut self, method: &str, path: &str, body: &[u8], headers: &[(&str, &str)]) -> Result<ureq::Response> {
+        let url = if path.starts_with("http") { path.to_string() } else { format!("{}/v2/{}/{path}", self.base, self.repo) };
+        for _ in 0..2 {
+            let mut req = self.a.request(method, &url);
+            for (k, v) in headers {
+                req = req.set(k, v);
+            }
+            if let Some(t) = &self.token {
+                req = req.set("Authorization", &format!("Bearer {t}"));
+            }
+            match req.send_bytes(body) {
+                Ok(r) if method == "GET" && (300..400).contains(&r.status()) => {
+                    let loc = r.header("location").ok_or_else(|| anyhow!("{url}: redirect without a location"))?.to_string();
+                    return Ok(self.a.get(&loc).call()?);
+                }
+                Ok(r) => return Ok(r),
+                Err(ureq::Error::Status(401, r)) if self.token.is_none() => self.token = Some(self.auth(r.header("www-authenticate").unwrap_or(""), &url)?),
+                Err(ureq::Error::Status(code, r)) => {
+                    let text = r.into_string().unwrap_or_default();
+                    bail!("{method} {url}: {code} {}", text.chars().take(300).collect::<String>())
+                }
+                Err(e) => bail!("{method} {url}: {e}"),
+            }
+        }
+        bail!("{method} {url}: refused")
+    }
+
+    fn auth(&self, challenge: &str, url: &str) -> Result<String> {
+        let f: HashMap<String, String> = regex::Regex::new(r#"(\w+)="([^"]*)""#)
+            .unwrap()
+            .captures_iter(challenge)
+            .map(|c| (c[1].to_string(), c[2].to_string()))
+            .collect();
+        let realm = f.get("realm").ok_or_else(|| anyhow!("{url}: 401 without a realm"))?;
+        let want = if self.secret.is_some() { "pull,push" } else { "pull" };
+        let scope = format!("repository:{}:{want}", self.repo);
+        let mut req = self.a.get(realm).query("service", f.get("service").map_or("", |s| s.as_str())).query("scope", &scope);
+        if let Some(s) = &self.secret {
+            use base64::Engine;
+            req = req.set("Authorization", &format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("x:{s}"))));
+        }
+        let j: serde_json::Value = match req.call() {
+            Ok(r) => r.into_json()?,
+            Err(ureq::Error::Status(code, _)) => bail!("{realm}: {scope}: {code}{}", if self.secret.is_some() { "" } else { " (no GHCR_TOKEN)" }),
+            Err(e) => bail!("{realm}: {e}"),
+        };
+        Ok(j["token"].as_str().or(j["access_token"].as_str()).ok_or_else(|| anyhow!("{realm}: no token"))?.to_string())
+    }
+
+    /// `data` as a blob (unless the registry has it already); its digest.
+    fn put_blob(&mut self, data: &[u8]) -> Result<String> {
+        let digest = format!("sha256:{}", hex(ring::digest::digest(&ring::digest::SHA256, data)));
+        match self.call("HEAD", &format!("blobs/{digest}"), &[], &[]) {
+            Ok(_) => return Ok(digest),
+            Err(e) if format!("{e:#}").contains(": 404") => {}
+            Err(e) => return Err(e),
+        }
+        let r = self.call("POST", "blobs/uploads/", &[], &[])?;
+        let loc = r.header("location").ok_or_else(|| anyhow!("{}: an upload without a location", self.repo))?;
+        let loc = if loc.starts_with("http") { loc.to_string() } else { format!("{}{loc}", self.base) };
+        let sep = if loc.contains('?') { '&' } else { '?' };
+        self.call("PUT", &format!("{loc}{sep}digest={}", digest.replace(':', "%3A")), data, &[("Content-Type", "application/octet-stream")])?;
+        Ok(digest)
+    }
 }
 
 /// Brings the package's database to `dest` when it differs from the copy there (`have`: the
 /// digest of that copy). Returns the digest now there.
 pub fn pull(dest: &Path, have: Option<&str>) -> Result<String> {
-    let r = reference();
-    let (name, tag) = r.rsplit_once(':').filter(|(n, _)| n.contains('/')).unwrap_or((&r, "latest"));
-    let (host, repo) = name.split_once('/').ok_or_else(|| anyhow!("{r}: no repository"))?;
-    let local = host.split(':').next().is_some_and(|h| h == "127.0.0.1" || h == "localhost");
-    let base = format!("{}{host}", if local { "http://" } else { "https://" });
-    let m: serde_json::Value = registry_get(&base, repo, &format!("manifests/{tag}"), "application/vnd.oci.image.manifest.v1+json")?.into_json()?;
+    pull_from(&reference(), dest, have)
+}
+
+fn pull_from(r: &str, dest: &Path, have: Option<&str>) -> Result<String> {
+    let (mut reg, tag) = Registry::new(r, None)?;
+    let m: serde_json::Value = reg.call("GET", &format!("manifests/{tag}"), &[], &[("Accept", MANIFEST)])?.into_json()?;
     let layer = &m["layers"][0];
     let digest = layer["digest"].as_str().ok_or_else(|| anyhow!("{r}: no layer"))?.to_string();
     if have == Some(digest.as_str()) && dest.is_file() {
         return Ok(digest);
     }
     let mut z = vec![];
-    registry_get(&base, repo, &format!("blobs/{digest}"), "*/*")?.into_reader().take(1 << 30).read_to_end(&mut z)?;
-    let sum = format!("sha256:{}", hex(&ring::digest::digest(&ring::digest::SHA256, &z)));
+    reg.call("GET", &format!("blobs/{digest}"), &[], &[("Accept", "*/*")])?.into_reader().take(1 << 30).read_to_end(&mut z)?;
+    let sum = format!("sha256:{}", hex(ring::digest::digest(&ring::digest::SHA256, &z)));
     if sum != digest {
         bail!("{r}: the blob is not {digest}");
     }
@@ -296,6 +358,87 @@ pub fn pull(dest: &Path, have: Option<&str>) -> Result<String> {
     egs_games(&tmp).with_context(|| format!("{r}: not a game database"))?;
     std::fs::rename(&tmp, dest)?;
     Ok(digest)
+}
+
+const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+
+/// A built copy onto the package (GHCR_TOKEN: a token with write:packages), zstd-compressed, as
+/// an OCI artifact tagged latest and the day (UTC), linked to the repository. Returns the layer's
+/// digest.
+pub fn push(file: &Path, secret: &str) -> Result<String> {
+    push_to(package(&reference()), file, secret, &meta::now_rfc3339()[..10].replace('-', ""))
+}
+
+fn push_to(name: &str, file: &Path, secret: &str, day: &str) -> Result<String> {
+    // (only a copy it would take itself)
+    egs_games(file).with_context(|| format!("{}: not a game database", file.display()))?;
+    let z = zstd::encode_all(&std::fs::read(file)?[..], 19)?;
+    let (mut reg, _) = Registry::new(name, Some(secret.into()))?;
+    let layer = reg.put_blob(&z)?;
+    let empty = reg.put_blob(b"{}")?;
+    let m = serde_json::json!({
+        "schemaVersion": 2, "mediaType": MANIFEST, "artifactType": "application/vnd.ippai.gamedb.v1",
+        "config": {"mediaType": "application/vnd.oci.empty.v1+json", "digest": empty, "size": 2},
+        "layers": [{"mediaType": "application/zstd", "digest": layer, "size": z.len(), "annotations": {"org.opencontainers.image.title": "gamedb.sqlite.zst"}}],
+        "annotations": {"org.opencontainers.image.source": "https://github.com/a-kaibu/ippai", "org.opencontainers.image.description": "ErogameScape and VNDB entries for ippai (crates/ippai/src/gamedb.rs)"},
+    })
+    .to_string();
+    for tag in ["latest", day] {
+        reg.call("PUT", &format!("manifests/{tag}"), m.as_bytes(), &[("Content-Type", MANIFEST)])?;
+    }
+    eprintln!("{name}:latest {layer} ({} compressed)", z.len());
+    Ok(layer)
+}
+
+/// The day's copy published: the copy there now pulled into `dir`, a new one built keeping its
+/// ErogameScape part when ErogameScape does not answer, checked (`egs`: ErogameScape's part must
+/// be there), pushed. gamedb.yml on GitHub's runners (VNDB's part), worker2's
+/// ippai-gamedb.timer (both: tools/gamedb/README.md).
+pub fn update(dir: &Path, egs: bool, secret: &str) -> Result<String> {
+    update_with(dir, egs, secret, &reference(), &meta::now_rfc3339()[..10].replace('-', ""), &|out, keep| build(out, Some(keep)))
+}
+
+fn update_with(dir: &Path, egs: bool, secret: &str, r: &str, day: &str, build: &dyn Fn(&Path, &Path) -> Result<()>) -> Result<String> {
+    std::fs::create_dir_all(dir)?;
+    let before = dir.join("before.sqlite");
+    if let Err(e) = pull_from(r, &before, None) {
+        eprintln!("the copy published before: {e:#}");
+        let _ = std::fs::remove_file(&before);
+    }
+    let new = dir.join("gamedb.sqlite");
+    build(&new, &before)?;
+    check(&new, egs)?;
+    push_to(package(r), &new, secret, day)
+}
+
+/// host/repo of a reference (without its tag).
+fn package(r: &str) -> &str {
+    r.rsplit_once(':').filter(|(n, t)| n.contains('/') && !t.contains('/')).map_or(r, |(n, _)| n)
+}
+
+/// The least a published copy holds: VNDB's Japanese VNs, and ErogameScape's PC games with a
+/// known one (30345: LOOPERS) when it has them; `egs`: it must have them (a host ErogameScape
+/// answers).
+pub fn check(file: &Path, egs: bool) -> Result<()> {
+    let c = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let n: u32 = c.query_row("SELECT count(*) FROM egs WHERE model='PC'", [], |r| r.get(0))?;
+    let v: u32 = c.query_row("SELECT count(*) FROM vndb", [], |r| r.get(0))?;
+    let known: Option<String> = c.query_row("SELECT name FROM egs WHERE id=30345", [], |r| r.get(0)).optional()?;
+    eprintln!("erogamescape: {n} PC games, 30345 {known:?}; vndb: {v} VNs");
+    counts_ok(n, v, known.as_deref(), egs)
+}
+
+const MIN_EGS: u32 = 20_000;
+const MIN_VNDB: u32 = 10_000;
+
+fn counts_ok(egs_pc: u32, vndb: u32, known: Option<&str>, need_egs: bool) -> Result<()> {
+    if vndb <= MIN_VNDB {
+        bail!("only {vndb} VNs from VNDB");
+    }
+    if (need_egs || egs_pc > 0) && (egs_pc <= MIN_EGS || known != Some("LOOPERS")) {
+        bail!("only {egs_pc} games from ErogameScape (30345: {known:?})");
+    }
+    Ok(())
 }
 
 fn hex(b: impl AsRef<[u8]>) -> String {
@@ -388,5 +531,217 @@ mod tests {
         assert_eq!(meta::vndb_info_json(full).unwrap().tags, meta::vndb_info_json(pruned.clone()).unwrap().tags);
         assert!(pruned["tags"].as_array().unwrap().len() <= 10);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A package registry as ghcr.io answers (the OCI distribution API): tokens from /token (a
+    /// push needs the secret as Basic; anonymous gets pull only), uploads at a location with its
+    /// own query, blobs behind a redirect to a URL that must come without a token.
+    #[derive(Default)]
+    struct Reg {
+        blobs: std::sync::Mutex<HashMap<String, Vec<u8>>>,
+        tags: std::sync::Mutex<HashMap<String, String>>,
+        uploads: std::sync::atomic::AtomicUsize,
+    }
+
+    fn registry(st: std::sync::Arc<Reg>) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::Ordering;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let me = format!("http://{}", l.local_addr().unwrap());
+        let at = me.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut line = String::new();
+                r.read_line(&mut line).unwrap();
+                let mut h: HashMap<String, String> = HashMap::new();
+                loop {
+                    let mut x = String::new();
+                    r.read_line(&mut x).unwrap();
+                    if x.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = x.split_once(':') {
+                        h.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+                    }
+                }
+                let mut body = vec![0; h.get("content-length").map_or(0, |v| v.parse().unwrap())];
+                r.read_exact(&mut body).unwrap();
+                let mut w = line.split(' ');
+                let (method, target) = (w.next().unwrap_or("").to_string(), w.next().unwrap_or("").to_string());
+                let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                let q: HashMap<String, String> = form_urlencoded::parse(query.as_bytes()).into_owned().collect();
+                let auth = h.get("authorization").cloned().unwrap_or_default();
+                let sum = |b: &[u8]| format!("sha256:{}", hex(ring::digest::digest(&ring::digest::SHA256, b)));
+                let ok = |s: &str| (s.to_string(), String::new(), vec![]);
+                let (status, extra, out): (String, String, Vec<u8>) = if path == "/token" {
+                    let scope = q.get("scope").cloned().unwrap_or_default();
+                    assert_eq!(q.get("service").map(|s| s.as_str()), Some("t"));
+                    // (base64 of "x:secret")
+                    if auth == "Basic eDpzZWNyZXQ=" && scope == "repository:t/gamedb:pull,push" {
+                        ("200 OK".into(), String::new(), br#"{"token":"push"}"#.to_vec())
+                    } else if auth.is_empty() && scope == "repository:t/gamedb:pull" {
+                        ("200 OK".into(), String::new(), br#"{"access_token":"pull"}"#.to_vec())
+                    } else {
+                        ok("403 Forbidden")
+                    }
+                } else if let Some(d) = path.strip_prefix("/signed/") {
+                    assert!(auth.is_empty(), "the signed URL gets no token");
+                    ("200 OK".into(), String::new(), st.blobs.lock().unwrap()[d].clone())
+                } else if auth != "Bearer push" && auth != "Bearer pull" {
+                    ("401 Unauthorized".into(), format!("www-authenticate: Bearer realm=\"{me}/token\",service=\"t\",scope=\"repository:t/gamedb:pull\"\r\n"), vec![])
+                } else if method != "GET" && method != "HEAD" && auth != "Bearer push" {
+                    ok("403 Forbidden")
+                } else if let Some(d) = path.strip_prefix("/v2/t/gamedb/blobs/").filter(|d| d.starts_with("sha256:")) {
+                    match (method.as_str(), st.blobs.lock().unwrap().contains_key(d)) {
+                        ("HEAD", true) => ok("200 OK"),
+                        ("GET", true) => ("307 Temporary Redirect".into(), format!("location: {me}/signed/{d}\r\n"), vec![]),
+                        _ => ok("404 Not Found"),
+                    }
+                } else if method == "POST" && path == "/v2/t/gamedb/blobs/uploads/" {
+                    let n = st.uploads.fetch_add(1, Ordering::SeqCst);
+                    ("202 Accepted".into(), format!("location: /v2/t/gamedb/blobs/uploads/{n}?state=s{n}\r\n"), vec![])
+                } else if method == "PUT" && path.starts_with("/v2/t/gamedb/blobs/uploads/") {
+                    assert!(q.contains_key("state"), "the location's own query kept: {target}");
+                    let d = q.get("digest").cloned().unwrap_or_default();
+                    if d == sum(&body) {
+                        st.blobs.lock().unwrap().insert(d, body);
+                        ok("201 Created")
+                    } else {
+                        ok("400 Bad Request")
+                    }
+                } else if let Some(tag) = path.strip_prefix("/v2/t/gamedb/manifests/") {
+                    if method == "PUT" {
+                        assert_eq!(h.get("content-type").map(|s| s.as_str()), Some(MANIFEST));
+                        let m: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        let blobs = st.blobs.lock().unwrap();
+                        assert!(blobs.contains_key(m["config"]["digest"].as_str().unwrap()) && blobs.contains_key(m["layers"][0]["digest"].as_str().unwrap()), "blobs before the manifest");
+                        st.tags.lock().unwrap().insert(tag.into(), String::from_utf8(body).unwrap());
+                        ok("201 Created")
+                    } else {
+                        match st.tags.lock().unwrap().get(tag) {
+                            Some(m) => ("200 OK".into(), String::new(), m.clone().into_bytes()),
+                            None => ok("404 Not Found"),
+                        }
+                    }
+                } else {
+                    ok("404 Not Found")
+                };
+                let mut s = s;
+                let _ = write!(s, "HTTP/1.1 {status}\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n", if method == "HEAD" { 0 } else { out.len() });
+                if method != "HEAD" {
+                    let _ = s.write_all(&out);
+                }
+            }
+        });
+        at.trim_start_matches("http://").to_string()
+    }
+
+    /// A built copy pushed (with the secret) comes back from an anonymous pull byte for byte,
+    /// tagged latest and the day; a second push uploads nothing it has; a wrong secret or a file
+    /// that is no game database pushes nothing.
+    #[test]
+    fn push_then_pull() {
+        let st = std::sync::Arc::new(Reg::default());
+        let host = registry(st.clone());
+        for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            std::env::remove_var(k);
+        }
+        let dir = std::env::temp_dir().join(format!("ippai-gamedb-push-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("gamedb.sqlite");
+        write(&db, &egs_all(&form).unwrap(), &[serde_json::json!({"id": "v17", "title": "Ever17"})]).unwrap();
+        let name = format!("{host}/t/gamedb");
+        let bad = dir.join("bad.sqlite");
+        std::fs::write(&bad, b"not sqlite").unwrap();
+        assert!(push_to(&name, &bad, "secret", "20261109").is_err());
+        let e = format!("{:#}", push_to(&name, &db, "wrong", "20261109").unwrap_err());
+        assert!(e.contains("403"), "{e}");
+        assert!(st.tags.lock().unwrap().is_empty() && st.blobs.lock().unwrap().is_empty());
+        let layer = push_to(&name, &db, "secret", "20261109").unwrap();
+        let tags = st.tags.lock().unwrap().clone();
+        assert_eq!(tags.keys().collect::<std::collections::BTreeSet<_>>(), ["20261109", "latest"].iter().map(|s| s.to_string()).collect::<std::collections::BTreeSet<_>>().iter().collect());
+        let m: serde_json::Value = serde_json::from_str(&tags["latest"]).unwrap();
+        assert_eq!(m["layers"][0]["digest"], layer);
+        assert_eq!(m["annotations"]["org.opencontainers.image.source"], "https://github.com/a-kaibu/ippai");
+        let back = dir.join("back.sqlite");
+        assert_eq!(pull_from(&format!("{name}:latest"), &back, None).unwrap(), layer);
+        assert_eq!(std::fs::read(&back).unwrap(), std::fs::read(&db).unwrap());
+        assert_eq!(pull_from(&format!("{name}:20261109"), &back, Some(&layer)).unwrap(), layer, "the copy there is kept");
+        let uploads = st.uploads.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(uploads, 2, "the layer and the empty config");
+        push_to(&name, &db, "secret", "20261110").unwrap();
+        assert_eq!(st.uploads.load(std::sync::atomic::Ordering::SeqCst), uploads, "nothing uploaded again");
+        assert!(pull_from(&format!("{name}:nope"), &back, None).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The daily job: a host ErogameScape answers publishes both parts; a runner it does not
+    /// answer then publishes new VNs with ErogameScape's part from that copy; with nothing
+    /// published before only VNDB's part goes up, and not at all where ErogameScape's part is
+    /// required; VNDB failing publishes nothing.
+    #[test]
+    fn the_daily_update() {
+        let st = std::sync::Arc::new(Reg::default());
+        let host = registry(st.clone());
+        for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            std::env::remove_var(k);
+        }
+        let games = || -> Result<EgsGames> {
+            Ok((1..=30345)
+                .map(|id| {
+                    let name = if id == 30345 { "LOOPERS".to_string() } else { format!("g{id}") };
+                    (id, row(&[("id", &id.to_string()), ("gamename", &name), ("count2", "1"), ("model", "PC")]), vec![])
+                })
+                .collect())
+        };
+        let vns = |k: u32| move || -> Result<Vec<serde_json::Value>> { Ok((1..=MIN_VNDB + k).map(|n| serde_json::json!({"id": format!("v{n}"), "title": format!("t{n}")})).collect()) };
+        let down = || -> Result<EgsGames> { anyhow::bail!("connection reset") };
+        let dir = std::env::temp_dir().join(format!("ippai-gamedb-update-{}", uuid::Uuid::new_v4()));
+        let r = format!("{host}/t/gamedb:latest");
+        let published = |tag: &str| -> (u32, u32) {
+            let f = dir.join(format!("published-{tag}.sqlite"));
+            pull_from(&format!("{host}/t/gamedb:{tag}"), &f, None).unwrap();
+            let c = Connection::open(&f).unwrap();
+            (c.query_row("SELECT count(*) FROM egs", [], |r| r.get(0)).unwrap(), c.query_row("SELECT count(*) FROM vndb", [], |r| r.get(0)).unwrap())
+        };
+        // nothing published yet, ErogameScape down: required, nothing goes up
+        assert!(update_with(&dir, true, "secret", &r, "20261108", &|o, k| build_from(o, Some(k), down(), vns(1))).is_err());
+        assert!(st.tags.lock().unwrap().is_empty());
+        // worker2
+        update_with(&dir, true, "secret", &r, "20261109", &|o, k| build_from(o, Some(k), games(), vns(1))).unwrap();
+        assert!(!dir.join("before.sqlite").exists(), "no copy before");
+        assert_eq!(published("latest"), (30345, MIN_VNDB + 1));
+        // a runner
+        update_with(&dir, false, "secret", &r, "20261110", &|o, k| build_from(o, Some(k), down(), vns(2))).unwrap();
+        assert_eq!(published("latest"), (30345, MIN_VNDB + 2), "ErogameScape's part kept, VNDB's new");
+        assert_eq!(published("20261109"), (30345, MIN_VNDB + 1));
+        // VNDB failing
+        let latest = st.tags.lock().unwrap()["latest"].clone();
+        assert!(update_with(&dir, false, "secret", &r, "20261111", &|o, k| build_from(o, Some(k), games(), || anyhow::bail!("429"))).is_err());
+        assert_eq!(st.tags.lock().unwrap()["latest"], latest);
+        assert!(!st.tags.lock().unwrap().contains_key("20261111"));
+        // another package, nothing before, a runner: VNDB's part only
+        let fresh = std::sync::Arc::new(Reg::default());
+        let other = format!("{}/t/gamedb:latest", registry(fresh.clone()));
+        update_with(&dir, false, "secret", &other, "20261112", &|o, k| build_from(o, Some(k), down(), vns(3))).unwrap();
+        let f = dir.join("fresh.sqlite");
+        pull_from(&other, &f, None).unwrap();
+        assert_eq!(egs_games(&f).unwrap().0.len(), 0);
+        assert_eq!(Connection::open(&f).unwrap().query_row("SELECT count(*) FROM vndb", [], |r| r.get::<_, u32>(0)).unwrap(), MIN_VNDB + 3);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn enough_to_publish() {
+        assert!(counts_ok(25_000, 40_000, Some("LOOPERS"), true).is_ok());
+        assert!(counts_ok(25_000, 40_000, Some("LOOPERS"), false).is_ok());
+        assert!(counts_ok(0, 40_000, None, false).is_ok(), "VNDB's part only, from a runner");
+        assert!(counts_ok(0, 40_000, None, true).is_err(), "a host ErogameScape answers must have its part");
+        assert!(counts_ok(25_000, 40_000, Some("ループス"), true).is_err(), "a known entry wrong");
+        assert!(counts_ok(25_000, 40_000, None, false).is_err());
+        assert!(counts_ok(MIN_EGS, 40_000, Some("LOOPERS"), false).is_err());
+        assert!(counts_ok(25_000, MIN_VNDB, Some("LOOPERS"), true).is_err());
+        assert!(counts_ok(25_000, 9, Some("LOOPERS"), true).is_err());
     }
 }

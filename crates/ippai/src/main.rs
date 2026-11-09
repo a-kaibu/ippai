@@ -104,6 +104,22 @@ enum GamedbCmd {
     },
     /// The published copy (ghcr.io/a-kaibu/ippai-gamedb:latest) into a file.
     Pull { out: std::path::PathBuf },
+    /// Fails unless a copy holds enough to publish (VNDB's VNs; ErogameScape's games if any).
+    Check {
+        file: std::path::PathBuf,
+        /// ErogameScape's games must be there too (a host it answers: tools/gamedb/README.md).
+        #[arg(long)]
+        egs: bool,
+    },
+    /// A copy onto the package (GHCR_TOKEN: a token with write:packages).
+    Push { file: std::path::PathBuf },
+    /// pull, build --keep, check, push in a directory: the daily job (gamedb.yml, worker2's timer).
+    Update {
+        dir: std::path::PathBuf,
+        /// ErogameScape's games must be there (a host it answers).
+        #[arg(long)]
+        egs: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,6 +175,10 @@ fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Resul
     })
 }
 
+fn ghcr_token() -> anyhow::Result<String> {
+    std::env::var("GHCR_TOKEN").ok().filter(|t| !t.is_empty()).ok_or_else(|| anyhow::anyhow!("GHCR_TOKEN: a token with write:packages"))
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let dirs = dirs::Dirs::load(cli.store)?;
@@ -190,6 +210,9 @@ fn main() -> anyhow::Result<()> {
         Cmd::Pack(c) => pack::run(&dirs.store, c),
         Cmd::Gamedb { action: GamedbCmd::Build { out, keep } } => gamedb::build(&out, keep.as_deref()),
         Cmd::Gamedb { action: GamedbCmd::Pull { out } } => gamedb::pull(&out, None).map(|d| println!("{d}")),
+        Cmd::Gamedb { action: GamedbCmd::Check { file, egs } } => gamedb::check(&file, egs),
+        Cmd::Gamedb { action: GamedbCmd::Push { file } } => gamedb::push(&file, &ghcr_token()?).map(|d| println!("{d}")),
+        Cmd::Gamedb { action: GamedbCmd::Update { dir, egs } } => gamedb::update(&dir, egs, &ghcr_token()?).map(|d| println!("{d}")),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),
     }
 }

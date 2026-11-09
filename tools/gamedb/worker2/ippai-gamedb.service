@@ -1,0 +1,13 @@
+# The game database's daily build on worker2, a host ErogameScape answers (GitHub's runners are
+# not: gamedb.yml keeps the ErogameScape part this publishes). tools/gamedb/README.md.
+[Unit]
+Description=ippai game database: build from ErogameScape and VNDB, push to ghcr.io
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# GHCR_TOKEN=<a token with write:packages> (chmod 600; never in the repository)
+EnvironmentFile=%h/.config/ippai/gamedb.env
+ExecStart=%h/.local/bin/ippai gamedb update --egs %h/.cache/ippai/gamedb
+Nice=10
