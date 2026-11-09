@@ -70,13 +70,16 @@ struct Surf {
     palette: u32,
     dc: u32,
     refs: u32,
-    /// the guest interface blocks, by vtable kind (0: v1-3, 1: v4, 2: v7)
-    blocks: [u32; 3],
+    /// the guest interface blocks, by vtable kind (0: v1-3, 1: v4, 2: v7, 3: IDirect3DTexture2, 4:
+    /// IDirect3DTexture)
+    blocks: [u32; 5],
     lock: Option<Rect>,
     /// the attached depth buffer (Direct3D)
     zbuf: u32,
     /// the DirectDraw object that made it
     dd: u32,
+    /// made through an IDirectDraw7 (no IDirect3DTexture2 then: ddraw7's test_surface_qi)
+    v7: bool,
     /// the IDirectDraw4/7 interface it holds a reference of (made through one of those, as on
     /// Windows; 0: none)
     dd_held: u32,
@@ -304,10 +307,11 @@ fn new_surface_pf(w: i32, h: i32, bpp: u16, r565: bool, pf: [u32; 5], caps: u32)
                 palette: 0,
                 dc: 0,
                 refs: 1,
-                blocks: [0; 3],
+                blocks: [0; 5],
                 lock: None,
                 zbuf: 0,
                 dd: 0,
+                v7: false,
                 dd_held: 0,
                 mip: 0,
                 mips: 0,
@@ -387,7 +391,11 @@ fn block(id: u32, kind: u8) -> u32 {
         return b;
     }
     let b = mem::heap_alloc(8, true);
-    w32(b, surf_vtbl(kind));
+    w32(b, match kind {
+        3 => d3d7::tex2_vtbl(),
+        4 => d3d7::tex_vtbl(),
+        _ => surf_vtbl(kind),
+    });
     w32(b + 4, id);
     with(|s| {
         s.blocks.insert(b, (id, kind));
@@ -424,6 +432,9 @@ fn S_QueryInterface(c: &mut Ctx) -> u32 {
         0x6c14_db81 | 0x5780_5885 | 0xda04_4e00 | 0 => 0,
         0x0b2b_8630 => 1,
         0x0667_5a80 => 2,
+        // IDirect3DTexture2, IDirect3DTexture (of a Direct3D 6 or older surface)
+        0x9328_1502 if !surf(id).map_or(true, |x| x.v7) => 3,
+        0x2cdc_d9e0 if !surf(id).map_or(true, |x| x.v7) => 4,
         _ => {
             put32(c.a(2), 0);
             return E_NOINTERFACE;
@@ -828,10 +839,11 @@ fn S_GetZero(c: &mut Ctx) -> u32 {
 }
 
 fn S_SetColorKey(c: &mut Ctx) -> u32 {
-    let (id, _) = this(c);
+    let (id, kind) = this(c);
     let (flags, ck) = (c.a(1), c.a(2));
-    // (a mipmap's sublevel has its top's: ddraw7's test_device_load)
-    if surf(id).is_some_and(|x| x.caps2 & DDSCAPS2_MIPMAPSUBLEVEL != 0) {
+    // (through IDirectDrawSurface7 a mipmap's sublevel has its top's: ddraw7's test_device_load;
+    // older ones key each level, ddraw4's test_ck_complex)
+    if kind == 2 && surf(id).is_some_and(|x| x.caps2 & DDSCAPS2_MIPMAPSUBLEVEL != 0) {
         return 0x8876_025b;
     }
     let key = if ck == 0 { None } else { Some((r32(ck), r32(ck + 4))) };
@@ -1413,7 +1425,10 @@ fn dd_vtbl(v: usize) -> u32 {
 struct DdObj {
     refs: [u32; 4],
     /// the guest interface blocks by version index, then IDirect3D7 (0 until asked for)
-    blocks: [u32; 5],
+    blocks: [u32; 6],
+    /// made by DirectDrawCreateEx (or as CLSID_DirectDraw7): none of its interfaces gives
+    /// IDirect3D3 (refcount.c: not even its IDirectDraw4)
+    ex: bool,
 }
 
 /// object id -> object; guest blocks are [vtable, version index, object id]
@@ -1426,16 +1441,16 @@ fn dds<R>(f: impl FnOnce(&mut HashMap<u32, DdObj>, &mut u32) -> R) -> R {
 }
 
 /// A new DirectDraw object; returns its id.
-fn dd_new() -> u32 {
+fn dd_new(ex: bool) -> u32 {
     dds(|m, next| {
         let id = *next;
         *next += 1;
-        m.insert(id, DdObj { refs: [0; 4], blocks: [0; 5] });
+        m.insert(id, DdObj { refs: [0; 4], blocks: [0; 6], ex });
         id
     })
 }
 
-/// The guest interface of object `obj` as version index `v` (4: IDirect3D7), one reference
+/// The guest interface of object `obj` as version index `v` (4: IDirect3D7, 5: IDirect3D3), one reference
 /// added (QueryInterface / create). 0 if the object is gone.
 fn dd_iface(obj: u32, v: usize) -> u32 {
     let Some(b) = dds(|m, _| m.get(&obj).map(|o| o.blocks[v])) else { return 0 };
@@ -1443,8 +1458,13 @@ fn dd_iface(obj: u32, v: usize) -> u32 {
         b
     } else {
         let b = mem::heap_alloc(12, true);
-        w32(b, if v == 4 { d3d7::d3d_vtbl() } else { dd_vtbl(v) });
-        w32(b + 4, v.min(3) as u32);
+        w32(b, match v {
+            4 => d3d7::d3d_vtbl(),
+            5 => d3d7::d3d3_vtbl(),
+            _ => dd_vtbl(v),
+        });
+        // (the reference counts: IDirect3D7's are IDirectDraw7's, IDirect3D3's IDirectDraw4's)
+        w32(b + 4, if v == 5 { 2 } else { v.min(3) as u32 });
         w32(b + 8, obj);
         dds(|m, _| m.get_mut(&obj).map(|o| o.blocks[v] = b));
         b
@@ -1514,6 +1534,8 @@ fn D_QueryInterface(c: &mut Ctx) -> u32 {
         0x9c59_509a => 2,
         0x15e6_5ec0 => 3,
         0xf504_9e77 if dd_version(c) == 3 => 4,
+        // IDirect3D3: not from an object DirectDrawCreateEx made
+        0xbb22_3240 if !dds(|m, _| m.get(&dd_of(c.a(0)).0).map_or(true, |o| o.ex)) => 5,
         _ => {
             put32(c.a(2), 0);
             return E_NOINTERFACE;
@@ -1633,7 +1655,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     }
     let pf = pfv.filter(|p| p[1] | p[2] | p[3] != 0).unwrap_or_else(|| plain_pf(bpp, r565));
     let Some(id) = new_surface_pf(w, h, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
-    let owner = dd_of(c.a(0)).0;
+    let (owner, v7) = (dd_of(c.a(0)).0, dd_version(c) == 3);
     let held = if kind >= 1 { c.a(0) } else { 0 };
     if held != 0 {
         dd_addref(held);
@@ -1641,6 +1663,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     with(|s| {
         s.surfs.get_mut(&id).map(|x| {
             x.dd = owner;
+            x.v7 = v7;
             x.dd_held = held;
         })
     });
@@ -1660,6 +1683,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
         with(|s| {
             s.surfs.get_mut(&f).map(|x| {
                 x.dd = owner;
+                x.v7 = v7;
                 x.sub = true;
             })
         });
@@ -1678,6 +1702,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
             with(|s| {
                 s.surfs.get_mut(&m).map(|x| {
                     x.dd = owner;
+                    x.v7 = v7;
                     x.sub = true;
                     x.mips = levels - i;
                     x.caps2 = cube2 | DDSCAPS2_MIPMAPSUBLEVEL;
@@ -1695,6 +1720,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
         with(|s| {
             s.surfs.get_mut(&b).map(|x| {
                 x.dd = owner;
+                x.v7 = v7;
                 x.implicit = true;
             });
             s.surfs.get_mut(&prev).map(|x| x.next = b)
@@ -1928,11 +1954,11 @@ fn D_GetDeviceIdentifier(c: &mut Ctx) -> u32 {
 // exports
 
 fn DirectDrawCreate(c: &mut Ctx) -> u32 {
-    crate::mem::putp(c.a(1), dd_iface(dd_new(), 0));
+    crate::mem::putp(c.a(1), dd_iface(dd_new(false), 0));
     DD_OK
 }
 fn DirectDrawCreateEx(c: &mut Ctx) -> u32 {
-    crate::mem::putp(c.a(1), dd_iface(dd_new(), 3));
+    crate::mem::putp(c.a(1), dd_iface(dd_new(true), 3));
     DD_OK
 }
 fn DirectDrawCreateClipper(c: &mut Ctx) -> u32 {
@@ -1982,7 +2008,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         0x15e6_5ec0 => 3,
         _ => 0,
     };
-    Some(dd_iface(dd_new(), v))
+    Some(dd_iface(dd_new(mem::r32(clsid) == 0x3c30_5196), v))
 }
 
 pub fn init() {

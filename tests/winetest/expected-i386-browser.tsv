@@ -13,12 +13,12 @@ d3d9:stateblock	fail	707	13738
 d3d9:visual	crash	193	0
 ddraw:d3d	ok	0	252
 ddraw:ddraw1	fail	2006	7939
-ddraw:ddraw2	fail	2197	8001
-ddraw:ddraw4	fail	2224	8122
+ddraw:ddraw2	fail	2197	8022
+ddraw:ddraw4	fail	4118	29671
 ddraw:ddraw7	fail	3998	30915
 ddraw:ddrawmodes	fail	185	756
 ddraw:dsurface	fail	117	1047
 ddraw:refcount	fail	7	69
-ddraw:visual	fail	1	169
+ddraw:visual	ok	0	208
 dxgi:dxgi	crash	5	0
 opengl32:opengl	crash	714	0

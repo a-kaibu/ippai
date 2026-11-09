@@ -81,6 +81,9 @@ struct Dev {
     zr: (f32, f32),
     /// world, view, projection
     xf: [[f32; 16]; 3],
+    /// after the projection: a Direct3D 6 viewport's clip volume to -1..1 (and its Z range
+    /// to 0..1)
+    clip: [f32; 16],
     rs: Vec<u32>,
     tss: [[u32; 32]; 8],
     tex: [u32; 8],
@@ -155,7 +158,7 @@ impl Dev {
         }
         let mut mat = [0f32; 17];
         mat[..4].copy_from_slice(&[1., 1., 1., 1.]);
-        Dev { rt, dd, d3d_held: 0, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], rs, tss, tex: [0; 8], mat, lights: Default::default(), rec: None, scene: false }
+        Dev { rt, dd, d3d_held: 0, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], clip: IDENT, rs, tss, tex: [0; 8], mat, lights: Default::default(), rec: None, scene: false }
     }
 
     /// Applies a change; a texture change takes a reference of the new texture and returns
@@ -241,6 +244,16 @@ impl Dev {
 
 struct D3d {
     devs: HashMap<u32, Dev>,
+    /// Direct3D 6 devices' viewports (blocks, in the order added) and the current one
+    dev3: HashMap<u32, (Vec<u32>, u32)>,
+    /// IDirect3DViewport3 blocks
+    vps: HashMap<u32, Vp3>,
+    /// IDirect3DMaterial3 blocks (their handles): D3DMATERIAL as words
+    mats: HashMap<u32, [u32; 20]>,
+    /// IDirect3DLight blocks: D3DLIGHT2 as words, set
+    /// IDirect3DLight block -> its D3DLIGHT2 (with D3DLIGHT_ACTIVE as D3DLIGHT's), the viewport it
+    /// is in (0: none)
+    lights3: HashMap<u32, ([u32; 20], u32)>,
     /// guest vertex buffer block -> (memory, fvf, count)
     vbs: HashMap<u32, (u32, u32, u32)>,
     blocks: HashMap<u32, Vec<Ch>>,
@@ -251,7 +264,7 @@ static D: Mutex<Option<D3d>> = Mutex::new(None);
 
 fn d3d<R>(f: impl FnOnce(&mut D3d) -> R) -> R {
     let mut g = D.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| D3d { devs: HashMap::default(), vbs: HashMap::default(), blocks: HashMap::default(), next: 1 }))
+    f(g.get_or_insert_with(|| D3d { devs: HashMap::default(), dev3: HashMap::default(), vps: HashMap::default(), mats: HashMap::default(), lights3: HashMap::default(), vbs: HashMap::default(), blocks: HashMap::default(), next: 1 }))
 }
 
 /// Runs `f` on the device `c` is called on (None if it is gone).
@@ -336,9 +349,19 @@ pub(super) fn d3d_vtbl() -> u32 {
 
 fn Q_QueryInterface(c: &mut Ctx) -> u32 {
     let obj = dd_of(c.a(0)).0;
+    // (IUnknown: the interface asked on)
+    let own = if r32(c.a(0)) == d3d3_vtbl() { 5 } else { 4 };
     match guid_first(c.a(1)) {
-        0xf504_9e77 | 0 => {
+        0 => {
+            put32(c.a(2), dd_iface(obj, own));
+            D3D_OK
+        }
+        0xf504_9e77 if own == 4 => {
             put32(c.a(2), dd_iface(obj, 4));
+            D3D_OK
+        }
+        0xbb22_3240 if own == 5 => {
+            put32(c.a(2), dd_iface(obj, 5));
             D3D_OK
         }
         // (the DirectDraw interfaces, each of its own version: ddraw7's test_texture_wrong_caps
@@ -500,6 +523,11 @@ fn dev_vtbl() -> u32 {
 }
 
 fn Q_CreateDevice(c: &mut Ctx) -> u32 {
+    create_dev(c, dev_vtbl())
+}
+
+/// CreateDevice(clsid, render target, out): a device block of vtable `vt` ([vtable, id, refs])
+fn create_dev(c: &mut Ctx, vt: u32) -> u32 {
     let (target, out) = (c.a(2), c.a(3));
     let Some((rt, _)) = sid(target) else {
         put32(out, 0);
@@ -517,7 +545,7 @@ fn Q_CreateDevice(c: &mut Ctx) -> u32 {
         id
     });
     let b = mem::heap_alloc(12, true);
-    w32(b, dev_vtbl());
+    w32(b, vt);
     w32(b + 4, id);
     w32(b + 8, 1);
     put32(out, b);
@@ -643,11 +671,15 @@ fn B_GetVertexBufferDesc(c: &mut Ctx) -> u32 {
 }
 
 /// Transforms (and lights) source vertices into this XYZRHW buffer.
-fn process(c: &mut Ctx, src: Option<Src>, src_index: u32) -> u32 {
-    let (dst_index, count, devb) = (c.a(2), c.a(3), c.a(6));
+fn process(c: &mut Ctx, src: Option<Src>, src_index: u32, src_fvf: u32) -> u32 {
+    let (op, dst_index, count, devb) = (c.a(1), c.a(2), c.a(3), c.a(6));
     let Some((dm, dfvf, dn)) = vb(c) else { return D3DERR_INVALIDCALL };
     let Some(src) = src else { return D3DERR_INVALIDCALL };
-    let Some(d) = d3d(|d| d.devs.get(&r32(devb + 4)).cloned()) else { return D3DERR_INVALIDCALL };
+    let Some(mut d) = d3d(|d| d.devs.get(&r32(devb + 4)).cloned()) else { return D3DERR_INVALIDCALL };
+    // (lit only with D3DVOP_LIGHT; a Direct3D 6 device has no D3DRENDERSTATE_LIGHTING: a material
+    // and normals light)
+    let lit = if r32(devb) == dev3_vtbl() { dev3_lights(&d, src_fvf) } else { d.rs[RS_LIGHTING] != 0 };
+    d.rs[RS_LIGHTING] = (lit && op & D3DVOP_LIGHT != 0) as u32;
     let dl = Layout::of(dfvf);
     let t = Xform::new(&d);
     for i in 0..count.min(dn.saturating_sub(dst_index)) {
@@ -673,12 +705,13 @@ fn process(c: &mut Ctx, src: Option<Src>, src_index: u32) -> u32 {
 }
 fn B_ProcessVertices(c: &mut Ctx) -> u32 {
     let (srcb, si) = (c.a(4), c.a(5));
-    let src = d3d(|d| d.vbs.get(&srcb).copied()).map(|(m, fvf, _)| Src::packed(fvf, m));
-    process(c, src, si)
+    let vb = d3d(|d| d.vbs.get(&srcb).copied());
+    let src = vb.map(|(m, fvf, _)| Src::packed(fvf, m));
+    process(c, src, si, vb.map_or(0, |x| x.1))
 }
 fn B_ProcessVerticesStrided(c: &mut Ctx) -> u32 {
     let src = Src::strided(c.a(5), c.a(4));
-    process(c, Some(src), 0)
+    process(c, Some(src), 0, c.a(4))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1341,7 +1374,7 @@ impl Xform {
         let world = d.xf[0];
         let wv = mul(&world, &d.xf[1]);
         Xform {
-            wvp: mul(&wv, &d.xf[2]),
+            wvp: mul(&mul(&wv, &d.xf[2]), &d.clip),
             wv,
             world,
             vp: [d.vp[0] as f32, d.vp[1] as f32, d.vp[2] as f32, d.vp[3] as f32],
@@ -1957,9 +1990,16 @@ fn V_DrawIndexedPrimitiveVB(c: &mut Ctx) -> u32 {
 /// Clear(count, rects, flags, color, z, stencil)
 fn V_Clear(c: &mut Ctx) -> u32 {
     let (n, rects, flags, color, z) = (c.a(1), c.a(2), c.a(3), c.a(4), f32::from_bits(c.a(5)));
-    let Some(d) = dev(c, |d| d.clone()) else { return D3DERR_INVALIDCALL };
-    let Some(rt) = surf(d.rt) else { return D3D_OK };
-    let vp = Rect { l: d.vp[0], t: d.vp[1], r: d.vp[0] + d.vp[2], b: d.vp[1] + d.vp[3] };
+    let Some(vp) = dev(c, |d| d.vp) else { return D3DERR_INVALIDCALL };
+    clear_dev(r32(c.a(0) + 4), vp, n, rects, flags, color, z)
+}
+
+/// Clears device `id`'s render target (flags 1) and depth buffer (2) in `rects` (none: all of
+/// it), each clipped to the viewport `vp` (x, y, width, height).
+fn clear_dev(id: u32, vp: [i32; 4], n: u32, rects: u32, flags: u32, color: u32, z: f32) -> u32 {
+    let Some(rt) = d3d(|d| d.devs.get(&id).map(|d| d.rt)) else { return D3DERR_INVALIDCALL };
+    let Some(rt) = surf(rt) else { return D3D_OK };
+    let vp = Rect { l: vp[0], t: vp[1], r: vp[0] + vp[2], b: vp[1] + vp[3] };
     let mut rs = Vec::new();
     if n == 0 || rects == 0 {
         rs.push(vp);
@@ -1982,6 +2022,1101 @@ fn V_Clear(c: &mut Ctx) -> u32 {
                 fill(zs, clip_rect(r, zs.w, zs.h), (z.clamp(0., 1.) * max as f32) as u32);
             }
         }
+    }
+    D3D_OK
+}
+
+// ---------------------------------------------------------------------------------------------
+// Direct3D 6: IDirect3D3, IDirect3DDevice3, IDirect3DViewport3, IDirect3DMaterial3,
+// IDirect3DLight, IDirect3DTexture2. A Device3 is a device of the same kind as a Device7 (its
+// block [vtable, id, refs]), with the methods whose arguments are the same shared; viewports
+// and materials are objects of their own, the current viewport the device's viewport.
+
+const CLASS_E_NOAGGREGATION: u32 = 0x8004_0110;
+const DDERR_ALREADYINITIALIZED: u32 = 0x8876_0005;
+const D3DERR_VIEWPORTDATANOTSET: u32 = 0x8876_0305;
+const D3DERR_VIEWPORTHASNODEVICE: u32 = 0x8876_0306;
+const D3DERR_NOCURRENTVIEWPORT: u32 = 0x8876_0307;
+
+/// An IDirect3DViewport3: D3DVIEWPORT2's words (dwSize, X, Y, width, height, clip x/y/w/h,
+/// min/max z) once set, the background material handle, the background depth surface, the
+/// device it was added to (its id), its lights (blocks)
+#[derive(Clone, Default)]
+struct Vp3 {
+    data: Option<[u32; 11]>,
+    bg: u32,
+    depth: u32,
+    dev: u32,
+    lights: Vec<u32>,
+    /// the device light indices its lights were last given (1..=lit)
+    lit: u32,
+    refs: u32,
+}
+
+pub(super) fn d3d3_vtbl() -> u32 {
+    static B: OnceLock<u32> = OnceLock::new();
+    *B.get_or_init(|| {
+        vtable(
+            "IDirect3D3",
+            &[
+                (Q_QueryInterface, 12),
+                (D_AddRef, 4),
+                (D_Release, 4),
+                (T_EnumDevices, 12),
+                (T_CreateLight, 12),
+                (T_CreateMaterial, 12),
+                (T_CreateViewport, 12),
+                (T_FindDevice, 12),
+                (T_CreateDevice, 20),
+                (Q_CreateVertexBuffer, 20),
+                (Q_EnumZBufferFormats, 16),
+                (ok, 4),
+            ],
+        )
+    })
+}
+
+/// D3DDEVICEDESC (Direct3D 6's, 252 bytes; the first `size` of them) of device `dev` from its
+/// D3DDEVICEDESC7; `empty`: a software device's hardware description (dwSize only)
+fn write_desc3(p: u32, size: u32, dev: usize, empty: bool) {
+    mem::fill(p, size, 0);
+    w32(p, size);
+    if empty {
+        return;
+    }
+    let d7 = mem::heap_alloc(236, true);
+    write_caps(d7, dev);
+    let mut b = [0u8; 252];
+    let put = |b: &mut [u8; 252], at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    put(&mut b, 0, size);
+    put(&mut b, 4, 0x7ff); // D3DDD_COLORMODEL ... D3DDD_MAXVERTEXCOUNT
+    put(&mut b, 8, 2); // D3DCOLOR_RGB
+    put(&mut b, 12, r32(d7));
+    put(&mut b, 16, 8);
+    put(&mut b, 20, 1); // D3DTRANSFORMCAPS_CLIP
+    put(&mut b, 24, 1);
+    put(&mut b, 28, 16);
+    put(&mut b, 32, 0x7); // D3DLIGHTCAPS_POINT | SPOT | DIRECTIONAL
+    put(&mut b, 36, 1); // D3DLIGHTINGMODEL_RGB
+    put(&mut b, 40, 8);
+    for k in 0..28 {
+        put(&mut b, 44 + 4 * k, r32(d7 + 4 + 4 * k as u32));
+    }
+    put(&mut b, 156, r32(d7 + 116));
+    put(&mut b, 160, r32(d7 + 120));
+    put(&mut b, 168, 0xffff);
+    for k in 0..4 {
+        put(&mut b, 172 + 4 * k, r32(d7 + 124 + 4 * k as u32));
+    }
+    for k in 0..3 {
+        put(&mut b, 204 + 4 * k, r32(d7 + 140 + 4 * k as u32));
+    }
+    for k in 0..9 {
+        put(&mut b, 216 + 4 * k, r32(d7 + 152 + 4 * k as u32));
+    }
+    b[248..252].copy_from_slice(&mem::slice(d7 + 184, 4));
+    mem::heap_free(d7);
+    mem::write(p, &b[..size.min(252) as usize]);
+}
+
+/// The sizes of D3DDEVICEDESC: Direct3D 1, 5, 6
+fn desc3_size_ok(n: u32) -> bool {
+    matches!(n, 172 | 204 | 252)
+}
+
+/// EnumDevices(callback, context): the RGB (software: an empty hardware description) and HAL
+/// devices, callback(guid, description, name, hardware desc, software desc, context)
+fn T_EnumDevices(c: &mut Ctx) -> u32 {
+    let (cb, ctx) = (c.a(1), c.a(2));
+    if cb == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let names = mem::heap_alloc(256 * 2, true);
+    let (g, hal, hel) = (mem::heap_alloc(16, true), mem::heap_alloc(252, true), mem::heap_alloc(252, true));
+    for i in 0..2 {
+        let (desc, name, d1, d2, d3, d4, _) = DEVICES[i];
+        let q = names + 256 * i as u32;
+        mem::write(q, desc.as_bytes());
+        mem::w8(q + desc.len() as u32, 0);
+        mem::write(q + 128, name.as_bytes());
+        mem::w8(q + 128 + name.len() as u32, 0);
+        guid(g, d1, d2, d3, d4);
+        write_desc3(hal, 252, i, i == 0);
+        write_desc3(hel, 252, i, false);
+        if c.call(cb, &[g, q, q + 128, hal, hel, ctx]) != 1 {
+            break;
+        }
+    }
+    for p in [names, g, hal, hel] {
+        mem::heap_free(p);
+    }
+    D3D_OK
+}
+
+/// FindDevice(D3DFINDDEVICESEARCH, D3DFINDDEVICERESULT): the device of the GUID asked for
+/// (D3DFDS_GUID), else the HAL one; the result's guid and descriptions
+fn T_FindDevice(c: &mut Ctx) -> u32 {
+    let (s, r) = (c.a(1), c.a(2));
+    if s == 0 || r == 0 || r32(r) < 4 + 16 + 2 * 172 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let mut i = 1;
+    if r32(s + 4) & 0x10 != 0 {
+        let want = r32(s + 52);
+        match DEVICES[..2].iter().position(|d| d.2 == want) {
+            Some(k) => i = k,
+            None => return DDERR_NOTFOUND,
+        }
+    }
+    let n = (r32(r) - 20) / 2;
+    let (_, _, d1, d2, d3, d4, _) = DEVICES[i];
+    guid(r + 4, d1, d2, d3, d4);
+    write_desc3(r + 20, n, i, i == 0);
+    write_desc3(r + 20 + n, n, i, false);
+    D3D_OK
+}
+
+/// A block [vtable, id, refs] for a new viewport, material or light (outer: no aggregation)
+fn new_obj(c: &Ctx, vt: u32) -> Option<u32> {
+    put32(c.a(1), 0);
+    if c.a(2) != 0 {
+        return None;
+    }
+    let b = mem::heap_alloc(12, true);
+    w32(b, vt);
+    w32(b + 4, b);
+    w32(b + 8, 1);
+    put32(c.a(1), b);
+    Some(b)
+}
+fn T_CreateViewport(c: &mut Ctx) -> u32 {
+    let Some(b) = new_obj(c, vp3_vtbl()) else { return CLASS_E_NOAGGREGATION };
+    d3d(|d| d.vps.insert(b, Vp3 { refs: 1, ..Default::default() }));
+    D3D_OK
+}
+fn T_CreateMaterial(c: &mut Ctx) -> u32 {
+    let Some(b) = new_obj(c, mat3_vtbl()) else { return CLASS_E_NOAGGREGATION };
+    let mut m = [0u32; 20];
+    m[0] = 80;
+    d3d(|d| d.mats.insert(b, m));
+    D3D_OK
+}
+fn T_CreateLight(c: &mut Ctx) -> u32 {
+    let Some(b) = new_obj(c, light3_vtbl()) else { return CLASS_E_NOAGGREGATION };
+    d3d(|d| d.lights3.insert(b, ([0; 20], 0)));
+    D3D_OK
+}
+/// CreateDevice(clsid, IDirectDrawSurface4, out, outer): the RGB or HAL device
+fn T_CreateDevice(c: &mut Ctx) -> u32 {
+    if c.a(4) != 0 {
+        put32(c.a(3), 0);
+        return CLASS_E_NOAGGREGATION;
+    }
+    if c.a(1) == 0 || !DEVICES[..2].iter().any(|d| d.2 == r32(c.a(1))) {
+        put32(c.a(3), 0);
+        return DDERR_INVALIDPARAMS;
+    }
+    let r = create_dev(c, dev3_vtbl());
+    if r == D3D_OK {
+        let id = r32(r32(c.a(3)) + 4);
+        d3d(|d| d.dev3.insert(id, (Vec::new(), 0)));
+    }
+    r
+}
+
+fn dev3_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        vtable(
+            "IDirect3DDevice3",
+            &[
+                (E_QueryInterface, 12),
+                (V_AddRef, 4),
+                (E_Release, 4),
+                (E_GetCaps, 12),
+                (E_GetStats, 8),
+                (E_AddViewport, 8),
+                (E_DeleteViewport, 8),
+                (E_NextViewport, 16),
+                (V_EnumTextureFormats, 12),
+                (V_BeginScene, 4),
+                (V_EndScene, 4),
+                (E_GetDirect3D, 8),
+                (E_SetCurrentViewport, 8),
+                (E_GetCurrentViewport, 8),
+                (V_SetRenderTarget, 12),
+                (E_GetRenderTarget, 8),
+                (unsupported, 16),
+                (unsupported, 24),
+                (unsupported, 8),
+                (unsupported, 8),
+                (unsupported, 8),
+                (E_GetRenderState, 12),
+                (E_SetRenderState, 12),
+                (E_GetLightState, 12),
+                (E_SetLightState, 12),
+                (V_SetTransform, 12),
+                (V_GetTransform, 12),
+                (V_MultiplyTransform, 12),
+                (E_DrawPrimitive, 24),
+                (E_DrawIndexedPrimitive, 32),
+                (ok, 8),
+                (V_GetClipStatus, 8),
+                (E_DrawPrimitiveStrided, 24),
+                (E_DrawIndexedPrimitiveStrided, 32),
+                (E_DrawPrimitiveVB, 24),
+                (E_DrawIndexedPrimitiveVB3, 24),
+                (V_ComputeSphereVisibility, 24),
+                (E_GetTexture, 12),
+                (V_SetTexture, 12),
+                (V_GetTextureStageState, 16),
+                (V_SetTextureStageState, 16),
+                (V_ValidateDevice, 8),
+            ],
+        )
+    })
+}
+
+const D3DVOP_LIGHT: u32 = 0x400;
+const D3DDP_DONOTLIGHT: u32 = 0x10;
+/// Whether a Direct3D 6 device lights vertices of `fvf`: with a material and normals
+fn dev3_lights(d: &Dev, fvf: u32) -> bool {
+    d.rs[0xff] != 0 && fvf & 0x10 != 0
+}
+/// D3DRENDERSTATE_LIGHTING for a Direct3D 6 draw of `fvf` with `flags` (D3DDP_DONOTLIGHT)
+fn lit3(c: &mut Ctx, fvf: u32, flags: u32) {
+    dev(c, |d| d.rs[RS_LIGHTING] = (dev3_lights(d, fvf) && flags & D3DDP_DONOTLIGHT == 0) as u32);
+}
+fn E_DrawPrimitive(c: &mut Ctx) -> u32 {
+    lit3(c, c.a(2), c.a(5));
+    V_DrawPrimitive(c)
+}
+fn E_DrawIndexedPrimitive(c: &mut Ctx) -> u32 {
+    lit3(c, c.a(2), c.a(7));
+    V_DrawIndexedPrimitive(c)
+}
+fn E_DrawPrimitiveStrided(c: &mut Ctx) -> u32 {
+    lit3(c, c.a(2), c.a(5));
+    V_DrawPrimitiveStrided(c)
+}
+fn E_DrawIndexedPrimitiveStrided(c: &mut Ctx) -> u32 {
+    lit3(c, c.a(2), c.a(7));
+    V_DrawIndexedPrimitiveStrided(c)
+}
+fn E_DrawPrimitiveVB(c: &mut Ctx) -> u32 {
+    let fvf = d3d(|d| d.vbs.get(&c.a(2)).map_or(0, |x| x.1));
+    lit3(c, fvf, c.a(5));
+    V_DrawPrimitiveVB(c)
+}
+fn E_DrawIndexedPrimitiveVB3(c: &mut Ctx) -> u32 {
+    let fvf = d3d(|d| d.vbs.get(&c.a(2)).map_or(0, |x| x.1));
+    lit3(c, fvf, c.a(5));
+    E_DrawIndexedPrimitiveVB(c)
+}
+fn unsupported(_: &mut Ctx) -> u32 {
+    DDERR_UNSUPPORTED
+}
+
+fn E_QueryInterface(c: &mut Ctx) -> u32 {
+    match guid_first(c.a(1)) {
+        // IDirect3DDevice3, IUnknown
+        0xb0ab_3b60 | 0 => {
+            put32(c.a(2), c.a(0));
+            V_AddRef(c);
+            D3D_OK
+        }
+        _ => {
+            put32(c.a(2), 0);
+            E_NOINTERFACE
+        }
+    }
+}
+/// Release: the device's viewports go with it (each one's reference dropped)
+fn E_Release(c: &mut Ctx) -> u32 {
+    let id = r32(c.a(0) + 4);
+    let n = V_Release(c);
+    if n == 0 {
+        if let Some((vps, cur)) = d3d(|d| d.dev3.remove(&id)) {
+            for v in vps.into_iter().chain((cur != 0).then_some(cur)) {
+                d3d(|d| d.vps.get_mut(&v).map(|x| x.dev = 0));
+                vp_release(v);
+            }
+        }
+    }
+    n
+}
+/// GetCaps(hardware desc, software desc): each D3DDEVICEDESC of its own dwSize
+fn E_GetCaps(c: &mut Ctx) -> u32 {
+    let (hal, hel) = (c.a(1), c.a(2));
+    if hal == 0 || hel == 0 || !desc3_size_ok(r32(hal)) || !desc3_size_ok(r32(hel)) {
+        return DDERR_INVALIDPARAMS;
+    }
+    write_desc3(hal, r32(hal), 1, false);
+    write_desc3(hel, r32(hel), 1, false);
+    D3D_OK
+}
+fn E_GetStats(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 || r32(p) != 24 {
+        return DDERR_INVALIDPARAMS;
+    }
+    mem::fill(p + 4, 20, 0);
+    D3D_OK
+}
+fn E_GetDirect3D(c: &mut Ctx) -> u32 {
+    let obj = dev(c, |d| d.dd).unwrap_or(0);
+    let b = dd_iface(obj, 5);
+    put32(c.a(1), b);
+    if b == 0 { D3DERR_INVALIDCALL } else { D3D_OK }
+}
+fn E_GetRenderTarget(c: &mut Ctx) -> u32 {
+    let Some(rt) = dev(c, |d| d.rt) else { return D3DERR_INVALIDCALL };
+    with(|st| st.surfs.get_mut(&rt).map(|x| x.refs += 1));
+    put32(c.a(1), block(rt, 1));
+    D3D_OK
+}
+/// D3DRENDERSTATE_TEXTUREHANDLE (1): stage 0's texture, by its IDirect3DTexture2 handle
+fn E_SetRenderState(c: &mut Ctx) -> u32 {
+    // (LIGHTING, LOCALVIEWER, NORMALIZENORMALS are Direct3D 7's: taken, and ignored)
+    if matches!(c.a(1), 137 | 142 | 143) {
+        return D3D_OK;
+    }
+    if c.a(1) == 1 {
+        let t = c.a(2);
+        if t != 0 && surf(t).is_none() {
+            return DDERR_INVALIDPARAMS;
+        }
+        return set(c, Ch::Tex(0, t));
+    }
+    V_SetRenderState(c)
+}
+fn E_GetRenderState(c: &mut Ctx) -> u32 {
+    if matches!(c.a(1), 137 | 142 | 143) {
+        put32(c.a(2), 0xffff_ffff);
+        return D3D_OK;
+    }
+    if c.a(1) == 1 {
+        put32(c.a(2), dev(c, |d| d.tex[0]).unwrap_or(0));
+        return D3D_OK;
+    }
+    V_GetRenderState(c)
+}
+/// D3DLIGHTSTATE_*: the render states they are in Direct3D 7 (AMBIENT, FOGMODE, FOGSTART, FOGEND,
+/// FOGDENSITY, COLORVERTEX); MATERIAL: the material of that handle; COLORMODEL: RGB only
+fn light_state_rs(k: u32) -> Option<usize> {
+    match k {
+        2 => Some(RS_AMBIENT),
+        4 => Some(RS_FOGVERTEXMODE),
+        5 => Some(RS_FOGSTART),
+        6 => Some(RS_FOGEND),
+        7 => Some(RS_FOGDENSITY),
+        8 => Some(RS_COLORVERTEX),
+        _ => None,
+    }
+}
+fn E_SetLightState(c: &mut Ctx) -> u32 {
+    let (k, v) = (c.a(1), c.a(2));
+    match k {
+        1 => {
+            let m = if v == 0 { None } else { d3d(|d| d.mats.get(&v).copied()) };
+            if v != 0 && m.is_none() {
+                return DDERR_INVALIDPARAMS;
+            }
+            let mut f = [0f32; 17];
+            if let Some(m) = m {
+                for (i, x) in f.iter_mut().enumerate() {
+                    *x = f32::from_bits(m[1 + i]);
+                }
+            }
+            let r = set(c, Ch::Mat(f));
+            dev(c, |d| d.rs[0xff] = v);
+            r
+        }
+        3 => if v == 2 { D3D_OK } else { DDERR_INVALIDPARAMS },
+        _ => match light_state_rs(k) {
+            Some(i) => set(c, Ch::Rs(i, v)),
+            None => DDERR_INVALIDPARAMS,
+        },
+    }
+}
+fn E_GetLightState(c: &mut Ctx) -> u32 {
+    let (k, p) = (c.a(1), c.a(2));
+    if p == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let v = match k {
+        1 => dev(c, |d| d.rs[0xff]),
+        3 => Some(2),
+        _ => match light_state_rs(k) {
+            Some(i) => dev(c, |d| d.rs[i]),
+            None => return DDERR_INVALIDPARAMS,
+        },
+    };
+    put32(p, v.unwrap_or(0));
+    D3D_OK
+}
+/// DrawIndexedPrimitiveVB(type, vertex buffer, indices, index count, flags): from vertex 0
+fn E_DrawIndexedPrimitiveVB(c: &mut Ctx) -> u32 {
+    let (prim, vbb, idx, ni) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    let Some((m, fvf, _)) = d3d(|d| d.vbs.get(&vbb).copied()) else { return D3DERR_INVALIDCALL };
+    draw(c, prim, Src::packed(fvf, m), Some((idx, ni)), 0, 0)
+}
+fn E_GetTexture(c: &mut Ctx) -> u32 {
+    let s = c.a(1) as usize;
+    if s >= 8 || c.a(2) == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let t = dev(c, |d| d.tex[s]).unwrap_or(0);
+    if t == 0 || surf(t).is_none() {
+        put32(c.a(2), 0);
+    } else {
+        with(|st| st.surfs.get_mut(&t).map(|x| x.refs += 1));
+        put32(c.a(2), block(t, 3));
+    }
+    D3D_OK
+}
+
+/// The device's viewports and current one, when it is a Direct3D 6 device
+fn vps_of(c: &Ctx) -> Option<(Vec<u32>, u32)> {
+    let id = r32(c.a(0) + 4);
+    d3d(|d| d.dev3.get(&id).cloned())
+}
+/// AddViewport(viewport): added to the device (a reference held); one of another device:
+/// DDERR_INVALIDPARAMS
+fn E_AddViewport(c: &mut Ctx) -> u32 {
+    let (id, v) = (r32(c.a(0) + 4), c.a(1));
+    let Some(x) = d3d(|d| d.vps.get(&v).cloned()) else { return DDERR_INVALIDPARAMS };
+    if x.dev != 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    d3d(|d| {
+        if let Some(l) = d.dev3.get_mut(&id) {
+            l.0.push(v);
+        }
+        if let Some(x) = d.vps.get_mut(&v) {
+            x.dev = id;
+            x.refs += 1;
+        }
+    });
+    D3D_OK
+}
+fn E_DeleteViewport(c: &mut Ctx) -> u32 {
+    let (id, v) = (r32(c.a(0) + 4), c.a(1));
+    let removed = d3d(|d| {
+        let l = d.dev3.get_mut(&id)?;
+        let i = l.0.iter().position(|&x| x == v)?;
+        l.0.remove(i);
+        // (Device3's, unlike Device2's, also lets go of it as the current viewport)
+        let cur = l.1 == v;
+        if cur {
+            l.1 = 0;
+        }
+        if let Some(x) = d.vps.get_mut(&v) {
+            x.dev = 0;
+        }
+        Some(cur)
+    });
+    let Some(cur) = removed else { return DDERR_INVALIDPARAMS };
+    if cur {
+        vp_release(v);
+    }
+    vp_release(v);
+    D3D_OK
+}
+/// NextViewport(reference, out, D3DNEXT_NEXT | HEAD | TAIL)
+fn E_NextViewport(c: &mut Ctx) -> u32 {
+    let (r, out, flags) = (c.a(1), c.a(2), c.a(3));
+    if out == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    put32(out, 0);
+    let Some((l, _)) = vps_of(c) else { return D3DERR_INVALIDCALL };
+    let v = match flags {
+        1 => l.iter().position(|&x| x == r).and_then(|i| l.get(i + 1).copied()),
+        2 => l.first().copied(),
+        4 => l.last().copied(),
+        _ => return DDERR_INVALIDPARAMS,
+    };
+    match v {
+        Some(v) => {
+            put32(out, v);
+            D3D_OK
+        }
+        None => D3DERR_INVALIDCALL,
+    }
+}
+/// SetCurrentViewport(viewport): one added to the device, set or not; its data becomes the
+/// device's viewport; holds a reference of it
+fn E_SetCurrentViewport(c: &mut Ctx) -> u32 {
+    let (id, v) = (r32(c.a(0) + 4), c.a(1));
+    let Some((l, cur)) = vps_of(c) else { return D3DERR_INVALIDCALL };
+    if !l.contains(&v) {
+        return DDERR_INVALIDPARAMS;
+    }
+    if cur != v {
+        d3d(|d| {
+            d.vps.get_mut(&v).map(|x| x.refs += 1);
+            d.dev3.get_mut(&id).map(|x| x.1 = v);
+        });
+        if cur != 0 {
+            vp_lights_off(cur);
+            vp_release(cur);
+        }
+    }
+    vp_lights(v);
+    apply_vp(v)
+}
+fn E_GetCurrentViewport(c: &mut Ctx) -> u32 {
+    // (none: the pointer is left as it is, NULL or not)
+    let out = c.a(1);
+    let cur = vps_of(c).map_or(0, |x| x.1);
+    if cur == 0 {
+        return D3DERR_NOCURRENTVIEWPORT;
+    }
+    if out == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    put32(out, cur);
+    d3d(|d| d.vps.get_mut(&cur).map(|x| x.refs += 1));
+    D3D_OK
+}
+/// Viewport `v`'s data as its device's viewport (when it has data)
+fn apply_vp(v: u32) -> u32 {
+    let Some(x) = d3d(|d| d.vps.get(&v).cloned()) else { return DDERR_INVALIDPARAMS };
+    let Some(p) = x.data else { return D3D_OK };
+    let ch = Ch::Vp([p[1] as i32, p[2] as i32, p[3] as i32, p[4] as i32], (0., 1.));
+    let dev = x.dev;
+    let f = |i: usize| f32::from_bits(p[i]);
+    let m = clip_space([f(5), f(6), f(7), f(8)], (f(9), f(10)));
+    d3d(|d| d.devs.get_mut(&dev).map(|d| {
+        let _ = d.apply(&ch);
+        d.clip = m;
+    }));
+    D3D_OK
+}
+/// The matrix after the projection that takes a D3DVIEWPORT2's clip volume (x, y, width,
+/// height; min z, max z) to -1..1 (0..1 in Z)
+fn clip_space(c: [f32; 4], z: (f32, f32)) -> [f32; 16] {
+    let (sx, sy, sz) = (2. / c[2], 2. / c[3], 1. / (z.1 - z.0));
+    let (ox, oy, oz) = (-2. * c[0] / c[2] - 1., -2. * c[1] / c[3] + 1., -z.0 / (z.1 - z.0));
+    [sx, 0., 0., 0., 0., sy, 0., 0., 0., 0., sz, 0., ox, oy, oz, 1.]
+}
+
+// IDirect3DViewport3
+
+fn vp3_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        vtable(
+            "IDirect3DViewport3",
+            &[
+                (P_QueryInterface, 12),
+                (P_AddRef, 4),
+                (P_Release, 4),
+                (P_Initialize, 8),
+                (P_GetViewport, 8),
+                (P_SetViewport, 8),
+                (unsupported, 20),
+                (unsupported, 12),
+                (P_SetBackground, 8),
+                (P_GetBackground, 12),
+                (P_SetBackgroundDepth, 8),
+                (P_GetBackgroundDepth, 12),
+                (P_Clear, 16),
+                (P_AddLight, 8),
+                (P_DeleteLight, 8),
+                (P_NextLight, 16),
+                (P_GetViewport2, 8),
+                (P_SetViewport2, 8),
+                (P_SetBackgroundDepth, 8),
+                (P_GetBackgroundDepth2, 12),
+                (P_Clear2, 28),
+            ],
+        )
+    })
+}
+fn vp_of(c: &Ctx) -> Option<Vp3> {
+    d3d(|d| d.vps.get(&c.a(0)).cloned())
+}
+fn vp_release(v: u32) -> u32 {
+    d3d(|d| {
+        let Some(x) = d.vps.get_mut(&v) else { return 0 };
+        x.refs = x.refs.saturating_sub(1);
+        let n = x.refs;
+        if n == 0 {
+            d.vps.remove(&v);
+        }
+        n
+    })
+}
+fn P_QueryInterface(c: &mut Ctx) -> u32 {
+    match guid_first(c.a(1)) {
+        // IDirect3DViewport3, 2, 1, IUnknown
+        0xb0ab_3b61 | 0x9328_1500 | 0x4417_c146 | 0 => {
+            put32(c.a(2), c.a(0));
+            P_AddRef(c);
+            D3D_OK
+        }
+        _ => {
+            put32(c.a(2), 0);
+            E_NOINTERFACE
+        }
+    }
+}
+fn P_AddRef(c: &mut Ctx) -> u32 {
+    d3d(|d| d.vps.get_mut(&c.a(0)).map_or(0, |x| {
+        x.refs += 1;
+        x.refs
+    }))
+}
+fn P_Release(c: &mut Ctx) -> u32 {
+    vp_release(c.a(0))
+}
+fn P_Initialize(_: &mut Ctx) -> u32 {
+    DDERR_ALREADYINITIALIZED
+}
+/// The new data of the viewport: applied to its device when it is the device's current one
+fn vp_set(c: &mut Ctx, data: [u32; 11]) -> u32 {
+    let v = c.a(0);
+    match d3d(|d| d.vps.get(&v).map(|x| x.dev)) {
+        None => return DDERR_INVALIDPARAMS,
+        Some(0) => return D3DERR_VIEWPORTHASNODEVICE,
+        _ => {}
+    }
+    let Some(x) = d3d(|d| d.vps.get_mut(&v).map(|x| {
+        x.data = Some(data);
+        x.clone()
+    })) else { return DDERR_INVALIDPARAMS };
+    if x.dev != 0 && d3d(|d| d.dev3.get(&x.dev).is_some_and(|l| l.1 == v)) {
+        return apply_vp(v);
+    }
+    D3D_OK
+}
+/// SetViewport2(D3DVIEWPORT2): dwSize 44, the clip volume kept as given
+fn P_SetViewport2(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 || r32(p) != 44 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let d: [u32; 11] = std::array::from_fn(|i| r32(p + 4 * i as u32));
+    vp_set(c, d)
+}
+fn P_GetViewport2(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 || r32(p) != 44 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let Some(x) = vp_of(c) else { return DDERR_INVALIDPARAMS };
+    let Some(d) = x.data else { return D3DERR_VIEWPORTDATANOTSET };
+    // (the Z range is the clip volume's, not the device's: reported as 0..1)
+    for (i, w) in d.iter().enumerate().take(9).skip(1) {
+        w32(p + 4 * i as u32, *w);
+    }
+    w32(p + 36, 0);
+    w32(p + 40, 1f32.to_bits());
+    D3D_OK
+}
+/// SetViewport(D3DVIEWPORT): position and size, the z range; its clip volume (-1..1 by
+/// width and height) is D3DVIEWPORT2's
+fn P_SetViewport(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 || r32(p) != 44 {
+        return DDERR_INVALIDPARAMS;
+    }
+    // (kept as D3DVIEWPORT2: the clip volume is where the scale puts the edges of the
+    // rectangle around its center; the Z range is always 0..1, ddraw4's test_viewport_object)
+    let (w, h) = (r32(p + 12), r32(p + 16));
+    let (sx, sy) = (f32::from_bits(r32(p + 20)), f32::from_bits(r32(p + 24)));
+    let clip = viewport_clip(w as f32, h as f32, sx, sy);
+    let d = [44, r32(p + 4), r32(p + 8), w, h, clip[0].to_bits(), clip[1].to_bits(), clip[2].to_bits(), clip[3].to_bits(), 0, 1f32.to_bits()];
+    vp_set(c, d)
+}
+fn P_GetViewport(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 || r32(p) != 44 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let Some(x) = vp_of(c) else { return DDERR_INVALIDPARAMS };
+    let Some(d) = x.data else { return D3DERR_VIEWPORTDATANOTSET };
+    let f = |i: usize| f32::from_bits(d[i]);
+    let v = viewport_scale(d[3] as f32, d[4] as f32, [f(5), f(6), f(7), f(8)]);
+    for (i, v) in [d[1], d[2], d[3], d[4], v[0].to_bits(), v[1].to_bits(), v[2].to_bits(), v[3].to_bits(), 0, 1f32.to_bits()].iter().enumerate() {
+        w32(p + 4 + 4 * i as u32, *v);
+    }
+    D3D_OK
+}
+/// D3DVIEWPORT's scale (x, y) of a width x height rectangle as D3DVIEWPORT2's clip volume
+/// (x, y, width, height)
+fn viewport_clip(w: f32, h: f32, sx: f32, sy: f32) -> [f32; 4] {
+    [-(w / 2.) / sx, (h / 2.) / sy, w / sx, h / sy]
+}
+/// D3DVIEWPORT2's clip volume as D3DVIEWPORT's (scale x, scale y, max x, max y)
+fn viewport_scale(w: f32, h: f32, clip: [f32; 4]) -> [f32; 4] {
+    [w / clip[2], h / clip[3], clip[0] + clip[2], clip[1]]
+}
+fn P_SetBackground(c: &mut Ctx) -> u32 {
+    let h = c.a(1);
+    if h != 0 && !d3d(|d| d.mats.contains_key(&h)) {
+        return DDERR_INVALIDPARAMS;
+    }
+    d3d(|d| d.vps.get_mut(&c.a(0)).map(|x| x.bg = h));
+    D3D_OK
+}
+fn P_GetBackground(c: &mut Ctx) -> u32 {
+    let (h, valid) = (c.a(1), c.a(2));
+    if h == 0 || valid == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let bg = vp_of(c).map_or(0, |x| x.bg);
+    put32(h, bg);
+    put32(valid, (bg != 0) as u32);
+    D3D_OK
+}
+fn P_SetBackgroundDepth(c: &mut Ctx) -> u32 {
+    let s = sid(c.a(1)).map_or(0, |x| x.0);
+    d3d(|d| d.vps.get_mut(&c.a(0)).map(|x| x.depth = s));
+    D3D_OK
+}
+fn P_GetBackgroundDepth(c: &mut Ctx) -> u32 {
+    background_depth(c, 0)
+}
+fn P_GetBackgroundDepth2(c: &mut Ctx) -> u32 {
+    background_depth(c, 1)
+}
+fn background_depth(c: &mut Ctx, kind: u8) -> u32 {
+    let (out, valid) = (c.a(1), c.a(2));
+    if out == 0 || valid == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let s = vp_of(c).map_or(0, |x| x.depth);
+    if s == 0 || surf(s).is_none() {
+        put32(out, 0);
+        put32(valid, 0);
+    } else {
+        with(|st| st.surfs.get_mut(&s).map(|x| x.refs += 1));
+        put32(out, block(s, kind));
+        put32(valid, 1);
+    }
+    D3D_OK
+}
+/// The device and rectangle of a viewport to clear
+fn vp_target(c: &Ctx) -> Result<(u32, [i32; 4]), u32> {
+    let Some(x) = vp_of(c) else { return Err(DDERR_INVALIDPARAMS) };
+    if x.dev == 0 {
+        return Err(D3DERR_VIEWPORTHASNODEVICE);
+    }
+    let Some(d) = x.data else { return Err(D3DERR_VIEWPORTDATANOTSET) };
+    Ok((x.dev, [d[1] as i32, d[2] as i32, d[3] as i32, d[4] as i32]))
+}
+/// Clear(count, rects, D3DCLEAR_TARGET | ZBUFFER): the background material's diffuse color
+/// (black without one), depth 1
+fn P_Clear(c: &mut Ctx) -> u32 {
+    let (n, rects, flags) = (c.a(1), c.a(2), c.a(3));
+    if rects == 0 || n == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let (dev, vp) = match vp_target(c) {
+        Ok(x) => x,
+        Err(e) => return e,
+    };
+    let bg = vp_of(c).map_or(0, |x| x.bg);
+    let m = d3d(|d| d.mats.get(&bg).copied());
+    let color = m.map_or(0, |m| {
+        let ch = |k: usize| (f32::from_bits(m[1 + k]).clamp(0., 1.) * 255. + 0.5) as u32;
+        ch(3) << 24 | ch(0) << 16 | ch(1) << 8 | ch(2)
+    });
+    clear_dev(dev, vp, n, rects, flags & 3, color, 1.)
+}
+/// Clear2(count, rects, flags, color, z, stencil)
+fn P_Clear2(c: &mut Ctx) -> u32 {
+    let (n, rects, flags, color, z) = (c.a(1), c.a(2), c.a(3), c.a(4), f32::from_bits(c.a(5)));
+    if rects == 0 || n == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let (dev, vp) = match vp_target(c) {
+        Ok(x) => x,
+        Err(e) => return e,
+    };
+    clear_dev(dev, vp, n, rects, flags & 3, color, z)
+}
+fn P_AddLight(c: &mut Ctx) -> u32 {
+    let (v, l) = (c.a(0), c.a(1));
+    match d3d(|d| d.lights3.get(&l).map(|x| x.1)) {
+        None => return DDERR_INVALIDPARAMS,
+        // (in this viewport or another one: ddraw4's test_lighting)
+        Some(0) => {}
+        Some(_) => return D3DERR_LIGHTHASVIEWPORT,
+    }
+    d3d(|d| {
+        d.vps.get_mut(&v).map(|x| x.lights.push(l));
+        d.lights3.get_mut(&l).map(|x| x.1 = v);
+    });
+    w32(l + 8, r32(l + 8) + 1);
+    vp_lights(v);
+    D3D_OK
+}
+fn P_DeleteLight(c: &mut Ctx) -> u32 {
+    let l = c.a(1);
+    let v = c.a(0);
+    let found = d3d(|d| d.vps.get_mut(&v).and_then(|x| x.lights.iter().position(|&y| y == l).map(|i| x.lights.remove(i))).is_some());
+    if !found {
+        return D3DERR_LIGHTNOTINTHISVIEWPORT;
+    }
+    d3d(|d| d.lights3.get_mut(&l).map(|x| x.1 = 0));
+    vp_lights(v);
+    light_release(l);
+    D3D_OK
+}
+fn P_NextLight(c: &mut Ctx) -> u32 {
+    let (r, out, flags) = (c.a(1), c.a(2), c.a(3));
+    if out == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    put32(out, 0);
+    let l = vp_of(c).map_or(vec![], |x| x.lights);
+    let v = match flags {
+        1 => l.iter().position(|&x| x == r).and_then(|i| l.get(i + 1).copied()),
+        2 => l.first().copied(),
+        4 => l.last().copied(),
+        _ => return DDERR_INVALIDPARAMS,
+    };
+    match v {
+        Some(v) => {
+            w32(v + 8, r32(v + 8) + 1);
+            put32(out, v);
+            D3D_OK
+        }
+        None => D3DERR_INVALIDCALL,
+    }
+}
+
+// IDirect3DMaterial3
+
+fn mat3_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| vtable("IDirect3DMaterial3", &[(M_QueryInterface, 12), (O_AddRef, 4), (M_Release, 4), (M_SetMaterial, 8), (M_GetMaterial, 8), (M_GetHandle, 12)]))
+}
+fn O_AddRef(c: &mut Ctx) -> u32 {
+    let b = c.a(0);
+    w32(b + 8, r32(b + 8) + 1);
+    r32(b + 8)
+}
+fn M_QueryInterface(c: &mut Ctx) -> u32 {
+    match guid_first(c.a(1)) {
+        // IDirect3DMaterial3, 2, 1, IUnknown
+        0xca9c_46f4 | 0x9328_1503 | 0x4417_c144 | 0 => {
+            put32(c.a(2), c.a(0));
+            O_AddRef(c);
+            D3D_OK
+        }
+        _ => {
+            put32(c.a(2), 0);
+            E_NOINTERFACE
+        }
+    }
+}
+fn M_Release(c: &mut Ctx) -> u32 {
+    let b = c.a(0);
+    let n = r32(b + 8).saturating_sub(1);
+    w32(b + 8, n);
+    if n == 0 {
+        d3d(|d| d.mats.remove(&b));
+    }
+    n
+}
+/// SetMaterial(D3DMATERIAL): dwSize 80
+fn M_SetMaterial(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 || r32(p) != 80 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let m: [u32; 20] = std::array::from_fn(|i| r32(p + 4 * i as u32));
+    d3d(|d| d.mats.insert(c.a(0), m));
+    D3D_OK
+}
+fn M_GetMaterial(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 || r32(p) != 80 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let Some(m) = d3d(|d| d.mats.get(&c.a(0)).copied()) else { return DDERR_INVALIDPARAMS };
+    for (i, w) in m.iter().enumerate().skip(1) {
+        w32(p + 4 * i as u32, *w);
+    }
+    D3D_OK
+}
+/// GetHandle(device, handle): the material's handle (its block)
+fn M_GetHandle(c: &mut Ctx) -> u32 {
+    if c.a(2) == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    put32(c.a(2), c.a(0));
+    D3D_OK
+}
+
+// IDirect3DLight
+
+fn light3_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| vtable("IDirect3DLight", &[(L_QueryInterface, 12), (O_AddRef, 4), (L_Release, 4), (P_Initialize, 8), (L_SetLight, 8), (L_GetLight, 8)]))
+}
+fn L_QueryInterface(c: &mut Ctx) -> u32 {
+    match guid_first(c.a(1)) {
+        0x4417_c142 | 0 => {
+            put32(c.a(2), c.a(0));
+            O_AddRef(c);
+            D3D_OK
+        }
+        _ => {
+            put32(c.a(2), 0);
+            E_NOINTERFACE
+        }
+    }
+}
+fn light_release(b: u32) -> u32 {
+    let n = r32(b + 8).saturating_sub(1);
+    w32(b + 8, n);
+    if n == 0 {
+        d3d(|d| d.lights3.remove(&b));
+    }
+    n
+}
+fn L_Release(c: &mut Ctx) -> u32 {
+    light_release(c.a(0))
+}
+/// SetLight(D3DLIGHT, 76 bytes, or D3DLIGHT2, 80: its dwFlags; a D3DLIGHT is an active one)
+fn L_SetLight(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 || !(1..=4).contains(&r32(p + 4)) {
+        return DDERR_INVALIDPARAMS;
+    }
+    let mut l = [0u32; 20];
+    for (i, w) in l.iter_mut().enumerate().take(19) {
+        *w = r32(p + 4 * i as u32);
+    }
+    l[19] = if r32(p) >= 80 { r32(p + 76) } else { D3DLIGHT_ACTIVE };
+    let Some(v) = d3d(|d| d.lights3.get_mut(&c.a(0)).map(|x| {
+        x.0 = l;
+        x.1
+    })) else { return DDERR_INVALIDPARAMS };
+    if v != 0 {
+        vp_lights(v);
+    }
+    D3D_OK
+}
+const D3DLIGHT_ACTIVE: u32 = 1;
+const D3DLIGHT_NO_SPECULAR: u32 = 2;
+const D3DERR_LIGHTHASVIEWPORT: u32 = 0x8876_0000 | 751;
+const D3DERR_LIGHTNOTINTHISVIEWPORT: u32 = 0x8876_0000 | 752;
+/// D3DLIGHT2 as D3DLIGHT7: its color the diffuse and (unless D3DLIGHT_NO_SPECULAR) specular one
+fn light7_of(l: &[u32; 20]) -> [u32; 26] {
+    let mut o = [0u32; 26];
+    o[0] = l[1];
+    o[1..5].copy_from_slice(&l[2..6]);
+    if l[19] & D3DLIGHT_NO_SPECULAR == 0 {
+        o[5..9].copy_from_slice(&l[2..6]);
+    }
+    o[13..26].copy_from_slice(&l[6..19]);
+    o
+}
+/// Viewport `v`'s lights as its device's (when it is the device's current viewport): the active
+/// ones at indices 1.., the indices it gave before off
+fn vp_lights(v: u32) {
+    let Some(x) = d3d(|d| d.vps.get(&v).cloned()) else { return };
+    if x.dev == 0 || !d3d(|d| d.dev3.get(&x.dev).is_some_and(|l| l.1 == v)) {
+        return;
+    }
+    let lights: Vec<_> = x.lights.iter().map(|l| d3d(|d| d.lights3.get(l).map(|y| y.0)).unwrap_or([0; 20])).collect();
+    d3d(|d| {
+        let Some(dv) = d.devs.get_mut(&x.dev) else { return };
+        for i in 1..=x.lit {
+            let _ = dv.apply(&Ch::LightOn(i, false));
+        }
+        for (i, l) in lights.iter().enumerate() {
+            let i = i as u32 + 1;
+            let _ = dv.apply(&Ch::Light(i, light7_of(l)));
+            let _ = dv.apply(&Ch::LightOn(i, l[19] & D3DLIGHT_ACTIVE != 0));
+        }
+        d.vps.get_mut(&v).map(|y| y.lit = y.lit.max(lights.len() as u32));
+    });
+}
+/// Viewport `v`'s lights off on its device (another viewport becomes the current one)
+fn vp_lights_off(v: u32) {
+    let Some(x) = d3d(|d| d.vps.get(&v).cloned()) else { return };
+    d3d(|d| {
+        if let Some(dv) = d.devs.get_mut(&x.dev) {
+            for i in 1..=x.lit {
+                let _ = dv.apply(&Ch::LightOn(i, false));
+            }
+        }
+    });
+}
+fn L_GetLight(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    let Some((l, _)) = d3d(|d| d.lights3.get(&c.a(0)).copied()) else { return DDERR_INVALIDPARAMS };
+    // (the first dwSize bytes of what was set, its flags as D3DLIGHT2's)
+    for i in 1..(r32(p) as usize / 4).min(20) {
+        w32(p + 4 * i as u32, l[i]);
+    }
+    D3D_OK
+}
+
+// IDirect3DTexture2: the surface's interface of kind 3 (a reference of the surface)
+
+pub(super) fn tex2_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| vtable("IDirect3DTexture2", &[(S_QueryInterface, 12), (S_AddRef, 4), (S_Release, 4), (X_GetHandle, 12), (ok, 12), (X_Load, 8)]))
+}
+/// IDirect3DTexture: Texture2's methods, with Initialize (the surface is one already),
+/// PaletteChanged and Unload
+pub(super) fn tex_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        vtable(
+            "IDirect3DTexture",
+            &[(S_QueryInterface, 12), (S_AddRef, 4), (S_Release, 4), (X_Initialize, 12), (X_GetHandle, 12), (ok, 12), (X_Load, 8), (ok, 4)],
+        )
+    })
+}
+fn X_Initialize(_c: &mut Ctx) -> u32 {
+    DDERR_ALREADYINITIALIZED
+}
+/// GetHandle(device, handle): the surface's id (what D3DRENDERSTATE_TEXTUREHANDLE takes)
+fn X_GetHandle(c: &mut Ctx) -> u32 {
+    if c.a(2) == 0 {
+        return DDERR_INVALIDPARAMS;
+    }
+    put32(c.a(2), sid(c.a(0)).map_or(0, |x| x.0));
+    D3D_OK
+}
+/// Load(source texture): every level the two have of the same size, and the palette
+fn X_Load(c: &mut Ctx) -> u32 {
+    let (Some((d, _)), Some((s, _))) = (sid(c.a(0)), sid(c.a(1))) else { return DDERR_INVALIDPARAMS };
+    let (dl, sl) = (levels(d), levels(s));
+    if dl.is_empty() || sl.is_empty() || (dl[0].w, dl[0].h) != (sl[0].w, sl[0].h) {
+        return DDERR_INVALIDPARAMS;
+    }
+    for (dx, sx) in dl.iter().zip(sl.iter()) {
+        if dx.bpp == sx.bpp {
+            let r = Rect { l: 0, t: 0, r: sx.w, b: sx.h };
+            blit(dx, r, sx, r, None, (false, false));
+        }
+    }
+    // (the source's color key goes with it; a destination's own one stays when the source has
+    // none: ddraw4's test_texture_load_ckey)
+    if let Some(k) = surf(s).and_then(|x| x.ck_src) {
+        with(|st| st.surfs.get_mut(&d).map(|x| x.ck_src = Some(k)));
+    }
+    let (dp, sp) = (dl[0].palette, sl[0].palette);
+    if dp != 0 && sp != 0 {
+        with(|st| {
+            if let Some(p) = st.palettes.get(&sp).copied() {
+                st.palettes.insert(dp, p);
+            }
+        });
     }
     D3D_OK
 }
@@ -2026,6 +3161,63 @@ mod tests {
         assert_eq!(D3DERR_SCENE_IN_SCENE, 0x8876_0000 | 760);
         assert_eq!(D3DERR_SCENE_NOT_IN_SCENE, 0x8876_0000 | 761);
         assert_eq!(D3DERR_VBUF_CREATE_FAILED, 0x8876_0825);
+    }
+
+    /// The clip volume of ddraw4's test_process_vertices (x 2, y 3, 4 x 5, z -2..3) takes its
+    /// points where Windows puts them on the 100 x 200 viewport at (10, 20)
+    #[test]
+    fn clip_volume_maps_to_the_viewport() {
+        let m = clip_space([2., 3., 4., 5.], (-2., 3.));
+        let on_screen = |p: [f32; 3]| {
+            let v: [f32; 4] = std::array::from_fn(|c| p[0] * m[c] + p[1] * m[4 + c] + p[2] * m[8 + c] + m[12 + c]);
+            [10. + (v[0] + 1.) * 50., 20. + (1. - v[1]) * 100., v[2]]
+        };
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-4);
+        assert!(near(on_screen([-1., -1., -1.]), [-65., 180., 0.2]));
+        assert!(near(on_screen([0., 0., 0.]), [-40., 140., 0.4]));
+        assert!(near(on_screen([1., 1., 1.]), [-15., 100., 0.6]));
+        assert_eq!(clip_space([-1., 1., 2., 2.], (0., 1.)), IDENT);
+    }
+
+    /// A D3DLIGHT2 as the D3DLIGHT7 its device gets: its color diffuse and specular (none with
+    /// D3DLIGHT_NO_SPECULAR), no ambient, the rest moved over
+    #[test]
+    fn light2_as_light7() {
+        let mut l: [u32; 20] = std::array::from_fn(|i| 100 + i as u32);
+        l[1] = 3;
+        l[19] = D3DLIGHT_ACTIVE;
+        let o = light7_of(&l);
+        assert_eq!(o[0], 3);
+        assert_eq!(o[1..5], [102, 103, 104, 105]);
+        assert_eq!(o[5..9], [102, 103, 104, 105]);
+        assert_eq!(o[9..13], [0; 4]);
+        assert_eq!(o[13], 106);
+        assert_eq!(o[25], 118);
+        l[19] |= D3DLIGHT_NO_SPECULAR;
+        assert_eq!(light7_of(&l)[5..9], [0; 4]);
+        assert_eq!(D3DERR_LIGHTHASVIEWPORT, 0x8876_02ef);
+    }
+
+    /// D3DVIEWPORT <-> D3DVIEWPORT2 as Windows converts them (ddraw4's test_viewport_object:
+    /// a 480 x 360 rectangle)
+    #[test]
+    fn viewport_scale_and_clip_volume() {
+        assert_eq!(viewport_scale(480., 360., [2., -1.75, 2.5, -1.5]), [192., -240., 4.5, -1.75]);
+        assert_eq!(viewport_scale(480., 360., [-1.5, 1.75, -1.5, 2.]), [-320., 180., -3., 1.75]);
+        assert_eq!(viewport_clip(480., 360., -320., 180.), [0.75, 1., -1.5, 2.]);
+        assert_eq!(viewport_clip(480., 360., 192., -240.), [-1.25, -0.75, 2.5, -1.5]);
+        // (the usual one: half the size as the scale is the -1..1 square)
+        assert_eq!(viewport_clip(640., 480., 320., 240.), [-1., 1., 2., 2.]);
+    }
+
+    /// Direct3D 6's viewport errors (d3d.h: 773, 774, 775) and D3DDEVICEDESC's three sizes
+    #[test]
+    fn dx6_viewport_errors_and_desc_sizes() {
+        assert_eq!(D3DERR_VIEWPORTDATANOTSET, 0x8876_0000 | 773);
+        assert_eq!(D3DERR_VIEWPORTHASNODEVICE, 0x8876_0000 | 774);
+        assert_eq!(D3DERR_NOCURRENTVIEWPORT, 0x8876_0000 | 775);
+        assert!([172, 204, 252].iter().all(|&n| desc3_size_ok(n)));
+        assert!(![0, 171, 236, 253].iter().any(|&n| desc3_size_ok(n)));
     }
 
     const ARGB: Fmt = Fmt { ch: [(16, 255), (8, 255), (0, 255), (24, 255)] };
