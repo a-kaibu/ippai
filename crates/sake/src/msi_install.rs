@@ -301,7 +301,11 @@ fn standard(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, _table: Option<&st
             ERROR_SUCCESS
         }
         "ProcessComponents" => process_components(p),
-        "InstallValidate" | "InstallInitialize" | "ValidateProductID" | "IsolateComponents" | "MigrateFeatureStates"
+        "InstallValidate" => {
+            p.lock().unwrap().validated = true;
+            ERROR_SUCCESS
+        }
+        "InstallInitialize" | "ValidateProductID" | "IsolateComponents" | "MigrateFeatureStates"
         | "AllocateRegistrySpace" | "PublishFeatures" | "PublishComponents" | "RegisterUser" | "UnpublishComponents" | "UnpublishFeatures" | "StopServices"
         | "DeleteServices" | "UnregisterComPlus" | "SelfUnregModules" | "UnregisterTypeLibraries" | "RemoveODBC" | "UnregisterFonts"
         | "UnregisterClassInfo" | "UnregisterExtensionInfo" | "UnregisterProgIdInfo" | "UnregisterMIMEInfo" | "RemoveShortcuts"

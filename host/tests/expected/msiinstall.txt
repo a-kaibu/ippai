@@ -5,6 +5,25 @@ ui 130
 missing package: 1619
 configure unknown: 1605
 file version missing: 2
+costs: open 0
+  before costing: 1609
+  not validated: 1626
+  component Main: 0 C: 8 0
+  component Data: 0 C: 144 0
+  component Extra: 0 C: 8 0
+  component Nope: 1607  -1 -1
+  index 1: 259
+  small buffer: 234 2
+  feature Complete tree 0: 0 152
+  feature Complete tree 1: 0 152
+  feature Complete tree 2: 0 152
+  feature Extras tree 0: 0 8
+  feature Extras tree 1: 0 8
+  feature Extras tree 2: 0 8
+  feature Nope tree 0: 1606 -1
+  feature Nope tree 1: 1606 -1
+  feature Nope tree 2: 1606 -1
+  bad tree: 87
 == msiinstall.msi
 before
   a.txt: missing

@@ -6,9 +6,11 @@
  * MsiEnumRelatedProducts) and uninstalled (REMOVE=ALL): the files, registry values,
  * folders and registration come and go. AppSearch finds a REG_SZ starting with '#', a
  * DWORD, a folder named in the registry and a file one folder down (DrLocator), and its
- * results are written back as a registry value. */
+ * results are written back as a registry value. Disk costs (MsiEnumComponentCosts,
+ * MsiGetFeatureCost) are asked of the package opened and costed. */
 #include <windows.h>
 #include <msi.h>
+#include <msiquery.h>
 #include <shlobj.h>
 #include <stdio.h>
 #include <string.h>
@@ -116,6 +118,47 @@ static void state(const char *what) {
     product();
 }
 
+/* Disk costs (512-byte units, files in whole 4 KiB clusters) once InstallValidate ran. */
+static void costs(void) {
+    char path[MAX_PATH], drive[8];
+    GetModuleFileNameA(NULL, path, sizeof path);
+    strcpy(strrchr(path, '\\') + 1, "msiinstall.msi");
+    MSIHANDLE h;
+    UINT r = MsiOpenPackageA(path, &h);
+    printf("costs: open %u\n", r);
+    if (r)
+        return;
+    int cost = -1, temp = -1;
+    DWORD n = sizeof drive;
+    printf("  before costing: %u\n", MsiEnumComponentCostsA(h, "Data", 0, INSTALLSTATE_LOCAL, drive, &n, &cost, &temp));
+    MsiDoActionA(h, "CostInitialize");
+    MsiDoActionA(h, "FileCost");
+    MsiDoActionA(h, "CostFinalize");
+    printf("  not validated: %u\n", MsiEnumComponentCostsA(h, "Data", 0, INSTALLSTATE_LOCAL, drive, &n, &cost, &temp));
+    MsiDoActionA(h, "InstallValidate");
+    const char *comps[] = {"Main", "Data", "Extra", "Nope"};
+    for (int i = 0; i < 4; i++) {
+        n = sizeof drive;
+        cost = temp = -1;
+        r = MsiEnumComponentCostsA(h, comps[i], 0, INSTALLSTATE_LOCAL, drive, &n, &cost, &temp);
+        printf("  component %s: %u %s %d %d\n", comps[i], r, r ? "" : drive, cost, temp);
+    }
+    n = sizeof drive;
+    printf("  index 1: %u\n", MsiEnumComponentCostsA(h, "Data", 1, INSTALLSTATE_LOCAL, drive, &n, &cost, &temp));
+    n = 1;
+    r = MsiEnumComponentCostsA(h, "Data", 0, INSTALLSTATE_LOCAL, drive, &n, &cost, &temp);
+    printf("  small buffer: %u %lu\n", r, n);
+    const char *feats[] = {"Complete", "Extras", "Nope"};
+    for (int i = 0; i < 3; i++)
+        for (int tree = 0; tree < 3; tree++) {
+            cost = -1;
+            r = MsiGetFeatureCostA(h, feats[i], tree, INSTALLSTATE_LOCAL, &cost);
+            printf("  feature %s tree %d: %u %d\n", feats[i], tree, r, cost);
+        }
+    printf("  bad tree: %u\n", MsiGetFeatureCostA(h, "Complete", 3, INSTALLSTATE_LOCAL, &cost));
+    MsiCloseHandle(h);
+}
+
 static void run(const char *msi) {
     char path[MAX_PATH];
     GetModuleFileNameA(NULL, path, sizeof path);
@@ -171,6 +214,7 @@ int main(void) {
     char v[32] = "x", lang[16] = "x";
     DWORD vn = sizeof v, ln = sizeof lang;
     printf("file version missing: %u\n", MsiGetFileVersionA("C:\\nowhere\\none.dll", v, &vn, lang, &ln));
+    costs();
     run("msiinstall.msi");
     run("msiinstall-u.msi");
     /* msiexec as a process of its own, as installers and uninstall strings run it */

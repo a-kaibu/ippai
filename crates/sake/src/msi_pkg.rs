@@ -98,6 +98,8 @@ pub struct Package {
     pub cost_started: bool,
     /// FeatureComponents: (feature, component)
     pub uses: Vec<(String, String)>,
+    /// InstallValidate ran: costs are known (MsiEnumComponentCosts)
+    pub validated: bool,
 }
 
 /// The package handle's package.
@@ -266,6 +268,7 @@ impl Package {
             sources: None,
             cost_started: false,
             uses: Vec::new(),
+            validated: false,
         };
         p.load_tables();
         p.sync_props();
@@ -1009,6 +1012,106 @@ fn MsiSetComponentStateW(c: &mut Ctx) -> u32 {
     set_component_state(c, true)
 }
 
+/// A component's disk cost in 512-byte units: its files, each in whole 4 KiB clusters.
+fn component_cost(p: &Package, comp: &str) -> i32 {
+    p.files.iter().filter(|f| f.comp == comp).map(|f| (f.size as u64).div_ceil(4096) as i64 * 8).sum::<i64>().min(i32::MAX as i64) as i32
+}
+
+/// MsiEnumComponentCosts: the one drive (C:) a component (or with "" the product) costs on,
+/// once InstallValidate ran.
+fn enum_component_costs(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, n, index, _state, drive, pcch, pcost, ptemp) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
+    if n == 0 || drive == 0 || pcch == 0 || pcost == 0 || ptemp == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
+    let name = arg_str(n, wide);
+    let p = p.lock().unwrap();
+    if !p.cost_started {
+        return ERROR_INVALID_HANDLE_STATE;
+    }
+    if !p.validated {
+        return ERROR_FUNCTION_NOT_CALLED;
+    }
+    let (cost, temp) = if name.is_empty() {
+        (0, 8)
+    } else {
+        if !p.comps.contains_key(&name) {
+            return ERROR_UNKNOWN_COMPONENT;
+        }
+        (component_cost(&p, &name), 0)
+    };
+    if index > 0 {
+        return ERROR_NO_MORE_ITEMS;
+    }
+    let r = crate::msi::out_str(drive, pcch, "C:", wide);
+    if r != ERROR_SUCCESS {
+        return r;
+    }
+    w32(pcost, cost as u32);
+    w32(ptemp, temp);
+    ERROR_SUCCESS
+}
+fn MsiEnumComponentCostsA(c: &mut Ctx) -> u32 {
+    enum_component_costs(c, false)
+}
+fn MsiEnumComponentCostsW(c: &mut Ctx) -> u32 {
+    enum_component_costs(c, true)
+}
+
+/// MsiGetFeatureCost: what the feature's components cost (MSICOSTTREE_CHILDREN 1: and its
+/// child features', PARENTS 2: and its parents'), each component once.
+fn get_feature_cost(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, n, tree, state, pcost) = (c.a(0), c.a(1), c.a(2), c.i(3), c.a(4));
+    if n == 0 || pcost == 0 || tree > 2 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
+    let name = arg_str(n, wide);
+    let p = p.lock().unwrap();
+    if !p.cost_started || !p.features.iter().any(|f| f.name == name) {
+        return ERROR_UNKNOWN_FEATURE;
+    }
+    let mut feats = vec![name.clone()];
+    match tree {
+        1 => {
+            let mut i = 0;
+            while i < feats.len() {
+                let parent = feats[i].clone();
+                feats.extend(p.features.iter().filter(|f| f.parent == parent && f.name != parent).map(|f| f.name.clone()));
+                i += 1;
+            }
+        }
+        2 => {
+            let mut cur = name.clone();
+            while let Some(f) = p.features.iter().find(|f| f.name == cur && !f.parent.is_empty() && f.parent != cur) {
+                cur = f.parent.clone();
+                if feats.contains(&cur) {
+                    break;
+                }
+                feats.push(cur.clone());
+            }
+        }
+        _ => {}
+    }
+    let mut comps: Vec<&str> = p.uses.iter().filter(|(f, _)| feats.contains(f)).map(|(_, c)| c.as_str()).collect();
+    comps.sort();
+    comps.dedup();
+    let cost: i32 = comps.iter().map(|c| component_cost(&p, c)).sum();
+    let cost = match state {
+        INSTALLSTATE_ABSENT | INSTALLSTATE_ADVERTISED | INSTALLSTATE_SOURCE => 0,
+        _ => cost,
+    };
+    w32(pcost, cost as u32);
+    ERROR_SUCCESS
+}
+fn MsiGetFeatureCostA(c: &mut Ctx) -> u32 {
+    get_feature_cost(c, false)
+}
+fn MsiGetFeatureCostW(c: &mut Ctx) -> u32 {
+    get_feature_cost(c, true)
+}
+
 fn MsiCreateRecordFromPkg(_c: &mut Ctx) -> u32 {
     0
 }
@@ -1024,7 +1127,7 @@ pub fn init() {
         MsiSetPropertyW, MsiEvaluateConditionA, MsiEvaluateConditionW, MsiGetActiveDatabase, MsiGetLanguage, MsiGetMode, MsiSetMode,
         MsiGetTargetPathA, MsiGetTargetPathW, MsiGetSourcePathA, MsiGetSourcePathW, MsiSetTargetPathA, MsiSetTargetPathW,
         MsiGetFeatureStateA, MsiGetFeatureStateW, MsiGetComponentStateA, MsiGetComponentStateW, MsiSetFeatureStateA, MsiSetFeatureStateW,
-        MsiSetComponentStateA, MsiSetComponentStateW,
+        MsiSetComponentStateA, MsiSetComponentStateW, MsiEnumComponentCostsA, MsiEnumComponentCostsW, MsiGetFeatureCostA, MsiGetFeatureCostW,
     );
     let _ = MsiCreateRecordFromPkg;
     crate::msi_install::init();
