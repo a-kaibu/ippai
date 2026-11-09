@@ -40,8 +40,8 @@ pub struct Feature {
     pub level: i32,
     pub attrs: i32,
     pub installed: i32,
+    /// the action requested (what MsiGetFeatureState answers)
     pub action: i32,
-    pub request: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -54,6 +54,12 @@ pub struct Component {
     pub keypath: String,
     pub installed: i32,
     pub action: i32,
+    /// its Condition is not false
+    pub enabled: bool,
+    /// it has a compressed file: it cannot run from source
+    pub force_local: bool,
+    /// products registered as using it
+    pub clients: i32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -84,6 +90,14 @@ pub struct Package {
     pub action: String,
     /// the execute sequence ran (ExecuteAction, or the sequence itself)
     pub executed: bool,
+    /// the package's folder (SourceDir once CostInitialize or ResolveSource ran)
+    pub pkg_dir: String,
+    /// MsiGetSourcePath's answers, fixed at CostInitialize / ResolveSource
+    pub sources: Option<HashMap<String, String>>,
+    /// CostInitialize ran: features and components are known
+    pub cost_started: bool,
+    /// FeatureComponents: (feature, component)
+    pub uses: Vec<(String, String)>,
 }
 
 /// The package handle's package.
@@ -117,6 +131,14 @@ pub fn query(db: &Db, sql: &str) -> Vec<Record> {
 /// The long name of a "short|long" file or directory name.
 pub fn long_name(s: &str) -> &str {
     s.rsplit_once('|').map_or(s, |x| x.1)
+}
+
+/// A path as MsiSetTargetPath keeps it: the spaces around each part and empty parts
+/// dropped, ending in a backslash.
+pub fn clean_path(p: &str) -> String {
+    let unc = p.starts_with("\\\\");
+    let parts: Vec<&str> = p.split('\\').map(str::trim).filter(|x| !x.is_empty()).collect();
+    format!("{}{}\\", if unc { "\\\\" } else { "" }, parts.join("\\"))
 }
 
 fn slash(s: &str) -> String {
@@ -187,17 +209,29 @@ fn system_props(p: &mut HashMap<String, String>) {
 
 impl Package {
     pub fn open(db: Db, path: &str) -> Package {
+        {
+            let mut o = db.lock().unwrap();
+            if o.db.table_index("_Property").is_none() {
+                let cols = vec![
+                    msidb::Col { name: "Property".into(), ty: 0x2d48 | msidb::db::T_TEMPORARY },
+                    msidb::Col { name: "Value".into(), ty: 0x0d00 | msidb::db::T_NULLABLE | msidb::db::T_TEMPORARY },
+                ];
+                let _ = o.db.create_table("_Property", cols, false);
+            }
+        }
         let summary = db.lock().unwrap().db.summary.as_deref().map(SummaryInfo::parse).unwrap_or_default();
         let mut props = HashMap::new();
         system_props(&mut props);
         for r in query(&db, "SELECT `Property`, `Value` FROM `Property`") {
             props.insert(r.get(1).text(), r.get(2).text());
         }
-        let dir = path.rsplit_once('\\').map_or(String::new(), |d| slash(d.0));
+        // (the package's folder: a relative path is taken from the current directory)
+        // ("#handle": the database's file)
+        let file = if path.starts_with('#') { db.lock().unwrap().path.clone() } else { path.to_string() };
+        let full = if file.is_empty() { String::new() } else { crate::files::full_path(&file) };
+        let dir = full.rsplit_once('\\').map_or(String::new(), |d| slash(d.0));
         props.insert("DATABASE".into(), path.to_string());
         props.insert("OriginalDatabase".into(), path.to_string());
-        props.entry("SourceDir".into()).or_insert(dir.clone());
-        props.insert("SOURCEDIR".into(), dir);
         if let Some(Prop::Str(code)) = summary.props.get(&msidb::suminfo::PID_REVNUMBER) {
             props.insert("PackageCode".into(), code.clone());
         }
@@ -220,26 +254,33 @@ impl Package {
             costed: false,
             action: String::new(),
             executed: false,
+            pkg_dir: dir,
+            sources: None,
+            cost_started: false,
+            uses: Vec::new(),
         };
         p.load_tables();
+        p.sync_props();
         p
     }
 
     fn load_tables(&mut self) {
+        // (msidbSumInfoSourceTypeSFN: the source tree has the short names)
+        let sfn = matches!(self.summary.props.get(&msidb::suminfo::PID_WORDCOUNT), Some(Prop::I4(v)) if v & 1 != 0);
         for r in query(&self.db, "SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`") {
             let def = r.get(3).text();
             let (t, s) = match def.split_once(':') {
                 Some((t, s)) => (t.to_string(), s.to_string()),
                 None => (def.clone(), def.clone()),
             };
-            self.dirs.insert(r.get(1).text(), Dir { parent: r.get(2).text(), target_name: long_name(&t).into(), source_name: long_name(&s).into(), ..Dir::default() });
+            self.dirs.insert(r.get(1).text(), Dir { parent: r.get(2).text(), target_name: long_name(&t).into(), source_name: if sfn { s.split('|').next().unwrap_or("").into() } else { long_name(&s).into() }, ..Dir::default() });
         }
         for r in query(&self.db, "SELECT `Feature`, `Feature_Parent`, `Level`, `Attributes` FROM `Feature`") {
-            self.features.push(Feature { name: r.get(1).text(), parent: r.get(2).text(), level: int(r.get(3)).max(0), attrs: int(r.get(4)).max(0), installed: INSTALLSTATE_ABSENT, action: INSTALLSTATE_UNKNOWN, request: None });
+            self.features.push(Feature { name: r.get(1).text(), parent: r.get(2).text(), level: int(r.get(3)).max(0), attrs: int(r.get(4)).max(0), installed: INSTALLSTATE_UNKNOWN, action: INSTALLSTATE_UNKNOWN });
         }
         for r in query(&self.db, "SELECT `Component`, `ComponentId`, `Directory_`, `Attributes`, `Condition`, `KeyPath` FROM `Component`") {
             let name = r.get(1).text();
-            self.comps.insert(name.clone(), Component { name, id: r.get(2).text(), dir: r.get(3).text(), attrs: int(r.get(4)).max(0), cond: r.get(5).text(), keypath: r.get(6).text(), installed: INSTALLSTATE_ABSENT, action: INSTALLSTATE_UNKNOWN });
+            self.comps.insert(name.clone(), Component { name, id: r.get(2).text(), dir: r.get(3).text(), attrs: int(r.get(4)).max(0), cond: r.get(5).text(), keypath: r.get(6).text(), installed: INSTALLSTATE_UNKNOWN, action: INSTALLSTATE_UNKNOWN, enabled: true, force_local: false, clients: 0 });
         }
         for r in query(&self.db, "SELECT `File`, `Component_`, `FileName`, `FileSize`, `Attributes`, `Sequence` FROM `File`") {
             let n = r.get(3).text();
@@ -247,6 +288,7 @@ impl Package {
             self.files.push(FileRec { key: r.get(1).text(), comp: r.get(2).text(), name: long, source_name: short, size: int(r.get(4)).max(0) as u32, attrs: int(r.get(5)).max(0), seq: int(r.get(6)) });
         }
         self.files.sort_by_key(|f| f.seq);
+        self.uses = query(&self.db, "SELECT `Feature_`, `Component_` FROM `FeatureComponents`").iter().map(|r| (r.get(1).text(), r.get(2).text())).collect();
     }
 
     pub fn prop(&self, name: &str) -> String {
@@ -259,9 +301,32 @@ impl Package {
         } else {
             self.props.insert(name.to_string(), v.to_string());
         }
+        self.sync_prop(name);
         // (a directory's property sets its target, as Windows' costing reads them back)
         if self.costed && self.dirs.contains_key(name) && !v.is_empty() {
             self.set_target(name, v);
+        }
+    }
+
+    /// The active database's temporary _Property table, where Windows keeps a package's
+    /// properties (a SELECT on it sees them): `name`'s row as the property is now.
+    pub fn sync_prop(&self, name: &str) {
+        let mut o = self.db.lock().unwrap();
+        let db = &mut o.db;
+        let Some(ti) = db.table_index("_Property") else { return };
+        if let Some(ri) = db.row_by_keys(ti, &[0], &[Field::Str(name.to_string())]) {
+            db.delete(ti, ri);
+        }
+        if let Some(v) = self.props.get(name) {
+            let _ = db.insert(ti, &[Field::Str(name.to_string()), Field::Str(v.clone())], true);
+        }
+    }
+
+    /// Every property into _Property (after actions that set many).
+    pub fn sync_props(&self) {
+        let names: Vec<String> = self.props.keys().cloned().collect();
+        for n in names {
+            self.sync_prop(&n);
         }
     }
 
@@ -285,7 +350,7 @@ impl Package {
         if let Some(v) = done.get(n) {
             return v.clone();
         }
-        let src_root = slash(&self.prop("SourceDir"));
+        let src_root = slash(&Some(self.prop("SourceDir")).filter(|v| !v.is_empty()).unwrap_or_else(|| self.pkg_dir.clone()));
         let Some(d) = self.dirs.get(n).cloned() else { return (slash(&self.prop("ROOTDRIVE")), src_root) };
         let own = self.props.get(n).filter(|v| !v.is_empty()).cloned();
         let (pt, ps) = if d.parent.is_empty() || d.parent == n || depth > 64 {
@@ -304,13 +369,49 @@ impl Package {
         (target, source)
     }
 
+    /// CostInitialize / ResolveSource: SourceDir is the package's folder, and each
+    /// directory's source is fixed (a compressed package's are all the root).
+    pub fn resolve_sources(&mut self) {
+        if self.prop("SourceDir").is_empty() {
+            self.props.insert("SourceDir".into(), self.pkg_dir.clone());
+        }
+        if self.prop("SOURCEDIR").is_empty() {
+            let v = self.prop("SourceDir");
+            self.props.insert("SOURCEDIR".into(), v);
+        }
+        let root = slash(&self.prop("SourceDir"));
+        let compressed = matches!(self.summary.props.get(&msidb::suminfo::PID_WORDCOUNT), Some(Prop::I4(v)) if v & 2 != 0);
+        let mut out = HashMap::new();
+        let names: Vec<String> = self.dirs.keys().cloned().collect();
+        for n in &names {
+            let v = if compressed { root.clone() } else { self.source_of(n, &root, 0) };
+            out.insert(n.clone(), v);
+        }
+        out.entry("SourceDir".into()).or_insert(root.clone());
+        if compressed {
+            out.entry("SOURCEDIR".into()).or_insert(root);
+        }
+        self.sources = Some(out);
+        self.sync_prop("SourceDir");
+        self.sync_prop("SOURCEDIR");
+    }
+
+    fn source_of(&self, n: &str, root: &str, depth: u32) -> String {
+        let Some(d) = self.dirs.get(n) else { return root.to_string() };
+        if d.parent.is_empty() || d.parent == n || depth > 64 {
+            return root.to_string();
+        }
+        let base = self.source_of(&d.parent, root, depth + 1);
+        if d.source_name == "." || d.source_name.is_empty() { base } else { slash(&format!("{base}{}", d.source_name)) }
+    }
+
     fn is_system_folder(&self, _n: &str) -> bool {
         false
     }
 
     /// MsiSetTargetPath / a type 35 custom action: the directory and those under it move.
     pub fn set_target(&mut self, n: &str, path: &str) {
-        let path = slash(path);
+        let path = clean_path(path);
         self.props.insert(n.to_string(), path.clone());
         let old = self.dirs.get(n).map(|d| d.target.clone()).unwrap_or_default();
         if old.is_empty() {
@@ -337,82 +438,199 @@ impl Package {
 
     /// Feature and component states for a first install (CostFinalize): features at or
     /// under INSTALLLEVEL (or named by ADDLOCAL / REMOVE) and the components they use.
+    /// A file comes out of a cabinet (msidbFileAttributesCompressed 0x4000, Noncompressed
+    /// 0x2000, else the package's word count bit 2).
+    pub fn file_compressed(&self, f: &FileRec) -> bool {
+        let wc = match self.summary.props.get(&msidb::suminfo::PID_WORDCOUNT) {
+            Some(Prop::I4(v)) => *v,
+            _ => 0,
+        };
+        if f.attrs & 0x4000 != 0 { true } else if f.attrs & 0x2000 != 0 { false } else { wc & 2 != 0 }
+    }
+
+    fn feature_comps(&self, f: &str) -> Vec<String> {
+        self.uses.iter().filter(|u| u.0 == f).map(|u| u.1.clone()).collect()
+    }
+
+    /// CostFinalize: the installed states (the registration), the states asked for
+    /// (ADDLOCAL, REMOVE, ADDSOURCE, REINSTALL, ADVERTISE, in that order, else INSTALLLEVEL
+    /// and the features' favoured states) and the components' from their features'.
     pub fn plan_states(&mut self) {
-        let level: i32 = self.prop("INSTALLLEVEL").parse().unwrap_or(1);
-        for r in query(&self.db, "SELECT `Feature_`, `Level`, `Condition` FROM `Condition`") {
-            if crate::msi_pkg::cond_true(self, &r.get(3).text()) {
-                let (f, l) = (r.get(1).text(), int(r.get(2)));
-                if let Some(x) = self.features.iter_mut().find(|x| x.name == f) {
-                    x.level = l;
-                }
-            }
-        }
-        let list = |s: String| -> Vec<String> { s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect() };
-        let add = list(self.prop("ADDLOCAL"));
-        let remove = list(self.prop("REMOVE"));
-        // (a product already installed: its features stay as they are unless named)
-        let maint = !self.prop("Installed").is_empty();
-        for f in self.features.iter_mut() {
-            let was = f.installed == INSTALLSTATE_LOCAL;
-            let mut on = if maint { was } else { f.level > 0 && f.level <= level };
-            if add.iter().any(|a| a == "ALL" || *a == f.name) {
-                on = true;
-            }
-            if remove.iter().any(|a| a == "ALL" || *a == f.name) {
-                on = false;
-            }
-            if let Some(r) = f.request {
-                on = r == INSTALLSTATE_LOCAL || r == INSTALLSTATE_SOURCE || r == INSTALLSTATE_DEFAULT;
-            }
-            f.action = match (was, on) {
-                (false, true) => INSTALLSTATE_LOCAL,
-                (true, false) => INSTALLSTATE_ABSENT,
-                (true, true) if !maint => INSTALLSTATE_LOCAL,
-                _ => INSTALLSTATE_UNKNOWN,
-            };
-        }
-        // (a feature under one that is off is off)
-        let stays_on = |f: &Feature| f.action == INSTALLSTATE_LOCAL || f.installed == INSTALLSTATE_LOCAL && f.action != INSTALLSTATE_ABSENT;
-        for _ in 0..8 {
-            let off: Vec<String> = self.features.iter().filter(|f| !stays_on(f)).map(|f| f.name.clone()).collect();
-            for f in self.features.iter_mut() {
-                if !f.parent.is_empty() && off.contains(&f.parent) {
-                    f.action = if f.installed == INSTALLSTATE_LOCAL { INSTALLSTATE_ABSENT } else { INSTALLSTATE_UNKNOWN };
-                }
-            }
-        }
-        let on: Vec<String> = self.features.iter().filter(|f| stays_on(f)).map(|f| f.name.clone()).collect();
-        let new: Vec<String> = self.features.iter().filter(|f| f.action == INSTALLSTATE_LOCAL).map(|f| f.name.clone()).collect();
-        let uses: Vec<(String, String)> = query(&self.db, "SELECT `Feature_`, `Component_` FROM `FeatureComponents`").iter().map(|r| (r.get(1).text(), r.get(2).text())).collect();
-        let names: Vec<String> = self.comps.keys().cloned().collect();
-        for n in names {
+        let code = self.prop("ProductCode");
+        for n in self.comps.keys().cloned().collect::<Vec<_>>() {
             let c = self.comps.get(&n).unwrap().clone();
-            let used = uses.iter().any(|(f, cc)| *cc == n && on.contains(f));
-            let added = uses.iter().any(|(f, cc)| *cc == n && new.contains(f));
-            let ok = c.cond.is_empty() || cond_true(self, &c.cond);
-            let was = c.installed == INSTALLSTATE_LOCAL;
-            self.comps.get_mut(&n).unwrap().action = if was && !used {
-                INSTALLSTATE_ABSENT
-            } else if added && ok && (!was || !maint) {
-                INSTALLSTATE_LOCAL
-            } else {
-                INSTALLSTATE_UNKNOWN
+            let enabled = c.cond.is_empty() || !matches!(evaluate(self, &c.cond), cond::Cond::False);
+            let (installed, clients) = if c.id.is_empty() { (INSTALLSTATE_UNKNOWN, 0) } else { crate::msi_install::component_registration(&code, &c.id) };
+            let c = self.comps.get_mut(&n).unwrap();
+            c.enabled = enabled;
+            c.installed = installed;
+            c.clients = clients;
+        }
+        for i in 0..self.features.len() {
+            let st = crate::msi_install::feature_state(&code, &self.features[i].name);
+            self.features[i].installed = if st == INSTALLSTATE_UNKNOWN || st == INSTALLSTATE_INVALIDARG { INSTALLSTATE_ABSENT } else { st };
+        }
+        let mut preselected = false;
+        for (prop, state) in [("ADDLOCAL", INSTALLSTATE_LOCAL), ("REMOVE", INSTALLSTATE_ABSENT), ("ADDSOURCE", INSTALLSTATE_SOURCE), ("REINSTALL", INSTALLSTATE_UNKNOWN), ("ADVERTISE", INSTALLSTATE_ADVERTISED)] {
+            let v = self.prop(prop);
+            if v.is_empty() {
+                continue;
+            }
+            preselected = true;
+            let all = v.eq_ignore_ascii_case("ALL");
+            let names: Vec<&str> = v.split(',').collect();
+            for f in self.features.iter_mut().filter(|f| f.level > 0) {
+                if !all && !names.contains(&f.name.as_str()) {
+                    continue;
+                }
+                f.action = match prop {
+                    "REINSTALL" if f.installed == INSTALLSTATE_ABSENT => INSTALLSTATE_UNKNOWN,
+                    "REINSTALL" => f.installed,
+                    "REMOVE" if f.installed == INSTALLSTATE_ABSENT => INSTALLSTATE_UNKNOWN,
+                    _ => state,
+                };
+            }
+        }
+        if preselected {
+            self.props.insert("Preselected".into(), "1".into());
+            self.sync_prop("Preselected");
+        } else {
+            for r in query(&self.db, "SELECT `Feature_`, `Level`, `Condition` FROM `Condition`") {
+                if matches!(evaluate(self, &r.get(3).text()), cond::Cond::True) {
+                    let (f, l) = (r.get(1).text(), int(r.get(2)));
+                    if let Some(x) = self.features.iter_mut().find(|x| x.name == f) {
+                        x.level = l;
+                    }
+                }
+            }
+        }
+        // (a component with a file in a cabinet is installed, not run from source)
+        for f in &self.files {
+            if self.file_compressed(f) {
+                if let Some(c) = self.comps.get_mut(&f.comp).filter(|c| c.enabled) {
+                    c.force_local = true;
+                }
+            }
+        }
+        if self.prop("INSTALLLEVEL").is_empty() {
+            self.set_prop("INSTALLLEVEL", "1");
+        }
+        let level: i32 = self.prop("INSTALLLEVEL").trim().parse().unwrap_or(1);
+        let selected = |f: &Feature| f.level > 0 && f.level <= level;
+        let fresh = self.prop("Installed").is_empty() && self.prop("Preselected").is_empty();
+        for f in self.features.iter_mut() {
+            if !selected(f) || f.action != INSTALLSTATE_UNKNOWN {
+                continue;
+            }
+            if self.props.contains_key("Preselected") {
+                f.action = if f.installed == INSTALLSTATE_ABSENT { INSTALLSTATE_UNKNOWN } else { f.installed };
+            } else if fresh {
+                f.action = favoured(f.attrs);
+            }
+        }
+        // (features under one not selected are off; FollowParent ones take their parent's)
+        for _ in 0..self.features.len().min(64) {
+            let mut changed = false;
+            for i in 0..self.features.len() {
+                let parent = self.features[i].parent.clone();
+                if parent.is_empty() || parent == self.features[i].name {
+                    continue;
+                }
+                let Some(p) = self.features.iter().find(|x| x.name == parent).cloned() else { continue };
+                let f = &mut self.features[i];
+                if !selected(&p) && (f.level != p.level || f.action != INSTALLSTATE_UNKNOWN) {
+                    f.level = p.level;
+                    f.action = INSTALLSTATE_UNKNOWN;
+                    changed = true;
+                } else if selected(&p) && f.attrs & 2 != 0 && f.action != p.action {
+                    f.action = p.action;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // (a feature with a component that must be local is local)
+        for i in 0..self.features.len() {
+            if self.features[i].action == INSTALLSTATE_SOURCE && self.feature_comps(&self.features[i].name).iter().any(|c| self.comps.get(c).is_some_and(|c| c.force_local)) {
+                self.features[i].action = INSTALLSTATE_LOCAL;
+            }
+        }
+        // what the features using each component want: (local, source, advertised, absent)
+        let mut want: HashMap<String, [bool; 4]> = HashMap::new();
+        for f in &self.features {
+            let st = match f.action {
+                INSTALLSTATE_DEFAULT => favoured(f.attrs),
+                INSTALLSTATE_UNKNOWN => f.installed,
+                a => a,
             };
+            let k = match st {
+                INSTALLSTATE_LOCAL => 0,
+                INSTALLSTATE_SOURCE => 1,
+                INSTALLSTATE_ADVERTISED => 2,
+                INSTALLSTATE_ABSENT if f.action == INSTALLSTATE_ABSENT => 3,
+                _ => continue,
+            };
+            for c in self.feature_comps(&f.name) {
+                want.entry(c).or_default()[k] = true;
+            }
+        }
+        for (n, c) in self.comps.iter_mut() {
+            let [local, source, adv, absent] = want.get(n).copied().unwrap_or_default();
+            let a = if c.attrs & 2 == 0 && (local || source) {
+                if c.attrs & 1 != 0 && !c.force_local { INSTALLSTATE_SOURCE } else { INSTALLSTATE_LOCAL }
+            } else if local {
+                INSTALLSTATE_LOCAL
+            } else if source {
+                INSTALLSTATE_SOURCE
+            } else if adv {
+                INSTALLSTATE_ADVERTISED
+            } else if absent && !c.id.is_empty() {
+                INSTALLSTATE_ABSENT
+            } else {
+                c.action
+            };
+            c.action = if a == INSTALLSTATE_DEFAULT { INSTALLSTATE_LOCAL } else { a };
+            if c.action == INSTALLSTATE_SOURCE && c.installed == INSTALLSTATE_SOURCE && source {
+                c.action = INSTALLSTATE_UNKNOWN;
+            }
+            // (another product still uses it: it stays)
+            if c.action == INSTALLSTATE_ABSENT && c.clients - 1 > 0 {
+                c.action = INSTALLSTATE_UNKNOWN;
+            }
         }
     }
 
-    /// The installed features of a product installed before (its registration) and the
-    /// components they use.
-    pub fn load_installed(&mut self, features: &[String]) {
-        let uses: Vec<(String, String)> = query(&self.db, "SELECT `Feature_`, `Component_` FROM `FeatureComponents`").iter().map(|r| (r.get(1).text(), r.get(2).text())).collect();
-        for f in self.features.iter_mut().filter(|f| features.contains(&f.name)) {
-            f.installed = INSTALLSTATE_LOCAL;
-        }
-        for (f, c) in uses {
-            if features.contains(&f) {
-                if let Some(c) = self.comps.get_mut(&c) {
-                    c.installed = INSTALLSTATE_LOCAL;
+    /// MsiSetFeatureState: the feature, its components and the features under it.
+    pub fn set_feature_state(&mut self, name: &str, state: i32, depth: u32) {
+        let Some(i) = self.features.iter().position(|f| f.name == name) else { return };
+        let state = if state == INSTALLSTATE_ADVERTISED && self.features[i].attrs & 8 != 0 { INSTALLSTATE_ABSENT } else { state };
+        self.features[i].action = state;
+        let new = if state == INSTALLSTATE_ABSENT { INSTALLSTATE_UNKNOWN } else { state };
+        for cn in self.feature_comps(name) {
+            let Some(c) = self.comps.get(&cn).filter(|c| c.enabled).cloned() else { continue };
+            let mut a = new;
+            if new != INSTALLSTATE_LOCAL {
+                // (another feature that wants it keeps it)
+                for f in self.features.iter().filter(|f| f.action == INSTALLSTATE_LOCAL || f.action == INSTALLSTATE_SOURCE) {
+                    if self.uses.iter().any(|u| u.0 == f.name && u.1 == cn) {
+                        a = if c.attrs & 2 != 0 {
+                            if f.attrs & 1 != 0 { INSTALLSTATE_SOURCE } else { INSTALLSTATE_LOCAL }
+                        } else if c.attrs & 1 != 0 {
+                            INSTALLSTATE_SOURCE
+                        } else {
+                            INSTALLSTATE_LOCAL
+                        };
+                    }
                 }
+            }
+            self.comps.get_mut(&cn).unwrap().action = a;
+        }
+        if depth < 64 {
+            let kids: Vec<String> = self.features.iter().filter(|f| f.parent == name && f.name != name).map(|f| f.name.clone()).collect();
+            for k in kids {
+                self.set_feature_state(&k, state, depth + 1);
             }
         }
     }
@@ -445,6 +663,10 @@ impl format::Env for FmtEnv<'_> {
     }
     fn component(&self, key: &str) -> Option<String> {
         let c = self.0.comps.get(key)?;
+        // (run from source: the source folder)
+        if c.action == INSTALLSTATE_SOURCE {
+            return Some(self.0.dirs.get(&c.dir).map(|d| d.source.clone()).unwrap_or_default());
+        }
         Some(self.0.target(&c.dir))
     }
 }
@@ -462,6 +684,18 @@ impl cond::Env for CondEnv<'_> {
     }
     fn feature(&self, n: &str) -> Option<(i32, i32)> {
         self.0.features.iter().find(|f| f.name == n).map(|f| (f.installed, f.action))
+    }
+}
+
+/// A feature's state when nothing asks for another (msidbFeatureAttributesFavorSource 1,
+/// FavorAdvertise 4).
+fn favoured(attrs: i32) -> i32 {
+    if attrs & 1 != 0 {
+        INSTALLSTATE_SOURCE
+    } else if attrs & 4 != 0 {
+        INSTALLSTATE_ADVERTISED
+    } else {
+        INSTALLSTATE_LOCAL
     }
 }
 
@@ -487,6 +721,11 @@ pub fn open_package(path: &str) -> R<Arc<Mutex<Package>>> {
             Err(e) => return Err(e),
         }
     };
+    // (a database with a _Property table of its own is not a package: that name is the
+    // package's properties')
+    if db.lock().unwrap().db.table("_Property").is_some_and(|t| t.persistent) {
+        return Err(ERROR_INSTALL_PACKAGE_INVALID);
+    }
     let full = if path.starts_with('#') { path.to_string() } else { crate::files::full_path(path) };
     Ok(Arc::new(Mutex::new(Package::open(db, &full))))
 }
@@ -523,10 +762,10 @@ fn MsiOpenPackageExW(c: &mut Ctx) -> u32 {
 
 fn get_property(c: &mut Ctx, wide: bool) -> u32 {
     let (h, n, buf, pcch) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     if n == 0 {
         return ERROR_INVALID_PARAMETER;
     }
+    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     let v = p.lock().unwrap().prop(&arg_str(n, wide));
     out_str(buf, pcch, &v, wide)
 }
@@ -545,7 +784,7 @@ fn set_property(c: &mut Ctx, wide: bool) -> u32 {
     }
     let name = arg_str(n, wide);
     if name.is_empty() {
-        return ERROR_FUNCTION_FAILED;
+        return ERROR_SUCCESS;
     }
     let val = if v == 0 { String::new() } else { arg_str(v, wide) };
     p.lock().unwrap().set_prop(&name, &val);
@@ -621,18 +860,24 @@ fn MsiSetMode(c: &mut Ctx) -> u32 {
 
 fn target_path(c: &mut Ctx, wide: bool, source: bool) -> u32 {
     let (h, d, buf, pcch) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     if d == 0 {
         return ERROR_INVALID_PARAMETER;
     }
+    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     let name = arg_str(d, wide);
     let p = p.lock().unwrap();
+    if source {
+        if pcch == 0 {
+            return ERROR_INVALID_PARAMETER;
+        }
+        let Some(v) = p.sources.as_ref().and_then(|s| s.get(&name)) else { return ERROR_DIRECTORY };
+        return out_str(buf, pcch, v, wide);
+    }
+    let Some(dir) = p.dirs.get(&name) else { return ERROR_DIRECTORY };
     if !p.costed {
         return ERROR_FUNCTION_NOT_CALLED;
     }
-    let Some(dir) = p.dirs.get(&name) else { return ERROR_DIRECTORY };
-    let v = if source { dir.source.clone() } else { dir.target.clone() };
-    out_str(buf, pcch, &v, wide)
+    out_str(buf, pcch, &dir.target, wide)
 }
 fn MsiGetTargetPathA(c: &mut Ctx) -> u32 {
     target_path(c, false, false)
@@ -649,10 +894,10 @@ fn MsiGetSourcePathW(c: &mut Ctx) -> u32 {
 
 fn set_target_path(c: &mut Ctx, wide: bool) -> u32 {
     let (h, d, v) = (c.a(0), c.a(1), c.a(2));
-    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     if d == 0 || v == 0 {
         return ERROR_INVALID_PARAMETER;
     }
+    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     let (name, path) = (arg_str(d, wide), arg_str(v, wide));
     let mut p = p.lock().unwrap();
     if !p.costed {
@@ -673,14 +918,22 @@ fn MsiSetTargetPathW(c: &mut Ctx) -> u32 {
 
 fn state(c: &mut Ctx, wide: bool, feature: bool) -> u32 {
     let (h, n, pi, pa) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     if n == 0 {
         return ERROR_INVALID_PARAMETER;
     }
+    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     let name = arg_str(n, wide);
     let p = p.lock().unwrap();
-    let s = if feature { p.features.iter().find(|f| f.name == name).map(|f| (f.installed, f.action)) } else { p.comps.get(&name).map(|x| (x.installed, x.action)) };
-    let Some((i, a)) = s else { return if feature { ERROR_UNKNOWN_FEATURE } else { ERROR_UNKNOWN_COMPONENT } };
+    let unknown = if feature { ERROR_UNKNOWN_FEATURE } else { ERROR_UNKNOWN_COMPONENT };
+    if !p.cost_started {
+        return unknown;
+    }
+    let s = if feature {
+        p.features.iter().find(|f| f.name == name).map(|f| (f.installed, f.action))
+    } else {
+        p.comps.get(&name).map(|x| if x.enabled { (x.installed, x.action) } else { (INSTALLSTATE_UNKNOWN, INSTALLSTATE_UNKNOWN) })
+    };
+    let Some((i, a)) = s else { return unknown };
     if pi != 0 {
         w32(pi, i as u32);
     }
@@ -704,14 +957,16 @@ fn MsiGetComponentStateW(c: &mut Ctx) -> u32 {
 
 fn set_feature_state(c: &mut Ctx, wide: bool) -> u32 {
     let (h, n, s) = (c.a(0), c.a(1), c.i(2));
+    if n == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
     let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     let name = arg_str(n, wide);
     let mut p = p.lock().unwrap();
-    let Some(f) = p.features.iter_mut().find(|f| f.name == name) else { return ERROR_UNKNOWN_FEATURE };
-    f.request = Some(s);
-    if p.costed {
-        p.plan_states();
+    if !p.cost_started || !p.features.iter().any(|f| f.name == name) {
+        return ERROR_UNKNOWN_FEATURE;
     }
+    p.set_feature_state(&name, s, 0);
     ERROR_SUCCESS
 }
 fn MsiSetFeatureStateA(c: &mut Ctx) -> u32 {
@@ -739,4 +994,17 @@ pub fn init() {
     );
     let _ = MsiCreateRecordFromPkg;
     crate::msi_install::init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_paths() {
+        // (Windows' answers, from Wine's package tests)
+        assert_eq!(clean_path("C:\\\\one\\\\two  "), "C:\\one\\two\\");
+        assert_eq!(clean_path("C:\\\\ Program Files \\\\ "), "C:\\Program Files\\");
+        assert_eq!(clean_path("C:\\one\\two\\three"), "C:\\one\\two\\three\\");
+    }
 }

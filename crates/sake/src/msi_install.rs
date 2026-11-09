@@ -167,6 +167,14 @@ pub fn do_action(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, table: Option
     }
     action_start(c, p, name);
     let prev = std::mem::replace(&mut p.lock().unwrap().action, name.to_string());
+    let r = do_action_inner(c, p, name, table);
+    let mut pk = p.lock().unwrap();
+    pk.action = prev;
+    pk.sync_props();
+    r
+}
+
+fn do_action_inner(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, table: Option<&str>) -> u32 {
     let r = match standard(c, p, name, table) {
         Some(r) => r,
         None => {
@@ -183,7 +191,6 @@ pub fn do_action(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, table: Option
             }
         }
     };
-    p.lock().unwrap().action = prev;
     r
 }
 
@@ -193,6 +200,8 @@ fn standard(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, _table: Option<&st
         "CostInitialize" => {
             let mut pk = p.lock().unwrap();
             pk.props.insert("CostingComplete".into(), "0".into());
+            pk.cost_started = true;
+            pk.resolve_sources();
             ERROR_SUCCESS
         }
         "FileCost" => ERROR_SUCCESS,
@@ -233,17 +242,17 @@ fn standard(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, _table: Option<&st
         "InstallFinalize" => {
             let mut pk = p.lock().unwrap();
             for c in pk.comps.values_mut() {
-                if matches!(c.action, INSTALLSTATE_LOCAL | INSTALLSTATE_ABSENT) {
+                if c.action != INSTALLSTATE_UNKNOWN {
                     c.installed = c.action;
                 }
             }
             for f in pk.features.iter_mut() {
-                if matches!(f.action, INSTALLSTATE_LOCAL | INSTALLSTATE_ABSENT) {
+                if f.action != INSTALLSTATE_UNKNOWN {
                     f.installed = f.action;
                 }
             }
             // (nothing left: the product is no longer installed)
-            if pk.features.iter().all(|f| f.installed != INSTALLSTATE_LOCAL) {
+            if pk.features.iter().all(|f| !matches!(f.installed, INSTALLSTATE_LOCAL | INSTALLSTATE_SOURCE | INSTALLSTATE_ADVERTISED)) {
                 unregister_product(&pk);
             } else {
                 register_features(&pk);
@@ -256,7 +265,12 @@ fn standard(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, _table: Option<&st
         "RemoveFolders" => remove_folders(p),
         "AppSearch" => app_search(p),
         "FindRelatedProducts" => find_related(p),
-        "InstallValidate" | "InstallInitialize" | "ProcessComponents" | "ResolveSource" | "ValidateProductID" | "IsolateComponents" | "MigrateFeatureStates"
+        "ResolveSource" => {
+            p.lock().unwrap().resolve_sources();
+            ERROR_SUCCESS
+        }
+        "ProcessComponents" => process_components(p),
+        "InstallValidate" | "InstallInitialize" | "ValidateProductID" | "IsolateComponents" | "MigrateFeatureStates"
         | "AllocateRegistrySpace" | "PublishFeatures" | "PublishComponents" | "RegisterUser" | "UnpublishComponents" | "UnpublishFeatures" | "StopServices"
         | "DeleteServices" | "UnregisterComPlus" | "SelfUnregModules" | "UnregisterTypeLibraries" | "RemoveODBC" | "UnregisterFonts"
         | "UnregisterClassInfo" | "UnregisterExtensionInfo" | "UnregisterProgIdInfo" | "UnregisterMIMEInfo" | "RemoveShortcuts"
@@ -888,29 +902,86 @@ fn register_product(p: &Arc<Mutex<Package>>) {
     if !pu.is_empty() {
         put_str(&format!("{UPGRADES}\\{pu}"), &packed, "");
     }
-    let comps: Vec<(String, String)> = pk.comps.values().filter(|c| c.action == INSTALLSTATE_LOCAL && !c.id.is_empty()).map(|c| (c.id.clone(), c.keypath.clone())).collect();
-    for (id, key) in comps {
-        let path = pk.files.iter().find(|f| f.key == key).map(|f| pk.file_target(f)).unwrap_or_default();
-        put_str(&format!("hklm\\software\\microsoft\\windows\\currentversion\\installer\\userdata\\s-1-5-18\\components\\{}", pack_guid(&id)), &packed, &path);
-    }
 }
 
 /// The installed features (HKLM\\Software\\Classes\\Installer\\Features\\<packed code>: one
 /// value per feature).
 const FEATURES: &str = "hklm\\software\\classes\\installer\\features";
+const USERDATA: &str = "hklm\\software\\microsoft\\windows\\currentversion\\installer\\userdata\\s-1-5-18";
 
+/// The features: HKLM\Software\Classes\Installer\Features\<product> holds each one's
+/// parent ("\x06" first when absent), UserData\...\Products\<product>\Features its
+/// components (base 85 GUIDs).
 fn register_features(pk: &Package) {
     let packed = pack_guid(&pk.prop("ProductCode"));
     if packed.is_empty() {
         return;
     }
     let key = format!("{FEATURES}\\{packed}");
-    crate::misc::reg_delete_tree(&key);
-    crate::misc::reg_create(&key);
-    // (an absent feature's value starts with \x06, as Windows writes it)
-    for f in &pk.features {
-        put_str(&key, &f.name, if f.installed == INSTALLSTATE_LOCAL { "" } else { "\u{6}" });
+    let ud = format!("{USERDATA}\\products\\{packed}\\features");
+    for k in [&key, &ud] {
+        crate::misc::reg_delete_tree(k);
+        crate::misc::reg_create(k);
     }
+    for f in &pk.features {
+        let on = matches!(f.installed, INSTALLSTATE_LOCAL | INSTALLSTATE_SOURCE | INSTALLSTATE_ADVERTISED);
+        put_str(&key, &f.name, &if on { f.parent.clone() } else { format!("\u{6}{}", f.parent) });
+        if on {
+            let comps: String = pk.uses.iter().filter(|u| u.0 == f.name).filter_map(|u| pk.comps.get(&u.1)).filter_map(|c| encode_guid85(&c.id)).collect();
+            put_str(&ud, &f.name, &comps);
+        }
+    }
+}
+
+/// ProcessComponents: each component's path for this product (its key file; "01:" first
+/// when it runs from source), gone when it is removed.
+fn process_components(p: &Arc<Mutex<Package>>) -> u32 {
+    let pk = p.lock().unwrap();
+    let packed = pack_guid(&pk.prop("ProductCode"));
+    if packed.is_empty() {
+        return ERROR_SUCCESS;
+    }
+    for c in pk.comps.values().filter(|c| !c.id.is_empty() && c.enabled) {
+        let key = format!("{USERDATA}\\components\\{}", pack_guid(&c.id));
+        let file = pk.files.iter().find(|f| f.key == c.keypath);
+        match c.action {
+            INSTALLSTATE_LOCAL => {
+                let path = file.map(|f| pk.file_target(f)).unwrap_or_else(|| pk.target(&c.dir));
+                put_str(&key, &packed, &path);
+            }
+            INSTALLSTATE_SOURCE => {
+                let src = pk.dirs.get(&c.dir).map(|d| d.source.clone()).unwrap_or_default();
+                let root = pk.prop("SourceDir");
+                let rel = src.strip_prefix(root.as_str()).unwrap_or(&src).to_string();
+                put_str(&key, &packed, &format!("01:{rel}{}", file.map(|f| f.name.as_str()).unwrap_or("")));
+            }
+            INSTALLSTATE_ABSENT => {
+                crate::misc::reg_delete_value(&key, &packed);
+                if crate::misc::reg_values(&key).is_empty() {
+                    crate::misc::reg_delete_tree(&key);
+                }
+            }
+            _ => {}
+        }
+    }
+    ERROR_SUCCESS
+}
+
+/// A component's state for `code` (LOCAL, SOURCE or ABSENT) and how many products use it.
+pub fn component_registration(code: &str, id: &str) -> (i32, i32) {
+    let key = format!("{USERDATA}\\components\\{}", pack_guid(id));
+    let clients = crate::misc::reg_values(&key).len() as i32;
+    let st = match get_str(&key, &pack_guid(code)) {
+        None => INSTALLSTATE_ABSENT,
+        Some(v) if is_source_path(&v) => INSTALLSTATE_SOURCE,
+        Some(_) => INSTALLSTATE_LOCAL,
+    };
+    (st, clients)
+}
+
+fn is_source_path(v: &str) -> bool {
+    let b = v.as_bytes();
+    b.len() > 2 && b[0].is_ascii_digit() && b[1].is_ascii_digit()
 }
 
 pub fn installed_features(code: &str) -> Vec<String> {
@@ -929,10 +1000,23 @@ pub fn feature_state(code: &str, feature: &str) -> i32 {
         return INSTALLSTATE_UNKNOWN;
     }
     match get_str(&format!("{FEATURES}\\{packed}"), feature) {
-        None => INSTALLSTATE_UNKNOWN,
-        Some(v) if v.starts_with('\u{6}') => INSTALLSTATE_ABSENT,
-        Some(_) => INSTALLSTATE_LOCAL,
+        None => return INSTALLSTATE_UNKNOWN,
+        Some(v) if v.starts_with('\u{6}') => return INSTALLSTATE_ABSENT,
+        Some(_) => {}
     }
+    // (from its components: one missing, advertised; one from source, source)
+    let Some(comps) = get_str(&format!("{USERDATA}\\products\\{packed}\\features"), feature) else { return INSTALLSTATE_ADVERTISED };
+    let c: Vec<char> = comps.chars().collect();
+    let mut source = false;
+    for g in c.chunks(20).take_while(|g| g.len() == 20 && g[0] != '\u{2}') {
+        let Some(id) = decode_guid85(g) else { break };
+        match get_str(&format!("{USERDATA}\\components\\{}", pack_guid(&id)), &packed) {
+            None => return INSTALLSTATE_ADVERTISED,
+            Some(v) if is_source_path(&v) => source = true,
+            Some(_) => {}
+        }
+    }
+    if source { INSTALLSTATE_SOURCE } else { INSTALLSTATE_LOCAL }
 }
 
 fn unregister_product(pk: &Package) {
@@ -1078,8 +1162,6 @@ pub fn install_product(c: &mut Ctx, path: &str, cmdline: &str) -> u32 {
         if product_installed(&code) {
             pk.props.insert("Installed".into(), "1".into());
             pk.props.insert("ProductState".into(), "5".into());
-            let f = installed_features(&code);
-            pk.load_installed(&f);
         }
     }
     let mut r = Record::new(0);
@@ -1167,10 +1249,10 @@ fn MsiInstallProductW(c: &mut Ctx) -> u32 {
 
 fn do_action_api(c: &mut Ctx, wide: bool) -> u32 {
     let (h, a) = (c.a(0), c.a(1));
-    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     if a == 0 {
         return ERROR_INVALID_PARAMETER;
     }
+    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
     let name = arg_str(a, wide);
     do_action(c, &p, &name, None)
 }
@@ -1446,6 +1528,33 @@ fn MsiSourceListEnumSourcesW(c: &mut Ctx) -> u32 {
 }
 
 /// A GUID in a descriptor: 20 characters, four little-endian dwords in base 85.
+/// A GUID ("{...}") in base 85 (20 characters), as descriptors and feature registrations
+/// write them.
+pub fn encode_guid85(g: &str) -> Option<String> {
+    const A: &[u8] = b"!$%&'()*+,-.0123456789=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{}~";
+    let h: Vec<u8> = g.bytes().filter(|c| c.is_ascii_hexdigit()).collect();
+    if h.len() != 32 {
+        return None;
+    }
+    let hex = |s: &[u8]| u64::from_str_radix(std::str::from_utf8(s).unwrap(), 16).unwrap();
+    let mut b = Vec::with_capacity(16);
+    b.extend((hex(&h[0..8]) as u32).to_le_bytes());
+    b.extend((hex(&h[8..12]) as u16).to_le_bytes());
+    b.extend((hex(&h[12..16]) as u16).to_le_bytes());
+    for i in 0..8 {
+        b.push(hex(&h[16 + 2 * i..18 + 2 * i]) as u8);
+    }
+    let mut out = String::new();
+    for k in 0..4 {
+        let mut x = u32::from_le_bytes(b[4 * k..4 * k + 4].try_into().unwrap()) as u64;
+        for _ in 0..5 {
+            out.push(A[(x % 85) as usize] as char);
+            x /= 85;
+        }
+    }
+    Some(out)
+}
+
 pub fn decode_guid85(s: &[char]) -> Option<String> {
     const A: &str = "!$%&'()*+,-.0123456789=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{}~";
     if s.len() < 20 {

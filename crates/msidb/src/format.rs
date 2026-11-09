@@ -31,6 +31,8 @@ impl Env for NoPackage {}
 struct F<'a> {
     rec: &'a Record,
     env: &'a dyn Env,
+    /// formatting a field's own text: [n] stays as written
+    in_field: bool,
 }
 
 /// What the keys of a {group} came to.
@@ -90,10 +92,13 @@ impl F<'_> {
             return None;
         }
         if key.bytes().all(|b| b.is_ascii_digit()) {
+            if self.in_field {
+                return None;
+            }
             let n: usize = key.parse().ok()?;
             return Some(match self.rec.get(n) {
                 Field::Null => String::new(),
-                f => f.text(),
+                f => self.field(&f.text()),
             });
         }
         // (without a package only fields are keys)
@@ -202,6 +207,15 @@ impl F<'_> {
         }
     }
 
+    /// A field's value: with a package its own keys are formatted too (not its [n]).
+    fn field(&self, t: &str) -> String {
+        if !self.env.has_package() || !t.contains('[') {
+            return t.to_string();
+        }
+        let c: Vec<char> = t.chars().collect();
+        F { rec: self.rec, env: self.env, in_field: true }.run(&c)
+    }
+
     fn run(&self, s: &[char]) -> String {
         let mut out = String::new();
         let mut text_braces = false;
@@ -239,9 +253,10 @@ impl F<'_> {
 pub fn format_record(rec: &Record, env: &dyn Env) -> String {
     match rec.get(0) {
         Field::Null => {
+            let f = F { rec, env, in_field: false };
             let mut s = String::new();
             for i in 1..=rec.count() {
-                s.push_str(&format!("{i}: {} ", rec.get(i).text()));
+                s.push_str(&format!("{i}: {} ", f.field(&rec.get(i).text())));
             }
             s
         }
@@ -251,7 +266,7 @@ pub fn format_record(rec: &Record, env: &dyn Env) -> String {
 
 pub fn format_str(t: &str, rec: &Record, env: &dyn Env) -> String {
     let c: Vec<char> = t.chars().collect();
-    F { rec, env }.run(&c)
+    F { rec, env, in_field: false }.run(&c)
 }
 
 #[cfg(test)]
@@ -342,5 +357,22 @@ mod tests {
         let r = rec("[INSTALLDIR]game.exe{ /x [NOPE]}{ /y [INSTALLDIR]}[\\[]", &[]);
         assert_eq!(format_record(&r, &P), "C:\\Game\\game.exe /y C:\\Game\\[");
         assert_eq!(format_record(&rec("{abc}", &[]), &P), "{abc}");
+    }
+
+    /// With a package a field's own keys are formatted (its [n] stay), with field 0
+    /// or without (Wine's test_formatrecord_tables, test_formatrecord_package).
+    #[test]
+    fn fields_formatted_with_a_package() {
+        let r = rec("1: [1] ", &[(1, "[INSTALLDIR]")]);
+        assert_eq!(format_record(&r, &P), "1: C:\\Game\\ ");
+        assert_eq!(format_record(&r, &NoPackage), "1: [INSTALLDIR] ");
+        let mut r = Record::new(5);
+        for (i, v) in [(1, "[2]"), (2, "stuff"), (3, "prop"), (4, "[INSTALLDIR]"), (5, "[noprop]")] {
+            r.set(i, Field::Str(v.into())).unwrap();
+        }
+        assert_eq!(format_record(&r, &P), "1: [2] 2: stuff 3: prop 4: C:\\Game\\ 5:  ");
+        assert_eq!(format_record(&r, &NoPackage), "1: [2] 2: stuff 3: prop 4: [INSTALLDIR] 5: [noprop] ");
+        r.set(0, Field::Str("[1]".into())).unwrap();
+        assert_eq!(format_record(&r, &P), "[2]");
     }
 }

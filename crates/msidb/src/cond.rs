@@ -232,7 +232,8 @@ impl P<'_> {
 }
 
 fn int_of(s: &str) -> Option<i32> {
-    crate::record::parse_int(s.trim())
+    // (no spaces around it: "0 " is a string)
+    crate::record::parse_int(s)
 }
 
 fn compare(a: &(V, bool), op: &str, b: &(V, bool)) -> bool {
@@ -240,14 +241,16 @@ fn compare(a: &(V, bool), op: &str, b: &(V, bool)) -> bool {
         Some(o) => (true, o),
         None => (false, op),
     };
-    let ints = |x: &V| match x {
+    // (a value that is an integer counts as one, a quoted literal never does)
+    let ints = |x: &(V, bool)| match &x.0 {
         V::Int(i) => Some(*i),
+        V::Str(_) if x.1 => None,
         V::Str(s) => int_of(s),
     };
     // an integer on either side: compare as integers when the other side is one too
     let any_int = matches!(a.0, V::Int(_)) || matches!(b.0, V::Int(_));
-    if any_int || (!a.1 && !b.1 && ints(&a.0).is_some() && ints(&b.0).is_some()) {
-        match (ints(&a.0), ints(&b.0)) {
+    if any_int || (ints(a).is_some() && ints(b).is_some()) {
+        match (ints(a), ints(b)) {
             (Some(x), Some(y)) => {
                 return match op {
                     "=" => x == y,
@@ -282,9 +285,10 @@ fn compare(a: &(V, bool), op: &str, b: &(V, bool)) -> bool {
         ">" => x > y,
         "<=" => x <= y,
         ">=" => x >= y,
-        "><" => x.contains(&y),
-        "<<" => x.starts_with(&y),
-        ">>" => x.ends_with(&y),
+        // (nothing is in an empty string, not even an empty one)
+        "><" => !x.is_empty() && x.contains(&y),
+        "<<" => !x.is_empty() && x.starts_with(&y),
+        ">>" => !x.is_empty() && x.ends_with(&y),
         _ => false,
     }
 }
@@ -319,12 +323,35 @@ mod tests {
                 "Installed" => String::new(),
                 "ProductName" => "Game".into(),
                 "ONE" => "1".into(),
+                "SP" => "0 ".into(),
+                "N1234" => "1234".into(),
+                "N1" => "1".into(),
+                "HI" => "hi".into(),
                 _ => String::new(),
             }
         }
         fn component(&self, n: &str) -> Option<(i32, i32)> {
             (n == "C1").then_some((-1, 3))
         }
+    }
+
+    #[test]
+    fn mixed_types() {
+        // (Windows' answers, from Wine's package tests)
+        let t = |s: &str| evaluate(s, &E);
+        assert_eq!(t(" 1 ~= \"1\" "), Cond::False);
+        assert_eq!(t(" 1 = \"1\" "), Cond::False);
+        assert_eq!(t(" 0 < \"100\" "), Cond::False);
+        assert_eq!(t(" 100 > \"0\" "), Cond::False);
+        assert_eq!(t("ONE = 1"), Cond::True);
+        assert_eq!(t("SP = 0"), Cond::False);
+        assert_eq!(t("SP <> 0"), Cond::True);
+        assert_eq!(t("N1234 >< N1"), Cond::False);
+        assert_eq!(t("N1234 << N1"), Cond::False);
+        assert_eq!(t("NOPE >< NOPE2"), Cond::False);
+        assert_eq!(t("NOPE << NOPE2"), Cond::False);
+        assert_eq!(t("HI >< NOPE"), Cond::True);
+        assert_eq!(t("HI << NOPE"), Cond::True);
     }
 
     #[test]
