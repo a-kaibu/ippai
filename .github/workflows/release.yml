@@ -278,11 +278,9 @@ jobs:
       # (a dispatch's tag is made here, on the commit the run built)
       - name: GitHub Release
         env:
-          # GITHUB_TOKEN may not make a tag on a commit whose workflow files differ from the
-          # last release's (HTTP 403 "Resource not accessible by integration": that needs the
-          # `workflow` scope, which GITHUB_TOKEN never has). RELEASE_TOKEN, when set, is a
-          # token that has it (fine-grained: Contents + Workflows read/write on this repo).
-          # Without it, push the tag by hand: git tag vX.Y.Z && git push origin vX.Y.Z.
+          # RELEASE_TOKEN, when set, is used instead of GITHUB_TOKEN (v0.3.3's run 42569773538 got
+          # HTTP 403 "Resource not accessible by integration" making the release and its tag;
+          # cause not confirmed). A tag pushed by hand releases as well.
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
