@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="テスト製品" Language="1041" Codepage="932" Version="1.2.3" Manufacturer="ippai" UpgradeCode="12345678-1234-1234-1234-123456789012">
+    <Package InstallerVersion="200" Compressed="yes" SummaryCodepage="932" Comments="コメント"/>
+    <Media Id="1" Cabinet="data.cab" EmbedCab="yes"/>
+    <Property Id="GAMEPROP" Value="値"/>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLDIR" Name="ゲーム">
+          <Component Id="C1" Guid="11111111-2222-3333-4444-555555555555">
+            <File Id="F1" Name="a.txt" Source="a.txt"/>
+            <File Id="F2" Name="データ.dat" Source="b.dat"/>
+            <RegistryValue Root="HKCU" Key="Software\ippai\test" Name="path" Value="[INSTALLDIR]" Type="string"/>
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="Main" Level="1"><ComponentRef Id="C1"/></Feature>
+  </Product>
+</Wix>

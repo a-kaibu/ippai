@@ -1,0 +1,14 @@
+[package]
+name = "msidb"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Windows Installer databases (.msi): the compound file's tables, string pool, streams and summary information, MSI SQL views, records, MsiFormatRecord and conditions; for sake's msi.dll and ippai's own unpacking"
+
+[dependencies]
+cfb = "0.16"
+encoding_rs = "0.8"
+uuid = "1"
+
+[dev-dependencies]
+proptest = "1"
