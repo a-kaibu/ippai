@@ -1,12 +1,13 @@
 // The game list's one sidebar, on the right (not modal: the list stays in use beside it on a wide
 // screen), its tabs switching between 詳細 (a game's details: ui/Library.tsx GameInfo), 統計 (the
-// play statistics, with a reset) and 設定 (the server's version and an update to the newest
+// play statistics, with a reset), 保存 (what is on the device and being saved there: ui/Storage.tsx) and 設定 (the server's version and an update to the newest
 // release, installing the page as an app, the DMM account).
 
 import { useEffect, useState, type ReactNode } from "react";
 import {
   BarChart3,
   CircleCheck,
+  HardDrive,
   Info,
   Loader2,
   MonitorDown,
@@ -23,6 +24,7 @@ import { useApp } from "../pwa";
 import { checkUpdate, installUpdate, waitForVersion, type UpdateInfo } from "../server-update";
 import { AccountSettings } from "./AccountSettings";
 import { Statistics } from "./Personal";
+import { StorageOverview } from "./Storage";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -133,10 +135,11 @@ function ServerUpdate({ build }: { build: string }) {
   );
 }
 
-export type SideTab = "info" | "stats" | "settings";
+export type SideTab = "info" | "stats" | "storage" | "settings";
 const TABS: { key: SideTab; label: string; icon: ReactNode }[] = [
   { key: "info", label: "詳細", icon: <Info /> },
   { key: "stats", label: "統計", icon: <BarChart3 /> },
+  { key: "storage", label: "保存", icon: <HardDrive /> },
   { key: "settings", label: "設定", icon: <SettingsIcon /> },
 ];
 
@@ -183,7 +186,9 @@ export function Sidebar({
             ? (game ?? "ゲームの詳細")
             : tab === "stats"
               ? "ゲーム別のプレイ時間"
-              : "サーバー・アプリ・アカウント"}
+              : tab === "storage"
+                ? "端末に保存したデータと保存中のもの"
+                : "サーバー・アプリ・アカウント"}
         </SheetDescription>
         <Tabs value={tab} onValueChange={(v) => onTab(v as SideTab)} className="border-b px-4 py-3 pr-12">
           <TabsList aria-label="サイドバーの表示" className="w-full [&_svg]:size-4">
@@ -200,6 +205,11 @@ export function Sidebar({
           {tab === "stats" && (
             <Part title="プレイ統計" icon={<BarChart3 />}>
               <Statistics games={games} />
+            </Part>
+          )}
+          {tab === "storage" && (
+            <Part title="端末のデータ" icon={<HardDrive />}>
+              <StorageOverview games={games} />
             </Part>
           )}
           {tab === "settings" && (

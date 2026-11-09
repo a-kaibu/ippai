@@ -5,7 +5,7 @@
 // service worker (sw.ts) keeps those and the app's pages: the game then starts with no connection.
 
 import { coverUrl, type GameEntry } from "./launcher";
-import { chunkCache, chunkPath, fetchRetry, getChunk, HttpError, treeChunks } from "./net";
+import { chunkCache, chunkPath, fetchRetry, getChunk, HttpError, treeChunks, treeChunkSizes } from "./net";
 import {
   fileVersion,
   gameChunksName,
@@ -94,17 +94,159 @@ export function stateOf(
 // the games being saved by this page now
 const running = new Set<string>();
 
-async function chunksOfTrees(trees: string[]): Promise<{ hashes: string[]; chunk: number }> {
+/** The file lists (trees/<name>.tsv) of `trees`. */
+async function treeLists(trees: string[]): Promise<{ name: string; tsv: string }[]> {
+  return Promise.all(
+    trees.map(async (name) => ({
+      name,
+      tsv: new TextDecoder().decode(
+        await fetchRetry(new URL(`trees/${encodeURIComponent(name)}.tsv`, store())),
+      ),
+    })),
+  );
+}
+
+async function chunksOfTrees(
+  trees: string[],
+): Promise<{ hashes: string[]; chunk: number; sizes: Map<string, number> }> {
   const seen = new Set<string>();
+  const sizes = new Map<string, number>();
   let chunk = 1 << 18;
-  for (const t of trees) {
-    const tsv = new TextDecoder().decode(
-      await fetchRetry(new URL(`trees/${encodeURIComponent(t)}.tsv`, store())),
-    );
+  for (const { tsv } of await treeLists(trees)) {
     chunk = Number(tsv.slice(0, tsv.indexOf("\n")).split("\t")[2]) || chunk;
     for (const h of treeChunks(tsv)) seen.add(h);
+    treeChunkSizes(tsv, sizes);
   }
-  return { hashes: [...seen], chunk };
+  return { hashes: [...seen], chunk, sizes };
+}
+
+/** The bytes of `hashes` (their lengths from the trees' lists; `chunk` for one of no length). */
+const bytesOf = (hashes: Iterable<string>, sizes: Map<string, number>, chunk: number) => {
+  let n = 0;
+  for (const h of hashes) n += sizes.get(h) ?? chunk;
+  return n;
+};
+
+/** One part of a game on the device: a top folder of its tree, its files in it, its chunks' bytes, of them on the device. */
+export interface PartInfo {
+  name: string;
+  files: number;
+  bytes: number;
+  have: number;
+}
+
+/** The prefix tree (sake's C:\: fonts, DLLs) as the parts list shows it. */
+export const PREFIX_PART = "システム（フォントなど）";
+/** A tree's files not in a folder. */
+export const TOP_PART = "（フォルダの外のファイル）";
+
+/**
+ * What a game's trees hold, part by part (the prefix as one, each top folder of the others,
+ * their files outside folders as one; another mounted tree's parts named "<tree>: <folder>"),
+ * the biggest first: files, the bytes of their chunks (a chunk two parts share counted in the
+ * first only, so the parts add up to the whole), and of them on the device (`on`).
+ */
+export function breakdown(trees: { name: string; tsv: string }[], on: Set<string>): PartInfo[] {
+  const parts = new Map<string, PartInfo>();
+  const seen = new Set<string>();
+  const games = trees.filter((t) => t.name !== "prefix32");
+  for (const { name, tsv } of trees) {
+    for (const line of tsv.split("\n").slice(1)) {
+      const f = line.split("\t");
+      if (f[0] !== "f") continue;
+      const path = f[3] ?? "";
+      const slash = path.indexOf("/");
+      const folder = slash > 0 ? path.slice(0, slash) : TOP_PART;
+      const key = name === "prefix32" ? PREFIX_PART : games.length > 1 ? `${name}: ${folder}` : folder;
+      let p = parts.get(key);
+      if (!p) parts.set(key, (p = { name: key, files: 0, bytes: 0, have: 0 }));
+      p.files++;
+      for (const c of (f[5] ?? "").split(",")) {
+        const [h, n] = c.split(":");
+        if (!h || !/^[0-9a-f]{32}$/.test(h) || seen.has(h)) continue;
+        seen.add(h);
+        p.bytes += Number(n) || 0;
+        if (on.has(h)) p.have += Number(n) || 0;
+      }
+    }
+  }
+  return [...parts.values()].sort((a, b) => b.bytes - a.bytes || a.name.localeCompare(b.name));
+}
+
+/** The first file (path) of each chunk in the trees' lists: what a chunk being saved belongs to. */
+export function chunkFiles(trees: { name: string; tsv: string }[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const { name, tsv } of trees)
+    for (const line of tsv.split("\n").slice(1)) {
+      const f = line.split("\t");
+      if (f[0] !== "f" || !f[5]) continue;
+      for (const c of f[5].split(",")) {
+        const h = c.split(":")[0]!;
+        if (/^[0-9a-f]{32}$/.test(h) && !out.has(h)) out.set(h, name === "prefix32" ? `C:\\${f[3]}` : f[3]!);
+      }
+    }
+  return out;
+}
+
+/** `g`'s parts (breakdown) with what is on the device now (null: no chunk cache here). */
+export async function offlineParts(g: GameEntry): Promise<PartInfo[] | null> {
+  if (!(await chunkCache())) return null;
+  const [lists, on] = await Promise.all([treeLists(gameTrees(g)), onDevice()]);
+  return breakdown(lists, on);
+}
+
+/** A save to the device going on in this page: chunks and bytes done of all, the file of the
+ * chunk fetched last, when it started and the bytes done then (for the rate). */
+export interface Progress {
+  have: number;
+  total: number;
+  haveBytes: number;
+  totalBytes: number;
+  now: string;
+  started: number;
+  startBytes: number;
+}
+
+const progress = new Map<string, Progress>();
+const watchers = new Set<() => void>();
+const tell = () => watchers.forEach((w) => w());
+
+/** The saves going on in this page now, by game id. */
+export function savesRunning(): ReadonlyMap<string, Progress> {
+  return progress;
+}
+
+/** Calls `on` whenever a save's progress changes; returns the unsubscribe. */
+export function watchSaves(on: () => void): () => void {
+  watchers.add(on);
+  return () => void watchers.delete(on);
+}
+
+/** The ids of the games saved to the device (finished or not) in this browser. */
+export function savedIds(): string[] {
+  return Object.keys(savedGames());
+}
+
+/** How much the origin may store and does (navigator.storage), and the chunk cache's bytes in all. */
+export async function storageUse(): Promise<{
+  quota?: number;
+  usage?: number;
+  persisted?: boolean;
+  chunks: number;
+  count: number;
+} | null> {
+  const cache = await chunkCache();
+  if (!cache) return null;
+  const est = await navigator.storage?.estimate?.().catch(() => undefined);
+  const persisted = await navigator.storage?.persisted?.().catch(() => undefined);
+  let chunks = 0;
+  const keys = await cache.keys();
+  for (const k of keys) {
+    const r = await cache.match(k).catch(() => undefined);
+    const n = Number(r?.headers.get("x-ippai-size"));
+    chunks += n > 0 ? n : ((await r?.blob().catch(() => null))?.size ?? 0);
+  }
+  return { quota: est?.quota, usage: est?.usage, persisted, chunks, count: keys.length };
 }
 
 const chunksOf = (g: GameEntry) => chunksOfTrees(gameTrees(g));
@@ -126,12 +268,12 @@ async function onDevice(): Promise<Set<string>> {
 /** How much of `g` is on the device (null: no chunk cache here). */
 export async function offlineState(g: GameEntry): Promise<OfflineState | null> {
   if (!(await chunkCache())) return null;
-  const [{ hashes, chunk }, on] = await Promise.all([chunksOf(g), onDevice()]);
+  const [{ hashes, chunk, sizes }, on] = await Promise.all([chunksOf(g), onDevice()]);
   const have = hashes.filter((h) => on.has(h)).length;
   return {
     total: hashes.length,
     have,
-    bytes: hashes.length * chunk,
+    bytes: bytesOf(hashes, sizes, chunk),
     ...stateOf(savedGames()[g.id], running.has(g.id), have, hashes.length),
   };
 }
@@ -174,10 +316,11 @@ async function saveApp(g: GameEntry, signal: AbortSignal): Promise<void> {
   ]);
 }
 
-/** Fetches `g`'s chunks the device lacks (4 at a time, retried as net.ts does); `progress(have, total)`. */
+/** Fetches `g`'s chunks the device lacks (4 at a time, retried as net.ts does); `report(have,
+ * total)`, and the whole progress in savesRunning (watchSaves). */
 export async function saveOffline(
   g: GameEntry,
-  progress: (have: number, total: number) => void,
+  report: (have: number, total: number) => void,
   signal: AbortSignal,
 ): Promise<void> {
   void navigator.storage?.persist?.().catch(() => false);
@@ -189,15 +332,47 @@ export async function saveOffline(
   running.add(g.id);
   try {
     await saveApp(g, signal);
-    const [{ hashes }, have] = await Promise.all([chunksOf(g), onDevice()]);
+    const [lists, have] = await Promise.all([treeLists(trees), onDevice()]);
+    const sizes = new Map<string, number>();
+    const all = new Set<string>();
+    let chunk = 1 << 18;
+    for (const { tsv } of lists) {
+      chunk = Number(tsv.slice(0, tsv.indexOf("\n")).split("\t")[2]) || chunk;
+      treeChunkSizes(tsv, sizes);
+      for (const h of treeChunks(tsv)) all.add(h);
+    }
+    const hashes = [...all];
+    const files = chunkFiles(lists);
     const missing = hashes.filter((h) => !have.has(h));
     let done = hashes.length - missing.length;
-    progress(done, hashes.length);
+    const p: Progress = {
+      have: done,
+      total: hashes.length,
+      haveBytes: bytesOf(
+        hashes.filter((h) => have.has(h)),
+        sizes,
+        chunk,
+      ),
+      totalBytes: bytesOf(hashes, sizes, chunk),
+      now: "",
+      started: Date.now(),
+      startBytes: 0,
+    };
+    p.startBytes = p.haveBytes;
+    progress.set(g.id, p);
+    tell();
+    report(done, hashes.length);
     let next = 0;
     const one = async () => {
       while (next < missing.length && !signal.aborted) {
-        await getChunk(store(), missing[next++]!, { cache, priority: "low", signal });
-        progress(++done, hashes.length);
+        const h = missing[next++]!;
+        p.now = files.get(h) ?? "";
+        tell();
+        await getChunk(store(), h, { cache, priority: "low", signal });
+        p.have = ++done;
+        p.haveBytes += sizes.get(h) ?? chunk;
+        tell();
+        report(done, hashes.length);
       }
     };
     await Promise.all(Array.from({ length: 4 }, one));
@@ -213,6 +388,8 @@ export async function saveOffline(
     throw e;
   } finally {
     running.delete(g.id);
+    progress.delete(g.id);
+    tell();
   }
 }
 

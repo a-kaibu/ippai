@@ -165,11 +165,11 @@ try {
       assert.equal(await side.isVisible(), true, "typing in the list keeps the sidebar");
     } else assert.ok(sbox.width >= view.width - 1, `phone: the sidebar is the whole width (${sbox.width})`);
     assert.equal(await page.locator("[data-slot=dialog-overlay]").count(), 0, "no overlay");
-    // its tabs: 詳細 (no game picked yet: off), 統計, 設定 (open)
+    // its tabs: 詳細 (no game picked yet: off), 統計, 保存 (tests/storage-browser.mjs), 設定 (open)
     const sideTabs = side.getByRole("tablist", { name: "サイドバーの表示" }).getByRole("tab");
-    assert.deepEqual(await sideTabs.allInnerTexts(), ["詳細", "統計", "設定"]);
+    assert.deepEqual(await sideTabs.allInnerTexts(), ["詳細", "統計", "保存", "設定"]);
     assert.ok(await sideTabs.nth(0).isDisabled(), "詳細 waits for a game");
-    assert.equal(await sideTabs.nth(2).getAttribute("aria-selected"), "true");
+    assert.equal(await sideTabs.nth(3).getAttribute("aria-selected"), "true");
     const sections = await side.getByRole("region").evaluateAll((l) => l.map((e) => e.getAttribute("aria-label")));
     assert.deepEqual(sections, ["サーバー", "アプリ", "DMM アカウント"]);
 

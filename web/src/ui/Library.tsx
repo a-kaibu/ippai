@@ -61,6 +61,7 @@ import { useApp } from "../pwa";
 import { fetchBuild } from "../version";
 import { Backup, Note, useProfile } from "./Personal";
 import { Sidebar, type SideTab } from "./Sidebar";
+import { GameParts, SaveProgress, useSaves } from "./Storage";
 import { renderShell } from "./Shell";
 
 /** The app's mark: the sake bottle (the same as the favicon and app icons). */
@@ -274,11 +275,18 @@ function Section({ title, icon, children }: { title: string; icon: ReactNode; ch
 
 const mb = (b: number) => `${Math.max(1, Math.round(b / 2 ** 20))} MB`;
 
+/** The saves this page started, by game (中止 stops them). */
+const stops = new Map<string, AbortController>();
+
 /** The game's data on this device: save it beforehand (for a weak mobile link), or remove it. */
 function Offline({ game }: { game: GameEntry }) {
   const [state, setState] = useState<OfflineState | null | undefined>();
-  const [saving, setSaving] = useState<{ have: number; total: number; stop: AbortController } | null>(null);
+  const [, setSaving] = useState<{ have: number; total: number; stop: AbortController } | null>(null);
   const [error, setError] = useState("");
+  // (the save goes on with the panel closed or another game shown: its progress is offline.ts's)
+  const progress = useSaves().get(game.id);
+  const stop = stops.get(game.id);
+  const saving = progress && stop ? { have: progress.have, total: progress.total, stop } : null;
   const refresh = () =>
     void offlineState(game).then(setState, (e: unknown) => {
       setState(null);
@@ -292,6 +300,7 @@ function Offline({ game }: { game: GameEntry }) {
     ) : null;
   const save = () => {
     const stop = new AbortController();
+    stops.set(game.id, stop);
     setError("");
     setSaving({ have: state.have, total: state.total, stop });
     saveOffline(game, (have, total) => setSaving({ have, total, stop }), stop.signal)
@@ -301,6 +310,7 @@ function Offline({ game }: { game: GameEntry }) {
           setError(`保存できませんでした: ${String(e instanceof Error ? e.message : e)}`),
       )
       .finally(() => {
+        stops.delete(game.id);
         setSaving(null);
         refresh();
       });
@@ -327,6 +337,8 @@ function Offline({ game }: { game: GameEntry }) {
                       : `端末に保存すると、モバイル回線でも読み込みで止まりません（約 ${mb(state.bytes)}）`}
         </span>
       </div>
+      {progress && <SaveProgress p={progress} />}
+      <GameParts game={game} saving={!!progress} />
       {error && <p className="text-destructive">{error}</p>}
       <div className="flex gap-2">
         {saving ? (
