@@ -1004,10 +1004,10 @@ function closeGame(): void {
 }
 
 /** The game's files saved and its log sent (at most 4 s for the log). */
-function wrapUp(): Promise<unknown> {
+function wrapUp(why?: string): Promise<unknown> {
   stopPlay?.();
   const ended = recorder
-    ? Promise.race([recorder.end(), new Promise((r) => setTimeout(r, 4000))])
+    ? Promise.race([recorder.end(why), new Promise((r) => setTimeout(r, 4000))])
     : Promise.resolve();
   return Promise.all([saveNow(), ended]);
 }
@@ -1019,7 +1019,9 @@ function backToList(): void {
   if (leaving) return;
   leaving = true;
   log("一覧に戻ります");
-  void wrapUp().finally(() => location.reload());
+  void wrapUp("the player went back to the list (the browser's back button)").finally(() =>
+    location.reload(),
+  );
 }
 
 function leave(): void {
