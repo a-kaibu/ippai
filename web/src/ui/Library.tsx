@@ -29,7 +29,15 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { coverUrl, played, type GameEntry } from "../launcher";
+import { coverUrl, fetchGames, played, type GameEntry } from "../launcher";
+import {
+  describe,
+  fetchMeta,
+  looksLikeGamePage,
+  metaStatus,
+  untilSettled,
+  type MetaStatus,
+} from "../meta-source";
 import { api } from "../library-data";
 import { sortGames, visibleGames, when, type Filter } from "../library-view";
 import { dropOffline, offlineState, saveOffline, type OfflineState } from "../offline";
@@ -276,16 +284,114 @@ function Offline({ game }: { game: GameEntry }) {
   );
 }
 
+/** 批評空間 / VNDB の作品ページの URL から、サーバーがこのゲームの情報を取り直す。 */
+function MetaSource({ game, onUpdated }: { game: GameEntry; onUpdated: () => Promise<void> }) {
+  const page = game.meta?.links?.find((l) => looksLikeGamePage(l.url))?.url ?? "";
+  const [url, setUrl] = useState("");
+  const [status, setStatus] = useState<MetaStatus | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const stop = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const ac = new AbortController();
+    stop.current = ac;
+    void metaStatus(game.id).then(
+      (s) => {
+        if (ac.signal.aborted) return;
+        setStatus(s);
+        setUrl((u) => u || s?.url || page);
+        if (s?.state === "pending") void follow(ac);
+      },
+      () => setUrl((u) => u || page),
+    );
+    return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game.id]);
+  async function follow(ac: AbortController) {
+    setBusy(true);
+    try {
+      const end = await untilSettled(game.id, (s) => !ac.signal.aborted && setStatus(s), ac.signal);
+      if (end?.state === "ok" && !ac.signal.aborted) await onUpdated();
+    } catch (e) {
+      if (!ac.signal.aborted) setError(String(e instanceof Error ? e.message : e));
+    } finally {
+      if (!ac.signal.aborted) setBusy(false);
+    }
+  }
+  const valid = looksLikeGamePage(url);
+  const submit = async () => {
+    setError("");
+    setBusy(true);
+    try {
+      setStatus(await fetchMeta(game.id, url.trim()));
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+      setBusy(false);
+      return;
+    }
+    if (stop.current) void follow(stop.current);
+  };
+  const said = error || describe(status);
+  return (
+    <form
+      className="grid gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (valid && !busy) void submit();
+      }}
+    >
+      <p className="text-xs text-muted-foreground">
+        批評空間か VNDB の作品ページの URL
+        を貼ると、サーバーがその情報（タイトル・ブランド・発売日・タグ・あらすじ・画像）を取ってきて置き換えます。
+      </p>
+      <div className="flex gap-2">
+        <Input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=…"
+          aria-label="批評空間・VNDB の作品ページの URL"
+          aria-invalid={!!url.trim() && !valid}
+          inputMode="url"
+          className="min-w-0 flex-1"
+          data-testid="meta-url"
+        />
+        <Button type="submit" size="sm" className="h-9" disabled={!valid || busy} data-testid="meta-fetch">
+          <RefreshCw className={cn(busy && "animate-spin")} /> {busy ? "取得中" : "取得"}
+        </Button>
+      </div>
+      {url.trim() && !valid && (
+        <p className="text-xs text-destructive">
+          批評空間（game.php?game=番号）か VNDB（vndb.org/v番号）の作品ページの URL を入れてください
+        </p>
+      )}
+      {said && (
+        <p
+          role="status"
+          data-testid="meta-status"
+          className={cn(
+            "text-xs",
+            error || status?.state === "error" ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {said}
+        </p>
+      )}
+    </form>
+  );
+}
+
 function GameInfo({
   game,
   onPick,
   onClose,
   onFavorite,
+  onUpdated,
 }: {
   game: GameEntry;
   onPick: () => void;
   onClose: () => void;
   onFavorite: (on: boolean) => void;
+  onUpdated: () => Promise<void>;
 }) {
   const m = game.meta ?? { source: "", title: game.title };
   const url = coverUrl(game);
@@ -383,6 +489,9 @@ function GameInfo({
               </ul>
             </div>
           )}
+          <Section title="作品情報を取り直す" icon={<RefreshCw />}>
+            <MetaSource game={game} onUpdated={onUpdated} />
+          </Section>
           <Section title="メモ" icon={<NotebookPen />}>
             <Note state={record} />
           </Section>
@@ -401,7 +510,8 @@ function GameInfo({
   );
 }
 
-export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: GameEntry) => void }) {
+export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick: (g: GameEntry) => void }) {
+  const [games, setGames] = useState(listed);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [favoriteError, setFavoriteError] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -602,6 +712,12 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
           onClose={() => setInfo(null)}
           onPick={() => onPick(info)}
           onFavorite={(on) => setFavorite(info.id, on)}
+          onUpdated={async () => {
+            // (the list again: the server's entry now carries what it fetched)
+            const fresh = await fetchGames();
+            setGames(fresh);
+            setInfo((open) => (open ? (fresh.find((g) => g.id === open.id) ?? open) : open));
+          }}
         />
       )}
     </main>

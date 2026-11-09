@@ -72,6 +72,12 @@ const EGS_SQL: &str = "https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/s
 const EGS_GAME: &str = "https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=";
 const VNDB_VN: &str = "https://api.vndb.org/kana/vn";
 
+/// `url`, or what the environment variable `var` names instead (tests/meta-browser.mjs points
+/// them at a local stand-in).
+fn endpoint(var: &str, url: &'static str) -> String {
+    std::env::var(var).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| url.to_string())
+}
+
 fn agent() -> &'static ureq::Agent {
     static A: LazyLock<ureq::Agent> = LazyLock::new(|| {
         ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).user_agent(UA).try_proxy_from_env(true).build()
@@ -91,7 +97,7 @@ fn egs_query(sql: &str) -> Result<Vec<Vec<(String, String)>>> {
         }
         *next = Some(Instant::now() + Duration::from_millis(2500));
     }
-    let page = agent().post(EGS_SQL).send_form(&[("sql", sql)])?.into_string()?;
+    let page = agent().post(&endpoint("IPPAI_META_EGS_SQL", EGS_SQL)).send_form(&[("sql", sql)])?.into_string()?;
     Ok(parse_table(&page))
 }
 
@@ -310,7 +316,7 @@ fn vndb_query(filters: serde_json::Value, fields: &str, n: u32) -> Result<Vec<Vn
         results: Vec<VndbVn>,
     }
     let body = serde_json::json!({ "filters": filters, "fields": fields, "results": n });
-    let out: Out = agent().post(VNDB_VN).send_json(body)?.into_json()?;
+    let out: Out = agent().post(&endpoint("IPPAI_META_VNDB", VNDB_VN)).send_json(body)?.into_json()?;
     Ok(out.results)
 }
 

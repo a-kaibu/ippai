@@ -23,6 +23,7 @@ mod library_api;
 mod storage;
 mod store_api;
 mod meta;
+mod meta_url;
 mod movie;
 mod nwjs;
 mod pack;

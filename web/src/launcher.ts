@@ -29,6 +29,9 @@ export interface GameEntry {
   engine?: string;
   /** image file in store/games/ */
   cover?: string;
+  /** the cover fetched with metadata from a page the user gave (server-relative, versioned:
+   * crates/ippai/src/library_api.rs); shown instead of `cover` */
+  cover_src?: string;
   run: string;
   args: string[];
   /** /path=tree */
@@ -67,6 +70,7 @@ export async function fetchGames(): Promise<GameEntry[]> {
 }
 
 export function coverUrl(g: GameEntry): string | null {
+  if (g.cover_src) return new URL(g.cover_src, location.href).href;
   return g.cover ? new URL(`store/games/${encodeURIComponent(g.cover)}`, location.href).href : null;
 }
 

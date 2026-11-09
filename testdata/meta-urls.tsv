@@ -1,0 +1,43 @@
+# Pasted addresses and the metadata entry they name (crates/ippai/src/meta_url.rs entry_id;
+# web/src/meta-source.ts looksLikeGamePage agrees on each). Columns: address (\t, \n escaped), id or -
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=35435	egs:35435
+http://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=25603#ad	egs:25603
+https://erogamescape.org/~ap2/ero/toukei_kaiseki/game.php?game=1&x=2	egs:1
+https://www.erogamescape.org/~ap2/ero/toukei_kaiseki/game.php?x=2&game=007	egs:7
+  https://ErogameScape.dyndns.org:443/~ap2/ero/toukei_kaiseki/game.php?game=12\n	egs:12
+erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=12	egs:12
+https://vndb.org/v1195	vndb:v1195
+https://vndb.org/v1195/chars#main	vndb:v1195
+vndb.org/v17?x	vndb:v17
+egs:42	egs:42
+vndb:v42	vndb:v42
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/brand.php?brand=1	-
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=	-
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=0	-
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=12a	-
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=1234567890	-
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?xgame=12	-
+https://erogamescape.dyndns.org/x/game.php#?game=12	-
+https://evil.example/erogamescape.dyndns.org/game.php?game=12	-
+https://erogamescape.dyndns.org.evil.example/game.php?game=12	-
+https://user@erogamescape.dyndns.org/game.php?game=12	-
+https://vndb.org/r1195	-
+https://vndb.org/	-
+https://vndb.org/v	-
+https://notvndb.org/v1	-
+egs:	-
+egs:-1	-
+vndb:1195	-
+	-
+ゲーム	-
+https://erogamescape.dyndns.org./~ap2/ero/toukei_kaiseki/game.php?game=3	egs:3
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=%31	-
+https://u:p@vndb.org/v1	-
+ftp://vndb.org/v1	-
+https://vndb.org/V9	vndb:v9
+https://vndb.org/v0	-
+https://vndb.org/v007	vndb:v7
+egs:007	egs:7
+vndb:V3	vndb:v3
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=1&game=2	egs:1
+https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=999999999	egs:999999999

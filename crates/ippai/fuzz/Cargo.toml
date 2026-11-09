@@ -30,3 +30,10 @@ path = "fuzz_targets/unpack.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "meta_url"
+path = "fuzz_targets/meta_url.rs"
+test = false
+doc = false
+bench = false

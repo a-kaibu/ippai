@@ -112,6 +112,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/library-browser.mjs target/debug/ippai
+      - name: A game's information from a pasted 批評空間 / VNDB page (stand-ins for both)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/meta-browser.mjs target/debug/ippai
       - name: Sign-in behind a reverse proxy that adds no forwarding header (auth.rs)
         run: python3 tests/auth-proxy.py target/debug/ippai
       - name: The server answers before it has compressed the web app (serve.rs precompress)
