@@ -1515,6 +1515,243 @@ fn NCryptVerifySignature(c: &mut Ctx) -> u32 {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// bcrypt: algorithm providers and asymmetric keys (RSA, ECDSA / ECDH on the NIST curves)
+
+const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
+const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
+const STATUS_BUFFER_TOO_SMALL: u32 = 0xC000_0023;
+const STATUS_NOT_SUPPORTED: u32 = 0xC000_00BB;
+const STATUS_INVALID_SIGNATURE: u32 = 0xC000_A000;
+
+/// An NTE_ error as the NTSTATUS bcrypt answers with
+fn nt(e: u32) -> u32 {
+    match e {
+        0 => 0,
+        NTE_BAD_SIGNATURE => STATUS_INVALID_SIGNATURE,
+        NTE_BUFFER_TOO_SMALL => STATUS_BUFFER_TOO_SMALL,
+        NTE_INVALID_HANDLE => STATUS_INVALID_HANDLE,
+        NTE_NOT_SUPPORTED | NTE_BAD_FLAGS => STATUS_NOT_SUPPORTED,
+        _ => STATUS_INVALID_PARAMETER,
+    }
+}
+
+/// BCRYPT_ALG_HANDLEs: the algorithm each names
+static ALG_HANDLES: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
+fn alg_of(h: u32) -> Option<String> {
+    ALG_HANDLES.lock().unwrap().iter().find(|a| a.0 == h).map(|a| a.1.clone())
+}
+
+/// BCryptOpenAlgorithmProvider(&alg, name, implementation, flags)
+fn BCryptOpenAlgorithmProvider(c: &mut Ctx) -> u32 {
+    let (out, name) = (c.a(0), c.a(1));
+    if out == 0 || name == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let h = new_handle();
+    ALG_HANDLES.lock().unwrap().push((h, wname(name).unwrap()));
+    putp(out, h);
+    0
+}
+fn BCryptCloseAlgorithmProvider(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    let mut l = ALG_HANDLES.lock().unwrap();
+    let Some(i) = l.iter().position(|a| a.0 == h) else { return STATUS_INVALID_HANDLE };
+    l.remove(i);
+    0
+}
+
+/// The asymmetric algorithm of a provider handle: its table entry
+fn asym_alg(h: u32) -> Result<&'static (&'static str, u32, u32, &'static str, u32, [u32; 3]), u32> {
+    let name = alg_of(h).ok_or(STATUS_INVALID_HANDLE)?;
+    match alg(&name) {
+        Some(a) if a.0 == "RSA" || Curve::of_alg(a.0).is_some() => Ok(a),
+        _ => Err(STATUS_NOT_SUPPORTED),
+    }
+}
+
+/// BCryptGenerateKeyPair(alg, &key, bits, flags): a key BCryptFinalizeKeyPair makes
+fn BCryptGenerateKeyPair(c: &mut Ctx) -> u32 {
+    let (a, out, bits) = (c.a(0), c.a(1), c.a(2));
+    let a = match asym_alg(a) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    if out == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let curve = Curve::of_alg(a.0).and_then(|(c, _)| c).or_else(|| Curve::ALL.into_iter().find(|c| c.bits() == bits && Curve::of_alg(a.0).is_some()));
+    let [min, max, _] = a.5;
+    if bits < min || bits > max || (Curve::of_alg(a.0).is_some() && curve.is_none_or(|c| c.bits() != bits)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let k = Key { prov: c.a(0), alg: a.0, bits, finalized: false, rsa: None, ecc: None, curve, export: ALLOW_PLAINTEXT_EXPORT, usage: 0x00ff_ffff, name: None };
+    putp(out, add_key(k));
+    0
+}
+
+/// BCryptFinalizeKeyPair(key, flags): the pair generated
+fn BCryptFinalizeKeyPair(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    let Some(mut k) = key(h) else { return STATUS_INVALID_HANDLE };
+    if k.finalized {
+        return STATUS_INVALID_HANDLE;
+    }
+    if k.alg == "RSA" {
+        match Rsa::generate(k.bits) {
+            Ok(r) => k.rsa = Some(r),
+            Err(e) => return nt(e),
+        }
+    } else if let Some((_, ecdsa)) = Curve::of_alg(k.alg) {
+        let Some(curve) = k.curve else { return STATUS_INVALID_PARAMETER };
+        k.ecc = Some(Ecc::generate(curve, ecdsa));
+    }
+    k.finalized = true;
+    with(|s| s.keys.insert(h, k));
+    0
+}
+
+/// BCryptImportKeyPair(alg, importKey, blobType, &key, input, size, flags)
+fn BCryptImportKeyPair(c: &mut Ctx) -> u32 {
+    let (a, wrap, bt, out, data, size) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    let a = match asym_alg(a) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    if bt == 0 || out == 0 || data == 0 || size == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if wrap != 0 {
+        return STATUS_NOT_SUPPORTED;
+    }
+    let bname = wname(bt).unwrap();
+    let raw = bytes(data, size);
+    let (bits, rsa, ecc) = if let Some((curve, ecdsa)) = Curve::of_alg(a.0) {
+        let private = match bname.as_str() {
+            "ECCPUBLICBLOB" | "PUBLICBLOB" => false,
+            "ECCPRIVATEBLOB" | "PRIVATEBLOB" => true,
+            _ => return STATUS_NOT_SUPPORTED,
+        };
+        let e = match Ecc::from_blob(&raw, Some(private)) {
+            Ok(e) => e,
+            Err(e) => return nt(e),
+        };
+        // (the blob's curve and kind are the algorithm's)
+        if e.ecdsa != ecdsa || curve.is_some_and(|c| c != e.curve) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        (e.curve.bits(), None, Some(e))
+    } else {
+        let Some((kind, any)) = Blob::from_name(&bname) else { return STATUS_NOT_SUPPORTED };
+        match Rsa::from_blob(kind, any, &raw) {
+            Ok((r, bits)) => (bits, Some(r), None),
+            Err(e) => return nt(e),
+        }
+    };
+    let curve = ecc.as_ref().map(|e| e.curve);
+    let k = Key { prov: c.a(0), alg: a.0, bits, finalized: true, rsa, ecc, curve, export: ALLOW_PLAINTEXT_EXPORT, usage: 0x00ff_ffff, name: None };
+    putp(out, add_key(k));
+    0
+}
+
+/// BCryptExportKey(key, exportKey, blobType, out, outlen, &result, flags)
+fn BCryptExportKey(c: &mut Ctx) -> u32 {
+    let (h, wrap, bt, out, outlen, res) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    let Some(k) = key(h) else { return STATUS_INVALID_HANDLE };
+    if bt == 0 || res == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if wrap != 0 {
+        return STATUS_NOT_SUPPORTED;
+    }
+    if !k.finalized {
+        return STATUS_INVALID_HANDLE;
+    }
+    let bname = wname(bt).unwrap();
+    let blob = match (&k.rsa, &k.ecc) {
+        (Some(r), _) => match Blob::from_name(&bname) {
+            Some((kind, _)) => r.to_blob(kind, k.bits),
+            None => return STATUS_NOT_SUPPORTED,
+        },
+        (_, Some(e)) => match bname.as_str() {
+            "ECCPUBLICBLOB" | "PUBLICBLOB" => e.to_blob(false),
+            "ECCPRIVATEBLOB" | "PRIVATEBLOB" => e.to_blob(true),
+            _ => return STATUS_NOT_SUPPORTED,
+        },
+        _ => return STATUS_NOT_SUPPORTED,
+    };
+    match blob {
+        Ok(b) => nt(give(out, outlen, res, &b)),
+        Err(e) => nt(e),
+    }
+}
+
+fn BCryptDestroyKey(c: &mut Ctx) -> u32 {
+    match with(|s| s.keys.remove(&c.a(0))) {
+        Some(_) => 0,
+        None => STATUS_INVALID_HANDLE,
+    }
+}
+
+/// BCryptSignHash(key, padinfo, hash, size, sig, siglen, &result, flags)
+fn BCryptSignHash(c: &mut Ctx) -> u32 {
+    let (h, info, hash, hsize, sig, siglen, res, fl) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
+    let Some(k) = key(h) else { return STATUS_INVALID_HANDLE };
+    if hash == 0 || res == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let digest = bytes(hash, hsize);
+    let (len, sign): (usize, Box<dyn Fn() -> Result<Vec<u8>, u32>>) = match (&k.rsa, &k.ecc) {
+        (_, Some(e)) => (e.sig_len(), Box::new(|| e.sign(&digest))),
+        (Some(r), _) => {
+            let pad = match padding(fl, info, true) {
+                Ok((p, _)) => p,
+                Err(e) => return nt(e),
+            };
+            (r.size(), Box::new(move || r.sign(pad.clone(), &digest)))
+        }
+        _ => return STATUS_INVALID_HANDLE,
+    };
+    if sig == 0 {
+        put32(res, len as u32);
+        return 0;
+    }
+    if (siglen as usize) < len {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    match sign() {
+        Ok(s) => nt(give(sig, siglen, res, &s)),
+        Err(e) => nt(e),
+    }
+}
+
+/// BCryptVerifySignature(key, padinfo, hash, hashsize, sig, sigsize, flags)
+fn BCryptVerifySignature(c: &mut Ctx) -> u32 {
+    let (h, info, hash, hsize, sig, siglen, fl) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let Some(k) = key(h) else { return STATUS_INVALID_HANDLE };
+    if hash == 0 || sig == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let (digest, s) = (bytes(hash, hsize), bytes(sig, siglen));
+    let r = match (&k.rsa, &k.ecc) {
+        (_, Some(e)) => {
+            if s.len() != e.sig_len() {
+                return STATUS_INVALID_SIGNATURE;
+            }
+            e.verify(&digest, &s)
+        }
+        (Some(r), _) => match padding(fl, info, true) {
+            Ok((pad, _)) => r.verify(pad, &digest, &s),
+            Err(e) => Err(e),
+        },
+        _ => return STATUS_INVALID_HANDLE,
+    };
+    match r {
+        Ok(()) => 0,
+        Err(e) => nt(e),
+    }
+}
+
 pub fn init() {
     implement("ncrypt", "NCryptOpenStorageProvider", NCryptOpenStorageProvider);
     implement("ncrypt", "NCryptFreeObject", NCryptFreeObject);
@@ -1538,6 +1775,15 @@ pub fn init() {
     implement("ncrypt", "NCryptVerifySignature", NCryptVerifySignature);
     implement("ncrypt", "NCryptSecretAgreement", NCryptSecretAgreement);
     implement("ncrypt", "NCryptDeriveKey", NCryptDeriveKey);
+    implement("bcrypt", "BCryptOpenAlgorithmProvider", BCryptOpenAlgorithmProvider);
+    implement("bcrypt", "BCryptCloseAlgorithmProvider", BCryptCloseAlgorithmProvider);
+    implement("bcrypt", "BCryptGenerateKeyPair", BCryptGenerateKeyPair);
+    implement("bcrypt", "BCryptFinalizeKeyPair", BCryptFinalizeKeyPair);
+    implement("bcrypt", "BCryptImportKeyPair", BCryptImportKeyPair);
+    implement("bcrypt", "BCryptExportKey", BCryptExportKey);
+    implement("bcrypt", "BCryptDestroyKey", BCryptDestroyKey);
+    implement("bcrypt", "BCryptSignHash", BCryptSignHash);
+    implement("bcrypt", "BCryptVerifySignature", BCryptVerifySignature);
 }
 
 #[cfg(test)]

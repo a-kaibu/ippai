@@ -811,6 +811,15 @@ fn tab_proc() -> u32 {
     static P: OnceLock<u32> = OnceLock::new();
     *P.get_or_init(|| crate::api::host_fn("tab_proc", tabctl::proc_fn, 16))
 }
+#[path = "listbox.rs"]
+mod listbox;
+fn listbox_proc() -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| crate::api::host_fn("listbox_proc", listbox::proc_fn, 16))
+}
+fn key_down(vk: usize) -> bool {
+    with(|s| s.keys[vk & 0xff] & 0x80 != 0)
+}
 fn gcall(c: &mut Ctx, dll: &str, name: &str, args: &[u32]) -> u32 {
     let f = crate::api::export(dll, name);
     c.call(f, args)
@@ -1073,6 +1082,7 @@ fn system_classes(s: &mut State) {
                 "Button" | "Static" | "Edit" => control_proc(),
                 "SysTabControl32" => tab_proc(),
                 "ComboBox" => combo_proc(),
+                "ListBox" => listbox_proc(),
                 // (the class's own: a CBT hook subclassing a new dialog keeps it as the super proc)
                 "#32770" => dlg_wndproc(),
                 _ => builtin_proc(),
@@ -3086,8 +3096,42 @@ fn SendMessageTimeoutA(c: &mut Ctx) -> u32 {
     put32(res, r);
     1
 }
+/// SendNotifyMessage(hwnd, msg, wp, lp): to a window of this thread as SendMessage; to another
+/// thread's as a sent message (handled before its posted ones) without waiting for it; to
+/// another process's window posted; HWND_BROADCAST to every top-level window
+fn send_notify(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let me = crate::cur().tid;
+    let targets: Vec<u32> = if h == 0xffff { with(|s| s.wins.iter().filter(|(_, w)| w.parent == 0).map(|(&h, _)| h).collect()) } else { vec![h] };
+    for t in targets {
+        match with(|s| s.wins.get(&t).map(|w| w.tid)) {
+            Some(tid) if tid == me => {
+                as_wide(wide, || send(c, t, m, wp, lp));
+            }
+            Some(tid) => {
+                let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
+                with(|s| {
+                    let q = s.queues.entry(tid).or_default();
+                    q.sent.push_back(Sent { msg: Msg { hwnd: t, msg: m, w: wp, l: lp, time: now_ms(), ..Default::default() }, result, from: 0, remote: None });
+                    q.fresh |= 0x40;
+                });
+                crate::obj::signal();
+            }
+            None => {
+                if !post(t, m, wp, lp) {
+                    crate::k32::last_error(1400);
+                    return 0;
+                }
+            }
+        }
+    }
+    1
+}
 fn SendNotifyMessageA(c: &mut Ctx) -> u32 {
-    post(c.a(0), c.a(1), c.a(2), c.a(3)) as u32
+    send_notify(c, false)
+}
+fn SendNotifyMessageW(c: &mut Ctx) -> u32 {
+    send_notify(c, true)
 }
 fn InSendMessage(_: &mut Ctx) -> u32 {
     0
@@ -6395,7 +6439,7 @@ pub fn init() {
         GetWindowTextLengthA, GetWindowTextLengthW, SetWindowRgn, DefWindowProcA, DefWindowProcW, DefDlgProcA,
         DefFrameProcA, DefMDIChildProcA, CallWindowProcA, CallWindowProcW,
         PostMessageA, PostMessageW, PostThreadMessageA, PostThreadMessageW, PostQuitMessage, SendMessageA,
-        SendMessageW, SendMessageTimeoutA, SendNotifyMessageA, InSendMessage, ReplyMessage, GetMessageA,
+        SendMessageW, SendMessageTimeoutA, SendNotifyMessageA, SendNotifyMessageW, InSendMessage, ReplyMessage, GetMessageA,
         GetMessageW, PeekMessageA, PeekMessageW, WaitMessage, MsgWaitForMultipleObjects,
         MsgWaitForMultipleObjectsEx, GetQueueStatus, GetInputState, TranslateMessage, DispatchMessageA,
         DispatchMessageW, IsDialogMessageA, IsDialogMessageW, TranslateMDISysAccel, TranslateAcceleratorA, TranslateAcceleratorW, CopyAcceleratorTableA, CopyAcceleratorTableW,

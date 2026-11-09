@@ -18,8 +18,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-dlgenter bigwindow aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose msiinstall msiui nsisinstall}
-X64=" dlgenter dlgthread editnotify shfileinfo deleteonclose aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout msiinstall msiui nsisinstall "
+TESTS=${*:-dlgenter bigwindow aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify shellstubs msiinstall msiui nsisinstall innoinstall}
+X64=" dlgenter dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify shellstubs aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall "
 CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
 CLANG32=${CLANG32-msvcseh}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
@@ -63,6 +63,31 @@ for t in $TESTS; do
       head -c 300000 /dev/zero | tr '\0' n > "$d/b.dat"
       cp "$ROOT/host/tests/nsisinstall.nsi" "$d/" && (cd "$d" && makensis -V1 nsisinstall.nsi) && cp "$d/nsisinstall-setup.exe" "$OUT/"
       return $?
+    fi
+    if [ "$t" = innoinstall ]; then
+      # Inno Setup 6.7.4 (its official installer, checked; kept in INNO_CACHE) installed on sake
+      # by itself once per OUT, then its ISCC on sake compiles innoinstall.iss (once: the x64
+      # run takes the same installer)
+      [ -f "$OUT/innoinstall-setup.exe" ] && return 0
+      local v=6.7.4 sum=a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
+      local cache=${INNO_CACHE:-$HOME/.cache/ippai-inno} tools=$OUT/inno-tools
+      local exe=$cache/innosetup-$v.exe
+      if ! echo "$sum  $exe" | sha256sum -c --quiet 2>/dev/null; then
+        mkdir -p "$cache" && curl -sSfL --retry 4 -o "$exe.part" "https://github.com/jrsoftware/issrc/releases/download/is-${v//./_}/innosetup-$v.exe" &&
+          echo "$sum  $exe.part" | sha256sum -c --quiet && mv "$exe.part" "$exe" || return 1
+      fi
+      if [ ! -f "$tools/IS6/ISCC.exe" ]; then
+        rm -rf "$tools" && mkdir -p "$tools/windows/system32" "$tools/windows/temp" || return 1
+        (cd "$(dirname "$SAKE")" && timeout 900 env SAKE_C="$tools" SAKE_FONTS="$FONTS" node "$SAKE" "$exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART '/DIR=C:\IS6' /CURRENTUSER > "$OUT/inno-setup.log" 2>&1)
+        [ -f "$tools/IS6/ISCC.exe" ] || { tail -5 "$OUT/inno-setup.log"; return 1; }
+      fi
+      rm -rf "$tools/src" && mkdir -p "$tools/src" || return 1
+      printf 'hello inno\r\n' > "$tools/src/a.txt"
+      head -c 300000 /dev/zero | tr '\0' i > "$tools/src/b.dat"
+      cp "$ROOT/host/tests/innoinstall.iss" "$tools/src/" || return 1
+      (cd "$(dirname "$SAKE")" && timeout 900 env SAKE_C="$tools" SAKE_FONTS="$FONTS" node "$SAKE" "$tools/IS6/ISCC.exe" /Q 'C:\src\innoinstall.iss' > "$OUT/inno-iscc.log" 2>&1) &&
+        cp "$tools/src/out/innoinstall-setup.exe" "$OUT/" || { tail -5 "$OUT/inno-iscc.log"; return 1; }
+      return 0
     fi
     if [ "$t" = msiui ]; then
       # (msiinstall.wxs's package with dialogs: Welcome (name, extras, Next / Cancel), a
@@ -113,10 +138,21 @@ for t in $TESTS; do
     "$1" -shared -nostdlib -DBUILD_FIXTURE -Wl,--entry,0 "$ROOT/host/tests/dllsearch.c" "$OUT/dllsearch-res.o" -o "$OUT/dllsearch-fixture.dll"
   }
   case "$t" in
-    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall|msiui|nsisinstall)
-      [[ $t = msi* || $t = nsis* ]] && rm -rf "$OUT/$t-prefix"
+    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall|msiui|nsisinstall|innoinstall)
+      [[ $t = msi* || $t = nsis* || $t = inno* ]] && rm -rf "$OUT/$t-prefix"
       mkdir -p "$OUT/$t-prefix/windows/system32"
       test_env=("SAKE_C=$OUT/$t-prefix")
+      ;;
+  esac
+  # (Inno Setup lays its windows out in dialog units: fonts, SAKE_FONTS or made from the IPA
+  # fonts by tools/ci/sake-fonts.py)
+  case "$t" in
+    innoinstall)
+      FONTS=${SAKE_FONTS:-$OUT/fonts}
+      if [ ! -d "$FONTS" ] && ! { mkdir -p "$FONTS" && python3 "$ROOT/tools/ci/sake-fonts.py" "$FONTS" > /dev/null; }; then
+        echo "FAIL $t: no fonts (SAKE_FONTS, or fonts-ipafont and fonttools for tools/ci/sake-fonts.py)"; fail=1; continue
+      fi
+      test_env+=("SAKE_FONTS=$FONTS")
       ;;
   esac
   if ! fixture i686-w64-mingw32-gcc; then

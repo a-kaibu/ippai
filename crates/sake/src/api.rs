@@ -617,3 +617,62 @@ mod dll_key_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod spec_tests {
+    use super::{forwards, specs};
+
+    /// Every function sake implements under a DLL whose exports are all stdcall has its spec
+    /// line (the bytes the callee pops): without one it binds as cdecl popping nothing, and a
+    /// 32-bit caller's stack is off by the arguments after the call (Inno Setup's ISCC crashed
+    /// so in BCryptVerifySignature). The LongPtr functions are x64's only (macros on x86); ippai_*
+    /// are sake's own, called without arguments.
+    #[test]
+    fn stdcall_implementations_have_specs() {
+        let sp = specs();
+        let mut all_stdcall: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+        for l in include_str!("specs.txt").lines() {
+            let v: Vec<&str> = l.split(' ').collect();
+            if v.len() >= 5 {
+                *all_stdcall.entry(v[0]).or_insert(true) &= v[2] == "stdcall";
+            }
+        }
+        let known = |d: &str, n: &str| {
+            sp.by_name.contains_key(&(d.to_string(), n.to_string()))
+                || forwards(d).iter().chain(&["kernel32", "kernelbase", "ntdll"]).any(|k| sp.by_name.contains_key(&(k.to_string(), n.to_string())))
+        };
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut missing = Vec::new();
+        for f in std::fs::read_dir(dir).unwrap() {
+            let p = f.unwrap().path();
+            if p.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let s = std::fs::read_to_string(&p).unwrap();
+            let mut found: Vec<(String, String)> = Vec::new();
+            // implement("dll", "Name", f)
+            for part in s.split("implement(\"").skip(1) {
+                let mut q = part.split('"');
+                let (Some(d), Some(sep), Some(n)) = (q.next(), q.next(), q.next()) else { continue };
+                if sep.trim() == "," {
+                    found.push((d.to_string(), n.to_string()));
+                }
+            }
+            // reg!("dll"; A, B, ...)
+            for part in s.split("reg!(\"").skip(1) {
+                let Some((d, rest)) = part.split_once('"') else { continue };
+                let Some(body) = rest.trim_start().strip_prefix(';') else { continue };
+                let body = body.split(')').next().unwrap_or("");
+                for n in body.split(|ch: char| !(ch.is_alphanumeric() || ch == '_')).filter(|n| !n.is_empty()) {
+                    found.push((d.to_string(), n.to_string()));
+                }
+            }
+            for (d, n) in found {
+                if all_stdcall.get(d.as_str()) == Some(&true) && !n.contains("LongPtr") && !n.starts_with("ippai_") && !known(&d, &n) {
+                    missing.push(format!("{d}!{n} ({})", p.file_name().unwrap().to_string_lossy()));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "implemented without a spec line: {missing:?}");
+    }
+}

@@ -1,0 +1,14 @@
+full name, no path: <dir>\Builtins.iss (length ok), file part Builtins.iss
+full name, another path: <dir>\Builtins.iss (length ok), file part Builtins.iss
+full name without the extension, .iss: <dir>\Builtins.iss (length ok), file part Builtins.iss
+full name of nothing: 0, error 2
+bare name in the path: <dir>\Builtins.iss (length ok), file part Builtins.iss
+bare name not in the path: 0, error 2
+bare name in the second directory: <dir>\Builtins.iss (length ok), file part Builtins.iss
+bare name and extension: <dir>\Builtins.iss (length ok), file part Builtins.iss
+extension not added to a name with one: 0, error 2
+.\ name with a path: 0, error 2
+..\ name with a path: <dir>\Builtins.iss (length ok), file part Builtins.iss
+empty name: 0, error 87
+spaces: 0, error 87
+short buffer: asks for the length with the NUL: yes

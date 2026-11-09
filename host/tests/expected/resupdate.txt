@@ -1,0 +1,21 @@
+begin: ok
+rcdata en: 1
+rcdata ja: 1
+named type: 1
+replaced: 1
+to remove: 1
+removed: 1
+remove what is not there: 1
+end: 1
+load as data: ok
+  rcdata en: 5 bytes "hello"
+  rcdata ja: 10 bytes "konnichiwa"
+  named type: 6 bytes "SEVEN!"
+  removed: not found (1814)
+  the copy's own resource: 5 bytes "hello"
+the copy ran: exit 7
+discarded: 1, size the same: 1
+deleting the rest: 1
+  only: 5 bytes "alone"
+  rcdata en after: not found (1814)
+missing file: NULL, error 2

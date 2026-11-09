@@ -134,6 +134,18 @@ fn with_env<R>(f: impl FnOnce(&mut Vec<(String, String)>) -> R) -> R {
             ("OS", "Windows_NT"),
             ("COMPUTERNAME", "SAKE"),
             ("USERNAME", "user"),
+            // (where SHGetFolderPath's folders are)
+            ("USERPROFILE", "C:\\users\\user"),
+            ("HOMEDRIVE", "C:"),
+            ("HOMEPATH", "\\users\\user"),
+            ("APPDATA", "C:\\users\\user\\AppData\\Roaming"),
+            ("LOCALAPPDATA", "C:\\users\\user\\AppData\\Local"),
+            ("PUBLIC", "C:\\users\\Public"),
+            ("ProgramData", "C:\\ProgramData"),
+            ("ALLUSERSPROFILE", "C:\\ProgramData"),
+            ("ProgramFiles", "C:\\Program Files"),
+            ("CommonProgramFiles", "C:\\Program Files\\Common Files"),
+            ("SystemDrive", "C:"),
         ]
         .iter()
         .map(|&(k, v)| (k.to_string(), v.to_string()))
@@ -2088,8 +2100,19 @@ fn VirtualFree(c: &mut Ctx) -> u32 {
     last_error(87);
     0
 }
+/// VirtualQueryEx: this process's memory as VirtualQuery tells it (another process's is
+/// not readable here: ERROR_ACCESS_DENIED).
+fn VirtualQueryEx(c: &mut Ctx) -> u32 {
+    if self_process(c.a(0)).is_none() {
+        last_error(5);
+        return 0;
+    }
+    virtual_query(c.a(1), c.a(2), c.a(3))
+}
 fn VirtualQuery(c: &mut Ctx) -> u32 {
-    let (a, mbi, len) = (c.a(0), c.a(1), c.a(2));
+    virtual_query(c.a(0), c.a(1), c.a(2))
+}
+fn virtual_query(a: u32, mbi: u32, len: u32) -> u32 {
     // MEMORY_BASIC_INFORMATION: (base, allocation base, allocation protection, region size,
     // state, protection, type); x64: pointers and the size 8 bytes, 48 in all
     let x64 = mem::x64();
@@ -4093,6 +4116,9 @@ fn GetLocaleInfoW(c: &mut Ctx) -> u32 {
 fn EnumCalendarInfoA(_: &mut Ctx) -> u32 {
     1
 }
+fn EnumCalendarInfoW(_: &mut Ctx) -> u32 {
+    1
+}
 fn GetCPInfo(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     mem::fill(p, 20, 0);
@@ -4393,6 +4419,29 @@ fn CompareStringA(c: &mut Ctx) -> u32 {
     let a = if n1 < 0 { cstr(s1) } else { mem::cstrn(s1, n1 as u32) };
     let b = if n2 < 0 { cstr(s2) } else { mem::cstrn(s2, n2 as u32) };
     crate::collate::compare(&a2w(&a), &a2w(&b), flags) as i32 as u32 + 2
+}
+/// CompareStringOrdinal(s1, n1, s2, n2, ignore case): code unit order (with the case
+/// ignored, of the upper case letters), CSTR_LESS_THAN 1 / EQUAL 2 / GREATER_THAN 3.
+fn CompareStringOrdinal(c: &mut Ctx) -> u32 {
+    let (s1, n1, s2, n2, nocase) = (c.a(0), c.i(1), c.a(2), c.i(3), c.a(4) != 0);
+    if s1 == 0 || s2 == 0 {
+        last_error(87);
+        return 0;
+    }
+    let rd = |p: u32, n: i32| -> Vec<u16> { if n < 0 { wstr(p) } else { (0..n as u32).map(|i| r16(p + 2 * i)).collect() } };
+    let up = |v: Vec<u16>| -> Vec<u16> {
+        if !nocase {
+            return v;
+        }
+        v.into_iter().map(|u| char::from_u32(u as u32).filter(|ch| !ch.is_ascii() || ch.is_ascii_lowercase()).and_then(|ch| {
+            let mut it = ch.to_uppercase();
+            match (it.next(), it.next()) {
+                (Some(x), None) if (x as u32) < 0x10000 => Some(x as u16),
+                _ => None,
+            }
+        }).unwrap_or(u)).collect()
+    };
+    up(rd(s1, n1)).cmp(&up(rd(s2, n2))) as i32 as u32 + 2
 }
 fn CompareStringW(c: &mut Ctx) -> u32 {
     let (flags, s1, n1, s2, n2) = (c.a(1), c.a(2), c.i(3), c.a(4), c.i(5));
@@ -5207,8 +5256,45 @@ fn LoadLibraryW(c: &mut Ctx) -> u32 {
     let n = arg_str(c.a(0), true);
     load_library_named(c, &n)
 }
+/// LoadLibraryEx(name, file, flags): LOAD_LIBRARY_AS_DATAFILE (2), its _EXCLUSIVE (0x40) and
+/// LOAD_LIBRARY_AS_IMAGE_RESOURCE (0x20) map the file for its resources only (a module already
+/// loaded as code answers unless exclusive); the handle is the base | 1 (| 2 for the image
+/// resource)
+fn load_library_ex(c: &mut Ctx, wide: bool) -> u32 {
+    let (name, flags) = (c.a(0), c.a(2));
+    if flags & 0x62 == 0 {
+        return if wide { LoadLibraryW(c) } else { LoadLibraryA(c) };
+    }
+    let n = arg_str(name, wide);
+    if n.is_empty() {
+        last_error(87);
+        return 0;
+    }
+    let full = files::full_path(&n);
+    if flags & 0x40 == 0 {
+        let loaded = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.name.is_empty() && m.path.eq_ignore_ascii_case(&full)).map(|m| m.base);
+        if let Some(b) = loaded {
+            return b;
+        }
+    }
+    let Some(host) = files::resolve(&full).filter(|h| !files::is_dir(h)) else {
+        last_error(2);
+        return 0;
+    };
+    let Ok(data) = kura::fs::read(&host) else {
+        last_error(5);
+        return 0;
+    };
+    match crate::pe::load_datafile(&data, &full) {
+        Some(b) => b | if flags & 0x20 != 0 && flags & 0x42 == 0 { 2 } else { 1 },
+        None => {
+            last_error(193);
+            0
+        }
+    }
+}
 fn LoadLibraryExA(c: &mut Ctx) -> u32 {
-    LoadLibraryA(c)
+    load_library_ex(c, false)
 }
 /// SetDllDirectory(path): one folder searched after the exe's (NULL or "": none again)
 fn set_dll_directory(c: &mut Ctx, wide: bool) -> u32 {
@@ -5229,7 +5315,7 @@ fn SetDllDirectoryW(c: &mut Ctx) -> u32 {
     set_dll_directory(c, true)
 }
 fn LoadLibraryExW(c: &mut Ctx) -> u32 {
-    LoadLibraryW(c)
+    load_library_ex(c, true)
 }
 /// (modules stay loaded; a handle that is no module is ERROR_MOD_NOT_FOUND, winref fmt)
 fn FreeLibrary(c: &mut Ctx) -> u32 {
@@ -5237,6 +5323,9 @@ fn FreeLibrary(c: &mut Ctx) -> u32 {
     if crate::pe::with(c.a(0) & !3, |_| ()).is_none() {
         last_error(126);
         return 0;
+    }
+    if c.a(0) & 3 != 0 {
+        crate::pe::free_datafile(c.a(0) & !3);
     }
     1
 }
@@ -6454,11 +6543,24 @@ fn GetVolumeInformationW(c: &mut Ctx) -> u32 {
 /// current one, system32 (where the DLLs we implement are), the Windows folder and PATH
 fn search_path(c: &mut Ctx, wide: bool) -> u32 {
     let (path, name, ext, cap, buf, part) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
-    let mut n = arg_str(name, wide);
+    let given = if name == 0 { String::new() } else { arg_str(name, wide) };
+    if given.trim_start_matches(' ').is_empty() {
+        last_error(87);
+        return 0;
+    }
+    let mut n = given.clone();
     if ext != 0 && !n.contains('.') {
         n += &arg_str(ext, wide);
     }
-    let dirs: Vec<String> = if path != 0 {
+    let path = if path != 0 && arg_str(path, wide).is_empty() { 0 } else { path };
+    // a name with a path of its own ("C:\x", "\\x", "\x", "C:x", ".\x", "..\x") is looked
+    // for there only, as given and then with the extension
+    let b = given.as_bytes();
+    let sep = |ch: u8| ch == b'\\' || ch == b'/';
+    let own_path = sep(b[0]) || (b.len() > 1 && b[1] == b':') || (b[0] == b'.' && b.len() > 1 && (sep(b[1]) || (b[1] == b'.' && b.len() > 2 && sep(b[2]))));
+    let dirs: Vec<String> = if own_path {
+        vec![String::new()]
+    } else if path != 0 {
         arg_str(path, wide).split(';').map(String::from).collect()
     } else {
         let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
@@ -6467,8 +6569,9 @@ fn search_path(c: &mut Ctx, wide: bool) -> u32 {
         v.extend(env_get("PATH").unwrap_or_default().split(';').filter(|d| !d.is_empty()).map(String::from));
         v
     };
-    for d in dirs.iter().filter(|d| !d.is_empty()) {
-        let w = files::full_path(&format!("{}\\{n}", d.trim_end_matches('\\')));
+    let names: Vec<String> = if own_path { vec![given, n] } else { vec![n] };
+    for (d, n) in dirs.iter().filter(|d| own_path || !d.is_empty()).flat_map(|d| names.iter().map(move |n| (d, n))) {
+        let w = files::full_path(&if own_path { n.clone() } else { format!("{}\\{n}", d.trim_end_matches('\\')) });
         if files::resolve(&w).is_some() || is_system_dll_path(&w) {
             let r = ret_str(buf, cap, &w, wide);
             if part != 0 {
@@ -6850,13 +6953,6 @@ fn SystemFunction036(c: &mut Ctx) -> u32 {
 }
 /// BCryptOpenAlgorithmProvider(&alg, id, implementation, flags): any algorithm "opens"; only
 /// BCryptGenRandom does something with it.
-fn BCryptOpenAlgorithmProvider(c: &mut Ctx) -> u32 {
-    crate::mem::putp(c.a(0), mem::heap_alloc(16, true));
-    0
-}
-fn BCryptCloseAlgorithmProvider(_: &mut Ctx) -> u32 {
-    0
-}
 /// BCryptGenRandom(alg, buffer, length, flags)
 fn BCryptGenRandom(c: &mut Ctx) -> u32 {
     let mut buf = vec![0u8; c.a(2) as usize];
@@ -7180,7 +7276,7 @@ pub fn init() {
         IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
         GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW, EnumSystemLocalesEx,
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
-        IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,
+        IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, EnumCalendarInfoW, CompareStringOrdinal, VirtualQueryEx, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,
         IsDBCSLeadByteEx, MultiByteToWideChar, WideCharToMultiByte, GetStringTypeA, GetStringTypeExA, GetStringTypeW,
         GetStringTypeExW, LCMapStringA, LCMapStringW, CompareStringA, CompareStringW, GetDateFormatA, GetTimeFormatA, GetDateFormatW, GetTimeFormatW,
         MulDiv, lstrlenA, lstrlenW, lstrcpyA, lstrcpyW, lstrcpynA, lstrcpynW, lstrcatA, lstrcatW, lstrcmpA, lstrcmpiA,
@@ -7240,7 +7336,7 @@ pub fn init() {
     });
     implement("ntdll", "RtlWakeAddressSingle", WakeByAddressAll);
     implement("kernelbase", "VirtualProtectFromApp", VirtualProtect);
-    reg!("bcrypt"; BCryptOpenAlgorithmProvider, BCryptCloseAlgorithmProvider, BCryptGenRandom, BCryptGetProperty);
+    reg!("bcrypt"; BCryptGenRandom, BCryptGetProperty);
     for n in ["PdhOpenQueryA", "PdhOpenQueryW", "PdhOpenQuery"] {
         implement("pdh", n, PdhOpenQuery);
     }

@@ -439,11 +439,11 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis
-      - name: mingw-w64, zstd, clang, msitools (host/tests/msiinstall.wxs)
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis-ipafont
+      - name: mingw-w64, zstd, clang, msitools (host/tests/msiinstall.wxs), the IPA fonts (host/tests/innoinstall.c)
         id: apt
         background: true
-        run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm msitools wixl nsis
+        run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm msitools wixl nsis fonts-ipafont-gothic fonts-ipafont-mincho
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 26
@@ -507,7 +507,7 @@ jobs:
         uses: actions/cache/save@v6.1.0
         with:
           path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis-ipafont
       - name: Build
         run: tools/ci/build.sh
       # (the release's Windows build: pack, add and storage on the PC that has the games)
@@ -515,8 +515,22 @@ jobs:
         run: |
           rustup target add x86_64-pc-windows-gnu
           RUSTFLAGS="-D warnings" cargo build --release -p ippai --target x86_64-pc-windows-gnu
+      # (host/tests/innoinstall.c: fonts for Inno Setup's dialog units, tools/ci/sake-fonts.py from
+      # the IPA fonts with fonttools; the official Inno Setup installer it installs on sake)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.pip-wheels
+          key: pip-${{ runner.os }}-fonttools==4.59.0
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ippai-inno
+          key: inno-6.7.4
+      - name: Fonts for host/tests
+        run: |
+          tools/ci/pip.sh fonttools==4.59.0
+          mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
       - name: host/tests on sake
-        run: SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
+        run: SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
       # (the page's fallback build where 4 GB at once is refused: web/src/runtime.ts sakeBuild;
       # and the JIT freeing modules nothing refers to after every load, kura jit.rs reclaim)
       - name: host/tests on sake-grow (a memory that starts at 2.06 GB and grows), JIT modules freed at every load

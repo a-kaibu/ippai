@@ -12785,6 +12785,7 @@ powrprof PowerGetActiveScheme stdcall 8 -
 powrprof PowerSetActiveScheme stdcall 8 -
 powrprof PowerReadDCValue stdcall 28 -
 powrprof PowerReadFriendlyName stdcall 24 -
+powrprof PowerReadDescription stdcall 24 -
 powrprof PowerRegisterForEffectivePowerModeNotifications stdcall 16 -
 powrprof PowerRegisterSuspendResumeNotification stdcall 12 -
 powrprof PowerUnregisterSuspendResumeNotification stdcall 4 -
@@ -32474,6 +32475,11 @@ bcrypt BCryptExportKey stdcall 28 -
 bcrypt BCryptHash stdcall 28 -
 bcrypt BCryptEnumAlgorithms stdcall 16 -
 bcrypt BCryptFreeBuffer stdcall 4 -
+bcrypt BCryptGenerateKeyPair stdcall 16 -
+bcrypt BCryptFinalizeKeyPair stdcall 8 -
+bcrypt BCryptImportKeyPair stdcall 28 -
+bcrypt BCryptSignHash stdcall 32 -
+bcrypt BCryptVerifySignature stdcall 28 -
 pdh PdhOpenQueryA stdcall 12 -
 pdh PdhOpenQueryW stdcall 12 -
 pdh PdhOpenQuery stdcall 12 -
@@ -33325,6 +33331,7 @@ ncrypt NCryptDeleteKey stdcall 8 -
 ncrypt NCryptDeriveKey stdcall 28 -
 ncrypt NCryptEncrypt stdcall 32 -
 ncrypt NCryptEnumAlgorithms stdcall 20 -
+ncrypt NCryptEnumStorageProviders stdcall 12 -
 ncrypt NCryptEnumKeys stdcall 20 -
 ncrypt NCryptExportKey stdcall 32 -
 ncrypt NCryptFinalizeKey stdcall 8 -

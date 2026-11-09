@@ -1323,6 +1323,9 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
         mem::putp(out, dxdiag_provider());
         return 0;
     }
+    if let Some(hr) = crate::shelllink::create_instance(clsid, iid, out) {
+        return hr;
+    }
     if let Some(obj) = crate::ddraw::create_instance(clsid, iid) {
         mem::putp(out, obj);
         return 0;
@@ -2025,6 +2028,16 @@ pub(crate) fn bstr_free(b: u32) {
         mem::heap_free(b - 4);
     }
 }
+/// VarBstrFromBool(value, lcid, flags, &out): "True" for any nonzero value, "False" for 0.
+fn VarBstrFromBool(c: &mut Ctx) -> u32 {
+    let (v, out) = (c.a(0) as u16, c.a(3));
+    if out == 0 {
+        return 0x8007_0057;
+    }
+    let s: Vec<u16> = if v != 0 { "True" } else { "False" }.encode_utf16().collect();
+    mem::wp(out, bstr_alloc(&s));
+    0
+}
 fn SysAllocString(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 {
         return 0;
@@ -2391,23 +2404,44 @@ fn SetErrorInfo(_: &mut Ctx) -> u32 {
 pub(crate) fn special_folder(csidl: u32) -> Option<&'static str> {
     Some(match csidl & 0xff {
         0 | 0x10 => "C:\\users\\user\\Desktop",
+        0x02 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs",
         5 => "C:\\users\\user\\Documents",
-        0x1a => "C:\\users\\user\\AppData\\Roaming",
-        0x1c => "C:\\users\\user\\AppData\\Local",
-        0x23 => "C:\\ProgramData",
-        0x2e => "C:\\users\\Public\\Documents",
+        0x06 | 0x1f => "C:\\users\\user\\Favorites",
+        0x07 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+        0x08 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\Recent",
+        0x09 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\SendTo",
+        0x0b => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu",
+        0x0d => "C:\\users\\user\\Music",
+        0x0e => "C:\\users\\user\\Videos",
+        0x13 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\Network Shortcuts",
         0x14 => "C:\\windows\\Fonts",
-        0x24 => "C:\\windows",
-        0x25 | 0x29 => "C:\\windows\\system32",
-        0x26 | 0x2a => "C:\\Program Files",
-        0x28 => "C:\\users\\user",
+        0x15 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\Templates",
+        0x16 => "C:\\ProgramData\\Microsoft\\Windows\\Start Menu",
+        0x17 => "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
+        0x18 => "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+        0x19 => "C:\\users\\Public\\Desktop",
+        0x1a => "C:\\users\\user\\AppData\\Roaming",
+        0x1b => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\Printer Shortcuts",
+        0x1c => "C:\\users\\user\\AppData\\Local",
         0x20 => "C:\\users\\user\\AppData\\Local\\Microsoft\\Windows\\Temporary Internet Files",
         0x21 => "C:\\users\\user\\AppData\\Local\\Microsoft\\Windows\\INetCookies",
         0x22 => "C:\\users\\user\\AppData\\Local\\Microsoft\\Windows\\History",
+        0x23 => "C:\\ProgramData",
+        0x24 => "C:\\windows",
+        0x25 | 0x29 => "C:\\windows\\system32",
+        0x26 | 0x2a => "C:\\Program Files",
         0x27 => "C:\\users\\user\\Pictures",
-        0x0d => "C:\\users\\user\\Music",
-        0x0e => "C:\\users\\user\\Videos",
-        0x02 | 0x07 | 0x0b | 0x15 | 0x08 | 0x06 | 0x09 | 0x13 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows",
+        0x28 => "C:\\users\\user",
+        0x2b | 0x2c => "C:\\Program Files\\Common Files",
+        0x2d => "C:\\ProgramData\\Microsoft\\Windows\\Templates",
+        0x2e => "C:\\users\\Public\\Documents",
+        0x2f => "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Administrative Tools",
+        0x30 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Administrative Tools",
+        0x35 => "C:\\users\\Public\\Music",
+        0x36 => "C:\\users\\Public\\Pictures",
+        0x37 => "C:\\users\\Public\\Videos",
+        0x38 => "C:\\windows\\resources",
+        0x3b => "C:\\users\\user\\AppData\\Local\\Microsoft\\Windows\\Burn\\Burn",
         _ => return None,
     })
 }
@@ -2511,6 +2545,30 @@ fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
         0xf38b_f404 => folder_path(0x24, true),
         0x905e_63b6 => folder_path(0x26, true),
         0x33e2_8130 => folder_path(0x27, true),
+        // Programs, CommonPrograms, StartMenu, CommonStartMenu, Startup, CommonStartup,
+        // PublicDesktop, ProgramFilesCommon, Favorites, Music, Videos, SendTo, Recent, Templates,
+        // PublicDocuments
+        0xa77f_5d77 => folder_path(0x02, true),
+        0x0139_d44e => folder_path(0x17, true),
+        0x625b_53c3 => folder_path(0x0b, true),
+        0xa411_5719 => folder_path(0x16, true),
+        0xb97d_20bb => folder_path(0x07, true),
+        0x82a5_ea35 => folder_path(0x18, true),
+        0xc4aa_340d => folder_path(0x19, true),
+        0xf7f1_ed05 => folder_path(0x2b, true),
+        0x1777_f761 => folder_path(0x06, true),
+        0x4bd8_d571 => folder_path(0x0d, true),
+        0x1898_9b1d => folder_path(0x0e, true),
+        0x8983_036c => folder_path(0x09, true),
+        0xae50_c081 => folder_path(0x08, true),
+        0xa632_93e8 => folder_path(0x15, true),
+        0xed48_24af => folder_path(0x2e, true),
+        // UserProgramFiles (a per-user install's Program Files)
+        0x5cd7_aee2 => folder_path(0x1c, true).map(|p| {
+            let p = format!("{p}\\Programs");
+            let _ = kura::fs::create_dir_all(crate::files::to_host(&p));
+            p
+        }),
         // Saved Games
         0x4c5c_32ff => folder_path(0x28, true).map(|p| {
             let p = format!("{p}\\Saved Games");
@@ -4114,6 +4172,39 @@ pub fn init() {
     let _ = (s2a, r8);
     wts_init();
     implement("shell32", "SHGetKnownFolderPath", SHGetKnownFolderPath);
+    // what installers (Inno Setup's uninstaller) call around their windows: no themes, no
+    // composition, no shutdown to block, nothing for Explorer to refresh
+    for n in ["BufferedPaintInit", "BufferedPaintUnInit"] {
+        implement("uxtheme", n, |_| 0);
+    }
+    implement("uxtheme", "IsAppThemed", |_| 0);
+    implement("dwmapi", "DwmIsCompositionEnabled", |c| {
+        let p = c.a(0);
+        if p == 0 {
+            return 0x8007_0057;
+        }
+        w32(p, 0);
+        0
+    });
+    implement("user32", "DisableProcessWindowsGhosting", |_| 0);
+    for n in ["ShutdownBlockReasonCreate", "ShutdownBlockReasonDestroy"] {
+        implement("user32", n, |_| 1);
+    }
+    // (CHANGEFILTERSTRUCT: cbSize, ExtStatus = MSGFLTINFO_NONE)
+    implement("user32", "ChangeWindowMessageFilterEx", |c| {
+        let p = c.a(3);
+        if p != 0 {
+            w32(p + 4, 0);
+        }
+        1
+    });
+    implement("shell32", "SHChangeNotify", |_| 0);
+    implement("shell32", "SHCreateItemFromParsingName", |c| {
+        if c.a(3) != 0 {
+            w32(c.a(3), 0);
+        }
+        0x8000_4001
+    });
     // (xinputuap: the Windows 10 one, AdvHD imports it)
     for &(d, names) in XINPUT {
         for &n in names {
@@ -4154,6 +4245,7 @@ pub fn init() {
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance, CoGetClassObject,
         CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, CoMarshalInterface, CoUnmarshalInterface, CoReleaseMarshalData, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
         RegisterDragDrop, RevokeDragDrop, DoDragDrop);
+    reg!("oleaut32"; VarBstrFromBool);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,
         VariantCopyInd, VariantChangeTypeEx, VariantChangeType, GetErrorInfo, SetErrorInfo);

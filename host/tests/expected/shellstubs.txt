@@ -1,0 +1,10 @@
+BufferedPaintInit: 0
+IsAppThemed: 0
+DwmIsCompositionEnabled: 0, 0
+ShutdownBlockReasonCreate: 1
+ShutdownBlockReasonDestroy: 1
+ChangeWindowMessageFilterEx: 1, ext status 0
+without the struct: 1
+SHChangeNotify returned
+SHCreateItemFromParsingName: failed, item NULL
+BufferedPaintUnInit: 0

@@ -51,8 +51,9 @@ pub static MODULES: RwLock<Vec<Module>> = RwLock::new(Vec::new());
 /// Serializes LoadLibrary (DllMain calls may load more).
 pub static LOADER: Mutex<()> = Mutex::new(());
 
+/// (a data-file module's handle is its base | 1 or | 2)
 pub fn by_base(base: u32) -> Option<usize> {
-    MODULES.read().unwrap().iter().position(|m| m.base == base)
+    MODULES.read().unwrap().iter().position(|m| m.base == base & !3)
 }
 
 pub fn by_name(name: &str) -> Option<u32> {
@@ -65,7 +66,58 @@ pub fn containing(a: u32) -> Option<u32> {
 }
 
 pub fn with<R>(base: u32, f: impl FnOnce(&Module) -> R) -> Option<R> {
-    MODULES.read().unwrap().iter().find(|m| m.base == base).map(f)
+    MODULES.read().unwrap().iter().find(|m| m.base == base & !3).map(f)
+}
+
+/// LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE / AS_IMAGE_RESOURCE): the file's headers and
+/// sections laid out as an image (any bitness; no imports, relocations or entry point) for its
+/// resources, read now (a later change to the file is seen by the next load); listed without
+/// a name, so GetModuleHandle never finds it. The base.
+pub fn load_datafile(data: &[u8], path: &str) -> Option<u32> {
+    let pe = crate::resupdate::Pe::parse(data)?;
+    let secs = pe.sections(data);
+    let headers = secs.iter().filter(|s| s.raw_size != 0).map(|s| s.raw as usize).min().unwrap_or(0x1000).min(0x1000).min(data.len());
+    let size = secs.iter().map(|s| s.va.saturating_add(s.vsize.max(s.raw_size))).max().unwrap_or(0).max(headers as u32).next_multiple_of(0x1000);
+    let base = mem::reserve(0, size, 0x02, 0x100_0000, false)?;
+    mem::commit(base, 0x04);
+    mem::write(base, &data[..headers]);
+    for s in &secs {
+        let n = s.raw_size.min(if s.vsize != 0 { s.vsize } else { s.raw_size }) as usize;
+        let n = n.min(data.len().saturating_sub(s.raw as usize));
+        if n > 0 && s.va as u64 + n as u64 <= size as u64 {
+            mem::write(base + s.va, &data[s.raw as usize..s.raw as usize + n]);
+        }
+    }
+    mem::protect(base, size, 0x02);
+    let (rva, _) = pe.dir(data, 2);
+    MODULES.write().unwrap().push(Module {
+        base,
+        size,
+        entry: 0,
+        name: String::new(),
+        path: path.to_string(),
+        exports: HashMap::default(),
+        ordinals: HashMap::default(),
+        dll: true,
+        tls: None,
+        resources: if rva != 0 && rva < size { base + rva } else { 0 },
+        refs: 1,
+        hle: false,
+        pdata: (0, 0),
+    });
+    Some(base)
+}
+
+/// FreeLibrary of a data-file module: unmapped once the last reference goes
+pub fn free_datafile(base: u32) {
+    let mut v = MODULES.write().unwrap();
+    let Some(i) = v.iter().position(|m| m.base == base && m.name.is_empty() && !m.hle) else { return };
+    v[i].refs = v[i].refs.saturating_sub(1);
+    if v[i].refs == 0 {
+        v.remove(i);
+        drop(v);
+        mem::release(base);
+    }
 }
 
 /// "C:\foo\Bar.DLL" -> "bar.dll"
@@ -515,7 +567,7 @@ pub fn resource_ids(module: u32, path: &[ResId]) -> Option<Vec<ResId>> {
 
 /// (address, size) of a found resource's data.
 pub fn resource_data(module: u32, entry: u32) -> (u32, u32) {
-    (module + r32(entry), r32(entry + 4))
+    ((module & !3) + r32(entry), r32(entry + 4))
 }
 
 // ---------------------------------------------------------------------------------------------

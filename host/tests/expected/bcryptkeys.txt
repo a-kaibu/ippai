@@ -1,0 +1,34 @@
+open ECDSA_P256: 0
+import public: 0
+verify openssl's signature: 0
+verify, signature changed: c000a000
+verify, hash changed: c000a000
+verify, short signature: c000a000
+import into ECDH_P256: c000000d
+import, point off the curve: c00000bb
+sign with a public key fails: 1
+destroy: 0, again: c0000008
+generate 384 on P-256: c000000d
+generate: 0
+export before finalizing fails: 1
+finalize: 0, again: 1
+public blob size: 0 72
+export, small buffer: c0000023
+export: 0 72 magic 31534345
+private blob size: 0 104
+sign, size: 0 64
+sign: 0 64
+import exported: 0
+verify with it: 0
+RSA generate: 0, finalize: 0
+RSA sign: 0 128
+RSA verify: 0
+RSA verify, changed: c000a000
+RSA public blob: 0 155
+BCryptGenerateKeyPair pops its arguments: yes
+BCryptFinalizeKeyPair pops its arguments: yes
+BCryptSignHash pops its arguments: yes
+BCryptVerifySignature pops its arguments: yes
+BCryptImportKeyPair pops its arguments: yes
+BCryptExportKey pops its arguments: yes
+close: 0
