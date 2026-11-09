@@ -4837,7 +4837,38 @@ fn liveness(list: &[Instruction], out: u32) -> (Vec<u32>, u32) {
 
 /// Status flags live at the start and at the end of each block, over the region's jumps
 /// (everything is live where it is left or jumps dynamically).
-fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)], tables: &[structure::Table]) -> (Vec<u32>, Vec<u32>) {
+/// The status flags a function called at `target` reads before it writes them (hand-written
+/// code passes a result that way: the static CRT's log10, _CIlog10, calls a helper that
+/// returns "is it inf/NaN" in ZF, then its body, which branches on that ZF first thing; with
+/// the flags taken for dead at the call the helper's CMP left none, the body took the inf/NaN
+/// path for 1743, and %g printed it as "0e+00"). Its code up to the first branch that is not
+/// a direct jump, a call or a return: the flags live after that are taken for dead.
+fn callee_reads<M: Memory>(mem: &mut M, target: u32) -> u32 {
+    let mut reads = 0;
+    let mut written = 0;
+    let mut at = target;
+    for _ in 0..4 {
+        let list = decode(mem, at);
+        let Some(last) = list.last() else { break };
+        let ends = match last.flow_control() {
+            FlowControl::ConditionalBranch => None,
+            FlowControl::UnconditionalBranch if last.op0_kind() == OpKind::NearBranch32 => Some(last.near_branch32()),
+            FlowControl::Next => Some(last.next_ip32()),
+            _ => None,
+        };
+        reads |= liveness(&list, 0).1 & !written;
+        for ins in &list {
+            written |= ins.rflags_modified() & STATUS_BITS;
+        }
+        match ends {
+            Some(a) if written != STATUS_BITS => at = a,
+            _ => break,
+        }
+    }
+    reads
+}
+
+fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)], tables: &[structure::Table], call_reads: &BTreeMap<usize, u32>) -> (Vec<u32>, Vec<u32>) {
     let n = blocks.len();
     let succ: Vec<Option<Vec<usize>>> = (0..n)
         .map(|k| {
@@ -4878,7 +4909,7 @@ fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)], tables: &[structu
         let mut changed = false;
         for k in (0..n).rev() {
             let out = match &succ[k] {
-                Some(s) => s.iter().fold(0, |a, &b| a | live_in[b]),
+                Some(s) => s.iter().fold(0, |a, &b| a | live_in[b]) | call_reads.get(&k).copied().unwrap_or(0),
                 None => STATUS_BITS,
             };
             live_out[k] = out;
@@ -5513,7 +5544,22 @@ fn translate_seen<M: Memory>(
             profile.push((*a, at, list.iter().map(profile_key).collect()));
         }
     }
-    g.live_out = block_liveness(&g, &blocks, &tables).1;
+    // (what the functions called read of the flags at the call: see callee_reads)
+    let mut call_reads = BTreeMap::new();
+    if fnm {
+        let mut by_target = BTreeMap::new();
+        for (k, (_, list)) in blocks.iter().enumerate() {
+            let last = list.last().unwrap();
+            if last.flow_control() == FlowControl::Call && last.op0_kind() == OpKind::NearBranch32 && !inlined.contains_key(&k) {
+                let t = last.near_branch32();
+                let r = *by_target.entry(t).or_insert_with(|| if hle_at(mem, t).is_some() { 0 } else { callee_reads(mem, t) });
+                if r != 0 {
+                    call_reads.insert(k, r);
+                }
+            }
+        }
+    }
+    g.live_out = block_liveness(&g, &blocks, &tables, &call_reads).1;
     // functions: the layout, entered at the root and (when the dispatcher comes back to the
     // middle, as at a return address after the call left, or a loop's head after the budget
     // ran out) at blocks outside loops but the outermost's heads
@@ -5732,5 +5778,29 @@ mod tests {
                 });
             }
         });
+    }
+    /// What a callee reads of the flags at its call (see callee_reads), from its code.
+    #[test]
+    fn callee_flag_reads() {
+        let zf_cf = RflagsBits::ZF | RflagsBits::CF;
+        let cases: [(&str, &[u8], u32); 7] = [
+            // _CIlog10's body (サクラノ刻 0x6e37b8): push edx; wait; fnstcw [esp]; je: ZF
+            ("branch first", &[0x52, 0x9b, 0xd9, 0x3c, 0x24, 0x74, 0x10, 0xc3], RflagsBits::ZF),
+            // a compiler's prologue: sub esp writes them all before anything reads
+            ("prologue", &[0x55, 0x89, 0xe5, 0x83, 0xec, 0x10, 0x74, 0x00, 0xc3], 0),
+            // cmc reads CF, then a jump on to a block whose cmovz reads ZF
+            ("jmp on", &[0xf5, 0xeb, 0x01, 0x90, 0x0f, 0x44, 0xc1, 0xc3], RflagsBits::CF | RflagsBits::ZF),
+            // adc reads CF and writes ZF before the cmovz
+            ("written", &[0x11, 0xc0, 0xeb, 0x01, 0x90, 0x0f, 0x44, 0xc1, 0xc3], RflagsBits::CF),
+            // jbe at once: CF and ZF
+            ("jbe", &[0x76, 0x00, 0xc3], zf_cf),
+            // nothing read before the RET
+            ("ret", &[0x89, 0xc8, 0xc3], 0),
+            // a call first: what the callee's callee reads is not followed
+            ("call", &[0xe8, 0x00, 0x00, 0x00, 0x00, 0xc3], 0),
+        ];
+        for (name, bytes, want) in cases {
+            assert_eq!(callee_reads(&mut Code(bytes.to_vec()), 0x10_0000), want, "{name}");
+        }
     }
 }

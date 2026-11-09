@@ -2188,7 +2188,11 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
     if jit::PROBES[0].load(Ordering::Relaxed) != 0 && jit::PROBES.iter().any(|p| p.load(Ordering::Relaxed) == (*cpu).eip) {
         let c = &*cpu;
         let f = |x: u128| (0..4).map(|i| f32::from_bits((x >> (32 * i)) as u32)).collect::<Vec<_>>();
-        eprintln!("vnjit probe {:#x}: regs {:x?} xmm0 {:?} xmm1 {:?} xmm2 {:?} xmm3 {:?}", c.eip, c.regs, f(c.xmm[0]), f(c.xmm[1]), f(c.xmm[2]), f(c.xmm[3]));
+        // (and the stack's top words: return addresses, arguments)
+        let stack: Vec<u32> = (0..12).map(|i| koji::Memory::read32(&mut Linear, c.regs[4].wrapping_add(4 * i)).unwrap_or(0)).collect();
+        // ([esp] as a C string: a call's buffer)
+        let s: String = (0..40).map(|i| koji::Memory::read8(&mut Linear, stack[0].wrapping_add(i)).unwrap_or(0)).take_while(|&b| b != 0).map(|b| b as char).collect();
+        eprintln!("vnjit probe {:#x}: regs {:x?} xmm0 {:?} xmm1 {:?} xmm2 {:?} xmm3 {:?} stack {:x?} str {s:?}", c.eip, c.regs, f(c.xmm[0]), f(c.xmm[1]), f(c.xmm[2]), f(c.xmm[3]), stack);
     }
     let g = GENERATION.load(Ordering::Relaxed);
     let m16 = (*cpu).mode16 != 0;

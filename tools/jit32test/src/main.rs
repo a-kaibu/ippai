@@ -1041,6 +1041,112 @@ fn fixed() -> Result<Vec<(&'static str, Vec<Instruction>)>, IcedError> {
     a.stmxcsr(dword_ptr(ebx + 0x7f8))?;
     a.jmp(END as u64)?;
     v.push(("mx read in a loop", a.take_instructions()));
+    // The static CRT's log10 (_CIlog10, サクラノ刻 0x6e3760; UCRT's %g estimates the exponent
+    // with it, so a wrong one printed 1743 as "0e+00"): ST0 stored for a helper that returns its
+    // answer in ZF, a call to the body that branches on that ZF, FNSTCW/FLDCW around FLDLG2 FXCH
+    // FYL2X, and an exit through another function's tail (POP EDX; RET).
+    // (the test translates entries at addresses = 1 mod 3 as regions: NOPs in front move them)
+    for ((x, flag), pad) in [(1743.0f64, 0u32), (1743.0, 1), (0.001, 0), (f64::INFINITY, 0), (0.0, 1)].into_iter().flat_map(|c| (0..3).map(move |p| (c, p))) {
+        let mut a = CodeAssembler::new(32)?;
+        for _ in 0..pad {
+            a.nop()?;
+        }
+        let (mut log10, mut chk, mut body, mut done) = (a.create_label(), a.create_label(), a.create_label(), a.create_label());
+        let (mut chk_ff, mut special, mut s1, mut zero, mut ok) = (a.create_label(), a.create_label(), a.create_label(), a.create_label(), a.create_label());
+        let (mut tail1, mut t1, mut tail2, mut t2) = (a.create_label(), a.create_label(), a.create_label(), a.create_label());
+        a.mov(dword_ptr(ebx + 0x700), x.to_bits() as u32)?;
+        a.mov(dword_ptr(ebx + 0x704), (x.to_bits() >> 32) as u32)?;
+        a.mov(dword_ptr(ebx + 0x708), flag)?;
+        a.mov(dword_ptr(ebx + 0x70c), 0x27f)?;
+        a.fldcw(word_ptr(ebx + 0x70c))?;
+        a.mov(edx, 0x1234)?;
+        a.fld(qword_ptr(ebx + 0x700))?;
+        a.call(log10)?;
+        a.fstp(qword_ptr(ebx + 0x710))?;
+        a.fld(qword_ptr(ebx + 0x700))?;
+        a.call(log10)?;
+        a.fadd(qword_ptr(ebx + 0x710))?;
+        a.fstp(qword_ptr(ebx + 0x718))?;
+        a.jmp(done)?;
+        a.set_label(&mut log10)?;
+        a.sub(esp, 0xc)?;
+        a.fst(qword_ptr(esp))?;
+        a.call(chk)?;
+        a.call(body)?;
+        a.add(esp, 0xc)?;
+        a.ret()?;
+        // ZF: the exponent is all ones
+        a.set_label(&mut chk)?;
+        a.mov(eax, dword_ptr(esp + 8))?;
+        a.and(eax, 0x7ff0_0000)?;
+        a.cmp(eax, 0x7ff0_0000)?;
+        a.je(chk_ff)?;
+        a.ret()?;
+        a.set_label(&mut chk_ff)?;
+        a.mov(eax, dword_ptr(esp + 8))?;
+        a.ret()?;
+        a.set_label(&mut body)?;
+        a.push(edx)?;
+        a.wait()?;
+        a.fnstcw(word_ptr(esp))?;
+        a.je(special)?;
+        a.mov(eax, dword_ptr(esp + 0xc))?;
+        a.cmp(word_ptr(esp), 0x27f)?;
+        a.je(s1)?;
+        a.fldcw(word_ptr(ebx + 0x70c))?;
+        a.set_label(&mut s1)?;
+        a.test(eax, 0x7ff0_0000)?;
+        a.je(zero)?;
+        a.test(eax, 0x8000_0000u32 as i32)?;
+        a.jne(special)?;
+        a.set_label(&mut ok)?;
+        a.fldlg2()?;
+        a.fxch(st0, st1)?;
+        a.fyl2x()?;
+        a.cmp(dword_ptr(ebx + 0x708), 0)?;
+        a.jne(tail1)?;
+        a.lea(ecx, ptr(ebx + 0x740))?;
+        a.mov(edx, 0x1b)?;
+        a.jmp(tail2)?;
+        a.set_label(&mut special)?;
+        a.fstp(st0)?;
+        a.fld1()?;
+        a.mov(eax, 1)?;
+        a.jmp(tail1)?;
+        a.set_label(&mut zero)?;
+        a.fstp(st0)?;
+        a.fldz()?;
+        a.mov(eax, 2)?;
+        a.jmp(tail2)?;
+        // (the tails: another function's code)
+        a.set_label(&mut tail1)?;
+        a.cmp(word_ptr(esp), 0x27f)?;
+        a.je(t1)?;
+        a.fldcw(word_ptr(esp))?;
+        a.set_label(&mut t1)?;
+        a.pop(edx)?;
+        a.ret()?;
+        // (with a call: the body is not inlined, as there)
+        let (mut t2b, mut report) = (a.create_label(), a.create_label());
+        a.set_label(&mut tail2)?;
+        a.mov(ax, word_ptr(esp))?;
+        a.cmp(ax, 0x27f)?;
+        a.je(t2)?;
+        a.and(ax, 0x20)?;
+        a.je(t2b)?;
+        a.call(report)?;
+        a.set_label(&mut t2b)?;
+        a.fldcw(word_ptr(esp))?;
+        a.set_label(&mut t2)?;
+        a.pop(edx)?;
+        a.ret()?;
+        a.set_label(&mut report)?;
+        a.mov(dword_ptr(ebx + 0x720), 8)?;
+        a.ret()?;
+        a.set_label(&mut done)?;
+        a.jmp(END as u64)?;
+        v.push(("log10 helper flags", a.take_instructions()));
+    }
     Ok(v)
 }
 
@@ -1208,6 +1314,9 @@ impl Jit {
             koji::jit::translate_region(&mut m, &mut Mem(base as *mut u8), &[eip], self.mode.blocks, accept)
         }
         .ok_or("refused")?;
+        if std::env::var("JLAYOUT").is_ok() {
+            eprintln!("{eip:#x} fns {fns}\n{}", region.layout);
+        }
         let bytes = m.finish();
         if std::env::var("JDUMP").is_ok() {
             std::fs::write(format!("/tmp/jit32-{eip:x}.wasm"), &bytes).ok();
@@ -1539,6 +1648,10 @@ fn main() {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     // fixed programs first, in every mode
     for (name, list) in fixed().unwrap() {
+        // (JFIXED=<name part>: just those)
+        if std::env::var("JFIXED").is_ok_and(|f| !name.contains(f.as_str())) {
+            continue;
+        }
         for fns in [false, true] {
             for blocks in [1, 2, koji::jit::MAX_BLOCKS] {
                 let mode = Mode { fns, blocks, hoist: true, slots: 0, pre: false, exact: !name.starts_with("mx "), fresh: false, stale: 0 };
