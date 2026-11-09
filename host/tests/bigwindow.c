@@ -40,6 +40,9 @@ int main(void)
     AdjustWindowRect(&r2, style, FALSE);
     SetWindowPos(h, NULL, 0, 0, r2.right - r2.left, r2.bottom - r2.top, SWP_NOMOVE | SWP_NOZORDER);
     show("2560x1440 set", h);
+    /* put back where a bigger desktop had it (saved settings from a real PC): moved alone */
+    SetWindowPos(h, NULL, 391, 239, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    show("moved to 391,239", h);
     /* smaller again: the screen stays */
     SetWindowPos(h, NULL, 0, 0, 800, 600, SWP_NOMOVE | SWP_NOZORDER);
     show("800x600 set", h);

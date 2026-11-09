@@ -1,5 +1,6 @@
 screen at start: 1366x768
 1920x1080 created: client 1920x1080, window inside the screen 1, screen 1966x1149, work 1966x1149, monitor 1966x1149
 2560x1440 set: client 2560x1440, window inside the screen 1, screen 2606x1509, work 2606x1509, monitor 2606x1509
-800x600 set: client 794x571, window inside the screen 1, screen 2606x1509, work 2606x1509, monitor 2606x1509
-5000x5000 popup: client 5000x5000, window inside the screen 0, screen 2606x1509, work 2606x1509, monitor 2606x1509
+moved to 391,239: client 2560x1440, window inside the screen 1, screen 2957x1708, work 2957x1708, monitor 2957x1708
+800x600 set: client 794x571, window inside the screen 1, screen 2957x1708, work 2957x1708, monitor 2957x1708
+5000x5000 popup: client 5000x5000, window inside the screen 0, screen 2957x1708, work 2957x1708, monitor 2957x1708

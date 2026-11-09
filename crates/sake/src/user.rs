@@ -288,6 +288,8 @@ pub struct State {
     /// click shorter than its frame)
     pub pressed: [bool; 256],
     pub screen: (i32, i32),
+    /// the display mode (as set: ChangeDisplaySettings), which `screen` may have grown past
+    pub mode: (i32, i32),
     pub cursor_handle: u32,
     pub cursor_count: i32,
     pub msgnames: HashMap<String, u32>,
@@ -320,6 +322,7 @@ pub fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
             keys: [0; 256],
             pressed: [false; 256],
             screen: (s, h),
+            mode: (s, h),
             cursor_handle: 0,
             cursor_count: 0,
             msgnames: HashMap::default(),
@@ -1864,15 +1867,18 @@ fn track_clamp(style: u32, (cx, cy): (i32, i32), min: (i32, i32), max: (i32, i32
 }
 
 /// The screen a top-level window at (`x`, `y`) asking `cx` x `cy` needs, when that is more than
-/// `screen`'s tracking size (the screen and 12 pixels): the screen grown to hold it (8192 at
-/// most). sake's screen is no monitor: a game that asks for a window bigger than it (KiriKiri
+/// the display mode's tracking size (`mode` and 12 pixels): `screen` (the mode, or what it grew
+/// to) grown to hold it where it is (8192 at most). A big window moved partly off the screen
+/// grows it too (俺の姿が､透明に! puts its window back where the real PC's desktop had it, from
+/// its saved settings: (391, 239), then only the top-left 1577x869 of its 1920x1080 showed);
+/// a small one does not (a window moved off the screen to hide it). sake's screen is no monitor: a game that asks for a window bigger than it (KiriKiri
 /// Z's 1920x1080 window with its frame, 俺の姿が､透明に!) gets a screen it fits on, not a window
 /// kept to the screen and drawn into at full size (the page then showed its top-left part
 /// enlarged). None: it fits, it does not track (a popup), or the screen was given
 /// (IPPAI_SCREEN: winref's probes keep Windows' clamp).
-fn grown_screen(screen: (i32, i32), style: u32, (x, y): (i32, i32), (cx, cy): (i32, i32)) -> Option<(i32, i32)> {
+fn grown_screen(mode: (i32, i32), screen: (i32, i32), style: u32, (x, y): (i32, i32), (cx, cy): (i32, i32)) -> Option<(i32, i32)> {
     let (sw, sh) = screen;
-    if !tracks(style) || (cx <= sw + 12 && cy <= sh + 12) {
+    if !tracks(style) || (cx <= mode.0 + 12 && cy <= mode.1 + 12) {
         return None;
     }
     let w = sw.max(x.max(0).saturating_add(cx)).min(8192);
@@ -1886,7 +1892,7 @@ fn grow_screen_for(style: u32, xy: (i32, i32), size: (i32, i32)) {
     if std::env::var_os("IPPAI_SCREEN").is_some() {
         return;
     }
-    if let Some((w, h)) = grown_screen(screen(), style, xy, size) {
+    if let Some((w, h)) = grown_screen(with(|s| s.mode), screen(), style, xy, size) {
         if crate::env_on!("SAKE_TRACE_WIN") {
             eprintln!("sake: screen grown to {w}x{h} for a {}x{} window", size.0, size.1);
         }
@@ -2837,9 +2843,12 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
             // (the size kept within the window's tracking sizes, as Windows')
             let (x, y, cx, cy, f) = windowpos_read(lp);
             let style = with(|s| s.wins.get(&h).map(|w| w.style));
+            // (a move alone too: a big window moved partly off the screen grows it)
+            if let Some(style) = style.filter(|&st| f & 3 != 3 && tracks(st)) {
+                let (at, size) = with(|s| s.wins.get(&h).map(|w| ((w.rect.l, w.rect.t), (w.rect.r - w.rect.l, w.rect.b - w.rect.t)))).unwrap_or_default();
+                grow_screen_for(style, if f & 2 == 0 { (x, y) } else { at }, if f & 1 == 0 { (cx, cy) } else { size });
+            }
             if let Some(style) = style.filter(|&st| f & 1 == 0 && tracks(st)) {
-                let at = with(|s| s.wins.get(&h).map(|w| (w.rect.l, w.rect.t))).unwrap_or_default();
-                grow_screen_for(style, if f & 2 == 0 { (x, y) } else { at }, (cx, cy));
                 let (min, max) = minmax(c, h);
                 let (ncx, ncy) = track_clamp(style, (cx, cy), min, max);
                 if (ncx, ncy) != (cx, cy) {
@@ -4283,7 +4292,11 @@ mod display_change_tests {
 /// A new screen size; top-level windows get WM_DISPLAYCHANGE (CatSystem2 goes on from there)
 fn set_display(c: &mut Ctx, w: i32, h: i32) {
     kura::display::vnhost_display_set_size(w, h);
-    if with(|s| std::mem::replace(&mut s.screen, (w, h))) != (w, h) {
+    if with(|s| {
+        s.mode = (w, h);
+        std::mem::replace(&mut s.screen, (w, h))
+    }) != (w, h)
+    {
         let f = crate::api::export("user32", "SendMessageA");
         c.call(f, &[0xffff, 0x7e, 32, (h as u32) << 16 | (w as u32 & 0xffff)]);
     }
@@ -6580,6 +6593,7 @@ mod track_tests {
     #[test]
     fn big_windows_grow_the_screen() {
         let s = (1366, 768);
+        let grown_screen = |s, st, xy, size| super::grown_screen(s, s, st, xy, size);
         assert_eq!(grown_screen(s, OVERLAPPED, (0, 0), (1926, 1109)), Some((1926, 1109)));
         // (CW_USEDEFAULT's x: from the left edge)
         assert_eq!(grown_screen(s, OVERLAPPED, (i32::MIN, i32::MIN), (1926, 1109)), Some((1926, 1109)));
@@ -6594,11 +6608,43 @@ mod track_tests {
         assert_eq!(grown_screen(s, OVERLAPPED, (0, 0), (90000, 90000)), Some((8192, 8192)));
     }
 
+    /// 俺の姿が､透明に!: its 1936x1119 window grew the screen to 1976x1159 at (40, 40), then went
+    /// to (391, 239), where its saved settings from a real PC put it: the screen holds it there
+    /// too. A window that fits the display mode moved off the screen leaves the screen as it is.
+    #[test]
+    fn big_windows_moved_off_the_screen_grow_it() {
+        let (mode, grown) = ((1366, 768), (1976, 1159));
+        assert_eq!(super::grown_screen(mode, grown, OVERLAPPED, (391, 239), (1936, 1119)), Some((2327, 1358)));
+        assert_eq!(super::grown_screen(mode, grown, OVERLAPPED, (40, 40), (1936, 1119)), None);
+        assert_eq!(super::grown_screen(mode, grown, OVERLAPPED, (3000, 3000), (800, 600)), None);
+        assert_eq!(super::grown_screen(mode, mode, OVERLAPPED, (3000, 3000), (1378, 780)), None);
+        // (the screen never shrinks back when a big window moves left)
+        assert_eq!(super::grown_screen(mode, (2327, 1358), OVERLAPPED, (0, 0), (1936, 1119)), None);
+    }
+
     proptest! {
+        /// A screen already grown past the display mode: it grows exactly when a window bigger
+        /// than the mode reaches past it, then holds the window, and growing again does nothing.
+        #[test]
+        fn grown_screens_hold_moved_windows(mw in 640i32..2000, mh in 480i32..1500, gw in 0i32..1500, gh in 0i32..1000, x in -3000i32..4000, y in -3000i32..4000, cx in 0i32..4000, cy in 0i32..3000) {
+            // (a screen grown past the mode before; any window, anywhere)
+            let (mode, screen) = ((mw, mh), (mw + gw, mh + gh));
+            let got = super::grown_screen(mode, screen, OVERLAPPED, (x, y), (cx, cy));
+            let big = cx > mw + 12 || cy > mh + 12;
+            let out = x.max(0) + cx > screen.0 || y.max(0) + cy > screen.1;
+            prop_assert_eq!(got.is_some(), big && out);
+            if let Some((w, h)) = got {
+                prop_assert!(w >= screen.0 && h >= screen.1);
+                prop_assert!(x.max(0) + cx <= w && y.max(0) + cy <= h);
+                prop_assert_eq!(super::grown_screen(mode, (w, h), OVERLAPPED, (x, y), (cx, cy)), None);
+            }
+        }
+
         /// Grown, the screen holds the window: its tracking size no longer changes it (up to
         /// 8192), the screen never shrinks, and growing again does nothing.
         #[test]
         fn grown_screens_hold_the_window(sw in 640i32..3000, sh in 480i32..2000, x in -3000i32..3000, y in -3000i32..3000, cx in 0i32..9000, cy in 0i32..9000, style in proptest::prop_oneof![Just(OVERLAPPED), Just(0x00cf_0000), Just(POPUP), Just(POPUP | 0x0004_0000), Just(0x4000_0000)]) {
+            let grown_screen = |s, st, xy, size| super::grown_screen(s, s, st, xy, size);
             match grown_screen((sw, sh), style, (x, y), (cx, cy)) {
                 None => prop_assert!(!tracks(style) || (cx <= sw + 12 && cy <= sh + 12)),
                 Some((w, h)) => {
