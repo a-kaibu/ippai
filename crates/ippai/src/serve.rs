@@ -897,27 +897,149 @@ fn watchdog(rt: tokio::runtime::Handle, every: std::time::Duration, limit: std::
     });
 }
 
-/// Every thread of the process prints its backtrace to stderr (the journal), each from a
-/// signal handler of its own: what a stuck server waits on. (Not signal-safe: only for a server
-/// about to be ended. A thread stuck holding the allocator or stderr prints nothing.)
+/// Every thread of the process says where it is, on stderr (the journal): what a stuck server
+/// waits on. Each thread, from a signal handler, only takes its return addresses (glibc's
+/// backtrace into memory set aside: no allocation, no lock a stuck thread may hold; worker2's
+/// first dumps, std's Backtrace in the handler, showed every thread in pthread_mutex_lock under
+/// frames it could not name). This thread then prints them as offsets in their files (for
+/// `addr2line -f -C -i -e ippai`, the release build keeps its line tables) and, where
+/// addr2line is installed, with the functions and lines themselves.
 #[cfg(target_os = "linux")]
 fn dump_threads() {
-    extern "C" fn on_signal(_: libc::c_int) {
-        let bt = std::backtrace::Backtrace::force_capture();
-        let tid = unsafe { libc::syscall(libc::SYS_gettid) };
-        let name = std::thread::current().name().map(str::to_owned).unwrap_or_default();
-        eprintln!("ippai: thread {tid} {name}:\n{bt}");
+    use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering::SeqCst};
+    const DEPTH: usize = 64;
+    const SLOTS: usize = 512;
+    static IPS: [[AtomicUsize; DEPTH]; SLOTS] = [const { [const { AtomicUsize::new(0) }; DEPTH] }; SLOTS];
+    static LENS: [AtomicUsize; SLOTS] = [const { AtomicUsize::new(0) }; SLOTS];
+    static TIDS: [AtomicI64; SLOTS] = [const { AtomicI64::new(0) }; SLOTS];
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    extern "C" {
+        fn backtrace(buf: *mut *mut libc::c_void, size: libc::c_int) -> libc::c_int;
     }
+    extern "C" fn on_signal(_: libc::c_int) {
+        let i = NEXT.fetch_add(1, SeqCst);
+        if i >= SLOTS {
+            return;
+        }
+        let mut buf = [std::ptr::null_mut::<libc::c_void>(); DEPTH];
+        let n = unsafe { backtrace(buf.as_mut_ptr(), DEPTH as libc::c_int) }.max(0) as usize;
+        for (k, ip) in buf[..n].iter().enumerate() {
+            IPS[i][k].store(*ip as usize, SeqCst);
+        }
+        TIDS[i].store(unsafe { libc::syscall(libc::SYS_gettid) }, SeqCst);
+        // (last: the slot is whole)
+        LENS[i].store(n.max(1), SeqCst);
+    }
+    // (the first call loads libgcc's unwinder: here, not in a handler)
+    let mut warm = [std::ptr::null_mut::<libc::c_void>(); 4];
+    unsafe { backtrace(warm.as_mut_ptr(), 4) };
     unsafe { libc::signal(libc::SIGUSR2, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
     let me = unsafe { libc::syscall(libc::SYS_gettid) };
     let pid = std::process::id() as libc::c_long;
+    let mut asked = 0;
     for e in std::fs::read_dir("/proc/self/task").into_iter().flatten().flatten() {
         let Some(tid) = e.file_name().to_str().and_then(|t| t.parse::<libc::c_long>().ok()) else { continue };
-        if tid != me {
+        if tid != me && asked < SLOTS {
             unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGUSR2) };
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            asked += 1;
         }
     }
+    // (a thread stuck with signals blocked does not answer)
+    let t = std::time::Instant::now();
+    while (0..asked).any(|i| LENS[i].load(SeqCst) == 0) && t.elapsed() < std::time::Duration::from_secs(2) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap_or_default();
+    let exe = std::env::current_exe().ok().map(|p| p.display().to_string()).unwrap_or_default();
+    eprint!("{}", describe_threads(&maps, &exe, (0..asked.min(NEXT.load(SeqCst)).min(SLOTS)).filter(|&i| LENS[i].load(SeqCst) > 0).map(|i| {
+        let tid = TIDS[i].load(SeqCst);
+        let name = std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")).unwrap_or_default().trim().to_string();
+        let ips: Vec<usize> = (0..LENS[i].load(SeqCst).min(DEPTH)).map(|k| IPS[i][k].load(SeqCst)).collect();
+        (tid, name, ips)
+    }).collect(), true));
+}
+
+/// What [`dump_threads`] prints for `threads` (tid, name, return addresses): each frame as
+/// `<file>+0x<offset>` from `maps` (/proc/self/maps), threads with the same frames once with
+/// their count, and, when `symbols` and addr2line is there, each frame of `exe` named.
+#[cfg(target_os = "linux")]
+fn describe_threads(maps: &str, exe: &str, threads: Vec<(i64, String, Vec<usize>)>, symbols: bool) -> String {
+    use std::fmt::Write;
+    // (start, end, file offset, path) of each mapped file
+    let regions: Vec<(usize, usize, usize, &str)> = maps
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            let (a, b) = f.first()?.split_once('-')?;
+            Some((usize::from_str_radix(a, 16).ok()?, usize::from_str_radix(b, 16).ok()?, usize::from_str_radix(f.get(2)?, 16).ok()?, *f.get(5)?))
+        })
+        .collect();
+    // a file's load address: its mapping at offset 0
+    let base = |path: &str| regions.iter().filter(|r| r.3 == path).map(|r| r.0 - r.2).min();
+    let place = |ip: usize| -> Option<(&str, usize)> {
+        let r = regions.iter().find(|r| ip >= r.0 && ip < r.1)?;
+        Some((r.3, ip - base(r.3)?))
+    };
+    let mut out = String::new();
+    let mut groups: Vec<(Vec<usize>, Vec<(i64, String)>)> = Vec::new();
+    for (tid, name, ips) in threads {
+        match groups.iter_mut().find(|g| g.0 == ips) {
+            Some(g) => g.1.push((tid, name)),
+            None => groups.push((ips, vec![(tid, name)])),
+        }
+    }
+    for (ips, who) in groups {
+        let names: Vec<String> = who.iter().map(|(t, n)| format!("{t} {n}")).collect();
+        let _ = writeln!(out, "ippai: thread{} {} ({} frames):", if who.len() > 1 { format!("s (x{})", who.len()) } else { String::new() }, names.join(", "), ips.len());
+        // (a return address is just after its call: the call's line is at ip - 1)
+        let frames: Vec<(usize, Option<(&str, usize)>)> = ips.iter().enumerate().map(|(k, &ip)| (ip, place(if k > 0 { ip.saturating_sub(1) } else { ip }))).collect();
+        let named = if symbols { addr2line(exe, frames.iter().filter_map(|f| f.1.filter(|p| p.0 == exe).map(|p| p.1)).collect()) } else { Default::default() };
+        for (k, (ip, at)) in frames.iter().enumerate() {
+            let _ = match at {
+                Some((file, off)) => {
+                    let short = file.rsplit('/').next().unwrap_or(file);
+                    let name = named.get(off).map(|n| format!("  {n}")).unwrap_or_default();
+                    writeln!(out, "  {k:2}: {short}+{off:#x}{name}")
+                }
+                None => writeln!(out, "  {k:2}: {ip:#x}"),
+            };
+        }
+    }
+    out
+}
+
+/// addr2line's names for `offsets` in `exe` ("function at file:line", the inlined ones
+/// joined with " <- "); empty when it is not installed or the file has no symbols.
+#[cfg(target_os = "linux")]
+fn addr2line(exe: &str, offsets: Vec<usize>) -> std::collections::HashMap<usize, String> {
+    let mut out = std::collections::HashMap::new();
+    if offsets.is_empty() {
+        return out;
+    }
+    let args: Vec<String> = offsets.iter().map(|o| format!("{o:#x}")).collect();
+    let Ok(r) = std::process::Command::new("addr2line").args(["-f", "-C", "-i", "-a", "-e", exe]).args(&args).output() else { return out };
+    let text = String::from_utf8_lossy(&r.stdout);
+    // (-a: each address on a line of its own, then function / place pairs, more when inlined)
+    let mut cur: Option<usize> = None;
+    let mut lines = text.lines();
+    while let Some(l) = lines.next() {
+        if let Some(a) = l.strip_prefix("0x").and_then(|h| usize::from_str_radix(h, 16).ok()) {
+            cur = Some(a);
+            continue;
+        }
+        let Some(a) = cur else { continue };
+        let at = lines.next().unwrap_or("??:0");
+        if l == "??" {
+            continue;
+        }
+        let at = at.rsplit('/').next().unwrap_or(at);
+        let e = out.entry(a).or_insert_with(String::new);
+        if !e.is_empty() {
+            e.push_str(" <- ");
+        }
+        let _ = std::fmt::Write::write_fmt(e, format_args!("{l} at {at}"));
+    }
+    out
 }
 #[cfg(not(target_os = "linux"))]
 fn dump_threads() {}
@@ -1066,8 +1188,36 @@ mod tests {
             .unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{err}");
-        let stuck = err.split("ippai: thread ").find(|t| t.contains("stuck-one")).unwrap_or_else(|| panic!("no stuck thread in:\n{err}"));
-        assert!(stuck.contains("waits_for_the_lock"), "{stuck}");
+        let stuck = err.split("ippai: thread").find(|t| t.contains("stuck-one")).unwrap_or_else(|| panic!("no stuck thread in:\n{err}"));
+        // (offsets in the test binary, named by addr2line where it is installed)
+        assert!(stuck.contains("+0x"), "{stuck}");
+        if std::process::Command::new("addr2line").arg("--version").output().is_ok() {
+            assert!(stuck.contains("waits_for_the_lock"), "{stuck}");
+        }
+    }
+
+    /// Frames as offsets in their files (a PIE's from its mapping at offset 0, a library's
+    /// too), threads with the same frames once with their count, an address in no file as is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stuck_threads_are_described_by_file_and_offset() {
+        let maps = "\
+55550000-55551000 r--p 00000000 08:01 1 /home/k/.local/bin/ippai
+55551000-55560000 r-xp 00001000 08:01 1 /home/k/.local/bin/ippai
+7f000000-7f001000 r--p 00000000 08:01 2 /usr/lib/libc.so.6
+7f001000-7f100000 r-xp 00001000 08:01 2 /usr/lib/libc.so.6
+";
+        let exe = "/home/k/.local/bin/ippai";
+        let a = vec![0x7f001234, 0x55552010, 0x99];
+        let threads = (1..=12).map(|t| (t, "tokio-rt-worker".to_string(), a.clone())).chain([(13, "main".to_string(), vec![0x55553000])]).collect();
+        let d = super::describe_threads(maps, exe, threads, false);
+        assert!(d.starts_with("ippai: threads (x12) 1 tokio-rt-worker, 2 tokio-rt-worker"), "{d}");
+        assert!(d.contains("   0: libc.so.6+0x1234\n"), "{d}");
+        // (a return address: the call before it)
+        assert!(d.contains("   1: ippai+0x200f\n"), "{d}");
+        assert!(d.contains("   2: 0x99\n"), "{d}");
+        assert!(d.contains("ippai: thread 13 main (1 frames):\n   0: ippai+0x3000\n"), "{d}");
+        assert_eq!(d.matches("ippai: thread").count(), 2, "{d}");
     }
 
     /// A runtime whose every thread is blocked (as worker2's was) is noticed, and once; one

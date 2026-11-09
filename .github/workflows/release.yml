@@ -225,6 +225,10 @@ jobs:
       # (everything but the page, while web builds it: rust-embed's allow_missing)
       - name: cargo zigbuild without the page
         env:
+          # (line tables kept, not stripped: a stuck server's thread dump names its functions
+          # with addr2line, crates/ippai/src/serve.rs dump_threads; only here, not sake.wasm's)
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+          CARGO_PROFILE_RELEASE_STRIP: "false"
           TAG: ${{ needs.version.outputs.tag }}
           TARGET: ${{ matrix.target }}
         run: IPPAI_VERSION=${TAG#v} cargo zigbuild --release --locked -p ippai --target "$TARGET"
@@ -234,6 +238,10 @@ jobs:
         run: tools/ci/wait-artifacts.sh web web=web/dist fonts=target/stage/fonts
       - name: cargo zigbuild and the archive
         env:
+          # (line tables kept, not stripped: a stuck server's thread dump names its functions
+          # with addr2line, crates/ippai/src/serve.rs dump_threads; only here, not sake.wasm's)
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+          CARGO_PROFILE_RELEASE_STRIP: "false"
           TAG: ${{ needs.version.outputs.tag }}
           TARGET: ${{ matrix.target }}
           OS: ${{ matrix.os }}
