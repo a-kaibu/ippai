@@ -52,6 +52,22 @@ link() {  # <output .js> <memory flags> <emcc flags...>
 # (node: a factory too, run by host/node-main.js, so that the processes a program starts run as
 # instances of their own in the same node; host/snap.js: save states under node)
 NODE="-sNODERAWFS=1 -sENVIRONMENT=node -sMODULARIZE -sEXPORT_NAME=createSake --pre-js $HO/node-stdio.js --pre-js $HO/snap.js --extern-post-js $HO/node-main.js -sEXPORTED_FUNCTIONS=_main,$EXPORTS"
+# the page's zstd for save states (crates/sake/snapz/snapz.c): Facebook's release, checked; built
+# while the links run
+snapz() {
+  ZV=1.5.7
+  ZSUM=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+  if [ ! -d "$OUT/zstd-$ZV" ]; then
+    curl -sSfL --retry 4 -o "$OUT/zstd.tar.gz" "https://github.com/facebook/zstd/releases/download/v$ZV/zstd-$ZV.tar.gz"
+    echo "$ZSUM  $OUT/zstd.tar.gz" | sha256sum -c --quiet
+    tar xzf "$OUT/zstd.tar.gz" -C "$OUT"
+  fi
+  Z=$OUT/zstd-$ZV/lib
+  emcc -O3 -DZSTD_DISABLE_ASM -DZSTD_MULTITHREAD=0 -DZSTD_LEGACY_SUPPORT=0 -I"$Z" -I"$Z/common" "$HERE/snapz/snapz.c" \
+    "$Z"/common/*.c "$Z"/compress/*.c "$Z"/decompress/*.c -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createSnapz \
+    -sENVIRONMENT=worker,web,node -sALLOW_MEMORY_GROWTH -sFILESYSTEM=0 -sEXPORTED_FUNCTIONS=_malloc,_free \
+    -sEXPORTED_RUNTIME_METHODS=HEAPU8 -o "$WEB_OUT/snapz.mjs"
+}
 # (the four links at once: each takes a core for a minute)
 # (SAKE_NODE=0: the page's two only, as the release builds: .github/workflows/release.yml)
 pids=()
@@ -61,6 +77,7 @@ if [ "${SAKE_NODE:-1}" != 0 ]; then
 fi
 WEB_OUT=${WEB_OUT:-$ROOT/web/public/sake}
 mkdir -p "$WEB_OUT"
+snapz & pids+=($!)
 # (no emscripten file system: the page mounts a tree at "/", crates/kura/src/vfs.rs)
 WEB="-sENVIRONMENT=web,worker -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createSake --js-library $HO/vngpu.js -sFILESYSTEM=0
   -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,HEAPF32,HEAPF64,wasmMemory -sEXPORTED_FUNCTIONS=_main,_malloc,_free,$WEB_EXPORTS"
@@ -69,19 +86,6 @@ link "$WEB_OUT/sake-grow.js" "$GROW" $WEB & pids+=($!)
 for p in "${pids[@]}"; do wait "$p"; done
 # each build's id: a state (docs/savestate.md) is of one build (host/snap.js computes the same)
 for b in sake sake-grow; do echo "$b $(sha256sum "$WEB_OUT/$b.wasm" | cut -c1-16)"; done > "$WEB_OUT/build-id.txt"
-# the page's zstd for save states (crates/sake/snapz/snapz.c): Facebook's release, checked
-ZV=1.5.7
-ZSUM=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
-if [ ! -d "$OUT/zstd-$ZV" ]; then
-  curl -sSfL --retry 4 -o "$OUT/zstd.tar.gz" "https://github.com/facebook/zstd/releases/download/v$ZV/zstd-$ZV.tar.gz"
-  echo "$ZSUM  $OUT/zstd.tar.gz" | sha256sum -c --quiet
-  tar xzf "$OUT/zstd.tar.gz" -C "$OUT"
-fi
-Z=$OUT/zstd-$ZV/lib
-emcc -O3 -DZSTD_DISABLE_ASM -DZSTD_MULTITHREAD=0 -DZSTD_LEGACY_SUPPORT=0 -I"$Z" -I"$Z/common" "$HERE/snapz/snapz.c" \
-  "$Z"/common/*.c "$Z"/compress/*.c "$Z"/decompress/*.c -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createSnapz \
-  -sENVIRONMENT=worker,web,node -sALLOW_MEMORY_GROWTH -sFILESYSTEM=0 -sEXPORTED_FUNCTIONS=_malloc,_free \
-  -sEXPORTED_RUNTIME_METHODS=HEAPU8 -o "$WEB_OUT/snapz.mjs"
 (cd "$ROOT" && find crates/koji/src crates/koji/Cargo.toml crates/kura/src/jit.rs crates/kura/src/cpu.rs host/vnjit.js -type f | sort | xargs cat) |
   sha256sum | cut -c1-8 > "$WEB_OUT/jit-version.txt"
 echo "built $OUT/sake.js and $WEB_OUT/sake.js"
