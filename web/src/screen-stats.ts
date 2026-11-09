@@ -55,15 +55,23 @@ export interface ShotModule {
   _vnhost_render_shot?(out: number): number;
 }
 
+/** 20 ms waits for a new picture: up to 4 s. */
+const SHOT_WAITS = 200;
+
 /** What the page shows now (kura's composed screen, read back: crates/kura/src/render), as BGRA
- * pixels copied out of the wasm heap; null when there is none or this build cannot. */
+ * pixels copied out of the wasm heap; null when there is none, no new one came in time (not the
+ * older one: that was taken for the black screen of a game showing a picture) or this build
+ * cannot. */
 export async function grabScreen(m: ShotModule): Promise<{ px: Uint8Array; w: number; h: number } | null> {
   if (!m._vnhost_render_shot || !m._malloc || !m._free) return null;
   const p = m._malloc(12) >>> 0;
   try {
+    // (a new one: the drawing thread takes it at its next frame and reads it back, which on a
+    // busy phone took longer than half a second; the last one before it was the black first)
     const first = m._vnhost_render_shot(p);
-    for (let k = 0; k < 25 && m._vnhost_render_shot(p) === first; k++)
+    for (let k = 0; k < SHOT_WAITS && m._vnhost_render_shot(p) === first; k++)
       await new Promise((r) => setTimeout(r, 20));
+    if (m._vnhost_render_shot(p) === first && first !== 0) return null;
     const [ptr, w, h] = Array.from(new Uint32Array(m.wasmMemory.buffer, p, 3)) as [number, number, number];
     if (!ptr || !w || !h) return null;
     return { px: new Uint8Array(m.wasmMemory.buffer, ptr, w * h * 4).slice(), w, h };

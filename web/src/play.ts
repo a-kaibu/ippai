@@ -615,7 +615,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     () => activeModule === sake,
     () => !rootExited,
   );
-  (await audio).attach(sake);
+  const out = await audio;
+  out.attach(sake);
+  recorder.audio = () => out.describe();
   if (!nosave && !statesOff)
     attachStates(
       sake as unknown as SnapModule,

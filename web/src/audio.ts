@@ -69,6 +69,18 @@ export class AudioOut {
     return new AudioOut(ctx, node);
   }
 
+  /** For the run's log: the context's state and rate, and how many frames the game's sound
+   * card mixed into the ring since the last call (0 while the game plays nothing). */
+  describe(): string {
+    const head = this.head ? Atomics.load(this.head, 0) : 0;
+    const mixed = this.head ? (head - this.lastHead) >>> 0 : 0;
+    this.lastHead = head;
+    return `audio: ${this.ctx.state} at ${this.ctx.sampleRate} Hz, ${this.head ? `${mixed} frames mixed since` : "no game attached"}`;
+  }
+
+  private head: Uint32Array | null = null;
+  private lastHead = 0;
+
   attach(sake: AudioSource): void {
     // autoplay: the context can only start on a user gesture
     for (const ev of ["pointerdown", "keydown"])
@@ -76,6 +88,8 @@ export class AudioOut {
     const p = sake._malloc(4) >>> 0;
     const ptr = sake._vnhost_audio_ring(p) >>> 0;
     const frames = new Uint32Array(sake.wasmMemory.buffer, p, 1)[0]!;
+    this.head = new Uint32Array(sake.wasmMemory.buffer, ptr, 1);
+    this.lastHead = Atomics.load(this.head, 0);
     this.node.port.postMessage({ mem: sake.wasmMemory.buffer, ptr, frames });
   }
 }

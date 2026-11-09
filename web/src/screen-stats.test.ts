@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { screenLine, screenStats } from "./screen-stats";
+import { grabScreen, screenLine, screenStats } from "./screen-stats";
 
 const image = (w: number, h: number, f: (x: number, y: number) => [number, number, number]) => {
   const px = new Uint8Array(w * h * 4);
@@ -81,5 +81,43 @@ describe("screenStats", () => {
         expect(s.lit).toBe(c.some((v) => v > 24) ? 1 : 0);
       }
     }
+  });
+});
+
+/** A module whose drawing thread finishes a shot after `after` asks (0: never a new one). */
+function shots(after: number, start = 1) {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const heap = new Uint8Array(memory.buffer);
+  let asks = 0;
+  let serial = start;
+  // the picture: 2x1 pixels at 1024 (the first, black, then a lit one)
+  heap.set([0, 0, 0, 255, 0, 0, 0, 255], 1024);
+  return {
+    wasmMemory: memory,
+    _malloc: () => 2048,
+    _free: () => {},
+    _vnhost_render_shot(out: number) {
+      asks++;
+      if (after && asks === after) {
+        serial++;
+        heap.set([10, 200, 30, 255, 10, 200, 30, 255], 1024);
+      }
+      new Uint32Array(memory.buffer, out, 3).set([1024, 2, 1]);
+      return serial;
+    },
+  };
+}
+
+describe("grabScreen", () => {
+  it("waits for the drawing thread's new picture (a slow phone's), not the older black one", async () => {
+    const got = await grabScreen(shots(30));
+    expect(got && Array.from(got.px.slice(0, 3))).toEqual([10, 200, 30]);
+  });
+  it("gives nothing when no new picture comes (rather than the old one)", async () => {
+    expect(await grabScreen(shots(0))).toBeNull();
+  }, 10_000);
+  it("takes the first picture when there was none before", async () => {
+    const got = await grabScreen(shots(2, 0));
+    expect(got?.w).toBe(2);
   });
 });

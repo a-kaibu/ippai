@@ -387,6 +387,8 @@ export class FlightRecorder {
       if (this.wasm && !this.ended) {
         const net = meterLine(meter.window(10));
         this.note(Perf.line(this.perf.sample(this.wasm)) + (net ? `, ${net}` : ""));
+        // (whether sound plays: the page's audio context and what the game mixed)
+        if (this.audio) this.note(this.audio());
         void this.screen().then(() => this.live());
       } else if (!this.ended) {
         // (still starting: what it waits for shows in the network numbers)
@@ -396,6 +398,9 @@ export class FlightRecorder {
     }, 10_000);
     this.note("page started");
   }
+
+  /** The sound's state for the log every 10 s (audio.ts AudioOut.describe), once it plays. */
+  audio: (() => string) | null = null;
 
   /** A line in the page's log. */
   note(line: string): void {

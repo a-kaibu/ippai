@@ -40,11 +40,15 @@ worker2 では `/home/kota/vnvm/vnvm-bench/logs/`) に `<名前>.txt` で置き�
 5. Wine の stdout / stderr の全部 (err: / fixme: など。時刻とプロセス・スレッド付き)。
 6. ページのログ: 状態表示、メモリ (wasm / JS ヒープ、30 秒ごと)、表示状態の変化、エラー。
    10 秒ごとの perf 行と、画面に出ているもの (`screen 960x540: 87% lit, mean …`、真っ黒なら
-   `(black)`)。起動中 (wasm が動く前) は 10 秒ごとに `starting` 行とネットワークの数字。
+   `(black)`。4 秒待っても新しい画面が来なければ `screen: none`: 前の画面は使いません)、音の
+   状態 (`audio: running at 44100 Hz, 4410 frames mixed since`: AudioContext の状態と、10 秒間に
+   ゲームが鳴らしたフレーム数。0 なら何も鳴らしていない)。起動中 (wasm が動く前) は 10 秒ごとに
+   `starting` 行とネットワークの数字。
    レポートを保存するときは、その時の画面の 160 ピクセル幅の JPEG (`screen image data:…`)。
 7. 設定なしで常に出る要点 (stderr): スワップチェーン / Direct3D 9 デバイスの作成 (サイズ、形式、
-   ウィンドウとそのクライアントサイズ)、1・60・600 回目の Present の行き先、DXGI サーフェスの
-   D2D ビットマップ (最初の 16 個)、開けなかったファイル (最初の 64 個)。
+   ウィンドウとそのクライアントサイズ)、1・60・600 回目の Present の行き先 (Direct3D 9 は転送元の
+   矩形も)、DXGI サーフェスの D2D ビットマップ (最初の 16 個)、開けなかったファイル (最初の 64
+   個)、最初に音のストリームを開いたとき (`sake: audio: the first sound stream opened`)。
 8. 端末: user agent のほか、タッチ点数、userAgentData の platform / mobile、ポインタの種類
    (スマホが「PC 版サイト」で開くと Mac の user agent になるため)。
 

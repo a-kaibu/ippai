@@ -73,6 +73,9 @@ impl Card {
 
 /// A new stream of stereo f32 frames at RATE.
 pub fn open() -> i32 {
+    // (always the first: in every run's log, whether the game opened any sound at all)
+    static FIRST: std::sync::Once = std::sync::Once::new();
+    FIRST.call_once(|| eprintln!("sake: audio: the first sound stream opened (the page plays the ring: {})", RING_ON.load(Ordering::Relaxed)));
     if stats() {
         eprintln!("vnvm audio: open");
     }
