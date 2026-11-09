@@ -295,6 +295,8 @@ pub struct State {
     pub msgnames: HashMap<String, u32>,
     pub last_msg_pos: (i32, i32),
     pub last_msg_time: u32,
+    /// where a maximized window goes back to when restored (its rect before)
+    pub normal: HashMap<u32, Rect>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -328,11 +330,13 @@ pub fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
             msgnames: HashMap::default(),
             last_msg_pos: (0, 0),
             last_msg_time: 0,
+            normal: HashMap::default(),
         }
     }))
 }
 
 pub const DESKTOP: u32 = 0x10010;
+const WS_MAXIMIZE: u32 = 0x0100_0000;
 
 pub fn screen() -> (i32, i32) {
     with(|s| s.screen)
@@ -1644,6 +1648,7 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
     send(c, h, 0x2, 0, 0);
     send(c, h, 0x82, 0, 0);
     with(|s| {
+        s.normal.remove(&h);
         if let Some(w) = s.wins.remove(&h) {
             if let Some(p) = s.wins.get_mut(&w.parent) {
                 p.children.retain(|&x| x != h);
@@ -1693,10 +1698,30 @@ fn show(c: &mut Ctx, h: u32, cmd: u32) -> u32 {
     // SW_(SHOW)MAXIMIZE: a top-level window's client area covers the screen (its frame
     // outside it)
     let top = with(|s| s.wins.get(&h).filter(|w| w.parent == 0 && w.style & 0x4000_0000 == 0).map(|w| (w.style, w.exstyle, menu_bar(&s.menus, w.menu, w.style))));
+    // (WS_MAXIMIZE set, the rect before kept: SW_RESTORE / SW_SHOWNORMAL / SC_RESTORE put it
+    // back; WM_SIZE says SIZE_MAXIMIZED)
     if let (3, Some((style, ex, menu))) = (cmd, top) {
         let (l, t, r, b) = frame(style, ex, menu);
         let (sw, sh) = screen();
+        with(|s| {
+            if let Some(w) = s.wins.get_mut(&h) {
+                if w.style & WS_MAXIMIZE == 0 {
+                    let r = w.rect;
+                    w.style |= WS_MAXIMIZE;
+                    s.normal.insert(h, r);
+                }
+            }
+        });
         set_pos(c, h, 0, -l, -t, sw + l + r, sh + t + b, 0x14);
+    }
+    if matches!(cmd, 1 | 9) && top.is_some_and(|t| t.0 & WS_MAXIMIZE != 0) {
+        let back = with(|s| {
+            s.wins.get_mut(&h).map(|w| w.style &= !WS_MAXIMIZE);
+            s.normal.remove(&h)
+        });
+        if let Some(r) = back {
+            set_pos(c, h, 0, r.l, r.t, r.w(), r.h(), 0x14);
+        }
     }
     let vis = !matches!(cmd, 0);
     if vis != was {
@@ -2037,7 +2062,9 @@ fn send_move_size(c: &mut Ctx, h: u32, mv: bool, size: bool) {
         send(c, h, 0x3, 0, (y as u32 & 0xffff) << 16 | (x as u32 & 0xffff));
     }
     if size {
-        send(c, h, 0x5, 0, (cl.h() as u32) << 16 | (cl.w() as u32 & 0xffff));
+        // (SIZE_MAXIMIZED for a maximized window)
+        let how = with(|s| s.wins.get(&h).is_some_and(|w| w.style & WS_MAXIMIZE != 0)) as u32 * 2;
+        send(c, h, 0x5, how, (cl.h() as u32) << 16 | (cl.w() as u32 & 0xffff));
     }
 }
 fn SetWindowPos(c: &mut Ctx) -> u32 {
@@ -2873,9 +2900,22 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
         }
         0x24 => 0,
         0x83 => 0,
+        // WM_SYSCOMMAND: SC_CLOSE closes; SC_MAXIMIZE and SC_RESTORE as ShowWindow's
+        // (KiriKiri's windowEx plugin restores a saved maximized window with a posted
+        // SC_MAXIMIZE: AMBITIOUS MISSION after episode 1, whose swap chain then takes the
+        // maximized size); SC_MINIMIZE is not done (the page shows the game)
         0x112 => {
-            if wp & 0xfff0 == 0xf060 {
-                send(c, h, 0x10, 0, 0);
+            match wp & 0xfff0 {
+                0xf060 => {
+                    send(c, h, 0x10, 0, 0);
+                }
+                0xf030 => {
+                    show(c, h, 3);
+                }
+                0xf120 => {
+                    show(c, h, 9);
+                }
+                _ => {}
             }
             0
         }

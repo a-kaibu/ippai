@@ -49,7 +49,7 @@ const browser = await chromium.launch({ args: ["--enable-unsafe-webgpu"] });
 let failed = false;
 
 /** One run of the probe in `mode` at viewport `vp` (with `mobile`: a phone's). */
-async function check(mode, vp, mobile, want) {
+async function check(mode, vp, mobile, want, size = [640, 360]) {
   const lines = [];
   const until = async (re, ms = 120000) => {
     const t = Date.now();
@@ -89,9 +89,9 @@ async function check(mode, vp, mobile, want) {
       return { w, h, at: [px(2, 2), px(Math.floor(w / 2) + 4, Math.floor(h / 2)), px(w - 3, h - 3), px(Math.floor(w / 4), h - 3)] };
     });
   let s = await shot();
-  for (let k = 0; k < 20 && !(s.w === 640 && s.h === 360 && near(s.at[0], RED)); k++) s = await shot();
-  assert.deepEqual([s.w, s.h], [640, 360], `${mode} ${vp.width}x${vp.height}: only the game window's client area, whole`);
-  for (const [i, c] of want.entries()) assert.ok(near(s.at[i], c), `${mode} ${vp.width}x${vp.height}: point ${i} is ${s.at[i]}, not ${c}`);
+  for (let k = 0; k < 20 && !(s.w === size[0] && s.h === size[1] && near(s.at[0], RED)); k++) s = await shot();
+  assert.deepEqual([s.w, s.h], size, `${mode} ${vp.width}x${vp.height}: only the game window's client area, whole`);
+  for (const [i, c] of want.entries()) assert.ok(near(s.at[i], c), `${mode} ${vp.width}x${vp.height}: point ${i} is ${s.at[i]}, not ${c} (all: ${JSON.stringify(s.at)})`);
   // a click at client (600, 300), from where the page shows it
   const at = await page.evaluate(([cx, cy]) => {
     const m = window.vnvmSake;
@@ -104,7 +104,7 @@ async function check(mode, vp, mobile, want) {
     return [c.left + (rx + ((cx + 0.5) * rw) / (r - l)) / dpr, c.top + (ry + ((cy + 0.5) * rh) / (b - t)) / dpr, rw / rh];
   }, [600, 300]);
   // (the letterbox keeps the window's shape)
-  assert.ok(Math.abs(at[2] - 640 / 360) < 0.02, `${mode}: shape ${at[2]}`);
+  assert.ok(Math.abs(at[2] - size[0] / size[1]) < 0.02, `${mode}: shape ${at[2]}`);
   await page.mouse.click(at[0], at[1]);
   const c = await until(/^click /, 20000);
   const [x, y] = c.slice(6).split(",").map(Number);
@@ -124,6 +124,8 @@ try {
     // Direct3D 9: the source rectangle (all red); the same partly off the screen
     await check("d3d9", vp, mobile, [RED, RED, RED, RED]);
     await check("d3d9off", vp, mobile, [RED, RED, RED, RED]);
+    // maximized by a posted SC_MAXIMIZE: the whole screen (AMBITIOUS MISSION after episode 1)
+    await check("max", vp, mobile, [RED, BLUE, BLUE, RED], [1366, 768]);
     console.log(`ok   the game window only, whole, and its clicks at ${vp.width}x${vp.height}${mobile ? " (phone)" : ""}`);
   }
   // the rest of the game's files onto the device while it plays (web/src/warm.ts): every chunk of
