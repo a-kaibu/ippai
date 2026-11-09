@@ -102,7 +102,7 @@ function Shell({ children }: { children?: ReactNode }) {
         </pre>
       )}
       {ui.bench && <BenchPanel bench={ui.bench} />}
-      {ui.states && !ui.back && <States states={ui.states} />}
+      {(ui.states || ui.auto) && !ui.back && <States states={ui.states} auto={ui.auto} />}
       {ui.back && (
         <div className="fixed inset-0 z-30 grid place-items-center">
           <Button

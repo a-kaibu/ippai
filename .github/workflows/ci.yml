@@ -548,6 +548,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
           "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
           PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/savestate-browser.mjs target/release/ippai
+      - name: 自動送り in the page (clicks, Enter, Ctrl held; a real Ctrl as VK_CONTROL)
+        run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/autoadvance-browser.mjs target/release/ippai
       - name: A launcher's chain from the list keeps its game's files (ShellExecuteEx in its place, play.ts closeGame)
         run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/exec-browser.mjs target/release/ippai
       - name: Chunks from the bucket itself (presigned, decrypted and zstd-decoded in the page; every way back to the server)

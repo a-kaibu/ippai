@@ -5893,6 +5893,37 @@ fn start_input() {
     }
 }
 
+/// A key going down (`down`) or up, `data` as the page sends it (vk | scan << 16; the page's vk
+/// for Shift, Ctrl and Alt is the side's: VK_LSHIFT..VK_RMENU), into the keyboard state as
+/// Windows keeps it: the side's entry and the generic VK_SHIFT / VK_CONTROL / VK_MENU, down while
+/// either side is (GetKeyState(VK_CONTROL) and GetKeyState(VK_LCONTROL) both); a key's toggle bit
+/// flips when it goes down, not on its repeats. Returns the vk of the message (WM_KEYDOWN's
+/// wParam is the generic one, never the side's) and its lParam bits: 24, the right Ctrl / Alt
+/// (extended); 30 (a key down), the key was down already (a repeat).
+fn key_state(keys: &mut [u8; 256], pressed: &mut [bool; 256], data: u32, down: bool) -> (u32, u32) {
+    let side = (data & 0xff) as usize;
+    let (generic, other) = match side {
+        0xa0..=0xa5 => (0x10 + (side - 0xa0) / 2, side ^ 1),
+        _ => (side, side),
+    };
+    let was = keys[side] & 0x80 != 0;
+    let mut flags = if matches!(side, 0xa3 | 0xa5) { 1 << 24 } else { 0 };
+    for k in if generic == side { vec![side] } else { vec![side, generic] } {
+        if down {
+            pressed[k] = true;
+            // (the generic key flips when it goes down from neither side down)
+            let first = if k == generic && generic != side { keys[other] & 0x80 == 0 && !was } else { !was };
+            keys[k] = 0x80 | if first { (keys[k] ^ 1) & 1 } else { keys[k] & 1 };
+        } else if k == side || keys[other] & 0x80 == 0 {
+            keys[k] &= 1;
+        }
+    }
+    if down && was {
+        flags |= 1 << 30;
+    }
+    (generic as u32, flags)
+}
+
 /// WM_INPUT with raw input event `h`, to `hwnd` (0: the window with the focus)
 fn raw_post(s: &mut State, hwnd: u32, h: u32, t: u32) {
     let hwnd = if hwnd != 0 { hwnd } else if s.focus != 0 { s.focus } else { s.active };
@@ -5982,14 +6013,9 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                 q.input.push_back(Msg { hwnd: target, msg, w: wp, l: lp, time: t, x, y });
             }
             5 | 6 => {
-                let vk = (data & 0xff) as usize;
+                let (vk, flags) = key_state(&mut s.keys, &mut s.pressed, data, kind == 5);
+                let vk = vk as usize;
                 let scan = (data >> 16) & 0xff;
-                if kind == 5 {
-                    s.pressed[vk] = true;
-                    s.keys[vk] = 0x80 | (s.keys[vk] ^ 1) & 1;
-                } else {
-                    s.keys[vk] &= 1;
-                }
                 let target = if s.focus != 0 { s.focus } else { s.active };
                 if crate::env_on!("SAKE_TRACE_INPUT") {
                     eprintln!("sake input: key {vk:x} kind {kind} -> {target:x} (focus {:x} active {:x})", s.focus, s.active);
@@ -6006,7 +6032,7 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                     (5, true) => 0x104,
                     _ => 0x105,
                 };
-                let lp = 1 | scan << 16 | if kind == 6 { 0xc000_0000 } else { 0 } | if alt { 0x2000_0000 } else { 0 };
+                let lp = 1 | scan << 16 | flags | if kind == 6 { 0xc000_0000 } else { 0 } | if alt { 0x2000_0000 } else { 0 };
                 if let Some((rw, nolegacy)) = crate::rawinput::registered(false) {
                     let h = crate::rawinput::key_event(scan as u16, (kind == 6) as u16, vk as u16, msg);
                     raw_post(s, rw, h, t);
@@ -6767,6 +6793,65 @@ mod tests {
 
     fn u(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn key_state_sides_and_generic() {
+        let (mut k, mut p) = ([0u8; 256], [false; 256]);
+        let lctrl = 0xa2 | 29 << 16;
+        let rctrl = 0xa3 | 29 << 16;
+        // WM_KEYDOWN VK_CONTROL (not VK_LCONTROL), both entries down
+        assert_eq!(key_state(&mut k, &mut p, lctrl, true), (0x11, 0));
+        assert_eq!((k[0x11] & 0x80, k[0xa2] & 0x80, k[0xa3] & 0x80), (0x80, 0x80, 0));
+        assert!(p[0x11] && p[0xa2]);
+        // held: a repeat (lParam bit 30), the toggle bits stay
+        let toggles = (k[0x11] & 1, k[0xa2] & 1);
+        assert_eq!(key_state(&mut k, &mut p, lctrl, true), (0x11, 1 << 30));
+        assert_eq!((k[0x11] & 1, k[0xa2] & 1), toggles);
+        // the right one too (extended), then the left let go: Ctrl is still down
+        assert_eq!(key_state(&mut k, &mut p, rctrl, true), (0x11, 1 << 24));
+        assert_eq!(key_state(&mut k, &mut p, lctrl, false), (0x11, 0));
+        assert_eq!((k[0x11] & 0x80, k[0xa2] & 0x80, k[0xa3] & 0x80), (0x80, 0, 0x80));
+        assert_eq!(key_state(&mut k, &mut p, rctrl, false), (0x11, 1 << 24));
+        assert_eq!(k[0x11] & 0x80, 0);
+        // Shift and Alt the same; other keys as they are
+        assert_eq!(key_state(&mut k, &mut p, 0xa1 | 54 << 16, true).0, 0x10);
+        assert_eq!(key_state(&mut k, &mut p, 0xa4 | 56 << 16, true), (0x12, 0));
+        assert_eq!(key_state(&mut k, &mut p, 0xa5 | 56 << 16, true), (0x12, 1 << 24));
+        assert_eq!(key_state(&mut k, &mut p, 0x0d | 28 << 16, true), (0x0d, 0));
+        assert_eq!(key_state(&mut k, &mut p, 0x0d | 28 << 16, true), (0x0d, 1 << 30));
+        // CapsLock's toggle flips per press, not per repeat
+        key_state(&mut k, &mut p, 0x14, true);
+        key_state(&mut k, &mut p, 0x14, true);
+        key_state(&mut k, &mut p, 0x14, false);
+        assert_eq!(k[0x14], 1);
+        key_state(&mut k, &mut p, 0x14, true);
+        key_state(&mut k, &mut p, 0x14, false);
+        assert_eq!(k[0x14], 0);
+    }
+
+    proptest! {
+        /// Any run of the six side keys and a few others going down and up: the generic Shift /
+        /// Ctrl / Alt is down exactly while one of its sides is, a message never names a side, and
+        /// the repeat bit is set exactly on a down of a key already down.
+        #[test]
+        fn key_state_any_run(ops in proptest::collection::vec((0usize..9, any::<bool>()), 0..200)) {
+            const KEYS: [u32; 9] = [0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0x0d, 0x41, 0x14];
+            let (mut k, mut p) = ([0u8; 256], [false; 256]);
+            for (i, down) in ops {
+                let vk = KEYS[i] as usize;
+                let was = k[vk] & 0x80 != 0;
+                let (w, flags) = key_state(&mut k, &mut p, KEYS[i] | 30 << 16, down);
+                prop_assert!(!(0xa0..=0xa5).contains(&w));
+                prop_assert_eq!(flags & (1 << 30) != 0, down && was);
+                prop_assert_eq!(flags & (1 << 24) != 0, vk == 0xa3 || vk == 0xa5);
+                prop_assert_eq!(k[vk] & 0x80 != 0, down);
+                for g in 0..3 {
+                    let either = k[0xa0 + 2 * g] & 0x80 != 0 || k[0xa1 + 2 * g] & 0x80 != 0;
+                    prop_assert_eq!(k[0x10 + g] & 0x80 != 0, either);
+                }
+            }
+        }
     }
 
     fn rect() -> impl Strategy<Value = Rect> {

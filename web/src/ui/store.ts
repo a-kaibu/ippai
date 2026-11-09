@@ -3,6 +3,7 @@
 // &d3dstats lines and the bench panel.
 
 import { useSyncExternalStore } from "react";
+import type { AutoMode } from "../autoadvance";
 
 export interface BenchView {
   /** what is running, or the result */
@@ -28,6 +29,18 @@ export interface UiState {
   net: boolean;
   /** save states of the running game (ui/States.tsx, web/src/savestate.ts); null: none here */
   states: StatesView | null;
+  /** 自動送り (web/src/autoadvance.ts), in the same dialog; null: no game running */
+  auto: AutoView | null;
+}
+
+export interface AutoView {
+  mode: AutoMode;
+  interval: number;
+  running: boolean;
+  /** the mode and the interval chosen (kept for the next game; a running one goes on in them) */
+  set: (mode: AutoMode, interval: number) => void;
+  start: () => void;
+  stop: () => void;
 }
 
 export interface StatesView {
@@ -50,6 +63,7 @@ let state: UiState = {
   back: null,
   net: false,
   states: null,
+  auto: null,
 };
 const listeners = new Set<() => void>();
 

@@ -19,6 +19,7 @@ import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { memGate } from "./memgate";
 import { startWebGame } from "./html";
 import { linuxKeycode } from "./keymap";
+import { AutoAdvance, DEFAULT_SETTINGS, parseSettings, type AutoSettings } from "./autoadvance";
 import { AudioOut } from "./audio";
 import { Video } from "./video";
 import { AudioDecode } from "./adec";
@@ -594,6 +595,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   }
   ahead?.(sake);
   attachInput(() => activeModule ?? sake);
+  attachAuto(() => activeModule ?? sake);
   const resize = () => {
     const dpr = window.devicePixelRatio || 1;
     memGate.run(
@@ -858,6 +860,68 @@ function watch(sake: SakeModule, active: () => boolean = () => true, live: () =>
   requestAnimationFrame(frame);
 }
 
+/** Where the pointer last was on the canvas (canvas pixels): 自動送り's clicks go there. */
+let pointerAt: [number, number] | null = null;
+/** 自動送り (web/src/autoadvance.ts) of the running game: stopped when the game ends. */
+let auto: AutoAdvance | null = null;
+
+const AUTO_KEY = "ippai.auto";
+
+function attachAuto(current: () => SakeModule): void {
+  let settings: AutoSettings = DEFAULT_SETTINGS;
+  try {
+    settings = parseSettings(JSON.parse(localStorage.getItem(AUTO_KEY) ?? "null"));
+  } catch {
+    // (no storage here: the default)
+  }
+  const a = new AutoAdvance({
+    push: (kind, x, y, data) => {
+      // (the game is gone: closeGame stops this)
+      if (exited) return;
+      memGate.run(() => void current()._vnhost_render_input(kind, x, y, data));
+    },
+    closed: () => memGate.closed,
+    // (no pointer yet: the middle of the screen, low, where the text usually is)
+    at: () => pointerAt ?? [Math.round(canvas.width / 2), Math.round(canvas.height * 0.85)],
+  });
+  auto = a;
+  const show = () =>
+    setUi({
+      auto: {
+        ...settings,
+        running: a.running,
+        set: (mode, interval) => {
+          settings = { mode, interval };
+          try {
+            localStorage.setItem(AUTO_KEY, JSON.stringify(settings));
+          } catch {
+            // (kept for this run only)
+          }
+          if (a.running) a.start(mode, interval);
+          show();
+        },
+        start: () => {
+          a.start(settings.mode, settings.interval);
+          recorder?.note(`auto: ${settings.mode} every ${settings.interval} ms`);
+          show();
+        },
+        stop: () => {
+          a.stop();
+          recorder?.note("auto: stopped");
+          show();
+        },
+      },
+    });
+  // (a page out of sight: nothing held down while the player is elsewhere)
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && a.running) {
+      a.stop();
+      show();
+    }
+  });
+  show();
+}
+
 function attachInput(current: () => SakeModule): void {
   // (a key pressed while a state is taken: given to the game after, memgate.ts)
   const push = (kind: number, x: number, y: number, data: number) =>
@@ -872,8 +936,10 @@ function attachInput(current: () => SakeModule): void {
   const button = (b: number) => [0, 2, 1][b] ?? -1;
   canvas.addEventListener("pointermove", (e) => {
     for (const ev of e.getCoalescedEvents?.() ?? [e]) push(MOUSE_MOVE, ...toFrame(ev), 0);
+    pointerAt = toFrame(e);
   });
   canvas.addEventListener("pointerdown", (e) => {
+    pointerAt = toFrame(e);
     canvas.setPointerCapture(e.pointerId);
     if (button(e.button) >= 0) push(MOUSE_DOWN, ...toFrame(e), button(e.button));
     e.preventDefault();
@@ -1017,6 +1083,8 @@ let exited = false;
 let nextRun: { run: string; args: string } | undefined;
 
 function closeGame(): void {
+  auto?.stop();
+  setUi({ auto: null });
   if (nextRun) {
     const { run, args } = nextRun;
     log(`${run} に切り替えます`);
