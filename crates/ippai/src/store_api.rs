@@ -16,6 +16,78 @@ struct Store {
     local: PathBuf,
     remote: Arc<Option<Storage>>,
     decoded: Arc<std::sync::Mutex<Decoded>>,
+    /// trees whose chunks were fetched ahead (or are being) since the server started
+    ahead: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
+
+/// Files up to this size are fetched ahead whole when their tree is first asked for; of bigger
+/// ones the first and last chunks (where archives keep their headers and indexes: xp3, zip).
+const AHEAD_WHOLE: u64 = 8 << 20;
+/// Objects fetched ahead at once. From Hugging Face each object takes ~2 s before its first
+/// byte whatever its size, so throughput is a matter of how many at once: 4 gave 3 MB/s, 16
+/// 6 MB/s, 64 10 MB/s (worker2's line).
+const AHEAD_WIDTH: usize = 48;
+
+/// What a game's start reads first, from its tree list (`trees/<name>.tsv`): the chunks of its
+/// small files (the exe, DLLs, scripts, small archives), smallest first, then the first and
+/// last chunks of the others; each chunk once.
+pub(crate) fn start_set(tsv: &str) -> Vec<String> {
+    let mut files: Vec<(u64, Vec<&str>)> = Vec::new();
+    for l in tsv.lines().skip(1) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() != 6 || f[0] != "f" {
+            continue;
+        }
+        let Ok(size) = f[4].parse::<u64>() else { continue };
+        let hashes: Vec<&str> = f[5].split(',').filter_map(|c| c.split_once(':').map(|x| x.0)).filter(|h| h.len() > 2 && h.bytes().all(|b| b.is_ascii_hexdigit())).collect();
+        if !hashes.is_empty() {
+            files.push((size, hashes));
+        }
+    }
+    files.sort_by_key(|f| f.0);
+    let (small, big): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.0 <= AHEAD_WHOLE);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let picks = small.iter().flat_map(|f| f.1.iter().copied()).chain(big.iter().flat_map(|f| [f.1[0], f.1[f.1.len() - 1]]));
+    for h in picks {
+        if seen.insert(h) {
+            out.push(format!("chunks/{}/{h}", &h[..2]));
+        }
+    }
+    out
+}
+
+/// Fetches tree `name`'s [`start_set`] into the disk cache, AHEAD_WIDTH at once.
+async fn fetch_ahead(s: Store, name: String) {
+    if s.remote.is_none() {
+        return;
+    }
+    let Ok(tsv) = tokio::fs::read_to_string(s.local.join("trees").join(format!("{name}.tsv"))).await else { return };
+    let set = start_set(&tsv);
+    let t0 = std::time::Instant::now();
+    let width = Arc::new(tokio::sync::Semaphore::new(AHEAD_WIDTH));
+    let mut jobs = tokio::task::JoinSet::new();
+    for l in set.iter().cloned() {
+        let (remote, width) = (s.remote.clone(), width.clone());
+        jobs.spawn(async move {
+            let _p = width.acquire_owned().await.ok()?;
+            let r = (*remote).as_ref()?;
+            match r.warm(&l).await {
+                Ok(got) => Some(got),
+                Err(e) => {
+                    eprintln!("ahead {l}: {e}");
+                    None
+                }
+            }
+        });
+    }
+    let mut fetched = 0;
+    while let Some(r) = jobs.join_next().await {
+        fetched += matches!(r, Ok(Some(true))) as usize;
+    }
+    if fetched > 0 {
+        eprintln!("ahead: {name}: {fetched} of {} start chunks from S3 in {:.1} s", set.len(), t0.elapsed().as_secs_f64());
+    }
 }
 
 /// Chunks decoded for ranges lately (a game's read asks for a chunk's blocks one range after
@@ -68,6 +140,12 @@ fn range(h: &str, len: u64) -> Option<Option<(u64, u64)>> {
 }
 
 async fn file(State(s): State<Store>, Path(path): Path<String>, headers: HeaderMap) -> Response {
+    // a tree list asked for: a game starts; what it reads first is fetched from S3 meanwhile
+    if let Some(name) = path.strip_prefix("trees/").and_then(|n| n.strip_suffix(".tsv")) {
+        if s.remote.is_some() && !name.contains('/') && s.ahead.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string()) {
+            tokio::spawn(fetch_ahead(s.clone(), name.to_string()));
+        }
+    }
     // a range of a chunk: of its decoded bytes, sent as they are (206, no Content-Encoding): a
     // game's scattered reads need a few blocks of a chunk, not all of it (crates/kura/src/vfs.rs)
     let want = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).filter(|_| path.starts_with("chunks/"));
@@ -182,6 +260,7 @@ pub fn router(local: PathBuf) -> anyhow::Result<Router> {
         local,
         remote: Arc::new(Storage::configured(db)?),
         decoded: Default::default(),
+        ahead: Default::default(),
     };
     Ok(Router::new()
         .route("/store/{*path}", get(file))
@@ -218,7 +297,7 @@ mod tests {
         let stored = zstd::encode_all(&data[..], 3).unwrap();
         std::fs::write(dir.join("chunks/ab/abc"), &stored).unwrap();
         std::fs::write(dir.join("trees/t.tsv"), b"vnvm-tree\t2\t64\n").unwrap();
-        let state = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default() };
+        let state = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default() };
         let app = Router::new().route("/store/{*path}", get(file)).with_state(state.clone());
         let (s, _, b) = get_(&app, "/store/chunks/ab/abc", None).await;
         assert_eq!((s, b), (StatusCode::OK, stored.clone()));
@@ -288,5 +367,105 @@ mod tests {
         assert!(d.get("c0").is_none() && d.get("c19").is_some());
         d.put("huge", big(DECODED_MAX + 1));
         assert_eq!((d.map.len(), d.bytes), (1, DECODED_MAX + 1));
+    }
+
+    fn line(path: &str, size: u64, chunks: &[(&str, u64)]) -> String {
+        let c: Vec<String> = chunks.iter().map(|(h, n)| format!("{h}:{n}")).collect();
+        format!("f\t644\t0\t{path}\t{size}\t{}\n", c.join(","))
+    }
+
+    /// A game's start: its small files whole (smallest first), the first and last chunk of
+    /// each big one (an xp3's header and index), every chunk once, directories and empty
+    /// files left out.
+    #[test]
+    fn start_set_small_whole_big_ends() {
+        let m = 1u64 << 20;
+        let mut tsv = String::from("vnvm-tree\t2\t64\n");
+        tsv += &line("game.exe", 5 * m, &[("aa01", 4 * m), ("aa02", m)]);
+        tsv += "d\t755\t0\tplugin\n";
+        tsv += &line("plugin/x.dll", 100, &[("bb01", 100)]);
+        tsv += &line("empty.txt", 0, &[]);
+        tsv += &line("bgimage.xp3", 300 * m, &[("cc01", 4 * m), ("cc02", 4 * m), ("cc03", 292 * m)]);
+        tsv += &line("voice.xp3", 9 * m, &[("dd01", 9 * m)]);
+        tsv += &line("dup.dll", 100, &[("bb01", 100)]);
+        tsv += "garbage line\n";
+        let got = start_set(&tsv);
+        let names: Vec<&str> = got.iter().map(|l| l.rsplit('/').next().unwrap()).collect();
+        assert_eq!(names, ["bb01", "aa01", "aa02", "dd01", "cc01", "cc03"]);
+        assert_eq!(got[0], "chunks/bb/bb01");
+    }
+
+    proptest::proptest! {
+        /// Any tree: what start_set names is chunks of its files, each once; every chunk of a
+        /// file up to AHEAD_WHOLE is in it, and the ends of every bigger one.
+        #[test]
+        fn start_set_model(files in proptest::collection::vec((0u64..(20 << 20), proptest::collection::vec(0u16..64, 1..6)), 0..12)) {
+            let mut tsv = String::from("vnvm-tree\t2\t64\n");
+            for (k, (size, hs)) in files.iter().enumerate() {
+                let c: Vec<(String, u64)> = hs.iter().map(|h| (format!("{h:04x}"), 1)).collect();
+                let c: Vec<(&str, u64)> = c.iter().map(|(h, n)| (h.as_str(), *n)).collect();
+                tsv += &line(&format!("f{k}"), *size, &c);
+            }
+            let got = start_set(&tsv);
+            let set: std::collections::HashSet<&String> = got.iter().collect();
+            proptest::prop_assert_eq!(set.len(), got.len());
+            let name = |h: &u16| format!("chunks/{:02x}/{h:04x}", h >> 8);
+            let all: std::collections::HashSet<String> = files.iter().flat_map(|f| f.1.iter().map(name)).collect();
+            for l in &got {
+                proptest::prop_assert!(all.contains(l));
+            }
+            for (size, hs) in &files {
+                if *size <= AHEAD_WHOLE {
+                    for h in hs {
+                        proptest::prop_assert!(set.contains(&name(h)));
+                    }
+                } else {
+                    proptest::prop_assert!(set.contains(&name(&hs[0])) && set.contains(&name(hs.last().unwrap())));
+                }
+            }
+        }
+    }
+
+    /// A game's tree list asked for: its start set reaches the disk cache from S3 by itself
+    /// (once per server run), and the game's reads of it then ask S3 for nothing.
+    #[tokio::test]
+    async fn tree_list_fetches_the_start_ahead() {
+        let (fake, mut remote, dir) = crate::storage::gc_tests::serve(20).await;
+        remote.set_disk(dir.join("s3"), 64 << 20);
+        let mut tsv = String::from("vnvm-tree\t2\t64\n");
+        let mut names = Vec::new();
+        for k in 0..20u32 {
+            let h = format!("{:02x}{k:062x}", k * 11 % 256);
+            let data = zstd::encode_all(&format!("chunk {k}").into_bytes()[..], 3).unwrap();
+            remote.put(&format!("chunks/{}/{h}", &h[..2]), &data).await.unwrap();
+            tsv += &line(&format!("file{k}.dat"), 7, &[(&h, 7)]);
+            names.push(format!("chunks/{}/{h}", &h[..2]));
+        }
+        std::fs::create_dir_all(dir.join("trees")).unwrap();
+        std::fs::write(dir.join("trees/game.tsv"), &tsv).unwrap();
+        let before = fake.gets();
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default() };
+        let app = Router::new().route("/store/{*path}", get(file)).with_state(state.clone());
+        let (st, _, b) = get_(&app, "/store/trees/game.tsv", None).await;
+        assert_eq!((st, b), (StatusCode::OK, tsv.clone().into_bytes()));
+        let disk = dir.join("s3");
+        let kept = || std::fs::read_dir(&disk).map_or(0, |d| d.flatten().map(|e| std::fs::read_dir(e.path()).map_or(0, |x| x.count())).sum::<usize>());
+        for _ in 0..300 {
+            if kept() == 20 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(kept(), 20);
+        assert_eq!(fake.gets() - before, 20);
+        // asked again (another start): nothing more
+        get_(&app, "/store/trees/game.tsv", None).await;
+        for n in &names {
+            let (st, _, _) = get_(&app, &format!("/store/{n}"), None).await;
+            assert_eq!(st, StatusCode::OK);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(fake.gets() - before, 20, "the reads came from the disk");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

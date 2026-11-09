@@ -170,6 +170,9 @@ pub(crate) mod gc_tests {
     }
 
     impl Fake {
+        pub(crate) fn gets(&self) -> usize {
+            self.gets.load(SeqCst)
+        }
         /// Some(status) when this request is refused.
         fn refuse(&self) -> Option<StatusCode> {
             let n = self.requests.fetch_add(1, SeqCst) + 1;
@@ -639,6 +642,34 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// warm: on the disk without a get, no second download, the get after it reads the disk;
+    /// warm and get of the same object at once download it once.
+    #[tokio::test]
+    async fn warm_fetches_ahead_once() {
+        let (f, mut s, dir) = serve(30).await;
+        s.disk = Some(Arc::new(Disk::open(dir.join("s3"), 64 << 20).unwrap()));
+        s.put("chunks/a", b"aaaa").await.unwrap();
+        s.put("chunks/b", b"bbbb").await.unwrap();
+        assert!(s.warm("chunks/a").await.unwrap());
+        assert!(!s.warm("chunks/a").await.unwrap());
+        assert!(!s.warm("chunks/none").await.unwrap());
+        assert_eq!(f.gets.load(SeqCst), 1);
+        assert_eq!(&*s.get("chunks/a").await.unwrap().unwrap(), b"aaaa");
+        assert_eq!(f.gets.load(SeqCst), 1);
+        let s = Arc::new(s);
+        let (w, g) = tokio::join!(s.warm("chunks/b"), s.get("chunks/b"));
+        assert_eq!(&*g.unwrap().unwrap(), b"bbbb");
+        w.unwrap();
+        assert_eq!(f.gets.load(SeqCst), 2, "one download for both");
+        assert!(s.inflight.lock().unwrap().is_empty());
+        // without a disk cache: nothing to warm
+        let (_f2, s2, dir2) = serve(0).await;
+        s2.put("chunks/c", b"c").await.unwrap();
+        assert!(!s2.warm("chunks/c").await.unwrap());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(dir2);
+    }
+
     /// A kept object damaged on the disk (a flipped byte, cut short, emptied) is noticed by its
     /// envelope: read from the bucket again, and kept again whole.
     #[tokio::test]
@@ -826,6 +857,10 @@ impl Disk {
             }
         }
         (out, temps)
+    }
+
+    pub(crate) fn has(&self, id: Uuid) -> bool {
+        self.path(id).exists()
     }
 
     /// Object `id` when kept (and marked as just read).
@@ -1088,7 +1123,7 @@ impl Storage {
             config,
             cache: Default::default(),
             inflight: Default::default(),
-            requests: tokio::sync::Semaphore::new(8),
+            requests: tokio::sync::Semaphore::new(16),
             disk,
         };
         s.key(&s.config.active_key)?;
@@ -1317,14 +1352,49 @@ impl Storage {
             Ok::<_, anyhow::Error>(data)
         }
         .await;
-        {
-            let mut f = self.inflight.lock().unwrap();
-            // (the last one out: the map's and ours are all that are left)
-            if f.get(&e.object).is_some_and(|g| std::sync::Arc::ptr_eq(g, &gate)) && std::sync::Arc::strong_count(&gate) == 2 {
-                f.remove(&e.object);
-            }
-        }
+        self.ungate(e.object, &gate);
         Ok(Some(data?))
+    }
+
+    /// (tests elsewhere: a disk cache at `dir`)
+    #[cfg(test)]
+    pub(crate) fn set_disk(&mut self, dir: std::path::PathBuf, limit: u64) {
+        self.disk = Some(std::sync::Arc::new(Disk::open(dir, limit).unwrap()));
+    }
+
+    fn ungate(&self, id: Uuid, gate: &std::sync::Arc<tokio::sync::Mutex<()>>) {
+        let mut f = self.inflight.lock().unwrap();
+        // (the last one out: the map's and ours are all that are left)
+        if f.get(&id).is_some_and(|g| std::sync::Arc::ptr_eq(g, gate)) && std::sync::Arc::strong_count(gate) == 2 {
+            f.remove(&id);
+        }
+    }
+
+    /// Puts object `logical` on the disk unless it is there (fetched ahead: a game's start).
+    /// Not decrypted here ([`Storage::get`] checks it when it is read); one download with a
+    /// `get` of the same object at once. Whether it was downloaded.
+    pub async fn warm(&self, logical: &str) -> Result<bool> {
+        let Some(disk) = self.disk.clone() else { return Ok(false) };
+        let entry: Option<String> = self.db.connect()?.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
+        let Some(entry) = entry else { return Ok(false) };
+        let e: Envelope = serde_json::from_str(&entry)?;
+        if disk.has(e.object) {
+            return Ok(false);
+        }
+        let gate = self.inflight.lock().unwrap().entry(e.object).or_default().clone();
+        let r = async {
+            let _one = gate.lock().await;
+            if disk.has(e.object) {
+                return Ok(false);
+            }
+            let ciphertext = self.download(e.object).await?;
+            let id = e.object;
+            tokio::task::spawn_blocking(move || disk.write(id, &ciphertext)).await?;
+            Ok::<_, anyhow::Error>(true)
+        }
+        .await;
+        self.ungate(e.object, &gate);
+        r
     }
 
     /// Uploads the store's files not uploaded yet, `uploads` (storage.toml, [`PUTS`]) at once:
