@@ -117,7 +117,7 @@ fn drawing(dc: u32, f: impl FnOnce(&mut Drawing) -> bool) -> bool {
 
 /// A bitmap of its own (CreateBitmap, CreateBitmapFromWicBitmap): its texture, size in pixels,
 /// and whether its alpha is ignored (D2D1_ALPHA_MODE_IGNORE).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Image {
     gpu: u32,
     w: u32,
@@ -178,6 +178,8 @@ struct State {
     /// bitmap object -> (surface, w, h)
     bitmaps: HashMap<u32, (u32, u32, u32)>,
     images: HashMap<u32, Image>,
+    /// surface bitmaps made with D2D1_ALPHA_MODE_IGNORE (or a format without alpha)
+    opaque: std::collections::HashSet<u32>,
     stops: HashMap<u32, Vec<(f32, [f32; 4])>>,
     /// device -> factory, context/device -> device
     parents: HashMap<u32, u32>,
@@ -694,7 +696,7 @@ fn CopyFromMemory(c: &mut Ctx) -> u32 {
 fn BitmapFormat(c: &mut Ctx) -> u32 {
     // (this, out): D2D1_PIXEL_FORMAT returned through a hidden pointer
     let out = c.a(1);
-    let opaque = st(|s| s.images.get(&c.a(0)).is_some_and(|i| i.opaque));
+    let opaque = st(|s| s.images.get(&c.a(0)).is_some_and(|i| i.opaque) || s.opaque.contains(&c.a(0)));
     w32(out, 87); // DXGI_FORMAT_B8G8R8A8_UNORM
     w32(out + 4, if opaque { 3 } else { 1 });
     out
@@ -706,6 +708,7 @@ fn BitmapRelease(c: &mut Ctx) -> u32 {
     if n == 0 {
         if let Some(im) = st(|s| {
             s.bitmaps.remove(&this);
+            s.opaque.remove(&this);
             s.images.remove(&this)
         }) {
             // (drawn first if a context still has it in its items)
@@ -717,20 +720,61 @@ fn BitmapRelease(c: &mut Ctx) -> u32 {
     n
 }
 
+/// What DrawBitmap of `bmp` on context `dc` shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Source {
+    /// a bitmap of its own (or a compatible render target's)
+    Image(Image),
+    /// a bitmap of a D3D11 texture / DXGI surface
+    Surface { surface: u32, w: u32, h: u32, opaque: bool },
+    /// the texture `dc` draws into (D2D refuses that: nothing drawn)
+    Target,
+    /// no bitmap (released, or not one)
+    None,
+}
+
+fn source(s: &State, dc: u32, bmp: u32) -> Source {
+    let surface = s.bitmaps.get(&bmp).copied();
+    let target = s.dcs.get(&dc).map(|d| d.surface);
+    if let Some((t, ..)) = surface {
+        if t != 0 && target == Some(t) {
+            return Source::Target;
+        }
+    }
+    match (s.images.get(&bmp), surface) {
+        (Some(&im), _) => Source::Image(im),
+        (None, Some((surface, w, h))) if surface != 0 => Source::Surface { surface, w, h, opaque: s.opaque.contains(&bmp) },
+        _ => Source::None,
+    }
+}
+
 fn DrawBitmap(c: &mut Ctx) -> u32 {
     if !drawing(c.a(0), Drawing::draw) {
         return 0;
     }
     // (this, bitmap, destination D2D1_RECT_F * or NULL, opacity, interpolation, source * or NULL)
     let (dc, bmp, pd, opacity, interp, ps) = (c.a(0), c.a(1), c.a(2), fl(c, 3), c.a(4), c.a(5));
-    let Some(im) = st(|s| s.images.get(&bmp).copied()) else {
-        if bmp != 0 {
-            com::warn_once("sake: d2d DrawBitmap of a surface bitmap: not drawn");
+    let im = match st(|s| source(s, dc, bmp)) {
+        Source::Image(im) => im,
+        // a bitmap of a D3D11 texture (CreateBitmapFromDxgiSurface, another context's target):
+        // the texture itself, as it is when the items are drawn
+        Source::Surface { surface, w, h, opaque } => match gpu2d::texture_gpu(surface) {
+            Some(gpu) => Image { gpu, w, h, opaque },
+            None => {
+                com::warn_once("sake: d2d DrawBitmap of a surface that is not a texture: not drawn");
+                return 0;
+            }
+        },
+        Source::Target => {
+            com::warn_once("sake: d2d DrawBitmap of the context's own target: not drawn");
+            return 0;
         }
-        return 0;
+        Source::None => return 0,
     };
-    // a compatible render target's bitmap: what was drawn into it first
-    if let Some(owner) = st(|s| s.dcs.iter().find(|(&k, d)| k != dc && d.target == bmp && !d.items.is_empty()).map(|(&k, _)| k)) {
+    // another context's target (a compatible render target's bitmap, a texture drawn by D2D):
+    // what was drawn into it first
+    let surface = st(|s| s.bitmaps.get(&bmp).map(|b| b.0));
+    if let Some(owner) = st(|s| s.dcs.iter().find(|(&k, d)| k != dc && (d.target == bmp || surface.is_some_and(|t| t != 0 && d.surface == t)) && !d.items.is_empty()).map(|(&k, _)| k)) {
         flush(owner);
     }
     let src = if ps != 0 { [rf(ps, 0), rf(ps, 1), rf(ps, 2), rf(ps, 3)] } else { [0.0, 0.0, im.w as f32, im.h as f32] };
@@ -774,7 +818,11 @@ fn CreateBitmapFromDxgiSurface(c: &mut Ctx) -> u32 {
     if gpu2d::size(c.a(1)).is_none() {
         eprintln!("sake: d2d CreateBitmapFromDxgiSurface {:#x}: not a texture", c.a(1));
     }
-    mem::putp(c.a(3), new_bitmap(c.a(1)));
+    let bmp = new_bitmap(c.a(1));
+    if alpha_ignored(c.a(2)) {
+        st(|s| s.opaque.insert(bmp));
+    }
+    mem::putp(c.a(3), bmp);
     0
 }
 /// A bitmap's size in pixels (either kind).
@@ -1561,6 +1609,98 @@ pub fn init() {
 
 #[cfg(test)]
 mod draw_tests;
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    fn state() -> State {
+        let mut s = State::default();
+        // context 1 draws into texture 0x100 (bitmap 10), context 2 into 0x200 (bitmap 20,
+        // a compatible render target's: an image too); bitmap 30 is texture 0x300 made with
+        // D2D1_ALPHA_MODE_IGNORE, 40 a WIC image, 50 texture 0x100 again (another bitmap of
+        // context 1's target)
+        for (dc, bmp, t) in [(1, 10, 0x100), (2, 20, 0x200)] {
+            s.dcs.insert(dc, Dc { target: bmp, surface: t, ..Default::default() });
+            s.bitmaps.insert(bmp, (t, 64, 32));
+        }
+        s.images.insert(20, Image { gpu: 7, w: 64, h: 32, opaque: false });
+        s.bitmaps.insert(30, (0x300, 16, 8));
+        s.opaque.insert(30);
+        s.images.insert(40, Image { gpu: 9, w: 4, h: 4, opaque: true });
+        s.bitmaps.insert(50, (0x100, 64, 32));
+        s
+    }
+
+    /// The black screen of KiriKiri's DrawDeviceD2D (AMBITIOUS MISSION after episode 1): the
+    /// game draws its picture into a D3D11 texture and DrawBitmap's a bitmap of that texture
+    /// onto the window's swap chain; sake drew nothing for such a bitmap.
+    #[test]
+    fn surface_bitmaps_are_drawn() {
+        let s = state();
+        assert_eq!(source(&s, 2, 30), Source::Surface { surface: 0x300, w: 16, h: 8, opaque: true });
+        assert_eq!(source(&s, 2, 10), Source::Surface { surface: 0x100, w: 64, h: 32, opaque: false });
+        assert_eq!(source(&s, 1, 20), Source::Image(Image { gpu: 7, w: 64, h: 32, opaque: false }));
+        assert_eq!(source(&s, 1, 40), Source::Image(Image { gpu: 9, w: 4, h: 4, opaque: true }));
+    }
+
+    /// A context's own target, by any bitmap of its texture, is not drawn into itself.
+    #[test]
+    fn own_target_is_not_a_source() {
+        let s = state();
+        assert_eq!(source(&s, 1, 10), Source::Target);
+        assert_eq!(source(&s, 1, 50), Source::Target);
+        assert_eq!(source(&s, 2, 20), Source::Target);
+    }
+
+    #[test]
+    fn released_or_unknown_bitmaps_draw_nothing() {
+        let mut s = state();
+        s.bitmaps.remove(&30);
+        s.opaque.remove(&30);
+        assert_eq!(source(&s, 2, 30), Source::None);
+        assert_eq!(source(&s, 2, 0), Source::None);
+        assert_eq!(source(&s, 99, 999), Source::None);
+        // (a texture the device could not give: surface 0)
+        s.bitmaps.insert(60, (0, 0, 0));
+        assert_eq!(source(&s, 1, 60), Source::None);
+    }
+
+    proptest::proptest! {
+        /// Any mix of contexts and bitmaps: Target exactly when the bitmap's texture is the
+        /// context's, an image's own pixels otherwise when it has them, its texture when it has
+        /// only that, and nothing for what is neither.
+        #[test]
+        fn source_model(dcs in proptest::collection::vec((1u32..4, 0u32..4), 0..4), bmps in proptest::collection::vec((1u32..8, 0u32..4, proptest::bool::ANY, proptest::bool::ANY), 0..8), dc in 0u32..5, bmp in 0u32..9) {
+            let mut s = State::default();
+            for &(k, t) in &dcs {
+                s.dcs.insert(k, Dc { surface: t * 0x100, ..Default::default() });
+            }
+            for &(k, t, image, opaque) in &bmps {
+                s.bitmaps.insert(k, (t * 0x100, k, k));
+                if image {
+                    s.images.insert(k, Image { gpu: k + 1000, w: k, h: k, opaque });
+                }
+                if opaque {
+                    s.opaque.insert(k);
+                }
+            }
+            let got = source(&s, dc, bmp);
+            let t = s.bitmaps.get(&bmp).map(|b| b.0);
+            let mine = s.dcs.get(&dc).map(|d| d.surface);
+            let want = if t.is_some_and(|t| t != 0 && Some(t) == mine) {
+                Source::Target
+            } else if let Some(&im) = s.images.get(&bmp) {
+                Source::Image(im)
+            } else if let Some(t) = t.filter(|&t| t != 0) {
+                Source::Surface { surface: t, w: bmp, h: bmp, opaque: s.opaque.contains(&bmp) }
+            } else {
+                Source::None
+            };
+            proptest::prop_assert_eq!(got, want);
+        }
+    }
+}
 
 #[cfg(test)]
 mod geom_tests {

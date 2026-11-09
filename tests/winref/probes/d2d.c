@@ -2,7 +2,9 @@
  * antialiased rectangles, ellipses and their outlines, stroke widths, transforms (the matrix
  * helpers), opacity, axis-aligned clips, linear gradients, bitmaps (nearest/linear, opacity,
  * source rects), and what the render target reports (DPI, sizes). Each picture is the 64x64
- * B8G8R8A8 texture read back through a staging copy. WARP on the Windows runner.
+ * B8G8R8A8 texture read back through a staging copy. Also bitmaps of another D3D11 texture
+ * (ID2D1DeviceContext::CreateBitmapFromDxgiSurface, premultiplied and alpha ignored), drawn as
+ * KiriKiri's DrawDeviceD2D draws its picture onto the window. WARP on the Windows runner.
  * libs: -ld3d11 -ld2d1 -luuid
  * run: browser (sake draws through WebGPU: tests/winref/run-browser.mjs) */
 #define COBJMACROS
@@ -10,6 +12,7 @@
 #include "../probe.h"
 #include <d3d11.h>
 #include <d2d1.h>
+#include <d2d1_1.h>
 
 #define W 64
 #define H 64
@@ -143,6 +146,60 @@ int main(void) {
         ID2D1RenderTarget_DrawEllipse(rt, &e, (ID2D1Brush *)white, 2, NULL);
         end("outlines");
         shot("outlines", 0);
+    }
+    /* a bitmap of another texture (a DXGI surface): the texture's pixels as D3D11 left them */
+    {
+        enum { SW = 8, SH = 8 };
+        UINT px[SW * SH];
+        for (int y = 0; y < SH; y++)
+            for (int x = 0; x < SW; x++) /* premultiplied: red, green, blue, half white quadrants */
+                px[y * SW + x] = y < 4 ? (x < 4 ? 0xffff0000 : 0xff00ff00) : (x < 4 ? 0xff0000ff : 0x80808080);
+        D3D11_TEXTURE2D_DESC sd = { SW, SH, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+        D3D11_SUBRESOURCE_DATA init = { px, SW * 4, 0 };
+        ID3D11Texture2D *src = NULL;
+        IDXGISurface *ss = NULL;
+        ID2D1DeviceContext *dc = NULL;
+        ID2D1Bitmap1 *b1 = NULL, *b2 = NULL;
+        hr = ID3D11Device_CreateTexture2D(dev, &sd, &init, &src);
+        if (src) ID3D11Texture2D_QueryInterface(src, &IID_IDXGISurface, (void **)&ss);
+        hr = ID2D1RenderTarget_QueryInterface(rt, &IID_ID2D1DeviceContext, (void **)&dc);
+        printf("ID2D1DeviceContext %#lx\n", hr);
+        if (dc && ss) {
+            D2D1_BITMAP_PROPERTIES1 bp = { { DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED }, 96, 96, D2D1_BITMAP_OPTIONS_NONE, NULL };
+            hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface(dc, ss, &bp, &b1);
+            printf("CreateBitmapFromDxgiSurface %#lx\n", hr);
+            bp.pixelFormat.alphaMode = D2D1_ALPHA_MODE_IGNORE;
+            hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface(dc, ss, &bp, &b2);
+            printf("CreateBitmapFromDxgiSurface ignore %#lx\n", hr);
+        }
+        if (b1 && b2) {
+            D2D1_SIZE_U ps;
+            /* (by the vtable: mingw's C ID2D1Bitmap1 has no struct-returning methods) slots 5, 6 */
+            ((D2D1_SIZE_U *(STDMETHODCALLTYPE *)(void *, D2D1_SIZE_U *))(*(void ***)b1)[5])(b1, &ps);
+            D2D1_PIXEL_FORMAT pf;
+            ((D2D1_PIXEL_FORMAT *(STDMETHODCALLTYPE *)(void *, D2D1_PIXEL_FORMAT *))(*(void ***)b2)[6])(b2, &pf);
+            printf("surface bitmap %ux%u, ignore format %u alpha %u\n", ps.width, ps.height, pf.format, pf.alphaMode);
+            begin(rgba(0, 0, 0.25f, 1));
+            D2D1_RECT_F d1 = rect(2, 2, 10, 10), d2 = rect(12, 2, 44, 34), d3 = rect(46, 2, 62, 18), d4 = rect(2, 40, 18, 56), s4 = rect(4, 4, 8, 8);
+            ID2D1RenderTarget_DrawBitmap(rt, (ID2D1Bitmap *)b1, &d1, 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, NULL);
+            ID2D1RenderTarget_DrawBitmap(rt, (ID2D1Bitmap *)b1, &d2, 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, NULL);
+            ID2D1RenderTarget_DrawBitmap(rt, (ID2D1Bitmap *)b2, &d3, 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, NULL);
+            ID2D1RenderTarget_DrawBitmap(rt, (ID2D1Bitmap *)b1, &d4, 0.5f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, &s4);
+            end("surface_bitmaps");
+            shot("surface_bitmaps", 2);
+            /* the texture changed by D3D11 between frames: the next draw shows the new pixels */
+            for (int i = 0; i < SW * SH; i++) px[i] = 0xffffff00;
+            ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)src, 0, NULL, px, SW * 4, 0);
+            begin(rgba(0, 0, 0, 1));
+            ID2D1RenderTarget_DrawBitmap(rt, (ID2D1Bitmap *)b1, &d2, 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, NULL);
+            end("surface_bitmap_updated");
+            shot("surface_bitmap_updated", 0);
+        }
+        if (b1) ID2D1Bitmap_Release((ID2D1Bitmap *)b1);
+        if (b2) ID2D1Bitmap_Release((ID2D1Bitmap *)b2);
+        if (dc) ID2D1RenderTarget_Release((ID2D1RenderTarget *)dc);
+        if (ss) IDXGISurface_Release(ss);
+        if (src) ID3D11Texture2D_Release(src);
     }
     /* transforms: translate+scale, rotation about a point, opacity of a brush, clips */
     {
