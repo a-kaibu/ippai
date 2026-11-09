@@ -854,6 +854,28 @@ fn get_str(key: &str, name: &str) -> Option<String> {
     })
 }
 
+/// The package's copy in C:\\Windows\\Installer (as Windows keeps one, so that removing
+/// or changing the product works once its source is gone): the one made before, else a
+/// new one named after the product code's hash.
+fn cache_package(pk: &Package, before: &str) -> String {
+    if !before.is_empty() && crate::files::resolve(before).is_some() {
+        return before.to_string();
+    }
+    let src = if pk.path.starts_with('#') { pk.db.lock().unwrap().path.clone() } else { pk.path.clone() };
+    let Some(from) = crate::files::resolve(&crate::files::full_path(&src)) else { return pk.path.clone() };
+    let mut h: u32 = 0x811c9dc5;
+    for b in pk.prop("ProductCode").bytes().chain(pk.prop("PackageCode").bytes()) {
+        h = (h ^ b as u32).wrapping_mul(0x01000193);
+    }
+    let dir = "C:\\Windows\\Installer";
+    let to = format!("{dir}\\{h:08x}.msi");
+    let _ = kura::fs::create_dir_all(crate::files::resolve_new(dir));
+    match kura::fs::copy(&from, crate::files::resolve_new(&to)) {
+        Ok(_) => to,
+        Err(_) => pk.path.clone(),
+    }
+}
+
 fn register_product(p: &Arc<Mutex<Package>>) {
     let pk = p.lock().unwrap();
     let code = pk.prop("ProductCode");
@@ -863,13 +885,14 @@ fn register_product(p: &Arc<Mutex<Package>>) {
     }
     let ip = format!("{PRODUCTS}\\{packed}\\installproperties");
     let un = format!("{UNINSTALL}\\{code}");
+    let local = cache_package(&pk, &get_str(&ip, "LocalPackage").unwrap_or_default());
     for key in [&ip, &un] {
         put_str(key, "DisplayName", &pk.prop("ProductName"));
         put_str(key, "DisplayVersion", &pk.prop("ProductVersion"));
         put_str(key, "Publisher", &pk.prop("Manufacturer"));
         put_str(key, "InstallLocation", &pk.prop("ARPINSTALLLOCATION"));
         put_str(key, "InstallSource", &pk.prop("SourceDir"));
-        put_str(key, "LocalPackage", &pk.path);
+        put_str(key, "LocalPackage", &local);
         put_str(key, "Language", &pk.prop("ProductLanguage"));
         put_str(key, "UninstallString", &format!("MsiExec.exe /X{code}"));
         crate::misc::reg_put(key, "WindowsInstaller", 4, 1u32.to_le_bytes().to_vec());
@@ -1471,6 +1494,145 @@ fn open_product(c: &mut Ctx, wide: bool) -> u32 {
         Err(_) => ERROR_INSTALL_PACKAGE_OPEN_FAILED,
     }
 }
+/// MsiConfigureProduct(Ex): the product's cached package run again: ABSENT removes it,
+/// LOCAL/SOURCE install every feature that way, DEFAULT as it was.
+fn configure_product(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
+    let (p, state) = (c.a(0), c.i(2));
+    if p == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let code = arg_str(p, wide);
+    if pack_guid(&code).is_empty() {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let Some(local) = product_info(&code, "LocalPackage") else { return ERROR_UNKNOWN_PRODUCT };
+    let mut cmd = if ex && c.a(3) != 0 { arg_str(c.a(3), wide) } else { String::new() };
+    let what = match state {
+        INSTALLSTATE_ABSENT => "REMOVE=ALL",
+        INSTALLSTATE_LOCAL => "ADDLOCAL=ALL",
+        INSTALLSTATE_SOURCE => "ADDSOURCE=ALL",
+        INSTALLSTATE_ADVERTISED => "ADVERTISE=ALL",
+        INSTALLSTATE_DEFAULT => "",
+        _ => return ERROR_INVALID_PARAMETER,
+    };
+    // (the files come from where it was installed from)
+    if let Some(src) = product_info(&code, "InstallSource").filter(|s| !s.is_empty()) {
+        cmd = format!("SourceDir=\"{src}\" {cmd}");
+    }
+    install_product(c, &local, &format!("{cmd} {what}"))
+}
+fn MsiConfigureProductA(c: &mut Ctx) -> u32 {
+    configure_product(c, false, false)
+}
+fn MsiConfigureProductW(c: &mut Ctx) -> u32 {
+    configure_product(c, true, false)
+}
+fn MsiConfigureProductExA(c: &mut Ctx) -> u32 {
+    configure_product(c, false, true)
+}
+fn MsiConfigureProductExW(c: &mut Ctx) -> u32 {
+    configure_product(c, true, true)
+}
+
+/// A component's registered path for `product` (any product when empty) and its state:
+/// LOCAL with the file there, ABSENT when it is gone, SOURCE when it runs from source,
+/// UNKNOWN when not registered.
+fn component_path(product: Option<&str>, id: &str) -> (i32, String) {
+    let path = match product {
+        Some(code) => get_str(&format!("{USERDATA}\\components\\{}", pack_guid(id)), &pack_guid(code)),
+        None => locate_component(id),
+    };
+    let Some(path) = path else { return (INSTALLSTATE_UNKNOWN, String::new()) };
+    if is_source_path(&path) {
+        return (INSTALLSTATE_SOURCE, path);
+    }
+    let there = path.is_empty() || crate::files::resolve(&crate::files::full_path(&path)).is_some();
+    (if there { INSTALLSTATE_LOCAL } else { INSTALLSTATE_ABSENT }, path)
+}
+
+fn path_out(st: i32, path: &str, buf: u32, pcch: u32, wide: bool) -> u32 {
+    if st == INSTALLSTATE_UNKNOWN {
+        return st as u32;
+    }
+    if buf != 0 && pcch != 0 && crate::msi::out_str(buf, pcch, path, wide) == ERROR_MORE_DATA {
+        return -3i32 as u32; // INSTALLSTATE_MOREDATA
+    }
+    if buf == 0 && pcch != 0 {
+        crate::msi::out_str(0, pcch, path, wide);
+    }
+    st as u32
+}
+
+fn get_component_path(c: &mut Ctx, wide: bool) -> u32 {
+    let (p, comp, buf, pcch) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if p == 0 || comp == 0 || (buf != 0 && pcch == 0) {
+        return INSTALLSTATE_INVALIDARG as u32;
+    }
+    let (code, id) = (arg_str(p, wide), arg_str(comp, wide));
+    if pack_guid(&code).is_empty() || pack_guid(&id).is_empty() {
+        return INSTALLSTATE_INVALIDARG as u32;
+    }
+    let (st, path) = component_path(Some(&code), &id);
+    path_out(st, &path, buf, pcch, wide)
+}
+fn MsiGetComponentPathA(c: &mut Ctx) -> u32 {
+    get_component_path(c, false)
+}
+fn MsiGetComponentPathW(c: &mut Ctx) -> u32 {
+    get_component_path(c, true)
+}
+
+fn locate_component_api(c: &mut Ctx, wide: bool) -> u32 {
+    let (comp, buf, pcch) = (c.a(0), c.a(1), c.a(2));
+    if comp == 0 || (buf != 0 && pcch == 0) {
+        return INSTALLSTATE_INVALIDARG as u32;
+    }
+    let id = arg_str(comp, wide);
+    if pack_guid(&id).is_empty() {
+        return INSTALLSTATE_INVALIDARG as u32;
+    }
+    let (st, path) = component_path(None, &id);
+    path_out(st, &path, buf, pcch, wide)
+}
+fn MsiLocateComponentA(c: &mut Ctx) -> u32 {
+    locate_component_api(c, false)
+}
+fn MsiLocateComponentW(c: &mut Ctx) -> u32 {
+    locate_component_api(c, true)
+}
+
+/// MsiGetFileVersion: "a.b.c.d" and the first language (decimal).
+fn get_file_version(c: &mut Ctx, wide: bool) -> u32 {
+    let (f, vb, vn, lb, ln) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if f == 0 || (vb != 0 && vn == 0) || (lb != 0 && ln == 0) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let path = arg_str(f, wide);
+    if crate::files::resolve(&crate::files::full_path(&path)).is_none() {
+        return 2; // ERROR_FILE_NOT_FOUND
+    }
+    let Some((ms, ls, langs)) = crate::misc::file_version(&path) else { return 1006 }; // ERROR_FILE_INVALID
+    let v = format!("{}.{}.{}.{}", ms >> 16, ms & 0xffff, ls >> 16, ls & 0xffff);
+    let mut r = ERROR_SUCCESS;
+    if vn != 0 {
+        r = crate::msi::out_str(vb, vn, &v, wide);
+    }
+    if ln != 0 {
+        let l = langs.first().map(|l| l.to_string()).unwrap_or_default();
+        let r2 = crate::msi::out_str(lb, ln, &l, wide);
+        if r == ERROR_SUCCESS {
+            r = r2;
+        }
+    }
+    r
+}
+fn MsiGetFileVersionA(c: &mut Ctx) -> u32 {
+    get_file_version(c, false)
+}
+fn MsiGetFileVersionW(c: &mut Ctx) -> u32 {
+    get_file_version(c, true)
+}
+
 fn MsiOpenProductA(c: &mut Ctx) -> u32 {
     open_product(c, false)
 }
@@ -1669,6 +1831,8 @@ pub fn init() {
         MsiGetProductInfoA, MsiGetProductInfoW, MsiEnumProductsA, MsiEnumProductsW, MsiEnumRelatedProductsA, MsiEnumRelatedProductsW,
         MsiOpenProductA, MsiOpenProductW, MsiGetProductPropertyA, MsiGetProductPropertyW, MsiSourceListEnumSourcesA,
         MsiSourceListEnumSourcesW, MsiGetLastErrorRecord, MsiEnableLogA, MsiEnableLogW, MsiVerifyPackageA, MsiVerifyPackageW,
+        MsiConfigureProductA, MsiConfigureProductW, MsiConfigureProductExA, MsiConfigureProductExW, MsiGetComponentPathA,
+        MsiGetComponentPathW, MsiLocateComponentA, MsiLocateComponentW, MsiGetFileVersionA, MsiGetFileVersionW,
     );
 }
 

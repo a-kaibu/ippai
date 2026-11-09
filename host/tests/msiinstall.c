@@ -91,6 +91,18 @@ static void product(void) {
         const char *f[] = {"Complete", "Extras", "Nope"};
         printf("  feature %s: %d\n", f[i], MsiQueryFeatureStateA(CODE, f[i]));
     }
+    /* (the components' key files, as <INSTALLDIR>...) */
+    const char *comps[] = {"{11111111-2222-3333-4444-555555555555}", "{33333333-4444-5555-6666-777777777777}"};
+    for (int i = 0; i < 2; i++) {
+        DWORD n = sizeof b;
+        b[0] = 0;
+        INSTALLSTATE st = MsiGetComponentPathA(CODE, comps[i], b, &n);
+        char m[MAX_PATH] = "";
+        DWORD mn = sizeof m;
+        INSTALLSTATE lst = MsiLocateComponentA(comps[i], m, &mn);
+        size_t l = strlen(dir);
+        printf("  component %d: %d \"%s%s\" locate %d %s\n", i, st, strncmp(b, dir, l) ? "" : "<INSTALLDIR>", strncmp(b, dir, l) ? b : b + l, lst, strcmp(m, b) ? "differs" : "same");
+    }
 }
 
 static void state(const char *what) {
@@ -117,7 +129,8 @@ static void run(const char *msi) {
         {"uninstall", "REMOVE=ALL"},
     };
     for (int i = 0; i < 4; i++) {
-        UINT r = MsiInstallProductA(path, steps[i][1]);
+        /* (the uncompressed one is removed through its cached package) */
+        UINT r = i == 3 && strstr(msi, "-u") ? MsiConfigureProductA(CODE, INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT) : MsiInstallProductA(path, steps[i][1]);
         char what[64];
         snprintf(what, sizeof what, "%s: %u", steps[i][0], r);
         state(what);
@@ -154,6 +167,10 @@ int main(void) {
     printf("ui %d\n", MsiSetInternalUI(6, NULL));
     printf("ui %d\n", MsiSetInternalUI(INSTALLUILEVEL_NONE, NULL));
     printf("missing package: %u\n", MsiInstallProductA("C:\\nowhere\\none.msi", ""));
+    printf("configure unknown: %u\n", MsiConfigureProductA(CODE, INSTALLLEVEL_DEFAULT, INSTALLSTATE_ABSENT));
+    char v[32] = "x", lang[16] = "x";
+    DWORD vn = sizeof v, ln = sizeof lang;
+    printf("file version missing: %u\n", MsiGetFileVersionA("C:\\nowhere\\none.dll", v, &vn, lang, &ln));
     run("msiinstall.msi");
     run("msiinstall-u.msi");
     return 0;

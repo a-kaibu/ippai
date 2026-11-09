@@ -984,6 +984,31 @@ fn MsiSetFeatureStateW(c: &mut Ctx) -> u32 {
     set_feature_state(c, true)
 }
 
+/// MsiSetComponentState: a component's action (one whose condition is false keeps none).
+fn set_component_state(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, n, s) = (c.a(0), c.a(1), c.i(2));
+    if n == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let Some(p) = pkg_of(h) else { return ERROR_INVALID_HANDLE };
+    let name = arg_str(n, wide);
+    let mut p = p.lock().unwrap();
+    if !p.cost_started {
+        return ERROR_UNKNOWN_COMPONENT;
+    }
+    let Some(comp) = p.comps.get_mut(&name) else { return ERROR_UNKNOWN_COMPONENT };
+    if comp.enabled {
+        comp.action = s;
+    }
+    ERROR_SUCCESS
+}
+fn MsiSetComponentStateA(c: &mut Ctx) -> u32 {
+    set_component_state(c, false)
+}
+fn MsiSetComponentStateW(c: &mut Ctx) -> u32 {
+    set_component_state(c, true)
+}
+
 fn MsiCreateRecordFromPkg(_c: &mut Ctx) -> u32 {
     0
 }
@@ -999,6 +1024,7 @@ pub fn init() {
         MsiSetPropertyW, MsiEvaluateConditionA, MsiEvaluateConditionW, MsiGetActiveDatabase, MsiGetLanguage, MsiGetMode, MsiSetMode,
         MsiGetTargetPathA, MsiGetTargetPathW, MsiGetSourcePathA, MsiGetSourcePathW, MsiSetTargetPathA, MsiSetTargetPathW,
         MsiGetFeatureStateA, MsiGetFeatureStateW, MsiGetComponentStateA, MsiGetComponentStateW, MsiSetFeatureStateA, MsiSetFeatureStateW,
+        MsiSetComponentStateA, MsiSetComponentStateW,
     );
     let _ = MsiCreateRecordFromPkg;
     crate::msi_install::init();

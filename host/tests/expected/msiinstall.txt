@@ -3,6 +3,8 @@ ui 2
 ui 0
 ui 130
 missing package: 1619
+configure unknown: 1605
+file version missing: 2
 == msiinstall.msi
 before
   a.txt: missing
@@ -19,6 +21,8 @@ before
   feature Complete: -1
   feature Extras: -1
   feature Nope: -1
+  component 0: -1 "" locate -1 same
+  component 1: -1 "" locate -1 same
 install: 0
   a.txt: 11 bytes "hello msi"
   sub\b.dat: 70000 bytes "bbbbbbbbb"
@@ -36,6 +40,8 @@ install: 0
   feature Complete: 3
   feature Extras: 2
   feature Nope: -1
+  component 0: 3 "<INSTALLDIR>a.txt" locate 3 same
+  component 1: -1 "" locate -1 same
 add Extras: 0
   a.txt: 11 bytes "hello msi"
   sub\b.dat: 70000 bytes "bbbbbbbbb"
@@ -53,6 +59,8 @@ add Extras: 0
   feature Complete: 3
   feature Extras: 3
   feature Nope: -1
+  component 0: 3 "<INSTALLDIR>a.txt" locate 3 same
+  component 1: 3 "<INSTALLDIR>extra.txt" locate 3 same
 remove Extras: 0
   a.txt: 11 bytes "hello msi"
   sub\b.dat: 70000 bytes "bbbbbbbbb"
@@ -70,6 +78,8 @@ remove Extras: 0
   feature Complete: 3
   feature Extras: 2
   feature Nope: -1
+  component 0: 3 "<INSTALLDIR>a.txt" locate 3 same
+  component 1: -1 "" locate -1 same
 uninstall: 0
   a.txt: missing
   sub\b.dat: missing
@@ -85,6 +95,8 @@ uninstall: 0
   feature Complete: -1
   feature Extras: -1
   feature Nope: -1
+  component 0: -1 "" locate -1 same
+  component 1: -1 "" locate -1 same
 == msiinstall-u.msi
 before
   a.txt: missing
@@ -101,6 +113,8 @@ before
   feature Complete: -1
   feature Extras: -1
   feature Nope: -1
+  component 0: -1 "" locate -1 same
+  component 1: -1 "" locate -1 same
 install: 0
   a.txt: 11 bytes "hello msi"
   sub\b.dat: 70000 bytes "bbbbbbbbb"
@@ -118,6 +132,8 @@ install: 0
   feature Complete: 3
   feature Extras: 2
   feature Nope: -1
+  component 0: 3 "<INSTALLDIR>a.txt" locate 3 same
+  component 1: -1 "" locate -1 same
 add Extras: 0
   a.txt: 11 bytes "hello msi"
   sub\b.dat: 70000 bytes "bbbbbbbbb"
@@ -135,6 +151,8 @@ add Extras: 0
   feature Complete: 3
   feature Extras: 3
   feature Nope: -1
+  component 0: 3 "<INSTALLDIR>a.txt" locate 3 same
+  component 1: 3 "<INSTALLDIR>extra.txt" locate 3 same
 remove Extras: 0
   a.txt: 11 bytes "hello msi"
   sub\b.dat: 70000 bytes "bbbbbbbbb"
@@ -152,6 +170,8 @@ remove Extras: 0
   feature Complete: 3
   feature Extras: 2
   feature Nope: -1
+  component 0: 3 "<INSTALLDIR>a.txt" locate 3 same
+  component 1: -1 "" locate -1 same
 uninstall: 0
   a.txt: missing
   sub\b.dat: missing
@@ -167,3 +187,5 @@ uninstall: 0
   feature Complete: -1
   feature Extras: -1
   feature Nope: -1
+  component 0: -1 "" locate -1 same
+  component 1: -1 "" locate -1 same
