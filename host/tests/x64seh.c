@@ -14,21 +14,30 @@ __declspec(noinline) static void deepj(int n) {
     if (n == 0) longjmp(jb, 1);
     deepj(n - 1); depth_hits += buf[0];
 }
-/* runs f with callee-saved regs set to known values, checks them after f returns */
+/* runs f with callee-saved regs set to known values, checks them after f returns; with its
+   unwind data (.seh_*) and its frame fixed after the prologue, the call's home space in it:
+   without them Windows' unwinder walked through it to junk (the exceptions at address -1 in
+   ntdll, then the end of the process in the longjmp test: issue #96) */
 extern int check_regs(void (*f)(void));
 __asm__(
 ".globl check_regs\n"
+".seh_proc check_regs\n"
 "check_regs:\n"
-" push %rbx; push %rbp; push %rsi; push %rdi; push %r12; push %r13; push %r14; push %r15\n"
-" sub $0xa8,%rsp\n"
-" movdqu %xmm6,0x00(%rsp); movdqu %xmm7,0x10(%rsp); movdqu %xmm8,0x20(%rsp); movdqu %xmm9,0x30(%rsp); movdqu %xmm10,0x40(%rsp)\n"
-" movdqu %xmm11,0x50(%rsp); movdqu %xmm12,0x60(%rsp); movdqu %xmm13,0x70(%rsp); movdqu %xmm14,0x80(%rsp); movdqu %xmm15,0x90(%rsp)\n"
+" push %rbx\n .seh_pushreg %rbx\n push %rbp\n .seh_pushreg %rbp\n push %rsi\n .seh_pushreg %rsi\n push %rdi\n .seh_pushreg %rdi\n"
+" push %r12\n .seh_pushreg %r12\n push %r13\n .seh_pushreg %r13\n push %r14\n .seh_pushreg %r14\n push %r15\n .seh_pushreg %r15\n"
+" sub $0xd8,%rsp\n .seh_stackalloc 0xd8\n"
+" movdqa %xmm6,0x20(%rsp)\n .seh_savexmm %xmm6, 0x20\n movdqa %xmm7,0x30(%rsp)\n .seh_savexmm %xmm7, 0x30\n"
+" movdqa %xmm8,0x40(%rsp)\n .seh_savexmm %xmm8, 0x40\n movdqa %xmm9,0x50(%rsp)\n .seh_savexmm %xmm9, 0x50\n"
+" movdqa %xmm10,0x60(%rsp)\n .seh_savexmm %xmm10, 0x60\n movdqa %xmm11,0x70(%rsp)\n .seh_savexmm %xmm11, 0x70\n"
+" movdqa %xmm12,0x80(%rsp)\n .seh_savexmm %xmm12, 0x80\n movdqa %xmm13,0x90(%rsp)\n .seh_savexmm %xmm13, 0x90\n"
+" movdqa %xmm14,0xa0(%rsp)\n .seh_savexmm %xmm14, 0xa0\n movdqa %xmm15,0xb0(%rsp)\n .seh_savexmm %xmm15, 0xb0\n"
+" .seh_endprologue\n"
 " mov $0x1111111111111111,%rbx; mov $0x2222222222222222,%rbp; mov $0x3333333333333333,%rsi; mov $0x4444444444444444,%rdi\n"
 " mov $0x5555555555555555,%r12; mov $0x6666666666666666,%r13; mov $0x7777777777777777,%r14; mov $0x8888888888888888,%r15\n"
 " mov $0x0606060606060606,%rax; movq %rax,%xmm6; pshufd $0x44,%xmm6,%xmm6\n"
 " mov $0x0f0f0f0f0f0f0f0f,%rax; movq %rax,%xmm15; pshufd $0x44,%xmm15,%xmm15\n"
 " mov $0x0a0a0a0a0a0a0a0a,%rax; movq %rax,%xmm10; pshufd $0x44,%xmm10,%xmm10\n"
-" sub $0x28,%rsp; call *%rcx; add $0x28,%rsp\n"
+" call *%rcx\n"
 " xor %eax,%eax\n"
 " mov $0x1111111111111111,%rcx; cmp %rcx,%rbx; jne 1f\n"
 " mov $0x2222222222222222,%rcx; cmp %rcx,%rbp; jne 2f\n"
@@ -46,10 +55,11 @@ __asm__(
 "5: mov $5,%eax; jmp 99f\n6: mov $6,%eax; jmp 99f\n7: mov $7,%eax; jmp 99f\n8: mov $8,%eax; jmp 99f\n"
 "9: mov $9,%eax; jmp 99f\n10: mov $10,%eax; jmp 99f\n11: mov $11,%eax\n"
 "99:\n"
-" movdqu 0x00(%rsp),%xmm6; movdqu 0x10(%rsp),%xmm7; movdqu 0x20(%rsp),%xmm8; movdqu 0x30(%rsp),%xmm9; movdqu 0x40(%rsp),%xmm10\n"
-" movdqu 0x50(%rsp),%xmm11; movdqu 0x60(%rsp),%xmm12; movdqu 0x70(%rsp),%xmm13; movdqu 0x80(%rsp),%xmm14; movdqu 0x90(%rsp),%xmm15\n"
-" add $0xa8,%rsp\n"
-" pop %r15; pop %r14; pop %r13; pop %r12; pop %rdi; pop %rsi; pop %rbp; pop %rbx; ret\n");
+" movdqa 0x20(%rsp),%xmm6; movdqa 0x30(%rsp),%xmm7; movdqa 0x40(%rsp),%xmm8; movdqa 0x50(%rsp),%xmm9; movdqa 0x60(%rsp),%xmm10\n"
+" movdqa 0x70(%rsp),%xmm11; movdqa 0x80(%rsp),%xmm12; movdqa 0x90(%rsp),%xmm13; movdqa 0xa0(%rsp),%xmm14; movdqa 0xb0(%rsp),%xmm15\n"
+" add $0xd8,%rsp\n"
+" pop %r15; pop %r14; pop %r13; pop %r12; pop %rdi; pop %rsi; pop %rbp; pop %rbx; ret\n"
+".seh_endproc\n");
 
 static void t_seh(void) {
     __try { deep(5); } __except (EXCEPTION_EXECUTE_HANDLER) { depth_hits++; }
