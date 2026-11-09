@@ -6352,6 +6352,21 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
     r
 }
 
+/// A modal dialog without controls that is never shown (WS_POPUP | WS_CAPTION | WS_SYSMENU |
+/// DS_MODALFRAME, not WS_VISIBLE), run by the dialog procedure `proc_` as DialogBoxParam runs
+/// one: its own message loop, EndDialog's result. shell32's SHBrowseForFolder: the program's
+/// callback gets a real dialog window to send BFFM_ messages to.
+pub(crate) fn hidden_dialog(c: &mut Ctx, owner: u32, proc_: u32, param: u32) -> u32 {
+    // DLGTEMPLATE: style, extended style, no items, 0,0 200x150, no menu, class or title
+    let t = mem::heap_alloc(32, true);
+    w32(t, 0x80c8_0080);
+    w16(t + 14, 200);
+    w16(t + 16, 150);
+    let r = dialog_box(c, 0, t, owner, proc_, param);
+    mem::heap_free(t);
+    r
+}
+
 fn dlg_template(c: &mut Ctx, inst: u32, name: u32, wide: bool) -> Option<u32> {
     let _ = c;
     let m = if inst == 0 { crate::k32::module_handle(0, false) } else { inst };

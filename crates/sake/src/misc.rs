@@ -2738,10 +2738,29 @@ fn SHGetFolderLocation(c: &mut Ctx) -> u32 {
     0
 }
 fn pidl_path(p: u32) -> Option<String> {
-    if p == 0 || r16(p + 2) != 0x7676 {
+    if p == 0 {
         return None;
     }
-    folder_path(r32(p + 4), false)
+    match r16(p + 2) {
+        0x7676 => folder_path(r32(p + 4), false),
+        PATH_PIDL => Some(String::from_utf16_lossy(&wstr(p + 4))),
+        _ => None,
+    }
+}
+/// The marker of an ID list sake makes for any folder (SHBrowseForFolder's): the path follows
+/// in UTF-16.
+const PATH_PIDL: u16 = 0x7677;
+fn path_pidl(path: &str) -> u32 {
+    let w: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    let n = 4 + 2 * w.len() as u32;
+    // (and the terminator: an item of 0 bytes)
+    let p = mem::heap_alloc(n + 2, true);
+    w16(p, n as u16);
+    w16(p + 2, PATH_PIDL);
+    for (i, &u) in w.iter().enumerate() {
+        w16(p + 4 + 2 * i as u32, u);
+    }
+    p
 }
 fn SHGetPathFromIDListA(c: &mut Ctx) -> u32 {
     match pidl_path(c.a(0)) {
@@ -2766,6 +2785,101 @@ fn ILFree(c: &mut Ctx) -> u32 {
         mem::heap_free(c.a(0));
     }
     0
+}
+
+/// SHBrowseForFolder's dialog: the program's callback (BROWSEINFO.lpfn) and the folder
+/// selected in it.
+struct Browse {
+    lpfn: u32,
+    lparam: u32,
+    sel: String,
+}
+thread_local!(static BROWSE: std::cell::RefCell<Vec<Browse>> = const { std::cell::RefCell::new(Vec::new()) });
+fn browse<R>(f: impl FnOnce(&mut Browse) -> R) -> Option<R> {
+    BROWSE.with(|b| b.borrow_mut().last_mut().map(f))
+}
+/// (posted to the dialog by itself: the player presses OK)
+const BROWSE_OK: u32 = 0xbff0;
+/// BFFM_SELCHANGED to the callback: the selection's ID list, freed after.
+fn browse_selchanged(c: &mut Ctx, h: u32) {
+    let Some((f, l, sel)) = browse(|b| (b.lpfn, b.lparam, b.sel.clone())) else { return };
+    if f != 0 {
+        let p = path_pidl(&sel);
+        c.call(f, &[h, 2, p, l]);
+        mem::heap_free(p);
+    }
+}
+fn browse_dlgproc(c: &mut Ctx) -> u32 {
+    let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let end = |c: &mut Ctx, r: u32| {
+        let f = crate::api::export("user32", "EndDialog");
+        c.call(f, &[h, r]);
+        1
+    };
+    match m {
+        // WM_INITDIALOG: BFFM_INITIALIZED, then BFFM_SELCHANGED for the first selection (as
+        // Windows' dialog); OK comes after whatever the callback posted meanwhile
+        0x110 => {
+            let (f, l) = browse(|b| (b.lpfn, b.lparam)).unwrap_or((0, 0));
+            if f != 0 {
+                c.call(f, &[h, 1, 0, l]);
+                browse_selchanged(c, h);
+            }
+            crate::user::post(h, BROWSE_OK, 0, 0);
+            1
+        }
+        // BFFM_SETSELECTIONA / W: a path (wParam TRUE) or an ID list; a folder that is not
+        // there leaves the selection as it was
+        0x466 | 0x467 => {
+            let s = if wp != 0 { (lp != 0).then(|| arg_str(lp, m == 0x467)) } else { pidl_path(lp) };
+            let s = s.map(|s| crate::files::full_path(&s)).filter(|s| crate::files::resolve(s).is_some_and(|h| kura::fs::metadata(h).is_ok_and(|m| m.is_dir())));
+            if let Some(s) = s {
+                browse(|b| b.sel = s);
+                browse_selchanged(c, h);
+            }
+            1
+        }
+        // BFFM_SETSTATUSTEXT, BFFM_ENABLEOK, BFFM_SETOKTEXT, BFFM_SETEXPANDED: nothing to show
+        0x464 | 0x465 | 0x468..=0x46a => 1,
+        // IDOK, IDCANCEL (the callback may press them itself)
+        0x111 if wp & 0xffff == 1 => end(c, 1),
+        0x111 if wp & 0xffff == 2 => end(c, 0),
+        BROWSE_OK => end(c, 1),
+        _ => 0,
+    }
+}
+/// SHBrowseForFolder(BROWSEINFO): the folder dialog, which nobody sees, the player taking the
+/// folder selected when it opens: the root (BROWSEINFO.pidlRoot; none: the desktop), or the
+/// one the callback selects (BFFM_SETSELECTION in BFFM_INITIALIZED, as programs do to offer a
+/// default). The callback gets a real dialog window and its messages; IDCANCEL from it is a
+/// cancel (NULL). Returns the folder's ID list (SHGetPathFromIDList reads it), its name in
+/// pszDisplayName. (SHUFFLE! Essence+ asks where its saves go when SCRIPT\LL_APP.SYS is not
+/// there and quits on NULL.)
+fn sh_browse_for_folder(c: &mut Ctx, wide: bool) -> u32 {
+    let bi = c.a(0);
+    let ps = mem::ps();
+    let (owner, root, name, lpfn, lparam) = (mem::rp(bi), mem::rp(bi + ps), mem::rp(bi + 2 * ps), mem::rp(bi + 5 * ps), mem::rp(bi + 6 * ps));
+    let sel = pidl_path(root).or_else(|| folder_path(0, false)).unwrap_or_default();
+    BROWSE.with(|b| b.borrow_mut().push(Browse { lpfn, lparam, sel }));
+    static PROC: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let proc_ = *PROC.get_or_init(|| crate::api::host_fn("browse_dlgproc", browse_dlgproc, 16));
+    let r = crate::user::hidden_dialog(c, owner, proc_, lparam);
+    let b = BROWSE.with(|b| b.borrow_mut().pop()).unwrap();
+    eprintln!("sake: SHBrowseForFolder: {}", if r == 1 { b.sel.as_str() } else { "(cancelled)" });
+    if r != 1 {
+        return 0;
+    }
+    if name != 0 {
+        let leaf = b.sel.trim_end_matches('\\').rsplit('\\').next().unwrap_or("");
+        ret_str(name, 260, leaf, wide);
+    }
+    path_pidl(&b.sel)
+}
+fn SHBrowseForFolderA(c: &mut Ctx) -> u32 {
+    sh_browse_for_folder(c, false)
+}
+fn SHBrowseForFolderW(c: &mut Ctx) -> u32 {
+    sh_browse_for_folder(c, true)
 }
 /// ShellExecute(verb, file, params, dir): "open" of one of the game's programs runs it
 /// (k32::exec); anything else (pages, documents) is only logged.
@@ -4257,7 +4371,7 @@ pub fn init() {
     reg!("oleaut32"; VarAdd, VarSub, VarMul, VarDiv, VarIdiv, VarMod, VarNeg, VarCmp, VarBstrCmp, VarBstrCat);
     reg!("shfolder"; SHGetFolderPathA, SHGetFolderPathW);
     reg!("shell32"; SHCreateDirectoryExA, SHCreateDirectoryExW, SHCreateDirectory, SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
-        SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc, IsUserAnAdmin,
+        SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc, SHBrowseForFolderA, SHBrowseForFolderW, IsUserAnAdmin,
         ShellExecuteA, ShellExecuteW, ShellExecuteExA, ShellExecuteExW, DragAcceptFiles, DragFinish,
         DragQueryFileA, DragQueryFileW, CommandLineToArgvW);
     reg!("comctl32"; InitCommonControls, InitCommonControlsEx, ImageList_Create, ImageList_Read, ImageList_Destroy, ImageList_Add,
@@ -4273,6 +4387,7 @@ pub fn init() {
         PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathRemoveBackslashA, PathRemoveBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
     reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW, SHStrDupA, SHStrDupW);
     reg!("shell32"; SHGetPropertyStoreForWindow, SHGetFileInfoA, SHGetFileInfoW);
+    implement("shell32", "SHBrowseForFolder", SHBrowseForFolderA);
     reg!("shlwapi"; IsOS, SHAutoComplete);
     reg!("sensapi"; IsNetworkAlive);
     // ws2_32 lives in ws2.rs
