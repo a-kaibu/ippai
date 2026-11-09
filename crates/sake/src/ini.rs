@@ -351,6 +351,16 @@ fn write_string(c: &mut Ctx, wide: bool, file: &str) -> u32 {
     })
 }
 
+/// WritePrivateProfileString(section, key, value, file) for sake's own callers (msi's IniFile).
+pub fn write_entry(file: &str, sec: &str, key: &str, val: &str) -> bool {
+    modify(file, |ini| ini.set(sec, key, Some(val))) != 0
+}
+
+/// Deletes a key (msi's RemoveIniValues).
+pub fn delete_entry(file: &str, sec: &str, key: &str) -> bool {
+    modify(file, |ini| ini.set(sec, key, None)) != 0
+}
+
 /// A double-NUL-terminated list of strings at `p`
 fn arg_list(p: u32, wide: bool) -> Vec<String> {
     let mut v = Vec::new();

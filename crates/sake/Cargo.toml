@@ -14,6 +14,8 @@ kura = { path = "../kura" }
 hlslc = { path = "../hlslc" }
 dxwgsl = { path = "../dxwgsl" }
 vorbis = { path = "../vorbis" }
+msidb = { path = "../msidb" }
+cab = "0.6"
 crt = { path = "../crt" }
 libm = "0.2"
 libc = "0.2"

@@ -1,0 +1,163 @@
+ui 1
+ui 2
+ui 0
+ui 130
+missing package: 1619
+== msiinstall.msi
+before
+  a.txt: missing
+  sub\b.dat: missing
+  extra.txt: missing
+  sub\: missing
+  \: missing
+  HKCU\Software\ippai\msitest: missing (2)
+  state -1
+  VersionString: 1605 "" 0
+  InstalledProductName: 1605 "" 0
+  Publisher: 1605 "" 0
+  related: 259 
+  feature Complete: -1
+  feature Extras: -1
+  feature Nope: -1
+install: 0
+  a.txt: 11 bytes "hello msi"
+  sub\b.dat: 70000 bytes "bbbbbbbbb"
+  extra.txt: missing
+  sub\: folder
+  \: folder
+  path: 0 type 1 "<INSTALLDIR>"
+  count: 0 type 4 7
+  state 5
+  VersionString: 0 "1.2.3" 5
+  InstalledProductName: 0 "ippai msi test" 14
+  Publisher: 0 "ippai" 5
+  related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
+  feature Complete: 3
+  feature Extras: 2
+  feature Nope: -1
+add Extras: 0
+  a.txt: 11 bytes "hello msi"
+  sub\b.dat: 70000 bytes "bbbbbbbbb"
+  extra.txt: 7 bytes "extra.."
+  sub\: folder
+  \: folder
+  path: 0 type 1 "<INSTALLDIR>"
+  count: 0 type 4 7
+  state 5
+  VersionString: 0 "1.2.3" 5
+  InstalledProductName: 0 "ippai msi test" 14
+  Publisher: 0 "ippai" 5
+  related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
+  feature Complete: 3
+  feature Extras: 3
+  feature Nope: -1
+remove Extras: 0
+  a.txt: 11 bytes "hello msi"
+  sub\b.dat: 70000 bytes "bbbbbbbbb"
+  extra.txt: missing
+  sub\: folder
+  \: folder
+  path: 0 type 1 "<INSTALLDIR>"
+  count: 0 type 4 7
+  state 5
+  VersionString: 0 "1.2.3" 5
+  InstalledProductName: 0 "ippai msi test" 14
+  Publisher: 0 "ippai" 5
+  related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
+  feature Complete: 3
+  feature Extras: 2
+  feature Nope: -1
+uninstall: 0
+  a.txt: missing
+  sub\b.dat: missing
+  extra.txt: missing
+  sub\: missing
+  \: missing
+  HKCU\Software\ippai\msitest: missing (2)
+  state -1
+  VersionString: 1605 "" 0
+  InstalledProductName: 1605 "" 0
+  Publisher: 1605 "" 0
+  related: 259 
+  feature Complete: -1
+  feature Extras: -1
+  feature Nope: -1
+== msiinstall-u.msi
+before
+  a.txt: missing
+  sub\b.dat: missing
+  extra.txt: missing
+  sub\: missing
+  \: missing
+  HKCU\Software\ippai\msitest: missing (2)
+  state -1
+  VersionString: 1605 "" 0
+  InstalledProductName: 1605 "" 0
+  Publisher: 1605 "" 0
+  related: 259 
+  feature Complete: -1
+  feature Extras: -1
+  feature Nope: -1
+install: 0
+  a.txt: 11 bytes "hello msi"
+  sub\b.dat: 70000 bytes "bbbbbbbbb"
+  extra.txt: missing
+  sub\: folder
+  \: folder
+  path: 0 type 1 "<INSTALLDIR>"
+  count: 0 type 4 7
+  state 5
+  VersionString: 0 "1.2.3" 5
+  InstalledProductName: 0 "ippai msi test" 14
+  Publisher: 0 "ippai" 5
+  related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
+  feature Complete: 3
+  feature Extras: 2
+  feature Nope: -1
+add Extras: 0
+  a.txt: 11 bytes "hello msi"
+  sub\b.dat: 70000 bytes "bbbbbbbbb"
+  extra.txt: 7 bytes "extra.."
+  sub\: folder
+  \: folder
+  path: 0 type 1 "<INSTALLDIR>"
+  count: 0 type 4 7
+  state 5
+  VersionString: 0 "1.2.3" 5
+  InstalledProductName: 0 "ippai msi test" 14
+  Publisher: 0 "ippai" 5
+  related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
+  feature Complete: 3
+  feature Extras: 3
+  feature Nope: -1
+remove Extras: 0
+  a.txt: 11 bytes "hello msi"
+  sub\b.dat: 70000 bytes "bbbbbbbbb"
+  extra.txt: missing
+  sub\: folder
+  \: folder
+  path: 0 type 1 "<INSTALLDIR>"
+  count: 0 type 4 7
+  state 5
+  VersionString: 0 "1.2.3" 5
+  InstalledProductName: 0 "ippai msi test" 14
+  Publisher: 0 "ippai" 5
+  related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
+  feature Complete: 3
+  feature Extras: 2
+  feature Nope: -1
+uninstall: 0
+  a.txt: missing
+  sub\b.dat: missing
+  extra.txt: missing
+  sub\: missing
+  \: missing
+  HKCU\Software\ippai\msitest: missing (2)
+  state -1
+  VersionString: 1605 "" 0
+  InstalledProductName: 1605 "" 0
+  Publisher: 1605 "" 0
+  related: 259 
+  feature Complete: -1
+  feature Extras: -1
+  feature Nope: -1

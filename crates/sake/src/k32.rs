@@ -208,7 +208,7 @@ pub(crate) fn env_set(name: &str, value: Option<&str>) {
 pub(crate) fn env_vars() -> Vec<(String, String)> {
     with_env(|e| e.clone())
 }
-fn env_get(name: &str) -> Option<String> {
+pub fn env_get(name: &str) -> Option<String> {
     let key = name.to_ascii_uppercase();
     with_env(|e| e.iter().find(|(k, _)| k.to_ascii_uppercase() == key).map(|(_, v)| v.clone()))
 }

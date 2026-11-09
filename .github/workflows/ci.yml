@@ -429,11 +429,11 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm
-      - name: mingw-w64, zstd, clang
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl
+      - name: mingw-w64, zstd, clang, msitools (host/tests/msiinstall.wxs)
         id: apt
         background: true
-        run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm
+        run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm msitools wixl
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 26
@@ -497,7 +497,7 @@ jobs:
         uses: actions/cache/save@v6.1.0
         with:
           path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl
       - name: Build
         run: tools/ci/build.sh
       # (the release's Windows build: pack, add and storage on the PC that has the games)

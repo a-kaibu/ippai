@@ -69,6 +69,10 @@ pub mod ddraw;
 pub mod typelib;
 pub mod jscript;
 pub mod ini;
+pub mod msi;
+pub mod msi_pkg;
+pub mod msi_install;
+pub mod msi_ui;
 pub mod dinput;
 pub mod fast;
 pub mod files;
@@ -690,6 +694,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     vcomp::init();
     nt::init();
     ini::init();
+    msi::init();
     ddraw::init();
     typelib::init();
     ole::init();

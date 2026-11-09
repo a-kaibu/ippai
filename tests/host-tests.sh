@@ -18,8 +18,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops sendrace}
-X64=" dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout "
+TESTS=${*:-dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops sendrace msiinstall}
+X64=" dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout msiinstall "
 CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
 CLANG32=${CLANG32-msvcseh}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
@@ -38,13 +38,27 @@ for t in $TESTS; do
       "$1" -O2 -shared -Wl,--kill-at "$ROOT/host/tests/comrpc-proxy.c" -loleaut32 -lrpcrt4 -o "$OUT/comrpc-proxy.dll"
       return $?
     fi
+    if [ "$t" = msiinstall ]; then
+      # (the package twice: files in its embedded cabinet, and uncompressed beside it)
+      local d=$OUT/msiinstall-src
+      rm -rf "$d" "$OUT/MsiTest" && mkdir -p "$d" "$OUT/MsiTest/sub" || return 1
+      printf 'hello msi\r\n' > "$d/a.txt"
+      head -c 70000 /dev/zero | tr '\0' b > "$d/b.dat"
+      printf 'extra\r\n' > "$d/extra.txt"
+      sed 's/COMPRESSED/yes/' "$ROOT/host/tests/msiinstall.wxs" > "$d/t.wxs"
+      (cd "$d" && wixl -o "$OUT/msiinstall.msi" t.wxs) || return 1
+      cp "$OUT/msiinstall.msi" "$OUT/msiinstall-u.msi" && msibuild "$OUT/msiinstall-u.msi" -q "UPDATE File SET Attributes = 8192" || return 1
+      cp "$d/a.txt" "$d/extra.txt" "$OUT/MsiTest/" && cp "$d/b.dat" "$OUT/MsiTest/sub/"
+      return $?
+    fi
     [ "$t" != dllsearch ] && return 0
     mkdir -p "$OUT/dllsearch-prefix/windows/system32"
     "${1%gcc}windres" "$ROOT/host/tests/dllsearch.rc" -O coff -o "$OUT/dllsearch-res.o" || return 1
     "$1" -shared -nostdlib -DBUILD_FIXTURE -Wl,--entry,0 "$ROOT/host/tests/dllsearch.c" "$OUT/dllsearch-res.o" -o "$OUT/dllsearch-fixture.dll"
   }
   case "$t" in
-    comclass|registrymulti|comrpc|services|capiprovider|dllsearch)
+    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall)
+      [ "$t" = msiinstall ] && rm -rf "$OUT/$t-prefix"
       mkdir -p "$OUT/$t-prefix/windows/system32"
       test_env=("SAKE_C=$OUT/$t-prefix")
       ;;

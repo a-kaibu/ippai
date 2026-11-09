@@ -102,8 +102,8 @@ pub enum Stream {
     File(String),
 }
 
-pub trait Source: Read + Seek + Send {}
-impl<T: Read + Seek + Send> Source for T {}
+pub trait Source: Read + Seek + Send + Sync {}
+impl<T: Read + Seek + Send + Sync> Source for T {}
 
 pub struct Database {
     pub pool: Pool,

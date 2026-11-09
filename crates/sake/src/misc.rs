@@ -277,6 +277,79 @@ pub(crate) fn registry_string(path: &str, name: &str) -> Option<String> {
     Some(String::from_utf16_lossy(&words))
 }
 
+/// Sets a value by key path ("hklm\\software\\x"; data as the W functions store it), creating
+/// the key and its parents (msi's WriteRegistryValues, product registration).
+pub fn reg_put(path: &str, name: &str, ty: u32, data: Vec<u8>) {
+    let path = path.trim_matches('\\').to_lowercase();
+    with_reg(|m| {
+        let mut at = String::new();
+        for part in path.split('\\') {
+            at = if at.is_empty() { part.to_string() } else { format!("{at}\\{part}") };
+            m.entry(at.clone()).or_default().ours = true;
+        }
+        let k = m.get_mut(&path).unwrap();
+        let lname = name.to_lowercase();
+        match k.values.iter_mut().find(|v| v.0.to_lowercase() == lname) {
+            Some(v) => {
+                v.1 = ty;
+                v.2 = data;
+            }
+            None => k.values.push((name.to_string(), ty, data)),
+        }
+        save_reg(m);
+    });
+}
+
+/// Creates a key by path (and its parents).
+pub fn reg_create(path: &str) {
+    let path = path.trim_matches('\\').to_lowercase();
+    with_reg(|m| {
+        let mut at = String::new();
+        for part in path.split('\\') {
+            at = if at.is_empty() { part.to_string() } else { format!("{at}\\{part}") };
+            m.entry(at.clone()).or_default().ours = true;
+        }
+        save_reg(m);
+    });
+}
+
+/// A value by key path: (type, data).
+pub fn reg_get(path: &str, name: &str) -> Option<(u32, Vec<u8>)> {
+    let path = path.trim_matches('\\').to_lowercase();
+    let lname = name.to_lowercase();
+    with_reg(|m| m.get(&path).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| (v.1, v.2.clone()))))
+}
+
+/// The value names of a key path.
+pub fn reg_values(path: &str) -> Vec<String> {
+    let path = path.trim_matches('\\').to_lowercase();
+    with_reg(|m| m.get(&path).map(|k| k.values.iter().map(|v| v.0.clone()).collect()).unwrap_or_default())
+}
+
+/// Deletes a value of a key path.
+pub fn reg_delete_value(path: &str, name: &str) {
+    let path = path.trim_matches('\\').to_lowercase();
+    with_reg(|m| {
+        if let Some(k) = m.get_mut(&path) {
+            let before = k.values.len();
+            k.values.retain(|v| !v.0.eq_ignore_ascii_case(name));
+            if k.values.len() != before {
+                save_reg(m);
+            }
+        }
+    });
+}
+
+/// Deletes a key path and everything under it.
+pub fn reg_delete_tree(path: &str) {
+    let path = path.trim_matches('\\').to_lowercase();
+    let pre = format!("{path}\\");
+    with_reg(|m| {
+        m.retain(|k, _| *k != path && !k.starts_with(&pre));
+        save_reg(m);
+    });
+}
+
 fn root_name(h: u32) -> Option<&'static str> {
     Some(match h {
         0x8000_0000 => "hkcr",
@@ -2283,7 +2356,7 @@ fn SetErrorInfo(_: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // shell32
 
-fn special_folder(csidl: u32) -> Option<&'static str> {
+pub(crate) fn special_folder(csidl: u32) -> Option<&'static str> {
     Some(match csidl & 0xff {
         0 | 0x10 => "C:\\users\\user\\Desktop",
         5 => "C:\\users\\user\\Documents",

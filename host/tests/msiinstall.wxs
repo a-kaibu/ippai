@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- host/tests/msiinstall.c's package (wixl; Compressed is set by the fixture build) -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="{6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}" Name="ippai msi test" Language="1033" Version="1.2.3" Manufacturer="ippai" UpgradeCode="{0B1C2D3E-4F50-6172-8394-A5B6C7D8E9F0}">
+    <Package InstallerVersion="200" Compressed="COMPRESSED" InstallScope="perMachine"/>
+    <Media Id="1" Cabinet="data.cab" EmbedCab="yes"/>
+    <Property Id="TESTPROP" Value="value"/>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLDIR" Name="MsiTest">
+          <Component Id="Main" Guid="{11111111-2222-3333-4444-555555555555}">
+            <File Id="a.txt" Name="a.txt" Source="a.txt" KeyPath="yes"/>
+            <RegistryValue Root="HKCU" Key="Software\ippai\msitest" Name="path" Value="[INSTALLDIR]" Type="string"/>
+            <RegistryValue Root="HKCU" Key="Software\ippai\msitest" Name="count" Value="7" Type="integer"/>
+          </Component>
+          <Directory Id="SUBDIR" Name="sub">
+            <Component Id="Data" Guid="{22222222-3333-4444-5555-666666666666}">
+              <File Id="b.dat" Name="b.dat" Source="b.dat" KeyPath="yes"/>
+            </Component>
+          </Directory>
+          <Component Id="Extra" Guid="{33333333-4444-5555-6666-777777777777}">
+            <File Id="extra.txt" Name="extra.txt" Source="extra.txt" KeyPath="yes"/>
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="Complete" Level="1">
+      <ComponentRef Id="Main"/>
+      <ComponentRef Id="Data"/>
+    </Feature>
+    <Feature Id="Extras" Level="1000">
+      <ComponentRef Id="Extra"/>
+    </Feature>
+  </Product>
+</Wix>
