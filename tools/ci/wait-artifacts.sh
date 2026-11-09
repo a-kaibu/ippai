@@ -30,6 +30,8 @@ while :; do
   sleep 5
 done
 echo "artifacts after $((SECONDS - start)) s of waiting"
+# (into empty directories: gh refuses to overwrite, and target/ comes from a cache)
 for a in "$@"; do
+  rm -rf "${a#*=}"
   gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" -n "${a%%=*}" -D "${a#*=}"
 done
