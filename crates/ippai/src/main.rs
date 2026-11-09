@@ -113,10 +113,11 @@ enum GamedbCmd {
     },
     /// A copy onto the package (GHCR_TOKEN: a token with write:packages).
     Push { file: std::path::PathBuf },
-    /// pull, build --keep, check, push in a directory: the daily job (gamedb.yml).
+    /// pull, one part anew (the other kept from the copy published), check, push in a directory.
     Update {
         dir: std::path::PathBuf,
-        /// ErogameScape's games must be there (a host it answers).
+        /// ErogameScape's part anew (a host it answers; tools/gamedb/update.sh), VNDB's kept; without:
+        /// VNDB's anew, ErogameScape's kept (gamedb.yml).
         #[arg(long)]
         egs: bool,
     },
