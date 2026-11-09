@@ -1,8 +1,12 @@
 # The game database (crates/ippai/src/gamedb.rs): every ErogameScape game (with its brand, tags and
 # series) and every Japanese VN on VNDB in one SQLite file, built each day and pushed to GitHub
-# Packages (ghcr.io/a-kaibu/ippai-gamedb:latest, `ippai gamedb update`). ippai serve pulls it once a
-# day, so it identifies games and shows their information without reaching ErogameScape, which
+# Packages (ghcr.io/a-kaibu/ippai-gamedb:latest, `ippai gamedb update`). ippai serve pulls it once
+# a day, so it identifies games and shows their information without reaching ErogameScape, which
 # refuses many hosts (the user, 2026-11-09: "批評空間とvndbのdbをsqliteとかにしてgh packagesにup").
+#
+# On worker2, a self-hosted runner (labels self-hosted, worker2): ErogameScape refuses GitHub's
+# runners by their address and answers worker2's (the user: "worker2のipでgha動かしたらいい").
+# ippai from the latest release, so worker2 needs no toolchain. Setup: tools/gamedb/README.md.
 name: Game database
 
 on:
@@ -10,10 +14,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/gamedb.yml'
-      - 'crates/ippai/src/gamedb.rs'
-      - 'tools/gamedb/**'
   schedule:
-    - cron: '30 19 * * *'
+    - cron: '30 18 * * *'
   workflow_dispatch:
 
 permissions:
@@ -26,37 +28,23 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    runs-on: [self-hosted, worker2]
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7.0.1
-      - run: tools/ci/rust-key.sh
-      - id: cargo-cache
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: gamedb-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            gamedb-${{ runner.os }}-${{ env.RUST_KEY }}-
-      - run: cargo build --release -p ippai
-      # (pull the copy published now, build keeping its ErogameScape part when ErogameScape does
-      # not answer, which it does not GitHub's runners: worker2 builds that part,
-      # tools/gamedb/README.md; check; push)
+      - name: ippai from the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) echo "$(uname -m)?"; exit 1 ;; esac
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest" \
+            | python3 -c "import json,sys; print(next(a['browser_download_url'] for a in json.load(sys.stdin)['assets'] if a['name'].endswith('_linux_$arch.tar.gz')))")
+          echo "$url"
+          rm -rf "$RUNNER_TEMP/ippai" && mkdir -p "$RUNNER_TEMP/ippai"
+          curl -fsSL "$url" | tar -xz -C "$RUNNER_TEMP/ippai"
+          "$RUNNER_TEMP/ippai/ippai" gamedb --help | grep -q update
+      # (pull the copy published now, build (ErogameScape at its pace, VNDB within its rate
+      # limit), check that both parts are there, push)
       - name: Build and push
         env:
           GHCR_TOKEN: ${{ github.token }}
-        run: ./target/release/ippai gamedb update "$RUNNER_TEMP/gamedb"
-      - name: Shrink the cargo cache
-        if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py target
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+        run: '"$RUNNER_TEMP/ippai/ippai" gamedb update --egs "$RUNNER_TEMP/gamedb"'

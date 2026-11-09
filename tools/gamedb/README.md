@@ -12,29 +12,21 @@ ErogameScape part of the one before when ErogameScape does not answer), checks i
 (`--egs`: ErogameScape's part must be there. The steps also run alone: `ippai gamedb pull`,
 `build [--keep]`, `check [--egs]`, `push`.)
 
-Two places run it each day:
+`.github/workflows/gamedb.yml` runs it each day at 03:30 JST on worker2 as a self-hosted runner:
+ErogameScape refuses GitHub's own runners (and many clouds) by address, and answers worker2's.
+The job takes ippai from the latest release and the job's own token for the push, so worker2
+needs no toolchain and no token of its own (curl, tar and python3 only).
 
-- `.github/workflows/gamedb.yml` (19:30 UTC): VNDB's part. ErogameScape does not answer GitHub's
-  runners (nor many clouds: the connection is reset or times out), so ErogameScape's part comes
-  from the copy published before.
-- worker2 (03:30 JST, an hour earlier): both parts, with `--egs`, from `worker2/`.
+## worker2 as the runner (once)
 
-## worker2
-
-Needs an ippai with `gamedb update` (v0.3.3 or later) at `~/.local/bin/ippai`, and a token: a
-classic personal access token with `write:packages` (GitHub -> Settings -> Developer settings ->
-Personal access tokens). The token stays on worker2, in a file only its user reads:
-
-    mkdir -p ~/.config/ippai ~/.config/systemd/user
-    install -m 600 /dev/null ~/.config/ippai/gamedb.env
-    echo 'GHCR_TOKEN=<the token>' > ~/.config/ippai/gamedb.env
-    cp tools/gamedb/worker2/ippai-gamedb.service tools/gamedb/worker2/ippai-gamedb.timer ~/.config/systemd/user/
-    systemctl --user daemon-reload
-    systemctl --user enable --now ippai-gamedb.timer
-    loginctl enable-linger "$USER"        # runs when nobody is logged in
-
-    systemctl --user start ippai-gamedb    # once now (ErogameScape at its pace: some minutes)
-    journalctl --user -u ippai-gamedb -f
+1. github.com/a-kaibu/ippai -> Settings -> Actions -> Runners -> New self-hosted runner -> Linux:
+   run the download and `./config.sh --url ... --token ...` lines it shows on worker2 (in
+   `~/actions-runner`), adding `--labels worker2` (or type `worker2` when it asks for labels).
+2. As a service, so it runs after reboots: `sudo ./svc.sh install && sudo ./svc.sh start`.
+3. Settings -> Actions -> General -> "Approval for running fork pull request workflows from
+   contributors": "Require approval for all external contributors", so no one else's pull
+   request runs on worker2 (only gamedb.yml asks for it).
+4. Actions -> Game database -> Run workflow, once now.
 
 ## Once
 

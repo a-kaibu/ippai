@@ -1,7 +1,6 @@
 //! The game database: every ErogameScape (批評空間) game and every Japanese VN on VNDB in one
-//! SQLite file, built once a day (`ippai gamedb update`: on worker2, which ErogameScape answers,
-//! and on GitHub Actions, gamedb.yml, which keeps that part: tools/gamedb/README.md) and
-//! published as a public package (ghcr.io/a-kaibu/ippai-gamedb:latest, zstd), so a server that
+//! SQLite file, built once a day (`ippai gamedb update`, gamedb.yml on worker2 as a self-hosted
+//! runner: ErogameScape refuses GitHub's runners; tools/gamedb/README.md) and published as a public package (ghcr.io/a-kaibu/ippai-gamedb:latest, zstd), so a server that
 //! cannot reach ErogameScape (it resets many hosts' connections) still identifies games and
 //! shows their information. The server keeps it as `<store>/gamedb.sqlite` (Library::egs_index
 //! pulls it when a day old) and meta.rs reads entries from it before asking the sites.
@@ -392,8 +391,7 @@ fn push_to(name: &str, file: &Path, secret: &str, day: &str) -> Result<String> {
 
 /// The day's copy published: the copy there now pulled into `dir`, a new one built keeping its
 /// ErogameScape part when ErogameScape does not answer, checked (`egs`: ErogameScape's part must
-/// be there), pushed. gamedb.yml on GitHub's runners (VNDB's part), worker2's
-/// ippai-gamedb.timer (both: tools/gamedb/README.md).
+/// be there), pushed. gamedb.yml runs it on worker2 (tools/gamedb/README.md).
 pub fn update(dir: &Path, egs: bool, secret: &str) -> Result<String> {
     update_with(dir, egs, secret, &reference(), &meta::now_rfc3339()[..10].replace('-', ""), &|out, keep| build(out, Some(keep)))
 }
