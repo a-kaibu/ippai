@@ -15,6 +15,14 @@ CreateBitmapFromDxgiSurface ignore 0
 surface bitmap 8x8, ignore format 87 alpha 3
 image surface_bitmaps 64 64 2
 image surface_bitmap_updated 64 64 0
+dc: ID2D1Factory1 0
+dc: CreateDevice 0
+dc: CreateDeviceContext 0
+dc: dpi 96 96
+dc: target bitmap 0
+dc: picture bitmap 0
+image device_context 64 64 2
+image device_context_frame2 64 64 2
 image transforms 64 64 8
 CreateGradientStopCollection 0
 image gradient 64 64 3
