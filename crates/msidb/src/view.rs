@@ -11,6 +11,7 @@ static IDS: AtomicU64 = AtomicU64::new(1);
 
 /// The system tables that are not stored as tables.
 pub const VIRTUAL: &[&str] = &["_Tables", "_Columns", "_Streams", "_Storages"];
+const SUMMARY: &str = "\u{5}SummaryInformation";
 
 enum Src {
     Db(String),
@@ -62,7 +63,11 @@ fn virt(db: &Database, name: &str) -> Option<Src> {
             }
             (vec![vcol("Table", 0x2d40), vcol("Number", 0x2502), vcol("Name", 0x0d40), vcol("Type", 0x0502)], rows)
         }
-        "_Streams" => (vec![vcol("Name", 0x2d3e), vcol("Data", 0x1900)], db.streams.keys().map(|k| vec![Field::Str(k.clone()), Field::Null]).collect()),
+        // (the summary information is a stream too)
+        "_Streams" => (
+            vec![vcol("Name", 0x2d3e), vcol("Data", 0x1900)],
+            db.streams.keys().cloned().chain(db.summary.is_some().then(|| SUMMARY.to_string())).map(|k| vec![Field::Str(k), Field::Null]).collect(),
+        ),
         "_Storages" => (vec![vcol("Name", 0x2d3e), vcol("Data", 0x1900)], db.storages.keys().map(|k| vec![Field::Str(k.clone()), Field::Null]).collect()),
         _ => return None,
     };
@@ -106,7 +111,13 @@ impl Src {
                 let f = rows.get(r).and_then(|row| row.get(c)).cloned().unwrap_or_default();
                 if c == 1 && (name == "_Streams" || name == "_Storages") {
                     let key = rows[r][0].text();
-                    let d = if name == "_Streams" { db.stream(&key) } else { db.storage(&key) };
+                    let d = if name == "_Streams" && key == SUMMARY {
+                        db.summary.clone()
+                    } else if name == "_Streams" {
+                        db.stream(&key)
+                    } else {
+                        db.storage(&key)
+                    };
                     return d.map_or(Field::Null, Field::Stream);
                 }
                 f
@@ -183,7 +194,7 @@ impl View {
             }
             Stmt::Update { table, sets, cond } => {
                 let s = src_of(db, table)?;
-                if matches!(s, Src::Virt { .. }) {
+                if matches!(s, Src::Virt { .. }) && table != "_Streams" && table != "_Storages" {
                     return Err(ERROR_BAD_QUERY_SYNTAX);
                 }
                 for (c, _) in sets {
@@ -234,11 +245,21 @@ impl View {
                 self.check_expr(db, b)
             }
             Expr::IsNull(c, _) => self.resolve(db, c).map(|_| ()),
-            Expr::Cmp(a, _, b) => {
+            Expr::Cmp(a, op, b) => {
+                let mut string = false;
                 for o in [a, b] {
-                    if let Operand::Col(c) = o {
-                        self.resolve(db, c)?;
+                    match o {
+                        Operand::Col(c) => {
+                            let (si, ci) = self.resolve(db, c)?;
+                            string |= self.srcs[si].cols(db)[ci].ty & T_STRING != 0;
+                        }
+                        Operand::Val(Val::Str(_)) => string = true,
+                        _ => {}
                     }
+                }
+                // (strings compare only for equality)
+                if string && !matches!(op, Op::Eq | Op::Ne) {
+                    return Err(ERROR_BAD_QUERY_SYNTAX);
                 }
                 Ok(())
             }
@@ -412,6 +433,27 @@ impl View {
                     return Err(ERROR_FUNCTION_FAILED);
                 }
             }
+            Stmt::Update { table, sets, cond } if db.table_index(&table).is_none() => {
+                // (_Streams / _Storages: a stream's data)
+                let rows = self.matching(db, &cond, &p);
+                let vals: Vec<Field> = sets.iter().map(|(_, v)| val_field(v, &p)).collect();
+                let names: Vec<String> = rows.iter().map(|r| self.srcs[0].field(db, r[0], 0).text()).collect();
+                for n in names {
+                    for (&(_, ci), f) in self.cols.iter().zip(&vals) {
+                        let Field::Stream(d) = f else { return Err(ERROR_FUNCTION_FAILED) };
+                        if ci != 1 {
+                            return Err(ERROR_FUNCTION_FAILED);
+                        }
+                        if table == "_Streams" && n == SUMMARY {
+                            db.summary = Some(d.clone());
+                        } else {
+                            let map = if table == "_Streams" { &mut db.streams } else { &mut db.storages };
+                            map.insert(n.clone(), Stream::Mem(d.clone()));
+                        }
+                        db.dirty = true;
+                    }
+                }
+            }
             Stmt::Update { table, sets, cond } => {
                 let ti = db.table_index(&table).ok_or(ERROR_FUNCTION_FAILED)?;
                 let rows = self.matching(db, &cond, &p);
@@ -456,19 +498,13 @@ impl View {
                 if cols.iter().any(|c| !names.insert(c.name.clone())) || keys.iter().any(|k| !names.contains(k)) {
                     return Err(ERROR_BAD_QUERY_SYNTAX);
                 }
-                let mut cs: Vec<Col> = cols.iter().map(|c| Col { name: c.name.clone(), ty: c.ty | if keys.contains(&c.name) { T_KEY } else { 0 } }).collect();
+                let cs: Vec<Col> = cols.iter().map(|c| Col { name: c.name.clone(), ty: c.ty | if keys.contains(&c.name) { T_KEY } else { 0 } }).collect();
                 let temp = cs.iter().all(|c| c.temporary());
                 if !temp && cs.iter().any(|c| c.temporary() && c.is_key()) {
                     return Err(ERROR_FUNCTION_FAILED);
                 }
                 if temp && !hold {
                     return Ok(());
-                }
-                // (a key column cannot be NULL)
-                for c in cs.iter_mut() {
-                    if c.is_key() {
-                        c.ty &= !T_NULLABLE;
-                    }
                 }
                 db.create_table(&table, cs, !temp)?;
                 if hold {
@@ -734,7 +770,7 @@ mod tests {
         run(&mut db, "DELETE FROM `phone` WHERE `id` = 2").unwrap();
         assert_eq!(texts(&run(&mut db, "SELECT * FROM `phone`").unwrap()), ["1|Abe|555", "3|Cindy|2937550"]);
         assert_eq!(texts(&run(&mut db, "SELECT `Name` FROM `_Tables`").unwrap()), ["phone"]);
-        assert_eq!(texts(&run(&mut db, "SELECT `Name`, `Type` FROM `_Columns`").unwrap()), [format!("id|{}", 0x2502 | 0x100 | 0x400 & 0x2fff), "name|7456".into(), "number|7456".into()]);
+        assert_eq!(texts(&run(&mut db, "SELECT `Name`, `Type` FROM `_Columns`").unwrap()), ["id|13570", "name|7456", "number|7456"]);
         assert_eq!(View::new(&db, "SELECT * FROM `nope`").err(), Some(ERROR_BAD_QUERY_SYNTAX));
         assert_eq!(View::new(&db, "SELECT `nope` FROM `phone`").err(), Some(ERROR_BAD_QUERY_SYNTAX));
     }

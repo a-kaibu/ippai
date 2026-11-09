@@ -28,6 +28,24 @@ pub struct DbObj {
     pub readonly: bool,
     /// MSIDBSTATE_WRITE: opened for writing
     pub writable: bool,
+    /// MSIDBOPEN_DIRECT / CREATEDIRECT: changes go to the file without MsiDatabaseCommit
+    /// (written when the last handle closes)
+    pub direct: bool,
+    /// the output file was made at open (MSIDBOPEN_CREATE, a separate output file) and goes
+    /// when the database closes without MsiDatabaseCommit
+    pub temp_out: bool,
+}
+
+impl Drop for DbObj {
+    fn drop(&mut self) {
+        if self.direct && self.db.dirty {
+            let _ = commit(self);
+        } else if self.temp_out {
+            if let Some(h) = crate::files::resolve(&self.out) {
+                let _ = kura::fs::remove_file(h);
+            }
+        }
+    }
 }
 
 pub enum Obj {
@@ -308,7 +326,7 @@ pub fn open_db(path: &str, mode: u32, out: Option<String>) -> R<DbObj> {
         if mode & MSIDBOPEN_PATCHFILE != 0 {
             db.clsid = msidb::db::CLSID_PATCH;
         }
-        let o = DbObj { db, path: path.to_string(), out: path.to_string(), readonly: false, writable: true };
+        let o = DbObj { db, path: path.to_string(), out: path.to_string(), readonly: false, writable: true, direct: m == MSIDBOPEN_CREATEDIRECT, temp_out: m == MSIDBOPEN_CREATE };
         // (the file exists from the start, as on Windows)
         commit(&o)?;
         return Ok(o);
@@ -326,7 +344,13 @@ pub fn open_db(path: &str, mode: u32, out: Option<String>) -> R<DbObj> {
         return Err(ERROR_OPEN_FAILED);
     }
     let readonly = m == MSIDBOPEN_READONLY && out.is_none();
-    Ok(DbObj { db, path: path.to_string(), out: out.unwrap_or_else(|| path.to_string()), readonly, writable: !readonly })
+    let temp_out = out.is_some();
+    let o = DbObj { db, path: path.to_string(), out: out.unwrap_or_else(|| path.to_string()), readonly, writable: !readonly, direct: m == MSIDBOPEN_DIRECT, temp_out };
+    // (a separate output file exists from the start, as on Windows)
+    if temp_out {
+        commit(&o)?;
+    }
+    Ok(o)
 }
 
 /// Writes the database to its output file (via a temporary file beside it).
@@ -369,17 +393,22 @@ fn MsiOpenDatabaseW(c: &mut Ctx) -> u32 {
 
 fn MsiDatabaseCommit(c: &mut Ctx) -> u32 {
     let Some(d) = db_of(c.a(0)) else { return ERROR_INVALID_HANDLE };
-    let o = d.lock().unwrap();
+    let mut o = d.lock().unwrap();
     if o.readonly {
         return ERROR_SUCCESS;
     }
-    status(commit(&o))
+    let r = commit(&o);
+    if r.is_ok() {
+        o.temp_out = false;
+        o.db.dirty = false;
+    }
+    status(r)
 }
 
 fn MsiGetDatabaseState(c: &mut Ctx) -> u32 {
     match db_of(c.a(0)) {
         Some(d) => d.lock().unwrap().writable as u32,
-        None => 0, // MSIDBSTATE_ERROR is -1 for a bad handle
+        None => u32::MAX, // MSIDBSTATE_ERROR
     }
 }
 
@@ -442,7 +471,9 @@ fn MsiViewFetch(c: &mut Ctx) -> u32 {
     let o = d.lock().unwrap();
     let r = v.lock().unwrap().fetch(&o.db);
     match r {
-        Ok(rec) => {
+        Ok(mut rec) => {
+            // (field 0 of a fetched record: the view it came from, as on Windows)
+            rec.f[0] = Field::Int(h as i32 | 0x10000);
             w32(out, new_handle(Obj::Rec(rec)));
             ERROR_SUCCESS
         }
@@ -614,7 +645,11 @@ fn db_import(c: &mut Ctx, wide: bool) -> u32 {
     let (folder, file) = (arg_str(folder, wide), arg_str(file, wide));
     let Some(data) = crate::files::resolve(&join(&folder, &file)).and_then(|h| kura::fs::read(h).ok()) else { return ERROR_FUNCTION_FAILED };
     let mut o = d.lock().unwrap();
-    let read = |rel: &str| crate::files::resolve(&join(&folder, &rel.replace('/', "\\"))).and_then(|h| kura::fs::read(h).ok());
+    // (binary fields: files in a folder named after the archive file, or after the table)
+    let stem = file.rsplit(['\\', '/']).next().unwrap_or(&file).rsplit_once('.').map_or(file.as_str(), |x| x.0).to_string();
+    let read = |table: &str, name: &str| {
+        [&stem, table].iter().find_map(|d| crate::files::resolve(&join(&folder, &format!("{d}\\{name}"))).and_then(|h| kura::fs::read(h).ok()))
+    };
     match idt::import(&mut o.db, &data, &read) {
         Ok(()) => ERROR_SUCCESS,
         Err(_) => ERROR_FUNCTION_FAILED,
@@ -647,6 +682,7 @@ fn get_summary(c: &mut Ctx, wide: bool) -> u32 {
         Some(d) => d.lock().unwrap().db.summary.as_deref().map(SummaryInfo::parse).unwrap_or_default(),
         None => match open_db(&path, MSIDBOPEN_READONLY, None) {
             Ok(o) => o.db.summary.as_deref().map(SummaryInfo::parse).unwrap_or_default(),
+            Err(ERROR_OPEN_FAILED) => return ERROR_INSTALL_PACKAGE_OPEN_FAILED,
             Err(e) => return e,
         },
     };
@@ -739,7 +775,8 @@ fn sum_set(c: &mut Ctx, wide: bool) -> u32 {
             Prop::Str(arg_str(s, wide))
         }
     };
-    if !info.props.contains_key(&pid) && info.props.len() as u32 >= *max {
+    // (an update count of 0: read only)
+    if *max == 0 {
         return ERROR_FUNCTION_FAILED;
     }
     let r = info.set(pid, p);
@@ -756,7 +793,10 @@ fn MsiSummaryInfoSetPropertyW(c: &mut Ctx) -> u32 {
 fn MsiSummaryInfoPersist(c: &mut Ctx) -> u32 {
     let Some(o) = get(c.a(0)) else { return ERROR_INVALID_HANDLE };
     let o = o.lock().unwrap();
-    let Obj::Sum { db, info, path, .. } = &*o else { return ERROR_INVALID_HANDLE };
+    let Obj::Sum { db, info, path, max, .. } = &*o else { return ERROR_INVALID_HANDLE };
+    if *max == 0 {
+        return ERROR_FUNCTION_FAILED;
+    }
     match db {
         Some(d) => {
             let mut d = d.lock().unwrap();

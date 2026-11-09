@@ -86,9 +86,9 @@ pub fn export(db: &mut Database, table: &str) -> R<(Vec<u8>, Vec<(String, Vec<u8
     Ok((crate::pool::encode_cp(cp, &out), files))
 }
 
-/// Imports archive text into the database (`read`: a binary field's file by its path
-/// relative to the archive's folder).
-pub fn import(db: &mut Database, data: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>) -> R<()> {
+/// Imports archive text into the database (`read`: a binary field's file, by its table and
+/// name; it is in a folder beside the archive named after the archive file, or the table).
+pub fn import(db: &mut Database, data: &[u8], read: &dyn Fn(&str, &str) -> Option<Vec<u8>>) -> R<()> {
     // (the codepage line comes first when there is one; the rest is in that codepage)
     let first = String::from_utf8_lossy(data);
     let lines0: Vec<&str> = first.split('\n').map(|l| l.trim_end_matches('\r')).collect();
@@ -144,11 +144,12 @@ pub fn import(db: &mut Database, data: &[u8], read: &dyn Fn(&str) -> Option<Vec<
         let vals: Vec<&str> = l.split('\t').collect();
         let mut row = Vec::new();
         for (i, c) in cols.iter().enumerate() {
-            let s = vals.get(i).copied().unwrap_or("").replace("\u{11}\u{19}", "\r\n").replace('\u{19}', "\n");
+            // (a CR on its own is dropped)
+            let s = vals.get(i).copied().unwrap_or("").replace('\r', "").replace("\u{11}\u{19}", "\r\n").replace('\u{19}', "\n");
             row.push(if s.is_empty() {
                 Field::Null
             } else if c.is_binary() {
-                Field::Stream(read(&format!("{table}/{s}")).ok_or(ERROR_FUNCTION_FAILED)?)
+                Field::Stream(read(table, &s).ok_or(ERROR_FUNCTION_FAILED)?)
             } else if c.ty & T_STRING != 0 {
                 Field::Str(s)
             } else {
@@ -205,8 +206,8 @@ mod tests {
         assert_eq!(s, "K\tN\tS\tB\r\ns16\tI2\tL0\tV0\r\nT\tK\r\na\t-3\t改行\u{11}\u{19}あり\ta.ibd\r\nb\t\t\t\r\n");
         assert_eq!(files, [("T/a.ibd".to_string(), b"bin".to_vec())]);
         let mut e = Database::new();
-        import(&mut e, b"\r\n\r\n932\t_ForceCodepage\r\n", &|_| None).unwrap();
-        import(&mut e, &txt, &|p| files.iter().find(|f| f.0 == p).map(|f| f.1.clone())).unwrap();
+        import(&mut e, b"\r\n\r\n932\t_ForceCodepage\r\n", &|_, _| None).unwrap();
+        import(&mut e, &txt, &|t, n| files.iter().find(|f| f.0 == format!("{t}/{n}")).map(|f| f.1.clone())).unwrap();
         let (txt2, _) = export(&mut e, "T").unwrap();
         assert_eq!(txt2, txt);
     }

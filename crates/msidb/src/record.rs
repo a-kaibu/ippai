@@ -42,15 +42,12 @@ pub fn parse_int(s: &str) -> Option<i32> {
     if d.is_empty() || !d.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let mut v: i64 = 0;
+    // (digits past 32 bits wrap, as Windows' MsiRecordGetInteger does: "4294967297" is 1)
+    let mut v: i32 = 0;
     for b in d.bytes() {
-        v = v * 10 + (b - b'0') as i64;
-        if v > i32::MAX as i64 + 1 {
-            return None;
-        }
+        v = v.wrapping_mul(10).wrapping_add((b - b'0') as i32);
     }
-    let v = if neg { -v } else { v };
-    i32::try_from(v).ok()
+    Some(if neg { v.wrapping_neg() } else { v })
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -120,7 +117,9 @@ mod tests {
     fn ints() {
         assert_eq!(parse_int("123"), Some(123));
         assert_eq!(parse_int("-2147483648"), Some(i32::MIN));
-        assert_eq!(parse_int("2147483648"), None);
+        assert_eq!(parse_int("2147483648"), Some(i32::MIN));
+        assert_eq!(parse_int("1000000000000000"), Some(-1530494976));
+        assert_eq!(parse_int("4294967297"), Some(1));
         assert_eq!(parse_int(" 1"), None);
         assert_eq!(parse_int("1a"), None);
         assert_eq!(parse_int("-"), None);

@@ -70,34 +70,55 @@ fn guest_str(s: &str, wide: bool) -> u32 {
 /// Sends a message to the external UI handler, if it takes this kind: its answer (0: not
 /// handled).
 pub fn send(c: &mut Ctx, pkg: Option<&Arc<Mutex<Package>>>, kind: u32, rec: &Record) -> i32 {
-    let (handler, filter, ctx, wide, record) = {
+    let (handler, filter, ctx, wide, record, level) = {
         let u = UI.lock().unwrap();
-        (u.handler, u.filter, u.ctx, u.wide, u.record)
+        (u.handler, u.filter, u.ctx, u.wide, u.record, u.level)
     };
-    if handler == 0 || filter & (1 << (kind >> 24)) == 0 {
-        if crate::env_on!("SAKE_TRACE_MSI") {
-            let text = match pkg {
-                Some(p) => p.lock().unwrap().format_record(rec),
-                None => format::format_record(rec, &format::NoPackage),
-            };
-            eprintln!("msi: message {:#x}: {text}", kind >> 24);
-        }
-        return 0;
-    }
-    if record {
-        let h = new_handle(Obj::Rec(rec.clone()));
-        let r = c.call(handler, &[ctx, kind, h]) as i32;
-        crate::msi::get(h).map(|_| ());
-        r
-    } else {
+    if crate::env_on!("SAKE_TRACE_MSI") {
         let text = match pkg {
             Some(p) => p.lock().unwrap().format_record(rec),
             None => format::format_record(rec, &format::NoPackage),
         };
-        let s = guest_str(&text, wide);
-        let r = c.call(handler, &[ctx, kind, s]) as i32;
-        mem::heap_free(s);
-        r
+        eprintln!("msi: message {:#x}: {text}", kind >> 24);
+    }
+    if handler != 0 && filter & (1 << (kind >> 24)) != 0 {
+        let r = if record {
+            let h = new_handle(Obj::Rec(rec.clone()));
+            let r = c.call(handler, &[ctx, kind, h]) as i32;
+            crate::msi::close(h);
+            r
+        } else {
+            let text = match pkg {
+                Some(p) => p.lock().unwrap().format_record(rec),
+                None => format::format_record(rec, &format::NoPackage),
+            };
+            let s = guest_str(&text, wide);
+            let r = c.call(handler, &[ctx, kind, s]) as i32;
+            mem::heap_free(s);
+            r
+        };
+        // (0: not handled, the internal UI's turn)
+        if r != 0 {
+            return r;
+        }
+    }
+    internal_ui(kind, rec, level)
+}
+
+/// What the internal UI answers (it shows no window here): progress and action messages
+/// are taken (IDOK), INITIALIZE / TERMINATE and the COMMONDATA it does not handle -1,
+/// the rest 0. With no UI (INSTALLUILEVEL_NONE) everything is 0.
+fn internal_ui(kind: u32, rec: &Record, level: u32) -> i32 {
+    const IDOK: i32 = 1;
+    if level & 0x1f == INSTALLUILEVEL_NONE {
+        return 0;
+    }
+    match kind {
+        INSTALLMESSAGE_ACTIONSTART | INSTALLMESSAGE_ACTIONDATA | INSTALLMESSAGE_PROGRESS => IDOK,
+        INSTALLMESSAGE_INITIALIZE | INSTALLMESSAGE_TERMINATE => -1,
+        // (field 1: 2 shows or hides the Cancel button)
+        INSTALLMESSAGE_COMMONDATA => if rec.get(1).int() == 2 { IDOK } else { -1 },
+        _ => 0,
     }
 }
 
@@ -1379,6 +1400,71 @@ fn MsiSourceListEnumSourcesW(c: &mut Ctx) -> u32 {
     source_list_enum(c, true)
 }
 
+/// A GUID in a descriptor: 20 characters, four little-endian dwords in base 85.
+pub fn decode_guid85(s: &[char]) -> Option<String> {
+    const A: &str = "!$%&'()*+,-.0123456789=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{}~";
+    if s.len() < 20 {
+        return None;
+    }
+    let mut d = [0u32; 4];
+    for (k, v) in d.iter_mut().enumerate() {
+        let mut x: u64 = 0;
+        for i in (0..5).rev() {
+            x = x * 85 + A.find(s[5 * k + i])? as u64;
+        }
+        *v = u32::try_from(x).ok()?;
+    }
+    let b: Vec<u8> = d.iter().flat_map(|v| v.to_le_bytes()).collect();
+    Some(format!(
+        "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+        d[0], u16::from_le_bytes([b[4], b[5]]), u16::from_le_bytes([b[6], b[7]]), b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    ))
+}
+
+/// MsiDecomposeDescriptor's parts: (product, feature, component, characters used). A
+/// descriptor is the product's GUID (base 85), the feature, then '>' and the component's
+/// GUID, or '<' for none.
+pub fn decompose_descriptor(d: &str) -> Option<(String, String, String, usize)> {
+    let c: Vec<char> = d.chars().collect();
+    let prod = decode_guid85(&c)?;
+    let end = c[20..].iter().position(|&x| x == '>' || x == '<')? + 20;
+    let feature: String = c[20..end].iter().collect();
+    if feature.chars().count() > 38 {
+        return None;
+    }
+    if c[end] == '<' {
+        return Some((prod, feature, String::new(), end + 1));
+    }
+    let comp = decode_guid85(&c[end + 1..])?;
+    Some((prod, feature, comp, end + 21))
+}
+
+fn decompose_api(c: &mut Ctx, wide: bool) -> u32 {
+    let (d, prod, feat, comp, len) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if d == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let Some((p, f, k, n)) = decompose_descriptor(&arg_str(d, wide)) else { return ERROR_INVALID_PARAMETER };
+    for (buf, v) in [(prod, &p), (feat, &f), (comp, &k)] {
+        if buf != 0 {
+            let s = guest_str(v, wide);
+            let bytes = (v.chars().count() as u32 + 1) * if wide { 2 } else { 1 };
+            mem::copy(buf, s, bytes);
+            mem::heap_free(s);
+        }
+    }
+    if len != 0 {
+        w32(len, n as u32);
+    }
+    ERROR_SUCCESS
+}
+fn MsiDecomposeDescriptorA(c: &mut Ctx) -> u32 {
+    decompose_api(c, false)
+}
+fn MsiDecomposeDescriptorW(c: &mut Ctx) -> u32 {
+    decompose_api(c, true)
+}
+
 fn MsiGetLastErrorRecord(_c: &mut Ctx) -> u32 {
     0
 }
@@ -1410,7 +1496,7 @@ fn MsiVerifyPackageW(c: &mut Ctx) -> u32 {
 pub fn init() {
     macro_rules! reg { ($($f:ident),* $(,)?) => { $( implement("msi", stringify!($f), $f); )* }; }
     reg!(
-        MsiInstallProductA, MsiInstallProductW, MsiQueryFeatureStateA, MsiQueryFeatureStateW, MsiDoActionA, MsiDoActionW, MsiSequenceA, MsiSequenceW, MsiSetInternalUI,
+        MsiInstallProductA, MsiInstallProductW, MsiQueryFeatureStateA, MsiQueryFeatureStateW, MsiDecomposeDescriptorA, MsiDecomposeDescriptorW, MsiDoActionA, MsiDoActionW, MsiSequenceA, MsiSequenceW, MsiSetInternalUI,
         MsiSetExternalUIA, MsiSetExternalUIW, MsiSetExternalUIRecord, MsiProcessMessage, MsiQueryProductStateA, MsiQueryProductStateW,
         MsiGetProductInfoA, MsiGetProductInfoW, MsiEnumProductsA, MsiEnumProductsW, MsiEnumRelatedProductsA, MsiEnumRelatedProductsW,
         MsiOpenProductA, MsiOpenProductW, MsiGetProductPropertyA, MsiGetProductPropertyW, MsiSourceListEnumSourcesA,
@@ -1421,6 +1507,22 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptors() {
+        // (Wine's db tests' descriptors)
+        let d = "']gAVn-}f(ZXfeAR6.jiFollowTheWhiteRabbit>3w2x^IGfe?CxI5heAvk.";
+        assert_eq!(
+            decompose_descriptor(d),
+            Some(("{90110409-6000-11D3-8CFE-0150048383C9}".into(), "FollowTheWhiteRabbit".into(), "{A7CD68DB-EF74-49C8-FBB2-A7C463B2AC24}".into(), d.len()))
+        );
+        assert_eq!(
+            decompose_descriptor("yh1BVN)8A$!!!!!MKKSkAlwaysInstalledIntl_1033<"),
+            Some(("{90150000-006E-0409-0000-0000000FF1CE}".into(), "AlwaysInstalledIntl_1033".into(), String::new(), 45))
+        );
+        assert_eq!(decompose_descriptor("']gAVn-}f(ZXfeAR6.jiThisWillFailIfTheresMoreThanAGuidsChars>3w2x^IGfe?CxI5heAvk."), None);
+        assert_eq!(decompose_descriptor("short"), None);
+    }
 
     #[test]
     fn guids() {

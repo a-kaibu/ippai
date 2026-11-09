@@ -728,6 +728,16 @@ fn RegDeleteKeyW(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(1), true);
     delete_key(c.a(0), &s)
 }
+/// RegDeleteKeyEx(key, subkey, samDesired, reserved): the WOW64 view flags do not matter
+/// here (one registry view).
+fn RegDeleteKeyExA(c: &mut Ctx) -> u32 {
+    let s = arg_str(c.a(1), false);
+    delete_key(c.a(0), &s)
+}
+fn RegDeleteKeyExW(c: &mut Ctx) -> u32 {
+    let s = arg_str(c.a(1), true);
+    delete_key(c.a(0), &s)
+}
 
 /// Whether a key (a lower-case full path such as "hklm\\software") exists
 pub(crate) fn reg_key_exists(path: &str) -> bool {
@@ -3973,7 +3983,7 @@ pub fn init() {
         RegOpenKeyExA, RegOpenKeyExW, RegOpenKeyA, RegOpenKeyW, RegCreateKeyExA, RegCreateKeyExW, RegCreateKeyA,
         RegCreateKeyW, RegCloseKey, RegFlushKey, RegQueryValueExA, RegQueryValueExW, RegQueryValueA, RegGetValueA, RegGetValueW,
         RegSetValueExA, RegSetValueExW, RegSetValueA, RegDeleteValueA, RegDeleteValueW, RegDeleteKeyA, RegDeleteTreeA, RegDeleteTreeW,
-        RegDeleteKeyW, RegEnumKeyExA, RegEnumKeyExW, RegEnumKeyA, RegEnumKeyW, RegEnumValueA, RegEnumValueW,
+        RegDeleteKeyW, RegDeleteKeyExA, RegDeleteKeyExW, RegEnumKeyExA, RegEnumKeyExW, RegEnumKeyA, RegEnumKeyW, RegEnumValueA, RegEnumValueW,
         RegQueryInfoKeyA, RegQueryInfoKeyW, CryptAcquireContextA, CryptAcquireContextW, CryptReleaseContext,
         CryptGenRandom, CryptCreateHash, CryptHashData, CryptGetHashParam, CryptDestroyHash, CryptDeriveKey,
         CryptDecrypt, CryptEncrypt, CryptDestroyKey, CryptGetKeyParam,

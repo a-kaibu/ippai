@@ -582,7 +582,12 @@ impl Database {
             b.extend(&v.to_le_bytes()[..rw]);
         };
         let mut wr = |name: &str, table: bool, data: &[u8]| -> R<()> {
-            let p = format!("/{}", stream_path(name, table));
+            let enc = stream_path(name, table);
+            // (an OLE stream name holds 31 characters: a longer one cannot be written)
+            if enc.encode_utf16().count() > 31 {
+                return Err(ERROR_FUNCTION_FAILED);
+            }
+            let p = format!("/{enc}");
             out.create_stream(&p).map_err(ioerr)?.write_all(data).map_err(ioerr)
         };
         let (sp, sd) = pool.save();

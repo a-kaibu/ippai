@@ -64,7 +64,6 @@ fn wixl_package_reads_the_same() {
     while let Ok(r) = v.fetch(&db) {
         ours.push(r.get(1).text());
     }
-    ours.push("\u{5}SummaryInformation".into());
     let mut theirs: Vec<String> = streams.lines().map(str::to_string).collect();
     theirs.sort();
     ours.sort();

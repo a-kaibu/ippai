@@ -97,12 +97,17 @@ fn lex(s: &str) -> R<Vec<Tok>> {
                 i += op.len();
                 out.push(Tok::Op(op));
             }
-            c0 if c0.is_alphabetic() || c0 == '_' || c0 == '#' || c0 == '$' => {
+            // (names: letters, digits, _ # $ and control characters; '-' after the first;
+            // a '`' right after a name is dropped, as Windows does: c`.`b` is c.b)
+            c0 if c0.is_alphabetic() || c0 == '_' || c0 == '#' || c0 == '$' || c0.is_control() => {
                 let st = i;
-                while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_' || c[i] == '#' || c[i] == '$') {
+                while i < c.len() && (c[i].is_alphanumeric() || matches!(c[i], '_' | '#' | '$' | '-') || c[i].is_control() && !c[i].is_whitespace()) {
                     i += 1;
                 }
                 out.push(Tok::Word(c[st..i].iter().collect()));
+                if c.get(i) == Some(&'`') {
+                    i += 1;
+                }
             }
             _ => return Err(ERROR_BAD_QUERY_SYNTAX),
         }
@@ -498,6 +503,23 @@ mod tests {
         assert_eq!(parse("SELECT * FROM"), Err(ERROR_BAD_QUERY_SYNTAX));
         assert_eq!(parse("SELECT * FROM T WHERE 1 = 1"), Err(ERROR_BAD_QUERY_SYNTAX));
         assert_eq!(parse("SELECT * FROM T junk"), Err(ERROR_BAD_QUERY_SYNTAX));
+        // (stray quotes and odd names: Windows' answers, from Wine's db tests)
+        for (q, ok) in [
+            ("select `c`.b` from `c`", true),
+            ("select `c`.`b from `c`", false),
+            ("select `c`.b from `c`", true),
+            ("select `c.`b` from `c`", false),
+            ("select c`.`b` from `c`", true),
+            ("select `c`.`b` from c`", true),
+            ("select `c`.`b` from `c", false),
+            ("SELECT * FROM \u{5}a", true),
+            ("SELECT * FROM a\u{5}", true),
+            ("SELECT * FROM a-", true),
+        ] {
+            assert_eq!(parse(q).is_ok(), ok, "{q}");
+        }
+        let Ok(Stmt::Select { tables, .. }) = parse("select c.`b` from c`") else { panic!() };
+        assert_eq!(tables, ["c"]);
     }
 
     #[test]
