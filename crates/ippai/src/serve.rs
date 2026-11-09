@@ -680,6 +680,18 @@ fn chrome() -> Option<PathBuf> {
 
 /// The store's `games/*.json` as one array, by file name; and a pre-run of the games without
 /// saved regions (one added since the start: before it is clicked, usually).
+/// What `ippai --version` prints: the version, and the commit built when known.
+pub const VERSION_LINE: &str = if env!("IPPAI_COMMIT").is_empty() {
+    env!("IPPAI_VERSION")
+} else {
+    concat!(env!("IPPAI_VERSION"), " (", env!("IPPAI_COMMIT"), ")")
+};
+
+/// `GET /version`: this binary's version and commit (the list page shows them by its name).
+fn version_info() -> serde_json::Value {
+    serde_json::json!({ "version": env!("IPPAI_VERSION"), "commit": env!("IPPAI_COMMIT") })
+}
+
 async fn games(State(p): State<Arc<Prerun>>) -> Response {
     tokio::spawn(prerun_games(p.clone()));
     let store = &p.store;
@@ -908,6 +920,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .merge(crate::store_api::router(store.clone())?)
         .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(trees.clone()))
         .route("/game-origin", get(move || async move { axum::Json(game_origin) }))
+        .route("/version", get(|| async { axum::Json(version_info()) }))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())
         .layer(middleware::from_fn(headers));
     // this web app kept for the states it takes, older ones while states need them (apps.rs)
@@ -979,6 +992,16 @@ mod tests {
         (0..n)
             .map(|i| saved::Entry { roots: vec![base + i * 16], starts: vec![(base + i * 16, 0)], code: vec![(base + i * 16, 4)], text: (base + i).to_le_bytes().to_vec(), build: 0, sites: vec![] })
             .collect()
+    }
+
+    /// GET /version names the commit built (a checkout: here and in CI), and `--version` too.
+    #[test]
+    fn version_names_the_commit() {
+        let v = super::version_info();
+        assert_eq!(v["version"], env!("IPPAI_VERSION"));
+        let c = v["commit"].as_str().unwrap();
+        assert!(c.len() == 7 && c.bytes().all(|b| b.is_ascii_hexdigit()), "{c:?}");
+        assert_eq!(super::VERSION_LINE, format!("{} ({c})", env!("IPPAI_VERSION")));
     }
 
     /// Loopback needs no token since 0f274c4, so the repository's own scripts start

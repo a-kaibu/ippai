@@ -34,6 +34,7 @@ import { api } from "../library-data";
 import { sortGames, visibleGames, when, type Filter } from "../library-view";
 import { dropOffline, offlineState, saveOffline, type OfflineState } from "../offline";
 import { useApp } from "../pwa";
+import { fetchBuild } from "../version";
 import { Backup, Note, Statistics, useProfile } from "./Personal";
 import { AccountSettings } from "./AccountSettings";
 import { renderShell } from "./Shell";
@@ -409,6 +410,10 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
   const settingsButton = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState("");
   const [info, setInfo] = useState<GameEntry | null>(null);
+  const [build, setBuild] = useState("");
+  useEffect(() => {
+    void fetchBuild().then(setBuild);
+  }, []);
   useEffect(() => {
     void api<string[]>("favorites")
       .then((ids) => {
@@ -436,6 +441,11 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
           >
             <Logo />
             <h1 className="text-lg font-bold tracking-tight">ippai</h1>
+            {build && (
+              <span className="text-[10px] text-muted-foreground tabular-nums sm:text-xs" data-testid="build">
+                {build}
+              </span>
+            )}
           </a>
           {games.length > 0 && (
             <div className="relative mx-auto w-full max-w-md min-w-0">

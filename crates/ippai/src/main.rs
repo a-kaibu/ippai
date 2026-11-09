@@ -39,7 +39,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(about, version = env!("IPPAI_VERSION"))]
+#[command(about, version = serve::VERSION_LINE)]
 struct Cli {
     /// The store: packed trees (trees/, chunks/), the game list (games/) [default: ~/.local/share/ippai/store]
     #[arg(long, global = true)]
