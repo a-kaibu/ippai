@@ -95,13 +95,27 @@ WHERE b.game >= {from} AND b.game < {} ORDER BY b.game, g.id",
 /// its limit of 200 requests in 5 minutes).
 pub fn vndb_all(page: &dyn Fn(u32) -> Result<(Vec<serde_json::Value>, bool)>, pause: Duration) -> Result<Vec<serde_json::Value>> {
     let mut all = vec![];
-    for n in 1.. {
-        let (mut r, more) = page(n)?;
-        all.append(&mut r);
-        if !more {
-            break;
+    let mut n = 1;
+    let mut waits = 0;
+    loop {
+        match page(n) {
+            Ok((mut r, more)) => {
+                all.append(&mut r);
+                if !more {
+                    break;
+                }
+                n += 1;
+                waits = 0;
+                std::thread::sleep(pause);
+            }
+            // (over the rate limit all the same: wait, longer each time, and ask again)
+            Err(e) if format!("{e:#}").contains("429") && waits < 8 => {
+                waits += 1;
+                eprintln!("vndb: page {n}: {e:#}; waiting");
+                std::thread::sleep(pause * 20 * waits);
+            }
+            Err(e) => return Err(e),
         }
-        std::thread::sleep(pause);
     }
     Ok(all)
 }
@@ -162,7 +176,7 @@ pub fn build(out: &Path, keep: Option<&Path>) -> Result<()> {
     eprintln!("erogamescape: {} games", egs.len());
     let vndb = vndb_all(
         &|n| meta::vndb_page(serde_json::json!(["olang", "=", "ja"]), n).map(|(v, more)| (v.into_iter().map(prune_vndb).collect(), more)),
-        Duration::from_millis(1600),
+        Duration::from_millis(2000),
     )
     .context("vndb")?;
     eprintln!("vndb: {} VNs", vndb.len());
@@ -339,6 +353,16 @@ mod tests {
         };
         let vndb = vndb_all(&pages, Duration::ZERO).unwrap();
         assert_eq!(vndb.len(), 2);
+        // over the rate limit: asked again for the same page; another error ends it
+        let tries = std::cell::Cell::new(0);
+        let limited = |n: u32| -> Result<(Vec<serde_json::Value>, bool)> {
+            tries.set(tries.get() + 1);
+            if n == 2 && tries.get() < 5 { anyhow::bail!("https://api.vndb.org/kana/vn: status code 429") }
+            pages(n)
+        };
+        assert_eq!(vndb_all(&limited, Duration::ZERO).unwrap(), vndb);
+        assert_eq!(tries.get(), 5);
+        assert!(vndb_all(&|_| anyhow::bail!("status code 500"), Duration::ZERO).is_err());
         let dir = std::env::temp_dir().join(format!("ippai-gamedb-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("gamedb.sqlite");
