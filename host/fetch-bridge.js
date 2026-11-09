@@ -242,6 +242,98 @@ function ippaiBlockKey(url, k, block) {
 }
 
 /**
+ * A store chunk straight from the bucket (S3) when the server gives a way (ippai serve's
+ * /store-direct: a presigned URL, the object's AES-256-GCM key and UUID): fetched, decrypted
+ * (nonce first, the UUID as associated data), zstd-decoded (sake/snapz.mjs) and checked
+ * against its name, then kept as one from the server would be. The bucket answers every object
+ * after ~2 s whatever its size, so many at once go much faster than through the server's line
+ * (worker2: 4 at once 3 MB/s; this page's own line has more). null: no way (an older server, a
+ * store without S3, a chunk only on the server, an expired URL that failed): the server, as before.
+ */
+var IPPAI_DIRECT_KEEP_MS = 3600000;
+var ippaiDirectInfo = new Map();
+var ippaiDirectOff = false;
+var ippaiZstd;
+async function ippaiDirect(url) {
+  const at = url.lastIndexOf('/store/chunks/');
+  if (ippaiDirectOff || at < 0 || !ippaiIsChunk(url) || !globalThis.crypto?.subtle || typeof fetch === 'undefined') return null;
+  const base = url.slice(0, at + 1);
+  let info = ippaiDirectInfo.get(url);
+  if (!info || Date.now() - info.at > IPPAI_DIRECT_KEEP_MS) {
+    let r;
+    try {
+      r = await fetch(`${base}store-direct/${url.slice(at + 7)}`, { cache: 'no-store' });
+    } catch (_) {
+      return null;
+    }
+    // (501: a store without S3; 404: this chunk is only on the server)
+    if (r.status === 501) ippaiDirectOff = true;
+    if (!r.ok) return null;
+    try {
+      info = { ...(await r.json()), at: Date.now() };
+    } catch (_) {
+      // (not JSON: a server without /store-direct answered with something else)
+      ippaiDirectOff = true;
+      return null;
+    }
+    if (typeof info.url !== 'string' || !/^[0-9a-f]{64}$/.test(info.key) || !/^[0-9a-f-]{36}$/.test(info.object)) return null;
+    if (ippaiDirectInfo.size > 20000) ippaiDirectInfo.clear();
+    ippaiDirectInfo.set(url, info);
+  }
+  for (let bad = 0; bad < IPPAI_BAD_CHUNK; bad++) {
+    let got;
+    try {
+      got = await ippaiFetchRobust(info.url, { giveUpMs: 60000 });
+    } catch (_) {
+      ippaiDirectInfo.delete(url);
+      return null;
+    }
+    const plain = await ippaiOpen(info, got.data).catch(() => null);
+    const data = plain && (await ippaiUnzstd(base, plain).catch(() => null));
+    if (data && ippaiChunkOk(url, data)) {
+      ippaiKeepRecent(url, data);
+      const cache = await ippaiCache();
+      if (cache) cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })).catch(() => {});
+      return { data, wire: got.wire, cached: got.cached };
+    }
+  }
+  return null;
+}
+
+/** Hex `h` as bytes. */
+function ippaiHex(h) {
+  return Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16));
+}
+
+/** Object `cipher` (nonce, ciphertext and tag, as crates/ippai/src/envelope.rs seals it) opened with `info`'s key. */
+async function ippaiOpen(info, cipher) {
+  if (cipher.length < 28) throw new Error('short');
+  const key = await crypto.subtle.importKey('raw', ippaiHex(info.key), 'AES-GCM', false, ['decrypt']);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: cipher.slice(0, 12), additionalData: ippaiHex(info.object.replace(/-/g, '')), tagLength: 128 }, key, cipher.slice(12));
+  return new Uint8Array(plain);
+}
+
+/** zstd frame `frame` decoded by sake's snapz (sake/snapz.mjs beside the store): a chunk is 16 MiB at most (4x FastCDC's 4 MiB average), 64 MiB tried once more. */
+async function ippaiUnzstd(base, frame) {
+  ippaiZstd ??= import(`${base}sake/snapz.mjs`).then((m) => m.default());
+  const z = await ippaiZstd;
+  for (const cap of [16 << 20, 64 << 20]) {
+    const src = z._malloc(frame.length) >>> 0;
+    const dst = z._malloc(cap) >>> 0;
+    try {
+      if (!src || !dst) throw new Error('zstd: no memory');
+      z.HEAPU8.set(frame, src);
+      const n = z._snapz_decompress(dst, cap, src, frame.length) >>> 0;
+      if (n !== 0xffffffff) return z.HEAPU8.slice(dst, dst + n);
+    } finally {
+      z._free?.(src);
+      z._free?.(dst);
+    }
+  }
+  throw new Error('zstd: not a frame, or too big');
+}
+
+/**
  * Bytes `from..from + len` of `url`'s (whole when `from` is undefined), as ippaiFetchRobust's
  * result. Of a chunk, from the first place that has them: this worker's memory (a chunk it
  * fetched whole lately), Cache Storage's copy of the whole chunk (checked when it was kept;
@@ -251,7 +343,17 @@ function ippaiBlockKey(url, k, block) {
  * whole chunk, then checked and kept whole (and in this worker's memory for the next blocks).
  */
 async function ippaiFetchPart(url, from, len, block) {
-  if (from === undefined) return ippaiFetchRobust(url);
+  if (from === undefined) {
+    if (ippaiIsChunk(url) && !ippaiRecent.has(url)) {
+      const cache = await ippaiCache();
+      const hit = await cache?.match(url).catch(() => undefined);
+      if (!hit) {
+        const d = await ippaiDirect(url);
+        if (d) return d;
+      }
+    }
+    return ippaiFetchRobust(url);
+  }
   const part = (d) => d.subarray(Math.min(from, d.length), Math.min(from + len, d.length));
   const mem = ippaiRecent.get(url);
   if (mem) return { data: part(mem), wire: 0, cached: 1 };
@@ -284,6 +386,9 @@ async function ippaiFetchPart(url, from, len, block) {
       return { data: all.subarray(from - first * block, from - first * block + len), wire: 0, cached: 1 };
     }
   }
+  // (from the bucket itself: the whole chunk, kept; the next blocks come from memory)
+  const direct = await ippaiDirect(url);
+  if (direct) return { ...direct, data: part(direct.data) };
   // (the whole blocks asked for: what is kept)
   const at = first * block;
   const r = await ippaiFetchRobust(url, { range: [at, (last + 1) * block - at] });
@@ -424,12 +529,12 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above, `main` its message handler. */
 function ippaiFetchWorkerSource(main) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiFetchPart, ippaiFetchRobust, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
-    'var ippaiCacheOpen, ippaiRecent = new Map();',
+    'var ippaiCacheOpen, ippaiRecent = new Map(), ippaiDirectInfo = new Map(), ippaiDirectOff = false, ippaiZstd;',
     ...fns.map(String),
     main,
   ].join('\n');

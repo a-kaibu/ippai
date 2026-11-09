@@ -81,6 +81,14 @@ impl Envelope {
         Ok((e, ciphertext))
     }
 
+    /// The object's own key, unwrapped (what a browser decrypts the object with:
+    /// AES-256-GCM, the first 12 bytes the nonce, the object's UUID bytes the associated data).
+    pub fn data_key(&self, master: &[u8; 32]) -> Result<[u8; 32]> {
+        ensure!(self.version == 1, "unsupported envelope version");
+        let k = open(master, &self.aad(), &self.wrapped_key)?;
+        k.try_into().map_err(|_| anyhow!("bad data key length"))
+    }
+
     pub fn decrypt(&self, master: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>> {
         ensure!(self.version == 1, "unsupported envelope version");
         ensure!(

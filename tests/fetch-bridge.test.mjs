@@ -46,6 +46,8 @@ globalThis.Worker = class {
         tries.set(url, n);
         // (how many chunk fetches and Cache Storage slices so far, as a body's length)
         if (url === 'count' || url === 'slices') return {ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(url === 'count' ? fetches : slices)};
+        // (a server without S3: no chunk from the bucket itself; tests/direct-browser.mjs has one)
+        if (url.includes('/store-direct/')) return {ok: false, status: 501};
         if (url.includes('/chunks/')) fetches++;
         // store chunks: the bytes their name says (the 262144-byte one damaged the first time,
         // and then only past the HTTP cache), any other name 1000 bytes that never match

@@ -662,6 +662,11 @@ pub(crate) mod gc_tests {
         w.unwrap();
         assert_eq!(f.gets.load(SeqCst), 2, "one download for both");
         assert!(s.inflight.lock().unwrap().is_empty());
+        // what the disk has is not sent to the bucket (/store-direct); the rest is
+        assert!(s.direct("chunks/a", 60).await.unwrap().is_none());
+        s.put("chunks/d", b"dddd").await.unwrap();
+        assert!(s.direct("chunks/d", 60).await.unwrap().is_some());
+        assert!(s.direct("chunks/none", 60).await.unwrap().is_none());
         // without a disk cache: nothing to warm
         let (_f2, s2, dir2) = serve(0).await;
         s2.put("chunks/c", b"c").await.unwrap();
@@ -932,6 +937,13 @@ impl Disk {
     pub(crate) fn kept(&self) -> u64 {
         *self.bytes.lock().unwrap()
     }
+}
+
+/// See [`Storage::direct`].
+pub struct Direct {
+    pub url: String,
+    pub key: [u8; 32],
+    pub object: Uuid,
 }
 
 /// Decrypted objects of at most 1 MiB, 64 MiB of them, the oldest put dropped first.
@@ -1368,6 +1380,23 @@ impl Storage {
         if f.get(&id).is_some_and(|g| std::sync::Arc::ptr_eq(g, gate)) && std::sync::Arc::strong_count(gate) == 2 {
             f.remove(&id);
         }
+    }
+
+    /// How a browser fetches object `logical` itself: a presigned GET of it (`expiry` seconds),
+    /// its key and its UUID (crypto: [`Envelope::data_key`]). The browser then reads the bucket
+    /// as fast as its own line allows, many at once, not through this server's line. None when
+    /// the bucket lacks it, or when this server's disk has it (a game's start fetched ahead:
+    /// here at once, where the bucket takes ~2 s to answer).
+    pub async fn direct(&self, logical: &str, expiry: u32) -> Result<Option<Direct>> {
+        let entry: Option<String> = self.db.connect()?.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
+        let Some(entry) = entry else { return Ok(None) };
+        let e: Envelope = serde_json::from_str(&entry)?;
+        if self.disk.as_ref().is_some_and(|d| d.has(e.object)) {
+            return Ok(None);
+        }
+        let key = e.data_key(&self.key(&e.key_id)?)?;
+        let url = self.bucket.presign_get(self.path(e.object), expiry, None).await?;
+        Ok(Some(Direct { url, key, object: e.object }))
     }
 
     /// Puts object `logical` on the disk unless it is there (fetched ahead: a game's start).

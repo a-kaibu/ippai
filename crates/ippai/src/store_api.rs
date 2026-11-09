@@ -254,6 +254,36 @@ async fn whole(s: &Store, path: &str) -> Response {
     }
 }
 
+/// How long a presigned URL from `/store-direct` works (a game's chunk asked for again after
+/// that asks for a new one).
+const DIRECT_EXPIRY: u32 = 6 * 3600;
+
+/// `GET /store-direct/chunks/<ab>/<hash>`: how the page fetches a chunk from the bucket itself
+/// (host/fetch-bridge.js): `{"url": presigned GET, "key": hex AES-256-GCM key, "object": UUID}`.
+/// 404 when the chunk is not in the bucket (a chunk only here, not a chunk path): the page asks
+/// /store for it as before; 501 for a store without S3, so the page stops asking.
+async fn direct(State(s): State<Store>, Path(path): Path<String>) -> Response {
+    let Some(remote) = s.remote.as_ref().as_ref() else { return StatusCode::NOT_IMPLEMENTED.into_response() };
+    let ok = path.split('/').count() == 3 && path.starts_with("chunks/") && path.bytes().all(|b| b.is_ascii_hexdigit() || b == b'/' || b.is_ascii_lowercase());
+    if !ok {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match remote.direct(&path, DIRECT_EXPIRY).await {
+        Ok(Some(d)) => {
+            let key: String = d.key.iter().map(|b| format!("{b:02x}")).collect();
+            let mut r = axum::Json(serde_json::json!({ "url": d.url, "key": key, "object": d.object.to_string() })).into_response();
+            // (a key: kept by nobody else; the page keeps it in memory for DIRECT_EXPIRY at most)
+            r.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+            r
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            eprintln!("store-direct {path}: {e}");
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
+}
+
 pub fn router(local: PathBuf) -> anyhow::Result<Router> {
     let db = crate::library::Library::new(&local)?;
     let state = Store {
@@ -264,6 +294,7 @@ pub fn router(local: PathBuf) -> anyhow::Result<Router> {
     };
     Ok(Router::new()
         .route("/store/{*path}", get(file))
+        .route("/store-direct/{*path}", get(direct))
         .with_state(state))
 }
 
@@ -466,6 +497,54 @@ mod tests {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(fake.gets() - before, 20, "the reads came from the disk");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// /store-direct: a presigned URL the bucket answers, and the key that opens what it
+    /// gives as the browser opens it (AES-256-GCM, nonce first, the UUID as associated data):
+    /// the chunk as /store has it. 404 for what the bucket does not have, or without S3.
+    #[tokio::test]
+    async fn direct_gives_what_opens_the_chunk() {
+        let (_fake, remote, dir) = crate::storage::gc_tests::serve(0).await;
+        let raw: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(2654435761) >> 11) as u8).collect();
+        let stored = zstd::encode_all(&raw[..], 3).unwrap();
+        let h = "ab".to_string() + &"5".repeat(30);
+        remote.put(&format!("chunks/ab/{h}"), &stored).await.unwrap();
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default() };
+        let app = Router::new().route("/store/{*path}", get(file)).route("/store-direct/{*path}", get(direct)).with_state(state);
+        let (st, hd, body) = get_(&app, &format!("/store-direct/chunks/ab/{h}"), None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(hd[header::CACHE_CONTROL], "no-store");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let (url, key, object) = (v["url"].as_str().unwrap(), v["key"].as_str().unwrap(), v["object"].as_str().unwrap());
+        assert!(url.contains("X-Amz-Signature=") && url.contains("X-Amz-Expires=21600"), "{url}");
+        let cipher = reqwest::get(url).await.unwrap().bytes().await.unwrap().to_vec();
+        let key: Vec<u8> = (0..32).map(|i| u8::from_str_radix(&key[i * 2..i * 2 + 2], 16).unwrap()).collect();
+        let uuid = uuid::Uuid::parse_str(object).unwrap();
+        let open = |key: &[u8], cipher: &[u8]| -> Option<Vec<u8>> {
+            use ring::aead;
+            let k = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, key).ok()?);
+            let mut d = cipher.get(12..)?.to_vec();
+            let p = k.open_in_place(aead::Nonce::assume_unique_for_key(cipher[..12].try_into().ok()?), aead::Aad::from(uuid.as_bytes()), &mut d).ok()?;
+            Some(p.to_vec())
+        };
+        assert_eq!(open(&key, &cipher).unwrap(), stored);
+        assert_eq!(zstd::decode_all(&stored[..]).unwrap(), raw);
+        // another key, a changed byte: refused
+        let mut bad = key.clone();
+        bad[0] ^= 1;
+        assert!(open(&bad, &cipher).is_none());
+        let mut c2 = cipher.clone();
+        c2[40] ^= 1;
+        assert!(open(&key, &c2).is_none());
+        // what the bucket does not have, what is not a chunk path
+        for p in [format!("/store-direct/chunks/ab/{}", "6".repeat(32)), "/store-direct/trees/x.tsv".into(), "/store-direct/chunks/../x".into()] {
+            assert_eq!(get_(&app, &p, None).await.0, StatusCode::NOT_FOUND, "{p}");
+        }
+        // a store without S3
+        let none = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default() };
+        let app2 = Router::new().route("/store-direct/{*path}", get(direct)).with_state(none);
+        assert_eq!(get_(&app2, &format!("/store-direct/chunks/ab/{h}"), None).await.0, StatusCode::NOT_IMPLEMENTED);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
