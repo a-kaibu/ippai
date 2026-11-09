@@ -1211,9 +1211,8 @@ unsafe fn new_swapchain(d: &mut D11, hwnd: u32, w: u32, h: u32, fmt: u32, sample
     let bid = d.id_of(buffer);
     d.add_ref(d.device);
     let sc = d.new_obj(IF_SWAPCHAIN, Data::SwapChain(SwapChain { device: d.device, hwnd, w, h, fmt, buffer: bid, presents: 0, samples }));
-    if d.trace {
-        eprintln!("d3d11: swap chain {w}x{h} format {fmt} window {hwnd:#x}");
-    }
+    // (always: in every run's log, a game's picture starts here)
+    eprintln!("sake: d3d11 swap chain {w}x{h} format {fmt} samples {} window {hwnd:#x} (client {}x{})", samples.0, rect[2] - rect[0], rect[3] - rect[1]);
     sc
 }
 
@@ -1897,6 +1896,10 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
             d.targets = None;
             if let Some(Data::SwapChain(sc)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
                 sc.presents += 1;
+                // (always, the 1st, 60th and 600th: where the frames go, in every run's log)
+                if matches!(sc.presents, 1 | 60 | 600) {
+                    eprintln!("sake: d3d11 present {} of {w}x{h} to window {hwnd:#x} client {:?}", sc.presents, rect);
+                }
             }
             *after = After::Present;
             S_OK

@@ -854,9 +854,8 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
     let _ = dev.new_gpu();
     d.dev = Some(dev);
     reset_buffers(d);
-    if d.trace {
-        eprintln!("d3d9: CreateDevice hwnd {hwnd:#x} {}x{} fmt {} depth {}/{} behavior {behavior:#x}", p[0], p[1], p[2], p[9], p[10]);
-    }
+    // (always: in every run's log, a game's picture starts here)
+    eprintln!("sake: d3d9 CreateDevice hwnd {hwnd:#x} {}x{} fmt {} depth {}/{} windowed {} behavior {behavior:#x}", p[0], p[1], p[2], p[9], p[10], p[8]);
     wrp(out, 0, obj_addr);
     S_OK
 }
@@ -2527,8 +2526,14 @@ unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
     if d.trace && dev.frames % 100 == 1 {
         eprintln!("d3d9: present #{} backbuffer {bb} hwnd {hwnd:#x}", dev.frames);
     }
+    let frames = dev.frames;
     let mut rect = [0i32; 4];
     (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
+    // (always, the 1st, 60th and 600th: where the frames go, in every run's log)
+    if matches!(frames, 1 | 60 | 600) {
+        let size = surface_gpu(d, bb).map(|g| (g.2, g.3));
+        eprintln!("sake: d3d9 present {frames} of {size:?} to window {hwnd:#x} client {rect:?}");
+    }
     if let Some(g) = surface_gpu(d, bb) {
         gpu::record(|b| {
             b.cmd(&[gpu::PRESENT, g.0, rect[0] as u32, rect[1] as u32, rect[2] as u32, rect[3] as u32, g.2, g.3, hwnd])

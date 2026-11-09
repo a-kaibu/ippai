@@ -22,6 +22,7 @@
 
 import { toast as sonner } from "sonner";
 import { meter, meterLine } from "./meter";
+import { grabScreen, screenLine, screenStats, smallJpeg } from "./screen-stats";
 const DIR = "vnvm-logs";
 /** OPFS files kept (the oldest go). */
 const KEEP = 40;
@@ -35,6 +36,8 @@ interface Wasm {
   _vnhost_load_busy?(): number;
   _vnhost_load_slot?(i: number, out: number): number;
   _vnhost_render_info?(out: number): void;
+  _vnhost_render_shot?(out: number): number;
+  _free?(p: number): void;
 }
 
 /** One 10 s window of the run. */
@@ -339,6 +342,8 @@ export class FlightRecorder {
       cores: String(navigator.hardwareConcurrency ?? "?"),
       deviceMemory: `${nav.deviceMemory ?? "?"} GB`,
       screen: `${screen.width}x${screen.height} @${devicePixelRatio}`,
+      // (a phone asking for the desktop site sends a desktop browser's user agent: these tell)
+      device: deviceHints(),
     });
     // (released when the tab goes, however it goes: see sendLeftovers)
     void navigator.locks
@@ -354,12 +359,7 @@ export class FlightRecorder {
     document.addEventListener("visibilitychange", () => {
       this.note(`visibility ${document.visibilityState}`);
       // (once a minute at most: switching apps back and forth)
-      if (
-        document.visibilityState === "hidden" &&
-        this.wasm &&
-        !this.ended &&
-        Date.now() - this.lastHidden > 60_000
-      ) {
+      if (document.visibilityState === "hidden" && !this.ended && Date.now() - this.lastHidden > 60_000) {
         this.lastHidden = Date.now();
         void this.save("hidden", "the page went to the background");
       }
@@ -385,6 +385,11 @@ export class FlightRecorder {
       if (this.wasm && !this.ended) {
         const net = meterLine(meter.window(10));
         this.note(Perf.line(this.perf.sample(this.wasm)) + (net ? `, ${net}` : ""));
+        void this.screen();
+      } else if (!this.ended) {
+        // (still starting: what it waits for shows in the network numbers)
+        const net = meterLine(meter.window(10));
+        this.note(`starting, ${((Date.now() - this.t0) / 1000).toFixed(0)} s${net ? `, ${net}` : ""}`);
       }
     }, 10_000);
     this.note("page started");
@@ -427,11 +432,19 @@ export class FlightRecorder {
     this.memory();
   }
 
-  /** The game ended normally. */
-  async end(): Promise<void> {
+  /** A line of what the page shows (screen-stats.ts): black or a picture. */
+  private async screen(): Promise<void> {
+    const w = this.wasm;
+    if (!w) return;
+    const shot = await grabScreen(w).catch(() => null);
+    this.note(screenLine(shot && screenStats(shot.px, shot.w, shot.h)));
+  }
+
+  /** The game ended (`why`: the program exited, or the player left it). */
+  async end(why = "the game ended"): Promise<void> {
     if (this.ended) return;
-    this.note("the game ended");
-    await this.save("end", "the game ended");
+    this.note(why);
+    await this.save("end", why);
     this.ended = true;
     await removeLocal(`session-${this.id}.txt`);
   }
@@ -546,6 +559,13 @@ export class FlightRecorder {
     if (this.sensitive) return name;
     this.reports++;
     this.note(`report ${name}: ${reason.split("\n")[0]}`);
+    // (what the page showed, small: one look tells a black screen from a picture)
+    const shot = this.wasm && !this.aborted ? await grabScreen(this.wasm).catch(() => null) : null;
+    if (shot) {
+      this.note(screenLine(screenStats(shot.px, shot.w, shot.h)));
+      const jpeg = await smallJpeg(shot.px, shot.w, shot.h);
+      if (jpeg) this.note(`screen image ${jpeg}`);
+    }
     const text = this.report(kind, reason, snap ?? this.snapshot());
     await writeFile(`${name}.txt`, text);
     const sent = await upload(name, text);
@@ -572,6 +592,17 @@ export class FlightRecorder {
     this.lastHeads = heads;
     await writeFile(`session-${this.id}.txt`, this.report("session", "the latest state of a running game"));
   }
+}
+
+/** What the browser tells of the device beyond its user agent. */
+function deviceHints(): string {
+  const n = navigator as Navigator & { userAgentData?: { platform?: string; mobile?: boolean } };
+  const ua = n.userAgentData;
+  const parts = [`touch points ${navigator.maxTouchPoints ?? 0}`];
+  if (ua) parts.push(`platform ${ua.platform || "?"}`, ua.mobile ? "mobile" : "not mobile");
+  if (typeof matchMedia === "function")
+    parts.push(matchMedia("(pointer: coarse)").matches ? "coarse pointer" : "fine pointer");
+  return parts.join(", ");
 }
 
 function toast(text: string): void {

@@ -818,6 +818,13 @@ fn CreateBitmapFromDxgiSurface(c: &mut Ctx) -> u32 {
     if alpha_ignored(c.a(2)) {
         st(|s| s.opaque.insert(bmp));
     }
+    // (always: a game's picture goes through these, in every run's log; the first 16)
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 16 {
+        let (w, h) = bitmap_size(bmp);
+        let opts = if c.a(2) != 0 { mem::r32(c.a(2) + 16) } else { 0 };
+        eprintln!("sake: d2d bitmap {bmp:#x} of surface {:#x}: {w}x{h} options {opts:#x}", c.a(1));
+    }
     mem::putp(c.a(3), bmp);
     0
 }

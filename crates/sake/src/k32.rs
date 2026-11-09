@@ -5610,9 +5610,20 @@ fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u3
             obj::add(Obj::File(std::sync::Arc::new(f)))
         }
         Err(e) => {
+            note_failed_open(&name, e);
             last_error(e);
             0xffff_ffff
         }
+    }
+}
+/// A file that did not open, in the run's log (the first 64 names, each once): what a game
+/// looked for and did not find says much of why it stopped.
+fn note_failed_open(name: &str, error: u32) {
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.len() < 64 && !seen.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        seen.push(name.to_string());
+        eprintln!("sake: CreateFile {name}: error {error}{}", if seen.len() == 64 { " (no more of these)" } else { "" });
     }
 }
 fn CreateFileA(c: &mut Ctx) -> u32 {
