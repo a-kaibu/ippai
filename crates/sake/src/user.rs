@@ -407,6 +407,13 @@ fn frame(style: u32, exstyle: u32, menu: bool) -> (i32, i32, i32, i32) {
     (b, top, b, b)
 }
 
+/// Whether a window draws a menu bar: a top-level (not WS_CHILD) window whose menu has an item.
+/// Windows draws none for an empty menu (俺の姿が､透明に!'s TVPMainWindow has one: its client is
+/// the whole 1920x1080 inside its 1936x1119 window). A handle sake does not know counts as a bar.
+fn menu_bar(menus: &HashMap<u32, Menu>, menu: u32, style: u32) -> bool {
+    menu != 0 && style & 0x4000_0000 == 0 && menus.get(&menu).map_or(true, |m| !m.items.is_empty())
+}
+
 fn client_of(rect: &Rect, style: u32, exstyle: u32, menu: bool) -> Rect {
     let (l, t, r, b) = frame(style, exstyle, menu);
     let c = Rect { l, t, r: rect.w() - r, b: rect.h() - b };
@@ -1468,7 +1475,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         let k = &s.classes[ci];
         let h = s.next;
         s.next += 0x10;
-        let has_menu = !child && menu != 0;
+        let has_menu = !child && menu_bar(&s.menus, menu, 0);
         let rect = Rect { l: x, t: y, r: x + cx, b: y + cy };
         let w = Window {
             class: ci,
@@ -1560,7 +1567,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
             with(|s| {
                 if let Some(w) = s.wins.get_mut(&h) {
                     w.rect = Rect { l: x, t: y, r: x + cx, b: y + cy };
-                    let has_menu = w.menu != 0;
+                    let has_menu = menu_bar(&s.menus, w.menu, w.style);
                     w.client = client_of(&w.rect, w.style, w.exstyle, has_menu);
                     resize_surface(w);
                 }
@@ -1685,7 +1692,7 @@ fn show(c: &mut Ctx, h: u32, cmd: u32) -> u32 {
     let Some(was) = was else { return 0 };
     // SW_(SHOW)MAXIMIZE: a top-level window's client area covers the screen (its frame
     // outside it)
-    let top = with(|s| s.wins.get(&h).filter(|w| w.parent == 0 && w.style & 0x4000_0000 == 0).map(|w| (w.style, w.exstyle, w.menu != 0)));
+    let top = with(|s| s.wins.get(&h).filter(|w| w.parent == 0 && w.style & 0x4000_0000 == 0).map(|w| (w.style, w.exstyle, menu_bar(&s.menus, w.menu, w.style))));
     if let (3, Some((style, ex, menu))) = (cmd, top) {
         let (l, t, r, b) = frame(style, ex, menu);
         let (sw, sh) = screen();
@@ -1948,7 +1955,7 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
             r.b = r.t + cy.max(0);
         }
         w.rect = r;
-        let has_menu = w.menu != 0 && w.style & 0x4000_0000 == 0;
+        let has_menu = menu_bar(&s.menus, w.menu, w.style);
         w.client = client_of(&r, w.style, w.exstyle, has_menu);
         let vis = w.visible;
         if flags & 0x40 != 0 {
@@ -2470,7 +2477,7 @@ fn set_long(h: u32, i: i32, v: u32) -> u32 {
                 let old = w.style;
                 w.style = v & !0x1000_0000;
                 w.visible = v & 0x1000_0000 != 0;
-                let has_menu = w.menu != 0 && w.style & 0x4000_0000 == 0;
+                let has_menu = menu_bar(&s.menus, w.menu, w.style);
                 w.client = client_of(&w.rect, w.style, w.exstyle, has_menu);
                 resize_surface(w);
                 update_display(s, h);
@@ -2479,7 +2486,7 @@ fn set_long(h: u32, i: i32, v: u32) -> u32 {
             -20 => {
                 let old = w.exstyle;
                 w.exstyle = v;
-                let has_menu = w.menu != 0 && w.style & 0x4000_0000 == 0;
+                let has_menu = menu_bar(&s.menus, w.menu, w.style);
                 w.client = client_of(&w.rect, w.style, w.exstyle, has_menu);
                 resize_surface(w);
                 update_display(s, h);
@@ -5213,10 +5220,11 @@ fn SetMenu(c: &mut Ctx) -> u32 {
     let (h, m) = (c.a(0), c.a(1));
     let changed = with(|s| {
         let Some(w) = s.wins.get_mut(&h) else { return None };
-        let had = w.menu != 0;
+        let had = menu_bar(&s.menus, w.menu, w.style);
         w.menu = m;
-        if had != (m != 0) {
-            w.client = client_of(&w.rect, w.style, w.exstyle, m != 0);
+        let has = menu_bar(&s.menus, m, w.style);
+        if had != has {
+            w.client = client_of(&w.rect, w.style, w.exstyle, has);
             resize_surface(w);
             let (cw, ch) = (w.client.w(), w.client.h());
             update_display(s, h);
@@ -5233,8 +5241,26 @@ fn GetSystemMenu(_: &mut Ctx) -> u32 {
     static M: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *M.get_or_init(new_menu)
 }
-fn DrawMenuBar(_: &mut Ctx) -> u32 {
-    1
+/// The menu bar comes or goes with the menu's first item or its last (Windows recomputes the
+/// frame here: SetWindowPos with SWP_FRAMECHANGED).
+fn DrawMenuBar(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    let changed = with(|s| {
+        let has = s.wins.get(&h).map(|w| menu_bar(&s.menus, w.menu, w.style))?;
+        let w = s.wins.get_mut(&h)?;
+        let client = client_of(&w.rect, w.style, w.exstyle, has);
+        if client == w.client {
+            return None;
+        }
+        w.client = client;
+        resize_surface(w);
+        update_display(s, h);
+        Some((client.w(), client.h()))
+    });
+    if let Some((cw, ch)) = changed {
+        send(c, h, 0x5, 0, (ch as u32) << 16 | (cw as u32 & 0xffff));
+    }
+    with(|s| s.wins.contains_key(&h)) as u32
 }
 fn TrackPopupMenu(_: &mut Ctx) -> u32 {
     0
@@ -6580,6 +6606,27 @@ fn app_id_params() -> (u32, u32) {
     } else {
         let pp = r32(peb + 0x10);
         (pp + 0x68, pp + 0x70)
+    }
+}
+
+#[cfg(test)]
+mod menu_bar_tests {
+    use super::{menu_bar, HashMap, Menu, MenuItem};
+
+    /// 俺の姿が､透明に!: GetMenu(TVPMainWindow) is a menu with no items on Windows, and its
+    /// client is the whole window inside the frame: an empty menu draws no bar.
+    #[test]
+    fn only_menus_with_items_draw_a_bar() {
+        let mut menus = HashMap::default();
+        menus.insert(0x10, Menu { items: vec![] });
+        menus.insert(0x20, Menu { items: vec![MenuItem::default()] });
+        assert!(!menu_bar(&menus, 0, 0));
+        assert!(!menu_bar(&menus, 0x10, 0x00cf_0000));
+        assert!(menu_bar(&menus, 0x20, 0x00cf_0000));
+        // a child's "menu" is its id
+        assert!(!menu_bar(&menus, 0x20, 0x4000_0000));
+        // (a handle sake does not know: a bar, as before)
+        assert!(menu_bar(&menus, 0x30, 0));
     }
 }
 
