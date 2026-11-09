@@ -95,12 +95,29 @@ def png_read(path):
     return w, h, [raw[y * (3 * w + 1) + 1:(y + 1) * (3 * w + 1)] for y in range(h)]
 
 
+def read(path):
+    return open(path).read().strip() if os.path.exists(path) else None
+
+
+def flaky(run, out, probe):
+    """Whether Windows' run of an unchanged probe failed where its answer had exited 0: the
+    runner's own trouble (WARP crashed d3d9state-32 once, exit 139, and the half answer broke
+    kura's golden tests), so the answer stays; a changed probe takes what Windows says"""
+    new = read(os.path.join(run, "exit"))
+    if new == "0" or read(os.path.join(out, "exit")) != "0" or read(os.path.join(out, "src")) != src_hash(probe):
+        return False
+    print(f"{probe}: exit {new} on Windows with the same sources, the answer kept", file=sys.stderr)
+    return True
+
+
 def import_(src, only):
     for probe in sorted(os.listdir(src)):
         d = os.path.join(src, probe)
         if not os.path.isdir(d) or (only and probe not in only):
             continue
         out = os.path.join(GOLDEN, probe)
+        if flaky(d, out, probe):
+            continue
         os.makedirs(out, exist_ok=True)
         for f in os.listdir(out):
             os.remove(os.path.join(out, f))
