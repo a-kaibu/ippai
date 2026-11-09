@@ -187,6 +187,8 @@ struct State {
     hwnds: HashMap<u32, (u32, u32)>,
     /// HWND / compatible render target -> the D3D11 device its textures come from
     d3d: HashMap<u32, u32>,
+    /// bitmap object -> the texture made for it (CreateBitmap1's targets), released with it
+    owned: HashMap<u32, u32>,
 }
 
 static S: Mutex<Option<State>> = Mutex::new(None);
@@ -427,6 +429,7 @@ fn context_methods() -> Vec<(&'static str, Handler)> {
     vec![
         ("CreateSolidColorBrush", CreateSolidColorBrush),
         ("CreateBitmapFromDxgiSurface", CreateBitmapFromDxgiSurface),
+        ("CreateBitmap#57", CreateBitmap1),
         ("CreateBitmap", CreateBitmap),
         ("CreateBitmapFromWicBitmap", CreateBitmapFromWicBitmap),
         ("DrawBitmap", DrawBitmap),
@@ -663,6 +666,39 @@ fn CreateBitmap(c: &mut Ctx) -> u32 {
     0
 }
 
+/// ID2D1DeviceContext::CreateBitmap (D2D1_BITMAP_PROPERTIES1): one made to be drawn into
+/// (D2D1_BITMAP_OPTIONS_TARGET) is a texture of its own a context can target, as Windows' is;
+/// the others as CreateBitmap's. (KiriKiri's DrawDeviceD2D draws each frame into such a bitmap,
+/// then that onto the swap chain's buffer: an image there took nothing and showed black,
+/// AMBITIOUS MISSION after episode 1.)
+fn CreateBitmap1(c: &mut Ctx) -> u32 {
+    let (w, h) = c.pt(1);
+    let (w, h, o) = (w as u32, h as u32, if mem::x64() { 2 } else { 3 });
+    let (data, pitch, props, out) = (c.a(o), c.a(o + 1), c.a(o + 2), c.a(o + 3));
+    // (D2D1_BITMAP_PROPERTIES1: pixel format, dpi x, dpi y, options, color context)
+    let options = if props != 0 { r32(props + 16) } else { 0 };
+    if options & 1 == 0 || w == 0 || h == 0 || w > 16384 || h > 16384 {
+        return CreateBitmap(c);
+    }
+    let Some(tex) = gpu2d::target_texture(w, h) else { return CreateBitmap(c) };
+    if data != 0 {
+        if let Some(gpu) = gpu2d::texture_gpu(tex) {
+            gpu2d::bitmap_write(gpu, (0, 0, w, h), mem::slice(data, pitch * (h - 1) + w * 4), pitch);
+        }
+    } else {
+        gpu2d::clear(tex, [0.0; 4]);
+    }
+    let bmp = new_bitmap(tex);
+    st(|s| {
+        s.owned.insert(bmp, tex);
+        if alpha_ignored(props) {
+            s.opaque.insert(bmp);
+        }
+    });
+    mem::putp(out, bmp);
+    0
+}
+
 fn CreateBitmapFromWicBitmap(c: &mut Ctx) -> u32 {
     // (this, source, properties or NULL, out)
     let (src, props, out) = (c.a(1), c.a(2), c.a(3));
@@ -677,7 +713,13 @@ fn CreateBitmapFromWicBitmap(c: &mut Ctx) -> u32 {
 fn CopyFromMemory(c: &mut Ctx) -> u32 {
     // (this, D2D1_RECT_U * or NULL, data, pitch)
     let (this, pr, data, pitch) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some(im) = st(|s| s.images.get(&this).copied()) else { return 0x8000_4005 };
+    let im = st(|s| {
+        s.images.get(&this).copied().or_else(|| {
+            let &(surface, w, h) = s.bitmaps.get(&this)?;
+            Some(Image { gpu: gpu2d::texture_gpu(surface)?, w, h, opaque: false })
+        })
+    });
+    let Some(im) = im else { return 0x8000_4005 };
     let (x, y, r, b) = if pr != 0 { (r32(pr), r32(pr + 4), r32(pr + 8), r32(pr + 12)) } else { (0, 0, im.w, im.h) };
     let (r, b) = (r.min(im.w), b.min(im.h));
     if data == 0 || r <= x || b <= y {
@@ -702,6 +744,12 @@ fn BitmapRelease(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let n = com::release_obj(this);
     if n == 0 {
+        // (a texture of its own: CreateBitmap1's, released with it, ID3D11Texture2D::Release)
+        if let Some(tex) = st(|s| s.owned.remove(&this)) {
+            let users: Vec<u32> = st(|s| s.dcs.iter().filter(|d| d.1.surface == tex).map(|d| *d.0).collect());
+            users.into_iter().for_each(flush);
+            c.call(mem::rp(mem::rp(tex) + mem::ps() * 2), &[tex]);
+        }
         if let Some(im) = st(|s| {
             s.bitmaps.remove(&this);
             s.opaque.remove(&this);

@@ -151,7 +151,11 @@ pub fn vtable(iface: &'static str, impls: &[(&str, Handler)]) -> u32 {
     let k = mem::ps();
     let v = mem::heap_alloc(k * t.1.len() as u32, true);
     for (i, &(name, dwords, kind)) in t.1.iter().enumerate() {
-        let f: Handler = match impls.iter().find(|m| m.0 == name) {
+        // ("name#slot": that slot only, where an interface has two methods of one name, as
+        // ID2D1DeviceContext's CreateBitmap with D2D1_BITMAP_PROPERTIES1 at 57 beside 4's)
+        let slot = format!("{name}#{i}");
+        let found = impls.iter().find(|m| m.0 == slot).or_else(|| impls.iter().find(|m| m.0 == name));
+        let f: Handler = match found {
             Some(m) => m.1,
             None if i == 0 => query_interface,
             None if i == 1 => add_ref,
@@ -159,7 +163,7 @@ pub fn vtable(iface: &'static str, impls: &[(&str, Handler)]) -> u32 {
             None => stub,
         };
         let a = host_fn(&format!("{iface}::{i}:{name}"), f, 4 * dwords as u32);
-        if i > 2 && !impls.iter().any(|m| m.0 == name) {
+        if i > 2 && found.is_none() {
             STUBS.lock().unwrap().get_or_insert_with(HashMap::new).insert(a, (iface, name, kind));
         }
         NAMES.lock().unwrap().get_or_insert_with(HashMap::new).insert(a, (name, dwords));
@@ -225,6 +229,21 @@ mod tests {
         // (a structure result: the hidden pointer counts)
         assert_eq!(slot("ID2D1RenderTarget", "GetSize"), (2, 2));
         assert_eq!(slot("ID2D1StrokeStyle", "GetMiterLimit"), (1, 1));
+    }
+
+    /// ID2D1DeviceContext (every version) has CreateBitmap twice: ID2D1RenderTarget's at 4
+    /// (D2D1_BITMAP_PROPERTIES) and its own at 57 (D2D1_BITMAP_PROPERTIES1, whose options make a
+    /// bitmap a target): d2d.rs implements "CreateBitmap#57" for the second alone.
+    #[test]
+    fn device_context_create_bitmap_slots() {
+        for t in IFACES.iter().filter(|t| t.0.starts_with("ID2D1DeviceContext")) {
+            let at: Vec<usize> = t.1.iter().enumerate().filter(|x| x.1 .0 == "CreateBitmap").map(|x| x.0).collect();
+            assert_eq!(at, [4, 57], "{}", t.0);
+        }
+        for i in ["ID2D1RenderTarget", "ID2D1BitmapRenderTarget", "ID2D1HwndRenderTarget"] {
+            let t = IFACES.iter().find(|t| t.0 == i).unwrap();
+            assert_eq!(t.1.iter().filter(|x| x.0 == "CreateBitmap").count(), 1, "{i}");
+        }
     }
 
     /// Overloads in one interface keep distinct names (the earlier get "_"s) and the vtable

@@ -336,6 +336,16 @@ pub fn clear(addr: u32, rgba: [f32; 4]) {
     d.targets = None;
 }
 
+/// A texture to draw into, for a D2D bitmap made with D2D1_BITMAP_OPTIONS_TARGET (CreateBitmap):
+/// B8G8R8A8, render target and shader resource, `w` x `h`; its address, as a D3D11 texture's
+/// (None before a D3D11 device). KiriKiri's DrawDeviceD2D draws its frame into one, then that
+/// onto the swap chain's buffer.
+pub fn target_texture(w: u32, h: u32) -> Option<u32> {
+    let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());
+    let d = g.as_mut()?;
+    Some(super::new_texture(d, 2, w.max(1), h.max(1), 1, 1, 87, 0, 0x28, false, 1))
+}
+
 /// A bitmap of its own (BGRA, premultiplied): its texture id.
 pub fn bitmap(w: u32, h: u32) -> u32 {
     let id = page_id();
