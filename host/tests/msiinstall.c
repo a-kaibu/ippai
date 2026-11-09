@@ -173,5 +173,25 @@ int main(void) {
     printf("file version missing: %u\n", MsiGetFileVersionA("C:\\nowhere\\none.dll", v, &vn, lang, &ln));
     run("msiinstall.msi");
     run("msiinstall-u.msi");
+    /* msiexec as a process of its own, as installers and uninstall strings run it */
+    char path[MAX_PATH], cmd[2 * MAX_PATH];
+    GetModuleFileNameA(NULL, path, sizeof path);
+    strcpy(strrchr(path, '\\') + 1, "msiinstall.msi");
+    const char *cmds[] = {"msiexec /i \"%s\" /qn TESTPROP=fromcmd", "MsiExec.exe /X{6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162} /qn", "msiexec /i"};
+    for (int i = 0; i < 3; i++) {
+        snprintf(cmd, sizeof cmd, cmds[i], path);
+        STARTUPINFOA si = {sizeof si};
+        PROCESS_INFORMATION pi;
+        DWORD code = 0xdead;
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+        printf("msiexec %d: %lu\n", i, code);
+        printf("  state %d\n", MsiQueryProductStateA(CODE));
+        file("a.txt");
+    }
     return 0;
 }

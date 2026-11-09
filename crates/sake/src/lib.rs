@@ -74,6 +74,7 @@ pub mod msi_pkg;
 pub mod msi_search;
 pub mod msi_install;
 pub mod msi_ui;
+pub mod msiexec;
 pub mod dinput;
 pub mod fast;
 pub mod files;
@@ -696,6 +697,8 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     nt::init();
     ini::init();
     msi::init();
+    msiexec::init();
+    msiexec::install();
     ddraw::init();
     typelib::init();
     ole::init();

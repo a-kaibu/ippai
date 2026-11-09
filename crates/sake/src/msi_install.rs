@@ -1297,6 +1297,11 @@ fn MsiSequenceW(c: &mut Ctx) -> u32 {
     sequence_api(c, true)
 }
 
+/// The internal UI's level (msiexec's /q options).
+pub fn set_ui_level(level: u32) {
+    UI.lock().unwrap().level = level;
+}
+
 fn MsiSetInternalUI(c: &mut Ctx) -> u32 {
     // (dwUILevel: a level 0..5 and INSTALLUILEVEL_ flags above it; phWnd: the parent window,
     // swapped with the previous one)
@@ -1502,11 +1507,17 @@ fn configure_product(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
         return ERROR_INVALID_PARAMETER;
     }
     let code = arg_str(p, wide);
-    if pack_guid(&code).is_empty() {
+    let cmd = if ex && c.a(3) != 0 { arg_str(c.a(3), wide) } else { String::new() };
+    configure(c, &code, state, &cmd)
+}
+
+/// A registered product's cached package run again for `state` (msiexec /x{code} too).
+pub fn configure(c: &mut Ctx, code: &str, state: i32, cmd: &str) -> u32 {
+    if pack_guid(code).is_empty() {
         return ERROR_INVALID_PARAMETER;
     }
-    let Some(local) = product_info(&code, "LocalPackage") else { return ERROR_UNKNOWN_PRODUCT };
-    let mut cmd = if ex && c.a(3) != 0 { arg_str(c.a(3), wide) } else { String::new() };
+    let Some(local) = product_info(code, "LocalPackage") else { return ERROR_UNKNOWN_PRODUCT };
+    let mut cmd = cmd.to_string();
     let what = match state {
         INSTALLSTATE_ABSENT => "REMOVE=ALL",
         INSTALLSTATE_LOCAL => "ADDLOCAL=ALL",
@@ -1516,7 +1527,7 @@ fn configure_product(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
         _ => return ERROR_INVALID_PARAMETER,
     };
     // (the files come from where it was installed from)
-    if let Some(src) = product_info(&code, "InstallSource").filter(|s| !s.is_empty()) {
+    if let Some(src) = product_info(code, "InstallSource").filter(|s| !s.is_empty()) {
         cmd = format!("SourceDir=\"{src}\" {cmd}");
     }
     install_product(c, &local, &format!("{cmd} {what}"))

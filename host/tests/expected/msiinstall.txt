@@ -189,3 +189,12 @@ uninstall: 0
   feature Nope: -1
   component 0: -1 "" locate -1 same
   component 1: -1 "" locate -1 same
+msiexec 0: 0
+  state 5
+  a.txt: 11 bytes "hello msi"
+msiexec 1: 0
+  state -1
+  a.txt: missing
+msiexec 2: 1639
+  state -1
+  a.txt: missing
