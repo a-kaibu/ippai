@@ -1,0 +1,23 @@
+24 section (module handle): 32 bytes 5x3 bpp 24 planes 1 widthbytes 16 bits yes section yes height 3 compression 0
+24 section (module handle) pixels: 1a4ee5 2163de 2878d7 2f8dd0 0d27f2 143ceb 1b51e4 2266dd 0000ff 0715f8 0e2af1 153fea
+24 ddb: 32 bytes 5x3 bpp 32 planes 1 widthbytes 20 bits no section no
+24 ddb pixels: 1a4ee5 2163de 2878d7 2f8dd0 0d27f2 143ceb 1b51e4 2266dd 0000ff 0715f8 0e2af1 153fea
+24 section A: 32 bytes 5x3 bpp 24 planes 1 widthbytes 16 bits yes section yes height 3 compression 0
+24 section A pixels: 1a4ee5 2163de 2878d7 2f8dd0 0d27f2 143ceb 1b51e4 2266dd 0000ff 0715f8 0e2af1 153fea
+8 section: 32 bytes 4x3 bpp 8 planes 1 widthbytes 4 bits yes section yes height 3 compression 0
+8 section pixels: 50c38c 78a5d2 a08718 c8695e 28e146 50c38c 78a5d2 a08718 00ff00 28e146 50c38c 78a5d2
+8 ddb: 32 bytes 4x3 bpp 32 planes 1 widthbytes 16 bits no section no
+8 ddb pixels: 50c38c 78a5d2 a08718 c8695e 28e146 50c38c 78a5d2 a08718 00ff00 28e146 50c38c 78a5d2
+1 section: 32 bytes 9x2 bpp 1 planes 1 widthbytes 4 bits yes section yes height 2 compression 0
+1 section pixels: 28e146 00ff00 28e146 00ff00 00ff00 28e146 00ff00 28e146
+1 ddb: 32 bytes 9x2 bpp 32 planes 1 widthbytes 36 bits no section no
+1 ddb pixels: 28e146 00ff00 28e146 00ff00 00ff00 28e146 00ff00 28e146
+32 top-down section: 32 bytes 3x2 bpp 32 planes 1 widthbytes 12 bits yes section yes height 2 compression 0
+32 top-down section pixels: 0000c8 0723c1 0e46ba 0d41bb 1464b4 1b87ad
+gap section: 32 bytes 2x2 bpp 24 planes 1 widthbytes 8 bits yes section yes height 2 compression 0
+gap section pixels: 0d27f2 143ceb 0000ff 0715f8
+full path: 32 bytes 5x3 bpp 24 planes 1 widthbytes 16 bits yes section yes height 3 compression 0
+full path pixels: 1a4ee5 2163de 2878d7 2f8dd0 0d27f2 143ceb 1b51e4 2266dd 0000ff 0715f8 0e2af1 153fea
+missing: NULL error 2
+broken: NULL
+missing icon: NULL
