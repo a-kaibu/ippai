@@ -2237,10 +2237,84 @@ pub fn load_bitmap(inst: u32, name: u32, wide: bool) -> u32 {
     };
     let (data, _) = crate::pe::resource_data(module, e);
     let Some(info) = dib_info(data, 0, &default_palette()) else { return 0 };
-    let hdr = r32(data);
-    let ncol = if info.bpp <= 8 { info.pal.len() as u32 } else if info.compression == 3 { 3 } else { 0 };
-    let bits = data + hdr + ncol * if hdr == 12 { 3 } else { 4 };
-    let src = dib_view(&info, bits);
+    let bits = data + dib_header_len(data, &info);
+    ddb_of(&info, bits)
+}
+
+/// The bytes of a packed DIB's header and colour table (where its bits start).
+fn dib_header_len(bmi: u32, info: &DibInfo) -> u32 {
+    let hdr = r32(bmi);
+    let ncol = if info.bpp <= 8 { info.pal.len() as u32 } else if info.compression == 3 && hdr == 40 { 3 } else { 0 };
+    hdr + ncol * if hdr == 12 { 3 } else { 4 }
+}
+
+/// LoadImage(IMAGE_BITMAP, LR_LOADFROMFILE): a .bmp file (BITMAPFILEHEADER, then a packed DIB).
+/// With LR_CREATEDIBSECTION a DIB section of the file's own depth, else a screen-compatible
+/// bitmap (a 1-bit one stays monochrome). NULL and the error for a file that is not there or
+/// not a bitmap. (Key's StartMenu.exe: LoadImage(its module, "Start.bmp", IMAGE_BITMAP, 0, 0,
+/// LR_CREATEDIBSECTION | LR_LOADFROMFILE); the module handle does not matter for a file.)
+pub fn load_bitmap_file(path: &str, section: bool) -> u32 {
+    let data = crate::files::resolve(path).and_then(|h| kura::fs::read(h).ok());
+    let Some(data) = data else {
+        crate::k32::last_error(crate::files::missing(path));
+        return 0;
+    };
+    match bitmap_from_file(&data, section) {
+        Some(h) => h,
+        None => {
+            crate::k32::last_error(13); // ERROR_INVALID_DATA
+            0
+        }
+    }
+}
+
+fn bitmap_from_file(data: &[u8], section: bool) -> Option<u32> {
+    if data.len() < 14 + 12 || &data[..2] != b"BM" {
+        return None;
+    }
+    let off = u32::from_le_bytes(data[10..14].try_into().unwrap()) as usize;
+    let dib = &data[14..];
+    let tmp = mem::heap_alloc(dib.len() as u32, false);
+    mem::write(tmp, dib);
+    let made = (|| {
+        let info = dib_info(tmp, 0, &default_palette())?;
+        // RLE and other compressed files are not read
+        if !matches!(info.compression, 0 | 3) {
+            return None;
+        }
+        let head = dib_header_len(tmp, &info);
+        // the bits where the file header says (else right after the colour table)
+        let start = if off >= 14 + head as usize && off < data.len() { off as u32 - 14 } else { head };
+        let size = info.stride * info.h as u32;
+        if start as usize + size as usize > dib.len() {
+            return None;
+        }
+        let bits = tmp + start;
+        if !section {
+            return Some(ddb_of(&info, bits));
+        }
+        let own = mem::alloc(size.max(4))?;
+        mem::copy(own, bits, size);
+        Some(add(G::Bitmap(Bitmap {
+            w: info.w,
+            h: info.h,
+            bpp: info.bpp,
+            bits: own,
+            stride: info.stride,
+            bottom_up: !info.top_down,
+            pal: info.pal,
+            r565: info.r565,
+            dib: true,
+            own: 2,
+        })))
+    })();
+    mem::heap_free(tmp);
+    made
+}
+
+/// A screen-compatible bitmap (32 bits, or 1 for a monochrome DIB) holding a DIB's pixels.
+fn ddb_of(info: &DibInfo, bits: u32) -> u32 {
+    let src = dib_view(info, bits);
     let bpp = if info.bpp == 1 { 1 } else { 32 };
     let b = new_bitmap_raw(info.w, info.h, bpp, 0);
     let dst = View::of(&b);

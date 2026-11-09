@@ -5372,19 +5372,33 @@ fn LoadIconA(_: &mut Ctx) -> u32 {
 fn LoadIconW(_: &mut Ctx) -> u32 {
     fake_handle()
 }
-fn LoadImageA(c: &mut Ctx) -> u32 {
-    if c.a(2) == 0 {
-        let (inst, name) = (c.a(0), c.a(1));
-        return crate::gdi::load_bitmap(inst, name, false);
+/// LoadImage(inst, name, type, cx, cy, flags). LR_LOADFROMFILE (0x10): `name` is a file and
+/// `inst` is not looked at (Key's StartMenu.exe passes its module); a bitmap is read from it
+/// (gdi::load_bitmap_file, LR_CREATEDIBSECTION 0x2000 for a DIB section), an icon or cursor is a
+/// handle when the file is there. Else a bitmap resource of `inst`; icons and cursors are
+/// handles whose pictures are not used.
+fn load_image(c: &mut Ctx, wide: bool) -> u32 {
+    let (inst, name, kind, flags) = (c.a(0), c.a(1), c.a(2), c.a(5));
+    if flags & 0x10 != 0 {
+        if name == 0 {
+            crate::k32::last_error(87);
+            return 0;
+        }
+        return match kind {
+            0 => crate::gdi::load_bitmap_file(&arg_str(name, wide), flags & 0x2000 != 0),
+            _ => cursor_from_file(name, wide),
+        };
+    }
+    if kind == 0 {
+        return crate::gdi::load_bitmap(inst, name, wide);
     }
     fake_handle()
 }
+fn LoadImageA(c: &mut Ctx) -> u32 {
+    load_image(c, false)
+}
 fn LoadImageW(c: &mut Ctx) -> u32 {
-    if c.a(2) == 0 {
-        let (inst, name) = (c.a(0), c.a(1));
-        return crate::gdi::load_bitmap(inst, name, true);
-    }
-    fake_handle()
+    load_image(c, true)
 }
 fn CreateIcon(_: &mut Ctx) -> u32 {
     fake_handle()

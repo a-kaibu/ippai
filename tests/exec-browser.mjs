@@ -32,9 +32,24 @@ for (const [stage, out] of [
   [1, "StartData/StartMenu.exe"],
   [2, "StartData/GameData/SiglusEngine.exe"],
 ]) {
-  execFileSync("i686-w64-mingw32-gcc", ["-O2", `-DSTAGE=${stage}`, "host/tests/execchain.c", "-o", join(game, out), "-lshell32"]);
+  execFileSync("i686-w64-mingw32-gcc", ["-O2", `-DSTAGE=${stage}`, "host/tests/execchain.c", "-o", join(game, out), "-lshell32", "-lgdi32"]);
 }
 writeFileSync(join(game, "StartData/Start.ini"), '#GAME_TITLE = "chain"\r\n');
+// anemoi's Start.bmp, small: 24 bits, bottom-up, biSizeImage 2 bytes more than the bits
+{
+  const [w, h] = [40, 30];
+  const bmp = Buffer.alloc(54 + w * 3 * h);
+  bmp.write("BM", 0, "latin1");
+  bmp.writeUInt32LE(bmp.length, 2);
+  bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14);
+  bmp.writeInt32LE(w, 18);
+  bmp.writeInt32LE(h, 22);
+  bmp.writeUInt16LE(1, 26);
+  bmp.writeUInt16LE(24, 28);
+  bmp.writeUInt32LE(w * 3 * h + 2, 34);
+  writeFileSync(join(game, "StartData/Start.bmp"), bmp);
+}
 writeFileSync(join(game, "StartData/GameData/Gameexe.dat"), "data");
 run("pack", game, "chain");
 run("add-game", "chain", "--title", "ランチャーの試験", "--tree", "chain", "--exe", "Start.exe", "--no-meta");
@@ -91,7 +106,7 @@ try {
   const got = lines.filter((l) => /^chain|^end$/.test(l));
   assert.deepEqual(got, [
     "chain 0: start",
-    'chain 1: args [/from="autorun"] ini [#GAME_TITLE = "chain"]',
+    'chain 1: args [/from="autorun"] ini [#GAME_TITLE = "chain"] bmp 40x30 24 bits',
     "chain 2: args [/window] gamedata yes",
     "end",
   ]);

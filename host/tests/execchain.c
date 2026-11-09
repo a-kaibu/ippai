@@ -1,7 +1,9 @@
 /* A launcher chain like Key's (anemoi): Start.exe opens StartData\StartMenu.exe with
  * ShellExecuteExW (/from="autorun", no directory, no wait) and exits; the menu reads Start.ini
  * beside it and opens GameData\SiglusEngine.exe the same way (/window). Each prints what it
- * saw, so a program started without its game's files says so. Built three times:
+ * saw, so a program started without its game's files says so. The menu also loads Start.bmp
+ * as anemoi's does: LoadImageW(its module, L"Start.bmp", IMAGE_BITMAP, 0, 0,
+ * LR_CREATEDIBSECTION | LR_LOADFROMFILE), and quits if that fails (sake looked for a resource). Built three times:
  *   STAGE=0 Start.exe, STAGE=1 StartData\StartMenu.exe, STAGE=2 StartData\GameData\SiglusEngine.exe
  * (tests/exec-browser.mjs: the page that takes over keeps the game's mounts) */
 #include <windows.h>
@@ -55,7 +57,13 @@ int main(void) {
     fclose(f);
   }
   ini[strcspn(ini, "\r\n")] = 0;
-  printf("chain 1: args [%ls] ini [%s]\n", args, ini);
+  HBITMAP bmp = (HBITMAP)LoadImageW(GetModuleHandleW(NULL), L"Start.bmp", IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE);
+  BITMAP bm = {0};
+  if (!bmp || !GetObjectW(bmp, sizeof bm, &bm)) {
+    printf("chain 1: Start.bmp failed %lu\n", GetLastError());
+    return 1;
+  }
+  printf("chain 1: args [%ls] ini [%s] bmp %dx%d %d bits\n", args, ini, (int)bm.bmWidth, (int)bm.bmHeight, bm.bmBitsPixel);
   return open_next(dir, L"GameData\\SiglusEngine.exe", L"/window");
 #else
   printf("chain 2: args [%ls] gamedata %s\n", args, GetFileAttributesW(L"Gameexe.dat") != INVALID_FILE_ATTRIBUTES ? "yes" : "no");
