@@ -24,6 +24,9 @@ pub struct MetaStatus {
     pub updated_ms: i64,
 }
 
+/// The game list (egs_index) is filled again past this age.
+pub const EGS_GAMES_MAX_AGE_MS: i64 = 24 * 3_600_000;
+
 /// A fetch left pending this long (the server stopped during it) reads as failed.
 pub const META_STALE_MS: i64 = 10 * 60_000;
 
@@ -52,6 +55,8 @@ impl Library {
             CREATE TABLE IF NOT EXISTS game_settings(game TEXT PRIMARY KEY, config TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS retired(object TEXT PRIMARY KEY, retired_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS backups(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, created_ms INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS egs_games(id INTEGER PRIMARY KEY, name TEXT NOT NULL, votes INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS game_meta(game TEXT PRIMARY KEY, url TEXT NOT NULL, job TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','ok','error')), error TEXT NOT NULL DEFAULT '', info TEXT, cover BLOB, cover_type TEXT, updated_ms INTEGER NOT NULL);
             PRAGMA user_version=1;")?;
         Ok(db)
@@ -170,6 +175,70 @@ impl Library {
             }
             s
         }))
+    }
+
+    /// Every ErogameScape game kept (id, name, votes), and when the list was last filled (ms; 0:
+    /// never).
+    pub fn egs_games(&self) -> Result<(Vec<(u32, String, u32)>, i64)> {
+        use rusqlite::OptionalExtension;
+        let c = self.connect()?;
+        let mut q = c.prepare("SELECT id,name,votes FROM egs_games ORDER BY id")?;
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let at: Option<String> = c.query_row("SELECT value FROM kv WHERE key='egs_games_ms'", [], |r| r.get(0)).optional()?;
+        Ok((rows, at.and_then(|s| s.parse().ok()).unwrap_or(0)))
+    }
+
+    /// Takes `list` as the games (names and votes updated, games not in it kept: a partial list
+    /// loses nothing), now as the time it was filled.
+    pub fn set_egs_games(&self, list: &[(u32, String, u32)]) -> Result<()> {
+        let mut c = self.connect()?;
+        let t = c.transaction()?;
+        {
+            let mut q = t.prepare("INSERT INTO egs_games(id,name,votes) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,votes=max(excluded.votes,egs_games.votes)")?;
+            for (id, name, votes) in list {
+                q.execute(params![id, name, votes])?;
+            }
+        }
+        t.execute("INSERT INTO kv(key,value) VALUES('egs_games_ms',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [now_ms().to_string()])?;
+        t.commit()?;
+        Ok(())
+    }
+
+    /// The games to match packages against (egs_match.rs), filled from ErogameScape when the list
+    /// is a day old or empty (launcherg's list when ErogameScape cannot be reached and there is
+    /// none yet); kept in memory while the list stays the same.
+    pub fn egs_index(&self) -> Result<std::sync::Arc<crate::egs_match::Index>> {
+        use std::sync::{Arc, Mutex};
+        static CACHE: Mutex<Option<(PathBuf, i64, Arc<crate::egs_match::Index>)>> = Mutex::new(None);
+        // (one filling at a time: the lock is held through it)
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut list, mut at) = self.egs_games()?;
+        if list.is_empty() || now_ms() - at > EGS_GAMES_MAX_AGE_MS {
+            let fresh = crate::meta::egs_all_games().or_else(|e| {
+                eprintln!("game list: {e:#}");
+                if list.is_empty() { crate::meta::seed_games() } else { Err(e) }
+            });
+            match fresh {
+                Ok(f) => {
+                    self.set_egs_games(&f)?;
+                    (list, at) = self.egs_games()?;
+                }
+                // (an old list stays in use; tried again in an hour)
+                Err(e) if !list.is_empty() => {
+                    eprintln!("game list: keeping the one from before: {e:#}");
+                    self.connect()?.execute("UPDATE kv SET value=? WHERE key='egs_games_ms'", [(now_ms() - EGS_GAMES_MAX_AGE_MS + 3_600_000).to_string()])?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if let Some((p, t, idx)) = cache.as_ref() {
+            if *p == self.0 && *t == at {
+                return Ok(idx.clone());
+            }
+        }
+        let idx = Arc::new(crate::egs_match::Index::new(list));
+        *cache = Some((self.0.clone(), at, idx.clone()));
+        Ok(idx)
     }
 
     /// The cover fetched with the game's metadata: bytes and media type.
@@ -391,5 +460,102 @@ mod meta_tests {
             }
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod egs_games_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A stand-in for ErogameScape's SQL form (POST /egs: max(id), then windows of ids) and
+    /// launcherg's list (GET /seed), counting requests; `up` false makes /egs answer 503.
+    fn sources(up: Arc<AtomicBool>, asked: Arc<AtomicUsize>) -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut line = String::new();
+                r.read_line(&mut line).unwrap();
+                let mut len = 0;
+                loop {
+                    let mut h = String::new();
+                    r.read_line(&mut h).unwrap();
+                    if h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; len];
+                r.read_exact(&mut body).unwrap();
+                asked.fetch_add(1, Ordering::SeqCst);
+                let sql: String = form_urlencoded::parse(&body).find(|(k, _)| k == "sql").map(|(_, v)| v.into_owned()).unwrap_or_default();
+                let (status, ty, text) = if line.starts_with("GET /seed") {
+                    ("200 OK", "application/json", r#"[{"id":1,"gamename":"サクラノ詩 -櫻の森の上を舞う-","thumbnailUrl":""},{"id":2,"gamename":"終のステラ"}]"#.to_string())
+                } else if !up.load(Ordering::SeqCst) {
+                    ("503 Service Unavailable", "text/plain", "down".into())
+                } else if sql.contains("max(id)") {
+                    ("200 OK", "text/html", "<table><tr><th>max</th></tr><tr><td>7000</td></tr></table>".into())
+                } else if sql.contains("id >= 0 ") {
+                    ("200 OK", "text/html", "<table><tr><th>id</th><th>gamename</th><th>count2</th></tr><tr><td>1</td><td>サクラノ詩 -櫻の森の上を舞う-</td><td>5000</td></tr><tr><td>3</td><td>LOOPERS</td><td>800</td></tr></table>".into())
+                } else {
+                    ("200 OK", "text/html", "<table><tr><th>id</th><th>gamename</th><th>count2</th></tr><tr><td>6000</td><td>アネモイ</td><td>90</td></tr></table>".into())
+                };
+                let mut s = s;
+                let _ = write!(s, "HTTP/1.1 {status}\r\ncontent-type: {ty}; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}", text.len());
+            }
+        });
+        at
+    }
+
+    /// No list yet and ErogameScape down: launcherg's; a day later and ErogameScape up: its whole
+    /// list (names and votes, games only the old one had kept); down again past a day: the list
+    /// before stays, tried again within the hour, not on every call.
+    #[test]
+    fn filled_from_erogamescape_or_the_seed() {
+        let up = Arc::new(AtomicBool::new(false));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let at = sources(up.clone(), asked.clone());
+        // (the only test that sets these: meta.rs reads them on each request; and no proxy, which
+        // ureq would send these local requests through)
+        for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            std::env::remove_var(k);
+        }
+        std::env::set_var("IPPAI_META_EGS_SQL", format!("{at}/egs"));
+        std::env::set_var("IPPAI_META_SEED", format!("{at}/seed"));
+        let dir = std::env::temp_dir().join(format!("ippai-test-{}", uuid::Uuid::new_v4()));
+        let db = Library::new(&dir).unwrap();
+        let q = |idx: &crate::egs_match::Index, s: &str| idx.best(&[s.to_string()]).map(|h| (h.id, h.votes));
+
+        let idx = db.egs_index().unwrap();
+        assert_eq!(q(&idx, "終のステラ"), Some((2, 0)), "the seed");
+        let n = asked.load(Ordering::SeqCst);
+        let again = db.egs_index().unwrap();
+        assert!(Arc::ptr_eq(&idx, &again), "the same list: kept in memory");
+        assert_eq!(asked.load(Ordering::SeqCst), n, "not asked again within the day");
+
+        up.store(true, Ordering::SeqCst);
+        db.connect().unwrap().execute("UPDATE kv SET value='0' WHERE key='egs_games_ms'", []).unwrap();
+        let idx = db.egs_index().unwrap();
+        assert_eq!(q(&idx, "サクラノ詩"), Some((1, 5000)), "votes from ErogameScape");
+        assert_eq!(q(&idx, "アネモイ"), Some((6000, 90)), "the second window");
+        assert_eq!(q(&idx, "LOOPERS"), Some((3, 800)));
+        assert_eq!(q(&idx, "終のステラ"), Some((2, 0)), "kept from the seed");
+
+        up.store(false, Ordering::SeqCst);
+        db.connect().unwrap().execute("UPDATE kv SET value='0' WHERE key='egs_games_ms'", []).unwrap();
+        let idx = db.egs_index().unwrap();
+        assert_eq!(q(&idx, "アネモイ"), Some((6000, 90)), "the list before");
+        let n = asked.load(Ordering::SeqCst);
+        db.egs_index().unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), n, "not tried again at once");
+        let (_, at) = db.egs_games().unwrap();
+        assert!(now_ms() - at > EGS_GAMES_MAX_AGE_MS - 3_700_000, "tried again within the hour");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

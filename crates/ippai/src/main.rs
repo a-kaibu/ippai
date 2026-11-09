@@ -24,6 +24,7 @@ mod storage;
 mod store_api;
 mod meta;
 mod meta_url;
+mod egs_match;
 mod movie;
 mod nwjs;
 mod pack;

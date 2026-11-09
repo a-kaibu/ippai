@@ -6,6 +6,10 @@
 //!   the address names no game page, 404 for a game not in the store. `GET` gives the state
 //!   (`null` before any). The result stands in for the store's (`GET /games`: Library::apply_meta)
 //! - `GET /api/library/<game>/cover`: the cover that came with it
+//! - `GET /api/library/<game>/candidates[?q=...]`: the ErogameScape games most like the game's
+//!   names (its title, program and folders: egs_match.rs), most alike first, `best` marking the
+//!   one taken without asking; or those a typed `q` finds (Index::search). From the whole list
+//!   the server keeps (Library::egs_index)
 use crate::library::{Library, MetaStatus, Profile, Session};
 use crate::meta;
 use axum::{
@@ -124,6 +128,7 @@ pub fn router_with(db: Library, fetch: Fetcher) -> Router {
         .route("/api/library/{game}", get(profile).put(update))
         .route("/api/library/{game}/meta", get(meta_state).put(meta_fetch))
         .route("/api/library/{game}/cover", get(cover))
+        .route("/api/library/{game}/candidates", get(candidates))
         .route("/api/sessions", put(session).get(stats))
         .with_state(Api { db, fetch })
 }
@@ -176,6 +181,58 @@ async fn meta_fetch(State(Api { db, fetch }): State<Api>, Path(game): Path<Strin
         }
     });
     (StatusCode::ACCEPTED, Json(status)).into_response()
+}
+
+#[derive(Deserialize)]
+struct CandidatesQuery {
+    q: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct Candidate {
+    #[serde(flatten)]
+    hit: crate::egs_match::Hit,
+    best: bool,
+}
+
+async fn candidates(
+    State(Api { db, .. }): State<Api>,
+    Path(game): Path<String>,
+    axum::extract::Query(cq): axum::extract::Query<CandidatesQuery>,
+) -> Response {
+    if !valid(&game) || cq.q.as_ref().is_some_and(|q| q.len() > 500) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(entry) = db.0.parent().map(|store| store.join("games").join(format!("{game}.json"))) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let found = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<Candidate>>> {
+        let Ok(text) = std::fs::read(&entry) else { return Ok(None) };
+        let mut g: serde_json::Value = serde_json::from_slice(&text)?;
+        let idx = db.egs_index()?;
+        if let Some(q) = cq.q.filter(|q| !q.trim().is_empty()) {
+            // (typed: what it finds; nothing is taken without asking)
+            return Ok(Some(idx.search(&q, 8).into_iter().map(|hit| Candidate { best: false, hit }).collect()));
+        }
+        db.apply_settings(&mut g)?;
+        // (not the metadata's title: that may be the wrong game this is to correct)
+        let queries = crate::egs_match::queries(g["title"].as_str().unwrap_or(""), g["run"].as_str().unwrap_or(""));
+        let best = idx.best(&queries);
+        let mut hits = idx.candidates(&queries, 8);
+        if let Some(b) = best.as_ref().filter(|b| !hits.iter().any(|h| h.id == b.id)) {
+            hits.pop();
+            hits.insert(1.min(hits.len()), b.clone());
+        }
+        let best = best.map(|b| b.id);
+        Ok(Some(hits.into_iter().map(|hit| Candidate { best: Some(hit.id) == best, hit }).collect()))
+    })
+    .await;
+    match found {
+        Ok(Ok(Some(c))) => Json(c).into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, format!("作品一覧を取得できませんでした：{e:#}")).into_response(),
+        Err(e) => error(e).into_response(),
+    }
 }
 
 async fn cover(State(Api { db, .. }): State<Api>, Path(game): Path<String>) -> Response {
@@ -358,6 +415,36 @@ mod tests {
         assert_eq!(listed(&db)["meta"]["title"], "二回目");
         let (_, b, ty) = call(&app, "GET", "/api/library/anemoi/cover", None).await;
         assert_eq!((b.as_slice(), ty.as_deref()), (&b"png"[..], Some("image/png")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 候補: from the list the server keeps (fresh: nothing fetched), by the game's names or
+    /// `q`; the one taken without asking marked.
+    #[tokio::test]
+    async fn candidates_from_the_kept_list() {
+        let dir = store();
+        std::fs::write(dir.join("games/loopers.json"), r#"{"id":"loopers","title":"LOOPERS DL版","run":"Z:\\vnvm\\game\\SiglusEngine.exe","args":[],"mounts":[],"env":[]}"#).unwrap();
+        let db = Library::new(&dir).unwrap();
+        db.set_egs_games(&[(1, "LOOPERS".into(), 800), (2, "LOOPERS+".into(), 40), (3, "アネモイ".into(), 500), (4, "サクラノ詩 -櫻の森の上を舞う-".into(), 5000), (5, "サクラノ詩 春ノ雪".into(), 30)]).unwrap();
+        let app = router_with(db, Arc::new(|_: &str| anyhow::bail!("not here")));
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let (s, b, _) = call(&app, "GET", uri, None).await;
+                (s, if s == StatusCode::OK { serde_json::from_slice::<serde_json::Value>(&b).unwrap() } else { serde_json::Value::Null })
+            }
+        };
+        let (s, c) = get("/api/library/loopers/candidates").await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!((c[0]["id"].as_u64(), c[0]["best"].as_bool(), c[0]["score"].as_f64()), (Some(1), Some(true), Some(1.0)), "{c}");
+        assert!(c.as_array().unwrap().iter().all(|h| h["id"] != 4), "nothing unlike it: {c}");
+        // typed: names with it in, most voted first, none taken without asking
+        let (_, c) = get("/api/library/anemoi/candidates?q=%E3%82%B5%E3%82%AF%E3%83%A9").await;
+        let ids: Vec<u64> = c.as_array().unwrap().iter().map(|h| h["id"].as_u64().unwrap()).collect();
+        assert_eq!(ids[..2], [4, 5], "{c}");
+        assert!(c.as_array().unwrap().iter().all(|h| h["best"] == false), "{c}");
+        assert_eq!(get("/api/library/nothere/candidates").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get("/api/library/.x/candidates").await.0, StatusCode::BAD_REQUEST);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

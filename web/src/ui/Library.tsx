@@ -31,11 +31,14 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { coverUrl, fetchGames, played, type GameEntry } from "../launcher";
 import {
+  candidates,
   describe,
+  egsPage,
   fetchMeta,
   looksLikeGamePage,
   metaStatus,
   untilSettled,
+  type Candidate,
   type MetaStatus,
 } from "../meta-source";
 import { api } from "../library-data";
@@ -319,11 +322,11 @@ function MetaSource({ game, onUpdated }: { game: GameEntry; onUpdated: () => Pro
     }
   }
   const valid = looksLikeGamePage(url);
-  const submit = async () => {
+  const submit = async (page = url.trim()) => {
     setError("");
     setBusy(true);
     try {
-      setStatus(await fetchMeta(game.id, url.trim()));
+      setStatus(await fetchMeta(game.id, page));
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
       setBusy(false);
@@ -364,6 +367,14 @@ function MetaSource({ game, onUpdated }: { game: GameEntry; onUpdated: () => Pro
           批評空間（game.php?game=番号）か VNDB（vndb.org/v番号）の作品ページの URL を入れてください
         </p>
       )}
+      <Candidates
+        game={game}
+        disabled={busy}
+        onPick={(c) => {
+          setUrl(egsPage(c.id));
+          void submit(`egs:${c.id}`);
+        }}
+      />
       {said && (
         <p
           role="status"
@@ -377,6 +388,108 @@ function MetaSource({ game, onUpdated }: { game: GameEntry; onUpdated: () => Pro
         </p>
       )}
     </form>
+  );
+}
+
+/** 批評空間の全作品から、このゲームの名前（タイトル・フォルダ・exe）に近いものを出して選ばせる。 */
+function Candidates({
+  game,
+  disabled,
+  onPick,
+}: {
+  game: GameEntry;
+  disabled: boolean;
+  onPick: (c: Candidate) => void;
+}) {
+  const [list, setList] = useState<Candidate[] | null>(null);
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const look = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setList(await candidates(game.id, q));
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid gap-2">
+      <div className="flex gap-2">
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void look();
+            }
+          }}
+          placeholder="作品名で探す（空ならタイトルとフォルダ名・exe名から）"
+          aria-label="批評空間の作品を名前で探す"
+          className="min-w-0 flex-1"
+          data-testid="meta-search"
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-9"
+          disabled={loading}
+          onClick={() => void look()}
+          data-testid="meta-candidates"
+        >
+          <Search className={cn(loading && "animate-pulse")} /> {loading ? "探しています" : "候補を探す"}
+        </Button>
+      </div>
+      {loading && !list && (
+        <p className="text-xs text-muted-foreground">
+          初回は批評空間の作品一覧を取ってくるので少しかかります
+        </p>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      {list && !list.length && (
+        <p className="text-xs text-muted-foreground">近い作品が見つかりませんでした</p>
+      )}
+      {!!list?.length && (
+        <ul className="grid gap-1" aria-label="批評空間の候補" data-testid="meta-candidate-list">
+          {list.map((c) => (
+            <li key={c.id} className="flex items-center gap-2 rounded-md border px-2 py-1.5 text-sm">
+              <div className="min-w-0 flex-1">
+                <a
+                  href={egsPage(c.id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="break-all hover:underline"
+                >
+                  {c.name}
+                </a>
+                <span className="ml-2 text-xs text-muted-foreground tabular-nums">
+                  {Math.round(c.score * 100)}%{c.votes ? ` · ${c.votes} 票` : ""}
+                </span>
+                {c.best && (
+                  <Badge variant="secondary" className="ml-2 rounded-full font-normal">
+                    自動で選ばれる作品
+                  </Badge>
+                )}
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={disabled}
+                onClick={() => onPick(c)}
+              >
+                これにする
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -490,7 +603,7 @@ function GameInfo({
             </div>
           )}
           <Section title="作品情報を取り直す" icon={<RefreshCw />}>
-            <MetaSource game={game} onUpdated={onUpdated} />
+            <MetaSource key={game.id} game={game} onUpdated={onUpdated} />
           </Section>
           <Section title="メモ" icon={<NotebookPen />}>
             <Note state={record} />

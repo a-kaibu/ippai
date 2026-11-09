@@ -307,7 +307,29 @@ fn write_game(store: &Path, g: &GameEntry) -> Result<()> {
 /// downloaded when the game has none. A failed lookup only warns.
 fn fetch_meta(store: &Path, g: &mut GameEntry, title: Option<&str>, id: Option<&str>) {
     let title = title.unwrap_or(&g.title).to_string();
-    let info = match meta::lookup(&title, id) {
+    // no pinned entry: the game the names match in ErogameScape's whole list (egs_match.rs),
+    // else a search by the title (meta.rs)
+    let matched = match id {
+        Some(_) => None,
+        None => match crate::library::Library::new(store).and_then(|db| db.egs_index()) {
+            Ok(idx) => idx.best(&crate::egs_match::queries(&title, &g.run)).map(|h| {
+                eprintln!("{}: {} (egs {}, {:.2})", g.id, h.name, h.id, h.score);
+                format!("egs:{}", h.id)
+            }),
+            Err(e) => {
+                eprintln!("{}: game list: {e:#}", g.id);
+                None
+            }
+        },
+    };
+    let found = match (id, &matched) {
+        (None, Some(m)) => meta::lookup(&title, Some(m)).or_else(|e| {
+            eprintln!("{}: {m}: {e:#} (searching by the title)", g.id);
+            meta::lookup(&title, None)
+        }),
+        _ => meta::lookup(&title, id),
+    };
+    let info = match found {
         Ok(i) => i,
         Err(e) => {
             eprintln!("{}: no metadata: {e:#}", g.id);

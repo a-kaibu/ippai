@@ -185,6 +185,47 @@ ORDER BY g.count2 DESC NULLS LAST LIMIT 30",
         .collect())
 }
 
+/// Every PC game on ErogameScape: (id, name, votes), in windows of 5000 ids (the form's own
+/// limit on rows), as ryoha000/launcherg gathers its list.
+pub fn egs_all_games() -> Result<Vec<(u32, String, u32)>> {
+    let max: u32 = egs_query("SELECT max(id) AS max FROM gamelist")?.first().map(|r| col(r, "max").parse()).transpose()?.unwrap_or(0);
+    let mut out = vec![];
+    let mut from = 0;
+    while from <= max {
+        for r in egs_query(&format!(
+            "SELECT id, gamename, count2 FROM gamelist WHERE id >= {from} AND id < {} AND model = 'PC' ORDER BY id",
+            from + 5000
+        ))? {
+            if let Ok(id) = col(&r, "id").parse() {
+                out.push((id, col(&r, "gamename").to_string(), col(&r, "count2").parse().unwrap_or(0)));
+            }
+        }
+        from += 5000;
+    }
+    if out.is_empty() {
+        bail!("erogamescape: no games listed");
+    }
+    Ok(out)
+}
+
+/// The list ryoha000/launcherg ships (public domain; ErogameScape's, without votes and not
+/// the newest games): for when ErogameScape cannot be reached.
+pub fn seed_games() -> Result<Vec<(u32, String, u32)>> {
+    #[derive(Deserialize)]
+    struct G {
+        id: u32,
+        gamename: String,
+    }
+    let url = endpoint("IPPAI_META_SEED", "https://raw.githubusercontent.com/ryoha000/launcherg/main/script/all_games.json");
+    let mut body = vec![];
+    agent().get(&url).timeout(Duration::from_secs(60)).call()?.into_reader().take(64 << 20).read_to_end(&mut body)?;
+    let list: Vec<G> = serde_json::from_slice(&body)?;
+    if list.is_empty() {
+        bail!("{url}: no games");
+    }
+    Ok(list.into_iter().map(|g| (g.id, g.gamename, 0)).collect())
+}
+
 /// POV groups shown as tags (genre, setting, tone).
 const POV_GROUPS: [&str; 3] = ["ジャンル", "背景", "傾向"];
 

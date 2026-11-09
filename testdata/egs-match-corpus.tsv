@@ -1,0 +1,193 @@
+# Folders and programs of real packages (the user's library) and the ErogameScape game each is, against
+# testdata/egs-games.tsv.gz (crates/ippai/src/egs_match.rs, test corpus::library). Columns: folder, program, expected:
+# an id (checked by hand), - (none matches: not in the list or no usable name), or x<id> (matched wrongly today: id it
+# picks; to fix, not to keep). The title given is the folder's last part, the program at the tree's root.
+frontwing\ピュアガール	puregirl.exe	17039
+Key\LOOPERS	SiglusEngine.exe	30345
+Key\Tomoyo After	RealLive.exe	-
+まどソフト\セレクトオブリージュ DL版	selectoblige.exe	-
+ゆずソフト\PARQUET	PARQUET.exe	31434
+aniplex.exe\ATRI	ATRI-MyDearMoments-.exe	29089
+Astronauts\Re Build	DarkCastleRebuild.exe	-
+Astronauts\極限痴漢特異点 Ver1.01	ExtremeMolesterTerminus.exe	29581
+Astronauts\深淵のラビリントス\program files\Astronauts_Sirius\深淵のラビリントス	LabyrinthosoftheAbyss.exe	32420
+Astronauts\深淵のラビリントス\深淵のラビリントス ハーレムコンテンツ	LabyrinthosoftheAbyss_Harem.exe	33015
+Astronauts\艶嬢学園２ ー熾天使たちの花園ー 1.01	GlossySchool2.exe	-
+August\千の刃濤、桃花染の皇姫	ISESUforSHTK.exe	20967
+August\夜明け前より瑠璃色な	ESS.exe	4979
+August\夜明け前より瑠璃色な - Brighter than dawning blue	ESS.exe	12335
+August\夜明け前より瑠璃色な - Moonlight Cradle	ESS.exe	11460
+CROSS†CHANNEL～FINAL COMPLETE～	cc.exe	20848
+CUBE\kamikimiEXDL	神様のような君へ Extended Edition.exe	32183
+CUBE\倉野くんちのふたご事情	倉野くんちのふたご事情.exe	17369
+CUBE\間宮くんちの五つ子事情	間宮くんちの五つ子事情.exe	22475
+D.C\D.C.4 - Fortunate Departures -	DC4_FD.exe	30160
+D.C\D.C.4 Sweet Harmony ～ダ・カーポ4～ スイートハーモニー	DC4_SH.exe	32033
+D.C\D.C.5 Sweet Happiness	SupportTools.exe	-
+D.C\DC2BS	DC2BS.EXE	-
+D.C\DC2CC_KOKO	DC2CC_KOKO.EXE	-
+D.C\DC2CC_OTOME	DC2CC_OTOME.EXE	-
+D.C\DC2DM	DC2DM.EXE	-
+D.C\DC2FL	DC2FL.EXE	-
+D.C\DC2PC	DC2PC.EXE	-
+D.C\DC2SC	DC2SC.EXE	-
+D.C\DC2TY	DC2TY.EXE	-
+D.C\DC3DD	DC3DD.EXE	-
+D.C\DC3PP	DC3PP.exe	-
+D.C\DC3RX	DC3RX.EXE	-
+D.C\DC3WY	DC3WY.EXE	-
+D.C\DC4	DC4.EXE	-
+D.C\DC4PHDL	DC4PHDL.exe	-
+D.C\DC5PH_M	DC5PH.exe	-
+D.C\DCASDVD	DCASDVD.exe	-
+D.C\DCDX	DCDX.EXE	-
+D.C\DCMEMORIES	DCMEMORIES.EXE	-
+D.C\DCPCV	DCPCV.EXE	-
+D.C\DCPKDVD	DCPKDVD.EXE	-
+D.C\DCSV	DCSV.EXE	-
+D.C\DCWS	DCWS.EXE	-
+D.C\Dc_Onsen	Dc_Onsen.EXE	-
+DMM\nanpa	nanpa.exe	-
+DMM\yakin_re	yakin_re.exe	-
+Fate stay night Realta Nua	Fate／stay night[Realta Nua] -Fate-.exe	16431
+favorite\いろとりどりのヒカリHD\IROHIKA_HD	irohika_HD.exe	-
+favorite\さくら、もゆ。	launch.exe	26245
+favorite\紅い瞳に映るセカイHD\AKASEKA_HD	akaseka_HD.exe	-
+frontwing\旧グリザイア\グリザイアの果実	Grisaia.exe	14237
+frontwing\旧グリザイア\グリザイアの楽園	Grisaia3.exe	15916
+frontwing\旧グリザイア\グリザイアの迷宮	Grisaia2.exe	15915
+HARUKAZE\ノラと皇女と野良猫ハート TVアニメ化記念特装版	ノラと皇女と野良猫ハート.exe	22474
+HARUKAZE\ノラと皇女と野良猫ハート２	ノラと皇女と野良猫ハート２.exe	24085
+HOOKSOFT\ハッピーウィークエンド_Ver101	ハッピーウィークエンド.exe	-
+Hulotte\ココロのカタチとイロとオト	ココロのカタチとイロとオト.exe	30004
+Hulotte\俺の姿が､透明に! 不可視の薬と数奇な運命	不可視の薬と数奇な運命.exe	28936
+Hulotte\俺の瞳で丸裸！ 不可知な未来と視透かす運命 初回版 DL版	不可知な未来と視透かす運命.exe	34211
+Hulotte\叶とメグリとのその後がイチャらぶすぎてヤバい。	叶とメグリとのその後がイチャらぶすぎてヤバい。.exe	20699
+Hulotte\妹のおかげでモテすぎてヤバい。	妹のおかげでモテすぎてヤバい。.exe	19477
+Hulotte\嫁探しが捗りすぎてヤバい。	嫁探しが捗りすぎてヤバい。.exe	22150
+Hulotte\時間停止と不可避な運命	時間停止と不可避な運命.exe	27034
+Hulotte\神頼みしすぎて俺の未来がヤバい。	神頼みしすぎて俺の未来がヤバい。.exe	24029
+Key\anemoi	Start.exe	-
+Key\Rewrite_plus	SiglusEngine.exe	x10917
+Key\クドわふたー	REALLIVE.EXE	13525
+Key\終のステラ	SiglusEngine.exe	31597
+leaf\WHITE ALBUM2	WA2.exe	x21458
+leaf\WHITE ALBUM2 Special Contents	WA2_Special.exe	-
+Lump of Sugar\ねこツク、さくら。	Nekotsuku.exe	29403
+MOONSTONE Cherry\妹ぱらだいす2	imopara2.exe	18035
+MOONSTONE Cherry\妹ぱらだいす！Hアニメ増量版	imouto.backup00000000.exe	-
+MOONSTONE Cherry\妹ぱらだいす！３	imopara3.exe	25783
+NanaWind\白恋サクラ＊グラム	ShirokoiSakuraGram.exe	26302
+NanaWind\白恋サクラ＊グラムLF	SakuraGramLF.exe	31880
+NanaWind\花鐘カナデグラム Chapter2 花ノ香澄玲	HanaganeKanadeGram.exe	32465
+NanaWind\花鐘カナデ＊グラム	花鐘カナデ＊グラム：おっぱいぷるるん露出パッチ（小桜結）.exe	-
+Navel\PrincessPrincess	PrincessPrincess.exe	30545
+Navel\SHUFFLE2!	SHUFFLE_episode2.exe	-
+Navel\SHUFFLE！Essence＋	SHFL_EP.EXE	11064
+Navel\保健室のセンセーとゴスロリの校医	hokeloli.exe	32017
+Navel\月に寄りそう乙女の作法21ExSxPAR	月に寄りそう乙女の作法21.exe	22058
+Navel\月に寄りそう乙女の作法_FullVoiceEdition	月に寄りそう乙女の作法_FV.exe	17334
+Navel\月に寄りそう乙女の作法２	月に寄りそう乙女の作法２.exe	20602
+Overflow\CrossDays	CrossDays.exe	11694
+Overflow\SCHOOLDAYS HQ	SCHOOLDAYS HQ.exe	13913
+Overflow\SHINYDAYS	SHINYDAYS.exe	15294
+Purple\Lip lipples	liplipples.exe	-
+Purple\アオイトリ	cmvs32.exe	25602
+Purple\ハピメア RE.ver	cmvs64.exe	-
+Purple\ハピメアFD RE.ver	cmvs64.exe	-
+Qruppo\抜きゲーみたいな島に住んでる貧乳はどうすりゃいいですか？	NUKITASHI.EXE	26724
+Qruppo\抜きゲーみたいな島に住んでる貧乳はどうすりゃいいですか？２	NUKITASHI2.EXE	27720
+SAGA PLANETS\AMBITIOUS MISSION + Wallpaper	ambitious_mission.exe	32004
+SAGA PLANETS\AMBITIOUS MISSION アフターエピソード1	ambmission_after1.exe	33956
+SAGA PLANETS\AMBITIOUS MISSION アフターエピソード２	ambmission_after2.exe	33957
+SAGA PLANETS\フローラル・フローラブ	SiglusEngine.exe	23433
+SAGA PLANETS\金色ラブリッチェ	SiglusEngine.exe	25861
+SAGA PLANETS\金色ラブリッチェ-GoldenTime-	kinkoi_gt.exe	27485
+silkysplus\kimaten	kimaten.exe	-
+STEINS;GATE HD	Game.exe	13842
+strip\蒼の彼方のフォーリズムEXTRA1_4BOX	蒼の彼方のフォーリズムEXTRA1_4BOX.exe	-
+strip\蒼の彼方のフォーリズムPerfect Edition	蒼の彼方のフォーリズムPerfect Edition.exe	26972
+Studio Mebius\SNOWFV	MEBIUS34.exe	-
+tone works\月の彼方で逢いましょうSSR_DL版	SiglusEngine.exe	27525
+tone works\銀色、遥か	SiglusEngine.exe	22258
+あかべぇそふとつぅ\Role player：いくら姉妹の粘膜ポトレ　ぐりぐちゃLIVE！	Role_player_ikura.exe	30818
+あかべぇそふとつぅ\Role player：とろろ姉妹の粘膜ポトレ ぐりぐちゃLIVE！ APPEND＋版	rpsisters2.exe	34769
+あかべぇそふとつぅ\いくら姉妹の粘膜ポトレ	rpsisters3_su.exe	-
+あかべぇそふとつぅ\小粥姉妹の粘膜ポトレ ぐりぐちゃLIVE！	rpsisters.exe	30818
+あざらし\[250627][1323073][あざらしそふと＋1] シークレット・デッサン DL版 (files)\secret_drawing	secret_drawing.exe	-
+あざらし\ガルドマ-女子寮の管理人-After	girldorm_after.exe	x34204
+きゃべつソフト\さくらの雲＊スカアレットの恋	saclet.exe	28762
+きゃべつソフト\アメイジング・グレイス	amegure.exe	27059
+きゃべつソフト\ジュエリー・ハーツ・アカデミア -We will wing wonder world-	jeweha.exe	32066
+すれ違う兄妹の壊れる倫理観	すれ違う兄妹の壊れる倫理観.exe	-
+はむはむソフト\いもうと美姫ちゃんの生配信ちゃんねる！	Start.exe	-
+ぱれっと\9-nine-DLC\nine_haruiro_Steam_R18DLC	nine_haruiro_Steam_R18DLC.exe	-
+ぱれっと\9-nine-DLC\nine_sorairo_Steam_R18DLC	nine_sorairo_Steam_R18DLC.exe	-
+ぱれっと\9-nine-DLC\nine_yukiiro_Steam_R18DLC	nine_yukiiro_Steam_R18DLC.exe	-
+ぱれっと\オトメ＊ドメイン	オトメドメイン.exe	22476
+まどソフト\ハミダシクリエイティブ	hamidashi.exe	29095
+まどソフト\ハミダシクリエイティブReRecall DL版	hamidashirerecall.exe	x29095
+まどソフト\ハミダシクリエイティブ凸	hamidashitotsu.exe	32521
+まどソフト\ラズベリーキューブ	raspberrycube.exe	26713
+まどソフト\ワガママハイスペックOC	WagamamaHighSpecOC.exe	24722
+みるくふぁくとりー\おっぱいバニー学園	hbunny.exe	-
+みるくふぁくとりー\もっと！孕ませ！炎のおっぱい異世界おっぱいメイド学園！	hmaid.exe	33322
+みるくふぁくとりー\もっと！孕ませ！炎のおっぱい異世界エロ魔法学園！	もっと！孕ませ！炎のおっぱい異世界エロ魔法学園！.exe	25031
+みるくふぁくとりー\もっと！孕ませ！炎のおっぱい異世界超エロ♥サキュバス学園！	hsuc.exe	30387
+みるくふぁくとりー\もっと！孕ませ！炎のおっぱい超エロ▼アプリ学園！	heapps.exe	28072
+ゆずソフト\DRACU-RIOT!	dracuriot.exe	16212
+ゆずソフト\RIDDLE JOKER	RiddleJoker.exe	26189
+ゆずソフト\のーぶる☆わーくす(PENTABOX)	nobleworks.exe	14006
+ゆずソフト\ぶらばん！(PENTABOX)	braban!.exe	-
+ゆずソフト\サノバウィッチ	SabbatOfTheWitch.exe	21076
+ゆずソフト\ライムライト・レモネードジャム	limelight_lj.exe	-
+ゆずソフト\千恋＊万花	SenrenBanka.exe	23425
+ゆずソフト\喫茶ステラと死神の蝶	CafeStella.exe	28526
+ゆずソフト\夏空カナタ(PENTABOX)	natsukana.exe	10328
+ゆずソフト\天使☆騒々 RE-BOOT!	tenshi_sz.exe	33651
+ゆずソフト\天神乱漫(PENTABOX)	tenshin.exe	-
+ゆずソフト\Ｅ×Ｅ(PENTABOX)	yuzuexe.exe	-
+アストロノーツ シリアス\[250627][1327479][アストロノーツ・シリウス] 極限痴漢特異点NEO DL版 (files)\[250627][1327479][アストロノーツ・シリウス] 極限痴漢特異点NEO 早期購入特典 ハーレムコンテンツ (files)\極限痴漢特異点NEO ハーレムコンテンツ	EMTNEO_harem .exe	29581
+アリスソフト\ドーナドーナ いっしょにわるいことをしよう	dohnadohna.exe	29109
+オトメ世界の歩き方	otomeki.exe	-
+ケロ枕\サクラノ刻	sakuranotoki.exe	25169
+ケロ枕\サクラノ詩	BGI.exe	x11396
+ケロ枕\終ノ空remake	tuinosora_remake.exe	29931
+コットンソフト\終わる世界とバースデイ	終わる世界とバースデイ.exe	16752
+ネコぱら\nekopara_after	nekopara_after.exe	-
+ネコぱら\ネコぱら Vol.0 DL版	ネコぱら vol.0 【ダウンロード版】 (JP EN CH).exe	22153
+ネコぱら\ネコぱら vol.1 ソレイユ開店しました！	SupportTools.exe	20772
+ネコぱら\ネコぱら vol.2 姉妹ネコのシュクレ	SupportTools.exe	22659
+ネコぱら\ネコぱらExtra 仔ネコの日の約束	nekopara_extra.exe	27020
+ネコぱら\ネコぱらvol.4 ～ネコとパティシエのノエル～	nekopara_vol4.exe	28396
+ユニゾンソフト\kohinata_dl_sp	kohinata.exe	-
+妹(姉)は兄(弟)の性癖を歪ませたい！	yugamase.exe	-
+戯画\Parfait	Parfait.exe	x4451
+戯画\ParfaitRemake	ParfaitRemake.exe	-
+枕\サクラノ詩	BGI.exe	x11396
+枕\サクラノ詩 10周年	sakuranouta10th.exe	-
+根暗なクラスメイトが俺の胃袋を掴んで放してくれない	根クラ.exe	-
+魔女こいにっき	MAJOKOI.exe	19471
+DMM\nanpa_re	nanpa_re.exe	-
+ensemble\乙女が結ぶ月夜の煌めき	Startup.exe	27013
+ensemble\乙女が結ぶ月夜の煌めき Fullmoon Days	Startup.exe	27817
+frontwing\グリザイアの果実	Grisaia.exe	14237
+Key\planetarian雪圏球	SiglusEngine.exe	31247
+Key\Summer Pockets REFLECTION BLUE	SiglusEngine.exe	29016
+Key\リトルバスターズ！ＥＸ	REALLIVE.EXE	x7062
+minori\ef - the first tale.（ダウンロード版）	ef_first_dlns.exe	4862
+minori\ef - the latter tale.（ダウンロード版）	ef_latter_dlns.exe	8008
+NanaWind\春音アリス＊グラム	HaruotoAliceGram.exe	23438
+Navel\SHUFFLE! Essence+	SHFL_EP.exe	11064
+Navel\保健室のセンセーと小悪魔な会長	hokecho__Crack.exe	32483
+Purple\青春フラジャイル + Original Soundtrack	cmvs64.exe	29474
+SAGA PLANETS\SAGAPLANETS\はつゆきさくら	SiglusEngine.exe	15425
+SAGA PLANETS\カルマルカ＊サークル	SiglusEngine.exe	18941
+SAGA PLANETS\花咲ワークスプリング！	SiglusEngine.exe	21080
+silkysplus\kimaten2	kimaten2.exe	-
+tone works\月の彼方で逢いましょう + 同梱特典	AlphaROMdiE.exe	27525
+あざらし\シークレットラブ（仮）純愛アフターストーリー	シークレットラブ（仮）純愛アフターストーリー_Crack.exe	-
+ケロ枕\素晴らしき日々HD	BGI.exe	-
+戯画\Aozora	Aozora.exe	-
+戯画\アイキスFD 七瀬アフター	アイキスFD 七瀬アフター.exe	33588
+白昼夢の青写真	cs2.exe	28941

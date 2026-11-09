@@ -91,3 +91,27 @@ export async function untilSettled(
     if (!s || s.state !== "pending") return s;
   }
 }
+
+/** An ErogameScape game like this one (crates/ippai/src/library_api.rs candidates). */
+export interface Candidate {
+  id: number;
+  name: string;
+  /** 0-1 */
+  score: number;
+  votes: number;
+  /** the one taken without asking */
+  best: boolean;
+}
+
+/** The ErogameScape games most like `game`'s names, or `q`. */
+export async function candidates(game: string, q = ""): Promise<Candidate[]> {
+  const url = new URL(`api/library/${encodeURIComponent(game)}/candidates`, location.href);
+  if (q.trim()) url.searchParams.set("q", q.trim());
+  const r = await fetch(url);
+  if (!r.ok) throw await failure(r);
+  return (await r.json()) as Candidate[];
+}
+
+/** A candidate's page on ErogameScape. */
+export const egsPage = (id: number) =>
+  `https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=${id}`;
