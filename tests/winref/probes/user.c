@@ -3,7 +3,9 @@
  * ones, WM_QUIT last, WM_TIMER and WM_PAINT generated only when nothing is posted, GetQueueStatus
  * bits, message time/pos fields aside), the messages CreateWindow / ShowWindow / SetWindowPos /
  * DestroyWindow send to the window procedure and their order, window longs and styles,
- * client/window rectangles of fixed styles, class registration errors, window properties.
+ * client/window rectangles of fixed styles, class registration errors, window properties;
+ * windows asked bigger than the screen (kept within WM_GETMINMAXINFO's tracking size by
+ * CreateWindowEx and DefWindowProc's WM_WINDOWPOSCHANGING, popups without a sizing frame not).
  * libs: -lgdi32 */
 #include "../probe.h"
 
@@ -84,8 +86,77 @@ static void drain(const char *label) {
     printf("\n");
 }
 
+static int bigmax;
+static LRESULT CALLBACK bigproc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_GETMINMAXINFO && bigmax) {
+        MINMAXINFO *i = (MINMAXINFO *)l;
+        i->ptMaxTrackSize.x = i->ptMaxTrackSize.y = bigmax;
+        return 0;
+    }
+    return DefWindowProcA(h, m, w, l);
+}
+
+/* what a window asked 5000x5000 gets, as 'tx'/'ty' for SM_CX/CYMAXTRACK, else its size */
+static void bigsize(const char *label, HWND h) {
+    RECT r;
+    GetWindowRect(h, &r);
+    int w = r.right - r.left, ht = r.bottom - r.top, mx = GetSystemMetrics(SM_CXMAXTRACK), my = GetSystemMetrics(SM_CYMAXTRACK);
+    char a[16], b[16];
+    if (w == mx) strcpy(a, "tx"); else sprintf(a, "%d", w);
+    if (ht == my) strcpy(b, "ty"); else sprintf(b, "%d", ht);
+    printf("%s: %s x %s\n", label, a, b);
+}
+
+static void big(void) {
+    WNDCLASSA wc = { 0 };
+    wc.lpfnWndProc = bigproc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = "ippai-big";
+    RegisterClassA(&wc);
+    printf("maxtrack beyond screen %d %d\n", GetSystemMetrics(SM_CXMAXTRACK) > GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYMAXTRACK) > GetSystemMetrics(SM_CYSCREEN));
+    printf("maxtrack x != y %d\n", GetSystemMetrics(SM_CXMAXTRACK) != GetSystemMetrics(SM_CYMAXTRACK));
+    static const struct { const char *name; DWORD style; } st[] = {
+        { "overlapped", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX },
+        { "overlappedwindow", WS_OVERLAPPEDWINDOW },
+        { "popup", WS_POPUP },
+        { "popup-thickframe", WS_POPUP | WS_THICKFRAME },
+        { "popup-caption", WS_POPUP | WS_CAPTION },
+    };
+    for (int k = 0; k < 5; k++) {
+        char l[64];
+        HWND h = CreateWindowExA(0, "ippai-big", "big", st[k].style, 0, 0, 5000, 5000, NULL, NULL, wc.hInstance, NULL);
+        sprintf(l, "create %s", st[k].name); bigsize(l, h);
+        SetWindowPos(h, NULL, 0, 0, 100, 100, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(h, NULL, 0, 0, 5000, 5000, SWP_NOZORDER | SWP_NOACTIVATE);
+        sprintf(l, "setpos %s", st[k].name); bigsize(l, h);
+        MoveWindow(h, 0, 0, 5000, 5000, FALSE);
+        sprintf(l, "move %s", st[k].name); bigsize(l, h);
+        DestroyWindow(h);
+    }
+    /* a window procedure that allows more: it gets it */
+    bigmax = 6000;
+    HWND h = CreateWindowExA(0, "ippai-big", "big", WS_OVERLAPPEDWINDOW, 0, 0, 5000, 5000, NULL, NULL, wc.hInstance, NULL);
+    bigsize("create allowed", h);
+    SetWindowPos(h, NULL, 0, 0, 5500, 5500, SWP_NOZORDER | SWP_NOACTIVATE);
+    bigsize("setpos allowed", h);
+    DestroyWindow(h);
+    /* and one that allows less */
+    bigmax = 300;
+    h = CreateWindowExA(0, "ippai-big", "big", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, NULL, NULL, wc.hInstance, NULL);
+    bigsize("create max 300", h);
+    SetWindowPos(h, NULL, 0, 0, 200, 900, SWP_NOZORDER | SWP_NOACTIVATE);
+    bigsize("setpos max 300", h);
+    /* SWP_NOSIZE keeps the size it has */
+    SetWindowPos(h, NULL, 5, 5, 0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+    bigsize("nosize max 300", h);
+    DestroyWindow(h);
+    bigmax = 0;
+    UnregisterClassA("ippai-big", wc.hInstance);
+}
+
 int main(void) {
     rects();
+    big();
 
     WNDCLASSA wc = { 0 };
     wc.lpfnWndProc = proc;

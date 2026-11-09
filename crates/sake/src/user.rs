@@ -366,7 +366,8 @@ pub fn metric(i: u32) -> i32 {
         51 => 15,
         52 | 53 => 13,
         54 | 55 => 18,
-        59 | 60 => w + 12,
+        59 => w + 12,
+        60 => h + 12,
         63 => 3,
         71 | 72 => 16,
         75 => 1,
@@ -1521,14 +1522,36 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         destroy(c, h);
         return 0;
     }
-    // MINMAXINFO for WM_GETMINMAXINFO
+    // MINMAXINFO for WM_GETMINMAXINFO: the size kept within its tracking sizes (Wine's
+    // CreateWindowEx: top-level windows only)
     let mmi = cs + if x64 { 0x60 } else { 0x40 };
     if !child {
-        let (sw, sh) = screen();
-        for (k, v) in [0, 0, sw, sh, 0, 0, 112, 27, sw + 12, sh + 12].iter().enumerate() {
-            w32(mmi + 4 * k as u32, *v as u32);
-        }
+        minmax_defaults(mmi);
         send(c, h, 0x24, 0, mmi);
+        let v = |k: u32| r32(mmi + 4 * k) as i32;
+        let (ncx, ncy) = track_clamp(style, (cx, cy), (v(6), v(7)), (v(8), v(9)));
+        if (ncx, ncy) != (cx, cy) {
+            if crate::env_on!("SAKE_TRACE_WIN") {
+                eprintln!("sake: CreateWindowEx {h:x}: {cx}x{cy} kept to {ncx}x{ncy}");
+            }
+            (cx, cy) = (ncx, ncy);
+            with(|s| {
+                if let Some(w) = s.wins.get_mut(&h) {
+                    w.rect = Rect { l: x, t: y, r: x + cx, b: y + cy };
+                    let has_menu = w.menu != 0;
+                    w.client = client_of(&w.rect, w.style, w.exstyle, has_menu);
+                    resize_surface(w);
+                }
+            });
+            // (CREATESTRUCT's cx, cy: what the window got)
+            if x64 {
+                w32(cs + 36, cx as u32);
+                w32(cs + 32, cy as u32);
+            } else {
+                w32(cs + 20, cx as u32);
+                w32(cs + 16, cy as u32);
+            }
+        }
     }
     let ok = send(c, h, 0x81, 0, cs);
     if ok == 0 {
@@ -1797,6 +1820,48 @@ const SWP_NOCLIENTSIZE: u32 = 0x800;
 const SWP_NOCLIENTMOVE: u32 = 0x1000;
 const SWP_BY_SHOWWINDOW: u32 = 0x1000_0000;
 const SWP_BY_HIDEWINDOW: u32 = 0x2000_0000;
+
+/// Whether Windows keeps window `style`'s size within its WM_GETMINMAXINFO tracking sizes
+/// (CreateWindowEx, DefWindowProc's WM_WINDOWPOSCHANGING): a sizing frame, or an overlapped
+/// window (neither WS_POPUP nor WS_CHILD).
+fn tracks(style: u32) -> bool {
+    style & 0x0004_0000 != 0 || style & 0xc000_0000 == 0
+}
+
+/// `(cx, cy)` kept within the tracking sizes `min` and `max`: at most `max`, then (unless
+/// minimized) at least `min`, as Wine's WINPOS_HandleWindowPosChanging. A window asked bigger
+/// than the screen (KiriKiri's 1920x1080 on sake's 1366x768) is made to fit, as on Windows,
+/// instead of reaching past the screen's edge (the page then showed only part of it).
+fn track_clamp(style: u32, (cx, cy): (i32, i32), min: (i32, i32), max: (i32, i32)) -> (i32, i32) {
+    if !tracks(style) {
+        return (cx, cy);
+    }
+    let (mut cx, mut cy) = (cx.min(max.0), cy.min(max.1));
+    if style & 0x2000_0000 == 0 {
+        cx = cx.max(min.0);
+        cy = cy.max(min.1);
+    }
+    (cx, cy)
+}
+
+/// MINMAXINFO's defaults for a top-level window on this screen, written at `p` (40 bytes).
+fn minmax_defaults(p: u32) {
+    let (sw, sh) = screen();
+    for (k, v) in [0, 0, sw, sh, 0, 0, metric(34), metric(35), metric(59), metric(60)].iter().enumerate() {
+        w32(p + 4 * k as u32, *v as u32);
+    }
+}
+
+/// WM_GETMINMAXINFO to `h`: its (min, max) tracking sizes.
+fn minmax(c: &mut Ctx, h: u32) -> ((i32, i32), (i32, i32)) {
+    let p = mem::heap_alloc(40, true);
+    minmax_defaults(p);
+    send(c, h, 0x24, 0, p);
+    let v = |k: u32| r32(p + 4 * k) as i32;
+    let r = ((v(6), v(7)), (v(8), v(9)));
+    mem::heap_free(p);
+    r
+}
 
 /// SetWindowPos: WM_WINDOWPOSCHANGING (which may change the request), WM_NCCALCSIZE when the
 /// size changes, WM_WINDOWPOSCHANGED unless nothing changed (DefWindowProc turns it into
@@ -2717,7 +2782,21 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
             0
         }
         0x21 => 1,
-        0x46 => 0,
+        0x46 => {
+            // (the size kept within the window's tracking sizes, as Windows')
+            let (x, y, cx, cy, f) = windowpos_read(lp);
+            let style = with(|s| s.wins.get(&h).map(|w| w.style));
+            if let Some(style) = style.filter(|&st| f & 1 == 0 && tracks(st)) {
+                let (min, max) = minmax(c, h);
+                let (ncx, ncy) = track_clamp(style, (cx, cy), min, max);
+                if (ncx, ncy) != (cx, cy) {
+                    let ps = mem::ps();
+                    let (hw, after) = (mem::rp(lp), mem::rp(lp + ps));
+                    windowpos_write(lp, hw, after, x, y, ncx, ncy, f);
+                }
+            }
+            0
+        }
         0x47 => {
             let (.., f) = windowpos_read(lp);
             send_move_size(c, h, f & SWP_NOCLIENTMOVE == 0, f & SWP_NOCLIENTSIZE == 0);
@@ -6400,6 +6479,61 @@ fn app_id_params() -> (u32, u32) {
     } else {
         let pp = r32(peb + 0x10);
         (pp + 0x68, pp + 0x70)
+    }
+}
+
+#[cfg(test)]
+mod track_tests {
+    use super::{track_clamp, tracks};
+    use proptest::prelude::*;
+
+    const OVERLAPPED: u32 = 0x00cb_0000; // WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+    const POPUP: u32 = 0x8000_0000;
+
+    /// winref user's "big" answers, with sake's 1366x768 screen (tracking size 1378x780).
+    #[test]
+    fn big_windows_as_windows_keeps_them() {
+        let (min, max) = ((112, 27), (1378, 780));
+        // the 俺の姿が､透明に! window: KiriKiri's 1920x1080 (and frame) made to fit
+        assert_eq!(track_clamp(OVERLAPPED, (1926, 1109), min, max), (1378, 780));
+        assert_eq!(track_clamp(0x00cf_0000, (5000, 5000), min, max), (1378, 780));
+        assert_eq!(track_clamp(POPUP, (5000, 5000), min, max), (5000, 5000));
+        assert_eq!(track_clamp(POPUP | 0x0004_0000, (5000, 5000), min, max), (1378, 780));
+        assert_eq!(track_clamp(POPUP | 0x00c0_0000, (5000, 5000), min, max), (5000, 5000));
+        assert_eq!(track_clamp(0x00cf_0000, (5000, 5000), min, (6000, 6000)), (5000, 5000));
+        assert_eq!(track_clamp(0x00cf_0000, (200, 900), min, (300, 300)), (200, 300));
+        // what fits is left as it is (AdvHD's 1280x720 with its frame)
+        assert_eq!(track_clamp(OVERLAPPED, (1286, 749), min, max), (1286, 749));
+        // grown to the least, unless minimized
+        assert_eq!(track_clamp(OVERLAPPED, (10, 5), min, max), (112, 27));
+        assert_eq!(track_clamp(OVERLAPPED | 0x2000_0000, (10, 5), min, max), (10, 5));
+    }
+
+    #[test]
+    fn which_styles_are_kept() {
+        assert!(tracks(0) && tracks(OVERLAPPED) && tracks(POPUP | 0x0004_0000) && tracks(0x4004_0000));
+        assert!(!tracks(POPUP) && !tracks(0x4000_0000) && !tracks(POPUP | 0x00c0_0000));
+    }
+
+    proptest! {
+        /// A kept size is within [min, max] (max winning where they cross, minimized windows
+        /// only capped), never changes what already fits, and is the request for the others.
+        #[test]
+        fn clamp_model(style: u32, cx in -100i32..9000, cy in -100i32..9000, minx in 0i32..400, miny in 0i32..400, maxx in 0i32..9000, maxy in 0i32..9000) {
+            let (rx, ry) = track_clamp(style, (cx, cy), (minx, miny), (maxx, maxy));
+            if !tracks(style) {
+                prop_assert_eq!((rx, ry), (cx, cy));
+            } else {
+                let mini = style & 0x2000_0000 != 0;
+                let want = |v: i32, lo: i32, hi: i32| if mini { v.min(hi) } else { v.min(hi).max(lo) };
+                prop_assert_eq!((rx, ry), (want(cx, minx, maxx), want(cy, miny, maxy)));
+                if cx >= minx && cx <= maxx && cy >= miny && cy <= maxy {
+                    prop_assert_eq!((rx, ry), (cx, cy));
+                }
+                // idempotent
+                prop_assert_eq!(track_clamp(style, (rx, ry), (minx, miny), (maxx, maxy)), (rx, ry));
+            }
+        }
     }
 }
 
