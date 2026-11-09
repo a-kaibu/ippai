@@ -108,7 +108,7 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/apps-browser.mjs target/debug/ippai
-      - name: The game list (name, icons, 統計 at the top right, favorites, statistics)
+      - name: The game list (name, icons, 設定 sidebar with server update, app, statistics and reset; order and sections; favorites)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/library-browser.mjs target/debug/ippai

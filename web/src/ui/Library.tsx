@@ -1,17 +1,16 @@
-// The game list (play.html without ?run=): a header (name, search, 統計 at the top right), the
-// game last played to continue, the cards with cover, brand, year and score from `ippai meta`,
-// and a dialog with the game's details and records. Picking a game starts it from that click
+// The game list (play.html without ?run=): a header (name, search, 設定 at the top right: a
+// sidebar, ui/Settings.tsx), the game last played to continue, the cards with cover, brand, year
+// and score from `ippai meta` (ordered and split into sections by brand or year as chosen:
+// library-view.ts), and a dialog with the game's details and records. Picking a game starts it from that click
 // (audio and fullscreen need the user gesture).
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  BarChart3,
   Download,
   ExternalLink,
   HardDrive,
   Heart,
   Info,
-  MonitorDown,
   NotebookPen,
   Play,
   RefreshCw,
@@ -42,12 +41,25 @@ import {
   type MetaStatus,
 } from "../meta-source";
 import { api } from "../library-data";
-import { sortGames, visibleGames, when, type Filter } from "../library-view";
+import {
+  GROUPS,
+  groupGames,
+  orderGames,
+  parseView,
+  SORTS,
+  sortGames,
+  visibleGames,
+  when,
+  type Filter,
+  type GroupKey,
+  type ListView,
+  type SortKey,
+} from "../library-view";
 import { dropOffline, offlineState, saveOffline, type OfflineState } from "../offline";
 import { useApp } from "../pwa";
 import { fetchBuild } from "../version";
-import { Backup, Note, Statistics, useProfile } from "./Personal";
-import { AccountSettings } from "./AccountSettings";
+import { Backup, Note, useProfile } from "./Personal";
+import { Settings as SettingsPanel } from "./Settings";
 import { renderShell } from "./Shell";
 
 /** The app's mark: the sake bottle (the same as the favicon and app icons). */
@@ -623,12 +635,56 @@ function GameInfo({
   );
 }
 
+const VIEW = "ippai-library-view";
+const loadView = (): ListView => {
+  try {
+    return parseView(localStorage.getItem(VIEW));
+  } catch {
+    return parseView(null);
+  }
+};
+const saveView = (v: ListView) => {
+  try {
+    localStorage.setItem(VIEW, JSON.stringify(v));
+  } catch {
+    // (storage blocked: the choice lasts for this page)
+  }
+};
+
+function ViewSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly { key: string; label: string }[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="flex min-w-0 items-center gap-1.5 text-xs whitespace-nowrap text-muted-foreground">
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm text-foreground shadow-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      >
+        {options.map((o) => (
+          <option key={o.key} value={o.key}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick: (g: GameEntry) => void }) {
   const [games, setGames] = useState(listed);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [favoriteError, setFavoriteError] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
-  const [stats, setStats] = useState(false);
   const [settings, setSettings] = useState(false);
   const settingsButton = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState("");
@@ -648,14 +704,23 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
   }, []);
   const app = useApp();
   const last = useMemo(played, []);
-  const sorted = useMemo(() => sortGames(games, last), [games, last]);
-  const shown = visibleGames(sorted, query, filter, favorites);
-  const recent = sorted[0] && last[sorted[0].id] ? sorted[0] : null;
+  const [view, setViewState] = useState<ListView>(loadView);
+  const setView = (v: Partial<ListView>) =>
+    setViewState((old) => {
+      const next = { ...old, ...v };
+      saveView(next);
+      return next;
+    });
+  const byRecent = useMemo(() => sortGames(games, last), [games, last]);
+  const ordered = useMemo(() => orderGames(games, view.sort, last), [games, view.sort, last]);
+  const shown = visibleGames(ordered, query, filter, favorites);
+  const groups = groupGames(shown, view.group);
+  const recent = byRecent[0] && last[byRecent[0].id] ? byRecent[0] : null;
   const favoriteCount = games.filter((g) => favorites.includes(g.id)).length;
   const setFavorite = (id: string, on: boolean) =>
     setFavorites((f) => (on ? [...new Set([...f, id])] : f.filter((x) => x !== id)));
   return (
-    <main className="fixed inset-0 z-40 overflow-y-auto bg-background">
+    <main className={cn("fixed inset-0 z-40 overflow-y-auto bg-background", settings && "lg:pr-96")}>
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-md">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4">
           <a
@@ -686,31 +751,13 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
           <div className="ml-auto flex shrink-0 items-center gap-1.5" data-header-actions>
             <Button
               ref={settingsButton}
-              variant="outline"
+              variant={settings ? "secondary" : "outline"}
               size="sm"
-              onClick={() => setSettings(true)}
+              onClick={() => setSettings((open) => !open)}
               aria-label="設定"
+              aria-expanded={settings}
             >
               <Settings aria-hidden="true" /> <span className="max-sm:hidden">設定</span>
-            </Button>
-            {app.install && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={app.install}
-                title="ホーム画面・デスクトップにアプリとして追加"
-              >
-                <MonitorDown /> <span className="max-md:hidden">アプリにする</span>
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setStats(true)}
-              aria-label="統計"
-              title="プレイ統計"
-            >
-              <BarChart3 /> <span className="max-sm:hidden">統計</span>
             </Button>
           </div>
         </div>
@@ -769,6 +816,20 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
+              <div className="grid w-full grid-cols-2 gap-2 sm:ml-auto sm:flex sm:w-auto">
+                <ViewSelect
+                  label="並び順"
+                  value={view.sort}
+                  options={SORTS}
+                  onChange={(sort) => setView({ sort: sort as SortKey })}
+                />
+                <ViewSelect
+                  label="区分け"
+                  value={view.group}
+                  options={GROUPS}
+                  onChange={(group) => setView({ group: group as GroupKey })}
+                />
+              </div>
             </div>
             {!shown.length ? (
               <div className="mt-12 grid justify-items-center gap-3 text-center text-sm text-muted-foreground">
@@ -784,40 +845,43 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
                 )}
               </div>
             ) : (
-              <ul className="grid grid-cols-2 gap-x-3 gap-y-6 sm:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] sm:gap-x-4">
-                {shown.map((g) => (
-                  <GameCard
-                    key={g.id}
-                    game={g}
-                    last={last[g.id]}
-                    favorite={favorites.includes(g.id)}
-                    onPick={() => onPick(g)}
-                    onInfo={() => setInfo(g)}
-                  />
+              <div className="grid gap-8">
+                {groups.map((group) => (
+                  <section key={group.key} aria-label={group.label || "ゲーム"} data-group={group.key}>
+                    {group.label && (
+                      <h3 className="mb-3 flex items-baseline gap-2 border-b pb-1.5 text-sm font-semibold">
+                        {group.label}
+                        <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                          {group.games.length}
+                        </span>
+                      </h3>
+                    )}
+                    <ul className="grid grid-cols-2 gap-x-3 gap-y-6 sm:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] sm:gap-x-4">
+                      {group.games.map((g) => (
+                        <GameCard
+                          key={g.id}
+                          game={g}
+                          last={last[g.id]}
+                          favorite={favorites.includes(g.id)}
+                          onPick={() => onPick(g)}
+                          onInfo={() => setInfo(g)}
+                        />
+                      ))}
+                    </ul>
+                  </section>
                 ))}
-              </ul>
+              </div>
             )}
           </>
         )}
       </div>
       {settings && (
-        <AccountSettings
+        <SettingsPanel
+          games={games}
+          build={build}
           onClose={() => setSettings(false)}
           returnFocus={() => settingsButton.current?.focus()}
         />
-      )}
-      {stats && (
-        <Dialog open onOpenChange={setStats}>
-          <DialogContent className="max-w-xl gap-4 p-5">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <BarChart3 className="size-5 text-primary" /> プレイ統計
-              </DialogTitle>
-              <DialogDescription>ゲーム別のプレイ時間</DialogDescription>
-            </DialogHeader>
-            <Statistics games={games} />
-          </DialogContent>
-        </Dialog>
       )}
       {info && (
         <GameInfo

@@ -64,3 +64,9 @@ export function trackPlay(game: string): () => void {
   addEventListener("pagehide", stop);
   return stop;
 }
+
+/** Forgets all play time (DELETE /api/sessions): the statistics start again from nothing. */
+export async function resetSessions(): Promise<void> {
+  const r = await fetch(new URL("api/sessions", location.href), { method: "DELETE" });
+  if (!r.ok) throw new Error(`保存サーバー: HTTP ${r.status}`);
+}

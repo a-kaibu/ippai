@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { clearAccountSettings, loadAccountSettings, saveAccountSettings } from "../account-settings";
 
-export function AccountSettings({ onClose, returnFocus }: { onClose: () => void; returnFocus: () => void }) {
+/** 設定's DMM アカウント section (ui/Settings.tsx). */
+export function AccountSettings() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
@@ -57,94 +57,75 @@ export function AccountSettings({ onClose, returnFocus }: { onClose: () => void;
     }
   }
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open) onClose();
+    <form
+      className="grid gap-4"
+      aria-busy={busy}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void update(false);
       }}
     >
-      <DialogContent
-        className="gap-5 p-5"
-        onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          returnFocus();
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>設定</DialogTitle>
-          <DialogDescription>DMM アカウント</DialogDescription>
-        </DialogHeader>
-        <form
-          className="grid gap-4"
-          aria-busy={busy}
-          onSubmit={(event) => {
-            event.preventDefault();
-            void update(false);
-          }}
-        >
-          <p className="text-sm text-muted-foreground">
-            ソフト電池の正規認証に使うアカウントです。対応ゲームの起動時に、公式の認証画面へ入力して送信します。
-          </p>
-          <fieldset disabled={busy} className="grid min-w-0 gap-4">
-            <div className="grid gap-2">
-              <label htmlFor="dmm-email" className="text-sm font-medium">
-                メールアドレス
-              </label>
-              <Input
-                id="dmm-email"
-                name="username"
-                type="email"
-                autoComplete="username"
-                autoCapitalize="none"
-                spellCheck={false}
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-            <div className="grid gap-2">
-              <label htmlFor="dmm-password" className="text-sm font-medium">
-                パスワード
-              </label>
-              <Input
-                id="dmm-password"
-                name="password"
-                type={show ? "text" : "password"}
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                aria-describedby="dmm-storage"
-              />
-              <label className="flex min-h-10 items-center gap-2 text-sm">
-                <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
-                パスワードを表示
-              </label>
-            </div>
-            <label className="flex min-h-10 items-center gap-2 text-sm">
-              <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-              このブラウザにパスワードを保存
-            </label>
-            <p id="dmm-storage" className="text-sm text-muted-foreground">
-              メールアドレスはこのブラウザに保存します。パスワードはページを閉じるまで使えます。保存を選ぶと暗号化して保持します。別端末には同期しません。
-            </p>
-          </fieldset>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          <p role="status" className="text-sm text-muted-foreground">
-            {busy ? "処理中…" : status}
-          </p>
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button type="button" variant="outline" disabled={busy} onClick={() => void update(true)}>
-              保存情報を削除
-            </Button>
-            <Button type="submit" disabled={busy}>
-              保存
-            </Button>
-          </div>
-        </form>
-      </DialogContent>
-    </Dialog>
+      <p className="text-sm text-muted-foreground">
+        ソフト電池の正規認証に使うアカウントです。対応ゲームの起動時に、公式の認証画面へ入力して送信します。
+      </p>
+      <fieldset disabled={busy} className="grid min-w-0 gap-4">
+        <div className="grid gap-2">
+          <label htmlFor="dmm-email" className="text-sm font-medium">
+            メールアドレス
+          </label>
+          <Input
+            id="dmm-email"
+            name="username"
+            type="email"
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <div className="grid gap-2">
+          <label htmlFor="dmm-password" className="text-sm font-medium">
+            パスワード
+          </label>
+          <Input
+            id="dmm-password"
+            name="password"
+            type={show ? "text" : "password"}
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            aria-describedby="dmm-storage"
+          />
+          <label className="flex min-h-10 items-center gap-2 text-sm">
+            <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+            パスワードを表示
+          </label>
+        </div>
+        <label className="flex min-h-10 items-center gap-2 text-sm">
+          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          このブラウザにパスワードを保存
+        </label>
+        <p id="dmm-storage" className="text-sm text-muted-foreground">
+          メールアドレスはこのブラウザに保存します。パスワードはページを閉じるまで使えます。保存を選ぶと暗号化して保持します。別端末には同期しません。
+        </p>
+      </fieldset>
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      <p role="status" className="text-sm text-muted-foreground">
+        {busy ? "処理中…" : status}
+      </p>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button type="button" variant="outline" disabled={busy} onClick={() => void update(true)}>
+          保存情報を削除
+        </Button>
+        <Button type="submit" disabled={busy}>
+          保存
+        </Button>
+      </div>
+    </form>
   );
 }

@@ -3,10 +3,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Clock, Download, Gamepad2, Loader2, Save, Upload } from "lucide-react";
+import { Clock, Download, Gamepad2, Loader2, RotateCcw, Save, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, type Profile, type Session } from "../library-data";
+import { api, resetSessions, type Profile, type Session } from "../library-data";
 import { coverUrl, type GameEntry } from "../launcher";
 import { duration, playTotals, when } from "../library-view";
 
@@ -156,9 +156,25 @@ function Tile({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** Play time per game; 統計をリセット (after a second click to confirm) forgets all of it. */
 export function Statistics({ games }: { games: GameEntry[] }) {
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [error, setError] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const reset = async () => {
+    setResetting(true);
+    try {
+      await resetSessions();
+      setSessions([]);
+      setConfirm(false);
+      toast.success("プレイ統計をリセットしました");
+    } catch (e) {
+      toast.error(`リセットできませんでした: ${message(e)}`);
+    } finally {
+      setResetting(false);
+    }
+  };
   useEffect(() => {
     void api<Session[]>("sessions")
       .then(setSessions)
@@ -229,6 +245,28 @@ export function Statistics({ games }: { games: GameEntry[] }) {
       <p className="text-xs text-muted-foreground">
         ゲームを起動してから、タブを表示している時間を記録しています。
       </p>
+      {totals.length > 0 &&
+        (confirm ? (
+          <div
+            role="alertdialog"
+            aria-label="統計のリセットの確認"
+            className="grid gap-2 rounded-lg border border-destructive/40 p-3 text-sm"
+          >
+            <p>すべてのゲームのプレイ時間と起動回数を消します。元には戻せません。</p>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button size="sm" variant="outline" disabled={resetting} onClick={() => setConfirm(false)}>
+                やめる
+              </Button>
+              <Button size="sm" variant="destructive" disabled={resetting} onClick={() => void reset()}>
+                {resetting ? <Loader2 className="animate-spin" /> : <RotateCcw />} リセットする
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" className="justify-self-start" onClick={() => setConfirm(true)}>
+            <RotateCcw /> 統計をリセット
+          </Button>
+        ))}
     </section>
   );
 }

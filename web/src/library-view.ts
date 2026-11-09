@@ -6,6 +6,100 @@ import type { Session } from "./library-data";
 
 export type Filter = "all" | "favorites";
 
+/** How the list is ordered: last played here, title (by its reading), brand, release (newest
+ * first) or score (highest first). */
+export type SortKey = "recent" | "title" | "brand" | "release" | "score";
+/** How the list is split into sections: not at all, by brand or by release year. */
+export type GroupKey = "none" | "brand" | "year";
+
+export const SORTS: readonly { key: SortKey; label: string }[] = [
+  { key: "recent", label: "最近遊んだ順" },
+  { key: "title", label: "タイトル順" },
+  { key: "brand", label: "ブランド順" },
+  { key: "release", label: "発売日が新しい順" },
+  { key: "score", label: "スコアが高い順" },
+];
+export const GROUPS: readonly { key: GroupKey; label: string }[] = [
+  { key: "none", label: "区分けなし" },
+  { key: "brand", label: "ブランドごと" },
+  { key: "year", label: "発売年ごと" },
+];
+
+export interface ListView {
+  sort: SortKey;
+  group: GroupKey;
+}
+export const DEFAULT_VIEW: ListView = { sort: "recent", group: "none" };
+
+/** A kept view (localStorage), anything unknown read as the default. */
+export function parseView(text: string | null): ListView {
+  let v: unknown;
+  try {
+    v = JSON.parse(text ?? "null");
+  } catch {
+    return DEFAULT_VIEW;
+  }
+  const o = (typeof v === "object" && v ? v : {}) as Partial<Record<keyof ListView, unknown>>;
+  return {
+    sort: SORTS.some((s) => s.key === o.sort) ? (o.sort as SortKey) : DEFAULT_VIEW.sort,
+    group: GROUPS.some((g) => g.key === o.group) ? (o.group as GroupKey) : DEFAULT_VIEW.group,
+  };
+}
+
+const ja = (a: string, b: string) => a.localeCompare(b, "ja");
+const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const reading = (g: GameEntry) => g.meta?.furigana || g.meta?.title || g.title;
+const brand = (g: GameEntry) => g.meta?.brand?.trim() || "";
+/** yyyy-mm-dd, or "" when there is no usable date */
+const release = (g: GameEntry) => /^\d{4}(-\d{2}(-\d{2})?)?/.exec(g.meta?.release ?? "")?.[0] ?? "";
+const score = (g: GameEntry) => (typeof g.meta?.score === "number" && g.meta.score > 0 ? g.meta.score : -1);
+/** the release year, or "" */
+export const year = (g: GameEntry): string => release(g).slice(0, 4);
+
+/** Games without the sort's value go last; ties by title, then id (one order for any input). */
+export function orderGames(games: GameEntry[], key: SortKey, last: Record<string, number>): GameEntry[] {
+  const title = (a: GameEntry, b: GameEntry) =>
+    ja(reading(a), reading(b)) || ja(a.title, b.title) || cmp(a.id, b.id);
+  const missingLast = (x: string, y: string) => (!x === !y ? 0 : x ? -1 : 1);
+  const by: Record<SortKey, (a: GameEntry, b: GameEntry) => number> = {
+    recent: (a, b) => (last[b.id] ?? 0) - (last[a.id] ?? 0),
+    title: () => 0,
+    brand: (a, b) => missingLast(brand(a), brand(b)) || ja(brand(a), brand(b)) || cmp(release(a), release(b)),
+    release: (a, b) => missingLast(release(a), release(b)) || cmp(release(b), release(a)),
+    score: (a, b) => score(b) - score(a) || (b.meta?.votes ?? 0) - (a.meta?.votes ?? 0),
+  };
+  return [...games].sort((a, b) => by[key](a, b) || title(a, b));
+}
+
+export interface GameGroup {
+  /** "" for the games without the value (they come last) */
+  key: string;
+  label: string;
+  games: GameEntry[];
+}
+
+/** The ordered list in sections: brands in name order, years newest first, the games without a
+ * brand or year last; each section keeps the list's order. `none` is one section of all. */
+export function groupGames(ordered: GameEntry[], group: GroupKey): GameGroup[] {
+  if (group === "none") return ordered.length ? [{ key: "", label: "", games: ordered }] : [];
+  const keyOf = group === "brand" ? brand : year;
+  const by = new Map<string, GameEntry[]>();
+  for (const g of ordered) {
+    const k = keyOf(g);
+    const list = by.get(k);
+    if (list) list.push(g);
+    else by.set(k, [g]);
+  }
+  const keys = [...by.keys()].sort((a, b) =>
+    !a !== !b ? (a ? -1 : 1) : group === "brand" ? ja(a, b) : cmp(b, a),
+  );
+  return keys.map((k) => ({
+    key: k,
+    label: k ? (group === "year" ? `${k}年` : k) : group === "brand" ? "ブランド不明" : "発売年不明",
+    games: by.get(k)!,
+  }));
+}
+
 /** Last played first (this browser), then by title. */
 export function sortGames(games: GameEntry[], last: Record<string, number>): GameEntry[] {
   return [...games].sort(
