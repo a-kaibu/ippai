@@ -31,9 +31,10 @@ pub struct Fetched {
 /// Fetches the entry `meta_url::entry_id` named (blocking: run off the async threads).
 pub type Fetcher = Arc<dyn Fn(&str) -> anyhow::Result<Fetched> + Send + Sync>;
 
-/// ErogameScape / VNDB (meta.rs), the cover too when the entry has one.
-fn fetch(id: &str) -> anyhow::Result<Fetched> {
-    let info = meta::lookup("", Some(id))?;
+/// The game database's entry (gamedb.rs) or ErogameScape / VNDB's (meta.rs), the cover too when
+/// the entry has one.
+fn fetch(id: &str, gamedb: &std::path::Path) -> anyhow::Result<Fetched> {
+    let info = meta::lookup("", Some(id), Some(gamedb))?;
     let cover = if info.cover_url.is_empty() {
         None
     } else {
@@ -119,7 +120,8 @@ async fn stats(State(Api { db, .. }): State<Api>) -> Result<Json<Vec<Session>>, 
 }
 
 pub fn router(db: Library) -> Router {
-    router_with(db, Arc::new(fetch))
+    let gamedb = db.0.with_file_name("gamedb.sqlite");
+    router_with(db, Arc::new(move |id: &str| fetch(id, &gamedb)))
 }
 
 pub fn router_with(db: Library, fetch: Fetcher) -> Router {

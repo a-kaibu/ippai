@@ -236,6 +236,23 @@ g.dmm, g.dmm_subsc, g.genre, g.shoukai, g.dlsite_id, g.dlsite_domain, b.brandnam
 FROM gamelist g LEFT JOIN brandlist b ON g.brandname = b.id WHERE g.id = {id}"
     ))?;
     let Some(r) = rows.first() else { bail!("erogamescape: no game {id}") };
+    let more = egs_query(&format!(
+        "(SELECT 'tag' AS src, p.title AS val, p.system_group AS grp, pt.count AS cnt
+FROM povgroups_toukei pt JOIN povlist p ON pt.pov = p.id WHERE pt.game = {id} ORDER BY pt.count DESC)
+UNION ALL (SELECT 'series', g.name, '', 0 FROM belong_to_gamegroup_list b JOIN gamegrouplist g ON b.gamegroup = g.id WHERE b.game = {id} LIMIT 1)"
+    ))
+    .unwrap_or_default();
+    egs_info(r, &more)
+}
+
+/// A table row: (column, value) pairs.
+pub type Row = Vec<(String, String)>;
+
+/// The info of a game from its gamelist row (with its brand's name and url) and its POV tag
+/// rows (src "tag": val, grp, cnt; most voted first) and series row (src "series": val), from
+/// the form or from the game database (gamedb.rs).
+pub fn egs_info(r: &[(String, String)], more: &[Row]) -> Result<Info> {
+    let id: u32 = col(r, "id").parse().map_err(|_| anyhow!("erogamescape: bad row"))?;
     let mut in_ = Info {
         source: "erogamescape".into(),
         egs_id: Some(id),
@@ -275,12 +292,8 @@ FROM gamelist g LEFT JOIN brandlist b ON g.brandname = b.id WHERE g.id = {id}"
     // POV tags (voted by users) and the series
     static POV_SUFFIX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(仕立てのゲーム|系のゲーム|系ゲーム|なゲーム|のゲーム|な作品|ゲーム|ゲー)$").unwrap());
-    if let Ok(more) = egs_query(&format!(
-        "(SELECT 'tag' AS src, p.title AS val, p.system_group AS grp, pt.count AS cnt
-FROM povgroups_toukei pt JOIN povlist p ON pt.pov = p.id WHERE pt.game = {id} ORDER BY pt.count DESC)
-UNION ALL (SELECT 'series', g.name, '', 0 FROM belong_to_gamegroup_list b JOIN gamegrouplist g ON b.gamegroup = g.id WHERE b.game = {id} LIMIT 1)"
-    )) {
-        for m in &more {
+    {
+        for m in more {
             match col(m, "src") {
                 "tag" => {
                     let n: u32 = col(m, "cnt").parse().unwrap_or(0);
@@ -361,6 +374,24 @@ fn vndb_query(filters: serde_json::Value, fields: &str, n: u32) -> Result<Vec<Vn
     Ok(out.results)
 }
 
+/// One page (100, by id) of the VNs `filters` selects, as the API gives them, and whether more
+/// follow.
+pub fn vndb_page(filters: serde_json::Value, page: u32) -> Result<(Vec<serde_json::Value>, bool)> {
+    #[derive(Deserialize)]
+    struct Out {
+        results: Vec<serde_json::Value>,
+        more: bool,
+    }
+    let body = serde_json::json!({ "filters": filters, "fields": format!("id,{VNDB_FIELDS}"), "results": 100, "page": page, "sort": "id" });
+    let out: Out = agent().post(&endpoint("IPPAI_META_VNDB", VNDB_VN)).timeout(Duration::from_secs(120)).send_json(body)?.into_json()?;
+    Ok((out.results, out.more))
+}
+
+/// Runs one statement on ErogameScape's form (at most one every 2.5 s, as every query here).
+pub fn egs_rows(sql: &str) -> Result<Vec<Row>> {
+    egs_query(sql)
+}
+
 fn vndb_search(keyword: &str) -> Result<Vec<Candidate>> {
     let res = vndb_query(serde_json::json!(["search", "=", keyword]), "title,alttitle,released,votecount,developers{name,original}", 15)?;
     let mut out = vec![];
@@ -382,13 +413,21 @@ fn vndb_search(keyword: &str) -> Result<Vec<Candidate>> {
     Ok(out)
 }
 
+/// The fields `vndb_info` reads.
+pub const VNDB_FIELDS: &str = "title,alttitle,released,votecount,rating,description,developers{name,original},image{url,sexual,violence},tags{name,rating,spoiler,category},extlinks{url,label}";
+
 fn vndb_get(id: &str) -> Result<Info> {
-    let res = vndb_query(
-        serde_json::json!(["id", "=", id]),
-        "title,alttitle,released,votecount,rating,description,developers{name,original},image{url,sexual,violence},tags{name,rating,spoiler,category},extlinks{url,label}",
-        1,
-    )?;
+    let res = vndb_query(serde_json::json!(["id", "=", id]), VNDB_FIELDS, 1)?;
     let Some(vn) = res.into_iter().next() else { bail!("vndb: no {id}") };
+    Ok(vndb_info(vn))
+}
+
+/// The info of a VN as VNDB's API gives it (VNDB_FIELDS), from the API or the game database.
+pub fn vndb_info_json(v: serde_json::Value) -> Result<Info> {
+    Ok(vndb_info(serde_json::from_value(v)?))
+}
+
+fn vndb_info(vn: VndbVn) -> Info {
     static BBCODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[/?[a-z]+(=[^\]]+)?\]").unwrap());
     let mut in_ = Info {
         source: "vndb".into(),
@@ -414,7 +453,7 @@ fn vndb_get(id: &str) -> Result<Info> {
             in_.tags.push(t.name);
         }
     }
-    Ok(in_)
+    in_
 }
 
 // ---- matching
@@ -484,9 +523,13 @@ pub fn best<'a>(title: &str, cands: &'a [Candidate]) -> Option<&'a Candidate> {
 // ---- entry points
 
 /// The game best matching `title` (a package title such as "○○ 体験版"). `id` may pin the
-/// entry: "egs:12345" or "vndb:v1195".
-pub fn lookup(title: &str, id: Option<&str>) -> Result<Info> {
+/// entry: "egs:12345" or "vndb:v1195", taken from the game database at `gamedb` (gamedb.rs)
+/// when it has it.
+pub fn lookup(title: &str, id: Option<&str>, gamedb: Option<&std::path::Path>) -> Result<Info> {
+    let local = id.zip(gamedb).and_then(|(id, p)| crate::gamedb::info(p, id));
     let mut in_ = match id {
+        // (the game database's copy first: ErogameScape refuses many hosts)
+        Some(_) if local.is_some() => local.unwrap(),
         Some(id) => {
             if let Some(n) = id.strip_prefix("egs:") {
                 egs_get(n.parse().map_err(|_| anyhow!("bad id {id:?}"))?)?
@@ -563,7 +606,7 @@ pub fn download_cover(url: &str) -> Result<(Vec<u8>, &'static str)> {
     Ok((b, ext))
 }
 
-fn now_rfc3339() -> String {
+pub fn now_rfc3339() -> String {
     rfc3339(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64)
 }
 

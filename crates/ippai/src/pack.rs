@@ -322,12 +322,13 @@ fn fetch_meta(store: &Path, g: &mut GameEntry, title: Option<&str>, id: Option<&
             }
         },
     };
+    let gamedb = store.join("gamedb.sqlite");
     let found = match (id, &matched) {
-        (None, Some(m)) => meta::lookup(&title, Some(m)).or_else(|e| {
+        (None, Some(m)) => meta::lookup(&title, Some(m), Some(&gamedb)).or_else(|e| {
             eprintln!("{}: {m}: {e:#} (searching by the title)", g.id);
-            meta::lookup(&title, None)
+            meta::lookup(&title, None, None)
         }),
-        _ => meta::lookup(&title, id),
+        _ => meta::lookup(&title, id, Some(&gamedb)),
     };
     let info = match found {
         Ok(i) => i,

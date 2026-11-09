@@ -1,0 +1,72 @@
+# The game database (crates/ippai/src/gamedb.rs): every ErogameScape game (with its brand, tags and
+# series) and every Japanese VN on VNDB in one SQLite file, built each day and pushed to GitHub
+# Packages (ghcr.io/a-kaibu/ippai-gamedb:latest, tools/gamedb/push.py). ippai serve pulls it once a
+# day, so it identifies games and shows their information without reaching ErogameScape, which
+# refuses many hosts (the user, 2026-11-09: "批評空間とvndbのdbをsqliteとかにしてgh packagesにup").
+name: Game database
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gamedb.yml'
+      - 'crates/ippai/src/gamedb.rs'
+      - 'tools/gamedb/**'
+  schedule:
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: gamedb
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gamedb-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            gamedb-${{ runner.os }}-${{ env.RUST_KEY }}-
+      - run: cargo build --release -p ippai
+      - name: Build (ErogameScape at its pace, VNDB within its rate limit)
+        run: ./target/release/ippai gamedb build "$RUNNER_TEMP/gamedb.sqlite"
+      - name: Check it reads (the PC games, a known entry)
+        run: |
+          python3 - "$RUNNER_TEMP/gamedb.sqlite" <<'PY'
+          import json, sqlite3, sys
+          c = sqlite3.connect(sys.argv[1])
+          n = c.execute("SELECT count(*) FROM egs WHERE model='PC'").fetchone()[0]
+          v = c.execute("SELECT count(*) FROM vndb").fetchone()[0]
+          name = c.execute("SELECT name FROM egs WHERE id=30345").fetchone()
+          print(f"egs PC {n}, vndb {v}, egs 30345 {name}")
+          assert n > 20000 and v > 10000 and name == ("LOOPERS",), "too few entries"
+          PY
+      - name: Push to GitHub Packages
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: python3 tools/gamedb/push.py "$RUNNER_TEMP/gamedb.sqlite"
+      - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
+        run: python3 tools/ci/cache-prune.py target
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

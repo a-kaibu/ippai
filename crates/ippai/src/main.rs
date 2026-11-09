@@ -25,6 +25,7 @@ mod store_api;
 mod meta;
 mod meta_url;
 mod egs_match;
+mod gamedb;
 mod movie;
 mod nwjs;
 mod pack;
@@ -80,11 +81,22 @@ enum Cmd {
     },
     #[command(flatten)]
     Pack(pack::Cmd),
+    /// The game database (gamedb.rs): `build <out>` from ErogameScape and VNDB.
+    Gamedb {
+        #[command(subcommand)]
+        action: GamedbCmd,
+    },
     /// One TrueType collection from fonts that share their glyphs (sake's MS-named fonts:
     /// msgothic.ttc from msgothic, msuigothic, mspgothic.ttf (Windows' order); msmincho.ttc from msmincho,
     /// mspmincho.ttf), the first font's glyphs shared by the others where theirs are the same.
     #[command(hide = true)]
     Ttc { out: PathBuf, fonts: Vec<PathBuf> },
+}
+
+#[derive(Subcommand)]
+enum GamedbCmd {
+    /// Every ErogameScape game and Japanese VNDB VN into a new SQLite file (gamedb.yml).
+    Build { out: std::path::PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -169,6 +181,7 @@ fn main() -> anyhow::Result<()> {
         #[cfg(unix)]
         Cmd::Logs { follow, lines } => daemon::logs(&dirs, follow, lines),
         Cmd::Pack(c) => pack::run(&dirs.store, c),
+        Cmd::Gamedb { action: GamedbCmd::Build { out } } => gamedb::build(&out),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),
     }
 }

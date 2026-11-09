@@ -214,7 +214,12 @@ impl Library {
         let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         let (mut list, mut at) = self.egs_games()?;
         if list.is_empty() || now_ms() - at > EGS_GAMES_MAX_AGE_MS {
-            let fresh = crate::meta::egs_all_games().or_else(|e| {
+            // the game database's (gamedb.rs) first, then ErogameScape itself, then launcherg's
+            let fresh = self.pull_gamedb().or_else(|e| {
+                eprintln!("game database: {e:#}");
+                crate::meta::egs_all_games()
+            });
+            let fresh = fresh.or_else(|e| {
                 eprintln!("game list: {e:#}");
                 if list.is_empty() { crate::meta::seed_games() } else { Err(e) }
             });
@@ -239,6 +244,20 @@ impl Library {
         let idx = Arc::new(crate::egs_match::Index::new(list));
         *cache = Some((self.0.clone(), at, idx.clone()));
         Ok(idx)
+    }
+
+    /// The game database's newest copy into `<store>/gamedb.sqlite` (when it changed), and its
+    /// PC games.
+    fn pull_gamedb(&self) -> Result<Vec<(u32, String, u32)>> {
+        use rusqlite::OptionalExtension;
+        let dest = self.0.with_file_name("gamedb.sqlite");
+        let have: Option<String> = self.connect()?.query_row("SELECT value FROM kv WHERE key='gamedb_digest'", [], |r| r.get(0)).optional()?;
+        let digest = crate::gamedb::pull(&dest, have.as_deref())?;
+        self.connect()?.execute("INSERT INTO kv(key,value) VALUES('gamedb_digest',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&digest])?;
+        let (games, built) = crate::gamedb::egs_games(&dest)?;
+        // (a database not rebuilt for a week: its maker stopped; the sites themselves instead)
+        ensure!(now_ms() - built < 7 * 24 * 3_600_000, "the game database is from {} days ago", (now_ms() - built) / 86_400_000);
+        Ok(games)
     }
 
     /// The cover fetched with the game's metadata: bytes and media type.
@@ -466,96 +485,162 @@ mod meta_tests {
 #[cfg(test)]
 mod egs_games_tests {
     use super::*;
+    use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
-    /// A stand-in for ErogameScape's SQL form (POST /egs: max(id), then windows of ids) and
-    /// launcherg's list (GET /seed), counting requests; `up` false makes /egs answer 503.
-    fn sources(up: Arc<AtomicBool>, asked: Arc<AtomicUsize>) -> String {
+    #[derive(Default)]
+    struct Stand {
+        /// ErogameScape answers (else 503)
+        up: AtomicBool,
+        /// requests to /egs and /seed
+        asked: AtomicUsize,
+        /// the game database package's blob (zstd), when there is one
+        gamedb: Mutex<Option<Vec<u8>>>,
+        /// blob downloads
+        blobs: AtomicUsize,
+    }
+
+    /// Stand-ins for ErogameScape's SQL form (POST /egs: max(id), then windows of ids),
+    /// launcherg's list (GET /seed) and the package registry (/v2/t/gamedb: a token asked for by
+    /// its 401, the blob behind a redirect that must come without it).
+    fn sources(st: Arc<Stand>) -> String {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let at = format!("http://{}", l.local_addr().unwrap());
+        let me = at.clone();
         std::thread::spawn(move || {
             for s in l.incoming().flatten() {
                 let mut r = BufReader::new(s.try_clone().unwrap());
                 let mut line = String::new();
                 r.read_line(&mut line).unwrap();
-                let mut len = 0;
+                let mut h: HashMap<String, String> = HashMap::new();
                 loop {
-                    let mut h = String::new();
-                    r.read_line(&mut h).unwrap();
-                    if h.trim().is_empty() {
+                    let mut x = String::new();
+                    r.read_line(&mut x).unwrap();
+                    if x.trim().is_empty() {
                         break;
                     }
-                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
-                        len = v.trim().parse().unwrap();
+                    if let Some((k, v)) = x.split_once(':') {
+                        h.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
                     }
                 }
-                let mut body = vec![0; len];
+                let mut body = vec![0; h.get("content-length").map_or(0, |v| v.parse().unwrap())];
                 r.read_exact(&mut body).unwrap();
-                asked.fetch_add(1, Ordering::SeqCst);
+                let path = line.split(' ').nth(1).unwrap_or("").to_string();
+                let auth = h.get("authorization").cloned().unwrap_or_default();
                 let sql: String = form_urlencoded::parse(&body).find(|(k, _)| k == "sql").map(|(_, v)| v.into_owned()).unwrap_or_default();
-                let (status, ty, text) = if line.starts_with("GET /seed") {
-                    ("200 OK", "application/json", r#"[{"id":1,"gamename":"サクラノ詩 -櫻の森の上を舞う-","thumbnailUrl":""},{"id":2,"gamename":"終のステラ"}]"#.to_string())
-                } else if !up.load(Ordering::SeqCst) {
-                    ("503 Service Unavailable", "text/plain", "down".into())
-                } else if sql.contains("max(id)") {
-                    ("200 OK", "text/html", "<table><tr><th>max</th></tr><tr><td>7000</td></tr></table>".into())
-                } else if sql.contains("id >= 0 ") {
-                    ("200 OK", "text/html", "<table><tr><th>id</th><th>gamename</th><th>count2</th></tr><tr><td>1</td><td>サクラノ詩 -櫻の森の上を舞う-</td><td>5000</td></tr><tr><td>3</td><td>LOOPERS</td><td>800</td></tr></table>".into())
+                let blob = st.gamedb.lock().unwrap().clone();
+                let digest = blob.as_ref().map(|b| format!("sha256:{}", ring::digest::digest(&ring::digest::SHA256, b).as_ref().iter().map(|x| format!("{x:02x}")).collect::<String>()));
+                let (status, extra, ty, out): (&str, String, &str, Vec<u8>) = if path.starts_with("/v2/") && auth != "Bearer tok" {
+                    ("401 Unauthorized", format!("www-authenticate: Bearer realm=\"{me}/token\",service=\"t\",scope=\"repository:t/gamedb:pull\"\r\n"), "text/plain", b"auth".to_vec())
+                } else if path.starts_with("/token?") {
+                    assert!(path.contains("scope=repository%3At%2Fgamedb%3Apull") || path.contains("scope=repository:t/gamedb:pull"), "{path}");
+                    ("200 OK", String::new(), "application/json", br#"{"token":"tok"}"#.to_vec())
+                } else if path == "/v2/t/gamedb/manifests/latest" {
+                    match &digest {
+                        Some(d) => ("200 OK", String::new(), "application/vnd.oci.image.manifest.v1+json", serde_json::json!({"schemaVersion": 2, "layers": [{"mediaType": "application/zstd", "digest": d, "size": blob.as_ref().unwrap().len()}]}).to_string().into_bytes()),
+                        None => ("404 Not Found", String::new(), "text/plain", b"none".to_vec()),
+                    }
+                } else if path.starts_with("/v2/t/gamedb/blobs/") {
+                    assert_eq!(Some(&path[19..]), digest.as_deref());
+                    ("307 Temporary Redirect", format!("location: {me}/signed\r\n"), "text/plain", vec![])
+                } else if path == "/signed" {
+                    assert!(auth.is_empty(), "the signed URL gets no token");
+                    st.blobs.fetch_add(1, Ordering::SeqCst);
+                    ("200 OK", String::new(), "application/octet-stream", blob.unwrap())
                 } else {
-                    ("200 OK", "text/html", "<table><tr><th>id</th><th>gamename</th><th>count2</th></tr><tr><td>6000</td><td>アネモイ</td><td>90</td></tr></table>".into())
+                    st.asked.fetch_add(1, Ordering::SeqCst);
+                    if line.starts_with("GET /seed") {
+                        ("200 OK", String::new(), "application/json", r#"[{"id":1,"gamename":"サクラノ詩 -櫻の森の上を舞う-","thumbnailUrl":""},{"id":2,"gamename":"終のステラ"}]"#.as_bytes().to_vec())
+                    } else if !st.up.load(Ordering::SeqCst) {
+                        ("503 Service Unavailable", String::new(), "text/plain", b"down".to_vec())
+                    } else if sql.contains("max(id)") {
+                        ("200 OK", String::new(), "text/html", "<table><tr><th>max</th></tr><tr><td>7000</td></tr></table>".as_bytes().to_vec())
+                    } else if sql.contains("id >= 0 ") {
+                        ("200 OK", String::new(), "text/html", "<table><tr><th>id</th><th>gamename</th><th>count2</th></tr><tr><td>1</td><td>サクラノ詩 -櫻の森の上を舞う-</td><td>5000</td></tr><tr><td>3</td><td>LOOPERS</td><td>800</td></tr></table>".as_bytes().to_vec())
+                    } else {
+                        ("200 OK", String::new(), "text/html", "<table><tr><th>id</th><th>gamename</th><th>count2</th></tr><tr><td>6000</td><td>アネモイ</td><td>90</td></tr></table>".as_bytes().to_vec())
+                    }
                 };
                 let mut s = s;
-                let _ = write!(s, "HTTP/1.1 {status}\r\ncontent-type: {ty}; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}", text.len());
+                let _ = write!(s, "HTTP/1.1 {status}\r\n{extra}content-type: {ty}; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", out.len());
+                let _ = s.write_all(&out);
             }
         });
         at
     }
 
-    /// No list yet and ErogameScape down: launcherg's; a day later and ErogameScape up: its whole
-    /// list (names and votes, games only the old one had kept); down again past a day: the list
-    /// before stays, tried again within the hour, not on every call.
+    /// No list yet, no game database and ErogameScape down: launcherg's; a day later and
+    /// ErogameScape up: its whole list (names and votes, games only the old one had kept); down
+    /// again past a day: the list before stays, tried again within the hour, not on every call;
+    /// then a game database published: its games and entries, downloaded again only when it
+    /// changes.
     #[test]
-    fn filled_from_erogamescape_or_the_seed() {
-        let up = Arc::new(AtomicBool::new(false));
-        let asked = Arc::new(AtomicUsize::new(0));
-        let at = sources(up.clone(), asked.clone());
-        // (the only test that sets these: meta.rs reads them on each request; and no proxy, which
-        // ureq would send these local requests through)
+    fn filled_from_the_game_database_erogamescape_or_the_seed() {
+        let st = Arc::new(Stand::default());
+        let at = sources(st.clone());
+        // (the only test that sets these: meta.rs and gamedb.rs read them on each request; and
+        // no proxy, which ureq would send these local requests through)
         for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
             std::env::remove_var(k);
         }
         std::env::set_var("IPPAI_META_EGS_SQL", format!("{at}/egs"));
         std::env::set_var("IPPAI_META_SEED", format!("{at}/seed"));
+        std::env::set_var("IPPAI_GAMEDB_REF", format!("{}/t/gamedb:latest", at.trim_start_matches("http://")));
         let dir = std::env::temp_dir().join(format!("ippai-test-{}", uuid::Uuid::new_v4()));
         let db = Library::new(&dir).unwrap();
         let q = |idx: &crate::egs_match::Index, s: &str| idx.best(&[s.to_string()]).map(|h| (h.id, h.votes));
+        let stale = || db.connect().unwrap().execute("UPDATE kv SET value='0' WHERE key='egs_games_ms'", []).unwrap();
 
         let idx = db.egs_index().unwrap();
         assert_eq!(q(&idx, "終のステラ"), Some((2, 0)), "the seed");
-        let n = asked.load(Ordering::SeqCst);
+        let n = st.asked.load(Ordering::SeqCst);
         let again = db.egs_index().unwrap();
         assert!(Arc::ptr_eq(&idx, &again), "the same list: kept in memory");
-        assert_eq!(asked.load(Ordering::SeqCst), n, "not asked again within the day");
+        assert_eq!(st.asked.load(Ordering::SeqCst), n, "not asked again within the day");
 
-        up.store(true, Ordering::SeqCst);
-        db.connect().unwrap().execute("UPDATE kv SET value='0' WHERE key='egs_games_ms'", []).unwrap();
+        st.up.store(true, Ordering::SeqCst);
+        stale();
         let idx = db.egs_index().unwrap();
         assert_eq!(q(&idx, "サクラノ詩"), Some((1, 5000)), "votes from ErogameScape");
         assert_eq!(q(&idx, "アネモイ"), Some((6000, 90)), "the second window");
         assert_eq!(q(&idx, "LOOPERS"), Some((3, 800)));
         assert_eq!(q(&idx, "終のステラ"), Some((2, 0)), "kept from the seed");
 
-        up.store(false, Ordering::SeqCst);
-        db.connect().unwrap().execute("UPDATE kv SET value='0' WHERE key='egs_games_ms'", []).unwrap();
+        st.up.store(false, Ordering::SeqCst);
+        stale();
         let idx = db.egs_index().unwrap();
         assert_eq!(q(&idx, "アネモイ"), Some((6000, 90)), "the list before");
-        let n = asked.load(Ordering::SeqCst);
+        let n = st.asked.load(Ordering::SeqCst);
         db.egs_index().unwrap();
-        assert_eq!(asked.load(Ordering::SeqCst), n, "not tried again at once");
-        let (_, at) = db.egs_games().unwrap();
-        assert!(now_ms() - at > EGS_GAMES_MAX_AGE_MS - 3_700_000, "tried again within the hour");
+        assert_eq!(st.asked.load(Ordering::SeqCst), n, "not tried again at once");
+        let (_, t) = db.egs_games().unwrap();
+        assert!(now_ms() - t > EGS_GAMES_MAX_AGE_MS - 3_700_000, "tried again within the hour");
+
+        // the game database
+        let file = dir.join("built.sqlite");
+        let row = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<crate::meta::Row>();
+        crate::gamedb::write(
+            &file,
+            &[(777, row(&[("id", "777"), ("gamename", "ゲームデータベースの作品"), ("count2", "42"), ("model", "PC"), ("brandname", "ブランド")]), vec![])],
+            &[serde_json::json!({"id": "v5", "title": "VN", "votecount": 1})],
+        )
+        .unwrap();
+        *st.gamedb.lock().unwrap() = Some(zstd::encode_all(&std::fs::read(&file).unwrap()[..], 3).unwrap());
+        stale();
+        let n = st.asked.load(Ordering::SeqCst);
+        let idx = db.egs_index().unwrap();
+        assert_eq!(q(&idx, "ゲームデータベースの作品"), Some((777, 42)));
+        assert_eq!(st.asked.load(Ordering::SeqCst), n, "ErogameScape not asked");
+        let local = dir.join("gamedb.sqlite");
+        let i = crate::meta::lookup("", Some("egs:777"), Some(&local)).unwrap();
+        assert_eq!((i.title.as_str(), i.brand.as_str()), ("ゲームデータベースの作品", "ブランド"));
+        assert_eq!(crate::meta::lookup("", Some("vndb:v5"), Some(&local)).unwrap().title, "VN");
+        assert_eq!(st.blobs.load(Ordering::SeqCst), 1);
+        stale();
+        db.egs_index().unwrap();
+        assert_eq!(st.blobs.load(Ordering::SeqCst), 1, "the same digest: not downloaded again");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
