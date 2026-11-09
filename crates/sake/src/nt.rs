@@ -46,9 +46,15 @@ impl Scratch {
         p
     }
     /// OBJECT_ATTRIBUTES (OBJ_CASE_INSENSITIVE, OBJ_INHERIT if asked) naming the NT path of a
-    /// Win32 one (RtlDosPathNameToNtPathName_U: \??\ and the full path)
-    fn attributes(&mut self, path: &str, inherit: bool) -> u32 {
-        let nt = nt_path(path);
+    /// Win32 one (RtlDosPathNameToNtPathName_U: \??\ and the full path); `relative`: a
+    /// relative path under the current directory as its name under the directory's handle
+    /// (RtlDosPathNameToRelativeNtPathName_U: CreateFile's and GetFileAttributesEx's, not
+    /// GetFileAttributes': Windows' answers in winref nthook-32)
+    fn attributes(&mut self, path: &str, inherit: bool, relative: bool) -> u32 {
+        let (nt, root) = match relative.then(|| relative_name(path)).flatten() {
+            Some((name, h)) => (name, h),
+            None => (nt_path(path), 0),
+        };
         let w: Vec<u16> = nt.encode_utf16().collect();
         let buf = self.alloc(2 * w.len() as u32 + 2);
         for (i, &x) in w.iter().enumerate() {
@@ -60,6 +66,7 @@ impl Scratch {
         w32(us + 4, buf);
         let oa = self.alloc(24);
         w32(oa, 24);
+        w32(oa + 4, root);
         w32(oa + 8, us);
         w32(oa + 12, 0x40 | if inherit { 2 } else { 0 });
         oa
@@ -71,6 +78,46 @@ impl Drop for Scratch {
             mem::heap_free(p);
         }
     }
+}
+
+/// A relative Win32 path (no drive, not rooted) whose full path is under the current
+/// directory: the rest of it and the current directory's handle.
+fn relative_name(path: &str) -> Option<(String, u32)> {
+    let full = crate::files::full_path(path);
+    let (dir, h) = cwd_handle()?;
+    relative_under(path, &full, &dir).map(|r| (r, h))
+}
+
+/// The name of `path` (its full path `full`) under directory `dir`, when the path is relative
+/// and the full one is under `dir` (case-insensitive; ".." out of it: None).
+fn relative_under(path: &str, full: &str, dir: &str) -> Option<String> {
+    let b = path.as_bytes();
+    if b.is_empty() || b[0] == b'\\' || b[0] == b'/' || b.get(1) == Some(&b':') {
+        return None;
+    }
+    let pre = format!("{}\\", dir.trim_end_matches('\\'));
+    let rest = full.get(pre.len()..).filter(|_| full.get(..pre.len()).is_some_and(|p| p.eq_ignore_ascii_case(&pre)))?;
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
+/// The current directory's handle, as Windows keeps one in the process parameters: opened
+/// for the directory it is now, again (the old one closed) once it changed.
+fn cwd_handle() -> Option<(String, u32)> {
+    static H: std::sync::Mutex<Option<(String, u32)>> = std::sync::Mutex::new(None);
+    let dir = crate::files::cwd();
+    let mut g = H.lock().unwrap();
+    if let Some((d, h)) = &*g {
+        if *d == dir {
+            return Some((dir, *h));
+        }
+    }
+    if let Some((_, h)) = g.take() {
+        crate::obj::close(h);
+    }
+    let f = crate::files::open(&dir, 0x8000_0000, 3).ok().filter(|f| f.dir)?;
+    let h = crate::obj::add(crate::obj::Obj::File(std::sync::Arc::new(f)));
+    *g = Some((dir.clone(), h));
+    Some((dir, h))
 }
 
 /// The NT name of a Win32 path: "\??\" and its full path (\\?\ kept as it is, \\server
@@ -145,7 +192,7 @@ pub mod via {
         }
         let mut s = Scratch::new();
         let inherit = sa != 0 && r32(sa + 8) != 0;
-        let oa = s.attributes(name, inherit);
+        let oa = s.attributes(name, inherit, true);
         let (out, io) = (s.alloc(4), s.alloc(8));
         let delete = if fl & 0x0400_0000 != 0 { 0x0001_0000 } else { 0 };
         let st = c.call(f, &[out, access | delete | 0x0010_0080, oa, io, 0, fl & 0x7fa7, share, nd, opts, 0, 0]);
@@ -154,9 +201,10 @@ pub mod via {
             last_error(if st == 0xc000_0035 && disp == 1 { 80 } else { file_error(st) });
             return Some(u32::MAX);
         }
-        // CREATE_ALWAYS / OPEN_ALWAYS of an existing file: ERROR_ALREADY_EXISTS
+        // ERROR_ALREADY_EXISTS: CREATE_ALWAYS that overwrote (FILE_OVERWRITTEN), OPEN_ALWAYS that
+        // opened (FILE_OPENED); a CREATE_ALWAYS that only opened says 0 (winref nthook-32)
         let info = r32(io + 4);
-        last_error(if (disp == 2 || disp == 4) && (info == 1 || info == 3) { 183 } else { 0 });
+        last_error(if disp == 2 && info == 3 || disp == 4 && info == 1 { 183 } else { 0 });
         Some(r32(out))
     }
 
@@ -288,7 +336,7 @@ pub mod via {
     pub fn attributes(c: &mut Ctx, name: &str) -> Option<u32> {
         let f = hooked("NtQueryAttributesFile")?;
         let mut s = Scratch::new();
-        let (oa, out) = (s.attributes(name, false), s.alloc(40));
+        let (oa, out) = (s.attributes(name, false, false), s.alloc(40));
         let st = c.call(f, &[oa, out]);
         if st >= 0xc000_0000 {
             last_error(file_error(st));
@@ -305,7 +353,7 @@ pub mod via {
         let f = hooked("NtQueryFullAttributesFile")?;
         let p = c.a(2);
         let mut s = Scratch::new();
-        let (oa, out) = (s.attributes(name, false), s.alloc(56));
+        let (oa, out) = (s.attributes(name, false, true), s.alloc(56));
         let st = c.call(f, &[oa, out]);
         if st >= 0xc000_0000 {
             last_error(file_error(st));
@@ -979,7 +1027,23 @@ pub fn init() {
 
 #[cfg(test)]
 mod route_tests {
-    use super::{file_error, nt_path};
+    use super::{file_error, nt_path, relative_under};
+
+    #[test]
+    fn relative_names_under_the_current_directory() {
+        // (RtlDosPathNameToRelativeNtPathName_U, as CreateFile passed them in winref nthook-32)
+        let d = "C:\\Game\\";
+        assert_eq!(relative_under("a.dat", "C:\\Game\\a.dat", d).as_deref(), Some("a.dat"));
+        assert_eq!(relative_under("sub\\a.dat", "C:\\Game\\sub\\a.dat", d).as_deref(), Some("sub\\a.dat"));
+        assert_eq!(relative_under(".\\a.dat", "C:\\game\\a.dat", d).as_deref(), Some("a.dat"));
+        assert_eq!(relative_under("a.dat", "C:\\Game\\a.dat", "C:\\Game").as_deref(), Some("a.dat"));
+        // a full path, a rooted one, another drive's, or one out of the directory: the full name
+        for (p, f) in [("C:\\Game\\a.dat", "C:\\Game\\a.dat"), ("\\Game\\a.dat", "C:\\Game\\a.dat"), ("D:a.dat", "D:\\a.dat"), ("..\\a.dat", "C:\\a.dat"), ("/x", "C:\\x"), ("", "C:\\Game\\")] {
+            assert_eq!(relative_under(p, f, d), None, "{p}");
+        }
+        // (the directory itself has no name under it)
+        assert_eq!(relative_under(".", "C:\\Game\\", d), None);
+    }
 
     #[test]
     fn nt_names_of_win32_paths() {
