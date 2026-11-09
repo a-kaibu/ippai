@@ -54,6 +54,11 @@ try {
   };
   const pick = async (title) => {
     await page.getByRole("button", { name: `${title} を起動` }).click();
+    // (a game not saved to the device: the dialog that saves it first, web/src/ui/SaveFirst.tsx;
+    // these games have no prefix tree to save, tests/save-first-browser.mjs saves real ones)
+    const first = page.getByTestId("save-first");
+    await Promise.race([first.waitFor(), page.waitForURL((u) => u.searchParams.get("game") !== null)]);
+    if (await first.count()) await first.getByRole("button", { name: "保存せずに遊ぶ" }).click();
     await page.waitForURL((u) => u.searchParams.get("game") !== null);
   };
 

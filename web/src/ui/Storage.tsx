@@ -199,7 +199,7 @@ export function StorageOverview({ games }: { games: GameEntry[] }) {
       </div>
       {shown.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          端末に保存した作品はありません。作品の詳細の「端末に保存」から保存できます。
+          端末に保存した作品はありません。作品を起動すると先に保存されます（作品の詳細の「端末に保存」からも保存できます）。
         </p>
       ) : (
         <ul className="grid gap-3" aria-label="端末に保存した作品">

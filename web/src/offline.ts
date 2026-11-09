@@ -1,11 +1,22 @@
-// A game saved to the device beforehand (on Wi-Fi, before a trip on a mobile line): every store
+// A game saved to the device before it is played (ui/SaveFirst.tsx: when it is picked the first
+// time; or from its 詳細, on Wi-Fi before a trip on a mobile line): every store
 // chunk of its trees (and of the prefix: fonts, DLLs) goes into the chunk cache (net.ts CHUNKS),
 // where the game's reads (host/fetch-bridge.js) and the page's read-ahead look first. sake
 // itself, the game's saved x86 regions and lists are fetched with them (saveApp), and the
 // service worker (sw.ts) keeps those and the app's pages: the game then starts with no connection.
 
 import { coverUrl, type GameEntry } from "./launcher";
-import { chunkCache, chunkPath, fetchRetry, getChunk, HttpError, treeChunks, treeChunkSizes } from "./net";
+import { directFetcher, limit, type Unzstd } from "./direct";
+import {
+  chunkCache,
+  chunkPath,
+  fetchRetry,
+  getChunk,
+  HttpError,
+  keepChunk,
+  treeChunks,
+  treeChunkSizes,
+} from "./net";
 import {
   fileVersion,
   gameChunksName,
@@ -316,12 +327,46 @@ async function saveApp(g: GameEntry, signal: AbortSignal): Promise<void> {
   ]);
 }
 
-/** Fetches `g`'s chunks the device lacks (4 at a time, retried as net.ts does); `report(have,
- * total)`, and the whole progress in savesRunning (watchSaves). */
+/** Chunks fetched at once from the bucket itself (direct.ts: ~2 s each whatever the size). */
+export const DIRECT_AT_ONCE = 16;
+/** Chunks fetched at once through the server (/store: a store without S3, a chunk only there). */
+export const SERVER_AT_ONCE = 4;
+
+/** What saveOffline may be given in place of the real ones (tests). */
+export interface SaveOptions {
+  request?: typeof fetch;
+  unzstd?: Unzstd;
+}
+
+/**
+ * Whether `free` bytes hold `need` more (with a margin: the browser counts what it keeps a
+ * little above the bytes). undefined: the browser does not say.
+ */
+export function roomFor(need: number, quota?: number, usage?: number): boolean {
+  if (!quota) return true;
+  return need * 1.05 <= quota * 0.9 - (usage ?? 0);
+}
+
+/** The free room a save needs, said as people read it. */
+export class NoRoom extends Error {
+  constructor(
+    readonly need: number,
+    readonly free: number,
+  ) {
+    super(
+      `端末の空き容量が足りません（あと約 ${Math.ceil(need / 2 ** 20)} MB 必要、空き約 ${Math.floor(Math.max(0, free) / 2 ** 20)} MB）`,
+    );
+  }
+}
+
+/** Fetches `g`'s chunks the device lacks (from the bucket DIRECT_AT_ONCE at a time, else through
+ * the server SERVER_AT_ONCE at a time, retried as net.ts does); `report(have, total)`, and the
+ * whole progress in savesRunning (watchSaves). Throws NoRoom first when the device has no room for them. */
 export async function saveOffline(
   g: GameEntry,
   report: (have: number, total: number) => void,
   signal: AbortSignal,
+  opt: SaveOptions = {},
 ): Promise<void> {
   void navigator.storage?.persist?.().catch(() => false);
   const cache = await chunkCache();
@@ -359,23 +404,31 @@ export async function saveOffline(
       startBytes: 0,
     };
     p.startBytes = p.haveBytes;
+    const est = await navigator.storage?.estimate?.().catch(() => undefined);
+    if (!roomFor(p.totalBytes - p.haveBytes, est?.quota, est?.usage))
+      throw new NoRoom(p.totalBytes - p.haveBytes, (est?.quota ?? 0) * 0.9 - (est?.usage ?? 0));
     progress.set(g.id, p);
     tell();
     report(done, hashes.length);
+    const base = store();
+    const direct = directFetcher(base, opt);
+    const server = limit(SERVER_AT_ONCE);
     let next = 0;
     const one = async () => {
       while (next < missing.length && !signal.aborted) {
         const h = missing[next++]!;
         p.now = files.get(h) ?? "";
         tell();
-        await getChunk(store(), h, { cache, priority: "low", signal });
+        const data = await direct.get(h, { signal, request: opt.request });
+        if (data) await keepChunk(cache, new URL(chunkPath(h), base).href, data);
+        else await server(() => getChunk(base, h, { cache, priority: "low", signal, request: opt.request }));
         p.have = ++done;
         p.haveBytes += sizes.get(h) ?? chunk;
         tell();
         report(done, hashes.length);
       }
     };
-    await Promise.all(Array.from({ length: 4 }, one));
+    await Promise.all(Array.from({ length: DIRECT_AT_ONCE }, one));
     if (signal.aborted) throw signal.reason;
     // done only when every chunk is on the device now (the browser may have dropped some)
     const now = await onDevice();
@@ -406,3 +459,34 @@ export async function dropOffline(g: GameEntry): Promise<void> {
     hashes.filter((h) => !keep.has(h)).map((h) => cache.delete(new URL(chunkPath(h), store()).href)),
   );
 }
+
+/** Whether `id` was saved to the device to the end (as this browser remembers: read at once,
+ * in the click that starts a game; chunks the browser dropped since are fetched as it plays). */
+export function savedDone(id: string): boolean {
+  return savedGames()[id]?.status === "done";
+}
+
+// the saves this page started (stopSave stops them), and how each will end
+const saves = new Map<string, { stop: AbortController; done: Promise<void> }>();
+
+/**
+ * Starts saving `g` to the device, or gives the save of it going on now: `done` settles when it
+ * ends (rejected when it failed or was stopped).
+ */
+export function startSave(
+  g: GameEntry,
+  opt: SaveOptions = {},
+): { stop: AbortController; done: Promise<void> } {
+  const on = saves.get(g.id);
+  if (on) return on;
+  const stop = new AbortController();
+  const done = saveOffline(g, () => {}, stop.signal, opt).finally(() => saves.delete(g.id));
+  // (the callers' own handlers report it)
+  done.catch(() => {});
+  const s = { stop, done };
+  saves.set(g.id, s);
+  return s;
+}
+
+/** The save of `id` this page started, going on now. */
+export const saveOf = (id: string) => saves.get(id);

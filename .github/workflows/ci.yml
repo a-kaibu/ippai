@@ -120,6 +120,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/back-browser.mjs target/debug/ippai
+      - name: A game not on the device is saved there whole before it starts (from the bucket many at once, the server at most 4)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/save-first-browser.mjs target/debug/ippai
       - name: A game's information from a pasted 批評空間 / VNDB page (stand-ins for both)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
@@ -560,6 +564,8 @@ jobs:
         run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/screen-browser.mjs target/release/ippai
       - name: Chunks from the bucket itself (presigned, decrypted and zstd-decoded in the page; every way back to the server)
         run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/direct-browser.mjs
+      - name: A game saved whole before it starts, the bucket's objects decoded by sake's own zstd
+        run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/save-first-browser.mjs target/release/ippai
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ippai

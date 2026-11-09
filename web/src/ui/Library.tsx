@@ -2,7 +2,8 @@
 // sidebar with tabs, ui/Sidebar.tsx), the game last played to continue, the cards with cover, brand, year
 // and score from `ippai meta` (ordered and split into sections by brand or year as chosen:
 // library-view.ts), and a sidebar with the game's details and records. Picking a game starts it from that click
-// (audio and fullscreen need the user gesture).
+// (audio and fullscreen need the user gesture); one not yet saved to the device whole is saved
+// there first (SaveFirst.tsx), and 遊ぶ, a click again, starts it.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -56,11 +57,12 @@ import {
   type ListView,
   type SortKey,
 } from "../library-view";
-import { dropOffline, offlineState, saveOffline, type OfflineState } from "../offline";
+import { dropOffline, offlineState, saveOf, savedDone, startSave, type OfflineState } from "../offline";
 import { useApp } from "../pwa";
 import { fetchBuild } from "../version";
 import { Backup, Note, useProfile } from "./Personal";
 import { Sidebar, type SideTab } from "./Sidebar";
+import { SaveFirst } from "./SaveFirst";
 import { GameParts, SaveProgress, useSaves } from "./Storage";
 import { renderShell } from "./Shell";
 
@@ -275,45 +277,46 @@ function Section({ title, icon, children }: { title: string; icon: ReactNode; ch
 
 const mb = (b: number) => `${Math.max(1, Math.round(b / 2 ** 20))} MB`;
 
-/** The saves this page started, by game (中止 stops them). */
-const stops = new Map<string, AbortController>();
-
 /** The game's data on this device: save it beforehand (for a weak mobile link), or remove it. */
 function Offline({ game }: { game: GameEntry }) {
   const [state, setState] = useState<OfflineState | null | undefined>();
-  const [, setSaving] = useState<{ have: number; total: number; stop: AbortController } | null>(null);
   const [error, setError] = useState("");
   // (the save goes on with the panel closed or another game shown: its progress is offline.ts's)
   const progress = useSaves().get(game.id);
-  const stop = stops.get(game.id);
-  const saving = progress && stop ? { have: progress.have, total: progress.total, stop } : null;
+  const running = saveOf(game.id);
+  const saving =
+    progress && running ? { have: progress.have, total: progress.total, stop: running.stop } : null;
   const refresh = () =>
     void offlineState(game).then(setState, (e: unknown) => {
       setState(null);
       setError(String(e instanceof Error ? e.message : e));
     });
   useEffect(refresh, [game]);
+  // (a save started elsewhere, the dialog before play: this shows how it ended)
+  useEffect(() => {
+    if (!running) return;
+    let live = true;
+    running.done.then(
+      () => live && refresh(),
+      (e: unknown) => {
+        if (!live) return;
+        if (!running.stop.signal.aborted)
+          setError(`保存できませんでした: ${String(e instanceof Error ? e.message : e)}`);
+        refresh();
+      },
+    );
+    return () => void (live = false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
   if (state === null && !error) return null;
   if (!state)
     return error ? (
       <p className="text-sm text-muted-foreground">保存の状態を読めませんでした（{error}）</p>
     ) : null;
   const save = () => {
-    const stop = new AbortController();
-    stops.set(game.id, stop);
     setError("");
-    setSaving({ have: state.have, total: state.total, stop });
-    saveOffline(game, (have, total) => setSaving({ have, total, stop }), stop.signal)
-      .catch(
-        (e: unknown) =>
-          stop.signal.aborted ||
-          setError(`保存できませんでした: ${String(e instanceof Error ? e.message : e)}`),
-      )
-      .finally(() => {
-        stops.delete(game.id);
-        setSaving(null);
-        refresh();
-      });
+    startSave(game);
+    refresh();
   };
   const all = state.complete;
   const pct = Math.floor((state.have / Math.max(1, state.total)) * 100);
@@ -738,8 +741,17 @@ function ViewSelect({
   );
 }
 
-export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick: (g: GameEntry) => void }) {
+export function Library({
+  games: listed,
+  onPick: play,
+}: {
+  games: GameEntry[];
+  onPick: (g: GameEntry) => void;
+}) {
   const [games, setGames] = useState(listed);
+  // a game not yet saved to the device whole: saved first (SaveFirst), then played from there
+  const [first, setFirst] = useState<GameEntry | null>(null);
+  const onPick = (g: GameEntry) => (needsSaveFirst(g) ? setFirst(g) : play(g));
   const [favorites, setFavorites] = useState<string[]>([]);
   const [favoriteError, setFavoriteError] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -1010,8 +1022,24 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
           )}
         </Sidebar>
       )}
+      {first && (
+        <SaveFirst
+          key={first.id}
+          game={first}
+          onPlay={(g) => {
+            setFirst(null);
+            play(g);
+          }}
+          onClose={() => setFirst(null)}
+        />
+      )}
     </main>
   );
+}
+
+/** Whether `g` is saved to the device before it starts: not saved whole yet, where the device can keep it and is online. */
+export function needsSaveFirst(g: GameEntry): boolean {
+  return typeof caches !== "undefined" && navigator.onLine !== false && !savedDone(g.id);
 }
 
 /** Shows the list over the page; `pick` runs in the click that chose a game. */

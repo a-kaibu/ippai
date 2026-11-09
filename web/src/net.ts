@@ -196,10 +196,7 @@ export async function getChunk(
 ): Promise<{ data: Uint8Array<ArrayBuffer>; cached: boolean }> {
   const url = new URL(chunkPath(hex), store).href;
   const cache = opt.cache === undefined ? await chunkCache() : opt.cache;
-  const keep = (data: Uint8Array<ArrayBuffer>) =>
-    cache
-      ?.put(url, new Response(data, { headers: { [CHECKED]: "1", [SIZE]: String(data.length) } }))
-      .catch(() => undefined);
+  const keep = (data: Uint8Array<ArrayBuffer>) => (cache ? keepChunk(cache, url, data) : undefined);
   const hit = await cache?.match(url).catch(() => undefined);
   if (hit) {
     const data = new Uint8Array(await hit.arrayBuffer());
@@ -224,6 +221,13 @@ export async function getChunk(
     if (bad >= BAD_CHUNK) throw new Error(`chunk ${hex} does not match its name (${bad} times)`);
     await new Promise((r) => setTimeout(r, backoff(bad - 1)));
   }
+}
+
+/** Keeps chunk `data` (checked against its name) at `url` in `cache`, as getChunk does. */
+export function keepChunk(cache: Cache, url: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
+  return cache
+    .put(url, new Response(data, { headers: { [CHECKED]: "1", [SIZE]: String(data.length) } }))
+    .catch(() => undefined);
 }
 
 /** Bytes of chunks kept at most: the newest are kept. */

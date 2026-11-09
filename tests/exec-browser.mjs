@@ -90,6 +90,8 @@ try {
   // the list, as a player opens it: the game from its card
   await page.goto(`${base}play.html?headless`);
   await page.locator('[data-game="chain"]').getByRole("button").first().click();
+  // (not on the device yet: saved there whole first, web/src/ui/SaveFirst.tsx; then 遊ぶ)
+  await page.getByTestId("save-first").getByRole("button", { name: "遊ぶ", exact: true }).click({ timeout: 120000 });
   await until(/^chain 0: start$/);
   // each program after a launcher starts by itself: the player already pressed 起動 once (a
   // phone user who saw the button again thought the game never started)
