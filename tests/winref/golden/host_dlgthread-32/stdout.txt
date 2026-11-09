@@ -1,0 +1,4 @@
+  sent: 0
+other thread: 42, window 0
+timer: 33, window 0
+posted: 42, window 0

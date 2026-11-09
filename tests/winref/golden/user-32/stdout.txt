@@ -51,7 +51,7 @@ setpos max 300: 200 x 300
 nosize max 300: 200 x 300
 RegisterClassA(&wc) != 0                                         = 1 err 57005
 RegisterClassA(&wc) != 0                                         = 0 err 1410
-GetClassInfoA(wc.hInstance, "ippai-winref", &got)                = 49497 err 57005
+GetClassInfoA(wc.hInstance, "ippai-winref", &got)                = 49467 err 57005
 GetClassInfoA(wc.hInstance, "ippai-nothere", &got)               = 0 err 1411
 -- create hidden
 WM_GETMINMAXINFO
