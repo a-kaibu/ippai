@@ -102,3 +102,17 @@ export function nextRunUrl(href: string, params: URLSearchParams, run: string, a
   url.search = `?${next}`;
   return url;
 }
+
+/** The list's address under a game's page (play.html?game=<id>): where the browser's back button
+ * goes. (the rest of the query, ?jit= or &memory=, stays for the next game) */
+export function listUrl(href: string): URL {
+  const url = new URL(href);
+  for (const k of ["game", "autostart", "state"]) url.searchParams.delete(k);
+  return url;
+}
+
+/** Whether the page of game `id` still needs the list put under it in the session history: opened
+ * at its own address (a bookmark, the PWA's last game, a link), not picked from the list. */
+export function needsListBelow(state: unknown, id: string): boolean {
+  return (state as { game?: unknown } | null)?.game !== id;
+}

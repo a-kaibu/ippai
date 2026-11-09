@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { applyGame, nextRunUrl, type GameEntry } from "./launcher";
+import { applyGame, listUrl, needsListBelow, nextRunUrl, type GameEntry } from "./launcher";
 
 // anemoi from the list: Start.exe opens StartData\StartMenu.exe (ShellExecuteExW, /from="autorun"),
 // which opens GameData\SiglusEngine.exe (/fullscreen)
@@ -85,5 +85,50 @@ describe("nextRunUrl", () => {
         expect(got.getAll(k)).toEqual(before.getAll(k));
       }
     }
+  });
+});
+
+describe("listUrl", () => {
+  it("is the list's address under a game's page", () => {
+    const url = listUrl("https://w2.example/play.html?game=anemoi");
+    expect(url.href).toBe("https://w2.example/play.html");
+  });
+  it("drops the game, its autostart and a state slot, and keeps the page's switches", () => {
+    const url = listUrl("https://w2.example/?jit=0&game=anemoi&autostart&state=3&memory=grow");
+    expect([...url.searchParams]).toEqual([
+      ["jit", "0"],
+      ["memory", "grow"],
+    ]);
+    expect(url.pathname).toBe("/");
+  });
+  it("never names a game, whatever the query (random queries)", () => {
+    const next = rng(7);
+    const keys = ["game", "autostart", "state", "jit", "memory", "mount", "x"];
+    for (let i = 0; i < 500; i++) {
+      const q = new URLSearchParams();
+      const n = Math.floor(next() * 8);
+      for (let j = 0; j < n; j++)
+        q.append(keys[Math.floor(next() * keys.length)], String(Math.floor(next() * 9)));
+      const url = listUrl(`https://w2.example/play.html?${q}`);
+      expect(url.searchParams.has("game")).toBe(false);
+      expect(url.searchParams.has("autostart")).toBe(false);
+      expect(url.searchParams.has("state")).toBe(false);
+      const kept = [...q].filter(([k]) => !["game", "autostart", "state"].includes(k));
+      expect([...url.searchParams]).toEqual(kept);
+      // (idempotent: the list of the list is the list)
+      expect(listUrl(url.href).href).toBe(url.href);
+    }
+  });
+});
+
+describe("needsListBelow", () => {
+  it("is true for a page opened at its own address (no state, or another game's)", () => {
+    expect(needsListBelow(null, "anemoi")).toBe(true);
+    expect(needsListBelow(undefined, "anemoi")).toBe(true);
+    expect(needsListBelow({ game: "reunion" }, "anemoi")).toBe(true);
+    expect(needsListBelow("anemoi", "anemoi")).toBe(true);
+  });
+  it("is false once the list is under it (picked from the list, or after a reload)", () => {
+    expect(needsListBelow({ game: "anemoi" }, "anemoi")).toBe(false);
   });
 });

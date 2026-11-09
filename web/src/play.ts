@@ -22,7 +22,15 @@ import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./audio";
 import { Video } from "./video";
 import { AudioDecode } from "./adec";
-import { applyGame, coverUrl, fetchGames, nextRunUrl, type GameEntry } from "./launcher";
+import {
+  applyGame,
+  coverUrl,
+  fetchGames,
+  listUrl,
+  needsListBelow,
+  nextRunUrl,
+  type GameEntry,
+} from "./launcher";
 import { getUi, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
@@ -898,6 +906,11 @@ function splash(g: GameEntry): void {
 async function main(): Promise<void> {
   // installable, and opens offline (sw.ts)
   startApp();
+  if (library) {
+    addEventListener("popstate", backToList);
+    // (a page the browser kept frozen in its back/forward cache, a game maybe: a fresh one)
+    addEventListener("pageshow", (e) => e.persisted && location.reload());
+  }
   // logs an earlier page left (its tab was killed mid-game) go to the server now
   void sendLeftovers().catch(() => {});
   // a weak link: say that the game waits for the network (the requests are being retried)
@@ -918,7 +931,8 @@ async function main(): Promise<void> {
     showLibrary(games, (g) => {
       const url = new URL(location.href);
       url.searchParams.set("game", g.id);
-      history.replaceState(null, "", url);
+      // a history entry of its own: the browser's back button comes back to the list (backToList)
+      history.pushState({ game: g.id }, "", url);
       applyGame(params, g);
       splash(g);
       fullscreen();
@@ -927,6 +941,18 @@ async function main(): Promise<void> {
     return;
   }
   const id = params.get("game");
+  if (library && id && needsListBelow(history.state, id)) {
+    if (params.has("run")) {
+      // the program a game started in its place (closeGame): over the game's entry, the list's
+      // still under it
+      history.replaceState({ game: id }, "", location.href);
+    } else {
+      // opened at the game's own address: the list goes under it, for the back button
+      const here = location.href;
+      history.replaceState(null, "", listUrl(here));
+      history.pushState({ game: id }, "", here);
+    }
+  }
   if (id && !params.has("run")) {
     const g = (await fetchGames()).find((x) => x.id === id);
     if (!g) throw new Error(`ゲーム ${id} が一覧にありません`);
@@ -974,15 +1000,38 @@ function closeGame(): void {
     return;
   }
   log("ゲームが終了しました。一覧に戻ります");
+  void wrapUp().finally(leave);
+}
+
+/** The game's files saved and its log sent (at most 4 s for the log). */
+function wrapUp(): Promise<unknown> {
+  stopPlay?.();
   const ended = recorder
     ? Promise.race([recorder.end(), new Promise((r) => setTimeout(r, 4000))])
     : Promise.resolve();
-  void Promise.all([saveNow(), ended]).finally(leave);
+  return Promise.all([saveNow(), ended]);
+}
+
+/** The browser's back (or forward) button: the address is already the list's (or the game's); the
+ * game running is saved and the page starts again there. */
+let leaving = false;
+function backToList(): void {
+  if (leaving) return;
+  leaving = true;
+  log("一覧に戻ります");
+  void wrapUp().finally(() => location.reload());
 }
 
 function leave(): void {
   stopPlay?.();
   const back = () => {
+    // the list's entry is under this one: back to it (no second list entry over the first)
+    if (library && history.state?.game) {
+      leaving = true;
+      addEventListener("popstate", () => location.reload(), { once: true });
+      history.back();
+      return;
+    }
     const url = new URL(location.href);
     url.searchParams.delete("autostart");
     // a game from the list: back to the list
