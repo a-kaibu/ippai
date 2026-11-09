@@ -23,7 +23,7 @@ for exe in "$EXE"/*.exe; do
     fonts=
     src=$(dirname "$0")/probes/${n%-[36][24]}.c
     [[ -n "${FONTS:-}" && -f "$src" ]] && grep -q 'needs: fonts' "$src" && fonts=$FONTS
-    (cd "$d/cwd" && timeout 300 env ${fonts:+SAKE_FONTS="$fonts"} node "$SAKE" "$exe" > ../stdout.raw 2>&1; echo $? > ../exit)
+    (cd "$d/cwd" && timeout 300 env IPPAI_SCREEN=1366x768 ${fonts:+SAKE_FONTS="$fonts"} node "$SAKE" "$exe" > ../stdout.raw 2>&1; echo $? > ../exit)
     grep -Ev '^(sake|kura):' "$d/stdout.raw" > "$d/stdout.txt"; grep -E '^(sake|kura):' "$d/stdout.raw" > "$d/stderr.txt"; rm "$d/stdout.raw"
   else
     (cd "$d/cwd" && timeout 300 "$exe" > ../stdout.txt 2> ../stderr.txt; echo $? > ../exit)

@@ -1534,6 +1534,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     // CreateWindowEx: top-level windows only)
     let mmi = cs + if x64 { 0x60 } else { 0x40 };
     if !child {
+        grow_screen_for(style, (x, y), (cx, cy));
         minmax_defaults(mmi);
         send(c, h, 0x24, 0, mmi);
         let v = |k: u32| r32(mmi + 4 * k) as i32;
@@ -1850,6 +1851,38 @@ fn track_clamp(style: u32, (cx, cy): (i32, i32), min: (i32, i32), max: (i32, i32
         cy = cy.max(min.1);
     }
     (cx, cy)
+}
+
+/// The screen a top-level window at (`x`, `y`) asking `cx` x `cy` needs, when that is more than
+/// `screen`'s tracking size (the screen and 12 pixels): the screen grown to hold it (8192 at
+/// most). sake's screen is no monitor: a game that asks for a window bigger than it (KiriKiri
+/// Z's 1920x1080 window with its frame, 俺の姿が､透明に!) gets a screen it fits on, not a window
+/// kept to the screen and drawn into at full size (the page then showed its top-left part
+/// enlarged). None: it fits, it does not track (a popup), or the screen was given
+/// (IPPAI_SCREEN: winref's probes keep Windows' clamp).
+fn grown_screen(screen: (i32, i32), style: u32, (x, y): (i32, i32), (cx, cy): (i32, i32)) -> Option<(i32, i32)> {
+    let (sw, sh) = screen;
+    if !tracks(style) || (cx <= sw + 12 && cy <= sh + 12) {
+        return None;
+    }
+    let w = sw.max(x.max(0).saturating_add(cx)).min(8192);
+    let h = sh.max(y.max(0).saturating_add(cy)).min(8192);
+    Some((w, h)).filter(|&g| g != screen)
+}
+
+/// Grows the screen for a top-level window asking `cx` x `cy` at (`x`, `y`) (see
+/// [`grown_screen`]); no WM_DISPLAYCHANGE: the screen was this big all along.
+fn grow_screen_for(style: u32, xy: (i32, i32), size: (i32, i32)) {
+    if std::env::var_os("IPPAI_SCREEN").is_some() {
+        return;
+    }
+    if let Some((w, h)) = grown_screen(screen(), style, xy, size) {
+        if crate::env_on!("SAKE_TRACE_WIN") {
+            eprintln!("sake: screen grown to {w}x{h} for a {}x{} window", size.0, size.1);
+        }
+        kura::display::vnhost_display_set_size(w, h);
+        with(|s| s.screen = (w, h));
+    }
 }
 
 /// MINMAXINFO's defaults for a top-level window on this screen, written at `p` (40 bytes).
@@ -2795,6 +2828,8 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
             let (x, y, cx, cy, f) = windowpos_read(lp);
             let style = with(|s| s.wins.get(&h).map(|w| w.style));
             if let Some(style) = style.filter(|&st| f & 1 == 0 && tracks(st)) {
+                let at = with(|s| s.wins.get(&h).map(|w| (w.rect.l, w.rect.t))).unwrap_or_default();
+                grow_screen_for(style, if f & 2 == 0 { (x, y) } else { at }, (cx, cy));
                 let (min, max) = minmax(c, h);
                 let (ncx, ncy) = track_clamp(style, (cx, cy), min, max);
                 if (ncx, ncy) != (cx, cy) {
@@ -6493,8 +6528,50 @@ fn app_id_params() -> (u32, u32) {
 
 #[cfg(test)]
 mod track_tests {
-    use super::{track_clamp, tracks};
+    use super::{grown_screen, track_clamp, tracks};
     use proptest::prelude::*;
+
+    /// 俺の姿が､透明に!: KiriKiri Z's 1920x1080 client with its frame on the 1366x768 screen
+    /// grows the screen to hold the window, which then keeps its size.
+    #[test]
+    fn big_windows_grow_the_screen() {
+        let s = (1366, 768);
+        assert_eq!(grown_screen(s, OVERLAPPED, (0, 0), (1926, 1109)), Some((1926, 1109)));
+        // (CW_USEDEFAULT's x: from the left edge)
+        assert_eq!(grown_screen(s, OVERLAPPED, (i32::MIN, i32::MIN), (1926, 1109)), Some((1926, 1109)));
+        assert_eq!(grown_screen(s, OVERLAPPED, (100, 50), (1926, 1109)), Some((2026, 1159)));
+        // only the width too big: the height as tall as the window needs
+        assert_eq!(grown_screen(s, OVERLAPPED, (0, 0), (2000, 700)), Some((2000, 768)));
+        // what fits (AdvHD's 1280x720 with its frame, up to the tracking size) leaves it
+        assert_eq!(grown_screen(s, OVERLAPPED, (0, 0), (1286, 749)), None);
+        assert_eq!(grown_screen(s, OVERLAPPED, (500, 500), (1378, 780)), None);
+        // popups are never kept to the screen, so never grow it
+        assert_eq!(grown_screen(s, POPUP, (0, 0), (5000, 5000)), None);
+        assert_eq!(grown_screen(s, OVERLAPPED, (0, 0), (90000, 90000)), Some((8192, 8192)));
+    }
+
+    proptest! {
+        /// Grown, the screen holds the window: its tracking size no longer changes it (up to
+        /// 8192), the screen never shrinks, and growing again does nothing.
+        #[test]
+        fn grown_screens_hold_the_window(sw in 640i32..3000, sh in 480i32..2000, x in -3000i32..3000, y in -3000i32..3000, cx in 0i32..9000, cy in 0i32..9000, style in proptest::prop_oneof![Just(OVERLAPPED), Just(0x00cf_0000), Just(POPUP), Just(POPUP | 0x0004_0000), Just(0x4000_0000)]) {
+            match grown_screen((sw, sh), style, (x, y), (cx, cy)) {
+                None => prop_assert!(!tracks(style) || (cx <= sw + 12 && cy <= sh + 12)),
+                Some((w, h)) => {
+                    prop_assert!(tracks(style));
+                    prop_assert!(w >= sw && h >= sh && (w, h) != (sw, sh));
+                    let max = (w + 12, h + 12);
+                    let kept = track_clamp(style, (cx, cy), (0, 0), max);
+                    prop_assert_eq!(kept, (cx.min(max.0), cy.min(max.1)));
+                    if cx + x.max(0) <= 8192 && cy + y.max(0) <= 8192 {
+                        prop_assert_eq!(kept, (cx, cy));
+                        prop_assert!(x.max(0) + cx <= w && y.max(0) + cy <= h);
+                    }
+                    prop_assert_eq!(grown_screen((w, h), style, (x, y), kept), None);
+                }
+            }
+        }
+    }
 
     const OVERLAPPED: u32 = 0x00cb_0000; // WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
     const POPUP: u32 = 0x8000_0000;

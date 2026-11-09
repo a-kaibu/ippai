@@ -85,7 +85,7 @@ for (const n of names) {
     });
     page.on("crash", ok);
   });
-  const env = [...(process.env.IPPAI_JIT === "0" ? ["IPPAI_JIT=0"] : []), ...(process.env.GUEST_ENV ?? "").split(/\s+/).filter(Boolean)].map((e) => `&env=${encodeURIComponent(e)}`).join("");
+  const env = ["IPPAI_SCREEN=1366x768", ...(process.env.IPPAI_JIT === "0" ? ["IPPAI_JIT=0"] : []), ...(process.env.GUEST_ENV ?? "").split(/\s+/).filter(Boolean)].map((e) => `&env=${encodeURIComponent(e)}`).join("");
   const t0 = Date.now();
   await page.goto(`${base}/play.html?autostart&headless${env}&mount=/vnvm/game=winref&run=Z:\\vnvm\\game\\${n}.exe`);
   await Promise.race([done, new Promise((r) => setTimeout(r, Number(process.env.TIMEOUT ?? 180) * 1000))]);
