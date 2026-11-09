@@ -1,7 +1,7 @@
 // The game list (play.html without ?run=): a header (name, search, 設定 at the top right: a
 // sidebar, ui/Settings.tsx), the game last played to continue, the cards with cover, brand, year
 // and score from `ippai meta` (ordered and split into sections by brand or year as chosen:
-// library-view.ts), and a dialog with the game's details and records. Picking a game starts it from that click
+// library-view.ts), and a sidebar with the game's details and records. Picking a game starts it from that click
 // (audio and fullscreen need the user gesture).
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -533,105 +533,107 @@ function GameInfo({
     ["エンジン", game.engine],
   ];
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl gap-0 p-0">
-        {url && (
-          <div className="relative bg-black">
-            <img src={url} alt="" className="max-h-80 w-full object-contain" />
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-background to-transparent" />
-          </div>
-        )}
-        <div className="grid gap-4 p-5">
-          <DialogHeader>
-            <DialogTitle className="pr-8 text-xl">{m.title || game.title}</DialogTitle>
-            {m.furigana && m.furigana !== (m.title || game.title) ? (
-              <DialogDescription>{m.furigana}</DialogDescription>
-            ) : (
-              <DialogDescription className="sr-only">ゲームの情報</DialogDescription>
-            )}
-          </DialogHeader>
-          <div className="flex gap-2">
-            <Button size="lg" className="flex-1" onClick={onPick}>
-              <Play className="fill-current" /> 起動
-            </Button>
-            <Button
-              size="lg"
-              variant="outline"
-              aria-pressed={favorite}
-              disabled={!record.profile || record.busy}
-              onClick={() => void record.toggleFavorite()}
-              title={favorite ? "お気に入りから外す" : "お気に入りに追加"}
-            >
-              <Heart className={cn(favorite && "fill-current text-rose-400")} />
-              <span className="max-sm:sr-only">{favorite ? "お気に入り" : "お気に入りに追加"}</span>
-            </Button>
-          </div>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-            {facts
-              .filter(([, v]) => v)
-              .map(([k, v]) => (
-                <div key={k} className="contents">
-                  <dt className="text-muted-foreground">{k}</dt>
-                  <dd>{v}</dd>
-                </div>
-              ))}
-          </dl>
-          {!!m.tags?.length && (
-            <div className="flex flex-wrap gap-1.5">
-              {m.tags.map((t) => (
-                <Badge key={t} variant="secondary" className="rounded-full font-normal">
-                  {t}
-                </Badge>
-              ))}
+    <Sheet open onOpenChange={(o) => !o && onClose()}>
+      <SheetContent onInteractOutside={(e) => e.preventDefault()} data-testid="game-info">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {url && (
+            <div className="relative bg-black">
+              <img src={url} alt="" className="max-h-80 w-full object-contain" />
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-background to-transparent" />
             </div>
           )}
-          {m.description && (
-            <p className="text-sm leading-relaxed whitespace-pre-line text-muted-foreground">
-              {m.description}
-            </p>
-          )}
-          {!!m.links?.length && (
-            <div className="flex flex-wrap gap-2">
-              {m.links.map((l) => (
-                <Button key={l.url} asChild size="sm" variant="outline">
-                  <a href={l.url} target="_blank" rel="noopener noreferrer">
-                    {l.label} <ExternalLink className="size-3" />
-                  </a>
-                </Button>
-              ))}
+          <div className="grid gap-4 p-5">
+            <div className="flex flex-col gap-1">
+              <SheetTitle className={cn("text-xl", !url && "pr-8")}>{m.title || game.title}</SheetTitle>
+              {m.furigana && m.furigana !== (m.title || game.title) ? (
+                <SheetDescription>{m.furigana}</SheetDescription>
+              ) : (
+                <SheetDescription className="sr-only">ゲームの情報</SheetDescription>
+              )}
             </div>
-          )}
-          {!!game.unpack_issues?.length && (
-            <div className="grid gap-1.5 rounded-lg border border-destructive/40 p-3 text-sm">
-              <p className="flex items-center gap-2 font-medium text-destructive">
-                <TriangleAlert className="size-4 shrink-0" />
-                取り込み時に展開できなかったものがあります（動かない場面があるかもしれません）
-              </p>
-              <ul className="grid gap-1 text-xs break-all text-muted-foreground">
-                {game.unpack_issues.map((t) => (
-                  <li key={t}>{t}</li>
+            <div className="flex gap-2">
+              <Button size="lg" className="flex-1" onClick={onPick}>
+                <Play className="fill-current" /> 起動
+              </Button>
+              <Button
+                size="lg"
+                variant="outline"
+                aria-pressed={favorite}
+                disabled={!record.profile || record.busy}
+                onClick={() => void record.toggleFavorite()}
+                title={favorite ? "お気に入りから外す" : "お気に入りに追加"}
+              >
+                <Heart className={cn(favorite && "fill-current text-rose-400")} />
+                <span className="max-sm:sr-only">{favorite ? "お気に入り" : "お気に入りに追加"}</span>
+              </Button>
+            </div>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+              {facts
+                .filter(([, v]) => v)
+                .map(([k, v]) => (
+                  <div key={k} className="contents">
+                    <dt className="text-muted-foreground">{k}</dt>
+                    <dd>{v}</dd>
+                  </div>
                 ))}
-              </ul>
-            </div>
-          )}
-          <Section title="作品情報を取り直す" icon={<RefreshCw />}>
-            <MetaSource key={game.id} game={game} onUpdated={onUpdated} />
-          </Section>
-          <Section title="メモ" icon={<NotebookPen />}>
-            <Note state={record} />
-          </Section>
-          <Section title="端末に保存" icon={<HardDrive />}>
-            <Offline game={game} />
-          </Section>
-          <Section title="バックアップ" icon={<Download />}>
-            <p className="text-xs text-muted-foreground">
-              セーブデータとメモを 1 つのファイルにして持ち運べます。
-            </p>
-            <Backup game={game.id} state={record} />
-          </Section>
+            </dl>
+            {!!m.tags?.length && (
+              <div className="flex flex-wrap gap-1.5">
+                {m.tags.map((t) => (
+                  <Badge key={t} variant="secondary" className="rounded-full font-normal">
+                    {t}
+                  </Badge>
+                ))}
+              </div>
+            )}
+            {m.description && (
+              <p className="text-sm leading-relaxed whitespace-pre-line text-muted-foreground">
+                {m.description}
+              </p>
+            )}
+            {!!m.links?.length && (
+              <div className="flex flex-wrap gap-2">
+                {m.links.map((l) => (
+                  <Button key={l.url} asChild size="sm" variant="outline">
+                    <a href={l.url} target="_blank" rel="noopener noreferrer">
+                      {l.label} <ExternalLink className="size-3" />
+                    </a>
+                  </Button>
+                ))}
+              </div>
+            )}
+            {!!game.unpack_issues?.length && (
+              <div className="grid gap-1.5 rounded-lg border border-destructive/40 p-3 text-sm">
+                <p className="flex items-center gap-2 font-medium text-destructive">
+                  <TriangleAlert className="size-4 shrink-0" />
+                  取り込み時に展開できなかったものがあります（動かない場面があるかもしれません）
+                </p>
+                <ul className="grid gap-1 text-xs break-all text-muted-foreground">
+                  {game.unpack_issues.map((t) => (
+                    <li key={t}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <Section title="作品情報を取り直す" icon={<RefreshCw />}>
+              <MetaSource key={game.id} game={game} onUpdated={onUpdated} />
+            </Section>
+            <Section title="メモ" icon={<NotebookPen />}>
+              <Note state={record} />
+            </Section>
+            <Section title="端末に保存" icon={<HardDrive />}>
+              <Offline game={game} />
+            </Section>
+            <Section title="バックアップ" icon={<Download />}>
+              <p className="text-xs text-muted-foreground">
+                セーブデータとメモを 1 つのファイルにして持ち運べます。
+              </p>
+              <Backup game={game.id} state={record} />
+            </Section>
+          </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -689,6 +691,11 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
   const settingsButton = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState("");
   const [info, setInfo] = useState<GameEntry | null>(null);
+  // (one sidebar at a time: a game's information takes 設定's place)
+  const showInfo = (g: GameEntry) => {
+    setSettings(false);
+    setInfo(g);
+  };
   const [build, setBuild] = useState("");
   useEffect(() => {
     void fetchBuild().then(setBuild);
@@ -720,7 +727,9 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
   const setFavorite = (id: string, on: boolean) =>
     setFavorites((f) => (on ? [...new Set([...f, id])] : f.filter((x) => x !== id)));
   return (
-    <main className={cn("fixed inset-0 z-40 overflow-y-auto bg-background", settings && "lg:pr-96")}>
+    <main
+      className={cn("fixed inset-0 z-40 overflow-y-auto bg-background", (settings || info) && "lg:pr-96")}
+    >
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-md">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4">
           <a
@@ -753,7 +762,10 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
               ref={settingsButton}
               variant={settings ? "secondary" : "outline"}
               size="sm"
-              onClick={() => setSettings((open) => !open)}
+              onClick={() => {
+                setInfo(null);
+                setSettings((open) => !open);
+              }}
               aria-label="設定"
               aria-expanded={settings}
             >
@@ -800,7 +812,7 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
                 game={recent}
                 last={last[recent.id]}
                 onPick={() => onPick(recent)}
-                onInfo={() => setInfo(recent)}
+                onInfo={() => showInfo(recent)}
               />
             )}
             <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -864,7 +876,7 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
                           last={last[g.id]}
                           favorite={favorites.includes(g.id)}
                           onPick={() => onPick(g)}
-                          onInfo={() => setInfo(g)}
+                          onInfo={() => showInfo(g)}
                         />
                       ))}
                     </ul>
@@ -885,6 +897,7 @@ export function Library({ games: listed, onPick }: { games: GameEntry[]; onPick:
       )}
       {info && (
         <GameInfo
+          key={info.id}
           game={info}
           onClose={() => setInfo(null)}
           onPick={() => onPick(info)}

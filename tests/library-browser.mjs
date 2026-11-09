@@ -207,6 +207,21 @@ try {
       // a favorite from the game's dialog: on its card at once, under お気に入り, and after a reload
       await page.getByRole("button", { name: "月の光 の情報" }).click();
       const info = page.getByRole("dialog", { name: "月の光" });
+      // a sidebar too, beside the list; 設定 and the information take each other's place
+      const ibox = await info.boundingBox();
+      assert.ok(Math.abs(ibox.x + ibox.width - view.width) <= 1 && ibox.y <= 1 && ibox.height >= view.height - 1 && ibox.width <= 400, `info sidebar ${JSON.stringify(ibox)}`);
+      const cardsRight = await page.locator("[data-game]").evaluateAll((l) => Math.max(...l.map((e) => e.getBoundingClientRect().right)));
+      assert.ok(cardsRight <= ibox.x, `the cards stay beside the information (${cardsRight} > ${ibox.x})`);
+      assert.equal(await page.locator("[data-slot=dialog-overlay]").count(), 0, "no overlay");
+      await page.getByRole("button", { name: "設定", exact: true }).click();
+      await page.getByRole("dialog", { name: "設定" }).waitFor();
+      assert.equal(await info.count(), 0, "設定 replaced the information");
+      await page.getByRole("button", { name: "さくらの詩 の情報" }).click();
+      await page.getByRole("dialog", { name: "さくらの詩" }).waitFor();
+      assert.equal(await page.getByRole("dialog", { name: "設定" }).count(), 0, "the information replaced 設定");
+      await page.getByRole("button", { name: "月の光 の情報" }).click();
+      await info.waitFor();
+      assert.equal(await page.getByRole("dialog").count(), 1, "one sidebar at a time");
       const fav = info.getByRole("button", { name: /お気に入りに追加/ });
       await fav.click();
       await info.locator('button[aria-pressed="true"]').waitFor();
