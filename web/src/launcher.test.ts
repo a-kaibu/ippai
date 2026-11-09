@@ -17,6 +17,22 @@ function rng(seed: number) {
   return () => (seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32;
 }
 
+describe("applyGame", () => {
+  it("keeps the address's own env after the game's (a trace asked for in the URL)", () => {
+    const params = new URLSearchParams("game=anemoi&env=IPPAI_D3D_TRACE%3D1&env=SAKE_X%3D2");
+    applyGame(params, anemoi);
+    expect(params.getAll("env")).toEqual(["SAKE_X=1", "IPPAI_D3D_TRACE=1", "SAKE_X=2"]);
+    // (the page's environment: the last of a name wins)
+    const env = Object.fromEntries(
+      params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]),
+    );
+    expect(env).toEqual({ SAKE_X: "2", IPPAI_D3D_TRACE: "1" });
+    // applied again (a page that already has them): the same, not doubled
+    applyGame(params, anemoi);
+    expect(params.getAll("env")).toEqual(["SAKE_X=1", "IPPAI_D3D_TRACE=1", "SAKE_X=2"]);
+  });
+});
+
 describe("nextRunUrl", () => {
   it("keeps the mounts of a game picked from the list, whose address bar has only ?game=", () => {
     const params = new URLSearchParams("game=anemoi");

@@ -82,8 +82,11 @@ export function applyGame(params: URLSearchParams, g: GameEntry): void {
   for (const m of g.mounts) params.append("mount", m);
   if (g.args.length) params.set("args", g.args.join(","));
   else params.delete("args");
+  // the game's environment, then the address's own &env= (a trace asked for, as
+  // &env=IPPAI_D3D_TRACE=1: later wins, so it can also override the game's)
+  const asked = params.getAll("env").filter((e) => !g.env.includes(e));
   params.delete("env");
-  for (const e of g.env) params.append("env", e);
+  for (const e of [...g.env, ...asked]) params.append("env", e);
   markPlayed(g.id);
 }
 
