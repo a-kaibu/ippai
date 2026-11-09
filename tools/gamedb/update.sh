@@ -5,7 +5,7 @@
 #
 #     tools/gamedb/update.sh [work dir]      (default ~/.cache/ippai/gamedb)
 #
-# ippai: $IPPAI, else `ippai` on PATH when it has `gamedb update`, else the latest release's.
+# ippai: $IPPAI, else `ippai` on PATH when it has `gamedb update --part`, else the latest release's.
 set -eu
 
 repo=a-kaibu/ippai
@@ -18,7 +18,8 @@ if ! gh auth status -h github.com 2>&1 | grep -q "write:packages"; then
     gh auth refresh -h github.com -s write:packages
 fi
 
-has_update() { "$1" gamedb --help 2>/dev/null | grep -q "update"; }
+# (one that builds a part on its own: `gamedb update --part`)
+has_update() { "$1" gamedb update --help 2>/dev/null | grep -q -- "--part"; }
 
 ippai=${IPPAI:-}
 if [ -z "$ippai" ] && command -v ippai >/dev/null 2>&1 && has_update ippai; then
@@ -45,10 +46,10 @@ if [ -z "$ippai" ]; then
         tar -xzf "$tmp"/ippai_*.tar.gz -C "$tmp"
         ippai=$tmp/ippai
     fi
-    has_update "$ippai" || { echo "最新リリースに gamedb update がまだありません (v0.3.3 以降が要ります)" >&2; exit 1; }
+    has_update "$ippai" || { echo "最新リリースに gamedb update --part がまだありません (v0.3.4 以降が要ります)" >&2; exit 1; }
 fi
 
 echo "ippai: $ippai ($("$ippai" --version 2>/dev/null || echo '?'))"
 GHCR_TOKEN=$(gh auth token -h github.com)
 export GHCR_TOKEN
-"$ippai" gamedb update --egs "$dir"
+"$ippai" gamedb update --part egs "$dir"

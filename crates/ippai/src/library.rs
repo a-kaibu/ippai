@@ -246,19 +246,29 @@ impl Library {
         Ok(idx)
     }
 
-    /// The game database's newest copy into `<store>/gamedb.sqlite` (when it changed), and its
-    /// PC games.
+    /// The game database's newest copies (gamedb.rs: a file for each part) into
+    /// `<store>/gamedb-<part>.sqlite` (each when it changed), and ErogameScape's PC games.
     fn pull_gamedb(&self) -> Result<Vec<(u32, String, u32)>> {
         use rusqlite::OptionalExtension;
-        let dest = self.0.with_file_name("gamedb.sqlite");
-        let have: Option<String> = self.connect()?.query_row("SELECT value FROM kv WHERE key='gamedb_digest'", [], |r| r.get(0)).optional()?;
-        let digest = crate::gamedb::pull(&dest, have.as_deref())?;
-        self.connect()?.execute("INSERT INTO kv(key,value) VALUES('gamedb_digest',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&digest])?;
-        // (however old: it is rebuilt by hand, gamedb.yml)
-        let (games, _) = crate::gamedb::egs_games(&dest)?;
-        // (one built where ErogameScape never answered has VNDB's part only: entries, no list)
-        ensure!(!games.is_empty(), "the game database has no ErogameScape games");
-        Ok(games)
+        let mut games = Err(anyhow::anyhow!("no ErogameScape part"));
+        for part in crate::gamedb::Part::ALL {
+            let key = format!("gamedb_digest_{}", part.tag());
+            let dest = self.0.with_file_name(part.file());
+            let have: Option<String> = self.connect()?.query_row("SELECT value FROM kv WHERE key=?", [&key], |r| r.get(0)).optional()?;
+            match crate::gamedb::pull(&dest, part, have.as_deref()) {
+                Ok(digest) => {
+                    self.connect()?.execute("INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&key, &digest])?;
+                    // (however old: it is rebuilt by hand)
+                    if part == crate::gamedb::Part::Egs {
+                        games = crate::gamedb::egs_games(&dest).map(|g| g.0);
+                    }
+                }
+                // (VNDB's part missing leaves the list: its entries come from VNDB itself)
+                Err(e) if part == crate::gamedb::Part::Vndb => eprintln!("game database: vndb: {e:#}"),
+                Err(e) => games = Err(e),
+            }
+        }
+        games
     }
 
     /// The cover fetched with the game's metadata: bytes and media type.
@@ -538,7 +548,9 @@ mod egs_games_tests {
                 } else if path.starts_with("/token?") {
                     assert!(path.contains("scope=repository%3At%2Fgamedb%3Apull") || path.contains("scope=repository:t/gamedb:pull"), "{path}");
                     ("200 OK", String::new(), "application/json", br#"{"token":"tok"}"#.to_vec())
-                } else if path == "/v2/t/gamedb/manifests/latest" {
+                } else if path == "/v2/t/gamedb/manifests/vndb" {
+                    ("404 Not Found", String::new(), "text/plain", b"none".to_vec())
+                } else if path == "/v2/t/gamedb/manifests/egs" {
                     match &digest {
                         Some(d) => ("200 OK", String::new(), "application/vnd.oci.image.manifest.v1+json", serde_json::json!({"schemaVersion": 2, "layers": [{"mediaType": "application/zstd", "digest": d, "size": blob.as_ref().unwrap().len()}]}).to_string().into_bytes()),
                         None => ("404 Not Found", String::new(), "text/plain", b"none".to_vec()),
@@ -588,7 +600,7 @@ mod egs_games_tests {
         }
         std::env::set_var("IPPAI_META_EGS_SQL", format!("{at}/egs"));
         std::env::set_var("IPPAI_META_SEED", format!("{at}/seed"));
-        std::env::set_var("IPPAI_GAMEDB_REF", format!("{}/t/gamedb:latest", at.trim_start_matches("http://")));
+        std::env::set_var("IPPAI_GAMEDB_REF", format!("{}/t/gamedb", at.trim_start_matches("http://")));
         let dir = std::env::temp_dir().join(format!("ippai-test-{}", uuid::Uuid::new_v4()));
         let db = Library::new(&dir).unwrap();
         let q = |idx: &crate::egs_match::Index, s: &str| idx.best(&[s.to_string()]).map(|h| (h.id, h.votes));
@@ -622,12 +634,12 @@ mod egs_games_tests {
         // the game database
         let file = dir.join("built.sqlite");
         let row = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<crate::meta::Row>();
-        crate::gamedb::write(
-            &file,
-            &[(777, row(&[("id", "777"), ("gamename", "ゲームデータベースの作品"), ("count2", "42"), ("model", "PC"), ("brandname", "ブランド")]), vec![])],
-            &[serde_json::json!({"id": "v5", "title": "VN", "votecount": 1})],
-        )
-        .unwrap();
+        // (ErogameScape's part as one is published: enough games, a known one)
+        let mut games: Vec<_> = (1..=30345u32)
+            .map(|id| (id, row(&[("id", &id.to_string()), ("gamename", if id == 30345 { "LOOPERS" } else { "" }), ("count2", "0"), ("model", "PC")]), vec![]))
+            .collect();
+        games[776] = (777, row(&[("id", "777"), ("gamename", "ゲームデータベースの作品"), ("count2", "42"), ("model", "PC"), ("brandname", "ブランド")]), vec![]);
+        crate::gamedb::write(&file, &games, &[]).unwrap();
         // (built by hand two months ago: still taken)
         rusqlite::Connection::open(&file).unwrap().execute("UPDATE info SET value=? WHERE key='built_ms'", [(now_ms() - 60 * 86_400_000).to_string()]).unwrap();
         *st.gamedb.lock().unwrap() = Some(zstd::encode_all(&std::fs::read(&file).unwrap()[..], 3).unwrap());
@@ -636,10 +648,9 @@ mod egs_games_tests {
         let idx = db.egs_index().unwrap();
         assert_eq!(q(&idx, "ゲームデータベースの作品"), Some((777, 42)));
         assert_eq!(st.asked.load(Ordering::SeqCst), n, "ErogameScape not asked");
-        let local = dir.join("gamedb.sqlite");
-        let i = crate::meta::lookup("", Some("egs:777"), Some(&local)).unwrap();
+        let i = crate::meta::lookup("", Some("egs:777"), Some(&dir)).unwrap();
         assert_eq!((i.title.as_str(), i.brand.as_str()), ("ゲームデータベースの作品", "ブランド"));
-        assert_eq!(crate::meta::lookup("", Some("vndb:v5"), Some(&local)).unwrap().title, "VN");
+        assert!(!dir.join("gamedb-vndb.sqlite").exists(), "no VNDB part published: the list all the same");
         assert_eq!(st.blobs.load(Ordering::SeqCst), 1);
         stale();
         db.egs_index().unwrap();

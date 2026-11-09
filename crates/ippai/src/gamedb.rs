@@ -1,8 +1,11 @@
-//! The game database: every ErogameScape (批評空間) game and every Japanese VN on VNDB in one
-//! SQLite file, rebuilt by hand now and then (`ippai gamedb update`: tools/gamedb/README.md) and
-//! published as a public package (ghcr.io/a-kaibu/ippai-gamedb:latest, zstd), so a server that
-//! cannot reach ErogameScape (it resets many hosts' connections) still identifies games and shows their information. The server keeps it as `<store>/gamedb.sqlite` (Library::egs_index
-//! pulls it when a day old) and meta.rs reads entries from it before asking the sites.
+//! The game database: every ErogameScape (批評空間) game and every Japanese VN on VNDB, each part
+//! its own SQLite file (Part), rebuilt by hand now and then (`ippai gamedb update --part`:
+//! ErogameScape's on a host it answers, VNDB's on GitHub's runner; tools/gamedb/README.md) and
+//! published as a public package (ghcr.io/a-kaibu/ippai-gamedb, a tag for each part, zstd), so
+//! a server that cannot reach ErogameScape (it resets many hosts' connections) still identifies
+//! games and shows their information. The server keeps them as `<store>/gamedb-<part>.sqlite`
+//! (Library::egs_index pulls them when a day old) and meta.rs reads entries from them before
+//! asking the sites.
 //!
 //! Tables: `egs(id, name, votes, model, row, more)`: the game's gamelist row (with its brand's
 //! name and url) and its tag and series rows, as JSON, exactly what meta::egs_info reads from the
@@ -17,9 +20,38 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
-/// Where the package is (IPPAI_GAMEDB_REF: another registry, for tests).
+/// Where the package is, host/repo (IPPAI_GAMEDB_REF: another registry, for tests). Each part has
+/// its tag there (Part::tag).
 pub fn reference() -> String {
-    std::env::var("IPPAI_GAMEDB_REF").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "ghcr.io/a-kaibu/ippai-gamedb:latest".into())
+    std::env::var("IPPAI_GAMEDB_REF").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "ghcr.io/a-kaibu/ippai-gamedb".into())
+}
+
+/// The two parts, each its own file, tag and maker (the user, 2026-11-09: "批評空間とvndbでdb分けた
+/// 方がいい"): ErogameScape's, built by hand on a host it answers (tools/gamedb/update.sh: it
+/// refuses GitHub's runners and many clouds); VNDB's, on GitHub's runner (gamedb.yml).
+#[derive(Clone, Copy, PartialEq, Debug, clap::ValueEnum)]
+pub enum Part {
+    Egs,
+    Vndb,
+}
+
+impl Part {
+    pub const ALL: [Part; 2] = [Part::Egs, Part::Vndb];
+
+    pub fn tag(self) -> &'static str {
+        match self {
+            Part::Egs => "egs",
+            Part::Vndb => "vndb",
+        }
+    }
+
+    /// The copy's name in a store (`<store>/gamedb-egs.sqlite`).
+    pub fn file(self) -> &'static str {
+        match self {
+            Part::Egs => "gamedb-egs.sqlite",
+            Part::Vndb => "gamedb-vndb.sqlite",
+        }
+    }
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS egs(id INTEGER PRIMARY KEY, name TEXT NOT NULL, votes INTEGER NOT NULL, model TEXT NOT NULL, row TEXT NOT NULL, more TEXT NOT NULL);
@@ -158,12 +190,10 @@ pub fn write(out: &Path, egs: &[(u32, meta::Row, Vec<meta::Row>)], vndb: &[serde
     Ok(())
 }
 
-/// `ippai gamedb build <out>`: from the sites (about 3 minutes of ErogameScape at its pace, 10 of
-/// VNDB at its).
-/// ErogameScape refuses many hosts (GitHub's runners too): its part then comes from `keep`, an
-/// earlier copy (the package's, or one built where it answers), or stays empty.
-pub fn build(out: &Path, keep: Option<&Path>) -> Result<()> {
-    build_from(out, keep, egs_all(&meta::egs_rows), vndb_fetch)
+/// `ippai gamedb build --part <part> <out>`: that part from its site (about 3 minutes of
+/// ErogameScape at its pace, half an hour of VNDB within its rate limit).
+pub fn build(out: &Path, part: Part) -> Result<()> {
+    build_with(out, part, &|| egs_all(&meta::egs_rows), &vndb_fetch)
 }
 
 fn vndb_fetch() -> Result<Vec<serde_json::Value>> {
@@ -173,53 +203,22 @@ fn vndb_fetch() -> Result<Vec<serde_json::Value>> {
     )
 }
 
-/// The part one host makes, the other kept from `keep` (the copy published before):
-/// ErogameScape's on a host it answers (`update --egs`, by hand), VNDB's on GitHub's runner
-/// (gamedb.yml, ErogameScape not even asked: it refuses the runners). The other part is fetched
-/// too only when `keep` has none of it.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Part {
-    Egs,
-    Vndb,
-}
-
-fn build_part(out: &Path, keep: &Path, part: Part, egs: &dyn Fn() -> Result<EgsGames>, vndb: &dyn Fn() -> Result<Vec<serde_json::Value>>) -> Result<()> {
-    let have = keep.is_file();
-    match part {
-        Part::Egs => {
-            let kept = if have { vndb_rows_of(keep)? } else { vec![] };
-            let games = egs().context("erogamescape")?;
-            if kept.is_empty() {
-                build_from(out, None, Ok(games), vndb)
-            } else {
-                eprintln!("vndb: {} VNs kept from before", kept.len());
-                build_from(out, None, Ok(games), || Ok(kept))
-            }
-        }
-        Part::Vndb => {
-            let kept = if have { egs_rows_of(keep)? } else { vec![] };
-            build_from(out, Some(keep), if kept.is_empty() { egs() } else { Err(anyhow!("not asked: kept from before")) }, vndb)
-        }
-    }
-}
-
 type EgsGames = Vec<(u32, meta::Row, Vec<meta::Row>)>;
 
-/// ErogameScape's part as `egs` answered (or as `keep` had it), and VNDB's.
-fn build_from(out: &Path, keep: Option<&Path>, egs: Result<EgsGames>, vndb: impl FnOnce() -> Result<Vec<serde_json::Value>>) -> Result<()> {
-    let egs = match egs {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("erogamescape: {e:#}");
-            let kept = keep.filter(|p| p.is_file()).map(egs_rows_of).transpose()?.unwrap_or_default();
-            eprintln!("erogamescape: {} games kept from before", kept.len());
-            kept
+/// Only `part`'s site asked; the other part's table stays empty.
+fn build_with(out: &Path, part: Part, egs: &dyn Fn() -> Result<EgsGames>, vndb: &dyn Fn() -> Result<Vec<serde_json::Value>>) -> Result<()> {
+    match part {
+        Part::Egs => {
+            let games = egs().context("erogamescape")?;
+            eprintln!("erogamescape: {} games", games.len());
+            write(out, &games, &[])
         }
-    };
-    eprintln!("erogamescape: {} games", egs.len());
-    let vndb = vndb().context("vndb")?;
-    eprintln!("vndb: {} VNs", vndb.len());
-    write(out, &egs, &vndb)
+        Part::Vndb => {
+            let vns = vndb().context("vndb")?;
+            eprintln!("vndb: {} VNs", vns.len());
+            write(out, &[], &vns)
+        }
+    }
 }
 
 fn now_ms() -> i64 {
@@ -228,13 +227,15 @@ fn now_ms() -> i64 {
 
 // ---- reading
 
-/// The entry `id` names (egs:<n>, vndb:v<n>) from a copy (`<store>/gamedb.sqlite`), when it is
-/// there and has it.
-pub fn info(path: &Path, id: &str) -> Option<meta::Info> {
+/// The entry `id` names (egs:<n>, vndb:v<n>) from the copies in `dir` (a store: its part's
+/// file), when that is there and has it.
+pub fn info(dir: &Path, id: &str) -> Option<meta::Info> {
+    let part = if id.starts_with("egs:") { Part::Egs } else { Part::Vndb };
+    let path = dir.join(part.file());
     if !path.is_file() {
         return None;
     }
-    info_in(&Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?, id)
+    info_in(&Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?, id)
 }
 
 fn info_in(c: &Connection, id: &str) -> Option<meta::Info> {
@@ -250,16 +251,9 @@ fn info_in(c: &Connection, id: &str) -> Option<meta::Info> {
     r.ok()
 }
 
-/// A copy's VNDB part, as `write` takes it.
-pub fn vndb_rows_of(path: &Path) -> Result<Vec<serde_json::Value>> {
-    let c = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut q = c.prepare("SELECT json FROM vndb ORDER BY id")?;
-    let rows = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    rows.iter().map(|j| Ok(serde_json::from_str(j)?)).collect()
-}
-
 /// A copy's ErogameScape part, as `write` takes it.
-pub fn egs_rows_of(path: &Path) -> Result<Vec<(u32, meta::Row, Vec<meta::Row>)>> {
+#[cfg(test)]
+fn egs_rows_of(path: &Path) -> Result<Vec<(u32, meta::Row, Vec<meta::Row>)>> {
     let c = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut q = c.prepare("SELECT id,row,more FROM egs ORDER BY id")?;
     let rows = q.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -293,14 +287,12 @@ struct Registry {
 }
 
 impl Registry {
-    /// For `reference` (host/repo[:tag]): the registry and the tag (latest when none).
-    fn new(reference: &str, secret: Option<String>) -> Result<(Registry, String)> {
-        let name = package(reference);
-        let tag = reference.get(name.len() + 1..).unwrap_or("latest");
-        let (host, repo) = name.split_once('/').ok_or_else(|| anyhow!("{reference}: no repository"))?;
+    /// For the package `name` (host/repo).
+    fn new(name: &str, secret: Option<String>) -> Result<Registry> {
+        let (host, repo) = name.split_once('/').ok_or_else(|| anyhow!("{name}: no repository"))?;
         let local = host.split(':').next().is_some_and(|h| h == "127.0.0.1" || h == "localhost");
         let base = format!("{}{host}", if local { "http://" } else { "https://" });
-        Ok((Registry { a: agent(), base, repo: repo.into(), secret, token: None }, tag.into()))
+        Ok(Registry { a: agent(), base, repo: repo.into(), secret, token: None })
     }
 
     /// `method` on `path` (under /v2/<repo>/, or a whole URL such as an upload's location).
@@ -370,15 +362,16 @@ impl Registry {
     }
 }
 
-/// Brings the package's database to `dest` when it differs from the copy there (`have`: the
-/// digest of that copy). Returns the digest now there.
-pub fn pull(dest: &Path, have: Option<&str>) -> Result<String> {
-    pull_from(&reference(), dest, have)
+/// Brings `part`'s copy in the package to `dest` when it differs from the copy there (`have`:
+/// the digest of that copy). Returns the digest now there.
+pub fn pull(dest: &Path, part: Part, have: Option<&str>) -> Result<String> {
+    pull_from(&reference(), part, dest, have)
 }
 
-fn pull_from(r: &str, dest: &Path, have: Option<&str>) -> Result<String> {
-    let (mut reg, tag) = Registry::new(r, None)?;
-    let m: serde_json::Value = reg.call("GET", &format!("manifests/{tag}"), &[], &[("Accept", MANIFEST)])?.into_json()?;
+fn pull_from(name: &str, part: Part, dest: &Path, have: Option<&str>) -> Result<String> {
+    let mut reg = Registry::new(name, None)?;
+    let r = format!("{name}:{}", part.tag());
+    let m: serde_json::Value = reg.call("GET", &format!("manifests/{}", part.tag()), &[], &[("Accept", MANIFEST)])?.into_json()?;
     let layer = &m["layers"][0];
     let digest = layer["digest"].as_str().ok_or_else(|| anyhow!("{r}: no layer"))?.to_string();
     if have == Some(digest.as_str()) && dest.is_file() {
@@ -392,93 +385,78 @@ fn pull_from(r: &str, dest: &Path, have: Option<&str>) -> Result<String> {
     }
     let tmp = dest.with_extension("sqlite.tmp");
     std::fs::write(&tmp, zstd::decode_all(&z[..])?)?;
-    // (a database it cannot read is not taken)
-    egs_games(&tmp).with_context(|| format!("{r}: not a game database"))?;
+    // (a copy it would not publish is not taken)
+    if let Err(e) = check(&tmp, part) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.context(format!("{r}: not {part:?}'s part")));
+    }
     std::fs::rename(&tmp, dest)?;
     Ok(digest)
 }
 
 const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
 
-/// A built copy onto the package (GHCR_TOKEN: a token with write:packages), zstd-compressed, as
-/// an OCI artifact tagged latest and the day (UTC), linked to the repository. Returns the layer's
-/// digest.
-pub fn push(file: &Path, secret: &str) -> Result<String> {
-    push_to(package(&reference()), file, secret, &meta::now_rfc3339()[..10].replace('-', ""))
+/// A built copy of `part` onto the package (GHCR_TOKEN: a token with write:packages),
+/// zstd-compressed, as an OCI artifact tagged with the part and the part and day (UTC: egs-20261109),
+/// linked to the repository. Checked first (`check`). Returns the layer's digest.
+pub fn push(file: &Path, part: Part, secret: &str) -> Result<String> {
+    push_to(&reference(), part, file, secret, &meta::now_rfc3339()[..10].replace('-', ""))
 }
 
-fn push_to(name: &str, file: &Path, secret: &str, day: &str) -> Result<String> {
-    // (only a copy it would take itself)
-    egs_games(file).with_context(|| format!("{}: not a game database", file.display()))?;
+fn push_to(name: &str, part: Part, file: &Path, secret: &str, day: &str) -> Result<String> {
+    check(file, part)?;
     let z = zstd::encode_all(&std::fs::read(file)?[..], 19)?;
-    let (mut reg, _) = Registry::new(name, Some(secret.into()))?;
+    let mut reg = Registry::new(name, Some(secret.into()))?;
     let layer = reg.put_blob(&z)?;
     let empty = reg.put_blob(b"{}")?;
     let m = serde_json::json!({
         "schemaVersion": 2, "mediaType": MANIFEST, "artifactType": "application/vnd.ippai.gamedb.v1",
         "config": {"mediaType": "application/vnd.oci.empty.v1+json", "digest": empty, "size": 2},
-        "layers": [{"mediaType": "application/zstd", "digest": layer, "size": z.len(), "annotations": {"org.opencontainers.image.title": "gamedb.sqlite.zst"}}],
-        "annotations": {"org.opencontainers.image.source": "https://github.com/a-kaibu/ippai", "org.opencontainers.image.description": "ErogameScape and VNDB entries for ippai (crates/ippai/src/gamedb.rs)"},
+        "layers": [{"mediaType": "application/zstd", "digest": layer, "size": z.len(), "annotations": {"org.opencontainers.image.title": part.file().to_string() + ".zst"}}],
+        "annotations": {"org.opencontainers.image.source": "https://github.com/a-kaibu/ippai", "org.opencontainers.image.description": "ErogameScape and VNDB entries for ippai (crates/ippai/src/gamedb.rs), a tag for each"},
     })
     .to_string();
-    for tag in ["latest", day] {
+    for tag in [part.tag().to_string(), format!("{}-{day}", part.tag())] {
         reg.call("PUT", &format!("manifests/{tag}"), m.as_bytes(), &[("Content-Type", MANIFEST)])?;
     }
-    eprintln!("{name}:latest {layer} ({} compressed)", z.len());
+    eprintln!("{name}:{} {layer} ({} compressed)", part.tag(), z.len());
     Ok(layer)
 }
 
-/// A new copy published: the copy there now pulled into `dir`, one part made anew and the other
-/// kept from it (`egs`: ErogameScape's, which must then be there; VNDB's otherwise: build_part),
-/// checked, pushed. By hand (tools/gamedb/README.md).
-pub fn update(dir: &Path, egs: bool, secret: &str) -> Result<String> {
-    let part = if egs { Part::Egs } else { Part::Vndb };
-    update_with(dir, egs, secret, &reference(), &meta::now_rfc3339()[..10].replace('-', ""), &|out, keep| {
-        build_part(out, keep, part, &|| egs_all(&meta::egs_rows), &vndb_fetch)
-    })
-}
-
-fn update_with(dir: &Path, egs: bool, secret: &str, r: &str, day: &str, build: &dyn Fn(&Path, &Path) -> Result<()>) -> Result<String> {
+/// `part` built anew into `dir` and pushed (tools/gamedb/update.sh: ErogameScape's; gamedb.yml:
+/// VNDB's).
+pub fn update(dir: &Path, part: Part, secret: &str) -> Result<String> {
     std::fs::create_dir_all(dir)?;
-    let before = dir.join("before.sqlite");
-    if let Err(e) = pull_from(r, &before, None) {
-        eprintln!("the copy published before: {e:#}");
-        let _ = std::fs::remove_file(&before);
-    }
-    let new = dir.join("gamedb.sqlite");
-    build(&new, &before)?;
-    check(&new, egs)?;
-    push_to(package(r), &new, secret, day)
+    let out = dir.join(part.file());
+    build(&out, part)?;
+    push(&out, part, secret)
 }
 
-/// host/repo of a reference (without its tag).
-fn package(r: &str) -> &str {
-    r.rsplit_once(':').filter(|(n, t)| n.contains('/') && !t.contains('/')).map_or(r, |(n, _)| n)
-}
-
-/// The least a published copy holds: VNDB's Japanese VNs, and ErogameScape's PC games with a
-/// known one (30345: LOOPERS) when it has them; `egs`: it must have them (a host ErogameScape
-/// answers).
-pub fn check(file: &Path, egs: bool) -> Result<()> {
-    let c = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let n: u32 = c.query_row("SELECT count(*) FROM egs WHERE model='PC'", [], |r| r.get(0))?;
-    let v: u32 = c.query_row("SELECT count(*) FROM vndb", [], |r| r.get(0))?;
-    let known: Option<String> = c.query_row("SELECT name FROM egs WHERE id=30345", [], |r| r.get(0)).optional()?;
+/// The least a copy of `part` holds to be published or taken: ErogameScape's PC games with a
+/// known one (30345: LOOPERS), or VNDB's Japanese VNs.
+pub fn check(file: &Path, part: Part) -> Result<()> {
+    let c = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).with_context(|| format!("{}", file.display()))?;
+    let counts = || -> rusqlite::Result<(u32, u32, Option<String>)> {
+        Ok((
+            c.query_row("SELECT count(*) FROM egs WHERE model='PC'", [], |r| r.get(0))?,
+            c.query_row("SELECT count(*) FROM vndb", [], |r| r.get(0))?,
+            c.query_row("SELECT name FROM egs WHERE id=30345", [], |r| r.get(0)).optional()?,
+        ))
+    };
+    let (n, v, known) = counts().with_context(|| format!("{}: not a game database", file.display()))?;
     eprintln!("erogamescape: {n} PC games, 30345 {known:?}; vndb: {v} VNs");
-    counts_ok(n, v, known.as_deref(), egs)
+    counts_ok(part, n, v, known.as_deref())
 }
 
 const MIN_EGS: u32 = 20_000;
 const MIN_VNDB: u32 = 10_000;
 
-fn counts_ok(egs_pc: u32, vndb: u32, known: Option<&str>, need_egs: bool) -> Result<()> {
-    if vndb <= MIN_VNDB {
-        bail!("only {vndb} VNs from VNDB");
+fn counts_ok(part: Part, egs_pc: u32, vndb: u32, known: Option<&str>) -> Result<()> {
+    match part {
+        Part::Egs if egs_pc <= MIN_EGS || known != Some("LOOPERS") => bail!("only {egs_pc} games from ErogameScape (30345: {known:?})"),
+        Part::Vndb if vndb <= MIN_VNDB => bail!("only {vndb} VNs from VNDB"),
+        _ => Ok(()),
     }
-    if (need_egs || egs_pc > 0) && (egs_pc <= MIN_EGS || known != Some("LOOPERS")) {
-        bail!("only {egs_pc} games from ErogameScape (30345: {known:?})");
-    }
-    Ok(())
 }
 
 fn hex(b: impl AsRef<[u8]>) -> String {
@@ -677,122 +655,132 @@ mod tests {
         at.trim_start_matches("http://").to_string()
     }
 
+    fn games(extra: u32) -> Result<EgsGames> {
+        Ok((1..=30345 + extra)
+            .map(|id| {
+                let name = if id == 30345 { "LOOPERS".to_string() } else { format!("g{id}") };
+                (id, row(&[("id", &id.to_string()), ("gamename", &name), ("count2", "1"), ("model", "PC")]), vec![])
+            })
+            .collect())
+    }
+
+    fn vns(extra: u32) -> Result<Vec<serde_json::Value>> {
+        Ok((1..=MIN_VNDB + extra).map(|n| serde_json::json!({"id": format!("v{n}"), "title": format!("t{n}")})).collect())
+    }
+
+    fn no_proxy() {
+        for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            std::env::remove_var(k);
+        }
+    }
+
     /// A built copy pushed (with the secret) comes back from an anonymous pull byte for byte,
-    /// tagged latest and the day; a second push uploads nothing it has; a wrong secret or a file
-    /// that is no game database pushes nothing.
+    /// tagged with its part and the part and day; a second push uploads nothing it has; a wrong
+    /// secret, a file that is no game database or a part too small pushes nothing.
     #[test]
     fn push_then_pull() {
         let st = std::sync::Arc::new(Reg::default());
-        let host = registry(st.clone());
-        for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
-            std::env::remove_var(k);
-        }
+        let name = format!("{}/t/gamedb", registry(st.clone()));
+        no_proxy();
         let dir = std::env::temp_dir().join(format!("ippai-gamedb-push-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("gamedb.sqlite");
-        write(&db, &egs_all(&form).unwrap(), &[serde_json::json!({"id": "v17", "title": "Ever17"})]).unwrap();
-        let name = format!("{host}/t/gamedb");
+        let db = dir.join("egs.sqlite");
+        build_with(&db, Part::Egs, &|| games(0), &|| panic!("VNDB asked")).unwrap();
         let bad = dir.join("bad.sqlite");
         std::fs::write(&bad, b"not sqlite").unwrap();
-        assert!(push_to(&name, &bad, "secret", "20261109").is_err());
-        let e = format!("{:#}", push_to(&name, &db, "wrong", "20261109").unwrap_err());
+        assert!(push_to(&name, Part::Egs, &bad, "secret", "20261109").is_err());
+        assert!(push_to(&name, Part::Vndb, &db, "secret", "20261109").is_err(), "ErogameScape's copy is no VNDB part");
+        let e = format!("{:#}", push_to(&name, Part::Egs, &db, "wrong", "20261109").unwrap_err());
         assert!(e.contains("403"), "{e}");
         assert!(st.tags.lock().unwrap().is_empty() && st.blobs.lock().unwrap().is_empty());
-        let layer = push_to(&name, &db, "secret", "20261109").unwrap();
+        let layer = push_to(&name, Part::Egs, &db, "secret", "20261109").unwrap();
         let tags = st.tags.lock().unwrap().clone();
-        assert_eq!(tags.keys().collect::<std::collections::BTreeSet<_>>(), ["20261109", "latest"].iter().map(|s| s.to_string()).collect::<std::collections::BTreeSet<_>>().iter().collect());
-        let m: serde_json::Value = serde_json::from_str(&tags["latest"]).unwrap();
+        assert_eq!(tags.keys().map(|s| s.as_str()).collect::<std::collections::BTreeSet<_>>(), ["egs", "egs-20261109"].into());
+        let m: serde_json::Value = serde_json::from_str(&tags["egs"]).unwrap();
         assert_eq!(m["layers"][0]["digest"], layer);
         assert_eq!(m["annotations"]["org.opencontainers.image.source"], "https://github.com/a-kaibu/ippai");
         let back = dir.join("back.sqlite");
-        assert_eq!(pull_from(&format!("{name}:latest"), &back, None).unwrap(), layer);
+        assert_eq!(pull_from(&name, Part::Egs, &back, None).unwrap(), layer);
         assert_eq!(std::fs::read(&back).unwrap(), std::fs::read(&db).unwrap());
-        assert_eq!(pull_from(&format!("{name}:20261109"), &back, Some(&layer)).unwrap(), layer, "the copy there is kept");
+        assert_eq!(pull_from(&name, Part::Egs, &back, Some(&layer)).unwrap(), layer, "the copy there is kept");
         let uploads = st.uploads.load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!(uploads, 2, "the layer and the empty config");
-        push_to(&name, &db, "secret", "20261110").unwrap();
+        push_to(&name, Part::Egs, &db, "secret", "20261110").unwrap();
         assert_eq!(st.uploads.load(std::sync::atomic::Ordering::SeqCst), uploads, "nothing uploaded again");
-        assert!(pull_from(&format!("{name}:nope"), &back, None).is_err());
+        assert!(pull_from(&name, Part::Vndb, &back, None).is_err(), "no VNDB part yet");
+        // (a published copy too small is not taken either)
+        let small = dir.join("small.sqlite");
+        write(&small, &[], &vns(0).unwrap()[..5]).unwrap();
+        let d = Registry::new(&name, Some("secret".into())).unwrap().put_blob(&zstd::encode_all(&std::fs::read(&small).unwrap()[..], 3).unwrap()).unwrap();
+        st.tags.lock().unwrap().insert("vndb".into(), tags["egs"].replace(&layer, &d));
+        let e = format!("{:#}", pull_from(&name, Part::Vndb, &back, None).unwrap_err());
+        assert!(e.contains("only 5 VNs"), "{e}");
+        assert_eq!(std::fs::read(&back).unwrap(), std::fs::read(&db).unwrap(), "the copy there kept");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// The daily job: a host ErogameScape answers publishes both parts; a runner it does not
-    /// answer then publishes new VNs with ErogameScape's part from that copy; with nothing
-    /// published before only VNDB's part goes up, and not at all where ErogameScape's part is
-    /// required; VNDB failing publishes nothing.
+    /// Each part from its own site into its own tag: ErogameScape's never asks VNDB and the
+    /// runner's VNDB part never asks ErogameScape; one part failing or too small publishes
+    /// nothing and leaves the other as it was; the server's copies (info) find each entry in its
+    /// part's file.
     #[test]
-    fn the_daily_update() {
+    fn the_parts_apart() {
         let st = std::sync::Arc::new(Reg::default());
-        let host = registry(st.clone());
-        for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
-            std::env::remove_var(k);
+        let name = format!("{}/t/gamedb", registry(st.clone()));
+        no_proxy();
+        let dir = std::env::temp_dir().join(format!("ippai-gamedb-parts-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |part, day: &str, e: &dyn Fn() -> Result<EgsGames>, v: &dyn Fn() -> Result<Vec<serde_json::Value>>| -> Result<String> {
+            let out = dir.join(format!("{}-{day}", part_file(part)));
+            build_with(&out, part, e, v)?;
+            push_to(&name, part, &out, "secret", day)
+        };
+        fn part_file(p: Part) -> &'static str {
+            p.file()
         }
-        let games = || -> Result<EgsGames> {
-            Ok((1..=30345)
-                .map(|id| {
-                    let name = if id == 30345 { "LOOPERS".to_string() } else { format!("g{id}") };
-                    (id, row(&[("id", &id.to_string()), ("gamename", &name), ("count2", "1"), ("model", "PC")]), vec![])
-                })
-                .collect())
-        };
-        let vns = |k: u32| move || -> Result<Vec<serde_json::Value>> { Ok((1..=MIN_VNDB + k).map(|n| serde_json::json!({"id": format!("v{n}"), "title": format!("t{n}")})).collect()) };
-        let down = || -> Result<EgsGames> { anyhow::bail!("connection reset") };
-        let dir = std::env::temp_dir().join(format!("ippai-gamedb-update-{}", uuid::Uuid::new_v4()));
-        let r = format!("{host}/t/gamedb:latest");
-        let published = |tag: &str| -> (u32, u32) {
-            let f = dir.join(format!("published-{tag}.sqlite"));
-            pull_from(&format!("{host}/t/gamedb:{tag}"), &f, None).unwrap();
-            let c = Connection::open(&f).unwrap();
-            (c.query_row("SELECT count(*) FROM egs", [], |r| r.get(0)).unwrap(), c.query_row("SELECT count(*) FROM vndb", [], |r| r.get(0)).unwrap())
-        };
-        let asked = std::cell::Cell::new(0);
-        let not_asked_egs = || -> Result<EgsGames> { asked.set(asked.get() + 1); anyhow::bail!("ErogameScape asked") };
-        let not_asked_vndb = || -> Result<Vec<serde_json::Value>> { asked.set(asked.get() + 1); anyhow::bail!("VNDB asked") };
-        let up = |o: &Path, k: &Path, part, e: &dyn Fn() -> Result<EgsGames>, v: &dyn Fn() -> Result<Vec<serde_json::Value>>| build_part(o, k, part, e, v);
-        // nothing published yet, ErogameScape down: required, nothing goes up
-        assert!(update_with(&dir, true, "secret", &r, "20261108", &|o, k| up(o, k, Part::Egs, &down, &vns(1))).is_err());
+        let egs_down = || -> Result<EgsGames> { anyhow::bail!("connection reset") };
+        let not_egs = || -> Result<EgsGames> { panic!("ErogameScape asked") };
+        let not_vndb = || -> Result<Vec<serde_json::Value>> { panic!("VNDB asked") };
+        assert!(run(Part::Egs, "20261108", &egs_down, &not_vndb).is_err());
         assert!(st.tags.lock().unwrap().is_empty());
-        // by hand (worker2), nothing before: VNDB's part fetched too
-        update_with(&dir, true, "secret", &r, "20261109", &|o, k| up(o, k, Part::Egs, &games, &vns(1))).unwrap();
-        assert!(!dir.join("before.sqlite").exists(), "no copy before");
-        assert_eq!(published("latest"), (30345, MIN_VNDB + 1));
-        // the runner: VNDB's part anew, ErogameScape not even asked
-        update_with(&dir, false, "secret", &r, "20261110", &|o, k| up(o, k, Part::Vndb, &not_asked_egs, &vns(2))).unwrap();
-        assert_eq!(published("latest"), (30345, MIN_VNDB + 2), "ErogameScape's part kept, VNDB's new");
-        assert_eq!(published("20261109"), (30345, MIN_VNDB + 1));
-        // by hand again: ErogameScape's part anew, VNDB's kept, VNDB not asked
-        let more = || -> Result<EgsGames> { let mut g = games()?; g.push((30346, row(&[("id", "30346"), ("gamename", "new"), ("model", "PC")]), vec![])); Ok(g) };
-        update_with(&dir, true, "secret", &r, "20261111", &|o, k| up(o, k, Part::Egs, &more, &not_asked_vndb)).unwrap();
-        assert_eq!(published("latest"), (30346, MIN_VNDB + 2));
-        let f = dir.join("published-latest.sqlite");
-        assert_eq!(vndb_rows_of(&f).unwrap(), vns(2)().unwrap(), "VNDB's part as it was");
-        assert_eq!(asked.get(), 0);
-        // VNDB failing
-        let latest = st.tags.lock().unwrap()["latest"].clone();
-        assert!(update_with(&dir, false, "secret", &r, "20261112", &|o, k| up(o, k, Part::Vndb, &games, &|| anyhow::bail!("429"))).is_err());
-        assert_eq!(st.tags.lock().unwrap()["latest"], latest);
-        assert!(!st.tags.lock().unwrap().contains_key("20261112"));
-        // another package, nothing before, the runner: ErogameScape tried (down), VNDB's part only
-        let fresh = std::sync::Arc::new(Reg::default());
-        let other = format!("{}/t/gamedb:latest", registry(fresh.clone()));
-        update_with(&dir, false, "secret", &other, "20261113", &|o, k| up(o, k, Part::Vndb, &down, &vns(3))).unwrap();
-        let f = dir.join("fresh.sqlite");
-        pull_from(&other, &f, None).unwrap();
-        assert_eq!(egs_games(&f).unwrap().0.len(), 0);
-        assert_eq!(Connection::open(&f).unwrap().query_row("SELECT count(*) FROM vndb", [], |r| r.get::<_, u32>(0)).unwrap(), MIN_VNDB + 3);
+        let e1 = run(Part::Egs, "20261109", &|| games(0), &not_vndb).unwrap();
+        let v1 = run(Part::Vndb, "20261109", &not_egs, &|| vns(1)).unwrap();
+        // VNDB failing, or too few: VNDB's tag stays, ErogameScape's untouched
+        assert!(run(Part::Vndb, "20261110", &not_egs, &|| anyhow::bail!("429")).is_err());
+        assert!(run(Part::Vndb, "20261110", &not_egs, &|| Ok(vns(0)?[..9].to_vec())).is_err());
+        let digest = |tag: &str| serde_json::from_str::<serde_json::Value>(&st.tags.lock().unwrap()[tag]).unwrap()["layers"][0]["digest"].as_str().unwrap().to_string();
+        assert_eq!((digest("egs"), digest("vndb")), (e1.clone(), v1.clone()));
+        // a new ErogameScape part: VNDB's as it was
+        let e2 = run(Part::Egs, "20261111", &|| games(1), &not_vndb).unwrap();
+        assert_ne!(e1, e2);
+        assert_eq!((digest("egs"), digest("vndb")), (e2, v1));
+        assert!(st.tags.lock().unwrap().contains_key("egs-20261109"), "each day's kept");
+        // the server's copies
+        let store = dir.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        for part in Part::ALL {
+            pull_from(&name, part, &store.join(part.file()), None).unwrap();
+        }
+        assert_eq!(egs_games(&store.join(Part::Egs.file())).unwrap().0.len(), 30346);
+        assert_eq!(info(&store, "egs:30345").unwrap().title, "LOOPERS");
+        assert_eq!(info(&store, "vndb:v7").unwrap().title, "t7");
+        assert!(info(&store, "vndb:v99999").is_none() && info(&store, "egs:99999").is_none());
+        std::fs::remove_file(store.join(Part::Vndb.file())).unwrap();
+        assert!(info(&store, "vndb:v7").is_none() && info(&store, "egs:30345").is_some(), "a part missing leaves the other");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn enough_to_publish() {
-        assert!(counts_ok(25_000, 40_000, Some("LOOPERS"), true).is_ok());
-        assert!(counts_ok(25_000, 40_000, Some("LOOPERS"), false).is_ok());
-        assert!(counts_ok(0, 40_000, None, false).is_ok(), "VNDB's part only, from a runner");
-        assert!(counts_ok(0, 40_000, None, true).is_err(), "a host ErogameScape answers must have its part");
-        assert!(counts_ok(25_000, 40_000, Some("ループス"), true).is_err(), "a known entry wrong");
-        assert!(counts_ok(25_000, 40_000, None, false).is_err());
-        assert!(counts_ok(MIN_EGS, 40_000, Some("LOOPERS"), false).is_err());
-        assert!(counts_ok(25_000, MIN_VNDB, Some("LOOPERS"), true).is_err());
-        assert!(counts_ok(25_000, 9, Some("LOOPERS"), true).is_err());
+        assert!(counts_ok(Part::Egs, 25_000, 0, Some("LOOPERS")).is_ok());
+        assert!(counts_ok(Part::Vndb, 0, 40_000, None).is_ok());
+        assert!(counts_ok(Part::Egs, 0, 40_000, None).is_err());
+        assert!(counts_ok(Part::Vndb, 25_000, 0, Some("LOOPERS")).is_err());
+        assert!(counts_ok(Part::Egs, 25_000, 0, Some("ループス")).is_err(), "a known entry wrong");
+        assert!(counts_ok(Part::Egs, 25_000, 0, None).is_err());
+        assert!(counts_ok(Part::Egs, MIN_EGS, 0, Some("LOOPERS")).is_err());
+        assert!(counts_ok(Part::Egs, MIN_EGS + 1, 0, Some("LOOPERS")).is_ok());
+        assert!(counts_ok(Part::Vndb, 0, MIN_VNDB, None).is_err());
+        assert!(counts_ok(Part::Vndb, 0, MIN_VNDB + 1, None).is_ok());
     }
 }

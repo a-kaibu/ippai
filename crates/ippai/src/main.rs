@@ -95,31 +95,36 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum GamedbCmd {
-    /// Every ErogameScape game and Japanese VNDB VN into a new SQLite file (gamedb.yml).
+    /// A part (ErogameScape's games or VNDB's Japanese VNs) from its site into a new SQLite file.
     Build {
         out: std::path::PathBuf,
-        /// An earlier copy whose ErogameScape part to keep when ErogameScape does not answer.
-        #[arg(long)]
-        keep: Option<std::path::PathBuf>,
+        #[arg(long, value_enum)]
+        part: gamedb::Part,
     },
-    /// The published copy (ghcr.io/a-kaibu/ippai-gamedb:latest) into a file.
-    Pull { out: std::path::PathBuf },
-    /// Fails unless a copy holds enough to publish (VNDB's VNs; ErogameScape's games if any).
+    /// A part's published copy (ghcr.io/a-kaibu/ippai-gamedb:<part>) into a file.
+    Pull {
+        out: std::path::PathBuf,
+        #[arg(long, value_enum)]
+        part: gamedb::Part,
+    },
+    /// Fails unless a copy holds enough of its part to publish.
     Check {
         file: std::path::PathBuf,
-        /// ErogameScape's games must be there too (a host it answers: tools/gamedb/README.md).
-        #[arg(long)]
-        egs: bool,
+        #[arg(long, value_enum)]
+        part: gamedb::Part,
     },
-    /// A copy onto the package (GHCR_TOKEN: a token with write:packages).
-    Push { file: std::path::PathBuf },
-    /// pull, one part anew (the other kept from the copy published), check, push in a directory.
+    /// A copy onto the package as its part (GHCR_TOKEN, or gh's token: write:packages).
+    Push {
+        file: std::path::PathBuf,
+        #[arg(long, value_enum)]
+        part: gamedb::Part,
+    },
+    /// build, check, push in a directory: egs by hand on a host ErogameScape answers
+    /// (tools/gamedb/update.sh), vndb on GitHub's runner (gamedb.yml).
     Update {
         dir: std::path::PathBuf,
-        /// ErogameScape's part anew (a host it answers; tools/gamedb/update.sh), VNDB's kept; without:
-        /// VNDB's anew, ErogameScape's kept (gamedb.yml).
-        #[arg(long)]
-        egs: bool,
+        #[arg(long, value_enum)]
+        part: gamedb::Part,
     },
 }
 
@@ -218,11 +223,11 @@ fn main() -> anyhow::Result<()> {
         #[cfg(unix)]
         Cmd::Logs { follow, lines } => daemon::logs(&dirs, follow, lines),
         Cmd::Pack(c) => pack::run(&dirs.store, c),
-        Cmd::Gamedb { action: GamedbCmd::Build { out, keep } } => gamedb::build(&out, keep.as_deref()),
-        Cmd::Gamedb { action: GamedbCmd::Pull { out } } => gamedb::pull(&out, None).map(|d| println!("{d}")),
-        Cmd::Gamedb { action: GamedbCmd::Check { file, egs } } => gamedb::check(&file, egs),
-        Cmd::Gamedb { action: GamedbCmd::Push { file } } => gamedb::push(&file, &ghcr_token()?).map(|d| println!("{d}")),
-        Cmd::Gamedb { action: GamedbCmd::Update { dir, egs } } => gamedb::update(&dir, egs, &ghcr_token()?).map(|d| println!("{d}")),
+        Cmd::Gamedb { action: GamedbCmd::Build { out, part } } => gamedb::build(&out, part),
+        Cmd::Gamedb { action: GamedbCmd::Pull { out, part } } => gamedb::pull(&out, part, None).map(|d| println!("{d}")),
+        Cmd::Gamedb { action: GamedbCmd::Check { file, part } } => gamedb::check(&file, part),
+        Cmd::Gamedb { action: GamedbCmd::Push { file, part } } => gamedb::push(&file, part, &ghcr_token()?).map(|d| println!("{d}")),
+        Cmd::Gamedb { action: GamedbCmd::Update { dir, part } } => gamedb::update(&dir, part, &ghcr_token()?).map(|d| println!("{d}")),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),
     }
 }

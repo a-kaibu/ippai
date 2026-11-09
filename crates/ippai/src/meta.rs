@@ -523,8 +523,8 @@ pub fn best<'a>(title: &str, cands: &'a [Candidate]) -> Option<&'a Candidate> {
 // ---- entry points
 
 /// The game best matching `title` (a package title such as "○○ 体験版"). `id` may pin the
-/// entry: "egs:12345" or "vndb:v1195", taken from the game database at `gamedb` (gamedb.rs)
-/// when it has it.
+/// entry: "egs:12345" or "vndb:v1195", taken from the game database's copies in `gamedb` (a
+/// store: gamedb.rs) when they have it.
 pub fn lookup(title: &str, id: Option<&str>, gamedb: Option<&std::path::Path>) -> Result<Info> {
     let local = id.zip(gamedb).and_then(|(id, p)| crate::gamedb::info(p, id));
     let mut in_ = match id {

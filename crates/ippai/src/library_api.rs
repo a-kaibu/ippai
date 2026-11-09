@@ -120,7 +120,7 @@ async fn stats(State(Api { db, .. }): State<Api>) -> Result<Json<Vec<Session>>, 
 }
 
 pub fn router(db: Library) -> Router {
-    let gamedb = db.0.with_file_name("gamedb.sqlite");
+    let gamedb = db.0.parent().map_or_else(|| std::path::PathBuf::from("."), |p| p.to_path_buf());
     router_with(db, Arc::new(move |id: &str| fetch(id, &gamedb)))
 }
 
