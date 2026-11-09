@@ -251,6 +251,9 @@ function ippaiBlockKey(url, k, block) {
  * store without S3, a chunk only on the server, an expired URL that failed): the server, as before.
  */
 var IPPAI_DIRECT_KEEP_MS = 3600000;
+/** How long the server may take to say how to fetch a chunk from the bucket (a stuck server, as
+ * worker2's at 19:58 JST 2026-11-09, held a read 80 s): past it, the server's own /store. */
+var IPPAI_DIRECT_ASK_MS = 10000;
 var ippaiDirectInfo = new Map();
 var ippaiDirectOff = false;
 var ippaiZstd;
@@ -262,7 +265,7 @@ async function ippaiDirect(url) {
   if (!info || Date.now() - info.at > IPPAI_DIRECT_KEEP_MS) {
     let r;
     try {
-      r = await fetch(`${base}store-direct/${url.slice(at + 7)}`, { cache: 'no-store' });
+      r = await fetch(`${base}store-direct/${url.slice(at + 7)}`, { cache: 'no-store', signal: AbortSignal.timeout(IPPAI_DIRECT_ASK_MS) });
     } catch (_) {
       return null;
     }
@@ -271,9 +274,10 @@ async function ippaiDirect(url) {
     if (!r.ok) return null;
     try {
       info = { ...(await r.json()), at: Date.now() };
-    } catch (_) {
-      // (not JSON: a server without /store-direct answered with something else)
-      ippaiDirectOff = true;
+    } catch (e) {
+      // (not JSON: a server without /store-direct answered with something else; cut short by
+      // the time limit: only this once)
+      if (e?.name !== 'TimeoutError' && e?.name !== 'AbortError') ippaiDirectOff = true;
       return null;
     }
     if (typeof info.url !== 'string' || !/^[0-9a-f]{64}$/.test(info.key) || !/^[0-9a-f-]{36}$/.test(info.object)) return null;
@@ -529,7 +533,7 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function ippaiFetchWorkerSource(main, more = []) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS };
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS };
   const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),

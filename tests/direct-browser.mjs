@@ -11,7 +11,9 @@ import { createCipheriv, randomBytes, randomUUID } from 'node:crypto';
 const pw = await import(process.env.PLAYWRIGHT ?? 'playwright');
 const { chromium } = pw.default ?? pw;
 const root = new URL('..', import.meta.url);
-const source = await readFile(new URL('host/fetch-bridge.js', root), 'utf8');
+// (the server's answer to /store-direct waited for 1 s, not 10: the test of a stuck server)
+const source = (await readFile(new URL('host/fetch-bridge.js', root), 'utf8')).replace('var IPPAI_DIRECT_ASK_MS = 10000;', 'var IPPAI_DIRECT_ASK_MS = 1000;');
+assert.ok(source.includes('IPPAI_DIRECT_ASK_MS = 1000;'));
 const sakeDir = new URL(process.env.SAKE_WEB ?? 'web/public/sake/', root);
 const blake3 = new Function(`${source}; return ippaiBlake3;`)();
 const z = await (await import(new URL('snapz.mjs', sakeDir))).default();
@@ -80,6 +82,8 @@ const app = createServer(async (req, res) => {
     hits.direct++;
     if (noS3) return res.writeHead(501), res.end();
     if (c.how.missing) return res.writeHead(404), res.end();
+    // (a stuck server: never answers)
+    if (c.how.stuck) return;
     const key = c.how.wrongKey ? randomBytes(32) : c.key;
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', 'application/json');
@@ -191,6 +195,18 @@ try {
   [r, d] = await since(() => read(page2, fresh));
   assert.deepEqual(r, fresh.map((p) => expect(p)));
   assert.deepEqual(d, { store: 3, direct: 1, bucket: 0, redirect: 0 }, 'no S3: asked once');
+
+  // a server stuck on /store-direct (worker2 at 19:58 JST held a read 80 s): the server's
+  // /store after the time limit, and the bucket again for the next chunk
+  noS3 = false;
+  const stuck = make('stuck ask', 60000, 14, { stuck: true });
+  const after = make('after stuck', 50000, 15);
+  const page4 = await open();
+  const t4 = Date.now();
+  [r, d] = await since(() => read(page4, [stuck, after]));
+  assert.deepEqual(r, [expect(stuck), expect(after)]);
+  assert.ok(Date.now() - t4 < 8000, `not held: ${Date.now() - t4} ms`);
+  assert.deepEqual([d.store, d.bucket], [1, 1], 'the stuck one from /store, the next from the bucket');
 
   // the game's chunks fetched onto the device while it plays (ippaiWarm, web/src/warm.ts): none
   // while the game waits for a read of its own, then all of them, from the bucket (the server for
