@@ -126,6 +126,47 @@ try {
     await check("d3d9off", vp, mobile, [RED, RED, RED, RED]);
     console.log(`ok   the game window only, whole, and its clicks at ${vp.width}x${vp.height}${mobile ? " (phone)" : ""}`);
   }
+  // the rest of the game's files onto the device while it plays (web/src/warm.ts): every chunk of
+  // its trees in the chunk cache, where its reads look; none of that with &warm=0
+  for (const warm of [true, false]) {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const page = await ctx.newPage();
+    const lines = [];
+    page.on("console", (m) => lines.push(m.text()));
+    const q = new URLSearchParams({ run: "Z:\\ippai\\game\\screenfit.exe", mount: "/ippai/game=screenfit", args: "gdi", nosave: "" });
+    if (!warm) q.set("warm", "0");
+    await page.goto(`${base}play.html?headless&autostart&${q}`);
+    const t = Date.now();
+    while (Date.now() - t < (warm ? 60000 : 12000) && !lines.some((l) => /^fetched ahead: .*done$/.test(l))) await new Promise((r) => setTimeout(r, 200));
+    const done = lines.find((l) => /^fetched ahead: /.test(l));
+    const kept = await page.evaluate(async () => {
+      const cache = await caches.open("ippai-chunks-v1");
+      let have = 0, all = 0;
+      for (const tree of ["prefix32", "screenfit"]) {
+        const tsv = await (await fetch(`store/trees/${tree}.tsv`)).text();
+        for (const line of tsv.split("\n").slice(1)) {
+          const f = line.split("\t");
+          if (f[0] !== "f" || !f[5]) continue;
+          for (const c of f[5].split(",")) {
+            const h = c.split(":")[0];
+            if (!/^[0-9a-f]{32}$/.test(h)) continue;
+            all++;
+            if (await cache.match(new URL(`store/chunks/${h.slice(0, 2)}/${h}`, location.href).href)) have++;
+          }
+        }
+      }
+      return { have, all };
+    });
+    if (warm) {
+      assert.match(done ?? "", /^fetched ahead: (\d+) of \1 chunks looked at, \d+ fetched .* 0 failed, .*done$/, lines.slice(-8).join(" | "));
+      assert.equal(kept.have, kept.all, `every chunk on the device: ${JSON.stringify(kept)}`);
+    } else {
+      assert.equal(done, undefined, "&warm=0: nothing fetched ahead");
+      assert.ok(kept.have < kept.all, `&warm=0: only what the game read: ${JSON.stringify(kept)}`);
+    }
+    await ctx.close();
+  }
+  console.log("ok   the game's files fetched onto the device while it plays (and not with &warm=0)");
 } catch (e) {
   failed = true;
   console.error(`FAIL ${e.stack ?? e}`);

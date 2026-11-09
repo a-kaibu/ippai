@@ -191,7 +191,56 @@ try {
   [r, d] = await since(() => read(page2, fresh));
   assert.deepEqual(r, fresh.map((p) => expect(p)));
   assert.deepEqual(d, { store: 3, direct: 1, bucket: 0, redirect: 0 }, 'no S3: asked once');
-  console.log('direct browser: bucket fetch, redirect, decrypt, zstd, blocks, cache and every fallback passed');
+
+  // the game's chunks fetched onto the device while it plays (ippaiWarm, web/src/warm.ts): none
+  // while the game waits for a read of its own, then all of them, from the bucket (the server for
+  // one it lacks), kept where the game's reads look; one already on the device not again
+  noS3 = false;
+  const warmed = [make('warm a', 80000, 10), make('warm b', 1500000, 11), make('warm c', 90000, 12, { missing: true }), make('warm d', 70000, 13)];
+  const page3 = await open();
+  await page3.evaluate(() => caches.delete('ippai-chunks-v1'));
+  await read(page3, [warmed[3]]);
+  const warm = (paths, { busyFirst, stopFirst } = {}) =>
+    page3.evaluate(
+      async ([source, paths, busyFirst, stopFirst]) => {
+        const ippaiWarm = new Function(source + '; return ippaiWarm;')();
+        const flag = new SharedArrayBuffer(8);
+        const f = new Int32Array(flag);
+        if (busyFirst) Atomics.store(f, 0, 1);
+        if (stopFirst) Atomics.store(f, 1, 1);
+        const reports = [];
+        const end = new Promise((resolve) => ippaiWarm(paths.map((p) => location.origin + p), flag, 3, (r) => (reports.push(r), r.end && resolve())));
+        let early = 0;
+        if (busyFirst) {
+          await new Promise((r) => setTimeout(r, 400));
+          early = reports.length;
+          Atomics.store(f, 0, 0);
+        }
+        await end;
+        const cache = await caches.open('ippai-chunks-v1');
+        const kept = [];
+        for (const p of paths) {
+          const r = await cache.match(location.origin + p);
+          kept.push(r ? new Uint8Array(await r.arrayBuffer()).length : -1);
+        }
+        return { last: reports.at(-1), early, kept };
+      },
+      [source, paths, !!busyFirst, !!stopFirst],
+    );
+  let w;
+  [w, d] = await since(() => warm(warmed, { stopFirst: true }));
+  assert.equal(w.last.done, 0, 'stopped before it starts: nothing');
+  assert.deepEqual(d, { store: 0, direct: 0, bucket: 0, redirect: 0 });
+  [w, d] = await since(() => warm(warmed, { busyFirst: true }));
+  assert.equal(w.early, 0, 'nothing while the game waits');
+  assert.deepEqual(w.last, { end: true, done: 4, fetched: 3, bytes: 80000 + 1500000 + 90000, failed: 0 });
+  assert.deepEqual(w.kept, warmed.map((p) => chunks.get(p.slice(-32)).data.length), 'all on the device');
+  assert.deepEqual([d.bucket, d.store], [2, 1], 'from the bucket, the server for the one it lacks, the kept one not again');
+  // what the game reads next is on the device: no network
+  [r, d] = await since(() => read(page3, [warmed[1], `${warmed[0]}#100+50/262144`]));
+  assert.deepEqual(r, [expect(warmed[1]), expect(warmed[0], 100, 50)]);
+  assert.deepEqual(d, { store: 0, direct: 0, bucket: 0, redirect: 0 }, 'read from the device');
+  console.log('direct browser: bucket fetch, redirect, decrypt, zstd, blocks, cache and every fallback passed; fetched ahead');
 } finally {
   await browser.close();
   app.close();

@@ -14,6 +14,7 @@ let stopPlay: (() => void) | undefined;
 //   &nosave                         no saved games (ippai serve's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/play.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
+//   &warm=0                         don't fetch the rest of the game's files onto the device while it plays (warm.ts)
 
 import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { memGate } from "./memgate";
@@ -58,6 +59,7 @@ import {
 } from "./runtime";
 import { checkOnline, startApp } from "./pwa";
 import { Budget, pool } from "./ahead";
+import { startWarm, warmAllowed, type Warm } from "./warm";
 import { savedChunks } from "./offline";
 import {
   builds,
@@ -103,6 +105,8 @@ interface SakeModule {
   _vnhost_render_input(kind: number, x: number, y: number, data: number): number;
   _vnhost_render_info(out: number): void;
   _vnhost_net_busy?(): number;
+  /** host/fetch-bridge.js: the game's chunks fetched onto the device (warm.ts) */
+  ippaiWarm?: Warm;
   _vnhost_display_view(out: number): void;
   _vnhost_display_windows?(out: number, max: number): number;
   _vnhost_display_frame(io: number): number;
@@ -594,6 +598,14 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     console.log(`sake memory: ${mib(before)} -> ${mib(sake.wasmMemory.buffer.byteLength)} MiB`);
   }
   ahead?.(sake);
+  // the rest of the game's files onto the device while it plays, after what it read last time
+  // (the read-ahead) and only while it waits for nothing (warm.ts)
+  const conn = (navigator as { connection?: { saveData?: boolean; type?: string } }).connection;
+  if (sake.ippaiWarm && warmAllowed(conn) && params.get("warm") !== "0")
+    void chunkSizes.then((sizes) => {
+      const warm = sake.ippaiWarm!;
+      setTimeout(() => startWarm(warm, new URL("store/", location.href).href, sizes, () => !!sake._vnhost_net_busy?.(), (l) => (console.log(l), recorder?.note(l))), 5000);
+    });
   attachInput(() => activeModule ?? sake);
   attachAuto(() => activeModule ?? sake);
   const resize = () => {

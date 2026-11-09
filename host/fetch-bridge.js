@@ -527,18 +527,69 @@ function ippaiFetchWorker(event) {
   })();
 }
 
-/** The network worker's script: the functions above, `main` its message handler. */
-function ippaiFetchWorkerSource(main) {
+/** The network worker's script: the functions above (and `more`), `main` its message handler. */
+function ippaiFetchWorkerSource(main, more = []) {
   const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS };
   const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
     'var ippaiCacheOpen, ippaiRecent = new Map(), ippaiDirectInfo = new Map(), ippaiDirectOff = false, ippaiZstd;',
-    ...fns.map(String),
+    ...[...fns, ...more].map(String),
     main,
   ].join('\n');
 }
+
+/**
+ * The game's store chunks fetched onto the device while it plays (ippaiWarm): `urls` in order,
+ * `width` at a time, each the device lacks fetched as the game's reads would (from the bucket
+ * itself when the server gives a way, else the server) and kept in Cache Storage, where the
+ * game's later reads find it (ippaiFetchPart). The bucket answers each object after 1-5 s from
+ * far away (worker2 to the Mac: 俺の姿が､透明に!'s CG mode and mode changes waited that long for
+ * every file read first), so a file read later is on the device by then. `flag` (Int32Array
+ * over a SharedArrayBuffer): [0] != 0 while the game waits for a read of its own (none starts
+ * then), [1] != 0 to stop. Reports { done, fetched, bytes } now and then and { end: true, ... }.
+ */
+async function ippaiWarmRun(msg, report) {
+  const flag = new Int32Array(msg.flag);
+  const cache = await ippaiCache();
+  let next = 0, done = 0, fetched = 0, bytes = 0, failed = 0;
+  const one = async () => {
+    while (next < msg.urls.length && !Atomics.load(flag, 1)) {
+      const url = msg.urls[next++];
+      while (Atomics.load(flag, 0) && !Atomics.load(flag, 1)) await new Promise((r) => setTimeout(r, 50));
+      if (Atomics.load(flag, 1)) break;
+      const hit = await cache.match(url).catch(() => undefined);
+      if (!hit) {
+        try {
+          const d = (await ippaiDirect(url)) ?? (await ippaiFetchRobust(url, { giveUpMs: 60000 }));
+          fetched++;
+          bytes += d.data.length;
+          // (not this worker's memory: the game's reads look on the device)
+          ippaiRecent.delete(url);
+        } catch (_) {
+          failed++;
+        }
+      }
+      if (++done % 16 === 0) report({ done, fetched, bytes, failed });
+    }
+  };
+  if (cache) await Promise.all(Array.from({ length: Math.max(1, msg.width) }, one));
+  report({ end: true, done, fetched, bytes, failed });
+}
+
+/** Starts ippaiWarmRun in a worker of its own; `report` gets its reports. The worker ends with the run. */
+function ippaiWarm(urls, flag, width, report) {
+  const main = 'self.onmessage = (e) => ippaiWarmRun(e.data, (r) => { postMessage(r); if (r.end) close(); });';
+  const blob = new Blob([ippaiFetchWorkerSource(main, [ippaiWarmRun])], { type: 'text/javascript' });
+  const url = URL.createObjectURL(blob);
+  const w = new Worker(url);
+  URL.revokeObjectURL(url);
+  w.onmessage = (e) => report(e.data);
+  w.postMessage({ urls, flag, width });
+  return w;
+}
+if (typeof Module !== 'undefined') Module.ippaiWarm = ippaiWarm;
 
 var ippaiFetchWorkerInstance;
 var ippaiFetchPort;
