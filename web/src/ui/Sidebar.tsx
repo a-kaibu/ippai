@@ -1,11 +1,23 @@
-// 設定: a sidebar on the right of the game list (not modal: the list stays in use beside it on a
-// wide screen), with the server (its version and an update to the newest release), the app
-// (installing the page as an app), the play statistics (with a reset) and the DMM account.
+// The game list's one sidebar, on the right (not modal: the list stays in use beside it on a wide
+// screen), its tabs switching between 詳細 (a game's details: ui/Library.tsx GameInfo), 統計 (the
+// play statistics, with a reset) and 設定 (the server's version and an update to the newest
+// release, installing the page as an app, the DMM account).
 
 import { useEffect, useState, type ReactNode } from "react";
-import { BarChart3, CircleCheck, Loader2, MonitorDown, RefreshCw, Server, UserRound } from "lucide-react";
+import {
+  BarChart3,
+  CircleCheck,
+  Info,
+  Loader2,
+  MonitorDown,
+  RefreshCw,
+  Server,
+  Settings as SettingsIcon,
+  UserRound,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { GameEntry } from "../launcher";
 import { useApp } from "../pwa";
 import { checkUpdate, installUpdate, waitForVersion, type UpdateInfo } from "../server-update";
@@ -121,18 +133,36 @@ function ServerUpdate({ build }: { build: string }) {
   );
 }
 
-export function Settings({
+export type SideTab = "info" | "stats" | "settings";
+const TABS: { key: SideTab; label: string; icon: ReactNode }[] = [
+  { key: "info", label: "詳細", icon: <Info /> },
+  { key: "stats", label: "統計", icon: <BarChart3 /> },
+  { key: "settings", label: "設定", icon: <SettingsIcon /> },
+];
+
+/** The one sidebar, its tabs: 詳細 (`children`: the game picked with (i); `game` its title, null
+ * before any), 統計, 設定. */
+export function Sidebar({
+  tab,
+  onTab,
   games,
   build,
+  game,
   onClose,
   returnFocus,
+  children,
 }: {
+  tab: SideTab;
+  onTab: (t: SideTab) => void;
   games: GameEntry[];
   build: string;
+  game: string | null;
   onClose: () => void;
   returnFocus: () => void;
+  children?: ReactNode;
 }) {
   const app = useApp();
+  const label = TABS.find((t) => t.key === tab)!.label;
   return (
     <Sheet
       open
@@ -147,36 +177,57 @@ export function Settings({
           returnFocus();
         }}
       >
-        <div className="border-b px-5 py-4 pr-12">
-          <SheetTitle>設定</SheetTitle>
-          <SheetDescription>サーバー・アプリ・プレイ統計・アカウント</SheetDescription>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          <Part title="サーバー" icon={<Server />}>
-            <ServerUpdate build={build} />
-          </Part>
-          <Part title="アプリ" icon={<MonitorDown />}>
-            {app.install ? (
-              <>
-                <p className="text-sm text-muted-foreground">
-                  ホーム画面やデスクトップに ippai をアプリとして追加します。
-                </p>
-                <Button variant="outline" className="justify-self-start" onClick={app.install}>
-                  <MonitorDown /> アプリにする
-                </Button>
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                アプリとして追加済みか、このブラウザでは追加できません（ブラウザのメニューから追加できる場合があります）。
-              </p>
-            )}
-          </Part>
-          <Part title="プレイ統計" icon={<BarChart3 />}>
-            <Statistics games={games} />
-          </Part>
-          <Part title="DMM アカウント" icon={<UserRound />}>
-            <AccountSettings />
-          </Part>
+        <SheetTitle className="sr-only">{label}</SheetTitle>
+        <SheetDescription className="sr-only">
+          {tab === "info"
+            ? (game ?? "ゲームの詳細")
+            : tab === "stats"
+              ? "ゲーム別のプレイ時間"
+              : "サーバー・アプリ・アカウント"}
+        </SheetDescription>
+        <Tabs value={tab} onValueChange={(v) => onTab(v as SideTab)} className="border-b px-4 py-3 pr-12">
+          <TabsList aria-label="サイドバーの表示" className="w-full [&_svg]:size-4">
+            {TABS.map((t) => (
+              <TabsTrigger key={t.key} value={t.key} disabled={t.key === "info" && !game}>
+                {t.icon}
+                {t.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" role="tabpanel" aria-label={label}>
+          {tab === "info" && children}
+          {tab === "stats" && (
+            <Part title="プレイ統計" icon={<BarChart3 />}>
+              <Statistics games={games} />
+            </Part>
+          )}
+          {tab === "settings" && (
+            <>
+              <Part title="サーバー" icon={<Server />}>
+                <ServerUpdate build={build} />
+              </Part>
+              <Part title="アプリ" icon={<MonitorDown />}>
+                {app.install ? (
+                  <>
+                    <p className="text-sm text-muted-foreground">
+                      ホーム画面やデスクトップに ippai をアプリとして追加します。
+                    </p>
+                    <Button variant="outline" className="justify-self-start" onClick={app.install}>
+                      <MonitorDown /> アプリにする
+                    </Button>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    アプリとして追加済みか、このブラウザでは追加できません（ブラウザのメニューから追加できる場合があります）。
+                  </p>
+                )}
+              </Part>
+              <Part title="DMM アカウント" icon={<UserRound />}>
+                <AccountSettings />
+              </Part>
+            </>
+          )}
         </div>
       </SheetContent>
     </Sheet>

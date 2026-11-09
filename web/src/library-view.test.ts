@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { GameEntry } from "./launcher";
 import type { Session } from "./library-data";
 import {
+  brandOf,
   duration,
   groupGames,
   GROUPS,
@@ -314,6 +315,29 @@ describe("parseView", () => {
       const v = parseView(t);
       expect(SORTS.map((s) => s.key)).toContain(v.sort as SortKey);
       expect(GROUPS.map((g) => g.key)).toContain(v.group);
+    }
+  });
+});
+
+describe("visibleGames by brand", () => {
+  it("keeps only the brand clicked, together with the search and favorites", () => {
+    expect(ids(visibleGames(shelf, "", "all", [], "Key")).sort()).toEqual(["k1", "k2"]);
+    expect(ids(visibleGames(shelf, "あの", "all", [], "Key"))).toEqual(["k2"]);
+    expect(ids(visibleGames(shelf, "", "favorites", ["k1", "y1"], "Key"))).toEqual(["k1"]);
+    expect(visibleGames(shelf, "", "all", [], "key")).toEqual([]);
+    expect(ids(visibleGames(shelf, "", "all", [], null))).toEqual(ids(shelf));
+  });
+  it("is the games whose brandOf is the brand, in order (random cases)", () => {
+    const r = rng(41);
+    const brands = [...new Set(shelf.map(brandOf)), "none"];
+    for (let n = 0; n < 300; n++) {
+      const list = shuffle(shelf, r).filter(() => r() < 0.8);
+      const b = brands[Math.floor(r() * brands.length)];
+      const out = visibleGames(list, "", "all", [], b);
+      expect(out).toEqual(list.filter((g) => brandOf(g) === b));
+      // the brand's games are exactly one section of groupGames by brand
+      const section = groupGames(list, "brand").find((g) => g.key === b);
+      expect(out).toEqual(section?.games ?? []);
     }
   });
 });

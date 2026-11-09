@@ -1,11 +1,13 @@
 // The game list (web/src/ui/Library.tsx) in Chromium, at a desktop and a phone size, on ippai
 // serve with a small store: the app's name and 🍶 icons everywhere (no "vnvm" left on screen,
 // favicon/manifest icons are PNGs that load), no debug switch and no log page, 設定 at the top
-// right opening a sidebar (not modal: the list beside it stays in use) with the server's version
+// right opening the sidebar (not modal: the list beside it stays in use; tabs 詳細 / 統計 / 設定,
+// a game's (i) opening 詳細) with the server's version
 // and its update (a stand-in release page: 9.9.9 offered; a broken download says why; the
 // update itself with its restart stood in by the page's routes), the app install, the play
 // statistics the server recorded (reset after a confirmation) and the DMM account; the list in
-// order of score / release and in sections by brand / year (kept across a reload), the game last
+// order of score / release and in sections by brand / year (kept across a reload), narrowed to a
+// brand by clicking its name, the game last
 // played offered to continue, search, and a favorite set from a game's dialog showing on its
 // card and under the お気に入り tab after a reload. SHOTS=<dir> keeps screenshots.
 //
@@ -161,8 +163,13 @@ try {
       assert.equal(await side.isVisible(), true, "typing in the list keeps the sidebar");
     } else assert.ok(sbox.width >= view.width - 1, `phone: the sidebar is the whole width (${sbox.width})`);
     assert.equal(await page.locator("[data-slot=dialog-overlay]").count(), 0, "no overlay");
+    // its tabs: 詳細 (no game picked yet: off), 統計, 設定 (open)
+    const sideTabs = side.getByRole("tablist", { name: "サイドバーの表示" }).getByRole("tab");
+    assert.deepEqual(await sideTabs.allInnerTexts(), ["詳細", "統計", "設定"]);
+    assert.ok(await sideTabs.nth(0).isDisabled(), "詳細 waits for a game");
+    assert.equal(await sideTabs.nth(2).getAttribute("aria-selected"), "true");
     const sections = await side.getByRole("region").evaluateAll((l) => l.map((e) => e.getAttribute("aria-label")));
-    assert.deepEqual(sections.filter((x) => ["サーバー", "アプリ", "プレイ統計", "DMM アカウント"].includes(x)), ["サーバー", "アプリ", "プレイ統計", "DMM アカウント"]);
+    assert.deepEqual(sections, ["サーバー", "アプリ", "DMM アカウント"]);
 
     // サーバー: the running version, the stand-in's 9.9.9 offered
     const upd = side.getByTestId("server-update");
@@ -170,8 +177,9 @@ try {
     assert.match(await upd.innerText(), /動作中のサーバー: v\d+\.\d+\.\d+/);
     assert.match(await upd.innerText(), /新しいバージョン v9\.9\.9 があります/);
 
-    // プレイ統計: total, games, sessions, most played first
-    const stats = side.getByRole("region", { name: "プレイ統計" });
+    // 統計 (the tab): total, games, sessions, most played first
+    await sideTabs.nth(1).click();
+    const stats = page.getByRole("dialog", { name: "統計" }).getByRole("region", { name: "プレイ統計" });
     await stats.getByRole("list", { name: "ゲーム別のプレイ時間" }).waitFor();
     const dtext = await stats.innerText();
     assert.match(dtext, /1時間 35分/, dtext);
@@ -186,7 +194,7 @@ try {
     assert.equal((await (await fetch(`${base}api/sessions`)).json()).length, 3, "やめる keeps the sessions");
     await shot("settings");
     await page.keyboard.press("Escape");
-    await side.waitFor({ state: "detached" });
+    await page.locator("[data-slot=sheet-content]").waitFor({ state: "detached" });
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "設定");
 
     // the game last played, to continue
@@ -206,8 +214,9 @@ try {
     if (view.name === "desktop") {
       // a favorite from the game's dialog: on its card at once, under お気に入り, and after a reload
       await page.getByRole("button", { name: "月の光 の情報" }).click();
-      const info = page.getByRole("dialog", { name: "月の光" });
-      // a sidebar too, beside the list; 設定 and the information take each other's place
+      const info = page.getByRole("dialog", { name: "詳細" });
+      await info.getByRole("heading", { name: "月の光" }).waitFor();
+      // the same sidebar on its 詳細 tab, beside the list; the tabs switch, the game is kept
       const ibox = await info.boundingBox();
       assert.ok(Math.abs(ibox.x + ibox.width - view.width) <= 1 && ibox.y <= 1 && ibox.height >= view.height - 1 && ibox.width <= 400, `info sidebar ${JSON.stringify(ibox)}`);
       const cardsRight = await page.locator("[data-game]").evaluateAll((l) => Math.max(...l.map((e) => e.getBoundingClientRect().right)));
@@ -215,13 +224,16 @@ try {
       assert.equal(await page.locator("[data-slot=dialog-overlay]").count(), 0, "no overlay");
       await page.getByRole("button", { name: "設定", exact: true }).click();
       await page.getByRole("dialog", { name: "設定" }).waitFor();
-      assert.equal(await info.count(), 0, "設定 replaced the information");
+      assert.equal(await info.count(), 0, "設定 took the sidebar");
+      await page.getByRole("dialog", { name: "設定" }).getByRole("tab", { name: "統計" }).click();
+      await page.getByRole("dialog", { name: "統計" }).getByRole("region", { name: "プレイ統計" }).waitFor();
+      await page.getByRole("dialog", { name: "統計" }).getByRole("tab", { name: "詳細" }).click();
+      await info.getByRole("heading", { name: "月の光" }).waitFor();
       await page.getByRole("button", { name: "さくらの詩 の情報" }).click();
-      await page.getByRole("dialog", { name: "さくらの詩" }).waitFor();
-      assert.equal(await page.getByRole("dialog", { name: "設定" }).count(), 0, "the information replaced 設定");
+      await info.getByRole("heading", { name: "さくらの詩" }).waitFor();
       await page.getByRole("button", { name: "月の光 の情報" }).click();
-      await info.waitFor();
-      assert.equal(await page.getByRole("dialog").count(), 1, "one sidebar at a time");
+      await info.getByRole("heading", { name: "月の光" }).waitFor();
+      assert.equal(await page.getByRole("dialog").count(), 1, "one sidebar");
       const fav = info.getByRole("button", { name: /お気に入りに追加/ });
       await fav.click();
       await info.locator('button[aria-pressed="true"]').waitFor();
@@ -235,7 +247,7 @@ try {
       assert.match(await page.getByRole("tab", { name: /お気に入り/ }).innerText(), /1/);
       // the note: saved on 保存 only
       await page.getByRole("button", { name: "月の光 の情報" }).click();
-      const note = page.getByRole("dialog", { name: "月の光" }).getByRole("textbox", { name: "メモ" });
+      const note = page.getByRole("dialog", { name: "詳細" }).getByRole("textbox", { name: "メモ" });
       const save = page.getByRole("button", { name: /メモを保存/ });
       assert.ok(await save.isDisabled(), "nothing to save yet");
       await note.fill("第2章まで");
@@ -270,6 +282,25 @@ try {
       await page.getByLabel("区分け").selectOption({ label: "区分けなし" });
       await page.getByLabel("並び順").selectOption({ label: "最近遊んだ順" });
       assert.equal(await page.locator("[data-group] h3").count(), 0);
+
+      // a brand's name, on a card or in 詳細, narrows the list to its games; × clears it
+      await page.locator('[data-game="tsuki"] [data-brand="Key"]').click();
+      assert.deepEqual((await order()).sort(), ["sakura", "tsuki"]);
+      assert.match(await page.getByTestId("brand-filter").innerText(), /ブランド:\s*Key/);
+      assert.equal(await page.getByRole("region", { name: "続きから遊ぶ" }).count(), 0, "no continue banner under a brand");
+      await page.getByRole("searchbox").fill("星");
+      await page.getByText("「星」・ブランド「Key」に合うゲームはありません").waitFor();
+      await page.getByRole("searchbox").fill("");
+      await page.getByRole("button", { name: "ブランドの絞り込みを解除" }).click();
+      assert.equal(await page.locator("[data-game]").count(), 3);
+      await page.getByRole("button", { name: "星のかけら の情報" }).click();
+      await page.getByRole("dialog", { name: "詳細" }).locator('[data-brand="august"]').click();
+      assert.deepEqual(await order(), ["hoshi"]);
+      assert.match(await page.getByTestId("brand-filter").innerText(), /ブランド:\s*august/);
+      await shot("brand");
+      await page.getByRole("button", { name: "ブランドの絞り込みを解除" }).click();
+      assert.equal(await page.locator("[data-game]").count(), 3);
+      assert.equal(await page.getByTestId("brand-filter").count(), 0);
     } else {
       // the update, on the real server: the stand-in's download is no archive, and it says so
       await page.getByRole("button", { name: "設定", exact: true }).click();
@@ -295,7 +326,8 @@ try {
       // the reset, confirmed: the server forgets every session and the statistics are empty
       await page.getByRole("heading", { name: "ippai", level: 1 }).waitFor();
       await page.getByRole("button", { name: "設定", exact: true }).click();
-      const stats = page.getByRole("dialog", { name: "設定" }).getByRole("region", { name: "プレイ統計" });
+      await page.getByRole("dialog", { name: "設定" }).getByRole("tab", { name: "統計" }).click();
+      const stats = page.getByRole("dialog", { name: "統計" }).getByRole("region", { name: "プレイ統計" });
       await stats.getByRole("button", { name: "統計をリセット" }).click();
       await stats.getByRole("button", { name: "リセットする" }).click();
       await stats.getByText("プレイ記録はまだありません").waitFor();

@@ -49,7 +49,9 @@ export function parseView(text: string | null): ListView {
 const ja = (a: string, b: string) => a.localeCompare(b, "ja");
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const reading = (g: GameEntry) => g.meta?.furigana || g.meta?.title || g.title;
-const brand = (g: GameEntry) => g.meta?.brand?.trim() || "";
+/** the game's brand as the list groups and filters by it ("" for none) */
+export const brandOf = (g: GameEntry): string => g.meta?.brand?.trim() || "";
+const brand = brandOf;
 /** yyyy-mm-dd, or "" when there is no usable date */
 const release = (g: GameEntry) => /^\d{4}(-\d{2}(-\d{2})?)?/.exec(g.meta?.release ?? "")?.[0] ?? "";
 const score = (g: GameEntry) => (typeof g.meta?.score === "number" && g.meta.score > 0 ? g.meta.score : -1);
@@ -119,13 +121,21 @@ export function matches(g: GameEntry, query: string): boolean {
   return words.every((w) => key.includes(w));
 }
 
+/** The games shown: matching the search, a favorite under お気に入り, and of `brand` when one
+ * was picked (a brand's name clicked: brandOf's value, exactly). */
 export function visibleGames(
   sorted: GameEntry[],
   query: string,
   filter: Filter,
   favorites: readonly string[],
+  brand: string | null = null,
 ): GameEntry[] {
-  return sorted.filter((g) => matches(g, query) && (filter === "all" || favorites.includes(g.id)));
+  return sorted.filter(
+    (g) =>
+      matches(g, query) &&
+      (filter === "all" || favorites.includes(g.id)) &&
+      (brand === null || brandOf(g) === brand),
+  );
 }
 
 export interface PlayTotal {
