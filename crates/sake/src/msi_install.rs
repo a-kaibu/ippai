@@ -103,6 +103,9 @@ pub fn send(c: &mut Ctx, pkg: Option<&Arc<Mutex<Package>>>, kind: u32, rec: &Rec
             return r;
         }
     }
+    if level & 0x1f > INSTALLUILEVEL_BASIC && crate::msi_ui::message(c, kind, rec) {
+        return 1;
+    }
     internal_ui(kind, rec, level)
 }
 
@@ -227,7 +230,35 @@ fn standard(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, _table: Option<&st
             // (EXECUTEACTION: the top-level action the UI sequence chose; INSTALL's sequence
             // is the only one here)
             let _ = ui;
-            p.lock().unwrap().executed = true;
+            let mut pk = p.lock().unwrap();
+            pk.executed = true;
+            // (the features the UI chose, a dialog's AddLocal or MsiSetFeatureState, go to
+            // the execute sequence's costing as request properties, as the client hands
+            // them to the server)
+            if pk.costed {
+                use crate::msi_pkg::{INSTALLSTATE_ABSENT, INSTALLSTATE_ADVERTISED, INSTALLSTATE_LOCAL, INSTALLSTATE_SOURCE};
+                let mut lists: [Vec<String>; 4] = Default::default();
+                for f in &pk.features {
+                    let i = match f.action {
+                        INSTALLSTATE_LOCAL => 0,
+                        INSTALLSTATE_SOURCE => 1,
+                        INSTALLSTATE_ABSENT if f.installed > INSTALLSTATE_ABSENT || f.installed == INSTALLSTATE_ADVERTISED => 2,
+                        INSTALLSTATE_ADVERTISED => 3,
+                        _ => continue,
+                    };
+                    lists[i].push(f.name.clone());
+                }
+                if lists.iter().any(|l| !l.is_empty()) {
+                    for (name, l) in ["ADDLOCAL", "ADDSOURCE", "REMOVE", "ADVERTISE"].iter().zip(&lists) {
+                        // (REMOVE=ALL and the like stay)
+                        if !l.is_empty() && !pk.prop(name).eq_ignore_ascii_case("ALL") {
+                            let v = l.join(",");
+                            pk.set_prop(name, &v);
+                        }
+                    }
+                }
+            }
+            drop(pk);
             run_sequence(c, p, "InstallExecuteSequence")
         }
         "InstallFiles" => install_files(c, p),
@@ -1199,6 +1230,7 @@ pub fn install_product(c: &mut Ctx, path: &str, cmdline: &str) -> u32 {
             do_action(c, &p, &name, None);
         }
     }
+    crate::msi_ui::close_modeless(c);
     r.f[0] = Field::Null;
     send(c, Some(&p), INSTALLMESSAGE_TERMINATE, &r);
     e

@@ -1041,6 +1041,14 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
         0xc | 0xa => {
             let r = def_proc(c, msg_wide());
             invalidate(h, None, true);
+            // (a single-line edit tells its parent of a WM_SETTEXT: EN_UPDATE, EN_CHANGE)
+            if m == 0xc && is_edit(h) {
+                let (id, parent, style) = with(|s| s.wins.get(&h).map_or((0, 0, 0), |w| (w.id, w.parent, w.style)));
+                if parent != 0 && style & 4 == 0 {
+                    send(c, parent, 0x111, 0x400 << 16 | (id & 0xffff), h);
+                    send(c, parent, 0x111, 0x300 << 16 | (id & 0xffff), h);
+                }
+            }
             r
         }
         0x2 => {
@@ -6147,13 +6155,14 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
     }
     let was_enabled = with(|s| s.wins.get_mut(&owner).map(|w| std::mem::replace(&mut w.enabled, false))).unwrap_or(false);
     let r = loop {
+        // (a message another thread sent may end it: EndDialog in its handling)
+        process_sent(c.cpu);
         if let Some(r) = DLG_END.lock().unwrap().get_or_insert_with(HashMap::default).remove(&dlg) {
             break r;
         }
         if !is_window(dlg) {
             break 0;
         }
-        process_sent(c.cpu);
         match next_msg(0, 0, 0, true) {
             Some(m) if m.msg == 0x12 => {
                 with(|s| s.queues.entry(crate::cur().tid).or_default().quit = Some(m.w));

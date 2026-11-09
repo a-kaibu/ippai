@@ -18,8 +18,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops sendrace msiinstall}
-X64=" dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout msiinstall "
+TESTS=${*:-dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify msiinstall msiui}
+X64=" dlgenter dlgthread editnotify aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout msiinstall msiui "
 CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
 CLANG32=${CLANG32-msvcseh}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
@@ -56,14 +56,57 @@ for t in $TESTS; do
       cp "$d/a.txt" "$d/extra.txt" "$OUT/MsiTest/" && cp "$d/b.dat" "$OUT/MsiTest/sub/"
       return $?
     fi
+    if [ "$t" = msiui ]; then
+      # (msiinstall.wxs's package with dialogs: Welcome (name, extras, Next / Cancel), a
+      # modeless progress dialog, Exit)
+      local d=$OUT/msiui-src
+      rm -rf "$d" && mkdir -p "$d" || return 1
+      printf 'hello msi\r\n' > "$d/a.txt"
+      head -c 70000 /dev/zero | tr '\0' b > "$d/b.dat"
+      printf 'extra\r\n' > "$d/extra.txt"
+      sed 's/COMPRESSED/yes/' "$ROOT/host/tests/msiinstall.wxs" > "$d/t.wxs"
+      (cd "$d" && wixl -o "$OUT/msiui.msi" t.wxs) || return 1
+      local ctl="INSERT INTO \`Control\` (\`Dialog_\`, \`Control\`, \`Type\`, \`X\`, \`Y\`, \`Width\`, \`Height\`, \`Attributes\`, \`Property\`, \`Text\`) VALUES"
+      local ev="INSERT INTO \`ControlEvent\` (\`Dialog_\`, \`Control_\`, \`Event\`, \`Argument\`, \`Condition\`, \`Ordering\`) VALUES"
+      local dlg="INSERT INTO \`Dialog\` (\`Dialog\`, \`HCentering\`, \`VCentering\`, \`Width\`, \`Height\`, \`Attributes\`, \`Title\`, \`Control_First\`, \`Control_Default\`, \`Control_Cancel\`) VALUES"
+      msibuild "$OUT/msiui.msi" \
+        -q 'CREATE TABLE `Dialog` (`Dialog` CHAR(72) NOT NULL, `HCentering` SHORT NOT NULL, `VCentering` SHORT NOT NULL, `Width` SHORT NOT NULL, `Height` SHORT NOT NULL, `Attributes` LONG, `Title` CHAR(128), `Control_First` CHAR(50) NOT NULL, `Control_Default` CHAR(50), `Control_Cancel` CHAR(50) PRIMARY KEY `Dialog`)' \
+        -q 'CREATE TABLE `Control` (`Dialog_` CHAR(72) NOT NULL, `Control` CHAR(50) NOT NULL, `Type` CHAR(20) NOT NULL, `X` SHORT NOT NULL, `Y` SHORT NOT NULL, `Width` SHORT NOT NULL, `Height` SHORT NOT NULL, `Attributes` LONG, `Property` CHAR(72), `Text` CHAR(255), `Control_Next` CHAR(50), `Help` CHAR(50) PRIMARY KEY `Dialog_`, `Control`)' \
+        -q 'CREATE TABLE `ControlEvent` (`Dialog_` CHAR(72) NOT NULL, `Control_` CHAR(50) NOT NULL, `Event` CHAR(50) NOT NULL, `Argument` CHAR(255) NOT NULL, `Condition` CHAR(255), `Ordering` SHORT PRIMARY KEY `Dialog_`, `Control_`, `Event`, `Argument`, `Condition`)' \
+        -q 'CREATE TABLE `EventMapping` (`Dialog_` CHAR(72) NOT NULL, `Control_` CHAR(50) NOT NULL, `Event` CHAR(50) NOT NULL, `Attribute` CHAR(50) NOT NULL PRIMARY KEY `Dialog_`, `Control_`, `Event`)' \
+        -q "$dlg ('WelcomeDlg', 50, 50, 270, 150, 3, '[ProductName] Setup', 'Name', 'Next', 'Cancel')" \
+        -q "$dlg ('ProgressDlg', 50, 50, 270, 80, 1, '[ProductName] Setup', 'ActionText', '', '')" \
+        -q "$dlg ('ExitDlg', 50, 50, 270, 100, 3, '[ProductName] Setup', 'Finish', 'Finish', 'Finish')" \
+        -q "$ctl ('WelcomeDlg', 'Title', 'Text', 15, 10, 240, 15, 3, '', 'Welcome to [ProductName]')" \
+        -q "$ctl ('WelcomeDlg', 'Name', 'Edit', 15, 40, 200, 18, 3, 'USERNAME', '{80}')" \
+        -q "$ctl ('WelcomeDlg', 'Extra', 'CheckBox', 15, 65, 200, 17, 3, 'WANTEXTRAS', 'Install extras')" \
+        -q "$ctl ('WelcomeDlg', 'Next', 'PushButton', 150, 120, 56, 17, 3, '', '&Next')" \
+        -q "$ctl ('WelcomeDlg', 'Cancel', 'PushButton', 210, 120, 56, 17, 3, '', 'Cancel')" \
+        -q "$ctl ('ProgressDlg', 'ActionText', 'Text', 15, 15, 240, 15, 3, '', '')" \
+        -q "$ctl ('ProgressDlg', 'Bar', 'ProgressBar', 15, 40, 240, 10, 1, '', '')" \
+        -q "$ctl ('ExitDlg', 'Done', 'Text', 15, 15, 240, 15, 3, '', 'Thanks, [USERNAME]')" \
+        -q "$ctl ('ExitDlg', 'Finish', 'PushButton', 210, 70, 56, 17, 3, '', '&Finish')" \
+        -q "$ev ('WelcomeDlg', 'Next', 'AddLocal', 'Extras', 'WANTEXTRAS = \"1\"', 1)" \
+        -q "$ev ('WelcomeDlg', 'Next', 'EndDialog', 'Return', '1', 2)" \
+        -q "$ev ('WelcomeDlg', 'Cancel', 'EndDialog', 'Exit', '1', 1)" \
+        -q "$ev ('ExitDlg', 'Finish', 'EndDialog', 'Return', '1', 1)" \
+        -q "INSERT INTO \`EventMapping\` (\`Dialog_\`, \`Control_\`, \`Event\`, \`Attribute\`) VALUES ('ProgressDlg', 'ActionText', 'ActionText', 'Text')" \
+        -q "INSERT INTO \`EventMapping\` (\`Dialog_\`, \`Control_\`, \`Event\`, \`Attribute\`) VALUES ('ProgressDlg', 'Bar', 'SetProgress', 'Progress')" \
+        -q "INSERT INTO \`Property\` (\`Property\`, \`Value\`) VALUES ('USERNAME', 'nobody')" \
+        -q "INSERT INTO \`ActionText\` (\`Action\`, \`Description\`) VALUES ('InstallFiles', 'Copying new files')" \
+        -q "INSERT INTO \`InstallUISequence\` (\`Action\`, \`Condition\`, \`Sequence\`) VALUES ('WelcomeDlg', 'NOT Installed', 1100)" \
+        -q "INSERT INTO \`InstallUISequence\` (\`Action\`, \`Sequence\`) VALUES ('ProgressDlg', 1280)" \
+        -q "INSERT INTO \`InstallUISequence\` (\`Action\`, \`Sequence\`) VALUES ('ExitDlg', -1)" || return 1
+      return 0
+    fi
     [ "$t" != dllsearch ] && return 0
     mkdir -p "$OUT/dllsearch-prefix/windows/system32"
     "${1%gcc}windres" "$ROOT/host/tests/dllsearch.rc" -O coff -o "$OUT/dllsearch-res.o" || return 1
     "$1" -shared -nostdlib -DBUILD_FIXTURE -Wl,--entry,0 "$ROOT/host/tests/dllsearch.c" "$OUT/dllsearch-res.o" -o "$OUT/dllsearch-fixture.dll"
   }
   case "$t" in
-    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall)
-      [ "$t" = msiinstall ] && rm -rf "$OUT/$t-prefix"
+    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall|msiui)
+      [[ $t = msi* ]] && rm -rf "$OUT/$t-prefix"
       mkdir -p "$OUT/$t-prefix/windows/system32"
       test_env=("SAKE_C=$OUT/$t-prefix")
       ;;

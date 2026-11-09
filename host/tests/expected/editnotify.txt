@@ -1,0 +1,6 @@
+created:
+single-line WM_SETTEXT: 11/400 11/300
+single-line same text: 11/400 11/300
+multi-line WM_SETTEXT:
+WM_GETTEXT, EM_SETSEL:
+text "Kota"
