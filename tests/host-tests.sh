@@ -18,8 +18,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify msiinstall msiui}
-X64=" dlgenter dlgthread editnotify aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout msiinstall msiui "
+TESTS=${*:-dlgenter aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose msiinstall msiui nsisinstall}
+X64=" dlgenter dlgthread editnotify shfileinfo deleteonclose aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout msiinstall msiui nsisinstall "
 CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
 CLANG32=${CLANG32-msvcseh}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
@@ -54,6 +54,14 @@ for t in $TESTS; do
         -q "INSERT INTO \`AppSearch\` (\`Property\`, \`Signature_\`) VALUES ('FOUNDFILE', 'probe')" || return 1
       cp "$OUT/msiinstall.msi" "$OUT/msiinstall-u.msi" && msibuild "$OUT/msiinstall-u.msi" -q "UPDATE File SET Attributes = 8192" || return 1
       cp "$d/a.txt" "$d/extra.txt" "$OUT/MsiTest/" && cp "$d/b.dat" "$OUT/MsiTest/sub/"
+      return $?
+    fi
+    if [ "$t" = nsisinstall ]; then
+      local d=$OUT/nsisinstall-src
+      rm -rf "$d" && mkdir -p "$d" || return 1
+      printf 'hello nsis\r\n' > "$d/a.txt"
+      head -c 300000 /dev/zero | tr '\0' n > "$d/b.dat"
+      cp "$ROOT/host/tests/nsisinstall.nsi" "$d/" && (cd "$d" && makensis -V1 nsisinstall.nsi) && cp "$d/nsisinstall-setup.exe" "$OUT/"
       return $?
     fi
     if [ "$t" = msiui ]; then
@@ -105,8 +113,8 @@ for t in $TESTS; do
     "$1" -shared -nostdlib -DBUILD_FIXTURE -Wl,--entry,0 "$ROOT/host/tests/dllsearch.c" "$OUT/dllsearch-res.o" -o "$OUT/dllsearch-fixture.dll"
   }
   case "$t" in
-    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall|msiui)
-      [[ $t = msi* ]] && rm -rf "$OUT/$t-prefix"
+    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall|msiui|nsisinstall)
+      [[ $t = msi* || $t = nsis* ]] && rm -rf "$OUT/$t-prefix"
       mkdir -p "$OUT/$t-prefix/windows/system32"
       test_env=("SAKE_C=$OUT/$t-prefix")
       ;;

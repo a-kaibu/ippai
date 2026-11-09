@@ -2541,6 +2541,125 @@ fn SHGetFolderPathW(c: &mut Ctx) -> u32 {
         None => 0x8000_4005,
     }
 }
+/// The system image list SHGetFileInfo(SHGFI_SYSICONINDEX) answers with.
+static SYS_IMAGELIST: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// SHGetFileInfoA/W(path, attrs, &info, size, flags): a file's or folder's display name,
+/// type name, attributes, icon and system image list index (SHGFI_USEFILEATTRIBUTES: from
+/// `attrs`, the file need not exist); SHGFI_EXETYPE: a PE's kind; SHGFI_PIDL is not taken.
+fn sh_get_file_info(c: &mut Ctx, wide: bool) -> u32 {
+    let (path, attrs, info, size, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    const ICON: u32 = 0x100;
+    const DISPLAYNAME: u32 = 0x200;
+    const TYPENAME: u32 = 0x400;
+    const ATTRIBUTES: u32 = 0x800;
+    const EXETYPE: u32 = 0x2000;
+    const SYSICONINDEX: u32 = 0x4000;
+    const USEFILEATTRIBUTES: u32 = 0x10;
+    if path == 0 || flags & 8 != 0 {
+        return 0;
+    }
+    let name = arg_str(path, wide);
+    let ps = mem::ps();
+    let need = if wide { ps + 8 + 340 * 2 } else { ps + 8 + 340 };
+    if info != 0 && size < need {
+        return 0;
+    }
+    if flags & EXETYPE != 0 {
+        // 'PE' and the subsystem's Windows version for a GUI program, 'PE' alone for a console one
+        let Some(host) = crate::files::resolve(&name) else { return 0 };
+        let Ok(b) = kura::fs::read(&host) else { return 0 };
+        let r32b = |o: usize| b.get(o..o + 4).map_or(0, |x| u32::from_le_bytes(x.try_into().unwrap()));
+        let r16b = |o: usize| b.get(o..o + 2).map_or(0, |x| u16::from_le_bytes(x.try_into().unwrap()) as u32);
+        if r16b(0) != 0x5a4d {
+            return 0;
+        }
+        let pe = r32b(0x3c) as usize;
+        if r32b(pe) != 0x4550 {
+            return 0;
+        }
+        let opt = pe + 24;
+        let (subsystem, major, minor) = (r16b(opt + 68), r16b(opt + 48), r16b(opt + 50));
+        return if subsystem == 3 { 0x4550 } else { 0x4550 | (major << 8 | minor) << 16 };
+    }
+    let (exists, dir) = if flags & USEFILEATTRIBUTES != 0 {
+        (true, attrs & 0x10 != 0)
+    } else {
+        match crate::files::resolve(&name).and_then(|h| kura::fs::metadata(&h).ok()) {
+            Some(m) => (true, m.is_dir()),
+            None => (false, false),
+        }
+    };
+    if !exists {
+        return 0;
+    }
+    let trimmed = name.trim_end_matches(['\\', '/']);
+    let base = trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed).to_string();
+    let drive = trimmed.len() == 2 && trimmed.ends_with(':');
+    let ext = if dir { String::new() } else { base.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default() };
+    if info != 0 {
+        mem::write(info, &vec![0u8; need as usize]);
+        if flags & SYSICONINDEX != 0 || flags & ICON != 0 {
+            // (indexes of the generic file, folder, drive and program icons)
+            let i = if drive { 8 } else if dir { 3 } else if ext == "exe" { 2 } else { 0 };
+            w32(info + ps, i);
+        }
+        if flags & ICON != 0 {
+            let load = crate::api::export("user32", "LoadIconW");
+            let h = c.call(load, &[0, 32512]);
+            mem::wp(info, h);
+        }
+        if flags & ATTRIBUTES != 0 {
+            // SFGAO_FILESYSTEM | CANCOPY | CANMOVE | CANRENAME | CANDELETE | HASPROPSHEET, and
+            // a folder's FOLDER | FILESYSANCESTOR | HASSUBFOLDER | STORAGE...
+            let a = if dir { 0xf080_0177u32 } else { 0x4040_0177 };
+            w32(info + ps + 4, a);
+        }
+        let name_at = info + ps + 8;
+        if flags & DISPLAYNAME != 0 {
+            let shown = if drive { format!("Local Disk ({})", trimmed.to_ascii_uppercase()) } else { base.clone() };
+            ret_str(name_at, 260, &shown, wide);
+        }
+        if flags & TYPENAME != 0 {
+            let t = if drive {
+                "Local Disk".to_string()
+            } else if dir {
+                "File folder".to_string()
+            } else {
+                match ext.as_str() {
+                    "" => "File".to_string(),
+                    "exe" => "Application".to_string(),
+                    "txt" => "Text Document".to_string(),
+                    e => format!("{} File", e.to_ascii_uppercase()),
+                }
+            };
+            ret_str(name_at + if wide { 520 } else { 260 }, 80, &t, wide);
+        }
+    }
+    if flags & SYSICONINDEX != 0 {
+        return *SYS_IMAGELIST.get_or_init(|| IMAGELISTS.fetch_add(4, Ordering::Relaxed));
+    }
+    1
+}
+/// SHAutoComplete(edit, flags): S_OK (no completion list is shown).
+fn SHAutoComplete(_: &mut Ctx) -> u32 {
+    0
+}
+fn SHGetFileInfoA(c: &mut Ctx) -> u32 {
+    sh_get_file_info(c, false)
+}
+fn SHGetFileInfoW(c: &mut Ctx) -> u32 {
+    sh_get_file_info(c, true)
+}
+
+/// IsOS(os): what Windows 10 Pro (a 64-bit workstation, not a domain member) answers; sake
+/// is no WoW64 process.
+fn IsOS(c: &mut Ctx) -> u32 {
+    // OS_NT, NT4ORGREATER, WIN2000ORGREATER, WIN2000PRO, XPORGREATER, PROFESSIONAL,
+    // PERSONALTERMINALSERVER, FASTUSERSWITCHING
+    matches!(c.a(0), 1 | 3 | 7 | 8 | 18 | 20 | 25 | 26) as u32
+}
+
 fn SHGetSpecialFolderLocation(c: &mut Ctx) -> u32 {
     let (csidl, out) = (c.a(1), c.a(2));
     // an ID list of our own: a marker and the CSIDL, then the terminator
@@ -4061,7 +4180,8 @@ pub fn init() {
         PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathRenameExtensionA, PathRenameExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
         PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathRemoveBackslashA, PathRemoveBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
     reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW, SHStrDupA, SHStrDupW);
-    reg!("shell32"; SHGetPropertyStoreForWindow);
+    reg!("shell32"; SHGetPropertyStoreForWindow, SHGetFileInfoA, SHGetFileInfoW);
+    reg!("shlwapi"; IsOS, SHAutoComplete);
     reg!("sensapi"; IsNetworkAlive);
     // ws2_32 lives in ws2.rs
 }

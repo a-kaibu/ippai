@@ -1,0 +1,6 @@
+open: 1, written 5, there 1
+duplicate closed: there 1
+read back: "hello"
+last closed: there 0
+plain file: there 1
+child: exit 7, there 0

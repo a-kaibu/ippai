@@ -16,6 +16,8 @@ pub struct File {
     pub scan: Mutex<Option<(Vec<u16>, Find)>>,
     /// its entry in OPEN (sharing checks), removed when the handle goes
     share: u64,
+    /// FILE_FLAG_DELETE_ON_CLOSE: the file goes with the last handle (or the process)
+    delete: std::sync::atomic::AtomicBool,
 }
 
 impl Drop for File {
@@ -23,6 +25,36 @@ impl Drop for File {
         if self.share != 0 {
             OPEN.lock().unwrap().retain(|o| o.0 != self.share);
         }
+        if self.delete.load(std::sync::atomic::Ordering::Relaxed) {
+            DELETE_ON_CLOSE.lock().unwrap().retain(|p| *p != self.path);
+            let _ = kura::fs::remove_file(&self.path);
+        }
+    }
+}
+
+impl File {
+    /// FILE_FLAG_DELETE_ON_CLOSE: deleted when its last handle closes, or when the process
+    /// ends with it open (as Windows closes a process's handles)
+    pub fn delete_on_close(&self) {
+        if self.dir || self.delete.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let mut l = DELETE_ON_CLOSE.lock().unwrap();
+        static AT_EXIT: std::sync::Once = std::sync::Once::new();
+        AT_EXIT.call_once(|| unsafe {
+            libc::atexit(delete_at_exit);
+        });
+        l.push(self.path.clone());
+    }
+}
+
+/// The files open with FILE_FLAG_DELETE_ON_CLOSE.
+static DELETE_ON_CLOSE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+extern "C" fn delete_at_exit() {
+    let l = std::mem::take(&mut *DELETE_ON_CLOSE.lock().unwrap_or_else(|e| e.into_inner()));
+    for p in l {
+        let _ = kura::fs::remove_file(&p);
     }
 }
 
@@ -278,7 +310,7 @@ pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -
     if let Some(h) = &existing {
         if kura::fs::metadata(h).is_ok_and(|m| m.is_dir()) {
             let f = kura::fs::File::open(h).map_err(|_| ERROR_ACCESS_DENIED)?;
-            return Ok((File { f: Mutex::new(f), path: h.clone(), dir: true, write: false, scan: Mutex::new(None), share: 0 }, true));
+            return Ok((File { f: Mutex::new(f), path: h.clone(), dir: true, write: false, scan: Mutex::new(None), share: 0, delete: Default::default() }, true));
         }
         if share.is_some_and(|s| share_conflict(h, access_bits(access), s)) {
             return Err(32);
@@ -330,7 +362,7 @@ pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -
                 }
                 None => 0,
             };
-            Ok((File { f: Mutex::new(f), path: host, dir: false, write, scan: Mutex::new(None), share: id }, existing.is_some()))
+            Ok((File { f: Mutex::new(f), path: host, dir: false, write, scan: Mutex::new(None), share: id, delete: Default::default() }, existing.is_some()))
         }
         Err(e) => Err(match e.kind() {
             std::io::ErrorKind::NotFound => {

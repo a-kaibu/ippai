@@ -1,0 +1,31 @@
+install: 0
+installed
+  a.txt: there
+  sub\b.dat: there
+  sub: there
+  uninst.exe: there
+  (folder): there
+  HKCU path: 0 <INSTDIR>
+  UninstallString: 0
+  %TEMP%: 0 left, 0 uninstaller copies
+uninstall in place: 0
+uninstalled in place
+  a.txt: missing
+  sub\b.dat: missing
+  sub: missing
+  uninst.exe: there
+  (folder): there
+  HKCU path: 2 
+  UninstallString: 2
+  %TEMP%: 0 left, 0 uninstaller copies
+install again: 0
+uninstall: 0
+uninstalled
+  a.txt: missing
+  sub\b.dat: missing
+  sub: missing
+  uninst.exe: missing
+  (folder): missing
+  HKCU path: 2 
+  UninstallString: 2
+  %TEMP%: 0 left, 1 uninstaller copies

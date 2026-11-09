@@ -5515,6 +5515,9 @@ fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u3
             if !f.dir && (!existed || disp == 2) && attrs & 7 != 0 {
                 files::set_attrs(&f.path, attrs & 7 | 0x20);
             }
+            if attrs & 0x0400_0000 != 0 {
+                f.delete_on_close();
+            }
             obj::add(Obj::File(std::sync::Arc::new(f)))
         }
         Err(e) => {
