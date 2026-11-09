@@ -1,8 +1,9 @@
 // The game's files fetched onto the device while it plays (host/fetch-bridge.js ippaiWarm). A
 // store chunk the game reads first waits 1-5 s for the bucket (worker2's games from a Mac:
 // 俺の姿が､透明に!'s CG mode and mode changes waited that long for each file read first); the
-// chunks fetched ahead, in the trees' order and only while the game waits for nothing, are on
-// the device by the time it reads them.
+// chunks fetched ahead (what earlier runs of the game read first, in that order, then the trees'
+// others; fewer at once while the game waits for a read) are on the device by the time it reads
+// them.
 
 import { chunkPath } from "./net";
 
@@ -11,18 +12,35 @@ import { chunkPath } from "./net";
 export const WARM_MAX = 1536 * 2 ** 20;
 /** Chunks fetched side by side (the bucket answers each after a while, whatever its size). */
 export const WARM_WIDTH = 6;
+/** Of those, how many go on while the game waits for a read of its own. The bucket takes 1-3 s
+ * to answer each request whatever its size, so a game that reads one file after another (金恋:
+ * SiglusEngine reads its pictures and sounds one at a time, ~1.2 s each, "waiting for files"
+ * ~970 ms/s for minutes) waits nearly all the time: with none then, nothing was ever fetched
+ * ahead. On a slow line (warmBusyWidth) none, as before: there the game's read needs the line. */
+export const WARM_BUSY_WIDTH = 2;
 
-/** The chunks to fetch ahead: the trees' chunks (`sizes`, hex -> bytes, in the lists' order),
- * the first ones up to `max` bytes in all. */
-export function warmList(sizes: Map<string, number>, max = WARM_MAX): string[] {
+/** The chunks to fetch ahead: those of `first` the trees have (the chunks earlier runs of the
+ * game read, in the order they read them), then the trees' others (`sizes`, hex -> bytes, in the
+ * lists' order); each once, up to `max` bytes in all. */
+export function warmList(sizes: Map<string, number>, max = WARM_MAX, first: string[] = []): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   let total = 0;
-  for (const [hex, n] of sizes) {
+  for (const hex of [...first, ...sizes.keys()]) {
+    const n = sizes.get(hex);
+    if (n === undefined || seen.has(hex)) continue;
     if (total + n > max) break;
+    seen.add(hex);
     total += n;
     out.push(hex);
   }
   return out;
+}
+
+/** How many fetches ahead go on while the game waits for a read (WARM_BUSY_WIDTH): none on a
+ * line the browser says is slow (under 5 Mbit/s: there the game's own read is slowed by them). */
+export function warmBusyWidth(c: { downlink?: number } | undefined): number {
+  return c?.downlink !== undefined && c.downlink < 5 ? 0 : WARM_BUSY_WIDTH;
 }
 
 interface Connection {
@@ -44,11 +62,18 @@ export interface WarmReport {
   end?: boolean;
 }
 
-export type Warm = (urls: string[], flag: SharedArrayBuffer, width: number, report: (r: WarmReport) => void) => Worker;
+export type Warm = (
+  urls: string[],
+  flag: SharedArrayBuffer,
+  width: number,
+  report: (r: WarmReport) => void,
+  busyWidth?: number,
+) => Worker;
 
 /**
- * Starts fetching ahead (`warm`: the module's ippaiWarm) the chunks of `sizes` under `store`;
- * `busy()` says while the game waits for a read of its own (none starts then). Returns a stop.
+ * Starts fetching ahead (`warm`: the module's ippaiWarm) the chunks of `sizes` under `store`,
+ * those of `first` first; `busy()` says while the game waits for a read of its own (then only
+ * `busyWidth` go on). Returns a stop.
  */
 export function startWarm(
   warm: Warm,
@@ -56,8 +81,10 @@ export function startWarm(
   sizes: Map<string, number>,
   busy: () => boolean,
   log: (line: string) => void,
+  first: string[] = [],
+  busyWidth = WARM_BUSY_WIDTH,
 ): () => void {
-  const list = warmList(sizes);
+  const list = warmList(sizes, WARM_MAX, first);
   const flag = new SharedArrayBuffer(8);
   const f = new Int32Array(flag);
   const t = performance.now();
@@ -70,9 +97,12 @@ export function startWarm(
     (r) => {
       const s = ((performance.now() - t) / 1000).toFixed(0);
       if (r.end || r.done % 128 === 0)
-        log(`fetched ahead: ${r.done} of ${list.length} chunks looked at, ${r.fetched} fetched (${mb(r.bytes)} MB), ${r.failed} failed, in ${s} s${r.end ? ", done" : ""}`);
+        log(
+          `fetched ahead: ${r.done} of ${list.length} chunks looked at, ${r.fetched} fetched (${mb(r.bytes)} MB), ${r.failed} failed, in ${s} s${r.end ? ", done" : ""}`,
+        );
       if (r.end) clearInterval(timer);
     },
+    busyWidth,
   );
   return () => {
     Atomics.store(f, 1, 1);

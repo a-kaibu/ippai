@@ -149,6 +149,35 @@ const JIT_SAVE_MAX: usize = 128 << 20;
 /// The jit directory; the lock keeps merges one at a time.
 type Jit = Arc<(PathBuf, tokio::sync::Mutex<()>)>;
 
+/// Chunks a list holds at most (16 bytes each): 32768 chunks of 4 MiB on average, 128 GiB.
+const CHUNKS_MAX: usize = 32768;
+
+/// A run's chunks list `new` (in the order it read them) with an earlier list `old` of the same
+/// name after it: `old`'s chunks `new` lacks, in their order; each chunk once, CHUNKS_MAX at most.
+fn merge_chunks(new: &[u8], old: &[u8]) -> Vec<u8> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(new.len() + old.len());
+    for c in new.chunks_exact(16).chain(old.chunks_exact(16)) {
+        if out.len() >= 16 * CHUNKS_MAX {
+            break;
+        }
+        if seen.insert(c) {
+            out.extend_from_slice(c);
+        }
+    }
+    out
+}
+
+/// Whose list `file` is, for _shared.chunks's count: a game's (`game.<id>.chunks`, the page's
+/// IPPAI_CHUNKS_URL) by its id; a program's (`<program>-<build>.chunks`) by its name without
+/// the build (the newest build's list stands for it).
+fn list_owner(file: &str) -> String {
+    if file.starts_with("game.") {
+        return file.to_string();
+    }
+    file.rsplit_once('-').map_or(file.to_string(), |x| x.0.to_string())
+}
+
 /// Merges a run's regions into `name`'s: those not saved already (same roots and code) go after
 /// the others.
 async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes) -> StatusCode {
@@ -162,7 +191,12 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         }
         let _g = jit.1.lock().await;
         let _ = tokio::fs::create_dir_all(&jit.0).await;
-        if tokio::fs::write(jit.0.join(&name), &body).await.is_err() {
+        // (what earlier runs read and this one did not yet stays, after it: a run that ended at
+        // the title does not take away what a longer one read)
+        let old = tokio::fs::read(jit.0.join(&name)).await.unwrap_or_default();
+        let list = merge_chunks(&body, &old);
+        let tmp = jit.0.join(format!("{name}.tmp"));
+        if tokio::fs::write(&tmp, &list).await.is_err() || tokio::fs::rename(&tmp, jit.0.join(&name)).await.is_err() {
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
         // chunks two programs or more read first (fonts, the prefix) make _shared.chunks, which
@@ -178,8 +212,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
                     continue;
                 }
                 let t = e.metadata().await.and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
-                // (a program by its name without the build: the newest build's list)
-                let prog = f.rsplit_once('-').map_or(f.clone(), |x| x.0.to_string());
+                let prog = list_owner(&f);
                 if lists.get(&prog).is_some_and(|l| l.0 >= t) {
                     continue;
                 }
@@ -1375,6 +1408,68 @@ mod tests {
         assert!(wasm::check(&parts[0].0, 4 * (super::PARTS_MAX + 1)));
         assert!(!d.join(format!("{n}.1.wasm")).exists() && !d.join(format!("{n}.1.idx")).exists());
         assert_eq!(std::fs::read_to_string(d.join(format!("{n}.parts"))).unwrap().lines().count(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A run's chunks list goes first, an earlier one's chunks it lacks after (a run that ended
+    /// at the title keeps what a longer one read); each chunk once, CHUNKS_MAX at most.
+    #[test]
+    fn chunk_lists_merge_new_first() {
+        let c = |k: u8| [k; 16];
+        let l = |ks: &[u8]| ks.iter().flat_map(|&k| c(k)).collect::<Vec<u8>>();
+        assert_eq!(super::merge_chunks(&l(&[3, 1]), &l(&[1, 2, 3, 4])), l(&[3, 1, 2, 4]));
+        assert_eq!(super::merge_chunks(&l(&[]), &l(&[1, 2])), l(&[1, 2]));
+        assert_eq!(super::merge_chunks(&l(&[5, 5, 6]), &[]), l(&[5, 6]));
+        // random lists: new is a prefix, then old's others in order, nothing twice, the cap
+        let mut seed = 11u32;
+        let mut rnd = |n: u32| {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 8) % n
+        };
+        for _ in 0..300 {
+            let new: Vec<u8> = (0..rnd(30)).map(|_| rnd(40) as u8).collect();
+            let old: Vec<u8> = (0..rnd(30)).map(|_| rnd(40) as u8).collect();
+            let got: Vec<u8> = super::merge_chunks(&l(&new), &l(&old)).chunks_exact(16).map(|x| x[0]).collect();
+            let mut want = Vec::new();
+            for k in new.iter().chain(&old) {
+                if !want.contains(k) {
+                    want.push(*k);
+                }
+            }
+            assert_eq!(got, want);
+        }
+        let many: Vec<u8> = (0..super::CHUNKS_MAX as u32 + 10).flat_map(|i| {
+            let mut b = [0u8; 16];
+            b[..4].copy_from_slice(&i.to_le_bytes());
+            b
+        }).collect();
+        assert_eq!(super::merge_chunks(&many, &[]).len(), 16 * super::CHUNKS_MAX);
+    }
+
+    /// PUT /jit-save/<name>.chunks: merged with what was there; the games' lists
+    /// (game.<id>.chunks) count one each for _shared.chunks, as programs' lists do.
+    #[tokio::test]
+    async fn chunk_lists_are_saved_merged_and_shared_by_owner() {
+        use axum::extract::{Path, State};
+        let d = scratch("chunklists");
+        let jit: super::Jit = std::sync::Arc::new((d.clone(), tokio::sync::Mutex::new(())));
+        let put = |name: &str, ks: &[u8]| {
+            let body: Vec<u8> = ks.iter().flat_map(|&k| [k; 16]).collect();
+            super::save_jit(State(jit.clone()), Path(name.to_string()), body.into())
+        };
+        let read = |name: &str| std::fs::read(d.join(name)).unwrap().chunks_exact(16).map(|x| x[0]).collect::<Vec<u8>>();
+        assert_eq!(put("game.saga_planets-2.chunks", &[1, 2, 3]).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(put("game.saga_planets-2.chunks", &[4, 1]).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(read("game.saga_planets-2.chunks"), [4, 1, 2, 3]);
+        // another game of the same program: a list of its own, and what both read is shared
+        assert_eq!(put("game.saga_planets-3.chunks", &[9, 1]).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(read("game.saga_planets-3.chunks"), [9, 1]);
+        assert_eq!(read("_shared.chunks"), [1]);
+        assert_eq!(super::list_owner("game.saga_planets-2.chunks"), "game.saga_planets-2.chunks");
+        assert_eq!(super::list_owner("sake-Z__ippai_game_SiglusEngine.exe-24d68ccbg.chunks"), "sake-Z__ippai_game_SiglusEngine.exe");
+        assert_eq!(put("game.x.chunks", &[]).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(super::save_jit(State(jit.clone()), Path("game.x.chunks".into()), vec![0u8; 15].into()).await, axum::http::StatusCode::BAD_REQUEST);
+        assert!(!d.join("game.saga_planets-2.chunks.tmp").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

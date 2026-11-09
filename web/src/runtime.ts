@@ -78,6 +78,12 @@ export function translatorVersion(wasmVersion: Promise<string>): Promise<string>
 /** The name `run`'s saved regions go by (ippai serve /jit), before the translator's version. */
 export const jitBase = (run: string) => `sake-${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
 
+/** The name of game `game`'s list of the store chunks its runs read, in order (ippai serve
+ * /jit/<name>.chunks; the page fetches them ahead). A game's own, not its program's: games start
+ * the same program (every SiglusEngine.exe at Z:\ippai\game) and read other chunks. Not per
+ * build either: a new sake does not change what the game reads. */
+export const gameChunksName = (game: string) => `game.${game.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+
 /** FNV-1a of `bytes`, in hex. */
 export function fnv(bytes: Uint8Array): string {
   let h = 0x811c9dc5;

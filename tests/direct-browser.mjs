@@ -216,23 +216,24 @@ try {
   const page3 = await open();
   await page3.evaluate(() => caches.delete('ippai-chunks-v1'));
   await read(page3, [warmed[3]]);
-  const warm = (paths, { busyFirst, stopFirst } = {}) =>
+  const warm = (paths, { busyFirst, stopFirst, busyWidth } = {}) =>
     page3.evaluate(
-      async ([source, paths, busyFirst, stopFirst]) => {
+      async ([source, paths, busyFirst, stopFirst, busyWidth]) => {
         const ippaiWarm = new Function(source + '; return ippaiWarm;')();
         const flag = new SharedArrayBuffer(8);
         const f = new Int32Array(flag);
-        if (busyFirst) Atomics.store(f, 0, 1);
+        if (busyFirst || busyWidth) Atomics.store(f, 0, 1);
         if (stopFirst) Atomics.store(f, 1, 1);
         const reports = [];
-        const end = new Promise((resolve) => ippaiWarm(paths.map((p) => location.origin + p), flag, 3, (r) => (reports.push(r), r.end && resolve())));
+        const end = new Promise((resolve) => ippaiWarm(paths.map((p) => location.origin + p), flag, 3, (r) => (reports.push(r), r.end && resolve()), busyWidth));
         let early = 0;
         if (busyFirst) {
           await new Promise((r) => setTimeout(r, 400));
           early = reports.length;
           Atomics.store(f, 0, 0);
         }
-        await end;
+        // (one that waits for the game for good: a failure, not a hang)
+        await Promise.race([end, new Promise((_, no) => setTimeout(() => no(new Error('fetching ahead stalled')), 30000))]);
         const cache = await caches.open('ippai-chunks-v1');
         const kept = [];
         for (const p of paths) {
@@ -241,7 +242,7 @@ try {
         }
         return { last: reports.at(-1), early, kept };
       },
-      [source, paths, !!busyFirst, !!stopFirst],
+      [source, paths, !!busyFirst, !!stopFirst, busyWidth ?? 0],
     );
   let w;
   [w, d] = await since(() => warm(warmed, { stopFirst: true }));
@@ -256,6 +257,28 @@ try {
   [r, d] = await since(() => read(page3, [warmed[1], `${warmed[0]}#100+50/262144`]));
   assert.deepEqual(r, [expect(warmed[1]), expect(warmed[0], 100, 50)]);
   assert.deepEqual(d, { store: 0, direct: 0, bucket: 0, redirect: 0 }, 'read from the device');
+  // the bytes over the network of a chunk from the bucket: another origin, which gives no
+  // timings (no Timing-Allow-Origin, as s3.hf.co): counted all the same (the run logs said
+  // "0.01 MB over the network" for minutes of 金恋's reads from the bucket)
+  const counted = make('counted', 120000, 19);
+  const got = await page3.evaluate(
+    async ([source, url]) => {
+      const ippaiDirect = new Function(source + '; return ippaiDirect;')();
+      const d = await ippaiDirect(url);
+      return { wire: d.wire, cached: d.cached, length: d.data.length };
+    },
+    [source, `http://127.0.0.1:${app.address().port}${counted}`],
+  );
+  assert.equal(got.length, 120000);
+  assert.equal(got.cached, 0);
+  assert.equal(got.wire, chunks.get(counted.slice(-32)).sealed.length, 'the sealed object crossed the network');
+  // a game that waits for a read the whole time (金恋: one file after another, ~1.2 s each):
+  // busyWidth of them go on all the same, all fetched; none of them twice
+  const busy = [make('busy a', 60000, 14), make('busy b', 70000, 15), make('busy c', 50000, 16, { missing: true }), make('busy d', 40000, 17), make('busy e', 30000, 18)];
+  [w, d] = await since(() => warm(busy, { busyWidth: 1 }));
+  assert.deepEqual(w.last, { end: true, done: 5, fetched: 5, bytes: 60000 + 70000 + 50000 + 40000 + 30000, failed: 0 }, 'all while the game waits');
+  assert.deepEqual(w.kept, busy.map((p) => chunks.get(p.slice(-32)).data.length));
+  assert.deepEqual([d.bucket, d.store], [4, 1], 'each once');
   console.log('direct browser: bucket fetch, redirect, decrypt, zstd, blocks, cache and every fallback passed; fetched ahead');
 } finally {
   await browser.close();

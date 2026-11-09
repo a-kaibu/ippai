@@ -6,7 +6,15 @@
 
 import { coverUrl, type GameEntry } from "./launcher";
 import { chunkCache, chunkPath, fetchRetry, getChunk, HttpError, treeChunks } from "./net";
-import { fileVersion, jitBase, lastSakeBuild, sakeBase, translatorVersion, versioned } from "./runtime";
+import {
+  fileVersion,
+  gameChunksName,
+  jitBase,
+  lastSakeBuild,
+  sakeBase,
+  translatorVersion,
+  versioned,
+} from "./runtime";
 
 const store = () => new URL("store/", location.href).href;
 
@@ -158,6 +166,7 @@ async function saveApp(g: GameEntry, signal: AbortSignal): Promise<void> {
   await Promise.all([
     get(versioned(`${base}${build.name}.js`, await fileVersion(`${base}${build.name}.js`))),
     get(versioned(`${base}${build.name}.wasm`, await wasm)),
+    maybe(`jit/${gameChunksName(g.id)}.chunks`),
     maybe(`jit/${name}.chunks`),
     maybe("jit/_shared.chunks"),
     ...(cover ? [maybe(cover)] : []),

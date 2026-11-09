@@ -1146,14 +1146,19 @@ const SAVE_TIMEOUT: Duration = Duration::from_secs(300);
 struct SaveBook {
     /// a region's newest build the server took (or refused for good)
     done: HashMap<Vec<u32>, u32>,
-    /// sent, no answer yet: id -> (when, the regions' builds, whether it is the chunks list)
-    inflight: HashMap<u32, (Instant, Vec<(Vec<u32>, u32)>, bool)>,
+    /// sent, no answer yet: id -> (when, the regions' builds, the chunks list's length when it is one)
+    inflight: HashMap<u32, (Instant, Vec<(Vec<u32>, u32)>, Option<usize>)>,
     next_id: u32,
     /// failures in a row
     fails: u32,
-    /// the store chunks the run read first: sent (or on their way)
-    chunks_sent: bool,
+    /// the length of the longest chunks list the server took (none yet: None)
+    chunks_taken: Option<usize>,
 }
+
+/// The chunks list goes again once the run has read this many more chunks than the server has
+/// (a game's whole play, not only its first seconds: 金恋 waited ~1.2 s for each file it read
+/// first long after its first save, and the next run's page fetches ahead only what is listed).
+const CHUNKS_STEP: usize = 32;
 
 impl SaveBook {
     /// Whether `build` of region `r` is to be sent: newer than the one taken, and not on its way.
@@ -1161,11 +1166,16 @@ impl SaveBook {
         self.done.get(r).is_none_or(|&b| build > b) && !self.inflight.values().any(|(_, rs, _)| rs.iter().any(|(x, b)| x == r && *b >= build))
     }
 
-    fn send(&mut self, now: Instant, regions: Vec<(Vec<u32>, u32)>, chunks: bool) -> u32 {
+    fn send(&mut self, now: Instant, regions: Vec<(Vec<u32>, u32)>, chunks: Option<usize>) -> u32 {
         self.next_id = self.next_id.wrapping_add(1);
-        self.chunks_sent |= chunks;
         self.inflight.insert(self.next_id, (now, regions, chunks));
         self.next_id
+    }
+
+    /// Whether the chunks list (`len` chunks now) is to be sent: none on its way, and never
+    /// taken yet or CHUNKS_STEP longer than the one taken.
+    fn chunks_due(&self, len: usize) -> bool {
+        !self.inflight.values().any(|(.., c)| c.is_some()) && self.chunks_taken.is_none_or(|t| len >= t + CHUNKS_STEP)
     }
 
     fn answer(&mut self, id: u32, a: Ack) {
@@ -1176,13 +1186,16 @@ impl SaveBook {
                     let d = self.done.entry(r).or_insert(b);
                     *d = (*d).max(b);
                 }
+                // (refused: not again until it is longer either)
+                if let Some(n) = chunks {
+                    self.chunks_taken = Some(self.chunks_taken.unwrap_or(0).max(n));
+                }
                 if a == Ack::Taken {
                     self.fails = 0;
                 }
             }
             Ack::Failed => {
                 self.fails += 1;
-                self.chunks_sent &= !chunks;
             }
         }
     }
@@ -1267,14 +1280,20 @@ fn maybe_save() {
             })
             .collect()
     };
+    // the store chunks the run read so far, in order (the next run's page fetches them ahead):
+    // the first time, then again whenever CHUNKS_STEP more were read (whether or not regions go)
+    let list = crate::vfs::fetched();
+    let chunks = book.chunks_due(list.len() / 16).then(|| (book.send(now, Vec::new(), Some(list.len() / 16)), list));
     // (fewer when they are what a failed save left: the run may have little more to add)
     if new.len() < SAVE_MIN && (book.fails == 0 || new.is_empty()) {
+        drop(guard);
+        if let Some((cid, c)) = chunks {
+            save_chunks(url, cid, &c);
+        }
         return;
     }
     g.1 = Some(now);
-    let id = book.send(now, new.iter().map(|(r, s)| (r.clone(), s.build)).collect(), false);
-    // the first time, the store chunks the run read so far too (for the page to fetch ahead)
-    let chunks = (!book.chunks_sent).then(|| (book.send(now, Vec::new(), true), crate::vfs::fetched()));
+    let id = book.send(now, new.iter().map(|(r, s)| (r.clone(), s.build)).collect(), None);
     drop(guard);
     // merged and sent on a thread of its own: the merge of a few hundred functions took the
     // game's thread tens of ms
@@ -1349,12 +1368,29 @@ fn save((url, id, new, chunks): Save) {
     #[cfg(target_os = "emscripten")]
     unsafe {
         vnvm_jit_save(url.as_ptr(), body.as_ptr(), body.len(), id);
-        if let Some((cid, c)) = &chunks {
-            let u = std::ffi::CString::new(format!("{}.chunks", url.to_str().unwrap_or(""))).unwrap();
-            vnvm_jit_save(u.as_ptr(), c.as_ptr(), c.len(), *cid);
-        }
     };
-    let _ = (url, body, chunks);
+    if let Some((cid, c)) = &chunks {
+        save_chunks(url, *cid, c);
+    }
+    let _ = (url, body);
+}
+
+/// Where the chunks list goes: IPPAI_CHUNKS_URL (the page's, per game: games that start the same
+/// program, all SiglusEngine.exe at Z:\ippai\game, read different chunks), else beside the
+/// regions (`<url>.chunks`).
+fn chunks_url(url: &std::ffi::CStr) -> std::ffi::CString {
+    let u = std::env::var("IPPAI_CHUNKS_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| format!("{}.chunks", url.to_str().unwrap_or("")));
+    std::ffi::CString::new(u).unwrap_or_default()
+}
+
+/// Sends the chunks list `c` (save `id`; the page answers it as any save).
+fn save_chunks(url: &std::ffi::CStr, id: u32, c: &[u8]) {
+    let u = chunks_url(url);
+    #[cfg(target_os = "emscripten")]
+    unsafe {
+        vnvm_jit_save(u.as_ptr(), c.as_ptr(), c.len(), id);
+    }
+    let _ = (u, id, c);
 }
 
 /// Whether the block at `a` ran: the interpreter stops at every branch, so each block that
@@ -2410,7 +2446,7 @@ mod save_tests {
     fn saved_only_once_taken() {
         let t0 = Instant::now();
         let mut b = SaveBook::default();
-        let id = b.send(t0, regions(3, 0), false);
+        let id = b.send(t0, regions(3, 0), None);
         // on its way: not sent again, not saved either
         assert!(!b.wanted(&[0x1000], 0));
         assert!(b.wanted(&[0x1000], 1), "a newer build goes");
@@ -2426,13 +2462,13 @@ mod save_tests {
         let mut b = SaveBook::default();
         let mut waits = Vec::new();
         for _ in 0..6 {
-            let id = b.send(t0, regions(2, 0), false);
+            let id = b.send(t0, regions(2, 0), None);
             b.answer(id, Ack::Failed);
             assert!(b.wanted(&[0x1000], 0) && b.wanted(&[0x1001], 0), "sent again");
             waits.push(b.wait().as_secs());
         }
         assert_eq!(waits, [60, 120, 240, 480, 480, 480]);
-        let id = b.send(t0, regions(2, 0), false);
+        let id = b.send(t0, regions(2, 0), None);
         b.answer(id, Ack::Taken);
         assert_eq!(b.wait(), SAVE_EVERY, "back to every 30 s once one is taken");
         assert!(!b.wanted(&[0x1000], 0));
@@ -2441,7 +2477,7 @@ mod save_tests {
     #[test]
     fn refused_for_good_is_not_sent_again() {
         let mut b = SaveBook::default();
-        let id = b.send(Instant::now(), regions(1, 2), false);
+        let id = b.send(Instant::now(), regions(1, 2), None);
         b.answer(id, Ack::Refused);
         assert!(!b.wanted(&[0x1000], 2) && !b.wanted(&[0x1000], 1));
         assert!(b.wanted(&[0x1000], 3));
@@ -2451,17 +2487,73 @@ mod save_tests {
     fn no_answer_counts_as_failed() {
         let t0 = Instant::now();
         let mut b = SaveBook::default();
-        b.send(t0, regions(1, 0), false);
-        let c = b.send(t0, Vec::new(), true);
-        assert!(b.chunks_sent);
+        b.send(t0, regions(1, 0), None);
+        assert!(b.chunks_due(0), "the first time, however short");
+        let c = b.send(t0, Vec::new(), Some(5));
+        assert!(!b.chunks_due(500), "not while one is on its way");
         b.expire(t0 + SAVE_TIMEOUT - Duration::from_secs(1));
         assert_eq!(b.inflight.len(), 2);
         b.expire(t0 + SAVE_TIMEOUT);
         assert!(b.inflight.is_empty() && b.wanted(&[0x1000], 0));
-        assert!(!b.chunks_sent, "the chunks list goes again too");
+        assert!(b.chunks_due(5), "the chunks list goes again too");
         // a late answer for one already given up: nothing
         b.answer(c, Ack::Taken);
-        assert!(!b.chunks_sent);
+        assert!(b.chunks_due(5) && b.chunks_taken.is_none());
+    }
+
+    /// The chunks list goes again as the run reads more (a whole play's reads, not its first
+    /// 20 s), CHUNKS_STEP at a time; one taken is the floor, a failed one changes nothing.
+    #[test]
+    fn chunks_list_goes_again_as_it_grows() {
+        let t0 = Instant::now();
+        let mut b = SaveBook::default();
+        let c = b.send(t0, Vec::new(), Some(10));
+        b.answer(c, Ack::Taken);
+        assert_eq!(b.chunks_taken, Some(10));
+        assert!(!b.chunks_due(10) && !b.chunks_due(10 + CHUNKS_STEP - 1));
+        assert!(b.chunks_due(10 + CHUNKS_STEP));
+        let c = b.send(t0, Vec::new(), Some(10 + CHUNKS_STEP));
+        b.answer(c, Ack::Failed);
+        assert_eq!(b.chunks_taken, Some(10), "failed: the old one stays the floor");
+        assert!(b.chunks_due(10 + CHUNKS_STEP), "and it goes again");
+        let c = b.send(t0, Vec::new(), Some(10 + CHUNKS_STEP));
+        b.answer(c, Ack::Refused);
+        assert!(!b.chunks_due(10 + CHUNKS_STEP), "refused: not again until it is longer");
+        // a region save's answer does not touch the list's
+        let r = b.send(t0, regions(1, 0), None);
+        b.answer(r, Ack::Taken);
+        assert_eq!(b.chunks_taken, Some(10 + CHUNKS_STEP));
+        // random answers: the floor only grows, and is the longest taken
+        let mut seed = 3u32;
+        let mut longest = 10 + CHUNKS_STEP;
+        for i in 0..2000 {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let n = (seed >> 8) as usize % 400;
+            if !b.chunks_due(n) {
+                continue;
+            }
+            let c = b.send(t0, Vec::new(), Some(n));
+            assert!(!b.chunks_due(n + 1000), "one at a time ({i})");
+            let a = [Ack::Taken, Ack::Refused, Ack::Failed][(seed >> 20) as usize % 3];
+            b.answer(c, a);
+            if a != Ack::Failed {
+                longest = longest.max(n);
+            }
+            assert_eq!(b.chunks_taken, Some(longest));
+        }
+    }
+
+    /// Games that start the same program (every SiglusEngine.exe at Z:\ippai\game) keep lists
+    /// of their own: the page's IPPAI_CHUNKS_URL, else beside the regions.
+    #[test]
+    fn chunks_url_is_the_pages() {
+        let url = std::ffi::CString::new("http://h/jit-save/sake-x-1").unwrap();
+        // (one test changes the variable: no other reads it)
+        std::env::remove_var("IPPAI_CHUNKS_URL");
+        assert_eq!(chunks_url(&url).to_str().unwrap(), "http://h/jit-save/sake-x-1.chunks");
+        std::env::set_var("IPPAI_CHUNKS_URL", "http://h/jit-save/sake-x-1.kinkoi.chunks");
+        assert_eq!(chunks_url(&url).to_str().unwrap(), "http://h/jit-save/sake-x-1.kinkoi.chunks");
+        std::env::remove_var("IPPAI_CHUNKS_URL");
     }
 
     #[test]
@@ -2469,8 +2561,8 @@ mod save_tests {
         let mut b = SaveBook::default();
         // (ids far from the other tests': slots are per process)
         b.next_id = 1000;
-        let a = b.send(Instant::now(), regions(1, 0), false);
-        let c = b.send(Instant::now(), vec![(vec![0x2000], 0)], false);
+        let a = b.send(Instant::now(), regions(1, 0), None);
+        let c = b.send(Instant::now(), vec![(vec![0x2000], 0)], None);
         vnhost_jit_saved(a, 1);
         // a stale answer in c's slot (an id 32 before): not c's
         ack(c.wrapping_sub(32), Ack::Taken);

@@ -51,6 +51,7 @@ import {
   fileVersion,
   fnv,
   jitBase as jitBaseOf,
+  gameChunksName,
   sakeBase,
   sakeBuild,
   type SakeBuild,
@@ -59,7 +60,7 @@ import {
 } from "./runtime";
 import { checkOnline, startApp } from "./pwa";
 import { Budget, pool } from "./ahead";
-import { startWarm, warmAllowed, type Warm } from "./warm";
+import { startWarm, warmAllowed, warmBusyWidth, type Warm } from "./warm";
 import { savedChunks } from "./offline";
 import {
   builds,
@@ -297,7 +298,18 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // (the trees' chunk lengths, once their lists are here: the read-ahead's reservations)
   let treesRead!: (sizes: Map<string, number>) => void;
   const chunkSizes = new Promise<Map<string, number>>((r) => (treesRead = r));
-  const ahead = jitName ? readAhead(jitName, jit, chunkSizes) : undefined;
+  // the store chunks earlier runs of this game read, in order (kura's vfs::fetched): the first
+  // fetched into the module's memory ahead (readAhead), the rest onto the device (warm.ts)
+  const game = params.get("game");
+  const conn = (navigator as { connection?: { saveData?: boolean; type?: string; downlink?: number } })
+    .connection;
+  const busyWidth = warmBusyWidth(conn);
+  const listed = jitName
+    ? jitName
+        .then((n) => chunksList([...(game ? [gameChunksName(game)] : []), n]))
+        .catch(() => [] as string[])
+    : Promise.resolve([] as string[]);
+  const ahead = jitName ? readAhead(listed, jit, chunkSizes, busyWidth) : undefined;
   // versioned too: the game's threads past the pool each start a worker from it, and a URL the
   // browser must revalidate fails while the link is down (the game then hangs)
   const scriptUrl = versioned(`${BASE}${build.name}.js`, await fileVersion(`${BASE}${build.name}.js`));
@@ -400,6 +412,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // sake's C:\ (the prefix's fonts)
       SAKE_C: "/ippai/prefix/drive_c",
       ...(jitName ? { IPPAI_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
+      // (the chunks list: the game's own, see gameChunksName)
+      ...(jitName && game
+        ? { IPPAI_CHUNKS_URL: new URL(`jit-save/${gameChunksName(game)}.chunks`, location.href).href }
+        : {}),
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off
       ...(params.has("noload") ? {} : { IPPAI_LOAD: "1" }),
@@ -598,13 +614,28 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     console.log(`sake memory: ${mib(before)} -> ${mib(sake.wasmMemory.buffer.byteLength)} MiB`);
   }
   ahead?.(sake);
-  // the rest of the game's files onto the device while it plays, after what it read last time
-  // (the read-ahead) and only while it waits for nothing (warm.ts)
-  const conn = (navigator as { connection?: { saveData?: boolean; type?: string } }).connection;
+  // the rest of the game's files onto the device while it plays: what earlier runs read first,
+  // in that order, then the trees' others; fewer at once while it waits for a read (warm.ts)
   if (sake.ippaiWarm && warmAllowed(conn) && params.get("warm") !== "0")
-    void chunkSizes.then((sizes) => {
+    void Promise.all([chunkSizes, listed]).then(([sizes, first]) => {
       const warm = sake.ippaiWarm!;
-      setTimeout(() => startWarm(warm, new URL("store/", location.href).href, sizes, () => !!sake._vnhost_net_busy?.(), (l) => (console.log(l), recorder?.note(l))), 5000);
+      const note = (l: string) => (console.log(l), recorder?.note(l));
+      note(
+        `fetching ahead: ${first.length} chunks earlier runs read first, then the trees' (${sizes.size}); ${busyWidth} at once while the game waits`,
+      );
+      setTimeout(
+        () =>
+          startWarm(
+            warm,
+            new URL("store/", location.href).href,
+            sizes,
+            () => !!sake._vnhost_net_busy?.(),
+            note,
+            first,
+            busyWidth,
+          ),
+        5000,
+      );
     });
   attachInput(() => activeModule ?? sake);
   attachAuto(() => activeModule ?? sake);
@@ -767,10 +798,36 @@ function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"], o
   void refresh();
 }
 
+/** The chunks list earlier runs left (`names` in turn: the game's, its program's), as hex; for
+ * one with none yet (a game's first run), the one several programs read (fonts and the like). */
+async function chunksList(names: string[]): Promise<string[]> {
+  const get = (u: string) =>
+    fetchRetry(u, {}, { giveUpMs: 60000 }).then(
+      (b) => new Uint8Array(b.buffer),
+      () => new Uint8Array(0),
+    );
+  let l = new Uint8Array(0);
+  for (const n of [...names, "_shared"]) {
+    l = await get(`jit/${n}.chunks`);
+    if (l.length >= 16) break;
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i + 16 <= l.length; i += 16) {
+    const hex = Array.from(l.subarray(i, i + 16), (b) => b.toString(16).padStart(2, "0")).join("");
+    if (!seen.has(hex)) {
+      seen.add(hex);
+      out.push(hex);
+    }
+  }
+  return out;
+}
+
 function readAhead(
-  name: Promise<string>,
+  listed: Promise<string[]>,
   after: Promise<unknown>,
   sizes: Promise<Map<string, number>>,
+  busyWidth: number,
 ): (sake: SakeModule) => void {
   const store = new URL("store/", location.href).href;
   const got: [Uint8Array, Uint8Array][] = [];
@@ -787,42 +844,23 @@ function readAhead(
     w._vnhost_vfs_put_chunk(p, d, data.length);
   };
   (async () => {
-    // this program's list; for a program with none yet (a game's first run), those several
-    // programs read (fonts and the like)
-    const get = (u: string) =>
-      fetchRetry(u, {}, { giveUpMs: 60000 }).then(
-        (b) => b.buffer,
-        () => new ArrayBuffer(0),
-      );
-    let lists = [await get(`jit/${await name}.chunks`)];
-    if (!lists[0]!.byteLength) lists = [await get("jit/_shared.chunks")];
+    const list = await listed;
     await after.catch(() => undefined);
-    const seen = new Set<string>();
-    const all: number[] = [];
-    for (const l of lists.map((b) => new Uint8Array(b))) {
-      for (let i = 0; i + 16 <= l.length; i += 16) {
-        const k = l.subarray(i, i + 16).join(",");
-        if (!seen.has(k)) {
-          seen.add(k);
-          all.push(...l.subarray(i, i + 16));
-        }
-      }
-    }
-    const list = new Uint8Array(all);
     if (!list.length) return;
     const cache = await chunkCache();
     // (the chunks' lengths, from the trees' lists: each fetch reserves its bytes first, so the
     // 4 side by side never pass the budget; a chunk of no listed length is left to the game)
     const length = await sizes.catch(() => new Map<string, number>());
     let next = 0;
-    const one = async () => {
-      while (next * 16 < list.length && !budget.full()) {
-        const hash = list.subarray(next * 16, ++next * 16);
-        const hex = Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
+    const one = async (i: number) => {
+      while (next < list.length && !budget.full()) {
+        const hex = list[next++]!;
+        const hash = Uint8Array.from(hex.match(/../g)!, (x) => parseInt(x, 16));
         const n = length.get(hex);
         if (!n || !(await budget.reserve(n))) continue;
-        // (the game's requests first)
-        while (sake?._vnhost_net_busy?.()) await new Promise((r) => setTimeout(r, 25));
+        // (the game's requests first: while it waits, only `busyWidth` of these go on, as the
+        // fetches ahead do, warm.ts WARM_BUSY_WIDTH)
+        while (i >= busyWidth && sake?._vnhost_net_busy?.()) await new Promise((r) => setTimeout(r, 25));
         // (kept on the device from an earlier play: no network; a chunk that fails for good is
         // left to the game's own read)
         const c = await getChunk(store, hex, { cache, priority: "low" }).catch(() => null);
@@ -837,7 +875,7 @@ function readAhead(
         else got.push([hash, c.data]);
       }
     };
-    await Promise.all(Array.from({ length: 4 }, one));
+    await Promise.all(Array.from({ length: 4 }, (_, i) => one(i)));
   })().catch((e) => console.log(`read-ahead: ${String(e)}`));
   return (w) => {
     sake = w;
