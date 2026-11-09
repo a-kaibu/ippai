@@ -98,7 +98,7 @@ pub enum Cmd {
         /// Shown on the card.
         #[arg(long)]
         title: String,
-        /// The tree with the game folder, mounted at Z:\vnvm\game.
+        /// The tree with the game folder, mounted at Z:\ippai\game.
         #[arg(long)]
         tree: String,
         /// Executable to start, relative to the game folder.
@@ -446,8 +446,8 @@ fn add_game(
         None => old.as_ref().and_then(|o| o.cover.clone()),
     };
     let mut entry = GameEntry {
-        run: format!("Z:\\vnvm\\game\\{}", exe.replace('/', "\\")),
-        mounts: [format!("/vnvm/game={tree}")].into_iter().chain(mount).collect(),
+        run: format!("Z:\\ippai\\game\\{}", exe.replace('/', "\\")),
+        mounts: [format!("/ippai/game={tree}")].into_iter().chain(mount).collect(),
         id: id.clone(),
         title,
         engine,
@@ -639,8 +639,63 @@ static MOVIES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     ok
 });
 
-/// The tree every game mounts as sake's C:\ (web/src/play.ts: `/vnvm/prefix=prefix32`).
+/// The tree every game mounts as sake's C:\ (web/src/play.ts: `/ippai/prefix=prefix32`).
 pub const PREFIX_TREE: &str = "prefix32";
+
+/// The store's games and saved JIT regions moved from the guest paths of before the rename
+/// (Z:\vnvm\game, /vnvm/game, /vnvm/prefix) to Z:\ippai\..., /ippai/...: each games/*.json
+/// whose run, args, mounts or env name them is rewritten (the rest of it as it was), and each
+/// file in `jit` named after such a program (play.ts jitName: sake-Z__vnvm_game_...) renamed.
+/// Done at every start, nothing to do once done; how many it changed.
+pub fn migrate_guest_paths(store: &Path, jit: &Path) -> Result<usize> {
+    let fix = |s: &str| s.replace("Z:\\vnvm\\", "Z:\\ippai\\").replace("/vnvm/game", "/ippai/game").replace("/vnvm/prefix", "/ippai/prefix");
+    let mut n = 0;
+    if let Ok(dir) = fs::read_dir(store.join("games")) {
+        for e in dir.flatten() {
+            let p = e.path();
+            if p.extension().is_none_or(|x| x != "json") || e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&p) else { continue };
+            let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+            let mut changed = false;
+            for key in ["run", "args", "mounts", "env"] {
+                let mut walk = |x: &mut serde_json::Value| {
+                    if let Some(s) = x.as_str() {
+                        let f = fix(s);
+                        if f != s {
+                            *x = serde_json::Value::String(f);
+                            changed = true;
+                        }
+                    }
+                };
+                match v.get_mut(key) {
+                    Some(serde_json::Value::Array(a)) => a.iter_mut().for_each(&mut walk),
+                    Some(x) => walk(x),
+                    None => {}
+                }
+            }
+            if changed {
+                let tmp = p.with_extension("json.migrate.tmp");
+                fs::write(&tmp, serde_json::to_vec_pretty(&v)?)?;
+                fs::rename(&tmp, &p)?;
+                n += 1;
+            }
+        }
+    }
+    if let Ok(dir) = fs::read_dir(jit) {
+        for e in dir.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(rest) = name.strip_prefix("sake-Z__vnvm_") {
+                let to = jit.join(format!("sake-Z__ippai_{rest}"));
+                if !to.exists() && fs::rename(e.path(), &to).is_ok() {
+                    n += 1;
+                }
+            }
+        }
+    }
+    Ok(n)
+}
 
 /// Makes the tree [`PREFIX_TREE`] from the fonts in `fonts` (a release's fonts/, put in place by
 /// install.sh; tools/ci/sake-fonts.py) when the store has none: C:\windows\Fonts with those
@@ -878,6 +933,35 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
 
 #[cfg(test)]
 mod tests {
+    /// Games packed before the rename (Z:\vnvm\game\..., /vnvm/game=...) and their saved
+    /// regions move to Z:\ippai\...; the rest of an entry stays as it was, a game already moved
+    /// and other files are left, and a second run changes nothing.
+    #[test]
+    fn guest_paths_migrate() {
+        let dir = std::env::temp_dir().join(format!("ippai-migrate-{}", std::process::id()));
+        let (store, jit) = (dir.join("store"), dir.join("jit"));
+        fs::create_dir_all(store.join("games")).unwrap();
+        fs::create_dir_all(&jit).unwrap();
+        fs::write(store.join("games/old.json"), r#"{"id":"old","title":"俺の姿","run":"Z:\\vnvm\\game\\不可視の薬と数奇な運命.exe","args":["-x","Z:\\vnvm\\game\\data"],"mounts":["/vnvm/game=hulotte-2","/vnvm/other=t"],"env":["A=/vnvm/prefix/drive_c"],"brand":"Hulotte"}"#).unwrap();
+        let new = r#"{"id":"new","run":"Z:\\ippai\\game\\a.exe","mounts":["/ippai/game=a"]}"#;
+        fs::write(store.join("games/new.json"), new).unwrap();
+        fs::write(store.join("games/new.jpg"), b"\xff\xd8").unwrap();
+        fs::write(jit.join("sake-Z__vnvm_game_a.exe-12.parts"), b"p").unwrap();
+        fs::write(jit.join("sake-other-12.parts"), b"q").unwrap();
+        assert_eq!(super::migrate_guest_paths(&store, &jit).unwrap(), 2);
+        let g: serde_json::Value = serde_json::from_slice(&fs::read(store.join("games/old.json")).unwrap()).unwrap();
+        assert_eq!(g["run"], "Z:\\ippai\\game\\不可視の薬と数奇な運命.exe");
+        assert_eq!(g["args"], serde_json::json!(["-x", "Z:\\ippai\\game\\data"]));
+        assert_eq!(g["mounts"], serde_json::json!(["/ippai/game=hulotte-2", "/vnvm/other=t"]));
+        assert_eq!(g["env"], serde_json::json!(["A=/ippai/prefix/drive_c"]));
+        assert_eq!((g["title"].as_str(), g["brand"].as_str()), (Some("俺の姿"), Some("Hulotte")));
+        assert_eq!(fs::read_to_string(store.join("games/new.json")).unwrap(), new, "untouched");
+        assert_eq!(fs::read(jit.join("sake-Z__ippai_game_a.exe-12.parts")).unwrap(), b"p");
+        assert!(!jit.join("sake-Z__vnvm_game_a.exe-12.parts").exists() && jit.join("sake-other-12.parts").exists());
+        assert_eq!(super::migrate_guest_paths(&store, &jit).unwrap(), 0);
+        let _ = fs::remove_dir_all(dir);
+    }
+
     use super::*;
 
     /// testdata/blake3.tsv: chunk names (the first 16 bytes of BLAKE3) from the blake3 crate,

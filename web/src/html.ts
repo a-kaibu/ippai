@@ -54,13 +54,14 @@ async function startPage(base: string): Promise<string | null> {
 
 /**
  * Opens the program as a web game when it is one; false when it is not (sake runs it).
- * `saveName` names its saves (as sake's).
+ * `saveName` names its saves (as sake's), `oldSaves` their name before the rename (Z:\vnvm).
  */
 export async function startWebGame(
   run: string,
   mounts: string[],
   saveName: string | null,
   log: (line: string) => void,
+  oldSaves: string | null = null,
 ): Promise<boolean> {
   const at = where(run, mounts);
   if (!at) return false;
@@ -76,7 +77,9 @@ export async function startWebGame(
 
   // saves: the page's localStorage (and fs writes), as one JSON blob
   const items = new Map<string, string>();
-  const saved = saveName ? await loadSaves(`${saveName}-web`) : null;
+  // (none yet: those of before the rename, Z:\vnvm, if any; the next save goes under the new name)
+  let saved = saveName ? await loadSaves(`${saveName}-web`) : null;
+  if (saveName && !saved?.length && oldSaves) saved = await loadSaves(`${oldSaves}-web`);
   if (saved?.length) {
     try {
       for (const [k, v] of Object.entries(

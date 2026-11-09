@@ -119,8 +119,8 @@ export async function runScenario(browser, build, c, timeout) {
   let error;
   const shot = shots(c.name ?? c.exe.replace(/\.exe$/, ""));
   const url = (args, extra = "") =>
-    `${build.url}/play.html?autostart&headless&mount=/vnvm/game=bench&args=${encodeURIComponent(args)}` +
-    `&run=${encodeURIComponent(`Z:\\vnvm\\game\\${c.exe}`)}${extra}${process.env.BENCH_URL_EXTRA ?? ""}` +
+    `${build.url}/play.html?autostart&headless&mount=/ippai/game=bench&args=${encodeURIComponent(args)}` +
+    `&run=${encodeURIComponent(`Z:\\ippai\\game\\${c.exe}`)}${extra}${process.env.BENCH_URL_EXTRA ?? ""}` +
     (c.env ?? []).map((e) => `&env=${encodeURIComponent(e)}`).join("");
   // a start up to the title in its own page of `ctx`: ms, or throws
   const toTitle = async (ctx, extra, what) => {

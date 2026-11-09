@@ -63,8 +63,8 @@ async function runOnce(build, c) {
   const scale = c.format === "plain" ? "" : SCALE;
   const args = [c.args, c.args && scale].filter(Boolean).join(",");
   const url =
-    `${build.url}/play.html?autostart&headless&env=IPPAI_NOPACE%3D1&mount=/vnvm/game=bench${c.page ? `&${c.page}` : ""}` +
-    `${args ? `&args=${encodeURIComponent(args)}` : ""}&run=${encodeURIComponent(`Z:\\vnvm\\game\\${c.exe}`)}`;
+    `${build.url}/play.html?autostart&headless&env=IPPAI_NOPACE%3D1&mount=/ippai/game=bench${c.page ? `&${c.page}` : ""}` +
+    `${args ? `&args=${encodeURIComponent(args)}` : ""}&run=${encodeURIComponent(`Z:\\ippai\\game\\${c.exe}`)}`;
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
   const metrics = {}, checks = {}, log = [];

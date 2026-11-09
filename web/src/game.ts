@@ -47,8 +47,8 @@ const earlier: Rows[] = (() => {
   }
 })();
 if (!params.has("run")) {
-  params.set("run", "Z:\\vnvm\\game\\reunion.exe");
-  params.set("mount", "/vnvm/game=reunion");
+  params.set("run", "Z:\\ippai\\game\\reunion.exe");
+  params.set("mount", "/ippai/game=reunion");
   params.set("autostart", "");
   params.set("load", "");
   // the screen the numbers were taken on: on kura's 1366x768 default Reunion's title ignores

@@ -1124,7 +1124,7 @@ fn dx_node(path: &str) -> Option<(Vec<&'static str>, Vec<(&'static str, DxProp)>
                 ("ullPhysicalMemory", U8(4 << 30)),
                 ("ullAvailPhysMem", U8(3 << 30)),
                 ("szPhysicalMemoryEnglish", Str("4096MB RAM")),
-                ("szProcessorEnglish", Str("vnvm x86")),
+                ("szProcessorEnglish", Str("ippai x86")),
                 ("szOSEnglish", Str("Windows 7")),
                 ("szOSExEnglish", Str("Windows 7 Professional 32-bit (6.1, Build 7601)")),
                 ("szLanguagesEnglish", Str("Japanese")),
@@ -1136,9 +1136,9 @@ fn dx_node(path: &str) -> Option<(Vec<&'static str>, Vec<(&'static str, DxProp)>
         "DxDiag_DisplayDevices.0" => (
             vec![],
             vec![
-                ("szDescription", Str("vnvm WebGPU")),
+                ("szDescription", Str("ippai WebGPU")),
                 ("szDeviceName", Str("\\\\.\\DISPLAY1")),
-                ("szManufacturer", Str("vnvm")),
+                ("szManufacturer", Str("ippai")),
                 ("szChipType", Str("WebGPU")),
                 ("szDisplayMemoryEnglish", Str("512.0 MB")),
                 ("szDisplayMemoryLocalized", Str("512.0 MB")),

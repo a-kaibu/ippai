@@ -97,7 +97,7 @@ for (const name of names) {
   const out = `${outDir}/${name.replace(" ", "-")}`;
   const env =
     (process.env.ENV ?? "").split(" ").filter(Boolean).map((e) => `env=${encodeURIComponent(e)}&`).join("");
-  const url = `${base}/play.html?${env}autostart&headless&d3dstats&mount=/vnvm/game=gfxtest&args=${["still", ...args]}&run=Z:\\vnvm\\game\\${exe}.exe`;
+  const url = `${base}/play.html?${env}autostart&headless&d3dstats&mount=/ippai/game=gfxtest&args=${["still", ...args]}&run=Z:\\ippai\\game\\${exe}.exe`;
   execFileSync("rm", ["-rf", out]);
   try {
     execFileSync("node", [`${here}/play.mjs`, url, out, "22", "20"], { stdio: "ignore", timeout: 90000 });

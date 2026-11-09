@@ -4351,7 +4351,7 @@ fn display_device(device: u32, n: u32, p: u32, wide: bool) -> u32 {
         }
         return 0;
     }
-    let (name, desc) = if device == 0 { ("\\\\.\\DISPLAY1", "vnvm display") } else { ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor") };
+    let (name, desc) = if device == 0 { ("\\\\.\\DISPLAY1", "ippai display") } else { ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor") };
     let u = if wide { 2 } else { 1 };
     let mut b = vec![0u8; ((32 + 128 + 128 + 128) * u + 4) as usize];
     let put = |b: &mut [u8], at: usize, s: &str, cap: usize| {

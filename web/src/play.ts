@@ -9,7 +9,7 @@ let stopPlay: (() => void) | undefined;
 //   /play.html?game=id              a game from the list (its run, mount, args and env)
 //   /play.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
-//   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
+//   &mount=/ippai/game=tree          also mount a store tree (repeatable; Z:\ippai\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. SAKE_TRACE_FILES=1)
 //   &nosave                         no saved games (ippai serve's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/play.mjs: headless Chromium
@@ -77,7 +77,14 @@ import {
 import { toast } from "sonner";
 import { accountInput } from "./account-settings";
 import { keepInstallation, loadInstallation } from "./installation";
-import { joinRecords, portablePath, selectRecords, withRegistry } from "./file-records";
+import {
+  joinRecords,
+  legacyNames,
+  portablePath,
+  renameRecords,
+  selectRecords,
+  withRegistry,
+} from "./file-records";
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
@@ -202,20 +209,37 @@ function virtualKey(code: string): number {
   return keys[code] ?? 0;
 }
 
+/** The saves of `name`; with none there, those of `old` (the name before the rename, Z:\vnvm),
+ * their paths moved to the new ones (the next save goes under `name`). */
+async function loadSavesOrOld(
+  name: string,
+  old: string | null,
+  notice: (m: string) => void,
+): Promise<Uint8Array | null> {
+  const saves = await loadSaves(name, notice);
+  if (saves?.length || !old) return saves;
+  const moved = renameRecords(await loadSaves(old, notice));
+  if (moved?.length) log(`Z:\\vnvm のころのセーブを引き継ぎました (${old})`);
+  return moved ?? saves;
+}
+
 async function boot(audio: Promise<AudioOut>): Promise<void> {
   const run = params.get("run") ?? "C:\\wintest.exe";
   // saved games: per program and mounts; what it writes in its folders and the user folders
   // (&saves: the launcher's, kept by the program it started: BISHOP's startup.exe writes the
   // bsxx.ini its game reads)
   const mounts = params.getAll("mount");
-  const saveName =
-    params.get("saves") ??
-    `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(new TextEncoder().encode(mounts.join(":")))}`;
+  const saveNameOf = (r: string, m: string[]) =>
+    `${r.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(new TextEncoder().encode(m.join(":")))}`;
+  const saveName = params.get("saves") ?? saveNameOf(run, mounts);
+  // (the saves of before the rename, Z:\vnvm: read when there are none under the new name)
+  const legacy = params.has("saves") ? null : legacyNames(run, mounts);
+  const oldSaves = legacy ? saveNameOf(legacy.run, legacy.mounts) : null;
   // (the programs this one starts in its place keep them: closeGame)
   params.set("saves", saveName);
   const nosave = params.has("nosave");
   // a web game (NW.js): its own page, no sake
-  if (await startWebGame(run, mounts, nosave ? null : saveName, log)) {
+  if (await startWebGame(run, mounts, nosave ? null : saveName, log, oldSaves)) {
     if (!nosave && params.get("game")) stopPlay = trackPlay(params.get("game")!);
     return;
   }
@@ -277,12 +301,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   recorder.note(
     `build: ${WASM} ${version}, translator ${await jitVersion}, memory ${build.memory ? "4 GB fixed" : "growing from 2.06 GB (4 GB refused)"}`,
   );
-  const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
+  const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/ippai/prefix/drive_c/users"];
   const { files: installation, registry: legacyRegistry } = await loadInstallation();
   const saved = nosave
     ? null
     : withRegistry(
-        selectRecords(await loadSaves(saveName, (m) => (log(m), toast.warning(m))), portablePath),
+        selectRecords(
+          await loadSavesOrOld(saveName, oldSaves, (m) => (log(m), toast.warning(m))),
+          portablePath,
+        ),
         legacyRegistry,
       );
   let stateMem: WebAssembly.Memory | undefined;
@@ -363,10 +390,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     locateFile: (path: string) => (path === WASM ? versioned(`${BASE}${path}`, version) : `${BASE}${path}`),
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
-      IPPAI_MOUNTS: ["/=", "/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
+      IPPAI_MOUNTS: ["/=", "/ippai/prefix=prefix32", ...params.getAll("mount")].join(":"),
       LANG: "ja_JP.UTF-8",
       // sake's C:\ (the prefix's fonts)
-      SAKE_C: "/vnvm/prefix/drive_c",
+      SAKE_C: "/ippai/prefix/drive_c",
       ...(jitName ? { IPPAI_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off

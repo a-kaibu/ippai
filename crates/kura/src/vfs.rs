@@ -1,5 +1,5 @@
 //! The page's file system: directory trees packed by `ippai pack` (`trees/<name>.tsv` plus
-//! chunks in the store) mounted where `IPPAI_MOUNTS` says ("/=:/vnvm/game=reunion"), read
+//! chunks in the store) mounted where `IPPAI_MOUNTS` says ("/=:/ippai/game=reunion"), read
 //! lazily chunk by chunk. Whatever is written stays in memory. Paths outside the mounts are the
 //! host's (node; the page mounts an empty tree at "/", so there is nothing outside). Rust code
 //! reaches it through crate::fs.

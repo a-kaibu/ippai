@@ -1,7 +1,7 @@
 // One browser installation: never uploaded with game saves or library exports.
 import { toast } from "sonner";
 import { exportFiles, type SavesModule } from "./saves";
-import { installationPath, legacyRegistry, selectRecords } from "./file-records";
+import { installationPath, legacyRegistry, renameRecords, selectRecords } from "./file-records";
 interface State {
   key: CryptoKey;
   iv: Uint8Array<ArrayBuffer>;
@@ -80,14 +80,15 @@ export async function loadInstallation(): Promise<{
   files: Uint8Array<ArrayBuffer> | null;
   registry: Uint8Array<ArrayBuffer> | null;
 }> {
-  const plain = await decrypt(await read());
+  // (written before the rename: /vnvm/prefix paths read as /ippai/prefix ones)
+  const plain = renameRecords(await decrypt(await read()));
   let registry = selectRecords(plain, legacyRegistry);
   if (registry?.length) {
     // (kept aside once: the record is rewritten without it at this tab's first write)
     if (!(await read("legacy-registry")) && (await ownInstallation()))
       await write(await encrypt(registry), "legacy-registry");
   } else {
-    registry = await decrypt(await read("legacy-registry"));
+    registry = renameRecords(await decrypt(await read("legacy-registry")));
   }
   return { files: selectRecords(plain, installationPath), registry };
 }
@@ -107,7 +108,7 @@ export function keepInstallation(
     if (current === revision) return;
     pending = true;
     try {
-      const data = selectRecords(exportFiles(module, ["/vnvm/prefix/drive_c"]), installationPath)!;
+      const data = selectRecords(exportFiles(module, ["/ippai/prefix/drive_c"]), installationPath)!;
       revision = current;
       if (!data.length) return;
       if (previous?.length === data.length && previous.every((b, i) => data[i] === b)) return;

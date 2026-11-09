@@ -312,7 +312,7 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
   `IPPAI_SCREENSHOT=out.ppm`、`IPPAI_INPUT="秒:種類,x,y,データ;..."` (1 移動、2/3 ボタン、
   5/6 キー)。ボタンはホバーの移動を先に送らないと反応しないゲームが多い。
 - ページ: `ippai pack <dir> <name>` してから
-  `play.html?engine=sake&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/vnvm/game=<name>`。
+  `play.html?engine=sake&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/ippai/game=<name>`。
   `tests/play.mjs` でヘッドレスのスクリーンショット。
 - 調べるとき: `SAKE_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`IPPAI_D3D_TRACE=1` (描画ごとの頂点も表示)、`SAKE_TRACE=1` (+ `SAKE_TRACE_FILTER=a,b`、`SAKE_TRACE_AFTER=ms`)、
   `SAKE_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`SAKE_API_STATS=秒`、

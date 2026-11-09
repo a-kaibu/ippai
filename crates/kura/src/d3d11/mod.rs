@@ -1593,7 +1593,7 @@ unsafe fn adapter_desc(p: u32, warp: bool, luid: u32, m: u32) {
     };
     std::ptr::write_bytes(p as *mut u8, 0, n as usize);
     let (name, vendor, device, dedicated, shared) =
-        if warp { ("Microsoft Basic Render Driver", 0x1414, 0x8c, 0, 0xffff_0000) } else { ("vnvm WebGPU", 0x10de, 0x1c82, 512 << 20, 1024 << 20) };
+        if warp { ("Microsoft Basic Render Driver", 0x1414, 0x8c, 0, 0xffff_0000) } else { ("ippai WebGPU", 0x10de, 0x1c82, 512 << 20, 1024 << 20) };
     for (i, c) in name.encode_utf16().enumerate() {
         *((p + i as u32 * 2) as *mut u16) = c;
     }

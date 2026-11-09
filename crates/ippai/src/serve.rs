@@ -839,6 +839,11 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
     for d in [&dirs.store, &args.jit, &args.logs] {
         std::fs::create_dir_all(d)?;
     }
+    match crate::pack::migrate_guest_paths(&dirs.store, &args.jit) {
+        Ok(0) => {}
+        Ok(n) => eprintln!("{n} games and saved regions moved from Z:\\vnvm to Z:\\ippai"),
+        Err(e) => eprintln!("moving games from Z:\\vnvm to Z:\\ippai: {e:#}"),
+    }
     if crate::pack::ensure_prefix(&dirs.store, &dirs.fonts)? {
         eprintln!("sake's C:\\ ({}) made from {}", crate::pack::PREFIX_TREE, dirs.fonts.display());
     }

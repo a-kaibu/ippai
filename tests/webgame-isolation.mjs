@@ -63,7 +63,7 @@ try {
   const page = await browser.newPage();
   page.on("console", (m) => console.log("page:", m.text()));
   page.on("pageerror", (e) => console.log("page error:", e.message));
-  const play = `http://127.0.0.1:${port}/play.html?autostart&game=sample&mount=/vnvm/game=sample&run=${encodeURIComponent("Z:\\vnvm\\game\\Game.exe")}`;
+  const play = `http://127.0.0.1:${port}/play.html?autostart&game=sample&mount=/ippai/game=sample&run=${encodeURIComponent("Z:\\ippai\\game\\Game.exe")}`;
   const result = async () => {
     await page.goto(play);
     await page.waitForSelector("#frame", { state: "attached", timeout: 20000 });

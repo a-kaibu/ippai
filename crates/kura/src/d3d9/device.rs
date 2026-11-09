@@ -663,8 +663,8 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
             }
             std::ptr::write_bytes(p, 0, 1100);
             let put = |off: usize, s: &[u8]| std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(off), s.len());
-            put(0, b"vnvm.dll");
-            put(512, b"vnvm WebGPU");
+            put(0, b"ippai.dll");
+            put(512, b"ippai WebGPU");
             put(1024, b"\\\\.\\DISPLAY1");
             // DriverVersion (1056), VendorId 1064, DeviceId 1068
             *(p.add(1056) as *mut u32) = 0x0001_0000;

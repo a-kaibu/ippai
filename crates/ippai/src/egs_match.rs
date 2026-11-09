@@ -215,7 +215,7 @@ const GENERIC: &[&str] = &[
     "game", "start", "startup", "launcher", "launch", "play", "main", "setup", "install", "uninstall", "unins000", "config", "configure",
     "setting", "settings", "siglusengine", "reallive", "bgi", "krkr", "tvpwin32", "nscripter", "nscr", "arc", "malie", "cmvs32", "cmvs64",
     "advhd", "system", "autorun", "menu", "startmenu", "supporttools", "exe", "program", "data", "files", "programfiles", "x86", "x64",
-    "win32", "win64", "windows", "bin", "app", "vnvm", "trial",
+    "win32", "win64", "windows", "bin", "app", "vnvm", "ippai", "trial",
 ];
 
 /// What to match a game by: its title, the folders of its program (from the innermost) and the
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn program_paths() {
-        assert_eq!(queries("anemoi", r"Z:\vnvm\game\Start.exe"), ["anemoi"]);
+        assert_eq!(queries("anemoi", r"Z:\ippai\game\Start.exe"), ["anemoi"]);
         assert_eq!(
             queries("t", r"C:\Astronauts\深淵のラビリントス\LabyrinthosoftheAbyss.exe"),
             ["t", "深淵のラビリントス", "Astronauts", "LabyrinthosoftheAbyss"]
@@ -379,7 +379,7 @@ mod corpus {
             let mut c = l.split('\t');
             let (folder, exe, want) = (c.next().unwrap(), c.next().unwrap(), c.next().unwrap());
             let title = folder.rsplit('\\').next().unwrap();
-            let got = idx.best(&queries(title, &format!("Z:\\vnvm\\game\\{exe}"))).map(|h| h.id.to_string());
+            let got = idx.best(&queries(title, &format!("Z:\\ippai\\game\\{exe}"))).map(|h| h.id.to_string());
             let ok = match want {
                 "-" => got.is_none(),
                 w if w.starts_with('x') => got.as_deref() == Some(&w[1..]),
@@ -407,7 +407,7 @@ mod corpus {
         for l in input.lines() {
             let (folder, exe) = l.split_once('\t').unwrap();
             let title = folder.rsplit('\\').next().unwrap();
-            let q = queries(title, &format!("Z:\\vnvm\\game\\{exe}"));
+            let q = queries(title, &format!("Z:\\ippai\\game\\{exe}"));
             let c = idx.candidates(&q, 3);
             let top: Vec<String> = c.iter().map(|h| format!("{}:{}:{:.2}", h.id, h.name, h.score)).collect();
             println!("{folder}\t{exe}\t{}", top.join(" | "));
