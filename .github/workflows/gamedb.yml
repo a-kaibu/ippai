@@ -4,20 +4,13 @@
 # day, so it identifies games and shows their information without reaching ErogameScape, which
 # refuses many hosts (the user, 2026-11-09: "批評空間とvndbのdbをsqliteとかにしてgh packagesにup").
 #
-# ErogameScape refuses GitHub's runners by their address and answers worker2's, so the job joins
-# the tailnet and goes out through worker2 as its exit node (the user: "worker2のipでgha動かしたら
-# いい", "セルフホストじゃなくて"): secrets TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET, setup in
-# tools/gamedb/README.md.
+# By hand only (the user, 2026-11-09: "一旦手動更新でいいや"): Actions -> Game database -> Run
+# workflow. ErogameScape refuses GitHub's runners, so this refreshes VNDB's part and keeps
+# ErogameScape's from the copy before; that part comes from `ippai gamedb update --egs` on a host
+# ErogameScape answers (tools/gamedb/README.md).
 name: Game database
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/gamedb.yml'
-      - 'crates/ippai/src/gamedb.rs'
-  schedule:
-    - cron: '30 18 * * *'
   workflow_dispatch:
 
 permissions:
@@ -32,9 +25,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      # (without the tailnet's secrets: VNDB's part only, ErogameScape's kept from before)
-      TAILNET: ${{ secrets.TS_OAUTH_CLIENT_ID != '' }}
     steps:
       - uses: actions/checkout@v7.0.1
       - run: tools/ci/rust-key.sh
@@ -49,21 +39,12 @@ jobs:
           restore-keys: |
             gamedb-${{ runner.os }}-${{ env.RUST_KEY }}-
       - run: cargo build --release -p ippai
-      - name: Out through worker2 (ErogameScape answers its address)
-        if: env.TAILNET == 'true'
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-          args: --exit-node=${{ vars.GAMEDB_EXIT_NODE || 'kota-server-worker-2' }}
-          ping: ${{ vars.GAMEDB_EXIT_NODE || 'kota-server-worker-2' }}
       # (pull the copy published now, build (ErogameScape at its pace, VNDB within its rate
-      # limit), check (both parts there when out through worker2), push)
+      # limit), check, push)
       - name: Build and push
         env:
           GHCR_TOKEN: ${{ github.token }}
-        run: ./target/release/ippai gamedb update ${{ env.TAILNET == 'true' && '--egs' || '' }} "$RUNNER_TEMP/gamedb"
+        run: ./target/release/ippai gamedb update "$RUNNER_TEMP/gamedb"
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target

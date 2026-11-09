@@ -254,11 +254,10 @@ impl Library {
         let have: Option<String> = self.connect()?.query_row("SELECT value FROM kv WHERE key='gamedb_digest'", [], |r| r.get(0)).optional()?;
         let digest = crate::gamedb::pull(&dest, have.as_deref())?;
         self.connect()?.execute("INSERT INTO kv(key,value) VALUES('gamedb_digest',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&digest])?;
-        let (games, built) = crate::gamedb::egs_games(&dest)?;
+        // (however old: it is rebuilt by hand, gamedb.yml)
+        let (games, _) = crate::gamedb::egs_games(&dest)?;
         // (one built where ErogameScape never answered has VNDB's part only: entries, no list)
         ensure!(!games.is_empty(), "the game database has no ErogameScape games");
-        // (a database not rebuilt for a week: its maker stopped; the sites themselves instead)
-        ensure!(now_ms() - built < 7 * 24 * 3_600_000, "the game database is from {} days ago", (now_ms() - built) / 86_400_000);
         Ok(games)
     }
 
@@ -629,6 +628,8 @@ mod egs_games_tests {
             &[serde_json::json!({"id": "v5", "title": "VN", "votecount": 1})],
         )
         .unwrap();
+        // (built by hand two months ago: still taken)
+        rusqlite::Connection::open(&file).unwrap().execute("UPDATE info SET value=? WHERE key='built_ms'", [(now_ms() - 60 * 86_400_000).to_string()]).unwrap();
         *st.gamedb.lock().unwrap() = Some(zstd::encode_all(&std::fs::read(&file).unwrap()[..], 3).unwrap());
         stale();
         let n = st.asked.load(Ordering::SeqCst);
