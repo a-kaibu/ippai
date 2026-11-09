@@ -76,14 +76,15 @@ try {
   await page.goto(`${base}play.html?headless`);
   await page.locator('[data-game="chain"]').getByRole("button").first().click();
   await until(/^chain 0: start$/);
-  // each program after a launcher waits for a click on its page (audio and fullscreen need one)
+  // each program after a launcher starts by itself: the player already pressed 起動 once (a
+  // phone user who saw the button again thought the game never started)
   for (const step of [1, 2]) {
     await page.waitForURL((u) => u.searchParams.get("run")?.endsWith(step === 1 ? "StartMenu.exe" : "SiglusEngine.exe"), { timeout: 60000 });
     const u = new URL(page.url());
     assert.deepEqual(u.searchParams.getAll("mount"), ["/ippai/game=chain"], `step ${step}: ${u}`);
     assert.equal(u.searchParams.get("game"), "chain");
     assert.ok(u.searchParams.get("saves"), `step ${step}: the launcher's saves`);
-    await page.getByRole("button", { name: /を起動|起動/ }).first().click();
+    assert.ok(u.searchParams.has("autostart"), `step ${step}: starts without a click: ${u}`);
     await until(new RegExp(`^chain ${step}:`));
   }
   await until(/^end$/);

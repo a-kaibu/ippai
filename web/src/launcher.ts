@@ -93,7 +93,9 @@ export function applyGame(params: URLSearchParams, g: GameEntry): void {
 /** The page for the program a game started in its own place (a launcher's game: sake's
  * k32::exec): the running page's parameters as they are now (`params`, which applyGame filled
  * for a game picked from the list: its mounts, env, ...; the address bar may hold only ?game=),
- * with that program and its arguments. A memory state stays with the program it was taken of. */
+ * with that program and its arguments. A memory state stays with the program it was taken of.
+ * It starts by itself (autostart): the player already pressed 起動 for the launcher, and the
+ * sound starts on their next touch or key (audio.ts). */
 export function nextRunUrl(href: string, params: URLSearchParams, run: string, args: string): URL {
   const url = new URL(href);
   const next = new URLSearchParams(params);
@@ -102,6 +104,7 @@ export function nextRunUrl(href: string, params: URLSearchParams, run: string, a
   if (list.length) next.set("args", list.join(","));
   else next.delete("args");
   next.delete("state");
+  next.set("autostart", "");
   url.search = `?${next}`;
   return url;
 }

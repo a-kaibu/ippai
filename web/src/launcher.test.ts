@@ -47,6 +47,8 @@ describe("nextRunUrl", () => {
     expect(url.searchParams.get("saves")).toBe("Z__ippai_game_Start.exe-c1b96914");
     expect(url.searchParams.get("run")).toBe("Z:\\ippai\\game\\StartData\\StartMenu.exe");
     expect(url.searchParams.get("args")).toBe('/from="autorun"');
+    // (the player pressed 起動 for the launcher: the next program starts by itself)
+    expect(url.searchParams.has("autostart")).toBe(true);
 
     // the next exec, from that page (its params are its address)
     const url2 = nextRunUrl(
