@@ -185,5 +185,33 @@ class End(unittest.TestCase):
                          (False, 1, 10.0, [('kill', 1), ('kill', 2)]))
 
 
+
+class StoryShots(unittest.TestCase):
+    def shots(self, story):
+        return [s + 2 for s in range(0, int(story), 2) if winplay.story_shot(s, story)]
+
+    def test_two_screens_at_the_default(self):
+        self.assertEqual(self.shots(30), [20, 30])
+        self.assertEqual(self.shots(60), [20, 40, 60])
+        self.assertEqual(self.shots(40), [20, 40])
+        self.assertEqual(self.shots(10), [10])
+        for story in range(4, 200, 2):
+            got = self.shots(story)
+            self.assertEqual(got[-1], story, story)
+            self.assertGreaterEqual(len(got), 2 if story > 20 else 1, story)
+
+    def test_the_same_rule_as_corpus_mjs(self):
+        # (differential: the page's rule, tests/corpus/story.mjs, under node)
+        import json, shutil, subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('no node')
+        cases = [(s, story) for story in range(2, 130, 2) for s in range(0, story, 2)] + [(s, 25) for s in range(0, 26, 2)]
+        js = ('import { storyShot } from %s; const c = JSON.parse(process.argv[1]);'
+              'console.log(JSON.stringify(c.map(([s, t]) => storyShot(s, t))));') % json.dumps('file://' + os.path.join(HERE, 'story.mjs'))
+        out = subprocess.run([node, '--input-type=module', '-e', js, json.dumps(cases)], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(json.loads(out), [winplay.story_shot(s, t) for s, t in cases])
+
+
 if __name__ == '__main__':
     unittest.main()

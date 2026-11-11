@@ -13,6 +13,7 @@ const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
+import { storyShot } from "./corpus/story.mjs";
 
 const [url, out, steps = ""] = process.argv.slice(2);
 const STORY = Number(process.env.STORY ?? 60);
@@ -160,11 +161,15 @@ async function input(kind, x, y, d) {
   await page.evaluate(([k, x, y, d]) => window.vnvmSake?._vnhost_input_push(k, x, y, d), [kind, x, y, d]).catch(() => {});
 }
 let view = [0, 0, 640, 480];
-// x, y in client pixels, or below 1: a fraction of the client size (dialogs whose size varies)
-async function click(x, y) {
+// x, y in client pixels, or below 1: a fraction of the client size (dialogs whose size varies,
+// games whose window follows the screen's: CatSystem2, PONScripter on the 1920x1080 screen)
+function at(x, y) {
   if (x < 1) x = Math.round(x * (view[2] - view[0]));
   if (y < 1) y = Math.round(y * (view[3] - view[1]));
-  const X = view[0] + x, Y = view[1] + y;
+  return [view[0] + x, view[1] + y];
+}
+async function click(x, y) {
+  const [X, Y] = at(x, y);
   // (held 0.1 s like a finger: games polling the button state at a few frames a second miss
   // an instant press)
   await input(1, X, Y, 0); await input(2, X, Y, 0); await sleep(0.1); await input(3, X, Y, 0);
@@ -228,7 +233,7 @@ save();
 for (const s of steps.split(/[ ;]+/).filter(Boolean)) {
   const [op, a = ""] = s.split(":");
   if (op === "click") { const [x, y] = a.split(",").map(Number); await click(x, y); }
-  else if (op === "move") { const [x, y] = a.split(",").map(Number); await input(1, view[0] + x, view[1] + y, 0); }
+  else if (op === "move") { const [x, y] = a.split(",").map(Number); await input(1, ...at(x, y), 0); }
   else if (op === "wait") await sleep(Number(a));
   else if (op === "key") await key(a);
   else if (op === "shot") await shot(a);
@@ -238,13 +243,15 @@ await shot("steps");
 
 // 3. the story: clicks every 2 s, CPU over STORY seconds
 const [sx, sy] = (process.env.STORY_AT ?? "").split(",").map(Number);
-const at = sx ? [sx, sy] : [Math.round(view[2] - view[0]) / 2, Math.round((view[3] - view[1]) * 0.85)];
+const storyAt = sx ? [sx, sy] : [Math.round(view[2] - view[0]) / 2, Math.round((view[3] - view[1]) * 0.85)];
 const b0 = (await frame(false))?.busy ?? 0, s0 = now();
 const hashes = new Set();
 for (let s = 0; s < STORY && !crashed; s += 2) {
-  await click(at[0], at[1]);
+  await click(storyAt[0], storyAt[1]);
   await sleep(2);
-  if (s % 20 === 18) { const f = await shot(`story-${s + 2}`); if (f?.hash !== undefined) hashes.add(f.hash); }
+  // (every 20 s and at the end: check.py's story wants two screens, which the default 30 s
+  // gave only one of when the shots were every 20 s alone)
+  if (storyShot(s, STORY)) { const f = await shot(`story-${s + 2}`); if (f?.hash !== undefined) hashes.add(f.hash); }
 }
 const f1 = await frame(false);
 res.storyCores = f1 && !f1.err ? (f1.busy - b0) / 1000 / (now() - s0) : null;

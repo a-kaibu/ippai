@@ -53,6 +53,12 @@ def client_xy(x, y, cw, ch):
     return int(x), int(y)
 
 
+def story_shot(s, story):
+    """whether the story's click at second s (every 2 s) is followed by a shot: every 20 s and at
+    the end (two screens for check.py's story), as tests/corpus/story.mjs"""
+    return s % 20 == 18 or s + 2 >= story
+
+
 def stats(w, h, rgb):
     """corpus.mjs's frame(): colours of ~3000 samples of the middle third (a grey picture counted
     by its greys) and a sparse hash"""
@@ -483,7 +489,7 @@ def run(exe, out, steps):
             cw, ch = (win[1][2], win[1][3]) if win[1] else (640, 480)
             click(*(at or (cw / 2, round(ch * 0.85))))
             time.sleep(2)
-            if s % 20 == 18:
+            if story_shot(s, STORY):
                 f = shot(f'story-{s + 2}')
                 if f: hashes.add(stats(*f)[1])
             s += 2
