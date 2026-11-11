@@ -298,13 +298,13 @@ s2020_casket_ayakashi03	-	not recorded yet
 s2020_eushully_tenmei	-	noconvert: 天冥のコンキスタ体験版/tenmei_trial.exe.is/天冥のコンキスタ体験版.msi.x/Program Files/Eushully/天冥のコンキスタ体験版/AGE.EXE: dxgi
 s2020_wonder_fool_maokatsu	Faithful	337 differences on sake
 s2021_dualtail_vbhi	-	not recorded yet
-s2021_giga_fuyukiss	Faithful	not run on sake
+s2021_giga_fuyukiss	Faithful	336 differences on sake
 s2021_nanawind_kanade_gram_ch1	-	not recorded yet
 s2021_silkys_plus_fuyukuru	Convertible	hr 67 ID3D11Device5::QueryInterface 0 want 0x80004002; left out: CompatValue x11; left out: ID3D10Multithread::Release x1; left out: ID3DDeviceContextState::AddRef x1; left out: ID3DDeviceContextState::Release x5
 s2022_akabeesoft2_roleplayer_tororo	-	not recorded yet
 s2022_amuse_craft_erotica_tsumamomi	-	not recorded yet
 s2022_bishop_cs2	-	not recorded yet
-s2022_hooksoft_houkago2	Faithful	not run on sake
+s2022_hooksoft_houkago2	Compatible	
 s2023_anim_anetumami2	-	not recorded yet
 s2023_hadashi_harem_shangrila	-	not recorded yet
 s2023_j_studio_reaero_dt	Convertible	left out: CompatValue x10
