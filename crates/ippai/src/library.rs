@@ -341,7 +341,7 @@ impl Library {
 
     pub fn snapshot(&self, path: &Path) -> Result<()> {
         ensure!(!path.exists(), "snapshot destination already exists");
-        self.connect()?.backup("main", path, None)?;
+        self.connect()?.backup("main", path, None::<fn(rusqlite::backup::Progress)>)?;
         let c = Connection::open(path)?;
         let check: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         ensure!(check == "ok", "snapshot integrity check failed");
