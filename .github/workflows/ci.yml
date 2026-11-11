@@ -54,7 +54,7 @@ jobs:
           key: playwright-${{ runner.os }}-1.63.0
       # (the corpus harness: screenshots against Windows' answers, the Windows player's platform-free parts)
       - name: Corpus harness tests
-        run: python3 tests/corpus/shots_test.py && python3 tests/corpus/winplay_test.py && python3 tests/corpus/golden_test.py
+        run: python3 tests/corpus/shots_test.py && python3 tests/corpus/winplay_test.py && python3 tests/corpus/golden_test.py && python3 tests/coverage/usage_test.py
       - name: Real browser fetch regression
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
@@ -537,8 +537,12 @@ jobs:
         run: |
           tools/ci/pip.sh fonttools==4.59.0
           mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
+      # (with the entry points each program called, a line per process, for
+      # tests/coverage/usage.py: artifact api-counts-host-tests)
       - name: host/tests on sake
-        run: SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
+        run: |
+          mkdir -p "$RUNNER_TEMP/api-counts"
+          IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
       # (the page's fallback build where 4 GB at once is refused: web/src/runtime.ts sakeBuild;
       # and the JIT freeing modules nothing refers to after every load, kura jit.rs reclaim)
       - name: host/tests on sake-grow (a memory that starts at 2.06 GB and grows), JIT modules freed at every load
@@ -566,6 +570,13 @@ jobs:
         run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/direct-browser.mjs
       - name: A game saved whole before it starts, the bucket's objects decoded by sake's own zstd
         run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/save-first-browser.mjs target/release/ippai
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: api-counts-host-tests
+          path: ${{ runner.temp }}/api-counts/
+          if-no-files-found: ignore
+          retention-days: 30
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ippai

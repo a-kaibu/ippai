@@ -215,6 +215,7 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/download-artifact@v8.0.2
@@ -226,6 +227,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tests"
           IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT="$RUNNER_TEMP/tests/kura.txt" cargo test -q --release -p kura --lib -- --skip f16_bits
           IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT="$RUNNER_TEMP/tests/sake.txt" cargo test -q --release -p sake --lib
+      # (the unit tests call sake's functions directly, never through a guest's import: the
+      # api: keys come from programs on sake, host/tests in CI and Wine's tests in Conformance,
+      # their newest tallies on main)
+      - name: Tallies of host/tests and Wine's tests on sake
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for w in ci.yml:api-counts-host-tests conformance.yml:winetest-; do
+            id=$(gh run list -R "$GITHUB_REPOSITORY" -w "${w%%:*}" -b main -s completed -L 1 --json databaseId -q '.[0].databaseId')
+            [ -n "$id" ] || { echo "no finished ${w%%:*} run on main"; continue; }
+            gh run download "$id" -R "$GITHUB_REPOSITORY" -p "${w#*:}*" -D "$RUNNER_TEMP/tests/${w%%.*}" || echo "no tallies in run $id"
+          done
+          find "$RUNNER_TEMP/tests" -name 'api-counts*' -o -name 'host-tests.txt' | sed 's/^/tallies: /'
       - name: Report
         run: |
           python3 tests/coverage/usage.py --games results --tests "$RUNNER_TEMP/tests" --md tests/coverage/usage.md > /dev/null

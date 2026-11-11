@@ -5,7 +5,8 @@ set beside what the tests call (the same tallies from the unit tests and the win
     usage.py --games DIR... --tests FILE_OR_DIR... [--md out.md] [--top N] [--prefix d3d,gl]
 
 A tally is the last `api-counts k=n ...` line of a log (crates/kura/src/usage.rs). Games:
-each log under DIR is one run, named by its directory. Prints, per key kind (d3d, api, stub,
+each log under DIR is one run, named by its directory. Tests: every line of a file is one
+process (the unit tests, host/tests and the Wine tests on sake append theirs to a file). Prints, per key kind (d3d, api, stub,
 glmissing), how many of the keys games use the tests reach, weighted by the number of games
 and by calls; then the keys games use that no test reaches, most used first. `stub` keys
 (COM methods sake does not implement) and `glmissing` keys (GL functions kura does not have)
@@ -13,24 +14,41 @@ are listed on their own: a game reached code that is not there."""
 import argparse, collections, os, re, sys
 
 
-def tally(path):
-    last = None
+def parse(line):
+    t = {}
+    for kv in line.split()[1:]:
+        k, _, n = kv.rpartition('=')
+        if k and n.isdigit():
+            t[k] = int(n)
+    return t
+
+
+def lines(path):
     try:
         with open(path, encoding='utf-8', errors='replace') as f:
             for line in f:
                 i = line.find('api-counts')
                 if i >= 0:
-                    last = line[i:]
+                    yield line[i:]
     except OSError:
-        return None
-    if last is None:
-        return None
-    t = {}
-    for kv in last.split()[1:]:
-        k, _, n = kv.rpartition('=')
-        if k and n.isdigit():
-            t[k] = int(n)
-    return t
+        return
+
+
+def tally(path):
+    """A game's log: its last line (the run's whole tally)."""
+    last = None
+    for last in lines(path):
+        pass
+    return None if last is None else parse(last)
+
+
+def reached(path):
+    """A tests' file: every line is a process of its own (IPPAI_API_COUNTS_OUT appends one at
+    each exit), the keys any of them called."""
+    keys = set()
+    for line in lines(path):
+        keys |= set(parse(line))
+    return keys
 
 
 def logs(paths):
@@ -69,9 +87,7 @@ def main():
                 calls[k] += n
     tested = set()
     for p in logs(A.tests):
-        t = tally(p)
-        if t:
-            tested |= set(t)
+        tested |= reached(p)
     out = []
     out.append(f'# Use-case coverage\n\n{runs} game runs, {len(games)} entry points they call, {len(tested)} the tests call.\n')
     out.append('| kind | used by games | tested | by games weighted | by calls weighted |')

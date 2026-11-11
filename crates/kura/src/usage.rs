@@ -3,8 +3,10 @@
 //! game asked for that kura does not have. Printed to stderr as one line,
 //! `api-counts <key>=<n> ...`, every time the total doubles (from 4096), every 2^20 calls and
 //! when the process exits, so the last such line in a log is the run's tally. tests/coverage/usage.py sets the corpus' tallies beside
-//! what the unit tests call (the same counter; at exit also written to the file
-//! `IPPAI_API_COUNTS_OUT` names): the entry points games use that no test reaches.
+//! what the tests call (the same counter): with `IPPAI_API_COUNTS_OUT` set the line goes to
+//! the end of that file instead, once at exit (the unit tests; host/tests and the Wine tests on
+//! sake, whose output is compared, a line per process): the entry points games use that no
+//! test reaches.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -52,9 +54,14 @@ pub fn tick() {
     AT_EXIT.call_once(|| {
         extern "C" fn at_exit() {
             let l = line();
-            eprintln!("{l}");
-            if let Some(p) = std::env::var_os("IPPAI_API_COUNTS_OUT") {
-                let _ = std::fs::write(p, l + "\n");
+            match std::env::var_os("IPPAI_API_COUNTS_OUT") {
+                Some(p) => {
+                    use std::io::Write;
+                    let f = std::fs::OpenOptions::new().create(true).append(true).open(p);
+                    // (one write: processes ending at once do not interleave)
+                    let _ = f.and_then(|mut f| f.write_all((l + "\n").as_bytes()));
+                }
+                None => eprintln!("{l}"),
             }
         }
         extern "C" {
@@ -63,9 +70,15 @@ pub fn tick() {
         unsafe { atexit(at_exit) };
     });
     let n = TOTAL.fetch_add(1, Relaxed) + 1;
-    if n >= 4096 && n.is_power_of_two() || n % (1 << 20) == 0 {
+    if (n >= 4096 && n.is_power_of_two() || n % (1 << 20) == 0) && !to_file() {
         eprintln!("{}", line());
     }
+}
+
+/// (IPPAI_API_COUNTS_OUT: the tally only at exit, in that file)
+fn to_file() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("IPPAI_API_COUNTS_OUT").is_some())
 }
 
 /// `api-counts k=n ...`, keys sorted.
