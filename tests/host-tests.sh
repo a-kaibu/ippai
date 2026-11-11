@@ -18,8 +18,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-dlgenter bigwindow aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall}
-X64=" dlgenter dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall "
+TESTS=${*:-dlgenter bigwindow aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread d3d12delay mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall}
+X64=" dlgenter dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall "
 CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
 CLANG32=${CLANG32-msvcseh}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
@@ -29,7 +29,17 @@ VEX=" sse4 "
 fail=0
 for t in $TESTS; do
   test_env=()
+  ldir=$OUT/lib-none
   fixture() {
+    if [ "$t" = d3d12delay ]; then
+      # (d3d12.dll as a delay-load import, as UnityPlayer.dll has it: mingw's own helper)
+      ldir=$OUT/lib-$t-${1%%-*}
+      local at16=@16 at8=@8
+      [ "${1%%-*}" = x86_64 ] && at16= at8=
+      mkdir -p "$ldir" && printf 'LIBRARY d3d12.dll\nEXPORTS\nD3D12CreateDevice%s\nD3D12GetDebugInterface%s\n' "$at16" "$at8" > "$ldir/d3d12.def" &&
+        "${1%gcc}dlltool" -k -d "$ldir/d3d12.def" -y "$ldir/libd3d12.a"
+      return $?
+    fi
     if [ "$t" = comclass ]; then
       "$1" -O2 -DBUILD_FIXTURE -shared -Wl,--kill-at "$ROOT/host/tests/comclass.c" -lole32 -luuid -o "$OUT/comclass-fixture.dll"
       return $?
@@ -160,7 +170,7 @@ for t in $TESTS; do
   fi
   # a "libs:" line in the source names its import libraries
   libs=$(sed -n 's/.*libs: *\([-a-z0-9_ ]*\).*/\1/p' "$ROOT/host/tests/$t.c" | head -1)
-  if ! i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 "$ROOT/host/tests/$t.c" -o "$OUT/$t.exe" $libs; then
+  if ! i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 "$ROOT/host/tests/$t.c" -o "$OUT/$t.exe" -L"$ldir" $libs; then
     echo "FAIL $t: build"; fail=1; continue
   fi
   # (the whole output kept: a process that fails shows its exit status and its last lines, sake's
@@ -206,7 +216,7 @@ for t in $TESTS; do
     if ! fixture x86_64-w64-mingw32-gcc; then
       echo "FAIL $t (x64): fixture build"; fail=1; continue
     fi
-    if ! x86_64-w64-mingw32-gcc -O2 "$ROOT/host/tests/$t.c" -o "$OUT/$t-64.exe" $libs; then
+    if ! x86_64-w64-mingw32-gcc -O2 "$ROOT/host/tests/$t.c" -o "$OUT/$t-64.exe" -L"$ldir" $libs; then
       echo "FAIL $t (x64): build"; fail=1; continue
     fi
     t64=$(EXE=$OUT/$t-64.exe LOG=$t-64 run); st=$?

@@ -123,6 +123,30 @@ fn DXGIGetDebugInterface1(c: &mut Ctx) -> u32 {
     mem::putp(c.a(2), 0);
     E_NOTIMPL
 }
+/// d3d12.dll as on a PC whose GPU has no Direct3D 12 driver: it loads (Unity 6 calls into it
+/// through a delay-load import with no __try around it: a missing d3d12.dll is c06d007e and
+/// the player's crash, corpus dl_RJ01636335 and 15 more), and D3D12CreateDevice says the
+/// adapter can't, so the program goes on with Direct3D 11.
+/// (adapter, minimum level, riid, device**)
+fn D3D12CreateDevice(c: &mut Ctx) -> u32 {
+    if c.a(3) != 0 {
+        mem::putp(c.a(3), 0);
+    }
+    DXGI_ERROR_UNSUPPORTED
+}
+/// (riid, out): no debug layer, no experimental features, no interfaces
+fn d3d12_no_interface(c: &mut Ctx) -> u32 {
+    if c.a(1) != 0 {
+        mem::putp(c.a(1), 0);
+    }
+    E_NOINTERFACE
+}
+/// (desc, version, blob**, error blob**) and the deserializers (data, size, riid, out**)
+fn d3d12_no_root_signature(_: &mut Ctx) -> u32 {
+    E_NOTIMPL
+}
+const DXGI_ERROR_UNSUPPORTED: u32 = 0x887a_0004;
+const E_NOINTERFACE: u32 = 0x8000_4002;
 fn not_impl(_: &mut Ctx) -> u32 {
     E_NOTIMPL
 }
@@ -149,4 +173,17 @@ pub fn register() {
     implement("dxgi", "DXGID3D10CreateDevice", not_impl);
     implement("dxgi", "DXGID3D10RegisterLayers", not_impl);
     implement("dxgi", "DXGIDeclareAdapterRemovalSupport", zero);
+    implement("d3d12", "D3D12CreateDevice", D3D12CreateDevice);
+    implement("d3d12", "D3D12GetDebugInterface", d3d12_no_interface);
+    implement("d3d12", "D3D12GetInterface", |c| {
+        // (clsid, riid, out)
+        if c.a(2) != 0 {
+            mem::putp(c.a(2), 0);
+        }
+        E_NOINTERFACE
+    });
+    implement("d3d12", "D3D12EnableExperimentalFeatures", |_| E_NOINTERFACE);
+    for n in ["D3D12SerializeRootSignature", "D3D12SerializeVersionedRootSignature", "D3D12CreateRootSignatureDeserializer", "D3D12CreateVersionedRootSignatureDeserializer"] {
+        implement("d3d12", n, d3d12_no_root_signature);
+    }
 }

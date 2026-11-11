@@ -1,0 +1,5 @@
+delay-load D3D12CreateDevice: failed, device null
+support check: failed
+debug interface: failed, null
+LoadLibrary: ok, GetProcAddress: ok
+then D3D11CreateDevice: ok

@@ -16879,6 +16879,14 @@ d3d11 D3D11CoreRegisterLayers stdcall 8 -
 d3d11 D3D11CreateDevice stdcall 40 -
 d3d11 D3D11CreateDeviceAndSwapChain stdcall 48 -
 d3d11 D3D11On12CreateDevice stdcall 40 -
+d3d12 D3D12CreateDevice stdcall 16 -
+d3d12 D3D12CreateRootSignatureDeserializer stdcall 16 -
+d3d12 D3D12CreateVersionedRootSignatureDeserializer stdcall 16 -
+d3d12 D3D12EnableExperimentalFeatures stdcall 16 -
+d3d12 D3D12GetDebugInterface stdcall 8 -
+d3d12 D3D12GetInterface stdcall 12 -
+d3d12 D3D12SerializeRootSignature stdcall 16 -
+d3d12 D3D12SerializeVersionedRootSignature stdcall 12 -
 dxgi CreateDXGIFactory stdcall 8 -
 dxgi CreateDXGIFactory1 stdcall 8 -
 dxgi CreateDXGIFactory2 stdcall 12 -
