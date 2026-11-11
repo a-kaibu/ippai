@@ -26,6 +26,9 @@ on:
       only:
         description: "only these title ids (space-separated; overrides set)"
         default: ""
+      screen:
+        description: "sake's screen (tests/corpus/ci.sh SCREEN; Windows' answers are 1920x1080)"
+        default: "1920x1080"
 
 permissions:
   contents: read
@@ -161,6 +164,7 @@ jobs:
         env:
           SET: ${{ needs.plan.outputs.set }}
           ONLY: ${{ inputs.only }}
+          SCREEN: ${{ inputs.screen || '1920x1080' }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
         run: |

@@ -10,7 +10,8 @@
 #     FONTS: sake's C:\windows\Fonts (tools/ci/sake-fonts.py). That is all of C:\: no Wine
 #     DLLs, so a title that needs a DLL sake does not implement yet fails here, and
 #     check.py lists the DLLs each title missed.
-#   env: SET=smoke|full (default smoke: rows with smoke=1), SHARD=0 SHARDS=1, ONLY="id ..."
+#   env: SET=smoke|full (default smoke: rows with smoke=1), SCREEN (sake's screen, default
+#        1920x1080 as Windows' answers; another to tell a size's effect), SHARD=0 SHARDS=1, ONLY="id ..."
 #        (just those), WORK (default $RUNNER_TEMP or /tmp), STORY (story seconds, default 30),
 #        LANES (titles run at once, default 2), PREP_JOBS (downloads ahead per lane, default 1: most trials come from one
 #        home-run mirror, suezou.dyndns.org, which 60 parallel downloads knocked over)
@@ -48,7 +49,7 @@ echo "shard ${SHARD:-0}/${SHARDS:-1}: $(wc -l < "$IDS") titles"
 
 run1() {  # ids file, port
   IPPAI_DIST=$DIST BASE_STORE=$BASE TRIALS=$WORK/trials STORES=$WORK/stores JIT_DIR=$WORK/jit \
-    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1&env=IPPAI_API_COUNTS%3D1&env=IPPAI_SCREEN%3D1920x1080' STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-1} PORT=$2 \
+    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1&env=IPPAI_API_COUNTS%3D1&env=IPPAI_SCREEN%3D'"${SCREEN:-1920x1080}" STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-1} PORT=$2 \
     python3 "$ROOT/tests/corpus-run.py" "$TITLES" "$1" "$OUT"
 }
 # LANES (default 2) queues side by side, each with its own Chromium, server and downloads: the
