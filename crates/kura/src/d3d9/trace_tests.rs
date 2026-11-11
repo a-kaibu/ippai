@@ -33,6 +33,7 @@ pub(crate) unsafe extern "C" fn alloc(n: u32) -> *mut u8 {
         let size = 512 << 20;
         let p = libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0);
         assert!(p != libc::MAP_FAILED);
+        lsan_root(p, size);
         *a = (p as usize as u32, p as usize as u32 + size as u32);
     }
     let p = a.0;
@@ -41,6 +42,17 @@ pub(crate) unsafe extern "C" fn alloc(n: u32) -> *mut u8 {
     p as *mut u8
 }
 unsafe extern "C" fn free(_: *mut u8) {}
+/// Under LeakSanitizer, `p..p+n` (mapped memory, which it does not look through) holds
+/// pointers too: the device objects in the guest arena own Vecs on the real heap, which were
+/// reported as leaked (Sanitize, d3d11::draw_tests: 125896 bytes in 438 allocations, now and
+/// then). Nothing without the sanitizer.
+pub(crate) unsafe fn lsan_root(p: *mut libc::c_void, n: usize) {
+    let f = libc::dlsym(libc::RTLD_DEFAULT, c"__lsan_register_root_region".as_ptr());
+    if !f.is_null() {
+        let f: unsafe extern "C" fn(*const libc::c_void, usize) = std::mem::transmute(f);
+        f(p, n);
+    }
+}
 /// Runs `f` on a thread whose stack and heap are below 4 GB: the Direct3D 8 layer hands the
 /// Direct3D 9 one structures on its stack and heap by 32-bit address, as it does in wasm32.
 pub(crate) fn on_low_stack(f: fn()) {
@@ -101,6 +113,8 @@ unsafe impl std::alloc::GlobalAlloc for LowHeap {
             assert!(p != libc::MAP_FAILED);
             if LOW.compare_exchange(0, p as usize, AcqRel, Acquire).is_err() {
                 libc::munmap(p, LOW_SIZE);
+            } else {
+                lsan_root(p, LOW_SIZE);
             }
         }
         let base = LOW.load(Acquire);
