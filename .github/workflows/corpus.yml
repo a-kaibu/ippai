@@ -27,8 +27,11 @@ on:
         description: "only these title ids (space-separated; overrides set)"
         default: ""
       screen:
-        description: "sake's screen (tests/corpus/ci.sh SCREEN; Windows' answers are 1920x1080)"
+        description: "sake's screen (tests/corpus/ci.sh SCREEN; Windows' answers are 1920x1080; none: sake's own)"
         default: "1920x1080"
+      ci_run:
+        description: "the CI run whose build is tested (a bisect; default the newest successful one of main)"
+        default: ""
 
 permissions:
   contents: read
@@ -58,8 +61,11 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha }}
           SET: ${{ inputs.set }}
           ONLY: ${{ inputs.only }}
+          CI_RUN: ${{ inputs.ci_run }}
         run: |
-          if [ "$EVENT" != workflow_run ]; then
+          if [ -n "$CI_RUN" ]; then
+            RUN_ID=$CI_RUN SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" --jq .head_sha)
+          elif [ "$EVENT" != workflow_run ]; then
             # the newest successful CI build of main
             read -r RUN_ID SHA < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
               --limit 1 --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"')
