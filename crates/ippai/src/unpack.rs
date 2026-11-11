@@ -413,7 +413,9 @@ fn installshield(job: &Job, src: &Path, out: &Path) -> Result<bool> {
     let mut h = [0u8; 46];
     f.seek(SeekFrom::Start(end + at))?;
     if f.read_exact(&mut h).is_err() {
-        return Ok(false);
+        // (shorter than a stream's header: an old plain setup's one small file, as Mutants'
+        // baseline found: "data", 1 byte)
+        return is_plain(job, &mut f, end, size, out);
     }
     let count = u16::from_le_bytes([h[14], h[15]]);
     let mut pos = end + at + 46;
@@ -1181,6 +1183,19 @@ mod tests {
             prop_assert_eq!(read_tree(&out), want);
             fs::remove_dir_all(&d).unwrap();
         }
+    }
+
+    /// A plain setup shorter than a stream's 46-byte header (proptest's minimal case).
+    #[test]
+    fn installshield_plain_with_one_small_file() {
+        let d = tmp("isplain1");
+        let exe = d.join("setup.exe");
+        fs::write(&exe, installshield_setup(&Is::Plain, &[("data".into(), vec![0], false)])).unwrap();
+        let out = d.join("out");
+        fs::create_dir_all(&out).unwrap();
+        assert!(installshield(&job(), &exe, &out).unwrap());
+        assert_eq!(read_tree(&out), vec![("data".to_string(), vec![0])]);
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
