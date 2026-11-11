@@ -41,7 +41,10 @@ WHICH=new PATH=$P sh "$S" >/dev/null
 ! grep -q 'auth refresh' "$T/log" || fail "the scope asked for again"
 if WHICH=old PATH=$P sh "$S" 2>"$T/err"; then fail "an old release ran"; fi
 grep -q "v0.3.4" "$T/err" || fail "why an old release is refused"
-if PATH=/usr/bin:/bin sh "$S" 2>"$T/err"; then fail "ran without gh"; fi
+# (a PATH with nothing on it: the runners have a real gh in /usr/bin, which this asked to sign in
+# until the step's 15 minutes ran out)
+mkdir "$T/nogh"
+if PATH=$T/nogh /bin/sh "$S" 2>"$T/err" </dev/null; then fail "ran without gh"; fi
 grep -q "cli.github.com" "$T/err" || fail "why without gh"
 : > "$T/log"
 out=$(IPPAI=$T/rel/new/ippai WHICH=old PATH=$P sh "$S" d)
