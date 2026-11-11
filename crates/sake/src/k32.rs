@@ -407,8 +407,22 @@ fn ExitThread(c: &mut Ctx) -> u32 {
     exit_thread(c.a(0))
 }
 /// _beginthread(start, stack, arg): a CRT thread (start is cdecl, returning ends it)
+/// _beginthreadex(security, stack, start, arg, flags, tid*): no start routine is EINVAL and 0,
+/// no thread (Wine's ucrtbase:thread; the thread at address 0 crashed the test meanwhile)
+fn _beginthreadex(c: &mut Ctx) -> u32 {
+    if c.a(2) == 0 {
+        crate::crt::set_errno(22); // EINVAL
+        return 0;
+    }
+    CreateThread(c)
+}
+/// _beginthread(start, stack, arg): no start routine is EINVAL and -1
 fn _beginthread(c: &mut Ctx) -> u32 {
     let (start, stack, arg) = (c.a(0), c.a(1), c.a(2));
+    if start == 0 {
+        crate::crt::set_errno(22); // EINVAL
+        return u32::MAX;
+    }
     let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
     let tid = crate::spawn_gated(start, arg, if stack == 0 { 0x10_0000 } else { stack.max(0x10000) }, h, false);
     obj::with(|t| {
@@ -7182,7 +7196,7 @@ fn SetFileApisToANSI(_: &mut Ctx) -> u32 {
 
 pub fn init() {
     implement("kernel32", "SetThreadDescription", |_| 0);
-    implement("msvcrt", "_beginthreadex", CreateThread);
+    implement("msvcrt", "_beginthreadex", _beginthreadex);
     implement("msvcrt", "_beginthread", _beginthread);
     implement("msvcrt", "_endthreadex", _endthreadex);
     implement("msvcrt", "_endthread", _endthread);

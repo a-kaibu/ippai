@@ -1,0 +1,4 @@
+beginthreadex null: 0 errno 22
+beginthread null: -1 errno 22
+beginthreadex: 42
+beginthread: 7
