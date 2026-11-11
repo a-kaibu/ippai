@@ -985,6 +985,10 @@ struct Ahead {
 #[cfg(test)]
 static SPAWN_FAILS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// (tests: fetcher threads registered with snap)
+#[cfg(test)]
+static FETCHERS_UP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn spawn_fetcher(i: usize) -> std::io::Result<()> {
     #[cfg(test)]
     if SPAWN_FAILS.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1008,10 +1012,20 @@ fn fetch_ahead(p: Piece) {
     if have.iter().all(|&x| x) {
         return;
     }
+    // (tests: the fetchers come up outside the snap tests' pauses; ONE before AHEAD, which
+    // fetchers wait for)
+    #[cfg(test)]
+    let _one = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_none_or(|a| a.threads == 0).then(|| crate::snap::ONE.lock().unwrap_or_else(|e| e.into_inner()));
     let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
     let a = g.get_or_insert_with(|| Ahead { queue: VecDeque::new(), busy: Default::default(), threads: 0 });
     if a.threads == 0 {
+        #[cfg(test)]
+        let up = FETCHERS_UP.load(std::sync::atomic::Ordering::SeqCst);
         a.threads = (0..FETCHERS).filter(|&i| spawn_fetcher(i).is_ok()).count();
+        #[cfg(test)]
+        while FETCHERS_UP.load(std::sync::atomic::Ordering::SeqCst) < up + a.threads {
+            std::thread::yield_now();
+        }
         if a.threads == 0 {
             return;
         }
@@ -1043,6 +1057,8 @@ pub(crate) fn snap_wake() {
 
 fn fetcher() {
     crate::snap::register("vfs fetcher", false, 0);
+    #[cfg(test)]
+    FETCHERS_UP.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     loop {
         let p = loop {
             crate::snap::idle();

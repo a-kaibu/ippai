@@ -254,6 +254,12 @@ pub fn parkable() -> bool {
     PARKABLE.with(|p| p.get())
 }
 
+/// (tests: those that use the module's one coordinator and Ctl; vfs holds it while its
+/// fetcher threads come up, as a thread registering while the page copies stirs it: the snap
+/// test's "stirred left 3", vfs tests running beside it)
+#[cfg(test)]
+pub(crate) static ONE: Mutex<()> = Mutex::new(());
+
 static GATE: Mutex<()> = Mutex::new(());
 static GATE_CV: Condvar = Condvar::new();
 static COORD_CV: Condvar = Condvar::new();
@@ -690,8 +696,7 @@ mod tests {
         });
     }
 
-    /// The tests that use the module's one coordinator and Ctl.
-    static ONE: Mutex<()> = Mutex::new(());
+    use super::ONE;
 
     #[test]
     fn ctl_offsets_are_the_pages() {
@@ -816,6 +821,33 @@ mod tests {
             until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
             assert_eq!(VNHOST_SNAP.stirred.load(SeqCst) != 0, wake);
         }
+        STOP.store(1, SeqCst);
+        t.join().unwrap();
+    }
+
+    /// A host thread that comes up while the page copies (vfs' fetchers, a read beside the
+    /// pause) stirs it: told, as a wake is (why vfs brings its fetchers up under ONE in tests).
+    #[test]
+    fn a_thread_coming_up_while_copied_is_told() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        start();
+        VNHOST_SNAP.cmd.store(CMD_SAVE, SeqCst);
+        until("READY", || VNHOST_SNAP.state.load(SeqCst) == ST_READY);
+        static STOP: AtomicU32 = AtomicU32::new(0);
+        STOP.store(0, SeqCst);
+        let t = std::thread::spawn(|| {
+            register("late host", false, 0);
+            while STOP.load(SeqCst) == 0 {
+                idle();
+                std::thread::sleep(Duration::from_millis(1));
+                busy();
+            }
+            unregister();
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        VNHOST_SNAP.cmd.store(CMD_RESUME, SeqCst);
+        until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
+        assert_ne!(VNHOST_SNAP.stirred.load(SeqCst), 0);
         STOP.store(1, SeqCst);
         t.join().unwrap();
     }
