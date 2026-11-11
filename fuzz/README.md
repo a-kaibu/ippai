@@ -31,7 +31,12 @@ Run (from the repository root):
 
 `fuzz/seeds.py` writes the starting inputs to `fuzz/seeds/` (gcc -m32 output of a few C
 functions at several -O levels, small BMP/PNG/JPEG files, ADPCM blocks); `run.sh` calls it.
-Corpus (`corpus/`), crash inputs (`artifacts/`) and seeds stay out of git. To look at a crash:
+Corpus (`corpus/`), crash inputs (`artifacts/`) and seeds stay out of git; a crash input
+looked into is kept in `regressions/<target>/` (in git, run at the start of every run):
+`x86_jit/popf-sets-tf` (the harness's step helper went on in the block after POPF set TF,
+unlike kura's, which leaves it) and `x86_jit64/enter-faults-after-push` (ENTER pushing RBP
+before a frame pointer it cannot read: the JIT and the interpreter write the same bytes below
+RSP; the harness compared the state before the instruction). To look at a crash:
 
     cd fuzz && cargo +nightly fuzz run -O x86_jit artifacts/x86_jit/crash-...
 

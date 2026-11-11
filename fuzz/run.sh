@@ -49,6 +49,8 @@ for dir in fuzz crates/*/fuzz; do
     mkdir -p "$dir/corpus/$t" "$dir/artifacts/$t"
     seeds=()
     [ -d "$dir/seeds/$t" ] && seeds=("seeds/$t")
+    # (inputs that once failed, kept in git: run first, every time)
+    [ -d "$dir/regressions/$t" ] && seeds+=("regressions/$t")
     while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do wait -n || true; reap; done
     n=$((n + 1))
     k=$logs/$n

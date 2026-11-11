@@ -189,9 +189,9 @@ fuzz_target!(|data: &[u8]| {
             let d = mem.data();
             let cpu = cpu_in(d, at);
             match koji::step(cpu, &mut Wasm(d)) {
-                // (as kura: another MXCSR mode leaves the region, and so does the first read
-                // of its flags)
-                Exit::Continue if !koji::jit::sse_ok(cpu.mxcsr) => 2,
+                // (as kura's vnhost_jit_step: POPF setting TF or another MXCSR mode leaves
+                // the region, and so does the first read of the MXCSR flags)
+                Exit::Continue if cpu.eflags & koji::flags::TF != 0 || !koji::jit::sse_ok(cpu.mxcsr) => 2,
                 Exit::Continue if koji::jit::mx_switched() => {
                     c.data_mut().read_flags = true;
                     2

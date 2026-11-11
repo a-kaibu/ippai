@@ -154,7 +154,9 @@ fuzz_target!(|data: &[u8]| {
             let d = mem.data();
             let cpu = cpu_in(d, at);
             match koji::step(cpu, &mut Wasm(d)) {
-                Exit::Continue if !koji::jit::sse_ok(cpu.mxcsr) => 2,
+                // (as kura's vnhost_jit_step: POPF setting TF or another MXCSR mode leaves the
+                // region)
+                Exit::Continue if cpu.eflags & koji::flags::TF != 0 || !koji::jit::sse_ok(cpu.mxcsr) => 2,
                 Exit::Continue => 0,
                 e => {
                     c.data_mut().exit = Some(e);
@@ -293,6 +295,9 @@ fuzz_target!(|data: &[u8]| {
             // writes the wasm memory as it is: not compared; one after the interpreter passed
             // the JIT's RIP without its state: they differ. A fault the JIT's interpreter steps
             // met too, at the same state, is the check at the top.)
+            // (the same fault: an instruction cut short writes what it wrote before it, as
+            // ENTER's push of RBP before a frame pointer it cannot read, on the hardware too)
+            e @ Exit::Fault(_) if Some(e) == jit_exit && same(&cpu, &got, false) && window.0 == got_mem => return,
             Exit::Fault(_) if first.is_none() => return,
             Exit::Fault(_) => break,
             e => {
