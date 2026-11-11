@@ -32,6 +32,9 @@ on:
       ci_run:
         description: "the CI run whose build is tested (a bisect; default the newest successful one of main)"
         default: ""
+      env:
+        description: "more of sake's environment, NAME=value separated by spaces (e.g. IPPAI_JIT=0: the interpreter alone)"
+        default: ""
 
 permissions:
   contents: read
@@ -171,6 +174,7 @@ jobs:
           SET: ${{ needs.plan.outputs.set }}
           ONLY: ${{ inputs.only }}
           SCREEN: ${{ inputs.screen || '1920x1080' }}
+          SAKE_ENV: ${{ inputs.env }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
         run: |
