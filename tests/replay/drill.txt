@@ -6,4 +6,4 @@
 # draws.
 b2011_anim_team_mm-32 711 714 1
 b2015_guilty-32 295 298 1
-s2020_wonder_fool_maokatsu-32 0 56 3
+s2020_wonder_fool_maokatsu-32 0 900 56
