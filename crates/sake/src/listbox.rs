@@ -94,12 +94,23 @@ fn font_height(c: &mut Ctx, h: u32, font: u32) -> i32 {
     let f = if font != 0 { font } else { gcall(c, "gdi32", "GetStockObject", &[13]) };
     let old = gcall(c, "gdi32", "SelectObject", &[dc, f]);
     let tm = mem::heap_alloc(64, true);
-    gcall(c, "gdi32", "GetTextMetricsW", &[dc, tm]);
-    let th = r32(tm) as i32;
+    let ok = gcall(c, "gdi32", "GetTextMetricsW", &[dc, tm]) != 0;
+    let th = text_height(ok, r32(tm) as i32);
     mem::heap_free(tm);
     gcall(c, "gdi32", "SelectObject", &[dc, old]);
     gcall(c, "user32", "ReleaseDC", &[h, dc]);
     th
+}
+
+/// An item's height from the font's text metrics: with no font file to measure (no C:\Windows\
+/// Fonts, as host/tests on sake-grow run) GetTextMetrics fails, and a height of 1 put a click
+/// at an item's top + 1 on the next item; then the 8-point dialog font's 13 pixels
+fn text_height(ok: bool, height: i32) -> i32 {
+    if ok && height > 0 {
+        height
+    } else {
+        13
+    }
 }
 
 /// WM_MEASUREITEM to the owner: MEASUREITEMSTRUCT { CtlType ODT_LISTBOX, CtlID, itemID,
@@ -917,5 +928,32 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             def_proc(c, wide)
         }
         _ => def_proc(c, wide),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_item_is_as_high_as_its_font_or_13() {
+        assert_eq!(text_height(true, 16), 16);
+        assert_eq!(text_height(false, 0), 13);
+        assert_eq!(text_height(true, 0), 13);
+        assert_eq!(text_height(false, 16), 13);
+    }
+
+    proptest::proptest! {
+        // a click at an item's top + 1 is on that item, whatever the font gave
+        #[test]
+        fn a_click_inside_an_items_rect_is_that_item(ok: bool, th in -5i32..40, n in 1usize..30, top in 0usize..30, pick in 0usize..30) {
+            let ih = text_height(ok, th).max(1);
+            // (a font of 1 pixel has no top + 1 inside its items)
+            proptest::prop_assume!(ih >= 2);
+            let l = List { items: (0..n).map(|_| Item { text: Vec::new(), data: 0, sel: false, height: ih }).collect(), item_h: ih, top: top.min(n - 1), ..List::default() };
+            let i = l.top + pick % (n - l.top);
+            let r = item_rect(&l, 0, 100, i);
+            proptest::prop_assert_eq!(item_at(&l, 0, r.t + 1), (i as i32, true));
+        }
     }
 }
