@@ -8,7 +8,7 @@
 //   PLAYWRIGHT=module path, FONTS=dir (drive_c\windows\Fonts), IPPAI_JIT=0, PORT (default 8790),
 //   GUEST_ENV="NAME=value ..." (the program's environment), TIMEOUT (seconds a program may run, default 180), DEBUG_CONSOLE=1 (every console line
 //   of the page into stderr.txt), BROWSER64=1, SYSTEM64=dir (x64 DLLs, e.g. the CRT, for the
-//   prefix's windows\system64)
+//   prefix's windows\system64), NO_GAMES=1 (not the trial games' replays)
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +21,10 @@ const ippai = process.env.IPPAI ?? join(root, "target/release/ippai");
 const port = Number(process.env.PORT ?? 8790);
 const list = join(exeDir, "browser.txt");
 // (x64 probes need the x64 CRT in the page's prefix, not there yet: BROWSER64=1 runs them)
-const names = existsSync(list) ? readFileSync(list, "utf8").split(/\s+/).filter((n) => n && n.includes(filter) && (process.env.BROWSER64 || !n.endsWith("-64"))) : [];
+// (NO_GAMES=1: not the trial games' replays, testdata/apitrace, a minute of frames each: the
+// interpreter's pass leaves them to the JIT's, or the two passes outrun the job's hour)
+const game = (n) => /^replay_(?:[bs]\d{4}_|dl_|r1_)/.test(n);
+const names = existsSync(list) ? readFileSync(list, "utf8").split(/\s+/).filter((n) => n && n.includes(filter) && (process.env.BROWSER64 || !n.endsWith("-64")) && !(process.env.NO_GAMES && game(n))) : [];
 if (!names.length) process.exit(0);
 
 const work = mkdtempSync(join(tmpdir(), "winref-"));

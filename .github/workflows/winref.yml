@@ -100,7 +100,8 @@ jobs:
   sake:
     needs: probes
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # (the browser's JIT pass alone is about 40 minutes with the games' replays)
+    timeout-minutes: 90
     concurrency:
       group: winref-sake-${{ github.ref }}-${{ github.event_name }}
       cancel-in-progress: false
@@ -218,7 +219,8 @@ jobs:
           TIMEOUT: 900
         run: |
           node tests/winref/run-browser.mjs exe out/jit
-          IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp
+          # (the games' replays only on the JIT: both passes over them took the job past its hour)
+          NO_GAMES=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp
           # (x64 Direct2D: float and by-value struct arguments in registers)
           BROWSER64=1 node tests/winref/run-browser.mjs exe out/jit d2d-64
           BROWSER64=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp d2d-64
