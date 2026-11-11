@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
@@ -143,11 +144,20 @@ const hChunks = await chunksOf("h");
 // (a few only on the server: /store-direct says 404)
 const serverOnly = new Set([...gChunks].slice(0, 6));
 const decoded = new Map();
-// (the store keeps chunks zstd-coded and sends them so, Content-Encoding: zstd, which node's fetch leaves as it is)
+// (the store keeps chunks zstd-coded and sends them so, Content-Encoding: zstd. Node 26's fetch
+// decodes that itself and keeps the header, so the bytes are read off the wire here)
+const raw = (url) =>
+  new Promise((ok, fail) =>
+    get(url, (r) => {
+      const parts = [];
+      r.on("data", (d) => parts.push(d));
+      r.on("end", () => ok({ encoding: r.headers["content-encoding"], body: Buffer.concat(parts) }));
+      r.on("error", fail);
+    }).on("error", fail),
+  );
 for (const h of [...gChunks, ...hChunks]) {
-  const r = await fetch(chunkUrl(h));
-  const body = Buffer.from(await r.arrayBuffer());
-  decoded.set(h, new Uint8Array(r.headers.get("content-encoding") === "zstd" ? zstdDecompressSync(body) : body));
+  const r = await raw(chunkUrl(h));
+  decoded.set(h, new Uint8Array(r.encoding === "zstd" ? zstdDecompressSync(r.body) : r.body));
 }
 
 const browser = await chromium.launchPersistentContext(join(work, "profile"), {

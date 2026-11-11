@@ -239,6 +239,9 @@ fn restart_soon(exe: PathBuf) {
             let e = std::process::Command::new(&exe).args(std::env::args_os().skip(1)).exec();
             eprintln!("ippai: restart {}: {e}", exe.display());
         }
+        // (elsewhere the binary is not replaced in place: see install)
+        #[cfg(not(unix))]
+        drop(exe);
         std::process::exit(1);
     });
 }

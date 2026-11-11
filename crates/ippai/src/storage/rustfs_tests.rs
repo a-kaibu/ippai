@@ -41,8 +41,10 @@ async fn rustfs_encrypted_storage() -> Result<()> {
     let dir = std::env::temp_dir().join(&bucket_name);
     let db = Library::new(&dir)?;
     let config = dir.join("storage.toml");
+    // (the disk cache in the test's own directory, not the user's)
+    let cache = dir.join("s3");
     std::fs::write(&config, format!(
-        "bucket = {bucket_name:?}\nregion = 'us-east-1'\nendpoint = {endpoint:?}\nprefix = 'test/'\nactive_key = 'old'\n[keys]\nold = '{}'\nnew = '{}'\n",
+        "bucket = {bucket_name:?}\nregion = 'us-east-1'\nendpoint = {endpoint:?}\nprefix = 'test/'\nactive_key = 'old'\ncache = {cache:?}\n[keys]\nold = '{}'\nnew = '{}'\n",
         "01".repeat(32), "02".repeat(32)
     ))?;
     let mut s = Storage::open(db.clone(), &config)?;
@@ -149,11 +151,26 @@ async fn rustfs_encrypted_storage() -> Result<()> {
         assert_eq!(s.get("saves/game/1").await?.as_deref(), Some(&b"private save"[..]));
         assert!(s.get("chunks/missing").await?.is_none());
 
-        // A cold cache must reject a modified ciphertext from the real object store.
+        // A ciphertext modified in the real object store. The whole copy the get above kept
+        // on the disk still answers (the disk write does not hold the get back: let it land)...
+        let kept = s.disk.as_ref().context("no disk cache")?.path(original.object);
+        for _ in 0..200 {
+            if kept.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        ensure!(kept.exists(), "the chunk was not kept on the disk");
         let mut damaged = s.download(original.object).await?;
         damaged[0] ^= 1;
         s.upload(original.object, &damaged).await?;
         *s.cache.lock().unwrap() = Default::default();
+        assert_eq!(s.get("chunks/test").await?.as_deref(), Some(&chunk[..]));
+        // ...and with it gone (memory and disk both cold) the damaged one is refused
+        s.disk.as_ref().unwrap().remove(original.object);
+        *s.cache.lock().unwrap() = Default::default();
+        assert!(s.get("chunks/test").await.is_err());
+        s.disk = None;
         assert!(s.get("chunks/test").await.is_err());
         Ok(())
     }

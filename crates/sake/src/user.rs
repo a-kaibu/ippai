@@ -6727,7 +6727,7 @@ mod menu_bar_tests {
 
 #[cfg(test)]
 mod track_tests {
-    use super::{grown_screen, track_clamp, tracks};
+    use super::{track_clamp, tracks};
     use proptest::prelude::*;
 
     /// 俺の姿が､透明に!: KiriKiri Z's 1920x1080 client with its frame on the 1366x768 screen

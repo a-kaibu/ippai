@@ -722,6 +722,54 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A ciphertext damaged in the bucket: a whole copy kept on the disk still answers (the
+    /// bucket is not asked); with no copy on the disk (none kept, or no disk cache) the get is an
+    /// error, and the damaged bytes are neither kept on the disk nor in memory.
+    #[tokio::test]
+    async fn damaged_bucket_objects_are_refused() {
+        let (f, mut s, dir) = serve(0).await;
+        let disk = dir.join("s3");
+        s.disk = Some(Arc::new(Disk::open(disk.clone(), 64 << 20).unwrap()));
+        s.put("chunks/x", b"payload bytes").await.unwrap();
+        let e: String = s.db.connect().unwrap().query_row("SELECT envelope FROM objects WHERE logical='chunks/x'", [], |r| r.get(0)).unwrap();
+        let id = serde_json::from_str::<Envelope>(&e).unwrap().object;
+        let path = s.disk.as_ref().unwrap().path(id);
+        assert_eq!(&*s.get("chunks/x").await.unwrap().unwrap(), b"payload bytes");
+        for _ in 0..200 {
+            if path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let good = std::fs::read(&path).unwrap();
+        for (i, flip) in [0usize, 12, good.len() / 2, good.len() - 1].into_iter().enumerate() {
+            for v in f.objects.lock().unwrap().values_mut() {
+                *v = good.clone();
+                v[flip] ^= 1 << (i % 8);
+            }
+            // the disk's whole copy
+            *s.cache.lock().unwrap() = Default::default();
+            let gets = f.gets.load(SeqCst);
+            assert_eq!(&*s.get("chunks/x").await.unwrap().unwrap(), b"payload bytes");
+            assert_eq!(f.gets.load(SeqCst), gets, "read from the disk");
+            // no copy on the disk: the bucket's damaged one is refused, and not kept
+            s.disk.as_ref().unwrap().remove(id);
+            *s.cache.lock().unwrap() = Default::default();
+            assert!(s.get("chunks/x").await.is_err());
+            assert_eq!(f.gets.load(SeqCst), gets + 1);
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            assert!(!path.exists(), "a damaged object kept on the disk");
+            assert!(s.cache.lock().unwrap().get(&id).is_none());
+            // no disk cache at all: the same
+            let d = s.disk.take();
+            assert!(s.get("chunks/x").await.is_err());
+            s.disk = d;
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &good).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Random writes and reads past the limit: the disk never holds more than the limit after a
     /// write, what it says it holds is what is there, the least lately read go first, and a
     /// write cut short (a .tmp left by a crash) is cleared when it opens.
