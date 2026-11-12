@@ -202,6 +202,11 @@ jobs:
         run: cargo test -p crt
       - name: Check all Rust targets without warnings
         run: cargo check --workspace --all-targets --locked
+      # (the binary cargo test just built: Docker's RustFS stands in for the storage server, so
+      # this needs no runner or cache of its own; the old job's timeout, now on the step)
+      - name: Encrypted storage against RustFS
+        timeout-minutes: 20
+        run: bash tools/ci/test-rustfs.sh
       # (before the cache is saved: only the registry crates' builds are worth keeping;
       # target/sst and target/testfloat have caches of their own)
       - name: Shrink the cargo cache
@@ -284,11 +289,11 @@ jobs:
             tools/jit64test/target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
-  # koji's 32-bit JIT against the interpreter (two parts at once), the runner's CPU and TestFloat
-  # (x87/SSE results and MXCSR flags, a sample per instruction and rounding mode); its 16-bit
-  # JIT (Win16 code) against its interpreter and real chips (SingleStepTests: 80386, 80286,
-  # 8086, 8088, V20; what it translates, SST_N per opcode file)
-  jit:
+  # koji's 32-bit JIT against the interpreter (four parts at once: each run is single-threaded
+  # and the runner has four cores), the runner's CPU and TestFloat (x87/SSE results and MXCSR
+  # flags, a sample per instruction and rounding mode). Its 16-bit JIT (Win16 code) is jit16:
+  # the two jobs need different builds and caches, and run side by side on two runners.
+  jit32:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -302,22 +307,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             tools/jit32test/target
-            tools/jit16test/target
-          key: jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit32test/Cargo.lock', 'tools/jit16test/Cargo.lock') }}
+          key: jit32-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit32test/Cargo.lock') }}
           restore-keys: |
-            jit-${{ runner.os }}-${{ env.RUST_KEY }}-
-      # (SingleStepTests for jit16test, pinned by fetch.sh)
-      - id: cache-3
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: target/sst
-          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
-      - name: SingleStepTests
-        id: sst
-        background: true
-        run: tests/sst/fetch.sh
+            jit32-${{ runner.os }}-${{ env.RUST_KEY }}-
       # (.debs per runner image: tools/ci/apt.sh)
-      - id: cache-4
+      - id: cache-apt
         uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
@@ -338,44 +332,36 @@ jobs:
         with:
           path: target/testfloat
           key: testfloat-${{ runner.os }}-${{ hashFiles('tests/testfloat/build.sh') }}
-      - name: Build jit32test and jit16test
-        run: |
-          (cd tools/jit16test && cargo build --release --locked) & q=$!
-          (cd tools/jit32test && cargo build --release --locked)
-          wait $q
-      - name: 32-bit, JIT against the interpreter, part 1 of 2
+      - name: Build jit32test
+        working-directory: tools/jit32test
+        run: cargo build --release --locked
+      - name: 32-bit, JIT against the interpreter, part 1 of 4
         id: jit32-diff0
         background: true
         working-directory: tools/jit32test
-        run: cargo run --release --locked -- 5000 $(( ${{ github.run_number }} * 2 ))
-      - name: 32-bit, JIT against the interpreter, part 2 of 2
+        run: target/release/jit32test 2500 $(( ${{ github.run_number }} * 4 + 0 ))
+      - name: 32-bit, JIT against the interpreter, part 2 of 4
         id: jit32-diff1
         background: true
         working-directory: tools/jit32test
-        run: cargo run --release --locked -- 5000 $(( ${{ github.run_number }} * 2 + 1 ))
-      - name: 16-bit, JIT against the interpreter (new seed per run)
-        id: jit16-diff
+        run: target/release/jit32test 2500 $(( ${{ github.run_number }} * 4 + 1 ))
+      - name: 32-bit, JIT against the interpreter, part 3 of 4
+        id: jit32-diff2
         background: true
-        working-directory: tools/jit16test
-        run: cargo run --release --locked -- 1500 ${{ github.run_number }}
+        working-directory: tools/jit32test
+        run: target/release/jit32test 2500 $(( ${{ github.run_number }} * 4 + 2 ))
+      - name: 32-bit, JIT against the interpreter, part 4 of 4
+        id: jit32-diff3
+        background: true
+        working-directory: tools/jit32test
+        run: target/release/jit32test 2500 $(( ${{ github.run_number }} * 4 + 3 ))
       - name: 32-bit, JIT against TestFloat
         id: jit32-tf
         background: true
         working-directory: tools/jit32test
-        run: cargo run --release --locked -- testfloat
-      - wait: sst
-      - if: steps.cache-3.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: target/sst
-          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
-      - name: 16-bit, against the chips (SingleStepTests)
-        id: jit16-sst
-        background: true
-        working-directory: tools/jit16test
-        run: SST_N=80 cargo run --release --locked -- sst
+        run: target/release/jit32test testfloat
       - wait: apt
-      - if: steps.cache-4.outputs.cache-hit != 'true'
+      - if: steps.cache-apt.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:
           path: ~/.apt-cache
@@ -384,13 +370,13 @@ jobs:
         id: jit32-native
         background: true
         working-directory: tools/jit32test
-        run: cargo run --release --locked -- native 3000 ${{ github.run_number }}
+        run: target/release/jit32test native 3000 ${{ github.run_number }}
       - name: Wait for the six runs
-        wait: [jit32-diff0, jit32-diff1, jit32-native, jit32-tf, jit16-diff, jit16-sst]
+        wait: [jit32-diff0, jit32-diff1, jit32-diff2, jit32-diff3, jit32-tf, jit32-native]
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py tools/jit32test/target tools/jit16test/target
+        run: python3 tools/ci/cache-prune.py tools/jit32test/target
       # (saved when the tests fail too: the registry crates' builds are good either way)
       - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
@@ -399,12 +385,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             tools/jit32test/target
-            tools/jit16test/target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
-  rustfs:
+  # koji's 16-bit JIT (Win16 code) against its interpreter and real chips (SingleStepTests:
+  # 80386, 80286, 8086, 8088, V20; what it translates, SST_N per opcode file). A suite per
+  # background step: the five are independent, so the job ends with the slowest alone rather
+  # than with their sum.
+  jit16:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
       - run: tools/ci/rust-key.sh
@@ -414,17 +403,65 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: rustfs-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
+            tools/jit16test/target
+          key: jit16-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit16test/Cargo.lock') }}
           restore-keys: |
-            rustfs-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
-            rustfs-${{ runner.os }}-${{ env.RUST_KEY }}-
-      - name: Encrypted storage against RustFS
-        run: bash tools/ci/test-rustfs.sh
+            jit16-${{ runner.os }}-${{ env.RUST_KEY }}-
+      # (SingleStepTests for jit16test, pinned by fetch.sh; shared with the test job's cache)
+      - id: cache-sst
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: target/sst
+          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
+      - name: SingleStepTests
+        id: sst
+        background: true
+        run: tests/sst/fetch.sh
+      - name: Build jit16test
+        working-directory: tools/jit16test
+        run: cargo build --release --locked
+      - name: 16-bit, JIT against the interpreter (new seed per run)
+        id: jit16-diff
+        background: true
+        working-directory: tools/jit16test
+        run: target/release/jit16test 1500 ${{ github.run_number }}
+      - wait: sst
+      - if: steps.cache-sst.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: target/sst
+          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
+      - name: 16-bit, against the chips (SingleStepTests 80386)
+        id: jit16-sst-80386
+        background: true
+        working-directory: tools/jit16test
+        run: SST_N=80 target/release/jit16test sst 80386
+      - name: 16-bit, against the chips (SingleStepTests 80286)
+        id: jit16-sst-80286
+        background: true
+        working-directory: tools/jit16test
+        run: SST_N=80 target/release/jit16test sst 80286
+      - name: 16-bit, against the chips (SingleStepTests 8086)
+        id: jit16-sst-8086
+        background: true
+        working-directory: tools/jit16test
+        run: SST_N=80 target/release/jit16test sst 8086
+      - name: 16-bit, against the chips (SingleStepTests 8088)
+        id: jit16-sst-8088
+        background: true
+        working-directory: tools/jit16test
+        run: SST_N=80 target/release/jit16test sst 8088
+      - name: 16-bit, against the chips (SingleStepTests V20)
+        id: jit16-sst-v20
+        background: true
+        working-directory: tools/jit16test
+        run: SST_N=80 target/release/jit16test sst V20
+      - name: Wait for the six runs
+        wait: [jit16-diff, jit16-sst-80386, jit16-sst-80286, jit16-sst-8086, jit16-sst-8088, jit16-sst-v20]
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py target
+        run: python3 tools/ci/cache-prune.py tools/jit16test/target
       # (saved when the tests fail too: the registry crates' builds are good either way)
       - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
@@ -432,7 +469,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            tools/jit16test/target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   build:
@@ -489,17 +526,23 @@ jobs:
             ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-std-wasm32-unknown-emscripten
             ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/multirust-config.toml
           key: rust-wasm-${{ env.RUST_KEY }}
+      # (Emscripten, one cache for every workflow that builds sake (conformance, release, winref,
+      # bench): in the cargo caches it was a copy per workflow, and the caches' 10 GB is shared)
+      - id: cache-emsdk
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/emsdk4
+          key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: |
-            ~/emsdk4
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}
+          key: build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh') }}
           restore-keys: |
-            build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}-
+            build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh') }}-
             build-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Web check (Oxfmt, Oxlint, types; warnings are errors)
         working-directory: web
@@ -510,19 +553,6 @@ jobs:
         run: node tests/fetch-bridge.test.mjs
       - name: Shared VFS, account bridge and node stdio tests (host/vnfs.js, host/account-bridge.js, host/node-stdio.js)
         run: node --test tests/vfs-shared.mjs tests/account-bridge.mjs tests/node-stdio.mjs
-      - wait: apt
-      - if: steps.cache-5.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis-ipafont
-      - name: Build
-        run: tools/ci/build.sh
-      # (the release's Windows build: pack, add and storage on the PC that has the games)
-      - name: ippai for Windows builds without warnings
-        run: |
-          rustup target add x86_64-pc-windows-gnu
-          RUSTFLAGS="-D warnings" cargo build --release -p ippai --target x86_64-pc-windows-gnu
       # (host/tests/innoinstall.c: fonts for Inno Setup's dialog units, tools/ci/sake-fonts.py from
       # the IPA fonts with fonttools; the official Inno Setup installer it installs on sake)
       - uses: actions/cache@v6.1.0
@@ -533,50 +563,85 @@ jobs:
         with:
           path: ~/.cache/ippai-inno
           key: inno-6.7.4
+      # (Playwright's Chromium, installed while the rest of the job runs: the tests that use it
+      # come after Build)
+      - id: cache-playwright
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.63.0
+      - name: Browser test tools
+        id: browser-tools
+        background: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
+          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
+      # (the release's Windows build; rustup's download here, cargo after Build)
+      - name: Windows target
+        run: rustup target add x86_64-pc-windows-gnu
+      - wait: apt
+      - if: steps.cache-5.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis-ipafont
       - name: Fonts for host/tests
         run: |
           tools/ci/pip.sh fonttools==4.59.0
           mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
+      - name: Build
+        run: tools/ci/build.sh
+      # (after the build, the checks that only need its outputs run side by side: each is
+      # single-threaded and the runner has four cores. Before, they ran one after another.)
+      # (the release's Windows build: pack, add and storage on the PC that has the games)
+      - name: ippai for Windows builds without warnings
+        id: windows
+        background: true
+        run: RUSTFLAGS="-D warnings" cargo build --release -p ippai --target x86_64-pc-windows-gnu
+      # (SAKE_C: each run its own C:\ (default /tmp/sake-c), or two runs share windows/temp)
       # (with the entry points each program called, a line per process, for
       # tests/coverage/usage.py: artifact api-counts-host-tests)
       - name: host/tests on sake
+        id: host-sake
+        background: true
         run: |
           mkdir -p "$RUNNER_TEMP/api-counts"
-          IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
+          IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_C=$RUNNER_TEMP/sake-c-sake SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
       # (the page's fallback build where 4 GB at once is refused: web/src/runtime.ts sakeBuild;
       # and the JIT freeing modules nothing refers to after every load, kura jit.rs reclaim)
       - name: host/tests on sake-grow (a memory that starts at 2.06 GB and grows), JIT modules freed at every load
-        run: IPPAI_JIT_RECLAIM=1 SAKE=$PWD/target/sake-out/sake-grow.js tests/host-tests.sh
+        id: host-grow
+        background: true
+        run: SAKE_C=$RUNNER_TEMP/sake-c-grow IPPAI_JIT_RECLAIM=1 SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/sake-grow.js tests/host-tests.sh
       - name: Save states under node (cut anywhere, restored, the same output)
-        run: SAKE=$PWD/target/sake-out/sake.js tests/snap.sh
+        id: snap
+        background: true
+        run: SAKE_C=$RUNNER_TEMP/sake-c-snap SAKE=$PWD/target/sake-out/sake.js tests/snap.sh
       - name: Save states under node on sake-grow (the build a state is of, its memory as large)
-        run: SAKE=$PWD/target/sake-out/sake-grow.js EXES=snaptest TIMES="0.7 2.1" tests/snap.sh
-      - uses: actions/cache@v6.1.0
+        id: snap-grow
+        background: true
+        run: SAKE_C=$RUNNER_TEMP/sake-c-snap-grow SAKE=$PWD/target/sake-out/sake-grow.js EXES=snaptest TIMES="0.7 2.1" tests/snap.sh
+      - wait: browser-tools
+      - if: steps.cache-playwright.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-1.63.0
-      - name: Save states in the page (taken, loaded, loaded on another device)
+      # (one after another: the tests pick a random port in the same range, and two software
+      # renderings at once could time each other out)
+      - name: The page's tests (save states, 自動送り, launchers, the game window, the bucket's chunks, a game saved whole)
+        id: browser-tests
+        background: true
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: |
-          mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
-          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
-          PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/savestate-browser.mjs target/release/ippai
-      - name: 自動送り in the page (clicks, Enter, Ctrl held; a real Ctrl as VK_CONTROL)
-        run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/autoadvance-browser.mjs target/release/ippai
-      - name: A launcher's chain from the list keeps its game's files (ShellExecuteEx in its place, play.ts closeGame)
-        run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/exec-browser.mjs target/release/ippai
-      - name: The game window only, whole (also off sake's screen; a D3D9 Present's source rectangle) and its clicks, at a desktop's and a phone's viewports
-        run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/screen-browser.mjs target/release/ippai
-      - name: Chunks from the bucket itself (presigned, decrypted and zstd-decoded in the page; every way back to the server)
-        run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/direct-browser.mjs
-      - name: A game saved whole before it starts, the bucket's objects decoded by sake's own zstd
-        run: PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/save-first-browser.mjs target/release/ippai
-      - uses: actions/upload-artifact@v7.0.2
-        if: ${{ !cancelled() }}
-        with:
-          name: api-counts-host-tests
-          path: ${{ runner.temp }}/api-counts/
-          if-no-files-found: ignore
-          retention-days: 30
+          node tests/savestate-browser.mjs target/release/ippai
+          node tests/autoadvance-browser.mjs target/release/ippai
+          node tests/exec-browser.mjs target/release/ippai
+          node tests/screen-browser.mjs target/release/ippai
+          node tests/direct-browser.mjs
+          node tests/save-first-browser.mjs target/release/ippai
+      # (the artifacts are ready as soon as Build is: upload them while the checks run)
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ippai
@@ -587,7 +652,23 @@ jobs:
           name: web
           path: web/dist
           retention-days: 14
-
+      - name: Wait for the six runs
+        wait: [windows, host-sake, host-grow, snap, snap-grow, browser-tests]
+      # (after host-sake, which writes it: the artifact the coverage report reads)
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: api-counts-host-tests
+          path: ${{ runner.temp }}/api-counts/
+          if-no-files-found: ignore
+          retention-days: 30
+      # (saved after the checks (compressing it while they run would take their cores), and on
+      # main only: a copy per pull request or tag would be unusable by the others)
+      - if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.cache-emsdk.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/emsdk4
+          key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
@@ -597,7 +678,6 @@ jobs:
         uses: actions/cache/save@v6.1.0
         with:
           path: |
-            ~/emsdk4
             ~/.cargo/registry
             ~/.cargo/git
             target
