@@ -693,6 +693,9 @@ jobs:
 
   page-tests:
     needs: build
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -738,6 +741,36 @@ jobs:
           node tests/screen-browser.mjs target/release/ippai
           node tests/direct-browser.mjs
           node tests/save-first-browser.mjs target/release/ippai
+
+      - name: Restore states across two real runtime builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: |
+          # The previous successful main artifact is immutable: use its original
+          # page code and Wasm together, never just change a build-id in a fixture.
+          old="$RUNNER_TEMP/ippai-old-web"
+          found=false
+          for run in $(gh run list --workflow ci.yml --branch main --status success --limit 10 --json databaseId --jq '.[].databaseId'); do
+            rm -rf "$old"
+            if ! gh run download "$run" --name web --dir "$old"; then continue; fi
+            if python3 - "$old/sake/build-id.txt" web/dist/sake/build-id.txt <<'PYIDS'
+          import sys
+          from pathlib import Path
+          a, b = [dict(line.split() for line in Path(p).read_text().splitlines()) for p in sys.argv[1:]]
+          sys.exit(0 if all(a.get(k) and b.get(k) and a[k] != b[k] for k in ('sake', 'sake-grow')) else 1)
+          PYIDS
+            then
+              found=true
+              echo "Old runtime artifact: CI run $run" >> "$GITHUB_STEP_SUMMARY"
+              OLD_WEB="$old" NEW_WEB=web/dist node tests/savestate-browser.mjs target/release/ippai
+              break
+            fi
+          done
+          if [ "$found" = false ]; then
+            echo "::warning::No retained successful main artifact with two distinct runtime builds; upgrade E2E not run"
+            echo "Upgrade E2E not run: no distinct prior runtime artifact available." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   windows:
     runs-on: ubuntu-24.04

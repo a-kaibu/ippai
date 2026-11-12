@@ -7,7 +7,7 @@
 //   node tests/apps-browser.mjs [path to ippai]   (web's node_modules installed; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -36,6 +36,7 @@ const app = (name, id) => {
 };
 const A = app("A", "000000000000000a");
 const B = app("B", "000000000000000b");
+for (const web of [A, B]) utimesSync(join(web, "sake/build-id.txt"), 1000000000, 1000000000);
 const port = 9700 + Math.floor(Math.random() * 100) * 2;
 const base = `http://127.0.0.1:${port}/`;
 const store = join(work, "store");
@@ -48,11 +49,22 @@ async function serve(web) {
   throw new Error("ippai serve did not start");
 }
 let server = await serve(A);
+const oldStamp = (await fetch(`${base}sake/build-id.txt`)).headers.get("last-modified");
 server.kill();
 await new Promise((r) => server.once("exit", r));
 server = await serve(B);
 const browser = await chromium.launch({ args: ["--no-proxy-server"] });
 try {
+  // Artifact extraction/rollback can preserve the same (or an earlier) mtime.
+  // A stale build-id must never make an incompatible state look loadable.
+  const ids = await fetch(`${base}sake/build-id.txt`, { headers: { "if-modified-since": oldStamp } });
+  assert.equal(ids.status, 200, "build ids were validated by timestamps instead of content");
+  assert.match(await ids.text(), /000000000000000b/);
+  // Runtime assets still use the normal immutable cache and conditional requests.
+  const wasm = await fetch(`${base}sake/sake.wasm?v=B`);
+  assert.match(wasm.headers.get("cache-control"), /immutable/);
+  const cached = await fetch(`${base}sake/sake.wasm?v=B`, { headers: { "if-modified-since": wasm.headers.get("last-modified") } });
+  assert.equal(cached.status, 304);
   const builds = await (await fetch(`${base}apps/builds`)).json();
   const keyA = builds["000000000000000a"];
   assert.ok(keyA && builds["f00000000000000a"] === keyA, JSON.stringify(builds));
@@ -81,6 +93,18 @@ try {
   const put = await page.evaluate(async () => (await fetch("saves/game", { method: "PUT", headers: { "if-match": '"1"' }, body: "from A" })).status);
   assert.equal(put, 204);
   assert.equal(await (await fetch(`${base}saves/game`)).text(), "from A");
+  // Old page code navigates to its own list on exit/back. The server must return
+  // the current app, retaining switches but dropping the completed state's slot.
+  await page.goto(`${base}apps/${keyA}/play.html?jit=0&state=2&autostart&memory=grow`);
+  assert.equal(new URL(page.url()).pathname, "/play.html");
+  assert.equal(await page.locator("#v").textContent(), "B");
+  assert.deepEqual([...new URL(page.url()).searchParams], [["jit", "0"], ["memory", "grow"]]);
+  // A manual executable is still a running old app, including encoded query keys.
+  await page.goto(`${base}apps/${keyA}/play.html?%72un=a.exe&state=2`);
+  assert.equal(await page.locator("#v").textContent(), "A");
+  await page.goto(`${base}apps/${keyA}/index.html`);
+  assert.equal(page.url(), `${base}index.html`);
+  assert.equal(await page.title(), "B");
   console.log("apps-browser: ok");
 } finally {
   await browser.close();
