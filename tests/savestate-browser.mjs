@@ -81,6 +81,7 @@ const bytes = (dir) => readdirSync(dir, { withFileTypes: true }).reduce((n, e) =
 async function device(name) {
   const ctx = await chromium.launchPersistentContext(join(work, name), { args: ["--enable-unsafe-webgpu"], viewport: { width: 1280, height: 720 } });
   contexts.add(ctx);
+  await ctx.addInitScript(() => { globalThis.__ippaiStateTestDocument = crypto.randomUUID(); });
   const page = ctx.pages()[0] ?? (await ctx.newPage());
   if (process.env.VERBOSE) {
     page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) console.log(`[${name}] navigation ${frame.url()}`); });
@@ -113,6 +114,7 @@ async function round(tag, start, game = "g", wholeOk = (w) => w.includes("clocks
   const a = await device(`a${tag}`);
   await a.page.goto(`${play}${start}`);
   await until(a.lines, /^step 15:/);
+  const runDocument = await a.page.evaluate(() => globalThis.__ippaiStateTestDocument);
   await a.page.getByRole("button", { name: "どこでもセーブ" }).click();
   await a.page.getByRole("dialog").getByRole("button", { name: "セーブ" }).first().click();
   await until(a.lines, /^state: .* stood still \d+ ms/, 60000);
@@ -126,7 +128,10 @@ async function round(tag, start, game = "g", wholeOk = (w) => w.includes("clocks
 
   // `end` is guest output, before exit's asynchronous save and navigation finish.
   // Do not let the previous run's leave() interrupt the restoration navigation.
-  await a.page.waitForURL((u) => !u.searchParams.has("game"), { timeout: 120000 });
+  // history.back changes the URL before leave() reloads the page. Wait for a
+  // genuinely new document, or that pending reload can interrupt our goto below.
+  await a.page.waitForFunction((old) => globalThis.__ippaiStateTestDocument !== old && !new URL(location.href).searchParams.has("game"), runDocument, { timeout: 120000 });
+  await a.page.waitForLoadState("load");
   if (upgrade) await serve(newWeb);
   const builds = await (await fetch(`${base}apps/builds`)).json();
   const runtime = start.includes("memory=grow") ? "sake-grow" : "sake";
