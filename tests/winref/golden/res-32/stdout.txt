@@ -70,7 +70,7 @@ LoadStringW 100 cap 10: 9 err 57005 [00610020006c006f006e00670065007200200000]
 LoadStringW 9999 cap 64: 0 err 1814 [0000]
 LoadStringW 9999 cap 0: 0 err 1814 []
 menu 1 count 2
-  item 0: 1 id 458889 type 0 state 0 sub 1 text [&File] cch 5
+  item 0: 1 id 6881613 type 0 state 0 sub 1 text [&File] cch 5
   item 1: 1 id 403 type 0 state 8 sub 0 text [&Help] cch 5
   item 2: 0 id 0 type 0 state 0 sub 0 text [] cch 64
 sub count 3 id0 401 id1 0 state2 1
