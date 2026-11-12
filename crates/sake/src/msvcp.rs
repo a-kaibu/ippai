@@ -327,6 +327,37 @@ fn ctype_tolower_range(c: &mut Ctx) -> u32 {
     c.call(f, &[this, c.a(1), c.a(2)])
 }
 
+fn ctype_toupper(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let f = rp(rp(this) + 6 * ps());
+    c.call(f, &[this, c.a(1)]) & 0xff
+}
+fn ctype_toupper_range(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let f = rp(rp(this) + 5 * ps());
+    c.call(f, &[this, c.a(1), c.a(2)])
+}
+fn ctype_widen(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let f = rp(rp(this) + 8 * ps());
+    c.call(f, &[this, c.a(1)]) & 0xff
+}
+fn ctype_widen_range(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let f = rp(rp(this) + 7 * ps());
+    c.call(f, &[this, c.a(1), c.a(2), c.a(3)])
+}
+fn ctype_narrow(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let f = rp(rp(this) + 10 * ps());
+    c.call(f, &[this, c.a(1), c.a(2)]) & 0xff
+}
+fn ctype_narrow_range(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let f = rp(rp(this) + 9 * ps());
+    c.call(f, &[this, c.a(1), c.a(2), c.a(3), c.a(4)])
+}
+
 // ---------------------------------------------------------------------------------------------
 // the standard exceptions: { vtable (scalar deleting destructor, what), __std_exception_data
 // { what, do_free } } (regex_error: then its error_type); thrown with a ThrowInfo { attributes,
@@ -596,6 +627,12 @@ pub fn init() {
         ("?_Getcat@?$ctype@D@std@@SA_KPEAPEBVfacet@locale@2@PEBV42@@Z", ctype_getcat),
         ("?tolower@?$ctype@D@std@@QEBADD@Z", ctype_tolower),
         ("?tolower@?$ctype@D@std@@QEBAPEBDPEADPEBD@Z", ctype_tolower_range),
+        ("?toupper@?$ctype@D@std@@QEBADD@Z", ctype_toupper),
+        ("?toupper@?$ctype@D@std@@QEBAPEBDPEADPEBD@Z", ctype_toupper_range),
+        ("?widen@?$ctype@D@std@@QEBADD@Z", ctype_widen),
+        ("?widen@?$ctype@D@std@@QEBAPEBDPEBD0PEAD@Z", ctype_widen_range),
+        ("?narrow@?$ctype@D@std@@QEBADDD@Z", ctype_narrow),
+        ("?narrow@?$ctype@D@std@@QEBAPEBDPEBD0DPEAD@Z", ctype_narrow_range),
         ("_Strcoll", _Strcoll),
         ("_Strxfrm", _Strxfrm),
         ("?_Xbad_alloc@std@@YAXXZ", x_bad_alloc),

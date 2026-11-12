@@ -116,8 +116,8 @@
     __C_specific_handler、catch funclet の呼び出しと継続、再送出、std::uncaught_exceptions。
     Wine の except.c / handler4.c の移植。
   - msvcp140 (msvcp.rs、x64 のみ): locale の最小限 (_Locimp "C"、_Lockit、_Locinfo、
-    ctype<char>)、_Xbad_alloc/_Xlength_error/_Xout_of_range/_Xregex_error (std の例外を
-    throw)。iarsys64.dll (Artemis) が使う分。それ以外の msvcp140 の関数は未実装で呼ぶと止まる。
+    ctype<char> の tolower/toupper/widen/narrow（単文字・範囲、独自 facet の仮想呼び出し）)、_Xbad_alloc/_Xlength_error/_Xout_of_range/_Xregex_error (std の例外を
+    throw)。host/tests/msvcpchar.c は全256バイト・空範囲・境界・独自facetを実EXEで検証。iarsys64.dll (Artemis) が使う分。それ以外の msvcp140 の関数は未実装で呼ぶと止まる。
   - _create_locale: msvcrt / msvcr* は threadlocinfo (x64 はポインタ幅で並べ直す)、UCRT は
     __crt_locale_data (先頭が pctype / mb_cur_max / コードページ)。winref crtlocale (#58)。
   - _set_se_translator (cxx.rs / cxx64.rs): try ブロックを持つ関数のフレームハンドラが構造化例外 (/EHs

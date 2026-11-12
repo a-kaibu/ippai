@@ -42,6 +42,7 @@ for t in nullcall intops simd atomics smc cmp64 ssecvt textbounds crtstdio files
   i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 -o "$OUT/host_$t-32.exe" "$src" "$OUT/ja32.res" $fpu $l
 done
 x86_64-w64-mingw32-gcc -O2 -o "$OUT/host_struct64-64.exe" "$ROOT/host/tests/struct64.c" "$OUT/ja64.res" $(libs "$ROOT/host/tests/struct64.c")
+x86_64-w64-mingw32-gcc -O2 -o "$OUT/host_msvcpchar-64.exe" "$ROOT/host/tests/msvcpchar.c" "$OUT/ja64.res"
 rm "$OUT"/*.res
 # D3D9 traces replayed (tests/replay: replay_<trace>-32.exe)
 "$ROOT/tests/replay/build.sh" "$OUT"
