@@ -44,6 +44,21 @@ Wine (it has no `wine_server_call`), so the tests expect Windows' results everyw
   parsed as for node). Results in `expected-i386-browser.tsv`; CI job `winetest-gpu`. Needs
   the web build with sake in it (`web/dist`), `target/release/ippai` and Playwright.
 
+CI also runs `gdiplus:font` with the IPA stand-ins made by `tools/ci/sake-fonts.py`, once
+per architecture. `expected-gdiplus-fonts.tsv` records this fixture's results: 588 checks,
+102 remaining failures on both i386 and x86_64 with build 0c662436. With no font files,
+x64 instead crashes before its summary; that crash must fail the fonts fixture. The
+remaining failures and the separate metafile crash are tracked in #99.
+
+```sh
+python3 tools/ci/sake-fonts.py /tmp/ippai-fonts
+python3 tests/winetest/run.py --arch x86_64 --fonts /tmp/ippai-fonts \
+  --expected tests/winetest/expected-gdiplus-fonts.tsv gdiplus:font
+```
+
+`--expected FILE` selects an explicit baseline and also rejects any baseline test that did
+not run. The fonts fixture reports are uploaded as `winetest-fonts-i386` / `winetest-fonts-x86_64`.
+
 Two switches make the tests more useful on sake: `SAKE_PROC_STUBS=1` makes GetProcAddress find
 functions sake knows from the DLL specs but does not implement (their stubs return 0), as
 Windows would, so a test fails on them instead of crashing on a NULL call (games keep the

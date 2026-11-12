@@ -1,0 +1,3 @@
+# Wine 11.20, IPA fonts from tools/ci/sake-fonts.py, i386 and x86_64.
+# CI runtime 43223421208 / 0c662436: crashes are regressions, remaining failures stay visible.
+gdiplus:font	fail	102	588

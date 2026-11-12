@@ -117,6 +117,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", default="i386")
     ap.add_argument("--update", action="store_true")
+    ap.add_argument("--expected", help="explicit baseline (all its tests must run)")
     ap.add_argument("-j", type=int, default=os.cpu_count())
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--fonts", default=os.environ.get("WINETEST_FONTS"))
@@ -178,11 +179,15 @@ def main():
             results[f"{d}:{t}"] = r
             print(f"{r['status']:7} {d}:{t} {r['executed']} tests, {r['failures']} failures ({r['secs']:.0f}s)", flush=True)
 
-    exp_path = os.path.join(HERE, f"expected-{a.arch}{suffix}.tsv")
+    exp_path = a.expected or os.path.join(HERE, f"expected-{a.arch}{suffix}.tsv")
+    if a.expected and not os.path.isfile(exp_path):
+        raise FileNotFoundError(exp_path)
     expected = read_tsv(exp_path)
     # tests whose failure count depends on thread timing: only their status is compared
     flaky = {l.split()[0] for l in open(os.path.join(HERE, "flaky.txt")) if l.strip() and not l.startswith("#")}
     worse, better = [], []
+    if a.expected:
+        worse.extend(f"{k}: expected test did not run" for k in sorted(expected.keys() - results.keys()))
     for k in sorted(results):
         r = results[k]
         if k not in expected:
