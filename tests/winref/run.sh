@@ -19,11 +19,15 @@ for exe in "$EXE"/*.exe; do
   rm -rf "$d"; mkdir -p "$d/cwd"
   start=$(date +%s)
   if [ -n "${SAKE:-}" ]; then
+    # JIT and interpreter passes run together. Each probe needs its own registry, temp
+    # files and services; sharing /tmp/sake-c lets the other pass delete its state.
+    prefix=${SAKE_C:-$d/drive_c}
+    mkdir -p "$prefix/windows/system32" "$prefix/windows/temp"
     # (sake writes the console to stderr, with its own "sake:" lines)
     fonts=
     src=$(dirname "$0")/probes/${n%-[36][24]}.c
     [[ -n "${FONTS:-}" && -f "$src" ]] && grep -q 'needs: fonts' "$src" && fonts=$FONTS
-    (cd "$d/cwd" && timeout 300 env IPPAI_SCREEN=1366x768 ${fonts:+SAKE_FONTS="$fonts"} node "$SAKE" "$exe" > ../stdout.raw 2>&1; echo $? > ../exit)
+    (cd "$d/cwd" && timeout 300 env SAKE_C="$prefix" IPPAI_SCREEN=1366x768 ${fonts:+SAKE_FONTS="$fonts"} node "$SAKE" "$exe" > ../stdout.raw 2>&1; echo $? > ../exit)
     grep -Ev '^(sake|kura):' "$d/stdout.raw" > "$d/stdout.txt"; grep -E '^(sake|kura):' "$d/stdout.raw" > "$d/stderr.txt"; rm "$d/stdout.raw"
   else
     (cd "$d/cwd" && timeout 300 "$exe" > ../stdout.txt 2> ../stderr.txt; echo $? > ../exit)
