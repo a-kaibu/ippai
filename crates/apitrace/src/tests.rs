@@ -778,32 +778,16 @@ fn a_stream_limited_in_bytes_stops_after_the_call_that_reaches_it() {
     assert!(replay::convert_max(&ev, Some(32), false, whole_b.len() + 1).unwrap().0 == whole_b);
 }
 
-/// st() whose signature lives on (the writer tells signatures apart by their address: one freed
-/// and made again at the same address would be taken for the first)
-fn fk(name: &str, args: &[&str]) -> Rc<FunctionSig> {
-    let s = f(name, args);
-    std::mem::forget(s.clone());
-    s
-}
-
-fn stk(name: &str, members: &[&str], v: Vec<Value>) -> Value {
-    let s = st(name, members, v);
-    if let Value::Struct(sig, _) = &s {
-        std::mem::forget(sig.clone());
-    }
-    s
-}
-
 /// DDSURFACEDESC2 as apitrace records it (its unions' members all named)
 fn ddsd2(w: u64, h: u64, caps: u64, pitch: u64, surface: u64, bpp: u64) -> Value {
-    let pf = stk("DDPIXELFORMAT", &["dwSize", "dwFlags", "dwFourCC", "dwRGBBitCount", "dwRBitMask", "dwGBitMask", "dwBBitMask", "dwRGBAlphaBitMask"], vec![Value::UInt(32), Value::UInt(0x40), Value::UInt(0), Value::UInt(bpp), Value::UInt(0xf800), Value::UInt(0x7e0), Value::UInt(0x1f), Value::UInt(0)]);
-    let caps = stk("DDSCAPS2", &["dwCaps", "dwCaps2", "dwCaps3", "dwCaps4"], vec![Value::UInt(caps), Value::UInt(0), Value::UInt(0), Value::UInt(0)]);
-    stk("DDSURFACEDESC2", &["dwSize", "dwFlags", "dwHeight", "dwWidth", "lPitch", "dwLinearSize", "dwBackBufferCount", "lpSurface", "ddpfPixelFormat", "ddsCaps"],
+    let pf = st("DDPIXELFORMAT", &["dwSize", "dwFlags", "dwFourCC", "dwRGBBitCount", "dwRBitMask", "dwGBitMask", "dwBBitMask", "dwRGBAlphaBitMask"], vec![Value::UInt(32), Value::UInt(0x40), Value::UInt(0), Value::UInt(bpp), Value::UInt(0xf800), Value::UInt(0x7e0), Value::UInt(0x1f), Value::UInt(0)]);
+    let caps = st("DDSCAPS2", &["dwCaps", "dwCaps2", "dwCaps3", "dwCaps4"], vec![Value::UInt(caps), Value::UInt(0), Value::UInt(0), Value::UInt(0)]);
+    st("DDSURFACEDESC2", &["dwSize", "dwFlags", "dwHeight", "dwWidth", "lPitch", "dwLinearSize", "dwBackBufferCount", "lpSurface", "ddpfPixelFormat", "ddsCaps"],
         vec![Value::UInt(124), Value::UInt(0x100f), Value::UInt(h), Value::UInt(w), Value::UInt(pitch), Value::UInt(pitch), Value::UInt(0), if surface == 0 { Value::Null } else { Value::Opaque(surface) }, pf, caps])
 }
 
 fn rect_v(l: i64, t: i64, r: i64, b: i64) -> Value {
-    Value::Array(vec![stk("RECT", &["left", "top", "right", "bottom"], vec![Value::SInt(l), Value::SInt(t), Value::SInt(r), Value::SInt(b)])])
+    Value::Array(vec![st("RECT", &["left", "top", "right", "bottom"], vec![Value::SInt(l), Value::SInt(t), Value::SInt(r), Value::SInt(b)])])
 }
 
 /// A windowed DirectDraw 7 session as apitrace records it (with tests/replay's wrapper: the
@@ -811,37 +795,37 @@ fn rect_v(l: i64, t: i64, r: i64, b: i64) -> Value {
 fn ddraw_session(exclusive: bool) -> Vec<u8> {
     let mut w = Writer::new(&[("process.arch", "x86")]);
     let ok = Some(Value::UInt(0));
-    let cx = fk("DirectDrawCreateEx", &["lpGuid", "lplpDD", "iid", "pUnkOuter"]);
+    let cx = f("DirectDrawCreateEx", &["lpGuid", "lplpDD", "iid", "pUnkOuter"]);
     let n = w.enter(0, &cx, &[(0, Value::Null), (2, Value::Blob(vec![0; 16])), (3, Value::Null)]);
     w.leave(n, &[(1, Value::Array(vec![Value::Opaque(0x1000)]))], ok.as_ref(), false);
-    let coop = fk("IDirectDraw7::SetCooperativeLevel", &["this", "hWnd", "dwFlags"]);
+    let coop = f("IDirectDraw7::SetCooperativeLevel", &["this", "hWnd", "dwFlags"]);
     let n = w.enter(0, &coop, &[(0, Value::Opaque(0x1000)), (1, Value::Opaque(0x777)), (2, Value::UInt(if exclusive { 0x11 } else { 8 }))]);
     w.leave(n, &[], ok.as_ref(), false);
     if exclusive {
-        let mode = fk("IDirectDraw7::SetDisplayMode", &["this", "dwWidth", "dwHeight", "dwBPP", "dwRefreshRate", "dwFlags"]);
+        let mode = f("IDirectDraw7::SetDisplayMode", &["this", "dwWidth", "dwHeight", "dwBPP", "dwRefreshRate", "dwFlags"]);
         let n = w.enter(0, &mode, &[(0, Value::Opaque(0x1000)), (1, Value::UInt(800)), (2, Value::UInt(600)), (3, Value::UInt(16)), (4, Value::UInt(0)), (5, Value::UInt(0))]);
         w.leave(n, &[], ok.as_ref(), false);
     }
-    let cs = fk("IDirectDraw7::CreateSurface", &["this", "lpDDSurfaceDesc", "lplpDDSurface", "pUnkOuter"]);
+    let cs = f("IDirectDraw7::CreateSurface", &["this", "lpDDSurfaceDesc", "lplpDDSurface", "pUnkOuter"]);
     let n = w.enter(0, &cs, &[(0, Value::Opaque(0x1000)), (1, Value::Array(vec![ddsd2(0, 0, 0x200, 0, 0, 0)])), (3, Value::Null)]);
     w.leave(n, &[(2, Value::Array(vec![Value::Opaque(0x2000)]))], ok.as_ref(), false);
     let n = w.enter(0, &cs, &[(0, Value::Opaque(0x1000)), (1, Value::Array(vec![ddsd2(40, 30, 0x840, 0, 0, 16)])), (3, Value::Null)]);
     w.leave(n, &[(2, Value::Array(vec![Value::Opaque(0x3000)]))], ok.as_ref(), false);
     // a rect locked: lpSurface at its corner, rows of 10 16-bit pixels in a pitch of 96
-    let lock = fk("IDirectDrawSurface7::Lock", &["this", "lpDestRect", "lpDDSurfaceDesc", "dwFlags", "hEvent"]);
+    let lock = f("IDirectDrawSurface7::Lock", &["this", "lpDestRect", "lpDDSurfaceDesc", "dwFlags", "hEvent"]);
     let n = w.enter(0, &lock, &[(0, Value::Opaque(0x3000)), (1, rect_v(4, 2, 14, 5)), (3, Value::UInt(1)), (4, Value::Null)]);
     w.leave(n, &[(2, Value::Array(vec![ddsd2(40, 30, 0x840, 96, 0x9000 + 2 * 96 + 8, 16)]))], ok.as_ref(), false);
-    let mc = fk("memcpy", &["dest", "src", "n"]);
+    let mc = f("memcpy", &["dest", "src", "n"]);
     let n = w.enter(0, &mc, &[(0, Value::Opaque(0x9000 + 2 * 96 + 8)), (1, Value::Blob(vec![7; 2 * 96 + 20])), (2, Value::UInt(2 * 96 + 20))]);
     w.leave(n, &[], None, true);
-    let unlock = fk("IDirectDrawSurface7::Unlock", &["this", "lpRect"]);
+    let unlock = f("IDirectDrawSurface7::Unlock", &["this", "lpRect"]);
     let n = w.enter(0, &unlock, &[(0, Value::Opaque(0x3000)), (1, Value::Null)]);
     w.leave(n, &[], ok.as_ref(), false);
     // GDI on it: the DC handed out and given back, then the wrapper's snapshot
-    let gdc = fk("IDirectDrawSurface7::GetDC", &["this", "phDC"]);
+    let gdc = f("IDirectDrawSurface7::GetDC", &["this", "phDC"]);
     let n = w.enter(0, &gdc, &[(0, Value::Opaque(0x3000))]);
     w.leave(n, &[(1, Value::Array(vec![Value::Opaque(0x5a0)]))], ok.as_ref(), false);
-    let rdc = fk("IDirectDrawSurface7::ReleaseDC", &["this", "hDC"]);
+    let rdc = f("IDirectDrawSurface7::ReleaseDC", &["this", "hDC"]);
     let n = w.enter(0, &rdc, &[(0, Value::Opaque(0x3000)), (1, Value::Opaque(0x5a0))]);
     w.leave(n, &[], ok.as_ref(), false);
     let n = w.enter(0, &lock, &[(0, Value::Opaque(0x3000)), (1, Value::Null), (3, Value::UInt(1)), (4, Value::Null)]);
@@ -851,16 +835,16 @@ fn ddraw_session(exclusive: bool) -> Vec<u8> {
     let n = w.enter(0, &unlock, &[(0, Value::Opaque(0x3000)), (1, Value::Null)]);
     w.leave(n, &[], ok.as_ref(), false);
     // to the screen: a Blt and a BltFast (screen coordinates: the window was at 100, 50)
-    let blt = fk("IDirectDrawSurface7::Blt", &["this", "lpDestRect", "lpDDSrcSurface", "lpSrcRect", "dwFlags", "lpDDBltFx"]);
+    let blt = f("IDirectDrawSurface7::Blt", &["this", "lpDestRect", "lpDDSrcSurface", "lpSrcRect", "dwFlags", "lpDDBltFx"]);
     let n = w.enter(0, &blt, &[(0, Value::Opaque(0x2000)), (1, rect_v(100, 50, 140, 80)), (2, Value::Opaque(0x3000)), (3, Value::Null), (4, Value::UInt(0x0100_0000)), (5, Value::Null)]);
     w.leave(n, &[], ok.as_ref(), false);
-    let bf = fk("IDirectDrawSurface7::BltFast", &["this", "dwX", "dwY", "lpDDSrcSurface", "lpSrcRect", "dwTrans"]);
+    let bf = f("IDirectDrawSurface7::BltFast", &["this", "dwX", "dwY", "lpDDSrcSurface", "lpSrcRect", "dwTrans"]);
     let n = w.enter(0, &bf, &[(0, Value::Opaque(0x2000)), (1, Value::UInt(130)), (2, Value::UInt(70)), (3, Value::Opaque(0x3000)), (4, Value::Null), (5, Value::UInt(0x10))]);
     w.leave(n, &[], ok.as_ref(), false);
-    let vb = fk("IDirectDraw7::WaitForVerticalBlank", &["this", "dwFlags", "hEvent"]);
+    let vb = f("IDirectDraw7::WaitForVerticalBlank", &["this", "dwFlags", "hEvent"]);
     let n = w.enter(0, &vb, &[(0, Value::Opaque(0x1000)), (1, Value::UInt(1)), (2, Value::Null)]);
     w.leave(n, &[], ok.as_ref(), false);
-    let flip = fk("IDirectDrawSurface7::Flip", &["this", "lpDDSurfaceTargetOverride", "dwFlags"]);
+    let flip = f("IDirectDrawSurface7::Flip", &["this", "lpDDSurfaceTargetOverride", "dwFlags"]);
     let n = w.enter(0, &flip, &[(0, Value::Opaque(0x2000)), (1, Value::Null), (2, Value::UInt(1))]);
     w.leave(n, &[], ok.as_ref(), false);
     w.file(100)
@@ -907,4 +891,42 @@ fn an_exclusive_ddraw_session_takes_its_display_mode() {
     let ws = all.iter().position(|r| matches!(r, Record::WinSize(800, 600))).unwrap();
     assert!(matches!(&all[ws + 1], Record::Call { name, .. } if name == "IDirectDraw7::SetDisplayMode"));
     assert_eq!(replay::ddraw_window(&unpack(&ddraw_session(true)).unwrap(), false), Ok(None));
+}
+
+/// Each call drops its source signatures before the next one is allocated. The
+/// writer must still distinguish all definitions, including different layouts.
+#[test]
+fn temporary_signatures_roundtrip_without_address_reuse_or_leaks() {
+    let mut w = Writer::new(&[]);
+    let mut weak = None;
+    for i in 0..256 {
+        let sig = f(&format!("call{i}"), &["s", "e", "b"]);
+        if i == 0 { weak = Some(Rc::downgrade(&sig)); }
+        let members: Vec<_> = (0..1 + i % 4).map(|n| format!("m{n}")).collect();
+        let args = [
+            (0, st(&format!("S{i}"), &members.iter().map(String::as_str).collect::<Vec<_>>(), (0..members.len()).map(|n| Value::UInt(n as u64)).collect())),
+            (1, Value::Enum(Rc::new(EnumSig { values: vec![(format!("E{i}"), i as i64)] }), i as i64)),
+            (2, Value::Bitmask(Rc::new(BitmaskSig { flags: vec![(format!("B{i}"), 1)] }), 1)),
+        ];
+        let n = w.enter(0, &sig, &args);
+        w.leave(n, &[], None, false);
+    }
+    let parsed = parse_all(&w.file(100));
+    assert_eq!(parsed.len(), 256);
+    for (i, call) in parsed.iter().enumerate() {
+        assert_eq!(call.sig.name, format!("call{i}"));
+        let Value::Struct(sig, fields) = call.arg("s").unwrap() else { panic!() };
+        assert_eq!(sig.name, format!("S{i}"));
+        assert_eq!(sig.members.len(), 1 + i % 4);
+        assert_eq!(fields, &(0..1 + i % 4).map(|n| Value::UInt(n as u64)).collect::<Vec<_>>());
+        let Value::Enum(sig, value) = call.arg("e").unwrap() else { panic!() };
+        assert_eq!(sig.values, vec![(format!("E{i}"), i as i64)]);
+        assert_eq!(*value, i as i64);
+        let Value::Bitmask(sig, value) = call.arg("b").unwrap() else { panic!() };
+        assert_eq!(sig.flags, vec![(format!("B{i}"), 1)]);
+        assert_eq!(*value, 1);
+    }
+    assert!(weak.as_ref().unwrap().upgrade().is_some());
+    drop(w);
+    assert!(weak.unwrap().upgrade().is_none(), "writer leaked source signatures");
 }

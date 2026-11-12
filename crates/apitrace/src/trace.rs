@@ -509,12 +509,12 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 pub mod writer {
     use super::*;
-    use std::collections::HashSet;
+    use std::{any::Any, collections::HashMap};
 
     #[derive(Default)]
     pub struct Writer {
         pub b: Vec<u8>,
-        seen: HashSet<(u8, usize)>,
+        seen: HashMap<(u8, usize), (u64, Rc<dyn Any>)>,
         next_no: u64,
     }
 
@@ -545,16 +545,22 @@ pub mod writer {
             self.uint(s.len() as u64);
             self.b.extend_from_slice(s);
         }
-        fn first(&mut self, kind: u8, sig: usize) -> bool {
-            self.seen.insert((kind, sig))
+        fn signature<T: Any>(&mut self, kind: u8, sig: &Rc<T>) -> (u64, bool) {
+            let key = (kind, Rc::as_ptr(sig) as usize);
+            if let Some((id, _)) = self.seen.get(&key) { return (*id, false); }
+            // Keep signatures alive while their addresses identify them. Dense
+            // wire ids also avoid collisions from truncating 64-bit pointers.
+            let id = self.seen.len() as u64;
+            self.seen.insert(key, (id, sig.clone()));
+            (id, true)
         }
         /// ENTER with these in arguments; returns the call number
         pub fn enter(&mut self, thread: u64, sig: &Rc<FunctionSig>, args: &[(usize, Value)]) -> u64 {
             self.b.push(EVENT_ENTER);
             self.uint(thread);
-            let id = Rc::as_ptr(sig) as usize;
-            self.uint(id as u64 & 0xffff_ffff);
-            if self.first(0, id) {
+            let (id, first) = self.signature(0, sig);
+            self.uint(id);
+            if first {
                 self.string(sig.name.as_bytes());
                 self.uint(sig.args.len() as u64);
                 for a in &sig.args {
@@ -622,9 +628,9 @@ pub mod writer {
                 }
                 Value::Enum(sig, x) => {
                     self.b.push(9);
-                    let id = Rc::as_ptr(sig) as usize;
-                    self.uint(id as u64 & 0xffff_ffff);
-                    if self.first(1, id) {
+                    let (id, first) = self.signature(1, sig);
+                    self.uint(id);
+                    if first {
                         self.uint(sig.values.len() as u64);
                         for (n, x) in &sig.values {
                             self.string(n.as_bytes());
@@ -635,9 +641,9 @@ pub mod writer {
                 }
                 Value::Bitmask(sig, x) => {
                     self.b.push(10);
-                    let id = Rc::as_ptr(sig) as usize;
-                    self.uint(id as u64 & 0xffff_ffff);
-                    if self.first(2, id) {
+                    let (id, first) = self.signature(2, sig);
+                    self.uint(id);
+                    if first {
                         self.uint(sig.flags.len() as u64);
                         for (n, x) in &sig.flags {
                             self.string(n.as_bytes());
@@ -655,9 +661,9 @@ pub mod writer {
                 }
                 Value::Struct(sig, m) => {
                     self.b.push(12);
-                    let id = Rc::as_ptr(sig) as usize;
-                    self.uint(id as u64 & 0xffff_ffff);
-                    if self.first(3, id) {
+                    let (id, first) = self.signature(3, sig);
+                    self.uint(id);
+                    if first {
                         self.string(sig.name.as_bytes());
                         self.uint(sig.members.len() as u64);
                         for n in &sig.members {
