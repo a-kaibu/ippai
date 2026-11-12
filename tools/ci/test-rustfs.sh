@@ -34,4 +34,5 @@ if [ "$ready" != true ]; then
     echo 'RustFS did not become ready' >&2
     exit 1
 fi
-cargo test -p ippai --bin ippai storage::rustfs_tests:: -- --ignored --nocapture
+# (--release: CI's cargo test built the workspace there, so only the test binary is reused)
+cargo test --release -p ippai --bin ippai storage::rustfs_tests:: -- --ignored --nocapture
