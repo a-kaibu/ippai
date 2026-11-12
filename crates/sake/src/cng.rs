@@ -564,6 +564,11 @@ impl Ecc {
         e.validate()?;
         Ok(e)
     }
+    /// BCrypt's supported ECC algorithms reject malformed keys as invalid parameters;
+    /// NCrypt's storage-provider import reports NTE_NOT_SUPPORTED for these same blobs.
+    fn from_bcrypt_blob(b: &[u8], private: bool) -> Result<Ecc, u32> {
+        Self::from_blob(b, Some(private)).map_err(|_| STATUS_INVALID_PARAMETER)
+    }
     pub fn to_blob(&self, private: bool) -> Result<Vec<u8>, u32> {
         if private && self.d.is_none() {
             return Err(NTE_INVALID_PARAMETER);
@@ -1632,9 +1637,9 @@ fn BCryptImportKeyPair(c: &mut Ctx) -> u32 {
             "ECCPRIVATEBLOB" | "PRIVATEBLOB" => true,
             _ => return STATUS_NOT_SUPPORTED,
         };
-        let e = match Ecc::from_blob(&raw, Some(private)) {
+        let e = match Ecc::from_bcrypt_blob(&raw, private) {
             Ok(e) => e,
-            Err(e) => return nt(e),
+            Err(e) => return e,
         };
         // (the blob's curve and kind are the algorithm's)
         if e.ecdsa != ecdsa || curve.is_some_and(|c| c != e.curve) {
@@ -1735,9 +1740,6 @@ fn BCryptVerifySignature(c: &mut Ctx) -> u32 {
     let (digest, s) = (bytes(hash, hsize), bytes(sig, siglen));
     let r = match (&k.rsa, &k.ecc) {
         (_, Some(e)) => {
-            if s.len() != e.sig_len() {
-                return STATUS_INVALID_SIGNATURE;
-            }
             e.verify(&digest, &s)
         }
         (Some(r), _) => match padding(fl, info, true) {
@@ -1941,6 +1943,12 @@ mod tests {
                 let mut off = pubb.clone();
                 off[8 + n] ^= 1; // y changed: not on the curve
                 assert_eq!(Ecc::from_blob(&off, None).unwrap_err(), NTE_NOT_SUPPORTED);
+                assert_eq!(Ecc::from_bcrypt_blob(&off, false).unwrap_err(), STATUS_INVALID_PARAMETER);
+                assert!(Ecc::from_bcrypt_blob(&pubb, false).is_ok());
+                if ecdsa {
+                    let short = vec![0; pk.sig_len() - 1];
+                    assert_eq!(nt(pk.verify(&[0; 32], &short).unwrap_err()), STATUS_INVALID_PARAMETER);
+                }
                 let mut wrong_d = privb.clone();
                 let last = wrong_d.len() - 1;
                 wrong_d[last] ^= 1; // a scalar of another point

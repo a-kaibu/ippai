@@ -3,9 +3,9 @@ import public: 0
 verify openssl's signature: 0
 verify, signature changed: c000a000
 verify, hash changed: c000a000
-verify, short signature: c000a000
+verify, short signature: c000000d
 import into ECDH_P256: c000000d
-import, point off the curve: c00000bb
+import, point off the curve: c000000d
 sign with a public key fails: 1
 destroy: 0, again: c0000008
 generate 384 on P-256: c000000d
