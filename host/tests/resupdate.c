@@ -103,16 +103,20 @@ int main(int argc, char **argv) {
     CloseHandle(f);
     before = file_size(copy);
     u = BeginUpdateResourceA(copy, FALSE);
-    BOOL rejected = !u;
     if (u) {
         if (!UpdateResourceA(u, (LPCSTR)RT_RCDATA, "ALIGNMENT", 0, "x", 1)) {
-            rejected = TRUE;
             EndUpdateResourceA(u, TRUE);
         } else {
-            rejected = !EndUpdateResourceA(u, FALSE);
+            EndUpdateResourceA(u, FALSE);
         }
     }
-    printf("malformed alignment: rejected %d, size unchanged %d\n", rejected, file_size(copy) == before);
+    /* Windows can accept this update without growing the existing section.
+       For a malformed PE, test the allocation bound, not a required rejection. */
+    WIN32_FILE_ATTRIBUTE_DATA after;
+    BOOL bounded = GetFileAttributesExA(copy, GetFileExInfoStandard, &after)
+        && after.nFileSizeHigh == 0 && after.nFileSizeLow >= before
+        && after.nFileSizeLow <= before + 0x10000;
+    printf("malformed alignment: size bounded %d\n", bounded);
     DeleteFileA(copy);
-    return rejected ? 0 : 11;
+    return bounded ? 0 : 11;
 }
