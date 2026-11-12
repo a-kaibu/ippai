@@ -15,9 +15,10 @@ permissions:
   contents: read
 
 concurrency:
-  # (github.workflow: called from Release, a run of its own beside the push's)
+  # Called from Release in its own group. For main pushes, test the newest cumulative
+  # revision: an obsolete run (or a hung test) must not queue every fix behind it.
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
 
 jobs:
   browser:
@@ -643,8 +644,9 @@ jobs:
       - name: host/tests on ${{ matrix.build }}
         env:
           SAKE_BUILD: ${{ matrix.build }}
+          OUT: ${{ runner.temp }}/host-tests
         run: |
-          mkdir -p "$RUNNER_TEMP/api-counts"
+          mkdir -p "$RUNNER_TEMP/api-counts" "$OUT"
           if [ "$SAKE_BUILD" = sake-grow ]; then export IPPAI_JIT_RECLAIM=1; fi
           IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_C=$RUNNER_TEMP/sake-c SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/$SAKE_BUILD.js tests/host-tests.sh
       - uses: actions/upload-artifact@v7.0.2
@@ -654,6 +656,12 @@ jobs:
           path: ${{ runner.temp }}/api-counts/
           if-no-files-found: ignore
           retention-days: 30
+      - uses: actions/upload-artifact@v7.0.2
+        if: failure()
+        with:
+          name: host-tests-logs-${{ matrix.build }}
+          path: ${{ runner.temp }}/host-tests/*.log
+          retention-days: 7
 
   snapshots:
     needs: build
