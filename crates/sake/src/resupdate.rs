@@ -363,7 +363,28 @@ type Op = (Id, Id, u16, Option<Vec<u8>>);
 struct Update {
     path: String,
     keep: bool,
+    original: Tree,
     ops: Vec<Op>,
+    failed: bool,
+}
+
+impl Update {
+    fn push(&mut self, op: Op) -> bool {
+        let (ty, name, lang, data) = &op;
+        if data.is_none() {
+            let exists = self.ops.iter().rev().find(|(t, n, l, _)| (t, n, l) == (ty, name, lang))
+                .map(|(_, _, _, d)| d.is_some())
+                .unwrap_or_else(|| self.original.get(ty).and_then(|n| n.get(name)).is_some_and(|l| l.contains_key(lang)));
+            if !exists {
+                // Windows rejects the missing deletion and cannot commit this update set
+                // afterwards (recorded by host_resupdate-32).
+                self.failed = true;
+                return false;
+            }
+        }
+        self.ops.push(op);
+        true
+    }
 }
 
 static UPDATES: Mutex<Option<HashMap<u32, Update>>> = Mutex::new(None);
@@ -421,12 +442,15 @@ fn begin(c: &mut Ctx, wide: bool) -> u32 {
         last_error(5);
         return 0;
     };
-    if !delete && read(&bytes).is_none() {
-        last_error(193);
-        return 0;
-    }
+    let original = if delete { Tree::new() } else {
+        let Some(tree) = read(&bytes) else {
+            last_error(193);
+            return 0;
+        };
+        tree
+    };
     let h = mem::heap_alloc(4, true);
-    updates(|u| u.insert(h, Update { path, keep: !delete, ops: Vec::new() }));
+    updates(|u| u.insert(h, Update { path, keep: !delete, original, ops: Vec::new(), failed: false }));
     h
 }
 fn BeginUpdateResourceA(c: &mut Ctx) -> u32 {
@@ -448,11 +472,13 @@ fn update(c: &mut Ctx, wide: bool) -> u32 {
         Some(mem::slice(data, size).to_vec())
     };
     let (ty, name) = (id_arg(ty, wide), id_arg(name, wide));
-    let ok = updates(|u| u.get_mut(&h).map(|x| x.ops.push((ty, name, lang, op))).is_some());
-    if !ok {
-        last_error(6);
+    match updates(|u| u.get_mut(&h).map(|x| x.push((ty, name, lang, op)))) {
+        Some(true) => 1,
+        result => {
+            last_error(if result.is_none() { 6 } else { 1814 });
+            0
+        }
     }
-    ok as u32
 }
 fn UpdateResourceA(c: &mut Ctx) -> u32 {
     update(c, false)
@@ -471,6 +497,10 @@ fn end(c: &mut Ctx) -> u32 {
     mem::heap_free(h);
     if discard {
         return 1;
+    }
+    if x.failed {
+        last_error(1814);
+        return 0;
     }
     let Some(host) = crate::files::resolve(&x.path) else {
         last_error(2);
@@ -671,6 +701,17 @@ mod tests {
         assert_eq!(t[&Id::Int(3)][&Id::Int(1)][&0x409], (0, vec![5]));
         assert_eq!(t[&Id::Int(3)][&Id::Int(1)][&0x411].1.len(), 300);
         assert!(!t.contains_key(&ty) && !t.contains_key(&Id::Int(4)) && !t.contains_key(&Id::Int(9)));
+    }
+
+    #[test]
+    fn missing_delete_invalidates_transaction() {
+        let mut u = Update { path: String::new(), keep: true, original: Tree::new(), ops: Vec::new(), failed: false };
+        let (ty, name) = (Id::Int(10), Id::Int(1));
+        assert!(u.push((ty.clone(), name.clone(), 0, Some(b"data".to_vec()))));
+        assert!(u.push((ty.clone(), name.clone(), 0, None)));
+        assert!(!u.failed);
+        assert!(!u.push((ty, name, 0, None)));
+        assert!(u.failed);
     }
 
     fn id() -> impl Strategy<Value = Id> {
