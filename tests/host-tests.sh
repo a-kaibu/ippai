@@ -78,7 +78,12 @@ for t in $TESTS; do
       # Inno Setup 6.7.4 (its official installer, checked; kept in INNO_CACHE) installed on sake
       # by itself once per OUT, then its ISCC on sake compiles innoinstall.iss (once: the x64
       # run takes the same installer)
-      [ -f "$OUT/innoinstall-setup.exe" ] && return 0
+      if [ -f "$OUT/innoinstall-setup.exe" ]; then
+        python3 "$ROOT/tests/check-inno-fixture.py" "$OUT/innoinstall-setup.exe" >> "$OUT/inno-fixture.log" 2>&1 || {
+          cat "$OUT/inno-fixture.log"; return 1;
+        }
+        return 0
+      fi
       local v=6.7.4 sum=a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
       local cache=${INNO_CACHE:-$HOME/.cache/ippai-inno} tools=$OUT/inno-tools
       local exe=$cache/innosetup-$v.exe
@@ -101,8 +106,15 @@ for t in $TESTS; do
       printf 'hello inno\r\n' > "$tools/src/a.txt"
       head -c 300000 /dev/zero | tr '\0' i > "$tools/src/b.dat"
       cp "$ROOT/host/tests/innoinstall.iss" "$tools/src/" || return 1
-      (cd "$(dirname "$SAKE")" && timeout 900 env SAKE_C="$tools" SAKE_FONTS="$FONTS" node "$SAKE" "$tools/IS6/ISCC.exe" /Q 'C:\src\innoinstall.iss' > "$OUT/inno-iscc.log" 2>&1) &&
-        cp "$tools/src/out/innoinstall-setup.exe" "$OUT/" || { tail -5 "$OUT/inno-iscc.log"; return 1; }
+      (cd "$(dirname "$SAKE")" && timeout 900 env SAKE_C="$tools" SAKE_FONTS="$FONTS" SAKE_TRACE_EXIT=1 SAKE_TRACE_FILES=1 node "$SAKE" "$tools/IS6/ISCC.exe" 'C:\src\innoinstall.iss' > "$OUT/inno-iscc.log" 2>&1) &&
+        cp "$tools/src/out/innoinstall-setup.exe" "$OUT/" || { tail -20 "$OUT/inno-iscc.log"; return 1; }
+      # Keep a broken output for the CI artifact; do not retry it into a passing run.
+      python3 "$ROOT/tests/check-inno-fixture.py" "$OUT/innoinstall-setup.exe" > "$OUT/inno-fixture.log" 2>&1 || {
+        cat "$OUT/inno-fixture.log"; tail -40 "$OUT/inno-iscc.log"; return 1;
+      }
+      python3 "$ROOT/tests/test_inno_fixture.py" "$OUT/innoinstall-setup.exe" >> "$OUT/inno-fixture.log" 2>&1 || {
+        cat "$OUT/inno-fixture.log"; return 1;
+      }
       return 0
     fi
     if [ "$t" = msiui ]; then
