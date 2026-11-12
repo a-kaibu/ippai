@@ -1,13 +1,13 @@
-# The game database's VNDB part (crates/ippai/src/gamedb.rs): every Japanese VN on VNDB in one
-# SQLite file, pushed to GitHub Packages as ghcr.io/a-kaibu/ippai-gamedb:vndb
-# (`ippai gamedb update --part vndb`). ippai serve pulls it once a day with ErogameScape's part
-# (:egs, built by hand on a host ErogameScape answers: it refuses GitHub's runners;
-# tools/gamedb/update.sh). By hand only (the user, 2026-11-09: "一旦手動更新でいいや"):
-# Actions -> Game database -> Run workflow.
 name: Game database
 
 on:
   workflow_dispatch:
+    inputs:
+      part:
+        description: Database to rebuild from the public SQLite mirrors
+        type: choice
+        options: [all, egs, vndb]
+        default: all
 
 permissions:
   contents: read
@@ -35,12 +35,19 @@ jobs:
           restore-keys: |
             gamedb-${{ runner.os }}-${{ env.RUST_KEY }}-
       - run: cargo build --release -p ippai
-      # (pull the copy published now, build (ErogameScape at its pace, VNDB within its rate
-      # limit), check, push)
+      # Manual only. Each part is checked before publication; retain EGS enrichment.
       - name: Build and push
         env:
           GHCR_TOKEN: ${{ github.token }}
-        run: ./target/release/ippai gamedb update --part vndb "$RUNNER_TEMP/gamedb"
+          PART: ${{ inputs.part }}
+        run: |
+          parts="$PART"
+          if [ "$parts" = all ]; then parts="egs vndb"; fi
+          failed=0
+          for part in $parts; do
+            ./target/release/ippai gamedb update --part "$part" "$RUNNER_TEMP/gamedb" || failed=1
+          done
+          exit "$failed"
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target

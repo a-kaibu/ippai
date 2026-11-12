@@ -1,6 +1,6 @@
 //! The game database: every ErogameScape (批評空間) game and every Japanese VN on VNDB, each part
 //! its own SQLite file (Part), rebuilt by hand now and then (`ippai gamedb update --part`:
-//! ErogameScape's on a host it answers, VNDB's on GitHub's runner; tools/gamedb/README.md) and
+//! from public SQLite mirrors; tools/gamedb/README.md) and
 //! published as a public package (ghcr.io/a-kaibu/ippai-gamedb, a tag for each part, zstd), so
 //! a server that cannot reach ErogameScape (it resets many hosts' connections) still identifies
 //! games and shows their information. The server keeps them as `<store>/gamedb-<part>.sqlite`
@@ -20,15 +20,26 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
+mod mirror;
+
+#[derive(clap::Args, Default)]
+pub struct Source {
+    /// Import an already downloaded vn-archive SQLite mirror instead of downloading it.
+    #[arg(long, value_name = "SQLITE")]
+    mirror: Option<std::path::PathBuf>,
+    /// Use the original websites/API instead of the public SQLite mirrors.
+    #[arg(long, conflicts_with = "mirror")]
+    live: bool,
+}
+
 /// Where the package is, host/repo (IPPAI_GAMEDB_REF: another registry, for tests). Each part has
 /// its tag there (Part::tag).
 pub fn reference() -> String {
     std::env::var("IPPAI_GAMEDB_REF").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "ghcr.io/a-kaibu/ippai-gamedb".into())
 }
 
-/// The two parts, each its own file, tag and maker (the user, 2026-11-09: "批評空間とvndbでdb分けた
-/// 方がいい"): ErogameScape's, built by hand on a host it answers (tools/gamedb/update.sh: it
-/// refuses GitHub's runners and many clouds); VNDB's, on GitHub's runner (gamedb.yml).
+/// The two parts keep separate files and tags; both can be rebuilt on a GitHub runner
+/// from vn-archive's public SQLite mirrors. Updates are manually triggered.
 #[derive(Clone, Copy, PartialEq, Debug, clap::ValueEnum)]
 pub enum Part {
     Egs,
@@ -190,10 +201,13 @@ pub fn write(out: &Path, egs: &[(u32, meta::Row, Vec<meta::Row>)], vndb: &[serde
     Ok(())
 }
 
-/// `ippai gamedb build --part <part> <out>`: that part from its site (about 3 minutes of
-/// ErogameScape at its pace, half an hour of VNDB within its rate limit).
-pub fn build(out: &Path, part: Part) -> Result<()> {
-    build_with(out, part, &|| egs_all(&meta::egs_rows), &vndb_fetch)
+/// Build a compact part from its SQLite mirror, or the original service with --live.
+pub fn build(out: &Path, part: Part, source: &Source) -> Result<()> {
+    if source.live {
+        build_with(out, part, &|| egs_all(&meta::egs_rows), &vndb_fetch)
+    } else {
+        mirror::build(out, part, source.mirror.as_deref())
+    }
 }
 
 fn vndb_fetch() -> Result<Vec<serde_json::Value>> {
@@ -423,12 +437,16 @@ fn push_to(name: &str, part: Part, file: &Path, secret: &str, day: &str) -> Resu
     Ok(layer)
 }
 
-/// `part` built anew into `dir` and pushed (tools/gamedb/update.sh: ErogameScape's; gamedb.yml:
-/// VNDB's).
-pub fn update(dir: &Path, part: Part, secret: &str) -> Result<String> {
+/// Rebuild and publish one part. Mirror updates retain previous EGS enrichment.
+pub fn update(dir: &Path, part: Part, secret: &str, source: &Source) -> Result<String> {
     std::fs::create_dir_all(dir)?;
     let out = dir.join(part.file());
-    build(&out, part)?;
+    // The EGS mirror does not include POV/series tables. A fresh updater first gets
+    // the published copy so rebuilding cannot silently erase that enrichment.
+    if part == Part::Egs && !source.live && !out.exists() {
+        pull(&out, part, None).context("fetching previous EGS tags/series (for a first publication, use build then push)")?;
+    }
+    build(&out, part, source)?;
     push(&out, part, secret)
 }
 

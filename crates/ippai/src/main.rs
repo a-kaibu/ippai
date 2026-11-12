@@ -96,11 +96,13 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum GamedbCmd {
-    /// A part (ErogameScape's games or VNDB's Japanese VNs) from its site into a new SQLite file.
+    /// Build a compact SQLite part from the public mirror (or --live for the original service).
     Build {
         out: std::path::PathBuf,
         #[arg(long, value_enum)]
         part: gamedb::Part,
+        #[command(flatten)]
+        source: gamedb::Source,
     },
     /// A part's published copy (ghcr.io/a-kaibu/ippai-gamedb:<part>) into a file.
     Pull {
@@ -120,12 +122,13 @@ enum GamedbCmd {
         #[arg(long, value_enum)]
         part: gamedb::Part,
     },
-    /// build, check, push in a directory: egs by hand on a host ErogameScape answers
-    /// (tools/gamedb/update.sh), vndb on GitHub's runner (gamedb.yml).
+    /// Build, check and publish a part from its SQLite mirror (manual update).
     Update {
         dir: std::path::PathBuf,
         #[arg(long, value_enum)]
         part: gamedb::Part,
+        #[command(flatten)]
+        source: gamedb::Source,
     },
 }
 
@@ -224,11 +227,11 @@ fn main() -> anyhow::Result<()> {
         #[cfg(unix)]
         Cmd::Logs { follow, lines } => daemon::logs(&dirs, follow, lines),
         Cmd::Pack(c) => pack::run(&dirs.store, c),
-        Cmd::Gamedb { action: GamedbCmd::Build { out, part } } => gamedb::build(&out, part),
+        Cmd::Gamedb { action: GamedbCmd::Build { out, part, source } } => gamedb::build(&out, part, &source),
         Cmd::Gamedb { action: GamedbCmd::Pull { out, part } } => gamedb::pull(&out, part, None).map(|d| println!("{d}")),
         Cmd::Gamedb { action: GamedbCmd::Check { file, part } } => gamedb::check(&file, part),
         Cmd::Gamedb { action: GamedbCmd::Push { file, part } } => gamedb::push(&file, part, &ghcr_token()?).map(|d| println!("{d}")),
-        Cmd::Gamedb { action: GamedbCmd::Update { dir, part } } => gamedb::update(&dir, part, &ghcr_token()?).map(|d| println!("{d}")),
+        Cmd::Gamedb { action: GamedbCmd::Update { dir, part, source } } => gamedb::update(&dir, part, &ghcr_token()?, &source).map(|d| println!("{d}")),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),
     }
 }

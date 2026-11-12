@@ -1,11 +1,11 @@
 #!/bin/sh
 # The game database rebuilt and published by hand, with the GitHub CLI's sign-in for the token
-# (the user, 2026-11-09: "ghコマンド使う版でupdateするスクリプト"). Run it on a host ErogameScape
-# answers (worker2, a home PC; Git Bash on Windows): tools/gamedb/README.md.
+# (the user, 2026-11-09: "ghコマンド使う版でupdateするスクリプト"). Uses the public SQLite
+# mirror; Linux or Git Bash on Windows: tools/gamedb/README.md.
 #
 #     tools/gamedb/update.sh [work dir]      (default ~/.cache/ippai/gamedb)
 #
-# ippai: $IPPAI, else `ippai` on PATH when it has `gamedb update --part`, else the latest release's.
+# ippai: $IPPAI, else `ippai` on PATH when it has `gamedb update --mirror`, else the latest release's.
 set -eu
 
 repo=a-kaibu/ippai
@@ -18,8 +18,8 @@ if ! gh auth status -h github.com 2>&1 | grep -q "write:packages"; then
     gh auth refresh -h github.com -s write:packages
 fi
 
-# (one that builds a part on its own: `gamedb update --part`)
-has_update() { "$1" gamedb update --help 2>/dev/null | grep -q -- "--part"; }
+# Require the mirror importer; older binaries still query the live website.
+has_update() { "$1" gamedb update --help 2>/dev/null | grep -q -- "--mirror"; }
 
 ippai=${IPPAI:-}
 if [ -z "$ippai" ] && command -v ippai >/dev/null 2>&1 && has_update ippai; then
@@ -46,8 +46,10 @@ if [ -z "$ippai" ]; then
         tar -xzf "$tmp"/ippai_*.tar.gz -C "$tmp"
         ippai=$tmp/ippai
     fi
-    has_update "$ippai" || { echo "最新リリースに gamedb update --part がまだありません (v0.3.4 以降が要ります)" >&2; exit 1; }
+    has_update "$ippai" || { echo "最新リリースに SQLite ミラー対応がまだありません。main をビルドして IPPAI で指定してください" >&2; exit 1; }
 fi
+
+has_update "$ippai" || { echo "SQLite ミラー対応の ippai を IPPAI で指定してください" >&2; exit 1; }
 
 echo "ippai: $ippai ($("$ippai" --version 2>/dev/null || echo '?'))"
 GHCR_TOKEN=$(gh auth token -h github.com)
