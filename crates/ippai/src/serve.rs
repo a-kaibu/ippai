@@ -763,9 +763,17 @@ async fn games(State(p): State<Arc<Prerun>>) -> Response {
         .unwrap()
 }
 
-async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
+async fn headers(mut req: Request<axum::body::Body>, next: Next) -> Response {
     if !same_origin_write(&req) {
         return (StatusCode::FORBIDDEN, "writes come from this server's own pages").into_response();
+    }
+    // Build identity must not be revalidated by mtime: extracted artifacts and
+    // rollbacks can have equal/older timestamps but incompatible Wasm contents.
+    // These tiny manifests are read at startup only; keep compiled Wasm caching.
+    let build_identity = matches!(req.uri().path(), "/sake/build-id.txt" | "/sake/jit-version.txt");
+    if build_identity {
+        req.headers_mut().remove(header::IF_MODIFIED_SINCE);
+        req.headers_mut().remove(header::IF_NONE_MATCH);
     }
     let chunk = req.uri().path().starts_with("/store/chunks/");
     let log = req.uri().path().starts_with("/logs/");

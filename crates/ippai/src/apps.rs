@@ -135,6 +135,22 @@ pub async fn file(State(a): State<Apps>, Path((key, path)): Path<(String, String
     let dir = a.dir.join(&key);
     let file = dir.join(if path.is_empty() { "index.html" } else { &path });
     if dir.join(".done").exists() && file.is_file() && req.method() == axum::http::Method::GET {
+        // Even already-kept page code returns to its own relative list URL. Redirect
+        // that navigation here so old snapshots need no rewriting or runtime shim.
+        if path == "play.html" || path == "index.html" {
+            let query: Vec<_> = form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()).collect();
+            if !query.iter().any(|(k, _)| k == "game" || k == "run") {
+                let mut kept = form_urlencoded::Serializer::new(String::new());
+                for (k, v) in &query {
+                    if k != "state" && k != "autostart" {
+                        kept.append_pair(k, v);
+                    }
+                }
+                let q = kept.finish();
+                let url = if q.is_empty() { format!("/{path}") } else { format!("/{path}?{q}") };
+                return axum::response::Redirect::temporary(&url).into_response();
+            }
+        }
         let versioned = req.uri().query().is_some_and(|q| q.split('&').any(|p| p.starts_with("v=")));
         let mut res = tower_http::services::ServeFile::new(file).oneshot(req).await.into_response();
         let h = res.headers_mut();
@@ -240,7 +256,19 @@ mod tests {
                 (s, coep, String::from_utf8(axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap())
             }
         };
-        assert_eq!(get(format!("/apps/{key}/play.html")).await, (StatusCode::OK, true, "<p>old".into()));
+        assert_eq!(get(format!("/apps/{key}/play.html?game=g")).await, (StatusCode::OK, true, "<p>old".into()));
+        for (query, target) in [
+            ("", "/play.html"),
+            ("?state=2&autostart&jit=0&memory=grow", "/play.html?jit=0&memory=grow"),
+            ("?mount=a&mount=b&env=x%3Dy", "/play.html?mount=a&mount=b&env=x%3Dy"),
+        ] {
+            let res = app.clone().oneshot(Request::get(format!("/apps/{key}/play.html{query}")).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
+            assert_eq!(res.headers()[header::LOCATION], target);
+        }
+        for query in ["?game=g&state=0", "?%67ame=g", "?%72un=a.exe&state=0"] {
+            assert_eq!(get(format!("/apps/{key}/play.html{query}")).await.0, StatusCode::OK);
+        }
         assert_eq!(get(format!("/apps/{key}/saves/game")).await.2, "save game");
         assert_eq!(get(format!("/apps/{key}/../secret")).await.0, StatusCode::NOT_FOUND);
         assert_eq!(get("/apps/builds".into()).await.2, format!(r#"{{"00000000000000aa":"{key}"}}"#));

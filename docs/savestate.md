@@ -86,7 +86,29 @@ path as at the root (saves, store, jit, the API), so the old app's relative URLs
 server (crates/ippai/src/apps.rs). `/apps/builds` maps build ids to keys; the page opens a state
 of another build at `/apps/<key>/play.html?...&state=<slot>`. Kept: the apps the states' indexes
 name, and the 3 newest. Apps from before this (served by an ippai older than 2026-11-08) were
-never kept. tests/apps-browser.mjs.
+never kept. When a retained app navigates back to its library (`play.html` without `game` or
+`run`, or `index.html`), the server redirects to the current app. The switches remain, but
+`state` and `autostart` are removed. This works for already-retained page code too.
+`build-id.txt` and `jit-version.txt` are not validated by modification time: extracted builds
+or rollbacks can share a timestamp while having incompatible contents. Wasm and versioned
+assets keep their normal caching.
+
+`tests/apps-browser.mjs` checks retained routing, current-library navigation, and equal-mtime
+build identity in real Chromium against a server upgrade. For real runtime restoration:
+
+```sh
+OLD_WEB=/path/to/old/web NEW_WEB=/path/to/new/web \
+  node tests/savestate-browser.mjs target/release/ippai
+```
+
+Both directories must contain complete, distinct sake and sake-grow builds and their matching
+page code. The test takes states in the old build, switches the same server/store to the new
+build, opens the states from the new page on the original and a fresh browser profile, checks
+the exact remaining guest output (including threads and clocks), checks requests for the
+retained Wasm, and verifies return to the current library. It covers fixed memory, grown memory,
+and Direct3D 11 MSAA sample readback, and prints retained apps' actual byte count. The page-tests
+CI job selects a distinct prior successful main `web` artifact when one is still retained;
+missing/expired fixtures are reported explicitly in the job summary.
 
 Sizes: the test program (host/tests/snaptest.c) 42 MiB of memory → 2.5 MiB, standing still
 0.15 s in Chromium (zstd level 1 in a worker, ~660 MB/s).
