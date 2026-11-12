@@ -1214,13 +1214,14 @@ pub(crate) fn linear_blend(focus: f32, scale: f32) -> Vec<(f32, f32)> {
 }
 /// The blend of Set..SigmaBlend(focus, scale): a bell, the normal distribution's integral
 /// over -2 to 2 sigmas rising to the focus and falling after it, at 511 positions
+/// (256 when the focus is at an end: only one half of the bell remains).
 /// (winref gdipbrush: focus 0.5 has 0.139 at 0.124 and 0.997 at 0.494)
 pub(crate) fn sigma_blend(focus: f32, scale: f32) -> Vec<(f32, f32)> {
-    const N: usize = 511;
+    let n = if focus == 0.0 || focus == 1.0 { 256 } else { 511 };
     let s = |u: f64| (erf(std::f64::consts::SQRT_2 * (2.0 * u - 1.0)) + erf(std::f64::consts::SQRT_2)) / (2.0 * erf(std::f64::consts::SQRT_2));
-    (0..N)
+    (0..n)
         .map(|i| {
-            let p = i as f64 / (N - 1) as f64;
+            let p = i as f64 / (n - 1) as f64;
             let f = focus as f64;
             let v = if f > 0.0 && p <= f {
                 s(p / f)
@@ -2049,6 +2050,14 @@ mod tests {
         assert_eq!(mix_premul(0xffffffff, 0xff000000, 234), 0xff151515);
         let s = sigma_blend(0.5, 1.0);
         assert_eq!(s.len(), 511);
+        // Recorded Windows answers (winref/gdipbrush): endpoints use 256 samples.
+        for (focus, expected) in [(0.0, [0.428, 0.248, 0.070]), (1.0, [0.072, 0.252, 0.430])] {
+            let s = sigma_blend(focus, 0.5);
+            assert_eq!(s.len(), 256);
+            for (i, factor) in [64, 128, 192].into_iter().zip(expected) {
+                assert!((s[i].0 - factor).abs() < 0.001, "focus {focus}, {i}: {:?}", s[i]);
+            }
+        }
         for (i, f) in [(63, 0.139), (126, 0.490), (252, 0.997), (315, 0.872), (441, 0.164), (504, 0.006)] {
             assert!((s[i].0 - f).abs() < 2e-3, "{i}: {}", s[i].0);
         }

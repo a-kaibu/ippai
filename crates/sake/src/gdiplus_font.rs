@@ -336,7 +336,7 @@ fn GdipGetFontCollectionFamilyCount(c: &mut Ctx) -> u32 {
 /// GdipGetFontCollectionFamilyList(collection, sought, families[], &found)
 fn GdipGetFontCollectionFamilyList(c: &mut Ctx) -> u32 {
     let (h, n, out, found) = (c.a(0), c.i(1), c.a(2), c.a(3));
-    if out == 0 || found == 0 || n <= 0 || !is_collection(h) {
+    if out == 0 || found == 0 || n < 0 || !is_collection(h) {
         return INVALID_PARAMETER;
     }
     let m = members(h).unwrap_or_default();
