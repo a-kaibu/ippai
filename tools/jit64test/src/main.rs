@@ -699,6 +699,9 @@ struct Jit {
 impl Jit {
     fn new(engine: &Engine, memory: &SharedMemory, base: usize) -> Jit {
         let mut store = Store::new(engine, ());
+        // A region can loop (and chain) without returning to run's host-side step limit.
+        // Trap instead of hanging the whole CI when a generated program or the JIT loops.
+        store.set_fuel(100_000_000).unwrap();
         let mut linker = Linker::new(engine);
         linker.define(&store, "env", "memory", memory.clone()).unwrap();
         let table = Table::new(&mut store, TableType::new(RefType::FUNCREF, 0, None), Ref::Func(None)).unwrap();
@@ -936,6 +939,11 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         koji::jit::MX_EXACT.store(false, Relaxed);
         koji::jit::mx_switched();
         let want = interp(base);
+        if want.as_ref().is_err_and(|e| e == "no end") {
+            // There is no reference final state. Previously this was ignored only AFTER
+            // running the JIT, which could loop forever on the same generated program.
+            return (Vec::new(), code);
+        }
         let reads = koji::jit::mx_switched();
         let exact = EXACT.load(Relaxed);
         koji::jit::MX_EXACT.store(exact, Relaxed);
@@ -968,11 +976,6 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         }
         if want.is_err() && got.is_err() {
             return (diffs, code); // (both stopped: where differs)
-        }
-        if want.as_ref().is_err_and(|e| e == "no end") {
-            // (a loop longer than the interpreter's step limit, which the JIT's regions run
-            // through: nothing to compare)
-            return (diffs, code);
         }
         if want.is_err() || got.is_err() {
             if want.is_ok() != got.is_ok() {
@@ -1052,6 +1055,7 @@ fn exe_mode(args: &[String]) {
     LIMIT.store(top as u32, std::sync::atomic::Ordering::Relaxed);
     let mut config = Config::new();
     config.wasm_threads(true);
+    config.consume_fuel(true);
     let engine = Engine::new(&config).unwrap();
     let pages = (top + 0xffff) / 65536;
     let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages().max(pages as u32), koji::jit::wasm::memory_min_pages().max(pages as u32))).unwrap();
@@ -1194,6 +1198,7 @@ fn main() {
     let seed: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
     let mut config = Config::new();
     config.wasm_threads(true);
+    config.consume_fuel(true);
     let engine = Engine::new(&config).unwrap();
     let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages(), koji::jit::wasm::memory_min_pages())).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
@@ -1227,7 +1232,7 @@ fn main() {
         if std::env::var("JONLY").is_ok_and(|o| o != t.to_string()) {
             continue;
         }
-        let (diffs, _) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi);
+        let (mut diffs, mut code) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi);
         // (JNOSHRINK: the program as generated)
         if !diffs.is_empty() && std::env::var("JNOSHRINK").is_err() {
             // shrink: drop instructions while it still fails
@@ -1245,8 +1250,8 @@ fn main() {
                     i += 1;
                 }
             }
+            (diffs, code) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi);
         }
-        let (diffs, code) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi);
         let rip = CODE as u64 | (rip_hi as u64) << 32;
         if !diffs.is_empty() {
             fails += 1;
@@ -1271,6 +1276,27 @@ fn main() {
 }
 
 #[test]
+fn looping_region_is_bounded() {
+    let mut config = Config::new();
+    config.wasm_threads(true).consume_fuel(true);
+    let engine = Engine::new(&config).unwrap();
+    let pages = koji::jit::wasm::memory_min_pages();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(pages, pages)).unwrap();
+    let base = memory.data().as_ptr() as *mut u8 as usize;
+    let mut cpu = initial(&mut Rng(1), 0);
+    cpu.eip = CODE;
+    unsafe {
+        // jmp to itself: no END, no return to the host's outer step counter.
+        std::ptr::copy_nonoverlapping([0xeb, 0xfe].as_ptr(), (base + CODE as usize) as *mut u8, 2);
+        put_cpu(base as *mut u8, &cpu);
+    }
+    let mut jit = Jit::new(&engine, &memory, base);
+    jit.store.set_fuel(10_000).unwrap();
+    let error = jit.run(base).unwrap_err();
+    assert!(error.contains("fuel"), "{error}");
+}
+
+#[test]
 fn sse_encodes() {
     let mut rng = Rng(7);
     println!("{} codes", sse_codes().len());
@@ -1289,5 +1315,3 @@ fn sse_encodes() {
     }
     println!("ok {ok} bad {bad}");
 }
-
-
