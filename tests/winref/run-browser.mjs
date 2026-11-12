@@ -5,7 +5,7 @@
 //
 //   node tests/winref/run-browser.mjs <exe dir> <out dir> [name-filter]
 //   IPPAI=path (default target/release/ippai), WEB=dir (web app instead of the built-in one),
-//   PLAYWRIGHT=module path, FONTS=dir (drive_c\windows\Fonts), IPPAI_JIT=0, PORT (default 8790),
+//   PLAYWRIGHT=module path, FONTS=dir (drive_c\windows\Fonts), IPPAI_JIT=0, MEMORY=grow, PORT (default 8790),
 //   GUEST_ENV="NAME=value ..." (the program's environment), TIMEOUT (seconds a program may run, default 180), DEBUG_CONSOLE=1 (every console line
 //   of the page into stderr.txt), BROWSER64=1, SYSTEM64=dir (x64 DLLs, e.g. the CRT, for the
 //   prefix's windows\system64), NO_GAMES=1 (not the trial games' replays)
@@ -40,16 +40,19 @@ execFileSync(ippai, ["--store", store, "pack", join(work, "probes"), "winref"], 
 const serveArgs = ["--store", store, "serve", "--foreground", "--listen", `127.0.0.1:${port}`, "--logs", join(work, "logs")];
 if (process.env.WEB) serveArgs.push("--web", process.env.WEB);
 const base = `http://127.0.0.1:${port}`;
+const memory = process.env.MEMORY === "grow" ? "&memory=grow" : "";
 // (a server left on the port, e.g. by a run that was killed, would answer from its own store:
 // stale programs, wrong results)
 if (await fetch(`${base}/play.html`).then(() => true, () => false)) throw new Error(`port ${port} is already served (an old ippai serve? PORT= another)`);
-const server = spawn(ippai, serveArgs, { stdio: "ignore" });
+const server = spawn(ippai, serveArgs, { stdio: ["ignore", "ignore", "pipe"] });
+let serverErrors = "";
+server.stderr.on("data", (chunk) => { serverErrors = (serverErrors + chunk).slice(-16384); });
 process.on("exit", () => server.kill());
 for (let i = 0; ; i++) {
   try {
     if ((await fetch(`${base}/play.html`)).ok) break;
   } catch {}
-  if (i > 300) throw new Error("ippai serve did not start");
+  if (server.exitCode !== null || i > 300) throw new Error(`ippai serve did not start (exit ${server.exitCode}): ${serverErrors}`);
   await new Promise((r) => setTimeout(r, 100));
 }
 
@@ -65,6 +68,12 @@ for (const n of names) {
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   const page = await browser.newPage();
+  let requestedRuntime = "unknown";
+  page.on("request", (r) => {
+    const path = new URL(r.url()).pathname;
+    if (path.endsWith("/sake-grow.wasm")) requestedRuntime = "sake-grow.wasm";
+    else if (path.endsWith("/sake.wasm")) requestedRuntime = "sake.wasm";
+  });
   const lines = [], sakeLines = [];
   // (what is kept of a program's console: a game that writes a line every frame for minutes
   // filled node's heap, 4 GB, and the whole run ended there: the rest counted, not kept)
@@ -91,13 +100,20 @@ for (const n of names) {
   });
   const env = ["IPPAI_SCREEN=1366x768", ...(process.env.IPPAI_JIT === "0" ? ["IPPAI_JIT=0"] : []), ...(process.env.GUEST_ENV ?? "").split(/\s+/).filter(Boolean)].map((e) => `&env=${encodeURIComponent(e)}`).join("");
   const t0 = Date.now();
-  await page.goto(`${base}/play.html?autostart&headless${env}&mount=/ippai/game=winref&run=Z:\\ippai\\game\\${n}.exe`);
-  await Promise.race([done, new Promise((r) => setTimeout(r, Number(process.env.TIMEOUT ?? 180) * 1000))]);
+  await page.goto(`${base}/play.html?autostart&headless${memory}${env}&mount=/ippai/game=winref&run=Z:\\ippai\\game\\${n}.exe`);
+  let timer;
+  await Promise.race([done, new Promise((r) => { timer = setTimeout(r, Number(process.env.TIMEOUT ?? 180) * 1000); })]);
+  clearTimeout(timer);
   await page.close();
+  if (memory && requestedRuntime !== "sake-grow.wasm") {
+    sakeLines.push("winref: MEMORY=grow did not load sake-grow.wasm");
+    failed++;
+  }
   if (dropped) lines.push(`(winref: ${dropped} more console lines not kept)`);
   writeFileSync(join(out, "stdout.txt"), lines.map((l) => l + "\n").join(""));
   writeFileSync(join(out, "stderr.txt"), sakeLines.map((l) => l + "\n").join(""));
   writeFileSync(join(out, "exit"), `${code}\n`);
+  writeFileSync(join(out, "runtime"), `${requestedRuntime}\n`);
   if (code === "?") failed++;
   console.log(`${n} exit ${code} ${((Date.now() - t0) / 1000).toFixed(0)}s ${lines.length} lines${dropped ? `, ${dropped} not kept` : ""}`);
 }

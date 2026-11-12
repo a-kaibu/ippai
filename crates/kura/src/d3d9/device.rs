@@ -3153,9 +3153,9 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     put(&mut psu, 8, alpha_bits);
     put(&mut psu, 12, f2u((st.rs[24] & 0xff) as f32 / 255.0));
     // (a render target of fewer bits than the page's: the steps it keeps, dxwgsl's steps())
-    // (not when it blends: Windows blends the shader's values, then rounds; the page's are
-    // then a step finer than Windows')
-    let steps = if st.rs[27] != 0 { [0; 4] } else { fmt::target_steps(target.4) };
+    // (only overwrites: Windows rounds after genuine blending; the page's result otherwise
+    // stays a step finer. ONE/ZERO ADD is an overwrite even with blending enabled.)
+    let steps = draw_steps(st.rs[27] != 0, blend, target.4);
     for (i, m) in steps.into_iter().enumerate() {
         put(&mut psu, 48 + 4 * i, m);
     }
@@ -3364,6 +3364,21 @@ fn shader_module(dev: &mut Device, wgsl: String) -> u32 {
     id
 }
 
+/// Quantize before hardware blending only when it is an exact overwrite.
+#[inline]
+fn draw_steps(enabled: bool, blend: [u32; 7], target: u32) -> [u32; 4] {
+    // The usual 32-bit targets already have the page's precision. Keep their hot
+    // path independent of blend factors, including X targets' synthetic blending.
+    if matches!(target, fmt::A8R8G8B8 | fmt::X8R8G8B8) {
+        return [0; 4];
+    }
+    // ONE/ZERO ADD overwrites just like disabled blending. X targets additionally
+    // write zero to their unused alpha bits, without reading source/destination alpha.
+    let overwrite = !enabled || blend == [1, 2, 1, 1, 2, 1, 1]
+        || blend == [1, 2, 1, 1, 1, 1, 1] && fmt::target_x(target);
+    if overwrite { fmt::target_steps(target) } else { [0; 4] }
+}
+
 /// [enable, src, dst, op, src alpha, dst alpha, op alpha] and the write mask, drawing to a
 /// render target of format `target`
 fn blend_state(st: &State, target: u32) -> ([u32; 7], u32) {
@@ -3401,10 +3416,43 @@ fn blend_state(st: &State, target: u32) -> ([u32; 7], u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{blend_state, default_state, fmt};
+    use super::{blend_state, default_state, draw_steps, fmt};
     use proptest::prelude::*;
 
     const RT: [u32; 4] = [fmt::X8R8G8B8, fmt::X1R5G5B5, fmt::X4R4G4B4, fmt::R5G6B5];
+
+    #[test]
+    fn identity_blending_keeps_overwrite_quantization() {
+        for f in [fmt::A8R8G8B8, fmt::X8R8G8B8] {
+            for enabled in [false, true] {
+                assert_eq!(draw_steps(enabled, [1, 5, 6, 1, 5, 6, 1], f), [0; 4]);
+            }
+        }
+        for f in [fmt::R5G6B5, fmt::X1R5G5B5, fmt::A1R5G5B5, fmt::A4R4G4B4,
+                  fmt::A2R10G10B10, fmt::A2B10G10R10, fmt::V8U8, fmt::Q8W8V8U8] {
+            let mut st = default_state();
+            let disabled = draw_steps(st.rs[27] != 0, blend_state(&st, f).0, f);
+            assert_ne!(disabled, [0; 4]);
+            st.rs[27] = 1;
+            st.rs[19] = 2; // ONE
+            st.rs[20] = 1; // ZERO
+            st.rs[171] = 1; // ADD
+            assert_eq!(draw_steps(st.rs[27] != 0, blend_state(&st, f).0, f), disabled);
+            st.rs[19] = 5; // SRCALPHA: rounding before blending would change its result
+            st.rs[20] = 6;
+            assert_eq!(draw_steps(st.rs[27] != 0, blend_state(&st, f).0, f), [0; 4]);
+        }
+        // Separate alpha blending can consume the unrounded source alpha even when
+        // color is ONE/ZERO; do not classify that as a complete overwrite.
+        let mut st = default_state();
+        st.rs[27] = 1;
+        st.rs[19] = 2;
+        st.rs[20] = 1;
+        st.rs[206] = 1;
+        st.rs[207] = 5;
+        st.rs[208] = 6;
+        assert_eq!(draw_steps(true, blend_state(&st, fmt::A4R4G4B4).0, fmt::A4R4G4B4), [0; 4]);
+    }
 
     #[test]
     fn x_targets_blend_with_alpha_one_and_write_x_zero() {
