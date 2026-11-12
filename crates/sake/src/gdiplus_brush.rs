@@ -2095,7 +2095,10 @@ mod tests {
             let m = line_transform(r, deg);
             let (cx, cy) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
             let (x, y) = apply(&m, cx, cy);
-            prop_assert!((x - cx).abs() < 1e-2 && (y - cy).abs() < 1e-2);
+            // (a nearly vertical line's transform is huge about the center: an f32 round trip is
+            // exact to the size of what it adds up, not to a hundredth of a pixel)
+            let scale = 1.0 + (cx * m[0]).abs().max((cy * m[2]).abs()).max((cx * m[1]).abs()).max((cy * m[3]).abs());
+            prop_assert!((x - cx).abs() < 1e-2 + 1e-6 * scale && (y - cy).abs() < 1e-2 + 1e-6 * scale);
             // the ends of the gradient (the rectangle's left and right sides through its
             // center) lie on the line from p to q
             let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
