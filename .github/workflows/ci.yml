@@ -660,7 +660,10 @@ jobs:
         if: failure()
         with:
           name: host-tests-logs-${{ matrix.build }}
-          path: ${{ runner.temp }}/host-tests/*.log
+          path: |
+            ${{ runner.temp }}/host-tests/*.log
+            ${{ runner.temp }}/host-tests/innoinstall.exe
+            ${{ runner.temp }}/host-tests/innoinstall-setup.exe
           retention-days: 7
 
   snapshots:

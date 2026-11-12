@@ -99,8 +99,19 @@ int main(void) {
     strcat(lnk, "\\InnoTest\\InnoTest.lnk");
     GetModuleFileNameA(NULL, setup, sizeof setup);
     strcpy(strrchr(setup, '\\') + 1, "innoinstall-setup.exe");
-    snprintf(cmd, sizeof cmd, "\"%s\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", setup);
-    printf("install: %lu\n", run(cmd));
+    snprintf(cmd, sizeof cmd, "\"%s\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=C:\\windows\\temp\\inno-install.log", setup);
+    DWORD installed = run(cmd);
+    printf("install: %lu\n", installed);
+    if (installed) {
+        /* Keep the installer's reason with the harness log, not just its exit code. */
+        FILE *log = fopen("C:\\windows\\temp\\inno-install.log", "rb");
+        if (log) {
+            char buf[4096];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof buf, log))) fwrite(buf, 1, n, stderr);
+            fclose(log);
+        }
+    }
     state("installed");
     snprintf(cmd, sizeof cmd, "\"%sunins000.exe\" /VERYSILENT /SUPPRESSMSGBOXES", dir);
     printf("uninstall: %lu\n", run(cmd));
