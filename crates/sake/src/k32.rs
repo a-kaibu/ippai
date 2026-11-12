@@ -2966,7 +2966,7 @@ fn global_flags(h: u32) -> u32 {
 /// GlobalHandle(pointer): a moveable block's handle, a fixed block itself
 fn global_handle(p: u32) -> u32 {
     if p == 0 {
-        last_error(87);
+        last_error(6); // ERROR_INVALID_HANDLE (winref/heap)
         return 0;
     }
     if let Some(h) = handles::owner(p) {
@@ -3024,7 +3024,8 @@ fn LocalSize(c: &mut Ctx) -> u32 {
 }
 /// LocalFlags: GlobalFlags with LMEM_DISCARDABLE (0xf00) for a discardable block
 fn LocalFlags(c: &mut Ctx) -> u32 {
-    let f = global_flags(c.a(0));
+    // LMEM has no GMEM_DDESHARE flag: a discarded block is 0x4000, not 0x6000.
+    let f = global_flags(c.a(0)) & !0x2000;
     if f != 0x8000 && f & 0x100 != 0 { f | 0xf00 } else { f }
 }
 fn LocalHandle(c: &mut Ctx) -> u32 {
