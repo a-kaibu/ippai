@@ -19,4 +19,4 @@ deleting the rest: 1
   only: 5 bytes "alone"
   rcdata en after: not found (1814)
 missing file: NULL, error 2
-malformed alignment: rejected 0, size unchanged 1
+malformed alignment: size bounded 1
