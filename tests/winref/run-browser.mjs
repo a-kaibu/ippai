@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { partition } from './partition.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const [exeDir, outDir, filter = ""] = process.argv.slice(2);
@@ -24,7 +25,7 @@ const list = join(exeDir, "browser.txt");
 // (NO_GAMES=1: not the trial games' replays, testdata/apitrace, a minute of frames each: the
 // interpreter's pass leaves them to the JIT's, or the two passes outrun the job's hour)
 const game = (n) => /^replay_(?:[bs]\d{4}_|dl_|r1_)/.test(n);
-const names = existsSync(list) ? readFileSync(list, "utf8").split(/\s+/).filter((n) => n && n.includes(filter) && (process.env.BROWSER64 || !n.endsWith("-64")) && !(process.env.NO_GAMES && game(n))) : [];
+const names = partition(existsSync(list) ? readFileSync(list, "utf8").split(/\s+/).filter((n) => n && n.includes(filter) && (process.env.BROWSER64 || !n.endsWith("-64")) && !(process.env.NO_GAMES && game(n))) : [], process.env.SHARD);
 if (!names.length) process.exit(0);
 
 const work = mkdtempSync(join(tmpdir(), "winref-"));

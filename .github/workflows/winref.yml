@@ -4,12 +4,9 @@
 # no Windows involved, as tests/winref/check.sh does locally (GPU probes in headless Chromium). The Windows runner only runs when a
 # probe changed or has no answer yet (or by hand): it records the new answers and commits them.
 #
-# Many threads push to main minutes apart, so the runs don't queue one per commit: the jobs that
-# hold a runner (sake, windows, golden) each have their own concurrency group with at most one
-# running and the newest commit's waiting (a waiting job of an older commit is dropped: the newer
-# commit has its probes too, and `golden.py stale` asks Windows for every probe whose answer is
-# missing or out of date, whichever commit changed it). Recording Windows' answers doesn't wait
-# for the slower sake comparison. Nightly and on release tags too.
+# Main pushes test the newest cumulative revision, not obsolete queued builds. `golden.py stale`
+# still asks Windows for every missing or out-of-date answer. Nightly/manual runs keep their own
+# group; Windows recording does not wait for sake's comparison.
 name: winref
 
 on:
@@ -37,6 +34,10 @@ permissions:
   contents: read
   # (the trial games' traces on ghcr.io: tests/replay/games.py)
   packages: read
+
+concurrency:
+  group: winref-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 jobs:
   probes:
@@ -73,6 +74,7 @@ jobs:
       # (the replay's layouts are the headers' (clang) and gcc's; check.py's matching; asset.sh; golden.py's import)
       - name: The replay's own checks
         run: python3 tests/replay/layouts.py --check && python3 tests/replay/layouts_test.py && python3 tests/replay/check_test.py && python3 tests/replay/gameapi_test.py && python3 tests/replay/games_test.py && sh tests/replay/asset_test.sh && python3 tests/winref/golden_test.py && python3 tests/winref/run_test.py
+      - run: node --test tests/winref/partition.test.mjs
       - name: Probes without a current Windows answer
         id: stale
         run: |
@@ -97,14 +99,9 @@ jobs:
       - name: Replays of the probes' traces against the probes
         run: python3 tests/replay/check.py
 
-  sake:
-    needs: probes
+  sake-build:
     runs-on: ubuntu-24.04
-    # (the browser's JIT pass alone is about 40 minutes with the games' replays)
-    timeout-minutes: 90
-    concurrency:
-      group: winref-sake-${{ github.ref }}-${{ github.event_name }}
-      cancel-in-progress: false
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0
@@ -119,19 +116,6 @@ jobs:
           key: pnpm-${{ runner.os }}-sake-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
           restore-keys: pnpm-${{ runner.os }}-sake-
       - run: tools/ci/pnpm.sh
-      # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
-      - id: cache-2
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-1.56.1
-      # (independent of the build: in the background meanwhile)
-      - name: Browser tools
-        id: browser-tools
-        background: true
-        run: |
-          mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
-          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
       - run: tools/ci/rust-key.sh
       # (rust-src and the emscripten std, per stable rustc)
       - id: cache-3
@@ -183,59 +167,146 @@ jobs:
         with:
           path: ~/emsdk4
           key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
-      - uses: actions/download-artifact@v8.0.2
-        with:
-          name: winref-exe
-          path: exe
       - name: sake's fonts (IPA fonts renamed, for the probes that measure text)
         run: |
           sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends fonts-ipafont-gothic fonts-ipafont-mincho
           pip install fonttools
-          python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
-      # (the node runs are single-threaded: JIT, interpreter and the build for the browser runs
-      # side by side)
-      - name: Run on sake (JIT)
-        id: node-jit
-        background: true
-        env:
-          FONTS: ${{ runner.temp }}/fonts
-        run: SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/jit
-      - name: Run on sake (interpreter)
-        id: node-interp
-        background: true
-        env:
-          FONTS: ${{ runner.temp }}/fonts
-        run: IPPAI_JIT=0 SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/interp
-      # GPU probes (Direct3D ...): sake in headless Chromium, WebGPU (software)
+          python3 tools/ci/sake-fonts.py target/winref-fonts
       - name: The web app and ippai
-        id: web
-        background: true
         run: |
           (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
           cargo build --release -p ippai
-      - name: Wait for the browser tools, the web app and ippai
-        wait: [browser-tools, web]
-      - if: steps.cache-2.outputs.cache-hit != 'true'
+      # tar preserves the binary's executable bit across artifact downloads.
+      - name: Package the exact runtime for every probe runner
+        run: tar -czf "$RUNNER_TEMP/winref-runtime.tar.gz" target/sake-out/*.js target/sake-out/*.wasm target/release/ippai web/dist target/winref-fonts
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: winref-runtime
+          path: ${{ runner.temp }}/winref-runtime.tar.gz
+          retention-days: 3
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
+        run: python3 tools/ci/cache-prune.py target
+      # (saved when the tests fail too: the registry crates' builds are good either way)
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # The old combined job took ~50 minutes just for GPU probes. A browser per runner,
+  # four disjoint shards; node's JIT/interpreter passes get independent prefixes/runners.
+  sake-node:
+    needs: [probes, sake-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [jit, interp]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-runtime
+          path: runtime
+      - run: tar -xzf runtime/winref-runtime.tar.gz
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-exe
+          path: exe
+      - name: Run the node probes
+        env:
+          MODE: ${{ matrix.mode }}
+          IPPAI_JIT: ${{ matrix.mode == 'interp' && '0' || '1' }}
+        run: FONTS=$PWD/target/winref-fonts SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe "out/$MODE"
+      - name: Compare with Windows immediately (without waiting for the GPU)
+        env:
+          MODE: ${{ matrix.mode }}
+        run: python3 tests/winref/compare.py tests/winref/golden "out/$MODE" --known tests/winref/known.txt
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: winref-out-node-${{ matrix.mode }}
+          path: out
+          retention-days: 7
+
+  sake-browser:
+    needs: [probes, sake-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-sake-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-sake-
+      - run: tools/ci/pnpm.sh
+      - uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-1.56.1
-      # (one after the other: two software-rendering Chromiums at once could time probes out)
-      - name: Run the GPU probes on sake in the browser (JIT, interpreter)
+      - name: Browser tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-runtime
+          path: runtime
+      - run: tar -xzf runtime/winref-runtime.tar.gz
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-exe
+          path: exe
+      - name: GPU probes (one browser at a time, both engines)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
           WEB: web/dist
-          # (a trial game's replay, testdata/apitrace, is a minute of frames)
           TIMEOUT: 900
+          SHARD: ${{ matrix.shard }}/4
         run: |
+          export FONTS=$PWD/target/winref-fonts
           node tests/winref/run-browser.mjs exe out/jit
-          # (the games' replays only on the JIT: both passes over them took the job past its hour)
           NO_GAMES=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp
-          # (x64 Direct2D: float and by-value struct arguments in registers)
           BROWSER64=1 node tests/winref/run-browser.mjs exe out/jit d2d-64
           BROWSER64=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp d2d-64
-      - name: Wait for the node runs
-        wait: [node-jit, node-interp]
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: winref-out-browser-${{ matrix.shard }}
+          path: out
+          retention-days: 7
+
+  sake:
+    needs: [sake-node, sake-browser]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: winref-out-*
+          merge-multiple: true
+          path: out
       - name: sake (JIT) against Windows
         run: python3 tests/winref/compare.py tests/winref/golden out/jit --known tests/winref/known.txt --png png --report jit.md
       - name: sake (interpreter) against Windows
@@ -254,19 +325,6 @@ jobs:
             interp.md
             png
           retention-days: 30
-      # (before the cache is saved: only the registry crates' builds are worth keeping)
-      - name: Shrink the cargo cache
-        if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py target
-      # (saved when the tests fail too: the registry crates' builds are good either way)
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   windows:
     needs: probes
