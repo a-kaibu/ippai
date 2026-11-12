@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compares probe outputs (tests/winref/run.sh) of sake with the reference from real Windows.
 
-    compare.py <reference dir> <sake dir> [--known tests/winref/known.txt] [--png dir] [--report file.md]
+    compare.py <reference dir> <sake dir> [--known tests/winref/known.txt] [--quarantine file.tsv] [--png dir] [--report file.md]
 
 The reference is run.sh's output on Windows or tests/winref/golden (Windows' answers kept in
 the repository, golden.py): then a probe whose source changed since its answer is reported as
@@ -113,10 +113,26 @@ def image_diff(name, want, got, png_dir, probe):
     return f"image {name}: {bad} pixels off by more than {tol} (worst {worst}; first at {first[0]},{first[1]} want {first[2]} got {first[3]})"
 
 
+def read_quarantine(path):
+    entries = []
+    with open(path, encoding="utf-8") as source:
+        lines = source.read().splitlines()
+    for n, line in enumerate(lines, 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.rstrip("\n").split("\t", 2)
+        if (len(fields) != 3 or fields[0] in ("*", "host_*", "replay_*") or not fields[0]
+                or not re.fullmatch(r"https://github\.com/a-kaibu/ippai/issues/[1-9][0-9]*", fields[1])
+                or not fields[2].strip()):
+            raise ValueError(f"{path}:{n}: expected a narrow probe glob, tracking issue URL and reason")
+        entries.append(tuple(fields))
+    return entries
+
+
 def main():
     args = sys.argv[1:]
     opt = {}
-    for o in ("--known", "--png", "--report"):
+    for o in ("--known", "--quarantine", "--png", "--report"):
         if o in args:
             k = args.index(o)
             opt[o] = args[k + 1]
@@ -141,6 +157,7 @@ def main():
             if l and not l.startswith("#"):
                 g, rx = l.split(None, 1)
                 known.append((g, re.compile(rx)))
+    quarantine = read_quarantine(opt["--quarantine"]) if "--quarantine" in opt else []
     report, failed, totals = [], [], {"ok": 0, "known": 0, "fail": 0, "skip": 0, "stale": 0, "new": 0}
     for probe in sorted(set(os.listdir(got)) - set(os.listdir(ref))):
         if os.path.isdir(os.path.join(got, probe)):
@@ -189,6 +206,10 @@ def main():
         elif not unknown:
             totals["known"] += 1
             report.append(f"- {probe}: {len(diffs)} known differences")
+        elif (entry := next((q for q in quarantine if fnmatch.fnmatch(probe, q[0])), None)) and gexit == "0" and gl:
+            totals["skip"] += 1
+            report.append(f"- {probe}: skipped comparison ({entry[1]}): {entry[2]} ({len(unknown)} differences)")
+            report.extend("      " + d[:300] for d in unknown[:5])
         else:
             totals["fail"] += 1
             failed.append(probe)

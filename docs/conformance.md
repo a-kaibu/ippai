@@ -4,6 +4,18 @@ Suites that check sake and koji against references they did not write themselves
 and the differential tests run in `.github/workflows/conformance.yml` (push to main, or by
 hand); TestFloat and SingleStepTests in ci.yml (`test`, `jit16`, `jit32`). All run locally too.
 
+## Issue-backed winref quarantine
+
+`tests/winref/quarantine.tsv` lists existing Windows compatibility gaps temporarily excluded
+from the comparison gate, with a tracking issue and reason for each probe or replay family.
+This was explicitly approved while optimizing CI; it is not a claim of Windows compatibility.
+The probes still execute and their outputs and image differences remain in the artifacts.
+Crashes, timeouts, missing/empty output, and new unrelated probes still fail. A quarantined
+probe that matches Windows is reported as passing, not skipped; remove its entry when fixed.
+
+CI and `tests/winref/check.sh` pass `--quarantine tests/winref/quarantine.tsv` to `compare.py`.
+Omit that option for an unquarantined comparison when investigating an issue.
+
 ## Wine's conformance tests (tests/winetest)
 
 Wine's `dlls/<dll>/tests` are thousands of checks of how Windows behaves, each written

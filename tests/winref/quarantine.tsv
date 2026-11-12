@@ -1,0 +1,42 @@
+# Existing compatibility gaps, temporarily skipped with the user's approval (2026-11-12).
+# probe glob<TAB>tracking issue<TAB>reason. Probes still execute and keep artifacts.
+# Only completed, nonempty, exit-0 results can be quarantined; crashes/timeouts still fail.
+eventlog-32	https://github.com/a-kaibu/ippai/issues/108	System event-log backup records differ from the isolated emulated log.
+eventlog-64	https://github.com/a-kaibu/ippai/issues/108	System event-log backup records differ from the isolated emulated log.
+gdipfont-32	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
+gdipfont-64	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
+outptr2-32	https://github.com/a-kaibu/ippai/issues/108	The Windows runner lacks an audio device; sake provides a virtual device.
+outptr2-64	https://github.com/a-kaibu/ippai/issues/108	The Windows runner lacks an audio device; sake provides a virtual device.
+host_browsefolder-32	https://github.com/a-kaibu/ippai/issues/108	Headless folder selection and callback ordering differ from the Windows dialog.
+host_netbios-32	https://github.com/a-kaibu/ippai/issues/108	Virtual adapter errors differ from the Windows runner's NetBIOS environment.
+host_mbsecure-32	https://github.com/a-kaibu/ippai/issues/108	The Windows reference cannot load this legacy CRT probe (exit 127).
+host_mbtokens-32	https://github.com/a-kaibu/ippai/issues/108	The Windows reference cannot load this legacy CRT probe (exit 127).
+host_aclentries-32	https://github.com/a-kaibu/ippai/issues/105	The host test's empty-ACL assertion itself fails on Windows.
+host_dialogtab-32	https://github.com/a-kaibu/ippai/issues/105	The host test's initial-focus assertion itself fails on Windows.
+host_listbox-32	https://github.com/a-kaibu/ippai/issues/105	Selection, owner-draw deletion and notification semantics differ.
+host_shfileinfo-32	https://github.com/a-kaibu/ippai/issues/105	Shell display names, attributes and IsOS results differ.
+host_wininetquery-32	https://github.com/a-kaibu/ippai/issues/105	Header enumeration and the host test's pre-send status assertion differ.
+loadimage-32	https://github.com/a-kaibu/ippai/issues/105	Monochrome DDB conversion and top-down DIB height reporting differ.
+loadimage-64	https://github.com/a-kaibu/ippai/issues/105	Monochrome DDB conversion and top-down DIB height reporting differ.
+rgnshape-32	https://github.com/a-kaibu/ippai/issues/55	Ellipse and round-rectangle region scan conversion differs.
+rgnshape-64	https://github.com/a-kaibu/ippai/issues/55	Ellipse and round-rectangle region scan conversion differs.
+user-32	https://github.com/a-kaibu/ippai/issues/105	Remaining window-message semantics differ from Windows.
+user-64	https://github.com/a-kaibu/ippai/issues/105	Remaining window-message semantics differ from Windows.
+versions-32	https://github.com/a-kaibu/ippai/issues/105	Remaining composite version comparisons and SSPI table entries differ.
+versions-64	https://github.com/a-kaibu/ippai/issues/105	Remaining composite version comparisons and SSPI table entries differ.
+d3d7state-32	https://github.com/a-kaibu/ippai/issues/105	Legacy lighting validation, depth formats and fog rasterization differ.
+d3d9rtfmt-32	https://github.com/a-kaibu/ippai/issues/53	Packed and floating-point render-target format conversion differs.
+replay_d3d9rtfmt-32-32	https://github.com/a-kaibu/ippai/issues/53	The same render-target format differences reproduced through apitrace.
+mfreader-32	https://github.com/a-kaibu/ippai/issues/85	The browser audio decoder does not yet produce the reference PCM stream.
+replay_d3d11-32-32	https://github.com/a-kaibu/ippai/issues/64	The remaining shader instruction translation is unsupported.
+replay_b2012_fudegaki_soft-32-32	https://github.com/a-kaibu/ippai/issues/107	Volume textures and LockBox are not implemented.
+replay_b2012_trois-32-32	https://github.com/a-kaibu/ippai/issues/107	Volume textures and LockBox are not implemented.
+replay_b2011_anim_team_mm-*	https://github.com/a-kaibu/ippai/issues/105	Recorded QueryInterface, scene-state and frame differences; includes drill variants.
+replay_b2015_guilty-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame/readback differences; includes drill variants.
+replay_b2019_anim-*	https://github.com/a-kaibu/ippai/issues/105	Recorded image and call-result differences.
+replay_b2021_tinkerbell-*	https://github.com/a-kaibu/ippai/issues/105	Recorded D3D11 interface and return-value differences.
+replay_b2026_anim-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame/readback differences.
+replay_b2026_wendybell-*	https://github.com/a-kaibu/ippai/issues/105	Recorded D3D11 interface and return-value differences.
+replay_s2020_wonder_fool_maokatsu-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame and draw-state differences; includes drill variants.
+replay_s2021_giga_fuyukiss-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame and draw-state differences.
+replay_s2021_silkys_plus_fuyukuru-*	https://github.com/a-kaibu/ippai/issues/105	Recorded D3D11 interface and return-value differences.

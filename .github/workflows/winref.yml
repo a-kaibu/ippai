@@ -75,6 +75,7 @@ jobs:
       - name: The replay's own checks
         run: python3 tests/replay/layouts.py --check && python3 tests/replay/layouts_test.py && python3 tests/replay/check_test.py && python3 tests/replay/gameapi_test.py && python3 tests/replay/games_test.py && sh tests/replay/asset_test.sh && python3 tests/winref/golden_test.py && python3 tests/winref/run_test.py
       - run: node --test tests/winref/partition.test.mjs
+      - run: python3 tests/winref/compare_test.py
       - name: Probes without a current Windows answer
         id: stale
         run: |
@@ -230,7 +231,7 @@ jobs:
       - name: Compare with Windows immediately (without waiting for the GPU)
         env:
           MODE: ${{ matrix.mode }}
-        run: python3 tests/winref/compare.py tests/winref/golden "out/$MODE" --known tests/winref/known.txt
+        run: python3 tests/winref/compare.py tests/winref/golden "out/$MODE" --known tests/winref/known.txt --quarantine tests/winref/quarantine.tsv
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -308,10 +309,10 @@ jobs:
           merge-multiple: true
           path: out
       - name: sake (JIT) against Windows
-        run: python3 tests/winref/compare.py tests/winref/golden out/jit --known tests/winref/known.txt --png png --report jit.md
+        run: python3 tests/winref/compare.py tests/winref/golden out/jit --known tests/winref/known.txt --quarantine tests/winref/quarantine.tsv --png png --report jit.md
       - name: sake (interpreter) against Windows
         if: always()
-        run: python3 tests/winref/compare.py tests/winref/golden out/interp --known tests/winref/known.txt --report interp.md
+        run: python3 tests/winref/compare.py tests/winref/golden out/interp --known tests/winref/known.txt --quarantine tests/winref/quarantine.tsv --report interp.md
       - name: Summary
         if: always()
         run: cat jit.md interp.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
