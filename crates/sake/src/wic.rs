@@ -877,7 +877,7 @@ fn scaler_init(c: &mut Ctx) -> u32 {
 }
 
 /// The source taps of each of `d` destination pixels from `s` for an interpolation mode:
-/// linear (1) two taps at the pixel's center, cubic (2) Catmull-Rom's four, Fant (3) the
+/// linear (1) two taps at the pixel's center, cubic (2) four quantized Catmull-Rom taps, Fant (3) the
 /// source area with a linearly interpolated first partial sample (also when growing).
 fn taps(s: u32, d: u32, mode: u32) -> Vec<Vec<(u32, f32)>> {
     let ratio = s as f32 / d as f32;
@@ -919,19 +919,28 @@ fn taps(s: u32, d: u32, mode: u32) -> Vec<Vec<(u32, f32)>> {
                 add((p >> 16) as i64 + 1, x / 256.0);
                 return t;
             }
-            let f = ((i as f32 + 0.5) * ratio - 0.5).max(0.0);
+            let f = if mode == 2 {
+                // Windows advances in 16.16, then indexes 64 cubic phases.
+                // Keep negative edge positions: clamp the taps, not the center,
+                // so the negative outer lobe still contributes at the border.
+                let step = ((s as u64) << 16) / d as u64;
+                let pos = (step / 2 + i as u64 * step) as i64 - 0x8000;
+                (pos >> 10) as f32 / 64.0
+            } else {
+                ((i as f32 + 0.5) * ratio - 0.5).max(0.0)
+            };
             let (j0, x) = (f.floor() as i64, f - f.floor());
             if mode == 2 {
-                // Catmull-Rom
+                // Exact 19-bit coefficients for the 64 phases. Evaluating the
+                // polynomial in floats can make an opaque alpha round to 254.
                 let cr = |d: f32| {
-                    let d = d.abs();
-                    if d < 1.0 {
-                        1.5 * d * d * d - 2.5 * d * d + 1.0
-                    } else if d < 2.0 {
-                        -0.5 * d * d * d + 2.5 * d * d - 4.0 * d + 2.0
-                    } else {
-                        0.0
-                    }
+                    let n = (d.abs() * 64.0) as i32;
+                    let weight = if n < 64 {
+                        3 * n * n * n - 320 * n * n + 524288
+                    } else if n < 128 {
+                        -n * n * n + 320 * n * n - 32768 * n + 1048576
+                    } else { 0 };
+                    weight as f32 / 524288.0
                 };
                 for k in -1..=2 {
                     add(j0 + k, cr(x - k as f32));
@@ -960,7 +969,8 @@ fn filter<const MODE: u32>(pm: &[u8], sw: u32, sh: u32, w: u32, h: u32,
             let dest = ((y * w + x as u32) * 4) as usize;
             for k in 0..4 {
                 mid[dest + k] = match MODE {
-                    1 => value[k].floor(), 3 => (value[k] + 0.5).floor(), _ => value[k],
+                    1 => value[k].floor(),
+                    3 => (value[k] + 0.5).floor(), _ => value[k],
                 };
             }
         }
@@ -977,6 +987,41 @@ fn filter<const MODE: u32>(pm: &[u8], sw: u32, sh: u32, w: u32, h: u32,
                 let v = if MODE == 3 { value[k] + 0.5 } else { value[k] };
                 px[dest + k] = v.clamp(0.0, 255.0) as u8;
             }
+            let alpha = px[dest + 3];
+            for k in 0..3 { px[dest + k] = px[dest + k].min(alpha); }
+        }
+    }
+}
+
+/// Cubic's coefficients are exact multiples of 2^-19. Integer sums preserve
+/// opaque alpha and clamp each pass, without per-pixel floating-point rounding.
+fn filter_cubic(pm: &[u8], sw: u32, sh: u32, w: u32, h: u32,
+    tx: &[Vec<(u32, f32)>], ty: &[Vec<(u32, f32)>], px: &mut [u8]) {
+    let integer = |t: &[Vec<(u32, f32)>]| -> Vec<Vec<(usize, i32)>> {
+        t.iter().map(|row| row.iter().map(|&(j, weight)| (j as usize, (weight * 524288.0) as i32)).collect()).collect()
+    };
+    let (tx, ty) = (integer(tx), integer(ty));
+    let (sw, sh, w, h) = (sw as usize, sh as usize, w as usize, h as usize);
+    let mut mid = vec![0u8; w * sh * 4];
+    for y in 0..sh {
+        for (x, taps) in tx.iter().enumerate() {
+            let mut value = [0i32; 4];
+            for &(j, weight) in taps {
+                let source = (y * sw + j) * 4;
+                for k in 0..4 { value[k] += weight * pm[source + k] as i32; }
+            }
+            for k in 0..4 { mid[(y * w + x) * 4 + k] = (value[k] >> 19).clamp(0, 255) as u8; }
+        }
+    }
+    for (y, taps) in ty.iter().enumerate().take(h) {
+        for x in 0..w {
+            let mut value = [0i32; 4];
+            for &(j, weight) in taps {
+                let source = (j * w + x) * 4;
+                for k in 0..4 { value[k] += weight * mid[source + k] as i32; }
+            }
+            let dest = (y * w + x) * 4;
+            for k in 0..4 { px[dest + k] = (value[k] >> 19).clamp(0, 255) as u8; }
             let alpha = px[dest + 3];
             for k in 0..3 { px[dest + k] = px[dest + k].min(alpha); }
         }
@@ -1009,6 +1054,7 @@ fn scale(img: &Img, w: u32, h: u32, mode: u32) -> Img {
         // pay a per-channel branch for Fant's different arithmetic.
         match mode {
             1 => filter::<1>(&pm, sw, sh, w, h, &tx, &ty, &mut px),
+            2 => filter_cubic(&pm, sw, sh, w, h, &tx, &ty, &mut px),
             3 => filter::<3>(&pm, sw, sh, w, h, &tx, &ty, &mut px),
             _ => filter::<0>(&pm, sw, sh, w, h, &tx, &ty, &mut px),
         }
@@ -1351,16 +1397,15 @@ mod tests {
     /// integral/nonintegral ratios. Verify nearest/linear remain unchanged too.
     #[test]
     fn scaler_impulses_as_windows() {
-        for reference in [
-            include_str!("../../../tests/winref/golden/wicconv-32/stdout.txt"),
-            include_str!("../../../tests/winref/golden/wicconv-64/stdout.txt"),
+        for (reference, cubic_tolerance) in [
+            (include_str!("../../../tests/winref/golden/wicconv-32/stdout.txt"), 1),
+            (include_str!("../../../tests/winref/golden/wicconv-64/stdout.txt"), 0),
         ] {
             let mut seen = 0;
             let mut failures = Vec::new();
             for line in reference.lines().filter(|l| l.starts_with("w ")) {
                 let fields: Vec<_> = line.split_whitespace().collect();
                 let mode = fields[1].parse::<u32>().unwrap();
-                if mode == 2 { continue; } // Cubic is a separate compatibility gap.
                 let (w, h) = fields[2].split_once('x').unwrap();
                 let (w, h) = (w.parse().unwrap(), h.parse().unwrap());
                 let value = fields[3].parse::<u8>().unwrap();
@@ -1374,13 +1419,17 @@ mod tests {
                     }
                 }
                 let scaled = scale(&Img::new(8, 4, pixels), w, h, mode);
+                assert!(scaled.px.chunks_exact(4).all(|p| p[3] == 255), "opaque alpha: {line}");
                 let actual: Vec<_> = (0..if across { w } else { h })
                     .map(|i| scaled.px[(if across { i } else { i * w }) as usize * 4]).collect();
                 let expected: Vec<u8> = fields[5..].iter().map(|v| v.parse().unwrap()).collect();
-                if actual != expected { failures.push(format!("{line}\n got {actual:?}")); }
+                // The Windows x64 Cubic measurements match exactly; x86's
+                // different rounding leaves at most one level of error.
+                let tolerance = if mode == 2 { cubic_tolerance } else { 0 };
+                if actual.iter().zip(&expected).any(|(a, b)| a.abs_diff(*b) > tolerance) { failures.push(format!("{line}\n got {actual:?}")); }
                 seen += 1;
             }
-            assert_eq!(seen, 576);
+            assert_eq!(seen, 768);
             assert!(failures.is_empty(), "{} differing probes:\n{}", failures.len(), failures.join("\n"));
         }
     }
