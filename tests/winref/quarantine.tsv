@@ -5,8 +5,6 @@ eventlog-32	https://github.com/a-kaibu/ippai/issues/108	System event-log backup 
 eventlog-64	https://github.com/a-kaibu/ippai/issues/108	System event-log backup records differ from the isolated emulated log.
 gdipfont-32	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
 gdipfont-64	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
-outptr2-32	https://github.com/a-kaibu/ippai/issues/108	The Windows runner lacks an audio device; sake provides a virtual device.
-outptr2-64	https://github.com/a-kaibu/ippai/issues/108	The Windows runner lacks an audio device; sake provides a virtual device.
 host_browsefolder-32	https://github.com/a-kaibu/ippai/issues/108	Headless folder selection and callback ordering differ from the Windows dialog.
 host_netbios-32	https://github.com/a-kaibu/ippai/issues/108	Virtual adapter errors differ from the Windows runner's NetBIOS environment.
 host_mbsecure-32	https://github.com/a-kaibu/ippai/issues/108	The Windows reference cannot load this legacy CRT probe (exit 127).

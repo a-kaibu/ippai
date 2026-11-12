@@ -212,3 +212,9 @@ crtlocale-32 ^got +ucrtbase\.dll locinfo acp at 0x8 0x10 0x14$
 # (ICU4X's dictionary is 4 MB more wasm; games wrap by the line kind, which matches)
 icubrk-* ^(want|got) +uloc_getDefault 
 icubrk-* ^(want|got) +(ja|ja long|mixed|surrogates) word: 
+
+# #108: Windows runner has no audio device and leaves these out-pointers untouched;
+# sake's virtual device succeeds and writes the full pointer. Keep the other
+# outptr2 assertions live instead of quarantining the entire probe.
+outptr2-* ^want +DirectSoundCreate8?: half 1$
+outptr2-* ^got +DirectSoundCreate8?: half 0$

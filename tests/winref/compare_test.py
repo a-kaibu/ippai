@@ -76,5 +76,52 @@ class Quarantine(unittest.TestCase):
                 compare.read_quarantine(self.quarantine)
 
 
+class OutPointerPolicy(unittest.TestCase):
+    """Exercise the shipped exclusions with real Windows output and injected faults."""
+
+    def test_only_observed_audio_device_differences_are_allowed(self):
+        for arch in (32, 64):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as tmp:
+                name = f"outptr2-{arch}"
+                root = Path(tmp)
+                ref, got = root / "ref" / name, root / "got" / name
+                ref.mkdir(parents=True)
+                got.mkdir(parents=True)
+                windows = (HERE / "golden" / name / "stdout.txt").read_text()
+                (ref / "stdout.txt").write_text(windows)
+                (ref / "exit").write_text("0\n")
+                actual = windows.replace("DirectSoundCreate: half 1", "DirectSoundCreate: half 0")
+                actual = actual.replace("DirectSoundCreate8: half 1", "DirectSoundCreate8: half 0")
+
+                def check(output, expected, code="0"):
+                    if output is None:
+                        (got / "stdout.txt").unlink(missing_ok=True)
+                    else:
+                        (got / "stdout.txt").write_text(output)
+                    (got / "exit").write_text(code + "\n")
+                    p = subprocess.run([
+                        sys.executable, str(HERE / "compare.py"), str(ref.parent), str(got.parent),
+                        "--known", str(HERE / "known.txt"),
+                        "--quarantine", str(HERE / "quarantine.tsv"),
+                    ], capture_output=True, text=True, check=False)
+                    self.assertEqual(p.returncode, expected, p.stdout + p.stderr)
+                    self.assertIn("0 skipped", p.stdout)
+
+                check(windows, 0)
+                check(actual, 0)
+                lines = actual.splitlines(keepends=True)
+                for i, line in enumerate(lines):
+                    if line.startswith("DirectSoundCreate"):
+                        mutated = line.replace("half 0", "half 2")
+                    else:
+                        mutated = line.rstrip("\n") + " unexpected\n"
+                    with self.subTest(line=line.strip()):
+                        check("".join(lines[:i] + [mutated] + lines[i + 1:]), 1)
+                check(actual, 1, "139")
+                check(actual, 1, "?")
+                check("", 1)
+                check(None, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
