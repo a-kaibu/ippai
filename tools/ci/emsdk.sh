@@ -7,6 +7,8 @@ if [ ! -f "$EMSDK4/emsdk_env.sh" ]; then
   mkdir -p "$EMSDK4"
   curl -fsSL "https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/$EMSCRIPTEN_HASH/wasm-binaries.tar.xz" | tar xJ -C "$EMSDK4"
   ln -sfn install "$EMSDK4/upstream"
-  printf "LLVM_ROOT = '%s/upstream/bin'\nBINARYEN_ROOT = '%s/upstream'\nNODE_JS = '%s'\n" "$EMSDK4" "$EMSDK4" "$(command -v node)" > "$EMSDK4/.emscripten"
   printf 'export EMSDK=%s\nexport EM_CONFIG=%s/.emscripten\nexport PATH=%s/upstream/emscripten:%s/upstream/bin:$PATH\n' "$EMSDK4" "$EMSDK4" "$EMSDK4" "$EMSDK4" > "$EMSDK4/emsdk_env.sh"
 fi
+# (written every time: the cache is shared across workflows, and a job's node (setup-node puts it
+# under a versioned path) or home is not the one the cache was saved with)
+printf "LLVM_ROOT = '%s/upstream/bin'\nBINARYEN_ROOT = '%s/upstream'\nNODE_JS = '%s'\n" "$EMSDK4" "$EMSDK4" "$(command -v node)" > "$EMSDK4/.emscripten"
