@@ -1001,6 +1001,11 @@ static AHEAD: Mutex<Option<Ahead>> = Mutex::new(None);
 static AHEAD_WORK: std::sync::Condvar = std::sync::Condvar::new();
 static AHEAD_DONE: std::sync::Condvar = std::sync::Condvar::new();
 
+#[cfg(test)]
+fn needs_fetchers() -> bool {
+    AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_none_or(|a| a.threads == 0)
+}
+
 /// Has piece `p`'s blocks fetched by the fetcher threads, but those here already or on their
 /// way (the rest in runs, a piece each). With no fetcher thread (none could be made) nothing
 /// is queued: the read fetches them itself, as before.
@@ -1015,7 +1020,11 @@ fn fetch_ahead(p: Piece) {
     // (tests: the fetchers come up outside the snap tests' pauses; ONE before AHEAD, which
     // fetchers wait for)
     #[cfg(test)]
-    let _one = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_none_or(|a| a.threads == 0).then(|| crate::snap::ONE.lock().unwrap_or_else(|e| e.into_inner()));
+    let starting = needs_fetchers();
+    // Release AHEAD before waiting for ONE. In one chained expression its temporary guard
+    // lived through then's closure: a snap test held ONE while its fetchers needed AHEAD.
+    #[cfg(test)]
+    let _one = starting.then(|| crate::snap::ONE.lock().unwrap_or_else(|e| e.into_inner()));
     let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
     let a = g.get_or_insert_with(|| Ahead { queue: VecDeque::new(), busy: Default::default(), threads: 0 });
     if a.threads == 0 {
@@ -2077,6 +2086,14 @@ mod tests {
             let _ = tx.send(());
         });
         rx.recv_timeout(std::time::Duration::from_secs(5)).expect("wait_ahead waited for ever");
+    }
+
+    #[test]
+    fn fetcher_start_check_releases_ahead_before_snap_lock() {
+        let _ = needs_fetchers();
+        // No temporary AHEAD guard may survive until the caller takes snap::ONE.
+        // A snap test owns ONE while its fetchers need AHEAD to stand still.
+        assert!(AHEAD.lock().is_ok());
     }
 
     #[test]
