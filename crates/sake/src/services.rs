@@ -211,7 +211,9 @@ fn ControlService(c: &mut Ctx) -> u32 {
     let reply = kern::block(Some(Instant::now() + Duration::from_secs(30)), &|| false, |k| {
         let s = k.services.get_mut(&name).ok_or(1062u32)?;
         if let Some(result) = s.replies.remove(&id) { k.changed(); return Ok(result); }
-        if s.status[1] == 1 { return Err(1062); }
+        // A stop handler may publish SERVICE_STOPPED before it returns its reply.
+        // This request was accepted while running; wait for that handler's result,
+        // not a status transition which can race the dispatcher posting the reply.
         Err(kern::PENDING)
     });
     match reply {
