@@ -82,6 +82,11 @@ install.sh が `~/.local/share/ippai/fonts` に置きます。`ippai serve` は�
 
 ## 使い方
 
+アーカイブ・インストーラを `ippai add` / `ippai unpack` で展開すると、展開先の exe に
+[sdrs-core](https://github.com/a-kaibu/sdrs/) をライブラリとして適用します。
+SDRS の抽出に失敗した場合は追加を中止します。
+元のアーカイブは変更せず、展開先で生成されたバックアップは成功後に削除します。
+
 ```sh
 ippai serve                       # バックグラウンドで起動して http://localhost:8656 を表示
 ippai status | ippai logs --follow | ippai stop

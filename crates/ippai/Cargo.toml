@@ -8,6 +8,8 @@ description = "ippai: play visual novels in the browser. The server (web app bui
 [dependencies]
 libc = "0.2"
 anyhow = "1"
+# sdrs v1.0.0 (core only; no CLI or GUI).
+sdrs-core = { git = "https://github.com/a-kaibu/sdrs", rev = "91be70fc0c7ee9a501b5cf06235abc655a84f4c8" }
 rusqlite = { version = "0.41", features = ["bundled", "backup"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 ring = "0.17"

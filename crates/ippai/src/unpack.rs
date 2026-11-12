@@ -190,6 +190,7 @@ pub fn unpack_with(src: &Path, out: &Path, lim: Limits) -> Result<Vec<String>> {
     }
     fix_names(out)?;
     nested(&job, out)?;
+    sdrs(&job, out)?;
     Ok(job.issues.into_inner())
 }
 
@@ -914,6 +915,63 @@ fn msi(job: &Job, src: &Path, out: &Path) -> Result<bool> {
 
 // --- after unpacking ---
 
+/// Extract SDRS through its SDK after installers have placed the EXE and data together.
+/// Only the unpacked copy changes; the archive still holds the originals.
+fn sdrs(job: &Job, root: &Path) -> Result<()> {
+    use sdrs_core::sdrs::program::{LoadError, SdrsProgram};
+    use sdrs_core::sdrs::stub::StubError;
+    let mut exes = vec![];
+    walk(root, &mut |p| {
+        if ext(p) == "exe" {
+            exes.push(p.to_path_buf());
+        }
+        None::<()>
+    });
+    for exe in exes {
+        if !exe.is_file() {
+            continue;
+        }
+        let mut program = SdrsProgram::default();
+        match program.load(&exe) {
+            Ok(()) => {}
+            // Ordinary PE files have no recognized SDRS overlay.
+            Err(LoadError::Not32Bit | LoadError::Stub(StubError::Invalid | StubError::UnknownVersion)) => continue,
+            Err(e) => return Err(e).with_context(|| format!("{}: load SDRS", exe.display())),
+        }
+        let n = program.executable_size() as u64;
+        if n > job.lim.file_bytes {
+            return Err(over(format!("{}: more than {} bytes", exe.display(), job.lim.file_bytes)).into());
+        }
+        // Reserve space for the new executable and copies of patched data before SDK writes.
+        // These copies coexist with the originals during transactional installation.
+        let mut outputs = vec![];
+        for patch in program.stub().unwrap().patches() {
+            if patch.mode == sdrs_core::sdrs::structs::SdrsPatchMode::File
+                && patch.file_name != program.stub().unwrap().executable_file_name()
+            {
+                let path = safe_path(exe.parent().unwrap(), &patch.file_name).context("invalid SDRS data path")?;
+                if path != exe && !outputs.contains(&path) {
+                    outputs.push(path);
+                }
+            }
+        }
+        job.add_files(1 + outputs.len() as u64)?;
+        job.add_bytes(n)?;
+        for path in outputs {
+            let len = path.metadata()?.len();
+            if len > job.lim.file_bytes {
+                return Err(over(format!("{}: more than {} bytes", path.display(), job.lim.file_bytes)).into());
+            }
+            job.add_bytes(len)?;
+        }
+        let backup = program.extract().with_context(|| format!("{}: extract SDRS", exe.display()))?;
+        // The SDK returns exactly the backup it created; leave pre-existing backups alone.
+        fs::remove_dir_all(backup)?;
+        eprintln!("{}: extracted SDRS", exe.display());
+    }
+    Ok(())
+}
+
 /// Names some tools leave in Shift-JIS bytes -> UTF-8.
 fn fix_names(d: &Path) -> Result<()> {
     for e in fs::read_dir(d)? {
@@ -1634,6 +1692,87 @@ mod tests {
         let mut c = Command::new("sh");
         c.args(["-c", script]);
         c
+    }
+
+    /// A minimal SDRS v3 shell around a PE, with a configured output name.
+    fn sdrs_shell(patched: bool) -> (Vec<u8>, Vec<u8>) {
+        use sdrs_core::sdrs::{crypto::decrypt_v1, hash::crc32};
+        let mut game = pe(b"");
+        game[0x84..0x86].copy_from_slice(&0x14cu16.to_le_bytes());
+        game[0x98..0x9a].copy_from_slice(&0x10bu16.to_le_bytes());
+        let mut args = vec![0; 0x1280];
+        args[0x3c..0x40].copy_from_slice(&8u32.to_le_bytes());
+        args[0x1180..0x1188].copy_from_slice(b"Game.exe");
+        if patched {
+            args[0x40..0x48].copy_from_slice(b"data.dat");
+            args[0x144..0x148].copy_from_slice(&0x12345678u32.to_le_bytes());
+            args[0x148..0x14c].copy_from_slice(&8u32.to_le_bytes());
+            args[0x14c..0x150].copy_from_slice(&0x87654321u32.to_le_bytes());
+        }
+        let hash = crc32(&args);
+        let key = 0x12345678;
+        decrypt_v1(&mut args, key);
+        let mut shell = game.clone();
+        for value in [0x33576453u32, hash, key, 0] {
+            shell.extend(value.to_le_bytes());
+        }
+        shell.extend(args);
+        shell.resize(0x400 + 0x2000, 0);
+        shell.extend(&game);
+        (shell, game)
+    }
+
+    #[test]
+    fn sdrs_sdk_extracts_without_external_tools() {
+        let d = tmp("sdrssdk");
+        let (shell, game) = sdrs_shell(false);
+        let zip = zip_with(&[(b"installed/shell.exe", &shell), (b"installed/data.dat", b"data"), (b"ordinary.exe", b"MZ")], b"");
+        fs::write(d.join("g.zip"), zip).unwrap();
+        let out = d.join("out");
+        // small() disables external tools; SDRS is always built in.
+        assert!(unpack_with(&d.join("g.zip"), &out, small()).unwrap().is_empty());
+        assert_eq!(fs::read(out.join("installed/Game.exe")).unwrap(), game);
+        assert_eq!(fs::read(out.join("installed/data.dat")).unwrap(), b"data");
+        assert!(!out.join("installed/shell.exe").exists());
+        assert_eq!(fs::read_dir(out.join("installed")).unwrap().count(), 2);
+        assert_eq!(pick_exe(&out, None).as_deref(), Some("installed/Game.exe"));
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn sdrs_sdk_decrypts_adjacent_data_and_preserves_it_on_failure() {
+        let d = tmp("sdrsdata");
+        let (shell, _) = sdrs_shell(true);
+        let stub = sdrs_core::sdrs::stub::create_factory(&shell[0x400..]).unwrap();
+        let mut encrypted = 0x12345678u32.to_le_bytes().to_vec();
+        encrypted.extend(b"test");
+        let plain = encrypted.clone();
+        assert!(stub.decrypt_resource(&mut encrypted, 0, 0x12345678, 0x87654321, true));
+        fs::write(d.join("shell.exe"), &shell).unwrap();
+        fs::write(d.join("data.dat"), b"bad-data").unwrap();
+        assert!(sdrs(&Job::new(small()), &d).is_err());
+        assert_eq!(fs::read(d.join("shell.exe")).unwrap(), shell);
+        assert_eq!(fs::read(d.join("data.dat")).unwrap(), b"bad-data");
+        fs::write(d.join("data.dat"), encrypted).unwrap();
+        sdrs(&Job::new(small()), &d).unwrap();
+        assert_eq!(fs::read(d.join("data.dat")).unwrap(), plain);
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn sdrs_sdk_rejects_corruption_and_reserves_output_space() {
+        let d = tmp("sdrsbad");
+        let (shell, _) = sdrs_shell(false);
+        fs::write(d.join("shell.exe"), &shell).unwrap();
+        let lim = Limits { total_bytes: 1, ..small() };
+        limit_err(sdrs(&Job::new(lim), &d));
+        assert_eq!(fs::read(d.join("shell.exe")).unwrap(), shell);
+        let mut broken = shell;
+        broken[0x404] ^= 1; // the configuration checksum
+        fs::write(d.join("shell.exe"), &broken).unwrap();
+        assert!(sdrs(&Job::new(small()), &d).is_err());
+        assert_eq!(fs::read(d.join("shell.exe")).unwrap(), broken);
+        fs::remove_dir_all(d).unwrap();
     }
 
     #[test]
