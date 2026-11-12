@@ -171,6 +171,28 @@ jobs:
           IPPAI_API_COUNTS: "1"
           IPPAI_API_COUNTS_OUT: ${{ github.workspace }}/target/winetest/api-counts-${{ matrix.arch }}-${{ matrix.shard }}.txt
         run: python3 tests/winetest/run.py --arch ${{ matrix.arch }} --shard ${{ matrix.shard }}/4 -j 2 --timeout 120
+      # The no-font baseline is useful too. Run this separate fixture once per
+      # architecture so missing fonts cannot mask the x64 font regression (#99).
+      - name: GDI+ fonts with the shipped IPA stand-ins
+        if: matrix.shard == 0
+        run: |
+          tools/ci/apt.sh fonts-ipafont-gothic fonts-ipafont-mincho
+          tools/ci/pip.sh fonttools==4.59.0
+          python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/winetest-fonts-data"
+          mkdir -p "$RUNNER_TEMP/winetest-fonts"
+          ln -s "$GITHUB_WORKSPACE/target/winetest/bin" "$RUNNER_TEMP/winetest-fonts/bin"
+          WINETEST="$RUNNER_TEMP/winetest-fonts" python3 tests/winetest/run.py \
+            --arch ${{ matrix.arch }} -j 1 --timeout 120 \
+            --fonts "$RUNNER_TEMP/winetest-fonts-data" \
+            --expected tests/winetest/expected-gdiplus-fonts.tsv gdiplus:font
+      - uses: actions/upload-artifact@v7.0.2
+        if: always() && matrix.shard == 0
+        with:
+          name: winetest-fonts-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/winetest-fonts/report-*.md
+            ${{ runner.temp }}/winetest-fonts/results-*.tsv
+          retention-days: 14
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
