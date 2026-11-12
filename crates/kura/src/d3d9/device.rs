@@ -175,6 +175,10 @@ pub struct Device {
     /// the last uniform blocks written in this batch (bytes, offset)
     last_vs: (Vec<u8>, u32),
     last_ps: (Vec<u8>, u32),
+    // Ping-pong with the last blocks: draws reuse allocations while still comparing
+    // against the previous bytes before reusing their GPU offsets.
+    vs_scratch: Vec<u8>,
+    ps_scratch: Vec<u8>,
     batch_gen: u64,
     /// the batch `last_vs` / `last_ps` were written to
     uniform_gen: u64,
@@ -843,6 +847,8 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         dummy: 0,
         last_vs: (Vec::new(), 0),
         last_ps: (Vec::new(), 0),
+        vs_scratch: Vec::new(),
+        ps_scratch: Vec::new(),
         batch_gen: u64::MAX,
         uniform_gen: u64::MAX,
         in_scene: false,
@@ -3082,8 +3088,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // uniforms
     let vp = st.viewport;
     let (vpw, vph) = (vp[2].max(1) as f32, vp[3].max(1) as f32);
-    let mut vsu = vec![0u8; shader::uniform_size(vs_consts) as usize];
-    let mut psu = vec![0u8; shader::uniform_size(ps_consts) as usize];
+    let mut vsu = std::mem::take(&mut dev.vs_scratch);
+    let mut psu = std::mem::take(&mut dev.ps_scratch);
+    vsu.clear();
+    psu.clear();
+    vsu.resize(shader::uniform_size(vs_consts) as usize, 0);
+    psu.resize(shader::uniform_size(ps_consts) as usize, 0);
     let put = |buf: &mut Vec<u8>, at: usize, v: u32| buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
     put(&mut vsu, 0, f2u(1.0 / vpw));
     put(&mut vsu, 4, f2u(1.0 / vph));
@@ -3114,7 +3124,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         put(&mut vsu, 44, f2u(2.0 / vph));
         let get = |s: u32| st.transforms.get(&s).copied().unwrap_or(IDENT);
         let wvp = mul(&mul(&get(256), &get(2)), &get(3));
-        let mut regs = vec![[0f32; 4]; ff::VS_CONSTS as usize];
+        let mut regs = [[0f32; 4]; ff::VS_CONSTS as usize];
         // WGSL: mat4x4f(c0..c3) * p with D3D's rows as the columns = transpose(M) * p = p * M
         for r in 0..4 {
             regs[r] = [wvp[4 * r], wvp[4 * r + 1], wvp[4 * r + 2], wvp[4 * r + 3]];
@@ -3163,7 +3173,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         consts(&mut psu, &st.psf, ps_consts);
     } else {
         let c = |v: u32| [((v >> 16) & 0xff) as f32 / 255.0, ((v >> 8) & 0xff) as f32 / 255.0, (v & 0xff) as f32 / 255.0, (v >> 24) as f32 / 255.0];
-        let mut regs = vec![[0f32; 4]; ff::PS_CONSTS as usize];
+        let mut regs = [[0f32; 4]; ff::PS_CONSTS as usize];
         regs[0] = c(st.rs[60]);
         for i in 0..8 {
             regs[1 + i] = c(st.tss[i][32]);
@@ -3181,7 +3191,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // What the draw reads from guest memory (its vertices, indices, constants), hashed, and
     // where it draws when its vertices are in pixels already (XYZRHW): the page redraws only
     // the parts of a target that changed since the last frame (render/d3d.rs, segments).
-    let mut h = Fnv::default();
+    let mut h = DrawHash::default();
     for &(sn, ptr, stride) in &streams {
         match divider(sn) {
             Some(dv) => h.add(std::slice::from_raw_parts(ptr as *const u8, (instances.div_ceil(dv) * stride) as usize)),
@@ -3213,7 +3223,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             }
         }
     }
-    let hash = h.0 as u32 ^ (h.0 >> 32) as u32;
+    let hash = h.finish();
     let ext = rect_draw(d, &elems, &streams, first, count, prim, index.is_none() && vs.is_none() && ps.is_none(), &samplers, wmask, ds);
 
     let more_rts: Vec<u32> = more.iter().map(|m| m.0).collect();
@@ -3311,8 +3321,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         ((vso, pso), true)
     });
     let _ = ok;
-    dev.last_vs = (vsu, cmd.0);
-    dev.last_ps = (psu, cmd.1);
+    dev.vs_scratch = std::mem::replace(&mut dev.last_vs, (vsu, cmd.0)).0;
+    dev.ps_scratch = std::mem::replace(&mut dev.last_ps, (psu, cmd.1)).0;
     dev.uniform_gen = gen;
     // mark the targets rendered
     mark_rendered(d, rt);
@@ -3331,20 +3341,24 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     S_OK
 }
 
-/// FNV-1a, 64 bits
-struct Fnv(u64);
+/// Internal draw-change fingerprint. Hash machine words, not one i64 multiply per
+/// byte. Lengths delimit streams/blocks so padding short tails cannot alias them.
+/// This is a cache hint, not a persisted content ID or an authentication digest.
+#[derive(Default)]
+struct DrawHash(super::Fast);
 
-impl Default for Fnv {
-    fn default() -> Fnv {
-        Fnv(0xcbf2_9ce4_8422_2325)
-    }
-}
-
-impl Fnv {
+impl DrawHash {
+    #[inline]
     fn add(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.0 = (self.0 ^ b as u64).wrapping_mul(0x0100_0000_01b3);
-        }
+        use std::hash::Hasher;
+        self.0.write_usize(bytes.len());
+        self.0.write(bytes);
+    }
+
+    fn finish(&self) -> u32 {
+        use std::hash::Hasher;
+        let h = self.0.finish();
+        h as u32 ^ (h >> 32) as u32
     }
 }
 
@@ -3416,10 +3430,36 @@ fn blend_state(st: &State, target: u32) -> ([u32; 7], u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{blend_state, default_state, draw_steps, fmt};
+    use super::{blend_state, default_state, draw_steps, fmt, DrawHash};
     use proptest::prelude::*;
 
     const RT: [u32; 4] = [fmt::X8R8G8B8, fmt::X1R5G5B5, fmt::X4R4G4B4, fmt::R5G6B5];
+
+    #[test]
+    fn draw_hash_detects_mutations_and_block_boundaries() {
+        let hash = |parts: &[&[u8]]| {
+            let mut h = DrawHash::default();
+            for p in parts {
+                h.add(p);
+            }
+            h.finish()
+        };
+        // Includes all alignments/tails, uniform-sized blocks and every changed bit.
+        for len in [0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 80, 320, 528, 4416] {
+            let mut b: Vec<u8> = (0..len).map(|i| (i * 37) as u8).collect();
+            let base = hash(&[&b]);
+            for i in 0..len {
+                for bit in 0..8 {
+                    b[i] ^= 1 << bit;
+                    assert_ne!(base, hash(&[&b]), "byte {i}, bit {bit}, length {len}");
+                    b[i] ^= 1 << bit;
+                }
+            }
+        }
+        assert_ne!(hash(&[&[1]]), hash(&[&[1, 0]]));
+        assert_ne!(hash(&[&[1, 2], &[3]]), hash(&[&[1], &[2, 3]]));
+        assert_ne!(hash(&[&[0; 8], &[0; 16]]), hash(&[&[0; 16], &[0; 8]]));
+    }
 
     #[test]
     fn identity_blending_keeps_overwrite_quantization() {

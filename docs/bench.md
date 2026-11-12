@@ -84,3 +84,57 @@ for every instruction. Atomic-memory handling itself is unchanged.
 This is a small microbenchmark improvement; native uncached execution is effectively
 unchanged. These numbers do not establish a browser or whole-game speedup.
 Validation: `cargo test -p koji --release`.
+
+## D3D9 draw preparation (2026-11-12)
+
+Draw preparation reuses two pairs of uniform buffers, places fixed-function temporary
+registers on the stack, and fingerprints input blocks eight bytes at a time instead
+of multiplying once per byte. Uniform equality and GPU batch-generation checks remain
+in place. The fingerprint is internal and nonpersistent; no file/cache migration is needed.
+
+Comparison: runtime before this change (`b930f93f`) versus the candidate, Chromium
+156.0.8078.79 / Node 26.13.1 on Linux. Both use the same web app and benchmark PE.
+`tests/bench/run.mjs`, `ROUNDS=3 SCALE=0.5`, one unmeasured warm-up round, alternating
+build order, separate saved-JIT directories, unpaced frames. Median ms/frame:
+
+| case | before | after |
+|---|---:|---:|
+| VN scene | 1.060 | 0.896 |
+| fade | 25.322 | 25.182 |
+| 2,000 sprites, one call | 91.281 | 90.636 |
+| 2,000 sprites, separate calls | 135.705 | 133.738 |
+| render-target blur | 238.025 | 235.198 |
+| texture upload | 26.785 | 27.074 |
+| 500 draws with state changes | 77.033 | 73.689 |
+
+All seven frame checksums match, with no errors, unstable checksums or excluded builds.
+The ranges overlap: these large-screen results do not establish a general FPS improvement.
+In particular, the median VN improvement is noisy and must not be advertised as a 15% game
+speedup. Rasterization dominates most of these cases on this software GPU.
+
+`tests/bench/d3d9-submit.c` uses 8x8 targets to reduce rasterization cost: 12,004 draws
+per round, including opaque/alpha/color-mask changes, two target formats and synchronous
+pixel readback. Compile with an i686 Windows GCC (`-O2 -ld3d9 -lgdi32`) to
+`d3d9-submit-32.exe`; put `d3d9-submit-32` in the executable directory's `browser.txt`.
+Run it with `tests/winref/run-browser.mjs EXE_DIR OUT_DIR`, setting `IPPAI`, `WEB` and
+`PLAYWRIGHT` as for other browser probes. Compare the non-timing output exactly and
+discard round zero of each process before comparing the remaining five timings.
+
+The submission experiment ran six blocks with all six permutations of before/after/control
+order; control is the identical old runtime. Each process ran six rounds, its first discarded
+(30 measured samples per label). Overall medians: before **715.5 ms**, after **674.5 ms**
+(-5.7%), old-runtime control **699.5 ms** (-2.2%). Median within each process, in block order:
+
+| build | block 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---:|---:|---:|---:|---:|---:|
+| before | 716 | 764 | 713 | 733 | 697 | 696 |
+| after | 650 | 644 | 650 | 651 | 685 | 748 |
+| old control | 697 | 782 | 681 | 665 | 863 | 697 |
+
+All 18 processes returned zero and identical non-timing output. The last block regressed;
+this is a modest, noisy submission-benchmark gain, not a guaranteed percentage on games.
+
+Validation also includes 38 native D3D9 tests and four Windows PE probes (`d3d9`,
+`d3d9rtfmt`, `d3d9sb`, `d3d9state`): all 1,853 output lines match the previous runtime
+with fixed-memory JIT, interpreter and growable-memory JIT. Android device FPS has
+not been measured.
