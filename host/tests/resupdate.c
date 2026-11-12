@@ -92,6 +92,27 @@ int main(int argc, char **argv) {
     SetLastError(0);
     u = BeginUpdateResourceA(missing, FALSE);
     printf("missing file: %s, error %lu\n", u ? "a handle" : "NULL", GetLastError());
+    /* A corrupt FileAlignment must not make a small update allocate gigabytes. */
+    HANDLE f = CreateFileA(copy, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    DWORD nt = 0, bytes = 0, alignment = 0x86000200;
+    if (f == INVALID_HANDLE_VALUE) return 8;
+    SetFilePointer(f, 0x3c, NULL, FILE_BEGIN);
+    if (!ReadFile(f, &nt, 4, &bytes, NULL) || bytes != 4) return 9;
+    SetFilePointer(f, nt + 24 + 36, NULL, FILE_BEGIN);
+    if (!WriteFile(f, &alignment, 4, &bytes, NULL) || bytes != 4) return 10;
+    CloseHandle(f);
+    before = file_size(copy);
+    u = BeginUpdateResourceA(copy, FALSE);
+    BOOL rejected = !u;
+    if (u) {
+        if (!UpdateResourceA(u, (LPCSTR)RT_RCDATA, "ALIGNMENT", 0, "x", 1)) {
+            rejected = TRUE;
+            EndUpdateResourceA(u, TRUE);
+        } else {
+            rejected = !EndUpdateResourceA(u, FALSE);
+        }
+    }
+    printf("malformed alignment: rejected %d, size unchanged %d\n", rejected, file_size(copy) == before);
     DeleteFileA(copy);
-    return 0;
+    return rejected ? 0 : 11;
 }
