@@ -34,7 +34,7 @@ concurrency:
   # (per branch, tag or pull request; the nightly and manual runs have their own group, so a
   # push doesn't replace them)
   group: sanitize-${{ (github.event_name == 'push' || github.event_name == 'pull_request') && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 jobs:
   sanitize:

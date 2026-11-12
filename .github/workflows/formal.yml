@@ -6,7 +6,7 @@
 name: Formal
 
 #
-# On main one run at a time with only the newest commit waiting. Timeouts are a few times each
+# On main only the newest cumulative revision runs. Timeouts are a few times each
 # job's usual time: a hung job used to hold the group (and its runner) for the 6 h maximum while
 # every later commit's run waited and was dropped. Nightly and on release tags too.
 on:
@@ -23,7 +23,7 @@ permissions:
 
 concurrency:
   group: formal-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 jobs:
   tlc:
