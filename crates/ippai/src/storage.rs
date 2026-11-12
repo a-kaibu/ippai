@@ -642,6 +642,73 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Real fake-S3 HTTP + a deliberately stopped disk write: callers get the
+    /// large object promptly, and warm/direct do not send it to S3 again.
+    #[tokio::test]
+    async fn large_reads_share_pending_ciphertext_without_waiting_for_disk() {
+        let (f, mut s, dir) = serve(0).await;
+        let disk = Arc::new(Disk::open(dir.join("s3"), 64 << 20).unwrap());
+        s.disk = Some(disk.clone());
+        let big = vec![0x5a; CACHE_ITEM + 4096];
+        s.put("chunks/big", &big).await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let started_tx = Mutex::new(Some(started_tx));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        *disk.before_write.lock().unwrap() = Some(Arc::new(move || {
+            if let Some(tx) = started_tx.lock().unwrap().take() { let _ = tx.send(()); }
+            // Bounded even when an assertion fails before the writer is released.
+            let _ = release_rx.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5));
+        }));
+        let deadline = std::time::Duration::from_secs(2);
+        let first = tokio::time::timeout(deadline, s.get("chunks/big")).await.expect("first answer waited for disk").unwrap().unwrap();
+        assert_eq!(&*first, &big);
+        tokio::time::timeout(deadline, started_rx).await.unwrap().unwrap();
+        assert_eq!(disk.files().0.len(), 0, "writer should still be stopped before IO");
+        assert!(s.cache.lock().unwrap().map.is_empty(), "large objects stay outside the plaintext cache");
+        tokio::time::timeout(deadline, async {
+            let reads = futures_util::future::join_all((0..8).map(|_| s.get("chunks/big"))).await;
+            for read in reads {
+                assert_eq!(&*read.unwrap().unwrap(), &big);
+            }
+            assert!(!s.warm("chunks/big").await.unwrap());
+            assert!(s.direct("chunks/big", 60).await.unwrap().is_none());
+        }).await.expect("readers waited for disk instead of sharing the pending bytes");
+        assert_eq!(f.gets.load(SeqCst), 1);
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(deadline, async {
+            while !disk.pending.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(disk.files().0.len(), 1);
+        assert_eq!(&*s.get("chunks/big").await.unwrap().unwrap(), &big);
+        assert_eq!(f.gets.load(SeqCst), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn failed_background_write_releases_pending_memory() {
+        let dir = std::env::temp_dir().join(format!("ippai-pending-failure-{}", Uuid::new_v4()));
+        let disk = Arc::new(Disk::open(dir.clone(), 4096).unwrap());
+        // The configured directory becomes a file, so the real write must fail.
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::write(&dir, b"not a directory").unwrap();
+        let id = Uuid::new_v4();
+        disk.write_later(id, vec![1; 100]);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !disk.pending.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        assert!(!disk.has(id));
+        assert_eq!(disk.kept(), 0);
+        // Oversized objects never enqueue a write or consume pending space.
+        disk.write_later(id, vec![0; 4097]);
+        assert!(disk.pending.lock().unwrap().is_empty());
+        std::fs::remove_file(dir).unwrap();
+    }
+
     /// warm: on the disk without a get, no second download, the get after it reads the disk;
     /// warm and get of the same object at once download it once.
     #[tokio::test]
@@ -871,6 +938,11 @@ pub(crate) struct Disk {
     dir: std::path::PathBuf,
     limit: u64,
     bytes: std::sync::Mutex<u64>,
+    // The write task already owns these ciphertext buffers. Share them until the
+    // rename finishes, so a > CACHE_ITEM object never needs a second download.
+    pending: std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Arc<Vec<u8>>>>,
+    #[cfg(test)]
+    before_write: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// Disk::trim keeps this share of the limit (a little room, so not every write trims).
@@ -879,7 +951,9 @@ const DISK_KEEP: f64 = 0.9;
 impl Disk {
     pub(crate) fn open(dir: std::path::PathBuf, limit: u64) -> Result<Self> {
         std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
-        let d = Disk { dir, limit, bytes: Default::default() };
+        let d = Disk { dir, limit, bytes: Default::default(), pending: Default::default(),
+            #[cfg(test)] before_write: Default::default(),
+        };
         let (files, _) = d.files();
         *d.bytes.lock().unwrap() = files.iter().map(|f| f.1).sum();
         d.trim();
@@ -913,19 +987,44 @@ impl Disk {
     }
 
     pub(crate) fn has(&self, id: Uuid) -> bool {
-        self.path(id).exists()
+        self.pending(id).is_some() || self.path(id).exists()
+    }
+
+    fn pending(&self, id: Uuid) -> Option<std::sync::Arc<Vec<u8>>> {
+        self.pending.lock().unwrap().get(&id).cloned()
+    }
+
+    /// Keep the answer independent of disk latency. Pending data shares the
+    /// existing buffer rather than copying it or adding it to the plaintext cache.
+    fn write_later(self: &std::sync::Arc<Self>, id: Uuid, bytes: Vec<u8>) {
+        if bytes.len() as u64 > self.limit { return; }
+        let bytes = std::sync::Arc::new(bytes);
+        {
+            let mut pending = self.pending.lock().unwrap();
+            if pending.contains_key(&id) { return; }
+            pending.insert(id, bytes.clone());
+        }
+        let disk = self.clone();
+        tokio::task::spawn_blocking(move || {
+            disk.write(id, &bytes);
+            // A failed write is not a permanent, unbounded memory cache either.
+            disk.pending.lock().unwrap().remove(&id);
+        });
     }
 
     /// Object `id` when kept (and marked as just read).
-    pub(crate) fn read(&self, id: Uuid) -> Option<Vec<u8>> {
+    pub(crate) fn read(&self, id: Uuid) -> Option<std::sync::Arc<Vec<u8>>> {
+        if let Some(data) = self.pending(id) { return Some(data); }
         let p = self.path(id);
         let data = std::fs::read(&p).ok()?;
         let _ = std::fs::File::options().write(true).open(&p).and_then(|f| f.set_modified(std::time::SystemTime::now()));
-        Some(data)
+        Some(std::sync::Arc::new(data))
     }
 
     /// Keeps `bytes` as object `id` (written whole or not at all: a temporary file renamed).
     pub(crate) fn write(&self, id: Uuid, bytes: &[u8]) {
+        #[cfg(test)]
+        if let Some(hook) = self.before_write.lock().unwrap().clone() { hook(); }
         if bytes.len() as u64 > self.limit {
             return;
         }
@@ -1380,9 +1479,12 @@ impl Storage {
             }
             let key = self.key(&e.key_id)?;
             let kept = match &self.disk {
-                Some(d) => {
-                    let (d, id) = (d.clone(), e.object);
-                    tokio::task::spawn_blocking(move || d.read(id)).await.ok().flatten()
+                Some(d) => match d.pending(e.object) {
+                    Some(data) => Some(data),
+                    None => {
+                        let (d, id) = (d.clone(), e.object);
+                        tokio::task::spawn_blocking(move || d.read(id)).await.ok().flatten()
+                    }
                 }
                 None => None,
             };
@@ -1400,9 +1502,7 @@ impl Storage {
                     let ciphertext = self.download(e.object).await?;
                     let plain = e.decrypt(&key, &ciphertext)?;
                     if let Some(d) = &self.disk {
-                        let (d, id) = (d.clone(), e.object);
-                        // (the answer does not wait for the disk)
-                        tokio::task::spawn_blocking(move || d.write(id, &ciphertext));
+                        d.write_later(e.object, ciphertext);
                     }
                     plain
                 }
