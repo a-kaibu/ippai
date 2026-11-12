@@ -325,6 +325,7 @@ mod tests {
     /// without decoding it all.
     #[tokio::test]
     async fn many_chunks_in_order() {
+        use std::io::Read;
         let dir = std::env::temp_dir().join(format!("ippai-treefiles-{}", uuid::Uuid::new_v4()));
         let mut seed = 0x853c49e6748fea9bu64;
         let mut rnd = move |n: u64| {
@@ -358,7 +359,10 @@ mod tests {
             files.push(want);
         }
         // a chunk that decodes to 64 MiB, listed as 64 bytes
-        let bomb = zstd::encode_all(&vec![0u8; 64 << 20][..], 19).unwrap();
+        // The decoded size is what this tests, not the compression level. Stream the
+        // same 64 MiB payload at level 1: level 19 exhausted mutants' 3 GB address-space
+        // cap when other tests compressed concurrently (the unmutated baseline failed).
+        let bomb = zstd::encode_all(std::io::repeat(0).take(64 << 20), 1).unwrap();
         std::fs::create_dir_all(dir.join("chunks/bb")).unwrap();
         std::fs::write(dir.join("chunks/bb/bb00"), bomb).unwrap();
         lines += "f\t644\t0\tbomb\t128\tbb00:64,bb00:64\n";
