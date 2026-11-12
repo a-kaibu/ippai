@@ -878,7 +878,7 @@ fn scaler_init(c: &mut Ctx) -> u32 {
 
 /// The source taps of each of `d` destination pixels from `s` for an interpolation mode:
 /// linear (1) two taps at the pixel's center, cubic (2) Catmull-Rom's four, Fant (3) the
-/// source area the pixel covers when shrinking (linear when growing).
+/// source area with a linearly interpolated first partial sample (also when growing).
 fn taps(s: u32, d: u32, mode: u32) -> Vec<Vec<(u32, f32)>> {
     let ratio = s as f32 / d as f32;
     (0..d)
@@ -891,12 +891,22 @@ fn taps(s: u32, d: u32, mode: u32) -> Vec<Vec<(u32, f32)>> {
                     None => t.push((j, w)),
                 }
             };
-            if mode == 3 && s > d {
-                let (lo, hi) = (i as f32 * ratio, (i + 1) as f32 * ratio);
-                let mut j = lo.floor();
-                while j < hi {
-                    add(j as i64, ((j + 1.0).min(hi) - j.max(lo)) / ratio);
-                    j += 1.0;
+            if mode == 3 {
+                // Windows' Fant integrates intervals starting at i*s/d. The first
+                // partial source pixel is interpolated at that start, rather than
+                // taking its constant color. Use integer positions to keep exact
+                // pixel boundaries (including integral shrink ratios).
+                let (s, d) = (s as u64, d as u64);
+                let (lo, hi) = (i as u64 * s, (i as u64 + 1) * s);
+                for j in lo / d..hi.div_ceil(d) {
+                    let start = lo.max(j * d);
+                    let width = hi.min((j + 1) * d) - start;
+                    let frac = start - j * d;
+                    let weight = width as f64 / (s as f64 * d as f64);
+                    add(j as i64, (weight * (d - frac) as f64) as f32);
+                    if frac != 0 {
+                        add(j as i64 + 1, (weight * frac as f64) as f32);
+                    }
                 }
                 return t;
             }
@@ -935,6 +945,44 @@ fn taps(s: u32, d: u32, mode: u32) -> Vec<Vec<(u32, f32)>> {
         .collect()
 }
 
+/// Separable filtering; MODE selects the arithmetic at compile time. Accumulate
+/// all four channels together so each tap's address and weight are read once.
+fn filter<const MODE: u32>(pm: &[u8], sw: u32, sh: u32, w: u32, h: u32,
+    tx: &[Vec<(u32, f32)>], ty: &[Vec<(u32, f32)>], px: &mut [u8]) {
+    let mut mid = vec![0f32; (w * sh * 4) as usize];
+    for y in 0..sh {
+        for (x, taps) in tx.iter().enumerate() {
+            let mut value = [0.0f32; 4];
+            for &(j, weight) in taps {
+                let source = ((y * sw + j) * 4) as usize;
+                for k in 0..4 { value[k] += weight * pm[source + k] as f32; }
+            }
+            let dest = ((y * w + x as u32) * 4) as usize;
+            for k in 0..4 {
+                mid[dest + k] = match MODE {
+                    1 => value[k].floor(), 3 => (value[k] + 0.5).floor(), _ => value[k],
+                };
+            }
+        }
+    }
+    for (y, taps) in ty.iter().enumerate().take(h as usize) {
+        for x in 0..w {
+            let mut value = [0.0f32; 4];
+            for &(j, weight) in taps {
+                let source = ((j * w + x) * 4) as usize;
+                for k in 0..4 { value[k] += weight * mid[source + k]; }
+            }
+            let dest = ((y as u32 * w + x) * 4) as usize;
+            for k in 0..4 {
+                let v = if MODE == 3 { value[k] + 0.5 } else { value[k] };
+                px[dest + k] = v.clamp(0.0, 255.0) as u8;
+            }
+            let alpha = px[dest + 3];
+            for k in 0..3 { px[dest + k] = px[dest + k].min(alpha); }
+        }
+    }
+}
+
 /// `img` scaled to `w x h` with a WICBitmapInterpolationMode, filtered premultiplied (as
 /// Windows does: no color bleeds from transparent pixels) and straight again.
 fn scale(img: &Img, w: u32, h: u32, mode: u32) -> Img {
@@ -957,28 +1005,12 @@ fn scale(img: &Img, w: u32, h: u32, mode: u32) -> Img {
     } else {
         // across, then down
         let (tx, ty) = (taps(sw, w, mode), taps(sh, h, mode));
-        let mut mid = vec![0f32; (w * sh * 4) as usize];
-        for y in 0..sh {
-            for (x, t) in tx.iter().enumerate() {
-                for k in 0..4 {
-                    let v: f32 = t.iter().map(|&(j, wt)| wt * pm[((y * sw + j) * 4) as usize + k] as f32).sum();
-                    mid[((y * w + x as u32) * 4) as usize + k] = if mode == 1 { v.floor() } else { v };
-                }
-            }
-        }
-        for (y, t) in ty.iter().enumerate() {
-            for x in 0..w {
-                let d = ((y as u32 * w + x) * 4) as usize;
-                for k in 0..4 {
-                    let v: f32 = t.iter().map(|&(j, wt)| wt * mid[((j * w + x) * 4) as usize + k]).sum();
-                    px[d + k] = v.clamp(0.0, 255.0) as u8;
-                }
-                // (premultiplied: no channel above alpha)
-                let a = px[d + 3];
-                for k in 0..3 {
-                    px[d + k] = px[d + k].min(a);
-                }
-            }
+        // Specialize rounding outside the pixel loops: nearest/linear must not
+        // pay a per-channel branch for Fant's different arithmetic.
+        match mode {
+            1 => filter::<1>(&pm, sw, sh, w, h, &tx, &ty, &mut px),
+            3 => filter::<3>(&pm, sw, sh, w, h, &tx, &ty, &mut px),
+            _ => filter::<0>(&pm, sw, sh, w, h, &tx, &ty, &mut px),
         }
     }
     let px = picture::to_bgra(Fmt::Pbgra, w, h, w * 4, &px, &[]);
@@ -1314,6 +1346,44 @@ pub fn factory() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// External Windows measurements, including shrink/grow, both axes, and
+    /// integral/nonintegral ratios. Verify nearest/linear remain unchanged too.
+    #[test]
+    fn scaler_impulses_as_windows() {
+        for reference in [
+            include_str!("../../../tests/winref/golden/wicconv-32/stdout.txt"),
+            include_str!("../../../tests/winref/golden/wicconv-64/stdout.txt"),
+        ] {
+            let mut seen = 0;
+            let mut failures = Vec::new();
+            for line in reference.lines().filter(|l| l.starts_with("w ")) {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                let mode = fields[1].parse::<u32>().unwrap();
+                if mode == 2 { continue; } // Cubic is a separate compatibility gap.
+                let (w, h) = fields[2].split_once('x').unwrap();
+                let (w, h) = (w.parse().unwrap(), h.parse().unwrap());
+                let value = fields[3].parse::<u8>().unwrap();
+                let across = fields[4].starts_with('x');
+                let impulse = fields[4][1..].parse::<u32>().unwrap();
+                let mut pixels = Vec::new();
+                for y in 0..4 {
+                    for x in 0..8 {
+                        let v = if (if across { x } else { y }) == impulse { value } else { 0 };
+                        pixels.extend_from_slice(&[v, v, v, 255]);
+                    }
+                }
+                let scaled = scale(&Img::new(8, 4, pixels), w, h, mode);
+                let actual: Vec<_> = (0..if across { w } else { h })
+                    .map(|i| scaled.px[(if across { i } else { i * w }) as usize * 4]).collect();
+                let expected: Vec<u8> = fields[5..].iter().map(|v| v.parse().unwrap()).collect();
+                if actual != expected { failures.push(format!("{line}\n got {actual:?}")); }
+                seen += 1;
+            }
+            assert_eq!(seen, 576);
+            assert!(failures.is_empty(), "{} differing probes:\n{}", failures.len(), failures.join("\n"));
+        }
+    }
 
     #[test]
     fn scale_and_crop() {

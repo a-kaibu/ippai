@@ -16,6 +16,19 @@ probe that matches Windows is reported as passing, not skipped; remove its entry
 CI and `tests/winref/check.sh` pass `--quarantine tests/winref/quarantine.tsv` to `compare.py`.
 Omit that option for an unquarantined comparison when investigating an issue.
 
+## WIC scaling against Windows
+
+`wic::tests::scaler_impulses_as_windows` replays the saved x86/x64 Windows measurements for
+nearest, linear and Fant scaling: 576 impulse cases per architecture, covering both axes,
+two intensities, and integral/nonintegral enlargement and reduction. Run the real `wicconv`
+and `imaging` winref probes to check COM dispatch, alpha and pixel conversion as well.
+Fant impulse and alpha results are checked without a known-difference exemption; remaining
+straight-color roundoff and Cubic differences are still tracked in `tests/winref/known.txt`.
+
+The `wic` benchmark group measures Fant enlargement/reduction and a linear control. Each
+iteration creates a scaler and copies every output pixel, including the work on Windows'
+lazy scaler and sake's eager scaler. It reports milliseconds per image and an output checksum.
+
 ## Wine's conformance tests (tests/winetest)
 
 Wine's `dlls/<dll>/tests` are thousands of checks of how Windows behaves, each written

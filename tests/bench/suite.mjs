@@ -14,7 +14,7 @@
 export const VERSION = 3;
 
 // More rounds for the groups whose cases are short and noisy (run.mjs's default when ROUNDS isn't set)
-export const MIN_ROUNDS = { "memory-grow": 5, "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5, krkr2: 5, "renpy-gl": 5, "renpy-angle": 5, onscripter: 5, onscripter64: 5, win16: 5, "win16-pascal": 5 };
+export const MIN_ROUNDS = { wic: 5, "memory-grow": 5, "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5, krkr2: 5, "renpy-gl": 5, "renpy-angle": 5, onscripter: 5, onscripter64: 5, win16: 5, "win16-pascal": 5 };
 
 const cases = (exe, names, extra = {}) => names.map((c) => ({ exe, args: c, ...extra }));
 
@@ -30,6 +30,7 @@ export const GROUPS = {
     ...cases("cxx.exe", ["map", "string", "vector", "virtual", "exceptions", "unordered"]),
   ],
   gdi: cases("gdi.exe", ["vn", "vn_dirty", "alphablend", "stretch", "text", "small"]),
+  wic: cases("wic.exe", ["fant_grow", "fant_shrink", "linear_grow"]),
   ddraw: cases("ddraw.exe", ["vn", "lock", "colorkey", "flip"]),
   d3d8: cases("d3d8.exe", ["vn", "sprites", "upload"]),
   d3d9: cases("d3d9.exe", ["vn", "fade", "sprites_batched", "sprites_calls", "rt", "upload", "state"]),
