@@ -96,21 +96,22 @@ d3d11-* ^image (lines|wireframe):
 # in 16ths, the GPU finer; a level at most
 d3d11-* ^image address: \d+ pixels off by more than 0 \(worst 1;
 # WIC pictures: CMYK -> sRGB goes through a color profile on Windows (sake: its measured grid,
-# within a few levels), and Cubic weights still differ (see wicconv below)
+# within a few levels), and Cubic rounding still differs (see wicconv below)
 imaging-* ^image (gdip_)?(jpeg_cmyk|png_gray16):
 imaging-* ^(want|got) +gdip jpeg_cmyk: pixel
-imaging-* ^image scale_2_
+imaging-32 ^image scale_2_[0-9]+x[0-9]+:
 # Fant weights match, alpha is within the probe tolerance; straight-color roundoff remains.
 imaging-* ^image scale_3_[0-9]+x[0-9]+:
 # WIC conversions measured but not yet reproduced exactly: CMYK goes through Windows' color
 # profile (sake interpolates a measured 9-level grid: within 3 levels; the sRGB -> CMYK direction
 # is not modelled), 16bppGray encodes within 1 of 65535, 4 of 128 indexed picks differ (ties of
-# Windows' own nearest-color search), and Cubic weights still differ
+# Windows' own nearest-color search), and x86 Cubic rounding still differs (native impulse
+# tests bound it to one level; x64 matches exactly)
 # (nearest, linear, and Fant impulse measurements match exactly)
 wicconv-* ^image cmyk_grid:
 wicconv-* ^(want|got) +32bppCMYK>32bppBGRA:
 wicconv-* ^(want|got) +32bppBGRA>(16bppGray|32bppCMYK|[248]bppIndexed):
-wicconv-* ^(want|got) +w 2\b
+wicconv-32 ^(want|got) +w 2\b
 # Direct2D (WARP): antialiased edges are Windows' own coverage (sake: 4x4 samples), an aliased
 # ellipse outline is its tessellated stroke (sake: a ring), and an antialiased clip still fades
 # an aliased fill at its edges (sake: clips by the pixel center there)

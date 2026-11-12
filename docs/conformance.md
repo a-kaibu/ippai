@@ -19,13 +19,16 @@ Omit that option for an unquarantined comparison when investigating an issue.
 ## WIC scaling against Windows
 
 `wic::tests::scaler_impulses_as_windows` replays the saved x86/x64 Windows measurements for
-nearest, linear and Fant scaling: 576 impulse cases per architecture, covering both axes,
-two intensities, and integral/nonintegral enlargement and reduction. Run the real `wicconv`
+nearest, linear, Cubic and Fant scaling: 768 impulse cases per architecture, covering both axes,
+two intensities, and integral/nonintegral enlargement and reduction. Cubic matches x64 exactly
+and allows one level of remaining x86 rounding error; the other modes require exact equality.
+Run the real `wicconv`
 and `imaging` winref probes to check COM dispatch, alpha and pixel conversion as well.
-Fant impulse and alpha results are checked without a known-difference exemption; remaining
-straight-color roundoff and Cubic differences are still tracked in `tests/winref/known.txt`.
+Fant impulse/alpha and x64 Cubic results are checked without a known-difference exemption.
+Cubic alpha also passes on x86; its low-alpha straight-color error and one-level impulse
+rounding difference remain tracked in `tests/winref/known.txt`.
 
-The `wic` benchmark group measures Fant enlargement/reduction and a linear control. Each
+The `wic` benchmark group measures Fant and Cubic enlargement/reduction and a linear control. Each
 iteration creates a scaler and copies every output pixel, including the work on Windows'
 lazy scaler and sake's eager scaler. It reports milliseconds per image and an output checksum.
 

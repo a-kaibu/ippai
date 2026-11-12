@@ -30,7 +30,7 @@ export const GROUPS = {
     ...cases("cxx.exe", ["map", "string", "vector", "virtual", "exceptions", "unordered"]),
   ],
   gdi: cases("gdi.exe", ["vn", "vn_dirty", "alphablend", "stretch", "text", "small"]),
-  wic: cases("wic.exe", ["fant_grow", "fant_shrink", "linear_grow"]),
+  wic: cases("wic.exe", ["fant_grow", "fant_shrink", "cubic_grow", "cubic_shrink", "linear_grow"]),
   ddraw: cases("ddraw.exe", ["vn", "lock", "colorkey", "flip"]),
   d3d8: cases("d3d8.exe", ["vn", "sprites", "upload"]),
   d3d9: cases("d3d9.exe", ["vn", "fade", "sprites_batched", "sprites_calls", "rt", "upload", "state"]),
