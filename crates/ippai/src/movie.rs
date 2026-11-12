@@ -478,26 +478,35 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("ippai-omv-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let ogv = dir.join("t.ogv");
-        let st = Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=30:duration=1", "-c:v", "libtheora", "-q:v", "7"])
-            .arg(&ogv)
-            .status()
-            .unwrap();
-        assert!(st.success());
-        let mut omv = vec![0u8; 0x60];
-        omv[..4].copy_from_slice(b"TFTD");
-        omv[0x2c..0x30].copy_from_slice(&64u32.to_le_bytes());
-        omv[0x30..0x34].copy_from_slice(&48u32.to_le_bytes());
-        omv[0x3c..0x40].copy_from_slice(&33333u32.to_le_bytes());
-        omv.extend(fs::read(&ogv).unwrap());
-        let (src, out) = (dir.join("t.omv"), dir.join("t.vnv"));
-        fs::write(&src, &omv).unwrap();
-        transcode(&src, &out).unwrap();
-        let i = vnv::info(&fs::read(&out).unwrap()).unwrap();
-        assert_eq!((i.w, i.h, i.tracks.len(), i.rate), (64, 48, 1, None));
-        assert!((29..=31).contains(&i.frames()), "{} frames", i.frames());
-        assert!(i.tracks[0].1[0].2, "a key frame first");
+        // A taller 4:4:4 source carries alpha in the lower Y/U/V planes. Exercise
+        // the real ffmpeg path, not just the container writer, for both layouts.
+        for source_height in [48, 64] {
+            let ogv = dir.join("t.ogv");
+            let st = Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc=size=64x{source_height}:rate=30:duration=1"), "-pix_fmt", "yuv444p", "-c:v", "libtheora", "-q:v", "7"])
+                .arg(&ogv)
+                .status()
+                .unwrap();
+            assert!(st.success());
+            let mut omv = vec![0u8; 0x60];
+            omv[..4].copy_from_slice(b"TFTD");
+            omv[0x2c..0x30].copy_from_slice(&64u32.to_le_bytes());
+            omv[0x30..0x34].copy_from_slice(&48u32.to_le_bytes());
+            omv[0x3c..0x40].copy_from_slice(&33333u32.to_le_bytes());
+            omv.extend(fs::read(&ogv).unwrap());
+            let (src, out) = (dir.join("t.omv"), dir.join("t.vnv"));
+            fs::write(&src, &omv).unwrap();
+            transcode(&src, &out).unwrap();
+            let i = vnv::info(&fs::read(&out).unwrap()).unwrap();
+            assert_eq!((i.w, i.h, i.tracks.len(), i.rate), (64, 48, if source_height == 48 { 1 } else { 2 }, None));
+            assert!((29..=31).contains(&i.frames()), "{} frames", i.frames());
+            assert!(i.tracks[0].1[0].2, "a key frame first");
+            for (codec, frames) in &i.tracks {
+                assert_eq!(codec, "vp09.00.31.08");
+                assert_eq!(frames.len(), i.frames() as usize);
+                assert!(frames[0].2, "each track starts at a key frame");
+            }
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 
