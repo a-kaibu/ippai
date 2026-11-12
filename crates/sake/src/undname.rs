@@ -545,10 +545,7 @@ impl<'a> P<'a> {
         if self.depth > 32 {
             return None;
         }
-        let flags = self.flags;
-        self.flags = 0;
         let r = self.symbol();
-        self.flags = flags;
         self.depth -= 1;
         r
     }
@@ -599,8 +596,9 @@ impl<'a> P<'a> {
                     return Some(name);
                 }
                 let pre = match c {
-                    b'0'..=b'2' if !self.flag(NO_ACCESS_SPECIFIERS) => format!("{}static ", ACCESS[(c - b'0') as usize + 1]),
-                    b'0'..=b'2' => "static ".into(),
+                    b'0'..=b'2' => format!("{}{}",
+                        if self.flag(NO_ACCESS_SPECIFIERS) { "" } else { ACCESS[(c - b'0') as usize + 1] },
+                        if self.flag(NO_MEMBER_TYPE) { "" } else { "static " }),
                     _ => String::new(),
                 };
                 Some(pre + &self.render(&t, &format!(" {name}")))
@@ -630,7 +628,9 @@ impl<'a> P<'a> {
                 let adjust = if kind == 3 { Some(self.signed()?) } else { None };
                 let f = self.function_rest(this)?;
                 if self.flag(NAME_ONLY) {
-                    return Some(name);
+                    return Some(if matches!(unq, Unq::Cast(_)) {
+                        format!("{name} {}", self.render(f.ret.as_ref()?, ""))
+                    } else { name });
                 }
                 let mut pre = String::new();
                 if adjust.is_some() {
@@ -655,9 +655,9 @@ impl<'a> P<'a> {
             self.expect(b'A')?;
             let cc = self.cc()?;
             if self.flag(NAME_ONLY) {
-                return Some(name.into());
+                return Some(format!("{name}{{{n}}}'"));
             }
-            return Some(format!("[thunk]: {}{name}{{{n},{{flat}}}}' }}'", sep_after(&cc)));
+            return Some(format!("[thunk]:{}{}{name}{{{n},{{flat}}}}' }}'", if cc.is_empty() { "" } else { " " }, sep_after(&cc)));
         }
         let ex = c == b'R';
         let d = if ex { self.next()? } else { c };
@@ -710,8 +710,14 @@ impl<'a> P<'a> {
             let cv = storage && matches!(&t, Ty::Base { cv, .. } if *cv != 0);
             (Some(Box::new(t)), cv)
         };
-        let args = self.params_list()?;
-        self.throw_spec()?;
+        let args = if self.peek().is_none() {
+            // Windows still renders a function with a missing parameter encoding.
+            " ?? ".into()
+        } else {
+            let args = self.params_list()?;
+            self.throw_spec()?;
+            args
+        };
         Some(Func { cc, ret, ret_cv, args, this_q })
     }
     /// `E` `I` `F` then a cv letter: as a member function prints them after its parameters
@@ -915,7 +921,7 @@ impl<'a> P<'a> {
                     b'U' => "struct",
                     _ => "class",
                 };
-                base(&format!("{k} {n}"))
+                base(&if self.flag(NAME_ONLY) { n } else { format!("{k} {n}") })
             }
             b'W' => {
                 let k = self.next()?;
@@ -923,7 +929,7 @@ impl<'a> P<'a> {
                     return None;
                 }
                 let n = self.qualified_name()?;
-                base(&format!("enum {n}"))
+                base(&if self.flag(NAME_ONLY) { n } else { format!("enum {n}") })
             }
             b'Y' => self.array(0),
             b'A' | b'B' => self.pointer("&", if c == b'B' { 2 } else { 0 }, ctx),
@@ -1151,6 +1157,9 @@ use crate::mem::{self, cstr, ps, rp, wp};
 
 /// `mangled` undecorated, or itself when it is not a name undname knows (Windows' answer)
 pub fn undecorate(mangled: &[u8], flags: u32) -> Vec<u8> {
+    if mangled.is_empty() {
+        return b" ?? ".to_vec();
+    }
     let s = String::from_utf8_lossy(mangled);
     match undname(&s, flags) {
         Some(d) => d.into_bytes(),
@@ -1190,6 +1199,11 @@ fn undname_into(c: &mut Ctx, buf: u32, name: u32, n: u32, alloc: u32, flags: u32
 }
 
 /// UnDecorateSymbolName(name, out, size, flags): the length written
+fn symbol_output_len(len: usize, cap: u32) -> usize {
+    // DbgHelp reserves a spare character as well as the terminator (winref's 8-byte
+    // buffer contains "void _", six characters; __unDName uses cap - 1 instead).
+    len.min(cap.saturating_sub(2) as usize)
+}
 fn UnDecorateSymbolName(c: &mut Ctx) -> u32 {
     let (name, out, n, flags) = (c.a(0), c.a(1), c.a(2), c.a(3));
     if name == 0 || out == 0 || n == 0 {
@@ -1197,7 +1211,7 @@ fn UnDecorateSymbolName(c: &mut Ctx) -> u32 {
         return 0;
     }
     let d = undecorate(&cstr(name), flags);
-    let k = d.len().min(n as usize - 1);
+    let k = symbol_output_len(d.len(), n);
     mem::write(out, &d[..k]);
     mem::w8(out + k as u32, 0);
     k as u32
@@ -1384,9 +1398,33 @@ mod tests {
 
     #[test]
     fn rejects() {
-        for m in ["", "?", "?f@@", "?f@@YAX", "f", "?f@@YAXXZjunk", "?f.g@@YAXXZ", "?f@@3H", "?0@@YAXXZ"] {
+        for m in ["", "?", "?f@@", "f", "?f@@YAXXZjunk", "?f.g@@YAXXZ", "?f@@3H", "?0@@YAXXZ"] {
             assert_eq!(undname(m, 0), None, "{m}");
         }
+    }
+
+    #[test]
+    fn recorded_windows_symbol_names() {
+        let answers = include_str!("../../../tests/winref/golden/undname-32/stdout.txt");
+        for line in answers.lines() {
+            let Some((query, answer)) = line.split_once(": ") else { continue };
+            let Some((name, flags)) = query.rsplit_once(' ') else { continue };
+            if name.contains(' ') { continue; } // the separate __unDName buffer probes
+            let flags = if let Some(hex) = flags.strip_prefix("0x") {
+                u32::from_str_radix(hex, 16).unwrap()
+            } else {
+                let Ok(flags) = flags.parse::<u32>() else { continue };
+                flags
+            };
+            let Some((_, answer)) = answer.split_once(" [") else { continue };
+            let answer = answer.strip_suffix(']').unwrap();
+            assert_eq!(String::from_utf8(undecorate(name.as_bytes(), flags)).unwrap(), answer, "{query}");
+        }
+        let d = undecorate(b"?f@@YAXXZ", 0);
+        let n = symbol_output_len(d.len(), 8);
+        assert_eq!(&d[..n], b"void _");
+        assert_eq!(symbol_output_len(d.len(), 1), 0);
+        assert_eq!(symbol_output_len(d.len(), 2), 0);
     }
 
     /// UNDNAME_VECTORS=file: lines of `id, mangled, flags, wanted[, also accepted]` (tabs),
