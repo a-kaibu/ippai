@@ -4316,3 +4316,28 @@ mod case_tests {
         assert_eq!(wcase(0xdf, true, false), 0xdf);
     }
 }
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod issue88 {
+    use super::*;
+    use crate::test_guest::enter;
+    #[test]
+    fn locale_ctype_pointer_skips_eof_entry() {
+        let _g = enter();
+        for ucrt in [false, true] {
+            let layout = locale_layout(ucrt, ps());
+            let offset = layout.pctype;
+            let handles = layout.handles;
+            let loc = make_locale(layout);
+            let li = mem::rp(loc);
+            if let Some(h) = handles {
+                for i in 0..6 { assert_eq!(r32(li + h + 4 * i), 0x411); }
+            }
+            let table = mem::rp(li + offset);
+            assert_eq!(table, user_ctype_table(crate::text::acp()) + 2);
+            for b in [0, b'A', b'a', b'0', b' '] {
+                assert_eq!(mem::r16(table + 2 * b as u32), user_ctype(crate::text::acp(), b));
+            }
+        }
+    }
+}

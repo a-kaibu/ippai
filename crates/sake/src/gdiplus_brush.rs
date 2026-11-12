@@ -2135,3 +2135,25 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod issue88 {
+    use super::*;
+    use crate::test_guest::{enter, call};
+    #[test]
+    fn line_rect_writes_all_fields_and_rejects_null() {
+        let _g = enter();
+        let out = mem::heap_alloc(32, true);
+        let rect = [3.5, -7.0, 11.0, 23.0];
+        assert_eq!(rect_brush(rect, 0, u32::MAX, 0.0, false, TILE, out), OK);
+        let brush = r32(out);
+        mem::fill(out + 4, 20, 0xcc);
+        assert_eq!(call(GdipGetLineRect, &[brush, out + 4]), OK);
+        for (i, v) in rect.iter().enumerate() { assert_eq!(r32(out + 4 + i as u32 * 4), v.to_bits()); }
+        assert_eq!(r32(out + 20), 0xcccccccc);
+        assert_eq!(call(GdipGetLineRect, &[brush, 0]), INVALID_PARAMETER);
+        assert_eq!(call(GdipGetLineRect, &[0, out + 4]), INVALID_PARAMETER);
+        assert_eq!(call(GdipDeleteBrush, &[brush]), OK);
+        mem::heap_free(out);
+    }
+}

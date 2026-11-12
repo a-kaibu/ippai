@@ -2247,3 +2247,29 @@ mod tests {
         assert_eq!(parse_net("::1/64", NS_IPV6_NETWORK), Some(Net::V6(one, None, Some(64), 0)));
     }
 }
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod issue88 {
+    use super::*;
+    use crate::test_guest::enter;
+    #[test]
+    fn empty_connection_table_still_has_its_header() {
+        let _g = enter();
+        for tcp in [false, true] { for v6 in [false, true] {
+            assert_eq!(conn_fill(0, tcp, v6, RowKind::Basic), 4);
+            assert_eq!(conn_fill(0, tcp, v6, RowKind::Module), 8);
+        }}
+        crate::ws2::test_bound_udp(|| {
+            let p = mem::heap_alloc(32, false);
+            mem::fill(p, 32, 0xcc);
+            assert_eq!(conn_fill(p, false, false, RowKind::Basic), 28);
+            assert_eq!(r32(p), 3);
+            for i in 0..3 {
+                assert_eq!(mem::slice(p + 4 + 8 * i, 4), &[127, 0, 0, 1]);
+                assert_eq!(mem::slice(p + 8 + 8 * i, 2), &(41000u16 + i as u16).to_be_bytes());
+            }
+            assert_eq!(r32(p + 28), 0xcccccccc);
+            mem::heap_free(p);
+        });
+    }
+}

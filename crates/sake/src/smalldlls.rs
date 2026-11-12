@@ -1763,3 +1763,26 @@ mod tests {
         assert!(!type_matches(&d, &b));
     }
 }
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod issue88 {
+    use super::*;
+    use crate::test_guest::{enter, call};
+    #[test]
+    fn enumerator_advances_and_reports_partial_fetches() {
+        let _g = enter();
+        let p = mem::heap_alloc(128, true);
+        w32(p + ps() + 8, 2);
+        mem::write(ed_entry(p, 0), &[0x11; 16]);
+        mem::write(ed_entry(p, 1), &[0x22; 16]);
+        // A broken +=1 can spin forever: surface that as a bounded assertion failure.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || { tx.send(call(ED_Next, &[p, 3, p + 64, 0, p + 120])).unwrap(); });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(2)).expect("Next must finish"), S_FALSE);
+        assert_eq!(r32(p + 120), 2);
+        assert_eq!(mem::slice(p + 64, 32), [&[0x11; 16][..], &[0x22; 16][..]].concat());
+        assert_eq!(call(ED_Next, &[p, 1, p + 64, 0, p + 120]), S_FALSE);
+        assert_eq!(r32(p + 120), 0);
+        mem::heap_free(p);
+    }
+}
