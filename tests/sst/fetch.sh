@@ -30,14 +30,25 @@ fetch() { # cpu rev dir [extra files...]
 }
 # (an older layout: the 386 suite directly in target/sst)
 [ -d "$ROOT/v1_ex_real_mode" ] && rm -rf "$ROOT"
+# (the five suites are separate repositories: fetched at once, so a cache miss is bounded by the
+# slowest suite instead of their sum; the downloads are most of a cold run)
+pids=
 for c in 80386 80286 8086 8088 V20; do
   CPU=$c
   want "$@" || continue
-  case $c in
-    80386) fetch 80386 459d49fbe6280e9ed46fee887b58dacd9cb880ab v1_ex_real_mode revocation_list.txt ;;
-    80286) fetch 80286 37c73caf53dcd22d3dd369ff09305d13d117a4fe v1_real_mode revocation_list.txt ;;
-    8086) fetch 8086 e71c68d215a6bb8c356bd4cb3842de3bef345ca9 v1_binary ;;
-    8088) fetch 8088 aea84484abc79d09639d855b7b0ab32bc9e4dbeb v2_binary ;;
-    V20) fetch V20 6b3748f97533d606249382cad8d94b1c165ef93d v1_native_binary ;;
-  esac
+  (
+    case $c in
+      80386) fetch 80386 459d49fbe6280e9ed46fee887b58dacd9cb880ab v1_ex_real_mode revocation_list.txt ;;
+      80286) fetch 80286 37c73caf53dcd22d3dd369ff09305d13d117a4fe v1_real_mode revocation_list.txt ;;
+      8086) fetch 8086 e71c68d215a6bb8c356bd4cb3842de3bef345ca9 v1_binary ;;
+      8088) fetch 8088 aea84484abc79d09639d855b7b0ab32bc9e4dbeb v2_binary ;;
+      V20) fetch V20 6b3748f97533d606249382cad8d94b1c165ef93d v1_native_binary ;;
+    esac
+  ) &
+  pids="$pids $!"
 done
+st=0
+for p in $pids; do
+  wait "$p" || st=1
+done
+exit $st
