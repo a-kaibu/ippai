@@ -1115,3 +1115,20 @@ fn S_SetSourceSampleRate(c: &mut Ctx) -> u32 {
     });
     0
 }
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod issue88 {
+    use super::*;
+    use crate::test_guest::{enter, call};
+    #[test]
+    fn voice_state_writes_packed_fields_without_touching_neighbours() {
+        let _g = enter();
+        let p = mem::heap_alloc(24, false);
+        mem::fill(p, 24, 0xcc);
+        assert_eq!(call(S_GetState, &[0, p + 4]), 0);
+        assert_eq!(mem::r32(p), 0xcccccccc);
+        assert_eq!(mem::slice(p + 4, 16), &[0; 16]);
+        assert_eq!(mem::r32(p + 20), 0xcccccccc);
+        mem::heap_free(p);
+    }
+}

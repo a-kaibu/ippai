@@ -3324,3 +3324,36 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod issue88 {
+    use super::*;
+    use crate::test_guest::enter;
+    #[test]
+    fn overlapped_resets_only_its_event_and_masks_the_low_bit() {
+        let _g = enter();
+        for tag in [0, 1] {
+            let ev = crate::obj::add(crate::obj::Obj::Event { manual: true, set: true });
+            let p = mem::heap_alloc(32, true);
+            mem::wp(p + 16, ev | tag);
+            ov_start(p);
+            assert!(crate::obj::with(|t| matches!(t.objs.get(&ev), Some((crate::obj::Obj::Event { set: false, .. }, _)))));
+            mem::heap_free(p);
+            assert!(crate::obj::close(ev));
+        }
+        ov_start(0);
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+pub(crate) fn test_bound_udp(f: impl FnOnce()) {
+    with(|st, _| {
+        for i in 0..3u32 {
+            let mut sock = Sock::new(AF_INET, SOCK_DGRAM, 17);
+            sock.local = Some(Addr::v4([127, 0, 0, 1], (41000 + i) as u16));
+            st.socks.insert(0xffff0000 + i, sock);
+        }
+    });
+    f();
+    with(|st, _| { for i in 0..3 { st.socks.remove(&(0xffff0000 + i)); } });
+}

@@ -1592,6 +1592,16 @@ mod tests {
     }
 
     #[test]
+    fn issue88_wave_format_derives_missing_byte_alignment() {
+        let (t, _) = pcm_track(10, 2);
+        let mut defaulted = pcm_type(&t, 16, false);
+        defaulted.delete(&k_align());
+        defaulted.delete(&k_avg());
+        assert_eq!(wave_format(&defaulted, false).unwrap(),
+            [1, 0, 2, 0, 0x80, 0xbb, 0, 0, 0, 0xee, 2, 0, 4, 0, 16, 0, 0, 0]);
+    }
+
+    #[test]
     fn types() {
         let (t, _) = pcm_track(10, 2);
         let n = native_type(&t);

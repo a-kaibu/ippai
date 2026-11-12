@@ -1138,3 +1138,19 @@ mod tests {
         assert_eq!(error_text(100900), Some("invalid enumerant"));
     }
 }
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod issue88 {
+    use super::*;
+    use crate::test_guest::enter;
+    #[test]
+    fn quadric_fields_are_independent() {
+        let _g = enter();
+        let p = crate::mem::heap_alloc(16, true);
+        for (i, v) in [GLU_FILL, 100000 /* GLU_SMOOTH */, 100020 /* GLU_OUTSIDE */, 1].iter().enumerate() {
+            crate::mem::w32(p + 4 * i as u32, *v);
+        }
+        assert_eq!(quad(p), [GLU_FILL, 100000 /* GLU_SMOOTH */, 100020 /* GLU_OUTSIDE */, 1]);
+        crate::mem::heap_free(p);
+    }
+}

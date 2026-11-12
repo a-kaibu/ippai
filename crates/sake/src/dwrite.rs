@@ -1169,6 +1169,16 @@ mod layout_tests {
     }
 
     #[test]
+    fn issue88_default_line_height_is_one_em() {
+        let mut f = fmt((0.0, 0.0, 0.0));
+        f.spacing = None;
+        for size in [1.0, 10.0, 24.0, 72.0] {
+            f.size = size;
+            assert!((metrics("a", 0.0, &f)[0].3 - size).abs() < 0.0001);
+        }
+    }
+
+    #[test]
     fn line_metrics_count_newlines_and_trailing_space_in_code_units() {
         let f = fmt((0.0, 0.0, 0.0));
         // (length, trailing white space, newline, height, baseline)

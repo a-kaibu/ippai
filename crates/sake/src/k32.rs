@@ -7610,3 +7610,19 @@ mod atom_tests {
         assert_eq!(t.add("other".into()), 0xc000);
     }
 }
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod issue88 {
+    use super::*;
+    use crate::test_guest::{enter, call};
+    #[test]
+    fn open_process_respects_the_inherit_argument() {
+        let _g = enter();
+        for inherit in [0, 1, 2] {
+            let h = call(OpenProcess, &[PROCESS_ALL_ACCESS, inherit, crate::pid()]);
+            assert_ne!(h, 0);
+            assert_eq!(obj::inherits(h), inherit != 0);
+            assert!(obj::close(h));
+        }
+    }
+}
