@@ -195,6 +195,9 @@ jobs:
           path: target/testfloat
           key: testfloat-${{ runner.os }}-${{ hashFiles('tests/testfloat/build.sh') }}
       - name: cargo test
+        # (a cold build and the tests take about 12 minutes; a hung fetcher in kura's vfs tests
+        # once held the job (and every later run, one at a time on main) for an hour)
+        timeout-minutes: 25
         run: cargo test --workspace --release
       # (the C runtime's property tests once more with overflow checks: fuzzing found an
       # overflow that release builds wrap silently)
@@ -591,13 +594,27 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
       - name: Build
         run: tools/ci/build.sh
-      # (after the build, the checks that only need its outputs run side by side: each is
-      # single-threaded and the runner has four cores. Before, they ran one after another.)
+      # (after the build, the checks that only need its outputs. The runner has four cores: one
+      # rustc build alone, then the four single-threaded suites (a core each), then the browser's
+      # (several processes). Six at once made every one of them take two to three times as long,
+      # and the timing-sensitive ones timed out or raced: no better than one after another.)
       # (the release's Windows build: pack, add and storage on the PC that has the games)
       - name: ippai for Windows builds without warnings
         id: windows
         background: true
         run: RUSTFLAGS="-D warnings" cargo build --release -p ippai --target x86_64-pc-windows-gnu
+      # (the artifacts are ready as soon as Build is: upload them while the build runs)
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ippai
+          path: target/dist/*
+          retention-days: 14
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: web
+          path: web/dist
+          retention-days: 14
+      - wait: windows
       # (SAKE_C: each run its own C:\ (default /tmp/sake-c), or two runs share windows/temp)
       # (with the entry points each program called, a line per process, for
       # tests/coverage/usage.py: artifact api-counts-host-tests)
@@ -621,6 +638,8 @@ jobs:
         id: snap-grow
         background: true
         run: SAKE_C=$RUNNER_TEMP/sake-c-snap-grow SAKE=$PWD/target/sake-out/sake-grow.js EXES=snaptest TIMES="0.7 2.1" tests/snap.sh
+      - name: Wait for the four suites
+        wait: [host-sake, host-grow, snap, snap-grow]
       - wait: browser-tools
       - if: steps.cache-playwright.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
@@ -630,8 +649,6 @@ jobs:
       # (one after another: the tests pick a random port in the same range, and two software
       # renderings at once could time each other out)
       - name: The page's tests (save states, 自動送り, launchers, the game window, the bucket's chunks, a game saved whole)
-        id: browser-tests
-        background: true
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: |
@@ -641,19 +658,6 @@ jobs:
           node tests/screen-browser.mjs target/release/ippai
           node tests/direct-browser.mjs
           node tests/save-first-browser.mjs target/release/ippai
-      # (the artifacts are ready as soon as Build is: upload them while the checks run)
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: ippai
-          path: target/dist/*
-          retention-days: 14
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: web
-          path: web/dist
-          retention-days: 14
-      - name: Wait for the six runs
-        wait: [windows, host-sake, host-grow, snap, snap-grow, browser-tests]
       # (after host-sake, which writes it: the artifact the coverage report reads)
       - uses: actions/upload-artifact@v7.0.2
         if: ${{ !cancelled() }}
