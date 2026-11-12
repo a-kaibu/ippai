@@ -1,6 +1,10 @@
 # Existing compatibility gaps, temporarily skipped with the user's approval (2026-11-12).
 # probe glob<TAB>tracking issue<TAB>reason. Probes still execute and keep artifacts.
-# Only completed, nonempty, exit-0 results can be quarantined; crashes/timeouts still fail.
+# Only completed, nonempty, exit-0 results matching quarantine.json can be quarantined.
+# quarantine.json records exact unknown differences (including full differing image pixels)
+# observed in Actions run 43289193614, a3af574f. A probe glob alone does not allow a skip.
+# Crashes/timeouts and new differences still fail. --quarantine-observed FILE records
+# candidate fingerprints for review; CI never automatically approves or updates them.
 gdipfont-32	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
 gdipfont-64	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
 host_browsefolder-32	https://github.com/a-kaibu/ippai/issues/108	Headless folder selection and callback ordering differ from the Windows dialog.

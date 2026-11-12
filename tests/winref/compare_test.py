@@ -2,6 +2,7 @@
 """Issue-backed quarantine never hides a new probe, crash, timeout or missing output."""
 from pathlib import Path
 import subprocess
+import json
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,9 @@ class Quarantine(unittest.TestCase):
         self.got.mkdir()
         self.quarantine = self.root / "quarantine.tsv"
         self.quarantine.write_text(f"old-probe-32\t{ISSUE}\tExisting compatibility gap.\n")
+        self.quarantine.with_suffix(".json").write_text(json.dumps({
+            "old-probe-32": [compare.quarantine_fingerprint(["want Windows", "got  different"], {}, {})]
+        }))
 
     def probe(self, name="old-probe-32", result="different\n", exit="0"):
         for root, text, code in [(self.ref, "Windows\n", "0"), (self.got, result, exit)]:
@@ -45,6 +49,24 @@ class Quarantine(unittest.TestCase):
         self.assertIn("1 skipped", p.stdout)
         self.assertIn(ISSUE, p.stdout)
         self.assertIn("different", p.stdout)
+
+    def test_new_difference_in_quarantined_probe_fails(self):
+        self.probe(result="different\nnew corruption\n")
+        self.assertEqual(self.run_compare().returncode, 1)
+
+    def test_missing_snapshot_does_not_allow_blanket_skip(self):
+        self.probe()
+        self.quarantine.with_suffix(".json").unlink()
+        self.assertEqual(self.run_compare().returncode, 1)
+
+    def test_same_image_summary_does_not_hide_different_pixels(self):
+        want = {"frame": (2, 1, 0, ["000000000000"])}
+        old = {"frame": (2, 1, 0, ["ff0000010000"])}
+        new = {"frame": (2, 1, 0, ["ff0000000100"])}
+        summary = [compare.image_diff("frame", want["frame"], old["frame"], None, "p")]
+        self.assertEqual(summary, [compare.image_diff("frame", want["frame"], new["frame"], None, "p")])
+        self.assertNotEqual(compare.quarantine_fingerprint(summary, want, old),
+                            compare.quarantine_fingerprint(summary, want, new))
 
     def test_new_probe_still_fails(self):
         self.probe("new-probe-32")

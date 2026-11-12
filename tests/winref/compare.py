@@ -12,9 +12,14 @@ Line kinds (probe.h): plain lines must be equal; "ulp <n> <label> <hex>" doubles
 difference goes to --png for each one that differs); "skip ..." as the first reference line
 skips the probe. known.txt lists differences already understood: "<probe glob> <regex>  # why",
 a diff line matching it does not fail the run (it is still reported, as known).
+Issue-backed quarantine additionally requires an exact fingerprint from the sibling
+quarantine.json. --quarantine-observed FILE writes candidate fingerprints for review;
+it does not approve them or change the comparison's exit status.
 Exits 1 on any other difference, a probe missing on the sake side or a different exit code.
 """
 import difflib
+import hashlib
+import json
 import fnmatch
 import os
 import re
@@ -92,6 +97,8 @@ def image_diff(name, want, got, png_dir, probe):
         if len(wr[y]) != w * 6 or len(gr[y]) != w * 6:
             return f"image {name}: row {y} truncated"
         a, b = bytes.fromhex(wr[y]), bytes.fromhex(gr[y])
+        if a == b:
+            continue
         for x in range(w):
             d = max(abs(a[3 * x + c] - b[3 * x + c]) for c in range(3))
             if d > tol:
@@ -129,10 +136,33 @@ def read_quarantine(path):
     return entries
 
 
+def quarantine_fingerprint(unknown, want_images, got_images):
+    # Include complete differing images: count/worst/first-pixel summaries alone
+    # can stay identical even when a different pixel breaks.
+    images = {name: [want_images.get(name), got_images.get(name)]
+              for name in sorted(set(want_images) | set(got_images))
+              if any(d.startswith(f"image {name}:") for d in unknown)}
+    data = json.dumps([unknown, images], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+def quarantine_baselines(path):
+    baseline = os.path.splitext(path)[0] + ".json"
+    if not os.path.exists(baseline):
+        return {}
+    with open(baseline, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or any(not isinstance(v, list) or not v or
+            any(not isinstance(h, str) or not re.fullmatch(r"[0-9a-f]{64}", h) for h in v)
+            for v in data.values()):
+        raise ValueError(f"{baseline}: expected probe names mapped to exact SHA-256 fingerprints")
+    return data
+
+
 def main():
     args = sys.argv[1:]
     opt = {}
-    for o in ("--known", "--quarantine", "--png", "--report"):
+    for o in ("--known", "--quarantine", "--quarantine-observed", "--png", "--report"):
         if o in args:
             k = args.index(o)
             opt[o] = args[k + 1]
@@ -146,10 +176,10 @@ def main():
         import golden
         stale = {p for p in os.listdir(ref) if os.path.isdir(os.path.join(ref, p))
                  and open(os.path.join(ref, p, "src")).read().strip() != golden.src_hash(p)}
-        tmp = tempfile.mkdtemp()
+        tmp = tempfile.TemporaryDirectory()
         golden.GOLDEN = os.path.abspath(ref)
-        golden.expand(tmp)
-        ref = tmp
+        golden.expand(tmp.name)
+        ref = tmp.name
     known = []
     if "--known" in opt:
         for l in open(opt["--known"], encoding="utf-8"):
@@ -158,6 +188,8 @@ def main():
                 g, rx = l.split(None, 1)
                 known.append((g, re.compile(rx)))
     quarantine = read_quarantine(opt["--quarantine"]) if "--quarantine" in opt else []
+    baselines = quarantine_baselines(opt["--quarantine"]) if "--quarantine" in opt else {}
+    observed = {}
     report, failed, totals = [], [], {"ok": 0, "known": 0, "fail": 0, "skip": 0, "stale": 0, "new": 0}
     for probe in sorted(set(os.listdir(got)) - set(os.listdir(ref))):
         if os.path.isdir(os.path.join(got, probe)):
@@ -200,15 +232,19 @@ def main():
             continue
         is_known = lambda d: any(fnmatch.fnmatch(probe, g) and rx.search(d) for g, rx in known)
         unknown = [d for d in diffs if not is_known(d)]
+        entry = next((q for q in quarantine if fnmatch.fnmatch(probe, q[0])), None)
+        fingerprint = quarantine_fingerprint(unknown, wi, gi)
+        if entry and unknown and gexit == "0" and gl:
+            observed[probe] = fingerprint
         if not diffs:
             totals["ok"] += 1
             report.append(f"- {probe}: ok")
         elif not unknown:
             totals["known"] += 1
             report.append(f"- {probe}: {len(diffs)} known differences")
-        elif (entry := next((q for q in quarantine if fnmatch.fnmatch(probe, q[0])), None)) and gexit == "0" and gl:
+        elif entry and gexit == "0" and gl and fingerprint in baselines.get(probe, []):
             totals["skip"] += 1
-            report.append(f"- {probe}: skipped comparison ({entry[1]}): {entry[2]} ({len(unknown)} differences)")
+            report.append(f"- {probe}: skipped recorded differences ({entry[1]}): {entry[2]} ({len(unknown)} differences)")
             report.extend("      " + d[:300] for d in unknown[:5])
         else:
             totals["fail"] += 1
@@ -222,6 +258,10 @@ def main():
     print(text)
     if "--report" in opt:
         open(opt["--report"], "w", encoding="utf-8").write(text)
+    if "--quarantine-observed" in opt:
+        with open(opt["--quarantine-observed"], "w", encoding="utf-8") as f:
+            json.dump(observed, f, indent=2, sort_keys=True)
+            f.write("\n")
     sys.exit(1 if failed else 0)
 
 

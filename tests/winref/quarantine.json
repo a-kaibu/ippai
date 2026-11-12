@@ -1,0 +1,110 @@
+{
+  "d3d7state-32": [
+    "86db3e839fc468d67935b64013c43531bf37758ea065823bf80ed551f3dfd92b"
+  ],
+  "d3d9rtfmt-32": [
+    "b0ecd42df1db45efc429570a2be70a139d2e79560d20e0327e14e457899a0aa4"
+  ],
+  "gdipfont-32": [
+    "b175874406111c723cb26b20a67fbba71f94c1a48fb1cec5e68cbd32060c3bc9"
+  ],
+  "gdipfont-64": [
+    "8377fc9ddfa9b924f5da6ad4f19de80a5bf8519d47017ce3db9e558cbd7dcd60"
+  ],
+  "host_aclentries-32": [
+    "ec16b3a36c2b5063822eb76c52e6002a55c014ade16ea39073fe3d9ea5bda1f9"
+  ],
+  "host_browsefolder-32": [
+    "6d12abad9ce2311d44cd0911b771b3c45c102060551fcc3a15bd2e0bf4929ff7"
+  ],
+  "host_dialogtab-32": [
+    "08a11b15f84d8b578f91b8e6c822507070f1182caa0db55481c43ec7a9d7dbe8"
+  ],
+  "host_listbox-32": [
+    "ca01ec9447324fd5afc86b17ebd4590df3317b247468f4bc0c5506ed12f0bd24"
+  ],
+  "host_mbsecure-32": [
+    "dd17f28dee65cab903d0b8c926d2626fc6b37300dec662eaada203b6ca55aa04"
+  ],
+  "host_mbtokens-32": [
+    "53c76b8a9bc50cb6a6f2cc87722f463de14b75121b0bf64843f811bba5075fea"
+  ],
+  "host_shfileinfo-32": [
+    "2e54313f6446f0947a61496b137febbff80f365519c3a864d8b9d159328fc48f"
+  ],
+  "host_wininetquery-32": [
+    "c02f5c333867510344c6a5c467e07e1f74166d417868be30282eb3af28bd43c5"
+  ],
+  "loadimage-32": [
+    "a801da11e511d3206a37a1ec813514977f7f0079e0ba83eb87ea1ab0c8d228de"
+  ],
+  "loadimage-64": [
+    "3141b74e56791d2e4da4e539e0c266a20e4d63c9e608e1e7eacdaea8a96d51f5"
+  ],
+  "mfreader-32": [
+    "37422e156ae1b5ff77a9062a11586a7c54112fadc67053d35dce70cbfb4ecbb3"
+  ],
+  "replay_b2011_anim_team_mm-32-32": [
+    "22f73cfba4f069b49dc2aed3520da8c176105f61ad43995157d2c95ecabeaa1f"
+  ],
+  "replay_b2011_anim_team_mm-32-f713-32": [
+    "314242908b3217b3cde9b7d0011985ef2c815dd7ca601dd866cc9ef01d541005"
+  ],
+  "replay_b2012_fudegaki_soft-32-32": [
+    "e56500fe3d096eccfb8edff3560934c0668402eba336e04944f6137966684d03"
+  ],
+  "replay_b2012_trois-32-32": [
+    "d01ffe3bb75aa5ff8ddb79cdd6ba2314b4793fb3d78b0ffbb53fd134ec2ed4ff"
+  ],
+  "replay_b2015_guilty-32-32": [
+    "ec29786c33723b1022420e7aa0d3f8878a88f3c61606118921978f28f2ef5146"
+  ],
+  "replay_b2019_anim-32-32": [
+    "cda2ebff8bd2e19e403de4e96bc45476939b7313413e5eb58f1350e590b94634"
+  ],
+  "replay_b2021_tinkerbell-32-32": [
+    "cfc6067f320dd7715fc1b6e3a8fd2744e35944d4e420bc40327a962c0615d845"
+  ],
+  "replay_b2026_anim-32-32": [
+    "dd8f1dd80aa63064fe029e9a73872f427d25837ef452f2a4212738d97ea375ef"
+  ],
+  "replay_b2026_wendybell-32-32": [
+    "9398cae275835297e2603d323f72bee0b5805b3482b4d0f18b8721b047a74050"
+  ],
+  "replay_d3d11-32-32": [
+    "6901f5ccb02142b91bb90284ca0cd547b8744690eae17f5cfcd92ce0d32e5fb0"
+  ],
+  "replay_d3d9rtfmt-32-32": [
+    "fef9cd29089480d085eb7fa601e841546e61654b8ba443f3058c82091d69e298"
+  ],
+  "replay_s2020_wonder_fool_maokatsu-32-32": [
+    "77aba4bae51bf90af89b80643a2c41d32e0f6ab267d25a14cac21e1b6c7b87ef"
+  ],
+  "replay_s2020_wonder_fool_maokatsu-32-f12-32": [
+    "733710317a03c30cb9f2114cacb1cb0de335abd1ad46be0c2da55efd4650cd9a"
+  ],
+  "replay_s2021_giga_fuyukiss-32-32": [
+    "733710317a03c30cb9f2114cacb1cb0de335abd1ad46be0c2da55efd4650cd9a"
+  ],
+  "replay_s2021_silkys_plus_fuyukuru-32-32": [
+    "996d2d1ceb8bd0c2a15a24874f406662087f928c54e69128b30aa82e418b263c"
+  ],
+  "rgnshape-32": [
+    "715cace9f20f4a9553997a58c09d85f6e85cac50197938c726b401ba0821c3d5"
+  ],
+  "rgnshape-64": [
+    "715cace9f20f4a9553997a58c09d85f6e85cac50197938c726b401ba0821c3d5"
+  ],
+  "user-32": [
+    "23ec6c45682cd432df733f1cb2879d36c2c046a2a214b8d7d119d10acec8f8eb"
+  ],
+  "user-64": [
+    "23ec6c45682cd432df733f1cb2879d36c2c046a2a214b8d7d119d10acec8f8eb"
+  ],
+  "versions-32": [
+    "971fcd86086def3baf6f44af0315fe6b6d8f1131818674315d9619ddf3e71fc7"
+  ],
+  "versions-64": [
+    "971fcd86086def3baf6f44af0315fe6b6d8f1131818674315d9619ddf3e71fc7"
+  ]
+}
