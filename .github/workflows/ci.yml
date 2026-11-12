@@ -55,7 +55,7 @@ jobs:
           key: playwright-${{ runner.os }}-1.63.0
       # (the corpus harness: screenshots against Windows' answers, the Windows player's platform-free parts)
       - name: Corpus harness tests
-        run: python3 tests/corpus/shots_test.py && python3 tests/corpus/winplay_test.py && python3 tests/corpus/golden_test.py && python3 tests/coverage/usage_test.py
+        run: python3 tests/corpus/shots_test.py && python3 tests/corpus/winplay_test.py && python3 tests/corpus/golden_test.py && python3 tests/corpus/check_test.py && python3 tests/coverage/usage_test.py
       - name: Real browser fetch regression
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs

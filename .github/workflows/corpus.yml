@@ -209,7 +209,7 @@ jobs:
         env:
           RUN: ${{ needs.run.result }}
         run: |
-          python3 tests/corpus/check.py tests/corpus/titles.tsv results --summary "$GITHUB_STEP_SUMMARY" --summary report.md
+          python3 tests/corpus/check.py tests/corpus/titles.tsv results --min-prepared-ratio 0.8 --summary "$GITHUB_STEP_SUMMARY" --summary report.md
           # (a shard that broke before grading its titles fails the run too)
           [ "$RUN" = success ] || { echo "a corpus job failed: $RUN"; exit 1; }
       - uses: actions/upload-artifact@v7.0.2

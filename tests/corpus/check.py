@@ -6,7 +6,7 @@
 Each title gets a level: prep (download/extract failed) < none (no title screen) < title
 (title screen) < story (the title's steps left the title and the story screens change).
 A title whose level is below its `expect` column is a regression; the exit code is 1 when
-there is one. The same for the `look` column: how far sake's screens match Windows' answers
+there is one. Insufficient preparation coverage (--min-prepared-ratio), or no results, exits 2. The same for the `look` column: how far sake's screens match Windows' answers
 (tests/corpus/golden, tests/corpus/golden.py look): none < title (the title screen matches)
 < steps (the screen the title's steps lead to matches too). A download failure of an expected title is reported but not a failure (the
 trial hosts come and go). The table also lists, per title, the DLLs and functions it asked for that sake does not
@@ -35,8 +35,11 @@ ap.add_argument('titles')
 ap.add_argument('outs', nargs='+')
 ap.add_argument('--summary', action='append', default=[])
 ap.add_argument('--regressions')
+ap.add_argument('--min-prepared-ratio', type=float, default=0.0, help='required prepared fraction; unmet coverage exits 2 (inconclusive), not a compatibility regression')
 ap.add_argument('--update', nargs='?', const='raise', choices=['raise', 'set'])
 A = ap.parse_args()
+if not 0 <= A.min_prepared_ratio <= 1:
+    ap.error('--min-prepared-ratio must be between 0 and 1')
 titles_path, outs = A.titles, A.outs
 rows = list(csv.DictReader(open(titles_path, encoding='utf-8'), delimiter='\t'))
 cols = list(rows[0].keys())
@@ -94,6 +97,9 @@ for row in rows:
             row['look'] = got_look if got_look != 'none' else ''
 
 total = sum(counts.values())
+prepared = total - counts.get('prep', 0)
+coverage = prepared / total if total else 0
+inconclusive = not total or coverage < A.min_prepared_ratio
 head = [f"### Corpus on sake: {total} titles",
         '',
         ' / '.join(f'{k} {counts.get(k, 0)}' for k in ('story', 'title', 'none', 'prep')) +
@@ -101,6 +107,9 @@ head = [f"### Corpus on sake: {total} titles",
         '',
         'Like Windows (tests/corpus/golden): ' + ' / '.join(f'{k} {looks.get(k, 0)}' for k in ('steps', 'title', 'none')) +
         f' of {sum(looks.values())} titles Windows answered',
+        '',
+        f'Preparation: {prepared}/{total} ({coverage:.1%}); required {A.min_prepared_ratio:.1%}. ' +
+        ('**INCONCLUSIVE: insufficient prepared titles; compatibility is not established.**' if inconclusive else 'Preparation threshold met.'),
         '',
         '| id | engine | expect | got | look expected | looks like Windows | | title s | missing DLLs / functions | first error |',
         '|---|---|---|---|---|---|---|---|---|---|']
@@ -114,4 +123,4 @@ if A.update:
     with open(titles_path, 'w', encoding='utf-8', newline='') as f:
         w = csv.DictWriter(f, fieldnames=cols, delimiter='\t', lineterminator='\n')
         w.writeheader(); w.writerows(rows)
-sys.exit(1 if regressed else 0)
+sys.exit(1 if regressed else 2 if inconclusive else 0)
