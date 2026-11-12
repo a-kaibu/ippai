@@ -18,11 +18,17 @@ objs="$t/$name.obj"
 grep -q '^// eha' "$src/$name.cpp" && cxx="$cxx -fasync-exceptions"
 if grep -q '^// msstl' "$src/$name.cpp"; then
   MSSTL=${MSSTL:-$HOME/.cache/msstl-17.11}
-  if [ ! -f "$MSSTL/stl/inc/iostream" ]; then
-    rm -rf "$MSSTL"
-    git clone -q --depth 1 --branch vs-2022-17.11 --filter=blob:none --sparse https://github.com/microsoft/STL.git "$MSSTL"
-    git -C "$MSSTL" sparse-checkout set stl/inc
-  fi
+  mkdir -p "$(dirname "$MSSTL")"
+  # (CI runs two host/tests suites at once: one clones it, the other waits and finds it there;
+  # an rm -rf beside a clone used to leave "Directory not empty")
+  if ! (
+    if command -v flock >/dev/null; then flock 9; fi
+    if [ ! -f "$MSSTL/stl/inc/iostream" ]; then
+      rm -rf "$MSSTL"
+      git clone -q --depth 1 --branch vs-2022-17.11 --filter=blob:none --sparse https://github.com/microsoft/STL.git "$MSSTL"
+      git -C "$MSSTL" sparse-checkout set stl/inc
+    fi
+  ) 9>"$MSSTL.lock"; then exit 1; fi
   cxx="$cxx -std=c++17 -fms-compatibility -fms-compatibility-version=19.40 -fno-rtti -fno-threadsafe-statics
     -D_DLL -D_MT -D_HAS_STATIC_RTTI=0 -isystem $src/msstl-shim -isystem $MSSTL/stl/inc
     -isystem $(clang -print-resource-dir)/include -isystem /usr/x86_64-w64-mingw32/include -include $src/msstl-shim/pre.h"
