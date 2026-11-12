@@ -59,17 +59,23 @@ jobs:
             ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-std-wasm32-unknown-emscripten
             ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/multirust-config.toml
           key: rust-wasm-${{ env.RUST_KEY }}
+      # (Emscripten, one cache shared with CI, Release, winref and Bench: in the cargo caches it
+      # was a copy per workflow)
+      - id: cache-emsdk
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/emsdk4
+          key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: |
-            ~/emsdk4
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: conformance-sake-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}
+          key: conformance-sake-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            conformance-sake-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}-
+            conformance-sake-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             conformance-sake-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: sake (node build)
         run: |
@@ -83,6 +89,11 @@ jobs:
             target/sake-out/sake.wasm
             target/sake-web
           retention-days: 3
+      - if: github.ref == 'refs/heads/main' && steps.cache-emsdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/emsdk4
+          key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
@@ -92,7 +103,6 @@ jobs:
         uses: actions/cache/save@v6.1.0
         with:
           path: |
-            ~/emsdk4
             ~/.cargo/registry
             ~/.cargo/git
             target
@@ -111,12 +121,8 @@ jobs:
         with:
           path: target/winetest/bin
           key: ${{ steps.key.outputs.key }}
-      # (.debs per runner image: tools/ci/apt.sh)
-      - id: cache-3
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-flex-bison
+      # (no ~/.apt-cache: these tools are installed only when target/winetest/bin misses, and
+      # the cache was restored on every run for that rare build)
       - name: Build Wine's tests
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -128,11 +134,6 @@ jobs:
         with:
           path: target/winetest/bin
           key: ${{ steps.key.outputs.key }}
-      - if: steps.cache-3.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-flex-bison
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: winetest-bin
@@ -303,21 +304,12 @@ jobs:
         with:
           name: sake-node
           path: target
-      # (.debs per runner image: tools/ci/apt.sh)
-      - id: cache-7
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-wine-wine32_i386
+      # (installed every run: its ~/.apt-cache (Wine's packages, ~400 MB) was a tenth of what
+      # the Actions cache holds, and an evicted SingleStepTests cache costs twenty minutes)
       - name: Wine (the reference) and mingw-w64
         run: |
           sudo dpkg --add-architecture i386
           tools/ci/apt.sh mingw-w64 wine wine32:i386
-      - if: steps.cache-7.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-mingw-w64-wine-wine32_i386
       - name: GDI drawing, sake against Wine
         run: python3 tests/diff/gdi.py
       - name: Floating point, sake against the CPU

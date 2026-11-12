@@ -129,16 +129,21 @@ jobs:
             ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/multirust-config.toml
           key: rust-wasm-${{ env.RUST_KEY }}
       - run: tools/ci/rust-wasm.sh
-      # (emsdk and the registry crates' wasm builds; saved on main only)
+      # (Emscripten, one cache shared with CI, Conformance, winref and Bench; saved on main)
+      - id: cache-emsdk
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/emsdk4
+          key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
+      # (the registry crates' wasm builds; saved on main only)
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: |
-            ~/emsdk4
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: release-web-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}
+          key: release-web-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: release-web-${{ env.RUST_KEY }}-
       # (the page's two sake builds only: SAKE_NODE=0 skips node's)
       - name: sake.wasm and the page
@@ -164,6 +169,11 @@ jobs:
             ~/.pnpm-store
             ~/.cache/node/corepack
           key: ${{ steps.cache-pnpm.outputs.cache-primary-key }}
+      - if: github.ref == 'refs/heads/main' && steps.cache-emsdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/emsdk4
+          key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
       - name: Shrink the cargo cache
         if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         run: python3 tools/ci/cache-prune.py target
@@ -171,7 +181,6 @@ jobs:
         uses: actions/cache/save@v6.1.0
         with:
           path: |
-            ~/emsdk4
             ~/.cargo/registry
             ~/.cargo/git
             target
