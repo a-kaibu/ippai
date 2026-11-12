@@ -2,7 +2,7 @@
 
 Suites that check sake and koji against references they did not write themselves. Wine's tests
 and the differential tests run in `.github/workflows/conformance.yml` (push to main, or by
-hand); TestFloat and SingleStepTests in ci.yml (`test`, `jit`). All run locally too.
+hand); TestFloat and SingleStepTests in ci.yml (`test`, `jit16`, `jit32`). All run locally too.
 
 ## Wine's conformance tests (tests/winetest)
 
