@@ -148,7 +148,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [i386, x86_64]
-        shard: [0, 1]
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0
@@ -163,11 +163,14 @@ jobs:
           name: winetest-bin
           path: target/winetest/bin
       # (with the entry points each test called, a line per process, for tests/coverage/usage.py)
-      - name: Wine's tests on sake (shard ${{ matrix.shard }} of 2)
+      # Four V8 processes per runner made gdiplus:graphics and user32:text hit 120s
+      # before finishing (their baseline finishes). Same total concurrency, twice the
+      # runners and half the processes on each: keep the time limit and assertions.
+      - name: Wine's tests on sake (shard ${{ matrix.shard }} of 4)
         env:
           IPPAI_API_COUNTS: "1"
           IPPAI_API_COUNTS_OUT: ${{ github.workspace }}/target/winetest/api-counts-${{ matrix.arch }}-${{ matrix.shard }}.txt
-        run: python3 tests/winetest/run.py --arch ${{ matrix.arch }} --shard ${{ matrix.shard }}/2 -j 4 --timeout 120
+        run: python3 tests/winetest/run.py --arch ${{ matrix.arch }} --shard ${{ matrix.shard }}/4 -j 2 --timeout 120
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:

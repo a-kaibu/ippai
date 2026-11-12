@@ -250,7 +250,7 @@ jobs:
             jit64-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Build jit64test
         working-directory: tools/jit64test
-        run: cargo build --release --locked
+        run: cargo build --release --locked && cargo test --release --locked
       - name: Long mode, JIT against the interpreter, part 1 of 4
         id: jit64-diff0
         background: true
@@ -556,54 +556,24 @@ jobs:
         run: node tests/fetch-bridge.test.mjs
       - name: Shared VFS, account bridge and node stdio tests (host/vnfs.js, host/account-bridge.js, host/node-stdio.js)
         run: node --test tests/vfs-shared.mjs tests/account-bridge.mjs tests/node-stdio.mjs
-      # (host/tests/innoinstall.c: fonts for Inno Setup's dialog units, tools/ci/sake-fonts.py from
-      # the IPA fonts with fonttools; the official Inno Setup installer it installs on sake)
-      - uses: actions/cache@v6.1.0
-        with:
-          path: ~/.pip-wheels
-          key: pip-${{ runner.os }}-fonttools==4.59.0
-      - uses: actions/cache@v6.1.0
-        with:
-          path: ~/.cache/ippai-inno
-          key: inno-6.7.4
-      # (Playwright's Chromium, installed while the rest of the job runs: the tests that use it
-      # come after Build)
-      - id: cache-playwright
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-1.63.0
-      - name: Browser test tools
-        id: browser-tools
-        background: true
-        run: |
-          mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
-          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
-      # (the release's Windows build; rustup's download here, cargo after Build)
-      - name: Windows target
-        run: rustup target add x86_64-pc-windows-gnu
       - wait: apt
       - if: steps.cache-5.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis-ipafont
-      - name: Fonts for host/tests
-        run: |
-          tools/ci/pip.sh fonttools==4.59.0
-          mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
       - name: Build
         run: tools/ci/build.sh
-      # (after the build, the checks that only need its outputs. The runner has four cores: one
-      # rustc build alone, then the four single-threaded suites (a core each), then the browser's
-      # (several processes). Six at once made every one of them take two to three times as long,
-      # and the timing-sensitive ones timed out or raced: no better than one after another.)
-      # (the release's Windows build: pack, add and storage on the PC that has the games)
-      - name: ippai for Windows builds without warnings
-        id: windows
-        background: true
-        run: RUSTFLAGS="-D warnings" cargo build --release -p ippai --target x86_64-pc-windows-gnu
-      # (the artifacts are ready as soon as Build is: upload them while the build runs)
+      # Publish once; the host suites, snapshots, browser and Windows checks below each get
+      # their own runner. Four suites on this runner took 11 minutes, after the Windows build;
+      # six at once took 17 minutes and raced. No test needs to rebuild sake to check it.
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-sake-node
+          path: |
+            target/sake-out/*.js
+            target/sake-out/*.wasm
+          retention-days: 3
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ippai
@@ -614,58 +584,6 @@ jobs:
           name: web
           path: web/dist
           retention-days: 14
-      - wait: windows
-      # (SAKE_C: each run its own C:\ (default /tmp/sake-c), or two runs share windows/temp)
-      # (with the entry points each program called, a line per process, for
-      # tests/coverage/usage.py: artifact api-counts-host-tests)
-      - name: host/tests on sake
-        id: host-sake
-        background: true
-        run: |
-          mkdir -p "$RUNNER_TEMP/api-counts"
-          IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_C=$RUNNER_TEMP/sake-c-sake SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
-      # (the page's fallback build where 4 GB at once is refused: web/src/runtime.ts sakeBuild;
-      # and the JIT freeing modules nothing refers to after every load, kura jit.rs reclaim)
-      - name: host/tests on sake-grow (a memory that starts at 2.06 GB and grows), JIT modules freed at every load
-        id: host-grow
-        background: true
-        run: SAKE_C=$RUNNER_TEMP/sake-c-grow IPPAI_JIT_RECLAIM=1 SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/sake-grow.js tests/host-tests.sh
-      - name: Save states under node (cut anywhere, restored, the same output)
-        id: snap
-        background: true
-        run: SAKE_C=$RUNNER_TEMP/sake-c-snap SAKE=$PWD/target/sake-out/sake.js tests/snap.sh
-      - name: Save states under node on sake-grow (the build a state is of, its memory as large)
-        id: snap-grow
-        background: true
-        run: SAKE_C=$RUNNER_TEMP/sake-c-snap-grow SAKE=$PWD/target/sake-out/sake-grow.js EXES=snaptest TIMES="0.7 2.1" tests/snap.sh
-      - name: Wait for the four suites
-        wait: [host-sake, host-grow, snap, snap-grow]
-      - wait: browser-tools
-      - if: steps.cache-playwright.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-1.63.0
-      # (one after another: the tests pick a random port in the same range, and two software
-      # renderings at once could time each other out)
-      - name: The page's tests (save states, 自動送り, launchers, the game window, the bucket's chunks, a game saved whole)
-        env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: |
-          node tests/savestate-browser.mjs target/release/ippai
-          node tests/autoadvance-browser.mjs target/release/ippai
-          node tests/exec-browser.mjs target/release/ippai
-          node tests/screen-browser.mjs target/release/ippai
-          node tests/direct-browser.mjs
-          node tests/save-first-browser.mjs target/release/ippai
-      # (after host-sake, which writes it: the artifact the coverage report reads)
-      - uses: actions/upload-artifact@v7.0.2
-        if: ${{ !cancelled() }}
-        with:
-          name: api-counts-host-tests
-          path: ${{ runner.temp }}/api-counts/
-          if-no-files-found: ignore
-          retention-days: 30
       # (saved after the checks (compressing it while they run would take their cores), and on
       # main only: a copy per pull request or tag would be unusable by the others)
       - if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.cache-emsdk.outputs.cache-hit != 'true' }}
@@ -686,3 +604,146 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  host-tests:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [sake, sake-grow]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: ci-sake-node
+          path: target/sake-out
+      - run: tools/ci/cache-keys.sh
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis-ipafont
+      - run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm msitools wixl nsis fonts-ipafont-gothic fonts-ipafont-mincho
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.pip-wheels
+          key: pip-${{ runner.os }}-fonttools==4.59.0
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ippai-inno
+          key: inno-6.7.4
+      - name: Fonts for host/tests
+        run: |
+          tools/ci/pip.sh fonttools==4.59.0
+          mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
+      - name: host/tests on ${{ matrix.build }}
+        env:
+          SAKE_BUILD: ${{ matrix.build }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/api-counts"
+          if [ "$SAKE_BUILD" = sake-grow ]; then export IPPAI_JIT_RECLAIM=1; fi
+          IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_C=$RUNNER_TEMP/sake-c SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/$SAKE_BUILD.js tests/host-tests.sh
+      - uses: actions/upload-artifact@v7.0.2
+        if: ${{ !cancelled() && matrix.build == 'sake' }}
+        with:
+          name: api-counts-host-tests
+          path: ${{ runner.temp }}/api-counts/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  snapshots:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [sake, sake-grow]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: ci-sake-node
+          path: target/sake-out
+      - run: tools/ci/apt.sh mingw-w64 zstd
+      - name: Save states under node (cut anywhere, restored, the same output)
+        env:
+          SAKE_BUILD: ${{ matrix.build }}
+        run: |
+          if [ "$SAKE_BUILD" = sake-grow ]; then export EXES=snaptest TIMES="0.7 2.1"; fi
+          SAKE_C=$RUNNER_TEMP/sake-c SAKE=$PWD/target/sake-out/$SAKE_BUILD.js tests/snap.sh
+
+  page-tests:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-build-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-build-
+      - run: tools/ci/pnpm.sh
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: ippai
+          path: target/dist
+      - name: Use the exact packaged build, not another compilation
+        run: |
+          mkdir -p target/release
+          tar --zstd -xf target/dist/ippai-*.tar.zst -C target/release --strip-components=1
+      - run: tools/ci/apt.sh mingw-w64
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.63.0
+      - name: Browser tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
+          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
+      # One browser at a time: software rendering itself uses several cores.
+      - name: The page's tests
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          SAKE_WEB: target/release/web/sake/
+        run: |
+          node tests/savestate-browser.mjs target/release/ippai
+          node tests/autoadvance-browser.mjs target/release/ippai
+          node tests/exec-browser.mjs target/release/ippai
+          node tests/screen-browser.mjs target/release/ippai
+          node tests/direct-browser.mjs
+          node tests/save-first-browser.mjs target/release/ippai
+
+  windows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
+      - run: tools/ci/apt.sh mingw-w64
+      - run: rustup target add x86_64-pc-windows-gnu
+      - name: ippai for Windows builds without warnings
+        run: RUSTFLAGS="-D warnings" cargo build --release -p ippai --target x86_64-pc-windows-gnu
+      - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
+        run: python3 tools/ci/cache-prune.py target
