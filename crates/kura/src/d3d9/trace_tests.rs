@@ -48,6 +48,9 @@ unsafe extern "C" fn free(_: *mut u8) {}
 /// then). Nothing without the sanitizer.
 pub(crate) unsafe fn lsan_root(p: *mut libc::c_void, n: usize) {
     let f = libc::dlsym(libc::RTLD_DEFAULT, c"__lsan_register_root_region".as_ptr());
+    if crate::env_on!("IPPAI_REQUIRE_LSAN_ROOTS") {
+        assert!(!f.is_null(), "LeakSanitizer root registration is not exported; use tools/ci/sanitize.sh");
+    }
     if !f.is_null() {
         let f: unsafe extern "C" fn(*const libc::c_void, usize) = std::mem::transmute(f);
         f(p, n);

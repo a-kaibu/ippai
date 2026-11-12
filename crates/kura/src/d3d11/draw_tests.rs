@@ -267,7 +267,24 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
     assert!(errors.is_empty(), "seed {seed}: WebGPU errors {:?}", &errors[..errors.len().min(10)]);
     model::with(|m| m.prims = None);
     cc(110, &[ctx]);
-    let _ = (sc, level);
+    // ClearState drops bindings, not the caller's COM references. Release every
+    // resource this run owns before the next seed creates another device.
+    for &(buffer, _) in &vbs {
+        assert_eq!(call1(m(ibuf, 2), &[buffer]), 0);
+    }
+    for (iface, object) in [
+        (if ten { IF10_RTV } else { IF_RTV }, rtv),
+        (if ten { IF10_TEX2D } else { IF_TEX2D }, rt),
+        (if ten { IF10_VS } else { IF_VS }, vsh),
+        (if ten { IF10_PS } else { IF_PS }, psh),
+        (IF_SWAPCHAIN, sc),
+    ] {
+        assert_eq!(call1(m(iface, 2), &[object]), 0);
+    }
+    if !ten {
+        call1(m(IF_CONTEXT, 2), &[ctx]);
+    }
+    call1(m(idev, 2), &[dev]);
 }
 
 #[test]

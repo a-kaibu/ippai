@@ -12,6 +12,12 @@ shift || true
 pkgs=("$@")
 [ ${#pkgs[@]} -gt 0 ] || pkgs=(-p koji -p kura -p sake -p crt -p vorbis -p hlslc -p dxwgsl -p glwgsl -p shaderconf -p ippai)
 export RUSTFLAGS="-Zsanitizer=$kind" RUSTDOCFLAGS="-Zsanitizer=$kind"
+if [ "$kind" = address ]; then
+  # Guest test arenas are mmap'd and hold pointers into the normal heap. Their
+  # dlsym-based root registration needs this symbol in .dynsym, not just .symtab.
+  export RUSTFLAGS="$RUSTFLAGS -Clink-arg=-Wl,--export-dynamic-symbol=__lsan_register_root_region"
+  export RUSTDOCFLAGS="$RUSTFLAGS" IPPAI_REQUIRE_LSAN_ROOTS=1
+fi
 export LSAN_OPTIONS="suppressions=$PWD/tools/ci/lsan.supp:print_suppressions=0"
 # (no fake stacks: the d3d tests run on a stack mapped below 4 GiB, trace_tests on_low_stack,
 # because the host code hands addresses of its locals to the guest side as 32-bit pointers, as
@@ -32,4 +38,4 @@ echo "symbolizer: $sym"
 export TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1"
 extra=()
 [ "$kind" = thread ] && extra=(-Zbuild-std)
-CARGO_TARGET_DIR=target/sanitize-$kind cargo +nightly test "${extra[@]}" --release --target x86_64-unknown-linux-gnu "${pkgs[@]}" --no-fail-fast
+CARGO_TARGET_DIR=target/sanitize-$kind cargo +nightly test "${extra[@]}" --release --target x86_64-unknown-linux-gnu --no-fail-fast "${pkgs[@]}"
