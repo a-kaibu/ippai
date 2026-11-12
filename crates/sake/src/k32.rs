@@ -3795,7 +3795,7 @@ fn ver_compare(left: u32, right: u32, c: u8) -> bool {
 /// 1 ... VER_PRODUCT_TYPE 0x80) under the conditions `cond` (3 bits per field,
 /// VerSetConditionMask).
 pub fn verify_version(cur: &OsVer, want: &OsVer, types: u32, cond: u64) -> Result<(), VerFail> {
-    if types == 0 || cond == 0 {
+    if types == 0 || cond & !(1 << 63) == 0 {
         return Err(VerFail::BadArgs);
     }
     let c = |k: u32| (cond >> (3 * k) & 7) as u8;
@@ -3841,9 +3841,13 @@ pub fn verify_version(cur: &OsVer, want: &OsVer, types: u32, cond: u64) -> Resul
 /// VerSetConditionMask(mask, type, condition): the condition goes to the slot of the type's
 /// highest bit among those it checks first (product type, suite, service pack, ...).
 pub fn ver_set_condition_mask(mask: u64, types: u32, cond: u8) -> u64 {
+    if types == 0 {
+        return 0;
+    }
     let c = (cond & 7) as u64;
-    let slot = [(0x80, 7), (0x40, 6), (0x20, 5), (0x10, 4), (8, 3), (4, 2), (2, 1), (1, 0)].into_iter().find(|&(b, _)| types & b != 0);
-    slot.map_or(mask, |(_, k)| mask | c << (3 * k))
+    // Windows marks this layout with bit 63, even for condition zero. The highest type
+    // bit chooses its three-bit slot (including unrecognized types, winref/versions).
+    mask | (1 << 63) | c.wrapping_shl(3 * types.ilog2())
 }
 
 /// OSVERSIONINFOEX(A/W) at `p`: the fields compared
@@ -7522,11 +7526,14 @@ mod version_tests {
     #[test]
     fn condition_mask_slots() {
         // (VerSetConditionMask: the highest-priority type bit picks the slot; conditions are 3 bits)
-        assert_eq!(ver_set_condition_mask(0, 2, 3), 3 << 3);
-        assert_eq!(ver_set_condition_mask(0, 1, 0xff), 7);
-        assert_eq!(ver_set_condition_mask(0, 0x80 | 1, 1), 1 << 21);
-        assert_eq!(ver_set_condition_mask(5, 0, 1), 5);
-        assert_eq!(ver_set_condition_mask(0, 0x20 | 0x10, 2), 2 << 15);
+        let layout = 1 << 63;
+        assert_eq!(ver_set_condition_mask(0, 2, 3), layout | 3 << 3);
+        assert_eq!(ver_set_condition_mask(0, 1, 0xff), layout | 7);
+        assert_eq!(ver_set_condition_mask(0, 0x80 | 1, 1), layout | 1 << 21);
+        assert_eq!(ver_set_condition_mask(5, 0, 1), 0);
+        assert_eq!(ver_set_condition_mask(0, 0x20 | 0x10, 2), layout | 2 << 15);
+        assert_eq!(ver_set_condition_mask(0, 0x100, 2), layout | 2 << 24);
+        assert_eq!(ver_set_condition_mask(0x123456789abc, 1, 0), layout | 0x123456789abc);
     }
 
     fn ver() -> impl Strategy<Value = OsVer> {
