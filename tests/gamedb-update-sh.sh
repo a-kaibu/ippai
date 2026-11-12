@@ -1,7 +1,7 @@
 #!/bin/sh
 # tools/gamedb/update.sh against a stand-in gh (sign-in, scopes, release download, token) and
 # stand-in ippai releases: the scope added once, the release's ippai run with gh's token, an old
-# release (no `gamedb update`) and no gh refused, $IPPAI and a PATH ippai used without a download.
+# release (no SQLite mirror support) and no gh refused, $IPPAI and a PATH ippai used without a download.
 set -eu
 S=$(cd "$(dirname "$0")/.." && pwd)/tools/gamedb/update.sh
 T=$(mktemp -d)
@@ -20,11 +20,11 @@ esac
 EOF
 cat > "$T/rel/new/ippai" <<'EOF'
 #!/bin/sh
-case "$*" in "gamedb update --help") echo "      --part <PART>" ;; --version) echo "ippai 0.3.4" ;; *) echo "RUN $* token=$GHCR_TOKEN" ;; esac
+case "$*" in "gamedb update --help") echo "      --part <PART> --mirror <PATH>" ;; --version) echo "ippai 0.3.4" ;; *) echo "RUN $* token=$GHCR_TOKEN" ;; esac
 EOF
 cat > "$T/rel/old/ippai" <<'EOF'
 #!/bin/sh
-case "$*" in "gamedb update --help") echo "      --egs" ;; *) echo "RUN $*" ;; esac
+case "$*" in "gamedb update --help") echo "      --part <PART>" ;; *) echo "RUN $*" ;; esac
 EOF
 chmod +x "$T/bin/gh" "$T/rel/new/ippai" "$T/rel/old/ippai"
 tar -czf "$T/rel/new/ippai_0.3.4_linux_amd64.tar.gz" -C "$T/rel/new" ippai
@@ -40,7 +40,9 @@ grep -q "release download -R a-kaibu/ippai -p ippai_\*_linux_amd64.tar.gz" "$T/l
 WHICH=new PATH=$P sh "$S" >/dev/null
 ! grep -q 'auth refresh' "$T/log" || fail "the scope asked for again"
 if WHICH=old PATH=$P sh "$S" 2>"$T/err"; then fail "an old release ran"; fi
-grep -q "v0.3.4" "$T/err" || fail "why an old release is refused"
+grep -q "SQLite ミラー対応" "$T/err" || fail "why an old release is refused"
+if IPPAI=$T/rel/old/ippai WHICH=new PATH=$P sh "$S" 2>"$T/err"; then fail "an explicit old binary ran"; fi
+grep -q "SQLite ミラー対応" "$T/err" || fail "why an explicit old binary is refused"
 # (a PATH with nothing on it: the runners have a real gh in /usr/bin, which this asked to sign in
 # until the step's 15 minutes ran out)
 mkdir "$T/nogh"
