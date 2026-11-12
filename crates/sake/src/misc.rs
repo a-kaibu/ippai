@@ -142,7 +142,7 @@ struct KeyData {
     values: Vec<(String, u32, Vec<u8>)>,
     /// made or changed by the game (saved)
     ours: bool,
-    /// the key's own name as created (paths are kept in lower case; not saved)
+    /// the key's own name as created (paths are kept in lower case)
     name: String,
 }
 
@@ -152,16 +152,25 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// The saved keys: "key" lines, then "key<TAB>name<TAB>type<TAB>hex" for each value.
+/// The saved keys: "key<TAB>original name" lines (old files just have "key"), then
+/// "key<TAB>name<TAB>type<TAB>hex" for each value.
 fn load_reg(m: &mut HashMap<String, KeyData>) -> bool {
     let Some(h) = crate::files::resolve(REG_FILE) else { return false };
     let Ok(t) = kura::fs::read(h) else { return false };
     let t = String::from_utf8_lossy(&t);
+    parse_reg(&t, m);
+    true
+}
+
+fn parse_reg(t: &str, m: &mut HashMap<String, KeyData>) {
     for l in t.lines() {
         if l.is_empty() { continue; }
         let f: Vec<&str> = l.split('\t').collect();
         let k = m.entry(f[0].to_string()).or_default();
         k.ours = true;
+        if let [_, name] = f[..] {
+            k.name = name.to_string();
+        }
         if let [_, name, ty, data] = f[..] {
             let bytes = (0..data.len() / 2).filter_map(|i| u8::from_str_radix(&data[2 * i..2 * i + 2], 16).ok()).collect();
             let lname = name.to_lowercase();
@@ -169,10 +178,9 @@ fn load_reg(m: &mut HashMap<String, KeyData>) -> bool {
             k.values.push((name.to_string(), ty.parse().unwrap_or(3), bytes));
         }
     }
-    true
 }
 
-fn save_reg(m: &HashMap<String, KeyData>) -> bool {
+fn format_reg(m: &HashMap<String, KeyData>) -> String {
     let mut keys: Vec<&String> = m.iter().filter(|(_, k)| k.ours).map(|(p, _)| p).collect();
     keys.sort();
     let mut t = String::new();
@@ -181,11 +189,21 @@ fn save_reg(m: &HashMap<String, KeyData>) -> bool {
         if p.contains(['\t', '\n']) {
             continue;
         }
-        t += &format!("{p}\n");
+        let name = &m[p].name;
+        if name.is_empty() || name.contains(['\t', '\n', '\r']) {
+            t += &format!("{p}\n");
+        } else {
+            t += &format!("{p}\t{name}\n");
+        }
         for (n, ty, d) in m[p].values.iter().filter(|v| !v.0.contains(['\t', '\n'])) {
             t += &format!("{p}\t{n}\t{ty}\t{}\n", hex(d));
         }
     }
+    t
+}
+
+fn save_reg(m: &HashMap<String, KeyData>) -> bool {
+    let t = format_reg(m);
     let h = crate::files::resolve_new(REG_FILE);
     if let Some(d) = h.rsplit_once('/') {
         let _ = kura::fs::create_dir_all(d.0);
@@ -4679,6 +4697,21 @@ fn wts_init() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn registry_refresh_keeps_key_spelling() {
+        use super::*;
+        let mut registry = HashMap::default();
+        parse_reg("hkcu\\software\\alpha\tAlpha\nhkcu\\software\\alpha\tValue\t3\t0102\n", &mut registry);
+        let serialized = format_reg(&registry);
+        let mut refreshed = HashMap::default();
+        parse_reg(&serialized, &mut refreshed);
+        let key = &refreshed["hkcu\\software\\alpha"];
+        assert_eq!(key.name, "Alpha");
+        assert_eq!(key.values, vec![("Value".to_string(), 3, vec![1, 2])]);
+        parse_reg("hkcu\\software\\old\nhkcu\\software\\old\tname\t3\tff\n", &mut refreshed);
+        assert_eq!(refreshed["hkcu\\software\\old"].values[0].2, vec![255]);
+    }
+
     /// Windows' answers (Wine's shlwapi:url TEST_APPLY table, which passes on Windows): None is
     /// S_FALSE
     /// Windows' answers (Wine's shlwapi:url test_UrlGetPart rows): None is S_FALSE
