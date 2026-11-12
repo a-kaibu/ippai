@@ -8,11 +8,11 @@ removed: 1
 remove what is not there: 0
 end: 0
 load as data: ok
-  rcdata en: not found (1813)
-  rcdata ja: not found (1813)
-  named type: not found (1813)
-  removed: not found (1813)
-  the copy's own resource: not found (1813)
+  rcdata en: not found (1812)
+  rcdata ja: not found (1812)
+  named type: not found (1812)
+  removed: not found (1812)
+  the copy's own resource: not found (1812)
 the copy ran: exit 7
 discarded: 1, size the same: 1
 deleting the rest: 1
