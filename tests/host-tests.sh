@@ -82,10 +82,16 @@ for t in $TESTS; do
       local v=6.7.4 sum=a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
       local cache=${INNO_CACHE:-$HOME/.cache/ippai-inno} tools=$OUT/inno-tools
       local exe=$cache/innosetup-$v.exe
-      if ! echo "$sum  $exe" | sha256sum -c --quiet 2>/dev/null; then
-        mkdir -p "$cache" && curl -sSfL --retry 4 -o "$exe.part" "https://github.com/jrsoftware/issrc/releases/download/is-${v//./_}/innosetup-$v.exe" &&
-          echo "$sum  $exe.part" | sha256sum -c --quiet && mv "$exe.part" "$exe" || return 1
-      fi
+      mkdir -p "$cache"
+      # (CI runs this file twice at once (sake and sake-grow): one downloads the installer, the
+      # other waits; the lock goes with the subshell, so a failed download holds nothing)
+      if ! (
+        if command -v flock >/dev/null; then flock 9; fi
+        if ! echo "$sum  $exe" | sha256sum -c --quiet 2>/dev/null; then
+          curl -sSfL --retry 4 -o "$exe.part" "https://github.com/jrsoftware/issrc/releases/download/is-${v//./_}/innosetup-$v.exe" &&
+            echo "$sum  $exe.part" | sha256sum -c --quiet && mv "$exe.part" "$exe" || exit 1
+        fi
+      ) 9>"$cache/.download.lock"; then return 1; fi
       if [ ! -f "$tools/IS6/ISCC.exe" ]; then
         rm -rf "$tools" && mkdir -p "$tools/windows/system32" "$tools/windows/temp" || return 1
         (cd "$(dirname "$SAKE")" && timeout 900 env SAKE_C="$tools" SAKE_FONTS="$FONTS" node "$SAKE" "$exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART '/DIR=C:\IS6' /CURRENTUSER > "$OUT/inno-setup.log" 2>&1)
