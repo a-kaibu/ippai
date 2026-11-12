@@ -804,3 +804,25 @@ fn every_opcode_with_any_operand_count() {
     assert!(bad.is_empty(), "{} of {tried} ({took} translated):\n{}", bad.len(), bad.join("\n"));
     assert!(took > 1000, "{took} of {tried} translated: the splicing is wrong");
 }
+
+/// Register pressure in the SM3 lowering must fail at compilation, rather
+/// than returning bytecode that the D3D9 translator cannot consume.
+#[test]
+fn sm3_temporary_budget() {
+    let mut inc = |_: &str, _: bool| None;
+    for target in ["ps_2_0", "ps_3_0"] {
+        let within = "float4 ps(float4 v:TEXCOORD0):COLOR {float4 a[25]; a[(int)v.x]=v; return a[(int)v.x];}";
+        let code = super::compile(within, &[], &mut inc, "ps", target, 0).unwrap();
+        let words: Vec<u32> = code.chunks_exact(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
+        assert!(dxwgsl::d3d9::Shader::parse(&words).is_some());
+        for source in [
+            // Ordinary array register beyond r31.
+            "float4 ps(float4 v:TEXCOORD0):COLOR {float4 a[40]; a[39]=v; a[(int)v.x]=v; return v;}",
+            // Conversion/comparison scratch registers also count.
+            "float4 ps(float4 v:TEXCOORD0):COLOR {float4 a[28]; a[(int)v.x]=v; return v;}",
+        ] {
+            let err = super::compile(source, &[], &mut inc, "ps", target, 0).unwrap_err();
+            assert!(err.contains("exceeds r31"), "{target}: {err}");
+        }
+    }
+}

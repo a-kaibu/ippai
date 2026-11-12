@@ -207,7 +207,11 @@ impl Gen<'_> {
 
     fn reg(&self, r: &Reg) -> Result<String, String> {
         Ok(match r.f {
-            RegF::Temp(t) if t >= 1000 => format!("r{}", self.temps + t - 1000),
+            RegF::Temp(t) if t >= 1000 => {
+                let n = self.temps + t - 1000;
+                Self::check_temp(n)?;
+                format!("r{n}")
+            }
             RegF::Temp(t) => format!("r{t}"),
             RegF::Input(i) => self.ins.get(&i).cloned().ok_or("an input without a register")?,
             RegF::Output(i) => self.outs.get(&i).cloned().ok_or("an output without a register")?,
@@ -271,8 +275,17 @@ impl Gen<'_> {
         Ok(())
     }
 
-    fn scr_d(&self, k: u32, mask: u8) -> String {
-        format!("r{}{}", self.temps + k, mask_str(mask))
+    fn check_temp(n: u32) -> Result<(), String> {
+        if n >= 32 {
+            Err(format!("shader model 2/3 temporary register r{n} exceeds r31"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn scr_d(&self, k: u32, mask: u8) -> Result<String, String> {
+        Self::check_temp(self.temps + k)?;
+        Ok(format!("r{}{}", self.temps + k, mask_str(mask)))
     }
 
     fn sampler(&self, s: &Src, t: &Src) -> Result<(String, u32), String> {
@@ -335,9 +348,9 @@ impl Gen<'_> {
                 let n = i.ctl as usize;
                 if n > 0 {
                     // clip(): any component below 0
-                    let d = self.scr_d(0, 0xf);
+                    let d = self.scr_d(0, 0xf)?;
                     self.op("mov", false, &d, &[&s])?;
-                    let m = self.scr_d(0, ((1u16 << n) - 1) as u8);
+                    let m = self.scr_d(0, ((1u16 << n) - 1) as u8)?;
                     self.line(format!("texkill {m}"));
                     return Ok(());
                 }
@@ -346,16 +359,16 @@ impl Gen<'_> {
                     if (v[0] != 0) != i.nz {
                         return Ok(());
                     }
-                    let d = self.scr_d(0, 1);
+                    let d = self.scr_d(0, 1)?;
                     self.op("mov", false, &d, &[&Src::Imm([0xbf80_0000; 4], true)])?;
                 } else if i.nz {
-                    let d = self.scr_d(0, 1);
+                    let d = self.scr_d(0, 1)?;
                     self.op("mov", false, &d, &[&neg(&abs(&c))])?;
                 } else {
-                    let d = self.scr_d(0, 1);
+                    let d = self.scr_d(0, 1)?;
                     self.op("cmp", false, &d, &[&neg(&abs(&c)), &Src::Imm([0xbf80_0000; 4], true), &zero])?;
                 }
-                let m = self.scr_d(0, 1);
+                let m = self.scr_d(0, 1)?;
                 self.line(format!("texkill {m}"));
             }
             _ => {
@@ -386,8 +399,6 @@ impl Gen<'_> {
                     let refs: Vec<&Src> = srcs.iter().collect();
                     return self.op(name, sat, &d, &refs);
                 }
-                let s0 = self.scr_d(0, m);
-                let s1 = self.scr_d(1, m);
                 match i.op {
                     DIV | SQRT | RSQ | RCP | EXP | LOG => {
                         let (x, op) = if i.op == DIV { (a(1)?, "rcp") } else { (a(0)?, "") };
@@ -395,7 +406,7 @@ impl Gen<'_> {
                             if m & 1 << k == 0 {
                                 continue;
                             }
-                            let dk = self.scr_d(0, 1 << k);
+                            let dk = self.scr_d(0, 1 << k)?;
                             let ck = comp(&x, k);
                             match i.op {
                                 DIV => self.op(op, false, &dk, &[&ck])?,
@@ -417,25 +428,31 @@ impl Gen<'_> {
                         }
                     }
                     ROUND_NI => {
+                        let s0 = self.scr_d(0, m)?;
                         self.op("frc", false, &s0, &[&a(0)?])?;
                         self.op("add", sat, &d, &[&a(0)?, &neg(&scr(0))])?;
                     }
                     ROUND_PI => {
+                        let s0 = self.scr_d(0, m)?;
                         self.op("frc", false, &s0, &[&neg(&a(0)?)])?;
                         self.op("add", sat, &d, &[&a(0)?, &scr(0)])?;
                     }
                     ROUND_NE => {
+                        let s0 = self.scr_d(0, m)?;
+                        let s1 = self.scr_d(1, m)?;
                         self.op("add", false, &s0, &[&a(0)?, &Src::Imm([0x3f00_0000; 4], true)])?;
                         self.op("frc", false, &s1, &[&scr(0)])?;
                         self.op("add", sat, &d, &[&scr(0), &neg(&scr(1))])?;
                     }
                     ROUND_Z => {
+                        let s0 = self.scr_d(0, m)?;
                         let x = a(0)?;
                         self.op("frc", false, &s0, &[&abs(&x)])?;
                         self.op("add", false, &s0, &[&abs(&x), &neg(&scr(0))])?;
                         if pixel {
                             self.op("cmp", sat, &d, &[&x, &scr(0), &neg(&scr(0))])?;
                         } else {
+                            let s1 = self.scr_d(1, m)?;
                             self.op("sge", false, &s1, &[&x, &zero])?;
                             self.op("mad", false, &s1, &[&scr(1), &Src::Imm([0x4000_0000; 4], true), &Src::Imm([0xbf80_0000; 4], true)])?;
                             self.op("mul", sat, &d, &[&scr(0), &scr(1)])?;
@@ -444,6 +461,7 @@ impl Gen<'_> {
                     EQ | NE | LT | GE => {
                         let (x, y) = (a(0)?, a(1)?);
                         if pixel {
+                            let s0 = self.scr_d(0, m)?;
                             self.op("add", false, &s0, &[&x, &neg(&y)])?;
                             let na = neg(&abs(&scr(0)));
                             match i.op {
@@ -457,6 +475,8 @@ impl Gen<'_> {
                                 LT => self.op("slt", sat, &d, &[&x, &y])?,
                                 GE => self.op("sge", sat, &d, &[&x, &y])?,
                                 _ => {
+                                    let s0 = self.scr_d(0, m)?;
+                                    let s1 = self.scr_d(1, m)?;
                                     self.op("sge", false, &s0, &[&x, &y])?;
                                     self.op("sge", false, &s1, &[&y, &x])?;
                                     if i.op == EQ {
@@ -474,6 +494,7 @@ impl Gen<'_> {
                         if pixel {
                             self.op("cmp", sat, &d, &[&neg(&abs(&c)), &y, &x])?;
                         } else {
+                            let s0 = self.scr_d(0, m)?;
                             self.op("add", false, &s0, &[&x, &neg(&y)])?;
                             self.op("mad", sat, &d, &[&c, &scr(0), &y])?;
                         }
@@ -482,7 +503,7 @@ impl Gen<'_> {
                         if pixel {
                             self.op("dp2add", sat, &d, &[&a(0)?, &a(1)?, &zero])?;
                         } else {
-                            let s = self.scr_d(0, 3);
+                            let s = self.scr_d(0, 3)?;
                             self.op("mul", false, &s, &[&a(0)?, &a(1)?])?;
                             self.op("add", sat, &d, &[&comp(&scr(0), 0), &comp(&scr(0), 1)])?;
                         }
@@ -496,7 +517,7 @@ impl Gen<'_> {
                             if mm & 1 << k == 0 {
                                 continue;
                             }
-                            let sc = self.scr_d(0, 3);
+                            let sc = self.scr_d(0, 3)?;
                             let ck = comp(&x, k);
                             if self.s.major < 3 {
                                 // (D3DSINCOSCONST1/2)
@@ -509,8 +530,8 @@ impl Gen<'_> {
                             } else {
                                 self.op("sincos", false, &sc, &[&ck])?;
                             }
-                            let s1 = self.scr_d(1, 1 << k);
-                            let s2 = self.scr_d(2, 1 << k);
+                            let s1 = self.scr_d(1, 1 << k)?;
+                            let s2 = self.scr_d(2, 1 << k)?;
                             self.op("mov", false, &s1, &[&comp(&scr(0), 1)])?;
                             self.op("mov", false, &s2, &[&comp(&scr(0), 0)])?;
                         }
@@ -537,7 +558,7 @@ impl Gen<'_> {
                             _ => [0, 1, 2, 3],
                         };
                         let direct = tswz == [0, 1, 2, 3];
-                        let td = if direct { d.clone() } else { self.scr_d(1, 0xf) };
+                        let td = if direct { d.clone() } else { self.scr_d(1, 0xf)? };
                         let op = if !pixel && i.op == SAMPLE { SAMPLE_L } else { i.op };
                         match op {
                             SAMPLE => {
@@ -551,9 +572,9 @@ impl Gen<'_> {
                                 self.line(format!("texldd {td}, {c}, {sname}, {dx}, {dy}"));
                             }
                             _ => {
-                                let s = self.scr_d(0, 0xf);
+                                let s = self.scr_d(0, 0xf)?;
                                 self.op("mov", false, &s, &[&coord])?;
-                                let w = self.scr_d(0, 8);
+                                let w = self.scr_d(0, 8)?;
                                 let lod = if i.op == SAMPLE { zero.clone() } else { comp(&a(3)?, 0) };
                                 self.op("mov", false, &w, &[&lod])?;
                                 let name = if op == SAMPLE_L { "texldl" } else { "texldb" };
@@ -657,6 +678,9 @@ fn ctab(target: &str, entries: &[(String, u16, u32, u32, CbVar)]) -> Vec<u8> {
 /// The shader's assembly text and constant table.
 pub fn assembly(mut s: Shader) -> Result<(String, Vec<u8>), String> {
     let temps = alloc(&mut s.code, &s.marks);
+    // alloc densely numbers all ordinary temporaries below `temps`. Validate
+    // their budget once; emitter-only scratch registers are checked on use.
+    Gen::check_temp(temps.saturating_sub(1))?;
     let (pixel, major, minor) = (s.pixel, s.major.max(2), if s.major < 2 { 0 } else { s.minor });
     let target = format!("{}_{major}_{minor}", if pixel { "ps" } else { "vs" });
     // uniforms: explicit registers first, then the lowest free
