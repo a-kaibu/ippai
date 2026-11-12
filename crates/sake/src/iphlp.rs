@@ -1961,15 +1961,16 @@ fn Netbios(c: &mut Ctx) -> u32 {
                 0
             }
         }
+        // Adapter lookup precedes dispatch even for unsupported synchronous commands.
+        // NRC_ENVNOTDEF (0x34) is for an existing adapter that has not been reset.
+        _ if lana >= adapters.len() => 0x23, // NRC_BRIDGE: invalid LANA
         0x32 => { // NCBRESET: no live sessions exist in this model.
-            if lana >= adapters.len() { 0x34 } else {
-                let mut reset = RESET.lock().unwrap();
-                if !reset.contains(&lana) { reset.push(lana); }
-                0
-            }
+            let mut reset = RESET.lock().unwrap();
+            if !reset.contains(&lana) { reset.push(lana); }
+            0
         }
         0x33 => { // NCBASTAT: only a query for this adapter's local status.
-            if lana >= adapters.len() || !RESET.lock().unwrap().contains(&lana) { 0x34 }
+            if !RESET.lock().unwrap().contains(&lana) { 0x34 }
             else if mem::r8(ncb + call_off) != b'*' { 0x17 }
             else if buffer == 0 || capacity < 60 { 1 }
             else {
