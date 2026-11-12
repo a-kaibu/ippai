@@ -18,8 +18,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-dlgenter bigwindow aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread d3d12delay mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall}
-X64=" dlgenter dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall "
+TESTS=${*:-dllinit dlgenter bigwindow aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread d3d12delay mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall}
+X64=" dllinit dlgenter dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall "
 CLANG64=${CLANG64-x64seh x64crt msvcpchar msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
 CLANG32=${CLANG32-msvcseh}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
@@ -31,6 +31,10 @@ for t in $TESTS; do
   test_env=()
   ldir=$OUT/lib-none
   fixture() {
+    if [ "$t" = dllinit ]; then
+      "$1" -O2 -DBUILD_FIXTURE -shared -Wl,--kill-at "$ROOT/host/tests/dllinit.c" -o "$OUT/dllinit-fixture.dll"
+      return $?
+    fi
     if [ "$t" = d3d12delay ]; then
       # (d3d12.dll as a delay-load import, as UnityPlayer.dll has it: mingw's own helper)
       ldir=$OUT/lib-$t-${1%%-*}

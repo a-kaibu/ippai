@@ -48,8 +48,31 @@ pub struct Tls {
 }
 
 pub static MODULES: RwLock<Vec<Module>> = RwLock::new(Vec::new());
-/// Serializes LoadLibrary (DllMain calls may load more).
-pub static LOADER: Mutex<()> = Mutex::new(());
+// Windows holds the loader lock across TLS callbacks and DllMain, including
+// DLL_THREAD_ATTACH. Delphi's DLL entry uses a shared initialization context:
+// concurrent callbacks can corrupt it and call ExitProcess(0) from a worker.
+static LOADER: Mutex<()> = Mutex::new(());
+thread_local! {
+    static IN_LOADER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+struct LoaderGuard(Option<std::sync::MutexGuard<'static, ()>>);
+impl Drop for LoaderGuard {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            IN_LOADER.with(|held| held.set(false));
+        }
+    }
+}
+fn loader_lock() -> LoaderGuard {
+    // DllMain may itself call LoadLibrary. Only the outer call takes the mutex;
+    // other threads still wait until that entire initialization has finished.
+    if IN_LOADER.with(|held| held.get()) {
+        return LoaderGuard(None);
+    }
+    let guard = LOADER.lock().unwrap();
+    IN_LOADER.with(|held| held.set(true));
+    LoaderGuard(Some(guard))
+}
 
 /// (a data-file module's handle is its base | 1 or | 2)
 pub fn by_base(base: u32) -> Option<usize> {
@@ -908,7 +931,7 @@ fn load_dll_file(dll: &str) -> Result<u32, String> {
 
 /// LoadLibrary: an existing module, one of ours, or a DLL file (initialized here).
 pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
-    let _g = LOADER.lock().unwrap();
+    let _g = loader_lock();
     let key = api::dll_key(name);
     if let Some(b) = by_name(name) {
         if let Some(i) = by_base(b) {
@@ -922,7 +945,6 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
     }
     match load_dll_file(name) {
         Ok(b) => {
-            drop(_g);
             init_dlls(cpu);
             b
         }
@@ -983,6 +1005,7 @@ fn tls_callbacks(cpu: &mut Cpu, base: u32, reason: u32) {
 
 /// DllMain(PROCESS_ATTACH) of the DLLs loaded since, and the exe's TLS callbacks the first time.
 pub fn init_dlls(cpu: &mut Cpu) {
+    let _g = loader_lock();
     static EXE_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     loop {
         let next = {
@@ -1016,6 +1039,7 @@ pub fn init_dlls(cpu: &mut Cpu) {
 
 /// A new thread: its TLS blocks, TLS callbacks and DllMain(THREAD_ATTACH).
 pub fn thread_attach(cpu: &mut Cpu) {
+    let _g = loader_lock();
     let mods: Vec<(u32, Option<Tls>, u32, bool)> =
         MODULES.read().unwrap().iter().map(|m| (m.base, m.tls, m.entry, m.dll && !m.hle)).collect();
     let teb = crate::cur().teb;

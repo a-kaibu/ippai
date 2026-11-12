@@ -1,0 +1,5 @@
+load: ok
+created from DllMain: deferred
+concurrent callbacks: serialized
+thread attaches: 17
+nested LoadLibrary: ok
