@@ -1,0 +1,86 @@
+draw 24118 IDirect3DDevice9::DrawPrimitiveUP
+image d24118 1024 768 2
+draw 24122 IDirect3DDevice9::DrawPrimitiveUP
+image d24122 1024 768 2
+draw 24126 IDirect3DDevice9::DrawPrimitiveUP
+image d24126 1024 768 2
+draw 24130 IDirect3DDevice9::DrawPrimitiveUP
+image d24130 1024 768 2
+draw 24134 IDirect3DDevice9::DrawPrimitiveUP
+image d24134 1024 768 2
+draw 24138 IDirect3DDevice9::DrawPrimitiveUP
+image d24138 1024 768 2
+draw 24142 IDirect3DDevice9::DrawPrimitiveUP
+image d24142 1024 768 2
+draw 24146 IDirect3DDevice9::DrawPrimitiveUP
+image d24146 1024 768 2
+draw 24150 IDirect3DDevice9::DrawPrimitiveUP
+image d24150 1024 768 2
+draw 24154 IDirect3DDevice9::DrawPrimitiveUP
+image d24154 1024 768 2
+draw 24158 IDirect3DDevice9::DrawPrimitiveUP
+image d24158 1024 768 2
+draw 24162 IDirect3DDevice9::DrawPrimitiveUP
+image d24162 1024 768 2
+draw 24166 IDirect3DDevice9::DrawPrimitiveUP
+image d24166 1024 768 2
+draw 24170 IDirect3DDevice9::DrawPrimitiveUP
+image d24170 1024 768 2
+draw 24174 IDirect3DDevice9::DrawPrimitiveUP
+image d24174 1024 768 2
+draw 24178 IDirect3DDevice9::DrawPrimitiveUP
+image d24178 1024 768 2
+draw 24182 IDirect3DDevice9::DrawPrimitiveUP
+image d24182 1024 768 2
+draw 24186 IDirect3DDevice9::DrawPrimitiveUP
+image d24186 1024 768 2
+draw 24190 IDirect3DDevice9::DrawPrimitiveUP
+image d24190 1024 768 2
+draw 24194 IDirect3DDevice9::DrawPrimitiveUP
+image d24194 1024 768 2
+draw 24198 IDirect3DDevice9::DrawPrimitiveUP
+image d24198 1024 768 2
+draw 24202 IDirect3DDevice9::DrawPrimitiveUP
+image d24202 1024 768 2
+draw 24206 IDirect3DDevice9::DrawPrimitiveUP
+image d24206 1024 768 2
+draw 24210 IDirect3DDevice9::DrawPrimitiveUP
+image d24210 1024 768 2
+draw 24214 IDirect3DDevice9::DrawPrimitiveUP
+image d24214 1024 768 2
+draw 24218 IDirect3DDevice9::DrawPrimitiveUP
+image d24218 1024 768 2
+draw 24222 IDirect3DDevice9::DrawPrimitiveUP
+image d24222 1024 768 2
+draw 24226 IDirect3DDevice9::DrawPrimitiveUP
+image d24226 1024 768 2
+draw 24230 IDirect3DDevice9::DrawPrimitiveUP
+image d24230 1024 768 2
+draw 24234 IDirect3DDevice9::DrawPrimitiveUP
+image d24234 1024 768 2
+draw 24238 IDirect3DDevice9::DrawPrimitiveUP
+image d24238 1024 768 2
+draw 24242 IDirect3DDevice9::DrawPrimitiveUP
+image d24242 1024 768 2
+draw 24246 IDirect3DDevice9::DrawPrimitiveUP
+image d24246 1024 768 2
+draw 24250 IDirect3DDevice9::DrawPrimitiveUP
+image d24250 1024 768 2
+draw 24254 IDirect3DDevice9::DrawPrimitiveUP
+image d24254 1024 768 2
+draw 24258 IDirect3DDevice9::DrawPrimitiveUP
+image d24258 1024 768 2
+draw 24262 IDirect3DDevice9::DrawPrimitiveUP
+image d24262 1024 768 2
+draw 24266 IDirect3DDevice9::DrawPrimitiveUP
+image d24266 1024 768 2
+draw 24270 IDirect3DDevice9::DrawPrimitiveUP
+image d24270 1024 768 2
+draw 24274 IDirect3DDevice9::DrawPrimitiveUP
+image d24274 1024 768 2
+draw 24278 IDirect3DDevice9::DrawPrimitiveUP
+image d24278 1024 768 2
+draw 24282 IDirect3DDevice9::DrawPrimitiveUP
+image d24282 1024 768 2
+image f713 1024 768 2
+calls 424497 frames 2781
