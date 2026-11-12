@@ -293,6 +293,15 @@ struct State {
     traces: HashMap<String, u64>,
 }
 
+impl State {
+    fn log(&self, h: u32) -> Option<&Log> {
+        match self.handles.get(&h)? {
+            Handle::Live { log, .. } => self.logs.get(log),
+            Handle::Backup { log, .. } => Some(log),
+        }
+    }
+}
+
 static ST: Mutex<Option<State>> = Mutex::new(None);
 
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
@@ -365,10 +374,7 @@ fn close(c: &mut Ctx) -> u32 {
 
 /// The records a handle reads (a copy)
 fn log_for(h: u32) -> Option<Log> {
-    with(|s| match s.handles.get(&h)? {
-        Handle::Live { log, .. } => s.logs.get(log).cloned(),
-        Handle::Backup { log, .. } => Some(log.clone()),
-    })
+    with(|s| s.log(h).cloned())
 }
 
 fn count(c: &mut Ctx, oldest: bool) -> u32 {
@@ -376,8 +382,10 @@ fn count(c: &mut Ctx, oldest: bool) -> u32 {
     if out == 0 {
         return fail(ERROR_INVALID_PARAMETER);
     }
-    let Some(l) = log_for(h) else { return fail(ERROR_INVALID_HANDLE) };
-    mem::w32(out, if oldest { l.oldest() } else { l.recs.len() as u32 });
+    let Some(n) = with(|s| s.log(h).map(|l| if oldest { l.oldest() } else { l.recs.len() as u32 })) else {
+        return fail(ERROR_INVALID_HANDLE);
+    };
+    mem::w32(out, n);
     1
 }
 
@@ -387,7 +395,7 @@ fn info(c: &mut Ctx) -> u32 {
     if level != 0 {
         return fail(ERROR_INVALID_LEVEL);
     }
-    if log_for(h).is_none() {
+    if !with(|s| s.log(h).is_some()) {
         return fail(ERROR_INVALID_HANDLE);
     }
     if buf == 0 || need == 0 {
@@ -612,7 +620,7 @@ pub fn init() {
     implement(d, "ClearEventLogW", |c| clear(c, true));
     implement(d, "OpenBackupEventLogA", |c| open_backup(c, false));
     implement(d, "OpenBackupEventLogW", |c| open_backup(c, true));
-    implement(d, "NotifyChangeEventLog", |c| if log_for(c.a(0)).is_some() { 1 } else { fail(ERROR_INVALID_HANDLE) });
+    implement(d, "NotifyChangeEventLog", |c| if with(|s| s.log(c.a(0)).is_some()) { 1 } else { fail(ERROR_INVALID_HANDLE) });
     implement(d, "StartTraceA", |c| start_trace(c, false));
     implement(d, "StartTraceW", |c| start_trace(c, true));
     // ControlTrace(TRACEHANDLE, name, props, control); StopTrace(TRACEHANDLE, name, props)

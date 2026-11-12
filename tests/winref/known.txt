@@ -218,3 +218,8 @@ icubrk-* ^(want|got) +(ja|ja long|mixed|surrogates) word:
 # outptr2 assertions live instead of quarantining the entire probe.
 outptr2-* ^want +DirectSoundCreate8?: half 1$
 outptr2-* ^got +DirectSoundCreate8?: half 0$
+
+# #108: the Windows system backup has different record identities from sake's isolated log.
+# Keep validation errors, record layout and all other event-log assertions live.
+eventlog-* ^want +backup: has a record 1 same number 0 same length 1 same bytes 0$
+eventlog-* ^got +backup: has a record 1 same number 1 same length 1 same bytes 1$

@@ -76,13 +76,12 @@ class Quarantine(unittest.TestCase):
                 compare.read_quarantine(self.quarantine)
 
 
-class OutPointerPolicy(unittest.TestCase):
+class EnvironmentPolicy(unittest.TestCase):
     """Exercise the shipped exclusions with real Windows output and injected faults."""
 
-    def test_only_observed_audio_device_differences_are_allowed(self):
-        for arch in (32, 64):
-            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as tmp:
-                name = f"outptr2-{arch}"
+    def test_only_observed_environment_differences_are_allowed(self):
+        for name in ("outptr2-32", "outptr2-64", "eventlog-32", "eventlog-64"):
+            with self.subTest(probe=name), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 ref, got = root / "ref" / name, root / "got" / name
                 ref.mkdir(parents=True)
@@ -92,6 +91,12 @@ class OutPointerPolicy(unittest.TestCase):
                 (ref / "exit").write_text("0\n")
                 actual = windows.replace("DirectSoundCreate: half 1", "DirectSoundCreate: half 0")
                 actual = actual.replace("DirectSoundCreate8: half 1", "DirectSoundCreate8: half 0")
+                actual = actual.replace(
+                    "backup: has a record 1 same number 0 same length 1 same bytes 0",
+                    "backup: has a record 1 same number 1 same length 1 same bytes 1",
+                )
+                for call in ("GetNumberOfEventLogRecords", "BackupEventLogA"):
+                    actual = actual.replace(f"{call}(NULL, NULL): 0 6", f"{call}(NULL, NULL): 0 87")
 
                 def check(output, expected, code="0"):
                     if output is None:
