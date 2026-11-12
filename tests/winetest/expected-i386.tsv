@@ -130,7 +130,7 @@ gdiplus:metafile	fail	380	1030
 gdiplus:pathiterator	fail	152	253
 gdiplus:pen	fail	113	509
 gdiplus:region	timeout	387590	0
-gdiplus:stringformat	fail	48	142
+gdiplus:stringformat	ok	0	142
 imagehlp:image	fail	15	23
 imagehlp:integrity	ok	0	0
 imm32:imm32	fail	1	2

@@ -29,7 +29,7 @@ enum Obj {
     /// unit, FontStyle (bold 1, italic 2, underline 4, strikeout 8)
     Font { lf: LogFont, em: f32, family: u32, size: f32, unit: u32, style: u32 },
     Pen { argb: u32, width: f32 },
-    Format { flags: u32, align: u32, ranges: Vec<(i32, i32)> },
+    Format(StringFormat),
     /// a rectangle (x, y, w, h) in world units; empty when w or h is 0
     Region { r: [f32; 4] },
 }
@@ -366,36 +366,144 @@ fn color_of(b: u32) -> Option<u32> {
     })
 }
 
-/// GdipCreateStringFormat(flags, language, &format)
+#[derive(Clone)]
+struct StringFormat {
+    flags: u32,
+    align: u32,
+    line_align: u32,
+    trimming: u32,
+    hotkey: u32,
+    digit_language: u16,
+    digit_method: u32,
+    first_tab: f32,
+    tabs: Vec<f32>,
+    ranges: Vec<(i32, i32)>,
+    generic: bool,
+}
+impl StringFormat {
+    fn new(flags: u32) -> Self {
+        Self { flags, align: 0, line_align: 0, trimming: 1, hotkey: 0,
+            digit_language: 0, digit_method: 0, first_tab: 0.0,
+            tabs: Vec::new(), ranges: Vec::new(), generic: false }
+    }
+}
+fn edit_format(h: u32, f: impl FnOnce(&mut StringFormat) -> u32) -> u32 {
+    with(|m| match m.get_mut(&h) {
+        Some(Obj::Format(v)) => f(v),
+        _ => INVALID_PARAMETER,
+    })
+}
 fn GdipCreateStringFormat(c: &mut Ctx) -> u32 {
-    new_obj(Obj::Format { flags: c.a(0), align: 0, ranges: Vec::new() }, c.a(2))
+    new_obj(Obj::Format(StringFormat::new(c.a(0))), c.a(2))
 }
-fn GdipSetStringFormatAlign(c: &mut Ctx) -> u32 {
-    let a = c.a(1);
-    with(|m| match m.get_mut(&c.a(0)) {
-        Some(Obj::Format { align, .. }) => {
-            *align = a;
-            OK
+fn GdipCloneStringFormat(c: &mut Ctx) -> u32 {
+    let v = with(|m| match m.get(&c.a(0)) {
+        Some(Obj::Format(v)) => Some(v.clone()), _ => None,
+    });
+    let Some(mut v) = v else { return INVALID_PARAMETER };
+    v.generic = false;
+    new_obj(Obj::Format(v), c.a(1))
+}
+fn GdipDeleteStringFormat(c: &mut Ctx) -> u32 {
+    with(|m| {
+        match m.get(&c.a(0)) {
+            Some(Obj::Format(v)) if v.generic => return OK,
+            Some(Obj::Format(_)) => (),
+            _ => return INVALID_PARAMETER,
         }
-        _ => INVALID_PARAMETER,
+        m.remove(&c.a(0));
+        mem::heap_free(c.a(0));
+        OK
     })
 }
-/// (count, CharacterRange { First, Length }[])
+// Native generic formats are shared, mutable objects, including across Delete calls.
+static GENERIC_FORMATS: Mutex<[u32; 2]> = Mutex::new([0; 2]);
+fn generic_format(out: u32, typographic: bool) -> u32 {
+    if out == 0 { return INVALID_PARAMETER; }
+    let mut handles = GENERIC_FORMATS.lock().unwrap();
+    let h = &mut handles[typographic as usize];
+    if *h == 0 {
+        let mut v = StringFormat::new(if typographic { 0x6004 } else { 0 });
+        v.generic = true;
+        if typographic { v.trimming = 0; }
+        *h = mem::heap_alloc(16, true);
+        with(|m| m.insert(*h, Obj::Format(v)));
+    }
+    mem::putp(out, *h);
+    OK
+}
+fn GdipStringFormatGetGenericDefault(c: &mut Ctx) -> u32 { generic_format(c.a(0), false) }
+fn GdipStringFormatGetGenericTypographic(c: &mut Ctx) -> u32 { generic_format(c.a(0), true) }
+macro_rules! format_property {
+    ($get:ident, $set:ident, $field:ident, $max:expr) => {
+        fn $get(c: &mut Ctx) -> u32 {
+            if c.a(1) == 0 { return INVALID_PARAMETER; }
+            edit_format(c.a(0), |v| { w32(c.a(1), v.$field); OK })
+        }
+        fn $set(c: &mut Ctx) -> u32 {
+            if c.a(1) > $max { return INVALID_PARAMETER; }
+            edit_format(c.a(0), |v| { v.$field = c.a(1); OK })
+        }
+    }
+}
+format_property!(GdipGetStringFormatFlags, GdipSetStringFormatFlags, flags, u32::MAX);
+format_property!(GdipGetStringFormatAlign, GdipSetStringFormatAlign, align, 2);
+format_property!(GdipGetStringFormatLineAlign, GdipSetStringFormatLineAlign, line_align, 2);
+format_property!(GdipGetStringFormatTrimming, GdipSetStringFormatTrimming, trimming, 5);
+format_property!(GdipGetStringFormatHotkeyPrefix, GdipSetStringFormatHotkeyPrefix, hotkey, 2);
+fn GdipGetStringFormatDigitSubstitution(c: &mut Ctx) -> u32 {
+    edit_format(c.a(0), |v| {
+        if c.a(1) != 0 { mem::w16(c.a(1), v.digit_language); }
+        if c.a(2) != 0 { w32(c.a(2), v.digit_method); }
+        OK
+    })
+}
+fn GdipSetStringFormatDigitSubstitution(c: &mut Ctx) -> u32 {
+    edit_format(c.a(0), |v| { v.digit_language = c.a(1) as u16; v.digit_method = c.a(2); OK })
+}
+fn GdipGetStringFormatMeasurableCharacterRangeCount(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 { return INVALID_PARAMETER; }
+    edit_format(c.a(0), |v| { w32(c.a(1), v.ranges.len() as u32); OK })
+}
 fn GdipSetStringFormatMeasurableCharacterRanges(c: &mut Ctx) -> u32 {
-    let (n, p) = (c.a(1), c.a(2));
-    let v: Vec<(i32, i32)> = (0..n.min(32)).map(|i| (r32(p + 8 * i) as i32, r32(p + 8 * i + 4) as i32)).collect();
-    with(|m| match m.get_mut(&c.a(0)) {
-        Some(Obj::Format { ranges, .. }) => {
-            *ranges = v;
-            OK
-        }
-        _ => INVALID_PARAMETER,
+    let (n, p) = (c.i(1), c.a(2));
+    edit_format(c.a(0), |v| {
+        if n < 0 || (n > 0 && p == 0) { return INVALID_PARAMETER; }
+        if n > 32 { return 11; } // ValueOverflow; do not silently truncate.
+        v.ranges = (0..n as u32).map(|i| (r32(p + 8*i) as i32, r32(p + 8*i + 4) as i32)).collect();
+        OK
     })
 }
-fn format(f: u32) -> (u32, u32, Vec<(i32, i32)>) {
+fn GdipGetStringFormatTabStopCount(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 { return INVALID_PARAMETER; }
+    edit_format(c.a(0), |v| { w32(c.a(1), v.tabs.len() as u32); OK })
+}
+fn GdipSetStringFormatTabStops(c: &mut Ctx) -> u32 {
+    let (first, n, p) = (c.f(1), c.i(2), c.a(3));
+    if p == 0 { return INVALID_PARAMETER; }
+    edit_format(c.a(0), |v| {
+        if n <= 0 { return OK; }
+        if first < 0.0 { return 6; } // Native GDI+ returns NotImplemented.
+        v.tabs = (0..n as u32).map(|i| fl(r32(p + 4*i))).collect();
+        v.first_tab = first;
+        OK
+    })
+}
+fn GdipGetStringFormatTabStops(c: &mut Ctx) -> u32 {
+    if c.a(2) == 0 || c.a(3) == 0 { return INVALID_PARAMETER; }
+    edit_format(c.a(0), |v| {
+        w32(c.a(2), v.first_tab.to_bits());
+        for (i, tab) in v.tabs.iter().take(c.i(1).max(0) as usize).enumerate() {
+            w32(c.a(3) + 4*i as u32, tab.to_bits());
+        }
+        OK
+    })
+}
+// Drawing needs only these scalars: do not clone ranges on every Draw/MeasureString.
+fn format(f: u32) -> (u32, u32) {
     with(|m| match m.get(&f) {
-        Some(Obj::Format { flags, align, ranges }) => (*flags, *align, ranges.clone()),
-        _ => (0, 0, Vec::new()),
+        Some(Obj::Format(v)) => (v.flags, v.align),
+        _ => (0, 0),
     })
 }
 
@@ -531,7 +639,7 @@ fn lay(g: u32, sp: u32, len: u32, f: u32, rp: u32, fmt: u32) -> Option<(Vec<Cell
     let (_, k) = graphics(g)?;
     let (tf, em) = text_font(f)?;
     let s = string(sp, len);
-    let (flags, align, _) = format(fmt);
+    let (flags, align) = format(fmt);
     let r = rectf(rp).map(|v| v * k);
     let lh = line_height(&tf);
     let cells = layout(&s, r, em, lh, flags & 0x1000 != 0, align, |ch| tf.advance(ch as u32));
@@ -562,7 +670,9 @@ fn GdipMeasureString(c: &mut Ctx) -> u32 {
 /// each of the format's ranges as the box of its characters' cells
 fn GdipMeasureCharacterRanges(c: &mut Ctx) -> u32 {
     let Some((cells, _, _, _, lh, k)) = lay(c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5)) else { return INVALID_PARAMETER };
-    let (_, _, ranges) = format(c.a(5));
+    let ranges = with(|m| match m.get(&c.a(5)) {
+        Some(Obj::Format(v)) => v.ranges.clone(), _ => Vec::new(),
+    });
     let (n, regs) = (c.a(6), c.a(7));
     for (j, &(first, count)) in ranges.iter().enumerate().take(n as usize) {
         let inr: Vec<&Cell> = cells.iter().filter(|c| c.i as i32 >= first && (c.i as i32) < first + count).collect();
@@ -748,8 +858,26 @@ pub fn init() {
         ("GdipGetFontHeightGivenDPI", GdipGetFontHeightGivenDPI),
         ("GdipCreatePen1", GdipCreatePen1),
         ("GdipDeletePen", delete),
+        ("GdipCloneStringFormat", GdipCloneStringFormat),
+        ("GdipStringFormatGetGenericDefault", GdipStringFormatGetGenericDefault),
+        ("GdipStringFormatGetGenericTypographic", GdipStringFormatGetGenericTypographic),
+        ("GdipGetStringFormatAlign", GdipGetStringFormatAlign),
+        ("GdipGetStringFormatFlags", GdipGetStringFormatFlags),
+        ("GdipSetStringFormatFlags", GdipSetStringFormatFlags),
+        ("GdipGetStringFormatLineAlign", GdipGetStringFormatLineAlign),
+        ("GdipSetStringFormatLineAlign", GdipSetStringFormatLineAlign),
+        ("GdipGetStringFormatTrimming", GdipGetStringFormatTrimming),
+        ("GdipSetStringFormatTrimming", GdipSetStringFormatTrimming),
+        ("GdipGetStringFormatHotkeyPrefix", GdipGetStringFormatHotkeyPrefix),
+        ("GdipSetStringFormatHotkeyPrefix", GdipSetStringFormatHotkeyPrefix),
+        ("GdipGetStringFormatDigitSubstitution", GdipGetStringFormatDigitSubstitution),
+        ("GdipSetStringFormatDigitSubstitution", GdipSetStringFormatDigitSubstitution),
+        ("GdipGetStringFormatMeasurableCharacterRangeCount", GdipGetStringFormatMeasurableCharacterRangeCount),
+        ("GdipGetStringFormatTabStopCount", GdipGetStringFormatTabStopCount),
+        ("GdipSetStringFormatTabStops", GdipSetStringFormatTabStops),
+        ("GdipGetStringFormatTabStops", GdipGetStringFormatTabStops),
         ("GdipCreateStringFormat", GdipCreateStringFormat),
-        ("GdipDeleteStringFormat", delete),
+        ("GdipDeleteStringFormat", GdipDeleteStringFormat),
         ("GdipSetStringFormatAlign", GdipSetStringFormatAlign),
         ("GdipSetStringFormatMeasurableCharacterRanges", GdipSetStringFormatMeasurableCharacterRanges),
         ("GdipCreateRegion", GdipCreateRegion),
@@ -871,5 +999,111 @@ mod tests {
                 prop_assert!(px[3] >= dst[3]);
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod format_abi_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+
+    #[test]
+    fn string_format_clone_owns_tabs_and_ranges() {
+        let _guard = enter();
+        let p = mem::heap_alloc(128, true);
+        assert_eq!(call(GdipCreateStringFormat, &[0xdeadbeef, 0x419, p]), OK);
+        let h = r32(p);
+        w32(p + 16, 10.0f32.to_bits());
+        w32(p + 20, 20.0f32.to_bits());
+        assert_eq!(call(GdipSetStringFormatTabStops, &[h, 5.0f32.to_bits(), 2, p + 16]), OK);
+        assert_eq!(call(GdipSetStringFormatMeasurableCharacterRanges, &[h, 1, p + 16]), OK);
+        assert_eq!(call(GdipCloneStringFormat, &[h, p + 4]), OK);
+        let cloned = r32(p + 4);
+        assert_ne!(h, cloned);
+        assert_eq!(call(GdipSetStringFormatFlags, &[h, 0]), OK);
+        assert_eq!(call(GdipSetStringFormatTabStops, &[h, 0, 1, p + 20]), OK);
+        assert_eq!(call(GdipSetStringFormatMeasurableCharacterRanges, &[h, 0, 0]), OK);
+        assert_eq!(call(GdipDeleteStringFormat, &[h]), OK);
+        assert_eq!(call(GdipGetStringFormatFlags, &[cloned, p + 8]), OK);
+        assert_eq!(r32(p + 8), 0xdeadbeef);
+        assert_eq!(call(GdipGetStringFormatTabStops, &[cloned, 2, p + 8, p + 32]), OK);
+        assert_eq!(fl(r32(p + 8)), 5.0);
+        assert_eq!([fl(r32(p + 32)), fl(r32(p + 36))], [10.0, 20.0]);
+        assert_eq!(call(GdipGetStringFormatMeasurableCharacterRangeCount, &[cloned, p + 8]), OK);
+        assert_eq!(r32(p + 8), 1);
+        assert_eq!(call(GdipDeleteStringFormat, &[cloned]), OK);
+        mem::heap_free(p);
+    }
+
+    #[test]
+    fn string_format_abi_validation_preserves_outputs_and_state() {
+        let _guard = enter();
+        let p = mem::heap_alloc(128, true);
+        assert_eq!(call(GdipCreateStringFormat, &[0, 0x419, p]), OK);
+        let h = r32(p);
+        w32(p + 8, 0xaaaa_aaaa);
+        assert_eq!(call(GdipGetStringFormatDigitSubstitution, &[h, p + 8, 0]), OK);
+        assert_eq!(r32(p + 8), 0xaaaa_0000, "LANGID writes exactly two bytes");
+        assert_eq!(call(GdipGetStringFormatDigitSubstitution, &[h, 0, 0]), OK);
+        assert_eq!(call(GdipSetStringFormatMeasurableCharacterRanges, &[0, 1, 0]), INVALID_PARAMETER);
+        assert_eq!(call(GdipSetStringFormatMeasurableCharacterRanges, &[h, 1, 0]), INVALID_PARAMETER);
+        assert_eq!(call(GdipSetStringFormatMeasurableCharacterRanges, &[h, u32::MAX, p + 16]), INVALID_PARAMETER);
+        assert_eq!(call(GdipSetStringFormatMeasurableCharacterRanges, &[h, 33, p + 16]), 11);
+        assert_eq!(call(GdipSetStringFormatTabStops, &[h, 0, 0, 0]), INVALID_PARAMETER);
+        w32(p + 16, 3.0f32.to_bits());
+        assert_eq!(call(GdipSetStringFormatTabStops, &[h, 7.0f32.to_bits(), 1, p + 16]), OK);
+        assert_eq!(call(GdipSetStringFormatTabStops, &[h, 0, 0, p + 16]), OK);
+        assert_eq!(call(GdipSetStringFormatTabStops, &[h, 0, u32::MAX, p + 16]), OK);
+        assert_eq!(call(GdipGetStringFormatTabStopCount, &[h, p + 8]), OK);
+        assert_eq!(r32(p + 8), 1);
+        assert_eq!(call(GdipSetStringFormatTabStops, &[h, (-1.0f32).to_bits(), 1, p + 16]), 6);
+        assert_eq!(call(GdipGetStringFormatTabStops, &[h, 0, p + 8, p + 16]), OK);
+        assert_eq!(fl(r32(p + 8)), 7.0);
+        assert_eq!(fl(r32(p + 16)), 3.0);
+        for (set, get, max) in [
+            (GdipSetStringFormatAlign as Handler, GdipGetStringFormatAlign as Handler, 2),
+            (GdipSetStringFormatLineAlign as Handler, GdipGetStringFormatLineAlign as Handler, 2),
+            (GdipSetStringFormatTrimming as Handler, GdipGetStringFormatTrimming as Handler, 5),
+            (GdipSetStringFormatHotkeyPrefix as Handler, GdipGetStringFormatHotkeyPrefix as Handler, 2),
+        ] {
+            assert_eq!(call(set, &[h, max]), OK);
+            assert_eq!(call(set, &[h, max + 1]), INVALID_PARAMETER);
+            assert_eq!(call(get, &[h, p + 8]), OK);
+            assert_eq!(r32(p + 8), max);
+        }
+        assert_eq!(call(GdipSetStringFormatAlign, &[h, 3]), INVALID_PARAMETER);
+        assert_eq!(call(GdipGetStringFormatAlign, &[h, 0]), INVALID_PARAMETER);
+        assert_eq!(call(GdipDeleteStringFormat, &[h]), OK);
+        mem::heap_free(p);
+    }
+
+    #[test]
+    fn string_format_generic_lifetime_and_clone() {
+        let _guard = enter();
+        let p = mem::heap_alloc(32, true);
+        for (get, flags, trimming) in [
+            (GdipStringFormatGetGenericDefault as Handler, 0, 1),
+            (GdipStringFormatGetGenericTypographic as Handler, 0x6004, 0),
+        ] {
+            assert_eq!(call(get, &[0]), INVALID_PARAMETER);
+            assert_eq!(call(get, &[p]), OK);
+            let h = r32(p);
+            assert_eq!(call(GdipGetStringFormatFlags, &[h, p + 8]), OK);
+            assert_eq!(r32(p + 8), flags);
+            assert_eq!(call(GdipGetStringFormatTrimming, &[h, p + 8]), OK);
+            assert_eq!(r32(p + 8), trimming);
+            assert_eq!(call(GdipSetStringFormatFlags, &[h, 0x1000]), OK);
+            assert_eq!(call(GdipDeleteStringFormat, &[h]), OK);
+            assert_eq!(call(get, &[p + 4]), OK);
+            assert_eq!(r32(p + 4), h);
+            assert_eq!(call(GdipGetStringFormatFlags, &[h, p + 8]), OK);
+            assert_eq!(r32(p + 8), 0x1000);
+            assert_eq!(call(GdipCloneStringFormat, &[h, p + 4]), OK);
+            let cloned = r32(p + 4);
+            assert_eq!(call(GdipDeleteStringFormat, &[cloned]), OK);
+            assert_eq!(call(GdipGetStringFormatFlags, &[cloned, p + 8]), INVALID_PARAMETER);
+            assert_eq!(call(GdipSetStringFormatFlags, &[h, flags]), OK);
+        }
+        mem::heap_free(p);
     }
 }
