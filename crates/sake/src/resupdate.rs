@@ -113,12 +113,6 @@ impl Pe {
         }
         (r32(b, self.dirs + 8 * i as usize).unwrap_or(0), r32(b, self.dirs + 8 * i as usize + 4).unwrap_or(0))
     }
-    fn section_align(&self, b: &[u8]) -> u32 {
-        r32(b, self.opt + 32).unwrap_or(0x1000).max(1)
-    }
-    fn file_align(&self, b: &[u8]) -> u32 {
-        r32(b, self.opt + 36).unwrap_or(0x200).max(1)
-    }
     /// The file offset of `len` bytes at rva
     fn offset(&self, b: &[u8], rva: u32, len: u32) -> Option<usize> {
         for s in self.sections(b) {
@@ -265,7 +259,14 @@ pub fn build(tree: &Tree, rva: u32) -> Vec<u8> {
 pub fn write(file: &[u8], tree: &Tree) -> Option<Vec<u8>> {
     let mut b = file.to_vec();
     let pe = Pe::parse(&b)?;
-    let (fa, sa) = (pe.file_align(&b), pe.section_align(&b));
+    let (fa, sa) = (r32(&b, pe.opt + 36)?, r32(&b, pe.opt + 32)?);
+    // FileAlignment controls output padding. A damaged header must not turn a tiny
+    // resource update into a multi-gigabyte allocation (mutation-test baseline).
+    // PE permits sub-page alignment only when FileAlignment == SectionAlignment.
+    if !fa.is_power_of_two() || !sa.is_power_of_two() || fa > 0x10000 || sa < fa
+        || (sa < 0x1000 && fa != sa) || (sa >= 0x1000 && fa < 0x200) {
+        return None;
+    }
     let secs = pe.sections(&b);
     let (rva, _) = pe.dir(&b, 2);
     let name = |i: usize| &b[pe.secs + 40 * i..pe.secs + 40 * i + 8];
@@ -723,6 +724,39 @@ mod tests {
             proptest::collection::btree_map(id(), proptest::collection::btree_map(any::<u16>(), (any::<u32>(), proptest::collection::vec(any::<u8>(), 0..600)), 1..3), 1..4),
             0..5,
         )
+    }
+
+    #[test]
+    fn valid_file_and_subpage_alignment_still_round_trip() {
+        let tree = sample();
+        for (fa, sa) in [(0x200, 0x1000), (0x10000, 0x10000), (0x80, 0x80)] {
+            let mut b = image(&[(b".rsrc", 0, 0x4000_0040)], Some(&tree));
+            w32(&mut b, 0x98 + 36, fa);
+            w32(&mut b, 0x98 + 32, sa);
+            let out = write(&b, &tree).unwrap();
+            assert_eq!(read(&out).unwrap(), tree);
+        }
+    }
+
+    #[test]
+    fn damaged_alignment_cannot_allocate_gigabytes() {
+        let original = image(&[(b".rsrc", 0, 0x4000_0040)], Some(&sample()));
+        // Every single-byte corruption of FileAlignment, as the damaged-files
+        // property test generates. Any accepted output must remain small.
+        for byte in 0..4 {
+            for value in 0..=255u8 {
+                let mut b = original.clone();
+                b[0x98 + 36 + byte] = value;
+                if let Some(out) = write(&b, &sample()) {
+                    assert!(out.len() < 0x20000);
+                }
+            }
+        }
+        for bad in [0, 3, 0x86000000, 0x80000000] {
+            let mut b = original.clone();
+            w32(&mut b, 0x98 + 36, bad);
+            assert!(write(&b, &sample()).is_none());
+        }
     }
 
     proptest! {
