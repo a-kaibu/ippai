@@ -234,6 +234,7 @@ fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &Has
     let mut block = String::new();
     let mut samplers: Vec<String> = Vec::new();
     let mut two_rows: Vec<(String, &str)> = Vec::new();
+    let mut bools: Vec<(String, String)> = Vec::new();
     let mut narrow_arrays: Vec<(String, &str)> = Vec::new();
     let mut extra_in: Vec<(String, String)> = Vec::new();
     let mut extra_out: Vec<(String, String)> = Vec::new();
@@ -370,6 +371,13 @@ fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &Has
                                 // std140, which WGSL cannot say of them; kept as vec4 arrays, see
                                 // `NARROW`)
                                 let narrow = NARROW.iter().find(|t| t.0 == d.ty).filter(|_| n.contains('['));
+                                // (booleans have no host-shareable layout: uint words the shader
+                                // turns back into bool, see `BOOLS`)
+                                if let Some(&(_, u)) = BOOLS.iter().find(|t| t.0 == d.ty).filter(|_| !n.contains('[')) {
+                                    let _ = writeln!(block, "  {u} {n}{BOOL_SUFFIX};");
+                                    bools.push((n.clone(), d.ty.clone()));
+                                    continue;
+                                }
                                 match (TWO_ROWS.iter().find(|t| t.0 == d.ty && !n.contains('[')), narrow) {
                                     (Some(&(_, wide, gl)), _) => {
                                         let _ = writeln!(block, "  {wide} {n}{TWO_ROWS_SUFFIX};");
@@ -458,6 +466,8 @@ fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &Has
     let body = map_idents(&body, &mut |id, _| {
         if samplers.iter().any(|s| s == id) {
             Some(format!("sampler2D({id}_vnt, {id}_vns)"))
+        } else if let Some((_, ty)) = bools.iter().find(|t| t.0 == id) {
+            Some(format!("{ty}({id}{BOOL_SUFFIX})"))
         } else if let Some((_, gl)) = two_rows.iter().find(|t| t.0 == id) {
             Some(format!("{gl}({id}{TWO_ROWS_SUFFIX})"))
         } else if id == "main" && !pixel {
@@ -497,6 +507,10 @@ const TWO_ROWS_SUFFIX: &str = "_vn2r";
 const NARROW: [(&str, &str, &str); 6] =
     [("float", "vec4", "x"), ("vec2", "vec4", "xy"), ("vec3", "vec4", "xyz"), ("int", "ivec4", "x"), ("ivec2", "ivec4", "xy"), ("ivec3", "ivec4", "xyz")];
 const NARROW_SUFFIX: &str = "_vna";
+/// Boolean uniforms (not host-shareable in WGSL): (GLSL type, the uint type the block holds).
+/// glUniform*i / *f write their 32-bit words; any non-zero word is true, as GL reads them.
+const BOOLS: [(&str, &str); 4] = [("bool", "uint"), ("bvec2", "uvec2"), ("bvec3", "uvec3"), ("bvec4", "uvec4")];
+const BOOL_SUFFIX: &str = "_vnb";
 
 /// `name[i]` -> `wide[i].swz` in `s` (indices rewritten too).
 fn index_narrow(s: &str, name: &str, wide: &str, swz: &str) -> String {
@@ -575,6 +589,9 @@ fn block_of(m: &naga::Module) -> Option<Block> {
                     };
                     let name = x.name.clone().unwrap_or_default();
                     let narrow = name.rfind(NARROW_SUFFIX).filter(|&i| name[i + NARROW_SUFFIX.len()..].parse::<u32>().is_ok());
+                    if let Some(n) = name.strip_suffix(BOOL_SUFFIX) {
+                        return Member { name: n.to_string(), offset: x.offset, cols, rows, count, stride };
+                    }
                     match (name.strip_suffix(TWO_ROWS_SUFFIX), narrow) {
                         (Some(n), _) => Member { name: n.to_string(), offset: x.offset, cols, rows: 2, count, stride },
                         (None, Some(i)) => {
@@ -891,6 +908,24 @@ mod tests {
             let b = link(vs, &plain, &HashMap::new()).unwrap_or_else(|e| panic!("case {case} plain: {e}"));
             let shape = |p: &Program| p.ps.block.as_ref().map(|b| (b.size, b.members.iter().map(|m| (m.name.clone(), m.count, m.offset)).collect::<Vec<_>>()));
             assert_eq!(shape(&a), shape(&b), "case {case}");
+        }
+    }
+
+    /// Boolean uniforms (EntisGLS: `uniform bool u_bEnableFog;` failed naga's validation,
+    /// NonHostShareable) are uint words in the block, read back as bool / bvecN, under their
+    /// own names for glGetUniformLocation; every type and use combination validates.
+    #[test]
+    fn boolean_uniforms_are_words() {
+        for (ty, use_) in [("bool", "b ? 1.0 : 0.0"), ("bvec2", "float(b.y)"), ("bvec3", "any(b) ? 1.0 : 0.0"), ("bvec4", "all(b) ? 1.0 : 0.0")] {
+            let ps = format!("uniform {ty} b; uniform float f; void main() {{ gl_FragColor = vec4({use_}, f, 0.0, 1.0); }}");
+            let p = link("attribute vec4 p; void main() { gl_Position = p; }", &ps, &HashMap::new()).unwrap_or_else(|e| panic!("{ty}: {e}"));
+            let b = p.ps.block.as_ref().unwrap();
+            let m = b.members.iter().find(|m| m.name == "b").unwrap_or_else(|| panic!("{ty}: no member b"));
+            assert_eq!((m.cols, m.count), (1, None), "{ty}");
+            assert_eq!(p.sizes["b"], m.rows, "{ty}");
+            let mut out = vec![0u8; b.size as usize];
+            m.put(&mut out, &vec![1u32; m.rows as usize]);
+            assert_eq!(&out[m.offset as usize..m.offset as usize + 4], &1u32.to_le_bytes(), "{ty}");
         }
     }
 
