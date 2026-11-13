@@ -1076,6 +1076,7 @@ name = "dxwgsl"
 version = "0.1.0"
 dependencies = [
  "naga",
+ "proptest",
 ]
 
 [[package]]

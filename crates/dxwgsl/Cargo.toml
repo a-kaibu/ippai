@@ -9,3 +9,4 @@ description = "Direct3D shader bytecode (DXBC shader model 4/5, Direct3D 8/9 vs/
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
+proptest = "1"

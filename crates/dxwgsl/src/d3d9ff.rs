@@ -197,7 +197,8 @@ pub fn pixel(k: &PsKey) -> String {
     h.push_str("  let diffuse = i.l0;\n  let specular = i.l1;\n  var current = diffuse;\n  var temp = vec4f(0.0);\n");
     // all samples first (uniform control flow)
     for (t, s) in k.stages.iter().enumerate() {
-        let uses = [s[1], s[2], s[3], s[5], s[6], s[7]].iter().any(|a| a & 0xf == 2) || s[0] == 13 || s[0] == 15;
+        // (BLENDTEXTUREALPHA / BLENDTEXTUREALPHAPM read the stage's texture as an alpha op too)
+        let uses = [s[1], s[2], s[3], s[5], s[6], s[7]].iter().any(|a| a & 0xf == 2) || [s[0], s[4]].iter().any(|&o| o == 13 || o == 15);
         if !uses {
             continue;
         }
@@ -270,4 +271,63 @@ fn alpha_ok(a: f32, func: u32) -> bool {
 ",
     );
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn valid(w: &str) {
+        let m = naga::front::wgsl::parse_str(w).unwrap_or_else(|e| panic!("{}\n{w}", e.emit_to_string(w)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&m)
+            .unwrap_or_else(|e| panic!("{e:?}\n{w}"));
+    }
+
+    /// The stage lines of the shader: what each stage assigns ("current" / "temp").
+    fn stage_dsts(w: &str) -> Vec<&str> {
+        w.lines().filter_map(|l| l.trim().strip_suffix(" = vec4f(c.xyz, a); }")).collect()
+    }
+
+    // D3DTA_TEMP (5) and D3DTSS_RESULTARG = D3DTA_TEMP: what kura reports with
+    // D3DPMISCCAPS_TSSARGTEMP. A stage that targets temp leaves current as it was for the next
+    // stage, and a later stage reads temp (ダンジョンズ＆シネステジア quits without the cap).
+    #[test]
+    fn resultarg_temp_goes_to_temp_and_back() {
+        // stage 0: temp = tex0 (SELECTARG1 TEXTURE, result TEMP); stage 1: current = diffuse * temp
+        let k = PsKey {
+            stages: vec![[2, 2, 0, 0, 2, 2, 0, 0, 5, 0], [4, 0, 5, 0, 4, 0, 5, 0, 1, 0]],
+            tex: [2, 0, 0, 0, 0, 0, 0, 0],
+            ..Default::default()
+        };
+        let w = pixel(&k);
+        valid(&w);
+        assert_eq!(stage_dsts(&w), ["temp", "current"], "{w}");
+        assert!(w.contains("(diffuse * temp)"), "{w}");
+        assert!(w.contains("var temp = vec4f(0.0);"), "temp starts at 0 (as D3D's)\n{w}");
+    }
+
+    fn stage() -> impl Strategy<Value = [u32; 10]> {
+        // ops 2-26 (not 1, DISABLE, which ends the stages), args 0-6 with COMPLEMENT /
+        // ALPHAREPLICATE, RESULTARG CURRENT or TEMP
+        let op = 2u32..=26;
+        let a = (0u32..=6, any::<bool>(), any::<bool>()).prop_map(|(r, c, ar)| r | if c { 0x10 } else { 0 } | if ar { 0x20 } else { 0 });
+        (op.clone(), a.clone(), a.clone(), a.clone(), op, a.clone(), a.clone(), a, prop::bool::ANY, prop::bool::ANY)
+            .prop_map(|(co, c1, c2, c0, ao, a1, a2, a0, temp, proj)| [co, c1, c2, c0, ao, a1, a2, a0, if temp { 5 } else { 1 }, proj as u32])
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        // Every stage setup a game can make (any op, any arg incl. TEMP, either result register)
+        // gives a valid shader, and each stage writes the register its RESULTARG names.
+        #[test]
+        fn any_stages_valid_and_write_their_resultarg(stages in prop::collection::vec(stage(), 1..=8), tex in prop::array::uniform8(prop_oneof![Just(0u8), Just(2u8)]), spec: bool) {
+            let k = PsKey { stages: stages.clone(), tex, specular: spec, ..Default::default() };
+            let w = pixel(&k);
+            valid(&w);
+            let want: Vec<&str> = stages.iter().map(|s| if s[8] & 0xf == 5 { "temp" } else { "current" }).collect();
+            prop_assert_eq!(stage_dsts(&w), want);
+        }
+    }
 }
