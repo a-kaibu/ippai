@@ -1990,7 +1990,10 @@ fn ShowOwnedPopups(_: &mut Ctx) -> u32 {
 }
 fn UpdateWindow(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    let dirty = with(|s| s.wins.get(&h).is_some_and(|w| !w.update.empty()));
+    // (Windows paints only what is on screen: a hidden window, or one inside a hidden parent,
+    // gets no WM_PAINT however invalid it is; Malie's twitter.dll creates its tweet window
+    // hidden, calls UpdateWindow, and its WM_PAINT needs a picture loaded only when shown)
+    let dirty = with(|s| paint_due(s, h));
     if dirty {
         send(c, h, 0xf, 0, 0);
     }
@@ -3899,18 +3902,31 @@ fn KillTimer(c: &mut Ctx) -> u32 {
 // painting
 /// Visible with all its ancestors (IsWindowVisible): a child of a hidden window is not
 /// painted (property sheet pages hidden behind the shown one).
-fn shown_tree(s: &State, mut h: u32) -> bool {
-    loop {
-        match s.wins.get(&h) {
-            Some(w) if w.visible => {
-                if w.parent == 0 || w.parent == DESKTOP {
+fn shown_tree(s: &State, h: u32) -> bool {
+    shown_chain(|h| s.wins.get(&h).map(|w| (w.visible, w.parent)), h)
+}
+
+/// Whether window `h` and every parent up to its top-level window are visible (`get`: a
+/// window's visible flag and parent). At most 4096 levels: a parent cycle is not shown.
+fn shown_chain(get: impl Fn(u32) -> Option<(bool, u32)>, mut h: u32) -> bool {
+    for _ in 0..4096 {
+        match get(h) {
+            Some((true, parent)) => {
+                if parent == 0 || parent == DESKTOP {
                     return true;
                 }
-                h = w.parent;
+                h = parent;
             }
             _ => return false,
         }
     }
+    false
+}
+
+/// A WM_PAINT is due: the window has an update region and is on screen (UpdateWindow,
+/// RedrawWindow's RDW_UPDATENOW and the queue's generated WM_PAINT all ask this).
+fn paint_due(s: &State, h: u32) -> bool {
+    s.wins.get(&h).is_some_and(|w| !w.update.empty()) && shown_tree(s, h)
 }
 
 /// A window shown: it and everything in it is to be painted.
@@ -3987,7 +4003,7 @@ fn RedrawWindow(c: &mut Ctx) -> u32 {
         });
     }
     if flags & 0x100 != 0 {
-        let dirty = with(|s| s.wins.get(&h).is_some_and(|w| !w.update.empty()));
+        let dirty = with(|s| paint_due(s, h));
         if dirty {
             send(c, h, 0xf, 0, 0);
         }
@@ -7447,6 +7463,49 @@ mod track_tests {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn shown_chain_cases() {
+        // 1 top-level visible, 2 its visible child, 3 a hidden top-level, 4 a visible child of 3
+        let w = |h: u32| match h {
+            1 => Some((true, 0)),
+            2 => Some((true, 1)),
+            3 => Some((false, DESKTOP)),
+            4 => Some((true, 3)),
+            5 => Some((true, 6)),
+            6 => Some((true, 5)),
+            _ => None,
+        };
+        assert!(shown_chain(w, 1) && shown_chain(w, 2));
+        assert!(!shown_chain(w, 3), "created without WS_VISIBLE");
+        assert!(!shown_chain(w, 4), "visible inside a hidden parent");
+        assert!(!shown_chain(w, 9), "no such window");
+        assert!(!shown_chain(w, 5), "a parent cycle ends");
+    }
+
+    proptest! {
+        /// Any forest of windows (parents earlier in the list or none): shown_chain agrees with
+        /// the recursive definition: visible, and the parent (if any) shown.
+        #[test]
+        fn shown_chain_forest(ws in proptest::collection::vec((any::<bool>(), any::<u16>(), any::<bool>()), 1..30)) {
+            // window i+1: (visible, parent index below i, top-level?)
+            let parent = |i: usize| -> u32 {
+                let (_, p, top) = ws[i];
+                if top || i == 0 { 0 } else { (p as usize % i) as u32 + 1 }
+            };
+            let get = |h: u32| (h >= 1 && h as usize <= ws.len()).then(|| (ws[h as usize - 1].0, parent(h as usize - 1)));
+            fn rec(get: &dyn Fn(u32) -> Option<(bool, u32)>, h: u32) -> bool {
+                match get(h) {
+                    Some((true, 0)) => true,
+                    Some((true, p)) => rec(get, p),
+                    _ => false,
+                }
+            }
+            for h in 1..=ws.len() as u32 {
+                prop_assert_eq!(shown_chain(get, h), rec(&get, h));
+            }
+        }
+    }
 
     fn u(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
