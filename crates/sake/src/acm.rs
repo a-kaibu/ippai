@@ -16,6 +16,15 @@ use crate::api::{implement, Ctx};
 use crate::mem::{self, put32, putp, r16, r32, r8, rp, w16, w32};
 
 const DRIVER: u32 = 0x00ac_0001;
+/// The same converter enumerated a second time as Windows' msadp32.acm ("MS-ADPCM"): F&C's
+/// codec plugin looks for that short name and else plays no sound and halts
+const DRIVER_MS: u32 = 0x00ac_0002;
+/// (driver id, wPid, short name, long name) of the drivers acmDriverEnum lists, as Windows'
+/// imaadp32.acm and msadp32.acm name themselves
+const DRIVERS: [(u32, u32, &str, &str); 2] = [
+    (DRIVER, 17, "Microsoft IMA ADPCM", "Microsoft IMA ADPCM CODEC"),
+    (DRIVER_MS, 33, "MS-ADPCM", "Microsoft ADPCM"),
+];
 const IMA: u16 = 0x11;
 const MSADPCM: u16 = 2;
 const PCM: u16 = 1;
@@ -267,8 +276,12 @@ fn acmGetVersion(_: &mut Ctx) -> u32 {
 fn acmDriverEnum(c: &mut Ctx) -> u32 {
     let (cb, inst) = (c.a(0), c.a(1));
     if cb != 0 {
-        // ACMDRIVERDETAILS_SUPPORTF_CODEC
-        c.call(cb, &[DRIVER, inst, 1]);
+        for (id, ..) in DRIVERS {
+            // ACMDRIVERDETAILS_SUPPORTF_CODEC; FALSE stops the enumeration
+            if c.call(cb, &[id, inst, 1]) == 0 {
+                break;
+            }
+        }
     }
     0
 }
@@ -277,7 +290,8 @@ fn acmDriverID(c: &mut Ctx) -> u32 {
     0
 }
 fn acmDriverOpen(c: &mut Ctx) -> u32 {
-    crate::mem::putp(c.a(0), DRIVER);
+    let id = if DRIVERS.iter().any(|d| d.0 == c.a(1)) { c.a(1) } else { DRIVER };
+    crate::mem::putp(c.a(0), id);
     0
 }
 fn ok0(_: &mut Ctx) -> u32 {
@@ -285,6 +299,7 @@ fn ok0(_: &mut Ctx) -> u32 {
 }
 fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
     let p = c.a(1);
+    let (_, pid, short, long) = DRIVERS.iter().copied().find(|d| d.0 == c.a(0)).unwrap_or(DRIVERS[0]);
     if p == 0 {
         return MMSYSERR_INVALPARAM;
     }
@@ -292,8 +307,10 @@ fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
     if !(4..=0x10000).contains(&size) {
         return MMSYSERR_INVALPARAM;
     }
-    let mut b = vec![0u8; size as usize];
-    b[0..4].copy_from_slice(&size.to_le_bytes());
+    // (the whole ACMDRIVERDETAILS, of which the first cbStruct bytes are copied and cbStruct
+    // becomes the bytes given, as msacm32 does: a field cut in two keeps its first bytes)
+    let full = if wide { 40 + 2 * 880 } else { 40 + 880 };
+    let mut b = vec![0u8; full];
     let put = |b: &mut Vec<u8>, at: usize, v: u32| {
         if at + 4 <= b.len() {
             b[at..at + 4].copy_from_slice(&v.to_le_bytes());
@@ -301,12 +318,12 @@ fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
     };
     put(&mut b, 4, u32::from_le_bytes(*b"audc"));
     put(&mut b, 8, 0);
-    put(&mut b, 12, 1 | 17 << 16); // wMid, wPid
+    put(&mut b, 12, 1 | pid << 16); // wMid, wPid
     put(&mut b, 16, 0x0300_0000);
     put(&mut b, 20, 0x0400_0000);
     put(&mut b, 24, 1); // codec
     put(&mut b, 28, tags().len() as u32); // format tags
-    let strs: [(&str, usize); 4] = [("Microsoft IMA ADPCM", 32), ("Microsoft IMA ADPCM CODEC", 128), ("Copyright (C) Microsoft Corp.", 80), ("", 128)];
+    let strs: [(&str, usize); 4] = [(short, 32), (long, 128), ("Copyright (C) Microsoft Corp.", 80), ("", 128)];
     let mut at = 40;
     for (s, n) in strs {
         let units: Vec<u16> = if wide { s.encode_utf16().collect() } else { s.bytes().map(|x| x as u16).collect() };
@@ -321,6 +338,9 @@ fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
         }
         at += if wide { 2 * n } else { n };
     }
+    let n = (size as usize).min(full);
+    b.truncate(n);
+    b[0..4].copy_from_slice(&(n as u32).to_le_bytes());
     mem::write(p, &b);
     0
 }
@@ -370,7 +390,7 @@ fn acmFormatTagDetailsW(c: &mut Ctx) -> u32 {
 fn acmMetrics(c: &mut Ctx) -> u32 {
     let (metric, out) = (c.a(1), c.a(2));
     let v = match metric {
-        1 | 2 | 3 => 1,       // counts of drivers / codecs
+        1 | 2 | 3 => DRIVERS.len() as u32, // counts of drivers / codecs
         50 => 50,             // ACM_METRIC_MAX_SIZE_FORMAT
         51 => 0,              // ..._FILTER
         _ => 0,
@@ -918,5 +938,73 @@ mod mp3_tests {
         s.block = 0;
         assert_eq!(mp3_size(&s, &d, 209, false), 9216);
         assert_eq!(mp3_size(&s, &d, 4608, true), 208);
+    }
+}
+
+/// The drivers acmDriverEnum lists and their details, as Windows names imaadp32.acm and
+/// msadp32.acm (F&C's codec plugin compares szShortName with "MS-ADPCM").
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod drivers {
+    use super::*;
+    use crate::test_guest::{call, enter as enter_mem, guest_thread};
+    use proptest::prelude::*;
+
+    fn enter() -> std::sync::MutexGuard<'static, ()> {
+        let g = enter_mem();
+        guest_thread();
+        g
+    }
+    /// (result, fdwSupport, cFormatTags, wPid, short name, long name) of acmDriverDetailsA(id)
+    fn details(id: u32, size: u32) -> (u32, u32, u32, u32, String, String) {
+        let p = mem::heap_alloc(0x400, true);
+        mem::fill(p, 0x400, 0xcc);
+        w32(p, size);
+        let r = call(acmDriverDetailsA, &[id, p, 0]);
+        let s = |at: u32| crate::text::a2s(&crate::mem::cstr(p + at));
+        (r, r32(p + 24), r32(p + 28), r32(p + 12) >> 16, s(40), s(72))
+    }
+
+    #[test]
+    fn ms_adpcm_is_a_driver_of_its_own() {
+        let _g = enter();
+        let ids: Vec<u32> = DRIVERS.iter().map(|d| d.0).collect();
+        assert_eq!(ids, [DRIVER, DRIVER_MS]);
+        let (r, support, tags, pid, short, long) = details(DRIVER_MS, 0x398);
+        assert_eq!((r, support, pid), (0, 1, 33));
+        assert_eq!(short, "MS-ADPCM");
+        assert_eq!(long, "Microsoft ADPCM");
+        assert!(tags >= 3);
+        let (_, _, _, pid, short, _) = details(DRIVER, 0x398);
+        assert_eq!((pid, short.as_str()), (17, "Microsoft IMA ADPCM"));
+        // (acmDriverOpen gives back the driver asked for; another id: the first)
+        let out = mem::heap_alloc(8, true);
+        assert_eq!(call(acmDriverOpen, &[out, DRIVER_MS, 0]), 0);
+        assert_eq!(r32(out), DRIVER_MS);
+        assert_eq!(call(acmDriverOpen, &[out, 0x1234, 0]), 0);
+        assert_eq!(r32(out), DRIVER);
+        // (ACM_METRIC_COUNT_DRIVERS)
+        assert_eq!(call(acmMetrics, &[0, 1, out]), 0);
+        assert_eq!(r32(out), 2);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// Any cbStruct from 4 up: the details stop there (nothing past it is written) and the
+        /// fields that fit are those of the full answer.
+        #[test]
+        fn details_fit_cb_struct(which in 0usize..2, size in 4u32..0x398) {
+            let _g = enter();
+            let id = DRIVERS[which].0;
+            let p = mem::heap_alloc(0x400, true);
+            mem::fill(p, 0x400, 0xcc);
+            w32(p, size);
+            prop_assert_eq!(call(acmDriverDetailsA, &[id, p, 0]), 0);
+            prop_assert_eq!(r32(p), size);
+            for k in size..0x400 { prop_assert_eq!(mem::r8(p + k), 0xcc); }
+            let full = mem::heap_alloc(0x400, true);
+            w32(full, 0x398);
+            call(acmDriverDetailsA, &[id, full, 0]);
+            for k in 4..size { prop_assert_eq!(mem::r8(p + k), mem::r8(full + k)); }
+        }
     }
 }

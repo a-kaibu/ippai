@@ -6044,15 +6044,18 @@ fn SetHandleInformation(c: &mut Ctx) -> u32 {
 }
 
 fn write_find_data(p: u32, name: &str, m: &kura::fs::Metadata, wide: bool) {
+    write_find_raw(p, name, files::attrs(m), m.modified().map_or(0, files::filetime), m.len(), wide);
+}
+/// WIN32_FIND_DATA(A/W) at `p`: attributes, the three times, size, name (no short name)
+fn write_find_raw(p: u32, name: &str, attrs: u32, t: u64, len: u64, wide: bool) {
     let size = if wide { 592 } else { 320 };
     mem::fill(p, size, 0);
-    w32(p, files::attrs(m));
-    let t = m.modified().map_or(0, files::filetime);
+    w32(p, attrs);
     for o in [4, 12, 20] {
         put64(p + o, t);
     }
-    w32(p + 28, (m.len() >> 32) as u32);
-    w32(p + 32, m.len() as u32);
+    w32(p + 28, (len >> 32) as u32);
+    w32(p + 32, len as u32);
     if wide {
         put_wstr(p + 44, 260, &name.encode_utf16().collect::<Vec<_>>());
     } else {
@@ -6078,6 +6081,13 @@ fn find_first_at(pat: u32, data: u32, wide: bool) -> u32 {
             let mut f = f;
             f.at = 1;
             obj::add(Obj::Find(std::sync::Arc::new(Mutex::new(f))))
+        }
+        // (a DLL of system32 that sake implements is there, as GetFileAttributes says: F&C's
+        // overture.exe looks for C:\windows\system32\d3d9.dll and else says DirectX is missing)
+        None if !pat.contains(['*', '?']) && is_system_dll_path(&pat) => {
+            let name = pat.rsplit(['\\', '/']).next().unwrap_or("").to_ascii_lowercase();
+            write_find_raw(data, &name, 0x20, SYSTEM_DLL_TIME, 0, wide);
+            obj::add(Obj::Find(std::sync::Arc::new(Mutex::new(files::Find { entries: Vec::new(), at: 0 }))))
         }
         None => {
             // ("dir\": ERROR_INVALID_PARAMETER; "" and a missing directory: ERROR_PATH_NOT_FOUND)
@@ -6147,6 +6157,9 @@ fn file_attrs(name: &str) -> u32 {
         }
     }
 }
+/// The times FindFirstFile gives system32's DLLs that sake implements (2019-12-07 09:09:00 UTC,
+/// as Windows 10's files carry)
+const SYSTEM_DLL_TIME: u64 = 132_201_833_400_000_000;
 /// C:\windows\system32\<a DLL we implement>
 fn is_system_dll_path(name: &str) -> bool {
     let full = files::full_path(name).to_ascii_lowercase();
@@ -6709,31 +6722,71 @@ fn SearchPathA(c: &mut Ctx) -> u32 {
 fn SearchPathW(c: &mut Ctx) -> u32 {
     search_path(c, true)
 }
-// file mappings: views are copies (read-only use: archives)
-fn CreateFileMappingA(c: &mut Ctx) -> u32 {
+// file mappings: views are copies (read-only use: archives); a pagefile-backed one has one view
+// that every handle to it shares, and a name another CreateFileMapping / OpenFileMapping finds
+fn create_file_mapping(c: &mut Ctx, wide: bool) -> u32 {
     let f = obj::file(c.a(0));
-    let size = c.a(4);
-    obj::add(Obj::Mapping { file: f, size, view: 0 })
+    let (protect, size) = (c.a(2) & 0xff, c.a(4));
+    let write = matches!(protect, 0x04 | 0x40);
+    // (a writable mapping larger than its file makes the file that long, as Windows does)
+    let want = c.a(4) as u64 | (c.a(3) as u64) << 32;
+    if let (Some(f), true) = (&f, write) {
+        if want > f.size() {
+            let _ = f.f.lock().unwrap().set_len(want);
+        }
+    }
+    create_named(named(c.a(5), wide), Obj::Mapping { file: f, size, view: 0, write })
+}
+fn CreateFileMappingA(c: &mut Ctx) -> u32 {
+    create_file_mapping(c, false)
 }
 fn CreateFileMappingW(c: &mut Ctx) -> u32 {
-    CreateFileMappingA(c)
+    create_file_mapping(c, true)
+}
+/// OpenFileMapping(access, inherit, name): a new handle to the named mapping; 0 and
+/// ERROR_FILE_NOT_FOUND when none has the name, ERROR_INVALID_HANDLE when another kind has it
+fn open_file_mapping(c: &mut Ctx, wide: bool) -> u32 {
+    if c.a(2) == 0 {
+        last_error(87);
+        return 0;
+    }
+    let h = open_sync(arg_str(c.a(2), wide), 5);
+    if h != 0 && c.a(1) != 0 {
+        obj::set_inherit(h, true);
+    }
+    h
+}
+fn OpenFileMappingA(c: &mut Ctx) -> u32 {
+    open_file_mapping(c, false)
+}
+fn OpenFileMappingW(c: &mut Ctx) -> u32 {
+    open_file_mapping(c, true)
 }
 fn MapViewOfFile(c: &mut Ctx) -> u32 {
-    let (h, off_hi, off_lo, n) = (c.a(0), c.a(2), c.a(3), c.a(4));
+    let (h, access, off_hi, off_lo, n) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let info = obj::with(|t| match t.objs.get(&h) {
-        Some((Obj::Mapping { file, size, view }, _)) => Some((file.clone(), *size, *view)),
+        Some((Obj::Mapping { file, size, view, write }, _)) => Some((file.clone(), *size, *view, *write)),
         _ => None,
     });
-    let Some((file, size, view)) = info else { return 0 };
-    if file.is_none() && view != 0 {
-        return view;
-    }
+    let Some((file, size, view, write)) = info else { return 0 };
     let off = off_lo as u64 | (off_hi as u64) << 32;
+    // a pagefile section: one block of its whole size that every view shows, at the view's
+    // offset (F&C's archive reader maps its decoded index again 0x40000 in); past its end:
+    // ERROR_ACCESS_DENIED
+    if file.is_none() {
+        if off + n as u64 > size as u64 || off >= size.max(1) as u64 {
+            last_error(5);
+            return 0;
+        }
+        if view != 0 {
+            return view + off as u32;
+        }
+    }
     let total = match &file {
         Some(f) => f.size().saturating_sub(off) as u32,
         None => size,
     };
-    let n = if n == 0 { total } else { n.min(total.max(n)) };
+    let n = if file.is_none() { size } else if n == 0 { total } else { n.min(total.max(n)) };
     let Some(b) = mem::reserve(0, n.max(1), 4, 0x40000, false) else { return 0 };
     mem::commit(b, 4);
     VIEWS.lock().unwrap().push((b, n.max(1), file.as_ref().map(|f| files::host_to_win(&f.path))));
@@ -6742,12 +6795,18 @@ fn MapViewOfFile(c: &mut Ctx) -> u32 {
         f.seek(SeekFrom::Start(off));
         f.read_into(b, n.min(total));
         f.seek(SeekFrom::Start(pos));
+        // (FILE_MAP_WRITE on a writable mapping: what the program writes there reaches the file
+        // when the view is flushed or unmapped; FILE_MAP_COPY alone is copy-on-write)
+        if write && access & 2 != 0 {
+            WRITE_BACK.lock().unwrap().push((b, n.min(total), f.clone(), off));
+        }
     } else {
         obj::with(|t| {
             if let Some((Obj::Mapping { view, .. }, _)) = t.objs.get_mut(&h) {
                 *view = b;
             }
         });
+        return b + off as u32;
     }
     b
 }
@@ -6756,13 +6815,35 @@ fn MapViewOfFileEx(c: &mut Ctx) -> u32 {
 }
 fn UnmapViewOfFile(c: &mut Ctx) -> u32 {
     let a = c.a(0);
-    let named_view = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, .. } if *view == a)));
-    if !named_view {
+    let named_view = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, size, .. } if *view != 0 && a >= *view && a - *view < (*size).max(1))));
+    // (a view's base frees it; an address inside a pagefile view whose section closed stays)
+    let base = VIEWS.lock().unwrap().iter().any(|v| v.0 == a);
+    if !named_view && base {
+        write_back(a, true);
         VIEWS.lock().unwrap().retain(|v| v.0 != a);
         mem::release(a);
     }
     1
 }
+/// Writes a writable file view back to its file (the bytes the view covers, at its offset;
+/// the file position stays); `remove`: the view goes away
+fn write_back(a: u32, remove: bool) {
+    let mut l = WRITE_BACK.lock().unwrap();
+    let Some(i) = l.iter().position(|v| a >= v.0 && a - v.0 < v.1.max(1)) else { return };
+    let (b, n, f, off) = if remove { l.remove(i) } else { l[i].clone() };
+    drop(l);
+    let pos = f.seek(SeekFrom::Current(0)).unwrap_or(0);
+    f.seek(SeekFrom::Start(off));
+    f.write_from(b, n);
+    f.seek(SeekFrom::Start(pos));
+}
+/// FlushViewOfFile(address, bytes): the view's bytes to its file
+fn FlushViewOfFile(c: &mut Ctx) -> u32 {
+    write_back(c.a(0), false);
+    1
+}
+/// The views of writable file mappings opened with FILE_MAP_WRITE: (base, bytes, file, offset)
+static WRITE_BACK: Mutex<Vec<(u32, u32, std::sync::Arc<files::File>, u64)>> = Mutex::new(Vec::new());
 /// Each view MapViewOfFile made: (base, size, the file's Windows path; None: pagefile-backed)
 static VIEWS: Mutex<Vec<(u32, u32, Option<String>)>> = Mutex::new(Vec::new());
 /// "C:\x\y" as the NT device path GetMappedFileName gives ("\Device\HarddiskVolume1\x\y")
@@ -6783,7 +6864,7 @@ fn mapped_file(a: u32) -> Result<String, u32> {
         Some(_) => Err(1006),
         None => {
             // (a pagefile section a program shares by name)
-            let named = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, size } if *view != 0 && a >= *view && a - *view < *size)));
+            let named = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, size, .. } if *view != 0 && a >= *view && a - *view < *size)));
             Err(if named { 1006 } else { 59 })
         }
     }
@@ -7414,7 +7495,7 @@ pub fn init() {
         GetSystemDirectoryW, GetSystemWindowsDirectoryA, GetDriveTypeA, GetDriveTypeW, GetLogicalDrives,
         GetDiskFreeSpaceA, GetDiskFreeSpaceExA, GetDiskFreeSpaceExW, GetVolumeInformationA, GetVolumeInformationW,
         SearchPathA, SearchPathW, CreateIoCompletionPort, PostQueuedCompletionStatus, GetQueuedCompletionStatus,
-        CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile,
+        CreateFileMappingA, CreateFileMappingW, OpenFileMappingA, OpenFileMappingW, FlushViewOfFile, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile,
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, OpenThread, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
         FormatMessageA, FormatMessageW, Beep, GetComputerNameA, GetComputerNameW, InitializeSListHead, GetCurrentPackageId,
         CreateToolhelp32Snapshot, Process32First, Process32FirstW, ConvertDefaultLocale,
@@ -7732,6 +7813,394 @@ mod nul_tests {
             let (dev, file) = (format!("{dir}{sep}{nul}{tail}"), format!("{dir}{sep}{nul}{junk}"));
             prop_assert!(is_nul_device(&dev), "{}", dev);
             prop_assert!(!is_nul_device(&file), "{}", file);
+        }
+    }
+}
+
+/// Named file mappings: CreateFileMapping's name, OpenFileMapping, and one shared view of a
+/// pagefile section for every handle to it (F&C's overture.exe creates
+/// "_fandc_native_system_32" and its plugin loader opens it; without the name it loaded no
+/// device DLL and crashed calling a null interface).
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod mapping_names {
+    use super::*;
+    use crate::test_guest::{call, enter as enter_mem, guest_thread};
+    fn enter() -> std::sync::MutexGuard<'static, ()> {
+        let g = enter_mem();
+        guest_thread();
+        g
+    }
+    use proptest::prelude::*;
+
+    const RW: u32 = 4; // PAGE_READWRITE
+    const ALL: u32 = 0xf001f; // FILE_MAP_ALL_ACCESS
+
+    fn cstr_arg(s: &str) -> u32 {
+        let p = mem::heap_alloc(s.len() as u32 + 1, true);
+        for (i, b) in s.bytes().chain([0]).enumerate() {
+            mem::w8(p + i as u32, b);
+        }
+        p
+    }
+    fn wstr_arg(s: &str) -> u32 {
+        let w: Vec<u16> = s.encode_utf16().chain([0]).collect();
+        let p = mem::heap_alloc(2 * w.len() as u32, true);
+        for (i, c) in w.iter().enumerate() {
+            mem::w16(p + 2 * i as u32, *c);
+        }
+        p
+    }
+    fn create(name: u32, wide: bool) -> (u32, u32) {
+        last_error(0xdead);
+        let h = call(if wide { CreateFileMappingW } else { CreateFileMappingA }, &[u32::MAX, 0, RW, 0, 0x20, name]);
+        (h, get_last_error())
+    }
+    fn open(name: u32, wide: bool) -> (u32, u32) {
+        last_error(0xdead);
+        let h = call(if wide { OpenFileMappingW } else { OpenFileMappingA }, &[ALL, 0, name]);
+        (h, get_last_error())
+    }
+    fn view(h: u32) -> u32 {
+        call(MapViewOfFile, &[h, ALL, 0, 0, 0])
+    }
+
+    #[test]
+    fn overture_shares_its_system_block() {
+        let _g = enter();
+        let name = cstr_arg("_fandc_native_system_32");
+        // (none yet: NULL and ERROR_FILE_NOT_FOUND, as Windows)
+        assert_eq!(open(name, false), (0, 2));
+        let (h, e) = create(name, false);
+        assert_ne!(h, 0);
+        assert_eq!(e, 0);
+        let v = view(h);
+        assert_ne!(v, 0);
+        mem::w32(v + 0x18, 0x1234_5678);
+        let (h2, _) = open(name, false);
+        assert_ne!(h2, 0);
+        assert_ne!(h2, h);
+        let v2 = view(h2);
+        assert_eq!(mem::r32(v2 + 0x18), 0x1234_5678);
+        // (creating it again opens the same section, ERROR_ALREADY_EXISTS)
+        let (h3, e3) = create(name, false);
+        assert_ne!(h3, 0);
+        assert_eq!(e3, files::ERROR_ALREADY_EXISTS);
+        assert_eq!(mem::r32(view(h3) + 0x18), 0x1234_5678);
+        // (the wide calls name the same object)
+        let wname = wstr_arg("_fandc_native_system_32");
+        let (h4, _) = open(wname, true);
+        assert_ne!(h4, 0);
+        for x in [h, h2, h3, h4] {
+            assert!(obj::close(x));
+        }
+        // (the last handle closed: the name is gone)
+        assert_eq!(open(name, false), (0, 2));
+    }
+
+    #[test]
+    fn names_are_one_namespace_and_checked() {
+        let _g = enter();
+        let name = cstr_arg("ippai-mapping-vs-event");
+        let ev = call(CreateEventA, &[0, 1, 0, name]);
+        assert_ne!(ev, 0);
+        // (an event has the name: ERROR_INVALID_HANDLE both ways)
+        assert_eq!(open(name, false), (0, 6));
+        assert_eq!(create(name, false).0, 0);
+        assert_eq!(get_last_error(), 6);
+        assert!(obj::close(ev));
+        let (m, _) = create(name, false);
+        assert_ne!(m, 0);
+        assert_eq!(call(OpenEventA, &[0x1f0003, 0, name]), 0);
+        assert_eq!(get_last_error(), 6);
+        assert!(obj::close(m));
+        // (a backslash outside Local\ / Global\: ERROR_PATH_NOT_FOUND; no name: invalid parameter)
+        assert_eq!(create(cstr_arg("bad\\name"), false), (0, 3));
+        assert_eq!(open(0, false), (0, 87));
+        // (unnamed mappings never meet)
+        let (a, _) = create(0, false);
+        let (b, _) = create(0, false);
+        mem::w32(view(a), 7);
+        assert_eq!(mem::r32(view(b)), 0);
+        assert!(obj::close(a) && obj::close(b));
+    }
+
+    /// A host file as Z:\..., with these bytes
+    fn host_file(bytes: &[u8]) -> (std::path::PathBuf, u32) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let p = std::env::temp_dir().join(format!("sake-map-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::write(&p, bytes).unwrap();
+        let win = format!("Z:{}", p.to_str().unwrap().replace('/', "\\"));
+        (p, cstr_arg(&win))
+    }
+    fn open_file(name: u32) -> u32 {
+        // GENERIC_READ | GENERIC_WRITE, share read/write, OPEN_EXISTING
+        call(CreateFileA, &[name, 0xc000_0000, 3, 0, 3, 0x80, 0])
+    }
+
+    /// F&C's file.dll writes HARDWARE_INFORMATION.TXT through a file mapping 0x5000 long:
+    /// the file grows to the mapping's size, the view's bytes reach the file when it is unmapped
+    /// (FlushViewOfFile before that), and copy-on-write / read-only views never write it.
+    #[test]
+    fn file_views_write_back() {
+        let _g = enter();
+        let (path, name) = host_file(b"hello");
+        let f = open_file(name);
+        assert_ne!(f, u32::MAX);
+        let m = call(CreateFileMappingA, &[f, 0, RW, 0, 0x5000, 0]);
+        assert_ne!(m, 0);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0x5000);
+        let v = view(m);
+        assert_eq!(mem::r8(v), b'h');
+        for (i, b) in b"WORLD".iter().enumerate() {
+            mem::w8(v + 0x1000 + i as u32, *b);
+        }
+        assert_eq!(call(FlushViewOfFile, &[v + 0x1000, 5]), 1);
+        assert_eq!(&std::fs::read(&path).unwrap()[0x1000..0x1005], b"WORLD");
+        mem::w8(v, b'J');
+        assert_eq!(call(UnmapViewOfFile, &[v]), 1);
+        let got = std::fs::read(&path).unwrap();
+        assert_eq!(&got[..5], b"Jello");
+        // (a copy-on-write view: FILE_MAP_COPY)
+        let v2 = call(MapViewOfFile, &[m, 1, 0, 0, 0]);
+        mem::w8(v2, b'X');
+        call(UnmapViewOfFile, &[v2]);
+        // (a read-only mapping: PAGE_READONLY, any view)
+        let ro = call(CreateFileMappingA, &[f, 0, 2, 0, 0, 0]);
+        let v3 = call(MapViewOfFile, &[ro, ALL, 0, 0, 0]);
+        mem::w8(v3, b'Y');
+        call(UnmapViewOfFile, &[v3]);
+        assert_eq!(std::fs::read(&path).unwrap()[0], b'J');
+        // (the file position is where it was)
+        assert_eq!(call(SetFilePointer, &[f, 0, 0, 1]), 0);
+        for h in [m, ro, f] {
+            assert!(obj::close(h));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+        /// Writes anywhere in a writable view at any offset of the file come back from the file
+        /// after UnmapViewOfFile, and nothing outside the view changes.
+        #[test]
+        fn file_view_model(len in 1usize..0x3000, off_pages in 0u32..2, writes in proptest::collection::vec((0usize..0x3000, any::<u8>()), 0..32)) {
+            let _g = enter();
+            let init: Vec<u8> = (0..len).map(|i| (i * 7) as u8).collect();
+            let (path, name) = host_file(&init);
+            let f = open_file(name);
+            let m = call(CreateFileMappingA, &[f, 0, RW, 0, 0, 0]);
+            let off = (off_pages * 0x1000).min(len as u32 & !0xfff);
+            let v = call(MapViewOfFile, &[m, 2, 0, off, 0]);
+            prop_assert_ne!(v, 0);
+            let mut want = init.clone();
+            for (at, b) in writes {
+                let at = at % (len - off as usize);
+                mem::w8(v + at as u32, b);
+                want[off as usize + at] = b;
+            }
+            call(UnmapViewOfFile, &[v]);
+            prop_assert_eq!(std::fs::read(&path).unwrap(), want);
+            obj::close(m);
+            obj::close(f);
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// F&C's archive reader decodes its index into a pagefile section (0x49c47 bytes), then
+    /// another thread maps it again 0x40000 in: that view shows the section from there.
+    #[test]
+    fn pagefile_views_at_an_offset() {
+        let _g = enter();
+        let m = call(CreateFileMappingA, &[u32::MAX, 0, RW, 0, 0x49c47, 0]);
+        let all = call(MapViewOfFile, &[m, ALL, 0, 0, 0x49c47]);
+        assert_ne!(all, 0);
+        for (i, b) in b"startmes.mes".iter().enumerate() {
+            mem::w8(all + 0x40000 + 0x9215 + i as u32, *b);
+        }
+        let part = call(MapViewOfFile, &[m, 4, 0, 0x40000, 0x931a]);
+        assert_ne!(part, 0);
+        assert_eq!(a2s(&cstr(part + 0x9215)), "startmes.mes");
+        // (writes through it show in the first view)
+        mem::w8(part, 0x5a);
+        assert_eq!(mem::r8(all + 0x40000), 0x5a);
+        // (past the end: ERROR_ACCESS_DENIED)
+        last_error(0);
+        assert_eq!(call(MapViewOfFile, &[m, 4, 0, 0x40000, 0x10000]), 0);
+        assert_eq!(get_last_error(), 5);
+        assert_eq!(call(MapViewOfFile, &[m, 4, 0, 0x50000, 0]), 0);
+        // (unmapping the inner view leaves the section)
+        assert_eq!(call(UnmapViewOfFile, &[part]), 1);
+        assert_eq!(mem::r8(all + 0x40000), 0x5a);
+        assert!(obj::close(m));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// Every view of a pagefile section, at any 64 KiB offset inside it, shows the bytes
+        /// written through any other view at the same section offset.
+        #[test]
+        fn pagefile_views_agree(size in 1u32..0x50000, writes in proptest::collection::vec((any::<u32>(), any::<u8>(), any::<u32>()), 1..24)) {
+            let _g = enter();
+            let m = call(CreateFileMappingA, &[u32::MAX, 0, RW, 0, size, 0]);
+            let grains: Vec<u32> = (0..size).step_by(0x10000).collect();
+            let mut model = vec![0u8; size as usize];
+            for (at, b, g) in writes {
+                let at = at % size;
+                let g = grains[g as usize % grains.len()].min(at & !0xffff);
+                let v = call(MapViewOfFile, &[m, ALL, 0, g, 0]);
+                prop_assert_ne!(v, 0);
+                mem::w8(v + (at - g), b);
+                model[at as usize] = b;
+                let g2 = grains[(at as usize) % grains.len()].min(at & !0xffff);
+                let v2 = call(MapViewOfFile, &[m, 4, 0, g2, 0]);
+                prop_assert_eq!(mem::r8(v2 + (at - g2)), model[at as usize]);
+            }
+            obj::close(m);
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Create(usize),
+        Open(usize),
+        Close(usize),
+        Write(usize, u32),
+    }
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (0usize..3).prop_map(Op::Create),
+            (0usize..3).prop_map(Op::Open),
+            (0usize..8).prop_map(Op::Close),
+            ((0usize..8), any::<u32>()).prop_map(|(i, v)| Op::Write(i, v)),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+        /// Against a model of the Windows object manager: a name lives while any handle to its
+        /// section is open; Create on a live name and Open give handles to that section (its
+        /// contents), Open of a dead name fails with ERROR_FILE_NOT_FOUND and Create of a dead
+        /// name makes a new, zeroed section.
+        #[test]
+        fn model(ops in proptest::collection::vec(op(), 1..40)) {
+            let _g = enter();
+            let tag = format!("ippai-pbt-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+            let names: Vec<u32> = (0..3).map(|i| cstr_arg(&format!("{tag}-{i}"))).collect();
+            // model: sections (live handle count, value), handles (handle, section)
+            let mut sections: Vec<(usize, u32, usize)> = Vec::new(); // (name, value, open handles)
+            let mut live: Vec<Option<usize>> = vec![None; 3]; // name -> section
+            let mut handles: Vec<(u32, usize)> = Vec::new();
+            for o in ops {
+                match o {
+                    Op::Create(n) | Op::Open(n) => {
+                        let is_open = matches!(o, Op::Open(_));
+                        let (h, e) = if is_open { open(names[n], false) } else { create(names[n], false) };
+                        match live[n] {
+                            Some(s) => {
+                                prop_assert_ne!(h, 0);
+                                if !is_open { prop_assert_eq!(e, files::ERROR_ALREADY_EXISTS); }
+                                prop_assert_eq!(mem::r32(view(h)), sections[s].1);
+                                sections[s].2 += 1;
+                                handles.push((h, s));
+                            }
+                            None if is_open => prop_assert_eq!((h, e), (0, 2)),
+                            None => {
+                                prop_assert_ne!(h, 0);
+                                prop_assert_eq!(e, 0);
+                                prop_assert_eq!(mem::r32(view(h)), 0);
+                                sections.push((n, 0, 1));
+                                live[n] = Some(sections.len() - 1);
+                                handles.push((h, sections.len() - 1));
+                            }
+                        }
+                    }
+                    Op::Close(i) if i < handles.len() => {
+                        let (h, s) = handles.remove(i);
+                        prop_assert!(obj::close(h));
+                        sections[s].2 -= 1;
+                        if sections[s].2 == 0 { live[sections[s].0] = None; }
+                    }
+                    Op::Write(i, v) if i < handles.len() => {
+                        let (h, s) = handles[i];
+                        mem::w32(view(h), v);
+                        sections[s].1 = v;
+                    }
+                    _ => {}
+                }
+            }
+            for (h, _) in handles { obj::close(h); }
+        }
+    }
+}
+
+/// FindFirstFile on system32's DLLs that sake implements agrees with GetFileAttributes (they
+/// "are there"); F&C's overture.exe tests C:\windows\system32\d3d9.dll that way.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod find_system_dlls {
+    use super::*;
+    use crate::test_guest::{call, enter as enter_mem, guest_thread};
+    use proptest::prelude::*;
+
+    fn enter() -> std::sync::MutexGuard<'static, ()> {
+        let g = enter_mem();
+        guest_thread();
+        g
+    }
+    fn cstr_arg(s: &str) -> u32 {
+        let p = mem::heap_alloc(s.len() as u32 + 1, true);
+        for (i, b) in s.bytes().chain([0]).enumerate() {
+            mem::w8(p + i as u32, b);
+        }
+        p
+    }
+    /// (handle, last error, attributes, low size, name) of FindFirstFileA(path)
+    fn find(path: &str) -> (u32, u32, u32, u32, String) {
+        let data = mem::heap_alloc(320, true);
+        last_error(0xdead);
+        let h = call(FindFirstFileA, &[cstr_arg(path), data]);
+        let e = get_last_error();
+        let name = a2s(&cstr(data + 44));
+        (h, e, mem::r32(data), mem::r32(data + 32), name)
+    }
+
+    #[test]
+    fn d3d9_is_in_system32() {
+        let _g = enter();
+        let (h, _, attrs, _, name) = find("C:\\windows\\system32\\d3d9.dll");
+        assert_ne!(h, u32::MAX);
+        assert_eq!(attrs, 0x20);
+        assert_eq!(name, "d3d9.dll");
+        // (one entry: then ERROR_NO_MORE_FILES)
+        let data = mem::heap_alloc(320, true);
+        assert_eq!(call(FindNextFileA, &[h, data]), 0);
+        assert_eq!(get_last_error(), 18);
+        assert_eq!(call(FindClose, &[h]), 1);
+        // (any case, and the same through GetFileAttributes)
+        assert_ne!(find("C:\\WINDOWS\\System32\\D3D9.DLL").0, u32::MAX);
+        assert_eq!(call(GetFileAttributesA, &[cstr_arg("C:\\windows\\system32\\d3d9.dll")]), 0x20);
+        // (not a DLL sake has, not a wildcard, not another folder)
+        assert_eq!(find("C:\\windows\\system32\\nosuchlib.dll").0, u32::MAX);
+        assert_eq!(find("C:\\windows\\SysWOW64\\d3d9.dll").0, u32::MAX);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// For any name, FindFirstFile finds system32\<name>.dll exactly when GetFileAttributes
+        /// says it exists.
+        #[test]
+        fn agrees_with_attributes(name in prop_oneof![
+            Just("d3d9".to_string()), Just("kernel32".to_string()), Just("ddraw".to_string()), Just("user32".to_string()),
+            "[a-z][a-z0-9]{0,10}"]) {
+            let _g = enter();
+            let path = format!("C:\\windows\\system32\\{name}.dll");
+            let attrs = call(GetFileAttributesA, &[cstr_arg(&path)]);
+            let (h, _, fa, _, fname) = find(&path);
+            prop_assert_eq!(h != u32::MAX, attrs != u32::MAX);
+            if h != u32::MAX {
+                prop_assert_eq!(fa, attrs);
+                prop_assert_eq!(fname, format!("{name}.dll"));
+                call(FindClose, &[h]);
+            }
         }
     }
 }

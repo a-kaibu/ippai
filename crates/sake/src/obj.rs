@@ -26,7 +26,9 @@ pub enum Obj {
     /// a named event, mutex or semaphore (crate::kern: other processes open it too)
     Shared(u32),
     Find(Arc<Mutex<crate::files::Find>>),
-    Mapping { file: Option<Arc<crate::files::File>>, size: u32, view: u32 },
+    /// a file mapping: its file (None: the pagefile), size, the one view of a pagefile section,
+    /// and whether its views may write the file (PAGE_READWRITE / PAGE_EXECUTE_READWRITE)
+    Mapping { file: Option<Arc<crate::files::File>>, size: u32, view: u32, write: bool },
     Key(crate::misc::Key),
     Other(&'static str),
 }

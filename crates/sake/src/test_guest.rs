@@ -22,3 +22,10 @@ pub fn call(f: Handler, args: &[u32]) -> u32 {
     mem::heap_free(sp);
     result
 }
+/// Makes the calling test thread a guest thread (a TEB: last_error, TLS), once per host thread.
+pub fn guest_thread() {
+    thread_local!(static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    if !DONE.with(|d| d.replace(true)) {
+        crate::enter(0);
+    }
+}
