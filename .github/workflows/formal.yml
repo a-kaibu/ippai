@@ -175,7 +175,7 @@ jobs:
           # (the toolchain this release was built against: it names it when missing)
           out=$("$V" --version 2>&1) || true
           echo "$out"
-          tc=$(echo "$out" | grep -oE 'rustup (toolchain )?install [^ `]+' | awk '{print $NF}' | head -1)
+          tc=$(echo "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-x86_64-unknown-linux-gnu' | head -1)
           if [ -n "$tc" ]; then rustup toolchain install --profile minimal "$tc"; fi
       - name: Proofs
         run: formal/verus.sh
