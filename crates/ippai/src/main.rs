@@ -12,6 +12,7 @@
 //! (sake's C:\ with the fonts) and for scripts.
 
 mod apps;
+mod asar;
 mod auth;
 mod cdc;
 #[cfg(unix)]

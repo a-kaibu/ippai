@@ -32,6 +32,7 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `strings` (crates/crt) | the _s string functions against their models (crt::sec::model) | same errno and buffer |
 | `strftime` (crates/crt) | crt::time strftime and mktime on any format and struct tm | no panic, mktime's result in range and gmtime gives back the normalized fields |
 | `unpack` (crates/ippai) | `ippai add`'s unpacking (zip, InstallShield, zlib-stream setups and the installers inside; no tools) on any file as .zip or .exe | no panic, no allocation over 16 MiB, nothing over the caps (Limits) written, nothing outside the output folder |
+| `asar` (crates/ippai) | `ippai pack`'s Electron app.asar header (asar::parse) on any file | no panic, every file a plain relative path inside the archive's bytes |
 
 Run (from the repository root):
 

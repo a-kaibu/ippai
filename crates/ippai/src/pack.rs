@@ -858,6 +858,7 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
         let mut ents: Vec<_> = fs::read_dir(&dir)?.collect::<std::io::Result<_>>()?;
         ents.sort_by_key(|e| e.file_name());
         let has_package = ents.iter().any(|e| e.file_name().eq_ignore_ascii_case("package.json"));
+        let has_app = ents.iter().any(|e| e.file_name().eq_ignore_ascii_case("app"));
         for e in ents {
             let fname = e.file_name().to_string_lossy().into_owned();
             let path = if rel.is_empty() { fname.clone() } else { format!("{rel}/{fname}") };
@@ -869,6 +870,18 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
                     eprintln!("{path}: NW.js app unpacked next to it");
                     apps += 1;
                     todo.push((to, rel.clone()));
+                }
+            }
+            // Electron: resources/app.asar unpacked as resources/app (asar.rs)
+            if first && !has_app && !dir.starts_with(&unpacked) && lower == "app.asar" {
+                let to = unpacked.join(apps.to_string());
+                if e.metadata()?.is_file() && crate::asar::unpack(&e.path(), &to)? {
+                    let app = if rel.is_empty() { "app".to_string() } else { format!("{rel}/app") };
+                    eprintln!("{path}: Electron app unpacked as {app}");
+                    apps += 1;
+                    lines.push(format!("d\t755\t{}\t{}", mtime(&e.metadata()?), esc(&app)));
+                    seen.insert(app.clone());
+                    todo.push((to, app));
                 }
             }
             let mut disk = e.path();
@@ -1292,6 +1305,35 @@ mod tests {
     /// Random files of many chunks (zero runs, repeated parts), packed with a file's chunks in
     /// parallel: the tree lists them in order, their lengths add up to the file's, and each
     /// decodes to its part (a zero chunk is `:<length>`).
+    /// An Electron game's resources/app.asar shows up in the tree as resources/app/ too (the page
+    /// runs Electron games from there), the archive itself kept; with a resources/app folder
+    /// already there, nothing is added.
+    #[test]
+    fn electron_asar_unpacked_into_the_tree() {
+        let t = std::env::temp_dir().join(format!("ippai-asar-pack-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, dir) = (t.join("store"), t.join("game"));
+        fs::create_dir_all(dir.join("resources")).unwrap();
+        fs::write(dir.join("tyranoproject.exe"), b"MZ").unwrap();
+        let a = crate::asar::tests::asar(&[("package.json", b"{\"main\":\"main.js\"}"), ("index.html", b"<html>"), ("data/scenario/first.ks", b"*start")]);
+        fs::write(dir.join("resources/app.asar"), &a).unwrap();
+        let paths = |tsv: &str| -> Vec<String> {
+            let mut v: Vec<String> = tsv.lines().skip(1).map(|l| format!("{} {}", &l[..1], l.split('\t').nth(3).unwrap())).collect();
+            v.sort();
+            v
+        };
+        let tsv = pack_tree(&store, &dir, "t", false, chunking(64)).unwrap();
+        assert_eq!(paths(&tsv), [
+            "d resources", "d resources/app", "d resources/app/data", "d resources/app/data/scenario",
+            "f resources/app.asar", "f resources/app/data/scenario/first.ks", "f resources/app/index.html", "f resources/app/package.json", "f tyranoproject.exe",
+        ]);
+        fs::create_dir_all(dir.join("resources/app")).unwrap();
+        fs::write(dir.join("resources/app/package.json"), b"{}").unwrap();
+        let tsv = pack_tree(&store, &dir, "t2", false, chunking(64)).unwrap();
+        assert_eq!(paths(&tsv), ["d resources", "d resources/app", "f resources/app.asar", "f resources/app/package.json", "f tyranoproject.exe"]);
+        let _ = fs::remove_dir_all(&t);
+    }
+
     #[test]
     fn files_chunked_in_order() {
         let t = std::env::temp_dir().join(format!("ippai-chunks-{}", std::process::id()));
