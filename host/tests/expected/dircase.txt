@@ -1,0 +1,8 @@
+CreateDirectory(DirCaseOK): 1, error 0
+CreateDirectory(dircaseok\save\): 1, error 0
+CreateDirectory(DIRCASEOK\save): 0, error 183
+CreateDirectory(dircaseok\two\\): 1, error 0
+CreateFile CREATE_NEW: ok
+attributes: found
+CreateDirectory(dircaseok\none\x\): 0, error 3
+cleaned: 1

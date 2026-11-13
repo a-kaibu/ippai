@@ -6107,7 +6107,11 @@ pub fn mkdir(name: &str) -> u32 {
         return 0;
     }
     let h = files::resolve_new(name);
-    match kura::fs::create_dir(&h) {
+    let r = kura::fs::create_dir(&h);
+    if crate::env_on!("SAKE_TRACE_FILES") {
+        eprintln!("sake: CreateDirectory({name}) -> {h}: {r:?}");
+    }
+    match r {
         Ok(()) => 1,
         Err(e) => {
             last_error(if e.kind() == std::io::ErrorKind::AlreadyExists { 183 } else { 3 });

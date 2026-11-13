@@ -315,6 +315,12 @@ pub fn resolve(w: &str) -> Option<String> {
 /// The host path for creating `w`: its directory resolved, the name as given.
 pub fn resolve_new(w: &str) -> String {
     let full = full_path(w);
+    // (a trailing backslash, "save\\" as CreateDirectory takes it: the name is the last
+    // component before it, else the parent's spelling was not looked up and a parent spelled in
+    // another case than the host's was not found; YU-RIS makes its save folder this way after
+    // lowering the case of the game's path)
+    let t = full.trim_end_matches('\\');
+    let full = if t.len() > 2 { t.to_string() } else { full };
     match full.rsplit_once('\\') {
         Some((d, n)) if !n.is_empty() => match resolve(&format!("{d}\\")) {
             Some(hd) => format!("{}/{n}", hd.trim_end_matches('/')),
@@ -684,5 +690,40 @@ mod tests {
         let h2 = make_dirs(&w("windows\\a\\b"));
         assert!(h2.ends_with("Windows/a/b") && std::path::Path::new(&h2).is_dir(), "{h2}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A new name under a parent spelled in another case, with trailing backslashes or not
+    /// (YU-RIS: CreateDirectory("...\\(実況ok)\\save\\") with the folder on the host as
+    /// "(実況OK)"): the parent's host spelling, the new name as given.
+    #[test]
+    fn new_names_follow_the_parent_spelling_with_trailing_backslashes() {
+        let root = std::env::temp_dir().join(format!("sake-newname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Game（実況OK）")).unwrap();
+        let r = root.to_string_lossy().into_owned();
+        let w = |p: &str| format!("Z:{}\\{p}", r.replace('/', "\\"));
+        let want = format!("{r}/Game（実況OK）/save");
+        assert_eq!(resolve_new(&w("game（実況ok）\\save")), want);
+        assert_eq!(resolve_new(&w("game（実況ok）\\save\\")), want);
+        assert_eq!(resolve_new(&w("GAME（実況OK）\\save\\\\")), want);
+        kura::fs::create_dir(resolve_new(&w("game（実況ok）\\save\\"))).unwrap();
+        assert!(root.join("Game（実況OK）").join("save").is_dir());
+        // a drive root stays a root
+        assert_eq!(resolve_new("Z:\\"), "/");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    proptest::proptest! {
+        /// Any case of the parent's ASCII letters and any number of trailing backslashes: the
+        /// same host path, under the parent as the host spells it.
+        #[test]
+        fn new_name_case_and_trailing_separators(flips in proptest::collection::vec(proptest::bool::ANY, 12), tail in 0usize..4, name in "[a-z0-9]{1,8}") {
+            let root = std::env::temp_dir().join(format!("sake-newprop-{}", std::process::id()));
+            std::fs::create_dir_all(root.join("SaveData").join("Sub")).unwrap();
+            let r = root.to_string_lossy().into_owned();
+            let parent: String = "SaveData\\Sub".chars().zip(flips.iter().cycle()).map(|(c, &f)| if f { c.to_ascii_lowercase() } else { c.to_ascii_uppercase() }).collect();
+            let w = format!("Z:{}\\{parent}\\{name}{}", r.replace('/', "\\"), "\\".repeat(tail));
+            proptest::prop_assert_eq!(resolve_new(&w), format!("{r}/SaveData/Sub/{name}"));
+        }
     }
 }
