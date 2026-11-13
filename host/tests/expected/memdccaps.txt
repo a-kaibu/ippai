@@ -1,0 +1,8 @@
+screen: planes 1 bitspixel 32 numcolors -1 rc_palette 0
+fresh memory dc: planes 1 bitspixel 32 numcolors -1 rc_palette 0
+memory dc of the screen: planes 1 bitspixel 32 numcolors -1 rc_palette 0
+monochrome bitmap: planes 1 bitspixel 1 numcolors -1 rc_palette 0
+8-bit dib: planes 1 bitspixel 32 numcolors -1 rc_palette 0
+32-bit dib: planes 1 bitspixel 32 numcolors -1 rc_palette 0
+stock bitmap back: planes 1 bitspixel 32 numcolors -1 rc_palette 0
+compatible bitmap of a fresh dc: 1 bpp

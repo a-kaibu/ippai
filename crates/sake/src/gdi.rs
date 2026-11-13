@@ -2743,8 +2743,11 @@ fn GetDeviceCaps(c: &mut Ctx) -> u32 {
         if d.kind != Kind::Mem {
             return 32;
         }
+        // a new memory DC answers for the screen it is compatible with, not for its 1x1
+        // monochrome stock bitmap (Flash's player asks a fresh CreateCompatibleDC(0) for
+        // BITSPIXEL and drew 1-bit dithered frames on 1: 裏雀荘ニ咲ク花 体験版)
         match t.m.get(&d.s.bitmap) {
-            Some(G::Bitmap(b)) if b.bpp == 1 => 1,
+            Some(G::Bitmap(b)) if b.bpp == 1 && d.s.bitmap != DEFAULT_BITMAP => 1,
             _ => 32,
         }
     });
@@ -5105,6 +5108,48 @@ mod clip_tests {
                     prop_assert!(m.iter().enumerate().all(|(i, &on)| !on || c.has(i as i32 % 32, i as i32 / 32)));
                 }
             }
+        }
+    }
+}
+
+/// GetDeviceCaps(BITSPIXEL) of a memory DC through any sequence of selected bitmaps: the
+/// screen's 32 with its stock 1x1 bitmap (a fresh CreateCompatibleDC; Flash's player drew 1-bit
+/// frames on 1), 1 only with a monochrome bitmap selected; a compatible bitmap of it stays
+/// monochrome while the stock or a monochrome bitmap is selected, as on Windows.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod memdc_caps_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn bitspixel_follows_the_selected_bitmap(picks in prop::collection::vec(0u8..3, 0..12)) {
+            let _g = enter();
+            guest_thread();
+            init();
+            let dc = call(CreateCompatibleDC, &[0]);
+            prop_assert_eq!(call(GetDeviceCaps, &[dc, 12]), 32);
+            prop_assert_eq!(call(GetDeviceCaps, &[dc, 14]), 1);
+            let mono = call(CreateBitmap, &[8, 8, 1, 1, 0]);
+            let color = call(CreateBitmap, &[8, 8, 1, 32, 0]);
+            let stock = call(SelectObject, &[dc, mono]);
+            prop_assert_eq!(stock, DEFAULT_BITMAP);
+            call(SelectObject, &[dc, stock]);
+            for &k in &picks {
+                let b = [stock, mono, color][k as usize];
+                call(SelectObject, &[dc, b]);
+                prop_assert_eq!(call(GetDeviceCaps, &[dc, 12]), if k == 1 { 1 } else { 32 });
+                let cb = call(CreateCompatibleBitmap, &[dc, 4, 4]);
+                let bpp = with(|t| match t.m.get(&cb) { Some(G::Bitmap(x)) => x.bpp, _ => 0 });
+                prop_assert_eq!(bpp, if k == 2 { 32 } else { 1 });
+                call(DeleteObject, &[cb]);
+            }
+            call(SelectObject, &[dc, stock]);
+            call(DeleteDC, &[dc]);
+            call(DeleteObject, &[mono]);
+            call(DeleteObject, &[color]);
         }
     }
 }
