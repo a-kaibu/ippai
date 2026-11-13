@@ -96,7 +96,11 @@ if [ ! -d x ]; then
     # carries a zip of its own data (NW.js): the zip has to hold an .exe
     elif unzip -Z1 "$s" 2>/dev/null | grep -qi '\.exe$' &&
         python3 -I "$HERE/unzip-cp932.py" "$s" "$s.zip" >/dev/null 2>&1 && [ -n "$(ls "$s.zip")" ]; then rm -f "$s"
-    else rm -rf "$s.is" "$s.inno" "$s.zip"
+    # a WinRAR (or other) self-extractor of the game inside the archive (koikata_ichika_trial.zip:
+    # its WinRAR SFX ran in sake and wrote 375 MB into the page until the browser died)
+    elif LC_ALL=C.UTF-8 lsar -e cp932 "$s" 2>/dev/null | sed -n '1{/: Embedded /!q1};2,$p' | grep -qi '\.exe$' &&
+        LC_ALL=C.UTF-8 unar -q -e cp932 -o "$s.sfx" "$s" >/dev/null 2>&1 && [ -n "$(ls "$s.sfx")" ]; then rm -f "$s"
+    else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx"
     fi
   done
   [ "$(find x.part -type f -iname '*.exe' | sort | md5sum)" = "$before" ] && break
@@ -127,7 +131,7 @@ else
   # game Inno Setup installs, not a setup program)
   e=$(find . -iname '*.exe' -printf '%s\t%P\n' |
       while IFS=$'\t' read -r n p; do
-        k=$(sed -E 's#[^/]*\.(exe|msi|zip|lzh|rar|7z)\.(is|inno|zip|x)/##Ig' <<< "$p")
+        k=$(sed -E 's#[^/]*\.(exe|msi|zip|lzh|rar|7z)\.(is|inno|zip|sfx|x)/##Ig' <<< "$p")
         grep -qaiE 'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' <<< "$k" || printf '%s\t%s\n' "$n" "$p"
       done | sort -rn | head -1 | cut -f2)
   # (nothing but installers and tools: the biggest of them, an installer sake runs itself)

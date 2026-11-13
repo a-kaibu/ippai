@@ -12,6 +12,8 @@
 - installers inside installers (kagura_r_trial010a.exe: a self-extracting zip of an installer):
   unpacked round after round.
 - the split Shift-JIS name through corpus-prep.sh end to end.
+- a WinRAR self-extractor inside the archive unpacked (koikata_ichika_trial.zip), a program with
+  only data in its embedded archive left alone.
 - an installer no extractor knows (Gentee CreateInstall) kept and run as it is, and an archive
   with only setup programs in it giving the biggest of them rather than "no exe".
 
@@ -175,6 +177,19 @@ def lzh(path, entries):
     open(path, 'wb').write(out + b'\0')
 
 
+def rar4(files):
+    """A RAR 4 archive of stored files (names in Shift-JIS, "\\" separators)."""
+    import struct, zlib
+    def hdr(t, flags, body):
+        h = struct.pack('<BHH', t, flags, 7 + len(body)) + body
+        return struct.pack('<H', zlib.crc32(h) & 0xffff) + h
+    out = b'Rar!\x1a\x07\x00' + hdr(0x73, 0, b'\0' * 6)
+    for n, data in files:
+        n = n.encode('cp932')
+        out += hdr(0x74, 0x8000, struct.pack('<IIBIIBBHI', len(data), len(data), 2, zlib.crc32(data), 0x5a6d0000, 29, 0x30, len(n), 0x20) + n) + data
+    return out + b'\xc4\x3d\x7b\x00\x40\x07\x00'
+
+
 def prep(t, gid, archive, ext):
     trials = os.path.join(t, 'trials')
     os.makedirs(os.path.join(trials, gid), exist_ok=True)
@@ -205,6 +220,18 @@ def e2e(t):
     zipof(outer, {b'outer.exe': open(zo, 'rb').read()})
     rc, exe, x = prep(t, 'nested', outer, 'zip')
     ok &= check('nested self-extractors', (rc, exe), (0, 'outer.exe.zip/inner.exe.zip/game/game.exe'))
+    # a WinRAR self-extractor of the game inside the zip (koikata_ichika_trial.zip): unpacked, not
+    # run in the page (its 375 MB filled the browser's memory). A hand-made RAR 4 archive (stored
+    # files, Shift-JIS names) behind an MZ stub stands in for WinRAR's SFX module.
+    sfx = MZ * 8 + rar4([('恋する気持ち\\AdvHD.exe', MZ * 3), ('恋する気持ち\\Rio.arc', b'data')])
+    z = os.path.join(t, 'rarsfx.zip')
+    zipof(z, {b'trial.exe': sfx, b'readme.txt': b'r'})
+    rc, exe, x = prep(t, 'rarsfx', z, 'zip')
+    ok &= check('WinRAR SFX in a zip', (rc, exe), (0, 'dl/trial.exe.sfx/恋する気持ち/AdvHD.exe'))
+    # a program carrying an archive of data only (NW.js-like): left alone
+    z = os.path.join(t, 'dataonly.zip')
+    zipof(z, {b'game.exe': MZ * 8 + rar4([('data\\a.png', b'png')])})
+    ok &= check('embedded data archive left alone', prep(t, 'dataonly', z, 'zip')[:2], (0, 'game.exe'))
     # an installer exe none of the extractors knows (michishio_trial_taming2_install.exe, Gentee
     # CreateInstall: "exit 10" from the last extractor tried): kept as it is, under its own name,
     # and chosen although its name says install (sake runs the installer)
