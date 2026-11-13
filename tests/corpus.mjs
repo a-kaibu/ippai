@@ -7,7 +7,8 @@
 //
 // STEPS (client-area pixels of the game window, run once the title shows):
 //   "click:x,y wait:3 key:Return wait:5" (move:x,y: the mouse only) ; default: nothing (story clicks start right away)
-// env: PRE=x,y / PRE_KEYS=0 (see below), STORY=60 (story seconds), TITLE_MAX=120 (give up on the title), STORY_AT=x,y (story clicks,
+// env: PRE=x,y / PRE_KEYS=0 (see below), STORY=60 (story seconds), TITLE_MAX=120 (give up on the title),
+// TITLE_AT=s (the title from then on even with few colours: 操心術外伝's dark menu on black), STORY_AT=x,y (story clicks,
 // default centre of the bottom fifth), CHROME_ARGS, PLAYWRIGHT
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
@@ -188,6 +189,7 @@ let last = null, firstFrame = null, lastPre = 0;
 // (games are 640x480 and up)
 const small = (f) => f.w < 600 || f.h < 400;
 const PRE = process.env.PRE?.split(",").map(Number);
+const TITLE_AT = Number(process.env.TITLE_AT ?? 0);
 while (now() < TITLE_MAX && !crashed) {
   await sleep(1);
   const f = await frame(false);
@@ -200,6 +202,8 @@ while (now() < TITLE_MAX && !crashed) {
   // (a small window with many colours is a launcher or a settings dialog: CatSystem2's
   // フルスクリーン/ウィンドウ bar, AdvHD's 390x453 dialog)
   if (f.colors > 300 && !small(f)) { res.title = now(); break; }
+  // (TITLE_AT=s: a title with few colours, a dark menu on black: the title from then on)
+  if (TITLE_AT && now() >= TITLE_AT && !small(f)) { res.title = now(); break; }
 }
 // the title is drawn: wait until it holds still (menus fade in), at most 25 s
 if (res.title !== null) {

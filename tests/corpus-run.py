@@ -4,8 +4,9 @@ title (download, extract, pack: tests/corpus-prep.sh) while the current one runs
 
   tests/corpus-run.py TITLES.tsv IDS_FILE OUT_DIR [--steps STEPS.tsv] [--keep]
 
-TITLES.tsv: id, url, exe_rel columns (header row); optional steps, story_at, pre, args columns.
-STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title), wins over the columns.
+TITLES.tsv: id, url, exe_rel columns (header row); optional steps, story_at, pre, title_at, args columns.
+STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title)<TAB>title_at (seconds:
+the title from then on however few colours it has, a dark menu on black), wins over the columns.
 IDS_FILE "-": every title of TITLES.tsv.
 OUT_DIR/<id>/ gets result.json + PNGs; titles whose result.json exists are skipped.
 env: IPPAI_DIST (a release directory: vnvm, web/; default the checkout's
@@ -19,10 +20,10 @@ ROOT = os.path.dirname(HERE)
 titles = {r['id']: r for r in csv.DictReader(open(sys.argv[1]), delimiter='\t')}
 ids = list(titles) if sys.argv[2] == '-' else [l.split()[0] for l in open(sys.argv[2]) if l.strip() and not l.startswith('#')]
 out = sys.argv[3]
-steps = {i: (r.get('steps') or 'key:Return wait:3', r.get('story_at') or '', r.get('pre') or '') for i, r in titles.items() if r.get('steps') or r.get('story_at') or r.get('pre')}
+steps = {i: (r.get('steps') or 'key:Return wait:3', r.get('story_at') or '', r.get('pre') or '', r.get('title_at') or '') for i, r in titles.items() if r.get('steps') or r.get('story_at') or r.get('pre') or r.get('title_at')}
 if '--steps' in sys.argv:
     for r in csv.reader(open(sys.argv[sys.argv.index('--steps') + 1]), delimiter='\t'):
-        if r and not r[0].startswith('#'): steps[r[0]] = (r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '', r[3] if len(r) > 3 else '')
+        if r and not r[0].startswith('#'): steps[r[0]] = tuple(r[k] if len(r) > k else '' for k in range(1, 5))
 keep = '--keep' in sys.argv
 TRIALS = os.environ.get('TRIALS', '/home/user/trials')
 STORES = os.environ.get('STORES', '/home/user/runs/stores')
@@ -122,10 +123,11 @@ while True:
         qs = 'autostart&headless&load&mount=/ippai/game=g&run=' + urllib.parse.quote(winexe)
         if args: qs += '&args=' + urllib.parse.quote(args)
         qs += os.environ.get('CORPUS_QS', '')  # (more page parameters, e.g. &env=NAME%3Dvalue)
-        st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))
+        st, at, pre, tat = steps.get(tid, ('key:Return wait:3', '', '', ''))
         e2 = dict(env)
         if at: e2['STORY_AT'] = at
         if pre: e2['PRE'] = pre  # launcher/settings dialog button before the title
+        if tat: e2['TITLE_AT'] = tat
         t0 = time.time()
         try:
             subprocess.run(['node', f'{HERE}/corpus.mjs', f'http://127.0.0.1:{PORT}/play.html?{qs}', od, st], env=e2,
