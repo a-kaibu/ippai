@@ -26,6 +26,7 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `msi` | msidb: an MSI database (compound file) with every field of every table and its streams read; SQL statements; condition expressions | no panic |
 | `jit_saved` | koji's saved translations index (from the server or a damaged file) | no panic; a whole index reads the same alone and in a bundle |
 | `mp3_frames` | sake's MP3 frame splitter (msacm32's MP3 codec) | the same frames however the stream is cut; each a whole frame its header describes |
+| `mpeg1` | crates/mpeg1: MPEG-1 system stream demuxer, video and layer II audio decoders (the DirectShow MPEG-1 splitter) | no panic; the same packets, pictures and samples however the stream is cut; pictures the size of their sequence header |
 | `audiofile` | sake::audiofile (WAVE, MP4/M4A, Ogg) | no panic |
 | `formats` | .lnk, event log records and .evt files, PE resource trees, type libraries, CryptStringToBinary / CryptBinaryToString | no panic; what decodes encodes back to the same (links, .evt, resource trees, base64 forms) |
 | `printf` (crates/crt) | crt::fmt::format, every mode (UCRT option bits, legacy msvcrt), narrow and wide | no panic, output within MAX_OUT, text without % unchanged |

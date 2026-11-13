@@ -2207,6 +2207,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpeg1"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "msidb"
 version = "0.1.0"
 dependencies = [

@@ -17,6 +17,7 @@ glwgsl = { path = "../crates/glwgsl" }
 dxwgsl = { path = "../crates/dxwgsl" }
 apitrace = { path = "../crates/apitrace" }
 msidb = { path = "../crates/msidb" }
+mpeg1 = { path = "../crates/mpeg1" }
 naga = { version = "30", features = ["wgsl-in"] }
 wasmparser = "0.263.0"
 wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "threads"] }
@@ -200,6 +201,13 @@ bench = false
 [[bin]]
 name = "rtf"
 path = "fuzz_targets/rtf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpeg1"
+path = "fuzz_targets/mpeg1.rs"
 test = false
 doc = false
 bench = false

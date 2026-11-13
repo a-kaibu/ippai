@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/apitrace", "crates/crt", "crates/dxwgsl", "crates/vorbis", "crates/hlslc", "crates/glwgsl", "crates/kura", "crates/ippai", "crates/koji", "crates/sake", "crates/msidb", "crates/tls-client", "crates/shaderconf", "crates/waits"]
+members = ["crates/apitrace", "crates/crt", "crates/dxwgsl", "crates/vorbis", "crates/hlslc", "crates/glwgsl", "crates/kura", "crates/ippai", "crates/koji", "crates/sake", "crates/msidb", "crates/tls-client", "crates/shaderconf", "crates/waits", "crates/mpeg1"]
 exclude = ["fuzz", "vendor/ring"]
 
 [workspace.package]

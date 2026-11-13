@@ -1355,6 +1355,7 @@ dependencies = [
  "glwgsl",
  "koji",
  "libfuzzer-sys",
+ "mpeg1",
  "msidb",
  "naga",
  "sake",
@@ -1590,6 +1591,10 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "mpeg1"
+version = "0.1.0"
 
 [[package]]
 name = "msidb"
