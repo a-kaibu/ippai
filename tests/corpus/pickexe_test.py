@@ -57,6 +57,15 @@ class Cases(unittest.TestCase):
             r + 'lib/windows-i686/pythonw.exe': 300,
         }), r + 'AAA.exe')
 
+    def test_bishop_startup(self):
+        # BISHOP 満淫電車2 trial: demo.exe (bigger) needs the bsxx.ini that startup.exe writes
+        r = 'MD2Trial_forWeb03/'
+        self.assertEqual(self.pick({
+            r + 'demo.exe': 998400, r + 'startup.exe': 283136, r + 'bsxx.dat': 16830, r + 'bsxx.cfg': 14304,
+        }), r + 'startup.exe')
+        # (a startup.exe of another engine, without bsxx.dat, is not chosen for that)
+        self.assertEqual(self.pick({r + 'game.exe': 900, r + 'startup.exe': 200}), r + 'game.exe')
+
     def test_engine_over_its_launcher(self):
         # ensemble's お嬢様は素直になれない trial: launcher.exe (bigger) greys out its start
         # button until setup.exe has installed the game; AdvHD.exe is the game

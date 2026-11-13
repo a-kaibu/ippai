@@ -9,6 +9,8 @@ In order:
      DEMO.EXE has not written yet, "初期化ファイルが破壊されています"; #172).
   1. Unity: X.exe beside its X_Data folder (the biggest such). Its own helpers (ffmpeg.exe in
      StreamingAssets, 80 MB in SuccubusTemptationW's trial, bigger than the game) never count.
+  1b. BISHOP (BSXX): startup.exe beside bsxx.dat. It writes bsxx.ini, without which the game
+     exe (demo.exe, bigger) stops with 「起動設定ファイルの読み込みに失敗しました」.
   2. Ren'Py: X.exe beside X.py and renpy/ (lib/windows-i686/zsync.exe, python.exe are tools).
   3. The biggest .exe that is not a tool (installers, configuration, redistributables, ffmpeg,
      ...; a launcher, whose start button may want an install first: ensemble's launcher.exe
@@ -52,6 +54,8 @@ def pick(root):
     if triangle: return biggest(triangle)
     unity = [c for c in all_ if not HELPER_DIR.search(c[1]) and os.path.isdir(os.path.join(root, os.path.dirname(c[1]), stem(c[1]) + '_Data'))]
     if unity: return biggest(unity)
+    bishop = [c for c in all_ if os.path.basename(c[1]).lower() == 'startup.exe' and beside(c[1], 'bsxx.dat')]
+    if bishop: return biggest(bishop)
     renpy = [c for c in all_ if not HELPER_DIR.search(c[1]) and beside(c[1], stem(c[1]) + '.py') and beside(c[1], 'renpy')]
     if renpy: return biggest(renpy)
     own = [c for c in all_ if not HELPER_DIR.search(c[1])]
