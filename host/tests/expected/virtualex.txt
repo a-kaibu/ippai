@@ -1,0 +1,32 @@
+current process
+  reserve 1
+  reserved: query 1 state 2000 protect 0 size 3000
+  commit at 1
+  committed: query 1 state 1000 protect 4 size 1000
+  protect 1 old 4
+  protected: query 1 state 1000 protect 20 size 1000
+  protect back 1 old 20 byte 1
+  decommit 1
+  decommitted: query 1 state 2000 protect 0 size 2000
+  release inside 0 error 87
+  release 1
+  released: query 1 state 10000 protect 1
+  reserve+commit 1 byte 7
+open 1
+opened handle
+  reserve 1
+  reserved: query 1 state 2000 protect 0 size 3000
+  commit at 1
+  committed: query 1 state 1000 protect 4 size 1000
+  protect 1 old 4
+  protected: query 1 state 1000 protect 20 size 1000
+  protect back 1 old 20 byte 1
+  decommit 1
+  decommitted: query 1 state 2000 protect 0 size 2000
+  release inside 0 error 87
+  release 1
+  released: query 1 state 10000 protect 1
+  reserve+commit 1 byte 7
+null handle alloc 0 error 6
+null handle protect 0 error 6
+null handle free 0 error 6

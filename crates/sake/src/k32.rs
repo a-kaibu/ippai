@@ -1961,7 +1961,45 @@ fn DecodePointer(c: &mut Ctx) -> u32 {
 // memory
 
 fn VirtualAlloc(c: &mut Ctx) -> u32 {
-    let (addr, size, ty, prot) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    virtual_alloc(c.a(0), c.a(1), c.a(2), c.a(3))
+}
+/// VirtualAllocEx, VirtualFreeEx, VirtualProtectEx: this process's memory as the plain calls
+/// do it (another process's is not reachable here: ERROR_ACCESS_DENIED). ChakraCore (the
+/// WendyBell engine's JavaScript) protects its JIT pages with VirtualProtectEx on itself.
+fn VirtualAllocEx(c: &mut Ctx) -> u32 {
+    if !own_process(c.a(0)) {
+        return 0;
+    }
+    virtual_alloc(c.a(1), c.a(2), c.a(3), c.a(4))
+}
+fn VirtualFreeEx(c: &mut Ctx) -> u32 {
+    if !own_process(c.a(0)) {
+        return 0;
+    }
+    virtual_free(c.a(1), c.a(2), c.a(3))
+}
+fn VirtualProtectEx(c: &mut Ctx) -> u32 {
+    if !own_process(c.a(0)) {
+        return 0;
+    }
+    virtual_protect(c.a(1), c.a(2), c.a(3), c.a(4))
+}
+/// Whether `h` is a handle to this process; else the error Windows gives: ERROR_INVALID_HANDLE
+/// for no process handle, ERROR_ACCESS_DENIED for another process (its memory is not reachable)
+fn own_process(h: u32) -> bool {
+    match crate::process::of_handle(h) {
+        Some((pid, _)) if crate::process::is_self(pid) => true,
+        Some(_) => {
+            last_error(5);
+            false
+        }
+        None => {
+            last_error(6);
+            false
+        }
+    }
+}
+fn virtual_alloc(addr: u32, size: u32, ty: u32, prot: u32) -> u32 {
     let reserve = ty & 0x2000 != 0;
     let commit = ty & 0x1000 != 0;
     if addr != 0 && !reserve {
@@ -1998,7 +2036,9 @@ fn VirtualAlloc(c: &mut Ctx) -> u32 {
     b
 }
 fn VirtualFree(c: &mut Ctx) -> u32 {
-    let (addr, size, ty) = (c.a(0), c.a(1), c.a(2));
+    virtual_free(c.a(0), c.a(1), c.a(2))
+}
+fn virtual_free(addr: u32, size: u32, ty: u32) -> u32 {
     if ty & 0x8000 != 0 {
         // an address in no allocation is ERROR_INVALID_ADDRESS, one inside but not its base (or
         // a size with MEM_RELEASE) ERROR_INVALID_PARAMETER
@@ -2025,8 +2065,7 @@ fn VirtualFree(c: &mut Ctx) -> u32 {
 /// VirtualQueryEx: this process's memory as VirtualQuery tells it (another process's is
 /// not readable here: ERROR_ACCESS_DENIED).
 fn VirtualQueryEx(c: &mut Ctx) -> u32 {
-    if self_process(c.a(0)).is_none() {
-        last_error(5);
+    if !own_process(c.a(0)) {
         return 0;
     }
     virtual_query(c.a(1), c.a(2), c.a(3))
@@ -2078,9 +2117,12 @@ fn virtual_query(a: u32, mbi: u32, len: u32) -> u32 {
     size
 }
 fn VirtualProtect(c: &mut Ctx) -> u32 {
-    match mem::protect(c.a(0), c.a(1), c.a(2)) {
+    virtual_protect(c.a(0), c.a(1), c.a(2), c.a(3))
+}
+fn virtual_protect(addr: u32, size: u32, prot: u32, old_out: u32) -> u32 {
+    match mem::protect(addr, size, prot) {
         Some(old) => {
-            put32(c.a(3), old);
+            put32(old_out, old);
             1
         }
         None => {
@@ -7467,7 +7509,7 @@ pub fn init() {
         IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
         GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW, EnumSystemLocalesEx,
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
-        IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, EnumCalendarInfoW, CompareStringOrdinal, VirtualQueryEx, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,
+        IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, EnumCalendarInfoW, CompareStringOrdinal, VirtualQueryEx, VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,
         IsDBCSLeadByteEx, MultiByteToWideChar, WideCharToMultiByte, GetStringTypeA, GetStringTypeExA, GetStringTypeW,
         GetStringTypeExW, LCMapStringA, LCMapStringW, CompareStringA, CompareStringW, GetDateFormatA, GetTimeFormatA, GetDateFormatW, GetTimeFormatW,
         MulDiv, lstrlenA, lstrlenW, lstrcpyA, lstrcpyW, lstrcpynA, lstrcpynW, lstrcatA, lstrcatW, lstrcmpA, lstrcmpiA,
@@ -8201,6 +8243,94 @@ mod find_system_dlls {
                 prop_assert_eq!(fname, format!("{name}.dll"));
                 call(FindClose, &[h]);
             }
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod virtual_ex {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use proptest::prelude::*;
+
+    const PROTS: [u32; 5] = [0x01, 0x02, 0x04, 0x20, 0x40];
+
+    /// MEMORY_BASIC_INFORMATION's state and protection of the page at `a`
+    fn state(a: u32, buf: u32) -> (u32, u32, u32) {
+        assert_eq!(call(VirtualQuery, &[a, buf, 28]), 28);
+        (r32(buf + 12), r32(buf + 16), r32(buf + 20))
+    }
+
+    proptest! {
+        /// The Ex forms on this process (its pseudo-handle and an opened handle) do what the
+        /// plain calls do, step by step: the same results, errors and page states.
+        #[test]
+        fn ex_on_self_is_the_plain_call(pages in 1u32..6, steps in prop::collection::vec((0u8..4, 0u32..6, 1u32..4, 0usize..5), 1..10), opened in any::<bool>()) {
+            let _g = enter();
+            guest_thread();
+            let h = if opened { call(OpenProcess, &[PROCESS_ALL_ACCESS, 0, crate::pid()]) } else { u32::MAX };
+            let buf = mem::heap_alloc(64, true);
+            let size = pages * mem::PAGE;
+            let a = call(VirtualAlloc, &[0, size, 0x2000, 1]);
+            let b = call(VirtualAllocEx, &[h, 0, size, 0x2000, 1]);
+            prop_assert!(a != 0 && b != 0);
+            for &(op, at, n, p) in &steps {
+                let (off, len) = ((at % pages) * mem::PAGE, n * mem::PAGE);
+                let (ra, ea, rb, eb);
+                match op {
+                    0 => {
+                        last_error(0); ra = call(VirtualAlloc, &[a + off, len, 0x1000, PROTS[p]]); ea = get_last_error();
+                        last_error(0); rb = call(VirtualAllocEx, &[h, b + off, len, 0x1000, PROTS[p]]); eb = get_last_error();
+                        prop_assert_eq!(ra.wrapping_sub(a), rb.wrapping_sub(b));
+                    }
+                    1 => {
+                        w32(buf + 40, 0xdead); w32(buf + 44, 0xdead);
+                        last_error(0); ra = call(VirtualProtect, &[a + off, len, PROTS[p], buf + 40]); ea = get_last_error();
+                        last_error(0); rb = call(VirtualProtectEx, &[h, b + off, len, PROTS[p], buf + 44]); eb = get_last_error();
+                        prop_assert_eq!(ra, rb);
+                        prop_assert_eq!(r32(buf + 40), r32(buf + 44));
+                    }
+                    2 => {
+                        last_error(0); ra = call(VirtualFree, &[a + off, len, 0x4000]); ea = get_last_error();
+                        last_error(0); rb = call(VirtualFreeEx, &[h, b + off, len, 0x4000]); eb = get_last_error();
+                        prop_assert_eq!(ra, rb);
+                    }
+                    _ => {
+                        // releasing from inside is ERROR_INVALID_PARAMETER on both
+                        if off == 0 { continue; }
+                        last_error(0); ra = call(VirtualFree, &[a + off, 0, 0x8000]); ea = get_last_error();
+                        last_error(0); rb = call(VirtualFreeEx, &[h, b + off, 0, 0x8000]); eb = get_last_error();
+                        prop_assert_eq!(ra, rb);
+                    }
+                }
+                prop_assert_eq!(ea, eb);
+                for i in 0..pages {
+                    prop_assert_eq!(state(a + i * mem::PAGE, buf), state(b + i * mem::PAGE, buf), "page {}", i);
+                }
+            }
+            prop_assert_eq!(call(VirtualFree, &[a, 0, 0x8000]), 1);
+            prop_assert_eq!(call(VirtualFreeEx, &[h, b, 0, 0x8000]), 1);
+            if opened { obj::close(h); }
+            mem::heap_free(buf);
+        }
+
+        /// A handle that is no process fails every Ex form with ERROR_INVALID_HANDLE and
+        /// changes nothing.
+        #[test]
+        fn ex_on_no_process_fails(h in prop::sample::select(vec![0u32, 4, 0x1234, 0xfffffffe]), p in 0usize..5) {
+            let _g = enter();
+            guest_thread();
+            let buf = mem::heap_alloc(64, true);
+            let a = call(VirtualAlloc, &[0, mem::PAGE, 0x3000, 4]);
+            let before = state(a, buf);
+            for (f, args) in [(VirtualAllocEx as crate::api::Handler, vec![h, 0, mem::PAGE, 0x3000, 4]), (VirtualProtectEx, vec![h, a, mem::PAGE, PROTS[p], buf + 40]), (VirtualFreeEx, vec![h, a, 0, 0x8000])] {
+                last_error(0);
+                prop_assert_eq!(call(f, &args), 0);
+                prop_assert_eq!(get_last_error(), 6);
+            }
+            prop_assert_eq!(state(a, buf), before);
+            call(VirtualFree, &[a, 0, 0x8000]);
+            mem::heap_free(buf);
         }
     }
 }
