@@ -1,0 +1,21 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0702235698699951,
+ "leftTitle": true,
+ "manifests": [
+  "オヤジ狩り少女(体験版).exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 2,
+ "title": 3.156792640686035,
+ "titleStill": 29.199889183044434
+}
