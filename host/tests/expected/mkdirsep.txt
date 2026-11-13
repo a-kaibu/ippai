@@ -1,0 +1,21 @@
+CreateDirectory MkSep: 1
+CreateDirectory MkSep\Docs: 1
+CreateDirectory mksep\docs\Game\: 1
+MkSep\Docs\Game: folder
+CreateDirectory MKSEP\DOCS\game: 0, error 183
+CreateDirectory mksep\docs\GAME\\: 0, error 183
+CreateDirectory mksep/docs/game/: 0, error 183
+spellings of game: 1, of docs: 1
+CreateDirectory mksep\nothere\x\: 0, error 3
+MkSep\nothere: missing
+full ...\mksep\docs\orc\: 1
+full ...\orc\title\: 1
+save file in it: made
+MkSep\Docs\orc\title\datasc.ksd: file
+spellings of docs: 1
+CreateDirectory MKSEP\DOCS\ORC\TITLE\DATASC.KSD: 0, error 183
+SHCreateDirectoryEx ...\MKSEP\DOCS\sh\a\b\: 0
+SHCreateDirectoryEx again: 183
+MkSep\Docs\sh\a\b: folder
+spellings of mksep: 1, of docs: 1
+removed: 1

@@ -792,6 +792,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A temporary root seen through the Z: drive (the host's /), and `w` mapping a Windows
+    /// path under it.
+    fn z_root(tag: &str) -> (std::path::PathBuf, impl Fn(&str) -> String) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!("sake-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let r = root.to_string_lossy().replace('/', "\\");
+        (root, move |p: &str| format!("Z:{r}\\{p}"))
+    }
+
+    // CreateDirectory("...\\documents\\orcsoft\\") under a host "Documents": the trailing
+    // separator names the folder itself, and the parent is found whatever its case (the
+    // ORCSOFT KiriKiri Z trial's save folder; its TVPCreateFolders passes each parent so)
+    #[test]
+    fn create_directory_takes_trailing_separators_and_any_case() {
+        let (root, w) = z_root("mkdir-sep");
+        std::fs::create_dir_all(root.join("users").join("Documents")).unwrap();
+        assert_eq!(crate::k32::make_dir(&w("users\\documents\\ORCSOFT\\")), Ok(()));
+        assert!(root.join("users/Documents/ORCSOFT").is_dir());
+        assert!(!root.join("users/documents").exists());
+        // there now: ERROR_ALREADY_EXISTS, with or without the separator
+        assert_eq!(crate::k32::make_dir(&w("users\\DOCUMENTS\\orcsoft")), Err(183));
+        assert_eq!(crate::k32::make_dir(&w("users\\documents\\orcsoft\\\\")), Err(183));
+        // a missing parent: ERROR_PATH_NOT_FOUND, and nothing made
+        assert_eq!(crate::k32::make_dir(&w("users\\nothere\\x\\")), Err(3));
+        assert!(!root.join("users/nothere").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     proptest::proptest! {
         /// Any case of the parent's ASCII letters and any number of trailing backslashes: the
         /// same host path, under the parent as the host spells it.
@@ -805,4 +836,40 @@ mod tests {
             proptest::prop_assert_eq!(resolve_new(&w), format!("{r}/SaveData/Sub/{name}"));
         }
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+        // for any existing parents, any case of them in the request and any trailing
+        // separators: the folder is made inside the existing parents (no second spelling of a
+        // parent appears), once (then 183)
+        #[test]
+        fn mkdir_lands_in_the_existing_spelling(
+            parents in proptest::collection::vec("[A-Za-z][A-Za-z0-9]{0,6}", 1..4),
+            flips in proptest::collection::vec(proptest::bool::ANY, 32),
+            leaf in "[A-Za-z0-9]{1,8}",
+            seps in "[\\\\/]{0,3}",
+        ) {
+            let (root, w) = z_root("mkdir-pbt");
+            let host_parent = parents.iter().fold(root.clone(), |p, n| p.join(n));
+            std::fs::create_dir_all(&host_parent).unwrap();
+            let mut k = 0;
+            let asked: Vec<String> = parents.iter().map(|n| n.chars().map(|ch| {
+                k += 1;
+                if flips[k % flips.len()] { ch.to_ascii_uppercase() } else { ch.to_ascii_lowercase() }
+            }).collect()).collect();
+            let path = w(&format!("{}\\{leaf}{seps}", asked.join("\\")));
+            proptest::prop_assert_eq!(crate::k32::make_dir(&path), Ok(()), "{}", path);
+            proptest::prop_assert!(host_parent.join(&leaf).is_dir());
+            // no other spelling of any parent level
+            let mut at = root.clone();
+            for n in &parents {
+                let names: Vec<String> = std::fs::read_dir(&at).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+                proptest::prop_assert_eq!(names.iter().filter(|x| x.eq_ignore_ascii_case(n)).count(), 1, "{:?} in {:?}", n, names);
+                at = at.join(n);
+            }
+            proptest::prop_assert_eq!(crate::k32::make_dir(&path), Err(183));
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
 }

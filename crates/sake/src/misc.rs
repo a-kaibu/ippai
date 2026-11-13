@@ -2484,8 +2484,9 @@ fn sh_mkdir(path: &str) -> u32 {
     if crate::files::resolve(path).is_some() {
         return 183;
     }
-    let h = crate::files::resolve_new(path);
-    if kura::fs::create_dir_all(&h).is_ok() { 0 } else { 3 }
+    // (each missing parent made in the spelling of the existing ones, trailing separators or not)
+    let h = crate::files::make_dirs(path);
+    if crate::files::is_dir(&h) { 0 } else { 3 }
 }
 fn SHCreateDirectoryExA(c: &mut Ctx) -> u32 {
     sh_mkdir(&arg_str(c.a(1), false))

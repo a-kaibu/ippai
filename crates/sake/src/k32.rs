@@ -6185,22 +6185,32 @@ fn bad_dir_name(name: &str) -> Option<u32> {
     last.contains(['?', '*', '<', '>', '|', '"']).then_some(123)
 }
 pub fn mkdir(name: &str) -> u32 {
+    match make_dir(name) {
+        Ok(()) => 1,
+        Err(e) => {
+            last_error(e);
+            0
+        }
+    }
+}
+/// CreateDirectory's work: Err(the last error).
+pub(crate) fn make_dir(name: &str) -> Result<(), u32> {
     if let Some(e) = bad_dir_name(name) {
-        last_error(e);
-        return 0;
+        return Err(e);
+    }
+    // (there in another case: the host's names are case-sensitive, Windows' are not, so
+    // "orcsoft" beside "ORCSOFT" is ERROR_ALREADY_EXISTS, not a second folder; a file of that
+    // name too, as Windows)
+    let t = name.trim_end_matches(['\\', '/']);
+    if !t.is_empty() && !t.ends_with(':') && files::resolve(t).is_some() {
+        return Err(183);
     }
     let h = files::resolve_new(name);
     let r = kura::fs::create_dir(&h);
     if crate::env_on!("SAKE_TRACE_FILES") {
         eprintln!("sake: CreateDirectory({name}) -> {h}: {r:?}");
     }
-    match r {
-        Ok(()) => 1,
-        Err(e) => {
-            last_error(if e.kind() == std::io::ErrorKind::AlreadyExists { 183 } else { 3 });
-            0
-        }
-    }
+    r.map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { 183 } else { 3 })
 }
 fn CreateDirectoryA(c: &mut Ctx) -> u32 {
     mkdir(&arg_str(c.a(0), false))
