@@ -793,7 +793,11 @@ async fn headers(mut req: Request<axum::body::Body>, next: Next) -> Response {
             h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("zstd"));
         }
         h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
+        // (only the whole answer is kept: a range is of other bytes than the zstd body the
+        // browser kept for the same URL, and a cache that mixes the two hands out bytes that
+        // never decode; host/fetch-bridge.js asks for ranges past the cache too)
+        let keep = if status == StatusCode::OK { "public, max-age=31536000, immutable" } else { "no-store" };
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static(keep));
     } else if log && ok {
         h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
@@ -1208,6 +1212,41 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
 
 #[cfg(test)]
 mod tests {
+    /// A chunk's whole answer is kept for good and zstd-coded; a range of it (its decoded
+    /// bytes, store_api.rs) is never kept, nor coded (tests/range-cache-browser.mjs: Chromium
+    /// answered ranges from the kept whole one, in bytes that never decode).
+    #[tokio::test]
+    async fn chunk_ranges_are_never_kept_by_the_browser() {
+        use axum::http::{header, Request, StatusCode};
+        use tower::ServiceExt;
+        let app = axum::Router::new()
+            .route(
+                "/store/chunks/ab/x",
+                axum::routing::get(|h: axum::http::HeaderMap| async move {
+                    if h.contains_key(header::RANGE) { (StatusCode::PARTIAL_CONTENT, "b") } else { (StatusCode::OK, "abc") }
+                }),
+            )
+            .route("/store/trees/t.tsv", axum::routing::get(|| async { "t" }))
+            .layer(axum::middleware::from_fn(super::headers));
+        let get = |uri: &str, range: bool| {
+            let mut r = Request::get(uri);
+            if range {
+                r = r.header(header::RANGE, "bytes=1-1");
+            }
+            app.clone().oneshot(r.body(axum::body::Body::empty()).unwrap())
+        };
+        let whole = get("/store/chunks/ab/x", false).await.unwrap();
+        assert_eq!(whole.status(), StatusCode::OK);
+        assert_eq!(whole.headers()[header::CACHE_CONTROL], "public, max-age=31536000, immutable");
+        assert_eq!(whole.headers()[header::CONTENT_ENCODING], "zstd");
+        let part = get("/store/chunks/ab/x", true).await.unwrap();
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(part.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(part.headers().get(header::CONTENT_ENCODING).is_none());
+        let tree = get("/store/trees/t.tsv", false).await.unwrap();
+        assert_eq!(tree.headers()[header::CACHE_CONTROL], "no-cache");
+    }
+
     /// What a stuck server prints: each thread's backtrace, a thread blocked on a lock among
     /// them with the function it waits in (run in a child process: its stderr is looked at).
     #[cfg(target_os = "linux")]
