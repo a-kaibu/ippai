@@ -194,7 +194,7 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
                 let jit = jit.unwrap_or_else(|| cache.join("jit"));
                 let games = if games.is_empty() { pack::game_ids(store)? } else { games };
                 for id in games {
-                    let list = std::fs::read(jit.join(format!("game.{id}.chunks"))).unwrap_or_default();
+                    let list = pack::read_order_list(store, &jit, &id);
                     let order = pack::read_order(store, &id, &list)?;
                     let p = storage.pack_objects(&order, mib << 20).await?;
                     println!("{id}: {} packs, {} objects, {} MiB ({} chunks in read order first; {} in a pack already)", p.packs, p.objects, p.bytes >> 20, list.len() / 16, p.skipped);

@@ -207,6 +207,36 @@ fn tree_chunks(store: &Path, name: &str) -> Result<std::collections::HashSet<Str
         .collect())
 }
 
+/// The read-order list earlier runs of game `id` left in ippai serve's `jit` folder, as the page
+/// finds it (web/src/play.ts chunksList): the game's own (`game.<id>.chunks`), else its
+/// program's (`sake-<program>-<build>.chunks`, the newest build's; what serve's pre-run saves),
+/// else none. 16 bytes a chunk.
+pub fn read_order_list(store: &Path, jit: &Path, id: &str) -> Vec<u8> {
+    if let Ok(l) = fs::read(jit.join(format!("game.{id}.chunks"))) {
+        if l.len() >= 16 {
+            return l;
+        }
+    }
+    let Ok(g) = read_game(store, id) else { return Vec::new() };
+    // (named as the page names its program: play.ts jitName, serve.rs prerun_games)
+    let prog: String = g.run.chars().map(|c| if c.is_ascii_alphanumeric() || "_.-".contains(c) { c } else { '_' }).collect();
+    let prefix = format!("sake-{prog}-");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for e in fs::read_dir(jit).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // (the build is the last part: no '-' after the prefix)
+        let Some(build) = name.strip_prefix(&prefix).and_then(|r| r.strip_suffix(".chunks")) else { continue };
+        if build.contains('-') {
+            continue;
+        }
+        let t = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        if best.as_ref().is_none_or(|b| t > b.0) {
+            best = Some((t, e.path()));
+        }
+    }
+    best.and_then(|(_, p)| fs::read(p).ok()).unwrap_or_default()
+}
+
 /// The store's games, by id.
 pub fn game_ids(store: &Path) -> Result<Vec<String>> {
     let mut v: Vec<String> = fs::read_dir(store.join("games"))?
@@ -991,6 +1021,32 @@ mod tests {
     /// Games packed before the rename (Z:\vnvm\game\..., /vnvm/game=...) and their saved
     /// regions move to Z:\ippai\...; the rest of an entry stays as it was, a game already moved
     /// and other files are left, and a second run changes nothing.
+    /// The list a game's packs follow: its own, else its program's newest build's, else none;
+    /// another program whose name starts the same is not its.
+    #[test]
+    fn read_order_list_own_then_program() {
+        let t = std::env::temp_dir().join(format!("ippai-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let jit = t.join("jit");
+        fs::create_dir_all(t.join("games")).unwrap();
+        fs::create_dir_all(&jit).unwrap();
+        fs::write(t.join("games/g.json"), r#"{"id":"g","title":"g","run":"Z:\\ippai\\game\\a.exe","args":[],"mounts":[],"env":[]}"#).unwrap();
+        assert!(read_order_list(&t, &jit, "g").is_empty());
+        let prog = "sake-Z__ippai_game_a.exe";
+        fs::write(jit.join(format!("{prog}-old.chunks")), [1u8; 16]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(jit.join(format!("{prog}-new.chunks")), [2u8; 32]).unwrap();
+        // (a program named a.exe-x: not this one)
+        fs::write(jit.join(format!("{prog}-x-b1.chunks")), [9u8; 16]).unwrap();
+        assert_eq!(read_order_list(&t, &jit, "g"), vec![2u8; 32]);
+        fs::write(jit.join("game.g.chunks"), [3u8; 16]).unwrap();
+        assert_eq!(read_order_list(&t, &jit, "g"), vec![3u8; 16]);
+        // (an empty one of its own: the program's)
+        fs::write(jit.join("game.g.chunks"), []).unwrap();
+        assert_eq!(read_order_list(&t, &jit, "g"), vec![2u8; 32]);
+        let _ = fs::remove_dir_all(&t);
+    }
+
     /// A game's chunks for delivery packs: those the read-order list names first (only its own
     /// trees': not the prefix's, not another game's), then the rest in tree order, each once.
     /// Random lists and trees: the result is a permutation of the trees' chunks whose head is

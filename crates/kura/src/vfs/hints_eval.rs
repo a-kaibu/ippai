@@ -143,8 +143,25 @@ fn hints_eval() {
     games.sort_by_key(|e| e.file_name());
     for e in games {
         let Some(id) = e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(String::from) else { continue };
-        let Ok(list) = std::fs::read(format!("{jit}/game.{id}.chunks")) else { continue };
         let json = std::fs::read_to_string(e.path()).unwrap_or_default();
+        // (its own list, else its program's newest: ippai pack.rs read_order_list)
+        let list = std::fs::read(format!("{jit}/game.{id}.chunks")).ok().filter(|l| l.len() >= 16).or_else(|| {
+            let run = field(&json, "run")?.replace("\\\\", "\\");
+            let prog: String = run.chars().map(|c| if c.is_ascii_alphanumeric() || "_.-".contains(c) { c } else { '_' }).collect();
+            let prefix = format!("sake-{prog}-");
+            let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+            for e in std::fs::read_dir(&jit).ok()?.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if n.strip_prefix(&prefix).and_then(|r| r.strip_suffix(".chunks")).is_some_and(|b| !b.contains('-')) {
+                    let t = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                    if best.as_ref().is_none_or(|b| t > b.0) {
+                        best = Some((t, e.path()));
+                    }
+                }
+            }
+            std::fs::read(best?.1).ok()
+        });
+        let Some(list) = list else { continue };
         let engine = field(&json, "engine").unwrap_or("?").to_string();
         let mut files = Vec::new();
         for t in mounts(&json) {
