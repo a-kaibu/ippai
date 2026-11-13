@@ -33441,3 +33441,12 @@ icu ubrk_isBoundary cdecl 8 -
 icu utext_openUChars cdecl 20 -
 icu utext_close cdecl 4 -
 netapi32 Netbios stdcall 4 -
+msvcp90 ??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QAE@XZ thiscall 4 -
+msvcp90 ??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QAE@PBD@Z thiscall 8 -
+msvcp90 ??0?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QAE@ABV01@@Z thiscall 8 -
+msvcp90 ??1?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QAE@XZ thiscall 4 -
+msvcp90 ??4?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QAEAAV01@ABV01@@Z thiscall 8 -
+msvcp90 ?c_str@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QBEPBDXZ thiscall 4 -
+msvcp90 ?size@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QBEIXZ thiscall 4 -
+msvcp90 ?find@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QBEIPBDI@Z thiscall 12 -
+msvcp90 ?substr@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QBE?AV12@II@Z thiscall 16 -

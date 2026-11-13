@@ -101,6 +101,7 @@ pub mod mf;
 pub mod usp;
 pub mod ole;
 pub mod picture;
+pub mod msvcp90;
 pub mod wic;
 pub mod wicmeta;
 pub mod wmi;
@@ -705,6 +706,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     undname::init();
     crt::init();
     msvcp::init();
+    msvcp90::init_dll();
     vcomp::init();
     nt::init();
     ini::init();
