@@ -125,6 +125,10 @@ pub struct PsKey {
     pub flat: bool,
     /// stages with BORDER / MIRRORONCE addressing (crate::addr)
     pub addr: Vec<crate::addr::Addr>,
+    /// the locations a programmable vertex shader writes (None: the fixed-function one, all):
+    /// inputs it leaves out read as a shader's would (diffuse 1, the rest 0), since WebGPU
+    /// rejects a fragment input with no vertex output (F&C's C4 trial: vs_1_1, no pixel shader)
+    pub vs_writes: Option<u32>,
 }
 
 const TOP_DISABLE: u32 = 1;
@@ -189,12 +193,19 @@ pub fn pixel(k: &PsKey) -> String {
     let addr: Vec<_> = k.addr.iter().filter(|a| k.tex.get(a.sampler as usize) == Some(&2) && (a.sampler as usize) < k.stages.len()).copied().collect();
     h.push_str(&crate::addr::helpers(&addr));
     let f = if k.flat { "@interpolate(flat) " } else { "" };
-    let _ = write!(h, "struct In {{\n  @builtin(position) fragpos: vec4f,\n  @location(0) {f}l0: vec4f,\n  @location(1) {f}l1: vec4f,\n");
-    for t in 0..8 {
-        let _ = writeln!(h, "  @location({}) l{}: vec4f,", 2 + t, 2 + t);
+    let linked = k.vs_writes.unwrap_or(0x3ff);
+    h.push_str("struct In {\n  @builtin(position) fragpos: vec4f,\n");
+    for l in 0..10 {
+        if linked & (1 << l) != 0 {
+            let _ = writeln!(h, "  @location({l}) {}l{l}: vec4f,", if l < 2 { f } else { "" });
+        }
     }
     h.push_str("}\n@fragment fn main(i: In) -> @location(0) vec4f {\n");
-    h.push_str("  let diffuse = i.l0;\n  let specular = i.l1;\n  var current = diffuse;\n  var temp = vec4f(0.0);\n");
+    for l in 0..10 {
+        let v = if linked & (1 << l) != 0 { format!("i.l{l}") } else if l == 0 { "vec4f(1.0)".into() } else { "vec4f(0.0)".into() };
+        let _ = writeln!(h, "  let l{l} = {v};");
+    }
+    h.push_str("  let diffuse = l0;\n  let specular = l1;\n  var current = diffuse;\n  var temp = vec4f(0.0);\n");
     // all samples first (uniform control flow)
     for (t, s) in k.stages.iter().enumerate() {
         // (BLENDTEXTUREALPHA / BLENDTEXTUREALPHAPM read the stage's texture as an alpha op too)
@@ -204,9 +215,9 @@ pub fn pixel(k: &PsKey) -> String {
         }
         if k.tex[t] == 2 {
             let coord = if s[9] != 0 {
-                format!("(i.l{0}.xy / i.l{0}.w)", 2 + t)
+                format!("(l{0}.xy / l{0}.w)", 2 + t)
             } else {
-                format!("i.l{}.xy", 2 + t)
+                format!("l{}.xy", 2 + t)
             };
             let smp = format!("textureSample(tex{0}, smp{0}, {1})", t, crate::addr::coord(&addr, t as u32, &coord));
             let _ = writeln!(h, "  var t{} = {};", t, smp);
@@ -329,5 +340,45 @@ mod tests {
             let want: Vec<&str> = stages.iter().map(|s| if s[8] & 0xf == 5 { "temp" } else { "current" }).collect();
             prop_assert_eq!(stage_dsts(&w), want);
         }
+
+        // Behind a programmable vertex shader, whatever it writes: a valid shader whose inputs
+        // are only locations it writes (WebGPU rejects the pipeline otherwise), the same stage
+        // results, and an unwritten input reads as a pixel shader's would (diffuse 1, others 0).
+        #[test]
+        fn inputs_only_what_the_vertex_shader_writes(stages in prop::collection::vec(stage(), 1..=8), tex in prop::array::uniform8(prop_oneof![Just(0u8), Just(2u8)]), writes in 0u32..0x400, flat: bool) {
+            let k = PsKey { stages: stages.clone(), tex, flat, vs_writes: Some(writes), ..Default::default() };
+            let w = pixel(&k);
+            valid(&w);
+            for l in 0..10 {
+                let declared = w.contains(&format!(" l{l}: vec4f,"));
+                prop_assert_eq!(declared, writes & (1 << l) != 0, "location {} with writes {:#x}\n{}", l, writes, w);
+                if writes & (1 << l) == 0 {
+                    let def = if l == 0 { "vec4f(1.0)" } else { "vec4f(0.0)" };
+                    prop_assert!(w.contains(&format!("let l{l} = {def};")), "{}", w);
+                }
+            }
+            let want: Vec<&str> = stages.iter().map(|s| if s[8] & 0xf == 5 { "temp" } else { "current" }).collect();
+            prop_assert_eq!(stage_dsts(&w), want);
+        }
+    }
+
+    // F&C's C4 trial: vs_1_1 writing oPos, oD0 and oT0 (locations 0 and 2), two texture stages
+    // with no pixel shader. Stage 1's coordinates (location 3) and beyond read 0.
+    #[test]
+    fn vs11_with_two_stages_links() {
+        let k = PsKey {
+            stages: vec![[4, 2, 0, 1, 4, 2, 0, 1, 1, 0], [4, 2, 1, 1, 4, 2, 1, 1, 1, 0]],
+            tex: [2, 2, 0, 0, 0, 0, 0, 0],
+            vs_writes: Some(0b101),
+            ..Default::default()
+        };
+        let w = pixel(&k);
+        valid(&w);
+        assert!(w.contains("@location(0) l0") && w.contains("@location(2) l2"), "{w}");
+        assert!(!w.contains(" l1: vec4f,") && !w.contains(" l3: vec4f,") && !w.contains(" l4: vec4f,"), "{w}");
+        assert!(w.contains("let l3 = vec4f(0.0);") && w.contains("let l1 = vec4f(0.0);"), "{w}");
+        // (the fixed-function vertex shader: all ten, as before)
+        let all = pixel(&PsKey { vs_writes: None, ..k });
+        assert!((0..10).all(|l| all.contains(&format!(" l{l}: vec4f,"))), "{all}");
     }
 }

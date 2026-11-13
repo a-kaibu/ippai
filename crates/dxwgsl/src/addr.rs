@@ -210,6 +210,7 @@ mod tests {
                 tex: [2, 2, 0, 0, 0, 0, 0, 0],
                 flat: false,
                 addr: vec![a[0], Addr::argb(1, f, 0x80102030)],
+                vs_writes: None,
             };
             let w = crate::d3d9ff::pixel(&k);
             assert!(w.contains("am1(") && (f & 3 == 0 || w.contains("ab1(")), "{w}");

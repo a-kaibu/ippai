@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 9684f9d80fa67d5eeb9fdcfd992ce947ffd30528cc90d3082f7c2d66b0317f5d # shrinks to stages = [[16, 3, 0, 0, 15, 3, 0, 0, 1, 0]], tex = [0, 0, 0, 0, 0, 0, 0, 0], spec = false
+cc 84efb27c6554fcee89133fbe934d276ac7867ade9e0895240185229d71003409 # shrinks to stages = [[2, 0, 0, 0, 2, 0, 0, 0, 1, 0]], tex = [0, 0, 0, 0, 0, 0, 0, 0], writes = 254, flat = false
