@@ -144,6 +144,7 @@ pub mod cryptstr;
 pub mod diskspace;
 pub mod resupdate;
 pub mod shelllink;
+mod webbrowser;
 pub mod icu;
 pub mod dnsrec;
 pub mod eventlog;

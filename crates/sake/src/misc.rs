@@ -1415,6 +1415,9 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
     if let Some(hr) = crate::shelllink::create_instance(clsid, iid, out) {
         return hr;
     }
+    if let Some(hr) = crate::webbrowser::create_instance(clsid, iid, out) {
+        return hr;
+    }
     if let Some(obj) = crate::ddraw::create_instance(clsid, iid) {
         mem::putp(out, obj);
         return 0;
