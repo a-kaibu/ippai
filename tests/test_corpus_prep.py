@@ -134,6 +134,11 @@ def keeps(t):
     write(root, {b'a/b.txt': b'1'})
     sj.fix(root)
     ok &= check('nothing split: untouched', read(root), ({b'a/b.txt': b'1'}, {b'empty'}))
+    # an empty folder under a split name is made whole
+    root = os.path.join(t, 'e')
+    os.makedirs(os.fsencode(os.path.join(root, 'x')) + b'/\x8f/\x98Z/save')
+    sj.fix(root)
+    ok &= check('empty split folder', read(root), ({}, {b'x/\x8f\\\x98Z/save'}))
     # a file already at the joined name is not overwritten (the split copy stays)
     root = os.path.join(t, 'o')
     write(root, {b'\x8f\\\x98Z.txt': b'real', b'\x8f/\x98Z.txt': b'split'})
@@ -167,9 +172,13 @@ def crc16(b):
     return c
 
 
-def lzh(path, entries):
-    """an LZH archive of stored (-lh0-) level-0 members: {bytes name with \\ separators: data}"""
+def lzh(path, entries, dirs=()):
+    """an LZH archive of stored (-lh0-) level-0 members: {bytes name with \\ separators: data},
+    and DIRS: empty folders (-lhd- members, names ending in a separator)"""
     out = b''
+    for n in dirs:
+        h = b'-lhd-' + bytes(8) + (0x5a6d0000).to_bytes(4, 'little') + b'\x10\x00' + bytes([len(n)]) + n + bytes(2)
+        out += bytes([len(h), sum(h) & 0xff]) + h
     for n, data in entries.items():
         h = b'-lh0-' + len(data).to_bytes(4, 'little') * 2 + (0x5a6d0000).to_bytes(4, 'little') + b'\x20\x00'
         h += bytes([len(n)]) + n + crc16(data).to_bytes(2, 'little')
@@ -249,10 +258,13 @@ def e2e(t):
         return ok
     sjis = '十六夜の花嫁'.encode('cp932')
     z = os.path.join(t, 'split.lzh')
-    lzh(z, {sjis + b'\\' + sjis + b'.exe': MZ * 4, sjis + b'\\data.bin': b'd'})
+    # (with an empty folder: izayoi's "十六夜の花嫁・体験版\\save\\" stayed split, and convmv then
+    # converted no name at all)
+    lzh(z, {sjis + b'\\' + sjis + b'.exe': MZ * 4, sjis + b'\\data.bin': b'd'}, dirs=[sjis + b'\\save\\'])
     rc, exe, x = prep(t, 'split', z, 'lzh')
     ok &= check('split Shift-JIS name', (rc, exe), (0, '十六夜の花嫁/十六夜の花嫁.exe'))
-    ok &= check('split Shift-JIS files', sorted(read(x)[0]), sorted(['十六夜の花嫁/十六夜の花嫁.exe'.encode(), '十六夜の花嫁/data.bin'.encode()]))
+    ok &= check('split Shift-JIS files', (sorted(read(x)[0]), read(x)[1]),
+                (sorted(['十六夜の花嫁/十六夜の花嫁.exe'.encode(), '十六夜の花嫁/data.bin'.encode()]), {'十六夜の花嫁/save'.encode()}))
     return ok
 
 

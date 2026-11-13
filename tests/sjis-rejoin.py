@@ -44,17 +44,26 @@ def rejoin(path):
 
 def fix(root):
     root = os.fsencode(root)
-    moves = []
-    for d, _, fs in os.walk(root):
+    moves, empty = [], []
+    for d, ds, fs in os.walk(root):
         for f in fs:
             rel = os.path.relpath(os.path.join(d, f), root)
             new = rejoin(rel)
             if new != rel: moves.append((rel, new))
+        # (an archive's empty folders under a split name, "十六夜の花嫁\\save\\": made again whole)
+        if d != root and not ds and not fs:
+            rel = os.path.relpath(d, root)
+            new = rejoin(rel)
+            if new != rel: empty.append((rel, new))
     for a, b in moves:
         dst = os.path.join(root, b)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         if os.path.lexists(dst): continue  # (never overwrite a file the archive really had)
         os.rename(os.path.join(root, a), dst)
+    for a, b in empty:
+        os.makedirs(os.path.join(root, b), exist_ok=True)
+        os.rmdir(os.path.join(root, a))
+    moves += empty
     # (only the directories the moved files came from: an archive's own empty ones stay)
     dirs = set()
     for a, _ in moves:
