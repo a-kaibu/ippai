@@ -1,6 +1,7 @@
 //! D3DX 9 (d3dx9_24 .. d3dx9_43): the math helpers, ID3DXBuffer, a shader assembler
 //! (D3DXAssembleShader: vs/ps 1.x-3.0 assembly to bytecode), D3DXFillTexture (the game's
-//! callback for each texel) and a font object. Everything else in the export table is a logged
+//! callback for each texel), D3DXLoadSurfaceFrom{File,Surface}, the rotation quaternions and a
+//! font object. Everything else in the export table is a logged
 //! stub returning 0.
 
 #![allow(non_snake_case)]
@@ -713,6 +714,24 @@ fn axis_rot(v: [f32; 3], a: f32) -> M {
      t * x * z + s * y, t * y * z - s * x, t * z * z + co, 0.0,
      0.0, 0.0, 0.0, 1.0]
 }
+/// D3DXQuaternionRotationAxis(out, axis, angle): the axis normalized, (axis sin a/2, cos a/2).
+fn D3DXQuaternionRotationAxis(c: &mut Ctx) -> u32 {
+    let [x, y, z] = norm3(rv(c.a(1)));
+    let (s, co) = (fl(c, 2) / 2.0).sin_cos();
+    wv(c.a(0), &[x * s, y * s, z * s, co]);
+    c.a(0)
+}
+/// The rotation matrix of quaternion `q` (row vectors, as D3DX).
+fn quat_matrix([x, y, z, w]: [f32; 4]) -> M {
+    [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w), 0.0,
+     2.0 * (x * y - z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + x * w), 0.0,
+     2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y), 0.0,
+     0.0, 0.0, 0.0, 1.0]
+}
+/// D3DXMatrixRotationQuaternion(out, q)
+fn D3DXMatrixRotationQuaternion(c: &mut Ctx) -> u32 {
+    out_m(c, quat_matrix(rv(c.a(1))))
+}
 fn ms_apply(c: &Ctx, m: M, local: bool) -> u32 {
     let o = c.a(0);
     let top = rm(o + 16);
@@ -1324,6 +1343,115 @@ fn pack(fmt: u32, v: [f32; 4]) -> Option<(u32, u32)> {
     })
 }
 
+/// Unpacks a texel of D3DFORMAT `fmt` (its `pack` forms) into straight RGBA floats.
+fn unpack(fmt: u32, v: u32) -> Option<[f32; 4]> {
+    let f = |x: u32, shift: u32, bits: u32| ((x >> shift) & ((1 << bits) - 1)) as f32 / ((1u32 << bits) - 1) as f32;
+    Some(match fmt {
+        21 => [f(v, 16, 8), f(v, 8, 8), f(v, 0, 8), f(v, 24, 8)],
+        22 => [f(v, 16, 8), f(v, 8, 8), f(v, 0, 8), 1.0],
+        32 => [f(v, 0, 8), f(v, 8, 8), f(v, 16, 8), f(v, 24, 8)],
+        23 => [f(v, 11, 5), f(v, 5, 6), f(v, 0, 5), 1.0],
+        24 => [f(v, 10, 5), f(v, 5, 5), f(v, 0, 5), 1.0],
+        25 => [f(v, 10, 5), f(v, 5, 5), f(v, 0, 5), f(v, 15, 1)],
+        26 => [f(v, 8, 4), f(v, 4, 4), f(v, 0, 4), f(v, 12, 4)],
+        28 => [0.0, 0.0, 0.0, f(v, 0, 8)],
+        50 => [f(v, 0, 8), f(v, 0, 8), f(v, 0, 8), 1.0],
+        51 => [f(v, 0, 8), f(v, 0, 8), f(v, 0, 8), f(v, 8, 8)],
+        _ => return None,
+    })
+}
+
+/// `sw` x `sh` texels scaled (nearest, as D3DX_FILTER_POINT) to `dw` x `dh`; texels equal to
+/// color `key` (as A8R8G8B8; 0 none) become transparent black.
+fn blit(px: &[[f32; 4]], sw: u32, sh: u32, dw: u32, dh: u32, key: u32) -> Vec<[f32; 4]> {
+    let mut out = Vec::with_capacity((dw * dh) as usize);
+    for y in 0..dh {
+        let sy = (y as u64 * sh as u64 / dh as u64) as u32;
+        for x in 0..dw {
+            let sx = (x as u64 * sw as u64 / dw as u64) as u32;
+            let v = px[(sy * sw + sx) as usize];
+            out.push(if key != 0 && pack(21, v).unwrap().0 == key { [0.0; 4] } else { v });
+        }
+    }
+    out
+}
+
+/// D3DXLoadSurfaceFromSurface(dst surface, dst palette, dst rect, src surface, src palette,
+/// src rect, filter, color key): the source rectangle converted and scaled (nearest) into the
+/// destination one; color key texels (compared as A8R8G8B8) become transparent black.
+fn D3DXLoadSurfaceFromSurface(c: &mut Ctx) -> u32 {
+    let (dsurf, dst, ssurf, src, key) = (c.a(0), c.a(2), c.a(3), c.a(5), c.a(7));
+    if dsurf == 0 || ssurf == 0 {
+        return 0x8876086c;
+    }
+    let scratch = mem::heap_alloc(32 + 32 + 8 + 8, true);
+    let (ddesc, sdesc, dlr, slr) = (scratch, scratch + 32, scratch + 64, scratch + 72);
+    com_call(c, dsurf, 12, &[ddesc]);
+    com_call(c, ssurf, 12, &[sdesc]);
+    let (dfmt, dw0, dh0) = (r32(ddesc), r32(ddesc + 24), r32(ddesc + 28));
+    let (sfmt, sw0, sh0) = (r32(sdesc), r32(sdesc + 24), r32(sdesc + 28));
+    let (sl, st, sr, sb) = rect_or(src, sw0, sh0);
+    let (dl, dt, dr, db) = rect_or(dst, dw0, dh0);
+    let bpp = |fmt: u32| pack(fmt, [0.0; 4]).map(|p| p.1);
+    let (Some(sbpp), Some(dbpp)) = (bpp(sfmt), bpp(dfmt)) else {
+        eprintln!("sake: D3DXLoadSurfaceFromSurface: format {sfmt} -> {dfmt} not handled");
+        mem::heap_free(scratch);
+        return 0x80004001;
+    };
+    if sr <= sl || sb <= st || dr <= dl || db <= dt {
+        mem::heap_free(scratch);
+        return 0;
+    }
+    // (the source read whole first: the two may be the same surface)
+    let srect = mem::heap_alloc(16, true);
+    for (k, v) in [sl, st, sr, sb].into_iter().enumerate() {
+        w32(srect + 4 * k as u32, v);
+    }
+    let hr = com_call(c, ssurf, 13, &[slr, srect, 0x10]);
+    mem::heap_free(srect);
+    if hr != 0 {
+        mem::heap_free(scratch);
+        return hr;
+    }
+    let (sw, sh) = (sr - sl, sb - st);
+    let (spitch, sbits) = (r32(slr), r32(slr + 4));
+    let mut px = Vec::with_capacity((sw * sh) as usize);
+    for y in 0..sh {
+        for x in 0..sw {
+            let at = sbits + y * spitch + x * sbpp;
+            let v = match sbpp {
+                4 => r32(at),
+                2 => mem::r16(at) as u32,
+                _ => mem::r8(at) as u32,
+            };
+            px.push(unpack(sfmt, v).unwrap());
+        }
+    }
+    com_call(c, ssurf, 14, &[]);
+    let hr = com_call(c, dsurf, 13, &[dlr, dst, 0]);
+    if hr != 0 {
+        mem::heap_free(scratch);
+        return hr;
+    }
+    let (dpitch, dbits) = (r32(dlr), r32(dlr + 4));
+    let (dw, dh) = (dr - dl, db - dt);
+    let out = blit(&px, sw, sh, dw, dh, key);
+    for y in 0..dh {
+        for x in 0..dw {
+            let (t, _) = pack(dfmt, out[(y * dw + x) as usize]).unwrap();
+            let at = dbits + y * dpitch + x * dbpp;
+            match dbpp {
+                4 => w32(at, t),
+                2 => mem::w16(at, t as u16),
+                _ => mem::w8(at, t as u8),
+            }
+        }
+    }
+    com_call(c, dsurf, 14, &[]);
+    mem::heap_free(scratch);
+    0
+}
+
 /// D3DXFillTexture(texture, function, data): function(out, texcoord, texel size, data) for
 /// every texel of every level.
 fn D3DXFillTexture(c: &mut Ctx) -> u32 {
@@ -1515,6 +1643,9 @@ pub fn init() {
         ("D3DXLoadSurfaceFromFileInMemory", D3DXLoadSurfaceFromFileInMemory),
         ("D3DXLoadSurfaceFromFileA", D3DXLoadSurfaceFromFileA),
         ("D3DXLoadSurfaceFromFileW", D3DXLoadSurfaceFromFileW),
+        ("D3DXLoadSurfaceFromSurface", D3DXLoadSurfaceFromSurface),
+        ("D3DXQuaternionRotationAxis", D3DXQuaternionRotationAxis),
+        ("D3DXMatrixRotationQuaternion", D3DXMatrixRotationQuaternion),
     ];
     for v in 24..=43 {
         let dll = format!("d3dx9_{v}");
@@ -1625,6 +1756,91 @@ mod save_tests {
         assert_eq!(widen_bgra(&[0x00, 0xf8], 23), [0, 0, 255, 255]);
         assert_eq!(widen_bgra(&[0x00, 0x00], 25), [0, 0, 0, 0]);
         assert_eq!(widen_bgra(&[0x1f, 0x80], 25), [255, 0, 0, 255]);
+    }
+}
+
+#[cfg(test)]
+mod surface_quat_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    /// (format, the bits a texel of it holds, its fixed bits: X8 reads as opaque and packs as 0xff)
+    const FMTS: &[(u32, u32, u32)] = &[(21, 0xffff_ffff, 0), (22, 0x00ff_ffff, 0xff00_0000), (32, 0xffff_ffff, 0), (23, 0xffff, 0),
+        (24, 0x7fff, 0), (25, 0xffff, 0), (26, 0xffff, 0), (28, 0xff, 0), (50, 0xff, 0), (51, 0xffff, 0)];
+
+    proptest! {
+        /// every texel of every format unpacks and packs back to itself (the formats
+        /// D3DXLoadSurfaceFromSurface converts between keep their bits)
+        #[test]
+        fn texels_round_trip(k in 0..FMTS.len(), t in any::<u32>()) {
+            let (fmt, bits, fixed) = FMTS[k];
+            let t = t & bits | fixed;
+            let v = unpack(fmt, t).unwrap();
+            prop_assert_eq!(pack(fmt, v).unwrap().0, t);
+            prop_assert!(v.iter().all(|x| (0.0..=1.0).contains(x)));
+        }
+
+        /// the same size is a copy; scaling picks source texels in order (nearest), never past
+        /// the source; the color key clears exactly the matching texels
+        #[test]
+        fn blit_scales_and_keys(sw in 1u32..9, sh in 1u32..9, dw in 1u32..17, dh in 1u32..17, t in prop::collection::vec(any::<u32>(), 64), key_at in any::<prop::sample::Index>()) {
+            let px: Vec<[f32; 4]> = (0..sw * sh).map(|i| unpack(21, t[i as usize]).unwrap()).collect();
+            prop_assert_eq!(blit(&px, sw, sh, sw, sh, 0), px.clone());
+            let out = blit(&px, sw, sh, dw, dh, 0);
+            prop_assert_eq!(out.len() as u32, dw * dh);
+            for y in 0..dh {
+                for x in 0..dw {
+                    let (sx, sy) = (x * sw / dw, y * sh / dh);
+                    prop_assert_eq!(out[(y * dw + x) as usize], px[(sy * sw + sx) as usize]);
+                }
+            }
+            let key = t[key_at.index((sw * sh) as usize)];
+            if key != 0 {
+                let keyed = blit(&px, sw, sh, sw, sh, key);
+                for (a, b) in keyed.iter().zip(&px) {
+                    prop_assert_eq!(*a, if pack(21, *b).unwrap().0 == key { [0.0; 4] } else { *b });
+                }
+            }
+        }
+
+        /// D3DXMatrixRotationQuaternion(D3DXQuaternionRotationAxis(v, a)) is the rotation about v
+        /// by a (D3DXMatrixRotationAxis), the quaternion is a unit one, and both return out
+        #[test]
+        fn quaternion_rotation_is_axis_rotation(v in prop::array::uniform3(-10.0f32..10.0), a in -7.0f32..7.0) {
+            prop_assume!(v.iter().map(|x| x * x).sum::<f32>() > 1e-3);
+            let _g = enter();
+            let (q, vp, m) = (mem::heap_alloc(16, true), mem::heap_alloc(12, true), mem::heap_alloc(64, true));
+            wv(vp, &v);
+            prop_assert_eq!(call(D3DXQuaternionRotationAxis, &[q, vp, a.to_bits()]), q);
+            let qv: [f32; 4] = rv(q);
+            prop_assert!((qv.iter().map(|x| x * x).sum::<f32>() - 1.0).abs() < 1e-5);
+            prop_assert_eq!(call(D3DXMatrixRotationQuaternion, &[m, q]), m);
+            let (got, want) = (rm(m), axis_rot(v, a));
+            for i in 0..16 {
+                prop_assert!((got[i] - want[i]).abs() < 1e-5, "{} {:?} {:?}", i, got, want);
+            }
+            for p in [q, vp, m] { mem::heap_free(p); }
+        }
+    }
+
+    /// by hand: the axis (2, 7, -3) (normalized) by π/3 is (axis sin π/6, cos π/6); the identity
+    /// quaternion is the identity matrix
+    #[test]
+    fn quaternion_known_values() {
+        let _g = enter();
+        let (q, vp, m) = (mem::heap_alloc(16, true), mem::heap_alloc(12, true), mem::heap_alloc(64, true));
+        wv(vp, &[2.0, 7.0, -3.0]);
+        call(D3DXQuaternionRotationAxis, &[q, vp, (std::f32::consts::PI / 3.0).to_bits()]);
+        let want = [0.127000, 0.444500, -0.190500, 0.866025];
+        let got: [f32; 4] = rv(q);
+        for i in 0..4 {
+            assert!((got[i] - want[i]).abs() < 1e-5, "{got:?}");
+        }
+        wv(q, &[0.0, 0.0, 0.0, 1.0]);
+        call(D3DXMatrixRotationQuaternion, &[m, q]);
+        assert_eq!(rm(m), ID);
+        for p in [q, vp, m] { mem::heap_free(p); }
     }
 }
 
