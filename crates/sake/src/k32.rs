@@ -393,6 +393,7 @@ pub fn exit_thread(code: u32) -> ! {
     obj::signal();
     obj::close(h);
     crate::apc::forget(t.tid);
+    SUSPENDS.forget(t.tid);
     // (ExitThread from a DllMain or TLS callback: the loader lock it holds)
     crate::pe::loader_thread_exit();
     if t.tid == crate::process::first_tid(crate::pid()) {
@@ -785,11 +786,35 @@ pub fn wait_gate_start(h: u32, start: u32, param: u32) {
 
 /// Save states: wakes the waits here so that they see the pause.
 pub(crate) fn snap_wake() {
+    SUSPENDS.wake();
     drop(GATE.lock());
     GATE_CV.notify_all();
     CS.wake();
     SYNC.wake_all();
     ADDR.stir();
+}
+
+/// Running threads another (or the thread itself) suspended: waits::suspend.
+pub(crate) static SUSPENDS: std::sync::LazyLock<waits::suspend::Suspends> = std::sync::LazyLock::new(Default::default);
+
+/// kura's run loop, before every slice: a suspended thread stands still here (true: it did).
+pub fn park_suspended() -> bool {
+    if !SUSPENDS.any() {
+        return false;
+    }
+    let tid = crate::cur().tid;
+    SUSPENDS.park(tid, || kura::snap::pausing() && kura::snap::parkable())
+}
+
+/// The thread id of a thread handle of this process (the pseudo-handle too).
+fn thread_tid(h: u32) -> Option<u32> {
+    if h == obj::CURRENT_THREAD {
+        return Some(crate::cur().tid);
+    }
+    obj::with(|t| match t.objs.get(&h) {
+        Some((Obj::Thread { tid, done: false, .. }, _)) => Some(*tid),
+        _ => None,
+    })
 }
 
 fn ResumeThread(c: &mut Ctx) -> u32 {
@@ -800,44 +825,55 @@ fn ResumeThread(c: &mut Ctx) -> u32 {
     }) {
         return crate::process::resume(pid);
     }
-    let mut g = GATE.lock().unwrap();
-    let r = match g.iter_mut().find(|(x, _)| *x == h) {
-        Some((_, n)) => {
+    // a thread created suspended that has not started yet
+    {
+        let mut g = GATE.lock().unwrap();
+        if let Some((_, n)) = g.iter_mut().find(|(x, n)| *x == h && *n > 0) {
             let old = *n;
-            *n = n.saturating_sub(1);
-            old
+            *n -= 1;
+            drop(g);
+            GATE_CV.notify_all();
+            return old;
         }
-        None => 0,
-    };
-    GATE_CV.notify_all();
-    r
+    }
+    match thread_tid(h) {
+        Some(tid) => SUSPENDS.resume(tid),
+        None if obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Thread { .. }, _)))) => 0,
+        None => {
+            last_error(6);
+            u32::MAX
+        }
+    }
 }
-/// SuspendThread: a thread suspending itself (WOLF RPG's workers) waits for ResumeThread; other
-/// threads can't be stopped from outside here and go on (0)
+/// SuspendThread: the previous suspend count. A thread created suspended counts one more
+/// before it starts; a running one stops at its next slice (waits::suspend), the calling thread
+/// at once.
 fn SuspendThread(c: &mut Ctx) -> u32 {
-    let tid = crate::cur().tid;
-    // a thread that has not started yet (created suspended): one more suspension
-    if let Some((_, n)) = GATE.lock().unwrap().iter_mut().find(|(x, n)| *x == c.a(0) && *n > 0) {
+    let h = c.a(0);
+    if let Some((_, n)) = GATE.lock().unwrap().iter_mut().find(|(x, n)| *x == h && *n > 0) {
+        if *n >= waits::suspend::MAX_COUNT {
+            last_error(298);
+            return u32::MAX;
+        }
         *n += 1;
         return *n - 1;
     }
-    let h = match c.a(0) {
-        0xffff_fffe => obj::with(|t| {
-            t.objs.iter().find_map(|(&h, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid).then_some(h))
-        }),
-        h => obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Thread { tid: x, .. }, _)) if *x == tid).then_some(h)),
+    let Some(tid) = thread_tid(h) else {
+        if obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Thread { .. }, _)))) {
+            return 0; // (ended: nothing to stop)
+        }
+        last_error(6);
+        return u32::MAX;
     };
-    let Some(h) = h else { return 0 };
-    let mut g = GATE.lock().unwrap();
-    match g.iter_mut().find(|(x, _)| *x == h) {
-        Some((_, n)) => *n += 1,
-        None => g.push((h, 1)),
+    let Some(old) = SUSPENDS.suspend(tid) else {
+        last_error(298); // ERROR_SIGNAL_REFCOUNT_EXCEEDED
+        return u32::MAX;
+    };
+    if tid == crate::cur().tid {
+        // (the thread stops itself: it goes on when resumed; WOLF RPG's workers)
+        SUSPENDS.park(tid, || false);
     }
-    while g.iter().any(|&(x, n)| x == h && n > 0) {
-        g = GATE_CV.wait(g).unwrap();
-    }
-    g.retain(|&(x, _)| x != h);
-    0
+    old
 }
 fn GetExitCodeThread(c: &mut Ctx) -> u32 {
     let code = obj::with(|t| match t.objs.get(&c.a(0)) {

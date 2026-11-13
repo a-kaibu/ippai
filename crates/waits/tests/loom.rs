@@ -414,3 +414,133 @@ fn waits_stand_still_holding_nothing() {
         t.join().unwrap();
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// SuspendThread / ResumeThread of running threads (src/suspend.rs, sake's k32)
+
+mod suspend {
+    use super::model;
+    use loom::sync::atomic::AtomicU32;
+    use loom::sync::Arc;
+    use loom::thread;
+    use std::sync::atomic::Ordering::SeqCst;
+    use waits::suspend::{Suspends, MAX_COUNT};
+
+    const T: u32 = 7;
+    /// The target passes a safe point (park) and then runs a step. When the suspender's
+    /// SuspendThread returned before the target came to the safe point, the target does not run its
+    /// step until ResumeThread (phase 2 is written just before it); it is never left waiting.
+    #[test]
+    fn a_suspended_thread_runs_nothing_until_resumed() {
+        model(|| {
+            let s = Arc::new(Suspends::new());
+            let phase = Arc::new(AtomicU32::new(0));
+            let (s2, p2) = (s.clone(), phase.clone());
+            let target = thread::spawn(move || {
+                let before = p2.load(SeqCst);
+                s2.park(T, || false);
+                let after = p2.load(SeqCst);
+                if before == 1 {
+                    assert_eq!(after, 2, "ran while suspended");
+                }
+            });
+            assert_eq!(s.suspend(T), Some(0));
+            phase.store(1, SeqCst);
+            phase.store(2, SeqCst);
+            assert_eq!(s.resume(T), 1);
+            target.join().unwrap();
+            assert!(!s.any());
+        });
+    }
+
+    /// Two threads suspend and resume the same target at once: the counts each call returns are
+    /// those of some order of the calls (every previous count once), and the target, parked in
+    /// between, goes on at the end.
+    #[test]
+    fn concurrent_suspends_and_resumes_count_like_one_order() {
+        model(|| {
+            let s = Arc::new(Suspends::new());
+            let seen = Arc::new(AtomicU32::new(0));
+            let mut hs = Vec::new();
+            for _ in 0..2 {
+                let (s, seen) = (s.clone(), seen.clone());
+                hs.push(thread::spawn(move || {
+                    let old = s.suspend(T).unwrap();
+                    seen.fetch_or(1 << old, SeqCst);
+                }));
+            }
+            let s3 = s.clone();
+            let target = thread::spawn(move || {
+                s3.park(T, || false);
+            });
+            for h in hs {
+                h.join().unwrap();
+            }
+            assert_eq!(seen.load(SeqCst), 0b11, "previous counts 0 and 1, once each");
+            assert_eq!(s.count(T), 2);
+            let r1 = thread::spawn({
+                let s = s.clone();
+                move || s.resume(T)
+            });
+            let a = s.resume(T);
+            let b = r1.join().unwrap();
+            assert_eq!(a.min(b), 1);
+            assert_eq!(a.max(b), 2);
+            target.join().unwrap();
+            assert_eq!(s.count(T), 0);
+            assert!(!s.any());
+        });
+    }
+
+    /// A parked thread asked to leave (a save state: `leave` turns true, then `wake`) returns
+    /// without being resumed; its count stays.
+    #[test]
+    fn a_parked_thread_leaves_for_a_save_state() {
+        model(|| {
+            let s = Arc::new(Suspends::new());
+            let pause = Arc::new(AtomicU32::new(0));
+            assert_eq!(s.suspend(T), Some(0));
+            let (s2, p2) = (s.clone(), pause.clone());
+            let target = thread::spawn(move || {
+                s2.park(T, || p2.load(SeqCst) != 0);
+            });
+            pause.store(1, SeqCst);
+            s.wake();
+            target.join().unwrap();
+            assert_eq!(s.count(T), 1);
+            assert_eq!(s.resume(T), 1);
+        });
+    }
+
+    /// Another thread's suspension does not stop this one, and `any` tells the run loops that
+    /// someone is suspended exactly while an entry exists.
+    #[test]
+    fn only_the_suspended_thread_waits() {
+        model(|| {
+            let s = Arc::new(Suspends::new());
+            let s2 = s.clone();
+            let other = thread::spawn(move || {
+                assert!(!s2.park(T + 1, || false));
+            });
+            assert_eq!(s.suspend(T), Some(0));
+            assert!(s.any());
+            other.join().unwrap();
+            s.forget(T);
+            assert!(!s.any());
+        });
+    }
+
+    /// The limit: MAX_COUNT suspensions, then None, as Windows' ERROR_SIGNAL_REFCOUNT_EXCEEDED.
+    #[test]
+    fn the_count_stops_at_the_limit() {
+        model(|| {
+            let s = Suspends::new();
+            for i in 0..MAX_COUNT {
+                assert_eq!(s.suspend(T), Some(i));
+            }
+            assert_eq!(s.suspend(T), None);
+            assert_eq!(s.resume(T), MAX_COUNT);
+            assert_eq!(s.resume(99), 0);
+        });
+    }
+}

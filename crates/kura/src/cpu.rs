@@ -386,6 +386,15 @@ fn unmasked_note(mx: u32) {
     }
 }
 
+/// Asked at the top of every slice of the run loop: whether the thread stood still (it is
+/// suspended by another thread: it returns once resumed, or when a save state wants it parked).
+static PARK: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+
+/// sake's SuspendThread: see PARK.
+pub fn set_park(f: fn() -> bool) {
+    let _ = PARK.set(f);
+}
+
 fn cpu_run(cpu: &mut Cpu) -> Stop {
     let mut mem = Linear;
     // long mode: IPPAI_JIT64=0 leaves it to the interpreter
@@ -394,6 +403,12 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
     loop {
         if crate::snap::pausing() && crate::snap::parkable() {
             return Stop::Pause;
+        }
+        // (a thread another one suspended: SuspendThread, sake's suspend.rs)
+        if let Some(park) = PARK.get() {
+            if park() {
+                continue;
+            }
         }
         trace_call(cpu);
         // (with TF set every instruction traps, and with an SSE exception unmasked any SSE

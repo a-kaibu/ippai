@@ -13,6 +13,9 @@
 //! What a save state needs (sake's `snap`): every wait here asks [`Host::pausing`] while it
 //! waits and stands still in [`Host::point`] holding none of its locks.
 
+
+pub mod suspend;
+
 #[cfg(loom)]
 pub use loom::sync::atomic::AtomicU32;
 #[cfg(loom)]
