@@ -2467,7 +2467,7 @@ pub(crate) fn special_folder(csidl: u32) -> Option<&'static str> {
 fn folder_path(csidl: u32, create: bool) -> Option<String> {
     let p = special_folder(csidl)?;
     if create || csidl & 0x8000 != 0 || true {
-        let _ = kura::fs::create_dir_all(crate::files::to_host(p));
+        crate::files::make_dirs(p);
     }
     Some(p.to_string())
 }
@@ -2584,13 +2584,13 @@ fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
         // UserProgramFiles (a per-user install's Program Files)
         0x5cd7_aee2 => folder_path(0x1c, true).map(|p| {
             let p = format!("{p}\\Programs");
-            let _ = kura::fs::create_dir_all(crate::files::to_host(&p));
+            crate::files::make_dirs(&p);
             p
         }),
         // Saved Games
         0x4c5c_32ff => folder_path(0x28, true).map(|p| {
             let p = format!("{p}\\Saved Games");
-            let _ = kura::fs::create_dir_all(crate::files::to_host(&p));
+            crate::files::make_dirs(&p);
             p
         }),
         _ => None,

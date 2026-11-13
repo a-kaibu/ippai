@@ -2911,8 +2911,11 @@ pub fn data(name: &str) -> Option<u32> {
             }
         }
     }
-    for (e, w) in [("D", false), ("_W", true)] {
+    // (G: unsigned short, the wchar_t of /Zc:wchar_t-: the same objects as _W)
+    for (e, w) in [("D", false), ("_W", true), ("G", true)] {
         let t = format!("{e}U?$char_traits@{e}@std@@@std@@");
+        // (inside a name the second std is the back reference 1)
+        let t1 = format!("{e}U?$char_traits@{e}@std@@@1@@");
         let v = |cls: &str| format!("??_7?$basic_{cls}@{t}6B@");
         let table_of = Some;
         if name == v("ios") {
@@ -2937,10 +2940,10 @@ pub fn data(name: &str) -> Option<u32> {
             return Some(if w { ostream_vbtable::<true>() } else { ostream_vbtable::<false>() });
         }
         let (vi, vo) = if w { iostream_vbtables::<true>() } else { iostream_vbtables::<false>() };
-        if name == format!("??_8?$basic_iostream@{t}7B?$basic_istream@{t}1@@") {
+        if name == format!("??_8?$basic_iostream@{t}7B?$basic_istream@{t1}") {
             return Some(vi);
         }
-        if name == format!("??_8?$basic_iostream@{t}7B?$basic_ostream@{t}1@@") {
+        if name == format!("??_8?$basic_iostream@{t}7B?$basic_ostream@{t1}") {
             return Some(vo);
         }
     }

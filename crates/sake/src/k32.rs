@@ -5781,7 +5781,7 @@ fn UnlockFile(_: &mut Ctx) -> u32 {
 fn GetFileTime(c: &mut Ctx) -> u32 {
     let Some(f) = obj::file(c.a(0)) else { return 0 };
     let m = f.f.lock().unwrap().metadata().ok();
-    let t = m.and_then(|m| m.modified().ok()).map_or(0, files::filetime);
+    let t = m.map_or(0, |m| files::write_time(&f.path, &m));
     for i in 1..4 {
         if c.a(i) != 0 {
             put64(c.a(i), t);
@@ -5789,7 +5789,20 @@ fn GetFileTime(c: &mut Ctx) -> u32 {
     }
     1
 }
-fn SetFileTime(_: &mut Ctx) -> u32 {
+/// SetFileTime(h, creation, access, write): the last write time is kept (files::set_write_time);
+/// the others are the host's (0 or -1: unchanged)
+fn SetFileTime(c: &mut Ctx) -> u32 {
+    let Some(f) = obj::file(c.a(0)) else {
+        last_error(6);
+        return 0;
+    };
+    let w = c.a(3);
+    if w != 0 {
+        let t = mem::r64(w);
+        if t != 0 && t != u64::MAX {
+            files::set_write_time(&f.path, t);
+        }
+    }
     1
 }
 fn GetFileInformationByHandle(c: &mut Ctx) -> u32 {
@@ -5798,7 +5811,7 @@ fn GetFileInformationByHandle(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     mem::fill(p, 52, 0);
     w32(p, files::attrs(&m));
-    let t = m.modified().map_or(0, files::filetime);
+    let t = files::write_time(&f.path, &m);
     for o in [4, 12, 20] {
         put64(p + o, t);
     }
@@ -5806,6 +5819,10 @@ fn GetFileInformationByHandle(c: &mut Ctx) -> u32 {
     w32(p + 32, (m.len() >> 32) as u32);
     w32(p + 36, m.len() as u32);
     w32(p + 40, 1);
+    // nFileIndexHigh, nFileIndexLow
+    let ix = files::file_index(&f.path, &m);
+    w32(p + 44, (ix >> 32) as u32);
+    w32(p + 48, ix as u32);
     1
 }
 
@@ -6024,18 +6041,31 @@ fn attrs_ex(c: &mut Ctx, wide: bool) -> u32 {
     if let Some(r) = crate::nt::via::attributes_ex(c, &name) {
         return r;
     }
+    if let Some(pn) = crate::kern::pipe_name(&name) {
+        if let Err(e) = crate::pipe::query(&pn) {
+            last_error(e);
+            return 0;
+        }
+        let p = c.a(2);
+        mem::fill(p, 36, 0);
+        w32(p, 0x80);
+        last_error(0);
+        return 1;
+    }
     let Some((h, m)) = files::resolve(&name).and_then(|h| kura::fs::metadata(&h).ok().map(|m| (h, m))) else {
         last_error(files::missing(&name));
         return 0;
     };
     let p = c.a(2);
     w32(p, files::attrs_of(&h, &m));
-    let t = m.modified().map_or(0, files::filetime);
+    let t = files::write_time(&h, &m);
     for o in [4, 12, 20] {
         put64(p + o, t);
     }
-    w32(p + 28, (m.len() >> 32) as u32);
-    w32(p + 32, m.len() as u32);
+    // (a directory's size is 0)
+    let len = if m.is_dir() { 0 } else { m.len() };
+    w32(p + 28, (len >> 32) as u32);
+    w32(p + 32, len as u32);
     1
 }
 fn GetFileAttributesExA(c: &mut Ctx) -> u32 {
@@ -6147,7 +6177,15 @@ fn mv(from: &str, to: &str, replace: bool) -> u32 {
         last_error(files::missing(from));
         return 0;
     };
+    if let Some(e) = bad_dir_name(to) {
+        last_error(e);
+        return 0;
+    }
     let t = files::resolve(to);
+    // (a file moved onto its own name: done)
+    if t.as_deref() == Some(f.as_str()) {
+        return 1;
+    }
     if t.is_some() && !replace {
         last_error(183);
         return 0;
@@ -6169,7 +6207,7 @@ fn MoveFileW(c: &mut Ctx) -> u32 {
 fn move_ex(c: &mut Ctx, wide: bool) -> u32 {
     let (from, to, flags) = (c.a(0), c.a(1), c.a(2));
     if from == 0 {
-        last_error(87);
+        last_error(3);
         return 0;
     }
     if flags & 4 != 0 {
@@ -6196,9 +6234,48 @@ fn copy_file(from: &str, to: &str, fail: bool) -> u32 {
         last_error(80);
         return 0;
     }
+    // (onto a read-only file or a directory: ERROR_ACCESS_DENIED)
+    if t.as_ref().is_some_and(|t| files::extra_attrs(t) & 1 != 0 || files::is_dir(t)) {
+        last_error(5);
+        return 0;
+    }
     let r = kura::fs::copy(f, t.unwrap_or_else(|| files::resolve_new(to))).is_ok();
     last_error(if r { 0 } else { 5 });
     ok(r)
+}
+/// CreateHardLink(new, existing, sa): a second name of the file (host files outside the page's
+/// trees only: ERROR_INVALID_FUNCTION there, as a file system without links)
+fn hard_link(new: &str, existing: &str) -> u32 {
+    let Some(f) = files::resolve(existing) else {
+        last_error(files::missing(existing));
+        return 0;
+    };
+    if files::resolve(new).is_some() {
+        last_error(183);
+        return 0;
+    }
+    match kura::fs::hard_link(f, files::resolve_new(new)) {
+        Ok(()) => 1,
+        Err(e) => {
+            // (a file system without hard links, as FAT on Windows: ERROR_INVALID_FUNCTION;
+            // emscripten's node one answers EMLINK)
+            let none = matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::TooManyLinks);
+            last_error(if none { 1 } else { 5 });
+            0
+        }
+    }
+}
+fn CreateHardLinkA(c: &mut Ctx) -> u32 {
+    hard_link(&arg_str(c.a(0), false), &arg_str(c.a(1), false))
+}
+fn CreateHardLinkW(c: &mut Ctx) -> u32 {
+    hard_link(&arg_str(c.a(0), true), &arg_str(c.a(1), true))
+}
+/// CreateSymbolicLink: what a process without SeCreateSymbolicLinkPrivilege (no developer mode)
+/// gets: ERROR_PRIVILEGE_NOT_HELD
+fn CreateSymbolicLink(_: &mut Ctx) -> u32 {
+    last_error(1314);
+    0
 }
 fn CopyFileA(c: &mut Ctx) -> u32 {
     copy_file(&arg_str(c.a(0), false), &arg_str(c.a(1), false), c.a(2) != 0)
@@ -6279,7 +6356,7 @@ fn SetCurrentDirectoryW(c: &mut Ctx) -> u32 {
     set_dir(&arg_str(c.a(0), true))
 }
 fn ensure_dir(w: &str) {
-    let _ = kura::fs::create_dir_all(files::to_host(w));
+    files::make_dirs(w);
 }
 fn GetTempPathA(c: &mut Ctx) -> u32 {
     ensure_dir("C:\\windows\\temp");
@@ -7195,7 +7272,7 @@ pub fn init() {
         FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, GetFileAttributesA,
         GetFileAttributesW, GetFileAttributesExA, GetFileAttributesExW, SetFileAttributesA, SetFileAttributesW,
         CreateDirectoryA, CreateDirectoryW, RemoveDirectoryA, RemoveDirectoryW, DeleteFileA, DeleteFileW, MoveFileA,
-        MoveFileW, MoveFileExA, MoveFileExW, CopyFileA, CopyFileW, GetFullPathNameA, GetFullPathNameW,
+        MoveFileW, MoveFileExA, MoveFileExW, CopyFileA, CopyFileW, CreateHardLinkA, CreateHardLinkW, GetFullPathNameA, GetFullPathNameW,
         GetShortPathNameA, GetShortPathNameW, GetLongPathNameA, GetLongPathNameW, GetCurrentDirectoryA,
         GetCurrentDirectoryW, SetCurrentDirectoryA, SetCurrentDirectoryW, GetTempPathA, GetTempPathW,
         GetTempFileNameA, GetTempFileNameW, GetWindowsDirectoryA, GetWindowsDirectoryW, GetSystemDirectoryA,
@@ -7209,6 +7286,8 @@ pub fn init() {
         InterlockedPushEntrySList, InterlockedPopEntrySList, InterlockedFlushSList, QueryDepthSList, InterlockedPushListSListEx,
         AreFileApisANSI, SetFileApisToANSI,
     );
+    implement("kernel32", "CreateSymbolicLinkA", CreateSymbolicLink);
+    implement("kernel32", "CreateSymbolicLinkW", CreateSymbolicLink);
     reg!("advapi32"; GetUserNameA, SystemFunction036);
     for d in ["kernel32", "kernelbase"] {
         implement(d, "GetProcessMitigationPolicy", GetProcessMitigationPolicy);

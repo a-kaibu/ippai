@@ -615,6 +615,7 @@ pub fn init() {
         return;
     }
     crate::msvcp_thr::init();
+    crate::msvcp_fs::init();
     crate::msvcp_io::init();
     crate::msvcp_loc::init();
     for (name, f) in [

@@ -386,6 +386,247 @@ fn wc_init(c: &mut Ctx) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
+// codecvt<char16_t, char, _Mbstatet>: UTF-8 <-> UTF-16 (MS STL's <xlocale>). Layout { facet,
+// u32 _Maxcode @16, _Codecvt_mode _Mode @20 } 24 bytes; the state's first u16 is 0 (fresh), 1
+// (started) or the saved half of a surrogate pair.
+
+const CONSUME_HEADER: u32 = 4;
+const GENERATE_HEADER: u32 = 2;
+const MAX_UCSCHAR: u32 = 0x10ffff;
+
+/// do_in on slices: (result, bytes consumed, elements written); `st` is the state's u16.
+pub(crate) fn c16_in(st: &mut u16, mode: u32, maxcode: u32, src: &[u8], dst: &mut [u16]) -> (u32, usize, usize) {
+    let (mut m1, mut m2, mut first) = (0usize, 0usize, 0usize);
+    let cont = |b: u8| (0x80..0xc0).contains(&b);
+    while m1 < src.len() && m2 < dst.len() {
+        let mut by = src[m1];
+        if *st > 1 {
+            if !cont(by) {
+                return (ERROR, m1, m2);
+            }
+            m1 += 1;
+            dst[m2] = *st | (by & 0x3f) as u16;
+            m2 += 1;
+            *st = 1;
+            continue;
+        }
+        let (mut ch, mut extra): (u32, usize) = match by {
+            0..=0x7f => (by as u32, 0),
+            0x80..=0xbf => return (ERROR, m1 + 1, m2),
+            0xc0..=0xdf => (by as u32 & 0x1f, 1),
+            0xe0..=0xef => (by as u32 & 0x0f, 2),
+            0xf0..=0xf7 => (by as u32 & 0x07, 3),
+            _ => (by as u32 & 0x03, if by < 0xfc { 4 } else { 5 }),
+        };
+        // a 4+ byte sequence leaves its last byte for the second word
+        let skip = (extra >= 3) as usize;
+        first = m1;
+        if extra == 0 {
+            m1 += 1;
+        } else if src.len() - m1 < extra + 1 - skip {
+            break;
+        } else {
+            m1 += 1;
+            while skip < extra {
+                by = src[m1];
+                if !cont(by) {
+                    return (ERROR, m1, m2);
+                }
+                ch = ch << 6 | (by & 0x3f) as u32;
+                extra -= 1;
+                m1 += 1;
+            }
+        }
+        if skip != 0 {
+            ch <<= 6;
+        }
+        if maxcode.min(MAX_UCSCHAR) < ch {
+            return (ERROR, m1, m2);
+        }
+        if ch > 0xffff {
+            dst[m2] = (0xd800 | ((ch >> 10) - 0x40)) as u16;
+            m2 += 1;
+            *st = (0xdc00 | (ch & 0x3ff)) as u16;
+            continue;
+        }
+        if skip != 0 {
+            if m1 == src.len() {
+                m1 = first;
+                break;
+            }
+            by = src[m1];
+            m1 += 1;
+            if !cont(by) {
+                return (ERROR, m1, m2);
+            }
+            ch |= (by & 0x3f) as u32;
+        }
+        if *st == 0 {
+            *st = 1;
+            if mode & CONSUME_HEADER != 0 && ch == 0xfeff {
+                // drop the header and convert the rest; a partial rest undoes it
+                let (r, n1, n2) = c16_in(st, mode, maxcode, &src[m1..], &mut dst[m2..]);
+                if r == PARTIAL {
+                    *st = 0;
+                    return (r, first, m2 + n2);
+                }
+                return (r, m1 + n1, m2 + n2);
+            }
+        }
+        dst[m2] = ch as u16;
+        m2 += 1;
+    }
+    (if first == m1 { PARTIAL } else { OK }, m1, m2)
+}
+
+/// do_out on slices: (result, elements consumed, bytes written)
+pub(crate) fn c16_out(st: &mut u16, mode: u32, src: &[u16], dst: &mut [u8]) -> (u32, usize, usize) {
+    let (mut m1, mut m2) = (0usize, 0usize);
+    while m1 < src.len() && m2 < dst.len() {
+        let c1 = src[m1] as u32;
+        let mut save = false;
+        let ch = if *st > 1 {
+            if !(0xdc00..0xe000).contains(&c1) {
+                return (ERROR, m1, m2);
+            }
+            ((*st as u32) << 10) | (c1 - 0xdc00)
+        } else if (0xd800..0xdc00).contains(&c1) {
+            save = true;
+            (c1 - 0xd800 + 0x40) << 10
+        } else {
+            c1
+        };
+        let (by, mut extra) = match ch {
+            0..=0x7f => (ch as u8, 0u32),
+            0x80..=0x7ff => ((0xc0 | ch >> 6) as u8, 1),
+            0x800..=0xffff => ((0xe0 | ch >> 12) as u8, 2),
+            _ => ((0xf0 | ch >> 18) as u8, 3),
+        };
+        let mut put = if extra < 3 { extra as usize + 1 } else if save { 1 } else { 3 };
+        if dst.len() - m2 < put {
+            break;
+        }
+        if *st == 0 && mode & GENERATE_HEADER != 0 {
+            if dst.len() - m2 < 3 + put {
+                break;
+            }
+            dst[m2..m2 + 3].copy_from_slice(b"\xef\xbb\xbf");
+            m2 += 3;
+        }
+        m1 += 1;
+        if save || extra < 3 {
+            dst[m2] = by;
+            m2 += 1;
+            put -= 1;
+        }
+        while put > 0 {
+            extra -= 1;
+            dst[m2] = ((ch >> (6 * extra)) & 0x3f) as u8 | 0x80;
+            m2 += 1;
+            put -= 1;
+        }
+        *st = if save { (ch >> 10) as u16 } else { 1 };
+    }
+    (if m1 == 0 { PARTIAL } else { OK }, m1, m2)
+}
+
+fn c16_params(this: u32) -> (u32, u32) {
+    (r32(this + 16), r32(this + 20))
+}
+/// do_in (this, state, from, from end, from next&, to, to end, to next&)
+fn c16_do_in(c: &mut Ctx) -> u32 {
+    let (maxcode, mode) = c16_params(c.a(0));
+    let (sp, f, fe, fnext, t, te, tnext) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
+    let src = mem::slice(f, fe.saturating_sub(f)).to_vec();
+    let mut dst = vec![0u16; (te.saturating_sub(t) / 2) as usize];
+    let mut st = r16(sp);
+    let (r, n1, n2) = c16_in(&mut st, mode, maxcode, &src, &mut dst);
+    w16(sp, st);
+    for (i, w) in dst[..n2].iter().enumerate() {
+        w16(t + 2 * i as u32, *w);
+    }
+    wq(fnext, f + n1 as u32);
+    wq(tnext, t + 2 * n2 as u32);
+    r
+}
+/// do_out (this, state, from, from end, from next&, to, to end, to next&)
+fn c16_do_out(c: &mut Ctx) -> u32 {
+    let (_, mode) = c16_params(c.a(0));
+    let (sp, f, fe, fnext, t, te, tnext) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
+    let src: Vec<u16> = (0..fe.saturating_sub(f) / 2).map(|i| r16(f + 2 * i)).collect();
+    let mut dst = vec![0u8; te.saturating_sub(t) as usize];
+    let mut st = r16(sp);
+    let (r, n1, n2) = c16_out(&mut st, mode, &src, &mut dst);
+    w16(sp, st);
+    mem::write(t, &dst[..n2]);
+    wq(fnext, f + 2 * n1 as u32);
+    wq(tnext, t + n2 as u32);
+    r
+}
+/// do_unshift: nothing to write
+fn c16_unshift(c: &mut Ctx) -> u32 {
+    wq(c.a(4), c.a(2));
+    OK
+}
+/// do_length (this, state, from, end, max): the bytes that make up to `max` elements
+fn c16_length(c: &mut Ctx) -> u32 {
+    let (maxcode, mode) = c16_params(c.a(0));
+    let (sp, f, fe, max) = (c.a(1), c.a(2), c.a(3), c.a64(4));
+    let src = mem::slice(f, fe.saturating_sub(f)).to_vec();
+    let mut dst = vec![0u16; max.min(src.len() as u64) as usize];
+    let mut st = r16(sp);
+    let (_, n1, _) = c16_in(&mut st, mode, maxcode, &src, &mut dst);
+    w16(sp, st);
+    n1 as u32
+}
+/// do_max_length: a header plus the longest sequence when headers are read
+fn c16_max_length(c: &mut Ctx) -> u32 {
+    if c16_params(c.a(0)).1 & CONSUME_HEADER != 0 { 9 } else { 6 }
+}
+fn c16_vtable() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        table("c16codecvt", &[facet_delete, facet_incref, facet_decref, no, c16_max_length, no, c16_do_in, c16_do_out, c16_unshift, c16_length])
+    })
+}
+fn c16_put(this: u32, refs: u64, maxcode: u32, mode: u32) -> u32 {
+    wq(this, c16_vtable());
+    w64(this + 8, refs);
+    w32(this + 16, maxcode);
+    w32(this + 20, mode);
+    this
+}
+fn new_c16() -> u32 {
+    c16_put(mem::heap_alloc(24, true), 0, MAX_UCSCHAR, CONSUME_HEADER)
+}
+fn c16_getcat(c: &mut Ctx) -> u32 {
+    getcat(c, new_c16, X_CTYPE)
+}
+/// ??_F (this): the default constructor's closure (no references)
+fn c16_ctor0(c: &mut Ctx) -> u32 {
+    c16_put(c.a(0), 0, MAX_UCSCHAR, CONSUME_HEADER)
+}
+/// ??0 (this, refs)
+fn c16_ctor(c: &mut Ctx) -> u32 {
+    c16_put(c.a(0), c.a64(1), MAX_UCSCHAR, CONSUME_HEADER)
+}
+/// ??0 (this, locinfo, refs)
+fn c16_ctor_li(c: &mut Ctx) -> u32 {
+    c16_put(c.a(0), c.a64(2), MAX_UCSCHAR, CONSUME_HEADER)
+}
+/// ??0 (this, locinfo, max code, mode, refs)
+fn c16_ctor_mode(c: &mut Ctx) -> u32 {
+    c16_put(c.a(0), c.a64(4), c.a(2), c.a(3))
+}
+/// _Init (this, locinfo)
+fn c16_init(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    w32(this + 16, MAX_UCSCHAR);
+    w32(this + 20, CONSUME_HEADER);
+    0
+}
+
+// ---------------------------------------------------------------------------------------------
 // ctype<wchar_t>
 
 /// do_is(first, last, dest)
@@ -608,6 +849,13 @@ fn tp_ctor<const W: bool>(c: &mut Ctx) -> u32 {
     w64(this + 8, c.a64(1));
     this
 }
+/// ??_F: the default constructor closure (refs 0)
+fn tp_ctor0<const W: bool>(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    wq(this, tp_vtable::<W>());
+    w64(this + 8, 0);
+    this
+}
 fn tp_ctor_li<const W: bool>(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, tp_vtable::<W>());
@@ -669,6 +917,9 @@ pub fn init() {
     const CC: &str = "?$codecvt@DDU_Mbstatet@@@std@@";
     const WC: &str = "?$codecvt@_WDU_Mbstatet@@@std@@";
     const CT: &str = "?$ctype@_W@std@@";
+    const C16: &str = "?$codecvt@_SDU_Mbstatet@@@std@@";
+    const C16IN: &str = "QEBAHAEAU_Mbstatet@@PEBD1AEAPEBDPEA_S3AEAPEA_S@Z";
+    const C16OUT: &str = "QEBAHAEAU_Mbstatet@@PEB_S1AEAPEB_SPEAD3AEAPEAD@Z";
     const TP: &str = "?$time_put@_WV?$ostreambuf_iterator@_WU?$char_traits@_W@std@@@std@@@std@@";
     const GETCAT: &str = "SA_KPEAPEBVfacet@locale@2@PEBV42@@Z";
     const IN: &str = "QEBAHAEAU_Mbstatet@@PEBD1AEAPEBDPEAD3AEAPEAD@Z";
@@ -732,6 +983,25 @@ pub fn init() {
         (format!("?do_out@{WC}{}", m(WOUT)), wc_out),
         (format!("?do_unshift@{WC}{}", m(UNSHIFT)), wc_unshift),
         (format!("?do_length@{WC}{}", m(LENGTH)), wc_length),
+        // codecvt<char16_t, char>
+        (format!("?_Getcat@{C16}{GETCAT}"), c16_getcat),
+        (format!("??_F{C16}QEAAXXZ"), c16_ctor0),
+        (format!("??0{C16}QEAA@_K@Z"), c16_ctor),
+        (format!("??0{C16}QEAA@AEBV_Locinfo@1@_K@Z"), c16_ctor_li),
+        (format!("??0{C16}QEAA@AEBV_Locinfo@1@KW4_Codecvt_mode@1@_K@Z"), c16_ctor_mode),
+        (format!("??1{C16}MEAA@XZ"), crate::msvcp::nothing),
+        (format!("?_Init@{C16}IEAAXAEBV_Locinfo@2@@Z"), c16_init),
+        (format!("?in@{C16}{C16IN}"), cv_in),
+        (format!("?out@{C16}{C16OUT}"), cv_out),
+        (format!("?unshift@{C16}{UNSHIFT}"), cv_unshift),
+        (format!("?length@{C16}{LENGTH}"), cv_length),
+        (format!("?do_always_noconv@{C16}MEBA_NXZ"), no),
+        (format!("?do_max_length@{C16}MEBAHXZ"), c16_max_length),
+        (format!("?do_encoding@{C16}MEBAHXZ"), no),
+        (format!("?do_in@{C16}{}", m(C16IN)), c16_do_in),
+        (format!("?do_out@{C16}{}", m(C16OUT)), c16_do_out),
+        (format!("?do_unshift@{C16}{}", m(UNSHIFT)), c16_unshift),
+        (format!("?do_length@{C16}{}", m(LENGTH)), c16_length),
         // ctype<wchar_t>
         (format!("?_Getcat@{CT}{GETCAT}"), ct_getcat),
         (format!("??0{CT}QEAA@_K@Z"), ct_ctor),
@@ -772,6 +1042,7 @@ pub fn init() {
         let g = |n: Handler, m: Handler| if w { m } else { n };
         list.push((format!("?_Getcat@{tp}{GETCAT}"), g(tp_getcat::<false>, tp_getcat::<true>)));
         list.push((format!("??0{tp}QEAA@_K@Z"), g(tp_ctor::<false>, tp_ctor::<true>)));
+        list.push((format!("??_F{tp}QEAAXXZ"), g(tp_ctor0::<false>, tp_ctor0::<true>)));
         list.push((format!("??0{tp}QEAA@AEBV_Locinfo@1@_K@Z"), g(tp_ctor_li::<false>, tp_ctor_li::<true>)));
         list.push((format!("??1{tp}MEAA@XZ"), crate::msvcp::nothing));
         list.push((format!("?_Init@{tp}IEAAXAEBV_Locinfo@2@@Z"), no));
@@ -788,6 +1059,139 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn inn(st: &mut u16, mode: u32, src: &[u8], cap: usize) -> (u32, usize, Vec<u16>) {
+        let mut d = vec![0u16; cap];
+        let (r, n1, n2) = c16_in(st, mode, MAX_UCSCHAR, src, &mut d);
+        d.truncate(n2);
+        (r, n1, d)
+    }
+    fn out(st: &mut u16, mode: u32, src: &[u16], cap: usize) -> (u32, usize, Vec<u8>) {
+        let mut d = vec![0u8; cap];
+        let (r, n1, n2) = c16_out(st, mode, src, &mut d);
+        d.truncate(n2);
+        (r, n1, d)
+    }
+
+    /// The cases of Wine's msvcp140 test_codecvt_char16 (results from Windows)
+    #[test]
+    fn char16_out_split_pairs() {
+        let s: Vec<u16> = "\u{1f4d8}\u{1f679}".encode_utf16().collect();
+        for mode in [0, CONSUME_HEADER] {
+            let mut st = 0;
+            assert_eq!(out(&mut st, mode, &s[..1], 0), (PARTIAL, 0, vec![]));
+            for cap in 1..=4 {
+                let mut st = 0;
+                assert_eq!(out(&mut st, mode, &s[..1], cap), (OK, 1, vec![0xf0]));
+                assert_eq!(st, 0x7d);
+            }
+            let mut st = 0x7d;
+            assert_eq!(out(&mut st, mode, &s[1..], 8), (OK, 3, b"\x9f\x93\x98\xf0\x9f\x99\xb9".to_vec()));
+            assert_eq!(st, 1);
+        }
+        let mut st = 0;
+        assert_eq!(out(&mut st, GENERATE_HEADER, &s[..1], 3), (PARTIAL, 0, vec![]));
+        assert_eq!(st, 0);
+        assert_eq!(out(&mut st, GENERATE_HEADER, &s[..1], 4), (OK, 1, b"\xef\xbb\xbf\xf0".to_vec()));
+        assert_eq!(st, 0x7d);
+    }
+
+    #[test]
+    fn char16_in_cases() {
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, b"abc", 2), (OK, 2, vec![b'a' as u16, b'b' as u16]));
+        assert_eq!(st, 1);
+        let p = b"\xf0\x92\x80\x92";
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, p, 2), (OK, 4, vec![0xd808, 0xdc12]));
+        assert_eq!(inn(&mut st, 0, &p[..1], 2), (PARTIAL, 0, vec![]));
+        assert_eq!(inn(&mut st, 0, &p[..2], 2), (PARTIAL, 0, vec![]));
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, &p[..3], 1), (OK, 3, vec![0xd808]));
+        assert_eq!(st, 0xdc00);
+        assert_eq!(inn(&mut st, 0, &p[3..], 2), (OK, 1, vec![0xdc12]));
+        assert_eq!(st, 1);
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, p, 0), (PARTIAL, 0, vec![]));
+        assert_eq!(st, 0);
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, b"\xe0\xa1\x93", 1), (OK, 3, vec![0x853]));
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, b"\xe0\xa1", 2), (PARTIAL, 0, vec![]));
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, b"\xf0\xff", 4), (PARTIAL, 0, vec![]));
+        assert_eq!(inn(&mut st, 0, b"\xf0\xff\xff", 4), (ERROR, 1, vec![]));
+        assert_eq!(inn(&mut st, 0, b"\xf0\xff\xff\xff", 4), (ERROR, 1, vec![]));
+        assert_eq!(st, 0);
+        // a non-canonical 4-byte form of U+2012, and unpaired surrogates pass through
+        assert_eq!(inn(&mut st, 0, b"\xf0\x82\x80\x92", 2), (OK, 4, vec![0x2012]));
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, b"\xed\xa0\x80", 4), (OK, 3, vec![0xd800]));
+        let mut st = 0;
+        assert_eq!(inn(&mut st, 0, b"\xf0\x90\x80\x80", 4), (OK, 4, vec![0xd800, 0xdc00]));
+    }
+
+    #[test]
+    fn char16_headers() {
+        for mode in [0, CONSUME_HEADER, GENERATE_HEADER, CONSUME_HEADER | GENERATE_HEADER] {
+            let mut st = 0;
+            let r = inn(&mut st, mode, b"\xef\xbb\xbf", 10);
+            if mode & CONSUME_HEADER != 0 {
+                assert_eq!(r, (PARTIAL, 0, vec![]));
+                assert_eq!(st, 0);
+            } else {
+                assert_eq!(r, (OK, 3, vec![0xfeff]));
+            }
+            let mut st = 0;
+            let r = inn(&mut st, mode, b"\xef\xbb\xbfa", 10);
+            let want = if mode & CONSUME_HEADER != 0 { vec![0x61] } else { vec![0xfeff, 0x61] };
+            assert_eq!(r, (OK, 4, want));
+            let mut st = 0;
+            let r = out(&mut st, mode, &[0x61, 0x62, 0x63], 6);
+            let want: &[u8] = if mode & GENERATE_HEADER != 0 { b"\xef\xbb\xbfabc" } else { b"abc" };
+            assert_eq!(r, (OK, 3, want.to_vec()));
+            let mut st = 0;
+            if mode & GENERATE_HEADER != 0 {
+                assert_eq!(out(&mut st, mode, &[0x61], 2), (PARTIAL, 0, vec![]));
+            }
+        }
+    }
+
+    /// Any valid UTF-16 round-trips through UTF-8 like Rust's own encoder, in whole and
+    /// split into pieces at every boundary (the state carries half pairs across calls).
+    #[test]
+    fn char16_round_trip_matches_std() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..2000 {
+            let mut s = String::new();
+            for _ in 0..(seed % 7) {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let c = match seed % 4 {
+                    0 => (seed >> 8) as u32 % 0x80,
+                    1 => (seed >> 8) as u32 % 0x800,
+                    2 => (seed >> 8) as u32 % 0x10000,
+                    _ => 0x10000 + (seed >> 8) as u32 % 0x100000,
+                };
+                s.extend(char::from_u32(c).filter(|&c| c != '\u{feff}'));
+            }
+            let w: Vec<u16> = s.encode_utf16().collect();
+            let mut st = 0;
+            let (_, n1, b) = out(&mut st, 0, &w, 64);
+            assert_eq!((n1, &b[..]), (w.len(), s.as_bytes()));
+            // one byte at a time
+            let (mut st, mut got, mut i) = (0u16, Vec::new(), 0);
+            while i < b.len() {
+                let mut d = [0u16; 4];
+                let (r, n1, n2) = c16_in(&mut st, 0, MAX_UCSCHAR, &b[i..(i + 4).min(b.len())], &mut d[..1]);
+                assert_ne!(r, ERROR);
+                got.extend_from_slice(&d[..n2]);
+                i += n1;
+            }
+            assert_eq!(got, w, "{s:?}");
+        }
+    }
 
     #[test]
     fn c_locale_conversions() {

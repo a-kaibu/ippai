@@ -96,10 +96,10 @@ pub fn install() {
     if kura::fs::metadata(&host).is_ok() {
         return;
     }
-    if let Some((d, _)) = host.rsplit_once('/') {
-        let _ = kura::fs::create_dir_all(d);
+    if let Some((d, _)) = PATH.rsplit_once('\\') {
+        crate::files::make_dirs(d);
     }
-    let _ = kura::fs::write(&host, image());
+    let _ = kura::fs::write(crate::files::resolve_new(PATH), image());
 }
 
 /// The words of a command line: quotes group (and are dropped), "NAME=\"a b\"" stays one.

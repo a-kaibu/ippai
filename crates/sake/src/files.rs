@@ -94,6 +94,10 @@ pub fn delete_blocked(host: &str) -> bool {
 
 /// Not found: ERROR_PATH_NOT_FOUND when the directory is missing too, else ERROR_FILE_NOT_FOUND.
 pub fn missing(w: &str) -> u32 {
+    // (no name at all, as NULL: ERROR_PATH_NOT_FOUND)
+    if w.is_empty() {
+        return ERROR_PATH_NOT_FOUND;
+    }
     let full = full_path(w);
     match full.trim_end_matches('\\').rsplit_once('\\') {
         Some((d, _)) if resolve(&format!("{d}\\")).is_none() => ERROR_PATH_NOT_FOUND,
@@ -116,6 +120,32 @@ pub fn set_attrs(host: &str, a: u32) {
 pub fn extra_attrs(host: &str) -> u32 {
     let key = host.to_lowercase();
     ATTRS.lock().unwrap().iter().find(|x| x.0 == key).map_or(0, |x| x.1)
+}
+
+/// SetFileTime's last write times (the host files keep the host's own): host path in lower case
+/// -> (the FILETIME set, the host's modification time then). A write since (the host's time
+/// moved) shows the host's time again.
+static TIMES: Mutex<Vec<(String, u64, u64)>> = Mutex::new(Vec::new());
+pub fn set_write_time(host: &str, ft: u64) {
+    let key = host.to_lowercase();
+    let now = kura::fs::metadata(host).ok().and_then(|m| m.modified().ok()).map_or(0, filetime);
+    let mut t = TIMES.lock().unwrap();
+    t.retain(|x| x.0 != key);
+    t.push((key, ft, now));
+}
+/// The last write time of host file `host` (metadata `m`) as a FILETIME.
+pub fn write_time(host: &str, m: &kura::fs::Metadata) -> u64 {
+    let real = m.modified().map_or(0, filetime);
+    let key = host.to_lowercase();
+    TIMES.lock().unwrap().iter().find(|x| x.0 == key && x.2 == real).map_or(real, |x| x.1)
+}
+/// A file's index (BY_HANDLE_FILE_INFORMATION): the host's inode, kept by renames, else a hash
+/// of its host path.
+pub fn file_index(host: &str, m: &kura::fs::Metadata) -> u64 {
+    if m.ino() != 0 {
+        return m.ino();
+    }
+    host.to_lowercase().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
 
 pub struct Find {
@@ -262,6 +292,9 @@ fn exists(h: &str) -> bool {
 
 /// The host path of an existing file or directory `w` (case-insensitive match).
 pub fn resolve(w: &str) -> Option<String> {
+    if w.is_empty() {
+        return None;
+    }
     let h = to_host(w);
     if exists(&h) {
         return Some(h);
@@ -291,6 +324,34 @@ pub fn resolve_new(w: &str) -> String {
     }
 }
 
+/// (C:\windows\temp goes into a C:\Windows made before, not beside it on a case-sensitive
+/// (C:\\windows\\temp goes into a C:\\Windows made before, not beside it on a case-sensitive
+/// host). The host path.
+pub fn make_dirs(w: &str) -> String {
+    let full = full_path(w);
+    let full = full.trim_end_matches('\\');
+    let mut at = String::new();
+    let mut host = to_host(full);
+    for (i, part) in full.split('\\').enumerate() {
+        if i > 0 {
+            at.push('\\');
+        }
+        at.push_str(part);
+        if i == 0 {
+            continue;
+        }
+        host = match resolve(&at) {
+            Some(h) => h,
+            None => {
+                let h = resolve_new(&at);
+                let _ = kura::fs::create_dir(&h);
+                h
+            }
+        };
+    }
+    host
+}
+
 pub const ERROR_FILE_NOT_FOUND: u32 = 2;
 pub const ERROR_PATH_NOT_FOUND: u32 = 3;
 pub const ERROR_ACCESS_DENIED: u32 = 5;
@@ -304,6 +365,9 @@ pub fn open(w: &str, access: u32, disposition: u32) -> Result<File, u32> {
 
 /// CreateFile with its share mode (None: no sharing checks): (handle object, whether it existed)
 pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -> Result<(File, bool), u32> {
+    if w.is_empty() {
+        return Err(ERROR_PATH_NOT_FOUND);
+    }
     let write = access & 0x4000_0000 != 0 || access & 0x1000_0000 != 0 || access & 2 != 0;
     let existing = resolve(w);
     let host = existing.clone().unwrap_or_else(|| resolve_new(w));
@@ -561,5 +625,64 @@ mod tests {
         assert_eq!(extra_attrs(&h), 4);
         set_attrs(&h, 0x80);
         let _ = std::fs::remove_file(&f);
+    }
+
+    #[test]
+    fn set_write_times_hold_until_the_file_changes() {
+        let f = std::env::temp_dir().join(format!("sake-times-{}", std::process::id()));
+        std::fs::write(&f, b"abc").unwrap();
+        let h = f.to_string_lossy().into_owned();
+        let m = kura::fs::metadata(&h).unwrap();
+        let real = write_time(&h, &m);
+        assert_ne!(real, 0);
+        // _Set_last_write_time to 1970 + 1 s: GetFileTime gives it back
+        set_write_time(&h, 116_444_736_010_000_000);
+        assert_eq!(write_time(&h, &kura::fs::metadata(&h).unwrap()), 116_444_736_010_000_000);
+        // a write after it moves the host's time: the host's time shows again
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&f, b"abcd").unwrap();
+        let m2 = kura::fs::metadata(&h).unwrap();
+        if m2.modified().ok() != m.modified().ok() {
+            assert_eq!(write_time(&h, &m2), m2.modified().map_or(0, filetime));
+        }
+        let _ = std::fs::remove_file(&f);
+    }
+
+    #[test]
+    fn file_indexes_tell_files_apart_and_follow_hard_links() {
+        let d = std::env::temp_dir().join(format!("sake-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b, l) = (d.join("a"), d.join("b"), d.join("l"));
+        std::fs::write(&a, b"1").unwrap();
+        std::fs::write(&b, b"2").unwrap();
+        let idx = |p: &std::path::Path| {
+            let h = p.to_string_lossy().into_owned();
+            file_index(&h, &kura::fs::metadata(&h).unwrap())
+        };
+        assert_ne!(idx(&a), idx(&b));
+        assert_eq!(idx(&a), idx(&a));
+        kura::fs::hard_link(&a, &l).unwrap();
+        assert_eq!(idx(&a), idx(&l));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn made_directories_follow_the_existing_spelling() {
+        let root = std::env::temp_dir().join(format!("sake-mkdirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Windows").join("System32")).unwrap();
+        let r = root.to_string_lossy().into_owned();
+        // as the Z: drive maps the host's /, a path under the temporary root
+        let w = |p: &str| format!("Z:{}\\{p}", r.replace('/', "\\"));
+        let h = make_dirs(&w("windows\\temp"));
+        assert!(h.ends_with("Windows/temp"), "{h}");
+        assert!(!root.join("windows").exists());
+        // a second time: the same directory
+        assert_eq!(make_dirs(&w("WINDOWS\\TEMP\\")), h);
+        // new parents too
+        let h2 = make_dirs(&w("windows\\a\\b"));
+        assert!(h2.ends_with("Windows/a/b") && std::path::Path::new(&h2).is_dir(), "{h2}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

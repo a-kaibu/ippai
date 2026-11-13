@@ -283,3 +283,13 @@ fn lead_bytes_are_the_code_pages() {
         assert!(!crate::text::is_lead_cp(1252, b) && !crate::text::is_lead_cp(65001, b));
     }
 }
+
+#[test]
+fn temporary_names_count_in_base_32() {
+    assert_eq!(radix32(0), "0");
+    assert_eq!(radix32(9), "9");
+    assert_eq!(radix32(10), "a");
+    assert_eq!(radix32(31), "v");
+    assert_eq!(radix32(32), "10");
+    assert_eq!(radix32(u32::MAX), "3vvvvvv");
+}

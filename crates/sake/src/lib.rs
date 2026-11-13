@@ -108,6 +108,7 @@ pub mod cxx;
 pub mod cxx64;
 pub mod rtti;
 pub mod msvcp;
+mod msvcp_fs;
 mod msvcp_io;
 mod msvcp_loc;
 mod msvcp_thr;

@@ -961,6 +961,15 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
     }
     let file = find_dll_file(name);
     if api::is_core(name) || (api::is_system(name) && file.is_none()) {
+        // the Visual C++ runtimes bring the UCRT in with them (GetModuleHandle("ucrtbase.dll")
+        // then finds it, as Wine's msvcp140 tests take setlocale from it)
+        if key.starts_with("msvcp14") || key.starts_with("vcruntime14") || key.starts_with("concrt14") {
+            hle_module("ucrtbase");
+            if !key.starts_with("vcruntime14") {
+                hle_module(if mem::x64() { "vcruntime140_1" } else { "vcruntime140" });
+                hle_module("vcruntime140");
+            }
+        }
         return hle_module(&key);
     }
     match load_dll_file(name) {

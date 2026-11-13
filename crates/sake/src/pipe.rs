@@ -61,6 +61,19 @@ pub fn open(name: &str, access: u32, flags: u32) -> u32 {
     }
 }
 
+/// GetFileAttributes(Ex) of a pipe path: Windows opens it (taking a listening instance, which
+/// stays busy until the server disconnects it) and answers FILE_ATTRIBUTE_NORMAL; no instance
+/// free: ERROR_PIPE_BUSY. Ok(()) when it was there.
+pub fn query(name: &str) -> Result<(), u32> {
+    match kw(|k| k.open(name, false, false, crate::pid())) {
+        Ok(end) => {
+            kw(|k| k.release(end, crate::pid()));
+            Ok(())
+        }
+        Err(s) => Err(kern::win32(s)),
+    }
+}
+
 /// CreatePipe(&read, &write, sa, size)
 fn CreatePipe(c: &mut Ctx) -> u32 {
     let (r, w) = kw(|k| k.create_anon(c.a(3), crate::pid()));

@@ -758,6 +758,53 @@ fn _wgetcwd(c: &mut Ctx) -> u32 {
     let w: Vec<u16> = cwd_string().encode_utf16().collect();
     put_or_alloc::<u16>(c.a(0), c.a(1), &w)
 }
+/// _tempnam / _wtempnam (dir, prefix): a malloc'd name of a file not there yet, in TMP when that
+/// is a directory, else in `dir`, else in the root, else the current directory, as the CRTs
+/// choose; NULL (ENOENT) without one.
+fn tempnam(c: &mut Ctx, wide: bool) -> u32 {
+    static N: AtomicU32 = AtomicU32::new(1);
+    let (dir, pre) = (c.a(0), c.a(1));
+    let is_dir = |d: &str| !d.is_empty() && crate::files::resolve(d).and_then(|h| kura::fs::metadata(h).ok()).is_some_and(|m| m.is_dir());
+    let arg = if dir != 0 { path_arg(dir, wide) } else { String::new() };
+    let tmp = crate::k32::env_get("TMP").unwrap_or_default();
+    let Some(d) = [tmp, arg, "\\".to_string(), cwd_string()].into_iter().find(|d| is_dir(d)) else {
+        set_errno(ENOENT);
+        return 0;
+    };
+    let d = crate::files::full_path(&d);
+    let pre = if pre != 0 { path_arg(pre, wide) } else { String::new() };
+    let name = loop {
+        let n = format!("{}\\{pre}{}", d.trim_end_matches('\\'), radix32(N.fetch_add(1, Ordering::Relaxed)));
+        if crate::files::resolve(&n).is_none() {
+            break n;
+        }
+    };
+    if wide {
+        let w: Vec<u16> = name.encode_utf16().collect();
+        put_or_alloc::<u16>(0, 0, &w)
+    } else {
+        put_or_alloc::<u8>(0, 0, &crate::text::s2a(&name))
+    }
+}
+/// The CRTs' temporary-name numbering: base 32, digits then lower-case letters
+fn radix32(mut n: u32) -> String {
+    let mut s = Vec::new();
+    loop {
+        s.push(b"0123456789abcdefghijklmnopqrstuv"[(n % 32) as usize]);
+        n /= 32;
+        if n == 0 {
+            break;
+        }
+    }
+    s.reverse();
+    String::from_utf8(s).unwrap()
+}
+fn _tempnam(c: &mut Ctx) -> u32 {
+    tempnam(c, false)
+}
+fn _wtempnam(c: &mut Ctx) -> u32 {
+    tempnam(c, true)
+}
 /// _fullpath / _wfullpath (buf, path, n): the absolute path (n is 260 when buf is NULL)
 fn _fullpath(c: &mut Ctx) -> u32 {
     let full = crate::files::full_path(&path_arg(c.a(1), false));
@@ -1830,7 +1877,7 @@ pub(super) fn init() {
         _wstati64
     );
     reg!(
-        _fileno, _fdopen, _wfdopen, _access, _waccess, _chmod, _wchmod, _rmdir, _wrmdir, _unlink, _wunlink, _wremove, _chdir, _wchdir, _getcwd, _wgetcwd, _fullpath, _wfullpath, _utime64, _wutime64
+        _fileno, _fdopen, _wfdopen, _access, _waccess, _chmod, _wchmod, _rmdir, _wrmdir, _unlink, _wunlink, _wremove, _chdir, _wchdir, _getcwd, _wgetcwd, _fullpath, _wfullpath, _utime64, _wutime64, _tempnam, _wtempnam
     );
     reg!(_wgetenv, _wgetenv_s, _wputenv, _putenv, _putenv_s, _wputenv_s);
     implement("msvcrt", "getenv_s", getenv_s_a);

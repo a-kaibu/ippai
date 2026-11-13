@@ -1311,12 +1311,13 @@ pub(crate) struct Info {
     pub len: u64,
     pub mtime: i64,
     pub mode: u32,
+    pub ino: u32,
 }
 
 impl Fs {
     fn info(&self, ino: Ino) -> Info {
         let n = self.node(ino).unwrap();
-        Info { dir: matches!(n.data, Data::Dir(_)), len: self.file_size(ino), mtime: n.mtime, mode: n.mode }
+        Info { dir: matches!(n.data, Data::Dir(_)), len: self.file_size(ino), mtime: n.mtime, mode: n.mode, ino }
     }
 }
 

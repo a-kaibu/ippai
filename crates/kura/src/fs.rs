@@ -23,6 +23,8 @@ pub struct Metadata {
     len: u64,
     modified: SystemTime,
     readonly: bool,
+    /// the file's inode number (0: unknown): the same file under any name, kept by renames
+    ino: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,6 +55,9 @@ impl Metadata {
     pub fn permissions(&self) -> Permissions {
         Permissions(self.readonly)
     }
+    pub fn ino(&self) -> u64 {
+        self.ino
+    }
 }
 
 impl From<Info> for Metadata {
@@ -62,13 +67,18 @@ impl From<Info> for Metadata {
             len: if i.dir { 0 } else { i.len },
             modified: UNIX_EPOCH + Duration::from_secs(i.mtime.max(0) as u64),
             readonly: i.mode & 0o200 == 0,
+            ino: i.ino as u64 | 1 << 40,
         }
     }
 }
 
 impl From<std::fs::Metadata> for Metadata {
     fn from(m: std::fs::Metadata) -> Metadata {
-        Metadata { dir: m.is_dir(), len: m.len(), modified: m.modified().unwrap_or(UNIX_EPOCH), readonly: m.permissions().readonly() }
+        #[cfg(unix)]
+        let ino = std::os::unix::fs::MetadataExt::ino(&m);
+        #[cfg(not(unix))]
+        let ino = 0;
+        Metadata { dir: m.is_dir(), len: m.len(), modified: m.modified().unwrap_or(UNIX_EPOCH), readonly: m.permissions().readonly(), ino }
     }
 }
 
@@ -139,6 +149,16 @@ pub fn remove_dir<P: AsRef<Path>>(p: P) -> io::Result<()> {
     match vfs::remove_at(&path_str(p.as_ref()), true) {
         At::Ours(r) => r.map_err(os),
         At::Outside(h) => std::fs::remove_dir(h),
+    }
+}
+
+/// A second name `to` of file `from` (std::fs::hard_link) outside the trees mounted here; in
+/// them, or across: Unsupported (they keep one name per file).
+pub fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<()> {
+    let (a, b) = (path_str(from.as_ref()), path_str(to.as_ref()));
+    match (vfs::info_at(&a, true), vfs::info_at(&b, true)) {
+        (At::Outside(ha), At::Outside(hb)) => std::fs::hard_link(ha, hb),
+        _ => Err(io::ErrorKind::Unsupported.into()),
     }
 }
 

@@ -118,7 +118,7 @@ fn mtx_lock(m: u32, wait: Wait) -> u32 {
 }
 
 fn mtx_unlock(m: u32) {
-    let n = r32(m + COUNT).saturating_sub(1);
+    let n = r32(m + COUNT).wrapping_sub(1);
     w32(m + COUNT, n);
     if n == 0 {
         w32(m + OWNER, u32::MAX);
@@ -414,15 +414,15 @@ fn release_chore(c: &mut Ctx) -> u32 {
     }
     0
 }
-/// _ContextCallback { size_t _M_context }: 1 = capture deferred; captured: 0 (no apartment)
-fn ctx_capture(c: &mut Ctx) -> u32 {
-    wp(c.a(0), 0);
+/// _ContextCallback { size_t _M_context }: 0 (no apartment); _Capture, _Reset and _Assign
+/// leave it as it is (Windows' answers in Wine's msvcp140 tests)
+fn ctx_capture(_: &mut Ctx) -> u32 {
     0
 }
-/// task_continuation_context() : _ContextCallback(deferred), _M_RunInline(false)
+/// task_continuation_context(): _M_context 0, _M_RunInline false
 fn continuation_ctor(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    wp(this, 1);
+    wp(this, 0);
     mem::write(this + 8, &[0]);
     this
 }
@@ -549,6 +549,8 @@ const ERRNO_MSGS: &[(u32, &str)] = &[
 ];
 
 fn errno_msg(e: u32) -> u32 {
+    // every unknown code shares one "unknown error" string, as the STL's table does
+    let e = if ERRNO_MSGS.iter().any(|(k, _)| *k == e) { e } else { u32::MAX };
     static STRS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
     let mut g = STRS.lock().unwrap();
     if let Some(&(_, p)) = g.iter().find(|(k, _)| *k == e) {
@@ -566,16 +568,57 @@ fn _Syserror_map(c: &mut Ctx) -> u32 {
 }
 /// ?_Winerror_map@std@@YAHH@Z: a Windows error's errno (0: none)
 fn _Winerror_map(c: &mut Ctx) -> u32 {
-    match c.a(0) {
-        2 | 3 => 2,
-        5 => 13,
-        6 => 9,
+    winerror_errno(c.a(0))
+}
+/// The STL's Windows error -> errno table (values as the Windows CRT's errno)
+fn winerror_errno(e: u32) -> u32 {
+    match e {
+        1 => 40,
+        2 | 3 | 123 => 2,
+        4 => 24,
+        5 | 12 | 16 | 19 | 32 | 82 | 998 | 10013 => 13,
+        6 | 87 | 131 | 267 | 4390 | 10022 => 22,
         8 | 14 => 12,
-        32 | 33 | 170 => 16,
+        15 | 20 | 55 => 19,
+        17 => 18,
+        21 | 1237 => 11,
+        25 | 29 | 30 | 110 | 1011 | 1012 | 1013 => 5,
+        33 | 212 => 39,
+        39 | 112 => 28,
+        50 => 129,
         80 | 183 => 17,
-        87 => 22,
-        112 => 28,
-        1460 => 138,
+        111 | 10063 => 38,
+        142 | 170 | 2401 | 2404 => 16,
+        145 => 41,
+        995 => 105,
+        1460 | 10060 => 138,
+        10004 => 4,
+        10009 => 9,
+        10014 => 14,
+        10024 => 24,
+        10035 => 140,
+        10036 => 112,
+        10037 => 103,
+        10038 => 128,
+        10039 => 109,
+        10040 => 115,
+        10041 => 136,
+        10042 => 123,
+        10043 => 135,
+        10045 => 130,
+        10047 => 102,
+        10048 => 100,
+        10049 => 101,
+        10050 => 116,
+        10051 => 118,
+        10052 => 117,
+        10053 => 106,
+        10054 => 108,
+        10055 => 119,
+        10056 => 113,
+        10057 => 126,
+        10061 => 107,
+        10065 => 110,
         _ => 0,
     }
 }
@@ -671,5 +714,28 @@ pub fn init() {
     for n in ["_LogScheduleTask@_TaskEventLogger@details@Concurrency@@QEAAX_N@Z", "_LogCancelTask", "_LogTaskCompleted", "_LogTaskExecutionCompleted", "_LogWorkItemCompleted", "_LogWorkItemStarted"] {
         let name = if n.contains('@') { format!("?{n}") } else { format!("?{n}@_TaskEventLogger@details@Concurrency@@QEAAXXZ") };
         implement("msvcp140", &name, nothing);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Windows' table, as Wine's msvcp140 test_Winerror_map checks it on Windows
+    #[test]
+    fn winerror_map_matches_windows() {
+        let want: &[(u32, u32)] = &[
+            (0, 0), (1, 40), (2, 2), (3, 2), (4, 24), (5, 13), (6, 22), (7, 0), (8, 12), (12, 13),
+            (14, 12), (15, 19), (16, 13), (17, 18), (19, 13), (20, 19), (21, 11), (25, 5), (29, 5),
+            (30, 5), (32, 13), (33, 39), (39, 28), (50, 129), (55, 19), (80, 17), (82, 13),
+            (87, 22), (110, 5), (111, 38), (112, 28), (123, 2), (131, 22), (142, 16), (145, 41),
+            (170, 16), (183, 17), (212, 39), (267, 22), (995, 105), (998, 13), (1011, 5),
+            (1237, 11), (1460, 138), (2401, 16), (2404, 16), (4390, 22), (10004, 4), (10013, 13),
+            (10035, 140), (10054, 108), (10060, 138), (10061, 107), (10063, 38), (10065, 110),
+            (10066, 0), (0xffff, 0),
+        ];
+        for &(e, n) in want {
+            assert_eq!(winerror_errno(e), n, "error {e}");
+        }
     }
 }

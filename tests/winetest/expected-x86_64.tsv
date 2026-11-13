@@ -184,7 +184,7 @@ mmdevapi:spatialaudio	ok	0	3
 mpr:mpr	fail	31	327
 msacm32:msacm	fail	181	337
 msdmo:msdmo	ok	0	46
-msvcp140:msvcp140	crash	36	0
+msvcp140:msvcp140	fail	3	1642
 msvcp60:ios	crash	45	0
 msvcp60:string	crash	39	0
 msvcp90:ios	ok	0	0
