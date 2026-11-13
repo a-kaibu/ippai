@@ -4,7 +4,9 @@
 //! A movie with a `.vnv` next to it (`ippai pack` makes one of every mpg / wmv / avi / mp4 ...,
 //! crates/ippai/src/movie.rs) really plays (dshow_play.rs): its clock, seeking, EC_COMPLETE at
 //! its end, its picture where the video window (IVideoWindow / IBasicVideo) or the EVR's
-//! rectangle (IMFVideoDisplayControl) is, its sound. Any other "plays" to its end shortly after
+//! rectangle (IMFVideoDisplayControl) is, its sound. A sound-only file (wav, mp3, ogg ...: what
+//! mci.rs's waveaudio decodes, through the page's AudioDecoder for mp3) plays on the mixer with
+//! its own clock, seeking and EC_COMPLETE at its end. Any other "plays" to its end shortly after
 //! Run (EC_COMPLETE after PLAY), so games go on past their opening or logo movie.
 //!
 //! One guest block holds every interface of a graph: pointer-sized word k is interface k's
@@ -184,6 +186,7 @@ fn release_k(c: &mut Ctx, k: u32) -> u32 {
         // the movie stops and its window goes (the block and the graph's event stay: a game
         // may still hold the handle it got from us)
         play::end(b);
+        sound_close(b);
         with(b, |g| g.playing = false);
         crate::dshow_mpeg::graph_released(c, b);
     }
@@ -457,6 +460,13 @@ fn load(b: u32, w: &str) -> Result<(), u32> {
     if movie.is_none() && crate::files::resolve(w).is_none() {
         return Err(NOT_FOUND);
     }
+    sound_close(b);
+    if movie.is_none() {
+        let bytes = crate::files::resolve(w).and_then(|p| kura::fs::read(p).ok());
+        if bytes.is_some_and(|d| sound_open(b, w, &d)) {
+            return Ok(());
+        }
+    }
     let Some(movie) = movie else {
         eprintln!("sake: movie {w}: not played (no .vnv to decode, see ippai pack)");
         with(b, |g| {
@@ -529,6 +539,17 @@ fn set_state(b: u32, s: u32) -> u32 {
             }
         });
         sync(b);
+    } else if is_sound(b) {
+        sounds(|m| {
+            if let Some(p) = m.get_mut(&b) {
+                match s {
+                    0 => p.tl.stop(t),
+                    1 => p.tl.pause(t),
+                    _ => p.tl.run(t),
+                }
+            }
+        });
+        sound_sync(b);
     }
     was
 }
@@ -542,6 +563,10 @@ fn run(c: &mut Ctx) -> u32 {
     let was = set_state(b, 2);
     // (an MPEG-1 stream of dshow_mpeg.rs plays: its own end)
     let mpeg = crate::dshow_mpeg::movie(b).is_some();
+    if is_sound(b) {
+        sound_end_check(b);
+        return if was == 0 { S_FALSE } else { 0 };
+    }
     let run = with(b, |g| {
         // (a Run again, after a Pause, keeps the end to come)
         if g.playing || g.done || mpeg {
@@ -577,7 +602,12 @@ fn due(v: &mut Vec<(std::time::Instant, u32, u32)>, t: std::time::Instant) -> Ve
 /// Graph `b`'s movie (nothing to play), run `n`, ends PLAY from now: unless a Stop or another
 /// Run came in between, or a real movie plays by then.
 fn end_later(b: u32, n: u32) {
-    ENDS.lock().unwrap_or_else(|e| e.into_inner()).push((std::time::Instant::now() + PLAY, b, n));
+    end_in(b, n, PLAY)
+}
+
+/// An end to check `after` from now (run `n` of a graph without a movie; a sound's: any run).
+fn end_in(b: u32, n: u32, after: std::time::Duration) {
+    ENDS.lock().unwrap_or_else(|e| e.into_inner()).push((std::time::Instant::now() + after, b, n));
     ENDS_WAKE.notify_all();
     static T: OnceLock<()> = OnceLock::new();
     T.get_or_init(|| {
@@ -591,7 +621,9 @@ fn end_later(b: u32, n: u32) {
                     let wait = v.iter().map(|e| e.0.saturating_duration_since(t)).min().unwrap_or(std::time::Duration::from_secs(3600));
                     drop(v);
                     for (b, n) in now_due {
-                        if with(b, |g| g.runs == n && g.done && !g.playing) == Some(true) {
+                        if is_sound(b) {
+                            sound_end_check(b);
+                        } else if with(b, |g| g.runs == n && g.done && !g.playing) == Some(true) {
                             completed(b);
                         }
                     }
@@ -769,7 +801,100 @@ fn get_notify_flags(c: &mut Ctx) -> u32 {
 fn timeline<R>(b: u32, f: impl FnOnce(&mut play::Timeline, u64) -> R) -> Option<R> {
     let t = now();
     let mut f = Some(f);
+    if let Some(r) = sounds(|m| m.get_mut(&b).map(|s| (f.take().unwrap())(&mut s.tl, t))) {
+        // (a seek, a new stop or rate moves its end: checked anew)
+        sound_sync(b);
+        sound_end_check(b);
+        return Some(r);
+    }
     play::with(|m| m.get_mut(&b).map(|p| (f.take().unwrap())(&mut p.tl, t))).or_else(|| crate::dshow_mpeg::timeline(b, f.take()?))
+}
+
+// ---------------------------------------------------------------------------------------------
+// sound-only files (an mp3, a wav, an ogg rendered without a picture)
+
+/// A graph playing a sound file: its clock, and the PCM the mixer plays under the graph's key
+/// (None: nothing decodes it here, only its timing).
+struct SoundGraph {
+    tl: play::Timeline,
+    pcm: Option<u32>,
+    rate: u32,
+}
+
+static SOUNDS: Mutex<Option<HashMap<u32, SoundGraph>>> = Mutex::new(None);
+
+fn sounds<R>(f: impl FnOnce(&mut HashMap<u32, SoundGraph>) -> R) -> R {
+    f(SOUNDS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new))
+}
+
+/// Opens the sound file `bytes` on graph `b` (paused at its start); false when it is not one.
+fn sound_open(b: u32, w: &str, bytes: &[u8]) -> bool {
+    let Some((pcm, rate, duration)) = crate::mci::sound_pcm(bytes) else { return false };
+    let data = pcm.map(|(data, size, fmt)| {
+        crate::sound::music_start(b, data, size, fmt, 0, volume(b));
+        crate::sound::music_set(b, Some(0.0), Some(false));
+        data
+    });
+    eprintln!("sake: movie {w}: sound only, {:.1} s{}", duration as f64 / SEC as f64, if data.is_none() { " (not decoded here: silent)" } else { "" });
+    sounds(|m| m.insert(b, SoundGraph { tl: play::Timeline::new(duration), pcm: data, rate }));
+    with(b, |g| {
+        g.done = false;
+        g.playing = false;
+        g.duration = duration;
+        g.video = (0, 0);
+        g.ended = false;
+        g.events.clear();
+    });
+    true
+}
+
+/// The graph's sound file goes (another file rendered, the graph released).
+fn sound_close(b: u32) {
+    if let Some(s) = sounds(|m| m.remove(&b)) {
+        if let Some(p) = s.pcm {
+            crate::sound::music_stop(b);
+            mem::heap_free(p);
+        }
+    }
+}
+
+fn is_sound(b: u32) -> bool {
+    sounds(|m| m.contains_key(&b))
+}
+
+/// The mixer follows the sound's clock: where it is, whether it plays (not past its stop).
+fn sound_sync(b: u32) {
+    let t = now();
+    let Some((frames, on)) = sounds(|m| {
+        let s = m.get(&b)?;
+        let pos = s.tl.position(t);
+        Some((pos as f64 * s.rate as f64 / SEC as f64, s.tl.running() && pos < s.tl.stop))
+    }) else {
+        return;
+    };
+    crate::sound::music_set(b, Some(frames), Some(on));
+}
+
+/// The sound's end: EC_COMPLETE once it runs past its stop; checked again then while it runs.
+fn sound_end_check(b: u32) {
+    let t = now();
+    // (Ok: the end reached now; Err(Some): the clock time to it; Err(None): not running)
+    let r = sounds(|m| {
+        let s = m.get_mut(&b)?;
+        Some(if s.tl.complete(t) { Ok(()) } else { Err(s.tl.until_end(t)) })
+    });
+    match r {
+        Some(Ok(())) => {
+            sound_sync(b);
+            completed(b);
+        }
+        Some(Err(Some(left))) => {
+            // (one check to come per sound: the one for its end now)
+            ENDS.lock().unwrap_or_else(|e| e.into_inner()).retain(|e| e.1 != b);
+            end_in(b, 0, std::time::Duration::from_nanos(left.saturating_mul(100)));
+        }
+        _ => {}
+    }
 }
 /// TIME_FORMAT_MEDIA_TIME {7b785574-8c82-11cf-bc0c-00aa00ac74f6}
 fn media_time(p: u32) -> bool {
@@ -1008,6 +1133,7 @@ fn ba_put_volume(c: &mut Ctx) -> u32 {
     }
     let b = base(c, BA);
     with(b, |g| g.volume = v);
+    crate::sound::music_volume(b, v);
     play::with(|m| {
         if let Some(p) = m.get_mut(&b) {
             p.volume = v;
@@ -2097,6 +2223,67 @@ mod ends_tests {
         assert!(due(&mut v, t).is_empty());
         assert_eq!(due(&mut v, t + Duration::from_secs(9)), [(1, 1)]);
         assert!(v.is_empty());
+    }
+
+    fn sound_at(b: u32, duration: u64, ran_for: Option<u64>) {
+        let mut tl = play::Timeline::new(duration);
+        if let Some(d) = ran_for {
+            // (as if it had run `d` already: running, at `d`)
+            tl.run(now());
+            tl.seek(now(), d);
+        }
+        sounds(|m| m.insert(b, SoundGraph { tl, pcm: None, rate: 22050 }));
+    }
+    fn pending(b: u32) -> usize {
+        ENDS.lock().unwrap().iter().filter(|e| e.1 == b).count()
+    }
+
+    /// A sound-only graph (#85): past its end while it runs, its end is reached once; before
+    /// it, one check is pending for the time left (however often it is asked); stopped, none.
+    #[test]
+    fn a_sound_ends_once_at_its_end() {
+        // (keys no graph has: completed() finds no graph to tell)
+        sound_at(0x7000_0010, SEC, Some(2 * SEC));
+        sound_end_check(0x7000_0010);
+        assert!(sounds(|m| m[&0x7000_0010].tl.done));
+        assert_eq!(pending(0x7000_0010), 0);
+        sound_end_check(0x7000_0010);
+        assert!(sounds(|m| m[&0x7000_0010].tl.done));
+
+        sound_at(0x7000_0020, 60 * SEC, Some(SEC));
+        for _ in 0..5 {
+            sound_end_check(0x7000_0020);
+        }
+        assert!(!sounds(|m| m[&0x7000_0020].tl.done));
+        assert_eq!(pending(0x7000_0020), 1);
+
+        sound_at(0x7000_0030, SEC, None);
+        sound_end_check(0x7000_0030);
+        assert!(!sounds(|m| m[&0x7000_0030].tl.done));
+        assert_eq!(pending(0x7000_0030), 0);
+        for b in [0x7000_0010, 0x7000_0020, 0x7000_0030] {
+            sounds(|m| m.remove(&b));
+        }
+    }
+
+    proptest::proptest! {
+        /// Any seek while it runs: done exactly when the position reached the stop.
+        #[test]
+        fn the_end_is_where_the_stop_is(dur in 1u64..100, ran in 0u64..200, seek in proptest::option::of(0u64..150)) {
+            let b = 0x7100_0000;
+            sound_at(b, dur * SEC / 10, Some(ran * SEC / 10));
+            if let Some(to) = seek {
+                sounds(|m| m.get_mut(&b).unwrap().tl.seek(now(), to * SEC / 10));
+            }
+            sound_end_check(b);
+            let (done, pos, stop) = sounds(|m| { let s = &m[&b]; (s.tl.done, s.tl.position(now()), s.tl.stop) });
+            proptest::prop_assert_eq!(done, pos >= stop);
+            // (a check due soon may already have been taken by the ends thread: at most one)
+            let most = usize::from(!done);
+            proptest::prop_assert!(pending(b) <= most);
+            ENDS.lock().unwrap().retain(|e| e.1 != b);
+            sounds(|m| m.remove(&b));
+        }
     }
 }
 

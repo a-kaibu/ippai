@@ -602,6 +602,18 @@ fn open(kind: Option<Kind>, element: &str, alias: Option<&str>) -> Result<u32, u
 
 /// A sound file's samples in guest memory (PCM as it is; the rest decoded by the page), and its
 /// length. A sound the page can't decode (or no page) still opens, silent, with its length.
+/// A sound file's PCM for the mixer, as MCI's waveaudio / mpegvideo play it: (the PCM in guest
+/// memory, its size and format, or None when nothing here decodes it), its sample rate, its
+/// duration. DirectShow's graph plays sound-only files with it (dshow.rs).
+pub(crate) fn sound_pcm(b: &[u8]) -> Option<(Option<(u32, u32, crate::sound::Fmt)>, u32, u64)> {
+    let (m, d) = sound(b)?;
+    Some(match m {
+        Media::Sound { data, size, fmt } => (Some((data, size, fmt)), fmt.rate, d),
+        Media::Silent { rate, .. } => (None, rate, d),
+        Media::Movie { .. } => return None,
+    })
+}
+
 fn sound(b: &[u8]) -> Option<(Media, u64)> {
     use crate::audiofile::Codec;
     let t = crate::audiofile::open(b)?;
