@@ -4081,6 +4081,11 @@ fn keyboard_layout() -> u32 {
 fn GetKeyboardLayout(_: &mut Ctx) -> u32 {
     keyboard_layout()
 }
+/// WaitForInputIdle(process, ms): 0, the process is ready (DEMO.EXE of 妄想ぷろとこる！ waits so for
+/// the game it starts; sake's processes take input from their first message loop on)
+fn WaitForInputIdle(_: &mut Ctx) -> u32 {
+    0
+}
 fn GetKeyboardLayoutList(c: &mut Ctx) -> u32 {
     if c.a(0) > 0 {
         crate::mem::wp(c.a(1), keyboard_layout());
@@ -6723,7 +6728,7 @@ pub fn init() {
         ScrollWindow, ScrollWindowEx, LockWindowUpdate, SetFocus, GetFocus, SetActiveWindow, GetActiveWindow,
         GetForegroundWindow, SetForegroundWindow, BringWindowToTop, SetCapture, ReleaseCapture, GetCapture,
         SendInput, GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
-        GetKeyboardState, SetKeyboardState, GetKeyboardType, GetKeyboardLayout, GetKeyboardLayoutList,
+        GetKeyboardState, SetKeyboardState, GetKeyboardType, GetKeyboardLayout, GetKeyboardLayoutList, WaitForInputIdle,
         ActivateKeyboardLayout, LoadKeyboardLayoutA, MapVirtualKeyA, MapVirtualKeyW, GetKeyNameTextA, GetKeyNameTextW,
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxExW, MessageBoxIndirectA, MessageBoxIndirectW,
         SetWindowsHookExA, SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, WinHelpA, GetSysColor,
