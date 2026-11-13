@@ -72,12 +72,26 @@ unsafe fn pp8(p8: u32, p: &[u32; 14]) {
     }
 }
 
-/// D3DCAPS9 to D3DCAPS8 (its first 53 dwords), with shader versions Direct3D 8 has.
+/// D3DCAPS2_CANRENDERWINDOWED: Direct3D 8 only (d3d9caps.h no longer has it). Windows' d3d8
+/// sets it on every device; the DirectX 8 SDK's D3DApp framework (凌●学園 体験版) counts a
+/// device as usable only with it, and with none says the video driver lacks DirectX 8.
+pub(crate) const CAPS2_CANRENDERWINDOWED: u32 = 0x0008_0000;
+
+/// D3DCAPS9 to D3DCAPS8 (its first 53 dwords), with shader versions Direct3D 8 has and
+/// Direct3D 8's CANRENDERWINDOWED.
+pub(crate) fn caps8_of(c: &[u32; 76]) -> [u32; 53] {
+    let mut o = [0u32; 53];
+    o.copy_from_slice(&c[..53]);
+    o[3] |= CAPS2_CANRENDERWINDOWED;
+    o[49] = 0xfffe_0101; // vs 1.1
+    o[50] = 96;
+    o[51] = 0xffff_0104; // ps 1.4
+    o
+}
+
 unsafe fn caps8(c: &mut [u32; 76], out: u32) {
-    c[49] = 0xfffe_0101; // vs 1.1
-    c[50] = 96;
-    c[51] = 0xffff_0104; // ps 1.4
-    std::ptr::copy_nonoverlapping(c.as_ptr(), out as *mut u32, 53);
+    let o = caps8_of(c);
+    std::ptr::copy_nonoverlapping(o.as_ptr(), out as *mut u32, 53);
 }
 
 /// D3DSURFACE_DESC9 to 8 (Size instead of MultiSampleQuality, before MultiSampleType)

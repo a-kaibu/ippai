@@ -35,6 +35,8 @@ mod volume_tests;
 mod tss_temp_tests;
 #[cfg(test)]
 mod cube_tests;
+#[cfg(test)]
+mod caps8_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;

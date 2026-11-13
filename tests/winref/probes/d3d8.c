@@ -144,6 +144,16 @@ int main(void) {
         printf("caps texture pow2 %d nonpow2cond %d square %d alpha %d\n", !!(c.TextureCaps & D3DPTEXTURECAPS_POW2),
                !!(c.TextureCaps & D3DPTEXTURECAPS_NONPOW2CONDITIONAL), !!(c.TextureCaps & D3DPTEXTURECAPS_SQUAREONLY),
                !!(c.TextureCaps & D3DPTEXTURECAPS_ALPHA));
+        /* Caps2 bits of IDirect3D8::GetDeviceCaps (D3DApp of the DirectX 8 SDK keeps a device
+           only when it renders windowed: 凌●学園 体験版) */
+        static const struct { D3DDEVTYPE t; const char *n; } dt[] = { { D3DDEVTYPE_HAL, "HAL" }, { D3DDEVTYPE_REF, "REF" } };
+        for (int i = 0; i < 2; i++) {
+            D3DCAPS8 a;
+            hr = IDirect3D8_GetDeviceCaps(d3d, 0, dt[i].t, &a);
+            if (FAILED(hr)) printf("caps2 %s %#lx\n", dt[i].n, hr);
+            else printf("caps2 %s windowed %d gamma %d dynamic %d\n", dt[i].n, !!(a.Caps2 & D3DCAPS2_CANRENDERWINDOWED),
+                        !!(a.Caps2 & D3DCAPS2_FULLSCREENGAMMA), !!(a.Caps2 & D3DCAPS2_DYNAMICTEXTURES));
+        }
         D3DDISPLAYMODE m;
         hr = IDirect3D8_GetAdapterDisplayMode(d3d, 0, &m);
         printf("GetAdapterDisplayMode %#lx format %d\n", hr, hr ? 0 : m.Format);
