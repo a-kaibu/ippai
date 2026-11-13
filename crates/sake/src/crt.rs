@@ -1935,6 +1935,28 @@ fn _libm_sse2_pow_precise(c: &mut Ctx) -> u32 {
     let (x, y) = (xmm_f64(c, 0), xmm_f64(c, 1));
     xmm_ret(c, x.powf(y))
 }
+fn _libm_sse2_atan2(c: &mut Ctx) -> u32 {
+    let (y, x) = (xmm_f64(c, 0), xmm_f64(c, 1));
+    xmm_ret(c, y.atan2(x))
+}
+/// the float forms (__libm_sse2_sinf...): xmm0's low 32 bits (powf: xmm0, xmm1)
+fn xmm_f32(c: &mut Ctx, i: usize) -> f32 {
+    f32::from_bits(c.cpu.xmm[i] as u32)
+}
+fn xmm_retf(c: &mut Ctx, v: f32) -> u32 {
+    c.cpu.xmm[0] = (c.cpu.xmm[0] & !(u32::MAX as u128)) | v.to_bits() as u128;
+    0
+}
+macro_rules! sse1f {
+    ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = xmm_f32(c, 0); xmm_retf(c, $f(x)) } )* };
+}
+sse1f!(_libm_sse2_sinf = f32::sin, _libm_sse2_cosf = f32::cos, _libm_sse2_tanf = f32::tan, _libm_sse2_asinf = f32::asin,
+    _libm_sse2_acosf = f32::acos, _libm_sse2_atanf = f32::atan, _libm_sse2_expf = f32::exp, _libm_sse2_logf = f32::ln,
+    _libm_sse2_log10f = f32::log10);
+fn _libm_sse2_powf(c: &mut Ctx) -> u32 {
+    let (x, y) = (xmm_f32(c, 0), xmm_f32(c, 1));
+    xmm_retf(c, x.powf(y))
+}
 fn _CIpow(c: &mut Ctx) -> u32 {
     let y = st_pop(c);
     let x = st_pop(c);
@@ -4047,6 +4069,19 @@ pub fn init() {
     reg!(_libm_sse2_sin_precise, _libm_sse2_cos_precise, _libm_sse2_tan_precise, _libm_sse2_asin_precise,
         _libm_sse2_acos_precise, _libm_sse2_atan_precise, _libm_sse2_exp_precise, _libm_sse2_log_precise,
         _libm_sse2_log10_precise, _libm_sse2_sqrt_precise, _libm_sse2_pow_precise);
+    // (the UCRT's x86 __libm_sse2_* that /arch:SSE2 code calls without /fp:precise: the same
+    // registers)
+    for (n, f) in [
+        ("sin", _libm_sse2_sin_precise as crate::api::Handler), ("cos", _libm_sse2_cos_precise), ("tan", _libm_sse2_tan_precise),
+        ("asin", _libm_sse2_asin_precise), ("acos", _libm_sse2_acos_precise), ("atan", _libm_sse2_atan_precise),
+        ("atan2", _libm_sse2_atan2), ("exp", _libm_sse2_exp_precise), ("log", _libm_sse2_log_precise),
+        ("log10", _libm_sse2_log10_precise), ("pow", _libm_sse2_pow_precise), ("sinf", _libm_sse2_sinf),
+        ("cosf", _libm_sse2_cosf), ("tanf", _libm_sse2_tanf), ("asinf", _libm_sse2_asinf), ("acosf", _libm_sse2_acosf),
+        ("atanf", _libm_sse2_atanf), ("expf", _libm_sse2_expf), ("logf", _libm_sse2_logf), ("log10f", _libm_sse2_log10f),
+        ("powf", _libm_sse2_powf),
+    ] {
+        implement("msvcrt", &format!("__libm_sse2_{n}"), f);
+    }
     reg!(_findclose, _findfirst32, _findnext32, _findfirst32i64, _findnext32i64, _findfirst64i32, _findnext64i32,
         _findfirst64, _findnext64, _wfindfirst32, _wfindnext32, _wfindfirst32i64, _wfindnext32i64,
         _wfindfirst64i32, _wfindnext64i32, _wfindfirst64, _wfindnext64);
@@ -4397,7 +4432,7 @@ mod eh_prolog_tests {
         let mut cpu = koji::Cpu::default();
         cpu.regs[koji::EAX] = 0x0040_2e1b;
         cpu.regs[koji::EBP] = 0x1234;
-        let mut c = Ctx { cpu: &mut cpu, esp: e, edx: None, jumped: false, st0: None, trap: 0 };
+        let mut c = Ctx { cpu: &mut cpu, esp: e, edx: None, jumped: false, st0: None, trap: 0, this: None };
         super::_EH_prolog(&mut c);
         assert!(c.jumped);
         assert_eq!(cpu.eip, 0x0040_1054);
@@ -4410,5 +4445,46 @@ mod eh_prolog_tests {
         assert_eq!(r32(teb), e - 12);
         w32(teb, old);
         mem::heap_free(stack);
+    }
+}
+
+#[cfg(test)]
+mod libm_sse2_tests {
+    use crate::api::{self, Ctx};
+    use proptest::prelude::*;
+
+    fn call(name: &str, x0: u128, x1: u128) -> u128 {
+        let f = api::find_impl("ucrtbase", name).unwrap_or_else(|| panic!("{name}"));
+        let mut cpu = koji::Cpu::default();
+        cpu.xmm[0] = x0;
+        cpu.xmm[1] = x1;
+        let mut c = Ctx { cpu: &mut cpu, esp: 0, edx: None, jumped: false, st0: None, trap: 0, this: None };
+        f(&mut c);
+        assert!(c.st0.is_none(), "{name}: the result is xmm0's, not ST0's");
+        cpu.xmm[0]
+    }
+
+    proptest! {
+        /// __libm_sse2_*: xmm0 (and xmm1) in, xmm0's low lane out, its upper bits kept
+        #[test]
+        fn doubles(x in any::<f64>(), y in any::<f64>(), hi in any::<u64>()) {
+            super::init();
+            let up = (hi as u128) << 64;
+            for (n, want) in [("pow", x.powf(y)), ("atan2", x.atan2(y)), ("sin", x.sin()), ("exp", x.exp()), ("log10", x.log10())] {
+                let r = call(&format!("__libm_sse2_{n}"), up | x.to_bits() as u128, y.to_bits() as u128);
+                prop_assert_eq!(r as u64, want.to_bits(), "{}", n);
+                prop_assert_eq!(r >> 64, hi as u128, "{}", n);
+            }
+        }
+        #[test]
+        fn floats(x in any::<f32>(), y in any::<f32>(), hi in any::<u32>()) {
+            super::init();
+            let up = (hi as u128) << 32;
+            for (n, want) in [("powf", x.powf(y)), ("cosf", x.cos()), ("logf", x.ln())] {
+                let r = call(&format!("__libm_sse2_{n}"), up | x.to_bits() as u128, y.to_bits() as u128);
+                prop_assert_eq!(r as u32, want.to_bits(), "{}", n);
+                prop_assert_eq!((r >> 32) as u32, hi, "{}", n);
+            }
+        }
     }
 }

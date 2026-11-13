@@ -1,23 +1,26 @@
-//! msvcp140.dll's threads support (x64), as the STL's stl/src (mutex.cpp, cond.cpp, cthread.cpp,
+//! msvcp140.dll's threads support, as the STL's stl/src (mutex.cpp, cond.cpp, cthread.cpp,
 //! xtime.cpp, ppltasks.cpp, excptptr.cpp): the C-style _Mtx_* / _Cnd_* / _Thrd_* functions
 //! std::mutex, std::condition_variable and std::thread call, the clocks, std::random_device,
 //! the Concurrency task plumbing PPL tasks (std::async) use, exception_ptr, and the
 //! std::system_error throwers.
 //!
-//! _Mtx_internal_imp_t (80 bytes): int _Type, then the critical section's storage (its SRW lock
-//! word at +16), long _Thread_id at +72 (-1 or 0: no owner), int _Count at +76. Storage the
-//! program's constexpr std::mutex constructor zeroed works without _Mtx_init_in_situ.
-//! _Cnd_internal_imp_t (72 bytes): the CONDITION_VARIABLE at +8 is the wait's key, as the STL's
+//! _Mtx_internal_imp_t (x64 80 bytes, x86 48): int _Type, then the critical section's storage
+//! { void* _Unused, SRW lock } (64 / 36 bytes: its SRW lock word at +16 / +8), long _Thread_id
+//! after it (-1 or 0: no owner), int _Count. Storage the program's constexpr std::mutex
+//! constructor zeroed works without _Mtx_init_in_situ. _Cnd_internal_imp_t (72 / 40 bytes): the
+//! CONDITION_VARIABLE after its first pointer is the wait's key, as the STL's
 //! _Stl_condition_variable keeps it: the headers' inline waits call SleepConditionVariableSRW on
-//! it (with the mutex's SRW lock at +16), and _Cnd_broadcast must wake those too.
+//! it (with the mutex's SRW lock), and _Cnd_broadcast must wake those too
+//! (<__msvc_threads_core.hpp>, VS 2022 17.11).
 
 #![allow(non_snake_case)]
 
 use std::sync::Mutex;
 
-use crate::api::{self, host_fn, implement, Ctx, Handler};
+use crate::api::{self, host_fn, Ctx, Handler};
 use crate::k32::{cv_wait, cv_wake, srw_acquire, srw_release, srw_try};
-use crate::mem::{self, r32, r64, rp, w32, w64, wp};
+use crate::mem::{self, ps, r32, r64, rp, w32, w64, wp};
+use crate::msvcp::{vcall, A};
 
 // _Thrd_result
 const SUCCESS: u32 = 0;
@@ -25,19 +28,35 @@ const NOMEM: u32 = 1;
 const TIMEDOUT: u32 = 2;
 const BUSY: u32 = 3;
 
-const MTX_SIZE: u32 = 80;
-const CND_SIZE: u32 = 72;
+fn x64() -> bool {
+    mem::x64()
+}
+fn MTX_SIZE() -> u32 {
+    if x64() { 80 } else { 48 }
+}
+fn CND_SIZE() -> u32 {
+    if x64() { 72 } else { 40 }
+}
 // _Mtx_type bits
 const MTX_PLAIN: u32 = 0x1;
 const MTX_TRY: u32 = 0x2;
 const MTX_TIMED: u32 = 0x4;
 const MTX_RECURSIVE: u32 = 0x100;
 
-const LOCK: u32 = 16;
+/// the SRW lock of the critical section (after int _Type and the critical section's _Unused)
+fn LOCK() -> u32 {
+    2 * ps()
+}
 /// the CONDITION_VARIABLE inside a _Cnd_internal_imp_t
-const CV: u32 = 8;
-const OWNER: u32 = 72;
-const COUNT: u32 = 76;
+fn CV() -> u32 {
+    ps()
+}
+fn OWNER() -> u32 {
+    if x64() { 72 } else { 40 }
+}
+fn COUNT() -> u32 {
+    OWNER() + 4
+}
 
 fn tid() -> u32 {
     crate::cur().tid
@@ -53,7 +72,7 @@ fn k32(c: &mut Ctx, name: &str, args: &[u32]) -> u32 {
 // mutexes
 
 fn owner_is_me(m: u32) -> bool {
-    r32(m + COUNT) != 0 && r32(m + OWNER) == tid()
+    r32(m + COUNT()) != 0 && r32(m + OWNER()) == tid()
 }
 
 /// How long `mtx_lock` may wait.
@@ -75,23 +94,23 @@ fn mtx_lock(m: u32, wait: Wait) -> u32 {
     let me = owner_is_me(m);
     if ty & !MTX_RECURSIVE == MTX_PLAIN {
         if !me {
-            srw_acquire(m + LOCK, false);
-            w32(m + OWNER, tid());
+            srw_acquire(m + LOCK(), false);
+            w32(m + OWNER(), tid());
         }
-        w32(m + COUNT, r32(m + COUNT) + 1);
+        w32(m + COUNT(), r32(m + COUNT()) + 1);
         return SUCCESS;
     }
     let got = me
         || match wait {
             Wait::Forever => {
-                srw_acquire(m + LOCK, false);
+                srw_acquire(m + LOCK(), false);
                 true
             }
-            Wait::Try | Wait::Ms(0) => srw_try(m + LOCK, false),
+            Wait::Try | Wait::Ms(0) => srw_try(m + LOCK(), false),
             Wait::Ms(ms) => {
                 let end = std::time::Instant::now() + std::time::Duration::from_millis(ms as u64);
                 loop {
-                    if srw_try(m + LOCK, false) {
+                    if srw_try(m + LOCK(), false) {
                         break true;
                     }
                     if std::time::Instant::now() >= end {
@@ -107,10 +126,10 @@ fn mtx_lock(m: u32, wait: Wait) -> u32 {
                 // (not recursive: the count stays, and it is as if taken elsewhere)
                 return if matches!(wait, Wait::Forever | Wait::Try) { BUSY } else { TIMEDOUT };
             }
-            w32(m + COUNT, r32(m + COUNT) + 1);
+            w32(m + COUNT(), r32(m + COUNT()) + 1);
         } else {
-            w32(m + OWNER, tid());
-            w32(m + COUNT, 1);
+            w32(m + OWNER(), tid());
+            w32(m + COUNT(), 1);
         }
         return SUCCESS;
     }
@@ -118,18 +137,18 @@ fn mtx_lock(m: u32, wait: Wait) -> u32 {
 }
 
 fn mtx_unlock(m: u32) {
-    let n = r32(m + COUNT).wrapping_sub(1);
-    w32(m + COUNT, n);
+    let n = r32(m + COUNT()).wrapping_sub(1);
+    w32(m + COUNT(), n);
     if n == 0 {
-        w32(m + OWNER, u32::MAX);
-        srw_release(m + LOCK, false);
+        w32(m + OWNER(), u32::MAX);
+        srw_release(m + LOCK(), false);
     }
 }
 
 fn mtx_init(m: u32, ty: u32) {
-    mem::fill(m, MTX_SIZE, 0);
+    mem::fill(m, MTX_SIZE(), 0);
     w32(m, ty);
-    w32(m + OWNER, u32::MAX);
+    w32(m + OWNER(), u32::MAX);
 }
 
 /// _Mtx_init_in_situ(mtx, type)
@@ -139,7 +158,7 @@ fn _Mtx_init_in_situ(c: &mut Ctx) -> u32 {
 }
 /// _Mtx_init(&mtx, type): a new one
 fn _Mtx_init(c: &mut Ctx) -> u32 {
-    let m = mem::heap_alloc(MTX_SIZE, true);
+    let m = mem::heap_alloc(MTX_SIZE(), true);
     if m == 0 {
         wp(c.a(0), 0);
         return NOMEM;
@@ -175,18 +194,18 @@ fn _Mtx_current_owns(c: &mut Ctx) -> u32 {
 }
 /// the critical section's storage
 fn _Mtx_getconcrtcs(c: &mut Ctx) -> u32 {
-    c.a(0) + 8
+    c.a(0) + ps()
 }
 fn _Mtx_clear_owner(c: &mut Ctx) -> u32 {
     let m = c.a(0);
-    w32(m + OWNER, u32::MAX);
-    w32(m + COUNT, r32(m + COUNT).wrapping_sub(1));
+    w32(m + OWNER(), u32::MAX);
+    w32(m + COUNT(), r32(m + COUNT()).wrapping_sub(1));
     0
 }
 fn _Mtx_reset_owner(c: &mut Ctx) -> u32 {
     let m = c.a(0);
-    w32(m + OWNER, tid());
-    w32(m + COUNT, r32(m + COUNT).wrapping_add(1));
+    w32(m + OWNER(), tid());
+    w32(m + COUNT(), r32(m + COUNT()).wrapping_add(1));
     0
 }
 
@@ -194,7 +213,7 @@ fn _Mtx_reset_owner(c: &mut Ctx) -> u32 {
 // condition variables
 
 fn cnd_new(c: &mut Ctx) -> u32 {
-    let p = mem::heap_alloc(CND_SIZE, true);
+    let p = mem::heap_alloc(CND_SIZE(), true);
     wp(c.a(0), p);
     if p == 0 { NOMEM } else { SUCCESS }
 }
@@ -205,27 +224,27 @@ fn cnd_free(c: &mut Ctx) -> u32 {
     0
 }
 fn cnd_init_in_situ(c: &mut Ctx) -> u32 {
-    mem::fill(c.a(0), CND_SIZE, 0);
+    mem::fill(c.a(0), CND_SIZE(), 0);
     0
 }
 
 /// Waits on `cv` with `m` (which the thread holds, possibly more than once) released.
 fn cnd_wait(cv: u32, m: u32, ms: u32) -> u32 {
-    let n = r32(m + COUNT);
+    let n = r32(m + COUNT());
     let woke = cv_wait(
-        cv + CV,
+        cv + CV(),
         ms,
         |m, _| {
             let m = m as u32;
-            w32(m + OWNER, u32::MAX);
-            w32(m + COUNT, 0);
-            srw_release(m + LOCK, false);
+            w32(m + OWNER(), u32::MAX);
+            w32(m + COUNT(), 0);
+            srw_release(m + LOCK(), false);
         },
         |m, n| {
             let m = m as u32;
-            srw_acquire(m + LOCK, false);
-            w32(m + OWNER, tid());
-            w32(m + COUNT, (n as u32).max(1));
+            srw_acquire(m + LOCK(), false);
+            w32(m + OWNER(), tid());
+            w32(m + COUNT(), (n as u32).max(1));
         },
         m as u64,
         n as u64,
@@ -248,7 +267,7 @@ fn _Cnd_timedwait_for(c: &mut Ctx) -> u32 {
 }
 /// _Cnd_signal / _Cnd_broadcast (a signal wakes all waiters: they recheck their predicate)
 fn _Cnd_signal(c: &mut Ctx) -> u32 {
-    cv_wake(c.a(0) + CV);
+    cv_wake(c.a(0) + CV());
     SUCCESS
 }
 
@@ -277,7 +296,7 @@ fn _Cnd_do_broadcast_at_thread_exit(_: &mut Ctx) -> u32 {
             w32(done, 1);
         }
         mtx_unlock(m);
-        cv_wake(cnd + CV);
+        cv_wake(cnd + CV());
     }
     0
 }
@@ -301,9 +320,10 @@ fn ms_until(ts: u32) -> u32 {
 fn _Thrd_id(_: &mut Ctx) -> u32 {
     tid()
 }
-/// _Thrd_join(_Thrd_t {handle, id} (by value: 16 bytes, so a pointer on x64), int *result)
+/// _Thrd_join(_Thrd_t {handle, id} (by value: 16 bytes, so a pointer on x64; x86 the 8 bytes
+/// on the stack), int *result)
 fn _Thrd_join(c: &mut Ctx) -> u32 {
-    let (t, res) = (c.a(0), c.a(1));
+    let (t, res) = (c.byval(0), c.a(if x64() { 1 } else { 2 }));
     let h = rp(t);
     if k32(c, "WaitForSingleObject", &[h, u32::MAX]) == u32::MAX {
         return 4;
@@ -318,7 +338,7 @@ fn _Thrd_join(c: &mut Ctx) -> u32 {
     SUCCESS
 }
 fn _Thrd_detach(c: &mut Ctx) -> u32 {
-    let h = rp(c.a(0));
+    let h = rp(c.byval(0));
     if k32(c, "CloseHandle", &[h]) != 0 { SUCCESS } else { 4 }
 }
 /// _Thrd_sleep(const _timespec64 *until)
@@ -380,7 +400,7 @@ fn _Random_device(_: &mut Ctx) -> u32 {
 /// item's callback (instance, chore, work) calls callback(data)
 fn chore_run(c: &mut Ctx) -> u32 {
     let chore = c.a(1);
-    let (f, data) = (rp(chore + 8), rp(chore + 16));
+    let (f, data) = (rp(chore + ps()), rp(chore + 2 * ps()));
     c.call(f, &[data]);
     0
 }
@@ -389,7 +409,8 @@ fn chore_run(c: &mut Ctx) -> u32 {
 /// tasks throw invalid_operation on anything else than 0)
 fn schedule_chore(c: &mut Ctx) -> u32 {
     let chore = c.a(0);
-    let cb = host_fn("msvcp::chore", chore_run, 0);
+    // (a PTP_WORK_CALLBACK: x86 stdcall, three arguments)
+    let cb = host_fn("msvcp::chore", chore_run, 12);
     let w = k32(c, "CreateThreadpoolWork", &[cb, chore, 0]);
     wp(chore, w);
     if w == 0 {
@@ -423,21 +444,22 @@ fn ctx_capture(_: &mut Ctx) -> u32 {
 fn continuation_ctor(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wp(this, 0);
-    mem::write(this + 8, &[0]);
+    mem::write(this + ps(), &[0]);
     this
 }
-/// _ContextCallback::_CallInContext(std::function<void()> f (a pointer to the caller's copy, which
-/// the callee destroys), bool): f() here. std::function: its _Impl pointer is the last of 8
-/// pointers; _Func_base's vtable: _Copy, _Move, _Do_call, _Target_type, _Delete_this, _Get.
+/// _ContextCallback::_CallInContext(std::function<void()> f (by value: x64 a pointer to the
+/// caller's copy, x86 the copy on the stack; the callee destroys it), bool): f() here.
+/// std::function: its _Impl pointer is the last of 6 + 16 / sizeof(void*) pointers; _Func_base's
+/// vtable: _Copy, _Move, _Do_call, _Target_type, _Delete_this, _Get.
 fn call_in_context(c: &mut Ctx) -> u32 {
-    let f = c.a(1);
-    let imp = rp(f + 56);
+    let f = c.byval(1);
+    let at = f + (5 + 16 / ps()) * ps();
+    let imp = rp(at);
     if imp != 0 {
-        let vt = rp(imp);
-        c.call(rp(vt + 16), &[imp]);
+        vcall(c, imp, 2, &[]);
         let local = (imp == f) as u32;
-        c.call(rp(vt + 32), &[imp, (local == 0) as u32]);
-        wp(f + 56, 0);
+        vcall(c, imp, 4, &[A::I((local == 0) as u32)]);
+        wp(at, 0);
     }
     0
 }
@@ -455,73 +477,96 @@ fn nothing(_: &mut Ctx) -> u32 {
 // exception_ptr (excptptr.cpp): two pointers, the EXCEPTION_RECORD (a copy) and a non-zero
 // "control block"; records are not freed (an exception_ptr is rare and small)
 
-const RECORD: u32 = 152;
+/// EXCEPTION_RECORD: its size, where its parameters are and how big each is
+fn RECORD() -> u32 {
+    if x64() { 152 } else { 80 }
+}
+fn PARAMS() -> u32 {
+    if x64() { 0x20 } else { 0x14 }
+}
+fn param(rec: u32, i: u32) -> u32 {
+    rp(rec + PARAMS() + ps() * i)
+}
 
 fn eptr_create(c: &mut Ctx) -> u32 {
-    w64(c.a(0), 0);
-    w64(c.a(0) + 8, 0);
+    wp(c.a(0), 0);
+    wp(c.a(0) + ps(), 0);
     0
 }
 fn eptr_copy(c: &mut Ctx) -> u32 {
     let (d, s) = (c.a(0), c.a(1));
-    w64(d, r64(s));
-    w64(d + 8, r64(s + 8));
+    mem::copy(d, s, 2 * ps());
     0
 }
 fn eptr_to_bool(c: &mut Ctx) -> u32 {
-    (r64(c.a(0)) != 0) as u32
+    (rp(c.a(0)) != 0) as u32
 }
 fn eptr_compare(c: &mut Ctx) -> u32 {
-    (r64(c.a(0)) == r64(c.a(1))) as u32
+    (rp(c.a(0)) == rp(c.a(1))) as u32
 }
 fn eptr_swap(c: &mut Ctx) -> u32 {
     let (a, b) = (c.a(0), c.a(1));
-    for o in [0, 8] {
-        let t = r64(a + o);
-        w64(a + o, r64(b + o));
-        w64(b + o, t);
-    }
+    let t = mem::slice(a, 2 * ps()).to_vec();
+    mem::copy(a, b, 2 * ps());
+    mem::write(b, &t);
     0
+}
+/// A C++ exception's record (x64: its image base the fourth parameter).
+fn new_record(obj: u64, ti: u32) -> u32 {
+    let rec = mem::heap_alloc(RECORD(), true);
+    w32(rec, 0xe06d_7363);
+    w32(rec + 4, 1);
+    if x64() {
+        w32(rec + 0x18, 4);
+        w64(rec + 0x20, 0x1993_0520);
+        w64(rec + 0x28, obj);
+        w64(rec + 0x30, ti as u64);
+        w64(rec + 0x38, crate::cxx64::image_base_of(ti));
+    } else {
+        w32(rec + 0x10, 3);
+        w32(rec + 0x14, 0x1993_0520);
+        w32(rec + 0x18, obj as u32);
+        w32(rec + 0x1c, ti);
+    }
+    rec
 }
 /// __ExceptionPtrCurrentException(dst): the exception being handled, if any
 fn eptr_current(c: &mut Ctx) -> u32 {
     let d = c.a(0);
-    let rec = crate::cxx64::current_record();
-    if rec == 0 {
-        w64(d, 0);
-        w64(d + 8, 0);
-        return 0;
-    }
-    let copy = mem::heap_alloc(RECORD, true);
-    mem::copy(copy, rec, RECORD);
-    w64(d, copy as u64);
-    w64(d + 8, 1);
+    let copy = if x64() {
+        let rec = crate::cxx64::current_record();
+        (rec != 0).then(|| {
+            let copy = mem::heap_alloc(RECORD(), true);
+            mem::copy(copy, rec, RECORD());
+            copy
+        })
+    } else {
+        crate::cxx::current().map(|(obj, ti)| new_record(obj as u64, ti))
+    };
+    wp(d, copy.unwrap_or(0));
+    wp(d + ps(), copy.is_some() as u32);
     0
 }
 /// __ExceptionPtrRethrow(src): the C++ exception again (its object and ThrowInfo)
 fn eptr_rethrow(c: &mut Ctx) -> u32 {
-    let rec = r64(c.a(0)) as u32;
+    let rec = rp(c.a(0));
     if rec == 0 {
         // (rethrow_exception of a null exception_ptr: bad_exception)
         crate::fatal(c.cpu, "std::rethrow_exception of a null exception_ptr");
     }
-    let (obj, ti) = (r64(rec + 0x20 + 8), r64(rec + 0x20 + 16) as u32);
-    crate::cxx64::throw_object(c, obj, ti);
+    if x64() {
+        let (obj, ti) = (r64(rec + 0x20 + 8), r64(rec + 0x20 + 16) as u32);
+        crate::cxx64::throw_object(c, obj, ti);
+    } else {
+        crate::cxx::throw_object(c, param(rec, 1), param(rec, 2));
+    }
     0
 }
 /// __ExceptionPtrCopyException(dst, object, ThrowInfo): make_exception_ptr's
 fn eptr_copy_exception(c: &mut Ctx) -> u32 {
-    let (d, obj, ti) = (c.a(0), c.a64(1), c.a(2));
-    let rec = mem::heap_alloc(RECORD, true);
-    w32(rec, 0xe06d_7363);
-    w32(rec + 4, 1);
-    w32(rec + 0x18, 4);
-    w64(rec + 0x20, 0x1993_0520);
-    w64(rec + 0x28, obj);
-    w64(rec + 0x30, ti as u64);
-    w64(rec + 0x38, crate::cxx64::image_base_of(ti));
-    w64(d, rec as u64);
-    w64(d + 8, 1);
+    let (d, obj, ti) = (c.a(0), if x64() { c.a64(1) } else { c.a(1) as u64 }, c.a(2));
+    wp(d, new_record(obj, ti));
+    wp(d + ps(), 1);
     0
 }
 
@@ -569,6 +614,10 @@ fn _Syserror_map(c: &mut Ctx) -> u32 {
 /// ?_Winerror_map@std@@YAHH@Z: a Windows error's errno (0: none)
 fn _Winerror_map(c: &mut Ctx) -> u32 {
     winerror_errno(c.a(0))
+}
+/// ?_Winerror_map@std@@YAPEBDH@Z (VS 2013's): the message of a Windows error's errno (Wine's)
+fn _Winerror_map_str(c: &mut Ctx) -> u32 {
+    errno_msg(winerror_errno(c.a(0)))
 }
 /// The STL's Windows error -> errno table (values as the Windows CRT's errno)
 fn winerror_errno(e: u32) -> u32 {
@@ -704,16 +753,19 @@ pub fn init() {
         ("?__ExceptionPtrCopyException@@YAXPEAXPEBX1@Z", eptr_copy_exception),
         ("?_Syserror_map@std@@YAPEBDH@Z", _Syserror_map),
         ("?_Winerror_map@std@@YAHH@Z", _Winerror_map),
+        ("?_Winerror_map@std@@YAPEBDH@Z", _Winerror_map_str),
         ("?_Throw_Cpp_error@std@@YAXH@Z", _Throw_Cpp_error),
         ("?_Throw_C_error@std@@YAXH@Z", _Throw_C_error),
     ];
     for (n, f) in fs {
-        implement("msvcp140", n, *f);
+        // (msvcp120 has these with VS 2013's layouts: only its messages and exception_ptr here)
+        let old = n.contains("_map@") || n.contains("ExceptionPtr");
+        crate::msvcp::reg_in(old, n, *f);
     }
     // the PPL task event logger (ETW): nothing logged
     for n in ["_LogScheduleTask@_TaskEventLogger@details@Concurrency@@QEAAX_N@Z", "_LogCancelTask", "_LogTaskCompleted", "_LogTaskExecutionCompleted", "_LogWorkItemCompleted", "_LogWorkItemStarted"] {
         let name = if n.contains('@') { format!("?{n}") } else { format!("?{n}@_TaskEventLogger@details@Concurrency@@QEAAXXZ") };
-        implement("msvcp140", &name, nothing);
+        crate::msvcp::reg_in(false, &name, nothing);
     }
 }
 

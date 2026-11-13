@@ -81,6 +81,27 @@ fn throw(c: &mut Ctx) -> u32 {
     0
 }
 
+/// Throws `obj` of ThrowInfo `info` from a trap (msvcp's _X* functions): as if the call had
+/// returned there.
+pub fn throw_object(c: &mut Ctx, obj: u32, info: u32) {
+    let ret = r32(c.esp);
+    c.cpu.eip = ret;
+    c.cpu.regs[ESP] = c.esp + 4;
+    crate::seh::raise(c.cpu, CXX_EXCEPTION, 1, ret, &[MAGIC_VC6, obj, info]);
+    c.jumped = true;
+}
+/// The C++ exception being handled (its object and ThrowInfo), if any.
+pub fn current() -> Option<(u32, u32)> {
+    CURRENT.with(|v| v.borrow().last().copied())
+}
+/// throw; from a trap: the exception being handled again
+pub fn rethrow(c: &mut Ctx) {
+    let Some((obj, info)) = current() else {
+        crate::fatal(c.cpu, "C++ rethrow without an exception (terminate)");
+    };
+    throw_object(c, obj, info);
+}
+
 /// this pointer of a base class (PMD: this offset, vbase descriptor offset, vbase offset)
 fn this_ptr(pmd: u32, obj: u32) -> u32 {
     if obj == 0 {

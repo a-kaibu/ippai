@@ -1,4 +1,4 @@
-//! msvcp140.dll's iostreams (x64), as Microsoft's STL has them (<xiosbase>, <ios>, <streambuf>,
+//! msvcp140.dll's iostreams, as Microsoft's STL has them (<xiosbase>, <ios>, <streambuf>,
 //! <istream>, <ostream>; src/ios.cpp, iosptrs.cpp, iostream.cpp, cout.cpp, fiopen.cpp): ios_base,
 //! basic_ios, basic_streambuf, basic_istream, basic_ostream and basic_iostream of char and
 //! wchar_t, the standard streams and _Fiopen. Numbers are formatted and parsed as num_put /
@@ -16,6 +16,14 @@
 //! basic_ios part. Programs mostly inline these and carry their own vftables, so everything here
 //! calls virtual functions through the object's.
 //!
+//! x86 (VS 2022 17.11's headers, clang -fdump-record-layouts): ios_base { vftable, _Stdstr at
+//! 8, _Mystate 12, _Except 16, _Fmtfl 20, _Prec 24, _Wide 32, _Arr 40, _Calls 44, _Ploc 48 }
+//! (56), basic_ios's fields at 56, 60, 64 (72); basic_streambuf's are pointer-sized (56);
+//! basic_istream { vbptr, _Chcount at 8, vtordisp, basic_ios at 24 }, basic_ostream { vbptr,
+//! vtordisp, basic_ios at 8 }, basic_iostream { istream, ostream at 16, vtordisp, basic_ios at
+//! 32 }. Virtual functions are thiscall there; a pos_type (24 bytes) is passed by value on the
+//! stack.
+//!
 //! Pointers stored into objects are widened (an object or buffer can be in an image mapped
 //! above 4G).
 
@@ -23,8 +31,9 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use crate::api::{host_fn, implement, Ctx, Handler};
-use crate::mem::{self, r16, r32, r64, r8, rp, w16, w32, w64, w8};
+use crate::api::{host_fn, Ctx, Handler};
+use crate::mem::{self, ps, r16, r32, r64, r8, rp, w16, w32, w64, w8};
+use crate::msvcp::{after_q, cpp, gcall, is_name, reg, table, wq, A};
 
 // ---------------------------------------------------------------------------------------------
 // constants (<xiosbase>)
@@ -58,35 +67,60 @@ const OUT: u32 = 2;
 const SEEK_CUR: u32 = 1;
 
 // ios_base / basic_ios fields
-const STDSTR: u32 = 8;
-const STATE: u32 = 16;
-const EXCEPT: u32 = 20;
-const FMTFL: u32 = 24;
-const PREC: u32 = 32;
-const WIDE: u32 = 40;
-const ARR: u32 = 48;
-const CALLS: u32 = 56;
-const PLOC: u32 = 64;
-const STRBUF: u32 = 72;
-const TIESTR: u32 = 80;
-const FILLCH: u32 = 88;
-const IOS_SIZE: u32 = 96;
-
+/// a layout offset: (x64, x86)
+macro_rules! at {
+    ($($name:ident = $x64:expr, $x86:expr;)*) => {
+        $(
+            #[inline]
+            fn $name() -> u32 {
+                if mem::x64() { $x64 } else { $x86 }
+            }
+        )*
+    };
+}
+// ios_base / basic_ios fields
+at! {
+    STDSTR = 8, 8;
+    STATE = 16, 12;
+    EXCEPT = 20, 16;
+    FMTFL = 24, 20;
+    PREC = 32, 24;
+    WIDE = 40, 32;
+    ARR = 48, 40;
+    CALLS = 56, 44;
+    PLOC = 64, 48;
+    STRBUF = 72, 56;
+    TIESTR = 80, 60;
+    FILLCH = 88, 64;
+    IOS_SIZE = 96, 72;
+}
 // basic_streambuf fields
-const GFIRST: u32 = 8;
-const PFIRST: u32 = 16;
-const IGFIRST: u32 = 24;
-const IPFIRST: u32 = 32;
-const GNEXT: u32 = 40;
-const PNEXT: u32 = 48;
-const IGNEXT: u32 = 56;
-const IPNEXT: u32 = 64;
-const GCOUNT: u32 = 72;
-const PCOUNT: u32 = 76;
-const IGCOUNT: u32 = 80;
-const IPCOUNT: u32 = 88;
-const PLOCALE: u32 = 96;
-const SB_SIZE: u32 = 104;
+at! {
+    GFIRST = 8, 4;
+    PFIRST = 16, 8;
+    IGFIRST = 24, 12;
+    IPFIRST = 32, 16;
+    GNEXT = 40, 20;
+    PNEXT = 48, 24;
+    IGNEXT = 56, 28;
+    IPNEXT = 64, 32;
+    GCOUNT = 72, 36;
+    PCOUNT = 76, 40;
+    IGCOUNT = 80, 44;
+    IPCOUNT = 88, 48;
+    PLOCALE = 96, 52;
+    SB_SIZE = 104, 56;
+}
+// _Iosarray { _Next, int _Index, long _Lo, void* _Vp } / _Fnarray { _Next, int _Index, _Pfn }
+at! {
+    ARR_INDEX = 8, 4;
+    ARR_LO = 12, 8;
+    ARR_VP = 16, 12;
+    ARR_SIZE = 24, 16;
+    FN_INDEX = 8, 4;
+    FN_PFN = 16, 8;
+    FN_SIZE = 24, 12;
+}
 
 // basic_streambuf's virtual functions
 const V_LOCK: u32 = 1;
@@ -105,22 +139,16 @@ const V_SYNC: u32 = 13;
 const V_IMBUE: u32 = 14;
 
 // the virtual base's place in each class standing alone
-const ISTREAM_VB: u32 = 24;
-const OSTREAM_VB: u32 = 16;
-const IOSTREAM_VB: u32 = 32;
-const CHCOUNT: u32 = 8;
+at! {
+    ISTREAM_VB = 24, 24;
+    OSTREAM_VB = 16, 8;
+    IOSTREAM_VB = 32, 32;
+    CHCOUNT = 8, 8;
+}
 
 // ---------------------------------------------------------------------------------------------
 // helpers
 
-/// A pointer as the program sees it.
-fn wide(a: u32) -> u64 {
-    mem::widen(a)
-}
-/// Stores pointer `v` (widened).
-fn wq(a: u32, v: u32) {
-    w64(a, wide(v));
-}
 fn i64_(a: u32) -> i64 {
     r64(a) as i64
 }
@@ -146,30 +174,7 @@ fn ch<const W: bool>(v: u32) -> u32 {
     if W { v & 0xffff } else { v & 0xff }
 }
 
-fn call(c: &mut Ctx, f: u32, args: &[u64]) -> u64 {
-    // (nothing more runs once a throw left the trap)
-    if c.jumped {
-        return 0;
-    }
-    crate::call64(c.cpu, wide(f), args)
-}
-/// Calls virtual function `slot` of `obj`.
-pub(crate) fn vcall(c: &mut Ctx, obj: u32, slot: u32, args: &[u64]) -> u64 {
-    let f = rp(rp(obj) + 8 * slot);
-    let mut a = Vec::with_capacity(args.len() + 1);
-    a.push(wide(obj));
-    a.extend_from_slice(args);
-    call(c, f, &a)
-}
-
-/// A table of traps (a vtable).
-fn table(name: &str, fs: &[Handler]) -> u32 {
-    let t = mem::heap_alloc(8 * fs.len() as u32, true);
-    for (i, f) in fs.iter().enumerate() {
-        wq(t + 8 * i as u32, host_fn(&format!("msvcp::{name}::{i}"), *f, 0));
-    }
-    t
-}
+pub(crate) use crate::msvcp::vcall;
 
 fn static_str(s: &str) -> u32 {
     let p = mem::heap_alloc(s.len() as u32 + 1, true);
@@ -181,10 +186,10 @@ fn static_str(s: &str) -> u32 {
 // ios_base
 
 fn state(ios: u32) -> u32 {
-    r32(ios + STATE)
+    r32(ios + STATE())
 }
 fn flags(ios: u32) -> u32 {
-    r32(ios + FMTFL)
+    r32(ios + FMTFL())
 }
 fn good(ios: u32) -> bool {
     state(ios) == 0
@@ -197,8 +202,8 @@ fn fail(ios: u32) -> bool {
 /// has (reraise: rethrows the exception being handled).
 fn base_clear(c: &mut Ctx, ios: u32, st: u32, reraise: bool) {
     let st = st & STATMASK;
-    w32(ios + STATE, st);
-    let f = st & r32(ios + EXCEPT);
+    w32(ios + STATE(), st);
+    let f = st & r32(ios + EXCEPT());
     if f != 0 {
         if reraise {
             crate::msvcp::rethrow(c);
@@ -216,7 +221,7 @@ fn base_clear(c: &mut Ctx, ios: u32, st: u32, reraise: bool) {
 }
 /// basic_ios::clear: a stream without a buffer is bad.
 fn ios_clear(c: &mut Ctx, ios: u32, st: u32, reraise: bool) {
-    let st = st | if rp(ios + STRBUF) != 0 { 0 } else { BADBIT };
+    let st = st | if rp(ios + STRBUF()) != 0 { 0 } else { BADBIT };
     base_clear(c, ios, st, reraise);
 }
 /// ios_base::setstate (no stream buffer check)
@@ -224,66 +229,66 @@ pub(crate) fn base_setstate(c: &mut Ctx, ios: u32, st: u32) {
     base_clear(c, ios, state(ios) | st, false);
 }
 fn setstate(c: &mut Ctx, ios: u32, st: u32) {
-    if st != 0 || r32(ios + EXCEPT) & state(ios) != 0 {
+    if st != 0 || r32(ios + EXCEPT()) & state(ios) != 0 {
         ios_clear(c, ios, state(ios) | st, false);
     }
 }
 
 /// _Iosarray { _Next, int _Index, long _Lo, void* _Vp } / _Fnarray { _Next, int _Index, _Pfn }
 fn callfns(c: &mut Ctx, ios: u32, ev: u32) {
-    let mut p = rp(ios + CALLS);
+    let mut p = rp(ios + CALLS());
     while p != 0 {
-        let f = rp(p + 16);
-        call(c, f, &[ev as u64, wide(ios), r32(p + 8) as u64]);
+        let f = rp(p + FN_PFN());
+        gcall(c, f, &[A::I(ev), A::P(ios), A::I(r32(p + FN_INDEX()))]);
         p = rp(p);
     }
 }
 fn findarr(ios: u32, idx: u32) -> u32 {
     let mut spare = 0;
-    let mut p = rp(ios + ARR);
+    let mut p = rp(ios + ARR());
     while p != 0 {
-        if r32(p + 8) == idx {
+        if r32(p + ARR_INDEX()) == idx {
             return p;
         }
-        if spare == 0 && r32(p + 12) == 0 && r64(p + 16) == 0 {
+        if spare == 0 && r32(p + ARR_LO()) == 0 && rp(p + ARR_VP()) == 0 {
             spare = p;
         }
         p = rp(p);
     }
     if spare != 0 {
-        w32(spare + 8, idx);
+        w32(spare + ARR_INDEX(), idx);
         return spare;
     }
-    let n = mem::heap_alloc(24, true);
-    wq(n, rp(ios + ARR));
-    w32(n + 8, idx);
-    wq(ios + ARR, n);
+    let n = mem::heap_alloc(ARR_SIZE(), true);
+    wq(n, rp(ios + ARR()));
+    w32(n + ARR_INDEX(), idx);
+    wq(ios + ARR(), n);
     n
 }
 fn tidy(c: &mut Ctx, ios: u32) {
     callfns(c, ios, 0);
-    for head in [ARR, CALLS] {
+    for head in [ARR(), CALLS()] {
         let mut p = rp(ios + head);
         while p != 0 {
             let next = rp(p);
             mem::heap_free(p);
             p = next;
         }
-        w64(ios + head, 0);
+        wq(ios + head, 0);
     }
 }
 /// ios_base::_Init
 fn base_init(c: &mut Ctx, ios: u32) {
-    w64(ios + PLOC, 0);
-    w64(ios + STDSTR, 0);
-    w32(ios + EXCEPT, 0);
-    w32(ios + FMTFL, SKIPWS | DEC);
-    w64(ios + PREC, 6);
-    w64(ios + WIDE, 0);
-    w64(ios + ARR, 0);
-    w64(ios + CALLS, 0);
+    wq(ios + PLOC(), 0);
+    wq(ios + STDSTR(), 0);
+    w32(ios + EXCEPT(), 0);
+    w32(ios + FMTFL(), SKIPWS | DEC);
+    w64(ios + PREC(), 6);
+    w64(ios + WIDE(), 0);
+    wq(ios + ARR(), 0);
+    wq(ios + CALLS(), 0);
     base_clear(c, ios, 0, false);
-    wq(ios + PLOC, crate::msvcp::new_locale());
+    wq(ios + PLOC(), crate::msvcp::new_locale());
 }
 
 /// The standard streams' slots (iosptrs.cpp: [1, 8]) and open counts.
@@ -297,11 +302,11 @@ fn addstd(ios: u32) {
     }
     t[i].0 = ios;
     t[i].1 = t[i].1.wrapping_add(1);
-    w64(ios + STDSTR, i as u64);
+    wq(ios + STDSTR(), i as u32);
 }
 /// ios_base::_Ios_base_dtor
 fn base_dtor(c: &mut Ctx, ios: u32) {
-    let i = r64(ios + STDSTR) as usize;
+    let i = rp(ios + STDSTR()) as usize;
     if i > 0 && i < 10 {
         let mut t = STDSTR_TAB.lock().unwrap();
         t[i].1 = t[i].1.wrapping_sub(1);
@@ -310,7 +315,7 @@ fn base_dtor(c: &mut Ctx, ios: u32) {
         }
     }
     tidy(c, ios);
-    let l = rp(ios + PLOC);
+    let l = rp(ios + PLOC());
     if l != 0 {
         crate::msvcp::delete_locale(c, l);
     }
@@ -318,7 +323,7 @@ fn base_dtor(c: &mut Ctx, ios: u32) {
 
 fn ios_base_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
-    *V.get_or_init(|| table("ios_base", &[ios_base_delete]))
+    *V.get_or_init(|| table("ios_base", &[(ios_base_delete, 4)]))
 }
 fn ios_base_delete(c: &mut Ctx) -> u32 {
     let (this, fl) = (c.a(0), c.a(1));
@@ -331,7 +336,8 @@ fn ios_base_delete(c: &mut Ctx) -> u32 {
 /// ??0ios_base@std@@IEAA@XZ: the members zeroed
 fn ios_base_ctor(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    mem::fill(this + 8, 64, 0);
+    // (ios_base ends where basic_ios's _Mystrbuf is)
+    mem::fill(this + ps(), STRBUF() - ps(), 0);
     wq(this, ios_base_vtable());
     this
 }
@@ -409,11 +415,11 @@ fn base_setstate1(c: &mut Ctx) -> u32 {
     0
 }
 fn base_exceptions_get(c: &mut Ctx) -> u32 {
-    r32(c.a(0) + EXCEPT)
+    r32(c.a(0) + EXCEPT())
 }
 fn base_exceptions_set(c: &mut Ctx) -> u32 {
     let (this, e) = (c.a(0), c.a(1));
-    w32(this + EXCEPT, e & STATMASK);
+    w32(this + EXCEPT(), e & STATMASK);
     base_clear(c, this, state(this), false);
     0
 }
@@ -423,55 +429,55 @@ fn base_flags_get(c: &mut Ctx) -> u32 {
 fn base_flags_set(c: &mut Ctx) -> u32 {
     let (this, f) = (c.a(0), c.a(1));
     let old = flags(this);
-    w32(this + FMTFL, f & FMTMASK);
+    w32(this + FMTFL(), f & FMTMASK);
     old
 }
 fn base_setf1(c: &mut Ctx) -> u32 {
     let (this, f) = (c.a(0), c.a(1));
     let old = flags(this);
-    w32(this + FMTFL, old | (f & FMTMASK));
+    w32(this + FMTFL(), old | (f & FMTMASK));
     old
 }
 fn base_setf2(c: &mut Ctx) -> u32 {
     let (this, f, m) = (c.a(0), c.a(1), c.a(2));
     let old = flags(this);
-    w32(this + FMTFL, (old & !m) | (f & m & FMTMASK));
+    w32(this + FMTFL(), (old & !m) | (f & m & FMTMASK));
     old
 }
 fn base_unsetf(c: &mut Ctx) -> u32 {
     let (this, m) = (c.a(0), c.a(1));
-    w32(this + FMTFL, flags(this) & !m);
+    w32(this + FMTFL(), flags(this) & !m);
     0
 }
 fn base_precision_get(c: &mut Ctx) -> u32 {
-    let v = r64(c.a(0) + PREC);
+    let v = r64(c.a(0) + PREC());
     c.ret64(v)
 }
 fn base_precision_set(c: &mut Ctx) -> u32 {
-    let (this, v) = (c.a(0), c.a64(1));
-    let old = r64(this + PREC);
-    w64(this + PREC, v);
+    let (this, v) = (c.a(0), c.q(1));
+    let old = r64(this + PREC());
+    w64(this + PREC(), v);
     c.ret64(old)
 }
 fn base_width_get(c: &mut Ctx) -> u32 {
-    let v = r64(c.a(0) + WIDE);
+    let v = r64(c.a(0) + WIDE());
     c.ret64(v)
 }
 fn base_width_set(c: &mut Ctx) -> u32 {
-    let (this, v) = (c.a(0), c.a64(1));
-    let old = r64(this + WIDE);
-    w64(this + WIDE, v);
+    let (this, v) = (c.a(0), c.q(1));
+    let old = r64(this + WIDE());
+    w64(this + WIDE(), v);
     c.ret64(old)
 }
 /// getloc (this, result)
 fn base_getloc(c: &mut Ctx) -> u32 {
     let (this, ret) = (c.a(0), c.a(1));
-    crate::msvcp::locale_copy(c, ret, rp(this + PLOC));
+    crate::msvcp::locale_copy(c, ret, rp(this + PLOC()));
     ret
 }
 /// ios_base::imbue (this, result, locale): the old one
 fn base_imbue_at(c: &mut Ctx, this: u32, ret: u32, loc: u32) {
-    let l = rp(this + PLOC);
+    let l = rp(this + PLOC());
     crate::msvcp::locale_copy(c, ret, l);
     crate::msvcp::locale_assign(c, l, loc);
     callfns(c, this, 1);
@@ -482,18 +488,18 @@ fn base_imbue(c: &mut Ctx) -> u32 {
     ret
 }
 fn base_iword(c: &mut Ctx) -> u32 {
-    findarr(c.a(0), c.a(1)) + 12
+    findarr(c.a(0), c.a(1)) + ARR_LO()
 }
 fn base_pword(c: &mut Ctx) -> u32 {
-    findarr(c.a(0), c.a(1)) + 16
+    findarr(c.a(0), c.a(1)) + ARR_VP()
 }
 fn base_register_callback(c: &mut Ctx) -> u32 {
     let (this, f, idx) = (c.a(0), c.a(1), c.a(2));
-    let n = mem::heap_alloc(24, true);
-    wq(n, rp(this + CALLS));
-    w32(n + 8, idx);
-    wq(n + 16, f);
-    wq(this + CALLS, n);
+    let n = mem::heap_alloc(FN_SIZE(), true);
+    wq(n, rp(this + CALLS()));
+    w32(n + FN_INDEX(), idx);
+    wq(n + FN_PFN(), f);
+    wq(this + CALLS(), n);
     0
 }
 fn copyfmt_base(c: &mut Ctx, this: u32, o: u32) {
@@ -501,30 +507,30 @@ fn copyfmt_base(c: &mut Ctx, this: u32, o: u32) {
         return;
     }
     tidy(c, this);
-    crate::msvcp::locale_assign(c, rp(this + PLOC), rp(o + PLOC));
-    w32(this + FMTFL, flags(o));
-    w64(this + PREC, r64(o + PREC));
-    w64(this + WIDE, r64(o + WIDE));
-    let mut p = rp(o + ARR);
+    crate::msvcp::locale_assign(c, rp(this + PLOC()), rp(o + PLOC()));
+    w32(this + FMTFL(), flags(o));
+    w64(this + PREC(), r64(o + PREC()));
+    w64(this + WIDE(), r64(o + WIDE()));
+    let mut p = rp(o + ARR());
     while p != 0 {
-        if r32(p + 12) != 0 || r64(p + 16) != 0 {
-            let n = findarr(this, r32(p + 8));
-            w32(n + 12, r32(p + 12));
-            w64(n + 16, r64(p + 16));
+        if r32(p + ARR_LO()) != 0 || rp(p + ARR_VP()) != 0 {
+            let n = findarr(this, r32(p + ARR_INDEX()));
+            w32(n + ARR_LO(), r32(p + ARR_LO()));
+            cpp(n + ARR_VP(), p + ARR_VP());
         }
         p = rp(p);
     }
-    let mut p = rp(o + CALLS);
+    let mut p = rp(o + CALLS());
     while p != 0 {
-        let n = mem::heap_alloc(24, true);
-        wq(n, rp(this + CALLS));
-        w32(n + 8, r32(p + 8));
-        w64(n + 16, r64(p + 16));
-        wq(this + CALLS, n);
+        let n = mem::heap_alloc(FN_SIZE(), true);
+        wq(n, rp(this + CALLS()));
+        w32(n + FN_INDEX(), r32(p + FN_INDEX()));
+        cpp(n + FN_PFN(), p + FN_PFN());
+        wq(this + CALLS(), n);
         p = rp(p);
     }
     callfns(c, this, 2);
-    w32(this + EXCEPT, r32(o + EXCEPT) & STATMASK);
+    w32(this + EXCEPT(), r32(o + EXCEPT()) & STATMASK);
     base_clear(c, this, state(this), false);
 }
 fn base_copyfmt(c: &mut Ctx) -> u32 {
@@ -536,7 +542,8 @@ fn base_swap_at(this: u32, o: u32) {
     if this == o {
         return;
     }
-    for (off, n) in [(STATE, 4), (EXCEPT, 4), (FMTFL, 4), (PREC, 8), (WIDE, 8), (ARR, 8), (CALLS, 8), (PLOC, 8)] {
+    let p = ps();
+    for (off, n) in [(STATE(), 4), (EXCEPT(), 4), (FMTFL(), 4), (PREC(), 8), (WIDE(), 8), (ARR(), p), (CALLS(), p), (PLOC(), p)] {
         let a = mem::slice(this + off, n).to_vec();
         mem::copy(this + off, o + off, n);
         mem::write(o + off, &a);
@@ -603,22 +610,22 @@ fn Init_cnt_func(_: &mut Ctx) -> u32 {
 // basic_streambuf
 
 fn gptr(sb: u32) -> u32 {
-    rp(rp(sb + IGNEXT))
+    rp(rp(sb + IGNEXT()))
 }
 fn eback(sb: u32) -> u32 {
-    rp(rp(sb + IGFIRST))
+    rp(rp(sb + IGFIRST()))
 }
 fn gcount(sb: u32) -> i32 {
-    r32(rp(sb + IGCOUNT)) as i32
+    r32(rp(sb + IGCOUNT())) as i32
 }
 fn pptr(sb: u32) -> u32 {
-    rp(rp(sb + IPNEXT))
+    rp(rp(sb + IPNEXT()))
 }
 fn pbase(sb: u32) -> u32 {
-    rp(rp(sb + IPFIRST))
+    rp(rp(sb + IPFIRST()))
 }
 fn pcount(sb: u32) -> i32 {
-    r32(rp(sb + IPCOUNT)) as i32
+    r32(rp(sb + IPCOUNT())) as i32
 }
 fn egptr<const W: bool>(sb: u32) -> u32 {
     gptr(sb).wrapping_add((gcount(sb) as u32).wrapping_mul(es::<W>()))
@@ -633,35 +640,35 @@ fn pnavail(sb: u32) -> i64 {
     if pptr(sb) != 0 { pcount(sb) as i64 } else { 0 }
 }
 fn gbump<const W: bool>(sb: u32, n: i32) {
-    let gc = rp(sb + IGCOUNT);
+    let gc = rp(sb + IGCOUNT());
     w32(gc, (r32(gc) as i32).wrapping_sub(n) as u32);
-    let gn = rp(sb + IGNEXT);
+    let gn = rp(sb + IGNEXT());
     wq(gn, rp(gn).wrapping_add((n as u32).wrapping_mul(es::<W>())));
 }
 fn pbump<const W: bool>(sb: u32, n: i32) {
-    let pc = rp(sb + IPCOUNT);
+    let pc = rp(sb + IPCOUNT());
     w32(pc, (r32(pc) as i32).wrapping_sub(n) as u32);
-    let pn = rp(sb + IPNEXT);
+    let pn = rp(sb + IPNEXT());
     wq(pn, rp(pn).wrapping_add((n as u32).wrapping_mul(es::<W>())));
 }
 fn setg<const W: bool>(sb: u32, first: u32, next: u32, last: u32) {
-    wq(rp(sb + IGFIRST), first);
-    wq(rp(sb + IGNEXT), next);
-    w32(rp(sb + IGCOUNT), (last.wrapping_sub(next) as i32 / es::<W>() as i32) as u32);
+    wq(rp(sb + IGFIRST()), first);
+    wq(rp(sb + IGNEXT()), next);
+    w32(rp(sb + IGCOUNT()), (last.wrapping_sub(next) as i32 / es::<W>() as i32) as u32);
 }
 fn setp<const W: bool>(sb: u32, first: u32, next: u32, last: u32) {
-    wq(rp(sb + IPFIRST), first);
-    wq(rp(sb + IPNEXT), next);
-    w32(rp(sb + IPCOUNT), (last.wrapping_sub(next) as i32 / es::<W>() as i32) as u32);
+    wq(rp(sb + IPFIRST()), first);
+    wq(rp(sb + IPNEXT()), next);
+    w32(rp(sb + IPCOUNT()), (last.wrapping_sub(next) as i32 / es::<W>() as i32) as u32);
 }
 /// _Init(): the buffer pointers point at the object's own fields, no buffers
 fn sb_init<const W: bool>(sb: u32) {
-    wq(sb + IGFIRST, sb + GFIRST);
-    wq(sb + IPFIRST, sb + PFIRST);
-    wq(sb + IGNEXT, sb + GNEXT);
-    wq(sb + IPNEXT, sb + PNEXT);
-    wq(sb + IGCOUNT, sb + GCOUNT);
-    wq(sb + IPCOUNT, sb + PCOUNT);
+    wq(sb + IGFIRST(), sb + GFIRST());
+    wq(sb + IPFIRST(), sb + PFIRST());
+    wq(sb + IGNEXT(), sb + GNEXT());
+    wq(sb + IPNEXT(), sb + PNEXT());
+    wq(sb + IGCOUNT(), sb + GCOUNT());
+    wq(sb + IPCOUNT(), sb + PCOUNT());
     setp::<W>(sb, 0, 0, 0);
     setg::<W>(sb, 0, 0, 0);
 }
@@ -694,14 +701,14 @@ pub(crate) fn sputc<const W: bool>(c: &mut Ctx, sb: u32, v: u32) -> u32 {
         pbump::<W>(sb, 1);
         v
     } else {
-        meta::<W>(vcall(c, sb, V_OVERFLOW, &[v as u64]))
+        meta::<W>(vcall(c, sb, V_OVERFLOW, &[A::I(v)]))
     }
 }
 fn sputn(c: &mut Ctx, sb: u32, p: u32, n: i64) -> i64 {
-    vcall(c, sb, V_XSPUTN, &[wide(p), n as u64]) as i64
+    vcall(c, sb, V_XSPUTN, &[A::P(p), A::Q(n as u64)]) as i64
 }
 fn sgetn(c: &mut Ctx, sb: u32, p: u32, n: i64) -> i64 {
-    vcall(c, sb, V_XSGETN, &[wide(p), n as u64]) as i64
+    vcall(c, sb, V_XSGETN, &[A::P(p), A::Q(n as u64)]) as i64
 }
 fn pubsync(c: &mut Ctx, sb: u32) -> i32 {
     vcall(c, sb, V_SYNC, &[]) as i32
@@ -712,7 +719,7 @@ fn sputbackc<const W: bool>(c: &mut Ctx, sb: u32, v: u32) -> u32 {
         gbump::<W>(sb, -1);
         return rd::<W>(gptr(sb));
     }
-    meta::<W>(vcall(c, sb, V_PBACKFAIL, &[v as u64]))
+    meta::<W>(vcall(c, sb, V_PBACKFAIL, &[A::I(v)]))
 }
 fn sungetc<const W: bool>(c: &mut Ctx, sb: u32) -> u32 {
     let g = gptr(sb);
@@ -720,12 +727,12 @@ fn sungetc<const W: bool>(c: &mut Ctx, sb: u32) -> u32 {
         gbump::<W>(sb, -1);
         return rd::<W>(gptr(sb));
     }
-    meta::<W>(vcall(c, sb, V_PBACKFAIL, &[eof::<W>() as u64]))
+    meta::<W>(vcall(c, sb, V_PBACKFAIL, &[A::I(eof::<W>())]))
 }
 /// pubseekoff / pubseekpos into a fresh pos_type; its streamoff (_Myoff + _Fpos)
 fn seekoff(c: &mut Ctx, sb: u32, off: i64, way: u32, mode: u32) -> i64 {
     let r = mem::heap_alloc(24, true);
-    vcall(c, sb, V_SEEKOFF, &[wide(r), off as u64, way as u64, mode as u64]);
+    vcall(c, sb, V_SEEKOFF, &[A::P(r), A::Q(off as u64), A::I(way), A::I(mode)]);
     let v = i64_(r).wrapping_add(i64_(r + 8));
     mem::heap_free(r);
     v
@@ -734,11 +741,15 @@ fn seekpos(c: &mut Ctx, sb: u32, pos: u32, mode: u32) -> i64 {
     let r = mem::heap_alloc(24, true);
     let arg = mem::heap_alloc(24, true);
     mem::copy(arg, pos, 24);
-    vcall(c, sb, V_SEEKPOS, &[wide(r), wide(arg), mode as u64]);
+    vcall(c, sb, V_SEEKPOS, &[A::P(r), A::V(arg, 24), A::I(mode)]);
     let v = i64_(r).wrapping_add(i64_(r + 8));
     mem::heap_free(r);
     mem::heap_free(arg);
     v
+}
+/// The argument index after a pos_type passed by value at `i` (x86: its 6 slots).
+fn after_pos(i: u32) -> u32 {
+    if mem::x64() { i + 1 } else { i + 6 }
 }
 /// fpos(off) into `ret`
 fn put_pos(ret: u32, off: i64) -> u32 {
@@ -754,27 +765,27 @@ fn sb_vtable<const W: bool>() -> u32 {
         table(
             if W { "wstreambuf" } else { "streambuf" },
             &[
-                sb_delete::<W>,
-                nothing,
-                nothing,
-                sb_eof::<W>,
-                sb_eof::<W>,
-                sb_zero,
-                sb_eof::<W>,
-                sb_uflow::<W>,
-                sb_xsgetn::<W>,
-                sb_xsputn::<W>,
-                sb_seekoff,
-                sb_seekpos,
-                sb_setbuf,
-                sb_zero,
-                nothing,
+                (sb_delete::<W>, 4),
+                (nothing, 0),
+                (nothing, 0),
+                (sb_eof::<W>, 4),
+                (sb_eof::<W>, 4),
+                (sb_zero, 0),
+                (sb_eof::<W>, 0),
+                (sb_uflow::<W>, 0),
+                (sb_xsgetn::<W>, 12),
+                (sb_xsputn::<W>, 12),
+                (sb_seekoff, 20),
+                (sb_seekpos, 32),
+                (sb_setbuf, 12),
+                (sb_zero, 0),
+                (nothing, 4),
             ],
         )
     })
 }
 fn sb_dtor_at(c: &mut Ctx, sb: u32) {
-    let l = rp(sb + PLOCALE);
+    let l = rp(sb + PLOCALE());
     if l != 0 {
         crate::msvcp::delete_locale(c, l);
     }
@@ -806,7 +817,7 @@ fn sb_uflow<const W: bool>(c: &mut Ctx) -> u32 {
     v
 }
 fn sb_xsgetn<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, mut p, count) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, mut p, count) = (c.a(0), c.a(1), c.q(2) as i64);
     let mut n = count;
     while n > 0 {
         let avail = gnavail(this);
@@ -829,7 +840,7 @@ fn sb_xsgetn<const W: bool>(c: &mut Ctx) -> u32 {
     c.ret64((count - n) as u64)
 }
 fn sb_xsputn<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, mut p, count) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, mut p, count) = (c.a(0), c.a(1), c.q(2) as i64);
     let mut n = count;
     while n > 0 {
         let avail = pnavail(this);
@@ -839,7 +850,7 @@ fn sb_xsputn<const W: bool>(c: &mut Ctx) -> u32 {
             p += k as u32 * es::<W>();
             n -= k;
             pbump::<W>(this, k as i32);
-        } else if meta::<W>(vcall(c, this, V_OVERFLOW, &[rd::<W>(p) as u64])) == eof::<W>() {
+        } else if meta::<W>(vcall(c, this, V_OVERFLOW, &[A::I(rd::<W>(p))])) == eof::<W>() {
             break;
         } else {
             p += es::<W>();
@@ -862,9 +873,9 @@ fn sb_setbuf(c: &mut Ctx) -> u32 {
 /// ??0basic_streambuf (protected default)
 fn sb_ctor<const W: bool>(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    mem::fill(this + 8, SB_SIZE - 8, 0);
+    mem::fill(this + ps(), SB_SIZE() - ps(), 0);
     wq(this, sb_vtable::<W>());
-    wq(this + PLOCALE, crate::msvcp::new_locale());
+    wq(this + PLOCALE(), crate::msvcp::new_locale());
     sb_init::<W>(this);
     this
 }
@@ -875,11 +886,11 @@ fn sb_ctor_uninit(c: &mut Ctx) -> u32 {
 /// basic_streambuf(const basic_streambuf&)
 fn sb_ctor_copy<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, o) = (c.a(0), c.a(1));
-    mem::fill(this + 8, SB_SIZE - 8, 0);
+    mem::fill(this + ps(), SB_SIZE() - ps(), 0);
     wq(this, sb_vtable::<W>());
-    let l = mem::heap_alloc(crate::msvcp::LOCALE_SIZE, true);
-    crate::msvcp::locale_copy(c, l, rp(o + PLOCALE));
-    wq(this + PLOCALE, l);
+    let l = mem::heap_alloc(crate::msvcp::locale_size(), true);
+    crate::msvcp::locale_copy(c, l, rp(o + PLOCALE()));
+    wq(this + PLOCALE(), l);
     sb_init::<W>(this);
     setp::<W>(this, pbase(o), pptr(o), epptr::<W>(o));
     setg::<W>(this, eback(o), gptr(o), egptr::<W>(o));
@@ -890,8 +901,8 @@ fn sb_assign<const W: bool>(c: &mut Ctx) -> u32 {
     if this != o {
         setp::<W>(this, pbase(o), pptr(o), epptr::<W>(o));
         setg::<W>(this, eback(o), gptr(o), egptr::<W>(o));
-        let tmp = mem::heap_alloc(crate::msvcp::LOCALE_SIZE, true);
-        pubimbue_at(c, this, tmp, rp(o + PLOCALE));
+        let tmp = mem::heap_alloc(crate::msvcp::locale_size(), true);
+        pubimbue_at(c, this, tmp, rp(o + PLOCALE()));
         crate::msvcp::delete_locale_value(c, tmp);
         mem::heap_free(tmp);
     }
@@ -906,9 +917,9 @@ fn sb_swap<const W: bool>(c: &mut Ctx) -> u32 {
         setp::<W>(o, pf, pn, pe);
         setg::<W>(this, eback(o), gptr(o), egptr::<W>(o));
         setg::<W>(o, gf, gn, ge);
-        let l = r64(this + PLOCALE);
-        w64(this + PLOCALE, r64(o + PLOCALE));
-        w64(o + PLOCALE, l);
+        let l = rp(this + PLOCALE());
+        cpp(this + PLOCALE(), o + PLOCALE());
+        wq(o + PLOCALE(), l);
     }
     0
 }
@@ -918,9 +929,9 @@ fn sb_dtor(c: &mut Ctx) -> u32 {
     0
 }
 fn pubimbue_at(c: &mut Ctx, sb: u32, ret: u32, loc: u32) {
-    let l = rp(sb + PLOCALE);
+    let l = rp(sb + PLOCALE());
     crate::msvcp::locale_copy(c, ret, l);
-    vcall(c, sb, V_IMBUE, &[wide(loc)]);
+    vcall(c, sb, V_IMBUE, &[A::P(loc)]);
     crate::msvcp::locale_assign(c, l, loc);
 }
 fn sb_pubimbue(c: &mut Ctx) -> u32 {
@@ -930,22 +941,24 @@ fn sb_pubimbue(c: &mut Ctx) -> u32 {
 }
 fn sb_getloc(c: &mut Ctx) -> u32 {
     let (this, ret) = (c.a(0), c.a(1));
-    crate::msvcp::locale_copy(c, ret, rp(this + PLOCALE));
+    crate::msvcp::locale_copy(c, ret, rp(this + PLOCALE()));
     ret
 }
 fn sb_pubseekoff(c: &mut Ctx) -> u32 {
-    let (this, ret, off, way, mode) = (c.a(0), c.a(1), c.a64(2), c.a(3), c.a(4));
-    vcall(c, this, V_SEEKOFF, &[wide(ret), off, way as u64, mode as u64]);
+    let (this, ret, off) = (c.a(0), c.a(1), c.q(2));
+    let (way, mode) = (c.a(after_q(2)), c.a(after_q(2) + 1));
+    vcall(c, this, V_SEEKOFF, &[A::P(ret), A::Q(off), A::I(way), A::I(mode)]);
     ret
 }
+/// pubseekpos(result, pos_type by value, mode)
 fn sb_pubseekpos(c: &mut Ctx) -> u32 {
-    let (this, ret, pos, mode) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    vcall(c, this, V_SEEKPOS, &[wide(ret), wide(pos), mode as u64]);
+    let (this, ret, pos, mode) = (c.a(0), c.a(1), c.byval(2), c.a(after_pos(2)));
+    vcall(c, this, V_SEEKPOS, &[A::P(ret), A::V(pos, 24), A::I(mode)]);
     ret
 }
 fn sb_pubsetbuf(c: &mut Ctx) -> u32 {
-    let (this, p, n) = (c.a(0), c.a(1), c.a64(2));
-    vcall(c, this, V_SETBUF, &[wide(p), n]) as u32
+    let (this, p, n) = (c.a(0), c.a(1), c.q(2));
+    vcall(c, this, V_SETBUF, &[A::P(p), A::Q(n)]) as u32
 }
 fn sb_pubsync(c: &mut Ctx) -> u32 {
     let this = c.a(0);
@@ -970,7 +983,7 @@ fn sb_snextc<const W: bool>(c: &mut Ctx) -> u32 {
     snextc::<W>(c, this)
 }
 fn sb_sgetn<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, p, n) = (c.a(0), c.a(1), c.q(2) as i64);
     let r = sgetn(c, this, p, n);
     c.ret64(r as u64)
 }
@@ -996,7 +1009,7 @@ fn sb_sputc<const W: bool>(c: &mut Ctx) -> u32 {
     sputc::<W>(c, this, v)
 }
 fn sb_sputn<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, p, n) = (c.a(0), c.a(1), c.q(2) as i64);
     let r = sputn(c, this, p, n);
     c.ret64(r as u64)
 }
@@ -1075,12 +1088,12 @@ fn sb_Init0<const W: bool>(c: &mut Ctx) -> u32 {
 /// _Init(gfirst, gnext, gcount, pfirst, pnext, pcount)
 fn sb_Init6(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    wq(this + IGFIRST, c.a(1));
-    wq(this + IGNEXT, c.a(2));
-    wq(this + IGCOUNT, c.a(3));
-    wq(this + IPFIRST, c.a(4));
-    wq(this + IPNEXT, c.a(5));
-    wq(this + IPCOUNT, c.a(6));
+    wq(this + IGFIRST(), c.a(1));
+    wq(this + IGNEXT(), c.a(2));
+    wq(this + IGCOUNT(), c.a(3));
+    wq(this + IPFIRST(), c.a(4));
+    wq(this + IPNEXT(), c.a(5));
+    wq(this + IPCOUNT(), c.a(6));
     0
 }
 
@@ -1089,14 +1102,14 @@ fn sb_Init6(c: &mut Ctx) -> u32 {
 
 fn ios_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| table(if W { "wios" } else { "ios" }, &[ios_base_delete]))
+    *V[W as usize].get_or_init(|| table(if W { "wios" } else { "ios" }, &[(ios_base_delete, 4)]))
 }
 /// basic_ios::init(streambuf, isstd)
 fn ios_init<const W: bool>(c: &mut Ctx, ios: u32, sb: u32, isstd: bool) {
     base_init(c, ios);
-    wq(ios + STRBUF, sb);
-    w64(ios + TIESTR, 0);
-    wr::<W>(ios + FILLCH, b' ' as u32);
+    wq(ios + STRBUF(), sb);
+    wq(ios + TIESTR(), 0);
+    wr::<W>(ios + FILLCH(), b' ' as u32);
     if sb == 0 {
         setstate(c, ios, BADBIT);
     }
@@ -1106,7 +1119,7 @@ fn ios_init<const W: bool>(c: &mut Ctx, ios: u32, sb: u32, isstd: bool) {
 }
 /// The basic_ios part of a new object: ios_base() and the basic_ios fields zeroed.
 fn ios_construct<const W: bool>(ios: u32) {
-    mem::fill(ios + 8, IOS_SIZE - 8, 0);
+    mem::fill(ios + ps(), IOS_SIZE() - ps(), 0);
     wq(ios, ios_vtable::<W>());
 }
 fn ios_ctor<const W: bool>(c: &mut Ctx) -> u32 {
@@ -1147,40 +1160,40 @@ fn ios_setstate1(c: &mut Ctx) -> u32 {
 }
 fn ios_copyfmt<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, o) = (c.a(0), c.a(1));
-    w64(this + TIESTR, r64(o + TIESTR));
-    wr::<W>(this + FILLCH, rd::<W>(o + FILLCH));
+    cpp(this + TIESTR(), o + TIESTR());
+    wr::<W>(this + FILLCH(), rd::<W>(o + FILLCH()));
     copyfmt_base(c, this, o);
     this
 }
 fn ios_tie_get(c: &mut Ctx) -> u32 {
-    rp(c.a(0) + TIESTR)
+    rp(c.a(0) + TIESTR())
 }
 fn ios_tie_set(c: &mut Ctx) -> u32 {
     let (this, t) = (c.a(0), c.a(1));
-    let old = rp(this + TIESTR);
-    wq(this + TIESTR, t);
+    let old = rp(this + TIESTR());
+    wq(this + TIESTR(), t);
     old
 }
 fn ios_rdbuf_get(c: &mut Ctx) -> u32 {
-    rp(c.a(0) + STRBUF)
+    rp(c.a(0) + STRBUF())
 }
 fn ios_rdbuf_set(c: &mut Ctx) -> u32 {
     let (this, sb) = (c.a(0), c.a(1));
-    let old = rp(this + STRBUF);
-    wq(this + STRBUF, sb);
+    let old = rp(this + STRBUF());
+    wq(this + STRBUF(), sb);
     ios_clear(c, this, 0, false);
     old
 }
 fn ios_set_rdbuf(c: &mut Ctx) -> u32 {
-    wq(c.a(0) + STRBUF, c.a(1));
+    wq(c.a(0) + STRBUF(), c.a(1));
     0
 }
 fn ios_imbue(c: &mut Ctx) -> u32 {
     let (this, ret, loc) = (c.a(0), c.a(1), c.a(2));
     base_imbue_at(c, this, ret, loc);
-    let sb = rp(this + STRBUF);
+    let sb = rp(this + STRBUF());
     if sb != 0 {
-        let tmp = mem::heap_alloc(crate::msvcp::LOCALE_SIZE, true);
+        let tmp = mem::heap_alloc(crate::msvcp::locale_size(), true);
         pubimbue_at(c, sb, tmp, loc);
         crate::msvcp::delete_locale_value(c, tmp);
         mem::heap_free(tmp);
@@ -1188,12 +1201,12 @@ fn ios_imbue(c: &mut Ctx) -> u32 {
     ret
 }
 fn ios_fill_get<const W: bool>(c: &mut Ctx) -> u32 {
-    rd::<W>(c.a(0) + FILLCH)
+    rd::<W>(c.a(0) + FILLCH())
 }
 fn ios_fill_set<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), ch::<W>(c.a(1)));
-    let old = rd::<W>(this + FILLCH);
-    wr::<W>(this + FILLCH, v);
+    let old = rd::<W>(this + FILLCH());
+    wr::<W>(this + FILLCH(), v);
     old
 }
 /// narrow(ch, default) / widen(byte): the "C" locale's ctype (wchar_t above 0xff: default)
@@ -1206,12 +1219,12 @@ fn ios_widen(c: &mut Ctx) -> u32 {
 }
 fn ios_swap_at<const W: bool>(this: u32, o: u32) {
     base_swap_at(this, o);
-    let f = rd::<W>(this + FILLCH);
-    wr::<W>(this + FILLCH, rd::<W>(o + FILLCH));
-    wr::<W>(o + FILLCH, f);
-    let t = r64(this + TIESTR);
-    w64(this + TIESTR, r64(o + TIESTR));
-    w64(o + TIESTR, t);
+    let f = rd::<W>(this + FILLCH());
+    wr::<W>(this + FILLCH(), rd::<W>(o + FILLCH()));
+    wr::<W>(o + FILLCH(), f);
+    let t = rp(this + TIESTR());
+    cpp(this + TIESTR(), o + TIESTR());
+    wq(o + TIESTR(), t);
 }
 fn ios_swap<const W: bool>(c: &mut Ctx) -> u32 {
     ios_swap_at::<W>(c.a(0), c.a(1));
@@ -1220,8 +1233,8 @@ fn ios_swap<const W: bool>(c: &mut Ctx) -> u32 {
 fn ios_move<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, o) = (c.a(0), c.a(1));
     if this != o {
-        w64(this + STRBUF, 0);
-        w64(this + TIESTR, 0);
+        wq(this + STRBUF(), 0);
+        wq(this + TIESTR(), 0);
         ios_swap_at::<W>(this, o);
     }
     0
@@ -1246,16 +1259,18 @@ fn vbtable(off: u32) -> u32 {
 }
 fn istream_vbtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| vbtable(ISTREAM_VB))
+    *V[W as usize].get_or_init(|| vbtable(ISTREAM_VB()))
 }
 fn ostream_vbtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| vbtable(OSTREAM_VB))
+    *V[W as usize].get_or_init(|| vbtable(OSTREAM_VB()))
 }
+/// basic_iostream's ostream part (x64 and x86)
+const IOSTREAM_OS: u32 = 16;
 /// basic_iostream's two: of its istream part (at 0) and its ostream part (at 16)
 fn iostream_vbtables<const W: bool>() -> (u32, u32) {
     static V: [OnceLock<(u32, u32)>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| (vbtable(IOSTREAM_VB), vbtable(IOSTREAM_VB - 16)))
+    *V[W as usize].get_or_init(|| (vbtable(IOSTREAM_VB()), vbtable(IOSTREAM_VB() - IOSTREAM_OS)))
 }
 
 /// The scalar deleting destructor in a stream class's vftable: `this` is the basic_ios part,
@@ -1270,25 +1285,25 @@ fn stream_delete(c: &mut Ctx, st: u32) -> u32 {
     start
 }
 fn istream_delete(c: &mut Ctx) -> u32 {
-    stream_delete(c, ISTREAM_VB)
+    stream_delete(c, ISTREAM_VB())
 }
 fn ostream_delete(c: &mut Ctx) -> u32 {
-    stream_delete(c, OSTREAM_VB)
+    stream_delete(c, OSTREAM_VB())
 }
 fn iostream_delete(c: &mut Ctx) -> u32 {
-    stream_delete(c, IOSTREAM_VB)
+    stream_delete(c, IOSTREAM_VB())
 }
 fn istream_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| table(if W { "wistream" } else { "istream" }, &[istream_delete]))
+    *V[W as usize].get_or_init(|| table(if W { "wistream" } else { "istream" }, &[(istream_delete, 4)]))
 }
 fn ostream_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| table(if W { "wostream" } else { "ostream" }, &[ostream_delete]))
+    *V[W as usize].get_or_init(|| table(if W { "wostream" } else { "ostream" }, &[(ostream_delete, 4)]))
 }
 fn iostream_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| table(if W { "wiostream" } else { "iostream" }, &[iostream_delete]))
+    *V[W as usize].get_or_init(|| table(if W { "wiostream" } else { "iostream" }, &[(iostream_delete, 4)]))
 }
 
 /// A stream constructor's own part: the vbtable (most derived: also the basic_ios), then the
@@ -1307,16 +1322,16 @@ fn stream_begin<const W: bool>(this: u32, vbt: u32, most_derived: bool, vft: u32
 /// basic_istream(streambuf, isstd) [, most derived]
 fn istream_ctor<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, sb, isstd, md) = (c.a(0), c.a(1), c.a(2) & 0xff != 0, c.a(3) != 0);
-    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB);
-    w64(this + CHCOUNT, 0);
+    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB());
+    w64(this + CHCOUNT(), 0);
     ios_init::<W>(c, ios, sb, isstd);
     this
 }
 /// basic_istream(streambuf, isstd, skip init) [, most derived]
 fn istream_ctor3<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, sb, isstd, skip, md) = (c.a(0), c.a(1), c.a(2) & 0xff != 0, c.a(3) & 0xff != 0, c.a(4) != 0);
-    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB);
-    w64(this + CHCOUNT, 0);
+    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB());
+    w64(this + CHCOUNT(), 0);
     if !skip {
         ios_init::<W>(c, ios, sb, isstd);
     }
@@ -1325,37 +1340,37 @@ fn istream_ctor3<const W: bool>(c: &mut Ctx) -> u32 {
 /// basic_istream(_Uninitialized) [, most derived]
 fn istream_ctor_uninit<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, md) = (c.a(0), c.a(2) != 0);
-    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB);
+    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB());
     addstd(ios);
     this
 }
 /// basic_istream(basic_istream&&) [, most derived]
 fn istream_ctor_move<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, o, md) = (c.a(0), c.a(1), c.a(2) != 0);
-    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB);
-    w64(this + CHCOUNT, r64(o + CHCOUNT));
+    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB());
+    w64(this + CHCOUNT(), r64(o + CHCOUNT()));
     ios_init::<W>(c, ios, 0, false);
     move_ios::<W>(ios, vb(o));
-    w64(o + CHCOUNT, 0);
+    w64(o + CHCOUNT(), 0);
     this
 }
 fn move_ios<const W: bool>(ios: u32, o: u32) {
     if ios != o {
-        w64(ios + STRBUF, 0);
-        w64(ios + TIESTR, 0);
+        wq(ios + STRBUF(), 0);
+        wq(ios + TIESTR(), 0);
         ios_swap_at::<W>(ios, o);
     }
 }
 fn ostream_ctor<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, sb, isstd, md) = (c.a(0), c.a(1), c.a(2) & 0xff != 0, c.a(3) != 0);
-    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB);
+    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB());
     ios_init::<W>(c, ios, sb, isstd);
     this
 }
 /// basic_ostream(_Uninitialized, addit) [, most derived]
 fn ostream_ctor_uninit<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, addit, md) = (c.a(0), c.a(2) & 0xff != 0, c.a(3) != 0);
-    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB);
+    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB());
     if addit {
         addstd(ios);
     }
@@ -1363,7 +1378,7 @@ fn ostream_ctor_uninit<const W: bool>(c: &mut Ctx) -> u32 {
 }
 fn ostream_ctor_move<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, o, md) = (c.a(0), c.a(1), c.a(2) != 0);
-    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB);
+    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB());
     ios_init::<W>(c, ios, 0, false);
     move_ios::<W>(ios, vb(o));
     this
@@ -1373,13 +1388,13 @@ fn iostream_begin<const W: bool>(this: u32, md: bool) -> u32 {
     let (vi, vo) = iostream_vbtables::<W>();
     if md {
         wq(this, vi);
-        wq(this + 16, vo);
+        wq(this + IOSTREAM_OS, vo);
         ios_construct::<W>(vb(this));
     }
     let ios = vb(this);
     wq(ios, iostream_vtable::<W>());
-    w32(ios - 4, (ios.wrapping_sub(this)).wrapping_sub(IOSTREAM_VB));
-    w64(this + CHCOUNT, 0);
+    w32(ios - 4, (ios.wrapping_sub(this)).wrapping_sub(IOSTREAM_VB()));
+    w64(this + CHCOUNT(), 0);
     ios
 }
 fn iostream_ctor<const W: bool>(c: &mut Ctx) -> u32 {
@@ -1393,8 +1408,8 @@ fn iostream_ctor_move<const W: bool>(c: &mut Ctx) -> u32 {
     let ios = iostream_begin::<W>(this, md);
     ios_init::<W>(c, ios, 0, false);
     move_ios::<W>(ios, vb(o));
-    w64(this + CHCOUNT, r64(o + CHCOUNT));
-    w64(o + CHCOUNT, 0);
+    w64(this + CHCOUNT(), r64(o + CHCOUNT()));
+    w64(o + CHCOUNT(), 0);
     this
 }
 /// ~basic_istream / ~basic_ostream / ~basic_iostream (this: the basic_ios part): nothing of
@@ -1412,9 +1427,9 @@ fn stream_vbase_dtor(c: &mut Ctx) -> u32 {
 fn istream_swap<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, o) = (c.a(0), c.a(1));
     ios_swap_at::<W>(vb(this), vb(o));
-    let n = r64(this + CHCOUNT);
-    w64(this + CHCOUNT, r64(o + CHCOUNT));
-    w64(o + CHCOUNT, n);
+    let n = r64(this + CHCOUNT());
+    w64(this + CHCOUNT(), r64(o + CHCOUNT()));
+    w64(o + CHCOUNT(), n);
     this
 }
 fn ostream_swap<const W: bool>(c: &mut Ctx) -> u32 {
@@ -1429,20 +1444,20 @@ fn ostream_swap<const W: bool>(c: &mut Ctx) -> u32 {
 // sentries
 
 fn lock(c: &mut Ctx, ios: u32) {
-    let sb = rp(ios + STRBUF);
+    let sb = rp(ios + STRBUF());
     if sb != 0 {
         vcall(c, sb, V_LOCK, &[]);
     }
 }
 fn unlock(c: &mut Ctx, ios: u32) {
-    let sb = rp(ios + STRBUF);
+    let sb = rp(ios + STRBUF());
     if sb != 0 {
         vcall(c, sb, V_UNLOCK, &[]);
     }
 }
 /// basic_ostream::flush of the stream whose basic_ios is `ios` (with its sentry)
 fn flush_ios<const W: bool>(c: &mut Ctx, ios: u32) {
-    let sb = rp(ios + STRBUF);
+    let sb = rp(ios + STRBUF());
     if sb == 0 {
         return;
     }
@@ -1464,7 +1479,7 @@ fn osentry<const W: bool>(c: &mut Ctx, ios: u32) -> bool {
     if !good(ios) {
         return false;
     }
-    let t = rp(ios + TIESTR);
+    let t = rp(ios + TIESTR());
     if t == 0 || vb(t) == ios {
         return true;
     }
@@ -1478,7 +1493,7 @@ fn osentry_end(c: &mut Ctx, ios: u32) {
 }
 fn osfx(c: &mut Ctx, ios: u32) {
     if good(ios) && flags(ios) & UNITBUF != 0 {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         if pubsync(c, sb) == -1 {
             setstate(c, ios, BADBIT);
         }
@@ -1490,12 +1505,12 @@ fn ipfx<const W: bool>(c: &mut Ctx, ios: u32, noskip: bool) -> bool {
         setstate(c, ios, FAILBIT);
         return false;
     }
-    let t = rp(ios + TIESTR);
+    let t = rp(ios + TIESTR());
     if t != 0 {
         flush_ios::<W>(c, vb(t));
     }
     if !noskip && flags(ios) & SKIPWS != 0 {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let mut m = sgetc::<W>(c, sb);
         loop {
             if m == eof::<W>() {
@@ -1533,7 +1548,7 @@ fn os_opfx<const W: bool>(c: &mut Ctx) -> u32 {
     if !good(ios) {
         return 0;
     }
-    let t = rp(ios + TIESTR);
+    let t = rp(ios + TIESTR());
     if t == 0 || t == this {
         return 1;
     }
@@ -1550,7 +1565,7 @@ fn os_put<const W: bool>(c: &mut Ctx) -> u32 {
     let ios = vb(this);
     let st = if !osentry::<W>(c, ios) {
         BADBIT
-    } else if sputc::<W>(c, rp(ios + STRBUF), v) == eof::<W>() {
+    } else if sputc::<W>(c, rp(ios + STRBUF()), v) == eof::<W>() {
         BADBIT
     } else {
         0
@@ -1560,11 +1575,11 @@ fn os_put<const W: bool>(c: &mut Ctx) -> u32 {
     this
 }
 fn os_write<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, p, n) = (c.a(0), c.a(1), c.q(2) as i64);
     let ios = vb(this);
     let st = if !osentry::<W>(c, ios) {
         BADBIT
-    } else if n > 0 && sputn(c, rp(ios + STRBUF), p, n) != n {
+    } else if n > 0 && sputn(c, rp(ios + STRBUF()), p, n) != n {
         BADBIT
     } else {
         0
@@ -1573,23 +1588,24 @@ fn os_write<const W: bool>(c: &mut Ctx) -> u32 {
     setstate(c, ios, st);
     this
 }
+/// seekp(pos_type by value)
 fn os_seekp_pos(c: &mut Ctx) -> u32 {
-    let (this, pos) = (c.a(0), c.a(1));
+    let (this, pos) = (c.a(0), c.byval(1));
     let ios = vb(this);
     lock(c, ios);
     if !fail(ios) {
-        let st = if seekpos(c, rp(ios + STRBUF), pos, OUT) == -1 { FAILBIT } else { 0 };
+        let st = if seekpos(c, rp(ios + STRBUF()), pos, OUT) == -1 { FAILBIT } else { 0 };
         setstate(c, ios, st);
     }
     osentry_end(c, ios);
     this
 }
 fn os_seekp_off(c: &mut Ctx) -> u32 {
-    let (this, off, way) = (c.a(0), c.a64(1) as i64, c.a(2));
+    let (this, off, way) = (c.a(0), c.q(1) as i64, c.a(after_q(1)));
     let ios = vb(this);
     lock(c, ios);
     if !fail(ios) {
-        let st = if seekoff(c, rp(ios + STRBUF), off, way, OUT) == -1 { FAILBIT } else { 0 };
+        let st = if seekoff(c, rp(ios + STRBUF()), off, way, OUT) == -1 { FAILBIT } else { 0 };
         setstate(c, ios, st);
     }
     osentry_end(c, ios);
@@ -1601,8 +1617,8 @@ fn os_tellp(c: &mut Ctx) -> u32 {
     lock(c, ios);
     put_pos(ret, -1);
     if !fail(ios) {
-        let sb = rp(ios + STRBUF);
-        vcall(c, sb, V_SEEKOFF, &[wide(ret), 0, SEEK_CUR as u64, OUT as u64]);
+        let sb = rp(ios + STRBUF());
+        vcall(c, sb, V_SEEKOFF, &[A::P(ret), A::Q(0), A::I(SEEK_CUR), A::I(OUT)]);
     }
     osentry_end(c, ios);
     ret
@@ -1611,11 +1627,11 @@ fn os_tellp(c: &mut Ctx) -> u32 {
 /// basic_ios part)
 fn os_manip_self(c: &mut Ctx) -> u32 {
     let (this, f) = (c.a(0), c.a(1));
-    call(c, f, &[wide(this)]) as u32
+    gcall(c, f, &[A::P(this)]) as u32
 }
 fn manip_ios(c: &mut Ctx) -> u32 {
     let (this, f) = (c.a(0), c.a(1));
-    call(c, f, &[wide(vb(this))]);
+    gcall(c, f, &[A::P(vb(this))]);
     this
 }
 /// operator<<(basic_streambuf*): copies until its end
@@ -1631,7 +1647,7 @@ fn os_from_sb<const W: bool>(c: &mut Ctx) -> u32 {
             if m == eof::<W>() {
                 break;
             }
-            if sputc::<W>(c, rp(ios + STRBUF), m) == eof::<W>() {
+            if sputc::<W>(c, rp(ios + STRBUF()), m) == eof::<W>() {
                 st |= BADBIT;
                 break;
             }
@@ -1639,7 +1655,7 @@ fn os_from_sb<const W: bool>(c: &mut Ctx) -> u32 {
         }
     }
     osentry_end(c, ios);
-    w64(ios + WIDE, 0);
+    w64(ios + WIDE(), 0);
     let st = if src == 0 { BADBIT } else if copied { st } else { st | FAILBIT };
     setstate(c, ios, st);
     this
@@ -1648,10 +1664,10 @@ fn os_from_sb<const W: bool>(c: &mut Ctx) -> u32 {
 /// Puts `field` (ASCII) padded to the stream's width as num_put does: the first `prefix`
 /// characters (sign, 0x) before internal fill. False when the buffer refused a character.
 fn put_field<const W: bool>(c: &mut Ctx, ios: u32, field: &[u8], prefix: usize) -> bool {
-    let w = r64(ios + WIDE) as i64;
+    let w = r64(ios + WIDE()) as i64;
     let mut fill = if w <= 0 || w as usize <= field.len() { 0 } else { w as usize - field.len() };
-    let fc = rd::<W>(ios + FILLCH);
-    let sb = rp(ios + STRBUF);
+    let fc = rd::<W>(ios + FILLCH());
+    let sb = rp(ios + STRBUF());
     let adj = flags(ios) & ADJUSTFIELD;
     let mut ok = true;
     let mut put = |c: &mut Ctx, v: u32| {
@@ -1683,7 +1699,7 @@ fn put_field<const W: bool>(c: &mut Ctx, ios: u32, field: &[u8], prefix: usize) 
     for &b in &field[prefix..] {
         put(c, b as u32);
     }
-    w64(ios + WIDE, 0);
+    w64(ios + WIDE(), 0);
     for _ in 0..fill {
         put(c, fc);
     }
@@ -1718,7 +1734,7 @@ impl crt::fmt::Args for Args {
     fn store(&mut self, _: u64, _: u32, _: u64) {}
 }
 fn sprintf(fmt: &str, ints: Vec<u64>, floats: Vec<f64>) -> Vec<u8> {
-    crt::fmt::format(fmt.as_bytes(), crt::fmt::Mode::ucrt(true, 0), &mut Args(ints, floats)).unwrap_or_default()
+    crt::fmt::format(fmt.as_bytes(), crt::fmt::Mode::ucrt(mem::x64(), 0), &mut Args(ints, floats)).unwrap_or_default()
 }
 
 /// num_put's integer field: _Ifmt's conversion (spec "ld", "lu", "Ld", "Lu")
@@ -1824,11 +1840,11 @@ fn os_long<const W: bool>(c: &mut Ctx) -> u32 {
     insert::<W>(c, this, |_, fl| int_field(fl, v as i32 as i64 as u64, true, false))
 }
 fn os_i64<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, v) = (c.a(0), c.a64(1));
+    let (this, v) = (c.a(0), c.q(1));
     insert::<W>(c, this, |_, fl| int_field(fl, v, true, true))
 }
 fn os_u64<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, v) = (c.a(0), c.a64(1));
+    let (this, v) = (c.a(0), c.q(1));
     insert::<W>(c, this, |_, fl| int_field(fl, v, false, true))
 }
 fn os_bool<const W: bool>(c: &mut Ctx) -> u32 {
@@ -1842,15 +1858,15 @@ fn os_bool<const W: bool>(c: &mut Ctx) -> u32 {
     })
 }
 fn os_float<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, v) = (c.a(0), f32::from_bits(c.xmm(1) as u32) as f64);
-    insert::<W>(c, this, |ios, fl| float_field(fl, r64(ios + PREC) as i64, v))
+    let (this, v) = (c.a(0), c.fl(1) as f64);
+    insert::<W>(c, this, |ios, fl| float_field(fl, r64(ios + PREC()) as i64, v))
 }
 fn os_double<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, v) = (c.a(0), f64::from_bits(c.xmm(1)));
-    insert::<W>(c, this, |ios, fl| float_field(fl, r64(ios + PREC) as i64, v))
+    let (this, v) = (c.a(0), c.d(1));
+    insert::<W>(c, this, |ios, fl| float_field(fl, r64(ios + PREC()) as i64, v))
 }
 fn os_ptr<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, v) = (c.a(0), c.a64(1));
+    let (this, v) = (c.a(0), if mem::x64() { c.a64(1) } else { c.a(1) as u64 });
     insert::<W>(c, this, |_, _| (sprintf("%p", vec![v], vec![]), 0))
 }
 
@@ -1858,9 +1874,9 @@ fn os_ptr<const W: bool>(c: &mut Ctx) -> u32 {
 // basic_istream
 
 fn chcount_inc(this: u32) {
-    let n = r64(this + CHCOUNT);
+    let n = r64(this + CHCOUNT());
     if n != i64::MAX as u64 {
-        w64(this + CHCOUNT, n + 1);
+        w64(this + CHCOUNT(), n + 1);
     }
 }
 fn is_Ipfx<const W: bool>(c: &mut Ctx) -> u32 {
@@ -1871,24 +1887,24 @@ fn is_isfx(_: &mut Ctx) -> u32 {
     0
 }
 fn is_gcount(c: &mut Ctx) -> u32 {
-    let n = r64(c.a(0) + CHCOUNT);
+    let n = r64(c.a(0) + CHCOUNT());
     c.ret64(n)
 }
 /// get(): a metacharacter
 fn get_meta<const W: bool>(c: &mut Ctx, this: u32) -> u32 {
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     let m = if !isentry::<W>(c, ios, true) {
         eof::<W>()
     } else {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let m = sgetc::<W>(c, sb);
         if m == eof::<W>() {
             st = EOFBIT | FAILBIT;
         } else {
             sbumpc::<W>(c, sb);
-            w64(this + CHCOUNT, 1);
+            w64(this + CHCOUNT(), 1);
         }
         m
     };
@@ -1911,10 +1927,10 @@ fn is_get_ch<const W: bool>(c: &mut Ctx) -> u32 {
 /// get(str, count, delim)
 fn get_str<const W: bool>(c: &mut Ctx, this: u32, mut p: u32, mut n: i64, delim: u32) -> u32 {
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     if isentry::<W>(c, ios, true) && n > 0 {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let mut m = sgetc::<W>(c, sb);
         loop {
             n -= 1;
@@ -1934,7 +1950,7 @@ fn get_str<const W: bool>(c: &mut Ctx, this: u32, mut p: u32, mut n: i64, delim:
         }
     }
     unlock(c, ios);
-    if r64(this + CHCOUNT) == 0 {
+    if r64(this + CHCOUNT()) == 0 {
         st |= FAILBIT;
     }
     setstate(c, ios, st);
@@ -1942,20 +1958,20 @@ fn get_str<const W: bool>(c: &mut Ctx, this: u32, mut p: u32, mut n: i64, delim:
     this
 }
 fn is_get_str2<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, p, n) = (c.a(0), c.a(1), c.q(2) as i64);
     get_str::<W>(c, this, p, n, b'\n' as u32)
 }
 fn is_get_str3<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n, d) = (c.a(0), c.a(1), c.a64(2) as i64, ch::<W>(c.a(3)));
+    let (this, p, n, d) = (c.a(0), c.a(1), c.q(2) as i64, ch::<W>(c.a(after_q(2))));
     get_str::<W>(c, this, p, n, d)
 }
 /// get(streambuf&, delim)
 fn get_sb<const W: bool>(c: &mut Ctx, this: u32, dst: u32, delim: u32) -> u32 {
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     if isentry::<W>(c, ios, true) {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let mut m = sgetc::<W>(c, sb);
         loop {
             if m == eof::<W>() {
@@ -1970,7 +1986,7 @@ fn get_sb<const W: bool>(c: &mut Ctx, this: u32, dst: u32, delim: u32) -> u32 {
         }
     }
     unlock(c, ios);
-    if r64(this + CHCOUNT) == 0 {
+    if r64(this + CHCOUNT()) == 0 {
         st |= FAILBIT;
     }
     setstate(c, ios, st);
@@ -1986,10 +2002,10 @@ fn is_get_sb2<const W: bool>(c: &mut Ctx) -> u32 {
 }
 fn getline<const W: bool>(c: &mut Ctx, this: u32, mut p: u32, mut n: i64, delim: u32) -> u32 {
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     if isentry::<W>(c, ios, true) && n > 0 {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let mut m = sgetc::<W>(c, sb);
         loop {
             if m == eof::<W>() {
@@ -2013,29 +2029,29 @@ fn getline<const W: bool>(c: &mut Ctx, this: u32, mut p: u32, mut n: i64, delim:
     }
     unlock(c, ios);
     wr::<W>(p, 0);
-    if r64(this + CHCOUNT) == 0 {
+    if r64(this + CHCOUNT()) == 0 {
         st |= FAILBIT;
     }
     setstate(c, ios, st);
     this
 }
 fn is_getline2<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, p, n) = (c.a(0), c.a(1), c.q(2) as i64);
     getline::<W>(c, this, p, n, b'\n' as u32)
 }
 fn is_getline3<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n, d) = (c.a(0), c.a(1), c.a64(2) as i64, ch::<W>(c.a(3)));
+    let (this, p, n, d) = (c.a(0), c.a(1), c.q(2) as i64, ch::<W>(c.a(after_q(2))));
     getline::<W>(c, this, p, n, d)
 }
 /// ignore(count, delim metacharacter)
 fn is_ignore<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, mut n, d) = (c.a(0), c.a64(1) as i64, c.a(2));
+    let (this, mut n, d) = (c.a(0), c.q(1) as i64, c.a(after_q(1)));
     let d = if W { d & 0xffff } else { d };
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     if isentry::<W>(c, ios, true) && n > 0 {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         loop {
             if n != i64::MAX {
                 n -= 1;
@@ -2060,11 +2076,11 @@ fn is_ignore<const W: bool>(c: &mut Ctx) -> u32 {
 }
 fn read_at<const W: bool>(c: &mut Ctx, this: u32, p: u32, n: i64) {
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     if isentry::<W>(c, ios, true) && n > 0 {
-        let got = sgetn(c, rp(ios + STRBUF), p, n);
-        w64(this + CHCOUNT, got as u64);
+        let got = sgetn(c, rp(ios + STRBUF()), p, n);
+        w64(this + CHCOUNT(), got as u64);
         if got != n {
             st |= EOFBIT | FAILBIT;
         }
@@ -2073,21 +2089,21 @@ fn read_at<const W: bool>(c: &mut Ctx, this: u32, p: u32, n: i64) {
     setstate(c, ios, st);
 }
 fn is_read<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, p, n) = (c.a(0), c.a(1), c.q(2) as i64);
     read_at::<W>(c, this, p, n);
     this
 }
 fn is_readsome<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, p, n) = (c.a(0), c.a(1), c.a64(2) as i64);
+    let (this, p, n) = (c.a(0), c.a(1), c.q(2) as i64);
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     let ok = isentry::<W>(c, ios, true);
     unlock(c, ios);
     if !ok {
         st |= FAILBIT;
     } else {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let g = gnavail(sb);
         let avail = if g > 0 { g } else { vcall(c, sb, V_SHOWMANYC, &[]) as i64 };
         if avail < 0 {
@@ -2097,18 +2113,18 @@ fn is_readsome<const W: bool>(c: &mut Ctx) -> u32 {
         }
     }
     setstate(c, ios, st);
-    let r = r64(this + CHCOUNT);
+    let r = r64(this + CHCOUNT());
     c.ret64(r)
 }
 fn is_peek<const W: bool>(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     let m = if !isentry::<W>(c, ios, true) {
         eof::<W>()
     } else {
-        let m = sgetc::<W>(c, rp(ios + STRBUF));
+        let m = sgetc::<W>(c, rp(ios + STRBUF()));
         if m == eof::<W>() {
             st |= EOFBIT;
         }
@@ -2121,12 +2137,12 @@ fn is_peek<const W: bool>(c: &mut Ctx) -> u32 {
 /// putback(ch) / unget()
 fn put_back<const W: bool>(c: &mut Ctx, this: u32, v: Option<u32>) -> u32 {
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let old = state(ios);
     ios_clear(c, ios, old & !EOFBIT, false);
     let mut st = 0;
     if isentry::<W>(c, ios, true) {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let m = match v {
             Some(v) => sputbackc::<W>(c, sb, v),
             None => sungetc::<W>(c, sb),
@@ -2151,7 +2167,7 @@ fn is_sync<const W: bool>(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let ios = vb(this);
     isentry::<W>(c, ios, true);
-    let sb = rp(ios + STRBUF);
+    let sb = rp(ios + STRBUF());
     let r = if sb == 0 {
         u32::MAX
     } else if pubsync(c, sb) == -1 {
@@ -2163,14 +2179,15 @@ fn is_sync<const W: bool>(c: &mut Ctx) -> u32 {
     unlock(c, ios);
     r
 }
+/// seekg(pos_type by value)
 fn is_seekg_pos<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, pos) = (c.a(0), c.a(1));
+    let (this, pos) = (c.a(0), c.byval(1));
     let ios = vb(this);
     let old = state(ios);
     ios_clear(c, ios, old & !EOFBIT, false);
     isentry::<W>(c, ios, true);
     let mut st = 0;
-    if !fail(ios) && seekpos(c, rp(ios + STRBUF), pos, IN) == -1 {
+    if !fail(ios) && seekpos(c, rp(ios + STRBUF()), pos, IN) == -1 {
         st |= FAILBIT;
     }
     unlock(c, ios);
@@ -2178,13 +2195,13 @@ fn is_seekg_pos<const W: bool>(c: &mut Ctx) -> u32 {
     this
 }
 fn is_seekg_off<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, off, way) = (c.a(0), c.a64(1) as i64, c.a(2));
+    let (this, off, way) = (c.a(0), c.q(1) as i64, c.a(after_q(1)));
     let ios = vb(this);
     let old = state(ios);
     ios_clear(c, ios, old & !EOFBIT, false);
     isentry::<W>(c, ios, true);
     let mut st = 0;
-    if !fail(ios) && seekoff(c, rp(ios + STRBUF), off, way, IN) == -1 {
+    if !fail(ios) && seekoff(c, rp(ios + STRBUF()), off, way, IN) == -1 {
         st |= FAILBIT;
     }
     unlock(c, ios);
@@ -2197,8 +2214,8 @@ fn is_tellg<const W: bool>(c: &mut Ctx) -> u32 {
     isentry::<W>(c, ios, true);
     put_pos(ret, -1);
     if !fail(ios) {
-        let sb = rp(ios + STRBUF);
-        vcall(c, sb, V_SEEKOFF, &[wide(ret), 0, SEEK_CUR as u64, IN as u64]);
+        let sb = rp(ios + STRBUF());
+        vcall(c, sb, V_SEEKOFF, &[A::P(ret), A::Q(0), A::I(SEEK_CUR), A::I(IN)]);
     }
     unlock(c, ios);
     ret
@@ -2207,10 +2224,10 @@ fn is_tellg<const W: bool>(c: &mut Ctx) -> u32 {
 fn is_to_sb<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, dst) = (c.a(0), c.a(1));
     let ios = vb(this);
-    w64(this + CHCOUNT, 0);
+    w64(this + CHCOUNT(), 0);
     let mut st = 0;
     if isentry::<W>(c, ios, true) && dst != 0 {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let mut m = sgetc::<W>(c, sb);
         loop {
             if m == eof::<W>() {
@@ -2225,7 +2242,7 @@ fn is_to_sb<const W: bool>(c: &mut Ctx) -> u32 {
         }
     }
     unlock(c, ios);
-    if r64(this + CHCOUNT) == 0 {
+    if r64(this + CHCOUNT()) == 0 {
         st |= FAILBIT;
     }
     setstate(c, ios, st);
@@ -2462,7 +2479,7 @@ fn extract<const W: bool>(c: &mut Ctx, kind: Num) -> u32 {
     let ios = vb(this);
     let mut st = 0;
     if isentry::<W>(c, ios, false) {
-        let sb = rp(ios + STRBUF);
+        let sb = rp(ios + STRBUF());
         let cur = sgetc::<W>(c, sb);
         let fl = flags(ios);
         let mut r = In::<W> { c, sb, cur };
@@ -2540,7 +2557,8 @@ fn get_num<const W: bool>(r: &mut In<W>, fl: u32, kind: Num, p: u32) -> u32 {
                 match kind {
                     Num::Short | Num::UShort => w16(p, 0),
                     Num::Bool => w8(p, 0),
-                    Num::I64 | Num::U64 | Num::Ptr => w64(p, 0),
+                    Num::I64 | Num::U64 => w64(p, 0),
+                    Num::Ptr => wq(p, 0),
                     _ => w32(p, 0),
                 }
                 return FAILBIT;
@@ -2604,8 +2622,13 @@ fn get_num<const W: bool>(r: &mut In<W>, fl: u32, kind: Num, p: u32) -> u32 {
                 _ => {
                     let (v, used, err) = strtoul(&ac, base, 64);
                     if matches!(kind, Num::Ptr) && (used == 0 || err != 0) {
-                        w64(p, 0);
+                        wq(p, 0);
                         return FAILBIT;
+                    }
+                    if matches!(kind, Num::Ptr) && !mem::x64() {
+                        // (x86: a pointer's 32 bits; more does not fit)
+                        w32(p, v as u32);
+                        return if used == 0 || err != 0 || v > u32::MAX as u64 { FAILBIT } else { 0 };
                     }
                     w64(p, v);
                     if used == 0 || err != 0 { FAILBIT } else { 0 }
@@ -2640,16 +2663,19 @@ extractor!(is_ptr, Num::Ptr);
 /// The standard streams' buffers: like MS STL's filebuf over _cpp_stdin / _cpp_stdout /
 /// _cpp_stderr (cout.cpp, cin.cpp ...), each character through the CRT's FILE (so a program's
 /// freopen of stdout carries cout along, and cout and printf keep their order). { streambuf,
-/// int stdio index @SB_SIZE }. The wide ones convert with the "C" locale's codecvt<wchar_t,
+/// int stdio index @SB_SIZE() }. The wide ones convert with the "C" locale's codecvt<wchar_t,
 /// char>: a byte is its own code and codes above 255 do not convert (a write fails).
-const STDIO_FD: u32 = SB_SIZE;
-fn stdio_file(c: &mut Ctx, this: u32) -> u64 {
-    let f = crate::api::export("ucrtbase", "__acrt_iob_func");
-    call(c, f, &[r32(this + STDIO_FD) as u64])
+#[allow(non_snake_case)]
+fn STDIO_FD() -> u32 {
+    SB_SIZE()
 }
-fn crt(c: &mut Ctx, name: &str, args: &[u64]) -> i32 {
+fn stdio_file(c: &mut Ctx, this: u32) -> u32 {
+    let f = crate::api::export("ucrtbase", "__acrt_iob_func");
+    gcall(c, f, &[A::I(r32(this + STDIO_FD()))]) as u32
+}
+fn crt(c: &mut Ctx, name: &str, args: &[A]) -> i32 {
     let f = crate::api::export("ucrtbase", name);
-    call(c, f, args) as i32
+    gcall(c, f, args) as i32
 }
 fn stdio_overflow<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), c.a(1));
@@ -2662,18 +2688,18 @@ fn stdio_overflow<const W: bool>(c: &mut Ctx) -> u32 {
         return eof::<W>();
     }
     let f = stdio_file(c, this);
-    if crt(c, "fputc", &[(v & 0xff) as u64, f]) == -1 { eof::<W>() } else { v }
+    if crt(c, "fputc", &[A::I(v & 0xff), A::P(f)]) == -1 { eof::<W>() } else { v }
 }
 /// The next byte, left in the FILE (underflow) or taken (uflow)
 fn stdio_get<const W: bool>(c: &mut Ctx, take: bool) -> u32 {
     let this = c.a(0);
     let f = stdio_file(c, this);
-    let ch = crt(c, "fgetc", &[f]);
+    let ch = crt(c, "fgetc", &[A::P(f)]);
     if ch == -1 {
         return eof::<W>();
     }
     if !take {
-        crt(c, "ungetc", &[ch as u32 as u64, f]);
+        crt(c, "ungetc", &[A::I(ch as u32), A::P(f)]);
     }
     ch as u32 & 0xff
 }
@@ -2690,12 +2716,12 @@ fn stdio_pbackfail<const W: bool>(c: &mut Ctx) -> u32 {
         return eof::<W>();
     }
     let f = stdio_file(c, this);
-    if crt(c, "ungetc", &[(v & 0xff) as u64, f]) == -1 { eof::<W>() } else { v }
+    if crt(c, "ungetc", &[A::I(v & 0xff), A::P(f)]) == -1 { eof::<W>() } else { v }
 }
 fn stdio_sync(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let f = stdio_file(c, this);
-    if crt(c, "fflush", &[f]) == 0 { 0 } else { u32::MAX }
+    if crt(c, "fflush", &[A::P(f)]) == 0 { 0 } else { u32::MAX }
 }
 fn stdio_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
@@ -2703,31 +2729,31 @@ fn stdio_vtable<const W: bool>() -> u32 {
         table(
             if W { "wstdiobuf" } else { "stdiobuf" },
             &[
-                sb_delete::<W>,
-                nothing,
-                nothing,
-                stdio_overflow::<W>,
-                stdio_pbackfail::<W>,
-                sb_zero,
-                stdio_underflow::<W>,
-                stdio_uflow::<W>,
-                sb_xsgetn::<W>,
-                sb_xsputn::<W>,
-                sb_seekoff,
-                sb_seekpos,
-                sb_setbuf,
-                stdio_sync,
-                nothing,
+                (sb_delete::<W>, 4),
+                (nothing, 0),
+                (nothing, 0),
+                (stdio_overflow::<W>, 4),
+                (stdio_pbackfail::<W>, 4),
+                (sb_zero, 0),
+                (stdio_underflow::<W>, 0),
+                (stdio_uflow::<W>, 0),
+                (sb_xsgetn::<W>, 12),
+                (sb_xsputn::<W>, 12),
+                (sb_seekoff, 20),
+                (sb_seekpos, 32),
+                (sb_setbuf, 12),
+                (stdio_sync, 0),
+                (nothing, 4),
             ],
         )
     })
 }
 fn new_stdiobuf<const W: bool>(fd: u32) -> u32 {
-    let sb = mem::heap_alloc(SB_SIZE + 8, true);
+    let sb = mem::heap_alloc(SB_SIZE() + 8, true);
     wq(sb, stdio_vtable::<W>());
-    wq(sb + PLOCALE, crate::msvcp::new_locale());
+    wq(sb + PLOCALE(), crate::msvcp::new_locale());
     sb_init::<W>(sb);
-    w32(sb + STDIO_FD, fd);
+    w32(sb + STDIO_FD(), fd);
     sb
 }
 
@@ -2743,10 +2769,10 @@ fn std_stream(i: usize) -> u32 {
         // ties and flags
         for w in [0, 4] {
             for k in [1, 2] {
-                wq(vb(s[w + k]) + TIESTR, s[w]);
+                wq(vb(s[w + k]) + TIESTR(), s[w]);
             }
             let e = vb(s[w + 1]);
-            w32(e + FMTFL, flags(e) | UNITBUF);
+            w32(e + FMTFL(), flags(e) | UNITBUF);
         }
         s
     })[i]
@@ -2755,10 +2781,10 @@ fn make_std(k: usize) -> u32 {
     let wide_ = k >= 4;
     let input = k % 4 == 2;
     let (size, vbt, vft, st) = match (input, wide_) {
-        (true, false) => (ISTREAM_VB + IOS_SIZE, istream_vbtable::<false>(), istream_vtable::<false>(), ISTREAM_VB),
-        (true, true) => (ISTREAM_VB + IOS_SIZE, istream_vbtable::<true>(), istream_vtable::<true>(), ISTREAM_VB),
-        (false, false) => (OSTREAM_VB + IOS_SIZE, ostream_vbtable::<false>(), ostream_vtable::<false>(), OSTREAM_VB),
-        (false, true) => (OSTREAM_VB + IOS_SIZE, ostream_vbtable::<true>(), ostream_vtable::<true>(), OSTREAM_VB),
+        (true, false) => (ISTREAM_VB() + IOS_SIZE(), istream_vbtable::<false>(), istream_vtable::<false>(), ISTREAM_VB()),
+        (true, true) => (ISTREAM_VB() + IOS_SIZE(), istream_vbtable::<true>(), istream_vtable::<true>(), ISTREAM_VB()),
+        (false, false) => (OSTREAM_VB() + IOS_SIZE(), ostream_vbtable::<false>(), ostream_vtable::<false>(), OSTREAM_VB()),
+        (false, true) => (OSTREAM_VB() + IOS_SIZE(), ostream_vbtable::<true>(), ostream_vtable::<true>(), OSTREAM_VB()),
     };
     let o = mem::heap_alloc(size, true);
     let ios = if wide_ { stream_begin::<true>(o, vbt, true, vft, st) } else { stream_begin::<false>(o, vbt, true, vft, st) };
@@ -2766,11 +2792,11 @@ fn make_std(k: usize) -> u32 {
     let fd = [1, 2, 0, 2][k % 4];
     let sb = if wide_ { new_stdiobuf::<true>(fd) } else { new_stdiobuf::<false>(fd) };
     // (basic_ios::init without a Ctx: nothing can throw or call back here)
-    w32(ios + FMTFL, SKIPWS | DEC);
-    w64(ios + PREC, 6);
-    wq(ios + PLOC, crate::msvcp::new_locale());
-    wq(ios + STRBUF, sb);
-    if wide_ { w16(ios + FILLCH, b' ' as u16) } else { w8(ios + FILLCH, b' ') };
+    w32(ios + FMTFL(), SKIPWS | DEC);
+    w64(ios + PREC(), 6);
+    wq(ios + PLOC(), crate::msvcp::new_locale());
+    wq(ios + STRBUF(), sb);
+    if wide_ { w16(ios + FILLCH(), b' ' as u16) } else { w8(ios + FILLCH(), b' ') };
     addstd(ios);
     o
 }
@@ -2791,11 +2817,11 @@ fn ptr_cell(i: usize) -> u32 {
 // hidden result
 
 fn swfun(c: &mut Ctx) -> u32 {
-    w64(c.a(0) + WIDE, c.a64(1));
+    w64(c.a(0) + WIDE(), c.q(1));
     0
 }
 fn spfun(c: &mut Ctx) -> u32 {
-    w64(c.a(0) + PREC, c.a64(1));
+    w64(c.a(0) + PREC(), c.q(1));
     0
 }
 fn sbfun(c: &mut Ctx) -> u32 {
@@ -2806,39 +2832,51 @@ fn sbfun(c: &mut Ctx) -> u32 {
         16 => HEX,
         _ => 0,
     };
-    w32(ios + FMTFL, (flags(ios) & !BASEFIELD) | f);
+    w32(ios + FMTFL(), (flags(ios) & !BASEFIELD) | f);
     0
 }
 fn sifun(c: &mut Ctx) -> u32 {
     let (ios, m) = (c.a(0), c.a(1));
-    w32(ios + FMTFL, (flags(ios) & !m) | (FMTMASK & m));
+    w32(ios + FMTFL(), (flags(ios) & !m) | (FMTMASK & m));
     0
 }
 fn rsfun(c: &mut Ctx) -> u32 {
     let (ios, m) = (c.a(0), c.a(1));
-    w32(ios + FMTFL, flags(ios) & !m);
+    w32(ios + FMTFL(), flags(ios) & !m);
     0
 }
-fn smanip(c: &mut Ctx, name: &str, f: Handler) -> u32 {
-    let (ret, v) = (c.a(0), c.a64(1));
+/// _Smanip<streamsize> { pfun, manarg at 8 } (x86 too: the __int64 is 8-aligned)
+fn smanip64(c: &mut Ctx, name: &str, f: Handler) -> u32 {
+    let (ret, v) = (c.a(0), c.q(1));
     wq(ret, host_fn(name, f, 0));
     w64(ret + 8, v);
     ret
 }
+/// _Smanip<int> { pfun, int manarg after it }
+fn smanip32(c: &mut Ctx, name: &str, f: Handler) -> u32 {
+    let (ret, v) = (c.a(0), c.a(1));
+    wq(ret, host_fn(name, f, 0));
+    if mem::x64() {
+        w64(ret + 8, c.a64(1));
+    } else {
+        w32(ret + 4, v);
+    }
+    ret
+}
 fn setw(c: &mut Ctx) -> u32 {
-    smanip(c, "msvcp::swfun", swfun)
+    smanip64(c, "msvcp::swfun", swfun)
 }
 fn setprecision(c: &mut Ctx) -> u32 {
-    smanip(c, "msvcp::spfun", spfun)
+    smanip64(c, "msvcp::spfun", spfun)
 }
 fn setbase(c: &mut Ctx) -> u32 {
-    smanip(c, "msvcp::sbfun", sbfun)
+    smanip32(c, "msvcp::sbfun", sbfun)
 }
 fn setiosflags(c: &mut Ctx) -> u32 {
-    smanip(c, "msvcp::sifun", sifun)
+    smanip32(c, "msvcp::sifun", sifun)
 }
 fn resetiosflags(c: &mut Ctx) -> u32 {
-    smanip(c, "msvcp::rsfun", rsfun)
+    smanip32(c, "msvcp::rsfun", rsfun)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2870,16 +2908,16 @@ fn fiopen(c: &mut Ctx, wide_name: bool) -> u32 {
         static_str(m)
     };
     let open = crate::api::export("ucrtbase", if wide_name { "_wfsopen" } else { "_fsopen" });
-    let fp = call(c, open, &[wide(name), wide(ms), prot as u64]) as u32;
+    let fp = gcall(c, open, &[A::P(name), A::P(ms), A::I(prot)]) as u32;
     mem::heap_free(ms);
     if fp == 0 {
         return 0;
     }
     if at_end {
         let seek = crate::api::export("ucrtbase", "fseek");
-        if call(c, seek, &[wide(fp), 0, 2]) as u32 != 0 {
+        if gcall(c, seek, &[A::P(fp), A::I(0), A::I(2)]) as u32 != 0 {
             let close = crate::api::export("ucrtbase", "fclose");
-            call(c, close, &[wide(fp)]);
+            gcall(c, close, &[A::P(fp)]);
             return 0;
         }
     }
@@ -2906,7 +2944,7 @@ pub fn data(name: &str) -> Option<u32> {
             if name == format!("?{pre}{s}@std@@3V?${cls}@{e}U?$char_traits@{e}@std@@@1@A") {
                 return Some(std_stream(w + k));
             }
-            if name == format!("?_Ptr_{pre}{s}@std@@3PEAV?${cls}@{e}U?$char_traits@{e}@std@@@1@EA") {
+            if is_name(name, &format!("?_Ptr_{pre}{s}@std@@3PEAV?${cls}@{e}U?$char_traits@{e}@std@@@1@EA")) {
                 return Some(ptr_cell(w + k));
             }
         }
@@ -2969,6 +3007,8 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
     let t = format!("{e}U?$char_traits@{e}@std@@@std@@");
     let sb = format!("?$basic_streambuf@{e}U?$char_traits@{e}@std@@@");
     let ios = format!("?$basic_ios@{t}");
+    // (inside an argument the second std is the back reference 1: "...@std@@@1@")
+    let ios1 = format!("?$basic_ios@{e}U?$char_traits@{e}@std@@@1@");
     let is = format!("?$basic_istream@{t}");
     let os = format!("?$basic_ostream@{t}");
     let io = format!("?$basic_iostream@{t}");
@@ -3101,7 +3141,7 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("??5{is}QEAAAEAV01@AEA_K@Z"), is_u64::<W>),
         (format!("??5{is}QEAAAEAV01@AEA_N@Z"), is_bool::<W>),
         (format!("??5{is}QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z"), os_manip_self),
-        (format!("??5{is}QEAAAEAV01@P6AAEAV{ios}1@AEAV21@@Z@Z"), manip_ios),
+        (format!("??5{is}QEAAAEAV01@P6AAEAV{ios1}AEAV21@@Z@Z"), manip_ios),
         (format!("??5{is}QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z"), manip_ios),
         (format!("??5{is}QEAAAEAV01@PEAV{sb}1@@Z"), is_to_sb::<W>),
         // basic_ostream
@@ -3135,7 +3175,7 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("??6{os}QEAAAEAV01@_K@Z"), os_u64::<W>),
         (format!("??6{os}QEAAAEAV01@_N@Z"), os_bool::<W>),
         (format!("??6{os}QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z"), os_manip_self),
-        (format!("??6{os}QEAAAEAV01@P6AAEAV{ios}1@AEAV21@@Z@Z"), manip_ios),
+        (format!("??6{os}QEAAAEAV01@P6AAEAV{ios1}AEAV21@@Z@Z"), manip_ios),
         (format!("??6{os}QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z"), manip_ios),
         (format!("??6{os}QEAAAEAV01@PEAV{sb}1@@Z"), os_from_sb::<W>),
         // basic_iostream
@@ -3200,7 +3240,7 @@ pub fn init() {
         ("?_Init_cnt_func@Init@ios_base@std@@CAAEAHXZ", Init_cnt_func),
     ];
     for (n, f) in base {
-        implement("msvcp140", n, f);
+        reg(n, f);
     }
     for (n, f) in [
         ("?setw@std@@YA?AU?$_Smanip@_J@1@_J@Z", setw as Handler),
@@ -3209,12 +3249,12 @@ pub fn init() {
         ("?setiosflags@std@@YA?AU?$_Smanip@H@1@H@Z", setiosflags),
         ("?resetiosflags@std@@YA?AU?$_Smanip@H@1@H@Z", resetiosflags),
     ] {
-        implement("msvcp140", n, f);
+        reg(n, f);
     }
-    implement("msvcp140", "?_Fiopen@std@@YAPEAU_iobuf@@PEBDHH@Z", Fiopen_a);
-    implement("msvcp140", "?_Fiopen@std@@YAPEAU_iobuf@@PEB_WHH@Z", Fiopen_w);
-    implement("msvcp140", "?_Fiopen@std@@YAPEAU_iobuf@@PEBGHH@Z", Fiopen_w);
+    reg("?_Fiopen@std@@YAPEAU_iobuf@@PEBDHH@Z", Fiopen_a);
+    reg("?_Fiopen@std@@YAPEAU_iobuf@@PEB_WHH@Z", Fiopen_w);
+    reg("?_Fiopen@std@@YAPEAU_iobuf@@PEBGHH@Z", Fiopen_w);
     for (n, f) in members::<false>().into_iter().chain(members::<true>()) {
-        implement("msvcp140", &n, f);
+        reg(&n, f);
     }
 }

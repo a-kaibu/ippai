@@ -1,4 +1,4 @@
-//! msvcp140.dll's locale facets beyond ctype<char>, for 64-bit programs: codecvt<char, char>
+//! msvcp140.dll's locale facets beyond ctype<char>: codecvt<char, char>
 //! and codecvt<wchar_t, char> (what basic_filebuf converts with), ctype<wchar_t>,
 //! time_put<wchar_t> and the "C" locale helpers under them (_Getwctype, _Towlower, _Mbrtowc,
 //! _Wcrtomb, _Wcscoll, _Wcsxfrm, _Getcvt, __crtLCMapStringW). Ported from MS STL's <xlocale>,
@@ -11,6 +11,9 @@
 //!   { _Timevec @16 } 24.
 //! - _Ctypevec { u32 _Page, short* _Table @8, int _Delfl @16, wchar_t* _LocaleName @24 } 32;
 //!   _Cvtvec { u32 _Page, u32 _Mbcurmax, int _Isclocale, u8 _Isleadbyte[32] } 44.
+//! - x86: the same with 4-byte pointers (facet { vftable, _Myrefs @4 }: codecvt<wchar_t, char>
+//!   { _Cvtvec @8 } 52, ctype<wchar_t> { _Ctypevec @8, _Cvtvec @24 } 68, _Ctypevec 16);
+//!   time_put { _Timevec @8 } 12, its ostreambuf_iterator (8 bytes) passed by value in two slots.
 //! - vftables: facet's 3 (deleting dtor, _Incref, _Decref), then codecvt: do_always_noconv,
 //!   do_max_length, do_encoding, do_in, do_out, do_unshift, do_length; ctype<wchar_t>: do_is
 //!   (range), do_is, do_scan_is, do_scan_not, do_tolower (range), do_tolower, do_toupper x2,
@@ -20,9 +23,9 @@
 
 use std::sync::OnceLock;
 
-use crate::api::{host_fn, implement, Ctx, Handler};
-use crate::mem::{self, r16, r32, r64, r8, w16, w32, w64, w8};
-use crate::msvcp::{facet_decref, facet_delete, facet_incref, X_CTYPE};
+use crate::api::{Ctx, Handler};
+use crate::mem::{self, ps, r16, r32, r8, w16, w32, w8};
+use crate::msvcp::{facet_decref, facet_delete, facet_incref, reg, table, vcall, wq, wz, A, X_CTYPE};
 
 /// _X_TIME (LC_TIME)
 const X_TIME: u32 = 5;
@@ -34,22 +37,15 @@ const NOCONV: u32 = 3;
 const WEOF: u32 = 0xffff;
 
 fn rq(a: u32) -> u32 {
-    r64(a) as u32
+    mem::rp(a)
 }
-/// Stores pointer `v` (widened).
-fn wq(a: u32, v: u32) {
-    w64(a, mem::widen(v));
+/// Where a facet's own fields start (after its vftable and _Myrefs).
+fn FACET() -> u32 {
+    2 * ps()
 }
-/// A table of traps (a vtable, 8-byte entries).
-fn table(name: &str, fs: &[Handler]) -> u32 {
-    let t = mem::heap_alloc(8 * fs.len() as u32, true);
-    for (i, f) in fs.iter().enumerate() {
-        wq(t + 8 * i as u32, host_fn(&format!("msvcp_loc::{name}::{i}"), *f, 0));
-    }
-    t
-}
-fn vcall(c: &mut Ctx, obj: u32, slot: u32, args: &[u64]) -> u64 {
-    crate::msvcp_io::vcall(c, obj, slot, args)
+/// Argument `i` passed on to a virtual function as it came (x64: the whole register).
+fn arg(c: &Ctx, i: u32) -> A {
+    if mem::x64() { A::Q(c.a64(i)) } else { A::I(c.a(i)) }
 }
 /// A new facet of `size` bytes with `vft` and no references.
 fn new_facet(size: u32, vft: u32) -> u32 {
@@ -79,8 +75,8 @@ fn put_cvtvec(p: u32) {
 }
 /// _Ctypevec for "C": the CRT's classification table, not ours to free, no locale name
 fn put_ctypevec(p: u32) {
-    mem::fill(p, 32, 0);
-    wq(p + 8, crate::crt::data("_pctype").map_or(0, mem::rp));
+    mem::fill(p, 4 * ps(), 0);
+    wq(p + ps(), crate::crt::data("_pctype").map_or(0, mem::rp));
 }
 /// _Mbrtowc in the "C" locale: a byte is its own code (-1 never; 0 for NUL)
 fn mbrtowc_c(b: u8) -> (u16, i32) {
@@ -120,7 +116,7 @@ fn wslice(a: u32, end: u32) -> Vec<u16> {
 
 /// _Mbrtowc(pwc, s, n, state, cvtvec)
 fn _Mbrtowc(c: &mut Ctx) -> u32 {
-    let (pwc, s, n) = (c.a(0), c.a(1), c.a64(2));
+    let (pwc, s, n) = (c.a(0), c.a(1), c.z(2));
     if n == 0 {
         return 0;
     }
@@ -164,7 +160,7 @@ fn locinfo_getctype(c: &mut Ctx) -> u32 {
 }
 /// _Getcoll(): _Collvec { code page, locale name (NULL: "C") } into the hidden result
 fn _Getcoll(c: &mut Ctx) -> u32 {
-    mem::fill(c.a(0), 16, 0);
+    mem::fill(c.a(0), 2 * ps(), 0);
     c.a(0)
 }
 /// _Getwctype(wc, ctypevec)
@@ -230,17 +226,17 @@ fn cc_unshift(c: &mut Ctx) -> u32 {
 }
 /// do_length (this, state, from, end, max): min(end - from, max)
 fn cc_length(c: &mut Ctx) -> u32 {
-    let n = c.a64(3).saturating_sub(c.a64(2)).min(c.a64(4));
+    let n = c.z(3).saturating_sub(c.z(2)).min(c.z(4));
     n.min(i32::MAX as u64) as u32
 }
 fn cc_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
     *V.get_or_init(|| {
-        table("codecvt", &[facet_delete, facet_incref, facet_decref, yes, yes, yes, cc_noconv, cc_noconv, cc_unshift, cc_length])
+        table("codecvt", &[(facet_delete, 4), (facet_incref, 0), (facet_decref, 0), (yes, 0), (yes, 0), (yes, 0), (cc_noconv, 28), (cc_noconv, 28), (cc_unshift, 16), (cc_length, 16)])
     })
 }
 fn new_cc() -> u32 {
-    new_facet(16, cc_vtable())
+    new_facet(FACET(), cc_vtable())
 }
 fn cc_getcat(c: &mut Ctx) -> u32 {
     getcat(c, new_cc, X_CTYPE)
@@ -249,13 +245,13 @@ fn cc_getcat(c: &mut Ctx) -> u32 {
 fn cc_ctor(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, cc_vtable());
-    w64(this + 8, c.a64(1));
+    wz(this + ps(), c.z(1));
     this
 }
 fn cc_ctor_li(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, cc_vtable());
-    w64(this + 8, c.a64(2));
+    wz(this + ps(), c.z(2));
     this
 }
 
@@ -271,8 +267,7 @@ fn v5(c: &mut Ctx) -> u32 {
 }
 /// in / out (this, state, from, from end, from next&, to, to end, to next&)
 fn call7(c: &mut Ctx, slot: u32) -> u32 {
-    let a: Vec<u64> = (1..8).map(|i| c.a64(i)).collect();
-    vcall(c, c.a(0), slot, &a) as u32
+    vargs(c, slot, 7)
 }
 fn cv_in(c: &mut Ctx) -> u32 {
     call7(c, 6)
@@ -281,12 +276,10 @@ fn cv_out(c: &mut Ctx) -> u32 {
     call7(c, 7)
 }
 fn cv_unshift(c: &mut Ctx) -> u32 {
-    let a: Vec<u64> = (1..5).map(|i| c.a64(i)).collect();
-    vcall(c, c.a(0), 8, &a) as u32
+    vargs(c, 8, 4)
 }
 fn cv_length(c: &mut Ctx) -> u32 {
-    let a: Vec<u64> = (1..5).map(|i| c.a64(i)).collect();
-    vcall(c, c.a(0), 9, &a) as u32
+    vargs(c, 9, 4)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -346,20 +339,20 @@ fn wc_length(c: &mut Ctx) -> u32 {
 }
 /// do_max_length / do_encoding: _Cvt._Mbcurmax (1) and _Mbcurmax == 1
 fn wc_max_length(c: &mut Ctx) -> u32 {
-    r32(c.a(0) + 16 + 4)
+    r32(c.a(0) + FACET() + 4)
 }
 fn wc_encoding(c: &mut Ctx) -> u32 {
-    (r32(c.a(0) + 16 + 4) == 1) as u32
+    (r32(c.a(0) + FACET() + 4) == 1) as u32
 }
 fn wc_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
     *V.get_or_init(|| {
-        table("wcodecvt", &[facet_delete, facet_incref, facet_decref, no, wc_max_length, wc_encoding, wc_in, wc_out, wc_unshift, wc_length])
+        table("wcodecvt", &[(facet_delete, 4), (facet_incref, 0), (facet_decref, 0), (no, 0), (wc_max_length, 0), (wc_encoding, 0), (wc_in, 28), (wc_out, 28), (wc_unshift, 16), (wc_length, 16)])
     })
 }
 fn new_wc() -> u32 {
-    let f = new_facet(64, wc_vtable());
-    put_cvtvec(f + 16);
+    let f = new_facet(FACET() + CVTVEC, wc_vtable());
+    put_cvtvec(f + FACET());
     f
 }
 fn wc_getcat(c: &mut Ctx) -> u32 {
@@ -368,20 +361,20 @@ fn wc_getcat(c: &mut Ctx) -> u32 {
 fn wc_ctor(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, wc_vtable());
-    w64(this + 8, c.a64(1));
-    put_cvtvec(this + 16);
+    wz(this + ps(), c.z(1));
+    put_cvtvec(this + FACET());
     this
 }
 fn wc_ctor_li(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, wc_vtable());
-    w64(this + 8, c.a64(2));
-    put_cvtvec(this + 16);
+    wz(this + ps(), c.z(2));
+    put_cvtvec(this + FACET());
     this
 }
 /// ?_Init@?$codecvt@...@IEAAXAEBV_Locinfo@2@@Z (this, locinfo)
 fn wc_init(c: &mut Ctx) -> u32 {
-    put_cvtvec(c.a(0) + 16);
+    put_cvtvec(c.a(0) + FACET());
     0
 }
 
@@ -531,7 +524,7 @@ pub(crate) fn c16_out(st: &mut u16, mode: u32, src: &[u16], dst: &mut [u8]) -> (
 }
 
 fn c16_params(this: u32) -> (u32, u32) {
-    (r32(this + 16), r32(this + 20))
+    (r32(this + FACET()), r32(this + FACET() + 4))
 }
 /// do_in (this, state, from, from end, from next&, to, to end, to next&)
 fn c16_do_in(c: &mut Ctx) -> u32 {
@@ -571,7 +564,7 @@ fn c16_unshift(c: &mut Ctx) -> u32 {
 /// do_length (this, state, from, end, max): the bytes that make up to `max` elements
 fn c16_length(c: &mut Ctx) -> u32 {
     let (maxcode, mode) = c16_params(c.a(0));
-    let (sp, f, fe, max) = (c.a(1), c.a(2), c.a(3), c.a64(4));
+    let (sp, f, fe, max) = (c.a(1), c.a(2), c.a(3), c.z(4));
     let src = mem::slice(f, fe.saturating_sub(f)).to_vec();
     let mut dst = vec![0u16; max.min(src.len() as u64) as usize];
     let mut st = r16(sp);
@@ -586,18 +579,18 @@ fn c16_max_length(c: &mut Ctx) -> u32 {
 fn c16_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
     *V.get_or_init(|| {
-        table("c16codecvt", &[facet_delete, facet_incref, facet_decref, no, c16_max_length, no, c16_do_in, c16_do_out, c16_unshift, c16_length])
+        table("c16codecvt", &[(facet_delete, 4), (facet_incref, 0), (facet_decref, 0), (no, 0), (c16_max_length, 0), (no, 0), (c16_do_in, 28), (c16_do_out, 28), (c16_unshift, 16), (c16_length, 16)])
     })
 }
 fn c16_put(this: u32, refs: u64, maxcode: u32, mode: u32) -> u32 {
     wq(this, c16_vtable());
-    w64(this + 8, refs);
-    w32(this + 16, maxcode);
-    w32(this + 20, mode);
+    wz(this + ps(), refs);
+    w32(this + FACET(), maxcode);
+    w32(this + FACET() + 4, mode);
     this
 }
 fn new_c16() -> u32 {
-    c16_put(mem::heap_alloc(24, true), 0, MAX_UCSCHAR, CONSUME_HEADER)
+    c16_put(mem::heap_alloc(FACET() + 8, true), 0, MAX_UCSCHAR, CONSUME_HEADER)
 }
 fn c16_getcat(c: &mut Ctx) -> u32 {
     getcat(c, new_c16, X_CTYPE)
@@ -608,21 +601,21 @@ fn c16_ctor0(c: &mut Ctx) -> u32 {
 }
 /// ??0 (this, refs)
 fn c16_ctor(c: &mut Ctx) -> u32 {
-    c16_put(c.a(0), c.a64(1), MAX_UCSCHAR, CONSUME_HEADER)
+    c16_put(c.a(0), c.z(1), MAX_UCSCHAR, CONSUME_HEADER)
 }
 /// ??0 (this, locinfo, refs)
 fn c16_ctor_li(c: &mut Ctx) -> u32 {
-    c16_put(c.a(0), c.a64(2), MAX_UCSCHAR, CONSUME_HEADER)
+    c16_put(c.a(0), c.z(2), MAX_UCSCHAR, CONSUME_HEADER)
 }
 /// ??0 (this, locinfo, max code, mode, refs)
 fn c16_ctor_mode(c: &mut Ctx) -> u32 {
-    c16_put(c.a(0), c.a64(4), c.a(2), c.a(3))
+    c16_put(c.a(0), c.z(4), c.a(2), c.a(3))
 }
 /// _Init (this, locinfo)
 fn c16_init(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    w32(this + 16, MAX_UCSCHAR);
-    w32(this + 20, CONSUME_HEADER);
+    w32(this + FACET(), MAX_UCSCHAR);
+    w32(this + FACET() + 4, CONSUME_HEADER);
     0
 }
 
@@ -708,18 +701,31 @@ fn ct_vtable() -> u32 {
         table(
             "wctype",
             &[
-                facet_delete, facet_incref, facet_decref, ct_is_range, ct_is, ct_scan_is, ct_scan_not, ct_tolower_range, ct_tolower, ct_toupper_range, ct_toupper,
-                ct_widen_range, ct_widen, ct_narrow_range, ct_narrow,
+                (facet_delete, 4),
+                (facet_incref, 0),
+                (facet_decref, 0),
+                (ct_is_range, 12),
+                (ct_is, 8),
+                (ct_scan_is, 12),
+                (ct_scan_not, 12),
+                (ct_tolower_range, 8),
+                (ct_tolower, 4),
+                (ct_toupper_range, 8),
+                (ct_toupper, 4),
+                (ct_widen_range, 12),
+                (ct_widen, 4),
+                (ct_narrow_range, 16),
+                (ct_narrow, 8),
             ],
         )
     })
 }
 fn ct_fill(f: u32) {
-    put_ctypevec(f + 16);
-    put_cvtvec(f + 48);
+    put_ctypevec(f + FACET());
+    put_cvtvec(f + FACET() + 4 * ps());
 }
 fn new_ct() -> u32 {
-    let f = new_facet(96, ct_vtable());
+    let f = new_facet(FACET() + 4 * ps() + CVTVEC, ct_vtable());
     ct_fill(f);
     f
 }
@@ -729,14 +735,14 @@ fn ct_getcat(c: &mut Ctx) -> u32 {
 fn ct_ctor(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, ct_vtable());
-    w64(this + 8, c.a64(1));
+    wz(this + ps(), c.z(1));
     ct_fill(this);
     this
 }
 fn ct_ctor_li(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, ct_vtable());
-    w64(this + 8, c.a64(2));
+    wz(this + ps(), c.z(2));
     ct_fill(this);
     this
 }
@@ -746,7 +752,7 @@ fn ct_init(c: &mut Ctx) -> u32 {
 }
 // the members: through the vftable (a program may derive its own ctype<wchar_t>)
 fn vargs(c: &mut Ctx, slot: u32, n: u32) -> u32 {
-    let a: Vec<u64> = (1..=n).map(|i| c.a64(i)).collect();
+    let a: Vec<A> = (1..=n).map(|i| arg(c, i)).collect();
     vcall(c, c.a(0), slot, &a) as u32
 }
 fn m_is_range(c: &mut Ctx) -> u32 {
@@ -795,8 +801,17 @@ fn m_donarrow(c: &mut Ctx) -> u32 {
 
 // ---------------------------------------------------------------------------------------------
 // time_put<char> and time_put<wchar_t> (on ostreambuf_iterator): ostreambuf_iterator { bool
-// _Failed, streambuf* _Strbuf @8 }, passed by address (16 bytes) and returned through the
-// hidden result
+// _Failed, streambuf* _Strbuf @ps } (16 / 8 bytes), passed by value (x64: by address; x86: on
+// the stack, two slots) and returned through the hidden result
+
+/// sizeof(ostreambuf_iterator)
+fn it_size() -> u32 {
+    2 * ps()
+}
+/// The argument after an ostreambuf_iterator at `i`
+fn after_it(i: u32) -> u32 {
+    if mem::x64() { i + 1 } else { i + 2 }
+}
 
 fn ch<const W: bool>(p: u32) -> u16 {
     if W { r16(p) } else { r8(p) as u16 }
@@ -806,7 +821,7 @@ const fn es<const W: bool>() -> u32 {
 }
 /// *it++ = v
 fn it_put<const W: bool>(c: &mut Ctx, it: u32, v: u16) {
-    let sb = rq(it + 8);
+    let sb = rq(it + ps());
     let eof = if W { WEOF } else { u32::MAX };
     if sb == 0 || crate::msvcp_io::sputc::<W>(c, sb, v as u32) == eof {
         w8(it, 1);
@@ -815,8 +830,9 @@ fn it_put<const W: bool>(c: &mut Ctx, it: u32, v: u16) {
 /// do_put(this, result, it, ios_base&, fill, tm*, specifier, modifier): one field with
 /// _Strftime / _Wcsftime ("%x" / "%Ex"), badbit when it is not one
 fn tp_do_put<const W: bool>(c: &mut Ctx) -> u32 {
-    let (ret, it, ios, tm, spec, modi) = (c.a(1), c.a(2), c.a(3), c.a(5), c.a(6) as u8, c.a(7) as u8);
-    mem::copy(ret, it, 16);
+    let j = after_it(2);
+    let (ret, it, ios, tm, spec, modi) = (c.a(1), c.byval(2), c.a(j), c.a(j + 2), c.a(j + 3) as u8, c.a(j + 4) as u8);
+    mem::copy(ret, it, it_size());
     let mut fmt = vec![b'%' as u16];
     if modi != 0 {
         fmt.push(modi as u16);
@@ -835,7 +851,7 @@ fn tp_do_put<const W: bool>(c: &mut Ctx) -> u32 {
 }
 fn tp_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| table(if W { "wtime_put" } else { "time_put" }, &[facet_delete, facet_incref, facet_decref, tp_do_put::<W>]))
+    *V[W as usize].get_or_init(|| table(if W { "wtime_put" } else { "time_put" }, &[(facet_delete, 4), (facet_incref, 0), (facet_decref, 0), (tp_do_put::<W>, 32)]))
 }
 fn new_tp<const W: bool>() -> u32 {
     new_facet(24, tp_vtable::<W>())
@@ -846,34 +862,36 @@ fn tp_getcat<const W: bool>(c: &mut Ctx) -> u32 {
 fn tp_ctor<const W: bool>(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, tp_vtable::<W>());
-    w64(this + 8, c.a64(1));
+    wz(this + ps(), c.z(1));
     this
 }
 /// ??_F: the default constructor closure (refs 0)
 fn tp_ctor0<const W: bool>(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, tp_vtable::<W>());
-    w64(this + 8, 0);
+    wz(this + ps(), 0);
     this
 }
 fn tp_ctor_li<const W: bool>(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     wq(this, tp_vtable::<W>());
-    w64(this + 8, c.a64(2));
+    wz(this + ps(), c.z(2));
     this
 }
 /// put(this, result, it, ios, fill, tm, specifier, modifier): do_put
 fn tp_put(c: &mut Ctx) -> u32 {
-    vargs(c, 3, 7);
+    // (x86: the iterator's two slots forwarded as they are)
+    vargs(c, 3, if mem::x64() { 7 } else { 8 });
     c.a(1)
 }
 /// put(this, result, it, ios, fill, tm, pattern, pattern end): literal text, and each %[EOQ#]x
 /// through do_put (<xloctime>'s loop: a trailing % or %E is copied as it is)
 fn tp_put_pattern<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, ret, it, ios, fill, tm, mut p, end) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a64(4), c.a64(5), c.a(6), c.a(7));
-    let e = es::<W>();
-    let mut cur = mem::heap_alloc(16, false);
-    mem::copy(cur, it, 16);
+    let j = after_it(2);
+    let (this, ret, it, ios, fill, tm, mut p, end) = (c.a(0), c.a(1), c.byval(2), c.a(j), c.a(j + 1), c.a(j + 2), c.a(j + 3), c.a(j + 4));
+    let (e, n) = (es::<W>(), it_size());
+    let mut cur = mem::heap_alloc(n, false);
+    mem::copy(cur, it, n);
     let nar = |v: u16| narrow(v, 0);
     while p < end {
         let v = ch::<W>(p);
@@ -896,8 +914,8 @@ fn tp_put_pattern<const W: bool>(c: &mut Ctx) -> u32 {
                 modi = spec;
                 spec = nar(ch::<W>(p));
             }
-            let out = mem::heap_alloc(16, false);
-            vcall(c, this, 3, &[mem::widen(out), mem::widen(cur), mem::widen(ios), fill, tm, spec as u64, modi as u64]);
+            let out = mem::heap_alloc(n, false);
+            vcall(c, this, 3, &[A::P(out), A::V(cur, n), A::P(ios), A::I(fill), A::P(tm), A::I(spec as u32), A::I(modi as u32)]);
             mem::heap_free(cur);
             cur = out;
             if c.jumped {
@@ -906,7 +924,7 @@ fn tp_put_pattern<const W: bool>(c: &mut Ctx) -> u32 {
         }
         p += e;
     }
-    mem::copy(ret, cur, 16);
+    mem::copy(ret, cur, n);
     mem::heap_free(cur);
     ret
 }
@@ -1052,7 +1070,7 @@ pub fn init() {
         list.push((format!("?do_put@{tp}MEBA{it}AEAVios_base@2@{el}PEBUtm@@DD@Z"), g(tp_do_put::<false>, tp_do_put::<true>)));
     }
     for (name, f) in list {
-        implement("msvcp140", Box::leak(name.into_boxed_str()), f);
+        reg(&name, f);
     }
 }
 

@@ -18,7 +18,7 @@ pub fn call(f: Handler, args: &[u32]) -> u32 {
     let sp = mem::heap_alloc(4 + 4 * args.len() as u32, true);
     for (i, &a) in args.iter().enumerate() { mem::w32(sp + 4 + 4 * i as u32, a); }
     let mut cpu = koji::Cpu::default();
-    let result = f(&mut Ctx { cpu: &mut cpu, esp: sp, edx: None, jumped: false, st0: None, trap: 0 });
+    let result = f(&mut Ctx { cpu: &mut cpu, esp: sp, edx: None, jumped: false, st0: None, trap: 0, this: None });
     mem::heap_free(sp);
     result
 }

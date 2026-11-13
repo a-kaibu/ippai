@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::api::{self, implement, Ctx, Handler};
+use crate::api::{self, Ctx, Handler};
 use crate::mem::{self, r32, w16, w32, w64, wp};
 
 const MAX_PATH: u32 = 260;
@@ -87,7 +87,7 @@ fn _File_size(c: &mut Ctx) -> u32 {
 }
 /// _Resize(path, size): 0 or the error
 fn _Resize(c: &mut Ctx) -> u32 {
-    let (path, size) = (c.a(0), c.a64(1));
+    let (path, size) = (c.a(0), c.q(1));
     // FILE_GENERIC_WRITE, OPEN_EXISTING
     let h = k32(c, "CreateFileW", &[path, 0x120116, 0, 0, 3, 0, 0]);
     if h == INVALID {
@@ -270,7 +270,7 @@ fn _Last_write_time(c: &mut Ctx) -> u32 {
 }
 /// _Set_last_write_time(path, ticks since 1970)
 fn _Set_last_write_time(c: &mut Ctx) -> u32 {
-    let (path, t) = (c.a(0), c.a64(1));
+    let (path, t) = (c.a(0), c.q(1));
     // FILE_WRITE_ATTRIBUTES, share all, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS
     let h = k32(c, "CreateFileW", &[path, 0x100, 7, 0, 3, 0x0200_0000, 0]);
     if h == INVALID {
@@ -383,6 +383,6 @@ pub fn init() {
         ("?_Assign@_ContextCallback@details@Concurrency@@AEAAXPEAX@Z", nothing),
     ];
     for (n, f) in fs {
-        implement("msvcp140", n, *f);
+        crate::msvcp::reg_in(false, n, *f);
     }
 }

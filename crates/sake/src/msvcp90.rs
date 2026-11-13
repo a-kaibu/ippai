@@ -259,7 +259,7 @@ mod tests {
         }
         let mut cpu = koji::Cpu::default();
         cpu.regs[1] = this;
-        let r = f(&mut Ctx { cpu: &mut cpu, esp: sp, edx: None, jumped: false, st0: None, trap: 0 });
+        let r = f(&mut Ctx { cpu: &mut cpu, esp: sp, edx: None, jumped: false, st0: None, trap: 0, this: None });
         mem::heap_free(sp);
         r
     }

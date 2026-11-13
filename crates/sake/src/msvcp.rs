@@ -3,15 +3,21 @@
 //! ctype<char>, _Locinfo, the "C" locale's _Strcoll / _Strxfrm) and the _X* functions that
 //! throw the standard exceptions. Layouts are MSVC's (<xlocale>, <xlocinfo>, <exception>) with
 //! pointer-sized fields; the thrown exceptions' ThrowInfo is the RVA form with base 0 (absolute
-//! addresses), which is also x86's pointer form. Registered for 64-bit programs (a 32-bit one
-//! needs thiscall glue first, issue #30).
+//! addresses), which is also x86's pointer form.
+//!
+//! The functions are written for x64 (`this` and the arguments as c.a(i)) and serve 32-bit
+//! programs too (issue #150): there the thiscall members get `this` from ECX as argument 0
+//! (api::Ctx::this), the 64-bit integers take two stack slots (Ctx::q), calls back into the
+//! program's virtual functions are thiscall (vcall), and each x64 name is registered under its
+//! x86 spelling (x86_names) in msvcp140 and msvcp120 (VS 2013: the same layouts for what is
+//! here, Wine's msvcp90.h), where those DLLs export it (specs.txt, from Wine's spec files).
 
 #![allow(non_snake_case)]
 
 use std::sync::OnceLock;
 
-use crate::api::{host_fn, implement, Ctx, Handler};
-use crate::mem::{self, cstr, ps, r8, rp, w32, w64, w8, wp};
+use crate::api::{host_fn_this, implement, Ctx, Handler};
+use crate::mem::{self, cstr, ps, r8, rp, w32, w8, wp};
 
 /// _X_CTYPE (LC_CTYPE): the category ctype<char>::_Getcat gives
 pub(crate) const X_CTYPE: u32 = 2;
@@ -20,13 +26,196 @@ fn align(v: u32, a: u32) -> u32 {
     (v + a - 1) & !(a - 1)
 }
 
-/// A table of traps (a vtable).
-fn table(name: &str, fs: &[Handler]) -> u32 {
+// ---------------------------------------------------------------------------------------------
+// the two ABIs
+
+/// A table of traps (a vftable): each function with its x86 stack argument bytes (thiscall:
+/// `this` in ECX, the callee pops the rest).
+pub(crate) fn table(name: &str, fs: &[(Handler, u32)]) -> u32 {
     let t = mem::heap_alloc(ps() * fs.len() as u32, true);
-    for (i, f) in fs.iter().enumerate() {
-        wp(t + ps() * i as u32, host_fn(&format!("msvcp::{name}::{i}"), *f, 0));
+    for (i, (f, bytes)) in fs.iter().enumerate() {
+        wq(t + ps() * i as u32, host_fn_this(&format!("msvcp::{name}::{i}"), *f, *bytes));
     }
     t
+}
+
+/// Stores pointer `v` (x64: widened, as the program sees an address in an image above 4G).
+pub(crate) fn wq(a: u32, v: u32) {
+    if mem::x64() {
+        mem::w64(a, mem::widen(v));
+    } else {
+        w32(a, v);
+    }
+}
+/// Stores a size_t (x86: its low 32 bits).
+pub(crate) fn wz(a: u32, v: u64) {
+    if mem::x64() {
+        mem::w64(a, v);
+    } else {
+        w32(a, v as u32);
+    }
+}
+/// Copies the pointer-sized field at `src` to `dst` (all of it).
+pub(crate) fn cpp(dst: u32, src: u32) {
+    mem::copy(dst, src, ps());
+}
+
+/// An argument of a call into the program: a pointer (x64: widened), a 32-bit value, or a
+/// 64-bit integer (x86: two stack slots).
+#[derive(Clone, Copy)]
+pub(crate) enum A {
+    P(u32),
+    I(u32),
+    Q(u64),
+    /// an object of so many bytes passed by value: x64 its address (a temporary copy of the
+    /// caller's: the callee may change it), x86 its bytes on the stack
+    V(u32, u32),
+}
+/// The x64 name `x64` as the program spells it (x86: one of its x86 names).
+pub(crate) fn is_name(name: &str, x64: &str) -> bool {
+    if mem::x64() { name == x64 } else { x86_names(x64).iter().any(|n| n == name) }
+}
+
+/// Calls the program's function `f` (cdecl, or x64's one convention) with `args`; EDX:EAX.
+pub(crate) fn gcall(c: &mut Ctx, f: u32, args: &[A]) -> u64 {
+    // (nothing more runs once a throw left the trap)
+    if c.jumped {
+        return 0;
+    }
+    if mem::x64() {
+        return crate::call64(c.cpu, mem::widen(f), &wide_args(args));
+    }
+    let r = c.call(f, &slots(args));
+    r as u64 | (c.cpu.regs[koji::EDX] as u64) << 32
+}
+/// Calls virtual function `slot` of `obj` (x86: thiscall); EDX:EAX (x64: RAX).
+pub(crate) fn vcall(c: &mut Ctx, obj: u32, slot: u32, args: &[A]) -> u64 {
+    let f = rp(rp(obj) + ps() * slot);
+    tcall(c, f, obj, args)
+}
+/// Calls member function `f` of `obj` (x86: thiscall).
+pub(crate) fn tcall(c: &mut Ctx, f: u32, obj: u32, args: &[A]) -> u64 {
+    if c.jumped {
+        return 0;
+    }
+    if mem::x64() {
+        let mut a = vec![mem::widen(obj)];
+        a.extend(wide_args(args));
+        return crate::call64(c.cpu, mem::widen(f), &a);
+    }
+    crate::call_thiscall(c.cpu, f, obj, &slots(args))
+}
+fn wide_args(args: &[A]) -> Vec<u64> {
+    args.iter().map(|a| match *a {
+        A::P(p) => mem::widen(p),
+        A::I(v) => v as u64,
+        A::Q(v) => v,
+        A::V(p, _) => mem::widen(p),
+    }).collect()
+}
+fn slots(args: &[A]) -> Vec<u32> {
+    let mut v = Vec::with_capacity(args.len() + 2);
+    for a in args {
+        match *a {
+            A::P(x) | A::I(x) => v.push(x),
+            A::Q(q) => {
+                v.push(q as u32);
+                v.push((q >> 32) as u32);
+            }
+            A::V(p, n) => v.extend((0..n.div_ceil(4)).map(|i| mem::r32(p + 4 * i))),
+        }
+    }
+    v
+}
+/// The argument index after a 64-bit integer argument at `i` (x86: two slots).
+pub(crate) fn after_q(i: u32) -> u32 {
+    if mem::x64() { i + 1 } else { i + 2 }
+}
+
+/// The x86 spellings an x64 name of msvcp140 can have (`_K`, size_t on x64, is `I` on x86 or
+/// stays unsigned __int64): the member function's `<access>E<cv>A` (__ptr64 this, cdecl) is
+/// `<access><cv>E` (thiscall; or `<access><cv>A`, the few __cdecl members like num_put::_Iput),
+/// the pointers and references lose their __ptr64 (`PEA` `PA`, `AEB` `AB`, `$$QEA` `$$QA`), a
+/// pointer variable's trailing `EA` is `A`. Not derivable (and not implemented): a `_K` that
+/// was a back reference on x64 (Concurrency::_Concurrent_vector_base_v4), and callbacks that
+/// are __stdcall on x86 (_Execute_once).
+pub fn x86_names(n: &str) -> Vec<String> {
+    let b = n.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    // (where the member's calling convention is)
+    let mut member = None;
+    let mut i = 0;
+    while i < b.len() {
+        if member.is_none() && b[i..].starts_with(b"@@") && i + 5 < b.len() && b[i + 2].is_ascii_uppercase() && b[i + 3] == b'E' && matches!(b[i + 4], b'A' | b'B') && b[i + 5] == b'A' {
+            out.extend_from_slice(&[b'@', b'@', b[i + 2], b[i + 4], b'E']);
+            member = Some(out.len() - 1);
+            i += 6;
+            continue;
+        }
+        if matches!(b[i], b'P' | b'Q' | b'A' | b'R' | b'S') && i + 2 < b.len() && b[i + 1] == b'E' && matches!(b[i + 2], b'A'..=b'D') {
+            out.push(b[i]);
+            i += 2;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    // (a variable: its type's trailing __ptr64 `E`; a function ends in `Z`)
+    if !out.ends_with(b"Z") && out.len() >= 2 && out[out.len() - 2] == b'E' && matches!(out[out.len() - 1], b'A' | b'B') {
+        out.remove(out.len() - 2);
+    }
+    let s = String::from_utf8(out).unwrap();
+    // (then the __cdecl spellings of a member: its `this` is stack argument 0)
+    let mut bases = vec![s.clone()];
+    if let Some(at) = member {
+        bases.push(format!("{}A{}", &s[..at], &s[at + 1..]));
+    }
+    bases.iter().flat_map(|s| k_choices(s)).collect()
+}
+/// Every choice of `I` / `_K` for the `_K`s of `s`, the ones keeping more `_K`s first (an
+/// operator<<(unsigned __int64) is `_K` on x86 too, beside the `I` of operator<<(unsigned)).
+fn k_choices(s: &str) -> Vec<String> {
+    let parts: Vec<&str> = s.split("_K").collect();
+    let mut v = vec![(0, parts[0].to_string())];
+    for p in &parts[1..] {
+        v = v.into_iter().flat_map(|(k, x)| [(k, format!("{x}I{p}")), (k + 1, format!("{x}_K{p}"))]).collect();
+    }
+    v.sort_by_key(|x| std::cmp::Reverse(x.0));
+    v.into_iter().map(|x| x.1).collect()
+}
+
+/// The x64 names reg_in found no x86 export for (tests: nothing the game libraries need).
+#[cfg(test)]
+pub(crate) static MISSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Registers an x64 msvcp140 function (x86: under its x86 names that msvcp140 exports, and
+/// msvcp120 too with `old`).
+pub(crate) fn reg_in(old: bool, name: &str, f: Handler) {
+    if mem::x64() {
+        implement("msvcp140", name, f);
+        return;
+    }
+    let names = x86_names(name);
+    let mut done = false;
+    for dll in if old { &["msvcp140", "msvcp120"][..] } else { &["msvcp140"][..] } {
+        if let Some(n) = names.iter().find(|n| crate::api::exports(dll, n)) {
+            implement(dll, n, f);
+            done = true;
+        }
+    }
+    // (a C or global cdecl function Wine's spec lacks: one spelling, nothing to pop)
+    if !done && names.len() == 1 && (!name.starts_with('?') || name.contains("@@YA") || name.contains("@@SA") || name.contains("@@CA")) {
+        implement("msvcp140", &names[0], f);
+        return;
+    }
+    #[cfg(test)]
+    if !done {
+        MISSED.lock().unwrap().push(name.to_string());
+    }
+}
+/// reg_in for msvcp140 and msvcp120
+pub(crate) fn reg(name: &str, f: Handler) {
+    reg_in(true, name, f);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -59,7 +248,7 @@ pub(crate) fn facet_delete(c: &mut Ctx) -> u32 {
 }
 fn facet_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
-    *V.get_or_init(|| table("facet", &[facet_delete, facet_incref, facet_decref]))
+    *V.get_or_init(|| table("facet", &[(facet_delete, 4), (facet_incref, 0), (facet_decref, 0)]))
 }
 /// ??0facet@locale@std@@IEAA@_K@Z (refs)
 fn facet_ctor(c: &mut Ctx) -> u32 {
@@ -101,10 +290,15 @@ fn locale_init(c: &mut Ctx) -> u32 {
     }
     l
 }
-/// A locale object is 16 bytes: its two empty bases take the first 8 (MSVC lays a second
-/// empty base out at offset 1), _Ptr is at 8.
-pub const LOCALE_SIZE: u32 = 16;
-const LOCALE_PTR: u32 = 8;
+/// A locale object is two pointers (x64 16 bytes, x86 8): its two empty bases take the first
+/// (MSVC lays a second empty base out at offset 1), _Ptr is the second.
+pub fn locale_size() -> u32 {
+    2 * ps()
+}
+#[allow(non_snake_case)]
+fn LOCALE_PTR() -> u32 {
+    ps()
+}
 
 /// ?classic@locale@std@@SAAEBV12@XZ: the "C" locale object (static, never destroyed)
 fn locale_classic(_c: &mut Ctx) -> u32 {
@@ -114,35 +308,32 @@ fn locale_classic(_c: &mut Ctx) -> u32 {
 
 /// A new locale object (locale(): the global locale, referenced).
 pub fn new_locale() -> u32 {
-    let p = mem::heap_alloc(LOCALE_SIZE, true);
+    let p = mem::heap_alloc(locale_size(), true);
     let l = locimp();
     wp(refs(l), rp(refs(l)).wrapping_add(1));
-    wp(p + LOCALE_PTR, l);
+    wp(p + LOCALE_PTR(), l);
     p
 }
 /// facet::_Incref / _Decref through the _Locimp's vftable
 fn locimp_incref(c: &mut Ctx, l: u32) {
     if l != 0 {
-        let f = rp(rp(l) + ps());
-        c.call(f, &[l]);
+        vcall(c, l, 1, &[]);
     }
 }
 fn locimp_release(c: &mut Ctx, l: u32) {
     if l == 0 {
         return;
     }
-    let f = rp(rp(l) + 2 * ps());
-    let del = c.call(f, &[l]);
+    let del = vcall(c, l, 2, &[]) as u32;
     if del != 0 {
-        let d = rp(rp(del));
-        c.call(d, &[del, 1]);
+        vcall(c, del, 0, &[A::I(1)]);
     }
 }
 /// ~locale of the locale object at `p` (its storage stays)
 pub fn delete_locale_value(c: &mut Ctx, p: u32) {
-    let l = rp(p + LOCALE_PTR);
+    let l = rp(p + LOCALE_PTR());
     locimp_release(c, l);
-    wp(p + LOCALE_PTR, 0);
+    wp(p + LOCALE_PTR(), 0);
 }
 /// delete of a locale object made with new
 pub fn delete_locale(c: &mut Ctx, p: u32) {
@@ -151,17 +342,17 @@ pub fn delete_locale(c: &mut Ctx, p: u32) {
 }
 /// locale(const locale&) at `dst` from the locale object at `src`
 pub fn locale_copy(c: &mut Ctx, dst: u32, src: u32) {
-    let l = rp(src + LOCALE_PTR);
-    w64(dst, 0);
-    w64(dst + LOCALE_PTR, mem::widen(l));
+    let l = rp(src + LOCALE_PTR());
+    wq(dst, 0);
+    wq(dst + LOCALE_PTR(), l);
     locimp_incref(c, l);
 }
 /// locale::operator=
 pub fn locale_assign(c: &mut Ctx, dst: u32, src: u32) {
-    let (a, b) = (rp(dst + LOCALE_PTR), rp(src + LOCALE_PTR));
+    let (a, b) = (rp(dst + LOCALE_PTR()), rp(src + LOCALE_PTR()));
     if a != b {
         locimp_release(c, a);
-        w64(dst + LOCALE_PTR, mem::widen(b));
+        wq(dst + LOCALE_PTR(), b);
         locimp_incref(c, b);
     }
 }
@@ -189,6 +380,33 @@ fn locale_id(c: &mut Ctx) -> u32 {
     }
     rp(this)
 }
+/// The constants: std::_BADOFF (streamoff -1) and the <ymath.h> _Dconst bit patterns (msvcp120:
+/// _Inf, _Nan...; long double is double), each in 16 zeroed bytes as the _Dconst union.
+fn constant(name: &str) -> Option<u32> {
+    let bits: u64 = match name {
+        "?_BADOFF@std@@3_JB" => u64::MAX,
+        "_FDenorm" | "_Denorm" | "_LDenorm" => 1,
+        "_FInf" => 0x7f80_0000,
+        "_Inf" | "_LInf" | "_Hugeval" => 0x7ff0 << 48,
+        "_FNan" => 0x7fc0_0000,
+        "_Nan" | "_LNan" => 0x7ff8 << 48,
+        "_FSnan" => 0x7f80_0001,
+        "_Snan" | "_LSnan" => (0x7ff0 << 48) + 1,
+        "_FEps" => f32::EPSILON.to_bits() as u64,
+        "_Eps" | "_LEps" => f64::EPSILON.to_bits(),
+        "_LZero" | "_FZero" | "_Zero" => 0,
+        _ => return None,
+    };
+    static CELLS: std::sync::Mutex<Vec<(String, u32)>> = std::sync::Mutex::new(Vec::new());
+    let mut g = CELLS.lock().unwrap();
+    if let Some(&(_, a)) = g.iter().find(|(n, _)| n == name) {
+        return Some(a);
+    }
+    let a = mem::heap_alloc(16, true);
+    mem::w64(a, bits);
+    g.push((name.to_string(), a));
+    Some(a)
+}
 /// The locale::id data exports (one zero word each, numbered by locale_id).
 pub fn data(name: &str) -> Option<u32> {
     if let Some(a) = crate::msvcp_io::data(name) {
@@ -196,6 +414,9 @@ pub fn data(name: &str) -> Option<u32> {
     }
     if name == "?_Id_cnt@id@locale@std@@0HA" {
         return Some(id_cnt());
+    }
+    if let Some(a) = constant(name) {
+        return Some(a);
     }
     static IDS: std::sync::Mutex<Vec<(String, u32)>> = std::sync::Mutex::new(Vec::new());
     if !(name.starts_with("?id@?$") && name.ends_with("@std@@2V0locale@2@A")) {
@@ -304,7 +525,19 @@ fn ctype_vtable() -> u32 {
     *V.get_or_init(|| {
         table(
             "ctype",
-            &[facet_delete, facet_incref, facet_decref, ct_tolower_range, ct_tolower, ct_toupper_range, ct_toupper, ct_widen_range, ct_widen, ct_narrow_range, ct_narrow],
+            &[
+                (facet_delete, 4),
+                (facet_incref, 0),
+                (facet_decref, 0),
+                (ct_tolower_range, 8),
+                (ct_tolower, 4),
+                (ct_toupper_range, 8),
+                (ct_toupper, 4),
+                (ct_widen_range, 12),
+                (ct_widen, 4),
+                (ct_narrow_range, 16),
+                (ct_narrow, 8),
+            ],
         )
     })
 }
@@ -321,47 +554,52 @@ fn ctype_getcat(c: &mut Ctx) -> u32 {
     }
     X_CTYPE
 }
+/// ctype<char>::is(mask, c): the classification table's bits for `c` (no virtual call: MSVC's
+/// header inlines it the same way)
+fn ctype_is(c: &mut Ctx) -> u32 {
+    let (this, mask, ch) = (c.a(0), c.a(1) & 0xffff, c.a(2) & 0xff);
+    let table = rp(this + 3 * ps());
+    (table != 0 && mem::r16(table + 2 * ch) as u32 & mask != 0) as u32
+}
+/// _Yarn<char>::c_str(): { char* _Myptr, char _Nul }: the string, or "" (the _Nul) for none
+fn yarn_c_str(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let p = rp(this);
+    if p != 0 { p } else { this + ps() }
+}
 /// ctype<char>::tolower(c) / tolower(first, last): the virtual do_tolower
 fn ctype_tolower(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 4 * ps());
-    c.call(f, &[this, c.a(1)]) & 0xff
+    vcall(c, this, 4, &[A::I(c.a(1))]) as u32 & 0xff
 }
 fn ctype_tolower_range(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 3 * ps());
-    c.call(f, &[this, c.a(1), c.a(2)])
+    vcall(c, this, 3, &[A::P(c.a(1)), A::P(c.a(2))]) as u32
 }
 
 fn ctype_toupper(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 6 * ps());
-    c.call(f, &[this, c.a(1)]) & 0xff
+    vcall(c, this, 6, &[A::I(c.a(1))]) as u32 & 0xff
 }
 fn ctype_toupper_range(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 5 * ps());
-    c.call(f, &[this, c.a(1), c.a(2)])
+    vcall(c, this, 5, &[A::P(c.a(1)), A::P(c.a(2))]) as u32
 }
 fn ctype_widen(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 8 * ps());
-    c.call(f, &[this, c.a(1)]) & 0xff
+    vcall(c, this, 8, &[A::I(c.a(1))]) as u32 & 0xff
 }
 fn ctype_widen_range(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 7 * ps());
-    c.call(f, &[this, c.a(1), c.a(2), c.a(3)])
+    vcall(c, this, 7, &[A::P(c.a(1)), A::P(c.a(2)), A::P(c.a(3))]) as u32
 }
 fn ctype_narrow(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 10 * ps());
-    c.call(f, &[this, c.a(1), c.a(2)]) & 0xff
+    vcall(c, this, 10, &[A::I(c.a(1)), A::I(c.a(2))]) as u32 & 0xff
 }
 fn ctype_narrow_range(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 9 * ps());
-    c.call(f, &[this, c.a(1), c.a(2), c.a(3), c.a(4)])
+    vcall(c, this, 9, &[A::P(c.a(1)), A::P(c.a(2)), A::I(c.a(3)), A::P(c.a(4))]) as u32
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -410,7 +648,7 @@ fn ex_dtor(c: &mut Ctx) -> u32 {
 }
 fn ex_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
-    *V.get_or_init(|| table("exception", &[ex_delete, ex_what]))
+    *V.get_or_init(|| table("exception", &[(ex_delete, 4), (ex_what, 0)]))
 }
 /// the copy constructor (this, source): a do_free message is copied
 fn copy_ctor(size: u32) -> impl Fn(&mut Ctx) -> u32 {
@@ -442,8 +680,9 @@ fn throw_info(class: &Class) -> u32 {
         return t;
     }
     let p = ps();
-    let dtor = host_fn("msvcp::exception::dtor", ex_dtor, 0);
-    let copy = if class.size > 3 * p { host_fn("msvcp::exception::copy32", copy32, 0) } else { host_fn("msvcp::exception::copy24", copy24, 0) };
+    // (x86: thiscall, the copy constructor's source on the stack)
+    let dtor = host_fn_this("msvcp::exception::dtor", ex_dtor, 0);
+    let copy = if class.size > 3 * p { host_fn_this("msvcp::exception::copy32", copy32, 4) } else { host_fn_this("msvcp::exception::copy24", copy24, 4) };
     let n = class.names.len() as u32;
     let array = mem::heap_alloc(4 + 4 * n, true);
     w32(array, n);
@@ -474,8 +713,16 @@ fn throw(c: &mut Ctx, class: &Class, what: u32, extra: u32) -> u32 {
     if class.size > 3 * ps() {
         w32(o + 3 * ps(), extra);
     }
-    crate::cxx64::throw_object(c, o as u64, throw_info(class));
+    throw_object(c, o, throw_info(class));
     0
+}
+/// Throws `o` (ThrowInfo `ti`) from this trap.
+pub(crate) fn throw_object(c: &mut Ctx, o: u32, ti: u32) {
+    if mem::x64() {
+        crate::cxx64::throw_object(c, o as u64, ti);
+    } else {
+        crate::cxx::throw_object(c, o, ti);
+    }
 }
 fn static_str(s: &str) -> u32 {
     let p = mem::heap_alloc(s.len() as u32 + 1, true);
@@ -489,13 +736,18 @@ const BAD_FUNCTION_CALL: Class = Class { names: &[".?AVbad_function_call@std@@",
 const RUNTIME_ERROR: Class = Class { names: &[".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 24 };
 const OVERFLOW_ERROR: Class = Class { names: &[".?AVoverflow_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 24 };
 
+/// error_category's virtual functions: deleting destructor, name, message(result, int),
+/// default_error_condition(result, int), equivalent(int, const error_condition&),
+/// equivalent(const error_code&, int)
+const CATEGORY: [(Handler, u32); 6] = [(nothing, 4), (nothing, 0), (nothing, 8), (nothing, 8), (nothing, 8), (nothing, 8)];
+
 /// generic_category() (an error_category: vtable, _Addr): what system_error's error_code points
 /// to; its virtual functions (name, message, ...) are not called by the programs here
 fn generic_category() -> u32 {
     static C: OnceLock<u32> = OnceLock::new();
     *C.get_or_init(|| {
         let p = mem::heap_alloc(2 * ps(), true);
-        wp(p, table("error_category", &[nothing, nothing, nothing, nothing, nothing, nothing]));
+        wp(p, table("error_category", &CATEGORY));
         wp(p + ps(), 3);
         p
     })
@@ -507,7 +759,7 @@ fn iostream_category() -> u32 {
     static C: OnceLock<u32> = OnceLock::new();
     *C.get_or_init(|| {
         let p = mem::heap_alloc(2 * ps(), true);
-        wp(p, table("iostream_category", &[nothing, nothing, nothing, nothing, nothing, nothing]));
+        wp(p, table("iostream_category", &CATEGORY));
         wp(p + ps(), 5);
         p
     })
@@ -524,11 +776,15 @@ pub fn throw_failure(c: &mut Ctx, msg: &str) {
     wp(o + ps(), static_str(&format!("{msg}: iostream stream error")));
     w32(o + 3 * ps(), 1);
     wp(o + 4 * ps(), iostream_category());
-    crate::cxx64::throw_object(c, o as u64, throw_info(&FAILURE));
+    throw_object(c, o, throw_info(&FAILURE));
 }
 /// throw; (the exception being handled)
 pub fn rethrow(c: &mut Ctx) {
-    crate::cxx64::rethrow(c);
+    if mem::x64() {
+        crate::cxx64::rethrow(c);
+    } else {
+        crate::cxx::rethrow(c);
+    }
 }
 
 pub fn throw_system_error(c: &mut Ctx, errno: u32, what: u32) -> u32 {
@@ -537,7 +793,7 @@ pub fn throw_system_error(c: &mut Ctx, errno: u32, what: u32) -> u32 {
     wp(o + ps(), what);
     w32(o + 3 * ps(), errno);
     wp(o + 4 * ps(), generic_category());
-    crate::cxx64::throw_object(c, o as u64, throw_info(&SYSTEM_ERROR));
+    throw_object(c, o, throw_info(&SYSTEM_ERROR));
     0
 }
 fn x_invalid_argument(c: &mut Ctx) -> u32 {
@@ -611,9 +867,6 @@ fn uncaught(_: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
-    if !mem::x64() {
-        return;
-    }
     crate::msvcp_thr::init();
     crate::msvcp_fs::init();
     crate::msvcp_io::init();
@@ -634,6 +887,8 @@ pub fn init() {
         ("?classic@locale@std@@SAAEBV12@XZ", locale_classic),
         ("?_Getcat@?$ctype@D@std@@SA_KPEAPEBVfacet@locale@2@PEBV42@@Z", ctype_getcat),
         ("?tolower@?$ctype@D@std@@QEBADD@Z", ctype_tolower),
+        ("?is@?$ctype@D@std@@QEBA_NFD@Z", ctype_is),
+        ("?c_str@?$_Yarn@D@std@@QEBAPEBDXZ", yarn_c_str),
         ("?tolower@?$ctype@D@std@@QEBAPEBDPEADPEBD@Z", ctype_tolower_range),
         ("?toupper@?$ctype@D@std@@QEBADD@Z", ctype_toupper),
         ("?toupper@?$ctype@D@std@@QEBAPEBDPEADPEBD@Z", ctype_toupper_range),
@@ -655,6 +910,6 @@ pub fn init() {
         ("?uncaught_exception@std@@YA_NXZ", uncaught),
         ("?_Facet_Register@std@@YAXPEAV_Facet_base@1@@Z", nothing),
     ] {
-        implement("msvcp140", name, f);
+        reg(name, f);
     }
 }

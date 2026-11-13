@@ -130,6 +130,8 @@ mod msvcp_fs;
 mod msvcp_io;
 mod msvcp_loc;
 mod msvcp_thr;
+#[cfg(test)]
+mod msvcp_x86_tests;
 pub mod sound;
 pub mod xapo;
 pub mod xaudio2;
@@ -568,7 +570,21 @@ pub fn call(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
         let a: Vec<u64> = args.iter().map(|&x| mem::widen(x)).collect();
         return call64(cpu, mem::widen(f), &a) as u32;
     }
+    call32(cpu, f, args, None)
+}
+
+/// x86: calls a thiscall function at `f` (`this` in ECX, `args` on the stack, which the callee
+/// pops); returns EDX:EAX. The registers but EAX/EDX come back as they were.
+pub fn call_thiscall(cpu: &mut Cpu, f: u32, this: u32, args: &[u32]) -> u64 {
+    let r = call32(cpu, f, args, Some(this));
+    r as u64 | (cpu.regs[koji::EDX] as u64) << 32
+}
+
+fn call32(cpu: &mut Cpu, f: u32, args: &[u32], ecx: Option<u32>) -> u32 {
     let regs = cpu.regs;
+    if let Some(t) = ecx {
+        cpu.regs[koji::ECX] = t;
+    }
     let eip = cpu.eip;
     cpu.materialize();
     let eflags = cpu.eflags;

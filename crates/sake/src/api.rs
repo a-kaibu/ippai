@@ -34,6 +34,9 @@ pub struct Ctx<'a> {
     pub st0: Option<f64>,
     /// the trap address called (handlers shared by many entries tell them apart by it)
     pub trap: u32,
+    /// x86: a thiscall function whose `this` (ECX) is argument 0, the stack arguments 1...
+    /// (as on x64, where `this` is the first argument): msvcp140 / msvcp120 and their vtables
+    pub this: Option<u32>,
 }
 
 impl Ctx<'_> {
@@ -42,7 +45,47 @@ impl Ctx<'_> {
         if crate::mem::x64() {
             return self.a64(i) as u32;
         }
-        r32(self.esp + 4 + 4 * i)
+        match self.this {
+            Some(t) if i == 0 => t,
+            Some(_) => r32(self.esp + 4 * i),
+            None => r32(self.esp + 4 + 4 * i),
+        }
+    }
+    /// A pointer-sized argument (size_t, ptrdiff_t): x64 all 64 bits, x86 the slot.
+    pub fn z(&self, i: u32) -> u64 {
+        if crate::mem::x64() { self.a64(i) } else { self.a(i) as u64 }
+    }
+    /// The 64-bit integer argument `i` (x64: one argument; x86: the slots `i`, `i + 1`).
+    pub fn q(&self, i: u32) -> u64 {
+        if crate::mem::x64() {
+            return self.a64(i);
+        }
+        self.a(i) as u64 | (self.a(i + 1) as u64) << 32
+    }
+    /// The double argument `i` (x64: XMM `i` or its stack slot; x86: the slots `i`, `i + 1`).
+    pub fn d(&self, i: u32) -> f64 {
+        if crate::mem::x64() {
+            return f64::from_bits(self.xmm(i));
+        }
+        f64::from_bits(self.q(i))
+    }
+    /// The float argument `i` (x64: XMM `i`; x86: slot `i`).
+    pub fn fl(&self, i: u32) -> f32 {
+        if crate::mem::x64() {
+            return f32::from_bits(self.xmm(i) as u32);
+        }
+        f32::from_bits(self.a(i))
+    }
+    /// Where an object passed by value as argument `i` is: x64 passes one bigger than 8 bytes
+    /// by address (the argument), x86 copies it onto the stack (from slot `i` on).
+    pub fn byval(&self, i: u32) -> u32 {
+        if crate::mem::x64() {
+            return self.a(i);
+        }
+        match self.this {
+            Some(_) => self.esp + 4 * i,
+            None => self.esp + 4 + 4 * i,
+        }
     }
     /// x64: the whole argument `i` (RCX, RDX, R8, R9, then the stack past the home space).
     pub fn a64(&self, i: u32) -> u64 {
@@ -116,6 +159,8 @@ struct Entry {
     bytes: u32,
     cdecl: bool,
     known: bool,
+    /// x86 thiscall with `this` as argument 0 (Ctx::this)
+    this_arg: bool,
 }
 
 static ENTRIES: RwLock<Vec<Entry>> = RwLock::new(Vec::new());
@@ -123,8 +168,8 @@ static INDEX: Mutex<Option<HashMap<(String, String), u32>>> = Mutex::new(None);
 static IMPLS: RwLock<Option<HashMap<String, Handler>>> = RwLock::new(None);
 
 struct Spec {
-    /// (dll, name) -> (cdecl, bytes)
-    by_name: HashMap<(String, String), (bool, u32)>,
+    /// (dll, name) -> (cdecl, bytes, thiscall)
+    by_name: HashMap<(String, String), (bool, u32, bool)>,
     by_ord: HashMap<(String, u32), String>,
     dlls: HashSet<String>,
 }
@@ -142,7 +187,7 @@ fn specs() -> &'static Spec {
             let cdecl = !matches!(v[2], "stdcall" | "thiscall");
             let bytes: u32 = v[3].parse::<u32>().unwrap_or(0).saturating_sub(if v[2] == "thiscall" { 4 } else { 0 });
             s.dlls.insert(v[0].to_string());
-            s.by_name.entry((v[0].to_string(), v[1].to_string())).or_insert((cdecl, bytes));
+            s.by_name.entry((v[0].to_string(), v[1].to_string())).or_insert((cdecl, bytes, v[2] == "thiscall"));
             if let Ok(o) = v[4].parse::<u32>() {
                 s.by_ord.insert((v[0].to_string(), o), v[1].to_string());
             }
@@ -296,6 +341,7 @@ pub fn export(dll: &str, name: &str) -> u32 {
     let f = find_impl(&d, name);
     let mut e = ENTRIES.write().unwrap();
     let i = e.len() as u32;
+    let this_arg = spec.is_some_and(|s| s.2) && THIS_ARG0.contains(&d.as_str());
     e.push(Entry {
         dll: d,
         name: name.to_string(),
@@ -303,10 +349,15 @@ pub fn export(dll: &str, name: &str) -> u32 {
         bytes: spec.map_or(0, |s| s.1),
         cdecl: spec.is_some_and(|s| s.0),
         known: spec.is_some() || f.is_some(),
+        this_arg,
     });
     idx.insert(key, i);
     TRAP_LO + 4 * i
 }
+
+/// The DLLs whose thiscall functions take `this` as argument 0 on x86 (Ctx::this): their
+/// handlers are x64's too. (msvcp90's and the others' read ECX themselves.)
+const THIS_ARG0: [&str; 2] = ["msvcp140", "msvcp120"];
 
 /// "dll!name" of a trap address (for logs).
 pub fn name_of(addr: u32) -> Option<String> {
@@ -439,12 +490,12 @@ fn usage(i: u32) {
 pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     crate::comrpc::pump(cpu, false);
     let i = (addr - TRAP_LO) / 4;
-    let (f, bytes, cdecl, known) = {
+    let (f, bytes, cdecl, known, this_arg) = {
         let e = ENTRIES.read().unwrap();
         let Some(e) = e.get(i as usize) else {
             crate::fatal(cpu, &format!("jump to unknown trap address {addr:#x}"));
         };
-        (e.f, e.bytes, e.cdecl, e.known)
+        (e.f, e.bytes, e.cdecl, e.known, e.this_arg)
     };
     if kura::usage::on() {
         usage(i);
@@ -470,7 +521,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         let x64 = crate::mem::x64();
         let nargs = if x64 { 4.max(bytes / 4).min(8) } else { (bytes / 4).min(8) };
         let args: Vec<String> = (0..nargs)
-            .map(|k| if x64 { format!("{:x}", Ctx { cpu: &mut *cpu, esp, edx: None, jumped: false, st0: None, trap: addr }.a64(k)) } else { format!("{:x}", r32(esp + 4 + 4 * k)) })
+            .map(|k| if x64 { format!("{:x}", Ctx { cpu: &mut *cpu, esp, edx: None, jumped: false, st0: None, trap: addr, this: None }.a64(k)) } else { format!("{:x}", r32(esp + 4 + 4 * k)) })
             .collect();
         let from = if x64 { crate::mem::r64(esp) } else { r32(esp) as u64 };
         let line = format!("sake {:04x} {}: {n}({}) from {:x}", crate::cur().tid, crate::k32::ticks_ms() - 60_000, args.join(","), from);
@@ -491,7 +542,8 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     let me = crate::cur();
     let outer = me.api;
     me.api = (esp, if crate::mem::x64() { 8 } else { 4 + if cdecl { 0 } else { bytes } });
-    let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None, trap: addr };
+    let this = (this_arg && !crate::mem::x64()).then(|| cpu.regs[koji::ECX]);
+    let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None, trap: addr, this };
     let r = match f {
         Some(f) => f(&mut c),
         None => {
@@ -576,6 +628,14 @@ pub fn host_fn(name: &str, f: Handler, bytes: u32) -> u32 {
     e[i as usize].bytes = bytes;
     e[i as usize].known = true;
     let _ = w32;
+    a
+}
+
+/// A host function called as a thiscall virtual function (x86: `this` in ECX is argument 0,
+/// the callee pops `bytes` of stack arguments; x64: the plain convention).
+pub fn host_fn_this(name: &str, f: Handler, bytes: u32) -> u32 {
+    let a = host_fn(name, f, bytes);
+    ENTRIES.write().unwrap()[((a - TRAP_LO) / 4) as usize].this_arg = true;
     a
 }
 

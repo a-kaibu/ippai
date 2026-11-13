@@ -11,6 +11,11 @@ for t in msvcpsync msvcstream msvcrtti msvcseh; do
   "$ROOT/host/tests/build-msvc64.sh" "$t" "$OUT"
   mv "$OUT/$t.exe" "$OUT/host_$t-64.exe"
 done
+# the same for x86 (msvcp140's thiscall members and i686 layouts), as host_msvcstl_<name>-32.exe
+for t in msvcpsync msvcstream msvcrtti msvcseh; do
+  MSVC_ARCH=i686 "$ROOT/host/tests/build-msvc64.sh" "$t" "$OUT"
+  mv "$OUT/$t.exe" "$OUT/host_msvcstl_$t-32.exe"
+done
 # (x86 on msvcrt.dll: build-msvc32.sh)
 for t in msvcseh mfc42 mfc42u mfc40; do
   "$ROOT/host/tests/build-msvc32.sh" "$t" "$OUT"

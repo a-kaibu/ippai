@@ -11,7 +11,8 @@
 # dynamic_cast and typeid (vcruntime140's __RTDynamicCast...); msvcseh: _set_se_translator
 # with /EHa; mmdev: the audio device enumerator; avx256: ymm forms, expected from a native
 # x86-64 Linux build), each with its own expected file. CLANG32 are
-# x86 MSVC-ABI programs on msvcrt.dll (build-msvc32.sh), expected in <name>-32.txt.
+# x86 MSVC-ABI programs on msvcrt.dll (build-msvc32.sh), expected in <name>-32.txt. MSVC32 are
+# CLANG64's msvcp140 programs built for x86, expected to print what x64 does.
 #
 #   tests/host-tests.sh [name ...]      SAKE=path/to/sake.js (default /home/user/work/sake-out/sake.js)
 set -uo pipefail
@@ -22,6 +23,9 @@ TESTS=${*:-changenotify afdpoll callwndhook dllinit dxversion dircase dlgenter b
 X64=" dxversion changenotify afdpoll nuldevice callwndhook dllinit dircase dlgenter dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep virtualex filetitle flatsb propsheet trackmouse richedit getmsghook memdccaps xfile mmiobuf dsnotify "
 CLANG64=${CLANG64-x64seh x64crt msvcpchar msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
 CLANG32=${CLANG32-msvcseh mfc42 mfc42u mfc40}
+# CLANG64's MSVC STL programs built for x86 (msvcp140's thiscall members, __int64 in two slots,
+# the i686 layouts): the same expected output as x64
+MSVC32=${MSVC32-msvcpsync msvcstream msvcrtti msvcseh}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
 GXX=${GXX-gxxunwind}
 # Tests in VEX are also built with -mavx (the VEX forms of their SSE instructions)
@@ -283,6 +287,19 @@ for t in $CLANG64; do
   else
     echo "ok   $t"
   fi
+done
+for t in $MSVC32; do
+  mkdir -p "$OUT/m32"
+  MSVC_ARCH=i686 "$ROOT/host/tests/build-msvc64.sh" "$t" "$OUT/m32" || { echo "FAIL $t (MSVC x86): build"; fail=1; continue; }
+  want=$ROOT/host/tests/expected/$t.txt
+  for jit in 1 0; do
+    got=$( (cd "$(dirname "$SAKE")" && timeout 300 env IPPAI_JIT=$jit node "$SAKE" "$OUT/m32/$t.exe" 2>&1 | grep -v '^sake:') )
+    if [ "$got" != "$(cat "$want" 2>/dev/null)" ]; then
+      echo "FAIL $t (MSVC x86, IPPAI_JIT=$jit):"; diff <(echo "$got") "$want" | head -10; fail=1
+    else
+      echo "ok   $t (MSVC x86, IPPAI_JIT=$jit)"
+    fi
+  done
 done
 for t in $CLANG32; do
   mkdir -p "$OUT/32"

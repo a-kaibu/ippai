@@ -10,7 +10,7 @@ typedef void *HANDLE;
 typedef unsigned long DWORD;
 __declspec(dllimport) HANDLE __stdcall GetStdHandle(DWORD);
 __declspec(dllimport) int __stdcall WriteFile(HANDLE, const void *, DWORD, DWORD *, void *);
-__declspec(dllimport) HANDLE __stdcall CreateThread(void *, unsigned long long, DWORD(__stdcall *)(void *), void *, DWORD, DWORD *);
+__declspec(dllimport) HANDLE __stdcall CreateThread(void *, decltype(sizeof 0), DWORD(__stdcall *)(void *), void *, DWORD, DWORD *);
 __declspec(dllimport) DWORD __stdcall WaitForSingleObject(HANDLE, DWORD);
 __declspec(dllimport) void __stdcall Sleep(DWORD);
 __declspec(dllimport) int __stdcall CloseHandle(HANDLE);
@@ -43,7 +43,11 @@ __declspec(dllimport) long long _Query_perf_counter(void);
 __declspec(dllimport) long long _Xtime_get_ticks(void);
 }
 __declspec(dllimport) unsigned __cdecl _Random_device_imp() asm("?_Random_device@std@@YAIXZ");
+#ifdef _WIN64
 __declspec(dllimport) const char *__cdecl _Syserror_map_imp(int) asm("?_Syserror_map@std@@YAPEBDH@Z");
+#else
+__declspec(dllimport) const char *__cdecl _Syserror_map_imp(int) asm("?_Syserror_map@std@@YAPBDH@Z");
+#endif
 __declspec(dllimport) int __cdecl _Winerror_map_imp(int) asm("?_Winerror_map@std@@YAHH@Z");
 __declspec(dllimport) void __cdecl _Throw_Cpp_error_imp(int) asm("?_Throw_Cpp_error@std@@YAXH@Z");
 
@@ -105,24 +109,28 @@ static DWORD __stdcall consumer(void *) {
 // _Mtx_internal_imp_t (AdvHD's std::condition_variable::wait_for calls
 // SleepConditionVariableSRW on them and the PPL's chore wakes it with _Cnd_broadcast).
 alignas(8) static char xmtx[80], xcnd[72];
+// (the SRW lock and the CONDITION_VARIABLE inside them: after _Type (x64: padded) and
+// critical_section's vtable)
+#define XSRW (xmtx + 2 * sizeof(void *))
+#define XCV (xcnd + sizeof(void *))
 static volatile int xflag;
 static int x_kernel_woke;
 // (the waiter holds the SRW lock itself, as the inlined wait does: _Mtx_lock / _Mtx_unlock around
 // it would leave the _Mtx's owner and count to a thread that no longer has it, and on Windows the
 // next _Mtx_lock never returned)
 static DWORD __stdcall kernel_waiter(void *) {
-    AcquireSRWLockExclusive(xmtx + 16);
+    AcquireSRWLockExclusive(XSRW);
     int r = 1;
-    while (!xflag && r) r = SleepConditionVariableSRW(xcnd + 8, xmtx + 16, 10000, 0);
+    while (!xflag && r) r = SleepConditionVariableSRW(XCV, XSRW, 10000, 0);
     x_kernel_woke = r != 0 && xflag;
-    ReleaseSRWLockExclusive(xmtx + 16);
+    ReleaseSRWLockExclusive(XSRW);
     return 0;
 }
 static DWORD __stdcall kernel_waker(void *) {
     Sleep(50);
     _Mtx_lock(xmtx);
     xflag = 2;
-    WakeAllConditionVariable(xcnd + 8);
+    WakeAllConditionVariable(XCV);
     _Mtx_unlock(xmtx);
     return 0;
 }
@@ -157,7 +165,13 @@ static void mixed_test() {
 }
 
 extern "C" {
+#ifdef _WIN64
 __declspec(dllimport) int __intrinsic_setjmp(unsigned long long *, void *);
+#define SETJMP(b) __intrinsic_setjmp(b, 0)
+#else
+__declspec(dllimport) int _setjmp3(unsigned long long *, int, ...);
+#define SETJMP(b) _setjmp3(b, 0)
+#endif
 __declspec(dllimport) void longjmp(unsigned long long *, int);
 }
 namespace Concurrency { namespace details {
@@ -197,7 +211,7 @@ __declspec(noinline) static void jump_back(int v) {
 }
 static void setjmp_test() {
     volatile int local = 5;
-    int r = __intrinsic_setjmp(jb, 0);
+    int r = SETJMP(jb);
     if (r < 3) {
         local = local + 1;
         jump_back(r == 0 ? 0 : r + 1);
