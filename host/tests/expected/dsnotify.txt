@@ -1,0 +1,16 @@
+GetDeviceID playback 0 0 same 1 listed 1
+GetDeviceID voice playback 0 same 1
+GetDeviceID no dest 0x80070057
+DirectSoundCreate8 0
+CreateSoundBuffer 0
+QueryInterface notify 0
+no array 0x80070057
+SetNotificationPositions 0
+Play 0
+position 0 set 1
+position 1 set 1
+position 2 set 1
+position 3 set 1
+position 0 again 1
+Stop 0
+stop event set 1

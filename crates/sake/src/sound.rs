@@ -975,6 +975,40 @@ fn enumerate(c: &mut Ctx, wide: bool) -> u32 {
     mem::heap_free(buf);
     0
 }
+/// DSDEVID_DefaultPlayback {DEF00000-9C6D-47ED-AAF1-4DDA8F2B5C03}; DefaultCapture, its voice
+/// forms differ only in the first byte (01, 02, 03)
+const DSDEVID_DEFAULT: [u8; 16] = [0x00, 0x00, 0xf0, 0xde, 0x6d, 0x9c, 0xed, 0x47, 0xaa, 0xf1, 0x4d, 0xda, 0x8f, 0x2b, 0x5c, 0x03];
+const DSERR_NODRIVER: u32 = 0x8878_0078;
+/// GetDeviceID(source, dest)'s answer, as Wine's: GUID_NULL and the default (voice) playback
+/// ids are the output device; the default capture ids have no device (sake records nothing);
+/// any other GUID is given back as it is. cmvs64.exe (リアライブ 体験版) compares the default
+/// playback device every frame with the one it opened on: the function was missing, the answer
+/// was whatever the stack held, and the game restarted its sound and warned
+/// 「再生デバイスが変更されました」 every frame.
+fn device_id(src: [u8; 16], sound: bool) -> Result<[u8; 16], u32> {
+    let default = src[1..] == DSDEVID_DEFAULT[1..] && src[0] <= 3;
+    if src == [0; 16] || (default && src[0] & 1 == 0) {
+        return if sound { Ok(DEVICE_GUID) } else { Err(DSERR_NODRIVER) };
+    }
+    if default {
+        return Err(DSERR_NODRIVER);
+    }
+    Ok(src)
+}
+fn GetDeviceID(c: &mut Ctx) -> u32 {
+    let (src, dst) = (c.a(0), c.a(1));
+    if src == 0 || dst == 0 {
+        return 0x8007_0057;
+    }
+    let g: [u8; 16] = mem::slice(src, 16).try_into().unwrap();
+    match device_id(g, !no_sound()) {
+        Ok(d) => {
+            mem::write(dst, &d);
+            0
+        }
+        Err(e) => e,
+    }
+}
 fn DirectSoundEnumerateA(c: &mut Ctx) -> u32 {
     enumerate(c, false)
 }
@@ -1385,10 +1419,22 @@ fn N_AddRef(_: &mut Ctx) -> u32 {
 fn N_Release(_: &mut Ctx) -> u32 {
     0
 }
+/// DSBPOSITIONNOTIFY {dwOffset, hEventNotify}: 8 bytes on x86; 16 on x64, the handle at 8 (after
+/// 4 bytes of padding). Reading x64's as x86's took the padding for the events, so none was ever
+/// set: cmvs64.exe (リアライブ 体験版) waits for its stream's notifications, takes the silence for a
+/// lost device and says 「再生デバイスが変更されました」 over and over, never past its logo.
+fn notify_list(n: u32, p: u32, wide: bool, read: impl Fn(u32) -> u32) -> Vec<(u32, u32)> {
+    let (size, ev) = if wide { (16, 8) } else { (8, 4) };
+    (0..n).map(|i| (read(p + size * i), read(p + size * i + ev))).collect()
+}
 fn N_SetNotificationPositions(c: &mut Ctx) -> u32 {
     let (this, n, p) = (c.a(0), c.a(1), c.a(2));
+    // (DSERR_INVALIDPARAM: positions but no array, or more than any buffer could hold)
+    if (n != 0 && p == 0) || n > 0x10_0000 {
+        return 0x8007_0057;
+    }
     let buf = r32(this + 4);
-    let list: Vec<(u32, u32)> = (0..n).map(|i| (r32(p + 8 * i), r32(p + 8 * i + 4))).collect();
+    let list = notify_list(n, p, crate::mem::x64(), r32);
     with_buf(buf, |b| b.notify = list);
     0
 }
@@ -1589,6 +1635,7 @@ pub fn init() {
     implement("dsound", "DirectSoundCreate8", DirectSoundCreate8);
     implement("dsound", "DirectSoundEnumerateA", DirectSoundEnumerateA);
     implement("dsound", "DirectSoundEnumerateW", DirectSoundEnumerateW);
+    implement("dsound", "GetDeviceID", GetDeviceID);
 }
 
 #[cfg(test)]
@@ -1788,8 +1835,38 @@ mod music_tests {
 
 #[cfg(test)]
 mod enumerate_tests {
-    use super::{ds_devices, guid_text, DEVICE_GUID};
+    use super::{device_id, ds_devices, guid_text, DEVICE_GUID, DSDEVID_DEFAULT, DSERR_NODRIVER};
     use proptest::prelude::*;
+
+    #[test]
+    fn device_ids_as_wine() {
+        let id = |b: u8| { let mut g = DSDEVID_DEFAULT; g[0] = b; g };
+        // the default playback and voice playback ids, and GUID_NULL: the device the listing has
+        assert_eq!(device_id(id(0), true), Ok(DEVICE_GUID));
+        assert_eq!(device_id(id(2), true), Ok(DEVICE_GUID));
+        assert_eq!(device_id([0; 16], true), Ok(DEVICE_GUID));
+        assert_eq!(ds_devices(true)[1].0, Some(DEVICE_GUID));
+        // capture: none
+        assert_eq!(device_id(id(1), true), Err(DSERR_NODRIVER));
+        assert_eq!(device_id(id(3), true), Err(DSERR_NODRIVER));
+        // without sound no playback device either
+        assert_eq!(device_id(id(0), false), Err(DSERR_NODRIVER));
+        // the device's own GUID, and the id the default stays: asked twice, the same answer
+        assert_eq!(device_id(DEVICE_GUID, true), Ok(DEVICE_GUID));
+        assert_eq!(device_id(id(0), true), device_id(device_id(id(0), true).unwrap(), true));
+    }
+
+    proptest! {
+        /// any GUID that is not one of the four default ids nor GUID_NULL comes back unchanged;
+        /// the answer never depends on anything but the GUID (cmvs64.exe asks every frame)
+        #[test]
+        fn other_guids_come_back(g in proptest::array::uniform16(any::<u8>()), sound: bool) {
+            let default = g[1..] == DSDEVID_DEFAULT[1..] && g[0] <= 3;
+            prop_assume!(!default && g != [0; 16]);
+            prop_assert_eq!(device_id(g, sound), Ok(g));
+            prop_assert_eq!(device_id(g, sound), device_id(g, sound));
+        }
+    }
 
     #[test]
     fn primary_then_the_device() {
@@ -1820,5 +1897,53 @@ mod enumerate_tests {
             back[8..].copy_from_slice(&b[8..]);
             prop_assert_eq!(back, g);
         }
+    }
+}
+
+#[cfg(test)]
+mod notify_layout_tests {
+    use super::notify_list;
+    use proptest::prelude::*;
+
+    /// DSBPOSITIONNOTIFY arrays as mingw-w64's dsound.h lays them out (x86: offset, handle; x64:
+    /// offset, 4 bytes of padding, an 8-byte handle), any entries, any padding bytes: the list is
+    /// exactly the (offset, event) pairs, whatever the padding holds.
+    fn layout(e: &[(u32, u32, u32)], wide: bool) -> Vec<u8> {
+        let mut v = Vec::new();
+        for &(off, ev, pad) in e {
+            v.extend_from_slice(&off.to_le_bytes());
+            if wide {
+                v.extend_from_slice(&pad.to_le_bytes());
+                v.extend_from_slice(&(ev as u64).to_le_bytes());
+            } else {
+                v.extend_from_slice(&ev.to_le_bytes());
+            }
+        }
+        v
+    }
+
+    proptest! {
+        #[test]
+        fn entries_read_as_written(e in proptest::collection::vec((any::<u32>(), any::<u32>(), any::<u32>()), 0..64),
+                                   base in 0u32..0x1000, wide: bool) {
+            let bytes = layout(&e, wide);
+            let read = |a: u32| {
+                let i = (a - base) as usize;
+                u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap())
+            };
+            let got = notify_list(e.len() as u32, base, wide, read);
+            let want: Vec<(u32, u32)> = e.iter().map(|&(o, ev, _)| (o, ev)).collect();
+            prop_assert_eq!(got, want);
+        }
+    }
+
+    /// cmvs64.exe's four positions: with the x86 reading the events were the padding (0)
+    #[test]
+    fn x64_events_are_not_the_padding() {
+        let e = [(0, 0x104, 0), (0x1800, 0x108, 0), (0x3000, 0x10c, 0), (0x4800, 0x110, 0)];
+        let bytes = layout(&e, true);
+        let read = |a: u32| u32::from_le_bytes(bytes[a as usize..a as usize + 4].try_into().unwrap());
+        assert_eq!(notify_list(4, 0, true, read).iter().map(|x| x.1).collect::<Vec<_>>(), [0x104, 0x108, 0x10c, 0x110]);
+        assert_eq!(notify_list(4, 0, false, read)[1].1, 0, "x86's reading of an x64 array");
     }
 }
