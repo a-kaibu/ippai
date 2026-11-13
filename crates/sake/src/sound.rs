@@ -909,20 +909,55 @@ fn DirectSoundCreate8(c: &mut Ctx) -> u32 {
     crate::mem::putp(c.a(1), create_device());
     0
 }
+/// The output device DirectSoundEnumerate lists after the primary driver (a GUID of its own, as
+/// Windows gives each endpoint one).
+const DEVICE_GUID: [u8; 16] = [0x7c, 0x1d, 0x7f, 0x3e, 0x2b, 0x4a, 0x5d, 0x4c, 0x9a, 0x61, 0x1e, 0x2f, 0x8b, 0x30, 0x51, 0x6c];
+
+/// What DirectSoundEnumerate lists, as Windows does: the primary sound driver (no GUID, no
+/// module), then each output device with its GUID, name and module "{0.0.0.00000000}.{GUID}".
+/// FMOD (Unity 4's audio) takes only entries with a GUID as drivers: with the primary one alone it
+/// found no device, Unity ran without audio and crashed when a script played the title music
+/// (絶対君主！小夜様！体験版). Without sound (SAKE_NO_SOUND) only the primary driver.
+fn ds_devices(sound: bool) -> Vec<(Option<[u8; 16]>, &'static str, String)> {
+    let mut v = vec![(None, "Primary Sound Driver", String::new())];
+    if sound {
+        v.push((Some(DEVICE_GUID), "Speakers (ippai Audio)", format!("{{0.0.0.00000000}}.{}", guid_text(&DEVICE_GUID))));
+    }
+    v
+}
+
+/// A GUID's registry form in lower case, "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}".
+fn guid_text(g: &[u8; 16]) -> String {
+    let d1 = u32::from_le_bytes([g[0], g[1], g[2], g[3]]);
+    let d2 = u16::from_le_bytes([g[4], g[5]]);
+    let d3 = u16::from_le_bytes([g[6], g[7]]);
+    let tail: String = g[10..].iter().map(|b| format!("{b:02x}")).collect();
+    format!("{{{d1:08x}-{d2:04x}-{d3:04x}-{:02x}{:02x}-{tail}}}", g[8], g[9])
+}
+
 fn enumerate(c: &mut Ctx, wide: bool) -> u32 {
     let (cb, ctx) = (c.a(0), c.a(1));
-    let buf = mem::heap_alloc(256, true);
-    let guid = buf;
-    let desc = buf + 16;
-    let module = buf + 160;
-    if wide {
-        let d: Vec<u16> = "Primary Sound Driver".encode_utf16().collect();
-        mem::put_wstr(desc, 64, &d);
-    } else {
-        mem::put_cstr(desc, 64, b"Primary Sound Driver");
+    if cb == 0 {
+        return 0x8007_0057;
     }
-    let _ = guid;
-    c.call(cb, &[0, desc, module, ctx]);
+    let buf = mem::heap_alloc(16 + 2 * 128 + 2 * 128, true);
+    let (guid, desc, module) = (buf, buf + 16, buf + 16 + 256);
+    for (g, d, m) in ds_devices(!no_sound()) {
+        if let Some(g) = g {
+            mem::write(guid, &g);
+        }
+        if wide {
+            mem::put_wstr(desc, 128, &d.encode_utf16().collect::<Vec<_>>());
+            mem::put_wstr(module, 128, &m.encode_utf16().collect::<Vec<_>>());
+        } else {
+            mem::put_cstr(desc, 128, d.as_bytes());
+            mem::put_cstr(module, 128, m.as_bytes());
+        }
+        // (the callback's FALSE stops the listing)
+        if c.call(cb, &[if g.is_some() { guid } else { 0 }, desc, module, ctx]) == 0 {
+            break;
+        }
+    }
     mem::heap_free(buf);
     0
 }
@@ -1733,6 +1768,43 @@ mod music_tests {
                 prop_assert_eq!(sounding, (n * (r + 1)) as usize);
                 prop_assert!(!playing);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod enumerate_tests {
+    use super::{ds_devices, guid_text, DEVICE_GUID};
+    use proptest::prelude::*;
+
+    #[test]
+    fn primary_then_the_device() {
+        let v = ds_devices(true);
+        assert_eq!(v.len(), 2);
+        assert_eq!((v[0].0, v[0].1, v[0].2.as_str()), (None, "Primary Sound Driver", ""));
+        assert_eq!(v[1].0, Some(DEVICE_GUID));
+        assert_eq!(v[1].2, "{0.0.0.00000000}.{3e7f1d7c-4a2b-4c5d-9a61-1e2f8b30516c}");
+        assert_eq!(ds_devices(false).len(), 1);
+        // (Windows' own spelling of a known GUID: DSDEVID_DefaultPlayback)
+        let g = [0xd6, 0xb0, 0x88, 0xde, 0x91, 0x1c, 0xd2, 0x11, 0x8f, 0xd3, 0x00, 0xc0, 0x4f, 0xa3, 0xc2, 0x1c];
+        assert_eq!(guid_text(&g), "{de88b0d6-1c91-11d2-8fd3-00c04fa3c21c}");
+    }
+
+    proptest! {
+        /// any GUID's text is 38 characters of the registry form and reads back to the same bytes
+        #[test]
+        fn guid_text_round_trips(g in proptest::array::uniform16(any::<u8>())) {
+            let t = guid_text(&g);
+            prop_assert_eq!(t.len(), 38);
+            let h: String = t.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+            prop_assert_eq!(h.len(), 32);
+            let b: Vec<u8> = (0..16).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap()).collect();
+            let mut back = [0u8; 16];
+            back[..4].copy_from_slice(&[b[3], b[2], b[1], b[0]]);
+            back[4..6].copy_from_slice(&[b[5], b[4]]);
+            back[6..8].copy_from_slice(&[b[7], b[6]]);
+            back[8..].copy_from_slice(&b[8..]);
+            prop_assert_eq!(back, g);
         }
     }
 }
