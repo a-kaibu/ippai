@@ -361,7 +361,7 @@ fn add_filter(c: &mut Ctx) -> u32 {
 }
 
 /// COM method `slot` of `obj` (`this` first)
-fn com(c: &mut Ctx, obj: u32, slot: u32, args: &[u32]) -> u32 {
+pub(crate) fn com(c: &mut Ctx, obj: u32, slot: u32, args: &[u32]) -> u32 {
     let f = rp(rp(obj) + ps() * slot);
     let mut a = vec![obj];
     a.extend_from_slice(args);
@@ -403,6 +403,28 @@ fn connect_direct(c: &mut Ctx) -> u32 {
         with(b, |g| g.wired = true);
     }
     r
+}
+/// Connect(out, in): ConnectDirect when a pin is one of dshow_mpeg.rs's filters (no filters in
+/// between: those are the ones games put there themselves); others, as before, succeed with
+/// nothing done (sake's graph renders files itself)
+fn connect(c: &mut Ctx) -> u32 {
+    let (out, inp) = (c.a(1), c.a(2));
+    if out == 0 || inp == 0 {
+        return E_POINTER;
+    }
+    if !crate::dshow_mpeg::is_pin(out) && !crate::dshow_mpeg::is_pin(inp) {
+        return 0;
+    }
+    let b = base(c, GB);
+    if with(b, |g| g.state).unwrap_or(0) != 0 {
+        return VFW_E_NOT_STOPPED;
+    }
+    let r = com(c, out, 3, &[inp, 0]);
+    if r == 0 {
+        with(b, |g| g.wired = true);
+    }
+    // (VFW_E_CANNOT_CONNECT, as Windows says when no filter would do)
+    if r & 0x8000_0000 != 0 { 0x8004_0217 } else { r }
 }
 /// Disconnect(pin): pin->Disconnect
 fn disconnect(c: &mut Ctx) -> u32 {
@@ -514,9 +536,11 @@ fn run(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
     filters_to(c, b, 6);
     let was = set_state(b, 2);
+    // (an MPEG-1 stream of dshow_mpeg.rs plays: its own end)
+    let mpeg = crate::dshow_mpeg::movie(b).is_some();
     let run = with(b, |g| {
         // (a Run again, after a Pause, keeps the end to come)
-        if g.playing || g.done {
+        if g.playing || g.done || mpeg {
             return None;
         }
         g.runs += 1;
@@ -724,7 +748,8 @@ fn get_notify_flags(c: &mut Ctx) -> u32 {
 
 fn timeline<R>(b: u32, f: impl FnOnce(&mut play::Timeline, u64) -> R) -> Option<R> {
     let t = now();
-    play::with(|m| m.get_mut(&b).map(|p| f(&mut p.tl, t)))
+    let mut f = Some(f);
+    play::with(|m| m.get_mut(&b).map(|p| (f.take().unwrap())(&mut p.tl, t))).or_else(|| crate::dshow_mpeg::timeline(b, f.take()?))
 }
 /// TIME_FORMAT_MEDIA_TIME {7b785574-8c82-11cf-bc0c-00aa00ac74f6}
 fn media_time(p: u32) -> bool {
@@ -779,11 +804,26 @@ fn ms_set_format(c: &mut Ctx) -> u32 {
     }
     if media_time(c.a(1)) { 0 } else { E_INVALIDARG }
 }
+/// A graph's movie's duration (its `.vnv`'s, or the MPEG-1 stream's of dshow_mpeg.rs).
+fn duration(b: u32) -> u64 {
+    match crate::dshow_mpeg::movie(b) {
+        Some(i) => (i.duration.max(0.0) * SEC as f64) as u64,
+        None => with(b, |g| g.duration).unwrap_or(0),
+    }
+}
+/// The picture size and rate (pictures, seconds) of a graph's MPEG-1 stream, if it has one.
+fn mpeg_video(b: u32) -> Option<((i32, i32), (u32, u32))> {
+    crate::dshow_mpeg::movie(b).map(|i| ((i.width as i32, i.height as i32), ((i.rate * 1000.0).round() as u32, 1000)))
+}
+/// The volume IBasicAudio set on graph `b` (hundredths of a dB).
+pub(crate) fn volume(b: u32) -> i32 {
+    with(b, |g| g.volume).unwrap_or(0)
+}
 fn ms_duration(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    w64(c.a(1), with(base(c, MS), |g| g.duration).unwrap_or(0));
+    w64(c.a(1), duration(base(c, MS)));
     0
 }
 fn ms_stop_pos(c: &mut Ctx) -> u32 {
@@ -818,10 +858,8 @@ fn ms_convert(c: &mut Ctx) -> u32 {
 fn ms_set_positions(c: &mut Ctx) -> u32 {
     let b = base(c, MS);
     let (pc, fc, pst, fst) = (c.a(1), c.a(2), c.a(3), c.a(4));
-    let t = now();
-    let r = play::with(|m| {
-        let Some(p) = m.get_mut(&b) else { return None };
-        let cur = p.tl.position(t);
+    let r = timeline(b, |tl, t| {
+        let cur = tl.position(t);
         let rd = |a: u32| if a == 0 { 0 } else { mem::r64(a) as i64 };
         let to = match fc & 3 {
             1 => Some(rd(pc)),
@@ -835,14 +873,17 @@ fn ms_set_positions(c: &mut Ctx) -> u32 {
             _ => None,
         };
         if let Some(s) = stop {
-            p.tl.set_stop(t, s.max(0) as u64);
+            tl.set_stop(t, s.max(0) as u64);
         }
         if let Some(to) = to {
-            p.tl.seek(t, to.max(0) as u64);
+            tl.seek(t, to.max(0) as u64);
         }
-        Some((p.tl.position(t), p.tl.stop))
+        (tl.position(t), tl.stop)
     });
     if let Some((cur, stop)) = r {
+        if fc & 3 != 0 {
+            crate::dshow_mpeg::seeked(b);
+        }
         // (a seek: an EC_COMPLETE of before is old news)
         if fc & 3 != 0 {
             with(b, |g| {
@@ -869,7 +910,7 @@ fn ms_get_positions(c: &mut Ctx) -> u32 {
     0
 }
 fn ms_available(c: &mut Ctx) -> u32 {
-    let d = with(base(c, MS), |g| g.duration).unwrap_or(0);
+    let d = duration(base(c, MS));
     put64(c.a(1), 0);
     put64(c.a(2), d);
     0
@@ -1127,15 +1168,18 @@ fn vw_owner_msg(_: &mut Ctx) -> u32 {
 // IBasicVideo
 
 fn bv_avg_time(c: &mut Ctx) -> u32 {
-    let r = with(base(c, BV), |g| if g.playing { g.rate } else { (0, 1) }).unwrap_or((0, 1));
+    let b = base(c, BV);
+    let r = mpeg_video(b).map(|v| v.1).or_else(|| with(b, |g| if g.playing { g.rate } else { (0, 1) })).unwrap_or((0, 1));
     put_dbl(c.a(1), if r.0 == 0 { 0.0 } else { r.1 as f64 / r.0 as f64 })
 }
 fn bv_width(c: &mut Ctx) -> u32 {
-    put32(c.a(1), with(base(c, BV), |g| g.video.0).unwrap_or(0) as u32);
+    let b = base(c, BV);
+    put32(c.a(1), mpeg_video(b).map(|v| v.0).or_else(|| with(b, |g| g.video)).unwrap_or((0, 0)).0 as u32);
     0
 }
 fn bv_height(c: &mut Ctx) -> u32 {
-    put32(c.a(1), with(base(c, BV), |g| g.video.1).unwrap_or(0) as u32);
+    let b = base(c, BV);
+    put32(c.a(1), mpeg_video(b).map(|v| v.0).or_else(|| with(b, |g| g.video)).unwrap_or((0, 0)).1 as u32);
     0
 }
 /// put/get Source / Destination Left, Width, Top, Height (index 0..16)
@@ -1296,7 +1340,7 @@ fn vtables() -> &'static [u32; NI as usize] {
                 (ok, 8),                     // Reconnect
                 (disconnect, 8),             // Disconnect
                 (ok, 4),                     // SetDefaultSyncSource
-                (ok, 12),                    // Connect
+                (connect, 12),               // Connect
                 (ok, 8),                     // Render
                 (render_file_gb, 12),        // RenderFile
                 (notimpl, 16),               // AddSourceFilter

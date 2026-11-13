@@ -15,6 +15,7 @@ waits = { path = "../waits" }
 hlslc = { path = "../hlslc" }
 dxwgsl = { path = "../dxwgsl" }
 vorbis = { path = "../vorbis" }
+mpeg1 = { path = "../mpeg1" }
 msidb = { path = "../msidb" }
 cab = "0.6"
 miniz_oxide = "0.8"

@@ -3306,6 +3306,7 @@ dependencies = [
  "md-5",
  "md5",
  "miniz_oxide 0.8.9",
+ "mpeg1",
  "msidb",
  "naga",
  "p256",

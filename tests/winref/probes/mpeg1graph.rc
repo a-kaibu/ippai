@@ -1,0 +1,5 @@
+/* resources of the mpeg1graph probe: an MPEG-1 system stream (crates/mpeg1's testsrc.mpg:
+ * 64x48, 25 fps, 30 pictures with B pictures, MPEG-1 layer II stereo 44.1 kHz) */
+1 24 "ja.manifest"
+
+10 RCDATA "../../crates/mpeg1/testdata/testsrc.mpg"
