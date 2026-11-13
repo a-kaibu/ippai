@@ -198,8 +198,11 @@ test('a range answered for another place is asked again', async () => {
 });
 test('ranges parse only at the end of a name', () => {
   const ippaiRange = new Function(`${source}; return ippaiRange;`)();
-  assert.deepEqual(ippaiRange('chunks/ab/x#0+5'), ['chunks/ab/x', 0, 5, undefined]);
-  assert.deepEqual(ippaiRange('chunks/ab/x#262144+5/262144'), ['chunks/ab/x', 262144, 5, 262144]);
+  // (the last: the request's class, 0 the game's, 1 a fetcher thread's "!a")
+  assert.deepEqual(ippaiRange('chunks/ab/x#0+5'), ['chunks/ab/x', 0, 5, undefined, 0]);
+  assert.deepEqual(ippaiRange('chunks/ab/x#262144+5/262144'), ['chunks/ab/x', 262144, 5, 262144, 0]);
+  assert.deepEqual(ippaiRange('chunks/ab/x#262144+5/262144!a'), ['chunks/ab/x', 262144, 5, 262144, 1]);
+  assert.deepEqual(ippaiRange('chunks/ab/x!a'), ['chunks/ab/x!a']);
   assert.deepEqual(ippaiRange('trees/a#b.tsv'), ['trees/a#b.tsv']);
   assert.deepEqual(ippaiRange('chunks/ab/x#12+'), ['chunks/ab/x#12+']);
 });

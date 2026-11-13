@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use libc::size_t;
 
+mod hints;
 mod shared;
 
 type Ino = u32;
@@ -178,6 +179,9 @@ static LOADING: Mutex<()> = Mutex::new(());
 extern "C" {
     /// host/vnfs.js: reads `name` from the store into a malloc'ed buffer (NULL if missing)
     fn vnvm_fetch(name: *const c_char, len: *mut size_t) -> *mut u8;
+    /// host/vnfs.js: store files (newline-separated) the game reads soon: fetched onto the
+    /// device by the page, not waited for (see `hint`)
+    fn vnvm_fetch_hint(names: *const c_char, len: size_t);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -932,9 +936,15 @@ fn own_blocks(off: u64, end: u64, l: &Layout) -> u64 {
 /// Bytes `from..from + len` of chunk `h` (decoded; fewer when the stored chunk ends short: its
 /// zero tail is cut). `from` is a block's start (host/fetch-bridge.js keeps what came over the
 /// network as blocks).
-fn fetch_range(h: &Hash, from: u64, len: u64) -> Option<Vec<u8>> {
-    let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
-    fetch(&format!("chunks/{}/{hex}#{from}+{len}/{}", &hex[..2], block()))
+fn fetch_range(h: &Hash, from: u64, len: u64, ahead: bool) -> Option<Vec<u8>> {
+    let hex = hex(h);
+    // ("!a": a fetcher thread's, ahead of the game's reads: the page's scheduler serves the
+    // game's first)
+    fetch(&format!("chunks/{}/{hex}#{from}+{len}/{}{}", &hex[..2], block(), if ahead { "!a" } else { "" }))
+}
+
+fn hex(h: &Hash) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// `data`, bytes from block `first` of chunk `h` on, as blocks (each padded to its length);
@@ -1091,7 +1101,7 @@ fn fetcher() {
         let b = block();
         let from = p.first as u64 * b;
         let len = (p.clen - from).min(p.n as u64 * b);
-        if let Some(data) = fetch_range(&p.h, from, len) {
+        if let Some(data) = fetch_range(&p.h, from, len, true) {
             put_blocks(&p.h, p.clen, p.first, p.n, data, false, |_| true);
         }
         if let Some(a) = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
@@ -1149,7 +1159,7 @@ fn chunk_blocks_wait(h: &Hash, clen: u64, b0: u32, b1: u32) -> Result<Vec<Arc<Ve
         }
         let from = s as u64 * block();
         let len = (clen - from).min((b - s) as u64 * block());
-        let data = fetch_range(h, from, len).ok_or(libc::EIO)?;
+        let data = fetch_range(h, from, len, false).ok_or(libc::EIO)?;
         out.extend(put_blocks(h, clen, s, b - s, data, true, |_| true));
     }
     Ok(out)
@@ -1170,6 +1180,90 @@ pub unsafe extern "C" fn vnhost_vfs_put_chunk(hash: *const u8, data: *mut u8, le
     if n > 0 {
         put_blocks(&h, len as u64, 0, n, data, false, |_| true);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// hints: when a read waits for the network, what the game reads soon goes to the page to fetch
+// onto the device meanwhile (vfs/hints.rs says what, by how engines lay out their files; the
+// page's network worker fetches them below the game's own reads, host/fetch-bridge.js
+// ippaiHint).
+
+/// Store files' paths by inode, as they were opened (a read knows only the inode): the folder
+/// their neighbours are in.
+static NAMES: Mutex<Option<HashMap<Ino, String>>> = Mutex::new(None);
+/// (inode, chunk) pairs hinted already, and (inode, u32::MAX): files whose neighbours were.
+static HINTED: Mutex<Option<std::collections::HashSet<(Ino, u32)>>> = Mutex::new(None);
+const HINTED_MAX: usize = 1 << 16;
+
+fn note_name(ino: Ino, path: &str) {
+    let mut g = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(HashMap::default);
+    if m.len() > 1 << 16 {
+        m.clear();
+    }
+    m.insert(ino, path.to_string());
+}
+
+/// Whether (`ino`, `what`) is new (u32::MAX: the file's neighbours).
+fn first_hint(ino: Ino, what: u32) -> bool {
+    let mut g = HINTED.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(Default::default);
+    if s.len() > HINTED_MAX {
+        s.clear();
+    }
+    s.insert((ino, what))
+}
+
+/// The store chunks a read of chunk `i` of file `ino` (laid out as `l`, `chunks`) says the game
+/// reads soon (`first`: the file's first read): see vfs/hints.rs. Not those in the cache.
+fn hinted(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) -> Vec<Hash> {
+    let path = NAMES.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&ino).cloned());
+    let Some(path) = path else { return Vec::new() };
+    let name = path.rsplit('/').next().unwrap_or(&path);
+    let mut out = Vec::new();
+    // (each chunk once: not the one being read, nor one hinted before)
+    for k in hints::chunks(name, l.size, chunks.len(), i, first) {
+        if k != i && first_hint(ino, k as u32) {
+            out.extend(chunks[k]);
+        }
+    }
+    if first && first_hint(ino, u32::MAX) {
+        let dir = path.rsplit_once('/').map_or("/", |(d, _)| if d.is_empty() { "/" } else { d });
+        let near: Vec<Hash> = with(|fs| {
+            let Ok(Found::Node { ino: d, .. }) = fs.resolve(dir, true) else { return Vec::new() };
+            let Some(Data::Dir(ch)) = fs.node(d).map(|n| &n.data) else { return Vec::new() };
+            let files: Vec<(&str, u64, &Arc<Vec<Option<Hash>>>)> = ch
+                .iter()
+                .filter_map(|(n, &f)| match fs.node(f).map(|n| &n.data) {
+                    Some(Data::File(Content::Lower { size, chunks, .. })) => Some((n.as_str(), *size, chunks)),
+                    _ => None,
+                })
+                .collect();
+            let names: Vec<(&str, u64)> = files.iter().map(|f| (f.0, f.1)).collect();
+            hints::siblings(&names, name).into_iter().flat_map(|k| files[k].2.iter().flatten().copied()).collect()
+        });
+        out.extend(near);
+    }
+    let g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    out.retain(|h| g.as_ref().is_none_or(|c| !c.contains(&(*h, 0))));
+    out
+}
+
+/// Tells the page what a read of chunk `i` of `ino` says the game reads soon (`hinted`).
+fn hint(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) {
+    let hs = hinted(ino, l, chunks, i, first);
+    if hs.is_empty() {
+        return;
+    }
+    let names: Vec<String> = hs.iter().map(|h| {
+        let x = hex(h);
+        format!("chunks/{}/{x}", &x[..2])
+    }).collect();
+    let s = names.join("\n");
+    if trace() {
+        eprintln!("vfs: hint {} chunks", names.len());
+    }
+    unsafe { vnvm_fetch_hint(s.as_ptr() as *const c_char, s.len()) };
 }
 
 /// Where each file's last read ended (a read that starts there reads on: SEQ_AHEAD blocks
@@ -1201,14 +1295,23 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
     let end = (off + buf.len() as u64).min(size);
     // the read's other pieces and the blocks after it: fetched at once by the fetcher threads
     // while this one fetches the first
-    let sequential = {
+    let (sequential, first_read) = {
         let mut g = LAST_END.lock().unwrap_or_else(|e| e.into_inner());
         let m = g.get_or_insert_with(HashMap::default);
         if m.len() > 256 {
             m.clear();
         }
-        m.insert(ino, end) == Some(off)
+        let last = m.insert(ino, end);
+        (last == Some(off), last.is_none())
     };
+    // (what the game reads soon, when this read waits for the network: the page fetches it
+    // onto the device meanwhile)
+    let i = layout.index(off);
+    if let Some(h) = chunks.get(i).copied().flatten() {
+        if !cached(&(h, ((off - layout.starts[i]) / block()) as u32)) {
+            hint(ino, &layout, &chunks, i, first_read);
+        }
+    }
     let ahead_end = (end + block() * if sequential { SEQ_AHEAD } else { NEXT_AHEAD }).min(size);
     for p in pieces(off, end, ahead_end, &layout, &chunks, true) {
         fetch_ahead(p);
@@ -1383,6 +1486,10 @@ pub(crate) fn name_nocase(p: &str, name: &str) -> At<Option<String>> {
 pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
     let follow = flags & libc::O_NOFOLLOW == 0;
     let found = with(|fs| fs.resolve(p, follow));
+    let opened = match &found {
+        Ok(Found::Node { path, .. }) => Some(path.clone()),
+        _ => None,
+    };
     let ino = match found {
         Err(e) => return At::Ours(Err(e)),
         Ok(Found::Outside(p)) => return At::Outside(p),
@@ -1420,6 +1527,9 @@ pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
         if let Err(e) = set_size(ino, 0) {
             return At::Ours(Err(e));
         }
+    }
+    if let (Some(1), Some(path)) = (kind, &opened) {
+        note_name(ino, path);
     }
     At::Ours(Ok(with(|fs| fs.new_handle(ino, flags))))
 }
@@ -1791,6 +1901,15 @@ mod tests {
     /// The store, for these tests: chunks by name, and the names fetched.
     static STORE: Mutex<Option<(HashMap<String, Vec<u8>>, Vec<String>)>> = Mutex::new(None);
 
+    /// The hints these tests' reads sent (host/vnfs.js vnvm_fetch_hint's names).
+    static HINTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    #[no_mangle]
+    extern "C" fn vnvm_fetch_hint(names: *const c_char, len: size_t) {
+        let s = unsafe { std::slice::from_raw_parts(names as *const u8, len) };
+        HINTS.lock().unwrap().extend(String::from_utf8_lossy(s).split('\n').map(String::from));
+    }
+
     #[no_mangle]
     extern "C" fn vnvm_fetch(name: *const c_char, len: *mut size_t) -> *mut u8 {
         let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
@@ -2065,10 +2184,62 @@ mod tests {
             drop(g);
             let log = std::mem::take(&mut STORE.lock().unwrap().as_mut().unwrap().1);
             let bytes: u64 = log.iter().map(|n| n.rsplit('+').next().unwrap().split('/').next().unwrap().parse::<u64>().unwrap()).sum();
-            assert!(log.iter().all(|n| n.ends_with("/24")), "{log:?}");
+            // (a fetcher thread's ends "!a": host/fetch-bridge.js serves the game's reads first)
+            assert!(log.iter().all(|n| n.ends_with("/24") || n.ends_with("/24!a")), "{log:?}");
             // its blocks (len <= 60 spans 4 of 24 bytes at most) and NEXT_AHEAD more
             assert!(bytes <= (4 + NEXT_AHEAD) * 24, "read {off}+{len} fetched {bytes} bytes: {log:?}");
         }
+    }
+
+    /// A read that waits for the network tells the page what the game reads soon: a voice the
+    /// folder's next voices (once), an archive its next chunks (each chunk once); a read the
+    /// cache has tells nothing; movies nothing.
+    #[test]
+    fn reads_hint_what_comes_next() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = |i: u32| format!("{:032x}", 0xc0de_0000u128 + i as u128);
+        let mut tsv = String::from("vnvm-tree\t2\t64\nd\t755\t0\tvoice\nd\t755\t0\tmovie\n");
+        let mut m = HashMap::new();
+        for i in 1..=20u32 {
+            tsv += &format!("f\t644\t0\tvoice/v{i:03}.ogg\t48\t{}:48\n", h(i));
+            m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), vec![i as u8; 48]);
+        }
+        // (an archive of 10 chunks, a movie of 3)
+        let arc: Vec<String> = (100..110).map(|i| format!("{}:48", h(i))).collect();
+        tsv += &format!("f\t644\t0\tdata.xp3\t{}\t{}\n", 48 * 10, arc.join(","));
+        let mov: Vec<String> = (200..203).map(|i| format!("{}:48", h(i))).collect();
+        tsv += &format!("f\t644\t0\tmovie/op.mpg\t{}\t{}\n", 48 * 3, mov.join(","));
+        for i in (100..110).chain(200..203) {
+            m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), vec![i as u8; 48]);
+        }
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        fs.mounts.push(("/".into(), root));
+        fs.load_tree(root, &tsv);
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        *CACHE.lock().unwrap() = None;
+        *HINTED.lock().unwrap() = None;
+        *LAST_END.lock().unwrap() = None;
+        HINTS.lock().unwrap().clear();
+        let name = |i: u32| format!("chunks/{}/{}", &h(i)[..2], h(i));
+        let read = |p: &str, off: u64| {
+            let At::Ours(Ok(fd)) = open_handle(p, libc::O_RDONLY, 0) else { panic!("open {p}") };
+            let ino = handle(fd).unwrap().0;
+            let mut b = [0u8; 8];
+            assert_eq!(read_at(ino, &mut b, off), Ok(8));
+            release(fd);
+            std::mem::take(&mut *HINTS.lock().unwrap())
+        };
+        // (a voice: the next 12 voices of its folder, not itself nor those before it)
+        assert_eq!(read("/voice/v005.ogg", 0), (6..=17).map(name).collect::<Vec<_>>());
+        // (again: cached now, nothing)
+        assert!(read("/voice/v005.ogg", 8).is_empty());
+        // (a small archive: all of it at its first read but the chunk read; later, nothing again)
+        assert_eq!(read("/data.xp3", 48 * 2), (100..110).filter(|&i| i != 102).map(name).collect::<Vec<_>>());
+        assert!(read("/data.xp3", 48 * 7).is_empty());
+        // (a movie: nothing)
+        assert!(read("/movie/op.mpg", 0).is_empty());
     }
 
     /// A padded get copies only a chunk someone else holds.

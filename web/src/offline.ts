@@ -6,6 +6,7 @@
 // service worker (sw.ts) keeps those and the app's pages: the game then starts with no connection.
 
 import { coverUrl, type GameEntry } from "./launcher";
+import { gameBusy } from "./budget";
 import { directFetcher, limit, type Unzstd } from "./direct";
 import {
   chunkCache,
@@ -332,6 +333,40 @@ export const DIRECT_AT_ONCE = 16;
 /** Chunks fetched at once through the server (/store: a store without S3, a chunk only there). */
 export const SERVER_AT_ONCE = 4;
 
+/** Of DIRECT_AT_ONCE, how many go on while a game playing waits for a read of its own. */
+export const SAVE_BUSY_WIDTH = 2;
+
+/** `hashes` with those of `order` first, in its order (the rest as they were). */
+export function byOrder(hashes: string[], order: string[]): string[] {
+  const want = new Set(hashes);
+  const first = [...new Set(order.filter((h) => want.has(h)))];
+  const seen = new Set(first);
+  return [...first, ...hashes.filter((h) => !seen.has(h))];
+}
+
+/** The chunks earlier runs of game `id` read first, in order (jit/game.<id>.chunks: 16 bytes
+ * each; none yet: empty). */
+async function readOrder(id: string, request?: typeof fetch): Promise<string[]> {
+  const b = await fetchRetry(
+    new URL(`jit/${gameChunksName(id)}.chunks`, location.href).href,
+    {},
+    { giveUpMs: 20000, request },
+  ).catch(() => new Uint8Array(0));
+  const out: string[] = [];
+  for (let i = 0; i + 16 <= b.length; i += 16)
+    out.push(Array.from(b.subarray(i, i + 16), (x) => x.toString(16).padStart(2, "0")).join(""));
+  return out;
+}
+
+/** `f()` holding chunk `hex`'s Web Lock (the network worker's fetches ahead hold it too), or just `f()`. */
+/** Chunks a save asks the server about at once (direct.ts prime), two windows ahead. */
+export const PRIME_WINDOW = 256;
+
+function withChunkLock(hex: string, f: () => Promise<void>): Promise<void> {
+  const locks = (navigator as { locks?: LockManager }).locks;
+  return locks ? locks.request(`ippai-chunk:${hex}`, f) : f();
+}
+
 /** What saveOffline may be given in place of the real ones (tests). */
 export interface SaveOptions {
   request?: typeof fetch;
@@ -388,7 +423,13 @@ export async function saveOffline(
     }
     const hashes = [...all];
     const files = chunkFiles(lists);
-    const missing = hashes.filter((h) => !have.has(h));
+    // (what earlier runs of the game read first, first: a game started while it is being saved
+    // finds its start on the device sooner)
+    const order = await readOrder(g.id, opt.request);
+    const missing = byOrder(
+      hashes.filter((h) => !have.has(h)),
+      order,
+    );
     let done = hashes.length - missing.length;
     const p: Progress = {
       have: done,
@@ -414,21 +455,44 @@ export async function saveOffline(
     const direct = directFetcher(base, opt);
     const server = limit(SERVER_AT_ONCE);
     let next = 0;
-    const one = async () => {
+    const primed = new Map<number, Promise<void>>();
+    const one = async (i: number) => {
       while (next < missing.length && !signal.aborted) {
-        const h = missing[next++]!;
+        // (a game playing meanwhile waits for a read of its own: SAVE_BUSY_WIDTH go on)
+        while (i >= SAVE_BUSY_WIDTH && gameBusy() && !signal.aborted)
+          await new Promise((r) => setTimeout(r, 50));
+        if (next >= missing.length || signal.aborted) break;
+        const k = next++;
+        const h = missing[k]!;
+        // (how to fetch the next ones from the bucket, asked for at once a window ahead; every
+        // fetcher waits for its window's answer, not only the one that asked)
+        const w = Math.floor(k / PRIME_WINDOW);
+        if (!primed.has(w))
+          primed.set(
+            w,
+            direct
+              .prime(missing.slice(w * PRIME_WINDOW, (w + 2) * PRIME_WINDOW), signal)
+              .catch(() => undefined),
+          );
+        await primed.get(w);
         p.now = files.get(h) ?? "";
         tell();
-        const data = await direct.get(h, { signal, request: opt.request });
-        if (data) await keepChunk(cache, new URL(chunkPath(h), base).href, data);
-        else await server(() => getChunk(base, h, { cache, priority: "low", signal, request: opt.request }));
+        const url = new URL(chunkPath(h), base).href;
+        // (one fetch of a chunk the game's network worker fetches too: its Web Lock, host/fetch-bridge.js ippaiWhole)
+        await withChunkLock(h, async () => {
+          if (await cache.match(url).catch(() => undefined)) return;
+          const data = await direct.get(h, { signal, request: opt.request });
+          if (data) await keepChunk(cache, url, data);
+          else
+            await server(() => getChunk(base, h, { cache, priority: "low", signal, request: opt.request }));
+        });
         p.have = ++done;
         p.haveBytes += sizes.get(h) ?? chunk;
         tell();
         report(done, hashes.length);
       }
     };
-    await Promise.all(Array.from({ length: DIRECT_AT_ONCE }, one));
+    await Promise.all(Array.from({ length: DIRECT_AT_ONCE }, (_, i) => one(i)));
     if (signal.aborted) throw signal.reason;
     // done only when every chunk is on the device now (the browser may have dropped some)
     const now = await onDevice();

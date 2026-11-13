@@ -62,6 +62,7 @@ import { checkOnline, startApp } from "./pwa";
 import { Budget, pool } from "./ahead";
 import { startWarm, warmAllowed, warmBusyWidth, type Warm } from "./warm";
 import { savedChunks } from "./offline";
+import { netBudget, setGameBusy } from "./budget";
 import {
   builds,
   getState,
@@ -395,6 +396,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     // the one-shot account input, but each having its own address space.
     vnvmSpawn: spawn,
     vnvmFiles,
+    // (the bucket's budget of requests: the network worker and the page's save take from one, budget.ts)
+    ippaiNetBudget: netBudget(),
     // (sake takes the host path: Z:\\x\\y.exe is /x/y.exe)
     arguments: [
       run.replace(/^z:/i, "").replaceAll("\\", "/"),
@@ -614,6 +617,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     console.log(`sake memory: ${mib(before)} -> ${mib(sake.wasmMemory.buffer.byteLength)} MiB`);
   }
   ahead?.(sake);
+  // (a save to the device going on meanwhile gives way while the game waits: offline.ts)
+  setGameBusy(() => !!sake._vnhost_net_busy?.());
   // the rest of the game's files onto the device while it plays: what earlier runs read first,
   // in that order, then the trees' others; fewer at once while it waits for a read (warm.ts)
   if (sake.ippaiWarm && warmAllowed(conn) && params.get("warm") !== "0")
@@ -623,18 +628,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       note(
         `fetching ahead: ${first.length} chunks earlier runs read first, then the trees' (${sizes.size}); ${busyWidth} at once while the game waits`,
       );
-      setTimeout(
-        () =>
-          startWarm(
-            warm,
-            new URL("store/", location.href).href,
-            sizes,
-            () => !!sake._vnhost_net_busy?.(),
-            note,
-            first,
-            busyWidth,
-          ),
-        5000,
+      // (at once: the network worker serves the game's reads first, host/fetch-bridge.js)
+      startWarm(
+        warm,
+        new URL("store/", location.href).href,
+        sizes,
+        () => !!sake._vnhost_net_busy?.(),
+        note,
+        first,
+        busyWidth,
       );
     });
   attachInput(() => activeModule ?? sake);

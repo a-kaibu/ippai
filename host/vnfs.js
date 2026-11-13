@@ -75,8 +75,8 @@ addToLibrary({
         }
         if (from !== undefined) data = data.subarray(from, from + len);
       } else {
-        const [file, from, len, block] = ippaiRange(name);
-        data = Module.vnvmFiles?.[file] ?? ippaiFetchSync(store + '/' + file, from, len, block);
+        const [file, from, len, block, cls] = ippaiRange(name);
+        data = Module.vnvmFiles?.[file] ?? ippaiFetchSync(store + '/' + file, from, len, block, cls);
         if (data.wire !== undefined) wasmExports.vnhost_net_wire(data.wire, data.cached);
         else if (from !== undefined) data = data.subarray(from, from + len);
       }
@@ -90,5 +90,18 @@ addToLibrary({
     HEAPU32[lenp >>> 2] = data.length;
     if (ENVIRONMENT_IS_NODE && name !== '@saves') wasmExports.vnhost_net_wire(data.length, 0);
     return p;
+  },
+  // vnvm_fetch_hint(names, len): store files (newline-separated, as vnvm_fetch's) the game reads
+  // soon (crates/kura/src/vfs.rs hints): fetched onto the device by the network worker, not
+  // waited for (host/fetch-bridge.js ippaiHint). node: nothing (the store is on the disk).
+  vnvm_fetch_hint: (names, len) => {
+    if (ENVIRONMENT_IS_NODE) return;
+#if EXPORT_ES6
+    const store = new URL('../store', import.meta.url).href;
+#else
+    const store = 'store';
+#endif
+    const s = UTF8ToString(names >>> 0, len >>> 0);
+    ippaiFetchHint(s.split('\n').filter(Boolean).map((n) => store + '/' + n));
   },
 });

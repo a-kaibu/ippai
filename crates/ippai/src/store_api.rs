@@ -264,8 +264,7 @@ const DIRECT_EXPIRY: u32 = 6 * 3600;
 /// /store for it as before; 501 for a store without S3, so the page stops asking.
 async fn direct(State(s): State<Store>, Path(path): Path<String>) -> Response {
     let Some(remote) = s.remote.as_ref().as_ref() else { return StatusCode::NOT_IMPLEMENTED.into_response() };
-    let ok = path.split('/').count() == 3 && path.starts_with("chunks/") && path.bytes().all(|b| b.is_ascii_hexdigit() || b == b'/' || b.is_ascii_lowercase());
-    if !ok {
+    if !chunk_path(&path) {
         return StatusCode::NOT_FOUND.into_response();
     }
     match remote.direct(&path, DIRECT_EXPIRY).await {
@@ -284,6 +283,41 @@ async fn direct(State(s): State<Store>, Path(path): Path<String>) -> Response {
     }
 }
 
+/// Whether `path` is a chunk's path (`chunks/<ab>/<hash>`), all /store-direct answers for.
+fn chunk_path(path: &str) -> bool {
+    path.split('/').count() == 3 && path.starts_with("chunks/") && path.bytes().all(|b| b.is_ascii_hexdigit() || b == b'/' || b.is_ascii_lowercase())
+}
+
+/// Chunk paths one `POST /store-direct` may ask for.
+const DIRECT_MANY: usize = 4096;
+
+/// `POST /store-direct` with a JSON list of chunk paths: `{"<path>": {url, key, object}}` for
+/// those the page may fetch from the bucket itself, as `GET /store-direct/<path>` answers each
+/// (host/fetch-bridge.js ippaiDirectMany: a game's chunks asked for at once, so its first read
+/// of each goes to the bucket without a round trip here first). Those it leaves out are only
+/// here (or this server's disk has them: /store is quicker then). 501 without S3; 413 past
+/// DIRECT_MANY paths.
+async fn direct_many(State(s): State<Store>, axum::Json(paths): axum::Json<Vec<String>>) -> Response {
+    let Some(remote) = s.remote.as_ref().as_ref() else { return StatusCode::NOT_IMPLEMENTED.into_response() };
+    if paths.len() > DIRECT_MANY {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    let mut out = serde_json::Map::new();
+    for path in paths.iter().filter(|p| chunk_path(p)) {
+        match remote.direct(path, DIRECT_EXPIRY).await {
+            Ok(Some(d)) => {
+                let key: String = d.key.iter().map(|b| format!("{b:02x}")).collect();
+                out.insert(path.clone(), serde_json::json!({ "url": d.url, "key": key, "object": d.object.to_string() }));
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("store-direct {path}: {e}"),
+        }
+    }
+    let mut r = axum::Json(serde_json::Value::Object(out)).into_response();
+    r.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    r
+}
+
 pub fn router(local: PathBuf) -> anyhow::Result<Router> {
     let db = crate::library::Library::new(&local)?;
     let state = Store {
@@ -295,6 +329,7 @@ pub fn router(local: PathBuf) -> anyhow::Result<Router> {
     Ok(Router::new()
         .route("/store/{*path}", get(file))
         .route("/store-direct/{*path}", get(direct))
+        .route("/store-direct", axum::routing::post(direct_many))
         .with_state(state))
 }
 
@@ -545,6 +580,55 @@ mod tests {
         let none = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default() };
         let app2 = Router::new().route("/store-direct/{*path}", get(direct)).with_state(none);
         assert_eq!(get_(&app2, &format!("/store-direct/chunks/ab/{h}"), None).await.0, StatusCode::NOT_IMPLEMENTED);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// POST /store-direct: many chunks at once, each answered as GET /store-direct/<path>
+    /// answers it alone (the same key and object; the URL opens the same ciphertext); what the
+    /// bucket lacks or is not a chunk path left out; too many refused; 501 without S3.
+    #[tokio::test]
+    async fn direct_many_answers_each_as_alone() {
+        let (_fake, remote, dir) = crate::storage::gc_tests::serve(0).await;
+        let mut names = Vec::new();
+        for i in 0..5u8 {
+            let raw = vec![i; 1000 + i as usize];
+            let h = format!("{:02x}{}", 0xa0 + i, "7".repeat(30));
+            remote.put(&format!("chunks/{}/{h}", &h[..2]), &zstd::encode_all(&raw[..], 3).unwrap()).await.unwrap();
+            names.push(format!("chunks/{}/{h}", &h[..2]));
+        }
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default() };
+        let app = Router::new().route("/store-direct/{*path}", get(direct)).route("/store-direct", axum::routing::post(direct_many)).with_state(state);
+        let post = |body: String| {
+            let app = app.clone();
+            async move {
+                let r = app.oneshot(Request::post("/store-direct").header("content-type", "application/json").body(Body::from(body)).unwrap()).await.unwrap();
+                let st = r.status();
+                (st, to_bytes(r.into_body(), usize::MAX).await.unwrap())
+            }
+        };
+        let mut ask = names.clone();
+        ask.push(format!("chunks/ab/{}", "6".repeat(32)));
+        ask.push("trees/x.tsv".into());
+        let (st, body) = post(serde_json::to_string(&ask).unwrap()).await;
+        assert_eq!(st, StatusCode::OK);
+        let all: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(all.as_object().unwrap().len(), names.len(), "{all}");
+        for n in &names {
+            let (st, _, one) = get_(&app, &format!("/store-direct/{n}"), None).await;
+            assert_eq!(st, StatusCode::OK);
+            let one: serde_json::Value = serde_json::from_slice(&one).unwrap();
+            assert_eq!(all[n]["key"], one["key"]);
+            assert_eq!(all[n]["object"], one["object"]);
+            let a = reqwest::get(all[n]["url"].as_str().unwrap()).await.unwrap().bytes().await.unwrap();
+            let b = reqwest::get(one["url"].as_str().unwrap()).await.unwrap().bytes().await.unwrap();
+            assert_eq!(a, b);
+        }
+        let many = vec![names[0].clone(); DIRECT_MANY + 1];
+        assert_eq!(post(serde_json::to_string(&many).unwrap()).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+        let none = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default() };
+        let app2 = Router::new().route("/store-direct", axum::routing::post(direct_many)).with_state(none);
+        let r = app2.oneshot(Request::post("/store-direct").header("content-type", "application/json").body(Body::from("[]")).unwrap()).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_IMPLEMENTED);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

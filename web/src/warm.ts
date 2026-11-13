@@ -68,7 +68,8 @@ export type Warm = (
   width: number,
   report: (r: WarmReport) => void,
   busyWidth?: number,
-) => Worker;
+  opt?: { cls?: number; sizes?: number[] },
+) => unknown;
 
 /**
  * Starts fetching ahead (`warm`: the module's ippaiWarm) the chunks of `sizes` under `store`,
@@ -103,6 +104,8 @@ export function startWarm(
       if (r.end) clearInterval(timer);
     },
     busyWidth,
+    // (the lengths: each decoded into a buffer of its size, not 16 MiB)
+    { sizes: list.map((h) => sizes.get(h) ?? 0) },
   );
   return () => {
     Atomics.store(f, 1, 1);

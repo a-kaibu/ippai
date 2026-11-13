@@ -209,12 +209,13 @@ function ippaiCache() {
 }
 
 /**
- * "<store path>#<from>+<len>/<block>" (vfs.rs asks for blocks of a chunk so, `block` bytes
- * each): [path, from, len, block]; a plain path: [path].
+ * "<store path>#<from>+<len>/<block>[!a]" (vfs.rs asks for blocks of a chunk so, `block` bytes
+ * each; "!a": by its fetcher threads, ahead of the game's reads): [path, from, len, block,
+ * class (IPPAI_CLASS)]; a plain path: [path].
  */
 function ippaiRange(name) {
-  const m = /^(.*)#(\d+)\+(\d+)(?:\/(\d+))?$/.exec(name);
-  return m ? [m[1], +m[2], +m[3], m[4] === undefined ? undefined : +m[4]] : [name];
+  const m = /^(.*)#(\d+)\+(\d+)(?:\/(\d+))?(!a)?$/.exec(name);
+  return m ? [m[1], +m[2], +m[3], m[4] === undefined ? undefined : +m[4], m[5] ? IPPAI_CLASS.ahead : IPPAI_CLASS.game] : [name];
 }
 
 /**
@@ -241,6 +242,155 @@ function ippaiBlockKey(url, k, block) {
   return `${url}?b=${k}&s=${block}`;
 }
 
+// ---------------------------------------------------------------------------------------------
+// One scheduler for every fetch from the bucket (docs/s3-reads.md): the game's reads, the blocks
+// vfs.rs fetches ahead, the files it says the game will read soon (hints), the chunks fetched
+// onto the device while it plays (warm) and a game saved whole (save) all go through this
+// worker. The bucket (Hugging Face Storage Buckets) answers each object after 0.4-2 s whatever
+// its size and lets one address make 3000 requests in 5 minutes ("resolvers", fixed window): a
+// budget of requests is shared, each class leaving a reserve to the ones above it, and a chunk
+// asked for twice is fetched once (in this worker: the same promise; across the page's other
+// fetchers, its save: a Web Lock per chunk).
+
+/** Request classes, most urgent first. */
+var IPPAI_CLASS = { game: 0, ahead: 1, hint: 2, warm: 3, save: 4 };
+/** Requests per second the budget refills by, and holds at most. */
+var IPPAI_RATE = 9;
+var IPPAI_BURST = 40;
+/** Requests each class leaves to the classes above it; the game's may run the budget into debt
+ * (to -IPPAI_RATE * 5: a game waits for no fetch ahead's budget, and its bursts are short). */
+var IPPAI_RESERVE = [-IPPAI_RATE * 5, 0, 8, 16, 16];
+
+/**
+ * The shared budget: an Int32 lock word, then [tokens, last refill (Date.now())] as Float64,
+ * over a SharedArrayBuffer the page makes (web/src/net.ts netBudget: its own save uses it too)
+ * or this worker's own.
+ */
+var ippaiBudgetBuf;
+function ippaiBudgetInit(buf) {
+  ippaiBudgetBuf = buf ?? ippaiBudgetBuf ?? (() => {
+    const b = new (typeof SharedArrayBuffer === 'undefined' ? ArrayBuffer : SharedArrayBuffer)(24);
+    new Float64Array(b, 8, 2).set([IPPAI_BURST, Date.now()]);
+    return b;
+  })();
+  return ippaiBudgetBuf;
+}
+/** `f(values)` with the budget's lock held (a few instructions: spun for). */
+function ippaiBudgetWith(f) {
+  const buf = ippaiBudgetInit();
+  const lock = new Int32Array(buf, 0, 1);
+  const v = new Float64Array(buf, 8, 2);
+  while (Atomics.compareExchange(lock, 0, 0, 1) !== 0);
+  try {
+    return f(v);
+  } finally {
+    Atomics.store(lock, 0, 0);
+  }
+}
+/** Takes one request of class `cls` from the budget (refilled to `now`): whether it may go. */
+function ippaiTake(cls, now = Date.now()) {
+  return ippaiBudgetWith((v) => {
+    const dt = Math.max(0, now - v[1]) / 1000;
+    v[0] = Math.min(IPPAI_BURST, v[0] + dt * IPPAI_RATE);
+    v[1] = Math.max(v[1], now);
+    if (v[0] - 1 < (IPPAI_RESERVE[cls] ?? 0)) return false;
+    v[0] -= 1;
+    return true;
+  });
+}
+/** The bucket said 429: nobody goes for `ms` (the budget into debt by that much). */
+function ippaiDrain(ms) {
+  ippaiBudgetWith((v) => {
+    v[0] = Math.min(v[0], -(IPPAI_RATE * ms) / 1000);
+  });
+}
+/** Waits until `job` (its class read again each time) may make a request of the bucket. */
+async function ippaiGate(job) {
+  while (!ippaiTake(job.cls)) await new Promise((r) => setTimeout(r, 50));
+}
+
+/** The game's reads waiting in this worker now (fetches ahead give way while there are any). */
+var ippaiGameWaiting = 0;
+
+/** Chunks being fetched whole now: url -> { promise, job }. */
+var ippaiInflight = new Map();
+
+/**
+ * Chunk `url` whole, fetched once whoever asks: from this worker's memory, Cache Storage, a
+ * fetch of it already on its way (made `cls`'s if more urgent), else from the bucket (or the
+ * server). `want`: the data is needed (not only kept on the device). `size`: its decoded length
+ * when known. Classes past the game's hold the chunk's Web Lock while they fetch, so the page's
+ * own save does not fetch it again meanwhile (the game's do not wait for a lock).
+ */
+function ippaiWhole(url, { cls = 0, size, want = true, directOnly = false } = {}) {
+  const mem = ippaiRecent.get(url);
+  if (mem) return Promise.resolve({ data: mem, wire: 0, cached: 1 });
+  // (null: not from the bucket; the server then, as the asker wants it)
+  const rest = (r) => r ?? (directOnly ? null : ippaiFetchRobust(url, cls ? { giveUpMs: 60000 } : {}));
+  const going = ippaiInflight.get(url);
+  if (going) {
+    going.job.cls = Math.min(going.job.cls, cls);
+    return going.promise.then((r) => (r && want && !r.data ? ippaiWhole(url, { cls, size, want, directOnly }) : rest(r)));
+  }
+  const job = { cls };
+  const run = async () => {
+    const cache = await ippaiCache();
+    const hit = await cache?.match(url).catch(() => undefined);
+    if (hit && hit.headers.get(IPPAI_CHECKED) === '1') {
+      if (!want) return { data: null, wire: 0, cached: 1 };
+      try {
+        return { data: new Uint8Array(await hit.arrayBuffer()), wire: 0, cached: 1 };
+      } catch (_) {}
+    }
+    return ippaiDirect(url, job, size);
+  };
+  const locks = cls > 0 ? globalThis.navigator?.locks : undefined;
+  const promise = (locks ? locks.request(`ippai-chunk:${url.slice(-32)}`, run) : run()).finally(() => {
+    if (ippaiInflight.get(url)?.promise === promise) ippaiInflight.delete(url);
+  });
+  ippaiInflight.set(url, { promise, job });
+  return promise.then(rest);
+}
+
+/**
+ * Chunks a read says the game reads soon (vfs.rs `hint`: the next files of a folder, the next
+ * chunks of an archive): fetched onto the device, IPPAI_HINT_WIDTH at a time, newest hints first
+ * (a scene that moved on leaves the old ones behind). The budget's reserve keeps them from the
+ * game's requests; the line is not what limits (16 at once from the bucket: 45 MB/s), the
+ * bucket's wait for each object is.
+ */
+var IPPAI_HINT_WIDTH = 6;
+var IPPAI_HINT_MAX = 256;
+var ippaiHints = [];
+var ippaiHintsSeen = new Set();
+var ippaiHintsGoing = 0;
+function ippaiHint(urls) {
+  for (const u of urls.slice(0, IPPAI_HINT_MAX).reverse()) {
+    if (ippaiHintsSeen.has(u) || ippaiInflight.has(u) || ippaiRecent.has(u)) continue;
+    ippaiHintsSeen.add(u);
+    ippaiHints.push(u);
+  }
+  if (ippaiHintsSeen.size > 1 << 16) ippaiHintsSeen.clear();
+  // (the oldest dropped)
+  if (ippaiHints.length > IPPAI_HINT_MAX) ippaiHints.splice(0, ippaiHints.length - IPPAI_HINT_MAX);
+  void ippaiDirectMany(ippaiHints.slice(-IPPAI_DIRECT_MANY));
+  ippaiHintPump();
+}
+function ippaiHintPump() {
+  while (ippaiHintsGoing < IPPAI_HINT_WIDTH && ippaiHints.length) {
+    const u = ippaiHints.pop();
+    ippaiHintsGoing++;
+    ippaiWhole(u, { cls: IPPAI_CLASS.hint, want: false })
+      .catch(() => {})
+      .finally(() => {
+        ippaiHintsGoing--;
+        // (not this worker's memory: the game's reads find it on the device)
+        if (!ippaiInflight.has(u)) ippaiRecent.delete(u);
+        ippaiHintPump();
+      });
+  }
+}
+
 /**
  * A store chunk straight from the bucket (S3) when the server gives a way (ippai serve's
  * /store-direct: a presigned URL, the object's AES-256-GCM key and UUID): fetched, decrypted
@@ -257,12 +407,88 @@ var IPPAI_DIRECT_ASK_MS = 10000;
 var ippaiDirectInfo = new Map();
 var ippaiDirectOff = false;
 var ippaiZstd;
-async function ippaiDirect(url) {
+/** Whether `info` (from /store-direct) still works. */
+function ippaiDirectFresh(info) {
+  return !!info && Date.now() - info.at <= IPPAI_DIRECT_KEEP_MS;
+}
+
+/** A well-formed answer of /store-direct for one chunk. */
+function ippaiDirectValid(info) {
+  return !!info && typeof info.url === 'string' && /^[0-9a-f]{64}$/.test(info.key) && /^[0-9a-f-]{36}$/.test(info.object);
+}
+
+/**
+ * Asks the server how to fetch many chunks from the bucket at once (`POST store-direct`, a
+ * list of chunk paths: crates/ippai/src/store_api.rs `direct_many`), IPPAI_DIRECT_MANY at a
+ * time, and keeps the answers: a game's read of one of them then goes to the bucket at once,
+ * without first a round trip to the server (which a read of every file the game had not read
+ * yet paid before the bucket's own wait). Those the server does not name are only on the server.
+ * An older server without the route: asked one by one, as before (ippaiDirect).
+ */
+var IPPAI_DIRECT_MANY = 512;
+var ippaiDirectAsking = new Map();
+var ippaiDirectManyOff = false;
+async function ippaiDirectMany(urls) {
+  const want = urls.filter((u) => ippaiIsChunk(u) && u.includes('/store/chunks/') && !ippaiDirectFresh(ippaiDirectInfo.get(u)) && !ippaiDirectAsking.has(u));
+  if (ippaiDirectOff || ippaiDirectManyOff || !want.length || typeof fetch === 'undefined') return;
+  const runs = [];
+  for (let i = 0; i < want.length; i += IPPAI_DIRECT_MANY) {
+    const part = want.slice(i, i + IPPAI_DIRECT_MANY);
+    const at = part[0].lastIndexOf('/store/chunks/');
+    const base = part[0].slice(0, at + 1);
+    const run = (async () => {
+      let r;
+      try {
+        r = await fetch(`${base}store-direct`, {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(part.map((u) => u.slice(u.lastIndexOf('/store/chunks/') + 7))),
+          signal: AbortSignal.timeout(IPPAI_DIRECT_ASK_MS * 3),
+        });
+      } catch (_) {
+        return;
+      }
+      if (r.status === 501) ippaiDirectOff = true;
+      // (a server without the route)
+      if (r.status === 404 || r.status === 405) ippaiDirectManyOff = true;
+      if (!r.ok) return;
+      let all;
+      try {
+        all = await r.json();
+      } catch (_) {
+        return;
+      }
+      const now = Date.now();
+      if (ippaiDirectInfo.size > 20000) ippaiDirectInfo.clear();
+      for (const u of part) {
+        const info = all?.[u.slice(u.lastIndexOf('/store/chunks/') + 7)];
+        // (not named: only on the server, which then answers it as before)
+        ippaiDirectInfo.set(u, ippaiDirectValid(info) ? { url: info.url, key: info.key, object: info.object, at: now } : { none: true, at: now });
+      }
+    })();
+    for (const u of part) ippaiDirectAsking.set(u, run);
+    runs.push(run.finally(() => part.forEach((u) => ippaiDirectAsking.get(u) === run && ippaiDirectAsking.delete(u))));
+  }
+  await Promise.all(runs);
+}
+
+/**
+ * Chunk `url` from the bucket itself (as above). `job.cls` is the request's class
+ * (IPPAI_CLASS; read again while it waits for the budget: a game read that joins a fetch ahead
+ * of the same chunk makes it the game's), `size` its decoded length when known.
+ */
+async function ippaiDirect(url, job = { cls: 0 }, size) {
   const at = url.lastIndexOf('/store/chunks/');
   if (ippaiDirectOff || at < 0 || !ippaiIsChunk(url) || !globalThis.crypto?.subtle || typeof fetch === 'undefined') return null;
   const base = url.slice(0, at + 1);
   let info = ippaiDirectInfo.get(url);
-  if (!info || Date.now() - info.at > IPPAI_DIRECT_KEEP_MS) {
+  // (being asked for with others: that answer)
+  if (!ippaiDirectFresh(info) && ippaiDirectAsking.has(url)) {
+    await ippaiDirectAsking.get(url);
+    info = ippaiDirectInfo.get(url);
+  }
+  if (!ippaiDirectFresh(info)) {
     let r;
     try {
       r = await fetch(`${base}store-direct/${url.slice(at + 7)}`, { cache: 'no-store', signal: AbortSignal.timeout(IPPAI_DIRECT_ASK_MS) });
@@ -280,20 +506,22 @@ async function ippaiDirect(url) {
       if (e?.name !== 'TimeoutError' && e?.name !== 'AbortError') ippaiDirectOff = true;
       return null;
     }
-    if (typeof info.url !== 'string' || !/^[0-9a-f]{64}$/.test(info.key) || !/^[0-9a-f-]{36}$/.test(info.object)) return null;
+    if (!ippaiDirectValid(info)) return null;
     if (ippaiDirectInfo.size > 20000) ippaiDirectInfo.clear();
     ippaiDirectInfo.set(url, info);
   }
+  if (info.none) return null;
   for (let bad = 0; bad < IPPAI_BAD_CHUNK; bad++) {
     let got;
     try {
+      await ippaiGate(job);
       got = await ippaiFetchRobust(info.url, { giveUpMs: 60000 });
     } catch (_) {
       ippaiDirectInfo.delete(url);
       return null;
     }
     const plain = await ippaiOpen(info, got.data).catch(() => null);
-    const data = plain && (await ippaiUnzstd(base, plain).catch(() => null));
+    const data = plain && (await ippaiUnzstd(base, plain, size).catch(() => null));
     if (data && ippaiChunkOk(url, data)) {
       ippaiKeepRecent(url, data);
       const cache = await ippaiCache();
@@ -317,11 +545,13 @@ async function ippaiOpen(info, cipher) {
   return new Uint8Array(plain);
 }
 
-/** zstd frame `frame` decoded by sake's snapz (sake/snapz.mjs beside the store): a chunk is 16 MiB at most (4x FastCDC's 4 MiB average), 64 MiB tried once more. */
-async function ippaiUnzstd(base, frame) {
+/** zstd frame `frame` decoded by sake's snapz (sake/snapz.mjs beside the store): `size` bytes when known, else a chunk is 16 MiB at most (4x FastCDC's 4 MiB average), 64 MiB tried once more. */
+async function ippaiUnzstd(base, frame, size) {
   ippaiZstd ??= import(`${base}sake/snapz.mjs`).then((m) => m.default());
   const z = await ippaiZstd;
-  for (const cap of [16 << 20, 64 << 20]) {
+  // (the length when known, from the trees' lists: no 16 MiB buffer for every chunk at once,
+  // which several side by side on a phone add up to)
+  for (const cap of size > 0 ? [size] : [16 << 20, 64 << 20]) {
     const src = z._malloc(frame.length) >>> 0;
     const dst = z._malloc(cap) >>> 0;
     try {
@@ -346,18 +576,8 @@ async function ippaiUnzstd(base, frame) {
  * (only what is read crosses the network, kept as blocks); a server without ranges sends the
  * whole chunk, then checked and kept whole (and in this worker's memory for the next blocks).
  */
-async function ippaiFetchPart(url, from, len, block) {
-  if (from === undefined) {
-    if (ippaiIsChunk(url) && !ippaiRecent.has(url)) {
-      const cache = await ippaiCache();
-      const hit = await cache?.match(url).catch(() => undefined);
-      if (!hit) {
-        const d = await ippaiDirect(url);
-        if (d) return d;
-      }
-    }
-    return ippaiFetchRobust(url);
-  }
+async function ippaiFetchPart(url, from, len, block, cls = 0) {
+  if (from === undefined) return ippaiIsChunk(url) ? ippaiWhole(url, { cls }) : ippaiFetchRobust(url);
   const part = (d) => d.subarray(Math.min(from, d.length), Math.min(from + len, d.length));
   const mem = ippaiRecent.get(url);
   if (mem) return { data: part(mem), wire: 0, cached: 1 };
@@ -390,9 +610,10 @@ async function ippaiFetchPart(url, from, len, block) {
       return { data: all.subarray(from - first * block, from - first * block + len), wire: 0, cached: 1 };
     }
   }
-  // (from the bucket itself: the whole chunk, kept; the next blocks come from memory)
-  const direct = await ippaiDirect(url);
-  if (direct) return { ...direct, data: part(direct.data) };
+  // (from the bucket itself: the whole chunk, kept; the next blocks come from memory; one
+  // fetch of it whoever else asks for it now)
+  const direct = await ippaiWhole(url, { cls, directOnly: true });
+  if (direct?.data) return { ...direct, data: part(direct.data) };
   // (the whole blocks asked for: what is kept)
   const at = first * block;
   const r = await ippaiFetchRobust(url, { range: [at, (last + 1) * block - at] });
@@ -471,6 +692,8 @@ async function ippaiFetchRobust(url, opt = {}) {
         error = `HTTP ${response.status}`;
         // (seconds; a date form counts as none)
         after = Math.min((+(response.headers?.get?.('retry-after')) || 0) * 1000, 30000);
+        // (too many requests: every class waits, not only this one)
+        if (response.status === 429) ippaiDrain(after || 5000);
       } catch (e) {
         if (e.final) throw e;
         error = e?.message ?? e;
@@ -499,7 +722,13 @@ var IPPAI_BRIDGE_HEADER = 32;
 var IPPAI_BRIDGE_BYTES = 262144;
 
 function ippaiFetchWorker(event) {
-  const { url, shared, from, len, block } = event.data;
+  const m = event.data;
+  // (not a read: chunks the game reads soon, the budget the page shares, a warm or save run)
+  if (m.hint) return ippaiHint(m.hint);
+  if (m.budget) return void ippaiBudgetInit(m.budget);
+  if (m.warm) return void ippaiWarmRun(m.warm, (r) => event.target?.postMessage?.(r));
+  const { url, shared, from, len, block } = m;
+  const cls = m.cls ?? IPPAI_CLASS.game;
   const state = new Int32Array(shared, 0, 8);
   const output = new Uint8Array(shared, IPPAI_BRIDGE_HEADER);
   const publish = (status) => {
@@ -508,9 +737,12 @@ function ippaiFetchWorker(event) {
   };
   // (the pthread waits with a timeout: a wake-up without news tells it this worker is alive)
   const alive = setInterval(() => Atomics.notify(state, 0), 5000);
+  if (cls === IPPAI_CLASS.game) ippaiGameWaiting++;
   (async () => {
     try {
-      const { data, wire, cached } = await ippaiFetchPart(url, from, len, block);
+      const { data, wire, cached } = await ippaiFetchPart(url, from, len, block, cls).finally(() => {
+        if (cls === IPPAI_CLASS.game) ippaiGameWaiting--;
+      });
       Atomics.store(state, 2, wire);
       Atomics.store(state, 3, cached);
       Atomics.store(state, 4, data.length);
@@ -536,12 +768,14 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function ippaiFetchWorkerSource(main, more = []) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiHint, ippaiHintPump, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
     'var ippaiCacheOpen, ippaiRecent = new Map(), ippaiDirectInfo = new Map(), ippaiDirectOff = false, ippaiZstd;',
+    'var ippaiDirectAsking = new Map(), ippaiDirectManyOff = false, ippaiBudgetBuf, ippaiGameWaiting = 0, ippaiInflight = new Map();',
+    'var ippaiHints = [], ippaiHintsSeen = new Set(), ippaiHintsGoing = 0;',
     ...[...fns, ...more].map(String),
     main,
   ].join('\n');
@@ -561,25 +795,31 @@ function ippaiFetchWorkerSource(main, more = []) {
  */
 async function ippaiWarmRun(msg, report) {
   const flag = new Int32Array(msg.flag);
+  const cls = msg.cls ?? IPPAI_CLASS.warm;
   const cache = await ippaiCache();
   let next = 0, done = 0, fetched = 0, bytes = 0, failed = 0;
+  const stop = () => Atomics.load(flag, 1) !== 0;
+  // (the game waits for a read of its own: in this worker, or as the page says)
+  const busy = () => ippaiGameWaiting > 0 || Atomics.load(flag, 0) !== 0;
   const one = async (i) => {
-    while (next < msg.urls.length && !Atomics.load(flag, 1)) {
-      while (i >= (msg.busyWidth ?? 0) && Atomics.load(flag, 0) && !Atomics.load(flag, 1) && next < msg.urls.length) await new Promise((r) => setTimeout(r, 50));
-      if (next >= msg.urls.length) break;
-      const url = msg.urls[next++];
-      if (Atomics.load(flag, 1)) break;
-      const hit = await cache.match(url).catch(() => undefined);
-      if (!hit) {
-        try {
-          const d = (await ippaiDirect(url)) ?? (await ippaiFetchRobust(url, { giveUpMs: 60000 }));
+    while (next < msg.urls.length && !stop()) {
+      while (i >= (msg.busyWidth ?? 0) && busy() && !stop() && next < msg.urls.length) await new Promise((r) => setTimeout(r, 50));
+      if (next >= msg.urls.length || stop()) break;
+      const k = next++;
+      // (how to fetch the next ones from the bucket: asked for IPPAI_DIRECT_MANY at a time,
+      // a window ahead, so no fetch waits for the server's answer of its own)
+      if (k % (IPPAI_DIRECT_MANY / 2) === 0) void ippaiDirectMany(msg.urls.slice(k, k + IPPAI_DIRECT_MANY));
+      const url = msg.urls[k];
+      try {
+        const d = await ippaiWhole(url, { cls, size: msg.sizes?.[k], want: false });
+        if (!d.cached) {
           fetched++;
-          bytes += d.data.length;
-          // (not this worker's memory: the game's reads look on the device)
-          ippaiRecent.delete(url);
-        } catch (_) {
-          failed++;
+          bytes += d.data?.length ?? 0;
         }
+        // (not this worker's memory: the game's reads look on the device)
+        if (!ippaiInflight.has(url)) ippaiRecent.delete(url);
+      } catch (_) {
+        failed++;
       }
       if (++done % 16 === 0) report({ done, fetched, bytes, failed });
     }
@@ -588,16 +828,17 @@ async function ippaiWarmRun(msg, report) {
   report({ end: true, done, fetched, bytes, failed });
 }
 
-/** Starts ippaiWarmRun in a worker of its own; `report` gets its reports. The worker ends with the run. */
-function ippaiWarm(urls, flag, width, report, busyWidth = 0) {
-  const main = 'self.onmessage = (e) => ippaiWarmRun(e.data, (r) => { postMessage(r); if (r.end) close(); });';
-  const blob = new Blob([ippaiFetchWorkerSource(main, [ippaiWarmRun])], { type: 'text/javascript' });
-  const url = URL.createObjectURL(blob);
-  const w = new Worker(url);
-  URL.revokeObjectURL(url);
-  w.onmessage = (e) => report(e.data);
-  w.postMessage({ urls, flag, width, busyWidth });
-  return w;
+/**
+ * Starts ippaiWarmRun in the network worker, beside the game's reads (one scheduler: a chunk the
+ * game reads while it is being fetched ahead is fetched once, and the game's go first);
+ * `report` gets its reports. `opt.cls`: IPPAI_CLASS.save for a game saved whole, `opt.sizes`
+ * the chunks' lengths. Returns the port the reports come on.
+ */
+function ippaiWarm(urls, flag, width, report, busyWidth = 0, opt = {}) {
+  const port = ippaiFetchConnect();
+  port.onmessage = (e) => report(e.data);
+  port.postMessage({ warm: { urls, flag, width, busyWidth, cls: opt.cls, sizes: opt.sizes } });
+  return port;
 }
 if (typeof Module !== 'undefined') Module.ippaiWarm = ippaiWarm;
 
@@ -605,10 +846,13 @@ var ippaiFetchWorkerInstance;
 var ippaiFetchPort;
 function ippaiFetchConnect() {
   if (!ippaiFetchWorkerInstance) {
-    const blob = new Blob([ippaiFetchWorkerSource('self.onmessage = e => { e.data.port.onmessage = ippaiFetchWorker; };')], {type:'text/javascript'});
+    const blob = new Blob([ippaiFetchWorkerSource('self.onmessage = e => { if (e.data.port) e.data.port.onmessage = ippaiFetchWorker; else ippaiFetchWorker(e); };')], {type:'text/javascript'});
     const url = URL.createObjectURL(blob);
     ippaiFetchWorkerInstance = new Worker(url);
     URL.revokeObjectURL(url);
+    // (the page's budget of bucket requests: its own save takes from it too, web/src/net.ts)
+    const budget = typeof Module !== 'undefined' ? Module.ippaiNetBudget : undefined;
+    if (budget) ippaiFetchWorkerInstance.postMessage({ budget });
   }
   const channel = new MessageChannel();
   ippaiFetchWorkerInstance.postMessage({port:channel.port1}, [channel.port1]);
@@ -621,7 +865,7 @@ function ippaiFetchDispose() {
 
 var ippaiBridgeBuffer;
 /** `url`'s bytes (`from`, `len`: only those; ippaiFetchPart), on a thread that may block. */
-function ippaiFetchSync(url, from, len, block) {
+function ippaiFetchSync(url, from, len, block, cls) {
   if (typeof document !== 'undefined') throw new Error('synchronous reads on the page must be preloaded');
   if (!ippaiFetchPort && !ippaiFetchWorkerInstance) {
     const blob = new Blob([ippaiFetchWorkerSource('self.onmessage = ippaiFetchWorker;')], {type: 'text/javascript'});
@@ -637,7 +881,7 @@ function ippaiFetchSync(url, from, len, block) {
   Atomics.store(state, 0, 0);
   let result;
   let length = 0;
-  (ippaiFetchPort || ippaiFetchWorkerInstance).postMessage({url, shared, from, len, block});
+  (ippaiFetchPort || ippaiFetchWorkerInstance).postMessage({url, shared, from, len, block, cls});
   for (;;) {
     while (Atomics.load(state, 0) === 0) {
       if (Atomics.wait(state, 0, 0, 65000) === 'timed-out') {
@@ -663,4 +907,11 @@ function ippaiFetchSync(url, from, len, block) {
   result.wire = Atomics.load(state, 2) >>> 0;
   result.cached = Atomics.load(state, 3);
   return result;
+}
+
+/** Chunks (`urls`) a read says the game reads soon: to the network worker (ippaiHint), not waited for. */
+function ippaiFetchHint(urls) {
+  if (!urls.length) return;
+  const to = ippaiFetchPort || ippaiFetchWorkerInstance;
+  to?.postMessage({ hint: urls });
 }

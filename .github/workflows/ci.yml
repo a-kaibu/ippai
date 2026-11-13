@@ -555,6 +555,8 @@ jobs:
         run: tools/ci/no-npm.sh
       - name: Fetch ordering tests
         run: node tests/fetch-bridge.test.mjs
+      - name: Fetch scheduler tests (one budget, fetch once, batch presign, hints; tests/sched.test.mjs)
+        run: node --test tests/sched.test.mjs
       - name: Shared VFS, account bridge and node stdio tests (host/vnfs.js, host/account-bridge.js, host/node-stdio.js)
         run: node --test tests/vfs-shared.mjs tests/account-bridge.mjs tests/node-stdio.mjs
       - wait: apt

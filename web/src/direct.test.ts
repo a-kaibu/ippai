@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { blake3Hex } from "./blake3";
 import { directFetcher, isDirectInfo, limit, openSealed } from "./direct";
-import { roomFor } from "./offline";
+import { byOrder, roomFor } from "./offline";
 
 type B = Uint8Array<ArrayBuffer>;
 const urlOf = (i: RequestInfo | URL) => (typeof i === "string" ? i : i instanceof URL ? i.href : i.url);
@@ -54,6 +54,8 @@ function world(
   how: {
     direct?: (hex: string) => Response | undefined;
     bucket?: (hex: string) => Response | Promise<Response> | undefined;
+    many?: () => Response;
+    onlyServer?: string[];
   } = {},
 ) {
   const objs = new Map<string, Obj>();
@@ -65,9 +67,23 @@ function world(
     objs.set(name, { data, key, object, sealed: await seal(key, object, frame(data)) });
     return name;
   };
-  const request: typeof fetch = async (input) => {
+  const answer = (o: Obj) => ({
+    url: `https://bucket.test/${o.object}`,
+    key: toHex(o.key),
+    object: o.object,
+  });
+  const request: typeof fetch = async (input, init) => {
     const url = urlOf(input);
     asked.push(url);
+    if (url.endsWith("/store-direct") && init?.method === "POST") {
+      if (how.many) return how.many();
+      const out: Record<string, unknown> = {};
+      for (const p of JSON.parse(init.body as string) as string[]) {
+        const o = objs.get(p.slice(p.lastIndexOf("/") + 1));
+        if (o && !how.onlyServer?.includes(p.slice(-32))) out[p] = answer(o);
+      }
+      return Response.json(out);
+    }
     let m = /\/store-direct\/chunks\/[0-9a-f]{2}\/([0-9a-f]{32})$/.exec(url);
     if (m) {
       const hex = m[1]!;
@@ -201,6 +217,64 @@ describe("directFetcher", () => {
     const sealed = await seal(key, object, Uint8Array.of(1, 2, 3));
     expect(await openSealed({ url: "", key: toHex(key), object }, sealed)).toEqual(Uint8Array.of(1, 2, 3));
     await expect(openSealed({ url: "", key: toHex(key), object: randomUUID() }, sealed)).rejects.toThrow();
+  });
+});
+
+describe("directFetcher.prime", () => {
+  it("asks for many at once (512 a POST), then fetches each from the bucket without asking alone", async () => {
+    const w = world();
+    const hexes = [];
+    for (let i = 0; i < 600; i++) hexes.push(await w.add(bytes(64 + i, 100 + i)));
+    const d = directFetcher(STORE, { request: w.request, unzstd });
+    await d.prime(hexes);
+    expect(w.asked.filter((u) => u.endsWith("/store-direct")).length).toBe(2);
+    const n = w.asked.length;
+    for (const h of hexes.slice(0, 20)) expect(await d.get(h)).toEqual(w.objs.get(h)!.data);
+    expect(w.asked.slice(n).every((u) => u.startsWith("https://bucket.test/"))).toBe(true);
+    // (asked again: nothing new)
+    await d.prime(hexes);
+    expect(w.asked.filter((u) => u.endsWith("/store-direct")).length).toBe(2);
+  });
+
+  it("a chunk the answer leaves out is only on the server: null, without asking alone", async () => {
+    const w0 = world();
+    const hex = await w0.add(bytes(500, 7));
+    const w = world({ onlyServer: [hex] });
+    w.objs.set(hex, w0.objs.get(hex)!);
+    const d = directFetcher(STORE, { request: w.request, unzstd });
+    await d.prime([hex]);
+    const n = w.asked.length;
+    expect(await d.get(hex)).toBeNull();
+    expect(w.asked.length).toBe(n);
+  });
+
+  it("an older server without the route: asked one by one, as before", async () => {
+    const w = world({ many: () => new Response("", { status: 405 }) });
+    const hex = await w.add(bytes(500, 8));
+    const d = directFetcher(STORE, { request: w.request, unzstd });
+    await d.prime([hex]);
+    expect(await d.get(hex)).toEqual(w.objs.get(hex)!.data);
+    expect(w.asked.some((u) => u.includes("/store-direct/chunks/"))).toBe(true);
+    // (and not asked in batches again)
+    await d.prime([await w.add(bytes(9, 9))]);
+    expect(w.asked.filter((u) => u.endsWith("/store-direct")).length).toBe(1);
+  });
+});
+
+describe("byOrder", () => {
+  it("puts what earlier runs read first, in their order, then the rest as it was", () => {
+    expect(byOrder(["a", "b", "c", "d"], ["c", "x", "a", "c"])).toEqual(["c", "a", "b", "d"]);
+    // (a permutation of what it was given, whatever the order says: random cases)
+    let x = 5;
+    const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+    for (let run = 0; run < 300; run++) {
+      const hashes = [...new Set(Array.from({ length: rnd(30) }, () => `h${rnd(40)}`))];
+      const order = Array.from({ length: rnd(30) }, () => `h${rnd(40)}`);
+      const out = byOrder(hashes, order);
+      expect([...out].sort()).toEqual([...hashes].sort());
+      const firsts = [...new Set(order.filter((h) => hashes.includes(h)))];
+      expect(out.slice(0, firsts.length)).toEqual(firsts);
+    }
   });
 });
 

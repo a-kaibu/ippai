@@ -1,6 +1,6 @@
 // A game not yet on the device is saved to it whole before it starts (web/src/ui/SaveFirst.tsx,
 // offline.ts saveOffline, direct.ts), in Chromium on ippai serve with a small store and a bucket
-// stood in by the test (page.route: /store-direct answers with a URL on https://bucket.test and
+// stood in by the test (page.route: /store-direct answers, many at once, with a URL on https://bucket.test and
 // the object's key; the bucket answers objects sealed as crates/ippai/src/envelope.rs seals them,
 // in zstd frames, each held back 300 ms as the real one holds them ~2 s):
 // - picking the game opens the dialog, which saves it: the bucket gets many at once (more than the
@@ -141,7 +141,7 @@ const seal = (key, object, plain) => {
 
 const gChunks = await chunksOf("prefix32", "g");
 const hChunks = await chunksOf("h");
-// (a few only on the server: /store-direct says 404)
+// (a few only on the server: /store-direct leaves them out, or says 404 asked alone)
 const serverOnly = new Set([...gChunks].slice(0, 6));
 const decoded = new Map();
 // (the store keeps chunks zstd-coded and sends them so, Content-Encoding: zstd. Node 26's fetch
@@ -168,17 +168,32 @@ const browser = await chromium.launchPersistentContext(join(work, "profile"), {
 try {
   const page = browser.pages()[0] ?? (await browser.newPage());
   const objects = new Map();
-  const count = { bucket: 0, bucketNow: 0, bucketMost: 0, server: 0, serverNow: 0, serverMost: 0, serverOnlyAsked: 0 };
+  const count = { bucket: 0, bucketNow: 0, bucketMost: 0, server: 0, serverNow: 0, serverMost: 0, serverOnlyAsked: 0, many: 0, one: 0 };
+  const answer = (h) => {
+    const key = randomBytes(32);
+    const object = randomUUID();
+    objects.set(object, seal(key, object, rawFrame(decoded.get(h))));
+    return { url: `https://bucket.test/${object}`, key: key.toString("hex"), object };
+  };
+  // (many at once, as ippai serve's POST /store-direct answers: the server's own left out)
+  await page.route(/\/store-direct$/, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    count.many++;
+    const out = {};
+    for (const p of route.request().postDataJSON()) {
+      const h = p.slice(-32);
+      if (!serverOnly.has(h) && decoded.has(h)) out[p] = answer(h);
+    }
+    await route.fulfill({ json: out });
+  });
   await page.route(/\/store-direct\/chunks\//, async (route) => {
     const h = route.request().url().slice(-32);
+    count.one++;
     if (serverOnly.has(h)) {
       count.serverOnlyAsked++;
       return route.fulfill({ status: 404, body: "" });
     }
-    const key = randomBytes(32);
-    const object = randomUUID();
-    objects.set(object, seal(key, object, rawFrame(decoded.get(h))));
-    await route.fulfill({ json: { url: `https://bucket.test/${object}`, key: key.toString("hex"), object } });
+    await route.fulfill({ json: answer(h) });
   });
   await page.route(/^https:\/\/bucket\.test\//, async (route) => {
     count.bucket++;
@@ -209,7 +224,9 @@ try {
   await dialog.getByRole("button", { name: "遊ぶ", exact: true }).waitFor({ timeout: 120000 });
   if (shots) await page.screenshot({ path: join(shots, "done.png") });
   console.log(`save first: ${JSON.stringify(count)} (${gChunks.size} chunks, real zstd: ${realZstd})`);
-  assert.equal(count.serverOnlyAsked, serverOnly.size, "each chunk asked of /store-direct once");
+  // (the addresses asked for in batches: none one by one, the server's own known from them)
+  assert.ok(count.many >= 1 && count.many <= Math.ceil(gChunks.size / 256), `batches: ${count.many}`);
+  assert.equal(count.one, 0, "no chunk asked of /store-direct one by one");
   assert.equal(count.bucket, gChunks.size - serverOnly.size, "the rest from the bucket");
   assert.ok(count.bucketMost > 4, `the bucket many at once: ${count.bucketMost}`);
   assert.equal(count.server, serverOnly.size, "only the server's own chunks through /store");
