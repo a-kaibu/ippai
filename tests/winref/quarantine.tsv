@@ -1,17 +1,13 @@
 # Existing compatibility gaps, temporarily skipped with the user's approval (2026-11-12).
 # probe glob<TAB>tracking issue<TAB>reason. Probes still execute and keep artifacts.
-# Only completed, nonempty, exit-0 results matching quarantine.json can be quarantined.
-# quarantine.json records exact unknown differences (including full differing image pixels)
-# observed in Actions run 43289193614, a3af574f. A probe glob alone does not allow a skip.
-# Crashes/timeouts and new differences still fail. --quarantine-observed FILE records
-# candidate fingerprints for review; CI never automatically approves or updates them.
+# Only completed, nonempty, exit-0 results can be quarantined, and only the difference lines
+# quarantine.json accepts (a SHA-256 per line; an image line hashes both whole images). A
+# fixed line may disappear; a new or changed line fails. A probe glob alone allows nothing.
+# compare.py prints the failing quarantined probes' line hashes as "quarantine candidates"
+# (and --quarantine-observed FILE writes them): CI never approves or updates them itself.
 gdipfont-32	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
 gdipfont-64	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
 host_browsefolder-32	https://github.com/a-kaibu/ippai/issues/108	Headless folder selection and callback ordering differ from the Windows dialog.
-host_mbsecure-32	https://github.com/a-kaibu/ippai/issues/108	The Windows reference cannot load this legacy CRT probe (exit 127).
-host_mbtokens-32	https://github.com/a-kaibu/ippai/issues/108	The Windows reference cannot load this legacy CRT probe (exit 127).
-host_aclentries-32	https://github.com/a-kaibu/ippai/issues/105	The host test's empty-ACL assertion itself fails on Windows.
-host_dialogtab-32	https://github.com/a-kaibu/ippai/issues/105	The host test's initial-focus assertion itself fails on Windows.
 host_listbox-32	https://github.com/a-kaibu/ippai/issues/105	Selection, owner-draw deletion and notification semantics differ.
 host_shfileinfo-32	https://github.com/a-kaibu/ippai/issues/105	Shell display names, attributes and IsOS results differ.
 host_wininetquery-32	https://github.com/a-kaibu/ippai/issues/105	Header enumeration and the host test's pre-send status assertion differ.
@@ -19,8 +15,6 @@ loadimage-32	https://github.com/a-kaibu/ippai/issues/105	Monochrome DDB conversi
 loadimage-64	https://github.com/a-kaibu/ippai/issues/105	Monochrome DDB conversion and top-down DIB height reporting differ.
 rgnshape-32	https://github.com/a-kaibu/ippai/issues/55	Ellipse and round-rectangle region scan conversion differs.
 rgnshape-64	https://github.com/a-kaibu/ippai/issues/55	Ellipse and round-rectangle region scan conversion differs.
-user-32	https://github.com/a-kaibu/ippai/issues/105	Remaining window-message semantics differ from Windows.
-user-64	https://github.com/a-kaibu/ippai/issues/105	Remaining window-message semantics differ from Windows.
 versions-32	https://github.com/a-kaibu/ippai/issues/105	Remaining composite version comparisons and SSPI table entries differ.
 versions-64	https://github.com/a-kaibu/ippai/issues/105	Remaining composite version comparisons and SSPI table entries differ.
 d3d7state-32	https://github.com/a-kaibu/ippai/issues/105	Legacy lighting validation, depth formats and fog rasterization differ.

@@ -12,8 +12,9 @@ Line kinds (probe.h): plain lines must be equal; "ulp <n> <label> <hex>" doubles
 difference goes to --png for each one that differs); "skip ..." as the first reference line
 skips the probe. known.txt lists differences already understood: "<probe glob> <regex>  # why",
 a diff line matching it does not fail the run (it is still reported, as known).
-Issue-backed quarantine additionally requires an exact fingerprint from the sibling
-quarantine.json. --quarantine-observed FILE writes candidate fingerprints for review;
+Issue-backed quarantine additionally requires each unknown difference line to be accepted by
+the sibling quarantine.json (SHA-256 per line, images hashed whole): fixed lines may go, new
+or changed ones fail. --quarantine-observed FILE writes candidate hashes for review;
 it does not approve them or change the comparison's exit status.
 Exits 1 on any other difference, a probe missing on the sake side or a different exit code.
 """
@@ -136,14 +137,18 @@ def read_quarantine(path):
     return entries
 
 
-def quarantine_fingerprint(unknown, want_images, got_images):
-    # Include complete differing images: count/worst/first-pixel summaries alone
-    # can stay identical even when a different pixel breaks.
-    images = {name: [want_images.get(name), got_images.get(name)]
-              for name in sorted(set(want_images) | set(got_images))
-              if any(d.startswith(f"image {name}:") for d in unknown)}
-    data = json.dumps([unknown, images], sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(data.encode()).hexdigest()
+def quarantine_lines(unknown, want_images, got_images):
+    """One SHA-256 per unknown difference line. An image difference line also hashes both
+    complete images: its count/worst/first-pixel summary can stay the same while other pixels
+    change. A quarantine records the lines it accepts; a run skips only when every line it
+    has is among them (a fixed line just disappears, a new or changed one fails)."""
+    out = []
+    for d in unknown:
+        name = d[len("image "):].split(":", 1)[0] if d.startswith("image ") else None
+        images = [want_images.get(name), got_images.get(name)] if name is not None else None
+        data = json.dumps([d, images], sort_keys=True, separators=(",", ":"))
+        out.append(hashlib.sha256(data.encode()).hexdigest())
+    return out
 
 
 def quarantine_baselines(path):
@@ -155,7 +160,7 @@ def quarantine_baselines(path):
     if not isinstance(data, dict) or any(not isinstance(v, list) or not v or
             any(not isinstance(h, str) or not re.fullmatch(r"[0-9a-f]{64}", h) for h in v)
             for v in data.values()):
-        raise ValueError(f"{baseline}: expected probe names mapped to exact SHA-256 fingerprints")
+        raise ValueError(f"{baseline}: expected probe names mapped to SHA-256 hashes of accepted difference lines")
     return data
 
 
@@ -233,26 +238,30 @@ def main():
         is_known = lambda d: any(fnmatch.fnmatch(probe, g) and rx.search(d) for g, rx in known)
         unknown = [d for d in diffs if not is_known(d)]
         entry = next((q for q in quarantine if fnmatch.fnmatch(probe, q[0])), None)
-        fingerprint = quarantine_fingerprint(unknown, wi, gi)
+        lines = quarantine_lines(unknown, wi, gi)
+        accepted = set(baselines.get(probe, []))
         if entry and unknown and gexit == "0" and gl:
-            observed[probe] = fingerprint
+            observed[probe] = sorted(set(lines))
         if not diffs:
             totals["ok"] += 1
             report.append(f"- {probe}: ok")
         elif not unknown:
             totals["known"] += 1
             report.append(f"- {probe}: {len(diffs)} known differences")
-        elif entry and gexit == "0" and gl and fingerprint in baselines.get(probe, []):
+        elif entry and gexit == "0" and gl and set(lines) <= accepted:
             totals["skip"] += 1
             report.append(f"- {probe}: skipped recorded differences ({entry[1]}): {entry[2]} ({len(unknown)} differences)")
             report.extend("      " + d[:300] for d in unknown[:5])
         else:
             totals["fail"] += 1
             failed.append(probe)
-            report.append(f"- {probe}: **{len(unknown)} differences** ({len(diffs) - len(unknown)} known)")
-            report.extend("      " + d[:300] for d in unknown[:40])
-            if len(unknown) > 40:
-                report.append(f"      ... {len(unknown) - 40} more")
+            # (a quarantined probe: only the lines its quarantine does not accept)
+            shown = [d for d, h in zip(unknown, lines) if h not in accepted] if entry else unknown
+            report.append(f"- {probe}: **{len(unknown)} differences** ({len(diffs) - len(unknown)} known"
+                          + (f", {len(unknown) - len(shown)} accepted by its quarantine" if entry else "") + ")")
+            report.extend("      " + d[:300] for d in shown[:40])
+            if len(shown) > 40:
+                report.append(f"      ... {len(shown) - 40} more")
     summary = f"winref: {totals['ok']} ok, {totals['known']} with known differences, {totals['fail']} differ, {totals['skip']} skipped, {totals['stale']} stale, {totals['new']} new"
     text = summary + "\n\n" + "\n".join(report) + "\n"
     print(text)
@@ -262,6 +271,10 @@ def main():
         with open(opt["--quarantine-observed"], "w", encoding="utf-8") as f:
             json.dump(observed, f, indent=2, sort_keys=True)
             f.write("\n")
+    # (the lines of the quarantined probes that failed, for review: a candidate, never applied)
+    pending = {p: observed[p] for p in failed if p in observed}
+    if pending:
+        print("quarantine candidates (review before adding to quarantine.json): " + json.dumps(pending, sort_keys=True, separators=(",", ":")))
     sys.exit(1 if failed else 0)
 
 

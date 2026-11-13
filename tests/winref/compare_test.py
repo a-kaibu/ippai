@@ -24,7 +24,7 @@ class Quarantine(unittest.TestCase):
         self.quarantine = self.root / "quarantine.tsv"
         self.quarantine.write_text(f"old-probe-32\t{ISSUE}\tExisting compatibility gap.\n")
         self.quarantine.with_suffix(".json").write_text(json.dumps({
-            "old-probe-32": [compare.quarantine_fingerprint(["want Windows", "got  different"], {}, {})]
+            "old-probe-32": compare.quarantine_lines(["want Windows", "got  different"], {}, {})
         }))
 
     def probe(self, name="old-probe-32", result="different\n", exit="0"):
@@ -54,6 +54,29 @@ class Quarantine(unittest.TestCase):
         self.probe(result="different\nnew corruption\n")
         self.assertEqual(self.run_compare().returncode, 1)
 
+    def test_partly_fixed_probe_still_passes_and_a_changed_line_fails(self):
+        # (the accepted difference, with a line both share)
+        d_ref, d_got = self.ref / "old-probe-32", self.got / "old-probe-32"
+        self.probe(result="different\n")
+        (d_ref / "stdout.txt").write_text("Windows\nshared\n")
+        (d_got / "stdout.txt").write_text("different\nshared\n")
+        self.assertEqual(self.run_compare().returncode, 0)
+        # (a line accepted as "got  different" that now reads differently)
+        (d_got / "stdout.txt").write_text("different again\nshared\n")
+        p = self.run_compare()
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("1 accepted by its quarantine", p.stdout)
+        self.assertIn("different again", p.stdout)
+        self.assertIn("quarantine candidates", p.stdout)
+
+    def test_fewer_lines_than_accepted_are_skipped_not_failed(self):
+        accepted = compare.quarantine_lines(["want Windows", "got  different", "want two", "got  deux"], {}, {})
+        self.quarantine.with_suffix(".json").write_text(json.dumps({"old-probe-32": accepted}))
+        self.probe(result="different\n")
+        p = self.run_compare()
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("1 skipped", p.stdout)
+
     def test_missing_snapshot_does_not_allow_blanket_skip(self):
         self.probe()
         self.quarantine.with_suffix(".json").unlink()
@@ -65,8 +88,8 @@ class Quarantine(unittest.TestCase):
         new = {"frame": (2, 1, 0, ["ff0000000100"])}
         summary = [compare.image_diff("frame", want["frame"], old["frame"], None, "p")]
         self.assertEqual(summary, [compare.image_diff("frame", want["frame"], new["frame"], None, "p")])
-        self.assertNotEqual(compare.quarantine_fingerprint(summary, want, old),
-                            compare.quarantine_fingerprint(summary, want, new))
+        self.assertNotEqual(compare.quarantine_lines(summary, want, old),
+                            compare.quarantine_lines(summary, want, new))
 
     def test_new_probe_still_fails(self):
         self.probe("new-probe-32")

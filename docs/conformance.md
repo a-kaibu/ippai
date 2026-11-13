@@ -12,6 +12,11 @@ This was explicitly approved while optimizing CI; it is not a claim of Windows c
 The probes still execute and their outputs and image differences remain in the artifacts.
 Crashes, timeouts, missing/empty output, and new unrelated probes still fail. A quarantined
 probe that matches Windows is reported as passing, not skipped; remove its entry when fixed.
+`quarantine.json` accepts each difference line by its SHA-256 (an image line hashes both whole
+images): a run skips a quarantined probe only when all its lines are accepted, so a fixed line
+may disappear (a replay re-recorded further, a partial fix) while a new or changed one fails.
+A failing quarantined probe's lines are printed as "quarantine candidates" for review; CI never
+adds them itself.
 
 CI and `tests/winref/check.sh` pass `--quarantine tests/winref/quarantine.tsv` to `compare.py`.
 Omit that option for an unquarantined comparison when investigating an issue.
