@@ -310,6 +310,20 @@ pub(crate) fn music_playing(key: u32) -> bool {
     with(|d| d.bufs.get(&key).is_some_and(|b| b.playing))
 }
 
+/// Moves `key` to frame `pos` and/or starts or holds it (MCI's seek, pause, resume: mci.rs).
+pub(crate) fn music_set(key: u32, pos: Option<f64>, playing: Option<bool>) {
+    with(|d| {
+        if let Some(b) = d.bufs.get_mut(&key) {
+            if let Some(p) = pos {
+                b.pos = p.max(0.0);
+            }
+            if let Some(on) = playing {
+                b.playing = on;
+            }
+        }
+    });
+}
+
 /// Frames played of the current pass (the segment state's seek)
 pub(crate) fn music_pos(key: u32) -> Option<f64> {
     with(|d| d.bufs.get(&key).map(|b| b.pos))

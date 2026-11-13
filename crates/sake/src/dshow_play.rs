@@ -545,7 +545,7 @@ fn turn() -> Duration {
     BUFS.with(|b| b.borrow_mut().retain(|k, _| live.contains(k)));
     for k in ended {
         // (a Media Engine's movie, or a graph's)
-        if !crate::mf::ended(k) && !crate::amstream::ended(k) {
+        if !crate::mf::ended(k) && !crate::amstream::ended(k) && !crate::mci::ended(k) {
             crate::dshow::completed(k);
         }
     }

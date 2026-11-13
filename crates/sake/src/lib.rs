@@ -101,6 +101,7 @@ pub mod unity6;
 pub mod vorbis_hook;
 pub mod obj;
 mod amstream;
+mod mci;
 pub mod dshow;
 pub(crate) mod dshow_play;
 mod dshow_mpeg;
@@ -753,6 +754,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     dwrite::init();
     mf::init();
     sound::init();
+    mci::init();
     mmio::init();
     mixer::init();
     gl::init();

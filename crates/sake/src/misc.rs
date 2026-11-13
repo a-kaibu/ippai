@@ -3259,15 +3259,6 @@ fn joyGetDevCapsA(_: &mut Ctx) -> u32 {
 fn joyGetDevCapsW(_: &mut Ctx) -> u32 {
     167
 }
-fn mciSendStringA(_: &mut Ctx) -> u32 {
-    263
-}
-fn mciSendStringW(_: &mut Ctx) -> u32 {
-    263
-}
-fn mciSendCommandA(_: &mut Ctx) -> u32 {
-    263
-}
 fn midiOutGetNumDevs(_: &mut Ctx) -> u32 {
     0
 }
@@ -4507,8 +4498,8 @@ pub fn init() {
         ImageList_GetImageCount, ImageList_SetBkColor, ImageList_GetBkColor, ImageList_GetIconSize,
         ImageList_SetIconSize, ImageList_Remove, ImageList_Draw, ImageList_DrawEx, ImageList_ReplaceIcon);
     reg!("winmm"; timeGetTime, timeBeginPeriod, timeEndPeriod, timeGetDevCaps, timeGetSystemTime, timeSetEvent,
-        timeKillEvent, joyGetNumDevs, joyGetPosEx, joyGetPos, joyGetDevCapsA, joyGetDevCapsW, mciSendStringA,
-        mciSendStringW, mciSendCommandA, midiOutGetNumDevs, auxGetNumDevs);
+        timeKillEvent, joyGetNumDevs, joyGetPosEx, joyGetPos, joyGetDevCapsA, joyGetDevCapsW,
+        midiOutGetNumDevs, auxGetNumDevs);
     reg!("shlwapi"; PathStripToRootA, PathStripToRootW, PathIsUNCA, PathIsUNCW, UrlApplySchemeA, UrlApplySchemeW, UrlGetPartA, UrlGetPartW);
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathCanonicalizeA, PathCanonicalizeW, PathFindFileNameA,
