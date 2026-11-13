@@ -4,10 +4,13 @@
 // the slot ends with the newer state, the server's index names a file that is that state's bytes
 // (files are named by their content and never written over), and a third device loads exactly
 // those bytes. Also a state of the old layout (no hash, `state.<game>.<slot>`) still loads.
+// Then the server starts again with every save a week and more old: the files no index names
+// are gone (Saves::prune_states, issue #90), the ones it names and the old layout's still load.
 //
 //   node tests/savestate-slots-browser.mjs [path to ippai]   (web's node_modules installed; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -31,11 +34,15 @@ mkdirSync(web);
 writeFileSync(join(web, "index.html"), "<!doctype html><title>states</title>");
 const port = 9500 + Math.floor(Math.random() * 200) * 2;
 const base = `http://127.0.0.1:${port}/`;
-const server = spawn(bin, ["serve", "--foreground", "--web", web, "--store", join(work, "store"), "--jit", join(work, "jit"), "--listen", `127.0.0.1:${port}`, "--no-prerun"], { stdio: "inherit" });
-for (let i = 0; i < 100; i++) {
-  if (await fetch(`${base}saves/x`).then((r) => r.status === 404, () => false)) break;
-  await new Promise((r) => setTimeout(r, 300));
+async function start() {
+  const s = spawn(bin, ["serve", "--foreground", "--web", web, "--store", join(work, "store"), "--jit", join(work, "jit"), "--listen", `127.0.0.1:${port}`, "--no-prerun"], { stdio: "inherit" });
+  for (let i = 0; i < 100; i++) {
+    if (await fetch(`${base}saves/x`).then((r) => r.status === 404, () => false)) break;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return s;
 }
+let server = await start();
 
 async function device(name) {
   const ctx = await chromium.launchPersistentContext(join(work, name), { args: ["--no-proxy-server"] });
@@ -107,7 +114,25 @@ try {
   await old.ctx.close();
   await pc.ctx.close();
   await phone.ctx.close();
-  console.log(`savestate-slots-browser: ok (${orders.length} orders)`);
+
+  // a week later: the server starts and drops the files no index names
+  const hash = (text) => createHash("sha256").update(text).digest().subarray(0, 16).toString("hex");
+  const file = (text) => `${base}saves/state.g.${hash(text)}`;
+  const named = `phone ${orders.length - 1} `.repeat(1000);
+  const unnamed = [...orders.keys()].flatMap((r) => [`pc ${r} `.repeat(1000), `phone ${r} `.repeat(1000)]).filter((t) => t !== named);
+  for (const t of [named, ...unnamed]) assert.equal((await fetch(file(t))).status, 200, "every state's file is there before");
+  server.kill();
+  await new Promise((r) => server.once("exit", r));
+  const aged = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('UPDATE saves SET written_ms=written_ms-8*86400000'); c.commit()", join(work, "store", "library.sqlite3")], { stdio: "inherit" });
+  assert.equal(aged.status, 0);
+  server = await start();
+  for (let i = 0; i < 100 && (await fetch(file(unnamed[0]))).status !== 404; i++) await new Promise((r) => setTimeout(r, 100));
+  for (const t of unnamed) assert.equal((await fetch(file(t))).status, 404, `a file no index names stays: ${t.slice(0, 12)}`);
+  const later = await device("later");
+  assert.equal((await load(later.page, 0)).text, named);
+  assert.equal((await load(later.page, 3)).text, "old state");
+  await later.ctx.close();
+  console.log(`savestate-slots-browser: ok (${orders.length} orders, ${unnamed.length} unnamed files pruned)`);
 } finally {
   server.kill();
 }

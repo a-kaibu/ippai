@@ -125,8 +125,15 @@ once and never over; only the index changes, with If-Match, merged again with th
 another device wrote it meanwhile (the newer entry of each slot wins). So a slot saved from a PC
 and a phone at once never leaves the index naming a file that was replaced
 (tests/savestate-slots-browser.mjs, every order of the two uploads). States from before (no
-`hash`) are read from `<slot>.snap` / `state.<game>.<slot>`. Files no index names stay on the
-server (this browser removes its own).
+`hash`) are read from `<slot>.snap` / `state.<game>.<slot>`. This browser removes its own files
+no index names. The server removes its own (`Saves::prune_states`, when `ippai serve` starts and in
+`ippai storage gc`) once written a week ago (`--grace-days` for gc: a device uploads the file before
+the index naming it): kept is every file the index names, with S3 also the files its kept older
+revisions name (a device may still be listing one), all files of a game whose index does not
+parse, and the old layout's `state.<game>.<slot>`. With S3 the files are forgotten and their
+objects deleted by the next gc after its grace period (tests: saves.rs
+prune_states_keeps_what_an_index_names, storage.rs unnamed_state_files_leave_the_bucket,
+savestate-slots-browser.mjs restarting the server a week later).
 
 A state holds the game's own save files as they were then: loading one goes back to those.
 

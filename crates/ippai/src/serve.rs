@@ -1153,11 +1153,23 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     // this web app kept for the states it takes, older ones while states need them (apps.rs)
     let apps_dir = store.join("apps");
     std::fs::create_dir_all(&apps_dir)?;
+    let apps_dir_prune = apps_dir.clone();
     let current = crate::apps::keep(&apps_dir, &args.web).unwrap_or_else(|e| {
         eprintln!("apps: this web app not kept: {e}");
         None
     });
-    tokio::spawn(prune_apps(apps_dir.clone(), current, saves));
+    tokio::spawn({
+        let saves = saves.clone();
+        async move {
+            // (the states' files no index names first: then the apps only they were of go too)
+            match saves.prune_states(saves::STATE_GRACE).await {
+                Ok(0) => {}
+                Ok(n) => eprintln!("saves: {n} state files no index names deleted"),
+                Err(e) => eprintln!("saves: state files not pruned: {e:#}"),
+            }
+            prune_apps(apps_dir_prune, current, saves).await
+        }
+    });
     let app = Router::new()
         .route("/apps/builds", get(crate::apps::list))
         .route("/apps/{key}/{*path}", axum::routing::any(crate::apps::file))

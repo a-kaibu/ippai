@@ -83,7 +83,7 @@ async fn rustfs_encrypted_storage() -> Result<()> {
             "existing chunks must not be uploaded again"
         );
         db.connect()?.execute_batch(
-            "CREATE TABLE saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);",
+            "CREATE TABLE saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB, written_ms INTEGER);",
         )?;
         let saves = Saves {
             db: db.clone(),

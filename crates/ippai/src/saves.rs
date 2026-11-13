@@ -1,5 +1,5 @@
 //! Versioned saves; local SQLite or encrypted S3, with optimistic concurrency.
-use crate::{library::Library, storage::Storage};
+use crate::{library::Library, storage::{Storage, SAVE_REVISIONS}};
 use axum::{
     body::Bytes,
     extract::{Path, State},
@@ -11,6 +11,10 @@ use axum::{
 use rusqlite::OptionalExtension;
 use std::{path::Path as FsPath, sync::Arc};
 
+/// How long a state file no index names is kept ([`Saves::prune_states`] when the server
+/// starts): a device uploads the file before the index naming it.
+pub const STATE_GRACE: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
+
 pub struct Saves {
     pub db: Library,
     pub remote: Option<Storage>,
@@ -20,6 +24,7 @@ impl Saves {
     pub fn new(store: &FsPath) -> anyhow::Result<Arc<Self>> {
         let db = Library::new(store)?;
         db.connect()?.execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);")?;
+        written_column(&db)?;
         let remote = Storage::configured(db.clone())?;
         Ok(Arc::new(Self {
             db,
@@ -71,13 +76,107 @@ impl Saves {
             remote.put(&format!("saves/{name}/{next}"), data).await?;
         }
         let local = self.remote.is_none().then_some(data);
-        self.db.connect()?.execute("INSERT INTO saves(name,revision,data) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data", rusqlite::params![name,next,local])?;
+        self.db.connect()?.execute("INSERT INTO saves(name,revision,data,written_ms) VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data,written_ms=excluded.written_ms", rusqlite::params![name,next,local,now_ms()])?;
         if let Some(remote) = &self.remote {
             remote.prune_save(name, next)?;
         }
         Ok(true)
     }
+
+    /// Deletes the save states' files (`state.<game>.<hash>`, named by their content, see
+    /// web/src/savestate.ts) that no index of their game names, once written `grace` ago: an
+    /// index is `state.<game>.index`, its current revision and, with S3, the older ones kept
+    /// ([`SAVE_REVISIONS`]: a device may still list a state of one of them). Files of the old
+    /// layout (`state.<game>.<slot>`) are left. Returns how many went.
+    pub async fn prune_states(&self, grace: std::time::Duration) -> anyhow::Result<usize> {
+        // (one at a time with writes: an index written meanwhile is read before anything goes)
+        let _guard = self.lock.lock().await;
+        written_column(&self.db)?;
+        let rows: Vec<(String, i64, i64)> = {
+            let c = self.db.connect()?;
+            let mut q = c.prepare("SELECT name,revision,written_ms FROM saves WHERE name LIKE 'state.%'")?;
+            let v = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
+            v
+        };
+        // (None: a game with an index that did not parse, whose files all stay)
+        let mut named: std::collections::HashMap<&str, Option<std::collections::HashSet<String>>> = Default::default();
+        for (name, revision, _) in &rows {
+            let Some(("index", game)) = state_name(name) else { continue };
+            let set = named.entry(game).or_insert_with(|| Some(Default::default()));
+            let revisions = match &self.remote {
+                Some(_) => (revision - SAVE_REVISIONS + 1).max(1)..=*revision,
+                None => *revision..=*revision,
+            };
+            for r in revisions {
+                let data = match &self.remote {
+                    // (an older revision gone already: nothing it named is needed)
+                    Some(remote) => remote.get(&format!("saves/{name}/{r}")).await?.map(|d| d.to_vec()),
+                    None => self.read(name).await?.map(|(_, d)| d),
+                };
+                if let (Some(d), Some(hashes)) = (data, set.as_mut()) {
+                    if !state_hashes(&d, hashes) {
+                        *set = None;
+                    }
+                }
+            }
+        }
+        let before = now_ms() - grace.as_millis() as i64;
+        let mut gone = 0;
+        for (name, revision, written) in &rows {
+            let Some((hash, game)) = state_name(name) else { continue };
+            if !is_hash(hash) || *written >= before || named.get(game).is_some_and(|s| s.as_ref().is_none_or(|s| s.contains(hash))) {
+                continue;
+            }
+            if let Some(remote) = &self.remote {
+                let revs: Vec<String> = (1..=*revision).map(|r| format!("saves/{name}/{r}")).collect();
+                remote.forget_all(&revs)?;
+            }
+            self.db.connect()?.execute("DELETE FROM saves WHERE name=?", [name])?;
+            gone += 1;
+        }
+        Ok(gone)
+    }
 }
+
+/// Adds saves.written_ms (when a save was last written) to a database made before it; rows
+/// without one (from before, or merged from another store) count as written now.
+fn written_column(db: &Library) -> anyhow::Result<()> {
+    let c = db.connect()?;
+    let has: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('saves') WHERE name='written_ms')", [], |r| r.get(0))?;
+    if !has {
+        c.execute_batch("ALTER TABLE saves ADD COLUMN written_ms INTEGER")?;
+    }
+    c.execute("UPDATE saves SET written_ms=? WHERE written_ms IS NULL", [now_ms()])?;
+    Ok(())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+/// `state.<game>.<last>`: (last, game).
+fn state_name(name: &str) -> Option<(&str, &str)> {
+    let (rest, last) = name.strip_prefix("state.")?.rsplit_once('.')?;
+    Some((last, rest))
+}
+
+/// A state file's content name (web/src/savestate.ts stateHash: 32 lowercase hex digits).
+fn is_hash(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The hashes of the states an index (`{"states":[{"hash":..},..]}`) names, into `into`;
+/// false when it is not such an index.
+fn state_hashes(index: &[u8], into: &mut std::collections::HashSet<String>) -> bool {
+    let Some(states) = serde_json::from_slice::<serde_json::Value>(index).ok().and_then(|v| v["states"].as_array().cloned()) else { return false };
+    for s in states {
+        if let Some(h) = s["hash"].as_str() {
+            into.insert(h.to_string());
+        }
+    }
+    true
+}
+
 fn valid(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 200
@@ -156,7 +255,7 @@ mod tests {
         db.connect()
             .unwrap()
             .execute_batch(
-                "CREATE TABLE saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);",
+                "CREATE TABLE saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB, written_ms INTEGER);",
             )
             .unwrap();
         let state = Arc::new(Saves {
@@ -219,5 +318,88 @@ mod tests {
             Some((1, b"\0\xffsave".to_vec()))
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn index(hashes: &[(u32, &str)]) -> Vec<u8> {
+        let states: Vec<serde_json::Value> = hashes.iter().map(|(slot, h)| serde_json::json!({"slot": slot, "hash": h, "created": 1})).collect();
+        serde_json::to_vec(&serde_json::json!({ "states": states })).unwrap()
+    }
+
+    fn names(s: &Saves) -> std::collections::BTreeSet<String> {
+        let c = s.db.connect().unwrap();
+        let mut q = c.prepare("SELECT name FROM saves").unwrap();
+        let v = q.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        v
+    }
+
+    /// Two devices save slots of two games in turn (the file once, then the index merged with
+    /// the server's, as web/src/savestate.ts putState), a game has an index that does not
+    /// parse, and a file of the old layout: once old enough, the files no current index names
+    /// go; what an index names, the bad index's game's files and the old layout's stay; a file
+    /// written just now stays however unnamed; then saves go on.
+    #[tokio::test]
+    async fn prune_states_keeps_what_an_index_names() {
+        let dir = std::env::temp_dir().join(format!("ippai-prune-states-{}", uuid::Uuid::new_v4()));
+        let s = Saves::new(&dir).unwrap();
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let mut slots: std::collections::BTreeMap<(&str, u32), String> = Default::default();
+        let mut written = std::collections::BTreeSet::new();
+        for step in 0..60 {
+            let game = ["g", "h.x"][rnd(2) as usize];
+            let slot = rnd(4) as u32;
+            // (a state saved again with the same bytes: the same name)
+            let hash = format!("{:032x}", if rnd(5) == 0 { 7 } else { step });
+            let name = format!("state.{game}.{hash}");
+            if s.read(&name).await.unwrap().is_none() {
+                assert!(s.write(&name, 0, hash.as_bytes()).await.unwrap());
+            }
+            written.insert(name);
+            slots.insert((game, slot), hash);
+            let iname = format!("state.{game}.index");
+            let rev = s.read(&iname).await.unwrap().map_or(0, |r| r.0);
+            let list: Vec<(u32, &str)> = slots.iter().filter(|((g, _), _)| *g == game).map(|((_, k), h)| (*k, h.as_str())).collect();
+            assert!(s.write(&iname, rev, &index(&list)).await.unwrap());
+        }
+        let bad = format!("state.bad.{:032x}", 1);
+        s.write("state.bad.index", 0, b"{not json").await.unwrap();
+        s.write(&bad, 0, b"x").await.unwrap();
+        s.write("state.g.3", 0, b"old layout").await.unwrap();
+        let all = names(&s);
+        assert_eq!(s.prune_states(STATE_GRACE).await.unwrap(), 0, "nothing is old enough");
+        assert_eq!(names(&s), all);
+        s.db.connect().unwrap().execute("UPDATE saves SET written_ms=written_ms-?", [8 * 86_400_000i64]).unwrap();
+        let fresh = format!("state.g.{:032x}", 999);
+        s.write(&fresh, 0, b"uploaded, index not yet").await.unwrap();
+        let named: std::collections::BTreeSet<String> = slots.iter().map(|((g, _), h)| format!("state.{g}.{h}")).collect();
+        let gone = s.prune_states(STATE_GRACE).await.unwrap();
+        let left = names(&s);
+        let want: std::collections::BTreeSet<String> = all.iter().filter(|n| !written.contains(*n) || named.contains(*n)).cloned().chain([fresh.clone()]).collect();
+        assert_eq!(left, want);
+        assert_eq!(gone, written.len() - named.len());
+        assert!(gone > 0);
+        assert!(left.contains(&bad) && left.contains("state.g.3"));
+        for n in &named {
+            assert!(s.read(n).await.unwrap().is_some(), "{n}");
+        }
+        // (again: nothing more)
+        assert_eq!(s.prune_states(STATE_GRACE).await.unwrap(), 0);
+        // a file gone is written anew when saved again
+        let again = written.difference(&named).next().unwrap();
+        assert!(s.write(again, 0, b"again").await.unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn state_names() {
+        assert_eq!(state_name("state.g.index"), Some(("index", "g")));
+        assert_eq!(state_name("state.a.b.0123"), Some(("0123", "a.b")));
+        assert_eq!(state_name("save.g.index"), None);
+        assert!(is_hash(&"0a".repeat(16)) && !is_hash(&"0A".repeat(16)) && !is_hash("12") && !is_hash(&"g".repeat(32)));
     }
 }

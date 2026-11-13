@@ -332,7 +332,7 @@ pub(crate) mod gc_tests {
     async fn old_save_revisions_are_retired() {
         let (f, s, dir) = serve(0).await;
         let db = s.db.clone();
-        db.connect().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);").unwrap();
+        db.connect().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB, written_ms INTEGER);").unwrap();
         let saves = crate::saves::Saves { db, remote: Some(s), lock: tokio::sync::Mutex::new(()) };
         for rev in 0..20 {
             assert!(saves.write("game", rev, format!("save {rev}").as_bytes()).await.unwrap());
@@ -344,6 +344,44 @@ pub(crate) mod gc_tests {
         age_retired(s, 7_200_000);
         s.gc(std::time::Duration::from_secs(3600), None).await.unwrap();
         assert_eq!(names(&f).len() as i64, SAVE_REVISIONS);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Save states with S3 (issue #90): the index of a slot saved again 12 times, each time a
+    /// new file; the files the kept revisions of the index ([`SAVE_REVISIONS`]) name stay (a
+    /// device may still list one of them), the older ones are forgotten and, after the grace
+    /// period, deleted from the bucket; every file still named reads back.
+    #[tokio::test]
+    async fn unnamed_state_files_leave_the_bucket() {
+        let (f, s, dir) = serve(0).await;
+        let db = s.db.clone();
+        db.connect().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB, written_ms INTEGER);").unwrap();
+        let saves = crate::saves::Saves { db, remote: Some(s), lock: tokio::sync::Mutex::new(()) };
+        let hash = |i: i64| format!("{i:032x}");
+        for i in 0..12 {
+            assert!(saves.write(&format!("state.g.{}", hash(i)), 0, format!("state {i}").as_bytes()).await.unwrap());
+            let index = format!(r#"{{"states":[{{"slot":0,"hash":"{}","created":{i}}}]}}"#, hash(i));
+            assert!(saves.write("state.g.index", i, index.as_bytes()).await.unwrap());
+        }
+        saves.db.connect().unwrap().execute("UPDATE saves SET written_ms=written_ms-?", [8 * 86_400_000i64]).unwrap();
+        let before = names(&f).len();
+        assert_eq!(saves.prune_states(crate::saves::STATE_GRACE).await.unwrap(), 12 - SAVE_REVISIONS as usize);
+        for i in 0..12 {
+            let kept = i >= 12 - SAVE_REVISIONS;
+            assert_eq!(saves.read(&format!("state.g.{}", hash(i))).await.unwrap().is_some(), kept, "file {i}");
+        }
+        let s = saves.remote.as_ref().unwrap();
+        // (forgotten, not yet deleted: retired for the grace period)
+        assert_eq!(names(&f).len(), before);
+        age_retired(s, 7_200_000);
+        let r = s.gc(std::time::Duration::from_secs(3600), None).await.unwrap();
+        // (the files, and the index's revisions older than the kept ones)
+        assert_eq!(r.deleted, 2 * (12 - SAVE_REVISIONS as usize));
+        assert_eq!(names(&f), named(s));
+        *s.cache.lock().unwrap() = Default::default();
+        for i in 12 - SAVE_REVISIONS..12 {
+            assert_eq!(saves.read(&format!("state.g.{}", hash(i))).await.unwrap().unwrap().1, format!("state {i}").into_bytes());
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

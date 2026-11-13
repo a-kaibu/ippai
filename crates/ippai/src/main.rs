@@ -147,8 +147,8 @@ enum StorageCmd {
     Rotate,
     /// Rewrap an existing backup envelope without rewriting its ciphertext.
     RotateBackup { backup: uuid::Uuid },
-    /// Delete objects no longer named (replaced, old save revisions) that no kept backup
-    /// refers to, once retired for the grace period.
+    /// Delete objects no longer named (replaced, old save revisions, save states' files no
+    /// state index names) that no kept backup refers to, once retired for the grace period.
     Gc {
         #[arg(long, default_value_t = 7)]
         grace_days: u64,
@@ -177,6 +177,9 @@ fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Resul
             StorageCmd::Rotate => storage.rotate_objects(),
             StorageCmd::RotateBackup { backup } => storage.rotate_backup(backup).await,
             StorageCmd::Gc { grace_days, keep_backups } => {
+                // (save states' files no index names: forgotten, their objects retired)
+                let n = saves::Saves::new(store)?.prune_states(std::time::Duration::from_secs(grace_days * 86400)).await?;
+                println!("forgot {n} save state files no index names");
                 let r = storage.gc(std::time::Duration::from_secs(grace_days * 86400), keep_backups).await?;
                 println!("deleted {} objects, kept {} retired, dropped {} backups", r.deleted, r.kept, r.backups_dropped);
                 Ok(())
