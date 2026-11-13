@@ -151,6 +151,7 @@ pub fn data(name: &str) -> Option<u32> {
         "_environ" | "__initenv" => var(io::environ(false)),
         "_wenviron" | "__winitenv" => var(io::environ(true)),
         "_tzname" => io::tzname_array(),
+        "_timezone" => var(io::timezone() as u32),
         "_osver" => var(2600),
         "_winver" => var(0x501),
         "_winmajor" => var(5),

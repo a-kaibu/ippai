@@ -4,3 +4,5 @@ GetUserDefaultUILanguage 409
 GetConsoleCP 65001
 GetVersionEx 6.2.9200 2
 lstrcmpiA ja -1
+SPI_GETDEFAULTINPUTLANG ret 1 same as GetKeyboardLayout(0) 1
+_timezone is Bias * 60 1

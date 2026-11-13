@@ -979,7 +979,23 @@ fn _wputenv_s(c: &mut Ctx) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// time zone: UTC (the page's clock has no zone the guest should see)
+// time zone: kernel32's (GetTimeZoneInformation, localtime: k32::tz_bias, Tokyo when the code
+// page is 932, else UTC), as msvcrt's _tzset takes it from there: _timezone is UTC minus local
+// time in seconds (-32400 in Tokyo) and _tzname the zone's names in the ANSI code page. Games
+// check them: Triangle's 妄想ぷろとこる！ quits "Japan only" unless _timezone is -32400.
+
+/// _timezone: seconds to add to local time for UTC
+pub(super) fn timezone() -> i32 {
+    -(crate::k32::tz_bias() as i32)
+}
+/// the zone's standard and daylight names, as GetTimeZoneInformation's in the ANSI code page
+fn tz_names() -> [Vec<u8>; 2] {
+    if crate::k32::tz_bias() == 9 * 3600 {
+        ["東京 (標準時)", "東京 (夏時間)"].map(|n| crate::text::s2a(n))
+    } else {
+        [b"UTC".to_vec(), b"UTC".to_vec()]
+    }
+}
 
 fn _tzset(_: &mut Ctx) -> u32 {
     0
@@ -997,35 +1013,36 @@ fn __tzname(_: &mut Ctx) -> u32 {
     data("_tzname").unwrap()
 }
 pub(super) fn tzname_array() -> u32 {
-    let words = vec![b"UTC".to_vec(), b"UTC".to_vec()];
     // (the CRT's two buffers are 64 bytes each: programs may write their own names there)
     let arr = mem::heap_alloc(2 * ps(), true);
-    for (i, w) in words.iter().enumerate() {
+    for (i, w) in tz_names().iter().enumerate() {
         let s = mem::heap_alloc(64, true);
         mem::write(s, w);
         wp(arr + ps() * i as u32, s);
     }
     arr
 }
-/// _get_tzname(&len, buf, n, index)
+/// _get_tzname(&len, buf, n, index): len counts the NUL
 fn _get_tzname(c: &mut Ctx) -> u32 {
     let (plen, buf, n, i) = (c.a(0), c.a(1), c.a(2), c.a(3));
     if plen == 0 || i > 1 || (buf == 0 && n != 0) {
         set_errno(EINVAL);
         return EINVAL;
     }
-    putp(plen, 4);
+    let mut name = tz_names()[i as usize].clone();
+    name.push(0);
+    putp(plen, name.len() as u32);
     if buf == 0 {
         return 0;
     }
-    if n < 4 {
+    if (n as usize) < name.len() {
         return 34;
     }
-    mem::write(buf, b"UTC\0");
+    mem::write(buf, &name);
     0
 }
 fn _get_timezone(c: &mut Ctx) -> u32 {
-    w32(c.a(0), 0);
+    w32(c.a(0), timezone() as u32);
     0
 }
 fn _get_daylight(c: &mut Ctx) -> u32 {

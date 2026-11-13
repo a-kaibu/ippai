@@ -4059,12 +4059,15 @@ fn GetKeyboardType(c: &mut Ctx) -> u32 {
         _ => 0,
     }
 }
-fn GetKeyboardLayout(_: &mut Ctx) -> u32 {
+fn keyboard_layout() -> u32 {
     if crate::text::acp() == 932 { 0x0411_0411 } else { 0x0409_0409 }
+}
+fn GetKeyboardLayout(_: &mut Ctx) -> u32 {
+    keyboard_layout()
 }
 fn GetKeyboardLayoutList(c: &mut Ctx) -> u32 {
     if c.a(0) > 0 {
-        crate::mem::wp(c.a(1), if crate::text::acp() == 932 { 0x0411_0411 } else { 0x0409_0409 });
+        crate::mem::wp(c.a(1), keyboard_layout());
     }
     1
 }
@@ -4262,6 +4265,13 @@ fn spi(c: &mut Ctx, wide: bool) -> u32 {
             }
         }
         0x1f => crate::gdi::default_logfont(p, wide),
+        // SPI_GETDEFAULTINPUTLANG: the HKL of the default input language, as GetKeyboardLayout
+        // (Triangle's 妄想ぷろとこる！ ANDs it with 0x411 among its "Japan only" checks)
+        0x59 => {
+            if p != 0 {
+                crate::mem::wp(p, keyboard_layout());
+            }
+        }
         0x26 | 0x10 | 0x0e | 0x16 | 0x0a | 0x68 | 0x1006 | 0x100a | 0x2000 | 0x2002 | 0x1002 | 0x1012 => {
             if p != 0 {
                 w32(p, 0);

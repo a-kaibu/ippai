@@ -1,0 +1,12 @@
+SPI_GETDEFAULTINPUTLANG returns TRUE: ok
+SPI_GETDEFAULTINPUTLANG is Japanese: ok
+SPI_GETDEFAULTINPUTLANG == GetKeyboardLayout(0): ok
+GetKeyboardLayoutList has it: ok
+UI languages Japanese: ok
+lang ids Japanese: ok
+LCIDs Japanese: ok
+code pages 932: ok
+keyboard type Japanese: ok
+_timezone -9 h: ok
+_tzname Tokyo: ok
+localtime = gmtime - _timezone: ok
