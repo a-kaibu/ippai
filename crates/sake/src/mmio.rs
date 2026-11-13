@@ -16,6 +16,7 @@ const MMIOERR_CANNOTWRITE: u32 = 260;
 const MMIOERR_INVALIDFILE: u32 = 272;
 const MMIO_DIRTY: u32 = 0x1000_0000;
 const FOURCC_MEM: u32 = u32::from_le_bytes(*b"MEM ");
+const FOURCC_DOS: u32 = u32::from_le_bytes(*b"DOS ");
 const FOURCC_RIFF: u32 = u32::from_le_bytes(*b"RIFF");
 const FOURCC_LIST: u32 = u32::from_le_bytes(*b"LIST");
 
@@ -23,6 +24,10 @@ enum Data {
     File(Vec<u8>),
     /// guest memory: address, size
     Mem(u32, u32),
+    /// an open file of the game's (DOS I/O procedure, adwInfo[0]), read where it lies: the file,
+    /// the offset of position 0 in it, the length (read only; archives can be bigger than memory),
+    /// the handle (mmioClose closes it unless MMIO_FHOPEN)
+    Handle(std::sync::Arc<crate::files::File>, u64, u32, u32),
 }
 
 struct Mmio {
@@ -58,7 +63,7 @@ impl Mmio {
     fn len(&self) -> u32 {
         match &self.data {
             Data::File(v) => v.len() as u32,
-            Data::Mem(_, n) => *n,
+            Data::Mem(_, n) | Data::Handle(_, _, n, _) => *n,
         }
     }
     /// copies up to `n` bytes at the position to guest `dst`
@@ -67,6 +72,11 @@ impl Mmio {
         match &self.data {
             Data::File(v) => mem::write(dst, &v[self.pos as usize..(self.pos + n) as usize]),
             Data::Mem(a, _) => mem::copy(dst, a + self.pos, n),
+            Data::Handle(f, base, _, _) => {
+                let got = f.seek(std::io::SeekFrom::Start(base + self.pos as u64)).map_or(0, |_| f.read_into(dst, n));
+                self.pos += got;
+                return got;
+            }
         }
         self.pos += n;
         n
@@ -87,6 +97,7 @@ impl Mmio {
                 mem::copy(*a + self.pos, src, n);
                 n
             }
+            Data::Handle(..) => return 0,
         };
         self.pos += n;
         self.dirty = true;
@@ -107,6 +118,7 @@ impl Mmio {
                     w32(*a + self.pos, v);
                 }
             }
+            Data::Handle(..) => return,
         }
         self.pos += 4;
         self.dirty = true;
@@ -128,6 +140,10 @@ impl Mmio {
         Some(match &self.data {
             Data::File(v) => u32::from_le_bytes(v[off as usize..off as usize + 4].try_into().unwrap()),
             Data::Mem(a, _) => r32(a + off),
+            Data::Handle(f, base, _, _) => {
+                f.seek(std::io::SeekFrom::Start(base + off as u64))?;
+                u32::from_le_bytes(f.read_vec(4).try_into().ok()?)
+            }
         })
     }
 }
@@ -164,12 +180,13 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
             Some(v) => Data::File(v),
             None => return fail(MMIOERR_CANNOTOPEN),
         }
-    } else if name == 0 && info != 0 && r32(info + 4) == 0 && r32(info + mi.adw) != 0 {
-        // adwInfo[0]: an open file's handle, read from where it is (a RIFF in an archive)
-        let Some(v) = from_handle(r32(info + mi.adw)) else {
+    } else if name == 0 && info != 0 && matches!(r32(info + 4), 0 | FOURCC_DOS) && r32(info + mi.adw) != 0 {
+        // adwInfo[0]: an open file's handle (with no I/O procedure or the DOS one named, as
+        // RGSS2 opens Game.rgss2a), read from where it is (a RIFF in an archive)
+        let Some(d) = from_handle(r32(info + mi.adw)) else {
             return fail(MMIOERR_CANNOTOPEN);
         };
-        Data::File(v)
+        d
     } else if info != 0 && r32(info + 4) == FOURCC_MEM {
         Data::Mem(mem::rp(info + mi.buf), r32(info + mi.cch))
     } else {
@@ -206,21 +223,24 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
     }
     h
 }
-/// The RIFF at an open file's position (or the rest of the file, up to 64 MB)
-fn from_handle(h: u32) -> Option<Vec<u8>> {
+/// The RIFF at an open file's position, else the rest of the file, read in place
+fn from_handle(h: u32) -> Option<Data> {
     use std::io::SeekFrom;
     let f = crate::obj::file(h)?;
     let at = f.seek(SeekFrom::Current(0))?;
-    let tmp = mem::alloc(8)?;
-    let got = f.read_into(tmp, 8);
-    let n = if got == 8 && r32(tmp) == FOURCC_RIFF { r32(tmp + 4).saturating_add(8) } else { (f.size().saturating_sub(at)).min(64 << 20) as u32 };
-    mem::release(tmp);
+    let head = f.read_vec(8);
     f.seek(SeekFrom::Start(at))?;
-    let buf = mem::alloc(n.max(1))?;
-    let got = f.read_into(buf, n);
-    let v = mem::slice(buf, got).to_vec();
-    mem::release(buf);
-    Some(v)
+    let rest = f.size().saturating_sub(at);
+    Some(Data::Handle(f, at, handle_len(&head, rest), h))
+}
+/// The length an mmio file on a handle gets: a RIFF's (header included, within the file), else
+/// the rest of the file (up to 4 GB - 1: mmio positions are 32-bit)
+pub(crate) fn handle_len(head: &[u8], rest: u64) -> u32 {
+    let rest = rest.min(u32::MAX as u64) as u32;
+    match head {
+        [b'R', b'I', b'F', b'F', a, b, c, d, ..] => u32::from_le_bytes([*a, *b, *c, *d]).saturating_add(8).min(rest),
+        _ => rest,
+    }
 }
 
 /// I/O procedures by FOURCC (mmioInstallIOProc)
@@ -236,7 +256,7 @@ fn io_proc(name: u32, info: u32, wide: bool) -> Option<u32> {
             return Some(r32(info + 8));
         }
         let f = r32(info + 4);
-        if f != 0 && f != FOURCC_MEM {
+        if f != 0 && f != FOURCC_MEM && f != FOURCC_DOS {
             if let Some(p) = find(f) {
                 return Some(p);
             }
@@ -310,6 +330,12 @@ fn mmioClose(c: &mut Ctx) -> u32 {
     let f = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
     match f {
         Some(mut f) => {
+            // the DOS I/O procedure closes the program's file too, unless MMIO_FHOPEN (0x10)
+            if let Data::Handle(.., h) = f.data {
+                if c.a(1) & 0x10 == 0 {
+                    crate::obj::close(h);
+                }
+            }
             if f.flush() { 0 } else { MMIOERR_CANNOTWRITE }
         }
         None => MMIOERR_INVALIDFILE,
@@ -324,7 +350,7 @@ fn mmioRead(c: &mut Ctx) -> u32 {
 }
 fn mmioWrite(c: &mut Ctx) -> u32 {
     let (h, buf, n) = (c.a(0), c.a(1), c.i(2));
-    with(h, |f| if f.out.is_none() && matches!(f.data, Data::File(_)) { u32::MAX } else { f.write(buf, n.max(0) as u32) }).unwrap_or(u32::MAX)
+    with(h, |f| if f.out.is_none() && matches!(f.data, Data::File(_) | Data::Handle(..)) { u32::MAX } else { f.write(buf, n.max(0) as u32) }).unwrap_or(u32::MAX)
 }
 /// mmioSeek(h, offset, origin) -> new position
 fn mmioSeek(c: &mut Ctx) -> u32 {
@@ -426,7 +452,7 @@ fn mmioCreateChunk(c: &mut Ctx) -> u32 {
         _ => None,
     };
     with(h, |f| {
-        if f.out.is_none() && matches!(f.data, Data::File(_)) {
+        if f.out.is_none() && matches!(f.data, Data::File(_) | Data::Handle(..)) {
             return MMIOERR_CANNOTWRITE;
         }
         if let Some(id) = list {
@@ -505,5 +531,45 @@ pub fn init() {
         ("mmioStringToFOURCCW", mmioStringToFOURCCW),
     ] {
         implement("winmm", n, f);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn handle_len_riff_and_rest() {
+        // a RIFF: its size plus the 8 header bytes
+        assert_eq!(handle_len(b"RIFF\x1c\0\0\0WAVE", 36), 36);
+        // a RIFF claiming more than the file holds: the file's end
+        assert_eq!(handle_len(b"RIFF\xff\xff\xff\xff", 100), 100);
+        // anything else (an RGSS archive), or too short a head: the rest of the file
+        assert_eq!(handle_len(b"RGSSAD\0\x01", 6_617_962), 6_617_962);
+        assert_eq!(handle_len(b"RIF", 3), 3);
+        assert_eq!(handle_len(b"", 0), 0);
+        // past 4 GB: what a 32-bit position reaches (not cut to 64 MB as before)
+        assert_eq!(handle_len(b"RGSSAD\0\x03", 5 << 30), u32::MAX);
+        assert_eq!(handle_len(b"RGSSAD\0\x03", 300 << 20), 300 << 20);
+    }
+
+    proptest! {
+        #[test]
+        fn handle_len_never_passes_the_file(head in proptest::collection::vec(any::<u8>(), 0..12), rest in any::<u64>()) {
+            let n = handle_len(&head, rest);
+            prop_assert!(n as u64 <= rest);
+            if !head.starts_with(b"RIFF") || head.len() < 8 {
+                prop_assert_eq!(n as u64, rest.min(u32::MAX as u64));
+            }
+        }
+
+        #[test]
+        fn handle_len_riff_is_size_plus_header(size in any::<u32>(), rest in any::<u64>()) {
+            let mut head = b"RIFF".to_vec();
+            head.extend_from_slice(&size.to_le_bytes());
+            let n = handle_len(&head, rest);
+            prop_assert_eq!(n as u64, (size as u64 + 8).min(u32::MAX as u64).min(rest));
+        }
     }
 }

@@ -388,7 +388,7 @@ winmm:joystick	fail	1	2
 winmm:mci	fail	314	588
 winmm:mcicda	fail	107	111
 winmm:midi	fail	5	9
-winmm:mixer	ok	0	4
+winmm:mixer	ok	0	56
 winmm:mmio	crash	132	0
 winmm:timer	fail	8	88
 winmm:wave	fail	3	7513

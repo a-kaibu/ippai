@@ -3204,9 +3204,6 @@ fn midiOutGetNumDevs(_: &mut Ctx) -> u32 {
 fn auxGetNumDevs(_: &mut Ctx) -> u32 {
     0
 }
-fn mixerGetNumDevs(_: &mut Ctx) -> u32 {
-    0
-}
 
 // ---------------------------------------------------------------------------------------------
 // shlwapi (a few path helpers)
@@ -4404,7 +4401,7 @@ pub fn init() {
         ImageList_SetIconSize, ImageList_Remove, ImageList_Draw, ImageList_DrawEx, ImageList_ReplaceIcon);
     reg!("winmm"; timeGetTime, timeBeginPeriod, timeEndPeriod, timeGetDevCaps, timeGetSystemTime, timeSetEvent,
         timeKillEvent, joyGetNumDevs, joyGetPosEx, joyGetPos, joyGetDevCapsA, joyGetDevCapsW, mciSendStringA,
-        mciSendStringW, mciSendCommandA, midiOutGetNumDevs, auxGetNumDevs, mixerGetNumDevs);
+        mciSendStringW, mciSendCommandA, midiOutGetNumDevs, auxGetNumDevs);
     reg!("shlwapi"; PathStripToRootA, PathStripToRootW, PathIsUNCA, PathIsUNCW, UrlApplySchemeA, UrlApplySchemeW, UrlGetPartA, UrlGetPartW);
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathCanonicalizeA, PathCanonicalizeW, PathFindFileNameA,

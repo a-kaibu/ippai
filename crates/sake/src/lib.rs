@@ -36,6 +36,8 @@ mod host_stubs {
         std::ptr::null_mut()
     }
     #[no_mangle]
+    extern "C" fn vnvm_fetch_hint(_names: *const std::ffi::c_char, _len: usize) {}
+    #[no_mangle]
     extern "C" fn emscripten_get_now() -> f64 {
         0.0
     }
@@ -122,6 +124,7 @@ mod mmdevapi;
 mod wasapi;
 pub mod x3daudio;
 pub mod mmio;
+pub mod mixer;
 pub mod gl;
 pub mod glu;
 pub mod cryptstr;
@@ -720,6 +723,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     mf::init();
     sound::init();
     mmio::init();
+    mixer::init();
     gl::init();
     glu::init();
     smalldlls::init();

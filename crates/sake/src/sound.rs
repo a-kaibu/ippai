@@ -252,6 +252,11 @@ fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
             }
         }
     }
+    // the session volume (winmm's mixer, mixer.rs) scales all of it
+    let g = crate::mixer::SESSION.gain();
+    if g != 1.0 {
+        out.iter_mut().for_each(|x| *x *= g);
+    }
     events
 }
 
@@ -381,13 +386,9 @@ fn wave_thread(c: &mut Ctx) -> u32 {
     crate::k32::exit_thread(0)
 }
 
-/// no mixer devices (MMSYSERR_BADDEVICEID)
-fn mixerOpen(c: &mut Ctx) -> u32 {
-    crate::mem::putp(c.a(0), 0);
-    2
-}
-fn mixerGetDevCaps(_: &mut Ctx) -> u32 {
-    2
+/// Whether `h` is an open waveOut handle (mixer.rs: MIXER_OBJECTF_HWAVEOUT)
+pub(crate) fn is_wave_handle(h: u32) -> bool {
+    with(|d| d.waves.contains_key(&h))
 }
 fn waveOutGetNumDevs(_: &mut Ctx) -> u32 {
     1
@@ -1463,14 +1464,11 @@ pub fn init() {
     ] {
         implement("winmm", n, f);
     }
-    implement("winmm", "mixerOpen", mixerOpen);
     implement("winmm", "PlaySoundA", PlaySoundA);
     implement("winmm", "PlaySound", PlaySoundA);
     implement("winmm", "PlaySoundW", PlaySoundW);
     implement("winmm", "sndPlaySoundA", sndPlaySoundA);
     implement("winmm", "sndPlaySoundW", sndPlaySoundW);
-    implement("winmm", "mixerGetDevCapsA", mixerGetDevCaps);
-    implement("winmm", "mixerGetDevCapsW", mixerGetDevCaps);
     implement("dsound", "DirectSoundCreate", DirectSoundCreate);
     implement("dsound", "DirectSoundCreate8", DirectSoundCreate8);
     implement("dsound", "DirectSoundEnumerateA", DirectSoundEnumerateA);
