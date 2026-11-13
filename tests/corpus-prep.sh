@@ -118,10 +118,6 @@ if [ ! -d x ]; then
     elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qx 'Type = Cab' &&
         LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | sed '1,/^----------$/d' | grep -qiE '^Path = .*\.exe$' &&
         mkdir -p "$s.cab" && (cd "$s.cab" && LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$s" >/dev/null 2>&1) && [ -n "$(ls "$s.cab")" ]; then rm -f "$s"
-    # a WinRAR 5 self-extractor unar doesn't recognize (薔薇ノ木ニ薔薇ノ花咲ク体験版's baraRe_trial.exe),
-    # as ippai add's unpack.rs: unrar
-    elif LC_ALL=C.UTF-8 unrar lb "$s" 2>/dev/null | grep -qi '\.exe$' && mkdir -p "$s.sfx" &&
-        LC_ALL=C.UTF-8 unrar x -y "$s" "$s.sfx/" >/dev/null 2>&1 && [ -n "$(ls "$s.sfx")" ]; then rm -f "$s"
     else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx" "$s.cab"
     fi
   done
