@@ -44,6 +44,7 @@ pub mod display;
 pub mod render;
 pub mod vfs;
 pub mod fs;
+pub mod filelock;
 pub mod wrap;
 pub mod usage;
 pub mod snap;

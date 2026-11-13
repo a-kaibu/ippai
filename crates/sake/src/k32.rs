@@ -5797,11 +5797,69 @@ fn SetEndOfFile(c: &mut Ctx) -> u32 {
 fn FlushFileBuffers(_: &mut Ctx) -> u32 {
     1
 }
-fn LockFile(_: &mut Ctx) -> u32 {
-    1
+/// LockFile(h, offset low, high, length low, high): an exclusive lock, failing at once
+/// (ERROR_LOCK_VIOLATION) when the range is locked (kura::filelock has the rules).
+fn LockFile(c: &mut Ctx) -> u32 {
+    let (off, len) = (c.a(1) as u64 | (c.a(2) as u64) << 32, c.a(3) as u64 | (c.a(4) as u64) << 32);
+    lock_file(c.a(0), off, len, true, true)
 }
-fn UnlockFile(_: &mut Ctx) -> u32 {
-    1
+/// UnlockFile(h, offset low, high, length low, high)
+fn UnlockFile(c: &mut Ctx) -> u32 {
+    let (off, len) = (c.a(1) as u64 | (c.a(2) as u64) << 32, c.a(3) as u64 | (c.a(4) as u64) << 32);
+    unlock_file(c.a(0), off, len)
+}
+/// OVERLAPPED's Offset / OffsetHigh (after Internal, InternalHigh: ULONG_PTRs)
+fn ov_offset(ov: u32) -> u64 {
+    let k = mem::ps();
+    r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32
+}
+/// LockFileEx(h, flags, reserved, length low, high, overlapped): LOCKFILE_EXCLUSIVE_LOCK (2) or
+/// shared, LOCKFILE_FAIL_IMMEDIATELY (1) or wait until the range is free, at OVERLAPPED's offset.
+fn LockFileEx(c: &mut Ctx) -> u32 {
+    let (flags, ov) = (c.a(1), c.a(5));
+    if c.a(2) != 0 || ov == 0 {
+        last_error(87);
+        return 0;
+    }
+    lock_file(c.a(0), ov_offset(ov), c.a(3) as u64 | (c.a(4) as u64) << 32, flags & 2 != 0, flags & 1 != 0)
+}
+/// UnlockFileEx(h, reserved, length low, high, overlapped)
+fn UnlockFileEx(c: &mut Ctx) -> u32 {
+    let ov = c.a(4);
+    if c.a(1) != 0 || ov == 0 {
+        last_error(87);
+        return 0;
+    }
+    unlock_file(c.a(0), ov_offset(ov), c.a(2) as u64 | (c.a(3) as u64) << 32)
+}
+fn lock_file(h: u32, off: u64, len: u64, excl: bool, now: bool) -> u32 {
+    let Some(f) = obj::file(h) else {
+        last_error(6);
+        return 0;
+    };
+    let (key, me) = (f.lock_key(), f.lock_owner());
+    loop {
+        if files::LOCKS.lock().unwrap().lock(&key, me, off, len, excl) {
+            return 1;
+        }
+        if now {
+            last_error(33); // ERROR_LOCK_VIOLATION
+            return 0;
+        }
+        // (a waiting lock: another thread's unlock or close frees the range)
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+fn unlock_file(h: u32, off: u64, len: u64) -> u32 {
+    let Some(f) = obj::file(h) else {
+        last_error(6);
+        return 0;
+    };
+    if files::LOCKS.lock().unwrap().unlock(&f.lock_key(), f.lock_owner(), off, len) {
+        return 1;
+    }
+    last_error(158); // ERROR_NOT_LOCKED
+    0
 }
 fn GetFileTime(c: &mut Ctx) -> u32 {
     let Some(f) = obj::file(c.a(0)) else { return 0 };
@@ -7292,7 +7350,7 @@ pub fn init() {
         LoadResource, LockResource, FreeResource, SizeofResource,
         GetStdHandle, SetStdHandle, SetDllDirectoryA, SetDllDirectoryW, GetFileInformationByHandleEx, PathCchSkipRoot, VerifyConsoleIoHandle, SetHandleInformation, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, CreateFile2, _lopen, _lcreat, _lclose, _lread,
         _llseek, ReadFile, WriteFile, SetFilePointer, SetFilePointerEx, GetFileSize, GetFileSizeEx, SetEndOfFile,
-        FlushFileBuffers, LockFile, UnlockFile, GetFileTime, SetFileTime, GetFileInformationByHandle,
+        FlushFileBuffers, LockFile, UnlockFile, LockFileEx, UnlockFileEx, GetFileTime, SetFileTime, GetFileInformationByHandle,
         FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, GetFileAttributesA,
         GetFileAttributesW, GetFileAttributesExA, GetFileAttributesExW, SetFileAttributesA, SetFileAttributesW,
         CreateDirectoryA, CreateDirectoryW, RemoveDirectoryA, RemoveDirectoryW, DeleteFileA, DeleteFileW, MoveFileA,

@@ -22,6 +22,13 @@ pub struct File {
 
 impl Drop for File {
     fn drop(&mut self) {
+        // (closing the handle releases its byte-range locks)
+        let me = self.lock_owner();
+        let mut locks = LOCKS.lock().unwrap();
+        if !locks.is_empty() {
+            locks.release(me);
+        }
+        drop(locks);
         if self.share != 0 {
             OPEN.lock().unwrap().retain(|o| o.0 != self.share);
         }
@@ -32,7 +39,18 @@ impl Drop for File {
     }
 }
 
+/// The byte-range locks of all files (LockFileEx; kura::filelock).
+pub static LOCKS: Mutex<kura::filelock::Locks> = Mutex::new(kura::filelock::Locks::new());
+
 impl File {
+    /// Who holds a lock: the open file (one per CreateFile; DuplicateHandle shares it).
+    pub fn lock_owner(&self) -> u64 {
+        self as *const File as usize as u64
+    }
+    /// The file a lock is on (paths match without case).
+    pub fn lock_key(&self) -> String {
+        self.path.to_lowercase()
+    }
     /// FILE_FLAG_DELETE_ON_CLOSE: deleted when its last handle closes, or when the process
     /// ends with it open (as Windows closes a process's handles)
     pub fn delete_on_close(&self) {
