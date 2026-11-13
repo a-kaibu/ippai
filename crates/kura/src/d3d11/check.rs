@@ -140,9 +140,12 @@ pub fn texture(t: &Tex, init: bool) -> Result<u32, u32> {
     }
     // multisampling: 2D, one level, a sample count with quality levels (or the standard and
     // center patterns, 0xffffffff and 0xfffffffe)
+    // (a typeless format casts within its bit layout and has no multisample bits of its own:
+    // Windows takes it when the format has quality levels, as Unity 6's 2x MSAA depth texture,
+    // R32G8X24_TYPELESS with DEPTH_STENCIL | SHADER_RESOURCE, in キメセク!地雷ちゃん 体験版)
     if t.samples > 1 || t.quality > 0 {
         let levels = quality_levels(t.fmt, t.samples);
-        if t.dim != 2 || mips != 1 || levels == 0 || t.quality >= levels && !(t.samples > 1 && t.quality >= 0xffff_fffe) || t.misc & (MISC_CUBE | MISC_GENMIPS) != 0 || t.samples > 1 && !with(winfmt::MS4, BIND_RT, 0x20_0000) {
+        if t.dim != 2 || mips != 1 || levels == 0 || t.quality >= levels && !(t.samples > 1 && t.quality >= 0xffff_fffe) || t.misc & (MISC_CUBE | MISC_GENMIPS) != 0 || t.samples > 1 && !(with(winfmt::MS4, BIND_RT, 0x20_0000) || t.bind & (BIND_RT | BIND_DS) == BIND_DS && sup & 0x10_0000 != 0) {
             return bad;
         }
     }
@@ -1069,6 +1072,35 @@ mod input_layout_tests {
         assert_eq!(input_elements(&[pos(2, 0, 0, 0), ("POSITION", 1, 2, 0, 0, 0)]), Ok(())); // pos_pos1
         assert_eq!(input_elements(&[pos(2, 0, 2, 0)]), Err(E_INVALIDARG));
         assert_eq!(input_elements(&[]), Ok(()));
+    }
+
+    #[test]
+    fn typeless_multisampled_depth() {
+        let t = |fmt, bind, samples| texture(&Tex { dim: 2, w: 540, h: 960, layers: 1, mips: 1, fmt, samples, bind, ..Tex::default() }, false);
+        // (キメセク!地雷ちゃん 体験版, Unity 6: 540x960 R32G8X24_TYPELESS at 2x, DS | SRV)
+        assert!(t(19, 0x48, 2).is_ok());
+        assert!(t(44, 0x48, 4).is_ok()); // R24G8_TYPELESS
+        assert!(t(39, 0x48, 8).is_ok()); // R32_TYPELESS
+        // a shader resource alone or a render target bind stays as the format says
+        assert!(t(19, 0x8, 2).is_err());
+        assert!(t(19, 0x20, 2).is_err());
+        assert!(t(19, 0x48, 3).is_err());
+    }
+
+    proptest::proptest! {
+        /// A multisampled texture is taken only at a sample count with quality levels, and a
+        /// depth bind on a typeless format with levels is always taken (Windows casts it).
+        #[test]
+        fn multisample_needs_levels(fmt in 1u32..133, samples in 2u32..17, bind in proptest::sample::select(vec![0x8u32, 0x20, 0x28, 0x40, 0x48, 0x80])) {
+            let r = texture(&Tex { dim: 2, w: 64, h: 64, layers: 1, mips: 1, fmt, samples, bind, ..Tex::default() }, false);
+            if quality_levels(fmt, samples) == 0 {
+                proptest::prop_assert!(r.is_err());
+            }
+            let f = format(fmt).unwrap();
+            if bind == 0x48 && quality_levels(fmt, samples) > 0 && f.1 & 0x10_0000 != 0 && f.5 & (winfmt::DS | winfmt::SRV | winfmt::NONE) == winfmt::DS | winfmt::SRV | winfmt::NONE {
+                proptest::prop_assert!(r.is_ok());
+            }
+        }
     }
 
     proptest::proptest! {
