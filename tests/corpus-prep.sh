@@ -65,6 +65,18 @@ if [ ! -d x ]; then
   esac
   # names some extractors leave in Shift-JIS bytes -> UTF-8
   LC_ALL=C.UTF-8 convmv -r -f cp932 -t utf8 --notest --qfrom x.part >/dev/null 2>&1 || true
+  # an archive that holds an archive and no program (niidumafuwatoro_trial.zip: a folder with
+  # NiizumaFuwatoro_trial.zip in it): the inner archives are unpacked next to themselves
+  if [ -z "$(find x.part -type f -iname '*.exe' -print -quit)" ]; then
+    find x.part -type f \( -iname '*.zip' -o -iname '*.lzh' -o -iname '*.rar' -o -iname '*.7z' \) -print0 |
+    while IFS= read -r -d '' a; do
+      rm -rf "$a.x" && mkdir "$a.x"
+      if (cd "$a.x" && { LC_ALL=C.UTF-8 unar -q -e cp932 -o . "$OLDPWD/$a" >/dev/null 2>&1 ||
+            LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$a" >/dev/null 2>&1; }) && [ -n "$(ls "$a.x")" ]; then rm -f "$a"
+      else rm -rf "$a.x"
+      fi
+    done
+  fi
   # installers (vnbox ran the installed game): unpack InstallShield setups, Windows Installer
   # packages and Inno Setup installers here rather than run them in the browser (an installer
   # writing a 1 GB package into the in-memory file system runs out of wasm memory)
@@ -100,7 +112,13 @@ if [ -n "$exe" ] && [ -f "$exe" ]; then e=$exe
 # (the same file one folder further down: silimagi_trial.zip has dl/startup.exe)
 elif [ -n "$exe" ] && e=$(find . -ipath "*/$exe" -printf '%P\n' | head -1) && [ -n "$e" ]; then :
 else
-  e=$(find . -iname '*.exe' -printf '%s\t%P\n' | grep -aviE 'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' | sort -rn | head -1 | cut -f2)
+  # (matched without the folders the unpacking above made: setup.exe.inno/app/game.exe is the
+  # game Inno Setup installs, not a setup program)
+  e=$(find . -iname '*.exe' -printf '%s\t%P\n' |
+      while IFS=$'\t' read -r n p; do
+        k=$(sed -E 's#[^/]*\.(exe|msi|zip|lzh|rar|7z)\.(is|inno|zip|x)/##Ig' <<< "$p")
+        grep -qaiE 'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' <<< "$k" || printf '%s\t%s\n' "$n" "$p"
+      done | sort -rn | head -1 | cut -f2)
 fi
 [ -n "$e" ] || { echo "no exe" >&2; exit 3; }
 # launchers that start the game as a second process: run the game exe itself (vnvm's processes

@@ -207,7 +207,7 @@ class Prep(unittest.TestCase):
         self.s.close()
         shutil.rmtree(self.tmp)
 
-    def prep(self, sha=None, mirror_only=False, use_mirror=True, tid='t1'):
+    def prep(self, sha=None, mirror_only=False, use_mirror=True, tid='t1', exe='trial/game.exe'):
         m = os.path.join(self.tmp, 'trials.json')
         os.environ['MIRROR_ORIGIN'] = self.s.base + '/m/'
         try:
@@ -221,7 +221,7 @@ class Prep(unittest.TestCase):
         if use_mirror: env['MIRROR'] = m
         if mirror_only: env['MIRROR_ONLY'] = '1'
         self.s.log.clear()
-        r = subprocess.run(['bash', os.path.join(os.path.dirname(HERE), 'corpus-prep.sh'), tid, self.url, 'trial/game.exe', ''],
+        r = subprocess.run(['bash', os.path.join(os.path.dirname(HERE), 'corpus-prep.sh'), tid, self.url, exe, ''],
                            capture_output=True, text=True, env=env, timeout=120)
         src = os.path.join(self.tmp, 'trials', tid, 'source')
         return r, open(src).read().strip() if os.path.exists(src) else None, [p for p, _ in self.s.log]
@@ -254,6 +254,51 @@ class Prep(unittest.TestCase):
         r, src, paths = self.prep(use_mirror=False)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((src, paths), ('origin', ['/o/x_trial.zip']))
+
+
+    def serve(self, data):
+        """the trial the mirror and the site hand out from now on"""
+        self.zip = data
+        self.sha = hashlib.sha256(data).hexdigest()
+        self.s.routes['/m/' + self.sha] = (200, {}, data)
+        self.s.routes['/o/x_trial.zip'] = (200, {}, data)
+
+    @staticmethod
+    def zipped(files):
+        b = io.BytesIO()
+        with zipfile.ZipFile(b, 'w') as z:
+            for name, data in files.items(): z.writestr(name, data)
+        return b.getvalue()
+
+    def test_archive_in_archive(self):
+        # (niidumafuwatoro_trial.zip: a folder holding NiizumaFuwatoro_trial.zip and no program)
+        inner = self.zipped({'game/game.exe': b'MZ' + b'\0' * 4096, 'game/config.exe': b'MZ'})
+        self.serve(self.zipped({'trial/inner_trial.zip': inner}))
+        r, src, _ = self.prep(exe='')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip().splitlines()[-1], 'trial/inner_trial.zip.x/game/game.exe')
+        x = os.path.join(self.tmp, 'trials', 't1', 'x', 'trial')
+        self.assertEqual(sorted(os.listdir(x)), ['inner_trial.zip.x'])  # (the inner archive is gone)
+
+    def test_game_inside_unpacked_setup(self):
+        # (imo-totokku_trial.zip: setup.exe, unpacked to setup.exe.inno/app/game.exe; the
+        # unpacked folder's name doesn't make the game a setup program). A setup.exe that is a
+        # self-extracting zip is unpacked the same way, to setup.exe.zip/.
+        setup = b'MZ' + b'\0' * 64 + self.zipped({'app/sister_trial.eXe': b'MZ' + b'\0' * 4096,
+                                                   'app/tools/krkr.eXe': b'MZ' + b'\0' * 8192,
+                                                   'app/unins000.exe': b'MZ' + b'\0' * 9000})
+        self.serve(self.zipped({'setup.exe': setup}))
+        r, src, _ = self.prep(exe='')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip().splitlines()[-1], 'setup.exe.zip/app/sister_trial.eXe')
+
+    def test_tools_still_skipped(self):
+        # (the biggest exe in a tools/ folder or named setup is still not the game)
+        self.serve(self.zipped({'g/game.exe': b'MZ' + b'\0' * 100, 'g/tools/big.exe': b'MZ' + b'\0' * 9000,
+                                'g/Setup.exe': b'MZ' + b'\0' * 9000}))
+        r, src, _ = self.prep(exe='')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip().splitlines()[-1], 'g/game.exe')
 
 
 @unittest.skipUnless(os.environ.get('MIRROR_LIVE') == '1', 'MIRROR_LIVE=1 reads the real catalog')
