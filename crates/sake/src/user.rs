@@ -6891,7 +6891,7 @@ fn default_button(c: &mut Ctx, dlg: u32) -> (u32, u32) {
     let focused = with(|s| {
         let w = s.wins.get(&s.focus)?;
         let button = s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button"));
-        (w.parent == dlg && button && w.style & 0xf == 1).then(|| (w.id & 0xffff, s.focus))
+        (descends(s, dlg, s.focus) && button && w.style & 0xf == 1).then(|| (w.id & 0xffff, s.focus))
     });
     if let Some(f) = focused {
         return f;
@@ -6911,6 +6911,22 @@ fn def_button(dlg: u32) -> Option<(u32, u32)> {
             .find(|k| s.wins.get(k).is_some_and(|w| s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.style & 0xf == 1))
             .map(|k| (s.wins[&k].id & 0xffff, k))
     })
+}
+
+/// h is a child window (WS_CHILD all the way) inside dlg, at any depth: IsChild
+fn descends(s: &State, dlg: u32, mut h: u32) -> bool {
+    for _ in 0..64 {
+        match s.wins.get(&h) {
+            Some(w) if w.style & 0x4000_0000 != 0 => {
+                if w.parent == dlg {
+                    return true;
+                }
+                h = w.parent;
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// DM_GETDEFID's button: the first BS_DEFPUSHBUTTON among the children in z-order, looking
@@ -7137,7 +7153,8 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
                 break 0;
             }
             Some(m) => {
-                let mine = m.hwnd == dlg || with(|s| s.wins.get(&m.hwnd).is_some_and(|w| w.parent == dlg));
+                // (the dialog or any control inside it, also in a page dialog: IsDialogMessage's IsChild)
+                let mine = m.hwnd == dlg || with(|s| descends(s, dlg, m.hwnd));
                 if m.msg == 0x100 && mine && (m.w == 0x0d || m.w == 0x1b) {
                     let (id, b) = if m.w == 0x0d { default_button(c, dlg) } else { (2, dlg_item(dlg, 2)) };
                     send(c, dlg, 0x111, id, b);

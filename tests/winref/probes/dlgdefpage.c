@@ -2,7 +2,8 @@
  * (DS_CONTROL, WS_EX_CONTROLPARENT) whose buttons include the BS_DEFPUSHBUTTON (姦淫特急『松葉』
  * 体験版's installer). What DefDlgProc answers for the outer dialog with the page visible,
  * hidden, disabled and without WS_EX_CONTROLPARENT, and which WM_COMMAND the outer dialog gets
- * for Enter through the modal loop.
+ * for Enter through the modal loop, also with the focus on the page's default button and on a
+ * plain one.
  * libs: -luser32 */
 #include "../probe.h"
 
@@ -53,6 +54,8 @@ static INT_PTR CALLBACK outer_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_APP: {
         /* Enter, to whatever has the focus, through the modal loop's IsDialogMessage */
+        if (variant == 4) SetFocus(GetDlgItem(page, 0x3f0));
+        if (variant == 5) SetFocus(GetDlgItem(page, 0x3f1));
         HWND f = GetFocus();
         if (!f) f = h;
         PostMessageA(f, WM_KEYDOWN, VK_RETURN, 0x001c0001);
@@ -75,8 +78,8 @@ static INT_PTR CALLBACK outer_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 }
 
 int main(void) {
-    static const char *names[] = { "visible page", "hidden page", "disabled page", "no WS_EX_CONTROLPARENT" };
-    for (variant = 0; variant < 4; variant++) {
+    static const char *names[] = { "visible page", "hidden page", "disabled page", "no WS_EX_CONTROLPARENT", "focus on the default button", "focus on a plain button" };
+    for (variant = 0; variant < 6; variant++) {
         WORD buf[64];
         what = names[variant];
         got_id = got_lp = step = 0;
