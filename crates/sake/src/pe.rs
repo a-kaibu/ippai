@@ -513,7 +513,27 @@ fn find_entry(root: u32, dir: u32, id: &ResId) -> Option<u32> {
     None
 }
 
-/// The data entry of a resource in language `lang` (None or LANG_NEUTRAL 0: the first one), or
+/// Which of a resource's languages (`langs`, in the directory's order) a lookup without a
+/// language takes, as Windows' (and Wine's) resource loader: LANG_NEUTRAL itself, the UI
+/// language `ui`, its primary language with SUBLANG_NEUTRAL, English (US), else the first one.
+/// A launcher with Chinese (0x404, 0x804), English and Japanese string tables showed its
+/// buttons in Chinese when the first language was taken.
+pub(crate) fn pick_lang(langs: &[u32], ui: u32) -> Option<usize> {
+    [0, ui, ui & 0x3ff, 0x409]
+        .iter()
+        .find_map(|want| langs.iter().position(|l| l == want))
+        .or(if langs.is_empty() { None } else { Some(0) })
+}
+
+/// The entry (data entry offset, or a subdirectory with the high bit) of the language
+/// pick_lang takes in the language directory `langs`.
+fn neutral_entry(root: u32, langs: u32) -> Option<u32> {
+    let ids = dir_ids(root, langs);
+    let l: Vec<u32> = ids.iter().map(|(id, _)| if let ResId::Int(v) = id { *v } else { u32::MAX }).collect();
+    pick_lang(&l, crate::k32::lcid()).map(|i| ids[i].1)
+}
+
+/// The data entry of a resource in language `lang` (None or LANG_NEUTRAL 0: pick_lang's), or
 /// the error Windows gives: ERROR_RESOURCE_TYPE/NAME/LANG_NOT_FOUND (1813/1814/1815).
 pub fn find_resource_lang(module: u32, ty: &ResId, name: &ResId, lang: Option<u32>) -> Result<u32, u32> {
     let root = with(module, |m| m.resources).unwrap_or(0);
@@ -524,7 +544,7 @@ pub fn find_resource_lang(module: u32, ty: &ResId, name: &ResId, lang: Option<u3
     let n = find_entry(root, root + (t & 0x7fff_ffff), name).filter(|n| n & 0x8000_0000 != 0).ok_or(1814u32)?;
     let langs = root + (n & 0x7fff_ffff);
     let e = match lang {
-        None | Some(0) => r32(langs + 16 + 4),
+        None | Some(0) => neutral_entry(root, langs).ok_or(1815u32)?,
         Some(l) => find_entry(root, langs, &ResId::Int(l)).ok_or(1815u32)?,
     };
     if e & 0x8000_0000 != 0 {
@@ -548,9 +568,8 @@ pub fn find_resource(module: u32, ty: &ResId, name: &ResId) -> Option<u32> {
         return None;
     }
     let langs = root + (n & 0x7fff_ffff);
-    // the first language (Japanese builds have one)
-    let first = r32(langs + 16 + 4);
-    (first & 0x8000_0000 == 0).then_some(root + first)
+    let e = neutral_entry(root, langs)?;
+    (e & 0x8000_0000 == 0).then_some(root + e)
 }
 
 /// The first resource of type `ty` (any name).
@@ -569,8 +588,8 @@ pub fn first_resource(module: u32, ty: u32) -> Option<u32> {
         return None;
     }
     let langs = root + (n & 0x7fff_ffff);
-    let first = r32(langs + 16 + 4);
-    (first & 0x8000_0000 == 0).then_some(root + first)
+    let e = neutral_entry(root, langs)?;
+    (e & 0x8000_0000 == 0).then_some(root + e)
 }
 
 /// The ids of directory `dir`'s entries, in their order (names first, as linkers sort them).
@@ -1150,5 +1169,46 @@ mod wine_tests {
         head[0x40..0x60].copy_from_slice(b"This program cannot be run in DO");
         assert!(!super::wine_stub(&head));
         assert!(!super::wine_stub(b"MZ"));
+    }
+}
+
+#[cfg(test)]
+mod lang_tests {
+    use super::pick_lang;
+    use proptest::prelude::*;
+
+    #[test]
+    fn neutral_lookups_take_the_ui_language_before_the_first() {
+        // 虜ノ焔 体験版's launcher: string tables in 0x404, 0x409, 0x411, 0x804 (sorted)
+        assert_eq!(pick_lang(&[0x404, 0x409, 0x411, 0x804], 0x411), Some(2));
+        // no Japanese: English (US), then the first
+        assert_eq!(pick_lang(&[0x404, 0x409, 0x804], 0x411), Some(1));
+        assert_eq!(pick_lang(&[0x404, 0x804], 0x411), Some(0));
+        // LANG_NEUTRAL itself first; the primary language with SUBLANG_NEUTRAL before English
+        assert_eq!(pick_lang(&[0x409, 0x411, 0], 0x411), Some(2));
+        assert_eq!(pick_lang(&[0x409, 0x11], 0x411), Some(1));
+        // one language (most Japanese builds), none
+        assert_eq!(pick_lang(&[0x411], 0x409), Some(0));
+        assert_eq!(pick_lang(&[], 0x411), None);
+    }
+
+    proptest! {
+        /// the reference order, written out: the first of [neutral, ui, ui's primary, en-US]
+        /// that is there, else index 0; always an index of `langs`
+        #[test]
+        fn pick_matches_the_lookup_order(langs in proptest::collection::vec(prop_oneof![Just(0u32), Just(0x11), Just(0x404), Just(0x409), Just(0x411), Just(0x804), 0u32..0x10000], 0..8), ui in prop_oneof![Just(0x411u32), Just(0x409), Just(0x804), 0u32..0x10000]) {
+            let got = pick_lang(&langs, ui);
+            let mut want = None;
+            'o: for w in [0, ui, ui & 0x3ff, 0x409] {
+                for (i, l) in langs.iter().enumerate() {
+                    if *l == w { want = Some(i); break 'o; }
+                }
+            }
+            if want.is_none() && !langs.is_empty() { want = Some(0); }
+            prop_assert_eq!(got, want);
+            if let Some(i) = got { prop_assert!(i < langs.len()); }
+            // the UI language is taken whenever it is there and no LANG_NEUTRAL entry is
+            if langs.contains(&ui) && !langs.contains(&0) { prop_assert_eq!(langs[got.unwrap()], ui); }
+        }
     }
 }

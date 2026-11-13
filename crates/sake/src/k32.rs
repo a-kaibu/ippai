@@ -3780,7 +3780,7 @@ fn GetOEMCP(_: &mut Ctx) -> u32 {
 fn IsValidCodePage(c: &mut Ctx) -> u32 {
     ok(matches!(c.a(0), 932 | 936 | 949 | 950 | 1250 | 1251 | 1252 | 65001 | 437 | 850))
 }
-fn lcid() -> u32 {
+pub(crate) fn lcid() -> u32 {
     match crate::text::acp() {
         932 => 0x411,
         936 => 0x804,
