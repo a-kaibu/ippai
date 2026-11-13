@@ -22,6 +22,7 @@ const RT_SURFACE: u32 = 1;
 const RT_VOLUME: u32 = 2;
 const RT_TEXTURE: u32 = 3;
 const RT_VOLUMETEX: u32 = 4;
+const RT_CUBETEX: u32 = 5;
 const RT_VB: u32 = 6;
 const RT_IB: u32 = 7;
 
@@ -52,6 +53,9 @@ pub struct Surface {
     /// unlock then uploads only the box that changed (see changed_box)
     pub full_locks: u32,
     pub shadow: Option<Box<[u8]>>,
+    /// a cube texture's face (D3DCUBEMAP_FACES): its layer of the cube's page texture, which
+    /// gets the pixels with gpu::WRITE_TEXTURE2
+    pub face: Option<u32>,
 }
 
 pub struct Texture {
@@ -65,6 +69,16 @@ pub struct Texture {
     pub lod: u32,
     /// a volume texture's depth (its levels are [`Volume`]s; 0: a 2D texture of surfaces)
     pub depth: u32,
+    /// a cube texture's faces (6; 0: not a cube): `levels` are the surfaces face by face, each
+    /// face's levels together (face * levels per face + level)
+    pub faces: u32,
+}
+
+impl Texture {
+    /// Mip levels (of each face, for a cube).
+    pub fn level_count(&self) -> u32 {
+        self.levels.len() as u32 / self.faces.max(1)
+    }
 }
 
 /// A level of a volume texture: its texels in guest memory (made on first lock), slices of
@@ -815,6 +829,7 @@ fn new_surface(d: &mut D3d, w: u32, h: u32, f: u32, pool: u32, usage: u32, conta
         pending: None,
         full_locks: 0,
         shadow: None,
+        face: None,
     };
     d.new_obj(IF_SURFACE, container, Data::Surface(s))
 }
@@ -1110,13 +1125,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         23 => create_texture(d, a(1), a(2), a(3), a(4), a(5), a(6), a(7)),
         24 => create_volume_texture(d, [a(1), a(2), a(3)], a(4), a(5), a(6), a(7), a(8)),
-        25 => {
-            if d.trace {
-                eprintln!("d3d9: cube textures not supported");
-            }
-            wrp(a(6), 0, 0);
-            D3DERR_NOTAVAILABLE
-        }
+        25 => create_cube_texture(d, a(1), a(2), a(3), a(4), a(5), a(6)),
         26 | 27 => {
             let (len, usage, f, pool, out) = (a(1), a(2), a(3), a(4), a(5));
             let mem = d.guest_alloc(len.max(16));
@@ -1776,7 +1785,7 @@ unsafe fn create_texture(d: &mut D3d, w: u32, h: u32, levels: u32, usage: u32, f
     let max = 32 - w.max(h).leading_zeros();
     let levels = if usage & 0x400 != 0 { 1 } else if levels == 0 { max } else { levels.min(max) };
     let gpu = if pool == POOL_SYSTEMMEM || pool == POOL_SCRATCH { 0 } else { gpu_texture(w, h, levels, f, usage) };
-    let tex = Texture { w, h, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0, depth: 0 };
+    let tex = Texture { w, h, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0, depth: 0, faces: 0 };
     let addr = d.new_obj(IF_TEXTURE, 0, Data::Texture(tex));
     let id = d.id_of(addr);
     let mut lv = Vec::new();
@@ -1825,7 +1834,7 @@ unsafe fn create_volume_texture(d: &mut D3d, size: [u32; 3], levels: u32, usage:
         gpu::record(|b| b.cmd(&[gpu::CREATE_TEXTURE2, id, w, h, depth, levels, fmt::page_format(f), 1]));
         id
     };
-    let tex = Texture { w, h, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0, depth };
+    let tex = Texture { w, h, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0, depth, faces: 0 };
     let addr = d.new_obj(IF_VOLUMETEX, 0, Data::Texture(tex));
     let id = d.id_of(addr);
     let mut lv = Vec::new();
@@ -1840,6 +1849,60 @@ unsafe fn create_volume_texture(d: &mut D3d, size: [u32; 3], levels: u32, usage:
             o.refs = 0;
         }
         lv.push(vid);
+    }
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+        t.levels = lv;
+    }
+    wrp(out, 0, addr);
+    S_OK
+}
+
+/// CreateCubeTexture(edge, levels, usage, format, pool, out): six faces of `edge` x `edge`, each
+/// a chain of surfaces (IDirect3DSurface9) whose container is the cube. The page texture is a
+/// 2D texture of six layers, one per face in D3DCUBEMAP_FACES order (+X -X +Y -Y +Z -Z), which
+/// is WebGPU's cube layer order: a cube sampler reads it through a cube view (render::d3d
+/// slot_view). No render target or depth-stencil cubes yet (refused, so a game sees an error,
+/// not a NULL it would call).
+unsafe fn create_cube_texture(d: &mut D3d, edge: u32, levels: u32, usage: u32, f: u32, pool: u32, out: u32) -> u32 {
+    if out == 0 || edge == 0 || !fmt::supported(f) || fmt::is_depth(f) || usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL) != 0 {
+        if d.trace {
+            eprintln!("d3d9: CreateCubeTexture {edge} format {f:#x} usage {usage:#x}: not supported");
+        }
+        if out != 0 {
+            wrp(out, 0, 0);
+        }
+        return if usage & USAGE_RENDERTARGET != 0 && fmt::supported(f) { D3DERR_NOTAVAILABLE } else { D3DERR_INVALIDCALL };
+    }
+    let max = 32 - edge.leading_zeros();
+    let levels = if usage & 0x400 != 0 { 1 } else if levels == 0 { max } else { levels.min(max) };
+    let gpu = if pool == POOL_SYSTEMMEM || pool == POOL_SCRATCH {
+        0
+    } else {
+        let id = gpu_id();
+        gpu::record(|b| b.cmd(&[gpu::CREATE_TEXTURE2, id, edge, edge, 6, levels, fmt::page_format(f), 0]));
+        id
+    };
+    let tex = Texture { w: edge, h: edge, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0, depth: 0, faces: 6 };
+    let addr = d.new_obj(IF_CUBE, 0, Data::Texture(tex));
+    let id = d.id_of(addr);
+    let mut lv = Vec::new();
+    for face in 0..6 {
+        for l in 0..levels {
+            let e = (edge >> l).max(1);
+            let s = new_surface(d, e, e, f, pool, usage, id, if gpu == 0 { u32::MAX } else { gpu }, l);
+            let sid = d.id_of(s);
+            if let Some(o) = d.objs.get_mut(&sid) {
+                // (a level's references are the texture's)
+                o.refs = 0;
+                if let Data::Surface(sf) = &mut o.data {
+                    sf.face = Some(face);
+                    if gpu == 0 {
+                        sf.gpu = 0;
+                    }
+                }
+            }
+            lv.push(sid);
+        }
     }
     if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
         t.levels = lv;
@@ -2060,6 +2123,16 @@ unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
     let (w, h) = (x1 - x0, y1 - y0);
     let bpp = fmt::page_bpp(sf.fmt);
     let (gpu, level, f, pitch) = (sf.gpu, sf.level, sf.fmt, sf.pitch);
+    if let Some(layer) = sf.face {
+        // (a cube's face: its layer of the page texture)
+        gpu::record(|b: &mut Batch| {
+            let at = b.blob.len().next_multiple_of(4);
+            b.blob.resize(at, 0);
+            fmt::convert(f, src as *const u8, pitch as usize, w, h, &mut b.blob);
+            b.cmd(&[gpu::WRITE_TEXTURE2, gpu, level, layer, x0, y0, w, h, w * bpp, at as u32]);
+        });
+        return;
+    }
     if super::stats::on() && w * h >= 1 << 20 {
         eprintln!("d3d9: upload {w}x{h} at {x0},{y0} of {}x{} format {f:#x} level {level} (page texture {gpu}, surface {s})", sf.w, sf.h);
     }
@@ -2257,11 +2330,43 @@ unsafe fn private_data(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
 }
 
 unsafe fn texture_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
-    if iface != IF_TEXTURE && iface != IF_VOLUMETEX {
-        return D3DERR_INVALIDCALL;
-    }
     let Some(Data::Texture(t)) = d.objs.get_mut(&this).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
     let level = |t: &Texture, l: u32| t.levels.get(l as usize).copied();
+    if iface == IF_CUBE && m >= 17 {
+        // GetLevelDesc(level, desc), GetCubeMapSurface(face, level, out), LockRect(face,
+        // level, locked, rect, flags), UnlockRect(face, level), AddDirtyRect(face, rect): a
+        // face's level is the 2D texture's level with the face in front
+        let n = t.level_count();
+        if m == 17 {
+            if a(1) >= n {
+                return D3DERR_INVALIDCALL;
+            }
+            let Some(s) = level(t, a(1)) else { return D3DERR_INVALIDCALL };
+            return surface_call(d, 12, s, &|i| if i == 1 { a(2) } else { 0 }, after);
+        }
+        if a(1) >= 6 {
+            return D3DERR_INVALIDCALL;
+        }
+        if m == 21 {
+            return S_OK;
+        }
+        if a(2) >= n {
+            return D3DERR_INVALIDCALL;
+        }
+        let Some(s) = level(t, a(1) * n + a(2)) else { return D3DERR_INVALIDCALL };
+        return match m {
+            18 => {
+                if a(3) == 0 {
+                    return D3DERR_INVALIDCALL;
+                }
+                d.add_ref(s);
+                wrp(a(3), 0, d.addr_of(s));
+                S_OK
+            }
+            19 => lock_surface(d, s, a(3), a(4), a(5), after),
+            _ => unlock_surface(d, s),
+        };
+    }
     if iface == IF_VOLUMETEX && m >= 17 {
         // GetLevelDesc(level, desc), GetVolumeLevel(level, out), LockBox(level, locked, box,
         // flags), UnlockBox(level), AddDirtyBox(box)
@@ -2288,14 +2393,18 @@ unsafe fn texture_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(us
         4..=6 => private_data(d, m, this, a),
         7 | 8 => 0,
         9 => 0,
-        10 => if iface == IF_VOLUMETEX { RT_VOLUMETEX } else { RT_TEXTURE },
+        10 => match iface {
+            IF_VOLUMETEX => RT_VOLUMETEX,
+            IF_CUBE => RT_CUBETEX,
+            _ => RT_TEXTURE,
+        },
         11 => {
             let old = t.lod;
             t.lod = a(1);
             old
         }
         12 => t.lod,
-        13 => t.levels.len() as u32,
+        13 => t.level_count(),
         14 => S_OK,
         15 => 2,
         16 => 0,
@@ -2384,8 +2493,22 @@ unsafe fn update_texture(d: &mut D3d, src: u32, dst: u32) -> u32 {
     else {
         return D3DERR_INVALIDCALL;
     };
-    if (a.depth == 0) != (b.depth == 0) {
+    if (a.depth == 0) != (b.depth == 0) || a.faces != b.faces {
         return D3DERR_INVALIDCALL;
+    }
+    if a.faces != 0 {
+        // (a cube: each face's levels from the top, as 2D textures pair them; the source may
+        // have more levels than the target)
+        let (na, nb) = (a.level_count(), b.level_count());
+        if a.fmt != b.fmt || na < nb || a.w != b.w {
+            return D3DERR_INVALIDCALL;
+        }
+        let pairs: Vec<(u32, u32)> = (0..6).flat_map(|f| (0..nb).map(move |l| (f, l))).map(|(f, l)| (a.levels[(f * na + l) as usize], b.levels[(f * nb + l) as usize])).collect();
+        for (x, y) in pairs {
+            let (sa, sb) = (d.addr_of(x), d.addr_of(y));
+            update_surface(d, sa, 0, sb, 0);
+        }
+        return S_OK;
     }
     if a.depth != 0 {
         // (Windows: a system memory texture into a default pool one, the same format and size)
@@ -3382,7 +3505,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     for &s in &samplers {
         let t = st.textures.get(s as usize).copied().unwrap_or(0);
         let (gpu_tex, f, levels) = match d.objs.get(&t).map(|o| &o.data) {
-            Some(Data::Texture(tx)) => (tx.gpu, tx.fmt, tx.levels.len() as u32),
+            Some(Data::Texture(tx)) => (tx.gpu, tx.fmt, tx.level_count()),
             _ => (0, 0, 1),
         };
         if fmt::no_alpha(f) {

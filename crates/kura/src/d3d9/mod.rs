@@ -33,6 +33,8 @@ pub(crate) mod sb_tests;
 mod volume_tests;
 #[cfg(test)]
 mod tss_temp_tests;
+#[cfg(test)]
+mod cube_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;

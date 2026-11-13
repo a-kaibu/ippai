@@ -119,3 +119,10 @@ path = "fuzz_targets/glsl.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dds"
+path = "fuzz_targets/dds.rs"
+test = false
+doc = false
+bench = false

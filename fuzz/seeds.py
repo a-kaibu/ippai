@@ -183,6 +183,24 @@ def wicmeta():
 write("wicmeta", wicmeta())
 
 
+def dds():
+    # DDS headers (sake::dds): a cube map of A8R8G8B8 levels, a partial DXT1 cube, a 2D DXT5
+    def f(w, h, mips, pf, caps2, n):
+        hd = bytearray(128)
+        hd[:4] = b"DDS "
+        for o, v in [(4, 124), (12, h), (16, w), (28, mips), (112, caps2)]:
+            struct.pack_into("<I", hd, o, v)
+        for k, v in enumerate(pf):
+            struct.pack_into("<I", hd, 76 + 4 * k, v)
+        return bytes(hd) + bytes(i % 251 for i in range(n))
+    argb = [32, 0x41, 0, 32, 0xFF0000, 0xFF00, 0xFF, 0xFF000000]
+    return [f(4, 4, 3, argb, 0x200 | 0xFC00, 6 * 84), f(8, 8, 4, [32, 4, 0x31545844, 0, 0, 0, 0, 0], 0x200 | 0x9000, 2 * 56),
+            f(5, 3, 0, [32, 4, 0x35545844, 0, 0, 0, 0, 0], 0, 32)]
+
+
+write("dds", dds())
+
+
 def vorbis():
     # the test streams (several channel counts, rates, qualities), cut short: the fuzzer
     # mutates headers and the first audio packets

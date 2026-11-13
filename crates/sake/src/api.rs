@@ -496,10 +496,11 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
                 crate::fatal(c.cpu, &format!("call to {n}, which we neither implement nor know the arguments of"));
             }
             static SEEN: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
+            let r = unimplemented_result(&n);
             if SEEN.lock().unwrap().get_or_insert_with(HashSet::default).insert(i) {
-                eprintln!("sake: unimplemented {n} (returns 0), from {:#x}", r32(esp));
+                eprintln!("sake: unimplemented {n} (returns {r:#x}), from {:#x}", r32(esp));
             }
-            0
+            r
         }
     };
     if top {
@@ -674,5 +675,34 @@ mod spec_tests {
             }
         }
         assert!(missing.is_empty(), "implemented without a spec line: {missing:?}");
+    }
+}
+
+/// What an export sake knows but doesn't implement returns: 0, except D3DX's functions that
+/// make an object, for which 0 is S_OK with the object pointer never written (ダイナマリサ3D
+/// called through the NULL D3DXCreateCubeTextureFromFileInMemory left, #126): E_NOTIMPL, a
+/// failure the game checks for.
+pub fn unimplemented_result(name: &str) -> u32 {
+    let (dll, f) = name.split_once('!').unwrap_or(("", name));
+    let d3dx = dll.to_ascii_lowercase().starts_with("d3dx");
+    if d3dx && ["D3DXCreate", "D3DXLoad", "D3DXCompile", "D3DXAssemble", "D3DXPreprocess", "D3DXGetShader", "D3DXSave", "D3DXFilter", "D3DXComputeNormalMap"].iter().any(|p| f.starts_with(p)) {
+        0x8000_4001
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod unimplemented_tests {
+    use super::unimplemented_result;
+    #[test]
+    fn d3dx_object_makers_fail() {
+        assert_eq!(unimplemented_result("d3dx9_33!D3DXCreateCubeTextureFromFileInMemory"), 0x8000_4001);
+        assert_eq!(unimplemented_result("D3DX9_43!D3DXLoadMeshFromXInMemory"), 0x8000_4001);
+        assert_eq!(unimplemented_result("d3dx8!D3DXCreateSprite"), 0x8000_4001);
+        // (matrices, vectors, others: 0 as before)
+        assert_eq!(unimplemented_result("d3dx9_33!D3DXMatrixReflect"), 0);
+        assert_eq!(unimplemented_result("kernel32!CreateFileTransactedA"), 0);
+        assert_eq!(unimplemented_result("comdlg32!GetFileTitleA"), 0);
     }
 }

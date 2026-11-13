@@ -235,6 +235,63 @@ fn D3DXMatrixTransformation2D(c: &mut Ctx) -> u32 {
     out_m(c, m)
 }
 
+/// The plane through `p` with normal `n`: (n, -n.p).
+fn plane_point_normal(p: [f32; 3], n: [f32; 3]) -> [f32; 4] {
+    [n[0], n[1], n[2], -dot3(p, n)]
+}
+/// The plane through three points, its normal (v2 - v1) x (v3 - v1) normalized (zero for points
+/// on a line), as Windows' D3DX.
+fn plane_points(v1: [f32; 3], v2: [f32; 3], v3: [f32; 3]) -> [f32; 4] {
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    plane_point_normal(v1, norm3(cross(sub(v2, v1), sub(v3, v1))))
+}
+/// The plane scaled to a unit normal (all zero for a zero normal).
+fn plane_normalize(p: [f32; 4]) -> [f32; 4] {
+    let l = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+    if l == 0.0 { [0.0; 4] } else { p.map(|x| x / l) }
+}
+/// Where the line v1-v2 crosses plane `p`: None when it is parallel to it.
+fn plane_line(p: [f32; 4], v1: [f32; 3], v2: [f32; 3]) -> Option<[f32; 3]> {
+    let n = [p[0], p[1], p[2]];
+    let d = [v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]];
+    let den = dot3(n, d);
+    if den == 0.0 {
+        return None;
+    }
+    let t = -(dot3(n, v1) + p[3]) / den;
+    Some([v1[0] + t * d[0], v1[1] + t * d[1], v1[2] + t * d[2]])
+}
+/// D3DXPlaneFromPointNormal(out, point, normal)
+fn D3DXPlaneFromPointNormal(c: &mut Ctx) -> u32 {
+    wv(c.a(0), &plane_point_normal(rv(c.a(1)), rv(c.a(2))));
+    c.a(0)
+}
+/// D3DXPlaneFromPoints(out, v1, v2, v3)
+fn D3DXPlaneFromPoints(c: &mut Ctx) -> u32 {
+    wv(c.a(0), &plane_points(rv(c.a(1)), rv(c.a(2)), rv(c.a(3))));
+    c.a(0)
+}
+/// D3DXPlaneNormalize(out, plane)
+fn D3DXPlaneNormalize(c: &mut Ctx) -> u32 {
+    wv(c.a(0), &plane_normalize(rv(c.a(1))));
+    c.a(0)
+}
+/// D3DXPlaneTransform(out, plane, matrix): the plane as a 4-vector times the matrix (the caller
+/// passes the inverse transpose of a point transform)
+fn D3DXPlaneTransform(c: &mut Ctx) -> u32 {
+    wv(c.a(0), &transform4(rv(c.a(1)), &rm(c.a(2))));
+    c.a(0)
+}
+/// D3DXPlaneIntersectLine(out, plane, v1, v2): NULL (out untouched) for a parallel line
+fn D3DXPlaneIntersectLine(c: &mut Ctx) -> u32 {
+    match plane_line(rv(c.a(1)), rv(c.a(2)), rv(c.a(3))) {
+        Some(v) => {
+            wv(c.a(0), &v);
+            c.a(0)
+        }
+        None => 0,
+    }
+}
 fn D3DXVec3Normalize(c: &mut Ctx) -> u32 {
     wv(c.a(0), &norm3(rv(c.a(1))));
     c.a(0)
@@ -647,6 +704,65 @@ fn ms_top(c: &mut Ctx) -> u32 {
     c.a(0) + 16
 }
 /// D3DXIMAGE_INFO of a decoded image: (width, height, file format)
+/// D3DXIMAGE_INFO of a DDS file: size, depth, levels, format, resource type (texture, cube,
+/// volume), D3DXIFF_DDS.
+fn dds_info(p: u32, d: &crate::dds::Dds) {
+    if p != 0 {
+        let ty = if d.faces != 0 { 5 } else if d.depth > 1 { 4 } else { 3 };
+        for (k, v) in [d.w, d.h, d.depth, d.levels, d.fmt, ty, 4].iter().enumerate() {
+            w32(p + 4 * k as u32, *v);
+        }
+    }
+}
+/// Copies a DDS level (rows of `row` bytes, tightly packed) to locked rows `pitch` apart.
+fn put_rows(src: &[u8], row: u32, rows: u32, bits: u32, pitch: u32) {
+    for y in 0..rows {
+        let s = &src[(y * row) as usize..((y + 1) * row) as usize];
+        mem::slice_mut(bits + y * pitch, row).copy_from_slice(s);
+    }
+}
+/// The levels of a DDS file into a texture (`cube`: an IDirect3DCubeTexture9, every face the
+/// file has), as many as both have; levels of the texture the file lacks stay as they are.
+fn dds_fill(c: &mut Ctx, tex: u32, data: &[u8], d: &crate::dds::Dds, cube: bool) {
+    let n = com_call(c, tex, 13, &[]).min(d.levels);
+    let lr = mem::heap_alloc(8, true);
+    for face in 0..if cube { 6 } else { 1 } {
+        for level in 0..n {
+            let Some((at, len)) = d.level_at(face, level) else { continue };
+            let (row, rows) = d.level_rows(level);
+            let locked = if cube { com_call(c, tex, 19, &[face, level, lr, 0, 0]) } else { com_call(c, tex, 19, &[level, lr, 0, 0]) };
+            if locked != 0 {
+                continue;
+            }
+            put_rows(&data[at..at + len], row, rows, r32(lr + 4), r32(lr));
+            if cube {
+                com_call(c, tex, 20, &[face, level]);
+            } else {
+                com_call(c, tex, 20, &[level]);
+            }
+        }
+    }
+    mem::heap_free(lr);
+}
+/// A texture from a DDS file: its own size, format and levels (D3DX_DEFAULT / 0 levels; else
+/// as many as asked, up to the file's), in `pool` with `usage`.
+fn texture_from_dds(c: &mut Ctx, dev: u32, data: &[u8], d: &crate::dds::Dds, mips: u32, usage: u32, pool: u32, info: u32, out: u32) -> u32 {
+    dds_info(info, d);
+    if d.faces != 0 || d.depth > 1 {
+        return 0x88760b59;
+    }
+    let levels = if mips == 0 || mips >= 0xffff_fffd { d.levels } else { mips.min(d.levels) };
+    let pt = mem::heap_alloc(8, true);
+    let hr = com_call(c, dev, 23, &[d.w, d.h, levels, usage, d.fmt, pool, pt, 0]);
+    let tex = r32(pt);
+    mem::heap_free(pt);
+    if hr != 0 || tex == 0 {
+        return if hr != 0 { hr } else { 0x8876086c };
+    }
+    dds_fill(c, tex, data, d, false);
+    mem::putp(out, tex);
+    0
+}
 fn image_info(data: &[u8]) -> Option<(u32, u32, Vec<u8>, u32)> {
     let ff = if data.starts_with(b"\x89PNG") { 3 } else if data.starts_with(b"BM") { 0 } else { 1 };
     let (w, h, px) = crate::ole::decode(data)?;
@@ -692,6 +808,9 @@ fn D3DXCheckTextureRequirements(c: &mut Ctx) -> u32 {
 fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
     let [w, h, mips, usage, fmt, pool, _filter, _mipfilter, key, info, _pal, out] = a;
     mem::putp(out, 0);
+    if let Some(d) = crate::dds::parse(data) {
+        return texture_from_dds(c, dev, data, &d, mips, usage, pool, info, out);
+    }
     let Some((iw, ih, mut px, ff)) = image_info(data) else {
         eprintln!("sake: D3DXCreateTexture: image not decoded ({:02x?})", &data[..data.len().min(8)]);
         return 0x88760b59;
@@ -793,6 +912,137 @@ fn D3DXCreateTextureFromFileExA(c: &mut Ctx) -> u32 {
 fn D3DXCreateTextureFromFileExW(c: &mut Ctx) -> u32 {
     texture_file(c, true, true)
 }
+/// D3DXCreateCubeTexture(device, size, mips, usage, format, pool, &cube)
+fn D3DXCreateCubeTexture(c: &mut Ctx) -> u32 {
+    let (size, _, mips) = tex_req(c.a(1), c.a(1), c.a(2));
+    let fmt = if c.a(4) == 0 || c.a(4) == 0xffff_fffd { 21 } else { c.a(4) };
+    let (dev, usage, pool, out) = (c.a(0), c.a(3), c.a(5), c.a(6));
+    com_call(c, dev, 25, &[size, mips, usage, fmt, pool, out, 0])
+}
+/// D3DXCreateCubeTextureFromFileInMemoryEx(device, data, length, size, mips, usage, format,
+/// pool, filter, mip filter, color key, &info, palette, &cube): a DDS cube map (its faces, size,
+/// format and levels), or one image (PNG, JPEG, BMP) on every face.
+fn cube_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 11]) -> u32 {
+    let [size, mips, usage, fmt, pool, _filter, _mipfilter, key, info, _pal, out] = a;
+    mem::putp(out, 0);
+    let pt = mem::heap_alloc(8, true);
+    let make = |c: &mut Ctx, edge: u32, levels: u32, f: u32| {
+        let hr = com_call(c, dev, 25, &[edge, levels, usage, f, pool, pt, 0]);
+        let cube = r32(pt);
+        mem::heap_free(pt);
+        if hr != 0 || cube == 0 { Err(if hr != 0 { hr } else { 0x8876086c }) } else { Ok(cube) }
+    };
+    if let Some(d) = crate::dds::parse(data) {
+        dds_info(info, &d);
+        if d.faces == 0 {
+            mem::heap_free(pt);
+            return 0x88760b59;
+        }
+        let levels = if mips == 0 || mips >= 0xffff_fffd { d.levels } else { mips.min(d.levels) };
+        let cube = match make(c, d.w, levels, d.fmt) {
+            Ok(t) => t,
+            Err(hr) => return hr,
+        };
+        dds_fill(c, cube, data, &d, true);
+        mem::putp(out, cube);
+        return 0;
+    }
+    let Some((iw, ih, mut px, ff)) = image_info(data) else {
+        mem::heap_free(pt);
+        eprintln!("sake: D3DXCreateCubeTexture: image not decoded ({:02x?})", &data[..data.len().min(8)]);
+        return 0x88760b59;
+    };
+    write_info(info, iw, ih, ff);
+    let edge = match size {
+        0xffff_ffff => iw.max(ih).next_power_of_two(),
+        0 | 0xffff_fffe | 0xffff_fffd => iw.max(ih),
+        v => v,
+    };
+    let fmt = if fmt == 0 || fmt == 0xffff_fffd { 21 } else { fmt };
+    let levels = match mips {
+        0xffff_fffd | 0xffff_fffe => 1,
+        0xffff_ffff => 0,
+        v => v,
+    };
+    if key != 0 {
+        for p in px.chunks_mut(4) {
+            if u32::from_le_bytes([p[0], p[1], p[2], p[3]]) == key {
+                p.copy_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+    let cube = match make(c, edge, levels, fmt) {
+        Ok(t) => t,
+        Err(hr) => return hr,
+    };
+    let n = com_call(c, cube, 13, &[]).max(1);
+    let lr = mem::heap_alloc(8, true);
+    for face in 0..6 {
+        for level in 0..n {
+            let e = (edge >> level).max(1);
+            if com_call(c, cube, 19, &[face, level, lr, 0, 0]) != 0 {
+                continue;
+            }
+            let (pitch, bits) = (r32(lr), r32(lr + 4));
+            for y in 0..e {
+                let sy = (y as u64 * ih as u64 / e as u64) as u32;
+                for x in 0..e {
+                    let sx = (x as u64 * iw as u64 / e as u64) as u32;
+                    let i = 4 * (sy * iw + sx) as usize;
+                    let v = |k: usize| px[i + k] as f32 / 255.0;
+                    if let Some((t, bpp)) = pack(fmt, [v(2), v(1), v(0), v(3)]) {
+                        let at = bits + y * pitch + x * bpp;
+                        match bpp {
+                            4 => w32(at, t),
+                            2 => mem::w16(at, t as u16),
+                            _ => mem::w8(at, t as u8),
+                        }
+                    }
+                }
+            }
+            com_call(c, cube, 20, &[face, level]);
+        }
+    }
+    mem::heap_free(lr);
+    mem::putp(out, cube);
+    0
+}
+fn D3DXCreateCubeTextureFromFileInMemoryEx(c: &mut Ctx) -> u32 {
+    let data = mem::slice(c.a(1), c.a(2)).to_vec();
+    let a = std::array::from_fn(|k| c.a(3 + k as u32));
+    let dev = c.a(0);
+    cube_from(c, dev, &data, a)
+}
+fn D3DXCreateCubeTextureFromFileInMemory(c: &mut Ctx) -> u32 {
+    let data = mem::slice(c.a(1), c.a(2)).to_vec();
+    let (dev, out) = (c.a(0), c.a(3));
+    cube_from(c, dev, &data, [u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, out])
+}
+/// D3DXCreateCubeTextureFromFile{A,W}(device, file, &cube) and the Ex forms (device, file, then
+/// the in-memory Ex arguments)
+fn cube_file(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
+    let name = crate::k32::arg_str(c.a(1), wide);
+    let out = if ex { c.a(12) } else { c.a(2) };
+    let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
+        mem::putp(out, 0);
+        return 0x88760b59;
+    };
+    let dev = c.a(0);
+    let a = if ex { std::array::from_fn(|k| c.a(2 + k as u32)) } else { [u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, out] };
+    cube_from(c, dev, &data, a)
+}
+fn D3DXCreateCubeTextureFromFileA(c: &mut Ctx) -> u32 {
+    cube_file(c, false, false)
+}
+fn D3DXCreateCubeTextureFromFileW(c: &mut Ctx) -> u32 {
+    cube_file(c, true, false)
+}
+fn D3DXCreateCubeTextureFromFileExA(c: &mut Ctx) -> u32 {
+    cube_file(c, false, true)
+}
+fn D3DXCreateCubeTextureFromFileExW(c: &mut Ctx) -> u32 {
+    cube_file(c, true, true)
+}
 /// A RECT* as (left, top, right, bottom), or the whole `w` x `h` for NULL.
 fn rect_or(p: u32, w: u32, h: u32) -> (u32, u32, u32, u32) {
     if p == 0 {
@@ -881,6 +1131,10 @@ fn image_info_file(c: &mut Ctx, wide: bool) -> u32 {
     let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
         return 0x88760b59;
     };
+    if let Some(d) = crate::dds::parse(&data) {
+        dds_info(c.a(1), &d);
+        return 0;
+    }
     match image_info(&data) {
         Some((w, h, _, ff)) => {
             write_info(c.a(1), w, h, ff);
@@ -898,6 +1152,10 @@ fn D3DXGetImageInfoFromFileW(c: &mut Ctx) -> u32 {
 /// D3DXGetImageInfoFromFileInMemory(data, length, &info)
 fn D3DXGetImageInfoFromFileInMemory(c: &mut Ctx) -> u32 {
     let data = mem::slice(c.a(0), c.a(1)).to_vec();
+    if let Some(d) = crate::dds::parse(&data) {
+        dds_info(c.a(2), &d);
+        return 0;
+    }
     match image_info(&data) {
         Some((w, h, _, ff)) => {
             write_info(c.a(2), w, h, ff);
@@ -1089,6 +1347,18 @@ pub fn init() {
         ("D3DXCreateTextureFromFileExA", D3DXCreateTextureFromFileExA),
         ("D3DXCreateTextureFromFileExW", D3DXCreateTextureFromFileExW),
         ("D3DXGetImageInfoFromFileInMemory", D3DXGetImageInfoFromFileInMemory),
+        ("D3DXCreateCubeTexture", D3DXCreateCubeTexture),
+        ("D3DXPlaneFromPointNormal", D3DXPlaneFromPointNormal),
+        ("D3DXPlaneFromPoints", D3DXPlaneFromPoints),
+        ("D3DXPlaneNormalize", D3DXPlaneNormalize),
+        ("D3DXPlaneTransform", D3DXPlaneTransform),
+        ("D3DXPlaneIntersectLine", D3DXPlaneIntersectLine),
+        ("D3DXCreateCubeTextureFromFileInMemory", D3DXCreateCubeTextureFromFileInMemory),
+        ("D3DXCreateCubeTextureFromFileInMemoryEx", D3DXCreateCubeTextureFromFileInMemoryEx),
+        ("D3DXCreateCubeTextureFromFileA", D3DXCreateCubeTextureFromFileA),
+        ("D3DXCreateCubeTextureFromFileW", D3DXCreateCubeTextureFromFileW),
+        ("D3DXCreateCubeTextureFromFileExA", D3DXCreateCubeTextureFromFileExA),
+        ("D3DXCreateCubeTextureFromFileExW", D3DXCreateCubeTextureFromFileExW),
         ("D3DXGetImageInfoFromFileA", D3DXGetImageInfoFromFileA),
         ("D3DXGetImageInfoFromFileW", D3DXGetImageInfoFromFileW),
         ("D3DXCreateEffectEx", D3DXCreateEffectEx),
@@ -1269,5 +1539,55 @@ mod array_tests {
         assert_eq!(r32(out), 0x1234);
         mem::heap_free(out);
         mem::heap_free(name);
+    }
+}
+
+#[cfg(test)]
+mod plane_tests {
+    use super::{dot3, plane_line, plane_normalize, plane_points};
+    use proptest::prelude::*;
+
+    #[test]
+    fn known_planes() {
+        // z = 2, normal +z for counter-clockwise points seen from +z ((v2-v1) x (v3-v1))
+        assert_eq!(plane_points([0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0]), [0.0, 0.0, 1.0, -2.0]);
+        assert_eq!(plane_points([0.0, 0.0, 2.0], [0.0, 1.0, 2.0], [1.0, 0.0, 2.0]), [0.0, 0.0, -1.0, 2.0]);
+        // (points on a line: a zero normal)
+        assert_eq!(plane_points([0.0; 3], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]), [0.0, 0.0, 0.0, -0.0]);
+        assert_eq!(plane_normalize([0.0, 3.0, 4.0, 10.0]), [0.0, 0.6, 0.8, 2.0]);
+        assert_eq!(plane_normalize([0.0, 0.0, 0.0, 5.0]), [0.0; 4]);
+        assert_eq!(plane_line([0.0, 0.0, 1.0, -2.0], [0.0, 0.0, 0.0], [0.0, 0.0, 4.0]), Some([0.0, 0.0, 2.0]));
+        assert_eq!(plane_line([0.0, 0.0, 1.0, -2.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]), None);
+    }
+
+    fn v() -> impl Strategy<Value = [f32; 3]> {
+        proptest::array::uniform3(-100.0f32..100.0)
+    }
+
+    proptest! {
+        /// The plane through three points (not on a line) has a unit normal and holds them;
+        /// normalizing it again changes nothing; a line through two points on opposite sides
+        /// crosses it on the plane.
+        #[test]
+        fn points_lie_on_their_plane(a in v(), b in v(), c in v(), t in 0.1f32..10.0) {
+            let p = plane_points(a, b, c);
+            let n = [p[0], p[1], p[2]];
+            let len = dot3(n, n).sqrt();
+            prop_assume!(len > 0.5);
+            prop_assert!((len - 1.0).abs() < 1e-4);
+            let scale = 1.0 + a.iter().chain(&b).chain(&c).fold(0.0f32, |m, x| m.max(x.abs()));
+            for q in [a, b, c] {
+                prop_assert!((dot3(n, q) + p[3]).abs() <= 1e-4 * scale * 10.0, "{:?} off {:?}", q, p);
+            }
+            let p2 = plane_normalize(p);
+            for k in 0..4 {
+                prop_assert!((p2[k] - p[k]).abs() <= 1e-5 * (1.0 + p[k].abs()));
+            }
+            // from a point above to one below
+            let above = [a[0] + n[0] * t, a[1] + n[1] * t, a[2] + n[2] * t];
+            let below = [a[0] - n[0] * t, a[1] - n[1] * t, a[2] - n[2] * t];
+            let x = plane_line(p, above, below).unwrap();
+            prop_assert!((dot3(n, x) + p[3]).abs() <= 1e-3 * scale);
+        }
     }
 }
