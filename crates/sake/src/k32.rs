@@ -6291,6 +6291,48 @@ fn FindNextFileW(c: &mut Ctx) -> u32 {
 fn FindClose(c: &mut Ctx) -> u32 {
     ok(obj::close(c.a(0)))
 }
+/// FindFirstChangeNotification{A,W}(path, subtree, filter): a handle to wait on for changes in
+/// the folder `path` (INVALID_HANDLE_VALUE with ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND when
+/// there is none, ERROR_DIRECTORY for a file). sake does not watch folders, so the handle (a
+/// manual-reset event) is never signaled: a wait on it times out as on Windows when nothing
+/// changes. オレンジポケット (HOOK) watches its save folder this way; returning 0 (as when it
+/// was unimplemented) left it waiting on no object.
+fn change_notification(c: &mut Ctx, wide: bool) -> u32 {
+    let name = arg_str(c.a(0), wide);
+    let a = file_attrs(&name);
+    if a == 0xffff_ffff {
+        return 0xffff_ffff;
+    }
+    if a & 0x10 == 0 {
+        last_error(267);
+        return 0xffff_ffff;
+    }
+    obj::add(Obj::Event { manual: true, set: false })
+}
+fn FindFirstChangeNotificationA(c: &mut Ctx) -> u32 {
+    change_notification(c, false)
+}
+fn FindFirstChangeNotificationW(c: &mut Ctx) -> u32 {
+    change_notification(c, true)
+}
+/// FindNextChangeNotification(handle): re-arms the wait (the event stays unsignaled)
+fn FindNextChangeNotification(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    match obj::with(|t| t.objs.get(&h).map(|(o, _)| matches!(o, Obj::Event { .. }))) {
+        Some(true) => 1,
+        _ => {
+            last_error(6);
+            0
+        }
+    }
+}
+fn FindCloseChangeNotification(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if FindNextChangeNotification(c) == 0 {
+        return 0;
+    }
+    ok(obj::close(h))
+}
 fn file_attrs(name: &str) -> u32 {
     if crate::env_on!("SAKE_TRACE_FILES") {
         eprintln!("sake: GetFileAttributes({name})");
@@ -7716,7 +7758,7 @@ pub fn init() {
         GetStdHandle, SetStdHandle, SetDllDirectoryA, SetDllDirectoryW, GetFileInformationByHandleEx, PathCchSkipRoot, VerifyConsoleIoHandle, SetHandleInformation, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, CreateFile2, _lopen, _lcreat, _lclose, _lread,
         _llseek, ReadFile, WriteFile, SetFilePointer, SetFilePointerEx, GetFileSize, GetFileSizeEx, SetEndOfFile,
         FlushFileBuffers, LockFile, UnlockFile, LockFileEx, UnlockFileEx, GetFileTime, SetFileTime, GetFileInformationByHandle,
-        FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, GetFileAttributesA,
+        FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, FindFirstChangeNotificationA, FindFirstChangeNotificationW, FindNextChangeNotification, FindCloseChangeNotification, GetFileAttributesA,
         GetFileAttributesW, GetFileAttributesExA, GetFileAttributesExW, SetFileAttributesA, SetFileAttributesW,
         CreateDirectoryA, CreateDirectoryW, RemoveDirectoryA, RemoveDirectoryW, DeleteFileA, DeleteFileW, MoveFileA,
         MoveFileW, MoveFileExA, MoveFileExW, CopyFileA, CopyFileW, CreateHardLinkA, CreateHardLinkW, GetFullPathNameA, GetFullPathNameW,
