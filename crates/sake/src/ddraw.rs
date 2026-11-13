@@ -1791,20 +1791,38 @@ fn D_EnumSurfaces(c: &mut Ctx) -> u32 {
     DD_OK
 }
 
+/// DDCAPS2 of the driver (HAL): NONLOCALVIDMEM | NONLOCALVIDMEMCAPS (AGP texturing, which
+/// dxdiag shows as "AGP Texture Acceleration: Enabled" on every WDDM driver and AdvHD's start-up
+/// check wants, #151) | WIDESURFACES | CANRENDERWINDOWED. The emulation layer (HEL) has none.
+const HAL_CAPS2: u32 = 0x200 | 0x400 | 0x1000 | 0x0008_0000;
+/// The surfaces the HAL makes (ddsCaps): BACKBUFFER | COMPLEX | FLIP | OFFSCREENPLAIN |
+/// PRIMARYSURFACE | SYSTEMMEMORY | TEXTURE | 3DDEVICE | VIDEOMEMORY | ZBUFFER | MIPMAP |
+/// LOCALVIDMEM | NONLOCALVIDMEM
+const HAL_SURFACES: u32 = 0x4 | 0x8 | 0x10 | 0x40 | 0x200 | 0x800 | 0x1000 | 0x2000 | 0x4000 | 0x2_0000 | 0x40_0000 | 0x1000_0000 | 0x2000_0000;
+
+/// DDCAPS (`size` bytes, at most the 380 of DirectX 7) as `words` of (offset, value): the HAL's
+/// (`hal`) or the HEL's.
+fn caps_words(size: u32, hal: bool) -> Vec<(u32, u32)> {
+    // BLT | BLTCOLORFILL | BLTSTRETCH | COLORKEY | PALETTE
+    let blt = 0x40 | 0x0400_0000 | 0x200 | 0x0040_0000 | 0x0080_0000;
+    let mut w = vec![(4, blt), (12, 0x200), (16, 0x0002_0000 | 0x0004_0000), (60, 256 << 20), (64, 240 << 20)];
+    if hal {
+        // dwCaps2, ddsOldCaps, dwNLVBCaps (blits to/from AGP memory), DDSCAPS2 ddsCaps
+        w.extend([(8, HAL_CAPS2), (132, HAL_SURFACES), (316, blt), (364, HAL_SURFACES)]);
+    }
+    w.retain(|&(o, _)| o + 4 <= size);
+    w
+}
+
 fn D_GetCaps(c: &mut Ctx) -> u32 {
-    for p in [c.a(1), c.a(2)] {
+    for (p, hal) in [(c.a(1), true), (c.a(2), false)] {
         if p == 0 {
             continue;
         }
         let size = r32(p).clamp(4, 380);
         mem::fill(p + 4, size - 4, 0);
-        // BLT | BLTCOLORFILL | BLTSTRETCH | COLORKEY | PALETTE
-        w32(p + 4, 0x40 | 0x0400_0000 | 0x200 | 0x0040_0000 | 0x0080_0000);
-        w32(p + 12, 0x200); // CKEYCAPS_SRCBLT
-        w32(p + 16, 0x0002_0000 | 0x0004_0000); // FXCAPS_BLTSTRETCHX/Y
-        if size >= 68 {
-            w32(p + 60, 256 << 20);
-            w32(p + 64, 240 << 20);
+        for (o, v) in caps_words(size, hal) {
+            w32(p + o, v);
         }
     }
     DD_OK
@@ -2106,7 +2124,39 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// The HAL reports AGP texturing (dwCaps2 and the DX6+ DDSCAPS2 ddsCaps), the HEL doesn't
+    /// (#151); offsets as mingw's ddraw.h (DDCAPS 380 bytes, ddsOldCaps 132, dwNLVBCaps 316,
+    /// ddsCaps 364)
+    #[test]
+    fn hal_reports_agp_texturing() {
+        let get = |size, hal, o| caps_words(size, hal).iter().find(|w| w.0 == o).map(|w| w.1);
+        let caps2 = get(380, true, 8).unwrap();
+        assert_eq!(caps2 & 0x600, 0x600);
+        assert_eq!(get(380, true, 364).unwrap() & 0x3000_1000, 0x3000_1000);
+        assert_eq!(get(380, true, 132), get(380, true, 364));
+        assert_eq!(get(380, false, 8), None);
+        assert_eq!(get(380, false, 364), None);
+        // a DirectX 3 DDCAPS (316 bytes) gets dwCaps2 but nothing past its end
+        assert_eq!(get(316, true, 8), Some(caps2));
+        assert_eq!(get(316, true, 316), None);
+    }
+
     proptest! {
+        /// Whatever dwSize the caller gives, no word lands past it, and the HEL's words are
+        /// the HAL's minus the AGP ones
+        #[test]
+        fn caps_stay_inside_dwsize(size in 4u32..=380) {
+            for hal in [false, true] {
+                for (o, _) in caps_words(size, hal) {
+                    prop_assert!(o >= 4 && o + 4 <= size);
+                }
+            }
+            let hal = caps_words(size, true);
+            for w in caps_words(size, false) {
+                prop_assert!(hal.contains(&w));
+            }
+        }
+
         /// A wait for the vertical blank lasts 1..=17 ms and crosses exactly one frame start,
         /// from any point of the beam's clock
         #[test]

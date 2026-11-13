@@ -160,6 +160,16 @@ int main(void) {
     DDCAPS hal = { sizeof hal }, hel = { sizeof hel };
     hr = IDirectDraw7_GetCaps(dd, &hal, &hel);
     printf("GetCaps %#lx hel blt %d colorkey %d stretch %d\n", hr, !!(hel.dwCaps & DDCAPS_BLT), !!(hel.dwCaps & DDCAPS_COLORKEY), !!(hel.dwCaps & DDCAPS_BLTSTRETCH));
+    /* (AGP texturing, as AdvHD's start-up check and dxdiag read it: #151) */
+    printf("hal agp: nonlocalvidmem %d caps %d, surfaces texture %d video %d local %d nonlocal %d\n",
+           !!(hal.dwCaps2 & DDCAPS2_NONLOCALVIDMEM), !!(hal.dwCaps2 & DDCAPS2_NONLOCALVIDMEMCAPS),
+           !!(hal.ddsCaps.dwCaps & DDSCAPS_TEXTURE), !!(hal.ddsCaps.dwCaps & DDSCAPS_VIDEOMEMORY),
+           !!(hal.ddsCaps.dwCaps & DDSCAPS_LOCALVIDMEM), !!(hal.ddsCaps.dwCaps & DDSCAPS_NONLOCALVIDMEM));
+    printf("hel agp: nonlocalvidmem %d\n", !!(hel.dwCaps2 & DDCAPS2_NONLOCALVIDMEM));
+    DDSCAPS2 agp = { DDSCAPS_TEXTURE | DDSCAPS_NONLOCALVIDMEM };
+    DWORD total = 0, free_ = 0;
+    hr = IDirectDraw7_GetAvailableVidMem(dd, &agp, &total, &free_);
+    printf("GetAvailableVidMem agp texture %#lx total %s free %s\n", hr, total ? "nonzero" : "0", free_ ? "nonzero" : "0");
     DDSURFACEDESC2 mode = { sizeof mode };
     hr = IDirectDraw7_GetDisplayMode(dd, &mode);
     printf("GetDisplayMode %#lx bpp %lu\n", hr, mode.ddpfPixelFormat.dwRGBBitCount);
