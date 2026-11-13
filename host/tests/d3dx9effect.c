@@ -115,5 +115,29 @@ int main(void)
 
     hr = D3DXCreateEffect((IDirect3DDevice9 *)&dev, "technique T { pass { ZEnable = Nope; } }", 41, NULL, NULL, 0, NULL, &fx, &err);
     printf("bad effect %08lx, errors %s\n", hr, err ? "given" : "none");
+
+    /* from an RT_RCDATA resource of the program (d3dx9effect.rc), as ExHIBIT loads its effects */
+    fx = NULL;
+    hr = D3DXCreateEffectFromResourceA((IDirect3DDevice9 *)&dev, NULL, "FXSRC", NULL, NULL, 0, NULL, &fx, NULL);
+    printf("from resource %08lx\n", hr);
+    if (SUCCEEDED(hr)) {
+        t = fx->lpVtbl->GetTechniqueByName(fx, "Main");
+        fx->lpVtbl->GetTechniqueDesc(fx, t, &td);
+        printf("resource technique %s: %u passes\n", td.Name, td.Passes);
+        fx->lpVtbl->Release(fx);
+    }
+    fx = (ID3DXEffect *)1;
+    hr = D3DXCreateEffectFromResourceW((IDirect3DDevice9 *)&dev, GetModuleHandleW(NULL), L"FXSRC", NULL, NULL, 0, NULL, &fx, NULL);
+    printf("from resource W %08lx\n", hr);
+    if (SUCCEEDED(hr)) fx->lpVtbl->Release(fx);
+    fx = (ID3DXEffect *)1;
+    hr = D3DXCreateEffectFromResourceExA((IDirect3DDevice9 *)&dev, NULL, "FXSRC", NULL, NULL, NULL, 0, NULL, &fx, NULL);
+    printf("from resource Ex %08lx\n", hr);
+    if (SUCCEEDED(hr)) fx->lpVtbl->Release(fx);
+    fx = (ID3DXEffect *)1;
+    hr = D3DXCreateEffectFromResourceA((IDirect3DDevice9 *)&dev, NULL, "NOSUCH", NULL, NULL, 0, NULL, &fx, NULL);
+    printf("missing resource %08lx effect %s\n", hr, fx == (ID3DXEffect *)1 ? "untouched" : "changed");
+    hr = D3DXCreateEffectFromResourceA(NULL, NULL, "FXSRC", NULL, NULL, 0, NULL, &fx, NULL);
+    printf("no device %08lx\n", hr);
     return 0;
 }

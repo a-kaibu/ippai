@@ -29,3 +29,12 @@ pass 0
 end
   stateblock apply
 bad effect 88760b59, errors given
+  CreatePixelShader ffff0200
+from resource 00000000
+resource technique Main: 2 passes
+  CreatePixelShader ffff0200
+from resource W 00000000
+  CreatePixelShader ffff0200
+from resource Ex 00000000
+missing resource 88760b59 effect untouched
+no device 8876086c

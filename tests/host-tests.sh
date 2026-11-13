@@ -192,7 +192,13 @@ for t in $TESTS; do
   fi
   # a "libs:" line in the source names its import libraries
   libs=$(sed -n 's/.*libs: *\([-a-z0-9_ ]*\).*/\1/p' "$ROOT/host/tests/$t.c" | head -1)
-  if ! i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 "$ROOT/host/tests/$t.c" -o "$OUT/$t.exe" -L"$ldir" $libs; then
+  # (host/tests/<name>.rc: the test's resources, linked in)
+  res=
+  if [ -f "$ROOT/host/tests/$t.rc" ] && [ "$t" != dllsearch ]; then
+    res=$OUT/$t-res32.o
+    (cd "$ROOT/host/tests" && i686-w64-mingw32-windres "$t.rc" -O coff -o "$res") || { echo "FAIL $t: resources"; fail=1; continue; }
+  fi
+  if ! i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 "$ROOT/host/tests/$t.c" $res -o "$OUT/$t.exe" -L"$ldir" $libs; then
     echo "FAIL $t: build"; fail=1; continue
   fi
   # (the whole output kept: a process that fails shows its exit status and its last lines, sake's

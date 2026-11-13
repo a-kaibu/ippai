@@ -1,0 +1,2 @@
+// d3dx9effect.c: an effect source as an RT_RCDATA resource (D3DXCreateEffectFromResource)
+FXSRC RCDATA "d3dx9effect.fx"

@@ -523,6 +523,42 @@ fn D3DXCreateEffectFromFileExA(c: &mut Ctx) -> u32 {
 fn D3DXCreateEffectFromFileExW(c: &mut Ctx) -> u32 {
     effect_file(c, true, true)
 }
+/// The bytes of an RT_RCDATA resource of a module (0: the program), as d3dx9's FromResource
+/// functions read their sources
+pub(crate) fn rcdata(module: u32, name: u32, wide: bool) -> Option<Vec<u8>> {
+    let m = if module == 0 { crate::k32::module_handle(0, false) } else { module };
+    let name = crate::pe::ResId::from_arg(name, wide);
+    let e = crate::pe::find_resource(m, &crate::pe::ResId::Int(10), &name)?;
+    let (at, n) = crate::pe::resource_data(m, e);
+    Some(mem::slice(at, n).to_vec())
+}
+/// D3DXCreateEffectFromResource{A,W}(device, module, resource, defines, include, flags, pool,
+/// effect, errors) and the Ex forms (.., include, skip, flags, pool, effect, errors)
+fn effect_resource(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
+    let (flags, out, errs) = if ex { (c.a(6), c.a(8), c.a(9)) } else { (c.a(5), c.a(7), c.a(8)) };
+    // (as d3dx9: no device D3DERR_INVALIDCALL, no resource D3DXERR_INVALIDDATA, the effect
+    // pointer left as it was)
+    if c.a(0) == 0 {
+        return 0x8876_086c;
+    }
+    let Some(data) = rcdata(c.a(1), c.a(2), wide) else {
+        return 0x88760b59;
+    };
+    let (dev, defs, inc) = (c.a(0), c.a(3), c.a(4));
+    effect_from(c, dev, &data, "", defs, inc, flags, out, errs)
+}
+fn D3DXCreateEffectFromResourceA(c: &mut Ctx) -> u32 {
+    effect_resource(c, false, false)
+}
+fn D3DXCreateEffectFromResourceW(c: &mut Ctx) -> u32 {
+    effect_resource(c, true, false)
+}
+fn D3DXCreateEffectFromResourceExA(c: &mut Ctx) -> u32 {
+    effect_resource(c, false, true)
+}
+fn D3DXCreateEffectFromResourceExW(c: &mut Ctx) -> u32 {
+    effect_resource(c, true, true)
+}
 
 /// D3DXCreateEffectFromResource{A,W}(device, module, resource, defines, include, flags, pool,
 /// effect, errors) and the Ex forms (.., include, skip, flags, pool, effect, errors): the
@@ -1088,6 +1124,10 @@ pub fn init() {
         ("D3DXCreateEffectFromFileW", D3DXCreateEffectFromFileW),
         ("D3DXCreateEffectFromFileExA", D3DXCreateEffectFromFileExA),
         ("D3DXCreateEffectFromFileExW", D3DXCreateEffectFromFileExW),
+        ("D3DXCreateEffectFromResourceA", D3DXCreateEffectFromResourceA),
+        ("D3DXCreateEffectFromResourceW", D3DXCreateEffectFromResourceW),
+        ("D3DXCreateEffectFromResourceExA", D3DXCreateEffectFromResourceExA),
+        ("D3DXCreateEffectFromResourceExW", D3DXCreateEffectFromResourceExW),
         ("D3DXMatrixMultiply", D3DXMatrixMultiply),
         ("D3DXMatrixMultiplyTranspose", D3DXMatrixMultiplyTranspose),
         ("D3DXMatrixTranspose", D3DXMatrixTranspose),
