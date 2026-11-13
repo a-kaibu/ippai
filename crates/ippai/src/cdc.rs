@@ -231,4 +231,45 @@ mod tests {
         let zero = lengths(&mut &vec![0u8; 1 << 20][..], p).unwrap();
         assert_eq!(zero.iter().sum::<u64>(), 1 << 20);
     }
+
+    /// Any bytes, any small parameters, fed in reads of any sizes: lengths add up, each but the
+    /// last within min..=max, every cut where a cutter fed byte by byte cuts.
+    #[test]
+    fn any_bytes_any_reads() {
+        use proptest::prelude::*;
+        struct Reads<'a>(&'a [u8], Vec<usize>, usize);
+        impl std::io::Read for Reads<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let want = self.1.get(self.2).copied().unwrap_or(7).max(1);
+                self.2 += 1;
+                let n = want.min(buf.len()).min(self.0.len());
+                buf[..n].copy_from_slice(&self.0[..n]);
+                self.0 = &self.0[n..];
+                Ok(n)
+            }
+        }
+        proptest!(|(data in proptest::collection::vec(any::<u8>(), 0..6000), reads in proptest::collection::vec(1usize..700, 0..40), k in 4u32..8)| {
+            let p = Params { min: 1 << (k - 2), avg: 1 << k, max: 1 << (k + 2) };
+            let l = lengths(&mut Reads(&data, reads, 0), p).unwrap();
+            prop_assert_eq!(l.iter().sum::<u64>(), data.len() as u64);
+            for (i, &x) in l.iter().enumerate() {
+                prop_assert!(x >= 1 && x <= p.max);
+                prop_assert!(i + 1 == l.len() || x >= p.min, "{} at {}", x, i);
+            }
+            let mut c = Cutter::new(p);
+            let mut byte = Vec::new();
+            let mut cur = 0;
+            for b in &data {
+                cur += 1;
+                if c.next(std::slice::from_ref(b)).is_some() {
+                    byte.push(cur);
+                    cur = 0;
+                }
+            }
+            if cur > 0 {
+                byte.push(cur);
+            }
+            prop_assert_eq!(l, byte);
+        });
+    }
 }

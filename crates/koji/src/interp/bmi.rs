@@ -118,3 +118,53 @@ impl<'a, M: Memory> X<'a, M> {
         self.done()
     }
 }
+
+/// Kani: PDEP and PEXT against the SDM's pseudocode (bit k of the source to the k-th set bit of
+/// the mask, and back), for every value and mask.
+#[cfg(kani)]
+mod proofs {
+    use super::{pdep, pext};
+
+    fn sdm_pdep(v: u64, m: u64) -> u64 {
+        let (mut r, mut k) = (0u64, 0);
+        for i in 0..64 {
+            if m >> i & 1 == 1 {
+                r |= (v >> k & 1) << i;
+                k += 1;
+            }
+        }
+        r
+    }
+    fn sdm_pext(v: u64, m: u64) -> u64 {
+        let (mut r, mut k) = (0u64, 0);
+        for i in 0..64 {
+            if m >> i & 1 == 1 {
+                r |= (v >> i & 1) << k;
+                k += 1;
+            }
+        }
+        r
+    }
+
+    #[kani::proof]
+    #[kani::unwind(66)]
+    fn pdep_is_the_sdm_pdep() {
+        let (v, m): (u64, u64) = (kani::any(), kani::any());
+        assert_eq!(pdep(v, m), sdm_pdep(v, m));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(66)]
+    fn pext_is_the_sdm_pext() {
+        let (v, m): (u64, u64) = (kani::any(), kani::any());
+        assert_eq!(pext(v, m), sdm_pext(v, m));
+    }
+
+    /// (the two undo each other where they can)
+    #[kani::proof]
+    #[kani::unwind(66)]
+    fn pext_undoes_pdep() {
+        let (v, m): (u64, u64) = (kani::any(), kani::any());
+        assert_eq!(pdep(pext(v, m), m), v & m);
+    }
+}

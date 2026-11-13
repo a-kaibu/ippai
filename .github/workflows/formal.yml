@@ -146,6 +146,40 @@ jobs:
             target/loom
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
+  # (Verus: unbounded proofs of small algorithms, formal/verus.sh; the latest release, cached
+  # under its tag, with the rust toolchain it asks for)
+  verus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Release
+        run: echo "VERUS_TAG=$(gh api repos/verus-lang/verus/releases/latest --jq .tag_name)" >> "$GITHUB_ENV"
+      - id: verus
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/verus
+          key: verus-${{ env.VERUS_TAG }}
+      - name: Fetch Verus
+        if: steps.verus.outputs.cache-hit != 'true'
+        run: |
+          gh release download "$VERUS_TAG" -R verus-lang/verus -p '*x86-linux*.zip' -D /tmp/verus
+          mkdir -p ~/verus && unzip -q /tmp/verus/*.zip -d ~/verus
+      - name: Toolchain
+        run: |
+          V=$(ls -d ~/verus/*/verus | head -1)
+          echo "VERUS=$V" >> "$GITHUB_ENV"
+          # (the toolchain this release was built against: it names it when missing)
+          out=$("$V" --version 2>&1) || true
+          echo "$out"
+          tc=$(echo "$out" | grep -oE 'rustup (toolchain )?install [^ `]+' | awk '{print $NF}' | head -1)
+          if [ -n "$tc" ]; then rustup toolchain install --profile minimal "$tc"; fi
+      - name: Proofs
+        run: formal/verus.sh
+
   miri:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

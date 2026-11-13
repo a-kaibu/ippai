@@ -18,6 +18,14 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `dds` | sake::dds::parse (DDS headers D3DX reads: 2D, cube maps, DXTn) | no panic, every face's levels inside the data, back to back |
 | `acm` | sake::acm IMA / MS ADPCM blocks | no panic, all of a block's samples or none |
 | `fdi` | sake::cabinet::copy (cabinet.dll FDICopy) on any bytes as a cabinet, stored / MSZIP / LZX folders | no panic; writes only to the handle fdintCOPY_FILE returned and within that file's size; one fdintCLOSE_FILE_INFO per copied file after all its bytes |
+| `dxbc` | dxwgsl::translate / translate_compute on any DXBC (vertex, pixel, compute, a vertex shader with the pixel shader it feeds) | no panic; what it takes is WGSL naga parses and validates |
+| `d3d9_shader` | dxwgsl's Direct3D 9 shaders (vs/ps 1.x-3.0 tokens) with alpha test, fog and 1-4 targets | no panic; a shader it parses gives WGSL naga validates |
+| `apitrace` | apitrace's snappy, trace container and replay stream (the game traces) | no panic; snappy gives back what it compressed |
+| `msi` | msidb: an MSI database (compound file) with every field of every table and its streams read; SQL statements; condition expressions | no panic |
+| `jit_saved` | koji's saved translations index (from the server or a damaged file) | no panic; a whole index reads the same alone and in a bundle |
+| `mp3_frames` | sake's MP3 frame splitter (msacm32's MP3 codec) | the same frames however the stream is cut; each a whole frame its header describes |
+| `audiofile` | sake::audiofile (WAVE, MP4/M4A, Ogg) | no panic |
+| `formats` | .lnk, event log records and .evt files, PE resource trees, type libraries, CryptStringToBinary / CryptBinaryToString | no panic; what decodes encodes back to the same (links, .evt, resource trees, base64 forms) |
 | `printf` (crates/crt) | crt::fmt::format, every mode (UCRT option bits, legacy msvcrt), narrow and wide | no panic, output within MAX_OUT, text without % unchanged |
 | `scanf` (crates/crt) | crt::scan on any input and format | no panic, writes fit the secure forms' buffers, the count never exceeds the conversions |
 | `strto` (crates/crt) | strtod/strtof/strtol/strtoul/strtoll against glibc | same value, end and errno (Windows' errno where it differs: no ERANGE for subnormals) |
@@ -37,7 +45,7 @@ functions at several -O levels, small BMP/PNG/JPEG files, ADPCM blocks); `run.sh
 Corpus (`corpus/`), crash inputs (`artifacts/`) and seeds stay out of git; a crash input
 looked into is kept in `regressions/<target>/` (in git, run at the start of every run):
 `x86_jit/popf-sets-tf` (the harness's step helper went on in the block after POPF set TF,
-unlike kura's, which leaves it) and `x86_jit64/enter-faults-after-push` (ENTER pushing RBP
+unlike kura's, which leaves it), `d3d9_shader/*` (D3D9 shaders dxwgsl turned into invalid WGSL: fog mixing the uniform's u32 words, texldd in ps_1_x, a texcoord op writing a temp, a constant named past the relative range, a matrix of a0, a register declared twice) and `x86_jit64/enter-faults-after-push` (ENTER pushing RBP
 before a frame pointer it cannot read: the JIT and the interpreter write the same bytes below
 RSP; the harness compared the state before the instruction). To look at a crash:
 

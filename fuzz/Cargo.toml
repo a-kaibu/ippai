@@ -14,8 +14,15 @@ koji = { path = "../crates/koji" }
 sake = { path = "../crates/sake" }
 vorbis = { path = "../crates/vorbis" }
 glwgsl = { path = "../crates/glwgsl" }
+dxwgsl = { path = "../crates/dxwgsl" }
+apitrace = { path = "../crates/apitrace" }
+msidb = { path = "../crates/msidb" }
+naga = { version = "30", features = ["wgsl-in"] }
 wasmparser = "0.263.0"
 wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "threads"] }
+
+[lib]
+path = "src/lib.rs"
 
 [workspace]
 
@@ -123,6 +130,62 @@ bench = false
 [[bin]]
 name = "dds"
 path = "fuzz_targets/dds.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dxbc"
+path = "fuzz_targets/dxbc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "d3d9_shader"
+path = "fuzz_targets/d3d9_shader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "apitrace"
+path = "fuzz_targets/apitrace.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "msi"
+path = "fuzz_targets/msi.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jit_saved"
+path = "fuzz_targets/jit_saved.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mp3_frames"
+path = "fuzz_targets/mp3_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audiofile"
+path = "fuzz_targets/audiofile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formats"
+path = "fuzz_targets/formats.rs"
 test = false
 doc = false
 bench = false

@@ -331,6 +331,13 @@ impl Shader {
             if i.op == DCL && (i.dst.is_none() || i.extra.is_empty()) {
                 return false;
             }
+            // (once: a register declared twice was two variables of one name, invalid WGSL)
+            if i.op == DCL {
+                let d = i.dst.unwrap();
+                if self.ins.iter().filter(|j| j.op == DCL && j.dst.is_some_and(|e| e.ty == d.ty && e.num == d.num)).count() > 1 {
+                    return false;
+                }
+            }
             let params = i.dst.iter().chain(&i.src).chain(&i.predicated);
             for p in params {
                 if !reg_ok(p) {
@@ -351,6 +358,20 @@ impl Shader {
             if i.src.get(1).is_some_and(|p| p.ty == TEMP && p.num + rows >= 32) {
                 return false;
             }
+            // (the matrix is that register and the next `rows`: each must be one too; a0 as
+            // the matrix read a1, which there is not)
+            if rows > 0 {
+                let Some(p) = i.src.get(1) else { return false };
+                let ok = match p.ty {
+                    TEMP => true,
+                    CONST | CONST2 | CONST3 | CONST4 => p.rel.is_some() || const_index(p) + rows < 8192,
+                    INPUT => (0..=rows).all(|k| reg_ok(&Param { num: p.num + k, ..*p })),
+                    _ => false,
+                };
+                if !ok {
+                    return false;
+                }
+            }
             if let Some(p) = i.predicated {
                 if p.ty != PREDICATE {
                     return false;
@@ -364,9 +385,10 @@ impl Shader {
             // (texture instructions: pixel shaders; texcoord and the 1.x texture ops only in 1.x)
             let tex_ok = match i.op {
                 TEXCOORD | 67..=77 => ps && m == 1,
-                TEX | TEXKILL | TEXLDD | DSX | DSY => ps,
-                // (vertex texture fetch is not translated)
-                TEXLDL => ps && m >= 2,
+                TEX | TEXKILL | DSX | DSY => ps,
+                // (vertex texture fetch is not translated; texldd is ps_2_x and later: a 1.x
+                // shader with it sampled a sampler 1.x never declared, invalid WGSL)
+                TEXLDL | TEXLDD => ps && m >= 2,
                 _ => true,
             };
             // (shader model 2+ samples a declared sampler)
@@ -374,6 +396,11 @@ impl Shader {
                 return false;
             }
             if !tex_ok {
+                return false;
+            }
+            // (ps_1_0..1_3: tex, texcoord and the other texture ops write a texture register,
+            // tN, the one whose coordinates they use: a temp there named a texcoord past t7)
+            if ps && m == 1 && self.minor < 4 && matches!(i.op, TEX | TEXCOORD | 67..=77) && !i.dst.is_some_and(|d| d.ty == ADDR) {
                 return false;
             }
             match i.op {
@@ -516,7 +543,9 @@ impl Shader {
             self.samplers.sort();
             self.samplers.dedup();
         }
-        self.max_const = if self.uses_rel { if self.pixel { 224 } else { 256 } } else { max_const };
+        // (relative addressing reaches the whole set the hardware has; a constant named directly
+        // past it is still there: c5731 beside c[a0.x] indexed past the array, invalid WGSL)
+        self.max_const = if self.uses_rel { max_const.max(if self.pixel { 224 } else { 256 }) } else { max_const };
         // linkage
         if self.pixel {
             if self.major >= 3 {
@@ -1289,7 +1318,7 @@ impl<'a> Gen<'a> {
             let _ = writeln!(tail, "  out.c{t} = oc{t};");
         }
         if opts.fog {
-            tail.push_str("  out.c0 = vec4f(mix(u.x[2].xyz, out.c0.xyz, clamp(fogf, 0.0, 1.0)), out.c0.w);\n");
+            tail.push_str("  out.c0 = vec4f(mix(bitcast<vec3f>(u.x[2].xyz), out.c0.xyz, clamp(fogf, 0.0, 1.0)), out.c0.w);\n");
         }
         if let Some(func) = opts.alpha_test {
             let _ = writeln!(tail, "  if (!alpha_ok(out.c0.w, {}u)) {{ discard; }}", func);
@@ -1413,6 +1442,74 @@ mod tests {
 
     fn opts() -> Options {
         Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 }
+    }
+
+    /// Pixel fog (Options::fog: the fog color in u.x[2] as f32 bits) is valid WGSL for every
+    /// pixel shader version (it mixed the vec4u words themselves: invalid; found by the
+    /// d3d9_shader fuzz target).
+    #[test]
+    fn pixel_fog_is_valid_wgsl() {
+        // ps_1_1: mov r0, t0? (tex t0; mov r0, t0) / ps_2_0: mov oC0, c0 / ps_3_0: mov oC0, c0
+        let shaders: [&[u32]; 3] = [
+            &[0xffff0101, 0x00000042, 0xb00f0000, 0x00000001, 0x800f0000, 0xb0e40000, 0x0000ffff],
+            &[0xffff0200, 0x02000001, 0x800f0800, 0xa0e40000, 0x0000ffff],
+            &[0xffff0300, 0x02000001, 0x800f0800, 0xa0e40000, 0x0000ffff],
+        ];
+        for c in shaders {
+            let s = Shader::parse(c).unwrap();
+            valid(&Gen::new(&s).pixel(&Options { fog: true, ..opts() }));
+        }
+    }
+
+    /// texldd in a ps_1_x shader is refused (shader model 2 and later only; it sampled an
+    /// undeclared texture: invalid WGSL, found by the d3d9_shader fuzz target).
+    #[test]
+    fn texldd_needs_shader_model_2() {
+        assert!(Shader::parse(&[0xffff0101, 0x5d, 0x80052001]).is_none());
+        assert!(Shader::parse(&[0xffff0104, 0x0400005d, 0x800f0000, 0xb0e40000, 0xa0e40800, 0xb0e40000, 0xb0e40000, 0x0000ffff]).is_none());
+    }
+
+    /// ps_1_1..1_3 texture ops write texture registers only (texcoord r9 read texcoord 9, which
+    /// no shader has: invalid WGSL, found by the d3d9_shader fuzz target); tN still goes.
+    #[test]
+    fn ps1_texture_ops_write_texture_registers() {
+        assert!(Shader::parse(&[0xffff0101, 0x1000040, 0x80142009]).is_none());
+        let s = Shader::parse(&[0xffff0101, 0x00000040, 0xb00f0000, 0x00000001, 0x800f0000, 0xb0e40000, 0x0000ffff]).unwrap();
+        valid(&Gen::new(&s).pixel(&opts()));
+    }
+
+    /// A vertex shader with relative addressing and a constant named past 256: the constant
+    /// array holds it (found by the d3d9_shader fuzz target).
+    #[test]
+    fn direct_constants_past_the_relative_range_are_declared() {
+        // vs_2_0: mova a0.x, c0.x; mov oPos, c[a0.x + 1]; mov oD0, c300
+        let c = [0xfffe0200u32, 0x0200002e, 0xb0010000, 0xa0000000, 0x03000001, 0xc00f0000, 0xa0e42001, 0xb0000000, 0x02000001, 0xd00f0000, 0xa0e4012c, 0x0000ffff];
+        let s = Shader::parse(&c).unwrap();
+        assert!(s.uses_rel && s.max_const > 300, "{}", s.max_const);
+        valid(&Gen::new(&s).vertex(&opts()));
+    }
+
+    /// A matrix op's matrix is registers that all exist (m3x2 of a0 read a1: invalid WGSL,
+    /// found by the d3d9_shader fuzz target); constants and temps go.
+    #[test]
+    fn matrix_ops_take_whole_matrices() {
+        // vs_1_1: m3x2 r0.xy, v0, a0 / m3x2 r0.xy, v0, c4; mov oPos, r0
+        let m = |src1: u32| [0xfffe0101u32, 0x0000001f, 0x80000000, 0x900f0000, 0x00000018, 0x80030000, 0x90e40000, src1, 0x00000001, 0xc00f0000, 0x80e40000, 0x0000ffff];
+        assert!(Shader::parse(&m(0xb0e40000)).is_none());
+        let s = Shader::parse(&m(0xa0e40004)).unwrap();
+        valid(&Gen::new(&s).vertex(&opts()));
+    }
+
+    /// A register declared twice is refused (two `var v0`: invalid WGSL, found by the
+    /// d3d9_shader fuzz target), as D3D's validator refuses it.
+    #[test]
+    fn registers_are_declared_once() {
+        // vs_2_0: dcl_position v0; dcl_texcoord v0; mov oPos, v0
+        let c = [0xfffe0200u32, 0x0200001f, 0x80000000, 0x900f0000, 0x0200001f, 0x80000005, 0x900f0000, 0x02000001, 0xc00f0000, 0x90e40000, 0x0000ffff];
+        assert!(Shader::parse(&c).is_none());
+        let mut ok = c.to_vec();
+        ok.drain(4..7);
+        valid(&Gen::new(&Shader::parse(&ok).unwrap()).vertex(&opts()));
     }
 
     /// Cube and volume samplers (dcl_cube, dcl_volume) are textures of their kind sampled at
