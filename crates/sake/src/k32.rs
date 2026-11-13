@@ -6038,7 +6038,7 @@ fn find_first_at(pat: u32, data: u32, wide: bool) -> u32 {
         }
         None => {
             // ("dir\": ERROR_INVALID_PARAMETER; "" and a missing directory: ERROR_PATH_NOT_FOUND)
-            last_error(if pat.is_empty() { 3 } else if pat.ends_with(['\\', '/']) { 87 } else { files::missing(&pat) });
+            last_error(if pat.is_empty() { 3 } else if pat.ends_with(['\\', '/']) { 87 } else { files::missing_pattern(&pat) });
             0xffff_ffff
         }
     }

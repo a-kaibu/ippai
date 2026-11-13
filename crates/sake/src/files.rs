@@ -116,6 +116,9 @@ pub fn missing(w: &str) -> u32 {
     if w.is_empty() {
         return ERROR_PATH_NOT_FOUND;
     }
+    if invalid_name(w) {
+        return ERROR_INVALID_NAME;
+    }
     let full = full_path(w);
     match full.trim_end_matches('\\').rsplit_once('\\') {
         Some((d, _)) if resolve(&format!("{d}\\")).is_none() => ERROR_PATH_NOT_FOUND,
@@ -376,6 +379,31 @@ pub fn make_dirs(w: &str) -> String {
     host
 }
 
+/// Whether a path has a character no file name can have (wildcards, <>|"), anywhere but in a
+/// \\?\ or \\.\ prefix: Windows' file functions fail on it with ERROR_INVALID_NAME, before
+/// they look for the file (NtCreateFile's STATUS_OBJECT_NAME_INVALID). The MSLU loader
+/// (unicows.lib) tells Windows NT from 9x by GetFileAttributesW(L"???.???") giving that error
+/// (light's malie.exe, しょぱん！: as 9x it loaded no unicows.dll and crashed).
+pub fn invalid_name(w: &str) -> bool {
+    let p = w.strip_prefix("\\\\?\\").or_else(|| w.strip_prefix("\\\\.\\")).unwrap_or(w);
+    p.contains(['?', '*', '<', '>', '|', '"'])
+}
+
+/// FindFirstFile's error when nothing matches `pat`: the wildcards of its last part are its
+/// pattern, a bad character before that is ERROR_INVALID_NAME.
+pub fn missing_pattern(pat: &str) -> u32 {
+    let dir = pat.rsplit_once(['\\', '/']).map_or("", |x| x.0);
+    if invalid_name(dir) {
+        return ERROR_INVALID_NAME;
+    }
+    let full = full_path(pat);
+    match full.trim_end_matches('\\').rsplit_once('\\') {
+        Some((d, _)) if resolve(&format!("{d}\\")).is_none() => ERROR_PATH_NOT_FOUND,
+        _ => ERROR_FILE_NOT_FOUND,
+    }
+}
+
+pub const ERROR_INVALID_NAME: u32 = 123;
 pub const ERROR_FILE_NOT_FOUND: u32 = 2;
 pub const ERROR_PATH_NOT_FOUND: u32 = 3;
 pub const ERROR_ACCESS_DENIED: u32 = 5;
@@ -391,6 +419,9 @@ pub fn open(w: &str, access: u32, disposition: u32) -> Result<File, u32> {
 pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -> Result<(File, bool), u32> {
     if w.is_empty() {
         return Err(ERROR_PATH_NOT_FOUND);
+    }
+    if invalid_name(w) {
+        return Err(ERROR_INVALID_NAME);
     }
     let write = access & 0x4000_0000 != 0 || access & 0x1000_0000 != 0 || access & 2 != 0;
     let existing = resolve(w);
@@ -606,6 +637,36 @@ pub fn find(w: &str) -> Option<Find> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn names_with_wildcards_are_invalid() {
+        // (winref badnames: ERROR_INVALID_NAME wherever the character is, not in a \\?\ prefix)
+        for p in ["???.???", "a?.txt", "a*", "a<b", "a>b", "a|b", "a\"b", "no?dir\\a.txt", "C:\\x\\y*", "\\\\?\\C:\\a?"] {
+            assert!(invalid_name(p), "{p}");
+            assert_eq!(missing(p), ERROR_INVALID_NAME, "{p}");
+        }
+        for p in ["a.txt", "\\\\?\\C:\\a.txt", "\\\\.\\pipe\\x", "C:\\dir\\", "", "\u{3042}.txt"] {
+            assert!(!invalid_name(p), "{p}");
+        }
+        // FindFirstFile: the last part's wildcards are its pattern
+        assert_eq!(missing_pattern("no?dir\\*"), ERROR_INVALID_NAME);
+        assert_ne!(missing_pattern("*.zzz-sake-test"), ERROR_INVALID_NAME);
+    }
+
+    proptest! {
+        // a path is invalid exactly when it has one of ?*<>|" outside a \\?\ or \\.\ prefix
+        #[test]
+        fn invalid_names_are_the_ones_with_bad_characters(pre in prop::sample::select(vec!["", "\\\\?\\", "\\\\.\\", "C:\\"]),
+                                                         body in "[a-zA-Z0-9 ._\\\\\u{3042}-\u{3093}?*<>|\"]{0,24}") {
+            let p = format!("{pre}{body}");
+            let bad = body.contains(['?', '*', '<', '>', '|', '"']);
+            prop_assert_eq!(invalid_name(&p), bad);
+            if bad {
+                prop_assert_eq!(missing(&p), ERROR_INVALID_NAME);
+            }
+        }
+    }
 
     #[test]
     fn a_drive_root_is_made_when_missing() {
