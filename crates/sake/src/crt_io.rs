@@ -17,10 +17,12 @@ const EEXIST: u32 = 17;
 const EINVAL: u32 = 22;
 const ENOENT: u32 = 2;
 const EMFILE: u32 = 24;
+const EPIPE: u32 = 32;
 
 const O_WRONLY: u32 = 1;
 const O_RDWR: u32 = 2;
 const O_APPEND: u32 = 8;
+const O_NOINHERIT: u32 = 0x80;
 const O_CREAT: u32 = 0x100;
 const O_TRUNC: u32 = 0x200;
 const O_EXCL: u32 = 0x400;
@@ -32,6 +34,8 @@ enum Kind {
     /// standard stream 0, 1 or 2
     Std(usize),
     File(Arc<File>),
+    /// an end of a pipe (_pipe, or _open_osfhandle of a pipe handle); `osf` is its handle
+    Pipe(crate::pipe::Handle),
 }
 
 #[derive(Clone)]
@@ -94,7 +98,7 @@ pub(super) fn fd_of_file(f: Arc<File>) -> u32 {
 pub(super) fn file_of(fd: u32) -> Option<Arc<File>> {
     match get(fd)?.kind {
         Kind::File(f) => Some(f),
-        Kind::Std(_) => None,
+        Kind::Std(_) | Kind::Pipe(_) => None,
     }
 }
 
@@ -195,6 +199,12 @@ fn _read(c: &mut Ctx) -> u32 {
     match get(fd).map(|d| d.kind) {
         Some(Kind::File(f)) => f.read_into(buf, n.min(i32::MAX as u32)),
         Some(Kind::Std(0)) => 0,
+        // (every writer closed: the end of the file, as the UCRT reads ERROR_BROKEN_PIPE)
+        Some(Kind::Pipe(p)) => match crate::pipe::crt_read(p, buf, n.min(i32::MAX as u32)) {
+            Ok(n) => n,
+            Err(crate::kern::PIPE_BROKEN) => 0,
+            Err(_) => bad(),
+        },
         _ => bad(),
     }
 }
@@ -218,6 +228,15 @@ fn _write(c: &mut Ctx) -> u32 {
             crate::k32::echo_write(&f.path, buf, n);
             f.write_from(buf, n)
         }
+        // (the reader closed: ERROR_NO_DATA, which the UCRT gives as EPIPE)
+        Kind::Pipe(p) => match crate::pipe::crt_write(p, buf, n) {
+            Ok(n) => n,
+            Err(crate::kern::PIPE_CLOSING) => {
+                set_errno(EPIPE);
+                u32::MAX
+            }
+            Err(_) => bad(),
+        },
     }
 }
 fn lseek(fd: u32, off: i64, origin: u32) -> Option<u64> {
@@ -350,6 +369,7 @@ fn _get_osfhandle(c: &mut Ctx) -> u32 {
                 d.osf = match &d.kind {
                     Kind::Std(i) => crate::k32::std_handle(*i),
                     Kind::File(f) => obj::add(Obj::File(f.clone())),
+                    Kind::Pipe(p) => crate::pipe::crt_dup(*p),
                 };
             }
             d.osf
@@ -362,6 +382,7 @@ fn _open_osfhandle(c: &mut Ctx) -> u32 {
     let (h, flags) = (c.a(0), c.a(1));
     let kind = obj::with(|t| match t.objs.get(&h) {
         Some((Obj::File(f), _)) => Some(Kind::File(f.clone())),
+        Some((Obj::Pipe(p), _)) => Some(Kind::Pipe(*p)),
         Some((Obj::Other(k), _)) => Some(Kind::Std(if *k == "stdin" {
             0
         } else if *k == "stderr" {
@@ -381,9 +402,26 @@ fn _open_osfhandle(c: &mut Ctx) -> u32 {
         None => bad(),
     }
 }
+/// The copy of `d` a new descriptor gets: a pipe's takes a handle of its own (the end stays
+/// open while one is open), a file's makes its handle when asked.
+fn dup_of(d: Fd) -> Fd {
+    let osf = match &d.kind {
+        Kind::Pipe(p) => crate::pipe::crt_dup(*p),
+        _ => 0,
+    };
+    Fd { osf, ..d }
+}
 fn _dup(c: &mut Ctx) -> u32 {
     match get(c.a(0)) {
-        Some(d) => add(Fd { osf: 0, ..d }),
+        Some(d) => {
+            let n = dup_of(d);
+            let h = n.osf;
+            let r = add(n);
+            if r == u32::MAX && h != 0 {
+                obj::close(h);
+            }
+            r
+        }
         None => bad(),
     }
 }
@@ -397,12 +435,42 @@ fn _dup2(c: &mut Ctx) -> u32 {
         return 0;
     }
     close_fd(to);
+    let n = dup_of(d);
     with_fds(|t| {
         if t.len() <= to as usize {
             t.resize(to as usize + 1, None);
         }
-        t[to as usize] = Some(Fd { osf: 0, ..d });
+        t[to as usize] = Some(n);
     });
+    0
+}
+/// _pipe(int pfds[2], psize, textmode): descriptors of a new anonymous pipe's read and write
+/// ends (inheritable unless _O_NOINHERIT), 0; -1 with errno EINVAL (no pfds, a mode that is not
+/// text or binary) or EMFILE.
+fn _pipe(c: &mut Ctx) -> u32 {
+    let (pfds, size, mode) = (c.a(0), c.a(1), c.a(2));
+    // (_O_WTEXT, _O_U16TEXT, _O_U8TEXT count as text)
+    if pfds == 0 || mode & !(O_TEXT | O_BINARY | O_NOINHERIT | 0x10000 | 0x20000 | 0x40000) != 0 || mode & O_TEXT != 0 && mode & O_BINARY != 0 {
+        set_errno(EINVAL);
+        return u32::MAX;
+    }
+    let (hr, hw) = crate::pipe::crt_pipe(size, mode & O_NOINHERIT == 0);
+    let fd = |h: u32, end: crate::pipe::Handle| add(Fd { kind: Kind::Pipe(end), text: mode & O_BINARY == 0, append: false, osf: h });
+    let end = |h: u32| crate::pipe::handle(h).expect("a new pipe handle");
+    let r = fd(hr, end(hr));
+    if r == u32::MAX {
+        obj::close(hr);
+        obj::close(hw);
+        return u32::MAX;
+    }
+    let w = fd(hw, end(hw));
+    if w == u32::MAX {
+        close_fd(r);
+        obj::close(hw);
+        return u32::MAX;
+    }
+    mem::put32(pfds, r);
+    mem::put32(pfds + 4, w);
     0
 }
 fn _umask(c: &mut Ctx) -> u32 {
@@ -532,6 +600,15 @@ fn fstat(c: &mut Ctx, k: StatKind) -> u32 {
             let Ok(m) = f.f.lock().unwrap().metadata() else { return bad() };
             info_of(&m, &f.path)
         }
+        // (a pipe: _S_IFIFO, the bytes waiting as its size)
+        Some(Kind::Pipe(p)) => StatInfo {
+            mode: 0x1000 | 0o666,
+            dev: fd,
+            size: crate::kern::with(|k| k.avail(p.end)).0 as u64,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+        },
         None => return bad(),
     };
     put_stat(p, k, &info);
@@ -622,7 +699,7 @@ fn fdopen(fd: u32, mode: &[u8]) -> u32 {
     match get(fd).map(|d| d.kind) {
         Some(Kind::File(f)) => new_stream_of(f, fd, mode),
         Some(Kind::Std(i)) => data("_iob").unwrap() + file_size() * i as u32,
-        None => {
+        Some(Kind::Pipe(_)) | None => {
             set_errno(EBADF);
             0
         }
@@ -1871,6 +1948,7 @@ pub(super) fn init() {
         _open_osfhandle,
         _dup,
         _dup2,
+        _pipe,
         _umask
     );
     reg!(

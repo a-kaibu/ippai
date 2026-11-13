@@ -89,6 +89,51 @@ fn CreatePipe(c: &mut Ctx) -> u32 {
     1
 }
 
+/// The C runtime's _pipe: (read handle, write handle) of a new anonymous pipe of `size` bytes
+/// (0: 4096), inheritable unless `inherit` is false.
+pub fn crt_pipe(size: u32, inherit: bool) -> (u32, u32) {
+    let (r, w) = kw(|k| k.create_anon(size, crate::pid()));
+    let hr = obj::add(Obj::Pipe(Handle { end: r, read: true, write: false, ovl: false }));
+    let hw = obj::add(Obj::Pipe(Handle { end: w, read: false, write: true, ovl: false }));
+    obj::set_inherit(hr, inherit);
+    obj::set_inherit(hw, inherit);
+    (hr, hw)
+}
+
+/// Another handle to `p`'s end (the C runtime's _dup of a pipe descriptor).
+pub fn crt_dup(p: Handle) -> u32 {
+    kw(|k| k.add_ref(p.end, crate::pid()));
+    obj::add(Obj::Pipe(p))
+}
+
+/// A synchronous read of up to `n` bytes into `buf` for the C runtime's _read: waits for data,
+/// Ok(bytes), or the NT status (PIPE_BROKEN: every writer closed and nothing left).
+pub fn crt_read(p: Handle, buf: u32, n: u32) -> Result<u32, u32> {
+    if !p.read {
+        return Err(kern::ACCESS_DENIED);
+    }
+    let e = p.end;
+    let r = kern::block(None, &|| false, move |k: &mut Kern| {
+        let (d, _) = k.read(e, n)?;
+        mem::write(buf, &d);
+        Ok(d.len() as u32)
+    });
+    pump();
+    r
+}
+
+/// A synchronous write of `n` bytes from `buf` for the C runtime's _write: Ok(bytes), or the
+/// NT status (PIPE_CLOSING: the reader closed).
+pub fn crt_write(p: Handle, buf: u32, n: u32) -> Result<u32, u32> {
+    if !p.write {
+        return Err(kern::ACCESS_DENIED);
+    }
+    let (e, data) = (p.end, mem::slice(buf, n).to_vec());
+    let r = kern::block(None, &|| false, move |k: &mut Kern| k.write(e, &data));
+    pump();
+    r
+}
+
 /// CreateNamedPipe(name, open mode, pipe mode, max instances, out size, in size, default
 /// timeout, sa)
 fn create_named(c: &mut Ctx, wide: bool) -> u32 {

@@ -446,3 +446,44 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    /// The C runtime's _pipe and _dup (crate::pipe::crt_dup): every duplicate of the write
+    /// end is a reference of its own, so the reader sees the end of the pipe (PIPE_BROKEN) only
+    /// once the last one is closed and what was written is read; until then an empty pipe waits
+    /// (PENDING). Writes through any duplicate arrive in order.
+    #[test]
+    fn dup_writers(ops in prop::collection::vec((0u8..3, prop::collection::vec(any::<u8>(), 0..8)), 0..40)) {
+        let mut k = Kern::default();
+        let (r, w) = k.create_anon(0, PID);
+        let (mut refs, mut written, mut read) = (1u32, Vec::new(), Vec::new());
+        for (op, d) in ops {
+            match op {
+                // _dup
+                0 if refs > 0 => { k.add_ref(w, PID); refs += 1; }
+                // _close of one of the write descriptors
+                1 if refs > 0 => { k.release(w, PID); refs -= 1; }
+                // _write through any of them
+                2 if refs > 0 => { prop_assert_eq!(k.write(w, &d), Ok(d.len() as u32)); written.extend(d); }
+                // _read
+                _ => match k.read(r, 4) {
+                    Ok((got, _)) => { prop_assert!(!got.is_empty()); read.extend(got); }
+                    Err(e) => {
+                        prop_assert_eq!(read.len(), written.len());
+                        prop_assert_eq!(e, if refs == 0 { PIPE_BROKEN } else { PENDING });
+                    }
+                },
+            }
+            prop_assert_eq!(&written[..read.len()], &read[..]);
+        }
+        // draining after every writer closed always ends in PIPE_BROKEN
+        while refs > 0 { k.release(w, PID); refs -= 1; }
+        loop {
+            match k.read(r, 4) {
+                Ok((got, _)) => read.extend(got),
+                Err(e) => { prop_assert_eq!(e, PIPE_BROKEN); break; }
+            }
+        }
+        prop_assert_eq!(read, written);
+    }
+}
