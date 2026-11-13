@@ -6529,10 +6529,65 @@ fn FlashWindow(_: &mut Ctx) -> u32 {
     0
 }
 fn GetProcessWindowStation(_: &mut Ctx) -> u32 {
-    0x50
+    WINSTA
 }
-fn GetUserObjectInformationA(_: &mut Ctx) -> u32 {
-    0
+/// The window station GetProcessWindowStation gives; any other handle is taken for the desktop.
+const WINSTA: u32 = 0x50;
+
+/// What GetUserObjectInformation returns for `index` of object `h`: UOI_FLAGS (1) a
+/// USEROBJECTFLAGS (the window station visible, WSF_VISIBLE: GDI+ and others check it for an
+/// interactive session), UOI_NAME (2) / UOI_TYPE (3) the name, NUL-terminated. None: an index
+/// Windows answers ERROR_INVALID_PARAMETER for.
+fn user_object_info(h: u32, index: u32, wide: bool) -> Option<Vec<u8>> {
+    let text = |t: &str| -> Vec<u8> {
+        if wide {
+            t.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect()
+        } else {
+            t.bytes().chain([0]).collect()
+        }
+    };
+    let winsta = h == WINSTA;
+    match index {
+        1 => Some([0u32, 0, winsta as u32].iter().flat_map(|v| v.to_le_bytes()).collect()),
+        2 => Some(text(if winsta { "WinSta0" } else { "Default" })),
+        3 => Some(text(if winsta { "WindowStation" } else { "Desktop" })),
+        _ => None,
+    }
+}
+/// GetUserObjectInformation(object, index, buffer, size, needed)
+fn user_object_information(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, index, buf, size, needed) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let Some(data) = user_object_info(h, index, wide) else {
+        crate::k32::last_error(87);
+        return 0;
+    };
+    let n = data.len() as u32;
+    if needed != 0 {
+        mem::w32(needed, n);
+    }
+    if buf == 0 || size < n {
+        crate::k32::last_error(122); // ERROR_INSUFFICIENT_BUFFER
+        return 0;
+    }
+    for (i, b) in data.iter().enumerate() {
+        mem::w8(buf + i as u32, *b);
+    }
+    1
+}
+fn GetUserObjectInformationA(c: &mut Ctx) -> u32 {
+    user_object_information(c, false)
+}
+fn GetUserObjectInformationW(c: &mut Ctx) -> u32 {
+    user_object_information(c, true)
+}
+/// SetWinEventHook: a handle, no events (sake raises no accessibility events); GDI+ fails its
+/// startup without one.
+fn SetWinEventHook(_: &mut Ctx) -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x7e00_0001);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+fn UnhookWinEvent(c: &mut Ctx) -> u32 {
+    (c.a(0) != 0) as u32
 }
 fn SetProcessDPIAware(_: &mut Ctx) -> u32 {
     1
@@ -7271,7 +7326,7 @@ pub fn init() {
         CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharLowerBuffW, CharUpperBuffW, CharNextA, CharNextExA, CharNextW,
         CharPrevA, CharPrevW, CharPrevExA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
         IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, wvsprintfW, GetGUIThreadInfo,
-        AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,
+        AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, GetUserObjectInformationW, SetWinEventHook, UnhookWinEvent, SetProcessDPIAware,
         IsWindowUnicode, RegisterHotKey, UnregisterHotKey,
     );
     reg!("user32"; DdeInitializeA, DdeCreateStringHandleA, DdeCreateStringHandleW, DdeConnect, DdeGetLastError,
@@ -8066,5 +8121,67 @@ mod display_mode_tests {
             prop_assert!(m.iter().all(|&(x, y)| x <= w && y <= h));
             prop_assert!(m.windows(2).all(|p| p[0] < p[1]));
         }
+    }
+}
+
+#[cfg(test)]
+mod user_object_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    #[test]
+    fn flags_and_names() {
+        // the window station is visible (WSF_VISIBLE), the desktop has no WSF flag
+        assert_eq!(user_object_info(WINSTA, 1, false).unwrap(), [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(user_object_info(0x60, 1, true).unwrap(), [0; 12]);
+        assert_eq!(user_object_info(WINSTA, 2, false).unwrap(), b"WinSta0\0");
+        assert_eq!(user_object_info(0x60, 3, true).unwrap(), "Desktop\0".encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<_>>());
+        assert!(user_object_info(WINSTA, 4, false).is_none());
+    }
+
+    proptest! {
+        /// whatever the buffer size: the needed size is always told, the call succeeds exactly
+        /// when the buffer holds the answer, and nothing is written past `size` or on failure
+        #[test]
+        fn buffer_sizes(index in 0u32..6, wide in any::<bool>(), size in 0u32..40, desk in any::<bool>()) {
+            let _g = enter();
+            crate::test_guest::guest_thread();
+            let h = if desk { 0x60 } else { WINSTA };
+            let (buf, needed) = (mem::heap_alloc(64, true), mem::heap_alloc(4, true));
+            for i in 0..64 { mem::w8(buf + i, 0xcc); }
+            mem::w32(needed, 0xdead);
+            let f = if wide { GetUserObjectInformationW } else { GetUserObjectInformationA };
+            let r = call(f, &[h, index, buf, size, needed]);
+            match user_object_info(h, index, wide) {
+                None => {
+                    prop_assert_eq!(r, 0);
+                    prop_assert_eq!(mem::r32(needed), 0xdead);
+                    prop_assert_eq!(crate::k32::get_last_error(), 87);
+                }
+                Some(d) => {
+                    prop_assert_eq!(mem::r32(needed), d.len() as u32);
+                    prop_assert_eq!(r, (size as usize >= d.len()) as u32);
+                    if r == 0 {
+                        prop_assert_eq!(crate::k32::get_last_error(), 122);
+                    }
+                    for i in 0..64u32 {
+                        let want = if r == 1 && (i as usize) < d.len() { d[i as usize] } else { 0xcc };
+                        prop_assert_eq!(mem::r8(buf + i), want);
+                    }
+                }
+            }
+            mem::heap_free(buf);
+            mem::heap_free(needed);
+        }
+    }
+
+    #[test]
+    fn win_event_hooks() {
+        let _g = enter();
+        let (a, b) = (call(SetWinEventHook, &[3, 3, 0, 0x1000, 0, 0, 0]), call(SetWinEventHook, &[3, 3, 0, 0x1000, 0, 0, 0]));
+        assert!(a != 0 && b != 0 && a != b);
+        assert_eq!(call(UnhookWinEvent, &[a]), 1);
+        assert_eq!(call(UnhookWinEvent, &[0]), 0);
     }
 }
