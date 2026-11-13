@@ -631,7 +631,12 @@ fn p_receive_connection(c: &mut Ctx) -> u32 {
     });
     let mut tl = Timeline::new(info.duration_100ns());
     tl.stop = tl.duration;
-    PIPES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Pipe { reader, len, info, tl, thread: false, dead: false, ended: false, gen: 0 });
+    // (connected again: the thread there was goes on with the new stream)
+    let mut pipes = PIPES.lock().unwrap_or_else(|e| e.into_inner());
+    let m = pipes.get_or_insert_with(HashMap::new);
+    let (thread, gen) = m.get(&b).map_or((false, 0), |p| (p.thread, p.gen + 1));
+    m.insert(b, Pipe { reader, len, info, tl, thread, dead: false, ended: false, gen });
+    drop(pipes);
     eprintln!("sake: MPEG-1 splitter: {}x{} {:.3} fps, sound {} Hz, {:.2} s, {} bytes", info.width, info.height, info.rate, info.audio_rate, info.duration, len);
     0
 }
@@ -682,6 +687,11 @@ fn p_disconnect(c: &mut Ctx) -> u32 {
         p.peer = 0;
         p.mem = 0;
     });
+    // (the splitter's source gone: no more reads from it)
+    let reader = if kind(b) == Some(Kind::Split) && k == 1 { pwith(b, |p| std::mem::take(&mut p.reader)).unwrap_or(0) } else { 0 };
+    if reader != 0 {
+        com(c, reader, 2, &[]);
+    }
     match pin_of(me.peer) {
         // (one of ours lets this one go too)
         Some((pb, pk)) => {
@@ -1211,6 +1221,37 @@ pub fn seeked(g: u32) {
     }
 }
 
+/// Graph `g` went: our filters in it let go of what they hold of the game's (its source's
+/// reader, its renderer's pins), their connections and the splitter's thread go, as Windows'
+/// graph disconnects every filter when it is released.
+pub fn graph_released(c: &mut Ctx, g: u32) {
+    let mine: Vec<u32> = FILTERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).iter().filter(|(_, f)| f.graph == g).map(|(&b, _)| b).collect();
+    for b in mine {
+        let pins = fwith(b, |f| {
+            f.graph = 0;
+            f.state = 0;
+            f.pins.iter_mut().map(|p| (std::mem::take(&mut p.peer), std::mem::take(&mut p.mem))).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+        for (peer, mem_pin) in pins {
+            for x in [peer, mem_pin] {
+                if x != 0 && pin_of(x).is_none() {
+                    com(c, x, 2, &[]);
+                }
+            }
+        }
+        let reader = pwith(b, |p| {
+            p.dead = true;
+            std::mem::take(&mut p.reader)
+        })
+        .unwrap_or(0);
+        if reader != 0 {
+            com(c, reader, 2, &[]);
+        }
+    }
+    WAKE.notify_all();
+}
+
 /// Whether `p` is a pin of ours.
 pub fn is_pin(p: u32) -> bool {
     pin_of(p).is_some()
@@ -1367,6 +1408,17 @@ fn stream_thread(c: &mut Ctx) -> u32 {
         let Some((dead, gen, pos, running, stop, reader, len, info)) = pwith(b, |p| (p.dead, p.gen, p.tl.position(t), p.tl.running(), p.tl.stop, p.reader, p.len, p.info)) else { break };
         if dead {
             break;
+        }
+        // (stopped: the game may take its source and renderer apart now; nothing of theirs is
+        // touched until it pauses or runs again)
+        if fwith(b, |f| f.state).unwrap_or(0) == 0 || reader == 0 {
+            if let Some(s) = d.as_mut() {
+                if let Some((a, _)) = s.out.take() {
+                    kura::audio::close(a);
+                }
+            }
+            pause(SEC / 50);
+            continue;
         }
         let (video, audio) = chain(b);
         // (a seek or a stop: the stream again from the start, to the position)

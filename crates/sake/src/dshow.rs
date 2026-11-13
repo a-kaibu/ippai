@@ -185,6 +185,7 @@ fn release_k(c: &mut Ctx, k: u32) -> u32 {
         // may still hold the handle it got from us)
         play::end(b);
         with(b, |g| g.playing = false);
+        crate::dshow_mpeg::graph_released(c, b);
     }
     n
 }
