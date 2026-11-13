@@ -4517,8 +4517,23 @@ fn set_display(c: &mut Ctx, w: i32, h: i32) {
 /// bytes later, those after it 64. Windows writes the Windows 95 DEVMODE (124 bytes, W 188)
 /// whatever dmSize says, and sets dmSize to that (tests/winref/probes/sizes.c): RealLive passes
 /// that short one on its stack, and the rest is its return address (e170d29).
+/// The display modes EnumDisplaySettings lists for the screen `(w, h)`: the usual sizes that fit
+/// on it and the screen's own, smallest first. Windows always lists the current mode: SiglusEngine
+/// looks the current size up in this list to know the desktop, and with the 1920x1080 screen
+/// missing it took the first entry (640x480), found its 1024x768 window too big and opened at
+/// half size (牝アイドル 体験版, 512x384).
+fn display_modes((w, h): (i32, i32)) -> Vec<(i32, i32)> {
+    const USUAL: [(i32, i32); 12] = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960), (1280, 1024),
+        (1366, 768), (1600, 900), (1680, 1050), (1920, 1080), (2560, 1440), (3840, 2160)];
+    let mut m: Vec<(i32, i32)> = USUAL.iter().copied().filter(|&(x, y)| x <= w && y <= h).collect();
+    if !m.contains(&(w, h)) {
+        m.push((w, h));
+    }
+    m.sort();
+    m
+}
 fn display_mode(n: u32, p: u32, wide: bool) -> u32 {
-    let modes = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960)];
+    let modes = display_modes(screen());
     let (w, h) = if n == 0xffff_ffff || n == 0xffff_fffe { screen() } else if (n as usize) < modes.len() { modes[n as usize] } else { return 0 };
     let (d, e) = if wide { (32, 64) } else { (0, 0) };
     let size = 124 + e;
@@ -7510,6 +7525,36 @@ mod edit_text_tests {
             prop_assert_eq!(f & 0x10 != 0, style & 4 != 0);
             prop_assert!(r.l >= 0 && r.t >= 0 && r.r <= w.max(r.l) + 4 && r.b <= h);
             prop_assert_eq!((r.l, r.r), (4, w - 4));
+        }
+    }
+}
+
+#[cfg(test)]
+mod display_mode_tests {
+    use super::display_modes;
+    use proptest::prelude::*;
+
+    #[test]
+    fn usual_screens() {
+        let m = display_modes((1920, 1080));
+        assert_eq!(m.first(), Some(&(640, 480)));
+        assert_eq!(m.last(), Some(&(1920, 1080)));
+        assert!(m.contains(&(1024, 768)) && !m.contains(&(2560, 1440)));
+        assert_eq!(display_modes((1366, 768)).last(), Some(&(1366, 768)));
+        assert_eq!(display_modes((800, 600)), vec![(640, 480), (800, 600)]);
+        // (a screen smaller than every usual size: just its own)
+        assert_eq!(display_modes((320, 240)), vec![(320, 240)]);
+    }
+
+    proptest! {
+        /// for any screen the list holds the screen's own size exactly once, holds no mode larger
+        /// than the screen in either direction, and is sorted without repeats
+        #[test]
+        fn current_mode_is_listed(w in 1i32..8000, h in 1i32..5000) {
+            let m = display_modes((w, h));
+            prop_assert_eq!(m.iter().filter(|&&x| x == (w, h)).count(), 1);
+            prop_assert!(m.iter().all(|&(x, y)| x <= w && y <= h));
+            prop_assert!(m.windows(2).all(|p| p[0] < p[1]));
         }
     }
 }

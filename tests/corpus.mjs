@@ -186,8 +186,8 @@ async function key(name) {
 // Return every 6 s from 12 s on, which takes a dialog's default button; a small window is a
 // dialog however many colours its text has: Softpal's ウインドウモード dialog)
 let last = null, firstFrame = null, lastPre = 0;
-// (games are 640x480 and up)
-const small = (f) => f.w < 600 || f.h < 400;
+// (games are 544x416 and up: RPG Maker VX Ace's RGSS3 screen, レイラのエクスタシティ冒険記)
+const small = (f) => f.w < 540 || f.h < 400;
 const PRE = process.env.PRE?.split(",").map(Number);
 const TITLE_AT = Number(process.env.TITLE_AT ?? 0);
 while (now() < TITLE_MAX && !crashed) {
