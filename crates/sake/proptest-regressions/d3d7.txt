@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0252f6551ec121c2a45dac19e497e5b7e4f7dbf1f67f553a89c63c615bc0a105 # shrinks to rf = 0, tf = 0, rw = 6, rh = 5, rect = (6, 5, 0, 0), tx = 0, ty = 0, extra = (0, 0), sub = 0.0, rhw = [1.0, 1.0, 1.0, 1.0], diff = [1.0, 1.0, 1.0, 1.0], tfactor = [1.0, 1.0, 1.0, 1.0], cop = 2, ca = (2, 2), aop = 1, aa = (2, 2), linear = false, addr = 1, seed = 0
+cc 5356d30e9ac51707a215e72f493ab9610702f2bfe03bdee35a4d97991b9a5d51 # shrinks to rf = 0, tf = 0, rw = 7, rh = 10, rect = (7, 0, 0, 1), tx = 0, ty = 0, extra = (-1, 0), sub = 0.0, rhw = [1.0, 1.0, 1.0, 1.0], diff = [1.0, 1.0, 1.0, 1.0], tfactor = [1.0, 1.0, 1.0, 1.0], cop = 4, ca = (2, 0), aop = 1, aa = (2, 2), linear = false, addr = 1, seed = 0
+cc 9dc7e9faae324675d6f361fbd1107bac79236dabfe54556f09bd53221bb037bb # shrinks to rf = 0, tf = 0, rw = 1, rh = 7, rect = (0, 7, 1, 0), tx = 0, ty = 0, extra = (0, 0), sub = 0.0, rhw = [1.0, 1.0, 1.0, 1.0], diff = [1.0, 1.0, 1.0, 1.0], tfactor = [1.0, 1.0, 1.0, 1.0], cop = 2, ca = (18, 2), aop = 1, aa = (2, 2), linear = false, addr = 1, seed = 0
+cc b8e58f4369c01ed4f98f0b35ee464e4ab032b1fa9bb076d0746fe6bc1cdd111d # shrinks to rf = 0, tf = 0, rw = 2, rh = 17, rect = (0, 0, 1, 1), tx = 0, ty = 0, extra = (1, 1), sub = 0.5, rhw = [1.0, 1.0, 1.0, 1.0], diff = [1.0, 1.0, 1.0, 1.0], tfactor = [1.0, 1.0, 1.0, 1.0], cop = 3, ca = (2, 2), aop = 1, aa = (2, 2), linear = true, addr = 1, seed = 0
+cc 22300f81bbc6feea69a03fdc1d1f083e0a273da526bd04fb27698770541bd4e3 # shrinks to rf = 0, tf = 0, rw = 4, rh = 10, rect = (0, 0, 1, 1), tx = 0, ty = 0, extra = (0, 0), sub = 0.0, rhw = [1.0, 1.0, 1.0, 1.0], diff = [1.0, 1.0, 1.0, 1.0], tfactor = [0.0, 0.0, 0.0, 0.0], cop = 4, ca = (2, 3), aop = 1, aa = (2, 2), linear = false, addr = 1, seed = 0

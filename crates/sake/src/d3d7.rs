@@ -1498,6 +1498,16 @@ struct Stage {
     linear: bool,
 }
 
+/// `Raster::copy_plan`: pixel (x, y) is texel (x + dx, y + dy); `same`: one pixel format, so the
+/// texel's bits (but those of no channel) are the pixel's.
+struct TexCopy<'a> {
+    tex: &'a Tex,
+    dx: i32,
+    dy: i32,
+    same: bool,
+    mask: u32,
+}
+
 struct Raster {
     rt: *mut u8,
     pitch: usize,
@@ -1518,6 +1528,8 @@ struct Raster {
     stages: Vec<Stage>,
     tfactor: C4,
     ntc: usize,
+    /// copy_plan's shortcut (off: every fragment through the pipeline, which tests compare it with)
+    copy: bool,
 }
 
 fn cmp(f: u32, a: f32, b: f32) -> bool {
@@ -1686,6 +1698,7 @@ impl Raster {
             stages,
             tfactor: unpack_argb(d.rs[RS_TEXTUREFACTOR]),
             ntc,
+            copy: true,
         })
     }
 
@@ -1787,6 +1800,58 @@ impl Raster {
         }
     }
 
+    /// A triangle whose fragments are its texture's texels unchanged (`tri`'s copy): one stage
+    /// whose color and alpha are the texture's (SELECTARG of TEXTURE, or MODULATE by a diffuse
+    /// or texture factor of 1), no blending, alpha test, color key, fog, specular or depth, one
+    /// rhw at all three vertices and texture coordinates that put every pixel center (x, y) on
+    /// texel center (x + dx, y + dy) inside the texture: what the rasterizer computes there is
+    /// that texel (bilinear filtering's weights are 1 and 0), so it is copied without the
+    /// fragment pipeline. KiriKiri 2 presents every frame so: a full-screen quad of a
+    /// screen-sized texture, at x - 0.5 and u in 0..1.
+    fn copy_plan(&self, v: [(&[f32; 4], &Vtx); 3], bbox: [i32; 4]) -> Option<TexCopy<'_>> {
+        let [s] = self.stages.as_slice() else { return None };
+        let tex = s.tex.as_ref()?;
+        if !self.copy {
+            return None;
+        }
+        if self.blend.is_some() || self.atest.is_some() || self.fog.is_some() || self.spec || self.z.is_some() || tex.pal.is_some() || (self.ck && tex.key.is_some()) {
+            return None;
+        }
+        if v.iter().any(|(p, _)| p[3] != v[0].0[3]) {
+            return None;
+        }
+        // TEXTURE (2) as given, DIFFUSE (0; CURRENT (1) is the diffuse in the first stage) or
+        // TFACTOR (3) only where that factor is 1
+        let one = |a: u32, ch: std::ops::Range<usize>| match a {
+            0 | 1 => v.iter().all(|(_, x)| x.diff[ch.clone()].iter().all(|&c| c == 1.)),
+            3 => self.tfactor[ch].iter().all(|&c| c == 1.),
+            _ => false,
+        };
+        let is_tex = |o: u32, a: &[u32; 2], ch: std::ops::Range<usize>| match o {
+            2 => a[0] == 2,
+            3 => a[1] == 2,
+            4 => (a[0] == 2 && one(a[1], ch.clone())) || (a[1] == 2 && one(a[0], ch)),
+            _ => false,
+        };
+        if !is_tex(s.cop, &s.ca, 0..3) {
+            return None;
+        }
+        // (with ALPHAOP disabled the alpha is the diffuse one: fine where the target has none)
+        if !is_tex(s.aop, &s.aa, 3..4) && !(s.aop <= 1 && self.fmt.ch[3].1 == 0) {
+            return None;
+        }
+        let off = |k: usize, n: i32| -> Option<i32> {
+            let r = (v[0].1.tex[s.tci][k] * n as f32 - 0.5 - v[0].0[k]).round();
+            v.iter().all(|(p, x)| (x.tex[s.tci][k] * n as f32 - 0.5 - p[k] - r).abs() <= 1. / 4096.).then_some(r as i32)
+        };
+        let (dx, dy) = (off(0, tex.w)?, off(1, tex.h)?);
+        if bbox[0] + dx < 0 || bbox[2] + dx >= tex.w || bbox[1] + dy < 0 || bbox[3] + dy >= tex.h {
+            return None;
+        }
+        let mask = (0..4).fold(0u32, |m, i| m | self.fmt.ch[i].1 << self.fmt.ch[i].0);
+        Some(TexCopy { tex, dx, dy, same: tex.bpp == self.bpp && tex.fmt.ch == self.fmt.ch, mask })
+    }
+
     /// One triangle of screen-space vertices ([x, y, z, rhw]).
     fn tri(&self, v: [(&[f32; 4], &Vtx); 3]) {
         let [(a, va), (b, vb), (c, vc)] = v;
@@ -1816,6 +1881,25 @@ impl Raster {
         let w = [a[3], b[3], c[3]];
         let nt = self.ntc;
         let vs = [va, vb, vc];
+        if let Some(cp) = self.copy_plan([(a, va), (b, vb), (c, vc)], [minx, miny, maxx, maxy]) {
+            for y in miny..=maxy {
+                let py = y as f32;
+                let row = unsafe { self.rt.add(y as usize * self.pitch) };
+                for x in minx..=maxx {
+                    let px = x as f32;
+                    // (the test of the loop below, NaN included)
+                    if es.iter().all(|&(dx, dy, ox, oy, tl)| {
+                        let e = dx * (py - oy) - dy * (px - ox);
+                        !(e < 0. || (e == 0. && !tl))
+                    }) {
+                        let v = cp.tex.raw(x + cp.dx, y + cp.dy);
+                        let v = if cp.same { v & cp.mask } else { self.fmt.pack(cp.tex.fmt.unpack(v)) };
+                        write_px(unsafe { row.add(x as usize * self.bpp) }, self.bpp as u32, v);
+                    }
+                }
+            }
+            return;
+        }
         for y in miny..=maxy {
             let py = y as f32;
             for x in minx..=maxx {
@@ -3252,6 +3336,7 @@ mod tests {
             stages: Vec::new(),
             tfactor: [1.; 4],
             ntc: 1,
+            copy: true,
         }
     }
 
@@ -3506,5 +3591,245 @@ mod tests {
             let _ = e.apply(&ch);
         }
         assert_eq!(e.lights, d.lights);
+    }
+
+    /// Raster's texel copy (copy_plan) against the fragment pipeline it stands for
+    mod texcopy {
+        use super::super::*;
+
+        // ----------------------------------------------------------------------------------------
+        // Raster's texel copy (copy_plan) against the fragment pipeline it stands for
+
+        const XRGB: [u32; 4] = [0xff_0000, 0xff00, 0xff, 0];
+        const ARGB: [u32; 4] = [0xff_0000, 0xff00, 0xff, 0xff00_0000];
+        const RGB565: [u32; 4] = [0xf800, 0x7e0, 0x1f, 0];
+        const ARGB1555: [u32; 4] = [0x7c00, 0x3e0, 0x1f, 0x8000];
+        const FMTS: [[u32; 4]; 4] = [XRGB, ARGB, RGB565, ARGB1555];
+
+        fn fmt_of(m: [u32; 4]) -> Fmt {
+            Fmt { ch: m.map(|m| if m == 0 { (0, 0) } else { (m.trailing_zeros(), m >> m.trailing_zeros()) }) }
+        }
+
+        struct Pic {
+            px: Vec<u8>,
+            w: i32,
+            h: i32,
+            bpp: usize,
+            fmt: Fmt,
+        }
+
+        impl Pic {
+            fn new(m: [u32; 4], w: i32, h: i32, seed: u32) -> Pic {
+                let bpp = if m[0] > 0xffff { 4 } else { 2 };
+                let mut x = seed | 1;
+                let px = (0..w as usize * h as usize * bpp).map(|_| { x ^= x << 13; x ^= x >> 17; x ^= x << 5; x as u8 }).collect();
+                Pic { px, w, h, bpp, fmt: fmt_of(m) }
+            }
+            fn at(&self, x: i32, y: i32) -> u32 {
+                read_px(self.px[(y * self.w) as usize * self.bpp + x as usize * self.bpp..].as_ptr(), self.bpp as u32)
+            }
+            fn tex(&self) -> Tex {
+                Tex { bits: self.px.as_ptr(), w: self.w, h: self.h, pitch: self.w as usize * self.bpp, bpp: self.bpp, fmt: self.fmt, pal: None, key: None }
+            }
+        }
+
+        struct Setup {
+            cop: u32,
+            ca: [u32; 2],
+            aop: u32,
+            aa: [u32; 2],
+            linear: bool,
+            addr: u32,
+            tfactor: C4,
+        }
+
+        /// KiriKiri 2's present (apt245, apt247): MODULATE(TEXTURE, CURRENT: the diffuse in the
+        /// first stage), alpha SELECTARG1(TEXTURE), bilinear, clamp
+        const KIRIKIRI: Setup = Setup { cop: 4, ca: [2, 1], aop: 2, aa: [2, 1], linear: true, addr: 3, tfactor: [1.; 4] };
+
+        fn raster(rt: &mut Pic, tex: &Pic, s: &Setup, copy: bool) -> Raster {
+            Raster {
+                rt: rt.px.as_mut_ptr(),
+                pitch: rt.w as usize * rt.bpp,
+                bpp: rt.bpp,
+                fmt: rt.fmt,
+                z: None,
+                clip: [0, 0, rt.w, rt.h],
+                ztest: None,
+                zwrite: false,
+                blend: None,
+                atest: None,
+                ck: false,
+                flat: false,
+                spec: false,
+                fog: None,
+                cull: 1,
+                stages: vec![Stage { cop: s.cop, ca: s.ca, aop: s.aop, aa: s.aa, tex: Some(tex.tex()), tci: 0, addr: [s.addr; 2], border: [0.; 4], linear: s.linear }],
+                tfactor: s.tfactor,
+                ntc: 1,
+                copy,
+            }
+        }
+
+        fn vtx(x: f32, y: f32, rhw: f32, u: f32, v: f32, diff: C4) -> ([f32; 4], Vtx) {
+            let mut tex = [[0.; 2]; 8];
+            tex[0] = [u, v];
+            ([x, y, 0.5, rhw], Vtx { clip: [x, y, 0.5, 1. / rhw], screen: true, diff, spec: [0.; 4], tex })
+        }
+
+        /// A triangle strip of four vertices, as draw() splits it.
+        fn strip(r: &Raster, q: &[([f32; 4], Vtx); 4]) {
+            r.tri([(&q[0].0, &q[0].1), (&q[1].0, &q[1].1), (&q[2].0, &q[2].1)]);
+            r.tri([(&q[2].0, &q[2].1), (&q[1].0, &q[1].1), (&q[3].0, &q[3].1)]);
+        }
+
+        /// The quad from (x0, y0) to (x1, y1) (pixel edges) showing texels from (tx, ty) on, one to a
+        /// pixel, `sub` texels further.
+        fn aligned(tex: &Pic, x0: i32, y0: i32, x1: i32, y1: i32, tx: i32, ty: i32, sub: f32, rhw: [f32; 4], diff: C4) -> [([f32; 4], Vtx); 4] {
+            let (tw, th) = (tex.w as f32, tex.h as f32);
+            let u = |x: i32| (x - x0 + tx) as f32 / tw + sub / tw;
+            let v = |y: i32| (y - y0 + ty) as f32 / th + sub / th;
+            let p = |x: i32| x as f32 - 0.5;
+            [
+                vtx(p(x0), p(y0), rhw[0], u(x0), v(y0), diff),
+                vtx(p(x1), p(y0), rhw[1], u(x1), v(y0), diff),
+                vtx(p(x0), p(y1), rhw[2], u(x0), v(y1), diff),
+                vtx(p(x1), p(y1), rhw[3], u(x1), v(y1), diff),
+            ]
+        }
+
+        /// Both ways of drawing `q` onto copies of `rt`: (with the copy, through the pipeline).
+        fn both(rt: &Pic, tex: &Pic, s: &Setup, q: &[([f32; 4], Vtx); 4]) -> (Pic, Pic) {
+            let run = |copy| {
+                let mut out = Pic { px: rt.px.clone(), ..*rt };
+                let r = raster(&mut out, tex, s, copy);
+                strip(&r, q);
+                out
+            };
+            (run(true), run(false))
+        }
+
+        /// Pixels differ by more than `tol` steps in a channel (or in bits no channel has).
+        fn diff_px(a: &Pic, b: &Pic, tol: u32) -> Option<(i32, i32, u32, u32)> {
+            let mask = (0..4).fold(0u32, |m, i| m | a.fmt.ch[i].1 << a.fmt.ch[i].0);
+            for y in 0..a.h {
+                for x in 0..a.w {
+                    let (p, q) = (a.at(x, y), b.at(x, y));
+                    let bad = (p & !mask) != (q & !mask)
+                        || a.fmt.ch.iter().any(|&(sh, mx)| ((p >> sh & mx) as i64 - (q >> sh & mx) as i64).unsigned_abs() as u32 > tol);
+                    if bad {
+                        return Some((x, y, p, q));
+                    }
+                }
+            }
+            None
+        }
+
+        impl Clone for Pic {
+            fn clone(&self) -> Pic {
+                Pic { px: self.px.clone(), ..*self }
+            }
+        }
+
+        /// KiriKiri 2 presents every frame by drawing its 1280x720 screen texture over the whole
+        /// target (x - 0.5, u 0..1): the copy takes it, and every pixel is its texel (the target has
+        /// no alpha), as the pipeline draws it.
+        #[test]
+        fn kirikiri_present_is_a_copy() {
+            let tex = Pic::new(ARGB, 64, 48, 7);
+            let rt = Pic::new(XRGB, 64, 48, 9);
+            let q = aligned(&tex, 0, 0, 64, 48, 0, 0, 0., [1.; 4], [1.; 4]);
+            let mut probe = rt.clone();
+            let r = raster(&mut probe, &tex, &KIRIKIRI, true);
+            assert!(r.copy_plan([(&q[0].0, &q[0].1), (&q[1].0, &q[1].1), (&q[2].0, &q[2].1)], [0, 0, 63, 47]).is_some());
+            let (fast, slow) = both(&rt, &tex, &KIRIKIRI, &q);
+            for y in 0..48 {
+                for x in 0..64 {
+                    assert_eq!(fast.at(x, y), tex.at(x, y) & 0xff_ffff, "({x}, {y})");
+                }
+            }
+            assert_eq!(diff_px(&fast, &slow, 0), None);
+        }
+
+        /// What the copy must leave to the pipeline: half a texel off, another rhw at one vertex, a
+        /// diffuse that is not white, blending, texels past the texture's edge, two stages.
+        #[test]
+        fn copy_declines_what_changes_texels() {
+            let tex = Pic::new(ARGB, 32, 32, 3);
+            let mut rt = Pic::new(XRGB, 32, 32, 5);
+            let plan = |r: &Raster, q: &[([f32; 4], Vtx); 4], bb: [i32; 4]| r.copy_plan([(&q[0].0, &q[0].1), (&q[1].0, &q[1].1), (&q[2].0, &q[2].1)], bb).is_some();
+            let r = raster(&mut rt, &tex, &KIRIKIRI, true);
+            assert!(plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+            assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0.5, [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+            assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1., 0.5, 1., 1.], [1.; 4]), [4, 4, 19, 19]));
+            assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1., 0.5, 1., 1.]), [4, 4, 19, 19]));
+            assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 20, 0, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+            let mut r = raster(&mut rt, &tex, &KIRIKIRI, true);
+            r.blend = Some((5, 6));
+            assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+            let mut r = raster(&mut rt, &tex, &KIRIKIRI, true);
+            r.stages.push(r.stages[0].clone());
+            assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+            // (DIFFUSE as the argument is the same, white)
+            let r = raster(&mut rt, &tex, &Setup { ca: [0, 2], ..KIRIKIRI }, true);
+            assert!(plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+            // (a texture factor of 1 is no change; another is, and so is a complemented texture)
+        let half = Setup { ca: [2, 3], tfactor: [0.5, 1., 1., 1.], ..KIRIKIRI };
+        let r = raster(&mut rt, &tex, &Setup { ca: [2, 3], ..KIRIKIRI }, true);
+        assert!(plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+        let r = raster(&mut rt, &tex, &half, true);
+        assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+        let r = raster(&mut rt, &tex, &Setup { cop: 2, ca: [0x12, 0], ..KIRIKIRI }, true);
+        assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+        // (a texel offset within 1/4096 of a whole one is that one; 1/2048 is not)
+        let r = raster(&mut rt, &tex, &KIRIKIRI, true);
+        assert!(plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 1. / 8192., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+        assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 1. / 1024., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+        // (the target's alpha comes from the texture: ALPHAOP disabled gives the diffuse's)
+            let mut rt_a = Pic::new(ARGB, 32, 32, 5);
+            let r = raster(&mut rt_a, &tex, &Setup { aop: 1, ..KIRIKIRI }, true);
+            assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+        }
+
+        mod copy_props {
+            use super::*;
+            use proptest::prelude::*;
+
+            proptest! {
+                #![proptest_config(ProptestConfig::with_cases(2048))]
+                /// Whatever the formats, rectangle, texel offset (whole or not), rhw, diffuse,
+                /// texture factor, stage operations, filter and addressing, drawing with the copy
+                /// gives what the fragment pipeline gives: the same bits with point sampling, and
+                /// with bilinear filtering at most one step off a channel (the pipeline's weights
+                /// at a texel center are 1 - e and e for a rounding e of the interpolation).
+                #[test]
+                fn copy_draws_what_the_pipeline_draws(
+                    rf in 0usize..4, tf in 0usize..4, rw in 1i32..24, rh in 1i32..24,
+                    rect in (0i32..24, 0i32..24, 0i32..24, 0i32..24), tx in -2i32..6, ty in -2i32..6,
+                    extra in (-2i32..5, -2i32..5),
+                    sub in prop_oneof![4 => Just(0f32), 1 => Just(0.5f32), 1 => Just(-0.5f32), 1 => Just(0.25f32), 1 => Just(1. / 2048.), 1 => -1f32..1f32],
+                    rhw in prop_oneof![2 => Just([1f32; 4]), 1 => Just([0.5f32; 4]), 1 => proptest::array::uniform4(0.25f32..2.)],
+                    diff in prop_oneof![2 => Just([1f32; 4]), 1 => proptest::array::uniform4(0f32..=1.)],
+                    tfactor in prop_oneof![Just([1f32; 4]), proptest::array::uniform4(0f32..=1.)],
+                    cop in prop_oneof![1 => Just(2u32), 1 => Just(3), 2 => Just(4), 1 => Just(7)],
+                    ca in (prop_oneof![3 => Just(2u32), 1 => Just(0), 1 => Just(3), 1 => Just(1), 1 => Just(0x12)], prop_oneof![1 => Just(2u32), 2 => Just(0), 1 => Just(3), 1 => Just(1)]),
+                    aop in prop_oneof![1 => Just(1u32), 3 => Just(2), 1 => Just(3), 1 => Just(4)],
+                    aa in (prop_oneof![3 => Just(2u32), 1 => Just(0), 1 => Just(3)], prop_oneof![Just(2u32), Just(0), Just(1)]),
+                    linear in any::<bool>(), addr in 1u32..5, seed in any::<u32>(),
+                ) {
+                    let (x0, x1) = (rect.0.min(rect.2).min(rw), rect.0.max(rect.2).min(rw));
+                    let (y0, y1) = (rect.1.min(rect.3).min(rh), rect.1.max(rect.3).min(rh));
+                    // (mostly a texture the rectangle's texels fit in, sometimes one they run past)
+                    let tw = (x1 - x0 + tx.max(0) + extra.0).max(1);
+                    let th = (y1 - y0 + ty.max(0) + extra.1).max(1);
+                    let tex = Pic::new(FMTS[tf], tw, th, seed);
+                    let rt = Pic::new(FMTS[rf], rw, rh, seed ^ 0x9e37_79b9);
+                    let s = Setup { cop, ca: [ca.0, ca.1], aop, aa: [aa.0, aa.1], linear, addr, tfactor };
+                    let q = aligned(&tex, x0, y0, x1, y1, tx, ty, sub, rhw, diff);
+                    let (fast, slow) = both(&rt, &tex, &s, &q);
+                    prop_assert_eq!(diff_px(&fast, &slow, if linear { 1 } else { 0 }), None);
+                }
+            }
+        }
     }
 }
