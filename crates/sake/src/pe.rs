@@ -1079,7 +1079,7 @@ fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
 fn hle_data(dll: &str, name: &str) -> Option<u32> {
     // (msvcr90's too: AdvHD imports _acmdln from it)
     let k = api::dll_key(dll);
-    if k == "msvcp90" {
+    if k == "msvcp90" || k == "msvcp80" {
         if let Some(a) = crate::msvcp90::data(name) {
             return Some(a);
         }

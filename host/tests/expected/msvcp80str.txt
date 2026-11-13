@@ -1,0 +1,7 @@
+LoadLibrary msvcp80: ok
+exports: ok
+ctor returns this: yes
+empty: size 0, c_str ""
+100 appends: size 100, ends "mnopqrstuv"
+with NUL: size 102, strlen 101
+dtor ok

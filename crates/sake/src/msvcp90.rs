@@ -1,6 +1,9 @@
 //! msvcp90.dll (Visual C++ 2008) for 32-bit programs: std::basic_string<char>'s out-of-line
 //! members, which programs built against the VC++ 2008 runtime import (the DLL comes from the
 //! redistributable's WinSxS, not with the game: 悪堕ラビリンス 体験版's lus004.exe, #136).
+//! msvcp80.dll (Visual C++ 2005) has the same members with the same layout and growth (VC8's
+//! release basic_string is VC9's): KiriKiri's csvParser.dll plug-in imports its default
+//! constructor, operator+=(char) and destructor (RJ140334 体験版, #195).
 //!
 //! The layout is VC9's (release, x86): the allocator (empty, 4 bytes with padding) at 0, the
 //! union _Bx { char _Buf[16]; char *_Ptr; } at 4, _Mysize at 20, _Myres at 24 (28 bytes); the
@@ -155,6 +158,19 @@ fn assign_copy(c: &mut Ctx) -> u32 {
     }
     s
 }
+/// ??Y...@QAEAAV01@D@Z (char): append(1, ch)
+fn append_char(c: &mut Ctx) -> u32 {
+    let (s, ch) = (this(c), c.a(0) as u8);
+    let n = size(s);
+    if n >= MAX_SIZE {
+        crate::fatal(c.cpu, "msvcp: basic_string too long (std::length_error is not thrown here)");
+    }
+    if grow(c, s, n + 1) {
+        w8(ptr(s) + n, ch);
+        eos(s, n + 1);
+    }
+    s
+}
 /// ?c_str@...@QBEPBDXZ
 fn c_str(c: &mut Ctx) -> u32 {
     ptr(this(c))
@@ -222,8 +238,10 @@ pub fn init_dll() {
         (format!("?size@{S}QBEIXZ"), size_fn),
         (format!("?find@{S}QBEIPBDI@Z"), find),
         (format!("?substr@{S}QBE?AV12@II@Z"), substr),
+        (format!("??Y{S}QAEAAV01@D@Z"), append_char),
     ] {
         implement("msvcp90", &name, f);
+        implement("msvcp80", &name, f);
     }
 }
 
@@ -317,7 +335,46 @@ mod tests {
         check(out2, b"");
     }
 
+    #[test]
+    fn append_char_grows_as_vc() {
+        let _g = enter();
+        let s = mem::heap_alloc(28, true);
+        tcall(ctor, s, &[]);
+        let mut want = Vec::new();
+        let mut caps = Vec::new();
+        for i in 0..100u32 {
+            let ch = b'a' + (i % 26) as u8;
+            assert_eq!(tcall(append_char, s, &[ch as u32 | 0xab00]), s, "returns *this; the char is the low byte");
+            want.push(ch);
+            check(s, &want);
+            if caps.last() != Some(&capacity(s)) {
+                caps.push(capacity(s));
+            }
+        }
+        // VC8/9: 15 inside, then n | 15, or 1.5x when that is more
+        assert_eq!(caps, [15, 31, 47, 70, 105]);
+        tcall(dtor, s, &[]);
+        assert_eq!((size(s), capacity(s)), (0, 15));
+    }
+
     proptest! {
+        /// operator+=(char) one at a time is the string with those characters appended.
+        #[test]
+        fn append_model(a in proptest::collection::vec(1u8..=255, 0..40), add in proptest::collection::vec(any::<u8>(), 0..60)) {
+            let _g = enter();
+            let s = new_str(&a);
+            let mut want = a.clone();
+            for &ch in &add {
+                tcall(append_char, s, &[ch as u32]);
+                want.push(ch);
+                prop_assert_eq!(bytes(s), want.clone());
+                prop_assert_eq!(mem::r8(ptr(s) + size(s)), 0);
+                prop_assert!(capacity(s) >= size(s));
+            }
+            tcall(dtor, s, &[]);
+            mem::heap_free(s);
+        }
+
         /// Against Rust's own strings: construction, copies, assignment, find, substr; the VC9
         /// capacity rule holds after every step and destruction frees back to the buffer.
         #[test]
