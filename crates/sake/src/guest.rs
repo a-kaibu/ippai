@@ -14,14 +14,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static PLACED: AtomicBool = AtomicBool::new(false);
 
-/// Maps the code (read+execute: the JIT translates no writable code).
+/// Maps the code (read+execute: the JIT translates no writable code). VirtualQuery calls it
+/// MEM_IMAGE: the system DLLs' functions it stands for (GetLastError, HeapAlloc, ...) are image
+/// code on Windows, and programs that check their imports look (tests/apiimage.c).
 pub fn init() {
     if crate::env_on!("SAKE_NO_GUEST_CRT") {
         return;
     }
     let (want, bytes) = if mem::x64() { (code64::AT, code64::CODE) } else { (code::AT, code::CODE) };
     let size = (bytes.len() as u32 + 0xfff) & !0xfff;
-    let Some(at) = mem::reserve(want, size, 0x20, 0x20000, false) else {
+    let Some(at) = mem::reserve(want, size, 0x20, 0x100_0000, false) else {
         eprintln!("sake: no room for the guest C library at {want:#x}");
         return;
     };

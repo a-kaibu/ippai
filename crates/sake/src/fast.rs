@@ -50,7 +50,7 @@ impl Asm {
     }
     /// Places the code in guest memory.
     fn place(&mut self) -> u32 {
-        let at = mem::heap_alloc(self.b.len() as u32, true);
+        let at = code_alloc(self.b.len() as u32);
         for &(p, l) in &self.rel8 {
             let d = self.labels[l] as i64 - (p as i64 + 1);
             assert!((-128..128).contains(&d), "fast: jump too far");
@@ -65,6 +65,24 @@ impl Asm {
         }
         at
     }
+}
+
+/// Room for the stubs: read+execute pages VirtualQuery calls MEM_IMAGE, as the system DLL code
+/// they stand for is on Windows (programs that check their imports look: tests/apiimage.c;
+/// KiriKiri's signed-plugin check wants kernel32's functions committed image code).
+fn code_alloc(n: u32) -> u32 {
+    static ARENA: Mutex<(u32, u32)> = Mutex::new((0, 0));
+    const SIZE: u32 = 0x10000;
+    let n = (n + 15) & !15;
+    let mut a = ARENA.lock().unwrap();
+    if a.0 == 0 || a.1 + n > SIZE {
+        let base = mem::reserve(0, SIZE.max(n), 0x20, 0x100_0000, true).expect("fast: no room for the stubs");
+        mem::commit_range(base, SIZE.max(n), 0x20);
+        *a = (base, 0);
+    }
+    let at = a.0 + a.1;
+    a.1 += n;
+    at
 }
 
 fn enter_cs(trap: u32) -> u32 {

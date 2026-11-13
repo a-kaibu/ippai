@@ -147,6 +147,7 @@ mod comrpc;
 mod ndr;
 mod capi;
 mod imagecert;
+pub mod imageload;
 mod olefont;
 mod wininet;
 mod tls_socket;
@@ -746,6 +747,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     services::init();
     comrpc::init();
     imagecert::init();
+    imageload::init();
     olefont::init();
     wininet::init();
     sysinfo::init();

@@ -18,6 +18,7 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `dds` | sake::dds::parse (DDS headers D3DX reads: 2D, cube maps, DXTn) | no panic, every face's levels inside the data, back to back |
 | `acm` | sake::acm IMA / MS ADPCM blocks | no panic, all of a block's samples or none |
 | `fdi` | sake::cabinet::copy (cabinet.dll FDICopy) on any bytes as a cabinet, stored / MSZIP / LZX folders | no panic; writes only to the handle fdintCOPY_FILE returned and within that file's size; one fdintCLOSE_FILE_INFO per copied file after all its bytes |
+| `loaded_image` | sake::imageload::layout (imagehlp MapAndLoad / ImageLoad) on any bytes as a PE file | no panic; a layout only with MZ, PE\0\0 at e_lfanew, a PE32 / PE32+ optional header and the whole section table in the file |
 | `dxbc` | dxwgsl::translate / translate_compute on any DXBC (vertex, pixel, compute, a vertex shader with the pixel shader it feeds) | no panic; what it takes is WGSL naga parses and validates |
 | `d3d9_shader` | dxwgsl's Direct3D 9 shaders (vs/ps 1.x-3.0 tokens) with alpha test, fog and 1-4 targets | no panic; a shader it parses gives WGSL naga validates |
 | `apitrace` | apitrace's snappy, trace container and replay stream (the game traces) | no panic; snappy gives back what it compressed |

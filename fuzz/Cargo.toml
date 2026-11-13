@@ -189,3 +189,10 @@ path = "fuzz_targets/formats.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "loaded_image"
+path = "fuzz_targets/loaded_image.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,17 @@
+VirtualQuery(GetModuleHandleA) 1 state 1000 type 1000000 base is kernel32 1
+system directory 1 file 1 same 1
+ImageLoad self 1
+ImageLoad: MZ 1 PE 1 header in view 1 sections 5 same 1 table 1 first 1 size 1 chars 1 readonly 1
+ImageLoad: section name 1 raw data at file offset 1
+module name 1
+ImageUnload 1
+ImageLoad missing 0 error 2
+MapAndLoad by name 1
+MapAndLoad: MZ 1 PE 1 header in view 1 sections 5 same 1 table 1 first 1 size 1 chars 1 readonly 0
+MapAndLoad: section name 1 raw data at file offset 1
+UnMapAndLoad 1
+imports imagehlp.dll: 4 of 4 in the image
+imports kernel32.dll: 14 of 14 in the image
+imports user32.dll: 2 of 2 in the image
+exports kernel32.dll: 0 not in the image, some seen 1
+exports user32.dll: 0 not in the image, some seen 1

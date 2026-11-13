@@ -2044,6 +2044,13 @@ fn virtual_query(a: u32, mbi: u32, len: u32) -> u32 {
     }
     let page = a & !(mem::PAGE - 1);
     let (base, alloc, aprot, n, state, prot, kind) = match mem::query(a) {
+        // an imported function bound to its trap: committed code of its DLL's image, as an
+        // import is on Windows (KiriKiri's signed-plugin check, lavender.tpm, VirtualQuerys
+        // kernel32!GetModuleHandleA from its import table and wants MEM_COMMIT: "/ NC")
+        None if crate::api::dll_of(a).is_some() => {
+            let dll = crate::api::dll_of(a).unwrap_or_default();
+            (page, crate::pe::hle_module(&dll), 0x80, mem::PAGE, 0x1000, 0x20, 0x100_0000)
+        }
         Some((b, r, start, n, state, prot)) => (start.max(page), b, r.alloc_prot, n - (page - start), state, prot, r.kind),
         None => {
             let (lo, n) = mem::free_at(a);
