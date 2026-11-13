@@ -134,20 +134,13 @@ if [ ! -d x ]; then
   rm -f "$f"
 fi
 cd x
-# the exe: vnbox's path (Games/<id>/...), else the biggest .exe that's not a tool
+# the exe: vnbox's path (Games/<id>/...), else tests/corpus/pickexe.py's
 if [ -n "$exe" ] && [ -f "$exe" ]; then e=$exe
 # (the same file one folder further down: silimagi_trial.zip has dl/startup.exe)
 elif [ -n "$exe" ] && e=$(find . -ipath "*/$exe" -printf '%P\n' | head -1) && [ -n "$e" ]; then :
 else
-  # (matched without the folders the unpacking above made: setup.exe.inno/app/game.exe is the
-  # game Inno Setup installs, not a setup program)
-  e=$(find . -iname '*.exe' -printf '%s\t%P\n' |
-      while IFS=$'\t' read -r n p; do
-        k=$(sed -E 's#[^/]*\.(exe|msi|zip|lzh|rar|7z)\.(is|inno|zip|sfx|x)/##Ig' <<< "$p")
-        grep -qaiE 'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet|CrashHandler' <<< "$k" || printf '%s\t%s\n' "$n" "$p"
-      done | sort -rn | head -1 | cut -f2)
-  # (nothing but installers and tools: the biggest of them, an installer sake runs itself)
-  [ -n "$e" ] || e=$(find . -iname '*.exe' -printf '%s\t%P\n' | sort -rn | head -1 | cut -f2)
+  # (tests/corpus/pickexe.py: Unity's and Ren'Py's own exe, else the biggest that is not a tool)
+  e=$(python3 -I "$HERE/corpus/pickexe.py" .) || e=
 fi
 [ -n "$e" ] || { echo "no exe" >&2; exit 3; }
 # launchers that start the game as a second process: run the game exe itself (vnvm's processes
