@@ -14,7 +14,9 @@ static void returning_invalid_parameters(HMODULE ucrt) {
     setvbuf(stdout, NULL, _IONBF, 0);
 }
 #define CHECK(label,expr) do{int ok=!!(expr);printf("%s: %s\n",label,ok?"ok":"FAIL");failed|=!ok;}while(0)
-int main(void){HMODULE m=LoadLibraryA("ucrtbase.dll");if(!m)return 1;returning_invalid_parameters(m);int (__cdecl *copy)(unsigned char *,size_t,const unsigned char *,size_t)=(void *)GetProcAddress(m,"_mbsnbcpy_s");if(!copy)return 1;unsigned char out[8],source[]={0x82,0xa0,'X',0};memset(out,0xa5,sizeof(out));
+int main(void){HMODULE m=LoadLibraryA("ucrtbase.dll");if(!m)return 1;returning_invalid_parameters(m);int (__cdecl *copy)(unsigned char *,size_t,const unsigned char *,size_t)=(void *)GetProcAddress(m,"_mbsnbcpy_s");if(!copy)return 1;
+ /* (the split character only exists in a DBCS code page: a Windows runner's ANSI code page is 1252) */
+ int (__cdecl *setmbcp)(int)=(void *)GetProcAddress(m,"_setmbcp");if(!setmbcp||setmbcp(932))return 1;unsigned char out[8],source[]={0x82,0xa0,'X',0};memset(out,0xa5,sizeof(out));
  CHECK("secure multibyte ASCII",copy(out,sizeof(out),(unsigned char *)"abc",3)==0&&!strcmp((char *)out,"abc")&&out[4]==0xa5);
  CHECK("complete multibyte character",copy(out,sizeof(out),source,2)==0&&out[0]==0x82&&out[1]==0xa0&&out[2]==0);
  CHECK("discard split multibyte character",copy(out,sizeof(out),source,1)==0&&out[0]==0);
