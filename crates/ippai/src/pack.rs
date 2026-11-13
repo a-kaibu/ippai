@@ -207,6 +207,52 @@ fn tree_chunks(store: &Path, name: &str) -> Result<std::collections::HashSet<Str
         .collect())
 }
 
+/// The store's games, by id.
+pub fn game_ids(store: &Path) -> Result<Vec<String>> {
+    let mut v: Vec<String> = fs::read_dir(store.join("games"))?
+        .filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".json").map(String::from))
+        .filter(|id| !id.starts_with('.'))
+        .collect();
+    v.sort();
+    Ok(v)
+}
+
+/// Game `id`'s chunks as the store names them (`chunks/ab/<hash>`), in the order it reads them:
+/// first those its read-order list names (`list`: ippai serve's `<jit>/game.<id>.chunks`, 16
+/// bytes a chunk, what earlier runs and the pre-run read first), then the rest in its trees'
+/// order (a file's chunks one after another, files as the tree lists them). Only its own trees'
+/// chunks (the prefix's are every game's). What delivery packs follow (storage.rs pack_objects).
+pub fn read_order(store: &Path, id: &str, list: &[u8]) -> Result<Vec<String>> {
+    let g = read_game(store, id)?;
+    let mut tree_order = Vec::new();
+    for t in game_trees(&g) {
+        let text = match fs::read_to_string(store.join("trees").join(format!("{t}.tsv"))) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        tree_order.extend(
+            text.lines()
+                .filter(|l| l.starts_with("f\t"))
+                .filter_map(|l| l.split('\t').nth(5))
+                .flat_map(|c| c.split(','))
+                .map(|c| c.split_once(':').map_or(c, |(h, _)| h))
+                .filter(|c| c.len() > 2)
+                .map(String::from),
+        );
+    }
+    let own: std::collections::HashSet<&str> = tree_order.iter().map(String::as_str).collect();
+    let first = list.chunks_exact(16).map(|c| c.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for h in first.filter(|h| own.contains(h.as_str())).chain(tree_order.iter().cloned()) {
+        if seen.insert(h.clone()) {
+            out.push(format!("chunks/{}/{h}", &h[..2]));
+        }
+    }
+    Ok(out)
+}
+
 /// What removing game `id` takes away, as paths in the store (the names the S3 store knows them
 /// by): its entry and cover; the trees it mounts that no other game mounts, never sake's C:\
 /// ([`PREFIX_TREE`]); and their chunks that no tree left lists. Saves are not touched.
@@ -487,12 +533,7 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
                 return Ok(());
             }
             let ids = if all && ids.is_empty() {
-                let mut v: Vec<String> = fs::read_dir(store.join("games"))?
-                    .filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".json").map(String::from))
-                    .filter(|id| !id.starts_with('.'))
-                    .collect();
-                v.sort();
-                v
+                game_ids(store)?
             } else {
                 ids
             };
@@ -936,6 +977,57 @@ mod tests {
     /// Games packed before the rename (Z:\vnvm\game\..., /vnvm/game=...) and their saved
     /// regions move to Z:\ippai\...; the rest of an entry stays as it was, a game already moved
     /// and other files are left, and a second run changes nothing.
+    /// A game's chunks for delivery packs: those the read-order list names first (only its own
+    /// trees': not the prefix's, not another game's), then the rest in tree order, each once.
+    /// Random lists and trees: the result is a permutation of the trees' chunks whose head is
+    /// the list's own chunks in the list's order.
+    #[test]
+    fn read_order_list_first_then_trees() {
+        let t = std::env::temp_dir().join(format!("ippai-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        fs::create_dir_all(t.join("games")).unwrap();
+        fs::create_dir_all(t.join("trees")).unwrap();
+        let h = |i: u32| format!("{i:032x}");
+        let mut seed = 0x9b05688c2b3e6c1fu64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for round in 0..50 {
+            // two trees of the game's (chunks 0..40, shared ones too), a third it does not mount
+            let mut trees: Vec<Vec<u32>> = Vec::new();
+            for (n, name) in ["a", "b", "other"].iter().enumerate() {
+                let mut text = String::from("v2\t\t\n");
+                let mut all = Vec::new();
+                for f in 0..rnd(5) + 1 {
+                    let cs: Vec<u32> = (0..rnd(4) + 1).map(|_| if n == 2 { 100 + rnd(10) as u32 } else { rnd(40) as u32 }).collect();
+                    let field: Vec<String> = cs.iter().map(|c| format!("{}:10", h(*c))).collect();
+                    text += &format!("f\t0\t0\tf{f}.bin\t{}\t{}\n", cs.len() * 10, field.join(","));
+                    all.extend(cs);
+                }
+                fs::write(t.join("trees").join(format!("{name}.tsv")), text).unwrap();
+                trees.push(all);
+            }
+            fs::write(t.join("games/g.json"), r#"{"id":"g","title":"g","run":"C:\\g.exe","args":[],"mounts":["/a=a","/b=b"],"env":[]}"#).unwrap();
+            // (the list: some of the game's, the prefix's, another game's, repeats)
+            let list: Vec<u32> = (0..rnd(30)).map(|_| [rnd(40), 100 + rnd(10), 200][rnd(3) as usize] as u32).collect();
+            let bytes: Vec<u8> = list.iter().flat_map(|c| { let s = h(*c); (0..16).map(move |i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap()) }).collect();
+            let got = read_order(&t, "g", &bytes).unwrap();
+            let own: Vec<u32> = trees[0].iter().chain(&trees[1]).copied().collect();
+            let mut want = Vec::new();
+            for c in list.iter().filter(|c| own.contains(c)).chain(&own) {
+                if !want.contains(c) {
+                    want.push(*c);
+                }
+            }
+            let want: Vec<String> = want.iter().map(|c| format!("chunks/{}/{}", &h(*c)[..2], h(*c))).collect();
+            assert_eq!(got, want, "round {round}");
+        }
+        let _ = fs::remove_dir_all(&t);
+    }
+
     #[test]
     fn guest_paths_migrate() {
         let dir = std::env::temp_dir().join(format!("ippai-migrate-{}", std::process::id()));

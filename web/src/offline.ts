@@ -456,40 +456,68 @@ export async function saveOffline(
     const server = limit(SERVER_AT_ONCE);
     let next = 0;
     const primed = new Map<number, Promise<void>>();
+    const window = (w: number) => {
+      if (!primed.has(w))
+        primed.set(
+          w,
+          direct
+            .prime(missing.slice(w * PRIME_WINDOW, (w + 2) * PRIME_WINDOW), signal)
+            .catch(() => undefined),
+        );
+      return primed.get(w)!;
+    };
+    const finished = (h: string) => {
+      p.have = ++done;
+      p.haveBytes += sizes.get(h) ?? chunk;
+      tell();
+      report(done, hashes.length);
+    };
+    /** Chunk `h` alone: from the bucket, else the server. */
+    const alone = (h: string) => {
+      const url = new URL(chunkPath(h), base).href;
+      // (one fetch of a chunk the game's network worker fetches too: its Web Lock, host/fetch-bridge.js ippaiWhole)
+      return withChunkLock(h, async () => {
+        if (await cache.match(url).catch(() => undefined)) return;
+        const data = await direct.get(h, { signal, request: opt.request });
+        if (data) await keepChunk(cache, url, data);
+        else await server(() => getChunk(base, h, { cache, priority: "low", signal, request: opt.request }));
+      });
+    };
     const one = async (i: number) => {
       while (next < missing.length && !signal.aborted) {
         // (a game playing meanwhile waits for a read of its own: SAVE_BUSY_WIDTH go on)
         while (i >= SAVE_BUSY_WIDTH && gameBusy() && !signal.aborted)
           await new Promise((r) => setTimeout(r, 50));
-        if (next >= missing.length || signal.aborted) break;
-        const k = next++;
-        const h = missing[k]!;
         // (how to fetch the next ones from the bucket, asked for at once a window ahead; every
         // fetcher waits for its window's answer, not only the one that asked)
-        const w = Math.floor(k / PRIME_WINDOW);
-        if (!primed.has(w))
-          primed.set(
-            w,
-            direct
-              .prime(missing.slice(w * PRIME_WINDOW, (w + 2) * PRIME_WINDOW), signal)
-              .catch(() => undefined),
-          );
-        await primed.get(w);
-        p.now = files.get(h) ?? "";
+        for (let w = -1; next < missing.length && w !== Math.floor(next / PRIME_WINDOW);) {
+          w = Math.floor(next / PRIME_WINDOW);
+          await window(w);
+        }
+        if (next >= missing.length || signal.aborted) break;
+        // (the next ones side by side in a delivery pack: one ranged GET for them all)
+        const k = next;
+        const n = direct.span(missing, k);
+        next += n;
+        const run = missing.slice(k, k + n);
+        p.now = files.get(run[0]!) ?? "";
         tell();
-        const url = new URL(chunkPath(h), base).href;
-        // (one fetch of a chunk the game's network worker fetches too: its Web Lock, host/fetch-bridge.js ippaiWhole)
-        await withChunkLock(h, async () => {
-          if (await cache.match(url).catch(() => undefined)) return;
-          const data = await direct.get(h, { signal, request: opt.request });
-          if (data) await keepChunk(cache, url, data);
-          else
-            await server(() => getChunk(base, h, { cache, priority: "low", signal, request: opt.request }));
-        });
-        p.have = ++done;
-        p.haveBytes += sizes.get(h) ?? chunk;
-        tell();
-        report(done, hashes.length);
+        if (n === 1) {
+          await alone(run[0]!);
+          finished(run[0]!);
+          continue;
+        }
+        const url = (h: string) => new URL(chunkPath(h), base).href;
+        const todo: string[] = [];
+        for (const h of run) if (!(await cache.match(url(h)).catch(() => undefined))) todo.push(h);
+        const got = todo.length ? await direct.getRun(todo, { signal, request: opt.request }) : new Map();
+        for (const h of run) {
+          const data = got.get(h);
+          if (data) await keepChunk(cache, url(h), data);
+          // (not in the GET's answer, or not what its name says: alone)
+          else if (todo.includes(h)) await alone(h);
+          finished(h);
+        }
       }
     };
     await Promise.all(Array.from({ length: DIRECT_AT_ONCE }, (_, i) => one(i)));

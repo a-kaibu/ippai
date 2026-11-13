@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 import { blake3Hex } from "./blake3";
-import { directFetcher, isDirectInfo, limit, openSealed } from "./direct";
+import {
+  directFetcher,
+  isDirectInfo,
+  isPackSpan,
+  limit,
+  openSealed,
+  PACK_RUN_BYTES,
+  PACK_RUN_MAX,
+} from "./direct";
 import { byOrder, roomFor } from "./offline";
 
 type B = Uint8Array<ArrayBuffer>;
@@ -56,22 +64,52 @@ function world(
     bucket?: (hex: string) => Response | Promise<Response> | undefined;
     many?: () => Response;
     onlyServer?: string[];
+    /** a bucket that sends the whole pack for a range */
+    noRange?: boolean;
   } = {},
 ) {
   const objs = new Map<string, Obj>();
   const asked: string[] = [];
-  const add = async (data: B) => {
+  const ranges: string[] = [];
+  // (a delivery pack: objects side by side, crates/ippai/src/storage.rs pack_objects)
+  const PACK = "0f0e0d0c-0b0a-4908-8706-050403020100";
+  const at = new Map<string, { id: string; offset: number; len: number }>();
+  const packs = new Map<string, Uint8Array>();
+  // (`start`: where the first one goes, after that many bytes of something else)
+  const pack = (names: string[], id = PACK, start = 0) => {
+    const parts = names.map((n) => objs.get(n)!.sealed);
+    const body = new Uint8Array(parts.reduce((n, p) => n + p.length, start));
+    let off = start;
+    names.forEach((n, i) => {
+      at.set(n, { id, offset: off, len: parts[i]!.length });
+      body.set(parts[i]!, off);
+      off += parts[i]!.length;
+    });
+    packs.set(id, body);
+    return body;
+  };
+  // (`wrong`: sealed as the bucket has it, but not the chunk its name says)
+  const add = async (data: B, wrong = false) => {
     const key = randomBytes(32);
     const object = randomUUID();
     const name = blake3Hex(data);
-    objs.set(name, { data, key, object, sealed: await seal(key, object, frame(data)) });
+    objs.set(name, {
+      data,
+      key,
+      object,
+      sealed: await seal(key, object, frame(wrong ? data.map((b) => b ^ 1) : data)),
+    });
     return name;
   };
-  const answer = (o: Obj) => ({
-    url: `https://bucket.test/${o.object}`,
-    key: toHex(o.key),
-    object: o.object,
-  });
+  const answer = (o: Obj) => {
+    const n = [...objs.entries()].find(([, v]) => v === o)![0];
+    return {
+      url: `https://bucket.test/${o.object}`,
+      key: toHex(o.key),
+      object: o.object,
+      ...(at.has(n) ? { pack: { url: `https://bucket.test/pack/${at.get(n)!.id}`, ...at.get(n)! } } : {}),
+    };
+  };
   const request: typeof fetch = async (input, init) => {
     const url = urlOf(input);
     asked.push(url);
@@ -97,6 +135,16 @@ function world(
         object: o.object,
       });
     }
+    const pm = /^https:\/\/bucket\.test\/pack\/(.+)$/.exec(url);
+    if (pm) {
+      const body = packs.get(pm[1]!);
+      if (!body) return new Response("", { status: 404 });
+      const range = new Headers(init?.headers).get("range") ?? "";
+      ranges.push(range);
+      const r = /^bytes=(\d+)-(\d+)$/.exec(range);
+      if (!r || how.noRange) return new Response(body.slice());
+      return new Response(body.slice(+r[1]!, +r[2]! + 1), { status: 206 });
+    }
     m = /^https:\/\/bucket\.test\/(.+)$/.exec(url);
     if (m) {
       const o = [...objs.entries()].find(([, v]) => v.object === m![1]);
@@ -107,7 +155,7 @@ function world(
     }
     return new Response("", { status: 500 });
   };
-  return { add, request, asked, objs };
+  return { add, request, asked, objs, pack, ranges, at };
 }
 
 const STORE = "https://ippai.test/store/";
@@ -317,5 +365,133 @@ describe("roomFor", () => {
   it("does not stop a save where the browser says nothing", () => {
     expect(roomFor(100 * GB)).toBe(true);
     expect(roomFor(100 * GB, 0, 0)).toBe(true);
+  });
+});
+
+describe("delivery packs", () => {
+  const setup = async (n: number, how: Parameters<typeof world>[0] = {}) => {
+    const w = world(how);
+    const names: string[] = [];
+    for (let i = 0; i < n; i++) names.push(await w.add(bytes(200 + ((i * 7919) % 900), 100 + i)));
+    w.pack(names);
+    const d = directFetcher(STORE, { request: w.request, unzstd });
+    await d.prime(names);
+    return { w, d, names };
+  };
+
+  it("a run of a pack's chunks side by side comes with one ranged GET", async () => {
+    const { w, d, names } = await setup(10);
+    expect(d.span(names, 0)).toBe(10);
+    const got = await d.getRun(names);
+    expect(w.ranges).toEqual([`bytes=0-${w.at.get(names[9]!)!.offset + w.at.get(names[9]!)!.len - 1}`]);
+    for (const n of names) expect(got.get(n)).toEqual(w.objs.get(n)!.data);
+    // (one from the middle on, and with those already here left out: from the first to the last asked)
+    w.ranges.length = 0;
+    expect(d.span(names, 4)).toBe(6);
+    const some = [names[5]!, names[8]!];
+    const part = await d.getRun(some);
+    expect([...part.keys()]).toEqual(some);
+    expect(w.ranges).toEqual([
+      `bytes=${w.at.get(names[5]!)!.offset}-${w.at.get(names[8]!)!.offset + w.at.get(names[8]!)!.len - 1}`,
+    ]);
+  });
+
+  it("span: the longest run from there that is known, of one pack, side by side, within the caps (random orders)", async () => {
+    const { d, names, w } = await setup(40);
+    let x = 7;
+    const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+    const pos = new Map(names.map((n, i) => [n, i]));
+    for (let t = 0; t < 300; t++) {
+      // (mostly in pack order, with swaps, unknown names and repeats)
+      const order = names.slice(rnd(10), 30 + rnd(10));
+      for (let s = rnd(4); s > 0; s--) {
+        const a = rnd(order.length);
+        const b = rnd(order.length);
+        [order[a], order[b]] = [order[b]!, order[a]!];
+      }
+      if (rnd(3) === 0) order.splice(rnd(order.length), 0, "f".repeat(32));
+      const from = rnd(order.length);
+      let want = 1;
+      if (pos.has(order[from]!)) {
+        let bytes = w.at.get(order[from]!)!.len;
+        while (from + want < order.length && want < PACK_RUN_MAX) {
+          const prev = pos.get(order[from + want - 1]!);
+          const cur = pos.get(order[from + want]!);
+          if (
+            prev === undefined ||
+            cur !== prev + 1 ||
+            bytes + w.at.get(order[from + want]!)!.len > PACK_RUN_BYTES
+          )
+            break;
+          bytes += w.at.get(order[from + want]!)!.len;
+          want++;
+        }
+      }
+      expect(d.span(order, from), `${t}`).toBe(want);
+    }
+  });
+
+  it("a bucket without ranges: the run cut from the whole pack; a damaged span or a wrong one left out", async () => {
+    {
+      const { d, names } = await setup(5, { noRange: true });
+      const got = await d.getRun(names.slice(1, 4));
+      expect([...got.keys()]).toEqual(names.slice(1, 4));
+    }
+    {
+      const { w, d, names } = await setup(5);
+      // (damaged in the bucket: that one does not open)
+      const body = w.pack(names);
+      body[w.at.get(names[2]!)!.offset + 30]! ^= 1;
+      const got = await d.getRun(names);
+      expect([...got.keys()]).toEqual([names[0], names[1], names[3], names[4]]);
+    }
+    {
+      // (a chunk in no pack: alone)
+      const w = world({ bucket: () => undefined });
+      const n = await w.add(bytes(500, 9));
+      const d = directFetcher(STORE, { request: w.request, unzstd });
+      await d.prime([n]);
+      expect(d.span([n], 0)).toBe(1);
+      expect((await d.getRun([n])).size).toBe(0);
+    }
+  });
+
+  it("span stops at another pack, at the caps; a run's chunk that opens but is not its name is left out", async () => {
+    const w = world();
+    const names: string[] = [];
+    for (let i = 0; i < 12; i++) names.push(await w.add(bytes(300, 300 + i), i === 3));
+    w.pack(names.slice(0, 6));
+    // (the other pack's first one where this one's last ends: not side by side all the same)
+    const end = w.at.get(names[5]!)!.offset + w.at.get(names[5]!)!.len;
+    w.pack(names.slice(6), "1f0e0d0c-0b0a-4908-8706-050403020100", end);
+    const size = w.at.get(names[0]!)!.len;
+    const d = directFetcher(STORE, { request: w.request, unzstd, packRun: [size * 4, 3] });
+    await d.prime(names);
+    // (3 at most; 4 sizes of bytes at most: 3 again; the other pack from 6 on)
+    expect([0, 3, 4, 5, 6, 9, 10].map((i) => d.span(names, i))).toEqual([3, 3, 2, 1, 3, 3, 2]);
+    const wide = directFetcher(STORE, { request: w.request, unzstd, packRun: [size * 2 + size / 2, 100] });
+    await wide.prime(names);
+    expect(wide.span(names, 0)).toBe(2);
+    const got = await d.getRun(names.slice(2, 5));
+    expect([...got.keys()]).toEqual([names[2], names[4]]);
+    // (one pack a GET: the first one's)
+    w.ranges.length = 0;
+    expect([...(await d.getRun(names.slice(4, 8))).keys()]).toEqual([names[4], names[5]]);
+    expect(w.ranges).toEqual([`bytes=${w.at.get(names[4]!)!.offset}-${end - 1}`]);
+  });
+
+  it("a malformed pack in an answer is no pack", () => {
+    const id = "0f0e0d0c-0b0a-4908-8706-050403020100";
+    for (const bad of [
+      null,
+      {},
+      { id: "x", url: "u", offset: 0, len: 100 },
+      { id, url: 1, offset: 0, len: 100 },
+      { id, url: "u", offset: -1, len: 100 },
+      { id, url: "u", offset: 0, len: 27 },
+      { id, url: "u", offset: 0.5, len: 100 },
+    ])
+      expect(isPackSpan(bad), JSON.stringify(bad)).toBe(false);
+    expect(isPackSpan({ id, url: "u", offset: 0, len: 28 })).toBe(true);
   });
 });

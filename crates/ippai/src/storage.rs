@@ -327,6 +327,135 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Every packs row's pack, as the bucket has it: its span is the object's own ciphertext,
+    /// and a pack's spans are side by side in the order they were packed.
+    fn check_packs(f: &Fake, s: &Storage) {
+        let c = s.db.connect().unwrap();
+        let mut q = c.prepare("SELECT p.logical,p.object,p.pack,p.offset,p.len,o.envelope FROM packs p JOIN objects o USING(logical) ORDER BY p.pack,p.offset").unwrap();
+        let rows: Vec<(String, String, String, i64, i64, String)> = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let objects = f.objects.lock().unwrap();
+        let get = |id: &str| objects.iter().find(|(k, _)| k.ends_with(id)).map(|(_, v)| v.clone());
+        let mut end: BTreeMap<String, i64> = BTreeMap::new();
+        for (l, object, pack, offset, len, env) in rows {
+            let body = get(&pack).unwrap_or_else(|| panic!("pack {pack} of {l} not in the bucket"));
+            let own = get(&object).unwrap_or_else(|| panic!("object {object} of {l} not in the bucket"));
+            assert_eq!(&body[offset as usize..(offset + len) as usize], &own[..], "{l}");
+            // (still the object the row names: a replaced one's span stays, but direct leaves it out)
+            let e: Envelope = serde_json::from_str(&env).unwrap();
+            if e.object.to_string() == object {
+                assert_eq!(e.decrypt(&s.key("k").unwrap(), &body[offset as usize..(offset + len) as usize]).is_ok(), true);
+            }
+            let at = end.entry(pack).or_insert(0);
+            // (side by side when packed; a replaced object's row moved on to a newer pack)
+            assert!(*at <= offset, "{l}: spans overlap");
+            *at = offset + len;
+        }
+    }
+
+    /// Delivery packs over random puts, replacements, packs and gcs: each pack's spans are the
+    /// objects' own ciphertexts side by side in read order, each pack reaches the target but
+    /// the last; packing again packs only what is new or replaced; direct answers name a span
+    /// only for the object it holds; gc never deletes a pack a row names, and deletes one no
+    /// row names once retired long enough.
+    #[tokio::test]
+    async fn packs_hold_objects_in_order_and_outlive_nothing() {
+        let (f, s, dir) = serve(0).await;
+        let mut seed = 0x510e527fade682d1u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let target = 4000;
+        for round in 0..12 {
+            for _ in 0..rnd(12) + 1 {
+                let l = format!("chunks/ab/{:032x}", rnd(30));
+                let v: Vec<u8> = (0..rnd(1500) + 1).map(|i| (i as u64 + round) as u8).collect();
+                s.put(&l, &v).await.unwrap();
+            }
+            let mut order: Vec<String> = (0..30).map(|i| format!("chunks/ab/{i:032x}")).collect();
+            for i in (1..order.len()).rev() {
+                order.swap(i, rnd(i as u64 + 1) as usize);
+            }
+            let packs_now = |s: &Storage| -> std::collections::BTreeSet<String> {
+                let c = s.db.connect().unwrap();
+                let mut q = c.prepare("SELECT DISTINCT pack FROM packs").unwrap();
+                q.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+            };
+            let before = packs_now(&s);
+            let p = s.pack_objects(&order, target).await.unwrap();
+            let made: Vec<String> = packs_now(&s).difference(&before).cloned().collect();
+            assert_eq!(made.len(), p.packs);
+            // (each of those not in a pack yet went into one, in this order)
+            let c = s.db.connect().unwrap();
+            let objects: i64 = c.query_row("SELECT COUNT(*) FROM objects", [], |r| r.get(0)).unwrap();
+            let current: i64 = c.query_row("SELECT COUNT(*) FROM packs p JOIN objects o USING(logical) WHERE instr(o.envelope,p.object) > 0", [], |r| r.get(0)).unwrap();
+            assert_eq!(current, objects, "round {round}: every object in a pack");
+            assert_eq!(p.objects + p.skipped, order.len());
+            let mut short = 0;
+            let mut total = 0;
+            for pack in &made {
+                let n = f.objects.lock().unwrap().iter().find(|(k, _)| k.ends_with(pack.as_str())).unwrap().1.len();
+                total += n as u64;
+                short += (n < target) as usize;
+                let mut q = c.prepare("SELECT logical,offset,len FROM packs WHERE pack=? ORDER BY offset").unwrap();
+                let rows: Vec<(String, i64, i64)> = q.query_map([pack], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+                // (side by side from 0 to the pack's end)
+                let mut at = 0;
+                for (_, o, len) in &rows {
+                    assert_eq!(*o, at);
+                    at += len;
+                }
+                assert_eq!(at as usize, n);
+                let ls: Vec<String> = rows.into_iter().map(|r| r.0).collect();
+                let pos: Vec<usize> = ls.iter().map(|l| order.iter().position(|o| o == l).unwrap()).collect();
+                assert!(pos.windows(2).all(|w| w[0] < w[1]), "round {round}: in read order {pos:?}");
+            }
+            assert!(short <= 1, "round {round}: {short} packs short of the target");
+            assert_eq!(total, p.bytes);
+            // again: nothing new
+            assert_eq!(s.pack_objects(&order, target).await.unwrap().packs, 0);
+            check_packs(&f, &s);
+            // a direct answer's span is the object's, for each named object
+            let l = &order[rnd(30) as usize];
+            if let Some(d) = s.direct(l, 60).await.unwrap() {
+                let span = d.pack.expect("packed");
+                let (pack, off, len): (String, i64, i64) = c.query_row("SELECT pack,offset,len FROM packs WHERE logical=?", [l], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+                assert_eq!((span.id.to_string(), span.offset, span.len), (pack, off as u64, len as u64));
+                assert!(span.url.contains(&span.id.to_string()));
+            }
+            if rnd(3) == 0 {
+                age_retired(&s, 7_200_000);
+                s.gc(std::time::Duration::from_secs(3600), None).await.unwrap();
+                check_packs(&f, &s);
+                // (no pack in the bucket that no row names: the retired ones went)
+                let packs: std::collections::BTreeSet<String> = {
+                    let mut q = c.prepare("SELECT DISTINCT pack FROM packs").unwrap();
+                    q.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+                };
+                let mut want = named(&s);
+                want.extend(packs);
+                assert_eq!(names(&f), want, "round {round}");
+            }
+        }
+        // (a pack that reaches the target exactly is closed: 3 objects of 128 bytes in the
+        // bucket, a target of 2 of them)
+        let three: Vec<String> = (0..3).map(|i| format!("chunks/cd/{i:032x}")).collect();
+        for l in &three {
+            s.put(l, &[7u8; 100]).await.unwrap();
+        }
+        let p = s.pack_objects(&three, 2 * (100 + 28)).await.unwrap();
+        assert_eq!((p.packs, p.objects, p.bytes), (2, 3, 3 * 128));
+        // a replaced object: no span until packed again
+        let l = "chunks/ab/00000000000000000000000000000001".to_string();
+        s.put(&l, b"new").await.unwrap();
+        assert!(s.direct(&l, 60).await.unwrap().unwrap().pack.is_none());
+        assert_eq!(s.pack_objects(&[l.clone()], target).await.unwrap().objects, 1);
+        assert!(s.direct(&l, 60).await.unwrap().unwrap().pack.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Saves keep their last SAVE_REVISIONS revisions in S3.
     #[tokio::test]
     async fn old_save_revisions_are_retired() {
@@ -1129,6 +1258,31 @@ pub struct Direct {
     pub url: String,
     pub key: [u8; 32],
     pub object: Uuid,
+    /// The same ciphertext inside a delivery pack ([`Storage::pack_objects`]), when one holds it.
+    pub pack: Option<PackSpan>,
+}
+
+/// Where a delivery pack holds an object's ciphertext: a presigned GET of the pack, read with
+/// `Range: bytes=offset-(offset+len-1)`.
+pub struct PackSpan {
+    pub url: String,
+    pub id: Uuid,
+    pub offset: u64,
+    pub len: u64,
+}
+
+/// Bytes of objects per delivery pack (docs/s3-reads.md): big enough that a game's start is a
+/// few packs, small enough that one is uploaded again soon when a run is cut short.
+pub const PACK_BYTES: usize = 64 << 20;
+
+/// What [`Storage::pack_objects`] did.
+#[derive(Debug, Default, PartialEq)]
+pub struct Packed {
+    pub packs: usize,
+    pub objects: usize,
+    pub bytes: u64,
+    /// in a pack already (or not in the bucket)
+    pub skipped: usize,
 }
 
 /// Decrypted objects of at most 1 MiB, 64 MiB of them, the oldest put dropped first.
@@ -1582,7 +1736,122 @@ impl Storage {
         }
         let key = e.data_key(&self.key(&e.key_id)?)?;
         let url = self.bucket.presign_get(self.path(e.object), expiry, None).await?;
-        Ok(Some(Direct { url, key, object: e.object }))
+        // (a pack made for an object since replaced holds the old one: not that)
+        let span: Option<(String, i64, i64)> = self
+            .db
+            .connect()?
+            .query_row("SELECT pack,offset,len FROM packs WHERE logical=? AND object=?", rusqlite::params![logical, e.object.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        let pack = match span {
+            Some((id, offset, len)) => {
+                let id = Uuid::parse_str(&id)?;
+                Some(PackSpan { url: self.bucket.presign_get(self.path(id), expiry, None).await?, id, offset: offset as u64, len: len as u64 })
+            }
+            None => None,
+        };
+        Ok(Some(Direct { url, key, object: e.object, pack }))
+    }
+
+    /// Delivery packs (docs/s3-reads.md): the objects named `logicals` (a game's chunks, in the
+    /// order it reads them), their ciphertexts as the bucket has them, side by side in new
+    /// objects of about `target` bytes each. The objects stay as they are (and are read alone as
+    /// before); a browser reads many of them with one ranged GET of a pack, the bucket's wait
+    /// for an object paid once for them all. Those in a pack already are left out, so packing a
+    /// game again packs only what was added. A pack whose objects all went to newer packs is
+    /// retired ([`Storage::gc`] deletes it).
+    pub async fn pack_objects(&self, logicals: &[String], target: usize) -> Result<Packed> {
+        use futures_util::StreamExt;
+        let mut out = Packed::default();
+        let mut todo: Vec<(String, Uuid)> = Vec::new();
+        {
+            let c = self.db.connect()?;
+            let mut seen = std::collections::HashSet::new();
+            for l in logicals {
+                if !seen.insert(l.as_str()) {
+                    continue;
+                }
+                let entry: Option<String> = c.query_row("SELECT envelope FROM objects WHERE logical=?", [l], |r| r.get(0)).optional()?;
+                let Some(entry) = entry else {
+                    out.skipped += 1;
+                    continue;
+                };
+                let e: Envelope = serde_json::from_str(&entry)?;
+                let packed: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM packs WHERE logical=? AND object=?)", rusqlite::params![l, e.object.to_string()], |r| r.get(0))?;
+                if packed {
+                    out.skipped += 1;
+                    continue;
+                }
+                todo.push((l.clone(), e.object));
+            }
+        }
+        // (read several at once, kept in order: the bucket waits for each)
+        let mut read = futures_util::stream::iter(todo.into_iter())
+            .map(|(l, id)| async move {
+                let kept = match &self.disk {
+                    Some(d) => {
+                        let d = d.clone();
+                        tokio::task::spawn_blocking(move || d.read(id)).await.ok().flatten()
+                    }
+                    None => None,
+                };
+                let c = match kept {
+                    Some(c) => c,
+                    None => {
+                        let _permit = self.requests.acquire().await?;
+                        std::sync::Arc::new(self.download(id).await?)
+                    }
+                };
+                Ok::<_, anyhow::Error>((l, id, c))
+            })
+            .buffered(16);
+        let mut buf: Vec<u8> = Vec::new();
+        let mut rows: Vec<(String, Uuid, u64, u64)> = Vec::new();
+        loop {
+            let next = read.next().await.transpose()?;
+            let end = next.is_none();
+            if let Some((l, id, c)) = next {
+                rows.push((l, id, buf.len() as u64, c.len() as u64));
+                buf.extend_from_slice(&c);
+                if buf.len() < target {
+                    continue;
+                }
+            }
+            if !rows.is_empty() {
+                out.packs += 1;
+                out.objects += rows.len();
+                out.bytes += buf.len() as u64;
+                self.record_pack(std::mem::take(&mut buf), std::mem::take(&mut rows)).await?;
+            }
+            if end {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// Uploads one pack and names where it holds each object.
+    async fn record_pack(&self, bytes: Vec<u8>, rows: Vec<(String, Uuid, u64, u64)>) -> Result<()> {
+        let pack = Uuid::new_v4();
+        self.upload(pack, &bytes).await?;
+        let mut c = self.db.connect()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut old = std::collections::HashSet::new();
+        for (l, object, offset, len) in &rows {
+            if let Some(p) = tx.query_row("SELECT pack FROM packs WHERE logical=?", [l], |r| r.get::<_, String>(0)).optional()? {
+                old.insert(p);
+            }
+            tx.execute(
+                "INSERT INTO packs(logical,object,pack,offset,len) VALUES(?,?,?,?,?) ON CONFLICT(logical) DO UPDATE SET object=excluded.object,pack=excluded.pack,offset=excluded.offset,len=excluded.len",
+                rusqlite::params![l, object.to_string(), pack.to_string(), *offset as i64, *len as i64],
+            )?;
+        }
+        for p in old {
+            let used: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM packs WHERE pack=?)", [&p], |r| r.get(0))?;
+            if !used {
+                retire(&tx, Uuid::parse_str(&p)?)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Puts object `logical` on the disk unless it is there (fetched ahead: a game's start).

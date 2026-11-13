@@ -147,6 +147,18 @@ enum StorageCmd {
     Rotate,
     /// Rewrap an existing backup envelope without rewriting its ciphertext.
     RotateBackup { backup: uuid::Uuid },
+    /// Make delivery packs of games' chunks (docs/s3-reads.md): their objects side by side in
+    /// read order, about --mib each, so a browser fetches many with one request. The objects
+    /// stay; packing a game again packs only what was added.
+    Packs {
+        /// Games to pack [default: every game]
+        games: Vec<String>,
+        /// ippai serve's saved regions and read-order lists [default: ~/.cache/ippai/jit]
+        #[arg(long)]
+        jit: Option<PathBuf>,
+        #[arg(long, default_value_t = storage::PACK_BYTES >> 20)]
+        mib: usize,
+    },
     /// Delete objects no longer named (replaced, old save revisions, save states' files no
     /// state index names) that no kept backup refers to, once retired for the grace period.
     Gc {
@@ -158,7 +170,7 @@ enum StorageCmd {
     },
 }
 
-fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Result<()> {
+fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: StorageCmd) -> anyhow::Result<()> {
     let db = library::Library::new(store)?;
     let storage = storage::Storage::configured(db)?.ok_or_else(|| anyhow::anyhow!("set IPPAI_STORAGE_CONFIG"))?;
     tokio::runtime::Runtime::new()?.block_on(async {
@@ -176,6 +188,17 @@ fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Resul
             }
             StorageCmd::Rotate => storage.rotate_objects(),
             StorageCmd::RotateBackup { backup } => storage.rotate_backup(backup).await,
+            StorageCmd::Packs { games, jit, mib } => {
+                let jit = jit.unwrap_or_else(|| cache.join("jit"));
+                let games = if games.is_empty() { pack::game_ids(store)? } else { games };
+                for id in games {
+                    let list = std::fs::read(jit.join(format!("game.{id}.chunks"))).unwrap_or_default();
+                    let order = pack::read_order(store, &id, &list)?;
+                    let p = storage.pack_objects(&order, mib << 20).await?;
+                    println!("{id}: {} packs, {} objects, {} MiB ({} chunks in read order first; {} in a pack already)", p.packs, p.objects, p.bytes >> 20, list.len() / 16, p.skipped);
+                }
+                Ok(())
+            }
             StorageCmd::Gc { grace_days, keep_backups } => {
                 // (save states' files no index names: forgotten, their objects retired)
                 let n = saves::Saves::new(store)?.prune_states(std::time::Duration::from_secs(grace_days * 86400)).await?;
@@ -205,7 +228,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let dirs = dirs::Dirs::load(cli.store)?;
     match cli.cmd {
-        Cmd::Storage { action } => storage_command(&dirs.store, action),
+        Cmd::Storage { action } => storage_command(&dirs.store, &dirs.cache, action),
         Cmd::Serve(a) if a.foreground => serve::run(&dirs, a),
         #[cfg(unix)]
         Cmd::Serve(a) => daemon::start(&dirs, &a),

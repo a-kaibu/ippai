@@ -32,7 +32,9 @@ async function bridge(opt = {}) {
   const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   const k = await crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
   const sealed = new Map();
-  for (const [h, data] of CHUNKS) {
+  for (const [h, real] of CHUNKS) {
+    // (opt.wrong: sealed as the bucket has it, but not the chunk its name says)
+    const data = h === opt.wrong ? real.map((b) => b ^ 1) : real;
     const object = crypto.randomUUID();
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ad = Uint8Array.from(object.replace(/-/g, '').match(/../g), (x) => parseInt(x, 16));
@@ -42,10 +44,29 @@ async function bridge(opt = {}) {
     all.set(c, 12);
     sealed.set(h, { object, all });
   }
+  // (a delivery pack of the chunks `opt.packs` names, in that order: their objects side by side)
+  const pack = { at: new Map(), body: new Uint8Array(0), ranges: [] };
+  if (opt.packs) {
+    const parts = opt.packs.map((h) => sealed.get(h).all);
+    pack.body = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let off = 0;
+    opt.packs.forEach((h, i) => {
+      pack.at.set(h, { offset: off, len: parts[i].length });
+      pack.body.set(parts[i], off);
+      off += parts[i].length;
+    });
+    if (opt.damage) pack.body[pack.at.get(opt.damage).offset + 20] ^= 1;
+  }
+  const PACK = '0f0e0d0c-0b0a-4908-8706-050403020100';
   const log = { bucket: [], one: 0, many: 0, store: 0 };
   let fail429 = opt.fail429 ?? 0;
   const delay = opt.delay ?? 5;
-  const info = (h) => ({ url: `http://bucket/${sealed.get(h).object}`, key: hex(key), object: sealed.get(h).object });
+  const info = (h) => ({
+    url: `http://bucket/${sealed.get(h).object}`,
+    key: hex(key),
+    object: sealed.get(h).object,
+    ...(pack.at.has(h) ? { pack: { id: PACK, url: `http://bucket/pack/${PACK}`, ...pack.at.get(h) } } : {}),
+  });
   const fetch = async (u, init = {}) => {
     await new Promise((r) => setTimeout(r, delay));
     if (u === `${BASE}store-direct` && init.method === 'POST') {
@@ -62,6 +83,18 @@ async function bridge(opt = {}) {
       const h = u.slice(u.lastIndexOf('/') + 1);
       if (!sealed.has(h) || (opt.onlyServer ?? []).includes(h)) return { ok: false, status: 404 };
       return { ok: true, status: 200, json: async () => info(h) };
+    }
+    if (u === `http://bucket/pack/${PACK}`) {
+      log.bucket.push(u);
+      const range = init.headers?.range;
+      pack.ranges.push(range);
+      if (opt.packGone) return { ok: false, status: 404, headers: { get: () => null } };
+      const m = /^bytes=(\d+)-(\d+)$/.exec(range ?? '');
+      // (a bucket that sends the whole object for a range)
+      if (!m || opt.noRange) return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => pack.body.slice().buffer };
+      const body = pack.body.slice(+m[1], +m[2] + 1);
+      const cr = `bytes ${m[1]}-${+m[1] + body.length - 1}/${pack.body.length}`;
+      return { ok: true, status: 206, headers: { get: (n) => (n === 'content-range' ? cr : null) }, arrayBuffer: async () => body.slice().buffer };
     }
     if (u.startsWith('http://bucket/')) {
       log.bucket.push(u);
@@ -99,7 +132,7 @@ async function bridge(opt = {}) {
   vm.runInContext(source, ctx);
   // (the stand-in objects are not zstd frames: the plain chunk)
   vm.runInContext('ippaiUnzstd = async (base, frame) => frame; IPPAI_BAD_CHUNK = 1;', ctx);
-  return { ctx, log, kept };
+  return { ctx, log, kept, pack };
 }
 
 test('one fetch of a chunk however many ask for it at once, of any class', async () => {
@@ -281,6 +314,145 @@ test('a 429 from the bucket: retried after its wait, and the budget drained for 
   assert.equal(log.bucket.length, 2);
   assert.equal(ctx.ippaiTake(ctx.IPPAI_CLASS.warm), false);
 });
+
+// ---- delivery packs (crates/ippai/src/storage.rs pack_objects)
+const settle = async (ctx) => {
+  for (let i = 0; i < 100 && ctx.ippaiInflight.size; i++) await new Promise((r) => setTimeout(r, 10));
+};
+
+test('a read takes the chunks after it in its pack with one ranged GET; reads of them then fetch nothing', async () => {
+  const order = HASHES.slice(0, 10);
+  const { ctx, log, pack } = await bridge({ packs: order });
+  await ctx.ippaiDirectMany(order.map(url));
+  const r = await ctx.ippaiWhole(url(order[0]), { cls: 2 });
+  assert.deepEqual(r.data, CHUNKS.get(order[0]));
+  await settle(ctx);
+  assert.equal(log.bucket.length, 1);
+  const end = pack.at.get(order[9]).offset + pack.at.get(order[9]).len;
+  assert.deepEqual(pack.ranges, [`bytes=0-${end - 1}`]);
+  ctx.ippaiRecent.clear();
+  for (const h of order) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+  assert.equal(log.bucket.length, 1, 'all from the one GET');
+});
+
+test('a read in the middle of a pack: from it on; a game read takes fewer bytes than a save', async () => {
+  const order = HASHES.slice(0, 12);
+  const { ctx, pack } = await bridge({ packs: order });
+  await ctx.ippaiDirectMany(order.map(url));
+  const at = (h) => pack.at.get(h);
+  // (the span: 3 chunks for the game's class, all for a save's)
+  ctx.IPPAI_PACK_SPAN[0] = at(order[6]).offset + at(order[6]).len - at(order[4]).offset;
+  await ctx.ippaiWhole(url(order[4]), { cls: 0 });
+  await settle(ctx);
+  assert.deepEqual(pack.ranges, [`bytes=${at(order[4]).offset}-${at(order[6]).offset + at(order[6]).len - 1}`]);
+  await ctx.ippaiWhole(url(order[7]), { cls: 4 });
+  await settle(ctx);
+  assert.equal(pack.ranges.length, 2);
+  assert.equal(pack.ranges[1], `bytes=${at(order[7]).offset}-${at(order[11]).offset + at(order[11]).len - 1}`);
+});
+
+test('neighbours on the device or coming already: left out, the range ends at the last one taken', async () => {
+  const order = HASHES.slice(0, 8);
+  const { ctx, log, pack, kept } = await bridge({ packs: order });
+  await ctx.ippaiDirectMany(order.map(url));
+  // (2 on the device, 7 on the device: the range ends with 6)
+  for (const i of [2, 7]) {
+    // (alone: not with its own neighbours)
+    await ctx.ippaiDirect(url(order[i]), { cls: 0 }, undefined, true);
+    await new Promise((r) => setTimeout(r, 5));
+    assert.ok(kept.has(url(order[i])));
+  }
+  const before = log.bucket.length;
+  pack.ranges.length = 0;
+  ctx.ippaiRecent.clear();
+  await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+  await settle(ctx);
+  const at = (h) => pack.at.get(h);
+  assert.deepEqual(pack.ranges, [`bytes=0-${at(order[6]).offset + at(order[6]).len - 1}`]);
+  assert.equal(log.bucket.length, before + 1);
+  for (const h of order) assert.ok(kept.has(url(h)), 'every one kept');
+});
+
+test('a neighbour in this worker\'s memory is left out too', async () => {
+  const order = HASHES.slice(0, 6);
+  const { ctx, pack } = await bridge({ packs: order });
+  await ctx.ippaiDirectMany(order.map(url));
+  ctx.ippaiRecent.set(url(order[3]), CHUNKS.get(order[3]));
+  await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+  await settle(ctx);
+  // (3's bytes only because 4 and 5 come after it)
+  const at = (h) => pack.at.get(h);
+  assert.deepEqual(pack.ranges, [`bytes=0-${at(order[5]).offset + at(order[5]).len - 1}`]);
+  assert.equal(ctx.ippaiInflight.size, 0);
+});
+
+test('a span that opens but is not the chunk its name says: not kept, the chunk from the server', async () => {
+  const order = HASHES.slice(0, 5);
+  const { ctx, log, kept } = await bridge({ packs: order, wrong: order[2] });
+  await ctx.ippaiDirectMany(order.map(url));
+  await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+  await settle(ctx);
+  assert.ok(!kept.has(url(order[2])), 'not kept');
+  for (const i of [1, 3, 4]) assert.ok(kept.has(url(order[i])));
+  // (read: from the server, once)
+  assert.deepEqual((await ctx.ippaiWhole(url(order[2]), { cls: 0 })).data, CHUNKS.get(order[2]));
+  assert.equal(log.store, 1);
+});
+
+test('a game read of a neighbour while the GET is going joins it', async () => {
+  const order = HASHES.slice(0, 6);
+  const { ctx, log } = await bridge({ packs: order, delay: 30 });
+  await ctx.ippaiDirectMany(order.map(url));
+  const a = ctx.ippaiWhole(url(order[0]), { cls: 3 });
+  await new Promise((r) => setTimeout(r, 5));
+  const b = ctx.ippaiWhole(url(order[3]), { cls: 0 });
+  assert.deepEqual((await b).data, CHUNKS.get(order[3]));
+  assert.deepEqual((await a).data, CHUNKS.get(order[0]));
+  assert.equal(log.bucket.length, 1);
+});
+
+test('packs gone wrong: a damaged span alone again, a bucket without ranges sliced, a pack gone alone', async () => {
+  const order = HASHES.slice(0, 6);
+  {
+    const { ctx, log } = await bridge({ packs: order, damage: order[2] });
+    await ctx.ippaiDirectMany(order.map(url));
+    await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+    await settle(ctx);
+    ctx.ippaiRecent.clear();
+    for (const h of order) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+    // (the pack, then the damaged one's own object)
+    assert.deepEqual(log.bucket.map((u) => u.includes('/pack/')), [true, false]);
+  }
+  {
+    const { ctx, log } = await bridge({ packs: order, noRange: true });
+    await ctx.ippaiDirectMany(order.map(url));
+    await ctx.ippaiWhole(url(order[1]), { cls: 3 });
+    await settle(ctx);
+    ctx.ippaiRecent.clear();
+    for (const h of order.slice(1)) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+    assert.equal(log.bucket.length, 1);
+  }
+  {
+    const { ctx, log } = await bridge({ packs: order, packGone: true });
+    await ctx.ippaiDirectMany(order.map(url));
+    const r = await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+    assert.deepEqual(r.data, CHUNKS.get(order[0]));
+    await settle(ctx);
+    ctx.ippaiRecent.clear();
+    for (const h of order) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+    // (the pack once, then each alone)
+    assert.equal(log.bucket.filter((u) => u.includes('/pack/')).length, 1);
+    assert.equal(log.bucket.length, 1 + order.length);
+  }
+});
+
+test('a malformed pack in an answer is no pack', async () => {
+  const { ctx } = await bridge();
+  for (const bad of [{}, { id: 'x', url: 'u', offset: 0, len: 100 }, { id: PACK_ID, url: 1, offset: 0, len: 100 }, { id: PACK_ID, url: 'u', offset: -1, len: 100 }, { id: PACK_ID, url: 'u', offset: 0, len: 27 }, { id: PACK_ID, url: 'u', offset: 0.5, len: 100 }])
+    assert.equal(ctx.ippaiPackValid(bad), false, JSON.stringify(bad));
+  assert.equal(ctx.ippaiPackValid({ id: PACK_ID, url: 'u', offset: 0, len: 28 }), true);
+});
+const PACK_ID = '0f0e0d0c-0b0a-4908-8706-050403020100';
 
 test('ranges name the fetcher threads\' reads', () => {
   const ctx = vm.createContext({ SharedArrayBuffer, Atomics, Int32Array, Float64Array, Math, Date });

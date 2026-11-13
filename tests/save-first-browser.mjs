@@ -168,13 +168,51 @@ const browser = await chromium.launchPersistentContext(join(work, "profile"), {
 try {
   const page = browser.pages()[0] ?? (await browser.newPage());
   const objects = new Map();
-  const count = { bucket: 0, bucketNow: 0, bucketMost: 0, server: 0, serverNow: 0, serverMost: 0, serverOnlyAsked: 0, many: 0, one: 0 };
-  const answer = (h) => {
-    const key = randomBytes(32);
-    const object = randomUUID();
-    objects.set(object, seal(key, object, rawFrame(decoded.get(h))));
-    return { url: `https://bucket.test/${object}`, key: key.toString("hex"), object };
+  const count = { bucket: 0, bucketNow: 0, bucketMost: 0, server: 0, serverNow: 0, serverMost: 0, serverOnlyAsked: 0, many: 0, one: 0, pack: 0, packChunks: 0 };
+  // (each chunk sealed once, as the bucket keeps it)
+  const sealed = new Map();
+  const sealOnce = (h) => {
+    if (!sealed.has(h)) {
+      const key = randomBytes(32);
+      const object = randomUUID();
+      objects.set(object, seal(key, object, rawFrame(decoded.get(h))));
+      sealed.set(h, { key, object });
+    }
+    return sealed.get(h);
   };
+  // (a delivery pack of the game's last PACKED chunks, in its order: crates/ippai/src/storage.rs
+  // pack_objects; the save reads them with ranged GETs of it, several a GET)
+  const PACK = "0f0e0d0c-0b0a-4908-8706-050403020100";
+  const PACKED = 20;
+  const packed = [...gChunks].filter((h) => !serverOnly.has(h)).slice(-PACKED);
+  const at = new Map();
+  let off = 0;
+  for (const h of packed) {
+    const o = objects.get(sealOnce(h).object);
+    at.set(h, { offset: off, len: o.length });
+    off += o.length;
+  }
+  const packBody = Buffer.concat(packed.map((h) => objects.get(sealOnce(h).object)));
+  const answer = (h) => {
+    const { key, object } = sealOnce(h);
+    return {
+      url: `https://bucket.test/${object}`,
+      key: key.toString("hex"),
+      object,
+      ...(at.has(h) ? { pack: { id: PACK, url: `https://bucket.test/pack/${PACK}`, ...at.get(h) } } : {}),
+    };
+  };
+  await page.route(`https://bucket.test/pack/${PACK}`, async (route) => {
+    count.pack++;
+    const m = /^bytes=(\d+)-(\d+)$/.exec(route.request().headers()["range"] ?? "");
+    const body = m ? packBody.subarray(+m[1], +m[2] + 1) : packBody;
+    count.packChunks += packed.filter((h) => m && at.get(h).offset >= +m[1] && at.get(h).offset + at.get(h).len <= +m[2] + 1).length;
+    await route.fulfill({
+      status: m ? 206 : 200,
+      body,
+      headers: { "access-control-allow-origin": "*", "access-control-expose-headers": "content-range", ...(m ? { "content-range": `bytes ${m[1]}-${+m[1] + body.length - 1}/${packBody.length}` } : {}) },
+    });
+  });
   // (many at once, as ippai serve's POST /store-direct answers: the server's own left out)
   await page.route(/\/store-direct$/, async (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -195,7 +233,7 @@ try {
     }
     await route.fulfill({ json: answer(h) });
   });
-  await page.route(/^https:\/\/bucket\.test\//, async (route) => {
+  await page.route(/^https:\/\/bucket\.test\/[0-9a-f-]{36}$/, async (route) => {
     count.bucket++;
     count.bucketMost = Math.max(count.bucketMost, ++count.bucketNow);
     await new Promise((r) => setTimeout(r, 300));
@@ -227,7 +265,10 @@ try {
   // (the addresses asked for in batches: none one by one, the server's own known from them)
   assert.ok(count.many >= 1 && count.many <= Math.ceil(gChunks.size / 256), `batches: ${count.many}`);
   assert.equal(count.one, 0, "no chunk asked of /store-direct one by one");
-  assert.equal(count.bucket, gChunks.size - serverOnly.size, "the rest from the bucket");
+  // (the packed ones from the pack, several a GET; the rest from the bucket alone)
+  assert.equal(count.packChunks, PACKED, "every packed chunk from the pack");
+  assert.ok(count.pack >= 1 && count.pack < PACKED / 2, `pack GETs: ${count.pack}`);
+  assert.equal(count.bucket, gChunks.size - serverOnly.size - PACKED, "the rest from the bucket alone");
   assert.ok(count.bucketMost > 4, `the bucket many at once: ${count.bucketMost}`);
   assert.equal(count.server, serverOnly.size, "only the server's own chunks through /store");
   assert.ok(count.serverMost <= 4, `the server at most 4 at once: ${count.serverMost}`);

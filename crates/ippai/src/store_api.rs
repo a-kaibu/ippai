@@ -269,8 +269,7 @@ async fn direct(State(s): State<Store>, Path(path): Path<String>) -> Response {
     }
     match remote.direct(&path, DIRECT_EXPIRY).await {
         Ok(Some(d)) => {
-            let key: String = d.key.iter().map(|b| format!("{b:02x}")).collect();
-            let mut r = axum::Json(serde_json::json!({ "url": d.url, "key": key, "object": d.object.to_string() })).into_response();
+            let mut r = axum::Json(direct_json(&d)).into_response();
             // (a key: kept by nobody else; the page keeps it in memory for DIRECT_EXPIRY at most)
             r.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
             r
@@ -281,6 +280,18 @@ async fn direct(State(s): State<Store>, Path(path): Path<String>) -> Response {
             StatusCode::BAD_GATEWAY.into_response()
         }
     }
+}
+
+/// A /store-direct answer: `{url, key, object}`, and `pack: {id, url, offset, len}` when a
+/// delivery pack holds the object too (storage.rs pack_objects; the page reads its neighbours
+/// in the pack with the same GET).
+fn direct_json(d: &crate::storage::Direct) -> serde_json::Value {
+    let key: String = d.key.iter().map(|b| format!("{b:02x}")).collect();
+    let mut v = serde_json::json!({ "url": d.url, "key": key, "object": d.object.to_string() });
+    if let Some(p) = &d.pack {
+        v["pack"] = serde_json::json!({ "id": p.id.to_string(), "url": p.url, "offset": p.offset, "len": p.len });
+    }
+    v
 }
 
 /// Whether `path` is a chunk's path (`chunks/<ab>/<hash>`), all /store-direct answers for.
@@ -306,8 +317,7 @@ async fn direct_many(State(s): State<Store>, axum::Json(paths): axum::Json<Vec<S
     for path in paths.iter().filter(|p| chunk_path(p)) {
         match remote.direct(path, DIRECT_EXPIRY).await {
             Ok(Some(d)) => {
-                let key: String = d.key.iter().map(|b| format!("{b:02x}")).collect();
-                out.insert(path.clone(), serde_json::json!({ "url": d.url, "key": key, "object": d.object.to_string() }));
+                out.insert(path.clone(), direct_json(&d));
             }
             Ok(None) => {}
             Err(e) => eprintln!("store-direct {path}: {e}"),
@@ -596,6 +606,8 @@ mod tests {
             remote.put(&format!("chunks/{}/{h}", &h[..2]), &zstd::encode_all(&raw[..], 3).unwrap()).await.unwrap();
             names.push(format!("chunks/{}/{h}", &h[..2]));
         }
+        // (the first three in a delivery pack: the answers say where, the rest do not)
+        assert_eq!(remote.pack_objects(&names[..3], 1 << 20).await.unwrap().packs, 1);
         let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default() };
         let app = Router::new().route("/store-direct/{*path}", get(direct)).route("/store-direct", axum::routing::post(direct_many)).with_state(state);
         let post = |body: String| {
@@ -622,6 +634,16 @@ mod tests {
             let a = reqwest::get(all[n]["url"].as_str().unwrap()).await.unwrap().bytes().await.unwrap();
             let b = reqwest::get(one["url"].as_str().unwrap()).await.unwrap().bytes().await.unwrap();
             assert_eq!(a, b);
+            assert_eq!(all[n]["pack"], one["pack"]);
+            if names[..3].contains(n) {
+                let p = &all[n]["pack"];
+                let body = reqwest::get(p["url"].as_str().unwrap()).await.unwrap().bytes().await.unwrap();
+                let (o, l) = (p["offset"].as_u64().unwrap() as usize, p["len"].as_u64().unwrap() as usize);
+                assert_eq!(&body[o..o + l], &a[..], "{n}: the pack's span is the object");
+                assert!(p["id"].as_str().is_some_and(|id| p["url"].as_str().unwrap().contains(id)));
+            } else {
+                assert!(all[n].get("pack").is_none(), "{n}");
+            }
         }
         let many = vec![names[0].clone(); DIRECT_MANY + 1];
         assert_eq!(post(serde_json::to_string(&many).unwrap()).await.0, StatusCode::PAYLOAD_TOO_LARGE);

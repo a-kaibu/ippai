@@ -65,9 +65,39 @@ in the background (`vnvm_fetch_hint` → `ippaiFetchHint`). How engines lay out 
 
 Movies are never hinted: they are read front to back as they play (vfs.rs `SEQ_AHEAD`).
 
+## Delivery packs (crates/ippai/src/storage.rs pack_objects)
+
+A pack is a game's chunk objects, exactly as the bucket has them (still encrypted, each with
+its own key), side by side in one big object, in the order the game reads them. The chunk
+objects themselves stay, so the storage format does not change and nothing reads them
+differently; a pack is only a quicker way to the same bytes.
+
+- `ippai storage packs [game...]` makes them, about 64 MiB each (`--mib`). The order is the
+  game's read-order list first (`<jit>/game.<id>.chunks`: what earlier runs and serve's
+  pre-run read first), then the rest of its trees in tree order. The prefix's chunks are left
+  out (every game shares them). Running it again packs only what was added or replaced.
+- The `packs` table names where each object is: pack, offset, length, and which object it was
+  (an object replaced since is not answered from an old pack). A pack no row names any more is
+  retired, and `storage gc` deletes it.
+- `/store-direct` answers add `pack: {id, url, offset, len}`. In the network worker a read of a
+  chunk takes the chunks after it in the pack with the same ranged GET, those not on the device
+  nor coming already: up to 4 MiB for the game's own read (it waits for all of it), 8 MiB for
+  read-ahead, 16 MiB for hints, 32 MiB for the warm and for a save. A read of one of them
+  meanwhile joins the GET. The page's save takes whole runs (up to 32 MiB or 64 chunks), 16 runs
+  at once.
+- Each chunk from a pack is opened and checked against its name, as one fetched alone is. One
+  that fails is fetched alone; a pack that fails sends all of them alone.
+- Hugging Face's CDN answers a ranged GET with 206 and exposes `Content-Range` to every origin
+  (checked 2026-11-13, through the 302 from huggingface.co).
+
+The user uploads the packs (this needs the bucket's write credentials):
+
+```sh
+IPPAI_STORAGE_CONFIG=... ippai storage packs            # every game
+IPPAI_STORAGE_CONFIG=... ippai storage packs saga_planets-2
+```
+
 ## Still to do
 
-- Delivery packs: the existing chunk ciphertexts concatenated per game in read order, read with
-  Range, so that one request carries many chunks (storage format unchanged).
-- A first-play read list from prerun, so a game nobody has played yet gets a warm too.
 - OPFS sync reads for a saved game, from the pthreads.
+- Tune the engine hints against real games' reads (`IPPAI_TRACE_VFS`).

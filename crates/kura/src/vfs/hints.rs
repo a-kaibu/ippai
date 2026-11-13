@@ -56,8 +56,8 @@ pub fn kind(name: &str) -> Kind {
         "mpg" | "mpeg" | "m1v" | "m2v" | "mp4" | "m4v" | "wmv" | "avi" | "webm" | "ogv" | "mkv" | "mov" | "bik" | "usm" | "mjpg" | "dat_mov" => Kind::Movie,
         "ogg" | "wav" | "opus" | "mp3" | "m4a" | "aac" | "flac" | "wma" | "nwa" | "owp" | "wv" => Kind::Sound,
         "png" | "bmp" | "jpg" | "jpeg" | "webp" | "tga" | "gif" | "tlg" | "tlg5" | "tlg6" | "g00" | "pna" | "hg2" | "hg3" | "gyu" | "dds" | "psd" | "cbg" | "crx" | "wip" | "akb" | "bgi" => Kind::Image,
-        "ks" | "tjs" | "scn" | "txt" | "ss" | "ybn" | "mjo" | "ast" | "nut" | "ini" | "csv" | "xml" | "json" | "lua" | "rpy" | "rpyc" | "sob" | "bin_" => Kind::Script,
-        "xp3" | "pck" | "ovk" | "arc" | "int" | "nsa" | "sar" | "ns2" | "pfs" | "rpa" | "assets" | "ress" | "resource" | "bundle" | "ypf" | "pack" | "pac" | "pak" | "dat" | "bin" | "fpk" | "gpk" | "mpk" | "iar" | "war" | "noa" | "cpz" | "npa" | "lpk" | "xfl" | "afs" | "vfs" | "mrg" | "zip" => Kind::Archive,
+        "ks" | "tjs" | "scn" | "txt" | "ss" | "ybn" | "mjo" | "ast" | "nut" | "ain" | "ini" | "csv" | "xml" | "json" | "lua" | "rpy" | "rpyc" | "sob" | "bin_" => Kind::Script,
+        "xp3" | "pck" | "ovk" | "arc" | "int" | "nsa" | "sar" | "ns2" | "pfs" | "rpa" | "assets" | "ress" | "resource" | "bundle" | "ypf" | "pack" | "pac" | "pak" | "dat" | "bin" | "fpk" | "gpk" | "mpk" | "iar" | "war" | "noa" | "cpz" | "npa" | "lpk" | "xfl" | "afs" | "vfs" | "mrg" | "zip" | "afa" | "ald" | "alf" | "med" | "pk" | "dxa" | "gxp" | "cpk" => Kind::Archive,
         _ => Kind::Other,
     }
 }
@@ -139,6 +139,11 @@ mod tests {
         assert_eq!(kind("op.mpg"), Kind::Movie);
         assert_eq!(kind("g00/BG01.g00"), Kind::Image);
         assert_eq!(kind("scenario/first.ks"), Kind::Script);
+        // (AliceSoft, Eushully, MED, DxLib, CRI archives; System4's script)
+        for a in ["Rance10CG.afa", "dlcg.ald", "data.alf", "md_scr.med", "misc/script.pk", "DXARC.dxa", "data.gxp", "movie.cpk"] {
+            assert_eq!(kind(a), Kind::Archive, "{a}");
+        }
+        assert_eq!(kind("Rance10.ain"), Kind::Script);
         // (no extension, a dot file)
         assert_eq!(kind("README"), Kind::Other);
         assert_eq!(kind(".ogg"), Kind::Other);

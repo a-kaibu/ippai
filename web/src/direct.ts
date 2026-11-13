@@ -15,7 +15,36 @@ export interface DirectInfo {
   url: string;
   key: string;
   object: string;
+  /** Where a delivery pack holds the same object (crates/ippai/src/storage.rs pack_objects). */
+  pack?: PackSpan;
 }
+
+/** A delivery pack's place for one object: read with Range: bytes=offset-(offset+len-1). */
+export interface PackSpan {
+  id: string;
+  url: string;
+  offset: number;
+  len: number;
+}
+
+/** Whether `v` is a well-formed pack place (host/fetch-bridge.js ippaiPackValid). */
+export function isPackSpan(v: unknown): v is PackSpan {
+  const p = v as Partial<PackSpan> | null;
+  return (
+    !!p &&
+    typeof p.url === "string" &&
+    typeof p.id === "string" &&
+    /^[0-9a-f-]{36}$/.test(p.id) &&
+    Number.isSafeInteger(p.offset) &&
+    p.offset! >= 0 &&
+    Number.isSafeInteger(p.len) &&
+    p.len! >= 28
+  );
+}
+
+/** A save's one ranged GET of a pack at most: bytes, chunks (host/fetch-bridge.js IPPAI_PACK_SPAN). */
+export const PACK_RUN_BYTES = 32 << 20;
+export const PACK_RUN_MAX = 64;
 
 /** How long the server may take to say how to fetch a chunk from the bucket (then: the server's /store). */
 export const DIRECT_ASK_MS = 10000;
@@ -102,10 +131,21 @@ export const DIRECT_MANY = 512;
 
 export function directFetcher(
   store: string,
-  opt: { request?: typeof fetch; unzstd?: Unzstd; askMs?: number; cls?: number } = {},
+  opt: {
+    request?: typeof fetch;
+    unzstd?: Unzstd;
+    askMs?: number;
+    cls?: number;
+    /** a run's caps [PACK_RUN_BYTES, PACK_RUN_MAX] */
+    packRun?: [number, number];
+  } = {},
 ): {
   get(hex: string, retry?: RetryOptions): Promise<Uint8Array<ArrayBuffer> | null>;
   prime(hexes: string[], signal?: AbortSignal): Promise<void>;
+  /** How many of `hexes` from `from` on one ranged GET of a pack fetches (1: alone). */
+  span(hexes: string[], from: number): number;
+  /** `hexes` (of one pack, as span gave them) with one ranged GET: those that came, checked. */
+  getRun(hexes: string[], retry?: RetryOptions): Promise<Map<string, Uint8Array<ArrayBuffer>>>;
   off(): boolean;
 } {
   const request = opt.request ?? ((i, n) => fetch(i, n));
@@ -146,9 +186,58 @@ export function directFetcher(
         if (!all) return;
         for (const h of part) {
           const v = all[`chunks/${h.slice(0, 2)}/${h}`];
-          known.set(h, isDirectInfo(v) ? v : null);
+          known.set(h, isDirectInfo(v) ? { ...v, pack: isPackSpan(v.pack) ? v.pack : undefined } : null);
         }
       }
+    },
+    span(hexes, from) {
+      const [maxBytes, maxRun] = opt.packRun ?? [PACK_RUN_BYTES, PACK_RUN_MAX];
+      const first = known.get(hexes[from]!)?.pack;
+      if (!first || off) return 1;
+      let end = first.offset + first.len;
+      let n = 1;
+      while (from + n < hexes.length && n < maxRun) {
+        const p = known.get(hexes[from + n]!)?.pack;
+        if (!p || p.id !== first.id || p.offset !== end || end + p.len - first.offset > maxBytes) break;
+        end += p.len;
+        n++;
+      }
+      return n;
+    },
+    async getRun(hexes, retry = {}) {
+      const out = new Map<string, Uint8Array<ArrayBuffer>>();
+      const all = hexes
+        .map((h) => [h, known.get(h)] as const)
+        .filter((x): x is [string, DirectInfo & { pack: PackSpan }] => !!x[1]?.pack);
+      if (!all.length || off) return out;
+      // (the first one's pack: others are left out)
+      const pack = all[0]![1].pack;
+      const infos = all.filter(([, i]) => i.pack.id === pack.id);
+      const from = Math.min(...infos.map(([, i]) => i.pack.offset));
+      const to = Math.max(...infos.map(([, i]) => i.pack.offset + i.pack.len));
+      let bytes: Uint8Array;
+      try {
+        await gate(opt.cls ?? CLASS.save, retry.signal);
+        bytes = await fetchRetry(
+          pack.url,
+          { cache: "no-store", headers: { range: `bytes=${from}-${to - 1}` } },
+          { giveUpMs: 60000, ...retry, request },
+        );
+      } catch (e) {
+        if (retry.signal?.aborted) throw e;
+        return out;
+      }
+      // (a bucket that sends the whole pack for a range: the range from it)
+      if (bytes.length !== to - from)
+        bytes = bytes.length >= to ? bytes.subarray(from, to) : new Uint8Array(0);
+      if (bytes.length !== to - from) return out;
+      for (const [h, i] of infos) {
+        const at = i.pack.offset - from;
+        const plain = await openSealed(i, bytes.subarray(at, at + i.pack.len)).catch(() => null);
+        const data = plain && (await unzstd(plain).catch(() => null));
+        if (data && blake3Hex(data) === h) out.set(h, new Uint8Array(data));
+      }
+      return out;
     },
     async get(hex, retry = {}) {
       retry.signal?.throwIfAborted();
