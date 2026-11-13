@@ -848,12 +848,6 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
     if pp == 0 || out == 0 {
         return D3DERR_INVALIDCALL;
     }
-    if d.dev.is_some() {
-        // (one device at a time)
-        if d.trace {
-            eprintln!("d3d9: a second device");
-        }
-    }
     let mut p = read_pp(pp);
     let hwnd = if p[7] != 0 { p[7] } else { focus };
     let mut rect = [0i32; 4];
@@ -915,7 +909,10 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         pal_gen: 0,
     });
     let _ = dev.new_gpu();
-    d.dev = Some(dev);
+    // (another device of the program waits: its calls switch back to it, `D3d::activate`)
+    if let Some(cur) = d.dev.replace(dev) {
+        d.parked.push(cur);
+    }
     reset_buffers(d);
     // (always: in every run's log, a game's picture starts here)
     eprintln!("sake: d3d9 CreateDevice hwnd {hwnd:#x} {}x{} fmt {} depth {}/{} windowed {} behavior {behavior:#x}", p[0], p[1], p[2], p[9], p[10], p[8]);

@@ -32,6 +32,8 @@ mod present_tests;
 #[cfg(test)]
 pub(crate) mod sb_tests;
 #[cfg(test)]
+mod devices_tests;
+#[cfg(test)]
 mod volume_tests;
 #[cfg(test)]
 mod tss_temp_tests;
@@ -84,6 +86,8 @@ pub struct Obj {
     pub binds: u32,
     /// the object public references go to (a texture's surfaces: the texture)
     pub parent: u32,
+    /// the device it was made by (a device: itself; 0: none, the IDirect3D9)
+    pub owner: u32,
     pub addr: u32,
     pub data: Data,
     pub private: Vec<([u8; 16], Vec<u8>)>,
@@ -111,7 +115,10 @@ pub struct D3d {
     next: u32,
     /// free 16-byte object blocks in guest memory
     free_blocks: Vec<u32>,
+    /// the device the calls go to: the one that made the object of the call being run (see
+    /// `activate`); the program's other devices wait in `parked`
     pub dev: Option<Box<device::Device>>,
+    pub parked: Vec<Box<device::Device>>,
     pub calls: *const HostCalls,
     pub trace: bool,
     /// guest memory to free once the page is done with a batch that reads it (mem, generation)
@@ -169,8 +176,23 @@ impl D3d {
             device::wrp(addr, 0, if v8 != 0 { v8 } else { self.vtbls[iface as usize] });
             *((addr + device::ptr()) as *mut u32) = id;
         }
-        self.objs.insert(id, Obj { iface, refs: 1, binds: 0, parent, addr, data, private: Vec::new() });
+        let owner = if iface == IF_DEVICE { id } else { self.dev.as_ref().map_or(0, |d| d.obj) };
+        self.objs.insert(id, Obj { iface, refs: 1, binds: 0, parent, addr, data, private: Vec::new(), owner });
         addr
+    }
+
+    /// The calls go to device `dev` (an object id) from now on: the active one waits in `parked`.
+    /// Devices are separate (state, swap chain, back buffer, scene); objects are the device's
+    /// that made them, so a call on any of them runs against that device.
+    pub fn activate(&mut self, dev: u32) {
+        if dev == 0 || self.dev.as_ref().is_some_and(|d| d.obj == dev) {
+            return;
+        }
+        let Some(i) = self.parked.iter().position(|d| d.obj == dev) else { return };
+        let next = self.parked.remove(i);
+        if let Some(cur) = self.dev.replace(next) {
+            self.parked.push(cur);
+        }
     }
 
     /// The object id at a guest address (0: none/not ours).
@@ -258,9 +280,15 @@ impl D3d {
             Data::Buffer(b) => self.guest_free(b.mem),
             Data::Volume(v) => self.guest_free(v.mem),
             Data::Device => {
-                // (a device made after this one is not this one's)
+                // (the device the calls went to, or one waiting: the others stay as they are,
+                // KiriKiri Z releases a small window's device while its main one draws on)
                 if self.dev.as_ref().is_some_and(|dev| dev.obj == id) {
                     let dev = self.dev.take().unwrap();
+                    dev.release_all(self);
+                    self.dev = self.parked.pop();
+                } else if let Some(i) = self.parked.iter().position(|dev| dev.obj == id) {
+                    let dev = self.parked.remove(i);
+                    // (release_all works on `dev` alone, not on the active device)
                     dev.release_all(self);
                 }
             }
@@ -288,6 +316,7 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
             next: 0,
             free_blocks: Vec::new(),
             dev: None,
+            parked: Vec::new(),
             calls: std::ptr::null(),
             trace: crate::env_on!("IPPAI_D3D_TRACE"),
             deferred_free: Vec::new(),
@@ -369,6 +398,10 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
         let a = |i: usize| *args.add(i);
         let this = d.id_of(a(0));
         let mut after = After::None;
+        if let Some(o) = d.objs.get(&this) {
+            let owner = o.owner;
+            d.activate(owner);
+        }
         let r = if this == 0 && method != 0xf0 {
             if d.trace {
                 eprintln!("d3d9: {} on a stale object {:#x}", name(iface, method), a(0));
