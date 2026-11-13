@@ -4448,6 +4448,8 @@ pub fn init() {
     reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW, SHStrDupA, SHStrDupW);
     reg!("shell32"; SHGetPropertyStoreForWindow, SHGetFileInfoA, SHGetFileInfoW);
     implement("shell32", "SHBrowseForFolder", SHBrowseForFolderA);
+    // (shell32 exports the ANSI one under its plain name too: matsuba_trial_1_setup.exe imports it)
+    implement("shell32", "SHGetPathFromIDList", SHGetPathFromIDListA);
     reg!("shlwapi"; IsOS, SHAutoComplete);
     implement("shlwapi", "DllGetVersion", |c| dll_get_version(c.a(0), SHLWAPI_VERSION));
     implement("shell32", "DllGetVersion", |c| dll_get_version(c.a(0), SHELL32_VERSION));
@@ -5814,5 +5816,41 @@ mod sspi_tests {
         assert_eq!(SSPI_TABLE[25], Some("DecryptMessage"));
         assert_eq!(sspi_name("InitializeSecurityContext", true), "InitializeSecurityContextW");
         assert_eq!(sspi_name("MakeSignature", true), "MakeSignature");
+    }
+}
+
+#[cfg(test)]
+mod idlist_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    fn read_a(p: u32) -> Vec<u8> {
+        (0..).map(|i| mem::r8(p + i)).take_while(|&b| b != 0).collect()
+    }
+
+    proptest! {
+        /// SHGetPathFromIDList (the plain export) answers as SHGetPathFromIDListA for any folder
+        /// ID list, the W form gives the same path in UTF-16, and an unknown or null list is 0
+        #[test]
+        fn plain_export_is_the_ansi_one(path in "[A-Za-z]:\\\\([A-Za-z0-9 _.]{1,8}|体験版|セーブ){0,4}") {
+            let _g = enter();
+            init();
+            let plain = crate::api::find_impl("shell32", "SHGetPathFromIDList").expect("exported");
+            let pidl = path_pidl(&path);
+            let (a, b, w) = (mem::heap_alloc(520, true), mem::heap_alloc(520, true), mem::heap_alloc(520, true));
+            prop_assert_eq!(call(plain, &[pidl, a]), 1);
+            prop_assert_eq!(call(SHGetPathFromIDListA, &[pidl, b]), 1);
+            prop_assert_eq!(read_a(a), read_a(b));
+            prop_assert_eq!(call(SHGetPathFromIDListW, &[pidl, w]), 1);
+            prop_assert_eq!(String::from_utf16_lossy(&wstr(w)), path.clone());
+            if path.is_ascii() {
+                prop_assert_eq!(read_a(a), path.as_bytes().to_vec());
+            }
+            prop_assert_eq!(call(plain, &[0, a]), 0);
+            w16(pidl + 2, 0x1234);
+            prop_assert_eq!(call(plain, &[pidl, a]), 0);
+            for p in [pidl, a, b, w] { mem::heap_free(p); }
+        }
     }
 }
