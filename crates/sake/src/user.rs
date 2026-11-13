@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::api::{implement, Ctx};
+use crate::api::{implement, Ctx, Handler};
 use crate::k32::{arg_str, ret_str};
 use crate::mem::{self, cstr, put32, r16, r32, w16, w32, wstr};
 use crate::text::{a2s, a2w, w2a};
@@ -6868,6 +6868,17 @@ pub fn init() {
     implement("user32", "DdeInitializeW", DdeInitializeA);
     // per-monitor DPI: everything is 96 dpi
     implement("user32", "AdjustWindowRectExForDpi", AdjustWindowRectEx);
+    // comctl32's flat scroll bars draw as the standard ones here: InitializeFlatSB succeeds and
+    // each FlatSB_ call is its user32 counterpart (same arguments), as Windows does for a
+    // window whose flat bars are not initialized (Delphi launchers call them on every list)
+    implement("comctl32", "InitializeFlatSB", |_| 1);
+    implement("comctl32", "UninitializeFlatSB", |_| 0);
+    implement("comctl32", "FlatSB_SetScrollProp", |c| (c.a(1) & !0xfff == 0 && c.a(1) != 0) as u32);
+    for (name, f) in [("FlatSB_GetScrollInfo", GetScrollInfo as Handler), ("FlatSB_SetScrollInfo", SetScrollInfo), ("FlatSB_GetScrollPos", GetScrollPos),
+        ("FlatSB_SetScrollPos", SetScrollPos), ("FlatSB_GetScrollRange", GetScrollRange), ("FlatSB_SetScrollRange", SetScrollRange),
+        ("FlatSB_ShowScrollBar", ShowScrollBar), ("FlatSB_EnableScrollBar", EnableScrollBar)] {
+        implement("comctl32", name, f);
+    }
     for n in ["GetDpiForSystem", "GetDpiForWindow", "GetSystemDpiForProcess"] {
         implement("user32", n, |_| 96);
     }
@@ -7013,7 +7024,7 @@ mod menu_bar_tests {
 
 #[cfg(test)]
 mod track_tests {
-    use super::{track_clamp, tracks};
+    use super::{track_clamp, tracks, Scroll};
     use proptest::prelude::*;
 
     /// 俺の姿が､透明に!: KiriKiri Z's 1920x1080 client with its frame on the 1366x768 screen
@@ -7111,6 +7122,28 @@ mod track_tests {
         // grown to the least, unless minimized
         assert_eq!(track_clamp(OVERLAPPED, (10, 5), min, max), (112, 27));
         assert_eq!(track_clamp(OVERLAPPED | 0x2000_0000, (10, 5), min, max), (10, 5));
+    }
+
+    proptest! {
+        /// A scroll bar's kept state (SetScrollInfo, SetScrollPos, SetScrollRange, and the
+        /// FlatSB_ calls that are them): the page never exceeds the range, the position is in
+        /// [min, max - (page - 1)] (min when that is empty), a position already there is kept,
+        /// and clamping twice changes nothing.
+        #[test]
+        fn scroll_clamp_model(min in -300i32..300, len in -50i32..400, page in 0u32..600, pos in -1000i32..1000) {
+            let max = min + len;
+            let mut s = Scroll { min, max, page, pos, track: 0 };
+            s.clamp();
+            let span = (max as i64 - min as i64 + 1).max(0);
+            prop_assert_eq!(s.page as i64, (page as i64).min(span));
+            let top = (max as i64 - (s.page as i64 - 1).max(0)).max(min as i64);
+            prop_assert!(s.pos as i64 >= min as i64 && s.pos as i64 <= top);
+            if pos as i64 >= min as i64 && pos as i64 <= top {
+                prop_assert_eq!(s.pos, pos);
+            }
+            let again = { let mut t = s; t.clamp(); t };
+            prop_assert_eq!((again.page, again.pos), (s.page, s.pos));
+        }
     }
 
     #[test]
