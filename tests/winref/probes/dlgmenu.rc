@@ -1,0 +1,50 @@
+/* resources of the dlgmenu probe: dialogs whose templates name a menu (by number and by name) */
+#pragma code_page(65001)
+#include <windows.h>
+1 24 "ja.manifest"
+
+5 MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Open", 101
+    END
+    MENUITEM "&Help", 103
+END
+
+BARMENU MENU
+BEGIN
+    MENUITEM "One", 201
+    MENUITEM "Two", 202
+END
+
+/* タイムリープ's shape: a popup without a caption, a menu, no WS_VISIBLE */
+10 DIALOGEX 0, 0, 200, 100
+STYLE WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | DS_SETFONT | DS_3DLOOK
+EXSTYLE WS_EX_CONTROLPARENT
+MENU 5
+FONT 9, "MS Shell Dlg"
+BEGIN
+    LTEXT "x", 1001, 4, 4, 20, 8
+END
+
+11 DIALOGEX 0, 0, 200, 100
+STYLE WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT
+CAPTION "menu by name"
+MENU BARMENU
+FONT 9, "MS Shell Dlg"
+BEGIN
+END
+
+12 DIALOG 0, 0, 200, 100
+STYLE WS_POPUP | WS_CAPTION | DS_MODALFRAME
+CAPTION "no menu"
+BEGIN
+END
+
+13 DIALOG 0, 0, 200, 100
+STYLE WS_POPUP | WS_CAPTION | DS_MODALFRAME
+CAPTION "old template, menu 5"
+MENU 5
+BEGIN
+END

@@ -995,6 +995,23 @@ mod tests {
         assert_eq!(rect(7, 7, 7, 9).or(&a), a);
     }
 
+    /// タイムリープ (#192): the D3D9 window was shown top-level, then made the child of a
+    /// bigger dialog shown after it. sake hides it from the screen then (SetParent: a zero rect,
+    /// not visible); it is no window of the screen's, and the windows over its frame are the ones
+    /// above the dialog that holds it, none, not the dialog itself.
+    #[test]
+    fn a_window_made_a_child_leaves_the_screen() {
+        let mut d = disp(64, 48);
+        d.pos(1, rect(0, 0, 64, 48), rect(0, 0, 64, 48), true, false, 0);
+        d.pos(2, rect(0, -2, 64, 50), rect(0, 0, 64, 48), true, false, 0);
+        let mut out = [0; 32];
+        assert_eq!(d.windows_above(1, &mut out), Some(1), "under the dialog while top-level");
+        d.pos(1, rect(0, 0, 0, 0), rect(0, 0, 0, 0), false, false, 0);
+        assert_eq!(d.windows_above(1, &mut out), None, "a child: by the topmost window over it");
+        d.fill(2, 0xff12_3456);
+        assert_eq!(d.at(10, 10), 0xff12_3456, "the dialog's pixels are the screen's");
+    }
+
     /// The windows above a Direct3D window, by the window: a movie's window exactly over the
     /// game's client area is above it (it was taken for the game's own before, and hidden).
     #[test]

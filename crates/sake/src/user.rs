@@ -910,10 +910,17 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         // check box / radio button: a box, then the text
         let by = (hh - 13) / 2;
         let b = Rect { l: 0, t: by, r: 13, b: by + 13 };
-        fill(b, 0xffffff);
-        frame(b, 0x333333);
-        if st.check == 1 {
-            fill(Rect { l: 3, t: by + 3, r: 10, b: by + 10 }, 0x202020);
+        if matches!(kind, 4 | 9) {
+            // a radio button's is a circle (タイムリープ's window/fullscreen choice, #192)
+            for (y, l, r, col) in radio_spans(st.check == 1) {
+                fill(Rect { l, t: by + y, r, b: by + y + 1 }, col);
+            }
+        } else {
+            fill(b, 0xffffff);
+            frame(b, 0x333333);
+            if st.check == 1 {
+                fill(Rect { l: 3, t: by + 3, r: 10, b: by + 10 }, 0x202020);
+            }
         }
         tr.l = 17;
         flags = 0x4 | 0x20;
@@ -946,6 +953,40 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     crate::gdi::draw_text(dc, &text, rc, flags);
     gcall(c, "user32", "EndPaint", &[h, ps]);
     mem::heap_free(ps);
+}
+
+/// A radio button's 13x13 circle as row spans (row, left, right, colour): a dark ring, white
+/// inside, and with `checked` a dark dot in the middle. The parent's background shows outside.
+fn radio_spans(checked: bool) -> Vec<(i32, i32, i32, u32)> {
+    let mut v = Vec::new();
+    for y in 0..13 {
+        let mut run: Option<(i32, u32)> = None;
+        for x in 0..=13 {
+            let col = (x < 13).then(|| {
+                let (dx, dy) = (x as f32 - 6.0, y as f32 - 6.0);
+                let d = (dx * dx + dy * dy).sqrt();
+                if d > 6.4 {
+                    None
+                } else if d > 5.4 {
+                    Some(0x333333)
+                } else if checked && d < 3.0 {
+                    Some(0x202020)
+                } else {
+                    Some(0xffffff)
+                }
+            }).flatten();
+            match (run, col) {
+                (Some((_, a)), Some(b)) if a == b => {}
+                _ => {
+                    if let Some((l, a)) = run {
+                        v.push((y, l, x, a));
+                    }
+                    run = col.map(|c| (x, c));
+                }
+            }
+        }
+    }
+    v
 }
 
 /// A static's picture (as Wine's static.c): SS_BITMAP (0xe) at its own size from the top left,
@@ -2471,6 +2512,11 @@ fn SetParent(c: &mut Ctx) -> u32 {
         if p == 0 || p == DESKTOP {
             resize_surface(s.wins.get_mut(&h).unwrap());
             update_display(s, h);
+        } else if old == 0 || old == DESKTOP {
+            // a top-level window made a child leaves the screen's windows: it is drawn in its
+            // parent's now (タイムリープ's D3D9 window, shown, then put in its menu dialog: the
+            // screen kept it under the dialog and the frames under the dialog's gray, #192)
+            unsafe { kura::display::vnhost_window_pos(h, [0i32; 8].as_ptr(), 0, 0, 0) };
         }
         if old == 0 { DESKTOP } else { old }
     })
@@ -7003,12 +7049,26 @@ fn du(x: i32, y: i32) -> (i32, i32) {
 #[path = "sdrt_login.rs"]
 mod sdrt_login;
 
+/// A dialog's window size for its template's `w`x`h` (pixels) client area: the frame and the
+/// menu bar (`bar`) around it, so that the client area is the template's.
+fn dialog_window_size(style: u32, exstyle: u32, w: i32, h: i32, bar: bool) -> (i32, i32) {
+    let (fl, ft, fr, fb) = frame(style, exstyle, bar);
+    (w + fl + fr, h + ft + fb)
+}
+
 fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32, modal: bool) -> u32 {
     let ex = r16(t) == 1 && r16(t + 2) == 0xffff;
     let (style, exstyle, n, mut p) = if ex { (r32(t + 12), r32(t + 8), r16(t + 16) as u32, t + 18) } else { (r32(t), r32(t + 4), r16(t + 8) as u32, t + 10) };
     let (x, y, cx, cy) = (r16(p) as i16 as i32, r16(p + 2) as i16 as i32, r16(p + 4) as i16 as i32, r16(p + 6) as i16 as i32);
     p += 8;
-    let (_, _, q) = sz_or_ord(p); // menu
+    // the menu: a dialog with one gets its menu bar on top of the template's size (タイムリープ
+    // moves its menu bar off the screen, SM_CYMENU above, and its game window fills the client)
+    let (menu_s, menu_o, q) = sz_or_ord(p);
+    let menu = match (menu_s, menu_o) {
+        (Some(s), _) => resource(inst, s, 4, true).map_or(0, menu_from_resource),
+        (None, o) if o != 0 => resource(inst, o, 4, true).map_or(0, menu_from_resource),
+        _ => 0,
+    };
     let (cls_s, cls_o, q) = sz_or_ord(q);
     let (title, _, mut q) = sz_or_ord(q);
     let mut font = 0;
@@ -7020,8 +7080,7 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
         font = gcall(c, "gdi32", "CreateFontW", &[(-(pt * 96 + 36) / 72) as u32, 0, 0, 0, weight, italic, 0, 0, charset, 0, 0, 0, 0, face]);
     }
     let (w, h) = du(cx, cy);
-    let (fl, ft, fr, fb) = frame(style, exstyle, false);
-    let (ww, wh) = (w + fl + fr, h + ft + fb);
+    let (ww, wh) = dialog_window_size(style, exstyle, w, h, with(|s| menu_bar(&s.menus, menu, style)));
     let (ox, oy) = if style & 0x4000_0000 != 0 {
         du(x, y)
     } else {
@@ -7037,7 +7096,7 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
         (None, 0) => crate::k32::atom("#32770"),
         (None, o) => o,
     };
-    let dlg = gcall(c, "user32", "CreateWindowExW", &[exstyle, cls, 0, style & !0x1000_0000, ox as u32, oy as u32, ww as u32, wh as u32, owner, 0, inst, param]);
+    let dlg = gcall(c, "user32", "CreateWindowExW", &[exstyle, cls, 0, style & !0x1000_0000, ox as u32, oy as u32, ww as u32, wh as u32, owner, menu, inst, param]);
     if dlg == 0 {
         return 0;
     }
@@ -7539,8 +7598,54 @@ mod message_box_tests {
 }
 
 #[cfg(test)]
+mod radio_tests {
+    use super::radio_spans;
+    fn grid(checked: bool) -> [[u32; 13]; 13] {
+        let mut g = [[0u32; 13]; 13];
+        for (y, l, r, c) in radio_spans(checked) {
+            for x in l..r {
+                assert_eq!(g[y as usize][x as usize], 0, "spans overlap at {x},{y}");
+                g[y as usize][x as usize] = c;
+            }
+        }
+        g
+    }
+    /// A circle, not the check box's square: the corners are the background, the middle of each
+    /// side the ring; checked only adds the dot, symmetric both ways.
+    #[test]
+    fn a_round_ring_with_a_dot() {
+        for checked in [false, true] {
+            let g = grid(checked);
+            for (x, y) in [(0, 0), (12, 0), (0, 12), (12, 12), (1, 1)] {
+                assert_eq!(g[y][x], 0, "corner {x},{y}");
+            }
+            for (x, y) in [(6, 0), (0, 6), (12, 6), (6, 12)] {
+                assert_eq!(g[y][x], 0x333333, "ring {x},{y}");
+            }
+            assert_eq!(g[6][6], if checked { 0x202020 } else { 0xffffff });
+            assert_eq!(g[2][6], 0xffffff);
+            for y in 0..13 {
+                for x in 0..13 {
+                    assert_eq!(g[y][x], g[y][12 - x]);
+                    assert_eq!(g[y][x], g[12 - y][x]);
+                    assert_eq!(g[y][x], g[x][y]);
+                }
+            }
+        }
+        let (a, b) = (grid(false), grid(true));
+        for y in 0..13 {
+            for x in 0..13 {
+                if a[y][x] != b[y][x] {
+                    assert_eq!((a[y][x], b[y][x]), (0xffffff, 0x202020));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod menu_bar_tests {
-    use super::{menu_bar, HashMap, Menu, MenuItem};
+    use super::{client_of, dialog_window_size, menu_bar, HashMap, Menu, MenuItem};
 
     /// 俺の姿が､透明に!: GetMenu(TVPMainWindow) is a menu with no items on Windows, and its
     /// client is the whole window inside the frame: an empty menu draws no bar.
@@ -7556,6 +7661,33 @@ mod menu_bar_tests {
         assert!(!menu_bar(&menus, 0x20, 0x4000_0000));
         // (a handle sake does not know: a bar, as before)
         assert!(menu_bar(&menus, 0x30, 0));
+    }
+
+    /// タイムリープ (#192): a dialog template with a menu is sized so that its client area is
+    /// the template's, below the bar; a captionless popup's client begins 20 below its top.
+    #[test]
+    fn a_dialog_menu_bar_sits_above_the_template_client() {
+        use super::Rect;
+        let style = 0x8600_0044;
+        let (w, h) = dialog_window_size(style, 0x10000, 640, 480, true);
+        assert_eq!((w, h), (640, 500));
+        let c = client_of(&Rect { l: 0, t: -20, r: 640, b: 480 }, style, 0x10000, true);
+        assert_eq!((c.l, c.t, c.w(), c.h()), (0, 20, 640, 480));
+        assert_eq!(dialog_window_size(style, 0x10000, 640, 480, false), (640, 480));
+    }
+
+    proptest::proptest! {
+        /// Any top-level dialog style, with or without a bar: the window CreateDialog makes has the
+        /// template's client size, and the bar only moves the client down.
+        #[test]
+        fn dialog_client_is_the_template(style in proptest::num::u32::ANY, ex in proptest::num::u32::ANY, w in 0i32..4000, h in 0i32..4000, bar: bool) {
+            let style = style & !0x4000_0000;
+            let (ww, wh) = dialog_window_size(style, ex, w, h, bar);
+            let c = client_of(&super::Rect { l: 0, t: 0, r: ww, b: wh }, style, ex, bar);
+            proptest::prop_assert_eq!((c.w(), c.h()), (w, h));
+            let c0 = client_of(&super::Rect { l: 0, t: 0, r: ww, b: wh }, style, ex, false);
+            proptest::prop_assert_eq!(c.t - c0.t, if bar { 20 } else { 0 });
+        }
     }
 }
 
