@@ -100,6 +100,10 @@ def read(root):
 
 def unit():
     ok = True
+    ok &= check('seps utf-8', sj.seps('体験版２\\AdvHD.exe'.encode()), ['体験版２'.encode(), b'AdvHD.exe'])
+    ok &= check('seps sjis trail kept', sj.seps('十六\\a'.encode('cp932')), ['十六'.encode('cp932'), b'a'])
+    ok &= check('seps ascii', sj.seps(b'a\\b\\'), [b'a', b'b', b''])
+    ok &= check('rejoin trailing separator', sj.rejoin(b'x/Game\\Mono\\'), b'x/Game/Mono')
     ok &= check('open_lead 十 first byte', sj.open_lead('十'.encode('cp932')[:1]), True)
     ok &= check('open_lead 十', sj.open_lead('十'.encode('cp932')), False)
     ok &= check('open_lead ascii', sj.open_lead(b'abc'), False)
@@ -108,12 +112,24 @@ def unit():
     ok &= check('open_lead after pair', sj.open_lead('ソ'.encode('cp932') + b'\x83'), True)
     ok &= check('rejoin', sj.rejoin(b'\x8f/\x98Z/a.txt'), b'\x8f\\\x98Z/a.txt')
     ok &= check('rejoin none', sj.rejoin(b'a/b/c'), b'a/b/c')
+    # (UTF-8 "体験版２/AdvHD.exe": ２ ends in 0x92, a Shift-JIS lead byte; not joined)
+    ok &= check('rejoin utf-8', sj.rejoin('体験版２/AdvHD.exe'.encode()), '体験版２/AdvHD.exe'.encode())
+    ok &= check('open_lead utf-8', sj.open_lead('２'.encode()), False)
     return ok
 
 
 def prop(rng, t):
-    """split tree -> fix -> the original tree"""
+    """split tree -> fix -> the original tree; a tree of UTF-8 names (as unar writes them) with
+    nothing split is left as it is"""
     want = tree(rng)
+    if rng.random() < 0.3:
+        want = {p.decode('cp932').encode(): v for p, v in want.items()}
+        root = os.path.join(t, 'u')
+        shutil.rmtree(root, ignore_errors=True)
+        os.makedirs(root)
+        write(root, want)
+        sj.fix(root)
+        return check(f'utf-8 tree untouched {sorted(want)}', read(root), (want, set()))
     root = os.path.join(t, 'p')
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(root)
@@ -125,6 +141,23 @@ def prop(rng, t):
     sj.fix(root)
     got, empty = read(root)
     return check(f'tree {sorted(want)}', (got, empty), (want, set()))
+
+
+def prop_seps(rng, t):
+    """a tree whose paths an extractor kept whole with backslashes (UTF-8 names or Shift-JIS ones,
+    with 0x5C trail bytes inside) -> fix -> the tree"""
+    utf8 = rng.random() < 0.5
+    want = {}
+    for p, v in tree(rng).items():
+        want[p.decode('cp932').encode() if utf8 else p] = v
+    root = os.path.join(t, 's')
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(root)
+    flat = {p.replace(b'/', b'\\'): v for p, v in want.items()}
+    if len(flat) != len(want): return True
+    write(root, flat)
+    sj.fix(root)
+    return check(f'kept separators {sorted(want)}', read(root), (want, set()))
 
 
 def keeps(t):
@@ -139,6 +172,11 @@ def keeps(t):
     os.makedirs(os.fsencode(os.path.join(root, 'x')) + b'/\x8f/\x98Z/save')
     sj.fix(root)
     ok &= check('empty split folder', read(root), ({}, {b'x/\x8f\\\x98Z/save'}))
+    # a folder entry made a 0-byte file "Game\\Mono\\" next to "Game\\Mono\\x.dll": a folder
+    root = os.path.join(t, 'f')
+    write(root, {b'Game\\Mono\\': b'', b'Game\\Mono\\x.dll': b'1', b'Game\\Empty\\': b''})
+    sj.fix(root)
+    ok &= check('folder entries', read(root), ({b'Game/Mono/x.dll': b'1'}, {b'Game/Empty'}))
     # a file already at the joined name is not overwritten (the split copy stays)
     root = os.path.join(t, 'o')
     write(root, {b'\x8f\\\x98Z.txt': b'real', b'\x8f/\x98Z.txt': b'split'})
@@ -251,6 +289,15 @@ def e2e(t):
     z = os.path.join(t, 'onlysetup.zip')
     zipof(z, {b'trial/setup.exe': MZ * 9, b'trial/config.exe': MZ * 2, b'trial/readme.txt': b'r'})
     ok &= check('only setup programs', prep(t, 'onlysetup', z, 'zip')[:2], (0, 'trial/setup.exe'))
+    # a zip with backslash separators and Shift-JIS names (togime_trial2.zip): unar keeps the
+    # backslashes in the names; the game is found in its folder, names UTF-8
+    sj_dir = '『伽女』 体験版２'.encode('cp932')
+    z = os.path.join(t, 'bs.zip')
+    zipof(z, {sj_dir + b'\\AdvHD.exe': MZ * 4, sj_dir + b'\\Rio.arc': b'r', sj_dir + b'\\SysGraphic\\a.png': b'p'})
+    rc, exe, x = prep(t, 'bs', z, 'zip')
+    ok &= check('backslash zip exe', (rc, exe), (0, '『伽女』 体験版２/AdvHD.exe'))
+    ok &= check('backslash zip files', sorted(read(x)[0]), sorted(n.encode() for n in
+                ['『伽女』 体験版２/AdvHD.exe', '『伽女』 体験版２/Rio.arc', '『伽女』 体験版２/SysGraphic/a.png']))
     # a Shift-JIS name that 7-Zip splits at its 0x5C (十), as in izayoi_taiken_hontai.exe's LZH:
     # whole again, then UTF-8
     if not shutil.which('7z'):
@@ -273,6 +320,8 @@ with tempfile.TemporaryDirectory() as t:
     rng = random.Random(SEED)
     n = sum(1 for _ in range(CASES) if not prop(rng, t))
     print(f'{"FAIL" if n else "ok  "} property: {CASES} random trees (seed {SEED}), {n} failed')
+    n = sum(1 for _ in range(CASES) if not prop_seps(rng, t))
+    print(f'{"FAIL" if n else "ok  "} property: {CASES} random trees kept whole with backslashes, {n} failed')
     keeps(t)
     e2e(t)
 
