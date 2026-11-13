@@ -157,7 +157,7 @@ fn everyone() -> Sid {
 fn admins() -> Sid {
     Sid(5, vec![32, 544])
 }
-fn the_user() -> Sid {
+pub(crate) fn the_user() -> Sid {
     Sid(5, vec![21, 3_623_811_015, 3_361_044_348, 30_300_820, 1001])
 }
 /// The token's groups: (SID, SE_GROUP_* attributes)
@@ -772,7 +772,7 @@ fn DuplicateTokenEx(c: &mut Ctx) -> u32 {
 }
 
 /// Privileges an elevated administrator holds: (LUID, name, enabled by default)
-const PRIVILEGES: &[(u32, &str, bool)] = &[
+pub(crate) const PRIVILEGES: &[(u32, &str, bool)] = &[
     (2, "SeCreateTokenPrivilege", false),
     (5, "SeIncreaseQuotaPrivilege", false),
     (8, "SeSecurityPrivilege", false),

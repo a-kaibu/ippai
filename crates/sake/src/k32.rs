@@ -1448,6 +1448,10 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
     };
     // (a HANDLE: 8 bytes on x64)
     mem::putp(c.a(3), h);
+    if h == 0 {
+        // (a value that is no handle of this process: a pointer, a closed handle)
+        last_error(6);
+    }
     ok(h != 0)
 }
 
@@ -4809,7 +4813,7 @@ fn system_time(p: u32, local: bool) {
 pub fn tz_bias() -> i64 {
     if crate::text::acp() == 932 { 9 * 3600 } else { 0 }
 }
-fn write_systemtime(p: u32, secs: i64, ms: u32) {
+pub(crate) fn write_systemtime(p: u32, secs: i64, ms: u32) {
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400);
     // civil from days (Howard Hinnant)
@@ -6913,11 +6917,6 @@ fn computer_name_ex(c: &mut Ctx, wide: bool) -> u32 {
     };
     put_sized_name(c.a(1), c.a(2), name, wide, 234)
 }
-fn GetUserNameA(c: &mut Ctx) -> u32 {
-    put_cstr(c.a(0), r32(c.a(1)), b"user");
-    w32(c.a(1), 5);
-    1
-}
 /// RtlGenRandom (advapi32!SystemFunction036): the browser's random bytes.
 fn SystemFunction036(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
@@ -7292,7 +7291,7 @@ pub fn init() {
     );
     implement("kernel32", "CreateSymbolicLinkA", CreateSymbolicLink);
     implement("kernel32", "CreateSymbolicLinkW", CreateSymbolicLink);
-    reg!("advapi32"; GetUserNameA, SystemFunction036);
+    reg!("advapi32"; SystemFunction036);
     for d in ["kernel32", "kernelbase"] {
         implement(d, "GetProcessMitigationPolicy", GetProcessMitigationPolicy);
         implement(d, "SetProcessMitigationPolicy", true_);
