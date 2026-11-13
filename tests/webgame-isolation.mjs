@@ -18,6 +18,12 @@ mkdirSync(join(game, "www"), { recursive: true });
 writeFileSync(join(game, "Game.exe"), "MZ not really");
 writeFileSync(join(game, "package.json"), JSON.stringify({ main: "www/index.html" }));
 writeFileSync(join(game, "www", "data.txt"), "from the game's folder");
+// every byte value, read back through the synchronous fs (web/src/sync-read.ts)
+writeFileSync(join(game, "www", "bytes.bin"), Uint8Array.from({ length: 512 }, (_, i) => (i * 7) & 255));
+// a big file the game never reads with fs: it must not be sent to the frame ahead (a 950 MB
+// RPG Maker MV folder sent ahead took the tab past 8 GB)
+mkdirSync(join(game, "www", "img"));
+writeFileSync(join(game, "www", "img", "big.png"), new Uint8Array(32 << 20).fill(0x5a));
 writeFileSync(
   join(game, "www", "index.html"),
   `<!doctype html><html><head><title>fake game</title><script>
@@ -28,6 +34,10 @@ writeFileSync(
   window.addEventListener("load", async () => {
     out.saved = localStorage.getItem("progress");
     out.fs = require("fs").readFileSync("www/data.txt", "utf8");
+    const b = require("fs").readFileSync("www/bytes.bin");
+    out.bytes = b.length + ":" + Array.from(b).every((x, i) => x === ((i * 7) & 255));
+    out.exists = [require("fs").existsSync("www/img/big.png"), require("fs").existsSync("www/img"), require("fs").existsSync("www/none.txt")].join();
+    try { require("fs").readFileSync("www/none.txt"); out.missing = "read"; } catch (e) { out.missing = e.code; }
     localStorage.setItem("progress", String(Number(out.saved ?? 0) + 1));
     for (const path of ["/saves/x", "/api/favorites", "/store/trees/sample.tsv", "/game-origin"]) {
       try { out[path] = (await fetch(path)).status; } catch { out[path] = "blocked"; }
@@ -63,6 +73,8 @@ try {
   const page = await browser.newPage();
   page.on("console", (m) => console.log("page:", m.text()));
   page.on("pageerror", (e) => console.log("page error:", e.message));
+  const big = [];
+  page.on("request", (r) => r.url().includes("big.png") && big.push(r.url()));
   const play = `http://127.0.0.1:${port}/play.html?autostart&game=sample&mount=/ippai/game=sample&run=${encodeURIComponent("Z:\\ippai\\game\\Game.exe")}`;
   const result = async () => {
     await page.goto(play);
@@ -83,6 +95,10 @@ try {
   assert.equal(first.nodeBefore, "function", "require is there before the game's scripts");
   assert.equal(first.saved, null);
   assert.equal(first.fs, "from the game's folder");
+  assert.equal(first.bytes, "512:true", "binary files read through the synchronous fs");
+  assert.equal(first.exists, "true,true,false", "existsSync of a file, a folder, nothing");
+  assert.equal(first.missing, "ENOENT");
+  assert.deepEqual(big, [], "a file the game does not read is not fetched");
   for (const path of ["/saves/x", "/api/favorites", "/store/trees/sample.tsv", "/game-origin"]) {
     assert.equal(first[path], 404, `${path} on the game listener`);
     assert.equal(first[`app ${path}`], "blocked", `${path} on the app read from the game`);

@@ -14,8 +14,10 @@ export interface Init {
   ippai: "init";
   /** the saves: localStorage, and files the game wrote (FILE + path, base64) */
   items: [string, string][];
-  /** NW.js: the game folder's files for a synchronous fs (path in the folder → bytes) */
-  files: [string, Uint8Array][];
+  /** NW.js: the game folder's URL on the frame's own origin, where its synchronous fs reads
+   * (sync-read.ts), and the paths of the folder's files ("/"-separated) */
+  base: string;
+  names: string[];
 }
 
 /** Keys of the saves that hold files the game wrote with Node's fs (base64). */

@@ -6,6 +6,7 @@
 // ippai's saved games and the Node stand-ins NW.js games reach for; the saves come from the
 // app's page, and until they do the page's DOMContentLoaded and load wait.
 import { FILE, type FromFrame, type Init } from "./frame-protocol";
+import { fileUrl, readSync } from "./sync-read";
 
 type Changed = (key: string) => void;
 
@@ -65,19 +66,20 @@ const stub: unknown = new Proxy(function () {}, {
 });
 
 /**
- * Node's require for NW.js games that call it from the page: synchronous fs (reads from the
- * game's tree, writes as saves) and path; nw.gui and the like do nothing.
+ * Node's require for NW.js games that call it from the page: synchronous fs (reads the game's
+ * files from its folder when asked, sync-read.ts; writes as saves) and path; nw.gui and the like
+ * do nothing.
  */
-function nodeRequire(files: Map<string, Uint8Array>, items: Map<string, string>, changed: Changed) {
+function nodeRequire(folder: Folder, items: Map<string, string>, changed: Changed) {
   const read = (p: string): Uint8Array | null => {
     const saved = items.get(FILE + norm(p));
     if (saved !== undefined) return Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
-    return files.get(norm(p))?.slice() ?? null;
+    return folder.names.has(norm(p)) ? readSync(fileUrl(folder.base, norm(p))) : null;
   };
   const exists = (p: string) =>
     items.has(FILE + norm(p)) ||
-    files.has(norm(p)) ||
-    [...files.keys()].some((name) => name.startsWith(norm(p).replace(/\/$/, "") + "/"));
+    folder.names.has(norm(p)) ||
+    [...folder.names].some((name) => name.startsWith(norm(p).replace(/\/$/, "") + "/"));
   const encoding = (opt: unknown) =>
     typeof opt === "string" ? opt : (opt as { encoding?: string } | undefined)?.encoding;
   const write = (p: string, data: unknown) => {
@@ -161,8 +163,14 @@ const nodeProcess = () =>
     on: () => undefined,
   });
 
+/** The game's folder: its URL on this origin and its files' paths (from the app's init). */
+interface Folder {
+  base: string;
+  names: Set<string>;
+}
+
 const items = new Map<string, string>();
-const files = new Map<string, Uint8Array>();
+const folder: Folder = { base: "", names: new Set() };
 let app: string | null = null;
 const post = (m: FromFrame) => parent.postMessage(m, app ?? "*");
 const changed: Changed = (key) => post({ ippai: "set", key, value: items.get(key) ?? null });
@@ -171,7 +179,7 @@ const changed: Changed = (key) => post({ ippai: "set", key, value: items.get(key
 // and a global `process` stops a PixiJS game's title buttons); NW.js ones beside the exe
 const node = !/\/resources\/app\//i.test(decodeURIComponent(location.pathname));
 Object.defineProperty(window, "localStorage", { value: storage(items, changed) });
-if (node) Object.assign(window, { require: nodeRequire(files, items, changed), process: nodeProcess() });
+if (node) Object.assign(window, { require: nodeRequire(folder, items, changed), process: nodeProcess() });
 else Object.assign(window, { studio_api: studioApi(items, changed) });
 
 // DOMContentLoaded and load wait for the saves (the game reads them from its handlers)
@@ -189,7 +197,11 @@ addEventListener("message", (e: MessageEvent) => {
   if (e.source !== parent || m?.ippai !== "init" || ready) return;
   app = e.origin;
   for (const [k, v] of m.items) items.set(k, v);
-  for (const [k, v] of m.files) files.set(k, v);
+  // (only a folder on this frame's own origin: the reads go nowhere else)
+  if (m.base && new URL(m.base, location.href).origin === location.origin) {
+    folder.base = m.base;
+    for (const n of m.names) folder.names.add(n);
+  }
   ready = true;
   for (const ev of held)
     if (ev.type === "load") dispatchEvent(new Event("load"));

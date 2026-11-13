@@ -7,7 +7,6 @@
 // asks this page for the game's saves and sends back what the game writes, and nothing else
 // (frame-protocol.ts).
 import { fromFrame, type Init } from "./frame-protocol";
-import { preloadFiles } from "./readonly-files";
 import { loadSaves, storeSaves } from "./saves";
 
 /** The program's tree and folder in it, from &run and the &mount that holds it. */
@@ -116,8 +115,10 @@ export async function startWebGame(
   addEventListener("visibilitychange", () => document.visibilityState === "hidden" && void save());
   addEventListener("pagehide", () => void save());
 
-  // NW.js games read their files synchronously (Node's fs): the folder's files go along
-  const files = new Map<string, Uint8Array>();
+  // NW.js games read their files synchronously (Node's fs): the frame reads them from the
+  // folder when asked (frame.ts, sync-read.ts); it gets the folder's URL and file names
+  const base = node ? `${origin}/tree/${encodeURIComponent(at.tree)}/${enc(at.dir)}` : "";
+  const names: string[] = [];
   if (node) {
     const response = await fetch(new URL(`store/trees/${encodeURIComponent(at.tree)}.tsv`, location.href));
     if (!response.ok) throw new Error(`ゲーム一覧の取得: HTTP ${response.status}`);
@@ -126,8 +127,7 @@ export async function startWebGame(
       .filter((line) => line.startsWith("f\t"))
       .map((line) => line.split("\t")[3]!)
       .filter((path) => path.startsWith(at.dir));
-    const loaded = await preloadFiles(root, paths);
-    for (const [path, bytes] of loaded) files.set(path.slice(at.dir.length), bytes);
+    for (const path of paths) names.push(path.slice(at.dir.length));
   }
 
   const frame = document.createElement("iframe");
@@ -148,7 +148,7 @@ export async function startWebGame(
     const m = fromFrame(e.data);
     if (m?.ippai === "hello") {
       // (each page of the game asks: a reload gets the saves as they are now)
-      const init: Init = { ippai: "init", items: [...items], files: [...files] };
+      const init: Init = { ippai: "init", items: [...items], base, names };
       frame.contentWindow!.postMessage(init, origin);
     } else if (m?.ippai === "set") {
       if (m.value === null) items.delete(m.key);
