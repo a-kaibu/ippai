@@ -6701,22 +6701,46 @@ fn GetSystemDirectoryW(c: &mut Ctx) -> u32 {
 fn GetSystemWindowsDirectoryA(c: &mut Ctx) -> u32 {
     GetWindowsDirectoryA(c)
 }
+/// The CD-ROM drive of a PC of the games' time, with no disc in it. CD-era games look for one:
+/// Boys of Darkness's trial (WinGApp.exe) asks GetDriveType of A:, B:, C:... until one answers
+/// DRIVE_CDROM, and on a PC without such a drive it never stops (a black window).
+pub(crate) const CD_DRIVE: u8 = b'D';
+const DRIVE_NO_ROOT_DIR: u32 = 1;
+const DRIVE_FIXED: u32 = 3;
+const DRIVE_CDROM: u32 = 5;
+/// GetDriveType of `root` (None: the current folder's drive, C: or Z:): our two disks, the
+/// empty CD-ROM drive, no root for the rest
+pub(crate) fn drive_type(root: Option<&str>) -> u32 {
+    let Some(r) = root else { return DRIVE_FIXED };
+    match r.bytes().next().map(|b| b.to_ascii_uppercase()) {
+        Some(b'C' | b'Z') => DRIVE_FIXED,
+        Some(CD_DRIVE) if r.as_bytes().get(1) == Some(&b':') => DRIVE_CDROM,
+        _ => DRIVE_NO_ROOT_DIR,
+    }
+}
+/// The empty CD-ROM drive's root ("D:", "D:\\"): its volume and free space are ERROR_NOT_READY
+fn is_empty_cd(root: u32, wide: bool) -> bool {
+    root != 0 && drive_type(Some(&arg_str(root, wide))) == DRIVE_CDROM
+}
 fn GetDriveTypeA(c: &mut Ctx) -> u32 {
-    let d = arg_str(c.a(0), false).to_ascii_uppercase();
-    if d.starts_with('C') || d.starts_with('Z') || c.a(0) == 0 { 3 } else { 1 }
+    drive_type((c.a(0) != 0).then(|| arg_str(c.a(0), false)).as_deref())
 }
 fn GetDriveTypeW(c: &mut Ctx) -> u32 {
-    let d = arg_str(c.a(0), true).to_ascii_uppercase();
-    if d.starts_with('C') || d.starts_with('Z') || c.a(0) == 0 { 3 } else { 1 }
+    drive_type((c.a(0) != 0).then(|| arg_str(c.a(0), true)).as_deref())
+}
+/// C:, the CD-ROM drive and Z:
+pub(crate) fn logical_drives() -> u32 {
+    (1 << 2) | (1 << (CD_DRIVE - b'A')) | (1 << 25)
 }
 fn GetLogicalDrives(_: &mut Ctx) -> u32 {
-    (1 << 2) | (1 << 25)
+    logical_drives()
 }
 /// The NT device of drive C: or Z: (QueryDosDevice), and back (for the Nt* file functions).
 pub fn drive_device(d: char) -> Option<&'static str> {
     match d.to_ascii_uppercase() {
         'C' => Some("\\Device\\HarddiskVolume1"),
         'Z' => Some("\\Device\\HarddiskVolume2"),
+        'D' => Some("\\Device\\CdRom0"),
         _ => None,
     }
 }
@@ -6724,7 +6748,7 @@ fn query_dos_device(c: &mut Ctx, wide: bool) -> u32 {
     let (name, out, max) = (c.a(0), c.a(1), c.a(2));
     // the list of names: our two drives
     let v: Vec<String> = if name == 0 {
-        vec!["C:".into(), "Z:".into()]
+        vec!["C:".into(), "D:".into(), "Z:".into()]
     } else {
         let n = arg_str(name, wide);
         let dev = n.chars().next().filter(|_| n.len() == 2 && n.ends_with(':')).and_then(drive_device);
@@ -6757,9 +6781,20 @@ fn QueryDosDeviceA(c: &mut Ctx) -> u32 {
 fn QueryDosDeviceW(c: &mut Ctx) -> u32 {
     query_dos_device(c, true)
 }
+/// GetLogicalDriveStrings' list ("C:\\", "D:\\", "Z:\\", double NUL): the drives of logical_drives
+pub(crate) fn drive_strings() -> Vec<u8> {
+    let mut s = Vec::new();
+    for l in 0..26u8 {
+        if logical_drives() & (1 << l) != 0 {
+            s.extend_from_slice(&[b'A' + l, b':', b'\\', 0]);
+        }
+    }
+    s.push(0);
+    s
+}
 fn logical_drive_strings(c: &mut Ctx, wide: bool) -> u32 {
     let (len, out) = (c.a(0), c.a(1));
-    let s: Vec<u8> = b"C:\\\0Z:\\\0\0".to_vec();
+    let s = drive_strings();
     if len < s.len() as u32 {
         return s.len() as u32;
     }
@@ -6775,6 +6810,10 @@ fn GetLogicalDriveStringsW(c: &mut Ctx) -> u32 {
     logical_drive_strings(c, true)
 }
 fn GetDiskFreeSpaceA(c: &mut Ctx) -> u32 {
+    if is_empty_cd(c.a(0), false) {
+        last_error(21);
+        return 0;
+    }
     put32(c.a(1), 8);
     put32(c.a(2), 512);
     put32(c.a(3), 0x0100_0000);
@@ -6782,6 +6821,13 @@ fn GetDiskFreeSpaceA(c: &mut Ctx) -> u32 {
     1
 }
 fn GetDiskFreeSpaceExA(c: &mut Ctx) -> u32 {
+    disk_free_ex(c, false)
+}
+fn disk_free_ex(c: &mut Ctx, wide: bool) -> u32 {
+    if is_empty_cd(c.a(0), wide) {
+        last_error(21);
+        return 0;
+    }
     for i in 1..4 {
         if c.a(i) != 0 {
             put64(c.a(i), 8 << 30);
@@ -6790,9 +6836,13 @@ fn GetDiskFreeSpaceExA(c: &mut Ctx) -> u32 {
     1
 }
 fn GetDiskFreeSpaceExW(c: &mut Ctx) -> u32 {
-    GetDiskFreeSpaceExA(c)
+    disk_free_ex(c, true)
 }
 fn GetVolumeInformationA(c: &mut Ctx) -> u32 {
+    if is_empty_cd(c.a(0), false) {
+        last_error(21);
+        return 0;
+    }
     if c.a(1) != 0 {
         put_cstr(c.a(1), c.a(2), b"SAKE");
     }
@@ -6805,6 +6855,10 @@ fn GetVolumeInformationA(c: &mut Ctx) -> u32 {
     1
 }
 fn GetVolumeInformationW(c: &mut Ctx) -> u32 {
+    if is_empty_cd(c.a(0), true) {
+        last_error(21);
+        return 0;
+    }
     if c.a(1) != 0 {
         put_wstr(c.a(1), c.a(2), &"SAKE".encode_utf16().collect::<Vec<_>>());
     }
@@ -8475,6 +8529,76 @@ mod virtual_ex {
             prop_assert_eq!(state(a, buf), before);
             call(VirtualFree, &[a, 0, 0x8000]);
             mem::heap_free(buf);
+        }
+    }
+}
+
+#[cfg(test)]
+mod drive_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn guest_str(s: &[u8]) -> u32 {
+        let a = mem::heap_alloc(s.len() as u32 + 1, true);
+        for (i, &b) in s.iter().enumerate() {
+            mem::w8(a + i as u32, b);
+        }
+        a
+    }
+
+    /// Boys of Darkness's WinGApp.exe (0x40b310): from "A:\" up, one letter at a time (the byte
+    /// wraps), until GetDriveType answers DRIVE_CDROM. It has to end, at the CD-ROM drive.
+    #[test]
+    fn a_cd_drive_scan_from_a_ends_at_the_cd_drive() {
+        let mut root = *b"A:\\";
+        let mut asked = 0;
+        while drive_type(Some(std::str::from_utf8(&root).unwrap_or("?"))) != DRIVE_CDROM {
+            root[0] = root[0].wrapping_add(1);
+            asked += 1;
+            assert!(asked < 256, "no CD-ROM drive: the game's scan never ends");
+        }
+        assert_eq!(root[0], CD_DRIVE);
+    }
+
+    #[test]
+    fn the_cd_drive_is_empty() {
+        let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+        for (root, ok) in [(&b"D:\\"[..], false), (b"d:", false), (b"C:\\", true), (b"Z:\\", true)] {
+            let r = guest_str(root);
+            let label = mem::heap_alloc(64, true);
+            last_error(0);
+            let got = crate::test_guest::call(GetVolumeInformationA, &[r, label, 64, 0, 0, 0, 0, 0]);
+            assert_eq!(got != 0, ok, "GetVolumeInformation {:?}", std::str::from_utf8(root));
+            if !ok {
+                assert_eq!(r32(crate::cur().teb + crate::teb_last_error()), 21, "ERROR_NOT_READY");
+            }
+            let got = crate::test_guest::call(GetDiskFreeSpaceExA, &[r, 0, 0, 0]);
+            assert_eq!(got != 0, ok);
+            assert_eq!(crate::test_guest::call(GetDriveTypeA, &[r]), if ok { DRIVE_FIXED } else { DRIVE_CDROM });
+            mem::heap_free(label);
+            mem::heap_free(r);
+        }
+        // (NULL: the current folder's drive)
+        assert_eq!(crate::test_guest::call(GetDriveTypeA, &[0]), DRIVE_FIXED);
+    }
+
+    proptest! {
+        /// any root gets one of the three answers; the drives GetLogicalDrives and
+        /// GetLogicalDriveStrings list are exactly the letters with a root, in either case
+        #[test]
+        fn drive_answers_agree(root in "\\PC{0,8}", l in 0u8..26, lower in any::<bool>()) {
+            prop_assert!([DRIVE_NO_ROOT_DIR, DRIVE_FIXED, DRIVE_CDROM].contains(&drive_type(Some(&root))));
+            let c = if lower { b'a' + l } else { b'A' + l } as char;
+            let listed = logical_drives() & (1 << l) != 0;
+            prop_assert_eq!(drive_type(Some(&format!("{c}:\\"))) != DRIVE_NO_ROOT_DIR, listed);
+            let strings = drive_strings();
+            prop_assert!(strings.ends_with(&[0, 0]));
+            let names: Vec<&[u8]> = strings[..strings.len() - 1].split(|&b| b == 0).filter(|s| !s.is_empty()).collect();
+            prop_assert_eq!(names.iter().any(|n| *n == [b'A' + l, b':', b'\\']), listed);
+            prop_assert_eq!(names.len() as u32, logical_drives().count_ones());
+            // QueryDosDevice knows each listed drive
+            prop_assert_eq!(drive_device(c).is_some(), listed);
         }
     }
 }

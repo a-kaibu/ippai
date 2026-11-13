@@ -459,7 +459,7 @@ fn path_of(oa: u32) -> Option<u32> {
         }
     }
     // a device path (QueryDosDevice's): its drive
-    for d in ['C', 'Z'] {
+    for d in ['C', 'D', 'Z'] {
         let dev = crate::k32::drive_device(d).unwrap();
         // (s may hold Japanese: compare bytes, the device name is ASCII)
         if s.as_bytes().get(..dev.len()).is_some_and(|p| p.eq_ignore_ascii_case(dev.as_bytes())) {
@@ -1315,7 +1315,9 @@ mod route_tests {
         assert_eq!(object_name("C:\\").as_deref(), Some("\\Device\\HarddiskVolume1\\"));
         assert_eq!(object_name("C:").as_deref(), Some("\\Device\\HarddiskVolume1\\"));
         assert_eq!(object_name("z:\\a").as_deref(), Some("\\Device\\HarddiskVolume2\\a"));
-        for p in ["D:\\x", "\\\\server\\share", "", "C", "\u{3042}:\\x"] {
+        // (the empty CD-ROM drive, k32::CD_DRIVE: its device as Windows names it)
+        assert_eq!(object_name("D:\\x").as_deref(), Some("\\Device\\CdRom0\\x"));
+        for p in ["E:\\x", "\\\\server\\share", "", "C", "\u{3042}:\\x"] {
             assert_eq!(object_name(p), None, "{p}");
         }
     }
