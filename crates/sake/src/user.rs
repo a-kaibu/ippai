@@ -2325,6 +2325,49 @@ fn GetClientRect(c: &mut Ctx) -> u32 {
         None => 0,
     }
 }
+/// WINDOWINFO (60 bytes, the same on x64): the window's and client's rectangles in screen
+/// coordinates, styles, WS_ACTIVECAPTION for the active window, the border widths as the
+/// gaps between the two rectangles (left and bottom, as Windows works them out), the class
+/// atom and creator version 0x400. cbSize is not checked (Windows fills it whatever it was).
+pub fn window_info(win: Rect, client: Rect, style: u32, exstyle: u32, active: bool, atom: u16) -> [u8; 60] {
+    let mut b = [0u8; 60];
+    let mut put = |o: usize, v: u32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    put(0, 60);
+    for (o, v) in [(4, win.l), (8, win.t), (12, win.r), (16, win.b), (20, client.l), (24, client.t), (28, client.r), (32, client.b)] {
+        put(o, v as u32);
+    }
+    put(36, style);
+    put(40, exstyle);
+    put(44, active as u32);
+    put(48, (client.l - win.l) as u32);
+    put(52, (win.b - client.b) as u32);
+    put(56, atom as u32 | 0x0400 << 16);
+    b
+}
+fn GetWindowInfo(c: &mut Ctx) -> u32 {
+    let (h, p) = (c.a(0), c.a(1));
+    let info = with(|s| {
+        let w = s.wins.get(&h)?;
+        let (x, y) = window_origin(s, h);
+        let win = Rect { l: x, t: y, r: x + w.rect.w(), b: y + w.rect.h() };
+        let atom = s.classes[w.class].atom as u16;
+        Some((win, client_screen(s, h), w.exstyle, s.active == h, atom))
+    });
+    let Some((win, client, exstyle, active, atom)) = info else {
+        w32(crate::cur().teb + crate::teb_last_error(), 1400);
+        return 0;
+    };
+    if p == 0 {
+        w32(crate::cur().teb + crate::teb_last_error(), 998);
+        return 0;
+    }
+    // (the style as GetWindowLong reports it: WS_VISIBLE follows the window's visibility)
+    let style = get_long(h, -16, true);
+    for (i, v) in window_info(win, client, style, exstyle, active, atom).iter().enumerate() {
+        crate::mem::w8(p + i as u32, *v);
+    }
+    1
+}
 fn GetWindowPlacement(c: &mut Ctx) -> u32 {
     let (h, p) = (c.a(0), c.a(1));
     let r = with(|s| s.wins.get(&h).map(|w| (w.rect, w.visible)));
@@ -4756,6 +4799,52 @@ fn display_change(w: u32, h: u32, flags: u32) -> Option<(i32, i32)> {
     (mode_exists(w, h) && flags & 2 == 0).then_some((w as i32, h as i32))
 }
 #[cfg(test)]
+mod window_info_tests {
+    use super::{window_info, Rect};
+    use proptest::prelude::*;
+    fn at(b: &[u8; 60], o: usize) -> u32 {
+        u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+    }
+    /// winref windowinfo's answer for an overlapped 300x200 window at 100,100 (frame 8, caption 31)
+    #[test]
+    fn overlapped() {
+        let win = Rect { l: 100, t: 100, r: 400, b: 300 };
+        let cl = Rect { l: 108, t: 131, r: 392, b: 292 };
+        let b = window_info(win, cl, 0x14cf_0000, 0x100, true, 0xc123);
+        assert_eq!(at(&b, 0), 60);
+        assert_eq!((at(&b, 4), at(&b, 8), at(&b, 12), at(&b, 16)), (100, 100, 400, 300));
+        assert_eq!((at(&b, 20), at(&b, 24), at(&b, 28), at(&b, 32)), (108, 131, 392, 292));
+        assert_eq!((at(&b, 36), at(&b, 40), at(&b, 44)), (0x14cf_0000, 0x100, 1));
+        assert_eq!((at(&b, 48), at(&b, 52)), (8, 8));
+        assert_eq!(at(&b, 56), 0x0400_c123);
+    }
+    proptest! {
+        /// any rectangles (negative screen positions too): every field lands where WINDOWINFO
+        /// has it, the borders are the left and bottom gaps, nothing else is written
+        #[test]
+        fn fields(l in -5000i32..5000, t in -5000i32..5000, w in 0i32..4000, h in 0i32..4000,
+                  bl in 0i32..50, bt in 0i32..80, br in 0i32..50, bb in 0i32..50,
+                  style: u32, ex: u32, active: bool, atom: u16) {
+            let win = Rect { l, t, r: l + w, b: t + h };
+            let cl = Rect { l: l + bl, t: t + bt, r: l + w - br, b: t + h - bb };
+            let b = window_info(win, cl, style, ex, active, atom);
+            prop_assert_eq!(at(&b, 0), 60);
+            prop_assert_eq!(at(&b, 4) as i32, l);
+            prop_assert_eq!(at(&b, 16) as i32, t + h);
+            prop_assert_eq!(at(&b, 20) as i32, l + bl);
+            prop_assert_eq!(at(&b, 32) as i32, t + h - bb);
+            prop_assert_eq!(at(&b, 36), style);
+            prop_assert_eq!(at(&b, 40), ex);
+            prop_assert_eq!(at(&b, 44), active as u32);
+            prop_assert_eq!(at(&b, 48) as i32, bl);
+            prop_assert_eq!(at(&b, 52) as i32, bb);
+            prop_assert_eq!(at(&b, 56) & 0xffff, atom as u32);
+            prop_assert_eq!(at(&b, 56) >> 16, 0x400);
+        }
+    }
+}
+
+#[cfg(test)]
 mod display_change_tests {
     use super::{display_change, mode_exists};
     /// winref dispmode's answers: CDS_TEST never switches, a size no display has is refused
@@ -7124,7 +7213,7 @@ pub fn init() {
         GetClassInfoA, GetClassInfoW, GetClassInfoExA, GetClassInfoExW, CreateWindowExA, CreateWindowExW,
         DestroyWindow, ShowWindow, ShowWindowAsync, ShowOwnedPopups, UpdateWindow, IsWindow, IsWindowVisible,
         IsWindowEnabled, EnableWindow, IsIconic, IsZoomed, IsChild, SetWindowPos, MoveWindow, BeginDeferWindowPos,
-        DeferWindowPos, EndDeferWindowPos, GetWindowRect, GetClientRect, GetWindowPlacement, SetWindowPlacement,
+        DeferWindowPos, EndDeferWindowPos, GetWindowRect, GetClientRect, GetWindowInfo, GetWindowPlacement, SetWindowPlacement,
         ClientToScreen, ScreenToClient, MapWindowPoints, AdjustWindowRect, AdjustWindowRectEx, GetParent,
         GetAncestor, SetParent, GetDesktopWindow, GetShellWindow, GetWindow, GetTopWindow, GetLastActivePopup,
         GetDlgItem, GetNextDlgTabItem, GetDlgCtrlID, SendDlgItemMessageA, GetWindowThreadProcessId, EnumWindows, EnumThreadWindows,
