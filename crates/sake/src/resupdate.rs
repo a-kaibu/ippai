@@ -261,12 +261,15 @@ pub fn write(file: &[u8], tree: &Tree) -> Option<Vec<u8>> {
     let pe = Pe::parse(&b)?;
     let (fa, sa) = (r32(&b, pe.opt + 36)?, r32(&b, pe.opt + 32)?);
     // FileAlignment controls output padding. A damaged header must not turn a tiny
-    // resource update into a multi-gigabyte allocation (mutation-test baseline).
+    // resource update into a multi-gigabyte allocation (mutation-test baseline), yet Windows
+    // still updates such a file (host_resupdate-32): pad as the usual 0x200 / 0x1000 then.
     // PE permits sub-page alignment only when FileAlignment == SectionAlignment.
-    if !fa.is_power_of_two() || !sa.is_power_of_two() || fa > 0x10000 || sa < fa
+    let (fa, sa) = if !fa.is_power_of_two() || !sa.is_power_of_two() || fa > 0x10000 || sa < fa
         || (sa < 0x1000 && fa != sa) || (sa >= 0x1000 && fa < 0x200) {
-        return None;
-    }
+        (0x200, 0x1000)
+    } else {
+        (fa, sa)
+    };
     let secs = pe.sections(&b);
     let (rva, _) = pe.dir(&b, 2);
     let name = |i: usize| &b[pe.secs + 40 * i..pe.secs + 40 * i + 8];
@@ -752,10 +755,13 @@ mod tests {
                 }
             }
         }
+        // (Windows updates such a file: so does sake, with the usual alignments)
         for bad in [0, 3, 0x86000000, 0x80000000] {
             let mut b = original.clone();
             w32(&mut b, 0x98 + 36, bad);
-            assert!(write(&b, &sample()).is_none());
+            let out = write(&b, &sample()).expect("a damaged alignment is still updated");
+            assert!(out.len() < 0x20000);
+            assert_eq!(read(&out).unwrap(), sample());
         }
     }
 
