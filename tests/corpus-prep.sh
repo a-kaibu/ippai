@@ -117,7 +117,10 @@ if [ ! -d x ]; then
     # itself with cabinet.dll's FDI and quits: the game is a separate exe inside)
     elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qx 'Type = Cab' &&
         LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | sed '1,/^----------$/d' | grep -qiE '^Path = .*\.exe$' &&
-        mkdir -p "$s.cab" && (cd "$s.cab" && LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$s" >/dev/null 2>&1) && [ -n "$(ls "$s.cab")" ]; then rm -f "$s"
+        # (an EXEpress CX one names a cabinet volume it doesn't carry and 7z exits 2 after writing
+        # every file, 下戸勇者_体験版.exe's "EXEpress Project.cab": kept when all are there whole)
+        mkdir -p "$s.cab" && (cd "$s.cab" && { LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$s" >/dev/null 2>&1 ||
+            python3 -I "$HERE/7z-complete.py" "$OLDPWD/$s" . >/dev/null 2>&1; }) && [ -n "$(ls "$s.cab")" ]; then rm -f "$s"
     # an LHa self-extractor holding the game (痴漢車両2号車R's ChikanSyaryou2TaikenData.exe in
     # discovery_0037t.zip; lsar fails on it, "Archive parsing failed"): 7z reads it
     elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qx 'Type = Lzh' &&
