@@ -4,13 +4,20 @@
 //! Uniforms (same block as programmable shaders, see d3d9::uniforms):
 //! vertex: x[0] position fixup, x[2] (vp x, vp y, 2/vp w, 2/vp h) for pretransformed vertices,
 //! c[0..4] world*view*projection (D3D's row-major memory), c[4..12] texture matrices of
-//! stages 0-1, c[12] material diffuse (lighting without normals).
+//! stages 0-1; with lighting (lighting_regs): c[12..16] material diffuse, ambient,
+//! specular, emissive, c[16] the ambient render state, c[17].x the specular power, c[18..22]
+//! world*view, c[22..25] the normals' matrix, and from c[25] 7 registers per enabled light.
 //! pixel: x[0] alpha bits and alpha reference, c[0] texture factor, c[1..9] stage constants.
 
 use crate::d3d9::{uniforms, USAGE_COLOR, USAGE_NORMAL, USAGE_POSITION, USAGE_POSITIONT, USAGE_TEXCOORD};
 use std::fmt::Write;
 
-pub const VS_CONSTS: u32 = 13;
+/// the first light's registers, and how many each light has (see `lighting_regs`)
+pub const LIGHT_BASE: u32 = 25;
+pub const LIGHT_REGS: u32 = 7;
+/// D3DCAPS9.MaxActiveLights (kura's caps)
+pub const MAX_LIGHTS: u32 = 8;
+pub const VS_CONSTS: u32 = LIGHT_BASE + LIGHT_REGS * MAX_LIGHTS;
 pub const PS_CONSTS: u32 = 9;
 
 /// What the generated vertex shader depends on.
@@ -19,12 +26,207 @@ pub struct VsKey {
     /// (usage, index, location, kind) of each input
     pub inputs: Vec<(u32, u32, u32, u32)>,
     pub rhw: bool,
-    pub lighting: bool,
     /// per stage: texcoord index (low bits of TEXCOORDINDEX), and the texture transform
     /// (TEXTURETRANSFORMFLAGS count, 0 off) for stages 0-1
     pub tci: [(u8, u8); 8],
     /// SHADEMODE flat: the colors come from each triangle's first vertex
     pub flat: bool,
+    /// LIGHTING on, vertices not pretransformed: Direct3D's lighting equation (else None)
+    pub light: Option<LightKey>,
+}
+
+/// What the lighting part of the vertex shader depends on.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct LightKey {
+    /// enabled lights (the first `count` light register blocks)
+    pub count: u8,
+    /// SPECULARENABLE: the specular term is computed
+    pub specular: bool,
+    /// LOCALVIEWER: the half vector from the vertex to the camera (else to (0, 0, -1))
+    pub local_viewer: bool,
+    /// NORMALIZENORMALS
+    pub normalize: bool,
+    /// where diffuse, specular, ambient and emissive come from: 0 the material, 1 the vertex's
+    /// diffuse color, 2 its specular color (`sources` resolves COLORVERTEX and missing colors)
+    pub sources: [u8; 4],
+}
+
+/// The material color sources of the lighting equation (D3DRS_DIFFUSEMATERIALSOURCE,
+/// SPECULAR-, AMBIENT-, EMISSIVEMATERIALSOURCE): D3DMCS_COLOR1 / COLOR2 take the vertex's
+/// color only when COLORVERTEX is on and the vertex has that color; otherwise the material's.
+pub fn sources(rs: [u32; 4], color_vertex: bool, has: [bool; 2]) -> [u8; 4] {
+    rs.map(|r| match r {
+        1 if color_vertex && has[0] => 1,
+        2 if color_vertex && has[1] => 2,
+        _ => 0,
+    })
+}
+
+/// A D3DLIGHT9.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Light {
+    /// 1 point, 2 spot, 3 directional
+    pub ty: u32,
+    pub diffuse: [f32; 4],
+    pub specular: [f32; 4],
+    pub ambient: [f32; 4],
+    pub position: [f32; 3],
+    pub direction: [f32; 3],
+    pub range: f32,
+    pub falloff: f32,
+    pub attenuation: [f32; 3],
+    pub theta: f32,
+    pub phi: f32,
+}
+
+impl Light {
+    /// from the 104 bytes of a D3DLIGHT9
+    pub fn from_bytes(b: &[u8]) -> Light {
+        let f = |i: usize| b.get(i * 4..i * 4 + 4).map_or(0.0, |c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+        let v4 = |i: usize| [f(i), f(i + 1), f(i + 2), f(i + 3)];
+        let v3 = |i: usize| [f(i), f(i + 1), f(i + 2)];
+        Light {
+            ty: f(0).to_bits(),
+            diffuse: v4(1),
+            specular: v4(5),
+            ambient: v4(9),
+            position: v3(13),
+            direction: v3(16),
+            range: f(19),
+            falloff: f(20),
+            attenuation: v3(21),
+            theta: f(24),
+            phi: f(25),
+        }
+    }
+}
+
+/// D3D's row-vector product v * M (M row-major, 16 floats)
+fn row_mul(v: [f32; 4], m: &[f32; 16]) -> [f32; 4] {
+    let mut r = [0f32; 4];
+    for (c, x) in r.iter_mut().enumerate() {
+        *x = (0..4).map(|k| v[k] * m[k * 4 + c]).sum();
+    }
+    r
+}
+
+fn mat_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    let mut r = [0f32; 16];
+    for i in 0..4 {
+        for j in 0..4 {
+            r[i * 4 + j] = (0..4).map(|k| a[i * 4 + k] * b[k * 4 + j]).sum();
+        }
+    }
+    r
+}
+
+/// The lighting registers (c[12..], see the module's comment) from the material (D3DMATERIAL9),
+/// the AMBIENT render state, the WORLD and VIEW transforms and the enabled lights (at most
+/// MAX_LIGHTS are used). Lights go to camera space here, as Direct3D lights there.
+pub fn lighting_regs(regs: &mut [[f32; 4]], material: &[f32; 17], ambient: u32, world: &[f32; 16], view: &[f32; 16], lights: &[Light]) {
+    for i in 0..4 {
+        regs[12 + i] = [material[4 * i], material[4 * i + 1], material[4 * i + 2], material[4 * i + 3]];
+    }
+    let ch = |s: u32| ((ambient >> s) & 0xff) as f32 / 255.0;
+    regs[16] = [ch(16), ch(8), ch(0), ch(24)];
+    regs[17] = [material[16], 0.0, 0.0, 0.0];
+    let wv = mat_mul(world, view);
+    for r in 0..4 {
+        regs[18 + r] = [wv[4 * r], wv[4 * r + 1], wv[4 * r + 2], wv[4 * r + 3]];
+    }
+    // normals: n * inverse(transpose(WV3)) as WGSL mat3 columns = the columns of inverse(WV3)
+    let m = |i: usize, j: usize| wv[i * 4 + j] as f64;
+    let det = m(0, 0) * (m(1, 1) * m(2, 2) - m(1, 2) * m(2, 1)) - m(0, 1) * (m(1, 0) * m(2, 2) - m(1, 2) * m(2, 0))
+        + m(0, 2) * (m(1, 0) * m(2, 1) - m(1, 1) * m(2, 0));
+    for c in 0..3 {
+        regs[22 + c] = if det.abs() > 1e-30 {
+            // column c of the inverse = cofactors of row c of WV3 / det (adjugate^T)
+            let (c1, c2) = ((c + 1) % 3, (c + 2) % 3);
+            let mut v = [0f32; 4];
+            for r in 0..3 {
+                let (r1, r2) = ((r + 1) % 3, (r + 2) % 3);
+                v[r] = ((m(c1, r1) * m(c2, r2) - m(c1, r2) * m(c2, r1)) / det) as f32;
+            }
+            v
+        } else {
+            [wv[c], wv[4 + c], wv[8 + c], 0.0]
+        };
+    }
+    for (i, l) in lights.iter().take(MAX_LIGHTS as usize).enumerate() {
+        let b = (LIGHT_BASE + LIGHT_REGS * i as u32) as usize;
+        let p = row_mul([l.position[0], l.position[1], l.position[2], 1.0], view);
+        let d = row_mul([l.direction[0], l.direction[1], l.direction[2], 0.0], view);
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let d = if len > 0.0 { [d[0] / len, d[1] / len, d[2] / len] } else { [0.0; 3] };
+        regs[b] = l.diffuse;
+        regs[b + 1] = l.specular;
+        regs[b + 2] = l.ambient;
+        regs[b + 3] = [p[0], p[1], p[2], l.range];
+        regs[b + 4] = [d[0], d[1], d[2], l.falloff];
+        regs[b + 5] = [l.attenuation[0], l.attenuation[1], l.attenuation[2], l.ty as f32];
+        regs[b + 6] = [(l.theta / 2.0).cos(), (l.phi / 2.0).cos(), 0.0, 0.0];
+    }
+}
+
+/// `fn ff_light(p, n, cd, ca, cs, ce) -> array<vec4f, 2>`: the lit diffuse and specular colors
+/// of a vertex at p with normal n (camera space) and material colors cd, ca, cs, ce, by the
+/// lighting equation of the Direct3D 9 docs ("Mathematics of Lighting"), as Wine's
+/// fixed-function pipeline (half vector to (0, 0, -1) without LOCALVIEWER, no specular on a
+/// face turned from the light).
+pub fn lighting_fn(k: &LightKey) -> String {
+    let mut h = String::from(
+        "fn ff_light(p: vec3f, n: vec3f, cd: vec4f, ca: vec4f, cs: vec4f, ce: vec4f) -> array<vec4f, 2> {
+  var amb = vec3f(0.0);
+  var dif = vec3f(0.0);
+  var spe = vec3f(0.0);
+",
+    );
+    let _ = writeln!(h, "  for (var i = 0u; i < {}u; i++) {{", k.count.min(MAX_LIGHTS as u8));
+    let _ = writeln!(h, "    let b = {}u + i * {}u;", LIGHT_BASE, LIGHT_REGS);
+    h.push_str(
+        "    let ty = u.c[b + 5u].w;
+    var l = -u.c[b + 4u].xyz;
+    var att = 1.0;
+    if (ty != 3.0) {
+      let d = u.c[b + 3u].xyz - p;
+      let dist = length(d);
+      if (dist > u.c[b + 3u].w) { continue; }
+      l = select(vec3f(0.0), d / dist, dist > 0.0);
+      let a = u.c[b + 5u].xyz;
+      let den = a.x + a.y * dist + a.z * dist * dist;
+      att = select(0.0, 1.0 / den, den > 0.0);
+      if (ty == 2.0) {
+        let rho = dot(-u.c[b + 4u].xyz, l);
+        let ct = u.c[b + 6u].x;
+        let cp = u.c[b + 6u].y;
+        if (rho <= cp) { att = 0.0; }
+        else if (rho <= ct) { att *= pw((rho - cp) / (ct - cp), u.c[b + 4u].w); }
+      }
+    }
+    amb += att * u.c[b + 2u].xyz;
+    let nl = dot(n, l);
+    dif += att * max(nl, 0.0) * u.c[b].xyz;
+",
+    );
+    if k.specular {
+        let v = if k.local_viewer { "-normalize(p)" } else { "vec3f(0.0, 0.0, -1.0)" };
+        let _ = writeln!(h, "    let hv = l + {v};");
+        h.push_str(
+            "    let hl = dot(hv, hv);
+    let nh = select(0.0, dot(n, hv * inverseSqrt(hl)), hl > 0.0);
+    if (nl > 0.0 && nh > 0.0) { spe += att * pw(nh, u.c[17].x) * u.c[b + 1u].xyz; }
+",
+        );
+    }
+    h.push_str(
+        "  }
+  let d = ce.xyz + ca.xyz * (u.c[16].xyz + amb) + cd.xyz * dif;
+  return array<vec4f, 2>(clamp(vec4f(d, cd.w), vec4f(0.0), vec4f(1.0)), clamp(vec4f(cs.xyz * spe, 0.0), vec4f(0.0), vec4f(1.0)));
+}
+fn pw(x: f32, y: f32) -> f32 { if (y == 0.0) { return 1.0; } return pow(max(x, 0.0), y); }
+",
+    );
+    h
 }
 
 pub fn vertex(k: &VsKey) -> String {
@@ -67,17 +269,34 @@ pub fn vertex(k: &VsKey) -> String {
     }
     h.push_str("  o.pos = fixpos(o.pos);\n");
     let diffuse = get(USAGE_COLOR, 0);
-    let has_normal = get(USAGE_NORMAL, 0).is_some();
-    let d = match (&diffuse, k.lighting && !k.rhw) {
-        (Some(c), false) => c.clone(),
-        (None, false) => "vec4f(1.0)".into(),
-        // (lights aren't done: material/vertex color as lit by a white ambient)
-        (Some(c), true) => c.clone(),
-        (None, true) => "u.c[12]".into(),
-    };
-    let _ = has_normal;
-    let _ = writeln!(h, "  o.l0 = clamp({}, vec4f(0.0), vec4f(1.0));", d);
-    let _ = writeln!(h, "  o.l1 = {};", get(USAGE_COLOR, 1).unwrap_or("vec4f(0.0)".into()));
+    let specular = get(USAGE_COLOR, 1);
+    match k.light.filter(|_| !k.rhw) {
+        Some(lk) => {
+            let src = |s: u8, mat: u32| match s {
+                1 => diffuse.clone().unwrap_or_else(|| format!("u.c[{mat}]")),
+                2 => specular.clone().unwrap_or_else(|| format!("u.c[{mat}]")),
+                _ => format!("u.c[{mat}]"),
+            };
+            let n = get(USAGE_NORMAL, 0).map_or("vec3f(0.0)".to_string(), |n| format!("({n}).xyz"));
+            h.push_str("  let vp = mat4x4f(u.c[18], u.c[19], u.c[20], u.c[21]) * p;\n");
+            let _ = writeln!(h, "  var vn = mat3x3f(u.c[22].xyz, u.c[23].xyz, u.c[24].xyz) * {n};");
+            if lk.normalize {
+                h.push_str("  let nl = dot(vn, vn);\n  if (nl > 0.0) { vn = vn * inverseSqrt(nl); }\n");
+            }
+            let _ = writeln!(
+                h,
+                "  let lit = ff_light(vp.xyz, vn, {}, {}, {}, {});\n  o.l0 = lit[0];\n  o.l1 = lit[1];",
+                src(lk.sources[0], 12),
+                src(lk.sources[2], 13),
+                src(lk.sources[1], 14),
+                src(lk.sources[3], 15)
+            );
+        }
+        None => {
+            let _ = writeln!(h, "  o.l0 = clamp({}, vec4f(0.0), vec4f(1.0));", diffuse.clone().unwrap_or("vec4f(1.0)".into()));
+            let _ = writeln!(h, "  o.l1 = {};", specular.clone().unwrap_or("vec4f(0.0)".into()));
+        }
+    }
     for t in 0..8u32 {
         let (src, count) = k.tci[t as usize];
         let tc = get(USAGE_TEXCOORD, src as u32).unwrap_or("vec4f(0.0, 0.0, 0.0, 1.0)".into());
@@ -102,6 +321,9 @@ pub fn vertex(k: &VsKey) -> String {
     }
     h.push_str("  return o;\n}\n");
     h.push_str(FIXPOS);
+    if let Some(lk) = k.light.filter(|_| !k.rhw) {
+        h.push_str(&lighting_fn(&lk));
+    }
     h
 }
 
@@ -380,5 +602,115 @@ mod tests {
         // (the fixed-function vertex shader: all ten, as before)
         let all = pixel(&PsKey { vs_writes: None, ..k });
         assert!((0..10).all(|l| all.contains(&format!(" l{l}: vec4f,"))), "{all}");
+    }
+
+    fn light_key() -> impl Strategy<Value = (LightKey, [bool; 3])> {
+        (0u8..=8, any::<bool>(), any::<bool>(), any::<bool>(), prop::array::uniform4(0u32..=2), any::<bool>(), prop::array::uniform3(any::<bool>())).prop_map(
+            |(count, specular, local_viewer, normalize, rs, cv, has)| {
+                (LightKey { count, specular, local_viewer, normalize, sources: sources(rs, cv, [has[0], has[1]]) }, has)
+            },
+        )
+    }
+
+    proptest! {
+        /// Lit vertex shaders are valid WGSL for any lights, sources and vertex layout (normal,
+        /// diffuse, specular present or not), and read the vertex color only where a source
+        /// takes it.
+        #[test]
+        fn lit_vertex_shaders_are_valid((lk, has) in light_key()) {
+            let mut inputs = vec![(USAGE_POSITION, 0, 0, 0)];
+            if has[2] { inputs.push((USAGE_NORMAL, 0, 1, 0)); }
+            if has[0] { inputs.push((USAGE_COLOR, 0, 2, 3)); }
+            if has[1] { inputs.push((USAGE_COLOR, 1, 3, 3)); }
+            let k = VsKey { inputs, rhw: false, tci: [(0, 0); 8], flat: false, light: Some(lk) };
+            let w = vertex(&k);
+            valid(&w);
+            prop_assert!(w.contains("ff_light("), "{}", w);
+            prop_assert_eq!(w.contains("i.i2.zyxw"), lk.sources.contains(&1), "{}", w);
+            prop_assert_eq!(w.contains("i.i3.zyxw"), lk.sources.contains(&2), "{}", w);
+            prop_assert_eq!(w.contains("let hv ="), lk.specular, "{}", w);
+            // (pretransformed vertices are never lit)
+            let rhw = vertex(&VsKey { rhw: true, ..k });
+            valid(&rhw);
+            prop_assert!(!rhw.contains("ff_light"), "{}", rhw);
+        }
+
+        /// The material sources: a vertex color only when COLORVERTEX is on and the vertex has it.
+        #[test]
+        fn sources_follow_colorvertex(rs in prop::array::uniform4(0u32..=4), cv in any::<bool>(), has in prop::array::uniform2(any::<bool>())) {
+            let s = sources(rs, cv, has);
+            for i in 0..4 {
+                let want = match rs[i] { 1 if cv && has[0] => 1, 2 if cv && has[1] => 2, _ => 0 };
+                prop_assert_eq!(s[i], want);
+            }
+        }
+
+        /// The normals' matrix keeps normals perpendicular to the surface: for a world * view
+        /// with any rotation, scale (also uneven) and translation, a normal n of a tangent t
+        /// (n . t = 0) stays perpendicular to the transformed tangent t * WV.
+        #[test]
+        fn normals_stay_perpendicular(a in -3.0f32..3.0, b in -3.0f32..3.0, sx in 0.2f32..4.0, sy in 0.2f32..4.0, sz in 0.2f32..4.0,
+                                      t in prop::array::uniform3(-5.0f32..5.0), n in prop::array::uniform3(-1.0f32..1.0), u in prop::array::uniform3(-1.0f32..1.0)) {
+            let (ca, sa, cb, sb) = (a.cos(), a.sin(), b.cos(), b.sin());
+            // world: scale then rotate about z; view: rotate about x and move
+            let world = [sx * ca, sx * sa, 0.0, 0.0, -sy * sa, sy * ca, 0.0, 0.0, 0.0, 0.0, sz, 0.0, 0.0, 0.0, 0.0, 1.0];
+            let view = [1.0, 0.0, 0.0, 0.0, 0.0, cb, sb, 0.0, 0.0, -sb, cb, 0.0, t[0], t[1], t[2], 1.0];
+            let mut regs = [[0f32; 4]; VS_CONSTS as usize];
+            lighting_regs(&mut regs, &[0.0; 17], 0, &world, &view, &[]);
+            // a tangent: u minus its part along n
+            let nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+            prop_assume!(nn > 0.01);
+            let k = (u[0] * n[0] + u[1] * n[1] + u[2] * n[2]) / nn;
+            let tan = [u[0] - k * n[0], u[1] - k * n[1], u[2] - k * n[2]];
+            let wv = mat_mul(&world, &view);
+            let tt = row_mul([tan[0], tan[1], tan[2], 0.0], &wv);
+            // WGSL's mat3x3f(c22, c23, c24) * n
+            let nt: Vec<f32> = (0..3).map(|r| (0..3).map(|c| regs[22 + c][r] * n[c]).sum()).collect();
+            let d: f32 = (0..3).map(|i| nt[i] * tt[i]).sum();
+            let scale = (nt.iter().map(|x| x * x).sum::<f32>() * tt.iter().take(3).map(|x| x * x).sum::<f32>()).sqrt();
+            prop_assert!(d.abs() <= 1e-3 * scale.max(1e-3), "{} {:?} {:?}", d, nt, tt);
+        }
+
+        /// D3DLIGHT9's bytes, field by field.
+        #[test]
+        fn light_from_bytes(v in prop::array::uniform25(-100.0f32..100.0), ty in 1u32..=3) {
+            let mut b = ty.to_le_bytes().to_vec();
+            for x in v { b.extend_from_slice(&x.to_le_bytes()); }
+            prop_assert_eq!(b.len(), 104);
+            let l = Light::from_bytes(&b);
+            prop_assert_eq!(l.ty, ty);
+            prop_assert_eq!(l.diffuse, [v[0], v[1], v[2], v[3]]);
+            prop_assert_eq!(l.specular, [v[4], v[5], v[6], v[7]]);
+            prop_assert_eq!(l.ambient, [v[8], v[9], v[10], v[11]]);
+            prop_assert_eq!(l.position, [v[12], v[13], v[14]]);
+            prop_assert_eq!(l.direction, [v[15], v[16], v[17]]);
+            prop_assert_eq!((l.range, l.falloff), (v[18], v[19]));
+            prop_assert_eq!(l.attenuation, [v[20], v[21], v[22]]);
+            prop_assert_eq!((l.theta, l.phi), (v[23], v[24]));
+        }
+    }
+
+    // 小悪魔ディーラーのキャンディ体験版 (Ags5 engine) draws its sprites lit: material diffuse
+    // 0 with the fade in its alpha, emissive white, one directional light. The vertex color is
+    // the emissive one, not the material's diffuse (black before lighting was done).
+    #[test]
+    fn emissive_lights_an_unlit_sprite() {
+        let lk = LightKey { count: 1, specular: false, local_viewer: true, normalize: false, sources: sources([1, 2, 0, 0], true, [false, false]) };
+        let k = VsKey { inputs: vec![(USAGE_POSITION, 0, 0, 0), (USAGE_NORMAL, 0, 1, 0), (5, 0, 2, 0)], rhw: false, tci: [(0, 0); 8], flat: false, light: Some(lk) };
+        let w = vertex(&k);
+        valid(&w);
+        assert!(w.contains("ff_light(vp.xyz, vn, u.c[12], u.c[13], u.c[14], u.c[15])"), "{w}");
+        assert!(w.contains("let d = ce.xyz + ca.xyz * (u.c[16].xyz + amb) + cd.xyz * dif;"), "{w}");
+        let mut regs = [[0f32; 4]; VS_CONSTS as usize];
+        let mut m = [0f32; 17];
+        m[3] = 0.5;
+        m[12..15].copy_from_slice(&[1.0; 3]);
+        let id: [f32; 16] = std::array::from_fn(|i| if i % 5 == 0 { 1.0 } else { 0.0 });
+        let l = Light { ty: 3, diffuse: [1.0; 4], direction: [0.6667, -0.6667, 0.3333], ..Default::default() };
+        lighting_regs(&mut regs, &m, 0xff50_5050, &id, &id, &[l]);
+        assert_eq!(regs[12], [0.0, 0.0, 0.0, 0.5]);
+        assert_eq!(regs[15], [1.0, 1.0, 1.0, 0.0]);
+        assert_eq!(regs[16], [80.0 / 255.0, 80.0 / 255.0, 80.0 / 255.0, 1.0]);
+        assert_eq!(regs[LIGHT_BASE as usize + 5][3], 3.0);
     }
 }

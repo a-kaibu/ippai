@@ -3250,6 +3250,10 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             eprintln!("d3d9:   viewport {:?}", st.viewport);
         }
         eprintln!("d3d9:   rt {rt} ds {ds} viewport {:?} cull {} z {} {}", st.viewport, st.rs[22], st.rs[7], st.rs[14]);
+        if st.rs[137] != 0 && st.vs == 0 {
+            let on: Vec<_> = st.lights.iter().filter(|l| l.1 .1).map(|(i, l)| (*i, ff::Light::from_bytes(&l.0))).collect();
+            eprintln!("d3d9:   lit: ambient {:#x} material {:?} colorvertex {} sources {} {} {} {} lights {:?}", st.rs[139], st.material, st.rs[141], st.rs[145], st.rs[146], st.rs[147], st.rs[148], on);
+        }
         if let Some((iptr, isize, _)) = index {
             let ix: Vec<u32> = (0..nverts.min(12)).map(|k| if isize == 4 { *((iptr + 4 * k) as *const u32) } else { *((iptr + 2 * k) as *const u16) as u32 }).collect();
             eprintln!("d3d9:   indices {ix:?}");
@@ -3366,7 +3370,17 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 let ttff = st.tss[i][24] & 0xff;
                 *t = ((st.tss[i][11] & 0xff) as u8, if ttff == 0 { 0 } else { ttff as u8 });
             }
-            let key = ModKey::FfVs(ff::VsKey { inputs: ff_inputs.clone(), rhw, lighting: st.rs[137] != 0, tci, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 });
+            let light = (st.rs[137] != 0 && !rhw).then(|| {
+                let has = |i: u32| ff_inputs.iter().any(|x| x.0 == shader::USAGE_COLOR && x.1 == i);
+                ff::LightKey {
+                    count: st.lights.values().filter(|l| l.1).count().min(ff::MAX_LIGHTS as usize) as u8,
+                    specular: st.rs[29] != 0,
+                    local_viewer: st.rs[142] != 0,
+                    normalize: st.rs[143] != 0,
+                    sources: ff::sources([st.rs[145], st.rs[146], st.rs[147], st.rs[148]], st.rs[141] != 0, [has(0), has(1)]),
+                }
+            });
+            let key = ModKey::FfVs(ff::VsKey { inputs: ff_inputs.clone(), rhw, tci, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0, light });
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
@@ -3585,7 +3599,13 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 regs[4 + t * 4 + r] = [m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]];
             }
         }
-        regs[12] = [st.material[0], st.material[1], st.material[2], st.material[3]];
+        if st.rs[137] != 0 {
+            // (enabled lights by index, as they take the light registers in that order)
+            let mut on: Vec<_> = st.lights.iter().filter(|l| l.1 .1).map(|(&i, l)| (i, ff::Light::from_bytes(&l.0))).collect();
+            on.sort_by_key(|l| l.0);
+            let lights: Vec<_> = on.into_iter().map(|l| l.1).collect();
+            ff::lighting_regs(&mut regs, &st.material, st.rs[139], &get(256), &get(2), &lights);
+        }
         consts(&mut vsu, &regs, ff::VS_CONSTS);
     }
     // alpha-less textures and alpha ref

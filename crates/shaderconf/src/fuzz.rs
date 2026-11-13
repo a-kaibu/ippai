@@ -261,6 +261,8 @@ pub fn run(cases: &[Case], n: usize, seed: u64) -> bool {
                     seeds.push(Input::D3d9(words(&b)));
                 }
             }
+            // (fixed-function lighting: generated from a key, no source to mutate)
+            "d3d9ff" => {}
             _ => seeds.push(Input::Glsl(c.src.clone())),
         }
     }

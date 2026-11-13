@@ -13,6 +13,7 @@
 
 mod cases;
 mod compute;
+mod fflight;
 mod fuzz;
 mod json;
 mod oracle;
