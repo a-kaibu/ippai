@@ -5657,6 +5657,7 @@ fn TranslateAcceleratorW(c: &mut Ctx) -> u32 {
 /// is the program's (or a game's damaged resource), so a deeper one must not overflow sake's own
 /// stack; the deeper popups are left empty. (Windows' menus nest a handful deep.)
 const MENU_DEPTH: u32 = 64;
+#[cfg(test)]
 fn menu_items(h: u32, p: u32) -> u32 {
     menu_items_at(h, p, u32::MAX, 0)
 }
@@ -5697,6 +5698,7 @@ fn menu_items_at(h: u32, mut p: u32, end: u32, depth: u32) -> u32 {
 }
 /// MENUEX items: type, state, id (dwords), flags word (1 popup, 0x80 last), text, dword aligned;
 /// a popup has a help id and then its items
+#[cfg(test)]
 fn menuex_items(h: u32, p: u32) -> u32 {
     menuex_items_at(h, p, u32::MAX, 0)
 }
