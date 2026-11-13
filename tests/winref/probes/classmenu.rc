@@ -1,0 +1,19 @@
+/* resources of the classmenu probe: a class menu (WNDCLASS lpszMenuName) by number and by name */
+#pragma code_page(65001)
+#include <windows.h>
+1 24 "ja.manifest"
+
+1 MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Open", 101
+        MENUITEM "E&xit", 102, GRAYED
+    END
+    MENUITEM "&Help", 103
+END
+
+NAMEDMENU MENU
+BEGIN
+    MENUITEM "One", 201
+END

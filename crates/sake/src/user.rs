@@ -1449,9 +1449,21 @@ pub fn deliver_remote() {
 fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     let (ex, cls_p, name_p, mut style) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let (mut x, mut y, mut cx, mut cy) = (c.i(4), c.i(5), c.i(6), c.i(7));
-    let (parent, menu, inst, param) = (c.a(8), c.a(9), c.a(10), c.a(11));
+    let (parent, mut menu, inst, param) = (c.a(8), c.a(9), c.a(10), c.a(11));
     let tid = crate::cur().tid;
     let child = style & 0x4000_0000 != 0;
+    // the class menu (WNDCLASS lpszMenuName): a top-level window without its own gets a copy,
+    // loaded from the window's instance (as Wine's WIN_CreateWindowEx; a missing resource
+    // leaves it without one). The engine of エピデミック 〜感染拡大〜 inserts its items into it.
+    if !child && menu == 0 {
+        let cm = with(|s| {
+            system_classes(s);
+            class_index(s, cls_p, wide).map(|ci| (s.classes[ci].menu, s.classes[ci].inst, s.classes[ci].unicode))
+        });
+        if let Some((name, kinst, uni)) = cm.filter(|k| k.0 != 0) {
+            menu = resource(if inst != 0 { inst } else { kinst }, name, 4, uni).map_or(0, menu_from_resource);
+        }
+    }
     let (sw, sh) = screen();
     // (as Wine's fix_cs_coordinates: popups and children take 0, overlapped windows a default)
     let def = |v: i32| v == 0x8000_0000u32 as i32 || v == 0x8000;
@@ -1650,6 +1662,10 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
     with(|s| {
         s.normal.remove(&h);
         if let Some(w) = s.wins.remove(&h) {
+            // (a top-level window's menu goes with it, as DestroyWindow does on Windows)
+            if w.parent == 0 && w.style & 0x4000_0000 == 0 && w.menu != 0 {
+                s.menus.remove(&w.menu);
+            }
             if let Some(p) = s.wins.get_mut(&w.parent) {
                 p.children.retain(|&x| x != h);
             }
@@ -4981,6 +4997,9 @@ fn CreateMenu(_: &mut Ctx) -> u32 {
 fn CreatePopupMenu(_: &mut Ctx) -> u32 {
     new_menu()
 }
+fn IsMenu(c: &mut Ctx) -> u32 {
+    with(|s| s.menus.contains_key(&c.a(0))) as u32
+}
 fn DestroyMenu(c: &mut Ctx) -> u32 {
     with(|s| s.menus.remove(&c.a(0)));
     1
@@ -5603,8 +5622,20 @@ fn TranslateAcceleratorW(c: &mut Ctx) -> u32 {
 
 /// The items of a menu template at `p` into menu `h` (MENUITEMTEMPLATE: flags, id unless a
 /// popup, text; MF_END on the last of each level); returns where the level ended.
-fn menu_items(h: u32, mut p: u32) -> u32 {
+/// How deep popups in a menu template may nest: the parsers recurse per level, and a template
+/// is the program's (or a game's damaged resource), so a deeper one must not overflow sake's own
+/// stack; the deeper popups are left empty. (Windows' menus nest a handful deep.)
+const MENU_DEPTH: u32 = 64;
+fn menu_items(h: u32, p: u32) -> u32 {
+    menu_items_at(h, p, u32::MAX, 0)
+}
+/// (`end`: where the template's bytes end, a resource's size; u32::MAX for LoadMenuIndirect,
+/// which trusts the program as Windows does. A damaged resource without its last item stops there.)
+fn menu_items_at(h: u32, mut p: u32, end: u32, depth: u32) -> u32 {
     loop {
+        if p.saturating_add(4) > end {
+            return end;
+        }
         let f = r16(p) as u32;
         p += 2;
         let id = if f & 0x10 == 0 {
@@ -5622,7 +5653,7 @@ fn menu_items(h: u32, mut p: u32) -> u32 {
         }
         if f & 0x10 != 0 {
             let sub = new_menu();
-            p = menu_items(sub, p);
+            p = if depth < MENU_DEPTH { menu_items_at(sub, p, end, depth + 1) } else { skip_menu_items(p, end) };
             // (a popup's id is its menu handle)
             insert_item(h, 0xffff_ffff, true, MenuItem { id: sub, flags, text, sub, data: 0, bmp: 0 });
         } else {
@@ -5635,15 +5666,60 @@ fn menu_items(h: u32, mut p: u32) -> u32 {
 }
 /// MENUEX items: type, state, id (dwords), flags word (1 popup, 0x80 last), text, dword aligned;
 /// a popup has a help id and then its items
-fn menuex_items(h: u32, mut p: u32) -> u32 {
+fn menuex_items(h: u32, p: u32) -> u32 {
+    menuex_items_at(h, p, u32::MAX, 0)
+}
+/// The end of a MENU template's item list, without making menus (and without recursion).
+fn skip_menu_items(mut p: u32, end: u32) -> u32 {
+    let mut open = 1u32;
+    while open > 0 {
+        if p.saturating_add(4) > end {
+            return end;
+        }
+        let f = r16(p) as u32;
+        p += if f & 0x10 == 0 { 4 } else { 2 };
+        p += 2 * wstr(p).len() as u32 + 2;
+        if f & 0x10 != 0 {
+            open += 1;
+        }
+        // (a popup that is the last item: its own list still follows, so the count stays open)
+        if f & 0x80 != 0 {
+            open -= 1;
+        }
+    }
+    p
+}
+fn skip_menuex_items(mut p: u32, end: u32) -> u32 {
+    let mut open = 1u32;
+    while open > 0 {
+        if p.saturating_add(16) > end {
+            return end;
+        }
+        let res = r16(p + 12) as u32;
+        let text = wstr(p + 14);
+        p = (p + 14 + 2 * text.len() as u32 + 2 + 3) & !3;
+        if res & 1 != 0 {
+            p += 4;
+            open += 1;
+        }
+        if res & 0x80 != 0 {
+            open -= 1;
+        }
+    }
+    p
+}
+fn menuex_items_at(h: u32, mut p: u32, end: u32, depth: u32) -> u32 {
     loop {
+        if p.saturating_add(16) > end {
+            return end;
+        }
         let (ty, state, id, res) = (r32(p), r32(p + 4), r32(p + 8), r16(p + 12) as u32);
         let text = wstr(p + 14);
         p = (p + 14 + 2 * text.len() as u32 + 2 + 3) & !3;
         let flags = ty | state | if res & 1 != 0 { 0x10 } else { 0 };
         if res & 1 != 0 {
             let sub = new_menu();
-            p = menuex_items(sub, p + 4);
+            p = if depth < MENU_DEPTH { menuex_items_at(sub, p + 4, end, depth + 1) } else { skip_menuex_items(p + 4, end) };
             insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub, data: 0, bmp: 0 });
         } else {
             insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0, bmp: 0 });
@@ -5654,23 +5730,33 @@ fn menuex_items(h: u32, mut p: u32) -> u32 {
     }
 }
 fn menu_from_template(p: u32) -> u32 {
+    menu_from_bytes(p, u32::MAX)
+}
+/// A menu from a RT_MENU resource of `size` bytes: never read past its end
+fn menu_from_resource((p, size): (u32, u32)) -> u32 {
+    menu_from_bytes(p, p.saturating_add(size))
+}
+fn menu_from_bytes(p: u32, end: u32) -> u32 {
     let h = new_menu();
+    if p.saturating_add(4) > end {
+        return h;
+    }
     match r16(p) {
         0 => {
-            menu_items(h, p + 4 + r16(p + 2) as u32);
+            menu_items_at(h, p + 4 + r16(p + 2) as u32, end, 0);
         }
         1 => {
-            menuex_items(h, p + 4 + r16(p + 2) as u32);
+            menuex_items_at(h, p + 4 + r16(p + 2) as u32, end, 0);
         }
         _ => {}
     }
     h
 }
 fn LoadMenuA(c: &mut Ctx) -> u32 {
-    resource(c.a(0), c.a(1), 4, false).map_or(0, |(p, _)| menu_from_template(p))
+    resource(c.a(0), c.a(1), 4, false).map_or(0, menu_from_resource)
 }
 fn LoadMenuW(c: &mut Ctx) -> u32 {
-    resource(c.a(0), c.a(1), 4, true).map_or(0, |(p, _)| menu_from_template(p))
+    resource(c.a(0), c.a(1), 4, true).map_or(0, menu_from_resource)
 }
 fn LoadMenuIndirectA(c: &mut Ctx) -> u32 {
     menu_from_template(c.a(0))
@@ -6620,7 +6706,7 @@ pub fn init() {
         EnumClipboardFormats, GetPriorityClipboardFormat, RegisterClipboardFormatA, RegisterClipboardFormatW,
         CreateMenu, CreatePopupMenu, DestroyMenu, InsertMenuA, InsertMenuW, ModifyMenuW, GetMenuStringW, AppendMenuA, AppendMenuW, InsertMenuItemA,
         InsertMenuItemW, SetMenuItemInfoA, SetMenuItemInfoW, GetMenuItemInfoA, GetMenuItemInfoW, GetMenuItemCount, GetMenuItemID, GetSubMenu,
-        GetMenuState, GetMenuStringA, CheckMenuItem, CheckMenuRadioItem, EnableMenuItem, DeleteMenu, RemoveMenu, ModifyMenuA, GetMenu,
+        GetMenuState, GetMenuStringA, CheckMenuItem, CheckMenuRadioItem, EnableMenuItem, IsMenu, DeleteMenu, RemoveMenu, ModifyMenuA, GetMenu,
         SetMenu, GetSystemMenu, DrawMenuBar, TrackPopupMenu, TrackPopupMenuEx, GetMenuItemRect,
         SetMenuItemBitmaps, GetMenuCheckMarkDimensions,
         LoadStringA, LoadStringW, LoadCursorA, LoadCursorW, LoadCursorFromFileA, LoadCursorFromFileW, LoadIconA, LoadIconW, LoadImageA,
@@ -7037,6 +7123,192 @@ mod tests {
         #[test]
         fn cur_hotspot_any(d in proptest::collection::vec(any::<u8>(), 0..32)) {
             let _ = cur_hotspot(&d);
+        }
+    }
+}
+
+#[cfg(test)]
+mod menu_template_tests {
+    use super::*;
+    use crate::test_guest::enter;
+    use proptest::prelude::*;
+
+    /// A menu as a tree: (text, id, popup items)
+    #[derive(Clone, Debug)]
+    enum Item {
+        Cmd(String, u16),
+        Popup(String, Vec<Item>),
+    }
+
+    fn items() -> impl Strategy<Value = Vec<Item>> {
+        let leaf = ("[a-zあ-ん]{0,6}", 1u16..0x7fff).prop_map(|(t, id)| Item::Cmd(t, id));
+        let item = leaf.prop_recursive(4, 40, 5, |inner| {
+            prop_oneof![
+                ("[a-z]{0,6}", 1u16..0x7fff).prop_map(|(t, id)| Item::Cmd(t, id)),
+                ("[a-z]{1,6}", proptest::collection::vec(inner, 1..5)).prop_map(|(t, v)| Item::Popup(t, v)),
+            ]
+        });
+        proptest::collection::vec(item, 1..6)
+    }
+
+    fn text(out: &mut Vec<u8>, t: &str) {
+        for c in t.encode_utf16().chain([0]) {
+            out.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    /// MENU (MENUITEMTEMPLATE) items as RC writes them: flags (0x10 popup, 0x80 last), id unless
+    /// a popup, text; a popup's items follow it
+    fn menu_bytes(out: &mut Vec<u8>, v: &[Item]) {
+        for (i, it) in v.iter().enumerate() {
+            let last = if i + 1 == v.len() { 0x80u16 } else { 0 };
+            match it {
+                Item::Cmd(t, id) => {
+                    out.extend_from_slice(&last.to_le_bytes());
+                    out.extend_from_slice(&id.to_le_bytes());
+                    text(out, t);
+                }
+                Item::Popup(t, sub) => {
+                    out.extend_from_slice(&(0x10 | last).to_le_bytes());
+                    text(out, t);
+                    menu_bytes(out, sub);
+                }
+            }
+        }
+    }
+    /// MENUEX items: type, state, id, flags word (1 popup, 0x80 last), text, dword aligned; a
+    /// popup's help id, then its items
+    fn menuex_bytes(out: &mut Vec<u8>, v: &[Item]) {
+        for (i, it) in v.iter().enumerate() {
+            let last = if i + 1 == v.len() { 0x80u16 } else { 0 };
+            let (t, id, sub) = match it {
+                Item::Cmd(t, id) => (t, *id as u32, None),
+                Item::Popup(t, s) => (t, 0, Some(s)),
+            };
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&(last | if sub.is_some() { 1 } else { 0 }).to_le_bytes());
+            text(out, t);
+            while out.len() % 4 != 0 {
+                out.push(0);
+            }
+            if let Some(s) = sub {
+                out.extend_from_slice(&0u32.to_le_bytes());
+                menuex_bytes(out, s);
+            }
+        }
+    }
+    fn template(v: &[Item], ex: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        if ex {
+            out.extend_from_slice(&[1, 0, 4, 0, 0, 0, 0, 0]); // version 1, offset 4, help id
+            menuex_bytes(&mut out, v);
+        } else {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            menu_bytes(&mut out, v);
+        }
+        out
+    }
+    /// The menu `h` made, as the tree it came from (`depth` levels deep at most)
+    fn check(h: u32, v: &[Item], depth: u32) -> Result<(), TestCaseError> {
+        let got = with(|s| s.menus.get(&h).map(|m| m.items.clone())).expect("menu");
+        if depth > MENU_DEPTH + 1 {
+            prop_assert!(got.is_empty());
+            return Ok(());
+        }
+        prop_assert_eq!(got.len(), v.len());
+        for (g, want) in got.iter().zip(v) {
+            match want {
+                Item::Cmd(t, id) => {
+                    prop_assert_eq!(&g.text, &t.encode_utf16().collect::<Vec<_>>());
+                    prop_assert_eq!(g.sub, 0);
+                    if !t.is_empty() {
+                        prop_assert_eq!(g.id, *id as u32);
+                    }
+                }
+                Item::Popup(t, sub) => {
+                    prop_assert_eq!(&g.text, &t.encode_utf16().collect::<Vec<_>>());
+                    prop_assert!(g.sub != 0);
+                    prop_assert_eq!(g.flags & 0x10, 0x10);
+                    check(g.sub, sub, depth + 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn load(bytes: &[u8]) -> u32 {
+        let p = mem::heap_alloc(bytes.len() as u32 + 64, true);
+        mem::write(p, bytes);
+        let h = menu_from_template(p);
+        mem::heap_free(p);
+        h
+    }
+
+    proptest! {
+        /// Any menu tree written as a MENU or MENUEX template loads back as the same menus
+        /// (items, texts, ids, popups in order); the class menu of CreateWindow and LoadMenu
+        /// both come through menu_from_template
+        #[test]
+        fn templates_load_as_written(v in items(), ex in any::<bool>()) {
+            let _g = enter();
+            let h = load(&template(&v, ex));
+            check(h, &v, 1)?;
+        }
+
+        /// Arbitrary bytes after a valid header, as a resource of that size (a damaged game
+        /// resource: no last item, popups never closed, nesting past MENU_DEPTH) never read past
+        /// the resource nor take sake down
+        #[test]
+        fn template_garbage_stays_inside(mut b in proptest::collection::vec(any::<u8>(), 0..512), ex in any::<bool>()) {
+            let _g = enter();
+            let head: &[u8] = if ex { &[1, 0, 4, 0, 0, 0, 0, 0] } else { &[0, 0, 0, 0] };
+            let mut t = head.to_vec();
+            t.append(&mut b);
+            // (texts end inside: a zero word at the end, as any resource's padding)
+            t.extend_from_slice(&[0, 0]);
+            let p = mem::heap_alloc(t.len() as u32, true);
+            mem::write(p, &t);
+            let end = p + t.len() as u32;
+            let h = menu_from_resource((p, t.len() as u32));
+            prop_assert!(with(|s| s.menus.contains_key(&h)));
+            let at = if ex { menuex_items_at(new_menu(), p + 8, end, 0) } else { menu_items_at(new_menu(), p + 4, end, 0) };
+            prop_assert!(at <= end + 2 * 256, "parsing stopped at {at:#x}, the resource ends at {end:#x}");
+            mem::heap_free(p);
+        }
+    }
+
+    const DEEP: usize = 5000;
+    /// A template nesting popups far deeper than any menu (a damaged or hostile resource) loads
+    /// without overflowing sake's stack: the levels below MENU_DEPTH are empty, and parsing
+    /// still ends where the template does
+    #[test]
+    fn deep_nesting_is_bounded() {
+        let _g = enter();
+        for ex in [false, true] {
+            let mut v = vec![Item::Cmd("leaf".into(), 7)];
+            for i in 0..DEEP {
+                v = vec![Item::Popup(format!("p{}", i % 10), v), Item::Cmd("after".into(), 9)];
+            }
+            let b = template(&v, ex);
+            let p = mem::heap_alloc(b.len() as u32 + 64, true);
+            mem::write(p, &b);
+            let end = if ex { menuex_items(new_menu(), p + 8) } else { menu_items(new_menu(), p + 4) };
+            assert_eq!(end, p + b.len() as u32, "ex {ex}: parsing ends at the template's end");
+            mem::heap_free(p);
+            let h = load(&b);
+            let mut cur = h;
+            let mut depth = 1;
+            loop {
+                let items = with(|s| s.menus[&cur].items.clone());
+                if depth > MENU_DEPTH + 1 {
+                    assert!(items.is_empty());
+                    break;
+                }
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[1].text, "after".encode_utf16().collect::<Vec<_>>());
+                cur = items[0].sub;
+                depth += 1;
+            }
         }
     }
 }
