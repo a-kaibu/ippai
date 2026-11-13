@@ -133,6 +133,35 @@ fn replay(files: &[File], dirs: &HashMap<String, Vec<usize>>, seq: &[(usize, usi
 }
 
 /// `p` with its siblings times `s` and its chunks times `c`.
+/// The engine a game's files say (games carry no engine field): by the archives it packs.
+fn engine(files: &[File]) -> &'static str {
+    let has = |f: &dyn Fn(&str, &str) -> bool| {
+        files.iter().any(|x| {
+            let name = x.path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+            let e = name.rsplit_once('.').map_or("", |p| p.1).to_string();
+            f(&name, &e)
+        })
+    };
+    type Test<'a> = &'a dyn Fn(&str, &str) -> bool;
+    let table: [(&str, Test); 14] = [
+        ("KiriKiri", &|_, e| e == "xp3"),
+        ("Siglus", &|n, e| e == "ovk" || n == "scene.pck" || n == "gameexe.dat"),
+        ("Unity", &|_, e| e == "assets" || e == "unity3d" || e == "ress"),
+        ("Ren'Py", &|_, e| e == "rpa" || e == "rpyc"),
+        ("Godot", &|_, e| e == "pck"),
+        ("Artemis", &|_, e| e == "pfs"),
+        ("NScripter", &|_, e| e == "nsa" || e == "sar" || e == "ns2"),
+        ("CatSystem2", &|_, e| e == "int"),
+        ("YU-RIS", &|_, e| e == "ypf" || e == "ybn"),
+        ("System4", &|_, e| e == "ain" || e == "ald" || e == "afa"),
+        ("BGI", &|n, e| e == "arc" && n.starts_with("data")),
+        ("RealLive", &|_, e| e == "g00" || e == "nwa"),
+        ("NeXAS", &|_, e| e == "pac"),
+        ("Majiro", &|_, e| e == "mjo"),
+    ];
+    table.iter().find(|(_, f)| has(f)).map_or("?", |t| t.0)
+}
+
 fn scale(p: Policy, s: f64, c: f64) -> Policy {
     Policy { siblings: (p.siblings as f64 * s).round() as usize, chunks: (p.chunks as f64 * c).round() as usize }
 }
@@ -182,13 +211,13 @@ fn hints_eval() {
             std::fs::read(best?.1).ok()
         });
         let Some(list) = list else { continue };
-        let engine = field(&json, "engine").unwrap_or("?").to_string();
         let mut files = Vec::new();
         for t in mounts(&json) {
             if let Ok(text) = std::fs::read_to_string(format!("{store}/trees/{t}.tsv")) {
                 files.extend(tree(&text));
             }
         }
+        let engine = field(&json, "engine").unwrap_or(engine(&files)).to_string();
         let mut at: HashMap<&str, (usize, usize)> = HashMap::new();
         let mut dirs: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, f) in files.iter().enumerate() {
@@ -267,12 +296,17 @@ fn replay_counts_what_hints_foresaw() {
     let as_is = Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX };
     let none = Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0 };
     let s = replay(&files, &dirs, &seq, &as_is);
-    // (v000 waits and hints 001..012; v013 waits and hints 014..019; the movie's 3 chunks wait)
-    assert_eq!((s.reads, s.misses, s.wasted), (23, 5, 0));
+    // (v000 waits and hints 001..019; the movie's 3 chunks wait)
+    assert_eq!((s.reads, s.misses, s.wasted), (23, 4, 0));
     assert_eq!(replay(&files, &dirs, &seq, &none).misses, 23);
-    // (read only the first: 12 hinted for nothing)
+    // (read only the first: 19 hinted for nothing)
     let s = replay(&files, &dirs, &[(0, 0)], &as_is);
-    assert_eq!((s.misses, s.wasted), (1, 12_000));
+    assert_eq!((s.misses, s.wasted), (1, 19_000));
+    let names = |ps: &[&str]| ps.iter().map(|p| File { path: p.to_string(), size: 1, chunks: vec![] }).collect::<Vec<_>>();
+    assert_eq!(engine(&names(&["game.exe", "data.xp3", "voice.xp3"])), "KiriKiri");
+    assert_eq!(engine(&names(&["SiglusEngine.exe", "Scene.pck", "koe/z0001.ovk"])), "Siglus");
+    assert_eq!(engine(&names(&["g_Data/data.unity3d", "g_Data/sharedassets0.assets"])), "Unity");
+    assert_eq!(engine(&names(&["game.exe", "readme.txt"])), "?");
     assert_eq!(mounts(r#"{"mounts":["/ippai/game=g1","/x="],"engine":"KiriKiri"}"#), vec!["g1"]);
     assert_eq!(field(r#"{"id":"a","engine":"KiriKiri Z"}"#, "engine"), Some("KiriKiri Z"));
     // (as ippai writes them: pretty, spaces inside strings kept)

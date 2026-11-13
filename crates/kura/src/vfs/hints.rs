@@ -67,12 +67,14 @@ pub fn policy(name: &str) -> Policy {
     let p = |siblings, chunks| Policy { siblings, chunks };
     match kind(name) {
         Kind::Movie => p(0, 0),
-        // (a scene's lines: read one after another, numbered)
-        Kind::Sound => p(12, 1),
+        // (a scene's lines: read one after another, numbered). The counts are 4x what they were
+        // first: replayed against worker2's read-order lists (hints_eval.rs, 2026-11-14) that took
+        // the misses from 49% to 37% for 3% more bytes, SIBLING_BYTES capping them
+        Kind::Sound => p(48, 1),
         // (a scene's pictures: fewer, bigger)
-        Kind::Image => p(6, 1),
+        Kind::Image => p(24, 1),
         // (small; a script calls the next)
-        Kind::Script => p(16, 1),
+        Kind::Script => p(64, 1),
         Kind::Archive => match ext(name).as_str() {
             // KiriKiri: members packed by folder, a scene reads its pictures and voices from one
             "xp3" => p(0, 4),
@@ -84,7 +86,8 @@ pub fn policy(name: &str) -> Policy {
             "pfs" | "nsa" | "sar" | "ns2" | "int" | "ypf" | "pack" | "cpz" => p(0, 3),
             _ => p(0, 2),
         },
-        Kind::Other => p(4, 1),
+        // (start-up files of one folder: .dll, .sig, .exe, fonts)
+        Kind::Other => p(16, 1),
     }
 }
 
@@ -169,6 +172,15 @@ mod tests {
         assert_eq!(siblings(&names, "v004.wav"), Vec::<usize>::new());
         // (a name not in the folder)
         assert_eq!(siblings(&names, "nope.ogg"), Vec::<usize>::new());
+        // (how many: a scene's worth, as replayed against real games)
+        let many: Vec<String> = (0..100).map(|i| format!("v{i:03}.ogg")).collect();
+        let many: Vec<(&str, u64)> = many.iter().map(|n| (n.as_str(), 1000)).collect();
+        assert_eq!(siblings(&many, "v000.ogg"), (1..49).collect::<Vec<_>>());
+        for (ext, n) in [("png", 24), ("ks", 64), ("dll", 16)] {
+            let names: Vec<String> = (0..100).map(|i| format!("f{i:03}.{ext}")).collect();
+            let names: Vec<(&str, u64)> = names.iter().map(|n| (n.as_str(), 1000)).collect();
+            assert_eq!(siblings(&names, names[0].0).len(), n, "{ext}");
+        }
     }
 
     #[test]

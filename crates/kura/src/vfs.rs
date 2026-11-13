@@ -2231,8 +2231,8 @@ mod tests {
             release(fd);
             std::mem::take(&mut *HINTS.lock().unwrap())
         };
-        // (a voice: the next 12 voices of its folder, not itself nor those before it)
-        assert_eq!(read("/voice/v005.ogg", 0), (6..=17).map(name).collect::<Vec<_>>());
+        // (a voice: the next voices of its folder (all of them here), not itself nor those before it)
+        assert_eq!(read("/voice/v005.ogg", 0), (6..=20).map(name).collect::<Vec<_>>());
         // (again: cached now, nothing)
         assert!(read("/voice/v005.ogg", 8).is_empty());
         // (a small archive: all of it at its first read but the chunk read; later, nothing again)

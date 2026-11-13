@@ -54,9 +54,9 @@ in the background (`vnvm_fetch_hint` → `ippaiFetchHint`). How engines lay out 
 (vnrun's notes for each engine) gives two shapes:
 
 - **Loose files in a folder**, read in name order: voices `v_0001.ogg`, `v_0002.ogg`, ...; CG
-  pictures; scripts. A read hints the next files of the folder of the same kind: 12 sounds,
-  6 pictures, 16 scripts, 4 of an unknown kind (same extension). Each must be at most 8 MiB and
-  all of them at most 24 MiB.
+  pictures; scripts. A read hints the next files of the folder of the same kind: 48 sounds,
+  24 pictures, 64 scripts, 16 of an unknown kind (same extension: .dll, .sig, fonts at start-up).
+  Each must be at most 8 MiB and all of them at most 24 MiB.
 - **Archives** (one big file, its index then its members): members packed side by side are read
   side by side, so a read hints the next chunks: 4 for KiriKiri `.xp3`, 6 for Unity, Godot and
   Ren'Py, 3 for Artemis, NScripter, CatSystem2 and the like, 1 for Siglus `.ovk` (one
@@ -114,6 +114,33 @@ so games saved before stay saved, and an entry there goes when it is kept or del
 - A file the worker holds open cannot be deleted. A delete from the page then leaves it, and
   the next trim takes it.
 
+## How well the hints foresee real reads (crates/kura/src/vfs/hints_eval.rs)
+
+`hints_eval` replays the read-order lists in the jit folder (`game.<id>.chunks`, else the
+program's `sake-<prog>-<build>.chunks`) against the games' trees, for the hints and variants of
+them, per engine (guessed from the archives a game packs):
+
+```sh
+HINTS_STORE=~/.local/share/ippai/store HINTS_JIT=~/.cache/ippai/jit \
+  cargo test -p kura --lib hints_eval -- --ignored --nocapture
+```
+
+On worker2 (2026-11-14, 9 games with a list, 392 first reads), reads that waited for the network:
+
+| variant | misses | hinted for nothing |
+|---------|--------|--------------------|
+| no hints | 100% | 0 |
+| the first counts (12/6/16/4 files) | 49.2% | 608 MiB |
+| no chunk hints | 59.2% | 86 MiB |
+| 2x the chunks | 47.2% | 1063 MiB |
+| whole archive up to 64 MiB | 49.0% | 631 MiB |
+| 4x the files (now) | 36.5% | 622 MiB |
+
+So the file counts went up 4x (SIBLING_BYTES keeps the bytes about the same); the chunk counts
+and the whole-archive size stay, since more of them costs far more than it saves. The misses
+left are mostly archives' first chunks, pictures, and start-up .dll/.exe/.sig files, which the
+read-order list (the warm) fetches before the game asks.
+
 ## Still to do
 
-- Tune the engine hints against real games' reads (`IPPAI_TRACE_VFS`).
+- Run hints_eval again when more games have read-order lists, per engine.
