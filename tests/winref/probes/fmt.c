@@ -88,6 +88,16 @@ int main(void) {
     E(FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, 2, 0, sm, 3, NULL));
     E(FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 2, MAKELANGID(LANG_ZULU, SUBLANG_DEFAULT), sm, sizeof sm, NULL));
     E(FormatMessageA(0, NULL, 2, 0, sm, sizeof sm, NULL));
+    /* RPG Maker VX's Game.exe (RGSS2 Player) reports a missing RGSS202J.dll this way:
+     * STG_E_FILENOTFOUND from the system with the dll's name as %1 in an argument array, in the
+     * user's default language (empty there = an empty message box) */
+    {
+        WCHAR wm[0x800];
+        DWORD_PTR stg[] = { (DWORD_PTR)L"RGSS202J.dll" };
+        SetLastError(0xdead);
+        DWORD n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ARGUMENT_ARRAY, NULL, 0x80030002, LANG_USER_DEFAULT, wm, 0x800, (va_list *)stg);
+        printf("stg filenotfound %d err %lu insert %d crlf %d\n", n > 0, n ? 0 : GetLastError(), n && wcsstr(wm, L"RGSS202J.dll") != NULL, n >= 2 && wm[n - 2] == '\r' && wm[n - 1] == '\n');
+    }
 
     /* modules */
     E(GetModuleHandleA(NULL) != NULL);

@@ -61,6 +61,8 @@ fn system_message(id: u32) -> Option<&'static str> {
         1813 => "The specified resource type cannot be found in the image file.\r\n",
         1814 => "The specified resource name cannot be found in the image file.\r\n",
         1815 => "The specified resource language ID cannot be found in the image file.\r\n",
+        // (STG_E_FILENOTFOUND: RPG Maker VX's Game.exe names a missing RGSS dll with it, winref fmt)
+        0x8003_0002 => "%1 could not be found.\r\n",
         0x8000_4001 => "Not implemented\r\n",
         0x8000_4002 => "No such interface supported\r\n",
         0x8000_4005 => "Unspecified error\r\n",
@@ -420,6 +422,32 @@ mod tests {
         assert_eq!(f("the quick brown fox\r\njumps", 0xff), Ok("the quick brown fox jumps".into()));
         assert_eq!(f("  spaced   words  ", 0xff), Ok("  spaced   words  ".into()));
         assert_eq!(f("verylongwordwithoutanyspaces here", 10), Ok("verylongwo\r\nrdwithouta\r\nnyspaces\r\nhere".into()));
+    }
+
+    /// RPG Maker VX's Game.exe (RGSS2 Player) shows FormatMessageW(FROM_SYSTEM | ARGUMENT_ARRAY,
+    /// STG_E_FILENOTFOUND, [dll]) when RGSS202J.dll is missing; without the message the box was
+    /// empty. Windows (tests/winref/probes/fmt.c "stg filenotfound") has it with the name in it.
+    #[test]
+    fn stg_file_not_found_names_the_file() {
+        let t = system_message(0x8003_0002).expect("STG_E_FILENOTFOUND");
+        assert!(t.contains("%1") && t.ends_with("\r\n"), "{t:?}");
+        assert_eq!(f(t, IGNORE_INSERTS), Ok(t.into()));
+    }
+
+    proptest::proptest! {
+        /// Every system message (Win32 codes and the HRESULTs sake knows) formats as Windows'
+        /// do: one line ending in CRLF, unchanged with IGNORE_INSERTS, and (without inserts) unchanged
+        /// with them too.
+        #[test]
+        fn system_messages_format(id in proptest::prop_oneof![0u32..20000, 0x8000_0000u32..0x8000_ffff, 0x8003_0000u32..0x8003_0100, 0x8007_0000u32..0x8007_ffff, 0x8876_0000u32..0x8876_ffff]) {
+            if let Some(t) = system_message(id) {
+                proptest::prop_assert!(t.ends_with("\r\n") && !t[..t.len() - 2].contains('\n'), "{id:#x}: {t:?}");
+                proptest::prop_assert_eq!(f(t, IGNORE_INSERTS), Ok(t.to_string()));
+                if !t.contains('%') {
+                    proptest::prop_assert_eq!(f(t, 0), Ok(t.to_string()));
+                }
+            }
+        }
     }
 
     /// Whatever the text and width, no line of a width-limited message is longer than the width
