@@ -216,6 +216,19 @@ fn save_reg(m: &HashMap<String, KeyData>) -> bool {
 
 static REG: Mutex<Option<HashMap<String, KeyData>>> = Mutex::new(None);
 
+/// Keys every Windows has, even empty (setup programs open them to tell whether they may
+/// install: EXEpress CX opens ...\Uninstall and says "requires power user" when it can't;
+/// winref regsys has Windows' answers). Their parents exist through them.
+const SYSTEM_KEYS: [&str; 7] = [
+    "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+    "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+    "hkcu\\software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    "hkcu\\software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+    "hkcu\\Control Panel\\Desktop",
+];
+
 fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
     // Serialize the read/modify/write transaction across the game, SCM and
     // helper processes, not just across this process's Rust threads.
@@ -243,6 +256,10 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
             }
         }
         m.entry("hkcu\\software".into()).or_default();
+        for path in SYSTEM_KEYS {
+            let k = m.entry(path.to_lowercase()).or_default();
+            k.name = path.rsplit('\\').next().unwrap_or(path).into();
+        }
         // the event logs (eventlog.rs) and the event log service's own source
         for l in ["Application", "Security", "System", "System\\EventLog"] {
             let k = m.entry(format!("hklm\\system\\currentcontrolset\\services\\eventlog\\{}", l.to_lowercase())).or_default();
@@ -4780,6 +4797,23 @@ mod tests {
         assert!(SHLWAPI_VERSION >= (5, 0, 0) && SHLWAPI_VERSION.0 == 6);
         assert_eq!((SHELL32_VERSION.0, SHELL32_VERSION.1), (6, 0));
         assert_eq!((COMCTL32_VERSION.0, COMCTL32_VERSION.1), (5, 82));
+    }
+
+    /// The keys every Windows has exist from the start with their parents, and enumerate under
+    /// their own spelling (EXEpress CX gave up on a missing ...\\Uninstall)
+    #[test]
+    fn system_keys_exist() {
+        use super::*;
+        for path in SYSTEM_KEYS {
+            let low = path.to_lowercase();
+            let parts: Vec<&str> = low.split('\\').collect();
+            for n in 2..=parts.len() {
+                assert!(reg_key_exists(&parts[..n].join("\\")), "{}", parts[..n].join("\\"));
+            }
+            let (parent, name) = path.rsplit_once('\\').unwrap();
+            assert!(reg_subkeys(&parent.to_lowercase()).iter().any(|k| k == name), "{name} under {parent}");
+        }
+        assert!(!reg_key_exists("hklm\\software\\microsoft\\windows\\currentversion\\no such key"));
     }
 
     #[test]

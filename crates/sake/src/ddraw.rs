@@ -1404,7 +1404,7 @@ fn dd_vtbl(v: usize) -> u32 {
             (D_RestoreDisplayMode, 4),
             (D_SetCooperativeLevel, 12),
             (if v == 0 { D_SetDisplayMode1 } else { D_SetDisplayMode }, if v == 0 { 16 } else { 24 }),
-            (ok, 12),
+            (D_WaitForVerticalBlank, 12),
         ];
         if v >= 1 {
             m.push((D_GetAvailableVidMem, 16));
@@ -1844,8 +1844,58 @@ fn D_GetScanLine(c: &mut Ctx) -> u32 {
     DD_OK
 }
 fn D_GetVerticalBlankStatus(c: &mut Ctx) -> u32 {
-    put32(c.a(1), 0);
+    put32(c.a(1), in_vblank(beam_clock()) as u32);
     DD_OK
+}
+
+// The monitor's 60 Hz beam, from a clock of its own: WaitForVerticalBlank waits for the next
+// frame and GetVerticalBlankStatus says when the beam is in the blank (the last 5% of a frame).
+// Games time it to tell the refresh rate: MBTRIAL0930's mb_trial.exe divides
+// QueryPerformanceFrequency by the counter's difference across two waits, and a wait that
+// returned at once made that a division by 0 (c0000094 at start).
+const HZ: f64 = 60.0;
+fn beam_clock() -> f64 {
+    static T0: OnceLock<std::time::Instant> = OnceLock::new();
+    T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+}
+fn in_vblank(t: f64) -> bool {
+    (t * HZ).fract() >= 0.95
+}
+/// The whole milliseconds from `t` (seconds on the beam's clock) until the next frame has begun:
+/// 1..=17, crossing exactly one frame start
+fn ms_to_next_frame(t: f64) -> u32 {
+    let frame = (t * HZ).floor();
+    let mut ms = (((frame + 1.0) / HZ - t) * 1000.0).ceil().max(1.0) as u32;
+    // (rounding: never short of the start, never past the one after)
+    while ((t + ms as f64 / 1000.0) * HZ).floor() <= frame {
+        ms += 1;
+    }
+    while ms > 1 && ((t + ms as f64 / 1000.0) * HZ).floor() > frame + 1.0 {
+        ms -= 1;
+    }
+    ms
+}
+const DDWAITVB_BLOCKBEGIN: u32 = 1;
+const DDWAITVB_BLOCKBEGINEVENT: u32 = 2;
+const DDWAITVB_BLOCKEND: u32 = 4;
+/// What WaitForVerticalBlank(flags) does: Ok(wait for the next frame?) or the error (an event
+/// to signal is DDERR_UNSUPPORTED, as on Windows and Wine)
+fn vblank_wait_kind(flags: u32) -> Result<bool, u32> {
+    if flags & DDWAITVB_BLOCKBEGINEVENT != 0 {
+        return Err(DDERR_UNSUPPORTED);
+    }
+    Ok(flags & (DDWAITVB_BLOCKBEGIN | DDWAITVB_BLOCKEND) != 0)
+}
+/// IDirectDraw::WaitForVerticalBlank(this, flags, event)
+fn D_WaitForVerticalBlank(c: &mut Ctx) -> u32 {
+    match vblank_wait_kind(c.a(1)) {
+        Ok(true) => {
+            crate::k32::sleep_ms(ms_to_next_frame(beam_clock()));
+            DD_OK
+        }
+        Ok(false) => DD_OK,
+        Err(e) => e,
+    }
 }
 fn D_RestoreDisplayMode(_: &mut Ctx) -> u32 {
     with(|s| s.mode = None);
@@ -2054,6 +2104,42 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// A wait for the vertical blank lasts 1..=17 ms and crosses exactly one frame start,
+        /// from any point of the beam's clock
+        #[test]
+        fn a_vblank_wait_crosses_one_frame_start(t in 0.0f64..100_000.0) {
+            let ms = ms_to_next_frame(t);
+            prop_assert!((1..=17).contains(&ms), "{ms}");
+            let (a, b) = ((t * HZ).floor(), ((t + ms as f64 / 1000.0) * HZ).floor());
+            prop_assert_eq!(b, a + 1.0);
+        }
+
+        /// mb_trial.exe's check: QueryPerformanceFrequency over the counter's difference
+        /// across two waits is a rate in 55..=65, never a division by 0
+        #[test]
+        fn two_vblank_waits_measure_about_60_hz(t in 0.0f64..100_000.0) {
+            let t1 = t + ms_to_next_frame(t) as f64 / 1000.0;
+            let t2 = t1 + ms_to_next_frame(t1) as f64 / 1000.0;
+            // (the counter at 10 MHz, as kernel32's QueryPerformanceFrequency)
+            let ticks = ((t2 - t1) * 1e7) as u64;
+            prop_assert!(ticks > 0);
+            let rate = 10_000_000 / ticks;
+            prop_assert!((55..=65).contains(&rate), "{rate}");
+        }
+    }
+
+    #[test]
+    fn vblank_wait_flags() {
+        assert_eq!(vblank_wait_kind(DDWAITVB_BLOCKBEGIN), Ok(true));
+        assert_eq!(vblank_wait_kind(DDWAITVB_BLOCKEND), Ok(true));
+        assert_eq!(vblank_wait_kind(DDWAITVB_BLOCKBEGINEVENT), Err(DDERR_UNSUPPORTED));
+        assert_eq!(vblank_wait_kind(0), Ok(false));
+        // the blank is the last twentieth of each frame
+        assert!(!in_vblank(0.0) && in_vblank(0.96 / HZ) && !in_vblank(1.0 / HZ + 0.001));
+    }
 
     /// ddraw.h numbers its errors in decimal: MAKE_DDHRESULT(10) is 0x8876000a, not 0x8876006e
     /// (AddAttachedSurface's "cannot attach" read as DDERR_INVALIDCLIPLIST; ddraw1's
