@@ -2540,7 +2540,8 @@ fn GetWindowLongW(c: &mut Ctx) -> u32 {
 }
 /// SetWindowLong: GWL_STYLE / GWL_EXSTYLE go through WM_STYLECHANGING (which may change the new
 /// style) and WM_STYLECHANGED; a top-level window keeps WS_CLIPSIBLINGS; a bad index is
-/// ERROR_INVALID_INDEX. A style change clears the last error (other fields leave it).
+/// ERROR_INVALID_INDEX. Success leaves the last error as it was (winref user: Windows keeps
+/// the caller's 0xdead after a style change too).
 fn set_long_msg(c: &mut Ctx, h: u32, i: i32, v: u32) -> u32 {
     let err = |e: u32| w32(crate::cur().teb + crate::teb_last_error(), e);
     let Some((extra, top)) = with(|s| s.wins.get(&h).map(|w| (w.extra.len(), w.parent == 0 && w.style & 0x4000_0000 == 0))) else {
@@ -2555,7 +2556,6 @@ fn set_long_msg(c: &mut Ctx, h: u32, i: i32, v: u32) -> u32 {
     if !matches!(i, -16 | -20) {
         return set_long(h, i, v);
     }
-    err(0);
     let old = get_long(h, i, false);
     let save = c.cpu.regs[koji::ESP];
     let ss = (save - 0x40) & !15;
@@ -3541,7 +3541,17 @@ fn next_dialog_tab(dlg: u32, control: u32, previous: bool) -> u32 {
         0
     })
 }
-fn GetNextDlgTabItem(c: &mut Ctx) -> u32 { next_dialog_tab(c.a(0), c.a(1), c.a(2) != 0) }
+/// GetNextDlgTabItem(dlg, ctrl, previous): the dialog itself as ctrl is no control; no control
+/// searching backwards finds nothing (winref host_dialogtab: Windows answers NULL, as Wine's
+/// tests on Windows 2000 found), forwards the first tab stop.
+fn GetNextDlgTabItem(c: &mut Ctx) -> u32 {
+    let (dlg, ctrl, previous) = (c.a(0), c.a(1), c.a(2) != 0);
+    let ctrl = if ctrl == dlg { 0 } else { ctrl };
+    if ctrl == 0 && previous {
+        return 0;
+    }
+    next_dialog_tab(dlg, ctrl, previous)
+}
 
 /// IsDialogMessage(dlg, msg): Enter / Escape pressed in the dialog become IDOK / IDCANCEL; its
 /// other messages are translated and dispatched (TRUE); messages of other windows are FALSE.

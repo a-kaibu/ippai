@@ -8,7 +8,8 @@ int main(void){HWND d=CreateWindowExA(0,"STATIC","Tab order",WS_OVERLAPPEDWINDOW
  HWND hidden=CreateWindowExA(0,"EDIT","",WS_CHILD|WS_TABSTOP,5,30,100,20,d,(HMENU)2,NULL,NULL);
  HWND disabled=CreateWindowExA(0,"EDIT","",WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_DISABLED,5,55,100,20,d,(HMENU)3,NULL,NULL);
  HWND b=CreateWindowExA(0,"EDIT","",WS_CHILD|WS_VISIBLE|WS_TABSTOP,5,80,100,20,d,(HMENU)4,NULL,NULL);
- CHECK("initial dialog tab item",GetNextDlgTabItem(d,NULL,FALSE)==a&&GetNextDlgTabItem(d,NULL,TRUE)==b);
+ /* (no control backwards: NULL on Windows, not the last control) */
+ CHECK("initial dialog tab item",GetNextDlgTabItem(d,NULL,FALSE)==a&&GetNextDlgTabItem(d,NULL,TRUE)==NULL&&GetNextDlgTabItem(d,d,FALSE)==a);
  CHECK("skip hidden and disabled controls",GetNextDlgTabItem(d,a,FALSE)==b&&GetNextDlgTabItem(d,b,TRUE)==a);
  CHECK("dialog tab wrap",GetNextDlgTabItem(d,b,FALSE)==a&&GetNextDlgTabItem(d,a,TRUE)==b);
  SetFocus(a);MSG msg={a,WM_KEYDOWN,VK_TAB,0,0,{0,0}};

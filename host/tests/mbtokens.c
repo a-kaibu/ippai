@@ -2,9 +2,22 @@
 #include <stdio.h>
 #include <string.h>
 static int errors;
+/* (ucrtbase's invalid-parameter handler returns, so its checks answer EINVAL instead of
+   ending the process; stdout unbuffered: Windows ended this probe with nothing printed) */
+static void __cdecl ignore_invalid(const wchar_t *e, const wchar_t *f, const wchar_t *file, unsigned line, UINT_PTR r) {
+    (void)e; (void)f; (void)file; (void)line; (void)r;
+}
+typedef void (__cdecl *invalid_handler)(const wchar_t *, const wchar_t *, const wchar_t *, unsigned, UINT_PTR);
+static void returning_invalid_parameters(HMODULE ucrt) {
+    invalid_handler (__cdecl *set)(invalid_handler) = (void *)GetProcAddress(ucrt, "_set_invalid_parameter_handler");
+    if (set) set(ignore_invalid);
+    setvbuf(stdout, NULL, _IONBF, 0);
+}
 #define CHECK(x) do { if (!(x)) { printf("FAIL line %d\n", __LINE__); errors++; } } while (0)
 int main(void) {
     HMODULE m = LoadLibraryA("ucrtbase.dll");
+    if (!m) return 1;
+    returning_invalid_parameters(m);
     unsigned char *(__cdecl *find)(const unsigned char *, const unsigned char *) = (void *)GetProcAddress(m, "_mbsstr");
     unsigned char *(__cdecl *token)(unsigned char *, const unsigned char *, unsigned char **) = (void *)GetProcAddress(m, "_mbstok_s");
     if (!find || !token) return 1;

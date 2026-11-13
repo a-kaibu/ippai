@@ -2,8 +2,19 @@
 #include <stdio.h>
 #include <string.h>
 static int failed;
+/* (ucrtbase's invalid-parameter handler returns, so its checks answer EINVAL instead of
+   ending the process; stdout unbuffered: Windows ended this probe with nothing printed) */
+static void __cdecl ignore_invalid(const wchar_t *e, const wchar_t *f, const wchar_t *file, unsigned line, UINT_PTR r) {
+    (void)e; (void)f; (void)file; (void)line; (void)r;
+}
+typedef void (__cdecl *invalid_handler)(const wchar_t *, const wchar_t *, const wchar_t *, unsigned, UINT_PTR);
+static void returning_invalid_parameters(HMODULE ucrt) {
+    invalid_handler (__cdecl *set)(invalid_handler) = (void *)GetProcAddress(ucrt, "_set_invalid_parameter_handler");
+    if (set) set(ignore_invalid);
+    setvbuf(stdout, NULL, _IONBF, 0);
+}
 #define CHECK(label,expr) do{int ok=!!(expr);printf("%s: %s\n",label,ok?"ok":"FAIL");failed|=!ok;}while(0)
-int main(void){HMODULE m=LoadLibraryA("ucrtbase.dll");int (__cdecl *copy)(unsigned char *,size_t,const unsigned char *,size_t)=(void *)GetProcAddress(m,"_mbsnbcpy_s");if(!copy)return 1;unsigned char out[8],source[]={0x82,0xa0,'X',0};memset(out,0xa5,sizeof(out));
+int main(void){HMODULE m=LoadLibraryA("ucrtbase.dll");if(!m)return 1;returning_invalid_parameters(m);int (__cdecl *copy)(unsigned char *,size_t,const unsigned char *,size_t)=(void *)GetProcAddress(m,"_mbsnbcpy_s");if(!copy)return 1;unsigned char out[8],source[]={0x82,0xa0,'X',0};memset(out,0xa5,sizeof(out));
  CHECK("secure multibyte ASCII",copy(out,sizeof(out),(unsigned char *)"abc",3)==0&&!strcmp((char *)out,"abc")&&out[4]==0xa5);
  CHECK("complete multibyte character",copy(out,sizeof(out),source,2)==0&&out[0]==0x82&&out[1]==0xa0&&out[2]==0);
  CHECK("discard split multibyte character",copy(out,sizeof(out),source,1)==0&&out[0]==0);

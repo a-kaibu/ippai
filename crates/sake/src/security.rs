@@ -996,6 +996,11 @@ fn set_entries(c: &mut Ctx, wide: bool) -> u32 {
     if out == 0 || count != 0 && list == 0 {
         return ERROR_INVALID_PARAMETER;
     }
+    // (no entries and no old ACL: no ACL at all, a NULL one (winref host_aclentries))
+    if count == 0 && old == 0 {
+        mem::putp(out, 0);
+        return 0;
+    }
     let x64 = mem::x64();
     let (stride, trustee) = if x64 { (48, 16) } else { (32, 12) };
     // (deny ACEs, then allowed ones: the order Windows' explicit entries get)

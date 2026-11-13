@@ -47,8 +47,14 @@ int main(void) {
     n.Trustee.TrusteeForm = TRUSTEE_IS_NAME; n.Trustee.ptstrName = L"CURRENT_USER";
     PACL acl4 = NULL;
     CHECK("current user by name", SetEntriesInAclW(1, &n, NULL, &acl4) == ERROR_SUCCESS);
-    PACL empty = NULL;
-    CHECK("no entries", SetEntriesInAclW(0, NULL, NULL, &empty) == ERROR_SUCCESS && empty && IsValidAcl(empty));
+    /* No entries and no old ACL: success with no ACL at all (NULL), as Windows answers */
+    PACL empty = (PACL)1;
+    CHECK("no entries", SetEntriesInAclW(0, NULL, NULL, &empty) == ERROR_SUCCESS && empty == NULL);
+    /* No entries with an old ACL: a copy of it */
+    PACL copy = NULL;
+    CHECK("no entries, old ACL", SetEntriesInAclW(0, NULL, acl, &copy) == ERROR_SUCCESS && copy && copy != acl && IsValidAcl(copy));
+    if (copy) dump("copied", copy);
+    LocalFree(copy);
     LocalFree(acl); LocalFree(acl2); LocalFree(acl3); LocalFree(acl4); LocalFree(empty);
     WCHAR s[] = L"ab\\c";
     CHECK("CharPrevW", CharPrevW(s, s + 3) == s + 2 && CharPrevW(s, s) == s && CharPrevW(s, s + 1) == s);
