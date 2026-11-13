@@ -272,8 +272,22 @@ fn well_known(t: u32) -> Option<Sid> {
         0 => Sid(0, vec![0]),     // Null
         1 => everyone(),          // World
         2 => Sid(2, vec![0]),     // Local
+        3 => Sid(3, vec![0]),     // CreatorOwner
+        4 => Sid(3, vec![1]),     // CreatorGroup
+        5 => Sid(3, vec![2]),     // CreatorOwnerServer
+        6 => Sid(3, vec![3]),     // CreatorGroupServer
+        7 => Sid(5, vec![]),      // NtAuthority
+        8 => Sid(5, vec![1]),     // Dialup
+        9 => Sid(5, vec![2]),     // Network
+        10 => Sid(5, vec![3]),    // Batch
         11 => Sid(5, vec![4]),    // Interactive
-        13 => Sid(5, vec![6]),    // Service
+        12 => Sid(5, vec![6]),    // Service
+        13 => Sid(5, vec![7]),    // Anonymous
+        14 => Sid(5, vec![8]),    // Proxy
+        15 => Sid(5, vec![9]),    // EnterpriseControllers
+        16 => Sid(5, vec![10]),   // Self
+        18 => Sid(5, vec![12]),   // RestrictedCode
+        19 => Sid(5, vec![13]),   // TerminalServer
         17 => Sid(5, vec![11]),   // Authenticated users
         22 => Sid(5, vec![18]),   // LocalSystem
         23 => Sid(5, vec![19]),   // LocalService
@@ -1299,6 +1313,20 @@ mod tests {
             if let Some(s) = parse_sid(&t) {
                 prop_assert_eq!(parse_sid(&sid_to_string(&s)), Some(s));
             }
+        }
+    }
+
+    /// WELL_KNOWN_SID_TYPE numbers (winnt.h): WinServiceSid is 12, WinAnonymousSid 13 (13 was
+    /// SERVICE's SID); every type 0..=28 sake answers is S-1-<authority>-... as Windows has it
+    #[test]
+    fn well_known_numbers() {
+        let want = [(0, "S-1-0-0"), (1, "S-1-1-0"), (2, "S-1-2-0"), (3, "S-1-3-0"), (4, "S-1-3-1"), (5, "S-1-3-2"), (6, "S-1-3-3"),
+            (7, "S-1-5"), (8, "S-1-5-1"), (9, "S-1-5-2"), (10, "S-1-5-3"), (11, "S-1-5-4"), (12, "S-1-5-6"), (13, "S-1-5-7"),
+            (14, "S-1-5-8"), (15, "S-1-5-9"), (16, "S-1-5-10"), (17, "S-1-5-11"), (18, "S-1-5-12"), (19, "S-1-5-13"),
+            (22, "S-1-5-18"), (23, "S-1-5-19"), (24, "S-1-5-20"), (25, "S-1-5-32"), (26, "S-1-5-32-544"), (27, "S-1-5-32-545"),
+            (28, "S-1-5-32-546")];
+        for (t, s) in want {
+            assert_eq!(well_known(t).map(|x| sid_to_string(&x)).as_deref(), Some(s), "type {t}");
         }
     }
 
