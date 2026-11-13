@@ -1479,6 +1479,91 @@ fn no_process(_: &mut Ctx) -> u32 {
     set_errno(ENOENT);
     u32::MAX
 }
+
+/// _spawn's modes
+const P_WAIT: u32 = 0;
+const P_NOWAIT: u32 = 1;
+const P_OVERLAY: u32 = 2;
+const P_NOWAITO: u32 = 3;
+const P_DETACH: u32 = 4;
+
+/// The strings of a NULL-terminated argv (char** or wchar_t**).
+fn argv_strings(argv: u32, wide: bool) -> Vec<String> {
+    let ps = mem::ps();
+    let mut out = Vec::new();
+    if argv == 0 {
+        return out;
+    }
+    for i in 0..4096 {
+        let p = mem::rp(argv + i * ps);
+        if p == 0 {
+            break;
+        }
+        out.push(path_arg(p, wide));
+    }
+    out
+}
+
+/// The command line the C runtime's _spawn / _exec give the new process: the arguments joined
+/// by single spaces, as they are (it adds no quotes: a program quotes arguments with spaces
+/// itself, Ren'Py's launcher does), and the part after the program's name.
+pub(crate) fn spawn_command_line(argv: &[String]) -> (String, String) {
+    (argv.join(" "), argv.get(1..).unwrap_or(&[]).join(" "))
+}
+
+/// _spawnv / _execv's work: start `path` with `argv` in `mode` (P_OVERLAY: _exec, this process
+/// ends with 0 once the new one started). P_WAIT: the exit code; P_NOWAIT(O): a process handle;
+/// P_DETACH: 0; -1 with errno ENOENT when the program can't be started, EINVAL for a bad mode.
+fn spawn_crt(mode: u32, path: u32, argv: u32, wide: bool) -> u32 {
+    if path == 0 || argv == 0 || mode > P_DETACH {
+        set_errno(EINVAL);
+        return u32::MAX;
+    }
+    let prog = path_arg(path, wide);
+    let (cmd, args) = spawn_command_line(&argv_strings(argv, wide));
+    match crate::process::spawn(&prog, false, &args, Some(cmd), None, true, 0, None) {
+        Err(_) => {
+            set_errno(ENOENT);
+            u32::MAX
+        }
+        Ok(pid) => match mode {
+            P_WAIT => crate::process::wait_exit(pid),
+            P_NOWAIT | P_NOWAITO => crate::process::process_handle(pid),
+            P_OVERLAY => unsafe { libc::exit(0) },
+            _ => 0,
+        },
+    }
+}
+fn _spawnv(c: &mut Ctx) -> u32 {
+    spawn_crt(c.a(0), c.a(1), c.a(2), false)
+}
+fn _wspawnv(c: &mut Ctx) -> u32 {
+    spawn_crt(c.a(0), c.a(1), c.a(2), true)
+}
+fn _execv(c: &mut Ctx) -> u32 {
+    spawn_crt(P_OVERLAY, c.a(0), c.a(1), false)
+}
+fn _wexecv(c: &mut Ctx) -> u32 {
+    spawn_crt(P_OVERLAY, c.a(0), c.a(1), true)
+}
+/// _cwait(int *termstat, process handle, action): waits for the process to end; its exit code
+/// in *termstat, the handle; -1 with ECHILD for a handle that is no process.
+fn _cwait(c: &mut Ctx) -> u32 {
+    let (stat, h) = (c.a(0), c.a(1));
+    match crate::process::of_handle(h) {
+        Some((pid, _)) if !crate::process::is_self(pid) => {
+            let code = crate::process::wait_exit(pid);
+            if stat != 0 {
+                mem::put32(stat, code);
+            }
+            h
+        }
+        _ => {
+            set_errno(10);
+            u32::MAX
+        }
+    }
+}
 fn _popen(_: &mut Ctx) -> u32 {
     set_errno(ENOENT);
     0
@@ -2039,21 +2124,17 @@ pub(super) fn init() {
         "system",
         "_wsystem",
         "_pclose",
-        "_cwait",
-        "_execv",
-        "_execve",
-        "_execvp",
-        "_wexecv",
-        "_wexecve",
-        "_wexecvp",
-        "_spawnv",
-        "_spawnve",
-        "_spawnvp",
-        "_wspawnv",
-        "_wspawnve",
-        "_wspawnvp",
     ] {
         implement("msvcrt", n, no_process);
+    }
+    // (the p forms look for the program as CreateProcess does; the e forms' environment is
+    // this process's: sake has one environment per host)
+    reg!(_spawnv, _wspawnv, _execv, _wexecv, _cwait);
+    for (n, f) in [("_execvp", _execv as fn(&mut Ctx) -> u32), ("_execve", _execv), ("_wexecvp", _wexecv), ("_wexecve", _wexecv)] {
+        implement("msvcrt", n, f);
+    }
+    for (n, f) in [("_spawnvp", _spawnv as fn(&mut Ctx) -> u32), ("_spawnve", _spawnv), ("_wspawnvp", _wspawnv), ("_wspawnve", _wspawnv)] {
+        implement("msvcrt", n, f);
     }
     reg!(
         _set_invalid_parameter_handler,

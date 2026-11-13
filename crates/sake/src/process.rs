@@ -94,6 +94,57 @@ fn startup_std(si: u32) -> Option<(u32, u32, u32)> {
     Some((mem::rp(si + std), mem::rp(si + std + ps), mem::rp(si + std + 2 * ps)))
 }
 
+/// A new process running `prog` (`app`: named exactly, as lpApplicationName, else ".exe" is
+/// added to a bare name) with `args` after its name, `cmd` as its command line (None: the
+/// program's name), the current directory `dir`, this process's inheritable handles when
+/// `inherit`, CreateProcess `flags` (CREATE_SUSPENDED) and standard handles `std`: its id, or
+/// the Windows error. On a host that runs one process the program takes this one's place
+/// (crate::k32::exec) and the answer is ERROR_FILE_NOT_FOUND. CreateProcess and the C runtime's
+/// _spawn / _exec functions start processes here.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn(prog: &str, app: bool, args: &str, cmd: Option<String>, dir: Option<String>, inherit: bool, flags: u32, std: Option<(u32, u32, u32)>) -> Result<u32, u32> {
+    // (SAKE_NO_EXEC: tests/winetest, whose programs start copies of themselves as children)
+    if std::env::var_os("SAKE_NO_EXEC").is_some() {
+        eprintln!("sake: CreateProcess({prog}, {args}) refused");
+        return Err(2);
+    }
+    let (win, host) = find_program(prog, app)?;
+    // a host that runs one process: the program takes this one's place (crate::k32::exec)
+    if !kern::share() {
+        if !crate::k32::exec(prog, args, dir.as_deref()) {
+            eprintln!("sake: CreateProcess({prog}, {args}) refused");
+        }
+        return Err(2);
+    }
+    watch();
+    let cmdline = cmd.unwrap_or_else(|| format!("\"{win}\""));
+    let cwd = match dir {
+        Some(d) => files::full_path(&d),
+        None => files::cwd(),
+    };
+    let list: Vec<(u32, KRef)> = if inherit { obj::with(|t| t.inheritable().filter_map(|(h, o)| Some((h, kref(o)?))).collect()) } else { Vec::new() };
+    let p = Proc { parent: crate::pid(), image: win.clone(), cmdline, cwd, suspend: (flags & 4 != 0) as u32, inherit: list, std, ..Proc::default() };
+    let pid = kern::with(|k| k.new_process(p)).0;
+    if crate::env_on!("SAKE_TRACE_EXIT") {
+        eprintln!("sake: CreateProcess {win} -> process {pid:#x}");
+    }
+    if !kern::host::spawn(pid, &host) {
+        kern::with(|k| k.exited(pid, 1));
+        return Err(2);
+    }
+    Ok(pid)
+}
+
+/// The id a new process handle names (the C runtime's _spawn with _P_NOWAIT).
+pub fn process_handle(pid: u32) -> u32 {
+    obj::add(Obj::Process { access: PROCESS_ALL_ACCESS, pid })
+}
+
+/// Waits for process `pid` to end: its exit code.
+pub fn wait_exit(pid: u32) -> u32 {
+    kern::block(None, &|| false, |k| k.exit_code(pid).ok_or(kern::PENDING)).unwrap_or(1)
+}
+
 /// CreateProcessA/W(app, command line, process sa, thread sa, inherit, flags, environment,
 /// directory, startup info, process information)
 pub fn create_process(c: &mut Ctx, wide: bool) -> u32 {
@@ -110,44 +161,13 @@ pub fn create_process(c: &mut Ctx, wide: bool) -> u32 {
         }
     };
     let dir = (dir != 0).then(|| arg_str(dir, wide));
-    // (SAKE_NO_EXEC: tests/winetest, whose programs start copies of themselves as children)
-    if std::env::var_os("SAKE_NO_EXEC").is_some() {
-        eprintln!("sake: CreateProcess({prog}, {args}) refused");
-        last_error(2);
-        return 0;
-    }
-    let (win, host) = match find_program(&prog, app.is_some()) {
-        Ok(p) => p,
+    let pid = match spawn(&prog, app.is_some(), &args, cmd, dir, inherit, flags, startup_std(si)) {
+        Ok(pid) => pid,
         Err(e) => {
             last_error(e);
             return 0;
         }
     };
-    // a host that runs one process: the program takes this one's place (crate::k32::exec)
-    if !kern::share() {
-        if !crate::k32::exec(&prog, &args, dir.as_deref()) {
-            eprintln!("sake: CreateProcess({prog}, {args}) refused");
-        }
-        last_error(2);
-        return 0;
-    }
-    watch();
-    let cmdline = cmd.unwrap_or_else(|| format!("\"{win}\""));
-    let cwd = match dir {
-        Some(d) => files::full_path(&d),
-        None => files::cwd(),
-    };
-    let list: Vec<(u32, KRef)> = if inherit { obj::with(|t| t.inheritable().filter_map(|(h, o)| Some((h, kref(o)?))).collect()) } else { Vec::new() };
-    let p = Proc { parent: crate::pid(), image: win.clone(), cmdline, cwd, suspend: (flags & 4 != 0) as u32, inherit: list, std: startup_std(si), ..Proc::default() };
-    let pid = kern::with(|k| k.new_process(p)).0;
-    if crate::env_on!("SAKE_TRACE_EXIT") {
-        eprintln!("sake: CreateProcess {win} -> process {pid:#x}");
-    }
-    if !kern::host::spawn(pid, &host) {
-        kern::with(|k| k.exited(pid, 1));
-        last_error(2);
-        return 0;
-    }
     let hp = obj::add(Obj::Process { access: PROCESS_ALL_ACCESS, pid });
     let ht = obj::add(Obj::RemoteThread { pid, tid: first_tid(pid) });
     if pi != 0 {

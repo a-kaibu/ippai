@@ -293,3 +293,28 @@ fn temporary_names_count_in_base_32() {
     assert_eq!(radix32(32), "10");
     assert_eq!(radix32(u32::MAX), "3vvvvvv");
 }
+
+#[test]
+fn spawn_command_line_joins_as_is() {
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // (Ren'Py's launcher quotes its arguments itself)
+    assert_eq!(spawn_command_line(&v(&["\"C:\\a b\\x.exe\"", "-EOO", "\"C:\\a b\\x.py\""])), ("\"C:\\a b\\x.exe\" -EOO \"C:\\a b\\x.py\"".into(), "-EOO \"C:\\a b\\x.py\"".into()));
+    // (no quotes added: "a b" becomes two arguments, as on Windows)
+    assert_eq!(spawn_command_line(&v(&["p", "a b"])), ("p a b".into(), "a b".into()));
+    assert_eq!(spawn_command_line(&v(&["p"])), ("p".into(), "".into()));
+    assert_eq!(spawn_command_line(&[]), ("".into(), "".into()));
+}
+
+proptest! {
+    /// Arguments without spaces or quotes come back as they went in: the command line the
+    /// C runtime builds splits (CreateProcess's rule, crate::process::split_command) into the
+    /// program and the rest, which is the arguments joined by spaces.
+    #[test]
+    fn spawn_command_line_splits_back(argv in prop::collection::vec("[A-Za-z0-9_.:\\\\-]{1,12}", 1..6)) {
+        let (cmd, args) = spawn_command_line(&argv);
+        let (prog, rest) = crate::process::split_command(&cmd);
+        prop_assert_eq!(prog, argv[0].clone());
+        prop_assert_eq!(rest, args.clone());
+        prop_assert_eq!(args.split(' ').filter(|s| !s.is_empty()).count(), argv.len() - 1);
+    }
+}
