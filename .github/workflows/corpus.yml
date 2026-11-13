@@ -167,6 +167,8 @@ jobs:
         run: python3 tests/test_corpus_prep.py
       - name: Cabinet self-extractors unpacked by prep (tests/test_corpus_prep_cab.py)
         run: python3 tests/test_corpus_prep_cab.py
+      - name: Extraction of self-extractors 7z half fails on (tests/test_corpus_prep_exe.py)
+        run: python3 tests/test_corpus_prep_exe.py
       - if: steps.cache-1.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:

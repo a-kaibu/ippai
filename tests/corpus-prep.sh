@@ -63,7 +63,10 @@ if [ ! -d x ]; then
          (find . -mindepth 1 -delete; python3 -I "$HERE/zsfx.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
          (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 unar -q -e cp932 -o . "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
-         (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+         # (7z exits 2 when an EXEpress CX SFX names a cabinet volume it doesn't carry,
+         # helter_taikenban_fubuki.exe's helt_t2.cab, though it extracted every file: what it
+         # leaves counts)
+         (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1; [ -n "$(ls)" ]) ||
          (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          # an installer nothing here unpacks (michishio_trial_taming2_install.exe: Gentee
          # CreateInstall): the exe itself, under its own name, run in sake as on Windows
