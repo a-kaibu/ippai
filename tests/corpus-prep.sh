@@ -132,7 +132,7 @@ else
   e=$(find . -iname '*.exe' -printf '%s\t%P\n' |
       while IFS=$'\t' read -r n p; do
         k=$(sed -E 's#[^/]*\.(exe|msi|zip|lzh|rar|7z)\.(is|inno|zip|sfx|x)/##Ig' <<< "$p")
-        grep -qaiE 'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' <<< "$k" || printf '%s\t%s\n' "$n" "$p"
+        grep -qaiE 'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet|CrashHandler' <<< "$k" || printf '%s\t%s\n' "$n" "$p"
       done | sort -rn | head -1 | cut -f2)
   # (nothing but installers and tools: the biggest of them, an installer sake runs itself)
   [ -n "$e" ] || e=$(find . -iname '*.exe' -printf '%s\t%P\n' | sort -rn | head -1 | cut -f2)

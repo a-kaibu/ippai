@@ -257,6 +257,10 @@ def e2e(t):
     zipof(z, {b'setup.exe.inno/app/game.exe': MZ * 4, b'setup.exe.inno/app/tools/krkr.exe': MZ * 9,
               b'setup.exe.inno/app/unins000.exe': MZ * 20})
     ok &= check('exe in setup.exe.inno/app', prep(t, 'inno', z, 'zip')[:2], (0, 'setup.exe.inno/app/game.exe'))
+    # Unity: the player exe is smaller than UnityCrashHandler64.exe beside it (RJ01227199_trial.zip)
+    z = os.path.join(t, 'unity.zip')
+    zipof(z, {b'hroom/hroom.exe': MZ * 2, b'hroom/UnityCrashHandler64.exe': MZ * 6, b'hroom/UnityPlayer.dll': MZ * 30})
+    ok &= check('Unity player, not its crash handler', prep(t, 'unity', z, 'zip')[:2], (0, 'hroom/hroom.exe'))
     # a self-extracting zip in a self-extracting zip: rounds until the game is out
     inner = os.path.join(t, 'inner.exe')
     zipof(inner, {b'game/game.exe': MZ * 4}, stub=MZ)
