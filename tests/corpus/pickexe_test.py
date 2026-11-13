@@ -70,6 +70,18 @@ class Cases(unittest.TestCase):
         # (nothing but tools, a launcher among them: the biggest, as before)
         self.assertEqual(self.pick({r + 'Launcher.exe': 10, r + 'setup.exe': 20}), r + 'setup.exe')
 
+    def test_triangle_demo_launcher(self):
+        # 妄想ぷろとこる！ チャプター体験版02/04 (#172): DEMO.EXE writes DTriDC0n.INI and starts
+        # the bigger DLPC0n.EXE, which refuses to run alone
+        for n in ('02', '04'):
+            r = f'DLPC{n}/'
+            self.assertEqual(self.pick({r + 'DEMO.EXE': 155648, r + f'DLPC{n}.EXE': 499712, r + f'DTriDC{n}.INI': 254,
+                                        r + 'ms.mhu': 12292}), r + 'DEMO.EXE')
+        # (a demo.exe without Triangle's INI is an ordinary small exe)
+        self.assertEqual(self.pick({'g/demo.exe': 10, 'g/game.exe': 50, 'g/game.ini': 1}), 'g/game.exe')
+        # (Axia's web trial has no DEMO.EXE: the game itself)
+        self.assertEqual(self.pick({'AXIATrialVoice/AXIAT.exe': 500, 'AXIATrialVoice/DTriAX.INI': 5}), 'AXIATrialVoice/AXIAT.exe')
+
     def test_biggest_not_a_tool(self):
         self.assertEqual(self.pick({'g/game.exe': 10, 'g/config.exe': 50, 'g/uninst.exe': 60, 'g/small.exe': 5}), 'g/game.exe')
 

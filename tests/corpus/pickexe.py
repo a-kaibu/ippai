@@ -4,6 +4,9 @@
   pickexe.py DIR      prints the exe's path relative to DIR; exit 3 when there is no .exe
 
 In order:
+  0. Triangle's chapter trials: DEMO.EXE beside DTri*.INI (妄想ぷろとこる！'s DLPC02/DLPC04: the
+     bigger DLPC0n.EXE run alone refuses, "起動用のファイルが読み込めません" or reads the INI
+     DEMO.EXE has not written yet, "初期化ファイルが破壊されています"; #172).
   1. Unity: X.exe beside its X_Data folder (the biggest such). Its own helpers (ffmpeg.exe in
      StreamingAssets, 80 MB in SuccubusTemptationW's trial, bigger than the game) never count.
   2. Ren'Py: X.exe beside X.py and renpy/ (lib/windows-i686/zsync.exe, python.exe are tools).
@@ -44,6 +47,9 @@ def pick(root):
     def beside(p, name):
         return os.path.exists(os.path.join(root, os.path.dirname(p), name))
     stem = lambda p: os.path.basename(p)[:-4]
+    triangle = [c for c in all_ if os.path.basename(c[1]).lower() == 'demo.exe'
+                and any(re.fullmatch(r'dtri.*\.ini', f, re.I) for f in os.listdir(os.path.join(root, os.path.dirname(c[1]))))]
+    if triangle: return biggest(triangle)
     unity = [c for c in all_ if not HELPER_DIR.search(c[1]) and os.path.isdir(os.path.join(root, os.path.dirname(c[1]), stem(c[1]) + '_Data'))]
     if unity: return biggest(unity)
     renpy = [c for c in all_ if not HELPER_DIR.search(c[1]) and beside(c[1], stem(c[1]) + '.py') and beside(c[1], 'renpy')]
