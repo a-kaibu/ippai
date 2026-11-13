@@ -56,7 +56,8 @@ const BV: u32 = 7; // IBasicVideo(2)
 const VW_NONE: u32 = 8;
 const BV_NONE: u32 = 9;
 const GC: u32 = 10; // IGraphConfig
-const NI: u32 = 11;
+const ES: u32 = 11; // IMediaEventSink (what filters tell the graph)
+const NI: u32 = 12;
 
 fn slot_of(iid: u32) -> Option<u32> {
     Some(match r32(iid) {
@@ -70,6 +71,8 @@ fn slot_of(iid: u32) -> Option<u32> {
         0x56a8_68b5 | 0x329b_b360 => BV,
         // IGraphConfig {03a1eb8e-32bf-4245-8502-114d08a9cb88}
         0x03a1_eb8e => GC,
+        // IMediaEventSink {56a868a2-0ad4-11ce-b03a-0020af0ba770}
+        0x56a8_68a2 => ES,
         _ => return None,
     })
 }
@@ -640,8 +643,11 @@ pub fn completed(b: u32) {
 
 /// Queues an event: the event handle set, the notify window told.
 fn queue(b: u32, code: u32, p1: u32) {
+    queue2(b, code, p1, 0)
+}
+fn queue2(b: u32, code: u32, p1: u32, p2: u32) {
     let Some((ev, (hwnd, msg, lp), flags)) = with(b, |g| {
-        g.events.push_back((code, p1, 0));
+        g.events.push_back((code, p1, p2));
         (g.event, g.notify, g.flags)
     }) else {
         return;
@@ -652,6 +658,19 @@ fn queue(b: u32, code: u32, p1: u32) {
     if hwnd != 0 {
         crate::user::post(hwnd, msg, 0, lp);
     }
+}
+
+/// IMediaEventSink::Notify(code, p1, p2) from a filter (krmovie's buffer renderer tells its
+/// frames with a code of its own): to the application, as Windows' graph passes what it does not
+/// handle itself. A renderer's EC_COMPLETE is not passed on (the graph sends its own when the
+/// movie ends), nor the ones Windows handles by default: EC_REPAINT, EC_CLOCK_CHANGED,
+/// EC_ACTIVATE, EC_NEED_RESTART, EC_DISPLAY_CHANGED, EC_STARVATION.
+fn es_notify(c: &mut Ctx) -> u32 {
+    let (code, p1, p2) = (c.a(1), c.a(2), c.a(3));
+    if !matches!(code, EC_COMPLETE | 0x05 | 0x0d | 0x13 | 0x14 | 0x16 | 0x17) {
+        queue2(base(c, ES), code, p1, p2);
+    }
+    0
 }
 
 fn get_event_handle(c: &mut Ctx) -> u32 {
@@ -1498,6 +1517,7 @@ fn vtables() -> &'static [u32; NI as usize] {
             ])
             .collect();
         let bv_none = none(iunknown!(BV_NONE), &bv);
+        let es: Vec<(Handler, u32)> = iunknown!(ES).into_iter().chain([(es_notify as Handler, 16)]).collect();
         [
             vtable("IGraphBuilder", &gb),
             vtable("IMediaControl", &mc),
@@ -1510,6 +1530,7 @@ fn vtables() -> &'static [u32; NI as usize] {
             vtable("IVideoWindow(windowless)", &vw_none),
             vtable("IBasicVideo(windowless)", &bv_none),
             vtable("IGraphConfig", &gc),
+            vtable("IMediaEventSink", &es),
         ]
     })
 }

@@ -13,7 +13,8 @@
 //! sound to kura's audio output. The pictures' time is the graph's (dshow.rs: its
 //! IMediaSeeking, IMediaPosition and EC_COMPLETE go by this timeline).
 //!
-//! Each filter is one guest block: word 0 is its IBaseFilter, word k its pin k (1..=3). The
+//! Each filter is one guest block: word 0 is its IBaseFilter, word k its pin k (1..=3), word 4
+//! the splitter's IAMStreamSelect (krmovie asks for it after connecting). The
 //! samples and the allocator the decoder hands the renderer are ours (NotifyAllocator), so no
 //! CLSID_MemoryAllocator is needed.
 
@@ -83,6 +84,9 @@ const IID_IMEMINPUTPIN: [u8; 16] = iface(0x56a8_689d);
 const IID_IMEMALLOCATOR: [u8; 16] = iface(0x56a8_689c);
 const IID_IMEDIASAMPLE: [u8; 16] = iface(0x56a8_689a);
 const IID_IASYNCREADER: [u8; 16] = iface(0x56a8_68aa);
+const IID_IAMSTREAMSELECT: [u8; 16] = guid(0xc196_0960, 0x17f5, 0x11d1, [0xab, 0xe1, 0x00, 0xa0, 0xc9, 0x05, 0xf3, 0x75]);
+/// the splitter's IAMStreamSelect: word SS of its block
+const SS: u32 = 4;
 
 fn is(p: u32, g: &[u8; 16]) -> bool {
     p != 0 && mem::slice(p, 16) == g
@@ -137,10 +141,10 @@ fn fwith<R>(b: u32, f: impl FnOnce(&mut Filter) -> R) -> Option<R> {
 fn ours(p: u32) -> Option<(u32, usize)> {
     let g = FILTERS.lock().unwrap_or_else(|e| e.into_inner());
     let m = g.as_ref()?;
-    (0..4u32).find_map(|k| p.checked_sub(ps() * k).filter(|b| m.contains_key(b)).map(|b| (b, k as usize)))
+    (0..=SS).find_map(|k| p.checked_sub(ps() * k).filter(|b| m.contains_key(b)).map(|b| (b, k as usize)))
 }
 fn pin_of(p: u32) -> Option<(u32, usize)> {
-    ours(p).filter(|x| x.1 > 0)
+    ours(p).filter(|x| (1..=3).contains(&x.1))
 }
 fn kind(b: u32) -> Option<Kind> {
     fwith(b, |f| f.kind)
@@ -158,12 +162,13 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
     if !filter_iid(iid) {
         return Some(0);
     }
-    let b = mem::heap_alloc(4 * 8, true);
+    let b = mem::heap_alloc((SS + 1) * 8, true);
     let v = vtables();
     wp(b, v.filter);
     for i in 1..4 {
         wp(b + ps() * i, v.pin);
     }
+    wp(b + ps() * SS, v.stream_select);
     let p = |out: bool, name: &'static str, on: bool| Pin { out, name, on, ..Pin::default() };
     let pins = match k {
         Kind::Split => [p(false, "Input", true), p(true, "Video", false), p(true, "Audio", false)],
@@ -217,6 +222,11 @@ fn f_qi(c: &mut Ctx) -> u32 {
     if filter_iid(iid) {
         add_ref(b);
         putp(out, b);
+        return 0;
+    }
+    if is(iid, &IID_IAMSTREAMSELECT) && kind(b) == Some(Kind::Split) {
+        add_ref(b);
+        putp(out, b + ps() * SS);
         return 0;
     }
     putp(out, 0);
@@ -771,6 +781,82 @@ fn p_accept(c: &mut Ctx) -> u32 {
     }
     let me = pin_of(p).map(|(b, k)| pin(b, k)).unwrap_or_default();
     if me.mt != 0 && mem::slice(mt, 32) == mem::slice(me.mt, 32) { 0 } else { S_FALSE }
+}
+
+// ---------------------------------------------------------------------------------------------
+// the splitter's IAMStreamSelect (krmovie asks for it): its streams, the video in group 0 and
+// the sound in group 1, each enabled
+
+/// The splitter's output pins there are: (pin number, group)
+fn streams(b: u32) -> Vec<(usize, u32)> {
+    [(2, 0), (3, 1)].into_iter().filter(|&(k, _)| fwith(b, |f| f.pins[k - 1].on).unwrap_or(false)).collect()
+}
+fn ss_qi(c: &mut Ctx) -> u32 {
+    let b = c.a(0) - ps() * SS;
+    let (iid, out) = (c.a(1), c.a(2));
+    if out == 0 {
+        return E_POINTER;
+    }
+    if is(iid, &IID_IUNKNOWN) || is(iid, &IID_IAMSTREAMSELECT) {
+        add_ref(b);
+        putp(out, c.a(0));
+        return 0;
+    }
+    if filter_iid(iid) {
+        add_ref(b);
+        putp(out, b);
+        return 0;
+    }
+    putp(out, 0);
+    E_NOINTERFACE
+}
+fn ss_add_ref(c: &mut Ctx) -> u32 {
+    add_ref(c.a(0) - ps() * SS)
+}
+fn ss_release(c: &mut Ctx) -> u32 {
+    let b = c.a(0) - ps() * SS;
+    release(c, b)
+}
+fn ss_count(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return E_POINTER;
+    }
+    put32(c.a(1), streams(c.a(0) - ps() * SS).len() as u32);
+    0
+}
+/// Info(index, &mt, &flags, &lcid, &group, &name, &object, &unk)
+fn ss_info(c: &mut Ctx) -> u32 {
+    let b = c.a(0) - ps() * SS;
+    let Some(&(k, group)) = streams(b).get(c.a(1) as usize) else { return S_FALSE };
+    let (mt, flags, lcid, grp, name, obj, unk) = (c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7), c.a(8));
+    if mt != 0 {
+        let t = out_type(b, k).unwrap_or(0);
+        let m = mem::heap_alloc(mt_size(), true);
+        if t != 0 {
+            copy_mt(t, m);
+        }
+        putp(mt, m);
+    }
+    put32(flags, 1); // AMSTREAMSELECTINFO_ENABLED
+    put32(lcid, 0);
+    put32(grp, group);
+    if name != 0 {
+        let n = pin(b, k).name;
+        let w: Vec<u16> = n.encode_utf16().chain([0]).collect();
+        let p = mem::heap_alloc(2 * w.len() as u32, false);
+        for (i, v) in w.iter().enumerate() {
+            w16(p + 2 * i as u32, *v);
+        }
+        putp(name, p);
+    }
+    putp(obj, 0);
+    putp(unk, 0);
+    0
+}
+/// Enable(index, flags): the streams there are stay enabled
+fn ss_enable(c: &mut Ctx) -> u32 {
+    let b = c.a(0) - ps() * SS;
+    if (c.a(1) as usize) < streams(b).len() { 0 } else { 0x8007_0057 }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1488,6 +1574,7 @@ fn sound(s: &mut Dec, running: bool, want: u64, volume: i32) {
 
 struct Vtables {
     filter: u32,
+    stream_select: u32,
     pin: u32,
     enum_pins: u32,
     allocator: u32,
@@ -1558,8 +1645,10 @@ fn vtables() -> &'static Vtables {
             (s_media_time, 12),
             (ok, 12), // SetMediaTime
         ];
+        let ss: [(Handler, u32); 6] = [(ss_qi, 12), (ss_add_ref, 4), (ss_release, 4), (ss_count, 8), (ss_info, 36), (ss_enable, 12)];
         Vtables {
             filter: vtable("MPEG-1 IBaseFilter", &filter),
+            stream_select: vtable("MPEG-1 IAMStreamSelect", &ss),
             pin: vtable("MPEG-1 IPin", &pin),
             enum_pins: vtable("MPEG-1 IEnumPins", &enum_pins),
             allocator: vtable("MPEG-1 IMemAllocator", &allocator),

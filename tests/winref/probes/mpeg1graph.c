@@ -2,10 +2,12 @@
  * game's own source filter (an IAsyncReader over the stream, here the probe's resource) and
  * its own video renderer (RGB32 samples into a buffer, no clock of its own) added, then
  * CLSID_MPEG1Splitter, CLSID_CMpegVideoCodec, CLSID_CMpegAudioCodec and CLSID_DSoundRender
- * created and connected pin to pin with IGraphBuilder::Connect (krmovie's ConnectFilters:
- * the first free output to the first free input). Prints the pins, the type the renderer is
- * given, the duration, the samples (times, sizes, a picture), EC_COMPLETE, and the same once
- * more after a rewind.
+ * created and connected pin to pin (krmovie's ConnectFilters: the first free output to the
+ * first free input, through IGraphBuilder::ConnectDirect), and the splitter's IAMStreamSelect
+ * asked for. Prints the pins, the streams, the type the renderer is given, the duration, the
+ * samples (times, sizes, a picture), the renderer's own events (IMediaEventSink::Notify, as
+ * krmovie tells its frames) reaching the application, EC_COMPLETE, and the same once more
+ * after a rewind.
  * libs: -lole32 -lstrmiids -loleaut32 -luuid -luser32 */
 #include "../probe.h"
 #include <stddef.h>
@@ -331,6 +333,8 @@ static HRESULT WINAPI mi_receive(IMemInputPin *m, IMediaSample *s) {
         if (FAILED(s->lpVtbl->GetTime(s, &f->t0[k], &f->t1[k]))) f->t0[k] = f->t1[k] = -1;
         f->lens[k] = s->lpVtbl->GetActualDataLength(s);
     }
+    /* (as krmovie's buffer renderer, a code of its own for each frame, through the graph) */
+    if (f->sink) f->sink->lpVtbl->Notify(f->sink, EC_USER + 1, k, 0);
     if (k == 10) {
         BYTE *p;
         s->lpVtbl->GetPointer(s, &p);
@@ -358,7 +362,7 @@ static Filter *filter(int out, const WCHAR *name, const WCHAR *pin) {
 static IGraphBuilder *gb;
 
 /* krmovie's ConnectFilters: the first free output of `a` to the first free input of `b` that
- * IGraphBuilder::Connect takes */
+ * IGraphBuilder::ConnectDirect takes */
 static HRESULT connect_filters(IBaseFilter *a, IBaseFilter *b) {
     IEnumPins *ea, *eb;
     IPin *pa, *pb, *x;
@@ -380,7 +384,7 @@ static HRESULT connect_filters(IBaseFilter *a, IBaseFilter *b) {
                 pb->lpVtbl->ConnectedTo(pb, &x);
                 if (x) x->lpVtbl->Release(x);
                 if (ib.dir == PINDIR_INPUT && !x) {
-                    last = gb->lpVtbl->Connect(gb, pa, pb);
+                    last = gb->lpVtbl->ConnectDirect(gb, pa, pb, 0);
                     if (SUCCEEDED(last)) { pb->lpVtbl->Release(pb); eb->lpVtbl->Release(eb); pa->lpVtbl->Release(pa); ea->lpVtbl->Release(ea); return last; }
                 }
                 pb->lpVtbl->Release(pb);
@@ -424,6 +428,13 @@ static void play(const char *label, Filter *r, IMediaControl *mc, IMediaEvent *m
     printf("%s: complete %08lx code %ld\n", label, hr, code);
     int n = r->samples;
     printf("%s: samples %d\n", label, n);
+    long ev, users = 0, last = -1, ordered_ev = 1;
+    LONG_PTR a, b;
+    while (me->lpVtbl->GetEvent(me, &ev, &a, &b, 0) == S_OK) {
+        if (ev == EC_USER + 1) { users++; if ((long)a != last + 1) ordered_ev = 0; last = (long)a; }
+        me->lpVtbl->FreeEventParams(me, ev, a, b);
+    }
+    printf("%s: frame events %ld, in order %s\n", label, users, ordered_ev ? "yes" : "no");
     int ordered = 1, sized = 1;
     for (int k = 0; k < n && k < 40; k++) {
         if (r->lens[k] != W * H * 4) sized = 0;
@@ -449,6 +460,28 @@ int main(void) {
     pins("splitter before", split);
     printf("source -> splitter: %08lx\n", connect_filters(&src->bf, split));
     pins("splitter", split);
+    IAMStreamSelect *sel = 0;
+    printf("splitter: IAMStreamSelect %08lx\n", split->lpVtbl->QueryInterface(split, &IID_IAMStreamSelect, (void **)&sel));
+    if (sel) {
+        DWORD n = 0;
+        HRESULT hc = sel->lpVtbl->Count(sel, &n);
+        printf("streams: count %08lx %lu\n", hc, n);
+        for (DWORD i = 0; i < n; i++) {
+            AM_MEDIA_TYPE *mt = 0;
+            DWORD flags = 0, group = 0;
+            LCID lcid = 0;
+            WCHAR *name = 0;
+            IUnknown *obj = 0, *unk = 0;
+            HRESULT hr = sel->lpVtbl->Info(sel, i, &mt, &flags, &lcid, &group, &name, &obj, &unk);
+            printf("stream %lu: %08lx flags %lu group %lu\n", i, hr, flags, group);
+            if (mt) { guid_name("stream: major", &mt->majortype); CoTaskMemFree(mt->pbFormat); CoTaskMemFree(mt); }
+            if (name) CoTaskMemFree(name);
+            if (obj) obj->lpVtbl->Release(obj);
+            if (unk) unk->lpVtbl->Release(unk);
+        }
+        printf("streams: enable 1 %08lx\n", sel->lpVtbl->Enable(sel, 1, AMSTREAMSELECTENABLE_ENABLE));
+        sel->lpVtbl->Release(sel);
+    }
     IBaseFilter *vdec = create(&CLSID_CMpegVideoCodec, L"MPEG Video Decoder", "video decoder");
     printf("splitter -> video decoder: %08lx\n", connect_filters(split, vdec));
     printf("video decoder -> renderer: %08lx\n", connect_filters(vdec, &rend->bf));
