@@ -23,17 +23,29 @@ size_t strlen(const char *);
 void *memset(void *, int, size_t);
 }
 // MFC42U (mfc42u.cpp includes this with MFCU): TCHAR is unsigned short, CString UTF-16, the
-// exports other ordinals (O(mfc42's, mfc42u's))
-#ifdef MFCU
+// exports other ordinals; MFC 4.0 (mfc40.cpp: MFC40): CWinThread 8 bytes shorter, CWinApp's
+// fields 8 lower (O(mfc42's, mfc42u's, mfc40's ordinal))
+#if defined(MFCU)
 typedef wchar_t TCH; // (16 bits on Windows: MFC42U's unsigned short)
 #define T(s) L##s
-#define O(a, u) u
+#define O(a, u, f) u
 #define DLL "mfc42u.dll"
+#elif defined(MFC40)
+typedef char TCH;
+#define T(s) s
+#define O(a, u, f) f
+#define DLL "mfc40.dll"
 #else
 typedef char TCH;
 #define T(s) s
-#define O(a, u) a
+#define O(a, u, f) a
 #define DLL "mfc42.dll"
+#endif
+// a CWinApp field at MFC 4.2's offset (MFC 4.0's CWinThread is 8 bytes shorter)
+#ifdef MFC40
+#define A(o) ((o) - 8)
+#else
+#define A(o) (o)
 #endif
 // TCHAR text printed: ASCII as is, others as \uXXXX (rotating buffers: several in one printf)
 static const char *ps(const TCH *s) {
@@ -91,10 +103,10 @@ struct Str {
 };
 static Str mk(const TCH *s) {
     Str r;
-    ((T1)fn(O(537, 538)))(&r, (unsigned)s);
+    ((T1)fn(O(537, 538, 483)))(&r, (unsigned)s);
     return r;
 }
-static void dtor(Str *s) { ((T0)fn(O(800, 800)))(s); }
+static void dtor(Str *s) { ((T0)fn(O(800, 800, 706)))(s); }
 static void show(const char *what, Str *s) {
     TCH *p = s->p;
     printf("%s \"%s\" refs %d len %u alloc %u\n", what, ps(p), (int)at(p, -12), at(p, -8), at(p, -4));
@@ -102,19 +114,19 @@ static void show(const char *what, Str *s) {
 
 static void strings() {
     Str e;
-    ((T0)fn(O(540, 540)))(&e);
+    ((T0)fn(O(540, 540, 486)))(&e);
     printf("empty refs %d len %u\n", (int)at(e.p, -12), at(e.p, -8));
     Str a = mk(T("hello"));
     show("a", &a);
     Str b;
-    ((T1)fn(O(535, 535)))(&b, (unsigned)&a);
+    ((T1)fn(O(535, 535, 481)))(&b, (unsigned)&a);
     printf("copy shares %d refs %d\n", a.p == b.p, (int)at(a.p, -12));
-    ((T1)fn(O(940, 941)))(&b, '!');
+    ((T1)fn(O(940, 941, 835)))(&b, '!');
     printf("write unshares %d\n", a.p != b.p);
     show("a", &a);
     show("b", &b);
     // (an empty string assigned is the shared empty one again)
-    ((T1)fn(O(858, 858)))(&b, (unsigned)&e);
+    ((T1)fn(O(858, 858, 760)))(&b, (unsigned)&e);
     printf("assigned empty is nil %d\n", b.p == e.p);
     TCH big[700];
     static const int lens[] = {1, 64, 65, 128, 129, 256, 257, 512, 513, 600};
@@ -122,51 +134,51 @@ static void strings() {
         for (int i = 0; i < n; i++)
             big[i] = 'x';
         big[n] = 0;
-        ((T1)fn(O(860, 861)))(&b, (unsigned)big);
+        ((T1)fn(O(860, 861, 762)))(&b, (unsigned)big);
         printf("len %d alloc %u\n", n, at(b.p, -4));
     }
     // (shrinking keeps the buffer)
-    ((T1)fn(O(860, 861)))(&b, (unsigned)T("short"));
+    ((T1)fn(O(860, 861, 762)))(&b, (unsigned)T("short"));
     show("b", &b);
     Str t = mk(T("  \t lead and trail \r\n "));
-    ((T0)fn(O(6282, 6278)))(&t);
+    ((T0)fn(O(6282, 6278, 5569)))(&t);
     show("trimleft", &t);
-    ((T0)fn(O(6283, 6279)))(&t);
+    ((T0)fn(O(6283, 6279, 5570)))(&t);
     show("trimright", &t);
     Str sum;
-    ((S3)fn(O(924, 925)))((unsigned)&sum, (unsigned)&a, (unsigned)T(" world"));
+    ((S3)fn(O(924, 925, 819)))((unsigned)&sum, (unsigned)&a, (unsigned)T(" world"));
     show("cs+sz", &sum);
     dtor(&sum);
-    ((S3)fn(O(926, 927)))((unsigned)&sum, (unsigned)T("say "), (unsigned)&a);
+    ((S3)fn(O(926, 927, 821)))((unsigned)&sum, (unsigned)T("say "), (unsigned)&a);
     show("sz+cs", &sum);
     dtor(&sum);
-    ((T1)fn(O(941, 942)))(&a, (unsigned)T(", again"));
+    ((T1)fn(O(941, 942, 836)))(&a, (unsigned)T(", again"));
     show("+=", &a);
     Str f;
-    ((T0)fn(O(540, 540)))(&f);
-    ((Fmt)fn(O(2818, 2810)))(&f, T("%d-%s-%04x"), 42, T("x"), 0xbeef);
+    ((T0)fn(O(540, 540, 486)))(&f);
+    ((Fmt)fn(O(2818, 2810, 2471)))(&f, T("%d-%s-%04x"), 42, T("x"), 0xbeef);
     show("format", &f);
     Str m;
-    ((T3)fn(O(4278, 4273)))(&a, (unsigned)&m, 2, 5);
+    ((T3)fn(O(4278, 4273, 3765)))(&a, (unsigned)&m, 2, 5);
     show("mid", &m);
     dtor(&m);
-    ((T3)fn(O(4278, 4273)))(&a, (unsigned)&m, 40, 5);
+    ((T3)fn(O(4278, 4273, 3765)))(&a, (unsigned)&m, 40, 5);
     show("mid past end", &m);
     dtor(&m);
-    ((T2)fn(O(4129, 4124)))(&a, (unsigned)&m, 3);
+    ((T2)fn(O(4129, 4124, 3626)))(&a, (unsigned)&m, 3);
     show("left", &m);
     dtor(&m);
-    ((T2)fn(O(5710, 5706)))(&a, (unsigned)&m, 5);
+    ((T2)fn(O(5710, 5706, 5049)))(&a, (unsigned)&m, 5);
     show("right", &m);
     dtor(&m);
-    printf("find %d %d\n", (int)(size_t)((T1)fn(O(2764, 2756)))(&a, (unsigned)T("again")), (int)(size_t)((T1)fn(O(2764, 2756)))(&a, (unsigned)T("zz")));
-    ((T0)fn(O(2614, 2606)))(&a);
+    printf("find %d %d\n", (int)(size_t)((T1)fn(O(2764, 2756, 2427)))(&a, (unsigned)T("again")), (int)(size_t)((T1)fn(O(2764, 2756, 2427)))(&a, (unsigned)T("zz")));
+    ((T0)fn(O(2614, 2606, 2293)))(&a);
     printf("emptied is nil %d\n", a.p == e.p);
 #ifdef MFCU
     // Unicode: the ideographic space trimmed (iswspace), CJK kept; an ANSI string converted
     Str j = mk(L"\u3000 \u65e5\u672c\u8a9e\u3000");
-    ((T0)fn(O(6282, 6278)))(&j);
-    ((T0)fn(O(6283, 6279)))(&j);
+    ((T0)fn(O(6282, 6278, 5569)))(&j);
+    ((T0)fn(O(6283, 6279, 5570)))(&j);
     show("trim cjk", &j);
     Str an;
     ((T1)fn(537))(&an, (unsigned)"ansi");
@@ -185,8 +197,8 @@ static void strings() {
 static const char *name_of(void *rtc) { return rtc ? *(const char **)rtc : "(none)"; }
 static void classes() {
     static const struct { int ord; const char *name; } c[] = {
-        {O(1871, 1863), "CObject"}, {O(1799, 1791), "CCmdTarget"}, {O(1948, 1940), "CWinThread"}, {O(1946, 1938), "CWinApp"}, {O(1949, 1941), "CWnd"},
-        {O(1816, 1808), "CDialog"}, {O(1833, 1825), "CFile"}, {O(1832, 1824), "CException"}, {O(1835, 1827), "CFileException"},
+        {O(1871, 1863, 1627), "CObject"}, {O(1799, 1791, 1559), "CCmdTarget"}, {O(1948, 1940, 1703), "CWinThread"}, {O(1946, 1938, 1701), "CWinApp"}, {O(1949, 1941, 1704), "CWnd"},
+        {O(1816, 1808, 1576), "CDialog"}, {O(1833, 1825, 1591), "CFile"}, {O(1832, 1824, 1590), "CException"}, {O(1835, 1827, 1593), "CFileException"},
     };
     for (auto &k : c) {
         void *r = fn(k.ord);
@@ -204,7 +216,7 @@ struct Map {
     const Entry *entries;
 };
 static void maps() {
-    static const struct { int ord; const char *name; } m[] = {{O(4226, 4221), "CCmdTarget"}, {O(4275, 4270), "CWnd"}, {O(4234, 4229), "CDialog"}, {O(4274, 4269), "CWinApp"}};
+    static const struct { int ord; const char *name; } m[] = {{O(4226, 4221, 3717), "CCmdTarget"}, {O(4275, 4270, 3762), "CWnd"}, {O(4234, 4229, 3724), "CDialog"}, {O(4274, 4269, 3761), "CWinApp"}};
     const Map *all[4];
     for (int i = 0; i < 4; i++)
         all[i] = (const Map *)fn(m[i].ord);
@@ -243,116 +255,126 @@ static void windows() {
     long(__stdcall * getlong)(void *, int) = (long(__stdcall *)(void *, int))GetProcAddress(user, "GetWindowLongA");
     int(__stdcall * iswindow)(void *) = (int(__stdcall *)(void *))GetProcAddress(user, "IsWindow");
     void *(__stdcall * settimer)(void *, unsigned, unsigned, void *) = (void *(__stdcall *)(void *, unsigned, unsigned, void *))GetProcAddress(user, "SetTimer");
-    void *ms = ((S0)fn(O(1168, 1165)))();
+    void *ms = ((S0)fn(O(1168, 1165, 1035)))();
     void *d = desktop();
-    void *w1 = ((S1)fn(O(2864, 2859)))((unsigned)d), *w2 = ((S1)fn(O(2864, 2859)))((unsigned)d);
-    printf("FromHandle same %d hwnd ok %d permanent %d\n", w1 == w2, at(w1, 0x20) == (unsigned)d, ((S1)fn(O(2867, 2862)))((unsigned)d) != 0);
+    void *w1 = ((S1)fn(O(2864, 2859, 2515)))((unsigned)d), *w2 = ((S1)fn(O(2864, 2859, 2515)))((unsigned)d);
+    printf("FromHandle same %d hwnd ok %d permanent %d\n", w1 == w2, at(w1, 0x20) == (unsigned)d, ((S1)fn(O(2867, 2862, 2518)))((unsigned)d) != 0);
     unsigned dlg[0x60 / 4];
-    ((T2)fn(O(324, 324)))(dlg, 0x66, 0);
+    ((T2)fn(O(324, 324, 315)))(dlg, 0x66, 0);
     printf("CDialog(0x66) help %#x template %#x hwnd %u refs %u expected %u state %d parent %u\n", dlg[0x40 / 4], dlg[0x44 / 4], dlg[0x20 / 4], dlg[1], dlg[5], dlg[7] == (unsigned)ms, dlg[0x54 / 4]);
-    printf("IsKindOf CDialog %d CWnd %d CFile %d\n", (int)(size_t)((T1)fn(O(4083, 4078)))(dlg, (unsigned)fn(O(1816, 1808))), (int)(size_t)((T1)fn(O(4083, 4078)))(dlg, (unsigned)fn(O(1949, 1941))), (int)(size_t)((T1)fn(O(4083, 4078)))(dlg, (unsigned)fn(O(1833, 1825))));
-    printf("GetRuntimeClass %s\n", name_of(((void *(__thiscall *)(void *))fn(O(3597, 3592)))(dlg)));
-    ((T0)fn(O(641, 641)))(dlg);
+    printf("IsKindOf CDialog %d CWnd %d CFile %d\n", (int)(size_t)((T1)fn(O(4083, 4078, 3583)))(dlg, (unsigned)fn(O(1816, 1808, 1576))), (int)(size_t)((T1)fn(O(4083, 4078, 3583)))(dlg, (unsigned)fn(O(1949, 1941, 1704))), (int)(size_t)((T1)fn(O(4083, 4078, 3583)))(dlg, (unsigned)fn(O(1833, 1825, 1591))));
+    printf("GetRuntimeClass %s\n", name_of(((void *(__thiscall *)(void *))fn(O(3597, 3592, 3134)))(dlg)));
+    ((T0)fn(O(641, 641, 570)))(dlg);
     // a modeless dialog from a template in memory: attached while created, MFC's procedure
     unsigned *t = (unsigned *)tmpl;
     t[0] = 0x80c80080; // WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME
     ((unsigned short *)tmpl)[7] = 120;
     ((unsigned short *)tmpl)[8] = 60;
-    ((T0)fn(O(326, 326)))(dlg);
-    int ok = (int)(size_t)((T3)fn(O(2170, 2162)))(dlg, (unsigned)tmpl, 0, 0);
+    ((T0)fn(O(326, 326, 317)))(dlg);
+#ifdef MFC40
+    // (MFC 4.0's CreateIndirect(lpDialogTemplate, pParentWnd))
+    int ok = (int)(size_t)((T2)fn(1884))(dlg, (unsigned)tmpl, 0);
+#else
+    int ok = (int)(size_t)((T3)fn(O(2170, 2162, 0)))(dlg, (unsigned)tmpl, 0, 0);
+#endif
     void *h = (void *)dlg[0x20 / 4];
 #ifdef MFCU
     // (MFC42U's windows are Unicode ones: CreateDialogIndirectParamW, SetWindowLongW)
     int(__stdcall * isuni)(void *) = (int(__stdcall *)(void *))GetProcAddress(user, "IsWindowUnicode");
     printf("unicode window %d\n", isuni(h));
 #endif
-    printf("CreateIndirect %d attached %d wndproc mfc %d\n", ok, ((S1)fn(O(2867, 2862)))((unsigned)h) == dlg, (void *)getlong(h, -4) == ((S0)fn(O(1153, 1150)))());
-    int destroyed = (int)(size_t)((void *(__thiscall *)(void *))fn(O(2446, 2438)))(dlg);
-    printf("DestroyWindow %d hwnd %u window gone %d permanent %d\n", destroyed, dlg[0x20 / 4], !iswindow(h), ((S1)fn(O(2867, 2862)))((unsigned)h) != 0);
-    ((T0)fn(O(641, 641)))(dlg);
+#ifdef MFC40
+    // (no AfxGetAfxWndProc in MFC 4.0: the procedure is only not the dialog class's any more)
+    printf("CreateIndirect %d attached %d wndproc mfc %d\n", ok, ((S1)fn(2518))((unsigned)h) == dlg, getlong(h, -4) != 0);
+#else
+    printf("CreateIndirect %d attached %d wndproc mfc %d\n", ok, ((S1)fn(O(2867, 2862, 2518)))((unsigned)h) == dlg, (void *)getlong(h, -4) == ((S0)fn(O(1153, 1150, 0)))());
+#endif
+    int destroyed = (int)(size_t)((void *(__thiscall *)(void *))fn(O(2446, 2438, 2140)))(dlg);
+    printf("DestroyWindow %d hwnd %u window gone %d permanent %d\n", destroyed, dlg[0x20 / 4], !iswindow(h), ((S1)fn(O(2867, 2862, 2518)))((unsigned)h) != 0);
+    ((T0)fn(O(641, 641, 570)))(dlg);
     // modal: IDOK posted by a timer ends it through CDialog's message map (OnOK, EndDialog(IDOK))
-    ((T0)fn(O(326, 326)))(dlg);
-    ((T3)fn(O(3957, 3952)))(dlg, (unsigned)tmpl, 0, 0);
+    ((T0)fn(O(326, 326, 317)))(dlg);
+    ((T3)fn(O(3957, 3952, 3463)))(dlg, (unsigned)tmpl, 0, 0);
     modal = dlg;
     settimer(0, 0, 50, (void *)tick);
-    int r = (int)(size_t)((void *(__thiscall *)(void *))fn(O(2514, 2506)))(dlg);
+    int r = (int)(size_t)((void *(__thiscall *)(void *))fn(O(2514, 2506, 2199)))(dlg);
     printf("DoModal %d hwnd %u\n", r, dlg[0x20 / 4]);
-    ((T0)fn(O(641, 641)))(dlg);
+    ((T0)fn(O(641, 641, 570)))(dlg);
 }
 
 static void app() {
     unsigned a[0xc4 / 4];
-    void *ms = ((S0)fn(O(1168, 1165)))();
-    ((T1)fn(O(561, 561)))(a, (unsigned)T("probe"));
-    printf("CWinApp app %d thread %d name %s autodelete %u tid %d handle %d\n", at(ms, 4) == (unsigned)a, ((S0)fn(O(1175, 1172)))() == a, ps((const TCH *)a[0x7c / 4]), a[0x28 / 4], a[0x30 / 4] == GetCurrentThreadId(), (HANDLE)a[0x2c / 4] == GetCurrentThread());
+    void *ms = ((S0)fn(O(1168, 1165, 1035)))();
+    ((T1)fn(O(561, 561, 504)))(a, (unsigned)T("probe"));
+    printf("CWinApp app %d thread %d name %s autodelete %u tid %d handle %d\n", at(ms, 4) == (unsigned)a, ((S0)fn(O(1175, 1172, 1041)))() == a, ps((const TCH *)a[A(0x7c) / 4]), a[0x28 / 4], a[0x30 / 4] == GetCurrentThreadId(), (HANDLE)a[0x2c / 4] == GetCurrentThread());
     void *inst = GetModuleHandleA(0);
-    int ok = (int)(size_t)((S4)fn(O(1575, 1568)))((unsigned)inst, 0, (unsigned)T(""), 1);
-    const TCH *prof = (const TCH *)a[0x94 / 4];
+    int ok = (int)(size_t)((S4)fn(O(1575, 1568, 1367)))((unsigned)inst, 0, (unsigned)T(""), 1);
+    const TCH *prof = (const TCH *)a[A(0x94) / 4];
     size_t n = tlen(prof);
-    printf("AfxWinInit %d instance %d resources %d app instance %d show %u appname %s exe %d profile .INI %d\n", ok, at(ms, 8) == (unsigned)inst, at(ms, 12) == (unsigned)inst, a[0x6c / 4] == (unsigned)inst, a[0x78 / 4], ps((const TCH *)at(ms, 0x10)), a[0x8c / 4] != 0, n > 4 && !strcmp(ps(prof + n - 4), ".INI"));
+    printf("AfxWinInit %d instance %d resources %d app instance %d show %u appname %s exe %d profile .INI %d\n", ok, at(ms, 8) == (unsigned)inst, at(ms, 12) == (unsigned)inst, a[A(0x6c) / 4] == (unsigned)inst, a[A(0x78) / 4], ps((const TCH *)at(ms, 0x10)), a[A(0x8c) / 4] != 0, n > 4 && !strcmp(ps(prof + n - 4), ".INI"));
     windows();
-    ((T0)fn(O(815, 815)))(a);
+    ((T0)fn(O(815, 815, 721)))(a);
     printf("after ~CWinApp app %u\n", at(ms, 4));
 }
 
 static void files() {
     unsigned f[4];
-    ((T0)fn(O(354, 354)))(f);
+    ((T0)fn(O(354, 354, 340)))(f);
     printf("CFile hFile %d close %u name empty %d\n", (int)f[1], f[2], at((void *)f[3], -8) == 0);
     unsigned e[5];
     memset(e, 0, sizeof e);
-    ((T0)fn(O(540, 540)))(&e[4]);
-    int ok = (int)(size_t)((T3)fn(O(5186, 5180)))(f, (unsigned)T("no such file.bin"), 0, (unsigned)e);
+    ((T0)fn(O(540, 540, 486)))(&e[4]);
+    int ok = (int)(size_t)((T3)fn(O(5186, 5180, 4619)))(f, (unsigned)T("no such file.bin"), 0, (unsigned)e);
     printf("open missing %d cause %u oserror %u name %s\n", ok, e[2], e[3], ps((TCH *)e[4]));
     DeleteFileA("mfc42probe.bin");
-    ok = (int)(size_t)((T3)fn(O(5186, 5180)))(f, (unsigned)T("mfc42probe.bin"), 0x1001, 0);
+    ok = (int)(size_t)((T3)fn(O(5186, 5180, 4619)))(f, (unsigned)T("mfc42probe.bin"), 0x1001, 0);
     printf("create %d close %u\n", ok, f[2]);
-    ((T2)fn(O(6385, 6381)))(f, (unsigned)"abcdef", 6);
-    printf("length %u position %u\n", (unsigned)(size_t)((void *(__thiscall *)(void *))fn(O(3318, 3313)))(f), (unsigned)(size_t)((void *(__thiscall *)(void *))fn(O(3507, 3502)))(f));
+    ((T2)fn(O(6385, 6381, 5658)))(f, (unsigned)"abcdef", 6);
+    printf("length %u position %u\n", (unsigned)(size_t)((void *(__thiscall *)(void *))fn(O(3318, 3313, 2891)))(f), (unsigned)(size_t)((void *(__thiscall *)(void *))fn(O(3507, 3502, 3054)))(f));
     Str nm;
-    ((T1)fn(O(3176, 3171)))(f, (unsigned)&nm);
+    ((T1)fn(O(3176, 3171, 2777)))(f, (unsigned)&nm);
     printf("file name %s\n", ps(nm.p));
     dtor(&nm);
-    ((T0)fn(O(1979, 1971)))(f);
+    ((T0)fn(O(1979, 1971, 1725)))(f);
     printf("closed hFile %d\n", (int)f[1]);
-    ok = (int)(size_t)((T3)fn(O(5186, 5180)))(f, (unsigned)T("mfc42probe.bin"), 0, 0);
+    ok = (int)(size_t)((T3)fn(O(5186, 5180, 4619)))(f, (unsigned)T("mfc42probe.bin"), 0, 0);
     char buf[16];
     memset(buf, 0, sizeof buf);
-    unsigned got = (unsigned)(size_t)((T2)fn(O(5442, 5438)))(f, (unsigned)buf, 16);
+    unsigned got = (unsigned)(size_t)((T2)fn(O(5442, 5438, 4819)))(f, (unsigned)buf, 16);
     printf("read %d got %u %s\n", ok, got, buf);
-    ((T2)fn(O(5773, 5769)))(f, 2, 0);
+    ((T2)fn(O(5773, 5769, 5110)))(f, 2, 0);
     memset(buf, 0, sizeof buf);
-    got = (unsigned)(size_t)((T2)fn(O(5442, 5438)))(f, (unsigned)buf, 3);
+    got = (unsigned)(size_t)((T2)fn(O(5442, 5438, 4819)))(f, (unsigned)buf, 3);
     printf("seek read %u %s\n", got, buf);
-    ((T0)fn(O(1979, 1971)))(f);
-    ((T0)fn(O(665, 665)))(f);
+    ((T0)fn(O(1979, 1971, 1725)))(f);
+    ((T0)fn(O(665, 665, 592)))(f);
     DeleteFileA("mfc42probe.bin");
     // MFC throws a CFileException* (caught by its class or a base's)
     for (int k = 0; k < 3; k++) {
         try {
             if (k == 2)
-                ((S3)fn(O(1262, 1255)))(13, 112, (unsigned)T("disk.bin"));
+                ((S3)fn(O(1262, 1255, 1114)))(13, 112, (unsigned)T("disk.bin"));
             else
-                ((S2)fn(O(6264, 6260)))(k == 0 ? 2 : 5, (unsigned)T("thrown.bin"));
+                ((S2)fn(O(6264, 6260, 5551)))(k == 0 ? 2 : 5, (unsigned)T("thrown.bin"));
             printf("not thrown\n");
         } catch (CFileException *x) {
             TCH msg[128];
             unsigned help = 0;
-            int r = (int)(size_t)((void *(__thiscall *)(void *, TCH *, unsigned, unsigned *))fn(O(3127, 3122)))(x, msg, 128, &help);
+            int r = (int)(size_t)((void *(__thiscall *)(void *, TCH *, unsigned, unsigned *))fn(O(3127, 3122, 2736)))(x, msg, 128, &help);
             printf("caught CFileException cause %u oserror %u autodelete %u name %s message %d \"%s\" help %#x\n", at(x, 8), at(x, 12), at(x, 4), ps(*(TCH **)((char *)x + 16)), r, ps(msg), help);
-            ((T0)fn(O(2393, 2385)))(x);
+            ((T0)fn(O(2393, 2385, 2094)))(x);
         } catch (CException *) {
             printf("caught CException\n");
         }
     }
     try {
-        ((S2)fn(O(6264, 6260)))(3, (unsigned)T("as base"));
+        ((S2)fn(O(6264, 6260, 5551)))(3, (unsigned)T("as base"));
     } catch (CException *x) {
         printf("caught as CException cause %u\n", at(x, 8));
-        ((T0)fn(O(2393, 2385)))(x);
+        ((T0)fn(O(2393, 2385, 2094)))(x);
     }
     try {
-        ((S2)fn(O(6264, 6260)))(0, (unsigned)T("no error"));
+        ((S2)fn(O(6264, 6260, 5551)))(0, (unsigned)T("no error"));
         printf("ThrowOsError(0) returns\n");
     } catch (CObject *) {
         printf("ThrowOsError(0) threw\n");

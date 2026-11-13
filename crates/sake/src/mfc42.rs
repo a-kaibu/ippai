@@ -1,5 +1,6 @@
-//! mfc42.dll (MFC 4.2, ANSI, the shared-DLL build Visual C++ 6 programs link against) for
-//! 32-bit programs: sake's own implementation, no Microsoft or Wine code. Programs import it by
+//! mfc42.dll (MFC 4.2, ANSI, the shared-DLL build Visual C++ 6 programs link against), its
+//! Unicode build mfc42u.dll and MFC 4.0's mfc40.dll (Visual C++ 4) for 32-bit programs: sake's
+//! own implementation, no Microsoft or Wine code (the differences: `FLAVOR`). Programs import it by
 //! ordinal only; specs.txt carries every export's ordinal, decorated name and argument bytes
 //! (tests/mfcabi/mfc42.py makes them from the DLL's public symbols), so an export not done here
 //! is logged by name and returns 0 instead of jumping to an unknown address (#159).
@@ -21,7 +22,7 @@
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{self, implement, Ctx, Handler};
@@ -30,22 +31,33 @@ use crate::mem::{self, r16, r32, w16, w32, w8};
 /// The MFC DLLs here: one implementation, registered under each DLL's decorated names (a name
 /// says its argument types: `PBD` const char*, `PBG` const unsigned short*, so a handler means
 /// the same in every DLL that exports its name).
-pub const DLLS: &[&str] = &["mfc42", "mfc42u"];
-/// The program imports mfc42u.dll (MFC 4.2's Unicode build: TCHAR is WCHAR, CString holds
-/// UTF-16, the windows MFC makes are Unicode ones)
-static WIDE: AtomicBool = AtomicBool::new(false);
+pub const DLLS: &[&str] = &["mfc42", "mfc42u", "mfc40"];
+/// The MFC the program imports, an index of DLLS: mfc42.dll; mfc42u.dll (MFC 4.2's Unicode
+/// build: TCHAR is WCHAR, CString holds UTF-16, the windows MFC makes are Unicode ones);
+/// mfc40.dll (MFC 4.0, Visual C++ 4: CCmdTarget without GetCommandMap, so the virtual
+/// functions after it one slot lower, and CWinThread 8 bytes shorter: see `vcall`, `th`)
+static FLAVOR: AtomicU8 = AtomicU8::new(0);
 /// An import from `dll` (a key): the MFC the program runs on
 pub fn use_dll(dll: &str) {
-    if dll == "mfc42u" {
-        WIDE.store(true, Ordering::Relaxed);
+    if let Some(i) = DLLS.iter().position(|&d| d == dll) {
+        FLAVOR.store(i as u8, Ordering::Relaxed);
     }
 }
 pub fn wide() -> bool {
-    WIDE.load(Ordering::Relaxed)
+    FLAVOR.load(Ordering::Relaxed) == 1
+}
+pub fn mfc40() -> bool {
+    FLAVOR.load(Ordering::Relaxed) == 2
 }
 /// The DLL of the MFC in use (its exports: the traps MFC's own objects point at)
 fn dll() -> &'static str {
-    if wide() { "mfc42u" } else { "mfc42" }
+    DLLS[FLAVOR.load(Ordering::Relaxed) as usize]
+}
+/// A CWinThread / CWinApp field at MFC 4.2's offset `o`: MFC 4.0's CWinThread lacks the 8
+/// bytes 4.2 put after m_pfnThreadProc (+0x54), so its later fields and CWinApp's are 8 lower
+/// (m_ptCursorLast +0x58, m_hInstance +0x64, m_pszAppName +0x74...)
+fn th(o: u32) -> u32 {
+    if mfc40() && o >= 0x58 { o - 8 } else { o }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -128,8 +140,11 @@ fn tcall(c: &mut Ctx, f: u32, obj: u32, args: &[u32]) -> u32 {
     c.cpu.regs[1] = ecx;
     r
 }
-/// The virtual function in slot `slot` of `obj`.
+/// The virtual function in slot `slot` (MFC 4.2's numbering) of `obj`. (MFC 4.0's
+/// CCmdTarget has no GetCommandMap, slot 13: its classes' later slots are one lower. The
+/// slots above 13 called here are all CCmdTarget-derived classes'.)
 fn vcall(c: &mut Ctx, obj: u32, slot: u32, args: &[u32]) -> u32 {
+    let slot = if mfc40() && slot > 13 { slot - 1 } else { slot };
     let f = r32(r32(obj) + 4 * slot);
     tcall(c, f, obj, args)
 }
@@ -832,7 +847,10 @@ pub fn runtime_class(name: &str) -> u32 {
     if let Some(&p) = RTC.lock().unwrap().get_or_insert_with(HashMap::default).get(name) {
         return p;
     }
-    let (base, size) = CLASSES.iter().find(|x| x.0 == name).map_or(("CObject", 0), |x| (x.1, x.2));
+    let (base, mut size) = CLASSES.iter().find(|x| x.0 == name).map_or(("CObject", 0), |x| (x.1, x.2));
+    if name == "CWinThread" {
+        size = th(size);
+    }
     let p = mem::heap_alloc(24 + name.len() as u32 + 1, true);
     mem::write(p + 24, name.as_bytes());
     w32(p, p + 24);
@@ -1021,6 +1039,10 @@ fn slots(class: &str) -> Vec<&'static str> {
                     v.extend(dialog);
                 }
             }
+            // (MFC 4.0's CCmdTarget: no GetCommandMap)
+            if mfc40() {
+                v.remove(13);
+            }
         }
     }
     v
@@ -1033,10 +1055,15 @@ fn export(n: &str) -> u32 {
     if wide() && !api::exports("mfc42u", n) {
         return api::export("mfc42u", &unicode_name(n));
     }
+    // (one MFC 4.0 lacks or names otherwise: MFC 4.2's, the same handler)
+    if mfc40() && !api::exports("mfc40", n) {
+        return api::export("mfc42", n);
+    }
     api::export(dll(), n)
 }
 pub fn vtable(class: &str) -> u32 {
-    if let Some(&v) = VTABLES.lock().unwrap().get_or_insert_with(HashMap::default).get(class) {
+    let key = format!("{} {class}", dll());
+    if let Some(&v) = VTABLES.lock().unwrap().get_or_insert_with(HashMap::default).get(&key) {
         return v;
     }
     let s = slots(class);
@@ -1054,7 +1081,7 @@ pub fn vtable(class: &str) -> u32 {
         };
         w32(v + 4 * i as u32, f);
     }
-    VTABLES.lock().unwrap().get_or_insert_with(HashMap::default).insert(class.to_string(), v);
+    VTABLES.lock().unwrap().get_or_insert_with(HashMap::default).insert(key, v);
     v
 }
 fn nop(_: &mut Ctx) -> u32 {
@@ -2248,6 +2275,13 @@ fn CreateIndirect(c: &mut Ctx) -> u32 {
     let hp = if parent == 0 { 0 } else { r32(parent + 0x20) };
     create_dlg_indirect(c, o, tmpl, hp, 0) as u32
 }
+/// MFC 4.0's CDialog::CreateIndirect(lpDialogTemplate, pParentWnd)
+fn CreateIndirect_40(c: &mut Ctx) -> u32 {
+    let (o, tmpl, parent) = (this(c), c.a(0), c.a(1));
+    w32(o + 0x50, 0);
+    let hp = if parent == 0 { 0 } else { r32(parent + 0x20) };
+    create_dlg_indirect(c, o, tmpl, hp, 0) as u32
+}
 /// CDialog::InitModalIndirect(lpDialogTemplate, pParentWnd, lpDialogInit): DoModal's template
 fn InitModalIndirect(c: &mut Ctx) -> u32 {
     let (o, t, parent, init) = (this(c), c.a(0), c.a(1), c.a(2));
@@ -2463,7 +2497,7 @@ fn DDX_Control(c: &mut Ctx) -> u32 {
 
 fn thread_init(o: u32, class: &str) {
     cmd_target_init(o, class);
-    mem::fill(o + 0x20, 0x6c - 0x20, 0);
+    mem::fill(o + 0x20, th(0x6c) - 0x20, 0);
     w32(o + 0x28, 1);
 }
 fn CWinThread_ctor(c: &mut Ctx) -> u32 {
@@ -2496,11 +2530,11 @@ fn CWinThread_dtor(c: &mut Ctx) -> u32 {
 fn CWinApp_ctor(c: &mut Ctx) -> u32 {
     let (o, name) = (this(c), c.a(0));
     thread_init(o, "CWinApp");
-    mem::fill(o + 0x6c, 0xc4 - 0x6c, 0);
+    mem::fill(o + th(0x6c), 0xc4 - th(0x6c), 0);
     if name != 0 {
-        w32(o + 0x7c, strdup(&sz(name)));
+        w32(o + th(0x7c), strdup(&sz(name)));
     }
-    w32(o + 0xbc, 0x200);
+    w32(o + th(0xbc), 0x200);
     w32(module_state() + 4, o);
     ts_set(|t| t.current = o);
     let (th, tid) = (k32(c, "GetCurrentThread", &[]), k32(c, "GetCurrentThreadId", &[]));
@@ -2509,7 +2543,7 @@ fn CWinApp_ctor(c: &mut Ctx) -> u32 {
     o
 }
 fn app_dtor(o: u32) {
-    for off in [0x7c, 0x8c, 0x90, 0x94] {
+    for off in [0x7c, 0x8c, 0x90, 0x94].map(th) {
         free(r32(o + off));
         w32(o + off, 0);
     }
@@ -2530,31 +2564,31 @@ fn CWinApp_dtor(c: &mut Ctx) -> u32 {
 /// CWinApp::SetCurrentHandles: the program's name, its help and profile file names
 fn set_current_handles(c: &mut Ctx, o: u32) {
     let buf = Tmp::new(520);
-    let n = k32(c, "GetModuleFileNameA", &[r32(o + 0x6c), buf.0, 260]);
+    let n = k32(c, "GetModuleFileNameA", &[r32(o + th(0x6c)), buf.0, 260]);
     let path = rd(buf.0, n);
     let stem_end = path.iter().rposition(|&b| b == b'.' as u16).unwrap_or(path.len());
     let file_start = file_start(&path);
     let exe = path[file_start..stem_end.max(file_start)].to_vec();
-    if r32(o + 0x8c) == 0 {
-        w32(o + 0x8c, strdup(&exe));
+    if r32(o + th(0x8c)) == 0 {
+        w32(o + th(0x8c), strdup(&exe));
     }
-    if r32(o + 0x7c) == 0 {
+    if r32(o + th(0x7c)) == 0 {
         let t = Tmp::new(256 * unit());
         let inst = resource_handle(c);
         let n = user(c, "LoadStringA", &[inst, 0xe000, t.0, 256]);
         let name = if n != 0 { rd(t.0, n) } else { exe.clone() };
-        w32(o + 0x7c, strdup(&name));
+        w32(o + th(0x7c), strdup(&name));
     }
-    w32(module_state() + 0x10, r32(o + 0x7c));
-    if r32(o + 0x90) == 0 {
+    w32(module_state() + 0x10, r32(o + th(0x7c)));
+    if r32(o + th(0x90)) == 0 {
         let mut h = path[..stem_end].to_vec();
         h.extend(lit(".HLP"));
-        w32(o + 0x90, strdup(&h));
+        w32(o + th(0x90), strdup(&h));
     }
-    if r32(o + 0x94) == 0 {
+    if r32(o + th(0x94)) == 0 {
         let mut p = exe;
         p.extend(lit(".INI"));
-        w32(o + 0x94, strdup(&p));
+        w32(o + th(0x94), strdup(&p));
     }
 }
 /// AfxWinInit(hInstance, hPrevInstance, lpCmdLine, nCmdShow)
@@ -2566,10 +2600,10 @@ fn win_init(c: &mut Ctx, inst: u32, prev: u32, cmd: u32, show: u32) -> u32 {
     w32(m + 0xc, inst);
     let a = app();
     if a != 0 {
-        w32(a + 0x6c, inst);
-        w32(a + 0x70, prev);
-        w32(a + 0x74, cmd);
-        w32(a + 0x78, show);
+        w32(a + th(0x6c), inst);
+        w32(a + th(0x70), prev);
+        w32(a + th(0x74), cmd);
+        w32(a + th(0x78), show);
         set_current_handles(c, a);
     }
     1
@@ -2644,12 +2678,12 @@ pub fn is_idle_message(msg: u32, pt: (u32, u32), last_pt: &mut (u32, u32), last_
 }
 fn IsIdleMessage(c: &mut Ctx) -> u32 {
     let (t, msg) = (this(c), c.a(0));
-    let mut last = (r32(t + 0x60), r32(t + 0x64));
-    let mut lm = r32(t + 0x68);
+    let mut last = (r32(t + th(0x60)), r32(t + th(0x64)));
+    let mut lm = r32(t + th(0x68));
     let r = is_idle_message(r32(msg + 4), (r32(msg + 20), r32(msg + 24)), &mut last, &mut lm);
-    w32(t + 0x60, last.0);
-    w32(t + 0x64, last.1);
-    w32(t + 0x68, lm);
+    w32(t + th(0x60), last.0);
+    w32(t + th(0x64), last.1);
+    w32(t + th(0x68), lm);
     r as u32
 }
 fn OnIdle(c: &mut Ctx) -> u32 {
@@ -2737,7 +2771,7 @@ fn end_thread(c: &mut Ctx, t: u32) {
 /// AfxBeginThread(pfnThreadProc, pParam, nPriority, nStackSize, dwCreateFlags, lpSecurityAttrs)
 fn AfxBeginThread(c: &mut Ctx) -> u32 {
     let (f, p, prio, stack, flags, sa) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
-    let t = alloc(0x6c);
+    let t = alloc(th(0x6c));
     thread_init(t, "CWinThread");
     w32(t + 0x54, f);
     w32(t + 0x50, p);
@@ -2837,12 +2871,12 @@ fn Enable3dControls(_: &mut Ctx) -> u32 {
 }
 fn GetProfileIntA(c: &mut Ctx) -> u32 {
     let (o, sec, key, def) = (this(c), c.a(0), c.a(1), c.a(2));
-    let ini = r32(o + 0x94);
+    let ini = r32(o + th(0x94));
     k32(c, "GetPrivateProfileIntA", &[sec, key, def, ini])
 }
 fn WriteProfileInt(c: &mut Ctx) -> u32 {
     let (o, sec, key, v) = (this(c), c.a(0), c.a(1), c.a(2));
-    let ini = r32(o + 0x94);
+    let ini = r32(o + th(0x94));
     let t = strdup(&lit(&(v as i32).to_string()));
     let r = k32(c, "WritePrivateProfileStringA", &[sec, key, t, ini]);
     free(t);
@@ -2851,7 +2885,7 @@ fn WriteProfileInt(c: &mut Ctx) -> u32 {
 /// CWinApp::GetProfileString(section, entry, default): a CString through the hidden argument
 fn GetProfileStringA(c: &mut Ctx) -> u32 {
     let (o, r, sec, key, def) = (this(c), c.a(0), c.a(1), c.a(2), c.a(3));
-    let ini = r32(o + 0x94);
+    let ini = r32(o + th(0x94));
     let b = Tmp::new(4096 * unit());
     let d = if def == 0 { strdup(&[]) } else { 0 };
     let n = k32(c, "GetPrivateProfileStringA", &[sec, key, if def == 0 { d } else { def }, b.0, 4096, ini]);
@@ -2862,7 +2896,7 @@ fn GetProfileStringA(c: &mut Ctx) -> u32 {
 }
 fn WriteProfileStringA(c: &mut Ctx) -> u32 {
     let (o, sec, key, v) = (this(c), c.a(0), c.a(1), c.a(2));
-    let ini = r32(o + 0x94);
+    let ini = r32(o + th(0x94));
     k32(c, "WritePrivateProfileStringA", &[sec, key, v, ini])
 }
 
@@ -3486,6 +3520,7 @@ fn table() -> Vec<(&'static str, Handler)> {
         ("?AfxBeginThread@@YGPAVCWinThread@@P6AIPAX@Z0HIKPAU_SECURITY_ATTRIBUTES@@@Z", AfxBeginThread),
         ("?AfxBeginThread@@YGPAVCWinThread@@PAUCRuntimeClass@@HIKPAU_SECURITY_ATTRIBUTES@@@Z", AfxBeginThread_class),
         ("?AfxEndThread@@YGXIH@Z", AfxEndThread),
+        ("?AfxEndThread@@YGXI@Z", AfxEndThread),
         ("?AfxHookWindowCreate@@YGXPAVCWnd@@@Z", AfxHookWindowCreate),
         ("?AfxUnhookWindowCreate@@YGHXZ", AfxUnhookWindowCreate),
         ("?AfxGetAfxWndProc@@YGP6GJPAUHWND__@@IIJ@ZXZ", AfxGetAfxWndProc),
@@ -3640,6 +3675,7 @@ fn table() -> Vec<(&'static str, Handler)> {
         ("?PreInitDialog@CDialog@@MAEXXZ", nop),
         ("?Create@CDialog@@QAEHPBDPAVCWnd@@@Z", Create_CDialog),
         ("?CreateIndirect@CDialog@@QAEHPBUDLGTEMPLATE@@PAVCWnd@@PAX@Z", CreateIndirect),
+        ("?CreateIndirect@CDialog@@QAEHPBUDLGTEMPLATE@@PAVCWnd@@@Z", CreateIndirect_40),
         ("?EndDialog@CDialog@@QAEXH@Z", EndDialog),
         ("?InitModalIndirect@CDialog@@QAEHPBUDLGTEMPLATE@@PAVCWnd@@PAX@Z", InitModalIndirect),
         // DDX
@@ -3793,9 +3829,13 @@ mod tests {
     }
     /// Runs `f` with MFC42U's (wide) or MFC42's TCHARs, back to MFC42's after
     fn with_wide<R>(w: bool, f: impl FnOnce() -> R) -> R {
-        WIDE.store(w, Ordering::Relaxed);
+        with_dll(if w { "mfc42u" } else { "mfc42" }, f)
+    }
+    /// Runs `f` on the MFC of `dll`, back to MFC42's after
+    fn with_dll<R>(dll: &str, f: impl FnOnce() -> R) -> R {
+        use_dll(dll);
         let r = f();
-        WIDE.store(false, Ordering::Relaxed);
+        use_dll("mfc42");
         r
     }
     /// The native constructor and operators of the DLL in use (PBD in MFC42, PBG in MFC42U)
@@ -3893,6 +3933,7 @@ mod tests {
 
     #[test]
     fn trim_right_keeps_double_byte_characters() {
+        let _g = enter();
         // (a Shift-JIS trail byte 0x20 isn't a space: "ー" is 81 5B, a "0x81 0x20" pair keeps)
         assert_eq!(cs::trim_right(&u(b"ab  ")), u(b"ab"));
         assert_eq!(cs::trim_right(&u(b"\x81\x20")), u(b"\x81\x20"));
@@ -4114,8 +4155,9 @@ mod tests {
     fn implemented_exports_are_in_the_spec() {
         let names: std::collections::HashSet<String> = api::spec_names("mfc42").into_iter().collect();
         let unames: std::collections::HashSet<String> = api::spec_names("mfc42u").into_iter().collect();
-        let missing: Vec<&str> = table().iter().map(|x| x.0).filter(|n| !names.contains(*n) && !unames.contains(*n)).collect();
-        assert!(missing.is_empty(), "not mfc42 / mfc42u exports: {missing:?}");
+        let names40: std::collections::HashSet<String> = api::spec_names("mfc40").into_iter().collect();
+        let missing: Vec<&str> = table().iter().map(|x| x.0).filter(|n| !names.contains(*n) && !unames.contains(*n) && !names40.contains(*n)).collect();
+        assert!(missing.is_empty(), "not mfc42 / mfc42u / mfc40 exports: {missing:?}");
         // MFC42U has (under its own names) everything MFC42's table does
         let regs = registrations();
         let u: std::collections::HashSet<&str> = regs.iter().filter(|r| r.0 == "mfc42u").map(|r| r.1.as_str()).collect();
@@ -4152,5 +4194,37 @@ mod tests {
         assert_eq!(d[51], "?OnOK@CDialog@@MAEXXZ");
         assert_eq!(slots("CWinApp")[37], "?DoMessageBox@CWinApp@@UAEHPBDII@Z");
         assert_eq!(slots("CWinApp")[25], "?PumpMessage@CWinThread@@UAEHXZ");
+    }
+
+    /// MFC 4.0 (mfc40.dll 4.1.6140's vtables, read from its constructors): no GetCommandMap,
+    /// so every CCmdTarget class's later slots are one lower; CWinThread's fields after +0x54
+    /// and CWinApp's 8 lower; the exports this table names there are its own or MFC 4.2's
+    #[test]
+    fn mfc40_layouts() {
+        let _g = enter();
+        with_dll("mfc40", || {
+            let names: std::collections::HashSet<String> = api::spec_names("mfc40").into_iter().chain(api::spec_names("mfc42")).collect();
+            for (class, want) in [("CCmdTarget", 21), ("CWinThread", 32), ("CWinApp", 40), ("CWnd", 47), ("CDialog", 53), ("CFile", 22), ("CException", 7)] {
+                let s = slots(class);
+                assert_eq!(s.len(), want, "{class}");
+                let bad: Vec<&&str> = s.iter().filter(|n| !(n.is_empty() || n.starts_with('~') || n.starts_with('-') || names.contains(**n))).collect();
+                assert!(bad.is_empty(), "{class}: {bad:?}");
+            }
+            let (app, dlg, wnd) = (slots("CWinApp"), slots("CDialog"), slots("CWnd"));
+            assert_eq!(app[21], "?InitInstance@CWinThread@@UAEHXZ");
+            assert_eq!(app[34], "?InitApplication@CWinApp@@UAEHXZ");
+            assert_eq!(app[36], "?DoMessageBox@CWinApp@@UAEHPBDII@Z");
+            assert_eq!(wnd[39], "?WindowProc@CWnd@@MAEJIIJ@Z");
+            assert_eq!(wnd[41], "?DefWindowProcA@CWnd@@MAEJIIJ@Z");
+            assert_eq!(dlg[47], "?DoModal@CDialog@@UAEHXZ");
+            assert_eq!(dlg[50], "?OnOK@CDialog@@MAEXXZ");
+            // (what `vcall`'s MFC 4.2 numbers come to)
+            let o = alloc(0x60);
+            w32(o, vtable("CDialog"));
+            assert_eq!(api::name_of(r32(r32(o) + 4 * 47)).unwrap(), "mfc40!?DoModal@CDialog@@UAEHXZ");
+            free(o);
+            assert_eq!((th(0x54), th(0x60), th(0x6c), th(0x7c), th(0xbc)), (0x54, 0x58, 0x64, 0x74, 0xb4));
+        });
+        assert_eq!(th(0x7c), 0x7c);
     }
 }
