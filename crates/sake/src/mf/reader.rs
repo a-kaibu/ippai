@@ -7,7 +7,8 @@
 //! MFCreateWaveFormatExFromMFMediaType, MFInitMediaTypeFromWaveFormatEx), samples and memory
 //! buffers (MFCreateSample, MFCreateMemoryBuffer).
 //!
-//! Synchronous only (a reader with MF_SOURCE_READER_ASYNC_CALLBACK is refused), no video, no
+//! Synchronous or asynchronous (MF_SOURCE_READER_ASYNC_CALLBACK: the reads answered in order by
+//! a worker thread of the reader's on the callback; Windows': tests/winref/probes/mfasync.c), no video, no
 //! resampling: a current type of another rate or channel count is refused (MF_E_INVALIDMEDIATYPE).
 //! Windows' answers: tests/winref/probes/mfreader.c.
 
@@ -491,6 +492,19 @@ struct Reader {
     stream: Arc<Mutex<Stream>>,
     selected: bool,
     current: u32,
+    /// asynchronous mode: the program's IMFSourceReaderCallback (a reference of the reader's)
+    callback: u32,
+    /// its requests not yet answered, in order; whether a worker thread answers them now
+    queue: std::collections::VecDeque<Req>,
+    busy: bool,
+    /// requests taken by the worker whose callback has not returned yet
+    taken: u32,
+}
+/// An asynchronous request: a ReadSample (stream, flags), a Flush (stream).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Req {
+    Read(u32),
+    Flush(u32),
 }
 static READERS: Mutex<Option<HashMap<u32, Reader>>> = Mutex::new(None);
 
@@ -1101,6 +1115,7 @@ fn sr_release(c: &mut Ctx) -> u32 {
         let gone = READERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&this);
         if let Some(r) = gone {
             release(c, r.current);
+            release(c, r.callback);
             mem::heap_free(this);
         }
     }
@@ -1200,6 +1215,10 @@ fn sr_seek(c: &mut Ctx) -> u32 {
         return E_INVALIDARG;
     }
     let t = mem::r64(p + 8) as i64;
+    // (asynchronous: not while reads are pending)
+    if reader(c.a(0), |r| pending(r)).unwrap_or(false) {
+        return MF_E_INVALIDREQUEST;
+    }
     let Some(s) = reader(c.a(0), |r| r.stream.clone()) else { return E_INVALIDARG };
     s.lock().unwrap_or_else(|e| e.into_inner()).seek(t.max(0) as u64);
     0
@@ -1208,6 +1227,20 @@ fn sr_seek(c: &mut Ctx) -> u32 {
 /// IMFSample **)
 fn sr_read(c: &mut Ctx) -> u32 {
     let (this, i, actual, sflags, time, out) = (c.a(0), c.a(1), c.a(3), c.a(4), c.a(5), c.a(6));
+    if reader(this, |r| r.callback != 0).unwrap_or(false) {
+        // asynchronous: none of the out pointers, the answer goes to OnReadSample
+        if actual != 0 || sflags != 0 || time != 0 || out != 0 {
+            return E_INVALIDARG;
+        }
+        if !ours(i) && i != ALL_STREAMS {
+            return MF_E_INVALIDSTREAMNUMBER;
+        }
+        if !reader(this, |r| r.selected).unwrap_or(false) {
+            return MF_E_INVALIDREQUEST;
+        }
+        request(this, Req::Read(i));
+        return 0;
+    }
     if out == 0 || sflags == 0 {
         // (synchronous mode: both are needed)
         return E_POINTER;
@@ -1216,38 +1249,113 @@ fn sr_read(c: &mut Ctx) -> u32 {
     if !ours(i) && i != ALL_STREAMS {
         return MF_E_INVALIDSTREAMNUMBER;
     }
-    let Some((s, on)) = reader(this, |r| (r.stream.clone(), r.selected)) else { return E_INVALIDARG };
     if actual != 0 {
         w32(actual, 0);
     }
+    let (hr, flags, t, sample) = read_one(this);
+    w32(sflags, flags);
+    if time != 0 && hr == 0 {
+        w64(time, t);
+    }
+    putp(out, sample);
+    hr
+}
+
+/// The next sample of reader `this`: (HRESULT, stream flags, its time, the sample or 0).
+fn read_one(this: u32) -> (u32, u32, u64, u32) {
+    let Some((s, on)) = reader(this, |r| (r.stream.clone(), r.selected)) else { return (E_INVALIDARG, 0, 0, 0) };
     if !on {
-        return MF_E_INVALIDREQUEST;
+        return (MF_E_INVALIDREQUEST, 0, 0, 0);
     }
     let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
     let got = st.read();
     let end_time = st.duration();
     drop(st);
     match got {
-        Ok(Some(p)) => {
-            w32(sflags, 0);
-            if time != 0 {
-                w64(time, p.time);
-            }
-            putp(out, new_sample(Some(p.time), Some(p.dur), Some(&p.bytes)));
-            0
-        }
-        Ok(None) => {
-            w32(sflags, ENDOFSTREAM);
-            if time != 0 {
-                w64(time, end_time);
-            }
-            0
-        }
-        Err(e) => {
-            w32(sflags, 1); // MF_SOURCE_READERF_ERROR
-            e
-        }
+        Ok(Some(p)) => (0, 0, p.time, new_sample(Some(p.time), Some(p.dur), Some(&p.bytes))),
+        Ok(None) => (0, ENDOFSTREAM, end_time, 0),
+        // MF_SOURCE_READERF_ERROR
+        Err(e) => (e, 1, 0, 0),
     }
+}
+
+/// Whether reader `r` has asynchronous requests not answered yet.
+fn pending(r: &Reader) -> bool {
+    r.queue.iter().any(|q| matches!(q, Req::Read(_))) || r.taken > 0
+}
+
+/// Queues an asynchronous request of reader `this`, starting its worker if none runs. A Flush
+/// drops the reads queued before it (they are not answered).
+fn request(this: u32, q: Req) {
+    if reader(this, |r| enqueue(r, q)).unwrap_or(false) {
+        static ENTRY: OnceLock<u32> = OnceLock::new();
+        let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mf_reader_worker", worker, 4));
+        let h = crate::obj::new_thread_obj(0);
+        crate::spawn_gated(entry, this, 0x10000, h, false);
+    }
+}
+
+/// Queues `q` on `r`; whether a worker is to start (none runs).
+fn enqueue(r: &mut Reader, q: Req) -> bool {
+    if let Req::Flush(_) = q {
+        r.queue.retain(|x| !matches!(x, Req::Read(_)));
+    }
+    r.queue.push_back(q);
+    !std::mem::replace(&mut r.busy, true)
+}
+/// The next request of `r` for its worker (counted as taken), or None: the worker ends.
+fn take(r: &mut Reader) -> Option<Req> {
+    let q = r.queue.pop_front();
+    match q {
+        Some(_) => r.taken += 1,
+        None => r.busy = false,
+    }
+    q
+}
+fn next_request(b: u32) -> Option<(Req, u32)> {
+    reader(b, |r| take(r).map(|q| (q, r.callback))).flatten()
+}
+
+/// A reader's worker thread: answers its requests in order on the callback
+/// (OnReadSample(hr, stream, flags, LONGLONG time, sample), OnFlush(stream)), then ends.
+fn worker(c: &mut Ctx) -> u32 {
+    let b = c.a(0);
+    while let Some((q, cb)) = next_request(b) {
+        // (the callback holds a reference of its own while it is called: the program may
+        // release the reader in it)
+        add_ref(c, cb);
+        match q {
+            Req::Read(_) => {
+                let (hr, flags, t, sample) = read_one(b);
+                let f = mem::rp(mem::rp(cb) + ps() * 3);
+                if mem::x64() {
+                    crate::call64(c.cpu, mem::widen(f), &[mem::widen(cb), hr as u64, 0, flags as u64, t, sample as u64]);
+                } else {
+                    c.call(f, &[cb, hr, 0, flags, t as u32, (t >> 32) as u32, sample]);
+                }
+                release(c, sample);
+            }
+            Req::Flush(i) => {
+                com(c, cb, 4, &[i]);
+            }
+        }
+        release(c, cb);
+        reader(b, |r| r.taken = r.taken.saturating_sub(1));
+        crate::snap::point();
+    }
+    0
+}
+
+/// Flush(DWORD stream): asynchronous, the reads not answered yet are dropped and OnFlush told.
+fn sr_flush(c: &mut Ctx) -> u32 {
+    let (this, i) = (c.a(0), c.a(1));
+    if !ours(i) && i != ALL_STREAMS {
+        return MF_E_INVALIDSTREAMNUMBER;
+    }
+    if reader(this, |r| r.callback != 0).unwrap_or(false) {
+        request(this, Req::Flush(i));
+    }
+    0
 }
 /// GetPresentationAttribute(DWORD stream, REFGUID, PROPVARIANT *)
 fn sr_presentation(c: &mut Ctx) -> u32 {
@@ -1290,7 +1398,7 @@ fn reader_vtable() -> u32 {
                 (sr_set_current, 16),
                 (sr_seek, 12),
                 (sr_read, 28),
-                (ok, 8), // Flush
+                (sr_flush, 8),
                 (|_| MF_E_UNSUPPORTED_SERVICE, 20),
                 (sr_presentation, 16),
             ],
@@ -1300,10 +1408,10 @@ fn reader_vtable() -> u32 {
 
 /// A reader of the sound file whose bytes are `data`.
 fn new_reader(c: &mut Ctx, attributes: u32, data: Vec<u8>, out: u32) -> u32 {
-    if attributes != 0 && store_of(attributes).is_some_and(|s| s.get(&k_async()).is_some()) {
-        eprintln!("sake: mf reader: asynchronous mode is not there");
-        return E_NOTIMPL;
-    }
+    let callback = match store_of(attributes).and_then(|s| s.get(&k_async()).cloned()) {
+        Some(Val::Unk(u)) => u,
+        _ => 0,
+    };
     let Some(track) = audiofile::open(&data) else { return MF_E_UNSUPPORTED_BYTESTREAM_TYPE };
     let native = native_type(&track);
     let stream = Stream::new(track, Arc::new(data));
@@ -1316,9 +1424,13 @@ fn new_reader(c: &mut Ctx, attributes: u32, data: Vec<u8>, out: u32) -> u32 {
             stream: Arc::new(Mutex::new(stream)),
             selected: true,
             current,
+            callback,
+            queue: Default::default(),
+            busy: false,
+            taken: 0,
         },
     );
-    let _ = c;
+    add_ref(c, callback);
     putp(out, b);
     0
 }
@@ -1670,5 +1782,86 @@ mod tests {
         assert_eq!(file_url_path("file:///C:/Game/bgm%2001.mp3"), "C:\\Game\\bgm 01.mp3");
         assert_eq!(file_url_path("bgm\\a.m4a"), "bgm\\a.m4a");
         assert_eq!(file_url_path("file:///C:/x%2"), "C:\\x%2");
+    }
+
+    fn async_reader() -> Reader {
+        let (t, d) = pcm_track(100, 1);
+        Reader {
+            refs: 1,
+            stream: Arc::new(Mutex::new(Stream::new(t, d))),
+            selected: true,
+            current: 0,
+            callback: 1,
+            queue: Default::default(),
+            busy: false,
+            taken: 0,
+        }
+    }
+
+    /// The asynchronous queue: one worker at a time, requests answered in order, a Flush drops
+    /// the reads queued before it (not those after), a seek refused while a read is pending.
+    #[test]
+    fn async_requests_in_order() {
+        let mut r = async_reader();
+        assert!(enqueue(&mut r, Req::Read(0)));
+        assert!(!enqueue(&mut r, Req::Read(0)));
+        assert!(pending(&r));
+        assert_eq!(take(&mut r), Some(Req::Read(0)));
+        assert!(!enqueue(&mut r, Req::Flush(0)));
+        assert!(!enqueue(&mut r, Req::Read(0)));
+        assert_eq!(r.queue, [Req::Flush(0), Req::Read(0)]);
+        r.taken -= 1;
+        assert_eq!(take(&mut r), Some(Req::Flush(0)));
+        r.taken -= 1;
+        assert_eq!(take(&mut r), Some(Req::Read(0)));
+        r.taken -= 1;
+        assert!(!pending(&r));
+        assert_eq!(take(&mut r), None);
+        assert!(!r.busy);
+        assert!(enqueue(&mut r, Req::Read(0)));
+    }
+
+    proptest::proptest! {
+        /// Against a model: any interleaving of requests and the worker's steps answers what
+        /// the model does, in its order, and the worker ends only with nothing queued.
+        #[test]
+        fn async_queue_is_its_model(ops in proptest::collection::vec(0u8..4, 0..60)) {
+            let mut r = async_reader();
+            let (mut model, mut answered) = (std::collections::VecDeque::new(), vec![]);
+            let mut running = false;
+            let mut n = 0u32;
+            for op in ops {
+                match op {
+                    0 | 1 => {
+                        let q = if op == 0 { n += 1; Req::Read(n) } else { Req::Flush(0) };
+                        if q == Req::Flush(0) {
+                            model.retain(|x| !matches!(x, Req::Read(_)));
+                        }
+                        model.push_back(q);
+                        let start = enqueue(&mut r, q);
+                        proptest::prop_assert_eq!(start, !running);
+                        running = true;
+                    }
+                    _ if running => {
+                        let got = take(&mut r);
+                        let m = model.pop_front();
+                        proptest::prop_assert_eq!(got, m);
+                        match got {
+                            Some(q) => {
+                                answered.push(q);
+                                r.taken -= 1;
+                            }
+                            None => running = false,
+                        }
+                        proptest::prop_assert_eq!(r.busy, running);
+                    }
+                    _ => {}
+                }
+                proptest::prop_assert_eq!(pending(&r), model.iter().any(|q| matches!(q, Req::Read(_))));
+            }
+            // reads answered in the order they were made
+            let reads: Vec<u32> = answered.iter().filter_map(|q| if let Req::Read(k) = q { Some(*k) } else { None }).collect();
+            proptest::prop_assert!(reads.windows(2).all(|w| w[0] < w[1]));
+        }
     }
 }
