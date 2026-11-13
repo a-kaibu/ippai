@@ -876,11 +876,9 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     let mut flags;
     let edit = with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit")));
     if edit {
-        // a white box, the text left and centred vertically
         fill(full, 0xffffff);
         frame(full, 0x7a7a7a);
-        tr.l = 4;
-        flags = 0x4 | 0x20;
+        (tr, flags) = edit_text_box(style, w, hh);
     } else if !button {
         if style & 0x1000 != 0 {
             // SS_SUNKEN: a one-pixel sunken edge (WS_EX_STATICEDGE)
@@ -936,6 +934,24 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     crate::gdi::draw_text(dc, &text, rc, flags);
     gcall(c, "user32", "EndPaint", &[h, ps]);
     mem::heap_free(ps);
+}
+
+/// Where an edit control's text goes and the DrawText flags for it. Never a prefix (an edit
+/// shows its "&" as typed). One line (the default) is centred vertically; ES_MULTILINE (4) starts
+/// at the top and breaks at its CRLFs and at the right edge (YU-RIS's error dialog, a read-only
+/// multiline edit, showed all its lines run together in one centred line). ES_CENTER (1) and
+/// ES_RIGHT (2) align each line.
+fn edit_text_box(style: u32, w: i32, hh: i32) -> (Rect, u32) {
+    let align = match style & 3 {
+        1 => 0x1,
+        2 => 0x2,
+        _ => 0,
+    };
+    if style & 4 != 0 {
+        (Rect { l: 4, t: 2, r: w - 4, b: hh - 2 }, align | 0x10 | 0x800 | 0x2000)
+    } else {
+        (Rect { l: 4, t: 0, r: w - 4, b: hh }, align | 0x4 | 0x20 | 0x800)
+    }
 }
 
 fn ctl_click(c: &mut Ctx, h: u32) {
@@ -7382,6 +7398,42 @@ mod menu_template_tests {
                 cur = items[0].sub;
                 depth += 1;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod edit_text_tests {
+    use super::edit_text_box;
+    use proptest::prelude::*;
+
+    /// YU-RIS's error dialog: a read-only multiline edit (0x50a01804) with several CRLF lines
+    /// drew them all on one line, centred vertically. Multiline starts at the top and breaks;
+    /// one line stays centred.
+    #[test]
+    fn multiline_edits_break_from_the_top() {
+        let (r, f) = edit_text_box(0x50a0_1804, 300, 120);
+        assert_eq!((r.l, r.t, r.r, r.b), (4, 2, 296, 118));
+        assert_eq!(f & 0x20, 0, "not DT_SINGLELINE");
+        assert_ne!(f & 0x10, 0, "DT_WORDBREAK");
+        assert_eq!(f & 0x4, 0, "not DT_VCENTER");
+        let (r, f) = edit_text_box(0x5081_0080, 300, 24);
+        assert_eq!((r.l, r.t, r.r, r.b), (4, 0, 296, 24));
+        assert_eq!(f & (0x20 | 0x4), 0x20 | 0x4);
+    }
+
+    proptest! {
+        /// Any style: never a prefix, the alignment from ES_CENTER/ES_RIGHT, single-line
+        /// exactly when ES_MULTILINE is clear, and the text box inside the control.
+        #[test]
+        fn edit_layout_follows_the_style(style in any::<u32>(), w in 0i32..4000, h in 0i32..4000) {
+            let (r, f) = edit_text_box(style, w, h);
+            prop_assert_ne!(f & 0x800, 0);
+            prop_assert_eq!(f & 3, match style & 3 { 1 => 1, 2 => 2, _ => 0 });
+            prop_assert_eq!(f & 0x20 != 0, style & 4 == 0);
+            prop_assert_eq!(f & 0x10 != 0, style & 4 != 0);
+            prop_assert!(r.l >= 0 && r.t >= 0 && r.r <= w.max(r.l) + 4 && r.b <= h);
+            prop_assert_eq!((r.l, r.r), (4, w - 4));
         }
     }
 }
