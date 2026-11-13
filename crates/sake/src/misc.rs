@@ -1315,6 +1315,10 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
     if let Some(hr) = crate::vmr9::create_instance(c, clsid, c.a(1), iid, out) {
         return hr;
     }
+    // (DirectMusic refuses an outer object)
+    if let Some(hr) = crate::dmusic::create_instance(clsid, c.a(1), iid, out) {
+        return hr;
+    }
     let hr = create_object(c, clsid, iid, out);
     if hr == 0x8004_0154 {
         let (context, outer) = (c.a(2), c.a(1));
@@ -1358,6 +1362,9 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
     if let Some(obj) = crate::dshow::create_instance(clsid, iid) {
         mem::putp(out, obj);
         return 0;
+    }
+    if let Some(hr) = crate::dmusic::create_instance(clsid, 0, iid, out) {
+        return hr;
     }
     if let Some(obj) = crate::dinput::create_instance(clsid) {
         mem::putp(out, obj);

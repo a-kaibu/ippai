@@ -1,0 +1,12 @@
+GetDXVersion: 800
+CoCreateInstance(IDirectMusic): ok
+QueryInterface(IUnknown): S_OK, same object
+QueryInterface(IDirectMusic2): S_OK, same object
+QueryInterface(IDirectMusic8): S_OK, same object
+QueryInterface(IClassFactory): E_NOINTERFACE, null
+QueryInterface(IDirectSound): E_NOINTERFACE, null
+QueryInterface(IDirectDraw): E_NOINTERFACE, null
+AddRef 2, Release 1
+last Release: 0
+aggregated: CLASS_E_NOAGGREGATION, null
+CoCreateInstance(IDirectSound): E_NOINTERFACE, null

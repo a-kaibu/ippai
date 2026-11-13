@@ -34,7 +34,7 @@ for src in "$HERE"/probes/*.c; do
 done
 # host/tests checks that print results (tests/host-tests.sh compares them with expected/*.txt;
 # here they are compared with Windows' own output)
-for t in nullcall intops simd atomics smc cmp64 ssecvt textbounds crtstdio fileseek crtfiles struct64 srwlock jitcode sendrace mbshort makepath netbios mbtokens mbsecure recalloc msgwaitstart dialogtab passwordchar winineturl wininetquery aclentries dlgenter dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder; do
+for t in nullcall dxversion intops simd atomics smc cmp64 ssecvt textbounds crtstdio fileseek crtfiles struct64 srwlock jitcode sendrace mbshort makepath netbios mbtokens mbsecure recalloc msgwaitstart dialogtab passwordchar winineturl wininetquery aclentries dlgenter dlgthread editnotify shfileinfo deleteonclose bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder; do
   src=$ROOT/host/tests/$t.c
   l=$(libs "$src")
   fpu=$HERE/fpu53.c
