@@ -285,6 +285,44 @@ fn D3DXVec2TransformCoord(c: &mut Ctx) -> u32 {
     wv(c.a(0), &coord([v[0], v[1], 0.0], &rm(c.a(2)))[..2]);
     c.a(0)
 }
+/// The D3DXVec*Transform*Array forms (out, out stride, in, in stride, matrix, n): `f` maps one
+/// N-float input to the output floats, written at each output stride (bytes between them
+/// untouched, as d3dx9); returns out.
+fn transform_array<const N: usize>(c: &mut Ctx, f: impl Fn([f32; N], &M) -> Vec<f32>) -> u32 {
+    let (out, os, inp, is, n) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(5));
+    let m = rm(c.a(4));
+    for i in 0..n {
+        let v: [f32; N] = rv(inp.wrapping_add(i.wrapping_mul(is)));
+        wv(out.wrapping_add(i.wrapping_mul(os)), &f(v, &m));
+    }
+    out
+}
+fn D3DXVec3TransformCoordArray(c: &mut Ctx) -> u32 {
+    transform_array::<3>(c, |v, m| coord(v, m).to_vec())
+}
+fn D3DXVec3TransformNormalArray(c: &mut Ctx) -> u32 {
+    transform_array::<3>(c, |v, m| transform4([v[0], v[1], v[2], 0.0], m)[..3].to_vec())
+}
+fn D3DXVec3TransformArray(c: &mut Ctx) -> u32 {
+    transform_array::<3>(c, |v, m| transform4([v[0], v[1], v[2], 1.0], m).to_vec())
+}
+fn D3DXVec2TransformCoordArray(c: &mut Ctx) -> u32 {
+    transform_array::<2>(c, |v, m| coord([v[0], v[1], 0.0], m)[..2].to_vec())
+}
+fn D3DXVec2TransformNormal(c: &mut Ctx) -> u32 {
+    let v: [f32; 2] = rv(c.a(1));
+    wv(c.a(0), &transform4([v[0], v[1], 0.0, 0.0], &rm(c.a(2)))[..2]);
+    c.a(0)
+}
+fn D3DXVec2TransformNormalArray(c: &mut Ctx) -> u32 {
+    transform_array::<2>(c, |v, m| transform4([v[0], v[1], 0.0, 0.0], m)[..2].to_vec())
+}
+fn D3DXVec2TransformArray(c: &mut Ctx) -> u32 {
+    transform_array::<2>(c, |v, m| transform4([v[0], v[1], 0.0, 1.0], m).to_vec())
+}
+fn D3DXVec4TransformArray(c: &mut Ctx) -> u32 {
+    transform_array::<4>(c, |v, m| transform4(v, m).to_vec())
+}
 fn world_view_proj(proj: u32, view: u32, world: u32) -> M {
     let mut m = ID;
     for p in [world, view, proj] {
@@ -484,6 +522,34 @@ fn D3DXCreateEffectFromFileExA(c: &mut Ctx) -> u32 {
 }
 fn D3DXCreateEffectFromFileExW(c: &mut Ctx) -> u32 {
     effect_file(c, true, true)
+}
+
+/// D3DXCreateEffectFromResource{A,W}(device, module, resource, defines, include, flags, pool,
+/// effect, errors) and the Ex forms (.., include, skip, flags, pool, effect, errors): the
+/// RT_RCDATA resource of that name in the module (0: the exe), as d3dx9 looks it up
+fn effect_resource(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
+    let (flags, out, errs) = if ex { (c.a(6), c.a(8), c.a(9)) } else { (c.a(5), c.a(7), c.a(8)) };
+    let module = if c.a(1) == 0 { crate::k32::module_handle(0, false) } else { c.a(1) };
+    let name = crate::pe::ResId::from_arg(c.a(2), wide);
+    let Some(e) = crate::pe::find_resource(module, &crate::pe::ResId::Int(10), &name) else {
+        mem::putp(out, 0);
+        return 0x8876_086c; // D3DERR_INVALIDCALL
+    };
+    let data = mem::slice(module.wrapping_add(r32(e)), r32(e + 4)).to_vec();
+    let (dev, defs, inc) = (c.a(0), c.a(3), c.a(4));
+    effect_from(c, dev, &data, "", defs, inc, flags, out, errs)
+}
+fn D3DXCreateEffectFromResourceA(c: &mut Ctx) -> u32 {
+    effect_resource(c, false, false)
+}
+fn D3DXCreateEffectFromResourceW(c: &mut Ctx) -> u32 {
+    effect_resource(c, true, false)
+}
+fn D3DXCreateEffectFromResourceExA(c: &mut Ctx) -> u32 {
+    effect_resource(c, false, true)
+}
+fn D3DXCreateEffectFromResourceExW(c: &mut Ctx) -> u32 {
+    effect_resource(c, true, true)
 }
 
 // ---- ID3DXMatrixStack: the top at object + 16 (GetTop's pointer), the rest here ----
@@ -1052,6 +1118,18 @@ pub fn init() {
         ("D3DXVec3TransformCoord", D3DXVec3TransformCoord),
         ("D3DXVec3TransformNormal", D3DXVec3TransformNormal),
         ("D3DXVec4Transform", D3DXVec4Transform),
+        ("D3DXVec3TransformCoordArray", D3DXVec3TransformCoordArray),
+        ("D3DXVec3TransformNormalArray", D3DXVec3TransformNormalArray),
+        ("D3DXVec3TransformArray", D3DXVec3TransformArray),
+        ("D3DXVec2TransformCoordArray", D3DXVec2TransformCoordArray),
+        ("D3DXVec2TransformNormal", D3DXVec2TransformNormal),
+        ("D3DXVec2TransformNormalArray", D3DXVec2TransformNormalArray),
+        ("D3DXVec2TransformArray", D3DXVec2TransformArray),
+        ("D3DXVec4TransformArray", D3DXVec4TransformArray),
+        ("D3DXCreateEffectFromResourceA", D3DXCreateEffectFromResourceA),
+        ("D3DXCreateEffectFromResourceW", D3DXCreateEffectFromResourceW),
+        ("D3DXCreateEffectFromResourceExA", D3DXCreateEffectFromResourceExA),
+        ("D3DXCreateEffectFromResourceExW", D3DXCreateEffectFromResourceExW),
         ("D3DXVec3Project", D3DXVec3Project),
         ("D3DXVec3Unproject", D3DXVec3Unproject),
         ("D3DXVec3Length", D3DXVec3Length),
@@ -1105,5 +1183,80 @@ mod save_tests {
         assert_eq!(widen_bgra(&[0x00, 0xf8], 23), [0, 0, 255, 255]);
         assert_eq!(widen_bgra(&[0x00, 0x00], 25), [0, 0, 0, 0]);
         assert_eq!(widen_bgra(&[0x1f, 0x80], 25), [255, 0, 0, 255]);
+    }
+}
+
+#[cfg(test)]
+mod array_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    fn put(p: u32, v: &[f32]) {
+        for (i, x) in v.iter().enumerate() {
+            w32(p + 4 * i as u32, x.to_bits());
+        }
+    }
+    fn get(p: u32, n: usize) -> Vec<u32> {
+        (0..n as u32).map(|i| r32(p + 4 * i)).collect()
+    }
+
+    /// (array handler, single handler, input floats, output floats)
+    const FORMS: &[(Handler, Handler, usize, usize)] = &[
+        (D3DXVec3TransformCoordArray, D3DXVec3TransformCoord, 3, 3),
+        (D3DXVec3TransformNormalArray, D3DXVec3TransformNormal, 3, 3),
+        (D3DXVec3TransformArray, D3DXVec3Transform, 3, 4),
+        (D3DXVec2TransformCoordArray, D3DXVec2TransformCoord, 2, 2),
+        (D3DXVec2TransformNormalArray, D3DXVec2TransformNormal, 2, 2),
+        (D3DXVec2TransformArray, D3DXVec2Transform, 2, 4),
+        (D3DXVec4TransformArray, D3DXVec4Transform, 4, 4),
+    ];
+
+    proptest! {
+        /// each *Array form gives, element by element, the bits of its single-vector form, writes
+        /// only its output floats at each stride (gap bytes keep their contents) and returns out
+        #[test]
+        fn arrays_match_single(form in 0..FORMS.len(), n in 0u32..6, in_gap in 0u32..3, out_gap in 0u32..3,
+                               m in prop::array::uniform16(-8.0f32..8.0), vals in prop::collection::vec(-100.0f32..100.0, 24)) {
+            let _g = enter();
+            let (arr, one, ni, no) = FORMS[form];
+            let (is, os) = (4 * (ni as u32 + in_gap), 4 * (no as u32 + out_gap));
+            let (mp, ip, op) = (mem::heap_alloc(64, true), mem::heap_alloc(is * 6 + 16, true), mem::heap_alloc(os * 6 + 16, true));
+            let (single_in, single_out) = (mem::heap_alloc(16, true), mem::heap_alloc(16, true));
+            put(mp, &m);
+            for i in 0..n {
+                put(ip + i * is, &vals[4 * i as usize..4 * i as usize + ni]);
+            }
+            for k in 0..(os * 6 + 16) / 4 { w32(op + 4 * k, 0xdead_0000 | k); }
+            prop_assert_eq!(call(arr, &[op, os, ip, is, mp, n]), op);
+            for i in 0..n {
+                w32(single_in, 0); w32(single_in + 4, 0); w32(single_in + 8, 0); w32(single_in + 12, 0);
+                put(single_in, &vals[4 * i as usize..4 * i as usize + ni]);
+                prop_assert_eq!(call(one, &[single_out, single_in, mp]), single_out);
+                prop_assert_eq!(get(op + i * os, no), get(single_out, no));
+                for k in no as u32..os / 4 {
+                    prop_assert_eq!(r32(op + i * os + 4 * k), 0xdead_0000 | (i * os / 4 + k));
+                }
+            }
+            for k in (n * os) / 4..(os * 6 + 16) / 4 {
+                prop_assert_eq!(r32(op + 4 * k), 0xdead_0000 | k);
+            }
+            for p in [mp, ip, op, single_in, single_out] { mem::heap_free(p); }
+        }
+    }
+
+    /// a module without that RT_RCDATA resource: D3DERR_INVALIDCALL and no effect
+    #[test]
+    fn effect_resource_missing() {
+        let _g = enter();
+        let out = mem::heap_alloc(4, true);
+        let name = mem::heap_alloc(8, true);
+        for (i, b) in b"FX\0".iter().enumerate() { mem::w8(name + i as u32, *b); }
+        w32(out, 0x1234);
+        // (a module handle nothing is loaded at)
+        assert_eq!(call(D3DXCreateEffectFromResourceA, &[0, 0x6000_0000, name, 0, 0, 0, 0, out, 0]), 0x8876_086c);
+        assert_eq!(r32(out), 0);
+        mem::heap_free(out);
+        mem::heap_free(name);
     }
 }
