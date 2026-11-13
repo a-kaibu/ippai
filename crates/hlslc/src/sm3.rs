@@ -275,6 +275,10 @@ impl Gen<'_> {
         Ok(())
     }
 
+    /// r31 for every target, ps_2_0 / vs_2_0 too (whose D3D9 limit is 12): the bound is what the
+    /// bytecode and sake's translator (dxwgsl) can address. This allocator needs more temporaries
+    /// than fxc for the same shader (tests::sm3's vs_2_0 uses r12), so the runtime's limit would
+    /// refuse shaders fxc compiles; sake's D3D9 runs them, so staying lenient loses nothing.
     fn check_temp(n: u32) -> Result<(), String> {
         if n >= 32 {
             Err(format!("shader model 2/3 temporary register r{n} exceeds r31"))
