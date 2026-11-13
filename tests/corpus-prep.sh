@@ -61,7 +61,10 @@ if [ ! -d x ]; then
          (LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 unar -q -e cp932 -o . "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
-         (LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ])) ;;
+         (LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+         # an installer nothing here unpacks (michishio_trial_taming2_install.exe: Gentee
+         # CreateInstall): the exe itself, under its own name, run in sake as on Windows
+         { find . -mindepth 1 -delete; n=${url##*/}; n=${n%%\?*}; cp "../$f" "./${n:-setup.exe}"; }) ;;
   esac
   # Shift-JIS names split at a 0x5C trail byte (7-Zip on LZH self-extractors: 十 = 8F 5C) joined again
   python3 -I "$HERE/sjis-rejoin.py" x.part >/dev/null 2>&1 || true
@@ -127,6 +130,8 @@ else
         k=$(sed -E 's#[^/]*\.(exe|msi|zip|lzh|rar|7z)\.(is|inno|zip|x)/##Ig' <<< "$p")
         grep -qaiE 'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' <<< "$k" || printf '%s\t%s\n' "$n" "$p"
       done | sort -rn | head -1 | cut -f2)
+  # (nothing but installers and tools: the biggest of them, an installer sake runs itself)
+  [ -n "$e" ] || e=$(find . -iname '*.exe' -printf '%s\t%P\n' | sort -rn | head -1 | cut -f2)
 fi
 [ -n "$e" ] || { echo "no exe" >&2; exit 3; }
 # launchers that start the game as a second process: run the game exe itself (vnvm's processes

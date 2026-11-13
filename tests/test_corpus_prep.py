@@ -12,6 +12,8 @@
 - installers inside installers (kagura_r_trial010a.exe: a self-extracting zip of an installer):
   unpacked round after round.
 - the split Shift-JIS name through corpus-prep.sh end to end.
+- an installer no extractor knows (Gentee CreateInstall) kept and run as it is, and an archive
+  with only setup programs in it giving the biggest of them rather than "no exe".
 
     python3 tests/test_corpus_prep.py [SEED] [CASES]
 """
@@ -203,6 +205,16 @@ def e2e(t):
     zipof(outer, {b'outer.exe': open(zo, 'rb').read()})
     rc, exe, x = prep(t, 'nested', outer, 'zip')
     ok &= check('nested self-extractors', (rc, exe), (0, 'outer.exe.zip/inner.exe.zip/game/game.exe'))
+    # an installer exe none of the extractors knows (michishio_trial_taming2_install.exe, Gentee
+    # CreateInstall: "exit 10" from the last extractor tried): kept as it is, under its own name,
+    # and chosen although its name says install (sake runs the installer)
+    gentee = os.path.join(t, 'gentee.exe')
+    open(gentee, 'wb').write(MZ * 8 + b'.gentee\0' + bytes(range(256)) * 64)
+    ok &= check('installer nothing unpacks', prep(t, 'ci_install', gentee, 'exe')[:2], (0, 'ci_install.exe'))
+    # only an installer and a tool in an archive: the bigger one, not "no exe"
+    z = os.path.join(t, 'onlysetup.zip')
+    zipof(z, {b'trial/setup.exe': MZ * 9, b'trial/config.exe': MZ * 2, b'trial/readme.txt': b'r'})
+    ok &= check('only setup programs', prep(t, 'onlysetup', z, 'zip')[:2], (0, 'trial/setup.exe'))
     # a Shift-JIS name that 7-Zip splits at its 0x5C (十), as in izayoi_taiken_hontai.exe's LZH:
     # whole again, then UTF-8
     if not shutil.which('7z'):
