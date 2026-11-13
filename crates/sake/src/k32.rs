@@ -1262,7 +1262,7 @@ pub(crate) fn sleep_ms(ms: u32) {
 static ADDR: waits::Addr = waits::Addr::new();
 
 /// A save state: the waits here stand still where a restored copy calls the API again.
-struct Pause;
+pub(crate) struct Pause;
 impl waits::Host for Pause {
     fn pausing(&self) -> bool {
         kura::snap::pausing()

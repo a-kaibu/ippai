@@ -21,7 +21,10 @@
 #![allow(non_snake_case)]
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use waits::calls::Calls;
 
 use crate::api::{Ctx, Handler};
 use crate::dshow::com;
@@ -634,8 +637,13 @@ fn p_receive_connection(c: &mut Ctx) -> u32 {
     // (connected again: the thread there was goes on with the new stream)
     let mut pipes = PIPES.lock().unwrap_or_else(|e| e.into_inner());
     let m = pipes.get_or_insert_with(HashMap::new);
-    let (thread, gen) = m.get(&b).map_or((false, 0), |p| (p.thread, p.gen + 1));
-    m.insert(b, Pipe { reader, len, info, tl, thread, dead: false, ended: false, gen });
+    let (thread, gen, calls) = m.get(&b).map_or((false, 0, None), |p| (p.thread, p.gen + 1, Some(p.calls.clone())));
+    let calls = calls.unwrap_or_default();
+    // (connected again while it runs: the calls go on)
+    if fwith(b, |f| f.state).unwrap_or(0) != 0 {
+        calls.run();
+    }
+    m.insert(b, Pipe { reader, len, info, tl, thread, dead: false, ended: false, gen, calls });
     drop(pipes);
     eprintln!("sake: MPEG-1 splitter: {}x{} {:.3} fps, sound {} Hz, {:.2} s, {} bytes", info.width, info.height, info.rate, info.audio_rate, info.duration, len);
     0
@@ -659,11 +667,8 @@ fn probe(c: &mut Ctx, reader: u32) -> Option<(u64, mpeg1::Info)> {
     if r & 0x8000_0000 != 0 || len == 0 {
         return None;
     }
-    const PART: u64 = 256 << 10;
-    let head = read_at(c, reader, 0, PART.min(len) as u32)?;
-    let whole = len <= PART;
-    let tail = if whole { head.clone() } else { read_at(c, reader, len - PART, PART as u32)? };
-    mpeg1::probe(&head, &tail, whole).map(|i| (len, i))
+    // (its end further back while it holds no picture: a stream may end in padding, #230)
+    mpeg1::probe_stream(len, 256 << 10, |pos, n| read_at(c, reader, pos, n as u32)).map(|i| (len, i))
 }
 
 /// `n` bytes at `pos` of the stream (IAsyncReader::SyncRead into a buffer of ours).
@@ -690,6 +695,8 @@ fn p_disconnect(c: &mut Ctx) -> u32 {
     // (the splitter's source gone: no more reads from it)
     let reader = if kind(b) == Some(Kind::Split) && k == 1 { pwith(b, |p| std::mem::take(&mut p.reader)).unwrap_or(0) } else { 0 };
     if reader != 0 {
+        // (a read in flight comes back first)
+        stop_calls(b, false);
         com(c, reader, 2, &[]);
     }
     match pin_of(me.peer) {
@@ -1185,6 +1192,9 @@ struct Pipe {
     ended: bool,
     /// stops and seeks so far: the thread starts the stream again from the position
     gen: u32,
+    /// the thread's calls into the game's objects (the reader, the renderer's pin): a stop
+    /// waits them out, as Windows' source filters do, before the game takes those apart
+    calls: Arc<Calls>,
 }
 static PIPES: Mutex<Option<HashMap<u32, Pipe>>> = Mutex::new(None);
 
@@ -1226,6 +1236,10 @@ pub fn seeked(g: u32) {
 /// graph disconnects every filter when it is released.
 pub fn graph_released(c: &mut Ctx, g: u32) {
     let mine: Vec<u32> = FILTERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).iter().filter(|(_, f)| f.graph == g).map(|(&b, _)| b).collect();
+    // (the splitter thread's calls into the source and the renderer come back first)
+    for &b in &mine {
+        stop_calls(b, true);
+    }
     for b in mine {
         let pins = fwith(b, |f| {
             f.graph = 0;
@@ -1280,9 +1294,15 @@ fn streaming(b: u32, s: u32) {
             1 => p.tl.pause(t),
             _ => p.tl.run(t),
         }
+        if s != 0 {
+            p.calls.run();
+        }
         s != 0 && !std::mem::replace(&mut p.thread, true)
     });
     WAKE.notify_all();
+    if s == 0 {
+        stop_calls(b, false);
+    }
     if start == Some(true) {
         static ENTRY: OnceLock<u32> = OnceLock::new();
         let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mpeg1_stream_thread", stream_thread, 4));
@@ -1398,12 +1418,41 @@ fn chain(b: u32) -> (Option<(u32, u32, u32)>, bool) {
     (v, a)
 }
 
+/// How long a stop waits for the splitter thread's call in flight (a call that waits for what
+/// only the stopping thread would do could wait forever).
+const STOP_WAIT: Duration = Duration::from_secs(2);
+
+/// No more calls from the splitter thread of `b` into the game's objects until it pauses or
+/// runs again (`close`: ever); the call in flight comes back first.
+fn stop_calls(b: u32, close: bool) {
+    let Some(calls) = pwith(b, |p| p.calls.clone()) else { return };
+    WAKE.notify_all();
+    let back = if close { calls.close(STOP_WAIT, &crate::k32::Pause) } else { calls.stop(STOP_WAIT, &crate::k32::Pause) };
+    if !back {
+        eprintln!("sake: MPEG-1 splitter: a call of its thread did not come back in {STOP_WAIT:?}");
+    }
+}
+
+/// One call of the splitter thread into the game's objects, unless a stop came after `epoch`
+/// (None then).
+fn call_out<R>(calls: &Calls, epoch: u32, f: impl FnOnce() -> R) -> Option<R> {
+    if !calls.enter(epoch) {
+        return None;
+    }
+    let r = f();
+    calls.leave();
+    Some(r)
+}
+
 /// The splitter's thread (its parameter): reads, decodes, hands out the pictures when due,
 /// queues the sound, tells the graph the end; until the splitter goes.
 fn stream_thread(c: &mut Ctx) -> u32 {
     let b = c.a(0);
     let mut d: Option<Dec> = None;
     loop {
+        // (the epoch before what it goes by: a stop or a new reader after this keeps its calls out)
+        let Some(calls) = pwith(b, |p| p.calls.clone()) else { break };
+        let epoch = calls.epoch();
         let t = now();
         let Some((dead, gen, pos, running, stop, reader, len, info)) = pwith(b, |p| (p.dead, p.gen, p.tl.position(t), p.tl.running(), p.tl.stop, p.reader, p.len, p.info)) else { break };
         if dead {
@@ -1426,8 +1475,10 @@ fn stream_thread(c: &mut Ctx) -> u32 {
             if let Some(old) = d.take() {
                 old.close();
                 if let Some((_, _, rpin)) = video {
-                    com(c, rpin, 15, &[]);
-                    com(c, rpin, 16, &[]);
+                    call_out(&calls, epoch, || {
+                        com(c, rpin, 15, &[]);
+                        com(c, rpin, 16, &[]);
+                    });
                 }
             }
             d = Some(Dec::new(gen, video.is_some(), audio, info.audio_rate));
@@ -1450,10 +1501,15 @@ fn stream_thread(c: &mut Ctx) -> u32 {
                 continue;
             }
             if !running || at > pos {
-                if !(sound_low && feed(c, s, reader, len)) {
+                if !(sound_low && feed(c, s, reader, len, &calls, epoch)) {
                     let wait = if running { (at - pos).min(SEC / 100) } else { SEC / 100 };
                     pause(wait);
                 }
+                continue;
+            }
+            // (stopped meanwhile: the picture waits for the next run)
+            if video.is_some() && !calls.enter(epoch) {
+                pause(SEC / 100);
                 continue;
             }
             let (n, px) = s.next.take().unwrap();
@@ -1472,6 +1528,7 @@ fn stream_thread(c: &mut Ctx) -> u32 {
                     mem::slice_mut(buf, px.len() as u32).copy_from_slice(&px);
                     com(c, mem_pin, 6, &[sample]);
                 }
+                calls.leave();
             }
             continue;
         }
@@ -1489,7 +1546,7 @@ fn stream_thread(c: &mut Ctx) -> u32 {
         }
         // (only sound: decoded a second ahead)
         let sound_full = s.video.is_none() && s.pcm_at + (s.pcm.len() as u64) > want + kura::audio::RATE as u64;
-        if !s.past_stop && !sound_full && feed(c, s, reader, len) {
+        if !s.past_stop && !sound_full && feed(c, s, reader, len, &calls, epoch) {
             continue;
         }
         if !s.read_all && !s.past_stop {
@@ -1498,9 +1555,8 @@ fn stream_thread(c: &mut Ctx) -> u32 {
         }
         // the end: the renderer told, then the graph once the clock is there and the sound out
         if let Some((_, _, rpin)) = video {
-            if !s.eos_sent {
+            if !s.eos_sent && call_out(&calls, epoch, || com(c, rpin, 14, &[])).is_some() {
                 s.eos_sent = true;
-                com(c, rpin, 14, &[]);
             }
         }
         let sound_end = if audio { (s.pcm_at + s.pcm.len() as u64) * SEC / kura::audio::RATE as u64 } else { 0 };
@@ -1522,7 +1578,7 @@ fn stream_thread(c: &mut Ctx) -> u32 {
 
 /// One step on: a packet to its decoder (and the sound decoded), or more of the stream read.
 /// False once all of it went to the decoders.
-fn feed(c: &mut Ctx, s: &mut Dec, reader: u32, len: u64) -> bool {
+fn feed(c: &mut Ctx, s: &mut Dec, reader: u32, len: u64, calls: &Calls, epoch: u32) -> bool {
     if s.read_all {
         return false;
     }
@@ -1562,7 +1618,8 @@ fn feed(c: &mut Ctx, s: &mut Dec, reader: u32, len: u64) -> bool {
         s.buf = mem::heap_alloc(READ, false);
     }
     let args: Vec<u32> = if mem::x64() { vec![s.pos as u32, n, s.buf] } else { vec![s.pos as u32, (s.pos >> 32) as u32, n, s.buf] };
-    let r = com(c, reader, 7, &args);
+    // (stopped meanwhile: nothing read)
+    let Some(r) = call_out(calls, epoch, || com(c, reader, 7, &args)) else { return false };
     if r & 0x8000_0000 != 0 {
         eprintln!("sake: MPEG-1 splitter: read at {} failed ({r:#x})", s.pos);
         s.pos = len;

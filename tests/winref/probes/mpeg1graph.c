@@ -7,7 +7,9 @@
  * asked for. Prints the pins, the streams, the type the renderer is given, the duration, the
  * samples (times, sizes, a picture), the renderer's own events (IMediaEventSink::Notify, as
  * krmovie tells its frames) reaching the application, EC_COMPLETE, and the same once more
- * after a rewind.
+ * after a rewind. Then a Stop while it streams (the renderer slow to take its samples): once
+ * Stop returned, the splitter calls neither the source nor the renderer, so the game may take
+ * them apart then (krmovie does; sake's splitter read on into freed objects, #230).
  * libs: -lole32 -lstrmiids -loleaut32 -luuid -luser32 */
 #include "../probe.h"
 #include <stddef.h>
@@ -21,6 +23,13 @@ static void wcopy(WCHAR *d, const WCHAR *s) { while ((*d++ = *s++)) {} }
 
 static const unsigned char *data;
 static DWORD data_len;
+
+/* the Stop while it streams: calls into the source and the renderer, those in flight, those
+ * made after Stop returned */
+static int slow;
+static volatile LONG inside, stopped, late;
+static void call_in(void) { InterlockedIncrement(&inside); if (stopped) InterlockedIncrement(&late); }
+static void call_out(void) { InterlockedDecrement(&inside); }
 
 static void guid_name(const char *l, const GUID *g) {
     const char *n = IsEqualGUID(g, &MEDIATYPE_Video) ? "video" : IsEqualGUID(g, &MEDIATYPE_Audio) ? "audio" : IsEqualGUID(g, &MEDIASUBTYPE_RGB32) ? "rgb32" : IsEqualGUID(g, &FORMAT_VideoInfo) ? "videoinfo" : 0;
@@ -307,11 +316,14 @@ static HRESULT WINAPI ar_wait(IAsyncReader *a, DWORD ms, IMediaSample **s, DWORD
     if (f->flushing) return VFW_E_WRONG_STATE;
     return fill(*s);
 }
-static HRESULT WINAPI ar_sync_aligned(IAsyncReader *a, IMediaSample *s) { return fill(s); }
+static HRESULT WINAPI ar_sync_aligned(IAsyncReader *a, IMediaSample *s) { call_in(); HRESULT hr = fill(s); call_out(); return hr; }
 static HRESULT WINAPI ar_sync(IAsyncReader *a, LONGLONG at, LONG n, BYTE *buf) {
     if (at >= data_len) return S_FALSE;
+    call_in();
+    if (slow) Sleep(20);
     LONG k = at + n > data_len ? (LONG)(data_len - at) : n;
     memcpy(buf, data + at, k);
+    call_out();
     return k == n ? S_OK : S_FALSE;
 }
 static HRESULT WINAPI ar_length(IAsyncReader *a, LONGLONG *total, LONGLONG *avail) { *total = *avail = data_len; return S_OK; }
@@ -328,6 +340,9 @@ static HRESULT WINAPI mi_notify_alloc(IMemInputPin *m, IMemAllocator *a, BOOL ro
 static HRESULT WINAPI mi_reqs(IMemInputPin *m, ALLOCATOR_PROPERTIES *p) { return E_NOTIMPL; }
 static HRESULT WINAPI mi_receive(IMemInputPin *m, IMediaSample *s) {
     Filter *f = OF(m, mi);
+    call_in();
+    if (slow) Sleep(30);
+    call_out();
     int k = f->samples++;
     if (k < 40) {
         if (FAILED(s->lpVtbl->GetTime(s, &f->t0[k], &f->t1[k]))) f->t0[k] = f->t1[k] = -1;
@@ -514,6 +529,20 @@ int main(void) {
     LONGLONG zero = 0;
     printf("rewind %08lx\n", ms->lpVtbl->SetPositions(ms, &zero, AM_SEEKING_AbsolutePositioning, 0, AM_SEEKING_NoPositioning));
     play("again", rend, mc, me);
+    /* (a Stop while it streams, the renderer slow: after Stop returns, no call comes in) */
+    printf("rewind %08lx\n", ms->lpVtbl->SetPositions(ms, &zero, AM_SEEKING_AbsolutePositioning, 0, AM_SEEKING_NoPositioning));
+    slow = 1;
+    rend->samples = 0;
+    hr = mc->lpVtbl->Run(mc);
+    Sleep(400);
+    printf("stop while streaming: run %s, samples before the stop %s\n", SUCCEEDED(hr) ? "ok" : "failed", rend->samples > 0 ? "some" : "none");
+    hr = mc->lpVtbl->Stop(mc);
+    stopped = 1;
+    LONG in_flight = inside;
+    Sleep(400);
+    printf("stop while streaming: stop %08lx, a call in flight after it %s, calls after it %ld\n", hr, in_flight ? "yes" : "no", late);
+    slow = 0;
+    stopped = 0;
     ms->lpVtbl->Release(ms);
     me->lpVtbl->Release(me);
     mc->lpVtbl->Release(mc);

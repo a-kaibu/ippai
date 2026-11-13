@@ -14,3 +14,6 @@ SnapPause SnapPauseNoFence.cfg violation
 CacheRead CacheRead.cfg ok
 CacheRead CacheReadNoTimeout.cfg violation
 CacheRead CacheReadShort.cfg violation
+StopCalls StopCalls.cfg ok
+StopCalls StopCallsOld.cfg violation
+StopCalls StopCallsGiveUp.cfg violation

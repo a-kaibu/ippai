@@ -622,3 +622,68 @@ mod suspend {
         });
     }
 }
+
+/// The streaming thread's calls and a Stop (calls.rs, #230): the thread looks at the epoch, enters
+/// with it, touches the game's object and leaves; the game stops, then destroys the object (a
+/// loom UnsafeCell: a touch the protocol doesn't order before the destroy is a data race, and
+/// the `alive` flag it reads must still be set). A second run after that may call again.
+mod calls {
+    use super::model;
+    use loom::cell::UnsafeCell;
+    use loom::sync::Arc;
+    use loom::thread;
+    use waits::calls::Calls;
+    use waits::NoPause;
+
+    struct Obj {
+        calls: Calls,
+        alive: UnsafeCell<bool>,
+    }
+    unsafe impl Sync for Obj {}
+
+    #[test]
+    fn calls_no_call_after_a_stop() {
+        model(|| {
+            let o = Arc::new(Obj { calls: Calls::new(), alive: UnsafeCell::new(true) });
+            o.calls.run();
+            let o2 = o.clone();
+            let t = thread::spawn(move || {
+                for _ in 0..2 {
+                    let e = o2.calls.epoch();
+                    if o2.calls.enter(e) {
+                        o2.alive.with(|a| assert!(unsafe { *a }, "a call into the destroyed object"));
+                        o2.calls.leave();
+                    }
+                }
+            });
+            assert!(o.calls.stop(std::time::Duration::from_secs(1), &NoPause));
+            o.alive.with_mut(|a| unsafe { *a = false });
+            t.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn calls_none_after_a_close() {
+        model(|| {
+            let o = Arc::new(Obj { calls: Calls::new(), alive: UnsafeCell::new(true) });
+            o.calls.run();
+            let o2 = o.clone();
+            let t = thread::spawn(move || {
+                let e = o2.calls.epoch();
+                if o2.calls.enter(e) {
+                    o2.alive.with(|a| assert!(unsafe { *a }));
+                    o2.calls.leave();
+                }
+                // (a look after the close: never in)
+                let e = o2.calls.epoch();
+                if o2.calls.enter(e) {
+                    o2.alive.with(|a| assert!(unsafe { *a }, "in after the close"));
+                    o2.calls.leave();
+                }
+            });
+            assert!(o.calls.close(std::time::Duration::from_secs(1), &NoPause));
+            o.alive.with_mut(|a| unsafe { *a = false });
+            t.join().unwrap();
+        });
+    }
+}

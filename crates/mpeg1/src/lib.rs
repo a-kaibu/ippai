@@ -97,6 +97,32 @@ pub fn probe(head: &[u8], tail: &[u8], whole: bool) -> Option<Info> {
     Some(info)
 }
 
+/// How much of a stream's end `probe_stream` reads at most, looking for its last picture.
+pub const MAX_TAIL: u64 = 16 << 20;
+
+/// The facts of a stream of `len` bytes that `read(pos, n)` reads (n bytes at pos): its first
+/// `part` bytes and, for the duration, its last `part` bytes, then 4 times as many and so on
+/// (up to MAX_TAIL) while those hold no picture's time. A stream may end in padding: アクアリウム
+/// (aquras) 体験版's opening has 366 KB of padding packets after its last picture, and its
+/// duration read as 0 stopped it at once (#230).
+pub fn probe_stream(len: u64, part: u64, mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>) -> Option<Info> {
+    let part = part.max(1);
+    let head = read(0, part.min(len) as usize)?;
+    if len <= part {
+        return probe(&head, &head, true);
+    }
+    let mut back = part;
+    loop {
+        let tail = read(len - back, back as usize)?;
+        let i = probe(&head, &tail, false)?;
+        // (a bare video stream has no times to find)
+        if i.duration > 0.0 || back >= len.min(MAX_TAIL) || ps::is_video_stream(&head) {
+            return Some(i);
+        }
+        back = back.saturating_mul(4).min(len).min(MAX_TAIL.max(part));
+    }
+}
+
 /// When the last picture of `tail` is shown: a packet's time stamp is that of the first picture
 /// that starts in it, so the pictures after the last stamp are placed by their temporal
 /// references (and a GOP after them follows the last picture of the one before).

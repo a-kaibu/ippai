@@ -14,6 +14,7 @@
 //! waits and stands still in [`Host::point`] holding none of its locks.
 
 
+pub mod calls;
 pub mod suspend;
 
 #[cfg(loom)]

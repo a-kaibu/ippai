@@ -80,4 +80,14 @@ pub fn check(data: &[u8], cuts: &[usize]) {
     let whole = decode(data, &[]);
     assert_eq!(decode(data, cuts), whole, "cut at {cuts:?}");
     let _ = crate::probe(data, data, true);
+    // (probe_stream in parts as small as the cuts: its reads stay in the stream, and a head
+    // that is all of it reads as the stream whole)
+    let part = cuts.first().map_or(256 << 10, |&c| c.max(1) as u64);
+    let i = crate::probe_stream(data.len() as u64, part, |pos, n| {
+        assert!(pos as usize + n <= data.len(), "read {n} at {pos} of {}", data.len());
+        Some(data[pos as usize..pos as usize + n].to_vec())
+    });
+    if part >= data.len() as u64 {
+        assert_eq!(i, crate::probe(data, data, true));
+    }
 }
