@@ -63,6 +63,8 @@ struct Buf {
     primary: bool,
     playing: bool,
     looping: bool,
+    /// plays left after this one when not looping (DirectMusic segment repeats)
+    repeats: u32,
     /// play position in frames
     pos: f64,
     gain: (f32, f32),
@@ -224,6 +226,9 @@ fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
             if b.pos >= frames as f64 {
                 if b.looping {
                     b.pos -= frames as f64;
+                } else if b.repeats > 0 {
+                    b.repeats -= 1;
+                    b.pos -= frames as f64;
                 } else {
                     b.pos = 0.0;
                     b.playing = false;
@@ -258,6 +263,65 @@ fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
         out.iter_mut().for_each(|x| *x *= g);
     }
     events
+}
+
+// ---------------------------------------------------------------------------------------------
+// DirectMusic's wave segments (dmime.rs): a sound in guest memory the mixer plays under `key`
+// (the segment state object), `repeats` more times or forever (u32::MAX), at `volume`
+// (hundredths of a dB, as DirectSound's)
+
+/// Starts playing; false without sound (SAKE_NO_SOUND).
+pub(crate) fn music_start(key: u32, data: u32, size: u32, fmt: Fmt, repeats: u32, volume: i32) -> bool {
+    if no_sound() {
+        return false;
+    }
+    start_mixer();
+    with(|d| d.bufs.insert(key, music_buf(key, data, size, fmt, repeats, volume)));
+    true
+}
+
+fn music_buf(key: u32, data: u32, size: u32, fmt: Fmt, repeats: u32, volume: i32) -> Buf {
+    Buf {
+        data,
+        size,
+        fmt,
+        freq: fmt.rate,
+        flags: 0,
+        primary: false,
+        playing: true,
+        looping: repeats == u32::MAX,
+        repeats: if repeats == u32::MAX { 0 } else { repeats },
+        pos: 0.0,
+        gain: gains(volume, 0),
+        volume,
+        pan: 0,
+        notify: Vec::new(),
+        refs: 1,
+        owner: key,
+    }
+}
+
+/// Stops and forgets `key`.
+pub(crate) fn music_stop(key: u32) {
+    with(|d| d.bufs.remove(&key));
+}
+
+pub(crate) fn music_playing(key: u32) -> bool {
+    with(|d| d.bufs.get(&key).is_some_and(|b| b.playing))
+}
+
+/// Frames played of the current pass (the segment state's seek)
+pub(crate) fn music_pos(key: u32) -> Option<f64> {
+    with(|d| d.bufs.get(&key).map(|b| b.pos))
+}
+
+pub(crate) fn music_volume(key: u32, volume: i32) {
+    with(|d| {
+        if let Some(b) = d.bufs.get_mut(&key) {
+            b.volume = volume;
+            b.gain = gains(volume, 0);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -929,6 +993,7 @@ fn DS_CreateSoundBuffer(c: &mut Ctx) -> u32 {
                 primary,
                 playing: false,
                 looping: false,
+                repeats: 0,
                 pos: 0.0,
                 gain,
                 volume: 0,
@@ -969,6 +1034,7 @@ fn DS_DuplicateSoundBuffer(c: &mut Ctx) -> u32 {
             primary: s.primary,
             playing: false,
             looping: false,
+            repeats: 0,
             pos: 0.0,
             gain: s.gain,
             volume: s.volume,
@@ -1411,6 +1477,7 @@ fn play_sound(name: u32, module: u32, flags: u32, wide: bool) -> u32 {
                 primary: false,
                 playing: true,
                 looping: flags & SND_LOOP != 0,
+                repeats: 0,
                 pos: 0.0,
                 gain: gains(0, 0),
                 volume: 0,
@@ -1624,6 +1691,48 @@ mod play_sound_tests {
             let (fmt, _, size) = wave_chunks(&out).unwrap();
             prop_assert_eq!(&out[fmt..fmt + 2], &[1, 0]);
             prop_assert_eq!(size, blocks * spb * ch as usize * 2);
+        }
+    }
+}
+
+#[cfg(test)]
+mod music_tests {
+    use super::*;
+    use crate::test_guest::enter;
+    use proptest::prelude::*;
+
+    /// A mixer of its own (not the global one a running mixer thread would also advance).
+    fn dev() -> Dev {
+        Dev { bufs: HashMap::default(), waves: HashMap::default(), stream: -1 }
+    }
+
+    proptest! {
+        /// A DirectMusic wave of n frames at the output rate with r repeats sounds for exactly
+        /// n * (r + 1) frames, then stops; with REPEAT_INFINITE it never stops. -96 dB is silence.
+        #[test]
+        fn repeats_play_whole_passes(n in 1u32..300, r in 0u32..4, infinite in any::<bool>(), mute in any::<bool>()) {
+            let _g = enter();
+            let data = mem::heap_alloc(n * 2, true);
+            for i in 0..n { w16(data + 2 * i, 16000); }
+            let fmt = Fmt { rate: RATE, channels: 1, bits: 16, float: false, law: 0 };
+            let mut d = dev();
+            let repeats = if infinite { u32::MAX } else { r };
+            d.bufs.insert(1, music_buf(1, data, n * 2, fmt, repeats, if mute { -10000 } else { 0 }));
+            let total = (n * (r + 1) + 50) as usize;
+            let mut out = vec![0f32; total * 2];
+            mix(&mut d, &mut out);
+            let sounding = out.chunks_exact(2).filter(|f| f[0] != 0.0).count();
+            let playing = d.bufs[&1].playing;
+            mem::heap_free(data);
+            if mute {
+                prop_assert_eq!(sounding, 0);
+            } else if infinite {
+                prop_assert_eq!(sounding, total);
+                prop_assert!(playing);
+            } else {
+                prop_assert_eq!(sounding, (n * (r + 1)) as usize);
+                prop_assert!(!playing);
+            }
         }
     }
 }

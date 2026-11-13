@@ -1336,6 +1336,9 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
     if let Some(hr) = crate::dmusic::create_instance(clsid, c.a(1), iid, out) {
         return hr;
     }
+    if let Some(hr) = crate::dmime::create_instance(clsid, c.a(1), iid, out) {
+        return hr;
+    }
     let hr = create_object(c, clsid, iid, out);
     if hr == 0x8004_0154 {
         let (context, outer) = (c.a(2), c.a(1));
@@ -1385,6 +1388,9 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
         return if obj == 0 { 0x8000_4002 } else { 0 };
     }
     if let Some(hr) = crate::dmusic::create_instance(clsid, 0, iid, out) {
+        return hr;
+    }
+    if let Some(hr) = crate::dmime::create_instance(clsid, 0, iid, out) {
         return hr;
     }
     if let Some(obj) = crate::dinput::create_instance(clsid) {

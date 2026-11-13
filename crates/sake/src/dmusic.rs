@@ -75,7 +75,7 @@ pub fn create_instance(clsid: u32, outer: u32, iid: u32, out: u32) -> Option<u32
 }
 
 /// Layout: vtable, references.
-fn new_object() -> u32 {
+pub(crate) fn new_object() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
         // (stack bytes, `this` included)

@@ -80,6 +80,7 @@ pub mod msi_install;
 pub mod msi_ui;
 pub mod msiexec;
 pub mod dinput;
+pub mod dmime;
 pub mod dmusic;
 pub mod fast;
 pub mod files;
