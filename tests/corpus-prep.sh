@@ -118,11 +118,19 @@ if [ ! -d x ]; then
     elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qx 'Type = Cab' &&
         LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | sed '1,/^----------$/d' | grep -qiE '^Path = .*\.exe$' &&
         mkdir -p "$s.cab" && (cd "$s.cab" && LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$s" >/dev/null 2>&1) && [ -n "$(ls "$s.cab")" ]; then rm -f "$s"
-    else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx" "$s.cab"
+    # an LHa self-extractor holding the game (痴漢車両2号車R's ChikanSyaryou2TaikenData.exe in
+    # discovery_0037t.zip; lsar fails on it, "Archive parsing failed"): 7z reads it
+    elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qx 'Type = Lzh' &&
+        LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | sed '1,/^----------$/d' | grep -qiE '^Path = .*\.exe$' &&
+        mkdir -p "$s.lzh" && (cd "$s.lzh" && LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$s" >/dev/null 2>&1) && [ -n "$(ls "$s.lzh")" ]; then rm -f "$s"
+    else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx" "$s.cab" "$s.lzh"
     fi
   done
   [ "$(find x.part -type f -iname '*.exe' | sort | md5sum)" = "$before" ] && break
   done
+  # (names from the extractors above, 7z on a cabinet or LHa self-extractor: as after the outer archive)
+  python3 -I "$HERE/sjis-rejoin.py" x.part >/dev/null 2>&1 || true
+  LC_ALL=C.UTF-8 convmv -r -f cp932 -t utf8 --notest --qfrom x.part >/dev/null 2>&1 || true
   # BGI install media: a 16-byte "0123456789ABCDEF" file next to BGIForInstalling.exe marks
   # the media, and the game run from there quits at once (the installed copy doesn't have it)
   find x.part -type f -iname BGIForInstalling.exe -print0 | while IFS= read -r -d '' b; do
