@@ -1843,6 +1843,53 @@ fn putc(c: &mut Ctx) -> u32 {
     write_stream(c.a(1), &[ch as u8]);
     ch
 }
+/// Writes wide text to a stream as fputws does (the locale's bytes); false at a character the
+/// locale lacks (errno EILSEQ).
+fn write_wide(fp: u32, s: &[u16]) -> bool {
+    for &u in s {
+        let Some(b) = wc_bytes(u) else {
+            set_errno(42);
+            return false;
+        };
+        write_stream(fp, &b);
+    }
+    true
+}
+fn fwprintf_of(c: &mut Ctx, fp: u32, fmt: u32, mut va: VaArgs) -> u32 {
+    let _ = c;
+    let Some(s) = legacy::<u16>(fmt, &mut va) else { return u32::MAX };
+    if !write_wide(fp, &s) {
+        return u32::MAX;
+    }
+    s.len() as u32
+}
+/// fwprintf(stream, fmt, ...) / fwprintf_s: the count of wide characters
+fn fwprintf(c: &mut Ctx) -> u32 {
+    let (fp, fmt) = (c.a(0), c.a(1));
+    let va = VaArgs::arg(c, 2);
+    fwprintf_of(c, fp, fmt, va)
+}
+fn fwprintf_s(c: &mut Ctx) -> u32 {
+    fwprintf(c)
+}
+/// vfwprintf(stream, fmt, va) / vfwprintf_s
+fn vfwprintf(c: &mut Ctx) -> u32 {
+    let (fp, fmt) = (c.a(0), c.a(1));
+    let va = VaArgs::stack(c.a(2));
+    fwprintf_of(c, fp, fmt, va)
+}
+fn vfwprintf_s(c: &mut Ctx) -> u32 {
+    vfwprintf(c)
+}
+/// vwprintf(fmt, va) / vwprintf_s: the console, as wprintf
+fn vwprintf(c: &mut Ctx) -> u32 {
+    let Some(s) = legacy::<u16>(c.a(0), &mut VaArgs::stack(c.a(1))) else { return u32::MAX };
+    crate::k32::console_write(&String::from_utf16_lossy(&s));
+    s.len() as u32
+}
+fn vwprintf_s(c: &mut Ctx) -> u32 {
+    vwprintf(c)
+}
 fn wprintf(c: &mut Ctx) -> u32 {
     let Some(s) = legacy::<u16>(c.a(0), &mut VaArgs::arg(c, 1)) else { return u32::MAX };
     crate::k32::console_write(&String::from_utf16_lossy(&s));
@@ -2054,6 +2101,7 @@ pub(super) fn init() {
         implement("msvcrt", n, zero);
     }
     reg!(setbuf, clearerr, fputwc, fputws, fgetwc, ungetwc, getchar, putc, wprintf);
+    reg!(fwprintf, fwprintf_s, vfwprintf, vfwprintf_s, vwprintf, vwprintf_s);
     implement("msvcrt", "_fputwc_nolock", fputwc);
     implement("msvcrt", "_putc_nolock", putc);
     implement("msvcrt", "getwc", fgetwc);

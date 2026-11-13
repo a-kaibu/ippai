@@ -1,0 +1,7 @@
+found 1 1 1 1
+fwprintf wide 42 x
+fwprintf_s  3.14|7   |
+vfwprintf beef ok
+vwprintf 005
+counts 19 23 18 13
+file counts 5 5 bytes 12: 61 5a 5a 62 0d 0a 2d 31 32 3b 0d 0a
