@@ -787,12 +787,9 @@ pub fn wait_gate_start(h: u32, start: u32, param: u32) {
 pub(crate) fn snap_wake() {
     drop(GATE.lock());
     GATE_CV.notify_all();
-    drop(CS_LOCK.lock());
-    CS_CV.notify_all();
-    drop(SYNC.lock());
-    SYNC_CV.notify_all();
-    drop(ADDR_GEN.lock());
-    ADDR_CV.notify_all();
+    CS.wake();
+    SYNC.wake_all();
+    ADDR.stir();
 }
 
 fn ResumeThread(c: &mut Ctx) -> u32 {
@@ -940,10 +937,19 @@ pub(crate) fn sleep_ms(ms: u32) {
         crate::snap::point();
     }
 }
-// WaitOnAddress: one generation counter for all addresses; any wake wakes every waiter, which
-// returns TRUE (Windows allows that: callers check the value again)
-static ADDR_GEN: Mutex<u64> = Mutex::new(0);
-static ADDR_CV: Condvar = Condvar::new();
+// WaitOnAddress: one generation for all addresses (crates/waits)
+static ADDR: waits::Addr = waits::Addr::new();
+
+/// A save state: the waits here stand still where a restored copy calls the API again.
+struct Pause;
+impl waits::Host for Pause {
+    fn pausing(&self) -> bool {
+        kura::snap::pausing()
+    }
+    fn point(&self) {
+        crate::snap::point();
+    }
+}
 
 /// The `size`-byte value at `a` (1, 2, 4, 8; else None)
 fn value_at(a: u32, size: u32) -> Option<u64> {
@@ -971,35 +977,11 @@ pub(crate) fn wait_on_address(a: u32, cmp: u32, size: u32, ms: u32) -> Result<()
     let (Some(_), Some(want)) = (value_at(a, size), value_at(cmp, size)) else {
         return Err(87);
     };
-    let g = ADDR_GEN.lock().unwrap_or_else(|e| e.into_inner());
-    // (checked under the lock: a waker changes the value, then takes it to wake)
-    if value_at(a, size) != Some(want) {
-        return Ok(());
-    }
-    let start = *g;
-    let end = (ms != 0xffff_ffff).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
-    let mut g = g;
-    while *g == start {
-        if kura::snap::pausing() {
-            drop(g);
-            crate::snap::point();
-            g = ADDR_GEN.lock().unwrap_or_else(|e| e.into_inner());
-            continue;
-        }
-        let left = match end {
-            Some(e) => match e.checked_duration_since(std::time::Instant::now()) {
-                Some(d) if !d.is_zero() => d,
-                _ => return Err(1460),
-            },
-            None => std::time::Duration::from_secs(3600),
-        };
-        g = ADDR_CV.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner()).0;
-    }
-    Ok(())
+    // (the value is looked at under the lock: a waker changes it, then takes it to wake)
+    if ADDR.wait(|| value_at(a, size) == Some(want), ms, &Pause) { Ok(()) } else { Err(1460) }
 }
 fn WakeByAddressAll(_: &mut Ctx) -> u32 {
-    *ADDR_GEN.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-    ADDR_CV.notify_all();
+    ADDR.wake_all();
     0
 }
 
@@ -1470,8 +1452,8 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
 }
 
 // critical sections: OwningThread is the lock word (CAS), LockSemaphore counts waiters
-static CS_LOCK: Mutex<()> = Mutex::new(());
-static CS_CV: Condvar = Condvar::new();
+// (crates/waits)
+static CS: waits::Cs = waits::Cs::new();
 
 fn atomic(a: u32) -> &'static AtomicU32 {
     unsafe { &*(a as usize as *const AtomicU32) }
@@ -1501,39 +1483,12 @@ fn cs_init(cs: u32) {
 }
 pub fn cs_enter(cs: u32) {
     let me = crate::cur().tid;
-    let own = atomic(cs + cs_off(OWNER));
-    if own.load(Ordering::Acquire) == me {
-        w32(cs + cs_off(REC), r32(cs + cs_off(REC)) + 1);
-        return;
-    }
-    let mut spins = 0;
-    loop {
-        if own.compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+    match CS.enter(atomic(cs + cs_off(OWNER)), atomic(cs + cs_off(SEM)), me, &Pause) {
+        waits::Entered::Again => w32(cs + cs_off(REC), r32(cs + cs_off(REC)) + 1),
+        _ => {
             w32(cs + cs_off(REC), 1);
             w32(cs + cs_off(LOCK), CS_LOCKED);
-            return;
         }
-        spins += 1;
-        if spins < 50 {
-            std::hint::spin_loop();
-            continue;
-        }
-        let waiters = atomic(cs + cs_off(SEM));
-        let mut g = CS_LOCK.lock().unwrap();
-        waiters.fetch_add(1, Ordering::SeqCst);
-        while own.load(Ordering::SeqCst) != 0 {
-            if kura::snap::pausing() {
-                waiters.fetch_sub(1, Ordering::SeqCst);
-                drop(g);
-                crate::snap::point();
-                g = CS_LOCK.lock().unwrap();
-                waiters.fetch_add(1, Ordering::SeqCst);
-                continue;
-            }
-            g = CS_CV.wait_timeout(g, std::time::Duration::from_millis(50)).unwrap().0;
-        }
-        waiters.fetch_sub(1, Ordering::SeqCst);
-        drop(g);
     }
 }
 pub fn cs_leave(cs: u32) {
@@ -1544,16 +1499,11 @@ pub fn cs_leave(cs: u32) {
     }
     w32(cs + cs_off(REC), 0);
     w32(cs + cs_off(LOCK), 0xffff_ffff);
-    atomic(cs + cs_off(OWNER)).store(0, Ordering::SeqCst);
-    if atomic(cs + cs_off(SEM)).load(Ordering::SeqCst) != 0 {
-        let _g = CS_LOCK.lock().unwrap();
-        CS_CV.notify_all();
-    }
+    CS.leave(atomic(cs + cs_off(OWNER)), atomic(cs + cs_off(SEM)));
 }
 /// Wakes the waiters of `cs` (fast::leave_cs found some after releasing it).
 pub fn cs_wake(_cs: u32) {
-    let _g = CS_LOCK.lock().unwrap();
-    CS_CV.notify_all();
+    CS.wake();
 }
 fn InitializeCriticalSection(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));
@@ -1606,18 +1556,15 @@ fn LeaveCriticalSection(c: &mut Ctx) -> u32 {
 }
 fn TryEnterCriticalSection(c: &mut Ctx) -> u32 {
     let cs = c.a(0);
-    let me = crate::cur().tid;
-    let own = atomic(cs + cs_off(OWNER));
-    if own.load(Ordering::Acquire) == me {
-        w32(cs + cs_off(REC), r32(cs + cs_off(REC)) + 1);
-        return 1;
+    match waits::Cs::try_enter(atomic(cs + cs_off(OWNER)), crate::cur().tid) {
+        waits::Entered::Again => w32(cs + cs_off(REC), r32(cs + cs_off(REC)) + 1),
+        waits::Entered::First => {
+            w32(cs + cs_off(REC), 1);
+            w32(cs + cs_off(LOCK), CS_LOCKED);
+        }
+        waits::Entered::Busy => return 0,
     }
-    if own.compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-        w32(cs + cs_off(REC), 1);
-        w32(cs + cs_off(LOCK), CS_LOCKED);
-        return 1;
-    }
-    0
+    1
 }
 fn RtlEnterCriticalSection(c: &mut Ctx) -> u32 {
     cs_enter(c.a(0));
@@ -1629,56 +1576,17 @@ fn RtlLeaveCriticalSection(c: &mut Ctx) -> u32 {
 }
 
 // slim reader/writer locks (word: bit 0 exclusive, the rest 2 x readers), condition variables
-// (a generation per address) and one-time init, all waiting on one Condvar
-static SYNC: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
-static SYNC_CV: Condvar = Condvar::new();
+// (a generation per address) and one-time init, all waiting on one Condvar (crates/waits)
+static SYNC: waits::Sync = waits::Sync::new();
 
 pub(crate) fn srw_try(l: u32, shared: bool) -> bool {
-    let a = atomic(l);
-    let v = a.load(Ordering::SeqCst);
-    if shared {
-        v & 1 == 0 && a.compare_exchange(v, v + 2, Ordering::SeqCst, Ordering::Relaxed).is_ok()
-    } else {
-        a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed).is_ok()
-    }
+    waits::Sync::srw_try(atomic(l), shared)
 }
 pub(crate) fn srw_acquire(l: u32, shared: bool) {
-    for _ in 0..50 {
-        if srw_try(l, shared) {
-            return;
-        }
-        std::hint::spin_loop();
-    }
-    let mut g = SYNC.lock().unwrap();
-    // (counted before the retry: a release that misses the count frees the lock before it, so
-    // the retry takes it; one that sees it notifies under SYNC, after this thread waits)
-    SRW_WAITERS.fetch_add(1, Ordering::SeqCst);
-    while !srw_try(l, shared) {
-        if kura::snap::pausing() {
-            drop(g);
-            crate::snap::point();
-            g = SYNC.lock().unwrap();
-            continue;
-        }
-        g = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20)).unwrap().0;
-    }
-    SRW_WAITERS.fetch_sub(1, Ordering::SeqCst);
+    SYNC.srw_acquire(atomic(l), shared, &Pause)
 }
-/// Threads in srw_acquire's slow path (any lock): a release with none skips SYNC and the wake,
-/// which cost Godot's loading thread seconds (one futex wake per release).
-static SRW_WAITERS: AtomicU32 = AtomicU32::new(0);
 pub(crate) fn srw_release(l: u32, shared: bool) {
-    let a = atomic(l);
-    if shared {
-        a.fetch_sub(2, Ordering::SeqCst);
-    } else {
-        a.store(0, Ordering::SeqCst);
-    }
-    if SRW_WAITERS.load(Ordering::SeqCst) == 0 {
-        return;
-    }
-    let _g = SYNC.lock().unwrap();
-    SYNC_CV.notify_all();
+    SYNC.srw_release(atomic(l), shared)
 }
 fn InitializeSRWLock(c: &mut Ctx) -> u32 {
     crate::mem::wp(c.a(0), 0);
@@ -1716,44 +1624,23 @@ fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
 /// `reacquire` and return `woken` from the API, a wake without a signal).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cv_wait(cv: u32, ms: u32, release: fn(u64, u64), reacquire: fn(u64, u64), a: u64, b: u64, woken: u32) -> bool {
-    // the generation is read before the lock is released (a wake in between is seen), but SYNC is
-    // not held across `release` (srw_release takes it to notify: holding it deadlocked)
-    let gen0 = *SYNC.lock().unwrap().get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
-    release(a, b);
-    let mut g = SYNC.lock().unwrap();
-    let end = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
-    let mut woke = true;
-    while g.as_ref().unwrap().get(&cv).copied() == Some(gen0) {
-        if kura::snap::pausing() {
-            drop(g);
-            crate::snap::point_return(woken, reacquire, a, b);
-            g = SYNC.lock().unwrap();
-            continue;
+    struct Return(fn(u64, u64), u64, u64, u32);
+    impl waits::Host for Return {
+        fn pausing(&self) -> bool {
+            kura::snap::pausing()
         }
-        let left = match end {
-            Some(e) => match e.checked_duration_since(std::time::Instant::now()) {
-                Some(d) => d.min(std::time::Duration::from_millis(50)),
-                None => {
-                    woke = false;
-                    break;
-                }
-            },
-            None => std::time::Duration::from_millis(50),
-        };
-        g = SYNC_CV.wait_timeout(g, left).unwrap().0;
+        fn point(&self) {
+            crate::snap::point_return(self.3, self.0, self.1, self.2);
+        }
     }
-    drop(g);
-    reacquire(a, b);
+    let woke = SYNC.cv_wait(cv, ms, || release(a, b), || reacquire(a, b), &Return(reacquire, a, b, woken));
     if !woke {
         last_error(1460);
     }
     woke
 }
 pub(crate) fn cv_wake(cv: u32) {
-    let mut g = SYNC.lock().unwrap();
-    let e = g.get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
-    *e = e.wrapping_add(1);
-    SYNC_CV.notify_all();
+    SYNC.cv_wake(cv);
 }
 fn SleepConditionVariableSRW(c: &mut Ctx) -> u32 {
     let (cv, l, ms, shared) = (c.a(0), c.a(1), c.a(2), c.a(3) & 1 != 0);
@@ -1790,30 +1677,19 @@ fn WakeAllConditionVariable(c: &mut Ctx) -> u32 {
 /// InitOnceExecuteOnce(once, fn, param, context): the word is 0 (new), 1 (running), 2 (done).
 fn InitOnceExecuteOnce(c: &mut Ctx) -> u32 {
     let (once, f, param, ctx) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let a = atomic(once);
-    loop {
-        match a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(_) => {
-                let r = c.call(f, &[once, param, ctx]);
-                // (done: the context the function gave, with 2 in its low bits)
-                let got = if ctx != 0 { r32(ctx) & !3 } else { 0 };
-                a.store(if r != 0 { got | 2 } else { 0 }, Ordering::SeqCst);
-                let _g = SYNC.lock().unwrap();
-                SYNC_CV.notify_all();
-                return r;
+    let r = SYNC.once_execute(atomic(once), || {
+        let r = c.call(f, &[once, param, ctx]);
+        // (done: the context the function gave, with 2 in its low bits)
+        let got = if ctx != 0 { r32(ctx) & !3 } else { 0 };
+        (r, if r != 0 { got | 2 } else { 0 })
+    });
+    match r {
+        waits::Once::Ran(r) => r,
+        waits::Once::Done(v) => {
+            if ctx != 0 {
+                mem::putp(ctx, v & !3);
             }
-            Err(v) if v & 3 == 2 => {
-                if ctx != 0 {
-                    mem::putp(ctx, v & !3);
-                }
-                return 1;
-            }
-            Err(_) => {
-                let g = SYNC.lock().unwrap();
-                if a.load(Ordering::SeqCst) == 1 {
-                    let _ = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20));
-                }
-            }
+            1
         }
     }
 }
@@ -1833,41 +1709,31 @@ fn SetThreadContext(_: &mut Ctx) -> u32 {
 fn InitOnceBeginInitialize(c: &mut Ctx) -> u32 {
     let (once, flags, pending, ctx) = (c.a(0), c.a(1), c.a(2), c.a(3));
     const CHECK_ONLY: u32 = 1;
-    let a = atomic(once);
-    loop {
-        let v = a.load(Ordering::SeqCst);
-        if v & 3 == 2 {
+    match SYNC.once_begin(atomic(once), flags & CHECK_ONLY != 0) {
+        waits::Begin::Done(v) => {
             put32(pending, 0);
             if ctx != 0 {
                 mem::putp(ctx, v & !3);
             }
-            return 1;
+            1
         }
-        if flags & CHECK_ONLY != 0 {
+        waits::Begin::NotYet => {
             last_error(31); // ERROR_GEN_FAILURE: not done yet
-            return 0;
+            0
         }
-        if v == 0 && a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        waits::Begin::Pending => {
             put32(pending, 1);
-            return 1;
-        }
-        let g = SYNC.lock().unwrap();
-        if a.load(Ordering::SeqCst) == 1 {
-            let _ = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20));
+            1
         }
     }
 }
 /// InitOnceComplete(once, flags, context): INIT_ONCE_INIT_FAILED (4) lets the next caller try
 fn InitOnceComplete(c: &mut Ctx) -> u32 {
     let (once, flags, ctx) = (c.a(0), c.a(1), c.a(2));
-    let a = atomic(once);
-    if a.load(Ordering::SeqCst) != 1 || ctx & 3 != 0 {
+    if ctx & 3 != 0 || !SYNC.once_complete(atomic(once), if flags & 4 != 0 { 0 } else { ctx | 2 }) {
         last_error(87);
         return 0;
     }
-    a.store(if flags & 4 != 0 { 0 } else { ctx | 2 }, Ordering::SeqCst);
-    let _g = SYNC.lock().unwrap();
-    SYNC_CV.notify_all();
     1
 }
 fn InitOnceInitialize(c: &mut Ctx) -> u32 {

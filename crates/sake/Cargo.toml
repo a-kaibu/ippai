@@ -11,6 +11,7 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 koji = { path = "../koji" }
 kura = { path = "../kura" }
+waits = { path = "../waits" }
 hlslc = { path = "../hlslc" }
 dxwgsl = { path = "../dxwgsl" }
 vorbis = { path = "../vorbis" }

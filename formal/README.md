@@ -18,6 +18,8 @@
 | Texel conversion (`d3d9/format.rs`, `d3d11/format.rs`) against references written from the Direct3D docs | exhaustive tests: every texel of every 16- and 8-bit format, every DXT endpoint pair per channel in both modes, every DXT5 alpha pair and code, every f32 → f16 (against `half`, IEEE round to nearest even) | `cargo test -p kura --release format` |
 | UNORM expansion, pitch/row arithmetic of every D3D9 and DXGI format, window rectangle algebra | Kani proofs (`#[cfg(kani)] mod proofs`) for all inputs in the API's limits | `formal/kani.sh` |
 | Direct3D 9/11 and OpenGL viewports and scissors (`rects9`, `rects11` in `render/d3d.rs`) | Kani: for every target size and every viewport, depth range and scissor (NaN and infinities too), what reaches setViewport / setScissorRect is what WebGPU accepts: inside the target as WebGPU adds it up, depths in 0..1 | `formal/kani.sh` |
+| Win32's user-mode locks on guest memory (`crates/waits`, used by sake's `k32`): critical sections (with the guest's own `lock xchg` leave of `fast.rs`), SRW locks, condition variables over both, INIT_ONCE (ExecuteOnce, Begin/Complete), WaitOnAddress, and their stand-still for save states | loom: every interleaving up to 3 preemptions (4 daily) with loom's weak-memory model and no timeouts on the safety-net waits: what each lock guards is never raced, counts come out exact, no wakeup is lost, readers share, INIT_ONCE runs once (and again after a failure), a waiting thread stands still holding none of the locks; `tests/threads.rs` the same at scale on real threads | `formal/loom.sh` |
+| koji's EFLAGS (`flags.rs`, the JIT's lazy flags `lazy.rs`) | Kani: ADD/ADC/SUB/SBB/CMP flags at 8/16/32/64 bits against the SDM's definitions on wide signed integers, Jcc conditions, logic flags; the lazy flags (ADD, SUB, ADC, SBB, LOGIC, INC/DEC keeping CF, SHL/SHR/SAR with the SDM's CF and 1-bit OF) equal to the eager ones, for every operand, carry and count | `formal/kani.sh` |
 | unsafe conversion loops on exactly sized buffers, movie slots across threads, padded GPU uploads | Miri | `formal/miri.sh` |
 | Shader translation (HLSL → DXBC / D3D9 bytecode, D3D9 assembly, GLSL → WGSL): what the shaders compute on a real WebGPU (Chromium's Dawn) against the D3D11.3 functional spec, the D3D9 instruction reference, HLSL constant packing, GLSL 1.20 and std140 | `crates/shaderconf` writes the cases (shader, uniform data per pixel, expected pixel), `tests/shaders.mjs` draws them | `cargo run -q -p shaderconf > c.json && node tests/shaders.mjs c.json` |
 
@@ -39,6 +41,10 @@ Siglus segment ended let later draws keep the segment's stamp (the next frame re
 a changed target); deferred clears did not mark the texture changed for draws sampling it;
 Direct3D 11 depth buffers no draw had used were cleared to 1 by the optimized passes while plain
 ones loaded WebGPU's zeros (they start at 1 now in both).
+
+loom found: a reader of an SRW lock gave up when another reader's count landed between its
+load and its exchange, and waited for a release (20 ms, or for ever where the readers holding it
+wait for it: three readers that each hold the lock until all have it deadlocked); it tries again now.
 
 Kani found: a viewport whose x + width, rounded in f32, came out past the target by one ulp
 (a WebGPU validation error, the draw lost); the D3D9 path passed MinZ/MaxZ outside 0..1 and NaN

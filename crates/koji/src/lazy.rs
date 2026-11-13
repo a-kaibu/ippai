@@ -109,3 +109,84 @@ mod tests {
         }
     }
 }
+
+/// Kani: what the JIT records (the operation and its operands) gives the flags the
+/// interpreter's eager helpers give, and shifts give the SDM's (Vol. 2 SAL/SAR/SHL/SHR: CF the
+/// last bit shifted out, OF for 1-bit shifts only), for every operand, count and width.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn any_bits() -> u32 {
+        let k: u8 = kani::any_where(|&k| k < 3);
+        8 << k
+    }
+    fn lazy(kind: u32, bits: u32, a: u64, b: u64, c: u32, r: u64) -> Lazy {
+        Lazy { op: op(kind, bits), c, a, b, r }
+    }
+
+    #[kani::proof]
+    fn arithmetic_is_the_eager_flags() {
+        let bits = any_bits();
+        let (a, b): (u32, u32) = (kani::any(), kani::any());
+        let c: u32 = kani::any_where(|&c| c < 2);
+        assert_eq!(lazy(ADD, bits, a as u64, b as u64, 0, 0).status(), flags::add(a, b, 0, bits).1);
+        assert_eq!(lazy(SUB, bits, a as u64, b as u64, 0, 0).status(), flags::sub(a, b, 0, bits).1);
+        assert_eq!(lazy(ADC, bits, a as u64, b as u64, c, 0).status(), flags::add(a, b, c, bits).1);
+        assert_eq!(lazy(SBB, bits, a as u64, b as u64, c, 0).status(), flags::sub(a, b, c, bits).1);
+        assert_eq!(lazy(LOGIC, bits, 0, 0, 0, a as u64).status(), flags::logic(a, bits));
+    }
+
+    /// INC / DEC: ADD / SUB of 1 that keep CF.
+    #[kani::proof]
+    fn inc_dec_keep_cf() {
+        let bits = any_bits();
+        let a: u32 = kani::any();
+        let cf: u32 = kani::any_where(|&c| c == 0 || c == CF);
+        assert_eq!(lazy(INC, bits, a as u64, 0, cf, 0).status(), (flags::add(a, 1, 0, bits).1 & !CF) | cf);
+        assert_eq!(lazy(DEC, bits, a as u64, 0, cf, 0).status(), (flags::sub(a, 1, 0, bits).1 & !CF) | cf);
+    }
+
+    fn result_flags(r: u32, bits: u32) -> u32 {
+        flags::szp(r, bits)
+    }
+
+    #[kani::proof]
+    fn shifts_are_the_sdm_shifts() {
+        let bits = any_bits();
+        let a: u32 = kani::any::<u32>() & flags::mask(bits);
+        let n: u32 = kani::any_where(|&n| (1..32).contains(&n));
+        let top = |v: u32| (v >> (bits - 1)) & 1;
+        // SHL
+        let r = if n >= bits { 0 } else { (a << n) & flags::mask(bits) };
+        let f = lazy(SHL, bits, a as u64, n as u64, 0, 0).status();
+        assert_eq!(f & (ZF | SF | PF), result_flags(r, bits));
+        if n <= bits {
+            assert_eq!(f & CF != 0, (a >> (bits - n)) & 1 == 1);
+        }
+        if n == 1 {
+            assert_eq!(f & OF != 0, top(r) != (a >> (bits - 1)) & 1);
+        }
+        // SHR
+        let r = if n >= bits { 0 } else { a >> n };
+        let f = lazy(SHR, bits, a as u64, n as u64, 0, 0).status();
+        assert_eq!(f & (ZF | SF | PF), result_flags(r, bits));
+        if n <= bits {
+            assert_eq!(f & CF != 0, (a >> (n - 1)) & 1 == 1);
+        }
+        if n == 1 {
+            assert_eq!(f & OF != 0, top(a) == 1);
+        }
+        // SAR: the sign bit fills
+        let neg = top(a) == 1;
+        let sx = if neg { a as i64 - (1i64 << bits) } else { a as i64 };
+        let r = ((sx >> n.min(63)) as u32) & flags::mask(bits);
+        let f = lazy(SAR, bits, a as u64, n as u64, 0, 0).status();
+        assert_eq!(f & (ZF | SF | PF), result_flags(r, bits));
+        let last_out = if n <= bits { (sx >> (n - 1)) & 1 == 1 } else { neg };
+        assert_eq!(f & CF != 0, last_out);
+        if n == 1 {
+            assert_eq!(f & OF, 0);
+        }
+    }
+}

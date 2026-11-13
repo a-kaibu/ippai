@@ -114,6 +114,38 @@ jobs:
       - name: Proofs
         run: formal/kani.sh
 
+  # (every interleaving of the Win32 lock words, crates/waits: formal/loom.sh)
+  loom:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/loom
+          key: loom-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            loom-${{ runner.os }}-${{ env.RUST_KEY }}-
+      - name: Interleavings
+        # (deeper on the daily run)
+        run: LOOM_MAX_PREEMPTIONS=${{ github.event_name == 'schedule' && '4' || '3' }} formal/loom.sh
+      - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
+        run: python3 tools/ci/cache-prune.py target/loom
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/loom
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
   miri:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
