@@ -1,0 +1,7 @@
+hook set: 1
+empty queue: 0, calls 0
+PM_NOREMOVE: 1, calls 1, flag 0, msg app+1, wParam 42
+PM_REMOVE: 1, calls 2, flag 1, wParam 42
+GetMessage: 1, calls 3, flag 1, msg app+2, wParam 5
+unhook: 1
+after unhook: 1, calls 3, wParam 7

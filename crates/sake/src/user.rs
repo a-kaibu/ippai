@@ -3539,6 +3539,7 @@ fn get_message(c: &mut Ctx, p: u32, hwnd: u32, lo: u32, hi: u32) -> u32 {
                 s.last_msg_pos = (m.x, m.y);
                 s.last_msg_time = m.time;
             });
+            getmsg_hooks(c.cpu, p, true);
             return (m.msg != 0x12) as u32;
         }
         wait_msgs(&[], false, 0xffff_ffff);
@@ -3564,6 +3565,7 @@ fn peek(c: &mut Ctx) -> u32 {
                 s.last_msg_pos = (m.x, m.y);
                 s.last_msg_time = m.time;
             });
+            getmsg_hooks(c.cpu, p, flags & 1 != 0);
             1
         }
         None => {
@@ -4501,25 +4503,35 @@ fn MessageBoxIndirectW(c: &mut Ctx) -> u32 {
 /// Hooks the thread's code calls (handle, WH_* id, procedure, thread; 0 = every thread):
 /// WH_CBT (MFC's CWnd::CreateEx attaches the window and subclasses it in HCBT_CREATEWND),
 /// WH_CALLWNDPROC and WH_CALLWNDPROCRET around every sent message (Softhouse-chara's pgsv.dll
-/// answers its own message 0x7771 to the game's window in one). Other hooks are accepted and
+/// answers its own message 0x7771 to the game's window in one), WH_GETMESSAGE on every message
+/// GetMessage / PeekMessage hands out (LiveMaker's live.dll). Other hooks are accepted and
 /// never called. CallNextHookEx does nothing: every hook of a chain is called, newest first.
 static HOOKS: Mutex<Vec<(u32, u32, u32, u32)>> = Mutex::new(Vec::new());
 /// WH_CALLWNDPROC(RET) hooks set: sending skips the hook lookup when none are
 static SEND_HOOKS: AtomicU32 = AtomicU32::new(0);
 static NEXT_HOOK: AtomicU32 = AtomicU32::new(0x5000);
+/// WH_GETMESSAGE hooks set: GetMessage / PeekMessage skip the lookup when none are
+static GETMSG_HOOKS: AtomicU32 = AtomicU32::new(0);
+const WH_GETMESSAGE: u32 = 3;
 const WH_CALLWNDPROC: u32 = 4;
 const WH_CBT: u32 = 5;
 const WH_CALLWNDPROCRET: u32 = 12;
 fn set_hook(c: &mut Ctx) -> u32 {
     let h = NEXT_HOOK.fetch_add(4, Ordering::Relaxed);
     let id = c.a(0);
-    if matches!(id, WH_CBT | WH_CALLWNDPROC | WH_CALLWNDPROCRET) {
+    if matches!(id, WH_CBT | WH_CALLWNDPROC | WH_CALLWNDPROCRET | WH_GETMESSAGE) {
         // (a hook for this thread when it names none and is not a DLL's global one; CBT
         // hooks always this thread's, as before)
         let tid = if c.a(3) != 0 { c.a(3) } else if id == WH_CBT || c.a(2) == 0 { crate::cur().tid } else { 0 };
         HOOKS.lock().unwrap().push((h, id, c.a(1), tid));
-        if id != WH_CBT {
-            SEND_HOOKS.fetch_add(1, Ordering::Relaxed);
+        match id {
+            WH_CBT => {}
+            WH_GETMESSAGE => {
+                GETMSG_HOOKS.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {
+                SEND_HOOKS.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
     h
@@ -4533,8 +4545,14 @@ fn SetWindowsHookExW(c: &mut Ctx) -> u32 {
 fn UnhookWindowsHookEx(c: &mut Ctx) -> u32 {
     let mut g = HOOKS.lock().unwrap();
     if let Some(i) = g.iter().position(|x| x.0 == c.a(0)) {
-        if g.remove(i).1 != WH_CBT {
-            SEND_HOOKS.fetch_sub(1, Ordering::Relaxed);
+        match g.remove(i).1 {
+            WH_CBT => {}
+            WH_GETMESSAGE => {
+                GETMSG_HOOKS.fetch_sub(1, Ordering::Relaxed);
+            }
+            _ => {
+                SEND_HOOKS.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
     1
@@ -4542,6 +4560,17 @@ fn UnhookWindowsHookEx(c: &mut Ctx) -> u32 {
 /// The procedures of thread `tid`'s hooks of kind `id`, newest first
 fn hooks_of(id: u32, tid: u32) -> Vec<u32> {
     HOOKS.lock().unwrap().iter().rev().filter(|x| x.1 == id && (x.3 == tid || x.3 == 0)).map(|x| x.2).collect()
+}
+/// The thread's WH_GETMESSAGE hooks for the message GetMessage / PeekMessage just wrote at `p`
+/// (HC_ACTION, PM_REMOVE or PM_NOREMOVE, the MSG: a hook may change it before the program sees
+/// it), newest first.
+fn getmsg_hooks(cpu: &mut koji::Cpu, p: u32, removed: bool) {
+    if GETMSG_HOOKS.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    for h in hooks_of(WH_GETMESSAGE, crate::cur().tid) {
+        crate::call(cpu, h, &[0, removed as u32, p]);
+    }
 }
 /// The thread's CBT hooks with (code, wparam, lparam); true when one refuses.
 fn cbt(c: &mut Ctx, code: u32, wp: u32, lp: u32) -> bool {
