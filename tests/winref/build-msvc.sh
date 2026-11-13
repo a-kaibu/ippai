@@ -12,7 +12,7 @@ for t in msvcpsync msvcstream msvcrtti msvcseh; do
   mv "$OUT/$t.exe" "$OUT/host_$t-64.exe"
 done
 # (x86 on msvcrt.dll: build-msvc32.sh)
-for t in msvcseh mfc42; do
+for t in msvcseh mfc42 mfc42u; do
   "$ROOT/host/tests/build-msvc32.sh" "$t" "$OUT"
   mv "$OUT/$t.exe" "$OUT/host_$t-32.exe"
 done

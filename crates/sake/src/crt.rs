@@ -1427,6 +1427,10 @@ fn legacy<T: Unit>(fmt: u32, va: &mut VaArgs) -> Option<Vec<T>> {
 pub(crate) fn vsprintf_a(fmt: u32, va: u32) -> Option<Vec<u8>> {
     legacy::<u8>(fmt, &mut VaArgs::stack(va))
 }
+/// vswprintf's (MFC42U's CString::Format)
+pub(crate) fn vsprintf_w(fmt: u32, va: u32) -> Option<Vec<u16>> {
+    legacy::<u16>(fmt, &mut VaArgs::stack(va))
+}
 /// sprintf / vsprintf / swprintf (no count): all of it and the NUL
 fn put_all<T: Unit>(out: u32, s: Option<Vec<T>>) -> u32 {
     let Some(s) = s else { return u32::MAX };

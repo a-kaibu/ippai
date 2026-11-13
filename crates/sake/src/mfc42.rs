@@ -21,12 +21,98 @@
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{self, implement, Ctx, Handler};
-use crate::mem::{self, cstr, r16, r32, w32, w8};
+use crate::mem::{self, r16, r32, w16, w32, w8};
 
-const DLL: &str = "mfc42";
+/// The MFC DLLs here: one implementation, registered under each DLL's decorated names (a name
+/// says its argument types: `PBD` const char*, `PBG` const unsigned short*, so a handler means
+/// the same in every DLL that exports its name).
+pub const DLLS: &[&str] = &["mfc42", "mfc42u"];
+/// The program imports mfc42u.dll (MFC 4.2's Unicode build: TCHAR is WCHAR, CString holds
+/// UTF-16, the windows MFC makes are Unicode ones)
+static WIDE: AtomicBool = AtomicBool::new(false);
+/// An import from `dll` (a key): the MFC the program runs on
+pub fn use_dll(dll: &str) {
+    if dll == "mfc42u" {
+        WIDE.store(true, Ordering::Relaxed);
+    }
+}
+pub fn wide() -> bool {
+    WIDE.load(Ordering::Relaxed)
+}
+/// The DLL of the MFC in use (its exports: the traps MFC's own objects point at)
+fn dll() -> &'static str {
+    if wide() { "mfc42u" } else { "mfc42" }
+}
+
+// ---------------------------------------------------------------------------------------------
+// TCHAR text: sake holds it as units (an ANSI build's bytes, a Unicode build's UTF-16 units)
+
+/// Bytes of a TCHAR
+fn unit() -> u32 {
+    if wide() { 2 } else { 1 }
+}
+/// `n` TCHARs at `p`
+fn rd(p: u32, n: u32) -> Vec<u16> {
+    if wide() { (0..n).map(|i| r16(p + 2 * i)).collect() } else { mem::slice(p, n).iter().map(|&b| b as u16).collect() }
+}
+/// TCHARs written at `p`
+fn wr(p: u32, t: &[u16]) {
+    if wide() {
+        for (i, &u) in t.iter().enumerate() {
+            w16(p + 2 * i as u32, u);
+        }
+    } else {
+        let b: Vec<u8> = t.iter().map(|&u| u as u8).collect();
+        mem::write(p, &b);
+    }
+}
+/// The TCHAR at index `i` of `p` set to `u` (a NUL: 0)
+fn wr_at(p: u32, i: u32, u: u16) {
+    if wide() { w16(p + 2 * i, u) } else { w8(p + i, u as u8) }
+}
+/// A NUL-terminated TCHAR string (NULL: empty)
+fn sz(p: u32) -> Vec<u16> {
+    match p {
+        0 => Vec::new(),
+        _ if wide() => mem::wstr(p),
+        _ => mem::cstr(p).into_iter().map(|b| b as u16).collect(),
+    }
+}
+/// Text from ANSI bytes (a Unicode build converts them: the ANSI code page)
+fn from_a(b: &[u8]) -> Vec<u16> {
+    if wide() { crate::text::mb2w(crate::text::acp(), b) } else { b.iter().map(|&b| b as u16).collect() }
+}
+/// Text from UTF-16 (an ANSI build converts it)
+fn from_w(w: &[u16]) -> Vec<u16> {
+    if wide() { w.to_vec() } else { crate::text::w2mb(crate::text::acp(), w).into_iter().map(|b| b as u16).collect() }
+}
+/// An `LPCSTR` argument (NULL: empty)
+fn asz(p: u32) -> Vec<u16> {
+    if p == 0 { Vec::new() } else { from_a(&mem::cstr(p)) }
+}
+/// An `LPCWSTR` argument (NULL: empty)
+fn wsz(p: u32) -> Vec<u16> {
+    if p == 0 { Vec::new() } else { from_w(&mem::wstr(p)) }
+}
+/// A `TCHAR` argument of a `D` (char) or `G` (unsigned short) parameter
+fn ach(v: u32) -> Vec<u16> {
+    from_a(&[v as u8])
+}
+fn wch(v: u32) -> Vec<u16> {
+    from_w(&[v as u16])
+}
+/// Text for ASCII `s`
+fn lit(s: &str) -> Vec<u16> {
+    s.bytes().map(|b| b as u16).collect()
+}
+/// Text as a Rust string (numbers, messages)
+fn string(t: &[u16]) -> String {
+    if wide() { String::from_utf16_lossy(t) } else { crate::text::a2s(&t.iter().map(|&u| u as u8).collect::<Vec<_>>()) }
+}
 
 // ---------------------------------------------------------------------------------------------
 // calling helpers
@@ -47,8 +133,16 @@ fn vcall(c: &mut Ctx, obj: u32, slot: u32, args: &[u32]) -> u32 {
     let f = r32(r32(obj) + 4 * slot);
     tcall(c, f, obj, args)
 }
-/// An API of another DLL.
+/// An API of another DLL (its W form for a Unicode MFC: "SendMessageA" is SendMessageW there)
 fn win(c: &mut Ctx, dll: &str, name: &str, args: &[u32]) -> u32 {
+    let w;
+    let name = match name.strip_suffix('A') {
+        Some(stem) if wide() && api::exports(dll, &format!("{stem}W")) => {
+            w = format!("{stem}W");
+            &w
+        }
+        _ => name,
+    };
     let f = api::export(dll, name);
     c.call(f, args)
 }
@@ -68,10 +162,10 @@ fn free(p: u32) {
     }
 }
 /// A NUL-terminated copy of `s` (MFC's _tcsdup: the C runtime's heap)
-fn strdup(s: &[u8]) -> u32 {
-    let p = alloc(s.len() as u32 + 1);
-    mem::write(p, s);
-    w8(p + s.len() as u32, 0);
+fn strdup(s: &[u16]) -> u32 {
+    let p = alloc((s.len() as u32 + 1) * unit());
+    wr(p, s);
+    wr_at(p, s.len() as u32, 0);
     p
 }
 /// Scratch guest memory for an out-parameter, freed when dropped.
@@ -126,10 +220,10 @@ pub mod cstring {
     pub fn cap(p: u32) -> u32 {
         r32(p - 4)
     }
-    /// The bytes of the CString at `s` (the object).
-    pub fn bytes(s: u32) -> Vec<u8> {
+    /// The text of the CString at `s` (the object).
+    pub fn bytes(s: u32) -> Vec<u16> {
         let p = r32(s);
-        mem::slice(p, len(p)).to_vec()
+        rd(p, len(p))
     }
     /// AllocBuffer's sizes: 64, 128, 256 and 512-character blocks (MFC's fixed allocators),
     /// the exact length above
@@ -148,11 +242,11 @@ pub mod cstring {
             return nil();
         }
         let a = alloc_len(n);
-        let d = mem::heap_alloc_small(12 + a + 1, false);
+        let d = mem::heap_alloc_small(12 + (a + 1) * unit(), false);
         w32(d, 1);
         w32(d + 4, n);
         w32(d + 8, a);
-        w8(d + 12 + n, 0);
+        wr_at(d + 12, n, 0);
         d + 12
     }
     /// Releases a buffer: the last reference frees it (InterlockedDecrement, <= 0)
@@ -184,28 +278,32 @@ pub mod cstring {
             alloc_buffer(s, n);
         }
     }
+    /// The length of the buffer `p` set to `n` (and its NUL)
+    pub fn set_len(p: u32, n: u32) {
+        w32(p - 8, n);
+        wr_at(p, n, 0);
+    }
     /// AssignCopy
-    pub fn assign(s: u32, src: &[u8]) {
+    pub fn assign(s: u32, src: &[u16]) {
         let n = src.len() as u32;
         alloc_before_write(s, n);
         let p = r32(s);
         if p == nil() {
             return;
         }
-        mem::write(p, src);
-        w32(p - 8, n);
-        w8(p + n, 0);
+        wr(p, src);
+        set_len(p, n);
     }
     /// CopyBeforeWrite: an own buffer (a shared one copied)
     pub fn copy_before_write(s: u32) {
         let p = r32(s);
         if refs(p) > 1 {
-            let old = mem::slice(p, len(p)).to_vec();
+            let old = rd(p, len(p));
             release(s);
             alloc_buffer(s, old.len() as u32);
             let q = r32(s);
             if q != nil() {
-                mem::write(q, &old);
+                wr(q, &old);
             }
         }
     }
@@ -216,7 +314,7 @@ pub mod cstring {
             return;
         }
         if (refs(p) < 0 && p != nil()) || refs(q) < 0 {
-            let b = mem::slice(q, len(q)).to_vec();
+            let b = rd(q, len(q));
             assign(s, &b);
         } else {
             release(s);
@@ -225,45 +323,42 @@ pub mod cstring {
         }
     }
     /// ConcatCopy into a new string `s`
-    pub fn concat_new(s: u32, a: &[u8], b: &[u8]) {
+    pub fn concat_new(s: u32, a: &[u16], b: &[u16]) {
         let n = (a.len() + b.len()) as u32;
         alloc_buffer(s, n);
         let p = r32(s);
         if n != 0 {
-            mem::write(p, a);
-            mem::write(p + a.len() as u32, b);
+            wr(p, a);
+            wr(p + a.len() as u32 * unit(), b);
         }
     }
     /// ConcatInPlace
-    pub fn append(s: u32, b: &[u8]) {
+    pub fn append(s: u32, b: &[u16]) {
         if b.is_empty() {
             return;
         }
         let p = r32(s);
         let n = len(p);
         if refs(p) > 1 || n + b.len() as u32 > cap(p) {
-            let a = mem::slice(p, n).to_vec();
+            let a = rd(p, n);
             concat_new(s, &a, b);
             release_data(p);
         } else {
-            mem::write(p + n, b);
-            let m = n + b.len() as u32;
-            w32(p - 8, m);
-            w8(p + m, 0);
+            wr(p + n * unit(), b);
+            set_len(p, n + b.len() as u32);
         }
     }
     /// GetBufferSetLength / GetBuffer(n): an own buffer of at least `n` characters
     pub fn get_buffer(s: u32, n: u32) -> u32 {
         let p = r32(s);
         if refs(p) > 1 || n > cap(p) {
-            let old = mem::slice(p, len(p)).to_vec();
+            let old = rd(p, len(p));
             release(s);
             alloc_buffer(s, n.max(old.len() as u32));
             let q = r32(s);
-            mem::write(q, &old);
             if q != nil() {
-                w32(q - 8, old.len() as u32);
-                w8(q + old.len() as u32, 0);
+                wr(q, &old);
+                set_len(q, old.len() as u32);
             }
         }
         r32(s)
@@ -275,21 +370,21 @@ pub mod cstring {
         if p == nil() {
             return;
         }
-        let n = if n < 0 { cstr(p).len() as u32 } else { n as u32 };
-        w32(p - 8, n);
-        w8(p + n, 0);
+        let n = if n < 0 { sz(p).len() as u32 } else { n as u32 };
+        set_len(p, n);
     }
-    /// _istspace for TrimLeft / TrimRight (the single-byte C locale: tab..CR and space)
-    pub fn is_space(b: u8) -> bool {
-        b == b' ' || (9..=13).contains(&b)
+    /// _istspace for TrimLeft / TrimRight (the C locale: tab..CR and space; iswspace's
+    /// Unicode spaces for a Unicode build)
+    pub fn is_space(u: u16) -> bool {
+        u == 0x20 || (9..=13).contains(&u) || (wide() && matches!(u, 0x85 | 0xa0 | 0x1680 | 0x2000..=0x200a | 0x2028 | 0x2029 | 0x202f | 0x205f | 0x3000))
     }
     /// TrimLeft's and TrimRight's result for `b`, double-byte aware (Shift-JIS lead bytes keep
     /// their trail byte: _tcsinc)
-    pub fn trim_left(b: &[u8]) -> &[u8] {
+    pub fn trim_left(b: &[u16]) -> &[u16] {
         let i = b.iter().position(|&x| !is_space(x)).unwrap_or(b.len());
         &b[i..]
     }
-    pub fn trim_right(b: &[u8]) -> &[u8] {
+    pub fn trim_right(b: &[u16]) -> &[u16] {
         // (the last run of spaces that starts at a character boundary)
         let mut i = 0;
         let mut cut = None;
@@ -299,12 +394,12 @@ pub mod cstring {
                 i += 1;
             } else {
                 cut = None;
-                i += if crate::text::is_lead(b[i]) && i + 1 < b.len() { 2 } else { 1 };
+                i += if !wide() && crate::text::is_lead(b[i] as u8) && i + 1 < b.len() { 2 } else { 1 };
             }
         }
         &b[..cut.unwrap_or(b.len())]
     }
-    pub fn set(s: u32, b: &[u8]) {
+    pub fn set(s: u32, b: &[u16]) {
         if b.is_empty() {
             release(s);
         } else {
@@ -332,26 +427,35 @@ fn cs_ctor_copy(c: &mut Ctx) -> u32 {
     }
     s
 }
-fn cs_ctor_sz(c: &mut Ctx) -> u32 {
+/// An `LPCSTR` (W false) or `LPCWSTR` (W true) argument as text
+fn arg<const W: bool>(p: u32) -> Vec<u16> {
+    if W { wsz(p) } else { asz(p) }
+}
+/// A `char` (W false) or `unsigned short` (W true) argument as text
+fn chr<const W: bool>(v: u32) -> Vec<u16> {
+    if W { wch(v) } else { ach(v) }
+}
+fn cs_ctor_sz<const W: bool>(c: &mut Ctx) -> u32 {
     let (s, p) = (this(c), c.a(0));
     cs::init(s);
     if p != 0 && p < 0x10000 {
         load_string(c, s, p);
     } else if p != 0 {
-        cs::assign(s, &cstr(p));
+        cs::assign(s, &arg::<W>(p));
     }
     s
 }
-fn cs_ctor_ch(c: &mut Ctx) -> u32 {
-    let (s, ch, n) = (this(c), c.a(0) as u8, c.i(1).max(0) as usize);
+fn cs_ctor_ch<const W: bool>(c: &mut Ctx) -> u32 {
+    let (s, ch, n) = (this(c), chr::<W>(c.a(0)), c.i(1).max(0) as usize);
     cs::init(s);
-    cs::assign(s, &vec![ch; n]);
+    cs::assign(s, &ch.repeat(n));
     s
 }
-fn cs_ctor_sz_n(c: &mut Ctx) -> u32 {
+fn cs_ctor_sz_n<const W: bool>(c: &mut Ctx) -> u32 {
     let (s, p, n) = (this(c), c.a(0), c.i(1).max(0) as u32);
     cs::init(s);
-    cs::assign(s, mem::slice(p, n));
+    let t = if W { from_w(&(0..n).map(|i| r16(p + 2 * i)).collect::<Vec<_>>()) } else { from_a(mem::slice(p, n)) };
+    cs::assign(s, &t);
     s
 }
 fn cs_dtor(c: &mut Ctx) -> u32 {
@@ -363,15 +467,14 @@ fn cs_assign_string(c: &mut Ctx) -> u32 {
     cs::assign_string(s, c.a(0));
     s
 }
-fn cs_assign_sz(c: &mut Ctx) -> u32 {
+fn cs_assign_sz<const W: bool>(c: &mut Ctx) -> u32 {
     let (s, p) = (this(c), c.a(0));
-    let b = if p == 0 { Vec::new() } else { cstr(p) };
-    cs::assign(s, &b);
+    cs::assign(s, &arg::<W>(p));
     s
 }
-fn cs_assign_ch(c: &mut Ctx) -> u32 {
+fn cs_assign_ch<const W: bool>(c: &mut Ctx) -> u32 {
     let s = this(c);
-    cs::assign(s, &[c.a(0) as u8]);
+    cs::assign(s, &chr::<W>(c.a(0)));
     s
 }
 fn cs_append_string(c: &mut Ctx) -> u32 {
@@ -380,20 +483,15 @@ fn cs_append_string(c: &mut Ctx) -> u32 {
     cs::append(s, &b);
     s
 }
-fn cs_append_sz(c: &mut Ctx) -> u32 {
+fn cs_append_sz<const W: bool>(c: &mut Ctx) -> u32 {
     let (s, p) = (this(c), c.a(0));
-    if p != 0 {
-        cs::append(s, &cstr(p));
-    }
+    cs::append(s, &arg::<W>(p));
     s
 }
-fn cs_append_ch(c: &mut Ctx) -> u32 {
+fn cs_append_ch<const W: bool>(c: &mut Ctx) -> u32 {
     let s = this(c);
-    cs::append(s, &[c.a(0) as u8]);
+    cs::append(s, &chr::<W>(c.a(0)));
     s
-}
-fn sz(p: u32) -> Vec<u8> {
-    if p == 0 { Vec::new() } else { cstr(p) }
 }
 /// operator+(...) (stdcall, the result through the hidden first argument)
 fn cs_plus_ss(c: &mut Ctx) -> u32 {
@@ -401,24 +499,24 @@ fn cs_plus_ss(c: &mut Ctx) -> u32 {
     cs::concat_new(r, &a, &b);
     r
 }
-fn cs_plus_sp(c: &mut Ctx) -> u32 {
-    let (r, a, b) = (c.a(0), cs::bytes(c.a(1)), sz(c.a(2)));
+fn cs_plus_sp<const W: bool>(c: &mut Ctx) -> u32 {
+    let (r, a, b) = (c.a(0), cs::bytes(c.a(1)), arg::<W>(c.a(2)));
     cs::concat_new(r, &a, &b);
     r
 }
-fn cs_plus_ps(c: &mut Ctx) -> u32 {
-    let (r, a, b) = (c.a(0), sz(c.a(1)), cs::bytes(c.a(2)));
+fn cs_plus_ps<const W: bool>(c: &mut Ctx) -> u32 {
+    let (r, a, b) = (c.a(0), arg::<W>(c.a(1)), cs::bytes(c.a(2)));
     cs::concat_new(r, &a, &b);
     r
 }
-fn cs_plus_sc(c: &mut Ctx) -> u32 {
-    let (r, a, b) = (c.a(0), cs::bytes(c.a(1)), c.a(2) as u8);
-    cs::concat_new(r, &a, &[b]);
+fn cs_plus_sc<const W: bool>(c: &mut Ctx) -> u32 {
+    let (r, a, b) = (c.a(0), cs::bytes(c.a(1)), chr::<W>(c.a(2)));
+    cs::concat_new(r, &a, &b);
     r
 }
-fn cs_plus_cs(c: &mut Ctx) -> u32 {
-    let (r, a, b) = (c.a(0), c.a(1) as u8, cs::bytes(c.a(2)));
-    cs::concat_new(r, &[a], &b);
+fn cs_plus_cs<const W: bool>(c: &mut Ctx) -> u32 {
+    let (r, a, b) = (c.a(0), chr::<W>(c.a(1)), cs::bytes(c.a(2)));
+    cs::concat_new(r, &a, &b);
     r
 }
 fn cs_empty(c: &mut Ctx) -> u32 {
@@ -430,7 +528,7 @@ fn cs_empty(c: &mut Ctx) -> u32 {
     if cs::refs(p) >= 0 {
         cs::release(s);
     } else {
-        cs::assign(s, b"");
+        cs::assign(s, &[]);
     }
     0
 }
@@ -441,9 +539,8 @@ fn cs_trim_left(c: &mut Ctx) -> u32 {
     let t = cs::trim_left(&b).to_vec();
     if t.len() != b.len() {
         let p = r32(s);
-        mem::write(p, &t);
-        w32(p - 8, t.len() as u32);
-        w8(p + t.len() as u32, 0);
+        wr(p, &t);
+        cs::set_len(p, t.len() as u32);
     }
     0
 }
@@ -453,9 +550,7 @@ fn cs_trim_right(c: &mut Ctx) -> u32 {
     let b = cs::bytes(s);
     let n = cs::trim_right(&b).len() as u32;
     if n != b.len() as u32 {
-        let p = r32(s);
-        w32(p - 8, n);
-        w8(p + n, 0);
+        cs::set_len(r32(s), n);
     }
     0
 }
@@ -466,8 +561,7 @@ fn cs_get_buffer_set_length(c: &mut Ctx) -> u32 {
     let (s, n) = (this(c), c.i(0).max(0) as u32);
     let p = cs::get_buffer(s, n);
     if p != cs::nil() {
-        w32(p - 8, n);
-        w8(p + n, 0);
+        cs::set_len(p, n);
     }
     p
 }
@@ -475,8 +569,9 @@ fn cs_release_buffer(c: &mut Ctx) -> u32 {
     cs::release_buffer(this(c), c.i(0));
     0
 }
+/// Find(ch) / ReverseFind(ch) (a TCHAR: the `D` or `G` parameter of the DLL's own build)
 fn cs_find_ch(c: &mut Ctx) -> u32 {
-    let (b, ch) = (cs::bytes(this(c)), c.a(0) as u8);
+    let (b, ch) = (cs::bytes(this(c)), c.a(0) as u16 & if wide() { 0xffff } else { 0xff });
     b.iter().position(|&x| x == ch).map_or(u32::MAX, |i| i as u32)
 }
 fn cs_find_sz(c: &mut Ctx) -> u32 {
@@ -487,25 +582,44 @@ fn cs_find_sz(c: &mut Ctx) -> u32 {
     b.windows(n.len()).position(|w| w == n.as_slice()).map_or(u32::MAX, |i| i as u32)
 }
 fn cs_reverse_find(c: &mut Ctx) -> u32 {
-    let (b, ch) = (cs::bytes(this(c)), c.a(0) as u8);
+    let (b, ch) = (cs::bytes(this(c)), c.a(0) as u16 & if wide() { 0xffff } else { 0xff });
     b.iter().rposition(|&x| x == ch).map_or(u32::MAX, |i| i as u32)
+}
+/// _tcsupr / _tcslwr: ASCII letters (the C locale; a double-byte character's trail byte kept)
+fn change_case(b: &mut [u16], upper: bool) {
+    let mut i = 0;
+    while i < b.len() {
+        let u = b[i];
+        if !wide() && crate::text::is_lead(u as u8) {
+            i += 2;
+            continue;
+        }
+        if upper && (0x61..=0x7a).contains(&u) {
+            b[i] = u - 0x20;
+        } else if !upper && (0x41..=0x5a).contains(&u) {
+            b[i] = u + 0x20;
+        }
+        i += 1;
+    }
 }
 fn cs_make_upper(c: &mut Ctx) -> u32 {
     let s = this(c);
     cs::copy_before_write(s);
-    let b = cs::bytes(s).to_ascii_uppercase();
-    mem::write(r32(s), &b);
+    let mut b = cs::bytes(s);
+    change_case(&mut b, true);
+    wr(r32(s), &b);
     0
 }
 fn cs_make_lower(c: &mut Ctx) -> u32 {
     let s = this(c);
     cs::copy_before_write(s);
-    let b = cs::bytes(s).to_ascii_lowercase();
-    mem::write(r32(s), &b);
+    let mut b = cs::bytes(s);
+    change_case(&mut b, false);
+    wr(r32(s), &b);
     0
 }
 /// Mid(first, count) / Left(count) / Right(count): a new CString through the hidden argument
-fn sub(b: &[u8], first: i32, count: i32) -> Vec<u8> {
+fn sub(b: &[u16], first: i32, count: i32) -> Vec<u16> {
     let first = first.clamp(0, b.len() as i32) as usize;
     let count = count.clamp(0, (b.len() - first) as i32) as usize;
     b[first..first + count].to_vec()
@@ -543,21 +657,25 @@ fn cs_format(c: &mut Ctx) -> u32 {
         cs::init(t.0);
         load_string(c, t.0, f);
         let p = r32(t.0);
-        let v = crate::crt::vsprintf_a(p, c.esp + 12);
+        let v = vsprintf(p, c.esp + 12);
         cs::release(t.0);
         v
     } else {
-        crate::crt::vsprintf_a(f, c.esp + 12)
+        vsprintf(f, c.esp + 12)
     };
     cs::set(s, &fmt.unwrap_or_default());
     0
 }
+/// _vstprintf's text
+fn vsprintf(fmt: u32, va: u32) -> Option<Vec<u16>> {
+    if wide() { crate::crt::vsprintf_w(fmt, va) } else { crate::crt::vsprintf_a(fmt, va).map(|b| b.into_iter().map(|b| b as u16).collect()) }
+}
 /// LoadString(id): the string resource of the program (or a DLL of its resources)
 fn load_string(c: &mut Ctx, s: u32, id: u32) -> u32 {
-    let buf = Tmp::new(1024);
+    let buf = Tmp::new(1024 * unit());
     let inst = resource_handle(c);
     let n = user(c, "LoadStringA", &[inst, id, buf.0, 1024]);
-    cs::set(s, mem::slice(buf.0, n));
+    cs::set(s, &rd(buf.0, n));
     (n != 0) as u32
 }
 fn cs_load_string(c: &mut Ctx) -> u32 {
@@ -910,6 +1028,13 @@ fn slots(class: &str) -> Vec<&'static str> {
 static VTABLES: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 static DTORS: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
 /// MFC's vtable of `class` (made on first use)
+/// The trap of MFC export `n` (an ANSI name) of the DLL in use: MFC42U's own name for a TCHAR one
+fn export(n: &str) -> u32 {
+    if wide() && !api::exports("mfc42u", n) {
+        return api::export("mfc42u", &unicode_name(n));
+    }
+    api::export(dll(), n)
+}
 pub fn vtable(class: &str) -> u32 {
     if let Some(&v) = VTABLES.lock().unwrap().get_or_insert_with(HashMap::default).get(class) {
         return v;
@@ -918,14 +1043,14 @@ pub fn vtable(class: &str) -> u32 {
     let v = mem::heap_alloc(4 * s.len() as u32, true);
     for (i, n) in s.iter().enumerate() {
         let f = match *n {
-            "" => api::export(DLL, &format!("?GetRuntimeClass@{class}@@UBEPAUCRuntimeClass@@XZ")),
+            "" => export(&format!("?GetRuntimeClass@{class}@@UBEPAUCRuntimeClass@@XZ")),
             "~" => {
                 let f = api::host_fn(&format!("mfc42 {class}::`scalar deleting destructor'"), scalar_deleting_dtor, 4);
                 DTORS.lock().unwrap().get_or_insert_with(HashMap::default).insert(f, class.to_string());
                 f
             }
             n if n.starts_with('-') => api::host_fn(&format!("mfc42 nop{n}"), nop, n[1..].parse().unwrap_or(0)),
-            n => api::export(DLL, n),
+            n => export(n),
         };
         w32(v + 4 * i as u32, f);
     }
@@ -2269,15 +2394,15 @@ fn PrepareEditCtrl(c: &mut Ctx) -> u32 {
     let (dx, id) = (this(c), c.a(0));
     prepare_ctrl(c, dx, id, true)
 }
-/// The window text as bytes
-fn window_text(c: &mut Ctx, h: u32) -> Vec<u8> {
+/// The window text
+fn window_text(c: &mut Ctx, h: u32) -> Vec<u16> {
     let n = user(c, "GetWindowTextLengthA", &[h]);
-    let b = Tmp::new(n + 1);
+    let b = Tmp::new((n + 1) * unit());
     let got = user(c, "GetWindowTextA", &[h, b.0, n + 1]);
-    mem::slice(b.0, got.min(n)).to_vec()
+    rd(b.0, got.min(n))
 }
 /// AfxSetWindowText: set only when it differs (no flicker)
-fn set_window_text(c: &mut Ctx, h: u32, text: &[u8]) {
+fn set_window_text(c: &mut Ctx, h: u32, text: &[u16]) {
     if window_text(c, h) != text {
         let t = strdup(text);
         user(c, "SetWindowTextA", &[h, t]);
@@ -2303,11 +2428,11 @@ fn DDX_Text_int(c: &mut Ctx) -> u32 {
     let h = prepare_ctrl(c, dx, id, true);
     if r32(dx) != 0 {
         let t = window_text(c, h);
-        let s = String::from_utf8_lossy(&t);
+        let s = string(&t);
         let s = s.trim();
         w32(v, s.parse::<i64>().unwrap_or(0) as u32);
     } else {
-        set_window_text(c, h, (r32(v) as i32).to_string().as_bytes());
+        set_window_text(c, h, &lit(&(r32(v) as i32).to_string()));
     }
     0
 }
@@ -2373,7 +2498,7 @@ fn CWinApp_ctor(c: &mut Ctx) -> u32 {
     thread_init(o, "CWinApp");
     mem::fill(o + 0x6c, 0xc4 - 0x6c, 0);
     if name != 0 {
-        w32(o + 0x7c, strdup(&cstr(name)));
+        w32(o + 0x7c, strdup(&sz(name)));
     }
     w32(o + 0xbc, 0x200);
     w32(module_state() + 4, o);
@@ -2406,29 +2531,29 @@ fn CWinApp_dtor(c: &mut Ctx) -> u32 {
 fn set_current_handles(c: &mut Ctx, o: u32) {
     let buf = Tmp::new(520);
     let n = k32(c, "GetModuleFileNameA", &[r32(o + 0x6c), buf.0, 260]);
-    let path = mem::slice(buf.0, n).to_vec();
-    let stem_end = path.iter().rposition(|&b| b == b'.').unwrap_or(path.len());
-    let file_start = path.iter().rposition(|&b| b == b'\\' || b == b'/').map_or(0, |i| i + 1);
+    let path = rd(buf.0, n);
+    let stem_end = path.iter().rposition(|&b| b == b'.' as u16).unwrap_or(path.len());
+    let file_start = file_start(&path);
     let exe = path[file_start..stem_end.max(file_start)].to_vec();
     if r32(o + 0x8c) == 0 {
         w32(o + 0x8c, strdup(&exe));
     }
     if r32(o + 0x7c) == 0 {
-        let t = Tmp::new(256);
+        let t = Tmp::new(256 * unit());
         let inst = resource_handle(c);
         let n = user(c, "LoadStringA", &[inst, 0xe000, t.0, 256]);
-        let name = if n != 0 { mem::slice(t.0, n).to_vec() } else { exe.clone() };
+        let name = if n != 0 { rd(t.0, n) } else { exe.clone() };
         w32(o + 0x7c, strdup(&name));
     }
     w32(module_state() + 0x10, r32(o + 0x7c));
     if r32(o + 0x90) == 0 {
         let mut h = path[..stem_end].to_vec();
-        h.extend_from_slice(b".HLP");
+        h.extend(lit(".HLP"));
         w32(o + 0x90, strdup(&h));
     }
     if r32(o + 0x94) == 0 {
         let mut p = exe;
-        p.extend_from_slice(b".INI");
+        p.extend(lit(".INI"));
         w32(o + 0x94, strdup(&p));
     }
 }
@@ -2718,7 +2843,7 @@ fn GetProfileIntA(c: &mut Ctx) -> u32 {
 fn WriteProfileInt(c: &mut Ctx) -> u32 {
     let (o, sec, key, v) = (this(c), c.a(0), c.a(1), c.a(2));
     let ini = r32(o + 0x94);
-    let t = strdup((v as i32).to_string().as_bytes());
+    let t = strdup(&lit(&(v as i32).to_string()));
     let r = k32(c, "WritePrivateProfileStringA", &[sec, key, t, ini]);
     free(t);
     r
@@ -2727,12 +2852,12 @@ fn WriteProfileInt(c: &mut Ctx) -> u32 {
 fn GetProfileStringA(c: &mut Ctx) -> u32 {
     let (o, r, sec, key, def) = (this(c), c.a(0), c.a(1), c.a(2), c.a(3));
     let ini = r32(o + 0x94);
-    let b = Tmp::new(4096);
-    let d = if def == 0 { strdup(b"") } else { 0 };
+    let b = Tmp::new(4096 * unit());
+    let d = if def == 0 { strdup(&[]) } else { 0 };
     let n = k32(c, "GetPrivateProfileStringA", &[sec, key, if def == 0 { d } else { def }, b.0, 4096, ini]);
     free(d);
     cs::init(r);
-    cs::assign(r, mem::slice(b.0, n));
+    cs::assign(r, &rd(b.0, n));
     r
 }
 fn WriteProfileStringA(c: &mut Ctx) -> u32 {
@@ -2895,7 +3020,7 @@ pub fn os_error_cause(e: u32) -> u32 {
         _ => 1,
     }
 }
-fn new_file_exception(cause: u32, os: u32, name: &[u8]) -> u32 {
+fn new_file_exception(cause: u32, os: u32, name: &[u16]) -> u32 {
     let e = alloc(0x14);
     w32(e, vtable("CFileException"));
     w32(e + 4, 1);
@@ -2905,7 +3030,7 @@ fn new_file_exception(cause: u32, os: u32, name: &[u8]) -> u32 {
     cs::assign(e + 0x10, name);
     e
 }
-fn throw_file(c: &mut Ctx, cause: u32, os: u32, name: &[u8], bytes: u32) -> u32 {
+fn throw_file(c: &mut Ctx, cause: u32, os: u32, name: &[u16], bytes: u32) -> u32 {
     let e = new_file_exception(cause, os, name);
     throw(c, e, "CFileException", bytes)
 }
@@ -2966,7 +3091,7 @@ fn GetErrorMessage_CException(c: &mut Ctx) -> u32 {
         w32(help, 0);
     }
     if max != 0 && buf != 0 {
-        w8(buf, 0);
+        wr_at(buf, 0, 0);
     }
     0
 }
@@ -2999,38 +3124,29 @@ fn GetErrorMessage_CFileException(c: &mut Ctx) -> u32 {
     }
     let mut name = cs::bytes(o + 0x10);
     if name.is_empty() {
-        name = b"an unnamed file".to_vec();
+        name = lit("an unnamed file");
     }
-    let t = file_error_text(cause).as_bytes();
-    let mut s = Vec::new();
-    let mut i = 0;
-    while i < t.len() {
-        if t[i..].starts_with(b"%1") {
-            s.extend_from_slice(&name);
-            i += 2;
-        } else {
-            s.push(t[i]);
-            i += 1;
-        }
-    }
+    let (head, tail) = file_error_text(cause).split_once("%1").unwrap_or((file_error_text(cause), ""));
+    let mut s = lit(head);
+    s.extend(name);
+    s.extend(lit(tail));
     if buf != 0 && max != 0 {
         let n = s.len().min(max as usize - 1);
-        mem::write(buf, &s[..n]);
-        w8(buf + n as u32, 0);
+        wr(buf, &s[..n]);
+        wr_at(buf, n as u32, 0);
     }
     1
 }
 /// CException::ReportError(nType, nMessageID)
 fn ReportError(c: &mut Ctx) -> u32 {
     let (o, ty, id) = (this(c), c.a(0), c.a(1));
-    let b = Tmp::new(512);
+    let b = Tmp::new(512 * unit());
     let help = Tmp::new(4);
     if vcall(c, o, 5, &[b.0, 512, help.0]) != 0 {
         let a = app();
         return if a != 0 { vcall(c, a, 37, &[b.0, ty, r32(help.0)]) } else { do_message_box(c, b.0, ty) };
     }
-    let text: &[u8] = if id == 0 { b"No error message is available." } else { b"" };
-    let s = strdup(text);
+    let s = strdup(&lit(if id == 0 { "No error message is available." } else { "" }));
     let r = if id != 0 {
         let t = Tmp::new(4);
         cs::init(t.0);
@@ -3072,7 +3188,7 @@ fn CFile_ctor_open(c: &mut Ctx) -> u32 {
     if open(c, o, name, flags, e.0) == 0 {
         let cause = r32(e.0 + 8);
         let os = r32(e.0 + 12);
-        let n = cstr(name);
+        let n = sz(name);
         return throw_file(c, cause, os, &n, 8);
     }
     o
@@ -3115,7 +3231,7 @@ fn open(c: &mut Ctx, o: u32, name: u32, flags: u32, err: u32) -> u32 {
     w32(o + 4, u32::MAX);
     let full = Tmp::new(520);
     let n = k32(c, "GetFullPathNameA", &[name, 260, full.0, 0]);
-    let path = if n != 0 && n < 260 { mem::slice(full.0, n).to_vec() } else { cstr(name) };
+    let path = if n != 0 && n < 260 { rd(full.0, n) } else { sz(name) };
     cs::set(o + 0xc, &path);
     let (access, share, disp) = open_args(flags);
     let sa = Tmp::new(12);
@@ -3128,7 +3244,7 @@ fn open(c: &mut Ctx, o: u32, name: u32, flags: u32, err: u32) -> u32 {
             w32(err + 12, e);
             w32(err + 8, os_error_cause(e));
             // (the caller's CFileException: its m_strFileName constructed)
-            cs::set(err + 0x10, &cstr(name));
+            cs::set(err + 0x10, &sz(name));
         }
         return 0;
     }
@@ -3141,7 +3257,7 @@ fn Open(c: &mut Ctx) -> u32 {
     let (o, name, flags, err) = (this(c), c.a(0), c.a(1), c.a(2));
     open(c, o, name, flags, err)
 }
-fn file_name(o: u32) -> Vec<u8> {
+fn file_name(o: u32) -> Vec<u16> {
     cs::bytes(o + 0xc)
 }
 fn Read(c: &mut Ctx) -> u32 {
@@ -3248,10 +3364,14 @@ fn GetFilePath(c: &mut Ctx) -> u32 {
 fn GetFileName(c: &mut Ctx) -> u32 {
     let (o, r) = (this(c), c.a(0));
     let p = file_name(o);
-    let s = p.iter().rposition(|&b| b == b'\\' || b == b'/').map_or(0, |i| i + 1);
+    let s = file_start(&p);
     cs::init(r);
     cs::assign(r, &p[s..]);
     r
+}
+/// Where the file name of a path starts (after its last \\ or /)
+fn file_start(p: &[u16]) -> usize {
+    p.iter().rposition(|&b| b == b'\\' as u16 || b == b'/' as u16).map_or(0, |i| i + 1)
 }
 fn SetFilePath(c: &mut Ctx) -> u32 {
     let (o, p) = (this(c), c.a(0));
@@ -3290,7 +3410,7 @@ pub fn data(name: &str) -> Option<u32> {
             let cls = n.trim_start_matches("?class").split('@').next()?;
             runtime_class(cls)
         }
-        "?afxPchNil@@3PBDB" => {
+        "?afxPchNil@@3PBDB" | "?afxPchNil@@3PBGB" => {
             static P: OnceLock<u32> = OnceLock::new();
             *P.get_or_init(|| {
                 let p = mem::heap_alloc(4, true);
@@ -3308,21 +3428,32 @@ fn table() -> Vec<(&'static str, Handler)> {
         // CString
         ("??0CString@@QAE@XZ", cs_ctor),
         ("??0CString@@QAE@ABV0@@Z", cs_ctor_copy),
-        ("??0CString@@QAE@PBD@Z", cs_ctor_sz),
-        ("??0CString@@QAE@PBDH@Z", cs_ctor_sz_n),
-        ("??0CString@@QAE@DH@Z", cs_ctor_ch),
+        ("??0CString@@QAE@PBD@Z", cs_ctor_sz::<false>),
+        ("??0CString@@QAE@PBG@Z", cs_ctor_sz::<true>),
+        ("??0CString@@QAE@PBDH@Z", cs_ctor_sz_n::<false>),
+        ("??0CString@@QAE@PBGH@Z", cs_ctor_sz_n::<true>),
+        ("??0CString@@QAE@DH@Z", cs_ctor_ch::<false>),
+        ("??0CString@@QAE@GH@Z", cs_ctor_ch::<true>),
         ("??1CString@@QAE@XZ", cs_dtor),
         ("??4CString@@QAEABV0@ABV0@@Z", cs_assign_string),
-        ("??4CString@@QAEABV0@PBD@Z", cs_assign_sz),
-        ("??4CString@@QAEABV0@D@Z", cs_assign_ch),
+        ("??4CString@@QAEABV0@PBD@Z", cs_assign_sz::<false>),
+        ("??4CString@@QAEABV0@PBG@Z", cs_assign_sz::<true>),
+        ("??4CString@@QAEABV0@D@Z", cs_assign_ch::<false>),
+        ("??4CString@@QAEABV0@G@Z", cs_assign_ch::<true>),
         ("??YCString@@QAEABV0@ABV0@@Z", cs_append_string),
-        ("??YCString@@QAEABV0@PBD@Z", cs_append_sz),
-        ("??YCString@@QAEABV0@D@Z", cs_append_ch),
+        ("??YCString@@QAEABV0@PBD@Z", cs_append_sz::<false>),
+        ("??YCString@@QAEABV0@PBG@Z", cs_append_sz::<true>),
+        ("??YCString@@QAEABV0@D@Z", cs_append_ch::<false>),
+        ("??YCString@@QAEABV0@G@Z", cs_append_ch::<true>),
         ("??H@YG?AVCString@@ABV0@0@Z", cs_plus_ss),
-        ("??H@YG?AVCString@@ABV0@PBD@Z", cs_plus_sp),
-        ("??H@YG?AVCString@@PBDABV0@@Z", cs_plus_ps),
-        ("??H@YG?AVCString@@ABV0@D@Z", cs_plus_sc),
-        ("??H@YG?AVCString@@DABV0@@Z", cs_plus_cs),
+        ("??H@YG?AVCString@@ABV0@PBD@Z", cs_plus_sp::<false>),
+        ("??H@YG?AVCString@@ABV0@PBG@Z", cs_plus_sp::<true>),
+        ("??H@YG?AVCString@@PBDABV0@@Z", cs_plus_ps::<false>),
+        ("??H@YG?AVCString@@PBGABV0@@Z", cs_plus_ps::<true>),
+        ("??H@YG?AVCString@@ABV0@D@Z", cs_plus_sc::<false>),
+        ("??H@YG?AVCString@@ABV0@G@Z", cs_plus_sc::<true>),
+        ("??H@YG?AVCString@@DABV0@@Z", cs_plus_cs::<false>),
+        ("??H@YG?AVCString@@GABV0@@Z", cs_plus_cs::<true>),
         ("?Empty@CString@@QAEXXZ", cs_empty),
         ("?TrimLeft@CString@@QAEXXZ", cs_trim_left),
         ("?TrimRight@CString@@QAEXXZ", cs_trim_right),
@@ -3330,8 +3461,10 @@ fn table() -> Vec<(&'static str, Handler)> {
         ("?GetBufferSetLength@CString@@QAEPADH@Z", cs_get_buffer_set_length),
         ("?ReleaseBuffer@CString@@QAEXH@Z", cs_release_buffer),
         ("?Find@CString@@QBEHD@Z", cs_find_ch),
+        ("?Find@CString@@QBEHG@Z", cs_find_ch),
         ("?Find@CString@@QBEHPBD@Z", cs_find_sz),
         ("?ReverseFind@CString@@QBEHD@Z", cs_reverse_find),
+        ("?ReverseFind@CString@@QBEHG@Z", cs_reverse_find),
         ("?MakeUpper@CString@@QAEXXZ", cs_make_upper),
         ("?MakeLower@CString@@QAEXXZ", cs_make_lower),
         ("?Mid@CString@@QBE?AV1@HH@Z", cs_mid2),
@@ -3590,15 +3723,45 @@ fn CalcWindowRect(c: &mut Ctx) -> u32 {
     0
 }
 
-pub fn init() {
-    for (n, f) in table() {
-        implement(DLL, n, f);
+/// MFC42U's name of an ANSI export whose strings are TCHARs (LPCTSTR `PBD` -> `PBG`, LPTSTR
+/// `PAD` -> `PAG`, an A function -> its W twin: GetWindowTextA -> GetWindowTextW)
+pub fn unicode_name(n: &str) -> String {
+    let w = n.replace("PBD", "PBG").replace("PAD", "PAG").replace("tagTOOLINFOA@", "tagTOOLINFOW@").replace("tagCREATESTRUCTA@", "tagCREATESTRUCTW@");
+    match w.split_once('@') {
+        Some((f, rest)) if f.ends_with('A') && !f.starts_with("??") => format!("{}W@{rest}", &f[..f.len() - 1]),
+        _ => w,
     }
-    // every class's GetRuntimeClass
-    for n in api::spec_names(DLL) {
-        if n.starts_with("?GetRuntimeClass@") {
-            implement(DLL, &n, GetRuntimeClass);
+}
+/// (DLL, name, handler) of every export done here: the table's names in each DLL that exports
+/// them, and MFC42U's Unicode names of the TCHAR ones
+pub fn registrations() -> Vec<(&'static str, String, Handler)> {
+    let t = table();
+    let names: std::collections::HashSet<&str> = t.iter().map(|x| x.0).collect();
+    let mut out = Vec::new();
+    for &(n, f) in &t {
+        for &d in DLLS {
+            if api::exports(d, n) {
+                out.push((d, n.to_string(), f));
+            }
         }
+        let w = unicode_name(n);
+        if w != n && !names.contains(w.as_str()) && api::exports("mfc42u", &w) {
+            out.push(("mfc42u", w, f));
+        }
+    }
+    for &d in DLLS {
+        // every class's GetRuntimeClass
+        for n in api::spec_names(d) {
+            if n.starts_with("?GetRuntimeClass@") {
+                out.push((d, n, GetRuntimeClass as Handler));
+            }
+        }
+    }
+    out
+}
+pub fn init() {
+    for (d, n, f) in registrations() {
+        implement(d, &n, f);
     }
     let _ = ret_this;
 }
@@ -3620,13 +3783,29 @@ mod tests {
         mem::heap_free(sp);
         r
     }
-    fn sz_(s: &[u8]) -> u32 {
+    /// Units of ASCII / ANSI bytes
+    fn u(s: &[u8]) -> Vec<u16> {
+        s.iter().map(|&b| b as u16).collect()
+    }
+    /// A native string (TCHARs) in guest memory
+    fn sz_(s: &[u16]) -> u32 {
         strdup(s)
     }
-    fn new_cs(s: &[u8]) -> u32 {
+    /// Runs `f` with MFC42U's (wide) or MFC42's TCHARs, back to MFC42's after
+    fn with_wide<R>(w: bool, f: impl FnOnce() -> R) -> R {
+        WIDE.store(w, Ordering::Relaxed);
+        let r = f();
+        WIDE.store(false, Ordering::Relaxed);
+        r
+    }
+    /// The native constructor and operators of the DLL in use (PBD in MFC42, PBG in MFC42U)
+    fn ctor_sz() -> Handler {
+        if wide() { cs_ctor_sz::<true> } else { cs_ctor_sz::<false> }
+    }
+    fn new_cs(s: &[u16]) -> u32 {
         let o = alloc(4);
         let p = sz_(s);
-        tcall_(cs_ctor_sz, o, &[p]);
+        tcall_(ctor_sz(), o, &[p]);
         free(p);
         o
     }
@@ -3636,14 +3815,14 @@ mod tests {
         if p == cs::nil() {
             assert_eq!(cs::refs(p), -1);
             assert_eq!(cs::len(p), 0);
-            assert_eq!(mem::r8(p), 0);
+            assert_eq!(r16(p), 0);
             return;
         }
         assert!(cs::refs(p) >= 1);
         assert!(cs::len(p) <= cs::cap(p));
         // (a size class, or the exact length above 512, at least the length)
         assert!(matches!(cs::cap(p), 64 | 128 | 256 | 512) || cs::cap(p) > 512);
-        assert_eq!(mem::r8(p + cs::len(p)), 0);
+        assert_eq!(rd(p + cs::len(p) * unit(), 1), [0]);
     }
 
     #[test]
@@ -3651,7 +3830,7 @@ mod tests {
         let _g = enter();
         let a = alloc(4);
         tcall_(cs_ctor, a, &[]);
-        let b = new_cs(b"");
+        let b = new_cs(&[]);
         assert_eq!(r32(a), cs::nil());
         assert_eq!(r32(b), cs::nil());
         // (programs read the length at [p - 8] inline)
@@ -3664,16 +3843,16 @@ mod tests {
     #[test]
     fn copy_shares_and_writes_copy() {
         let _g = enter();
-        let a = new_cs(b"abc");
+        let a = new_cs(&u(b"abc"));
         let b = alloc(4);
         tcall_(cs_ctor_copy, b, &[a]);
         assert_eq!(r32(a), r32(b));
         assert_eq!(cs::refs(r32(a)), 2);
         // a write unshares
-        tcall_(cs_append_ch, b, &[b'd' as u32]);
+        tcall_(cs_append_ch::<false>, b, &[b'd' as u32]);
         assert_ne!(r32(a), r32(b));
-        assert_eq!(cs::bytes(a), b"abc");
-        assert_eq!(cs::bytes(b), b"abcd");
+        assert_eq!(cs::bytes(a), u(b"abc"));
+        assert_eq!(cs::bytes(b), u(b"abcd"));
         assert_eq!(cs::refs(r32(a)), 1);
         check(a);
         check(b);
@@ -3694,18 +3873,18 @@ mod tests {
     #[test]
     fn trim_left_and_plus() {
         let _g = enter();
-        let a = new_cs(b" \t\r\nC:\\game ");
+        let a = new_cs(&u(b" \t\r\nC:\\game "));
         tcall_(cs_trim_left, a, &[]);
-        assert_eq!(cs::bytes(a), b"C:\\game ");
+        assert_eq!(cs::bytes(a), u(b"C:\\game "));
         check(a);
         let r = alloc(4);
-        let p = sz_(b"\\x");
-        tcall_(cs_plus_sp, 0, &[r, a, p]);
-        assert_eq!(cs::bytes(r), b"C:\\game \\x");
+        let p = sz_(&u(b"\\x"));
+        tcall_(cs_plus_sp::<false>, 0, &[r, a, p]);
+        assert_eq!(cs::bytes(r), u(b"C:\\game \\x"));
         check(r);
         let r2 = alloc(4);
-        tcall_(cs_plus_ps, 0, &[r2, p, a]);
-        assert_eq!(cs::bytes(r2), b"\\xC:\\game ");
+        tcall_(cs_plus_ps::<false>, 0, &[r2, p, a]);
+        assert_eq!(cs::bytes(r2), u(b"\\xC:\\game "));
         for s in [a, r, r2] {
             tcall_(cs_dtor, s, &[]);
         }
@@ -3715,31 +3894,68 @@ mod tests {
     #[test]
     fn trim_right_keeps_double_byte_characters() {
         // (a Shift-JIS trail byte 0x20 isn't a space: "ー" is 81 5B, a "0x81 0x20" pair keeps)
-        assert_eq!(cs::trim_right(b"ab  "), b"ab");
-        assert_eq!(cs::trim_right(b"\x81\x20"), b"\x81\x20");
-        assert_eq!(cs::trim_right(b"   "), b"");
-        assert_eq!(cs::trim_left(b"  x "), b"x ");
+        assert_eq!(cs::trim_right(&u(b"ab  ")), u(b"ab"));
+        assert_eq!(cs::trim_right(&u(b"\x81\x20")), u(b"\x81\x20"));
+        assert_eq!(cs::trim_right(&u(b"   ")), u(b""));
+        assert_eq!(cs::trim_left(&u(b"  x ")), u(b"x "));
+    }
+
+    /// MFC42U: CString holds UTF-16 (the length in characters, 2-byte NUL), its ANSI forms
+    /// convert, iswspace trims the ideographic space, a CJK unit 0x5C2F isn't a '\' or a '/'
+    #[test]
+    fn unicode_cstring() {
+        let _g = enter();
+        with_wide(true, || {
+            let text: Vec<u16> = "\u{3000} 日本語 ".encode_utf16().collect();
+            let a = new_cs(&text);
+            assert_eq!(cs::len(r32(a)), text.len() as u32);
+            assert_eq!(r16(r32(a) + 2 * text.len() as u32), 0);
+            tcall_(cs_trim_left, a, &[]);
+            tcall_(cs_trim_right, a, &[]);
+            assert_eq!(String::from_utf16_lossy(&cs::bytes(a)), "日本語");
+            check(a);
+            // operator=(LPCSTR) converts from the ANSI code page
+            let p = mem::heap_alloc(8, true);
+            mem::write(p, b"ab");
+            tcall_(cs_assign_sz::<false>, a, &[p]);
+            assert_eq!(cs::bytes(a), u(b"ab"));
+            tcall_(cs_append_ch::<true>, a, &[0x3042]);
+            assert_eq!(String::from_utf16_lossy(&cs::bytes(a)), "abあ");
+            assert_eq!(file_start(&[0x5c2f, b'x' as u16]), 0);
+            assert_eq!(file_start(&u(b"C:\\x\\y.exe")), 5);
+            tcall_(cs_dtor, a, &[]);
+        });
+    }
+
+    #[test]
+    fn unicode_names_of_tchar_exports() {
+        assert_eq!(unicode_name("?SetWindowTextA@CWnd@@QAEXPBD@Z"), "?SetWindowTextW@CWnd@@QAEXPBG@Z");
+        assert_eq!(unicode_name("?GetBuffer@CString@@QAEPADH@Z"), "?GetBuffer@CString@@QAEPAGH@Z");
+        assert_eq!(unicode_name("?PreCreateWindow@CWnd@@UAEHAAUtagCREATESTRUCTA@@@Z"), "?PreCreateWindow@CWnd@@UAEHAAUtagCREATESTRUCTW@@@Z");
+        assert_eq!(unicode_name("??0CWnd@@QAE@XZ"), "??0CWnd@@QAE@XZ");
     }
 
     #[derive(Debug, Clone)]
     enum Op {
-        AssignSz(Vec<u8>),
+        AssignSz(Vec<u16>),
         AssignOther,
-        AppendSz(Vec<u8>),
-        AppendCh(u8),
+        AppendSz(Vec<u16>),
+        AppendCh(u16),
         TrimLeft,
         TrimRight,
         Empty,
         CopyFromOther,
         Upper,
     }
-    fn op() -> impl Strategy<Value = Op> {
-        let bytes = proptest::collection::vec(prop_oneof![Just(b' '), Just(b'\t'), 0x21u8..0x7f], 0..140);
+    /// Text units: ASCII and spaces (and, for MFC42U, kana and the ideographic space)
+    fn op(wide: bool) -> impl Strategy<Value = Op> {
+        let unit = if wide { prop_oneof![Just(0x20u16), Just(9), Just(0x3000), 0x21u16..0x7f, 0x3041u16..0x3097].boxed() } else { prop_oneof![Just(0x20u16), Just(9), 0x21u16..0x7f].boxed() };
+        let text = proptest::collection::vec(unit.clone(), 0..140);
         prop_oneof![
-            bytes.clone().prop_map(Op::AssignSz),
+            text.clone().prop_map(Op::AssignSz),
             Just(Op::AssignOther),
-            bytes.prop_map(Op::AppendSz),
-            (0x20u8..0x7f).prop_map(Op::AppendCh),
+            text.prop_map(Op::AppendSz),
+            unit.prop_map(Op::AppendCh),
             Just(Op::TrimLeft),
             Just(Op::TrimRight),
             Just(Op::Empty),
@@ -3747,48 +3963,56 @@ mod tests {
             Just(Op::Upper),
         ]
     }
+    fn ops() -> impl Strategy<Value = (bool, Vec<(Op, bool)>)> {
+        any::<bool>().prop_flat_map(|w| (Just(w), proptest::collection::vec((op(w), any::<bool>()), 1..40)))
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
-        /// Two CStrings under random operations stay what a model (Vec<u8>) says, with headers
-        /// MFC's: reference counts, the size classes, the terminator; shared buffers counted
+        /// Two CStrings under random operations stay what a model (the units) says, with
+        /// headers MFC's: reference counts, the size classes, the terminator; shared buffers
+        /// counted. MFC42's (bytes) and MFC42U's (UTF-16) alike.
         #[test]
-        fn cstring_matches_model(ops in proptest::collection::vec((op(), any::<bool>()), 1..40)) {
+        fn cstring_matches_model((wide, ops) in ops()) {
             let _g = enter();
-            let s = [new_cs(b""), new_cs(b"seed")];
-            let mut m: [Vec<u8>; 2] = [Vec::new(), b"seed".to_vec()];
-            for (o, which) in ops {
-                let (i, j) = if which { (0, 1) } else { (1, 0) };
-                match o {
-                    Op::AssignSz(b) => { let p = sz_(&b); tcall_(cs_assign_sz, s[i], &[p]); free(p); m[i] = b; }
-                    Op::AssignOther => { tcall_(cs_assign_string, s[i], &[s[j]]); m[i] = m[j].clone(); }
-                    Op::AppendSz(b) => { let p = sz_(&b); tcall_(cs_append_sz, s[i], &[p]); free(p); m[i].extend_from_slice(&b); }
-                    Op::AppendCh(ch) => { tcall_(cs_append_ch, s[i], &[ch as u32]); m[i].push(ch); }
-                    Op::TrimLeft => { tcall_(cs_trim_left, s[i], &[]); m[i] = cs::trim_left(&m[i]).to_vec(); }
-                    Op::TrimRight => { tcall_(cs_trim_right, s[i], &[]); m[i] = cs::trim_right(&m[i]).to_vec(); }
-                    Op::Empty => { tcall_(cs_empty, s[i], &[]); m[i].clear(); }
-                    Op::CopyFromOther => { tcall_(cs_dtor, s[i], &[]); tcall_(cs_ctor_copy, s[i], &[s[j]]); m[i] = m[j].clone(); }
-                    Op::Upper => { tcall_(cs_make_upper, s[i], &[]); m[i] = m[i].to_ascii_uppercase(); }
-                }
-                for k in 0..2 {
-                    prop_assert_eq!(&cs::bytes(s[k]), &m[k]);
-                    check(s[k]);
-                }
-                let (p, q) = (r32(s[0]), r32(s[1]));
-                if p == q && p != cs::nil() {
-                    prop_assert_eq!(cs::refs(p), 2);
-                } else {
-                    for p in [p, q] {
-                        if p != cs::nil() { prop_assert_eq!(cs::refs(p), 1); }
+            with_wide(wide, || -> Result<(), TestCaseError> {
+                let (assign_sz, append_sz, append_ch): (Handler, Handler, Handler) = if wide { (cs_assign_sz::<true>, cs_append_sz::<true>, cs_append_ch::<true>) } else { (cs_assign_sz::<false>, cs_append_sz::<false>, cs_append_ch::<false>) };
+                let s = [new_cs(&[]), new_cs(&u(b"seed"))];
+                let mut m: [Vec<u16>; 2] = [Vec::new(), u(b"seed")];
+                for (o, which) in ops {
+                    let (i, j) = if which { (0, 1) } else { (1, 0) };
+                    match o {
+                        Op::AssignSz(b) => { let p = sz_(&b); tcall_(assign_sz, s[i], &[p]); free(p); m[i] = b; }
+                        Op::AssignOther => { tcall_(cs_assign_string, s[i], &[s[j]]); m[i] = m[j].clone(); }
+                        Op::AppendSz(b) => { let p = sz_(&b); tcall_(append_sz, s[i], &[p]); free(p); m[i].extend_from_slice(&b); }
+                        Op::AppendCh(ch) => { tcall_(append_ch, s[i], &[ch as u32]); m[i].push(ch); }
+                        Op::TrimLeft => { tcall_(cs_trim_left, s[i], &[]); m[i] = cs::trim_left(&m[i]).to_vec(); }
+                        Op::TrimRight => { tcall_(cs_trim_right, s[i], &[]); m[i] = cs::trim_right(&m[i]).to_vec(); }
+                        Op::Empty => { tcall_(cs_empty, s[i], &[]); m[i].clear(); }
+                        Op::CopyFromOther => { tcall_(cs_dtor, s[i], &[]); tcall_(cs_ctor_copy, s[i], &[s[j]]); m[i] = m[j].clone(); }
+                        Op::Upper => { tcall_(cs_make_upper, s[i], &[]); for x in m[i].iter_mut() { if (0x61..=0x7a).contains(x) { *x -= 0x20; } } }
+                    }
+                    for k in 0..2 {
+                        prop_assert_eq!(&cs::bytes(s[k]), &m[k]);
+                        check(s[k]);
+                    }
+                    let (p, q) = (r32(s[0]), r32(s[1]));
+                    if p == q && p != cs::nil() {
+                        prop_assert_eq!(cs::refs(p), 2);
+                    } else {
+                        for p in [p, q] {
+                            if p != cs::nil() { prop_assert_eq!(cs::refs(p), 1); }
+                        }
                     }
                 }
-            }
-            for k in s { tcall_(cs_dtor, k, &[]); }
+                for k in s { tcall_(cs_dtor, k, &[]); }
+                Ok(())
+            })?;
         }
 
         /// Mid / Left / Right clamp as MFC 4.2's do (never past the string)
         #[test]
-        fn substrings_clamp(b in proptest::collection::vec(0x21u8..0x7f, 0..80), first in -5i32..90, count in -5i32..90) {
+        fn substrings_clamp(b in proptest::collection::vec(0x21u16..0x7f, 0..80), first in -5i32..90, count in -5i32..90) {
             let r = sub(&b, first, count);
             let f = first.clamp(0, b.len() as i32) as usize;
             prop_assert!(r.len() <= b.len() - f);
@@ -3888,9 +4112,18 @@ mod tests {
     /// every vtable slot names an export (or a stub of sake's)
     #[test]
     fn implemented_exports_are_in_the_spec() {
-        let names: std::collections::HashSet<String> = api::spec_names(DLL).into_iter().collect();
-        let missing: Vec<&str> = table().iter().map(|x| x.0).filter(|n| !names.contains(*n)).collect();
-        assert!(missing.is_empty(), "not mfc42 exports: {missing:?}");
+        let names: std::collections::HashSet<String> = api::spec_names("mfc42").into_iter().collect();
+        let unames: std::collections::HashSet<String> = api::spec_names("mfc42u").into_iter().collect();
+        let missing: Vec<&str> = table().iter().map(|x| x.0).filter(|n| !names.contains(*n) && !unames.contains(*n)).collect();
+        assert!(missing.is_empty(), "not mfc42 / mfc42u exports: {missing:?}");
+        // MFC42U has (under its own names) everything MFC42's table does
+        let regs = registrations();
+        let u: std::collections::HashSet<&str> = regs.iter().filter(|r| r.0 == "mfc42u").map(|r| r.1.as_str()).collect();
+        let a: Vec<&str> = regs.iter().filter(|r| r.0 == "mfc42").map(|r| r.1.as_str()).collect();
+        // (CString's TCHAR `D` parameters are `G` there)
+        let twin = |n: &str| n.replace("@DH@", "@GH@").replace("@D@Z", "@G@Z").replace("@@DABV0", "@@GABV0").replace("HD@Z", "HG@Z");
+        let lost: Vec<&&str> = a.iter().filter(|n| !u.contains(**n) && !u.contains(unicode_name(n).as_str()) && !u.contains(twin(n).as_str())).collect();
+        assert!(lost.is_empty(), "not in mfc42u: {lost:?}");
         for class in ["CObject", "CCmdTarget", "CWinThread", "CWinApp", "CWnd", "CDialog", "CProgressCtrl", "CFile", "CException", "CFileException", "CPaintDC"] {
             let s = slots(class);
             let want = match class {
@@ -3906,6 +4139,8 @@ mod tests {
             assert_eq!(s.len(), want, "{class}");
             let bad: Vec<&&str> = s.iter().filter(|n| !(n.is_empty() || n.starts_with('~') || n.starts_with('-') || names.contains(**n))).collect();
             assert!(bad.is_empty(), "{class}: {bad:?}");
+            let ubad: Vec<&&str> = s.iter().filter(|n| !(n.is_empty() || n.starts_with('~') || n.starts_with('-') || unames.contains(**n) || unames.contains(&unicode_name(n)))).collect();
+            assert!(ubad.is_empty(), "mfc42u {class}: {ubad:?}");
             if !["CObject", "CPaintDC", "CFile", "CException", "CFileException"].contains(&class) {
                 assert!(s[12].starts_with("?GetMessageMap@"), "{class}");
             }

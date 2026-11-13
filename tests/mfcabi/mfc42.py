@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""MFC 4.2's ordinal -> name table (out/mfc42.tsv) for sake's own MFC42.DLL (crates/sake/src/mfc42.rs).
+"""MFC 4.2's ordinal -> name tables (out/mfc42.tsv, out/mfc42u.tsv) for sake's own MFC42.DLL and
+MFC42U.DLL (the Unicode build; crates/sake/src/mfc42.rs).
 
 MFC42.DLL exports by ordinal only, and the VC6 import library that names them is long gone. The
 DLL Windows still ships (6.06.8063.0, System32 / SysWOW64) and its public PDB are on Microsoft's
@@ -7,8 +8,8 @@ symbol server: the PDB's public symbols at each export's address name it. Overlo
 folded into one body (identical code) share an address; the radare2 table (undecorated names by
 ordinal, libr/bin/d/dll/mfc42.sdb.txt) picks among them.
 
-  mfc42.py DIR    DIR: work directory (mfc42.dll, mfc42.pdb, publics.txt, sdb cached there)
-                  writes out/mfc42.tsv: ordinal, decorated name, conv, argument bytes (with this)
+  mfc42.py DIR [mfc42u]   DIR: work directory (the DLL, its PDB, publics, sdb cached there)
+                          writes out/<dll>.tsv: ordinal, decorated name, conv, argument bytes (with this)
 
 Needs pefile (pip), llvm-pdbutil and llvm-undname. The argument bytes come from the decorated
 names (sizes of the by-value classes below) and are checked against the `ret N` that ends each
@@ -17,9 +18,9 @@ export's code where that is found.
 import collections, os, re, subprocess, sys, urllib.request
 
 SYMSRV = 'https://msdl.microsoft.com/download/symbols'
-# mfc42.dll 6.06.8063.0 (x86): TimeDateStamp + SizeOfImage, the symbol server's key
-DLL_KEY = '5BD1349712a000'
-SDB = 'https://raw.githubusercontent.com/radareorg/radare2/master/libr/bin/d/dll/mfc42.sdb.txt'
+# 6.06.8063.0 (x86): TimeDateStamp + SizeOfImage, the symbol server's key
+DLL_KEY = {'mfc42': '5BD1349712a000', 'mfc42u': '5BD13576130000'}
+SDB = 'https://raw.githubusercontent.com/radareorg/radare2/master/libr/bin/d/dll/%s.sdb.txt'
 # by-value argument sizes (x86; MFC's headers pack to 4: COleDateTime is 12 bytes)
 BYVAL = {'CPoint': 8, 'CSize': 8, 'CRect': 16, 'tagPOINT': 8, 'tagSIZE': 8, 'tagRECT': 16, 'CString': 4,
          'CTime': 4, 'CTimeSpan': 4, 'COleDateTime': 12, 'COleDateTimeSpan': 12, 'COleCurrency': 12,
@@ -102,17 +103,18 @@ def conv_bytes(dec, und):
 
 def main():
     d = sys.argv[1]
+    lib = sys.argv[2] if len(sys.argv) > 2 else 'mfc42'
     os.makedirs(d, exist_ok=True)
     import pefile
-    dll = fetch(f'{SYMSRV}/mfc42.dll/{DLL_KEY}/mfc42.dll', os.path.join(d, 'mfc42.dll'))
+    dll = fetch(f'{SYMSRV}/{lib}.dll/{DLL_KEY[lib]}/{lib}.dll', os.path.join(d, f'{lib}.dll'))
     pe = pefile.PE(dll)
     cv = [e.entry for e in pe.DIRECTORY_ENTRY_DEBUG if hasattr(e.entry, 'PdbFileName')][0]
     g = cv.Signature_String
-    pdb = fetch(f'{SYMSRV}/mfc42.pdb/{g}{cv.Age:x}/mfc42.pdb', os.path.join(d, 'mfc42.pdb'))
-    pubs = os.path.join(d, 'publics.txt')
+    pdb = fetch(f'{SYMSRV}/{lib}.pdb/{g}{cv.Age:x}/{lib}.pdb', os.path.join(d, f'{lib}.pdb'))
+    pubs = os.path.join(d, f'{lib}-publics.txt')
     if not os.path.exists(pubs):
         open(pubs, 'w').write(subprocess.run(['llvm-pdbutil', 'dump', '-publics', pdb], capture_output=True, text=True, check=True).stdout)
-    sdb = fetch(SDB, os.path.join(d, 'mfc42.sdb.txt'))
+    sdb = fetch(SDB % lib, os.path.join(d, f'{lib}.sdb.txt'))
     secs = [s.VirtualAddress for s in pe.sections]
     byrva = collections.defaultdict(set)
     name = None
@@ -147,7 +149,7 @@ def main():
         n = cands[0] if cands else f'#{e.ordinal}'
         conv, nb = conv_bytes(n, und.get(n, n))
         rows.append((e.ordinal, n, conv, nb))
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'out', 'mfc42.tsv')
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'out', f'{lib}.tsv')
     with open(out, 'w') as f:
         for r in rows:
             f.write('%d\t%s\t%s\t%d\n' % r)

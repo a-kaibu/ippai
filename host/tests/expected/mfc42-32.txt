@@ -16,8 +16,7 @@ len 512 alloc 512
 len 513 alloc 513
 len 600 alloc 600
 b "short" refs 1 len 5 alloc 600
-trimleft "lead and trail 
- " refs 1 len 18 alloc 64
+trimleft "lead and trail \x0d\x0a " refs 1 len 18 alloc 64
 trimright "lead and trail" refs 1 len 14 alloc 64
 cs+sz "hello world" refs 1 len 11 alloc 64
 sz+cs "say hello" refs 1 len 9 alloc 64
