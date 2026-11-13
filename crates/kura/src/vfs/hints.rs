@@ -92,7 +92,11 @@ pub fn policy(name: &str) -> Policy {
 /// that a read of `cur` hints: of `cur`'s kind (an unknown kind: its extension), not past
 /// SIBLING_MAX each nor SIBLING_BYTES in all, at most `policy(cur).siblings`, the nearest first.
 pub fn siblings(names: &[(&str, u64)], cur: &str) -> Vec<usize> {
-    let pol = policy(cur);
+    siblings_with(names, cur, policy(cur))
+}
+
+/// [`siblings`] with policy `pol` instead of `cur`'s (examples/hints_eval.rs tries others).
+pub fn siblings_with(names: &[(&str, u64)], cur: &str, pol: Policy) -> Vec<usize> {
     let (k, e) = (kind(cur), ext(cur));
     let same = |n: &str| if k == Kind::Other { ext(n) == e } else { kind(n) == k };
     let Some(at) = names.iter().position(|(n, _)| *n == cur) else { return Vec::new() };
@@ -117,15 +121,23 @@ pub fn siblings(names: &[(&str, u64)], cur: &str) -> Vec<usize> {
 /// The chunks of a file of `n` chunks (`size` bytes, named `name`) that a read of chunk `i`
 /// hints: all of a small archive at its first read, else the next `policy(name).chunks`.
 pub fn chunks(name: &str, size: u64, n: usize, i: usize, first: bool) -> std::ops::Range<usize> {
-    let pol = policy(name);
+    chunks_with(name, size, n, i, first, policy(name), WHOLE_MAX)
+}
+
+/// [`chunks`] with policy `pol` and `whole_max` instead of `name`'s and WHOLE_MAX.
+pub fn chunks_with(name: &str, size: u64, n: usize, i: usize, first: bool, pol: Policy, whole_max: u64) -> std::ops::Range<usize> {
     if kind(name) == Kind::Movie || n <= 1 {
         return 0..0;
     }
-    if first && kind(name) == Kind::Archive && size <= WHOLE_MAX {
+    if first && kind(name) == Kind::Archive && size <= whole_max {
         return 0..n;
     }
     (i + 1).min(n)..(i + 1 + pol.chunks).min(n)
 }
+
+#[cfg(test)]
+#[path = "hints_eval.rs"]
+mod hints_eval;
 
 #[cfg(test)]
 mod tests {

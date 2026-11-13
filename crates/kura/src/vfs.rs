@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use libc::size_t;
 
-mod hints;
+pub mod hints;
 mod shared;
 
 type Ino = u32;
