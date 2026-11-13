@@ -8278,6 +8278,7 @@ dsound DllCanUnloadNow stdcall 0 -
 dsound DllGetClassObject stdcall 12 -
 dsound DllRegisterServer stdcall 0 -
 dsound DllUnregisterServer stdcall 0 -
+d3dxof DirectXFileCreate stdcall 4 -
 ddraw DirectDrawCreate stdcall 12 -
 ddraw DirectDrawCreateClipper stdcall 12 -
 ddraw DirectDrawCreateEx stdcall 16 -

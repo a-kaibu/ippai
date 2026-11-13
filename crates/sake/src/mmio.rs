@@ -15,6 +15,9 @@ const MMIOERR_CHUNKNOTFOUND: u32 = 265;
 const MMIOERR_CANNOTWRITE: u32 = 260;
 const MMIOERR_INVALIDFILE: u32 = 272;
 const MMIO_DIRTY: u32 = 0x1000_0000;
+const MMIO_ALLOCBUF: u32 = 0x0001_0000;
+/// MMIO_DEFAULTBUFFER
+const DEFAULT_BUFFER: u32 = 8192;
 const FOURCC_MEM: u32 = u32::from_le_bytes(*b"MEM ");
 const FOURCC_DOS: u32 = u32::from_le_bytes(*b"DOS ");
 const FOURCC_RIFF: u32 = u32::from_le_bytes(*b"RIFF");
@@ -36,6 +39,11 @@ struct Mmio {
     /// the file to write back to (opened for writing) and whether there is something to write
     out: Option<String>,
     dirty: bool,
+    /// the I/O buffer (MMIO_ALLOCBUF, or made by mmioAdvance): guest address, size; the file
+    /// offset its contents start at and how many bytes it holds
+    buf: Option<(u32, u32)>,
+    buf_off: u32,
+    buf_len: u32,
 }
 
 /// MMIOINFO field offsets: (wErrorRet, cchBuffer, pchBuffer, pchNext, pchEndRead, lDiskOffset,
@@ -60,6 +68,39 @@ fn info() -> Info {
 }
 
 impl Mmio {
+    /// The I/O buffer, made at first use (`want` bytes, 0: MMIO_DEFAULTBUFFER).
+    fn buffer(&mut self, want: u32) -> (u32, u32) {
+        *self.buf.get_or_insert_with(|| {
+            let n = if want == 0 { DEFAULT_BUFFER } else { want };
+            self.buf_off = self.pos;
+            self.buf_len = 0;
+            (mem::heap_alloc(n, true), n)
+        })
+    }
+    /// MMIOINFO's buffer fields for the position: pchNext inside the bytes the buffer holds, or
+    /// an emptied buffer at the position.
+    fn put_buffer(&mut self, info: u32) {
+        let Some((b, n)) = self.buf else { return };
+        let mi = self::info();
+        if self.pos < self.buf_off || self.pos > self.buf_off + self.buf_len {
+            self.buf_off = self.pos;
+            self.buf_len = 0;
+        }
+        w32(info + mi.cch, n);
+        mem::wp(info + mi.buf, b);
+        mem::wp(info + mi.next, b + (self.pos - self.buf_off));
+        mem::wp(info + mi.end_read, b + self.buf_len);
+        mem::wp(info + mi.end_read + mem::ps(), b + n);
+        w32(info + mi.disk - 4, self.buf_off);
+        w32(info + mi.disk, self.buf_off + self.buf_len);
+    }
+    /// The position MMIOINFO's pchNext stands for (the program read from the buffer itself), if it
+    /// points into this buffer's bytes.
+    fn pos_of(&self, info: u32) -> Option<u32> {
+        let (b, _) = self.buf?;
+        let next = mem::rp(info + self::info().next);
+        (next >= b && next <= b + self.buf_len).then(|| self.buf_off + (next - b))
+    }
     fn len(&self) -> u32 {
         match &self.data {
             Data::File(v) => v.len() as u32,
@@ -216,7 +257,11 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
         }
     };
     let h = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Mmio { data, pos: 0, out, dirty: false });
+    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Mmio { data, pos: 0, out, dirty: false, buf: None, buf_off: 0, buf_len: 0 });
+    if flags & MMIO_ALLOCBUF != 0 {
+        let want = if info != 0 { r32(info + mi.cch) } else { 0 };
+        with(h, |f| f.buffer(want));
+    }
     if info != 0 {
         w32(info + mi.err, 0);
         mem::wp(info + mi.hmmio, h);
@@ -478,6 +523,11 @@ fn mmioGetInfo(c: &mut Ctx) -> u32 {
     let mi = self::info();
     let Some((pos, mem_buf)) = with(h, |f| (f.pos, if let Data::Mem(a, n) = f.data { Some((a, n)) } else { None })) else { return MMIOERR_INVALIDFILE };
     mem::fill(info, mi.size, 0);
+    if with(h, |f| f.buf.is_some()).unwrap_or(false) {
+        with(h, |f| f.put_buffer(info));
+        mem::wp(info + mi.hmmio, h);
+        return 0;
+    }
     match mem_buf {
         Some((a, n)) => {
             w32(info + 4, FOURCC_MEM);
@@ -492,8 +542,46 @@ fn mmioGetInfo(c: &mut Ctx) -> u32 {
     mem::wp(info + mi.hmmio, h);
     0
 }
-fn ok(_: &mut Ctx) -> u32 {
-    0
+/// mmioSetInfo(h, MMIOINFO*, flags): the position where the program's reading through the buffer
+/// got to (pchNext).
+fn mmioSetInfo(c: &mut Ctx) -> u32 {
+    let (h, info) = (c.a(0), c.a(1));
+    if info == 0 {
+        return 0;
+    }
+    with(h, |f| {
+        if let Some(p) = f.pos_of(info) {
+            f.pos = p;
+        }
+        0
+    })
+    .unwrap_or(MMIOERR_INVALIDFILE)
+}
+/// mmioAdvance(h, MMIOINFO*, MMIO_READ): the buffer refilled from where pchNext got to (the
+/// DirectX SDK's WaveReadFile reads a file this way, byte by byte from pchNext); at the end of the
+/// file it succeeds with pchNext == pchEndRead. A buffer is made if the file had none (Windows
+/// answers MMIOERR_UNBUFFERED there; the programs then read nothing). Writing through the buffer
+/// is not supported.
+fn mmioAdvance(c: &mut Ctx) -> u32 {
+    let (h, info, flags) = (c.a(0), c.a(1), c.a(2));
+    if info == 0 {
+        return MMIOERR_INVALIDFILE;
+    }
+    with(h, |f| {
+        if flags & 2 != 0 {
+            return MMIOERR_CANNOTWRITE;
+        }
+        let p = f.pos_of(info).unwrap_or(f.pos);
+        let (b, n) = f.buffer(r32(info + self::info().cch));
+        f.pos = p;
+        let got = f.read(b, n);
+        f.pos = p;
+        f.buf_off = p;
+        f.buf_len = got;
+        f.put_buffer(info);
+        0
+    })
+    .unwrap_or(MMIOERR_INVALIDFILE)
 }
 /// mmioStringToFOURCC(str, flags): the first four characters (upper-cased with MMIO_TOUPPER)
 fn fourcc(c: &mut Ctx, wide: bool) -> u32 {
@@ -526,7 +614,8 @@ pub fn init() {
         ("mmioGetInfo", mmioGetInfo),
         ("mmioCreateChunk", mmioCreateChunk),
         ("mmioFlush", mmioFlush),
-        ("mmioSetInfo", ok),
+        ("mmioSetInfo", mmioSetInfo),
+        ("mmioAdvance", mmioAdvance),
         ("mmioStringToFOURCCA", mmioStringToFOURCCA),
         ("mmioStringToFOURCCW", mmioStringToFOURCCW),
     ] {

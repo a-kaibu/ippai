@@ -53,6 +53,8 @@ pub mod crt;
 pub mod com;
 pub mod d2d;
 pub mod d3dx9;
+pub mod d3dxof;
+pub mod xof;
 pub mod dds;
 pub mod d3dcompiler;
 pub mod d3dreflect;
@@ -749,6 +751,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     dinput::init();
     d2d::init();
     d3dx9::init();
+    d3dxof::init();
     d3dx9shader::init();
     d3dcompiler::init();
     dwrite::init();

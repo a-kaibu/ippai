@@ -78,6 +78,7 @@ d3dx9_36:surface	crash	187	0
 d3dx9_36:texture	crash	67	0
 d3dx9_36:volume	crash	630	0
 d3dx9_36:xfile	crash	1	0
+d3dxof:d3dxof	ok	0	233
 dbghelp:dbghelp	fail	593	768
 dbghelp:minidump	crash	9	0
 dbghelp:path	fail	342	3114
@@ -389,7 +390,7 @@ winmm:mci	fail	340	588
 winmm:mcicda	fail	108	111
 winmm:midi	fail	5	9
 winmm:mixer	ok	0	56
-winmm:mmio	crash	61	0
+winmm:mmio	fail	72	360
 winmm:timer	fail	5	88
 winmm:wave	fail	2	7513
 ws2_32:afd	timeout	661	0

@@ -11,6 +11,7 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `x86_jit64` | the long-mode JIT (koji::jit::long) against the interpreter: sixteen registers and up to 1 KB of x86-64 code run through the dispatcher in regions of 1 to 4 blocks, a module each (nearly every jump, call and return a hop between regions), translated where the dispatcher misses, with only the named registers moved per region or all sixteen | valid wasm, no trap, and the interpreter reaches the JIT's state (registers, RIP, flags, SSE, memory) |
 | `x86_interp` | koji::step on any bytes, 32-bit, 64-bit and 16-bit mode | no panic |
 | `uuid` | sake::misc::parse_uuid (UuidFromString) on any UTF-16 text | Some exactly for the 8-4-4-4-12 hex form, printing back as the same text |
+| `xfile` | sake::xof (d3dxof.dll's .x files: text, binary, MSZIP-compressed) on any bytes after each header, with templates registered | no panic; each object's members back to back over its data, strings inside it; RegisterTemplates adds all of a file's templates or none |
 | `sid` | sake::security::parse_sid (ConvertStringSidToSid) on any text | 15 sub-authorities and 48-bit authority at most; the printed SID parses back the same |
 | `wsprintf` | sake::user::wsprintf_format (wsprintf's dialect) on any UTF-16 text | no more `%` than given, text without `%` unchanged, idempotent |
 | `rtf` | sake::rtf::to_text (a rich edit's EM_STREAMIN with SF_RTF) on any bytes | no panic; the text written back as RTF (from_text) reads as the same text |

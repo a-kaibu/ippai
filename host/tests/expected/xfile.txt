@@ -1,0 +1,54 @@
+DirectXFileCreate found
+DirectXFileCreate(NULL) 0x88760353
+create 0 refs 1
+RegisterTemplates 0
+RegisterTemplates(NULL) 0x88760353
+RegisterTemplates(an object) 0x88760362
+text: CreateEnumObject 0
+  Material 'Mat' (len 4, id 00000000) data 0 size=44 0.5 0.25 0.125 1 51.2 0 0 0 1 2 3
+    TextureFilename '' (len 0, id 00000000) data 0 str="tex\x82\xa0.psd" (ok: 0 bytes, a pointer)
+    end 0x88760367
+  end 0x88760367
+  Frame 'Root' (len 5, id 01020304) data 0 size=0
+    FrameTransformMatrix '' (len 0, id 00000000) data 0 size=64 1 0 0 0 0 1 0 0 0 0 1 0 10 20 30 1
+    end 0x88760367
+    Frame 'Child' (len 6, id 00000000) data 0 size=0
+      Vector '' (len 0, id 00000000) data 0 size=12 1 2 3
+      end 0x88760367
+      { Mat } resolve 0 -> Material 'Mat'
+    end 0x88760367
+    { Later } resolve 0 -> Words 'Later'
+  end 0x88760367
+  Local '' (len 0, id 00000000) data 0 size=4 a=5
+    Numbers '' (len 0, id 00000000) data 0 n=2 4 5 str="x;y" (ok: 12 bytes, a pointer)
+    end 0x88760367
+  end 0x88760367
+  Words 'Later' (len 6, id 00000000) data 0 a=65535 b=66 c=-0.5 w=7,8 size=15
+  end 0x88760367
+  GetNextDataObject 0x88760367
+  Release 0
+binary: CreateEnumObject 0
+  Numbers 'Bin' (len 4, id 00000000) data 0 n=3 10 20 30 str="ok" (ok: 16 bytes, a pointer)
+  end 0x88760367
+  Vector '' (len 0, id 00000000) data 0 size=12 1.5 -2.25 3
+  end 0x88760367
+  GetNextDataObject 0x88760367
+  Release 0
+compressed: CreateEnumObject 0
+  Vector 'Packed' (len 7, id 00000000) data 0 size=12 1.5 -2.25 3
+  end 0x88760367
+  Numbers 'Zipped' (len 7, id 00000000) data 0 n=3 7 8 9 str="zip" (ok: 16 bytes, a pointer)
+  end 0x88760367
+  GetNextDataObject 0x88760367
+  Release 0
+by name Later 0 member c 0 size 8 value -0.5 member w 0 size 4 offset 8 member nope 0x88760365
+by name Nothing 0x88760357
+top refs 2 enum refs 1 file refs 1
+child refs 3
+release enum 0 -> top 1 child 2
+release top 0 -> child 1
+release child 0
+from file 0 first 0
+missing file 0x88760359
+unknown template: create 0 first 0 second 0x88760362 third 0x88760362
+release file 0

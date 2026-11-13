@@ -59,6 +59,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "xfile"
+path = "fuzz_targets/xfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "sid"
 path = "fuzz_targets/sid.rs"
 test = false

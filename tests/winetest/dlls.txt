@@ -26,6 +26,7 @@ ddraw
 d3d8
 d3d9
 d3dx9_36
+d3dxof
 d3d10
 d3d11
 dxgi
