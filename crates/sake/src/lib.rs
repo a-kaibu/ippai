@@ -73,6 +73,7 @@ pub mod ddraw;
 pub mod typelib;
 pub mod jscript;
 pub mod ini;
+pub mod rtf;
 pub mod msi;
 pub mod cabinet;
 pub mod msi_pkg;

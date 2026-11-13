@@ -1,0 +1,6 @@
+riched20.dll loads: ok
+RichEdit20W created: ok
+RTF read through several callbacks: ok
+RTF text: ok
+SF_TEXT replaces the text: ok
+callback error in dwError: ok

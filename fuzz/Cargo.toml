@@ -196,3 +196,10 @@ path = "fuzz_targets/loaded_image.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "rtf"
+path = "fuzz_targets/rtf.rs"
+test = false
+doc = false
+bench = false

@@ -886,7 +886,7 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     }
     let mut tr = full;
     let mut flags;
-    let edit = with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit")));
+    let edit = with(|s| s.wins.get(&h).is_some_and(|w| edit_class(&s.classes[w.class].name)));
     if edit {
         fill(full, 0xffffff);
         frame(full, 0x7a7a7a);
@@ -1013,6 +1013,58 @@ fn edit_text_box(style: u32, w: i32, hh: i32) -> (Rect, u32) {
     }
 }
 
+fn rich_stream_in(c: &mut Ctx, h: u32, format: u32, es: u32) -> u32 {
+    if es == 0 {
+        return 0;
+    }
+    // EDITSTREAM { DWORD_PTR dwCookie; DWORD dwError; EDITSTREAMCALLBACK pfnCallback; }, packed
+    // to 4 (richedit.h's pshpack4): the callback at 12 on x64
+    let (err_at, cb_at) = if mem::x64() { (8, 12) } else { (4, 8) };
+    let (cookie, cb) = (mem::rp(es), mem::rp(es + cb_at));
+    if crate::env_on!("SAKE_TRACE_INPUT") {
+        eprintln!("sake: EM_STREAMIN {h:x} format {format:x} es {es:x} cookie {cookie:x} callback {cb:x}");
+    }
+    if cb == 0 {
+        return 0;
+    }
+    const N: u32 = 4096;
+    let buf = mem::heap_alloc(N + 4, true);
+    let got = buf + N;
+    let mut data = Vec::new();
+    let mut err = 0;
+    // (a callback that keeps giving: a license is not 64 MB)
+    while data.len() < 64 << 20 {
+        mem::w32(got, 0);
+        err = c.call(cb, &[cookie, buf, N, got]);
+        let n = r32(got).min(N);
+        if err != 0 || n == 0 {
+            break;
+        }
+        data.extend_from_slice(mem::slice(buf, n));
+    }
+    mem::heap_free(buf);
+    mem::w32(es + err_at, err);
+    let text: Vec<u16> = if format & 2 != 0 {
+        crate::rtf::to_text(&data, 0)
+    } else if format & 0x10 != 0 {
+        data.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect()
+    } else {
+        crate::text::mb2w(0, &data)
+    };
+    let n = text.len() as u32;
+    with(|s| {
+        if let Some(w) = s.wins.get_mut(&h) {
+            if format & 0x8000 != 0 {
+                w.text.extend(text);
+            } else {
+                w.text = text;
+            }
+        }
+    });
+    invalidate(h, None, true);
+    n
+}
+
 fn ctl_click(c: &mut Ctx, h: u32) {
     let (style, id, parent) = with(|s| s.wins.get(&h).map_or((0, 0, 0), |w| (w.style, w.id, w.parent)));
     match style & 0xf {
@@ -1087,8 +1139,14 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             }
             0
         }
+        // EM_STREAMIN (rich edit): the program's EDITSTREAM callback gives the text, RTF (SF_RTF 2)
+        // or plain (SF_TEXT 1, SF_UNICODE 0x10: UTF-16); it replaces the text (or the selection,
+        // SFF_SELECTION: sake has none, so it is appended). Returns the characters read in.
+        0x449 if is_rich(h) => rich_stream_in(c, h, wp, lp),
+        // EM_EXLIMITTEXT, EM_SETBKGNDCOLOR, EM_SETEVENTMASK, EM_AUTOURLDETECT: taken, nothing to do
+        0x435 | 0x443 | 0x445 | 0x45b if is_rich(h) => 0,
         // the edit control: typed characters (no caret, no selection)
-        0x7 | 0x8 | 0x102 | 0x201 | 0x87 if with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit"))) => {
+        0x7 | 0x8 | 0x102 | 0x201 | 0x87 if with(|s| s.wins.get(&h).is_some_and(|w| edit_class(&s.classes[w.class].name))) => {
             match m {
                 // EN_SETFOCUS / EN_KILLFOCUS to the parent (winref msgwait)
                 0x7 | 0x8 => {
@@ -1203,7 +1261,7 @@ fn system_classes(s: &mut State) {
             name: n.into(),
             style: 0,
             proc_: match n {
-                "Button" | "Static" | "Edit" => control_proc(),
+                "Button" | "Static" | "Edit" | "RichEdit20A" | "RichEdit20W" | "RICHEDIT50W" => control_proc(),
                 "SysTabControl32" => tab_proc(),
                 "ComboBox" => combo_proc(),
                 "ListBox" => listbox_proc(),
@@ -2897,8 +2955,16 @@ fn SetWindowRgn(_: &mut Ctx) -> u32 {
 // DefWindowProc
 
 const PASSWORD_CHAR: &str = "sake:passwordchar";
+/// The edit control and the rich edit controls (RichEdit20A/W, RICHEDIT50W): sake draws a rich
+/// edit as a plain edit of its text (EM_STREAMIN's RTF reduced by crate::rtf, #164).
+fn edit_class(name: &str) -> bool {
+    ["edit", "richedit20a", "richedit20w", "richedit50w"].iter().any(|n| name.eq_ignore_ascii_case(n))
+}
+fn is_rich(h: u32) -> bool {
+    with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.to_ascii_lowercase().starts_with("richedit")))
+}
 fn is_edit(h: u32) -> bool {
-    with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit")))
+    with(|s| s.wins.get(&h).is_some_and(|w| edit_class(&s.classes[w.class].name)))
 }
 /// The character an edit control draws for each one of its text (None: drawn as typed).
 fn password_char(h: u32) -> Option<u16> {
