@@ -176,8 +176,10 @@ const post = (m: FromFrame) => parent.postMessage(m, app ?? "*");
 const changed: Changed = (key) => post({ ippai: "set", key, value: items.get(key) ?? null });
 
 // Electron games' pages are under resources/app/ (they run without Node: contextIsolation,
-// and a global `process` stops a PixiJS game's title buttons); NW.js ones beside the exe
-const node = !/\/resources\/app\//i.test(decodeURIComponent(location.pathname));
+// and a global `process` stops a PixiJS game's title buttons), unless the game asks for Node
+// (nodeIntegration, as older Electron did by default: #ippai-node); NW.js ones beside the exe
+const node =
+  !/\/resources\/app\//i.test(decodeURIComponent(location.pathname)) || location.hash === "#ippai-node";
 Object.defineProperty(window, "localStorage", { value: storage(items, changed) });
 if (node) Object.assign(window, { require: nodeRequire(folder, items, changed), process: nodeProcess() });
 else Object.assign(window, { studio_api: studioApi(items, changed) });

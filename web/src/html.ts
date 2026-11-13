@@ -6,6 +6,7 @@
 // other games or the server's other routes: its pages start with frame.ts (frame.js), which
 // asks this page for the game's saves and sends back what the game writes, and nothing else
 // (frame-protocol.ts).
+import { electronNode } from "./electron";
 import { fromFrame, type Init } from "./frame-protocol";
 import { loadSaves, storeSaves } from "./saves";
 
@@ -51,6 +52,25 @@ async function startPage(base: string): Promise<string | null> {
   return null;
 }
 
+/** Whether the Electron game in `dir` (with resources/app/) runs its page with Node. */
+async function electronPageNode(dir: string): Promise<boolean> {
+  const text = async (url: string) => {
+    const r = await fetch(url).catch(() => null);
+    return r?.ok ? r.text() : null;
+  };
+  const app = `${dir}resources/app/`;
+  let main = "index.js";
+  try {
+    const m = (JSON.parse((await text(`${app}package.json`)) ?? "{}") as { main?: unknown }).main;
+    if (typeof m === "string" && m) main = m.replace(/^\.\//, "");
+  } catch (e) {
+    console.warn("package.json:", e);
+  }
+  if (!/\.[cm]?js$/i.test(main)) main += ".js";
+  const code = await text(app + enc(main));
+  return code !== null && electronNode(code, await text(`${dir}version`));
+}
+
 /**
  * Opens the program as a web game when it is one; false when it is not (sake runs it).
  * `saveName` names its saves (as sake's), `oldSaves` their name before the rename (Z:\vnvm).
@@ -71,6 +91,8 @@ export async function startWebGame(
   const node = !!page;
   page ??= await startPage(root + enc(`${at.dir}resources/app/`));
   if (!page) return false;
+  // (older Electron games, as TyranoScript v5's, have Node in the page: saves through fs)
+  const electronWithNode = !node && (await electronPageNode(root + enc(at.dir)));
   log("Web ゲームとして開いています");
   const origin = await gameOrigin();
 
@@ -142,7 +164,7 @@ export async function startWebGame(
     "allow-popups",
     "allow-modals",
   );
-  frame.src = `${origin}/tree/${encodeURIComponent(at.tree)}/${page.slice(root.length)}`;
+  frame.src = `${origin}/tree/${encodeURIComponent(at.tree)}/${page.slice(root.length)}${electronWithNode ? "#ippai-node" : ""}`;
   addEventListener("message", (e: MessageEvent) => {
     if (e.source !== frame.contentWindow || e.origin !== origin) return;
     const m = fromFrame(e.data);
