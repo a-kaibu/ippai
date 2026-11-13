@@ -4146,18 +4146,26 @@ fn GetDoubleClickTime(_: &mut Ctx) -> u32 {
 fn MessageBeep(_: &mut Ctx) -> u32 {
     1
 }
+/// The button a message box "presses" so the program goes on (sake shows none): OK, Ignore,
+/// Yes, Cancel (Retry would ask again), Continue; by the low 4 bits of uType (MB_OK ..
+/// MB_CANCELTRYCONTINUE, else OK).
+pub(crate) fn box_answer(style: u32) -> u32 {
+    match style & 0xf {
+        2 => 5,      // MB_ABORTRETRYIGNORE: IDIGNORE
+        3 | 4 => 6,  // MB_YESNOCANCEL, MB_YESNO: IDYES
+        5 => 2,      // MB_RETRYCANCEL: IDCANCEL
+        6 => 11,     // MB_CANCELTRYCONTINUE: IDCONTINUE
+        _ => 1,      // MB_OK, MB_OKCANCEL: IDOK
+    }
+}
+fn show_box(text: &str, cap: &str, style: u32) -> u32 {
+    eprintln!("sake: MessageBox [{cap}] {text}");
+    box_answer(style)
+}
 fn message_box(c: &mut Ctx, wide: bool) -> u32 {
     let t = arg_str(c.a(1), wide);
     let cap = arg_str(c.a(2), wide);
-    eprintln!("sake: MessageBox [{cap}] {t}");
-    // the answer that goes on: OK, Ignore, Yes, Cancel (Retry would ask again), Continue
-    match c.a(3) & 0xf {
-        2 => 5,
-        3 | 4 => 6,
-        5 => 2,
-        6 => 11,
-        _ => 1,
-    }
+    show_box(&t, &cap, c.a(3))
 }
 fn MessageBoxA(c: &mut Ctx) -> u32 {
     message_box(c, false)
@@ -4168,10 +4176,33 @@ fn MessageBoxW(c: &mut Ctx) -> u32 {
 fn MessageBoxExA(c: &mut Ctx) -> u32 {
     message_box(c, false)
 }
-fn MessageBoxIndirectA(c: &mut Ctx) -> u32 {
+fn MessageBoxExW(c: &mut Ctx) -> u32 {
+    message_box(c, true)
+}
+/// MSGBOXPARAMS' lpszText, lpszCaption and dwStyle offsets for a pointer size (cbSize and
+/// hwndOwner, hInstance pointers first; x64 pads cbSize to 8).
+pub(crate) fn msgboxparams(ps: u32) -> (u32, u32, u32) {
+    let first = if ps == 8 { 8 } else { 4 };
+    (first + 2 * ps, first + 3 * ps, first + 4 * ps)
+}
+fn message_box_indirect(c: &mut Ctx, wide: bool) -> u32 {
     let p = c.a(0);
-    eprintln!("sake: MessageBox [{}] {}", arg_str(r32(p + 12), false), arg_str(r32(p + 8), false));
-    1
+    if p == 0 {
+        return 0;
+    }
+    let (t, cap, style) = msgboxparams(mem::ps());
+    // (lpszText / lpszCaption may be resource ids with hInstance: shown as numbers)
+    let s = |o: u32| {
+        let v = mem::rp(p + o);
+        if v < 0x10000 { format!("#{v}") } else { arg_str(v, wide) }
+    };
+    show_box(&s(t), &s(cap), r32(p + style))
+}
+fn MessageBoxIndirectA(c: &mut Ctx) -> u32 {
+    message_box_indirect(c, false)
+}
+fn MessageBoxIndirectW(c: &mut Ctx) -> u32 {
+    message_box_indirect(c, true)
 }
 /// CBT hooks (MFC's CWnd::CreateEx attaches the window and subclasses it in HCBT_CREATEWND):
 /// (handle, procedure, thread). Other hooks are accepted and never called.
@@ -6692,7 +6723,7 @@ pub fn init() {
         SendInput, GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
         GetKeyboardState, SetKeyboardState, GetKeyboardType, GetKeyboardLayout, GetKeyboardLayoutList,
         ActivateKeyboardLayout, LoadKeyboardLayoutA, MapVirtualKeyA, MapVirtualKeyW, GetKeyNameTextA, GetKeyNameTextW,
-        GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxIndirectA,
+        GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxExW, MessageBoxIndirectA, MessageBoxIndirectW,
         SetWindowsHookExA, SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, WinHelpA, GetSysColor,
         GetSysColorBrush, GetSystemMetrics, SystemParametersInfoA, SystemParametersInfoW, ChangeDisplaySettingsA,
         ChangeDisplaySettingsW, ChangeDisplaySettingsExA, ChangeDisplaySettingsExW, EnumDisplaySettingsA, EnumDisplaySettingsW, EnumDisplaySettingsExA, EnumDisplaySettingsExW, EnumDisplayDevicesA, EnumDisplayDevicesW, GetDisplayConfigBufferSizes, QueryDisplayConfig, DisplayConfigGetDeviceInfo, MonitorFromWindow, MonitorFromPoint,
@@ -6807,6 +6838,41 @@ fn app_id_params() -> (u32, u32) {
     } else {
         let pp = r32(peb + 0x10);
         (pp + 0x68, pp + 0x70)
+    }
+}
+
+#[cfg(test)]
+mod message_box_tests {
+    use super::{box_answer, msgboxparams};
+    use proptest::prelude::*;
+
+    /// MSGBOXPARAMSA/W as the SDK lays it out (winuser.h; x64 pads cbSize).
+    #[test]
+    fn msgboxparams_offsets() {
+        assert_eq!(msgboxparams(4), (12, 16, 20));
+        assert_eq!(msgboxparams(8), (24, 32, 40));
+    }
+
+    proptest! {
+        /// Whatever the other uType bits (icons, default button, modality, flags), the answer is
+        /// one of the box's own buttons and one that goes on (never IDABORT, IDRETRY, IDNO,
+        /// IDTRYAGAIN), and IDOK for the types that have no other.
+        #[test]
+        fn answer_is_a_button_that_goes_on(style in any::<u32>()) {
+            let buttons: &[u32] = match style & 0xf {
+                1 => &[1, 2],
+                2 => &[3, 4, 5],
+                3 => &[6, 7, 2],
+                4 => &[6, 7],
+                5 => &[4, 2],
+                6 => &[2, 10, 11],
+                _ => &[1],
+            };
+            let a = box_answer(style);
+            prop_assert!(buttons.contains(&a), "{style:#x}: {a}");
+            prop_assert!(![3, 4, 7, 10].contains(&a));
+            prop_assert_eq!(a, box_answer(style & 0xf));
+        }
     }
 }
 
