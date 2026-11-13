@@ -463,3 +463,115 @@ test('ranges name the fetcher threads\' reads', () => {
   assert.deepEqual([...ctx.ippaiRange('chunks/ab/x#0+10/256')], ['chunks/ab/x', 0, 10, 256, 0]);
   assert.deepEqual([...ctx.ippaiRange('chunks/ab/x#262144+4/262144!a')], ['chunks/ab/x', 262144, 4, 262144, 1]);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Cache Storage that does not answer (Chromium left a cached chunk's body read pending for good
+// under load: a read ahead waited on it, the game's read behind it, no window ever): each step of
+// a read of it given IPPAI_CACHE_MS, then the network.
+
+/** Cache Storage over `kept` (url -> { b, h }) whose steps (open, match, arrayBuffer, blob,
+ * slice) never settle when `hang(step)` says so, and reject when `fail(step)` does. */
+function stalling(kept, hang, fail = () => false) {
+  const step = (name, f) => (hang(name) ? new Promise(() => {}) : fail(name) ? Promise.reject(new Error(name)) : f());
+  const body = (b) => ({
+    arrayBuffer: () => step('arrayBuffer', async () => b.slice().buffer),
+    blob: () => step('blob', async () => ({ slice: (x, y) => ({ arrayBuffer: () => step('slice', async () => b.slice(x, y).buffer) }) })),
+  });
+  return {
+    open: () =>
+      step('open', async () => ({
+        match: (u) =>
+          step('match', async () => {
+            const d = kept.get(u);
+            return d && { headers: { get: (n) => d.h[n] ?? null }, ...body(d.b) };
+          }),
+        put: async (u, r) => void kept.set(u, { b: new Uint8Array(await r.arrayBuffer()), h: Object.fromEntries(r.headers) }),
+      })),
+  };
+}
+
+/** A seeded generator (xorshift32). */
+const rng = (seed) => () => {
+  seed ^= seed << 13;
+  seed ^= seed >>> 17;
+  seed ^= seed << 5;
+  return (seed >>> 0) / 2 ** 32;
+};
+
+test('Cache Storage that never answers, at any step of any read: every read still has the right bytes, from the network, in time', async () => {
+  const big = HASHES.filter((h) => CHUNKS.get(h).length > 3000);
+  for (let seed = 1; seed <= 150; seed++) {
+    const r = rng(seed * 2654435761);
+    const { ctx, kept, log } = await bridge({ delay: 1 });
+    const h = big[Math.floor(r() * big.length)];
+    const data = CHUNKS.get(h);
+    const block = 1024;
+    // (on the device as a whole chunk, as blocks kept alone, or not at all)
+    const where = Math.floor(r() * 3);
+    if (where === 0) kept.set(url(h), { b: data, h: { 'x-ippai-checked': '1' } });
+    if (where === 1) for (let k = 0; k * block < data.length; k++) kept.set(ctx.ippaiBlockKey(url(h), k, block), { b: data.slice(k * block, (k + 1) * block), h: {} });
+    const p = r();
+    const hung = new Set();
+    ctx.caches = stalling(kept, (s) => r() < p && (hung.add(s), true));
+    ctx.ippaiCacheOpen = undefined;
+    ctx.IPPAI_CACHE_MS = 15;
+    const whole = r() < 0.3;
+    const from = Math.floor((r() * data.length) / block) * block;
+    const len = 1 + Math.floor(r() * Math.min(3 * block, data.length - from));
+    const cls = Math.floor(r() * 2);
+    const t = Date.now();
+    const got = whole ? await ctx.ippaiWhole(url(h), { cls }) : await ctx.ippaiFetchPart(url(h), from, len, block, cls);
+    const want = whole ? data : data.subarray(from, from + len);
+    assert.deepEqual(got.data, want, `seed ${seed}: where ${where}, hung ${[...hung]}, ${whole ? 'whole' : `${from}+${len}`}`);
+    assert.ok(Date.now() - t < 2000, `seed ${seed}: ${Date.now() - t} ms`);
+    // (an answering cache: from it, nothing over the network)
+    if (!hung.size && where === 0) assert.equal(log.bucket.length + log.store, 0, `seed ${seed}`);
+  }
+});
+
+test("a block kept alone that does not read is not there: not taken for the chunk's short last block", async () => {
+  const h = HASHES.find((x) => CHUNKS.get(x).length > 4096);
+  const data = CHUNKS.get(h);
+  const block = 1024;
+  for (const mode of ['reject', 'hang']) {
+    const { ctx, kept, log } = await bridge({ delay: 1 });
+    for (let k = 0; k * block < data.length; k++) kept.set(ctx.ippaiBlockKey(url(h), k, block), { b: data.slice(k * block, (k + 1) * block), h: {} });
+    // (the second block's body does not read)
+    let n = 0;
+    const second = (s) => s === 'arrayBuffer' && ++n === 2;
+    ctx.caches = mode === 'hang' ? stalling(kept, second) : stalling(kept, () => false, second);
+    ctx.ippaiCacheOpen = undefined;
+    ctx.IPPAI_CACHE_MS = 15;
+    const got = await ctx.ippaiFetchPart(url(h), 0, 3 * block, block, 0);
+    assert.deepEqual(got.data, data.subarray(0, 3 * block), mode);
+    assert.ok(log.bucket.length + log.store > 0, `${mode}: from the network`);
+  }
+});
+
+test("every range goes past the browser's HTTP cache (its bodies of one chunk waited on each other there), whole chunks not", async () => {
+  const big = HASHES.filter((h) => CHUNKS.get(h).length > 3000);
+  for (let seed = 1; seed <= 60; seed++) {
+    const r = rng(seed * 40503);
+    const { ctx } = await bridge({ delay: 1 });
+    const seen = [];
+    const inner = ctx.fetch;
+    ctx.fetch = (u, init = {}) => {
+      seen.push({ u, range: init.headers?.range, cache: init.cache });
+      return inner(u, init);
+    };
+    // (a server without the bucket: reads of blocks are ranges of /store)
+    ctx.ippaiDirectOff = r() < 0.5;
+    const h = big[Math.floor(r() * big.length)];
+    const data = CHUNKS.get(h);
+    const block = 1024;
+    const reads = Array.from({ length: 1 + Math.floor(r() * 4) }, () => {
+      const from = Math.floor((r() * data.length) / block) * block;
+      return [from, 1 + Math.floor(r() * Math.min(2 * block, data.length - from))];
+    });
+    const got = await Promise.all(reads.map(([from, len]) => ctx.ippaiFetchPart(url(h), from, len, block, Math.floor(r() * 2))));
+    got.forEach((g, i) => assert.deepEqual(g.data, data.subarray(reads[i][0], reads[i][0] + reads[i][1]), `seed ${seed}`));
+    const store = seen.filter((s) => s.u.includes('/store/chunks/'));
+    for (const s of store) assert.equal(s.cache === 'no-store', !!s.range, `seed ${seed}: ${JSON.stringify(s)}`);
+    if (ctx.ippaiDirectOff) assert.ok(store.some((s) => s.range), `seed ${seed}: ranges asked for`);
+  }
+});

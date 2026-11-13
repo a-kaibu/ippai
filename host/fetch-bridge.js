@@ -160,6 +160,8 @@ async function ippaiFetchOnce(url, stallMs, reload, headers) {
     // zstd-coded) is kept there, and Chromium answers a range from that entry with the coded
     // bytes (a wrong Content-Range, then "Failed to fetch"): reads retried for good while the
     // page's read-ahead had fetched the chunk first, and the game stopped at its start.
+    // Under CPU load the bodies of several 206s of one chunk at once also waited on each other
+    // there for 20 s and more (2026-11-13, #205).
     const cache = headers?.range ? 'no-store' : reload ? 'reload' : undefined;
     const init = { signal: abort.signal, ...(cache ? { cache } : {}), ...(headers ? { headers } : {}) };
     const response = await fetch(url, init);
@@ -201,12 +203,27 @@ function ippaiNetReport(error) {
   } catch (_) {}
 }
 
+/**
+ * How long one step of a read of Cache Storage (open, match, a body) may take: past it, the
+ * chunk is as if not there and comes from the network. Chromium left a cached chunk's body read
+ * pending for good under load (2026-11-13, 白濁の少女 and 夏神家に起きたこと+ about 1 start in 4
+ * with the warm run beside the first reads: a read ahead waited in Blob.arrayBuffer, the game's
+ * read for its blocks behind it, no window ever); a read of a 4 MiB chunk takes milliseconds.
+ */
+var IPPAI_CACHE_MS = 5000;
+/** `p` (a Cache Storage step), or a rejection once it took IPPAI_CACHE_MS. */
+function ippaiCacheStep(p) {
+  let timer;
+  const late = new Promise((_, no) => (timer = setTimeout(() => no(new Error('Cache Storage did not answer')), IPPAI_CACHE_MS)));
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
 /** Cache Storage for chunks (opened once: every read of a block asks for it). */
 var ippaiCacheOpen;
 function ippaiCache() {
   return (ippaiCacheOpen ??= (async () => {
     try {
-      return typeof caches === 'undefined' ? null : await caches.open(IPPAI_CHUNKS);
+      return typeof caches === 'undefined' ? null : await ippaiCacheStep(caches.open(IPPAI_CHUNKS));
     } catch (_) {
       return null;
     }
@@ -340,11 +357,11 @@ function ippaiWhole(url, { cls = 0, size, want = true, directOnly = false } = {}
   const job = { cls };
   const run = async () => {
     const cache = await ippaiCache();
-    const hit = await cache?.match(url).catch(() => undefined);
+    const hit = cache && (await ippaiCacheStep(cache.match(url)).catch(() => undefined));
     if (hit && hit.headers.get(IPPAI_CHECKED) === '1') {
       if (!want) return { data: null, wire: 0, cached: 1 };
       try {
-        return { data: new Uint8Array(await hit.arrayBuffer()), wire: 0, cached: 1 };
+        return { data: new Uint8Array(await ippaiCacheStep(hit.arrayBuffer())), wire: 0, cached: 1 };
       } catch (_) {}
     }
     return ippaiDirect(url, job, size);
@@ -587,7 +604,7 @@ async function ippaiPackRun(url, info, job, size, base) {
     end += n.pack.len;
     // (here or coming already: its bytes only if a later one is taken)
     if (ippaiInflight.has(u) || ippaiRecent.has(u)) continue;
-    const hit = await cache?.match(u).catch(() => undefined);
+    const hit = cache && (await ippaiCacheStep(cache.match(u)).catch(() => undefined));
     if (hit && hit.headers.get(IPPAI_CHECKED) === '1') continue;
     run.push({ url: u, info: n });
     last = end;
@@ -681,19 +698,21 @@ async function ippaiFetchPart(url, from, len, block, cls = 0) {
   const first = Math.floor(from / block);
   const last = Math.max(first, Math.ceil((from + len) / block) - 1);
   if (cache) {
-    const hit = await cache.match(url).catch(() => undefined);
+    const hit = await ippaiCacheStep(cache.match(url)).catch(() => undefined);
     if (hit && hit.headers.get(IPPAI_CHECKED) === '1') {
       try {
-        const blob = await hit.blob();
-        return { data: new Uint8Array(await blob.slice(from, from + len).arrayBuffer()), wire: 0, cached: 1 };
+        const blob = await ippaiCacheStep(hit.blob());
+        return { data: new Uint8Array(await ippaiCacheStep(blob.slice(from, from + len).arrayBuffer())), wire: 0, cached: 1 };
       } catch (_) {}
     }
-    // (blocks kept alone: all of them, or the network)
+    // (blocks kept alone: all of them, or the network; a block that does not read is not there,
+    // not a short last one)
     const parts = [];
     for (let k = first; k <= last; k++) {
-      const b = await cache.match(ippaiBlockKey(url, k, block)).catch(() => undefined);
-      if (!b) break;
-      parts.push(new Uint8Array(await b.arrayBuffer().catch(() => new ArrayBuffer(0))));
+      const b = await ippaiCacheStep(cache.match(ippaiBlockKey(url, k, block))).catch(() => undefined);
+      const bytes = b && (await ippaiCacheStep(b.arrayBuffer()).catch(() => undefined));
+      if (!bytes) break;
+      parts.push(new Uint8Array(bytes));
       // (a chunk's last block: shorter, nothing after it)
       if (parts.at(-1).length < block) break;
     }
@@ -736,10 +755,10 @@ async function ippaiFetchRobust(url, opt = {}) {
   // already); the answer has `partial` (a 206 of them, ippai serve's store_api.rs) or is the
   // whole chunk (a server without ranges), checked and kept as any
   const range = opt.range;
-  const hit = range ? undefined : await cache?.match(url).catch(() => undefined);
+  const hit = range || !cache ? undefined : await ippaiCacheStep(cache.match(url)).catch(() => undefined);
   if (hit) {
     try {
-      const data = new Uint8Array(await hit.arrayBuffer());
+      const data = new Uint8Array(await ippaiCacheStep(hit.arrayBuffer()));
       if (hit.headers.get(IPPAI_CHECKED) === '1') return { data, wire: 0, cached: 1 };
       if (ippaiChunkOk(url, data)) {
         cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })).catch(() => {});
@@ -862,8 +881,8 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function ippaiFetchWorkerSource(main, more = []) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiHint, ippaiHintPump, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiHint, ippaiHintPump, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',

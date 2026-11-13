@@ -21,8 +21,8 @@ while read -r mod cfg expect; do
   states=$(echo "$out" | grep -o '[0-9,]* distinct states found' | tail -1)
   if [ "$expect" = ok ] && [ $rc -eq 0 ]; then
     echo "ok   $mod ($cfg): $states, ${t}s"
-  elif [ "$expect" = violation ] && [ $rc -ne 0 ] && echo "$out" | grep -q 'is violated'; then
-    echo "ok   $mod ($cfg): counterexample found as expected ($(echo "$out" | grep -m1 'is violated' | sed 's/^Error: //')), ${t}s"
+  elif [ "$expect" = violation ] && [ $rc -ne 0 ] && echo "$out" | grep -Eq '(is|was) violated'; then
+    echo "ok   $mod ($cfg): counterexample found as expected ($(echo "$out" | grep -Em1 '(is|was) violated' | sed 's/^Error: //')), ${t}s"
   else
     echo "FAIL $mod ($cfg), expected $expect, TLC exit $rc:"
     echo "$out" | grep -v '^Parsing\|^Semantic\|^Starting\|^Implied\|^Computing\|^Progress' | tail -60
