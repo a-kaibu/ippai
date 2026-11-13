@@ -6851,8 +6851,10 @@ fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
     match m {
         0x14 => DefDlgProcA(c),
         0x110 => 1,
-        // DM_GETDEFID: MAKELONG(id, DC_HASDEFID) of the BS_DEFPUSHBUTTON child
-        0x400 => def_button(h).map_or(0, |(id, _)| 0x534b_0000 | id),
+        // DM_GETDEFID: MAKELONG(id, DC_HASDEFID) of the BS_DEFPUSHBUTTON child, also one in a
+        // visible, enabled WS_EX_CONTROLPARENT child (a wizard's page dialog holding the
+        // buttons: 姦淫特急『松葉』体験版's installer; Wine's DEFDLG_FindDefButton)
+        0x400 => find_def_button(h).map_or(0, |(id, _)| 0x534b_0000 | id),
         // DM_SETDEFID(id): that button takes BS_DEFPUSHBUTTON from the old one
         0x401 => {
             let old = def_button(h);
@@ -6905,6 +6907,53 @@ fn def_button(dlg: u32) -> Option<(u32, u32)> {
             .find(|k| s.wins.get(k).is_some_and(|w| s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.style & 0xf == 1))
             .map(|k| (s.wins[&k].id & 0xffff, k))
     })
+}
+
+/// DM_GETDEFID's button: the first BS_DEFPUSHBUTTON among the children in z-order, looking
+/// into visible, enabled WS_EX_CONTROLPARENT children as it goes
+fn find_def_button(dlg: u32) -> Option<(u32, u32)> {
+    with(|s| def_in(s, dlg, 0))
+}
+
+fn def_in(s: &State, h: u32, depth: u32) -> Option<(u32, u32)> {
+    let node = |k: u32| {
+        let w = s.wins.get(&k)?;
+        let button = s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.style & 0xf == 1;
+        let into = w.exstyle & 0x1_0000 != 0 && w.visible && w.style & 0x0800_0000 == 0;
+        Some(DefNode { id: w.id & 0xffff, button, into, children: if into { w.children.clone() } else { Vec::new() } })
+    };
+    let top = s.wins.get(&h)?.children.clone();
+    def_search(&top, &node, depth)
+}
+
+/// A window as DM_GETDEFID's search sees it.
+struct DefNode {
+    id: u32,
+    /// a BS_DEFPUSHBUTTON Button
+    button: bool,
+    /// WS_EX_CONTROLPARENT, visible and enabled: searched into
+    into: bool,
+    children: Vec<u32>,
+}
+
+/// The first default push button among `kids` in order, descending into the windows to search
+/// into before going on (Wine's DEFDLG_FindDefButton): (id, window)
+fn def_search(kids: &[u32], node: &dyn Fn(u32) -> Option<DefNode>, depth: u32) -> Option<(u32, u32)> {
+    if depth > 16 {
+        return None;
+    }
+    for &k in kids {
+        let Some(n) = node(k) else { continue };
+        if n.button {
+            return Some((n.id, k));
+        }
+        if n.into {
+            if let Some(r) = def_search(&n.children, node, depth + 1) {
+                return Some(r);
+            }
+        }
+    }
+    None
 }
 
 fn dlg_item(h: u32, id: u32) -> u32 {
@@ -8183,5 +8232,51 @@ mod user_object_tests {
         assert!(a != 0 && b != 0 && a != b);
         assert_eq!(call(UnhookWinEvent, &[a]), 1);
         assert_eq!(call(UnhookWinEvent, &[0]), 0);
+    }
+}
+
+#[cfg(test)]
+mod def_button_search {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A random window tree: per window (parent index or none, default button, searched into).
+    fn tree() -> impl Strategy<Value = Vec<(Option<usize>, bool, bool)>> {
+        prop::collection::vec((any::<prop::sample::Index>(), any::<bool>(), any::<bool>(), any::<bool>()), 1..40).prop_map(|v| {
+            v.into_iter()
+                .enumerate()
+                .map(|(i, (p, top, b, into))| (if i == 0 || top { None } else { Some(p.index(i)) }, b, into))
+                .collect()
+        })
+    }
+
+    proptest! {
+        /// DM_GETDEFID's search is the first default button of a preorder walk (explicit
+        /// stack) that enters only the windows to search into.
+        #[test]
+        fn first_in_preorder(t in tree()) {
+            let kids = |p: Option<usize>| -> Vec<u32> { t.iter().enumerate().filter(|x| x.1 .0 == p).map(|x| x.0 as u32 + 1).collect() };
+            let node = |k: u32| {
+                let (_, button, into) = t[k as usize - 1];
+                Some(DefNode { id: k + 100, button, into, children: if into { kids(Some(k as usize - 1)) } else { Vec::new() } })
+            };
+            let got = def_search(&kids(None), &node, 0);
+            // reference: walk, stack of pending windows (reversed so the first child pops first)
+            let mut stack: Vec<(u32, u32)> = kids(None).into_iter().rev().map(|k| (k, 0)).collect();
+            let mut want = None;
+            while let Some((k, d)) = stack.pop() {
+                let (_, button, into) = t[k as usize - 1];
+                if button { want = Some((k + 100, k)); break; }
+                if into && d < 16 {
+                    for c in kids(Some(k as usize - 1)).into_iter().rev() { stack.push((c, d + 1)); }
+                }
+            }
+            prop_assert_eq!(got, want);
+            if let Some((_, k)) = got {
+                // (found through windows to search into only)
+                let mut p = t[k as usize - 1].0;
+                while let Some(i) = p { prop_assert!(t[i].2); p = t[i].0; }
+            }
+        }
     }
 }
