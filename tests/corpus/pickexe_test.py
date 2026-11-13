@@ -60,6 +60,13 @@ class Cases(unittest.TestCase):
     def test_biggest_not_a_tool(self):
         self.assertEqual(self.pick({'g/game.exe': 10, 'g/config.exe': 50, 'g/uninst.exe': 60, 'g/small.exe': 5}), 'g/game.exe')
 
+    def test_ags_inst_beside_the_game(self):
+        # 8人のM娘 体験版 (8mz_TR): game/inst.exe (2.1 MB) is the installer, game/ags.exe (1 MB) the game
+        r = '8mz_TR/'
+        self.assertEqual(self.pick({r + 'setup.exe': 2440, r + 'game/ags.exe': 1069, r + 'game/inst.exe': 2152,
+                                    r + 'game/uninst.exe': 2139}), r + 'game/ags.exe')
+        self.assertEqual(self.pick({'first.exe': 10, 'firstinst.exe': 20}), 'firstinst.exe')
+
     def test_installed_by_inno(self):
         self.assertEqual(self.pick({'setup.exe.inno/app/game.exe': 10, 'setup.exe.inno/app/tiny.exe': 1}), 'setup.exe.inno/app/game.exe')
 

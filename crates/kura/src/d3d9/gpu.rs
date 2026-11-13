@@ -67,6 +67,9 @@ pub struct Batch {
 
 impl Batch {
     pub fn cmd(&mut self, words: &[u32]) {
+        if matches!(words.first(), Some(&PRESENT) | Some(&PRESENT_FLIP)) {
+            crate::display::presented();
+        }
         self.cmds.extend_from_slice(words);
     }
 

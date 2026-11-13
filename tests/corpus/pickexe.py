@@ -9,14 +9,14 @@ In order:
   2. Ren'Py: X.exe beside X.py and renpy/ (lib/windows-i686/zsync.exe, python.exe are tools).
   3. The biggest .exe that is not a tool (installers, configuration, redistributables, ffmpeg,
      ...), matched without the folders the unpacking made (setup.exe.inno/app/game.exe is the
-     game Inno Setup installs, not a setup program), nor inside a Unity *_Data folder or a
+     game Inno Setup installs, not a setup program; inst.exe is AGS's installer beside ags.exe), nor inside a Unity *_Data folder or a
      Ren'Py lib/ folder.
   4. Nothing but tools: the biggest .exe (an installer sake runs itself), helpers last.
 Ties go to the shorter, then the smaller path, so the answer never depends on listing order.
 """
 import os, re, sys
 
-TOOL = re.compile(r'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet|CrashHandler|ffmpeg|zsync', re.I)
+TOOL = re.compile(r'unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet|CrashHandler|ffmpeg|zsync|(^|/)inst\.exe$', re.I)
 UNPACKED = re.compile(r'[^/]*\.(exe|msi|zip|lzh|rar|7z)\.(is|inno|zip|sfx|x)/', re.I)
 # (a Unity game's data folder, a Ren'Py game's helper programs)
 HELPER_DIR = re.compile(r'(^|/)[^/]*_Data/|(^|/)lib/(windows|py[0-9][^/]*-windows)[^/]*/', re.I)

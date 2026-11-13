@@ -442,6 +442,15 @@ impl Render {
                 }
             }
         }
+        // and what GDI drew on the window since the frame was presented
+        if let Some(o) = self.d3d.overlay {
+            let [ol, ot, or, ob] = o.rect;
+            for [l, t, r, b] in crate::display::gdi_since_present() {
+                if l < or && t < ob && r > ol && b > ot && above.len() < 8 {
+                    above.push([l, t, r, b]);
+                }
+            }
+        }
         if above != self.above {
             self.above = above;
             redraw = true;

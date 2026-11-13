@@ -548,7 +548,59 @@ impl Display {
         let at = Rect { l: dirty.l + win.rect.l, t: dirty.t + win.rect.t, r: dirty.r + win.rect.l, b: dirty.b + win.rect.t };
         if win.visible {
             d.compose(at);
+            gdi_drew([at.l, at.t, at.r, at.b]);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// GDI over Direct3D: on Windows a window's GDI drawing and its Direct3D / OpenGL presents land
+// on the same surface, the later one showing. The page shows the last present over the window
+// until the next one, so what GDI changed on the screen since then (a game that drew its logo
+// with Direct3D and then its warning screen with DrawDibDraw: カスタムレイド4 体験版) is drawn
+// from the screen on top of it. (Its own lock: taken alone, or after the display's.)
+
+static GDI_SINCE_PRESENT: Mutex<Vec<[i32; 4]>> = Mutex::new(Vec::new());
+/// at most this many rects; more: their bounding box
+pub const GDI_RECTS: usize = 4;
+
+fn gdi_drew(r: [i32; 4]) {
+    add_rect(&mut GDI_SINCE_PRESENT.lock().unwrap_or_else(|e| e.into_inner()), r);
+}
+
+/// A present (d3d9/gpu.rs, from the program's thread): the frame is over everything again.
+pub fn presented() {
+    GDI_SINCE_PRESENT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// What GDI changed on the screen since the last present (l t r b, screen coordinates).
+pub fn gdi_since_present() -> Vec<[i32; 4]> {
+    GDI_SINCE_PRESENT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Adds `r` to the rects `v`, which cover the same pixels as the rects added (more only once
+/// they are over GDI_RECTS: then their bounding box): a rect inside another is dropped, two
+/// that make one rect (the same columns and touching rows, or the same rows and touching
+/// columns: strips drawn one after another) become it.
+pub fn add_rect(v: &mut Vec<[i32; 4]>, r: [i32; 4]) {
+    let inside = |a: &[i32; 4], b: &[i32; 4]| a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
+    if r[0] >= r[2] || r[1] >= r[3] || v.iter().any(|e| inside(&r, e)) {
+        return;
+    }
+    v.retain(|e| !inside(e, &r));
+    let mut r = r;
+    while let Some(i) = v.iter().position(|e| {
+        (e[0] == r[0] && e[2] == r[2] && e[1] <= r[3] && r[1] <= e[3]) || (e[1] == r[1] && e[3] == r[3] && e[0] <= r[2] && r[0] <= e[2])
+    }) {
+        let e = v.swap_remove(i);
+        r = [e[0].min(r[0]), e[1].min(r[1]), e[2].max(r[2]), e[3].max(r[3])];
+        v.retain(|x| !inside(x, &r));
+    }
+    v.push(r);
+    if v.len() > GDI_RECTS {
+        let b = v.iter().fold(v[0], |a, e| [a[0].min(e[0]), a[1].min(e[1]), a[2].max(e[2]), a[3].max(e[3])]);
+        v.clear();
+        v.push(b);
     }
 }
 
@@ -781,6 +833,56 @@ pub extern "C" fn vnhost_input_push(kind: u32, x: i32, y: i32, data: u32) -> c_i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cover(v: &[[i32; 4]], x: i32, y: i32) -> bool {
+        v.iter().any(|r| x >= r[0] && x < r[2] && y >= r[1] && y < r[3])
+    }
+
+    #[test]
+    fn strips_drawn_one_after_another_make_one_rect() {
+        // カスタムレイド4: DrawDibDraw in 1024x8 strips down the window
+        let mut v = Vec::new();
+        for y in (0..768).step_by(8) {
+            add_rect(&mut v, [0, y, 1024, y + 8]);
+        }
+        assert_eq!(v, [[0, 0, 1024, 768]]);
+        add_rect(&mut v, [10, 10, 20, 20]);
+        assert_eq!(v, [[0, 0, 1024, 768]]);
+        add_rect(&mut v, [5, 5, 5, 9]);
+        assert_eq!(v.len(), 1);
+    }
+
+    proptest::proptest! {
+        /// Any rects in any order: at most GDI_RECTS, and the same pixels as the rects added
+        /// while they fit; once not, everything added stays covered (the bounding box).
+        #[test]
+        fn add_rect_covers_what_was_added(rs in proptest::collection::vec((0i32..12, 0i32..12, 0i32..6, 0i32..6), 0..10)) {
+            let mut v = Vec::new();
+            let mut added: Vec<[i32; 4]> = Vec::new();
+            let mut overflowed = false;
+            for (l, t, w, h) in rs {
+                let r = [l, t, l + w, t + h];
+                add_rect(&mut v, r);
+                if w > 0 && h > 0 { added.push(r); }
+                proptest::prop_assert!(v.len() <= GDI_RECTS);
+                proptest::prop_assert!(v.iter().all(|e| e[0] < e[2] && e[1] < e[3]));
+                for y in 0..18 {
+                    for x in 0..18 {
+                        let want = cover(&added, x, y);
+                        let got = cover(&v, x, y);
+                        proptest::prop_assert!(!want || got, "({}, {}) lost: {:?} from {:?}", x, y, v, added);
+                    }
+                }
+                let exact = (0..18).all(|y| (0..18).all(|x| cover(&added, x, y) == cover(&v, x, y)));
+                if !exact && !overflowed {
+                    // only by going over GDI_RECTS: one rect, the bounding box of all added
+                    overflowed = true;
+                    let bb = added.iter().fold(added[0], |a, e| [a[0].min(e[0]), a[1].min(e[1]), a[2].max(e[2]), a[3].max(e[3])]);
+                    proptest::prop_assert_eq!(&v, &vec![bb]);
+                }
+            }
+        }
+    }
 
     fn run(old: &[u32], new: &[u32], w: usize, dirty: Rect) -> (Rect, Vec<u32>) {
         let mut px = old.to_vec();
