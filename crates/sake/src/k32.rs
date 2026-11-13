@@ -393,6 +393,8 @@ pub fn exit_thread(code: u32) -> ! {
     obj::signal();
     obj::close(h);
     crate::apc::forget(t.tid);
+    // (ExitThread from a DllMain or TLS callback: the loader lock it holds)
+    crate::pe::loader_thread_exit();
     if t.tid == crate::process::first_tid(crate::pid()) {
         // the main thread: the process
         unsafe { libc::exit(code as i32) }

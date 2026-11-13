@@ -51,27 +51,47 @@ pub static MODULES: RwLock<Vec<Module>> = RwLock::new(Vec::new());
 // Windows holds the loader lock across TLS callbacks and DllMain, including
 // DLL_THREAD_ATTACH. Delphi's DLL entry uses a shared initialization context:
 // concurrent callbacks can corrupt it and call ExitProcess(0) from a worker.
-static LOADER: Mutex<()> = Mutex::new(());
-thread_local! {
-    static IN_LOADER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-struct LoaderGuard(Option<std::sync::MutexGuard<'static, ()>>);
+// The holder's thread and how many times it took the lock (DllMain may itself call LoadLibrary:
+// the same thread takes it again, other threads wait until that whole initialization ends).
+static LOADER: Mutex<(Option<std::thread::ThreadId>, u32)> = Mutex::new((None, 0));
+static LOADER_FREE: std::sync::Condvar = std::sync::Condvar::new();
+struct LoaderGuard;
 impl Drop for LoaderGuard {
     fn drop(&mut self) {
-        if self.0.is_some() {
-            IN_LOADER.with(|held| held.set(false));
+        let me = std::thread::current().id();
+        let mut l = LOADER.lock().unwrap();
+        if l.0 == Some(me) && l.1 > 0 {
+            l.1 -= 1;
+            if l.1 == 0 {
+                l.0 = None;
+                LOADER_FREE.notify_all();
+            }
         }
     }
 }
 fn loader_lock() -> LoaderGuard {
-    // DllMain may itself call LoadLibrary. Only the outer call takes the mutex;
-    // other threads still wait until that entire initialization has finished.
-    if IN_LOADER.with(|held| held.get()) {
-        return LoaderGuard(None);
+    let me = std::thread::current().id();
+    let mut l = LOADER.lock().unwrap();
+    if l.0 == Some(me) {
+        l.1 += 1;
+        return LoaderGuard;
     }
-    let guard = LOADER.lock().unwrap();
-    IN_LOADER.with(|held| held.set(true));
-    LoaderGuard(Some(guard))
+    while l.1 != 0 {
+        l = LOADER_FREE.wait(l).unwrap();
+    }
+    *l = (Some(me), 1);
+    LoaderGuard
+}
+/// The calling thread ends (ExitThread, also from inside a DllMain or TLS callback): the loader
+/// lock it holds goes, as its guards never drop (pthread_exit), or every later LoadLibrary and
+/// thread start would wait forever.
+pub fn loader_thread_exit() {
+    let me = std::thread::current().id();
+    let mut l = LOADER.lock().unwrap();
+    if l.0 == Some(me) {
+        *l = (None, 0);
+        LOADER_FREE.notify_all();
+    }
 }
 
 /// (a data-file module's handle is its base | 1 or | 2)
@@ -1053,6 +1073,51 @@ pub fn thread_attach(cpu: &mut Cpu) {
         if dll && entry != 0 {
             crate::call(cpu, entry, &[base, 2, 0]);
         }
+    }
+}
+
+#[cfg(test)]
+mod loader_tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    // (one test: they share the process-wide lock)
+    #[test]
+    fn loader_lock_is_reentrant_exclusive_and_released_by_thread_exit() {
+        // the same thread again: no wait; the outer guard still holds it after the inner goes
+        let outer = loader_lock();
+        drop(loader_lock());
+        let (tx, rx) = channel();
+        let waiter = std::thread::spawn(move || {
+            let _g = loader_lock();
+            tx.send(()).unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "another thread got the lock while it was held");
+        drop(outer);
+        rx.recv_timeout(Duration::from_secs(5)).expect("the lock was not released by its last guard");
+        waiter.join().unwrap();
+        // a thread that ends inside its DllMain (ExitThread: its guards never drop)
+        std::thread::spawn(|| {
+            let g = loader_lock();
+            let _inner = std::mem::ManuallyDrop::new(loader_lock());
+            std::mem::forget(g);
+            loader_thread_exit();
+        })
+        .join()
+        .unwrap();
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let _g = loader_lock();
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(5)).expect("a thread that exited holding the loader lock kept it");
+        // (exiting without holding it changes nothing)
+        let held = loader_lock();
+        std::thread::spawn(loader_thread_exit).join().unwrap();
+        assert_eq!(LOADER.lock().unwrap().1, 1);
+        drop(held);
+        assert_eq!(*LOADER.lock().unwrap(), (None, 0));
     }
 }
 
