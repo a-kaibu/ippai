@@ -55,13 +55,16 @@ if [ ! -d x ]; then
     *.rar|*.7z) (cd x.part && LC_ALL=C.UTF-8 unar -q -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.exe)
       # InstallShield setup with its files in the exe, a zlib-stream setup (zsfx.py), self-extracting
-      # archive or Inno Setup installer
+      # archive or Inno Setup installer. Each try starts from an empty folder: one that fails half
+      # way leaves files behind (unar on Front Wing's LHa self-extractor canary_game_preview.exe:
+      # a SYSTEM.PAK cut at 1.75 MB, an empty IMAGE.PAK), and the next one's whole copy under
+      # Shift-JIS names then sat beside them while the game ran from the broken one
       (cd x.part && (python3 -I "$HERE/isextract.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
-         (python3 -I "$HERE/zsfx.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
-         (LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
-         (LC_ALL=C.UTF-8 unar -q -e cp932 -o . "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
-         (LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
-         (LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+         (find . -mindepth 1 -delete; python3 -I "$HERE/zsfx.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+         (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
+         (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 unar -q -e cp932 -o . "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+         (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+         (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          # an installer nothing here unpacks (michishio_trial_taming2_install.exe: Gentee
          # CreateInstall): the exe itself, under its own name, run in sake as on Windows
          { find . -mindepth 1 -delete; n=${url##*/}; n=${n%%\?*}; cp "../$f" "./${n:-setup.exe}"; }) ;;
