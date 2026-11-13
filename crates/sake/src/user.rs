@@ -1289,9 +1289,19 @@ fn send_to(cpu: &mut koji::Cpu, hwnd: u32, msg: u32, wp: u32, lp: u32, hooks: bo
         eprintln!("sake msg {hwnd:x} {msg:04x} {wp:x} {lp:x}");
     }
     if !hooks {
-        return crate::call(cpu, proc_, &[hwnd, msg, wp, lp]);
+        return call_proc(cpu, proc_, hwnd, msg, wp, lp);
     }
     call_sent(cpu, proc_, hwnd, msg, wp, lp, true)
+}
+
+/// Calls a window procedure. A window whose procedure was set to NULL (SetWindowLongPtr
+/// GWLP_WNDPROC 0) answers 0 without a call, as in Wine: the Flash projector does that before
+/// DestroyWindow, whose WM_DESTROY then called address 0 (オヤジ狩り少女 体験版).
+fn call_proc(cpu: &mut koji::Cpu, proc_: u32, hwnd: u32, msg: u32, wp: u32, lp: u32) -> u32 {
+    if proc_ == 0 {
+        return 0;
+    }
+    crate::call(cpu, proc_, &[hwnd, msg, wp, lp])
 }
 
 fn trace_msgs() -> bool {
@@ -4288,7 +4298,7 @@ fn cbt(c: &mut Ctx, code: u32, wp: u32, lp: u32) -> bool {
 /// hooks after it (&CWPRETSTRUCT {lResult, lParam, wParam, message, hwnd}).
 fn call_sent(cpu: &mut koji::Cpu, proc_: u32, hwnd: u32, msg: u32, wp: u32, lp: u32, own: bool) -> u32 {
     if SEND_HOOKS.load(Ordering::Relaxed) == 0 {
-        return crate::call(cpu, proc_, &[hwnd, msg, wp, lp]);
+        return call_proc(cpu, proc_, hwnd, msg, wp, lp);
     }
     let tid = crate::cur().tid;
     let (before, after) = (hooks_of(WH_CALLWNDPROC, tid), hooks_of(WH_CALLWNDPROCRET, tid));
@@ -4304,7 +4314,7 @@ fn call_sent(cpu: &mut koji::Cpu, proc_: u32, hwnd: u32, msg: u32, wp: u32, lp: 
         }
         mem::heap_free(cwp);
     }
-    let r = crate::call(cpu, proc_, &[hwnd, msg, wp, lp]);
+    let r = call_proc(cpu, proc_, hwnd, msg, wp, lp);
     if !after.is_empty() {
         let cwp = mem::heap_alloc(5 * ps, true);
         mem::wp(cwp, r);
