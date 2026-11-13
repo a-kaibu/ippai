@@ -263,6 +263,16 @@ fn SwapBuffers(c: &mut Ctx) -> u32 {
     1
 }
 
+/// wglSwapLayerBuffers(dc, planes): WGL_SWAP_MAIN_PLANE (1) is SwapBuffers; overlay and underlay
+/// planes do not exist here and are left alone; TRUE (EntisGLS presents with it: unimplemented,
+/// its screen stayed black; winref gl)
+fn wglSwapLayerBuffers(c: &mut Ctx) -> u32 {
+    if c.a(1) & 1 != 0 {
+        return SwapBuffers(c);
+    }
+    1
+}
+
 // ---- pixel formats (gdi32): one, 32-bit RGBA, 24-bit depth, 8-bit stencil, double buffered ----
 
 fn ChoosePixelFormat(_: &mut Ctx) -> u32 {
@@ -304,6 +314,7 @@ pub fn init() {
         ("wglGetProcAddress", wglGetProcAddress),
         ("wglShareLists", one),
         ("wglSwapBuffers", SwapBuffers),
+        ("wglSwapLayerBuffers", wglSwapLayerBuffers),
         ("wglChoosePixelFormat", ChoosePixelFormat),
         ("wglSetPixelFormat", SetPixelFormat),
         ("wglGetPixelFormat", GetPixelFormat),

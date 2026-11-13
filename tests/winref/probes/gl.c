@@ -249,6 +249,8 @@ int main(void) {
         reset();
         shot("transforms", 2);
     }
+    /* EntisGLS presents with wglSwapLayerBuffers(dc, WGL_SWAP_MAIN_PLANE) */
+    printf("wglSwapLayerBuffers main %d\n", wglSwapLayerBuffers(dc, WGL_SWAP_MAIN_PLANE));
     printf("glGetError %#x\n", glGetError());
     wglMakeCurrent(NULL, NULL);
     printf("wglDeleteContext %d\n", wglDeleteContext(rc));
