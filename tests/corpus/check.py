@@ -10,7 +10,8 @@ there is one. Insufficient preparation coverage (--min-prepared-ratio), or no re
 (tests/corpus/golden, tests/corpus/golden.py look): none < title (the title screen matches)
 < steps (the screen the title's steps lead to matches too). A download failure of an expected title is reported but not a failure (the
 trial hosts come and go). The table also lists, per title, the DLLs and functions it asked for that sake does not
-have (from console.log). --summary writes a Markdown table (GitHub step summary; repeatable),
+have (from console.log), and how many games came from the VN Mirror Archive (result.json source:
+mirror) and how many from their own sites (origin). --summary writes a Markdown table (GitHub step summary; repeatable),
 --regressions the regressed ids (one per line, for a rerun), --update writes the levels
 reached into the expect column (raising only, so a flaky run does not lower a baseline;
 --update set takes the levels as they are).
@@ -63,7 +64,7 @@ for out in outs:
                 dlls += sorted(set(re.findall(r'sake: call to (\S+), which we neither implement', log)))[:10]
             res[tid] = (r, dlls, os.path.dirname(root))
 
-lines, regressed, counts, better, looks = [], [], {}, [], {}
+lines, regressed, counts, better, looks, sources = [], [], {}, [], {}, {}
 for row in rows:
     tid = row['id']
     if tid not in res: continue
@@ -72,6 +73,7 @@ for row in rows:
     got_look = lk['level'] if lk else ''
     lv = level(r)
     counts[lv] = counts.get(lv, 0) + 1
+    if r.get('source'): sources[r['source']] = sources.get(r['source'], 0) + 1
     exp = row.get('expect') or ''
     mark = ''
     if exp and RANK[lv] < RANK[exp]:
@@ -107,6 +109,9 @@ head = [f"### Corpus on sake: {total} titles",
         '',
         'Like Windows (tests/corpus/golden): ' + ' / '.join(f'{k} {looks.get(k, 0)}' for k in ('steps', 'title', 'none')) +
         f' of {sum(looks.values())} titles Windows answered',
+        '',
+        # (tests/corpus-prep.sh: the VN Mirror Archive's copy, or the title's own site)
+        'Downloads: ' + ' / '.join(f'{k} {sources.get(k, 0)}' for k in ('mirror', 'origin')),
         '',
         f'Preparation: {prepared}/{total} ({coverage:.1%}); required {A.min_prepared_ratio:.1%}. ' +
         ('**INCONCLUSIVE: insufficient prepared titles; compatibility is not established.**' if inconclusive else 'Preparation threshold met.'),

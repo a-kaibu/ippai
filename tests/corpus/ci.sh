@@ -1,7 +1,8 @@
 #!/bin/bash
 # One shard of the trial-game corpus on sake, as .github/workflows/corpus.yml runs it (and
 # runnable anywhere with the same tools): the titles of tests/corpus/titles.tsv whose row
-# number modulo SHARDS is SHARD are downloaded from their original sites, run in headless
+# number modulo SHARDS is SHARD are downloaded (from the VN Mirror Archive when MIRROR names its
+# trials, tests/corpus/mirror.py fetch; else from their original sites), run in headless
 # Chromium (tests/corpus-run.py, tests/corpus.mjs), and titles that fell below their expected
 # level get one more try (a busy runner can miss a timing). Grading: tests/corpus/check.py.
 #
@@ -15,6 +16,8 @@
 #        (just those), WORK (default $RUNNER_TEMP or /tmp), STORY (story seconds, default 30),
 #        LANES (titles run at once, default 2), PREP_JOBS (downloads ahead per lane, default 1: most trials come from one
 #        home-run mirror, suezou.dyndns.org, which 60 parallel downloads knocked over)
+#        MIRROR (tests/corpus/mirror.py fetch's file: a title the mirror has comes from there, its
+#        sha256 checked, else from its own site; MIRROR_ONLY=1: never its own site)
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DIST=$(realpath "$1") FONTS=$(realpath "$2") OUT=$3

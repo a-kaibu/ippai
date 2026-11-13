@@ -11,17 +11,32 @@ BASE=${BASE_STORE:-/home/user/work/base-store}
 mkdir -p "$T"
 cd "$T"
 f=dl.${url##*.}
-# (already extracted: no download)
-if [ ! -d x ] && [ ! -s "$f" ]; then
-  # the proxy sometimes cuts long transfers: resume
-  ok=
+dl() {  # url: $f.part, resumed (the proxy sometimes cuts long transfers)
+  local i
   # (DL_TRIES / DL_MAX_TIME: CI gives a dead host less time)
   for i in $(seq "${DL_TRIES:-10}"); do
-    curl -sSfL --connect-timeout 30 --max-time "${DL_MAX_TIME:-3600}" -C - -o "$f.part" "$url" && { ok=1; break; }
+    curl -sSfL --connect-timeout 30 --max-time "${DL_MAX_TIME:-3600}" -C - -o "$f.part" "$1" && return 0
     sleep $((i * 2))
   done
+  return 1
+}
+# (already extracted: no download)
+if [ ! -d x ] && [ ! -s "$f" ]; then
+  ok=
+  # MIRROR (tests/corpus/mirror.py fetch): the VN Mirror Archive's copy when it has the title,
+  # checked against its sha256; else (or when that fails) the title's own site
+  if [ -n "${MIRROR:-}" ] && m=$(python3 -I "$HERE/corpus/mirror.py" lookup "$MIRROR" "$url"); then
+    IFS=$'\t' read -r murl msha msize <<< "$m"
+    rm -f "$f.part"
+    if dl "$murl" && echo "$msha  $f.part" | sha256sum -c --status; then ok=mirror
+    else echo "mirror: $murl failed or its sha256 differs; the title's own site" >&2; rm -f "$f.part"
+    fi
+  fi
+  if [ -z "$ok" ] && [ -n "${MIRROR_ONLY:-}" ]; then echo "download failed: not on the mirror" >&2; exit 4; fi
+  if [ -z "$ok" ]; then dl "$url" && ok=origin; fi
   [ -n "$ok" ] || { echo "download failed" >&2; exit 4; }
   mv "$f.part" "$f"
+  echo "$ok" > source
 fi
 if [ ! -d x ]; then
   rm -rf x.part; mkdir x.part

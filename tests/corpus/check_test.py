@@ -35,6 +35,20 @@ class PreparationCoverage(unittest.TestCase):
         self.assertIn('INCONCLUSIVE', p.stdout)
         self.assertIn('regressions 0', p.stdout)
 
+    def test_download_sources_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = ['id\tengine\texpect\tlook']
+            for i, src in enumerate(['mirror', 'mirror', 'origin', None]):
+                rows.append(f'src-{i}\ttest\ttitle\t')
+                d = root / 'results' / f'src-{i}'
+                d.mkdir(parents=True)
+                (d / 'result.json').write_text(json.dumps({'title': 1.0, **({'source': src} if src else {})}))
+            (root / 'titles.tsv').write_text('\n'.join(rows) + '\n')
+            p = subprocess.run([sys.executable, str(HERE / 'check.py'), str(root / 'titles.tsv'), str(root / 'results')], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIn('Downloads: mirror 2 / origin 1', p.stdout)
+
     def test_threshold_boundary(self):
         self.assertEqual(self.grade(4, 1).returncode, 0)
         self.assertEqual(self.grade(3, 1).returncode, 2)

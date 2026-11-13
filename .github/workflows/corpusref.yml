@@ -52,6 +52,7 @@ jobs:
       ids: ${{ steps.p.outputs.ids }}
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/mirror-trials
       - id: p
         env:
           SET: ${{ inputs.set || 'smoke' }}
@@ -90,10 +91,17 @@ jobs:
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools
+      # (tests/corpus-prep.sh: the VN Mirror Archive's copy of a title when it has one)
+      - uses: actions/download-artifact@v8.0.2
+        continue-on-error: true
+        with:
+          name: mirror-trials
+          path: mirror
       - name: Download ${{ matrix.id }}
         env:
           ID: ${{ matrix.id }}
         run: |
+          [ -f mirror/mirror-trials.json ] && export MIRROR=$PWD/mirror/mirror-trials.json
           IFS=$'\t' read -r url exe < <(awk -F'\t' -v i="$ID" '$1 == i { print $5 "\t" $6 }' tests/corpus/titles.tsv)
           export TRIALS=$RUNNER_TEMP/trials DL_TRIES=3
           mkdir -p game

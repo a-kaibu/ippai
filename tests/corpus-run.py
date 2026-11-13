@@ -143,6 +143,8 @@ while True:
     try:
         r = json.load(open(f'{od}/result.json'))
         r['prep_s'] = PREP_S.get(tid)
+        # where the game came from (tests/corpus-prep.sh: mirror, origin; none when it was ready)
+        if os.path.exists(f'{TRIALS}/{tid}/source'): r['source'] = open(f'{TRIALS}/{tid}/source').read().strip()
         json.dump(r, open(f'{od}/result.json', 'w'), ensure_ascii=False, indent=1)
     except Exception: pass
     # with --keep a failed title's packed store stays (debugging needs no download); the extracted files go

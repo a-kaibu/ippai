@@ -1,0 +1,35 @@
+# The VN Mirror Archive's trials (tests/corpus/mirror.py fetch) as the artifact "mirror-trials"
+# for the jobs that download corpus titles (tests/corpus-prep.sh with MIRROR). Fetched once per
+# workflow run, in its plan job; the catalog (~30 MB gzipped) is downloaded only when its ETag
+# changed since the newest cached copy (GitHub Pages' bandwidth).
+name: Mirror trials
+description: tests/corpus/mirror.py fetch, cached by the catalog's ETag, uploaded as the artifact mirror-trials
+runs:
+  using: composite
+  steps:
+    - id: restore
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: mirror-trials.json
+        key: mirror-trials-${{ github.run_id }}
+        restore-keys: mirror-trials-
+    - id: fetch
+      shell: bash
+      run: |
+        # (the mirror unreachable: the cached copy, else every title from its own site)
+        python3 -I tests/corpus/mirror.py fetch mirror-trials.json || echo "mirror: catalog not fetched" >&2
+        if [ -f mirror-trials.json ]; then
+          python3 -I tests/corpus/mirror.py report mirror-trials.json tests/corpus/titles.tsv | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "key=mirror-trials-$(python3 -I -c 'import hashlib, json; print(hashlib.sha256(str(json.load(open("mirror-trials.json"))["etag"]).encode()).hexdigest()[:16])')" >> "$GITHUB_OUTPUT"
+        fi
+    - if: steps.fetch.outputs.key && steps.fetch.outputs.key != steps.restore.outputs.cache-matched-key
+      uses: actions/cache/save@v6.1.0
+      with:
+        path: mirror-trials.json
+        key: ${{ steps.fetch.outputs.key }}
+    - uses: actions/upload-artifact@v7.0.2
+      with:
+        name: mirror-trials
+        path: mirror-trials.json
+        retention-days: 2
+        if-no-files-found: ignore

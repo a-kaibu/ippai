@@ -1,5 +1,6 @@
-# Trial-game corpus on sake: tests/corpus/titles.tsv (vnbox's trials, downloaded from their
-# original sites on the runner; no game file is ever stored on GitHub) run in headless Chromium
+# Trial-game corpus on sake: tests/corpus/titles.tsv (vnbox's trials, downloaded on the runner
+# from the VN Mirror Archive when it has them, tests/corpus/mirror.py, else from their original
+# sites; no game file is ever stored on GitHub) run in headless Chromium
 # against the build CI made, sharded over parallel jobs. Each title must reach its `expect`
 # level (title screen / story) and its `look` level (sake's title / steps screens match Windows'
 # answers, tests/corpus/golden from corpusref.yml); tests/corpus/check.py grades, lists the DLLs
@@ -56,6 +57,8 @@ jobs:
       set: ${{ steps.p.outputs.set }}
       shards: ${{ steps.p.outputs.shards }}
     steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/mirror-trials
       - id: p
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,6 +107,12 @@ jobs:
           path: dist
           run-id: ${{ needs.plan.outputs.run_id }}
           github-token: ${{ github.token }}
+      # (tests/corpus-prep.sh: the VN Mirror Archive's copy of a title when it has one)
+      - uses: actions/download-artifact@v8.0.2
+        continue-on-error: true
+        with:
+          name: mirror-trials
+          path: mirror
       # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
       - uses: actions/cache@v6.1.0
         with:
@@ -179,6 +188,7 @@ jobs:
           SHARDS: ${{ strategy.job-total }}
         run: |
           export PLAYWRIGHT="$RUNNER_TEMP/pw/node_modules/playwright/index.js"
+          [ -f mirror/mirror-trials.json ] && export MIRROR=$PWD/mirror/mirror-trials.json
           tests/corpus/ci.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/fonts" results
       # results.json (look.json: sake's screens against Windows', tests/corpus/golden), logs, and
       # the two shots compared with Windows' (title, steps: trial games, as the golden answers)
