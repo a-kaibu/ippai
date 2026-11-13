@@ -214,7 +214,8 @@ pub fn pick_exe(root: &Path, hint: Option<&str>) -> Option<String> {
     if let Some((_, r)) = exes.iter().find(|(_, r)| r.rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case("cs2.exe"))) {
         return Some(r.clone());
     }
-    let tool = regex::Regex::new(r"(?i)unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet").unwrap();
+    // (Unity's UnityCrashHandler32/64.exe is bigger than the game's own exe)
+    let tool = regex::Regex::new(r"(?i)unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet|CrashHandler|crashpad").unwrap();
     exes.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     // (by the file's name: setup.exe.is/Disk1/BGI.exe is a game)
     exes.into_iter().find(|(_, r)| !tool.is_match(r.rsplit('/').next().unwrap_or(r))).map(|(_, r)| r)
@@ -323,6 +324,57 @@ fn unzip(job: &Job, src: &Path, out: &Path) -> Result<bool> {
 
 /// A self-extracting zip of a game: one that holds an .exe (not a program that only carries a
 /// zip of its own data, as NW.js apps do).
+/// The archive a WinRAR or 7-Zip self-extractor carries right after its PE image: "rar" or
+/// "7z" by the signature at the overlay's start (RAR 4 and 5 share "Rar!\x1a\x07").
+fn sfx_archive(src: &Path) -> Option<&'static str> {
+    let mut f = File::open(src).ok()?;
+    let end = pe_end(&mut f)?;
+    let mut sig = [0u8; 6];
+    f.seek(SeekFrom::Start(end)).ok()?;
+    f.read_exact(&mut sig).ok()?;
+    sfx_kind(&sig)
+}
+
+fn sfx_kind(sig: &[u8]) -> Option<&'static str> {
+    match sig {
+        [b'R', b'a', b'r', b'!', 0x1a, 0x07, ..] => Some("rar"),
+        [b'7', b'z', 0xbc, 0xaf, 0x27, 0x1c, ..] => Some("7z"),
+        _ => None,
+    }
+}
+
+/// Unpacks a WinRAR / 7-Zip self-extractor with the tools that read its archive: unrar for RAR
+/// (unar doesn't recognize WinRAR's SFX, p7zip has no RAR codec), 7z then unar for 7z. Without
+/// errors only (a damaged one is left as it is).
+fn sfx(job: &Job, src: &Path, out: &Path) -> Result<bool> {
+    let Some(kind) = sfx_archive(src) else { return Ok(false) };
+    let src = &src.canonicalize()?;
+    let mut o_slash = out.as_os_str().to_os_string();
+    o_slash.push("/");
+    let mut o7 = std::ffi::OsString::from("-o");
+    o7.push(out.as_os_str());
+    let tries: Vec<(&str, Vec<&OsStr>)> = match kind {
+        "rar" => vec![("unrar", vec!["x".as_ref(), "-y".as_ref(), src.as_os_str(), o_slash.as_os_str()])],
+        _ => vec![
+            ("7z", vec!["x".as_ref(), "-y".as_ref(), "-t7z".as_ref(), o7.as_os_str(), src.as_os_str()]),
+            ("unar", vec!["-q".as_ref(), "-f".as_ref(), "-o".as_ref(), out.as_os_str(), src.as_os_str()]),
+        ],
+    };
+    let m = job.mark();
+    for (tool, args) in tries {
+        if run(job, tool, &args, out)?.ok && !empty(out) {
+            return Ok(true);
+        }
+        clear(out)?;
+        job.reset(m);
+    }
+    Ok(false)
+}
+
+fn has_exe(d: &Path) -> bool {
+    walk(d, &mut |p| (ext(p) == "exe").then_some(())).is_some()
+}
+
 fn game_sfx(src: &Path) -> bool {
     let Ok(z) = File::open(src).map(BufReader::new).map_err(anyhow::Error::from).and_then(|f| Ok(zip::ZipArchive::new(f)?)) else {
         return false;
@@ -1009,10 +1061,13 @@ fn nested(job: &Job, root: &Path) -> Result<()> {
         PathBuf::from(o)
     };
     for s in files.iter().filter(|p| ext(p) == "exe") {
-        let tries: [(&str, &dyn Fn(&Path, &Path) -> Result<bool>); 3] = [
+        let tries: [(&str, &dyn Fn(&Path, &Path) -> Result<bool>); 4] = [
             (".is", &|s: &Path, o: &Path| installshield(job, s, o)),
             (".inno", &|s: &Path, o: &Path| Ok(job.lim.tools && run(job, "innoextract", &["-s".as_ref(), "-q".as_ref(), "-e".as_ref(), "-d".as_ref(), o.as_os_str(), s.as_os_str()], o)?.ok)),
             (".zip", &|s: &Path, o: &Path| if game_sfx(s) { unzip(job, s, o) } else { Ok(false) }),
+            // a WinRAR or 7-Zip self-extractor of the game (薔薇ノ木ニ薔薇ノ花咲ク's
+            // baraRe_trial.exe): only when what it held has an exe (not a program carrying data)
+            (".sfx", &|s: &Path, o: &Path| Ok(job.lim.tools && sfx(job, s, o)? && has_exe(o))),
         ];
         for (suffix, f) in tries {
             let o = with(s, suffix);
@@ -1390,6 +1445,62 @@ mod tests {
         fs::remove_dir_all(&d).unwrap();
     }
 
+    /// A 7-Zip self-extractor of the game inside a zip (WinRAR's take the same path: the
+    /// overlay's signature, then the tools): unpacked next to it; one carrying only data stays.
+    /// (Needs 7z; skipped without it, like the tool steps themselves.)
+    #[test]
+    fn nested_7z_sfx() {
+        if Command::new("7z").arg("i").stdout(Stdio::null()).status().map_or(true, |s| !s.success()) {
+            eprintln!("no 7z: skipped");
+            return;
+        }
+        let d = tmp("sfx7z");
+        let pack = |name: &str, files: &[(&str, &[u8])]| -> Vec<u8> {
+            let src = d.join(format!("{name}.src"));
+            for (n, b) in files {
+                fs::create_dir_all(src.join(n).parent().unwrap()).unwrap();
+                fs::write(src.join(n), b).unwrap();
+            }
+            let a = d.join(format!("{name}.7z"));
+            let ok = Command::new("7z").current_dir(&src).args(["a", "-bd", "-y"]).arg(&a).arg(".").stdout(Stdio::null()).status().unwrap().success();
+            assert!(ok);
+            pe(&fs::read(a).unwrap())
+        };
+        let exe = [b"MZ".as_slice(), &[0u8; 8000]].concat();
+        let game = pack("game", &[("薔薇/game.exe", &exe), ("薔薇/data.pak", b"pak")]);
+        let data = pack("data", &[("only/data.pak", b"pak")]);
+        assert_eq!(sfx_kind(&game[0x400..]), Some("7z"));
+        fs::write(d.join("g.zip"), zip_with(&[(b"trial/setup_trial.exe", &game), (b"trial/viewer.exe", &data)], b"")).unwrap();
+        let out = d.join("out");
+        unpack(&d.join("g.zip"), &out).unwrap();
+        let tree = read_tree(&out);
+        assert_eq!(tree, vec![
+            ("trial/setup_trial.exe.sfx/薔薇/data.pak".into(), b"pak".to_vec()),
+            ("trial/setup_trial.exe.sfx/薔薇/game.exe".into(), exe.clone()),
+            ("trial/viewer.exe".into(), data.clone()),
+        ]);
+        assert_eq!(pick_exe(&out, None).as_deref(), Some("trial/setup_trial.exe.sfx/薔薇/game.exe"));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn sfx_signatures() {
+        assert_eq!(sfx_kind(b"Rar!\x1a\x07\x00"), Some("rar"));
+        assert_eq!(sfx_kind(b"Rar!\x1a\x07\x01\x00"), Some("rar"));
+        assert_eq!(sfx_kind(b"7z\xbc\xaf\x27\x1c"), Some("7z"));
+        assert_eq!(sfx_kind(b"PK\x03\x04\0\0"), None);
+        assert_eq!(sfx_kind(b"Rar!"), None);
+        // a PE whose overlay is not an archive, and a file that is no PE
+        let d = tmp("sfxsig");
+        fs::write(d.join("a.exe"), pe(b"Rar!\x1a\x07\x01\x00rest")).unwrap();
+        fs::write(d.join("b.exe"), pe(b"nothing")).unwrap();
+        fs::write(d.join("c.exe"), b"Rar!\x1a\x07\x01\x00").unwrap();
+        assert_eq!(sfx_archive(&d.join("a.exe")), Some("rar"));
+        assert_eq!(sfx_archive(&d.join("b.exe")), None);
+        assert_eq!(sfx_archive(&d.join("c.exe")), None);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     #[cfg(unix)]
     fn shift_jis_names_renamed() {
@@ -1415,6 +1526,11 @@ mod tests {
         // one folder further down, any case
         assert_eq!(pick_exe(&d, Some("GAME.EXE")).as_deref(), Some("game/Game.exe"));
         assert_eq!(pick_exe(&d, Some("missing.exe")), None);
+        // Unity: UnityCrashHandler32.exe is bigger than the game's exe
+        fs::write(d.join("game/UnityCrashHandler32.exe"), vec![0; 1000]).unwrap();
+        fs::write(d.join("game/UnityCrashHandler64.exe"), vec![0; 1100]).unwrap();
+        fs::write(d.join("game/crashpad_handler.exe"), vec![0; 1200]).unwrap();
+        assert_eq!(pick_exe(&d, None).as_deref(), Some("game/Game.exe"));
         fs::write(d.join("game/cs2.exe"), b"MZ").unwrap();
         assert_eq!(pick_exe(&d, None).as_deref(), Some("game/cs2.exe"));
         fs::remove_dir_all(&d).unwrap();
@@ -1912,6 +2028,26 @@ mod tests {
             let bytes = v.to_le_bytes();
             let n = [1, 2, 4, 8][kind as usize % 4].min(b.len() - at);
             b[at..at + n].copy_from_slice(&bytes[..n]);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// Any sizes of a game exe and the tools beside it (installers, Unity's crash handlers,
+        /// updaters...): the game is picked whenever it is there, however small, and a tool
+        /// never is while a game exe exists.
+        #[test]
+        fn pick_exe_skips_tools(game in 1usize..3000, tools in prop::collection::vec((0usize..8, 1usize..5000), 0..6)) {
+            let names = ["UnityCrashHandler32.exe", "UnityCrashHandler64.exe", "crashpad_handler.exe", "setup.exe", "unins000.exe", "Config.exe", "updater.exe", "vcredist_x86.exe"];
+            let d = tmp("pickprop");
+            fs::create_dir_all(d.join("g")).unwrap();
+            fs::write(d.join("g/Game.exe"), vec![0; game]).unwrap();
+            for (k, n) in &tools {
+                fs::write(d.join("g").join(names[*k]), vec![0; *n]).unwrap();
+            }
+            let got = pick_exe(&d, None);
+            fs::remove_dir_all(&d).unwrap();
+            prop_assert_eq!(got.as_deref(), Some("g/Game.exe"));
         }
     }
 
