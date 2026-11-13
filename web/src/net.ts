@@ -7,6 +7,7 @@
 // carry CHECKED, one kept without it (an older page's) is checked once when read.
 
 import { blake3Hex } from "./blake3";
+import { deviceChunks, type ChunkStore } from "./chunkstore";
 
 export const CHUNKS = "ippai-chunks-v1";
 const RETRY = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
@@ -174,13 +175,9 @@ const page = {
   },
 };
 
-/** Cache Storage for chunks (null where there is none: http:// other than localhost). */
-export async function chunkCache(): Promise<Cache | null> {
-  try {
-    return typeof caches === "undefined" ? null : await caches.open(CHUNKS);
-  } catch {
-    return null;
-  }
+/** The device's chunk store (chunkstore.ts: OPFS, Cache Storage's old entries read too; null where there is neither). */
+export function chunkCache(): Promise<ChunkStore | null> {
+  return deviceChunks();
 }
 
 export const chunkPath = (hex: string) => `chunks/${hex.slice(0, 2)}/${hex}`;
@@ -192,7 +189,7 @@ export const chunkPath = (hex: string) => `chunks/${hex.slice(0, 2)}/${hex}`;
 export async function getChunk(
   store: string,
   hex: string,
-  opt: RetryOptions & { cache?: Cache | null; priority?: RequestPriority } = {},
+  opt: RetryOptions & { cache?: ChunkStore | null; priority?: RequestPriority } = {},
 ): Promise<{ data: Uint8Array<ArrayBuffer>; cached: boolean }> {
   const url = new URL(chunkPath(hex), store).href;
   const cache = opt.cache === undefined ? await chunkCache() : opt.cache;
@@ -224,7 +221,7 @@ export async function getChunk(
 }
 
 /** Keeps chunk `data` (checked against its name) at `url` in `cache`, as getChunk does. */
-export function keepChunk(cache: Cache, url: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
+export function keepChunk(cache: ChunkStore, url: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
   return cache
     .put(url, new Response(data, { headers: { [CHECKED]: "1", [SIZE]: String(data.length) } }))
     .catch(() => undefined);

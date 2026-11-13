@@ -64,6 +64,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/range-cache-browser.mjs
+      - name: Saved chunks in OPFS, read through synchronous handles (tests/opfs-read-browser.mjs)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/opfs-read-browser.mjs
       - name: Unstable link (drops, stalls, offline, chunks kept on the device)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs

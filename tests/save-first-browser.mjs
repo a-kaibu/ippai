@@ -273,7 +273,21 @@ try {
   assert.equal(count.server, serverOnly.size, "only the server's own chunks through /store");
   assert.ok(count.serverMost <= 4, `the server at most 4 at once: ${count.serverMost}`);
   const kept = await page.evaluate(async (hashes) => {
-    const cache = await caches.open("ippai-chunks-v1");
+    const cache = await (async () => {
+      // (the device's chunk store: OPFS, web/src/chunkstore.ts; Cache Storage before)
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("ippai-chunks", { create: true });
+      const old = await caches.open("ippai-chunks-v1");
+      return {
+        async match(u) {
+          const name = u.slice(u.lastIndexOf("/") + 1);
+          try {
+            const f = await (await dir.getFileHandle(name)).getFile();
+            if (f.size) return new Response(f, { headers: { "x-ippai-size": String(f.size) } });
+          } catch {}
+          return old.match(u);
+        },
+      };
+    })();
     const out = {};
     for (const h of hashes) {
       const r = await cache.match(new URL(`store/chunks/${h.slice(0, 2)}/${h}`, location.href).href);

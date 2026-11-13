@@ -142,7 +142,21 @@ try {
     while (Date.now() - t < (warm ? 60000 : 12000) && !lines.some((l) => /^fetched ahead: .*done$/.test(l))) await new Promise((r) => setTimeout(r, 200));
     const done = lines.find((l) => /^fetched ahead: /.test(l));
     const kept = await page.evaluate(async () => {
-      const cache = await caches.open("ippai-chunks-v1");
+      const cache = await (async () => {
+      // (the device's chunk store: OPFS, web/src/chunkstore.ts; Cache Storage before)
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("ippai-chunks", { create: true });
+      const old = await caches.open("ippai-chunks-v1");
+      return {
+        async match(u) {
+          const name = u.slice(u.lastIndexOf("/") + 1);
+          try {
+            const f = await (await dir.getFileHandle(name)).getFile();
+            if (f.size) return new Response(f, { headers: { "x-ippai-size": String(f.size) } });
+          } catch {}
+          return old.match(u);
+        },
+      };
+    })();
       let have = 0, all = 0;
       for (const tree of ["prefix32", "screenfit"]) {
         const tsv = await (await fetch(`store/trees/${tree}.tsv`)).text();

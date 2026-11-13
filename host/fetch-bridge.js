@@ -218,16 +218,181 @@ function ippaiCacheStep(p) {
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
-/** Cache Storage for chunks (opened once: every read of a block asks for it). */
+/**
+ * The device's chunk store (opened once: every read of a block asks for it): OPFS, with Cache
+ * Storage's entries from before read too (web/src/chunkstore.ts has the page's copy, tested
+ * against this one on one folder); Cache Storage alone where there is no OPFS.
+ */
 var ippaiCacheOpen;
+var IPPAI_CHUNK_DIR = 'ippai-chunks';
 function ippaiCache() {
   return (ippaiCacheOpen ??= (async () => {
+    let old = null;
     try {
-      return typeof caches === 'undefined' ? null : await ippaiCacheStep(caches.open(IPPAI_CHUNKS));
+      old = typeof caches === 'undefined' ? null : await ippaiCacheStep(caches.open(IPPAI_CHUNKS));
+    } catch (_) {}
+    try {
+      const root = await navigator.storage.getDirectory();
+      return ippaiOpfsStore(await root.getDirectoryHandle(IPPAI_CHUNK_DIR, { create: true }), old);
     } catch (_) {
-      return null;
+      return old;
     }
   })());
+}
+
+/** A key's file name in the chunk folder (chunkstore.ts chunkFileName). */
+function ippaiChunkFile(u) {
+  u = typeof u === 'string' ? u : u.url;
+  const m = /\/([0-9a-f]{2}|ippai-chunks)\/([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u) ?? /^()([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u);
+  return m && (m[1] === '' || m[1] === 'ippai-chunks' || m[2].startsWith(m[1])) ? m[2] : '';
+}
+
+/**
+ * Chunks in OPFS folder `dir` (one file each, chunkstore.ts says how), Cache Storage's `old`
+ * read too, with the Cache interface the rest of this file uses, and `read(url, from, len)`: a
+ * part through a read-only synchronous access handle (a dedicated worker's), kept open
+ * IPPAI_HANDLE_MS for the next reads of the same chunk, IPPAI_HANDLES at most; elsewhere the
+ * file's slice. null when it is not here.
+ */
+var IPPAI_HANDLE_MS = 5000;
+var IPPAI_HANDLES = 32;
+function ippaiOpfsStore(dir, old) {
+  const handles = new Map();
+  const oldKey = (k) => {
+    const u = typeof k === 'string' ? k : k.url;
+    return /^https?:/.test(u) ? u : undefined;
+  };
+  const notFound = (e) => e?.name === 'NotFoundError' || e?.name === 'TypeMismatchError';
+  const file = async (name) => {
+    try {
+      const f = await (await dir.getFileHandle(name)).getFile();
+      return f.size > 0 ? f : null;
+    } catch (e) {
+      if (notFound(e)) return null;
+      throw e;
+    }
+  };
+  const close = (name) => {
+    const h = handles.get(name);
+    if (!h) return;
+    handles.delete(name);
+    clearTimeout(h.timer);
+    try {
+      h.h.close();
+    } catch (_) {}
+  };
+  const handle = async (name) => {
+    let h = handles.get(name);
+    if (!h) {
+      let fh;
+      try {
+        fh = await dir.getFileHandle(name);
+      } catch (e) {
+        if (notFound(e)) return null;
+        throw e;
+      }
+      if (typeof fh.createSyncAccessHandle !== 'function') return undefined;
+      let sync;
+      try {
+        sync = await fh.createSyncAccessHandle({ mode: 'read-only' });
+      } catch (_) {
+        return undefined;
+      }
+      // (opened meanwhile by another read: that one)
+      if (handles.has(name)) {
+        try {
+          sync.close();
+        } catch (_) {}
+        h = handles.get(name);
+      } else {
+        while (handles.size >= IPPAI_HANDLES) close(handles.keys().next().value);
+        h = { h: sync };
+        handles.set(name, h);
+      }
+    } else {
+      // (the newest last: the oldest goes first)
+      handles.delete(name);
+      handles.set(name, h);
+    }
+    clearTimeout(h.timer);
+    h.timer = setTimeout(() => close(name), IPPAI_HANDLE_MS);
+    return h.h;
+  };
+  return {
+    async match(k) {
+      const name = ippaiChunkFile(k);
+      const f = name ? await file(name) : null;
+      if (f) {
+        const headers = { 'x-ippai-size': String(f.size) };
+        if (!name.includes('?')) headers[IPPAI_CHECKED] = '1';
+        return new Response(f, { headers });
+      }
+      const o = oldKey(k);
+      return o ? ((await old?.match(o).catch(() => undefined)) ?? undefined) : undefined;
+    },
+    async put(k, response) {
+      const name = ippaiChunkFile(k);
+      const o = oldKey(k);
+      if (!name || (!name.includes('?') && response.headers.get(IPPAI_CHECKED) !== '1')) {
+        if (o) await old?.put(o, response);
+        return;
+      }
+      const data = new Uint8Array(await response.arrayBuffer());
+      if (!data.length) return;
+      const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      try {
+        await w.write(data);
+        await w.close();
+      } catch (e) {
+        await w.abort().catch(() => {});
+        throw e;
+      }
+      if (o) await old?.delete(o).catch(() => false);
+    },
+    async delete(k) {
+      const name = ippaiChunkFile(k);
+      let gone = false;
+      if (name) {
+        close(name);
+        try {
+          await dir.removeEntry(name);
+          gone = true;
+        } catch (_) {}
+      }
+      const o = oldKey(k);
+      const was = (o && (await old?.delete(o).catch(() => false))) || false;
+      return gone || was;
+    },
+    async keys() {
+      const out = [];
+      const seen = new Set();
+      for await (const name of dir.keys()) {
+        if (!ippaiChunkFile(name)) continue;
+        seen.add(name);
+        out.push({ url: `opfs:/${IPPAI_CHUNK_DIR}/${name}` });
+      }
+      for (const k of (await old?.keys().catch(() => [])) ?? []) if (!seen.has(ippaiChunkFile(k))) out.push(k);
+      return out;
+    },
+    async read(k, from, len) {
+      const name = ippaiChunkFile(k);
+      if (!name) return null;
+      const h = await handle(name);
+      if (h === null) return null;
+      if (h) {
+        const size = h.getSize();
+        if (!size) return null;
+        const buf = new Uint8Array(Math.max(0, Math.min(len, size - from)));
+        const n = h.read(buf, { at: from });
+        return n === buf.length ? buf : buf.subarray(0, n);
+      }
+      const f = await file(name);
+      return f ? new Uint8Array(await f.slice(from, from + len).arrayBuffer()) : null;
+    },
+    closeAll() {
+      for (const name of [...handles.keys()]) close(name);
+    },
+  };
 }
 
 /**
@@ -698,6 +863,9 @@ async function ippaiFetchPart(url, from, len, block, cls = 0) {
   const first = Math.floor(from / block);
   const last = Math.max(first, Math.ceil((from + len) / block) - 1);
   if (cache) {
+    // (the whole chunk in OPFS: those bytes alone, through a synchronous handle)
+    const quick = cache.read && (await ippaiCacheStep(cache.read(url, from, len)).catch(() => null));
+    if (quick) return { data: quick, wire: 0, cached: 1 };
     const hit = await ippaiCacheStep(cache.match(url)).catch(() => undefined);
     if (hit && hit.headers.get(IPPAI_CHECKED) === '1') {
       try {
@@ -881,8 +1049,8 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function ippaiFetchWorkerSource(main, more = []) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiHint, ippaiHintPump, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX, IPPAI_CHUNK_DIR, IPPAI_HANDLE_MS, IPPAI_HANDLES };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiChunkFile, ippaiOpfsStore, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiHint, ippaiHintPump, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',

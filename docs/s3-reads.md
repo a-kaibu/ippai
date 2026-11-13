@@ -97,7 +97,23 @@ IPPAI_STORAGE_CONFIG=... ippai storage packs            # every game
 IPPAI_STORAGE_CONFIG=... ippai storage packs saga_planets-2
 ```
 
+## Chunks on the device: OPFS (web/src/chunkstore.ts)
+
+Chunks fetched or saved to the device are kept in the origin private file system, in the folder
+`ippai-chunks`, one file each, named by the chunk's hex name (a block kept alone:
+`<hex>?b=<k>&s=<block>`). Cache Storage (`ippai-chunks-v1`) was used before. It is still read,
+so games saved before stay saved, and an entry there goes when it is kept or deleted again.
+
+- The network worker reads a block of a whole chunk through a read-only synchronous access
+  handle, kept open 5 s for the next blocks (32 at most). Measured in headless Chromium
+  (tests/opfs-read-browser.mjs): a 256 KiB block of a 4 MiB chunk takes 1.4 ms against Cache
+  Storage's 1.6 ms. At that size the disk dominates; the gain is bigger for small reads. It also
+  avoids Cache Storage, which sometimes did not answer at all (IPPAI_CACHE_MS).
+- A file exists empty from its creation, and its bytes land whole when it is closed. An empty
+  file reads as not there.
+- A file the worker holds open cannot be deleted. A delete from the page then leaves it, and
+  the next trim takes it.
+
 ## Still to do
 
-- OPFS sync reads for a saved game, from the pthreads.
 - Tune the engine hints against real games' reads (`IPPAI_TRACE_VFS`).
