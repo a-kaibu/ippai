@@ -12,7 +12,8 @@ typedef const char *(*map_range_fn)(void *, char *, const char *);
 typedef char (*narrow_fn)(void *, char, char);
 typedef const char *(*copy_fn)(void *, const char *, const char *, char *);
 typedef const char *(*narrow_range_fn)(void *, const char *, const char *, char, char *);
-typedef size_t (*getcat_fn)(void **, void *);
+typedef size_t (*getcat_fn)(void **, const void *);
+typedef const void *(*classic_fn)(void);
 static void *expected_this;
 static char *expected_first, *expected_last, *expected_dest;
 static int called;
@@ -45,8 +46,13 @@ int main(void) {
     LOAD(narrow_fn, narrow, "?narrow@?$ctype@D@std@@QEBADDD@Z");
     LOAD(narrow_range_fn, narrow_range, "?narrow@?$ctype@D@std@@QEBAPEBDPEBD0DPEAD@Z");
     LOAD(getcat_fn, getcat, "?_Getcat@?$ctype@D@std@@SA_KPEAPEBVfacet@locale@2@PEBV42@@Z");
+    LOAD(classic_fn, classic, "?classic@locale@std@@SAAEBV12@XZ");
+    /* _Getcat reads the locale's name (Windows dereferences it: a NULL locale crashes).
+       The "C" locale, not the user's: its toupper changes only a-z. */
+    const void *c_locale = classic();
+    CHECK(c_locale != NULL);
     void *facet = NULL;
-    CHECK(getcat(&facet, NULL) == 2 && facet != NULL);
+    CHECK(getcat(&facet, c_locale) == 2 && facet != NULL);
     if (!facet) return 1;
     char src[258], out[258], mapped[258];
     memset(src, 0x65, sizeof src);

@@ -106,6 +106,12 @@ fn locale_init(c: &mut Ctx) -> u32 {
 pub const LOCALE_SIZE: u32 = 16;
 const LOCALE_PTR: u32 = 8;
 
+/// ?classic@locale@std@@SAAEBV12@XZ: the "C" locale object (static, never destroyed)
+fn locale_classic(_c: &mut Ctx) -> u32 {
+    static L: OnceLock<u32> = OnceLock::new();
+    *L.get_or_init(new_locale)
+}
+
 /// A new locale object (locale(): the global locale, referenced).
 pub fn new_locale() -> u32 {
     let p = mem::heap_alloc(LOCALE_SIZE, true);
@@ -624,6 +630,7 @@ pub fn init() {
         ("??Bid@locale@std@@QEAA_KXZ", locale_id),
         ("?_Init@locale@std@@CAPEAV_Locimp@12@_N@Z", locale_init),
         ("?_Getgloballocale@locale@std@@CAPEAV_Locimp@12@XZ", locale_global),
+        ("?classic@locale@std@@SAAEBV12@XZ", locale_classic),
         ("?_Getcat@?$ctype@D@std@@SA_KPEAPEBVfacet@locale@2@PEBV42@@Z", ctype_getcat),
         ("?tolower@?$ctype@D@std@@QEBADD@Z", ctype_tolower),
         ("?tolower@?$ctype@D@std@@QEBAPEBDPEADPEBD@Z", ctype_tolower_range),
