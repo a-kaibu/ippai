@@ -182,6 +182,38 @@ pub fn is_64bit_file(path: &str) -> bool {
     d.get(pe + 4..pe + 6) == Some(&[0x64, 0x86])
 }
 
+/// The image's SizeOfStackReserve (the size of each thread's stack unless CreateThread asks for
+/// more), from the PE32 or PE32+ optional header; None if `d` is not a PE.
+pub fn stack_reserve(d: &[u8]) -> Option<u64> {
+    let at = |o: usize, n: usize| d.get(o..o.checked_add(n)?);
+    let pe = u32::from_le_bytes(at(0x3c, 4)?.try_into().ok()?) as usize;
+    if at(pe, 4)? != b"PE\0\0" {
+        return None;
+    }
+    let opt = pe.checked_add(24)?;
+    match u16::from_le_bytes(at(opt, 2)?.try_into().ok()?) {
+        0x10b => Some(u32::from_le_bytes(at(opt + 72, 4)?.try_into().ok()?) as u64),
+        0x20b => Some(u64::from_le_bytes(at(opt + 72, 8)?.try_into().ok()?)),
+        _ => None,
+    }
+}
+
+/// The stack a new thread reserves, as Windows' RtlCreateUserStack works it out: CreateThread's
+/// size is the commit, and a commit at or past the image's reserve makes the reserve that
+/// commit rounded up to 1 MB; with STACK_SIZE_PARAM_IS_A_RESERVATION (0x10000) it is the
+/// reserve itself. Rounded to 64 KB, at least 1 MB (sake's own floor, see new_teb) and at most
+/// 256 MB of the 4 GB space.
+pub fn thread_stack(image_reserve: u64, size: u32, flags: u32) -> u32 {
+    const MB: u64 = 0x10_0000;
+    let mut reserve = image_reserve.max(1);
+    if flags & 0x10000 != 0 && size != 0 {
+        reserve = size as u64;
+    } else if size as u64 >= reserve {
+        reserve = (size as u64).div_ceil(MB) * MB;
+    }
+    (reserve.min(256 * MB).div_ceil(0x10000) * 0x10000).clamp(MB, 256 * MB) as u32
+}
+
 /// Read an integer-typed resource from an on-disk PE without mapping the image,
 /// resolving imports or running DllMain. Version queries also inspect executables
 /// that the caller has never loaded (SDRT's installed service, for example).
@@ -1209,6 +1241,73 @@ mod lang_tests {
             if let Some(i) = got { prop_assert!(i < langs.len()); }
             // the UI language is taken whenever it is there and no LANG_NEUTRAL entry is
             if langs.contains(&ui) && !langs.contains(&0) { prop_assert_eq!(langs[got.unwrap()], ui); }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    const MB: u32 = 0x10_0000;
+
+    #[test]
+    fn as_windows_sizes_them() {
+        assert_eq!(thread_stack(4 * MB as u64, 0, 0), 4 * MB);
+        assert_eq!(thread_stack(4 * MB as u64, 0x10000, 0), 4 * MB);
+        assert_eq!(thread_stack(4 * MB as u64, 5 * MB + 1, 0), 6 * MB);
+        assert_eq!(thread_stack(4 * MB as u64, 8 * MB, 0x10000), 8 * MB);
+        assert_eq!(thread_stack(4 * MB as u64, 2 * MB, 0x10000), 2 * MB);
+        // a reservation of 0 is the image's
+        assert_eq!(thread_stack(4 * MB as u64, 0, 0x10000), 4 * MB);
+        // sake's floor and ceiling
+        assert_eq!(thread_stack(0x10000, 0, 0), MB);
+        assert_eq!(thread_stack(u64::MAX, 0, 0), 256 * MB);
+    }
+
+    /// A PE32 and a PE32+ header with the field set, and what is not a PE.
+    #[test]
+    fn reads_the_header() {
+        for (magic, wide) in [(0x10bu16, false), (0x20b, true)] {
+            let mut d = vec![0u8; 0x200];
+            d[0x3c] = 0x80;
+            d[0x80..0x84].copy_from_slice(b"PE\0\0");
+            d[0x98..0x9a].copy_from_slice(&magic.to_le_bytes());
+            if wide {
+                d[0x98 + 72..0x98 + 80].copy_from_slice(&0x1_0040_0000u64.to_le_bytes());
+            } else {
+                d[0x98 + 72..0x98 + 76].copy_from_slice(&0x40_0000u32.to_le_bytes());
+            }
+            assert_eq!(stack_reserve(&d), Some(if wide { 0x1_0040_0000 } else { 0x40_0000 }));
+        }
+        assert_eq!(stack_reserve(b"MZ"), None);
+        assert_eq!(stack_reserve(&[0u8; 0x100]), None);
+    }
+
+    proptest! {
+        /// Any bytes: no panic.
+        #[test]
+        fn header_any_bytes(d in proptest::collection::vec(any::<u8>(), 0..0x200), pe in 0u32..0x180) {
+            let mut d = d;
+            if d.len() >= 0x40 {
+                d[0x3c..0x40].copy_from_slice(&pe.to_le_bytes());
+            }
+            let _ = stack_reserve(&d);
+        }
+
+        /// The stack holds what was asked for (within the ceiling), is 64 KB aligned and in range,
+        /// and never shrinks below the image's reserve without the reservation flag.
+        #[test]
+        fn stack_holds_the_request(image in 0u64..0x2000_0000, size in any::<u32>(), resv in any::<bool>()) {
+            let flags = if resv { 0x10000 } else { 0 };
+            let s = thread_stack(image, size, flags);
+            prop_assert_eq!(s % 0x10000, 0);
+            prop_assert!((MB..=256 * MB).contains(&s));
+            prop_assert!(s as u64 >= (size as u64).min(256 * MB as u64));
+            if !resv || size == 0 {
+                prop_assert!(s as u64 >= image.clamp(MB as u64, 256 * MB as u64));
+            }
         }
     }
 }

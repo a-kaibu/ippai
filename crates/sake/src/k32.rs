@@ -427,7 +427,7 @@ fn _beginthread(c: &mut Ctx) -> u32 {
         return u32::MAX;
     }
     let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
-    let tid = crate::spawn_gated(start, arg, if stack == 0 { 0x10_0000 } else { stack.max(0x10000) }, h, false);
+    let tid = crate::spawn_gated(start, arg, thread_stack(stack, 0), h, false);
     obj::with(|t| {
         if let Some((Obj::Thread { tid: x, .. }, _)) = t.objs.get_mut(&h) {
             *x = tid;
@@ -740,12 +740,17 @@ fn K32GetModuleFileNameExW(c: &mut Ctx) -> u32 {
 static GATE: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 static GATE_CV: Condvar = Condvar::new();
 
+/// A new thread's stack: CreateThread's size and flags against the program's own reserve.
+fn thread_stack(size: u32, flags: u32) -> u32 {
+    crate::pe::thread_stack(crate::STACK_RESERVE.load(Ordering::Relaxed), size, flags)
+}
+
 fn CreateThread(c: &mut Ctx) -> u32 {
     let (stack, start, param, flags, ptid) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
     let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
     let suspended = flags & 4 != 0;
     // a suspended thread is started by its first ResumeThread
-    let stack = if stack == 0 { 0x10_0000 } else { stack.max(0x10000) };
+    let stack = thread_stack(stack, flags);
     if suspended {
         GATE.lock().unwrap().push((h, 1));
     }

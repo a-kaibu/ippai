@@ -204,6 +204,9 @@ pub fn pid() -> u32 {
     PID.load(Ordering::Relaxed)
 }
 pub static PEB: AtomicU32 = AtomicU32::new(0);
+/// The program image's SizeOfStackReserve: the stack of the main thread and of a thread
+/// CreateThread asks no more for.
+pub static STACK_RESERVE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x10_0000);
 
 /// TEB offsets that differ between 32 and 64-bit programs.
 #[inline]
@@ -792,7 +795,10 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
     mem::commit(peb, 4);
     PEB.store(peb, Ordering::Relaxed);
-    let t = enter(0x10_0000);
+    if let Some(r) = kura::fs::read(exe).ok().as_deref().and_then(pe::stack_reserve) {
+        STACK_RESERVE.store(r, Ordering::Relaxed);
+    }
+    let t = enter(pe::thread_stack(STACK_RESERVE.load(Ordering::Relaxed), 0, 0));
     t.obj = obj::new_thread_obj(t.tid);
     let cpu = unsafe { &mut *t.cpu };
     let wpath = files::host_to_win(exe);

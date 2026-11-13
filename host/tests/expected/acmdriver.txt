@@ -1,0 +1,31 @@
+add: 0 id
+add, no proc: 11
+open: 0 had, driver opened 1
+details W: 0 "XOR8" "XOR 8 test codec" tags 2
+details A: 0 "XOR8" tags 2
+id of had: 0 same
+suggest: 0 tag 1 ch 1 rate 8000 bits 8
+query: 0
+query other rate: 512
+stream on had: 0, streams 1
+  size: 0 6
+  convert unprepared: 514
+  prepare: 0 prepared 1
+  convert: 0 done 1 used 6 -> 6: 00 01 5a a5 40 20 ee ee
+  convert 3: 0 used 3 -> 3
+  unprepare: 0 prepared 0
+  reset: 0
+  close: 0, streams 0
+stream any driver: 0, streams 1
+  size: 0 6
+  convert unprepared: 514
+  prepare: 0 prepared 1
+  convert: 0 done 1 used 6 -> 6: 00 01 5a a5 40 20 ee ee
+  convert 3: 0 used 3 -> 3
+  unprepare: 0 prepared 0
+  reset: 0
+  close: 0, streams 0
+driver close: 0
+remove: 0
+open removed: refused
+converts 4

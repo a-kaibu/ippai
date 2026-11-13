@@ -267,6 +267,403 @@ pub fn ms_block(b: &[u8], ch: usize, spb: usize, out: &mut Vec<i16>) {
     }
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// drivers the program adds itself (acmDriverAdd, ACM_DRIVERADDF_FUNCTION): its own DriverProc
+// gets the ACMDM_ messages Windows' msacm32 sends (a game's Vorbis.acm: LoadLibrary, then
+// acmDriverAdd(&id, module, DriverProc, 0, ACM_DRIVERADDF_FUNCTION) and acmDriverOpen)
+
+const DRV_LOAD: u32 = 1;
+const DRV_ENABLE: u32 = 2;
+const DRV_OPEN: u32 = 3;
+const DRV_CLOSE: u32 = 4;
+const DRV_DISABLE: u32 = 5;
+const DRV_FREE: u32 = 6;
+const ACMDM_DRIVER_DETAILS: u32 = 0x600a;
+const ACMDM_FORMATTAG_DETAILS: u32 = 0x6019;
+const ACMDM_FORMAT_SUGGEST: u32 = 0x601b;
+const ACMDM_STREAM_OPEN: u32 = 0x604c;
+const ACMDM_STREAM_CLOSE: u32 = 0x604d;
+const ACMDM_STREAM_SIZE: u32 = 0x604e;
+const ACMDM_STREAM_CONVERT: u32 = 0x604f;
+const ACMDM_STREAM_RESET: u32 = 0x6050;
+const ACMDM_STREAM_PREPARE: u32 = 0x6051;
+const ACMDM_STREAM_UNPREPARE: u32 = 0x6052;
+const MMSYSERR_ERROR: u32 = 1;
+const MMSYSERR_INVALHANDLE: u32 = 5;
+const MMSYSERR_NOTSUPPORTED: u32 = 8;
+const ACMERR_UNPREPARED: u32 = 514;
+/// ACMSTREAMHEADER's fdwStatus
+const STATUSF_DONE: u32 = 0x0001_0000;
+const STATUSF_PREPARED: u32 = 0x0002_0000;
+
+/// HACMDRIVERID of added driver i: ADDED + i; its HACMDRIVER once opened: OPENED + i
+const ADDED: u32 = 0x00ad_0000;
+const OPENED: u32 = 0x00ae_0000;
+
+#[derive(Clone)]
+struct Added {
+    proc_: u32,
+    /// DRV_OPEN's answer, the dwDriverId of every later message (0: not open)
+    id: u32,
+    removed: bool,
+}
+static ADDED_DRIVERS: Mutex<Vec<Added>> = Mutex::new(Vec::new());
+
+/// A stream on an added driver: its driver and the ACMDRVSTREAMINSTANCE (with the formats
+/// copied next to it) it keeps for the stream's life
+struct GuestStream {
+    drv: usize,
+    inst: u32,
+    /// the program's ACMSTREAMHEADERs prepared on it -> the ACMDRVSTREAMHEADER the driver sees
+    hdrs: HashMap<u32, u32>,
+}
+static GUEST_STREAMS: Mutex<Option<HashMap<u32, GuestStream>>> = Mutex::new(None);
+
+fn added(i: usize) -> Option<Added> {
+    ADDED_DRIVERS.lock().unwrap().get(i).cloned().filter(|d| !d.removed)
+}
+/// The added driver a HACMDRIVERID or HACMDRIVER names
+fn added_index(h: u32) -> Option<usize> {
+    let i = match h & 0xffff_0000 {
+        ADDED | OPENED => (h & 0xffff) as usize,
+        _ => return None,
+    };
+    added(i).map(|_| i)
+}
+fn send(c: &mut Ctx, i: usize, msg: u32, l1: u32, l2: u32) -> u32 {
+    let Some(d) = added(i) else { return MMSYSERR_INVALHANDLE };
+    c.call(d.proc_, &[d.id, OPENED + i as u32, msg, l1, l2])
+}
+
+/// Byte offsets of a structure's fields: DWORDs are 4 bytes, pointers `ps` and aligned to it
+/// Field offsets and size of an msacm struct; msacm.h packs them to 1 byte, so a pointer after
+/// a DWORD is not aligned on x64.
+fn layout(fields: &[bool], ps: u32) -> (Vec<u32>, u32) {
+    let mut o = 0u32;
+    let mut v = Vec::new();
+    for &ptr in fields {
+        v.push(o);
+        o += if ptr { ps } else { 4 };
+    }
+    (v, o)
+}
+fn put_field(at: u32, ptr: bool, v: u32) {
+    if ptr { mem::wp(at, v) } else { w32(at, v) }
+}
+/// A WAVEFORMATEX's size (18 + cbSize; PCM's may be 16 bytes)
+fn wfx_len(p: u32) -> u32 {
+    if r16(p) == PCM { 16 } else { 18 + r16(p + 16) as u32 }
+}
+fn copy_out(p: u32, n: u32) -> u32 {
+    let q = mem::heap_alloc(n.max(4), true);
+    for i in 0..n {
+        mem::w8(q + i, r8(p + i));
+    }
+    q
+}
+
+/// ACMDRVSTREAMINSTANCE: cbStruct, pwfxSrc, pwfxDst, pwfltr, dwCallback, dwInstance, fdwOpen,
+/// fdwDriver, dwDriver, has
+const INST: [bool; 10] = [false, true, true, true, true, true, false, false, true, true];
+/// ACMDRVSTREAMHEADER: ACMSTREAMHEADER's fields, then fdwConvert, padshNext, fdwDriver,
+/// dwDriver, fdwPrepared, dwPrepared, pbPreparedSrc, cbPreparedSrcLength, pbPreparedDst,
+/// cbPreparedDstLength
+const HDR: [bool; 21] = [
+    false, false, true, true, false, false, true, true, false, false, true, // ACMSTREAMHEADER
+    false, true, false, true, false, true, true, false, true, false,
+];
+const H_STATUS: usize = 1;
+const H_SRC: usize = 3;
+const H_SRC_LEN: usize = 4;
+const H_SRC_USED: usize = 5;
+const H_DST: usize = 7;
+const H_DST_LEN: usize = 8;
+const H_DST_USED: usize = 9;
+const H_CONVERT: usize = 11;
+const H_PREP_SRC: usize = 17;
+const H_PREP_SRC_LEN: usize = 18;
+const H_PREP_DST: usize = 19;
+const H_PREP_DST_LEN: usize = 20;
+
+fn hdr_get(h: u32, f: usize) -> u32 {
+    let (o, _) = layout(&HDR, mem::ps());
+    if HDR[f] { rp(h + o[f]) } else { r32(h + o[f]) }
+}
+fn hdr_set(h: u32, f: usize, v: u32) {
+    let (o, _) = layout(&HDR, mem::ps());
+    put_field(h + o[f], HDR[f], v)
+}
+/// The program's header's own fields (cbStruct .. dwDstUser) into the driver's, or back
+fn hdr_sync(from: u32, to: u32) {
+    for f in 0..11 {
+        hdr_set(to, f, hdr_get(from, f));
+    }
+}
+
+/// acmDriverAdd(&hadid, hinstModule, lParam, priority, flags): ACM_DRIVERADDF_FUNCTION (lParam
+/// is the DriverProc); a notification window (ACM_DRIVERADDF_NOTIFYHWND) is taken and never
+/// told; drivers by registry name are not there
+fn driver_add(c: &mut Ctx) -> u32 {
+    let (out, lparam, flags) = (c.a(0), c.a(2), c.a(4));
+    if out == 0 {
+        return MMSYSERR_INVALPARAM;
+    }
+    match flags & 7 {
+        3 if lparam != 0 => {}
+        4 => {
+            putp(out, 0);
+            return 0;
+        }
+        _ => return MMSYSERR_INVALPARAM,
+    }
+    let i = {
+        let mut v = ADDED_DRIVERS.lock().unwrap();
+        v.push(Added { proc_: lparam, id: 0, removed: false });
+        v.len() - 1
+    };
+    // (Windows loads and enables it when it is added: a DriverProc that refuses DRV_LOAD is
+    // not added)
+    if send(c, i, DRV_LOAD, 0, 0) == 0 {
+        ADDED_DRIVERS.lock().unwrap()[i].removed = true;
+        return MMSYSERR_ERROR;
+    }
+    send(c, i, DRV_ENABLE, 0, 0);
+    putp(out, ADDED + i as u32);
+    0
+}
+fn acmDriverAddA(c: &mut Ctx) -> u32 {
+    driver_add(c)
+}
+fn acmDriverAddW(c: &mut Ctx) -> u32 {
+    driver_add(c)
+}
+/// acmDriverRemove(hadid, 0)
+fn acmDriverRemove(c: &mut Ctx) -> u32 {
+    let Some(i) = added_index(c.a(0)) else { return MMSYSERR_INVALHANDLE };
+    send(c, i, DRV_DISABLE, 0, 0);
+    send(c, i, DRV_FREE, 0, 0);
+    ADDED_DRIVERS.lock().unwrap()[i].removed = true;
+    0
+}
+/// Opens added driver i (DRV_OPEN with an ACMDRVOPENDESC); its dwDriverId
+fn open_added(c: &mut Ctx, i: usize) -> u32 {
+    if let Some(d) = added(i) {
+        if d.id != 0 {
+            return d.id;
+        }
+    }
+    let ps = mem::ps();
+    // ACMDRVOPENDESC: cbStruct, fccType, fccComp, dwVersion, dwFlags, dwError, pszSectionName,
+    // pszAliasName, dnDevNode
+    let f = [false, false, false, false, false, false, true, true, false];
+    let (o, size) = layout(&f, ps);
+    let d = mem::heap_alloc(size, true);
+    w32(d + o[0], size);
+    w32(d + o[1], u32::from_le_bytes(*b"audc"));
+    w32(d + o[3], 0x0500_0000);
+    let id = send(c, i, DRV_OPEN, 0, d);
+    mem::heap_free(d);
+    if id != 0 {
+        ADDED_DRIVERS.lock().unwrap()[i].id = id;
+    }
+    id
+}
+fn acmDriverOpen(c: &mut Ctx) -> u32 {
+    let (out, id) = (c.a(0), c.a(1));
+    if out == 0 {
+        return MMSYSERR_INVALPARAM;
+    }
+    if let Some(i) = added_index(id) {
+        if open_added(c, i) == 0 {
+            return MMSYSERR_ERROR;
+        }
+        putp(out, OPENED + i as u32);
+        return 0;
+    }
+    if id & 0xffff_0000 == ADDED {
+        return MMSYSERR_INVALHANDLE;
+    }
+    // (a built-in driver gives back itself; another id: the first)
+    putp(out, if DRIVERS.iter().any(|d| d.0 == id) { id } else { DRIVER });
+    0
+}
+fn acmDriverClose(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if h & 0xffff_0000 == OPENED {
+        let Some(i) = added_index(h) else { return MMSYSERR_INVALHANDLE };
+        if let Some(d) = added(i) {
+            if d.id != 0 {
+                send(c, i, DRV_CLOSE, 0, 0);
+                ADDED_DRIVERS.lock().unwrap()[i].id = 0;
+            }
+        }
+    }
+    0
+}
+
+/// acmStreamOpen on added driver i; Some(result) when the driver answered
+fn stream_open_added(c: &mut Ctx, i: usize, ph: u32, src: u32, dst: u32, filter: u32, cb: u32, inst: u32, flags: u32) -> u32 {
+    if open_added(c, i) == 0 {
+        return MMSYSERR_ERROR;
+    }
+    let ps = mem::ps();
+    let (o, size) = layout(&INST, ps);
+    let (ls, ld) = (wfx_len(src), wfx_len(dst));
+    let si = mem::heap_alloc(size, true);
+    let (s2, d2) = (copy_out(src, ls), copy_out(dst, ld));
+    let f2 = if filter != 0 { copy_out(filter, r32(filter).clamp(12, 0x1000)) } else { 0 };
+    let h = {
+        let mut n = NEXT.lock().unwrap();
+        *n += 1;
+        *n
+    };
+    for (k, v) in [(0, size), (1, s2), (2, d2), (3, f2), (4, cb), (5, inst), (6, flags), (9, h)] {
+        put_field(si + o[k], INST[k], v);
+    }
+    let r = send(c, i, ACMDM_STREAM_OPEN, si, 0);
+    // ACM_STREAMOPENF_QUERY, or a refusal: nothing stays open
+    if r != 0 || flags & 1 != 0 {
+        for p in [si, s2, d2, f2] {
+            if p != 0 {
+                mem::heap_free(p);
+            }
+        }
+        if ph != 0 && r != 0 {
+            putp(ph, 0);
+        }
+        return r;
+    }
+    GUEST_STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, GuestStream { drv: i, inst: si, hdrs: HashMap::default() });
+    putp(ph, h);
+    0
+}
+fn guest<R>(h: u32, f: impl FnOnce(&mut GuestStream) -> R) -> Option<R> {
+    GUEST_STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&h).map(f)
+}
+fn guest_close(c: &mut Ctx, h: u32) -> Option<u32> {
+    let (drv, inst) = guest(h, |g| (g.drv, g.inst))?;
+    let r = send(c, drv, ACMDM_STREAM_CLOSE, inst, 0);
+    if r != 0 {
+        return Some(r);
+    }
+    let g = GUEST_STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h)?;
+    let (o, _) = layout(&INST, mem::ps());
+    for k in [1, 2, 3] {
+        let p = rp(g.inst + o[k]);
+        if p != 0 {
+            mem::heap_free(p);
+        }
+    }
+    mem::heap_free(g.inst);
+    for (_, d) in g.hdrs {
+        mem::heap_free(d);
+    }
+    Some(0)
+}
+fn guest_size(c: &mut Ctx, h: u32, n: u32, out: u32, flags: u32) -> Option<u32> {
+    let (drv, inst) = guest(h, |g| (g.drv, g.inst))?;
+    // ACMDRVSTREAMSIZE: cbStruct, fdwSize, cbSrcLength, cbDstLength
+    let z = mem::heap_alloc(16, true);
+    w32(z, 16);
+    w32(z + 4, flags);
+    w32(z + if flags & 0xf == 0 { 8 } else { 12 }, n);
+    let r = send(c, drv, ACMDM_STREAM_SIZE, inst, z);
+    if r == 0 {
+        put32(out, r32(z + if flags & 0xf == 0 { 12 } else { 8 }));
+    }
+    mem::heap_free(z);
+    Some(r)
+}
+fn guest_prepare(c: &mut Ctx, h: u32, hdr: u32, flags: u32) -> Option<u32> {
+    let (drv, inst) = guest(h, |g| (g.drv, g.inst))?;
+    if hdr == 0 || r32(hdr) < 44 {
+        return Some(MMSYSERR_INVALPARAM);
+    }
+    if r32(hdr + 4) & STATUSF_PREPARED != 0 {
+        return Some(0);
+    }
+    let (_, size) = layout(&HDR, mem::ps());
+    let d = mem::heap_alloc(size, true);
+    hdr_sync(hdr, d);
+    hdr_set(d, H_CONVERT, flags);
+    let r = send(c, drv, ACMDM_STREAM_PREPARE, inst, d);
+    // (a driver with nothing to prepare says MMSYSERR_NOTSUPPORTED: msacm32 prepares it)
+    if r != 0 && r != MMSYSERR_NOTSUPPORTED {
+        mem::heap_free(d);
+        return Some(r);
+    }
+    hdr_set(d, H_PREP_SRC, hdr_get(hdr, H_SRC));
+    hdr_set(d, H_PREP_SRC_LEN, hdr_get(hdr, H_SRC_LEN));
+    hdr_set(d, H_PREP_DST, hdr_get(hdr, H_DST));
+    hdr_set(d, H_PREP_DST_LEN, hdr_get(hdr, H_DST_LEN));
+    w32(hdr + 4, (r32(hdr + 4) | STATUSF_PREPARED) & !STATUSF_DONE);
+    guest(h, |g| g.hdrs.insert(hdr, d));
+    Some(0)
+}
+fn guest_unprepare(c: &mut Ctx, h: u32, hdr: u32) -> Option<u32> {
+    let (drv, inst) = guest(h, |g| (g.drv, g.inst))?;
+    let Some(d) = guest(h, |g| g.hdrs.get(&hdr).copied()).flatten() else { return Some(ACMERR_UNPREPARED) };
+    hdr_sync(hdr, d);
+    let r = send(c, drv, ACMDM_STREAM_UNPREPARE, inst, d);
+    if r != 0 && r != MMSYSERR_NOTSUPPORTED {
+        return Some(r);
+    }
+    guest(h, |g| g.hdrs.remove(&hdr));
+    mem::heap_free(d);
+    w32(hdr + 4, r32(hdr + 4) & !STATUSF_PREPARED);
+    Some(0)
+}
+fn guest_convert(c: &mut Ctx, h: u32, hdr: u32, flags: u32) -> Option<u32> {
+    let (drv, inst) = guest(h, |g| (g.drv, g.inst))?;
+    let Some(d) = guest(h, |g| g.hdrs.get(&hdr).copied()).flatten() else { return Some(ACMERR_UNPREPARED) };
+    // (the buffers have to be the ones prepared)
+    if hdr_get(hdr, H_SRC) != hdr_get(d, H_PREP_SRC) || hdr_get(hdr, H_DST) != hdr_get(d, H_PREP_DST)
+        || hdr_get(hdr, H_SRC_LEN) > hdr_get(d, H_PREP_SRC_LEN) || hdr_get(hdr, H_DST_LEN) > hdr_get(d, H_PREP_DST_LEN)
+    {
+        return Some(MMSYSERR_INVALPARAM);
+    }
+    hdr_sync(hdr, d);
+    hdr_set(d, H_CONVERT, flags);
+    hdr_set(d, H_SRC_USED, 0);
+    hdr_set(d, H_DST_USED, 0);
+    hdr_set(d, H_STATUS, hdr_get(hdr, H_STATUS) & !STATUSF_DONE);
+    let r = send(c, drv, ACMDM_STREAM_CONVERT, inst, d);
+    hdr_set(hdr, H_SRC_USED, hdr_get(d, H_SRC_USED));
+    hdr_set(hdr, H_DST_USED, hdr_get(d, H_DST_USED));
+    if r == 0 {
+        w32(hdr + 4, r32(hdr + 4) | STATUSF_DONE);
+    }
+    Some(r)
+}
+fn acmStreamReset(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if let Some((drv, inst)) = guest(h, |g| (g.drv, g.inst)) {
+        let r = send(c, drv, ACMDM_STREAM_RESET, inst, 0);
+        return if r == MMSYSERR_NOTSUPPORTED { 0 } else { r };
+    }
+    0
+}
+/// ACMDM_FORMAT_SUGGEST on added driver i (ACMDRVFORMATSUGGEST: cbStruct, fdwSuggest,
+/// pwfxSrc, cbwfxSrc, pwfxDst, cbwfxDst)
+fn suggest_added(c: &mut Ctx, i: usize, src: u32, dst: u32, n: u32, flags: u32) -> u32 {
+    if open_added(c, i) == 0 {
+        return MMSYSERR_ERROR;
+    }
+    let f = [false, false, true, false, true, false];
+    let (o, size) = layout(&f, mem::ps());
+    let z = mem::heap_alloc(size, true);
+    for (k, v) in [(0, size), (1, flags), (2, src), (3, wfx_len(src)), (4, dst), (5, n)] {
+        put_field(z + o[k], f[k], v);
+    }
+    let r = send(c, i, ACMDM_FORMAT_SUGGEST, z, 0);
+    mem::heap_free(z);
+    r
+}
+fn added_count() -> usize {
+    ADDED_DRIVERS.lock().unwrap().len()
+}
+
 // ---------------------------------------------------------------------------------------------
 // the API
 
@@ -285,17 +682,24 @@ fn acmDriverEnum(c: &mut Ctx) -> u32 {
     }
     0
 }
+/// acmDriverID(hao, &hadid, 0): an added driver's id for its HACMDRIVER or streams
 fn acmDriverID(c: &mut Ctx) -> u32 {
-    crate::mem::putp(c.a(1), DRIVER);
+    let h = c.a(0);
+    let id = if let Some(i) = added_index(h) {
+        ADDED + i as u32
+    } else if let Some(i) = guest(h, |g| g.drv) {
+        ADDED + i as u32
+    } else if let Some(&(d, ..)) = DRIVERS.iter().find(|d| d.0 == h) {
+        d
+    } else {
+        DRIVER
+    };
+    crate::mem::putp(c.a(1), id);
     0
 }
-fn acmDriverOpen(c: &mut Ctx) -> u32 {
-    let id = if DRIVERS.iter().any(|d| d.0 == c.a(1)) { c.a(1) } else { DRIVER };
-    crate::mem::putp(c.a(0), id);
-    0
-}
-fn ok0(_: &mut Ctx) -> u32 {
-    0
+/// ACMDRIVERDETAILS' numbers and hicon, before its strings
+fn details_head() -> u32 {
+    if mem::x64() { 44 } else { 40 }
 }
 fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
     let p = c.a(1);
@@ -309,7 +713,7 @@ fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
     }
     // (the whole ACMDRIVERDETAILS, of which the first cbStruct bytes are copied and cbStruct
     // becomes the bytes given, as msacm32 does: a field cut in two keeps its first bytes)
-    let full = if wide { 40 + 2 * 880 } else { 40 + 880 };
+    let full = details_head() as usize + if wide { 2 * 880 } else { 880 };
     let mut b = vec![0u8; full];
     let put = |b: &mut Vec<u8>, at: usize, v: u32| {
         if at + 4 <= b.len() {
@@ -324,7 +728,8 @@ fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
     put(&mut b, 24, 1); // codec
     put(&mut b, 28, tags().len() as u32); // format tags
     let strs: [(&str, usize); 4] = [(short, 32), (long, 128), ("Copyright (C) Microsoft Corp.", 80), ("", 128)];
-    let mut at = 40;
+    // (the strings follow hicon: offset 36 on x86, 40 and 8 bytes on x64, packed)
+    let mut at = details_head() as usize;
     for (s, n) in strs {
         let units: Vec<u16> = if wide { s.encode_utf16().collect() } else { s.bytes().map(|x| x as u16).collect() };
         for (i, u) in units.iter().take(n - 1).enumerate() {
@@ -344,10 +749,61 @@ fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
     mem::write(p, &b);
     0
 }
+/// An added driver's ACMDRIVERDETAILSW (ACMDM_DRIVER_DETAILS); the A form's strings are the
+/// W ones in the ANSI code page (the driver only speaks W)
+fn added_details(c: &mut Ctx, i: usize, p: u32, wide: bool) -> u32 {
+    if p == 0 || r32(p) < 4 {
+        return MMSYSERR_INVALPARAM;
+    }
+    if open_added(c, i) == 0 {
+        return MMSYSERR_ERROR;
+    }
+    // (40 bytes of numbers, then short name 32, long name 128, copyright 80, licensing 128,
+    // features 512 characters)
+    const STRS: [u32; 5] = [32, 128, 80, 128, 512];
+    let head = details_head();
+    let full_w = head + 2 * STRS.iter().sum::<u32>();
+    let w = mem::heap_alloc(full_w, true);
+    w32(w, full_w);
+    let r = send(c, i, ACMDM_DRIVER_DETAILS, w, 0);
+    if r == 0 {
+        let want = r32(p);
+        let mut b: Vec<u8> = (0..head).map(|k| r8(w + k)).collect();
+        let mut at = head;
+        for n in STRS {
+            let units: Vec<u16> = (0..n).map(|k| r16(w + at + 2 * k)).take_while(|&u| u != 0).collect();
+            if wide {
+                let mut v = vec![0u8; 2 * n as usize];
+                for (k, u) in units.iter().enumerate() {
+                    v[2 * k..2 * k + 2].copy_from_slice(&u.to_le_bytes());
+                }
+                b.extend(v);
+            } else {
+                let mut v = crate::text::w2a(&units);
+                v.truncate(n as usize - 1);
+                v.resize(n as usize, 0);
+                b.extend(v);
+            }
+            at += 2 * n;
+        }
+        b.truncate(want as usize);
+        let k = 4.min(b.len());
+        b[..k].copy_from_slice(&want.to_le_bytes()[..k]);
+        mem::write(p, &b);
+    }
+    mem::heap_free(w);
+    r
+}
 fn acmDriverDetailsA(c: &mut Ctx) -> u32 {
+    if let Some(i) = added_index(c.a(0)) {
+        return added_details(c, i, c.a(1), false);
+    }
     driver_details(c, false)
 }
 fn acmDriverDetailsW(c: &mut Ctx) -> u32 {
+    if let Some(i) = added_index(c.a(0)) {
+        return added_details(c, i, c.a(1), true);
+    }
     driver_details(c, true)
 }
 const TAGS: [(u16, u32, &str); 4] = [(PCM, 16, "PCM"), (IMA, 20, "IMA ADPCM"), (MSADPCM, 50, "Microsoft ADPCM"), (MP3, 30, "MPEG Layer-3")];
@@ -385,6 +841,13 @@ fn acmFormatTagDetailsA(c: &mut Ctx) -> u32 {
     format_tag_details(c, false)
 }
 fn acmFormatTagDetailsW(c: &mut Ctx) -> u32 {
+    // (an added driver opened: its own answer)
+    if let Some(i) = added_index(c.a(0)) {
+        if open_added(c, i) == 0 {
+            return MMSYSERR_ERROR;
+        }
+        return send(c, i, ACMDM_FORMATTAG_DETAILS, c.a(1), c.a(2));
+    }
     format_tag_details(c, true)
 }
 fn acmMetrics(c: &mut Ctx) -> u32 {
@@ -400,12 +863,22 @@ fn acmMetrics(c: &mut Ctx) -> u32 {
 }
 /// acmFormatSuggest(had, src, dst, cbDst, flags): 16-bit PCM for ADPCM
 fn acmFormatSuggest(c: &mut Ctx) -> u32 {
-    let (src, dst, n) = (c.a(1), c.a(2), c.a(3));
-    let s = read_fmt(src);
-    if n < 16 {
+    let (had, src, dst, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if src == 0 || dst == 0 || n < 16 {
         return MMSYSERR_INVALPARAM;
     }
+    if let Some(i) = added_index(had) {
+        return suggest_added(c, i, src, dst, n, c.a(4));
+    }
+    let s = read_fmt(src);
     if !matches!(s.tag, IMA | MSADPCM | PCM) && !(s.tag == MP3 && mp3_ok()) || s.bad {
+        if had == 0 {
+            for i in (0..added_count()).rev() {
+                if added(i).is_some() && suggest_added(c, i, src, dst, n, c.a(4)) == 0 {
+                    return 0;
+                }
+            }
+        }
         return ACMERR_NOTPOSSIBLE;
     }
     let ch = s.channels.max(1) as u32;
@@ -422,7 +895,25 @@ fn acmFormatSuggest(c: &mut Ctx) -> u32 {
 }
 /// acmStreamOpen(phas, had, src, dst, filter, cb, inst, flags)
 fn acmStreamOpen(c: &mut Ctx) -> u32 {
-    let (ph, src, dst, flags) = (c.a(0), c.a(2), c.a(3), c.a(7));
+    let (ph, had, src, dst, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(7));
+    if src == 0 || dst == 0 {
+        return MMSYSERR_INVALPARAM;
+    }
+    // a driver the program added: the one it opened, or with no driver named, any of them
+    // before the built-in one (as Windows tries the process's own drivers first)
+    if let Some(i) = added_index(had) {
+        return stream_open_added(c, i, ph, src, dst, c.a(4), c.a(5), c.a(6), flags);
+    }
+    if had & 0xffff_0000 == ADDED || had & 0xffff_0000 == OPENED {
+        return MMSYSERR_INVALHANDLE;
+    }
+    if had == 0 {
+        for i in (0..added_count()).rev() {
+            if added(i).is_some() && stream_open_added(c, i, ph, src, dst, c.a(4), c.a(5), c.a(6), flags) == 0 {
+                return 0;
+            }
+        }
+    }
     let (s, d) = (read_fmt(src), read_fmt(dst));
     if !supported(&s, &d) {
         // (once a pair: which codecs games ask for, MP3 = 0x55, shows in corpus logs)
@@ -463,12 +954,18 @@ fn with<R>(h: u32, f: impl FnOnce(&Stream) -> R) -> Option<R> {
     STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).map(f)
 }
 fn acmStreamClose(c: &mut Ctx) -> u32 {
+    if let Some(r) = guest_close(c, c.a(0)) {
+        return r;
+    }
     STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
     0
 }
 /// acmStreamSize(has, cbInput, pdwOutputBytes, flags): SOURCE (0) or DESTINATION (1)
 fn acmStreamSize(c: &mut Ctx) -> u32 {
     let (h, n, out, flags) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if let Some(r) = guest_size(c, h, n, out, flags) {
+        return r;
+    }
     let Some((s, d)) = with(h, |st| (st.src, st.dst)) else { return 5 };
     let ch = s.channels.max(1) as u32;
     let v = if s.tag == MP3 {
@@ -502,6 +999,9 @@ fn mp3_size(s: &Fmt, d: &Fmt, n: u32, from_dst: bool) -> u32 {
 }
 fn acmStreamPrepareHeader(c: &mut Ctx) -> u32 {
     let h = c.a(1);
+    if let Some(r) = guest_prepare(c, c.a(0), h, c.a(2)) {
+        return r;
+    }
     // (l3codecp refuses a header with no source: winref acmmp3, its probe's last call)
     let p = mem::ps();
     if with(c.a(0), |st| st.src.tag == MP3).unwrap_or(false) && r32(h + 8 + 2 * p) == 0 {
@@ -512,6 +1012,9 @@ fn acmStreamPrepareHeader(c: &mut Ctx) -> u32 {
 }
 fn acmStreamUnprepareHeader(c: &mut Ctx) -> u32 {
     let h = c.a(1);
+    if let Some(r) = guest_unprepare(c, c.a(0), h) {
+        return r;
+    }
     w32(h + 4, r32(h + 4) & !0x0002_0000);
     0
 }
@@ -519,6 +1022,9 @@ fn acmStreamUnprepareHeader(c: &mut Ctx) -> u32 {
 fn acmStreamConvert(c: &mut Ctx) -> u32 {
     let (h, hdr) = (c.a(0), c.a(1));
     let (h, hdr, flags) = (h, hdr, c.a(2));
+    if let Some(r) = guest_convert(c, h, hdr, flags) {
+        return r;
+    }
     let Some((s, d, mp3)) = with(h, |st| (st.src, st.dst, st.mp3.clone())) else { return 5 };
     // ACMSTREAMHEADER: cbStruct, fdwStatus, dwUser, pbSrc, cbSrcLength, cbSrcLengthUsed,
     // dwSrcUser, pbDst, cbDstLength, cbDstLengthUsed (the pointer-sized ones 8 bytes on x64)
@@ -629,7 +1135,10 @@ pub fn init() {
         ("acmDriverEnum", acmDriverEnum),
         ("acmDriverID", acmDriverID),
         ("acmDriverOpen", acmDriverOpen),
-        ("acmDriverClose", ok0),
+        ("acmDriverClose", acmDriverClose),
+        ("acmDriverAddA", acmDriverAddA),
+        ("acmDriverAddW", acmDriverAddW),
+        ("acmDriverRemove", acmDriverRemove),
         ("acmDriverDetailsA", acmDriverDetailsA),
         ("acmDriverDetailsW", acmDriverDetailsW),
         ("acmFormatTagDetailsA", acmFormatTagDetailsA),
@@ -642,7 +1151,7 @@ pub fn init() {
         ("acmStreamPrepareHeader", acmStreamPrepareHeader),
         ("acmStreamUnprepareHeader", acmStreamUnprepareHeader),
         ("acmStreamConvert", acmStreamConvert),
-        ("acmStreamReset", ok0),
+        ("acmStreamReset", acmStreamReset),
     ] {
         implement("msacm32", n, f);
     }
@@ -709,6 +1218,18 @@ mod proptests {
         assert_eq!(out, [50, 0, 100, 0, 166, 0, 344, 0]);
     }
 
+    /// msacmdrv.h structs are pack(1): the sizes a driver built with it expects.
+    #[test]
+    fn driver_struct_layouts() {
+        assert_eq!(layout(&INST, 4).1, 40);
+        assert_eq!(layout(&INST, 8).1, 68);
+        assert_eq!(layout(&HDR, 4).1, 84);
+        assert_eq!(layout(&HDR, 8).1, 124);
+        // ACMDRVSTREAMHEADER.pbSrc follows dwUser; on x64 padshNext sits right after fdwConvert
+        assert_eq!(layout(&HDR, 8).0[3], 16);
+        assert_eq!(layout(&HDR, 8).0[12], 68);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -721,6 +1242,19 @@ mod proptests {
             let mut out = Vec::new();
             ima_block(&block, ch, spb, &mut out);
             prop_assert_eq!(out, want);
+        }
+
+        /// Packed layout: every field starts where the one before ends, whatever the mix.
+        #[test]
+        fn layout_is_packed(fields in vec(any::<bool>(), 0..32), x64 in any::<bool>()) {
+            let ps = if x64 { 8 } else { 4 };
+            let (offs, size) = layout(&fields, ps);
+            let mut o = 0;
+            for (f, at) in fields.iter().zip(&offs) {
+                prop_assert_eq!(*at, o);
+                o += if *f { ps } else { 4 };
+            }
+            prop_assert_eq!(size, o);
         }
 
         /// Any bytes, channel count and block length the header claims: no panic, and either
