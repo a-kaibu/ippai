@@ -866,7 +866,8 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
             let lower = fname.to_ascii_lowercase();
             if first && !has_package && !dir.starts_with(&unpacked) && (lower.ends_with(".exe") || lower.ends_with(".nw")) {
                 let to = unpacked.join(apps.to_string());
-                if e.metadata()?.is_file() && crate::nwjs::unpack(&e.path(), &to)? {
+                // (a zip appended to nw.exe, or an Enigma Virtual Box holding the app: evb.rs)
+                if e.metadata()?.is_file() && (crate::nwjs::unpack(&e.path(), &to)? || lower.ends_with(".exe") && crate::evb::unpack(&e.path(), &to)?) {
                     eprintln!("{path}: NW.js app unpacked next to it");
                     apps += 1;
                     todo.push((to, rel.clone()));
@@ -1331,6 +1332,33 @@ mod tests {
         fs::write(dir.join("resources/app/package.json"), b"{}").unwrap();
         let tsv = pack_tree(&store, &dir, "t2", false, chunking(64)).unwrap();
         assert_eq!(paths(&tsv), ["d resources", "d resources/app", "f resources/app.asar", "f resources/app/package.json", "f tyranoproject.exe"]);
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    /// An NW.js game boxed by Enigma Virtual Box (one exe holding package.json and www/) gets
+    /// the box's files next to the exe; one whose folder has a package.json already gets none.
+    #[test]
+    fn enigma_boxed_nwjs_unpacked_into_the_tree() {
+        let t = std::env::temp_dir().join(format!("ippai-evb-pack-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, dir) = (t.join("store"), t.join("game"));
+        fs::create_dir_all(&dir).unwrap();
+        let files: &[(&str, &[u8])] = &[("package.json", b"{\"main\":\"www/index.html\"}"), ("www/index.html", b"<html>"), ("www/data/System.json", b"{}")];
+        for legacy in [true, false] {
+            let e = crate::evb::tests::exe(&crate::evb::tests::Spec { files, legacy, chunk: Some(3), other: true });
+            fs::write(dir.join("Game.exe"), &e).unwrap();
+            let paths = |tsv: &str| -> Vec<String> {
+                let mut v: Vec<String> = tsv.lines().skip(1).map(|l| format!("{} {}", &l[..1], l.split('\t').nth(3).unwrap())).collect();
+                v.sort();
+                v
+            };
+            let tsv = pack_tree(&store, &dir, "t", false, chunking(64)).unwrap();
+            assert_eq!(paths(&tsv), ["d www", "d www/data", "f Game.exe", "f package.json", "f www/data/System.json", "f www/index.html"]);
+            fs::write(dir.join("package.json"), b"{}").unwrap();
+            let tsv = pack_tree(&store, &dir, "t2", false, chunking(64)).unwrap();
+            assert_eq!(paths(&tsv), ["f Game.exe", "f package.json"]);
+            fs::remove_file(dir.join("package.json")).unwrap();
+        }
         let _ = fs::remove_dir_all(&t);
     }
 

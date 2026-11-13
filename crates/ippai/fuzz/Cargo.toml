@@ -8,7 +8,7 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
-# (unpack.rs and asar.rs are compiled in as a module: ippai is a binary crate; these are its dependencies)
+# (unpack.rs, asar.rs and evb.rs are compiled in as a module: ippai is a binary crate; these are its dependencies)
 [dependencies]
 libfuzzer-sys = "0.4"
 anyhow = "1"
@@ -43,6 +43,13 @@ bench = false
 [[bin]]
 name = "asar"
 path = "fuzz_targets/asar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evb"
+path = "fuzz_targets/evb.rs"
 test = false
 doc = false
 bench = false

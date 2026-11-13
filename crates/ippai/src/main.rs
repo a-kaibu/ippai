@@ -28,6 +28,7 @@ mod meta_url;
 mod egs_match;
 mod gamedb;
 mod movie;
+mod evb;
 mod nwjs;
 mod pack;
 mod portable;
