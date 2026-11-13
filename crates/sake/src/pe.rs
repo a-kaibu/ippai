@@ -23,6 +23,9 @@ pub struct Module {
     pub hle: bool,
     /// x64: the exception directory (RUNTIME_FUNCTION array, count)
     pub pdata: (u32, u32),
+    /// loaded from a side-by-side assembly (LDR_REDIRECTED): its name finds it only while
+    /// that activation context is active
+    pub redirected: bool,
 }
 
 /// The module mapped at the low alias of a base above 4G: (low base, upper half, size).
@@ -101,7 +104,17 @@ pub fn by_base(base: u32) -> Option<usize> {
 
 pub fn by_name(name: &str) -> Option<u32> {
     let n = base_name(name);
-    MODULES.read().unwrap().iter().find(|m| m.name == n || m.name.trim_end_matches(".dll") == n).map(|m| m.base)
+    MODULES.read().unwrap().iter().find(|m| !m.redirected && (m.name == n || m.name.trim_end_matches(".dll") == n)).map(|m| m.base)
+}
+
+/// The module a bare DLL name stands for in the active activation context: Some(the
+/// redirected module, 0 when not loaded, and its path) when an assembly of the context lists
+/// the DLL and its file is there.
+pub fn sxs_module(name: &str) -> Option<(u32, String)> {
+    let path = crate::actctx::redirect_dll(name)?;
+    crate::files::resolve(&path)?;
+    let b = MODULES.read().unwrap().iter().find(|m| m.path.eq_ignore_ascii_case(&path)).map(|m| m.base).unwrap_or(0);
+    Some((b, path))
 }
 
 pub fn containing(a: u32) -> Option<u32> {
@@ -147,6 +160,7 @@ pub fn load_datafile(data: &[u8], path: &str) -> Option<u32> {
         refs: 1,
         hle: false,
         pdata: (0, 0),
+        redirected: false,
     });
     Some(base)
 }
@@ -437,7 +451,9 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         refs: 1,
         hle: false,
         pdata: if dir(3).0 != 0 { (base + dir(3).0, dir(3).1 / 12) } else { (0, 0) },
+        redirected: false,
     });
+    ldr_add(base);
     // imports (after the module is listed: a DLL importing from itself, or a cycle)
     let (irva, _) = dir(1);
     if crate::env_on!("SAKE_TRACE_LOAD") {
@@ -748,9 +764,10 @@ pub fn hle_module(dll: &str) -> u32 {
         w32(e + 36, ords - base);
         // (stub 0: the exe's and threads' return address, on to EXIT_TRAP with EAX kept)
         mem::write(base + thunks, &[0xb9, 0x20, 0x00, 0xff, 0xff, 0xff, 0xe1, 0xcc]);
-        // each function: Windows' hot-patch prologue undone, then `mov ecx, trap; jmp ecx`:
+        // each function: Windows' hot-patch prologue undone, then `push trap; ret`:
         // ASProtect copies an API's first instructions into its own code and jumps past them, so
-        // what follows the prologue must work anywhere (no relative jump)
+        // what follows the prologue must work anywhere (no relative jump); and it keeps every
+        // register, as fastcall and thiscall functions found by GetProcAddress take ECX/EDX
         for (i, f) in names.iter().enumerate() {
             let i = i as u32;
             // (ntdll's Zw* are its Nt* functions, at the same address: a hook on one is on both)
@@ -765,9 +782,9 @@ pub fn hle_module(dll: &str) -> u32 {
             }
             let t = base + thunks + 16 * (i + 1);
             let trap = crate::api::export(&key, f);
-            mem::write(t, &[0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0xb9]);
+            mem::write(t, &[0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0x68]);
             w32(t + 7, trap);
-            mem::write(t + 11, &[0xff, 0xe1, 0xcc, 0xcc, 0xcc]);
+            mem::write(t + 11, &[0xc3, 0xcc, 0xcc, 0xcc, 0xcc]);
             exports.insert(f.clone(), t);
             w32(funs + 4 * i, t - base);
             w32(nms + 4 * i, str_at - base);
@@ -798,8 +815,93 @@ pub fn hle_module(dll: &str) -> u32 {
         refs: 1,
         hle: true,
         pdata: (0, 0),
+        redirected: false,
     });
+    ldr_add(base);
     base
+}
+
+// ---------------------------------------------------------------------------------------------
+// the PEB's loader data: PEB_LDR_DATA and a LDR_DATA_TABLE_ENTRY per module, in its three
+// lists (load, memory and initialization order), as programs walk them
+
+/// (PEB_LDR_DATA, base -> entry)
+static LDR: Mutex<(u32, Vec<(u32, u32)>)> = Mutex::new((0, Vec::new()));
+/// LDR_DATA_TABLE_ENTRY.Flags: loaded from a side-by-side assembly
+pub const LDR_REDIRECTED: u32 = 0x1000_0000;
+
+fn ldr_data() -> u32 {
+    let mut g = LDR.lock().unwrap();
+    if g.0 == 0 {
+        let peb = crate::PEB.load(std::sync::atomic::Ordering::Relaxed);
+        if peb == 0 {
+            return 0;
+        }
+        let ps = mem::ps();
+        let d = mem::heap_alloc(0x58, true);
+        w32(d, if ps == 8 { 0x58 } else { 0x30 });
+        w32(d + 4, 1);
+        for k in 0..3 {
+            let head = d + if ps == 8 { 16 } else { 12 } + 2 * ps * k;
+            mem::wp(head, head);
+            mem::wp(head + ps, head);
+        }
+        mem::wp(peb + if ps == 8 { 0x18 } else { 0x0c }, d);
+        g.0 = d;
+    }
+    g.0
+}
+
+fn ustr_at(at: u32, s: &str) {
+    let w: Vec<u16> = s.encode_utf16().collect();
+    let b = mem::heap_alloc(2 * w.len() as u32 + 2, true);
+    for (i, &c) in w.iter().enumerate() {
+        w16(b + 2 * i as u32, c);
+    }
+    w16(at, 2 * w.len() as u16);
+    w16(at + 2, 2 * w.len() as u16 + 2);
+    mem::wp(at + mem::ps(), b);
+}
+
+/// Lists module `base` (just added to MODULES) at the end of the loader's lists.
+fn ldr_add(base: u32) {
+    let d = ldr_data();
+    let Some((size, entry, path, redirected)) = with(base, |m| (m.size, m.entry, m.path.clone(), m.redirected)) else { return };
+    if d == 0 {
+        return;
+    }
+    let ps = mem::ps();
+    let e = mem::heap_alloc(if ps == 8 { 0x120 } else { 0xa8 }, true);
+    for k in 0..3 {
+        let head = d + if ps == 8 { 16 } else { 12 } + 2 * ps * k;
+        let link = e + 2 * ps * k;
+        let last = mem::rp(head + ps);
+        mem::wp(link, head);
+        mem::wp(link + ps, last);
+        mem::wp(last, link);
+        mem::wp(head + ps, link);
+    }
+    let (dllbase, ep, sz, full, basen, flags, count) = if ps == 8 { (48, 56, 64, 72, 88, 104, 108) } else { (24, 28, 32, 36, 44, 52, 56) };
+    mem::wp(e + dllbase, base);
+    mem::wp(e + ep, entry);
+    w32(e + sz, size);
+    ustr_at(e + full, &path);
+    ustr_at(e + basen, path.rsplit('\\').next().unwrap_or(&path));
+    w32(e + flags, 0x4 | if redirected { LDR_REDIRECTED } else { 0 });
+    w16(e + count, 1);
+    LDR.lock().unwrap().1.push((base, e));
+}
+
+/// A module's flags or path changed after it was listed.
+pub fn ldr_update(base: u32) {
+    let Some(e) = LDR.lock().unwrap().1.iter().find(|x| x.0 == base).map(|x| x.1) else { return };
+    let Some((path, redirected)) = with(base, |m| (m.path.clone(), m.redirected)) else { return };
+    let ps = mem::ps();
+    let (full, basen, flags) = if ps == 8 { (72, 88, 104) } else { (36, 44, 52) };
+    ustr_at(e + full, &path);
+    ustr_at(e + basen, path.rsplit('\\').next().unwrap_or(&path));
+    let f = r32(e + flags) & !LDR_REDIRECTED;
+    w32(e + flags, f | if redirected { LDR_REDIRECTED } else { 0 });
 }
 
 use crate::mem::w16;
@@ -1009,6 +1111,20 @@ fn load_dll_file(dll: &str) -> Result<u32, String> {
 pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
     let _g = loader_lock();
     let key = api::dll_key(name);
+    if let Some((b, path)) = sxs_module(name) {
+        if let Some(i) = by_base(b).filter(|_| b != 0) {
+            MODULES.write().unwrap()[i].refs += 1;
+            return b;
+        }
+        if let Ok(b) = load_dll_file(&path) {
+            if let Some(i) = by_base(b) {
+                MODULES.write().unwrap()[i].redirected = true;
+                ldr_update(b);
+            }
+            init_dlls(cpu);
+            return b;
+        }
+    }
     if let Some(b) = by_name(name) {
         if let Some(i) = by_base(b) {
             MODULES.write().unwrap()[i].refs += 1;
@@ -1026,7 +1142,15 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
                 hle_module("vcruntime140");
             }
         }
-        return hle_module(&key);
+        let b = hle_module(&key);
+        // (a system assembly's DLL, the Visual C++ runtime's: from its WinSxS folder)
+        if let Some(p) = crate::actctx::builtin_dll_path(name) {
+            if let Some(i) = by_base(b) {
+                MODULES.write().unwrap()[i].path = p;
+                ldr_update(b);
+            }
+        }
+        return b;
     }
     match load_dll_file(name) {
         Ok(b) => {
@@ -1310,4 +1434,30 @@ mod stack_tests {
             }
         }
     }
+}
+
+/// LdrFindEntryForAddress(address, LDR_DATA_TABLE_ENTRY *out)
+#[allow(non_snake_case)]
+fn LdrFindEntryForAddress(c: &mut crate::api::Ctx) -> u32 {
+    let Some(b) = containing(c.a(0)) else { return 0xc000_0135 };
+    let Some(e) = LDR.lock().unwrap().1.iter().find(|x| x.0 == b).map(|x| x.1) else { return 0xc000_0135 };
+    mem::putp(c.a(1), e);
+    0
+}
+/// RtlImageNtHeader(base): its IMAGE_NT_HEADERS, or NULL when it is not a PE image
+#[allow(non_snake_case)]
+fn RtlImageNtHeader(c: &mut crate::api::Ctx) -> u32 {
+    let b = c.a(0);
+    if b == 0 || mem::accessible(b, 64, false, true) < 64 || r16(b) != 0x5a4d {
+        return 0;
+    }
+    let nt = b.wrapping_add(r32(b + 0x3c));
+    if mem::accessible(nt, 4, false, true) < 4 || r32(nt) != 0x4550 {
+        return 0;
+    }
+    nt
+}
+pub fn init() {
+    crate::api::implement("ntdll", "LdrFindEntryForAddress", LdrFindEntryForAddress);
+    crate::api::implement("ntdll", "RtlImageNtHeader", RtlImageNtHeader);
 }

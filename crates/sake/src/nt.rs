@@ -29,8 +29,8 @@ pub fn hooked(name: &str) -> Option<u32> {
     let base = crate::pe::by_name("ntdll.dll")?;
     let t = crate::pe::with(base, |m| m.exports.get(name).copied())??;
     // (the thunk: hot-patch prologue `mov edi, edi; push ebp; mov ebp, esp; pop ebp`, then
-    // `mov ecx, trap; jmp ecx`)
-    let same = mem::slice(t, 7) == [0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0xb9] && r32(t + 7) == export("ntdll", name) && mem::slice(t + 11, 2) == [0xff, 0xe1];
+    // `push trap; ret`)
+    let same = mem::slice(t, 7) == [0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0x68] && r32(t + 7) == export("ntdll", name) && mem::r8(t + 11) == 0xc3;
     (!same).then_some(t)
 }
 

@@ -34,5 +34,9 @@ for d in DLLS:
         if re.match(r'_*wine_', name):
             continue
         n = sum(SIZES.get(a, 4) for a in args.split())
+        # (i386 fastcall: the first two 4-byte arguments come in ECX and EDX)
+        if conv == 'fastcall' or '-fastcall' in flags:
+            n -= sum(4 for a in args.split()[:2] if SIZES.get(a, 4) == 4)
+            conv = 'stdcall'
         dll = d.split('.')[0]
         print(dll, name, conv, n, ordinal if ordinal != '@' else '-')

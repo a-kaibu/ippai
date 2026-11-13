@@ -144,6 +144,8 @@ pub mod eventlog;
 pub mod smalldlls;
 pub mod security;
 pub mod lsa;
+pub mod actctx;
+pub mod fiber;
 pub mod cred;
 pub mod propsheet;
 pub mod perf;
@@ -194,6 +196,11 @@ thread_local! {
     static CUR: Cell<*mut Thread> = const { Cell::new(std::ptr::null_mut()) };
 }
 
+/// Whether this host thread runs a guest thread (cur() would answer)
+pub fn on_guest_thread() -> bool {
+    CUR.with(|c| !c.get().is_null())
+}
+
 pub fn cur() -> &'static mut Thread {
     let p = CUR.with(|c| c.get());
     assert!(!p.is_null(), "sake: not a guest thread");
@@ -240,6 +247,8 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
         mem::w64(teb + 0x48, tid as u64);
         mem::w64(teb + 0x58, teb as u64 + 0x2000); // ThreadLocalStoragePointer (static TLS blocks)
         mem::w64(teb + 0x60, PEB.load(Ordering::Relaxed) as u64);
+        mem::w64(teb + 0x20, 0x1e00); // NT_TIB Version (FiberData until ConvertThreadToFiber)
+        mem::w64(teb + 0x1478, st as u64); // DeallocationStack
         return (teb, top, st);
     }
     w32(teb, 0xffff_ffff); // ExceptionList
@@ -250,6 +259,8 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
     w32(teb + 0x24, tid);
     w32(teb + 0x2c, teb + 0x2000); // ThreadLocalStoragePointer (static TLS blocks)
     w32(teb + 0x30, PEB.load(Ordering::Relaxed));
+    w32(teb + 0x10, 0x1e00); // NT_TIB Version (FiberData until ConvertThreadToFiber)
+    w32(teb + 0xe0c, st); // DeallocationStack
     (teb, top, st)
 }
 
@@ -648,9 +659,11 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
             // object while the thread runs; GetCurrentThread duplicates it, mono's GC does)
             t.obj = obj::dup(obj);
             tx.send(t.tid).unwrap();
+            crate::actctx::adopt(obj);
             if gated {
                 k32::wait_gate_start(obj, start, param);
             }
+            k32::check_terminate();
             thread_start(t, start, param);
             run(unsafe { &mut *t.cpu }, 0);
         })
@@ -751,6 +764,9 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     eventlog::init();
     security::init();
     lsa::init();
+    actctx::init();
+    fiber::init();
+    pe::init();
     cred::init();
     propsheet::init();
     perf::init();

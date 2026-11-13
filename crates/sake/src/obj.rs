@@ -292,6 +292,12 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
             crate::snap::point();
             g = lock();
         }
+        // (TerminateThread ended this thread)
+        if crate::k32::terminating() {
+            drop(g);
+            crate::k32::check_terminate();
+            g = lock();
+        }
         let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
         if let Some(x) = extra {
             if x() {

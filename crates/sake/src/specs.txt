@@ -121,7 +121,7 @@ kernel32 BackupSeek stdcall 24 -
 kernel32 BackupWrite stdcall 28 -
 kernel32 BaseFlushAppcompatCache stdcall 0 -
 kernel32 BaseGetNamedObjectDirectory stdcall 4 -
-kernel32 BaseThreadInitThunk stdcall 12 -
+kernel32 BaseThreadInitThunk stdcall 4 -
 kernel32 Beep stdcall 8 -
 kernel32 BeginUpdateResourceA stdcall 8 -
 kernel32 BeginUpdateResourceW stdcall 8 -
@@ -812,7 +812,7 @@ kernel32 InterlockedFlushSList stdcall 4 -
 kernel32 InterlockedIncrement stdcall 4 -
 kernel32 InterlockedPopEntrySList stdcall 4 -
 kernel32 InterlockedPushEntrySList stdcall 8 -
-kernel32 InterlockedPushListSList stdcall 16 -
+kernel32 InterlockedPushListSList stdcall 8 -
 kernel32 InterlockedPushListSListEx stdcall 16 -
 kernel32 InvalidateNLSCache stdcall 0 -
 kernel32 IsBadCodePtr stdcall 4 -
@@ -2059,7 +2059,7 @@ kernelbase InterlockedFlushSList stdcall 4 -
 kernelbase InterlockedIncrement stdcall 4 -
 kernelbase InterlockedPopEntrySList stdcall 4 -
 kernelbase InterlockedPushEntrySList stdcall 8 -
-kernelbase InterlockedPushListSList stdcall 16 -
+kernelbase InterlockedPushListSList stdcall 8 -
 kernelbase InterlockedPushListSListEx stdcall 16 -
 kernelbase Internal_EnumCalendarInfo stdcall 32 -
 kernelbase Internal_EnumDateFormats stdcall 28 -
@@ -3153,7 +3153,7 @@ ntdll RtlAcquireSRWLockExclusive stdcall 4 -
 ntdll RtlAcquireSRWLockShared stdcall 4 -
 ntdll RtlActivateActivationContext stdcall 12 -
 ntdll RtlActivateActivationContextEx stdcall 16 -
-ntdll RtlActivateActivationContextUnsafeFast stdcall 8 -
+ntdll RtlActivateActivationContextUnsafeFast stdcall 0 -
 ntdll RtlAddAccessAllowedAce stdcall 16 -
 ntdll RtlAddAccessAllowedAceEx stdcall 20 -
 ntdll RtlAddAccessAllowedObjectAce stdcall 28 -
@@ -3239,7 +3239,7 @@ ntdll RtlCreateUserThread stdcall 40 -
 ntdll RtlCustomCPToUnicodeN stdcall 24 -
 ntdll RtlDeNormalizeProcessParams stdcall 4 -
 ntdll RtlDeactivateActivationContext stdcall 8 -
-ntdll RtlDeactivateActivationContextUnsafeFast stdcall 4 -
+ntdll RtlDeactivateActivationContextUnsafeFast stdcall 0 -
 ntdll RtlDecodePointer stdcall 4 -
 ntdll RtlDecodeSystemPointer stdcall 4 -
 ntdll RtlDecompressBuffer stdcall 24 -
@@ -3433,7 +3433,7 @@ ntdll RtlInterlockedCompareExchange64 stdcall 20 -
 ntdll RtlInterlockedFlushSList stdcall 4 -
 ntdll RtlInterlockedPopEntrySList stdcall 4 -
 ntdll RtlInterlockedPushEntrySList stdcall 8 -
-ntdll RtlInterlockedPushListSList stdcall 16 -
+ntdll RtlInterlockedPushListSList stdcall 8 -
 ntdll RtlInterlockedPushListSListEx stdcall 16 -
 ntdll RtlIpv4AddressToStringA stdcall 8 -
 ntdll RtlIpv4AddressToStringExA stdcall 16 -
@@ -3612,7 +3612,7 @@ ntdll RtlTryAcquireSRWLockExclusive stdcall 4 -
 ntdll RtlTryAcquireSRWLockShared stdcall 4 -
 ntdll RtlTryEnterCriticalSection stdcall 4 -
 ntdll RtlUTF8ToUnicodeN stdcall 20 -
-ntdll RtlUlongByteSwap stdcall 4 -
+ntdll RtlUlongByteSwap stdcall 0 -
 ntdll RtlUlonglongByteSwap stdcall 8 -
 ntdll RtlUnicodeStringToAnsiSize stdcall 4 -
 ntdll RtlUnicodeStringToAnsiString stdcall 12 -
@@ -3640,7 +3640,7 @@ ntdll RtlUpdateTimer stdcall 16 -
 ntdll RtlUpperChar stdcall 4 -
 ntdll RtlUpperString stdcall 8 -
 ntdll RtlUserThreadStart stdcall 8 -
-ntdll RtlUshortByteSwap stdcall 4 -
+ntdll RtlUshortByteSwap stdcall 0 -
 ntdll RtlValidAcl stdcall 4 -
 ntdll RtlValidRelativeSecurityDescriptor stdcall 12 -
 ntdll RtlValidSecurityDescriptor stdcall 4 -

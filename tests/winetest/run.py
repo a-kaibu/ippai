@@ -12,8 +12,10 @@ The tests expect Windows' behaviour: sake is not Wine (no wine_server_call), so 
 marks do not apply.
 
 Functions sake knows but lacks are found by GetProcAddress (SAKE_PROC_STUBS: their stubs return
-0), as on Windows, so a test that does not check for NULL fails instead of crashing. Other
-processes are not started (SAKE_NO_EXEC): the tests that need a child fail.
+0), as on Windows, so a test that does not check for NULL fails instead of crashing. The tests
+start their child processes (copies of themselves) as on Windows, each its own sake beside
+the test's, on the same C: drive; a test's whole process group ends with it (--no-exec: no
+children, SAKE_NO_EXEC, and the tests that need one fail).
 
 A run fails (exit 1) on a regression against the expected file: a test that got worse
 (ok -> fail -> crash/timeout) or one with clearly more failures than recorded (over 10%, 5 at
@@ -32,6 +34,7 @@ import concurrent.futures
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -57,7 +60,7 @@ HOSTS = "".join(f"127.0.0.1 {n}\n" for n in (
     "winehq.org", "test.winehq.org", "source.winehq.org", "www.kernel.org", "xn--zckzah.winehq.org"))
 
 
-def run_one(sake, exe, test, timeout, fonts):
+def run_one(sake, exe, test, timeout, fonts, no_exec=False):
     c = tempfile.mkdtemp(prefix="winetest-c-")
     for d in ("windows/temp", "windows/system32", "users/user/desktop"):
         os.makedirs(os.path.join(c, d), exist_ok=True)
@@ -68,17 +71,32 @@ def run_one(sake, exe, test, timeout, fonts):
     os.makedirs(os.path.join(c, "windows/system32/drivers/etc"), exist_ok=True)
     with open(os.path.join(c, "windows/system32/drivers/etc/hosts"), "w") as f:
         f.write(HOSTS)
-    env = dict(os.environ, SAKE_C=c, SAKE_NO_EXEC="1", SAKE_PROC_STUBS="1")
+    env = dict(os.environ, SAKE_C=c, SAKE_PROC_STUBS="1")
+    if no_exec:
+        env["SAKE_NO_EXEC"] = "1"
     t0 = time.time()
+    # (its own process group: the children it started end with it, and none outlives the run
+    # holding the output pipe open)
+    p = subprocess.Popen(["node", sake, exe, test], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=c, start_new_session=True)
     try:
-        p = subprocess.run(["node", sake, exe, test], capture_output=True, text=True, errors="replace", env=env, timeout=timeout, cwd=c)
-        out, timed_out = p.stdout + p.stderr, False
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or b"").decode(errors="replace") + (e.stderr or b"").decode(errors="replace")
+        raw, _ = p.communicate(timeout=timeout)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        killpg(p.pid)
+        raw, _ = p.communicate()
         timed_out = True
     finally:
+        killpg(p.pid)
         shutil.rmtree(c, ignore_errors=True)
+    out = (raw or b"").decode(errors="replace")
     return parse(test, out, timed_out, time.time() - t0)
+
+
+def killpg(pid):
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def parse(test, out, timed_out, secs):
@@ -123,6 +141,7 @@ def main():
     ap.add_argument("--fonts", default=os.environ.get("WINETEST_FONTS"))
     ap.add_argument("--shard", default="0/1", help="i/n: every n-th test from the i-th (CI matrix)")
     ap.add_argument("--browser", action="store_true", help="run in headless Chromium (run-browser.mjs): the GPU dlls of browser.txt")
+    ap.add_argument("--no-exec", action="store_true", help="start no child processes (SAKE_NO_EXEC)")
     ap.add_argument("only", nargs="*")
     a = ap.parse_args()
     sake = os.path.abspath(os.environ.get("SAKE", os.path.join(ROOT, "target/sake-out/sake.js")))
@@ -140,7 +159,7 @@ def main():
         dlls = [d for d in dlls if d in sel] + [d for d in sel if d not in dlls]
 
     jobs = []
-    env = dict(os.environ, SAKE_C=tempfile.mkdtemp(prefix="winetest-c-"), SAKE_NO_EXEC="1")
+    env = dict(os.environ, SAKE_C=tempfile.mkdtemp(prefix="winetest-c-"), SAKE_NO_EXEC="1")  # (listing only)
     for d in dlls:
         exe = os.path.join(bindir, d.split(".")[0] + "_test.exe")
         if not os.path.exists(exe):
@@ -172,7 +191,7 @@ def main():
             print(f"{r['status']:7} {d}:{t} {r['executed']} tests, {r['failures']} failures", flush=True)
         shutil.rmtree(out, ignore_errors=True)
     with concurrent.futures.ThreadPoolExecutor(a.j) as pool:
-        futs = {pool.submit(run_one, sake, exe, t, a.timeout, a.fonts): (d, t) for d, exe, t in ([] if a.browser else jobs)}
+        futs = {pool.submit(run_one, sake, exe, t, a.timeout, a.fonts, a.no_exec): (d, t) for d, exe, t in ([] if a.browser else jobs)}
         for f in concurrent.futures.as_completed(futs):
             d, t = futs[f]
             r = f.result()

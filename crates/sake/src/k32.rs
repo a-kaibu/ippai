@@ -402,7 +402,8 @@ pub fn exit_thread(code: u32) -> ! {
     }
     // the guest stack and TEB go back to the address space (a game starting a thread per
     // file load ran out of it after ~600)
-    mem::release(t.stack);
+    // (a thread ending on a fiber: that fiber's stack; fiber.rs)
+    mem::release(crate::fiber::exit_stack(t.stack));
     mem::release(t.teb);
     unsafe { libc::pthread_exit(std::ptr::null_mut()) }
 }
@@ -754,6 +755,7 @@ fn CreateThread(c: &mut Ctx) -> u32 {
     if suspended {
         GATE.lock().unwrap().push((h, 1));
     }
+    crate::actctx::inherit(h);
     let tid = crate::spawn_gated(start, param, stack, h, suspended);
     obj::with(|t| {
         if let Some((Obj::Thread { tid: x, .. }, _)) = t.objs.get_mut(&h) {
@@ -905,7 +907,74 @@ fn GetExitCodeProcess(c: &mut Ctx) -> u32 {
         }
     }
 }
-fn TerminateThread(_: &mut Ctx) -> u32 {
+/// Threads TerminateThread ended that have not stopped yet: (thread id, exit code). A thread
+/// stops at its next API call or wait (one running guest code without either goes on).
+static TERMINATE: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+static ANY_TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether some thread is to end (TerminateThread)
+pub fn terminating() -> bool {
+    ANY_TERMINATE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Ends the calling thread here when TerminateThread ended it.
+pub fn check_terminate() {
+    if !ANY_TERMINATE.load(std::sync::atomic::Ordering::Relaxed) || !crate::on_guest_thread() {
+        return;
+    }
+    let me = crate::cur().tid;
+    let code = {
+        let mut v = TERMINATE.lock().unwrap();
+        let Some(i) = v.iter().position(|x| x.0 == me) else { return };
+        let code = v.remove(i).1;
+        if v.is_empty() {
+            ANY_TERMINATE.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        code
+    };
+    exit_thread(code)
+}
+
+/// TerminateThread(thread, code): the calling thread ends now; another one when it next calls
+/// an API or waits (one not started yet, created suspended, right away)
+fn TerminateThread(c: &mut Ctx) -> u32 {
+    let (h, code) = (c.a(0), c.a(1));
+    if h == obj::CURRENT_THREAD {
+        exit_thread(code);
+    }
+    let Some((tid, done)) = obj::with(|t| match t.objs.get(&h) {
+        Some((Obj::Thread { tid, done, .. }, _)) => Some((*tid, *done)),
+        _ => None,
+    }) else {
+        last_error(6);
+        return 0;
+    };
+    if done {
+        return 1;
+    }
+    if tid == crate::cur().tid {
+        exit_thread(code);
+    }
+    TERMINATE.lock().unwrap().push((tid, code));
+    ANY_TERMINATE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let gated = {
+        let mut g = GATE.lock().unwrap();
+        let had = g.iter().any(|&(x, n)| x == h && n > 0);
+        g.retain(|&(x, _)| x != h);
+        had
+    };
+    if gated {
+        // (it never ran: it is done now, and its host thread goes when the gate opens)
+        obj::with(|t| {
+            if let Some((Obj::Thread { done, code: c, .. }, _)) = t.objs.get_mut(&h) {
+                *done = true;
+                *c = code;
+            }
+        });
+        GATE_CV.notify_all();
+    }
+    obj::signal();
+    CS.wake();
     1
 }
 // thread priorities are kept (and answered) but change nothing: by thread handle
@@ -974,8 +1043,9 @@ pub(crate) fn sleep_ms(ms: u32) {
             },
             None => std::time::Duration::from_secs(3600),
         };
-        kura::snap::sleep(left);
+        kura::snap::sleep(left.min(std::time::Duration::from_millis(100)));
         crate::snap::point();
+        check_terminate();
     }
 }
 // WaitOnAddress: one generation for all addresses (crates/waits)
@@ -1322,6 +1392,12 @@ fn CreateMutexW(c: &mut Ctx) -> u32 {
     let own = c.a(1) != 0;
     create_named(named(c.a(2), true), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 })
 }
+fn OpenSemaphoreA(c: &mut Ctx) -> u32 {
+    open_named(c.a(2), false, 3)
+}
+fn OpenSemaphoreW(c: &mut Ctx) -> u32 {
+    open_named(c.a(2), true, 3)
+}
 fn OpenMutexA(c: &mut Ctx) -> u32 {
     open_named(c.a(2), false, 2)
 }
@@ -1589,6 +1665,25 @@ fn DeleteCriticalSection(c: &mut Ctx) -> u32 {
         w32(c.a(0), 0);
         mem::heap_free(d);
     }
+    0
+}
+/// PEB FastPebLock: the critical section RtlAcquirePebLock takes (made on first use)
+fn peb_lock() -> u32 {
+    static L: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *L.get_or_init(|| {
+        let cs = mem::heap_alloc(if mem::x64() { 40 } else { 24 }, true);
+        cs_init(cs);
+        let peb = crate::PEB.load(std::sync::atomic::Ordering::Relaxed);
+        mem::wp(peb + if mem::x64() { 0x38 } else { 0x1c }, cs);
+        cs
+    })
+}
+fn RtlAcquirePebLock(_: &mut Ctx) -> u32 {
+    cs_enter(peb_lock());
+    0
+}
+fn RtlReleasePebLock(_: &mut Ctx) -> u32 {
+    cs_leave(peb_lock());
     0
 }
 fn EnterCriticalSection(c: &mut Ctx) -> u32 {
@@ -1865,18 +1960,6 @@ fn TlsSetValue(c: &mut Ctx) -> u32 {
     }
     mem::wp(tls_slot(i), c.a(1));
     1
-}
-fn FlsAlloc(c: &mut Ctx) -> u32 {
-    TlsAlloc(c)
-}
-fn FlsFree(c: &mut Ctx) -> u32 {
-    TlsFree(c)
-}
-fn FlsGetValue(c: &mut Ctx) -> u32 {
-    TlsGetValue(c)
-}
-fn FlsSetValue(c: &mut Ctx) -> u32 {
-    TlsSetValue(c)
 }
 
 fn GetLastError(_: &mut Ctx) -> u32 {
@@ -2317,6 +2400,15 @@ fn RtlInitAnsiString(c: &mut Ctx) -> u32 {
     let n = if s == 0 { 0 } else { cstr(s).len() as u32 };
     put_counted(us, n, if s == 0 { 0 } else { n + 1 }, s);
     0
+}
+/// RtlCreateUnicodeStringFromAsciiz(UNICODE_STRING out, ANSI string): TRUE when made
+fn RtlCreateUnicodeStringFromAsciiz(c: &mut Ctx) -> u32 {
+    let (us, s) = (c.a(0), c.a(1));
+    if us == 0 || s == 0 {
+        return 0;
+    }
+    let w = crate::text::a2w(&cstr(s));
+    (counted_out(us, &w, 2, true) == 0) as u32
 }
 fn RtlFreeUnicodeString(c: &mut Ctx) -> u32 {
     let us = c.a(0);
@@ -3870,6 +3962,10 @@ fn GetOEMCP(_: &mut Ctx) -> u32 {
 fn IsValidCodePage(c: &mut Ctx) -> u32 {
     ok(matches!(c.a(0), 932 | 936 | 949 | 950 | 1250 | 1251 | 1252 | 65001 | 437 | 850))
 }
+/// The user's UI language (GetUserDefaultUILanguage)
+pub(crate) fn ui_lang() -> u32 {
+    lcid()
+}
 pub(crate) fn lcid() -> u32 {
     match crate::text::acp() {
         932 => 0x411,
@@ -5189,6 +5285,12 @@ pub fn module_handle(name: u32, wide: bool) -> u32 {
         return crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base).unwrap_or(0);
     }
     let n = arg_str(name, wide);
+    if let Some((b, _)) = crate::pe::sxs_module(&n) {
+        if b == 0 {
+            last_error(126);
+        }
+        return b;
+    }
     if let Some(b) = crate::pe::by_name(&n) {
         return b;
     }
@@ -7246,12 +7348,28 @@ fn RtlFillMemory(c: &mut Ctx) -> u32 {
     0
 }
 fn InitializeSListHead(c: &mut Ctx) -> u32 {
-    mem::fill(c.a(0), 8, 0);
+    mem::fill(c.a(0), if mem::x64() { 16 } else { 8 }, 0);
     0
 }
-// interlocked singly linked lists (SLIST_HEADER: next, depth u16, sequence u16), under one lock
+// interlocked singly linked lists, under one lock. SLIST_HEADER: x86 { next, depth u16,
+// sequence u16 }; x64 (Header16) { depth u16 | sequence << 16; HeaderType 1 | next (16-byte
+// aligned) }. An entry's first pointer is the next entry.
 static SLIST: Mutex<()> = Mutex::new(());
+/// (first entry, depth) of list `h`
+fn slist_get(h: u32) -> (u32, u32) {
+    if mem::x64() {
+        ((mem::r64(h + 8) & !0xf) as u32, r16(h) as u32)
+    } else {
+        (r32(h), r16(h + 4) as u32)
+    }
+}
 fn slist_set(h: u32, next: u32, depth: u32) {
+    if mem::x64() {
+        let seq = (mem::r64(h) >> 16).wrapping_add(1) & 0xffff_ffff_ffff;
+        mem::w64(h, (depth & 0xffff) as u64 | seq << 16);
+        mem::w64(h + 8, next as u64 & !0xf | 1);
+        return;
+    }
     w32(h, next);
     w16(h + 4, depth as u16);
     w16(h + 6, r16(h + 6).wrapping_add(1));
@@ -7259,41 +7377,53 @@ fn slist_set(h: u32, next: u32, depth: u32) {
 fn InterlockedPushEntrySList(c: &mut Ctx) -> u32 {
     let (h, e) = (c.a(0), c.a(1));
     let _g = SLIST.lock().unwrap();
-    let old = r32(h);
-    w32(e, old);
-    slist_set(h, e, r16(h + 4) as u32 + 1);
+    let (old, n) = slist_get(h);
+    mem::wp(e, old);
+    slist_set(h, e, n + 1);
     old
 }
 fn InterlockedPopEntrySList(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     let _g = SLIST.lock().unwrap();
-    let e = r32(h);
+    let (e, n) = slist_get(h);
     if e != 0 {
-        slist_set(h, r32(e), (r16(h + 4) as u32).saturating_sub(1));
+        slist_set(h, mem::rp(e), n.saturating_sub(1));
     }
     e
 }
 fn InterlockedFlushSList(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     let _g = SLIST.lock().unwrap();
-    let e = r32(h);
-    slist_set(h, 0, 0);
+    let (e, _) = slist_get(h);
+    if e != 0 {
+        slist_set(h, 0, 0);
+    }
     e
 }
 fn QueryDepthSList(c: &mut Ctx) -> u32 {
-    r16(c.a(0) + 4) as u32
+    slist_get(c.a(0)).1
+}
+fn push_list(h: u32, first: u32, last: u32, n: u32) -> u32 {
+    let _g = SLIST.lock().unwrap();
+    let (old, d) = slist_get(h);
+    mem::wp(last, old);
+    slist_set(h, first, d + n);
+    old
 }
 /// InterlockedPushListSListEx(head, first, last, count)
 fn InterlockedPushListSListEx(c: &mut Ctx) -> u32 {
-    let (h, first, last, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let _g = SLIST.lock().unwrap();
-    let old = r32(h);
-    w32(last, old);
-    slist_set(h, first, r16(h + 4) as u32 + n);
-    old
+    push_list(c.a(0), c.a(1), c.a(2), c.a(3))
+}
+/// InterlockedPushListSList(head, first, last, count): fastcall on x86 (head in ECX, first
+/// in EDX)
+fn InterlockedPushListSList(c: &mut Ctx) -> u32 {
+    if mem::x64() {
+        return push_list(c.a(0), c.a(1), c.a(2), c.a(3));
+    }
+    push_list(c.cpu.regs[1], c.cpu.regs[2], c.a(0), c.a(1))
 }
 fn RtlFirstEntrySList(c: &mut Ctx) -> u32 {
-    r32(c.a(0))
+    slist_get(c.a(0)).0
 }
 // tool help snapshots: the process list holds this process only (single-instance checks)
 fn CreateToolhelp32Snapshot(_: &mut Ctx) -> u32 {
@@ -7485,13 +7615,13 @@ pub fn init() {
         SetProcessAffinityMask, GetProcessAffinityMask, SetThreadIdealProcessor, Sleep, SleepEx, SwitchToThread,
         CreateEventA, CreateEventW, CreateEventExW, CreateWaitableTimerA, CreateWaitableTimerW, CreateWaitableTimerExW,
         OpenWaitableTimerA, OpenWaitableTimerW, SetWaitableTimer, SetWaitableTimerEx, CancelWaitableTimer, OpenEventA, OpenEventW, SetEvent, ResetEvent, PulseEvent,
-        CreateMutexA, CreateMutexW, OpenMutexA, OpenMutexW, ReleaseMutex, CreateSemaphoreA, CreateSemaphoreW, ReleaseSemaphore,
+        CreateMutexA, CreateMutexW, OpenMutexA, OpenMutexW, OpenSemaphoreA, OpenSemaphoreW, ReleaseMutex, CreateSemaphoreA, CreateSemaphoreW, ReleaseSemaphore,
         WaitForSingleObject, WaitForSingleObjectEx, WaitForMultipleObjects, WaitForMultipleObjectsEx, CloseHandle,
         DuplicateHandle, InitializeCriticalSection, InitializeCriticalSectionAndSpinCount, SetCriticalSectionSpinCount, GetHandleInformation,
         InitializeCriticalSectionEx,
         DeleteCriticalSection, EnterCriticalSection, LeaveCriticalSection, TryEnterCriticalSection,
         InterlockedIncrement, InterlockedDecrement, InterlockedExchange, InterlockedExchangeAdd, InterlockedCompareExchange,
-        TlsAlloc, TlsFree, TlsGetValue, TlsSetValue, FlsAlloc, FlsFree, FlsGetValue, FlsSetValue,
+        TlsAlloc, TlsFree, TlsGetValue, TlsSetValue,
         GetLastError, SetLastError, SetErrorMode, GetErrorMode, SetThreadErrorMode, GetThreadErrorMode, RtlUnwind, RaiseException, SetUnhandledExceptionFilter,
         UnhandledExceptionFilter, IsDebuggerPresent, OutputDebugStringA, OutputDebugStringW, SetConsoleCtrlHandler,
         DebugBreak, EncodePointer, DecodePointer,
@@ -7546,7 +7676,7 @@ pub fn init() {
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, OpenThread, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
         FormatMessageA, FormatMessageW, Beep, GetComputerNameA, GetComputerNameW, InitializeSListHead, GetCurrentPackageId,
         CreateToolhelp32Snapshot, Process32First, Process32FirstW, ConvertDefaultLocale,
-        InterlockedPushEntrySList, InterlockedPopEntrySList, InterlockedFlushSList, QueryDepthSList, InterlockedPushListSListEx,
+        InterlockedPushEntrySList, InterlockedPopEntrySList, InterlockedFlushSList, QueryDepthSList, InterlockedPushListSListEx, InterlockedPushListSList,
         AreFileApisANSI, SetFileApisToANSI,
     );
     implement("kernel32", "CreateSymbolicLinkA", CreateSymbolicLink);
@@ -7563,6 +7693,7 @@ pub fn init() {
         implement(d, "InitOnceBeginInitialize", InitOnceBeginInitialize);
         implement(d, "InitOnceComplete", InitOnceComplete);
         implement(d, "QueueUserAPC", crate::apc::QueueUserAPC);
+        implement(d, "QueueUserAPC2", crate::apc::QueueUserAPC2);
     }
     implement("kernelbase", "WakeByAddressAll", WakeByAddressAll);
     implement("kernelbase", "WakeByAddressSingle", WakeByAddressAll);
@@ -7608,7 +7739,9 @@ pub fn init() {
     reg!("kernel32"; DeviceIoControl, QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW, GetProductInfo);
     reg!("ntdll"; RtlMultiByteToUnicodeN, RtlUnicodeToMultiByteN, RtlMultiByteToUnicodeSize, RtlUnicodeToMultiByteSize,
         RtlUpcaseUnicodeChar, RtlCompareUnicodeString, RtlEqualUnicodeString);
-    reg!("ntdll"; RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlAnsiStringToUnicodeString,
+    implement("ntdll", "NtQueueApcThread", crate::apc::NtQueueApcThread);
+    implement("ntdll", "NtTestAlert", crate::apc::NtTestAlert);
+    reg!("ntdll"; RtlAcquirePebLock, RtlReleasePebLock, RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlCreateUnicodeStringFromAsciiz, RtlAnsiStringToUnicodeString,
         RtlUnicodeStringToAnsiString, RtlDosPathNameToNtPathName_U, RtlFormatCurrentUserKeyPath, LdrGetProcedureAddress,
         NtProtectVirtualMemory);
     implement("ntdll", "RtlInitString", RtlInitAnsiString);
@@ -7619,6 +7752,8 @@ pub fn init() {
     implement("ntdll", "RtlInterlockedFlushSList", InterlockedFlushSList);
     implement("ntdll", "RtlQueryDepthSList", QueryDepthSList);
     implement("ntdll", "RtlInitializeSListHead", InitializeSListHead);
+    implement("ntdll", "RtlInterlockedPushListSList", InterlockedPushListSList);
+    implement("ntdll", "RtlInterlockedPushListSListEx", InterlockedPushListSListEx);
     reg!("ntdll"; RtlZeroMemory, RtlMoveMemory, RtlFillMemory, RtlAllocateHeap, RtlFreeHeap, RtlEnterCriticalSection,
         RtlLeaveCriticalSection, InitializeSRWLock, AcquireSRWLockExclusive, AcquireSRWLockShared,
         ReleaseSRWLockExclusive, ReleaseSRWLockShared, TryAcquireSRWLockExclusive, TryAcquireSRWLockShared,

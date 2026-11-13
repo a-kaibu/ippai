@@ -486,6 +486,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
             eprintln!("{line}");
         }
     }
+    crate::k32::check_terminate();
     let top = crate::snap::api_enter(addr, esp);
     let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None, trap: addr };
     let r = match f {
