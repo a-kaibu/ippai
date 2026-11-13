@@ -71,6 +71,11 @@ jobs:
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: tests/winref/build.sh "$RUNNER_TEMP/exe" && tests/winref/build-msvc.sh "$RUNNER_TEMP/exe"
+      # (sake-only GPU checks, not probes: in subdirectories, which run.sh and golden.py skip)
+      - name: Build the identity-blend and D3D9 submission checks
+        run: |
+          python3 tests/winref/identity-blend.py build "$RUNNER_TEMP/exe/extra/identity-blend"
+          python3 tests/bench/d3d9_submit.py build "$RUNNER_TEMP/exe/extra/d3d9-submit"
       # (the replay's layouts are the headers' (clang) and gcc's; check.py's matching; asset.sh; golden.py's import)
       - name: The replay's own checks
         run: python3 tests/replay/layouts.py --check && python3 tests/replay/layouts_test.py && python3 tests/replay/check_test.py && python3 tests/replay/gameapi_test.py && python3 tests/replay/games_test.py && sh tests/replay/asset_test.sh && python3 tests/winref/golden_test.py && python3 tests/winref/run_test.py
@@ -289,6 +294,18 @@ jobs:
           NO_GAMES=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp
           BROWSER64=1 node tests/winref/run-browser.mjs exe out/jit d2d-64
           BROWSER64=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp d2d-64
+      # (metamorphic: disabled blending and ONE/ZERO ADD render the same; the submission
+      # benchmark's rounds give the same pixels. Both memories' runtimes.)
+      - name: Identity blending and D3D9 submission (sake only)
+        if: ${{ matrix.shard == 0 }}
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
+          WEB: web/dist
+        run: |
+          export FONTS=$PWD/target/winref-fonts
+          python3 tests/winref/identity-blend.py check exe/extra/identity-blend out/extra/identity-blend
+          MEMORY=grow python3 tests/winref/identity-blend.py check exe/extra/identity-blend out/extra/identity-blend-grow
+          python3 tests/bench/d3d9_submit.py check exe/extra/d3d9-submit out/extra/d3d9-submit
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
