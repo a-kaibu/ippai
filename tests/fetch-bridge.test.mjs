@@ -58,6 +58,10 @@ globalThis.Worker = class {
           // ranges of the decoded chunk (ippai serve's store_api.rs), but from "old" (a server
           // without them: the whole chunk); "bad" answers the wrong place the first time
           const range = /^bytes=([0-9]+)-([0-9]+)$/.exec(init?.headers?.range ?? '');
+          // "warm": the page's read-ahead fetched the whole chunk (200, zstd-coded) into the
+          // browser's HTTP cache; Chromium answers a range of it from that entry, coded bytes
+          // that fail to decode, unless the request keeps out of the cache (tests/range-cache-browser.mjs)
+          if (range && url.startsWith('https://warm/') && init?.cache !== 'no-store') throw new TypeError('Failed to fetch');
           if (range && !url.startsWith('https://old/')) {
             const a = +range[1];
             if (a >= length) return {ok: false, status: 416, headers: {get: () => null}};
@@ -195,6 +199,19 @@ test('a range answered for another place is asked again', async () => {
   assert.ok(!r.error, r.error);
   assert.deepEqual(r.data[0], want(65536, 65536, 200000));
   assert.equal(r.data[1].length, 2);
+});
+test('ranges of a chunk the HTTP cache holds whole (read ahead by the page) keep out of that cache', async () => {
+  const c = `https://warm/store/chunks/ab/${nameOf(262143)}`;
+  const B = 65536;
+  // (random places and lengths, seeded: every one the decoded chunk's bytes)
+  let x = 7;
+  const next = (n) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  const asks = Array.from({length: 12}, () => [next(262143 + 1000), 1 + next(3 * B)]);
+  const t = Date.now();
+  const r = await request(asks.map(([from, len]) => `${c}#${from}+${len}/${B}`).join('|'));
+  assert.ok(!r.error, r.error);
+  asks.forEach(([from, len], i) => assert.deepEqual(r.data[i], want(from, len, 262143), `${from}+${len}`));
+  assert.ok(Date.now() - t < 1000, 'no retries');
 });
 test('ranges parse only at the end of a name', () => {
   const ippaiRange = new Function(`${source}; return ippaiRange;`)();

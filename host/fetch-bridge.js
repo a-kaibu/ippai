@@ -156,7 +156,12 @@ async function ippaiFetchOnce(url, stallMs, reload, headers) {
     if (Date.now() - last > stallMs) abort.abort(new Error('stalled'));
   }, Math.min(1000, stallMs / 4));
   try {
-    const init = { signal: abort.signal, ...(reload ? { cache: 'reload' } : {}), ...(headers ? { headers } : {}) };
+    // A range never goes through the browser's HTTP cache: the same URL's whole chunk (200,
+    // zstd-coded) is kept there, and Chromium answers a range from that entry with the coded
+    // bytes (a wrong Content-Range, then "Failed to fetch"): reads retried for good while the
+    // page's read-ahead had fetched the chunk first, and the game stopped at its start.
+    const cache = headers?.range ? 'no-store' : reload ? 'reload' : undefined;
+    const init = { signal: abort.signal, ...(cache ? { cache } : {}), ...(headers ? { headers } : {}) };
     const response = await fetch(url, init);
     last = Date.now();
     if (!response.ok) {

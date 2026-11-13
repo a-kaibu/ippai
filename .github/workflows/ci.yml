@@ -60,6 +60,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/fetch-browser.mjs
+      - name: Ranges past a whole chunk in the HTTP cache
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/range-cache-browser.mjs
       - name: Unstable link (drops, stalls, offline, chunks kept on the device)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
