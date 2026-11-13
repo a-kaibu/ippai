@@ -37,14 +37,14 @@ pub fn next(c: &mut Cutter, buf: &[u8], gear: &[u64; 256]) -> (r: Option<usize>)
     requires
         well_formed(old(c)),
     ensures
-        well_formed(c),
+        well_formed(final(c)),
         match r {
             Some(i) => {
                 &&& 1 <= i <= buf.len()
-                &&& c.len == 0
+                &&& final(c).len == 0
                 &&& old(c).min <= old(c).len + i <= old(c).max
             },
-            None => c.len == old(c).len + buf.len(),
+            None => final(c).len == old(c).len + buf.len(),
         },
 {
     let mut i: usize = 0;
