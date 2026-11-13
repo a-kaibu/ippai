@@ -464,6 +464,24 @@ pub fn dup_socket(h: u32) -> Option<u32> {
     Some(n)
 }
 
+/// A socket's state for an AFD poll (afd.rs); None: not a socket (closed)
+pub fn afd_state(h: u32) -> Option<crate::afd::SockState> {
+    with(|st, _| {
+        let s = st.socks.get(&st.id(h).ok()?)?;
+        Some(crate::afd::SockState {
+            rx: !s.rx.is_empty() || !s.dgrams.is_empty() || s.udp_reset,
+            oob: s.oob.is_some(),
+            listening_queue: s.listening && !s.queue.is_empty(),
+            stream: s.stream(),
+            connected: s.connected,
+            connect_failed: s.connect_failed,
+            eof: s.eof || s.shut_rd,
+            reset: s.reset,
+            bound: s.local.is_some(),
+        })
+    })
+}
+
 pub fn is_socket(h: u32) -> bool {
     with(|st, _| st.handles.contains_key(&h))
 }

@@ -67,6 +67,7 @@ pub mod vmr9;
 pub mod d3dx9shader;
 pub mod vcomp;
 pub mod nt;
+pub mod afd;
 pub mod dwrite;
 pub mod ddraw;
 pub mod typelib;
@@ -713,6 +714,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     msvcp90::init_dll();
     vcomp::init();
     nt::init();
+    afd::init();
     ini::init();
     msi::init();
     msiexec::init();

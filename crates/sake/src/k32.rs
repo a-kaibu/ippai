@@ -7627,6 +7627,10 @@ pub fn set_event(h: u32) {
     event_set(h, true);
 }
 
+pub fn reset_event(h: u32) {
+    event_set(h, false);
+}
+
 pub fn pulse_event(h: u32) {
     event_set(h, true);
     std::thread::yield_now();

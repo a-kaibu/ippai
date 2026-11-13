@@ -1,0 +1,22 @@
+NtCreateFile \Device\Afd\Mio: 00000000
+port: 1, skip modes: 1
+listening poll: 00000103
+after connect: packet ok 1 key 7 overlapped iosb status 00000000 bytes one handle handles 1 events 0x80 same socket 1
+receive poll (nothing sent): 00000103, iosb 00000103
+before send: no packet (258)
+after send: packet ok 1 key 7 overlapped iosb status 00000000 bytes one handle handles 1 events 0x1 same socket 1
+send poll: accepted
+send: packet ok 1 key 7 overlapped iosb status 00000000 bytes one handle handles 1 events 0x4 same socket 1
+poll to cancel: 00000103
+NtCancelIoFileEx: 00000000
+cancelled: packet ok 0 key 7 overlapped iosb status c0000120 bytes 0 handles 0 events 0 same socket 0
+NtCancelIoFileEx again: c0000225
+disconnect poll: 00000103
+peer closed: packet ok 1 key 7 overlapped iosb status 00000000 bytes one handle handles 1 events 0x8 same socket 1
+local close poll: accepted
+closed: packet ok 1 key 7 overlapped iosb status 00000000 bytes one handle handles 1 events 0x20 same socket 1
+RtlNtStatusToDosError: 2 995 5 997 998
+device: 00000000 type 7 chars 0 info 8
+attributes: 00000000 name NTFS max 255 info 20
+attributes in 8 bytes: c0000004
+attributes in 14 bytes: 80000005 info 14

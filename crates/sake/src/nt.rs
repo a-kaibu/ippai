@@ -135,20 +135,64 @@ pub fn nt_path(path: &str) -> String {
 
 /// The Win32 error kernel32 gives for a file function's NTSTATUS (RtlNtStatusToDosError).
 pub fn file_error(st: u32) -> u32 {
+    dos_error(st)
+}
+
+/// RtlNtStatusToDosError(NoTeb): the Win32 error for any NTSTATUS. 0 and customer codes (bit 29)
+/// come back as they are; 0xd... is 0xc...; facility 1 (debugger), 7 (Win32) carry the error in
+/// their low word; the rest by table (the codes programs meet: file, memory, loader, sync),
+/// ERROR_MR_MID_NOT_FOUND (317) for a code with no Win32 error. (MSVC's CRT and std::filesystem
+/// ask ntdll for it by GetProcAddress and give up when it's missing: the Edicius trial quit at
+/// start with "GetProcAddress: (127)".)
+pub fn dos_error(st: u32) -> u32 {
+    if st == 0 || st & 0x2000_0000 != 0 {
+        return st;
+    }
+    let st = if st & 0xf000_0000 == 0xd000_0000 { st & !0x1000_0000 } else { st };
+    if matches!(st >> 16, 0xc001 | 0x8007 | 0xc007) {
+        return st & 0xffff;
+    }
     match st {
-        0xc000_0034 => 2,   // OBJECT_NAME_NOT_FOUND: ERROR_FILE_NOT_FOUND
-        0xc000_003a => 3,   // OBJECT_PATH_NOT_FOUND
-        0xc000_0033 => 123, // OBJECT_NAME_INVALID
-        0xc000_0022 | 0xc000_00ba => 5, // ACCESS_DENIED, FILE_IS_A_DIRECTORY
-        0xc000_0043 => 32,  // SHARING_VIOLATION
-        0xc000_0035 => 183, // OBJECT_NAME_COLLISION: ERROR_ALREADY_EXISTS
-        0xc000_0008 => 6,   // INVALID_HANDLE
-        0xc000_0011 => 38,  // END_OF_FILE: ERROR_HANDLE_EOF
-        0xc000_0103 => 267, // NOT_A_DIRECTORY: ERROR_DIRECTORY
-        0xc000_000d => 87,
-        0xc000_0001 => 31,
+        0x0000_0102 => 1460, // TIMEOUT: ERROR_TIMEOUT
+        0x0000_0103 => 997,  // PENDING: ERROR_IO_PENDING
+        0x4000_0000 => 698,  // OBJECT_NAME_EXISTS
+        0x8000_0005 => 234,  // BUFFER_OVERFLOW: ERROR_MORE_DATA
+        0x8000_0006 => 18,   // NO_MORE_FILES
+        0x8000_001a => 259,  // NO_MORE_ENTRIES: ERROR_NO_MORE_ITEMS
+        0xc000_0001 => 31,   // UNSUCCESSFUL: ERROR_GEN_FAILURE
+        0xc000_0002 | 0xc000_0010 => 1, // NOT_IMPLEMENTED, INVALID_DEVICE_REQUEST: ERROR_INVALID_FUNCTION
+        0xc000_0003 | 0xc000_000d => 87, // INVALID_INFO_CLASS, INVALID_PARAMETER
+        0xc000_0004 => 24,   // INFO_LENGTH_MISMATCH: ERROR_BAD_LENGTH
+        0xc000_0005 => 998,  // ACCESS_VIOLATION: ERROR_NOACCESS
+        0xc000_0008 | 0xc000_0024 => 6, // INVALID_HANDLE, OBJECT_TYPE_MISMATCH
+        0xc000_000f | 0xc000_0034 => 2, // NO_SUCH_FILE, OBJECT_NAME_NOT_FOUND: ERROR_FILE_NOT_FOUND
+        0xc000_0011 => 38,   // END_OF_FILE: ERROR_HANDLE_EOF
+        0xc000_0017 => 8,    // NO_MEMORY: ERROR_NOT_ENOUGH_MEMORY
+        0xc000_0022 | 0xc000_0056 | 0xc000_00ba => 5, // ACCESS_DENIED, DELETE_PENDING, FILE_IS_A_DIRECTORY
+        0xc000_0023 => 122,  // BUFFER_TOO_SMALL: ERROR_INSUFFICIENT_BUFFER
+        0xc000_0033 => 123,  // OBJECT_NAME_INVALID
+        0xc000_0035 => 183,  // OBJECT_NAME_COLLISION: ERROR_ALREADY_EXISTS
+        0xc000_003a => 3,    // OBJECT_PATH_NOT_FOUND
+        0xc000_003b => 161,  // OBJECT_PATH_SYNTAX_BAD: ERROR_BAD_PATHNAME
+        0xc000_0043 => 32,   // SHARING_VIOLATION
+        0xc000_0046 => 288,  // MUTANT_NOT_OWNED: ERROR_NOT_OWNER
+        0xc000_0047 => 298,  // SEMAPHORE_LIMIT_EXCEEDED: ERROR_TOO_MANY_POSTS
+        0xc000_0061 => 1314, // PRIVILEGE_NOT_HELD
+        0xc000_007a | 0xc000_0139 => 127, // PROCEDURE_NOT_FOUND, ENTRYPOINT_NOT_FOUND: ERROR_PROC_NOT_FOUND
+        0xc000_007f => 112,  // DISK_FULL
+        0xc000_009a => 1450, // INSUFFICIENT_RESOURCES: ERROR_NO_SYSTEM_RESOURCES
+        0xc000_00bb => 50,   // NOT_SUPPORTED
+        0xc000_0101 => 145,  // DIRECTORY_NOT_EMPTY: ERROR_DIR_NOT_EMPTY
+        0xc000_0103 => 267,  // NOT_A_DIRECTORY: ERROR_DIRECTORY
+        0xc000_0135 => 126,  // DLL_NOT_FOUND: ERROR_MOD_NOT_FOUND
+        0xc000_0225 => 1168, // NOT_FOUND: ERROR_NOT_FOUND
+        // (the pipe codes kern.rs names)
         st => crate::kern::win32(st),
     }
+}
+
+fn rtl_nt_status_to_dos_error(c: &mut Ctx) -> u32 {
+    dos_error(c.a(0))
 }
 
 /// kernel32's file functions as Windows' kernelbase makes them out of ntdll's, for a program that
@@ -511,8 +555,138 @@ fn create(c: &mut Ctx, out: u32, access: u32, oa: u32, io: u32, attrs: u32, shar
 /// NtCreateFile(&h, access, oa, iosb, alloc, attrs, share, disposition, options, ea, ealen)
 fn nt_create_file(c: &mut Ctx) -> u32 {
     let a: Vec<u32> = (0..9).map(|i| c.a(i)).collect();
+    if let Some(h) = afd_name(a[2]).and_then(|n| crate::afd::open(&n)) {
+        mem::wp(a[0], h);
+        iosb(a[3], 0, 1); // FILE_OPENED
+        return 0;
+    }
     create(c, a[0], a[1], a[2], a[3], a[5], a[6], a[7], a[8])
 }
+/// OBJECT_ATTRIBUTES' name when it is a device's ("\Device\..."), for afd.rs
+fn afd_name(oa: u32) -> Option<String> {
+    if oa == 0 {
+        return None;
+    }
+    let us = mem::rp(oa + 2 * mem::ps());
+    if us == 0 {
+        return None;
+    }
+    let (n, b) = (r16(us) as u32 / 2, mem::rp(us + mem::ps()));
+    let s = String::from_utf16_lossy(&(0..n).map(|i| r16(b + 2 * i)).collect::<Vec<_>>());
+    s.to_ascii_lowercase().starts_with("\\device\\").then_some(s)
+}
+
+/// NtDeviceIoControlFile(h, event, apc, apcctx, iosb, code, in, inlen, out, outlen): AFD's poll
+/// (afd.rs), else kernel32's DeviceIoControl, synchronously
+fn nt_device_io_control_file(c: &mut Ctx) -> u32 {
+    if let Some(st) = crate::afd::ioctl(c) {
+        return st;
+    }
+    let (h, event, io, code, inp, inlen, out, outlen) = (c.a(0), c.a(1), c.a(4), c.a(5), c.a(6), c.a(7), c.a(8), c.a(9));
+    let n = mem::heap_alloc(4, true);
+    let ok = k32(c, "DeviceIoControl", &[h, code, inp, inlen, out, outlen, n, 0]);
+    let got = r32(n);
+    mem::heap_free(n);
+    let st = if ok != 0 { 0 } else { status() };
+    iosb(io, st, got);
+    if event != 0 && st < 0xc000_0000 {
+        crate::k32::set_event(event);
+    }
+    st
+}
+
+/// NtQueryVolumeInformationFile's answer for FsInformationClass `class` on a handle whose
+/// GetFileType is `ty`, the volume kernel32's GetVolumeInformation / GetDiskFreeSpace describe
+/// (label SAKE, serial 12345678, NTFS, 8 sectors of 512 bytes a cluster, 0x200_0000 clusters of
+/// which 0x100_0000 free). Err: the NTSTATUS for a class answered nowhere here.
+pub fn fs_info(class: u32, ty: u32) -> Result<Vec<u8>, u32> {
+    let w = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+    let (sec, bps, total, free) = (8u32, 512u32, 0x200_0000u64, 0x100_0000u64);
+    let mut v = Vec::new();
+    match class {
+        // FileFsVolumeInformation: creation time, serial, label length, supports objects, label
+        1 => {
+            let label = w("SAKE");
+            v.extend(0u64.to_le_bytes());
+            v.extend(0x1234_5678u32.to_le_bytes());
+            v.extend((label.len() as u32).to_le_bytes());
+            v.extend([0, 0]);
+            v.extend(label);
+        }
+        // FileFsSizeInformation: total and available clusters, sectors a cluster, bytes a sector
+        3 => {
+            v.extend(total.to_le_bytes());
+            v.extend(free.to_le_bytes());
+            v.extend(sec.to_le_bytes());
+            v.extend(bps.to_le_bytes());
+        }
+        // FileFsDeviceInformation: DeviceType (FILE_DEVICE_DISK; a pipe's, a console's), Characteristics
+        4 => {
+            let dev: u32 = match ty {
+                3 => 0x11, // FILE_DEVICE_NAMED_PIPE
+                2 => 0x50, // FILE_DEVICE_CONSOLE
+                _ => 7,
+            };
+            v.extend(dev.to_le_bytes());
+            v.extend(0u32.to_le_bytes());
+        }
+        // FileFsAttributeInformation: attributes (as GetVolumeInformation's), longest name, name
+        5 => {
+            let name = w("NTFS");
+            v.extend(3u32.to_le_bytes());
+            v.extend(255u32.to_le_bytes());
+            v.extend((name.len() as u32).to_le_bytes());
+            v.extend(name);
+        }
+        // FileFsFullSizeInformation: total, caller's and actual available clusters, geometry
+        7 => {
+            v.extend(total.to_le_bytes());
+            v.extend(free.to_le_bytes());
+            v.extend(free.to_le_bytes());
+            v.extend(sec.to_le_bytes());
+            v.extend(bps.to_le_bytes());
+        }
+        _ => return Err(0xc000_0003), // STATUS_INVALID_INFO_CLASS
+    }
+    Ok(v)
+}
+
+/// The fixed part of class `class`'s structure (less than this: STATUS_INFO_LENGTH_MISMATCH;
+/// the variable name past it is cut with STATUS_BUFFER_OVERFLOW)
+pub fn fs_info_fixed(class: u32) -> u32 {
+    match class {
+        1 => 18,
+        5 => 12,
+        3 => 24,
+        4 => 8,
+        7 => 32,
+        _ => 0,
+    }
+}
+
+/// NtQueryVolumeInformationFile(h, iosb, out, len, class)
+fn nt_query_volume_information_file(c: &mut Ctx) -> u32 {
+    let (h, io, out, len, class) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let ty = k32(c, "GetFileType", &[h]);
+    if ty == 0 && crate::k32::get_last_error() != 0 {
+        return 0xc000_0008; // STATUS_INVALID_HANDLE
+    }
+    let v = match fs_info(class, ty) {
+        Ok(v) => v,
+        Err(st) => return st,
+    };
+    if len < fs_info_fixed(class) {
+        return 0xc000_0004; // STATUS_INFO_LENGTH_MISMATCH
+    }
+    let n = (v.len() as u32).min(len);
+    for (i, b) in v[..n as usize].iter().enumerate() {
+        mem::w8(out + i as u32, *b);
+    }
+    let st = if n < v.len() as u32 { 0x8000_0005 } else { 0 }; // STATUS_BUFFER_OVERFLOW
+    iosb(io, st, n);
+    st
+}
+
 /// NtOpenFile(&h, access, oa, iosb, share, options)
 fn nt_open_file(c: &mut Ctx) -> u32 {
     let a: Vec<u32> = (0..6).map(|i| c.a(i)).collect();
@@ -1094,6 +1268,8 @@ fn nt_query_object(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    implement("ntdll", "RtlNtStatusToDosError", rtl_nt_status_to_dos_error);
+    implement("ntdll", "RtlNtStatusToDosErrorNoTeb", rtl_nt_status_to_dos_error);
     for (n, f) in [
         ("SetInformationThread", nt_set_information_thread as crate::api::Handler),
         ("QueryInformationProcess", nt_query_information_process),
@@ -1116,6 +1292,8 @@ pub fn init() {
             ("QueryFullAttributesFile", nt_query_full_attributes_file),
             ("DeleteFile", nt_delete_file),
             ("QueryDirectoryFile", nt_query_directory_file),
+            ("DeviceIoControlFile", nt_device_io_control_file),
+            ("QueryVolumeInformationFile", nt_query_volume_information_file),
         ] {
             implement(d, &format!("Nt{n}"), f);
             implement(d, &format!("Zw{n}"), f);
@@ -1204,6 +1382,81 @@ mod route_tests {
             (0x0000_0103, 997),
         ] {
             assert_eq!(file_error(st), e, "{st:#x}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod fs_info_tests {
+    use super::{fs_info, fs_info_fixed};
+    use proptest::prelude::*;
+    #[test]
+    fn layouts() {
+        // (sizes as Windows' structures with these names: SAKE, NTFS)
+        assert_eq!(fs_info(1, 1).unwrap().len(), 26);
+        assert_eq!(fs_info(3, 1).unwrap().len(), 24);
+        assert_eq!(fs_info(4, 1).unwrap(), [7, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(fs_info(4, 3).unwrap()[0], 0x11);
+        assert_eq!(fs_info(5, 1).unwrap().len(), 20);
+        assert_eq!(&fs_info(5, 1).unwrap()[12..], &[b'N', 0, b'T', 0, b'F', 0, b'S', 0]);
+        assert_eq!(fs_info(7, 1).unwrap().len(), 32);
+        assert_eq!(fs_info(2, 1), Err(0xc000_0003));
+    }
+    proptest! {
+        // every answered class is at least its fixed part, a name's length field matches the
+        // bytes after it, and the sizes agree with GetDiskFreeSpace's (8 x 512, 0x200_0000 / 0x100_0000)
+        #[test]
+        fn consistent(class in 0u32..12, ty in 0u32..4) {
+            match fs_info(class, ty) {
+                Ok(v) => {
+                    prop_assert!(v.len() as u32 >= fs_info_fixed(class));
+                    let u32at = |o: usize| u32::from_le_bytes(v[o..o + 4].try_into().unwrap());
+                    let u64at = |o: usize| u64::from_le_bytes(v[o..o + 8].try_into().unwrap());
+                    match class {
+                        1 => prop_assert_eq!(u32at(12) as usize, v.len() - 18),
+                        5 => prop_assert_eq!(u32at(8) as usize, v.len() - 12),
+                        3 => prop_assert_eq!((u64at(0), u64at(8), u32at(16), u32at(20)), (0x200_0000, 0x100_0000, 8, 512)),
+                        7 => prop_assert_eq!((u64at(0), u64at(8), u64at(16), u32at(24), u32at(28)), (0x200_0000, 0x100_0000, 0x100_0000, 8, 512)),
+                        _ => {}
+                    }
+                }
+                Err(st) => {
+                    prop_assert_eq!(st, 0xc000_0003);
+                    prop_assert_eq!(fs_info_fixed(class), 0);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dos_error_tests {
+    use super::dos_error;
+    use proptest::prelude::*;
+    #[test]
+    fn known_codes() {
+        // (status, Windows' error)
+        for (st, e) in [
+            (0, 0), (0x103, 997), (0x102, 1460), (0x8000_0005, 234), (0x8000_001a, 259), (0xc000_0001, 31),
+            (0xc000_0005, 998), (0xc000_0017, 8), (0xc000_0022, 5), (0xc000_0034, 2), (0xc000_003a, 3),
+            (0xc000_0135, 126), (0xc000_0139, 127), (0xc000_014b, 109), (0xc000_00bb, 50),
+            (0x8007_0005, 5), (0xc007_0002, 2), (0xc001_0003, 3), (0xd000_0034, 2),
+            (0xe000_1234, 0xe000_1234), (0xc000_ffff, 317), (0x4000_0001, 317),
+        ] {
+            assert_eq!(dos_error(st), e, "{st:#x}");
+        }
+    }
+    proptest! {
+        // facility Win32 (7) and the debugger's (c001): the low word, whatever it is
+        #[test]
+        fn facility_codes_carry_the_error(lo in 0u32..0x10000, hi in prop::sample::select(vec![0x8007u32, 0xc007, 0xc001])) {
+            prop_assert_eq!(dos_error(hi << 16 | lo), lo);
+        }
+        // customer codes come back unchanged; 0xd... answers as 0xc...
+        #[test]
+        fn customer_and_d_codes(st in any::<u32>()) {
+            if st & 0x2000_0000 != 0 { prop_assert_eq!(dos_error(st), st); }
+            if st & 0xf000_0000 == 0xd000_0000 { prop_assert_eq!(dos_error(st), dos_error(st & !0x1000_0000)); }
         }
     }
 }

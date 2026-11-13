@@ -114,6 +114,11 @@ pub fn closed(h: u32) {
     obj::signal();
 }
 
+/// The port and key handle `h` is tied to
+pub fn association(h: u32) -> Option<(u32, u64)> {
+    with(|s| s.assoc.get(&h).copied())
+}
+
 /// Whether a port has packets (a port handle is signaled then)
 pub fn has_packets(h: u32) -> bool {
     with(|s| s.ports.get(&h).is_some_and(|q| !q.is_empty()))
@@ -169,6 +174,8 @@ fn wait_packet(c: &mut Ctx, port: u32, ms: u32, alertable: bool) -> Result<Packe
     let tid = crate::cur().tid;
     let deadline = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     loop {
+        // (AFD polls end here: a socket that changed is looked at by the port's waiter)
+        crate::afd::check();
         if let Some(p) = take(port) {
             return Ok(p);
         }
@@ -190,6 +197,8 @@ fn wait_packet(c: &mut Ctx, port: u32, ms: u32, alertable: bool) -> Result<Packe
             }
         };
         let ready = || with(|s| s.ports.get(&port).is_none_or(|q| !q.is_empty())) || (alertable && crate::apc::pending(tid));
+        // (AFD polls waiting: look at their sockets again every 10 ms)
+        let left = if crate::afd::pending() { left.min(10) } else { left };
         obj::wait(&[], false, left, Some(&ready));
     }
 }

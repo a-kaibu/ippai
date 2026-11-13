@@ -171,6 +171,10 @@ pub fn close(h: u32) -> bool {
     match gone {
         Some(Obj::Pipe(p)) => crate::pipe::closed(p),
         Some(Obj::Other("iocp")) => crate::iocp::closed(h),
+        Some(Obj::Other("afd")) => {
+            crate::afd::closed(h);
+            crate::iocp::forget(h);
+        }
         Some(Obj::Shared(id)) => {
             crate::kern::with(|k| k.release_sync(id, crate::pid()));
         }
