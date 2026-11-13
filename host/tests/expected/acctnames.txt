@@ -1,0 +1,45 @@
+Everyone: sizes 0 err 122 sid 12 domain 1
+Everyone: 1 sid 12 domain "" (0) use 5
+  back: sizes 0 err 122 name 9 domain 1
+  back: 1 "Everyone" (8) "" (0) use 5
+Administrators: sizes 0 err 122 sid 16 domain 8
+Administrators: 1 sid 16 domain "BUILTIN" (7) use 4
+  back: sizes 0 err 122 name 15 domain 8
+  back: 1 "Administrators" (14) "BUILTIN" (7) use 4
+BUILTIN\Users: sizes 0 err 122 sid 16 domain 8
+BUILTIN\Users: 1 sid 16 domain "BUILTIN" (7) use 4
+  back: sizes 0 err 122 name 6 domain 8
+  back: 1 "Users" (5) "BUILTIN" (7) use 4
+SYSTEM: sizes 0 err 122 sid 12 domain 13
+SYSTEM: 1 sid 12 domain "NT AUTHORITY" (12) use 5
+  back: sizes 0 err 122 name 7 domain 13
+  back: 1 "SYSTEM" (6) "NT AUTHORITY" (12) use 5
+NT AUTHORITY\Authenticated Users: sizes 0 err 122 sid 12 domain 13
+NT AUTHORITY\Authenticated Users: 1 sid 12 domain "NT AUTHORITY" (12) use 5
+  back: sizes 0 err 122 name 20 domain 13
+  back: 1 "Authenticated Users" (19) "NT AUTHORITY" (12) use 5
+unknown: 0 err 1332
+ansi: 1 sid 16 domain "BUILTIN" (7) use 4
+user by name: ok
+user's domain is the computer: ok
+user back by SID: ok
+token user: ok
+COMPUTER\user: ok
+folder: GetNamedSecurityInfoW 0
+  descriptor: ok
+  owner and group: ok
+  DACL: ok
+  read, write, delete: ok
+  DACL alone: ok
+  SetNamedSecurityInfoW missing 2
+file: GetNamedSecurityInfoW 0
+  descriptor: ok
+  owner and group: ok
+  DACL: ok
+  read, write, delete: ok
+  DACL alone: ok
+  SetNamedSecurityInfoW 0
+  still writable: ok
+  SetNamedSecurityInfoW missing 2
+missing file: 2
+ansi folder: ok

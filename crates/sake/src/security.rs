@@ -1086,7 +1086,169 @@ fn SetEntriesInAclW(c: &mut Ctx) -> u32 {
     set_entries(c, true)
 }
 
+// ---------------------------------------------------------------------------------------------
+// objects' descriptors (GetNamedSecurityInfo / GetSecurityInfo / SetNamedSecurityInfo)
+
+const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
+
+/// SECURITY_INFORMATION bits
+const OWNER_SECURITY_INFORMATION: u32 = 1;
+const GROUP_SECURITY_INFORMATION: u32 = 2;
+const DACL_SECURITY_INFORMATION: u32 = 4;
+const SACL_SECURITY_INFORMATION: u32 = 8;
+
+/// The DACL every object of the machine has, inherited from its drive as on a Windows data
+/// drive: Administrators and SYSTEM full control, Authenticated Users modify, Users read and
+/// execute (a folder's ACEs also inherit to what it holds). The process's user (an elevated
+/// administrator) may read, write and delete.
+fn object_dacl(dir: bool) -> Vec<(u8, u8, u32, Sid)> {
+    let f = 0x10 | if dir { 0x03 } else { 0 }; // INHERITED_ACE (| OBJECT_INHERIT | CONTAINER_INHERIT)
+    vec![
+        (0, f, 0x001f_01ff, admins()),
+        (0, f, 0x001f_01ff, Sid(5, vec![18])),
+        (0, f, 0x0013_01bf, Sid(5, vec![11])),
+        (0, f, 0x0012_00a9, Sid(5, vec![32, 545])),
+    ]
+}
+
+/// A self-relative descriptor with the parts `info` asks for: header, owner, group, DACL (the
+/// order Windows lays them out in); a SACL asked for is present and empty
+fn object_sd(info: u32, dir: bool) -> Vec<u8> {
+    let mut v = vec![0u8; 20];
+    v[0] = 1;
+    let mut ctl: u16 = 0x8000; // SE_SELF_RELATIVE
+    let off = |v: &mut Vec<u8>, at: usize, b: &[u8]| {
+        let o = v.len() as u32;
+        v[at..at + 4].copy_from_slice(&o.to_le_bytes());
+        v.extend_from_slice(b);
+    };
+    if info & OWNER_SECURITY_INFORMATION != 0 {
+        off(&mut v, 4, &admins().bytes());
+    }
+    if info & GROUP_SECURITY_INFORMATION != 0 {
+        off(&mut v, 8, &the_user().bytes());
+    }
+    if info & SACL_SECURITY_INFORMATION != 0 {
+        ctl |= 0x10 | 0x800; // SE_SACL_PRESENT | SE_SACL_AUTO_INHERITED
+        off(&mut v, 12, &[2, 0, 8, 0, 0, 0, 0, 0]);
+    }
+    if info & DACL_SECURITY_INFORMATION != 0 {
+        ctl |= 0x4 | 0x400; // SE_DACL_PRESENT | SE_DACL_AUTO_INHERITED
+        let aces = object_dacl(dir);
+        let size = 8 + aces.iter().map(|a| 8 + a.3.len()).sum::<u32>();
+        let mut acl = vec![2, 0];
+        acl.extend_from_slice(&(size as u16).to_le_bytes());
+        acl.extend_from_slice(&(aces.len() as u16).to_le_bytes());
+        acl.extend_from_slice(&[0, 0]);
+        for (ty, fl, mask, sid) in &aces {
+            acl.extend_from_slice(&[*ty, *fl]);
+            acl.extend_from_slice(&((8 + sid.len()) as u16).to_le_bytes());
+            acl.extend_from_slice(&mask.to_le_bytes());
+            acl.extend_from_slice(&sid.bytes());
+        }
+        off(&mut v, 16, &acl);
+    }
+    v[2..4].copy_from_slice(&ctl.to_le_bytes());
+    v
+}
+
+/// The descriptor (LocalAlloc'd) and the pointers into it the caller asked for; a Win32 error
+fn give_sd(info: u32, dir: bool, owner: u32, group: u32, dacl: u32, sacl: u32, sdp: u32) -> u32 {
+    if info & SACL_SECURITY_INFORMATION != 0 && !enabled(8) {
+        return ERROR_PRIVILEGE_NOT_HELD;
+    }
+    let b = object_sd(info, dir);
+    let sd = crate::k32::global_alloc(0x40, b.len() as u32);
+    if sd == 0 {
+        return 8;
+    }
+    mem::write(sd, &b);
+    let part = |i: u32| {
+        let o = r32(sd + 4 + 4 * i);
+        if o == 0 { 0 } else { sd + o }
+    };
+    for (want, p, i) in [(OWNER_SECURITY_INFORMATION, owner, 0), (GROUP_SECURITY_INFORMATION, group, 1), (SACL_SECURITY_INFORMATION, sacl, 2), (DACL_SECURITY_INFORMATION, dacl, 3)] {
+        if p != 0 && info & want != 0 {
+            mem::wp(p, part(i));
+        }
+    }
+    if sdp != 0 {
+        mem::wp(sdp, sd);
+    }
+    0
+}
+
+/// GetNamedSecurityInfo(name, type, info, &owner, &group, &dacl, &sacl, &sd): returns a Win32
+/// error. A file or folder (SE_FILE_OBJECT) has to exist; other kinds get the same descriptor.
+fn named_info(c: &mut Ctx, wide: bool) -> u32 {
+    let (name, ty, info) = (c.a(0), c.a(1), c.a(2));
+    let (owner, group, dacl, sacl, sdp) = (c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
+    if name == 0 || owner == 0 && group == 0 && dacl == 0 && sacl == 0 && sdp == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let mut dir = false;
+    if ty == 1 {
+        let n = crate::k32::arg_str(name, wide);
+        let Some(h) = crate::files::resolve(&n) else { return crate::files::missing(&n) };
+        match kura::fs::metadata(&h) {
+            Ok(m) => dir = m.is_dir(),
+            Err(_) => return crate::files::missing(&n),
+        }
+    }
+    give_sd(info, dir, owner, group, dacl, sacl, sdp)
+}
+fn GetNamedSecurityInfoA(c: &mut Ctx) -> u32 {
+    named_info(c, false)
+}
+fn GetNamedSecurityInfoW(c: &mut Ctx) -> u32 {
+    named_info(c, true)
+}
+/// SetNamedSecurityInfo(name, type, info, owner, group, dacl, sacl): sake's files keep no
+/// descriptors, so a file or folder that exists takes the change (its DACL stays the one every
+/// object has); a SID or ACL that is not one fails as Windows' does
+fn set_named(c: &mut Ctx, wide: bool) -> u32 {
+    let (name, ty, info) = (c.a(0), c.a(1), c.a(2));
+    let (owner, group, dacl) = (c.a(3), c.a(4), c.a(5));
+    if name == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    if info & OWNER_SECURITY_INFORMATION != 0 && Sid::read(owner).is_none() || info & GROUP_SECURITY_INFORMATION != 0 && Sid::read(group).is_none() {
+        return ERROR_INVALID_SID;
+    }
+    if info & DACL_SECURITY_INFORMATION != 0 && dacl != 0 && !((2..=4).contains(&r8(dacl)) && used(dacl) <= r16(dacl + 2) as u32) {
+        return ERROR_INVALID_ACL;
+    }
+    if info & SACL_SECURITY_INFORMATION != 0 && !enabled(8) {
+        return ERROR_PRIVILEGE_NOT_HELD;
+    }
+    if ty == 1 {
+        let n = crate::k32::arg_str(name, wide);
+        if crate::files::resolve(&n).map_or(true, |h| kura::fs::metadata(&h).is_err()) {
+            return crate::files::missing(&n);
+        }
+    }
+    0
+}
+fn SetNamedSecurityInfoA(c: &mut Ctx) -> u32 {
+    set_named(c, false)
+}
+fn SetNamedSecurityInfoW(c: &mut Ctx) -> u32 {
+    set_named(c, true)
+}
+/// GetSecurityInfo(handle, type, info, &owner, &group, &dacl, &sacl, &sd)
+fn GetSecurityInfo(c: &mut Ctx) -> u32 {
+    let (h, info) = (c.a(0), c.a(2));
+    let (owner, group, dacl, sacl, sdp) = (c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
+    if h == 0 || h == u32::MAX {
+        return ERROR_INVALID_HANDLE;
+    }
+    give_sd(info, false, owner, group, dacl, sacl, sdp)
+}
+
 pub fn init() {
+    reg!("advapi32";
+        GetNamedSecurityInfoA, GetNamedSecurityInfoW, GetSecurityInfo, SetNamedSecurityInfoA, SetNamedSecurityInfoW,
+    );
     reg!("advapi32";
         SetEntriesInAclA, SetEntriesInAclW,
         AllocateAndInitializeSid, FreeSid, GetLengthSid, IsValidSid, EqualSid, CopySid, GetSidLengthRequired,
@@ -1145,5 +1307,69 @@ mod tests {
         assert_eq!(admins().bytes(), [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0]);
         assert_eq!(everyone().len(), 12);
         assert!(member(&admins()) && member(&everyone()) && !member(&Sid(5, vec![18])));
+    }
+
+    /// What `object_sd` holds: (control, owner, group, sacl present, DACL ACEs)
+    fn parse_sd(b: &[u8]) -> (u16, Option<Vec<u8>>, Option<Vec<u8>>, bool, Option<Vec<(u8, u8, u32, Vec<u8>)>>) {
+        let u32at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+        let u16at = |o: usize| u16::from_le_bytes(b[o..o + 2].try_into().unwrap()) as usize;
+        let sid = |o: usize| b[o..o + 8 + 4 * b[o + 1] as usize].to_vec();
+        let ctl = u16at(2) as u16;
+        let (ow, gr, sa, da) = (u32at(4), u32at(8), u32at(12), u32at(16));
+        let dacl = (da != 0).then(|| {
+            let (size, n) = (u16at(da + 2), u16at(da + 4));
+            assert!(da + size <= b.len());
+            let mut at = da + 8;
+            let mut v = Vec::new();
+            for _ in 0..n {
+                let sz = u16at(at + 2);
+                v.push((b[at], b[at + 1], u32at(at + 4) as u32, sid(at + 8)));
+                assert_eq!(sz, 8 + v.last().unwrap().3.len());
+                at += sz;
+            }
+            assert_eq!(at, da + size, "the ACL's size is its ACEs'");
+            v
+        });
+        ((ctl), (ow != 0).then(|| sid(ow)), (gr != 0).then(|| sid(gr)), sa != 0, dacl)
+    }
+
+    #[test]
+    fn object_descriptor_lets_the_user_write() {
+        for dir in [false, true] {
+            let (ctl, ow, gr, sa, dacl) = parse_sd(&object_sd(0xf, dir));
+            assert_eq!(ctl, 0x8000 | 0x4 | 0x400 | 0x10 | 0x800);
+            assert_eq!(ow, Some(admins().bytes()));
+            assert_eq!(gr, Some(the_user().bytes()));
+            assert!(sa);
+            let dacl = dacl.unwrap();
+            // FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE, from the ACEs of groups the token has
+            let mut grant = 0;
+            for (ty, fl, mask, sid) in &dacl {
+                assert_eq!(*ty, 0);
+                assert_eq!(*fl, if dir { 0x13 } else { 0x10 });
+                let s = Sid(u64::from_be_bytes([0, 0, sid[2], sid[3], sid[4], sid[5], sid[6], sid[7]]), sid[8..].chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect());
+                if member(&s) {
+                    grant |= mask;
+                }
+            }
+            assert_eq!(grant & 0x0013_01bf, 0x0013_01bf);
+            assert_eq!(grant, 0x001f_01ff);
+        }
+    }
+
+    proptest! {
+        /// Only the parts asked for are there, and they are well formed
+        #[test]
+        fn object_descriptor_parts(info in 0u32..16, dir in any::<bool>()) {
+            let b = object_sd(info, dir);
+            let (ctl, ow, gr, sa, dacl) = parse_sd(&b);
+            prop_assert_eq!(ctl & 0x8000, 0x8000);
+            prop_assert_eq!(ow.is_some(), info & 1 != 0);
+            prop_assert_eq!(gr.is_some(), info & 2 != 0);
+            prop_assert_eq!(dacl.is_some(), info & 4 != 0);
+            prop_assert_eq!(ctl & 4 != 0, info & 4 != 0);
+            prop_assert_eq!(sa, info & 8 != 0);
+            prop_assert_eq!(b.len() % 4, 0);
+        }
     }
 }
