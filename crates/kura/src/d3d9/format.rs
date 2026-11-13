@@ -341,6 +341,27 @@ pub fn same_on_page(fmt: u32) -> bool {
     matches!(fmt, A8R8G8B8 | X8R8G8B8 | A16B16G16R16F)
 }
 
+/// A P8 texel through a palette of 256 PALETTEENTRYs (red, green, blue, flags: Direct3D 9
+/// takes the flags as the alpha), as BGRA8.
+pub fn p8_texel(pal: &[u8; 1024], i: u8) -> [u8; 4] {
+    let e = &pal[i as usize * 4..][..4];
+    [e[2], e[1], e[0], e[3]]
+}
+
+/// convert() of a P8 region through a palette (p8_texel), `w*4` bytes a row.
+pub unsafe fn convert_p8(src: *const u8, pitch: usize, w: u32, h: u32, pal: &[u8; 1024], out: &mut Vec<u8>) {
+    let (w, h) = (w as usize, h as usize);
+    let at = out.len();
+    out.resize(at + w * h * 4, 0);
+    let dst = &mut out[at..];
+    for y in 0..h {
+        let s = std::slice::from_raw_parts(src.add(y * pitch), w);
+        for (x, &i) in s.iter().enumerate() {
+            dst[(y * w + x) * 4..][..4].copy_from_slice(&p8_texel(pal, i));
+        }
+    }
+}
+
 pub unsafe fn convert(fmt: u32, src: *const u8, pitch: usize, w: u32, h: u32, out: &mut Vec<u8>) {
     let (w, h) = (w as usize, h as usize);
     let page = page_bpp(fmt) as usize;
@@ -890,6 +911,30 @@ mod tests {
     }
 
 
+    proptest::proptest! {
+        /// convert_p8 against a texel-by-texel lookup, for any palette, region and pitch
+        /// (and a prefix in `out` stays as it was).
+        #[test]
+        fn convert_p8_matches_lookup(pal in proptest::collection::vec(0u8.., 1024), w in 1u32..17, h in 1u32..9,
+                                     pad in 0usize..5, seed in 0u64.., prefix in proptest::collection::vec(0u8.., 0..9)) {
+            let pal: [u8; 1024] = pal.try_into().unwrap();
+            let pitch = w as usize + pad;
+            let mut r = seed | 1;
+            let src: Vec<u8> = (0..pitch * (h as usize - 1) + w as usize).map(|_| { r ^= r << 13; r ^= r >> 7; r ^= r << 17; r as u8 }).collect();
+            let mut out = prefix.clone();
+            unsafe { convert_p8(src.as_ptr(), pitch, w, h, &pal, &mut out) };
+            proptest::prop_assert_eq!(&out[..prefix.len()], &prefix[..]);
+            let mut want = prefix.clone();
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    let i = src[y * pitch + x] as usize;
+                    want.extend([pal[i * 4 + 2], pal[i * 4 + 1], pal[i * 4], pal[i * 4 + 3]]);
+                }
+            }
+            proptest::prop_assert_eq!(out, want);
+        }
+    }
+
     /// What each format is, as the D3D9 docs list them.
     #[test]
     fn format_table() {
@@ -1013,6 +1058,14 @@ mod tests {
                     unsafe { convert(fmt, src.as_ptr(), pitch as usize, w, h, &mut out) };
                     assert_eq!(out.len(), 3 + (w * h * page_bpp(fmt)) as usize);
                     assert_eq!(out[..3], [7, 7, 7]);
+                    if fmt == P8 {
+                        // (and through a palette)
+                        let pal: [u8; 1024] = std::array::from_fn(|i| i as u8 ^ 0x55);
+                        let mut out = vec![7u8; 3];
+                        unsafe { convert_p8(src.as_ptr(), pitch as usize, w, h, &pal, &mut out) };
+                        assert_eq!(out.len(), 3 + (w * h * 4) as usize);
+                        assert_eq!(out[..3], [7, 7, 7]);
+                    }
                 }
             }
         }
@@ -1054,6 +1107,17 @@ mod proofs {
         // |e - v * 255 / max| <= 1/2, in integers
         assert!(e <= 255);
         assert!((2 * e * max).abs_diff(2 * v * 255) <= max);
+    }
+
+    /// A P8 texel is its palette entry (red, green, blue, flags as the alpha) as BGRA8, for
+    /// every palette and index.
+    #[kani::proof]
+    fn p8_texel_is_the_entry() {
+        let pal: [u8; 1024] = kani::any();
+        let i: u8 = kani::any();
+        let t = p8_texel(&pal, i);
+        let k = i as usize * 4;
+        assert!(t == [pal[k + 2], pal[k + 1], pal[k], pal[k + 3]]);
     }
 
     /// No overflow for any level Direct3D 9 allows (8192 x 8192 at most), and the pitch covers a row.

@@ -22,6 +22,8 @@ mod draw_tests;
 #[cfg(test)]
 mod target_tests;
 #[cfg(test)]
+mod palette_tests;
+#[cfg(test)]
 mod draw8_tests;
 #[cfg(test)]
 mod golden_tests;

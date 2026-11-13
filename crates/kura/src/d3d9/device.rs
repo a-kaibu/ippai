@@ -56,6 +56,8 @@ pub struct Surface {
     /// a cube texture's face (D3DCUBEMAP_FACES): its layer of the cube's page texture, which
     /// gets the pixels with gpu::WRITE_TEXTURE2
     pub face: Option<u32>,
+    /// a P8 surface: the device's `pal_gen` its page texels were made with (see refresh_p8)
+    pub pal_gen: u64,
 }
 
 pub struct Texture {
@@ -226,6 +228,12 @@ pub struct Device {
     pub frames: u64,
     /// the declarations GetVertexDeclaration hands out for FVFs (fvf -> object id)
     pub fvf_decls: HashMap<u32, u32>,
+    /// SetPaletteEntries' palettes (PALETTEENTRY red, green, blue, flags: the alpha) by number,
+    /// SetCurrentTexturePalette's, and a count that changes whenever the palette P8 textures
+    /// read does (their page texels are made again at the next draw: refresh_p8)
+    pub palettes: HashMap<u32, Box<[u8; 1024]>>,
+    pub cur_palette: u32,
+    pub pal_gen: u64,
 }
 
 /// The render states Direct3D 9 has (GetRenderState of the others: D3DERR_INVALIDCALL), as
@@ -830,6 +838,7 @@ fn new_surface(d: &mut D3d, w: u32, h: u32, f: u32, pool: u32, usage: u32, conta
         full_locks: 0,
         shadow: None,
         face: None,
+        pal_gen: 0,
     };
     d.new_obj(IF_SURFACE, container, Data::Surface(s))
 }
@@ -901,6 +910,9 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         gamma: Vec::new(),
         frames: 0,
         fvf_decls: HashMap::new(),
+        palettes: HashMap::new(),
+        cur_palette: 0,
+        pal_gen: 0,
     });
     let _ = dev.new_gpu();
     d.dev = Some(dev);
@@ -1427,9 +1439,49 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             wr(a(1), 0, 1);
             S_OK
         }
-        71 | 72 | 73 => S_OK,
+        71 => {
+            // SetPaletteEntries(number, 256 PALETTEENTRY)
+            if a(2) == 0 || a(1) > 0xffff {
+                return D3DERR_INVALIDCALL;
+            }
+            let dev = dev!(d);
+            let mut p = Box::new([0u8; 1024]);
+            std::ptr::copy_nonoverlapping(a(2) as *const u8, p.as_mut_ptr(), 1024);
+            if dev.palettes.get(&a(1)) != Some(&p) {
+                if a(1) == dev.cur_palette {
+                    dev.pal_gen += 1;
+                }
+                dev.palettes.insert(a(1), p);
+            }
+            S_OK
+        }
+        72 => {
+            // GetPaletteEntries(number, out): only a palette that was set
+            let dev = dev!(d);
+            match dev.palettes.get(&a(1)) {
+                Some(p) if a(2) != 0 => {
+                    std::ptr::copy_nonoverlapping(p.as_ptr(), a(2) as *mut u8, 1024);
+                    S_OK
+                }
+                _ => D3DERR_INVALIDCALL,
+            }
+        }
+        73 => {
+            // SetCurrentTexturePalette(number)
+            let dev = dev!(d);
+            if a(1) > 0xffff {
+                return D3DERR_INVALIDCALL;
+            }
+            if a(1) != dev.cur_palette {
+                dev.cur_palette = a(1);
+                dev.pal_gen += 1;
+            }
+            S_OK
+        }
         74 => {
-            wr(a(1), 0, 0);
+            let dev = dev!(d);
+            let p = dev.cur_palette;
+            wr(a(1), 0, p);
             S_OK
         }
         75 => {
@@ -2123,12 +2175,22 @@ unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
     let (w, h) = (x1 - x0, y1 - y0);
     let bpp = fmt::page_bpp(sf.fmt);
     let (gpu, level, f, pitch) = (sf.gpu, sf.level, sf.fmt, sf.pitch);
+    // (P8: through the current palette, when there is one)
+    let pal = if f == fmt::P8 {
+        sf.pal_gen = d.dev.as_ref().map_or(0, |dev| dev.pal_gen);
+        d.dev.as_ref().and_then(|dev| dev.palettes.get(&dev.cur_palette)).map(|p| **p)
+    } else {
+        None
+    };
     if let Some(layer) = sf.face {
         // (a cube's face: its layer of the page texture)
         gpu::record(|b: &mut Batch| {
             let at = b.blob.len().next_multiple_of(4);
             b.blob.resize(at, 0);
-            fmt::convert(f, src as *const u8, pitch as usize, w, h, &mut b.blob);
+            match &pal {
+                Some(p) => fmt::convert_p8(src as *const u8, pitch as usize, w, h, p, &mut b.blob),
+                None => fmt::convert(f, src as *const u8, pitch as usize, w, h, &mut b.blob),
+            }
             b.cmd(&[gpu::WRITE_TEXTURE2, gpu, level, layer, x0, y0, w, h, w * bpp, at as u32]);
         });
         return;
@@ -2155,9 +2217,37 @@ unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
     gpu::record(|b: &mut Batch| {
         let at = b.blob.len().next_multiple_of(4);
         b.blob.resize(at, 0);
-        fmt::convert(f, src as *const u8, pitch as usize, w, h, &mut b.blob);
+        match &pal {
+            Some(p) => fmt::convert_p8(src as *const u8, pitch as usize, w, h, p, &mut b.blob),
+            None => fmt::convert(f, src as *const u8, pitch as usize, w, h, &mut b.blob),
+        }
         b.cmd(&[gpu::WRITE_TEXTURE, gpu, level, x0, y0, w, h, w * bpp, at as u32]);
     });
+}
+
+/// The P8 textures a draw reads whose page texels were made with another palette than the
+/// current one (SetPaletteEntries / SetCurrentTexturePalette since): made again from their
+/// guest copies, so a draw shows the palette current at the draw, as Direct3D 9 does.
+unsafe fn refresh_p8(d: &mut D3d) {
+    let Some(dev) = d.dev.as_ref() else { return };
+    let gen = dev.pal_gen;
+    let mut stale = Vec::new();
+    for &t in dev.st.textures.iter().filter(|&&t| t != 0) {
+        let Some(Data::Texture(tx)) = d.objs.get(&t).map(|o| &o.data) else { continue };
+        if tx.fmt != fmt::P8 || tx.depth != 0 {
+            continue;
+        }
+        for &s in &tx.levels {
+            if let Some(Data::Surface(sf)) = d.objs.get(&s).map(|o| &o.data) {
+                if sf.pal_gen != gen && sf.mem != 0 && sf.gpu != 0 {
+                    stale.push((s, sf.w, sf.h));
+                }
+            }
+        }
+    }
+    for (s, w, h) in stale {
+        upload(d, s, [0, 0, w, h]);
+    }
 }
 
 /// Before the guest copy of a surface changes: the uploads the page has not read yet take a
@@ -3069,6 +3159,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     if prims == 0 || !(1..=6).contains(&prim) {
         return S_OK;
     }
+    refresh_p8(d);
     let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
     let st = &dev.st;
     let rt = dev.rt[0];

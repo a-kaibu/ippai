@@ -2737,6 +2737,44 @@ fn SHGetFileInfoW(c: &mut Ctx) -> u32 {
 
 /// IsOS(os): what Windows 10 Pro (a 64-bit workstation, not a domain member) answers; sake
 /// is no WoW64 process.
+/// DllGetVersion's answers (major, minor, build) as Windows 10 22H2's: shlwapi and shell32 6.0,
+/// comctl32 5.82 (version 6 only for programs whose manifest asks for it). Programs check
+/// them: 魔王戦記 (玉藻スタジオ) refuses to start without shlwapi 5 ("IE5以降が…").
+pub const SHLWAPI_VERSION: (u32, u32, u32) = (6, 0, 19041);
+pub const SHELL32_VERSION: (u32, u32, u32) = (6, 0, 19041);
+pub const COMCTL32_VERSION: (u32, u32, u32) = (5, 82, 19041);
+
+/// DllGetVersion(DLLVERSIONINFO *): cbSize 20 (DLLVERSIONINFO) or 32 (DLLVERSIONINFO2: dwFlags 0,
+/// ullVersion major.minor.build.0 in 16-bit fields), else E_INVALIDARG; dwPlatformID
+/// DLLVER_PLATFORM_NT. The dwords written (offset, value), all within cbSize.
+pub fn dll_version_words(size: u32, (major, minor, build): (u32, u32, u32)) -> Result<Vec<(u32, u32)>, u32> {
+    const E_INVALIDARG: u32 = 0x8007_0057;
+    if size != 20 && size != 32 {
+        return Err(E_INVALIDARG);
+    }
+    let mut w = vec![(4, major), (8, minor), (12, build), (16, 2)];
+    if size == 32 {
+        let ull = (major as u64 & 0xffff) << 48 | (minor as u64 & 0xffff) << 32 | (build as u64 & 0xffff) << 16;
+        w.extend([(20, 0), (24, ull as u32), (28, (ull >> 32) as u32)]);
+    }
+    Ok(w)
+}
+
+pub fn dll_get_version(p: u32, v: (u32, u32, u32)) -> u32 {
+    if p == 0 {
+        return 0x8007_0057;
+    }
+    match dll_version_words(r32(p), v) {
+        Ok(w) => {
+            for (o, x) in w {
+                w32(p + o, x);
+            }
+            0
+        }
+        Err(e) => e,
+    }
+}
+
 fn IsOS(c: &mut Ctx) -> u32 {
     // OS_NT, NT4ORGREATER, WIN2000ORGREATER, WIN2000PRO, XPORGREATER, PROFESSIONAL,
     // PERSONALTERMINALSERVER, FASTUSERSWITCHING
@@ -4411,6 +4449,9 @@ pub fn init() {
     reg!("shell32"; SHGetPropertyStoreForWindow, SHGetFileInfoA, SHGetFileInfoW);
     implement("shell32", "SHBrowseForFolder", SHBrowseForFolderA);
     reg!("shlwapi"; IsOS, SHAutoComplete);
+    implement("shlwapi", "DllGetVersion", |c| dll_get_version(c.a(0), SHLWAPI_VERSION));
+    implement("shell32", "DllGetVersion", |c| dll_get_version(c.a(0), SHELL32_VERSION));
+    implement("comctl32", "DllGetVersion", |c| dll_get_version(c.a(0), COMCTL32_VERSION));
     reg!("sensapi"; IsNetworkAlive);
     // ws2_32 lives in ws2.rs
 }
@@ -4701,6 +4742,39 @@ fn wts_init() {
 
 #[cfg(test)]
 mod tests {
+    proptest::proptest! {
+        /// DllGetVersion: only cbSize 20 and 32 are answered, every dword written lies inside
+        /// cbSize past cbSize itself, and DLLVERSIONINFO2's ullVersion carries the same
+        /// major.minor.build (16-bit fields, QFE 0).
+        #[test]
+        fn dll_version_words_stay_in_the_struct(size in 0u32..80, major in 0u32..0x10000, minor in 0u32..0x10000, build in 0u32..0x10000) {
+            use super::*;
+            match dll_version_words(size, (major, minor, build)) {
+                Err(e) => proptest::prop_assert!(e == 0x8007_0057 && size != 20 && size != 32),
+                Ok(w) => {
+                    proptest::prop_assert!(size == 20 || size == 32);
+                    proptest::prop_assert!(w.iter().all(|&(o, _)| o >= 4 && o + 4 <= size && o % 4 == 0));
+                    let get = |o: u32| w.iter().find(|x| x.0 == o).map(|x| x.1);
+                    proptest::prop_assert_eq!((get(4), get(8), get(12), get(16)), (Some(major), Some(minor), Some(build), Some(2)));
+                    if size == 32 {
+                        let ull = (get(28).unwrap() as u64) << 32 | get(24).unwrap() as u64;
+                        proptest::prop_assert_eq!((ull >> 48, ull >> 32 & 0xffff, ull >> 16 & 0xffff, ull & 0xffff), (major as u64, minor as u64, build as u64, 0));
+                        proptest::prop_assert_eq!(get(20), Some(0));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The versions Windows 10 answers: programs that check for IE5's shlwapi (5.0) or later go on.
+    #[test]
+    fn dll_versions_are_windows_10s() {
+        use super::*;
+        assert!(SHLWAPI_VERSION >= (5, 0, 0) && SHLWAPI_VERSION.0 == 6);
+        assert_eq!((SHELL32_VERSION.0, SHELL32_VERSION.1), (6, 0));
+        assert_eq!((COMCTL32_VERSION.0, COMCTL32_VERSION.1), (5, 82));
+    }
+
     #[test]
     fn registry_refresh_keeps_key_spelling() {
         use super::*;
