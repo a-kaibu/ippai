@@ -63,6 +63,8 @@ if [ ! -d x ]; then
          (LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ])) ;;
   esac
+  # Shift-JIS names split at a 0x5C trail byte (7-Zip on LZH self-extractors: 十 = 8F 5C) joined again
+  python3 -I "$HERE/sjis-rejoin.py" x.part >/dev/null 2>&1 || true
   # names some extractors leave in Shift-JIS bytes -> UTF-8
   LC_ALL=C.UTF-8 convmv -r -f cp932 -t utf8 --notest --qfrom x.part >/dev/null 2>&1 || true
   # an archive that holds an archive and no program (niidumafuwatoro_trial.zip: a folder with
@@ -80,6 +82,10 @@ if [ ! -d x ]; then
   # installers (vnbox ran the installed game): unpack InstallShield setups, Windows Installer
   # packages and Inno Setup installers here rather than run them in the browser (an installer
   # writing a 1 GB package into the in-memory file system runs out of wasm memory)
+  # (rounds: an installer can come out of another one, kagura_r_trial010a.exe is a self-extracting
+  # zip of an Inno Setup installer; a round that changed no .exe ends it)
+  for round in 1 2 3; do
+  before=$(find x.part -type f -iname '*.exe' | sort | md5sum)
   find x.part -type f -iname '*.exe' -print0 | while IFS= read -r -d '' s; do
     if python3 -I "$HERE/isextract.py" "$s" "$s.is" >/dev/null 2>&1; then rm -f "$s"
     elif LC_ALL=C.UTF-8 innoextract -s -q -e -d "$s.inno" "$s" >/dev/null 2>&1 && [ -n "$(ls "$s.inno")" ]; then rm -f "$s"
@@ -89,6 +95,8 @@ if [ ! -d x ]; then
         python3 -I "$HERE/unzip-cp932.py" "$s" "$s.zip" >/dev/null 2>&1 && [ -n "$(ls "$s.zip")" ]; then rm -f "$s"
     else rm -rf "$s.is" "$s.inno" "$s.zip"
     fi
+  done
+  [ "$(find x.part -type f -iname '*.exe' | sort | md5sum)" = "$before" ] && break
   done
   # BGI install media: a 16-byte "0123456789ABCDEF" file next to BGIForInstalling.exe marks
   # the media, and the game run from there quits at once (the installed copy doesn't have it)
