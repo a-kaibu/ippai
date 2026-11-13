@@ -57,6 +57,19 @@ class Cases(unittest.TestCase):
             r + 'lib/windows-i686/pythonw.exe': 300,
         }), r + 'AAA.exe')
 
+    def test_engine_over_its_launcher(self):
+        # ensemble's お嬢様は素直になれない trial: launcher.exe (bigger) greys out its start
+        # button until setup.exe has installed the game; AdvHD.exe is the game
+        r = 'OJONAI_WKB_TRIAL/'
+        self.assertEqual(self.pick({
+            r + 'AdvHD.exe': 1659392,
+            r + 'launcher.exe': 1932800,
+            r + 'setup.exe': 2226176,
+            r + 'uninst.exe': 2042368,
+        }), r + 'AdvHD.exe')
+        # (nothing but tools, a launcher among them: the biggest, as before)
+        self.assertEqual(self.pick({r + 'Launcher.exe': 10, r + 'setup.exe': 20}), r + 'setup.exe')
+
     def test_biggest_not_a_tool(self):
         self.assertEqual(self.pick({'g/game.exe': 10, 'g/config.exe': 50, 'g/uninst.exe': 60, 'g/small.exe': 5}), 'g/game.exe')
 
