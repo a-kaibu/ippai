@@ -19,8 +19,12 @@ fn open(path: &Path) -> Result<Connection> {
     Ok(Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?)
 }
 fn download(url: &str, out: &Path) -> Result<()> {
+    download_with(url, out, true)
+}
+/// (`proxy`: HTTPS_PROXY and the like from the environment; the tests' local server: none)
+fn download_with(url: &str, out: &Path, proxy: bool) -> Result<()> {
     let response = ureq::AgentBuilder::new()
-        .try_proxy_from_env(true)
+        .try_proxy_from_env(proxy)
         .timeout_connect(Duration::from_secs(20))
         .timeout_read(Duration::from_secs(60))
         .build()
@@ -483,13 +487,12 @@ INSERT INTO tags_vn VALUES('v1','g1',NULL,3,0,0),('v1','g1','u1',-3,2,0),('v1','
                 stream.write_all(response.as_bytes()).unwrap();
             }
         });
-        for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
-            std::env::remove_var(key);
-        }
+        // (no proxy for the local server, without changing the process's environment: other
+        // tests run at the same time)
         let out = scratch();
-        download(&url, &out.0).unwrap();
+        download_with(&url, &out.0, false).unwrap();
         assert_eq!(std::fs::read(&out.0).unwrap(), b"data");
-        assert!(download(&url, &out.0).is_err());
+        assert!(download_with(&url, &out.0, false).is_err());
         server.join().unwrap();
     }
 }
