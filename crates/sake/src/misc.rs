@@ -1363,6 +1363,10 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
         mem::putp(out, obj);
         return 0;
     }
+    if let Some(obj) = crate::amstream::create_instance(clsid, iid) {
+        mem::putp(out, obj);
+        return if obj == 0 { 0x8000_4002 } else { 0 };
+    }
     if let Some(hr) = crate::dmusic::create_instance(clsid, 0, iid, out) {
         return hr;
     }

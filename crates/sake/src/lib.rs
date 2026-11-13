@@ -96,6 +96,7 @@ pub mod movie;
 pub mod unity6;
 pub mod vorbis_hook;
 pub mod obj;
+mod amstream;
 pub mod dshow;
 mod dshow_play;
 pub mod mf;

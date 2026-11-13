@@ -115,6 +115,8 @@ struct Graph {
     evr: u32,
     /// the filters added (each joined to the graph, one reference held)
     filters: Vec<u32>,
+    /// the names they were added by (FindFilterByName)
+    named: Vec<(Vec<u16>, u32)>,
     /// pins were connected through it (ConnectDirect): its state changes go to the filters
     /// from then on (a graph a game only renders a file in keeps them to itself)
     wired: bool,
@@ -335,7 +337,13 @@ fn add_filter(c: &mut Ctx) -> u32 {
         with(b, |g| g.evr = f);
     }
     com(c, f, 1, &[]);
-    with(b, |g| g.filters.push(f));
+    let name = if c.a(2) == 0 { None } else { Some(mem::wstr(c.a(2))) };
+    with(b, |g| {
+        g.filters.push(f);
+        if let Some(n) = name {
+            g.named.push((n, f));
+        }
+    });
     // IBaseFilter::JoinFilterGraph(graph, name)
     com(c, f, 13, &[b + ps() * GB, c.a(2)]);
     0
@@ -350,6 +358,26 @@ fn com(c: &mut Ctx, obj: u32, slot: u32, args: &[u32]) -> u32 {
 }
 
 /// ConnectDirect(out, in, mt): out->Connect(in, mt), only while stopped
+/// FindFilterByName(LPCWSTR, IBaseFilter **): a filter AddFilter added by that name (one
+/// reference added), else *out NULL and VFW_E_NOT_FOUND (the graph's own renderers are no
+/// filters a game can reach)
+fn find_filter(c: &mut Ctx) -> u32 {
+    let (name, out) = (c.a(1), c.a(2));
+    if out == 0 {
+        return E_POINTER;
+    }
+    putp(out, 0);
+    let want = if name == 0 { Vec::new() } else { mem::wstr(name) };
+    if let Some(f) = with(base(c, GB), |g| g.named.iter().find(|(n, _)| *n == want).map(|x| x.1)).flatten() {
+        com(c, f, 1, &[]);
+        putp(out, f);
+        return 0;
+    }
+    if crate::env_on!("SAKE_TRACE_COM") && name != 0 {
+        eprintln!("sake: FilterGraph FindFilterByName {:?}: none", String::from_utf16_lossy(&mem::wstr(name)));
+    }
+    NOT_FOUND
+}
 fn connect_direct(c: &mut Ctx) -> u32 {
     let b = base(c, GB);
     let (out, inp, mt) = (c.a(1), c.a(2), c.a(3));
@@ -1252,7 +1280,7 @@ fn vtables() -> &'static [u32; NI as usize] {
                 (add_filter as Handler, 12), // AddFilter
                 (remove_filter, 8),          // RemoveFilter
                 (enum_filters, 8),           // EnumFilters
-                (notimpl, 12),               // FindFilterByName
+                (find_filter, 12),           // FindFilterByName
                 (connect_direct, 16),        // ConnectDirect
                 (ok, 8),                     // Reconnect
                 (disconnect, 8),             // Disconnect
@@ -1479,6 +1507,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         balance: 0,
         evr: 0,
         filters: Vec::new(),
+        named: Vec::new(),
         wired: false,
     };
     GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, g);

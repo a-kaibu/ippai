@@ -2011,6 +2011,35 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
     Some(dd_iface(dd_new(mem::r32(clsid) == 0x3c30_5196), v))
 }
 
+/// The pixels of the surface interface `block` (amstream.rs draws movie frames into them):
+/// width, height, bit count, pixel format (flags, masks), pitch and address. None for anything
+/// that is not one of our surfaces.
+pub fn surface_memory(block: u32) -> Option<(i32, i32, u16, [u32; 5], u32, u32)> {
+    let (id, kind) = sid(block)?;
+    if kind > 2 {
+        return None;
+    }
+    surf(id).map(|s| (s.w, s.h, s.bpp, s.pf, s.pitch, s.bits))
+}
+
+/// Pixels written straight into surface `block` reach the window if it is the primary one.
+pub fn drawn(c: &mut Ctx, block: u32, r: Rect) {
+    if let Some((id, _)) = sid(block) {
+        present_if_primary(c, id, r);
+    }
+}
+
+/// The display mode's pixel format as a DDPIXELFORMAT at `p`.
+pub fn write_display_pf(p: u32) {
+    let (_, _, b) = display();
+    write_pf(p, b, plain_pf(b, b == 16));
+}
+
+/// A new DirectDraw object's IDirectDraw (one reference).
+pub fn new_direct_draw() -> u32 {
+    dd_iface(dd_new(false), 0)
+}
+
 pub fn init() {
     implement("ddraw", "DirectDrawCreate", DirectDrawCreate);
     implement("ddraw", "DirectDrawCreateEx", DirectDrawCreateEx);
