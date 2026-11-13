@@ -1,0 +1,23 @@
+by name in lower case (W), own module: 00000000, effect given
+  technique Main, 2 passes, Desc from a resource
+  pass 0
+  SetRenderState 7 0
+  SetRenderState 27 1
+  pass 1
+  SetRenderState 7 1
+by number: 00000000, effect given
+  technique Seven, 2 passes, Desc from a resource
+  pass 0
+  SetRenderState 7 0
+  SetRenderState 27 1
+  pass 1
+  SetRenderState 7 1
+by "#7": 00000000, effect given
+  technique Seven, 2 passes, Desc from a resource
+  pass 0
+  SetRenderState 7 0
+  SetRenderState 27 1
+  pass 1
+  SetRenderState 7 1
+image info: 00000000 2x1 depth 1 levels 1 type 3 file format 0
+image info, missing: 88760b59

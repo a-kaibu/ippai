@@ -617,6 +617,89 @@ fn D3DXCreateEffectFromResourceExW(c: &mut Ctx) -> u32 {
     effect_resource(c, true, true)
 }
 
+/// The bytes of an image resource D3DX loads (D3DXCreateTexture/GetImageInfo FromResource): RT_RCDATA in `module` (NULL:
+/// the program), else an RT_BITMAP given its BITMAPFILEHEADER back, as a .bmp file is (Wine's
+/// d3dx9 looks in the same two places). None: no such resource.
+pub fn resource_bytes(module: u32, name: u32, wide: bool) -> Option<Vec<u8>> {
+    let m = if module == 0 { crate::k32::module_handle(0, false) } else { module };
+    let id = crate::pe::ResId::from_arg(name, wide);
+    let data = |e: u32| mem::slice(m + r32(e), r32(e + 4)).to_vec();
+    if let Some(e) = crate::pe::find_resource(m, &crate::pe::ResId::Int(10), &id) {
+        return Some(data(e));
+    }
+    let dib = data(crate::pe::find_resource(m, &crate::pe::ResId::Int(2), &id)?);
+    Some(bmp_file(&dib))
+}
+
+/// A packed DIB (BITMAPINFOHEADER or BITMAPCOREHEADER, colour table, bits) as a .bmp file: the
+/// 14-byte BITMAPFILEHEADER in front, its bits offset past the header, masks and colour table.
+pub fn bmp_file(dib: &[u8]) -> Vec<u8> {
+    let u32_at = |o: usize| dib.get(o..o + 4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let u16_at = |o: usize| dib.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32;
+    let size = u32_at(0);
+    let table = if size == 12 {
+        // BITMAPCOREHEADER: RGBTRIPLEs, 2^bits of them under 16 bits
+        let bits = u16_at(10);
+        if bits < 16 { 3u64 << bits } else { 0 }
+    } else {
+        let (bits, comp, used) = (u16_at(14), u32_at(16), u32_at(32));
+        // (BI_BITFIELDS with a 40-byte header: three DWORD masks follow it)
+        let masks = if size == 40 && (comp == 3 || comp == 6) { if comp == 3 { 12 } else { 16 } } else { 0 };
+        let colours = if used != 0 { used as u64 } else if bits <= 8 && bits > 0 { 1u64 << bits } else { 0 };
+        masks + 4 * colours
+    };
+    let off = (14 + size as u64 + table).min(u32::MAX as u64) as u32;
+    let mut f = Vec::with_capacity(14 + dib.len());
+    f.extend_from_slice(b"BM");
+    f.extend_from_slice(&((14 + dib.len()) as u32).to_le_bytes());
+    f.extend_from_slice(&[0; 4]);
+    f.extend_from_slice(&off.to_le_bytes());
+    f.extend_from_slice(dib);
+    f
+}
+
+/// D3DXCreateTextureFromResource{A,W}(device, module, resource, &texture) and the Ex forms
+/// (device, module, resource, then the in-memory Ex arguments)
+fn texture_resource(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
+    let Some(data) = resource_bytes(c.a(1), c.a(2), wide) else {
+        return 0x88760b59;
+    };
+    let dev = c.a(0);
+    let a = if ex { std::array::from_fn(|k| c.a(3 + k as u32)) } else { [u32::MAX, u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, c.a(3)] };
+    texture_from(c, dev, &data, a)
+}
+fn D3DXCreateTextureFromResourceA(c: &mut Ctx) -> u32 {
+    texture_resource(c, false, false)
+}
+fn D3DXCreateTextureFromResourceW(c: &mut Ctx) -> u32 {
+    texture_resource(c, true, false)
+}
+fn D3DXCreateTextureFromResourceExA(c: &mut Ctx) -> u32 {
+    texture_resource(c, false, true)
+}
+fn D3DXCreateTextureFromResourceExW(c: &mut Ctx) -> u32 {
+    texture_resource(c, true, true)
+}
+/// D3DXGetImageInfoFromResource{A,W}(module, resource, &info)
+fn image_info_resource(c: &mut Ctx, wide: bool) -> u32 {
+    let Some(data) = resource_bytes(c.a(0), c.a(1), wide) else {
+        return 0x88760b59;
+    };
+    match image_info(&data) {
+        Some((w, h, _, ff)) => {
+            write_info(c.a(2), w, h, ff);
+            0
+        }
+        None => 0x88760b59,
+    }
+}
+fn D3DXGetImageInfoFromResourceA(c: &mut Ctx) -> u32 {
+    image_info_resource(c, false)
+}
+fn D3DXGetImageInfoFromResourceW(c: &mut Ctx) -> u32 {
+    image_info_resource(c, true)
+}
+
 // ---- ID3DXMatrixStack: the top at object + 16 (GetTop's pointer), the rest here ----
 
 static STACKS: std::sync::Mutex<Option<crate::HashMap<u32, Vec<M>>>> = std::sync::Mutex::new(None);
@@ -1370,6 +1453,12 @@ pub fn init() {
         ("D3DXCreateEffectFromResourceW", D3DXCreateEffectFromResourceW),
         ("D3DXCreateEffectFromResourceExA", D3DXCreateEffectFromResourceExA),
         ("D3DXCreateEffectFromResourceExW", D3DXCreateEffectFromResourceExW),
+        ("D3DXCreateTextureFromResourceA", D3DXCreateTextureFromResourceA),
+        ("D3DXCreateTextureFromResourceW", D3DXCreateTextureFromResourceW),
+        ("D3DXCreateTextureFromResourceExA", D3DXCreateTextureFromResourceExA),
+        ("D3DXCreateTextureFromResourceExW", D3DXCreateTextureFromResourceExW),
+        ("D3DXGetImageInfoFromResourceA", D3DXGetImageInfoFromResourceA),
+        ("D3DXGetImageInfoFromResourceW", D3DXGetImageInfoFromResourceW),
         ("D3DXMatrixMultiply", D3DXMatrixMultiply),
         ("D3DXMatrixMultiplyTranspose", D3DXMatrixMultiplyTranspose),
         ("D3DXMatrixTranspose", D3DXMatrixTranspose),
@@ -1450,6 +1539,81 @@ mod save_tests {
             prop_assert_eq!((rw, rh), (w, h));
             let opaque: Vec<u8> = px.chunks(4).flat_map(|p| [p[0], p[1], p[2], 255]).collect();
             prop_assert_eq!(back, opaque);
+        }
+    }
+
+    /// A .bmp file as a paint program writes it: header (40-byte info or 12-byte core), masks for
+    /// BI_BITFIELDS, `used` (0: all 2^bits) colour table entries, rows padded to 4 bytes.
+    fn bmp_with(core: bool, w: u32, h: u32, bits: u16, comp: u32, used: u32, seed: u64) -> Vec<u8> {
+        let (hdr, entry) = if core { (12u32, 3u32) } else { (40, 4) };
+        let colours = if used != 0 { used } else if bits <= 8 { 1 << bits } else { 0 };
+        let masks = if comp == 3 { 12 } else { 0 };
+        let table = masks + entry * colours;
+        let stride = (w * bits as u32).div_ceil(32) * 4;
+        let off = 14 + hdr + table;
+        let mut f = b"BM".to_vec();
+        f.extend_from_slice(&(off + stride * h).to_le_bytes());
+        f.extend_from_slice(&[0; 4]);
+        f.extend_from_slice(&off.to_le_bytes());
+        f.extend_from_slice(&hdr.to_le_bytes());
+        if core {
+            f.extend_from_slice(&(w as u16).to_le_bytes());
+            f.extend_from_slice(&(h as u16).to_le_bytes());
+            f.extend_from_slice(&1u16.to_le_bytes());
+            f.extend_from_slice(&bits.to_le_bytes());
+        } else {
+            for v in [w, h] {
+                f.extend_from_slice(&v.to_le_bytes());
+            }
+            f.extend_from_slice(&1u16.to_le_bytes());
+            f.extend_from_slice(&bits.to_le_bytes());
+            for v in [comp, stride * h, 2835, 2835, used, 0] {
+                f.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        if comp == 3 {
+            let m: [u32; 3] = if bits == 16 { [0xf800, 0x07e0, 0x001f] } else { [0xff0000, 0xff00, 0xff] };
+            for v in m {
+                f.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let mut x = seed | 1;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        };
+        for _ in 0..entry * colours {
+            f.push(next());
+        }
+        for _ in 0..stride * h {
+            f.push(next());
+        }
+        f
+    }
+
+    proptest! {
+        /// an RT_BITMAP resource (the file less its 14-byte header) given its header back is the
+        /// file again, and decodes as the file does: every header kind, depth and table size
+        #[test]
+        fn bitmap_resource_is_the_file(core in any::<bool>(), w in 1u32..12, h in 1u32..12, kind in 0usize..8,
+                                       used_frac in 0u32..3, seed in any::<u64>()) {
+            let (bits, comp): (u16, u32) = [(1, 0), (4, 0), (8, 0), (24, 0), (16, 0), (32, 0), (16, 3), (32, 3)][kind];
+            prop_assume!(!core || (comp == 0 && bits != 16 && bits != 32));
+            let used = if core || bits > 8 { 0 } else { [0, 1, (1u32 << bits) / 2][used_frac as usize].max(if used_frac > 0 { 1 } else { 0 }) };
+            let file = bmp_with(core, w, h, bits, comp, used, seed);
+            let back = super::bmp_file(&file[14..]);
+            prop_assert_eq!(&back, &file);
+            prop_assert_eq!(crate::picture::decode_bgra(&back), crate::picture::decode_bgra(&file));
+        }
+
+        /// whatever the resource holds, the header is 14 bytes in front of it, sizes in range
+        #[test]
+        fn bitmap_resource_never_panics(dib in proptest::collection::vec(any::<u8>(), 0..80)) {
+            let f = super::bmp_file(&dib);
+            prop_assert_eq!(&f[14..], &dib[..]);
+            prop_assert_eq!(u32::from_le_bytes([f[2], f[3], f[4], f[5]]) as usize, 14 + dib.len());
         }
     }
 
