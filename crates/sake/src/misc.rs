@@ -4370,8 +4370,45 @@ fn xinput_ok(_: &mut Ctx) -> u32 {
     0
 }
 
+/// GetFileTitle's answer for a path (comdlg32; as Wine): the part after the last '\\', '/' or
+/// ':'; None (-1) for an empty path, one with wildcards or brackets, or one ending in a separator.
+/// Extensions are kept (Windows hides them only when Explorer hides known extensions).
+pub(crate) fn file_title(path: &[u16]) -> Option<&[u16]> {
+    let sep = |c: u16| c == b'\\' as u16 || c == b'/' as u16 || c == b':' as u16;
+    if path.is_empty() || path.iter().any(|&c| c == b'*' as u16 || c == b'[' as u16 || c == b']' as u16) || sep(*path.last()?) {
+        return None;
+    }
+    let start = path.iter().rposition(|&c| sep(c)).map_or(0, |i| i + 1);
+    Some(&path[start..])
+}
+/// GetFileTitleA/W(lpszFile, lpszTitle, cchSize): 0, or the size it needs (with the
+/// terminator) when cchSize is short, or -1. The ANSI form works on the wide text, so a
+/// Shift-JIS trail byte 0x5c is no separator.
+fn get_file_title(c: &mut Ctx, wide: bool) -> u32 {
+    let (file, out, cap) = (c.a(0), c.a(1), c.a(2) & 0xffff);
+    if file == 0 || out == 0 {
+        return u32::MAX;
+    }
+    let w: Vec<u16> = if wide { wstr(file) } else { a2w(&cstr(file)) };
+    let Some(t) = file_title(&w) else { return u32::MAX };
+    let t = String::from_utf16_lossy(t);
+    let need = if wide { t.encode_utf16().count() } else { s2a(&t).len() } as u32 + 1;
+    if cap < need {
+        return need;
+    }
+    ret_str(out, cap, &t, wide);
+    0
+}
+fn GetFileTitleA(c: &mut Ctx) -> u32 {
+    get_file_title(c, false)
+}
+fn GetFileTitleW(c: &mut Ctx) -> u32 {
+    get_file_title(c, true)
+}
 pub fn init() {
     let _ = (s2a, r8);
+    implement("comdlg32", "GetFileTitleA", GetFileTitleA);
+    implement("comdlg32", "GetFileTitleW", GetFileTitleW);
     wts_init();
     implement("shell32", "SHGetKnownFolderPath", SHGetKnownFolderPath);
     // what installers (Inno Setup's uninstaller) call around their windows: no themes, no
@@ -4768,6 +4805,45 @@ fn wts_init() {
         }
         1 // S_FALSE
     });
+}
+
+#[cfg(test)]
+mod file_title_tests {
+    use super::file_title;
+    use proptest::prelude::*;
+
+    fn t(s: &str) -> Option<String> {
+        let w: Vec<u16> = s.encode_utf16().collect();
+        file_title(&w).map(String::from_utf16_lossy)
+    }
+
+    /// Wine's comdlg32 tests (filedlg: test_GetFileTitle) and the LZH self-extractor's call.
+    #[test]
+    fn as_wine() {
+        assert_eq!(t("C:\\dir\\file.txt").as_deref(), Some("file.txt"));
+        assert_eq!(t("file.txt").as_deref(), Some("file.txt"));
+        assert_eq!(t("c:file").as_deref(), Some("file"));
+        assert_eq!(t("a/b/c.lzh").as_deref(), Some("c.lzh"));
+        assert_eq!(t("Z:\\ippai\\game\\地っ球.exe").as_deref(), Some("地っ球.exe"));
+        assert_eq!(t(""), None);
+        assert_eq!(t("C:\\dir\\"), None);
+        assert_eq!(t("C:"), None);
+        assert_eq!(t("C:\\*.txt"), None);
+        assert_eq!(t("C:\\[a].txt"), None);
+    }
+
+    proptest! {
+        /// dir + separator + name gives name; the title never holds a separator and is a suffix.
+        #[test]
+        fn name_after_any_dir(dir in "[A-Za-z0-9 .\\\\/:\u{3042}-\u{3093}]{0,20}", sep in prop::sample::select(vec!['\\', '/', ':']), name in "[A-Za-z0-9 ._\u{30a2}-\u{30f3}]{1,16}") {
+            let p = format!("{dir}{sep}{name}");
+            prop_assert_eq!(t(&p), Some(name.clone()));
+            let w: Vec<u16> = p.encode_utf16().collect();
+            let got = file_title(&w).unwrap();
+            prop_assert!(w.ends_with(got));
+            prop_assert!(!got.iter().any(|&c| c == 92 || c == 47 || c == 58));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,16 @@
+A [C:\dir\file.lzh] cap 64: 0 "file.lzh"
+A [file.lzh] cap 64: 0 "file.lzh"
+A [c:file] cap 64: 0 "file"
+A [a/b/c.lzh] cap 64: 0 "c.lzh"
+A [C:\dir\] cap 64: -1
+A [C:] cap 64: -1
+A [] cap 64: -1
+A [C:\*.lzh] cap 64: -1
+A [C:\[x].lzh] cap 64: -1
+A [C:\dir\file.lzh] cap 8: 9
+A [C:\dir\file.lzh] cap 9: 0 "file.lzh"
+A [C:\dir\\x95\\x8e\xa6.lzh] cap 64: 0 "\x95\\x8e\xa6.lzh"
+A [C:\\x95\\x.lzh] cap 64: 0 "x.lzh"
+W cap 64: 0 "\u8868\u793a.lzh"
+W cap 3: 7
+W cap 64: -1
