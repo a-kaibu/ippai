@@ -41,6 +41,10 @@ impl koji::Memory for Mem {
         if !(0x10000..limit()).contains(&a) {
             return Err(Fault { addr: a, write: true });
         }
+        // (as kura's interp_write: the interpreter's store into translated code)
+        if in_code(a) {
+            CODE_WRITTEN.store(true, Relaxed);
+        }
         unsafe { *self.0.add(a as usize) = v };
         Ok(())
     }
@@ -114,6 +118,13 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
         mem(rng, rip)
     };
     use Code as C;
+    if rip_hi == 0 && WATCH.load(Relaxed) && rng.below(60) == 0 {
+        // a store into the program's own code (koji::jit::long's Gen::smc): its first bytes,
+        // often an instruction that already ran or runs next in a loop
+        let at = MemoryOperand::new(Register::RIP, Register::None, 1, (CODE as u64 + rng.below(48)) as i64, 8, false, Register::None);
+        out.push(Instruction::with2(C::Add_rm8_imm8, at, 1 + rng.below(3) as u32).unwrap());
+        return;
+    }
     let k = rng.below(40);
     if k >= 30 {
         if rng.below(40) == 0 {
@@ -684,6 +695,23 @@ fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_h
 const HASH: u32 = 0x8000;
 const HASH_N: u32 = 2048;
 const RING: u32 = 0xc000;
+/// a bit per 4 KB page with translated code (Cpu::jit_code_pages; addresses below 128 MB)
+const PAGES: u32 = 0xd000;
+
+/// Whether translations test their stores against the pages with translated code
+/// (koji::jit::set_watch, as kura for a main executable's W|X pages).
+static WATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn watch(_: u32) -> bool {
+    WATCH.load(Relaxed)
+}
+
+/// The translated code's byte ranges (kura's CODE_RANGES), and whether the interpreter wrote
+/// into them since last asked.
+static CODE_RANGES: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+static CODE_WRITTEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn in_code(a: u32) -> bool {
+    CODE_RANGES.lock().unwrap().iter().any(|&(s, n)| a >= s && a - s < n.max(1))
+}
 
 struct Jit {
     engine: Engine,
@@ -694,6 +722,9 @@ struct Jit {
     entries: HashMap<u32, (Func, u32, u32)>,
     /// blocks a region may take in
     range: (u32, u32),
+    /// translated code was written over (by a region's store, Cpu::jit_smc, or the
+    /// interpreter's): as kura, the translations went and the interpreter runs on
+    rewritten: bool,
 }
 
 impl Jit {
@@ -714,6 +745,8 @@ impl Jit {
                 let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
                 match r {
+                    // (as kura: it rewrote translated code, the region leaves)
+                    Exit::Continue if CODE_WRITTEN.load(Relaxed) => 2,
                     // (as kura: another MXCSR mode leaves the region, and so does the first
                     // read of its flags)
                     Exit::Continue if !koji::jit::sse_ok(c.mxcsr) => 2,
@@ -741,7 +774,11 @@ impl Jit {
             .func_wrap("env", "x87", |_: i32, _: i32, _: i32, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64| {})
             .unwrap();
         unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
-        Jit { engine: engine.clone(), store, linker, table, entries: HashMap::new(), range: (0, u32::MAX) }
+        unsafe { std::ptr::write_bytes((base + PAGES as usize) as *mut u8, 0, 0x1000) };
+        CODE_RANGES.lock().unwrap().clear();
+        CODE_WRITTEN.store(false, Relaxed);
+        koji::jit::set_watch(watch);
+        Jit { engine: engine.clone(), store, linker, table, entries: HashMap::new(), range: (0, u32::MAX), rewritten: false }
     }
 
     /// Points the Cpu at the hash table and the ring (regions jump to each other through them).
@@ -751,6 +788,7 @@ impl Jit {
         c.jit_hash = HASH;
         c.jit_mask = HASH_N - 1;
         c.jit_ring = RING;
+        c.jit_code_pages = PAGES;
         unsafe { put_cpu(m, &c) };
     }
 
@@ -760,6 +798,15 @@ impl Jit {
         let (lo, hi) = self.range;
         let region = koji::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), &[full], (END, END + 16), |a, _| a != END && a >= lo && a < hi).ok_or("refused")?;
         let bytes = m.finish();
+        for &(a, n) in &region.code {
+            CODE_RANGES.lock().unwrap().push((a, n));
+            for p in (a >> 12)..=((a + n.max(1) - 1) >> 12) {
+                if p < 0x8000 {
+                    let w = (base + PAGES as usize + 4 * (p as usize >> 5)) as *mut u32;
+                    unsafe { w.write(w.read() | 1 << (p & 31)) };
+                }
+            }
+        }
         if std::env::var("JDUMP").is_ok() { std::fs::write("/tmp/jit64-last.wasm", &bytes).ok(); eprintln!("module {} bytes", bytes.len()); }
         let module = Module::new(&self.engine, &bytes).map_err(|e| {
             std::fs::write("/tmp/jit64-bad.wasm", &bytes).ok();
@@ -810,8 +857,9 @@ impl Jit {
                 unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
                 self.entries.clear();
             }
-            if !koji::jit::sse_ok(c.mxcsr) {
-                // (as kura: the interpreter while MXCSR isn't the JIT's)
+            if !koji::jit::sse_ok(c.mxcsr) || self.rewritten {
+                // (as kura: the interpreter while MXCSR isn't the JIT's, and for code that
+                // was rewritten)
                 let mut c = c;
                 let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
@@ -831,6 +879,25 @@ impl Jit {
             let mut results = vec![Val::I32(0); 1];
             f.call(&mut self.store, &params, &mut results).map_err(|e| format!("trap: {e:?}"))?;
             regions += 1;
+            let mut c = unsafe { get_cpu(m) };
+            if c.jit_smc != 0 {
+                // (a store into a page with translated code, the region left at the next
+                // instruction: into the code itself, or data beside it, which leaves the
+                // translations alone)
+                let a = std::mem::take(&mut c.jit_smc);
+                unsafe { put_cpu(m, &c) };
+                if results[0].unwrap_i32() != 1 {
+                    return Err(format!("store at {a:#x} into a page with code: status {}", results[0].unwrap_i32()));
+                }
+                if in_code(a) {
+                    CODE_WRITTEN.store(true, Relaxed);
+                }
+            }
+            if CODE_WRITTEN.swap(false, Relaxed) {
+                self.rewritten = true;
+                unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+                self.entries.clear();
+            }
             match results[0].unwrap_i32() {
                 0 => {}
                 1 => {
@@ -842,7 +909,7 @@ impl Jit {
                     }
                 }
                 // (a step that changed MXCSR: on in the interpreter; one that read its flags)
-                2 if !koji::jit::sse_ok(unsafe { get_cpu(m) }.mxcsr) || SWITCHED.load(Relaxed) => {}
+                2 if !koji::jit::sse_ok(unsafe { get_cpu(m) }.mxcsr) || SWITCHED.load(Relaxed) || self.rewritten => {}
                 s => return Err(format!("status {s} at {:#x}", unsafe { get_cpu(m) }.eip)),
             }
         }
@@ -1213,6 +1280,8 @@ fn main() {
         // (JALLREGS: regions load and store all sixteen registers, as before they named theirs)
         koji::jit::long::DEBUG_ALL_REGS.store(std::env::var("JALLREGS").is_ok(), Relaxed);
         koji::jit::long::DEBUG_BLOCKS.store(if t % 2 == 1 { 1 + t / 2 % 3 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
+        // (every other pair of tests: stores checked against the code, some into it)
+        WATCH.store(t / 4 % 2 == 0, Relaxed);
         let mut list = Vec::new();
         let n = 5 + rng.below(40) as usize;
         while list.len() < n {
@@ -1314,4 +1383,53 @@ fn sse_encodes() {
         }
     }
     println!("ok {ok} bad {bad}");
+}
+
+/// Code that rewrites itself inside one region (issue #80): `mov eax, imm32` whose immediate
+/// the loop's `add byte [rip+...], 1` raises each time around. rdx: the sum of what EAX was.
+fn self_modifying(watch: bool) -> u64 {
+    let mut config = Config::new();
+    config.wasm_threads(true).consume_fuel(true);
+    let engine = Engine::new(&config).unwrap();
+    let pages = koji::jit::wasm::memory_min_pages();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(pages, pages)).unwrap();
+    let base = memory.data().as_ptr() as *mut u8 as usize;
+    // (the immediate's address: the loop's first instruction + 1)
+    let imm = MemoryOperand::new(Register::RIP, Register::None, 1, CODE as i64 + 5 + 1, 8, false, Register::None);
+    let mut list = vec![
+        Instruction::with2(Code::Mov_r32_imm32, Register::ECX, 3u32).unwrap(),
+        Instruction::with2(Code::Mov_r32_imm32, Register::EAX, 1u32).unwrap(),
+        Instruction::with2(Code::Add_rm8_imm8, imm, 1u32).unwrap(),
+        Instruction::with2(Code::Add_rm64_r64, Register::RDX, Register::RAX).unwrap(),
+        Instruction::with1(Code::Dec_rm32, Register::ECX).unwrap(),
+        Instruction::with_branch(Code::Jne_rel32_64, LBASE).unwrap(),
+        Instruction::with_branch(Code::Jmp_rel32_64, END as u64).unwrap(),
+    ];
+    // (the loop's label)
+    list[1].set_ip(LBASE);
+    let code = encode(&list, CODE as u64).unwrap();
+    // (the loop starts at +5: mov ecx is 5 bytes, its mov eax's immediate at +6)
+    assert_eq!(&code[5..7], &[0xb8, 1]);
+    let mut cpu = Cpu { mode64: 1, eip: CODE, jit_budget: 1 << 30, ..Cpu::default() };
+    cpu.set_gpr(4, (STACK - 0x800) as u64);
+    unsafe {
+        std::ptr::write_bytes((base + 0x10000) as *mut u8, 0, MEM - 0x10000);
+        std::ptr::copy_nonoverlapping(code.as_ptr(), (base + CODE as usize) as *mut u8, code.len());
+        put_cpu(base as *mut u8, &cpu);
+    }
+    WATCH.store(watch, Relaxed);
+    let mut jit = Jit::new(&engine, &memory, base);
+    jit.run(base).unwrap();
+    WATCH.store(false, Relaxed);
+    let c = unsafe { get_cpu(base as *mut u8) };
+    assert_eq!(c.eip, END);
+    c.gpr(2)
+}
+
+#[test]
+fn self_modifying_code_in_a_region() {
+    // the interpreter: 1 + 2 + 3
+    assert_eq!(self_modifying(true), 6);
+    // (unwatched, the region runs its translation of the code as it was: the test sees it)
+    assert_eq!(self_modifying(false), 3);
 }

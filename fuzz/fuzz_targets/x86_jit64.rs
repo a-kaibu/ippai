@@ -26,6 +26,8 @@ const CPU_AT: u32 = 0x1000;
 const HASH_AT: u32 = 0x4000; // 512 entries
 const HASH_N: u32 = 512;
 const RING_AT: u32 = 0x8000;
+/// a bit per 4 KB page with translated code (Cpu::jit_code_pages, addresses below 128 MB)
+const PAGES_AT: u32 = 0xc000;
 const LO: u32 = 0x10_0000;
 const HI: u32 = 0x14_0000;
 const CODE_MAX: usize = 1024;
@@ -64,6 +66,10 @@ impl Memory for Wasm<'_> {
     }
     fn write8(&mut self, a: u32, v: u8) -> Result<(), Fault> {
         if (LO..HI).contains(&a) {
+            // (as kura's interp_write: the interpreter's store into the code)
+            if a < CODE_END.load(Relaxed) {
+                REWROTE.store(true, Relaxed);
+            }
             unsafe { *self.0[a as usize].get() = v };
             Ok(())
         } else {
@@ -71,6 +77,10 @@ impl Memory for Wasm<'_> {
         }
     }
 }
+
+/// The code's end (it starts at LO), and whether the interpreter wrote into it.
+static CODE_END: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static REWROTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn cpu_in(mem: &[UnsafeCell<u8>], at: u32) -> &mut Cpu {
     // SAFETY: Cpu is plain data (repr(C), any bits valid) and CPU_AT is aligned; one thread
@@ -154,8 +164,9 @@ fuzz_target!(|data: &[u8]| {
             let d = mem.data();
             let cpu = cpu_in(d, at);
             match koji::step(cpu, &mut Wasm(d)) {
-                // (as kura's vnhost_jit_step: POPF setting TF or another MXCSR mode leaves the
-                // region)
+                // (as kura's vnhost_jit_step: it rewrote the code, POPF set TF or another
+                // MXCSR mode: the region leaves)
+                Exit::Continue if REWROTE.load(Relaxed) => 2,
                 Exit::Continue if cpu.eflags & koji::flags::TF != 0 || !koji::jit::sse_ok(cpu.mxcsr) => 2,
                 Exit::Continue => 0,
                 e => {
@@ -197,6 +208,18 @@ fuzz_target!(|data: &[u8]| {
     jcpu.jit_hash = HASH_AT;
     jcpu.jit_mask = HASH_N - 1;
     jcpu.jit_ring = RING_AT;
+    // (every store checked against the code's pages: koji::jit::set_watch, as kura for a main
+    // executable's W|X pages; a store into the code itself ends the JIT's run, as kura then
+    // drops the translations and keeps the page to the interpreter)
+    jit::set_watch(|_| true);
+    jcpu.jit_code_pages = PAGES_AT;
+    for p in (LO >> 12)..=((end.max(LO + 1) - 1) >> 12) {
+        let w = PAGES_AT + 4 * (p >> 5);
+        let v = u32::from_le_bytes(std::array::from_fn(|i| unsafe { *d[(w + i as u32) as usize].get() })) | 1 << (p & 31);
+        put(w, &v.to_le_bytes());
+    }
+    CODE_END.store(end, Relaxed);
+    REWROTE.store(false, Relaxed);
     *cpu_in(d, CPU_AT) = jcpu;
     // eip -> table index | block << ENTRY_SHIFT, as the hash table holds it
     let mut entries: HashMap<u32, u32> = HashMap::new();
@@ -252,6 +275,18 @@ fuzz_target!(|data: &[u8]| {
             Ok(r) => r,
             Err(e) => panic!("the JIT's code trapped for {:02x?}: {e:?}", code),
         };
+        let c = cpu_in(d, CPU_AT);
+        if c.jit_smc != 0 {
+            // (a region's store into a page with code: it left at the next instruction)
+            let a = std::mem::take(&mut c.jit_smc);
+            assert_eq!(r, 1, "a store into code at {a:#x} left with status {r} for {:02x?}", code);
+            if (LO..end).contains(&a) {
+                break;
+            }
+        }
+        if REWROTE.load(Relaxed) {
+            break;
+        }
         match r {
             0 => break, // budget
             1 => {
@@ -270,6 +305,7 @@ fuzz_target!(|data: &[u8]| {
             _ => break,
         }
     }
+    CODE_END.store(0, Relaxed);
     let mut got = cpu_in(d, CPU_AT).clone();
     got.materialize();
     let got_mem: Vec<u8> = (LO..HI).map(|a| unsafe { *d[a as usize].get() }).collect();
@@ -307,11 +343,6 @@ fuzz_target!(|data: &[u8]| {
                 break;
             }
         }
-    }
-    // (code that wrote over its own bytes: the long-mode JIT has no check for it, unlike
-    // koji::jit::packed's, and runs what it translated)
-    if window.0[..code.len()] != *code {
-        return;
     }
     let (at, at_mem) = first.unwrap_or((cpu, window.0));
     let memdiff: Vec<(u32, u8, u8)> =

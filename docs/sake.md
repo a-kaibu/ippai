@@ -242,8 +242,14 @@
     (1〜4 ブロックのリージョンをモジュール 1 つずつ、移動だらけで解釈器と比べる。全レジスタを出し入れする
     DEBUG_ALL_REGS とも)、long.rs の splice_regs の PBT、jit64test (JALLREGS で全レジスタ)。
     「書くレジスタしか読み込まない」壊し方は jit64test と x86_jit64 の両方が見つける。
-    制限: long.rs は同じリージョンの中で自分のコードを書き換えるのを見張らない (packed.rs の
-    write_op の検査がない)。x86_jit64 はその実行を比べない。
+    自己書き換え (#80): 書き換えられうるブロック (jit::set_watch、exe の W|X ページ) では、メモリに書く
+    命令 (iced の used_memory の書き込み) の後で、書いた先頭と末尾のバイトのページに翻訳済みコードが
+    あるか (Cpu::jit_code_pages) を見て、あれば Cpu::jit_smc を立てて次の命令でリージョンを抜ける
+    (kura の smc_hit が翻訳を捨て、そのページをインタプリタに回す)。インタプリタに回した命令の書き込みは
+    従来どおり interp_write。call の push は見ない (packed.rs と同じ)。テスト: jit64test の
+    self_modifying_code_in_a_region (見張りなしだと古い翻訳を実行することも確かめる)、乱数プログラムに
+    自分のコードへの `add byte [rip+..]` を混ぜる (見張りの有無を 2 件ずつ交互)、x86_jit64 は全ストアを
+    見張って比べる (regressions/x86_jit64/add-rip-rewrites-next)。
   - 残り: script 1.5 倍、C++ の std::map 2〜4 倍、x87 と minss の JIT。
 - gl.rs: x64 では引数を位置で並べる ('d'/'f' は xmm、他は a64 の下位)。glShaderSource の
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。

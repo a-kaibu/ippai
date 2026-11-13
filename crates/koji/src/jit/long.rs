@@ -94,7 +94,8 @@ const L_ST: u32 = L_FC + 3; // i32: an exit's status
 const L_DBG: u32 = L_FC + 4; // i32: debugging
 const L_H: u32 = L_FC + 5; // i32: the exit's hash probe (see Gen::chain)
 const L_E: u32 = L_FC + 6; // i32
-const N_I32: u32 = 7;
+const L_W: u32 = L_FC + 7; // i32: the address a store of the instruction writes (Gen::smc)
+const N_I32: u32 = 8;
 const L_V0: u32 = L_FC + N_I32; // v128: SSE operands (long/sse.rs)
 const L_V1: u32 = L_V0 + 1;
 const L_V2: u32 = L_V1 + 1; // v128: the MXCSR guard's scratch (long/sse.rs)
@@ -202,6 +203,13 @@ struct Gen<'a> {
     /// YMM registers whose halves a VEX.256 translation has swapped (long/sse.rs): leaving for
     /// the interpreter swaps them back first
     hi_swapped: Vec<Register>,
+    /// the block's code may be rewritten ([`super::WATCH`]): an instruction's store into a
+    /// page with translated code leaves at the next instruction with Cpu::jit_smc set
+    smc: bool,
+    /// the current instruction's store is checked so (its address kept in L_W by addr/push64)
+    watch_store: bool,
+    /// the current instruction went to the interpreter (whose stores the host checks)
+    fell_back: bool,
 }
 
 /// The registers `code` reads or writes (bit i: register i's local, L_R + i), and the ones
@@ -411,6 +419,9 @@ impl<'a> Gen<'a> {
             self.c.get(L_CPU).load32(o).add();
         }
         self.c.tee(L_A);
+        if self.watch_store {
+            self.c.get(L_A).set(L_W);
+        }
         let span = GUEST_HI - GUEST_LO;
         self.c.u32c(GUEST_LO).sub().u32c(span - size).gt_u().if_();
         self.depth += 1;
@@ -969,6 +980,7 @@ impl<'a> Gen<'a> {
     /// Runs the current instruction through the `step` import; with `ends`, leaves after it at
     /// the Cpu's EIP.
     fn fallback(&mut self, ends: bool) {
+        self.fell_back = true;
         self.flags_to_cpu();
         self.store_regs();
         let ip = self.ins.ip();
@@ -998,6 +1010,9 @@ impl<'a> Gen<'a> {
     fn push64(&mut self, v: u32) -> bool {
         let rsp = L_R + 4;
         self.c.get(rsp).x(I32_WRAP).i32c(8).sub().tee(L_A);
+        if self.watch_store {
+            self.c.get(L_A).set(L_W);
+        }
         let span = GUEST_HI - GUEST_LO;
         self.c.u32c(GUEST_LO).sub().u32c(span - 8).gt_u().if_();
         self.depth += 1;
@@ -1026,6 +1041,51 @@ impl<'a> Gen<'a> {
 
     /// One instruction; false if it ended the block.
     fn emit(&mut self) -> bool {
+        // (a store in a block whose code may be rewritten: see Gen::smc)
+        let size = if self.smc { stored_bytes(&self.ins) } else { 0 };
+        self.watch_store = size != 0;
+        self.fell_back = false;
+        let open = self.emit_one();
+        if self.watch_store && open && !self.fell_back {
+            self.smc_check(size);
+        }
+        self.watch_store = false;
+        open
+    }
+
+    /// After the current instruction's store of `size` bytes at L_W: when a page it wrote has
+    /// translated code (Cpu::jit_code_pages, a bit per 4 KB page), leaves for the host at the
+    /// next instruction with Cpu::jit_smc = the address (kura's smc_hit drops the translations
+    /// and keeps the page to the interpreter, as for koji::jit's 32-bit Gen::smc_check).
+    fn smc_check(&mut self, size: u32) {
+        for o in [0, size - 1] {
+            if o > 0 {
+                // (the last byte's page, when the store crosses into the next one)
+                self.c.get(L_W).u32c(o).add().set(L_E);
+            } else {
+                self.c.get(L_W).set(L_E);
+            }
+            self.c.get(L_CPU).load32(cpu_off!(jit_code_pages));
+            self.c.get(L_E).i32c(17).shr_u().i32c(2).shl().add().load32(0);
+            self.c.get(L_E).i32c(12).shr_u().shr_u().i32c(1).and();
+            if o > 0 {
+                self.c.or();
+            }
+        }
+        self.c.if_();
+        self.depth += 1;
+        self.c.get(L_CPU).get(L_W).store32(cpu_off!(jit_smc));
+        if !self.hi_swapped.is_empty() {
+            let r = self.hi_swapped.clone();
+            self.swap_hi(&r);
+        }
+        let next = self.ins.next_ip();
+        self.exit_to(next, RET_INTERP);
+        self.depth -= 1;
+        self.c.end();
+    }
+
+    fn emit_one(&mut self) -> bool {
         let ins = self.ins;
         self.temps = 0;
         let xchg_mem = ins.mnemonic() == Mnemonic::Xchg && self.has_mem();
@@ -1954,6 +2014,19 @@ impl<'a> Gen<'a> {
     }
 }
 
+/// The bytes `ins` writes to memory (0: none), as one store (the widest of them).
+fn stored_bytes(ins: &Instruction) -> u32 {
+    use iced_x86::OpAccess;
+    iced_x86::InstructionInfoFactory::new()
+        .info(ins)
+        .used_memory()
+        .iter()
+        .filter(|u| matches!(u.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite))
+        .map(|u| u.memory_size().size() as u32)
+        .max()
+        .unwrap_or(0)
+}
+
 fn reads_flags(ins: &Instruction) -> (u32, u32) {
     // (iced's RflagsBits: OF 1, SF 2, ZF 4, AF 8, CF 0x10, PF 0x20)
     let all = 0x3f;
@@ -2218,7 +2291,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     returns.sort_unstable();
     returns.dedup();
     returns.truncate(MAX_RETURNS);
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new() };
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, watch_store: false, fell_back: false };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();
@@ -2255,6 +2328,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
         g.flags = Flags::Cpu;
         g.mx_checked = None;
         g.mx_seen = [[None; 2]; 16];
+        g.smc = super::WATCH.get().is_some_and(|w| w(blocks[k].start as u32));
         let list = &blocks[k].ins;
         let mut open = true;
         for ins in list {
