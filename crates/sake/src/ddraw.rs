@@ -205,7 +205,73 @@ fn write_pf(p: u32, bpp: u16, pf: [u32; 5]) {
 fn write_desc(p: u32, s: Option<&Surf>) {
     write_desc_mode(p, s, display())
 }
+/// DDSURFACEDESC(2)'s offset `o` (as in a 32-bit program) in this program: a 64-bit one has
+/// lpSurface (36) as 8 bytes at 40 and everything after it 8 bytes on (mingw-w64's ddraw.h:
+/// 120 / 136 bytes, ddpfPixelFormat 80, ddsCaps 112; #128)
+fn wide(o: u32) -> u32 {
+    wide_at(o, mem::x64())
+}
+fn wide_at(o: u32, x64: bool) -> u32 {
+    match o {
+        _ if !x64 || o < 36 => o,
+        36 => 40,
+        _ => o + 8,
+    }
+}
+/// DDBLTFX's offset `o` (as in a 32-bit program) in a 64-bit one, where the z-buffer and alpha
+/// unions before dwFillColor hold pointers (mingw-w64's ddraw.h: 128 bytes, dwFillColor 104,
+/// ddckDestColorkey 112, ddckSrcColorkey 120; dwDDFX and dwROP stay at 4 and 8; #128)
+fn fx_at(o: u32, x64: bool) -> u32 {
+    match o {
+        _ if !x64 || o < 40 => o,
+        80 => 104,
+        // (dwFillColor's union holds lpDDSPattern: 8 bytes)
+        84.. => o + 28,
+        _ => o,
+    }
+}
+
+/// The size of a DDSURFACEDESC (`v2`: DDSURFACEDESC2) in this program (a 64-bit one pads the
+/// end to 8 bytes too: 120 / 136)
+fn desc_size(v2: bool) -> u32 {
+    desc_size_at(v2, mem::x64())
+}
+fn desc_size_at(v2: bool, x64: bool) -> u32 {
+    match (v2, x64) {
+        (false, false) => 108,
+        (true, false) => 124,
+        (false, true) => 120,
+        (true, true) => 136,
+    }
+}
+const DESC_MAX: u32 = 136;
+
+/// A 32-bit DDSURFACEDESC(2) (`x86`, 108 or 124 bytes) as the 64-bit one (120 / 136): the
+/// fields before lpSurface as they are, lpSurface widened with a zero high half, the rest
+/// moved 8 bytes on.
+fn desc_to_x64(x86: &[u8]) -> Vec<u8> {
+    let mut o = vec![0u8; x86.len() + 12];
+    o[..36].copy_from_slice(&x86[..36]);
+    o[40..44].copy_from_slice(&x86[36..40]);
+    o[48..48 + x86.len() - 40].copy_from_slice(&x86[40..]);
+    let n = o.len() as u32;
+    o[..4].copy_from_slice(&n.to_le_bytes());
+    o
+}
+
 fn write_desc_mode(p: u32, s: Option<&Surf>, mode: (i32, i32, u16)) {
+    if !mem::x64() {
+        return write_desc_x86(p, s, mode);
+    }
+    // (made as the 32-bit one, then laid out as the 64-bit one)
+    let n = if r32(p) == 120 { 108 } else { 124 };
+    let t = mem::heap_alloc(124, true);
+    w32(t, n);
+    write_desc_x86(t, s, mode);
+    mem::write(p, &desc_to_x64(&mem::slice(t, n).to_vec()));
+    mem::heap_free(t);
+}
+fn write_desc_x86(p: u32, s: Option<&Surf>, mode: (i32, i32, u16)) {
     let size = match r32(p) {
         108 => 108,
         _ => 124,
@@ -707,8 +773,8 @@ fn S_EnumAttachedSurfaces(c: &mut Ctx) -> u32 {
     let att = if s.next != 0 && s.caps & CAPS_FRONTBUFFER != 0 { s.next } else { s.mip };
     for att in s.faces.iter().copied().chain(std::iter::once(att)).filter(|&a| a != 0) {
         if let Some(n) = surf(att) {
-            let d = mem::heap_alloc(124, true);
-            w32(d, if kind == 0 { 108 } else { 124 });
+            let d = mem::heap_alloc(DESC_MAX, true);
+            w32(d, desc_size(kind != 0));
             write_desc(d, Some(&n));
             with(|st| st.surfs.get_mut(&att).map(|x| x.refs += 1));
             let b = block(att, kind);
@@ -928,7 +994,12 @@ fn S_Lock(c: &mut Ctx) -> u32 {
     write_desc(desc, Some(&s));
     w32(desc + 4, r32(desc + 4) | 0x800);
     let bpp = s.bpp as u32 / 8;
-    w32(desc + 36, s.bits + r.t.max(0) as u32 * s.pitch + r.l.max(0) as u32 * bpp);
+    let bits = s.bits + r.t.max(0) as u32 * s.pitch + r.l.max(0) as u32 * bpp;
+    // (lpSurface: a pointer, 8 bytes at 40 in a 64-bit program)
+    w32(desc + wide(36), bits);
+    if mem::x64() {
+        w32(desc + 44, 0);
+    }
     with(|st| st.surfs.get_mut(&id).map(|x| x.lock = Some(r)));
     DD_OK
 }
@@ -1206,7 +1277,7 @@ fn S_Blt(c: &mut Ctx) -> u32 {
     let dr = if drp == 0 { Rect { l: 0, t: 0, r: dst.w, b: dst.h } } else { Rect::read(drp) };
     if flags & 0x400 != 0 {
         // COLORFILL
-        let color = if fx != 0 { r32(fx + 80) } else { 0 };
+        let color = if fx != 0 { r32(fx + fx_at(80, mem::x64())) } else { 0 };
         fill(&dst, dr, color);
         present_if_primary(c, id, dr);
         return DD_OK;
@@ -1216,7 +1287,7 @@ fn S_Blt(c: &mut Ctx) -> u32 {
         if dst.caps & CAPS_ZBUFFER == 0 || fx == 0 {
             return DDERR_INVALIDPARAMS;
         }
-        fill(&dst, clip_rect(dr, dst.w, dst.h), r32(fx + 80));
+        fill(&dst, clip_rect(dr, dst.w, dst.h), r32(fx + fx_at(80, mem::x64())));
         return DD_OK;
     }
     if flags & 0x20000 != 0 && fx != 0 && srcb == 0 {
@@ -1233,7 +1304,7 @@ fn S_Blt(c: &mut Ctx) -> u32 {
         return DDERR_INVALIDRECT;
     }
     let key = if flags & 0x10000 != 0 && fx != 0 {
-        Some((r32(fx + 92), r32(fx + 96)))
+        Some((r32(fx + fx_at(92, mem::x64())), r32(fx + fx_at(96, mem::x64()))))
     } else if flags & 0x8000 != 0 {
         src.ck_src
     } else {
@@ -1573,10 +1644,10 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
         _ => 0,
     };
     let flags = r32(d + 4);
-    let mut caps = if flags & 1 != 0 { r32(d + 104) } else { CAPS_OFFSCREENPLAIN };
+    let mut caps = if flags & 1 != 0 { r32(d + wide(104)) } else { CAPS_OFFSCREENPLAIN };
     // (cube map faces without DDSCAPS2_CUBEMAP: refused, as Windows, Wine's dsurface tests
     // CubeMapTest)
-    if flags & 1 != 0 && kind == 2 && r32(d + 108) & 0xfc00 != 0 && r32(d + 108) & 0x200 == 0 {
+    if flags & 1 != 0 && kind == 2 && r32(d + wide(108)) & 0xfc00 != 0 && r32(d + wide(108)) & 0x200 == 0 {
         put32(out, 0);
         return DDERR_INVALIDCAPS;
     }
@@ -1584,7 +1655,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     let (mut bpp, mut r565) = (mbpp, mbpp == 16);
     let mut pfv = None;
     if flags & 0x1000 != 0 {
-        let pf = d + 72;
+        let pf = d + wide(72);
         let pff = r32(pf + 4);
         if pff & 0x20 != 0 {
             bpp = 8;
@@ -1624,13 +1695,13 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     // a mipmap is a texture; a complex surface is a flip chain, a mipmap or a cube map; a
     // mipmap count is of a complex one, and not 0; a complex mipmap without one goes down to
     // 1x1 (ddraw7's test_mipmap)
-    let cube = kind == 2 && flags & 1 != 0 && r32(d + 108) & 0x200 != 0;
+    let cube = kind == 2 && flags & 1 != 0 && r32(d + wide(108)) & 0x200 != 0;
     let mip = caps & CAPS_MIPMAP != 0;
     if (mip && caps & CAPS_TEXTURE == 0) || (caps & CAPS_COMPLEX != 0 && !mip && caps & CAPS_FLIP == 0 && !cube) {
         put32(out, 0);
         return DDERR_INVALIDCAPS;
     }
-    let faces = r32(d + 108) & CUBE_FACES;
+    let faces = r32(d + wide(108)) & CUBE_FACES;
     if cube && faces == 0 {
         put32(out, 0);
         return DDERR_INVALIDPARAMS;
@@ -1668,7 +1739,7 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
         })
     });
     if flags & 0x10000 != 0 {
-        let key = (r32(d + 64), r32(d + 68));
+        let key = (r32(d + wide(64)), r32(d + wide(68)));
         with(|s| s.surfs.get_mut(&id).map(|x| x.ck_src = Some(key)));
     }
     if caps & CAPS_PRIMARY != 0 {
@@ -1743,8 +1814,8 @@ const MODES: [(i32, i32); 5] = [(640, 480), (800, 600), (1024, 768), (1280, 720)
 
 fn D_EnumDisplayModes(c: &mut Ctx) -> u32 {
     let (filter, ctx, cb) = (c.a(2), c.a(3), c.a(4));
-    let size = if dd_version(c) >= 2 { 124 } else { 108 };
-    let d = mem::heap_alloc(124, true);
+    let size = desc_size(dd_version(c) >= 2);
+    let d = mem::heap_alloc(DESC_MAX, true);
     'all: for bpp in [8u16, 16, 32] {
         for (w, h) in MODES {
             if filter != 0 && r32(filter + 4) & 0x6 == 0x6 && (r32(filter + 12) as i32 != w || r32(filter + 8) as i32 != h) {
@@ -1773,15 +1844,15 @@ fn D_EnumSurfaces(c: &mut Ctx) -> u32 {
         return DD_OK;
     }
     let (obj, v) = dd_of(c.a(0));
-    let caps = if flags & 1 == 0 && want != 0 && r32(want + 4) & 1 != 0 { r32(want + 104) } else { 0 };
+    let caps = if flags & 1 == 0 && want != 0 && r32(want + 4) & 1 != 0 { r32(want + wide(104)) } else { 0 };
     let mut ids: Vec<u32> = with(|s| s.surfs.iter().filter(|(_, x)| x.dd == obj && x.caps & caps == caps).map(|(&i, _)| i).collect());
     ids.sort_unstable();
     let kind = [0u8, 0, 1, 2][v];
-    let d = mem::heap_alloc(124, true);
+    let d = mem::heap_alloc(DESC_MAX, true);
     for id in ids {
         let Some(s) = surf(id) else { continue };
         with(|st| st.surfs.get_mut(&id).map(|x| x.refs += 1));
-        w32(d, if v >= 2 { 124 } else { 108 });
+        w32(d, desc_size(v >= 2));
         write_desc(d, Some(&s));
         if c.call(cb, &[block(id, kind), d, ctx]) == 0 {
             break;
@@ -2141,7 +2212,41 @@ mod tests {
         assert_eq!(get(316, true, 316), None);
     }
 
+    /// A 64-bit program's DDSURFACEDESC(2) offsets, as mingw-w64's ddraw.h (#128): lpSurface
+    /// 40, ddckCKSrcBlt 72, ddpfPixelFormat 80, ddsCaps 112, ddsCaps.dwCaps2 116, sizes 120/136
+    #[test]
+    fn x64_desc_offsets() {
+        for (x86, x64) in [(4, 4), (8, 8), (16, 16), (24, 24), (36, 40), (64, 72), (72, 80), (104, 112), (108, 116), (120, 128)] {
+            assert_eq!(wide_at(x86, true), x64, "{x86}");
+            assert_eq!(wide_at(x86, false), x86);
+        }
+        assert_eq!([false, true].map(|v| desc_size_at(v, true)), [120, 136]);
+        // DDBLTFX: dwDDFX, dwROP, dwFillColor, ddckDestColorkey, ddckSrcColorkey (lo, hi)
+        assert_eq!([4, 8, 80, 84, 92, 96].map(|o| fx_at(o, true)), [4, 8, 104, 112, 120, 124]);
+        assert_eq!([4, 8, 80, 84, 92, 96].map(|o| fx_at(o, false)), [4, 8, 80, 84, 92, 96]);
+        assert_eq!([false, true].map(|v| desc_size_at(v, false)), [108, 124]);
+    }
+
     proptest! {
+        /// The 64-bit layout keeps every field of the 32-bit one (read back through wide_at),
+        /// lpSurface's high half and the alignment gap zero, and dwSize the 64-bit size
+        #[test]
+        fn x64_desc_keeps_fields(mut x86 in proptest::collection::vec(any::<u8>(), 124), v2 in any::<bool>()) {
+            let n = if v2 { 124 } else { 108 };
+            x86.truncate(n);
+            x86[..4].copy_from_slice(&(n as u32).to_le_bytes());
+            let o = desc_to_x64(&x86);
+            prop_assert_eq!(o.len() as u32, desc_size_at(v2, true));
+            prop_assert_eq!(u32::from_le_bytes(o[..4].try_into().unwrap()), o.len() as u32);
+            for f in (4..n as u32).step_by(4) {
+                let w = wide_at(f, true) as usize;
+                prop_assert_eq!(&o[w..w + 4], &x86[f as usize..f as usize + 4]);
+            }
+            prop_assert_eq!(&o[36..40], &[0u8; 4]);
+            prop_assert_eq!(&o[44..48], &[0u8; 4]);
+            prop_assert!(o[n + 8..].iter().all(|&b| b == 0));
+        }
+
         /// Whatever dwSize the caller gives, no word lands past it, and the HEL's words are
         /// the HAL's minus the AGP ones
         #[test]

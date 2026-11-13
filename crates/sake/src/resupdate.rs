@@ -356,7 +356,7 @@ pub fn write(file: &[u8], tree: &Tree) -> Option<Vec<u8>> {
     let secs = pe.sections(&b);
     let image = secs.iter().map(|x| x.va.saturating_add(align(x.vsize.max(x.raw_size), sa))).max().unwrap_or(0);
     w32(&mut b, pe.opt + 56, image);
-    let init: u32 = secs.iter().filter(|x| x.flags & 0x40 != 0).map(|x| x.raw_size).sum();
+    let init = secs.iter().filter(|x| x.flags & 0x40 != 0).fold(0u32, |a, x| a.wrapping_add(x.raw_size));
     w32(&mut b, pe.opt + 8, init);
     Some(b)
 }

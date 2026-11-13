@@ -4,8 +4,7 @@
  * event; GetFilterGraph and FindFilterByName on it; the errors on the way. The movie is
  * dshow.c's: an uncompressed AVI (64x48, 10 fps, 20 frames, each frame's halves two grays) and
  * the `.vnv` ippai pack makes of it, which sake plays.
- * (x86 only: the games are, and DirectDraw is 32-bit sake's)
- * arch: 32
+ * (x64 too: the 64-bit DDSURFACEDESC, #128)
  * libs: -lole32 -loleaut32 -luuid -lddraw */
 #include "../probe.h"
 #include <initguid.h>
