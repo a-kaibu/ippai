@@ -1423,6 +1423,10 @@ fn pf<T: Unit>(fmt: u32, va: &mut VaArgs, m: crt::fmt::Mode) -> Option<Vec<T>> {
 fn legacy<T: Unit>(fmt: u32, va: &mut VaArgs) -> Option<Vec<T>> {
     pf(fmt, va, crate::misc::legacy_mode())
 }
+/// vsprintf's text for `fmt` with the arguments at `va` (MFC's CString::Format)
+pub(crate) fn vsprintf_a(fmt: u32, va: u32) -> Option<Vec<u8>> {
+    legacy::<u8>(fmt, &mut VaArgs::stack(va))
+}
 /// sprintf / vsprintf / swprintf (no count): all of it and the NUL
 fn put_all<T: Unit>(out: u32, s: Option<Vec<T>>) -> u32 {
     let Some(s) = s else { return u32::MAX };
@@ -2691,6 +2695,26 @@ fn longjmp(c: &mut Ctx) -> u32 {
     w32(crate::cur().teb, g(5));
     c.cpu.regs[koji::EAX] = if v == 0 { 1 } else { v };
     c.cpu.eip = g(6);
+    c.jumped = true;
+    0
+}
+
+/// _EH_prolog (x86, VC6-era C++ functions' prologue, EAX: the function's EH handler): pushes
+/// the frame's state (-1), the handler and the SEH link, links it into FS:[0], and makes EBP the
+/// frame pointer at the return address's slot (which takes the caller's EBP), as msvcrt's does
+pub(crate) fn _EH_prolog(c: &mut Ctx) -> u32 {
+    let e = c.esp;
+    let ret = r32(e);
+    let teb = crate::cur().teb;
+    w32(e - 4, u32::MAX);
+    w32(e - 8, c.cpu.regs[koji::EAX]);
+    w32(e - 12, r32(teb));
+    w32(teb, e - 12);
+    w32(e, c.cpu.regs[koji::EBP]);
+    c.cpu.regs[koji::EBP] = e;
+    c.cpu.regs[koji::ESP] = e - 12;
+    c.cpu.regs[koji::EAX] = ret;
+    c.cpu.eip = ret;
     c.jumped = true;
     0
 }
@@ -4045,6 +4069,9 @@ pub fn init() {
     reg!(_setmaxstdio);
     reg!(wcsncmp, getenv, _ismbblead, memcpy_s, memmove_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp, remove, rename);
     implement("msvcrt", "_setjmp", _setjmp3);
+    if !mem::x64() {
+        implement("msvcrt", "_EH_prolog", _EH_prolog);
+    }
     reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);
     reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,
         __p__fmode, __p__commode, __p___argc, __p___argv, __p___wargv, __p__wcmdln, __p__wenviron, __wgetmainargs,
@@ -4343,5 +4370,41 @@ mod issue88 {
                 assert_eq!(mem::r16(table + 2 * b as u32), user_ctype(crate::text::acp(), b));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod eh_prolog_tests {
+    use crate::api::Ctx;
+    use crate::mem::{self, r32, w32};
+
+    /// _EH_prolog leaves the frame msvcrt's does: [ebp] the caller's EBP, [ebp-4] state -1,
+    /// [ebp-8] the handler (EAX), [ebp-12] the old FS:[0] (and FS:[0] -> it), ESP below it,
+    /// back at the return address
+    #[test]
+    fn frame_as_msvcrts() {
+        let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+        let teb = crate::cur().teb;
+        let old = r32(teb);
+        let stack = mem::heap_alloc(64, true);
+        let e = stack + 32;
+        w32(e, 0x0040_1054);
+        let mut cpu = koji::Cpu::default();
+        cpu.regs[koji::EAX] = 0x0040_2e1b;
+        cpu.regs[koji::EBP] = 0x1234;
+        let mut c = Ctx { cpu: &mut cpu, esp: e, edx: None, jumped: false, st0: None, trap: 0 };
+        super::_EH_prolog(&mut c);
+        assert!(c.jumped);
+        assert_eq!(cpu.eip, 0x0040_1054);
+        assert_eq!(cpu.regs[koji::EBP], e);
+        assert_eq!(cpu.regs[koji::ESP], e - 12);
+        assert_eq!(r32(e), 0x1234);
+        assert_eq!(r32(e - 4), u32::MAX);
+        assert_eq!(r32(e - 8), 0x0040_2e1b);
+        assert_eq!(r32(e - 12), old);
+        assert_eq!(r32(teb), e - 12);
+        w32(teb, old);
+        mem::heap_free(stack);
     }
 }

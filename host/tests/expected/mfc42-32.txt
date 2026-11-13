@@ -1,0 +1,72 @@
+empty refs -1 len 0
+a "hello" refs 1 len 5 alloc 64
+copy shares 1 refs 2
+write unshares 1
+a "hello" refs 1 len 5 alloc 64
+b "hello!" refs 1 len 6 alloc 64
+assigned empty is nil 0
+len 1 alloc 64
+len 64 alloc 64
+len 65 alloc 128
+len 128 alloc 128
+len 129 alloc 256
+len 256 alloc 256
+len 257 alloc 512
+len 512 alloc 512
+len 513 alloc 513
+len 600 alloc 600
+b "short" refs 1 len 5 alloc 600
+trimleft "lead and trail 
+ " refs 1 len 18 alloc 64
+trimright "lead and trail" refs 1 len 14 alloc 64
+cs+sz "hello world" refs 1 len 11 alloc 64
+sz+cs "say hello" refs 1 len 9 alloc 64
++= "hello, again" refs 1 len 12 alloc 64
+format "42-x-beef" refs 1 len 9 alloc 64
+mid "llo, " refs 1 len 5 alloc 64
+mid past end "" refs -1 len 0 alloc 0
+left "hel" refs 1 len 3 alloc 64
+right "again" refs 1 len 5 alloc 64
+find 7 -1
+emptied is nil 1
+class CObject name CObject size 0x4 schema 0xffff base (none)
+class CCmdTarget name CCmdTarget size 0x20 schema 0xffff base CObject
+class CWinThread name CWinThread size 0x6c schema 0xffff base CCmdTarget
+class CWinApp name CWinApp size 0xc4 schema 0xffff base CWinThread
+class CWnd name CWnd size 0x40 schema 0xffff base CCmdTarget
+class CDialog name CDialog size 0x60 schema 0xffff base CWnd
+class CFile name CFile size 0x10 schema 0xffff base CObject
+class CException name CException size 0x8 schema 0xffff base CObject
+class CFileException name CFileException size 0x14 schema 0xffff base CException
+map CCmdTarget base (none)
+map CWnd base CCmdTarget
+map CDialog base CWnd
+map CWinApp base CCmdTarget
+entry CDialog IDOK sig 12
+entry CDialog IDCANCEL sig 12
+entry CDialog WM_INITDIALOG sig 10
+entry CDialog WM_SETFONT sig 10
+entry CWnd WM_NCDESTROY sig 12
+CWinApp app 1 thread 1 name probe autodelete 1 tid 1 handle 1
+AfxWinInit 1 instance 1 resources 1 app instance 1 show 1 appname probe exe 1 profile .INI 1
+FromHandle same 1 hwnd ok 1 permanent 0
+CDialog(0x66) help 0x66 template 0x66 hwnd 0 refs 1 expected 1 state 1 parent 0
+IsKindOf CDialog 1 CWnd 1 CFile 0
+GetRuntimeClass CDialog
+CreateIndirect 1 attached 1 wndproc mfc 1
+DestroyWindow 1 hwnd 0 window gone 1 permanent 0
+DoModal 1 hwnd 0
+after ~CWinApp app 0
+CFile hFile -1 close 0 name empty 1
+open missing 0 cause 2 oserror 2 name no such file.bin
+create 1 close 1
+length 6 position 6
+file name mfc42probe.bin
+closed hFile -1
+read 1 got 6 abcdef
+seek read 3 cde
+caught CFileException cause 2 oserror 2 autodelete 1 name thrown.bin message 1 "thrown.bin was not found." help 0xf0e2
+caught CFileException cause 5 oserror 5 autodelete 1 name thrown.bin message 1 "Access to thrown.bin was denied." help 0xf0e5
+caught CFileException cause 13 oserror 112 autodelete 1 name disk.bin message 1 "Disk full while accessing disk.bin." help 0xf0ed
+caught as CException cause 3
+ThrowOsError(0) returns
