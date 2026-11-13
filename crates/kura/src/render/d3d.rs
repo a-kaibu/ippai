@@ -383,8 +383,24 @@ struct Pipe2 {
     zuse: u32,
 }
 
+/// What a Direct3D 9 pixel shader's WGSL samples in each of its 8 slots, 2 bits each (0 2D,
+/// 1 3D, 2 cube; dxwgsl declares `texN` so).
+fn slot_dims(code: &str) -> u32 {
+    let mut d = 0;
+    for s in 0..8 {
+        if code.contains(&format!("var tex{s}: texture_3d<")) {
+            d |= 1 << (s * 2);
+        } else if code.contains(&format!("var tex{s}: texture_cube<")) {
+            d |= 2 << (s * 2);
+        }
+    }
+    d
+}
+
 struct Pipe {
     pipeline: Id,
+    /// Direct3D 9: what the pixel shader samples in each slot (see `slot_dims`)
+    dims: u32,
     /// Direct3D 9 stencil test: its reference
     stencil_ref: Option<u32>,
 }
@@ -517,6 +533,13 @@ pub struct D3d {
     layout0: Id,
     layout1: Id,
     layout: Id,
+    /// Direct3D 9 pixel shaders sampling cube or volume textures: their group 1 and pipeline
+    /// layouts, by slot dimensions (see `slot_dims`)
+    layouts: HashMap<u32, (Id, Id)>,
+    /// slot dimensions by shader
+    shader_dims: HashMap<u32, u32>,
+    /// white cube and volume textures for slots with nothing of their kind bound
+    white_dims: [Id; 2],
     data_buf: Id,
     data_size: u32,
     white: Id,
@@ -640,6 +663,9 @@ impl D3d {
             layout0,
             layout1,
             layout,
+            layouts: HashMap::new(),
+            shader_dims: HashMap::new(),
+            white_dims: [0; 2],
             data_buf: 0,
             data_size: 0,
             white: gpu::view(white, ""),
@@ -975,6 +1001,7 @@ impl D3d {
                             keep
                         });
                     }
+                    self.shader_dims.insert(id as u32, slot_dims(&code));
                     self.shader_src.insert(id as u32, code.into_owned());
                     i += 4;
                 }
@@ -2153,16 +2180,71 @@ impl D3d {
             String::new()
         };
         let stencil_ref = stencil.filter(|_| depth).map(|st| st[0]);
-        let (Some(&vm), Some(&pm)) = (self.shaders.get(&vs), self.shaders.get(&ps)) else { return Pipe { pipeline: 0, stencil_ref } };
+        let (Some(&vm), Some(&pm)) = (self.shaders.get(&vs), self.shaders.get(&ps)) else { return Pipe { pipeline: 0, dims: 0, stencil_ref } };
+        let dims = self.shader_dims.get(&ps).copied().unwrap_or(0);
+        let layout = self.layouts_for(dims).1;
         let pipeline = gpu::render_pipeline(&format!(
             r#"{{"layout":{},"vertex":{{"module":{vm},"entryPoint":"main","buffers":[{}]}},"fragment":{{"module":{pm},"entryPoint":"main","targets":[{}]}},"primitive":{{"topology":{}{strip_fmt},"cullMode":{},"frontFace":"ccw"}}{ds}}}"#,
-            self.layout,
+            layout,
             buffers.join(","),
             targets.join(","),
             q(pick(&TOPOLOGY, topo, "triangle-list")),
             q(cull)
         ));
-        Pipe { pipeline, stencil_ref }
+        Pipe { pipeline, dims, stencil_ref }
+    }
+
+    /// The group 1 and pipeline layouts of a pixel shader with slot dimensions `dims`.
+    fn layouts_for(&mut self, dims: u32) -> (Id, Id) {
+        if dims == 0 {
+            return (self.layout1, self.layout);
+        }
+        if let Some(&l) = self.layouts.get(&dims) {
+            return l;
+        }
+        let mut e1 = Vec::new();
+        for s in 0..8 {
+            let d = ["2d", "3d", "cube"][(dims >> (s * 2) & 3).min(2) as usize];
+            e1.push(format!(r#"{{"binding":{},"visibility":2,"texture":{{"sampleType":"float","viewDimension":{}}}}}"#, s * 2, q(d)));
+            e1.push(format!(r#"{{"binding":{},"visibility":2,"sampler":{{"type":"filtering"}}}}"#, s * 2 + 1));
+        }
+        let layout1 = gpu::bind_group_layout(&format!(r#"{{"entries":[{}]}}"#, e1.join(",")));
+        let layout = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{},{layout1}]}}"#, self.layout0));
+        self.layouts.insert(dims, (layout1, layout));
+        (layout1, layout)
+    }
+
+    /// The view of texture `id` a slot of dimension `dim` (0 2D, 1 3D, 2 cube) samples: white when
+    /// the texture is of another kind.
+    fn slot_view(&mut self, id: u32, dim: u32) -> Option<Id> {
+        let t = self.textures.get(&id)?;
+        match dim {
+            1 => (t.dim == "3d").then_some(t.view),
+            2 => {
+                if t.dim != "2d" || t.layers < 6 {
+                    return None;
+                }
+                let levels = t.levels;
+                Some(self.view2(id, 3, 0, levels, 0, 6, false))
+            }
+            _ => (t.dim == "2d").then_some(t.view),
+        }
+    }
+
+    /// A white texture for a slot of dimension `dim` (1 3D, 2 cube) with nothing of its kind.
+    fn white_of(&mut self, dim: u32) -> Id {
+        if dim == 0 {
+            return self.white;
+        }
+        let k = dim as usize - 1;
+        if self.white_dims[k] == 0 {
+            let (size, d) = if dim == 1 { ("[1,1,1]", "3d") } else { ("[1,1,6]", "2d") };
+            let tex = gpu::texture(&format!(r#"{{"size":{size},"dimension":{},"format":"bgra8unorm","usage":{}}}"#, q(d), usage::T_BINDING | usage::T_COPY_DST));
+            let px = [255u8; 24];
+            gpu::write_texture(tex, 0, [0; 3], px.as_ptr(), 24, 4, 1, if dim == 1 { [1, 1, 1] } else { [1, 1, 6] });
+            self.white_dims[k] = gpu::view(tex, &format!(r#"{{"dimension":{}}}"#, q(if dim == 1 { "3d" } else { "cube" })));
+        }
+        self.white_dims[k]
     }
 
     fn sampler(&mut self, key: u32) -> Id {
@@ -2172,9 +2254,10 @@ impl D3d {
         let filter = |f: u32| if f >= 2 { "linear" } else { "nearest" };
         let mip = (key >> 10) & 3;
         let s = gpu::sampler(&format!(
-            r#"{{"addressModeU":{},"addressModeV":{},"magFilter":{},"minFilter":{},"mipmapFilter":{},"lodMaxClamp":{}}}"#,
+            r#"{{"addressModeU":{},"addressModeV":{},"addressModeW":{},"magFilter":{},"minFilter":{},"mipmapFilter":{},"lodMaxClamp":{}}}"#,
             q(pick(&ADDRESS, key & 7, "repeat")),
             q(pick(&ADDRESS, (key >> 3) & 7, "repeat")),
+            q(pick(&ADDRESS, (key >> 12) & 7, "repeat")),
             q(filter((key >> 6) & 3)),
             q(filter((key >> 8) & 3)),
             q(if mip >= 2 { "linear" } else { "nearest" }),
@@ -2185,7 +2268,7 @@ impl D3d {
     }
 
     fn draw(&mut self, c: &[u32], i: usize) -> usize {
-        let (pipe, stencil_ref) = self.pipelines.get(&c[i + 1]).map_or((0, None), |p| (p.pipeline, p.stencil_ref));
+        let (pipe, dims, stencil_ref) = self.pipelines.get(&c[i + 1]).map_or((0, 0, None), |p| (p.pipeline, p.dims, p.stencil_ref));
         let [vx, vy, vw, vh, minz, maxz] = std::array::from_fn(|k| f32of(c[i + 2 + k]));
         let (sx, sy, sw, sh) = (c[i + 8], c[i + 9], c[i + 10], c[i + 11]);
         let (vso, vss, pso, pss) = (c[i + 12], c[i + 13], c[i + 14], c[i + 15]);
@@ -2261,20 +2344,28 @@ impl D3d {
             k1.push(u32::MAX);
             k1.push(t[1]);
         }
+        if dims != 0 {
+            k1.push(u32::MAX - 1);
+            k1.push(dims);
+        }
         let g1 = match self.groups1.get(&k1) {
             Some(&g) => g,
             None => {
                 let mut entries = Vec::new();
                 for s in 0..8u32 {
                     let t = texs.iter().find(|x| x[0] == s);
-                    let view = t
-                        .and_then(|t| self.textures.get(&t[1]).filter(|tex| tex.format != DS && !drawn_to(t[1])))
-                        .map_or(self.white, |tex| tex.view);
+                    let dim = dims >> (s * 2) & 3;
+                    let id = t.map(|t| t[1]).filter(|&id| !drawn_to(id) && self.textures.get(&id).is_some_and(|tex| tex.format != DS));
+                    let view = match id.and_then(|id| self.slot_view(id, dim)) {
+                        Some(v) => v,
+                        None => self.white_of(dim),
+                    };
                     let smp = self.sampler(t.map_or(0x5, |t| t[2]));
                     entries.push((s * 2, Res::Obj(view)));
                     entries.push((s * 2 + 1, Res::Obj(smp)));
                 }
-                let g = gpu::bind_group(self.layout1, &entries);
+                let layout1 = self.layouts_for(dims).0;
+                let g = gpu::bind_group(layout1, &entries);
                 if self.groups1.len() > 4096 {
                     drop_all(&mut self.groups1);
                 }

@@ -6,10 +6,11 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() == 3 && a[1] == "dump" {
         let file = std::fs::read(&a[2]).unwrap_or_else(|e| panic!("{}: {e}", a[2]));
-        let ev = apitrace::trace::unpack(&file).unwrap();
+        // (a game's trace, cut where the game was killed: the calls before its last chunk)
+        let (ev, _) = apitrace::trace::unpack_cut(&file).unwrap();
         let mut p = apitrace::trace::Parser::new(&ev).unwrap();
         println!("{:?}", p.properties);
-        while let Some(c) = p.next_call().unwrap() {
+        while let Ok(Some(c)) = p.next_call() {
             println!("{c}");
         }
         return;

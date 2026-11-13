@@ -22,8 +22,6 @@ d3d9rtfmt-32	https://github.com/a-kaibu/ippai/issues/53	Packed and floating-poin
 replay_d3d9rtfmt-32-32	https://github.com/a-kaibu/ippai/issues/53	The same render-target format differences reproduced through apitrace.
 mfreader-32	https://github.com/a-kaibu/ippai/issues/85	The browser audio decoder does not yet produce the reference PCM stream.
 replay_d3d11-32-32	https://github.com/a-kaibu/ippai/issues/64	The remaining shader instruction translation is unsupported.
-replay_b2012_fudegaki_soft-32-32	https://github.com/a-kaibu/ippai/issues/107	Volume textures and LockBox are not implemented.
-replay_b2012_trois-32-32	https://github.com/a-kaibu/ippai/issues/107	Volume textures and LockBox are not implemented.
 replay_b2011_anim_team_mm-*	https://github.com/a-kaibu/ippai/issues/105	Recorded QueryInterface, scene-state and frame differences; includes drill variants.
 replay_b2015_guilty-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame/readback differences; includes drill variants.
 replay_b2019_anim-*	https://github.com/a-kaibu/ippai/issues/105	Recorded image and call-result differences.

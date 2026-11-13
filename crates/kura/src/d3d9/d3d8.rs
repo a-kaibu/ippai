@@ -89,6 +89,15 @@ unsafe fn surface_desc8(d9: &[u32; 8], out: u32) {
     }
 }
 
+/// D3DVOLUME_DESC8 from D3DVOLUME_DESC: Size after Pool.
+unsafe fn volume_desc8(d9: &[u32; 8], out: u32) {
+    let (_, rows) = fmt::pitch_rows(d9[0], d9[4], d9[5]);
+    let size = fmt::layout(d9[0]).map_or(0, |(bpb, bs)| d9[4].div_ceil(bs) * bpb * rows * d9[6]);
+    for (i, v) in [d9[0], d9[1], d9[2], d9[3], size, d9[4], d9[5], d9[6]].into_iter().enumerate() {
+        wr(out, i, v);
+    }
+}
+
 // Direct3D 8 IIDs (first dword)
 const IID_IUNKNOWN: u32 = 0;
 const IID_D3D8: u32 = 0x1dd9e8da;
@@ -157,12 +166,24 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
                 device::call(d, IF_SURFACE, m + 4, this, args, after)
             }
         }
+        (IF_VOLUME, 8) => {
+            let mut d9 = [0u32; 8];
+            let r = c9(d, IF_VOLUME, 8, this, &[me, d9.as_mut_ptr() as u32], after);
+            if r == S_OK {
+                volume_desc8(&d9, a(1));
+            }
+            r
+        }
         (IF_TEXTURE | IF_CUBE | IF_VOLUMETEX, 14..=18) => {
-            if m == 14 && iface != IF_VOLUMETEX {
+            if m == 14 {
                 let mut d9 = [0u32; 8];
                 let r = c9(d, iface, 17, this, &[me, a(1), d9.as_mut_ptr() as u32], after);
                 if r == S_OK {
-                    surface_desc8(&d9, a(2));
+                    if iface == IF_VOLUMETEX {
+                        volume_desc8(&d9, a(2));
+                    } else {
+                        surface_desc8(&d9, a(2));
+                    }
                 }
                 r
             } else {

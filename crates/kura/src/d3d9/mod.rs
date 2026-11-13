@@ -29,6 +29,8 @@ mod golden_tests;
 mod present_tests;
 #[cfg(test)]
 pub(crate) mod sb_tests;
+#[cfg(test)]
+mod volume_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -85,6 +87,8 @@ pub enum Data {
     SwapChain,
     Surface(device::Surface),
     Texture(device::Texture),
+    /// a volume texture's level (IDirect3DVolume9)
+    Volume(device::Volume),
     Buffer(device::Buffer),
     Decl(device::Decl),
     Shader(device::ShaderObj),
@@ -244,6 +248,7 @@ impl D3d {
                 }
             }
             Data::Buffer(b) => self.guest_free(b.mem),
+            Data::Volume(v) => self.guest_free(v.mem),
             Data::Device => {
                 // (a device made after this one is not this one's)
                 if self.dev.as_ref().is_some_and(|dev| dev.obj == id) {
@@ -486,6 +491,8 @@ const IID_SURFACE: u32 = 0x0cfbaf3a;
 const IID_VB: u32 = 0xb64bb1b5;
 const IID_IB: u32 = 0x7c9dd65e;
 const IID_SWAPCHAIN: u32 = 0x794950f2;
+const IID_VOLUMETEX: u32 = 0x2518526c;
+const IID_VOLUME: u32 = 0x24f416e6;
 
 unsafe fn query_interface(d: &mut D3d, id: u32, iface: u32, riid: *const u8, out: *mut u32) -> u32 {
     if out.is_null() {
@@ -504,6 +511,8 @@ unsafe fn query_interface(d: &mut D3d, id: u32, iface: u32, riid: *const u8, out
         IID_VB => iface == IF_VB,
         IID_IB => iface == IF_IB,
         IID_SWAPCHAIN => iface == IF_SWAPCHAIN,
+        IID_VOLUMETEX => iface == IF_VOLUMETEX,
+        IID_VOLUME => iface == IF_VOLUME,
         _ => false,
     };
     if !ok {

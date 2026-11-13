@@ -798,11 +798,8 @@ impl<'a> Gen<'a> {
             _ => format!("{}.xy", paren(coord)),
         };
         let c0 = c.clone();
-        if ty == 3 || ty == 4 {
-            // (cube/volume textures aren't bound: black)
-            return "vec4f(0.0, 0.0, 0.0, 1.0)".into();
-        }
-        let c = crate::addr::coord(&self.addr, sampler, &c);
+        // (cube and volume textures: the sampler's own address modes, no emulated ones)
+        let c = if ty == 3 || ty == 4 { c } else { crate::addr::coord(&self.addr, sampler, &c) };
         let call = match (kind, self.tex_level) {
             (1, _) => format!("textureSampleLevel(tex{0}, smp{0}, {1}, {2})", sampler, c, extra),
             (2, false) => format!("textureSampleBias(tex{0}, smp{0}, {1}, {2})", sampler, c, extra),
@@ -1219,10 +1216,13 @@ impl<'a> Gen<'a> {
         h.push_str(HELPERS);
         h.push_str(PS_HELPERS);
         for &(reg, ty) in &s.samplers {
-            if ty == 2 || ty == 0 {
-                let _ = writeln!(h, "@group(1) @binding({}) var tex{}: texture_2d<f32>;", reg * 2, reg);
-                let _ = writeln!(h, "@group(1) @binding({}) var smp{}: sampler;", reg * 2 + 1, reg);
-            }
+            let dim = match ty {
+                3 => "texture_cube",
+                4 => "texture_3d",
+                _ => "texture_2d",
+            };
+            let _ = writeln!(h, "@group(1) @binding({}) var tex{}: {}<f32>;", reg * 2, reg, dim);
+            let _ = writeln!(h, "@group(1) @binding({}) var smp{}: sampler;", reg * 2 + 1, reg);
         }
         self.addr = opts.addr.iter().filter(|a| s.samplers.iter().any(|&(r, ty)| r == a.sampler && (ty == 2 || ty == 0))).copied().collect();
         h.push_str(&crate::addr::helpers(&self.addr));
@@ -1389,3 +1389,76 @@ fn alpha_ok(a: f32, func: u32) -> bool {
   }
 }
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid(w: &str) -> naga::Module {
+        let m = naga::front::wgsl::parse_str(w).unwrap_or_else(|e| panic!("{}\n{w}", e.emit_to_string(w)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&m)
+            .unwrap_or_else(|e| panic!("{e:?}\n{w}"));
+        m
+    }
+
+    /// The dimension `tex<n>` is declared with.
+    fn dim_of(m: &naga::Module, n: u32) -> Option<naga::ImageDimension> {
+        let name = format!("tex{n}");
+        m.global_variables.iter().find(|(_, g)| g.name.as_deref() == Some(name.as_str())).and_then(|(_, g)| match m.types[g.ty].inner {
+            naga::TypeInner::Image { dim, arrayed: false, .. } => Some(dim),
+            _ => None,
+        })
+    }
+
+    fn opts() -> Options {
+        Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 }
+    }
+
+    /// Cube and volume samplers (dcl_cube, dcl_volume) are textures of their kind sampled at
+    /// .xyz with every texld form (#107: they sampled as black, undeclared), 2D ones beside them
+    /// still 2D.
+    #[test]
+    fn cube_and_volume_samplers_are_sampled() {
+        use naga::ImageDimension as D;
+        // dcl_2d / dcl_cube / dcl_volume: texture type in bits 27-30 of the usage token
+        let dcl = |s: u32, ty: u32| [0x0200001f, 0x8000_0000 | ty << 27, 0xa00f0800 | s];
+        // texld r0, t0, sN; texldp r1, t0, sN; texldb r2, t0, sN (ps_2_0)
+        for (ty, want) in [(3, D::Cube), (4, D::D3)] {
+            let mut c = vec![0xffff0200u32, 0x0200001f, 0x80000000, 0xb00f0000];
+            c.extend(dcl(0, 2));
+            c.extend(dcl(1, ty));
+            c.extend([0x03000042, 0x800f0000, 0xb0e40000, 0xa0e40801]);
+            c.extend([0x03010042, 0x800f0001, 0xb0e40000, 0xa0e40801]);
+            c.extend([0x03020042, 0x800f0002, 0xb0e40000, 0xa0e40801]);
+            c.extend([0x03000042, 0x800f0003, 0xb0e40000, 0xa0e40800]);
+            // oC0 = r0 + r1 + r2 + r3
+            c.extend([0x03000002, 0x800f0000, 0x80e40000, 0x80e40001]);
+            c.extend([0x03000002, 0x800f0000, 0x80e40000, 0x80e40002]);
+            c.extend([0x03000002, 0x800f0000, 0x80e40000, 0x80e40003]);
+            c.extend([0x02000001, 0x800f0800, 0x80e40000, 0x0000ffff]);
+            let s = Shader::parse(&c).unwrap();
+            let w = Gen::new(&s).pixel(&opts());
+            let m = valid(&w);
+            assert_eq!(dim_of(&m, 1), Some(want), "{w}");
+            assert_eq!(dim_of(&m, 0), Some(D::D2), "{w}");
+            assert!(!w.contains("vec4f(0.0, 0.0, 0.0, 1.0)"), "no black stand-in: {w}");
+            assert_eq!(w.matches("(tex1, smp1, ").count(), 3, "{w}");
+            assert!(w.contains("textureSampleBias(tex1"), "{w}");
+        }
+        // ps_3_0: dcl_texcoord0 v0; texldl r0, v0, s1; texldd r1, v0, s1, v0, v0
+        for (ty, want) in [(3, D::Cube), (4, D::D3)] {
+            let mut c = vec![0xffff0300u32, 0x0200001f, 0x80000005, 0x900f0000];
+            c.extend(dcl(1, ty));
+            c.extend([0x0300005f, 0x800f0000, 0x90e40000, 0xa0e40801]);
+            c.extend([0x0500005d, 0x800f0001, 0x90e40000, 0xa0e40801, 0x90e40000, 0x90e40000]);
+            c.extend([0x03000002, 0x800f0000, 0x80e40000, 0x80e40001]);
+            c.extend([0x02000001, 0x800f0800, 0x80e40000, 0x0000ffff]);
+            let s = Shader::parse(&c).unwrap();
+            let w = Gen::new(&s).pixel(&opts());
+            let m = valid(&w);
+            assert_eq!(dim_of(&m, 1), Some(want), "{w}");
+            assert!(w.contains("textureSampleLevel(tex1") && w.contains("textureSampleGrad(tex1"), "{w}");
+        }
+    }
+}

@@ -40,6 +40,9 @@ d3d9sb-* ^(want|got) +(vsf|psf) [0-9]+ all
 d3d9-* ^(want|got) +caps blend src 
 # StretchRect with D3DTEXF_NONE: WARP filters linearly, GPUs' drivers use point (sake: point)
 d3d9-* ^image surfaces:
+# WebGPU has no border addressing: sake emulates D3DTADDRESS_BORDER in U and V of 2D textures
+# (dxwgsl addr.rs), a volume texture's W clamps instead
+d3d9vol-* ^(want|got) +ADDRESSW BORDER: 
 # the d3d9 probe's trace played back (tests/replay): its pictures in the probe's order are r<call>;
 # sampling (r307) and address2 (r443) take tolerance 10 in the probe (WARP's 1/16 filter weights),
 # the replay's pictures 2; r1023 is surfaces (above), and so is the back buffer at its Present (f0)

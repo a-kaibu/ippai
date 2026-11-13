@@ -19,7 +19,9 @@ const LOCK_READONLY: u32 = 0x10;
 const LOCK_DISCARD: u32 = 0x2000;
 
 const RT_SURFACE: u32 = 1;
+const RT_VOLUME: u32 = 2;
 const RT_TEXTURE: u32 = 3;
+const RT_VOLUMETEX: u32 = 4;
 const RT_VB: u32 = 6;
 const RT_IB: u32 = 7;
 
@@ -61,6 +63,28 @@ pub struct Texture {
     pub gpu: u32,
     pub levels: Vec<u32>,
     pub lod: u32,
+    /// a volume texture's depth (its levels are [`Volume`]s; 0: a 2D texture of surfaces)
+    pub depth: u32,
+}
+
+/// A level of a volume texture: its texels in guest memory (made on first lock), slices of
+/// `rows` rows `pitch` bytes apart, `slice` bytes apart; uploaded on unlock (the page texture
+/// is 3D, one layer per slice: gpu::CREATE_TEXTURE2 dimension 1).
+pub struct Volume {
+    pub w: u32,
+    pub h: u32,
+    pub depth: u32,
+    pub fmt: u32,
+    pub pool: u32,
+    pub usage: u32,
+    pub gpu: u32,
+    pub level: u32,
+    pub container: u32,
+    pub mem: u32,
+    pub pitch: u32,
+    pub slice: u32,
+    /// the locked box (left, top, front, right, bottom, back; all 0: read only)
+    pub lock: Option<[u32; 6]>,
 }
 
 pub struct Buffer {
@@ -504,7 +528,7 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
             }
             _ => E_NOTIMPL,
         },
-        IF_VOLUME => D3DERR_INVALIDCALL,
+        IF_VOLUME => volume_call(d, m, this, &a),
         _ => E_NOTIMPL,
     }
 }
@@ -596,9 +620,10 @@ const CAPS: [u32; 76] = {
     c[12] = 0x3fff;
     c[13] = 0xff; // AlphaCmpCaps
     c[14] = 0x8 | 0x80 | 0x200 | 0x4000 | 0x8_0000; // ShadeCaps
-    // TextureCaps: PERSPECTIVE, ALPHA, TEXREPEATNOTSCALEDBYSIZE, CUBEMAP, MIPMAP, MIPVOLUMEMAP; no POW2 or
-    // CUBEMAP_POW2: WebGPU textures have any size (AdvHD refuses to start without that)
-    c[15] = 0x1 | 0x4 | 0x40 | 0x800 | 0x4000 | 0x8000;
+    // TextureCaps: PERSPECTIVE, ALPHA, TEXREPEATNOTSCALEDBYSIZE, CUBEMAP, VOLUMEMAP, MIPMAP, MIPVOLUMEMAP;
+    // no POW2, CUBEMAP_POW2 or VOLUMEMAP_POW2: WebGPU textures have any size (AdvHD refuses to
+    // start without that)
+    c[15] = 0x1 | 0x4 | 0x40 | 0x800 | 0x2000 | 0x4000 | 0x8000;
     c[16] = 0x0300_0000 | 0x0001_0000 | 0x0002_0000 | 0x0100 | 0x0200 | 0x0400; // TextureFilterCaps
     c[17] = c[16];
     c[18] = c[16];
@@ -1081,11 +1106,12 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             S_OK
         }
         23 => create_texture(d, a(1), a(2), a(3), a(4), a(5), a(6), a(7)),
-        24 | 25 => {
+        24 => create_volume_texture(d, [a(1), a(2), a(3)], a(4), a(5), a(6), a(7), a(8)),
+        25 => {
             if d.trace {
-                eprintln!("d3d9: cube/volume textures not supported");
+                eprintln!("d3d9: cube textures not supported");
             }
-            wrp(a(if m == 24 { 8 } else { 6 }), 0, 0);
+            wrp(a(6), 0, 0);
             D3DERR_NOTAVAILABLE
         }
         26 | 27 => {
@@ -1747,7 +1773,7 @@ unsafe fn create_texture(d: &mut D3d, w: u32, h: u32, levels: u32, usage: u32, f
     let max = 32 - w.max(h).leading_zeros();
     let levels = if usage & 0x400 != 0 { 1 } else if levels == 0 { max } else { levels.min(max) };
     let gpu = if pool == POOL_SYSTEMMEM || pool == POOL_SCRATCH { 0 } else { gpu_texture(w, h, levels, f, usage) };
-    let tex = Texture { w, h, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0 };
+    let tex = Texture { w, h, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0, depth: 0 };
     let addr = d.new_obj(IF_TEXTURE, 0, Data::Texture(tex));
     let id = d.id_of(addr);
     let mut lv = Vec::new();
@@ -1771,6 +1797,161 @@ unsafe fn create_texture(d: &mut D3d, w: u32, h: u32, levels: u32, usage: u32, f
     }
     wrp(out, 0, addr);
     S_OK
+}
+
+/// CreateVolumeTexture(w, h, depth, levels, usage, format, pool, out): a texture of `depth`
+/// slices, its levels [`Volume`]s (Windows: no render target or depth-stencil volumes, no
+/// depth formats; levels down to 1x1x1 of the largest of the three).
+unsafe fn create_volume_texture(d: &mut D3d, size: [u32; 3], levels: u32, usage: u32, f: u32, pool: u32, out: u32) -> u32 {
+    let [w, h, depth] = size;
+    if out == 0 || w == 0 || h == 0 || depth == 0 || !fmt::supported(f) || fmt::is_depth(f) || usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL) != 0 {
+        if d.trace {
+            eprintln!("d3d9: CreateVolumeTexture {w}x{h}x{depth} format {f:#x} usage {usage:#x}: not supported");
+        }
+        if out != 0 {
+            wrp(out, 0, 0);
+        }
+        return D3DERR_INVALIDCALL;
+    }
+    let max = 32 - w.max(h).max(depth).leading_zeros();
+    let levels = if levels == 0 { max } else { levels.min(max) };
+    let gpu = if pool == POOL_SYSTEMMEM || pool == POOL_SCRATCH {
+        0
+    } else {
+        let id = gpu_id();
+        gpu::record(|b| b.cmd(&[gpu::CREATE_TEXTURE2, id, w, h, depth, levels, fmt::page_format(f), 1]));
+        id
+    };
+    let tex = Texture { w, h, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0, depth };
+    let addr = d.new_obj(IF_VOLUMETEX, 0, Data::Texture(tex));
+    let id = d.id_of(addr);
+    let mut lv = Vec::new();
+    for l in 0..levels {
+        let (lw, lh, ld) = ((w >> l).max(1), (h >> l).max(1), (depth >> l).max(1));
+        let (pitch, rows) = fmt::pitch_rows(f, lw, lh);
+        let v = Volume { w: lw, h: lh, depth: ld, fmt: f, pool, usage, gpu, level: l, container: id, mem: 0, pitch, slice: pitch * rows, lock: None };
+        let va = d.new_obj(IF_VOLUME, id, Data::Volume(v));
+        let vid = d.id_of(va);
+        // (a level's references are the texture's)
+        if let Some(o) = d.objs.get_mut(&vid) {
+            o.refs = 0;
+        }
+        lv.push(vid);
+    }
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+        t.levels = lv;
+    }
+    wrp(out, 0, addr);
+    S_OK
+}
+
+/// IDirect3DVolume9: GetDevice, private data, GetContainer(riid, out), GetDesc(desc),
+/// LockBox(locked, box, flags), UnlockBox.
+unsafe fn volume_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) -> u32 {
+    let Some(Data::Volume(v)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
+    match m {
+        3 => device_out(d, a(1)),
+        4..=6 => private_data(d, m, this, a),
+        7 => {
+            let c = v.container;
+            if a(2) == 0 {
+                return D3DERR_INVALIDCALL;
+            }
+            d.add_ref(c);
+            wrp(a(2), 0, d.addr_of(c));
+            S_OK
+        }
+        8 => {
+            // D3DVOLUME_DESC: Format, Type, Usage, Pool, Width, Height, Depth
+            if a(1) == 0 {
+                return D3DERR_INVALIDCALL;
+            }
+            let desc = [v.fmt, RT_VOLUME, v.usage, v.pool, v.w, v.h, v.depth];
+            std::ptr::copy_nonoverlapping(desc.as_ptr(), a(1) as *mut u32, 7);
+            S_OK
+        }
+        9 => lock_volume(d, this, a(1), a(2), a(3)),
+        10 => unlock_volume(d, this),
+        _ => E_NOTIMPL,
+    }
+}
+
+/// The volume's guest copy, made on first use.
+fn volume_mem(d: &mut D3d, v: u32) -> Option<u32> {
+    let Some(Data::Volume(vl)) = d.objs.get(&v).map(|o| &o.data) else { return None };
+    if vl.mem != 0 {
+        return Some(vl.mem);
+    }
+    let mem = d.guest_alloc((vl.slice * vl.depth).max(16));
+    if mem == 0 {
+        return None;
+    }
+    // (zeros, as a new texture reads)
+    unsafe { std::ptr::write_bytes(mem as *mut u8, 0, (vl.slice * vl.depth) as usize) };
+    if let Some(Data::Volume(vl)) = d.objs.get_mut(&v).map(|o| &mut o.data) {
+        vl.mem = mem;
+    }
+    Some(mem)
+}
+
+/// LockBox(D3DLOCKED_BOX { RowPitch, SlicePitch, pBits }, box or NULL, flags).
+unsafe fn lock_volume(d: &mut D3d, v: u32, out: u32, bx: u32, flags: u32) -> u32 {
+    if out == 0 {
+        return D3DERR_INVALIDCALL;
+    }
+    let Some(mem) = volume_mem(d, v) else { return D3DERR_INVALIDCALL };
+    let Some(Data::Volume(vl)) = d.objs.get_mut(&v).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
+    if vl.lock.is_some() {
+        return D3DERR_INVALIDCALL;
+    }
+    // D3DBOX: Left, Top, Right, Bottom, Front, Back
+    let b = if bx != 0 { [rd(bx, 0), rd(bx, 1), rd(bx, 4), rd(bx, 2), rd(bx, 3), rd(bx, 5)] } else { [0, 0, 0, vl.w, vl.h, vl.depth] };
+    let (bpb, bs) = fmt::layout(vl.fmt).unwrap_or((4, 1));
+    if b[0] >= b[3] || b[1] >= b[4] || b[2] >= b[5] || b[3] > vl.w || b[4] > vl.h || b[5] > vl.depth || (bs > 1 && (b[0] % bs != 0 || b[1] % bs != 0)) {
+        return D3DERR_INVALIDCALL;
+    }
+    vl.lock = Some(if flags & LOCK_READONLY != 0 { [0; 6] } else { b });
+    let bits = mem + b[2] * vl.slice + (b[1] / bs) * vl.pitch + (b[0] / bs) * bpb;
+    wr(out, 0, vl.pitch);
+    wr(out, 1, vl.slice);
+    wrp(out + 8, 0, bits);
+    S_OK
+}
+
+unsafe fn unlock_volume(d: &mut D3d, v: u32) -> u32 {
+    let Some(Data::Volume(vl)) = d.objs.get_mut(&v).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
+    let Some(b) = vl.lock.take() else { return D3DERR_INVALIDCALL };
+    if b[3] > b[0] {
+        upload_volume(d, v, b);
+    }
+    S_OK
+}
+
+/// Uploads box `b` (left, top, front, right, bottom, back) of a volume's guest copy to its page
+/// texture, a slice at a time (the page's layer z), converted to the page's texels.
+fn upload_volume(d: &mut D3d, v: u32, b: [u32; 6]) {
+    let Some(Data::Volume(vl)) = d.objs.get(&v).map(|o| &o.data) else { return };
+    if vl.gpu == 0 || vl.mem == 0 {
+        return;
+    }
+    let (bpb, bs) = fmt::layout(vl.fmt).unwrap_or((4, 1));
+    let (x0, y0) = (b[0] / bs * bs, b[1] / bs * bs);
+    let (x1, y1) = (b[3].min(vl.w), b[4].min(vl.h));
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let (w, h) = (x1 - x0, y1 - y0);
+    let bpp = fmt::page_bpp(vl.fmt);
+    let (gpu, level, f, pitch, slice, mem) = (vl.gpu, vl.level, vl.fmt, vl.pitch, vl.slice, vl.mem);
+    for z in b[2]..b[5].min(vl.depth) {
+        let src = mem + z * slice + (y0 / bs) * pitch + (x0 / bs) * bpb;
+        gpu::record(|bt: &mut Batch| {
+            let at = bt.blob.len().next_multiple_of(4);
+            bt.blob.resize(at, 0);
+            unsafe { fmt::convert(f, src as *const u8, pitch as usize, w, h, &mut bt.blob) };
+            bt.cmd(&[gpu::WRITE_TEXTURE2, gpu, level, z, x0, y0, w, h, w * bpp, at as u32]);
+        });
+    }
 }
 
 /// The surface's guest copy, made on first use (and read back from the page if it rendered).
@@ -2073,17 +2254,38 @@ unsafe fn private_data(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
 }
 
 unsafe fn texture_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
-    if iface != IF_TEXTURE {
+    if iface != IF_TEXTURE && iface != IF_VOLUMETEX {
         return D3DERR_INVALIDCALL;
     }
     let Some(Data::Texture(t)) = d.objs.get_mut(&this).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
     let level = |t: &Texture, l: u32| t.levels.get(l as usize).copied();
+    if iface == IF_VOLUMETEX && m >= 17 {
+        // GetLevelDesc(level, desc), GetVolumeLevel(level, out), LockBox(level, locked, box,
+        // flags), UnlockBox(level), AddDirtyBox(box)
+        if m == 21 {
+            return S_OK;
+        }
+        let Some(v) = level(t, a(1)) else { return D3DERR_INVALIDCALL };
+        return match m {
+            17 => volume_call(d, 8, v, &|i| if i == 1 { a(2) } else { 0 }),
+            18 => {
+                if a(2) == 0 {
+                    return D3DERR_INVALIDCALL;
+                }
+                d.add_ref(v);
+                wrp(a(2), 0, d.addr_of(v));
+                S_OK
+            }
+            19 => lock_volume(d, v, a(2), a(3), a(4)),
+            _ => unlock_volume(d, v),
+        };
+    }
     match m {
         3 => device_out(d, a(1)),
         4..=6 => private_data(d, m, this, a),
         7 | 8 => 0,
         9 => 0,
-        10 => RT_TEXTURE,
+        10 => if iface == IF_VOLUMETEX { RT_VOLUMETEX } else { RT_TEXTURE },
         11 => {
             let old = t.lod;
             t.lod = a(1);
@@ -2179,6 +2381,24 @@ unsafe fn update_texture(d: &mut D3d, src: u32, dst: u32) -> u32 {
     else {
         return D3DERR_INVALIDCALL;
     };
+    if (a.depth == 0) != (b.depth == 0) {
+        return D3DERR_INVALIDCALL;
+    }
+    if a.depth != 0 {
+        // (Windows: a system memory texture into a default pool one, the same format and size)
+        if a.pool != POOL_SYSTEMMEM || b.pool != POOL_DEFAULT || a.fmt != b.fmt || (a.w, a.h, a.depth) != (b.w, b.h, b.depth) || a.levels.len() < b.levels.len() {
+            return D3DERR_INVALIDCALL;
+        }
+        let pairs: Vec<(u32, u32)> = a.levels.iter().copied().zip(b.levels.iter().copied()).collect();
+        for (x, y) in pairs {
+            let (Some(xm), Some(ym)) = (volume_mem(d, x), volume_mem(d, y)) else { return D3DERR_INVALIDCALL };
+            let Some(Data::Volume(v)) = d.objs.get(&y).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
+            let (len, b) = (v.slice * v.depth, [0, 0, 0, v.w, v.h, v.depth]);
+            std::ptr::copy(xm as *const u8, ym as *mut u8, len as usize);
+            upload_volume(d, y, b);
+        }
+        return S_OK;
+    }
     let pairs: Vec<(u32, u32)> = a.levels.iter().copied().zip(b.levels.iter().copied()).collect();
     for (x, y) in pairs {
         let sa = d.addr_of(x);
@@ -2692,7 +2912,7 @@ unsafe fn rect_draw(d: &D3d, elems: &[Elem], streams: &[(u32, u32, u32)], first:
     // stage 0 alone, a 2D texture of one level, its coordinates the vertices' texcoord 0 as they are
     let tex = st.textures[0];
     let tsize = match d.objs.get(&tex).map(|o| &o.data) {
-        Some(Data::Texture(t)) if t.levels.len() == 1 => Some((t.w as f32, t.h as f32)),
+        Some(Data::Texture(t)) if t.levels.len() == 1 && t.depth == 0 => Some((t.w as f32, t.h as f32)),
         _ => None,
     };
     let tc = elems.iter().find(|e| e.usage == shader::USAGE_TEXCOORD && e.index == 0 && e.stream == 0 && e.ty == 1);
@@ -2959,13 +3179,16 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     };
     let (ps_mod, ps_consts) = match ps_shader {
         Some(sh) => {
+            // (cube and volume samplers too: their own address modes, no emulated ones)
+            let mut flat = Vec::new();
             for &(r, ty) in &sh.samplers {
+                samplers.push(r);
                 if ty == 2 || ty == 0 {
-                    samplers.push(r);
+                    flat.push(r);
                 }
             }
             let link = if vs_shader.is_some() { writes } else { 0x3ff };
-            let addr: Vec<_> = samplers.iter().filter_map(|&s| addr_of(s)).collect();
+            let addr: Vec<_> = flat.iter().filter_map(|&s| addr_of(s)).collect();
             let key = ModKey::Ps(ps_serial, link, alpha_test, addr.clone(), ntargets);
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
@@ -3169,7 +3392,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         let ss = &st.ss[s as usize];
         let mip = if levels > 1 { ss[7] } else { 0 };
         let am = dxwgsl::addr::sampler_mode;
-        let skey = (am(ss[1]) & 7) | (am(ss[2]) & 7) << 3 | (ss[5] & 3) << 6 | (ss[6] & 3) << 8 | (mip & 3) << 10;
+        let skey = (am(ss[1]) & 7) | (am(ss[2]) & 7) << 3 | (ss[5] & 3) << 6 | (ss[6] & 3) << 8 | (mip & 3) << 10 | (am(ss[3]) & 7) << 12;
         texs.push((s, gpu_tex, skey));
     }
     put(&mut psu, 8, alpha_bits);
