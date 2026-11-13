@@ -7,3 +7,7 @@ RepeatSkip RepeatSkip.cfg ok
 RepeatSkip RepeatSkipOld.cfg violation
 RepeatSkip RepeatSkipUseful.cfg violation
 D2dDrawCheck D2dDrawCheck.cfg ok
+SnapPause SnapPause.cfg ok
+SnapPause SnapPauseSpurious.cfg violation
+SnapPause SnapPauseGiveUp.cfg violation
+SnapPause SnapPauseNoFence.cfg violation

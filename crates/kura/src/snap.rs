@@ -274,6 +274,11 @@ fn stand_still(mut g: std::sync::MutexGuard<'static, ()>) {
     }
 }
 
+/// (tests: how long a thread that said PARKED takes to reach its wait, holding GATE: a thread
+/// preempted there)
+#[cfg(test)]
+static PARK_DELAY_MS: AtomicU32 = AtomicU32::new(0);
+
 /// Every time a standing thread woke, or a thread came to stand still: none may between READY
 /// and RESUME ([`Ctl::stirred`]).
 static STIRS: AtomicU32 = AtomicU32::new(0);
@@ -285,6 +290,8 @@ pub fn park() {
     let g = GATE.lock().unwrap_or_else(|e| e.into_inner());
     p.state.store(PARKED, SeqCst);
     COORD_CV.notify_all();
+    #[cfg(test)]
+    std::thread::sleep(Duration::from_millis(PARK_DELAY_MS.load(SeqCst) as u64));
     stand_still(g);
     p.state.store(BUSY, SeqCst);
 }
@@ -604,6 +611,10 @@ fn take() {
         wake_all();
         std::thread::sleep(Duration::from_millis(1));
     }
+    // every thread that said PARKED in its wait: each says it holding GATE and lets go of GATE
+    // only in the wait (one between the two held GATE in the copy, for ever in the restored
+    // module: formal/tla/SnapPause.tla, NoFence)
+    drop(GATE.lock().unwrap_or_else(|e| e.into_inner()));
     let list = Box::leak(build_ranges().into_boxed_slice());
     VNHOST_SNAP.ranges.store(list.as_ptr() as usize as u32, SeqCst);
     VNHOST_SNAP.nranges.store(list.len() as u32 / 2, SeqCst);
@@ -789,6 +800,37 @@ mod tests {
         }
         STOP.store(1, SeqCst);
         threads.into_iter().for_each(|t| t.join().unwrap());
+    }
+
+    /// A thread that said PARKED but has not reached its wait yet (preempted there, holding
+    /// GATE) is waited for: READY only once it lets go of GATE.
+    #[test]
+    fn ready_waits_for_a_parked_thread_to_reach_its_wait() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        static STOP: AtomicU32 = AtomicU32::new(0);
+        STOP.store(0, SeqCst);
+        PARK_DELAY_MS.store(150, SeqCst);
+        let t = std::thread::spawn(|| {
+            register("guest", true, 0);
+            while STOP.load(SeqCst) == 0 {
+                if pausing() {
+                    park();
+                }
+                std::thread::yield_now();
+            }
+            unregister();
+        });
+        start();
+        VNHOST_SNAP.cmd.store(CMD_SAVE, SeqCst);
+        until("READY", || matches!(VNHOST_SNAP.state.load(SeqCst), ST_READY | ST_FAILED));
+        assert_eq!(VNHOST_SNAP.state.load(SeqCst), ST_READY);
+        assert!(GATE.try_lock().is_ok(), "GATE held while copied");
+        PARK_DELAY_MS.store(0, SeqCst);
+        VNHOST_SNAP.cmd.store(CMD_RESUME, SeqCst);
+        until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
+        assert_eq!(VNHOST_SNAP.stirred.load(SeqCst), 0);
+        STOP.store(1, SeqCst);
+        t.join().unwrap();
     }
 
     /// A standing thread that wakes while the page copies (a spurious wake) is told: the state

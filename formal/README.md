@@ -7,6 +7,7 @@
 | Command queue between guest threads and the render thread (Direct3D 8/9/10/11, OpenGL): batches, generations, uploads straight from guest memory (`WRITE_TEXTURE_MEM`, `detach_mem`, `wait_done`, deferred frees) | TLA+ `tla/GpuQueue.tla`: no upload the page runs sees pixels the guest changed after recording it; waits end | `formal/run.sh` (TLC from [tlc-static](https://github.com/yashikota/tlc-static)) |
 | Readbacks (GetRenderTargetData, Map, glReadPixels): give-up vs. the page's copy | TLA+ `tla/GpuReadback.tla`: the page never writes `dst` after its waiter returned; nothing leaks | 〃 |
 | Movie slots (WebCodecs frames, `video.rs`) | TLA+ `tla/VideoSlots.tla`: no use after free, no torn read, closed streams are dropped | 〃 |
+| Save states (`kura/src/snap.rs`): guest threads parking at safe points, host threads idle/busy, the coordinator pausing, waiting for the parked and the idle ones, READY while the page copies, resume_all | TLA+ `tla/SnapPause.tla` (3 guest and 2 host threads, 2 saves): while the page copies no thread runs, holds GATE or woke from its wait (STIRS unchanged); every save ends and every thread works again | `formal/run.sh` |
 | The executor (`render/d3d.rs`) against WebGPU: every call kura makes checked against the spec's validation rules, and its optimizations (clears deferred into loadOps, stencil cleared and discarded, batches the same as the last one not run, Siglus segments drawn again only where they changed) against plain execution | `render/model.rs`, a model of WebGPU (validation, an abstract meaning of every command: texel terms, queue writes at once, commands at submit, `discard` leaves zeros); `render/d3d/model_tests.rs` runs random Direct3D 9, Direct3D 11, OpenGL/Direct2D-style command streams optimized and plain: the same frames and readbacks, no WebGPU error | `IPPAI_MODEL_SEEDS=N cargo test --release -p kura --lib optimizations_draw_the_same` |
 | The rule of `repeats()` (when a batch may be skipped) | TLA+ `tla/RepeatSkip.tla`: for every batch of up to 3 commands (clears, draws with and without blending, writes, copies, fills; partial boxes, an array texture) from any contents, "repeats" implies running it twice leaves what once did | `formal/run.sh` |
 | Direct3D 9 and 11 object lifetimes (`d3d9/mod.rs`, `d3d11/mod.rs`): reference counts, what the device state, state blocks, views and swap chains hold, Reset, ResizeBuffers, ClearState | TLA+ `tla/ComRefs.tla`, the API's rules (an object lives while the application, a live holder or a live binding reaches it; AddRef/Release return the public count); `d3d9/trace_tests.rs` and `d3d11/trace_tests.rs` make random calls through the real entry points and write each run as a trace; TLC checks every call's result, returned object and the set of live objects against ComRefs (`tla/ComRefsTrace.tla`) | `formal/trace.sh` |
@@ -23,7 +24,7 @@
 | unsafe conversion loops on exactly sized buffers, movie slots across threads, padded GPU uploads | Miri | `formal/miri.sh` |
 | Shader translation (HLSL → DXBC / D3D9 bytecode, D3D9 assembly, GLSL → WGSL): what the shaders compute on a real WebGPU (Chromium's Dawn) against the D3D11.3 functional spec, the D3D9 instruction reference, HLSL constant packing, GLSL 1.20 and std140 | `crates/shaderconf` writes the cases (shader, uniform data per pixel, expected pixel), `tests/shaders.mjs` draws them | `cargo run -q -p shaderconf > c.json && node tests/shaders.mjs c.json` |
 
-`tla/models.txt` lists the configurations. Four of them must fail, as records of known limits:
+`tla/models.txt` lists the configurations. Seven of them must fail, as records of known limits:
 
 - `GpuQueueTimeouts.cfg`: when `wait_done` gives up (its 1 s deadline, or a page that has not
   polled for 3 s) the guest may change pixels the page is still uploading: a torn texture for a
@@ -31,6 +32,13 @@
 - `VideoSlotsFlag.cfg`: `reading` as a flag (as it was) lets two guest threads reading the same
   slot free it under each other; `reading` is a count now.
 
+- `SnapPauseNoFence.cfg`: `take` as it was: READY once every thread said PARKED; a thread says
+  it holding GATE and lets go only in its wait, so one preempted in between held GATE in the copy
+  (for ever in the restored module). The coordinator takes GATE once before READY now
+  (`ready_waits_for_a_parked_thread_to_reach_its_wait`).
+- `SnapPauseSpurious.cfg`, `SnapPauseGiveUp.cfg`: a spurious wake of a standing thread, or
+  resume_all giving up its 2 s wait for the parked threads to wake, lets a thread wake while the
+  page copies: detected (`Ctl::stirred`), the page drops that state.
 - `RepeatSkipOld.cfg`: the rule before the model tests: a counterexample (below).
 - `RepeatSkipUseful.cfg`: the rule does skip some batches (it is not vacuously safe).
 
