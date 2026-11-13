@@ -127,6 +127,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "asf"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3287,6 +3294,7 @@ name = "sake"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "asf",
  "boa_engine",
  "cab",
  "crt",
@@ -3321,6 +3329,7 @@ dependencies = [
  "ttf-parser",
  "vorbis",
  "waits",
+ "wmcodec",
 ]
 
 [[package]]
@@ -4742,6 +4751,14 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "wmcodec"
+version = "0.1.0"
+dependencies = [
+ "asf",
+ "proptest",
+]
 
 [[package]]
 name = "write16"

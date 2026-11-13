@@ -108,6 +108,8 @@ mod shiina;
 pub mod dshow;
 pub(crate) mod dshow_play;
 mod dshow_mpeg;
+mod wmvcore;
+mod wmdec;
 pub mod mf;
 pub mod usp;
 pub mod ole;
@@ -779,6 +781,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     acm::init();
     dinput::init();
     d2d::init();
+    wmvcore::init();
     d3dx9::init();
     d3dxof::init();
     d3dx9shader::init();

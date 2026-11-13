@@ -80,6 +80,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "asf"
+version = "0.1.0"
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1351,6 +1355,7 @@ name = "ippai-fuzz"
 version = "0.0.0"
 dependencies = [
  "apitrace",
+ "asf",
  "dxwgsl",
  "glwgsl",
  "koji",
@@ -1362,6 +1367,7 @@ dependencies = [
  "vorbis",
  "wasmparser 0.263.0",
  "wasmtime",
+ "wmcodec",
 ]
 
 [[package]]
@@ -2288,6 +2294,7 @@ name = "sake"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "asf",
  "boa_engine",
  "cab",
  "crt",
@@ -2307,6 +2314,7 @@ dependencies = [
  "md-5",
  "md5",
  "miniz_oxide 0.8.9",
+ "mpeg1",
  "msidb",
  "p256",
  "p384",
@@ -2319,6 +2327,7 @@ dependencies = [
  "ttf-parser",
  "vorbis",
  "waits",
+ "wmcodec",
 ]
 
 [[package]]
@@ -3302,6 +3311,10 @@ checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "wmcodec"
+version = "0.1.0"
 
 [[package]]
 name = "write16"

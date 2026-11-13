@@ -4804,9 +4804,8 @@ fn wts_init() {
     implement("kernel32", "WTSGetActiveConsoleSessionId", |_| SESSION);
     reg!("bcryptprimitives"; ProcessPrng);
     sspi_init();
-    // wmvcore (Windows Media Format SDK): krmovie.dll of KiriKiri Z imports WMCreateSyncReader
-    // (its own WMV demuxer); nothing reads ASF here (movies "play" to their end at once, as in
-    // dshow.rs), so the readers, writers and editors can't be made
+    // wmvcore (Windows Media Format SDK): the readers are wmvcore.rs's; the writers, editors and
+    // the rest can't be made
     fn not_made(c: &mut Ctx, out: u32) -> u32 {
         if c.a(out) != 0 {
             mem::putp(c.a(out), 0);
@@ -4816,7 +4815,7 @@ fn wts_init() {
     let outs: [(Handler, &[&str]); 3] = [
         (|c| not_made(c, 0), &["WMCreateEditor", "WMCreateProfileManager", "WMCreateIndexer", "WMCreateWriterFileSink", "WMCreateWriterNetworkSink", "WMCreateWriterPushSink"]),
         (|c| not_made(c, 1), &["WMCreateWriter", "WMCreateBackupRestorer"]),
-        (|c| not_made(c, 2), &["WMCreateSyncReader", "WMCreateReader"]),
+        (|c| not_made(c, 2), &["WMCreateReader"]),
     ];
     for (f, names) in outs {
         for n in names {

@@ -18,6 +18,8 @@ dxwgsl = { path = "../crates/dxwgsl" }
 apitrace = { path = "../crates/apitrace" }
 msidb = { path = "../crates/msidb" }
 mpeg1 = { path = "../crates/mpeg1" }
+asf = { path = "../crates/asf" }
+wmcodec = { path = "../crates/wmcodec" }
 naga = { version = "30", features = ["wgsl-in"] }
 wasmparser = "0.263.0"
 wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "threads"] }
@@ -215,6 +217,20 @@ bench = false
 [[bin]]
 name = "mpeg1"
 path = "fuzz_targets/mpeg1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "asf"
+path = "fuzz_targets/asf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wma"
+path = "fuzz_targets/wma.rs"
 test = false
 doc = false
 bench = false

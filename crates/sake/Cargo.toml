@@ -16,6 +16,8 @@ hlslc = { path = "../hlslc" }
 dxwgsl = { path = "../dxwgsl" }
 vorbis = { path = "../vorbis" }
 mpeg1 = { path = "../mpeg1" }
+asf = { path = "../asf" }
+wmcodec = { path = "../wmcodec" }
 msidb = { path = "../msidb" }
 cab = "0.6"
 miniz_oxide = "0.8"

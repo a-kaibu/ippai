@@ -1,0 +1,16 @@
+[package]
+name = "wmcodec"
+version = "0.1.0"
+edition.workspace = true
+# a port of FFmpeg's decoders, and so under FFmpeg's license
+license = "LGPL-2.1-or-later"
+description = "Windows Media decoders (WMA 1/2, MS-MPEG4 / WMV 1/2, WMV 3 / VC-1) ported from FFmpeg 7.1 to Rust, for sake's wmvcore readers and decoder DMOs"
+
+[dependencies]
+
+[dev-dependencies]
+asf = { path = "../asf" }
+proptest = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
