@@ -253,6 +253,8 @@ struct Queue {
     input: VecDeque<Msg>,
     sent: VecDeque<Sent>,
     timers: Vec<Timer>,
+    /// TrackMouseEvent's watch for this thread
+    track: Option<crate::mousetrack::Track>,
     quit: Option<u32>,
     /// QS_* bits of messages that came since the last GetQueueStatus (posted, sent)
     fresh: u32,
@@ -3387,6 +3389,19 @@ fn next_msg(hwnd: u32, lo: u32, hi: u32, remove: bool) -> Option<Msg> {
                 return Some(m);
             }
         }
+        // TrackMouseEvent's hover (generated like a timer's message, then posted)
+        if remove {
+            let q = s.queues.get_mut(&me).unwrap();
+            let (t, e) = crate::mousetrack::tick(q.track, track_ms());
+            q.track = t;
+            if let Some(e) = e {
+                track_post(s, e);
+                let q = s.queues.get_mut(&me).unwrap();
+                if let Some(i) = q.posted.iter().position(|m| matches(m, hwnd, lo, hi)) {
+                    return q.posted.remove(i);
+                }
+            }
+        }
         None
     })
 }
@@ -3397,7 +3412,8 @@ fn next_timer() -> Option<Duration> {
     with(|s| {
         let q = s.queues.get(&me)?;
         let now = Instant::now();
-        q.timers.iter().map(|t| t.due.saturating_duration_since(now)).min()
+        let hover = crate::mousetrack::next_due(q.track).map(|d| Duration::from_millis(d.saturating_sub(track_ms())));
+        q.timers.iter().map(|t| t.due.saturating_duration_since(now)).chain(hover).min()
     })
 }
 
@@ -3530,7 +3546,7 @@ fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
 fn timer_due() -> bool {
     let me = crate::cur().tid;
     let now = Instant::now();
-    with(|s| s.queues.get(&me).is_some_and(|q| q.timers.iter().any(|t| t.due <= now)))
+    with(|s| s.queues.get(&me).is_some_and(|q| q.timers.iter().any(|t| t.due <= now) || crate::mousetrack::next_due(q.track).is_some_and(|d| d <= track_ms())))
 }
 /// MsgWaitForMultipleObjects(Ex): input of the `mask` kinds (a message ends the wait before a
 /// signaled handle, as on Windows) or a handle; with `all` (MWMO_WAITALL), every handle AND
@@ -4131,6 +4147,71 @@ fn SendInput(c: &mut Ctx) -> u32 {
     }
     crate::obj::signal();
     n
+}
+/// Milliseconds for TrackMouseEvent's hover timing.
+fn track_ms() -> u64 {
+    static T0: OnceLock<Instant> = OnceLock::new();
+    T0.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+/// Posts what mouse tracking answered (WM_MOUSELEAVE / WM_MOUSEHOVER, or their WM_NC kinds).
+fn track_post(s: &mut State, e: crate::mousetrack::Event) {
+    use crate::mousetrack::Event;
+    let (hwnd, msg, w, l) = match e {
+        Event::Leave(h, nc) => (h, if nc { 0x2a2 } else { 0x2a3 }, 0, 0),
+        Event::Hover(h, nc, (x, y)) => {
+            let mut fl = 0u32;
+            for (vk, bit) in [(1usize, 1u32), (2, 2), (0x10, 4), (0x11, 8), (4, 0x10)] {
+                if s.keys[vk] & 0x80 != 0 {
+                    fl |= bit;
+                }
+            }
+            // (WM_NCMOUSEHOVER: the hit-test code and screen coordinates; HTCAPTION)
+            let (w, (px, py)) = if nc { (2, (x, y)) } else {
+                let c = client_screen(s, h);
+                (fl, (x - c.l, y - c.t))
+            };
+            (h, if nc { 0x2a0 } else { 0x2a1 }, w, ((py as u32) << 16) | (px as u32 & 0xffff))
+        }
+    };
+    let Some(tid) = s.wins.get(&hwnd).map(|w| w.tid) else { return };
+    let (x, y) = s.cursor;
+    s.queues.entry(tid).or_default().posted.push_back(Msg { hwnd, msg, w, l, time: now_ms(), x, y });
+}
+/// TrackMouseEvent (comctl32's _TrackMouseEvent too): WM_MOUSELEAVE when the cursor leaves the
+/// window, WM_MOUSEHOVER when it rests there for the hover time; TME_QUERY / TME_CANCEL.
+fn TrackMouseEvent(c: &mut Ctx) -> u32 {
+    use crate::mousetrack::*;
+    let p = c.a(0);
+    // (x64: the HWND at 8 is 8 bytes, the hover time at 16, 24 bytes in all)
+    let (size, ho) = if crate::mem::x64() { (24, 16) } else { (16, 12) };
+    if p == 0 || r32(p) != size {
+        crate::k32::last_error(87);
+        return 0;
+    }
+    let (flags, hwnd, ms) = (r32(p + 4), r32(p + 8), r32(p + ho));
+    let me = crate::cur().tid;
+    if flags & TME_QUERY != 0 {
+        let (f, h, t) = with(|s| query(s.queues.get(&me).and_then(|q| q.track)));
+        w32(p + 4, f);
+        mem::putp(p + 8, h);
+        w32(p + ho, t);
+        return 1;
+    }
+    if !is_window(hwnd) {
+        crate::k32::last_error(1400);
+        return 0;
+    }
+    with(|s| {
+        let (x, y) = s.cursor;
+        let under = window_at(s, x, y);
+        let q = s.queues.entry(me).or_default();
+        let (t, e) = request(q.track, hwnd, flags, ms, under, (x, y), track_ms());
+        q.track = t;
+        if let Some(e) = e {
+            track_post(s, e);
+        }
+    });
+    1
 }
 fn GetCursorPos(c: &mut Ctx) -> u32 {
     let (x, y) = with(|s| s.cursor);
@@ -6358,7 +6439,23 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                         return;
                     }
                 }
-                let target = if s.capture != 0 { s.capture } else { window_at(s, x, y) };
+                let under = window_at(s, x, y);
+                {
+                    // TrackMouseEvent: leaving (the window under the cursor, capture or not)
+                    let now = track_ms();
+                    let mut events = Vec::new();
+                    for q in s.queues.values_mut() {
+                        if q.track.is_some() {
+                            let (t, e) = crate::mousetrack::moved(q.track, under, (x, y), now);
+                            q.track = t;
+                            events.extend(e);
+                        }
+                    }
+                    for e in events {
+                        track_post(s, e);
+                    }
+                }
+                let target = if s.capture != 0 { s.capture } else { under };
                 let Some(w) = s.wins.get(&target) else { return };
                 let tid = w.tid;
                 let c = client_screen(s, target);
@@ -6939,7 +7036,7 @@ pub fn init() {
         GetUpdateRect, GetUpdateRgn, BeginPaint, EndPaint, GetDC, GetDCEx, GetWindowDC, ReleaseDC, WindowFromDC,
         ScrollWindow, ScrollWindowEx, LockWindowUpdate, SetFocus, GetFocus, SetActiveWindow, GetActiveWindow,
         GetForegroundWindow, SetForegroundWindow, BringWindowToTop, SetCapture, ReleaseCapture, GetCapture,
-        SendInput, GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
+        SendInput, TrackMouseEvent, GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
         GetKeyboardState, SetKeyboardState, GetKeyboardType, GetKeyboardLayout, GetKeyboardLayoutList, WaitForInputIdle,
         ActivateKeyboardLayout, LoadKeyboardLayoutA, MapVirtualKeyA, MapVirtualKeyW, GetKeyNameTextA, GetKeyNameTextW,
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxExW, MessageBoxIndirectA, MessageBoxIndirectW,
@@ -6971,6 +7068,7 @@ pub fn init() {
     reg!("user32"; DdeInitializeA, DdeCreateStringHandleA, DdeCreateStringHandleW, DdeConnect, DdeGetLastError,
         DdeQueryStringA, DdeQueryStringW, DdeCmpStringHandles);
     implement("user32", "DdeInitializeW", DdeInitializeA);
+    implement("comctl32", "_TrackMouseEvent", TrackMouseEvent);
     // per-monitor DPI: everything is 96 dpi
     implement("user32", "AdjustWindowRectExForDpi", AdjustWindowRectEx);
     // comctl32's flat scroll bars draw as the standard ones here: InitializeFlatSB succeeds and
