@@ -1,0 +1,36 @@
+CheckDeviceFormat VOLUMETEXTURE A8R8G8B8 0
+VOLUMEMAP 1
+CreateVolumeTexture depth 0 0x8876086c 1
+CreateVolumeTexture RENDERTARGET 0x8876086c
+CreateVolumeTexture 0
+levels 3 type 4
+level 0 0 format 21 type 2 usage 0 pool 1 4x4x4
+level 1 0 format 21 type 2 usage 0 pool 1 2x2x2
+level 2 0 format 21 type 2 usage 0 pool 1 1x1x1
+level 3 0x8876086c format 0 type 0 usage 0 pool 0 0x0x0
+GetVolumeLevel 0
+volume desc format 21 type 2 2x2x2
+GetContainer 0 same 1
+LockBox box 0 0x8876086c
+LockBox box 1 0x8876086c
+LockBox box 2 0x8876086c
+LockBox level 0 0 RowPitch 16 SlicePitch 64
+LockBox level 1 0 RowPitch 8 SlicePitch 16
+LockBox box 0 offset 148
+CreatePixelShader 0
+point: 205008 605048 000000 e050c8
+box texels: ffffff 000000
+ADDRESSW WRAP: 201008 e01008
+ADDRESSW MIRROR: e01008 201008
+ADDRESSW CLAMP: e01008 201008
+ADDRESSW BORDER: 808080 808080
+ADDRESSW MIRRORONCE: e01008 201008
+linear: 401008 801008
+CreateVolumeTexture SYSTEMMEM 0
+CreateVolumeTexture DEFAULT 0
+LockBox level 0 0 RowPitch 16 SlicePitch 64
+UpdateTexture 0
+updated: 205008 605048 a05088 e050c8
+UpdateTexture back 0x8876086c
+again: 205008 605048 000000 e050c8
+Release 0
