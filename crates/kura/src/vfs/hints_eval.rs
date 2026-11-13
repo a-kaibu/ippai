@@ -34,7 +34,27 @@ fn tree(text: &str) -> Vec<File> {
         .collect()
 }
 
-/// A JSON string field's value, the simple way (games/<id>.json is ippai's own).
+/// `json` without the whitespace between its tokens (ippai writes games/<id>.json pretty).
+fn compact(json: &str) -> String {
+    let (mut out, mut quoted, mut escaped) = (String::with_capacity(json.len()), false, false);
+    for c in json.chars() {
+        if quoted {
+            out.push(c);
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => quoted = false,
+                _ => {}
+            }
+        } else if !c.is_whitespace() {
+            quoted = c == '"';
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A JSON string field's value, the simple way (games/<id>.json is ippai's own, compacted).
 fn field<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     let at = json.find(&format!("\"{key}\":\""))? + key.len() + 4;
     json[at..].find('"').map(|e| &json[at..at + e])
@@ -143,7 +163,7 @@ fn hints_eval() {
     games.sort_by_key(|e| e.file_name());
     for e in games {
         let Some(id) = e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(String::from) else { continue };
-        let json = std::fs::read_to_string(e.path()).unwrap_or_default();
+        let json = compact(&std::fs::read_to_string(e.path()).unwrap_or_default());
         // (its own list, else its program's newest: ippai pack.rs read_order_list)
         let list = std::fs::read(format!("{jit}/game.{id}.chunks")).ok().filter(|l| l.len() >= 16).or_else(|| {
             let run = field(&json, "run")?.replace("\\\\", "\\");
@@ -255,6 +275,10 @@ fn replay_counts_what_hints_foresaw() {
     assert_eq!((s.misses, s.wasted), (1, 12_000));
     assert_eq!(mounts(r#"{"mounts":["/ippai/game=g1","/x="],"engine":"KiriKiri"}"#), vec!["g1"]);
     assert_eq!(field(r#"{"id":"a","engine":"KiriKiri Z"}"#, "engine"), Some("KiriKiri Z"));
+    // (as ippai writes them: pretty, spaces inside strings kept)
+    let pretty = compact("{\n  \"run\": \"Z:\\\\ippai\\\\a b.exe\",\n  \"mounts\": [\n    \"/ippai/game=g 1\"\n  ],\n  \"engine\": \"Siglus \\\"x\\\"\"\n}");
+    assert_eq!(mounts(&pretty), vec!["g 1"]);
+    assert_eq!(field(&pretty, "run"), Some("Z:\\\\ippai\\\\a b.exe"));
     let t = tree("v1\t\t\nf\t0\t0\tvoice/a\\tb.ogg\t3\taa:1,bb:2\nd\t0\t0\tvoice\t0\t\n");
     assert_eq!((t.len(), t[0].path.as_str(), t[0].chunks.len()), (1, "voice/a\tb.ogg", 2));
 }
