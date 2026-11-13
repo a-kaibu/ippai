@@ -4882,6 +4882,10 @@ mod display_change_tests {
     }
 }
 
+/// The screen switches to `w` x `h` (DirectDraw's SetDisplayMode / RestoreDisplayMode)
+pub fn set_screen(c: &mut Ctx, w: i32, h: i32) {
+    set_display(c, w, h);
+}
 /// A new screen size; top-level windows get WM_DISPLAYCHANGE (CatSystem2 goes on from there)
 fn set_display(c: &mut Ctx, w: i32, h: i32) {
     kura::display::vnhost_display_set_size(w, h);

@@ -745,7 +745,7 @@ fn V_Release(c: &mut Ctx) -> u32 {
             held.push(d.rt);
             release_surfs(c, &held);
             if d.d3d_held != 0 {
-                dd_release(d.d3d_held);
+                dd_release(c, d.d3d_held);
             }
         }
     }

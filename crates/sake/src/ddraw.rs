@@ -119,13 +119,15 @@ struct State {
     /// and release one object after the other and expect the registry's mode back)
     mode_by: u32,
     coop_by: u32,
+    /// the screen before the first SetDisplayMode: it comes back with RestoreDisplayMode or when
+    /// the object that set the mode goes
+    desktop: Option<(i32, i32)>,
 }
 
 static ST: Mutex<Option<State>> = Mutex::new(None);
 
-fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
-    let mut g = ST.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| State {
+fn fresh() -> State {
+    State {
         surfs: HashMap::default(),
         blocks: HashMap::default(),
         clippers: HashMap::default(),
@@ -137,7 +139,13 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
         primary: 0,
         mode_by: 0,
         coop_by: 0,
-    }))
+        desktop: None,
+    }
+}
+
+fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
+    let mut g = ST.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(fresh))
 }
 
 use crate::api::vtable;
@@ -598,7 +606,7 @@ fn free_surface(c: &mut Ctx, id: u32) {
         }
     }
     if s.dd_held != 0 {
-        dd_release(s.dd_held);
+        dd_release(c, s.dd_held);
     }
 }
 
@@ -1564,7 +1572,7 @@ fn dd_addref(b: u32) -> u32 {
 /// Drops a reference of interface `b`; the object goes with its last one (the guest blocks
 /// stay allocated, so a stray call on a released interface finds no object instead of freed
 /// memory).
-fn dd_release(b: u32) -> u32 {
+fn dd_release(c: &mut Ctx, b: u32) -> u32 {
     let (obj, v) = dd_of(b);
     let (n, gone) = dds(|m, _| {
         let Some(o) = m.get_mut(&obj) else { return (0, false) };
@@ -1577,16 +1585,16 @@ fn dd_release(b: u32) -> u32 {
         (n, gone)
     });
     if gone {
-        with(|s| {
-            if s.mode_by == obj {
-                s.mode = None;
-                s.mode_by = 0;
-            }
+        let back = with(|s| {
             if s.coop_by == obj {
                 s.exclusive = false;
                 s.coop_by = 0;
             }
+            if s.mode_by == obj { mode_restored(s) } else { None }
         });
+        if let Some((w, h)) = back {
+            crate::user::set_screen(c, w, h);
+        }
     }
     n
 }
@@ -1595,7 +1603,7 @@ fn D_AddRef(c: &mut Ctx) -> u32 {
     dd_addref(c.a(0))
 }
 fn D_Release(c: &mut Ctx) -> u32 {
-    dd_release(c.a(0))
+    dd_release(c, c.a(0))
 }
 
 fn D_QueryInterface(c: &mut Ctx) -> u32 {
@@ -1986,9 +1994,42 @@ fn D_WaitForVerticalBlank(c: &mut Ctx) -> u32 {
         Err(e) => e,
     }
 }
-fn D_RestoreDisplayMode(_: &mut Ctx) -> u32 {
-    with(|s| s.mode = None);
+fn D_RestoreDisplayMode(c: &mut Ctx) -> u32 {
+    if let Some((w, h)) = with(mode_restored) {
+        switch_screen(c, w, h);
+    }
     DD_OK
+}
+/// The screen becomes `w` x `h`; an exclusive (fullscreen) cooperative window is sized to cover
+/// it, as Windows' DirectDraw does (Wine's ddraw tests, test_coop_level_mode_set: the window
+/// rect is the mode's after SetDisplayMode). Melty Blood Re-ACT's window was the desktop's
+/// 1920x1080 and its 640x480 frames filled a third of it.
+fn switch_screen(c: &mut Ctx, w: i32, h: i32) {
+    crate::user::set_screen(c, w, h);
+    let (hwnd, exclusive) = with(|s| (s.hwnd, s.exclusive));
+    if exclusive && hwnd != 0 {
+        // (SWP_NOZORDER | SWP_NOACTIVATE)
+        gcall(c, "user32", "SetWindowPos", &[hwnd, 0, 0, 0, w as u32, h as u32, 0x14]);
+    }
+}
+/// SetDisplayMode's bookkeeping: the mode, who set it, and the screen it replaced (kept from the
+/// first of several). Returns the screen size to switch to: none for a size no screen has
+/// (kura's screen is 1..=8192 each way), which is only remembered.
+fn mode_set(s: &mut State, by: u32, w: i32, h: i32, bpp: u16, screen: (i32, i32)) -> Option<(i32, i32)> {
+    s.mode = Some((w, h, bpp));
+    s.mode_by = by;
+    if !(1..=8192).contains(&w) || !(1..=8192).contains(&h) {
+        return None;
+    }
+    s.desktop.get_or_insert(screen);
+    Some((w, h))
+}
+/// The mode goes (RestoreDisplayMode, or the object that set it is released): the screen to
+/// switch back to, if a mode had replaced it.
+fn mode_restored(s: &mut State) -> Option<(i32, i32)> {
+    s.mode = None;
+    s.mode_by = 0;
+    s.desktop.take()
 }
 fn D_SetCooperativeLevel(c: &mut Ctx) -> u32 {
     let (h, flags) = (c.a(1), c.a(2));
@@ -2000,15 +2041,19 @@ fn D_SetCooperativeLevel(c: &mut Ctx) -> u32 {
     });
     DD_OK
 }
-fn set_mode(c: &Ctx, w: u32, h: u32, bpp: u32) -> u32 {
+/// SetDisplayMode switches the screen as Windows does: GetSystemMetrics answers the mode, and the
+/// page shows that size, scaled. Melty Blood Re-ACT (mbp.exe) sizes its exclusive window to the
+/// 1920x1080 desktop, then sets 640x480 and flips 640x480 into it: with the screen left at
+/// 1920x1080 the game sat in its top-left corner.
+fn set_mode(c: &mut Ctx, w: u32, h: u32, bpp: u32) -> u32 {
     if !matches!(bpp, 8 | 16 | 24 | 32) {
         return DDERR_INVALIDPARAMS;
     }
     let by = dd_of(c.a(0)).0;
-    with(|s| {
-        s.mode = Some((w as i32, h as i32, bpp as u16));
-        s.mode_by = by;
-    });
+    let screen = crate::user::screen();
+    if let Some((w, h)) = with(|s| mode_set(s, by, w as i32, h as i32, bpp as u16, screen)) {
+        switch_screen(c, w, h);
+    }
     DD_OK
 }
 fn D_SetDisplayMode1(c: &mut Ctx) -> u32 {
@@ -2225,6 +2270,67 @@ mod tests {
         assert_eq!([4, 8, 80, 84, 92, 96].map(|o| fx_at(o, true)), [4, 8, 104, 112, 120, 124]);
         assert_eq!([4, 8, 80, 84, 92, 96].map(|o| fx_at(o, false)), [4, 8, 80, 84, 92, 96]);
         assert_eq!([false, true].map(|v| desc_size_at(v, false)), [108, 124]);
+    }
+
+    #[derive(Debug, Clone)]
+    enum ModeOp {
+        Set(u32, i32, i32),
+        Restore,
+        Release(u32),
+    }
+    fn mode_op() -> impl Strategy<Value = ModeOp> {
+        prop_oneof![
+            (1u32..4, prop_oneof![Just(640), Just(800), Just(1024), Just(0), Just(9000), 1i32..4000],
+             prop_oneof![Just(480), Just(600), Just(768), Just(-1), 1i32..3000]).prop_map(|(b, w, h)| ModeOp::Set(b, w, h)),
+            Just(ModeOp::Restore),
+            (1u32..4).prop_map(ModeOp::Release),
+        ]
+    }
+
+    proptest! {
+        /// SetDisplayMode / RestoreDisplayMode / releasing DirectDraw objects, any order, any
+        /// sizes (Melty Blood Re-ACT: 640x480 over the 1920x1080 desktop): the screen is the last
+        /// mode that a screen can take while one is set, and the desktop exactly when it goes
+        /// (never a mode set in between: several sets keep the first screen); a size no screen
+        /// has (0, -1, over 8192) is remembered but never switches to.
+        #[test]
+        fn display_modes_switch_the_screen_and_give_the_desktop_back(ops in proptest::collection::vec(mode_op(), 0..40)) {
+            let desk = (1920, 1080);
+            let mut s = fresh();
+            let (mut screen, mut setter) = (desk, 0u32);
+            for op in ops {
+                let (want, got) = match op {
+                    ModeOp::Set(by, w, h) => {
+                        let ok = (1..=8192).contains(&w) && (1..=8192).contains(&h);
+                        setter = by;
+                        let got = mode_set(&mut s, by, w, h, 16, screen);
+                        prop_assert_eq!(s.mode, Some((w, h, 16)));
+                        (if ok { (w, h) } else { screen }, got.unwrap_or(screen))
+                    }
+                    ModeOp::Restore => {
+                        setter = 0;
+                        let got = mode_restored(&mut s);
+                        prop_assert_eq!(s.mode, None);
+                        (desk, got.unwrap_or(screen))
+                    }
+                    ModeOp::Release(by) => {
+                        // (dd_release: only the object that set the mode takes it away)
+                        if s.mode_by == by && s.mode.is_some() {
+                            prop_assert_eq!(setter, by);
+                            setter = 0;
+                            (desk, mode_restored(&mut s).unwrap_or(screen))
+                        } else {
+                            (screen, screen)
+                        }
+                    }
+                };
+                prop_assert_eq!(got, want);
+                screen = got;
+                // the desktop is kept exactly while a switched mode is on screen
+                prop_assert_eq!(s.desktop.is_some(), screen != desk || s.desktop == Some(desk));
+                if let Some(d) = s.desktop { prop_assert_eq!(d, desk); }
+            }
+        }
     }
 
     proptest! {
