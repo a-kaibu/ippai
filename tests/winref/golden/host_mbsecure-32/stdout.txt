@@ -1,0 +1,7 @@
+secure multibyte ASCII: ok
+complete multibyte character: ok
+discard split multibyte character: FAIL
+secure multibyte overflow: ok
+secure multibyte truncation: ok
+zero count accepts null source: ok
+secure multibyte null rejected: ok

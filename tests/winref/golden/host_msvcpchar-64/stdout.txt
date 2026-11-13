@@ -1,0 +1,1 @@
+ctype<char>: 1306 checks, 0 failures

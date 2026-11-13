@@ -1,0 +1,20 @@
+Direct3DCreate9 QI IDirect3D9: 0 same
+Direct3DCreate9 QI IDirect3D9Ex: 0x80004002 NULL
+its device QI IDirect3DDevice9: 0 same
+its device QI IDirect3DDevice9Ex: 0x80004002 NULL
+Direct3DCreate9Ex QI IDirect3D9Ex: 0 same
+its CreateDevice device QI IDirect3DDevice9Ex: 0 same
+EndScene outside a scene: 0x8876086c
+BeginScene: 0
+BeginScene in a scene: 0x8876086c
+EndScene: 0
+EndScene again: 0x8876086c
+BeginScene after: 0
+EndScene after: 0
+CreateVertexShader: 0
+GetFunction NULL data: 0 size 44
+GetFunction size 0: 0 size 44 tokens copied 11 after untouched
+GetFunction size 8: 0 size 44 tokens copied 11 after untouched
+GetFunction size 43: 0 size 44 tokens copied 11 after untouched
+GetFunction size 44: 0 size 44 tokens copied 11 after untouched
+GetFunction size 100: 0 size 44 tokens copied 11 after untouched
