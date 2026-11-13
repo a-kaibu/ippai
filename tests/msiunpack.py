@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """msiunpack.py PACKAGE.msi OUTDIR: unpacks a Windows Installer package's files when msiextract
-can't (packages split over several embedded cabinets give it "Invalid folder index"): every
-embedded .cab stream goes through cabextract, then each file (named by its File table key)
-moves to its install path from the Directory/Component tables."""
+can't (cabinets split into a set give it "Invalid folder index"): the cabinets the Media table
+names, embedded ("#name": a stream of the package) or beside the package (InstallShield's
+Data1.cab + Data11.cab of 三極姫４ 体験版), go through 7-Zip, which follows a cabinet set from
+volume to volume; then each file (named by its File table key) moves to its install path from
+the Directory/Component tables."""
 import os, shutil, subprocess, sys, tempfile
 
 
@@ -42,17 +44,32 @@ def main(msi, out):
         p = path(parent, seen + (d,))
         return p if name in ('.', 'SourceDir') else os.path.join(p, name)
 
-    streams = subprocess.run(['msiinfo', 'streams', msi], capture_output=True, text=True).stdout.split()
+    os.makedirs(out, exist_ok=True)
     tmp = tempfile.mkdtemp(dir=out)
-    # (a cabinet set spans several streams: keep their names so cabextract can follow the set,
-    # and let the ones that continue a set fail on their own)
-    cabs = [s for s in streams if s.lower().endswith('.cab')]
-    for s in cabs:
-        with open(os.path.join(tmp, s), 'wb') as f:
-            subprocess.run(['msiinfo', 'extract', msi, s], stdout=f, check=True)
-    for s in cabs:
-        subprocess.run(['cabextract', '-q', '-d', os.path.join(tmp, 'files'), os.path.join(tmp, s)],
-                       stderr=subprocess.DEVNULL)
+    here = os.path.dirname(os.path.abspath(msi))
+    beside = {f.lower(): f for f in os.listdir(here)}
+    streams = subprocess.run(['msiinfo', 'streams', msi], capture_output=True, text=True).stdout.split()
+    cabs = []
+    # (the Media table's cabinets in disk order; streams named *.cab that it does not name too)
+    named = [r[3] for r in sorted(table(msi, 'Media'), key=lambda r: int(r[0]) if r[0].isdigit() else 0)
+             if len(r) >= 4 and r[3]]
+    for c in named + [s for s in streams if s.lower().endswith('.cab') and '#' + s not in named]:
+        if c.startswith('#') or c in streams:
+            name = c.lstrip('#')
+            if name not in streams or os.path.exists(os.path.join(tmp, name)):
+                continue
+            # (a set spanning several streams: their names kept so 7-Zip follows the set)
+            with open(os.path.join(tmp, name), 'wb') as f:
+                subprocess.run(['msiinfo', 'extract', msi, name], stdout=f, check=True)
+            cabs.append(os.path.join(tmp, name))
+        elif c.lower() in beside:
+            cabs.append(os.path.join(here, beside[c.lower()]))
+    os.makedirs(os.path.join(tmp, 'files'))
+    for c in cabs:
+        # (-aos: a file a set's first volume already gave is not unpacked again from a later one,
+        # which may hold only its tail)
+        subprocess.run(['7z', 'x', '-y', '-aos', '-o' + os.path.join(tmp, 'files'), c],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(os.environ, LC_ALL='C.UTF-8'))
     n = 0
     for key in os.listdir(os.path.join(tmp, 'files')):
         if key not in files:

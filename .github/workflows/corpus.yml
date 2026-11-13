@@ -163,6 +163,8 @@ jobs:
           wait
       - name: Extraction of zips unar fails on (tests/test_unzip_cp932.py)
         run: python3 tests/test_unzip_cp932.py
+      - name: Installer packages msiextract fails on (tests/test_msiunpack.py)
+        run: python3 tests/test_msiunpack.py
       - name: What corpus-prep.sh makes of the mirror's archives (tests/test_corpus_prep.py)
         run: python3 tests/test_corpus_prep.py
       - name: Cabinet self-extractors unpacked by prep (tests/test_corpus_prep_cab.py)
