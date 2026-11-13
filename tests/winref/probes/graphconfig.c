@@ -68,9 +68,17 @@ int main(void) {
     n = count(gb, evr, &found);
     printf("after RemoveFilterEx: %d filters, ours %d\n", n, found);
     graph_of(evr, "removed");
+    IBaseFilter *byname = NULL;
+    hr = IGraphBuilder_FindFilterByName(gb, L"EVR", &byname);
+    printf("FindFilterByName after removal %08lx %s\n", hr, byname ? "found" : "null");
+    if (byname) IBaseFilter_Release(byname);
     printf("RemoveFilterEx again %08lx\n", gc->lpVtbl->RemoveFilterEx(gc, evr, 0));
     printf("RemoveFilter not in it %08lx\n", IGraphBuilder_RemoveFilter(gb, evr));
     printf("AddFilter again %08lx\n", IGraphBuilder_AddFilter(gb, evr, L"EVR"));
+    byname = NULL;
+    hr = IGraphBuilder_FindFilterByName(gb, L"EVR", &byname);
+    printf("FindFilterByName %08lx %s\n", hr, byname == evr ? "ours" : byname ? "other" : "null");
+    if (byname) IBaseFilter_Release(byname);
     printf("RemoveFilter %08lx\n", IGraphBuilder_RemoveFilter(gb, evr));
     n = count(gb, evr, &found);
     printf("after RemoveFilter: %d filters, ours %d\n", n, found);

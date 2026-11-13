@@ -294,17 +294,33 @@ fn get0_64(c: &mut Ctx) -> u32 {
 /// REMFILTERF_LEAVECONNECTED only keeps pins this graph doesn't track): out of the graph, told so
 /// (JoinFilterGraph(NULL, NULL)) and released; E_FAIL for one not in it (Wine's answer). A
 /// game's teardown (薔薇ノ木ニ薔薇ノ花咲ク: enumerate, RemoveFilterEx each) relies on it.
+/// A graph's filter list taking filter `f` in: false for one already in it (added once).
+fn put_filter(filters: &mut Vec<u32>, evr: &mut u32, f: u32, is_evr: bool) -> bool {
+    if filters.contains(&f) {
+        return false;
+    }
+    filters.push(f);
+    if is_evr {
+        *evr = f;
+    }
+    true
+}
+/// ... and letting it go: false for one not in it. The renderer it was goes with it.
+fn take_filter(filters: &mut Vec<u32>, evr: &mut u32, f: u32) -> bool {
+    let n = filters.len();
+    filters.retain(|&x| x != f);
+    if *evr == f {
+        *evr = 0;
+    }
+    filters.len() != n
+}
 fn remove_filter_at(c: &mut Ctx, b: u32, f: u32) -> u32 {
     if f == 0 {
         return E_POINTER;
     }
     let had = with(b, |g| {
-        let n = g.filters.len();
-        g.filters.retain(|&x| x != f);
-        if g.evr == f {
-            g.evr = 0;
-        }
-        g.filters.len() != n
+        g.named.retain(|x| x.1 != f);
+        take_filter(&mut g.filters, &mut g.evr, f)
     })
     .unwrap_or(false);
     if !had {
@@ -330,20 +346,15 @@ fn add_filter(c: &mut Ctx) -> u32 {
     }
     let b = base(c, GB);
     // (one added again stays added once)
-    if with(b, |g| g.filters.contains(&f)).unwrap_or(false) {
+    let is_evr = evr_with(f, |_| ()).is_some();
+    if !with(b, |g| put_filter(&mut g.filters, &mut g.evr, f, is_evr)).unwrap_or(false) {
         return 0;
     }
-    if evr_with(f, |_| ()).is_some() {
-        with(b, |g| g.evr = f);
-    }
     com(c, f, 1, &[]);
-    let name = if c.a(2) == 0 { None } else { Some(mem::wstr(c.a(2))) };
-    with(b, |g| {
-        g.filters.push(f);
-        if let Some(n) = name {
-            g.named.push((n, f));
-        }
-    });
+    if c.a(2) != 0 {
+        let n = mem::wstr(c.a(2));
+        with(b, |g| g.named.push((n, f)));
+    }
     // IBaseFilter::JoinFilterGraph(graph, name)
     com(c, f, 13, &[b + ps() * GB, c.a(2)]);
     0
@@ -2020,5 +2031,51 @@ mod ends_tests {
         assert!(due(&mut v, t).is_empty());
         assert_eq!(due(&mut v, t + Duration::from_secs(9)), [(1, 1)]);
         assert!(v.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod filter_list_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn removed_once_then_fails() {
+        let (mut v, mut e) = (Vec::new(), 0);
+        assert!(put_filter(&mut v, &mut e, 7, true));
+        assert!(!put_filter(&mut v, &mut e, 7, true));
+        assert_eq!((v.as_slice(), e), (&[7][..], 7));
+        assert!(take_filter(&mut v, &mut e, 7));
+        assert_eq!((v.len(), e), (0, 0));
+        assert!(!take_filter(&mut v, &mut e, 7));
+    }
+
+    proptest! {
+        /// Any run of adds and removes keeps the list a set in the order filters came in, the
+        /// renderer one of it (or none), and each call's answer what a set model says.
+        #[test]
+        fn adds_and_removes_match_a_set(ops in proptest::collection::vec((any::<bool>(), 1u32..6, any::<bool>()), 0..64)) {
+            let (mut v, mut e) = (Vec::new(), 0u32);
+            let mut model: Vec<u32> = Vec::new();
+            let mut renderer = 0u32;
+            for (add, f, is_evr) in ops {
+                if add {
+                    let fresh = !model.contains(&f);
+                    prop_assert_eq!(put_filter(&mut v, &mut e, f, is_evr), fresh);
+                    if fresh {
+                        model.push(f);
+                        if is_evr { renderer = f; }
+                    }
+                } else {
+                    let had = model.contains(&f);
+                    prop_assert_eq!(take_filter(&mut v, &mut e, f), had);
+                    model.retain(|&x| x != f);
+                    if renderer == f { renderer = 0; }
+                }
+                prop_assert_eq!(&v, &model);
+                prop_assert_eq!(e, renderer);
+                prop_assert!(e == 0 || v.contains(&e));
+            }
+        }
     }
 }
