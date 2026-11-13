@@ -9,7 +9,7 @@
 # x64crt: an MSVC-ABI program on ucrtbase/vcruntime140; msvcpsync: msvcp140 threads/sync;
 # msvcstream: its iostreams and locale facets, built against Microsoft's STL headers; msvcrtti:
 # dynamic_cast and typeid (vcruntime140's __RTDynamicCast...); msvcseh: _set_se_translator
-# with /EHa; mmdev: the audio device enumerator; avx256: ymm forms, expected from a native
+# with /EHa; mmdev: the audio device enumerator; highmem: memory, an exe and DLLs above 4G; avx256: ymm forms, expected from a native
 # x86-64 Linux build), each with its own expected file. CLANG32 are
 # x86 MSVC-ABI programs on msvcrt.dll (build-msvc32.sh), expected in <name>-32.txt. MSVC32 are
 # CLANG64's msvcp140 programs built for x86, expected to print what x64 does.
@@ -21,7 +21,7 @@ SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
 TESTS=${*:-changenotify afdpoll callwndhook dllinit dxversion dircase dlgenter bigwindow aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect d3dx9resource struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread d3d12delay mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep apiimage nuldevice virtualex filetitle flatsb propsheet trackmouse richedit getmsghook memdccaps msvcp80str xfile mmiobuf dsnotify}
 X64=" dxversion changenotify afdpoll nuldevice callwndhook dllinit dircase dlgenter dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep virtualex filetitle flatsb propsheet trackmouse richedit getmsghook memdccaps xfile mmiobuf dsnotify "
-CLANG64=${CLANG64-x64seh x64crt msvcpchar msvcpsync msvcstream msvcrtti msvcseh mmdev avx256}
+CLANG64=${CLANG64-x64seh x64crt msvcpchar msvcpsync msvcstream msvcrtti msvcseh mmdev avx256 highmem}
 CLANG32=${CLANG32-msvcseh mfc42 mfc42u mfc40}
 # CLANG64's MSVC STL programs built for x86 (msvcp140's thiscall members, __int64 in two slots,
 # the i686 layouts): the same expected output as x64
@@ -276,6 +276,7 @@ done
 for t in $CLANG64; do
   case $t in
   x64crt) "$ROOT/host/tests/build-x64crt.sh" "$OUT" ;;
+  highmem) "$ROOT/host/tests/build-highmem.sh" "$OUT" ;;
   msvcpsync|msvcstream|msvcrtti|msvcseh) "$ROOT/host/tests/build-msvc64.sh" "$t" "$OUT" ;;
   *) clang --target=x86_64-w64-windows-gnu -fms-extensions -fuse-ld=lld -O2 "$ROOT/host/tests/$t.c" -o "$OUT/$t.exe" ;;
   esac || { echo "FAIL $t: build"; fail=1; continue; }

@@ -43,6 +43,8 @@ for t in changenotify callwndhook xfile mmiobuf nullcall dxversion dircase intop
 done
 x86_64-w64-mingw32-gcc -O2 -o "$OUT/host_struct64-64.exe" "$ROOT/host/tests/struct64.c" "$OUT/ja64.res" $(libs "$ROOT/host/tests/struct64.c")
 x86_64-w64-mingw32-gcc -O2 -o "$OUT/host_msvcpchar-64.exe" "$ROOT/host/tests/msvcpchar.c" "$OUT/ja64.res"
+# (an exe and two DLLs at fixed bases above 4G: the DLLs beside it, found by LoadLibrary)
+"$ROOT/host/tests/build-highmem.sh" "$OUT" && mv "$OUT/highmem.exe" "$OUT/host_highmem-64.exe" && rm -f "$OUT/libhm1.a"
 rm "$OUT"/*.res
 # D3D9 traces replayed (tests/replay: replay_<trace>-32.exe)
 "$ROOT/tests/replay/build.sh" "$OUT"

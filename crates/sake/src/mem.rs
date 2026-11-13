@@ -65,12 +65,42 @@ pub fn putp(a: u32, v: u32) {
     }
 }
 
-/// The 64-bit value of guest address `a` as code sees it: the low alias of a module mapped
-/// above 4G (see pe::ALIAS) gets its upper half back.
+/// The 64-bit value of guest address `a` as code sees it: an allocation that stands for one
+/// above 4G (a fixed image based there, a VirtualAlloc asked there: `set_high`) lives at its
+/// address's low half, and addresses in it get the upper half back.
 #[inline]
 pub fn widen(a: u32) -> u64 {
-    let (lo, hi, n) = crate::pe::alias();
-    if n != 0 && a.wrapping_sub(lo) < n { a as u64 | (hi as u64) << 32 } else { a as u64 }
+    if HIGH.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        return a as u64;
+    }
+    a as u64 | (find(a).map_or(0, |(_, r)| r.hi) as u64) << 32
+}
+
+/// How many allocations stand for addresses above 4G (widen's fast path: none).
+static HIGH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Makes the allocation at `base` the one at `hi:base` (x64): addresses in it widen to that.
+/// Memory is addressed modulo 4G (koji), so allocations above 4G can't share a low half; two
+/// of them (or one and a plain low allocation) that would are refused by `reserve` already.
+pub fn set_high(base: u32, hi: u32) -> bool {
+    let mut sp = SPACE.lock().unwrap();
+    let Some(r) = sp.get_mut(&base) else { return false };
+    if r.hi == 0 && hi != 0 {
+        HIGH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    } else if r.hi != 0 && hi == 0 {
+        HIGH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    r.hi = hi;
+    true
+}
+
+/// The upper half of the address the allocation holding `a` stands for (0: a plain one, or
+/// none there).
+pub fn high_of(a: u32) -> u32 {
+    if HIGH.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        return 0;
+    }
+    find(a).map_or(0, |(_, r)| r.hi)
 }
 
 /// Writes guest address `v` as a pointer (x64: its 64-bit value, `widen`) if `a` is not NULL.
@@ -262,6 +292,8 @@ pub struct Region {
     pub alloc_prot: u32,
     /// MEM_IMAGE 0x1000000, MEM_MAPPED 0x40000, MEM_PRIVATE 0x20000
     pub kind: u32,
+    /// x64: the upper half of the address it stands for (`set_high`), 0 for a plain one
+    pub hi: u32,
 }
 
 /// Allocations by base. Each allocation is one region here (commit state is kept per
@@ -323,7 +355,7 @@ fn holes(sp: &BTreeMap<u32, Region>, size: u32) -> Vec<(u32, u32)> {
 }
 
 fn insert(sp: &mut BTreeMap<u32, Region>, base: u32, size: u32, prot: u32, kind: u32) {
-    sp.insert(base, Region { size, prot, state: 0x2000, alloc_base: base, alloc_prot: prot, kind });
+    sp.insert(base, Region { size, prot, state: 0x2000, alloc_base: base, alloc_prot: prot, kind, hi: 0 });
     PAGES.lock().unwrap().insert(base, vec![0; (size / PAGE) as usize]);
 }
 
@@ -533,6 +565,9 @@ pub fn release(base: u32) -> bool {
     kura::jit::code_changed(base as usize, r.size as usize);
     jit_prot(base, r.size, 0);
     fill(base, r.size, 0);
+    if r.hi != 0 {
+        HIGH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
     sp.remove(&base);
     PAGES.lock().unwrap().remove(&base);
     true
@@ -808,6 +843,63 @@ pub(crate) fn rmw32_at(p: usize, f: impl Fn(u32) -> u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{over_reserved_block, rmw32_at, GUEST_TOP};
+
+    /// Blocks standing for addresses above 4G (#62), as VirtualAlloc and the loader make them:
+    /// reserved at the low half, `set_high`; every address inside widens to the high one,
+    /// those outside don't; a request whose low half meets a block already there is refused
+    /// (koji addresses memory modulo 4G). The bookkeeping only (no guest memory: native test),
+    /// in 0x5000_0000..0x7000_0000, where no other test reserves.
+    mod high {
+        use super::super::{find, high_of, reserve, set_high, widen, HIGH, SPACE};
+        use proptest::prelude::*;
+        use std::sync::atomic::Ordering::Relaxed;
+
+        fn forget(base: u32) {
+            let r = SPACE.lock().unwrap().remove(&base).unwrap();
+            if r.hi != 0 {
+                HIGH.fetch_sub(1, Relaxed);
+            }
+            super::super::PAGES.lock().unwrap().remove(&base);
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(300))]
+            #[test]
+            fn widen_restores_the_high_half(reqs in proptest::collection::vec((1u32..0x7ffe, 0x5000u32..0x6f00, 1u32..0x40), 1..12), probes in proptest::collection::vec(0x5000_0000u32..0x7000_0000, 40)) {
+                static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+                let before = HIGH.load(Relaxed);
+                let mut got: Vec<(u32, u32, u32)> = Vec::new();
+                for &(hi, lo64k, pages) in &reqs {
+                    let (lo, size) = (lo64k << 16, pages * 0x1000);
+                    let meets = got.iter().any(|&(b, n, _)| lo < b + n && b < lo + size);
+                    let r = reserve(lo, size, 4, 0x2_0000, false);
+                    prop_assert_eq!(r.is_none(), meets, "{:#x}+{:#x}", lo, size);
+                    if let Some(b) = r {
+                        prop_assert_eq!(b, lo);
+                        prop_assert!(set_high(b, hi));
+                        got.push((b, size, hi));
+                    }
+                }
+                prop_assert_eq!(HIGH.load(Relaxed), before + got.len() as u32);
+                for a in probes.iter().copied().chain(got.iter().flat_map(|&(b, n, _)| [b, b + n - 1, b + n])) {
+                    let want = got.iter().find(|&&(b, n, _)| a.wrapping_sub(b) < n).map_or(0, |g| g.2);
+                    prop_assert_eq!(widen(a), a as u64 | (want as u64) << 32, "{:#x}", a);
+                    prop_assert_eq!(high_of(a), want);
+                    prop_assert_eq!(find(a).is_some(), got.iter().any(|&(b, n, _)| a.wrapping_sub(b) < n));
+                }
+                // made plain again, then gone: no high block left
+                if let Some(&(b, _, _)) = got.first() {
+                    prop_assert!(set_high(b, 0));
+                    prop_assert_eq!(widen(b), b as u64);
+                }
+                for &(b, _, _) in &got {
+                    forget(b);
+                }
+                prop_assert_eq!(HIGH.load(Relaxed), before);
+            }
+        }
+    }
 
     /// sake's data starts where the JIT's direct guest range ends (build.sh's GLOBAL_BASE too)
     #[test]

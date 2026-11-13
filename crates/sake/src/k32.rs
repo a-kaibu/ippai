@@ -2515,7 +2515,38 @@ fn DecodePointer(c: &mut Ctx) -> u32 {
 // memory
 
 fn VirtualAlloc(c: &mut Ctx) -> u32 {
-    virtual_alloc(c.a(0), c.a(1), c.a(2), c.a(3))
+    let a = if mem::x64() { c.a64(0) } else { c.a(0) as u64 };
+    alloc64(a, c.a(1), c.a(2), c.a(3)).unwrap_or_else(|e| {
+        last_error(e);
+        0
+    })
+}
+/// VirtualAlloc at a 64-bit address: above 4G (x64) the block lives at the address's low half
+/// and stands for the high one (mem::set_high; koji addresses memory modulo 4G), so it is
+/// there only if that low half is free. A commit there needs the reservation made there.
+pub(crate) fn alloc64(a: u64, size: u32, ty: u32, prot: u32) -> Result<u32, u32> {
+    let (lo, hi) = (a as u32, (a >> 32) as u32);
+    if hi == 0 {
+        return alloc_r(lo, size, ty, prot);
+    }
+    if a > 0x7ffe_ffff_ffff {
+        return Err(87); // above the user address space
+    }
+    if ty & 0x2000 == 0 {
+        if mem::high_of(lo) != hi {
+            return Err(487);
+        }
+        return alloc_r(lo, size, ty, prot);
+    }
+    if lo < mem::LO {
+        return Err(487);
+    }
+    let b = alloc_r(lo, size, ty, prot).inspect_err(|_| {
+        // (Windows would give it: koji addresses memory modulo 4G, #62)
+        eprintln!("sake: VirtualAlloc above 4G at {a:#x} refused: its low half is taken");
+    })?;
+    mem::set_high(b, hi);
+    Ok(b)
 }
 /// VirtualAllocEx, VirtualFreeEx, VirtualProtectEx: this process's memory as the plain calls
 /// do it, another process's through crate::xmem (it does the same there). ChakraCore (the
@@ -2523,7 +2554,10 @@ fn VirtualAlloc(c: &mut Ctx) -> u32 {
 fn VirtualAllocEx(c: &mut Ctx) -> u32 {
     let (a, n, ty, prot) = (c.a(1), c.a(2), c.a(3), c.a(4));
     match remote(c.a(0), xmem::ALLOC, vec![a, n, ty, prot], vec![]) {
-        None => virtual_alloc(a, n, ty, prot),
+        None => alloc64(if mem::x64() { c.a64(1) } else { a as u64 }, n, ty, prot).unwrap_or_else(|e| {
+            last_error(e);
+            0
+        }),
         Some(r) => r.and_then(|v| v.first().copied().ok_or(5)).unwrap_or_else(|e| {
             last_error(e);
             0
@@ -2571,12 +2605,6 @@ fn remote_bytes(h: u32, op: u32, args: Vec<u32>, data: Vec<u8>) -> Option<Result
         }),
     }
 }
-fn virtual_alloc(addr: u32, size: u32, ty: u32, prot: u32) -> u32 {
-    alloc_r(addr, size, ty, prot).unwrap_or_else(|e| {
-        last_error(e);
-        0
-    })
-}
 /// VirtualAlloc: the block, or the error (no guest thread needed: crate::xmem runs it for
 /// other processes)
 pub(crate) fn alloc_r(addr: u32, size: u32, ty: u32, prot: u32) -> Result<u32, u32> {
@@ -2621,8 +2649,9 @@ fn NtAllocateVirtualMemory(c: &mut Ctx) -> u32 {
         return 0xC000_000D;
     }
     let (want, size) = (mem::rp(pbase), mem::rp(psize));
+    let want64 = if mem::x64() { mem::r64(pbase) } else { want as u64 };
     let r = match xmem::target(c.a(0)) {
-        xmem::Target::Own => alloc_r(want, size, ty, prot),
+        xmem::Target::Own => alloc64(want64, size, ty, prot),
         xmem::Target::Bad => return 0xC000_0008,
         xmem::Target::Other(pid) => match xmem::call(pid, xmem::ALLOC, vec![want, size, ty, prot], vec![]) {
             None => return 0xC000_010A, // STATUS_PROCESS_IS_TERMINATING
@@ -2638,7 +2667,11 @@ fn NtAllocateVirtualMemory(c: &mut Ctx) -> u32 {
         },
         Ok(b) => {
             let (base, n) = nt_rounded(want, size, b);
-            mem::wp(pbase, base);
+            if mem::x64() {
+                mem::w64(pbase, mem::widen(base));
+            } else {
+                mem::wp(pbase, base);
+            }
             mem::wp(psize, n);
             0
         }
@@ -2700,7 +2733,19 @@ pub(crate) fn nt_free_r(addr: u32, size: u32, ty: u32) -> Result<(u32, u32), u32
         Err(0xC000_00F2) // STATUS_INVALID_PARAMETER_4
     }
 }
+/// Whether address argument `i` is the allocation at its low half's own (x64: above 4G only
+/// one that stands for it, mem::set_high; below 4G only a plain one); else ERROR_INVALID_ADDRESS.
+fn high_ok(c: &Ctx, i: u32) -> bool {
+    if mem::x64() && (c.a64(i) >> 32) as u32 != mem::high_of(c.a(i)) {
+        last_error(487);
+        return false;
+    }
+    true
+}
 fn VirtualFree(c: &mut Ctx) -> u32 {
+    if !high_ok(c, 0) {
+        return 0;
+    }
     virtual_free(c.a(0), c.a(1), c.a(2))
 }
 fn virtual_free(addr: u32, size: u32, ty: u32) -> u32 {
@@ -2750,7 +2795,25 @@ fn VirtualQueryEx(c: &mut Ctx) -> u32 {
     }
 }
 fn VirtualQuery(c: &mut Ctx) -> u32 {
-    virtual_query(c.a(0), c.a(1), c.a(2))
+    let (a, mbi, len) = (c.a(0), c.a(1), c.a(2));
+    let hi = if mem::x64() { (c.a64(0) >> 32) as u32 } else { 0 };
+    if hi == mem::high_of(a) {
+        return virtual_query(a, mbi, len);
+    }
+    // x64, an address whose low half holds an allocation that stands for another (a low one, or
+    // one above 4G): free there, as far as that allocation goes (a scan for free memory near a
+    // module moves on; VirtualAlloc there is refused: alloc64)
+    if c.a64(0) > 0x7ffe_ffff_ffff {
+        last_error(87);
+        return 0;
+    }
+    if len < 48 {
+        return 0;
+    }
+    let [base, _, _, n, ..] = query_r(a);
+    write_mbi(mbi, [base, 0, 0, n, 0x10000, 1, 0]);
+    mem::w64(mbi, base as u64 | (hi as u64) << 32);
+    48
 }
 fn virtual_query(a: u32, mbi: u32, len: u32) -> u32 {
     // MEMORY_BASIC_INFORMATION: (base, allocation base, allocation protection, region size,
@@ -2804,6 +2867,9 @@ pub(crate) fn write_mbi(mbi: u32, [base, alloc, aprot, n, state, prot, kind]: [u
     }
 }
 fn VirtualProtect(c: &mut Ctx) -> u32 {
+    if !high_ok(c, 0) {
+        return 0;
+    }
     virtual_protect(c.a(0), c.a(1), c.a(2), c.a(3))
 }
 fn virtual_protect(addr: u32, size: u32, prot: u32, old_out: u32) -> u32 {

@@ -81,10 +81,17 @@
 
 - sake.wasm は 1 つのまま。exe が PE32+ なら起動時に `mem::set_x64()` で x64 モードにし、koji を
   long mode で動かす。ゲストのアドレスは 32 ビットのまま (メモリは 4GB で折り返す)。
-- ローダー (pe.rs): ImageBase が 4GB より上で再配置のない exe (0x140000000 など) は下位半分
-  (0x40000000) に置き、上位半分は koji の `rip_hi` が持つ (`pe::ALIAS`)。プログラムに返す
-  その範囲のアドレスは `mem::widen` で上位を戻す。DIR64 再配置、8 バイト IAT、TLS、.pdata。
-- アドレスの扱いの検討 (2026-11-07、レビューの P1): いまのゲストのアドレスは 4GB で折り返し、4GB より上は
+- ローダー (pe.rs): ImageBase が 4GB より上で再配置のない exe / DLL (0x140000000 など) は下位半分
+  (0x40000000) に置き、上位半分は koji の `rip_hi` が持つ。その確保 (mem.rs の Region) に上位半分を
+  覚えさせ (`mem::set_high`)、プログラムに返すその範囲のアドレスは `mem::widen` で上位を戻す。
+  下位半分どうしが重ならない限りいくつでも置ける (2026-11-13、#62)。DIR64 再配置、8 バイト IAT、TLS、.pdata。
+- 4GB より上を指定した VirtualAlloc / VirtualAllocEx / NtAllocateVirtualMemory (#62): 下位半分が空いていれば
+  そこに確保して `set_high` し、指定どおりのアドレスを返す (k32.rs `alloc64`)。空いていなければ
+  ERROR_INVALID_ADDRESS (Windows なら成功するところ: `sake: VirtualAlloc above 4G ...` をログに出す)。
+  VirtualFree / VirtualProtect / VirtualQuery は上位半分も照合し、下位半分に別の確保 (上位の違うもの、
+  普通の下位のもの) がある番地は空き (MEM_FREE) として答える。host/tests/highmem.c (exe と DLL 2 つを
+  4GB より上に固定、確保と解放、呼び合い) と mem.rs の PBT。
+- アドレスの扱いの検討 (2026-11-07、レビューの P1。2026-11-13 に下の「ALIAS を表に」を実施): いまのゲストのアドレスは 4GB で折り返し、4GB より上は
   再配置のない exe 1 つ分だけ (`pe::ALIAS` + `rip_hi`)。sake が返すメモリ (VirtualAlloc、ヒープ、
   スタック、DLL) は全部下位 4GB なので、64 ビットのポインタでも上位 32 ビットは 0 で、普通のプログラムは
   これで足りる (Artemis / SakanaGL / Godot / Unity 2019 は本編まで)。壊れるのは (1) 再配置のない

@@ -28,13 +28,6 @@ pub struct Module {
     pub redirected: bool,
 }
 
-/// The module mapped at the low alias of a base above 4G: (low base, upper half, size).
-static ALIAS: RwLock<(u32, u32, u32)> = RwLock::new((0, 0, 0));
-
-pub fn alias() -> (u32, u32, u32) {
-    *ALIAS.read().unwrap()
-}
-
 /// The 64-bit address an image mapped at `base` (preferring `pref`) has.
 fn widen_base(base: u32, pref: u64) -> u64 {
     if base as u64 != pref && base == pref as u32 { pref } else { base as u64 }
@@ -333,13 +326,22 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     let base = match (pref >> 32 == 0).then(|| mem::reserve(low, size, 0x80, 0x100_0000, false)).flatten() {
         Some(b) => b,
         // (elsewhere when it can move: relocations, or a resource-only DLL with no code to fix)
-        None if can_move || (dll && entry_rva == 0) => mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?,
+        // (one that lands on its base's low half by chance is taken as mapped at the base itself,
+        // widen_base: unrelocated, so it stands for the base)
+        None if can_move || (dll && entry_rva == 0) => {
+            let b = mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?;
+            if pref >> 32 != 0 && b == low {
+                mem::set_high(b, (pref >> 32) as u32);
+            }
+            b
+        }
         // above 4G and fixed: memory is addressed modulo 4G, so the image lives at its base's
         // low half and RIP keeps the upper one (koji Cpu::rip_hi); addresses handed to the
-        // program in that range get it back (mem::widen)
-        None if pref >> 32 != 0 && alias().2 == 0 => {
+        // program in that range get it back (mem::widen). Any number of them, as long as their
+        // low halves don't meet (each other's, or a low allocation's)
+        None if pref >> 32 != 0 => {
             let b = mem::reserve(low, size, 0x80, 0x100_0000, false).ok_or_else(|| format!("cannot map at {pref:#x} (its low alias {low:#x} is taken)"))?;
-            *ALIAS.write().unwrap() = (b, (pref >> 32) as u32, size);
+            mem::set_high(b, (pref >> 32) as u32);
             b
         }
         None => return Err(format!("cannot map at {pref:#x} (no relocations)")),

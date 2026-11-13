@@ -148,7 +148,7 @@ target/release/ippai serve --foreground --web web/dist --listen 127.0.0.1:8080
 | 対象 | 状態 |
 | --- | --- |
 | x86 32bit (PE32) の Windows ゲーム | 対応 (主な対象) |
-| x86-64 (PE32+) | 実験的: JIT と独自 CRT あり。ゲストのアドレスは下位 32bit で 4GiB の Wasm メモリに写します (4GiB より上は exe のイメージ 1 つだけ別名で扱う)。4GiB より上を指定して確保する、再配置できない高位の DLL が複数ある、といったプログラムは動きません ([docs/sake.md](docs/sake.md)) |
+| x86-64 (PE32+) | 実験的: JIT と独自 CRT あり。ゲストのアドレスは下位 32bit で 4GiB の Wasm メモリに写します (4GiB より上の再配置できない exe / DLL と、4GiB より上を指定した VirtualAlloc は、下位 32bit が空いていればその別名に置く)。下位 32bit が重なる高位の確保や、2GiB を超えて使うプログラムは動きません ([docs/sake.md](docs/sake.md)) |
 | 16bit (Win16 / NE) | 実験的 |
 | Web ゲーム (NW.js / Electron) | 対応 (別オリジンの iframe) |
 | DOS、ARM64 の exe | 未対応 |
