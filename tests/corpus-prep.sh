@@ -107,6 +107,12 @@ if [ ! -d x ]; then
     # its WinRAR SFX ran in sake and wrote 375 MB into the page until the browser died)
     elif LC_ALL=C.UTF-8 lsar -e cp932 "$s" 2>/dev/null | sed -n '1{/: Embedded /!q1};2,$p' | grep -qi '\.exe$' &&
         LC_ALL=C.UTF-8 unar -q -e cp932 -o "$s.sfx" "$s" >/dev/null 2>&1 && [ -n "$(ls "$s.sfx")" ]; then rm -f "$s"
+    # (one unar does not know, as a RAR5 one: 7-Zip lists it, unrar unpacks it (Debian's 7-Zip
+    # has no RAR codec). CYCLET's tokage_trial_kanau_web.exe ran in sake, unpacked part of itself,
+    # opened its readme and ended)
+    elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qxE 'Type = Rar5?' &&
+        LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | sed '1,/^----------$/d' | grep -qiE '^Path = .*\.exe$' &&
+        mkdir -p "$s.sfx" && (cd "$s.sfx" && LC_ALL=C.UTF-8 unrar x -y "$OLDPWD/$s" >/dev/null 2>&1) && [ -n "$(ls "$s.sfx")" ]; then rm -f "$s"
     # a cabinet self-extractor holding the game (騎士姫クラリス's taiken exe, which unpacks
     # itself with cabinet.dll's FDI and quits: the game is a separate exe inside)
     elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qx 'Type = Cab' &&
