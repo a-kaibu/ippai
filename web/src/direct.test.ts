@@ -141,6 +141,8 @@ function world(
       if (!body) return new Response("", { status: 404 });
       const range = new Headers(init?.headers).get("range") ?? "";
       ranges.push(range);
+      // (past the HTTP cache: #213, a cached whole object answered ranges wrongly)
+      if (init?.cache !== "no-store") return new Response("", { status: 500 });
       const r = /^bytes=(\d+)-(\d+)$/.exec(range);
       if (!r || how.noRange) return new Response(body.slice());
       return new Response(body.slice(+r[1]!, +r[2]! + 1), { status: 206 });

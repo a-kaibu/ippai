@@ -88,6 +88,8 @@ async function bridge(opt = {}) {
       log.bucket.push(u);
       const range = init.headers?.range;
       pack.ranges.push(range);
+      // (a range kept out of the HTTP cache: #213, a cached whole object answered ranges wrongly)
+      pack.caches = [...(pack.caches ?? []), init.cache];
       if (opt.packGone) return { ok: false, status: 404, headers: { get: () => null } };
       const m = /^bytes=(\d+)-(\d+)$/.exec(range ?? '');
       // (a bucket that sends the whole object for a range)
@@ -330,6 +332,7 @@ test('a read takes the chunks after it in its pack with one ranged GET; reads of
   assert.equal(log.bucket.length, 1);
   const end = pack.at.get(order[9]).offset + pack.at.get(order[9]).len;
   assert.deepEqual(pack.ranges, [`bytes=0-${end - 1}`]);
+  assert.deepEqual(pack.caches, ['no-store'], 'a pack range past the HTTP cache (#213)');
   ctx.ippaiRecent.clear();
   for (const h of order) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
   assert.equal(log.bucket.length, 1, 'all from the one GET');
