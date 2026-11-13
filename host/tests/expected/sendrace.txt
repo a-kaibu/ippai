@@ -1,1 +1,2 @@
 12 rounds: registered elsewhere than slot 0: 0, wrong answers: 0
+12 rounds, peeking owner: registered elsewhere than slot 0: 0, wrong answers: 0

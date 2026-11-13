@@ -1498,11 +1498,14 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
 /// translated), so threads that waited together for a busy owner went on in lockstep and hit
 /// races native timing never shows. KiriKiri's sigcheck.dll (#82) is one: its two checking
 /// threads each register SHA-256 without a lock right after a SetWindowPos to the main
-/// thread's window, and the second one got slot 1, which it takes for an error.
-const HEAD_START: Duration = Duration::from_millis(4);
+/// thread's window, and the second one got slot 1, which it takes for an error. 4 ms was
+/// enough on an idle machine but not on a loaded one (the mirror trial sweep: アパタイト's
+/// KiriKiri trials failed 1 start in 8 alone and up to half with two games running; sendrace
+/// failed 1-2 rounds in 12): the first thread has to be scheduled and run its next few calls.
+const HEAD_START: Duration = Duration::from_millis(25);
 
-/// When the sender `from` of a message answered `now` goes on, `last` being the sender let go
-/// before it in the same turn (and when): another thread waits a head start after that one.
+/// When the sender `from` of a message answered `now` goes on, `last` being the sender this
+/// thread let go before it (and when): another thread waits a head start after that one.
 fn release_at(last: Option<(u32, Instant)>, from: u32, now: Instant) -> Instant {
     match last {
         Some((t, at)) if t != from => (at + HEAD_START).max(now),
@@ -1512,11 +1515,17 @@ fn release_at(last: Option<(u32, Instant)>, from: u32, now: Instant) -> Instant 
     }
 }
 
+thread_local! {
+    /// The sender this thread let go last, and when. Kept across pumps and nested ones: a busy
+    /// owner that peeks between bits of work (KiriKiri's main loop) answers two waiting senders
+    /// in two PeekMessage calls microseconds apart, and a window procedure that pumps answers
+    /// the second inside the first one's call; both must still go on a head start apart (#82).
+    static LAST_RELEASE: std::cell::Cell<Option<(u32, Instant)>> = const { std::cell::Cell::new(None) };
+}
+
 /// Runs messages other threads sent to this one.
 fn process_sent(cpu: &mut koji::Cpu) {
     let me = crate::cur().tid;
-    // the thread let go last here, and when it was
-    let mut last: Option<(u32, Instant)> = None;
     loop {
         let s = with(|s| s.queues.get_mut(&me).and_then(|q| q.sent.pop_front()));
         let Some(sent) = s else { return };
@@ -1526,8 +1535,8 @@ fn process_sent(cpu: &mut koji::Cpu) {
             Some(p) => call_sent(cpu, p, m.hwnd, m.msg, m.w, m.l, false),
             None => 0,
         };
-        let at = release_at(last, sent.from, Instant::now());
-        last = Some((sent.from, at));
+        let at = release_at(LAST_RELEASE.get(), sent.from, Instant::now());
+        LAST_RELEASE.set(Some((sent.from, at)));
         *sent.result.0.lock().unwrap() = Some((r, at));
         sent.result.1.notify_all();
         if let Some((id, buf)) = sent.remote {
