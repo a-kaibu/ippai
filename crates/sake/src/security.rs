@@ -1002,10 +1002,9 @@ fn GetTokenInformation(c: &mut Ctx) -> u32 {
 /// SetEntriesInAcl(count, EXPLICIT_ACCESS list, old ACL, &new ACL): a new ACL (LocalAlloc'd)
 /// from the old one's ACEs and the entries: SET_ACCESS and REVOKE_ACCESS drop the trustee's
 /// ACEs first, DENY_ACCESS puts a denied ACE before the allowed ones, GRANT_ACCESS and
-/// SET_ACCESS add an allowed one. Trustees by SID, or by the names CURRENT_USER, CREATOR OWNER
-/// and the well-known groups' (Everyone, SYSTEM, Administrators, Users).
+/// SET_ACCESS add an allowed one. Trustees by SID, or by CURRENT_USER and the accounts'
+/// names (LookupAccountName's).
 fn set_entries(c: &mut Ctx, wide: bool) -> u32 {
-    const ERROR_NONE_MAPPED: u32 = 1332;
     let (count, list, old, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
     if out == 0 || count != 0 && list == 0 {
         return ERROR_INVALID_PARAMETER;
@@ -1035,14 +1034,13 @@ fn set_entries(c: &mut Ctx, wide: bool) -> u32 {
             0 => match Sid::read(name) { Some(s) => s, None => return ERROR_INVALID_SID },
             1 => {
                 let n = if wide { String::from_utf16_lossy(&wstr(name)) } else { crate::text::a2s(&mem::cstr(name)) };
-                match n.to_ascii_uppercase().as_str() {
-                    "CURRENT_USER" => the_user(),
-                    "EVERYONE" => everyone(),
-                    "SYSTEM" | "NT AUTHORITY\\SYSTEM" => Sid(5, vec![18]),
-                    "ADMINISTRATORS" | "BUILTIN\\ADMINISTRATORS" => admins(),
-                    "USERS" | "BUILTIN\\USERS" => Sid(5, vec![32, 545]),
-                    "CREATOR OWNER" => Sid(3, vec![0]),
-                    _ => return ERROR_NONE_MAPPED,
+                if n.eq_ignore_ascii_case("CURRENT_USER") {
+                    the_user()
+                } else {
+                    match account_by_name(&n) {
+                        Some(a) => a.2,
+                        None => return ERROR_NONE_MAPPED,
+                    }
                 }
             }
             _ => return ERROR_INVALID_PARAMETER,
@@ -1259,9 +1257,136 @@ fn GetSecurityInfo(c: &mut Ctx) -> u32 {
     give_sd(info, false, owner, group, dacl, sacl, sdp)
 }
 
+// ---------------------------------------------------------------------------------------------
+// accounts (LookupAccountName / LookupAccountSid)
+
+const ERROR_NONE_MAPPED: u32 = 1332;
+
+/// (name, domain, SID, SID_NAME_USE: 1 user, 4 alias, 5 well-known group): the names Japanese
+/// Windows gives them too (the built-in accounts keep their English names there).
+fn accounts() -> Vec<(&'static str, &'static str, Sid, u32)> {
+    vec![
+        ("SYSTEM", "NT AUTHORITY", Sid(5, vec![18]), 5),
+        ("LOCAL SERVICE", "NT AUTHORITY", Sid(5, vec![19]), 5),
+        ("NETWORK SERVICE", "NT AUTHORITY", Sid(5, vec![20]), 5),
+        ("Authenticated Users", "NT AUTHORITY", Sid(5, vec![11]), 5),
+        ("INTERACTIVE", "NT AUTHORITY", Sid(5, vec![4]), 5),
+        ("Administrators", "BUILTIN", admins(), 4),
+        ("Users", "BUILTIN", Sid(5, vec![32, 545]), 4),
+        ("Guests", "BUILTIN", Sid(5, vec![32, 546]), 4),
+        ("Everyone", "", everyone(), 5),
+        ("LOCAL", "", Sid(2, vec![0]), 5),
+        ("CREATOR OWNER", "", Sid(3, vec![0]), 5),
+        ("user", "SAKE", the_user(), 1),
+    ]
+}
+/// The account a name means: "name" or "DOMAIN\name", any case.
+fn account_by_name(name: &str) -> Option<(&'static str, &'static str, Sid, u32)> {
+    let (dom, n) = match name.rsplit_once('\\') {
+        Some((d, n)) => (Some(d), n),
+        None => (None, name),
+    };
+    accounts().into_iter().find(|a| a.0.eq_ignore_ascii_case(n) && dom.is_none_or(|d| a.1.eq_ignore_ascii_case(d)))
+}
+fn account_by_sid(sid: &Sid) -> Option<(&'static str, &'static str, Sid, u32)> {
+    accounts().into_iter().find(|a| a.2 == *sid)
+}
+/// Copies `s` (and its NUL) to a `cap`-character buffer whose size goes to/from `*capp`; false
+/// (with `*capp` the size needed, NUL included) when it does not fit.
+fn put_name(buf: u32, capp: u32, s: &str, wide: bool) -> bool {
+    let n = if wide { s.encode_utf16().count() } else { crate::text::s2a(s).len() } as u32;
+    let cap = if capp == 0 { 0 } else { r32(capp) };
+    if cap <= n || buf == 0 {
+        if capp != 0 {
+            w32(capp, n + 1);
+        }
+        return false;
+    }
+    if wide {
+        mem::put_wstr(buf, n + 1, &s.encode_utf16().collect::<Vec<_>>());
+    } else {
+        mem::put_cstr(buf, n + 1, &crate::text::s2a(s));
+    }
+    w32(capp, n);
+    true
+}
+/// LookupAccountName(system, name, sid, &cbSid, domain, &cchDomain, &use)
+fn lookup_name(c: &mut Ctx, wide: bool) -> u32 {
+    let name = crate::k32::arg_str(c.a(1), wide);
+    let (sidp, cbp, dom, cchp, usep) = (c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let Some((_, d, sid, use_)) = account_by_name(&name) else {
+        last_error(ERROR_NONE_MAPPED);
+        return 0;
+    };
+    let b = sid.bytes();
+    let sid_fits = cbp != 0 && r32(cbp) >= b.len() as u32 && sidp != 0;
+    let dn = if wide { d.encode_utf16().count() } else { crate::text::s2a(d).len() } as u32;
+    let dom_fits = cchp != 0 && r32(cchp) > dn && dom != 0;
+    if !sid_fits || !dom_fits {
+        if cbp != 0 {
+            w32(cbp, b.len() as u32);
+        }
+        if cchp != 0 {
+            w32(cchp, dn + 1);
+        }
+        last_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    mem::write(sidp, &b);
+    w32(cbp, b.len() as u32);
+    put_name(dom, cchp, d, wide);
+    if usep != 0 {
+        w32(usep, use_);
+    }
+    1
+}
+fn LookupAccountNameA(c: &mut Ctx) -> u32 {
+    lookup_name(c, false)
+}
+fn LookupAccountNameW(c: &mut Ctx) -> u32 {
+    lookup_name(c, true)
+}
+/// LookupAccountSid(system, sid, name, &cchName, domain, &cchDomain, &use)
+fn lookup_sid(c: &mut Ctx, wide: bool) -> u32 {
+    let (sidp, name, cchn, dom, cchd, usep) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let Some(sid) = Sid::read(sidp) else {
+        last_error(ERROR_INVALID_SID);
+        return 0;
+    };
+    let Some((n, d, _, use_)) = account_by_sid(&sid) else {
+        last_error(ERROR_NONE_MAPPED);
+        return 0;
+    };
+    let len = |s: &str| if wide { s.encode_utf16().count() } else { crate::text::s2a(s).len() } as u32;
+    let fits = |b: u32, p: u32, s: &str| b != 0 && p != 0 && r32(p) > len(s);
+    if !fits(name, cchn, n) || !fits(dom, cchd, d) {
+        if cchn != 0 {
+            w32(cchn, len(n) + 1);
+        }
+        if cchd != 0 {
+            w32(cchd, len(d) + 1);
+        }
+        last_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    put_name(name, cchn, n, wide);
+    put_name(dom, cchd, d, wide);
+    if usep != 0 {
+        w32(usep, use_);
+    }
+    1
+}
+fn LookupAccountSidA(c: &mut Ctx) -> u32 {
+    lookup_sid(c, false)
+}
+fn LookupAccountSidW(c: &mut Ctx) -> u32 {
+    lookup_sid(c, true)
+}
+
 pub fn init() {
     reg!("advapi32";
         GetNamedSecurityInfoA, GetNamedSecurityInfoW, GetSecurityInfo, SetNamedSecurityInfoA, SetNamedSecurityInfoW,
+        LookupAccountNameA, LookupAccountNameW, LookupAccountSidA, LookupAccountSidW,
     );
     reg!("advapi32";
         SetEntriesInAclA, SetEntriesInAclW,
@@ -1382,6 +1507,28 @@ mod tests {
             }
             assert_eq!(grant & 0x0013_01bf, 0x0013_01bf);
             assert_eq!(grant, 0x001f_01ff);
+        }
+    }
+
+    #[test]
+    fn account_names() {
+        for (n, d, sid, u) in accounts() {
+            assert_eq!(account_by_name(n).map(|a| a.2), Some(sid.clone()), "{n}");
+            assert_eq!(account_by_name(&n.to_lowercase()).map(|a| a.2), Some(sid.clone()));
+            assert_eq!(account_by_name(&format!("{d}\\{n}")).map(|a| a.2), Some(sid.clone()));
+            assert_eq!(account_by_sid(&sid).map(|a| (a.0, a.1, a.3)), Some((n, d, u)));
+        }
+        assert_eq!(account_by_name("Users").map(|a| sid_to_string(&a.2)), Some("S-1-5-32-545".into()));
+        assert_eq!(account_by_name("SYSTEM").map(|a| sid_to_string(&a.2)), Some("S-1-5-18".into()));
+        assert_eq!(account_by_name("OTHER\\Users"), None);
+        assert_eq!(account_by_name("nobody"), None);
+        // one account per SID, one per name
+        let a = accounts();
+        for (i, x) in a.iter().enumerate() {
+            for y in &a[i + 1..] {
+                assert_ne!(x.2, y.2);
+                assert!(!x.0.eq_ignore_ascii_case(y.0));
+            }
         }
     }
 
