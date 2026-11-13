@@ -120,6 +120,45 @@ fn same(a: &Cpu, b: &Cpu, status: bool) -> bool {
         && fp(a) == fp(b)
 }
 
+/// Whether the instruction at EIP is an x87 one that may read an empty stack register (an
+/// over-approximation: st0 for any arithmetic/store form, st(i) for the register forms, st1
+/// for the D9 E0..FF group).
+fn reads_empty(c: &Cpu, m: &mut Window) -> bool {
+    let mut a = c.eip;
+    let mut op = 0;
+    for _ in 0..15 {
+        match m.read8(a) {
+            Ok(0x66 | 0x67 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0xf0 | 0x9b) => a += 1,
+            Ok(b) => {
+                op = b;
+                break;
+            }
+            Err(_) => return false,
+        }
+    }
+    if !(0xd8..=0xdf).contains(&op) {
+        return false;
+    }
+    let Ok(modrm) = m.read8(a + 1) else { return false };
+    let (reg, rm) = (modrm >> 3 & 7, modrm & 7);
+    let f = &c.fpu;
+    let empty = |i: u8| f.empty >> ((f.top + i as u32) & 7) & 1 != 0;
+    if modrm < 0xc0 {
+        // loads and control/state forms read no stack register
+        let load = matches!((op, reg), (0xd9, 0 | 4..=7) | (0xdb, 0 | 5) | (0xdd, 0 | 4 | 6 | 7) | (0xdf, 0 | 4 | 5));
+        return !load && empty(0);
+    }
+    match (op, reg) {
+        (0xd9, 0) => empty(rm),                    // fld st(i)
+        (0xd9, 2) | (0xdb, 4) | (0xdd, 0) => false, // fnop, fnclex/fninit, ffree
+        (0xd9, 5) => false,                        // constants
+        (0xd9, 4 | 6 | 7) => empty(0) || empty(1), // the unary/binary group
+        (0xdd, 2 | 3) => empty(0),                 // fst(p) st(i)
+        (0xdf, 4) => false,                        // fnstsw ax
+        _ => empty(0) || empty(rm),
+    }
+}
+
 fn show(c: &Cpu) -> String {
     format!(
         "eip {:#x} regs {:x?} flags {:#x} lazy {:x?} xmm {:x?} mm {:x?} mxcsr {:#x} fpu top {} empty {:#x} sw {:#x} regs {:?}",
@@ -287,6 +326,12 @@ fuzz_target!(|data: &[u8]| {
         }
         if cpu.eip == got.eip && first.is_none() {
             first = Some((cpu.clone(), window.0.clone()));
+        }
+        if reads_empty(&cpu, &mut window) {
+            // (an x87 read of an empty register: the stack underflows; the JIT's register
+            // cache does not keep popped values, so what the code computes from there is not
+            // compared, any more than the tags are)
+            return;
         }
         match koji::step(&mut cpu, &mut window) {
             Exit::Continue => {}

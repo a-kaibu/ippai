@@ -156,7 +156,8 @@ impl Audio {
             }
             self.first.get_or_insert(h);
             let end = (self.at + h.size).min(self.es.len());
-            let frame = self.es[self.at + if h.crc { 6 } else { 4 }..end].to_vec();
+            // (a last frame cut inside its CRC has no data at all)
+            let frame = self.es[(self.at + if h.crc { 6 } else { 4 }).min(end)..end].to_vec();
             self.at = end;
             self.frame(&h, &frame);
             self.frames += 1;

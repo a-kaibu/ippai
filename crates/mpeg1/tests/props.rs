@@ -19,6 +19,19 @@ fn the_stream_cut_anywhere_decodes_the_same() {
     assert_eq!(w.samples.len(), 46 * 1152 * 2);
 }
 
+#[test]
+fn a_last_frame_cut_inside_its_crc() {
+    // (a layer II header with CRC, then the stream ends: the frame's data start past its end;
+    // found by fuzz/fuzz_targets/mpeg1.rs, fuzz/regressions/mpeg1/crc-frame-cut-short)
+    for d in [&[0xff, 0xfc, 0x10, 0xff][..], &[0xff, 0xfc, 0x10, 0xff, 0x00], &[0, 0, 1, 0xc0, 0, 4, 0xff, 0xfc, 0x10, 0xff]] {
+        for cut in 0..d.len() {
+            mpeg1::check::check(d, &[cut]);
+        }
+    }
+    let d = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fuzz/regressions/mpeg1/crc-frame-cut-short")).unwrap();
+    mpeg1::check::check(&d[1..], &[]);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
