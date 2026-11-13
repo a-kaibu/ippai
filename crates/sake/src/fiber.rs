@@ -201,12 +201,10 @@ pub fn get(slots: u32, index: u32) -> Result<u32, u32> {
     if f == 0 {
         return Err(STATUS_INVALID_PARAMETER);
     }
+    // (a chunk this fiber never set a value in: NULL)
     let (j, k) = chunk_of(index);
     let d = rp(f + (2 + j) * ps());
-    if d == 0 {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
-    Ok(rp(d + (k + 1) * ps()))
+    Ok(if d == 0 { 0 } else { rp(d + (k + 1) * ps()) })
 }
 
 /// RtlFlsSetValue with the TEB's FlsSlots at `slots` (the fiber's TEB_FLS_DATA and the chunk
@@ -216,22 +214,9 @@ pub fn set(slots: u32, index: u32, v: u32) -> Result<(), u32> {
         return Err(STATUS_INVALID_PARAMETER);
     }
     let p = ps();
-    let mut f = rp(slots);
+    let f = new_data(slots);
     if f == 0 {
-        f = mem::heap_alloc((2 + CHUNKS) * p, true);
-        if f == 0 {
-            return Err(STATUS_NO_MEMORY);
-        }
-        let mut g = FLS.lock().unwrap();
-        let g = global(&mut g);
-        // InsertTailList
-        let h = head(g);
-        let last = rp(h + p);
-        wp(f, h);
-        wp(f + p, last);
-        wp(last, f);
-        wp(h + p, f);
-        wp(slots, f);
+        return Err(STATUS_NO_MEMORY);
     }
     let (j, k) = chunk_of(index);
     let mut d = rp(f + (2 + j) * p);
@@ -244,6 +229,64 @@ pub fn set(slots: u32, index: u32, v: u32) -> Result<(), u32> {
     }
     wp(d + (k + 1) * p, v);
     Ok(())
+}
+
+/// The TEB_FLS_DATA at `slots`, made (and linked into the process's list) if there is none;
+/// 0: no memory
+fn new_data(slots: u32) -> u32 {
+    let p = ps();
+    let f = rp(slots);
+    if f != 0 {
+        return f;
+    }
+    let f = mem::heap_alloc((2 + CHUNKS) * p, true);
+    if f == 0 {
+        return 0;
+    }
+    let mut g = FLS.lock().unwrap();
+    let g = global(&mut g);
+    // InsertTailList
+    let h = head(g);
+    let last = rp(h + p);
+    wp(f, h);
+    wp(f + p, last);
+    wp(last, f);
+    wp(h + p, f);
+    wp(slots, f);
+    f
+}
+
+/// Threads get FLS data as they start (from the first's, once the image is known)
+pub static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A thread starts: it has FLS data from the start, as the loader gives every thread on
+/// Windows (FlsGetValue of an allocated index is NULL there, not an error: kernel32:thread
+/// test_FLS; a new fiber has none: kernel32:fiber)
+pub fn thread_start(teb: u32) {
+    new_data(teb + offs().fls);
+}
+
+/// A thread ends: its FLS values go to their callbacks (with `cpu`; None: none run, as for a
+/// thread stopped from outside) and its FLS data off the list and freed, as the loader does
+/// on Windows
+pub fn thread_exit(cpu: Option<&mut koji::Cpu>) {
+    if !READY.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let at = slots();
+    let f = rp(at);
+    if f == 0 {
+        return;
+    }
+    let calls = process(f, 1);
+    if let Some(cpu) = cpu {
+        for (cb, v) in calls {
+            crate::call(cpu, cb, &[v]);
+        }
+    }
+    // (a callback may have set values again: they go unannounced)
+    process(rp(at), 2);
+    wp(at, 0);
 }
 
 /// RtlProcessFlsData(fls, flags): 1 takes it off the list and returns its callbacks to make
@@ -682,6 +725,8 @@ mod tests {
         Get(usize, usize),
         /// a fiber's data processed (callbacks) and freed
         Drop(usize),
+        /// a fiber's data made as a thread start makes it
+        Start(usize),
     }
     fn op() -> impl Strategy<Value = Op> {
         prop_oneof![
@@ -690,6 +735,7 @@ mod tests {
             (0usize..3, 0usize..8, 0u32..4).prop_map(|(f, i, v)| Op::Set(f, i, v)),
             (0usize..3, 0usize..8).prop_map(|(f, i)| Op::Get(f, i)),
             (0usize..3).prop_map(Op::Drop),
+            (0usize..3).prop_map(Op::Start),
         ]
     }
 
@@ -740,10 +786,20 @@ mod tests {
                     }
                     Op::Get(f, n) => {
                         let Some(&(i, _)) = live.get(n) else { continue };
+                        // (a fiber without FLS data: an error; with it, NULL until set, as a
+                        // thread's from the start)
                         match get(fibers[f], i) {
-                            Ok(v) => prop_assert_eq!(v, vals.get(&(f, i)).copied().unwrap_or(0)),
-                            Err(_) => prop_assert!(!vals.contains_key(&(f, i)) || rp(fibers[f]) == 0),
+                            Ok(v) => {
+                                prop_assert!(rp(fibers[f]) != 0);
+                                prop_assert_eq!(v, vals.get(&(f, i)).copied().unwrap_or(0));
+                            }
+                            Err(e) => prop_assert!(e == STATUS_INVALID_PARAMETER && rp(fibers[f]) == 0),
                         }
+                    }
+                    Op::Start(f) => {
+                        let before = rp(fibers[f]);
+                        let d = new_data(fibers[f]);
+                        prop_assert!(d != 0 && (before == 0 || before == d));
                     }
                     Op::Drop(f) => {
                         let d = rp(fibers[f]);

@@ -139,3 +139,43 @@ fn init_once_runs_once_on_many_threads() {
     t.into_iter().for_each(|t| t.join().unwrap());
     assert_eq!(runs.load(SeqCst), 1);
 }
+
+/// A writer waiting behind a reader is preferred: new readers (TryAcquireSRWLockShared, and
+/// AcquireSRWLockShared, which waits) stand back until it had the lock (Wine's kernel32:sync
+/// test_srwlock_base, seq 17-18 and 24), and the word is 0 again at the end.
+#[test]
+fn srw_waiting_writer_is_preferred_over_new_readers() {
+    let s = Arc::new(Waits::new());
+    let word = Arc::new(AtomicU32::new(0));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    s.srw_acquire(&word, true, &NoPause);
+    let w = {
+        let (s, word, order) = (s.clone(), word.clone(), order.clone());
+        std::thread::spawn(move || {
+            s.srw_acquire(&word, false, &NoPause);
+            order.lock().unwrap().push("writer");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            s.srw_release(&word, false);
+        })
+    };
+    while word.load(SeqCst) < waits::SRW_WRITER_WAITS {
+        std::thread::yield_now();
+    }
+    assert!(!Waits::srw_try(&word, true), "a new reader waits behind the writer");
+    assert!(!Waits::srw_try(&word, false), "the reader still holds it");
+    let r = {
+        let (s, word, order) = (s.clone(), word.clone(), order.clone());
+        std::thread::spawn(move || {
+            s.srw_acquire(&word, true, &NoPause);
+            order.lock().unwrap().push("reader");
+            s.srw_release(&word, true);
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert!(order.lock().unwrap().is_empty());
+    s.srw_release(&word, true);
+    w.join().unwrap();
+    r.join().unwrap();
+    assert_eq!(*order.lock().unwrap(), vec!["writer", "reader"]);
+    assert_eq!(word.load(SeqCst), 0);
+}

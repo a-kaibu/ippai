@@ -81,6 +81,46 @@ fn kref(o: &Obj) -> Option<KRef> {
     }
 }
 
+/// Handle `h` for another process (DuplicateHandle into it): what it is there. An unnamed
+/// event, mutex or semaphore becomes the kernel's first (its handles here use it there too).
+pub fn share_handle(h: u32) -> Option<KRef> {
+    let me = crate::pid();
+    let local = obj::with(|t| t.objs.get(&h).map(|(o, _)| match o {
+        Obj::Event { manual, set } => Some(kern::Sync::Event { manual: *manual, set: *set }),
+        Obj::Mutex { owner, count } if *owner == obj::ABANDONED => Some(kern::Sync::Mutex { owner: 0, pid: 0, count: 0, abandoned: true }).filter(|_| *count == 0),
+        Obj::Mutex { owner, count } => Some(kern::Sync::Mutex { owner: *owner, pid: if *owner != 0 { me } else { 0 }, count: *count, abandoned: false }),
+        Obj::Semaphore { count, max } => Some(kern::Sync::Semaphore { count: *count, max: *max }),
+        _ => None,
+    }))?;
+    if let Some(sync) = local {
+        if !kern::share() {
+            return None;
+        }
+        watch();
+        let name = format!("\0anonymous {me:x} {h:x} {}", crate::k32::ticks_ms());
+        let id = kern::with(|k| k.create_sync(&name, sync, me)).0.ok()?.0;
+        obj::with(|t| {
+            if let Some((o, _)) = t.objs.get_mut(&h) {
+                *o = Obj::Shared(id);
+            }
+        });
+    }
+    obj::with(|t| t.objs.get(&h).and_then(|(o, _)| kref(o)))
+}
+
+/// A handle here for what another process duplicated into this one
+pub fn adopt_handle(r: KRef) -> u32 {
+    let o = match r {
+        KRef::Pipe { end, read, write, ovl } => Obj::Pipe(crate::pipe::Handle { end, read, write, ovl }),
+        KRef::Process { pid, access } => Obj::Process { access, pid },
+        KRef::Sync { id } => {
+            kern::with(|k| k.add_sync_ref(id, crate::pid()));
+            Obj::Shared(id)
+        }
+    };
+    obj::add(o)
+}
+
 /// STARTUPINFO's dwFlags and its three standard handles
 fn startup_std(si: u32) -> Option<(u32, u32, u32)> {
     if si == 0 {
@@ -270,6 +310,7 @@ pub fn watch() {
             unsafe { libc::exit(code as i32) }
         }
         obj::signal();
+        crate::xmem::serve();
         crate::pipe::pump();
         crate::user::deliver_remote();
         crate::comrpc::wake();

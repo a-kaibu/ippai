@@ -904,8 +904,161 @@ fn nt_delete_file(c: &mut Ctx) -> u32 {
     if ok != 0 { 0 } else { status() }
 }
 
-/// NtSetInformationThread(h, class, buf, len): accepted (ThreadHideFromDebugger and the like).
-fn nt_set_information_thread(_: &mut Ctx) -> u32 {
+/// NtSetInformationThread(h, class, buf, len): ThreadAffinityMask (all bits: the process's)
+/// and ThreadGroupInformation through crate::affinity, the rest accepted
+/// (ThreadHideFromDebugger and the like).
+fn nt_set_information_thread(c: &mut Ctx) -> u32 {
+    let (h, class, buf, len) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let Some(tid) = crate::k32::any_thread_tid(h) else { return 0xC000_0008 };
+    let ps = mem::ps();
+    match class {
+        4 => {
+            if len != ps {
+                return 0xC000_0004;
+            }
+            let m = mem::rp(buf);
+            crate::affinity::with(|a| a.set_thread(tid, m)).map_or(0xC000_000D, |_| 0)
+        }
+        30 => {
+            if len != ps + 8 {
+                return 0xC000_0004;
+            }
+            if buf == 0 || mem::accessible(buf, len, false, false) < len {
+                return 0xC000_0005;
+            }
+            if mem::r16(buf + ps) != 0 {
+                return 0xC000_000D;
+            }
+            crate::affinity::with(|a| a.set_group(tid, mem::rp(buf))).map_or(0xC000_000D, |_| 0)
+        }
+        38 => set_name_info(tid, buf, len),
+        _ => 0,
+    }
+}
+/// Thread descriptions (SetThreadDescription, ThreadNameInformation), by thread id
+static NAMES: std::sync::Mutex<Option<crate::HashMap<u32, Vec<u16>>>> = std::sync::Mutex::new(None);
+pub fn thread_name(tid: u32) -> Vec<u16> {
+    NAMES.lock().unwrap().get_or_insert_with(Default::default).get(&tid).cloned().unwrap_or_default()
+}
+pub fn set_thread_name(tid: u32, name: Vec<u16>) {
+    let mut g = NAMES.lock().unwrap();
+    let m = g.get_or_insert_with(Default::default);
+    if name.is_empty() {
+        m.remove(&tid);
+    } else {
+        m.insert(tid, name);
+    }
+}
+/// ThreadNameInformation's set: a UNICODE_STRING (exactly its size), its characters readable
+fn set_name_info(tid: u32, buf: u32, len: u32) -> u32 {
+    let ps = mem::ps();
+    if len != 2 * ps {
+        return 0xC000_0004;
+    }
+    if buf == 0 || mem::accessible(buf, len, false, false) < len {
+        return 0xC000_0005;
+    }
+    let (n, p) = (r16(buf) as u32, mem::rp(buf + ps));
+    if n != 0 && (p == 0 || mem::accessible(p, n, false, false) < n) {
+        return 0xC000_0005;
+    }
+    set_thread_name(tid, (0..n / 2).map(|i| r16(p + 2 * i)).collect());
+    0
+}
+/// GetThreadDescription(thread, &string): a LocalAlloc'd copy; SetThreadDescription(thread,
+/// string): NULL clears it. Both HRESULT_FROM_NT (0x10000000 | status).
+fn get_thread_description(c: &mut Ctx) -> u32 {
+    let (h, out) = (c.a(0), c.a(1));
+    let Some(tid) = crate::k32::any_thread_tid(h) else { return 0x1000_0000 | 0xC000_0008 };
+    if !crate::obj::allows_any(h, 0x40 | 0x800) {
+        return 0x1000_0000 | 0xC000_0022;
+    }
+    let name = thread_name(tid);
+    let p = crate::k32::global_alloc(0x40, 2 * name.len() as u32 + 2);
+    for (i, &u) in name.iter().enumerate() {
+        mem::w16(p + 2 * i as u32, u);
+    }
+    mem::putp(out, p);
+    0x1000_0000
+}
+fn set_thread_description(c: &mut Ctx) -> u32 {
+    let (h, s) = (c.a(0), c.a(1));
+    let Some(tid) = crate::k32::any_thread_tid(h) else { return 0x1000_0000 | 0xC000_0008 };
+    if !crate::obj::allows_any(h, 0x20 | 0x400) {
+        return 0x1000_0000 | 0xC000_0022;
+    }
+    set_thread_name(tid, if s == 0 { vec![] } else { mem::wstr(s) });
+    0x1000_0000
+}
+
+/// NtQueryInformationThread(h, class, buf, len, &retlen): basic information, times, whether it
+/// is the last thread, the priority boost, I/O pending, hidden from the debugger, the group
+/// affinity. A handle opened with THREAD_QUERY_LIMITED_INFORMATION only gets the first four
+/// (kernel32:thread test_thread_info); others need THREAD_QUERY_INFORMATION.
+fn nt_query_information_thread(c: &mut Ctx) -> u32 {
+    let (h, class, out, len, ret) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let Some(tid) = crate::k32::any_thread_tid(h) else { return 0xC000_0008 };
+    let limited = matches!(class, 0 | 1 | 12 | 14 | 38);
+    if !crate::obj::allows(h, 0x40) && !(limited && crate::obj::allows(h, 0x800)) {
+        return 0xC000_0022; // STATUS_ACCESS_DENIED
+    }
+    let (x64, ps) = (mem::x64(), mem::ps());
+    if class == 38 {
+        // THREAD_NAME_INFORMATION: a UNICODE_STRING, its characters after it
+        let name = thread_name(tid);
+        let need = 2 * ps + 2 * name.len() as u32;
+        if ret != 0 {
+            w32(ret, need);
+        }
+        if len < need {
+            return 0xC000_0023; // STATUS_BUFFER_TOO_SMALL
+        }
+        let n = 2 * name.len() as u16;
+        mem::w16(out, n);
+        mem::w16(out + 2, n);
+        mem::wp(out + ps, out + 2 * ps);
+        for (i, &u) in name.iter().enumerate() {
+            mem::w16(out + 2 * ps + 2 * i as u32, u);
+        }
+        return 0;
+    }
+    let need = match class {
+        0 => if x64 { 48 } else { 28 },
+        1 => 32,
+        12 | 14 | 16 => 4,
+        17 => 1,
+        30 => ps + 8,
+        _ => return 0xC000_0003, // STATUS_INVALID_INFO_CLASS
+    };
+    if len < need {
+        return 0xC000_0004;
+    }
+    mem::fill(out, need, 0);
+    match class {
+        0 => {
+            // THREAD_BASIC_INFORMATION: ExitStatus, TebBaseAddress, ClientId (process, thread),
+            // AffinityMask, Priority, BasePriority
+            let code = crate::obj::with(|t| match t.objs.get(&crate::obj::norm(h)) {
+                Some((crate::obj::Obj::Thread { code, .. }, _)) => *code,
+                _ => 0x103,
+            });
+            let teb = if h == crate::obj::CURRENT_THREAD { crate::cur().teb } else { crate::k32::teb_of(tid).unwrap_or(0) };
+            w32(out, code);
+            mem::wp(out + ps, teb);
+            mem::wp(out + 2 * ps, crate::pid());
+            mem::wp(out + 3 * ps, tid);
+            mem::wp(out + 4 * ps, crate::affinity::with(|a| a.thread(tid)));
+            w32(out + 5 * ps, 8);
+            w32(out + 5 * ps + 4, 8);
+        }
+        12 => w32(out, (crate::k32::thread_count() <= 1) as u32),
+        14 => w32(out, crate::k32::boost_off(tid) as u32),
+        30 => mem::wp(out, crate::affinity::with(|a| a.thread(tid))),
+        _ => {}
+    }
+    if ret != 0 {
+        w32(ret, need);
+    }
     0
 }
 /// NtQueryInformationProcess(h, class, buf, len, &retlen)
@@ -1268,10 +1421,15 @@ fn nt_query_object(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    for d in ["kernel32", "kernelbase"] {
+        implement(d, "GetThreadDescription", get_thread_description);
+        implement(d, "SetThreadDescription", set_thread_description);
+    }
     implement("ntdll", "RtlNtStatusToDosError", rtl_nt_status_to_dos_error);
     implement("ntdll", "RtlNtStatusToDosErrorNoTeb", rtl_nt_status_to_dos_error);
     for (n, f) in [
         ("SetInformationThread", nt_set_information_thread as crate::api::Handler),
+        ("QueryInformationThread", nt_query_information_thread),
         ("QueryInformationProcess", nt_query_information_process),
         ("QueryObject", nt_query_object),
     ] {

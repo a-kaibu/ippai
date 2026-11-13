@@ -1775,16 +1775,19 @@ macro_rules! math1 {
 }
 math1!(floor = f64::floor, ceil = f64::ceil, fabs = f64::abs);
 /// msvcrt's errno for math: EDOM when a number gives NaN, ERANGE when finite numbers give an
-/// infinity (log(0) too).
-fn math_errno(args: &[f64], r: f64) {
+/// infinity (log(0) too). A domain error also raises the invalid-operation flag, as the
+/// instruction that computes it would (_statusfp then says _SW_INVALID: kernel32:thread
+/// test_thread_fpu_cw): MXCSR's IE (msvcrt computes it with SSE2 on x86 too).
+fn math_errno(c: &mut Ctx, args: &[f64], r: f64) {
     if r.is_nan() && !args.iter().any(|a| a.is_nan()) {
+        c.cpu.mxcsr |= 1;
         set_errno(33);
     } else if r.is_infinite() && args.iter().all(|a| a.is_finite()) {
         set_errno(34);
     }
 }
 macro_rules! math1e {
-    ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = c.f64(0); let r = $f(x); math_errno(&[x], r); ret(c, r) } )* };
+    ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = c.f64(0); let r = $f(x); math_errno(c, &[x], r); ret(c, r) } )* };
 }
 math1e!(sqrt = f64::sqrt, sin = f64::sin, cos = f64::cos, tan = f64::tan, asin = f64::asin, acos = f64::acos,
     atan = f64::atan, exp = f64::exp, log = f64::ln, log10 = f64::log10, sinh = f64::sinh, cosh = f64::cosh, tanh = f64::tanh);
@@ -1793,7 +1796,7 @@ fn pow(c: &mut Ctx) -> u32 {
     let (x, y) = (a.f64(c), a.f64(c));
     let r = x.powf(y);
     if x != 0.0 {
-        math_errno(&[x, y], r);
+        math_errno(c, &[x, y], r);
     }
     ret(c, r)
 }
@@ -1806,7 +1809,7 @@ fn fmod(c: &mut Ctx) -> u32 {
     let mut a = Args(0);
     let (x, y) = (a.f64(c), a.f64(c));
     let r = x % y;
-    math_errno(&[x, y], r);
+    math_errno(c, &[x, y], r);
     ret(c, if r == 0.0 { 0f64.copysign(x) } else { r })
 }
 fn ldexp(c: &mut Ctx) -> u32 {

@@ -332,6 +332,11 @@ thread_local! {
     /// caller (libgcc's cleanups raise STATUS_GCC_UNWIND from their unwind handler, for the
     /// frame being unwound to catch); an unwind that one starts leaves this one behind.
     static UNWINDS: RefCell<Vec<Unwind>> = const { RefCell::new(Vec::new()) };
+    /// The contexts of the exceptions whose vectored handlers run (crate::call: they return to
+    /// RET_TRAP): an unwind out of one (longjmp from the handler) goes on from that context,
+    /// the frame that raised it, as on Windows where KiUserExceptionDispatcher's frame leads
+    /// there.
+    static VEH: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
 
 /// No exception dispatch or unwind under way on this thread (save states: snap.rs).
@@ -381,13 +386,16 @@ fn dispatch(cpu: &mut Cpu, rec: u32, orig: u32) {
         w64(ptrs, rec as u64);
         w64(ptrs + 8, orig as u64);
         cpu.set_gpr(4, ptrs as u64 - 0x40);
+        VEH.with(|v| v.borrow_mut().push(orig));
         for f in veh {
             if crate::call(cpu, f, &[ptrs]) == 0xffff_ffff {
+                VEH.with(|v| v.borrow_mut().pop());
                 crate::seh::continue_handlers(cpu, ptrs);
                 load_context(cpu, orig);
                 return;
             }
         }
+        VEH.with(|v| v.borrow_mut().pop());
     }
     let cur = (orig - 0x40 - CONTEXT_SIZE) & !15;
     let next = cur - CONTEXT_SIZE;
@@ -707,8 +715,18 @@ fn unwind_go(cpu: &mut Cpu, resumed: bool) {
         crate::mem::copy(ctx, next, CONTEXT_SIZE);
     }
     while !done {
+        let mut pc = rip(ctx);
+        if pc == crate::api::RET_TRAP as u64 {
+            // (out of a vectored handler: on from the context of its exception, which is left)
+            if let Some(o) = VEH.with(|v| v.borrow_mut().pop()) {
+                crate::mem::copy(ctx, o, CONTEXT_SIZE);
+                pc = rip(ctx);
+                if trace() {
+                    eprintln!("sake: x64 unwind: out of a vectored handler, on from {pc:#x}");
+                }
+            }
+        }
         crate::mem::copy(next, ctx, CONTEXT_SIZE);
-        let pc = rip(ctx);
         let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_UHANDLER, next, &mut u.seen, rec) else {
             crate::fatal(cpu, &format!("x64 unwind to {:#x}: ran out of frames at {pc:#x}", u.target));
         };

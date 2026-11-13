@@ -270,7 +270,32 @@ pub struct Kern {
     next_msg: u32,
     pub services: BTreeMap<String, services::Service>,
     pub com: com::Broker,
+    /// another process's memory: what was asked of each process (crate::xmem), and the answers
+    vm: Vec<VmReq>,
+    vm_replies: BTreeMap<u32, VmReply>,
+    /// the threads started for other processes (CreateRemoteThread): their exit codes once
+    /// they ended
+    rthreads: BTreeMap<u32, Option<u32>>,
 }
+
+/// A request for process `to`'s memory (crate::xmem's operation `op` on `args`, `data`)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VmReq {
+    pub id: u32,
+    pub to: u32,
+    pub op: u32,
+    pub args: Vec<u32>,
+    pub data: Vec<u8>,
+}
+
+/// Its answer: `status` 0 or the error, values and bytes; GONE if the process ended first.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VmReply {
+    pub status: u32,
+    pub vals: Vec<u32>,
+    pub data: Vec<u8>,
+}
+pub const VM_GONE: u32 = u32::MAX;
 
 /// A pipe path's name (lower case, without the `\\.\pipe\` part); None if it is not a pipe path.
 pub fn pipe_name(path: &str) -> Option<String> {
@@ -734,6 +759,11 @@ impl Kern {
         }
         // (its windows go; what was sent to them is answered 0)
         self.wins.retain(|w| w.pid != pid);
+        let asked: Vec<u32> = self.vm.iter().filter(|r| r.to == pid).map(|r| r.id).collect();
+        self.vm.retain(|r| r.to != pid);
+        for id in asked {
+            self.vm_replies.insert(id, VmReply { status: VM_GONE, ..Default::default() });
+        }
         let gone: Vec<u32> = self.xmsgs.iter().filter(|x| x.to == pid && x.send).map(|x| x.id).collect();
         self.xmsgs.retain(|x| x.to != pid);
         for id in gone {
@@ -777,6 +807,60 @@ impl Kern {
         }
         self.changed();
         self.next_msg
+    }
+    /// Asks process `r.to` for something of its memory: the request's id (what `take_vm_reply`
+    /// answers). A process that ended answers VM_GONE.
+    pub fn put_vm(&mut self, mut r: VmReq) -> u32 {
+        self.next_msg += 1;
+        r.id = self.next_msg;
+        if self.exit_code(r.to).is_some() || !self.procs.contains_key(&r.to) {
+            self.vm_replies.insert(r.id, VmReply { status: VM_GONE, ..Default::default() });
+        } else {
+            self.vm.push(r);
+        }
+        self.changed();
+        self.next_msg
+    }
+    /// The memory requests for process `pid`, in order.
+    pub fn take_vm(&mut self, pid: u32) -> Vec<VmReq> {
+        if !self.vm.iter().any(|r| r.to == pid) {
+            return Vec::new();
+        }
+        let (mine, rest) = std::mem::take(&mut self.vm).into_iter().partition(|r| r.to == pid);
+        self.vm = rest;
+        self.changed();
+        mine
+    }
+    pub fn vm_reply(&mut self, id: u32, r: VmReply) {
+        self.vm_replies.insert(id, r);
+        self.changed();
+    }
+    /// Request `id`'s answer once there is one (PENDING until then).
+    pub fn take_vm_reply(&mut self, id: u32) -> Result<VmReply, u32> {
+        let r = self.vm_replies.remove(&id).ok_or(PENDING)?;
+        self.changed();
+        Ok(r)
+    }
+    /// A thread started for another process (CreateRemoteThread) runs.
+    pub fn thread_started(&mut self, tid: u32) {
+        self.rthreads.insert(tid, None);
+        self.changed();
+    }
+    /// A thread ended (one another process may wait for: else nothing).
+    pub fn thread_ended(&mut self, tid: u32, code: u32) {
+        if let Some(e @ None) = self.rthreads.get_mut(&tid) {
+            *e = Some(code);
+            self.changed();
+        }
+    }
+    /// Thread `tid` of process `pid`: its exit code once it ended. The first thread ends with
+    /// its process; any thread of a process that ended has.
+    pub fn thread_exit(&self, pid: u32, tid: u32) -> Option<u32> {
+        let proc_exit = self.exit_code(pid);
+        match self.rthreads.get(&tid) {
+            Some(Some(code)) => Some(*code),
+            _ => proc_exit,
+        }
     }
     /// The messages that came for process `pid`, in order.
     pub fn take_msgs(&mut self, pid: u32) -> Vec<XMsg> {
@@ -1219,7 +1303,9 @@ impl Enc for Sync {
 crate::enc_struct!(KObj { sync, name, refs });
 crate::enc_struct!(KWin { hwnd, pid, tid, class, title });
 crate::enc_struct!(XMsg { id, to, hwnd, msg, w, l, data, send });
-crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, next_msg, services, com });
+crate::enc_struct!(VmReq { id, to, op, args, data });
+crate::enc_struct!(VmReply { status, vals, data });
+crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, next_msg, services, com, vm, vm_replies, rthreads });
 
 #[cfg(test)]
 mod tests;

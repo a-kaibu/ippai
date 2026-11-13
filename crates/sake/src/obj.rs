@@ -42,6 +42,8 @@ pub struct Objs {
     handles: HashMap<u32, u32>,
     /// the handles child processes inherit (HANDLE_FLAG_INHERIT)
     inherit: crate::HashSet<u32>,
+    /// the access handles opened with less than all have (OpenMutex & co.)
+    access: HashMap<u32, u32>,
 }
 
 impl Objs {
@@ -155,22 +157,39 @@ pub fn dup(h: u32) -> u32 {
 
 /// Closes one handle; the object goes with its last one.
 pub fn close(h: u32) -> bool {
-    let (r, gone) = with(|t| {
-        let Some(k) = t.objs.handles.remove(&h) else { return (false, None) };
+    let (r, gone, port) = with(|t| {
+        let Some(k) = t.objs.handles.remove(&h) else { return (false, None, None) };
         t.objs.inherit.remove(&h);
-        let rc = &mut t.objs.map.get_mut(&k).unwrap().1;
-        *rc -= 1;
-        let mut gone = None;
-        if *rc == 0 {
-            gone = t.objs.map.remove(&k).map(|o| o.0);
-            t.names.retain(|_, v| *v != k);
-        }
-        (true, gone)
+        t.objs.access.remove(&h);
+        // (a completion port is closed with its last handle, though waits still hold it:
+        // they end, signaled, as on Windows)
+        let port = (matches!(t.objs.map.get(&k), Some((Obj::Other("iocp"), _))) && !t.objs.handles.values().any(|&v| v == k)).then_some(k);
+        (true, unref(t, k), port)
     });
+    if let Some(k) = port {
+        crate::iocp::closed(k);
+    }
+    gone_object(h, gone);
+    r
+}
+
+/// One reference to object `k` less: the object when that was its last
+fn unref(t: &mut Table, k: u32) -> Option<Obj> {
+    let rc = &mut t.objs.map.get_mut(&k)?.1;
+    *rc -= 1;
+    if *rc == 0 {
+        t.names.retain(|_, v| *v != k);
+        return t.objs.map.remove(&k).map(|o| o.0);
+    }
+    None
+}
+
+/// An object that went (its last handle closed, or the last wait on it ended)
+fn gone_object(h: u32, gone: Option<Obj>) {
     // (outside the table's lock: the kernel's comes after it, never before)
     match gone {
         Some(Obj::Pipe(p)) => crate::pipe::closed(p),
-        Some(Obj::Other("iocp")) => crate::iocp::closed(h),
+        Some(Obj::Other("iocp")) => crate::iocp::gone(h),
         Some(Obj::Other("afd")) => {
             crate::afd::closed(h);
             crate::iocp::forget(h);
@@ -180,7 +199,6 @@ pub fn close(h: u32) -> bool {
         }
         _ => {}
     }
-    r
 }
 
 pub fn file(h: u32) -> Option<Arc<crate::files::File>> {
@@ -248,7 +266,8 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
         }
         Obj::Thread { done, .. } => *done,
         Obj::Shared(id) => crate::kern::with(|k| k.try_take(*id, crate::pid(), tid, take)).0.is_some_and(|r| r.0),
-        Obj::Process { pid, .. } | Obj::RemoteThread { pid, .. } => crate::process::ended(*pid),
+        Obj::Process { pid, .. } => crate::process::ended(*pid),
+        Obj::RemoteThread { pid, tid } => crate::kern::with(|k| k.thread_exit(*pid, *tid)).0.is_some(),
         // a completion port: while it holds packets (waiting on it takes none)
         Obj::Other("iocp") => crate::iocp::has_packets(h),
         // files and the like count as signaled
@@ -279,10 +298,66 @@ pub fn waitable(handles: &[u32]) -> bool {
     let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
     handles.iter().all(|&h| try_take(t, if h == CURRENT_THREAD { me } else { h }, tid, false).is_some())
 }
+/// Handle `h` has only the rights `mask` (waiting needs SYNCHRONIZE)
+pub fn set_access(h: u32, mask: u32) {
+    with(|t| t.objs.access.insert(h, mask));
+}
+/// Whether handle `h` grants any of `bits` (a handle opened without a mask grants all)
+pub fn allows_any(h: u32, bits: u32) -> bool {
+    with(|t| t.objs.access.get(&norm(h)).is_none_or(|a| a & bits != 0))
+}
+/// Whether handle `h` grants all of `want` (a handle opened without a mask grants all)
+pub fn allows(h: u32, want: u32) -> bool {
+    with(|t| t.objs.access.get(&norm(h)).is_none_or(|a| a & want == want))
+}
+
+/// A handle as the object table knows it: the low two bits are the program's (Windows ignores
+/// them), pseudo-handles stay
+pub fn norm(h: u32) -> u32 {
+    if is_pseudo(h) { h } else { h & !3 }
+}
+/// GetCurrentProcess, GetCurrentThread, the token pseudo-handles and the rest of the top 16
+pub fn is_pseudo(h: u32) -> bool {
+    h >= 0xffff_fff0
+}
+/// What waiting on GetCurrentProcess() waits for: something never signaled (this process
+/// has not ended while it waits)
+fn self_process() -> u32 {
+    static H: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *H.get_or_init(|| add(Obj::Event { manual: true, set: false }))
+}
 pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
-    let tid = crate::cur().tid;
     let me = crate::cur().obj;
-    let handles: Vec<u32> = handles.iter().map(|&h| if h == CURRENT_THREAD { me } else { h }).collect();
+    let handles: Vec<u32> = handles.iter().map(|&h| match h {
+        CURRENT_THREAD => me,
+        CURRENT_PROCESS => self_process(),
+        h => norm(h),
+    }).collect();
+    // (a handle without SYNCHRONIZE cannot be waited on)
+    if with(|t| handles.iter().any(|h| t.objs.access.get(h).is_some_and(|a| a & 0x0010_0000 == 0))) {
+        crate::k32::last_error(5);
+        return WAIT_FAILED;
+    }
+    // the wait holds its objects: one whose last handle closes meanwhile stays (a mutex then
+    // abandoned is still WAIT_ABANDONED for this waiter)
+    let keys: Vec<Option<u32>> = with(|t| {
+        handles.iter().map(|h| {
+            let k = t.objs.key(h)?;
+            t.objs.map.get_mut(&k)?.1 += 1;
+            Some(k)
+        }).collect()
+    });
+    let held: Vec<u32> = handles.iter().zip(&keys).map(|(&h, k)| k.unwrap_or(h)).collect();
+    let r = wait_held(&held, all, ms, extra);
+    let gone: Vec<(u32, Obj)> = with(|t| keys.iter().flatten().filter_map(|&k| unref(t, k).map(|o| (k, o))).collect());
+    for (k, o) in gone {
+        gone_object(k, Some(o));
+    }
+    r
+}
+
+fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
+    let tid = crate::cur().tid;
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
     let mut g = lock();
     loop {
@@ -313,7 +388,7 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
                 }
                 Some(v) if v.iter().all(|&b| b) => {
                     let ab = handles.iter().position(|&h| abandoned(t, h));
-                    for &h in &handles {
+                    for &h in handles {
                         try_take(t, h, tid, true);
                     }
                     return ab.map_or(0, |_| 0x80);

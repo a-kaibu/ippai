@@ -91,6 +91,8 @@ fn enter_cs(trap: u32) -> u32 {
         .x(&[0x64, 0x8b, 0x15, 0x24, 0, 0, 0]) // mov edx,fs:[0x24] (thread id)
         .x(&[0x39, 0x51, 0x0c]) // cmp [ecx+0xc],edx
         .j8(0x74, "again") // je
+        .x(&[0x83, 0x79, 0x04, 0x00]) // cmp dword [ecx+4],0 (LockCount 0: never initialized, or
+        .j8(0x74, "slow") // je                          broken: k32::cs_corrupt)
         .x(&[0x31, 0xc0]) // xor eax,eax
         .x(&[0xf0, 0x0f, 0xb1, 0x51, 0x0c]) // lock cmpxchg [ecx+0xc],edx
         .j8(0x75, "slow") // jne

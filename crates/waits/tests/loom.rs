@@ -9,7 +9,7 @@ use loom::sync::atomic::AtomicU32;
 use loom::sync::Arc;
 use loom::thread;
 use std::sync::atomic::Ordering::SeqCst;
-use waits::{Begin, Cs, Entered, NoPause, Once, Sync as Waits};
+use waits::{Begin, Complete, Cs, Entered, NoPause, Once, Sync as Waits};
 
 fn model(f: impl Fn() + Sync + Send + 'static) {
     let mut b = loom::model::Builder::new();
@@ -117,6 +117,33 @@ impl Srw {
     fn new() -> Arc<Self> {
         Arc::new(Srw { sync: Waits::new(), word: AtomicU32::new(0), data: UnsafeCell::new(0) })
     }
+}
+
+/// A writer that waits behind a reader marks the word; whatever the interleaving, it gets the
+/// lock once the reader (who meanwhile tries to read again) lets go, and the word ends at 0.
+#[test]
+fn srw_waiting_writer_gets_the_lock_and_the_mark_goes() {
+    model(|| {
+        let l = Srw::new();
+        l.sync.srw_acquire(&l.word, true, &NoPause);
+        let w = {
+            let l = l.clone();
+            thread::spawn(move || {
+                l.sync.srw_acquire(&l.word, false, &NoPause);
+                l.data.with_mut(|d| unsafe { *d += 1 });
+                l.sync.srw_release(&l.word, false);
+            })
+        };
+        // (a second read: taken only while no writer shows in the word)
+        let again = Waits::srw_try(&l.word, true);
+        if again {
+            l.sync.srw_release(&l.word, true);
+        }
+        l.sync.srw_release(&l.word, true);
+        w.join().unwrap();
+        assert_eq!(l.data.with(|d| unsafe { *d }), 1);
+        assert_eq!(l.word.load(SeqCst), 0);
+    });
 }
 
 #[test]
@@ -330,7 +357,7 @@ fn init_once_begin_and_complete() {
                 assert_eq!(w, 0x42);
                 assert_eq!(i.runs.with(|r| unsafe { *r }), 1);
             }
-            Begin::NotYet => panic!("not only asked"),
+            Begin::NotYet | Begin::Invalid => panic!("not only asked, synchronous only"),
         };
         let t = {
             let i = i.clone();
@@ -341,13 +368,64 @@ fn init_once_begin_and_complete() {
             thread::spawn(move || match i.sync.once_begin(&i.word, true) {
                 Begin::Done(w) => assert_eq!(w, 0x42),
                 Begin::NotYet => {}
-                Begin::Pending => panic!("only asked"),
+                Begin::Pending | Begin::Invalid => panic!("only asked"),
             })
         };
         go(&i);
         t.join().unwrap();
         c.join().unwrap();
         assert!(!i.sync.once_complete(&i.word, 2), "completed twice");
+    });
+}
+
+/// INIT_ONCE_ASYNC: both initializers run (neither waits), the first to complete wins and the
+/// other's completion fails; a synchronous caller meanwhile is refused or sees it done.
+#[test]
+fn init_once_async_first_completion_wins() {
+    model(|| {
+        let i = Arc::new(Init { sync: Waits::new(), word: AtomicU32::new(0), runs: UnsafeCell::new(0) });
+        let go = |i: &Init, word: u32| -> bool {
+            match i.sync.once_begin_ex(&i.word, false, true) {
+                Begin::Pending => i.sync.once_complete_ex(&i.word, true, word).is_ok(),
+                Begin::Done(w) => {
+                    assert!(w == 0x42 || w == 0x82 || w == 0xc2);
+                    false
+                }
+                // (the synchronous one runs)
+                Begin::Invalid => false,
+                Begin::NotYet => panic!("not only asked"),
+            }
+        };
+        let t = {
+            let i = i.clone();
+            thread::spawn(move || go(&i, 0x40 | 2))
+        };
+        let s = {
+            let i = i.clone();
+            thread::spawn(move || match i.sync.once_begin_ex(&i.word, false, false) {
+                // (an asynchronous one runs, or it is done; or none began yet and this one runs)
+                Begin::Invalid => None,
+                Begin::Done(w) => Some(w),
+                Begin::Pending => {
+                    i.sync.once_complete_ex(&i.word, false, 0xc0 | 2).unwrap();
+                    Some(0xc2)
+                }
+                Begin::NotYet => panic!("not only asked"),
+            })
+        };
+        let mine = go(&i, 0x80 | 2);
+        let theirs = t.join().unwrap();
+        let sync = s.join().unwrap();
+        let w = i.word.load(SeqCst);
+        if sync == Some(0xc2) {
+            assert_eq!(w, 0xc2);
+            assert!(!mine && !theirs);
+        } else {
+            // exactly one asynchronous completion took
+            assert!(mine ^ theirs);
+            assert_eq!(w, if mine { 0x82 } else { 0x42 });
+        }
+        assert_eq!(i.sync.once_complete_ex(&i.word, true, 0x102), Err(Complete::Invalid));
     });
 }
 

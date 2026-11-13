@@ -291,7 +291,8 @@ enum { CS_LOCK = 2, CS_REC = 3, CS_OWNER = 4, CS_SEM = 6 };
 void EnterCriticalSection(volatile u32 *cs) {
     u32 me = TEB32(0x48), z = 0;
     if (cs[CS_OWNER] == me) { cs[CS_REC]++; return; }
-    if (__atomic_compare_exchange_n(&cs[CS_OWNER], &z, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+    /* (LockCount 0: never initialized, or broken: k32::cs_corrupt decides) */
+    if (cs[CS_LOCK] != 0 && __atomic_compare_exchange_n(&cs[CS_OWNER], &z, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
         cs[CS_REC] = 1;
         cs[CS_LOCK] = 0xfffffffe; /* locked, no waiters (Vista and later) */
         return;

@@ -150,6 +150,11 @@ pub mod security;
 pub mod lsa;
 pub mod actctx;
 pub mod fiber;
+pub mod timerq;
+pub mod xmem;
+pub mod barrier;
+pub mod affinity;
+pub mod tctx;
 pub mod cred;
 pub mod propsheet;
 pub mod perf;
@@ -194,6 +199,9 @@ pub struct Thread {
     pub tls: [u32; 8],
     /// a thread pool thread's arguments (k32 tp_take), kept for its start over
     pub tp: Option<(u32, (u32, u32, u32))>,
+    /// the API call it is in: the stack pointer at its return address and what returning
+    /// pops (0 outside one; GetThreadContext from another thread, crate::tctx)
+    pub api: (u32, u32),
 }
 
 thread_local! {
@@ -285,7 +293,7 @@ fn enter(stack: u32) -> &'static mut Thread {
             (*cpu).fpu.cw = 0x27f;
         }
     }
-    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st, tls: [0; 8], tp: None }));
+    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st, tls: [0; 8], tp: None, api: (0, 0) }));
     adopt(t as *mut Thread);
     k32::tls_thread_init(teb);
     t
@@ -328,6 +336,7 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                     seh::handler_done(cpu);
                 } else if a == api::EXIT_TRAP {
                     let code = cpu.regs[EAX];
+                    fiber::thread_exit(Some(cpu));
                     k32::exit_thread(code);
                 } else if a == api::SEH64_TRAP {
                     seh64::handler_done(cpu);
@@ -772,6 +781,10 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     lsa::init();
     actctx::init();
     fiber::init();
+    barrier::init();
+    affinity::init();
+    tctx::init();
+    timerq::init();
     pe::init();
     cred::init();
     propsheet::init();
@@ -833,16 +846,18 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     files::set_cwd(&dir);
     // (a process another one started: what CreateProcess gave it, and maybe a wait for
     // ResumeThread)
+    let mut suspended = false;
     if let Some(r) = process::record() {
         k32::set_command_line_raw(&r.cmdline);
         files::set_cwd(&r.cwd);
         k32::set_std_handles(r.std);
         process::start_child(&r);
-        if r.suspend > 0 {
-            process::wait_resumed();
-        }
+        suspended = r.suspend > 0;
     }
     if w16::is_ne(exe) {
+        if suspended {
+            process::wait_resumed();
+        }
         w16::start(cpu, exe, &wpath, args);
     }
     let base = match pe::load_exe(cpu, exe, &wpath) {
@@ -895,6 +910,13 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     // the window title (STARTUPINFO lpTitle) is the image path when the parent gave none
     ustr(pp + if x64 { 0xb0 } else { 0x70 }, 2 * wpath16.len() as u32, wp);
     let entry = pe::with(base, |m| m.entry).unwrap();
+    // (a process created suspended has its image mapped and its PEB filled, as on Windows,
+    // where the parent reads both before ResumeThread: kernel32:loader; nothing of it runs yet)
+    if suspended {
+        process::wait_resumed();
+    }
+    fiber::thread_start(cur().teb);
+    fiber::READY.store(true, Ordering::Release);
     pe::init_dlls(cpu);
     if x64 {
         start64(cpu, entry, peb);

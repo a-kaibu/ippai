@@ -154,15 +154,15 @@ kernel32:heap	fail	4153	278633
 kernel32:loader	crash	3719	0
 kernel32:locale	timeout	914933	0
 kernel32:mailslot	fail	84	126
-kernel32:module	timeout	377	0
+kernel32:module	fail	378	657
 kernel32:path	fail	99785	202588
 kernel32:pipe	crash	62	0
 kernel32:power	fail	2	3
 kernel32:process	timeout	0	62
 kernel32:profile	fail	149	570
 kernel32:resource	crash	26	0
-kernel32:sync	timeout	2274	0
-kernel32:thread	crash	147	0
+kernel32:sync	ok	0	367017
+kernel32:thread	ok	0	1026
 kernel32:time	fail	100	2249
 kernel32:timer	ok	0	4
 kernel32:toolhelp	fail	33	81
@@ -216,7 +216,7 @@ ntdll:atom	crash	0	0
 ntdll:change	fail	46	82
 ntdll:directory	fail	19	8328
 ntdll:env	crash	68	0
-ntdll:error	fail	1447	1448
+ntdll:error	fail	489	1448
 ntdll:exception	crash	36	0
 ntdll:file	crash	504	0
 ntdll:generated	ok	0	0
@@ -236,7 +236,7 @@ ntdll:thread	timeout	3	0
 ntdll:threadpool	timeout	777	0
 ntdll:time	fail	10610	10656
 ntdll:unwind	crash	60599	0
-ntdll:virtual	crash	20	0
+ntdll:virtual	crash	417	0
 ntdll:wow64	fail	28720	114131
 ole32:clipboard	crash	4	0
 ole32:compobj	crash	4	0

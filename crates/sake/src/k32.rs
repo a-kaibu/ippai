@@ -2,6 +2,7 @@
 
 #![allow(non_snake_case)]
 
+use crate::xmem;
 use crate::HashMap;
 use std::io::SeekFrom;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -372,6 +373,7 @@ fn FatalAppExitA(c: &mut Ctx) -> u32 {
 /// The calling thread ends (from the thread's own code: ExitThread or a return).
 pub fn exit_thread(code: u32) -> ! {
     kura::snap::unregister();
+    crate::fiber::thread_exit(None);
     let t = crate::cur();
     let h = t.obj;
     obj::with(|tb| {
@@ -394,6 +396,11 @@ pub fn exit_thread(code: u32) -> ! {
     obj::close(h);
     crate::apc::forget(t.tid);
     SUSPENDS.forget(t.tid);
+    tls_thread_exit(t.teb);
+    if crate::kern::host::shared() {
+        crate::kern::with(|k| k.thread_ended(t.tid, code));
+    }
+    crate::affinity::with(|m| m.gone(t.tid));
     // (ExitThread from a DllMain or TLS callback: the loader lock it holds)
     crate::pe::loader_thread_exit();
     if t.tid == crate::process::first_tid(crate::pid()) {
@@ -408,6 +415,7 @@ pub fn exit_thread(code: u32) -> ! {
     unsafe { libc::pthread_exit(std::ptr::null_mut()) }
 }
 fn ExitThread(c: &mut Ctx) -> u32 {
+    crate::fiber::thread_exit(Some(c.cpu));
     exit_thread(c.a(0))
 }
 /// _beginthread(start, stack, arg): a CRT thread (start is cdecl, returning ends it)
@@ -748,6 +756,13 @@ fn thread_stack(size: u32, flags: u32) -> u32 {
 
 fn CreateThread(c: &mut Ctx) -> u32 {
     let (stack, start, param, flags, ptid) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    let (h, tid) = create_thread(start, param, stack, flags, true);
+    put32(ptid, tid);
+    h
+}
+/// A new thread of this process: its handle and id (`inherit`: the creator's activation
+/// context goes along; a thread another process asked for has none here)
+fn create_thread(start: u32, param: u32, stack: u32, flags: u32, inherit: bool) -> (u32, u32) {
     let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
     let suspended = flags & 4 != 0;
     // a suspended thread is started by its first ResumeThread
@@ -755,15 +770,84 @@ fn CreateThread(c: &mut Ctx) -> u32 {
     if suspended {
         GATE.lock().unwrap().push((h, 1));
     }
-    crate::actctx::inherit(h);
+    if inherit {
+        crate::actctx::inherit(h);
+    }
     let tid = crate::spawn_gated(start, param, stack, h, suspended);
     obj::with(|t| {
         if let Some((Obj::Thread { tid: x, .. }, _)) = t.objs.get_mut(&h) {
             *x = tid;
         }
     });
-    put32(ptid, tid);
-    h
+    crate::affinity::with(|m| m.created(tid));
+    (h, tid)
+}
+/// CreateRemoteThread(process, attributes, stack, start, param, flags, &tid) and
+/// CreateRemoteThreadEx (an attribute list before &tid): in this process CreateThread; in
+/// another (crate::xmem) a thread there, its handle here (crate::kern tells when it ends).
+fn CreateRemoteThread(c: &mut Ctx) -> u32 {
+    remote_thread(c, c.a(6))
+}
+fn CreateRemoteThreadEx(c: &mut Ctx) -> u32 {
+    remote_thread(c, c.a(7))
+}
+fn remote_thread(c: &mut Ctx, ptid: u32) -> u32 {
+    let (stack, start, param, flags) = (c.a(2), c.a(3), c.a(4), c.a(5));
+    match xmem::target(c.a(0)) {
+        xmem::Target::Own => {
+            let (h, tid) = create_thread(start, param, stack, flags, true);
+            put32(ptid, tid);
+            h
+        }
+        xmem::Target::Bad => {
+            last_error(6);
+            0
+        }
+        xmem::Target::Other(pid) => match xmem::call(pid, xmem::CREATE_THREAD, vec![start, param, stack, flags], vec![]) {
+            Some(r) if r.status == 0 => {
+                let tid = r.vals.first().copied().unwrap_or(0);
+                put32(ptid, tid);
+                obj::add(Obj::RemoteThread { pid, tid })
+            }
+            Some(r) => {
+                last_error(r.status);
+                0
+            }
+            None => {
+                last_error(5);
+                0
+            }
+        },
+    }
+}
+/// crate::xmem's CREATE_THREAD here: the new thread's id (its end goes to the kernel)
+pub(crate) fn thread_for_other(start: u32, param: u32, stack: u32, flags: u32) -> u32 {
+    let (_, tid) = create_thread(start, param, stack, flags, false);
+    crate::kern::with(|k| k.thread_started(tid));
+    tid
+}
+/// crate::xmem's SUSPEND / RESUME here, of thread `tid`: its count before
+pub(crate) fn suspend_for_other(tid: u32, suspend: bool) -> Result<u32, u32> {
+    let h = obj::with(|t| t.objs.iter().find(|(_, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid)).map(|(&h, _)| h));
+    if let Some(h) = h {
+        let mut g = GATE.lock().unwrap();
+        if let Some((_, n)) = g.iter_mut().find(|(x, n)| *x == h && *n > 0) {
+            let old = *n;
+            if suspend {
+                *n += 1;
+            } else {
+                *n -= 1;
+            }
+            drop(g);
+            GATE_CV.notify_all();
+            return Ok(old);
+        }
+    }
+    if suspend {
+        SUSPENDS.suspend(tid).ok_or(298)
+    } else {
+        Ok(SUSPENDS.resume(tid))
+    }
 }
 
 /// Blocks a new thread created suspended until ResumeThread.
@@ -809,8 +893,13 @@ pub fn park_suspended() -> bool {
     if !SUSPENDS.any() {
         return false;
     }
-    let tid = crate::cur().tid;
-    SUSPENDS.park(tid, || kura::snap::pausing() && kura::snap::parkable())
+    let t = crate::cur();
+    let parked = SUSPENDS.park(t.tid, || kura::snap::pausing() && kura::snap::parkable());
+    if parked {
+        // (a context set meanwhile: SetThreadContext)
+        crate::tctx::apply_pending(unsafe { &mut *t.cpu });
+    }
+    parked
 }
 
 /// The thread id of a thread handle of this process (the pseudo-handle too).
@@ -826,11 +915,14 @@ fn thread_tid(h: u32) -> Option<u32> {
 
 fn ResumeThread(c: &mut Ctx) -> u32 {
     let h = c.a(0);
+    if thread_denied(h, 2) {
+        return u32::MAX;
+    }
     if let Some(pid) = obj::with(|t| match t.objs.get(&h) {
         Some((Obj::RemoteThread { pid, .. }, _)) => Some(*pid),
         _ => None,
     }) {
-        return crate::process::resume(pid);
+        return remote_thread_count(h, pid, false);
     }
     // a thread created suspended that has not started yet
     {
@@ -852,11 +944,55 @@ fn ResumeThread(c: &mut Ctx) -> u32 {
         }
     }
 }
+/// Another process's thread's exit code (STILL_ACTIVE while it runs): one started for this
+/// process from the kernel, the first one's the process's.
+fn remote_thread_exit(pid: u32, tid: u32) -> u32 {
+    crate::kern::with(|k| k.thread_exit(pid, tid)).0.unwrap_or(0x103)
+}
+/// Suspend/ResumeThread of another process's thread: its first thread before it starts counts
+/// in the kernel (CREATE_SUSPENDED), else that process does it (crate::xmem).
+fn remote_thread_count(h: u32, pid: u32, suspend: bool) -> u32 {
+    let tid = obj::with(|t| match t.objs.get(&h) {
+        Some((Obj::RemoteThread { tid, .. }, _)) => *tid,
+        _ => 0,
+    });
+    let early = crate::kern::with(|k| match k.procs.get_mut(&pid) {
+        Some(p) if p.suspend > 0 && tid == crate::process::first_tid(pid) => {
+            let n = p.suspend;
+            p.suspend = if suspend { n + 1 } else { n - 1 };
+            k.changed();
+            Some(n)
+        }
+        _ => None,
+    })
+    .0;
+    if let Some(n) = early {
+        return n;
+    }
+    let r = match xmem::call(pid, if suspend { xmem::SUSPEND } else { xmem::RESUME }, vec![tid], vec![]) {
+        None => Err(5),
+        Some(r) if r.status != 0 => Err(r.status),
+        Some(r) => Ok(r.vals.first().copied().unwrap_or(0)),
+    };
+    r.unwrap_or_else(|e| {
+        last_error(e);
+        u32::MAX
+    })
+}
 /// SuspendThread: the previous suspend count. A thread created suspended counts one more
 /// before it starts; a running one stops at its next slice (waits::suspend), the calling thread
 /// at once.
 fn SuspendThread(c: &mut Ctx) -> u32 {
     let h = c.a(0);
+    if thread_denied(h, 2) {
+        return u32::MAX; // (THREAD_SUSPEND_RESUME)
+    }
+    if let Some(pid) = obj::with(|t| match t.objs.get(&h) {
+        Some((Obj::RemoteThread { pid, .. }, _)) => Some(*pid),
+        _ => None,
+    }) {
+        return remote_thread_count(h, pid, true);
+    }
     if let Some((_, n)) = GATE.lock().unwrap().iter_mut().find(|(x, n)| *x == h && *n > 0) {
         if *n >= waits::suspend::MAX_COUNT {
             last_error(298);
@@ -867,7 +1003,8 @@ fn SuspendThread(c: &mut Ctx) -> u32 {
     }
     let Some(tid) = thread_tid(h) else {
         if obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Thread { .. }, _)))) {
-            return 0; // (ended: nothing to stop)
+            last_error(5); // (ended: ERROR_ACCESS_DENIED, as on Windows)
+            return u32::MAX;
         }
         last_error(6);
         return u32::MAX;
@@ -883,8 +1020,12 @@ fn SuspendThread(c: &mut Ctx) -> u32 {
     old
 }
 fn GetExitCodeThread(c: &mut Ctx) -> u32 {
+    if thread_denied(c.a(0), THREAD_QUERY_ANY) {
+        return 0;
+    }
     let code = obj::with(|t| match t.objs.get(&c.a(0)) {
         Some((Obj::Thread { code, .. }, _)) => Some(*code),
+        Some((Obj::RemoteThread { pid, tid }, _)) => Some((*pid, *tid)).map(|(pid, tid)| remote_thread_exit(pid, tid)),
         _ => None,
     });
     match code {
@@ -892,7 +1033,10 @@ fn GetExitCodeThread(c: &mut Ctx) -> u32 {
             put32(c.a(1), v);
             1
         }
-        None => 0,
+        None => {
+            last_error(6);
+            0
+        }
     }
 }
 fn GetExitCodeProcess(c: &mut Ctx) -> u32 {
@@ -939,6 +1083,9 @@ pub fn check_terminate() {
 /// an API or waits (one not started yet, created suspended, right away)
 fn TerminateThread(c: &mut Ctx) -> u32 {
     let (h, code) = (c.a(0), c.a(1));
+    if thread_denied(h, 1) {
+        return 0; // (THREAD_TERMINATE)
+    }
     if h == obj::CURRENT_THREAD {
         exit_thread(code);
     }
@@ -979,13 +1126,91 @@ fn TerminateThread(c: &mut Ctx) -> u32 {
 }
 // thread priorities are kept (and answered) but change nothing: by thread handle
 static PRIORITY: Mutex<Option<HashMap<u32, i32>>> = Mutex::new(None);
+/// Priority boost: disabled per thread (by id), and for the process (SetProcessPriorityBoost
+/// sets it for every thread too, and a thread started later takes the process's)
+static BOOST_OFF: Mutex<Option<(bool, HashMap<u32, bool>)>> = Mutex::new(None);
+pub(crate) fn boost_off(tid: u32) -> bool {
+    let mut g = BOOST_OFF.lock().unwrap();
+    let (proc, m) = g.get_or_insert_with(Default::default);
+    m.get(&tid).copied().unwrap_or(*proc)
+}
+/// The thread id of a thread handle (running or ended)
+pub(crate) fn any_thread_tid(h: u32) -> Option<u32> {
+    if h == obj::CURRENT_THREAD {
+        return Some(crate::cur().tid);
+    }
+    obj::with(|t| match t.objs.get(&obj::norm(h)) {
+        Some((Obj::Thread { tid, .. }, _)) => Some(*tid),
+        _ => None,
+    })
+}
+/// THREAD_QUERY_INFORMATION or THREAD_QUERY_LIMITED_INFORMATION; the SET pair
+const THREAD_QUERY_ANY: u32 = 0x40 | 0x800;
+const THREAD_SET_ANY: u32 = 0x20 | 0x400;
+/// Whether thread handle `h` lacks every one of `bits` (ERROR_ACCESS_DENIED set then)
+fn thread_denied(h: u32, bits: u32) -> bool {
+    if obj::allows_any(h, bits) {
+        return false;
+    }
+    last_error(5);
+    true
+}
+/// The thread of `h` if the handle grants `want` (else the error is set)
+fn thread_with(h: u32, want: u32) -> Option<u32> {
+    let Some(tid) = any_thread_tid(h) else {
+        last_error(6);
+        return None;
+    };
+    if !obj::allows(h, want) {
+        last_error(5);
+        return None;
+    }
+    Some(tid)
+}
+fn GetThreadPriorityBoost(c: &mut Ctx) -> u32 {
+    if thread_denied(c.a(0), THREAD_QUERY_ANY) {
+        return 0;
+    }
+    let Some(tid) = thread_with(c.a(0), 0) else { return 0 };
+    let mut g = BOOST_OFF.lock().unwrap();
+    let (proc, m) = g.get_or_insert_with(Default::default);
+    let off = m.get(&tid).copied().unwrap_or(*proc);
+    put32(c.a(1), off as u32);
+    1
+}
+fn SetThreadPriorityBoost(c: &mut Ctx) -> u32 {
+    if thread_denied(c.a(0), THREAD_SET_ANY) {
+        return 0;
+    }
+    let Some(tid) = thread_with(c.a(0), 0) else { return 0 };
+    BOOST_OFF.lock().unwrap().get_or_insert_with(Default::default).1.insert(tid, c.a(1) != 0);
+    1
+}
+fn GetProcessPriorityBoost(c: &mut Ctx) -> u32 {
+    let off = BOOST_OFF.lock().unwrap().get_or_insert_with(Default::default).0;
+    put32(c.a(1), off as u32);
+    1
+}
+fn SetProcessPriorityBoost(c: &mut Ctx) -> u32 {
+    let mut g = BOOST_OFF.lock().unwrap();
+    let (proc, m) = g.get_or_insert_with(Default::default);
+    *proc = c.a(1) != 0;
+    m.values_mut().for_each(|v| *v = *proc);
+    1
+}
 fn thread_key(h: u32) -> u32 {
     if h == obj::CURRENT_THREAD { crate::cur().obj } else { h }
 }
 fn GetThreadPriority(c: &mut Ctx) -> u32 {
+    if thread_denied(c.a(0), THREAD_QUERY_ANY) {
+        return 0x7fff_ffff; // THREAD_PRIORITY_ERROR_RETURN
+    }
     PRIORITY.lock().unwrap().get_or_insert_with(HashMap::default).get(&thread_key(c.a(0))).copied().unwrap_or(0) as u32
 }
 fn SetThreadPriority(c: &mut Ctx) -> u32 {
+    if thread_denied(c.a(0), THREAD_SET_ANY) {
+        return 0;
+    }
     let p = c.i(1);
     if !matches!(p, -15 | -2..=2 | 15) {
         last_error(87);
@@ -1000,26 +1225,11 @@ fn SetPriorityClass(_: &mut Ctx) -> u32 {
 fn GetPriorityClass(_: &mut Ctx) -> u32 {
     0x20
 }
-fn SetThreadAffinityMask(_: &mut Ctx) -> u32 {
-    1
-}
-fn SetProcessAffinityMask(_: &mut Ctx) -> u32 {
-    1
-}
 pub(crate) fn ncpu() -> u32 {
     if let Some(n) = std::env::var("SAKE_NCPU").ok().and_then(|v| v.parse::<u32>().ok()) {
         return n.clamp(1, 64);
     }
     std::thread::available_parallelism().map_or(4, |n| n.get() as u32).clamp(1, 8)
-}
-fn GetProcessAffinityMask(c: &mut Ctx) -> u32 {
-    let m = (1u32 << ncpu()) - 1;
-    crate::mem::putp(c.a(1), m);
-    crate::mem::putp(c.a(2), m);
-    1
-}
-fn SetThreadIdealProcessor(_: &mut Ctx) -> u32 {
-    0
 }
 fn Sleep(c: &mut Ctx) -> u32 {
     let ms = c.a(0);
@@ -1184,8 +1394,62 @@ pub(crate) fn create_named(name: Option<String>, o: Obj) -> u32 {
     last_error(0);
     h
 }
-fn open_named(name: u32, wide: bool, want: u8) -> u32 {
-    open_sync(arg_str(name, wide), want)
+/// OpenEvent / OpenMutex / OpenSemaphore / OpenWaitableTimer(access, inherit, name): no
+/// name is ERROR_INVALID_PARAMETER; the access asked for must be the object type's (else
+/// ERROR_ACCESS_DENIED) and the handle gets that (waiting needs SYNCHRONIZE)
+fn open_named(c: &Ctx, wide: bool, want: u8) -> u32 {
+    let (access, name) = (c.a(0), c.a(2));
+    if name == 0 {
+        last_error(87);
+        return 0;
+    }
+    // (a name that is not there first, then the access)
+    let h = open_sync(arg_str(name, wide), want);
+    if h == 0 {
+        return 0;
+    }
+    match sync_access(want, access) {
+        Ok(g) => {
+            obj::set_access(h, g);
+            h
+        }
+        Err(e) => {
+            obj::close(h);
+            last_error(e);
+            0
+        }
+    }
+}
+
+/// The rights a handle to an event (1), mutex (2), semaphore (3) or timer (4) opened with
+/// `access` has (generic rights mapped), or the error opening it fails with
+pub(crate) fn sync_access(kind: u8, access: u32) -> Result<u32, u32> {
+    const STANDARD: u32 = 0x001f_0000;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const READ_CONTROL: u32 = 0x0002_0000;
+    // QUERY_STATE (1) for all; MODIFY_STATE (2) for all but mutexes
+    let specific = if kind == 2 { 1 } else { 3 };
+    let all = STANDARD | specific;
+    if access & 0x0100_0000 != 0 {
+        return Err(1314); // ACCESS_SYSTEM_SECURITY: ERROR_PRIVILEGE_NOT_HELD
+    }
+    if access == 0 || access & !(all | 0x0200_0000 | 0xf000_0000) != 0 {
+        return Err(5);
+    }
+    let mut g = access & all;
+    if access & 0x0200_0000 != 0 || access & 0x1000_0000 != 0 {
+        g |= all;
+    }
+    if access & 0x8000_0000 != 0 {
+        g |= READ_CONTROL | 1;
+    }
+    if access & 0x4000_0000 != 0 {
+        g |= READ_CONTROL | (specific & 2);
+    }
+    if access & 0x2000_0000 != 0 {
+        g |= READ_CONTROL | SYNCHRONIZE;
+    }
+    Ok(g)
 }
 /// Opens a named event (1), mutex (2), semaphore (3) or timer (4); 0 and the last error
 /// (ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE for another kind)
@@ -1237,10 +1501,10 @@ fn CreateWaitableTimerExW(c: &mut Ctx) -> u32 {
     create_named(named(c.a(1), true), new_timer(c.a(2) & 1 != 0))
 }
 fn OpenWaitableTimerA(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), false, 4)
+    open_named(c, false, 4)
 }
 fn OpenWaitableTimerW(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), true, 4)
+    open_named(c, true, 4)
 }
 /// SetWaitableTimer(h, due, period ms, apc, arg, resume): `due` in 100 ns, negative = from now,
 /// positive = an absolute FILETIME. (The completion routine is not called.)
@@ -1284,10 +1548,10 @@ fn CancelWaitableTimer(c: &mut Ctx) -> u32 {
     }))
 }
 fn OpenEventA(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), false, 1)
+    open_named(c, false, 1)
 }
 fn OpenEventW(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), true, 1)
+    open_named(c, true, 1)
 }
 // I/O completion ports: a manual-reset event (set while packets wait) and its packets. Only
 // PostQueuedCompletionStatus queues them (file I/O here completes synchronously).
@@ -1393,16 +1657,16 @@ fn CreateMutexW(c: &mut Ctx) -> u32 {
     create_named(named(c.a(2), true), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 })
 }
 fn OpenSemaphoreA(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), false, 3)
+    open_named(c, false, 3)
 }
 fn OpenSemaphoreW(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), true, 3)
+    open_named(c, true, 3)
 }
 fn OpenMutexA(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), false, 2)
+    open_named(c, false, 2)
 }
 fn OpenMutexW(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), true, 2)
+    open_named(c, true, 2)
 }
 /// The kernel's id of a named event, mutex or semaphore handle
 pub(crate) fn shared_id(h: u32) -> Option<u32> {
@@ -1497,21 +1761,35 @@ pub(crate) fn release_semaphore(h: u32, n: i32) -> Result<i32, u32> {
     obj::signal();
     r
 }
+/// WaitForSingleObject's handle: STD_INPUT/OUTPUT/ERROR_HANDLE stand for the handles
+fn single_wait_handle(h: u32) -> u32 {
+    match h {
+        0xffff_fff6 => std_handle(0),
+        0xffff_fff5 => std_handle(1),
+        0xffff_fff4 => std_handle(2),
+        h => h,
+    }
+}
 fn WaitForSingleObject(c: &mut Ctx) -> u32 {
-    obj::wait(&[c.a(0)], false, c.a(1), None)
+    obj::wait(&[single_wait_handle(c.a(0))], false, c.a(1), None)
 }
 fn WaitForSingleObjectEx(c: &mut Ctx) -> u32 {
     if c.a(2) == 0 {
         return WaitForSingleObject(c);
     }
-    crate::apc::wait(c, &[c.a(0)], false, c.a(1))
+    crate::apc::wait(c, &[single_wait_handle(c.a(0))], false, c.a(1))
 }
 fn WaitForMultipleObjects(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 || c.a(0) > 64 {
         last_error(87);
         return obj::WAIT_FAILED;
     }
-    let hs: Vec<u32> = (0..c.a(0)).map(|i| mem::rp(c.a(1) + mem::ps() * i)).collect();
+    // (std handle values are taken, as in WaitForSingleObject; the other pseudo-handles not)
+    let hs: Vec<u32> = (0..c.a(0)).map(|i| single_wait_handle(mem::rp(c.a(1) + mem::ps() * i))).collect();
+    if hs.iter().any(|&h| obj::is_pseudo(h)) {
+        last_error(6);
+        return obj::WAIT_FAILED;
+    }
     // (wait-all on the same object twice: ERROR_INVALID_PARAMETER)
     if c.a(2) != 0 && (1..hs.len()).any(|i| hs[..i].contains(&hs[i])) {
         last_error(87);
@@ -1527,7 +1805,11 @@ fn WaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
         last_error(87);
         return obj::WAIT_FAILED;
     }
-    let hs: Vec<u32> = (0..c.a(0)).map(|i| r32(c.a(1) + mem::ps() * i)).collect();
+    let hs: Vec<u32> = (0..c.a(0)).map(|i| single_wait_handle(mem::rp(c.a(1) + mem::ps() * i))).collect();
+    if hs.iter().any(|&h| obj::is_pseudo(h)) {
+        last_error(6);
+        return obj::WAIT_FAILED;
+    }
     crate::apc::wait(c, &hs, c.a(2) != 0, c.a(3))
 }
 fn CloseHandle(c: &mut Ctx) -> u32 {
@@ -1546,6 +1828,9 @@ fn CloseHandle(c: &mut Ctx) -> u32 {
 }
 fn DuplicateHandle(c: &mut Ctx) -> u32 {
     let src = c.a(1);
+    if let xmem::Target::Other(pid) = xmem::target(c.a(2)) {
+        return duplicate_into(c, pid);
+    }
     let h = if src == obj::CURRENT_THREAD {
         obj::dup(crate::cur().obj)
     } else if src == obj::CURRENT_PROCESS {
@@ -1572,12 +1857,55 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
     ok(h != 0)
 }
 
+/// DuplicateHandle from this process into process `pid`: the object the kernel's (crate::process
+/// share_handle), a handle to it there (crate::xmem)
+fn duplicate_into(c: &mut Ctx, pid: u32) -> u32 {
+    use crate::kern::enc::Enc;
+    let (src, out, opts) = (c.a(1), c.a(3), c.a(6));
+    if !matches!(xmem::target(c.a(0)), xmem::Target::Own) {
+        last_error(5);
+        return 0;
+    }
+    let Some(r) = crate::process::share_handle(src) else {
+        last_error(if obj::with(|t| t.objs.contains_key(&src)) { 5 } else { 6 });
+        return 0;
+    };
+    let mut data = vec![];
+    r.put(&mut data);
+    let h = match xmem::call(pid, xmem::ADD_HANDLE, vec![], data) {
+        Some(r) if r.status == 0 => r.vals.first().copied().unwrap_or(0),
+        Some(r) => {
+            last_error(r.status);
+            return 0;
+        }
+        None => {
+            last_error(5);
+            return 0;
+        }
+    };
+    if opts & 1 != 0 {
+        obj::close(src);
+    }
+    if out != 0 {
+        mem::putp(out, h);
+    }
+    1
+}
+
 // critical sections: OwningThread is the lock word (CAS), LockSemaphore counts waiters
 // (crates/waits)
 static CS: waits::Cs = waits::Cs::new();
 
+/// The lock word at `a` (SRW locks, condition variables, INIT_ONCE, critical sections) as an
+/// atomic. An unaligned one (x86 allows it; Wine's kernel32:sync tests one) cannot be a wasm
+/// atomic: it gets an aligned stand-in of its own, the guest's bytes there left as they are.
 fn atomic(a: u32) -> &'static AtomicU32 {
-    unsafe { &*(a as usize as *const AtomicU32) }
+    if a % 4 == 0 {
+        return unsafe { &*(a as usize as *const AtomicU32) };
+    }
+    static SHADOW: Mutex<Option<HashMap<u32, &'static AtomicU32>>> = Mutex::new(None);
+    let mut g = SHADOW.lock().unwrap_or_else(|e| e.into_inner());
+    g.get_or_insert_with(HashMap::default).entry(a).or_insert_with(|| Box::leak(Box::new(AtomicU32::new(mem::r32(a)))))
 }
 
 /// An RTL_CRITICAL_SECTION_DEBUG for `cs` (Wine's msvcr90 names its locks in DebugInfo->Spare).
@@ -1601,6 +1929,14 @@ const CS_LOCKED: u32 = 0xffff_fffe;
 fn cs_init(cs: u32) {
     mem::fill(cs, if mem::x64() { 40 } else { 24 }, 0);
     w32(cs + cs_off(LOCK), 0xffff_ffff);
+}
+/// A section that says it is held (LockCount 0) by nobody, with a LockSemaphore that is no
+/// handle: Windows waits on that handle and raises STATUS_INVALID_HANDLE (kernel32:sync
+/// test_initializecriticalsectionex). (Ours keeps its waiter count there: the section of a
+/// guest that set the field itself.)
+fn cs_corrupt(cs: u32) -> bool {
+    let sem = r32(cs + cs_off(SEM));
+    r32(cs + cs_off(LOCK)) == 0 && r32(cs + cs_off(OWNER)) == 0 && r32(cs + cs_off(REC)) == 0 && sem > 0x10000 && !obj::with(|t| t.objs.contains_key(&sem))
 }
 pub fn cs_enter(cs: u32) {
     let me = crate::cur().tid;
@@ -1653,19 +1989,39 @@ fn GetHandleInformation(c: &mut Ctx) -> u32 {
 }
 fn InitializeCriticalSectionEx(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));
-    // (unless RTL_CRITICAL_SECTION_FLAG_NO_DEBUG_INFO)
+    // (RTL_CRITICAL_SECTION_FLAG_NO_DEBUG_INFO: none, DebugInfo -1 as on Windows 8 and later)
     if c.a(2) & 0x0100_0000 == 0 {
         cs_debug_info(c.a(0));
+    } else {
+        mem::wp(c.a(0), u32::MAX);
     }
     1
 }
+/// (DebugInfo is NULL after it, ours freed, -1 or the guest's own left alone)
 fn DeleteCriticalSection(c: &mut Ctx) -> u32 {
     let d = r32(c.a(0));
     if d != 0 && d != u32::MAX && r32(d + 4) == c.a(0) {
-        w32(c.a(0), 0);
         mem::heap_free(d);
     }
+    mem::wp(c.a(0), 0);
     0
+}
+/// Raises `code` from an API (`nargs` stdcall arguments) as if the call had returned: the
+/// handler sees the caller's context, as RtlRaiseStatus does.
+pub(crate) fn raise_from_api(c: &mut Ctx, code: u32, flags: u32, nargs: u32) {
+    if mem::x64() {
+        let ret = mem::r64(c.esp);
+        c.cpu.eip = ret as u32;
+        c.cpu.rip_hi = (ret >> 32) as u32;
+        c.cpu.set_gpr(4, c.esp as u64 + 8);
+        crate::seh64::raise(c.cpu, code, flags, ret as u32, &[]);
+    } else {
+        let ret = r32(c.esp);
+        c.cpu.eip = ret;
+        c.cpu.regs[ESP] = c.esp + 4 + 4 * nargs;
+        crate::seh::raise(c.cpu, code, flags, ret, &[]);
+    }
+    c.jumped = true;
 }
 /// PEB FastPebLock: the critical section RtlAcquirePebLock takes (made on first use)
 fn peb_lock() -> u32 {
@@ -1678,6 +2034,9 @@ fn peb_lock() -> u32 {
         cs
     })
 }
+fn RtlGetCurrentPeb(_: &mut Ctx) -> u32 {
+    crate::PEB.load(std::sync::atomic::Ordering::Relaxed)
+}
 fn RtlAcquirePebLock(_: &mut Ctx) -> u32 {
     cs_enter(peb_lock());
     0
@@ -1687,6 +2046,12 @@ fn RtlReleasePebLock(_: &mut Ctx) -> u32 {
     0
 }
 fn EnterCriticalSection(c: &mut Ctx) -> u32 {
+    if cs_corrupt(c.a(0)) {
+        // (counted as a waiter first, as Windows does before it waits)
+        w32(c.a(0) + cs_off(LOCK), 0xffff_fffc);
+        raise_from_api(c, 0xC000_0008, 1, 1);
+        return 0;
+    }
     cs_enter(c.a(0));
     0
 }
@@ -1707,8 +2072,7 @@ fn TryEnterCriticalSection(c: &mut Ctx) -> u32 {
     1
 }
 fn RtlEnterCriticalSection(c: &mut Ctx) -> u32 {
-    cs_enter(c.a(0));
-    0
+    EnterCriticalSection(c)
 }
 fn RtlLeaveCriticalSection(c: &mut Ctx) -> u32 {
     cs_leave(c.a(0));
@@ -1834,22 +2198,18 @@ fn InitOnceExecuteOnce(c: &mut Ctx) -> u32 {
     }
 }
 /// No debugger: the debug registers read as zero (games check them against hooks).
-fn GetThreadContext(c: &mut Ctx) -> u32 {
-    let ctx = c.a(1);
-    for i in 1..7 {
-        w32(ctx + 4 * i, 0);
-    }
-    1
-}
-fn SetThreadContext(_: &mut Ctx) -> u32 {
-    1
-}
 /// InitOnceBeginInitialize(once, flags, &pending, &context). The INIT_ONCE: 0, 1 while one
-/// thread initializes, then the context with 2 in its low bits (as Windows keeps it).
+/// thread initializes (3 while INIT_ONCE_ASYNC ones do), then the context with 2 in its low
+/// bits (as Windows keeps it).
 fn InitOnceBeginInitialize(c: &mut Ctx) -> u32 {
     let (once, flags, pending, ctx) = (c.a(0), c.a(1), c.a(2), c.a(3));
     const CHECK_ONLY: u32 = 1;
-    match SYNC.once_begin(atomic(once), flags & CHECK_ONLY != 0) {
+    const ASYNC: u32 = 2;
+    if flags & !3 != 0 || flags == CHECK_ONLY | ASYNC {
+        last_error(87);
+        return 0;
+    }
+    match SYNC.once_begin_ex(atomic(once), flags & CHECK_ONLY != 0, flags & ASYNC != 0) {
         waits::Begin::Done(v) => {
             put32(pending, 0);
             if ctx != 0 {
@@ -1865,16 +2225,33 @@ fn InitOnceBeginInitialize(c: &mut Ctx) -> u32 {
             put32(pending, 1);
             1
         }
+        waits::Begin::Invalid => {
+            last_error(87);
+            0
+        }
     }
 }
 /// InitOnceComplete(once, flags, context): INIT_ONCE_INIT_FAILED (4) lets the next caller try
+/// (and takes no context); INIT_ONCE_ASYNC (2) ends an asynchronous initialization (which
+/// cannot fail)
 fn InitOnceComplete(c: &mut Ctx) -> u32 {
     let (once, flags, ctx) = (c.a(0), c.a(1), c.a(2));
-    if ctx & 3 != 0 || !SYNC.once_complete(atomic(once), if flags & 4 != 0 { 0 } else { ctx | 2 }) {
+    let (asynchronous, failed) = (flags & 2 != 0, flags & 4 != 0);
+    if flags & !6 != 0 || (asynchronous && failed) || ctx & 3 != 0 || (failed && ctx != 0) {
         last_error(87);
         return 0;
     }
-    1
+    match SYNC.once_complete_ex(atomic(once), asynchronous, if failed { 0 } else { ctx | 2 }) {
+        Ok(()) => 1,
+        Err(waits::Complete::Invalid) => {
+            last_error(87);
+            0
+        }
+        Err(waits::Complete::NotPending) => {
+            last_error(31);
+            0
+        }
+    }
 }
 fn InitOnceInitialize(c: &mut Ctx) -> u32 {
     crate::mem::wp(c.a(0), 0);
@@ -1903,25 +2280,64 @@ fn InterlockedCompareExchange(c: &mut Ctx) -> u32 {
 // TLS slots: TEB+0xE10 (64), then TEB+0xF94 -> 1024 more
 static TLS_USED: Mutex<Vec<bool>> = Mutex::new(Vec::new());
 
-pub fn tls_thread_init(_teb: u32) {}
+/// The TEBs of the running threads (TlsFree clears its slot in each)
+/// (by thread id)
+/// (by thread id, with the thread's record: crate::Thread)
+static TEBS: Mutex<Vec<(u32, u32, usize)>> = Mutex::new(Vec::new());
+
+pub fn tls_thread_init(teb: u32) {
+    let t = crate::cur();
+    TEBS.lock().unwrap_or_else(|e| e.into_inner()).push((t.tid, teb, t as *mut crate::Thread as usize));
+    // (the first thread's comes once its image says 32 or 64 bit: crate::run)
+    if crate::fiber::READY.load(std::sync::atomic::Ordering::Acquire) {
+        crate::fiber::thread_start(teb);
+    }
+}
+fn tls_thread_exit(teb: u32) {
+    TEBS.lock().unwrap_or_else(|e| e.into_inner()).retain(|&(_, t, _)| t != teb);
+}
+/// The TEB of running thread `tid`
+pub(crate) fn teb_of(tid: u32) -> Option<u32> {
+    TEBS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.0 == tid).map(|e| e.1)
+}
+/// Running thread `tid`'s CPU and the API call it is in (crate::Thread's `api`)
+pub(crate) fn thread_cpu(tid: u32) -> Option<(*mut koji::Cpu, (u32, u32))> {
+    let g = TEBS.lock().unwrap_or_else(|e| e.into_inner());
+    let &(_, _, t) = g.iter().find(|e| e.0 == tid)?;
+    let t = unsafe { &*(t as *const crate::Thread) };
+    Some((t.cpu, t.api))
+}
+/// How many threads run
+pub(crate) fn thread_count() -> usize {
+    TEBS.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
 
 fn tls_slot(i: u32) -> u32 {
-    let teb = crate::cur().teb;
+    tls_slot_of(crate::cur().teb, i, true)
+}
+/// Where TLS slot `i` of the thread of `teb` is (its expansion slots made if `make`; else 0
+/// when there are none)
+fn tls_slot_of(teb: u32, i: u32, make: bool) -> u32 {
     let (slots, exp, k) = if mem::x64() { (0x1480, 0x1780, 8) } else { (0xe10, 0xf94, 4) };
     if i < 64 {
         return teb + slots + k * i;
     }
     let mut ex = r32(teb + exp);
     if ex == 0 {
+        if !make {
+            return 0;
+        }
         ex = mem::heap_alloc(1024 * k, true);
         mem::wp(teb + exp, ex);
     }
     ex + k * (i - 64)
 }
+/// (slot 0 is never given out, as on XP SP2 and later: kernel32:thread test_reserved_tls)
 fn TlsAlloc(_: &mut Ctx) -> u32 {
     let mut u = TLS_USED.lock().unwrap();
     if u.is_empty() {
         u.resize(1088, false);
+        u[0] = true;
     }
     match u.iter().position(|x| !x) {
         Some(i) => {
@@ -1931,13 +2347,22 @@ fn TlsAlloc(_: &mut Ctx) -> u32 {
         None => 0xffff_ffff,
     }
 }
+/// TlsFree: the slot is cleared in every thread (ThreadZeroTlsCell); freeing one that is not
+/// allocated (twice, say) is ERROR_INVALID_PARAMETER.
 fn TlsFree(c: &mut Ctx) -> u32 {
-    match TLS_USED.lock().unwrap().get_mut(c.a(0) as usize) {
-        Some(x) => {
+    let i = c.a(0);
+    match TLS_USED.lock().unwrap().get_mut(i as usize) {
+        Some(x) if *x && i != 0 => {
             *x = false;
+            for &(_, teb, _) in TEBS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                let p = tls_slot_of(teb, i, false);
+                if p != 0 {
+                    mem::wp(p, 0);
+                }
+            }
             1
         }
-        None => {
+        _ => {
             last_error(87);
             0
         }
@@ -1992,6 +2417,47 @@ fn SetThreadErrorMode(c: &mut Ctx) -> u32 {
 }
 fn GetThreadErrorMode(_: &mut Ctx) -> u32 {
     THREAD_ERROR_MODE.with(|t| t.get())
+}
+/// The SEM_* bits as ntdll keeps them (TEB HardErrorMode): FAILCRITICALERRORS 0x10,
+/// NOGPFAULTERRORBOX 0x20, NOOPENFILEERRORBOX 0x40
+fn sem_to_rtl(m: u32) -> u32 {
+    (m & 1) << 4 | (m & 2) << 4 | (m & 0x8000) >> 9
+}
+fn rtl_to_sem(m: u32) -> u32 {
+    (m & 0x10) >> 4 | (m & 0x20) >> 4 | (m & 0x40) << 9
+}
+fn RtlGetThreadErrorMode(_: &mut Ctx) -> u32 {
+    sem_to_rtl(THREAD_ERROR_MODE.with(|t| t.get()))
+}
+/// RtlSetThreadErrorMode(mode, &old): NTSTATUS; bits beyond 0x70 STATUS_INVALID_PARAMETER_1
+fn RtlSetThreadErrorMode(c: &mut Ctx) -> u32 {
+    let (m, old) = (c.a(0), c.a(1));
+    if m & !0x70 != 0 {
+        return 0xC000_00EF;
+    }
+    let prev = THREAD_ERROR_MODE.with(|t| t.replace(rtl_to_sem(m)));
+    if old != 0 {
+        w32(old, sem_to_rtl(prev));
+    }
+    0
+}
+#[cfg(test)]
+mod error_mode_tests {
+    use super::*;
+    proptest::proptest! {
+        #[test]
+        fn sem_and_rtl_bits_round_trip(m in 0u32..8) {
+            let sem = (m & 1) | (m & 2) | (m & 4) << 13;
+            proptest::prop_assert_eq!(rtl_to_sem(sem_to_rtl(sem)), sem);
+            proptest::prop_assert_eq!(sem_to_rtl(sem) & !0x70, 0);
+        }
+    }
+    #[test]
+    fn windows_values() {
+        assert_eq!(sem_to_rtl(1), 0x10);
+        assert_eq!(sem_to_rtl(2), 0x20);
+        assert_eq!(sem_to_rtl(0x8000), 0x40);
+    }
 }
 pub(crate) fn thread_error_mode() -> u32 {
     THREAD_ERROR_MODE.with(|t| t.get())
@@ -2052,58 +2518,82 @@ fn VirtualAlloc(c: &mut Ctx) -> u32 {
     virtual_alloc(c.a(0), c.a(1), c.a(2), c.a(3))
 }
 /// VirtualAllocEx, VirtualFreeEx, VirtualProtectEx: this process's memory as the plain calls
-/// do it (another process's is not reachable here: ERROR_ACCESS_DENIED). ChakraCore (the
+/// do it, another process's through crate::xmem (it does the same there). ChakraCore (the
 /// WendyBell engine's JavaScript) protects its JIT pages with VirtualProtectEx on itself.
 fn VirtualAllocEx(c: &mut Ctx) -> u32 {
-    if !own_process(c.a(0)) {
-        return 0;
+    let (a, n, ty, prot) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    match remote(c.a(0), xmem::ALLOC, vec![a, n, ty, prot], vec![]) {
+        None => virtual_alloc(a, n, ty, prot),
+        Some(r) => r.and_then(|v| v.first().copied().ok_or(5)).unwrap_or_else(|e| {
+            last_error(e);
+            0
+        }),
     }
-    virtual_alloc(c.a(1), c.a(2), c.a(3), c.a(4))
 }
 fn VirtualFreeEx(c: &mut Ctx) -> u32 {
-    if !own_process(c.a(0)) {
-        return 0;
+    let (a, n, ty) = (c.a(1), c.a(2), c.a(3));
+    match remote(c.a(0), xmem::FREE, vec![a, n, ty], vec![]) {
+        None => virtual_free(a, n, ty),
+        Some(r) => win32_ok(r.map(|_| ())),
     }
-    virtual_free(c.a(1), c.a(2), c.a(3))
 }
 fn VirtualProtectEx(c: &mut Ctx) -> u32 {
-    if !own_process(c.a(0)) {
-        return 0;
+    let (a, n, prot, old) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    match remote(c.a(0), xmem::PROTECT, vec![a, n, prot], vec![]) {
+        None => virtual_protect(a, n, prot, old),
+        Some(r) => win32_ok(r.map(|v| put32(old, v.first().copied().unwrap_or(0)))),
     }
-    virtual_protect(c.a(1), c.a(2), c.a(3), c.a(4))
 }
-/// Whether `h` is a handle to this process; else the error Windows gives: ERROR_INVALID_HANDLE
-/// for no process handle, ERROR_ACCESS_DENIED for another process (its memory is not reachable)
-fn own_process(h: u32) -> bool {
-    match crate::process::of_handle(h) {
-        Some((pid, _)) if crate::process::is_self(pid) => true,
-        Some(_) => {
-            last_error(5);
-            false
+/// 1, or 0 with the last error
+fn win32_ok(r: Result<(), u32>) -> u32 {
+    match r {
+        Ok(()) => 1,
+        Err(e) => {
+            last_error(e);
+            0
         }
-        None => {
-            last_error(6);
-            false
-        }
+    }
+}
+/// For a call on process handle `h`: None for this process (the caller does it itself), else
+/// what the other process answered (its values, or the Win32 error): ERROR_INVALID_HANDLE for
+/// no process, ERROR_ACCESS_DENIED once it ended.
+fn remote(h: u32, op: u32, args: Vec<u32>, data: Vec<u8>) -> Option<Result<Vec<u32>, u32>> {
+    remote_bytes(h, op, args, data).map(|r| r.map(|(v, _)| v))
+}
+fn remote_bytes(h: u32, op: u32, args: Vec<u32>, data: Vec<u8>) -> Option<Result<(Vec<u32>, Vec<u8>), u32>> {
+    match xmem::target(h) {
+        xmem::Target::Own => None,
+        xmem::Target::Bad => Some(Err(6)),
+        xmem::Target::Other(pid) => Some(match xmem::call(pid, op, args, data) {
+            None => Err(5),
+            Some(r) if r.status != 0 => Err(r.status),
+            Some(r) => Ok((r.vals, r.data)),
+        }),
     }
 }
 fn virtual_alloc(addr: u32, size: u32, ty: u32, prot: u32) -> u32 {
+    alloc_r(addr, size, ty, prot).unwrap_or_else(|e| {
+        last_error(e);
+        0
+    })
+}
+/// VirtualAlloc: the block, or the error (no guest thread needed: crate::xmem runs it for
+/// other processes)
+pub(crate) fn alloc_r(addr: u32, size: u32, ty: u32, prot: u32) -> Result<u32, u32> {
     let reserve = ty & 0x2000 != 0;
     let commit = ty & 0x1000 != 0;
     if addr != 0 && !reserve {
         // commit inside an existing reservation
         if commit && mem::commit_range(addr, size, prot) {
-            return addr & !(mem::PAGE - 1);
+            return Ok(addr & !(mem::PAGE - 1));
         }
         if ty & 0x80000 != 0 && mem::find(addr).is_some() {
-            return addr & !(mem::PAGE - 1); // MEM_RESET
+            return Ok(addr & !(mem::PAGE - 1)); // MEM_RESET
         }
-        last_error(487);
-        return 0;
+        return Err(487);
     }
     if !reserve && !commit {
-        last_error(87);
-        return 0;
+        return Err(87);
     }
     // the guest has 2 GB of address space, not 128 TB: a reservation that only wants an aligned
     // block inside (twice the block less a page) gets that block, aligned; else Unity 6, which
@@ -2115,48 +2605,149 @@ fn virtual_alloc(addr: u32, size: u32, ty: u32, prot: u32) -> u32 {
         if crate::env_on!("SAKE_TRACE_MEM") {
             eprintln!("sake: VirtualAlloc({addr:#x}, {size:#x}, {ty:#x}) failed; the address space:\n{}", mem::dump());
         }
-        last_error(if addr != 0 { 487 } else { 8 });
-        return 0;
+        return Err(if addr != 0 { 487 } else { 8 });
     };
     if commit {
         mem::commit(b, prot);
     }
-    b
+    Ok(b)
+}
+/// NtAllocateVirtualMemory(process, &base, zero bits, &size, type, protect): VirtualAlloc
+/// (in another process through crate::xmem) with the base and size written back (the
+/// page-rounded block); the last error stays
+fn NtAllocateVirtualMemory(c: &mut Ctx) -> u32 {
+    let (pbase, psize, ty, prot) = (c.a(1), c.a(3), c.a(4), c.a(5));
+    if pbase == 0 || psize == 0 {
+        return 0xC000_000D;
+    }
+    let (want, size) = (mem::rp(pbase), mem::rp(psize));
+    let r = match xmem::target(c.a(0)) {
+        xmem::Target::Own => alloc_r(want, size, ty, prot),
+        xmem::Target::Bad => return 0xC000_0008,
+        xmem::Target::Other(pid) => match xmem::call(pid, xmem::ALLOC, vec![want, size, ty, prot], vec![]) {
+            None => return 0xC000_010A, // STATUS_PROCESS_IS_TERMINATING
+            Some(r) if r.status != 0 => Err(r.status),
+            Some(r) => Ok(r.vals.first().copied().unwrap_or(0)),
+        },
+    };
+    match r {
+        Err(e) => match e {
+            8 => 0xC000_0017,   // STATUS_NO_MEMORY
+            487 => 0xC000_0018, // STATUS_CONFLICTING_ADDRESSES
+            _ => 0xC000_000D,
+        },
+        Ok(b) => {
+            let (base, n) = nt_rounded(want, size, b);
+            mem::wp(pbase, base);
+            mem::wp(psize, n);
+            0
+        }
+    }
+}
+/// The block NtAllocateVirtualMemory reports for `size` bytes asked at `want` that got `b`:
+/// whole pages, from the page of the address asked for (or of the block)
+pub(crate) fn nt_rounded(want: u32, size: u32, b: u32) -> (u32, u32) {
+    let start = if want != 0 { (want & !(mem::PAGE - 1)).max(b) } else { b };
+    let end = (want.max(b).wrapping_add(size).wrapping_add(mem::PAGE - 1)) & !(mem::PAGE - 1);
+    (start, end.wrapping_sub(start).max(mem::PAGE))
+}
+/// NtFreeVirtualMemory(process, &base, &size, type): VirtualFree, the freed range written back
+fn NtFreeVirtualMemory(c: &mut Ctx) -> u32 {
+    let (pbase, psize, ty) = (c.a(1), c.a(2), c.a(3));
+    if pbase == 0 || psize == 0 {
+        return 0xC000_000D;
+    }
+    let (addr, size) = (mem::rp(pbase), mem::rp(psize));
+    let r = match xmem::target(c.a(0)) {
+        xmem::Target::Own => nt_free_r(addr, size, ty),
+        xmem::Target::Bad => return 0xC000_0008,
+        xmem::Target::Other(pid) => match xmem::call(pid, xmem::NT_FREE, vec![addr, size, ty], vec![]) {
+            None => return 0xC000_010A,
+            Some(r) if r.status != 0 => Err(r.status),
+            Some(r) => Ok((r.vals.first().copied().unwrap_or(0), r.vals.get(1).copied().unwrap_or(0))),
+        },
+    };
+    match r {
+        Ok((b, n)) => {
+            mem::wp(pbase, b);
+            mem::wp(psize, n);
+            0
+        }
+        Err(st) => st,
+    }
+}
+/// NtFreeVirtualMemory's work: the freed (base, size), or the NTSTATUS
+pub(crate) fn nt_free_r(addr: u32, size: u32, ty: u32) -> Result<(u32, u32), u32> {
+    if ty & 0x8000 != 0 {
+        // MEM_RELEASE: the whole allocation (from its base, a size of 0)
+        match mem::find(addr) {
+            Some((b, reg)) if b == addr && size == 0 => {
+                mem::release(b);
+                Ok((b, reg.size))
+            }
+            Some(_) => Err(0xC000_00F1), // STATUS_INVALID_PARAMETER_2
+            None => Err(0xC000_00A0),    // STATUS_MEMORY_NOT_ALLOCATED
+        }
+    } else if ty & 0x4000 != 0 {
+        let start = addr & !(mem::PAGE - 1);
+        let end = (addr.wrapping_add(size.max(1)) + mem::PAGE - 1) & !(mem::PAGE - 1);
+        if mem::decommit_range(start, end - start) {
+            Ok((start, end - start))
+        } else {
+            Err(0xC000_00A0)
+        }
+    } else {
+        Err(0xC000_00F2) // STATUS_INVALID_PARAMETER_4
+    }
 }
 fn VirtualFree(c: &mut Ctx) -> u32 {
     virtual_free(c.a(0), c.a(1), c.a(2))
 }
 fn virtual_free(addr: u32, size: u32, ty: u32) -> u32 {
+    match free_r(addr, size, ty) {
+        Ok(()) => 1,
+        Err(e) => {
+            last_error(e);
+            0
+        }
+    }
+}
+pub(crate) fn free_r(addr: u32, size: u32, ty: u32) -> Result<(), u32> {
     if ty & 0x8000 != 0 {
         // an address in no allocation is ERROR_INVALID_ADDRESS, one inside but not its base (or
         // a size with MEM_RELEASE) ERROR_INVALID_PARAMETER
         if mem::find(addr).is_none() {
-            last_error(487);
-            return 0;
+            return Err(487);
         }
         if size != 0 || mem::find(addr).is_some_and(|(b, _)| b != addr) {
-            last_error(87);
-            return 0;
+            return Err(87);
         }
-        return ok(mem::release(addr));
+        return if mem::release(addr) { Ok(()) } else { Err(487) };
     }
     if ty & 0x4000 != 0 {
-        if !mem::decommit_range(addr, size) {
-            last_error(487);
-            return 0;
-        }
-        return 1;
+        return if mem::decommit_range(addr, size) { Ok(()) } else { Err(487) };
     }
-    last_error(87);
-    0
+    Err(87)
 }
-/// VirtualQueryEx: this process's memory as VirtualQuery tells it (another process's is
-/// not readable here: ERROR_ACCESS_DENIED).
+/// VirtualQueryEx: this process's memory as VirtualQuery tells it, another's as it tells it
+/// there (crate::xmem).
 fn VirtualQueryEx(c: &mut Ctx) -> u32 {
-    if !own_process(c.a(0)) {
-        return 0;
+    let (a, mbi, len) = (c.a(1), c.a(2), c.a(3));
+    match remote(c.a(0), xmem::QUERY, vec![a], vec![]) {
+        None => virtual_query(a, mbi, len),
+        Some(Err(e)) => {
+            last_error(e);
+            0
+        }
+        Some(Ok(v)) => {
+            let size = if mem::x64() { 48 } else { 28 };
+            if len < size || v.len() != 7 {
+                return 0;
+            }
+            write_mbi(mbi, v.try_into().unwrap());
+            size
+        }
     }
-    virtual_query(c.a(1), c.a(2), c.a(3))
 }
 fn VirtualQuery(c: &mut Ctx) -> u32 {
     virtual_query(c.a(0), c.a(1), c.a(2))
@@ -2164,11 +2755,16 @@ fn VirtualQuery(c: &mut Ctx) -> u32 {
 fn virtual_query(a: u32, mbi: u32, len: u32) -> u32 {
     // MEMORY_BASIC_INFORMATION: (base, allocation base, allocation protection, region size,
     // state, protection, type); x64: pointers and the size 8 bytes, 48 in all
-    let x64 = mem::x64();
-    let size = if x64 { 48 } else { 28 };
+    let size = if mem::x64() { 48 } else { 28 };
     if len < size {
         return 0;
     }
+    write_mbi(mbi, query_r(a));
+    size
+}
+/// What VirtualQuery tells of address `a`: (base, allocation base, allocation protection,
+/// region size, state, protection, type)
+pub(crate) fn query_r(a: u32) -> [u32; 7] {
     let page = a & !(mem::PAGE - 1);
     let (base, alloc, aprot, n, state, prot, kind) = match mem::query(a) {
         // an imported function bound to its trap: committed code of its DLL's image, as an
@@ -2184,6 +2780,10 @@ fn virtual_query(a: u32, mbi: u32, len: u32) -> u32 {
             (lo.max(page), 0, 0, n - (page.max(lo) - lo), 0x10000, 1, 0)
         }
     };
+    [base, alloc, aprot, n, state, prot, kind]
+}
+pub(crate) fn write_mbi(mbi: u32, [base, alloc, aprot, n, state, prot, kind]: [u32; 7]) {
+    let x64 = mem::x64();
     if x64 {
         mem::fill(mbi, 48, 0);
         mem::w64(mbi, mem::widen(base));
@@ -2202,7 +2802,6 @@ fn virtual_query(a: u32, mbi: u32, len: u32) -> u32 {
         w32(mbi + 20, prot);
         w32(mbi + 24, kind);
     }
-    size
 }
 fn VirtualProtect(c: &mut Ctx) -> u32 {
     virtual_protect(c.a(0), c.a(1), c.a(2), c.a(3))
@@ -2258,13 +2857,27 @@ fn is_bad(p: u32, n: u32) -> bool {
 /// Executable pages take writes, read-only data does not. The count is a SIZE_T.
 fn ReadProcessMemory(c: &mut Ctx) -> u32 {
     let (a, b, n, done) = (c.a(1), c.a(2), c.a(3), c.a(4));
-    if mem::accessible(a, n, false, false) < n {
-        mem::putp(done, 0);
-        last_error(299);
-        return 0;
-    }
+    let src = match remote_bytes(c.a(0), xmem::READ, vec![a, n], vec![]) {
+        None => {
+            if mem::accessible(a, n, false, false) < n {
+                mem::putp(done, 0);
+                last_error(299);
+                return 0;
+            }
+            None
+        }
+        Some(Err(e)) => {
+            mem::putp(done, 0);
+            last_error(e);
+            return 0;
+        }
+        Some(Ok((_, bytes))) => Some(bytes),
+    };
     let k = mem::accessible(b, n, true, false);
-    mem::copy(b, a, k);
+    match src {
+        None => mem::copy(b, a, k),
+        Some(bytes) => mem::write(b, &bytes[..(k as usize).min(bytes.len())]),
+    }
     mem::putp(done, k);
     if k < n {
         last_error(299);
@@ -2274,13 +2887,30 @@ fn ReadProcessMemory(c: &mut Ctx) -> u32 {
 }
 fn WriteProcessMemory(c: &mut Ctx) -> u32 {
     let (a, b, n, done) = (c.a(1), c.a(2), c.a(3), c.a(4));
-    let k = mem::accessible(a, n, true, true).min(mem::accessible(b, n, false, false));
-    if k == 0 && n != 0 {
-        last_error(998);
-        return 0;
-    }
-    mem::copy(a, b, k);
-    kura::jit::code_changed(a as usize, k.max(1) as usize);
+    let readable = mem::accessible(b, n, false, false);
+    let k = match xmem::target(c.a(0)) {
+        xmem::Target::Other(_) => {
+            let data = mem::slice(b, readable).to_vec();
+            match remote(c.a(0), xmem::WRITE, vec![a], data) {
+                Some(Ok(v)) => v.first().copied().unwrap_or(0),
+                Some(Err(e)) => {
+                    last_error(e);
+                    return 0;
+                }
+                None => 0,
+            }
+        }
+        _ => {
+            let k = mem::accessible(a, n, true, true).min(readable);
+            if k == 0 && n != 0 {
+                last_error(998);
+                return 0;
+            }
+            mem::copy(a, b, k);
+            kura::jit::code_changed(a as usize, k.max(1) as usize);
+            k
+        }
+    };
     mem::putp(done, k);
     if k < n {
         last_error(299);
@@ -3158,7 +3788,7 @@ fn GetSystemInfo(c: &mut Ctx) -> u32 {
 }
 // CPU topology: one group, one package, one NUMA node, one core per processor (the MSVC
 // concurrency runtime asks before it starts; without it the game throws at startup)
-fn cpu_mask() -> u32 {
+pub(crate) fn cpu_mask() -> u32 {
     (1u32 << ncpu()) - 1
 }
 fn group_affinity(p: u32, mask: u32) {
@@ -3272,16 +3902,6 @@ fn GetActiveProcessorGroupCount(_: &mut Ctx) -> u32 {
     1
 }
 fn GetMaximumProcessorGroupCount(_: &mut Ctx) -> u32 {
-    1
-}
-fn GetThreadGroupAffinity(c: &mut Ctx) -> u32 {
-    group_affinity(c.a(1), cpu_mask());
-    1
-}
-fn SetThreadGroupAffinity(c: &mut Ctx) -> u32 {
-    if c.a(2) != 0 {
-        group_affinity(c.a(2), cpu_mask());
-    }
     1
 }
 // ---------------------------------------------------------------------------------------------
@@ -3407,7 +4027,13 @@ fn tp_wait_thread(c: &mut Ctx) -> u32 {
                 c.call(cb, &[0, ctx, h, if r == 0 { 0 } else { 0x102 }]);
                 break;
             }
+            // (WT_EXECUTEINWAITTHREAD: Windows runs those callbacks on one wait thread, one
+            // after the other)
+            let serial = (mode & 4 != 0).then(|| WAIT_THREAD.lock().unwrap_or_else(|e| e.into_inner()));
+            WAIT_RUNNING.lock().unwrap().push((h, crate::cur().tid));
             c.call(cb, &[ctx, (r != 0) as u32]);
+            WAIT_RUNNING.lock().unwrap().retain(|x| x.0 != h);
+            drop(serial);
             if mode & 8 != 0 {
                 break;
             }
@@ -3424,40 +4050,6 @@ fn RegisterWaitForSingleObject(c: &mut Ctx) -> u32 {
     tp_spawn(false, h, 0, (obj_h, ms, flags | 0x8000_0000));
     1
 }
-// timer queues: one implicit queue, each timer a thread pool timer calling callback(param, TRUE)
-fn CreateTimerQueue(_: &mut Ctx) -> u32 {
-    mem::heap_alloc(16, true)
-}
-fn DeleteTimerQueueEx(_: &mut Ctx) -> u32 {
-    1
-}
-fn DeleteTimerQueue(_: &mut Ctx) -> u32 {
-    1
-}
-/// CreateTimerQueueTimer(phandle*, queue, callback, param, due ms, period ms, flags)
-fn CreateTimerQueueTimer(c: &mut Ctx) -> u32 {
-    let (out, cb, param, due, period) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5));
-    let h = mem::heap_alloc(16, true);
-    tp_with(|m| m.insert(h, Tp { cb, ctx: param, gen: 0, running: 0 }));
-    mem::putp(out, h);
-    tp_spawn(true, h, 0, (due, period, 1));
-    1
-}
-/// ChangeTimerQueueTimer(queue, timer, due ms, period ms)
-fn ChangeTimerQueueTimer(c: &mut Ctx) -> u32 {
-    let (h, due, period) = (c.a(1), c.a(2), c.a(3));
-    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
-    tp_spawn(true, h, gen, (due, period, 1));
-    1
-}
-fn DeleteTimerQueueTimer(c: &mut Ctx) -> u32 {
-    tp_with(|m| m.remove(&c.a(1)));
-    let ev = c.a(2);
-    if ev != 0 && ev != u32::MAX {
-        set_event(ev);
-    }
-    1
-}
 /// QueueUserWorkItem(function, context, flags): function(context) on a new guest thread
 fn QueueUserWorkItem(c: &mut Ctx) -> u32 {
     let (cb, ctx) = (c.a(0), c.a(1));
@@ -3465,6 +4057,35 @@ fn QueueUserWorkItem(c: &mut Ctx) -> u32 {
     tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
     tp_spawn(true, h, 0, (0, 0, 2));
     1
+}
+/// CreateThreadpool: a pool of its own (the work of every pool runs on threads of its own all
+/// the same, so a pool is only its handle and limits)
+fn CreateThreadpool(_: &mut Ctx) -> u32 {
+    mem::heap_alloc(16, true)
+}
+fn CloseThreadpool(c: &mut Ctx) -> u32 {
+    if c.a(0) != 0 {
+        mem::heap_free(c.a(0));
+    }
+    0
+}
+/// SetThreadpoolThreadMinimum: TRUE; SetThreadpoolThreadMaximum: VOID
+fn SetThreadpoolThreadMinimum(_: &mut Ctx) -> u32 {
+    1
+}
+fn SetThreadpoolThreadMaximum(_: &mut Ctx) -> u32 {
+    0
+}
+/// TpAllocPool(&pool, reserved): STATUS_SUCCESS
+fn TpAllocPool(c: &mut Ctx) -> u32 {
+    if c.a(0) == 0 {
+        return 0xC000_000D;
+    }
+    mem::putp(c.a(0), mem::heap_alloc(16, true));
+    0
+}
+fn TpSetPoolMinThreads(_: &mut Ctx) -> u32 {
+    0
 }
 fn CreateThreadpoolWork(c: &mut Ctx) -> u32 {
     tp_new(c)
@@ -3499,14 +4120,57 @@ fn CloseThreadpoolWork(c: &mut Ctx) -> u32 {
     tp_with(|m| m.remove(&c.a(0)));
     0
 }
+/// RegisterWaitForSingleObject's callbacks running: (wait handle, the thread running it)
+static WAIT_RUNNING: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+/// held while a WT_EXECUTEINWAITTHREAD callback runs
+static WAIT_THREAD: Mutex<()> = Mutex::new(());
+/// UnregisterWait(wait): no more callbacks; one running on another thread meanwhile makes it
+/// ERROR_IO_PENDING (the wait is gone all the same), from the callback itself it succeeds;
+/// NULL is ERROR_INVALID_HANDLE.
 fn UnregisterWait(c: &mut Ctx) -> u32 {
-    tp_with(|m| m.remove(&c.a(0)));
+    let h = c.a(0);
+    if h == 0 {
+        last_error(6);
+        return 0;
+    }
+    tp_with(|m| m.remove(&h));
+    let me = crate::cur().tid;
+    if WAIT_RUNNING.lock().unwrap().iter().any(|&(x, t)| x == h && t != me) {
+        last_error(997);
+        return 0;
+    }
     1
 }
+/// UnregisterWaitEx(wait, event): event INVALID_HANDLE_VALUE waits for a running callback,
+/// another event is set once it is done
 fn UnregisterWaitEx(c: &mut Ctx) -> u32 {
-    tp_with(|m| m.remove(&c.a(0)));
-    if c.a(1) != 0 && c.a(1) != u32::MAX {
-        set_event(c.a(1));
+    let (h, ev) = (c.a(0), c.a(1));
+    if h == 0 {
+        last_error(6);
+        return 0;
+    }
+    tp_with(|m| m.remove(&h));
+    let me = crate::cur().tid;
+    let busy = || WAIT_RUNNING.lock().unwrap().iter().any(|&(x, t)| x == h && t != me);
+    if ev == u32::MAX {
+        while busy() {
+            sleep_ms(1);
+        }
+        return 1;
+    }
+    let pending = busy();
+    if ev != 0 {
+        if pending {
+            // (set once the callback is done: a pool thread waits for it)
+            while busy() {
+                sleep_ms(1);
+            }
+        }
+        set_event(ev);
+    }
+    if pending && ev == 0 {
+        last_error(997);
+        return 0;
     }
     1
 }
@@ -3564,8 +4228,36 @@ fn FreeLibraryWhenCallbackReturns(_: &mut Ctx) -> u32 {
 fn CreateSemaphoreExW(c: &mut Ctx) -> u32 {
     create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
 }
-fn SetThreadStackGuarantee(_: &mut Ctx) -> u32 {
+/// SetThreadStackGuarantee(&size): the stack kept for a stack overflow's handler, in TEB
+/// GuaranteedStackBytes; whole pages, at least 4 KB (8 KB on x64), never less than before;
+/// *size gets the one before. More than the stack's reservation: ERROR_INVALID_PARAMETER.
+fn SetThreadStackGuarantee(c: &mut Ctx) -> u32 {
+    let p = c.a(0);
+    let teb = crate::cur().teb;
+    let at = teb + if mem::x64() { 0x1748 } else { 0xf78 };
+    let old = r32(at);
+    let want = r32(p);
+    let reserved = mem::rp(teb + mem::ps()).wrapping_sub(r32(teb + if mem::x64() { 0x1478 } else { 0xe0c }));
+    if want > reserved {
+        put32(p, old);
+        last_error(87);
+        return 0;
+    }
+    put32(p, old);
+    if want != 0 {
+        let min = 4096 * mem::ps() / 4;
+        let new = want.div_ceil(4096).saturating_mul(4096).max(min).max(old);
+        w32(at, new);
+    }
     1
+}
+/// GetCurrentThreadStackLimits(&low, &high): TEB DeallocationStack and StackBase
+fn GetCurrentThreadStackLimits(c: &mut Ctx) -> u32 {
+    let teb = crate::cur().teb;
+    let ps = mem::ps();
+    mem::putp(c.a(0), mem::rp(teb + if mem::x64() { 0x1478 } else { 0xe0c }));
+    mem::putp(c.a(1), mem::rp(teb + ps));
+    0
 }
 fn FlushProcessWriteBuffers(_: &mut Ctx) -> u32 {
     std::sync::atomic::fence(Ordering::SeqCst);
@@ -5248,6 +5940,9 @@ fn GetProcessTimes(c: &mut Ctx) -> u32 {
     1
 }
 fn GetThreadTimes(c: &mut Ctx) -> u32 {
+    if thread_denied(c.a(0), THREAD_QUERY_ANY) {
+        return 0;
+    }
     GetProcessTimes(c)
 }
 
@@ -5659,7 +6354,11 @@ fn create_file(c: &mut Ctx, wide: bool) -> u32 {
     if let Some(h) = crate::nt::via::create_file(c, &name) {
         return h;
     }
-    open_file(name, c.a(1), c.a(2), c.a(4), c.a(5))
+    let h = open_file(name, c.a(1), c.a(2), c.a(4), c.a(5));
+    if h != 0xffff_ffff && c.a(5) & 0x4000_0000 != 0 {
+        crate::iocp::mark_overlapped(h);
+    }
+    h
 }
 
 /// CreateFileW's work: `attrs` is dwFlagsAndAttributes.
@@ -5733,7 +6432,11 @@ fn CreateFileW(c: &mut Ctx) -> u32 {
 fn CreateFile2(c: &mut Ctx) -> u32 {
     let p = c.a(4);
     let attrs = if p == 0 { 0 } else { r32(p + 4) | r32(p + 8) };
-    open_file(arg_str(c.a(0), true), c.a(1), c.a(2), c.a(3), attrs)
+    let h = open_file(arg_str(c.a(0), true), c.a(1), c.a(2), c.a(3), attrs);
+    if h != 0xffff_ffff && attrs & 0x4000_0000 != 0 {
+        crate::iocp::mark_overlapped(h);
+    }
+    h
 }
 fn _lopen(c: &mut Ctx) -> u32 {
     let name = arg_str(c.a(0), false);
@@ -5808,13 +6511,8 @@ fn ReadFile(c: &mut Ctx) -> u32 {
     }
     let got = f.read_into(buf, n);
     put32(pread, got);
-    if ov != 0 {
-        mem::wp(ov, 0);
-        mem::wp(ov + k, got);
-        if r32(ov + 2 * k + 8) != 0 {
-            event_set(r32(ov + 2 * k + 8), true);
-        }
-    }
+    // (done at once: the OVERLAPPED, its event and the handle's completion port)
+    crate::iocp::complete(h, ov, 0, got, true);
     1
 }
 fn WriteFile(c: &mut Ctx) -> u32 {
@@ -5864,9 +6562,17 @@ fn WriteFile(c: &mut Ctx) -> u32 {
         last_error(5);
         return 0;
     }
+    let ov = c.a(4);
+    if ov != 0 {
+        let k = mem::ps();
+        f.seek(SeekFrom::Start(r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32));
+    }
     echo_write(&f.path, buf, n);
     let w = f.write_from(buf, n);
     put32(pw, w);
+    if w == n {
+        crate::iocp::complete(h, ov, 0, w, true);
+    }
     ok(w == n)
 }
 /// Console output a line at a time (the page logs each write as its own line: 吉里吉里2 writes its
@@ -7284,7 +7990,13 @@ fn OpenThread(c: &mut Ctx) -> u32 {
         t.objs.iter().filter(|(_, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid && tid != 0)).map(|(&h, (o, _))| (matches!(o, Obj::Thread { done: true, .. }), h)).min()
     });
     match h {
-        Some((_, h)) => obj::dup(h),
+        Some((_, h)) => {
+            let n = obj::dup(h);
+            // (what was asked of THREAD_ALL_ACCESS; MAXIMUM_ALLOWED all of it)
+            let want = c.a(0);
+            obj::set_access(n, if want & 0x0200_0000 != 0 { 0x001f_ffff } else { want & 0x001f_ffff });
+            n
+        }
         None => {
             last_error(87);
             0
@@ -7634,7 +8346,6 @@ fn SetFileApisToANSI(_: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
-    implement("kernel32", "SetThreadDescription", |_| 0);
     implement("msvcrt", "_beginthreadex", _beginthreadex);
     implement("msvcrt", "_beginthread", _beginthread);
     implement("msvcrt", "_endthreadex", _endthreadex);
@@ -7707,8 +8418,8 @@ pub fn init() {
         SetEnvironmentVariableA, SetEnvironmentVariableW, ExpandEnvironmentStringsA, ExpandEnvironmentStringsW,
         GetCurrentProcess, GetCurrentProcessId, GetProcessId, GetCurrentThread, GetCurrentThreadId, GetThreadId, ExitProcess, TerminateProcess,
         FatalAppExitA, ExitThread, CreateThread, ResumeThread, SuspendThread, GetExitCodeThread, GetExitCodeProcess,
-        TerminateThread, GetThreadPriority, SetThreadPriority, SetPriorityClass, GetPriorityClass, SetThreadAffinityMask,
-        SetProcessAffinityMask, GetProcessAffinityMask, SetThreadIdealProcessor, Sleep, SleepEx, SwitchToThread,
+        TerminateThread, CreateRemoteThread, CreateRemoteThreadEx, GetThreadPriorityBoost, SetThreadPriorityBoost, GetProcessPriorityBoost, SetProcessPriorityBoost, GetThreadPriority, SetThreadPriority, SetPriorityClass, GetPriorityClass,
+        Sleep, SleepEx, SwitchToThread,
         CreateEventA, CreateEventW, CreateEventExW, CreateWaitableTimerA, CreateWaitableTimerW, CreateWaitableTimerExW,
         OpenWaitableTimerA, OpenWaitableTimerW, SetWaitableTimer, SetWaitableTimerEx, CancelWaitableTimer, OpenEventA, OpenEventW, SetEvent, ResetEvent, PulseEvent,
         CreateMutexA, CreateMutexW, OpenMutexA, OpenMutexW, OpenSemaphoreA, OpenSemaphoreW, ReleaseMutex, CreateSemaphoreA, CreateSemaphoreW, ReleaseSemaphore,
@@ -7729,14 +8440,13 @@ pub fn init() {
         GlobalMemoryStatus, GlobalMemoryStatusEx, GetSystemInfo, GetNativeSystemInfo, IsProcessorFeaturePresent,
         GetLogicalProcessorInformationEx, GetLogicalProcessorInformation, GetNumaHighestNodeNumber, GetCurrentProcessorNumber,
         GetCurrentProcessorNumberEx, GetNumaNodeProcessorMaskEx, GetNumaNodeProcessorMask, GetActiveProcessorCount,
-        GetMaximumProcessorCount, GetActiveProcessorGroupCount, GetMaximumProcessorGroupCount, GetThreadGroupAffinity,
-        SetThreadGroupAffinity, LCMapStringEx, CreateThreadpoolTimer, SetThreadpoolTimer, IsThreadpoolTimerSet,
+        GetMaximumProcessorCount, GetActiveProcessorGroupCount, GetMaximumProcessorGroupCount,
+        LCMapStringEx, CreateThreadpoolTimer, SetThreadpoolTimer, IsThreadpoolTimerSet,
         WaitForThreadpoolTimerCallbacks, CloseThreadpoolTimer, CreateThreadpoolWait, SetThreadpoolWait,
         WaitForThreadpoolWaitCallbacks, CloseThreadpoolWait, FreeLibraryWhenCallbackReturns, CreateSemaphoreExW,
-        SetThreadStackGuarantee, FlushProcessWriteBuffers, RegisterWaitForSingleObject, UnregisterWait, UnregisterWaitEx,
-        QueueUserWorkItem, CreateThreadpoolWork, SubmitThreadpoolWork, TrySubmitThreadpoolCallback,
+        SetThreadStackGuarantee, GetCurrentThreadStackLimits, FlushProcessWriteBuffers, RegisterWaitForSingleObject, UnregisterWait, UnregisterWaitEx,
+        QueueUserWorkItem, CreateThreadpool, CloseThreadpool, SetThreadpoolThreadMinimum, SetThreadpoolThreadMaximum, CreateThreadpoolWork, SubmitThreadpoolWork, TrySubmitThreadpoolCallback,
         WaitForThreadpoolWorkCallbacks, CloseThreadpoolWork,
-        CreateTimerQueue, DeleteTimerQueueEx, DeleteTimerQueue, CreateTimerQueueTimer, ChangeTimerQueueTimer, DeleteTimerQueueTimer,
         IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
         GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW, EnumSystemLocalesEx,
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
@@ -7833,11 +8543,20 @@ pub fn init() {
         implement(d, "GetComputerNameExW", |c| computer_name_ex(c, true));
     }
     reg!("kernel32"; DeviceIoControl, QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW, GetProductInfo);
+    reg!("ntdll"; RtlGetThreadErrorMode, RtlSetThreadErrorMode);
     reg!("ntdll"; RtlMultiByteToUnicodeN, RtlUnicodeToMultiByteN, RtlMultiByteToUnicodeSize, RtlUnicodeToMultiByteSize,
         RtlUpcaseUnicodeChar, RtlCompareUnicodeString, RtlEqualUnicodeString);
     implement("ntdll", "NtQueueApcThread", crate::apc::NtQueueApcThread);
+    implement("ntdll", "NtAllocateVirtualMemory", NtAllocateVirtualMemory);
+    implement("ntdll", "NtFreeVirtualMemory", NtFreeVirtualMemory);
+    implement("ntdll", "ZwAllocateVirtualMemory", NtAllocateVirtualMemory);
+    implement("ntdll", "ZwFreeVirtualMemory", NtFreeVirtualMemory);
     implement("ntdll", "NtTestAlert", crate::apc::NtTestAlert);
-    reg!("ntdll"; RtlAcquirePebLock, RtlReleasePebLock, RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlCreateUnicodeStringFromAsciiz, RtlAnsiStringToUnicodeString,
+    implement("ntdll", "TpAllocPool", TpAllocPool);
+    implement("ntdll", "TpReleasePool", CloseThreadpool);
+    implement("ntdll", "TpSetPoolMaxThreads", SetThreadpoolThreadMaximum);
+    implement("ntdll", "TpSetPoolMinThreads", TpSetPoolMinThreads);
+    reg!("ntdll"; RtlGetCurrentPeb, RtlAcquirePebLock, RtlReleasePebLock, RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlCreateUnicodeStringFromAsciiz, RtlAnsiStringToUnicodeString,
         RtlUnicodeStringToAnsiString, RtlDosPathNameToNtPathName_U, RtlFormatCurrentUserKeyPath, LdrGetProcedureAddress,
         NtProtectVirtualMemory);
     implement("ntdll", "RtlInitString", RtlInitAnsiString);
@@ -7854,7 +8573,7 @@ pub fn init() {
         RtlLeaveCriticalSection, InitializeSRWLock, AcquireSRWLockExclusive, AcquireSRWLockShared,
         ReleaseSRWLockExclusive, ReleaseSRWLockShared, TryAcquireSRWLockExclusive, TryAcquireSRWLockShared,
         InitializeConditionVariable, SleepConditionVariableSRW, SleepConditionVariableCS, WakeConditionVariable,
-        WakeAllConditionVariable, InitOnceExecuteOnce, InitOnceInitialize, GetThreadContext, SetThreadContext, FreeLibraryAndExitThread,
+        WakeAllConditionVariable, InitOnceExecuteOnce, InitOnceInitialize, FreeLibraryAndExitThread,
         K32GetProcessMemoryInfo);
     let _ = (EAX, ESP);
 }
@@ -8641,6 +9360,40 @@ mod drive_tests {
             prop_assert_eq!(names.len() as u32, logical_drives().count_ones());
             // QueryDosDevice knows each listed drive
             prop_assert_eq!(drive_device(c).is_some(), listed);
+        }
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::sync_access;
+    use proptest::prelude::*;
+
+    /// Windows' answer for a mutex opened with each single access bit (Wine's kernel32:sync
+    /// test_mutex): these fail
+    #[test]
+    fn mutex_single_bits_fail_as_on_windows() {
+        let failed = (0..32).filter(|i| sync_access(2, 1 << i).is_err()).fold(0u32, |m, i| m | 1 << i);
+        assert_eq!(failed, 0x0de0_fffe);
+        assert_eq!(sync_access(2, 0x0100_0000), Err(1314));
+        assert_eq!(sync_access(2, 0), Err(5));
+        // GENERIC_EXECUTE can wait, GENERIC_READ | GENERIC_WRITE cannot
+        assert!(sync_access(2, 0x2000_0000).unwrap() & 0x0010_0000 != 0);
+        assert!(sync_access(2, 0xc000_0000).unwrap() & 0x0010_0000 == 0);
+    }
+
+    proptest! {
+        /// Granted rights are always within the type's own, and asking for everything
+        /// (GENERIC_ALL, MAXIMUM_ALLOWED) gives all of them
+        #[test]
+        fn granted_within_the_type(kind in 1u8..=4, access in any::<u32>()) {
+            let all = 0x001f_0000 | if kind == 2 { 1 } else { 3 };
+            if let Ok(g) = sync_access(kind, access) {
+                prop_assert_eq!(g & !all, 0);
+                if access & 0x1200_0000 != 0 {
+                    prop_assert_eq!(g, all);
+                }
+            }
         }
     }
 }

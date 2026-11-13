@@ -166,6 +166,8 @@ jobs:
       # Four V8 processes per runner made gdiplus:graphics and user32:text hit 120s
       # before finishing (their baseline finishes). Same total concurrency, twice the
       # runners and half the processes on each: keep the time limit and assertions.
+      - name: run.py's own tests
+        run: python3 -m unittest tests/winetest/test_run.py
       - name: Wine's tests on sake (shard ${{ matrix.shard }} of 4)
         env:
           IPPAI_API_COUNTS: "1"

@@ -43,9 +43,10 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 RANK = {"ok": 0, "fail": 1, "crash": 2, "timeout": 2}
-SUMMARY = re.compile(r"^(?:[0-9a-f]{4}:)?(\S+): (\d+) tests executed \((\d+) marked as todo, (?:(\d+) as flaky, )?(\d+) failures?\), (\d+) skipped\.")
+SUMMARY = re.compile(r"^(?:([0-9a-f]{4,}):)?([^\s:]+): (\d+) tests executed \((\d+) marked as todo, (?:(\d+) as flaky, )?(\d+) failures?\), (\d+) skipped\.")
 FAILED = re.compile(r"^(?:[0-9a-f]{4}:)?\S+\.c:\d+:(?:\d+\.\d+ )?(?: Test failed:|Test failed:| unhandled exception)")
 CRASH = re.compile(r"panicked|RuntimeError|Aborted|unhandled|sake: .*(exception|fault|unknown|not supported)")
+PID = re.compile(r"^([0-9a-f]{4,}):")
 UNIMPL = re.compile(r"^sake: unimplemented (\S+?) ")
 
 
@@ -103,12 +104,15 @@ def parse(test, out, timed_out, secs):
     lines = out.splitlines()
     executed = failures = 0
     summary = False
+    # (the test's own process has the lowest id, its children's come after it: a child's
+    # summary alone does not finish the test)
+    first = min((m.group(1) for m in map(PID.match, lines) if m), key=lambda p: int(p, 16), default=None)
     for l in lines:
         m = SUMMARY.match(l)
         if m:
-            summary = True
-            executed += int(m.group(2))
-            failures += int(m.group(5))
+            summary |= m.group(1) == first
+            executed += int(m.group(3))
+            failures += int(m.group(6))
     failed = [l for l in lines if FAILED.match(l)]
     if not summary:
         failures = len(failed)  # (the ones printed before it ended)

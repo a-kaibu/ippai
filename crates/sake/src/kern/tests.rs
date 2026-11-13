@@ -487,3 +487,58 @@ proptest! {
         prop_assert_eq!(read, written);
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// another process's memory (crate::xmem): the request queue
+
+#[test]
+fn vm_requests_reach_their_process_in_order_and_ended_ones_answer_gone() {
+    let mut k = Kern::default();
+    let a = k.new_process(Proc::default());
+    let b = k.new_process(Proc::default());
+    let r1 = k.put_vm(VmReq { to: a, op: 1, args: vec![0, 0x1000, 0x3000, 4], ..Default::default() });
+    let r2 = k.put_vm(VmReq { to: b, op: 5, ..Default::default() });
+    let r3 = k.put_vm(VmReq { to: a, op: 7, ..Default::default() });
+    assert_eq!(k.take_vm_reply(r1), Err(PENDING));
+    let got: Vec<u32> = k.take_vm(a).iter().map(|r| r.id).collect();
+    assert_eq!(got, vec![r1, r3]);
+    assert!(k.take_vm(a).is_empty());
+    k.vm_reply(r1, VmReply { status: 0, vals: vec![0x5000], data: vec![] });
+    assert_eq!(k.take_vm_reply(r1).unwrap().vals, vec![0x5000]);
+    assert_eq!(k.take_vm_reply(r1), Err(PENDING), "an answer is taken once");
+    // b ends with r2 still waiting: it answers VM_GONE, and so does anything asked after
+    k.exited(b, 0);
+    assert_eq!(k.take_vm_reply(r2).unwrap().status, VM_GONE);
+    let r4 = k.put_vm(VmReq { to: b, ..Default::default() });
+    assert_eq!(k.take_vm_reply(r4).unwrap().status, VM_GONE);
+    let r5 = k.put_vm(VmReq { to: 0x7777_0000, ..Default::default() });
+    assert_eq!(k.take_vm_reply(r5).unwrap().status, VM_GONE, "no such process");
+}
+
+proptest! {
+    /// Through the shared buffer (as bytes) the requests and answers come back the same.
+    #[test]
+    fn vm_queue_survives_encoding(ops in proptest::collection::vec((0u32..3, 0u32..8, proptest::collection::vec(any::<u32>(), 0..5), proptest::collection::vec(any::<u8>(), 0..40)), 0..12)) {
+        use crate::kern::enc::Enc;
+        let mut k = Kern::default();
+        let pids: Vec<u32> = (0..3).map(|_| k.new_process(Proc::default())).collect();
+        let mut ids = vec![];
+        for (who, op, args, data) in ops {
+            ids.push(k.put_vm(VmReq { id: 0, to: pids[who as usize], op, args: args.clone(), data: data.clone() }));
+            if op % 2 == 0 {
+                k.vm_reply(*ids.last().unwrap(), VmReply { status: op, vals: args, data });
+            }
+        }
+        let mut bytes = vec![];
+        k.put(&mut bytes);
+        let mut r = &bytes[..];
+        let mut back = Kern::get(&mut r).unwrap();
+        prop_assert!(r.is_empty());
+        for p in &pids {
+            prop_assert_eq!(back.take_vm(*p), k.take_vm(*p));
+        }
+        for id in ids {
+            prop_assert_eq!(back.take_vm_reply(id), k.take_vm_reply(id));
+        }
+    }
+}

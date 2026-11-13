@@ -347,6 +347,9 @@ pub fn init() {
             return STATUS_INVALID_PARAMETER;
         }
         let hs: Vec<u32> = (0..n).map(|i| rp(p + ps() * i)).collect();
+        if hs.iter().any(|&h| obj::is_pseudo(h)) {
+            return STATUS_INVALID_HANDLE;
+        }
         wait(c, &hs, ty == 0, alertable, ms)
     });
     implement(d, "NtSignalAndWaitForSingleObject", |c| {

@@ -184,6 +184,9 @@ impl Default for Cs {
 
 /// The waits of every SRW lock, condition variable and INIT_ONCE: one lock (which also holds
 /// the condition variables' generations) and one condition variable.
+/// One writer waiting for an SRW lock, in its word (Sync::srw_try)
+pub const SRW_WRITER_WAITS: u32 = 0x1_0000;
+
 pub struct Sync {
     gens: Mutex<BTreeMap<u32, u32>>,
     cv: Condvar,
@@ -201,6 +204,17 @@ pub enum Begin {
     NotYet,
     /// the caller initializes now (InitOnceComplete ends it)
     Pending,
+    /// a synchronous initialization runs and this one is asynchronous, or the other way round
+    Invalid,
+}
+
+/// Why InitOnceComplete failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Complete {
+    /// ERROR_INVALID_PARAMETER: another kind of initialization runs
+    Invalid,
+    /// ERROR_GEN_FAILURE: none runs
+    NotPending,
 }
 
 /// What InitOnceExecuteOnce did.
@@ -222,22 +236,38 @@ impl Sync {
         Sync { gens: Mutex::new(BTreeMap::new()), cv: Condvar::new(), srw_waiters: AtomicU32::new(0) }
     }
 
-    /// TryAcquireSRWLockShared / Exclusive. A reader fails only while a writer holds the lock:
-    /// another reader's count landing between its load and its exchange makes it try again
-    /// (it gave up there once, and waited for a release that the readers holding the lock
-    /// might never make: loom's srw_readers_share_the_lock).
+    /// TryAcquireSRWLockShared / Exclusive. The word: bit 0 a writer holds it, bits 1-15 twice
+    /// the readers holding it, bits 16 up the writers waiting for it (SRW_WRITER_WAITS each).
+    /// A reader fails while a writer holds the lock or waits for it (a waiting writer is
+    /// preferred, as on Windows: Wine's kernel32:sync test_srwlock_base); another reader's
+    /// count landing between its load and its exchange makes it try again (it gave up there
+    /// once, and waited for a release that the readers holding the lock might never make:
+    /// loom's srw_readers_share_the_lock). A writer takes a lock nobody holds.
     pub fn srw_try(a: &AtomicU32, shared: bool) -> bool {
-        if !shared {
-            return a.compare_exchange(0, 1, SeqCst, Relaxed).is_ok();
-        }
+        Self::srw_take(a, shared, false)
+    }
+
+    /// The exchange: `waiting` for a writer counted among the waiting ones (it takes its count
+    /// off as it takes the lock).
+    fn srw_take(a: &AtomicU32, shared: bool, waiting: bool) -> bool {
         let mut v = a.load(SeqCst);
-        while v & 1 == 0 {
-            match a.compare_exchange_weak(v, v + 2, SeqCst, SeqCst) {
+        loop {
+            let new = if shared {
+                if v & 1 != 0 || v >= SRW_WRITER_WAITS {
+                    return false;
+                }
+                v + 2
+            } else {
+                if v & (SRW_WRITER_WAITS - 1) != 0 {
+                    return false;
+                }
+                (v | 1) - if waiting { SRW_WRITER_WAITS } else { 0 }
+            };
+            match a.compare_exchange_weak(v, new, SeqCst, SeqCst) {
                 Ok(_) => return true,
                 Err(now) => v = now,
             }
         }
-        false
     }
 
     /// AcquireSRWLockShared / Exclusive.
@@ -252,12 +282,27 @@ impl Sync {
         // (counted before the retry: a release that misses the count frees the lock before it,
         // so the retry takes it; one that sees it notifies under the lock, after this thread waits)
         self.srw_waiters.fetch_add(1, SeqCst);
+        // (a writer shows in the word that it waits: new readers stand back)
+        let mark = |on: bool| {
+            if !shared {
+                if on {
+                    a.fetch_add(SRW_WRITER_WAITS, SeqCst);
+                } else {
+                    a.fetch_sub(SRW_WRITER_WAITS, SeqCst);
+                }
+            }
+        };
+        mark(true);
         handshake();
-        while !Self::srw_try(a, shared) {
+        while !Self::srw_take(a, shared, !shared) {
             if h.pausing() {
+                // (not marked while paused: a save state taken then has no waiter in the word)
+                mark(false);
+                self.cv.notify_all();
                 drop(g);
                 h.point();
                 g = relock(&self.gens);
+                mark(true);
                 continue;
             }
             g = nap(&self.cv, g, 20);
@@ -270,7 +315,7 @@ impl Sync {
         if shared {
             a.fetch_sub(2, SeqCst);
         } else {
-            a.store(0, SeqCst);
+            a.fetch_and(!1, SeqCst);
         }
         handshake();
         if self.srw_waiters.load(SeqCst) == 0 {
@@ -344,6 +389,13 @@ impl Sync {
 
     /// InitOnceBeginInitialize.
     pub fn once_begin(&self, a: &AtomicU32, check_only: bool) -> Begin {
+        self.once_begin_ex(a, check_only, false)
+    }
+
+    /// InitOnceBeginInitialize with INIT_ONCE_ASYNC as `asynchronous`: the word is 3 while
+    /// asynchronous initializers run (any number of them, none waits), 1 while one synchronous
+    /// one does (the others wait); mixing the two is Begin::Invalid.
+    pub fn once_begin_ex(&self, a: &AtomicU32, check_only: bool, asynchronous: bool) -> Begin {
         loop {
             let v = a.load(SeqCst);
             if v & 3 == 2 {
@@ -351,6 +403,21 @@ impl Sync {
             }
             if check_only {
                 return Begin::NotYet;
+            }
+            if asynchronous {
+                match v {
+                    3 => return Begin::Pending,
+                    1 => return Begin::Invalid,
+                    _ => {
+                        if a.compare_exchange(0, 3, SeqCst, SeqCst).is_ok() {
+                            return Begin::Pending;
+                        }
+                        continue;
+                    }
+                }
+            }
+            if v == 3 {
+                return Begin::Invalid;
             }
             if v == 0 && a.compare_exchange(0, 1, SeqCst, SeqCst).is_ok() {
                 return Begin::Pending;
@@ -362,12 +429,28 @@ impl Sync {
     /// InitOnceComplete: `word` is what the INIT_ONCE becomes (0: failed, the next caller
     /// tries). False: nobody was initializing it.
     pub fn once_complete(&self, a: &AtomicU32, word: u32) -> bool {
-        if a.load(SeqCst) != 1 {
-            return false;
+        self.once_complete_ex(a, false, word).is_ok()
+    }
+
+    /// InitOnceComplete with INIT_ONCE_ASYNC as `asynchronous` (the first asynchronous
+    /// initializer to complete wins; failing is not allowed then): Err(Complete::Invalid) for
+    /// the other kind of initialization (or an asynchronous one already done),
+    /// Err(Complete::NotPending) when nobody initializes it.
+    pub fn once_complete_ex(&self, a: &AtomicU32, asynchronous: bool, word: u32) -> Result<(), Complete> {
+        let v = a.load(SeqCst);
+        if asynchronous {
+            if v != 3 || word == 0 || a.compare_exchange(3, word, SeqCst, SeqCst).is_err() {
+                return Err(Complete::Invalid);
+            }
+        } else {
+            match v {
+                1 => a.store(word, SeqCst),
+                3 => return Err(Complete::Invalid),
+                _ => return Err(Complete::NotPending),
+            }
         }
-        a.store(word, SeqCst);
         self.wake_all();
-        true
+        Ok(())
     }
 
     /// Waits (once) while `a` is 1.

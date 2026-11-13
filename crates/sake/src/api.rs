@@ -488,6 +488,9 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     }
     crate::k32::check_terminate();
     let top = crate::snap::api_enter(addr, esp);
+    let me = crate::cur();
+    let outer = me.api;
+    me.api = (esp, if crate::mem::x64() { 8 } else { 4 + if cdecl { 0 } else { bytes } });
     let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None, trap: addr };
     let r = match f {
         Some(f) => f(&mut c),
@@ -507,7 +510,9 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     if top {
         crate::snap::api_leave();
     }
+    crate::cur().api = outer;
     if c.jumped {
+        crate::tctx::apply_pending(c.cpu);
         return;
     }
     let (edx, st0) = (c.edx, c.st0);
@@ -530,6 +535,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         cpu.eip = ret as u32;
         cpu.rip_hi = (ret >> 32) as u32;
         cpu.set_gpr(ESP, esp as u64 + 8);
+        crate::tctx::apply_pending(cpu);
         return;
     }
     cpu.regs[EAX] = r;
@@ -541,6 +547,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     }
     cpu.eip = r32(esp);
     cpu.regs[ESP] = esp + 4 + if cdecl { 0 } else { bytes };
+    crate::tctx::apply_pending(cpu);
 }
 
 /// Writes a small x86 stub `code` into guest memory; returns its address.

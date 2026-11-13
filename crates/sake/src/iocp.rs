@@ -27,6 +27,12 @@ struct State {
     assoc: HashMap<u32, (u32, u64)>,
     /// handle -> FILE_SKIP_* flags
     modes: HashMap<u32, u32>,
+    /// handles opened with FILE_FLAG_OVERLAPPED
+    overlapped: std::collections::HashSet<u32>,
+    /// handles BindIoCompletionCallback gave a callback (their port's pool thread calls it)
+    bound: HashMap<u32, u32>,
+    /// ports whose last handle was closed while waits still hold them (signaled)
+    closed: std::collections::HashSet<u32>,
 }
 static ST: Mutex<Option<State>> = Mutex::new(None);
 
@@ -102,16 +108,87 @@ pub fn forget(h: u32) {
         s.assoc.remove(&h);
         s.modes.remove(&h);
         s.ports.remove(&h);
+        s.overlapped.remove(&h);
+        s.bound.remove(&h);
     });
 }
 
+/// CreateFile with FILE_FLAG_OVERLAPPED made `h`
+pub fn mark_overlapped(h: u32) {
+    with(|s| s.overlapped.insert(h));
+}
+
+/// BindIoCompletionCallback(file, callback(error, bytes, overlapped), flags): the file's IO
+/// completes on a pool thread that calls `callback`; the file must be overlapped and not
+/// bound yet
+fn BindIoCompletionCallback(c: &mut Ctx) -> u32 {
+    let (h, f) = (c.a(0), c.a(1));
+    if h == 0 || h == 0xffff_ffff {
+        last_error(6);
+        return 0;
+    }
+    if f == 0 || !with(|s| s.overlapped.contains(&h)) || with(|s| s.bound.contains_key(&h) || s.assoc.contains_key(&h)) {
+        last_error(87);
+        return 0;
+    }
+    let port = new_port();
+    with(|s| {
+        s.assoc.insert(h, (port, 0));
+        s.bound.insert(h, f);
+    });
+    static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let entry = *ENTRY.get_or_init(|| crate::api::host_fn("bind_io_thread", bind_io_thread, 4));
+    BIND_ARGS.lock().unwrap().push((port, f));
+    crate::spawn_gated(entry, port, 0x10000, obj::new_thread_obj(0), false);
+    1
+}
+static BIND_ARGS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+
+/// A BindIoCompletionCallback pool thread: callback(Win32 error, bytes, overlapped) for each
+/// packet of its port, until the port goes
+fn bind_io_thread(c: &mut Ctx) -> u32 {
+    let port = c.a(0);
+    let f = {
+        let mut v = BIND_ARGS.lock().unwrap();
+        let Some(i) = v.iter().position(|x| x.0 == port) else { return 0 };
+        v.remove(i).1
+    };
+    loop {
+        match wait_packet(c, port, 1000, false) {
+            Ok((bytes, _, ov, status)) => {
+                c.call(f, &[nt_to_win32(status), bytes, ov]);
+            }
+            Err(258) => {
+                // (its file closed: the port and the thread go)
+                if !with(|s| s.assoc.values().any(|a| a.0 == port)) {
+                    with(|s| s.ports.remove(&port));
+                    obj::close(port);
+                    return 0;
+                }
+            }
+            Err(_) => return 0,
+        }
+    }
+}
+
 /// A port handle was closed: its packets go, its waiters end (ERROR_ABANDONED_WAIT_0)
+/// The port's last handle was closed: its waiters end (GetQueuedCompletionStatus:
+/// ERROR_ABANDONED_WAIT_0; a wait on the port: signaled)
 pub fn closed(h: u32) {
     with(|s| {
         s.ports.remove(&h);
         s.assoc.retain(|_, (p, _)| *p != h);
+        s.closed.insert(h);
     });
     obj::signal();
+}
+/// The port object went (the last wait on it ended too)
+pub fn gone(h: u32) {
+    with(|s| {
+        s.ports.remove(&h);
+        s.assoc.retain(|_, (p, _)| *p != h);
+        s.closed.remove(&h);
+    });
 }
 
 /// The port and key handle `h` is tied to
@@ -121,7 +198,7 @@ pub fn association(h: u32) -> Option<(u32, u64)> {
 
 /// Whether a port has packets (a port handle is signaled then)
 pub fn has_packets(h: u32) -> bool {
-    with(|s| s.ports.get(&h).is_some_and(|q| !q.is_empty()))
+    with(|s| s.closed.contains(&h) || s.ports.get(&h).is_some_and(|q| !q.is_empty()))
 }
 
 /// A new port's handle
@@ -423,6 +500,7 @@ pub fn init_nt() {
 pub fn init() {
     let d = "kernel32";
     implement(d, "CreateIoCompletionPort", CreateIoCompletionPort);
+    implement(d, "BindIoCompletionCallback", BindIoCompletionCallback);
     implement(d, "GetQueuedCompletionStatus", GetQueuedCompletionStatus);
     implement(d, "GetQueuedCompletionStatusEx", GetQueuedCompletionStatusEx);
     implement(d, "PostQueuedCompletionStatus", PostQueuedCompletionStatus);
