@@ -5478,6 +5478,10 @@ fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u3
     if name.eq_ignore_ascii_case("CONOUT$") || name.eq_ignore_ascii_case("CONIN$") {
         return obj::add(Obj::Other("console"));
     }
+    if is_nul_device(&name) {
+        last_error(0);
+        return obj::add(Obj::Other("nul"));
+    }
     if let Some(n) = crate::kern::pipe_name(&name) {
         return crate::pipe::open(&n, access, attrs);
     }
@@ -5506,6 +5510,15 @@ fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u3
             0xffff_ffff
         }
     }
+}
+/// The null device: "NUL" in any case, as a path's last part too ("C:\\dir\\nul",
+/// "\\\\.\\NUL"), with trailing spaces or a colon ("NUL :", "nul:"; DOS device names win
+/// over files; "nul.txt" is left to the file system: Windows 11 stopped treating it as the
+/// device). Ruby (RPG Maker VX Ace's RGSS301.dll) opens it at start and crashed when it failed.
+pub fn is_nul_device(name: &str) -> bool {
+    let last = name.rsplit(['\\', '/']).next().unwrap_or("");
+    let stem = last.split(':').next().unwrap_or("").trim_end_matches(' ');
+    stem.eq_ignore_ascii_case("nul")
 }
 /// A file that did not open, in the run's log (the first 64 names, each once): what a game
 /// looked for and did not find says much of why it stopped.
@@ -5587,6 +5600,11 @@ fn ReadFile(c: &mut Ctx) -> u32 {
     if crate::ws2::is_socket(h) {
         return socket_io(h, buf, n, pread, ov, false);
     }
+    if obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Other("nul"), _)))) {
+        // (the null device: at its end at once)
+        put32(pread, 0);
+        return 1;
+    }
     let Some(f) = obj::file(h) else {
         last_error(6);
         return 0;
@@ -5637,8 +5655,11 @@ fn WriteFile(c: &mut Ctx) -> u32 {
         Some((Obj::Other(k), _)) => Some(*k),
         _ => None,
     });
-    if let Some(_k) = kind {
-        console_write(&a2s(mem::slice(buf, n)));
+    if let Some(k) = kind {
+        // (the null device takes everything; the console writes it to stderr)
+        if k != "nul" {
+            console_write(&a2s(mem::slice(buf, n)));
+        }
         put32(pw, n);
         return 1;
     }
@@ -7573,6 +7594,33 @@ mod issue88 {
             assert_ne!(h, 0);
             assert_eq!(obj::inherits(h), inherit != 0);
             assert!(obj::close(h));
+        }
+    }
+}
+
+#[cfg(test)]
+mod nul_tests {
+    use super::is_nul_device;
+    use proptest::prelude::*;
+    #[test]
+    fn names() {
+        for n in ["NUL", "nul", "Nul", "\\\\.\\NUL", "C:\\windows\\nul", "Z:/game/NUL", "nul:", "NUL  ", "nul :"] {
+            assert!(is_nul_device(n), "{n}");
+        }
+        for n in ["nul.txt", "null", "anul", "NULL.dat", "C:\\nul\\a.txt", "", "nu", "C:\\dir\\"] {
+            assert!(!is_nul_device(n), "{n}");
+        }
+    }
+    proptest! {
+        /// Only a last part that is NUL (any case, trailing spaces/colon) is the device: any
+        /// directory in front keeps it so, anything else after the name doesn't.
+        #[test]
+        fn last_part_decides(dir in "[A-Za-z0-9_\\\\/:. ]{0,12}", case in proptest::collection::vec(any::<bool>(), 3), tail in "[ ]{0,3}:?", junk in "[A-Za-z0-9_.]{1,4}") {
+            let nul: String = "nul".chars().zip(&case).map(|(c, &u)| if u { c.to_ascii_uppercase() } else { c }).collect();
+            let sep = if dir.is_empty() || dir.ends_with(['\\', '/']) { "" } else { "\\" };
+            let (dev, file) = (format!("{dir}{sep}{nul}{tail}"), format!("{dir}{sep}{nul}{junk}"));
+            prop_assert!(is_nul_device(&dev), "{}", dev);
+            prop_assert!(!is_nul_device(&file), "{}", file);
         }
     }
 }
