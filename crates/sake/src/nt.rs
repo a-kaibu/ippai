@@ -996,10 +996,108 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
     0
 }
 
+/// The NT name of a file object (NtQueryObject's ObjectNameInformation): the device of its
+/// drive (QueryDosDevice's) and the rest of its Win32 path; a drive's root ends in "\".
+/// None: not on one of our drives.
+pub fn object_name(win: &str) -> Option<String> {
+    let mut ch = win.chars();
+    let d = ch.next()?;
+    if ch.next() != Some(':') {
+        return None;
+    }
+    let dev = crate::k32::drive_device(d)?;
+    let rest = &win[2..];
+    let rest = if rest.is_empty() { "\\" } else { rest };
+    // (no trailing "\" but the root's: Windows names a directory without one)
+    let rest = if rest.len() > 1 { rest.trim_end_matches('\\') } else { rest };
+    let rest = if rest.is_empty() { "\\" } else { rest };
+    Some(format!("{dev}{rest}"))
+}
+
+/// The type name of an object (NtQueryObject's ObjectTypeInformation).
+fn type_name(o: &crate::obj::Obj) -> &'static str {
+    use crate::obj::Obj;
+    match o {
+        Obj::Event { .. } | Obj::Shared(_) => "Event",
+        Obj::Timer { .. } => "Timer",
+        Obj::Mutex { .. } => "Mutant",
+        Obj::Semaphore { .. } => "Semaphore",
+        Obj::Thread { .. } | Obj::RemoteThread { .. } => "Thread",
+        Obj::Process { .. } => "Process",
+        Obj::File(_) | Obj::Pipe(_) | Obj::Find(_) => "File",
+        Obj::Mapping { .. } => "Section",
+        Obj::Key(_) => "Key",
+        Obj::Other(n) => n,
+    }
+}
+
+/// NtQueryObject(h, class, buf, len, &retlen): ObjectBasicInformation (0), ObjectNameInformation
+/// (1: a file's NT name, "" for an unnamed object) and ObjectTypeInformation (2). Enigma Virtual
+/// Box's NtCreateFile hook asks it for the name of the root directory handle that kernel32
+/// passes with a relative path (ane_ane_trial.exe called a null pointer while sake's ntdll had
+/// no NtQueryObject).
+fn nt_query_object(c: &mut Ctx) -> u32 {
+    let (h, class, buf, len, ret) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    // (the current process and thread pseudo-handles)
+    let info = match h {
+        0xffff_ffff => Some(("Process", String::new())),
+        0xffff_fffe => Some(("Thread", String::new())),
+        _ => crate::obj::with(|t| {
+            t.objs.get(&h).map(|(o, _)| {
+                let name = match o {
+                    crate::obj::Obj::File(f) => object_name(&crate::files::host_to_win(&f.path)).unwrap_or_default(),
+                    _ => String::new(),
+                };
+                (type_name(o), name)
+            })
+        }),
+    };
+    let Some((ty, name)) = info else { return 0xc000_0008 }; // STATUS_INVALID_HANDLE
+    let ps = mem::ps();
+    // a UNICODE_STRING (2 lengths, a pointer) and its characters after the structure
+    let ustr = |at: u32, s: &str, base: u32| {
+        let w: Vec<u16> = s.encode_utf16().collect();
+        mem::w16(at, 2 * w.len() as u16);
+        mem::w16(at + 2, if w.is_empty() { 0 } else { 2 * w.len() as u16 + 2 });
+        mem::wp(at + ps, if w.is_empty() { 0 } else { base });
+        for (i, &x) in w.iter().enumerate() {
+            mem::w16(base + 2 * i as u32, x);
+        }
+        if !w.is_empty() {
+            mem::w16(base + 2 * w.len() as u32, 0);
+        }
+    };
+    let chars = |s: &str| 2 * s.encode_utf16().count() as u32;
+    let us = 2 * ps; // sizeof(UNICODE_STRING)
+    let need = match class {
+        0 => 56,
+        1 => us + if name.is_empty() { 0 } else { chars(&name) + 2 },
+        // OBJECT_TYPE_INFORMATION (0x60, x64 0x68) and the name
+        2 => (if mem::x64() { 0x68 } else { 0x60 }) + chars(ty) + 2,
+        _ => return 0xc000_0003, // STATUS_INVALID_INFO_CLASS
+    };
+    put32(ret, need);
+    if len < need {
+        return 0xc000_0004; // STATUS_INFO_LENGTH_MISMATCH
+    }
+    mem::fill(buf, need, 0);
+    match class {
+        0 => {
+            // Attributes, GrantedAccess, HandleCount, PointerCount
+            w32(buf + 8, 1);
+            w32(buf + 12, 1);
+        }
+        1 => ustr(buf, &name, buf + us),
+        _ => ustr(buf, ty, buf + need - chars(ty) - 2),
+    }
+    0
+}
+
 pub fn init() {
     for (n, f) in [
         ("SetInformationThread", nt_set_information_thread as crate::api::Handler),
         ("QueryInformationProcess", nt_query_information_process),
+        ("QueryObject", nt_query_object),
     ] {
         implement("ntdll", &format!("Nt{n}"), f);
         implement("ntdll", &format!("Zw{n}"), f);
@@ -1027,7 +1125,42 @@ pub fn init() {
 
 #[cfg(test)]
 mod route_tests {
-    use super::{file_error, nt_path, relative_under};
+    use super::{file_error, nt_path, object_name, relative_under};
+    use proptest::prelude::*;
+
+    #[test]
+    fn object_names_of_files() {
+        // (NtQueryObject ObjectNameInformation: the drive's device and the rest; the root ends in
+        // "\", a directory does not; winref ntobject)
+        assert_eq!(object_name("C:\\game\\a.dat").as_deref(), Some("\\Device\\HarddiskVolume1\\game\\a.dat"));
+        assert_eq!(object_name("Z:\\home\\x\\").as_deref(), Some("\\Device\\HarddiskVolume2\\home\\x"));
+        assert_eq!(object_name("C:\\").as_deref(), Some("\\Device\\HarddiskVolume1\\"));
+        assert_eq!(object_name("C:").as_deref(), Some("\\Device\\HarddiskVolume1\\"));
+        assert_eq!(object_name("z:\\a").as_deref(), Some("\\Device\\HarddiskVolume2\\a"));
+        for p in ["D:\\x", "\\\\server\\share", "", "C", "\u{3042}:\\x"] {
+            assert_eq!(object_name(p), None, "{p}");
+        }
+    }
+
+    proptest! {
+        // any path on C: or Z: (Japanese too): its NT name is the device and the path after the
+        // drive, without a trailing "\" but the root's, and the device read back the way
+        // path_of reads a device path gives the same file
+        #[test]
+        fn object_names_map_back(drive in prop::sample::select(vec!['C', 'Z', 'c', 'z']),
+                                 segs in prop::collection::vec("[^\\\\/:\u{0}]{1,12}", 0..5), slash in any::<bool>()) {
+            let rest = segs.join("\\");
+            let win = format!("{drive}:\\{rest}{}", if slash && !rest.is_empty() { "\\" } else { "" });
+            let n = object_name(&win).unwrap();
+            let dev = crate::k32::drive_device(drive).unwrap();
+            prop_assert!(n.starts_with(dev));
+            let tail = &n[dev.len()..];
+            prop_assert_eq!(tail, format!("\\{rest}"));
+            prop_assert!(!tail.ends_with('\\') || tail == "\\");
+            let back = format!("{}:{tail}", drive.to_ascii_uppercase());
+            prop_assert_eq!(back.to_lowercase(), win.trim_end_matches('\\').to_lowercase() + if rest.is_empty() { "\\" } else { "" });
+        }
+    }
 
     #[test]
     fn relative_names_under_the_current_directory() {
