@@ -25,6 +25,7 @@ const E_POINTER: u32 = 0x8000_4003;
 const VFW_E_NOT_STOPPED: u32 = 0x8004_0224;
 const E_NOTIMPL: u32 = 0x8000_4001;
 const E_ABORT: u32 = 0x8000_4004;
+const E_FAIL: u32 = 0x8000_4005;
 const E_INVALIDARG: u32 = 0x8007_0057;
 const S_FALSE: u32 = 1;
 const EC_COMPLETE: u32 = 1;
@@ -54,7 +55,8 @@ const BV: u32 = 7; // IBasicVideo(2)
 // E_NOINTERFACE, as no filter of it has a window)
 const VW_NONE: u32 = 8;
 const BV_NONE: u32 = 9;
-const NI: u32 = 10;
+const GC: u32 = 10; // IGraphConfig
+const NI: u32 = 11;
 
 fn slot_of(iid: u32) -> Option<u32> {
     Some(match r32(iid) {
@@ -66,6 +68,8 @@ fn slot_of(iid: u32) -> Option<u32> {
         0x56a8_68b3 => BA,
         0x56a8_68b4 => VW,
         0x56a8_68b5 | 0x329b_b360 => BV,
+        // IGraphConfig {03a1eb8e-32bf-4245-8502-114d08a9cb88}
+        0x03a1_eb8e => GC,
         _ => return None,
     })
 }
@@ -284,6 +288,39 @@ fn get0_64(c: &mut Ctx) -> u32 {
 // IFilterGraph / IGraphBuilder
 
 /// AddFilter(filter, name): an EVR added is where the picture goes
+/// RemoveFilter(filter) (and IGraphConfig::RemoveFilterEx(filter, flags), whose
+/// REMFILTERF_LEAVECONNECTED only keeps pins this graph doesn't track): out of the graph, told so
+/// (JoinFilterGraph(NULL, NULL)) and released; E_FAIL for one not in it (Wine's answer). A
+/// game's teardown (薔薇ノ木ニ薔薇ノ花咲ク: enumerate, RemoveFilterEx each) relies on it.
+fn remove_filter_at(c: &mut Ctx, b: u32, f: u32) -> u32 {
+    if f == 0 {
+        return E_POINTER;
+    }
+    let had = with(b, |g| {
+        let n = g.filters.len();
+        g.filters.retain(|&x| x != f);
+        if g.evr == f {
+            g.evr = 0;
+        }
+        g.filters.len() != n
+    })
+    .unwrap_or(false);
+    if !had {
+        return E_FAIL;
+    }
+    com(c, f, 13, &[0, 0]);
+    com(c, f, 2, &[]);
+    0
+}
+fn remove_filter(c: &mut Ctx) -> u32 {
+    let (b, f) = (base(c, GB), c.a(1));
+    remove_filter_at(c, b, f)
+}
+fn remove_filter_ex(c: &mut Ctx) -> u32 {
+    let (b, f) = (base(c, GC), c.a(1));
+    remove_filter_at(c, b, f)
+}
+
 fn add_filter(c: &mut Ctx) -> u32 {
     let f = c.a(1);
     if f == 0 {
@@ -1213,7 +1250,7 @@ fn vtables() -> &'static [u32; NI as usize] {
             .into_iter()
             .chain([
                 (add_filter as Handler, 12), // AddFilter
-                (ok, 8),                     // RemoveFilter
+                (remove_filter, 8),          // RemoveFilter
                 (enum_filters, 8),           // EnumFilters
                 (notimpl, 12),               // FindFilterByName
                 (connect_direct, 16),        // ConnectDirect
@@ -1362,6 +1399,21 @@ fn vtables() -> &'static [u32; NI as usize] {
         // (the same calls, each E_NOINTERFACE)
         let none = |unk: [(Handler, u32); 3], v: &[(Handler, u32)]| -> Vec<(Handler, u32)> { unk.into_iter().chain(v[3..].iter().map(|&(_, n)| (nointerface as Handler, n))).collect() };
         let vw_none = none(iunknown!(VW_NONE), &vw);
+        let gc: Vec<(Handler, u32)> = iunknown!(GC)
+            .into_iter()
+            .chain([
+                (notimpl as Handler, 28), // Reconnect
+                (notimpl, 20),            // Reconfigure
+                (notimpl, 8),             // AddFilterToCache
+                (notimpl, 8),             // EnumCacheFilter
+                (notimpl, 8),             // RemoveFilterFromCache
+                (notimpl, 8),             // GetStartTime
+                (notimpl, 16),            // PushThroughData
+                (notimpl, 12),            // SetFilterFlags
+                (notimpl, 12),            // GetFilterFlags
+                (remove_filter_ex, 12),   // RemoveFilterEx
+            ])
+            .collect();
         let bv_none = none(iunknown!(BV_NONE), &bv);
         [
             vtable("IGraphBuilder", &gb),
@@ -1374,6 +1426,7 @@ fn vtables() -> &'static [u32; NI as usize] {
             vtable("IBasicVideo", &bv),
             vtable("IVideoWindow(windowless)", &vw_none),
             vtable("IBasicVideo(windowless)", &bv_none),
+            vtable("IGraphConfig", &gc),
         ]
     })
 }
@@ -1453,6 +1506,8 @@ struct Evr {
     windowless: bool,
     border: u32,
     key: u32,
+    /// the graph it joined (JoinFilterGraph; not held: the graph holds the filter)
+    graph: u32,
 }
 
 static EVRS: Mutex<Option<HashMap<u32, Evr>>> = Mutex::new(None);
@@ -1473,7 +1528,7 @@ pub(crate) fn evr_changed(e: u32) {
 pub(crate) fn vmr_evr(key: u32, windowless: Option<bool>) {
     let mut g = EVRS.lock().unwrap_or_else(|e| e.into_inner());
     let m = g.get_or_insert_with(HashMap::new);
-    let e = m.entry(key).or_insert(Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0 });
+    let e = m.entry(key).or_insert(Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0, graph: 0 });
     if let Some(w) = windowless {
         e.windowless = w;
     }
@@ -1518,6 +1573,26 @@ fn evr_get_service(c: &mut Ctx) -> u32 {
 }
 fn one(_: &mut Ctx) -> u32 {
     1
+}
+/// IBaseFilter::QueryFilterInfo(&info): FILTER_INFO { WCHAR achName[128], IFilterGraph *pGraph }
+fn evr_query_info(c: &mut Ctx) -> u32 {
+    let (e, out) = (c.a(0), c.a(1));
+    if out == 0 {
+        return E_POINTER;
+    }
+    let graph = evr_with(e, |v| v.graph).unwrap_or(0);
+    mem::fill(out, 128 * 2 + ps(), 0);
+    if graph != 0 {
+        com(c, graph, 1, &[]);
+    }
+    wp(out + 256, graph);
+    0
+}
+/// IBaseFilter::JoinFilterGraph(graph, name)
+fn evr_join(c: &mut Ctx) -> u32 {
+    let (e, g) = (c.a(0), c.a(1));
+    evr_with(e, |v| v.graph = g);
+    0
 }
 fn dc_block(c: &Ctx) -> u32 {
     c.a(0) - 2 * ps()
@@ -1619,7 +1694,7 @@ fn evr(iid: u32) -> Option<u32> {
         // EnumPins, FindPin, QueryFilterInfo, JoinFilterGraph, QueryVendorInfo
         let mut bf = unk(q0);
         bf.extend([(notimpl as Handler, 8), (ok, 4), (ok, 4), (ok, 12), (notimpl, 12), (ok, 8), (notimpl, 8)]);
-        bf.extend([(notimpl as Handler, 8), (notimpl, 12), (notimpl, 8), (ok, 12), (notimpl, 8)]);
+        bf.extend([(notimpl as Handler, 8), (notimpl, 12), (evr_query_info, 8), (evr_join, 12), (notimpl, 8)]);
         // IMFVideoDisplayControl
         let mut dc = unk(q2);
         dc.extend([
@@ -1646,7 +1721,7 @@ fn evr(iid: u32) -> Option<u32> {
     for (k, t) in v.iter().enumerate() {
         wp(b + ps() * k as u32, *t);
     }
-    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 1, vmr: false, src_px: None, windowless: true, border: 0, key: 0 });
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 1, vmr: false, src_px: None, windowless: true, border: 0, key: 0, graph: 0 });
     Some(b + ps() * s)
 }
 
@@ -1858,7 +1933,7 @@ fn vmr(iid: u32) -> Option<u32> {
         let unk = |q: Handler| -> Vec<(Handler, u32)> { vec![(q, 12), (one as Handler, 4), (one as Handler, 4)] };
         let mut bf = unk(q0);
         bf.extend([(notimpl as Handler, 8), (ok, 4), (ok, 4), (ok, 12), (notimpl, 12), (ok, 8), (notimpl, 8)]);
-        bf.extend([(notimpl as Handler, 8), (notimpl, 12), (notimpl, 8), (ok, 12), (notimpl, 8)]);
+        bf.extend([(notimpl as Handler, 8), (notimpl, 12), (evr_query_info, 8), (evr_join, 12), (notimpl, 8)]);
         let mut fc = unk(q1);
         fc.extend([
             (ok as Handler, 8), // SetImageCompositor
@@ -1898,7 +1973,7 @@ fn vmr(iid: u32) -> Option<u32> {
     for (k, t) in v.iter().enumerate() {
         wp(b + ps() * k as u32, *t);
     }
-    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0 });
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0, graph: 0 });
     Some(b + ps() * s)
 }
 
