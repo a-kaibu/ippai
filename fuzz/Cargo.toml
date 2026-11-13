@@ -72,6 +72,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "wicmeta"
+path = "fuzz_targets/wicmeta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "acm"
 path = "fuzz_targets/acm.rs"
 test = false

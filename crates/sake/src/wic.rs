@@ -18,8 +18,12 @@ const WINCODEC_ERR_PALETTEUNAVAILABLE: u32 = 0x8898_2f45;
 const WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT: u32 = 0x8898_2f80;
 const WINCODEC_ERR_COMPONENTNOTFOUND: u32 = 0x8898_2f50;
 const WINCODEC_ERR_INSUFFICIENTBUFFER: u32 = 0x8898_2f8c;
+const WINCODEC_ERR_PROPERTYNOTFOUND: u32 = 0x8898_2f40;
+const WINCODEC_ERR_UNSUPPORTEDOPERATION: u32 = 0x8898_2f81;
+const E_NOTIMPL: u32 = 0x8000_4001;
 
 use crate::picture::{self, Fmt};
+use crate::wicmeta;
 
 fn fmt_guid(f: Fmt) -> Guid {
     f.guid()
@@ -76,10 +80,22 @@ enum Obj {
         fmt: Fmt,
         raw: Option<Arc<picture::Frame>>,
     },
-    /// a decoder: the picture and its container format
+    /// a decoder: the picture and its container format, and its frames' metadata (None: the
+    /// container has no metadata reader, BMP)
     Decoder {
         pic: Arc<picture::Picture>,
         container: Guid,
+        meta: Option<Arc<wicmeta::Meta>>,
+    },
+    /// IWICMetadataQueryReader of a frame: the container format and the items
+    Reader {
+        container: Guid,
+        meta: Arc<wicmeta::Meta>,
+    },
+    /// IEnumString over a reader's blocks
+    Names {
+        names: Vec<String>,
+        pos: usize,
     },
     /// IWICPalette: ARGB colors and the WICBitmapPaletteType
     Palette {
@@ -122,6 +138,10 @@ fn release(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let n = com::release_obj(this);
     if n == 0 {
+        frame_meta(|m| m.remove(&this));
+        if matches!(with(|m| m.get(&this).map(|o| matches!(o, Obj::Reader { .. } | Obj::Names { .. }))), Some(true)) {
+            with(|m| m.remove(&this));
+        }
         if let Some(Obj::Lock { bitmap, fmt, rect, buf, stride, write }) = with(|m| m.remove(&this)) {
             if write {
                 let data = mem::slice(buf, stride * rect.3).to_vec();
@@ -476,17 +496,24 @@ fn decoder(data: &[u8]) -> Option<u32> {
         picture::Kind::Bmp => BMP,
         picture::Kind::Gif => GIF,
     };
+    // (Windows: PNG, JPEG and GIF frames have a metadata reader, BMP's answer
+    // WINCODEC_ERR_UNSUPPORTEDOPERATION; only PNG's chunks are answered by name so far)
+    let meta = match pic.kind {
+        picture::Kind::Png => Some(Arc::new(wicmeta::png(data).unwrap_or_default())),
+        picture::Kind::Jpeg | picture::Kind::Gif => Some(Arc::new(wicmeta::Meta::default())),
+        picture::Kind::Bmp => None,
+    };
     let d = new(
         "IWICBitmapDecoder",
         &[("Release", release), ("GetContainerFormat", dec_container), ("GetFrameCount", dec_frame_count), ("GetFrame", dec_frame), ("CopyPalette", dec_palette), ("Initialize", ok)],
-        Obj::Decoder { pic: Arc::new(pic), container },
+        Obj::Decoder { pic: Arc::new(pic), container, meta },
     );
     Some(d)
 }
 
 fn picture_of(this: u32) -> Option<(Arc<picture::Picture>, Guid)> {
     with(|m| match m.get(&this) {
-        Some(Obj::Decoder { pic, container }) => Some((pic.clone(), *container)),
+        Some(Obj::Decoder { pic, container, .. }) => Some((pic.clone(), *container)),
         _ => None,
     })
 }
@@ -534,13 +561,195 @@ fn dec_frame(c: &mut Ctx) -> u32 {
     let img = Img { w: f.w, h: f.h, px: f.bgra(), palette: f.palette.clone(), dpi: f.dpi };
     let raw = picture::Frame { w: f.w, h: f.h, fmt: f.fmt, bits: f.bits.clone(), palette: f.palette.clone(), dpi: f.dpi };
     let fmt = f.fmt;
-    let p = new_source("IWICBitmapFrameDecode", Arc::new(img), fmt, &[]);
+    let p = new_source("IWICBitmapFrameDecode", Arc::new(img), fmt, &[("GetMetadataQueryReader", frame_reader)]);
+    let (container, meta) = with(|m| match m.get(&this) {
+        Some(Obj::Decoder { container, meta, .. }) => (*container, meta.clone()),
+        _ => (BMP, None),
+    });
+    frame_meta(|m| m.insert(p, (container, meta)));
     with(|m| {
         if let Some(Obj::Source { raw: r, .. }) = m.get_mut(&p) {
             *r = Some(Arc::new(raw));
         }
     });
     mem::putp(out, p);
+    0
+}
+
+// ---- metadata readers ----
+
+/// Each frame's container format and metadata (None: no reader, BMP).
+static FRAME_META: Mutex<Option<HashMap<u32, (Guid, Option<Arc<wicmeta::Meta>>)>>> = Mutex::new(None);
+
+fn frame_meta<R>(f: impl FnOnce(&mut HashMap<u32, (Guid, Option<Arc<wicmeta::Meta>>)>) -> R) -> R {
+    f(FRAME_META.lock().unwrap().get_or_insert_with(HashMap::new))
+}
+
+/// IWICBitmapFrameDecode::GetMetadataQueryReader(this, out)
+fn frame_reader(c: &mut Ctx) -> u32 {
+    let (this, out) = (c.a(0), c.a(1));
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    mem::putp(out, 0);
+    match frame_meta(|m| m.get(&this).cloned()) {
+        Some((container, Some(meta))) => {
+            let r = new(
+                "IWICMetadataQueryReader",
+                &[("Release", release), ("GetContainerFormat", reader_container), ("GetLocation", reader_location), ("GetMetadataByName", reader_get), ("GetEnumerator", reader_enum)],
+                Obj::Reader { container, meta },
+            );
+            mem::putp(out, r);
+            0
+        }
+        Some((_, None)) => WINCODEC_ERR_UNSUPPORTEDOPERATION,
+        None => E_FAIL,
+    }
+}
+
+fn reader_of(this: u32) -> Option<(Guid, Arc<wicmeta::Meta>)> {
+    with(|m| match m.get(&this) {
+        Some(Obj::Reader { container, meta }) => Some((*container, meta.clone())),
+        _ => None,
+    })
+}
+
+fn reader_container(c: &mut Ctx) -> u32 {
+    let (this, out) = (c.a(0), c.a(1));
+    let Some((g, _)) = reader_of(this) else { return E_FAIL };
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    write_guid(out, g);
+    0
+}
+
+/// GetLocation(this, cchMaxLength, wzNamespace, pcchActualLength): a frame's reader is the root, "/"
+fn reader_location(c: &mut Ctx) -> u32 {
+    let (max, buf, len) = (c.a(1), c.a(2), c.a(3));
+    if len == 0 {
+        return E_INVALIDARG;
+    }
+    mem::w32(len, 2);
+    if buf != 0 {
+        if max < 2 {
+            return WINCODEC_ERR_INSUFFICIENTBUFFER;
+        }
+        mem::w16(buf, b'/' as u16);
+        mem::w16(buf + 2, 0);
+    }
+    0
+}
+
+/// GetMetadataByName(this, wzName, pvarValue): pvarValue NULL only asks whether it is there
+fn reader_get(c: &mut Ctx) -> u32 {
+    let (this, name, out) = (c.a(0), c.a(1), c.a(2));
+    let Some((_, meta)) = reader_of(this) else { return E_FAIL };
+    if name == 0 {
+        return E_INVALIDARG;
+    }
+    let n = String::from_utf16_lossy(&mem::wstr(name));
+    let Some(v) = meta.get(&n) else { return WINCODEC_ERR_PROPERTYNOTFOUND };
+    if out != 0 {
+        mem::write(out, &[0u8; 16]);
+        if mem::ps() == 8 {
+            mem::write(out + 16, &[0u8; 8]);
+        }
+        mem::w16(out, v.vt());
+        match v {
+            wicmeta::Value::U1(b) => mem::w8(out + 8, *b),
+            wicmeta::Value::U4(x) => mem::w32(out + 8, *x),
+            wicmeta::Value::Str(s) => {
+                let p = mem::heap_alloc(s.len() as u32 + 1, true);
+                mem::write(p, s);
+                mem::wp(out + 8, p);
+            }
+        }
+    }
+    0
+}
+
+/// GetEnumerator(this, IEnumString **): the top-level blocks ("/sRGB", ...)
+fn reader_enum(c: &mut Ctx) -> u32 {
+    let (this, out) = (c.a(0), c.a(1));
+    let Some((_, meta)) = reader_of(this) else { return E_FAIL };
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    mem::putp(out, new_names(meta.blocks.clone(), 0));
+    0
+}
+
+fn new_names(names: Vec<String>, pos: usize) -> u32 {
+    new(
+        "IEnumString",
+        &[("Release", release), ("Next", names_next), ("Skip", names_skip), ("Reset", names_reset), ("Clone", names_clone)],
+        Obj::Names { names, pos },
+    )
+}
+
+/// IEnumString::Next(this, celt, rgelt, pceltFetched): CoTaskMem strings
+fn names_next(c: &mut Ctx) -> u32 {
+    let (this, n, out, fetched) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if out == 0 || (n > 1 && fetched == 0) {
+        return E_INVALIDARG;
+    }
+    let got = with(|m| match m.get_mut(&this) {
+        Some(Obj::Names { names, pos }) => {
+            let take: Vec<String> = names.iter().skip(*pos).take(n as usize).cloned().collect();
+            *pos += take.len();
+            take
+        }
+        _ => Vec::new(),
+    });
+    for (i, s) in got.iter().enumerate() {
+        let w: Vec<u16> = s.encode_utf16().chain([0]).collect();
+        let p = mem::heap_alloc(w.len() as u32 * 2, false);
+        for (j, ch) in w.iter().enumerate() {
+            mem::w16(p + j as u32 * 2, *ch);
+        }
+        mem::wp(out + i as u32 * mem::ps(), p);
+    }
+    if fetched != 0 {
+        mem::w32(fetched, got.len() as u32);
+    }
+    if got.len() as u32 == n { 0 } else { 1 }
+}
+
+fn names_skip(c: &mut Ctx) -> u32 {
+    let (this, n) = (c.a(0), c.a(1));
+    with(|m| match m.get_mut(&this) {
+        Some(Obj::Names { names, pos }) => {
+            let left = names.len() - *pos;
+            *pos += left.min(n as usize);
+            if left >= n as usize { 0 } else { 1 }
+        }
+        _ => E_FAIL,
+    })
+}
+
+fn names_reset(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    with(|m| {
+        if let Some(Obj::Names { pos, .. }) = m.get_mut(&this) {
+            *pos = 0;
+        }
+    });
+    0
+}
+
+fn names_clone(c: &mut Ctx) -> u32 {
+    let (this, out) = (c.a(0), c.a(1));
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    let Some((names, pos)) = with(|m| match m.get(&this) {
+        Some(Obj::Names { names, pos }) => Some((names.clone(), *pos)),
+        _ => None,
+    }) else {
+        return E_NOTIMPL;
+    };
+    mem::putp(out, new_names(names, pos));
     0
 }
 

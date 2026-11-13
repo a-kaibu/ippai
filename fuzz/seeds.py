@@ -167,6 +167,22 @@ write("acm", acm())
 write("fdi", cabinets())
 
 
+def wicmeta():
+    """PNGs with the chunks WIC's frame metadata reader answers (sRGB, gAMA, tEXt) before IDAT"""
+    def chunk(t, b):
+        return struct.pack(">I", len(b)) + t + b + struct.pack(">I", zlib.crc32(t + b))
+    out = []
+    for extra in ([chunk(b"sRGB", b"\0")], [chunk(b"gAMA", struct.pack(">I", 45455))],
+                  [chunk(b"tEXt", b"Software\0paint"), chunk(b"tEXt", b"Title\0x")],
+                  [chunk(b"sRGB", b"\3"), chunk(b"gAMA", struct.pack(">I", 100000)), chunk(b"tEXt", b"Comment\0")]):
+        p = png(2, 2, 6)
+        out.append(p[:33] + b"".join(extra) + p[33:])
+    return out
+
+
+write("wicmeta", wicmeta())
+
+
 def vorbis():
     # the test streams (several channel counts, rates, qualities), cut short: the fuzzer
     # mutates headers and the first audio packets

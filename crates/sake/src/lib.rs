@@ -100,6 +100,7 @@ pub mod usp;
 pub mod ole;
 pub mod picture;
 pub mod wic;
+pub mod wicmeta;
 pub mod wmi;
 pub mod winrt;
 pub mod pe;
