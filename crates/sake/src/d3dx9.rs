@@ -560,34 +560,6 @@ fn D3DXCreateEffectFromResourceExW(c: &mut Ctx) -> u32 {
     effect_resource(c, true, true)
 }
 
-/// D3DXCreateEffectFromResource{A,W}(device, module, resource, defines, include, flags, pool,
-/// effect, errors) and the Ex forms (.., include, skip, flags, pool, effect, errors): the
-/// RT_RCDATA resource of that name in the module (0: the exe), as d3dx9 looks it up
-fn effect_resource(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
-    let (flags, out, errs) = if ex { (c.a(6), c.a(8), c.a(9)) } else { (c.a(5), c.a(7), c.a(8)) };
-    let module = if c.a(1) == 0 { crate::k32::module_handle(0, false) } else { c.a(1) };
-    let name = crate::pe::ResId::from_arg(c.a(2), wide);
-    let Some(e) = crate::pe::find_resource(module, &crate::pe::ResId::Int(10), &name) else {
-        mem::putp(out, 0);
-        return 0x8876_086c; // D3DERR_INVALIDCALL
-    };
-    let data = mem::slice(module.wrapping_add(r32(e)), r32(e + 4)).to_vec();
-    let (dev, defs, inc) = (c.a(0), c.a(3), c.a(4));
-    effect_from(c, dev, &data, "", defs, inc, flags, out, errs)
-}
-fn D3DXCreateEffectFromResourceA(c: &mut Ctx) -> u32 {
-    effect_resource(c, false, false)
-}
-fn D3DXCreateEffectFromResourceW(c: &mut Ctx) -> u32 {
-    effect_resource(c, true, false)
-}
-fn D3DXCreateEffectFromResourceExA(c: &mut Ctx) -> u32 {
-    effect_resource(c, false, true)
-}
-fn D3DXCreateEffectFromResourceExW(c: &mut Ctx) -> u32 {
-    effect_resource(c, true, true)
-}
-
 // ---- ID3DXMatrixStack: the top at object + 16 (GetTop's pointer), the rest here ----
 
 static STACKS: std::sync::Mutex<Option<crate::HashMap<u32, Vec<M>>>> = std::sync::Mutex::new(None);
@@ -1166,10 +1138,6 @@ pub fn init() {
         ("D3DXVec2TransformNormalArray", D3DXVec2TransformNormalArray),
         ("D3DXVec2TransformArray", D3DXVec2TransformArray),
         ("D3DXVec4TransformArray", D3DXVec4TransformArray),
-        ("D3DXCreateEffectFromResourceA", D3DXCreateEffectFromResourceA),
-        ("D3DXCreateEffectFromResourceW", D3DXCreateEffectFromResourceW),
-        ("D3DXCreateEffectFromResourceExA", D3DXCreateEffectFromResourceExA),
-        ("D3DXCreateEffectFromResourceExW", D3DXCreateEffectFromResourceExW),
         ("D3DXVec3Project", D3DXVec3Project),
         ("D3DXVec3Unproject", D3DXVec3Unproject),
         ("D3DXVec3Length", D3DXVec3Length),
@@ -1285,7 +1253,8 @@ mod array_tests {
         }
     }
 
-    /// a module without that RT_RCDATA resource: D3DERR_INVALIDCALL and no effect
+    /// as d3dx9 (Wine's effect.c): no device D3DERR_INVALIDCALL; a module without that RT_RCDATA
+    /// resource D3DXERR_INVALIDDATA; the effect pointer left as it was either way
     #[test]
     fn effect_resource_missing() {
         let _g = enter();
@@ -1295,7 +1264,9 @@ mod array_tests {
         w32(out, 0x1234);
         // (a module handle nothing is loaded at)
         assert_eq!(call(D3DXCreateEffectFromResourceA, &[0, 0x6000_0000, name, 0, 0, 0, 0, out, 0]), 0x8876_086c);
-        assert_eq!(r32(out), 0);
+        assert_eq!(r32(out), 0x1234);
+        assert_eq!(call(D3DXCreateEffectFromResourceExA, &[0x5000_0000, 0x6000_0000, name, 0, 0, 0, 0, 0, out, 0]), 0x8876_0b59);
+        assert_eq!(r32(out), 0x1234);
         mem::heap_free(out);
         mem::heap_free(name);
     }
