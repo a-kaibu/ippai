@@ -436,11 +436,13 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
             3 => device_out(d, a(1)),
             4 => {
                 let Some(Data::Shader(s)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
+                // (Windows does not read *size: a buffer with a size of 0 gets the code too,
+                // replay_s2020_wonder_fool_maokatsu; NULL data asks for the size)
+                if a(2) == 0 {
+                    return D3DERR_INVALIDCALL;
+                }
                 let size = s.code.len() as u32 * 4;
                 if a(1) != 0 {
-                    if rd(a(2), 0) < size {
-                        return D3DERR_INVALIDCALL;
-                    }
                     std::ptr::copy_nonoverlapping(s.code.as_ptr(), a(1) as *mut u32, s.code.len());
                 }
                 wr(a(2), 0, size);
@@ -1173,12 +1175,22 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             wrp(a(1), 0, d.addr_of(s));
             S_OK
         }
+        // (a BeginScene inside a scene, an EndScene outside one: D3DERR_INVALIDCALL, as
+        // Windows; replay_b2011_anim_team_mm begins twice)
         41 => {
-            dev!(d).in_scene = true;
+            let dev = dev!(d);
+            if dev.in_scene {
+                return D3DERR_INVALIDCALL;
+            }
+            dev.in_scene = true;
             S_OK
         }
         42 => {
-            dev!(d).in_scene = false;
+            let dev = dev!(d);
+            if !dev.in_scene {
+                return D3DERR_INVALIDCALL;
+            }
+            dev.in_scene = false;
             S_OK
         }
         43 => clear(d, a(1), a(2), a(3), a(4), f32::from_bits(a(5)), a(6)),

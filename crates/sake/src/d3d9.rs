@@ -86,7 +86,9 @@ fn method_ex(c: &mut Ctx, id: u32) -> Option<u32> {
     let this = args[0];
     let r = match id {
         // QueryInterface: the Ex interfaces are these objects
-        D3D9_QI | DEVICE_QI if args[1] != 0 && matches!(mem::r32(args[1]), IID_D3D9EX | IID_DEVICE9EX) => {
+        // (only those of Direct3DCreate9Ex: Direct3DCreate9's object and its devices answer
+        // E_NOINTERFACE, as Windows; replay_b2011_anim_team_mm asks a plain device)
+        D3D9_QI | DEVICE_QI if args[1] != 0 && matches!(mem::r32(args[1]), IID_D3D9EX | IID_DEVICE9EX) && extended(id, this) => {
             d3d_call(id + 1, &[this]);
             putp(args[2], this);
             0
@@ -153,6 +155,26 @@ fn method_ex(c: &mut Ctx, id: u32) -> Option<u32> {
         _ => return None,
     };
     Some(r)
+}
+/// The IDirect3D9 objects Direct3DCreate9Ex made.
+static EXTENDED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// Whether `this` (an IDirect3D9 for D3D9_QI, a device otherwise) comes from Direct3DCreate9Ex.
+fn extended(id: u32, this: u32) -> bool {
+    let d3d = if id == D3D9_QI {
+        this
+    } else {
+        // the device's IDirect3D9 (GetDirect3D), released again
+        let out = mem::heap_alloc(8, true);
+        let r = d3d_call(DEVICE_QI | 6, &[this, out]);
+        let o = mem::rp(out);
+        mem::heap_free(out);
+        if r != 0 || o == 0 {
+            return false;
+        }
+        d3d_call(D3D9_QI | 2, &[o]);
+        o
+    };
+    EXTENDED.lock().unwrap().contains(&d3d)
 }
 const D3D9_QI: u32 = 1 << 8;
 const DEVICE_QI: u32 = 2 << 8;
@@ -399,6 +421,12 @@ fn ValidatePixelShader(c: &mut Ctx) -> u32 {
 }
 
 fn Direct3DCreate9(c: &mut Ctx) -> u32 {
+    let o = create9(c);
+    // (an address an Ex object had before it was released)
+    EXTENDED.lock().unwrap().retain(|&e| e != o);
+    o
+}
+fn create9(c: &mut Ctx) -> u32 {
     init();
     let out = mem::heap_alloc(8, true);
     let r = unsafe { kura::d3d9::vnhost_d3d9_create(c.a(0), out as usize as *mut u32, &CALLS) };
@@ -409,7 +437,13 @@ fn Direct3DCreate9(c: &mut Ctx) -> u32 {
 /// Direct3DCreate9Ex(version, out): the Direct3D 9 object, whose vtable has the Ex methods.
 fn Direct3DCreate9Ex(c: &mut Ctx) -> u32 {
     let out = if mem::x64() { c.a64(1) as u32 } else { c.a(1) };
-    let o = Direct3DCreate9(c);
+    let o = create9(c);
+    if o != 0 {
+        let mut ex = EXTENDED.lock().unwrap();
+        if !ex.contains(&o) {
+            ex.push(o);
+        }
+    }
     putp(out, o);
     if o == 0 { 0x8876_086a } else { 0 }
 }
