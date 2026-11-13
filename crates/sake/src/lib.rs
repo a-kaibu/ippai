@@ -143,6 +143,7 @@ pub mod smalldlls;
 pub mod security;
 pub mod lsa;
 pub mod cred;
+pub mod propsheet;
 pub mod perf;
 pub mod services;
 mod comrpc;
@@ -749,6 +750,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     security::init();
     lsa::init();
     cred::init();
+    propsheet::init();
     perf::init();
     services::init();
     comrpc::init();

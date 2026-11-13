@@ -4992,6 +4992,10 @@ fn DrawTextW(c: &mut Ctx) -> u32 {
 fn DrawTextExW(c: &mut Ctx) -> u32 {
     DrawTextW(c)
 }
+/// (DRAWTEXTPARAMS' margins and tab length are not applied, as in DrawTextExW)
+fn DrawTextExA(c: &mut Ctx) -> u32 {
+    DrawTextA(c)
+}
 fn GrayStringA(_: &mut Ctx) -> u32 {
     1
 }
@@ -6844,7 +6848,7 @@ pub fn init() {
         MonitorFromRect, GetMonitorInfoA, GetMonitorInfoW, EnumDisplayMonitors,
         SetRect, SetRectEmpty, CopyRect, IsRectEmpty, EqualRect, PtInRect, OffsetRect, InflateRect, IntersectRect,
         UnionRect, SubtractRect, FillRect, FrameRect, InvertRect, DrawFocusRect, DrawEdge, DrawFrameControl,
-        DrawIcon, DrawIconEx, DrawTextA, DrawTextW, DrawTextExW, GrayStringA,
+        DrawIcon, DrawIconEx, DrawTextA, DrawTextW, DrawTextExW, DrawTextExA, GrayStringA,
         CreateCaret, DestroyCaret, SetCaretPos, ShowCaret, HideCaret, GetScrollInfo, SetScrollInfo, GetScrollPos,
         SetScrollPos, GetScrollRange, SetScrollRange, ShowScrollBar, EnableScrollBar, OpenClipboard,
         CloseClipboard, EmptyClipboard, GetClipboardData, SetClipboardData, IsClipboardFormatAvailable,
