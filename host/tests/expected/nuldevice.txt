@@ -1,0 +1,9 @@
+NUL: open, type 2, write 1 5, read 1 0, buffer kept 1, close 1
+nul: open, type 2, write 1 5, read 1 0, buffer kept 1, close 1
+\\.\NUL: open, type 2, write 1 5, read 1 0, buffer kept 1, close 1
+C:\windows\nul: open, type 2, write 1 5, read 1 0, buffer kept 1, close 1
+nul:: open, type 2, write 1 5, read 1 0, buffer kept 1, close 1
+NUL: open, type 2, write 1 5, read 1 0, buffer kept 1, close 1
+NUL: open, type 2, write 1 5, read 1 0, buffer kept 1, close 1
+read-only: 1 read 1 0
+NULX: 0 error 2
