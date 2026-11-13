@@ -107,6 +107,50 @@ def acm():
     return out
 
 
+def cabinets():
+    # stored and MSZIP folders (one deflate stream per 32 KB block, "CK" first), a file
+    # skipped ahead in its folder, an executable attribute; the first byte steers the harness
+    import zlib
+
+    def cab(folders):
+        files, blocks = [], []
+        for zipped, items in folders:
+            data = b"".join(d for _, d in items)
+            chunks = [data[i:i + 0x8000] for i in range(0, len(data), 0x8000)] or [b""]
+            enc = []
+            for c in chunks:
+                if zipped:
+                    z = zlib.compressobj(9, zlib.DEFLATED, -15)
+                    enc.append((b"CK" + z.compress(c) + z.flush(), len(c)))
+                else:
+                    enc.append((c, len(c)))
+            blocks.append((1 if zipped else 0, enc))
+            off = 0
+            for name, d in items:
+                files.append((len(d), off, len(blocks) - 1, name))
+                off += len(d)
+        nf = len(folders)
+        head = 36
+        coff_files = head + 8 * nf
+        ftab = b"".join(struct.pack("<IIHHHH", n, o, f, 0x5821, 0x6000, 0x20 | (0x40 if nm.endswith(b".exe") else 0)) + nm + b"\0" for n, o, f, nm in files)
+        data_at = coff_files + len(ftab)
+        ftabs, dat = b"", b""
+        for kind, enc in blocks:
+            ftabs += struct.pack("<IHH", data_at + len(dat), len(enc), kind)
+            for e, un in enc:
+                dat += struct.pack("<IHH", 0, len(e), un) + e
+        total = data_at + len(dat)
+        hdr = b"MSCF" + struct.pack("<IIIIIBBHHHHH", 0, total, 0, coff_files, 0, 3, 1, nf, len(files), 0, 0x1234, 0)
+        return hdr + ftabs + ftab + dat
+
+    text = bytes(b"abcabcabd xyz\n"[(i * 7) % 14] for i in range(70000))
+    return [
+        b"\x01" + cab([(False, [(b"a.txt", b"hello"), (b"b.exe", b"MZ" * 40)])]),
+        b"\x02" + cab([(True, [(b"big.txt", text), (b"small", text[:100])])]),
+        b"\x00" + cab([(True, [(b"x", text[:5000])]), (False, [(b"y", text[:40000]), (b"z", b"")])]),
+    ]
+
+
 def write(target, items):
     d = os.path.join(ROOT, target)
     os.makedirs(d, exist_ok=True)
@@ -120,6 +164,7 @@ write("x86_jit", [state(96, i) + c[:1024] for i, c in enumerate(code)])
 write("x86_interp", [state(32, i) + bytes([0x0F, 0x93]) + c for i, c in enumerate(code)])
 write("image", images())
 write("acm", acm())
+write("fdi", cabinets())
 
 
 def vorbis():

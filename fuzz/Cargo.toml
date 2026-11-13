@@ -79,6 +79,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fdi"
+path = "fuzz_targets/fdi.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "vorbis"
 path = "fuzz_targets/vorbis.rs"
 test = false

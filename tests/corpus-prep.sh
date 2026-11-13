@@ -100,7 +100,12 @@ if [ ! -d x ]; then
     # its WinRAR SFX ran in sake and wrote 375 MB into the page until the browser died)
     elif LC_ALL=C.UTF-8 lsar -e cp932 "$s" 2>/dev/null | sed -n '1{/: Embedded /!q1};2,$p' | grep -qi '\.exe$' &&
         LC_ALL=C.UTF-8 unar -q -e cp932 -o "$s.sfx" "$s" >/dev/null 2>&1 && [ -n "$(ls "$s.sfx")" ]; then rm -f "$s"
-    else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx"
+    # a cabinet self-extractor holding the game (騎士姫クラリス's taiken exe, which unpacks
+    # itself with cabinet.dll's FDI and quits: the game is a separate exe inside)
+    elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qx 'Type = Cab' &&
+        LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | sed '1,/^----------$/d' | grep -qiE '^Path = .*\.exe$' &&
+        mkdir -p "$s.cab" && (cd "$s.cab" && LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$s" >/dev/null 2>&1) && [ -n "$(ls "$s.cab")" ]; then rm -f "$s"
+    else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx" "$s.cab"
     fi
   done
   [ "$(find x.part -type f -iname '*.exe' | sort | md5sum)" = "$before" ] && break

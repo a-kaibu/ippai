@@ -16,6 +16,7 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `glsl` | glwgsl::check / link (OpenGL GLSL -> WGSL, preprocessor first) on any text (vertex NUL fragment) | no panic; a linked program's uniform blocks have members and hold them |
 | `image` | sake::ole::decode (BMP, PNG, JPEG: OleLoadPicture, WIC) | no panic, w x h BGRA out |
 | `acm` | sake::acm IMA / MS ADPCM blocks | no panic, all of a block's samples or none |
+| `fdi` | sake::cabinet::copy (cabinet.dll FDICopy) on any bytes as a cabinet, stored / MSZIP / LZX folders | no panic; writes only to the handle fdintCOPY_FILE returned and within that file's size; one fdintCLOSE_FILE_INFO per copied file after all its bytes |
 | `printf` (crates/crt) | crt::fmt::format, every mode (UCRT option bits, legacy msvcrt), narrow and wide | no panic, output within MAX_OUT, text without % unchanged |
 | `scanf` (crates/crt) | crt::scan on any input and format | no panic, writes fit the secure forms' buffers, the count never exceeds the conversions |
 | `strto` (crates/crt) | strtod/strtof/strtol/strtoul/strtoll against glibc | same value, end and errno (Windows' errno where it differs: no ERANGE for subnormals) |
