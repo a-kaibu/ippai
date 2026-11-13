@@ -229,6 +229,43 @@ const SYSTEM_KEYS: [&str; 7] = [
     "hkcu\\Control Panel\\Desktop",
 ];
 
+/// A ShiinaRio game's installed state (shiina.rs), once the game's exe is loaded: the values its
+/// SETUP.exe writes, where its INI's key has no InstPath yet.
+fn shiina_installed() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(exe) = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()) else { return };
+    DONE.store(true, Ordering::Relaxed);
+    let Some((dir, inis)) = crate::shiina::inis(&exe) else { return };
+    let Some(key) = inis.iter().find_map(|i| {
+        let t = kura::fs::read(crate::files::resolve(i)?).ok()?;
+        crate::shiina::reg_key(&String::from_utf16_lossy(&crate::text::mb2w(932, &t)))
+    }) else {
+        return;
+    };
+    let path = join("hkcu", &key);
+    with_reg(|m| {
+        let k = m.entry(path.clone()).or_default();
+        if k.values.iter().any(|v| v.0.eq_ignore_ascii_case("InstPath")) {
+            return;
+        }
+        if crate::env_on!("SAKE_TRACE_REG") {
+            eprintln!("sake reg: {path}: ShiinaRio's installed state for {dir}");
+        }
+        if k.name.is_empty() {
+            k.name = key.clone();
+        }
+        for (n, ty, d) in crate::shiina::values(&dir) {
+            k.values.push((n.to_string(), ty, d));
+        }
+        k.ours = true;
+        save_reg(m);
+    });
+}
+
 fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
     // Serialize the read/modify/write transaction across the game, SCM and
     // helper processes, not just across this process's Rust threads.
@@ -439,6 +476,7 @@ fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
     if crate::env_on!("SAKE_TRACE_REG") {
         eprintln!("sake reg: open {path}");
     }
+    shiina_installed();
     let exists = with_reg(|m| {
         if m.contains_key(&path) || root_name(h).is_some() && sub.trim_matches('\\').is_empty() {
             return true;
@@ -636,6 +674,15 @@ fn set_value(key: u32, name: &str, ty: u32, data: u32, len: u32, wide: bool) -> 
             u.push(0);
         }
         bytes = u.iter().flat_map(|c| c.to_le_bytes()).collect();
+    }
+    if crate::env_on!("SAKE_TRACE_REG") {
+        let shown = if is_str(ty) {
+            let u: Vec<u16> = bytes.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+            format!("{:?}", String::from_utf16_lossy(&u))
+        } else {
+            hex(&bytes)
+        };
+        eprintln!("sake reg: set {path}\\{name} type {ty}: {shown}");
     }
     with_reg(|m| {
         let k = m.entry(path).or_default();

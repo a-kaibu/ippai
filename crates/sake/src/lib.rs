@@ -104,6 +104,7 @@ pub mod vorbis_hook;
 pub mod obj;
 mod amstream;
 mod mci;
+mod shiina;
 pub mod dshow;
 pub(crate) mod dshow_play;
 mod dshow_mpeg;
