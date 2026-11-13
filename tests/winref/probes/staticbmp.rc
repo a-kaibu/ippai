@@ -1,0 +1,20 @@
+/* resources of the staticbmp probe: an 8x6 bitmap and a dialog whose picture statics name it by
+ * number (as Bishop's startup.exe banner, SS_BITMAP | SS_REALSIZEIMAGE) */
+#pragma code_page(65001)
+#include <windows.h>
+1 24 "ja.manifest"
+
+10 BITMAP "probes/staticbmp.bmp"
+
+100 DIALOGEX 0, 0, 200, 120
+STYLE DS_SETFONT | WS_POPUP | WS_CAPTION
+CAPTION "staticbmp"
+FONT 9, "MS UI Gothic"
+BEGIN
+    CONTROL 10, 1001, "Static", SS_BITMAP | WS_CHILD | WS_VISIBLE, 4, 4, 40, 40
+    CONTROL 10, 1002, "Static", SS_BITMAP | SS_REALSIZEIMAGE | WS_CHILD | WS_VISIBLE, 50, 4, 40, 40
+    CONTROL 10, 1003, "Static", SS_BITMAP | SS_REALSIZECONTROL | WS_CHILD | WS_VISIBLE, 100, 4, 40, 40
+    CONTROL 10, 1004, "Static", SS_BITMAP | SS_CENTERIMAGE | WS_CHILD | WS_VISIBLE, 150, 4, 40, 40
+    CONTROL "", 1005, "Static", SS_BITMAP | WS_CHILD | WS_VISIBLE, 4, 60, 40, 40
+    CONTROL 77, 1006, "Static", SS_BITMAP | WS_CHILD | WS_VISIBLE, 50, 60, 40, 40
+END

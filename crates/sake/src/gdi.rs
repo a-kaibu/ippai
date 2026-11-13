@@ -2233,6 +2233,12 @@ pub fn load_bitmap(inst: u32, name: u32, wide: bool) -> u32 {
         crate::pe::find_resource(module, &crate::pe::ResId::Int(2), &crate::pe::ResId::from_arg(name, wide))
     };
     let Some(e) = ent else {
+        // (a module's bitmap that isn't there: NULL, as Windows (winref staticbmp); the
+        // system's OBM_ bitmaps, module 0, aren't drawn: a 1x1 stand-in)
+        if module != 0 {
+            crate::k32::last_error(1814);
+            return 0;
+        }
         return add(G::Bitmap(new_bitmap_raw(1, 1, 1, 0)));
     };
     let (data, _) = crate::pe::resource_data(module, e);

@@ -616,6 +616,8 @@ struct Ctl {
     font: u32,
     check: u32,
     pressed: bool,
+    /// a static's picture (STM_SETIMAGE / STM_SETICON): SS_BITMAP's HBITMAP, SS_ICON's HICON
+    image: u32,
 }
 
 static CTLS: Mutex<Option<HashMap<u32, Ctl>>> = Mutex::new(None);
@@ -872,6 +874,14 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         fill(Rect { l: r.l, t: r.t, r: r.l + 1, b: r.b }, color);
         fill(Rect { l: r.r - 1, t: r.t, r: r.r, b: r.b }, color);
     };
+    if !button && matches!(style & 0x1f, 3 | 0xe) {
+        if st.image != 0 {
+            static_picture(c, dc, style, st.image, w, hh);
+        }
+        gcall(c, "user32", "EndPaint", &[h, ps]);
+        mem::heap_free(ps);
+        return;
+    }
     let mut tr = full;
     let mut flags;
     let edit = with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit")));
@@ -934,6 +944,53 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     crate::gdi::draw_text(dc, &text, rc, flags);
     gcall(c, "user32", "EndPaint", &[h, ps]);
     mem::heap_free(ps);
+}
+
+/// A static's picture (as Wine's static.c): SS_BITMAP (0xe) at its own size from the top left,
+/// stretched over the control with SS_REALSIZECONTROL (0x40), centred with SS_CENTERIMAGE
+/// (0x200); SS_ICON (3) drawn at its size from the top left (centred with SS_CENTERIMAGE).
+fn static_picture(c: &mut Ctx, dc: u32, style: u32, image: u32, w: i32, hh: i32) {
+    if style & 0x1f == 3 {
+        let (x, y) = if style & 0x200 != 0 { ((w - 32) / 2, (hh - 32) / 2) } else { (0, 0) };
+        gcall(c, "user32", "DrawIconEx", &[dc, x as u32, y as u32, image, 0, 0, 0, 0, 0x3 | 0x8]);
+        return;
+    }
+    let info = mem::heap_alloc(32, true);
+    gcall(c, "gdi32", "GetObjectW", &[image, 24, info]);
+    let (bw, bh) = (r32(info + 4) as i32, r32(info + 8) as i32);
+    mem::heap_free(info);
+    let (x, y, dw, dh) = static_bitmap_rect(style, w, hh, bw, bh);
+    let mdc = gcall(c, "gdi32", "CreateCompatibleDC", &[dc]);
+    let old = gcall(c, "gdi32", "SelectObject", &[mdc, image]);
+    gcall(c, "gdi32", "StretchBlt", &[dc, x as u32, y as u32, dw as u32, dh as u32, mdc, 0, 0, bw as u32, bh as u32, 0x00cc_0020]);
+    gcall(c, "gdi32", "SelectObject", &[mdc, old]);
+    gcall(c, "gdi32", "DeleteDC", &[mdc]);
+}
+
+/// Where an SS_BITMAP static draws its bitmap (bw x bh) in its client area (w x hh): x y cx cy.
+pub fn static_bitmap_rect(style: u32, w: i32, hh: i32, bw: i32, bh: i32) -> (i32, i32, i32, i32) {
+    if style & 0x40 != 0 {
+        (0, 0, w, hh)
+    } else if style & 0x200 != 0 {
+        ((w - bw) / 2, (hh - bh) / 2, bw, bh)
+    } else {
+        (0, 0, bw, bh)
+    }
+}
+
+/// A picture static made from a template whose text is a resource (a dialog item's ordinal,
+/// or a name): its bitmap or icon from `inst`, as the static's WM_CREATE does on Windows.
+fn static_load_picture(c: &mut Ctx, h: u32, inst: u32, res: u32) {
+    let style = with(|s| s.wins.get(&h).map_or(0, |w| w.style));
+    let (load, kind) = match style & 0x1f {
+        0xe => ("LoadBitmapW", 0),
+        3 => ("LoadIconW", 1),
+        _ => return,
+    };
+    let img = gcall(c, "user32", load, &[inst, res]);
+    if img != 0 {
+        send(c, h, 0x172, kind, img);
+    }
 }
 
 /// Where an edit control's text goes and the DrawText flags for it. Never a prefix (an edit
@@ -1065,6 +1122,41 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
                 }
             }
             0
+        }
+        // STM_SETICON / STM_SETIMAGE: the old picture back; a bitmap static takes the bitmap's
+        // size unless SS_CENTERIMAGE or SS_REALSIZECONTROL (Wine's static.c)
+        0x170 | 0x172 if !button => {
+            let style = with(|s| s.wins.get(&h).map_or(0, |w| w.style));
+            let (kind, img) = if m == 0x170 { (1, wp) } else { (wp, lp) };
+            let want = match style & 0x1f {
+                0xe => 0,
+                3 => 1,
+                _ => return 0,
+            };
+            if kind != want && !(want == 1 && kind == 2) {
+                return 0;
+            }
+            let old = ctl(h).image;
+            set_ctl(h, |t| t.image = img);
+            if want == 0 && img != 0 && style & 0x240 == 0 {
+                let info = mem::heap_alloc(32, true);
+                if gcall(c, "gdi32", "GetObjectW", &[img, 24, info]) != 0 {
+                    let (bw, bh) = (r32(info + 4), r32(info + 8));
+                    gcall(c, "user32", "SetWindowPos", &[h, 0, 0, 0, bw, bh, 0x2 | 0x4 | 0x10]);
+                }
+                mem::heap_free(info);
+            }
+            invalidate(h, None, true);
+            old
+        }
+        // STM_GETICON / STM_GETIMAGE: only of the static's own kind
+        0x171 | 0x173 if !button => {
+            let style = with(|s| s.wins.get(&h).map_or(0, |w| w.style));
+            let kind = if m == 0x171 { 1 } else { wp };
+            match (style & 0x1f, kind) {
+                (0xe, 0) | (3, 1 | 2) => ctl(h).image,
+                _ => 0,
+            }
         }
         0x87 => 0x100,
         0xf0 => ctl(h).check,
@@ -6559,6 +6651,15 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
             let s = wstr(t);
             with(|stt| stt.wins.get_mut(&ctl).map(|w| w.text = s));
         }
+        // (a picture static's text is its bitmap or icon: Bishop's startup.exe banner)
+        let is_static = with(|stt| stt.wins.get(&ctl).is_some_and(|w| stt.classes[w.class].name.eq_ignore_ascii_case("static")));
+        if is_static {
+            match sz_or_ord(r2) {
+                (None, o, _) if o != 0 => static_load_picture(c, ctl, inst, o),
+                (Some(t), _, _) if r16(t) != 0 => static_load_picture(c, ctl, inst, t),
+                _ => {}
+            }
+        }
         if font != 0 {
             send(c, ctl, 0x30, font, 0);
         }
@@ -7220,6 +7321,28 @@ mod tests {
         key_state(&mut k, &mut p, 0x14, true);
         key_state(&mut k, &mut p, 0x14, false);
         assert_eq!(k[0x14], 0);
+    }
+
+    proptest! {
+        /// An SS_BITMAP static's picture: over the whole control with SS_REALSIZECONTROL (which
+        /// wins over SS_CENTERIMAGE), else at the bitmap's own size, centred (each side within a
+        /// pixel of the other) with SS_CENTERIMAGE, else from the top left. Other style bits
+        /// change nothing.
+        #[test]
+        fn static_bitmap_placement(w in 0i32..2000, h in 0i32..2000, bw in 1i32..2000, bh in 1i32..2000, style in any::<u32>()) {
+            let (x, y, cx, cy) = static_bitmap_rect(style, w, h, bw, bh);
+            if style & 0x40 != 0 {
+                prop_assert_eq!((x, y, cx, cy), (0, 0, w, h));
+            } else {
+                prop_assert_eq!((cx, cy), (bw, bh));
+                if style & 0x200 != 0 {
+                    prop_assert!((x - (w - (x + cx))).abs() <= 1 && (y - (h - (y + cy))).abs() <= 1);
+                } else {
+                    prop_assert_eq!((x, y), (0, 0));
+                }
+            }
+            prop_assert_eq!(static_bitmap_rect(style & 0x240, w, h, bw, bh), (x, y, cx, cy));
+        }
     }
 
     proptest! {
