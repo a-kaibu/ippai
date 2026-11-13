@@ -1479,6 +1479,7 @@ name = "glwgsl"
 version = "0.1.0"
 dependencies = [
  "naga",
+ "pp-rs",
 ]
 
 [[package]]

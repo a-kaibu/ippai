@@ -590,6 +590,12 @@ extern "C" fn glGetStringi(name: u32, i: u32) -> *const u8 {
 }
 
 /// glGet values as f64 (None: unknown)
+/// GL_MAX_VERTEX/FRAGMENT_UNIFORM_VECTORS (x4: _COMPONENTS)
+const UNIFORM_VECTORS: u32 = 1024;
+/// GL_MAX_VARYING_VECTORS (x4: GL_MAX_VARYING_FLOATS): WebGPU's 16 inter-stage locations less
+/// one for the fixed-function colour glwgsl may add
+const VARYING_VECTORS: u32 = 15;
+
 fn get(g: &Gl, c: &Ctx, pname: u32) -> Option<Vec<f64>> {
     let f = |v: &[f32]| v.iter().map(|&x| x as f64).collect::<Vec<_>>();
     let i = |v: &[i32]| v.iter().map(|&x| x as f64).collect::<Vec<_>>();
@@ -600,6 +606,14 @@ fn get(g: &Gl, c: &Ctx, pname: u32) -> Option<Vec<f64>> {
         0x84E2 => vec![2.0],
         0x8872 | 0x8B4D | 0x8B4C => vec![8.0],
         0x8869 => vec![16.0],
+        // GLSL limits (EntisGLS sizes its bone palette from GL_MAX_VERTEX_UNIFORM_COMPONENTS: 0
+        // left MAX_BONE_PALETTE undefined, the shader failed and the game crashed). What
+        // glwgsl's per-stage uniform block (WebGPU: 64 KiB bindings) and WebGPU's 16 inter-stage
+        // vectors hold, as GL 2.1 / GLES 2 name them (gl/limits_tests.rs)
+        0x8B4A | 0x8B49 => vec![(UNIFORM_VECTORS * 4) as f64],
+        0x8DFB | 0x8DFD => vec![UNIFORM_VECTORS as f64],
+        0x8B4B => vec![(VARYING_VECTORS * 4) as f64],
+        0x8DFC => vec![VARYING_VECTORS as f64],
         0x0BA6 => f(c.modelview.last().unwrap()),
         0x0BA7 => f(c.projection.last().unwrap()),
         0x0BA8 => f(c.units[c.active].matrices.last().unwrap()),
@@ -2280,3 +2294,5 @@ mod names_tests;
 mod draw_tests;
 #[cfg(test)]
 mod unpack_tests;
+#[cfg(test)]
+mod limits_tests;

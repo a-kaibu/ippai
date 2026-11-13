@@ -6,4 +6,5 @@ license.workspace = true
 description = "GLSL 1.10-1.30 (OpenGL 2.x programs with the compatibility built-ins) to WGSL, through naga"
 
 [dependencies]
+pp-rs = "0.2.1"  # (naga's GLSL preprocessor: run first, so a macro sizing a uniform array is known where the declaration moves to)
 naga = { version = "30", features = ["glsl-in", "wgsl-in", "wgsl-out"] }  # (naga 30's glsl-in needs spv-in or wgsl-in)

@@ -13,6 +13,7 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `uuid` | sake::misc::parse_uuid (UuidFromString) on any UTF-16 text | Some exactly for the 8-4-4-4-12 hex form, printing back as the same text |
 | `sid` | sake::security::parse_sid (ConvertStringSidToSid) on any text | 15 sub-authorities and 48-bit authority at most; the printed SID parses back the same |
 | `wsprintf` | sake::user::wsprintf_format (wsprintf's dialect) on any UTF-16 text | no more `%` than given, text without `%` unchanged, idempotent |
+| `glsl` | glwgsl::check / link (OpenGL GLSL -> WGSL, preprocessor first) on any text (vertex NUL fragment) | no panic; a linked program's uniform blocks have members and hold them |
 | `image` | sake::ole::decode (BMP, PNG, JPEG: OleLoadPicture, WIC) | no panic, w x h BGRA out |
 | `acm` | sake::acm IMA / MS ADPCM blocks | no panic, all of a block's samples or none |
 | `printf` (crates/crt) | crt::fmt::format, every mode (UCRT option bits, legacy msvcrt), narrow and wide | no panic, output within MAX_OUT, text without % unchanged |

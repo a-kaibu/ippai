@@ -179,9 +179,56 @@ fn base_name(n: &str) -> &str {
 
 /// Rewrites one stage. `attribs`: vertex input locations by name (assigned as found when
 /// missing); `varyings`: locations by name, shared by both stages.
+/// The GLSL preprocessor run on its own (#define, #if/#ifdef/#elif/#else/#endif, macro
+/// expansion; #version, #extension and #pragma dropped): `rewrite` moves declarations into the
+/// header and the uniform block, away from the #defines and #ifs around them, so it gets source
+/// without either (EntisGLS: `uniform mat3 u_mat3BoneRotation[MAX_BONE_PALETTE];` met an
+/// undefined macro; declarations inside an #ifdef were moved out of it). A source the
+/// preprocessor rejects is passed on as it is.
+fn preprocess(src: &str) -> String {
+    use pp_rs::token::{Punct as P, TokenValue as T};
+    let mut out = String::with_capacity(src.len());
+    let mut prev: Option<usize> = None;
+    for item in pp_rs::pp::Preprocessor::new(src) {
+        let Ok(t) = item else { return src.to_string() };
+        let text = match &t.value {
+            T::Version(_) | T::Extension(_) | T::Pragma(_) => continue,
+            T::Ident(s) => s.clone(),
+            T::Integer(i) => format!("{}{}", i.value, if i.signed { "" } else { "u" }),
+            // (the literal as written where the token has its own text, else the value)
+            T::Float(f) => match src.get(t.location.start as usize..t.location.end as usize) {
+                Some(s) if s.parse::<f64>().is_ok() || s.trim_end_matches(['f', 'F']).parse::<f64>().is_ok() => s.trim_end_matches(['f', 'F']).to_string(),
+                _ => format!("{:?}", f.value),
+            },
+            T::Punct(p) => match p {
+                P::AddAssign => "+=", P::SubAssign => "-=", P::MulAssign => "*=", P::DivAssign => "/=", P::ModAssign => "%=",
+                P::LeftShiftAssign => "<<=", P::RightShiftAssign => ">>=", P::AndAssign => "&=", P::XorAssign => "^=", P::OrAssign => "|=",
+                P::Increment => "++", P::Decrement => "--", P::LogicalAnd => "&&", P::LogicalOr => "||", P::LogicalXor => "^^",
+                P::LessEqual => "<=", P::GreaterEqual => ">=", P::EqualEqual => "==", P::NotEqual => "!=", P::LeftShift => "<<", P::RightShift => ">>",
+                P::LeftBrace => "{", P::RightBrace => "}", P::LeftParen => "(", P::RightParen => ")", P::LeftBracket => "[", P::RightBracket => "]",
+                P::LeftAngle => "<", P::RightAngle => ">", P::Semicolon => ";", P::Comma => ",", P::Colon => ":", P::Dot => ".", P::Equal => "=",
+                P::Bang => "!", P::Minus => "-", P::Tilde => "~", P::Plus => "+", P::Star => "*", P::Slash => "/", P::Percent => "%",
+                P::Pipe => "|", P::Caret => "^", P::Ampersand => "&", P::Question => "?",
+            }
+            .to_string(),
+        };
+        // (the spacing of the source where the tokens follow each other there, so `w[4]` stays
+        // one piece for `rewrite`; a space where a macro or a directive came between)
+        let (start, end) = (t.location.start as usize, t.location.end as usize);
+        match prev.and_then(|p| src.get(p..start)) {
+            Some(gap) if gap.chars().all(char::is_whitespace) => out.push_str(if gap.is_empty() { "" } else if gap.contains('\n') { "\n" } else { " " }),
+            _ if prev.is_some() => out.push(' '),
+            _ => {}
+        }
+        out.push_str(&text);
+        prev = Some(end);
+    }
+    out
+}
+
 fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &HashMap<String, u32>, varyings: &mut Vec<String>) -> (String, Vec<String>) {
     let set = pixel as u32;
-    let src = strip_comments(src);
+    let src = strip_comments(&preprocess(src));
     let mut head = String::from("#version 450\n");
     let mut body = String::new();
     let mut block = String::new();
@@ -762,10 +809,13 @@ mod tests {
     fn preprocessor_lines_and_scopes() {
         let v = vs_of("#version 120\n#extension GL_EXT_foo : enable\n#define K 2.0\n  #ifdef X\nuniform float a;\n#endif\nfloat f() { if (true) { return K; } return a; }\nvoid main() { gl_Position = vec4(f()); }");
         assert!(!v.contains("#version 120") && !v.contains("extension"), "{v}");
-        assert!(v.contains("#define K 2.0\n") && v.contains("#ifdef X\n") && v.contains("#endif\n"), "{v}");
+        // directives are the preprocessor's: K expanded, the #ifdef X part (X undefined) gone
+        assert!(!v.contains('#') || v.matches('#').count() == 1, "{v}");
         // a function body stays one piece, nested braces included, and keeps its statements
-        assert!(v.contains("float f() { if (true) { return K; } return a; }"), "{v}");
-        assert!(v.contains("  float a;\n"), "{v}");
+        assert!(v.contains("float f() { if (true) { return 2.0 ; } return a; }"), "{v}");
+        assert!(!v.contains("float a;"), "{v}");
+        let v = vs_of("#define X\n#ifdef X\nuniform float a;\n#else\nuniform float b;\n#endif\nvoid main() { gl_Position = vec4(a); }");
+        assert!(v.contains("  float a;\n") && !v.contains("float b"), "{v}");
         // a '#' inside an expression line is not a directive
         let v = vs_of("void main() { gl_Position = vec4(1.0); }\nconst float k = 2.0;");
         assert!(v.contains("const float k = 2.0;\n"), "{v}");
@@ -799,6 +849,49 @@ mod tests {
         assert!(p.contains("layout(location = 0) out vec4 color;") && p.contains("layout(location = 0) in vec4 a;"), "{p}");
         let p = ps_of("flat in uint u; void main() { gl_FragColor = vec4(float(u)); }");
         assert!(p.contains("flat in uint u;"), "{p}");
+    }
+
+    /// EntisGLS (zombie2_trial.zip) sizes uniform arrays with a macro and declares things inside
+    /// #ifdefs; `rewrite` moves declarations into the header and the block, so the preprocessor
+    /// runs first (before: UnknownVariable("MAX_BONE_PALETTE"), and the game crashed).
+    #[test]
+    fn macros_size_arrays_and_ifdefs_choose_declarations() {
+        let vs = "#version 130\n#define MAX_BONE_PALETTE 24\n#define _DISABLE_MORPHING 1\n#ifdef GL_ES\n#define LOWP lowp\n#else\n#define LOWP\n#endif\n\
+                  #ifdef _GLSL_VERSION_130_LATER_\n#define attribute in\n#endif\n\
+                  attribute vec3 a_vPos;\n#ifndef _DISABLE_MORPHING\nattribute vec3 a_vMorph;\n#endif\n\
+                  uniform mat3 u_mat3BoneRotation[MAX_BONE_PALETTE];\nuniform vec4 u_vBoneTranslate[MAX_BONE_PALETTE];\n\
+                  #define BONE(k) (u_mat3BoneRotation[k] * a_vPos + u_vBoneTranslate[k].xyz)\n\
+                  void main() { LOWP vec3 p = BONE(MAX_BONE_PALETTE - 1); gl_Position = vec4(p, 1.0); }";
+        let ps = "void main() { gl_FragColor = vec4(1.0); }";
+        let prog = link(vs, ps, &HashMap::new()).unwrap_or_else(|e| panic!("{e}"));
+        let b = prog.vs.block.as_ref().unwrap();
+        let m = b.members.iter().find(|m| m.name == "u_mat3BoneRotation").unwrap();
+        assert_eq!(m.count, Some(24));
+        assert!(prog.attribs.iter().any(|a| a.0 == "a_vPos") && !prog.attribs.iter().any(|a| a.0 == "a_vMorph"), "{:?}", prog.attribs);
+    }
+
+    /// Random shaders whose uniform array sizes, attribute choice and constants come from
+    /// macros and #if/#ifdef chains translate the same as the same shader written out by hand.
+    #[test]
+    fn preprocessed_shaders_match_written_out_ones() {
+        let mut seed = 0x1113_2026u64;
+        let mut next = |n: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        for case in 0..200 {
+            let (n, k, on) = (1 + next(64), next(5), next(2) == 1);
+            let macro_src = format!(
+                "#define N {n}\n#define K {k}.0\n{}#if defined(USE_B) && N > 0\nuniform vec4 b[N];\n#define PICK b[N - 1]\n#else\nuniform vec4 c[N];\n#define PICK c[0]\n#endif\nvoid main() {{ gl_FragColor = PICK * K; }}",
+                if on { "#define USE_B\n" } else { "" }
+            );
+            let plain = if on { format!("uniform vec4 b[{n}];\nvoid main() {{ gl_FragColor = b[{n} - 1] * {k}.0; }}") } else { format!("uniform vec4 c[{n}];\nvoid main() {{ gl_FragColor = c[0] * {k}.0; }}") };
+            let vs = "attribute vec4 p; void main() { gl_Position = p; }";
+            let a = link(vs, &macro_src, &HashMap::new()).unwrap_or_else(|e| panic!("case {case}: {e}"));
+            let b = link(vs, &plain, &HashMap::new()).unwrap_or_else(|e| panic!("case {case} plain: {e}"));
+            let shape = |p: &Program| p.ps.block.as_ref().map(|b| (b.size, b.members.iter().map(|m| (m.name.clone(), m.count, m.offset)).collect::<Vec<_>>()));
+            assert_eq!(shape(&a), shape(&b), "case {case}");
+        }
     }
 
     #[test]

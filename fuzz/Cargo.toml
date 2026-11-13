@@ -13,6 +13,7 @@ libfuzzer-sys = "0.4"
 koji = { path = "../crates/koji" }
 sake = { path = "../crates/sake" }
 vorbis = { path = "../crates/vorbis" }
+glwgsl = { path = "../crates/glwgsl" }
 wasmparser = "0.263.0"
 wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "threads"] }
 
@@ -94,6 +95,13 @@ bench = false
 [[bin]]
 name = "unity6"
 path = "fuzz_targets/unity6.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glsl"
+path = "fuzz_targets/glsl.rs"
 test = false
 doc = false
 bench = false
