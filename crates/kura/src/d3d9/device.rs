@@ -3702,7 +3702,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 }
                 let t = st.textures[i];
                 let is2d = t != 0 && matches!(d.objs.get(&t).map(|o| o.iface), Some(IF_TEXTURE));
-                tex[i] = if is2d { 2 } else { 0 };
+                tex[i] = if is2d { 2 } else if t != 0 { 1 } else { 0 };
                 if is2d {
                     samplers.push(i as u32);
                 }

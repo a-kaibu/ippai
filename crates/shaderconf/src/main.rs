@@ -14,6 +14,7 @@
 mod cases;
 mod compute;
 mod fflight;
+mod ffstages;
 mod fuzz;
 mod json;
 mod oracle;

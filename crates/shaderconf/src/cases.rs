@@ -636,6 +636,7 @@ pub fn all(out: &mut Vec<Case>, errors: &mut Vec<String>) {
     d3d9_cases(out, errors);
     glsl_cases(out, errors);
     super::fflight::cases(out, errors);
+    super::ffstages::cases(out, errors);
     super::random::cases(out, errors, 300, 0x5eed, 0, 2, "small");
     super::random::cases(out, errors, 500, 0x1bba1, 2, 4, "random");
 }

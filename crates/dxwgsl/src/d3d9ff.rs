@@ -341,7 +341,7 @@ pub struct PsKey {
     pub stages: Vec<[u32; 10]>,
     pub specular: bool,
     pub alpha_test: Option<u32>,
-    /// texture types per stage (2: 2D, 0: none bound)
+    /// texture types per stage (2: 2D, 1: another kind, sampled as white, 0: none bound)
     pub tex: [u8; 8],
     /// SHADEMODE flat (must match the vertex shader's)
     pub flat: bool,
@@ -404,6 +404,12 @@ fn op(o: u32, a1: &str, a2: &str, a0: &str, stage: usize) -> String {
     }
 }
 
+/// An op that reads the stage's texture (arg1 unless SELECTARG2, arg2 unless SELECTARG1, arg0 of
+/// MULTIPLYADD / LERP): with no texture bound the stage is SELECTARG1 CURRENT instead.
+pub fn no_texture(o: u32, a1: u32, a2: u32, a0: u32) -> bool {
+    o != TOP_DISABLE && ((a1 & 0xf == 2 && o != 3) || (a2 & 0xf == 2 && o != 2) || (a0 & 0xf == 2 && (o == 25 || o == 26)))
+}
+
 pub fn pixel(k: &PsKey) -> String {
     let mut h = uniforms(PS_CONSTS, 1);
     for t in 0..k.stages.len() {
@@ -458,11 +464,17 @@ pub fn pixel(k: &PsKey) -> String {
         if s[0] == TOP_DISABLE {
             break;
         }
-        let c = op(s[0], &arg(s[1], t, false), &arg(s[2], t, false), &arg(s[3], t, false), t);
-        let a = if s[4] == TOP_DISABLE {
+        // (an op that reads the stage's texture where none is bound passes current through, as
+        // Windows: SELECTARG1 CURRENT. 正しい性奴○の使い方's stage 1 MODULATE TEXTURE DIFFUSE
+        // with no texture gave the diffuse, a white screen.)
+        let none = k.tex[t] == 0;
+        let (cop, c1, c2, c0) = if none && no_texture(s[0], s[1], s[2], s[3]) { (2, 1, 1, 1) } else { (s[0], s[1], s[2], s[3]) };
+        let (aop, a1, a2, a0) = if none && no_texture(s[4], s[5], s[6], s[7]) { (2, 1, 1, 1) } else { (s[4], s[5], s[6], s[7]) };
+        let c = op(cop, &arg(c1, t, false), &arg(c2, t, false), &arg(c0, t, false), t);
+        let a = if aop == TOP_DISABLE {
             "current.w".to_string()
         } else {
-            format!("({}).w", op(s[4], &arg(s[5], t, true), &arg(s[6], t, true), &arg(s[7], t, true), t))
+            format!("({}).w", op(aop, &arg(a1, t, true), &arg(a2, t, true), &arg(a0, t, true), t))
         };
         let dst = if s[8] & 0xf == 5 { "temp" } else { "current" };
         let _ = writeln!(h, "  {{ let c = clamp({}, vec4f(-1.0), vec4f(1.0)); let a = clamp({}, -1.0, 1.0);", c, a);
@@ -581,6 +593,61 @@ mod tests {
             }
             let want: Vec<&str> = stages.iter().map(|s| if s[8] & 0xf == 5 { "temp" } else { "current" }).collect();
             prop_assert_eq!(stage_dsts(&w), want);
+        }
+    }
+
+    /// the stage lines as written: (color, alpha) of each stage
+    fn stage_exprs(w: &str) -> Vec<(String, String)> {
+        w.lines()
+            .filter_map(|l| l.trim().strip_prefix("{ let c = clamp("))
+            .map(|l| {
+                let (c, rest) = l.split_once(", vec4f(-1.0), vec4f(1.0)); let a = clamp(").unwrap();
+                (c.to_string(), rest.strip_suffix(", -1.0, 1.0);").unwrap().to_string())
+            })
+            .collect()
+    }
+
+    // 正しい性奴○の使い方: stage 0 MODULATE TEXTURE DIFFUSE with its texture, stage 1 the same
+    // with none bound. Windows passes stage 0's result through stage 1 (a stand-in white texture
+    // gave stage 1 the diffuse: white sprites, a white screen).
+    #[test]
+    fn unbound_stage_passes_current_through() {
+        let k = PsKey { stages: vec![[4, 2, 0, 1, 4, 2, 0, 1, 1, 0], [4, 2, 0, 1, 4, 2, 0, 1, 1, 0]], tex: [2, 0, 0, 0, 0, 0, 0, 0], ..Default::default() };
+        let w = pixel(&k);
+        valid(&w);
+        assert_eq!(stage_exprs(&w), [("(t0 * diffuse)".into(), "((t0 * diffuse)).w".into()), ("current".into(), "(current).w".into())], "{w}");
+        // (a bound texture of another kind, a cube under fixed function: sampled as white)
+        let w = pixel(&PsKey { tex: [2, 1, 0, 0, 0, 0, 0, 0], ..k });
+        assert_eq!(stage_exprs(&w)[1].0, "(t1 * diffuse)", "{w}");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        // Any stages, any texture bound or not: a stage with no texture whose color (alpha) op
+        // reads the texture is exactly SELECTARG1 CURRENT for color (alpha), and every other
+        // stage is written as its op and args say (the same line as with a texture bound).
+        #[test]
+        fn unbound_texture_reads_become_current(stages in prop::collection::vec(stage(), 1..=8), tex in prop::array::uniform8(prop_oneof![Just(0u8), Just(1u8), Just(2u8)])) {
+            let k = PsKey { stages: stages.clone(), tex, ..Default::default() };
+            let w = pixel(&k);
+            valid(&w);
+            let got = stage_exprs(&w);
+            let bound = stage_exprs(&pixel(&PsKey { tex: [2; 8], ..k.clone() }));
+            prop_assert_eq!(got.len(), stages.len());
+            for (t, s) in stages.iter().enumerate() {
+                let none = tex[t] == 0;
+                let (c, a) = &got[t];
+                if none && no_texture(s[0], s[1], s[2], s[3]) {
+                    prop_assert_eq!(c, "current", "stage {} {:?}\n{}", t, s, w);
+                } else {
+                    prop_assert_eq!(c, &bound[t].0);
+                }
+                if none && no_texture(s[4], s[5], s[6], s[7]) {
+                    prop_assert_eq!(a, "(current).w", "stage {} {:?}\n{}", t, s, w);
+                } else {
+                    prop_assert_eq!(a, &bound[t].1);
+                }
+            }
         }
     }
 
