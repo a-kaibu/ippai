@@ -81,24 +81,49 @@ struct Blend {
     factors: Vec<(f32, f32)>,
     /// (color, position) pairs replacing the brush's colors; empty: none
     preset: Vec<(u32, f32)>,
+    /// the positions of both go up (or stay): looked up by halving, not one by one (a sigma
+    /// blend's 511 factors were scanned per pixel)
+    sorted: bool,
+}
+
+/// The first of `n` positions (`pos(i)`) at or past `t`: halving when they are in order (the
+/// same answer), one by one otherwise.
+fn first_at(n: usize, sorted: bool, pos: impl Fn(usize) -> f32, t: f32) -> Option<usize> {
+    if sorted && n > 8 {
+        let (mut lo, mut hi) = (0, n);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if pos(mid) < t { lo = mid + 1 } else { hi = mid }
+        }
+        return (lo < n).then_some(lo);
+    }
+    (0..n).position(|i| pos(i) >= t)
 }
 
 impl Blend {
     fn new() -> Blend {
-        Blend { factors: Vec::new(), preset: Vec::new() }
+        Blend { factors: Vec::new(), preset: Vec::new(), sorted: true }
+    }
+    /// Notes whether the positions are in order (after a setter changed them).
+    fn resort(&mut self) {
+        let up = |v: &mut dyn Iterator<Item = f32>| {
+            let v: Vec<f32> = v.collect();
+            v.windows(2).all(|w| w[0] <= w[1])
+        };
+        self.sorted = up(&mut self.factors.iter().map(|p| p.1)) && up(&mut self.preset.iter().map(|p| p.1));
     }
     /// The color at `t` (0..=1) between `a` and `b`, premultiplied
     fn color_pm(&self, a: u32, b: u32, t: f32) -> u32 {
         if !self.preset.is_empty() {
             let p = &self.preset;
-            let k = p.iter().position(|&(_, pos)| pos >= t).unwrap_or(p.len() - 1);
+            let k = first_at(p.len(), self.sorted, |i| p[i].1, t).unwrap_or(p.len() - 1);
             if k == 0 {
                 return premul_argb(p[0].0);
             }
             let ((c0, p0), (c1, p1)) = (p[k - 1], p[k]);
             return lerp(premul_argb(c0), premul_argb(c1), if p1 > p0 { (t - p0) / (p1 - p0) } else { 1.0 });
         }
-        lerp(premul_argb(a), premul_argb(b), interp(&self.factors, t))
+        lerp(premul_argb(a), premul_argb(b), interp_in(&self.factors, self.sorted, t))
     }
     fn color(&self, a: u32, b: u32, t: f32) -> u32 {
         straight_argb(self.color_pm(a, b, t))
@@ -106,11 +131,11 @@ impl Blend {
 }
 
 /// The blend factor at `t` of (factor, position) pairs (straight lines between them)
-fn interp(f: &[(f32, f32)], t: f32) -> f32 {
+fn interp_in(f: &[(f32, f32)], sorted: bool, t: f32) -> f32 {
     if f.len() < 2 {
         return t * f.first().map_or(1.0, |p| p.0);
     }
-    let k = f.iter().position(|&(_, pos)| pos >= t).unwrap_or(f.len() - 1);
+    let k = first_at(f.len(), sorted, |i| f[i].1, t).unwrap_or(f.len() - 1);
     if k == 0 {
         return f[0].0;
     }
@@ -179,7 +204,7 @@ enum Brush {
     Solid(u32),
     Hatch { style: u32, fore: u32, back: u32 },
     /// the image's straight BGRA pixels, copied when the brush is made
-    Texture { w: u32, h: u32, px: Vec<u8>, wrap: u32, m: M },
+    Texture { w: u32, h: u32, px: std::sync::Arc<Vec<u8>>, wrap: u32, m: M },
     Line { rect: [f32; 4], colors: [u32; 2], wrap: u32, m: M, blend: Blend, gamma: bool },
     PathGrad { pts: Vec<[f32; 2]>, center: [f32; 2], cc: u32, surround: Vec<u32>, wrap: u32, m: M, blend: Blend, focus: [f32; 2], gamma: bool },
 }
@@ -273,6 +298,10 @@ fn wf(p: u32, v: f32) {
 fn read_rect(p: u32, int: bool) -> [f32; 4] {
     std::array::from_fn(|i| if int { r32(p + 4 * i as u32) as i32 as f32 } else { rf(p + 4 * i as u32) })
 }
+/// The most points, factors or colours a call takes (a garbage count read gigabytes into a
+/// Vec, an abort; GDI+ fails far below): OutOfMemory past it.
+const MAX_COUNT: i32 = 1 << 22;
+
 fn read_pts(p: u32, n: u32, int: bool) -> Vec<[f32; 2]> {
     (0..n).map(|i| [0, 1].map(|k| {
         let a = p + 8 * i + 4 * k;
@@ -399,6 +428,9 @@ fn transform_points(c: &mut Ctx, int: bool, vector: bool) -> u32 {
     if p == 0 || n <= 0 {
         return INVALID_PARAMETER;
     }
+    if n > MAX_COUNT {
+        return OUT_OF_MEMORY;
+    }
     if vector {
         m[4] = 0.0;
         m[5] = 0.0;
@@ -465,6 +497,9 @@ fn create_path2(c: &mut Ctx, int: bool) -> u32 {
     if pp == 0 || tp == 0 || n < 0 {
         return INVALID_PARAMETER;
     }
+    if n > MAX_COUNT {
+        return OUT_OF_MEMORY;
+    }
     let pts = read_pts(pp, n as u32, int);
     let types = mem::slice(tp, n as u32).to_vec();
     new_obj(Obj::Path { pts, types, fill: c.a(3) }, c.a(4))
@@ -527,6 +562,9 @@ fn add_polygon(c: &mut Ctx, int: bool) -> u32 {
     let (pp, n) = (c.a(1), c.i(2));
     if pp == 0 || n < 3 {
         return INVALID_PARAMETER;
+    }
+    if n > MAX_COUNT {
+        return OUT_OF_MEMORY;
     }
     add_figure(c.a(0), read_pts(pp, n as u32, int), 1, true)
 }
@@ -713,7 +751,7 @@ fn new_texture(img: u32, wrap: u32, crop: Option<[f32; 4]>, out: u32) -> u32 {
         let s = ((y * w + x0) * 4) as usize;
         sub.extend_from_slice(&px[s..s + (cw * 4) as usize]);
     }
-    new_obj(Obj::Brush(Brush::Texture { w: cw, h: ch, px: sub, wrap, m: IDENTITY }), out)
+    new_obj(Obj::Brush(Brush::Texture { w: cw, h: ch, px: std::sync::Arc::new(sub), wrap, m: IDENTITY }), out)
 }
 fn GdipCreateTexture(c: &mut Ctx) -> u32 {
     let wrap = c.a(1);
@@ -1140,6 +1178,9 @@ fn set_blend(c: &mut Ctx) -> u32 {
     if fp == 0 || pp == 0 || n <= 0 {
         return INVALID_PARAMETER;
     }
+    if n > MAX_COUNT {
+        return OUT_OF_MEMORY;
+    }
     let f: Vec<(f32, f32)> = (0..n as u32).map(|i| (rf(fp + 4 * i), rf(pp + 4 * i))).collect();
     if !ends_ok(&f.iter().map(|p| p.1).collect::<Vec<_>>()) {
         return INVALID_PARAMETER;
@@ -1147,6 +1188,7 @@ fn set_blend(c: &mut Ctx) -> u32 {
     on_blend(c.a(0), |b, _| {
         b.factors = f;
         b.preset.clear();
+        b.resort();
         OK
     })
 }
@@ -1192,6 +1234,9 @@ fn set_preset(c: &mut Ctx) -> u32 {
     if cp == 0 || pp == 0 || n < 2 {
         return INVALID_PARAMETER;
     }
+    if n > MAX_COUNT {
+        return OUT_OF_MEMORY;
+    }
     let p: Vec<(u32, f32)> = (0..n as u32).map(|i| (r32(cp + 4 * i), rf(pp + 4 * i))).collect();
     if !ends_ok(&p.iter().map(|p| p.1).collect::<Vec<_>>()) {
         return INVALID_PARAMETER;
@@ -1199,6 +1244,7 @@ fn set_preset(c: &mut Ctx) -> u32 {
     on_blend(c.a(0), |b, _| {
         b.preset = p;
         b.factors.clear();
+        b.resort();
         OK
     })
 }
@@ -1248,6 +1294,7 @@ fn shaped_blend(c: &mut Ctx, f: fn(f32, f32) -> Vec<(f32, f32)>) -> u32 {
     on_blend(c.a(0), |b, _| {
         b.factors = f(focus, scale);
         b.preset.clear();
+        b.resort();
         OK
     })
 }
@@ -1276,7 +1323,7 @@ fn create_path_grad(c: &mut Ctx, int: bool) -> u32 {
     if pp == 0 || out == 0 {
         return INVALID_PARAMETER;
     }
-    if n < 2 {
+    if !(2..=MAX_COUNT).contains(&n) {
         return OUT_OF_MEMORY;
     }
     path_grad(read_pts(pp, n as u32, int), wrap, out)
@@ -2039,10 +2086,10 @@ mod tests {
         assert_eq!(linear_blend(0.6, 0.8), vec![(0.0, 0.0), (0.8, 0.6), (0.0, 1.0)]);
         assert_eq!(linear_blend(0.0, 0.8), vec![(0.8, 0.0), (0.0, 1.0)]);
         assert_eq!(linear_blend(1.0, 0.8), vec![(0.0, 0.0), (0.8, 1.0)]);
-        let b = Blend { factors: vec![(0.0, 0.0), (1.0, 0.5), (0.0, 1.0)], preset: Vec::new() };
+        let b = Blend { factors: vec![(0.0, 0.0), (1.0, 0.5), (0.0, 1.0)], preset: Vec::new(), sorted: true };
         assert_eq!(b.color(0xff000000, 0xffffffff, 0.5), 0xffffffff);
         assert_eq!(b.color(0xff000000, 0xffffffff, 0.25), 0xff808080);
-        let p = Blend { factors: Vec::new(), preset: vec![(0xffff0000, 0.0), (0xff0000ff, 1.0)] };
+        let p = Blend { factors: Vec::new(), preset: vec![(0xffff0000, 0.0), (0xff0000ff, 1.0)], sorted: true };
         assert_eq!(p.color(0, 0, 1.0), 0xff0000ff);
         assert_eq!(mix_premul(0x400000ff, 0x80ff0000, 64), 0x50660099);
         assert_eq!(mix_premul(0x400000ff, 0x80ff0000, 234), 0x7af4000a);
@@ -2155,5 +2202,46 @@ mod issue88 {
         assert_eq!(call(GdipGetLineRect, &[0, out + 4]), INVALID_PARAMETER);
         assert_eq!(call(GdipDeleteBrush, &[brush]), OK);
         mem::heap_free(out);
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod review_b06_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The halving lookup gives the one-by-one answer for positions in order, and lists
+        /// out of order keep the one-by-one lookup
+        #[test]
+        fn blend_lookups_are_the_scans(mut pos in prop::collection::vec(0f32..1.0, 0..600), f in prop::collection::vec(-2f32..2.0, 600), t in -0.5f32..1.5, sort in any::<bool>()) {
+            if sort {
+                pos.sort_by(f32::total_cmp);
+            }
+            let fac: Vec<(f32, f32)> = pos.iter().zip(&f).map(|(&p, &k)| (k, p)).collect();
+            let mut b = Blend { factors: fac.clone(), preset: Vec::new(), sorted: false };
+            b.resort();
+            prop_assert_eq!(b.sorted, pos.windows(2).all(|w| w[0] <= w[1]));
+            prop_assert_eq!(interp_in(&fac, b.sorted, t).to_bits(), interp_in(&fac, false, t).to_bits());
+            prop_assert_eq!(first_at(pos.len(), b.sorted, |i| pos[i], t), pos.iter().position(|&p| p >= t));
+            let pre: Vec<(u32, f32)> = pos.iter().map(|&p| ((p * 1e6) as u32 | 0xff00_0000, p)).collect();
+            if pre.len() >= 2 {
+                let mut a = Blend { factors: Vec::new(), preset: pre.clone(), sorted: false };
+                a.resort();
+                let plain = Blend { factors: Vec::new(), preset: pre, sorted: false };
+                prop_assert_eq!(a.color_pm(0, 0, t), plain.color_pm(0, 0, t));
+            }
+        }
+    }
+
+    /// A garbage count is OutOfMemory, not gigabytes read into a Vec
+    #[test]
+    fn huge_counts_are_out_of_memory() {
+        let _g = crate::test_guest::enter();
+        let p = mem::heap_alloc(64, true);
+        let huge = MAX_COUNT as u32 + 1;
+        assert_eq!(crate::test_guest::call(GdipCreatePath2, &[p, p, huge, 0, p + 32]), OUT_OF_MEMORY);
+        assert_eq!(crate::test_guest::call(GdipCreatePath2, &[p, p, i32::MAX as u32, 0, p + 32]), OUT_OF_MEMORY);
+        mem::heap_free(p);
     }
 }

@@ -668,14 +668,25 @@ pub fn attrs(m: &kura::fs::Metadata) -> u32 {
 pub fn wild(pat: &str, name: &str) -> bool {
     let p: Vec<char> = pat.to_lowercase().chars().collect();
     let n: Vec<char> = name.to_lowercase().chars().collect();
+    // whether p[i..] matches n[j..], for every i and j, from the ends back (the recursion it
+    // was went exponential: "*a*a*a*a*b" over a long name stalled FindFirstFile)
     fn m(p: &[char], n: &[char]) -> bool {
-        match p.first() {
-            None => n.is_empty(),
-            Some('*') => (0..=n.len()).any(|i| m(&p[1..], &n[i..])),
-            // (DOS: '?' also matches nothing at the end of the name or before its dot)
-            Some('?') => !n.is_empty() && m(&p[1..], &n[1..]) || (n.is_empty() || n[0] == '.') && m(&p[1..], n),
-            Some(c) => n.first() == Some(c) && m(&p[1..], &n[1..]),
+        let w = n.len() + 1;
+        let mut next = vec![false; w];
+        next[n.len()] = true;
+        for i in (0..p.len()).rev() {
+            let mut cur = vec![false; w];
+            for j in (0..w).rev() {
+                cur[j] = match p[i] {
+                    '*' => next[j] || j < n.len() && cur[j + 1],
+                    // (DOS: '?' also matches nothing at the end of the name or before its dot)
+                    '?' => j < n.len() && next[j + 1] || (j == n.len() || n[j] == '.') && next[j],
+                    c => j < n.len() && n[j] == c && next[j + 1],
+                };
+            }
+            next = cur;
         }
+        next[0]
     }
     // "*.*" matches names without a dot too
     if pat == "*.*" {
@@ -1210,5 +1221,48 @@ mod tests {
             prop_assert_eq!(std::fs::read(root.join("db")).unwrap(), data);
             let _ = std::fs::remove_dir_all(&root);
         }
+    }
+}
+
+#[cfg(test)]
+mod wild_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The recursion wild was (the reference).
+    fn old_m(p: &[char], n: &[char]) -> bool {
+        match p.first() {
+            None => n.is_empty(),
+            Some('*') => (0..=n.len()).any(|i| old_m(&p[1..], &n[i..])),
+            Some('?') => !n.is_empty() && old_m(&p[1..], &n[1..]) || (n.is_empty() || n[0] == '.') && old_m(&p[1..], n),
+            Some(c) => n.first() == Some(c) && old_m(&p[1..], &n[1..]),
+        }
+    }
+
+    proptest! {
+        /// The table answers as the recursion did, for any pattern and name
+        #[test]
+        fn wildcards_match_as_before(p in "[ab.*?A]{0,8}", n in "[abAB.]{0,10}") {
+            let (pl, nl): (Vec<char>, Vec<char>) = (p.to_lowercase().chars().collect(), n.to_lowercase().chars().collect());
+            let want = if p == "*.*" { true } else if let Some(base) = p.strip_suffix('.').filter(|b| !b.is_empty() && !b.ends_with('.')) {
+                (n == "." || n == ".." || !n.contains('.')) && {
+                    let b: Vec<char> = base.to_lowercase().chars().collect();
+                    if base == "*.*" { true } else { old_m(&b, &nl) }
+                }
+            } else {
+                old_m(&pl, &nl)
+            };
+            prop_assert_eq!(wild(&p, &n), want, "{:?} {:?}", p, n);
+        }
+    }
+
+    /// Many stars over a long name that does not match: at once
+    #[test]
+    fn many_stars_are_quick() {
+        let t = std::time::Instant::now();
+        let name = "a".repeat(250);
+        assert!(!wild("*a*a*a*a*a*a*a*a*a*a*a*a*b", &name));
+        assert!(wild("*a*a*a*a*a*a*a*a*a*a*a*a*", &name));
+        assert!(t.elapsed() < std::time::Duration::from_millis(500));
     }
 }

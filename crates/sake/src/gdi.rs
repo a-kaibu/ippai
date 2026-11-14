@@ -3543,6 +3543,9 @@ fn pts_rect(pts: &[(i32, i32)]) -> Rect {
 /// A cosmetic pen leaves out each path's last point (unless closed), a wide pen covers it.
 fn stroke(c: &mut Canvas, s: &DcState, pen: PenInfo, paths: &[Vec<(i32, i32)>], closed: bool) -> Rect {
     let mut done: Vec<(i32, i32)> = Vec::new();
+    // only the steps that can reach the clip (with the nib around them)
+    let pad = pen.width.clamp(1, 1 << 16) + 1;
+    let win = Rect { l: c.clip.l.saturating_sub(pad), t: c.clip.t.saturating_sub(pad), r: c.clip.r.saturating_add(pad), b: c.clip.b.saturating_add(pad) };
     if pen.width > 1 {
         let nib = gdi_geom::nib(pen.width);
         let mut set = std::collections::HashSet::new();
@@ -3555,7 +3558,7 @@ fn stroke(c: &mut Canvas, s: &DcState, pen: PenInfo, paths: &[Vec<(i32, i32)>], 
                 q.push(q[0]);
             }
             for w in q.windows(2) {
-                for (x, y) in gdi_geom::line_pts(w[0], w[1], true) {
+                for (x, y) in gdi_geom::line_pts_in(w[0], w[1], true, Some(win)).1 {
                     for &(u, v) in &nib {
                         set.insert((x + u, y + v));
                     }
@@ -3577,27 +3580,31 @@ fn stroke(c: &mut Canvas, s: &DcState, pen: PenInfo, paths: &[Vec<(i32, i32)>], 
         4 => &[9, 3, 3, 3, 3, 3],
         _ => &[],
     };
-    let period: u32 = dashes.iter().sum();
-    let mut pos = 0u32;
+    let period: u64 = dashes.iter().map(|&d| d as u64).sum();
+    let mut pos = 0u64;
     for p in paths {
         let mut q: Vec<(i32, i32)> = p.iter().map(|&(x, y)| c.dev(x, y)).collect();
         if closed && q.len() > 1 {
             q.push(q[0]);
         }
         for w in q.windows(2) {
-            for (x, y) in gdi_geom::line_pts(w[0], w[1], false) {
+            // (the pattern counts the steps left out too)
+            let (skip, pts, steps) = gdi_geom::line_pts_in(w[0], w[1], false, Some(win));
+            let start = pos;
+            pos = start + skip as u64;
+            for (x, y) in pts {
                 let mut on = true;
                 if period > 0 {
                     let mut k = pos % period;
                     for (i, &d) in dashes.iter().enumerate() {
-                        if k < d {
+                        if k < d as u64 {
                             on = i % 2 == 0;
                             break;
                         }
-                        k -= d;
+                        k -= d as u64;
                     }
-                    pos += 1;
                 }
+                pos += 1;
                 let hit = if on {
                     plot(c, x, y, pen.col, s.rop2)
                 } else if s.bk_mode == 2 {
@@ -3609,6 +3616,7 @@ fn stroke(c: &mut Canvas, s: &DcState, pen: PenInfo, paths: &[Vec<(i32, i32)>], 
                     done.push((x, y));
                 }
             }
+            pos = start + steps as u64;
         }
     }
     pts_rect(&done)
@@ -3714,7 +3722,11 @@ fn PolyBezierTo(c: &mut Ctx) -> u32 {
 
 /// A closed shape: `area(l, t, r, b)` gives its spans for a box. With a pen the box is the
 /// whole shape and its border is drawn with the pen, without one the box is a pixel smaller.
-fn shape(dc: u32, b: (i32, i32, i32, i32), area: impl Fn(i32, i32, i32, i32) -> Vec<gdi_geom::Span>) -> u32 {
+/// A shape's area in logical coordinates (l, t, r, b), made only within `win` (logical; the
+/// clip grown by the pen and one pixel: a shape 2^27 rows tall was made row by row whole).
+type Area<'a> = &'a dyn Fn(i32, i32, i32, i32, Rect) -> Vec<gdi_geom::Span>;
+
+fn shape(dc: u32, b: (i32, i32, i32, i32), area: Area) -> u32 {
     let (mut l, mut t, mut r, mut bo) = b;
     if l > r {
         std::mem::swap(&mut l, &mut r);
@@ -3725,14 +3737,19 @@ fn shape(dc: u32, b: (i32, i32, i32, i32), area: impl Fn(i32, i32, i32, i32) -> 
     draw(dc, |tt, s, cv| {
         let pen = pen_of(tt, s);
         let pat = pattern(tt, s, s.brush);
+        let pad = pen.map_or(0, |p| p.width.clamp(1, 1 << 16)) + 1;
+        let grow = |r: Rect, k: i32| Rect { l: r.l.saturating_sub(k), t: r.t.saturating_sub(k), r: r.r.saturating_add(k), b: r.b.saturating_add(k) };
+        // (the outline's window, device; the area's a pixel more, logical)
+        let ow = grow(cv.clip, pad);
+        let aw = grow(ow, 1).off(-cv.ox, -cv.oy);
         match pen {
             None => {
-                let sp = dev_spans(cv, area(l, t, r - 1, bo - 1));
+                let sp = dev_spans(cv, area(l, t, r - 1, bo - 1, aw));
                 fill_spans(cv, &sp, &pat, s.rop2)
             }
             Some(pen) => {
-                let sp = dev_spans(cv, area(l, t, r, bo));
-                let (edge, inner) = gdi_geom::outline(&sp);
+                let sp = dev_spans(cv, area(l, t, r, bo, aw));
+                let (edge, inner) = gdi_geom::outline_in(&sp, Some(ow));
                 let mut d = fill_spans(cv, &inner, &pat, s.rop2);
                 if pen.width > 1 {
                     // a wide pen: the nib along the border
@@ -3753,17 +3770,21 @@ fn shape(dc: u32, b: (i32, i32, i32, i32), area: impl Fn(i32, i32, i32, i32) -> 
     }) as u32
 }
 fn Rectangle(c: &mut Ctx) -> u32 {
-    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), |l, t, r, b| (t..b).filter(|_| r > l).map(|y| (y, l, r)).collect())
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), &|l, t, r, b, w| (t.max(w.t)..b.min(w.b)).filter(|_| r > l).map(|y| (y, l.max(w.l), r.min(w.r))).filter(|s| s.2 > s.1).collect())
 }
 fn Ellipse(c: &mut Ctx) -> u32 {
-    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), gdi_geom::ellipse_spans)
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), &|l, t, r, b, w| clip_x(gdi_geom::ellipse_spans_rows(l, t, r, b, (w.t, w.b)), w))
 }
 fn RoundRect(c: &mut Ctx) -> u32 {
     let (ew, eh) = (c.i(5), c.i(6));
-    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), move |l, t, r, b| gdi_geom::round_rect_spans(l, t, r, b, ew, eh))
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), &move |l, t, r, b, w| clip_x(gdi_geom::round_rect_spans_rows(l, t, r, b, ew, eh, (w.t, w.b)), w))
 }
 /// Pie (pie: true) or chord of the ellipse in the box, counter-clockwise from radial s to e.
-fn arc_area(l: i32, t: i32, r: i32, b: i32, s: (i32, i32), e: (i32, i32), pie: bool) -> Vec<gdi_geom::Span> {
+/// Spans cut to `w`'s columns (its rows are the caller's).
+fn clip_x(v: Vec<gdi_geom::Span>, w: Rect) -> Vec<gdi_geom::Span> {
+    v.into_iter().map(|(y, a, b)| (y, a.max(w.l), b.min(w.r))).filter(|s| s.2 > s.1).collect()
+}
+fn arc_area(l: i32, t: i32, r: i32, b: i32, s: (i32, i32), e: (i32, i32), pie: bool, w: Rect) -> Vec<gdi_geom::Span> {
     let (cx, cy) = ((l + r) as f64 / 2.0, (t + b) as f64 / 2.0);
     let (a0, a1) = (gdi_geom::angle(cx, cy, s.0 as f64, s.1 as f64), gdi_geom::angle(cx, cy, e.0 as f64, e.1 as f64));
     // the chord's end points on the ellipse
@@ -3771,7 +3792,7 @@ fn arc_area(l: i32, t: i32, r: i32, b: i32, s: (i32, i32), e: (i32, i32), pie: b
     let on = |a: f64| (cx + rx * a.cos(), cy - ry * a.sin());
     let (p0, p1) = (on(a0), on(a1));
     let mut out = Vec::new();
-    for (y, x0, x1) in gdi_geom::ellipse_spans(l, t, r, b) {
+    for (y, x0, x1) in clip_x(gdi_geom::ellipse_spans_rows(l, t, r, b, (w.t, w.b)), w) {
         let mut run: Option<i32> = None;
         for x in x0..=x1 {
             let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
@@ -3796,11 +3817,11 @@ fn arc_area(l: i32, t: i32, r: i32, b: i32, s: (i32, i32), e: (i32, i32), pie: b
 }
 fn Pie(c: &mut Ctx) -> u32 {
     let (s, e) = ((c.i(5), c.i(6)), (c.i(7), c.i(8)));
-    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), move |l, t, r, b| arc_area(l, t, r, b, s, e, true))
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), &move |l, t, r, b, w| arc_area(l, t, r, b, s, e, true, w))
 }
 fn Chord(c: &mut Ctx) -> u32 {
     let (s, e) = ((c.i(5), c.i(6)), (c.i(7), c.i(8)));
-    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), move |l, t, r, b| arc_area(l, t, r, b, s, e, false))
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), &move |l, t, r, b, w| arc_area(l, t, r, b, s, e, false, w))
 }
 fn arc(dc: u32, b: (i32, i32, i32, i32), s: (i32, i32), e: (i32, i32)) -> u32 {
     let (l, t, r, bo) = b;
@@ -3808,7 +3829,11 @@ fn arc(dc: u32, b: (i32, i32, i32, i32), s: (i32, i32), e: (i32, i32)) -> u32 {
         let Some(pen) = pen_of(tt, st) else { return Rect::default() };
         let (cx, cy) = ((l + r) as f64 / 2.0, (t + bo) as f64 / 2.0);
         let (a0, a1) = (gdi_geom::angle(cx, cy, s.0 as f64, s.1 as f64), gdi_geom::angle(cx, cy, e.0 as f64, e.1 as f64));
-        let (edge, _) = gdi_geom::outline(&gdi_geom::ellipse_spans(l, t, r, bo));
+        // (in the clip's window, logical, as shape's)
+        let pad = pen.width.clamp(1, 1 << 16) + 1;
+        let ow = Rect { l: cv.clip.l.saturating_sub(pad), t: cv.clip.t.saturating_sub(pad), r: cv.clip.r.saturating_add(pad), b: cv.clip.b.saturating_add(pad) }.off(-cv.ox, -cv.oy);
+        let aw = Rect { l: ow.l.saturating_sub(1), t: ow.t.saturating_sub(1), r: ow.r.saturating_add(1), b: ow.b.saturating_add(1) };
+        let (edge, _) = gdi_geom::outline_in(&clip_x(gdi_geom::ellipse_spans_rows(l, t, r, bo, (aw.t, aw.b)), aw), Some(ow));
         let pts: Vec<(i32, i32)> = edge.into_iter().filter(|&(x, y)| gdi_geom::on_arc(gdi_geom::angle(cx, cy, x as f64 + 0.5, y as f64 + 0.5), a0, a1)).collect();
         let paths: Vec<Vec<(i32, i32)>> = pts.iter().map(|&p| vec![p]).collect();
         if pen.width > 1 {
@@ -3837,7 +3862,7 @@ fn polygons(dc: u32, polys: Vec<Vec<(i32, i32)>>) -> u32 {
     draw(dc, |t, s, cv| {
         let pat = pattern(t, s, s.brush);
         let dev: Vec<Vec<(i32, i32)>> = polys.iter().map(|p| p.iter().map(|&(x, y)| cv.dev(x, y)).collect()).collect();
-        let sp = gdi_geom::poly_spans(&dev, s.fill_mode == 2);
+        let sp = gdi_geom::poly_spans_rows(&dev, s.fill_mode == 2, (cv.clip.t, cv.clip.b));
         let mut d = fill_spans(cv, &sp, &pat, s.rop2);
         if let Some(pen) = pen_of(t, s) {
             d = d.or(&stroke(cv, s, pen, &polys, true));
@@ -5552,5 +5577,59 @@ mod line_breaks {
             }
             prop_assert_eq!(r.len(), 1 + chars.iter().filter(|&&c| c == 10).count() + r.windows(2).filter(|w| w[0].1 == w[1].0).count());
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod far_shape_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+
+    /// Lines and shapes to points far past the bitmap draw what Windows draws there, in the
+    /// time of the bitmap (each made every pixel of the whole line or shape first: LineTo to
+    /// 0x3fffffff asked for gigabytes, an abort)
+    #[test]
+    fn far_lines_and_shapes_draw_their_part() {
+        let _g = enter();
+        guest_thread();
+        init();
+        let t0 = std::time::Instant::now();
+        let dc = call(CreateCompatibleDC, &[0]);
+        let bmp = call(CreateBitmap, &[16, 12, 1, 32, 0]);
+        call(SelectObject, &[dc, bmp]);
+        let white = call(CreatePen, &[0, 1, 0xff_ffff]);
+        call(SelectObject, &[dc, white]);
+        // a horizontal line from far left to far right on row 3, and a dashed one on row 5
+        call(MoveToEx, &[dc, (-(1i32 << 30)) as u32, 3, 0]);
+        call(LineTo, &[dc, 0x3fff_ffff, 3]);
+        for x in 0..16 {
+            assert_eq!(call(GetPixel, &[dc, x, 3]), 0xff_ffff, "row 3, x {x}");
+            assert_eq!(call(GetPixel, &[dc, x, 4]), 0, "row 4, x {x}");
+        }
+        // a Rectangle far past the bitmap with a red brush: all of the bitmap inside it
+        let red = call(CreateSolidBrush, &[0x00_00ff]);
+        call(SelectObject, &[dc, red]);
+        call(Rectangle, &[dc, (-(1i32 << 29)) as u32, (-(1i32 << 29)) as u32, 1 << 29, 1 << 29]);
+        for y in 0..12 {
+            for x in 0..16 {
+                assert_eq!(call(GetPixel, &[dc, x, y]), 0x00_00ff, "({x}, {y})");
+            }
+        }
+        // its border where the bitmap has it: a rectangle from -1e8 to 8 x 6
+        call(Rectangle, &[dc, (-100_000_000i32) as u32, (-100_000_000i32) as u32, 8, 6]);
+        assert_eq!(call(GetPixel, &[dc, 7, 0]), 0xff_ffff);
+        assert_eq!(call(GetPixel, &[dc, 0, 5]), 0xff_ffff);
+        assert_eq!(call(GetPixel, &[dc, 6, 4]), 0x00_00ff);
+        assert_eq!(call(GetPixel, &[dc, 8, 0]), 0x00_00ff);
+        // Ellipse, RoundRect and a polygon of that size too
+        call(Ellipse, &[dc, (-(1i32 << 29)) as u32, (-(1i32 << 29)) as u32, 1 << 29, 1 << 29]);
+        call(RoundRect, &[dc, (-(1i32 << 29)) as u32, (-(1i32 << 29)) as u32, 1 << 29, 1 << 29, 1 << 28, 1 << 28]);
+        let pts = mem::heap_alloc(24, true);
+        for (i, v) in [-(1i32 << 26), -(1 << 26), 1 << 26, -(1 << 26), 0, 1 << 26].into_iter().enumerate() {
+            mem::w32(pts + 4 * i as u32, v as u32);
+        }
+        call(Polygon, &[dc, pts, 3]);
+        assert_eq!(call(GetPixel, &[dc, 4, 4]), 0x00_00ff);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "{:?}", t0.elapsed());
     }
 }

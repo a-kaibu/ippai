@@ -56,11 +56,16 @@ pub(crate) fn with_pixels(h: u32, f: impl FnOnce(u32, u32, &mut [u8])) {
             if b.fmt != FMT_32PARGB {
                 return f(b.w, b.h, &mut b.px);
             }
-            // (a PARGB bitmap: drawn on straight, kept premultiplied)
+            // (a PARGB bitmap: drawn on straight, kept premultiplied; only the pixels drawn on
+            // are stored back: the round trip is lossy, untouched translucent ones changed with
+            // every call)
             let mut px: Vec<u8> = (0..b.px.len() / 4).flat_map(|i| b.straight(i)).collect();
             f(b.w, b.h, &mut px);
             for (i, p) in px.chunks(4).enumerate() {
-                b.store(i, [p[0], p[1], p[2], p[3]]);
+                let p = [p[0], p[1], p[2], p[3]];
+                if p != b.straight(i) {
+                    b.store(i, p);
+                }
             }
         }
     })
@@ -155,13 +160,33 @@ fn add(b: Bitmap, out: u32) -> u32 {
 /// A decoded file's ImageFlags (winref gdip: BMP 0x13010, PNG with alpha 0x12012, 16-bit gray
 /// 0x12042): read-only, its real pixel size, its DPI when the file says it (a BMP always, a
 /// PNG with pHYs, a JPEG with JFIF density), the color space, alpha
+/// Whether a PNG file has a chunk of type `ty`, from the chunk headers (the whole file was
+/// scanned byte by byte on every load without one); a chunk cut short ends the walk.
+fn png_has_chunk(data: &[u8], ty: &[u8; 4]) -> bool {
+    let mut at = 8usize;
+    while let Some(h) = data.get(at..at + 8) {
+        if &h[4..8] == ty {
+            return true;
+        }
+        if &h[4..8] == b"IEND" {
+            return false;
+        }
+        let len = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as usize;
+        at = match at.checked_add(12).and_then(|a| a.checked_add(len)) {
+            Some(a) => a,
+            None => return false,
+        };
+    }
+    false
+}
+
 fn decoded_flags(pic: &crate::picture::Picture, data: &[u8], fmt: u32) -> u32 {
     use crate::picture::{Fmt, Kind};
     let f = &pic.frames[0];
     let gray = matches!(f.fmt, Fmt::Gray2 | Fmt::Gray4 | Fmt::Gray8 | Fmt::Gray16);
     let dpi = match pic.kind {
         Kind::Bmp => true,
-        Kind::Png => data.windows(4).any(|w| w == b"pHYs"),
+        Kind::Png => png_has_chunk(data, b"pHYs"),
         Kind::Jpeg => data.get(13).is_some_and(|&u| data.get(6..10) == Some(b"JFIF") && u != 0),
         Kind::Gif => false,
     };
@@ -354,7 +379,11 @@ fn GdipGetImageEncodersSize(c: &mut Ctx) -> u32 {
     OK
 }
 fn GdipDisposeImage(c: &mut Ctx) -> u32 {
-    if with(|m| m.remove(&c.a(0))).is_some() {
+    if let Some(b) = with(|m| m.remove(&c.a(0))) {
+        // (disposed while locked: the lock's copy of the image goes too)
+        if let Some((buf, ..)) = b.locked {
+            mem::heap_free(buf);
+        }
         mem::heap_free(c.a(0));
     }
     OK
@@ -534,7 +563,8 @@ fn GdipBitmapUnlockBits(c: &mut Ctx) -> u32 {
                 if !b.idx.is_empty() {
                     let k = b.nearest(v);
                     b.idx[d] = k;
-                    let col = b.palette[k as usize];
+                    // (an index with no palette entry: black, not a panic)
+                    let col = b.palette.get(k as usize).copied().unwrap_or(0xff00_0000);
                     b.px[4 * d..4 * d + 4].copy_from_slice(&col.to_le_bytes());
                 } else {
                     b.store(d, v);
@@ -777,5 +807,80 @@ mod decoder_tests {
             // (nothing past the last string or signature: the size is tight)
             prop_assert_eq!(ends.into_iter().max(), Some(b.len()));
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod review_b06_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The chunk walk's answer for a list of chunks (type, payload).
+    fn png(chunks: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        for (t, d) in chunks {
+            v.extend((d.len() as u32).to_be_bytes());
+            v.extend(t);
+            v.extend(d);
+            v.extend([0; 4]);
+        }
+        v
+    }
+
+    proptest! {
+        /// pHYs is found as a chunk, never in another chunk's bytes (the byte scan took an
+        /// IDAT holding "pHYs" for one); cut or garbage files end the walk, never a panic
+        #[test]
+        fn png_chunks_are_walked(types in prop::collection::vec(prop::sample::select(vec![*b"IHDR", *b"IDAT", *b"pHYs", *b"tEXt", *b"IEND"]), 0..8),
+                                 payload in prop::collection::vec(any::<u8>(), 0..40), cut in any::<prop::sample::Index>(), noise in prop::collection::vec(any::<u8>(), 0..64)) {
+            let mut p = payload.clone();
+            p.extend(b"pHYs");
+            let chunks: Vec<([u8; 4], Vec<u8>)> = types.iter().map(|t| (*t, p.clone())).collect();
+            let file = png(&chunks);
+            let want = types.iter().take_while(|t| *t != b"IEND").any(|t| t == b"pHYs") || types.first() == Some(b"pHYs");
+            let want = want || types.iter().position(|t| t == b"pHYs").is_some_and(|i| types.iter().position(|t| t == b"IEND").is_none_or(|e| i < e));
+            prop_assert_eq!(png_has_chunk(&file, b"pHYs"), want);
+            let k = cut.index(file.len() + 1);
+            let _ = png_has_chunk(&file[..k], b"pHYs");
+            let _ = png_has_chunk(&noise, b"pHYs");
+        }
+
+        /// Drawing on a PARGB bitmap changes only the pixels drawn on (the straight round trip
+        /// is lossy: every untouched translucent pixel drifted with each call)
+        #[test]
+        fn pargb_pixels_not_drawn_on_stay(px in prop::collection::vec(any::<[u8; 4]>(), 1..64), touch in any::<prop::sample::Index>(), col in any::<[u8; 4]>()) {
+            let _g = crate::test_guest::enter();
+            let n = px.len();
+            let bytes: Vec<u8> = px.iter().flat_map(|p| [premul(p[0], p[3]), premul(p[1], p[3]), premul(p[2], p[3]), p[3]]).collect();
+            let out = mem::heap_alloc(8, true);
+            add(Bitmap { w: n as u32, h: 1, px: bytes.clone(), fmt: FMT_32PARGB, flags: 0, palette: Vec::new(), idx: Vec::new(), locked: None }, out);
+            let h = mem::rp(out);
+            let i = touch.index(n);
+            with_pixels(h, |_, _, p| p[4 * i..4 * i + 4].copy_from_slice(&col));
+            let after = with(|m| m[&h].px.clone());
+            for j in 0..n {
+                if j != i {
+                    prop_assert_eq!(&after[4 * j..4 * j + 4], &bytes[4 * j..4 * j + 4], "pixel {} changed", j);
+                }
+            }
+            prop_assert_eq!(&after[4 * i..4 * i + 4], &[premul(col[0], col[3]), premul(col[1], col[3]), premul(col[2], col[3]), col[3]][..]);
+            with(|m| m.remove(&h));
+        }
+    }
+
+    /// A bitmap disposed while locked frees the lock's copy (a full image a lock, on the
+    /// guest's heap)
+    #[test]
+    fn disposing_a_locked_bitmap_frees_its_lock() {
+        let _g = crate::test_guest::enter();
+        let out = mem::heap_alloc(8, true);
+        add(Bitmap { w: 2, h: 2, px: vec![7; 16], fmt: FMT_32ARGB, flags: 0, palette: Vec::new(), idx: Vec::new(), locked: None }, out);
+        let h = mem::rp(out);
+        let buf = mem::heap_alloc(4096, true);
+        with(|m| m.get_mut(&h).unwrap().locked = Some((buf, 0, 0, 2, FMT_32ARGB)));
+        assert!(mem::heap_owns(buf));
+        assert_eq!(crate::test_guest::call(GdipDisposeImage, &[h]), OK);
+        // (a freed block loses its header's mark)
+        assert!(!mem::heap_owns(buf), "the lock's buffer was left");
     }
 }

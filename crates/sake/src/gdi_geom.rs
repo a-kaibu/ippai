@@ -15,27 +15,51 @@ fn ceil_div(n: i64, d: i64) -> i64 {
 /// The pixels of a line from a to b: one per step along the major axis; on the minor axis the
 /// nearest pixel, ties to the smaller coordinate. `last` includes b.
 pub fn line_pts(a: (i32, i32), b: (i32, i32), last: bool) -> Vec<(i32, i32)> {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let n = dx.abs().max(dy.abs());
-    let mut v = Vec::with_capacity(n as usize + 1);
-    let steps = if last { n + 1 } else { n };
-    for k in 0..steps {
-        let minor = |d: i32| a_minor(k as i64, d as i64, n as i64);
-        if dx.abs() >= dy.abs() {
-            v.push((a.0 + k * dx.signum(), a.1 + minor(dy)));
-        } else {
-            v.push((a.0 + minor(dx), a.1 + k * dy.signum()));
-        }
-    }
-    v
+    line_pts_in(a, b, last, None).1
 }
 
-fn a_minor(k: i64, d: i64, n: i64) -> i32 {
+/// line_pts, only the steps whose major coordinate lies in `win` (the clip, grown by a pen's
+/// nib): (the steps before them, those pixels, all the steps). A line to a far point (LineTo
+/// x = 0x3fffffff) asked for gigabytes of pixels before any were clipped; the pixels kept are
+/// the very ones line_pts gives at those steps (a dash pattern goes on counting the others).
+pub fn line_pts_in(a: (i32, i32), b: (i32, i32), last: bool, win: Option<Rect>) -> (i64, Vec<(i32, i32)>, i64) {
+    let (dx, dy) = (b.0 as i64 - a.0 as i64, b.1 as i64 - a.1 as i64);
+    let n = dx.abs().max(dy.abs());
+    let steps = if last { n + 1 } else { n };
+    let xmajor = dx.abs() >= dy.abs();
+    let (k0, k1) = match win {
+        None => (0, steps),
+        Some(w) => {
+            // the major coordinate a + k * sign within lo..hi
+            let (from, sign, lo, hi) = if xmajor { (a.0 as i64, dx.signum(), w.l as i64, w.r as i64) } else { (a.1 as i64, dy.signum(), w.t as i64, w.b as i64) };
+            let (k0, k1) = match sign {
+                0 => if (lo..hi).contains(&from) { (0, steps) } else { (0, 0) },
+                1 => (lo - from, hi - from),
+                _ => (from - hi + 1, from - lo + 1),
+            };
+            (k0.clamp(0, steps), k1.clamp(0, steps))
+        }
+    };
+    let mut v = Vec::with_capacity((k1 - k0).max(0) as usize);
+    for k in k0..k1 {
+        let minor = |d: i64| a_minor(k, d, n);
+        if xmajor {
+            v.push(((a.0 as i64 + k * dx.signum()) as i32, (a.1 as i64 + minor(dy)) as i32));
+        } else {
+            v.push(((a.0 as i64 + minor(dx)) as i32, (a.1 as i64 + k * dy.signum()) as i32));
+        }
+    }
+    (k0.min(k1), v, steps)
+}
+
+fn a_minor(k: i64, d: i64, n: i64) -> i64 {
     if n == 0 {
         return 0;
     }
-    // round(k * d / n), halves down: ceil(k * d / n - 1/2)
-    ceil_div(2 * k * d - n, 2 * n) as i32
+    // round(k * d / n), halves down: ceil(k * d / n - 1/2) (in i128: k * d of a line across
+    // the whole coordinate range is past i64)
+    let (num, den) = (2 * k as i128 * d as i128 - n as i128, 2 * n as i128);
+    -((-num).div_euclid(den)) as i64
 }
 
 /// The offsets a wide pen covers around each point of its path (a disc of diameter w).
@@ -60,6 +84,15 @@ pub fn nib(w: i32) -> Vec<(i32, i32)> {
 /// Spans inside polygons (each implicitly closed): a pixel is in when its corner point (x, y)
 /// is, left and top edges in, right and bottom out. ALTERNATE or WINDING.
 pub fn poly_spans(polys: &[Vec<(i32, i32)>], winding: bool) -> Vec<Span> {
+    poly_spans_rows(polys, winding, ALL_ROWS)
+}
+
+/// Every row.
+pub const ALL_ROWS: (i32, i32) = (i32::MIN, i32::MAX);
+
+/// poly_spans of the rows `rows.0..rows.1` only (the clip's: a polygon 2^27 rows tall walked
+/// every one of them, times its edges, to fill the few on the bitmap).
+pub fn poly_spans_rows(polys: &[Vec<(i32, i32)>], winding: bool, rows: (i32, i32)) -> Vec<Span> {
     // GDI coordinates are 28-bit (+-2^27); a polygon beyond them makes an empty region (as
     // on Windows, Wine's gdi32 clipping test) instead of 2^31 rows of edge table
     const LIM: i32 = 1 << 27;
@@ -78,6 +111,7 @@ pub fn poly_spans(polys: &[Vec<(i32, i32)>], winding: bool) -> Vec<Span> {
     let (Some(y0), Some(y1)) = (edges.iter().map(|e| e.0 .1.min(e.1 .1)).min(), edges.iter().map(|e| e.0 .1.max(e.1 .1)).max()) else {
         return Vec::new();
     };
+    let (y0, y1) = (y0.max(rows.0), y1.min(rows.1));
     let mut out = Vec::new();
     let mut xs: Vec<(i64, i64, i32)> = Vec::new();
     for y in y0..y1 {
@@ -120,14 +154,18 @@ pub fn poly_spans(polys: &[Vec<(i32, i32)>], winding: bool) -> Vec<Span> {
 
 /// Spans of the ellipse in the box l..r, t..b (exclusive): the pixels whose centres are inside.
 pub fn ellipse_spans(l: i32, t: i32, r: i32, b: i32) -> Vec<Span> {
-    let (w, h) = ((r - l) as f64, (b - t) as f64);
+    ellipse_spans_rows(l, t, r, b, ALL_ROWS)
+}
+/// ellipse_spans of the rows `rows.0..rows.1` only.
+pub fn ellipse_spans_rows(l: i32, t: i32, r: i32, b: i32, rows: (i32, i32)) -> Vec<Span> {
+    let (w, h) = ((r as f64 - l as f64), (b as f64 - t as f64));
     if w <= 0.0 || h <= 0.0 {
         return Vec::new();
     }
     let (cx, cy) = (l as f64 + w / 2.0, t as f64 + h / 2.0);
     let (a, bb) = (w / 2.0, h / 2.0);
     let mut out = Vec::new();
-    for y in t..b {
+    for y in t.max(rows.0)..b.min(rows.1) {
         let dy = (y as f64 + 0.5 - cy) / bb;
         let q = 1.0 - dy * dy;
         if q < 0.0 {
@@ -146,17 +184,24 @@ pub fn ellipse_spans(l: i32, t: i32, r: i32, b: i32) -> Vec<Span> {
 
 /// Spans of a rectangle with corners rounded by ellipses of ew x eh.
 pub fn round_rect_spans(l: i32, t: i32, r: i32, b: i32, ew: i32, eh: i32) -> Vec<Span> {
-    let (ew, eh) = (ew.abs().min(r - l), eh.abs().min(b - t));
+    round_rect_spans_rows(l, t, r, b, ew, eh, ALL_ROWS)
+}
+/// round_rect_spans of the rows `rows.0..rows.1` only.
+pub fn round_rect_spans_rows(l: i32, t: i32, r: i32, b: i32, ew: i32, eh: i32, rows: (i32, i32)) -> Vec<Span> {
+    let (ew, eh) = (ew.saturating_abs().min(r.saturating_sub(l)), eh.saturating_abs().min(b.saturating_sub(t)));
+    let (y0, y1) = (t.max(rows.0), b.min(rows.1));
     if ew < 2 || eh < 2 {
-        return (t..b).filter(|_| r > l).map(|y| (y, l, r)).collect();
+        return (y0..y1).filter(|_| r > l).map(|y| (y, l, r)).collect();
     }
-    let e = ellipse_spans(0, 0, ew, eh);
+    // (the corner ellipse's row of each corner row on its own: each looked its row up in all
+    // of them, and all of them were made for a corner of any height)
+    let row = |ey: i32| ellipse_spans_rows(0, 0, ew, eh, (ey, ey + 1)).first().copied();
     let mut out = Vec::new();
-    for y in t..b {
+    for y in y0..y1 {
         // corner rows use the ellipse's half rows
         let ey = if y - t < eh / 2 { Some(y - t) } else if b - 1 - y < eh / 2 { Some(eh - (b - y)) } else { None };
-        match ey.and_then(|ey| e.iter().find(|s| s.0 == ey)) {
-            Some(&(_, x0, x1)) => {
+        match ey.and_then(row) {
+            Some((_, x0, x1)) => {
                 let (il, ir) = (x0, ew - x1);
                 if r - ir > l + il {
                     out.push((y, l + il, r - ir));
@@ -176,6 +221,84 @@ pub fn spans_has(s: &[Span], x: i32, y: i32) -> bool {
 
 /// The border pixels of an area (a pixel with a 4-neighbour outside) and the rest.
 pub fn outline(s: &[Span]) -> (Vec<(i32, i32)>, Vec<Span>) {
+    outline_in(s, None)
+}
+
+/// outline, from the spans (no per-pixel lookups: four hash lookups and a row scan per pixel
+/// of every Rectangle drawn with a pen), only within `win` when given (a rectangle 2^30 wide
+/// had every pixel of its top row listed). The spans must cover `win` grown by one pixel for
+/// its border to be right there.
+pub fn outline_in(s: &[Span], win: Option<Rect>) -> (Vec<(i32, i32)>, Vec<Span>) {
+    let mut rows: std::collections::BTreeMap<i32, Vec<(i32, i32)>> = Default::default();
+    for &(y, x0, x1) in s {
+        if x1 > x0 {
+            rows.entry(y).or_default().push((x0, x1));
+        }
+    }
+    // each row's runs sorted and merged (touching runs are one: the pixels between are in)
+    for v in rows.values_mut() {
+        v.sort_unstable();
+        let mut m: Vec<(i32, i32)> = Vec::with_capacity(v.len());
+        for &(a, b) in v.iter() {
+            match m.last_mut() {
+                Some(l) if a <= l.1 => l.1 = l.1.max(b),
+                _ => m.push((a, b)),
+            }
+        }
+        *v = m;
+    }
+    let none: Vec<(i32, i32)> = Vec::new();
+    let w = win.unwrap_or(Rect { l: i32::MIN, t: i32::MIN, r: i32::MAX, b: i32::MAX });
+    let mut edge = Vec::new();
+    let mut inner = Vec::new();
+    for (&y, runs) in &rows {
+        if y < w.t || y >= w.b {
+            continue;
+        }
+        let up = y.checked_sub(1).and_then(|u| rows.get(&u)).unwrap_or(&none);
+        let down = y.checked_add(1).and_then(|d| rows.get(&d)).unwrap_or(&none);
+        for &(x0, x1) in runs {
+            // inside: both horizontal neighbours in the run, and the pixels above and below in
+            let mut ins: Vec<(i32, i32)> = Vec::new();
+            let core = (x0.saturating_add(1), x1.saturating_sub(1));
+            if core.1 > core.0 {
+                for &(a, b) in up {
+                    let (l, r) = (a.max(core.0), b.min(core.1));
+                    if r <= l {
+                        continue;
+                    }
+                    for &(c, d) in down {
+                        let (l2, r2) = (c.max(l), d.min(r));
+                        if r2 > l2 {
+                            ins.push((l2, r2));
+                        }
+                    }
+                }
+            }
+            ins.sort_unstable();
+            // the run's pixels: the inside ones as spans, the rest as points (in the window)
+            let (wl, wr) = (x0.max(w.l), x1.min(w.r));
+            let mut x = wl;
+            for &(a, b) in &ins {
+                let (a, b) = (a.max(wl), b.min(wr));
+                if b <= a {
+                    continue;
+                }
+                edge.extend((x..a).map(|e| (e, y)));
+                inner.push((y, a, b));
+                x = b;
+            }
+            if wr > x {
+                edge.extend((x..wr).map(|e| (e, y)));
+            }
+        }
+    }
+    (edge, inner)
+}
+
+#[cfg(test)]
+/// outline as it was: per pixel, the reference for outline_in.
+pub fn outline_old(s: &[Span]) -> (Vec<(i32, i32)>, Vec<Span>) {
     use std::collections::HashMap;
     let mut rows: HashMap<i32, Vec<(i32, i32)>> = HashMap::new();
     for &(y, x0, x1) in s {
@@ -355,5 +478,91 @@ mod tests {
         assert_eq!(combine(&a, &b, 1), vec![Rect { l: 5, t: 5, r: 10, b: 10 }]);
         assert_eq!(combine(&a, &b, 3).len(), 4);
         assert_eq!(normalize(&[a[0], a[0]]), a);
+    }
+
+    /// line_pts as it was (i32 steps), the reference.
+    fn old_line_pts(a: (i32, i32), b: (i32, i32), last: bool) -> Vec<(i32, i32)> {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let n = dx.abs().max(dy.abs());
+        let steps = if last { n + 1 } else { n };
+        (0..steps)
+            .map(|k| {
+                let minor = |d: i32| a_minor(k as i64, d as i64, n as i64) as i32;
+                if dx.abs() >= dy.abs() { (a.0 + k * dx.signum(), a.1 + minor(dy)) } else { (a.0 + minor(dx), a.1 + k * dy.signum()) }
+            })
+            .collect()
+    }
+
+    fn pixels(v: &[Span]) -> std::collections::BTreeSet<(i32, i32)> {
+        v.iter().flat_map(|&(y, a, b)| (a..b).map(move |x| (x, y))).collect()
+    }
+
+    proptest::proptest! {
+        /// The steps a window keeps are line_pts' own at those steps, in order, the skipped
+        /// ones counted (a dash pattern goes on as if all were drawn)
+        #[test]
+        fn windowed_lines_are_the_whole_lines_cut(a in (-300i32..300, -300i32..300), b in (-300i32..300, -300i32..300), last in proptest::bool::ANY,
+                                                   w in (-200i32..200, -200i32..200, 0i32..150, 0i32..150)) {
+            let all = old_line_pts(a, b, last);
+            proptest::prop_assert_eq!(line_pts(a, b, last), all.clone());
+            let win = Rect { l: w.0, t: w.1, r: w.0 + w.2, b: w.1 + w.3 };
+            let (skip, got, steps) = line_pts_in(a, b, last, Some(win));
+            proptest::prop_assert_eq!(steps as usize, all.len());
+            let xmajor = (b.0 - a.0).abs() >= (b.1 - a.1).abs();
+            let inside = |p: &(i32, i32)| if xmajor { p.0 >= win.l && p.0 < win.r } else { p.1 >= win.t && p.1 < win.b };
+            let want: Vec<_> = all.iter().copied().filter(inside).collect();
+            proptest::prop_assert_eq!(&got, &want);
+            if let Some(first) = all.iter().position(inside) {
+                proptest::prop_assert_eq!(skip as usize, first);
+            }
+        }
+
+        /// outline_in is the old per-pixel outline, and within a window that part of it, for
+        /// any spans (overlapping, touching, several a row)
+        #[test]
+        fn outlines_from_spans_are_the_per_pixel_ones(s in proptest::collection::vec((-8i32..8, -10i32..10, 0i32..12), 0..40), w in (-12i32..12, -12i32..12, 0i32..20, 0i32..20)) {
+            let s: Vec<Span> = s.into_iter().map(|(y, a, n)| (y, a, a + n)).collect();
+            let (oe, oi) = outline_old(&s);
+            let (ne, ni) = outline_in(&s, None);
+            let set = |v: &[(i32, i32)]| v.iter().copied().collect::<std::collections::BTreeSet<_>>();
+            proptest::prop_assert_eq!(set(&ne), set(&oe));
+            proptest::prop_assert_eq!(ne.len(), set(&ne).len(), "an edge pixel twice");
+            proptest::prop_assert_eq!(pixels(&ni), pixels(&oi));
+            proptest::prop_assert_eq!(ni.iter().map(|x| x.2 - x.1).sum::<i32>() as usize, pixels(&ni).len(), "inner spans overlap");
+            let win = Rect { l: w.0, t: w.1, r: w.0 + w.2, b: w.1 + w.3 };
+            let (we, wi) = outline_in(&s, Some(win));
+            proptest::prop_assert_eq!(set(&we), set(&oe).into_iter().filter(|&(x, y)| win.has(x, y)).collect::<std::collections::BTreeSet<_>>());
+            proptest::prop_assert_eq!(pixels(&wi), pixels(&oi).into_iter().filter(|&(x, y)| win.has(x, y)).collect::<std::collections::BTreeSet<_>>());
+        }
+
+        /// The row-limited areas are the whole ones' rows
+        #[test]
+        fn row_limited_areas_are_the_whole_ones_rows(l in -40i32..40, t in -40i32..40, w in 0i32..60, h in 0i32..60, ew in -30i32..30, eh in -30i32..30, rows in (-50i32..50, 0i32..60),
+                                                     poly in proptest::collection::vec((-50i32..50, -50i32..50), 0..7), winding in proptest::bool::ANY) {
+            let rows = (rows.0, rows.0 + rows.1);
+            let cut = |v: Vec<Span>| v.into_iter().filter(|s| s.0 >= rows.0 && s.0 < rows.1).collect::<Vec<_>>();
+            proptest::prop_assert_eq!(ellipse_spans_rows(l, t, l + w, t + h, rows), cut(ellipse_spans(l, t, l + w, t + h)));
+            proptest::prop_assert_eq!(round_rect_spans_rows(l, t, l + w, t + h, ew, eh, rows), cut(round_rect_spans(l, t, l + w, t + h, ew, eh)));
+            proptest::prop_assert_eq!(poly_spans_rows(&[poly.clone()], winding, rows), cut(poly_spans(&[poly], winding)));
+        }
+    }
+
+    /// Far points (as LineTo to 0x3fffffff, which Windows clips cheaply) cost the window, not
+    /// the line; a corner of any height does not make all its rows
+    #[test]
+    fn far_shapes_cost_their_window() {
+        let win = Rect { l: 0, t: 0, r: 64, b: 64 };
+        let t0 = std::time::Instant::now();
+        let (skip, pts, steps) = line_pts_in((0, 10), (0x3fff_ffff, 20), true, Some(win));
+        assert_eq!((skip, pts.len(), steps), (0, 64, 0x4000_0000));
+        assert!(pts.iter().all(|p| p.1 == 10));
+        let (_, pts, _) = line_pts_in((i32::MIN, i32::MIN), (i32::MAX, i32::MAX), false, Some(win));
+        assert_eq!(pts, (0..64).map(|k| (k, k)).collect::<Vec<_>>());
+        let r = round_rect_spans_rows(-(1 << 30), -(1 << 30), 1 << 30, 1 << 30, 1 << 29, 1 << 29, (0, 64));
+        assert_eq!(r.len(), 64);
+        let (e, i) = outline_in(&[(0, -(1 << 30), 1 << 30), (1, -(1 << 30), 1 << 30), (2, -(1 << 30), 1 << 30)], Some(win));
+        assert_eq!(e.len(), 128);
+        assert_eq!(i, vec![(1, 0, 64)]);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2));
     }
 }

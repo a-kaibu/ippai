@@ -304,12 +304,13 @@ fn add_private(coll: u32, data: Vec<u8>) -> u32 {
             Some(&h) => h,
             None => face_family(s, face),
         };
-        let list = s.private.get_mut(&coll).unwrap();
+        // (the collection deleted by another thread meanwhile: InvalidParameter, not an abort)
+        let Some(list) = s.private.get_mut(&coll) else { return INVALID_PARAMETER };
         if !list.contains(&fam) {
             list.push(fam);
         }
-    });
-    OK
+        OK
+    })
 }
 fn GdipPrivateAddFontFile(c: &mut Ctx) -> u32 {
     let (coll, np) = (c.a(0), c.a(1));
@@ -375,4 +376,22 @@ pub fn init() {
         implement("gdiplus", n, *f);
     }
     let _ = r32;
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod review_b06_tests {
+    use super::*;
+
+    /// A font added to a collection another thread deleted meanwhile (after the caller's
+    /// check): InvalidParameter, not the abort of an unwrap
+    #[test]
+    fn a_font_into_a_deleted_collection_is_refused() {
+        let Some(font) = std::fs::read_dir("/usr/share/fonts/truetype").ok().into_iter().flatten().flatten().flat_map(|d| std::fs::read_dir(d.path()).ok().into_iter().flatten().flatten()).map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "ttf")) else {
+            eprintln!("no TrueType font on this machine: skipped");
+            return;
+        };
+        let _g = crate::test_guest::enter();
+        let data = std::fs::read(font).unwrap();
+        assert_eq!(add_private(0x7fff_0010, data), INVALID_PARAMETER);
+    }
 }
