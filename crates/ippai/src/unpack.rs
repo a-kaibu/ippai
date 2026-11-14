@@ -196,7 +196,7 @@ pub fn unpack_with(src: &Path, out: &Path, lim: Limits) -> Result<Vec<String>> {
 
 /// The program to start, relative to `root` with `/`: `hint` (also found one folder further
 /// down, as `*/hint`), else the biggest .exe that is not a tool or installer; cs2.exe (CatSystem2's
-/// game behind its launcher) over that.
+/// game behind its launcher) and a Siglus game's engine (beside Gameexe.dat) over that.
 pub fn pick_exe(root: &Path, hint: Option<&str>) -> Option<String> {
     let mut exes = vec![];
     walk(root, &mut |p| {
@@ -213,6 +213,15 @@ pub fn pick_exe(root: &Path, hint: Option<&str>) -> Option<String> {
     }
     if let Some((_, r)) = exes.iter().find(|(_, r)| r.rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case("cs2.exe"))) {
         return Some(r.clone());
+    }
+    // (Siglus: the engine beside Gameexe.dat, not the autorun menu in front of it, engine_exe.rs)
+    let mut all = vec![];
+    walk(root, &mut |p| {
+        all.push(p.strip_prefix(root).ok()?.to_string_lossy().into_owned());
+        None::<()>
+    });
+    if let Some(e) = crate::engine_exe::siglus_engine(all.iter().map(String::as_str)) {
+        return Some(e);
     }
     // (Unity's UnityCrashHandler32/64.exe is bigger than the game's own exe)
     let tool = regex::Regex::new(r"(?i)unins|setup|install|config|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet|CrashHandler|crashpad").unwrap();
@@ -1533,6 +1542,15 @@ mod tests {
         assert_eq!(pick_exe(&d, None).as_deref(), Some("game/Game.exe"));
         fs::write(d.join("game/cs2.exe"), b"MZ").unwrap();
         assert_eq!(pick_exe(&d, None).as_deref(), Some("game/cs2.exe"));
+        // a Siglus game behind its autorun menu (anemoi): the engine beside Gameexe.dat
+        let sg = d.join("siglus");
+        for (f, n) in [("Start.exe", 9000), ("StartData/StartMenu.exe", 8000), ("StartData/GameData/SiglusEngine.exe", 100), ("StartData/GameData/data/SiglusEngine.exe", 50), ("StartData/GameData/data/Gameexe.dat", 10)] {
+            fs::create_dir_all(sg.join(f).parent().unwrap()).unwrap();
+            fs::write(sg.join(f), vec![0u8; n]).unwrap();
+        }
+        assert_eq!(pick_exe(&sg, None).as_deref(), Some("StartData/GameData/data/SiglusEngine.exe"));
+        // (a hint still wins)
+        assert_eq!(pick_exe(&sg, Some("Start.exe")).as_deref(), Some("Start.exe"));
         fs::remove_dir_all(&d).unwrap();
     }
 

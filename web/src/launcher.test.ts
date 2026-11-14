@@ -33,6 +33,21 @@ describe("applyGame", () => {
   });
 });
 
+describe("applyGame launcher", () => {
+  it("names the launcher a Siglus game was registered with (its saves are read), and drops it for another game", () => {
+    const params = new URLSearchParams("game=anemoi");
+    applyGame(params, {
+      ...anemoi,
+      run: "Z:\\ippai\\game\\StartData\\GameData\\data\\SiglusEngine.exe",
+      launcher: "Z:\\ippai\\game\\Start.exe",
+    });
+    expect(params.get("run")).toBe("Z:\\ippai\\game\\StartData\\GameData\\data\\SiglusEngine.exe");
+    expect(params.get("launcher")).toBe("Z:\\ippai\\game\\Start.exe");
+    applyGame(params, anemoi);
+    expect(params.has("launcher")).toBe(false);
+  });
+});
+
 describe("nextRunUrl", () => {
   it("keeps the mounts of a game picked from the list, whose address bar has only ?game=", () => {
     const params = new URLSearchParams("game=anemoi");

@@ -766,6 +766,9 @@ async fn games(State(p): State<Arc<Prerun>>) -> Response {
         if let Ok(text) = tokio::fs::read_to_string(&f).await {
             let text = match serde_json::from_str::<serde_json::Value>(&text) {
                 Ok(mut game) => {
+                    // (a Siglus game registered with its autorun menu: its engine, engine_exe.rs;
+                    // what the user set for the game still wins)
+                    crate::engine_exe::resolve(store, &mut game);
                     if let Ok(db) = crate::library::Library::new(store) {
                         if let Err(e) = db.apply_settings(&mut game) { eprintln!("game settings: {e}"); }
                     }

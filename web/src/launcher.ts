@@ -38,6 +38,9 @@ export interface GameEntry {
   mounts: string[];
   /** NAME=value */
   env: string[];
+  /** the launcher the game was registered with, when the server starts its engine instead
+   * (a Siglus game's autorun menu: crates/ippai/src/engine_exe.rs); saves made under it are read */
+  launcher?: string;
   meta?: GameMeta;
   /** what did not unpack of the download it was added from (`ippai add` of an archive a tool
    * failed on in part: crates/ippai/src/unpack.rs) */
@@ -78,6 +81,8 @@ export function coverUrl(g: GameEntry): string | null {
 export function applyGame(params: URLSearchParams, g: GameEntry): void {
   params.set("game", g.id);
   params.set("run", g.run);
+  if (g.launcher) params.set("launcher", g.launcher);
+  else params.delete("launcher");
   params.delete("mount");
   for (const m of g.mounts) params.append("mount", m);
   if (g.args.length) params.set("args", g.args.join(","));

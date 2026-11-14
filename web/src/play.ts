@@ -229,7 +229,7 @@ async function loadSavesOrOld(
   const saves = await loadSaves(name, notice);
   if (saves?.length || !old) return saves;
   const moved = renameRecords(await loadSaves(old, notice));
-  if (moved?.length) log(`Z:\\vnvm のころのセーブを引き継ぎました (${old})`);
+  if (moved?.length) log(`以前のセーブを引き継ぎました (${old})`);
   return moved ?? saves;
 }
 
@@ -244,7 +244,13 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const saveName = params.get("saves") ?? saveNameOf(run, mounts);
   // (the saves of before the rename, Z:\vnvm: read when there are none under the new name)
   const legacy = params.has("saves") ? null : legacyNames(run, mounts);
-  const oldSaves = legacy ? saveNameOf(legacy.run, legacy.mounts) : null;
+  // (or those made under the launcher the server now starts the engine of, launcher.ts)
+  const launcher = params.has("saves") ? null : params.get("launcher");
+  const oldSaves = legacy
+    ? saveNameOf(legacy.run, legacy.mounts)
+    : launcher
+      ? saveNameOf(launcher, mounts)
+      : null;
   // (the programs this one starts in its place keep them: closeGame)
   params.set("saves", saveName);
   const nosave = params.has("nosave");

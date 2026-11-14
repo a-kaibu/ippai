@@ -26,6 +26,7 @@ mod store_api;
 mod meta;
 mod meta_url;
 mod egs_match;
+mod engine_exe;
 mod gamedb;
 mod movie;
 mod evb;
