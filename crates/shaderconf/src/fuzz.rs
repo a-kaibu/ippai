@@ -233,7 +233,7 @@ impl Input {
 
 fn d3d9_wgsl(w: &[u32]) -> Option<Vec<String>> {
     let s = dxwgsl::d3d9::Shader::parse(w)?;
-    let o = dxwgsl::d3d9::Options { link: 0, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 };
+    let o = dxwgsl::d3d9::Options { link: 0, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1, flat: false };
     let g = dxwgsl::d3d9::Gen::new(&s);
     Some(vec![if s.pixel { g.pixel(&o) } else { g.vertex(&o) }])
 }

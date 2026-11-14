@@ -43,6 +43,12 @@ pub const USAGE_FOG: u32 = 11;
 pub const USAGE_DEPTH: u32 = 12;
 pub const USAGE_SAMPLE: u32 = 13;
 
+/// The interpolation attribute of a vertex output / pixel input location: the colors (0, 1)
+/// are flat under SHADEMODE flat (WGSL's flat takes the first vertex, as D3D9's flat shading).
+pub fn flat_attr(flat: bool, loc: u32) -> &'static str {
+    if flat && loc < 2 { "@interpolate(flat) " } else { "" }
+}
+
 /// Where a vertex output / pixel input of a semantic goes (None: not passed).
 pub fn location(usage: u32, index: u32) -> Option<u32> {
     match (usage, index) {
@@ -637,6 +643,9 @@ pub struct Options {
     pub addr: Vec<crate::addr::Addr>,
     /// pixel shader: the render targets set (1-4): oC1-oC3 go to locations 1-3 of those there
     pub targets: u32,
+    /// SHADEMODE flat: the colors (locations 0 and 1, COLOR0/1 and ps 1.x-2.x v0/v1) come from
+    /// each triangle's first vertex, as D3D9 does with shaders too (both stages must agree)
+    pub flat: bool,
 }
 
 pub const CONSTS_EXTRA: u32 = 4;
@@ -1156,7 +1165,7 @@ impl<'a> Gen<'a> {
         let writes = s.writes;
         for l in 0..16 {
             if writes & (1 << l) != 0 {
-                let _ = writeln!(h, "  @location({}) l{}: vec4f,", l, l);
+                let _ = writeln!(h, "  @location({}) {}l{}: vec4f,", l, flat_attr(opts.flat, l), l);
             }
         }
         h.push_str("}\n");
@@ -1259,7 +1268,7 @@ impl<'a> Gen<'a> {
         let used = s.reads & opts.link;
         for l in 0..16 {
             if used & (1 << l) != 0 {
-                let _ = writeln!(h, "  @location({}) l{}: vec4f,", l, l);
+                let _ = writeln!(h, "  @location({}) {}l{}: vec4f,", l, flat_attr(opts.flat, l), l);
             }
         }
         h.push_str("}\n");
@@ -1441,7 +1450,79 @@ mod tests {
     }
 
     fn opts() -> Options {
-        Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 }
+        Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1, flat: false }
+    }
+
+    /// The interpolation of each @location of an entry point's inputs (pixel) or outputs (vertex).
+    fn interp(m: &naga::Module, pixel: bool) -> Vec<(u32, Option<naga::Interpolation>)> {
+        let ep = &m.entry_points[0];
+        let mut out = Vec::new();
+        let mut take = |ty: naga::Handle<naga::Type>, b: &Option<naga::Binding>| {
+            let mut one = |b: &Option<naga::Binding>| {
+                if let Some(naga::Binding::Location { location, interpolation, .. }) = b {
+                    out.push((*location, *interpolation));
+                }
+            };
+            match &m.types[ty].inner {
+                naga::TypeInner::Struct { members, .. } => members.iter().for_each(|x| one(&x.binding)),
+                _ => one(b),
+            }
+        };
+        if pixel {
+            for a in &ep.function.arguments {
+                take(a.ty, &a.binding);
+            }
+        } else if let Some(r) = &ep.function.result {
+            take(r.ty, &r.binding);
+        }
+        out.sort_by_key(|x| x.0);
+        out
+    }
+
+    /// Shaders of 幻聖神姫LINEAGE and tests/winref/probes/d3d9flat.c: ps_2_0 texture * v0, ps_2_0
+    /// v0 + v1, ps_1_1 mov r0, v0, vs_2_0 writing oPos and oD0, vs_3_0 writing COLOR0/1 + TEXCOORD0.
+    const FLAT_PS: [&[u32]; 3] = [
+        &[0xffff0200, 0x0200001f, 0x80000000, 0x900f0000, 0x0200001f, 0x80000000, 0xb0030000, 0x0200001f, 0x90000000, 0xa00f0800, 0x03000042, 0x800f0000, 0xb0e40000, 0xa0e40800, 0x03000005, 0x80070000, 0x80e40000, 0x90e40000, 0x02000001, 0x80080000, 0x90ff0000, 0x02000001, 0x800f0800, 0x80e40000, 0x0000ffff],
+        &[0xffff0200, 0x0200001f, 0x80000000, 0x900f0000, 0x0200001f, 0x80000000, 0x900f0001, 0x03000002, 0x800f0000, 0x90e40000, 0x90e40001, 0x02000001, 0x800f0800, 0x80e40000, 0x0000ffff],
+        &[0xffff0101, 0x00000001, 0x800f0000, 0x90e40000, 0x0000ffff],
+    ];
+    const FLAT_VS: [&[u32]; 2] = [
+        &[0xfffe0200, 0x0200001f, 0x80000000, 0x900f0000, 0x0200001f, 0x8000000a, 0x900f0001, 0x02000001, 0xc00f0000, 0x90e40000, 0x02000001, 0xd00f0000, 0x90e40001, 0x0000ffff],
+        &[0xfffe0300, 0x0200001f, 0x80000000, 0x900f0000, 0x0200001f, 0x80000000, 0xe00f0000, 0x0200001f, 0x8000000a, 0xe00f0001, 0x0200001f, 0x8001000a, 0xe00f0002, 0x0200001f, 0x80000005, 0xe0030003,
+          0x02000001, 0xe00f0000, 0x90e40000, 0x02000001, 0xe00f0001, 0x90e40000, 0x02000001, 0xe00f0002, 0x90e40000, 0x02000001, 0xe0030003, 0x90e40000, 0x0000ffff],
+    ];
+
+    proptest::proptest! {
+        /// SHADEMODE flat: the colors (locations 0, 1) and only they are flat in what every
+        /// vertex stage (shader or fixed function) writes and every pixel shader reads, so the two
+        /// stages always agree (WebGPU refuses a pipeline whose stages disagree), and the WGSL is valid.
+        #[test]
+        fn flat_colors_agree_between_stages(flat: bool, vi in 0usize..3, pi in 0usize..3, rhw: bool) {
+            let check = |l: &[(u32, Option<naga::Interpolation>)]| {
+                for &(loc, i) in l {
+                    let is_flat = i == Some(naga::Interpolation::Flat);
+                    assert_eq!(is_flat, flat && loc < 2, "location {loc}: {i:?}");
+                }
+            };
+            let ps = Shader::parse(FLAT_PS[pi]).unwrap();
+            let pm = valid(&Gen::new(&ps).pixel(&Options { flat, ..opts() }));
+            let pin = interp(&pm, true);
+            check(&pin);
+            proptest::prop_assert!(pin.iter().any(|x| x.0 == 0), "the pixel shader reads v0");
+            let vout = if vi < 2 {
+                let vs = Shader::parse(FLAT_VS[vi]).unwrap();
+                interp(&valid(&Gen::new(&vs).vertex(&Options { flat, link: 0, vs_inputs: vec![(0, 0, 0), (1, 1, 3)], ..opts() })), false)
+            } else {
+                let k = crate::d3d9ff::VsKey { inputs: vec![(USAGE_POSITIONT, 0, 0, 0), (USAGE_COLOR, 0, 1, 3)], rhw, tci: [(0, 0); 8], flat, light: None };
+                interp(&valid(&crate::d3d9ff::vertex(&k)), false)
+            };
+            check(&vout);
+            for &(loc, i) in &pin {
+                if let Some(&(_, o)) = vout.iter().find(|x| x.0 == loc) {
+                    proptest::prop_assert_eq!(i == Some(naga::Interpolation::Flat), o == Some(naga::Interpolation::Flat), "location {}", loc);
+                }
+            }
+        }
     }
 
     /// Pixel fog (Options::fog: the fog color in u.x[2] as f32 bits) is valid WGSL for every

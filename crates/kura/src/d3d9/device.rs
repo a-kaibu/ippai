@@ -205,8 +205,10 @@ pub struct Decl {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum ModKey {
-    Vs(u32, Vec<(u32, u32, u32)>),
-    Ps(u32, u32, Option<u32>, Vec<dxwgsl::addr::Addr>, u32),
+    /// (serial, inputs, SHADEMODE flat)
+    Vs(u32, Vec<(u32, u32, u32)>, bool),
+    /// (serial, link, alpha test, emulated addressing, targets, SHADEMODE flat)
+    Ps(u32, u32, Option<u32>, Vec<dxwgsl::addr::Addr>, u32, bool),
     FfVs(ff::VsKey),
     FfPs(ff::PsKey),
 }
@@ -3010,7 +3012,7 @@ unsafe fn create_shader(d: &mut D3d, pixel: bool, code: u32, out: u32) -> u32 {
     let words = if dump { code.iter().map(|t| format!("{t:08x}")).collect::<Vec<_>>().join(" ") } else { String::new() };
     let o = d.new_obj(if pixel { IF_PS } else { IF_VS }, 0, Data::Shader(ShaderObj { code, parsed, serial }));
     if dump {
-        eprintln!("d3d9:   shader {o} serial {serial}: {words}");
+        eprintln!("d3d9:   shader {} at {o:#x} serial {serial}: {words}", d.next);
     }
     wrp(out, 0, o);
     S_OK
@@ -3611,13 +3613,15 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         _ => 0,
     };
     let (vs_serial, ps_serial) = (serial_of(vs), serial_of(ps));
+    // (D3DSHADE_FLAT: the colors of each triangle's first vertex, with shaders as without)
+    let flat = st.rs[9] == 1;
     let (vs_mod, vs_consts, writes) = match vs_shader {
         Some(sh) => {
-            let key = ModKey::Vs(vs_serial, vs_inputs.clone());
+            let key = ModKey::Vs(vs_serial, vs_inputs.clone(), flat);
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
-                    let opts = shader::Options { link: 0, vs_inputs: vs_inputs.clone(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 };
+                    let opts = shader::Options { link: 0, vs_inputs: vs_inputs.clone(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1, flat };
                     let w = shader::Gen::new(sh).vertex(&opts);
                     Err((key, w))
                 }
@@ -3640,7 +3644,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                     sources: ff::sources([st.rs[145], st.rs[146], st.rs[147], st.rs[148]], st.rs[141] != 0, [has(0), has(1)]),
                 }
             });
-            let key = ModKey::FfVs(ff::VsKey { inputs: ff_inputs.clone(), rhw, tci, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0, light });
+            let key = ModKey::FfVs(ff::VsKey { inputs: ff_inputs.clone(), rhw, tci, flat, light });
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
@@ -3668,20 +3672,20 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let (ps_mod, ps_consts) = match ps_shader {
         Some(sh) => {
             // (cube and volume samplers too: their own address modes, no emulated ones)
-            let mut flat = Vec::new();
+            let mut plain = Vec::new();
             for &(r, ty) in &sh.samplers {
                 samplers.push(r);
                 if ty == 2 || ty == 0 {
-                    flat.push(r);
+                    plain.push(r);
                 }
             }
             let link = if vs_shader.is_some() { writes } else { 0x3ff };
-            let addr: Vec<_> = flat.iter().filter_map(|&s| addr_of(s)).collect();
-            let key = ModKey::Ps(ps_serial, link, alpha_test, addr.clone(), ntargets);
+            let addr: Vec<_> = plain.iter().filter_map(|&s| addr_of(s)).collect();
+            let key = ModKey::Ps(ps_serial, link, alpha_test, addr.clone(), ntargets, flat);
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
-                    let opts = shader::Options { link, vs_inputs: Vec::new(), alpha_test, fog: false, addr, targets: ntargets };
+                    let opts = shader::Options { link, vs_inputs: Vec::new(), alpha_test, fog: false, addr, targets: ntargets, flat };
                     let w = shader::Gen::new(sh).pixel(&opts);
                     Err((key, w))
                 }
@@ -3707,7 +3711,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             }
             let addr = samplers.iter().filter_map(|&s| addr_of(s)).collect();
             let vs_writes = vs_shader.is_some().then_some(writes & 0x3ff);
-            let key = ModKey::FfPs(ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0, addr, vs_writes });
+            let key = ModKey::FfPs(ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex, flat, addr, vs_writes });
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {

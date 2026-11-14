@@ -262,10 +262,10 @@ fn d3d9(src: &str, entry: &str, target: &str, link: u32) -> (String, dxwgsl::d3d
     let s = dxwgsl::d3d9::Shader::parse(&words).unwrap_or_else(|| panic!("{entry}: dxwgsl cannot parse"));
     let g = dxwgsl::d3d9::Gen::new(&s);
     let code = if s.pixel {
-        g.pixel(&dxwgsl::d3d9::Options { link, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 })
+        g.pixel(&dxwgsl::d3d9::Options { link, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1, flat: false })
     } else {
         let ins = s.inputs.iter().enumerate().map(|(k, i)| (i.0, k as u32, 0)).collect();
-        g.vertex(&dxwgsl::d3d9::Options { link: 0, vs_inputs: ins, alpha_test: None, fog: false, addr: Vec::new(), targets: 1 })
+        g.vertex(&dxwgsl::d3d9::Options { link: 0, vs_inputs: ins, alpha_test: None, fog: false, addr: Vec::new(), targets: 1, flat: false })
     };
     let m = match naga::front::wgsl::parse_str(&code) {
         Ok(m) => m,

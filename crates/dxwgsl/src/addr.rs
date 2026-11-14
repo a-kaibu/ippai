@@ -198,7 +198,7 @@ mod tests {
         let s = crate::d3d9::Shader::parse(&code).unwrap();
         for f in [1, 2, 3, 4, 8, 12, 17, 18, 19, 21, 30, 31] {
             let a = vec![Addr::argb(0, f, 0xff40c0e0)];
-            let opts = crate::d3d9::Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: a.clone(), targets: 1 };
+            let opts = crate::d3d9::Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: a.clone(), targets: 1, flat: false };
             let w = crate::d3d9::Gen::new(&s).pixel(&opts);
             assert!(w.contains("am0(") && (f & 3 == 0 || w.contains("ab0(")), "{w}");
             valid(&w);
@@ -217,7 +217,7 @@ mod tests {
             valid(&w);
         }
         // nothing for samplers the shader does not sample
-        let opts = crate::d3d9::Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: vec![Addr::argb(3, 1, 0)], targets: 1 };
+        let opts = crate::d3d9::Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: vec![Addr::argb(3, 1, 0)], targets: 1, flat: false };
         assert!(!crate::d3d9::Gen::new(&s).pixel(&opts).contains("ab3"));
     }
 }
