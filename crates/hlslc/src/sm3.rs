@@ -837,6 +837,11 @@ pub fn finish(s: Shader) -> Result<Vec<u8>, String> {
     while body.len() % 4 != 0 {
         body.push(0);
     }
+    // (a comment's length has 15 bits: a longer constant table would set bit 31 and break the
+    // token stream)
+    if body.len() / 4 > 0x7fff {
+        return Err(format!("constant table of {} dwords (at most 32767)", body.len() / 4));
+    }
     out.extend_from_slice(&(0xfffe | ((body.len() as u32 / 4) << 16)).to_le_bytes());
     out.extend_from_slice(&body);
     for w in &words[1..] {

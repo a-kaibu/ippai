@@ -87,15 +87,26 @@ fn parse_program(
     src: &str,
     defines: &[(String, String)],
     include: &mut dyn FnMut(&str, bool) -> Option<String>,
-) -> Result<(ast::Program, ast::Program), String> {
+) -> Result<(ast::Program, &'static ast::Program), String> {
     let toks = pp::preprocess(src, defines, include)?;
     let mut p = parse::Parser::new(toks);
     p.program()?;
-    let mut none = |_: &str, _: bool| None;
-    let pre_toks = pp::preprocess(&prelude::source(), &[], &mut none)?;
-    let mut pp2 = parse::Parser::new(pre_toks);
-    pp2.program().map_err(|e| format!("prelude: {e}"))?;
-    Ok((p.prog, pp2.prog))
+    Ok((p.prog, prelude_program()?))
+}
+
+/// The prelude parsed once (it does not depend on the source, its defines or includes): each
+/// D3DCompile / D3DXCompileShader / effect paid for preprocessing and parsing it again
+fn prelude_program() -> Result<&'static ast::Program, String> {
+    static PRE: std::sync::OnceLock<Result<ast::Program, String>> = std::sync::OnceLock::new();
+    PRE.get_or_init(|| {
+        let mut none = |_: &str, _: bool| None;
+        let pre_toks = pp::preprocess(&prelude::source(), &[], &mut none)?;
+        let mut pp2 = parse::Parser::new(pre_toks);
+        pp2.program().map_err(|e| format!("prelude: {e}"))?;
+        Ok(pp2.prog)
+    })
+    .as_ref()
+    .map_err(|e| e.clone())
 }
 
 /// Entry point `entry` (with `args` for its uniform parameters) lowered for target `t`.

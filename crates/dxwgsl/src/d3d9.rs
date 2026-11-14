@@ -625,6 +625,8 @@ pub struct Gen<'a> {
     indent: usize,
     tex_level: bool,
     loops: usize,
+    /// aL of each `loop` open around the code being written: start + iteration * step
+    al: Vec<String>,
     /// samplers addressing as WebGPU's can't (pixel shaders)
     addr: Vec<crate::addr::Addr>,
 }
@@ -673,7 +675,7 @@ impl<'a> Gen<'a> {
                 _ => {}
             }
         }
-        Gen { s, out: String::new(), defs, defis, defbs, indent: 1, tex_level: false, loops: 0, addr: Vec::new() }
+        Gen { s, out: String::new(), defs, defis, defbs, indent: 1, tex_level: false, loops: 0, al: Vec::new(), addr: Vec::new() }
     }
 
     fn line(&mut self, l: &str) {
@@ -881,6 +883,12 @@ impl<'a> Gen<'a> {
                         if ins.op != ENDIF {
                             self.loops -= 1;
                         }
+                        // (after an inner loop, aL is the enclosing loop's again)
+                        if ins.op == ENDLOOP && self.al.pop().is_some() {
+                            if let Some(outer) = self.al.last().cloned() {
+                                self.line(&format!("aL = {};", outer));
+                            }
+                        }
                         self.tex_level_pop();
                     }
                     REP => {
@@ -894,14 +902,16 @@ impl<'a> Gen<'a> {
                     LOOPOP => {
                         let n = ins.src.get(1).map(|p| self.reg(p)).unwrap_or("vec4f(0.0)".into());
                         let id = self.loops;
-                        self.line(&format!("aL = i32({}.y);", n));
+                        // (aL: the integer constant's y, plus its z each iteration)
+                        let al = format!("i32({1}.y) + rep{0} * i32({1}.z)", id, n);
                         self.line(&format!(
                             "for (var rep{0} = 0; rep{0} < min(i32({1}.x), 255); rep{0}++) {{",
                             id, n
                         ));
                         self.loops += 1;
                         self.indent += 1;
-                        self.line(&format!("defer_aL{} = i32({}.z);", id, n));
+                        self.line(&format!("aL = {};", al));
+                        self.al.push(al);
                         self.tex_level_push();
                     }
                     BREAK => self.line("break;"),
@@ -1154,7 +1164,7 @@ impl<'a> Gen<'a> {
         // inputs
         h.push_str("struct In {\n");
         for &(reg, loc, kind) in &opts.vs_inputs {
-            let ty = ["vec4f", "vec4u", "vec4i", "vec4f"][kind as usize];
+            let ty = ["vec4f", "vec4u", "vec4i", "vec4f"].get(kind as usize).copied().unwrap_or("vec4f");
             let _ = writeln!(h, "  @location({}) v{}: {},", loc, reg, ty);
         }
         if opts.vs_inputs.is_empty() {
@@ -1238,8 +1248,7 @@ impl<'a> Gen<'a> {
             let _ = writeln!(tail, "  out.l{} = {};", l, src);
         }
         tail.push_str("  return out;\n}\n");
-        // loop counters for aL (set at loop start: start + step * iteration); kept simple
-        let body = self.out.replace("defer_aL", "//");
+        let body = &self.out;
         format!("{}{}{}{}", h, "", body, tail)
     }
 
@@ -1343,7 +1352,7 @@ impl<'a> Gen<'a> {
         } else {
             String::new()
         };
-        let body = self.out.replace("defer_aL", "//");
+        let body = &self.out;
         format!("{}{}{}{}", h, fog_decl, body, tail)
     }
 }

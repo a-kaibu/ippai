@@ -105,6 +105,13 @@ fn td_of(prog: &Program, t: &Ty, row_major: bool) -> Td {
 
 /// The value of a constant expression, component by component.
 fn eval(prog: &Program, e: &Expr) -> Option<Vec<f64>> {
+    eval_at(prog, e, 0)
+}
+
+/// `vars`: how many static initializers deep (`static float a = b; static float b = a;` would
+/// go round for ever)
+fn eval_at(prog: &Program, e: &Expr, vars: u32) -> Option<Vec<f64>> {
+    let eval = |prog: &Program, e: &Expr| eval_at(prog, e, vars);
     Some(match e {
         Expr::Int(v, _) => vec![*v as f64],
         Expr::Float(f) => vec![*f],
@@ -144,7 +151,7 @@ fn eval(prog: &Program, e: &Expr) -> Option<Vec<f64>> {
                         Bin::Div => p / q,
                         Bin::Or => (p as i64 | q as i64) as f64,
                         Bin::And => (p as i64 & q as i64) as f64,
-                        Bin::Shl => ((p as i64) << (q as i64)) as f64,
+                        Bin::Shl => (p as i64).wrapping_shl(q as i64 as u32) as f64,
                         _ => return None,
                     })
                 })
@@ -158,7 +165,10 @@ fn eval(prog: &Program, e: &Expr) -> Option<Vec<f64>> {
                 return Some(vec![0.0]);
             }
             let g = prog.globals.iter().find(|g| &g.name == n && g.is_static)?;
-            eval(prog, g.init.as_ref()?)?
+            if vars >= 64 {
+                return None;
+            }
+            eval_at(prog, g.init.as_ref()?, vars + 1)?
         }
         _ => return None,
     })

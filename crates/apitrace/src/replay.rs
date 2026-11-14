@@ -591,11 +591,13 @@ impl Converter {
         let arch = self.arch;
         let off = |name: &str| r.members.iter().find(|m| m.name == name).map(|m| m.off[arch] as usize);
         let set = |b: &mut Blob, name: &str, v: u32| {
-            if let Some(o) = off(name) {
-                b.bytes[o..o + 4].copy_from_slice(&v.to_le_bytes());
+            // (a blob shorter than the record, as a damaged trace can give: nothing to set)
+            if let Some(d) = off(name).and_then(|o| b.bytes.get_mut(o..o + 4)) {
+                d.copy_from_slice(&v.to_le_bytes());
             }
         };
-        let get = |b: &Blob, o: usize| u32::from_le_bytes(b.bytes[o..o + 4].try_into().unwrap());
+        let get = |b: &Blob, o: usize| b.bytes.get(o..o + 4).map(|x| u32::from_le_bytes(x.try_into().unwrap()));
+        let size = |b: &Blob| get(b, 0).zip(get(b, 4));
         let window = |b: &mut Blob, name: &str| {
             if let Some(o) = off(name) {
                 b.fix.retain(|f| f.0 != o as u32);
@@ -610,14 +612,14 @@ impl Converter {
                 set(b, "PresentationInterval", 0x8000_0000);
                 set(b, "FullScreen_PresentationInterval", 0);
                 window(b, "hDeviceWindow");
-                self.winsize = Some((get(b, 0), get(b, 4)));
+                self.winsize = size(b).or(self.winsize);
             }
             "DXGI_SWAP_CHAIN_DESC" => {
                 set(b, "Windowed", 1);
                 window(b, "OutputWindow");
-                self.winsize = Some((get(b, 0), get(b, 4)));
+                self.winsize = size(b).or(self.winsize);
             }
-            "DXGI_SWAP_CHAIN_DESC1" => self.winsize = Some((get(b, 0), get(b, 4))),
+            "DXGI_SWAP_CHAIN_DESC1" => self.winsize = size(b).or(self.winsize),
             _ => {}
         }
     }
@@ -660,8 +662,14 @@ impl Converter {
             *self.stats.dropped.entry("memcpy (into no lock)".into()).or_default() += 1;
             return Ok(());
         };
+        // (an offset or a length past 32 bits is no copy into a lock: one far above the highest
+        // lock, a damaged trace; cut to 32 bits it would land somewhere in the lock)
+        let (Ok(at), Ok(n)) = (u32::try_from(*dest - base), u32::try_from(data.len())) else {
+            *self.stats.dropped.entry("memcpy (past 4 GiB of its lock)".into()).or_default() += 1;
+            return Ok(());
+        };
         self.out.push(MEMCPY);
-        for w in [h, key, (*dest - base) as u32, pitch, slice, row, data.len() as u32] {
+        for w in [h, key, at, pitch, slice, row, n] {
             self.out.extend_from_slice(&w.to_le_bytes());
         }
         self.out.extend_from_slice(data);

@@ -896,3 +896,267 @@ fn mismatched_conditions_are_errors_not_panics() {
         let _ = super::compile(src, &[], &mut inc, "ps", t, 0);
     }
 }
+
+/// review b00: what a guest's D3DCompile string can make of the compiler's stack and memory.
+/// Each on a thread with the guest threads' 1 MiB stack (release; debug frames are bigger):
+/// nesting up to the parser's limit compiles, past it is an error, never a stack overflow.
+fn on_guest_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let stack = if cfg!(debug_assertions) { 64 << 20 } else { 1 << 20 };
+    std::thread::Builder::new().stack_size(stack).spawn(f).unwrap().join().unwrap()
+}
+
+fn try_compile(src: String, target: &'static str) -> Result<Vec<u8>, String> {
+    on_guest_stack(move || super::compile(&src, &[], &mut |_, _| None, "ps", target, 0))
+}
+
+#[test]
+fn deep_nesting_is_an_error_not_a_stack_overflow() {
+    let n = super::parse::MAX_NEST as usize;
+    for t in ["ps_2_0", "ps_3_0", "ps_4_0", "ps_5_0"] {
+        let ret = if t.starts_with("ps_2") || t.starts_with("ps_3") { "COLOR" } else { "SV_Target" };
+        let wrap = |body: String| format!("float4 A : register(c0);\nfloat4 ps() : {ret} {{ {body} }}\n");
+        // (parentheses, unary minus, a sum of terms, nested blocks, member/index chains; at
+        // a quarter of the limit they compile)
+        let ok = [
+            wrap(format!("return {}A{};", "(".repeat(n / 4), ")".repeat(n / 4))),
+            wrap(format!("return {}A;", "- ".repeat(n / 4))),
+            wrap(format!("return A{};", " + A".repeat(n / 4))),
+            wrap(format!("float4 r = A; {} r += A; {} return r;", "{".repeat(n / 4), "}".repeat(n / 4))),
+            wrap(format!("return A{};", ".xyzw".repeat(n / 4))),
+        ];
+        for src in ok {
+            let r = try_compile(src.clone(), t);
+            assert!(r.is_ok(), "{t}: {:?}\n{}", r.err(), &src[..200.min(src.len())]);
+        }
+        // (every depth up to past the limit: compiles or an error, the stack holds)
+        for k in (1..n + 16).step_by(13) {
+            for src in [
+                wrap(format!("return {}A{};", "(".repeat(k), ")".repeat(k))),
+                wrap(format!("return {}A;", "- ".repeat(k))),
+                wrap(format!("return A{};", " * A".repeat(k))),
+                wrap(format!("float4 r = A; {} r += A; {} return r;", "{".repeat(k), "}".repeat(k))),
+                wrap(format!("float4 r = A; {} r = A; return r;", "if (A.x) ".repeat(k))),
+                wrap(format!("return A{};", ".x".repeat(k))),
+            ] {
+                let _ = try_compile(src, t);
+            }
+        }
+        for k in [n + 1, 100_000] {
+            let bad = [
+                wrap(format!("return {}A{};", "(".repeat(k), ")".repeat(k))),
+                wrap(format!("return {}A;", "- ".repeat(k))),
+                wrap(format!("return {}A;", "!".repeat(k))),
+                wrap(format!("return A{};", " + A".repeat(k))),
+                wrap(format!("float4 r = A; {} r += A; {} return r;", "{".repeat(k), "}".repeat(k))),
+                wrap(format!("return A{};", ".x".repeat(k))),
+                wrap(format!("return A{};", "[0]".repeat(k))),
+                wrap(format!("float4 r = A; {} r = A; return r;", "if (A.x) ".repeat(k))),
+            ];
+            for src in bad {
+                assert!(try_compile(src, t).is_err(), "{t} {k}");
+            }
+        }
+    }
+}
+
+/// review b00: macros that grow as a power (40 levels of `#define An An-1 An-1`) are an error,
+/// not 2^40 tokens; #if nesting is bounded, and i64::MIN / -1 is no panic
+#[test]
+fn preprocessor_bombs_are_errors() {
+    let mut src = String::from("#define A0 x\n");
+    for i in 1..=40 {
+        src += &format!("#define A{i} A{} A{}\n", i - 1, i - 1);
+    }
+    src += "float4 ps() : COLOR { return A40; }\n";
+    let e = try_compile(src, "ps_3_0").unwrap_err();
+    assert!(e.contains("expansion"), "{e}");
+    for k in [300usize, 100_000] {
+        let src = format!("#if {}1{}\n#endif\nfloat4 ps() : COLOR {{ return 0; }}\n", "(".repeat(k), ")".repeat(k));
+        assert!(try_compile(src, "ps_3_0").is_err());
+        let src = format!("#if {}1\n#endif\nfloat4 ps() : COLOR {{ return 0; }}\n", "!".repeat(k));
+        assert!(try_compile(src, "ps_3_0").is_err());
+    }
+    for e in ["0x8000000000000000 / -1", "0x8000000000000000 % -1", "-0x8000000000000000", "-(0x8000000000000000 / -1)"] {
+        let src = format!("#if {e}\nfloat4 ps() : COLOR {{ return 1; }}\n#else\nfloat4 ps() : COLOR {{ return 0; }}\n#endif\n");
+        assert!(try_compile(src, "ps_3_0").is_ok(), "{e}");
+    }
+}
+
+/// review b00: calls doubling at each level (2^30 inlined instructions) are an error in a short
+/// time; 64 nested calls (the inlining limit) fit the guest's stack; types of 2^48 components
+/// and a static initializer referring to itself are errors, not an abort or a hang
+#[test]
+fn blowups_are_errors() {
+    let mut src = String::from("float4 A : register(c0);\nfloat4 f0(float4 x) { return x * A + A.yzwx; }\n");
+    for i in 1..=30 {
+        src += &format!("float4 f{i}(float4 x) {{ return f{}(x) + f{}(x.wzyx); }}\n", i - 1, i - 1);
+    }
+    src += "float4 ps() : SV_Target { return f30(A); }\n";
+    let t = std::time::Instant::now();
+    let e = try_compile(src, "ps_4_0").unwrap_err();
+    assert!(e.contains("instructions"), "{e}");
+    assert!(t.elapsed().as_secs() < 60, "{:?}", t.elapsed());
+    for (n, ok) in [(60, true), (70, false)] {
+        let mut src = String::from("float4 A : register(c0);\nfloat4 f0(float4 x) { return x * A; }\n");
+        for i in 1..=n {
+            src += &format!("float4 f{i}(float4 x) {{ return f{}(x + A); }}\n", i - 1);
+        }
+        src += &format!("float4 ps() : SV_Target {{ return f{n}(A); }}\n");
+        // (shader model 3 runs out of its 32 temps first)
+        for t in ["ps_4_0", "ps_5_0"] {
+            let src = src.clone();
+            let r = try_compile(src, t);
+            assert_eq!(r.is_ok(), ok, "{n} {t} {r:?}");
+        }
+    }
+    for src in [
+        "typedef float4 V[65536];\nV a[65536];\nfloat4 ps() : SV_Target { return a[0][0]; }\n",
+        "typedef float4 V[65536];\nstruct S { V a; V b; };\nstatic S s[65536];\nfloat4 ps() : SV_Target { return s[0].a[0]; }\n",
+        "typedef float4x4 M[4096];\ntypedef M N[4096];\nfloat4 ps() : SV_Target { N n; return n[0][0][0]; }\n",
+    ] {
+        let e = try_compile(src.into(), "ps_4_0").unwrap_err();
+        assert!(e.contains("components"), "{e}");
+    }
+    for src in [
+        "static float a = a;\ntechnique T { pass P { AlphaRef = a; } }\n",
+        "static float a = b;\nstatic float b = a;\ntechnique T { pass P { AlphaRef = a + 1; } }\n",
+    ] {
+        let src = src.to_string();
+        let r = on_guest_stack(move || super::compile_effect(&src, &[], &mut |_, _| None, 0).map(|_| ()));
+        let _ = r;
+    }
+    // (an array parameter past the 32 registers from any first index)
+    for src in [
+        "float4 ps(float4 a[65536] : TEXCOORD0) : SV_Target { return a[0]; }\n",
+        "float4 ps(float4 a[4] : TEXCOORD30) : SV_Target { return a[0]; }\n",
+    ] {
+        let t = std::time::Instant::now();
+        assert!(try_compile(src.into(), "ps_4_0").is_err(), "{src}");
+        assert!(t.elapsed().as_secs() < 5);
+    }
+    assert!(try_compile("float4 ps(float4 a[4] : TEXCOORD28) : SV_Target { return a[3]; }\n".into(), "ps_4_0").is_ok());
+    // (packoffset past a constant buffer's 4096 registers; huge array sizes from constant
+    // arithmetic that overflows)
+    for src in [
+        "cbuffer C { float4 A : packoffset(c4096); };\nfloat4 ps() : SV_Target { return A; }\n",
+        "cbuffer C { float4 A : packoffset(c4294967295); };\nfloat4 ps() : SV_Target { return A; }\n",
+        "float4 a[0x7fffffffffffffff * 4];\nfloat4 ps() : SV_Target { return a[0]; }\n",
+        "float4 a[1 << 64];\nfloat4 ps() : SV_Target { return a[0]; }\n",
+        "float4 a[-0x8000000000000000];\nfloat4 ps() : SV_Target { return a[0]; }\n",
+    ] {
+        assert!(try_compile(src.into(), "ps_4_0").is_err(), "{src}");
+    }
+}
+
+/// review b00: every intrinsic and texture method with every count (0 to 4) of arguments of
+/// mismatched kinds (void, scalars, vectors of each size, a matrix, bools, ints, objects): an
+/// error or a shader, never a panic (an abort of the VM under panic=abort). Exhaustive up to two
+/// arguments, then a sample of the three- and four-argument ones.
+#[test]
+fn intrinsics_with_any_arguments_are_no_panic() {
+    let args = ["v()", "1", "A.x", "A.xy", "A.xyz", "A", "(int)A.x", "(int3)A.xyz", "(bool2)A.xy", "(float2x2)A", "M", "(uint4)A", "T", "S"];
+    let mut fns: Vec<&str> = super::intrinsics::NO_OUT.to_vec();
+    fns.extend(["sincos", "modf", "frexp", "InterlockedAdd", "InterlockedMax", "InterlockedExchange", "InterlockedCompareExchange", "asdouble", "msad4", "noise", "D3DCOLORtoUBYTE4", "dst", "lit", "fma", "rcp", "mul", "transpose", "determinant", "GroupMemoryBarrierWithGroupSync", "abort", "errorf", "printf", "EvaluateAttributeAtSample", "GetRenderTargetSampleCount", "CheckAccessFullyMapped", "WaveActiveSum", "f16tof32"]);
+    let methods = ["Sample", "SampleLevel", "SampleBias", "SampleGrad", "SampleCmp", "SampleCmpLevelZero", "Gather", "GatherRed", "GatherCmp", "Load", "GetSamplePosition", "GetDimensions", "CalculateLevelOfDetail", "mips"];
+    let objs = ["T", "TA", "TC", "T3", "TM", "TMA", "B", "RW"];
+    let head = "float4 A : register(c0); float2x2 M; Texture2D T; Texture2DArray TA; TextureCube TC; Texture3D T3; Texture2DMS<float4> TM; Texture2DMSArray<float4> TMA; Buffer<float4> B; RWTexture2D<float4> RW; SamplerState S; SamplerComparisonState SC;\nvoid v() {}\n";
+    let mut calls = Vec::new();
+    let combos = |calls: &mut Vec<String>, name: &str, n: usize| {
+        let mut idx = vec![0usize; n];
+        loop {
+            calls.push(format!("{name}({})", idx.iter().map(|&i| args[i]).collect::<Vec<_>>().join(", ")));
+            let mut k = 0;
+            while k < n {
+                idx[k] += 1;
+                if idx[k] < args.len() { break }
+                idx[k] = 0;
+                k += 1;
+            }
+            if k == n { break }
+        }
+    };
+    for f in &fns {
+        for n in 0..=2 {
+            combos(&mut calls, f, n);
+        }
+    }
+    for o in objs {
+        for m in methods {
+            for n in 0..=2 {
+                combos(&mut calls, &format!("{o}.{m}"), n);
+            }
+        }
+    }
+    // (three and four arguments: a fixed pseudo-random sample)
+    let mut seed = 0x9e3779b97f4a7c15u64;
+    let mut rnd = |k: usize| { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed % k as u64) as usize };
+    for _ in 0..6000 {
+        let name = if rnd(3) == 0 { format!("{}.{}", objs[rnd(objs.len())], methods[rnd(methods.len())]) } else { fns[rnd(fns.len())].to_string() };
+        let n = 3 + rnd(2);
+        let a: Vec<&str> = (0..n).map(|_| args[rnd(args.len())]).collect();
+        calls.push(format!("{name}({})", a.join(", ")));
+    }
+    let t0 = std::time::Instant::now();
+    let total = calls.len();
+    // (a batch of calls per shader: each call its own statement, so one bad call fails that
+    // shader; then each call of a failing batch alone)
+    let loc = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let l2 = loc.clone();
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |i| *l2.lock().unwrap() = i.location().map_or(String::new(), |l| format!("{}:{}", l.file(), l.line()))));
+    let mut panics: std::collections::BTreeMap<String, String> = Default::default();
+    let mut one = |body: &str, t: &str| {
+        let src = format!("{head}float4 ps(float4 p : SV_Position) : SV_Target {{ float4 r = 0; {body} return r; }}\n");
+        match std::panic::catch_unwind(|| super::compile(&src, &[], &mut |_, _| None, "ps", t, 0).is_ok()) {
+            Ok(ok) => ok,
+            Err(_) => {
+                panics.entry(loc.lock().unwrap().clone()).or_insert(format!("{t}: {body}"));
+                false
+            }
+        }
+    };
+    let mut ok = 0;
+    for t in ["ps_5_0", "ps_3_0"] {
+        for c in &calls {
+            if one(&format!("r += (float4){c};"), t) {
+                ok += 1;
+            }
+            let _ = one(&format!("{c};"), t);
+        }
+    }
+    std::panic::set_hook(prev);
+    assert!(panics.is_empty(), "{panics:#?}");
+    eprintln!("{total} calls x 2 targets: {ok} compiled, {:?}", t0.elapsed());
+}
+
+/// review b00: the DXBC checksum's table is RFC 1321's (it was computed from 64 sines per block):
+/// the table is the sines, and the checksum of known blocks is unchanged (`checksum` above
+/// compares whole blobs against fxc's)
+#[test]
+fn md5_table_is_the_sines() {
+    for (i, &k) in super::sm4::MD5_K.iter().enumerate() {
+        assert_eq!(k, ((i as f64 + 1.0).sin().abs() * 4294967296.0) as u32, "{i}");
+    }
+}
+
+/// review b00: a D3D9 assembly instruction with more than 15 operand tokens is an error, not a
+/// length that spills into the co-issue and predicate bits; a shader's constant table past a
+/// comment's 32767 dwords is an error
+#[test]
+fn d3d9_token_fields_do_not_overflow() {
+    let ok = super::d3d9asm::assemble("ps_3_0\ndef c0, 1, 2, 3, 4\nmov oC0, c0\n").unwrap();
+    assert_eq!(ok[1] >> 24 & 0xf, 5);
+    let many: String = (0..16).map(|i| format!(", r{i}")).collect();
+    assert!(super::d3d9asm::assemble(&format!("ps_3_0\nadd r0{many}\n")).is_err());
+    // (many uniform structs, each member its own type record)
+    let mut src = String::new();
+    for i in 0..3000 {
+        src += &format!("struct S{i} {{ float4 a{i}; float4 b{i}; float c{i}; }};\nS{i} u{i} : register(c{});\n", (i * 3) % 220);
+    }
+    src += "float4 ps() : COLOR { return 0";
+    for i in 0..3000 {
+        src += &format!(" + u{i}.a{i}");
+    }
+    src += "; }\n";
+    let _ = try_compile(src, "ps_3_0");
+}

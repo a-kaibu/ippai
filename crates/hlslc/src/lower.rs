@@ -155,6 +155,10 @@ fn no_size(t: &Ty) -> bool {
     matches!(t, Ty::Array(e, n) if *n == 0 || no_size(e))
 }
 
+/// The most instructions a shader may lower to (D3D11 has no limit, fxc gives up near a million
+/// and a real shader is a few thousand)
+pub const MAX_INS: usize = 1 << 20;
+
 pub fn ncomp(prog: &Program, t: &Ty) -> usize {
     match t {
         Ty::Array(e, n) => ncomp(prog, e) * *n as usize,
@@ -947,8 +951,10 @@ impl<'a> L<'a> {
             Ty::Array(e, n) => {
                 at = at.div_ceil(16) * 16;
                 let mut end = at;
+                // (an element's size once, not a layout of it per element)
+                let regs = if *n > 1 { self.cb_regs(e, row_major) } else { 0 };
                 for k in 0..*n {
-                    let st = at + k * 16 * self.cb_regs(e, row_major);
+                    let st = at + k * 16 * regs;
                     end = self.cb_layout(e, row_major, st, sym, out);
                 }
                 end
@@ -1329,6 +1335,11 @@ impl<'a> L<'a> {
         };
         let mut u = Vec::new();
         units(self.prog, t, &mut u);
+        // (an array parameter takes a register per element: `float4 a[65536] : TEXCOORD`
+        // is past the 32 registers however its first index is)
+        if index as usize + u.len() > max as usize {
+            return Err(format!("semantic {sem}: {} registers from index {index}, past {max}", u.len()));
+        }
         if name == "POSITION" && pixel && !output && self.sm3() {
             // (unreadable: zeros)
             out.extend(std::iter::repeat_n(C::I(0), u.iter().sum()));
@@ -2640,6 +2651,10 @@ impl<'a> L<'a> {
     fn inline(&mut self, f: &'a Func, args: Vec<Val>, line: u32) -> R<Val> {
         if self.fns.len() > 64 {
             return Err(format!("line {line}: calls nested too deep (recursion?)"));
+        }
+        // (every call is inlined: f1 calling f0 twice, f2 f1 twice... is 2^n instructions)
+        if self.code.len() > MAX_INS {
+            return Err(format!("line {line}: shader past {MAX_INS} instructions"));
         }
         let body = f.body.as_ref().unwrap();
         let mut scope = HashMap::new();

@@ -432,6 +432,11 @@ pub fn assemble(src: &str) -> Result<Vec<u32>, String> {
             44 if ctl != 0 => 45,
             op => op,
         };
+        // (the length field has 4 bits: more tokens would spill into the co-issue and
+        // predicate bits)
+        if body.len() > 15 {
+            return Err(format!("{mnem}: {} operand tokens in one instruction", body.len()));
+        }
         let len = if v.major >= 2 { (body.len() as u32) << 24 } else { 0 };
         words.push(op | ctl << 16 | len | if coissue { 1 << 30 } else { 0 });
         words.extend(body);

@@ -14,7 +14,19 @@ pub struct Parser {
     pack: Option<bool>,
     /// [attributes] waiting for the function they come before
     attrs: Vec<(String, Vec<Expr>)>,
+    /// how deep statements, expressions and types nest here (and how long a chain of binary
+    /// operators is: its tree is as deep): past MAX_NEST an error, not a stack overflow in the
+    /// parser or in the lowering and drop that walk the tree
+    depth: u32,
 }
+
+/// The most components one declared type may have (a 65536-element array of float4x4; no
+/// D3D storage holds even that much: 4096 constant or temp vectors)
+pub const MAX_COMPS: u64 = 1 << 20;
+
+/// The deepest nesting a source may have (fxc's own limits are of the same order; real shaders
+/// nest a few dozen levels, and sum a few dozen terms)
+pub const MAX_NEST: u32 = 512;
 
 fn scalar_base(s: &str) -> Option<B> {
     Some(match s {
@@ -67,7 +79,7 @@ const MODIFIERS: &[&str] = &[
 
 impl Parser {
     pub fn new(t: Vec<Token>) -> Self {
-        Parser { t, p: 0, prog: Program::default(), typedefs: Vec::new(), pack: None, attrs: Vec::new() }
+        Parser { t, p: 0, prog: Program::default(), typedefs: Vec::new(), pack: None, attrs: Vec::new(), depth: 0 }
     }
 
     fn peek(&self) -> Option<&Tok> {
@@ -79,6 +91,17 @@ impl Parser {
     fn line(&self) -> u32 {
         self.t.get(self.p).or(self.t.last()).map_or(0, |t| t.line)
     }
+    /// f one level deeper
+    fn nest<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        if self.depth >= MAX_NEST {
+            return self.err("nested too deep");
+        }
+        self.depth += 1;
+        let r = f(self);
+        self.depth -= 1;
+        r
+    }
+
     fn err<T>(&self, m: &str) -> R<T> {
         let near = match self.peek() {
             Some(Tok::Ident(s)) => s.clone(),
@@ -178,6 +201,10 @@ impl Parser {
 
     /// A type at the current position.
     fn ty(&mut self) -> R<Ty> {
+        self.nest(|p| p.ty_in())
+    }
+
+    fn ty_in(&mut self) -> R<Ty> {
         let name = self.ident()?;
         if let Some(t) = builtin_numeric(&name) {
             return Ok(t);
@@ -309,7 +336,21 @@ impl Parser {
         for n in dims.into_iter().rev() {
             ty = Ty::Array(Box::new(ty), n);
         }
+        // (arrays of typedefs of arrays, of structs holding them: each declarator within its
+        // 65536, together 2^48 components the lowering would lay out one by one)
+        if self.comps(&ty) > MAX_COMPS {
+            return Err(format!("line {}: a type of more than {MAX_COMPS} components", self.line()));
+        }
         Ok(ty)
+    }
+
+    /// components of a type, saturating
+    fn comps(&self, t: &Ty) -> u64 {
+        match t {
+            Ty::Array(e, n) => self.comps(e).saturating_mul((*n).max(1) as u64),
+            Ty::Struct(i) => self.prog.structs.get(*i).map_or(0, |s| s.fields.iter().fold(0u64, |a, f| a.saturating_add(self.comps(&f.ty)))),
+            t => t.comps() as u64,
+        }
     }
 
     /// storage and interpolation modifiers into a Var's fields
@@ -417,6 +458,10 @@ impl Parser {
                         };
                     }
                     self.expect(")")?;
+                    // (a constant buffer has 4096 registers)
+                    if reg >= 4096 {
+                        return Err(format!("line {}: packoffset(c{reg}) past a constant buffer", self.line()));
+                    }
                     v.packoffset = Some(reg * 16 + comp * 4);
                 }
                 _ => v.sem = Some(n),
@@ -806,6 +851,10 @@ impl Parser {
     }
 
     fn stmt(&mut self) -> R<Stmt> {
+        self.nest(|p| p.stmt_in())
+    }
+
+    fn stmt_in(&mut self) -> R<Stmt> {
         while self.is("[") {
             self.skip_group("[", "]")?;
         }
@@ -977,6 +1026,10 @@ impl Parser {
     }
 
     fn assign_expr(&mut self) -> R<Expr> {
+        self.nest(|p| p.assign_expr_in())
+    }
+
+    fn assign_expr_in(&mut self) -> R<Expr> {
         if self.is("{") {
             self.p += 1;
             let mut v = Vec::new();
@@ -1027,6 +1080,13 @@ impl Parser {
     }
 
     fn bin_expr(&mut self, min: u32) -> R<Expr> {
+        let base = self.depth;
+        let r = self.bin_chain(min);
+        self.depth = base;
+        r
+    }
+
+    fn bin_chain(&mut self, min: u32) -> R<Expr> {
         let mut l = self.unary()?;
         loop {
             let Some(Tok::Punct(p)) = self.peek() else { break };
@@ -1055,6 +1115,11 @@ impl Parser {
                 break;
             }
             self.p += 1;
+            // (each operator of the chain one level deeper: the tree's left spine)
+            if self.depth >= MAX_NEST {
+                return self.err("expression too long (nested too deep)");
+            }
+            self.depth += 1;
             let r = self.bin_expr(prec + 1)?;
             l = Expr::Bin(op, Box::new(l), Box::new(r));
         }
@@ -1062,6 +1127,10 @@ impl Parser {
     }
 
     fn unary(&mut self) -> R<Expr> {
+        self.nest(|p| p.unary_in())
+    }
+
+    fn unary_in(&mut self) -> R<Expr> {
         if let Some(Tok::Punct(p)) = self.peek() {
             let op = match *p {
                 "-" => Some(Un::Neg),
@@ -1104,8 +1173,20 @@ impl Parser {
     }
 
     fn postfix(&mut self) -> R<Expr> {
+        let base = self.depth;
+        let r = self.postfix_chain();
+        self.depth = base;
+        r
+    }
+
+    fn postfix_chain(&mut self) -> R<Expr> {
         let mut e = self.primary()?;
         loop {
+            // (a.b[1].c++...: each one a level of the tree)
+            if self.depth >= MAX_NEST {
+                return self.err("expression too long (nested too deep)");
+            }
+            self.depth += 1;
             if self.eat(".") {
                 let n = self.ident()?;
                 if self.is("(") {
@@ -1197,19 +1278,20 @@ pub fn const_int(e: &Expr) -> Option<i64> {
         Expr::Bin(op, a, b) => {
             let (a, b) = (const_int(a)?, const_int(b)?);
             match op {
-                Bin::Add => a + b,
-                Bin::Sub => a - b,
-                Bin::Mul => a * b,
+                // (overflow: no constant, as a size it is out of range anyway)
+                Bin::Add => a.checked_add(b)?,
+                Bin::Sub => a.checked_sub(b)?,
+                Bin::Mul => a.checked_mul(b)?,
                 Bin::Div => a.checked_div(b)?,
                 Bin::Mod => a.checked_rem(b)?,
-                Bin::Shl => a << b,
-                Bin::Shr => a >> b,
+                Bin::Shl => a.checked_shl(u32::try_from(b).ok()?)?,
+                Bin::Shr => a.checked_shr(u32::try_from(b).ok()?)?,
                 Bin::And => a & b,
                 Bin::Or => a | b,
                 _ => return None,
             }
         }
-        Expr::Un(Un::Neg, a) => -const_int(a)?,
+        Expr::Un(Un::Neg, a) => const_int(a)?.checked_neg()?,
         Expr::Cast(_, a) => const_int(a)?,
         _ => return None,
     })

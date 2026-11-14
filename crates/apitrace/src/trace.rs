@@ -244,13 +244,22 @@ pub struct Parser<'a> {
     pub cut: bool,
     /// a read ran out of bytes
     ended: bool,
+    /// how deep value() is in arrays, structs and reprs (a damaged file nesting without end
+    /// would overflow the stack)
+    depth: u32,
 }
+
+/// the deepest nesting of values a trace may have (apitrace's are a few levels: an array of
+/// structs of arrays)
+pub const MAX_DEPTH: u32 = 64;
+/// the highest argument index a call may have (Win32 and D3D calls have at most a few dozen)
+pub const MAX_ARG: u64 = 255;
 
 type R<T> = Result<T, String>;
 
 impl<'a> Parser<'a> {
     pub fn new(b: &'a [u8]) -> R<Self> {
-        let mut p = Parser { b, i: 0, version: 0, properties: vec![], functions: HashMap::new(), structs: HashMap::new(), enums: HashMap::new(), bitmasks: HashMap::new(), pending: HashMap::new(), next_no: 0, cut: false, ended: false };
+        let mut p = Parser { b, i: 0, version: 0, properties: vec![], functions: HashMap::new(), structs: HashMap::new(), enums: HashMap::new(), bitmasks: HashMap::new(), pending: HashMap::new(), next_no: 0, cut: false, ended: false, depth: 0 };
         p.version = p.uint()?;
         if p.version > VERSION {
             return Err(format!("trace format version {} (this reader knows up to {VERSION})", p.version));
@@ -320,7 +329,11 @@ impl<'a> Parser<'a> {
             match self.byte()? {
                 CALL_END => return Ok(()),
                 CALL_ARG => {
-                    let idx = self.uint()? as usize;
+                    let idx = self.uint()?;
+                    if idx > MAX_ARG {
+                        return Err(format!("trace: argument {idx} at byte {}", self.i));
+                    }
+                    let idx = idx as usize;
                     let v = self.value()?;
                     let args = if leave { &mut call.args_out } else { &mut call.args_in };
                     if idx >= args.len() {
@@ -369,6 +382,16 @@ impl<'a> Parser<'a> {
     }
 
     fn value(&mut self) -> R<Value> {
+        if self.depth >= MAX_DEPTH {
+            return Err(format!("trace: values nested past {MAX_DEPTH} at byte {}", self.i));
+        }
+        self.depth += 1;
+        let v = self.value_in();
+        self.depth -= 1;
+        v
+    }
+
+    fn value_in(&mut self) -> R<Value> {
         let t = self.byte()?;
         Ok(match t {
             0 => Value::Null,

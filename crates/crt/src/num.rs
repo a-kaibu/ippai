@@ -411,7 +411,12 @@ fn round_binary(m: u128, sticky: bool, exp: i64, kind: Float) -> f64 {
 
 /// The digits of `v` in `radix` (2..=36, lowercase letters), with a '-' for a negative value
 /// in base 10 (`signed` types only); other bases show the two's complement bits of `bits`.
+/// Nothing for a radix outside 2..=36 (the callers report EINVAL first; no division by 0 or
+/// digit past 'z' whatever they pass).
 pub fn to_radix(v: i64, bits: u32, signed: bool, radix: u32) -> Vec<u8> {
+    if !(2..=36).contains(&radix) {
+        return Vec::new();
+    }
     let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
     let neg = signed && radix == 10 && v < 0;
     let mut u = if neg { v.unsigned_abs() } else { v as u64 & mask };
@@ -493,6 +498,22 @@ mod proofs {
         let s = to_radix(v as i64, 32, true, r);
         assert!(s.len() == 1 || s[0] != b'0');
         assert!(value(&s, r as u64) == v as u32 as u64);
+    }
+
+    /// Any radix: no panic (division by zero, a digit past the table); nothing outside 2..=36,
+    /// otherwise digits of the radix only (8-bit values: the solver's division chain stays
+    /// small; the PBT has all values and widths).
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn to_radix_is_total() {
+        let v: u8 = kani::any();
+        let radix: u32 = kani::any();
+        let s = to_radix(v as i64, 8, kani::any(), radix);
+        if !(2..=36).contains(&radix) {
+            assert!(s.is_empty());
+        } else {
+            assert!(!s.is_empty() && s.len() <= 8 && value(&s, radix as u64) == v as u64);
+        }
     }
 
     /// _itoa_s: EINVAL / ERANGE / the digits and a NUL, never past the buffer.
@@ -584,5 +605,38 @@ mod tests {
         assert_eq!(xtoa_s(-123, 32, true, Some(&mut b), 10), ERANGE);
         assert_eq!(b[0], 0);
         assert_eq!(xtoa_s(1, 32, true, Some(&mut b), 37), EINVAL);
+        // (review b00: a radix the callers reject is nothing, not a division by 0 / a digit past z)
+        for r in [0, 1, 37, 255, u32::MAX] {
+            assert_eq!(to_radix(12345, 32, true, r), b"");
+        }
+    }
+
+    proptest::proptest! {
+        /// any value, width and radix: the radix's digits of the value's `bits` low bits (or its
+        /// signed decimal), as u64/i64 formatting gives them; nothing for a bad radix
+        #[test]
+        fn to_radix_matches_formatting(v: i64, bits in 1u32..=64, signed: bool, radix: u32, small in 0u32..40) {
+            for r in [radix, small] {
+                let got = to_radix(v, bits, signed, r);
+                if !(2..=36).contains(&r) {
+                    proptest::prop_assert!(got.is_empty());
+                    continue;
+                }
+                let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+                let want = if signed && r == 10 && v < 0 {
+                    format!("-{}", v.unsigned_abs())
+                } else {
+                    let mut u = v as u64 & mask;
+                    let mut d = Vec::new();
+                    loop {
+                        d.push(std::char::from_digit((u % r as u64) as u32, r).unwrap());
+                        u /= r as u64;
+                        if u == 0 { break }
+                    }
+                    d.iter().rev().collect()
+                };
+                proptest::prop_assert_eq!(String::from_utf8(got).unwrap(), want);
+            }
+        }
     }
 }

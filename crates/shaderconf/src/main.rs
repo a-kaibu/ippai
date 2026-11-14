@@ -23,6 +23,8 @@ mod ref_d3d9;
 mod ref_dxbc;
 #[cfg(test)]
 mod ref_tests;
+#[cfg(test)]
+mod limit_tests;
 
 /// How a pixel's channel compares.
 #[derive(Clone, Copy, Debug)]

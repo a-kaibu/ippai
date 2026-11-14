@@ -494,6 +494,14 @@ fn d3d9_cases(out: &mut Vec<Case>, errors: &mut Vec<String>) {
     d3d9(out, errors, "break_comp", "break_ge inside rep", "defi i0, 10, 0, 0, 0\nmov r0, c2\nrep i0\nadd r0.x, r0.x, c0.x\nbreak_ge r0.x, c1.x\nendrep", Tol::Exact,
         vec![(xyz(1.0, 3.0, 0.0), w1(vec![3.0])), (xyz(1.0, 100.0, 0.0), w1(vec![10.0]))]);
     d3d9(out, errors, "loop_aL", "loop aL, i#: aL = start, start + step, ...", "defi i0, 3, 2, 5, 0\nmov r0, c2\nloop aL, i0\nadd r0.x, r0.x, c0.x\nendloop", Tol::Exact, vec![(x(1.0), w1(vec![3.0]))]);
+    // (review b00: aL steps each iteration, c#[aL] reads start, start + step, ...; after an
+    // inner loop aL is the outer loop's again)
+    d3d9(out, errors, "loop_aL_index", "loop aL, i#: c#[aL] reads c[start + k * step]", "defi i0, 2, 0, 1, 0\nmov r0, c2\nloop aL, i0\nadd r0.x, r0.x, c0[aL].x\nendloop", Tol::Exact,
+        vec![(xyz(1.0, 10.0, 100.0), w1(vec![111.0]))]);
+    d3d9(out, errors, "loop_aL_step", "loop aL, i#: a step of 2", "defi i0, 2, 0, 2, 0\nmov r0, c1\nloop aL, i0\nadd r0.x, r0.x, c0[aL].x\nendloop", Tol::Exact,
+        vec![(xyz(1.0, 10.0, 100.0), w1(vec![111.0]))]);
+    d3d9(out, errors, "loop_aL_nested", "nested loops: aL is the inner loop's inside it, the outer's after it", "defi i0, 2, 0, 1, 0\ndefi i1, 1, 2, 0, 0\nmov r0, c2\nloop aL, i0\nloop aL, i1\nadd r0.x, r0.x, c0[aL].x\nendloop\nadd r0.x, r0.x, c0[aL].x\nendloop", Tol::Exact,
+        vec![(xyz(1.0, 10.0, 100.0), w1(vec![311.0]))]);
     d3d9(out, errors, "setp_if_pred", "setp_gt, then if on the predicate", "mov r0, c2\nsetp_gt p0.x, c0.x, c1.x\nif p0.x\nmov r0.x, c0.x\nendif", Tol::Exact,
         vec![(xyz(5.0, 1.0, 0.0), w1(vec![5.0])), (xyz(0.0, 1.0, 0.0), w1(vec![0.0]))]);
     d3d9(out, errors, "swizzle_mask", "swizzles and write masks", "mov r0, c2\nmov r0.yw, c0.wzyx", Tol::Exact,

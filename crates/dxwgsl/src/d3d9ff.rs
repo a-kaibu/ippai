@@ -233,7 +233,7 @@ pub fn vertex(k: &VsKey) -> String {
     let mut h = uniforms(VS_CONSTS, 0);
     h.push_str("struct In {\n");
     for &(_, _, loc, kind) in &k.inputs {
-        let ty = ["vec4f", "vec4u", "vec4i", "vec4f"][kind as usize];
+        let ty = ["vec4f", "vec4u", "vec4i", "vec4f"].get(kind as usize).copied().unwrap_or("vec4f");
         let _ = writeln!(h, "  @location({}) i{}: {},", loc, loc, ty);
     }
     if k.inputs.is_empty() {
@@ -413,7 +413,7 @@ pub fn no_texture(o: u32, a1: u32, a2: u32, a0: u32) -> bool {
 pub fn pixel(k: &PsKey) -> String {
     let mut h = uniforms(PS_CONSTS, 1);
     for t in 0..k.stages.len() {
-        if k.tex[t] == 2 {
+        if k.tex.get(t).copied().unwrap_or(0) == 2 {
             let _ = writeln!(h, "@group(1) @binding({}) var tex{}: texture_2d<f32>;", t * 2, t);
             let _ = writeln!(h, "@group(1) @binding({}) var smp{}: sampler;", t * 2 + 1, t);
         }
@@ -441,7 +441,7 @@ pub fn pixel(k: &PsKey) -> String {
         if !uses {
             continue;
         }
-        if k.tex[t] == 2 {
+        if k.tex.get(t).copied().unwrap_or(0) == 2 {
             let coord = if s[9] != 0 {
                 format!("(l{0}.xy / l{0}.w)", 2 + t)
             } else {
@@ -467,7 +467,7 @@ pub fn pixel(k: &PsKey) -> String {
         // (an op that reads the stage's texture where none is bound passes current through, as
         // Windows: SELECTARG1 CURRENT. 正しい性奴○の使い方's stage 1 MODULATE TEXTURE DIFFUSE
         // with no texture gave the diffuse, a white screen.)
-        let none = k.tex[t] == 0;
+        let none = k.tex.get(t).copied().unwrap_or(0) == 0;
         let (cop, c1, c2, c0) = if none && no_texture(s[0], s[1], s[2], s[3]) { (2, 1, 1, 1) } else { (s[0], s[1], s[2], s[3]) };
         let (aop, a1, a2, a0) = if none && no_texture(s[4], s[5], s[6], s[7]) { (2, 1, 1, 1) } else { (s[4], s[5], s[6], s[7]) };
         let c = op(cop, &arg(c1, t, false), &arg(c2, t, false), &arg(c0, t, false), t);

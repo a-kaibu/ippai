@@ -275,6 +275,11 @@ fn check_registers(w: &W, p: &Program) -> R<()> {
     if w.temps > 4096 || w.xs.len() > 4096 || w.xs.iter().any(|(&r, &n)| r >= 4096 || n == 0 || n > 4096) {
         return Err("more temps than Direct3D allows".into());
     }
+    // (D3D11.3 spec: 4096 vectors of temps in all, r# and every x# together: so no shader asks
+    // the GPU for 4096 arrays of 4096)
+    if w.xs.values().map(|&n| n as u64).sum::<u64>() + w.temps as u64 > 4096 {
+        return Err("more temps than Direct3D allows (r# and x# together past 4096)".into());
+    }
     if w.inputs.keys().chain(w.outputs.keys()).any(|&r| r >= 32) || w.cbs.keys().any(|&r| r >= 15) || w.res.keys().any(|&r| r >= 128) || w.samplers.keys().any(|&r| r >= 16) {
         return Err("a register past Direct3D's limits".into());
     }
@@ -1839,7 +1844,7 @@ fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f3
                 .osgn
                 .iter()
                 .find(|e| e.sysval == 0 && e.name.eq_ignore_ascii_case("PSIZE") && w.outputs.contains_key(&e.reg))
-                .map_or("1.0f".to_string(), |e| format!("bitcast<f32>(o{}.{})", e.reg, XYZW[bits(e.mask)[0] as usize]));
+                .map_or("1.0f".to_string(), |e| format!("bitcast<f32>(o{}.{})", e.reg, XYZW[bits(e.mask).first().copied().unwrap_or(0) as usize]));
             // (the geometry shader's strip 0 1 2 3 as triangles 0 1 2, 2 1 3)
             post.push("var sp_c = array<vec2<f32>, 6>(vec2<f32>(0.5f, -0.5f), vec2<f32>(0.5f, 0.5f), vec2<f32>(-0.5f, -0.5f), vec2<f32>(-0.5f, -0.5f), vec2<f32>(0.5f, 0.5f), vec2<f32>(-0.5f, 0.5f));".into());
             post.push(format!("let sp_s = clamp({size}, 1.0f, {}f);", crate::f32_text(max)));

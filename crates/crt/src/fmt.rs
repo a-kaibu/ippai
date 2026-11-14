@@ -633,8 +633,9 @@ fn int_digits(v: u64, base: u64, upper: bool, prec: Option<usize>) -> Vec<u8> {
         u /= base;
     }
     let min = prec.unwrap_or(1);
-    while d.len() < min {
-        d.push(b'0');
+    if d.len() < min {
+        // (a precision of up to MAX_OUT zeros: at once, not a push each)
+        d.resize(min, b'0');
     }
     d.reverse();
     d

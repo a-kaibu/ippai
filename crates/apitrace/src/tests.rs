@@ -930,3 +930,194 @@ fn temporary_signatures_roundtrip_without_address_reuse_or_leaks() {
     drop(w);
     assert!(weak.unwrap().upgrade().is_none(), "writer leaked source signatures");
 }
+
+/// review b00: a damaged trace nesting values without end (`14 14 14 ...`, arrays of arrays) is
+/// an error, not a stack overflow; on a thread with a small stack, the reader's own frames at the
+/// deepest nesting allowed fit
+#[test]
+fn values_nested_too_deep_are_an_error() {
+    for (kind, depth, ok) in [(11u8, MAX_DEPTH as usize - 1, true), (11, MAX_DEPTH as usize, false), (11, 100_000, false), (14, 100_000, false)] {
+        let mut w = Writer::new(&[]);
+        let sig = f("F", &["a"]);
+        let n = w.enter(0, &sig, &[]);
+        w.b.pop(); // (CALL_END)
+        w.b.push(1); // (CALL_ARG)
+        w.uint(0);
+        for _ in 0..depth {
+            w.b.push(kind);
+            if kind == 11 {
+                w.uint(1);
+            }
+        }
+        w.b.push(0);
+        if kind == 14 {
+            w.b.extend(std::iter::repeat_n(0, depth));
+        }
+        w.b.push(0); // (CALL_END)
+        w.leave(n, &[], None, false);
+        let b = w.b.clone();
+        let r = std::thread::Builder::new().stack_size(256 << 10).spawn(move || {
+            let mut p = Parser::new(&b).unwrap();
+            p.next_call().map(|c| c.is_some())
+        }).unwrap().join().unwrap();
+        assert_eq!(r.is_ok(), ok, "{kind} {depth}: {r:?}");
+    }
+}
+
+/// review b00: an argument index from the file (2^40, u64::MAX) is an error, not an allocation of
+/// that many arguments (an abort); the highest allowed one still reads
+#[test]
+fn argument_index_is_bounded() {
+    for (idx, ok) in [(MAX_ARG, true), (MAX_ARG + 1, false), (1 << 40, false), (u64::MAX, false)] {
+        let mut w = Writer::new(&[]);
+        let sig = f("F", &["a"]);
+        let n = w.enter(0, &sig, &[]);
+        w.b.pop();
+        w.b.push(1); // (CALL_ARG)
+        w.uint(idx);
+        w.b.push(4);
+        w.uint(7);
+        w.b.push(0); // (CALL_END)
+        w.leave(n, &[], None, false);
+        let mut p = Parser::new(&w.b).unwrap();
+        let r = p.next_call();
+        assert_eq!(r.is_ok(), ok, "{idx}: {r:?}");
+        if ok {
+            let c = r.unwrap().unwrap();
+            assert_eq!(c.args_in.len(), idx as usize + 1);
+            assert_eq!(c.args_in[idx as usize], Some(Value::UInt(7)));
+        }
+    }
+}
+
+/// review b00: CreateDevice's present parameters recorded as a few bytes (a damaged trace) are
+/// passed as they are, not a panic in the windowed patch; the window keeps its last size
+#[test]
+fn short_present_parameters_are_no_panic() {
+    for len in [0usize, 3, 4, 7] {
+        let mut w = Writer::new(&[]);
+        let create = f("Direct3DCreate9", &["SDKVersion"]);
+        let n = w.enter(0, &create, &[(0, Value::UInt(32))]);
+        w.leave(n, &[], Some(&Value::Opaque(0x100)), false);
+        let cd = f("IDirect3D9::CreateDevice", &["this", "Adapter", "DeviceType", "hFocusWindow", "BehaviorFlags", "pPresentationParameters", "ppReturnedDeviceInterface"]);
+        let n = w.enter(0, &cd, &[(0, Value::Opaque(0x100)), (1, Value::UInt(0)), (2, Value::UInt(1)), (3, Value::Opaque(0x777)), (4, Value::UInt(0x20))]);
+        w.leave(n, &[(5, Value::Blob(vec![9; len])), (6, Value::Array(vec![Value::Opaque(0x200)]))], Some(&Value::UInt(0)), false);
+        let _ = replay::convert(&w.b, None);
+        let _ = replay::convert(&w.b, Some(64));
+    }
+}
+
+/// review b00: a memcpy 4 GiB or more above its lock (64-bit trace) is dropped, not cut to 32 bits
+/// and written into the lock
+#[test]
+fn memcpy_far_above_a_lock_is_dropped() {
+    let mut w = Writer::new(&[]);
+    let lock = f("IDirect3DVertexBuffer9::Lock", &["this", "OffsetToLock", "SizeToLock", "ppbData", "Flags"]);
+    let n = w.enter(0, &lock, &[(0, Value::Opaque(0x100)), (1, Value::UInt(0)), (2, Value::UInt(8)), (4, Value::UInt(0))]);
+    w.leave(n, &[(3, Value::Array(vec![Value::Opaque(0x8000)]))], Some(&Value::UInt(0)), false);
+    let mc = f("memcpy", &["dest", "src", "n"]);
+    for dest in [0x8000u64, 0x8000 + (1 << 32), 0x8004 + (1 << 33)] {
+        let n = w.enter(0, &mc, &[(0, Value::Opaque(dest)), (1, Value::Blob(vec![1; 4])), (2, Value::UInt(4))]);
+        w.leave(n, &[], None, true);
+    }
+    let (out, stats) = replay::convert(&w.b, None).unwrap();
+    assert_eq!(stats.memcpys, 1);
+    assert_eq!(stats.dropped.get("memcpy (past 4 GiB of its lock)"), Some(&2));
+    let r = calls(&out);
+    let m: Vec<_> = r.iter().filter_map(|x| match x { Record::Memcpy { offset, .. } => Some(*offset), _ => None }).collect();
+    assert_eq!(m, vec![0]);
+}
+
+/// snappy's copies against the plain byte-by-byte copy (the format's definition): the copy in runs
+/// of the offset gives the same bytes for every offset and length, overlapping or not
+fn snappy_model(src: &[u8]) -> Option<Vec<u8>> {
+    let mut i = 0;
+    let mut n = 0u64;
+    let mut sh = 0;
+    loop {
+        let b = *src.get(i)?;
+        i += 1;
+        n |= ((b & 0x7f) as u64) << sh;
+        if b & 0x80 == 0 { break }
+        sh += 7;
+    }
+    let mut out = Vec::new();
+    while i < src.len() {
+        let tag = src[i];
+        i += 1;
+        let (len, off) = match tag & 3 {
+            0 => {
+                let len = (tag >> 2) as usize + 1;
+                assert!(len <= 60);
+                out.extend_from_slice(src.get(i..i + len)?);
+                i += len;
+                continue;
+            }
+            2 => {
+                let o = u16::from_le_bytes(src.get(i..i + 2)?.try_into().unwrap()) as usize;
+                i += 2;
+                ((tag >> 2) as usize + 1, o)
+            }
+            _ => unreachable!(),
+        };
+        if off == 0 || off > out.len() { return None }
+        for _ in 0..len {
+            out.push(out[out.len() - off]);
+        }
+    }
+    (out.len() as u64 == n).then_some(out)
+}
+
+proptest! {
+    #[test]
+    fn snappy_copies_match_the_definition(elems in proptest::collection::vec((any::<bool>(), proptest::collection::vec(any::<u8>(), 1..61), 1usize..65, 1usize..300), 1..40)) {
+        // a stream of literals and 2-byte-offset copies (any offset into what is out, any length)
+        let mut body = Vec::new();
+        let mut out_len = 0usize;
+        for (lit, bytes, len, off) in &elems {
+            if *lit || out_len == 0 {
+                body.push(((bytes.len() - 1) as u8) << 2);
+                body.extend_from_slice(bytes);
+                out_len += bytes.len();
+            } else {
+                let off = 1 + (off - 1) % out_len;
+                body.push((((len - 1) as u8) << 2) | 2);
+                body.extend_from_slice(&(off as u16).to_le_bytes());
+                out_len += len;
+            }
+        }
+        let mut src = Vec::new();
+        let mut n = out_len as u64;
+        loop {
+            let b = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 { src.push(b); break }
+            src.push(b | 0x80);
+        }
+        src.extend_from_slice(&body);
+        let want = snappy_model(&src).unwrap();
+        prop_assert_eq!(crate::snappy::decompress(&src).unwrap(), want.clone());
+        prop_assert_eq!(crate::snappy::decompress_prefix(&src).unwrap(), want);
+    }
+
+    /// any nesting of arrays and reprs up to twice the limit: read back below it, an error at or
+    /// above it, never a crash
+    #[test]
+    fn nesting_up_to_the_limit_reads_back(kinds in proptest::collection::vec(any::<bool>(), 0..(2 * MAX_DEPTH as usize))) {
+        let mut v = Value::UInt(1);
+        for &arr in kinds.iter().rev() {
+            v = if arr { Value::Array(vec![v]) } else { Value::Repr(Box::new(Value::Null), Box::new(v)) };
+        }
+        let mut w = Writer::new(&[]);
+        let sig = f("F", &["a"]);
+        let n = w.enter(0, &sig, &[(0, v.clone())]);
+        w.leave(n, &[], None, false);
+        let mut p = Parser::new(&w.b).unwrap();
+        let r = p.next_call();
+        if kinds.len() < MAX_DEPTH as usize {
+            prop_assert_eq!(r.unwrap().unwrap().args_in[0].as_ref().map(norm), Some(norm(&v)));
+        } else {
+            prop_assert!(r.is_err());
+        }
+    }
+}

@@ -209,9 +209,15 @@ impl L<'_> {
         let (dim, el) = self.x_tex_el(t);
         let coord = self.x_cast(coord.clone(), &coord.ty.with_base(B::Int))?;
         let c = &coord.c;
+        if c.len() < 2 {
+            return Err("Load of a multisampled texture takes a 2D coordinate".into());
+        }
         let z = C::I(0);
         let addr = if dim == Dim::T2DMSArray { vec![c[0], c[1], c.get(2).copied().unwrap_or(z), z] } else { vec![c[0], c[1], z, z] };
         let sample = self.x_cast(sample, &Ty::Scalar(B::Int))?;
+        if sample.c.is_empty() {
+            return Err("Load of a multisampled texture takes a sample number".into());
+        }
         let dst = self.x_tmp();
         let a = self.x_opnd(&addr);
         let si = self.x_opnd(&sample.c[..1]);
@@ -568,7 +574,8 @@ pub fn call(l: &mut L, name: &str, args: &[Expr], line: u32) -> R<Val> {
             need(1)?;
             let v = l.expr(&args[0])?;
             let b = l.x_cast(v.clone(), &v.ty.with_base(B::Bool))?;
-            let mut acc = b.c[0];
+            let Some(&first) = b.c.first() else { return Err(format!("{name} of no value")) };
+            let mut acc = first;
             for c in &b.c[1..] {
                 acc = l.x_alu(if name == "any" { OR } else { AND }, B::Bool, &[&[acc], &[*c]])[0];
             }
@@ -840,8 +847,9 @@ pub fn method(l: &mut L, o: Val, name: &str, args: &[Expr]) -> R<Val> {
             let ms = l.x_opnd(&mip);
             let mut ins_ctl = 2;
             let outs = &args[has_mip as usize..];
+            let Some(out0) = outs.first() else { return Err("GetDimensions takes outputs".into()) };
             // (float outputs: resinfo float)
-            let first = l.x_place(&outs[0])?;
+            let first = l.x_place(out0)?;
             if first.ty.base() == B::Float {
                 ins_ctl = 0;
             }

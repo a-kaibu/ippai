@@ -58,7 +58,7 @@ fn step_all(src: &[u8], mut i: usize, out: &mut Vec<u8>) -> Result<(), Cut> {
                     i += k;
                 }
                 let len = len + 1;
-                let lit = src.get(i..i + len).ok_or(Cut::Short)?;
+                let lit = src.get(i..i.checked_add(len).ok_or(Cut::Short)?).ok_or(Cut::Short)?;
                 out.extend_from_slice(lit);
                 i += len;
                 continue;
@@ -82,11 +82,14 @@ fn step_all(src: &[u8], mut i: usize, out: &mut Vec<u8>) -> Result<(), Cut> {
         if off == 0 || off > out.len() {
             return Err(Cut::Bad(format!("snappy: copy offset {off} with {} bytes out", out.len())));
         }
-        // (the copy may overlap what it writes: byte by byte)
+        // (the copy may overlap what it writes: then in runs of the offset, each a copy of
+        // bytes already out)
         let start = out.len() - off;
-        for k in 0..len {
-            let b = out[start + k];
-            out.push(b);
+        let mut left = len;
+        while left > 0 {
+            let k = left.min(off);
+            out.extend_from_within(start..start + k);
+            left -= k;
         }
     }
     Ok(())

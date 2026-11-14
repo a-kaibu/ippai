@@ -353,6 +353,8 @@ impl Pp<'_> {
         Ok(())
     }
 
+    /// Expands one line's tokens: macros of macros up to 64 deep, at most MAX_EXPANSION tokens
+    /// out of any one expansion.
     fn expand(&self, toks: &[Token], disabled: &mut Vec<String>, depth: u32) -> Result<Vec<Token>, String> {
         if depth > 64 {
             return Err("macro expansion too deep".into());
@@ -360,6 +362,11 @@ impl Pp<'_> {
         let mut out = Vec::new();
         let mut i = 0;
         while i < toks.len() {
+            // (macros of macros used several times each grow as a power: 40 levels of
+            // `#define A2 A1 A1` are 2^40 tokens; fxc gives up long before)
+            if out.len() > MAX_EXPANSION {
+                return Err(format!("line {}: macro expansion past {MAX_EXPANSION} tokens", toks[i].line));
+            }
             let tk = &toks[i];
             let Tok::Ident(name) = &tk.t else {
                 out.push(tk.clone());
@@ -453,6 +460,9 @@ impl Pp<'_> {
                 }
             }
         }
+        if out.len() > MAX_EXPANSION {
+            return Err(format!("line {}: macro expansion past {MAX_EXPANSION} tokens", toks.last().map_or(0, |t| t.line)));
+        }
         Ok(out)
     }
 
@@ -478,7 +488,7 @@ impl Pp<'_> {
         }
         let e = self.expand(&t2, &mut Vec::new(), 0)?;
         let mut p = 0;
-        let v = cexpr(&e, &mut p, 0)?;
+        let v = cexpr(&e, &mut p, 0, 0)?;
         Ok(v)
     }
 }
@@ -517,9 +527,16 @@ fn paste(toks: Vec<Token>) -> Vec<Token> {
     out
 }
 
-/// Integer expressions of #if (precedence climbing).
-fn cexpr(t: &[Token], p: &mut usize, min: u32) -> Result<i64, String> {
-    let mut l = cunary(t, p)?;
+/// The most tokens one expansion gives
+pub const MAX_EXPANSION: usize = 1 << 20;
+
+/// How deep parentheses and unary operators of one #if may nest (a long `((((` or `!!!!` line
+/// would otherwise overflow the stack: the guest thread's is small)
+const MAX_IF_DEPTH: u32 = 256;
+
+/// Integer expressions of #if (precedence climbing); `d`: the nesting so far.
+fn cexpr(t: &[Token], p: &mut usize, min: u32, d: u32) -> Result<i64, String> {
+    let mut l = cunary(t, p, d)?;
     loop {
         let Some(Tok::Punct(op)) = t.get(*p).map(|x| &x.t) else { break };
         let prec = match *op {
@@ -541,16 +558,16 @@ fn cexpr(t: &[Token], p: &mut usize, min: u32) -> Result<i64, String> {
         }
         *p += 1;
         if *op == "?" {
-            let a = cexpr(t, p, 0)?;
+            let a = cexpr(t, p, 0, d + 1)?;
             if t.get(*p).map(|x| &x.t) != Some(&Tok::Punct(":")) {
                 return Err("bad ?: in #if".into());
             }
             *p += 1;
-            let b = cexpr(t, p, 1)?;
+            let b = cexpr(t, p, 1, d + 1)?;
             l = if l != 0 { a } else { b };
             continue;
         }
-        let r = cexpr(t, p, prec + 1)?;
+        let r = cexpr(t, p, prec + 1, d)?;
         l = match *op {
             "||" => (l != 0 || r != 0) as i64,
             "&&" => (l != 0 && r != 0) as i64,
@@ -569,17 +586,18 @@ fn cexpr(t: &[Token], p: &mut usize, min: u32) -> Result<i64, String> {
             "-" => l.wrapping_sub(r),
             "*" => l.wrapping_mul(r),
             "/" => {
+                // (i64::MIN / -1: the wrapped quotient, not a panic)
                 if r == 0 {
                     0
                 } else {
-                    l / r
+                    l.wrapping_div(r)
                 }
             }
             _ => {
                 if r == 0 {
                     0
                 } else {
-                    l % r
+                    l.wrapping_rem(r)
                 }
             }
         };
@@ -587,7 +605,11 @@ fn cexpr(t: &[Token], p: &mut usize, min: u32) -> Result<i64, String> {
     Ok(l)
 }
 
-fn cunary(t: &[Token], p: &mut usize) -> Result<i64, String> {
+fn cunary(t: &[Token], p: &mut usize, d: u32) -> Result<i64, String> {
+    if d > MAX_IF_DEPTH {
+        return Err("#if expression nested too deep".into());
+    }
+    let d = d + 1;
     let Some(tk) = t.get(*p) else { return Err("bad #if expression".into()) };
     *p += 1;
     Ok(match &tk.t {
@@ -595,14 +617,14 @@ fn cunary(t: &[Token], p: &mut usize) -> Result<i64, String> {
         Tok::Float(f) => *f as i64,
         Tok::Ident(_) => 0,
         Tok::Punct("(") => {
-            let v = cexpr(t, p, 0)?;
+            let v = cexpr(t, p, 0, d)?;
             *p += 1;
             v
         }
-        Tok::Punct("!") => (cunary(t, p)? == 0) as i64,
-        Tok::Punct("-") => -cunary(t, p)?,
-        Tok::Punct("+") => cunary(t, p)?,
-        Tok::Punct("~") => !cunary(t, p)?,
+        Tok::Punct("!") => (cunary(t, p, d)? == 0) as i64,
+        Tok::Punct("-") => cunary(t, p, d)?.wrapping_neg(),
+        Tok::Punct("+") => cunary(t, p, d)?,
+        Tok::Punct("~") => !cunary(t, p, d)?,
         _ => return Err("bad #if expression".into()),
     })
 }

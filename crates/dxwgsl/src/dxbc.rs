@@ -27,7 +27,7 @@ pub struct Container<'a> {
 }
 
 fn rd(b: &[u8], at: usize) -> Option<u32> {
-    b.get(at..at + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    b.get(at..at.checked_add(4)?).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 impl<'a> Container<'a> {
@@ -39,9 +39,9 @@ impl<'a> Container<'a> {
         let mut chunks = Vec::new();
         for i in 0..n.min(64) {
             let off = rd(code, 32 + 4 * i).ok_or("short DXBC")? as usize;
-            let tag = code.get(off..off + 4).ok_or("bad DXBC chunk")?;
+            let tag = code.get(off..off.checked_add(4).ok_or("bad DXBC chunk")?).ok_or("bad DXBC chunk")?;
             let size = rd(code, off + 4).ok_or("bad DXBC chunk")? as usize;
-            let data = code.get(off + 8..off + 8 + size).ok_or("bad DXBC chunk size")?;
+            let data = (off + 8).checked_add(size).and_then(|end| code.get(off + 8..end)).ok_or("bad DXBC chunk size")?;
             chunks.push(([tag[0], tag[1], tag[2], tag[3]], data));
         }
         Ok(Container { chunks })
