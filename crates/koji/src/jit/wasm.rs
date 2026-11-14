@@ -373,6 +373,19 @@ impl Code {
         self.b.extend_from_slice(&lanes);
         self
     }
+    /// v128.const
+    pub fn v128c(&mut self, bytes: [u8; 16]) -> &mut Self {
+        self.simd(0x0c);
+        self.b.extend_from_slice(&bytes);
+        self
+    }
+    /// A SIMD memory instruction (load_splat and the like) at offset `off`.
+    pub fn simd_mem(&mut self, op: u32, off: u32) -> &mut Self {
+        self.simd(op);
+        uleb(&mut self.b, 0);
+        uleb(&mut self.b, off as u64);
+        self
+    }
     pub fn v128zero(&mut self) -> &mut Self {
         self.simd(0x0c);
         self.b.extend_from_slice(&[0; 16]);

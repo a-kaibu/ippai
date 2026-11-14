@@ -19,6 +19,8 @@
 
 use super::wasm::{Code, Func, FuncType, Import, Module, F64, I32, I64, V128};
 
+#[path = "long/avx.rs"]
+mod avx;
 #[path = "long/sse.rs"]
 mod sse;
 use super::{Region, ENTRY_SHIFT, GUEST_HI, GUEST_LO, N_PARAMS, RET_INTERP};

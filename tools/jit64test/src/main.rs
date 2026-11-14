@@ -521,7 +521,7 @@ fn sse_codes() -> &'static [Code] {
                 let any_x = kinds.iter().any(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::ymm_reg | K::ymm_rm | K::ymm_or_mem | K::ymm_vvvv | K::mm_reg | K::mm_rm | K::mm_or_mem));
                 let m = format!("{:?}", c.mnemonic());
                 // (side effects outside the compared state, or not in CPUID)
-                let skip = ["Maskmov", "Vmaskmov", "Ldmxcsr", "Stmxcsr", "Aes", "Pclmul", "Sha", "Gf2p8", "Vcvtph2ps", "Vcvtps2ph", "Extrq", "Insertq", "Movnt", "Crc32", "Vfm", "Vfnm", "Vgather", "Vpgather", "Vpdpb", "Vpdpw", "Vpmadd52", "Kmov", "Vpbroadcast", "Vbroadcast", "Vperm", "Vtest", "Vpblendd", "Vpsllv", "Vpsrlv", "Vpsrav", "Vblendv", "Vpblendv", "Rdrand", "Rdseed", "Pconfig", "Bndc", "Bndm", "Senduipi"];
+                let skip = ["Maskmov", "Vmaskmov", "Ldmxcsr", "Stmxcsr", "Aes", "Pclmul", "Sha", "Gf2p8", "Vcvtph2ps", "Vcvtps2ph", "Extrq", "Insertq", "Movnt", "Crc32", "Vfm", "Vfnm", "Vgather", "Vpgather", "Vpdpb", "Vpdpw", "Vpmadd52", "Kmov", "Vtest", "Vblendv", "Vpblendv", "Rdrand", "Rdseed", "Pconfig", "Bndc", "Bndm", "Senduipi"];
                 // (JIT64_SSE=Movlps,Blendv: only these mnemonic prefixes, to focus a run)
                 let only = std::env::var("JIT64_SSE").map_or(true, |v| v.split(',').any(|p| m.starts_with(p)));
                 ok && any_x && only && !skip.iter().any(|p| m.starts_with(p))
@@ -949,23 +949,29 @@ fn initial(rng: &mut Rng, rip_hi: u32) -> Cpu {
     c.set_gpr(5, DATA as u64 + 0x100); // rbp
     c.eflags = 0x202 | (rng.next() as u32 & 0x8d5);
     // xmm: random bits, or floats / doubles / small integers (fewer NaNs)
-    for i in 0..16 {
-        let v: u128 = match rng.below(6) {
+    let vec = |rng: &mut Rng| -> u128 {
+        match rng.below(8) {
             0 => rng.next() as u128 | (rng.next() as u128) << 64,
             1 => (0..4).fold(0, |v, k| v | ((((rng.next() as i32) >> rng.below(31)) as f32 / 8.0).to_bits() as u128) << (32 * k)),
             2 => (0..2).fold(0, |v, k| v | ((((rng.next() as i64) >> rng.below(63)) as f64 / 8.0).to_bits() as u128) << (64 * k)),
             3 => (0..8).fold(0, |v, k| v | ((rng.below(512) as u16).wrapping_sub(256) as u128) << (16 * k)),
             // the MXCSR flags' edge cases: zeros, infinities, NaNs, denormals, range ends
             4 => (0..4).fold(0, |v, k| v | (if rng.below(2) == 0 { FS32[rng.below(FS32.len() as u64) as usize] } else { (1.5f32 * k as f32).to_bits() } as u128) << (32 * k)),
-            _ => (0..2).fold(0, |v, k| v | (if rng.below(2) == 0 { FS64[rng.below(FS64.len() as u64) as usize] } else { (1.5 * k as f64).to_bits() } as u128) << (64 * k)),
-        };
+            5 => (0..2).fold(0, |v, k| v | (if rng.below(2) == 0 { FS64[rng.below(FS64.len() as u64) as usize] } else { (1.5 * k as f64).to_bits() } as u128) << (64 * k)),
+            // small dwords / qwords: shift counts around the element widths (VPSLLVD...), indices
+            6 => (0..4).fold(0, |v, k| v | (rng.below(72) as u128) << (32 * k)),
+            _ => (0..2).fold(0, |v, k| v | (rng.below(72) as u128) << (64 * k)),
+        }
+    };
+    for i in 0..16 {
+        let v = vec(rng);
         if i < 8 {
             c.xmm[i] = v;
         } else {
             c.xmm8[i - 8] = v;
         }
         // the upper YMM halves: VEX.128 must clear the destination's, legacy SSE keep them
-        c.ymmh[i] = rng.next() as u128 | (rng.next() as u128) << 64;
+        c.ymmh[i] = if rng.below(2) == 0 { vec(rng) } else { rng.next() as u128 | (rng.next() as u128) << 64 };
     }
     for i in 0..8 {
         c.mm[i] = rng.next();

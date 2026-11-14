@@ -228,6 +228,9 @@ fn supported(ins: &Instruction) -> bool {
 impl Gen<'_> {
     /// Translates an instruction [`plan`] accepts; false (nothing emitted) if it can't.
     pub(super) fn sse(&mut self) -> bool {
+        if super::avx::supported(&self.ins) {
+            return self.avx();
+        }
         if let Some(x) = lanes(&self.ins) {
             return self.sse256(&x);
         }

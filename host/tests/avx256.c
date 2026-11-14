@@ -1,7 +1,8 @@
 /* AVX / AVX2 256-bit forms (ymm) as the x64 JIT translates them a lane at a time: lane-wise
  * float and integer arithmetic, logic, per-lane shuffles, packs, unpacks, blends with the
  * immediate's upper bits for the upper lane, shifts by an immediate, conversions, loads and
- * stores, over many inputs (NaN, infinities, out of range for conversions, signed limits).
+ * stores, over many inputs (NaN, infinities, out of range for conversions, signed limits); and
+ * the forms that cross lanes or have no legacy form (cross()).
  * Prints checksums; they match the same program built for x86-64 Linux and run natively.
  * The functions take target("avx2") so the program needs no -mavx2. */
 #include <immintrin.h>
@@ -60,6 +61,48 @@ __attribute__((target("avx2"), noinline)) static void ints(void) {
     }
 }
 
+/* forms that move data between the lanes or have no legacy form (jit/long/avx.rs): inserts,
+ * extracts, VPERM2F128 (zeroing bits too), VPERMQ/PD, VPERMD/PS (indices above 7), broadcasts
+ * from registers and memory, VPERMILPS/PD (both forms), VPBLENDD, the variable shifts with
+ * counts around the element width, VPMOVZX/SX into YMM, VPMOVMSKB/VMOVMSKPS/PD of YMM */
+__attribute__((target("avx2"), noinline)) static void cross(void) {
+    for (int i = 0; i < N; i++) {
+        __m256i a = _mm256_loadu_si256((__m256i *)(iin + i * 8)), b = _mm256_loadu_si256((__m256i *)(iin + i * 8 + 3));
+        __m256i n = _mm256_and_si256(b, _mm256_set1_epi32(0x47)), n64 = _mm256_and_si256(b, _mm256_set1_epi64x(0x47));
+        __m256 f = _mm256_castsi256_ps(a), g = _mm256_castsi256_ps(b);
+        __m256d d = _mm256_castsi256_pd(a), e = _mm256_castsi256_pd(b);
+        __m128i x = _mm_loadu_si128((__m128i *)(iin + i * 8 + 2));
+        __m256i r[34] = {
+            _mm256_inserti128_si256(a, x, 0), _mm256_inserti128_si256(a, x, 1),
+            _mm256_zextsi128_si256(_mm256_extracti128_si256(a, 1)), _mm256_zextsi128_si256(_mm256_extractf128_si256(b, 0)),
+            _mm256_permute2x128_si256(a, b, 0x21), _mm256_permute2x128_si256(a, b, 0x83), _mm256_permute2x128_si256(a, b, 0x38),
+            _mm256_permute4x64_epi64(a, 0x1b), _mm256_permute4x64_epi64(b, 0xe4),
+            _mm256_castpd_si256(_mm256_permute4x64_pd(d, 0x72)),
+            _mm256_permutevar8x32_epi32(a, b), _mm256_castps_si256(_mm256_permutevar8x32_ps(g, a)),
+            _mm256_broadcastd_epi32(x), _mm256_broadcastb_epi8(x), _mm256_broadcastw_epi16(_mm256_castsi256_si128(b)),
+            _mm256_broadcastq_epi64(x), _mm256_castps_si256(_mm256_broadcastss_ps(_mm_castsi128_ps(x))),
+            _mm256_castps_si256(_mm256_broadcast_ss(fin + i)), _mm256_castpd_si256(_mm256_broadcast_sd((double *)(fin + i))),
+            _mm256_broadcastsi128_si256(x), _mm256_castps_si256(_mm256_permute_ps(f, 0x39)),
+            _mm256_castpd_si256(_mm256_permute_pd(d, 0x6)), _mm256_castps_si256(_mm256_permutevar_ps(f, b)),
+            _mm256_castpd_si256(_mm256_permutevar_pd(d, b)), _mm256_blend_epi32(a, b, 0xa5),
+            _mm256_sllv_epi32(a, n), _mm256_srlv_epi32(a, n), _mm256_srav_epi32(a, n),
+            _mm256_sllv_epi64(a, n64), _mm256_srlv_epi64(a, n64),
+            _mm256_cvtepu8_epi16(x), _mm256_cvtepi8_epi32(x), _mm256_cvtepu16_epi64(x), _mm256_cvtepi32_epi64(x),
+        };
+        mix(r, sizeof r);
+        __m128i h[8] = {
+            _mm_sllv_epi32(x, _mm256_castsi256_si128(n)), _mm_srav_epi32(x, _mm256_castsi256_si128(n)), _mm_srlv_epi64(x, _mm256_castsi256_si128(n64)),
+            _mm_blend_epi32(x, _mm256_castsi256_si128(b), 0x6), _mm_castps_si128(_mm_permutevar_ps(_mm_castsi128_ps(x), _mm256_castsi256_si128(b))),
+            _mm_castpd_si128(_mm_permute_pd(_mm_castsi128_pd(x), 1)), _mm_broadcastb_epi8(x), _mm_castps_si128(_mm_broadcastss_ps(_mm_castsi128_ps(x))),
+        };
+        mix(h, sizeof h);
+        int m[3] = { _mm256_movemask_epi8(a), _mm256_movemask_ps(g), _mm256_movemask_pd(e) };
+        mix(m, sizeof m);
+        __m128i lo = _mm256_extracti128_si256(b, 1);
+        _mm_storeu_si128((__m128i *)(iin + i * 8 + 6), _mm_xor_si128(lo, _mm256_castsi256_si128(a)));
+    }
+}
+
 int main(void) {
     unsigned fbits[] = { 0x7fc00000, 0xff800000, 0x7f800000, 0x4f000000, 0xcf000001, 0x80000000, 0x00000001, 0x3f800000 };
     for (int i = 0; i < N * 8 + 8; i++) {
@@ -77,5 +120,10 @@ int main(void) {
     printf("ints %016llx\n", sum);
     mix(iin, sizeof iin);
     printf("stored %016llx\n", sum);
+    sum = 0;
+    for (int k = 0; k < 40; k++) cross();
+    printf("cross %016llx\n", sum);
+    mix(iin, sizeof iin);
+    printf("cross stored %016llx\n", sum);
     return 0;
 }

@@ -6,7 +6,8 @@
 //! moving between its locals and the Cpu), a region is translated where the dispatcher found
 //! none, and the interpreter steps what a region left to it. The interpreter runs the same code
 //! from the same state; somewhere along its run the state must be the JIT's: the sixteen
-//! registers, RIP, the status flags, SSE and the guest memory window.
+//! registers, RIP, the status flags, SSE (all sixteen XMM registers and the upper YMM halves) and
+//! the guest memory window.
 //!
 //! Guest memory is [LO, HI): code at LO, data above it. A run where the interpreter touches
 //! memory outside it (a fault) is not compared.
@@ -110,12 +111,14 @@ fn same(a: &Cpu, b: &Cpu, status: bool) -> bool {
         && a.rip_hi == b.rip_hi
         && a.flags() & keep == b.flags() & keep
         && a.xmm == b.xmm
+        && a.xmm8 == b.xmm8
+        && a.ymmh[..16] == b.ymmh[..16]
         && a.mxcsr == b.mxcsr
 }
 
 fn show(c: &Cpu) -> String {
     let r: Vec<u64> = (0..16).map(|i| c.gpr(i)).collect();
-    format!("rip {:#x}:{:#x} regs {:x?} flags {:#x} xmm {:x?} mxcsr {:#x}", c.rip_hi, c.eip, r, c.flags(), c.xmm, c.mxcsr)
+    format!("rip {:#x}:{:#x} regs {:x?} flags {:#x} xmm {:x?} xmm8 {:x?} ymmh {:x?} mxcsr {:#x}", c.rip_hi, c.eip, r, c.flags(), c.xmm, c.xmm8, &c.ymmh[..16], c.mxcsr)
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -136,6 +139,11 @@ fuzz_target!(|data: &[u8]| {
     cpu.eflags = 0x202 | (state[0] as u32 & STATUS);
     for i in 0..8 {
         cpu.xmm[i] = (quad(i) as u128) << 64 | quad(15 - i) as u128;
+        cpu.xmm8[i] = (quad(15 - i) as u128) << 64 | quad((i + 3) % 16) as u128;
+    }
+    // (the upper YMM halves: VEX.256 forms read and write them, VEX.128 clears its destination's)
+    for i in 0..16 {
+        cpu.ymmh[i] = (quad((i + 5) % 16) as u128) << 64 | quad((i + 9) % 16).rotate_left(i as u32) as u128;
     }
     // regions of 1..4 blocks (koji::jit::long::DEBUG_BLOCKS), all sixteen registers moved at
     // every entry and exit or only the named ones (DEBUG_ALL_REGS: both must agree with the
