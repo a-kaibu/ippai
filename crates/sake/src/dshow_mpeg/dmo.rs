@@ -119,6 +119,20 @@ pub(super) fn state(b: u32, s: u32) {
 /// The input pin's IPin::EndOfStream / BeginFlush / EndFlush / NewSegment: on to the renderer
 /// (`slot`), the graph told of the end.
 pub(super) fn downstream(c: &mut Ctx, b: u32, slot: u32) -> u32 {
+    if slot == 14 {
+        // the end: what the codec still holds (WMV3's last I / P picture behind B ones) first
+        if let Some((mut codec, gen)) = dwith(b, |d| (d.codec.take(), d.gen)) {
+            let frames = codec.as_mut().map(|x| x.drain()).unwrap_or_default();
+            dwith(b, |d| d.codec = codec);
+            for f in frames {
+                if let Frame::Picture { time, w, h, bgra } = f {
+                    if !show(c, b, gen, time, w, h, &bgra) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
     match slot {
         15 => {
             dwith(b, |d| {

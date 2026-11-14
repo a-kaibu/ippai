@@ -33,13 +33,37 @@ def array(text, name):
     body = text[m.end():i - 1]
     dims = [d.strip() for d in re.findall(r'\[([^\]]*)\]', m.group(2))]
     num = r'-?(?:0x[0-9a-fA-F]+|\d+\.?\d*(?:e[-+]?\d+)?)[fFuUlL]*'
+    sizes = [int(d, 0) if re.fullmatch(r'\d+|0x[0-9a-fA-F]+', d) else None for d in dims]
     if len(dims) >= 2 and '{' in body:
-        # (rows shorter than the row size: padded with zeros, as C does)
-        toks = []
-        for row in re.findall(r'\{([^{}]*)\}', body):
-            r = re.findall(num, row)
-            n = int(dims[-1], 0) if dims[-1] else len(r)
-            toks += r + ['0'] * (n - len(r))
+        # (nested braces: each level padded with zeros to its size, as C does)
+        def level(txt, k):
+            if k == len(dims) - 1:
+                r = re.findall(num, txt)
+                return r + ['0'] * ((sizes[k] or len(r)) - len(r))
+            out, depth, start = [], 0, None
+            for j, c in enumerate(txt):
+                if c == '{':
+                    if depth == 0:
+                        start = j + 1
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        out.append(level(txt[start:j], k + 1))
+            inner = 1
+            for z in sizes[k + 1:]:
+                inner *= z
+            flat = [t for o in out for t in o]
+            n = sizes[k] * inner if sizes[k] else len(flat)
+            return flat + ['0'] * (n - len(flat))
+        if len(dims) == 2:
+            toks = []
+            for row in re.findall(r'\{([^{}]*)\}', body):
+                r = re.findall(num, row)
+                n = sizes[-1] or len(r)
+                toks += r + ['0'] * (n - len(r))
+        else:
+            toks = level(body, 0)
     else:
         toks = re.findall(num, body)
     vals = []
@@ -49,7 +73,11 @@ def array(text, name):
         if ty == 'f32':
             vals.append(repr(float(t)) if not t.startswith('0x') else str(int(t, 16)))
         else:
-            vals.append(str(int(t, 0)))
+            v = int(t, 0)
+            # C wraps a negative initializer of an unsigned element (vc1 delta tables' -1 is 255)
+            if v < 0 and ty[0] == 'u':
+                v &= (1 << int(ty[1:])) - 1
+            vals.append(str(v))
     return ty, vals
 
 
@@ -96,3 +124,15 @@ m4 += [('libavcodec/wmv2data.c', n, n.upper().replace('FF_', '')) for n in ['ff_
 m4 += [('libavcodec/mathtables.c', 'ff_zigzag_direct', 'ZIGZAG_DIRECT')]
 m4 += [('libavcodec/mpegvideodata.c', n, n.upper().replace('FF_', '')) for n in ['ff_alternate_horizontal_scan', 'ff_alternate_vertical_scan']]
 gen('msmpeg4_tables.rs', m4, 'MSMPEG4')
+
+vlc = 'libavcodec/vc1_vlc_data.h'
+v1 = [(vlc, n, n.upper()) for n in [
+    'vc1_imode_codes', 'vc1_imode_bits', 'vc1_norm2_codes', 'vc1_norm2_bits', 'vc1_norm6_codes', 'vc1_norm6_bits',
+    'vc1_cbpcy_p_codes', 'vc1_cbpcy_p_bits', 'vc1_ttmb_codes', 'vc1_ttmb_bits', 'vc1_ttblk_codes', 'vc1_ttblk_bits',
+    'vc1_subblkpat_codes', 'vc1_subblkpat_bits', 'vc1_mv_diff_codes', 'vc1_mv_diff_bits', 'vc1_ac_tables', 'ff_vc1_ac_sizes']]
+v1 += [('libavcodec/vc1acdata.h', n, n.upper()) for n in [
+    'vc1_last_decode_table', 'vc1_index_decode_table', 'vc1_delta_level_table', 'vc1_last_delta_level_table',
+    'vc1_delta_run_table', 'vc1_last_delta_run_table']]
+v1 += [('libavcodec/vc1data.c', n, n.upper().replace('FF_', '')) for n in [
+    'ff_vc1_pquant_table', 'ff_wmv3_dc_scale_table', 'ff_vc1_simple_progressive_4x4_zz', 'ff_vc1_dqscale']]
+gen('vc1_tables.rs', v1, 'VC1')

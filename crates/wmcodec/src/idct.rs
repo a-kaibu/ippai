@@ -121,6 +121,18 @@ pub fn simple_put(dst: &mut [u8], stride: usize, b: &mut [i16; 64]) {
     }
 }
 
+/// ff_simple_idct_int16_8bit: in place, the result in i16 as C stores it
+pub fn simple_inplace(b: &mut [i16; 64]) {
+    for i in 0..8 {
+        row_cond_dc(&mut b[i * 8..i * 8 + 8]);
+    }
+    for c in 0..8 {
+        for (k, v) in col(b, c).into_iter().enumerate() {
+            b[k * 8 + c] = v as i16;
+        }
+    }
+}
+
 /// ff_simple_idct_add_int16_8bit
 pub fn simple_add(dst: &mut [u8], stride: usize, b: &mut [i16; 64]) {
     for i in 0..8 {
@@ -170,7 +182,7 @@ fn idct4row(row: &mut [i16]) {
 }
 
 /// ff_simple_idct84_add: 8 wide, 4 high (the first 4 rows of `b`).
-pub fn simple84_add(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16; 64]) {
+pub fn simple84_add(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16]) {
     for i in 0..4 {
         row_cond_dc(&mut b[i * 8..i * 8 + 8]);
     }
@@ -180,15 +192,25 @@ pub fn simple84_add(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16; 64]
 }
 
 /// ff_simple_idct48_add: 4 wide (the first 4 columns of `b`), 8 high.
-pub fn simple48_add(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16; 64]) {
+pub fn simple48_add(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16]) {
     for i in 0..8 {
-        idct4row(&mut b[i * 8..i * 8 + 8]);
+        idct4row(&mut b[i * 8..i * 8 + 4]);
     }
     for c in 0..4 {
         for (k, v) in col(b, c).into_iter().enumerate() {
             let d = &mut dst[off + k * stride + c];
             *d = clip(*d as i32 + v);
         }
+    }
+}
+
+/// ff_simple_idct44_add: the 4x4 at the top left of `b` (stride 8).
+pub fn simple44_add(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16]) {
+    for i in 0..4 {
+        idct4row(&mut b[i * 8..i * 8 + 4]);
+    }
+    for c in 0..4 {
+        idct4col_add(dst, off + c, stride, b, c);
     }
 }
 

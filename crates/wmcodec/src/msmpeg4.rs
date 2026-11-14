@@ -151,6 +151,14 @@ fn tables() -> &'static Tables {
     })
 }
 
+/// The DC VLC (table `k`, chroma or not) and the I-picture MB VLC, shared with VC-1.
+pub(crate) fn dc_vlc(k: usize, chroma: bool) -> &'static Vlc {
+    &tables().dc[k & 1][chroma as usize]
+}
+pub(crate) fn mb_i_vlc() -> &'static Vlc {
+    &tables().mb_i
+}
+
 #[inline]
 fn decode012(r: &mut Bits) -> u32 {
     if r.get1() == 0 { 0 } else { r.get1() + 1 }

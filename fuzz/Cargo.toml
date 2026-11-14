@@ -248,3 +248,10 @@ path = "fuzz_targets/wmv.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "vc1"
+path = "fuzz_targets/vc1.rs"
+test = false
+doc = false
+bench = false

@@ -184,6 +184,53 @@ impl Codec for MsMpeg4 {
     }
 }
 
+/// WMV 9 (WMV3, VC-1 Simple / Main; crates/wmcodec::vc1). With B pictures the decoder hands
+/// an I / P picture back when the next one comes, so it keeps that one's time.
+struct Wmv3 {
+    d: wmcodec::vc1::Decoder,
+    w: usize,
+    h: usize,
+    extra: Vec<u8>,
+    last: Option<Vec<u8>>,
+    /// the time of the I / P picture the decoder holds
+    held: Option<u64>,
+}
+
+impl Codec for Wmv3 {
+    fn decode(&mut self, data: &[u8], time: u64, _key: bool) -> Vec<Frame> {
+        let got = self.d.decode(data);
+        let (w, h) = (self.w as u32, self.h as u32);
+        if !self.d.delayed() {
+            match got {
+                Ok(Some(p)) => self.last = Some(yuv_to_bgra(&p)),
+                // (a damaged picture: the last again)
+                _ if self.last.is_some() => {}
+                _ => return Vec::new(),
+            }
+            return vec![Frame::Picture { time, w, h, bgra: self.last.clone().unwrap_or_default() }];
+        }
+        let Ok(got) = got else { return Vec::new() };
+        let shown = if self.d.last_was_b() { Some(time) } else { self.held.replace(time) };
+        match (got, shown) {
+            (Some(p), Some(t)) => vec![Frame::Picture { time: t, w, h, bgra: yuv_to_bgra(&p) }],
+            _ => Vec::new(),
+        }
+    }
+    fn drain(&mut self) -> Vec<Frame> {
+        match (self.d.flush(), self.held.take()) {
+            (Some(p), Some(t)) => vec![Frame::Picture { time: t, w: self.w as u32, h: self.h as u32, bgra: yuv_to_bgra(&p) }],
+            _ => Vec::new(),
+        }
+    }
+    fn flush(&mut self) {
+        if let Ok(d) = wmcodec::vc1::Decoder::new(self.w, self.h, &self.extra) {
+            self.d = d;
+        }
+        self.held = None;
+        self.last = None;
+    }
+}
+
 /// BT.601 limited range YUV 4:2:0 to B G R A, top row first (what Windows' WMV decoder DMO
 /// gives as RGB).
 pub fn yuv_to_bgra(p: &wmcodec::msmpeg4::Picture) -> Vec<u8> {
@@ -209,7 +256,7 @@ const fn fcc(s: &[u8; 4]) -> u32 {
     u32::from_le_bytes(*s)
 }
 
-/// The compressed codecs: WMA 1 / 2, MS-MPEG4 v3, WMV 1 / 2.
+/// The compressed codecs: WMA 1 / 2, MS-MPEG4 v3, WMV 1 / 2 / 3 (WMV 9 Simple / Main).
 fn backend(i: &Info) -> Option<Box<dyn Codec>> {
     use wmcodec::msmpeg4::Version;
     match i {
@@ -218,6 +265,11 @@ fn backend(i: &Info) -> Option<Box<dyn Codec>> {
                 x if x == fcc(b"WMV1") => Version::Wmv1,
                 x if x == fcc(b"WMV2") => Version::Wmv2,
                 x if x == fcc(b"MP43") || x == fcc(b"DIV3") => Version::V3,
+                x if x == fcc(b"WMV3") => {
+                    let (w, h) = (*width as usize, (*height as i32).unsigned_abs() as usize);
+                    let d = wmcodec::vc1::Decoder::new(w, h, extra).ok()?;
+                    return Some(Box::new(Wmv3 { d, w, h, extra: extra.clone(), last: None, held: None }));
+                }
                 _ => return None,
             };
             let d = wmcodec::msmpeg4::Decoder::new(ver, *width as usize, (*height as i32).unsigned_abs() as usize, extra).ok()?;
@@ -444,13 +496,54 @@ mod tests {
         }
     }
 
+    /// WMV3 with B pictures: pictures come out in display order with the times of the objects
+    /// that carried them, the held one at the end; a seek forgets it.
+    #[test]
+    fn wmv3_b_pictures_keep_their_times() {
+        use wmcodec::vc1::synth;
+        let info = Info::from_bih(&bih(44, b"WMV3", &synth::extra(true))).unwrap();
+        let Info::Video { width: 800, height: 600, .. } = info else { panic!() };
+        let mut d = codec_for(&info).expect("WMV3 decoder");
+        let mut times = Vec::new();
+        for (k, t) in [('P', 0), ('P', 2000), ('B', 1000), ('P', 4000), ('B', 3000)] {
+            for f in d.decode(&synth::picture(k, true, 38), t, false) {
+                let Frame::Picture { time, w: 800, h: 600, bgra } = f else { panic!() };
+                assert_eq!(bgra.len(), 800 * 600 * 4);
+                // (Y 128 gray: (112 * 298 + 128) >> 8)
+                assert!(bgra.chunks(4).all(|p| p == [130, 130, 130, 255]));
+                times.push(time);
+            }
+        }
+        for f in d.drain() {
+            let Frame::Picture { time, .. } = f else { panic!() };
+            times.push(time);
+        }
+        assert_eq!(times, [0, 1000, 2000, 3000, 4000]);
+        d.decode(&synth::picture('P', true, 38), 5000, false);
+        d.flush();
+        assert!(d.drain().is_empty());
+        // without B pictures: one picture per object, at its time
+        let mut d = codec_for(&Info::from_bih(&bih(44, b"WMV3", &synth::extra(false))).unwrap()).unwrap();
+        for t in [0, 1000, 2000] {
+            let [Frame::Picture { time, .. }] = &d.decode(&synth::picture('P', false, 38), t, false)[..] else { panic!() };
+            assert_eq!(*time, t);
+        }
+        // a damaged object repeats the last picture
+        let [Frame::Picture { time: 3000, .. }] = &d.decode(&[0xff; 3], 3000, false)[..] else { panic!() };
+    }
+
     #[test]
     fn fourccs_are_case_blind() {
         for f in [b"WMV1", b"wmv1", b"WMV2", b"wmv2", b"MP43", b"mp43", b"DIV3", b"div3"] {
             assert!(codec_for(&Info::from_bih(&bih(40, f, &[])).unwrap()).is_some() || f.eq_ignore_ascii_case(b"WMV2"), "{f:?}");
         }
-        // (WMV2 needs its extradata; WMV3 / VC-1 is not ported yet)
+        for f in [b"WMV3", b"wmv3"] {
+            assert!(codec_for(&Info::from_bih(&bih(44, f, &wmcodec::vc1::synth::extra(false))).unwrap()).is_some(), "{f:?}");
+        }
+        // (WMV2 and WMV3 need their extradata; WVC1 / the Advanced profile is not ported)
         assert!(codec_for(&Info::from_bih(&bih(40, b"WMV2", &[])).unwrap()).is_none());
+        assert!(codec_for(&Info::from_bih(&bih(40, b"WMV3", &[])).unwrap()).is_none());
+        assert!(codec_for(&Info::from_bih(&bih(44, b"WVC1", &[0xc0, 0, 0, 0])).unwrap()).is_none());
     }
 
     fn codec_for(i: &Info) -> Option<Box<dyn Codec>> {
