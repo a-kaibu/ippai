@@ -76,7 +76,10 @@ pub fn query(name: &str) -> Result<(), u32> {
 
 /// CreatePipe(&read, &write, sa, size)
 fn CreatePipe(c: &mut Ctx) -> u32 {
-    let (r, w) = kw(|k| k.create_anon(c.a(3), crate::pid()));
+    let Some((r, w)) = kw(|k| k.create_anon(c.a(3), crate::pid())) else {
+        crate::k32::last_error(5);
+        return 0;
+    };
     let hr = obj::add(Obj::Pipe(Handle { end: r, read: true, write: false, ovl: false }));
     let hw = obj::add(Obj::Pipe(Handle { end: w, read: false, write: true, ovl: false }));
     // SECURITY_ATTRIBUTES.bInheritHandle
@@ -91,13 +94,14 @@ fn CreatePipe(c: &mut Ctx) -> u32 {
 
 /// The C runtime's _pipe: (read handle, write handle) of a new anonymous pipe of `size` bytes
 /// (0: 4096), inheritable unless `inherit` is false.
-pub fn crt_pipe(size: u32, inherit: bool) -> (u32, u32) {
-    let (r, w) = kw(|k| k.create_anon(size, crate::pid()));
+/// None: no pipe could be made.
+pub fn crt_pipe(size: u32, inherit: bool) -> Option<(u32, u32)> {
+    let (r, w) = kw(|k| k.create_anon(size, crate::pid()))?;
     let hr = obj::add(Obj::Pipe(Handle { end: r, read: true, write: false, ovl: false }));
     let hw = obj::add(Obj::Pipe(Handle { end: w, read: false, write: true, ovl: false }));
     obj::set_inherit(hr, inherit);
     obj::set_inherit(hw, inherit);
-    (hr, hw)
+    Some((hr, hw))
 }
 
 /// Another handle to `p`'s end (the C runtime's _dup of a pipe descriptor).

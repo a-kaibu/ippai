@@ -27,7 +27,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -480,8 +480,19 @@ fn arm(id: u32) {
     static ENTRY: OnceLock<u32> = OnceLock::new();
     let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mci_waiter", waiter, 4));
     let h = crate::obj::new_thread_obj(0);
-    crate::spawn_gated(entry, (id << 16) | (gen & 0xffff), 0x10000, h, false);
+    // (the device and generation by a token: packed as id << 16 | gen, a device id past
+    // 0xffff, after 65536 opens, watched another device or none)
+    crate::spawn_gated(entry, waiter_token(id, gen), 0x10000, h, false);
 }
+fn waiter_token(id: u32, gen: u32) -> u32 {
+    let mut w = WAITERS.lock().unwrap();
+    let (next, m) = &mut *w;
+    *next = next.wrapping_add(1);
+    m.insert(*next, (id, gen));
+    *next
+}
+/// The waiters started: token -> (device, generation)
+static WAITERS: Mutex<(u32, BTreeMap<u32, (u32, u32)>)> = Mutex::new((0, BTreeMap::new()));
 
 /// Bumps the generation (a waiter in flight gives up), keeping the paused flag.
 fn disarm(id: u32) {
@@ -489,9 +500,9 @@ fn disarm(id: u32) {
 }
 
 fn waiter(c: &mut Ctx) -> u32 {
-    let (id, gen) = (c.a(0) >> 16, c.a(0) & 0xffff);
+    let Some((id, gen)) = WAITERS.lock().unwrap().1.remove(&c.a(0)) else { return 0 };
     loop {
-        let live = dev(id, |d| d.gen & 0xffff == gen && !d.paused()).unwrap_or(false);
+        let live = dev(id, |d| d.gen & 0x7fff_ffff == gen && !d.paused()).unwrap_or(false);
         if !live {
             return 0;
         }
@@ -1004,6 +1015,9 @@ fn command(_c: &mut Ctx, id: u32, msg: u32, flags: u32, p: u32, wide: bool) -> u
             mem::wp(ret, v);
             0
         }
+        // (these read or write their parameter block: none is MCIERR_NULL_PARAMETER_BLOCK, as
+        // Windows, not low memory)
+        MCI_SET | MCI_SETAUDIO | MCI_WINDOW | MCI_PUT | MCI_WHERE | MCI_INFO if !need(p) => MCIERR_NULL_PARAMETER_BLOCK,
         MCI_SET => {
             if flags & MCI_SET_TIME_FORMAT != 0 {
                 let f = r32(field(p, 1, 0));
@@ -1759,6 +1773,43 @@ pub fn init() {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// Review b07: the commands that read or write a parameter block refuse a NULL one (the
+    /// old code read, and MCI_WHERE wrote 16 bytes, at the bottom of the address space)
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn null_parameter_blocks_are_refused() {
+        let _g = crate::test_guest::enter();
+        let mut cpu = koji::Cpu::default();
+        let mut c = Ctx { cpu: &mut cpu, esp: 0, edx: None, jumped: false, st0: None, trap: 0, this: None };
+        for (msg, flags) in [
+            (MCI_SET, MCI_SET_TIME_FORMAT),
+            (MCI_SETAUDIO, MCI_DGV_SETAUDIO_ITEM | MCI_DGV_SETAUDIO_VALUE),
+            (MCI_WINDOW, MCI_DGV_WINDOW_HWND),
+            (MCI_PUT, MCI_DGV_PUT_DESTINATION | MCI_DGV_RECT),
+            (MCI_WHERE, MCI_DGV_WHERE_DESTINATION),
+            (MCI_INFO, 0x200),
+            (MCI_STATUS, MCI_STATUS_ITEM),
+        ] {
+            assert_eq!(command(&mut c, 0x7777, msg, flags, 0, false), MCIERR_NULL_PARAMETER_BLOCK, "{msg:#x}");
+        }
+    }
+
+    proptest! {
+        /// A waiter finds its device and generation for any device id (ids past 0xffff were
+        /// cut by the packing), once
+        #[test]
+        fn waiter_tokens_carry_any_device(ids in proptest::collection::vec((any::<u32>(), 0u32..0x7fff_ffff), 1..50)) {
+            let mut tokens = vec![];
+            for &(id, gen) in &ids {
+                tokens.push(waiter_token(id, gen));
+            }
+            for (t, want) in tokens.iter().zip(&ids) {
+                prop_assert_eq!(WAITERS.lock().unwrap().1.remove(t), Some(*want));
+                prop_assert_eq!(WAITERS.lock().unwrap().1.remove(t), None);
+            }
+        }
+    }
 
     #[test]
     fn devices_by_type_and_extension() {

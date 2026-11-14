@@ -37,7 +37,7 @@ fn names() {
 #[test]
 fn anonymous() {
     let mut k = Kern::default();
-    let (r, w) = k.create_anon(0, PID);
+    let (r, w) = k.create_anon(0, PID).unwrap();
     assert_eq!(k.write1(w, b"abc"), Ok(3));
     assert_eq!(k.peek(r, 4), Ok(Peek { data: b"abc".to_vec(), avail: 3, msg_len: 0 }));
     assert_eq!(rd(&mut k, r, 2), ok("ab", false));
@@ -50,12 +50,12 @@ fn anonymous() {
     assert_eq!(k.peek(r, 4), Err(PIPE_BROKEN));
     k.release(r, PID);
     assert!(k.ends.is_empty() && k.pipes.is_empty());
-    let (r, w) = k.create_anon(0, PID);
+    let (r, w) = k.create_anon(0, PID).unwrap();
     k.release(r, PID);
     assert_eq!(k.write1(w, b"q"), Err(PIPE_CLOSING));
     assert_eq!(win32(PIPE_CLOSING), 232);
     // what the reader has not read yet stays after the writer closed
-    let (r, w) = k.create_anon(0, PID);
+    let (r, w) = k.create_anon(0, PID).unwrap();
     k.write1(w, b"left").unwrap();
     k.release(w, PID);
     assert_eq!(rd(&mut k, r, 10), ok("left", false));
@@ -225,7 +225,7 @@ fn nonblocking() {
 #[test]
 fn processes() {
     let mut k = Kern::default();
-    let (r, w) = k.create_anon(0, 1);
+    let (r, w) = k.create_anon(0, 1).unwrap();
     // the write end inherited by process 2, then closed by process 1
     k.add_ref(w, 2);
     k.release(w, 1);
@@ -253,7 +253,7 @@ proptest! {
     #[test]
     fn byte_stream(ops in ops()) {
         let mut k = Kern::default();
-        let (r, w) = k.create_anon(0, PID);
+        let (r, w) = k.create_anon(0, PID).unwrap();
         let (mut written, mut read) = (Vec::new(), Vec::new());
         for op in ops {
             match op {
@@ -366,7 +366,7 @@ fn named_objects() {
 #[test]
 fn process_records() {
     let mut k = Kern::default();
-    let (r, w) = k.create_anon(0, ROOT_PID);
+    let (r, w) = k.create_anon(0, ROOT_PID).unwrap();
     let p = Proc { parent: ROOT_PID, suspend: 1, inherit: vec![(0x104, KRef::Pipe { end: w, read: false, write: true, ovl: false })], ..Proc::default() };
     let pid = k.new_process(p);
     assert_eq!(pid, ROOT_PID + PID_STEP);
@@ -440,7 +440,7 @@ proptest! {
     #[test]
     fn state_bytes(ops in ops(), cut in any::<prop::sample::Index>()) {
         let mut k = Kern::default();
-        let (r, w) = k.create_anon(0, PID);
+        let (r, w) = k.create_anon(0, PID).unwrap();
         let s = named(&mut k, "m", 3, true, 2).unwrap();
         let c = k.open("m", true, true, PID).unwrap();
         let (ev, _) = k.create_sync("ev", Sync::Event { manual: true, set: false }, PID).unwrap();
@@ -469,7 +469,7 @@ proptest! {
     #[test]
     fn dup_writers(ops in prop::collection::vec((0u8..3, prop::collection::vec(any::<u8>(), 0..8)), 0..40)) {
         let mut k = Kern::default();
-        let (r, w) = k.create_anon(0, PID);
+        let (r, w) = k.create_anon(0, PID).unwrap();
         let (mut refs, mut written, mut read) = (1u32, Vec::new(), Vec::new());
         for (op, d) in ops {
             match op {
@@ -538,7 +538,7 @@ proptest! {
         let pids: Vec<u32> = (0..3).map(|_| k.new_process(Proc::default())).collect();
         let mut ids = vec![];
         for (who, op, args, data) in ops {
-            ids.push(k.put_vm(VmReq { id: 0, to: pids[who as usize], op, args: args.clone(), data: data.clone() }));
+            ids.push(k.put_vm(VmReq { id: 0, to: pids[who as usize], op, args: args.clone(), data: data.clone(), ..Default::default() }));
             if op % 2 == 0 {
                 k.vm_reply(*ids.last().unwrap(), VmReply { status: op, vals: args, data });
             }
@@ -561,7 +561,7 @@ proptest! {
 // bounded pipes: a writer waits for the reader to make room (review P1-4)
 
 fn anon(k: &mut Kern, size: u32) -> (u32, u32) {
-    k.create_anon(size, PID)
+    k.create_anon(size, PID).unwrap()
 }
 
 #[test]
@@ -726,7 +726,7 @@ proptest! {
 /// a 4 KiB pipe arrives whole, and the writer never gets more than the buffer ahead.
 #[test]
 fn threads_stream_through_a_small_pipe() {
-    let (r, w) = with(|k| k.create_anon(4096, PID)).0;
+    let (r, w) = with(|k| k.create_anon(4096, PID)).0.unwrap();
     let data: std::sync::Arc<Vec<u8>> = std::sync::Arc::new((0..4u32 << 20).map(|i| (i ^ (i >> 9)) as u8).collect());
     let d = data.clone();
     let writer = std::thread::spawn(move || {
@@ -746,4 +746,134 @@ fn threads_stream_through_a_small_pipe() {
     writer.join().unwrap();
     with(|k| k.release(r, PID));
     assert!(got == *data);
+}
+
+/// Review b07: answers nobody takes are not kept: a posted message to an ended process, the
+/// answers of a process that ended, a reply to an asker that went.
+#[test]
+fn answers_nobody_takes_are_dropped() {
+    let mut k = Kern::default();
+    let (a, b) = (ROOT_PID, ROOT_PID + PID_STEP);
+    k.procs.entry(a).or_default();
+    k.procs.entry(b).or_default();
+    k.exited(b, 0);
+    // posted to an ended process: no answer kept; sent: 0, taken once
+    k.put_msg(XMsg { to: b, msg: 0x400, from: a, ..XMsg::default() });
+    assert!(k.replies.is_empty() && k.askers.is_empty());
+    let s = k.put_msg(XMsg { to: b, msg: 0x400, send: true, from: a, ..XMsg::default() });
+    assert_eq!(k.take_reply(s), Ok(0));
+    assert!(k.replies.is_empty() && k.askers.is_empty());
+    // an asker that ends before its answer comes: the answer is not kept
+    let c = ROOT_PID + 2 * PID_STEP;
+    k.procs.entry(c).or_default();
+    let s = k.put_msg(XMsg { to: a, msg: 0x401, send: true, from: c, ..XMsg::default() });
+    let v = k.put_vm(VmReq { to: a, op: 1, from: c, ..Default::default() });
+    k.exited(c, 0);
+    assert!(k.xmsgs.is_empty() && k.vm.is_empty(), "its questions are taken back");
+    k.reply(s, 5);
+    k.vm_reply(v, VmReply::default());
+    assert!(k.replies.is_empty() && k.vm_replies.is_empty() && k.askers.is_empty());
+    // an answer already there when its asker ends
+    let d = ROOT_PID + 3 * PID_STEP;
+    k.procs.entry(d).or_default();
+    let s = k.put_msg(XMsg { to: a, msg: 0x401, send: true, from: d, ..XMsg::default() });
+    k.take_msgs(a);
+    k.reply(s, 9);
+    assert_eq!(k.replies.len(), 1);
+    k.exited(d, 0);
+    assert!(k.replies.is_empty() && k.askers.is_empty());
+}
+
+#[test]
+fn squatted_anonymous_pipe_names_fail_the_call() {
+    let mut k = Kern::default();
+    let p = NewPipe { access: 3, msg_type: false, msg_read: false, nonblock: false, max: 1, outsize: 64, insize: 64, timeout: 0, first: true };
+    // a program that made pipes of the names CreatePipe takes next
+    for i in 1..=3 {
+        k.create(&format!("win32pipes.{PID:08x}.{:08x}", k.next + i), &p, PID).unwrap();
+    }
+    let (r, w) = k.create_anon(0, PID).expect("a later free name");
+    assert_eq!(k.write1(w, b"x"), Ok(1));
+    assert_eq!(rd(&mut k, r, 1), ok("x", false));
+    // every name it would try taken: CreatePipe fails, nothing aborts
+    let mut k = Kern::default();
+    let base = k.next;
+    for i in 1..=64 {
+        k.create(&format!("win32pipes.{PID:08x}.{:08x}", base + i), &p, PID).unwrap();
+    }
+    k.next = base;
+    assert_eq!(k.create_anon(0, PID), None);
+}
+
+#[test]
+fn semaphores_take_only_positive_counts() {
+    let mut k = Kern::default();
+    let (s, _) = k.create_sync("s", Sync::Semaphore { count: 0, max: 5 }, 1).unwrap();
+    for n in [0, -1, i32::MIN] {
+        assert_eq!(k.release_semaphore(s, n), Err(87), "{n}");
+    }
+    assert_eq!(k.release_semaphore(s, 5), Ok(0));
+    assert_eq!(k.release_semaphore(s, i32::MAX), Err(298));
+}
+
+proptest! {
+    /// Whatever processes ask each other and in whatever order they end, once all have ended
+    /// no answer, question or asker is left (the shared state no longer grows with them), and
+    /// while they run every answer is taken exactly once by its asker.
+    #[test]
+    fn ended_processes_leave_no_answers(ops in proptest::collection::vec((0u8..6, 0u8..3, 0u8..3, any::<u32>()), 1..120)) {
+        let mut k = Kern::default();
+        let pids: Vec<u32> = (0..3).map(|i| ROOT_PID + i * PID_STEP).collect();
+        for &p in &pids {
+            k.procs.entry(p).or_default();
+        }
+        let mut open: Vec<(u32, u32, bool)> = vec![];
+        for (op, from, to, v) in ops {
+            let (from, to) = (pids[from as usize], pids[to as usize]);
+            let alive = |k: &Kern, p: u32| k.exit_code(p).is_none();
+            match op {
+                0 if alive(&k, from) => {
+                    let id = k.put_msg(XMsg { to, msg: 0x400, send: true, from, ..XMsg::default() });
+                    open.push((id, from, false));
+                }
+                1 if alive(&k, from) => {
+                    k.put_msg(XMsg { to, msg: 0x401, from, ..XMsg::default() });
+                }
+                2 if alive(&k, from) => {
+                    let id = k.put_vm(VmReq { to, op: 1, from, ..Default::default() });
+                    open.push((id, from, true));
+                }
+                3 => {
+                    // `to` answers what came for it
+                    for m in k.take_msgs(to) {
+                        if m.send {
+                            k.reply(m.id, v);
+                        }
+                    }
+                    for r in k.take_vm(to) {
+                        k.vm_reply(r.id, VmReply { status: v, ..Default::default() });
+                    }
+                }
+                4 => {
+                    for &(id, asker, vm) in &open {
+                        if k.exit_code(asker).is_none() {
+                            let got = if vm { k.take_vm_reply(id).map(|_| 0) } else { k.take_reply(id) };
+                            if got.is_ok() {
+                                prop_assert_eq!(if vm { k.take_vm_reply(id).map(|_| 0) } else { k.take_reply(id) }, Err(PENDING));
+                            }
+                        }
+                    }
+                }
+                5 => k.exited(from, 0),
+                _ => {}
+            }
+        }
+        for &p in &pids {
+            k.exited(p, 0);
+        }
+        prop_assert!(k.replies.is_empty(), "{:?}", k.replies);
+        prop_assert!(k.vm_replies.is_empty());
+        prop_assert!(k.askers.is_empty());
+        prop_assert!(k.xmsgs.is_empty() && k.vm.is_empty());
+    }
 }

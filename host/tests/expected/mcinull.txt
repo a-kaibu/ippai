@@ -1,0 +1,6 @@
+open 0
+set 297
+info 297
+status 297
+set with a block 0
+status with a block 0

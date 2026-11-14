@@ -255,6 +255,8 @@ pub struct XMsg {
     pub l: u32,
     pub data: Option<(u64, Vec<u8>)>,
     pub send: bool,
+    /// the sending process (its answers go with it if it ends first)
+    pub from: u32,
 }
 
 /// The first process's id; the others are 0x10000 apart (each numbers its threads from its
@@ -278,6 +280,9 @@ pub struct Kern {
     wins: Vec<KWin>,
     xmsgs: Vec<XMsg>,
     replies: BTreeMap<u32, u32>,
+    /// who asks for each answer not yet taken (replies, vm_replies): a process that ended
+    /// takes none of them
+    askers: BTreeMap<u32, u32>,
     next_msg: u32,
     pub services: BTreeMap<String, services::Service>,
     pub com: com::Broker,
@@ -299,6 +304,8 @@ pub struct VmReq {
     pub op: u32,
     pub args: Vec<u32>,
     pub data: Vec<u8>,
+    /// the asking process
+    pub from: u32,
 }
 
 /// Its answer: `status` 0 or the error, values and bytes; GONE if the process ended first.
@@ -438,14 +445,22 @@ impl Kern {
     }
 
     /// CreatePipe: (read end, write end) of a new byte pipe of `size` bytes (0: 4096).
-    pub fn create_anon(&mut self, size: u32, pid: u32) -> (u32, u32) {
+    /// (None: no name of Windows' pattern was free: a program made named pipes of the same
+    /// names first; that failed CreatePipe, not the program)
+    pub fn create_anon(&mut self, size: u32, pid: u32) -> Option<(u32, u32)> {
         let size = if size == 0 { 4096 } else { size };
-        // (Windows' own names for them)
-        let name = format!("win32pipes.{pid:08x}.{:08x}", self.next + 1);
         let p = NewPipe { access: 1, msg_type: false, msg_read: false, nonblock: false, max: 1, outsize: size, insize: size, timeout: 0, first: true };
-        let r = self.create(&name, &p, pid).expect("a new name");
-        let w = self.open(&name, false, true, pid).expect("a listening pipe");
-        (r, w)
+        // (Windows' own names for them)
+        for k in 1..=64 {
+            let name = format!("win32pipes.{pid:08x}.{:08x}", self.next.wrapping_add(k));
+            if self.pipes.contains_key(&name) {
+                continue;
+            }
+            let Ok(r) = self.create(&name, &p, pid) else { continue };
+            let w = self.open(&name, false, true, pid).ok()?;
+            return Some((r, w));
+        }
+        None
     }
 
     /// Another handle object referring to end `e` (an inherited or duplicated handle in `pid`).
@@ -904,6 +919,16 @@ impl Kern {
             self.sync.get_mut(&id).unwrap().refs.retain(|r| r.0 != pid);
             self.drop_sync_if_unused(id);
         }
+        // (the answers it was waiting for: nobody will take them; what it asked of others
+        // is dropped too)
+        let mine: Vec<u32> = self.askers.iter().filter(|(_, &a)| a == pid).map(|(&id, _)| id).collect();
+        for id in mine {
+            self.askers.remove(&id);
+            self.replies.remove(&id);
+            self.vm_replies.remove(&id);
+        }
+        self.xmsgs.retain(|x| !(x.send && x.from == pid));
+        self.vm.retain(|r| r.from != pid);
         self.changed();
     }
 }
@@ -930,8 +955,14 @@ impl Kern {
     pub fn put_msg(&mut self, mut m: XMsg) -> u32 {
         self.next_msg += 1;
         m.id = self.next_msg;
+        // (a posted message waits for no answer: only a sent one gets 0 from an ended process)
+        if m.send {
+            self.askers.insert(m.id, m.from);
+        }
         if self.exit_code(m.to).is_some() {
-            self.replies.insert(m.id, 0);
+            if m.send {
+                self.replies.insert(m.id, 0);
+            }
         } else {
             self.xmsgs.push(m);
         }
@@ -943,6 +974,7 @@ impl Kern {
     pub fn put_vm(&mut self, mut r: VmReq) -> u32 {
         self.next_msg += 1;
         r.id = self.next_msg;
+        self.askers.insert(r.id, r.from);
         if self.exit_code(r.to).is_some() || !self.procs.contains_key(&r.to) {
             self.vm_replies.insert(r.id, VmReply { status: VM_GONE, ..Default::default() });
         } else {
@@ -962,12 +994,16 @@ impl Kern {
         mine
     }
     pub fn vm_reply(&mut self, id: u32, r: VmReply) {
-        self.vm_replies.insert(id, r);
+        // (nobody to take it: its asker ended)
+        if self.askers.contains_key(&id) {
+            self.vm_replies.insert(id, r);
+        }
         self.changed();
     }
     /// Request `id`'s answer once there is one (PENDING until then).
     pub fn take_vm_reply(&mut self, id: u32) -> Result<VmReply, u32> {
         let r = self.vm_replies.remove(&id).ok_or(PENDING)?;
+        self.askers.remove(&id);
         self.changed();
         Ok(r)
     }
@@ -1004,12 +1040,15 @@ impl Kern {
     }
     /// A sent message's result.
     pub fn reply(&mut self, id: u32, r: u32) {
-        self.replies.insert(id, r);
+        if self.askers.contains_key(&id) {
+            self.replies.insert(id, r);
+        }
         self.changed();
     }
     /// The result of sent message `id` once there is one (PENDING until then).
     pub fn take_reply(&mut self, id: u32) -> Result<u32, u32> {
         let r = self.replies.remove(&id).ok_or(PENDING)?;
+        self.askers.remove(&id);
         self.changed();
         Ok(r)
     }
@@ -1145,6 +1184,10 @@ impl Kern {
     }
     /// ReleaseSemaphore: the count before, or Err(ERROR_TOO_MANY_POSTS, ERROR_INVALID_HANDLE)
     pub fn release_semaphore(&mut self, id: u32, n: i32) -> Result<i32, u32> {
+        // (a count that is not positive: the count would go down, or wrap past i32)
+        if n <= 0 {
+            return Err(87);
+        }
         match self.sync.get_mut(&id).map(|o| &mut o.sync) {
             Some(Sync::Semaphore { count, max }) => {
                 let prev = *count;
@@ -1446,10 +1489,10 @@ impl Enc for Sync {
 }
 crate::enc_struct!(KObj { sync, name, refs });
 crate::enc_struct!(KWin { hwnd, pid, tid, class, title });
-crate::enc_struct!(XMsg { id, to, hwnd, msg, w, l, data, send });
-crate::enc_struct!(VmReq { id, to, op, args, data });
+crate::enc_struct!(XMsg { id, to, hwnd, msg, w, l, data, send, from });
+crate::enc_struct!(VmReq { id, to, op, args, data, from });
 crate::enc_struct!(VmReply { status, vals, data });
-crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, next_msg, services, com, vm, vm_replies, rthreads, dbg });
+crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, askers, next_msg, services, com, vm, vm_replies, rthreads, dbg });
 
 #[cfg(test)]
 mod tests;

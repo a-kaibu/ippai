@@ -454,7 +454,10 @@ fn _pipe(c: &mut Ctx) -> u32 {
         set_errno(EINVAL);
         return u32::MAX;
     }
-    let (hr, hw) = crate::pipe::crt_pipe(size, mode & O_NOINHERIT == 0);
+    let Some((hr, hw)) = crate::pipe::crt_pipe(size, mode & O_NOINHERIT == 0) else {
+        set_errno(24); // EMFILE
+        return u32::MAX;
+    };
     let fd = |h: u32, end: crate::pipe::Handle| add(Fd { kind: Kind::Pipe(end), text: mode & O_BINARY == 0, append: false, osf: h });
     let end = |h: u32| crate::pipe::handle(h).expect("a new pipe handle");
     let r = fd(hr, end(hr));

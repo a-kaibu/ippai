@@ -23,7 +23,7 @@ fuzz_target!(|data: &[u8]| {
     // a byte pipe (CreatePipe) of some size, and a message pipe whose server reads messages
     let size = [0u32, 1, 16, 100, 4096, 9000][sizes as usize % 6];
     let room = if size == 0 { 4096 } else { size as usize };
-    let (r, w) = k.create_anon(size, PID);
+    let (r, w) = k.create_anon(size, PID).unwrap();
     let msg_in = [16u32, 512, 70000][(sizes as usize / 6) % 3];
     let p = NewPipe { access: 3, msg_type: true, msg_read: true, nonblock: false, max: 1, outsize: 512, insize: msg_in, timeout: 0, first: false };
     let s = k.create("fuzz", &p, PID).unwrap();

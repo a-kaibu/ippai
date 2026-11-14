@@ -158,7 +158,7 @@ pub fn pieces(n: u32) -> impl Iterator<Item = (u32, u32)> {
 
 /// Asks process `pid` to do `op`; None if it ended first.
 pub fn call(pid: u32, op: u32, args: Vec<u32>, data: Vec<u8>) -> Option<VmReply> {
-    let id = kern::with(|k| k.put_vm(VmReq { id: 0, to: pid, op, args, data })).0;
+    let id = kern::with(|k| k.put_vm(VmReq { id: 0, to: pid, op, args, data, from: crate::pid() })).0;
     let r = kern::block(None, &|| false, |k| k.take_vm_reply(id)).ok()?;
     if r.status == VM_GONE && crate::env_on!("SAKE_TRACE_DBG") {
         let st = kern::with(|k| (k.exit_code(pid), k.procs.contains_key(&pid))).0;
