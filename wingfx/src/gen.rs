@@ -673,7 +673,7 @@ pub fn ddraw() -> String {
         // copy, fill and the rectangle checks, one by one
         writeln!(s, "case basic-{f}\ndd\nddsurf 0 12 9 {f}\nddsurf 1 7 5 {f}\nddfill 0 11\nddfill 1 12").unwrap();
         for l in [
-            "ddblt 0 all 1 all", "ddblt 0 0 0 7 5 1 all", "ddblt 0 5 4 12 9 1 all", "ddblt 0 2 1 5 3 1 3 2 6 4", "ddblt 0 6 4 13 9 1 all", "ddblt 0 -1 0 6 5 1 all",
+            "ddblt 0 0 0 7 5 1 all", "ddblt 0 all 0 all", "ddblt 0 5 4 12 9 1 all", "ddblt 0 2 1 5 3 1 3 2 6 4", "ddblt 0 6 4 13 9 1 all", "ddblt 0 -1 0 6 5 1 all",
             "ddblt 0 3 3 3 5 1 all", "ddblt 0 0 0 2 2 1 6 4 8 6", "ddblt 0 0 0 7 5 1 0 0 7 5 mirrorlr", "ddblt 0 1 2 8 7 1 all mirrorud", "ddblt 0 2 2 9 7 1 all mirrorlr mirrorud",
         ] {
             writeln!(s, "{l}").unwrap();
