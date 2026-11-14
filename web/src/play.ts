@@ -62,6 +62,8 @@ import { checkOnline, startApp } from "./pwa";
 import { Budget, pool } from "./ahead";
 import { startWarm, warmAllowed, warmBusyWidth, type Warm } from "./warm";
 import { savedChunks } from "./offline";
+import { sakeWasmBytes, wasmModuleArg } from "./wasmsource";
+import { deviceChunks } from "./chunkstore";
 import { netBudget, setGameBusy } from "./budget";
 import {
   builds,
@@ -316,6 +318,16 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const scriptUrl = versioned(`${BASE}${build.name}.js`, await fileVersion(`${BASE}${build.name}.js`));
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<SakeModule>;
   const version = await wasmVersion;
+  // sake's wasm from the bucket when the browser lacks the server's (wasmsource.ts): a far or
+  // slow server held the start for minutes; &wasm=server: always the server's
+  const wasmUrl = new URL(versioned(`${BASE}${WASM}`, version), location.href).href;
+  const wasmBytes =
+    params.get("wasm") === "server"
+      ? Promise.resolve({ bytes: null, from: "server" as const })
+      : sakeWasmBytes(WASM, wasmUrl, new URL("store/", location.href).href, {
+          device: deviceChunks,
+          note: (l) => recorder?.note(l),
+        });
   recorder.note(
     `build: ${WASM} ${version}, translator ${await jitVersion}, memory ${build.memory ? "4 GB fixed" : "growing from 2.06 GB (4 GB refused)"}`,
   );
@@ -408,6 +420,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     // the module starting its threads where they stood)
     ...(build.memory || stateMem ? { wasmMemory: stateMem ?? build.memory } : {}),
     locateFile: (path: string) => (path === WASM ? versioned(`${BASE}${path}`, version) : `${BASE}${path}`),
+    // (the bytes from the device or the bucket, compiled once for this process and its children)
+    ...(await wasmModuleArg(wasmBytes, (l) => recorder?.note(l))),
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
       IPPAI_MOUNTS: ["/=", "/ippai/prefix=prefix32", ...params.getAll("mount")].join(":"),

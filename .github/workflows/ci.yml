@@ -97,6 +97,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/offline-browser.mjs target/debug/ippai
+      - name: sake's wasm from the bucket, the device or the HTTP cache (web/src/wasmsource.ts)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/wasmsource-browser.mjs
       - name: Saves made offline survive the next online start (saves.ts sync state)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs

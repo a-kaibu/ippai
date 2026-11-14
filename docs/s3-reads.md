@@ -169,6 +169,21 @@ and the whole-archive size stay, since more of them costs far more than it saves
 left are mostly archives' first chunks, pictures, and start-up .dll/.exe/.sig files, which the
 read-order list (the warm) fetches before the game asks.
 
+## sake's wasm from the bucket (web/src/wasmsource.ts)
+
+sake.wasm is ~23 MB (~5 MB as zstd). From worker2 it came at ~100 KB/s at times (2026-11-14:
+anemoi sat on "起動中" for minutes, the first instruction not run yet). `ippai serve` with S3
+puts each `<web>/sake/*.wasm` in the bucket once per build as a chunk (named by its BLAKE3,
+zstd 19, encrypted: store_api.rs `publish_wasm`), and `GET /sake-direct/<file>` says how to
+fetch it (a presigned URL, key, object, `chunk`), the server's own disk cache ignored. The page
+(play.ts, before sake.js starts) takes, in order: the browser's HTTP cache of the server's
+`?v=` file (`only-if-cached`: emscripten then loads it itself and V8 keeps its compiled code),
+the device's chunk store (OPFS, from an earlier start), the bucket (then kept on the device),
+else the server's file as before (an older server, no S3, a failing bucket). Bytes go to
+sake.js through `Module.instantiateWasm`, compiled once per page (children share the module).
+`&wasm=server` forces the server's file. Tests: store_api `sake_wasm_from_the_bucket`,
+web/src/wasmsource.test.ts, tests/wasmsource-browser.mjs (Chromium, CI).
+
 ## Still to do
 
 - Run hints_eval again when more games have read-order lists, per engine.

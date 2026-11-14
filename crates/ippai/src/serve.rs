@@ -1148,7 +1148,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
                 .layer(tower_http::compression::CompressionLayer::new().no_br().no_gzip().no_deflate())
                 .service(ServeDir::new(&args.jit)),
         )
-        .merge(crate::store_api::router(store.clone())?)
+        .merge(crate::store_api::router(store.clone(), Some(args.web.clone()))?)
         .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(trees.clone()))
         .route("/game-origin", get(move || async move { axum::Json(game_origin) }))
         .route("/version", get(|| async { axum::Json(version_info()) }))

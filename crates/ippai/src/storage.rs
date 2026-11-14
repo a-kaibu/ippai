@@ -1916,10 +1916,25 @@ impl Storage {
     /// the bucket lacks it, or when this server's disk has it (a game's start fetched ahead:
     /// here at once, where the bucket takes ~2 s to answer).
     pub async fn direct(&self, logical: &str, expiry: u32) -> Result<Option<Direct>> {
+        self.direct_from(logical, expiry, true).await
+    }
+
+    /// [`Storage::direct`] whether or not this server's disk has the object: for what the page
+    /// should never fetch through this server's line (sake's wasm, `store_api` publish_wasm).
+    pub async fn direct_bucket(&self, logical: &str, expiry: u32) -> Result<Option<Direct>> {
+        self.direct_from(logical, expiry, false).await
+    }
+
+    /// Whether the store names `logical`.
+    pub fn has(&self, logical: &str) -> Result<bool> {
+        Ok(self.db.connect()?.query_row("SELECT 1 FROM objects WHERE logical=?", [logical], |_| Ok(())).optional()?.is_some())
+    }
+
+    async fn direct_from(&self, logical: &str, expiry: u32, disk_first: bool) -> Result<Option<Direct>> {
         let entry: Option<String> = self.db.connect()?.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
         let Some(entry) = entry else { return Ok(None) };
         let e: Envelope = serde_json::from_str(&entry)?;
-        if self.disk.as_ref().is_some_and(|d| d.has(e.object)) {
+        if disk_first && self.disk.as_ref().is_some_and(|d| d.has(e.object)) {
             return Ok(None);
         }
         let key = e.data_key(&self.key(&e.key_id)?)?;

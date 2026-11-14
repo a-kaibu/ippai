@@ -18,6 +18,8 @@ struct Store {
     decoded: Arc<std::sync::Mutex<Decoded>>,
     /// trees whose chunks were fetched ahead (or are being) since the server started
     ahead: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// sake's wasm files put in the bucket ([`publish_wasm`]): file name -> chunk name
+    wasm: Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
 }
 
 /// Files up to this size are fetched ahead whole when their tree is first asked for; of bigger
@@ -328,16 +330,81 @@ async fn direct_many(State(s): State<Store>, axum::Json(paths): axum::Json<Vec<S
     r
 }
 
-pub fn router(local: PathBuf) -> anyhow::Result<Router> {
+/// Whether `name` is one of sake's wasm files (`sake.wasm`, `sake-grow.wasm`, ...).
+fn wasm_name(name: &str) -> bool {
+    name.len() <= 64 && name.ends_with(".wasm") && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.') && !name.starts_with('.')
+}
+
+/// Puts sake's wasm files (`<web>/sake/*.wasm`, ~23 MB each, ~5 MB as zstd) in the bucket as
+/// chunks (named by their BLAKE3 like a game's, zstd-coded, encrypted), those not there yet,
+/// and notes them in `wasm` for `/sake-direct`: the page then fetches sake from the bucket at
+/// the bucket's speed, not through this server's own line (worker2's gave ~100 KB/s at times,
+/// minutes before a game could start). Each build once: a release's files are the same at
+/// every start.
+async fn publish_wasm(remote: &Storage, web: &std::path::Path, wasm: &std::sync::RwLock<std::collections::HashMap<String, String>>) -> anyhow::Result<usize> {
+    let mut names: Vec<String> = std::fs::read_dir(web.join("sake"))?.filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| wasm_name(n)).collect();
+    names.sort();
+    let mut sent = 0;
+    for name in names {
+        let bytes = tokio::fs::read(web.join("sake").join(&name)).await?;
+        let h = blake3::hash(&bytes).to_hex()[..32].to_string();
+        let logical = format!("chunks/{}/{h}", &h[..2]);
+        if !remote.has(&logical)? {
+            let z = tokio::task::spawn_blocking(move || zstd::bulk::compress(&bytes, 19)).await??;
+            remote.put(&logical, &z).await?;
+            sent += 1;
+        }
+        wasm.write().unwrap().insert(name, h);
+    }
+    Ok(sent)
+}
+
+/// `GET /sake-direct/<file>`: how the page fetches sake's wasm `file` from the bucket, as
+/// `/store-direct` answers for a chunk, and `chunk`: its name (the decoded bytes' BLAKE3,
+/// checked by the page). 404 until [`publish_wasm`] put it there (or for another name), 501
+/// without S3: the page then loads it from here as before.
+async fn sake_direct(State(s): State<Store>, Path(name): Path<String>) -> Response {
+    let Some(remote) = s.remote.as_ref().as_ref() else { return StatusCode::NOT_IMPLEMENTED.into_response() };
+    let Some(h) = s.wasm.read().unwrap().get(&name).cloned() else { return StatusCode::NOT_FOUND.into_response() };
+    match remote.direct_bucket(&format!("chunks/{}/{h}", &h[..2]), DIRECT_EXPIRY).await {
+        Ok(Some(d)) => {
+            let mut v = direct_json(&d);
+            v["chunk"] = h.into();
+            let mut r = axum::Json(v).into_response();
+            r.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+            r
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            eprintln!("sake-direct {name}: {e}");
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
+}
+
+/// The store's routes; `web`: the web app's folder, whose sake wasm files go to the bucket.
+pub fn router(local: PathBuf, web: Option<PathBuf>) -> anyhow::Result<Router> {
     let db = crate::library::Library::new(&local)?;
     let state = Store {
         local,
         remote: Arc::new(Storage::configured(db)?),
         decoded: Default::default(),
         ahead: Default::default(),
+        wasm: Default::default(),
     };
+    if let (Some(web), Some(_)) = (web, state.remote.as_ref()) {
+        let s = state.clone();
+        tokio::spawn(async move {
+            match publish_wasm(s.remote.as_ref().as_ref().unwrap(), &web, &s.wasm).await {
+                Ok(0) => {}
+                Ok(n) => eprintln!("sake: {n} wasm files put in the bucket (pages fetch them from there)"),
+                Err(e) => eprintln!("sake: wasm not put in the bucket (pages fetch it from here): {e:#}"),
+            }
+        });
+    }
     Ok(Router::new()
         .route("/store/{*path}", get(file))
+        .route("/sake-direct/{name}", get(sake_direct))
         .route("/store-direct/{*path}", get(direct))
         .route("/store-direct", axum::routing::post(direct_many))
         .with_state(state))
@@ -373,7 +440,7 @@ mod tests {
         let stored = zstd::encode_all(&data[..], 3).unwrap();
         std::fs::write(dir.join("chunks/ab/abc"), &stored).unwrap();
         std::fs::write(dir.join("trees/t.tsv"), b"vnvm-tree\t2\t64\n").unwrap();
-        let state = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default() };
+        let state = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
         let app = Router::new().route("/store/{*path}", get(file)).with_state(state.clone());
         let (s, _, b) = get_(&app, "/store/chunks/ab/abc", None).await;
         assert_eq!((s, b), (StatusCode::OK, stored.clone()));
@@ -520,7 +587,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("trees")).unwrap();
         std::fs::write(dir.join("trees/game.tsv"), &tsv).unwrap();
         let before = fake.gets();
-        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default() };
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
         let app = Router::new().route("/store/{*path}", get(file)).with_state(state.clone());
         let (st, _, b) = get_(&app, "/store/trees/game.tsv", None).await;
         assert_eq!((st, b), (StatusCode::OK, tsv.clone().into_bytes()));
@@ -555,7 +622,7 @@ mod tests {
         let stored = zstd::encode_all(&raw[..], 3).unwrap();
         let h = "ab".to_string() + &"5".repeat(30);
         remote.put(&format!("chunks/ab/{h}"), &stored).await.unwrap();
-        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default() };
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
         let app = Router::new().route("/store/{*path}", get(file)).route("/store-direct/{*path}", get(direct)).with_state(state);
         let (st, hd, body) = get_(&app, &format!("/store-direct/chunks/ab/{h}"), None).await;
         assert_eq!(st, StatusCode::OK);
@@ -587,10 +654,64 @@ mod tests {
             assert_eq!(get_(&app, &p, None).await.0, StatusCode::NOT_FOUND, "{p}");
         }
         // a store without S3
-        let none = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default() };
+        let none = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
         let app2 = Router::new().route("/store-direct/{*path}", get(direct)).with_state(none);
         assert_eq!(get_(&app2, &format!("/store-direct/chunks/ab/{h}"), None).await.0, StatusCode::NOT_IMPLEMENTED);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// sake's wasm in the bucket: publish_wasm puts each `<web>/sake/*.wasm` there once (a second
+    /// start sends nothing), and /sake-direct answers what opens to the file's zstd, named by the
+    /// file's BLAKE3; other names 404, no S3 501.
+    #[tokio::test]
+    async fn sake_wasm_from_the_bucket() {
+        let (_fake, remote, dir) = crate::storage::gc_tests::serve(0).await;
+        let web = dir.join("web");
+        std::fs::create_dir_all(web.join("sake")).unwrap();
+        let wasm: Vec<u8> = b"\0asm\x01\0\0\0".iter().copied().chain((0..300_000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)).collect();
+        std::fs::write(web.join("sake/sake.wasm"), &wasm).unwrap();
+        std::fs::write(web.join("sake/sake-grow.wasm"), &wasm[..1000]).unwrap();
+        std::fs::write(web.join("sake/sake.js"), b"js").unwrap();
+        std::fs::write(web.join("sake/.x.wasm"), b"hidden").unwrap();
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
+        let remote = state.remote.as_ref().as_ref().unwrap();
+        assert_eq!(publish_wasm(remote, &web, &state.wasm).await.unwrap(), 2);
+        assert_eq!(publish_wasm(remote, &web, &state.wasm).await.unwrap(), 0, "the same build again: nothing sent");
+        assert_eq!(state.wasm.read().unwrap().len(), 2);
+        let h = blake3::hash(&wasm).to_hex()[..32].to_string();
+        assert!(remote.has(&format!("chunks/{}/{h}", &h[..2])).unwrap());
+        // (the server reads it as any chunk too)
+        assert!(remote.get(&format!("chunks/{}/{h}", &h[..2])).await.unwrap().is_some());
+        let app = Router::new().route("/sake-direct/{name}", get(sake_direct)).with_state(state.clone());
+        let (st, _, body) = get_(&app, "/sake-direct/sake.wasm", None).await;
+        assert_eq!(st, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["chunk"], h);
+        let cipher = reqwest::get(v["url"].as_str().unwrap()).await.unwrap().bytes().await.unwrap().to_vec();
+        let k = v["key"].as_str().unwrap();
+        let key: Vec<u8> = (0..32).map(|i| u8::from_str_radix(&k[i * 2..i * 2 + 2], 16).unwrap()).collect();
+        let uuid = uuid::Uuid::parse_str(v["object"].as_str().unwrap()).unwrap();
+        use ring::aead;
+        let lk = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &key).unwrap());
+        let mut d = cipher[12..].to_vec();
+        let plain = lk.open_in_place(aead::Nonce::assume_unique_for_key(cipher[..12].try_into().unwrap()), aead::Aad::from(uuid.as_bytes()), &mut d).unwrap();
+        assert_eq!(zstd::decode_all(&plain[..]).unwrap(), wasm);
+        for p in ["/sake-direct/sake.js", "/sake-direct/.x.wasm", "/sake-direct/other.wasm", "/sake-direct/..%2Fsake.wasm"] {
+            assert_eq!(get_(&app, p, None).await.0, StatusCode::NOT_FOUND, "{p}");
+        }
+        let none = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default(), wasm: state.wasm.clone() };
+        let app2 = Router::new().route("/sake-direct/{name}", get(sake_direct)).with_state(none);
+        assert_eq!(get_(&app2, "/sake-direct/sake.wasm", None).await.0, StatusCode::NOT_IMPLEMENTED);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    proptest::proptest! {
+        /// wasm_name takes only plain names ending in .wasm (no folders, no hidden files)
+        #[test]
+        fn wasm_name_model(n in "[a-z./_%-]{0,12}(\\.wasm)?") {
+            let ok = wasm_name(&n);
+            proptest::prop_assert_eq!(ok, n.ends_with(".wasm") && !n.starts_with('.') && !n.contains('/') && !n.contains('%'));
+        }
     }
 
     /// POST /store-direct: many chunks at once, each answered as GET /store-direct/<path>
@@ -608,7 +729,7 @@ mod tests {
         }
         // (the first three in a delivery pack: the answers say where, the rest do not)
         assert_eq!(remote.pack_objects("g", &names[..3], 1 << 20).await.unwrap().packs, 1);
-        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default() };
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
         let app = Router::new().route("/store-direct/{*path}", get(direct)).route("/store-direct", axum::routing::post(direct_many)).with_state(state);
         let post = |body: String| {
             let app = app.clone();
@@ -647,7 +768,7 @@ mod tests {
         }
         let many = vec![names[0].clone(); DIRECT_MANY + 1];
         assert_eq!(post(serde_json::to_string(&many).unwrap()).await.0, StatusCode::PAYLOAD_TOO_LARGE);
-        let none = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default() };
+        let none = Store { local: dir.clone(), remote: Arc::new(None), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
         let app2 = Router::new().route("/store-direct", axum::routing::post(direct_many)).with_state(none);
         let r = app2.oneshot(Request::post("/store-direct").header("content-type", "application/json").body(Body::from("[]")).unwrap()).await.unwrap();
         assert_eq!(r.status(), StatusCode::NOT_IMPLEMENTED);
