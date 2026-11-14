@@ -338,13 +338,18 @@ static void slab_lock(void) {
     while (__atomic_exchange_n(&slab_table[0], 1, __ATOMIC_ACQUIRE)) __builtin_ia32_pause();
 }
 static void slab_unlock(void) { __atomic_store_n(&slab_table[0], 0, __ATOMIC_RELEASE); }
-/* a block of `n` (<= SLAB_MAX) bytes from its class list, or 0 (empty: the host refills it) */
-static void *slab_pop(size_t n) {
+/* a block of `n` (<= SLAB_MAX) bytes from its class list, or 0 (empty: the host refills it);
+   its heap (mem.rs heap_tag: 0 for malloc's) written while the list is held, so HeapDestroy's
+   walk never sees a live block with an old heap */
+static void *slab_pop(size_t n, u32 heap) {
     u32 k = (u32)(n + 15) >> 4;
     if (!k) k = 1;
     slab_lock();
     u32 p = slab_table[k];
-    if (p) slab_table[k] = *(volatile u32 *)(size_t)p;
+    if (p) {
+        slab_table[k] = *(volatile u32 *)(size_t)p;
+        ((u32 *)(size_t)p)[-4] = heap;
+    }
     slab_unlock();
     if (!p) return 0;
     u32 *h = (u32 *)(size_t)p;
@@ -365,7 +370,7 @@ static int slab_push(void *p) {
 }
 void *HeapAlloc(void *heap, u32 flags, size_t n) {
     if (n <= SLAB_MAX) {
-        unsigned char *p = slab_pop(n);
+        unsigned char *p = slab_pop(n, (u32)(size_t)heap);
         if (p) {
             if (flags & 8)
                 for (size_t i = 0; i < n; i++) p[i] = 0;
@@ -379,7 +384,7 @@ int HeapFree(void *heap, u32 flags, void *p) {
     return host_heap_free(heap, flags, p);
 }
 void *malloc(size_t n) {
-    void *p = n <= SLAB_MAX ? slab_pop(n) : 0;
+    void *p = n <= SLAB_MAX ? slab_pop(n, 0) : 0;
     return p ? p : host_malloc(n);
 }
 void free(void *p) {

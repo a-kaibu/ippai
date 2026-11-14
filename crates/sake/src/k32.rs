@@ -3600,15 +3600,30 @@ fn GetProcessHeap(_: &mut Ctx) -> u32 {
 static NEXT_HEAP: AtomicU32 = AtomicU32::new(0x0016_0000);
 /// The maximum size of each fixed-size heap (HeapCreate with dwMaximumSize != 0)
 static HEAP_MAX: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+/// The heaps HeapCreate made and HeapDestroy has not destroyed
+static HEAPS: Mutex<Option<std::collections::HashSet<u32>>> = Mutex::new(None);
+/// heap_alloc_in's tag for heap handle `h`: its own for a HeapCreate heap, else 0
+fn heap_tag(h: u32) -> u32 {
+    if h != PROCESS_HEAP && HEAPS.lock().unwrap().get_or_insert_with(Default::default).contains(&h) { h } else { 0 }
+}
 fn HeapCreate(c: &mut Ctx) -> u32 {
     let h = NEXT_HEAP.fetch_add(0x10000, Ordering::Relaxed);
+    HEAPS.lock().unwrap().get_or_insert_with(Default::default).insert(h);
     if c.a(2) != 0 {
         HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, c.a(2));
     }
     h
 }
+/// HeapDestroy: the blocks the heap still holds are freed with it (they stayed allocated for
+/// good); the process heap and handles HeapCreate never gave fail with ERROR_INVALID_HANDLE
 fn HeapDestroy(c: &mut Ctx) -> u32 {
-    HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
+    let h = c.a(0);
+    if !HEAPS.lock().unwrap().get_or_insert_with(Default::default).remove(&h) {
+        last_error(6);
+        return 0;
+    }
+    HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
+    mem::heap_destroy(h);
     1
 }
 /// Whether heap `h` can never hold a block of `size` bytes: a fixed heap's blocks fit in its
@@ -3618,7 +3633,7 @@ fn heap_refuses(h: u32, size: u32) -> bool {
     size > max || HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).is_some_and(|&m| size > m)
 }
 fn HeapAlloc(c: &mut Ctx) -> u32 {
-    let p = if heap_refuses(c.a(0), c.a(2)) { 0 } else { mem::heap_alloc_small(c.a(2), c.a(1) & 8 != 0) };
+    let p = if heap_refuses(c.a(0), c.a(2)) { 0 } else { mem::heap_alloc_in(heap_tag(c.a(0)), c.a(2), c.a(1) & 8 != 0) };
     if p == 0 {
         // (the error is ERROR_NOT_ENOUGH_MEMORY, which RtlAllocateHeap's caller sets)
         last_error(8);
@@ -3646,6 +3661,12 @@ fn HeapReAlloc(c: &mut Ctx) -> u32 {
     };
     if r == 0 {
         last_error(8);
+    } else {
+        // (a block that moved stays the heap's)
+        let tag = heap_tag(c.a(0));
+        if r != p || r32(r - 16) != tag {
+            mem::heap_retag(r, tag);
+        }
     }
     r
 }
@@ -8465,39 +8486,31 @@ fn MapViewOfFile(c: &mut Ctx) -> u32 {
         Some((Obj::Mapping { file, size, view, write }, _)) => Some((file.clone(), *size, *view, *write)),
         _ => None,
     });
-    let Some((file, size, view, write)) = info else { return 0 };
+    let Some((file, size, view, write)) = info else {
+        last_error(6);
+        return 0;
+    };
     let off = off_lo as u64 | (off_hi as u64) << 32;
     // a pagefile section: one block of its whole size that every view shows, at the view's
     // offset (F&C's archive reader maps its decoded index again 0x40000 in); past its end:
-    // ERROR_ACCESS_DENIED
+    // ERROR_ACCESS_DENIED. The block goes when its last view is unmapped and its last handle
+    // closed (it stayed for good).
     if file.is_none() {
         if off + n as u64 > size as u64 || off >= size.max(1) as u64 {
             last_error(5);
             return 0;
         }
         if view != 0 {
+            section_views(|m| m.get_mut(&view).map(|s| s.views += 1));
             return view + off as u32;
         }
-    }
-    let total = match &file {
-        Some(f) => f.size().saturating_sub(off) as u32,
-        None => size,
-    };
-    let n = if file.is_none() { size } else if n == 0 { total } else { n.min(total.max(n)) };
-    let Some(b) = mem::reserve(0, n.max(1), 4, 0x40000, false) else { return 0 };
-    mem::commit(b, 4);
-    VIEWS.lock().unwrap().push((b, n.max(1), file.as_ref().map(|f| files::host_to_win(&f.path))));
-    if let Some(f) = &file {
-        let pos = f.seek(SeekFrom::Current(0)).unwrap_or(0);
-        f.seek(SeekFrom::Start(off));
-        f.read_into(b, n.min(total));
-        f.seek(SeekFrom::Start(pos));
-        // (FILE_MAP_WRITE on a writable mapping: what the program writes there reaches the file
-        // when the view is flushed or unmapped; FILE_MAP_COPY alone is copy-on-write)
-        if write && access & 2 != 0 {
-            WRITE_BACK.lock().unwrap().push((b, n.min(total), f.clone(), off));
-        }
-    } else {
+        let Some(b) = mem::reserve(0, size.max(1), 4, 0x40000, false) else {
+            last_error(8);
+            return 0;
+        };
+        mem::commit(b, 4);
+        VIEWS.lock().unwrap().push((b, size.max(1), None));
+        section_views(|m| m.insert(b, Section { size: size.max(1), views: 1, open: true }));
         obj::with(|t| {
             if let Some((Obj::Mapping { view, .. }, _)) = t.objs.get_mut(&h) {
                 *view = b;
@@ -8505,17 +8518,125 @@ fn MapViewOfFile(c: &mut Ctx) -> u32 {
         });
         return b + off as u32;
     }
+    let f = file.unwrap();
+    // a file's view: the bytes from `off`, as many as asked (0: to the end); the section is the
+    // file (a writable mapping made it at least its size), past it ERROR_ACCESS_DENIED; a view
+    // bigger than the address space can hold: ERROR_NOT_ENOUGH_MEMORY
+    let len = f.size();
+    let section = len.max(size as u64);
+    if off > section || n as u64 > section - off {
+        last_error(5);
+        return 0;
+    }
+    let want = if n == 0 { section - off } else { n as u64 };
+    if want > 0x7fff_0000 {
+        last_error(8);
+        return 0;
+    }
+    let n = want as u32;
+    let have = len.saturating_sub(off).min(n as u64) as u32;
+    let path = files::host_to_win(&f.path);
+    // (a read-only view of what another read-only view shows already: the same copy)
+    // (FILE_MAP_READ alone: FILE_MAP_WRITE and FILE_MAP_COPY views are the program's own)
+    let shared = access & 3 == 0;
+    let key = (f.path.clone(), off, n, len);
+    if shared {
+        if let Some(b) = READ_VIEWS.lock().unwrap().iter_mut().find(|v| v.0 == key).map(|v| {
+            v.2 += 1;
+            v.1
+        }) {
+            return b;
+        }
+    }
+    let Some(b) = mem::reserve(0, n.max(1), 4, 0x40000, false) else {
+        last_error(8);
+        return 0;
+    };
+    mem::commit(b, 4);
+    VIEWS.lock().unwrap().push((b, n.max(1), Some(path)));
+    let pos = f.seek(SeekFrom::Current(0)).unwrap_or(0);
+    f.seek(SeekFrom::Start(off));
+    f.read_into(b, have);
+    f.seek(SeekFrom::Start(pos));
+    if shared {
+        READ_VIEWS.lock().unwrap().push((key, b, 1));
+    }
+    // (FILE_MAP_WRITE on a writable mapping: what the program writes there reaches the file
+    // when the view is flushed or unmapped; FILE_MAP_COPY alone is copy-on-write)
+    if write && access & 2 != 0 {
+        WRITE_BACK.lock().unwrap().push((b, have, f.clone(), off));
+    }
     b
+}
+/// The read-only file views made once and shown to each MapViewOfFile of the same bytes:
+/// ((host path, offset, bytes, file size), base, views)
+static READ_VIEWS: Mutex<Vec<((String, u64, u32, u64), u32, u32)>> = Mutex::new(Vec::new());
+/// A pagefile section's block: its size, the views mapped, whether a handle still holds it
+struct Section {
+    size: u32,
+    views: u32,
+    open: bool,
+}
+static SECTIONS: Mutex<Option<HashMap<u32, Section>>> = Mutex::new(None);
+fn section_views<R>(f: impl FnOnce(&mut HashMap<u32, Section>) -> R) -> R {
+    f(SECTIONS.lock().unwrap().get_or_insert_with(HashMap::default))
+}
+/// The block of a pagefile section whose last handle closed (obj::gone_object): freed now if
+/// no view shows it, else at its last UnmapViewOfFile
+pub(crate) fn section_closed(view: u32) {
+    let free = section_views(|m| {
+        let s = m.get_mut(&view)?;
+        s.open = false;
+        (s.views == 0).then(|| m.remove(&view))
+    });
+    if free.is_some() {
+        VIEWS.lock().unwrap().retain(|v| v.0 != view);
+        mem::release(view);
+    }
 }
 fn MapViewOfFileEx(c: &mut Ctx) -> u32 {
     MapViewOfFile(c)
 }
 fn UnmapViewOfFile(c: &mut Ctx) -> u32 {
     let a = c.a(0);
-    let named_view = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, size, .. } if *view != 0 && a >= *view && a - *view < (*size).max(1))));
-    // (a view's base frees it; an address inside a pagefile view whose section closed stays)
-    let base = VIEWS.lock().unwrap().iter().any(|v| v.0 == a);
-    if !named_view && base {
+    // a view of a pagefile section: one view fewer; the block goes with the last view of a
+    // section no handle holds
+    let section = section_views(|m| {
+        let (&b, s) = m.iter_mut().find(|(&b, s)| a >= b && a - b < s.size)?;
+        s.views = s.views.saturating_sub(1);
+        let last = s.views == 0 && !s.open;
+        if last {
+            m.remove(&b);
+        }
+        Some((b, last))
+    });
+    if let Some((b, last)) = section {
+        if last {
+            VIEWS.lock().unwrap().retain(|v| v.0 != b);
+            mem::release(b);
+        }
+        return 1;
+    }
+    // (an address that is no view's base: nothing to do, as before)
+    if !VIEWS.lock().unwrap().iter().any(|v| v.0 == a) {
+        return 1;
+    }
+    // (a shared read-only copy: freed with its last view)
+    let more = {
+        let mut r = READ_VIEWS.lock().unwrap();
+        match r.iter().position(|v| v.1 == a) {
+            Some(i) if r[i].2 > 1 => {
+                r[i].2 -= 1;
+                true
+            }
+            Some(i) => {
+                r.remove(i);
+                false
+            }
+            None => false,
+        }
+    };
+    if !more {
         write_back(a, true);
         VIEWS.lock().unwrap().retain(|v| v.0 != a);
         mem::release(a);
@@ -9015,6 +9136,13 @@ pub struct Snapshot {
     next_module: usize,
 }
 pub static SNAPSHOTS: Mutex<Option<HashMap<u32, Snapshot>>> = Mutex::new(None);
+
+/// A snapshot's list goes with its handle (obj::gone_object)
+pub(crate) fn snapshot_closed(h: u32) {
+    if let Some(m) = SNAPSHOTS.lock().unwrap().as_mut() {
+        m.remove(&h);
+    }
+}
 
 /// TH32CS_SNAPMODULE / TH32CS_SNAPMODULE32
 const TH32CS_MODULES: u32 = 0x8 | 0x10;

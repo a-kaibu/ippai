@@ -313,6 +313,13 @@ fn slab_alloc(trap: u32, size_at: u8, flags_at: Option<u8>, ret: u16) -> u32 {
         .x(&[0x8b, 0x10]) // mov edx,[eax]
         .x(&[0x89, 0x14, 0x8d])
         .u32(t); // mov [ecx*4+t],edx
+    // the block's heap (mem::heap_tag; malloc's: 0), written while the lists are held
+    if flags_at.is_some() {
+        a.x(&[0x8b, 0x54, 0x24, 0x04]) // mov edx,[esp+4]
+            .x(&[0x89, 0x50, 0xf0]); // mov [eax-16],edx
+    } else {
+        a.x(&[0xc7, 0x40, 0xf0]).u32(0); // mov dword [eax-16],0
+    }
     unlock(&mut a, t);
     a.x(&[0x8b, 0x54, 0x24, size_at]) // mov edx,[esp+size]
         .x(&[0x89, 0x50, 0xf8]) // mov [eax-8],edx

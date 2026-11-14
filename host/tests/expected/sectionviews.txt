@@ -1,0 +1,10 @@
+unmap then close: rounds 2500 failure 0
+close then unmap: rounds 2500 failure 0
+second view sees the first's bytes: 1
+a view outlives the other: 1
+view past the section: 0 error 5
+file views: 1 1 1
+the other view after one went: 1
+file view past the end: 0 error 5
+file view starting past the end: 0 error 5
+snapshots listed: 3000

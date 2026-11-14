@@ -308,6 +308,8 @@ fn gone_object(h: u32, gone: Option<Obj>) {
             crate::kern::with(|k| k.release_sync(id, crate::pid()));
         }
         Some(Obj::DebugObject(port)) => crate::dbg::port_closed(port),
+        Some(Obj::Mapping { file: None, view, .. }) if view != 0 => crate::k32::section_closed(view),
+        Some(Obj::Other("Section")) => crate::k32::snapshot_closed(h),
         _ => {}
     }
 }

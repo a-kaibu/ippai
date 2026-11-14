@@ -769,8 +769,25 @@ fn slab_lock(t: u32) -> &'static std::sync::atomic::AtomicU32 {
 /// heap_alloc for HeapAlloc/malloc: small sizes come from the class lists (refilled here when
 /// empty, a few blocks at a time), so the x86 fast path can serve the next ones.
 pub fn heap_alloc_small(size: u32, zero: bool) -> u32 {
+    heap_alloc_in(0, size, zero)
+}
+
+/// Every small block ever made (they never go back to dlmalloc): what heap_destroy walks
+static SLABS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// The big blocks of each private heap (HeapCreate), by heap
+static BIG: Mutex<Option<std::collections::HashMap<u32, std::collections::HashSet<u32>>>> = Mutex::new(None);
+
+/// heap_alloc_small for HeapAlloc of private heap `heap` (0: no heap of its own, as malloc's
+/// and the process heap's): the block carries its heap at p-16 (the x86 stubs and crt.c write
+/// it too), so heap_destroy can free what a heap still holds.
+pub fn heap_alloc_in(heap: u32, size: u32, zero: bool) -> u32 {
     if size > SLAB_MAX {
-        return heap_alloc(size, zero);
+        let p = heap_alloc(size, zero);
+        if p != 0 && heap != 0 {
+            w32(p - 16, heap);
+            BIG.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).entry(heap).or_default().insert(p);
+        }
+        return p;
     }
     use std::sync::atomic::Ordering;
     let k = slab_class(size);
@@ -780,8 +797,11 @@ pub fn heap_alloc_small(size: u32, zero: bool) -> u32 {
         std::hint::spin_loop();
     }
     let head = r32(t + 4 * k);
+    let mut made = Vec::new();
     let p = if head != 0 {
         w32(t + 4 * k, r32(head));
+        // (its heap goes with it while the lists are held: heap_destroy walks under the lock)
+        w32(head - 16, heap);
         head
     } else {
         // a new block for the caller and a few for the list
@@ -793,6 +813,8 @@ pub fn heap_alloc_small(size: u32, zero: bool) -> u32 {
                 break;
             }
             w32(b - 12, SLAB_CAP | k);
+            w32(b - 16, heap);
+            made.push(b);
             #[cfg(test)]
             SLAB_MADE.fetch_add(1, Ordering::Relaxed);
             if i == 0 {
@@ -806,6 +828,10 @@ pub fn heap_alloc_small(size: u32, zero: bool) -> u32 {
         first
     };
     lock.store(0, Ordering::Release);
+    // (after the lists' lock: heap_destroy takes this one first)
+    if !made.is_empty() {
+        SLABS.lock().unwrap_or_else(|e| e.into_inner()).extend(made);
+    }
     if p == 0 {
         return 0;
     }
@@ -836,12 +862,76 @@ pub fn heap_free_small(p: u32) -> bool {
     true
 }
 
+/// Block `p` (heap_alloc_in's) as one of private heap `heap` (0: none), as a block that moved
+/// in HeapReAlloc
+pub fn heap_retag(p: u32, heap: u32) {
+    use std::sync::atomic::Ordering;
+    if !heap_owns(p) {
+        return;
+    }
+    if r32(p - 4) == SLAB {
+        let lock = slab_lock(slab_table());
+        while lock.swap(1, Ordering::Acquire) != 0 {
+            std::hint::spin_loop();
+        }
+        w32(p - 16, heap);
+        lock.store(0, Ordering::Release);
+        return;
+    }
+    let mut m = BIG.lock().unwrap_or_else(|e| e.into_inner());
+    let m = m.get_or_insert_with(Default::default);
+    let old = r32(p - 16);
+    if old != 0 {
+        m.get_mut(&old).map(|s| s.remove(&p));
+    }
+    w32(p - 16, heap);
+    if heap != 0 {
+        m.entry(heap).or_default().insert(p);
+    }
+}
+
+/// HeapDestroy: frees every block heap `heap` still holds (its small ones back to their class
+/// lists, its big ones to the heap); the number freed. Programs that make a heap, fill it and
+/// destroy it (script VMs, per-scene arenas, CRTs of unloaded DLLs) kept every block.
+pub fn heap_destroy(heap: u32) -> usize {
+    use std::sync::atomic::Ordering;
+    if heap == 0 {
+        return 0;
+    }
+    let mut n = 0;
+    let t = slab_table();
+    let lock = slab_lock(t);
+    let slabs = SLABS.lock().unwrap_or_else(|e| e.into_inner());
+    while lock.swap(1, Ordering::Acquire) != 0 {
+        std::hint::spin_loop();
+    }
+    for &b in slabs.iter() {
+        if r32(b - 4) == SLAB && r32(b - 16) == heap {
+            let k = slab_cap(b);
+            w32(b - 4, SLAB_FREE);
+            w32(b, r32(t + 4 * k));
+            w32(t + 4 * k, b);
+            n += 1;
+        }
+    }
+    lock.store(0, Ordering::Release);
+    drop(slabs);
+    let big = BIG.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|m| m.remove(&heap)).unwrap_or_default();
+    for p in big {
+        if r32(p - 4) == MAGIC && r32(p - 16) == heap && heap_free(p) {
+            n += 1;
+        }
+    }
+    n
+}
+
 pub fn heap_alloc(size: u32, zero: bool) -> u32 {
     let Some(total) = size.checked_add(HDR) else { return 0 };
     let p = unsafe { HEAP.lock().unwrap().malloc(total as usize, 16) } as usize as u32;
     if p == 0 {
         return 0;
     }
+    w32(p + HDR - 16, 0);
     w32(p + HDR - 8, size);
     w32(p + HDR - 4, MAGIC);
     if zero {
@@ -851,7 +941,7 @@ pub fn heap_alloc(size: u32, zero: bool) -> u32 {
 }
 
 pub fn heap_size(p: u32) -> u32 {
-    if p == 0 {
+    if p == 0 || !heap_owns(p) {
         return u32::MAX;
     }
     r32(p - 8)
@@ -868,6 +958,12 @@ pub fn heap_free(p: u32) -> bool {
         return false;
     }
     let size = r32(p - 8);
+    if r32(p - 4) == MAGIC && r32(p - 16) != 0 {
+        let h = r32(p - 16);
+        if let Some(m) = BIG.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            m.get_mut(&h).map(|s| s.remove(&p));
+        }
+    }
     w32(p - 4, 0);
     // (c_free: the header's size may be below the chunk's after an in-place shrink)
     let _ = size;
@@ -878,7 +974,7 @@ pub fn heap_free(p: u32) -> bool {
 /// Whether block `p` can take `size` bytes in place: a small block within its class, or any
 /// block shrinking
 pub fn heap_fits(p: u32, size: u32) -> bool {
-    if p == 0 {
+    if p == 0 || !heap_owns(p) {
         return false;
     }
     let old = heap_size(p);
@@ -888,6 +984,11 @@ pub fn heap_fits(p: u32, size: u32) -> bool {
 pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
     if p == 0 {
         return heap_alloc_small(size, zero);
+    }
+    // (a pointer the heap never gave, or gave and took back: its "size" is whatever lies
+    // before it, and a copy of that many bytes could reach anywhere)
+    if !heap_owns(p) {
+        return 0;
     }
     let old = heap_size(p);
     if heap_fits(p, size) {
@@ -1288,6 +1389,153 @@ mod tests {
             hs.into_iter().for_each(|h| h.join().unwrap());
             assert_eq!(unsafe { (p as *const u32).read_unaligned() }, 80000, "offset {off}");
             unsafe { (p as *mut u32).write_unaligned(0) };
+        }
+    }
+}
+
+/// Review b07: HeapDestroy frees what a private heap still holds, and only that.
+#[cfg(test)]
+mod heap_destroy_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn live(p: u32) -> bool {
+        matches!(r32(p - 4), MAGIC | SLAB)
+    }
+
+    #[test]
+    fn destroy_frees_small_and_big_blocks_of_its_heap_only() {
+        let _g = crate::test_guest::enter();
+        let (a, b) = (0x7a_0000, 0x7b_0000);
+        let mine: Vec<u32> = (0..300).map(|i| heap_alloc_in(a, [8, 100, 512, 513, 70_000][i % 5], false)).collect();
+        let other: Vec<u32> = (0..50).map(|i| heap_alloc_in(b, [16, 4000][i % 2], false)).collect();
+        let plain: Vec<u32> = (0..50).map(|i| heap_alloc_small([24, 9000][i % 2], false)).collect();
+        for (i, &p) in other.iter().chain(&plain).enumerate() {
+            w32(p, i as u32 ^ 0x5a5a_0000);
+        }
+        assert_eq!(heap_destroy(a), mine.len());
+        assert!(mine.iter().all(|&p| !live(p)), "every block of the heap went");
+        for (i, &p) in other.iter().chain(&plain).enumerate() {
+            assert!(live(p), "{p:#x} of another heap");
+            assert_eq!(r32(p), i as u32 ^ 0x5a5a_0000, "{p:#x} kept its bytes");
+        }
+        // (again: nothing left)
+        assert_eq!(heap_destroy(a), 0);
+        assert_eq!(heap_destroy(b), other.len());
+        for p in plain {
+            assert!(heap_free_small(p));
+        }
+    }
+
+    #[test]
+    fn a_block_that_moves_stays_its_heaps() {
+        let _g = crate::test_guest::enter();
+        let h = 0x7c_0000;
+        let p = heap_alloc_in(h, 40, false);
+        let q = heap_realloc(p, 5000, false);
+        heap_retag(q, h);
+        let r = heap_realloc(q, 100, false);
+        assert_eq!(r, q, "shrinks in place");
+        let s = heap_alloc_in(h, 3000, false);
+        let t = heap_realloc(s, 200, false);
+        heap_retag(t, h);
+        assert_eq!(heap_destroy(h), 2);
+        assert!(!live(q) && !live(t));
+    }
+
+    #[test]
+    fn bad_pointers_have_no_size_and_do_not_move() {
+        let _g = crate::test_guest::enter();
+        let p = heap_alloc(64, true);
+        assert!(heap_free(p));
+        assert_eq!(heap_size(p), u32::MAX, "a freed block");
+        assert_eq!(heap_realloc(p, 10, false), 0);
+        assert!(!heap_fits(p, 10));
+        let q = heap_alloc(64, true);
+        assert_eq!(heap_size(q + 16), u32::MAX, "inside a block");
+        assert_eq!(heap_realloc(q + 16, 1000, false), 0);
+        assert_eq!(heap_size(4), u32::MAX);
+        assert!(heap_free(q));
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Alloc(u8, u32),
+        Free(usize),
+        Realloc(usize, u32),
+        Destroy(u8),
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        let size = prop_oneof![4u32..=512, 513u32..20_000];
+        prop_oneof![
+            4 => (0u8..4, size.clone()).prop_map(|(h, n)| Op::Alloc(h, n)),
+            2 => any::<usize>().prop_map(Op::Free),
+            2 => (any::<usize>(), size).prop_map(|(i, n)| Op::Realloc(i, n)),
+            1 => (1u8..4).prop_map(Op::Destroy),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+        /// Model: each live block has a heap (0: malloc's) and a stamp in its first word; a
+        /// destroy frees exactly the live blocks of that heap, every other block keeps its
+        /// stamp, and none is handed out twice.
+        #[test]
+        fn heaps_against_a_model(ops in proptest::collection::vec(op(), 1..120)) {
+            let _g = crate::test_guest::enter();
+            let heap = |h: u8| if h == 0 { 0 } else { 0x90_0000 + h as u32 * 0x1_0000 };
+            // (what a failed case before this one left)
+            for h in 1..4 {
+                heap_destroy(heap(h));
+            }
+            let mut blocks: Vec<(u32, u8, u32)> = vec![];
+            let mut stamp = 1u32;
+            for o in ops {
+                match o {
+                    Op::Alloc(h, n) => {
+                        let p = heap_alloc_in(heap(h), n, false);
+                        prop_assert!(p != 0);
+                        prop_assert!(blocks.iter().all(|b| b.0 != p), "handed out twice");
+                        w32(p, stamp);
+                        blocks.push((p, h, stamp));
+                        stamp += 1;
+                    }
+                    Op::Free(i) if !blocks.is_empty() => {
+                        let (p, ..) = blocks.swap_remove(i % blocks.len());
+                        prop_assert!(heap_free_small(p));
+                    }
+                    Op::Realloc(i, n) if !blocks.is_empty() => {
+                        let i = i % blocks.len();
+                        let (p, h, s) = blocks[i];
+                        let q = heap_realloc(p, n, false);
+                        prop_assert!(q != 0);
+                        heap_retag(q, heap(h));
+                        prop_assert_eq!(r32(q), s);
+                        blocks[i].0 = q;
+                    }
+                    Op::Destroy(h) => {
+                        let n = blocks.iter().filter(|b| b.1 == h).count();
+                        prop_assert_eq!(heap_destroy(heap(h)), n);
+                        for b in blocks.iter().filter(|b| b.1 == h) {
+                            prop_assert!(!live(b.0));
+                        }
+                        blocks.retain(|b| b.1 != h);
+                    }
+                    _ => {}
+                }
+                for b in &blocks {
+                    prop_assert!(live(b.0));
+                    prop_assert_eq!(r32(b.0), b.2);
+                }
+            }
+            for h in 1..4 {
+                let n = blocks.iter().filter(|b| b.1 == h).count();
+                prop_assert_eq!(heap_destroy(heap(h)), n);
+            }
+            for b in blocks.iter().filter(|b| b.1 == 0) {
+                prop_assert!(heap_free_small(b.0));
+            }
         }
     }
 }
