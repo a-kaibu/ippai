@@ -29,7 +29,7 @@ use koji::Cpu;
 
 const EV_SIZE: usize = 1 << 19;
 const OUT_SIZE: usize = 1 << 19;
-const SNAP_SIZE: usize = 1 << 16;
+const SNAP_SIZE: usize = 1 << 19;
 /// Syscalls / API calls kept per thread.
 const TRAPS: usize = 128;
 
