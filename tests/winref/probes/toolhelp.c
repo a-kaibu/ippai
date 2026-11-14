@@ -60,6 +60,17 @@ int main(void) {
     WCHAR wbase[MAX_PATH];
     MultiByteToWideChar(CP_ACP, 0, base, -1, wbase, MAX_PATH);
     printf("first W is the exe: %d\n", Module32FirstW(h, &w) && _wcsicmp(w.szModule, wbase) == 0);
+    /* (no heap lists in a module snapshot) and this process's memory read back */
+    HEAPLIST32 hl;
+    hl.dwSize = sizeof hl;
+    SetLastError(0xdead);
+    int hr = Heap32ListFirst(h, &hl);
+    printf("heap list first: %d err %lu\n", hr, GetLastError());
+    static const char secret[8] = "sake!ok";
+    char got[8] = "";
+    SIZE_T nread = 0;
+    int rr = Toolhelp32ReadProcessMemory(GetCurrentProcessId(), secret, got, sizeof got, &nread);
+    printf("read own memory: %d %lu same %d\n", rr, (unsigned long)nread, !memcmp(got, secret, 8));
     printf("close: %d\n", CloseHandle(h));
     /* (a closed snapshot: no handle any more) */
     type_of("closed", h);

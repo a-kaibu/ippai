@@ -6641,6 +6641,15 @@ fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u3
     if let Some(n) = crate::kern::pipe_name(&name) {
         return crate::pipe::open(&n, access, attrs);
     }
+    match device_open(&name) {
+        Some(Ok(h)) => return h,
+        Some(Err(e)) => {
+            note_failed_open(&name, e);
+            last_error(e);
+            return 0xffff_ffff;
+        }
+        None => {}
+    }
     match files::open_shared(&name, access, disp, Some(share)) {
         // a directory opens only with FILE_FLAG_BACKUP_SEMANTICS
         Ok((f, _)) if f.dir && attrs & 0x0200_0000 == 0 => {
@@ -6666,6 +6675,26 @@ fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u3
             0xffff_ffff
         }
     }
+}
+/// `\\\\.\\<device>` names other than pipes and NUL: a drive's volume (`\\\\.\\C:`) opens, even
+/// with no access asked (programs ask a volume's information so; Enigma Protector opens C: and
+/// expects it to), any other device is not there: ERROR_FILE_NOT_FOUND, as Windows has no
+/// \\\\.\\NTICE, \\\\.\\SICE (kernel debuggers' devices Enigma looks for). None: not a device name.
+fn device_open(name: &str) -> Option<Result<u32, u32>> {
+    let rest = name.strip_prefix("\\\\.\\").or_else(|| name.strip_prefix("//./"))?;
+    if rest.is_empty() || rest.contains(['\\', '/']) {
+        return None;
+    }
+    let b = rest.as_bytes();
+    if b.len() == 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        let bit = 1u32 << (b[0].to_ascii_uppercase() - b'A');
+        return Some(if logical_drives() & bit != 0 { last_error(0); Ok(obj::add(Obj::Other("volume"))) } else { Err(2) });
+    }
+    // (devices sake has: the console's, COM ports and the like are not)
+    if rest.eq_ignore_ascii_case("CONOUT$") || rest.eq_ignore_ascii_case("CONIN$") {
+        return None;
+    }
+    Some(Err(2))
 }
 /// The null device: "NUL" in any case, as a path's last part too ("C:\\dir\\nul",
 /// "\\\\.\\NUL"), with trailing spaces or a colon ("NUL :", "nul:"; DOS device names win
@@ -8744,6 +8773,25 @@ fn Process32First(c: &mut Ctx) -> u32 {
 fn Process32FirstW(c: &mut Ctx) -> u32 {
     process_entry(c, true)
 }
+/// Toolhelp32ReadProcessMemory(pid, base, buffer, count, read): this process's memory (0: this
+/// process too, as kernel32 opens it with OpenProcess(pid) and that is ours); another's: not
+/// ours to read (ERROR_INVALID_PARAMETER)
+fn Toolhelp32ReadProcessMemory(c: &mut Ctx) -> u32 {
+    let (pid, a, b, n, done) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if pid != 0 && pid != crate::pid() {
+        mem::putp(done, 0);
+        last_error(87);
+        return 0;
+    }
+    let k = mem::accessible(a, n, false, false).min(mem::accessible(b, n, true, false));
+    mem::copy(b, a, k);
+    mem::putp(done, k);
+    if k < n {
+        last_error(299);
+        return 0;
+    }
+    1
+}
 fn no_more(_: &mut Ctx) -> u32 {
     last_error(18);
     0
@@ -9020,9 +9068,12 @@ pub fn init() {
     }
     implement("avrt", "AvRevertMmThreadCharacteristics", av_true);
     implement("avrt", "AvSetMmThreadPriority", av_true);
-    for n in ["Process32Next", "Process32NextW", "Thread32First", "Thread32Next"] {
+    // (a snapshot holds no heap lists here: Delphi's TlHelp32 unit, Enigma Protector's, looks
+    // all of these up)
+    for n in ["Process32Next", "Process32NextW", "Thread32First", "Thread32Next", "Heap32ListFirst", "Heap32ListNext", "Heap32First", "Heap32Next"] {
         implement("kernel32", n, no_more);
     }
+    reg!("kernel32"; Toolhelp32ReadProcessMemory);
     reg!("kernel32"; Module32First, Module32FirstW, Module32Next, Module32NextW);
     reg!("dbghelp"; MakeSureDirectoryPathExists, SearchTreeForFile);
     reg!("imagehlp"; MakeSureDirectoryPathExists, SearchTreeForFile);
@@ -10100,6 +10151,51 @@ mod wow64_tests {
             // (only right under the Windows folder)
             let deeper = format!("C:\\games\\{dir}{rest}");
             prop_assert_eq!(crate::files::wow64_system(&deeper).into_owned(), deeper);
+        }
+    }
+}
+
+#[cfg(test)]
+mod device_names {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn volumes_open_debugger_devices_are_not_found() {
+        let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+        let h = device_open("\\\\.\\C:").unwrap().unwrap();
+        assert!(obj::close(h));
+        assert!(device_open("\\\\.\\c:").unwrap().is_ok());
+        for n in ["\\\\.\\NTICE", "\\\\.\\SICE", "\\\\.\\SIWVID", "//./NTICE"] {
+            assert_eq!(device_open(n), Some(Err(2)), "{n}");
+        }
+        // (left to the others: paths under a volume, pipes' names, the console's)
+        for n in ["\\\\.\\C:\\x.txt", "\\\\.\\pipe\\p", "\\\\.\\CONOUT$", "C:\\NTICE", "NTICE", "\\\\?\\C:"] {
+            assert_eq!(device_open(n), None, "{n}");
+        }
+    }
+
+    proptest! {
+        /// Only a bare `\\.\name` is taken; a drive letter opens exactly when that drive exists.
+        #[test]
+        fn device_model(pre in prop::sample::select(vec!["\\\\.\\", "//./", "\\\\?\\", "", "C:\\"]), rest in "([A-Za-z]:|[A-Za-z$]{1,8})(\\\\[a-z]{1,3})?") {
+            let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+            let name = format!("{pre}{rest}");
+            let got = device_open(&name);
+            let device = (pre == "\\\\.\\" || pre == "//./") && !rest.contains('\\');
+            if !device || rest.eq_ignore_ascii_case("CONOUT$") || rest.eq_ignore_ascii_case("CONIN$") {
+                prop_assert_eq!(got, None);
+            } else if rest.len() == 2 && rest.as_bytes()[1] == b':' {
+                let on = logical_drives() & 1 << (rest.as_bytes()[0].to_ascii_uppercase() - b'A') != 0;
+                match got {
+                    Some(Ok(h)) => { prop_assert!(on); obj::close(h); }
+                    other => { prop_assert!(!on); prop_assert_eq!(other, Some(Err(2))); }
+                }
+            } else {
+                prop_assert_eq!(got, Some(Err(2)));
+            }
         }
     }
 }

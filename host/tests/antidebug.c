@@ -4,7 +4,8 @@
  * - int 2d (the debug service) raises STATUS_BREAKPOINT with the context just after it; a
  *   debugger would swallow it and resume a byte further;
  * - a Toolhelp module snapshot lists the exe first, then ntdll and kernel32, and is a Section
- *   object to NtQueryObject; once closed the handle is gone. */
+ *   object to NtQueryObject; once closed the handle is gone;
+ * - \\.\C: opens with no access asked, \\.\NTICE (SoftICE) is not found. */
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -104,10 +105,31 @@ int main(void) {
     }
     DWORD err = GetLastError();
     printf("listed ntdll %d kernel32 %d, more than 2 %d, then err %lu\n", nt, k32, n > 2, err);
+    /* (no heap lists in a module snapshot) and this process's memory read back */
+    HEAPLIST32 hl;
+    hl.dwSize = sizeof hl;
+    SetLastError(0xdead);
+    int hr = Heap32ListFirst(h, &hl);
+    printf("heap list first: %d err %lu\n", hr, GetLastError());
+    static const char secret[8] = "sake!ok";
+    char got[8] = "";
+    SIZE_T nread = 0;
+    int rr = Toolhelp32ReadProcessMemory(GetCurrentProcessId(), secret, got, sizeof got, &nread);
+    printf("read own memory: %d %lu same %d\n", rr, (unsigned long)nread, !memcmp(got, secret, 8));
     printf("close: %d\n", CloseHandle(h));
     type_of("closed type", h);
     SetLastError(0xdead);
     ok = Module32First(h, &m);
     printf("closed first: %d err %lu\n", ok, GetLastError());
+
+    /* a volume opens with no access; a kernel debugger's device is not there */
+    static const char *const devs[] = { "\\\\.\\C:", "\\\\.\\NTICE", "\\\\.\\SICE" };
+    for (int i = 0; i < 3; i++) {
+        SetLastError(0xdead);
+        HANDLE d = CreateFileA(devs[i], i ? GENERIC_READ : 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+        err = GetLastError();
+        printf("%s: %s err %lu\n", devs[i], d == INVALID_HANDLE_VALUE ? "fails" : "opens", d == INVALID_HANDLE_VALUE ? err : 0);
+        if (d != INVALID_HANDLE_VALUE) CloseHandle(d);
+    }
     return 0;
 }

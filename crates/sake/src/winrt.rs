@@ -239,7 +239,7 @@ mod ui {
                 _ => None,
             }
         }
-        fn name(self) -> &'static str {
+        pub(super) fn name(self) -> &'static str {
             match self {
                 Class::Settings => UI_SETTINGS,
                 Class::Access => ACCESSIBILITY,

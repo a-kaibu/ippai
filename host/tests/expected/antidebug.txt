@@ -7,6 +7,11 @@ snapshot type: status 00000000 Section
 short dwSize: 0 err 24
 first is the exe: 1 at its base 1
 listed ntdll 1 kernel32 1, more than 2 1, then err 18
+heap list first: 0 err 18
+read own memory: 1 8 same 1
 close: 1
 closed type: status c0000008 
 closed first: 0 err 6
+\\.\C:: opens err 0
+\\.\NTICE: fails err 2
+\\.\SICE: fails err 2
