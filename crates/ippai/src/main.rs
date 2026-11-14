@@ -160,6 +160,9 @@ enum StorageCmd {
         jit: Option<PathBuf>,
         #[arg(long, default_value_t = storage::PACK_BYTES >> 20)]
         mib: usize,
+        /// At most this many Mbit/s on average, so the server on the same line keeps serving
+        #[arg(long)]
+        mbps: Option<f64>,
     },
     /// What the bucket holds, largest first: by kind, then each game's chunks (those only it
     /// has: what deleting it frees; those it shares) and its packs.
@@ -201,7 +204,7 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
             }
             StorageCmd::Rotate => storage.rotate_objects(),
             StorageCmd::RotateBackup { backup } => storage.rotate_backup(backup).await,
-            StorageCmd::Packs { games, jit, mib } => {
+            StorageCmd::Packs { games, jit, mib, mbps } => {
                 let jit = jit.unwrap_or_else(|| cache.join("jit"));
                 let games = if games.is_empty() { pack::game_ids(store)? } else { games };
                 let mut failed = 0;
@@ -209,7 +212,7 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
                     let list = pack::read_order_list(store, &jit, &id);
                     let order = pack::read_order(store, &id, &list)?;
                     // (one game failing leaves the others: run again to retry, what was packed stays)
-                    match storage.pack_objects(&id, &order, mib << 20).await {
+                    match storage.pack_objects_paced(&id, &order, mib << 20, mbps.map(|m| (m * 125_000.0) as u64)).await {
                         Ok(p) => println!("{id}: {} packs, {} objects, {} MiB ({} chunks in read order first; {} in a pack already)", p.packs, p.objects, p.bytes >> 20, list.len() / 16, p.skipped),
                         Err(e) => {
                             eprintln!("{id}: {e:#}");

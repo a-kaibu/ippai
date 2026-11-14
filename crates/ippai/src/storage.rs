@@ -470,6 +470,25 @@ pub(crate) mod gc_tests {
         }
     }
 
+    /// Paced packing takes at least the bytes' time at the rate, and packs the same.
+    #[tokio::test]
+    async fn paced_packs() {
+        assert_eq!(pace(10 << 20, 1 << 20), std::time::Duration::from_secs(10));
+        assert_eq!(pace(0, 0), std::time::Duration::ZERO);
+        let (f, s, dir) = serve(0).await;
+        let ls: Vec<String> = (0..6).map(|i| format!("chunks/ef/{i:032x}")).collect();
+        for (i, l) in ls.iter().enumerate() {
+            s.put(l, &vec![i as u8 + 1; 1000]).await.unwrap();
+        }
+        let t = std::time::Instant::now();
+        let p = s.pack_objects_paced("g", &ls, 2000, Some(10_000)).await.unwrap();
+        // (6 objects of 1028 bytes at 10 kB/s: 0.6 s at least)
+        assert_eq!((p.packs, p.objects), (3, 6));
+        assert!(t.elapsed() >= std::time::Duration::from_millis(600), "{:?}", t.elapsed());
+        check_packs(&f, &s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A pack past 8 MiB goes up through the bucket with the longer timeout, whole.
     #[tokio::test]
     async fn big_pack_uploads() {
@@ -1899,7 +1918,14 @@ impl Storage {
     /// retired ([`Storage::gc`] deletes it).
     /// Each pack is marked as `game`'s ([`Storage::usage`], [`Storage::unpack`]).
     pub async fn pack_objects(&self, game: &str, logicals: &[String], target: usize) -> Result<Packed> {
+        self.pack_objects_paced(game, logicals, target, None).await
+    }
+
+    /// [`Storage::pack_objects`] at most `rate` bytes a second on average (uploads; reading the
+    /// objects waits as well), so a server on the same line still serves its players.
+    pub async fn pack_objects_paced(&self, game: &str, logicals: &[String], target: usize, rate: Option<u64>) -> Result<Packed> {
         use futures_util::StreamExt;
+        let started = std::time::Instant::now();
         let mut out = Packed::default();
         let mut todo: Vec<(String, Uuid)> = Vec::new();
         {
@@ -1960,6 +1986,9 @@ impl Storage {
                 out.objects += rows.len();
                 out.bytes += buf.len() as u64;
                 self.record_pack(game, std::mem::take(&mut buf), std::mem::take(&mut rows)).await?;
+                if let Some(t) = rate.and_then(|r| pace(out.bytes, r).checked_sub(started.elapsed())) {
+                    tokio::time::sleep(t).await;
+                }
             }
             if end {
                 return Ok(out);
@@ -2370,6 +2399,11 @@ impl Storage {
         )?;
         self.upload(id, &serde_json::to_vec(&b)?).await
     }
+}
+
+/// How long `bytes` take at `rate` bytes a second.
+fn pace(bytes: u64, rate: u64) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(bytes as f64 / rate.max(1) as f64)
 }
 
 /// How long an upload of `len` bytes may take, past rust-s3's 60 s for any request: none (that)
