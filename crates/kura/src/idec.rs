@@ -290,7 +290,7 @@ impl Picture {
         if self.bytes.len() != self.layout.size(self.w, self.h) {
             return None;
         }
-        let mut out = vec![0; w * h * 3];
+        let mut out = zeroed(w * h * 3)?;
         match self.layout {
             Layout::Bgrx | Layout::Rgbx => {
                 let (b, r) = if self.layout == Layout::Bgrx { (0, 2) } else { (2, 0) };
@@ -450,13 +450,26 @@ fn begin(id: u32, w: u32, h: u32, layout: u32) -> Option<usize> {
     let n = layout.size(w, h);
     with(|m| match m.get_mut(&id) {
         Some(r) if r.done.is_none() && r.px.is_empty() && !r.abandoned => {
-            r.px = vec![0; n];
+            // (a picture the heap has no room for fails on its own: an abort would end the VM)
+            r.px = zeroed(n)?;
             r.size = (w, h);
             r.layout = Some(layout);
             Some(r.px.as_ptr() as usize)
         }
         _ => None,
     })
+}
+
+/// `n` zero bytes, None when the heap cannot give them.
+fn zeroed(n: usize) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    if n > tests::HEAP.load(Ordering::Relaxed) {
+        return None;
+    }
+    let mut v = Vec::new();
+    v.try_reserve_exact(n).ok()?;
+    v.resize(n, 0);
+    Some(v)
 }
 
 /// The page is done with file `id`: its pixels written (`ok`), or it could not decode it.
@@ -528,10 +541,49 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    /// Tests: the most one allocation of `zeroed` gets (a heap that is full past it)
+    pub(super) static HEAP: AtomicUsize = AtomicUsize::new(usize::MAX);
+    /// (tests that share the page and HEAP)
+    static ONE: Mutex<()> = Mutex::new(());
+
+    /// A picture bigger than the heap can hold fails on its own (the guest falls back to its own
+    /// decoder), and the next one that fits decodes: a full heap no longer aborts the VM.
+    #[test]
+    fn a_picture_past_the_heap_fails_alone() {
+        let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        test_page(true);
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let s2 = stop.clone();
+        let page = std::thread::spawn(move || {
+            while !s2.load(Ordering::Relaxed) {
+                test_page_pass(&mut |d| match d[0] {
+                    // (16384 x 16384 I420: 384 MiB the heap does not have; never written)
+                    b'b' => Some(Picture { w: 16384, h: 16384, layout: Layout::I420, bytes: Vec::new() }),
+                    _ => Some(Picture { w: 1, h: 1, layout: Layout::Bgrx, bytes: vec![1, 2, 3, 255] }),
+                });
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        HEAP.store(1 << 20, Ordering::Relaxed);
+        let t = std::time::Instant::now();
+        assert_eq!(jpeg(b"big!", TIMEOUT), None);
+        assert!(t.elapsed() < TIMEOUT, "answered, not timed out");
+        assert!(available(), "one picture failing keeps the page");
+        assert_eq!(jpeg(b"tiny", TIMEOUT).map(|p| p.bytes), Some(vec![1, 2, 3, 255]));
+        let p = Picture { w: 1024, h: 1024, layout: Layout::Bgrx, bytes: vec![0; 4 << 20] };
+        assert_eq!(p.bgr24(), None, "3 MiB out of a 1 MiB heap");
+        HEAP.store(usize::MAX, Ordering::Relaxed);
+        assert_eq!(p.bgr24().map(|v| v.len()), Some(3 << 20));
+        assert!(with(|m| m.is_empty()));
+        stop.store(true, Ordering::Relaxed);
+        page.join().unwrap();
+    }
+
     /// A guest thread waits while a page thread answers: done, failed, and late (the guest is not
     /// asked again after that).
     #[test]
     fn guest_and_page() {
+        let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
         static CALLS: AtomicUsize = AtomicUsize::new(0);
         PAGE.store(true, Ordering::Relaxed);
         let stop = std::sync::Arc::new(AtomicBool::new(false));

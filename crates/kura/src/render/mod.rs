@@ -72,14 +72,22 @@ thread_local! {
 /// The page, once its module runs: starts the thread that draws into `Module.vnvmCanvas`.
 #[no_mangle]
 pub extern "C" fn vnhost_render_start() {
-    {
-        let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
-        let tag = if crate::snap::restoring() { RESTORED } else { crate::snap::epoch() + 1 };
-        if *s == tag {
-            return;
-        }
-        *s = tag;
-        crate::snap::GPU_THREAD.store(1, SeqCst);
+    start_with(|main| {
+        let mut t: libc::pthread_t = unsafe { std::mem::zeroed() };
+        unsafe { libc::pthread_create(&mut t, std::ptr::null(), main, std::ptr::null_mut()) }
+    })
+}
+
+type ThreadMain = extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
+
+/// vnhost_render_start with `create` making the thread (pthread_create's result: 0 made). A
+/// thread that could not be made (no worker left: Android Chrome's small pools) leaves the
+/// page's next call to try again, not a page that never draws.
+fn start_with(create: impl FnOnce(ThreadMain) -> i32) {
+    let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+    let tag = if crate::snap::restoring() { RESTORED } else { crate::snap::epoch() + 1 };
+    if *s == tag {
+        return;
     }
     extern "C" fn main(_: *mut libc::c_void) -> *mut libc::c_void {
         extern "C" {
@@ -95,8 +103,16 @@ pub extern "C" fn vnhost_render_start() {
         // (back to the worker's event loop: the frames come from there)
         unsafe { emscripten_exit_with_live_runtime() }
     }
-    let mut t: libc::pthread_t = unsafe { std::mem::zeroed() };
-    unsafe { libc::pthread_create(&mut t, std::ptr::null(), main, std::ptr::null_mut()) };
+    // (the lock is held while the thread is made: snap_restore sees one or the other whole)
+    let (was, gpu_was) = (*s, crate::snap::GPU_THREAD.load(SeqCst));
+    *s = tag;
+    crate::snap::GPU_THREAD.store(1, SeqCst);
+    let e = create(main);
+    if e != 0 {
+        eprintln!("render: the drawing thread could not be made ({e}): trying again at the next start");
+        *s = was;
+        crate::snap::GPU_THREAD.store(gpu_was, SeqCst);
+    }
 }
 
 /// A restored module's main, before its threads go on (crates/kura/src/snap.rs restore_begin):
@@ -789,4 +805,40 @@ impl Render {
 fn write_f32(buf: Id, v: &[f32]) {
     let b: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
     gpu::write_buffer(buf, 0, &b);
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+
+    /// A drawing thread that could not be made is made at the next start (a page that kept
+    /// STARTED would never draw); one that was made is not made twice; and a failure puts
+    /// GPU_THREAD back, so a save does not wait for a thread that is not there.
+    #[test]
+    fn a_thread_not_made_is_tried_again() {
+        let _one = crate::snap::ONE.lock().unwrap_or_else(|e| e.into_inner());
+        *STARTED.lock().unwrap() = 0;
+        crate::snap::GPU_THREAD.store(0, SeqCst);
+        let mut tries = 0;
+        // (a model: results of pthread_create, then whether a thread runs and how often it was made)
+        for results in [[11, 11, 0, 0], [0, 0, 0, 0], [11, 0, 11, 0]] {
+            *STARTED.lock().unwrap() = 0;
+            crate::snap::GPU_THREAD.store(0, SeqCst);
+            let mut made = 0;
+            for e in results {
+                start_with(|_| {
+                    tries += 1;
+                    if e == 0 {
+                        made += 1;
+                    }
+                    e
+                });
+                assert_eq!(crate::snap::GPU_THREAD.load(SeqCst), (made > 0) as u32, "{results:?}");
+            }
+            assert_eq!(made, 1, "{results:?}: made once, after the failures");
+        }
+        assert_eq!(tries, 3 + 1 + 2, "no try after one was made");
+        *STARTED.lock().unwrap() = 0;
+        crate::snap::GPU_THREAD.store(0, SeqCst);
+    }
 }
