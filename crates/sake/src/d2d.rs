@@ -712,8 +712,11 @@ fn CreateBitmap(c: &mut Ctx) -> u32 {
 /// copy of a whole frame per upload); None when the pitch is less than a row or the rows are
 /// not readable memory (the size, from the guest's pitch, was u32 arithmetic that could wrap)
 pub fn pixels<'a>(data: u32, pitch: u32, w: u32, h: u32) -> Option<&'a [u8]> {
+    if h == 0 {
+        return None;
+    }
     let len = pitch as u64 * (h as u64 - 1) + w as u64 * 4;
-    if h == 0 || (pitch as u64) < w as u64 * 4 || len > u32::MAX as u64 || mem::accessible(data, len as u32, false, false) < len as u32 {
+    if (pitch as u64) < w as u64 * 4 || len > u32::MAX as u64 || mem::accessible(data, len as u32, false, false) < len as u32 {
         return None;
     }
     Some(mem::slice(data, len as u32))

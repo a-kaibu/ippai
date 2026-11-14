@@ -26,6 +26,7 @@ pub const EXCEPTION: u32 = 1;
 pub const CREATE_THREAD: u32 = 2;
 pub const CREATE_PROCESS: u32 = 3;
 pub const EXIT_THREAD: u32 = 4;
+pub const EXIT_PROCESS: u32 = 5;
 pub const LOAD_DLL: u32 = 6;
 pub const UNLOAD_DLL: u32 = 7;
 pub const OUTPUT_DEBUG_STRING: u32 = 8;
@@ -41,8 +42,14 @@ fn shared() -> bool {
 
 /// Whether a debugger debugs this process
 pub fn debugged() -> bool {
-    shared() && kern::with(|k| k.dbg.debugger(crate::pid()).is_some()).0
+    // (asked on every thread start/end, DLL load, OutputDebugString and exception: the kernel
+    // lock only while a debugger may be there)
+    MAYBE_DEBUGGED.load(Ordering::Acquire) && shared() && kern::with(|k| k.dbg.debugger(crate::pid()).is_some()).0
 }
+
+/// False once the process started undebugged, until a debugger attaches (attached()): no one
+/// else makes this process debugged (a debugger is the creator, known at the start, or attaches).
+static MAYBE_DEBUGGED: AtomicBool = AtomicBool::new(true);
 
 /// Thread `tid` of this process was suspended (`on`) or is running again: while it is,
 /// the debugger gets none of its events (as no suspended thread reports one on Windows)
@@ -234,6 +241,7 @@ pub fn process_start(cpu: &mut koji::Cpu, base: u32, entry: u32) {
     break_point();
     int3_stub(&LOADER_BREAK, &[0xcc, 0xc3, 0x90]);
     if !debugged() {
+        MAYBE_DEBUGGED.store(false, Ordering::Release);
         STARTED.store(true, Ordering::Release);
         return;
     }
@@ -298,7 +306,8 @@ pub fn int3_hit() {
 /// (`cpu` goes on, past a breakpoint's int3), None for the handlers to run
 pub fn first_chance(cpu: &mut koji::Cpu, code: u32, flags: u32, addr: u64, params: &[u64]) -> Option<()> {
     // (the break-in thread's breakpoint never reaches handlers: it ends either way)
-    let breakin = code == BREAKPOINT && BREAKIN.load(Ordering::Relaxed) != 0 && mem::rp(cpu.gpr(4) as u32) == breakin_return();
+    let sp = cpu.gpr(4) as u32;
+    let breakin = code == BREAKPOINT && BREAKIN.load(Ordering::Relaxed) != 0 && mem::accessible(sp, ps(), false, false) >= ps() && mem::rp(sp) == breakin_return();
     let int3 = INT3.with(|f| f.replace(false));
     if !STARTED.load(Ordering::Acquire) || !debugged() {
         return None.or(breakin.then(|| cpu.eip = cpu.eip.wrapping_add(1)));
@@ -307,7 +316,7 @@ pub fn first_chance(cpu: &mut koji::Cpu, code: u32, flags: u32, addr: u64, param
     let pc = cpu.eip as u64 | (cpu.rip_hi as u64) << 32;
     let bp = code == BREAKPOINT && pc == addr && int3;
     // (int 2d: a debugger that continues it skips the byte after it)
-    let service = code == BREAKPOINT && addr >= 2 && mem::r8(addr as u32 - 2) == 0xcd && mem::r8(addr as u32 - 1) == 0x2d;
+    let service = code == BREAKPOINT && addr >= 2 && mem::accessible(addr as u32 - 2, 2, false, true) >= 2 && mem::r8(addr as u32 - 2) == 0xcd && mem::r8(addr as u32 - 1) == 0x2d;
     if bp {
         cpu.eip = cpu.eip.wrapping_add(1);
     }
@@ -365,6 +374,9 @@ fn ae_debug() -> bool {
         let set = matches!(k.sync_state(id), Some(kern::Sync::Event { set: true, .. }));
         if set || k.exit_code(dpid).is_some() { Ok(()) } else { Err(PENDING) }
     });
+    // (the debugger has its own handle to the event: ours is done with)
+    obj::close(ev);
+    MAYBE_DEBUGGED.store(true, Ordering::Release);
     debugged()
 }
 
@@ -413,6 +425,7 @@ pub fn attached() {
     if crate::env_on!("SAKE_TRACE_DBG") {
         eprintln!("sake: process {:#x}: a debugger attached", crate::pid());
     }
+    MAYBE_DEBUGGED.store(true, Ordering::Release);
     set_being_debugged(true);
     let main = crate::process::first_tid(crate::pid());
     let threads = crate::k32::thread_list();
@@ -448,6 +461,62 @@ fn process_of(h: u32) -> Option<u32> {
     crate::process::of_handle(h).map(|(pid, _)| pid)
 }
 
+/// The handles WaitForDebugEvent gave the debugger with CREATE_PROCESS / CREATE_THREAD events,
+/// and the last event of each thread it was given: ContinueDebugEvent after an EXIT_THREAD /
+/// EXIT_PROCESS closes them, as Windows does (a debugger of a process making threads all along
+/// had one handle more per thread for good).
+#[derive(Default)]
+struct Given {
+    threads: crate::HashMap<(u32, u32), u32>,
+    processes: crate::HashMap<u32, u32>,
+    last: crate::HashMap<(u32, u32), u32>,
+}
+static GIVEN: std::sync::Mutex<Option<Given>> = std::sync::Mutex::new(None);
+fn given<R>(f: impl FnOnce(&mut Given) -> R) -> R {
+    f(GIVEN.lock().unwrap().get_or_insert_with(Given::default))
+}
+
+/// Closes handle `h` if it is still the one given: the debugger may have closed it and the
+/// number gone to something else.
+fn close_given(h: u32, pid: u32, tid: Option<u32>) {
+    let same = obj::with(|t| match (t.objs.get(&h), tid) {
+        (Some((Obj::RemoteThread { pid: p, tid: q }, _)), Some(tid)) => *p == pid && *q == tid,
+        (Some((Obj::Process { pid: p, .. }, _)), None) => *p == pid,
+        _ => false,
+    });
+    if same {
+        obj::close(h);
+    }
+}
+
+/// ContinueDebugEvent's part: after a thread's or process's exit event, its handles go.
+fn continued(pid: u32, tid: u32) {
+    let gone = given(|g| match g.last.remove(&(pid, tid)) {
+        Some(EXIT_THREAD) => g.threads.remove(&(pid, tid)).map(|h| (vec![(h, Some(tid))], None)),
+        Some(EXIT_PROCESS) => {
+            let ts: Vec<(u32, Option<u32>)> = g.threads.iter().filter(|(k, _)| k.0 == pid).map(|(k, h)| (*h, Some(k.1))).collect();
+            g.threads.retain(|k, _| k.0 != pid);
+            g.last.retain(|k, _| k.0 != pid);
+            Some((ts, g.processes.remove(&pid)))
+        }
+        _ => None,
+    });
+    if let Some((ts, p)) = gone {
+        for (h, t) in ts {
+            close_given(h, pid, t);
+        }
+        if let Some(h) = p {
+            close_given(h, pid, None);
+        }
+    }
+}
+
+/// The bytes of an EXCEPTION_DEBUG_INFO's record (80 / 152): an event's record from another
+/// process is cut there, not written over the rest of the structure and past it.
+fn record_room() -> usize {
+    if mem::x64() { 0x98 } else { 0x50 }
+}
+
 /// DEBUG_EVENT from event `e` (handles to its process and thread made here)
 fn fill(de: u32, e: &Ev) {
     let p = ps();
@@ -458,10 +527,15 @@ fn fill(de: u32, e: &Ev) {
     w32(de + 4, e.pid);
     w32(de + 8, e.tid);
     let v = |i: usize| e.vals.get(i).copied().unwrap_or(0) as u32;
-    let thread = || obj::add(Obj::RemoteThread { pid: e.pid, tid: e.tid });
+    let thread = || {
+        let h = obj::add(Obj::RemoteThread { pid: e.pid, tid: e.tid });
+        given(|g| g.threads.insert((e.pid, e.tid), h));
+        h
+    };
+    given(|g| g.last.insert((e.pid, e.tid), e.code));
     match e.code {
         EXCEPTION => {
-            mem::write(u, &e.data);
+            mem::write(u, &e.data[..e.data.len().min(record_room())]);
             w32(u + if x64 { 0x98 } else { 0x50 }, v(0));
         }
         CREATE_THREAD => {
@@ -470,7 +544,9 @@ fn fill(de: u32, e: &Ev) {
             wp(u + 2 * p, v(1));
         }
         CREATE_PROCESS => {
-            wp(u + p, obj::add(Obj::Process { access: crate::process::PROCESS_ALL_ACCESS, pid: e.pid }));
+            let h = obj::add(Obj::Process { access: crate::process::PROCESS_ALL_ACCESS, pid: e.pid });
+            given(|g| g.processes.insert(e.pid, h));
+            wp(u + p, h);
             wp(u + 2 * p, thread());
             wp(u + 3 * p, v(0));
             let (tls, start, name, uni) = if x64 { (40, 48, 56, 64) } else { (24, 28, 32, 36) };
@@ -479,7 +555,7 @@ fn fill(de: u32, e: &Ev) {
             wp(u + name, 0);
             w16(u + uni, 1);
         }
-        4 | 5 => w32(u, v(0)),
+        EXIT_THREAD | EXIT_PROCESS => w32(u, v(0)),
         LOAD_DLL => {
             wp(u + p, v(0));
             let (name, uni) = if x64 { (24, 32) } else { (16, 20) };
@@ -665,6 +741,7 @@ fn ContinueDebugEvent(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
+    continued(pid, tid);
     1
 }
 
@@ -816,6 +893,100 @@ mod tests {
                 want += p;
             }
             prop_assert_eq!(got, want);
+        }
+    }
+}
+
+/// Review b05: an exception event's record from another process is cut to EXCEPTION_DEBUG_INFO's
+/// room; the process / thread handles handed out with CREATE_* events are closed after the
+/// matching EXIT_* event is continued (only while they still are those handles). The winref
+/// probe debughandles checks the same against Windows.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::test_guest::enter;
+    use proptest::prelude::*;
+
+    fn ev(code: u32, pid: u32, tid: u32) -> Ev {
+        Ev { code, pid, tid, ..Ev::default() }
+    }
+    fn live(h: u32) -> bool {
+        obj::with(|t| t.objs.get(&h).is_some())
+    }
+
+    /// a record longer than the union (any length) leaves the bytes after DEBUG_EVENT alone
+    #[test]
+    fn long_records_stay_in_the_event() {
+        let _g = enter();
+        for n in [0usize, 80, 81, 200, 5000] {
+            let de = mem::heap_alloc(96 + 64, true);
+            mem::fill(de + 96, 64, 0xa5);
+            let mut e = ev(EXCEPTION, 1, 2);
+            e.data = vec![0x5a; n];
+            e.vals = vec![1];
+            fill(de, &e);
+            assert!(mem::slice(de + 96, 64).iter().all(|&b| b == 0xa5), "{n}");
+            assert_eq!(r32(de + 12 + 0x50), 1);
+            mem::heap_free(de);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// any interleaving of thread creates / exits (each continued) and the debugger closing
+        /// handles itself: a handle given with CREATE_THREAD is closed by the continue of its
+        /// EXIT_THREAD unless the debugger closed it first, and nothing else is closed; at
+        /// EXIT_PROCESS the process handle and the remaining thread handles go
+        #[test]
+        fn given_handles_close_at_exits(ops in prop::collection::vec((0u8..3, 1u32..6), 1..30)) {
+            let _g = enter();
+            let pid = 0x7700 + (ops.len() as u32);
+            let de = mem::heap_alloc(96, true);
+            let other = obj::add(Obj::Event { manual: true, set: false });
+            fill(de, &ev(CREATE_PROCESS, pid, 1));
+            let (ph, mainh) = (r32(de + 12 + 4), r32(de + 12 + 8));
+            continued(pid, 1);
+            let mut given: crate::HashMap<u32, u32> = crate::HashMap::default();
+            let mut closed_by_us: Vec<u32> = Vec::new();
+            for &(op, tid) in &ops {
+                let tid = tid + 1;
+                match op {
+                    0 if !given.contains_key(&tid) => {
+                        fill(de, &ev(CREATE_THREAD, pid, tid));
+                        given.insert(tid, r32(de + 12));
+                        continued(pid, tid);
+                    }
+                    1 => {
+                        if let Some(h) = given.remove(&tid) {
+                            fill(de, &ev(EXIT_THREAD, pid, tid));
+                            let ours = closed_by_us.contains(&h);
+                            prop_assert_eq!(live(h), !ours);
+                            continued(pid, tid);
+                            prop_assert!(!live(h) || ours);
+                        }
+                    }
+                    2 => {
+                        if let Some(&h) = given.get(&tid) {
+                            if !closed_by_us.contains(&h) {
+                                obj::close(h);
+                                closed_by_us.push(h);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                prop_assert!(live(other));
+                prop_assert!(live(ph) && live(mainh));
+            }
+            fill(de, &ev(EXIT_PROCESS, pid, 1));
+            continued(pid, 1);
+            prop_assert!(!live(ph) && !live(mainh));
+            for h in given.values() {
+                prop_assert!(!live(*h));
+            }
+            prop_assert!(live(other));
+            obj::close(other);
+            mem::heap_free(de);
         }
     }
 }
