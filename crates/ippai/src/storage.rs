@@ -227,7 +227,7 @@ pub(crate) mod gc_tests {
         let f = Fake { delay_ms, ..Default::default() };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
-        let app = Router::new().route("/{*path}", get(read).put(put).delete(delete)).with_state(f.clone());
+        let app = Router::new().route("/{*path}", get(read).put(put).delete(delete)).layer(axum::extract::DefaultBodyLimit::max(64 << 20)).with_state(f.clone());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let dir = std::env::temp_dir().join(format!("ippai-gc-{}", Uuid::new_v4()));
         let config = Config {
@@ -453,6 +453,35 @@ pub(crate) mod gc_tests {
         assert!(s.direct(&l, 60).await.unwrap().unwrap().pack.is_none());
         assert_eq!(s.pack_objects("g", &[l.clone()], target).await.unwrap().objects, 1);
         assert!(s.direct(&l, 60).await.unwrap().unwrap().pack.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn big_uploads_get_time_for_their_size() {
+        assert_eq!(upload_timeout(4 << 20), None);
+        assert_eq!(upload_timeout(8 << 20), None);
+        assert_eq!(upload_timeout((8 << 20) + 1), Some(std::time::Duration::from_secs(60 + 65)));
+        // (a 64 MiB pack: 9 minutes, enough at 1 Mbit/s)
+        let t = upload_timeout(PACK_BYTES).unwrap().as_secs();
+        assert_eq!(t, 60 + 512);
+        assert!((PACK_BYTES as u64 * 8) / t < 1_000_000);
+        for len in [(9usize << 20), 32 << 20, 64 << 20, 256 << 20] {
+            assert!(upload_timeout(len) < upload_timeout(len * 2), "{len}");
+        }
+    }
+
+    /// A pack past 8 MiB goes up through the bucket with the longer timeout, whole.
+    #[tokio::test]
+    async fn big_pack_uploads() {
+        let (f, s, dir) = serve(0).await;
+        let ls: Vec<String> = (0..3).map(|i| format!("chunks/ef/{i:032x}")).collect();
+        for (i, l) in ls.iter().enumerate() {
+            s.put(l, &vec![i as u8 + 1; 3 << 20]).await.unwrap();
+        }
+        let p = s.pack_objects("g", &ls, 16 << 20).await.unwrap();
+        assert_eq!(p.packs, 1);
+        assert!(p.bytes > 8 << 20);
+        check_packs(&f, &s);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1603,7 +1632,17 @@ impl Storage {
 
     async fn upload(&self, id: Uuid, bytes: &[u8]) -> Result<()> {
         let path = self.path(id);
-        let r = retrying(|| self.bucket.put_object(&path, bytes)).await?;
+        // (rust-s3 gives up on any request after 60 s: a 64 MiB pack on a slow uplink never got
+        // through. A big object gets time for its size.)
+        let long;
+        let bucket = match upload_timeout(bytes.len()) {
+            Some(t) => {
+                long = self.bucket.with_request_timeout(t)?;
+                &*long
+            }
+            None => &*self.bucket,
+        };
+        let r = retrying(|| bucket.put_object(&path, bytes)).await?;
         ensure!(
             r.status_code() / 100 == 2,
             "S3 upload failed: {}",
@@ -2331,6 +2370,12 @@ impl Storage {
         )?;
         self.upload(id, &serde_json::to_vec(&b)?).await
     }
+}
+
+/// How long an upload of `len` bytes may take, past rust-s3's 60 s for any request: none (that)
+/// up to 8 MiB, else 60 s and a second for each 128 KiB (an uplink of 1 Mbit/s still gets there).
+fn upload_timeout(len: usize) -> Option<std::time::Duration> {
+    (len > 8 << 20).then(|| std::time::Duration::from_secs(60 + (len as u64).div_ceil(128 << 10)))
 }
 
 /// Notes that `object` is no longer named (gc deletes it later).
