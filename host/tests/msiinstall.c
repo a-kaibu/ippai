@@ -62,7 +62,7 @@ static void registry(void) {
     if (!r) {
         /* (the paths under Program Files as <PF>) */
         char pf[MAX_PATH], out[2 * MAX_PATH] = "", *p = s;
-        SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, pf);
+        SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILESX86, NULL, 0, pf); /* (the 32-bit package's ProgramFilesFolder, on 64-bit Windows from either kind of process) */
         size_t l = strlen(pf);
         while (*p) {
             if (!_strnicmp(p, pf, l)) {
@@ -183,7 +183,7 @@ static void run(const char *msi) {
 /* What AppSearch is to find. */
 static void search_setup(void) {
     char pf[MAX_PATH], p[MAX_PATH];
-    SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, pf);
+    SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILESX86, NULL, 0, pf); /* (the 32-bit package's ProgramFilesFolder, on 64-bit Windows from either kind of process) */
     snprintf(p, sizeof p, "%s\\MsiSearch", pf);
     CreateDirectoryA(p, NULL);
     strcat(p, "\\deep");
@@ -202,7 +202,7 @@ static void search_setup(void) {
 }
 
 int main(void) {
-    SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, dir);
+    SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILESX86, NULL, 0, dir); /* (the 32-bit package's ProgramFilesFolder, on 64-bit Windows from either kind of process) */
     strcat(dir, "\\MsiTest\\");
     search_setup();
     printf("ui %d\n", MsiSetInternalUI(INSTALLUILEVEL_NONE, NULL));

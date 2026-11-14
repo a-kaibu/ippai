@@ -6,7 +6,7 @@ installed
   unins000.dat: there
   (folder): there
   HKCU path: 0 <app>
-  UninstallString: 0 "C:\Program Files\InnoTest\unins000.exe"
+  UninstallString: 0 "C:\Program Files (x86)\InnoTest\unins000.exe"
   shortcut: there
     target <app>\a.txt, arguments /x, in <app>, "the test file"
 uninstall: 0

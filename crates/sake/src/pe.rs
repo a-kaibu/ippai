@@ -1067,7 +1067,7 @@ use crate::mem::w16;
 /// The folders SetDllDirectory / AddDllDirectory added to the search (after the exe's).
 pub static DLL_DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// A guest DLL, including third-party runtimes installed in system32 / SysWOW64.
+/// A guest DLL, including third-party runtimes installed in system32 (SysWOW64 is the same folder).
 /// Known Windows DLLs there remain sake's own: an old Wine prefix must not replace
 /// its system implementations. This restriction does not apply to vendor DLLs
 /// such as SDRT's UCUtil50.dll, which the official MSI installs in SystemFolder.
@@ -1095,11 +1095,8 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
         }
     }
     if !system_dll {
-        // A 32-bit runtime on a 64-bit prefix normally lives in SysWOW64;
-        // architecture checks below also allow a 32-bit-only system32 prefix.
-        if !mem::x64() {
-            dirs.push("C:\\windows\\SysWOW64".into());
-        }
+        // (SysWOW64 is the same folder: files::wow64_system; the machine check below takes a
+        // runtime of this process's kind)
         dirs.push("C:\\windows\\system32".into());
         dirs.push("C:\\windows\\system".into());
     }
@@ -1134,12 +1131,12 @@ fn wine_stub(head: &[u8]) -> bool {
     head.get(0x40..0x60).is_some_and(|s| s.starts_with(b"Wine builtin DLL") || s.starts_with(b"Wine placeholder DLL"))
 }
 
-/// C:\windows\system32 or C:\windows\SysWOW64 (a game run from there, or one that adds it with
+/// C:\windows\system32 (or SysWOW64, Sysnative: files::wow64_system) or C:\windows\system (a game run from there, or one that adds it with
 /// SetDllDirectory, still gets sake's DLLs only)
 fn is_system_dir(d: &str) -> bool {
-    let d = crate::files::full_path(d).to_ascii_lowercase();
+    let d = crate::files::wow64_system(&crate::files::full_path(d)).to_ascii_lowercase();
     let d = d.trim_end_matches('\\');
-    d == "c:\\windows\\system32" || d == "c:\\windows\\syswow64" || d == "c:\\windows\\system"
+    d == "c:\\windows\\system32" || d == "c:\\windows\\system"
 }
 
 

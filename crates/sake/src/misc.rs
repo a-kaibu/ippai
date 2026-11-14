@@ -134,6 +134,8 @@ impl crt::fmt::Args for GuestArgs<'_> {
 
 pub struct Key {
     pub path: String,
+    /// opened in the 64-bit view (a 64-bit process's own, or KEY_WOW64_64KEY): wow64_value
+    pub view64: bool,
 }
 
 #[derive(Default)]
@@ -288,7 +290,11 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
         };
         set("hklm\\software\\microsoft\\windows nt\\currentversion", "CurrentVersion", "6.1");
         set("hklm\\software\\microsoft\\windows nt\\currentversion", "ProductName", "Microsoft Windows 7");
-        set("hklm\\software\\microsoft\\windows\\currentversion", "ProgramFilesDir", "C:\\Program Files");
+        // (ProgramFilesDir and CommonFilesDir as the key's view has them: wow64_value)
+        for (n, v) in [("ProgramFilesDir", "C:\\Program Files"), ("ProgramFilesDir (x86)", "C:\\Program Files (x86)"), ("ProgramW6432Dir", "C:\\Program Files"),
+            ("CommonFilesDir", "C:\\Program Files\\Common Files"), ("CommonFilesDir (x86)", "C:\\Program Files (x86)\\Common Files"), ("CommonW6432Dir", "C:\\Program Files\\Common Files")] {
+            set("hklm\\software\\microsoft\\windows\\currentversion", n, v);
+        }
         set("hklm\\software\\microsoft\\directx", "Version", "4.09.00.0904");
         // the installed fonts (DirectWrite's system collection reads this list)
         if let Some(dir) = crate::files::resolve("C:\\windows\\Fonts\\") {
@@ -366,7 +372,7 @@ pub(crate) fn registry_string(path: &str, name: &str) -> Option<String> {
 /// Sets a value by key path ("hklm\\software\\x"; data as the W functions store it), creating
 /// the key and its parents (msi's WriteRegistryValues, product registration).
 pub fn reg_put(path: &str, name: &str, ty: u32, data: Vec<u8>) {
-    let path = path.trim_matches('\\').to_lowercase();
+    let path = wow64_key(path.trim_matches('\\').to_lowercase());
     with_reg(|m| {
         let mut at = String::new();
         for part in path.split('\\') {
@@ -388,7 +394,7 @@ pub fn reg_put(path: &str, name: &str, ty: u32, data: Vec<u8>) {
 
 /// Creates a key by path (and its parents).
 pub fn reg_create(path: &str) {
-    let path = path.trim_matches('\\').to_lowercase();
+    let path = wow64_key(path.trim_matches('\\').to_lowercase());
     with_reg(|m| {
         let mut at = String::new();
         for part in path.split('\\') {
@@ -401,20 +407,20 @@ pub fn reg_create(path: &str) {
 
 /// A value by key path: (type, data).
 pub fn reg_get(path: &str, name: &str) -> Option<(u32, Vec<u8>)> {
-    let path = path.trim_matches('\\').to_lowercase();
+    let path = wow64_key(path.trim_matches('\\').to_lowercase());
     let lname = name.to_lowercase();
     with_reg(|m| m.get(&path).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| (v.1, v.2.clone()))))
 }
 
 /// The value names of a key path.
 pub fn reg_values(path: &str) -> Vec<String> {
-    let path = path.trim_matches('\\').to_lowercase();
+    let path = wow64_key(path.trim_matches('\\').to_lowercase());
     with_reg(|m| m.get(&path).map(|k| k.values.iter().map(|v| v.0.clone()).collect()).unwrap_or_default())
 }
 
 /// Deletes a value of a key path.
 pub fn reg_delete_value(path: &str, name: &str) {
-    let path = path.trim_matches('\\').to_lowercase();
+    let path = wow64_key(path.trim_matches('\\').to_lowercase());
     with_reg(|m| {
         if let Some(k) = m.get_mut(&path) {
             let before = k.values.len();
@@ -428,7 +434,7 @@ pub fn reg_delete_value(path: &str, name: &str) {
 
 /// Deletes a key path and everything under it.
 pub fn reg_delete_tree(path: &str) {
-    let path = path.trim_matches('\\').to_lowercase();
+    let path = wow64_key(path.trim_matches('\\').to_lowercase());
     let pre = format!("{path}\\");
     with_reg(|m| {
         m.retain(|k, _| *k != path && !k.starts_with(&pre));
@@ -462,18 +468,36 @@ fn join(base: &str, sub: &str) -> String {
     if sub.is_empty() {
         base.into()
     } else {
-        format!("{base}\\{sub}")
+        wow64_key(format!("{base}\\{sub}"))
     }
 }
 
+/// The keys under which 64-bit Windows keeps the 32-bit view (registry redirection), as one with
+/// the 64-bit view in sake: a program that opens SOFTWARE\Wow6432Node\<x> because it is on 64-bit
+/// Windows finds what a 32-bit installer wrote to SOFTWARE\<x>, and KEY_WOW64_32KEY /
+/// KEY_WOW64_64KEY open the same keys. (A 32-bit process's views of the two are the same keys
+/// on Windows for most of what games keep: their own keys in the view they were written in.)
+/// `p` is a lower-case path.
+pub(crate) fn wow64_key(p: String) -> String {
+    const VIEWS: [&str; 4] = ["hklm\\software\\classes", "hkcu\\software\\classes", "hklm\\software", "hkcr"];
+    for v in VIEWS {
+        if let Some(rest) = p.strip_prefix(v).and_then(|r| r.strip_prefix("\\wow6432node")) {
+            if rest.is_empty() || rest.starts_with('\\') {
+                return format!("{v}{rest}");
+            }
+        }
+    }
+    p
+}
+
 /// RegCreateKeyEx: opens or creates, and says which (REG_CREATED_NEW_KEY 1, REG_OPENED_EXISTING_KEY 2).
-fn create_key_ex(h: u32, sub: &str, out: u32, disp: u32) -> u32 {
+fn create_key_ex(h: u32, sub: &str, out: u32, disp: u32, sam: u32) -> u32 {
     let existed = key_path(h).is_some_and(|base| {
         let path = join(&base, sub);
         let pre = format!("{path}\\");
         root_name(h).is_some() && sub.trim_matches('\\').is_empty() || with_reg(|m| m.contains_key(&path) || m.keys().any(|k| k.starts_with(&pre)))
     });
-    let r = open_key(h, sub, true, out);
+    let r = open_key_view(h, sub, true, out, sam);
     if r == 0 {
         put32(disp, if existed { 2 } else { 1 });
     }
@@ -481,6 +505,22 @@ fn create_key_ex(h: u32, sub: &str, out: u32, disp: u32) -> u32 {
 }
 
 fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
+    open_key_view(h, sub, create, out, 0)
+}
+/// The view a key opened from `h` with access `sam` is in: KEY_WOW64_64KEY (0x100) or
+/// KEY_WOW64_32KEY (0x200) when given, else `h`'s, else the process's own.
+fn view64(h: u32, sam: u32) -> bool {
+    match sam & 0x300 {
+        0x100 => true,
+        0x200 => false,
+        _ => obj::with(|t| match t.objs.get(&h) {
+            Some((Obj::Key(k), _)) => Some(k.view64),
+            _ => None,
+        })
+        .unwrap_or_else(mem::x64),
+    }
+}
+fn open_key_view(h: u32, sub: &str, create: bool, out: u32, sam: u32) -> u32 {
     let Some(base) = key_path(h) else { return 6 };
     if sub.starts_with('\\') {
         mem::putp(out, 0);
@@ -523,17 +563,18 @@ fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
         mem::putp(out, 0);
         return 2;
     }
-    mem::putp(out, obj::add(Obj::Key(Key { path })));
+    let view64 = view64(h, sam);
+    mem::putp(out, obj::add(Obj::Key(Key { path, view64 })));
     0
 }
 
 fn RegOpenKeyExA(c: &mut Ctx) -> u32 {
     let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
-    open_key(c.a(0), &s, false, c.a(4))
+    open_key_view(c.a(0), &s, false, c.a(4), c.a(3))
 }
 fn RegOpenKeyExW(c: &mut Ctx) -> u32 {
     let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), true) };
-    open_key(c.a(0), &s, false, c.a(4))
+    open_key_view(c.a(0), &s, false, c.a(4), c.a(3))
 }
 fn RegOpenKeyA(c: &mut Ctx) -> u32 {
     let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
@@ -545,11 +586,11 @@ fn RegOpenKeyW(c: &mut Ctx) -> u32 {
 }
 fn RegCreateKeyExA(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(1), false);
-    create_key_ex(c.a(0), &s, c.a(7), c.a(8))
+    create_key_ex(c.a(0), &s, c.a(7), c.a(8), c.a(5))
 }
 fn RegCreateKeyExW(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(1), true);
-    create_key_ex(c.a(0), &s, c.a(7), c.a(8))
+    create_key_ex(c.a(0), &s, c.a(7), c.a(8), c.a(5))
 }
 fn RegCreateKeyA(c: &mut Ctx) -> u32 {
     let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
@@ -569,6 +610,24 @@ fn RegFlushKey(_: &mut Ctx) -> u32 {
     0
 }
 
+/// The values 64-bit Windows keeps apart in its two views of the same key (wow64_key): the
+/// Program Files folders of the view's kind (k32::wow64_env)
+fn wow64_value(path: &str, lname: &str, view64: bool) -> Option<&'static str> {
+    if path != "hklm\\software\\microsoft\\windows\\currentversion" {
+        return None;
+    }
+    Some(match (lname, view64) {
+        ("programfilesdir", true) => "C:\\Program Files",
+        ("programfilesdir", false) => "C:\\Program Files (x86)",
+        ("commonfilesdir", true) => "C:\\Program Files\\Common Files",
+        ("commonfilesdir", false) => "C:\\Program Files (x86)\\Common Files",
+        _ => return None,
+    })
+}
+fn utf16z(s: &str) -> Vec<u8> {
+    s.encode_utf16().chain([0]).flat_map(|c| c.to_le_bytes()).collect()
+}
+
 fn is_str(ty: u32) -> bool {
     matches!(ty, 1 | 2 | 7)
 }
@@ -577,6 +636,7 @@ fn query_value(c: &mut Ctx, key: u32, name: &str, pty: u32, data: u32, plen: u32
     let Some(path) = key_path(key) else { return 6 };
     let lname = name.to_lowercase();
     let v = with_reg(|m| m.get(&path).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| (v.1, v.2.clone()))));
+    let v = v.map(|(ty, d)| wow64_value(&path, &lname, view64(key, 0)).map_or((ty, d), |s| (1, utf16z(s))));
     let _ = c;
     if crate::env_on!("SAKE_TRACE_REG") {
         eprintln!("sake reg: query {path}\\{name}: {:?}", v.as_ref().map(|x| x.1.len()));
@@ -643,7 +703,8 @@ fn reg_get_value(c: &mut Ctx, wide: bool) -> u32 {
     let mut h = k;
     if sub != 0 && r8(sub) != 0 {
         let tmp = mem::heap_alloc(8, true);
-        let r = open_key(k, &arg_str(sub, wide), false, tmp);
+        // (RRF_SUBKEY_WOW6464KEY 0x10000, RRF_SUBKEY_WOW6432KEY 0x20000: KEY_WOW64_64KEY, _32KEY)
+        let r = open_key_view(k, &arg_str(sub, wide), false, tmp, c.a(3) >> 8 & 0x300);
         h = mem::rp(tmp);
         mem::heap_free(tmp);
         if r != 0 {
@@ -2548,11 +2609,16 @@ pub(crate) fn special_folder(csidl: u32) -> Option<&'static str> {
         0x22 => "C:\\users\\user\\AppData\\Local\\Microsoft\\Windows\\History",
         0x23 => "C:\\ProgramData",
         0x24 => "C:\\windows",
-        0x25 | 0x29 => "C:\\windows\\system32",
-        0x26 | 0x2a => "C:\\Program Files",
+        // (64-bit Windows: SYSTEMX86 is SysWOW64, PROGRAM_FILES(X86) and their COMMON ones the
+        // 32-bit folders, PROGRAM_FILES the process's own kind's: k32::wow64_env)
+        0x25 => "C:\\windows\\system32",
+        0x29 => crate::k32::SYSWOW64,
+        0x26 if mem::x64() => "C:\\Program Files",
+        0x26 | 0x2a => "C:\\Program Files (x86)",
         0x27 => "C:\\users\\user\\Pictures",
         0x28 => "C:\\users\\user",
-        0x2b | 0x2c => "C:\\Program Files\\Common Files",
+        0x2b if mem::x64() => "C:\\Program Files\\Common Files",
+        0x2b | 0x2c => "C:\\Program Files (x86)\\Common Files",
         0x2d => "C:\\ProgramData\\Microsoft\\Windows\\Templates",
         0x2e => "C:\\users\\Public\\Documents",
         0x2f => "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Administrative Tools",
@@ -2665,6 +2731,13 @@ fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
         0x1ac1_4e77 => folder_path(0x25, true),
         0xf38b_f404 => folder_path(0x24, true),
         0x905e_63b6 => folder_path(0x26, true),
+        // ProgramFilesX86, ProgramFilesCommonX86, SystemX86; ProgramFilesX64 and
+        // ProgramFilesCommonX64 only for a 64-bit process
+        0x7c5a_40ef => folder_path(0x2a, true),
+        0xde97_4d24 => folder_path(0x2c, true),
+        0xd652_31b0 => folder_path(0x29, true),
+        0x6d80_9377 if mem::x64() => folder_path(0x26, true),
+        0x6365_d5a7 if mem::x64() => folder_path(0x2b, true),
         0x33e2_8130 => folder_path(0x27, true),
         // Programs, CommonPrograms, StartMenu, CommonStartMenu, Startup, CommonStartup,
         // PublicDesktop, ProgramFilesCommon, Favorites, Music, Videos, SendTo, Recent, Templates,
@@ -2710,6 +2783,168 @@ fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
     mem::putp(out, b);
     0
 }
+// SHFileOperation: what installers do with it (NSIS's CopyFiles and RMDir on wildcards,
+// electron-builder's installer copying the unpacked app into $INSTDIR), without UI.
+
+/// A double-NUL-ended list of paths, full.
+fn path_list(p: u32, wide: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut at = p;
+    if p == 0 {
+        return out;
+    }
+    loop {
+        let s = if wide { String::from_utf16_lossy(&mem::wstr(at)) } else { crate::text::a2s(&mem::cstr(at)) };
+        if s.is_empty() {
+            break;
+        }
+        at += if wide { 2 * (s.encode_utf16().count() as u32 + 1) } else { crate::text::s2a(&s).len() as u32 + 1 };
+        out.push(crate::files::full_path(&s));
+    }
+    out
+}
+/// '*' and '?' without regard to case ("*.*" any name, as Windows takes it)
+pub(crate) fn wild_match(pat: &str, name: &str) -> bool {
+    if pat == "*.*" {
+        return true;
+    }
+    let (p, n): (Vec<char>, Vec<char>) = (pat.to_lowercase().chars().collect(), name.to_lowercase().chars().collect());
+    let (mut i, mut j, mut star, mut mark) = (0, 0, None, 0);
+    while j < n.len() {
+        if i < p.len() && (p[i] == '?' || p[i] == n[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == '*' {
+            star = Some(i);
+            mark = j;
+            i += 1;
+        } else if let Some(st) = star {
+            i = st + 1;
+            mark += 1;
+            j = mark;
+        } else {
+            return false;
+        }
+    }
+    p[i..].iter().all(|&c| c == '*')
+}
+/// The existing paths a source names: itself, or what its wildcard last part matches in its
+/// folder (only files with FOF_FILESONLY); (path, is a folder)
+fn sh_expand(src: &str, files_only: bool) -> Vec<(String, bool)> {
+    let (dir, last) = src.rsplit_once('\\').unwrap_or(("", src));
+    if !last.contains(['*', '?']) {
+        return crate::files::resolve(src).and_then(|h| kura::fs::metadata(&h).ok()).map(|m| vec![(src.to_string(), m.is_dir())]).unwrap_or_default();
+    }
+    let Some(h) = crate::files::resolve(dir) else { return Vec::new() };
+    let mut out: Vec<(String, bool)> = kura::fs::read_dir(&h).into_iter().flatten().flatten().filter_map(|e| {
+        let name = e.file_name().into_string().ok()?;
+        let is_dir = e.metadata().ok()?.is_dir();
+        (wild_match(last, &name) && !(files_only && is_dir)).then(|| (format!("{dir}\\{name}"), is_dir))
+    }).collect();
+    out.sort();
+    out
+}
+fn sh_copy(src: &str, is_dir: bool, to: &str, recurse: bool) -> bool {
+    let Some(h) = crate::files::resolve(src) else { return false };
+    if !is_dir {
+        return kura::fs::copy(&h, crate::files::resolve_new(to)).is_ok();
+    }
+    crate::files::make_dirs(to);
+    let mut ok = true;
+    for e in kura::fs::read_dir(&h).into_iter().flatten().flatten() {
+        let (Ok(name), Ok(m)) = (e.file_name().into_string(), e.metadata()) else { continue };
+        if m.is_dir() && !recurse {
+            continue;
+        }
+        ok &= sh_copy(&format!("{src}\\{name}"), m.is_dir(), &format!("{to}\\{name}"), recurse);
+    }
+    ok
+}
+fn sh_delete(src: &str, is_dir: bool) -> bool {
+    let Some(h) = crate::files::resolve(src) else { return false };
+    if !is_dir {
+        return kura::fs::remove_file(&h).is_ok();
+    }
+    for e in kura::fs::read_dir(&h).into_iter().flatten().flatten() {
+        let (Ok(name), Ok(m)) = (e.file_name().into_string(), e.metadata()) else { continue };
+        sh_delete(&format!("{src}\\{name}"), m.is_dir());
+    }
+    kura::fs::remove_dir(&h).is_ok()
+}
+/// SHFileOperation(&SHFILEOPSTRUCT): FO_MOVE 1, FO_COPY 2, FO_DELETE 3, FO_RENAME 4 of the
+/// double-NUL lists pFrom / pTo (FOF_MULTIDESTFILES 1: a destination per source; FOF_FILESONLY
+/// 0x80 for wildcards; FOF_NORECURSION 0x1000). A copy into an existing folder goes under it; a
+/// single source to a missing name takes that name; several (or a wildcard) to a missing folder
+/// make it. 0 when done, else ERROR_FILE_NOT_FOUND (a source missing) or the DE_ code 0x7c
+/// (DE_INVALIDFILES) for a list Windows rejects. The struct is packed to 1 byte in a 32-bit
+/// process (shellapi.h).
+fn sh_file_operation(c: &mut Ctx, wide: bool) -> u32 {
+    let op = c.a(0);
+    let x64 = mem::x64();
+    let (func_at, from_at, to_at, flags_at, aborted_at) = if x64 { (8, 16, 24, 32, 36) } else { (4, 8, 12, 16, 18) };
+    let func = r32(op + func_at);
+    let from = path_list(mem::rp(op + from_at), wide);
+    let to = path_list(mem::rp(op + to_at), wide);
+    let flags = mem::r16(op + flags_at) as u32;
+    put32(op + aborted_at, 0);
+    if crate::env_on!("SAKE_TRACE_FILES") {
+        eprintln!("sake: SHFileOperation {func} {from:?} -> {to:?} flags {flags:#x}");
+    }
+    if from.is_empty() || !(1..=4).contains(&func) {
+        return 0x7c;
+    }
+    let (files_only, recurse, multi) = (flags & 0x80 != 0, flags & 0x1000 == 0, flags & 1 != 0);
+    let mut missing = false;
+    for (i, src) in from.iter().enumerate() {
+        let wild = src.rsplit('\\').next().is_some_and(|l| l.contains(['*', '?']));
+        let found = sh_expand(src, files_only);
+        if found.is_empty() {
+            missing |= !wild;
+            continue;
+        }
+        if func == 3 {
+            for (p, d) in &found {
+                sh_delete(p, *d);
+            }
+            continue;
+        }
+        let Some(dest) = (if multi { to.get(i) } else { to.first() }).cloned() else { return 0x7c };
+        if func == 4 {
+            let (Some(h), new) = (crate::files::resolve(src), crate::files::resolve_new(&dest)) else { missing = true; continue };
+            if kura::fs::rename(&h, &new).is_err() {
+                return 5;
+            }
+            continue;
+        }
+        let dest_dir = crate::files::resolve(&dest).and_then(|h| kura::fs::metadata(&h).ok()).is_some_and(|m| m.is_dir());
+        let into = dest_dir || wild || (!multi && from.len() > 1);
+        for (p, d) in &found {
+            let target = if into {
+                crate::files::make_dirs(&dest);
+                format!("{}\\{}", dest.trim_end_matches('\\'), p.rsplit('\\').next().unwrap_or(p))
+            } else {
+                dest.clone()
+            };
+            let moved = func == 1 && crate::files::resolve(p).is_some_and(|h| crate::files::resolve(&target).is_none() && kura::fs::rename(&h, crate::files::resolve_new(&target)).is_ok());
+            if !moved {
+                if !sh_copy(p, *d, &target, recurse) {
+                    return 5;
+                }
+                if func == 1 {
+                    sh_delete(p, *d);
+                }
+            }
+        }
+    }
+    if missing { 2 } else { 0 }
+}
+fn SHFileOperationA(c: &mut Ctx) -> u32 {
+    sh_file_operation(c, false)
+}
+fn SHFileOperationW(c: &mut Ctx) -> u32 {
+    sh_file_operation(c, true)
+}
+
 fn SHGetFolderPathW(c: &mut Ctx) -> u32 {
     let (csidl, out) = (c.a(1), c.a(4));
     match folder_path(csidl, true) {
@@ -4578,7 +4813,7 @@ pub fn init() {
         SafeArrayDestroyDescriptor, SafeArrayDestroy, SafeArrayRedim);
     reg!("oleaut32"; VarAdd, VarSub, VarMul, VarDiv, VarIdiv, VarMod, VarNeg, VarCmp, VarBstrCmp, VarBstrCat);
     reg!("shfolder"; SHGetFolderPathA, SHGetFolderPathW);
-    reg!("shell32"; SHCreateDirectoryExA, SHCreateDirectoryExW, SHCreateDirectory, SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
+    reg!("shell32"; SHFileOperationA, SHFileOperationW, SHCreateDirectoryExA, SHCreateDirectoryExW, SHCreateDirectory, SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
         SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc, SHBrowseForFolderA, SHBrowseForFolderW, IsUserAnAdmin,
         ShellExecuteA, ShellExecuteW, ShellExecuteExA, ShellExecuteExW, DragAcceptFiles, DragFinish,
         DragQueryFileA, DragQueryFileW, CommandLineToArgvW);
@@ -6076,6 +6311,249 @@ mod idlist_tests {
             w16(pidl + 2, 0x1234);
             prop_assert_eq!(call(plain, &[pidl, a]), 0);
             for p in [pidl, a, b, w] { mem::heap_free(p); }
+        }
+    }
+}
+
+/// 64-bit Windows' registry views and folders as a 32-bit (WoW64) process sees them (#183)
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod wow64_tests {
+    use super::*;
+    use crate::test_guest::{call, enter as enter_mem, guest_thread};
+    use proptest::prelude::*;
+
+    fn enter() -> std::sync::MutexGuard<'static, ()> {
+        let g = enter_mem();
+        guest_thread();
+        g
+    }
+    fn arg(s: &str) -> u32 {
+        let p = mem::heap_alloc(s.len() as u32 + 1, true);
+        for (i, b) in s.bytes().chain([0]).enumerate() {
+            mem::w8(p + i as u32, b);
+        }
+        p
+    }
+    const HKLM: u32 = 0x8000_0002;
+    /// RegQueryValueExA of a REG_SZ: (status, the text)
+    fn query(key: u32, name: &str) -> (u32, String) {
+        let (ty, data, len) = (mem::heap_alloc(4, true), mem::heap_alloc(520, true), mem::heap_alloc(4, true));
+        w32(len, 520);
+        let r = call(RegQueryValueExA, &[key, arg(name), 0, ty, data, len]);
+        (r, crate::text::a2s(&mem::cstr(data)))
+    }
+    fn open(root: u32, sub: &str, sam: u32) -> u32 {
+        let out = mem::heap_alloc(4, true);
+        assert_eq!(call(RegOpenKeyExA, &[root, arg(sub), 0, 0x2_0019 | sam, out]), 0, "{sub}");
+        r32(out)
+    }
+
+    /// What a 32-bit installer writes is where a program that knows it is on 64-bit Windows
+    /// looks for it (SOFTWARE\Wow6432Node\...), and the other way round; KEY_WOW64_32KEY and
+    /// KEY_WOW64_64KEY open the same keys.
+    #[test]
+    fn wow6432node_is_the_same_key() {
+        let _g = enter();
+        let brand = format!("SakeWow64Test{}", std::process::id());
+        let (out, disp) = (mem::heap_alloc(4, true), mem::heap_alloc(4, true));
+        let sub = format!("SOFTWARE\\{brand}\\Game");
+        assert_eq!(call(RegCreateKeyExA, &[HKLM, arg(&sub), 0, 0, 0, 0xf003f, 0, out, disp]), 0);
+        let data: Vec<u8> = "C:\\Game".bytes().chain([0]).collect();
+        let d = mem::heap_alloc(data.len() as u32, true);
+        mem::write(d, &data);
+        assert_eq!(call(RegSetValueExA, &[r32(out), arg("InstPath"), 0, 1, d, data.len() as u32]), 0);
+        for (path, sam) in [
+            (format!("SOFTWARE\\Wow6432Node\\{brand}\\Game"), 0),
+            (format!("Software\\WOW6432NODE\\{brand}\\Game\\"), 0x100),
+            (format!("SOFTWARE\\{brand}\\Game"), 0x200),
+            (format!("SOFTWARE\\{brand}\\Game"), 0x100),
+        ] {
+            let k = open(HKLM, &path, sam);
+            assert_eq!(query(k, "InstPath"), (0, "C:\\Game".to_string()), "{path} {sam:#x}");
+            call(RegCloseKey, &[k]);
+        }
+        // (one key: made through Wow6432Node, it is there without it)
+        let sub2 = format!("SOFTWARE\\Wow6432Node\\{brand}\\Other");
+        assert_eq!(call(RegCreateKeyExA, &[HKLM, arg(&sub2), 0, 0, 0, 0xf003f, 0, out, disp]), 0);
+        assert_eq!(r32(disp), 1);
+        assert!(reg_key_exists(&format!("hklm\\software\\{}\\other", brand.to_lowercase())));
+        // (and the Wow6432Node key itself opens)
+        call(RegCloseKey, &[open(HKLM, "SOFTWARE\\Wow6432Node", 0)]);
+        reg_delete_tree(&format!("hklm\\software\\{brand}"));
+    }
+
+    /// ProgramFilesDir and CommonFilesDir are the view's: a 32-bit process's own the x86
+    /// folders, KEY_WOW64_64KEY (NSIS's $PROGRAMFILES64, SetRegView 64) the 64-bit ones.
+    #[test]
+    fn program_files_by_view() {
+        let _g = enter();
+        let cv = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion";
+        let k32 = open(HKLM, cv, 0);
+        let k64 = open(HKLM, cv, 0x100);
+        assert_eq!(query(k32, "ProgramFilesDir").1, "C:\\Program Files (x86)");
+        assert_eq!(query(k64, "ProgramFilesDir").1, "C:\\Program Files");
+        assert_eq!(query(k32, "CommonFilesDir").1, "C:\\Program Files (x86)\\Common Files");
+        assert_eq!(query(k64, "CommonFilesDir").1, "C:\\Program Files\\Common Files");
+        for k in [k32, k64] {
+            assert_eq!(query(k, "ProgramFilesDir (x86)").1, "C:\\Program Files (x86)");
+            assert_eq!(query(k, "ProgramW6432Dir").1, "C:\\Program Files");
+        }
+        // (a key opened from one of them keeps its view; KEY_WOW64_32KEY gives the 32-bit one)
+        let sub = mem::heap_alloc(4, true);
+        assert_eq!(call(RegOpenKeyExA, &[k64, 0, 0, 0x2_0019, sub]), 0);
+        assert_eq!(query(r32(sub), "ProgramFilesDir").1, "C:\\Program Files");
+        call(RegCloseKey, &[r32(sub)]);
+        assert_eq!(query(open(HKLM, cv, 0x200), "ProgramFilesDir").1, "C:\\Program Files (x86)");
+        // (the root's own view is the process's)
+        let (ty, data, len) = (mem::heap_alloc(4, true), mem::heap_alloc(520, true), mem::heap_alloc(4, true));
+        w32(len, 520);
+        assert_eq!(call(RegGetValueA, &[HKLM, arg(cv), arg("ProgramFilesDir"), 0xffff, ty, data, len]), 0);
+        assert_eq!(crate::text::a2s(&mem::cstr(data)), "C:\\Program Files (x86)");
+        w32(len, 520);
+        assert_eq!(call(RegGetValueA, &[HKLM, arg(cv), arg("ProgramFilesDir"), 0x1_ffff, ty, data, len]), 0);
+        assert_eq!(crate::text::a2s(&mem::cstr(data)), "C:\\Program Files", "RRF_SUBKEY_WOW6464KEY");
+    }
+
+    #[test]
+    fn special_folders_of_a_wow64_process() {
+        let _g = enter();
+        assert_eq!(special_folder(0x25), Some("C:\\windows\\system32"));
+        assert_eq!(special_folder(0x29), Some("C:\\windows\\SysWOW64"));
+        assert_eq!(special_folder(0x26), Some("C:\\Program Files (x86)"));
+        assert_eq!(special_folder(0x2a), Some("C:\\Program Files (x86)"));
+        assert_eq!(special_folder(0x2b), Some("C:\\Program Files (x86)\\Common Files"));
+        assert_eq!(special_folder(0x2c), Some("C:\\Program Files (x86)\\Common Files"));
+        let buf = mem::heap_alloc(520, true);
+        assert_eq!(call(SHGetFolderPathA, &[0, 0x29, 0, 0, buf]), 0);
+        assert_eq!(crate::text::a2s(&mem::cstr(buf)), "C:\\windows\\SysWOW64");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+        /// wow64_key drops one Wow6432Node right under a redirected root and nothing else: the
+        /// result never has it there, it is idempotent, and other paths are given back as they are.
+        #[test]
+        fn wow64_key_paths(
+            root in prop_oneof![Just("hklm\\software"), Just("hkcr"), Just("hklm\\software\\classes"),
+                Just("hkcu\\software\\classes"), Just("hkcu\\software"), Just("hklm\\system")],
+            node in prop_oneof![Just("wow6432node"), Just("wow6432nodex"), Just("wow6432"), Just("x")],
+            rest in prop::collection::vec("[a-z0-9 ]{1,8}", 0..3),
+        ) {
+            let tail: String = rest.iter().map(|r| format!("\\{r}")).collect();
+            let p = format!("{root}\\{node}{tail}");
+            let got = wow64_key(p.clone());
+            let redirected = matches!(root, "hklm\\software" | "hkcr" | "hklm\\software\\classes" | "hkcu\\software\\classes");
+            if redirected && node == "wow6432node" {
+                prop_assert_eq!(&got, &format!("{root}{tail}"));
+            } else {
+                prop_assert_eq!(&got, &p);
+            }
+            prop_assert_eq!(wow64_key(got.clone()), got.clone());
+        }
+    }
+}
+
+/// SHFileOperation as installers use it (electron-builder's NSIS installer copies the unpacked
+/// app with it, #183)
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod sh_file_op_tests {
+    use super::*;
+    use crate::test_guest::{call, enter as enter_mem, guest_thread};
+    use proptest::prelude::*;
+
+    fn enter() -> std::sync::MutexGuard<'static, ()> {
+        let g = enter_mem();
+        guest_thread();
+        g
+    }
+    /// a double-NUL list
+    fn list(items: &[&str]) -> u32 {
+        let mut b: Vec<u8> = Vec::new();
+        for i in items {
+            b.extend(crate::text::s2a(i));
+            b.push(0);
+        }
+        b.push(0);
+        let p = mem::heap_alloc(b.len() as u32, true);
+        mem::write(p, &b);
+        p
+    }
+    fn op(func: u32, from: &[&str], to: &[&str], flags: u16) -> u32 {
+        let s = mem::heap_alloc(30, true);
+        w32(s + 4, func);
+        w32(s + 8, list(from));
+        w32(s + 12, if to.is_empty() { 0 } else { list(to) });
+        mem::w16(s + 16, flags);
+        w32(s + 18, 0xdead);
+        let r = call(SHFileOperationA, &[s]);
+        assert_eq!(r32(s + 18), 0, "fAnyOperationsAborted");
+        r
+    }
+    fn put(w: &str, data: &str) {
+        crate::files::make_dirs(w.rsplit_once('\\').unwrap().0);
+        kura::fs::write(crate::files::resolve_new(w), data).unwrap();
+    }
+    fn get(w: &str) -> Option<String> {
+        crate::files::resolve(w).and_then(|h| kura::fs::read(h).ok()).map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+
+    #[test]
+    fn copy_move_delete_rename() {
+        let _g = enter();
+        let base = format!("C:\\shop-{}", std::process::id());
+        let (src, dst) = (format!("{base}\\src"), format!("{base}\\dst"));
+        put(&format!("{src}\\a.txt"), "a");
+        put(&format!("{src}\\sub\\b.dat"), "b");
+        put(&format!("{src}\\c.txt"), "c");
+        // (NSIS CopyFiles "$PLUGINSDIR\app\*.*" "$INSTDIR": a missing destination folder is made)
+        assert_eq!(op(2, &[&format!("{src}\\*.*")], &[&dst], 0x614), 0);
+        assert_eq!(get(&format!("{dst}\\a.txt")).as_deref(), Some("a"));
+        assert_eq!(get(&format!("{dst}\\sub\\b.dat")).as_deref(), Some("b"));
+        // (FOF_FILESONLY: the wildcard takes no folders; FOF_NORECURSION copies none either)
+        let d2 = format!("{base}\\files");
+        assert_eq!(op(2, &[&format!("{src}\\*")], &[&d2], 0x80), 0);
+        assert!(get(&format!("{d2}\\a.txt")).is_some() && get(&format!("{d2}\\sub\\b.dat")).is_none());
+        // (one file to a missing name takes that name; into an existing folder, goes under it)
+        assert_eq!(op(2, &[&format!("{src}\\a.txt")], &[&format!("{base}\\renamed.txt")], 0), 0);
+        assert_eq!(get(&format!("{base}\\renamed.txt")).as_deref(), Some("a"));
+        assert_eq!(op(2, &[&format!("{src}\\c.txt")], &[&d2], 0), 0);
+        assert_eq!(get(&format!("{d2}\\c.txt")).as_deref(), Some("c"));
+        // (a folder copied to a missing name is that folder)
+        assert_eq!(op(2, &[&src], &[&format!("{base}\\copy")], 0), 0);
+        assert_eq!(get(&format!("{base}\\copy\\sub\\b.dat")).as_deref(), Some("b"));
+        // (move: gone from the source)
+        assert_eq!(op(1, &[&format!("{base}\\renamed.txt")], &[&format!("{base}\\moved.txt")], 0), 0);
+        assert!(get(&format!("{base}\\renamed.txt")).is_none());
+        assert_eq!(get(&format!("{base}\\moved.txt")).as_deref(), Some("a"));
+        // (rename)
+        assert_eq!(op(4, &[&format!("{base}\\moved.txt")], &[&format!("{base}\\r.txt")], 0), 0);
+        assert_eq!(get(&format!("{base}\\r.txt")).as_deref(), Some("a"));
+        // (a missing source: ERROR_FILE_NOT_FOUND; an empty list DE_INVALIDFILES)
+        assert_eq!(op(2, &[&format!("{base}\\nothing.txt")], &[&d2], 0), 2);
+        assert_eq!(op(2, &[], &[&d2], 0), 0x7c);
+        // (delete: folders with what is in them, wildcards)
+        assert_eq!(op(3, &[&format!("{d2}\\*.txt")], &[], 0x14), 0);
+        assert!(get(&format!("{d2}\\a.txt")).is_none() && crate::files::resolve(&d2).is_some());
+        assert_eq!(op(3, &[&base], &[], 0x14), 0);
+        assert!(crate::files::resolve(&base).is_none());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+        /// wild_match agrees with the plain recursive definition ('*' any run, '?' one
+        /// character), without regard to case
+        #[test]
+        fn wildcards_as_defined(pat in "[ab*?.]{0,6}", name in "[abAB.]{0,8}") {
+            fn by_def(p: &[char], n: &[char]) -> bool {
+                match p.first() {
+                    None => n.is_empty(),
+                    Some('*') => (0..=n.len()).any(|k| by_def(&p[1..], &n[k..])),
+                    Some(&c) => !n.is_empty() && (c == '?' || c.eq_ignore_ascii_case(&n[0])) && by_def(&p[1..], &n[1..]),
+                }
+            }
+            let (p, n): (Vec<char>, Vec<char>) = (pat.chars().collect(), name.chars().collect());
+            let want = pat == "*.*" || by_def(&p, &n);
+            prop_assert_eq!(wild_match(&pat, &name), want);
         }
     }
 }

@@ -93,7 +93,7 @@ int main(void) {
     setvbuf(stdout, out, _IOFBF, sizeof out);
     CoInitialize(NULL);
     char setup[MAX_PATH], cmd[2 * MAX_PATH];
-    SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, dir);
+    SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILESX86, NULL, 0, dir); /* (the 32-bit installer's Program Files, on 64-bit Windows from either kind of process) */
     strcat(dir, "\\InnoTest\\");
     SHGetFolderPathA(NULL, CSIDL_COMMON_PROGRAMS, NULL, 0, lnk);
     strcat(lnk, "\\InnoTest\\InnoTest.lnk");

@@ -144,13 +144,12 @@ fn with_env<R>(f: impl FnOnce(&mut Vec<(String, String)>) -> R) -> R {
             ("PUBLIC", "C:\\users\\Public"),
             ("ProgramData", "C:\\ProgramData"),
             ("ALLUSERSPROFILE", "C:\\ProgramData"),
-            ("ProgramFiles", "C:\\Program Files"),
-            ("CommonProgramFiles", "C:\\Program Files\\Common Files"),
             ("SystemDrive", "C:"),
         ]
         .iter()
         .map(|&(k, v)| (k.to_string(), v.to_string()))
         .collect();
+        e.extend(wow64_env().iter().map(|&(k, v)| (k.to_string(), v.to_string())));
         let mut extra: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k.starts_with("WINETEST_")).collect();
         if let Ok(list) = std::env::var("SAKE_GUEST_ENV") {
             extra.extend(list.split(';').filter_map(|kv| kv.split_once('=')).filter(|(k, _)| !k.is_empty()).map(|(k, v)| (k.to_string(), v.to_string())));
@@ -162,6 +161,31 @@ fn with_env<R>(f: impl FnOnce(&mut Vec<(String, String)>) -> R) -> R {
         e
     });
     f(e)
+}
+
+/// The variables 64-bit Windows gives a process by its machine: a 32-bit (WoW64) one has the
+/// 32-bit Program Files as ProgramFiles and the 64-bit one as ProgramW6432.
+pub(crate) fn wow64_env() -> &'static [(&'static str, &'static str)] {
+    const BOTH: [(&str, &str); 4] = [
+        ("ProgramFiles(x86)", "C:\\Program Files (x86)"),
+        ("ProgramW6432", "C:\\Program Files"),
+        ("CommonProgramFiles(x86)", "C:\\Program Files (x86)\\Common Files"),
+        ("CommonProgramW6432", "C:\\Program Files\\Common Files"),
+    ];
+    const X64: [(&str, &str); 7] = [
+        BOTH[0], BOTH[1], BOTH[2], BOTH[3],
+        ("ProgramFiles", "C:\\Program Files"),
+        ("CommonProgramFiles", "C:\\Program Files\\Common Files"),
+        ("PROCESSOR_ARCHITECTURE", "AMD64"),
+    ];
+    const X86: [(&str, &str); 8] = [
+        BOTH[0], BOTH[1], BOTH[2], BOTH[3],
+        ("ProgramFiles", "C:\\Program Files (x86)"),
+        ("CommonProgramFiles", "C:\\Program Files (x86)\\Common Files"),
+        ("PROCESSOR_ARCHITECTURE", "x86"),
+        ("PROCESSOR_ARCHITEW6432", "AMD64"),
+    ];
+    if mem::x64() { &X64 } else { &X86 }
 }
 
 /// Sets (or with None removes) a variable, keeping the order.
@@ -4390,21 +4414,81 @@ fn LCMapStringEx(c: &mut Ctx) -> u32 {
     // (locale name, flags, src, n, dst, cap, ..): the same slots as LCMapStringW's
     LCMapStringW(c)
 }
+/// GetNativeSystemInfo: sake is 64-bit Windows, so a 32-bit process (WoW64) gets its own
+/// GetSystemInfo with the machine's architecture: PROCESSOR_ARCHITECTURE_AMD64 (9) and
+/// PROCESSOR_AMD_X8664 (8664); its addresses stay the 32-bit ones (as Wine's kernelbase).
 fn GetNativeSystemInfo(c: &mut Ctx) -> u32 {
-    GetSystemInfo(c)
+    GetSystemInfo(c);
+    if !mem::x64() {
+        w16(c.a(0), 9);
+        w32(c.a(0) + 24, 8664);
+    }
+    0
 }
 fn IsProcessorFeaturePresent(c: &mut Ctx) -> u32 {
     // MMX 3, XMMI 6, RDTSC 8, XMMI64 10, NX 12, SSE3 13
     ok(matches!(c.a(0), 3 | 8) || (matches!(c.a(0), 6 | 10) && crate::env_on!("SAKE_SSE")))
 }
+/// Whether a process is a 32-bit one on 64-bit Windows (sake runs x64 programs too, so a 32-bit
+/// process is a WoW64 one). Another process's handle is taken to be of this one's kind (sake does
+/// not keep their machines; a 32-bit game's helpers are 32-bit ones).
+pub(crate) fn is_wow64(h: u32) -> Option<bool> {
+    crate::process::of_handle(h).map(|_| !mem::x64())
+}
+/// IsWow64Process(process, &wow64): ERROR_INVALID_HANDLE for what is not a process
 fn IsWow64Process(c: &mut Ctx) -> u32 {
-    put32(c.a(1), 0);
+    let Some(w) = is_wow64(c.a(0)) else {
+        last_error(6);
+        return 0;
+    };
+    put32(c.a(1), w as u32);
     1
+}
+/// IsWow64Process2(process, &process machine, &native machine): IMAGE_FILE_MACHINE_I386
+/// (0x14c) under WoW64, else IMAGE_FILE_MACHINE_UNKNOWN; the machine is AMD64 (0x8664)
+fn IsWow64Process2(c: &mut Ctx) -> u32 {
+    let Some(w) = is_wow64(c.a(0)) else {
+        last_error(6);
+        return 0;
+    };
+    w16(c.a(1), if w { 0x14c } else { 0 });
+    if c.a(2) != 0 {
+        w16(c.a(2), 0x8664);
+    }
+    1
+}
+/// Where 64-bit Windows keeps its 32-bit system files. sake has one system folder for both
+/// (its DLLs are its own, for either machine): files::to_host takes SysWOW64 to system32.
+pub const SYSWOW64: &str = "C:\\windows\\SysWOW64";
+/// GetSystemWow64Directory(buffer, size): the same rules as GetSystemDirectory's, in 32-bit and
+/// 64-bit processes alike
+fn GetSystemWow64DirectoryA(c: &mut Ctx) -> u32 {
+    ret_str(c.a(0), c.a(1), SYSWOW64, false)
+}
+fn GetSystemWow64DirectoryW(c: &mut Ctx) -> u32 {
+    ret_str(c.a(0), c.a(1), SYSWOW64, true)
+}
+/// GetSystemWow64Directory2(buffer, size, machine): the folder of that machine's WoW64 system
+/// files; IMAGE_FILE_MACHINE_I386 is SysWOW64, the others (AMD64 has none, ARM's SysArm32 is not
+/// on an x64 machine) 0 with ERROR_INVALID_PARAMETER
+fn wow64_dir2(c: &mut Ctx, wide: bool) -> u32 {
+    if c.a(2) != 0x14c {
+        last_error(87);
+        return 0;
+    }
+    ret_str(c.a(0), c.a(1), SYSWOW64, wide)
+}
+fn GetSystemWow64Directory2A(c: &mut Ctx) -> u32 {
+    wow64_dir2(c, false)
+}
+fn GetSystemWow64Directory2W(c: &mut Ctx) -> u32 {
+    wow64_dir2(c, true)
 }
 
 thread_local! {
-    /// The thread's file system redirection setting (nonzero: off). We are not WoW64, so it
-    /// redirects nothing; programs only read back what they set.
+    /// The thread's file system redirection setting (nonzero: off), as a WoW64 process keeps it.
+    /// sake's system32 is SysWOW64 too (files::to_host), so turning redirection off changes
+    /// which files a path names only for Sysnative, the 64-bit view a 32-bit process has.
     static FS_REDIR_OFF: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 /// RtlWow64EnableFsRedirectionEx(disable, &old): any value is kept as given, also when `old`
@@ -7194,9 +7278,9 @@ fn file_attrs(name: &str) -> u32 {
 /// The times FindFirstFile gives system32's DLLs that sake implements (2019-12-07 09:09:00 UTC,
 /// as Windows 10's files carry)
 const SYSTEM_DLL_TIME: u64 = 132_201_833_400_000_000;
-/// C:\windows\system32\<a DLL we implement>
+/// C:\windows\system32\<a DLL we implement> (or SysWOW64\, Sysnative\: files::wow64_system)
 fn is_system_dll_path(name: &str) -> bool {
-    let full = files::full_path(name).to_ascii_lowercase();
+    let full = files::wow64_system(&files::full_path(name)).to_ascii_lowercase();
     full.strip_prefix("c:\\windows\\system32\\")
         .and_then(|n| n.strip_suffix(".dll"))
         .is_some_and(|d| !d.contains('\\') && crate::api::is_system(d))
@@ -8584,7 +8668,8 @@ pub fn init() {
         SetThreadStackGuarantee, GetCurrentThreadStackLimits, FlushProcessWriteBuffers, RegisterWaitForSingleObject, UnregisterWait, UnregisterWaitEx,
         QueueUserWorkItem, CreateThreadpool, CloseThreadpool, SetThreadpoolThreadMinimum, SetThreadpoolThreadMaximum, CreateThreadpoolWork, SubmitThreadpoolWork, TrySubmitThreadpoolCallback,
         WaitForThreadpoolWorkCallbacks, CloseThreadpoolWork,
-        IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
+        IsWow64Process, IsWow64Process2, GetSystemWow64DirectoryA, GetSystemWow64DirectoryW, GetSystemWow64Directory2A,
+        GetSystemWow64Directory2W, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
         GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW, EnumSystemLocalesEx,
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
         IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, EnumCalendarInfoW, CompareStringOrdinal, VirtualQueryEx, VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,
@@ -9318,7 +9403,17 @@ mod find_system_dlls {
         assert_eq!(call(GetFileAttributesA, &[cstr_arg("C:\\windows\\system32\\d3d9.dll")]), 0x20);
         // (not a DLL sake has, not a wildcard, not another folder)
         assert_eq!(find("C:\\windows\\system32\\nosuchlib.dll").0, u32::MAX);
-        assert_eq!(find("C:\\windows\\SysWOW64\\d3d9.dll").0, u32::MAX);
+        assert_eq!(find("C:\\windows\\SysWOW640\\d3d9.dll").0, u32::MAX);
+        assert_eq!(find("C:\\windows\\fonts\\d3d9.dll").0, u32::MAX);
+        // (64-bit Windows: SysWOW64 has the 32-bit ones, and a 32-bit process's Sysnative the
+        // 64-bit system32's; Hime's Flash loader looks there after GetSystemWow64Directory, #209)
+        for d in ["SysWOW64", "syswow64", "Sysnative"] {
+            let (h, _, attrs, _, name) = find(&format!("C:\\windows\\{d}\\d3d9.dll"));
+            assert_ne!(h, u32::MAX, "{d}");
+            assert_eq!((attrs, name.as_str()), (0x20, "d3d9.dll"), "{d}");
+            assert_eq!(call(FindClose, &[h]), 1);
+            assert_eq!(call(GetFileAttributesA, &[cstr_arg(&format!("C:\\Windows\\{d}\\KERNEL32.dll"))]), 0x20, "{d}");
+        }
     }
 
     proptest! {
@@ -9585,6 +9680,151 @@ mod empty_name_tests {
             }
             prop_assert!(obj::close(a) && obj::close(b));
             mem::heap_free(p);
+        }
+    }
+}
+
+/// sake is 64-bit Windows: a 32-bit process is a WoW64 one (#183: NSIS's x64.nsh asks
+/// IsWow64Process; #209: Hime's Flash loader calls GetSystemWow64DirectoryW). Windows' answers
+/// are winref's wow64 probe's.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod wow64_tests {
+    use super::*;
+    use crate::test_guest::{call, enter as enter_mem, guest_thread};
+    use proptest::prelude::*;
+
+    fn enter() -> std::sync::MutexGuard<'static, ()> {
+        let g = enter_mem();
+        guest_thread();
+        g
+    }
+    fn arg(s: &str) -> u32 {
+        let p = mem::heap_alloc(s.len() as u32 + 1, true);
+        for (i, b) in s.bytes().chain([0]).enumerate() {
+            mem::w8(p + i as u32, b);
+        }
+        p
+    }
+
+    #[test]
+    fn a_32_bit_process_is_wow64() {
+        let _g = enter();
+        let out = mem::heap_alloc(4, true);
+        w32(out, 0xdead);
+        assert_eq!(call(IsWow64Process, &[obj::CURRENT_PROCESS, out]), 1);
+        assert_eq!(r32(out), 1);
+        // (not a process: ERROR_INVALID_HANDLE, the BOOL untouched)
+        w32(out, 0xdead);
+        last_error(0);
+        assert_eq!(call(IsWow64Process, &[0x1234_5678, out]), 0);
+        assert_eq!((get_last_error(), r32(out)), (6, 0xdead));
+        let (pm, nm) = (mem::heap_alloc(2, true), mem::heap_alloc(2, true));
+        assert_eq!(call(IsWow64Process2, &[obj::CURRENT_PROCESS, pm, nm]), 1);
+        assert_eq!((mem::r16(pm), mem::r16(nm)), (0x14c, 0x8664));
+        // (the native machine is optional)
+        assert_eq!(call(IsWow64Process2, &[obj::CURRENT_PROCESS, pm, 0]), 1);
+    }
+
+    #[test]
+    fn native_system_info_is_the_process_s_but_for_the_machine() {
+        let _g = enter();
+        let (a, b) = (mem::heap_alloc(36, true), mem::heap_alloc(36, true));
+        mem::fill(a, 36, 0xcc);
+        mem::fill(b, 36, 0xcc);
+        call(GetSystemInfo, &[a]);
+        call(GetNativeSystemInfo, &[b]);
+        assert_eq!((mem::r16(a), r32(a + 24)), (0, 586), "PROCESSOR_ARCHITECTURE_INTEL, PROCESSOR_INTEL_PENTIUM");
+        assert_eq!((mem::r16(b), r32(b + 24)), (9, 8664), "PROCESSOR_ARCHITECTURE_AMD64, PROCESSOR_AMD_X8664");
+        for o in (2..36).filter(|o| !(24..28).contains(o)) {
+            assert_eq!(mem::r8(a + o), mem::r8(b + o), "byte {o}");
+        }
+    }
+
+    #[test]
+    fn the_environment_has_both_program_files() {
+        let _g = enter();
+        let buf = mem::heap_alloc(260, true);
+        let get = |n: &str| {
+            let k = call(GetEnvironmentVariableA, &[arg(n), buf, 260]);
+            (k != 0).then(|| a2s(&cstr(buf)))
+        };
+        assert_eq!(get("ProgramFiles").as_deref(), Some("C:\\Program Files (x86)"));
+        assert_eq!(get("ProgramFiles(x86)").as_deref(), Some("C:\\Program Files (x86)"));
+        assert_eq!(get("ProgramW6432").as_deref(), Some("C:\\Program Files"));
+        assert_eq!(get("CommonProgramFiles").as_deref(), Some("C:\\Program Files (x86)\\Common Files"));
+        assert_eq!(get("CommonProgramW6432").as_deref(), Some("C:\\Program Files\\Common Files"));
+        assert_eq!(get("PROCESSOR_ARCHITECTURE").as_deref(), Some("x86"));
+        assert_eq!(get("PROCESSOR_ARCHITEW6432").as_deref(), Some("AMD64"));
+    }
+
+    /// A file put in SysWOW64 is in system32 (the same folder to a 32-bit process), and in
+    /// Sysnative (sake's 64-bit system32 is the same one too).
+    #[test]
+    fn syswow64_and_system32_are_one_folder() {
+        let _g = enter();
+        let name = format!("sake-wow64-{}.txt", std::process::id());
+        let w = format!("C:\\windows\\SysWOW64\\{name}");
+        crate::files::make_dirs("C:\\windows\\system32");
+        kura::fs::write(crate::files::resolve_new(&w), b"wow").unwrap();
+        for d in ["system32", "System32", "SYSWOW64", "Sysnative"] {
+            let p = format!("C:\\Windows\\{d}\\{name}");
+            let h = crate::files::resolve(&p).unwrap_or_else(|| panic!("{p}"));
+            assert_eq!(kura::fs::read(&h).unwrap(), b"wow", "{p}");
+        }
+        let _ = kura::fs::remove_file(crate::files::resolve(&w).unwrap());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        /// GetSystemWow64Directory follows GetSystemDirectory's rules for any buffer size: the
+        /// length without the NUL when it fits, the size it needs with the NUL when not (the
+        /// buffer then untouched); A and W alike.
+        #[test]
+        fn wow64_directory_sizes(cap in 0u32..48, wide in any::<bool>()) {
+            let _g = enter();
+            let want = "C:\\windows\\SysWOW64";
+            let n = want.len() as u32;
+            let buf = mem::heap_alloc(2 * 48 + 2, true);
+            mem::fill(buf, 2 * 48 + 2, 0xcc);
+            let f: crate::api::Handler = if wide { GetSystemWow64DirectoryW } else { GetSystemWow64DirectoryA };
+            let r = call(f, &[buf, cap]);
+            if cap > n {
+                prop_assert_eq!(r, n);
+                let got = if wide { String::from_utf16_lossy(&mem::wstr(buf)) } else { a2s(&cstr(buf)) };
+                prop_assert_eq!(got, want);
+            } else {
+                prop_assert_eq!(r, n + 1);
+                prop_assert_eq!(mem::r8(buf), 0xcc);
+            }
+            // (Directory2: I386's is the same folder; another machine has none)
+            let r2 = call(if wide { GetSystemWow64Directory2W } else { GetSystemWow64Directory2A }, &[buf, cap, 0x14c]);
+            prop_assert_eq!(r2, r);
+            last_error(0);
+            prop_assert_eq!(call(if wide { GetSystemWow64Directory2W } else { GetSystemWow64Directory2A }, &[buf, cap, 0x8664]), 0);
+            prop_assert_eq!(get_last_error(), 87);
+        }
+
+        /// files::wow64_system: SysWOW64 and Sysnative directly under C:\windows, in any case,
+        /// are system32 with the rest kept; nothing else changes, and it is idempotent.
+        #[test]
+        fn wow64_system_names(
+            win in "[cC]:\\\\[wW][iI][nN][dD][oO][wW][sS]",
+            dir in prop_oneof![Just("SysWOW64"), Just("SYSWOW64"), Just("sysnative"), Just("SysNative"),
+                Just("system32"), Just("SysWOW640"), Just("Sys"), Just("syswow6"), Just("Fonts")],
+            rest in prop_oneof![Just(String::new()), Just("\\".to_string()), "\\\\[a-zA-Z0-9.]{1,12}"],
+        ) {
+            let p = format!("{win}\\{dir}{rest}");
+            let got = crate::files::wow64_system(&p).into_owned();
+            let alias = dir.eq_ignore_ascii_case("syswow64") || dir.eq_ignore_ascii_case("sysnative");
+            if alias {
+                prop_assert_eq!(&got, &format!("{win}\\system32{rest}"));
+            } else {
+                prop_assert_eq!(&got, &p);
+            }
+            prop_assert_eq!(crate::files::wow64_system(&got).into_owned(), got.clone());
+            // (only right under the Windows folder)
+            let deeper = format!("C:\\games\\{dir}{rest}");
+            prop_assert_eq!(crate::files::wow64_system(&deeper).into_owned(), deeper);
         }
     }
 }

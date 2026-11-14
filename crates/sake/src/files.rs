@@ -307,6 +307,7 @@ fn full_path_trim(p: &str, trim: bool) -> String {
 pub fn to_host(w: &str) -> String {
     let w = full_path(w);
     let w = w.strip_prefix("\\\\?\\").unwrap_or(&w);
+    let w = &wow64_system(w);
     let (drive, rest) = w.split_at(2);
     let rest = rest.replace('\\', "/");
     match drive {
@@ -314,6 +315,26 @@ pub fn to_host(w: &str) -> String {
         "C:" => format!("{}{}", c_root(), rest),
         d => format!("{}/{}{}", c_root(), &d[..1].to_ascii_lowercase(), rest),
     }
+}
+
+/// 64-bit Windows' other names for its system folder, as sake has one for both machines (its
+/// DLLs are its own, and a third-party one is taken by its machine, pe.rs): SysWOW64, where a
+/// 32-bit process's system32 is redirected (so system32 and SysWOW64 are the same files to it,
+/// with redirection on or off), and Sysnative, a 32-bit process's name for the 64-bit system32.
+/// `w` is a full path; any other is given back as it is.
+pub fn wow64_system(w: &str) -> std::borrow::Cow<'_, str> {
+    const WIN: &str = "c:\\windows\\";
+    let Some(rest) = w.get(..WIN.len()).filter(|h| h.eq_ignore_ascii_case(WIN)).map(|_| &w[WIN.len()..]) else {
+        return w.into();
+    };
+    for (alias, ok) in [("syswow64", true), ("sysnative", !crate::mem::x64())] {
+        let n = alias.len();
+        let hit = rest.get(..n).is_some_and(|a| a.eq_ignore_ascii_case(alias)) && matches!(rest.as_bytes().get(n), None | Some(b'\\'));
+        if ok && hit {
+            return format!("{}system32{}", &w[..WIN.len()], &rest[n..]).into();
+        }
+    }
+    w.into()
 }
 
 fn exists(h: &str) -> bool {

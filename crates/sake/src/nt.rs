@@ -1069,6 +1069,7 @@ fn nt_query_information_process(c: &mut Ctx) -> u32 {
         7 => (4, 0),             // ProcessDebugPort: none
         0x1e => (4, 0xc000_0353), // ProcessDebugObjectHandle: STATUS_PORT_NOT_SET
         0x1f => (4, 0),          // ProcessDebugFlags: not debugged
+        0x1a => (mem::ps(), 0),  // ProcessWow64Information: ULONG_PTR
         _ => return 0xc000_0003,
     };
     if len < need {
@@ -1083,6 +1084,9 @@ fn nt_query_information_process(c: &mut Ctx) -> u32 {
             w32(out + 16, 0x20);
         }
         0x1f => w32(out, 1),
+        // (a 32-bit process is a WoW64 one, k32::is_wow64: its 32-bit PEB's address; a 64-bit
+        // one 0)
+        0x1a if crate::k32::is_wow64(c.a(0)) == Some(true) => w32(out, crate::PEB.load(std::sync::atomic::Ordering::Relaxed)),
         _ => {}
     }
     put32(ret, need);
