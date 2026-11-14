@@ -1,8 +1,9 @@
 //! Kernel objects behind handles, and waiting on them.
 //!
-//! One lock and one condition variable for everything waitable (events, mutexes, semaphores,
-//! threads, message queues): any change wakes all waiters, which then recheck. Simple, and
-//! games have few threads.
+//! One lock for everything waitable (events, mutexes, semaphores, threads, message queues), and
+//! a condition variable per waiting thread. SetEvent, ReleaseMutex and ReleaseSemaphore wake only
+//! the waiters of their object, as many as they let through (`signal_obj`, waits::wake); any
+//! other change wakes every waiter (`signal`), which then rechecks.
 
 use crate::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -118,6 +119,45 @@ pub struct Table {
     /// named objects: name -> handle of the first one
     pub names: HashMap<String, u32>,
     pub gen: u64,
+    /// the waiting threads, by the object keys they wait on, and each one's condition variable
+    waits: waits::wake::WaitList<u32>,
+    cvs: HashMap<u64, Arc<Condvar>>,
+}
+impl Table {
+    fn new() -> Self {
+        Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0, waits: Default::default(), cvs: HashMap::default() }
+    }
+    fn notify(&self, ids: &[u64]) {
+        for id in ids {
+            if let Some(cv) = self.cvs.get(id) {
+                cv.notify_one();
+            }
+        }
+    }
+    /// Whether object `k` lets some waiter through now (without taking it); false for the kinds
+    /// only `signal` wakes for.
+    fn signaled(&self, k: u32) -> bool {
+        match self.objs.map.get(&k) {
+            Some((Obj::Event { set, .. } | Obj::Timer { set, .. }, _)) => *set,
+            Some((Obj::Semaphore { count, .. }, _)) => *count > 0,
+            Some((Obj::Mutex { owner, .. }, _)) => *owner == 0 || *owner == ABANDONED,
+            Some((Obj::Thread { done, .. }, _)) => *done,
+            _ => false,
+        }
+    }
+    /// A waiter goes: the wakeup it may have taken goes on to another waiter of each of its
+    /// objects still signaled (waits::wake).
+    fn leave(&mut self, id: u64) {
+        self.cvs.remove(&id);
+        let Some((_, keys)) = self.waits.remove(id) else { return };
+        let mut out = Vec::new();
+        for k in keys {
+            if self.signaled(k) {
+                self.waits.wake(&k, 1, &mut out);
+            }
+        }
+        self.notify(&out);
+    }
 }
 
 pub static TABLE: Mutex<Option<Table>> = Mutex::new(None);
@@ -152,7 +192,6 @@ fn signal_of(t: &Table, h: u32) -> Option<waits::handoff::Mark> {
     let k = t.objs.key(&h)?;
     SIGNALS.lock().unwrap().as_ref()?.get(&k).copied()
 }
-pub static WAKE: Condvar = Condvar::new();
 
 pub fn lock() -> MutexGuard<'static, Option<Table>> {
     TABLE.lock().unwrap_or_else(|e| e.into_inner())
@@ -160,7 +199,7 @@ pub fn lock() -> MutexGuard<'static, Option<Table>> {
 
 pub fn with<R>(f: impl FnOnce(&mut Table) -> R) -> R {
     let mut g = lock();
-    f(g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 }))
+    f(g.get_or_insert_with(|| Table::new()))
 }
 
 pub const CURRENT_PROCESS: u32 = 0xffff_ffff;
@@ -248,8 +287,29 @@ pub fn file(h: u32) -> Option<Arc<crate::files::File>> {
 
 /// Wakes every waiter (after changing anything they may wait for).
 pub fn signal() {
-    with(|t| t.gen += 1);
-    WAKE.notify_all();
+    with(|t| {
+        t.gen += 1;
+        let mut out = Vec::new();
+        t.waits.wake_all(&mut out);
+        t.notify(&out);
+    });
+}
+
+/// Handle `h`'s object became signaled for `n` waiters (an auto-reset event or a released mutex
+/// 1, a semaphore the count released, a manual-reset event all): wakes only its waiters.
+pub fn signal_obj(h: u32, n: usize) {
+    with(|t| {
+        t.gen += 1;
+        let Some(k) = t.objs.key(&norm(h)) else { return };
+        let mut out = Vec::new();
+        t.waits.wake(&k, n, &mut out);
+        t.notify(&out);
+    });
+}
+
+thread_local! {
+    /// this thread's condition variable for its waits (Table::cvs while it waits)
+    static CV: Arc<Condvar> = Arc::new(Condvar::new());
 }
 
 pub fn new_thread_obj(tid: u32) -> u32 {
@@ -332,7 +392,7 @@ pub fn waitable(handles: &[u32]) -> bool {
     let tid = crate::cur().tid;
     let me = crate::cur().obj;
     let mut g = lock();
-    let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
+    let t = g.get_or_insert_with(|| Table::new());
     handles.iter().all(|&h| try_take(t, if h == CURRENT_THREAD { me } else { h }, tid, false).is_some())
 }
 /// Handle `h` has only the rights `mask` (waiting needs SYNCHRONIZE)
@@ -396,26 +456,32 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
 fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
     let tid = crate::cur().tid;
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
+    let cv = CV.with(Arc::clone);
     let mut g = lock();
     // (whether it waited: only a waiter that was woken defers to its signaler)
     let mut blocked = false;
-    loop {
+    // (this wait's entry in the table's list while it has one)
+    let mut id: Option<u64> = None;
+    let (r, marks) = loop {
         // (a save state: the wait stands still here, holding nothing; see snap.rs)
         if kura::snap::pausing() {
             drop(g);
             crate::snap::point();
             g = lock();
         }
-        // (TerminateThread ended this thread)
+        // (TerminateThread ended this thread: its entry goes first, with what woke it)
         if crate::k32::terminating() {
+            if let Some(id) = id.take() {
+                g.as_mut().unwrap().leave(id);
+            }
             drop(g);
             crate::k32::check_terminate();
             g = lock();
         }
-        let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
+        let t = g.get_or_insert_with(Table::new);
         if let Some(x) = extra {
             if x() {
-                return handles.len() as u32;
+                break (handles.len() as u32, Vec::new());
             }
         }
         if all {
@@ -423,7 +489,7 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
             match ok {
                 None => {
                     crate::k32::last_error(6);
-                    return WAIT_FAILED;
+                    break (WAIT_FAILED, Vec::new());
                 }
                 Some(v) if v.iter().all(|&b| b) => {
                     let ab = handles.iter().position(|&h| abandoned(t, h));
@@ -431,36 +497,33 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
                         try_take(t, h, tid, true);
                     }
                     let marks: Vec<_> = if blocked { handles.iter().filter_map(|&h| signal_of(t, h)).collect() } else { Vec::new() };
-                    drop(g);
-                    for m in marks {
-                        defer_to(m, tid);
-                    }
-                    return ab.map_or(0, |_| 0x80);
+                    break (ab.map_or(0, |_| 0x80), marks);
                 }
                 _ => {}
             }
         } else {
+            let mut done = None;
             for (i, &h) in handles.iter().enumerate() {
                 let ab = abandoned(t, h);
                 match try_take(t, h, tid, true) {
                     None => {
                         crate::k32::last_error(6);
-                        return WAIT_FAILED;
+                        done = Some((WAIT_FAILED, Vec::new()));
+                        break;
                     }
                     Some(true) => {
                         // (woken by another thread's SetEvent: it runs on to its next call first)
                         let m = if blocked { signal_of(t, h) } else { None };
-                        drop(g);
-                        if let Some(m) = m {
-                            defer_to(m, tid);
-                        }
-                        return i as u32 + if ab { 0x80 } else { 0 };
+                        done = Some((i as u32 + if ab { 0x80 } else { 0 }, m.into_iter().collect()));
+                        break;
                     }
                     Some(false) => {}
                 }
             }
+            if let Some(d) = done {
+                break d;
+            }
         }
-        let gen = t.gen;
         // (timers turn set by themselves: wake when the first one is due)
         let timer = handles
             .iter()
@@ -473,23 +536,48 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+        if let Some(d) = deadline {
+            if Instant::now() >= d {
+                if timer == Some(d) {
+                    continue;
+                }
+                break (WAIT_TIMEOUT, Vec::new());
+            }
+        }
+        // sleeps until one of its objects (or anything, `signal`) changes
+        let me = match id {
+            Some(me) => {
+                t.waits.rearm(me);
+                me
+            }
+            None => {
+                let me = t.waits.add(handles, all);
+                t.cvs.insert(me, cv.clone());
+                id = Some(me);
+                me
+            }
+        };
         blocked = true;
         match deadline {
             None => {
-                while g.as_ref().unwrap().gen == gen {
-                    g = WAKE.wait(g).unwrap_or_else(|e| e.into_inner());
+                while !g.as_ref().unwrap().waits.poked(me) {
+                    g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
                 }
             }
             Some(d) => {
                 let now = Instant::now();
-                if now >= d {
-                    if timer == Some(d) {
-                        continue;
-                    }
-                    return WAIT_TIMEOUT;
+                if now < d {
+                    g = cv.wait_timeout(g, d - now).unwrap_or_else(|e| e.into_inner()).0;
                 }
-                g = WAKE.wait_timeout(g, d - now).unwrap_or_else(|e| e.into_inner()).0;
             }
         }
+    };
+    if let Some(id) = id {
+        g.as_mut().unwrap().leave(id);
     }
+    drop(g);
+    for m in marks {
+        defer_to(m, tid);
+    }
+    r
 }

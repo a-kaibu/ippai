@@ -18,6 +18,7 @@ pub mod calls;
 pub mod handoff;
 pub mod outq;
 pub mod suspend;
+pub mod wake;
 
 #[cfg(loom)]
 pub use loom::sync::atomic::AtomicU32;

@@ -822,3 +822,184 @@ fn output_queue_keeps_records_whole() {
         }
     });
 }
+
+/// sake's obj.rs waits (wake::WaitList): semaphores and auto-reset events under one lock, each
+/// waiter with a condition variable of its own; a release wakes only as many waiters of that
+/// object as it lets through, a waiter that leaves hands its wakeup on. Nobody sleeps for ever
+/// (loom has no timeouts: a lost wakeup is a deadlock it reports), and no token is taken twice.
+mod objects {
+    use super::*;
+    use loom::sync::{Condvar, Mutex};
+    use waits::wake::WaitList;
+
+    #[derive(Default)]
+    struct State {
+        count: Vec<u32>,
+        list: WaitList<usize>,
+        /// (waiter id, its condition variable's index)
+        cvs: Vec<(u64, usize)>,
+    }
+    struct Table {
+        s: Mutex<State>,
+        cv: Vec<Condvar>,
+    }
+    impl Table {
+        fn new(objects: usize, waiters: usize) -> Arc<Self> {
+            let s = State { count: vec![0; objects], ..Default::default() };
+            Arc::new(Table { s: Mutex::new(s), cv: (0..waiters).map(|_| Condvar::new()).collect() })
+        }
+        fn notify(&self, s: &State, ids: &[u64]) {
+            for id in ids {
+                let i = s.cvs.iter().find(|c| c.0 == *id).unwrap().1;
+                self.cv[i].notify_one();
+            }
+        }
+        /// ReleaseSemaphore(key, n) / SetEvent of an auto-reset event (n = 1)
+        fn release(&self, key: usize, n: u32) {
+            let mut s = self.s.lock().unwrap();
+            s.count[key] += n;
+            let mut out = Vec::new();
+            s.list.wake(&key, n as usize, &mut out);
+            self.notify(&s, &out);
+        }
+        /// WaitForMultipleObjects(keys, bWaitAll = all, INFINITE) by waiter `me`: what it took
+        fn wait(&self, me: usize, keys: &[usize], all: bool) -> Vec<usize> {
+            let mut s = self.s.lock().unwrap();
+            let id = s.list.add(keys, all);
+            s.cvs.push((id, me));
+            loop {
+                let took: Vec<usize> = if all {
+                    if keys.iter().all(|&k| s.count[k] > 0) { keys.to_vec() } else { vec![] }
+                } else {
+                    keys.iter().copied().find(|&k| s.count[k] > 0).into_iter().collect()
+                };
+                if !took.is_empty() {
+                    for &k in &took {
+                        s.count[k] -= 1;
+                    }
+                    let (_, keys) = s.list.remove(id).unwrap();
+                    s.cvs.retain(|c| c.0 != id);
+                    // (the wakeup it may have taken from another waiter goes on)
+                    let mut out = Vec::new();
+                    for k in keys {
+                        if s.count[k] > 0 {
+                            s.list.wake(&k, 1, &mut out);
+                        }
+                    }
+                    self.notify(&s, &out);
+                    return took;
+                }
+                s.list.rearm(id);
+                while !s.list.poked(id) {
+                    s = self.cv[me].wait(s).unwrap();
+                }
+            }
+        }
+    }
+
+    fn run(objects: usize, waits: Vec<(Vec<usize>, bool)>, releases: Vec<(usize, u32)>) {
+        let n = waits.len();
+        let mut given = vec![0u32; objects];
+        for &(k, n) in &releases {
+            given[k] += n;
+        }
+        let t = Table::new(objects, n);
+        let w: Vec<_> = waits
+            .into_iter()
+            .enumerate()
+            .map(|(me, (keys, all))| {
+                let t = t.clone();
+                thread::spawn(move || t.wait(me, &keys, all))
+            })
+            .collect();
+        let r: Vec<_> = releases
+            .into_iter()
+            .map(|(k, n)| {
+                let t = t.clone();
+                thread::spawn(move || t.release(k, n))
+            })
+            .collect();
+        for x in r {
+            x.join().unwrap();
+        }
+        let mut took = vec![0u32; objects];
+        for x in w {
+            for k in x.join().unwrap() {
+                took[k] += 1;
+            }
+        }
+        let s = t.s.lock().unwrap();
+        for k in 0..objects {
+            assert_eq!(took[k] + s.count[k], given[k]);
+        }
+        assert!(s.list.is_empty());
+    }
+
+    /// Two waiters on one semaphore, one release each: neither is left asleep with a token there.
+    #[test]
+    fn one_semaphore_two_waiters() {
+        model(|| run(1, vec![(vec![0], false), (vec![0], false)], vec![(0, 1), (0, 1)]));
+    }
+
+    /// A release of 2 at once lets both through.
+    #[test]
+    fn a_release_of_two_wakes_two() {
+        model(|| run(1, vec![(vec![0], false), (vec![0], false)], vec![(0, 2)]));
+    }
+
+    /// The waiter a release woke takes another object of its list instead: the wakeup goes on to
+    /// the waiter that has only that object. (Enough for every order: a waiter on [1, 0] may take
+    /// 0 before 1 is released.)
+    #[test]
+    fn a_waiter_that_takes_another_object_hands_the_wakeup_on() {
+        model(|| run(2, vec![(vec![1, 0], false), (vec![0], false)], vec![(0, 2), (1, 1)]));
+    }
+
+    /// The waiter woken for object 0 takes object 1 (released meanwhile, waking nobody new):
+    /// it hands the wakeup on to the waiter that has only 0. Checked as the wakeup itself once
+    /// the releases are done: no object that lets one through has a waiter of it asleep without
+    /// another one of it awake (then everyone gets what is left over).
+    #[test]
+    fn the_wakeup_goes_on_when_the_woken_takes_another() {
+        model(|| {
+            let t = Table::new(2, 2);
+            let w: Vec<_> = [vec![1, 0], vec![0]]
+                .into_iter()
+                .enumerate()
+                .map(|(me, keys)| {
+                    let t = t.clone();
+                    thread::spawn(move || t.wait(me, &keys, false))
+                })
+                .collect();
+            let r = {
+                let t = t.clone();
+                thread::spawn(move || {
+                    t.release(0, 1);
+                    t.release(1, 1);
+                })
+            };
+            r.join().unwrap();
+            {
+                let s = t.s.lock().unwrap();
+                for k in 0..2 {
+                    if s.count[k] > 0 {
+                        let asleep = s.cvs.iter().any(|c| !s.list.poked(c.0) && s.list.waits_on(c.0, &k));
+                        let awake = s.cvs.iter().any(|c| s.list.poked(c.0) && s.list.waits_on(c.0, &k));
+                        assert!(!asleep || awake, "object {k} is signaled, a waiter of it sleeps and none of them was woken");
+                    }
+                }
+            }
+            t.release(0, 2);
+            t.release(1, 2);
+            for x in w {
+                x.join().unwrap();
+            }
+        });
+    }
+
+    /// A wait-all waiter beside a wait-any one on a shared object.
+    #[test]
+    fn wait_all_beside_wait_any() {
+        model(|| run(2, vec![(vec![0, 1], true), (vec![0], false)], vec![(0, 2), (1, 1)]));
+    }
+}

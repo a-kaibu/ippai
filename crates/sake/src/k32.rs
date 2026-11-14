@@ -1784,18 +1784,20 @@ pub fn event_set(h: u32, v: bool) -> u32 {
         obj::signal();
         return ok(r);
     }
+    // (Some(manual-reset): it is an event)
     let r = obj::with(|t| match t.objs.get_mut(&h) {
-        Some((Obj::Event { set, .. }, _)) => {
+        Some((Obj::Event { set, manual }, _)) => {
             *set = v;
-            true
+            Some(*manual)
         }
-        _ => false,
+        _ => None,
     });
-    if r && v {
+    if let (Some(manual), true) = (r, v) {
         obj::with(|t| obj::note_signal(t, h));
-        obj::signal();
+        // (an auto-reset event lets one waiter through, a manual-reset one all of them)
+        obj::signal_obj(h, if manual { usize::MAX } else { 1 });
     }
-    ok(r)
+    ok(r.is_some())
 }
 fn SetEvent(c: &mut Ctx) -> u32 {
     event_set(c.a(0), true)
@@ -1865,7 +1867,9 @@ pub(crate) fn release_mutex(h: u32) -> Result<(), u32> {
         Some((Obj::Mutex { .. }, _)) => Err(288), // ERROR_NOT_OWNER
         _ => Err(6),
     });
-    obj::signal();
+    if r.is_ok() {
+        obj::signal_obj(h, 1);
+    }
     r
 }
 fn CreateSemaphoreA(c: &mut Ctx) -> u32 {
@@ -1920,7 +1924,9 @@ pub(crate) fn release_semaphore(h: u32, n: i32) -> Result<i32, u32> {
         }
         _ => Err(6),
     });
-    obj::signal();
+    if r.is_ok() {
+        obj::signal_obj(h, n as usize);
+    }
     r
 }
 /// WaitForSingleObject's handle: STD_INPUT/OUTPUT/ERROR_HANDLE stand for the handles
