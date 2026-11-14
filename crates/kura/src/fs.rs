@@ -106,6 +106,35 @@ pub fn symlink_metadata<P: AsRef<Path>>(p: P) -> io::Result<Metadata> {
     }
 }
 
+/// A number that changes whenever the file at `p` may have changed (what it holds, being made,
+/// removed or renamed over): what a cache of a file's contents checks before it trusts them.
+/// In the trees here it is the file system's change count (any change anywhere changes it);
+/// outside them (node's own files) the file's size, time and inode, and 0 (trust nothing) for
+/// a file that is not there or was changed in the last `RECENT` (a host's file times move in
+/// ticks of a few ms: a rewrite of the same size within one would look the same). Take it
+/// before reading the file: a change while reading then shows at the next look.
+pub fn stamp<P: AsRef<Path>>(p: P) -> u64 {
+    let count = vfs::change_count();
+    match vfs::info_at(&path_str(p.as_ref()), true) {
+        At::Ours(_) => 1 << 63 | count as u64,
+        At::Outside(h) => match std::fs::metadata(h) {
+            Err(_) => 0,
+            Ok(m) if m.modified().ok().and_then(|t| SystemTime::now().duration_since(t).ok()).is_none_or(|d| d < RECENT) => 0,
+            Ok(m) => {
+                use std::hash::{Hash, Hasher};
+                let mut s = std::collections::hash_map::DefaultHasher::new();
+                m.len().hash(&mut s);
+                m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos()).hash(&mut s);
+                Metadata::from(m).ino().hash(&mut s);
+                s.finish() >> 1 | 1
+            }
+        },
+    }
+}
+
+/// How long a host file's change keeps its stamp 0 (`stamp`)
+pub const RECENT: Duration = Duration::from_secs(2);
+
 pub fn read<P: AsRef<Path>>(p: P) -> io::Result<Vec<u8>> {
     let mut f = File::open(p)?;
     let mut v = Vec::with_capacity(f.metadata().map_or(0, |m| m.len() as usize));
@@ -441,6 +470,50 @@ mod link_tests {
         assert_eq!(metadata(&b).unwrap().links(), 1);
         assert_eq!(read(&b).unwrap(), b"one+b");
         assert_eq!(metadata(&d).unwrap().links(), 1);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::*;
+
+    fn age(p: &Path, secs: u64) {
+        let f = std::fs::File::options().write(true).open(p).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
+    }
+
+    /// A host file's stamp: 0 when missing or just changed (a same-size rewrite in the same
+    /// tick must not look unchanged), the same while nothing changes, new for a rewrite of the
+    /// same size at another time, a rename over it and a removal
+    #[test]
+    fn host_file_stamps() {
+        let d = std::env::temp_dir().join(format!("kura-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let a = d.join("a.ini");
+        assert_eq!(stamp(&a), 0);
+        write(&a, b"k=1").unwrap();
+        assert_eq!(stamp(&a), 0, "just written");
+        age(&a, 60);
+        let s1 = stamp(&a);
+        assert_ne!(s1, 0);
+        assert_eq!(stamp(&a), s1);
+        let _ = read(&a).unwrap();
+        assert_eq!(stamp(&a), s1, "reading changes nothing");
+        write(&a, b"k=2").unwrap();
+        assert_eq!(stamp(&a), 0, "same size, just written");
+        age(&a, 50);
+        let s2 = stamp(&a);
+        assert!(s2 != 0 && s2 != s1);
+        let b = d.join("b.ini");
+        write(&b, b"k=2").unwrap();
+        age(&b, 50);
+        rename(&b, &a).unwrap();
+        let s3 = stamp(&a);
+        assert!(s3 != 0 && s3 != s2, "another inode");
+        remove_file(&a).unwrap();
+        assert_eq!(stamp(&a), 0);
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

@@ -151,7 +151,13 @@ struct KeyData {
 const REG_FILE: &str = "C:\\users\\user\\sake-registry.tsv";
 
 fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    const D: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(2 * b.len());
+    for &x in b {
+        s.push(D[(x >> 4) as usize] as char);
+        s.push(D[(x & 15) as usize] as char);
+    }
+    s
 }
 
 /// The saved keys: "key<TAB>original name" lines (old files just have "key"), then
@@ -174,7 +180,8 @@ fn parse_reg(t: &str, m: &mut HashMap<String, KeyData>) {
             k.name = name.to_string();
         }
         if let [_, name, ty, data] = f[..] {
-            let bytes = (0..data.len() / 2).filter_map(|i| u8::from_str_radix(&data[2 * i..2 * i + 2], 16).ok()).collect();
+            // (bytes, not chars: a damaged file read lossily has U+FFFD in it)
+            let bytes = data.as_bytes().chunks_exact(2).filter_map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok()).collect();
             let lname = name.to_lowercase();
             k.values.retain(|v| v.0.to_lowercase() != lname);
             k.values.push((name.to_string(), ty.parse().unwrap_or(3), bytes));
@@ -204,8 +211,9 @@ fn format_reg(m: &HashMap<String, KeyData>) -> String {
     t
 }
 
-fn save_reg(m: &HashMap<String, KeyData>) -> bool {
-    let t = format_reg(m);
+fn write_reg(t: &str) -> bool {
+    #[cfg(test)]
+    reg_cache_tests::WRITES.with(|n| n.set(n.get() + 1));
     let h = crate::files::resolve_new(REG_FILE);
     if let Some(d) = h.rsplit_once('/') {
         let _ = kura::fs::create_dir_all(d.0);
@@ -216,7 +224,85 @@ fn save_reg(m: &HashMap<String, KeyData>) -> bool {
     true
 }
 
-static REG: Mutex<Option<HashMap<String, KeyData>>> = Mutex::new(None);
+/// A change to the registry (called inside `with_reg`): written to the file when the
+/// transaction ends, at once while other processes share the registry, a little later
+/// otherwise (`Reg::flush`).
+fn save_reg(_: &HashMap<String, KeyData>) -> bool {
+    REG_CHANGED.store(true, Ordering::Relaxed);
+    true
+}
+
+/// Set by `save_reg` inside a transaction (REG is held meanwhile)
+static REG_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// How long a change of a process of its own waits for more before it is written (one file
+/// write for a settings dialog's 50 values, an installer's 200): the page's look at the saves,
+/// RegFlushKey, RegCloseKey, starting another process and the process's end write it sooner.
+const REG_LATER: Duration = Duration::from_millis(500);
+
+/// The registry of this process: the keys, and how far they are from the file
+struct Reg {
+    m: HashMap<String, KeyData>,
+    /// changed since written: since when
+    dirty: Option<std::time::Instant>,
+    /// the file's stamp (kura::fs::stamp) when last read or written: another process's change
+    /// shows as a new one
+    stamp: u64,
+    /// what was written last (a write that changes nothing is not made)
+    written: u64,
+}
+
+impl Reg {
+    /// Writes the changes to the file (when there are any)
+    fn flush(&mut self) {
+        let Some(since) = self.dirty.take() else { return };
+        let t = format_reg(&self.m);
+        let sum = text_sum(&t);
+        if sum != self.written {
+            if !write_reg(&t) {
+                // (kept: the next flush tries again)
+                self.dirty = Some(since);
+                return;
+            }
+            self.written = sum;
+        }
+        self.stamp = kura::fs::stamp(crate::files::resolve_new(REG_FILE));
+    }
+}
+
+fn text_sum(t: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    t.hash(&mut h);
+    h.finish()
+}
+
+static REG: Mutex<Option<Reg>> = Mutex::new(None);
+
+fn reg_lock() -> std::sync::MutexGuard<'static, Option<Reg>> {
+    REG.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Writes the registry's changes now (RegFlushKey; before another process starts; at exit).
+pub(crate) fn reg_flush() {
+    if let Some(r) = reg_lock().as_mut() {
+        r.flush();
+    }
+}
+
+/// The page looks at the saves: what waits is written first. Never waits for a guest thread
+/// (the page's main thread runs it): a transaction going on writes it itself in a moment.
+fn reg_flush_for_page() {
+    if let Ok(mut g) = REG.try_lock() {
+        if let Some(r) = g.as_mut() {
+            r.flush();
+        }
+    }
+}
+
+extern "C" fn reg_flush_at_exit() {
+    reg_flush_for_page();
+}
 
 /// Keys every Windows has, even empty (setup programs open them to tell whether they may
 /// install: EXEpress CX opens ...\Uninstall and says "requires power user" when it can't;
@@ -343,70 +429,114 @@ fn put_str(m: &mut HashMap<String, KeyData>, key: &str, name: &str, v: &str, ty:
     e.values.push((name.to_string(), ty, data));
 }
 
-fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
-    // Serialize the read/modify/write transaction across the game, SCM and
-    // helper processes, not just across this process's Rust threads.
-    crate::kern::with(|_| {
-    let mut g = REG.lock().unwrap();
-    let m = g.get_or_insert_with(|| {
-        let mut m = HashMap::default();
-        put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion", "CurrentVersion", "6.1", 1);
-        put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion", "ProductName", "Microsoft Windows 7", 1);
-        // (ProgramFilesDir and CommonFilesDir as the key's view has them: wow64_value)
-        for (n, v) in [("ProgramFilesDir", "C:\\Program Files"), ("ProgramFilesDir (x86)", "C:\\Program Files (x86)"), ("ProgramW6432Dir", "C:\\Program Files"),
-            ("CommonFilesDir", "C:\\Program Files\\Common Files"), ("CommonFilesDir (x86)", "C:\\Program Files (x86)\\Common Files"), ("CommonW6432Dir", "C:\\Program Files\\Common Files")] {
-            put_str(&mut m, "hklm\\software\\microsoft\\windows\\currentversion", n, v, 1);
-        }
-        put_str(&mut m, "hklm\\software\\microsoft\\directx", "Version", "4.09.00.0904", 1);
-        // Explorer's folder lists (old programs read these instead of SHGetFolderPath)
-        for (key, user) in [("hkcu", true), ("hklm", false)] {
-            for &(name, csidl, for_user) in SHELL_FOLDERS {
-                if for_user != user {
-                    continue;
-                }
-                let Some(path) = special_folder(csidl) else { continue };
-                put_str(&mut m, &format!("{key}\\software\\microsoft\\windows\\currentversion\\explorer\\shell folders"), name, path, 1);
-                if let Some(v) = shell_folder_unexpanded(path) {
-                    put_str(&mut m, &format!("{key}\\software\\microsoft\\windows\\currentversion\\explorer\\user shell folders"), name, &v, 2); // REG_EXPAND_SZ
-                }
-            }
-        }
-        // the installed fonts (DirectWrite's system collection reads this list)
-        if let Some(dir) = crate::files::resolve("C:\\windows\\Fonts\\") {
-            let mut files: Vec<String> = kura::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
-            files.sort();
-            for f in files.iter().filter(|f| [".ttf", ".ttc", ".otf"].iter().any(|x| f.to_ascii_lowercase().ends_with(x))) {
-                let stem = f.rsplit_once('.').map_or(f.as_str(), |x| x.0);
-                put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f, 1);
-            }
-        }
-        // the RPG Maker RTPs in C:\ (the official ones, crates/ippai/src/rtp.rs), as their setups
-        // register them: the engine finds the RTP folder by this value
-        for (key, name, dir) in RTPS {
-            if crate::files::resolve(&format!("{dir}\\")).is_some() {
-                put_str(&mut m, key, name, dir, 1);
-            }
-        }
-        m.entry("hkcu\\software".into()).or_default();
-        for path in SYSTEM_KEYS {
-            let k = m.entry(path.to_lowercase()).or_default();
-            k.name = path.rsplit('\\').next().unwrap_or(path).into();
-        }
-        // the event logs (eventlog.rs) and the event log service's own source
-        for l in ["Application", "Security", "System", "System\\EventLog"] {
-            let k = m.entry(format!("hklm\\system\\currentcontrolset\\services\\eventlog\\{}", l.to_lowercase())).or_default();
-            k.name = l.rsplit('\\').next().unwrap_or(l).into();
-        }
-        load_reg(&mut m);
-        m
-    });
-    let mut saved = HashMap::default();
-    if load_reg(&mut saved) {
-        m.retain(|_, k| !k.ours);
-        m.extend(saved);
+fn reg_builtin() -> HashMap<String, KeyData> {
+    let mut m = HashMap::default();
+    put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion", "CurrentVersion", "6.1", 1);
+    put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion", "ProductName", "Microsoft Windows 7", 1);
+    // (ProgramFilesDir and CommonFilesDir as the key's view has them: wow64_value)
+    for (n, v) in [("ProgramFilesDir", "C:\\Program Files"), ("ProgramFilesDir (x86)", "C:\\Program Files (x86)"), ("ProgramW6432Dir", "C:\\Program Files"),
+        ("CommonFilesDir", "C:\\Program Files\\Common Files"), ("CommonFilesDir (x86)", "C:\\Program Files (x86)\\Common Files"), ("CommonW6432Dir", "C:\\Program Files\\Common Files")] {
+        put_str(&mut m, "hklm\\software\\microsoft\\windows\\currentversion", n, v, 1);
     }
-    f(m)
-    }).0
+    put_str(&mut m, "hklm\\software\\microsoft\\directx", "Version", "4.09.00.0904", 1);
+    // Explorer's folder lists (old programs read these instead of SHGetFolderPath)
+    for (key, user) in [("hkcu", true), ("hklm", false)] {
+        for &(name, csidl, for_user) in SHELL_FOLDERS {
+            if for_user != user {
+                continue;
+            }
+            let Some(path) = special_folder(csidl) else { continue };
+            put_str(&mut m, &format!("{key}\\software\\microsoft\\windows\\currentversion\\explorer\\shell folders"), name, path, 1);
+            if let Some(v) = shell_folder_unexpanded(path) {
+                put_str(&mut m, &format!("{key}\\software\\microsoft\\windows\\currentversion\\explorer\\user shell folders"), name, &v, 2); // REG_EXPAND_SZ
+            }
+        }
+    }
+    // the installed fonts (DirectWrite's system collection reads this list)
+    if let Some(dir) = crate::files::resolve("C:\\windows\\Fonts\\") {
+        let mut files: Vec<String> = kura::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+        files.sort();
+        for f in files.iter().filter(|f| [".ttf", ".ttc", ".otf"].iter().any(|x| f.to_ascii_lowercase().ends_with(x))) {
+            let stem = f.rsplit_once('.').map_or(f.as_str(), |x| x.0);
+            put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f, 1);
+        }
+    }
+    // the RPG Maker RTPs in C:\ (the official ones, crates/ippai/src/rtp.rs), as their setups
+    // register them: the engine finds the RTP folder by this value
+    for (key, name, dir) in RTPS {
+        if crate::files::resolve(&format!("{dir}\\")).is_some() {
+            put_str(&mut m, key, name, dir, 1);
+        }
+    }
+    m.entry("hkcu\\software".into()).or_default();
+    for path in SYSTEM_KEYS {
+        let k = m.entry(path.to_lowercase()).or_default();
+        k.name = path.rsplit('\\').next().unwrap_or(path).into();
+    }
+    // the event logs (eventlog.rs) and the event log service's own source
+    for l in ["Application", "Security", "System", "System\\EventLog"] {
+        let k = m.entry(format!("hklm\\system\\currentcontrolset\\services\\eventlog\\{}", l.to_lowercase())).or_default();
+        k.name = l.rsplit('\\').next().unwrap_or(l).into();
+    }
+m
+}
+
+/// Runs `f` on the registry: a transaction (other threads, and other processes once they
+/// share the registry, wait meanwhile). The file is read once; read again only when another
+/// process changed it (its stamp is new), which only happens while the registry is shared.
+fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
+    if crate::kern::host::shared() {
+        // (the read/modify/write transaction across the game, SCM and helper processes, not
+        // just across this process's Rust threads)
+        crate::kern::with(|_| reg_transaction(true, f)).0
+    } else {
+        reg_transaction(false, f)
+    }
+}
+
+fn reg_transaction<R>(shared: bool, f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
+    let mut g = reg_lock();
+    let r = g.get_or_insert_with(|| {
+        let mut m = reg_builtin();
+        let stamp = kura::fs::stamp(crate::files::resolve_new(REG_FILE));
+        load_reg(&mut m);
+        static HOOKS: std::sync::Once = std::sync::Once::new();
+        HOOKS.call_once(|| {
+            kura::vfs::before_export(reg_flush_for_page);
+            unsafe {
+                libc::atexit(reg_flush_at_exit);
+            }
+        });
+        Reg { m, dirty: None, stamp, written: 0 }
+    });
+    transact(r, shared, f)
+}
+
+fn transact<R>(r: &mut Reg, shared: bool, f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
+    if shared {
+        // (a change made before the registry was shared: written before another's is read)
+        r.flush();
+        let stamp = kura::fs::stamp(crate::files::resolve_new(REG_FILE));
+        // (0: a file just changed or not there: nothing tells, so it is read)
+        if stamp == 0 || stamp != r.stamp {
+            let mut saved = HashMap::default();
+            if load_reg(&mut saved) {
+                r.m.retain(|_, k| !k.ours);
+                r.m.extend(saved);
+            }
+            r.stamp = stamp;
+        }
+    }
+    REG_CHANGED.store(false, Ordering::Relaxed);
+    let out = f(&mut r.m);
+    if REG_CHANGED.swap(false, Ordering::Relaxed) {
+        let now = std::time::Instant::now();
+        r.dirty.get_or_insert(now);
+    }
+    if r.dirty.is_some_and(|t| shared || t.elapsed() >= REG_LATER) {
+        r.flush();
+    }
+    out
 }
 
 /// Internal SCM / COM access to the same registry as guest Reg* calls. Refresh
@@ -679,9 +809,12 @@ fn RegCloseKey(c: &mut Ctx) -> u32 {
     if root_name(c.a(0)).is_none() && !obj::close(c.a(0)) {
         return 6;
     }
+    // (what was written through the key reaches the file: a settings dialog's values once)
+    reg_flush();
     0
 }
 fn RegFlushKey(_: &mut Ctx) -> u32 {
+    reg_flush();
     0
 }
 
@@ -5337,6 +5470,156 @@ mod file_title_tests {
             let got = file_title(&w).unwrap();
             prop_assert!(w.ends_with(got));
             prop_assert!(!got.iter().any(|&c| c == 92 || c == 47 || c == 58));
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod reg_cache_tests {
+    //! The registry kept in memory and written later (with_reg / Reg::flush). The tests that
+    //! look at the file are one test: other tests of this binary change the same registry, but
+    //! only ever add to what the file holds.
+    use super::*;
+    use proptest::prelude::*;
+
+    const HKEY_CURRENT_USER: u32 = 0x8000_0001;
+
+    thread_local! {
+        /// registry file writes made on this thread
+        pub(super) static WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn file() -> String {
+        kura::fs::read(crate::files::resolve_new(REG_FILE)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+    }
+
+    fn line(path: &str, name: &str, data: &[u8]) -> String {
+        format!("{path}\t{name}\t3\t{}\n", hex(data))
+    }
+
+    fn put(path: &str, name: &str, data: &[u8]) {
+        reg_put(path, name, 3, data.to_vec());
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn registry_written_later_and_never_lost() {
+        use crate::test_guest::{call, enter, guest_thread};
+        let _g = enter();
+        guest_thread();
+        let me = format!("hkcu\\software\\regcache{}", std::process::id());
+        // 200 values (an installer's) are one write or two, not 200
+        let w0 = WRITES.with(|n| n.get());
+        for i in 0..200u32 {
+            put(&me, &format!("v{i}"), &i.to_le_bytes());
+        }
+        assert!(WRITES.with(|n| n.get()) - w0 <= 2, "{} writes", WRITES.with(|n| n.get()) - w0);
+        assert_eq!(reg_get(&me, "v199"), Some((3, 199u32.to_le_bytes().to_vec())));
+        // the page's look at the saves writes them first
+        kura::vfs::vnhost_vfs_changes();
+        let t = file();
+        for i in 0..200u32 {
+            assert!(t.contains(&line(&me, &format!("v{i}"), &i.to_le_bytes())), "v{i}");
+        }
+        // RegFlushKey and RegCloseKey write; nothing changed: no write
+        put(&me, "flushed", b"f");
+        assert_eq!(call(RegFlushKey, &[HKEY_CURRENT_USER]), 0);
+        assert!(file().contains(&line(&me, "flushed", b"f")));
+        put(&me, "closed", b"c");
+        let w1 = WRITES.with(|n| n.get());
+        assert_eq!(call(RegCloseKey, &[HKEY_CURRENT_USER]), 0);
+        assert!(file().contains(&line(&me, "closed", b"c")));
+        put(&me, "closed", b"c");
+        reg_flush();
+        assert!(WRITES.with(|n| n.get()) - w1 <= 1);
+        // a change waiting longer than REG_LATER is written by the next transaction
+        put(&me, "late", b"l");
+        std::thread::sleep(REG_LATER + Duration::from_millis(50));
+        let _ = reg_get(&me, "late");
+        assert!(file().contains(&line(&me, "late", b"l")));
+        // shared: another process's change to the file is seen, ours reach the file at once
+        {
+            let mut g = reg_lock();
+            let r = g.as_mut().unwrap();
+            r.flush();
+            let other = format!("{}{}", file(), line(&me, "other", b"o"));
+            assert!(write_reg(&other));
+            let seen = transact(r, true, |m| m.get(&me).and_then(|k| k.values.iter().find(|v| v.0 == "other").map(|v| v.2.clone())));
+            assert_eq!(seen, Some(b"o".to_vec()));
+            transact(r, true, |m| {
+                m.get_mut(&me).unwrap().values.push(("mine".into(), 3, b"m".to_vec()));
+                save_reg(m)
+            });
+            assert!(r.dirty.is_none());
+        }
+        assert!(file().contains(&line(&me, "mine", b"m")));
+        // threads writing while the page looks: every value reaches the file
+        let ts: Vec<_> = (0..6)
+            .map(|t| {
+                let me = me.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40u32 {
+                        put(&me, &format!("t{t}i{i}"), &i.to_le_bytes());
+                    }
+                })
+            })
+            .collect();
+        let page = std::thread::spawn(|| {
+            for _ in 0..50 {
+                kura::vfs::vnhost_vfs_changes();
+                std::thread::yield_now();
+            }
+        });
+        for t in ts {
+            t.join().unwrap();
+        }
+        page.join().unwrap();
+        reg_flush_at_exit();
+        let t = file();
+        for th in 0..6 {
+            for i in 0..40u32 {
+                assert!(t.contains(&line(&me, &format!("t{th}i{i}"), &i.to_le_bytes())), "t{th}i{i}");
+            }
+        }
+        reg_delete_tree(&me);
+        reg_flush();
+        assert!(!file().contains(&me));
+    }
+
+    proptest! {
+        /// A damaged file (any text, lossy UTF-8 included) never stops the registry: it parses
+        #[test]
+        fn parse_any_text(t in "\\PC{0,200}", b in prop::collection::vec(any::<u8>(), 0..200)) {
+            let mut m = HashMap::default();
+            parse_reg(&t, &mut m);
+            parse_reg(&String::from_utf8_lossy(&b), &mut m);
+            parse_reg(&format!("k\tn\t3\t0\u{fffd}1"), &mut m);
+        }
+
+        /// What is written reads back: names, types and bytes
+        #[test]
+        fn format_parse_roundtrip(keys in prop::collection::vec(("[a-z0-9\\\\ ]{1,12}", prop::collection::vec(("[A-Za-z0-9 ]{0,8}", 0u32..12, prop::collection::vec(any::<u8>(), 0..16)), 0..4)), 0..6)) {
+            let mut m: HashMap<String, KeyData> = HashMap::default();
+            for (p, vals) in &keys {
+                let k = m.entry(p.clone()).or_default();
+                k.ours = true;
+                for (n, ty, d) in vals {
+                    k.values.retain(|v| !v.0.eq_ignore_ascii_case(n));
+                    k.values.push((n.clone(), *ty, d.clone()));
+                }
+            }
+            let mut back = HashMap::default();
+            parse_reg(&format_reg(&m), &mut back);
+            for (p, k) in &m {
+                prop_assert_eq!(&back[p].values, &k.values);
+            }
+            prop_assert_eq!(back.len(), m.len());
+        }
+
+        #[test]
+        fn hex_is_two_digits_a_byte(b in prop::collection::vec(any::<u8>(), 0..64)) {
+            let want: String = b.iter().map(|x| format!("{x:02x}")).collect();
+            prop_assert_eq!(hex(&b), want);
         }
     }
 }

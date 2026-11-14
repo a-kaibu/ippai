@@ -1260,6 +1260,8 @@ pub fn with<R>(f: impl FnOnce(&mut Kern) -> R) -> (R, u64) {
 /// Shares the kernel with the processes this one starts: false if the host can't run another
 /// process.
 pub fn share() -> bool {
+    // (the registry's changes reach its file before another process reads it)
+    crate::misc::reg_flush();
     let mut g = local();
     if host::shared() {
         return true;

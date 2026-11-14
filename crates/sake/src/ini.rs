@@ -8,6 +8,7 @@ use crate::api::{implement, Ctx};
 use crate::files;
 use crate::k32::arg_str;
 use crate::mem::{put_cstr, put_wstr};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// A profile file as its lines: the ones before the first section, then each section's header
 /// and lines. Writes change only the lines they touch, as Windows does (comments, odd spacing,
@@ -205,10 +206,8 @@ fn path(name: &str) -> String {
     }
 }
 
-/// The file's contents, or None when it does not exist
-fn load(name: &str) -> Option<Ini> {
-    let h = files::resolve(&path(name))?;
-    let b = kura::fs::read(h).ok()?;
+/// A profile file's bytes as its lines: ANSI, or UTF-16 / UTF-8 with a BOM
+fn decode(b: &[u8]) -> Ini {
     let mut wide = false;
     let text = if b.starts_with(&[0xff, 0xfe]) {
         wide = true;
@@ -216,20 +215,101 @@ fn load(name: &str) -> Option<Ini> {
     } else if let Some(u) = b.strip_prefix(&[0xef, 0xbb, 0xbf]) {
         String::from_utf8_lossy(u).into_owned()
     } else {
-        crate::text::a2s(&b)
+        crate::text::a2s(b)
     };
     let mut ini = Ini::parse(&text);
     ini.wide = wide;
+    ini
+}
+
+fn encode(ini: &Ini) -> Vec<u8> {
+    let s = ini.text();
+    if ini.wide { [0xff, 0xfe].into_iter().chain(s.encode_utf16().flat_map(|u| u.to_le_bytes())).collect() } else { crate::text::s2a(&s) }
+}
+
+// The files read last, parsed (as Windows keeps the profile file it read last): a game reads
+// hundreds of keys at start-up and some read one per scene, each a whole-file read and parse
+// without it. An entry is good while the file's stamp (kura::fs::stamp: any change to the
+// file, also through CreateFile or another process) is the one it was read at.
+struct Cached {
+    host: String,
+    stamp: u64,
+    ini: Arc<Ini>,
+}
+
+/// The cache, most recently used last
+static CACHE: Mutex<Vec<Cached>> = Mutex::new(Vec::new());
+/// Profile writes one at a time (a read, a change and a write: two threads writing keys of the
+/// same file both keep theirs), and never while a profile read reads (a write truncates the
+/// file before it writes it again; Windows' profile functions take one lock too)
+static PROFILE: RwLock<()> = RwLock::new(());
+/// The files the cache keeps, and the largest it keeps
+const CACHE_FILES: usize = 8;
+const CACHE_BYTES: usize = 1 << 20;
+
+fn cache() -> std::sync::MutexGuard<'static, Vec<Cached>> {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn remember(host: &str, stamp: u64, ini: Arc<Ini>) {
+    let mut c = cache();
+    c.retain(|e| e.host != host);
+    // (0: a file outside the vfs it could not look at: never trusted)
+    if stamp != 0 {
+        c.push(Cached { host: host.to_string(), stamp, ini });
+        if c.len() > CACHE_FILES {
+            c.remove(0);
+        }
+    }
+}
+
+/// The parsed file at host path `host`, or None when it can't be read
+fn read_host(host: &str) -> Option<Arc<Ini>> {
+    let stamp = kura::fs::stamp(host);
+    {
+        let mut c = cache();
+        if let Some(i) = c.iter().position(|e| e.host == host) {
+            if c[i].stamp == stamp && stamp != 0 {
+                let e = c.remove(i);
+                let ini = e.ini.clone();
+                c.push(e);
+                return Some(ini);
+            }
+            c.remove(i);
+        }
+    }
+    let b = kura::fs::read(host).ok()?;
+    #[cfg(test)]
+    tests::READS.with(|n| n.set(n.get() + 1));
+    let ini = Arc::new(decode(&b));
+    if b.len() <= CACHE_BYTES {
+        remember(host, stamp, ini.clone());
+    }
     Some(ini)
 }
 
-fn save(name: &str, ini: &Ini) -> bool {
-    let s = ini.text();
-    let bytes = if ini.wide { [0xff, 0xfe].into_iter().chain(s.encode_utf16().flat_map(|u| u.to_le_bytes())).collect() } else { crate::text::s2a(&s) };
-    let w = path(name);
-    let h = files::resolve(&w).unwrap_or_else(|| files::resolve_new(&w));
-    kura::fs::write(h, bytes).is_ok()
+/// Writes `ini` to host path `host`, and keeps it as the file's contents
+fn write_host(host: &str, ini: Ini) -> bool {
+    let bytes = encode(&ini);
+    if kura::fs::write(host, &bytes).is_err() {
+        cache().retain(|e| e.host != host);
+        return false;
+    }
+    if bytes.len() <= CACHE_BYTES {
+        remember(host, kura::fs::stamp(host), Arc::new(ini));
+    } else {
+        cache().retain(|e| e.host != host);
+    }
+    true
 }
+
+/// The file's contents, or None when it does not exist
+fn load(name: &str) -> Option<Arc<Ini>> {
+    let host = files::resolve(&path(name))?;
+    let _r = PROFILE.read().unwrap_or_else(|e| e.into_inner());
+    read_host(&host)
+}
+
 
 /// Copies `s` into a buffer of `cap` characters (truncated, NUL-terminated): returns the length
 /// and whether it was cut (Windows counts filling the buffer exactly as cut).
@@ -326,13 +406,22 @@ fn get_int(c: &mut Ctx, wide: bool, file: &str) -> u32 {
 
 /// Changes the file with `f` (creating it when it changes something), and writes it back
 fn modify(file: &str, f: impl FnOnce(&mut Ini)) -> u32 {
-    let old = load(file);
-    let mut ini = old.clone().unwrap_or_default();
+    let w = path(file);
+    let host = files::resolve(&w).unwrap_or_else(|| files::resolve_new(&w));
+    modify_host(&host, f) as u32
+}
+
+/// The file at host path `host` changed by `f` and written back (made when `f` changes
+/// something): false when it can't be written
+fn modify_host(host: &str, f: impl FnOnce(&mut Ini)) -> bool {
+    let _one = PROFILE.write().unwrap_or_else(|e| e.into_inner());
+    let old = read_host(host);
+    let mut ini = old.as_deref().cloned().unwrap_or_default();
     f(&mut ini);
-    if old.as_ref() == Some(&ini) || old.is_none() && ini == Ini::default() {
-        return 1;
+    if old.as_deref() == Some(&ini) || old.is_none() && ini == Ini::default() {
+        return true;
     }
-    save(file, &ini) as u32
+    write_host(host, ini)
 }
 
 fn write_string(c: &mut Ctx, wide: bool, file: &str) -> u32 {

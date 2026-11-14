@@ -127,11 +127,40 @@ static CHANGES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 /// only then (an export holds the file system's lock and copies every written file).
 #[no_mangle]
 pub extern "C" fn vnhost_vfs_changes() -> u32 {
+    before_export_run();
+    change_count()
+}
+
+/// The count `vnhost_vfs_changes` hands the page (without writing what waits first).
+pub fn change_count() -> u32 {
     CHANGES.load(std::sync::atomic::Ordering::Relaxed).wrapping_add(shared::generation())
+}
+
+/// What writes files it keeps back (sake's registry): run before the page looks for changes
+/// and before it exports the saves, so what a game wrote reaches the saves even when the file
+/// itself is written later (`before_export`).
+static BEFORE_EXPORT: std::sync::Mutex<Vec<fn()>> = std::sync::Mutex::new(Vec::new());
+
+/// Has `f` run before every look of the page at the saves (`vnhost_vfs_changes`,
+/// `vnhost_vfs_export`): it writes what it holds back. `f` must not wait for a lock a guest
+/// thread may hold long (the page's main thread runs it).
+pub fn before_export(f: fn()) {
+    let mut l = BEFORE_EXPORT.lock().unwrap_or_else(|e| e.into_inner());
+    if !l.iter().any(|&g| g as usize == f as usize) {
+        l.push(f);
+    }
+}
+
+fn before_export_run() {
+    let l = BEFORE_EXPORT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for f in l {
+        f();
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_t) -> *mut u8 {
+    before_export_run();
     let roots = CStr::from_ptr(roots).to_string_lossy().into_owned();
     let mut out = Vec::new();
     {

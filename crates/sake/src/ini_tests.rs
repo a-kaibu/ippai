@@ -175,3 +175,178 @@ proptest! {
         prop_assert_eq!(int_of(&format!("  {n}abc")), Some(n as u32));
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// the cache of parsed files (read_host / write_host)
+
+thread_local! {
+    /// whole-file reads read_host made on this thread
+    pub(super) static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn reads() -> usize {
+    READS.with(|n| n.get())
+}
+
+fn temp_file(tag: &str) -> String {
+    let d = std::env::temp_dir().join(format!("sake-ini-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d.join("game.ini").to_string_lossy().into_owned()
+}
+
+/// Sets the file's time `secs` back (a change the stamp may trust: kura::fs::RECENT)
+fn age(p: &str, secs: u64) {
+    let f = std::fs::File::options().write(true).open(p).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs)).unwrap();
+}
+
+/// A value as GetPrivateProfileString reads it (`load` on a host path)
+fn value(host: &str, sec: &str, key: &str) -> Option<String> {
+    let _r = PROFILE.read().unwrap_or_else(|e| e.into_inner());
+    read_host(host)?.value(sec, key)
+}
+
+/// Reading 500 keys reads the file once; a write by anything else (same size, another time)
+/// is seen at once; the profile's own write is kept without a read; a file changed just now
+/// is read every time (its stamp can't tell a same-size rewrite in the same tick)
+#[test]
+fn cache_reads_once_and_sees_changes() {
+    let f = temp_file("once");
+    std::fs::write(&f, "[Main]\r\nvolume=50\r\n").unwrap();
+    age(&f, 100);
+    let r0 = reads();
+    for _ in 0..500 {
+        assert_eq!(value(&f, "Main", "volume").as_deref(), Some("50"));
+    }
+    assert_eq!(reads() - r0, 1);
+    std::fs::write(&f, "[Main]\r\nvolume=60\r\n").unwrap();
+    age(&f, 90);
+    assert_eq!(value(&f, "Main", "volume").as_deref(), Some("60"));
+    assert_eq!(reads() - r0, 2);
+    assert!(modify_host(&f, |i| i.set("Main", "volume", Some("70"))));
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "[Main]\r\nvolume=70\r\n");
+    // (just written: not trusted, read again)
+    assert_eq!(value(&f, "Main", "volume").as_deref(), Some("70"));
+    std::fs::write(&f, "[Main]\r\nvolume=80\r\n").unwrap();
+    assert_eq!(value(&f, "Main", "volume").as_deref(), Some("80"));
+    assert_eq!(value(&f, "Main", "volume").as_deref(), Some("80"));
+    std::fs::remove_file(&f).unwrap();
+    assert!(read_host(&f).is_none());
+    assert!(modify_host(&f, |i| i.set("New", "k", Some("v"))));
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "[New]\r\nk=v\r\n");
+}
+
+/// A UTF-16 file stays UTF-16 through the cache, and a file over the cache's size is read
+/// every time (never kept)
+#[test]
+fn cache_keeps_encoding_and_skips_big_files() {
+    let f = temp_file("wide");
+    let wide: Vec<u8> = [0xff, 0xfe].into_iter().chain("[S]\r\nk=あ\r\n".encode_utf16().flat_map(|u| u.to_le_bytes())).collect();
+    std::fs::write(&f, &wide).unwrap();
+    age(&f, 100);
+    assert_eq!(value(&f, "S", "k").as_deref(), Some("あ"));
+    assert!(modify_host(&f, |i| i.set("S", "k", Some("い"))));
+    let b = std::fs::read(&f).unwrap();
+    assert_eq!(&b[..2], &[0xff, 0xfe]);
+    assert_eq!(decode(&b).value("S", "k").as_deref(), Some("い"));
+    let big = temp_file("big");
+    let text = format!("[S]\r\nk=1\r\npad={}\r\n", "x".repeat(CACHE_BYTES));
+    std::fs::write(&big, text).unwrap();
+    age(&big, 100);
+    let r0 = reads();
+    for _ in 0..3 {
+        assert_eq!(value(&big, "S", "k").as_deref(), Some("1"));
+    }
+    assert_eq!(reads() - r0, 3);
+}
+
+/// Threads writing keys of one file at once all keep theirs
+#[test]
+fn cache_writes_from_threads_all_kept() {
+    let f = temp_file("threads");
+    let ts: Vec<_> = (0..8)
+        .map(|t| {
+            let f = f.clone();
+            std::thread::spawn(move || {
+                for k in 0..20 {
+                    assert!(modify_host(&f, |i| i.set("S", &format!("t{t}k{k}"), Some(&format!("{t}.{k}")))));
+                    assert_eq!(value(&f, "S", &format!("t{t}k{k}")), Some(format!("{t}.{k}")));
+                }
+            })
+        })
+        .collect();
+    for t in ts {
+        t.join().unwrap();
+    }
+    let ini = decode(&std::fs::read(&f).unwrap());
+    for t in 0..8 {
+        for k in 0..20 {
+            assert_eq!(ini.value("S", &format!("t{t}k{k}")), Some(format!("{t}.{k}")), "t{t}k{k}");
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Op {
+    /// WritePrivateProfileString
+    Set(u8, u8),
+    /// WritePrivateProfileString(key, NULL)
+    Unset(u8),
+    /// the game (or another process) writes the file itself; `old`: its time far enough back
+    /// for the stamp to trust it
+    Outside(Vec<(u8, u8)>, bool),
+    Remove,
+    Get(u8),
+}
+
+fn op() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        (0u8..4, 0u8..10).prop_map(|(k, v)| Op::Set(k, v)),
+        (0u8..4).prop_map(Op::Unset),
+        (prop::collection::vec((0u8..4, 0u8..10), 0..4), any::<bool>()).prop_map(|(e, old)| Op::Outside(e, old)),
+        Just(Op::Remove),
+        (0u8..4).prop_map(Op::Get),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Differential: any mix of profile writes, outside writes and removals reads exactly what
+    /// a fresh read of the file says (the cache never answers from an old file)
+    #[test]
+    fn cache_matches_fresh_reads(ops in prop::collection::vec(op(), 1..30)) {
+        let f = temp_file("pbt");
+        // (each outside write a different time back: what a real later change looks like)
+        let mut back = 1000;
+        for o in ops {
+            match o {
+                Op::Set(k, v) => {
+                    let ok = modify_host(&f, |i| i.set("S", &format!("k{k}"), Some(&v.to_string())));
+                    prop_assert!(ok);
+                }
+                Op::Unset(k) => {
+                    let ok = modify_host(&f, |i| i.set("S", &format!("k{k}"), None));
+                    prop_assert!(ok);
+                }
+                Op::Outside(e, old) => {
+                    let text: String = std::iter::once("[S]\r\n".to_string()).chain(e.iter().map(|(k, v)| format!("k{k}={v}\r\n"))).collect();
+                    std::fs::write(&f, text).unwrap();
+                    if old {
+                        back -= 1;
+                        age(&f, back);
+                    }
+                }
+                Op::Remove => {
+                    let _ = std::fs::remove_file(&f);
+                }
+                Op::Get(k) => {
+                    let fresh = std::fs::read(&f).ok().map(|b| decode(&b));
+                    let key = format!("k{k}");
+                    prop_assert_eq!(value(&f, "S", &key), fresh.and_then(|i| i.value("S", &key)));
+                }
+            }
+        }
+    }
+}
