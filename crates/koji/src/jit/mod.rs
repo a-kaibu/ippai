@@ -823,9 +823,13 @@ fn xmm_or_m128(ins: &Instruction, i: u32) -> bool {
     }
 }
 
-/// x87 instructions the block's register cache (FCache) implements.
+/// x87 instructions the block's register cache (FCache) implements (none in the precise x87
+/// mode, crate::fpu::X87_80: the interpreter keeps the 80-bit values).
 fn fc_handles(ins: &Instruction) -> bool {
     use Mnemonic::*;
+    if crate::fpu::x87_80() {
+        return false;
+    }
     let reg = |i| ins.op_kind(i) == OpKind::Register;
     match ins.mnemonic() {
         Fld | Fst | Fstp => if reg(0) { true } else { fmem_ok(ins) },

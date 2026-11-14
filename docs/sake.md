@@ -157,8 +157,11 @@
   movmsk、vptest) は直接。AVX2 の gather 全種、BMI1/BMI2 (interp/bmi.rs)、XGETBV (XCR0 = 7)。
   64 ビット JIT もレーンごとの VEX.256 (移動、算術、論理、per-lane のシャッフル・pack・unpack・
   ブレンド、即値シフト、同じ幅の cvt) を同じやり方で訳す (jit/long/sse.rs の sse256: 両レーンの
-  MXCSR ガードを先に済ませ、途中でインタプリタに戻るときは入れ替えを戻す)。レーンをまたぐもの、
-  FMA、xmm の個数のシフトはインタプリタ。確認は tools/jit64test (ymm の形もインタプリタと照合) と
+  MXCSR ガードを先に済ませ、途中でインタプリタに戻るときは入れ替えを戻す)。レーンをまたぐもの
+  (vinsert/vextract128、vperm2f128/i128、vpermq/pd、vpermd/ps、broadcast 全種、vpermilps/pd の両形、
+  vpblendd、可変シフト vpsllv/vpsrlv/vpsrav、YMM への vpmovzx/sx、YMM の movmsk、vzeroall) は
+  jit/long/avx.rs が直接訳す (2026-11-13、#36: 結果を L_V0/L_V1 に作ってから書くので、行き先が
+  元と同じでもよい)。FMA、gather、vptest、vmaskmov、cvt の拡大・縮小、xmm の個数のシフトはまだインタプリタ。確認は tools/jit64test (ymm の形もインタプリタと照合) と
   host/tests/avx256.c (ネイティブの x86-64 と同じチェックサム)。CPUID は既定では AVX 系を報告しない
   (CPUID で経路を選ぶ memcpy やコーデックがインタプリタの命令に入るため)。IPPAI_CPUID_AVX を付けると
   AVX/AVX2/FMA/BMI1/BMI2/LZCNT/OSXSAVE と leaf 7 を報告する (koji::CPUID_AVX)。
@@ -231,6 +234,15 @@
     命令ごとのモード読み出しも 30% 遅かったのでブロックごとにした。SSE は MXCSR.RC が最近接の
     ときだけ JIT で走らせ、それ以外はインタプリタ)、PC24 の x87 を f32 の指数範囲で丸めていた、x87 の非正規化数になる
     積・商の二重丸め (レジスタで 53 ビット、ストアで f64)。
+  - x87 の 80 ビット拡張精度 (2026-11-14、#52): 既定の x87 は f64 で計算する (速さのため。PC64 も 53 ビット)。
+    IPPAI_X87_80=1 を付けると koji::f80 (SoftFloat の roundPackToExtF80 と同じ丸め、x86 の NaN 規則、
+    後丸めの tininess) で 64 ビット仮数・15 ビット指数のまま計算し、PC 24/53/64 と 4 つの RC を守る
+    (interp/x87.rs の x87_precise。ロード・ストア・四則と整数オペランド・fsqrt・frndint・比較・fcmov・
+    fsave/frstor・fxsave/fxrstor。超越関数などは f64 のまま)。このモードでは x87 の JIT を使わない。
+    確認は TestFloat 3e (crates/koji/tests/testfloat_f80.rs、extF80 の四則・sqrt・変換 240 万件と
+    命令経由 26 万件)、実機の x87 との差分 (tests/diff_x87_80.rs、ランダムな命令列 4 万件)、
+    host/tests/x87ext.c (ネイティブと同じチェックサム)。crt_math の known.txt の差は x87 ではなく
+    sake の libm と msvcrt の libm の違いなので、このモードでは変わらない。
   - リージョン間の移動 (2026-11-07、Godot 4 の Forgotten Village の起動): merge_hot64 は「ring を
     8 回続けて一番多く出ていく」で統合していた。ring は 64 回の移動ごと (次の miss や API 呼び出しで)
     読まれるので、起動中のコードは数千回の移動で統合され、タイトルまでに約 1300 回、大きくなった

@@ -2,6 +2,7 @@
 
 use super::X;
 use crate::flags::{self, *};
+use crate::f80::F80;
 use crate::fpu::{self, C0, C1, C2, C3};
 use crate::round::{self, Op};
 use crate::{Exit, Memory, EAX};
@@ -94,10 +95,266 @@ impl<'a, M: Memory> X<'a, M> {
         Ok((1, self.cpu.fpu.st(0), true))
     }
 
+    /// A memory operand as an 80-bit value (precise mode).
+    fn fload80(&mut self) -> Result<F80, crate::Fault> {
+        let a = self.addr();
+        Ok(match self.ins.memory_size() {
+            MemorySize::Float32 => {
+                let v = f32::from_bits(self.mem.read32(a)?);
+                F80::from_f64(fpu::quiet(v as f64))
+            }
+            MemorySize::Float64 => F80::from_f64(fpu::quiet(f64::from_bits(self.mem.read64(a)?))),
+            MemorySize::Float80 => {
+                let mut b = [0u8; 10];
+                for (i, x) in b.iter_mut().enumerate() {
+                    *x = self.mem.read8(a.wrapping_add(i as u32))?;
+                }
+                F80::from_bytes(&b)
+            }
+            MemorySize::Int16 => F80::from_i64(self.mem.read16(a)? as i16 as i64),
+            MemorySize::Int32 => F80::from_i64(self.mem.read32(a)? as i32 as i64),
+            _ => F80::from_i64(self.mem.read64(a)? as i64),
+        })
+    }
+
+    /// The precise mode's x87 (crate::fpu::X87_80): the instructions whose results depend on
+    /// the 80-bit format, in it; None for the rest (the f64 code runs them, and a register it
+    /// writes drops its 80-bit value).
+    fn x87_precise(&mut self) -> Option<Exit> {
+        use Mnemonic::*;
+        let ins = self.ins;
+        let mn = ins.mnemonic();
+        let cw = self.cpu.fpu.cw as u32;
+        let (pc, rc) = ((cw >> 8) & 3, (cw >> 10) & 3);
+        macro_rules! t {
+            ($e:expr) => {
+                match $e {
+                    Ok(v) => v,
+                    Err(f) => return Some(Exit::Fault(f)),
+                }
+            };
+        }
+        let mem0 = ins.op_count() >= 1 && ins.op_kind(0) == OpKind::Memory;
+        match mn {
+            Fld => {
+                let v = if mem0 { t!(self.fload80()) } else { self.cpu.fpu.st80(st_index(ins.op_register(0))) };
+                // (FLD of an SNaN from memory: quiet, as the x87 converts it; m80 and registers keep it)
+                self.cpu.fpu.push80(v);
+            }
+            Fild => {
+                let v = t!(self.fload80());
+                self.cpu.fpu.push80(v);
+            }
+            Fst | Fstp => {
+                let v = self.cpu.fpu.st80(0);
+                if mem0 {
+                    let a = self.addr();
+                    match ins.memory_size() {
+                        MemorySize::Float32 => t!(self.mem.write32(a, v.to_f32(rc).to_bits())),
+                        MemorySize::Float64 => t!(self.mem.write64(a, v.to_f64(rc).to_bits())),
+                        _ => {
+                            for (i, x) in v.to_bytes().iter().enumerate() {
+                                t!(self.mem.write8(a.wrapping_add(i as u32), *x));
+                            }
+                        }
+                    }
+                } else {
+                    self.cpu.fpu.set_st80(st_index(ins.op_register(0)), v);
+                }
+                if mn == Fstp {
+                    self.cpu.fpu.pop();
+                }
+            }
+            Fist | Fistp | Fisttp => {
+                let v = self.cpu.fpu.st80(0);
+                let r = v.to_int(if mn == Fisttp { 3 } else { rc });
+                let a = self.addr();
+                match ins.memory_size() {
+                    MemorySize::Int16 => {
+                        let x = r.filter(|r| (-32768..=32767).contains(r)).map_or(i16::MIN, |r| r as i16);
+                        t!(self.mem.write16(a, x as u16));
+                    }
+                    MemorySize::Int32 => {
+                        let x = r.filter(|r| (i32::MIN as i128..=i32::MAX as i128).contains(r)).map_or(i32::MIN, |r| r as i32);
+                        t!(self.mem.write32(a, x as u32));
+                    }
+                    _ => {
+                        let x = r.filter(|r| (i64::MIN as i128..=i64::MAX as i128).contains(r)).map_or(i64::MIN, |r| r as i64);
+                        t!(self.mem.write64(a, x as u64));
+                    }
+                }
+                if mn != Fist {
+                    self.cpu.fpu.pop();
+                }
+            }
+            Fldpi | Fldl2e | Fldl2t | Fldlg2 | Fldln2 => {
+                // the x87's constants: 64 bits of the exact value, rounded by RC (the nearest
+                // and the one below it: down and toward zero take it when the nearest is above)
+                let (se, m, near_up) = match mn {
+                    Fldpi => (0x4000, 0xc90f_daa2_2168_c235u64, true),
+                    Fldl2e => (0x3fff, 0xb8aa_3b29_5c17_f0bc, true),
+                    Fldl2t => (0x4000, 0xd49a_784b_cd1b_8afe, false),
+                    Fldlg2 => (0x3ffd, 0x9a20_9a84_fbcf_f799, true),
+                    _ => (0x3ffe, 0xb172_17f7_d1cf_79ac, true),
+                };
+                let m = match (rc, near_up) {
+                    (1 | 3, true) => m - 1,
+                    (2, false) => m + 1,
+                    _ => m,
+                };
+                self.cpu.fpu.push80(F80 { m, se });
+            }
+            Fadd | Faddp | Fsub | Fsubp | Fsubr | Fsubrp | Fmul | Fmulp | Fdiv | Fdivp | Fdivr | Fdivrp | Fiadd | Fisub | Fisubr | Fimul | Fidiv | Fidivr => {
+                let (d, s) = if mem0 {
+                    (0, t!(self.fload80()))
+                } else if ins.op_count() == 2 {
+                    (st_index(ins.op_register(0)), self.cpu.fpu.st80(st_index(ins.op_register(1))))
+                } else {
+                    (1, self.cpu.fpu.st80(0))
+                };
+                let x = self.cpu.fpu.st80(d);
+                let r = match mn {
+                    Fadd | Faddp | Fiadd => x.add(s, pc, rc),
+                    Fsub | Fsubp | Fisub => x.sub(s, pc, rc),
+                    Fsubr | Fsubrp | Fisubr => s.sub(x, pc, rc),
+                    Fmul | Fmulp | Fimul => x.mul(s, pc, rc),
+                    Fdiv | Fdivp | Fidiv => x.div(s, pc, rc),
+                    _ => s.div(x, pc, rc),
+                };
+                self.cpu.fpu.set_st80(d, r);
+                if matches!(mn, Faddp | Fsubp | Fsubrp | Fmulp | Fdivp | Fdivrp) {
+                    self.cpu.fpu.pop();
+                }
+            }
+            Fchs | Fabs => {
+                let v = self.cpu.fpu.st80(0);
+                self.cpu.fpu.set_st80(0, if mn == Fchs { v.neg() } else { v.abs() });
+            }
+            Fsqrt => {
+                let v = self.cpu.fpu.st80(0);
+                self.cpu.fpu.set_st80(0, v.sqrt(pc, rc));
+            }
+            Frndint => {
+                let v = self.cpu.fpu.st80(0);
+                let r = v.round_int(rc);
+                let f = &mut self.cpu.fpu;
+                f.sw &= !C1;
+                if r != v && !v.is_nan() {
+                    f.sw |= fpu::PE | if r.abs().compare(v.abs()) == Some(core::cmp::Ordering::Greater) { C1 } else { 0 };
+                }
+                f.set_st80(0, r);
+            }
+            Fcom | Fcomp | Fcompp | Fucom | Fucomp | Fucompp | Ficom | Ficomp | Ftst => {
+                let s = if mn == Ftst {
+                    F80::default()
+                } else if ins.op_count() >= 1 && ins.op_kind(ins.op_count() - 1) == OpKind::Memory {
+                    t!(self.fload80())
+                } else if ins.op_count() == 2 {
+                    self.cpu.fpu.st80(st_index(ins.op_register(1)))
+                } else if ins.op_count() == 1 {
+                    self.cpu.fpu.st80(st_index(ins.op_register(0)))
+                } else {
+                    self.cpu.fpu.st80(1)
+                };
+                let a = self.cpu.fpu.st80(0);
+                use core::cmp::Ordering::*;
+                let cc = match a.compare(s) {
+                    None => C3 | C2 | C0,
+                    Some(Greater) => 0,
+                    Some(Less) => C0,
+                    Some(Equal) => C3,
+                };
+                self.cpu.fpu.sw = (self.cpu.fpu.sw & !(C3 | C2 | C1 | C0)) | cc;
+                match mn {
+                    Fcomp | Fucomp | Ficomp => self.cpu.fpu.pop(),
+                    Fcompp | Fucompp => {
+                        self.cpu.fpu.pop();
+                        self.cpu.fpu.pop();
+                    }
+                    _ => {}
+                }
+            }
+            Fcomi | Fcomip | Fucomi | Fucomip => {
+                let s = self.cpu.fpu.st80(st_index(ins.op_register(1)));
+                let a = self.cpu.fpu.st80(0);
+                use core::cmp::Ordering::*;
+                let f = match a.compare(s) {
+                    None => ZF | PF | CF,
+                    Some(Greater) => 0,
+                    Some(Less) => CF,
+                    Some(Equal) => ZF,
+                };
+                self.cpu.eflags = (self.cpu.eflags & !STATUS) | f;
+                if matches!(mn, Fcomip | Fucomip) {
+                    self.cpu.fpu.pop();
+                }
+            }
+            Fcmovb | Fcmove | Fcmovbe | Fcmovu | Fcmovnb | Fcmovne | Fcmovnbe | Fcmovnu => {
+                let e = self.cpu.eflags;
+                let c = match mn {
+                    Fcmovb => e & CF != 0,
+                    Fcmove => e & ZF != 0,
+                    Fcmovbe => e & (CF | ZF) != 0,
+                    Fcmovu => e & PF != 0,
+                    Fcmovnb => e & CF == 0,
+                    Fcmovne => e & ZF == 0,
+                    Fcmovnbe => e & (CF | ZF) == 0,
+                    _ => e & PF == 0,
+                };
+                if c {
+                    let v = self.cpu.fpu.st80(st_index(ins.op_register(1)));
+                    self.cpu.fpu.set_st80(0, v);
+                }
+            }
+            Fnsave | Fsave => {
+                let a = self.addr();
+                let f = &self.cpu.fpu;
+                let env = [f.cw as u32 | 0xffff_0000, f.status() as u32 | 0xffff_0000, f.tag_word() as u32 | 0xffff_0000, 0, 0, 0, 0];
+                for (i, v) in env.iter().enumerate() {
+                    t!(self.mem.write32(a + 4 * i as u32, *v));
+                }
+                for i in 0..8 {
+                    for (k, x) in self.cpu.fpu.st80(i).to_bytes().iter().enumerate() {
+                        t!(self.mem.write8(a + 28 + 10 * i + k as u32, *x));
+                    }
+                }
+                self.cpu.fpu = crate::Fpu::default();
+            }
+            Frstor => {
+                let a = self.addr();
+                let cw = t!(self.mem.read32(a)) as u16;
+                let sw = t!(self.mem.read32(a + 4)) as u16;
+                let tw = t!(self.mem.read32(a + 8)) as u16;
+                let mut regs = [F80::default(); 8];
+                for (i, r) in regs.iter_mut().enumerate() {
+                    let mut b = [0u8; 10];
+                    for (k, x) in b.iter_mut().enumerate() {
+                        *x = t!(self.mem.read8(a + 28 + 10 * i as u32 + k as u32));
+                    }
+                    *r = F80::from_bytes(&b);
+                }
+                let f = &mut self.cpu.fpu;
+                f.cw = cw;
+                f.set_status(sw);
+                f.set_tag_word(tw);
+                for (i, r) in regs.iter().enumerate() {
+                    f.load80(i as u32, *r);
+                }
+            }
+            _ => return None,
+        }
+        Some(self.done())
+    }
+
     pub(super) fn x87(&mut self) -> Exit {
         use Mnemonic::*;
         let ins = self.ins;
         let mn = ins.mnemonic();
+        if fpu::x87_80() {
+            if let Some(e) = self.x87_precise() {
+                return e;
+            }
+        }
         match mn {
             Fld => {
                 if ins.op_kind(0) == OpKind::Memory {

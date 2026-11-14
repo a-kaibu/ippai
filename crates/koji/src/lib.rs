@@ -12,6 +12,7 @@ pub(crate) mod interp;
 pub mod flags;
 pub mod lazy;
 pub mod jit;
+pub mod f80;
 pub mod fpu;
 pub mod round;
 
@@ -316,7 +317,8 @@ pub fn fxsave<M: Memory + ?Sized>(cpu: &Cpu, mem: &mut M, a: u32) -> Result<(), 
     mem.write32(a + 24, cpu.mxcsr)?;
     mem.write32(a + 28, 0xffff)?;
     for i in 0..8u32 {
-        let b = fpu::to_f80(cpu.fpu.st(i));
+        // (an 80-bit value as it is: the precise mode's, or an exact FILD integer)
+        let b = cpu.fpu.st80(i).to_bytes();
         for (k, x) in b.iter().enumerate() {
             mem.write8(a + 32 + 16 * i + k as u32, *x)?;
         }
@@ -338,13 +340,13 @@ pub fn fxrstor<M: Memory + ?Sized>(cpu: &mut Cpu, mem: &mut M, a: u32) -> Result
     let sw = mem.read16(a + 2)?;
     let tw = mem.read8(a + 4)?;
     let mxcsr = mem.read32(a + 24)?;
-    let mut regs = [0.0; 8];
+    let mut regs = [f80::F80::default(); 8];
     for (i, r) in regs.iter_mut().enumerate() {
         let mut b = [0u8; 10];
         for (k, x) in b.iter_mut().enumerate() {
             *x = mem.read8(a + 32 + 16 * i as u32 + k as u32)?;
         }
-        *r = fpu::from_f80(&b);
+        *r = f80::F80::from_bytes(&b);
     }
     let mut xmm = [0u128; 16];
     for (i, x) in xmm.iter_mut().enumerate().take(if cpu.mode64 != 0 { 16 } else { 8 }) {
@@ -357,9 +359,9 @@ pub fn fxrstor<M: Memory + ?Sized>(cpu: &mut Cpu, mem: &mut M, a: u32) -> Result
     f.set_status(sw);
     f.empty = !tw;
     f.exact = 0;
+    f.extv = 0;
     for (i, r) in regs.iter().enumerate() {
-        let p = ((f.top + i as u32) & 7) as usize;
-        f.regs[p] = *r;
+        f.load80(i as u32, *r);
     }
     cpu.mxcsr = mxcsr;
     crate::jit::mx_modes(mxcsr, cpu.eip);

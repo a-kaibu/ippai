@@ -202,6 +202,8 @@ pub fn tid() -> i32 {
 pub fn create(trap_lo: u32, trap_hi: u32) -> *mut Cpu {
     // IPPAI_CPUID_AVX: CPUID reports AVX/AVX2/FMA3/BMI (koji::CPUID_AVX)
     koji::CPUID_AVX.store(crate::env_on!("IPPAI_CPUID_AVX"), Ordering::Relaxed);
+    // IPPAI_X87_80: the x87 in its 80-bit format (koji::fpu::X87_80: interpreted, slower)
+    koji::fpu::X87_80.store(crate::env_on!("IPPAI_X87_80"), Ordering::Relaxed);
     let mut cpu = Box::new(Cpu::default());
     cpu.trap_lo = trap_lo;
     cpu.trap_hi = trap_hi;

@@ -3,7 +3,21 @@
 //! One exception is kept exact: FILD m64 followed by FISTP m64 (old MSVC
 //! CRTs copy 8 bytes that way), via a per-register exact integer shadow.
 
+use crate::f80::F80;
 use crate::flags::{CF, PF, ZF};
+use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
+/// The precise x87 mode (off by default; the embedder sets it, kura: IPPAI_X87_80): the
+/// interpreter computes the x87's arithmetic, loads, stores and compares in the 80-bit format
+/// (crate::f80: 64-bit significand, 15-bit exponent, the precision control's rounding), keeping
+/// each register's extended value beside its f64 (`Fpu::ext`), and the JITs leave x87
+/// instructions to it. Transcendentals, FSCALE, FXTRACT and FPREM stay f64.
+pub static X87_80: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn x87_80() -> bool {
+    X87_80.load(Relaxed)
+}
 
 #[derive(Clone, Debug)]
 pub struct Fpu {
@@ -19,11 +33,15 @@ pub struct Fpu {
     pub cw: u16,
     /// Status word without TOP (C0..C3, exception bits).
     pub sw: u16,
+    /// The precise mode's 80-bit value of a register (valid while its bit is set in `extv`;
+    /// `regs` then holds it rounded to the nearest f64). Only the interpreter sets them.
+    pub ext: [F80; 8],
+    pub extv: u8,
 }
 
 impl Default for Fpu {
     fn default() -> Self {
-        Fpu { regs: [0.0; 8], ints: [0; 8], exact: 0, empty: 0xff, top: 0, cw: 0x037f, sw: 0 }
+        Fpu { regs: [0.0; 8], ints: [0; 8], exact: 0, empty: 0xff, top: 0, cw: 0x037f, sw: 0, ext: [F80::default(); 8], extv: 0 }
     }
 }
 
@@ -68,7 +86,47 @@ impl Fpu {
         let p = self.phys(i);
         self.regs[p] = v;
         self.exact &= !(1 << p);
+        self.extv &= !(1 << p);
         self.empty &= !(1 << p);
+    }
+    /// ST(i) in the 80-bit format: its extended value (precise mode), or its f64 exactly (an
+    /// exact FILD integer as it is).
+    pub fn st80(&self, i: u32) -> F80 {
+        let p = self.phys(i);
+        if self.extv & (1 << p) != 0 {
+            self.ext[p]
+        } else if self.exact & (1 << p) != 0 {
+            F80::from_i64(self.ints[p])
+        } else {
+            F80::from_f64(self.regs[p])
+        }
+    }
+    /// Sets ST(i) to an 80-bit value: its nearest f64 in `regs`, the value itself kept beside it
+    /// unless the f64 is exact.
+    pub fn set_st80(&mut self, i: u32, v: F80) {
+        let d = v.to_f64(0);
+        self.set_st(i, d);
+        if F80::from_f64(d) != v || v.is_nan() {
+            let p = self.phys(i);
+            self.ext[p] = v;
+            self.extv |= 1 << p;
+        }
+    }
+    /// ST(i) as FRSTOR / FXRSTOR load it from its 80 bits (the tag word comes separately): the
+    /// nearest f64, and in the precise mode the value itself
+    pub fn load80(&mut self, i: u32, v: F80) {
+        let p = self.phys(i);
+        self.regs[p] = from_f80(&v.to_bytes());
+        self.exact &= !(1 << p);
+        self.extv &= !(1 << p);
+        if x87_80() && (F80::from_f64(self.regs[p]) != v || v.is_nan()) {
+            self.ext[p] = v;
+            self.extv |= 1 << p;
+        }
+    }
+    pub fn push80(&mut self, v: F80) {
+        self.top = (self.top + 7) & 7;
+        self.set_st80(0, v);
     }
     pub fn push(&mut self, v: f64) {
         self.top = (self.top + 7) & 7;
@@ -118,6 +176,7 @@ impl Fpu {
         let p = self.phys(0);
         self.empty |= 1 << p;
         self.exact &= !(1 << p);
+        self.extv &= !(1 << p);
         self.top = (self.top + 1) & 7;
     }
     pub fn swap(&mut self, i: u32) {
@@ -127,6 +186,9 @@ impl Fpu {
         let bit = |m: u8, x: usize| (m >> x) & 1;
         let (ea, eb) = (bit(self.exact, a), bit(self.exact, b));
         self.exact = (self.exact & !(1 << a | 1 << b)) | eb << a | ea << b;
+        self.ext.swap(a, b);
+        let (xa, xb) = (bit(self.extv, a), bit(self.extv, b));
+        self.extv = (self.extv & !(1 << a | 1 << b)) | xb << a | xa << b;
         let (ma, mb) = (bit(self.empty, a), bit(self.empty, b));
         self.empty = (self.empty & !(1 << a | 1 << b)) | mb << a | ma << b;
     }
@@ -155,6 +217,7 @@ impl Fpu {
             }
         }
         self.exact = 0;
+        self.extv = 0;
     }
     /// Round to an integer with the control word's rounding mode.
     pub fn round(&self, v: f64) -> f64 {
