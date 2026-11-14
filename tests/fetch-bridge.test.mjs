@@ -259,11 +259,20 @@ test('a zstd frame header gives its decoded size, every field layout (RFC 8878)'
 test('the zstd CLI\'s frames say the sizes they hold (differential, when zstd is on PATH)', async () => {
   const { execFileSync } = await import('node:child_process');
   try { execFileSync('zstd', ['--version']); } catch { return; }
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
   const size = scope('', 'ippaiZstdSize');
-  for (const n of [0, 1, 255, 256, 65791, 70000, 1 << 20]) {
-    const z = execFileSync('zstd', ['-c', '-q'], { input: Buffer.alloc(n, 3) });
-    assert.equal(size(new Uint8Array(z)), n || 0);
-  }
+  // (from a file: from stdin the CLI does not know the size and leaves it out of the frame)
+  const dir = mkdtempSync(join(tmpdir(), 'zstd-'));
+  try {
+    for (const n of [0, 1, 255, 256, 65791, 70000, 1 << 20]) {
+      const f = join(dir, `in${n}`);
+      writeFileSync(f, Buffer.alloc(n, 3));
+      const z = execFileSync('zstd', ['-c', '-q', f]);
+      assert.equal(size(new Uint8Array(z)), n);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('a chunk whose put never settles leaves after IPPAI_PUT_MS, and the fetches ahead go on', async () => {

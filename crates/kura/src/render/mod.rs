@@ -275,6 +275,8 @@ pub extern "C" fn vnhost_render_lost_state() -> u32 {
 /// save state restores, d3d/snap.rs `lose`); the screen is uploaded again whole; Direct3D's
 /// clears not done yet stay; readbacks on their way end without pixels and a save state being
 /// read back fails. Then the guest uploads again what it has (`lost_gen`).
+// (fetch_update is try_update on newer toolchains, as in sake mem.rs)
+#[allow(deprecated)]
 #[no_mangle]
 pub extern "C" fn vnhost_render_lost() {
     R.with(|r| {
