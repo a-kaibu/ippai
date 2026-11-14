@@ -31,6 +31,12 @@ const PCM: u16 = 1;
 const MP3: u16 = 0x55;
 /// How long a conversion waits for the page's decoder.
 const MP3_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a stream whose page did not answer last time waits (it answers late or never).
+const MP3_LATE_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+/// Samples (per channel) a stream keeps decoded past the destination's room: 3 s at 48 kHz.
+const PENDING_MAX: usize = 3 * 48000;
+/// MP3 bytes taken at a time (a few dozen frames).
+const MP3_PIECE: usize = 16 << 10;
 const ACMERR_NOTPOSSIBLE: u32 = 512;
 const MMSYSERR_INVALPARAM: u32 = 11;
 
@@ -85,6 +91,8 @@ struct Mp3 {
     channels: usize,
     /// the decoder has given samples since the stream began (its delay is made up only before)
     heard: bool,
+    /// the page did not answer the last decode in time
+    late: bool,
 }
 
 impl Drop for Mp3 {
@@ -140,7 +148,9 @@ fn headers_ok(s: &Fmt, src: u32, blocks: u32) -> bool {
 /// or skips frames, output frame i taking source frame (i * src + c) / dst, with c fitted
 /// to Windows' answers (half a source frame, a quarter of a destination one when that is
 /// more), while that frame exists.
-fn pcm_convert(s: &Fmt, d: &Fmt, src: &[u8]) -> Vec<u8> {
+/// `src` as `d`, `max` frames at most (the destination's room: the rates are the guest's, and
+/// 8000 -> 0xFFFFFFFF made a multi-GB Vec before it was cut to the buffer).
+fn pcm_convert(s: &Fmt, d: &Fmt, src: &[u8], max: usize) -> Vec<u8> {
     let sa = s.align as usize;
     let frame = |i: usize| -> [i32; 2] {
         let get = |k: usize| -> i32 {
@@ -160,7 +170,7 @@ fn pcm_convert(s: &Fmt, d: &Fmt, src: &[u8]) -> Vec<u8> {
     // dr/2 and moves to the next frame once it exceeds dr; downsampling rounds from sr/2
     let c = if sr < dr { dr / 2 - 1 } else { (sr / 2).max(dr / 4) };
     let mut out = Vec::new();
-    for i in 0u64.. {
+    for i in 0u64..max as u64 {
         let k = ((i * sr + c) / dr) as usize;
         if k >= n {
             break;
@@ -942,7 +952,7 @@ fn acmStreamOpen(c: &mut Ctx) -> u32 {
             putp(ph, 0);
             return ACMERR_NOTPOSSIBLE;
         };
-        Some(std::sync::Arc::new(Mutex::new(Mp3 { dec, split: Default::default(), pending: Default::default(), due: 0, channels: s.channels as usize, heard: false })))
+        Some(std::sync::Arc::new(Mutex::new(Mp3 { dec, split: Default::default(), pending: Default::default(), due: 0, channels: s.channels as usize, heard: false, late: false })))
     } else {
         None
     };
@@ -1033,23 +1043,27 @@ fn acmStreamConvert(c: &mut Ctx) -> u32 {
     let (src, slen, dst, dlen) = (rp(hdr + o_src), r32(hdr + o_src + p), rp(hdr + o_dst), r32(hdr + o_dst + p));
     let (o_sused, o_dused) = (o_src + p + 4, o_dst + p + 4);
     let (used_in, used_out) = if let Some(m) = mp3 {
-        let input: Vec<u8> = (0..slen).map(|i| r8(src + i)).collect();
+        let input = mem::slice(src, if mem::guest(src, slen) { slen } else { 0 });
         let n = mp3_native(&s);
         // (the decoder's frames that fit, at its rate)
-        let frames = (dlen / d.align.max(1) as u32) as u64 * s.rate as u64 / d.rate.max(1) as u64;
-        let out = mp3_convert(&mut m.lock().unwrap_or_else(|e| e.into_inner()), &input, frames as usize * n.channels as usize, flags & 0x10 != 0, flags & 0x20 != 0);
+        let room = (dlen / d.align.max(1) as u32) as usize;
+        let frames = (room as u64 * s.rate as u64 / d.rate.max(1) as u64).min(usize::MAX as u64 / 4);
+        let (out, used) = mp3_convert(&mut m.lock().unwrap_or_else(|e| e.into_inner()), input, frames as usize * n.channels as usize, flags & 0x10 != 0, flags & 0x20 != 0);
         let mut bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();
         if (d.bits, d.channels, d.rate) != (16, n.channels, n.rate) {
-            bytes = pcm_convert(&n, &d, &bytes);
-            bytes.truncate((dlen / d.align.max(1) as u32 * d.align as u32) as usize);
+            bytes = pcm_convert(&n, &d, &bytes, room);
+            // (a format whose block align is not its frame's)
+            bytes.truncate(room * d.align as usize);
         }
         mem::write(dst, &bytes);
-        (slen, bytes.len() as u32)
+        (used as u32, bytes.len() as u32)
     } else if s.tag == PCM {
         let sa = s.align.max(1) as u32;
-        let input: Vec<u8> = (0..slen / sa * sa).map(|i| r8(src + i)).collect();
-        let mut out = pcm_convert(&s, &d, &input);
-        out.truncate((dlen / d.align.max(1) as u32 * d.align as u32) as usize);
+        let n = slen / sa * sa;
+        let input = mem::slice(src, if mem::guest(src, n) { n } else { 0 });
+        let room = (dlen / d.align.max(1) as u32) as usize;
+        let mut out = pcm_convert(&s, &d, input, room);
+        out.truncate(room * d.align as usize);
         mem::write(dst, &out);
         (input.len() as u32, out.len() as u32)
     } else {
@@ -1071,11 +1085,11 @@ fn acmStreamConvert(c: &mut Ctx) -> u32 {
         }
         let mut out = Vec::with_capacity((blocks * per_block / 2) as usize);
         for k in 0..blocks {
-            let b: Vec<u8> = (0..align).map(|i| r8(src + k * align + i)).collect();
+            let b = mem::slice(src + k * align, align);
             if s.tag == IMA {
-                ima_block(&b, ch, s.spb as usize, &mut out);
+                ima_block(b, ch, s.spb as usize, &mut out);
             } else {
-                ms_block(&b, ch, s.spb as usize, &mut out);
+                ms_block(b, ch, s.spb as usize, &mut out);
             }
         }
         let bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -1094,7 +1108,10 @@ fn acmStreamConvert(c: &mut Ctx) -> u32 {
 /// each frame gives its samples once the next one's header is here: what the decoder holds
 /// back for its delay (FFmpeg's first 529, or a chunk it answers only with the next) comes as
 /// silence first.
-fn mp3_convert(m: &mut Mp3, input: &[u8], max: usize, start: bool, end: bool) -> Vec<i16> {
+/// The bytes taken are fewer than given (cbSrcLengthUsed) once what is decoded and not handed
+/// out yet passes the destination's room and PENDING_MAX: a whole track converted into a small
+/// buffer at a time kept all of it decoded (10 MB a minute).
+fn mp3_convert(m: &mut Mp3, input: &[u8], max: usize, start: bool, end: bool) -> (Vec<i16>, usize) {
     if start {
         m.split.reset();
         m.pending.clear();
@@ -1102,31 +1119,46 @@ fn mp3_convert(m: &mut Mp3, input: &[u8], max: usize, start: bool, end: bool) ->
         m.heard = false;
         kura::adec::reset(m.dec);
     }
-    let mut frames = Vec::new();
-    m.split.push(input, &mut frames);
-    if end {
-        m.split.finish(&mut frames);
-    }
-    m.due += frames.iter().map(|f| f.0.samples as usize * m.channels).sum::<usize>();
-    let mut pcm = Vec::new();
-    let answered = kura::adec::decode(m.dec, frames.iter().map(|f| &f.1[..]), MP3_WAIT, &mut pcm).is_some();
-    if !answered && !frames.is_empty() {
-        eprintln!("sake: acm: mp3: the page's decoder did not answer");
-    }
-    // (as FFmpeg's float to 16-bit: rounded, clipped)
-    m.pending.extend(pcm.iter().map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16));
-    // (only at the start: later a decoder that answers a chunk late, as Chrome's can, is
-    // waited for, not filled in, or the sound would have gaps)
-    if answered && !m.heard && m.pending.len() < m.due {
-        let short = m.due - m.pending.len();
-        for _ in 0..short {
-            m.pending.push_front(0);
+    let cap = max.saturating_add(PENDING_MAX * m.channels.max(1));
+    let mut used = 0;
+    loop {
+        // (a piece at a time, while there is room for what it decodes to)
+        let piece = if m.pending.len() < cap { (input.len() - used).min(MP3_PIECE) } else { 0 };
+        let last = used + piece == input.len();
+        let mut frames = Vec::new();
+        m.split.push(&input[used..used + piece], &mut frames);
+        used += piece;
+        if end && last {
+            m.split.finish(&mut frames);
+        }
+        m.due += frames.iter().map(|f| f.0.samples as usize * m.channels).sum::<usize>();
+        let mut pcm = Vec::new();
+        // (a page that did not answer is waited for briefly until it does: a game converting in
+        // its main loop waited MP3_WAIT every call)
+        let wait = if m.late { MP3_LATE_WAIT } else { MP3_WAIT };
+        let answered = kura::adec::decode(m.dec, frames.iter().map(|f| &f.1[..]), wait, &mut pcm).is_some();
+        if !answered && !frames.is_empty() && !m.late {
+            eprintln!("sake: acm: mp3: the page's decoder did not answer");
+        }
+        m.late = !answered;
+        // (as FFmpeg's float to 16-bit: rounded, clipped)
+        m.pending.extend(pcm.iter().map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16));
+        // (only at the start: later a decoder that answers a chunk late, as Chrome's can, is
+        // waited for, not filled in, or the sound would have gaps)
+        if answered && !m.heard && m.pending.len() < m.due {
+            let short = m.due - m.pending.len();
+            for _ in 0..short {
+                m.pending.push_front(0);
+            }
+        }
+        m.heard |= !pcm.is_empty();
+        if last || piece == 0 || !answered {
+            break;
         }
     }
-    m.heard |= !pcm.is_empty();
     let n = max.min(m.pending.len()).min(m.due);
     m.due -= n;
-    m.pending.drain(..n).collect()
+    (m.pending.drain(..n).collect(), used)
 }
 
 pub fn init() {
@@ -1302,6 +1334,49 @@ mod proptests {
 #[cfg(test)]
 mod mp3_tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn pcm(channels: u16, rate: u32, bits: u16, align: u16) -> Fmt {
+        Fmt { tag: PCM, channels, rate, avg: rate * align as u32, align, bits, spb: 1, block: 0, bad: false }
+    }
+
+    /// pcm_convert as it was: the whole output, then cut to the destination.
+    fn pcm_convert_old(s: &Fmt, d: &Fmt, src: &[u8], room: usize) -> Vec<u8> {
+        let mut v = pcm_convert(s, d, src, usize::MAX);
+        v.truncate(room * d.align as usize);
+        v
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 400, ..ProptestConfig::default() })]
+
+        /// Any rates, sizes and rooms: the bytes are those of the whole conversion cut to the
+        /// room, and never more than the room asks for (rates up to 0xFFFFFFFF made GB first).
+        #[test]
+        fn pcm_stops_at_the_room(sc in 1u16..=2, dc in 1u16..=2, s8 in any::<bool>(), d8 in any::<bool>(), sr in 1u32..200_000, dr in 1u32..200_000, frames in 0usize..300, room in 0usize..2000, seed: u8) {
+            let (sb, db) = (if s8 { 8 } else { 16 }, if d8 { 8 } else { 16 });
+            let s = pcm(sc, sr, sb, sc * sb / 8);
+            let d = pcm(dc, dr, db, dc * db / 8);
+            let src: Vec<u8> = (0..frames * s.align as usize).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed)).collect();
+            let got = pcm_convert(&s, &d, &src, room);
+            prop_assert!(got.len() <= room * d.align as usize);
+            // (the old one only where its whole output is small)
+            if (frames as u64) * (dr as u64) / (sr as u64) < 100_000 {
+                prop_assert_eq!(got, pcm_convert_old(&s, &d, &src, room));
+            }
+        }
+    }
+
+    /// A rate of 0xFFFFFFFF into a small buffer: the room's frames, at once.
+    #[test]
+    fn pcm_huge_rate_is_cut_early() {
+        let s = pcm(2, 8000, 16, 4);
+        let d = pcm(2, u32::MAX, 16, 4);
+        let src = vec![1u8; 1 << 20];
+        let t = std::time::Instant::now();
+        assert_eq!(pcm_convert(&s, &d, &src, 1024).len(), 4096);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+    }
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -1331,7 +1406,7 @@ mod mp3_tests {
 
     fn stream(ch: u32) -> Mp3 {
         let dec = kura::adec::open("mp3", 44100, ch, &[]).expect("a page");
-        Mp3 { dec, split: Default::default(), pending: Default::default(), due: 0, channels: ch as usize, heard: false }
+        Mp3 { dec, split: Default::default(), pending: Default::default(), due: 0, channels: ch as usize, heard: false, late: false }
     }
 
     #[test]
@@ -1344,16 +1419,16 @@ mod mp3_tests {
         let mut m = stream(2);
         let bytes: Vec<u8> = (1..=4).flat_map(|k| frame(k, false)).collect();
         // a frame alone: nothing yet (it waits for the next header)
-        assert!(mp3_convert(&mut m, &bytes[..417], usize::MAX, false, false).is_empty());
+        assert!(mp3_convert(&mut m, &bytes[..417], usize::MAX, false, false).0.is_empty());
         // and a half more: one frame out, the half waits
-        let out = mp3_convert(&mut m, &bytes[417..417 + 200], usize::MAX, false, false);
+        let out = mp3_convert(&mut m, &bytes[417..417 + 200], usize::MAX, false, false).0;
         assert_eq!(out.len(), 1152 * 2);
         assert!(out.chunks(2).all(|f| f == [sample(1, 0), sample(1, 1)]));
         // the rest, into a buffer of 1000 samples: the others come on later calls, in order
-        let mut got = mp3_convert(&mut m, &bytes[417 + 200..], 1000, false, true);
+        let mut got = mp3_convert(&mut m, &bytes[417 + 200..], 1000, false, true).0;
         assert_eq!(got.len(), 1000);
         loop {
-            let more = mp3_convert(&mut m, &[], 1000, false, false);
+            let more = mp3_convert(&mut m, &[], 1000, false, false).0;
             if more.is_empty() {
                 break;
             }
@@ -1364,11 +1439,75 @@ mod mp3_tests {
         assert_eq!(got, want);
         // START: what was waiting goes; the stream begins again
         mp3_convert(&mut m, &bytes[..417 + 9], 10, false, false);
-        let out = mp3_convert(&mut m, &frame(9, false), usize::MAX, true, true);
+        let out = mp3_convert(&mut m, &frame(9, false), usize::MAX, true, true).0;
         assert_eq!(out.len(), 1152 * 2);
         assert_eq!(&out[..2], [sample(9, 0), sample(9, 1)]);
         stop.store(true, Ordering::Relaxed);
         p.join().unwrap();
+    }
+
+    /// A whole track converted into a small buffer a call at a time: what is decoded and not
+    /// handed out stays near PENDING_MAX (cbSrcLengthUsed falls short and the rest comes again),
+    /// and every sample comes out once, in order (it kept the whole track decoded).
+    #[test]
+    fn a_whole_track_into_a_small_buffer() {
+        let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let p = page(stop.clone());
+        let mut m = stream(2);
+        // 600 frames (15 s); the body byte names each
+        let track: Vec<u8> = (0..600u32).flat_map(|k| frame((k % 251) as u8 + 1, false)).collect();
+        let mut at = 0;
+        let mut got: Vec<i16> = Vec::new();
+        let mut most = 0;
+        for call in 0.. {
+            assert!(call < 10_000, "no progress");
+            let (out, used) = mp3_convert(&mut m, &track[at..], 4096, call == 0, true);
+            assert!(out.len() <= 4096);
+            at += used;
+            most = most.max(m.pending.len());
+            if out.is_empty() && at == track.len() {
+                break;
+            }
+            got.extend(out);
+        }
+        assert!(most <= 4096 + PENDING_MAX * 2 + 2 * MP3_PIECE / 417 * 1152 * 2, "{most} samples kept");
+        // (the decoder's frames: each frame's samples once the next header is here, the last at END)
+        let want: Vec<i16> = (0..600u32).flat_map(|k| {
+            let b = (k % 251) as u8 + 1;
+            (0..1152).flat_map(move |_| [sample(b, 0), sample(b, 1)])
+        }).collect();
+        assert_eq!(got.len(), want.len());
+        assert!(got == want);
+        stop.store(true, Ordering::Relaxed);
+        p.join().unwrap();
+    }
+
+    /// After the page did not answer once, later calls wait briefly (a game converting in its
+    /// main loop waited 2 s a call), and the samples still come when it answers.
+    #[test]
+    fn a_late_page_is_not_waited_for_again() {
+        let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        let mut m = stream(1);
+        assert!(mp3_convert(&mut m, &frame(3, true), usize::MAX, false, true).0.is_empty());
+        assert!(m.late);
+        let t = std::time::Instant::now();
+        for k in 4..10 {
+            let _ = mp3_convert(&mut m, &frame(k, true), usize::MAX, false, false);
+        }
+        assert!(t.elapsed() < MP3_WAIT, "{:?} for 6 calls", t.elapsed());
+        // (the page comes back)
+        let stop = Arc::new(AtomicBool::new(false));
+        let p = page(stop.clone());
+        let (out, _) = mp3_convert(&mut m, &[], usize::MAX, false, true);
+        stop.store(true, Ordering::Relaxed);
+        p.join().unwrap();
+        assert!(!m.late);
+        assert_eq!(out.len(), 1152 * 7);
+        assert_eq!(out[0], sample(3, 0));
+        assert_eq!(out[1152 * 6], sample(9, 0));
     }
 
     #[test]
@@ -1378,10 +1517,10 @@ mod mp3_tests {
         let mut m = stream(1);
         // no page running: the wait ends, nothing out, nothing lost later
         let t = std::time::Instant::now();
-        assert!(mp3_convert(&mut m, &frame(3, true), usize::MAX, false, true).is_empty());
+        assert!(mp3_convert(&mut m, &frame(3, true), usize::MAX, false, true).0.is_empty());
         assert!(t.elapsed() >= MP3_WAIT);
         kura::adec::test_page_pass(&mut |b, ch| vec![b[4] as f32 / 256.0; 1152 * ch as usize]);
-        let out = mp3_convert(&mut m, &[], usize::MAX, false, false);
+        let out = mp3_convert(&mut m, &[], usize::MAX, false, false).0;
         assert_eq!(out.len(), 1152);
         assert_eq!(out[0], sample(3, 0));
     }
@@ -1407,11 +1546,11 @@ mod mp3_tests {
         let mut m = stream(1);
         let bytes: Vec<u8> = (1..=3).flat_map(|k| frame(k, true)).collect();
         // each frame gives 1152 once the next header is here, the first led by 529 zeros
-        let a = mp3_convert(&mut m, &bytes[..417 + 4], usize::MAX, true, false);
+        let a = mp3_convert(&mut m, &bytes[..417 + 4], usize::MAX, true, false).0;
         assert_eq!(a.len(), 1152);
         assert!(a[..529].iter().all(|&v| v == 0));
         assert!(a[529..].iter().all(|&v| v == sample(1, 0)));
-        let b = mp3_convert(&mut m, &bytes[417 + 4..], usize::MAX, false, true);
+        let b = mp3_convert(&mut m, &bytes[417 + 4..], usize::MAX, false, true).0;
         assert_eq!(b.len(), 2 * 1152);
         assert_eq!(b[0], sample(2, 0));
         assert_eq!(b[1152], sample(3, 0));
@@ -1441,7 +1580,7 @@ mod mp3_tests {
         let bytes: Vec<u8> = (1..=6).flat_map(|k| frame(k, true)).collect();
         let mut got = Vec::new();
         for (k, piece) in bytes.chunks(300).enumerate() {
-            got.extend(mp3_convert(&mut m, piece, usize::MAX, k == 0, false));
+            got.extend(mp3_convert(&mut m, piece, usize::MAX, k == 0, false).0);
         }
         // a frame of silence, then frames 1.. each whole and in order
         assert!(got.len() >= 4 * 1152, "{}", got.len());

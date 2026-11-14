@@ -132,7 +132,7 @@ pub fn w64(a: u32, v: u64) {
 /// GLOBAL_BASE). A write the guest asks for there (a bad pointer passed to an API: Wine's tests
 /// pass some on purpose) would corrupt sake itself: it is dropped (Windows would fault).
 #[inline(always)]
-fn guest(a: u32, n: u32) -> bool {
+pub fn guest(a: u32, n: u32) -> bool {
     if a as u64 + n as u64 <= GUEST_TOP as u64 {
         return true;
     }
