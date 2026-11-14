@@ -369,6 +369,7 @@ pub fn init() {
     reg("KERNEL.GetWindowsDirectory", |c| crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS"));
     reg("KERNEL.GetSystemDirectory", |c| crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS\\SYSTEM"));
     reg("KERNEL.SetErrorMode", |_| 0);
+    reg("WIN87EM.__fpMath", fp_math);
     reg("KERNEL.GetProcAddress", |c| {
         let (h, p) = (c.w(0), c.a(1));
         let h = if h == 0 { task().hinst } else { h };
@@ -718,6 +719,25 @@ thread_local! {
     /// Catch/Throw's registers for after the return: [ip, cs, sp, bp, si, di, ds, ss, ax]
     static JUMP: std::cell::Cell<[u16; 9]> = const { std::cell::Cell::new([0; 9]) };
 }
+
+/// WIN87EM's __fpMath (a register function, BX the request). There is a coprocessor
+/// (GetWinFlags' WF_80x87, so the OSFIXUPs stay unapplied): 0 initialize and 1 reset are
+/// FNINIT, 2 terminate nothing, 3 records the program's exception handler (DX:AX); AX 0.
+fn fp_math(c: &mut C16) -> u32 {
+    let cpu = &mut *c.cpu;
+    let bx = cpu.regs[koji::EBX] as u16;
+    match bx {
+        0 | 1 => cpu.fpu = Default::default(),
+        2 => {}
+        3 => *FP_HANDLER.lock().unwrap() = (cpu.regs[EDX] & 0xffff) << 16 | cpu.regs[EAX] & 0xffff,
+        _ => eprintln!("sake w16: __fpMath {bx}"),
+    }
+    cpu.regs[EAX] &= 0xffff_0000;
+    0
+}
+
+/// the program's floating point exception handler (__fpMath 3)
+static FP_HANDLER: Mutex<u32> = Mutex::new(0);
 
 /// Catch(CATCHBUF*): the caller's registers as they will be after this call returns, so that
 /// Throw can return there again (Windows' setjmp; Free Pascal's RTL uses it for Halt and
