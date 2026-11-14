@@ -6,6 +6,8 @@ Release 0
 fpu after release 24
 caps vs fffe0101 ps ffff0104 stages 8 textures 8
 caps texture pow2 0 nonpow2cond 0 square 0 alpha 1
+caps2 HAL windowed 1 gamma 0 dynamic 1
+caps2 REF windowed 1 gamma 0 dynamic 1
 GetAdapterDisplayMode 0 format 22
 format A8R8G8B8 texture 1 depth -1
 format X8R8G8B8 texture 1 depth -1

@@ -1,0 +1,8 @@
+cbSize 0: 0, error 87
+bad window: 0, error 1400
+TME_LEAVE away from the window: 1
+WM_MOUSELEAVE posted: 1, wndproc saw 1
+TME_QUERY: 1, flags 0
+nothing more: 0
+_TrackMouseEvent: 1, posted 1
+cancel: 1, posted 0

@@ -1,0 +1,14 @@
+DrawPrimitive 0x887602d1
+present: outside kept 0 of 0
+present: inside texels few
+image present 64 48 1
+DrawPrimitive 0x887602d1
+part-linear: outside kept 2048 of 2048
+part-linear: inside texels few
+image part-linear 64 48 1
+DrawPrimitive 0x887602d1
+part-point: outside kept 2048 of 2048
+part-point: inside texels few
+image part-point 64 48 1
+DrawPrimitive 0x887602d1
+half-texel: outside kept 2048, inside texels unchanged few

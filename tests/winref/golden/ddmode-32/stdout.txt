@@ -1,0 +1,11 @@
+after 640x480: the mode
+GetDisplayMode 0 640x480
+after 800x600: the mode
+RestoreDisplayMode 0
+after restore: the desktop
+again 640x480 0: the mode
+Release 0
+after release: the desktop
+exclusive 0
+exclusive 640x480 0: the mode, window 640x480 at 0,0
+exclusive restore: the desktop

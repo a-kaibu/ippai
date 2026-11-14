@@ -1,0 +1,29 @@
+MaxActiveLights >= 8 1
+image emissive 1 1 3
+image ambient 1 1 3
+image directional 1 1 3
+image directional60 1 1 3
+image behind 1 1 3
+image two 1 1 3
+image point 1 1 3
+image point_att2 1 1 3
+image point_att1 1 1 3
+image point_range 1 1 3
+image spot_inside 1 1 3
+image spot_falloff1 1 1 3
+image spot_falloff2 1 1 3
+image spot_outside 1 1 3
+image specular 1 1 3
+image specular_local 1 1 3
+image specular_on_axis_local 1 1 3
+image specular_power0 1 1 3
+image specular_behind 1 1 3
+image specular_disabled 1 1 3
+image colorvertex 1 1 3
+image colorvertex_no_diffuse 1 1 3
+image colorvertex_off 1 1 3
+image sources 1 1 3
+image no_normal 1 1 3
+image scaled 1 1 3
+image scaled_normalized 1 1 3
+done

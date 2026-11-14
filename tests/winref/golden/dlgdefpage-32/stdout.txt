@@ -1,0 +1,18 @@
+visible page: DM_GETDEFID 0x534b0001
+visible page: focus none
+visible page: Enter WM_COMMAND 0x3ef lparam 1
+hidden page: DM_GETDEFID 0x534b0001
+hidden page: focus none
+hidden page: Enter WM_COMMAND 0x1 lparam 0
+disabled page: DM_GETDEFID 0x534b0001
+disabled page: focus none
+disabled page: Enter WM_COMMAND 0x1 lparam 0
+no WS_EX_CONTROLPARENT: DM_GETDEFID 0x534b0001
+no WS_EX_CONTROLPARENT: focus none
+no WS_EX_CONTROLPARENT: Enter WM_COMMAND 0x3ef lparam 1
+focus on the default button: DM_GETDEFID 0x534b0001
+focus on the default button: focus none
+focus on the default button: Enter WM_COMMAND 0x1 lparam 0
+focus on a plain button: DM_GETDEFID 0x534b0001
+focus on a plain button: focus none
+focus on a plain button: Enter WM_COMMAND 0x1 lparam 0

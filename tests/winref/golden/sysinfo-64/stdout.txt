@@ -13,6 +13,9 @@ processor times, room for one more: status 00000000 return length==48*processors
 kernel time includes idle 1
 code integrity: status 00000000 return length 8 length field 8
 code integrity, 4 bytes: status c0000004
+GetSystemTimes: 1 kernel includes idle 1 nonzero 1
+GetSystemTimes later: idle, kernel, user not less 1 1 1
+GetSystemTimes with NULLs: 1 1
 class 0x7fff: status c0000003
 RSMB size query: nonzero 1
 RSMB into 4 bytes: returns the size 1

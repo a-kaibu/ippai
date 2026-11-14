@@ -1,0 +1,34 @@
+pipe 0 errno 0
+fds distinct 1 above std 1
+write abc 6 errno 0
+read 4 4 errno 0
+got 'abcd'
+fstat 0 errno 0
+fifo 1 size 2
+read rest 2 errno 0
+got 'ef'
+read on write end -1 errno 9
+write on read end -1 errno 9
+type 3
+write xyz 3 errno 0
+peek 1 avail 3
+ReadFile 1 n 2 'xy'
+inherit r 1 inherit 1
+inherit w 1 inherit 1
+dup ok 1
+close w 0 errno 0
+write dup 1 errno 0
+read after close 2 errno 0
+got 'zQ'
+close dup 0 errno 0
+read eof 0 errno 0
+close r 0 errno 0
+pipe noinherit 0 errno 0
+noinherit r 1 inherit 0
+noinherit w 1 inherit 0
+close r2 0 errno 0
+write broken -1 errno 22
+close w2 0 errno 0
+pipe text 0 errno 0
+close t0 0 errno 0
+close t1 0 errno 0

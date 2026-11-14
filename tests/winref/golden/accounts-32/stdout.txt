@@ -1,0 +1,42 @@
+LookupAccountNameW(SYSTEM) = 1 err 0 S-1-5-18 cb 68 dom NT AUTHORITY cch 12 use 5 | back 1 SYSTEM 6 NT AUTHORITY 12 5
+LookupAccountNameW(Administrators) = 1 err 0 S-1-5-32-544 cb 68 dom BUILTIN cch 7 use 4 | back 1 Administrators 14 BUILTIN 7 4
+LookupAccountNameW(Users) = 1 err 0 S-1-5-32-545 cb 68 dom BUILTIN cch 7 use 4 | back 1 Users 5 BUILTIN 7 4
+LookupAccountNameW(Everyone) = 1 err 0 S-1-1-0 cb 68 dom  cch 0 use 5 | back 1 Everyone 8  0 5
+LookupAccountNameW(Authenticated Users) = 1 err 0 S-1-5-11 cb 68 dom NT AUTHORITY cch 12 use 5 | back 1 Authenticated Users 19 NT AUTHORITY 12 5
+LookupAccountNameW(NT AUTHORITY\SYSTEM) = 1 err 0 S-1-5-18 cb 68 dom NT AUTHORITY cch 12 use 5 | back 1 SYSTEM 6 NT AUTHORITY 12 5
+LookupAccountNameW(BUILTIN\Users) = 1 err 0 S-1-5-32-545 cb 68 dom BUILTIN cch 7 use 4 | back 1 Users 5 BUILTIN 7 4
+LookupAccountNameW(users) = 1 err 0 S-1-5-32-545 cb 68 dom BUILTIN cch 7 use 4 | back 1 Users 5 BUILTIN 7 4
+LookupAccountNameW(INTERACTIVE) = 1 err 0 S-1-5-4 cb 68 dom NT AUTHORITY cch 12 use 5 | back 1 INTERACTIVE 11 NT AUTHORITY 12 5
+LookupAccountNameW(Guests) = 1 err 0 S-1-5-32-546 cb 68 dom BUILTIN cch 7 use 4 | back 1 Guests 6 BUILTIN 7 4
+LookupAccountNameW(CREATOR OWNER) = 1 err 0 S-1-3-0 cb 68 dom  cch 0 use 5 | back 1 CREATOR OWNER 13  0 5
+LookupAccountNameW(LOCAL SERVICE) = 1 err 0 S-1-5-19 cb 68 dom NT AUTHORITY cch 12 use 5 | back 1 LOCAL SERVICE 13 NT AUTHORITY 12 5
+LookupAccountNameW(NETWORK SERVICE) = 1 err 0 S-1-5-20 cb 68 dom NT AUTHORITY cch 12 use 5 | back 1 NETWORK SERVICE 15 NT AUTHORITY 12 5
+LookupAccountNameW(no such account 1234) = 0 err 1332
+LookupAccountNameW(NT AUTHORITY\Users) = 0 err 1332
+sizes Users: 0 err 122 cb 16 cch 8
+  small sid: 0 err 122 cb 16 cch 8
+  small domain: 0 err 122 cb 16 cch 8
+  sid sizes: 0 err 122 cn 6 cd 8
+  A: 1 Users 5 BUILTIN 7 4
+sizes SYSTEM: 0 err 122 cb 12 cch 13
+  small sid: 0 err 122 cb 12 cch 13
+  small domain: 0 err 122 cb 12 cch 13
+  sid sizes: 0 err 122 cn 7 cd 13
+  A: 1 SYSTEM 6 NT AUTHORITY 12 5
+sizes Everyone: 0 err 122 cb 12 cch 1
+  small sid: 0 err 122 cb 12 cch 1
+  small domain: 1 err 57005 cb 68 cch 0
+  sid sizes: 0 err 122 cn 9 cd 1
+  A: 1 Everyone 8  0 5
+LookupAccountSidW(unknown) = 0 err 1332
+GetNamedSecurityInfoW(dir, 0x4) = 0 self-relative 1 valid 1 owner untouched group untouched dacl acl sacl untouched aces>0 1 named 1 users 1
+GetNamedSecurityInfoW(dir, 0x20000004) = 0 self-relative 1 valid 1 owner untouched group untouched dacl acl sacl untouched aces>0 1 named 1 users 1
+GetNamedSecurityInfoW(dir, 0x3) = 0 self-relative 1 valid 1 owner sid group sid dacl untouched sacl untouched
+GetNamedSecurityInfoW(file, 0x7) = 0 self-relative 1 valid 1 owner sid group sid dacl acl sacl untouched aces>0 1 named 1 users 1
+GetNamedSecurityInfoW(missing, 0x4) = 2
+GetNamedSecurityInfoW(missing dir, 0x4) = 3
+SetNamedSecurityInfoW(dir) = 0
+SetNamedSecurityInfoW(missing) = 2
+GetNamedSecurityInfoW(dir after, 0x4) = 0 self-relative 1 valid 1 owner untouched group untouched dacl acl sacl untouched aces>0 1 named 1 users 1
+write after: 1
+GetSecurityInfo(file) = 0 dacl 1

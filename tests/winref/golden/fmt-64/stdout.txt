@@ -28,6 +28,7 @@ FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 0x12345678, 0, sm, sizeof sm, N
 FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, 2, 0, sm, 3, NULL) = 0 err 122
 FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 2, MAKELANGID(LANG_ZULU, SUBLANG_DEFAULT), sm, sizeof sm, NULL) = 0 err 15100
 FormatMessageA(0, NULL, 2, 0, sm, sizeof sm, NULL)                       = 0 err 87
+stg filenotfound 1 err 0 insert 1 crlf 1
 GetModuleHandleA(NULL) != NULL                                           = 1 err 57005
 GetModuleHandleA("kernel32") != NULL                                     = 1 err 57005
 GetModuleHandleA("KERNEL32.DLL") == GetModuleHandleA("kernel32.dll")     = 1 err 57005

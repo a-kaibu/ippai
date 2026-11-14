@@ -1,0 +1,27 @@
+CoCreateInstance(WebBrowser, IOleObject): 00000000 1
+interfaces: IWebBrowser2 yes IWebBrowser yes IDispatch yes IOleControl yes IPersistStreamInit yes IOleInPlaceObject yes IOleInPlaceActiveObject yes IConnectionPointContainer yes IViewObject2 yes IOleWindow yes IPersist yes
+GetMiscStatus: 00000000 00020191
+GetUserClassID: 00000000 is CLSID_WebBrowser 1
+SetClientSite: 00000000
+InitNew: 00000000
+IPersistStreamInit GetClassID: 00000000 is CLSID_WebBrowser 1
+GetControlInfo: 80004001 accels 0
+OnAmbientPropertyChange: 00000000
+FindConnectionPoint(DWebBrowserEvents2): 00000000 1
+FindConnectionPoint(IPropertyNotifySink): 00000000 1
+FindConnectionPoint(IOleObject): 80040200 0
+GetConnectionInterface: 00000000 is DWebBrowserEvents2 1
+Advise: 00000000 cookie 1 sink held 1
+DoVerb(INPLACEACTIVATE): 00000000 CanInPlaceActivate 1 OnInPlaceActivate 1
+GetWindow: 00000000 class 'Shell Embedding' parent is host 1 child 1 visible 1 at 10,20 320x240
+SetObjectRects: 00000000 200x100
+get_Visible: 00000000 -1
+put_Silent: 00000000 get_Silent: 00000000 -1
+get_RegisterAsDropTarget: 00000000 -1
+get_Width: 00000000 200
+get_Application: 00000000 1
+GetTypeInfoCount: 00000000
+Unadvise: 00000000 again 80040200
+InPlaceDeactivate: 00000000 OnInPlaceDeactivate 1 window gone 0
+Close: 00000000
+CLSID_WebBrowser_V1: 00000000

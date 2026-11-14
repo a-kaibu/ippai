@@ -1,0 +1,26 @@
+first event 1 err 0
+second event 1 err 0 other handle 1
+SetEvent(a)                                                              = 1 err 57005
+WaitForSingleObject(b, 0)                                                = 258 err 57005
+WaitForSingleObject(a, 0)                                                = 0 err 57005
+wide event 1 err 0
+WaitForSingleObject(b, 0)                                                = 258 err 57005
+WaitForSingleObject(w, 0)                                                = 0 err 57005
+OpenEventA(EVENT_ALL_ACCESS, FALSE, "") != NULL                          = 0 err 6
+OpenEventW(EVENT_ALL_ACCESS, FALSE, L"") != NULL                         = 0 err 6
+thread 1 done 0 woke 3, thread 0 woke 0
+thread 0 done 0 woke 3
+mutex 1 err 0
+second mutex 1 err 0
+OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "") != NULL                          = 0 err 6
+semaphores 1 1 err 0
+WaitForSingleObject(s2, 0)                                               = 258 err 57005
+WaitForSingleObject(s1, 0)                                               = 0 err 57005
+timers 1 1 err 0
+set timer 1
+WaitForSingleObject(wt1, 2000)                                           = 0 err 57005
+WaitForSingleObject(wt2, 0)                                              = 258 err 57005
+first section 1 err 0
+second section 1 err 0
+second view 0
+OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "") != NULL                 = 0 err 6

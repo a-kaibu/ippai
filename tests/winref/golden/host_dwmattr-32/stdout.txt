@@ -1,0 +1,2 @@
+DwmIsCompositionEnabled 00000000, extended frame bounds agree 1
+cloaked agrees 1

@@ -1,0 +1,56 @@
+file ok
+open fcc DOS  flags 10000: ok err 0
+read 8: RGSSAD 00 01 pos 8
+seek set 100 -> 100
+read 4: bf c6 cd d4
+seek cur 10 -> 114
+read 2: 21 28
+seek end -> 4160
+seek end -4 -> 4164
+read at end 0: 21 28 cd d4
+read past end 0
+write 1
+close 262
+handle after close: 1 4 3b
+open fcc 0000 flags 10000: ok err 0
+read 8: RGSSAD 00 01 pos 8
+seek set 100 -> 100
+read 4: bf c6 cd d4
+seek cur 10 -> 114
+read 2: 21 28
+seek end -> 4160
+seek end -4 -> 4164
+read at end 0: 21 28 cd d4
+read past end 0
+write 1
+close 262
+handle after close: 1 4 3b
+open fcc DOS  flags 0: ok err 0
+read 8: RGSSAD 00 01 pos 8
+seek set 100 -> 100
+read 4: bf c6 cd d4
+seek cur 10 -> 114
+read 2: 21 28
+seek end -> 4160
+seek end -4 -> 4164
+read at end 0: 21 28 cd d4
+read past end 0
+write -1
+close 0
+handle after close: 1 4 3b
+open fcc 0000 flags 0: ok err 0
+read 8: RGSSAD 00 01 pos 8
+seek set 100 -> 100
+read 4: bf c6 cd d4
+seek cur 10 -> 114
+read 2: 21 28
+seek end -> 4160
+seek end -4 -> 4164
+read at end 0: 21 28 cd d4
+read past end 0
+write -1
+close 0
+handle after close: 1 4 3b
+open fcc DOS  flags 10000: ok err 0
+descend riff 0 RIFF 28 WAVE
+find data 0 size 4 offset 32 read 4 09080706

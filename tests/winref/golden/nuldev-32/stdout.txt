@@ -1,0 +1,6 @@
+NUL                     : opens, err 0, type 2, write 1 10, read 1 0
+nul                     : opens, err 0, type 2, write 1 10, read 1 0
+\\.\NUL                 : opens, err 0, type 2, write 1 10, read 1 0
+C:\Windows\nul          : opens, err 0, type 2, write 1 10, read 1 0
+nul:                    : opens, err 0, type 2, write 1 10, read 1 0
+CREATE_ALWAYS NUL: opens err 0

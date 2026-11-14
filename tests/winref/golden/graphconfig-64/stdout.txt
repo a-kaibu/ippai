@@ -1,0 +1,17 @@
+FilterGraph 00000000
+IGraphConfig 00000000 set
+EVR 00000000
+AddFilter 00000000
+after add: 1 filters, ours 1
+added: QueryFilterInfo 00000000 graph set
+RemoveFilterEx 00000000
+after RemoveFilterEx: 0 filters, ours 0
+removed: QueryFilterInfo 00000000 graph null
+FindFilterByName after removal 80040216 null
+RemoveFilterEx again 00000000
+RemoveFilter not in it 00000000
+AddFilter again 00000000
+FindFilterByName 00000000 ours
+RemoveFilter 00000000
+after RemoveFilter: 0 filters, ours 0
+RemoveFilterEx NULL 80004003

@@ -1,0 +1,13 @@
+overlapped: menu 1 items 2 [&File id -1 state 10 sub 2] [&Help id 103 state 0 sub -1]
+popup: menu 1 items 2 [&File id -1 state 10 sub 2] [&Help id 103 state 0 sub -1]
+own copies: 1
+client takes the bar: 1
+enable by position 2: 1
+enable by position 3: ffffffff
+enable 102 by command (in the popup): 1
+after: menu 1 items 3 [&File id -1 state 10 sub 2] [&Help id 103 state 0 sub -1] [added id 104 state 0 sub -1]
+given menu kept: 1
+named: menu 1 items 1 [One id 201 state 0 sub -1]
+child: menu 1 id 5
+missing: window 1 menu 0
+after destroy: menu valid 0

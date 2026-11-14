@@ -1,0 +1,22 @@
+GetFullPathName 'dir.\f.txt' <cur>\dir\f.txt part f.txt
+  GetFileAttributes file err 0
+GetFullPathName 'dir..\f.txt' <cur>\dir..\f.txt part f.txt
+  GetFileAttributes none err 3
+GetFullPathName 'dir...\f.txt' <cur>\dir...\f.txt part f.txt
+  GetFileAttributes none err 3
+GetFullPathName 'dir .\f.txt' <cur>\dir \f.txt part f.txt
+  GetFileAttributes none err 3
+GetFullPathName 'dir. \f.txt' <cur>\dir. \f.txt part f.txt
+  GetFileAttributes none err 3
+GetFullPathName 'dir. .\f.txt' <cur>\dir. \f.txt part f.txt
+  GetFileAttributes none err 3
+GetFullPathName 'dir.\' <cur>\dir\ part (null)
+  GetFileAttributes dir err 0
+GetFullPathName 'dir.' <cur>\dir part dir
+  GetFileAttributes dir err 0
+GetFullPathName 'dir.\sub.\g' <cur>\dir\sub\g part g
+  GetFileAttributes none err 3
+GetFullPathName 'C:\a.\b.\c' C:\a\b\c part c
+  GetFileAttributes none err 3
+GetFullPathName 'C:\a..\c' C:\a..\c part c
+  GetFileAttributes none err 3

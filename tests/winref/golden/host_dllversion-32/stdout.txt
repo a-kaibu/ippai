@@ -1,0 +1,30 @@
+shlwapi.dll: DllGetVersion
+  v1: 0 10.0 platform 1 build set 1, dwFlags untouched 1
+  v2: 0 10.0 platform 1 flags 0 ullVersion 10.0 build agrees 1
+  cbSize 0: 80070057 major untouched 1
+  cbSize 4: 80070057 major untouched 1
+  cbSize 16: 80070057 major untouched 1
+  cbSize 24: 80070057 major untouched 1
+  cbSize 28: 80070057 major untouched 1
+  cbSize 36: 80070057 major untouched 1
+  cbSize 64: 80070057 major untouched 1
+shell32.dll: DllGetVersion
+  v1: 0 10.0 platform 2 build set 1, dwFlags untouched 1
+  v2: 0 10.0 platform 2 flags 0 ullVersion 10.0 build agrees 1
+  cbSize 0: 80070057 major untouched 1
+  cbSize 4: 80070057 major untouched 1
+  cbSize 16: 80070057 major untouched 1
+  cbSize 24: 80070057 major untouched 1
+  cbSize 28: 80070057 major untouched 1
+  cbSize 36: 80070057 major untouched 1
+  cbSize 64: 80070057 major untouched 1
+comctl32.dll: DllGetVersion
+  v1: 0 5.82 platform 2 build set 1, dwFlags untouched 1
+  v2: 0 5.82 platform 2 flags 0 ullVersion 5.82 build agrees 1
+  cbSize 0: 80070057 major untouched 1
+  cbSize 4: 80070057 major untouched 1
+  cbSize 16: 80070057 major untouched 1
+  cbSize 24: 80070057 major untouched 1
+  cbSize 28: 80070057 major untouched 1
+  cbSize 36: 80070057 major untouched 1
+  cbSize 64: 80070057 major untouched 1

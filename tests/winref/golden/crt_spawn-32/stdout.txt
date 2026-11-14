@@ -1,0 +1,8 @@
+child argc 3 [7]
+spawn wait 7 errno 0
+child argc 5 [3] [a] [b]
+nowait handle ok 1 cwait same 1 stat 3
+child argc 3 [5]
+wspawn wait 5
+missing -1 errno 2
+child argc 4 [0] [last]

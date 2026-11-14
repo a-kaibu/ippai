@@ -1,0 +1,41 @@
+synchronous handle
+write AB at 5 (pointer 2)          = 1 err 0 n 2 status 0 info 2 event 0
+  pointer 7 size 10
+read 3 at 1                        = 1 err 0 n 3 status 0 info 3 event 0
+  pointer 4 got "123"
+read 10 at 8                       = 1 err 0 n 2 status 0 info 2 event 0
+  pointer 10 got "89"
+read 3 at the end (10)             = 0 err 38 n 0 status c0000011 info 0 event 0
+  pointer 10 got ""
+read 3 past the end (100)          = 0 err 38 n 0 status c0000011 info 0 event 0
+  pointer 10 got ""
+read 0 past the end (100)          = 1 err 0 n 0 status 0 info 0 event 0
+  pointer 10 got ""
+write x at 12 (past the end)       = 1 err 0 n 1 status 0 info 1 event 0
+  pointer 13 size 13
+write yz at all ones               = 1 err 0 n 2 status 0 info 2 event 0
+  pointer 15 size 15
+write P at the pointer (0)         = 1 err 0 n 1 status 0 info 1 event 0
+  pointer 1 size 15
+read 2 at the pointer (1)          = 1 err 0 n 2 status 0 info 2 event 0
+  pointer 3 got "12"
+  contents 15:P1234AB789<00><00>xyz
+page 2                             = 1 err 0 n 8 status 0 info 8 event 0
+  pointer 40 size 40
+page 1                             = 1 err 0 n 8 status 0 info 8 event 0
+  pointer 24 size 40
+page 0                             = 1 err 0 n 9 status 0 info 9 event 0
+  pointer 9 size 40
+page 2 back                        = 1 err 0 n 8 status 0 info 8 event 0
+  pointer 40 got "page-two"
+  contents 40:page-zero9<00><00>xyz<00>page-one<00><00><00><00><00><00><00><00>page-two
+FILE_FLAG_OVERLAPPED handle
+write AB at 5 (pointer 3)          = 1 err 0 n 2 status 0 info 2 event 0
+  pointer 3 size 10
+read 3 at 1                        = 1 err 0 n 3 status 0 info 3 event 0
+  pointer 3 got "123"
+read 3 past the end (100)          = 0 err 38 n 0 status c0000011 info 0 event 0
+  pointer 3 got ""
+write yz at all ones               = 1 err 0 n 2 status 0 info 2 event 0
+  pointer 3 size 12
+  contents 0:

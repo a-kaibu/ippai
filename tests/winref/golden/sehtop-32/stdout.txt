@@ -1,0 +1,31 @@
+main: fs:[0] is -1: 0
+main: frames>=1: 1, all inside the stack: 1
+main: last handler in ntdll: 1, in the exe: 0
+main: last frame within 64 KB of the stack base: 1
+thread: fs:[0] is -1: 0
+thread: frames>=1: 1, all inside the stack: 1
+thread: last handler in ntdll: 1, in the exe: 0
+thread: last frame within 64 KB of the stack base: 1
+thread: peC frame: code c0000005, frame at ESP 1, fs:[0] back 0
+steps 20
+step 0 at +13 tf 0 rf 0
+step 1 at +15 tf 0 rf 0
+step 2 at +18 tf 0 rf 0
+step 3 at +23 tf 0 rf 0
+step 4 at +24 tf 0 rf 0
+step 5 at +24 tf 0 rf 0
+step 6 at +24 tf 0 rf 0
+step 7 at +26 tf 0 rf 0
+step 8 at +27 tf 0 rf 0
+step 9 at +28 tf 0 rf 0
+step 10 at +31 tf 0 rf 0
+step 11 at +33 tf 0 rf 0
+step 12 at +35 tf 0 rf 0
+step 13 at +42 tf 0 rf 0
+step 14 at +40 tf 0 rf 0
+step 15 at +43 tf 0 rf 0
+step 16 at +45 tf 0 rf 0
+step 17 at +46 tf 0 rf 0
+step 18 at +53 tf 0 rf 0
+step 19 at +54 tf 0 rf 0
+copied abc, pushfd saw TF 1

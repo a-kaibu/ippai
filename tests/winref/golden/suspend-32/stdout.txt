@@ -1,0 +1,40 @@
+spinner runs: 1
+SuspendThread(t)                                             = 0 err 57005
+suspended: moves 0
+SuspendThread(t)                                             = 1 err 57005
+ResumeThread(t)                                              = 2 err 57005
+count 1: moves 0
+ResumeThread(t)                                              = 1 err 57005
+resumed: moves 1
+ResumeThread(t)                                              = 0 err 57005
+ResumeThread(d)                                              = 1 err 57005
+SuspendThread(d)                                             = 0 err 57005
+SuspendThread(t)                                             = 0 err 57005
+both suspended: moves 0
+ResumeThread(d)                                              = 1 err 57005
+one resumed: moves 1
+ResumeThread(t)                                              = 1 err 57005
+sleeper runs: 1
+SuspendThread(s)                                             = 0 err 57005
+sleeper suspended: moves 0
+ResumeThread(s)                                              = 1 err 57005
+sleeper resumed: moves 1
+suspends until the limit: 126 err 156
+ResumeThread(l)                                              = 127 err 57005
+ResumeThread(l)                                              = 0 err 57005
+ResumeThread(l)                                              = 0 err 57005
+self-suspended after 1
+ResumeThread(m)                                              = 1 err 57005
+WaitForSingleObject(m, 5000)                                 = 0 err 57005
+GetExitCodeThread(m, &code)                                  = 1 err 57005
+code 100, runs 2
+WaitForSingleObject(t, 5000)                                 = 0 err 57005
+WaitForSingleObject(d, 5000)                                 = 0 err 57005
+WaitForSingleObject(s, 5000)                                 = 0 err 57005
+WaitForSingleObject(l, 5000)                                 = 0 err 57005
+GetExitCodeThread(t, &code)                                  = 1 err 57005
+code 1
+SuspendThread(t)                                             = 4294967295 err 5
+ResumeThread(t)                                              = 0 err 57005
+SuspendThread((HANDLE)0x1234)                                = 4294967295 err 6
+ResumeThread((HANDLE)0x1234)                                 = 4294967295 err 6

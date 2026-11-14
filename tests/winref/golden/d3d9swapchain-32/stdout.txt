@@ -1,0 +1,19 @@
+device: 1x1 format 22 count 1 effect 1 windowed 1 autodepth 0
+CreateAdditionalSwapChain 0
+written back: 96x48 format 22 count 1 effect 1 windowed 1 autodepth 0
+GetPresentParameters 0
+chain: 96x48 format 22 count 1 effect 1 windowed 1 autodepth 0
+GetNumberOfSwapChains 1
+GetSwapChain 1 0x8876086c NULL
+chain GetBackBuffer 0
+chain GetBackBuffer 1 0x8876086c
+chain back buffer 96x48 format 22 usage 0x1 pool 0, the device's: no
+device back buffer 1x1
+full screen: 0x8876086c NULL
+4 back buffers: 0 made
+swap effect 0: 0x8876086c NULL
+swap effect 6: 0x8876086c NULL
+A8: 0x8876086c NULL
+R5G6B5 copy: 0 made
+A8R8G8B8 flip, 0 back buffers: 0 made
+no window (the device's): 0 made

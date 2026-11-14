@@ -1,0 +1,54 @@
+IsWow64Process(self) 1 wow64 0 err 0
+IsWow64Process(0x1234) 0 wow64 2 err 6
+IsWow64Process2 1 process 0 native 0x8664
+GetSystemInfo architecture 9 type 8664
+GetNativeSystemInfo architecture 9 type 8664
+native: page==1 granularity==1 min==1 max==1 mask==1 processors==1 level==1 revision==1
+GetSystemWow64DirectoryA 19 err 0 c:\windows\syswow64
+  size 0: 20 first untouched
+  size 1: 20 first untouched
+  size 18: 20 first untouched
+  size 19: 20 first untouched
+  size 20: 19 first written
+GetSystemWow64DirectoryW 19 err 0 same as A 1
+GetSystemWow64Directory2A(0x14c) 19 err 0 c:\windows\syswow64
+GetSystemWow64Directory2A(0x8664) 0 err 160 -
+GetSystemWow64Directory2A(0x1c4) 19 err 0 c:\windows\sysarm32
+GetSystemWow64Directory2A(0xaa64) 0 err 160 -
+GetSystemWow64Directory2A(0) 0 err 160 -
+GetSystemDirectory c:\windows\system32
+env ProgramFiles: c:\program files
+env ProgramFiles(x86): c:\program files (x86)
+env ProgramW6432: c:\program files
+env CommonProgramFiles: c:\program files\common files
+env CommonProgramFiles(x86): c:\program files (x86)\common files
+env CommonProgramW6432: c:\program files\common files
+env PROCESSOR_ARCHITECTURE: amd64
+env PROCESSOR_ARCHITEW6432: (none)
+SHGetFolderPath 0x25: 0 c:\windows\system32
+SHGetFolderPath 0x29: 0 c:\windows\syswow64
+SHGetFolderPath 0x26: 0 c:\program files
+SHGetFolderPath 0x2a: 0 c:\program files (x86)
+SHGetFolderPath 0x2b: 0 c:\program files\common files
+SHGetFolderPath 0x2c: 0 c:\program files (x86)\common files
+SHGetKnownFolderPath ProgramFilesX64: 0 c:\program files
+SHGetKnownFolderPath ProgramFilesX86: 0 c:\program files (x86)
+SHGetKnownFolderPath ProgramFilesCommonX64: 0 c:\program files\common files
+SHGetKnownFolderPath ProgramFilesCommonX86: 0 c:\program files (x86)\common files
+SHGetKnownFolderPath SystemX86: 0 c:\windows\syswow64
+registry default ProgramFilesDir: 0 type 1 c:\program files
+registry 64KEY ProgramFilesDir: 0 type 1 c:\program files
+registry 32KEY ProgramFilesDir: 0 type 1 c:\program files (x86)
+registry default CommonFilesDir: 0 type 1 c:\program files\common files
+registry 64KEY CommonFilesDir: 0 type 1 c:\program files\common files
+registry default ProgramFilesDir (x86): 0 type 1 c:\program files (x86)
+registry default ProgramW6432Dir: 0 type 1 c:\program files
+open SOFTWARE\Wow6432Node 0
+open SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion 0
+GetFileAttributes C:\Windows\SysWOW64: directory
+GetFileAttributes C:\Windows\SysWOW64\kernel32.dll: file
+GetFileAttributes C:\Windows\System32\kernel32.dll: file
+GetFileAttributes C:\Windows\Sysnative\kernel32.dll: none err 3
+GetFileAttributes C:\Windows\System32\kernel32.dll: file
+ProcessWow64Information status 0 nonzero 0 length 8
+ProcessWow64Information, short: status 0xc0000004

@@ -1,0 +1,9 @@
+startup 0
+size status 0, count nonzero 1
+decoders status 0
+bytes after the buffer untouched 1
+strings inside 1, signatures inside 1, all decoders 1
+bmp 1 jpeg 1 gif 1 png 1
+too small refused 1
+eri bitmap from stream 2, bitmap NULL
+eri image from stream 2, image NULL

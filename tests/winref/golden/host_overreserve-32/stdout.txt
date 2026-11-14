@@ -1,0 +1,4 @@
+reservations: at least 8 1, every aligned block whole 1
+commit past the end: 0 error 487, last page still reserved 1
+commit of the last page: 1
+commit of its last 4 bytes: 1

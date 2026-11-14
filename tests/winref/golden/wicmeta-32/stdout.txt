@@ -1,0 +1,56 @@
+WICImagingFactory 0
+png_plain: GetMetadataQueryReader 0 reader
+  GetContainerFormat 0 png
+  GetLocation size 0 2
+  GetLocation 0 2 "/"
+  GetEnumerator 0
+  /sRGB/RenderingIntent: 0x88982f40 vt 0
+  /sRGB/RenderingIntent (no value): 0x88982f40
+  /srgb/renderingintent: 0x88982f40 vt 0
+  /srgb/renderingintent (no value): 0x88982f40
+  /gAMA/ImageGamma: 0x88982f40 vt 0
+  /gAMA/ImageGamma (no value): 0x88982f40
+  /tEXt/{str=Software}: 0x88982f40 vt 0
+  /tEXt/{str=Software} (no value): 0x88982f40
+  /tEXt/{str=Title}: 0x88982f40 vt 0
+  /tEXt/{str=Title} (no value): 0x88982f40
+  /tEXt/{str=Author}: 0x88982f40 vt 0
+  /tEXt/{str=Author} (no value): 0x88982f40
+  /iCCP/ProfileName: 0x88982f40 vt 0
+  /iCCP/ProfileName (no value): 0x88982f40
+  System.Image.ColorSpace: 0x88982f40 vt 0
+  System.Image.ColorSpace (no value): 0x88982f40
+png_meta: GetMetadataQueryReader 0 reader
+  GetContainerFormat 0 png
+  GetLocation size 0 2
+  GetLocation 0 2 "/"
+  GetEnumerator 0
+    /sRGB
+    /gAMA
+    /tEXt
+    /[1]tEXt
+  /sRGB/RenderingIntent: 0 vt 17 1
+  /sRGB/RenderingIntent (no value): 0
+  /srgb/renderingintent: 0 vt 17 1
+  /srgb/renderingintent (no value): 0
+  /gAMA/ImageGamma: 0 vt 19 45455
+  /gAMA/ImageGamma (no value): 0
+  /tEXt/{str=Software}: 0 vt 30 "paint"
+  /tEXt/{str=Software} (no value): 0
+  /tEXt/{str=Title}: 0x88982f40 vt 0
+  /tEXt/{str=Title} (no value): 0x88982f40
+  /tEXt/{str=Author}: 0x88982f40 vt 0
+  /tEXt/{str=Author} (no value): 0x88982f40
+  /iCCP/ProfileName: 0x88982f40 vt 0
+  /iCCP/ProfileName (no value): 0x88982f40
+  System.Image.ColorSpace: 0x88982f40 vt 0
+  System.Image.ColorSpace (no value): 0x88982f40
+bmp24: GetMetadataQueryReader 0x88982f81 null
+jpeg: GetMetadataQueryReader 0 reader
+  GetContainerFormat 0 jpeg
+  GetLocation size 0 2
+  GetLocation 0 2 "/"
+gif: GetMetadataQueryReader 0 reader
+  GetContainerFormat 0 gif
+  GetLocation size 0 2
+  GetLocation 0 2 "/"

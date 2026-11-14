@@ -9,5 +9,6 @@ glCopyTexImage2D 0
 image formats 64 64 4
 image blend_depth 64 64 4
 image transforms 64 64 2
+wglSwapLayerBuffers main 1
 glGetError 0
 wglDeleteContext 1

@@ -1,0 +1,34 @@
+well-known 0: 1 S-1-0-0 len 12
+well-known 1: 1 S-1-1-0 len 12
+well-known 2: 1 S-1-2-0 len 12
+well-known 3: 1 S-1-3-0 len 12
+well-known 4: 1 S-1-3-1 len 12
+well-known 5: 1 S-1-3-2 len 12
+well-known 6: 1 S-1-3-3 len 12
+well-known 7: 1 S-1-5 len 8
+well-known 8: 1 S-1-5-1 len 12
+well-known 9: 1 S-1-5-2 len 12
+well-known 10: 1 S-1-5-3 len 12
+well-known 11: 1 S-1-5-4 len 12
+well-known 12: 1 S-1-5-6 len 12
+well-known 13: 1 S-1-5-7 len 12
+well-known 14: 1 S-1-5-8 len 12
+well-known 15: 1 S-1-5-9 len 12
+well-known 16: 1 S-1-5-10 len 12
+well-known 17: 1 S-1-5-11 len 12
+well-known 18: 1 S-1-5-12 len 12
+well-known 19: 1 S-1-5-13 len 12
+well-known 22: 1 S-1-5-18 len 12
+well-known 23: 1 S-1-5-19 len 12
+well-known 24: 1 S-1-5-20 len 12
+well-known 25: 1 S-1-5-32 len 12
+well-known 26: 1 S-1-5-32-544 len 16
+well-known 27: 1 S-1-5-32-545 len 16
+well-known 28: 1 S-1-5-32-546 len 16
+hooks set: ok
+hook answered 5a5a0007 seen 1 from this thread 0
+returned 1234; ret hook seen 1 result 1234
+after a posted one: seen 1
+other thread: 5a5a0009 seen 2 from this thread 1
+unhooked: 00000000 seen 2
+all ok

@@ -1,0 +1,23 @@
+[form shown and made foreground]
+app: APP(1,?)
+util: APP(1,?)
+msgonly:
+form: APP(1,?) NC(1) ACT(1) SETFOCUS
+child:
+other:
+activateapp before the form's activate 1
+[the other thread's window takes it]
+app: APP(0,other)
+util: APP(0,other)
+msgonly:
+form: NC(0) ACT(0) APP(0,other) KILLFOCUS
+child:
+other: APP(1,0) NC(0) ACT(1) SETFOCUS NC(1)
+[the form takes it back]
+app: APP(1,other)
+util: APP(1,other)
+msgonly:
+form: APP(1,other) NC(1) ACT(1) SETFOCUS
+child:
+other: NC(0) ACT(0) APP(0,main) KILLFOCUS
+foreground is form 1 active is form 1

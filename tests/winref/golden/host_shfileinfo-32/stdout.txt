@@ -1,6 +1,6 @@
 windows folder: ok "Windows" folder 1 filesystem 1
-text file: ok "shfileinfo" folder 0 filesystem 1
-program: ok "host_shfileinfo-32" folder 0 filesystem 1
+text file: ok "probe-text" folder 0 filesystem 1
+program: ok "<self>" folder 0 filesystem 1
 missing: 0
 missing, file attributes: ok "none" folder 0 filesystem 0
 missing folder, file attributes: ok "Folder" folder 0 filesystem 0

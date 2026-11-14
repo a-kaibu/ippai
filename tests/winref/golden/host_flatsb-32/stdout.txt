@@ -1,0 +1,19 @@
+window 1
+plain bar 1: set 20 get 1 range 0..99 page 10 pos 20
+  setpos old 20 now 90 (clamped to max-page+1)
+  setpos old 90 now 0
+  range 1 1: 5..50 pos 5
+  show 1 enable 0
+init 1
+flat bar 0: set 20 get 1 range 0..99 page 10 pos 20
+  setpos old 20 now 90 (clamped to max-page+1)
+  setpos old 90 now 0
+  range 1 1: 5..50 pos 5
+  show 1 enable 0
+flat bar 1: set 20 get 1 range 0..99 page 10 pos 20
+  setpos old 20 now 90 (clamped to max-page+1)
+  setpos old 90 now 0
+  range 1 1: 5..50 pos 5
+  show 1 enable 0
+setprop style 1
+uninit 0

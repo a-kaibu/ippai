@@ -1,0 +1,20 @@
+AppData: type 1 %APPDATA%, same as SHGetFolderPath, user shell folders type 2 %APPDATA%
+Local AppData: type 1 %LOCALAPPDATA%, same as SHGetFolderPath, user shell folders type 2 %LOCALAPPDATA%
+Personal: type 1 %USERPROFILE%\Documents, same as SHGetFolderPath, user shell folders type 2 %USERPROFILE%\Documents
+Desktop: type 1 %USERPROFILE%\Desktop, same as SHGetFolderPath, user shell folders type 2 %USERPROFILE%\Desktop
+Programs: type 1 %APPDATA%\Microsoft\Windows\Start Menu\Programs, same as SHGetFolderPath, user shell folders type 2 %APPDATA%\Microsoft\Windows\Start Menu\Programs
+Start Menu: type 1 %APPDATA%\Microsoft\Windows\Start Menu, same as SHGetFolderPath, user shell folders type 2 %APPDATA%\Microsoft\Windows\Start Menu
+Startup: type 1 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup, same as SHGetFolderPath, user shell folders type 2 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+Favorites: type 1 %USERPROFILE%\Favorites, same as SHGetFolderPath, user shell folders type 2 %USERPROFILE%\Favorites
+My Music: type 1 %USERPROFILE%\Music, same as SHGetFolderPath, user shell folders type 2 %USERPROFILE%\Music
+My Pictures: type 1 %USERPROFILE%\Pictures, same as SHGetFolderPath, user shell folders type 2 %USERPROFILE%\Pictures
+My Video: type 1 %USERPROFILE%\Videos, same as SHGetFolderPath, user shell folders type 2 %USERPROFILE%\Videos
+SendTo: type 1 %APPDATA%\Microsoft\Windows\SendTo, same as SHGetFolderPath, user shell folders type 2 %APPDATA%\Microsoft\Windows\SendTo
+Recent: type 1 %APPDATA%\Microsoft\Windows\Recent, same as SHGetFolderPath, user shell folders type 2 %APPDATA%\Microsoft\Windows\Recent
+Templates: type 1 %APPDATA%\Microsoft\Windows\Templates, same as SHGetFolderPath, user shell folders type 2 %APPDATA%\Microsoft\Windows\Templates
+Common AppData: type 1 %ProgramData%, same as SHGetFolderPath, user shell folders type 2 %ProgramData%
+Common Desktop: type 1 %PUBLIC%\Desktop, same as SHGetFolderPath, user shell folders type 2 %PUBLIC%\Desktop
+Common Documents: type 1 %PUBLIC%\Documents, same as SHGetFolderPath, user shell folders type 2 %PUBLIC%\Documents
+Common Programs: type 1 %ProgramData%\Microsoft\Windows\Start Menu\Programs, same as SHGetFolderPath, user shell folders type 2 %ProgramData%\Microsoft\Windows\Start Menu\Programs
+Common Start Menu: type 1 %ProgramData%\Microsoft\Windows\Start Menu, same as SHGetFolderPath, user shell folders type 2 %ProgramData%\Microsoft\Windows\Start Menu
+Common Startup: type 1 %ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup, same as SHGetFolderPath, user shell folders type 2 %ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup

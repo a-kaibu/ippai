@@ -1,0 +1,17 @@
+create async 0, the callback held 1
+ReadSample with out pointers 0x80070057
+ReadSample with the sample pointer only 0x80070057
+ReadSample of stream 5 0
+ReadSample 0xc00d36b3
+answers ok 1, on another thread 1, times rising 1
+samples 0, bytes 0, the end's flags 0x1, at 0.00 s
+one more read past the end: flags 0x1 sample bytes still 0
+SetCurrentPosition 0 idle 0xc00d36b3
+held read reached the callback 0
+SetCurrentPosition with a read pending 0xc00d36b3
+Flush 0xc00d36b3
+OnFlush 0 (stream 0), reads answered after the held one -1
+Flush idle 0xc00d36b3
+OnFlush again 0 (stream 0)
+SetCurrentPosition after the flush 0xc00d36b3
+the callback let go 1

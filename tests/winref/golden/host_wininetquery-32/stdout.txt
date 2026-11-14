@@ -6,7 +6,6 @@
 0xffff: error 12150
 0x21: error 12150
 0x1c: error 12150
-FAIL line 38
-status before send: error 0
+status before send: 1 [0] error 0
 indices: 21 23 28 33 39 43
-wininet query errors: 1
+wininet query errors: 0

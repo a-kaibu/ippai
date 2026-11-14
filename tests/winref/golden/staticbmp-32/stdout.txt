@@ -1,0 +1,25 @@
+dialog 1
+1001: image 1 size 
+1001: 8x6
+1002: image 1 size 
+1002: 8x6
+1003: image 1 size template
+1004: image 1 size template
+1005: image 0 size template
+1006: image 0 size template
+loaded: 8x6
+LoadBitmap missing: 0 error 1814
+set icon: 0, image same 1
+get as icon: 0
+set: old back 1
+after set: 20x10
+set NULL: old back 1
+after NULL: 0x0
+get after NULL: 0
+empty set: old 0
+empty after set: 8x6
+centred kept 1, real-size-control kept 1
+created: image 0
+created after set: 20x10
+text static set: 0 get 0
+text after set: 50x50

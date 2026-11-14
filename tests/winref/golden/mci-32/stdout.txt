@@ -1,0 +1,84 @@
+[open "\mci_tone.wav" alias w] error 326
+[status w length] error 263
+[status w mode] error 263
+[status w time format] error 263
+[status w ready] error 263
+[set w time format samples] error 263
+[status w length] error 263
+[set w time format bytes] error 263
+[status w length] error 263
+[set w time format frames] error 263
+[set w time format ms] error 263
+[play w wait] error 263
+[status w mode] error 263
+[status w position] error 263
+[seek w to 100] error 263
+[status w position] error 263
+[seek w to end] error 263
+[status w position] error 263
+[seek w to 500] error 263
+[seek w to start] error 263
+[status w position] error 263
+[play w notify] error 300
+[status w mode] error 263
+play to the end: notes
+[status w mode] error 263
+[status w position] error 263
+[play w from 0 notify] error 300
+[stop w] error 263
+stopped: notes
+[play w from 0 notify] error 300
+[play w from 0 notify] error 300
+played again: notes
+[play w from 0 to 100 notify] error 300
+played to 100: notes
+[status w position] error 263
+[play w from 300 to 100] error 263
+[pause w] error 263
+[status w mode] error 263
+[play w from 0] error 263
+[pause w] error 263
+[status w mode] error 263
+[resume w] error 263
+[status w mode] error 263
+[stop w] error 263
+[status w mode] error 263
+[close w notify] error 263
+closed: notes
+[status w mode] error 263
+[open "\mci_tone" type mpegvideo alias m] error 277
+[status m length] error 263
+[play m wait] error 263
+[status m mode] error 263
+[close m] error 263
+[open "\mci_tone" alias n] error 263
+[open "\nothere.wav" alias e] error 275
+[open "\mci_tone.wav" type nosuchdevice alias e] error 263
+[frob w] error 261
+[status nosuch mode] error 263
+[open "\mci_tone.wav" alias d] error 326
+[open "\mci_tone.wav" alias d] error 326
+[status d nonsense] error 263
+[close all] ""
+mciGetErrorString 0: 1 "The specified command was carried out."
+mciGetErrorString 257: 1 "Invalid MCI device ID.  Use the ID returned when opening the MCI device."
+mciGetErrorString 259: 1 "The driver cannot recognize the specified command parameter."
+mciGetErrorString 261: 1 "The driver cannot recognize the specified command."
+mciGetErrorString 263: 1 "The specified device is not open or is not recognized by MCI."
+mciGetErrorString 275: 1 "Cannot find the specified file.  Make sure the path and filename are correct."
+mciGetErrorString 281: 1 "Cannot determine the device type from the given filename extension."
+mciGetErrorString 282: 1 "The specified parameter is out of range for the specified command."
+mciGetErrorString 289: 1 "The specified alias is already being used in this application.  Use a unique alias."
+mciGetErrorString 293: 1 "The specified value for the time format is invalid.  Refer to the MCI documentation for valid formats."
+MCI_OPEN 326 id set
+MCI_STATUS length 274 0
+MCI_STATUS mode 274 0
+MCI_PLAY notify 274
+notify for the device: no
+MCI_PLAY: notes
+MCI_SEEK start 274
+MCI_PLAY wait 274
+MCI_STATUS position 274 0
+MCI_STOP 257
+MCI_CLOSE 257
+MCI_STATUS after close 274

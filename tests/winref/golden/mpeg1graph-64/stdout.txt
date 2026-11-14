@@ -1,0 +1,52 @@
+source: add 00000000
+renderer: add 00000000
+splitter: create 00000000
+splitter: add 00000000
+splitter before: pin in -
+source -> splitter: 00000000
+splitter: pin in -
+splitter: pin out -
+splitter: pin out -
+splitter: IAMStreamSelect 00000000
+streams: count 00000000 2
+stream 0: 00000000 flags 1 group 0
+stream: major {00000000-...}
+stream 1: 00000000 flags 1 group 1
+stream: major {00000000-...}
+streams: enable 1 00000000
+video decoder: create 00000000
+video decoder: add 00000000
+splitter -> video decoder: 00000000
+video decoder -> renderer: 00000000
+renderer: major video
+renderer: sub rgb32
+renderer: format videoinfo
+renderer: 64x48 32 bits, compression 0, image 12288, sample size 12288 fixed 1, frame 400000
+audio decoder: create 00000000
+audio decoder: add 00000000
+splitter -> audio decoder: 00000000
+splitter -> video decoder again: 00000001
+duration 00000000 1.2 s
+first: run ok
+first: complete 00000000 code 1
+first: samples 28
+first: frame events 0, in order yes
+first: lengths ok, each starting at the last's end yes
+first: sample 0 10..50
+first: sample 1 50..90
+first: sample 2 90..130
+image first 64 48 24
+rewind 00000000
+again: run ok
+again: complete 00000000 code 1
+again: samples 28
+again: frame events 0, in order yes
+again: lengths ok, each starting at the last's end yes
+again: sample 0 10..50
+again: sample 1 50..90
+again: sample 2 90..130
+image again 64 48 24
+rewind 00000000
+stop while streaming: run ok, samples before the stop some
+stop while streaming: stop 00000000, a call in flight after it no, calls after it 0
+done

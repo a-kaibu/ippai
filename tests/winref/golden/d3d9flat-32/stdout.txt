@@ -1,0 +1,22 @@
+image ff_flat_list 8 8 3
+image ff_flat_strip 8 8 3
+image ff_gouraud_list 8 8 3
+image ff_gouraud_strip 8 8 3
+game ps 0
+image ps_game_flat_list 8 8 3
+image ps_game_flat_strip 8 8 3
+image ps_game_gouraud_list 8 8 3
+image ps_game_gouraud_strip 8 8 3
+two-color ps 0
+image ps_two_flat_list 8 8 3
+image ps_two_flat_strip 8 8 3
+image ps_two_gouraud_list 8 8 3
+image ps_two_gouraud_strip 8 8 3
+ps_1_1 0
+image ps11_flat_list 8 8 3
+image ps11_flat_strip 8 8 3
+image ps11_gouraud_list 8 8 3
+image ps11_gouraud_strip 8 8 3
+vs 0 ps 0
+image vs_flat 8 8 3
+image vs_gouraud 8 8 3

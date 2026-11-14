@@ -1,0 +1,11 @@
+FindResource ALL4: ja-JP
+FindResourceEx neutral ALL4: ja-JP
+FindResource NOJA: en-US
+FindResourceEx neutral NOJA: en-US
+FindResource ZHONLY: zh-TW
+FindResourceEx neutral ZHONLY: zh-TW
+FindResource NEUTRAL: neutral
+FindResourceEx neutral NEUTRAL: neutral
+LoadString 100: 5 ja-JP / 5 006a 0061 002d 004a 0050
+LoadString 200: 5 en-US / 5 0065 006e 002d 0055 0053
+LoadString 300: 5 zh-CN / 5 007a 0068 002d 0043 004e

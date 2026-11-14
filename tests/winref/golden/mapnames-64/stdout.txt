@@ -1,0 +1,27 @@
+OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, n) != NULL                          = 0 err 2
+create 1 err 0
+view 1
+open 1 other handle 1
+second view +0x18 12345678
+first view +0 77
+again 1 err 183
+third view +0x18 12345678
+open wide 1
+OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, NULL) != NULL                       = 0 err 87
+OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "ippai-winref-none") != NULL        = 0 err 2
+CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "bad\\name") != NULL = 0 err 3
+OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "ippai-winref-mapev") != NULL       = 0 err 6
+CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "ippai-winref-mapev") != NULL = 0 err 6
+mapping after the event closed 1
+OpenEventA(EVENT_ALL_ACCESS, FALSE, "ippai-winref-mapev") != NULL                = 0 err 6
+OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, n) != NULL                          = 0 err 2
+create again 1 err 0
+new section +0x18 00000000
+offset view startmes.mes
+past the end 0 err 5
+offset past the end 0 err 5
+file mapping 1 size now 20480
+flush 1
+read after flush WORLD
+read after unmap Jello
+truncated 401

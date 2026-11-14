@@ -1,0 +1,8 @@
+d3d9.dll: found d3d9.dll attrs 20
+  next 0 err 18
+ddraw.dll: found ddraw.dll attrs 20
+  next 0 err 18
+kernel32.dll: found kernel32.dll attrs 20
+  next 0 err 18
+ippai-no-such-lib.dll: none err 2
+attrs 20

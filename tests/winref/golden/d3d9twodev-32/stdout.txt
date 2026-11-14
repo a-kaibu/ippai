@@ -1,0 +1,18 @@
+CreateDevice 0
+texture a 0
+a 1: lock 0 viewport 0 begin 0 texture 0 draw 0 end 0 present 0
+a pixel 102030
+CreateDevice 0
+texture b 0
+b 1: lock 0 viewport 0 begin 0 texture 0 draw 0 end 0 present 0
+a 2: lock 0 viewport 0 begin 0 texture 0 draw 0 end 0 present 0
+a pixel 708090 b pixel 405060
+release texture b 0
+release device b 0
+a 3: lock 0 viewport 0 begin 0 texture 0 draw 0 end 0 present 0
+a 4: lock 0 viewport 0 begin 0 texture 0 draw 0 end 0 present 0
+a 5: lock 0 viewport 0 begin 0 texture 0 draw 0 end 0 present 0
+a pixel after b f04050
+release texture a 0
+release device a 0
+release d3d 0

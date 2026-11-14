@@ -1,0 +1,26 @@
+down to Dog 1
+down to Puppy 1
+Dog field 1
+not a Cat 1
+Cat is no Dog 1
+null stays null 1
+cross to Right 1
+Right moved 1
+Right field 20
+Right down to Both 1
+Right back to Left 1
+void from Right 1
+private base from Left 1
+Both from private base 1
+virtual base down to Diamond 1
+virtual base to V2 1
+V2 field 70
+void from virtual base 1
+V1 to V2 1
+ambiguous Animal from Dog 1
+Dog to Cat across 1
+DogCat from Dog 1
+typeid Puppy 1
+typeid not Dog 0
+typeid through Right 1
+typeid through virtual base 1

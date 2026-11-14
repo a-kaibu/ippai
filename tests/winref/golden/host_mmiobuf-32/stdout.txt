@@ -1,0 +1,31 @@
+buffer 0: open ok
+  data chunk 20000 bytes at 44
+  info: cchBuffer 8192, buffer set, at 44
+  read 5000 bytes; at 5044
+  buffer 0: the first 5000 bytes: ok
+  buffer 0: mmioRead after mmioSetInfo goes on (3000): ok
+  position 8044
+  buffer 0: to the end (12000 bytes): ok
+  at the end: advance 0, next == endread 1
+  position 20044
+buffer 1000: open ok
+  data chunk 20000 bytes at 44
+  info: cchBuffer 1000, buffer set, at 44
+  read 5000 bytes; at 5044
+  buffer 1000: the first 5000 bytes: ok
+  buffer 1000: mmioRead after mmioSetInfo goes on (3000): ok
+  position 8044
+  buffer 1000: to the end (12000 bytes): ok
+  at the end: advance 0, next == endread 1
+  position 20044
+buffer 64: open ok
+  data chunk 20000 bytes at 44
+  info: cchBuffer 64, buffer set, at 44
+  read 5000 bytes; at 5044
+  buffer 64: the first 5000 bytes: ok
+  buffer 64: mmioRead after mmioSetInfo goes on (3000): ok
+  position 8044
+  buffer 64: to the end (12000 bytes): ok
+  at the end: advance 0, next == endread 1
+  position 20044
+all ok

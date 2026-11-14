@@ -1,0 +1,10 @@
+first 1 tag 0xa1 fixed up 1
+second 1 tag 0xb2 fixed up 1, another module 1
+second again (altered search path): the second 1
+first by another spelling: the first 1
+second's file name is its path 1
+bare name: one of them 1
+GetModuleHandle bare: one of them 1
+GetModuleHandle second's path: the second 1
+free first 1, second 1
+unloaded: second 1

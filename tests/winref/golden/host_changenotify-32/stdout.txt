@@ -1,0 +1,10 @@
+folder A: valid 1
+  wait 258
+  next 1 wait 258
+  close 1
+folder W: valid 1
+  wait 258
+  next 1 wait 258
+  close 1
+missing folder: invalid 1 err 2
+a file: invalid 1 err 267

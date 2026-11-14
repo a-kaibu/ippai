@@ -1,0 +1,36 @@
+missing: AddSourceFilter 80040216 filter set
+null out: 80004003
+mpeg: AddSourceFilter 00000000 filter set
+mpeg: class File Source (Async)
+mpeg: pin 0 Output out
+mpeg: FindPin Output 00000000
+mpeg: IFileSourceFilter 00000000
+mpeg: GetCurFile 00000000 movie.dat major stream sub null
+mpeg: Load again fails
+mpeg: Length 00000000 the file's size
+mpeg: SyncRead 0 4 00000000 000001ba
+mpeg: SyncRead end-2 4 00000001
+mpeg: FindFilterByName 00000000 the source
+avi: AddSourceFilter 00000000 filter set
+avi: class File Source (Async)
+avi: pin 0 Output out
+avi: FindPin Output 00000000
+avi: IFileSourceFilter 00000000
+avi: GetCurFile 00000000 clip.avi major stream sub avi
+avi: Load again fails
+avi: Length 00000000 the file's size
+avi: SyncRead 0 4 00000000 52494646
+avi: SyncRead end-2 4 00000001
+avi: FindFilterByName 00000000 the source
+render: AddFilter 00000000
+render: RenderFile ok, the renderer connected
+render: type video rgb24 videoinfo fixed 0 sample 1
+render: 64x48 24 bits compression 0 size 9216 frame 1000000
+render: IVideoWindow get_Visible 80004002
+render: Run ok
+render: WaitForCompletion 80040227 code 0
+render: eos 1 samples some
+render: first sample length 9216
+render: times whole frames in order yes, each picture its time's yes
+render: first sample time 0 top 00 bottom 2f
+done

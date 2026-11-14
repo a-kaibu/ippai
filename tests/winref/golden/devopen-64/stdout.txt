@@ -1,0 +1,9 @@
+\\.\C: access 0: opens err 0
+  close 1
+\\.\c: access 0: opens err 0
+  close 1
+\\.\NTICE access 0: fails err 2
+\\.\NTICE access 80000000: fails err 2
+\\.\SICE access c0000000: fails err 2
+\\.\SIWVID access 80000000: fails err 2
+\\.\Q: access 0: fails err 2

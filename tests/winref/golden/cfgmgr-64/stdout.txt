@@ -1,0 +1,77 @@
+LoadLibrary ok
+CM_Get_Device_Interface_List_SizeW       found
+CM_Get_Device_Interface_ListW            found
+CM_Get_Device_Interface_List_SizeA       found
+CM_Get_Device_Interface_ListA            found
+CM_Locate_DevNodeW                       found
+CM_Get_Parent                            found
+CM_MapCrToWin32Err                       found
+CM_Get_Device_Interface_PropertyW        found
+CM_Register_Notification                 found
+CM_Unregister_Notification               found
+size(NULL len) = 0x3
+size(NULL class) = 0x13 len 0
+size(flags 1) = 0 len 1
+size(flags 2) = 0x4 len 77
+size(flags 4) = 0x4 len 77
+size(flags 8) = 0x4 len 77
+size("") = 0 len 1
+size(INVALID) = 0x5 len 0
+sizeA = 0 len 1
+size(HID) = 0, at least 1: 1
+list(NULL buffer) = 0x3
+list(NULL class) = 0x13
+list(len 0) = 0x3
+list(flags 2) = 0x4
+list = 0: 0 78 78 78 78 78 78 78
+listA = 0: 0 6f 6c 73 5c 7a 73 74
+list(INVALID) = 0x5
+list(HID) = 0, ends in two NULs: 1
+locate(NULL ptr) = 0x3
+locate(NULL) = 0, node set: 1
+locate("") = 0, same: 1
+locate(root) = 0, same: 1
+locate(INVALID) = 0x1e node 0
+locate(unknown) = 0xd node 0
+parent(root) = 0xd node 0
+parent(NULL) = 0x3
+iface property(NULL) = 0x3
+iface property(none) = 0x37
+map 0 = 0
+map 0x2 = 8
+map 0x3 = 1784
+map 0x4 = 1004
+map 0x5 = 13
+map 0xd = 1168
+map 0x10 = 183
+map 0x13 = 4242
+map 0x1a = 122
+map 0x1c = 6
+map 0x1d = 1015
+map 0x1e = 13
+map 0x1f = 4242
+map 0x25 = 1168
+map 0x2e = 2
+map 0x2f = 13
+map 0x30 = 1062
+map 0x31 = 1062
+map 0x32 = 1062
+map 0x33 = 5
+map 0x34 = 120
+map 0x35 = 13
+map 0x37 = 1168
+map 0x38 = 13
+map 0x3b = 4242
+filter size 416
+register(NULL out) = 0x13
+register(NULL cb) = 0x1f
+register(bad size) = 0x1f
+register = 0 handle 1
+unregister = 0
+unregister(NULL) = 0x1f
+HidD_GetHidGuid: 1 is GUID_DEVINTERFACE_HID: 1
+RegisterDeviceNotificationW = 1 err 0
+UnregisterDeviceNotification = 1
+RegisterDeviceNotificationW(all) = 1 err 0
+RegisterDeviceNotificationW(flags 0x10) = 1 err 0
+RegisterDeviceNotificationW(no window) = 1 err 0

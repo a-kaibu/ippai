@@ -1,0 +1,14 @@
+snapshot: handle
+snapshot type: status 00000000 Section
+short dwSize: 0 err 87
+first: 1 is the exe 1 hModule is its base 1 base is the exe's 1 pid ok 1 size>0 1
+first path is the exe's: 1
+after the last: err 18; listed kernel32 1 ntdll 1 more than 2 1
+first again is the exe: 1
+first W is the exe: 1
+heap list first: 0 err 18
+read own memory: 1 8 same 1
+close: 1
+closed type: status c0000008 
+closed first: 0 err 6
+process snapshot type: status 00000000 Section

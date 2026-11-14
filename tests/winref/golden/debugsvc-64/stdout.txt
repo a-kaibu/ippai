@@ -1,0 +1,7 @@
+service 0: exceptions 1 ret 1 code 80000003 context after it 1 address after it 0 params 1 info0 is eax 1
+service 1: exceptions 0 ret 0 code 00000000 context after it 0 address after it 0 params 0 info0 is eax 0
+service 2: exceptions 1 ret 1 code 80000003 context after it 1 address after it 0 params 1 info0 is eax 1
+service 3: exceptions 0 ret 0 code 00000000 context after it 0 address after it 0 params 0 info0 is eax 0
+service 4: exceptions 0 ret 0 code 00000000 context after it 0 address after it 0 params 0 info0 is eax 0
+service 6: exceptions 1 ret 1 code 80000003 context after it 1 address after it 0 params 1 info0 is eax 1
+unhandled filter: 1 ret 1

@@ -1,0 +1,37 @@
+LoadLibrary lib
+  dep attach
+  lib attach
+  got it 1
+  loaded: lib 1 dep 1
+  lib_next 202 101
+LoadLibrary lib again: the same 1
+FreeLibrary lib 1
+  loaded: lib 1 dep 1
+LoadLibrary dep
+  lib detach
+FreeLibrary lib 1
+  loaded: lib 0 dep 1
+  dep detach
+FreeLibrary dep 1
+  loaded: lib 0 dep 0
+FreeLibrary dep again 0 error 126
+LoadLibrary lib, a second time
+  dep attach
+  lib attach
+  lib_next from the start 101
+GetModuleHandleEx dep (a reference) 1
+  lib detach
+FreeLibrary lib 1
+  loaded: lib 0 dep 1
+  dep detach
+FreeLibrary dep 1
+  loaded: lib 0 dep 0
+LoadLibrary dep, pinned
+  dep attach
+  pin 1
+FreeLibrary dep 1
+  loaded: lib 0 dep 1
+FreeLibrary dep again 1
+  loaded: lib 0 dep 1
+end
+  dep detach (process end)

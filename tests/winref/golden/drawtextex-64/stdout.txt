@@ -1,0 +1,4 @@
+text 0: height>0 1, ExA = A 1, ExW = A 1, with params = A 1, rects same 1 1 1
+text 0: draw ExA = draw A 1
+text 1: height>0 1, ExA = A 1, ExW = A 1, with params = A 1, rects same 1 1 1
+text 1: draw ExA = draw A 1

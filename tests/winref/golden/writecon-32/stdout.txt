@@ -1,0 +1,11 @@
+file type 1
+file   WriteConsoleW 0: 0 err 6 written dead
+file   WriteConsoleW 3: 0 err 6 written dead
+file   WriteConsoleA 3: 0 err 6 written dead
+file size after 0
+file console mode: 0
+WriteFile: 1 5
+file size 5
+nul    WriteConsoleW 0: 0 err 1 written dead
+nul    WriteConsoleW 3: 0 err 1 written dead
+nul    WriteConsoleA 3: 0 err 1 written dead

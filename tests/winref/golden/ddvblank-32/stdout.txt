@@ -1,0 +1,6 @@
+SetCooperativeLevel 0
+BLOCKBEGIN 0
+BLOCKEND 0
+BLOCKBEGINEVENT 0x80004001
+two waits take time 1
+GetVerticalBlankStatus 0 bool 0

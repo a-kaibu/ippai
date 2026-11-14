@@ -1,0 +1,26 @@
+open: 1 1
+a LockFile 0+10                          1
+a LockFile 5+1 again                     0 error 33
+b LockFile 9+5                           0 error 33
+b LockFile 10+5 (next byte)              1
+b shared 0+1 over a's exclusive          0 error 33
+a shared 0+10 inside its own             1
+b LockFile 3+0 (zero bytes)              0 error 33
+a UnlockFile 0+9 (not the range)         0 error 158
+a UnlockFile 0+10 (the exclusive)        1
+b exclusive 0+1 (a's shared left)        0 error 33
+b shared 0+1 beside it                   1
+a UnlockFileEx 0+10 (the shared)         1
+a UnlockFileEx 0+10 again                0 error 158
+b UnlockFileEx 0+1                       1
+a exclusive past the end 1000+10         1
+b shared 1005+1                          0 error 33
+b UnlockFile 10+5                        1
+b UnlockFile 3+0                         0 error 158
+b exclusive 1000+10 after a closed       1
+b UnlockFile 1000+10                     1
+b exclusive 100+10                       1
+waiter still waiting                     0
+b UnlockFileEx 100+10                    1
+waiter got it (1)                        1
+b exclusive 100+10 now                   0 error 33

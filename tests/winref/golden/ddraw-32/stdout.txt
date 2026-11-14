@@ -1,5 +1,8 @@
 SetCooperativeLevel 0
 GetCaps 0 hel blt 1 colorkey 1 stretch 1
+hal agp: nonlocalvidmem 1 caps 0, surfaces texture 1 video 1 local 1 nonlocal 1
+hel agp: nonlocalvidmem 0
+GetAvailableVidMem agp texture 0 total nonzero free nonzero
 GetDisplayMode 0 bpp 32
 rgb32: desc flags 0x1007 caps 0x840 24x16 bpp 32 masks ff0000 ff00 ff
 rgb32: Blt copy 0

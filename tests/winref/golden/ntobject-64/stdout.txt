@@ -1,0 +1,25 @@
+NtQueryObject 1 ZwQueryObject 1
+handles 1 1 1 1
+file: empty buffer c0000004 need>=8 1
+file: 00000000 len==need 1
+file: device 1 ends with the path 1 trailing backslash 0 max 2 buffer after 16 nul 1 len 1
+file: short 80000005 len==need 1
+dir: empty buffer c0000004 need>=8 1
+dir: 00000000 len==need 1
+dir: device 1 ends with the path 1 trailing backslash 0 max 2 buffer after 16 nul 1 len 1
+dir: short 80000005 len==need 1
+root: empty buffer c0000004 need>=8 1
+root: 00000000 len==need 1
+root: device 1 ends with the path 1 trailing backslash 1 max 2 buffer after 16 nul 1 len 1
+root: short c0000039 len==need 0
+event name: 00000000 len 16 length 0 max 0 buffer null 1
+file type: File len-size>=max 1 max-len 2 buffer after 104
+file type short: c0000004 len>size 1
+dir type: File len-size>=max 1 max-len 2 buffer after 104
+dir type short: c0000004 len>size 1
+event type: Event len-size>=max 1 max-len 2 buffer after 104
+event type short: c0000004 len>size 1
+basic: c0000004 len 57005
+basic short: c0000004 len 57005
+bad handle: c0000008
+class 99: c0000003

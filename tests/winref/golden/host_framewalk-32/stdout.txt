@@ -1,0 +1,10 @@
+entry: the EBP chain ends at a 0 return address; the first caller is in a system DLL
+thread: the EBP chain ends at a 0 return address; the first caller is in a system DLL
+suspended thread: the EBP chain ends at a 0 return address; the first caller is in a system DLL
+GetSystemTimes: 1
+NULL pointers: 1 1
+kernel includes idle: yes
+nonzero: yes
+never decreasing: yes
+time passed: yes
+busy time not negative: yes

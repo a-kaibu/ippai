@@ -1,0 +1,129 @@
+== main
+create 1 erf 0 0 0
+iscabinet 1 cb 9039 folders 2 files 6 set 4660 icab 0 reserve 0 prev 0 next 0
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+cabinet_info next '' disk '' path 'C:\probe\' set 4660 icab 0 pv 1
+enumerate
+copy_file 'readme.txt' cb 300 date 5821 time 6000 attribs 0020 pv 1 -> 10
+close_file 'readme.txt' hf 10 cb 0 date 5821 time 6000 attribs 0020 len 300 crc dba85341
+copy_file '' cb 0 date 6f80 time 244a attribs 0000 pv 1 -> 11
+close_file '' hf 11 cb 0 date 6f80 time 244a attribs 0000 len 0 crc 00000000
+copy_file 'Dº4' cb -313834624 date 2103 time 69d5 attribs fdbc pv 1 -> 12
+close cabinet
+close cabinet
+copy 0 erf 4 1
+destroy 1 live 0
+== skip odd
+create 1 erf 0 0 0
+iscabinet 1 cb 9039 folders 2 files 6 set 4660 icab 0 reserve 0 prev 0 next 0
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+cabinet_info next '' disk '' path 'C:\probe\' set 4660 icab 0 pv 1
+enumerate
+copy_file 'readme.txt' cb 300 date 5821 time 6000 attribs 0020 pv 1 -> 10
+close_file 'readme.txt' hf 10 cb 0 date 5821 time 6000 attribs 0020 len 300 crc dba85341
+copy_file '' cb 0 date 6f80 time 244a attribs 0000 pv 1 -> skip
+copy_file 'Dº4' cb -313834624 date 2103 time 69d5 attribs fdbc pv 1 -> 11
+close cabinet
+close cabinet
+copy 0 erf 4 1
+destroy 1 live 0
+== abort third
+create 1 erf 0 0 0
+iscabinet 1 cb 9039 folders 2 files 6 set 4660 icab 0 reserve 0 prev 0 next 0
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+cabinet_info next '' disk '' path 'C:\probe\' set 4660 icab 0 pv 1
+enumerate
+copy_file 'readme.txt' cb 300 date 5821 time 6000 attribs 0020 pv 1 -> 10
+close_file 'readme.txt' hf 10 cb 0 date 5821 time 6000 attribs 0020 len 300 crc dba85341
+copy_file '' cb 0 date 6f80 time 244a attribs 0000 pv 1 -> 11
+close_file '' hf 11 cb 0 date 6f80 time 244a attribs 0000 len 0 crc 00000000
+copy_file 'Dº4' cb -313834624 date 2103 time 69d5 attribs fdbc pv 1 -> abort
+close cabinet
+close cabinet
+copy 0 erf 11 1
+destroy 1 live 0
+== close fails
+create 1 erf 0 0 0
+iscabinet 1 cb 9039 folders 2 files 6 set 4660 icab 0 reserve 0 prev 0 next 0
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+cabinet_info next '' disk '' path 'C:\probe\' set 4660 icab 0 pv 1
+enumerate
+copy_file 'readme.txt' cb 300 date 5821 time 6000 attribs 0020 pv 1 -> 10
+close_file 'readme.txt' hf 10 cb 0 date 5821 time 6000 attribs 0020 len 300 crc dba85341
+close cabinet
+close cabinet
+copy 0 erf 8 1
+destroy 1 live 0
+== write fails
+create 1 erf 0 0 0
+iscabinet 1 cb 9039 folders 2 files 6 set 4660 icab 0 reserve 0 prev 0 next 0
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+cabinet_info next '' disk '' path 'C:\probe\' set 4660 icab 0 pv 1
+enumerate
+copy_file 'readme.txt' cb 300 date 5821 time 6000 attribs 0020 pv 1 -> 10
+close_file 'readme.txt' hf 10 cb 0 date 5821 time 6000 attribs 0020 len 300 crc dba85341
+copy_file '' cb 0 date 6f80 time 244a attribs 0000 pv 1 -> 11
+close_file '' hf 11 cb 0 date 6f80 time 244a attribs 0000 len 0 crc 00000000
+copy_file 'Dº4' cb -313834624 date 2103 time 69d5 attribs fdbc pv 1 -> 12
+close cabinet
+close cabinet
+copy 0 erf 4 1
+destroy 1 live 0
+== open fails
+create 1 erf 0 0 0
+iscabinet 1 cb 9039 folders 2 files 6 set 4660 icab 0 reserve 0 prev 0 next 0
+open C:\probe\trial.cab flags 8000 mode 180
+copy 0 erf 1 1
+destroy 1 live 0
+== reserved
+create 1 erf 0 0 0
+iscabinet 1 cb 198 folders 1 files 2 set 7 icab 0 reserve 1 prev 0 next 0
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+cabinet_info next '' disk '' path 'C:\probe\' set 7 icab 0 pv 1
+enumerate
+copy_file 'r1' cb 33000 date 5821 time 6000 attribs 0020 pv 1 -> 10
+close_file 'r1' hf 10 cb 0 date 5821 time 6000 attribs 0020 len 33000 crc 03378ea7
+close cabinet
+close cabinet
+copy 0 erf 4 1
+destroy 1 live 0
+== version 1.4
+create 1 erf 0 0 0
+iscabinet 0 erf 3 1
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+close cabinet
+close cabinet
+copy 0 erf 3 1
+destroy 1 live 0
+== truncated data
+create 1 erf 0 0 0
+iscabinet 1 cb 9039 folders 2 files 6 set 4660 icab 0 reserve 0 prev 0 next 0
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+cabinet_info next '' disk '' path 'C:\probe\' set 4660 icab 0 pv 1
+enumerate
+copy_file 'readme.txt' cb 300 date 5821 time 6000 attribs 0020 pv 1 -> 10
+close_file 'readme.txt' hf 10 cb 0 date 5821 time 6000 attribs 0020 len 300 crc dba85341
+copy_file '' cb 0 date 6f80 time 244a attribs 0000 pv 1 -> 11
+close_file '' hf 11 cb 0 date 6f80 time 244a attribs 0000 len 0 crc 00000000
+copy_file 'Dº4' cb -313834624 date 2103 time 69d5 attribs fdbc pv 1 -> 12
+close cabinet
+close cabinet
+copy 0 erf 4 1
+destroy 1 live 0
+== not a cabinet
+create 1 erf 0 0 0
+iscabinet 0 erf 0 0
+open C:\probe\trial.cab flags 8000 mode 180
+open C:\probe\trial.cab flags 8000 mode 180
+close cabinet
+close cabinet
+copy 0 erf 2 1
+destroy 1 live 0

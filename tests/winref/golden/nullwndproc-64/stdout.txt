@@ -1,0 +1,9 @@
+register 1
+window 1 calls>0 1
+set: old is proc 1 err 57005
+get: zero 0 err 57005
+send WM_USER: 0
+send WM_GETTEXTLENGTH: 1
+dispatch: 0
+posted 1
+destroy 1 err 0 is window 0 old proc calls 6

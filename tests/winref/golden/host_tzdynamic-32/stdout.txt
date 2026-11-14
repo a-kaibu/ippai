@@ -1,0 +1,7 @@
+GetDynamicTimeZoneInformation 1 GetTimeZoneInformationForYear 1
+same return 1, same zone 1
+key name set 1, ends in the field 1, dynamic daylight disabled 0
+sizes 172 432
+for year, current zone: same bias 1990..2040 1
+for year, own key: 1 same bias 1
+for year, unknown key: 0 error 2

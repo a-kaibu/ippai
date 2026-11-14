@@ -1,0 +1,6 @@
+main: reserve 4096 KB, 3072 KB frame: 3
+default:  reserve 4096 KB, 3072 KB frame: 3
+64 KB commit:  reserve 4096 KB, 3072 KB frame: 3
+5 MB + 1 commit:  reserve 6144 KB, 5120 KB frame: 3
+8 MB reserve:  reserve 8192 KB, 7168 KB frame: 3
+2 MB reserve:  reserve 2048 KB, 1536 KB frame: 3

@@ -1,0 +1,20 @@
+alloc a 1 b 1
+commit b 1
+a reads back 1, 1122334455667788, b 77
+a: query 1 base 1 state 1000 alloc 1 protect 4 type 20000
+b reserved: query 1 base 1 state 2000 alloc 1 protect 0 type 20000
+b committed: query 1 base 1 state 1000 alloc 1 protect 4 type 20000
+protect 1 old 4
+a protected: query 1 base 1 state 1000 alloc 1 protect 2 type 20000
+free above 4G: query 1 base 1 state 10000
+hm1 at base 1, hm2 at base 1, exe at base 1
+procs in their modules 1 1 1 1
+counter in hm1 1 = 5
+bump 42, counter 42
+sum 242
+name in hm2 1: hm2 data
+counter's allocation is hm1 1, image 1
+hm2 file hm2.dll
+free a 1 b 1
+a freed: query 1 base 1 state 10000
+again at a 1

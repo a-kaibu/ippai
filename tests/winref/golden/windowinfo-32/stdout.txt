@@ -1,0 +1,9 @@
+overlapped hidden: 1 cb 60 win 100,100,300,200 client+8,31,8,8 style 04cf0000 ex 00000100 status 0 borders 8,8 atom class ver 0500
+overlapped shown: 1 cb 60 win 100,100,300,200 client+8,31,8,8 style 14cf0000 ex 20000900 status 1 borders 8,8 atom class ver 0500
+cbSize 0: 1 cb 0 win 100,100,300,200 client+8,31,8,8 style 14cf0000 ex 20000900 status 1 borders 8,8 atom class ver 0500
+popup border: 1 cb 60 win 50,60,120,80 client+1,1,1,1 style 84800000 ex 00000080 status 0 borders 1,1 atom class ver 0500
+dialog frame: 1 cb 60 win 200,150,250,120 client+3,26,3,3 style 84c80080 ex 00000101 status 0 borders 3,3 atom class ver 0500
+child edge: 1 cb 60 win 118,151,50,40 client+2,2,2,2 style 50000000 ex 00000a00 status 0 borders 0,0 atom class ver 0500
+static child: 1 cb 60 win 108,131,30,10 client+0,0,0,0 style 50000000 ex 00000800 status 0 borders 0,0 atom class ver 0500
+destroyed: 0 err 1400
+null hwnd: 0 err 1400

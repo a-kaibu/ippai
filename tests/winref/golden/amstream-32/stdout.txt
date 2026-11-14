@@ -1,0 +1,39 @@
+CoCreateInstance 00000000 object
+Initialize 00000000
+GetMediaStream before add 80040403 null
+AddMediaStream video 00000000
+AddMediaStream video again 80040402
+GetDuration before open 00000001
+OpenFile missing 80040216
+OpenFile 00000000
+GetDuration 00000001 0.00 s
+GetInformation 00000000 flags 5 type 0
+GetMediaStream audio 80040403 null
+GetMediaStream video 00000000
+QueryInterface IDirectDrawMediaStream 00000000
+GetFormat 00000000 64x48
+SetFormat 00000000
+GetTimePerFrame 00000000 0.100 s
+CreateSample 00000000
+GetSurface 00000000 surface rect 0,0,64,48
+Update stopped 8004040a
+GetEndOfStreamEventHandle 00000000
+end event before run not set
+SetState run 00000000
+GetState 1
+Update to the end 00040003
+frames: first 0, last 19, in order yes, most shown
+surface 32 bits
+played in about the movie's length
+end event not set
+Update after the end 00040003
+GetTime at the end 1.9 s
+Seek 0 80004001
+end event after seek not set
+Update after seek 00040003 frame elsewhere
+GetFilterGraph 00000000 graph
+QueryInterface IFilterGraph 00000000
+FindFilterByName 80040216 null
+SetState stop 00000000
+Update stopped again 8004040a
+done

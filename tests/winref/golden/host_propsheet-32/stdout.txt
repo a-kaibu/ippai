@@ -1,0 +1,6 @@
+sheet: 1:init 1:set [cur 1] 2:init 2:set [cur 2] [veto cur 2] 1:query 2:query [siblings 42] [tab 3] 1:apply 2:apply
+sheet returns 1, pages released 3, created 011
+wizard: 0:init 0:set [cur 0] 0:next 1:init 1:set 2:init 2:set [cur 2] 2:back 1:set 0:set [cur 0] 0:next 1:set [cur 1] 1:finish
+wizard returns 1, pages released 4
+cancel: 0:init 0:set 0:querycancel 0:reset
+cancel returns 0, pages released 2

@@ -1,0 +1,31 @@
+copy src\*.* to missing dst: 0 aborted 0
+  dst\a.txt: file
+  dst\sub\b.dat: file
+copy src\* FILESONLY to files: 0 aborted 0
+  files\a.txt: file
+  files\sub: missing
+copy a.txt to renamed.txt: 0 aborted 0
+  renamed.txt: file
+copy c.txt into files: 0 aborted 0
+  files\c.txt: file
+copy src to copy: 0 aborted 0
+  copy\sub\b.dat: file
+copy two files to missing two: 0 aborted 0
+  two\a.txt: file
+  two\c.txt: file
+move renamed.txt to moved.txt: 0 aborted 0
+  renamed.txt: missing
+  moved.txt: file
+rename moved.txt to r.txt: 0 aborted 0
+  moved.txt: missing
+  r.txt: file
+delete files\*.txt: 0 aborted 0
+  files\a.txt: missing
+  files: folder
+delete whole copy: 0 aborted 0
+  copy: missing
+copy a missing file: 0x2 aborted 0
+copy an empty list: 0 aborted 0
+delete the rest: 0 aborted 0
+  src: missing
+  two: missing

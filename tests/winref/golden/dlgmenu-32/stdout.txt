@@ -1,0 +1,13 @@
+dialog 10: menu 1 items 2 first '&File' client top 20 left 0 frame w 0 h 20
+  moved: client 640x480 at screen 0,0 (SM_CYMENU 20, client top - SM_CYMENU 20)
+  child at 0,0 of the client
+dialog 11: menu 1 items 2 first 'One' client top 46 left 3 frame w 6 h 49
+  moved: client 634x480 at screen 3,26 (SM_CYMENU 20, client top - SM_CYMENU 46)
+  child at 0,0 of the client
+dialog 12: menu 0 items -1 first '' client top 26 left 3 frame w 6 h 29
+  moved: client 634x480 at screen 3,6 (SM_CYMENU 20, client top - SM_CYMENU 26)
+  child at 0,0 of the client
+dialog 13: menu 1 items 2 first '&File' client top 46 left 3 frame w 6 h 49
+  moved: client 634x480 at screen 3,26 (SM_CYMENU 20, client top - SM_CYMENU 46)
+  child at 0,0 of the client
+reparented: old parent desktop 1 parent dialog 1 visible 1 at 0,0 of the client 640x480, top-level 0

@@ -1,0 +1,14 @@
+a alone: links 1 size 5
+CreateHardLink 1 error 0
+a: links 2 size 5
+b: links 2 size 5
+one file index 1
+a after writing b: "first+b"
+b after writing a: "first+b+a"
+new name exists 0 error 183
+missing file 0 error 2
+a directory 0 error 5
+into a missing folder 0 error 3
+DeleteFile a 1
+b after a went: links 1 size 9
+b: "first+b+a"
