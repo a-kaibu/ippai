@@ -56,8 +56,6 @@ const GETNPATCHMODE: u32 = 2 << 8 | 80;
 const SURFACE_GETDC: u32 = 4 << 8 | 15;
 const SURFACE_RELEASEDC: u32 = 4 << 8 | 16;
 
-/// trap address -> method id
-static IDS: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 
 unsafe extern "C" fn alloc(size: u32) -> *mut u8 {
     mem::alloc(size).unwrap_or(0) as usize as *mut u8
@@ -81,8 +79,12 @@ const CREATE_DEVICE8: u32 = 17 << 8 | 15;
 /// IDirect3D9Ex's and IDirect3DDevice9Ex's methods past the Direct3D 9 ones (kura has the
 /// Direct3D 9 interfaces only): each answered with its Direct3D 9 counterpart.
 fn method_ex(c: &mut Ctx, id: u32) -> Option<u32> {
+    // (every Direct3D 9 call comes here: the others go on before any argument is read)
+    if !is_ex(id) {
+        return None;
+    }
     let a = |c: &Ctx, i: u32| if mem::x64() { c.a64(i) as u32 } else { c.a(i) };
-    let args: Vec<u32> = (0..10).map(|i| a(c, i)).collect();
+    let args: [u32; 10] = std::array::from_fn(|i| a(c, i as u32));
     let this = args[0];
     let r = match id {
         // QueryInterface: the Ex interfaces are these objects
@@ -156,6 +158,11 @@ fn method_ex(c: &mut Ctx, id: u32) -> Option<u32> {
     };
     Some(r)
 }
+/// The method ids `method_ex` answers (or may: the QueryInterfaces).
+fn is_ex(id: u32) -> bool {
+    matches!(id, D3D9_QI | DEVICE_QI | 0x111..=0x115 | 0x277..=0x285)
+}
+
 /// The IDirect3D9 objects Direct3DCreate9Ex made.
 static EXTENDED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// Whether `this` (an IDirect3D9 for D3D9_QI, a device otherwise) comes from Direct3DCreate9Ex.
@@ -198,7 +205,8 @@ fn write_mode_ex(p: u32, m: &[u32; 4], r: u32) {
 }
 
 fn method(c: &mut Ctx) -> u32 {
-    let id = IDS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied()).unwrap_or(0);
+    // (the method's id, kept with its trap: init)
+    let id = crate::api::tag_of(c.trap).0;
     if let Some(r) = method_ex(c, id) {
         return r;
     }
@@ -250,7 +258,11 @@ static DCS: Mutex<Option<HashMap<u32, (u32, u32, u32)>>> = Mutex::new(None);
 /// Calls the host directly (x64: the arguments as 8-byte slots).
 fn d3d_call(id: u32, args: &[u32]) -> u32 {
     if mem::x64() {
-        let wide: Vec<u64> = args.iter().map(|&a| a as u64).collect();
+        let mut wide = [0u64; 16];
+        assert!(args.len() <= wide.len());
+        for (w, &a) in wide.iter_mut().zip(args) {
+            *w = a as u64;
+        }
         return unsafe { kura::d3d9::vnhost_d3d9_call(id, wide.as_ptr() as *const u32, &CALLS) };
     }
     unsafe { kura::d3d9::vnhost_d3d9_call(id, args.as_ptr(), &CALLS) }
@@ -360,19 +372,16 @@ fn init() {
     DONE.get_or_init(|| {
         let k = ps();
         let table = mem::heap_alloc(k * (NUM_IFACES + 1), true);
-        let mut ids = HashMap::default();
         for i in 1..=NUM_IFACES {
             let m = METHODS[i as usize - 1];
             let v = mem::heap_alloc(k * m.len() as u32, true);
             for (n, &args) in m.iter().enumerate() {
-                let id = i << 8 | n as u32;
                 let a = host_fn(&format!("d3d9:{i}:{n}"), method, 4 * args);
-                ids.insert(a, id);
+                crate::api::set_tag(a, i << 8 | n as u32, 0);
                 wp(v + k * n as u32, a);
             }
             wp(table + k * i, v);
         }
-        *IDS.lock().unwrap() = Some(ids);
         unsafe { kura::d3d9::vnhost_d3d9_init(table as usize as *const u32, NUM_IFACES + 1) };
     });
 }
@@ -384,18 +393,15 @@ fn init8() {
     DONE.get_or_init(|| {
         let k = ps();
         let table = mem::heap_alloc(k * (NUM_IFACES8 + 1), true);
-        let mut g = IDS.lock().unwrap();
-        let ids = g.get_or_insert_with(HashMap::default);
         for &(i, m) in METHODS8.iter() {
             let v = mem::heap_alloc(k * m.len() as u32, true);
             for (n, &args) in m.iter().enumerate() {
                 let a = host_fn(&format!("d3d8:{i}:{n}"), method, 4 * args);
-                ids.insert(a, i << 8 | n as u32);
+                crate::api::set_tag(a, i << 8 | n as u32, 0);
                 wp(v + k * n as u32, a);
             }
             wp(table + k * i, v);
         }
-        drop(g);
         unsafe { kura::d3d9::vnhost_d3d9_init(table as usize as *const u32, NUM_IFACES8 + 1) };
     });
 }
@@ -466,5 +472,44 @@ pub fn register() {
         "D3DPERF_SetOptions", "D3DPERF_SetRegion", "DebugSetMute", "Direct3DShaderValidatorCreate9"]
     {
         implement("d3d9", n, zero);
+    }
+}
+
+/// Every Direct3D 8/9 vtable trap carries its method id (method reads it without a lock:
+/// review C-2), and the stack bytes its arguments take; only the Ex ids go to method_ex.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn traps_carry_their_ids() {
+        let _g = crate::test_guest::enter();
+        init8();
+        let trap = |name: String| crate::api::export("sake", &name);
+        for i in 1..=NUM_IFACES {
+            for (n, &args) in METHODS[i as usize - 1].iter().enumerate() {
+                let a = trap(format!("d3d9:{i}:{n}"));
+                assert_eq!(crate::api::tag_of(a), (i << 8 | n as u32, 0), "d3d9:{i}:{n}");
+                assert_eq!(crate::api::args_of(a), (false, 4 * args));
+            }
+        }
+        for &(i, m) in METHODS8.iter() {
+            for (n, &args) in m.iter().enumerate() {
+                let a = trap(format!("d3d8:{i}:{n}"));
+                assert_eq!(crate::api::tag_of(a), (i << 8 | n as u32, 0), "d3d8:{i}:{n}");
+                assert_eq!(crate::api::args_of(a), (false, 4 * args));
+            }
+        }
+    }
+
+    #[test]
+    fn ex_ids() {
+        // IDirect3D9Ex's five past IDirect3D9's 17 (0x111..=0x115), IDirect3DDevice9Ex's 15
+        // past the device's 119 (0x277..=0x285), and both QueryInterfaces
+        let ex: Vec<u32> = (0..0x2000).filter(|&id| is_ex(id)).collect();
+        let want: Vec<u32> = [D3D9_QI, DEVICE_QI].into_iter().chain(0x111..=0x115).chain(0x277..=0x285).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        assert_eq!(ex, want);
+        assert_eq!(METHODS[0].len(), 0x16);
+        assert_eq!(METHODS[1].len(), 0x86);
     }
 }

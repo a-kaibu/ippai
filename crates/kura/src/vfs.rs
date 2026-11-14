@@ -1548,13 +1548,42 @@ fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
     out
 }
 
-/// Where each file's last read ended (a read that starts there reads on: SEQ_AHEAD blocks
-/// are fetched ahead, not one).
-static LAST_END: Mutex<Option<HashMap<Ino, u64>>> = Mutex::new(None);
+/// Per file: where its last read ended (a read that starts there reads on: SEQ_AHEAD blocks
+/// are fetched ahead, not one), and the bytes whose blocks reads have queued to be fetched
+/// already (`ahead`: a read whose window lies in them queues nothing; small reads one after
+/// another went through `pieces` and `fetch_ahead`'s locks and allocations each, review C-3).
+#[derive(Clone, Copy)]
+struct Last {
+    end: u64,
+    ahead: (u64, u64),
+}
+static LAST_END: Mutex<Option<HashMap<Ino, Last>>> = Mutex::new(None);
+/// (tests: reads that queued their window)
+#[cfg(test)]
+static QUEUED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Reads file content at `off` (the lock is not held while chunks are fetched).
-fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
-    let lower = with(|fs| match fs.node(ino).map(|n| &n.data) {
+thread_local! {
+    /// The block this thread read last: a read inside it again (an engine reading an index in
+    /// small reads) copies from it without the cache's locks. Blocks are named by their
+    /// content, so it stays right whatever the cache drops meanwhile.
+    static LAST_BLOCK: std::cell::RefCell<Option<(Key, Arc<Vec<u8>>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The thread's last block when it is `k` (`len` bytes)
+fn last_block(k: &Key, len: usize) -> Option<Arc<Vec<u8>>> {
+    LAST_BLOCK.with(|c| c.borrow().as_ref().filter(|(x, d)| x == k && d.len() == len).map(|x| x.1.clone()))
+}
+
+/// Where the block holding byte `at` of a file laid out as `l` ends.
+fn block_end(l: &Layout, at: u64) -> u64 {
+    let (cstart, clen) = l.span(l.index(at));
+    (cstart + ((at - cstart) / block() + 1) * block()).min(cstart + clen)
+}
+
+/// What a read of `ino` at `off` finds under the FS lock: the bytes of a file in memory
+/// (copied into `buf`: Err(count)), or a store file's layout and chunks.
+fn lookup(fs: &Fs, ino: Ino, buf: &mut [u8], off: u64) -> Result<Result<(Layout, Arc<Vec<Option<Hash>>>), usize>, c_int> {
+    match fs.node(ino).map(|n| &n.data) {
         Some(Data::File(Content::Upper(v))) => {
             // (an offset past what a usize holds is past the end: not its low 32 bits)
             let start = usize::try_from(off).map_or(v.len(), |o| o.min(v.len()));
@@ -1565,7 +1594,17 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
         Some(Data::File(Content::Lower { size, chunks, starts })) => Ok(Ok((Layout { size: *size, starts: starts.clone() }, chunks.clone()))),
         Some(Data::Dir(_)) => Err(libc::EISDIR),
         _ => Err(libc::EBADF),
-    })?;
+    }
+}
+
+/// Reads file content at `off` (the lock is not held while chunks are fetched).
+fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
+    let lower = with(|fs| lookup(fs, ino, buf, off))?;
+    read_lower(ino, buf, off, lower)
+}
+
+/// read_at past the FS lock (`lower`: what `lookup` found).
+fn read_lower(ino: Ino, buf: &mut [u8], off: u64, lower: Result<(Layout, Arc<Vec<Option<Hash>>>), usize>) -> Result<usize, c_int> {
     let (layout, chunks) = match lower {
         Err(n) => return Ok(n),
         Ok(l) => l,
@@ -1577,27 +1616,36 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
     }
     let end = (off + buf.len() as u64).min(size);
     // the read's other pieces and the blocks after it: fetched at once by the fetcher threads
-    // while this one fetches the first
-    let (sequential, first_read) = {
+    // while this one fetches the first (unless reads before it queued them already)
+    let (ahead_end, first_read, queued) = {
         let mut g = LAST_END.lock().unwrap_or_else(|e| e.into_inner());
         let m = g.get_or_insert_with(HashMap::default);
         if m.len() > 256 {
             m.clear();
         }
-        let last = m.insert(ino, end);
-        (last == Some(off), last.is_none())
+        let last = m.get(&ino).copied();
+        let sequential = last.is_some_and(|l| l.end == off);
+        let ahead_end = (end + block() * if sequential { SEQ_AHEAD } else { NEXT_AHEAD }).min(size);
+        let queued = last.is_some_and(|l| off >= l.ahead.0 && ahead_end <= l.ahead.1);
+        let ahead = if queued { last.unwrap().ahead } else { (off, block_end(&layout, ahead_end - 1)) };
+        m.insert(ino, Last { end, ahead });
+        (ahead_end, last.is_none(), queued)
     };
     // (what the game reads soon, when this read waits for the network: the page fetches it
     // onto the device meanwhile)
     let i = layout.index(off);
     if let Some(h) = chunks.get(i).copied().flatten() {
-        if !cached(&(h, ((off - layout.starts[i]) / block()) as u32)) {
+        let k = (h, ((off - layout.starts[i]) / block()) as u32);
+        if last_block(&k, block_len(layout.span(i).1, k.1)).is_none() && !cached(&k) {
             hint(ino, &layout, &chunks, i, first_read);
         }
     }
-    let ahead_end = (end + block() * if sequential { SEQ_AHEAD } else { NEXT_AHEAD }).min(size);
-    for p in pieces(off, end, ahead_end, &layout, &chunks, true) {
-        fetch_ahead(p);
+    if !queued {
+        #[cfg(test)]
+        QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        for p in pieces(off, end, ahead_end, &layout, &chunks, true) {
+            fetch_ahead(p);
+        }
     }
     let b = block();
     let mut at = off;
@@ -1612,7 +1660,18 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
             None => dst.fill(0),
             Some(h) => {
                 let (b0, b1) = ((from / b) as u32, ((from + n - 1) / b) as u32);
+                if b0 == b1 {
+                    if let Some(blk) = last_block(&(h, b0), block_len(clen, b0)) {
+                        let s = (from - b0 as u64 * b) as usize;
+                        dst.copy_from_slice(&blk[s..s + n as usize]);
+                        at += n;
+                        continue;
+                    }
+                }
                 let blocks = chunk_blocks(&h, clen, b0, b1)?;
+                if let Some(last) = blocks.last() {
+                    LAST_BLOCK.with(|c| *c.borrow_mut() = Some(((h, b1), last.clone())));
+                }
                 let mut d = 0usize;
                 for (k, blk) in blocks.iter().enumerate() {
                     let bstart = (b0 as u64 + k as u64) * b;
@@ -1806,9 +1865,22 @@ pub(crate) fn list_at(p: &str) -> At<Vec<(String, Info)>> {
 pub(crate) fn name_nocase(p: &str, name: &str) -> At<Option<String>> {
     let lc = name.to_lowercase();
     at(p, true, |fs, ino| match &fs.node(ino).unwrap().data {
-        Data::Dir(ch) => Ok(ch.keys().find(|k| k.to_lowercase() == lc).cloned()),
+        Data::Dir(ch) => Ok(ch.keys().find(|k| same_nocase(k, name, &lc)).cloned()),
         _ => Err(libc::ENOTDIR),
     })
+}
+
+/// `k.to_lowercase() == lc` (`lc`: `name` lowercased) without a String per key: a lookup
+/// lowercased every name of the directory under the FS lock (review C-3). Char by char is the
+/// same but for Σ, whose lowercase depends on where it is in the word.
+fn same_nocase(k: &str, name: &str, lc: &str) -> bool {
+    if k.is_ascii() && name.is_ascii() {
+        return k.eq_ignore_ascii_case(name);
+    }
+    if k.contains('Σ') || name.contains('Σ') {
+        return k.to_lowercase() == lc;
+    }
+    k.chars().flat_map(char::to_lowercase).eq(lc.chars())
 }
 
 /// Opens `p` as a handle (released with [`release`]).
@@ -2004,14 +2076,19 @@ fn set_pos(h: u32, pos: u64) {
 }
 
 pub(crate) fn h_read(h: u32, buf: &mut [u8]) -> Result<usize, c_int> {
-    let (ino, pos, flags) = handle(h).ok_or(libc::EBADF)?;
-    if flags & libc::O_ACCMODE == libc::O_WRONLY {
-        return Err(libc::EBADF);
-    }
+    // (the handle and its file's content in one lock)
+    let (ino, pos, lower) = with(|fs| {
+        let x = fs.handles.get(&h).ok_or(libc::EBADF)?;
+        let (ino, pos) = (x.ino, x.pos);
+        if x.flags & libc::O_ACCMODE == libc::O_WRONLY {
+            return Err(libc::EBADF);
+        }
+        Ok((ino, pos, lookup(fs, ino, buf, pos)?))
+    })?;
     if trace() {
         eprintln!("vfs: read {h} ino {ino} {}@{pos}", buf.len());
     }
-    let n = read_at(ino, buf, pos)?;
+    let n = read_lower(ino, buf, pos, lower)?;
     set_pos(h, pos + n as u64);
     Ok(n)
 }
@@ -2074,7 +2151,7 @@ pub unsafe extern "C" fn vnhost_free(p: *mut c_void) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Random puts, replacements (other lengths) and padded gets against a model: a list of
@@ -2229,6 +2306,15 @@ mod tests {
 
     /// The tests that mount files in the one file system (FS) and store, one at a time.
     static TEST_FS: Mutex<()> = Mutex::new(());
+
+    /// For tests of other modules that open the host's files (video's temporary .vnv): none of
+    /// these tests' mounts meanwhile (most mount "/", and leave it mounted), held while the guard
+    /// lives. (They failed when run with these: their file was looked for in a test's tree.)
+    pub(crate) fn host_files() -> std::sync::MutexGuard<'static, ()> {
+        let g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        *FS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        g
+    }
 
     /// The store, for these tests: chunks by name, and the names fetched.
     static STORE: Mutex<Option<(HashMap<String, Vec<u8>>, Vec<String>)>> = Mutex::new(None);
@@ -2523,6 +2609,182 @@ mod tests {
         }
     }
 
+    /// Small reads one after another (an engine reading an index): each read gives the file's
+    /// bytes, but only a read whose window passes the blocks queued before queues more (one per
+    /// block, not one per read), and reads inside the thread's last block take nothing from the
+    /// store; with the cache emptied between reads, and reads that jump about, the bytes stay right.
+    #[test]
+    fn small_reads_queue_once_per_block() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = |i: u32| format!("{:032x}", 0x5ead_0000u128 + i as u128);
+        let mut m = HashMap::new();
+        let mut model = Vec::new();
+        let mut list = Vec::new();
+        for i in 0..20u32 {
+            // (chunks of 100 bytes but one of 37 and one all zero; blocks are 24 bytes here)
+            let len = if i == 7 { 37 } else { 100 };
+            let c: Vec<u8> = (0..len).map(|k| if i == 11 { 0 } else { (i * 31 + k * 7 + 1) as u8 }).collect();
+            if i == 11 {
+                list.push(format!(":{len}"));
+            } else {
+                m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), c.clone());
+                list.push(format!("{}:{len}", h(i)));
+            }
+            model.extend(c);
+        }
+        let tsv = format!("vnvm-tree\t2\t64\nf\t644\t0\tindex.pck\t{}\t{}\n", model.len(), list.join(","));
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        // (not at "/": the other tests' files (video's temporary .vnv) stay outside it)
+        fs.mounts.push(("/vfs-test".into(), root));
+        fs.load_tree(root, &tsv);
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        *CACHE.lock().unwrap() = None;
+        *LAST_END.lock().unwrap() = None;
+        let At::Ours(Ok(fd)) = open_handle("/vfs-test/index.pck", libc::O_RDONLY, 0) else { panic!("open") };
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        // front to back in reads of 1 to 8 bytes
+        let q0 = QUEUED.load(std::sync::atomic::Ordering::Relaxed);
+        let (mut pos, mut reads) = (0usize, 0usize);
+        while pos < model.len() {
+            let mut b = vec![0u8; 1 + rnd(8) as usize];
+            let n = h_read(fd, &mut b).unwrap();
+            assert!(n > 0);
+            assert_eq!(&b[..n], &model[pos..pos + n], "at {pos}");
+            pos += n;
+            reads += 1;
+        }
+        assert_eq!(h_read(fd, &mut [0u8; 4]), Ok(0));
+        let queued = QUEUED.load(std::sync::atomic::Ordering::Relaxed) - q0;
+        // (20 chunks of at most 5 blocks: a window per block at most, and the first)
+        assert!(queued <= 20 * 5 + 1, "{queued} windows for {reads} reads");
+        assert!(reads >= 3 * queued, "{queued} windows for {reads} reads");
+        // a read inside the last block again: nothing fetched, nothing queued
+        let fetched = || std::mem::take(&mut STORE.lock().unwrap().as_mut().unwrap().1);
+        let wait_fetchers = || {
+            let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
+            while g.as_ref().is_some_and(|a| !a.busy.is_empty()) {
+                g = AHEAD_DONE.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+        };
+        wait_fetchers();
+        fetched();
+        *CACHE.lock().unwrap() = None;
+        let last = model.len() as u64 - 3;
+        h_seek(fd, last as i64, libc::SEEK_SET).unwrap();
+        let mut b = [0u8; 2];
+        assert_eq!(h_read(fd, &mut b), Ok(2));
+        assert_eq!(&b, &model[last as usize..last as usize + 2]);
+        wait_fetchers();
+        assert!(fetched().is_empty(), "the thread's last block, from the store again");
+        // anywhere, any length, the cache sometimes emptied
+        for k in 0..400 {
+            if k % 37 == 0 {
+                wait_fetchers();
+                *CACHE.lock().unwrap() = None;
+            }
+            let off = rnd(model.len() as u64 + 30);
+            let len = rnd(260) as usize;
+            let mut b = vec![0u8; len];
+            h_seek(fd, off as i64, libc::SEEK_SET).unwrap();
+            let n = h_read(fd, &mut b).unwrap();
+            let want = &model[(off as usize).min(model.len())..(off as usize + len).min(model.len())];
+            assert_eq!(&b[..n], want, "{len} at {off}");
+            // and on from there, as the sequential reader it may be
+            let mut b2 = vec![0u8; rnd(30) as usize];
+            let n2 = h_read(fd, &mut b2).unwrap();
+            let at = (off as usize + n).min(model.len());
+            assert_eq!(&b2[..n2], &model[at..(at + b2.len()).min(model.len())]);
+        }
+        wait_fetchers();
+        release(fd);
+        *LAST_END.lock().unwrap() = None;
+    }
+
+    // same_nocase is `k.to_lowercase() == name.to_lowercase()` (what name_nocase compared,
+    // with a String per key), Σ, the Kelvin sign and İ included.
+    proptest::proptest! {
+        #[test]
+        fn same_nocase_is_lowercase_eq(k in "[aAzZ_.0-9ΣσςİiKkÄäあア漢]{0,6}", n in "[aAzZ_.0-9ΣσςİiKkÄäあア漢]{0,6}") {
+            let lc = n.to_lowercase();
+            proptest::prop_assert_eq!(same_nocase(&k, &n, &lc), k.to_lowercase() == lc);
+        }
+    }
+
+    #[test]
+    fn same_nocase_cases() {
+        let same = |k: &str, n: &str| same_nocase(k, n, &n.to_lowercase());
+        assert!(same("Data.XP3", "data.xp3"));
+        assert!(!same("data.xp", "data.xp3"));
+        assert!(same("\u{212a}", "k"));
+        assert!(same("ΟΔΟΣ", "οδος") == ("ΟΔΟΣ".to_lowercase() == "οδος"));
+        assert!(same("ボイス", "ボイス") && !same("ボイス", "ぼいす"));
+    }
+
+    /// (a measurement, not a check: `cargo test --release -p kura --lib bench_small_reads --
+    /// --ignored --nocapture`) ReadFile-sized reads of a store file whose blocks are all here:
+    /// the per-read cost of the locks and allocations around the copy (review C-3).
+    #[test]
+    #[ignore]
+    fn bench_small_reads() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = |i: u32| format!("{:032x}", 0xbe4c_0000u128 + i as u128);
+        let mut m = HashMap::new();
+        let mut list = Vec::new();
+        let mut size = 0;
+        for i in 0..64u32 {
+            m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), vec![i as u8 + 1; 1000]);
+            list.push(format!("{}:1000", h(i)));
+            size += 1000;
+        }
+        let tsv = format!("vnvm-tree\t2\t64\nf\t644\t0\tbig.pck\t{size}\t{}\n", list.join(","));
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        // (not at "/": the other tests' files (video's temporary .vnv) stay outside it)
+        fs.mounts.push(("/vfs-test".into(), root));
+        fs.load_tree(root, &tsv);
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        *CACHE.lock().unwrap() = None;
+        *LAST_END.lock().unwrap() = None;
+        let At::Ours(Ok(fd)) = open_handle("/vfs-test/big.pck", libc::O_RDONLY, 0) else { panic!("open") };
+        let mut b = [0u8; 16];
+        // (everything fetched once)
+        for _ in 0..2 {
+            h_seek(fd, 0, libc::SEEK_SET).unwrap();
+            while h_read(fd, &mut b).unwrap() > 0 {}
+        }
+        let wait = || {
+            let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
+            while g.as_ref().is_some_and(|a| !a.busy.is_empty()) {
+                g = AHEAD_DONE.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+        };
+        wait();
+        for (what, len) in [("16-byte reads", 16usize), ("4-byte reads", 4)] {
+            let mut b = vec![0u8; len];
+            let t = std::time::Instant::now();
+            let mut n = 0u64;
+            for _ in 0..20 {
+                h_seek(fd, 0, libc::SEEK_SET).unwrap();
+                while h_read(fd, &mut b).unwrap() > 0 {
+                    n += 1;
+                }
+            }
+            println!("BENCH vfs {what}: {:.0} ns per read ({n} reads)", t.elapsed().as_nanos() as f64 / n as f64);
+        }
+        wait();
+        release(fd);
+        *LAST_END.lock().unwrap() = None;
+    }
+
     /// A read that waits for the network tells the page what the game reads soon: a voice the
     /// folder's next voices (once), an archive its next chunks (each chunk once); a read the
     /// cache has tells nothing; movies nothing.
@@ -2706,6 +2968,9 @@ mod tests {
         *CACHE.lock().unwrap() = None;
         *PREDICT.lock().unwrap() = None;
         *HINTED.lock().unwrap() = None;
+        // (a file's first read hints its folder: not the first when an earlier test's file had
+        // this inode)
+        *LAST_END.lock().unwrap() = None;
         trace::reset();
         let read = |p: &str, off: u64, n: usize| {
             let At::Ours(Ok(fd)) = open_handle(p, libc::O_RDONLY, 0) else { panic!("open {p}") };

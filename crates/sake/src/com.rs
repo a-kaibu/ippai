@@ -77,9 +77,21 @@ pub fn warn_once(msg: &str) {
     }
 }
 
+/// A stub method's trap tag (crate::api::set_tag): STUB_TAG | its kind, STUB_WARNED once said
+/// (a title that calls one every frame paid a lock, a format and a hash for each: review C-2).
+const STUB_TAG: u32 = 1 << 31;
+const STUB_WARNED: u32 = 1 << 30;
+
 fn stub(c: &mut Ctx) -> u32 {
-    let (iface, name, kind) = STUBS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied()).unwrap_or(("?", "?", 0));
-    warn_once(&format!("sake: com {iface}::{name} not implemented"));
+    let (tag, _) = crate::api::tag_of(c.trap);
+    let kind = if tag & STUB_WARNED != 0 {
+        tag as u8
+    } else {
+        let (iface, name, kind) = STUBS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied()).unwrap_or(("?", "?", 0));
+        warn_once(&format!("sake: com {iface}::{name} not implemented"));
+        crate::api::set_tag(c.trap, STUB_TAG | STUB_WARNED | kind as u32, 0);
+        kind
+    };
     match kind {
         1 => {
             c.st0 = Some(0.0);

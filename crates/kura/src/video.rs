@@ -1193,6 +1193,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // (a file: Miri isolates the file system)
     fn raw_frames_from_a_file() {
         let d = raw(5, 3, 300, 128, 128);
+        let _fs = crate::vfs::tests::host_files();
         let f = TempVnv::new(&d);
         let (id, i) = open_file(&f.0).unwrap();
         assert_eq!(i, info(&d).unwrap());
@@ -1226,6 +1227,7 @@ mod tests {
                 tracks.push(("vp09.00.31.08".to_string(), track(0x5a)));
             }
             let d = crate::vnv::write(32, 16, &tracks, None);
+            let _fs = crate::vfs::tests::host_files();
             let f = TempVnv::new(&d);
             let (id, i) = open_file(&f.0).unwrap();
             // (closed however the case ends: a failing case must not leave streams to the others)

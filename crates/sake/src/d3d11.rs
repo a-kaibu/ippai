@@ -5,8 +5,7 @@
 
 #![allow(non_snake_case)]
 
-use crate::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crate::api::{host_fn, implement, Ctx};
 use crate::mem;
@@ -19,22 +18,24 @@ use methods::METHODS;
 const FIRST: u32 = 64;
 const E_NOTIMPL: u32 = 0x8000_4001;
 
-/// trap address -> method id (0 marks a FLOAT method)
-static IDS: Mutex<Option<HashMap<u32, (u32, bool)>>> = Mutex::new(None);
+/// A method's trap tag (crate::api::set_tag): its id, with FLOAT for a method that returns a
+/// float; the tag's data is its argument count with `this`.
+const FLOAT: u32 = 1 << 31;
 
 fn calls() -> &'static kura::d3d9::HostCalls {
     crate::d3d9::host_calls()
 }
 
 fn method(c: &mut Ctx) -> u32 {
-    let (id, float) = IDS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied()).unwrap_or((0, false));
-    if float {
+    let (tag, nargs) = crate::api::tag_of(c.trap);
+    let id = tag & !FLOAT;
+    if tag & FLOAT != 0 {
         c.st0 = Some(0.0);
         return 0;
     }
     if mem::x64() {
-        // (the host reads 8-byte slots)
-        let a: [u64; 16] = std::array::from_fn(|i| c.a64(i as u32));
+        // (the host reads 8-byte slots: the method's arguments, the rest 0)
+        let a: [u64; 16] = std::array::from_fn(|i| if i < nargs { c.a64(i as u32) } else { 0 });
         return unsafe { kura::d3d11::call(id, a.as_ptr() as *const u32, calls()) };
     }
     unsafe { kura::d3d11::call(id, (c.esp + 4) as usize as *const u32, calls()) }
@@ -59,7 +60,6 @@ fn init() {
         let n = FIRST + METHODS.len() as u32;
         let ps = mem::ps();
         let table = mem::heap_alloc(ps * n, true);
-        let mut ids = HashMap::default();
         for (k, m) in METHODS.iter().enumerate() {
             let i = FIRST + k as u32;
             let v = mem::heap_alloc(ps * m.len() as u32, true);
@@ -67,12 +67,11 @@ fn init() {
                 let float = args == 0;
                 let bytes = if float { 8 } else { 4 * args as u32 };
                 let a = host_fn(&format!("d3d11:{i}:{j}"), method, bytes);
-                ids.insert(a, (i << 8 | j as u32, float));
+                crate::api::set_tag(a, i << 8 | j as u32 | if float { FLOAT } else { 0 }, args as usize);
                 mem::wp(v + ps * j as u32, a);
             }
             mem::wp(table + ps * i, v);
         }
-        *IDS.lock().unwrap() = Some(ids);
         unsafe { kura::d3d11::init(table as usize as *const u32, n) };
     });
 }
@@ -185,5 +184,28 @@ pub fn register() {
     implement("d3d12", "D3D12EnableExperimentalFeatures", |_| E_NOINTERFACE);
     for n in ["D3D12SerializeRootSignature", "D3D12SerializeVersionedRootSignature", "D3D12CreateRootSignatureDeserializer", "D3D12CreateVersionedRootSignatureDeserializer"] {
         implement("d3d12", n, d3d12_no_root_signature);
+    }
+}
+
+/// Every D3D11/DXGI vtable trap carries its method id, FLOAT for the float ones, and its
+/// argument count (method reads them without a lock: review C-2).
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn traps_carry_their_ids() {
+        let _g = crate::test_guest::enter();
+        init();
+        for (k, m) in METHODS.iter().enumerate() {
+            let i = FIRST + k as u32;
+            for (j, &args) in m.iter().enumerate() {
+                let a = crate::api::export("sake", &format!("d3d11:{i}:{j}"));
+                let (tag, n) = crate::api::tag_of(a);
+                assert_eq!(tag & !FLOAT, i << 8 | j as u32);
+                assert_eq!(tag & FLOAT != 0, args == 0);
+                assert_eq!(n, args as usize);
+            }
+        }
     }
 }

@@ -14,8 +14,6 @@ use crate::api::{host_fn, implement, Ctx};
 use crate::gl_sigs::{self, Ret};
 use crate::mem::{self, r32, w16, w32};
 
-/// trap -> (kura function, signature)
-static TRAPS: Mutex<Option<HashMap<u32, (usize, u16)>>> = Mutex::new(None);
 /// name -> trap, for wglGetProcAddress
 static PROCS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 /// strings kura returns (glGetString), copied once into guest memory
@@ -41,43 +39,66 @@ fn stack_bytes(sig: u16) -> u32 {
     gl_sigs::SIGS[sig as usize].0.chars().map(|k| if k == 'd' { 8 } else { 4 }).sum()
 }
 
+/// A GL trap's tag (crate::api::set_tag; the data is kura's function): SIG_SET | the signature,
+/// with RET_STR when the result is a host string (glGetString, glGetStringi) to copy out.
+const SIG_SET: u32 = 1 << 31;
+const RET_STR: u32 = 1 << 16;
+
+fn gl_tag(name: &str, sig: u16) -> u32 {
+    SIG_SET | sig as u32 | if matches!(name, "glGetString" | "glGetStringi") { RET_STR } else { 0 }
+}
+
 fn dispatch(c: &mut Ctx) -> u32 {
-    let entry = TRAPS.lock().unwrap().get_or_insert_with(HashMap::default).get(&c.trap).copied();
-    let entry = entry.or_else(|| {
-        // an opengl32 export: by its name
-        let n = crate::api::name_of(c.trap)?;
-        let e = host_proc(n.split('!').nth(1)?)?;
-        TRAPS.lock().unwrap().get_or_insert_with(HashMap::default).insert(c.trap, e);
-        Some(e)
-    });
-    let Some((f, sig)) = entry else {
-        missing(c.trap);
-        return 0;
-    };
-    let w: Vec<u32> = if mem::x64() {
+    // (kept with the trap: no lock, no lookup per call)
+    let (mut tag, mut f) = crate::api::tag_of(c.trap);
+    if tag == 0 {
+        // an opengl32 export, the first call: by its name
+        let Some((t, e)) = crate::api::name_of(c.trap).and_then(|n| {
+            let name = n.split('!').nth(1)?;
+            let (f, sig) = host_proc(name)?;
+            Some((gl_tag(name, sig), f))
+        }) else {
+            missing(c.trap);
+            return 0;
+        };
+        crate::api::set_tag(c.trap, t, e);
+        (tag, f) = (t, e);
+    }
+    let sig = tag as u16;
+    // (12 words at most: gl_sigs::call reads w[..12])
+    let mut w = [0u32; 16];
+    let mut n = 0;
+    if mem::x64() {
         // x64: argument i in RCX/RDX/R8/R9 or XMM0-3 by position, then the stack; pointers
         // and GLsizeiptr pass their low half
-        let mut w = Vec::new();
         for (i, k) in gl_sigs::SIGS[sig as usize].0.chars().enumerate() {
             match k {
                 'd' => {
                     let v = c.xmm(i as u32);
-                    w.extend([v as u32, (v >> 32) as u32]);
+                    w[n] = v as u32;
+                    w[n + 1] = (v >> 32) as u32;
+                    n += 2;
                 }
-                'f' => w.push(c.xmm(i as u32) as u32),
-                _ => w.push(c.a64(i as u32) as u32),
+                'f' => {
+                    w[n] = c.xmm(i as u32) as u32;
+                    n += 1;
+                }
+                _ => {
+                    w[n] = c.a64(i as u32) as u32;
+                    n += 1;
+                }
             }
         }
-        w
     } else {
-        let n = stack_bytes(sig) / 4;
-        (0..n).map(|i| r32(c.esp + 4 + 4 * i)).collect()
-    };
-    match unsafe { gl_sigs::call(sig, f as *const (), &w) } {
+        n = (stack_bytes(sig) / 4) as usize;
+        for (i, x) in w[..n].iter_mut().enumerate() {
+            *x = r32(c.esp + 4 + 4 * i as u32);
+        }
+    }
+    match unsafe { gl_sigs::call(sig, f as *const (), &w[..n]) } {
         Ret::V => 0,
         Ret::I(v) => {
-            let name = crate::api::name_of(c.trap).unwrap_or_default();
-            if v != 0 && (name.ends_with("!glGetString") || name.ends_with("!glGetStringi") || c.trap == string_i_trap()) {
+            if v != 0 && tag & RET_STR != 0 {
                 guest_str(v as usize)
             } else {
                 v
@@ -98,10 +119,6 @@ pub fn call_gl(name: &str, w: &[u32]) -> u32 {
         Ret::I(v) => v,
         _ => 0,
     }
-}
-
-fn string_i_trap() -> u32 {
-    PROCS.lock().unwrap().get_or_insert_with(HashMap::default).get("glGetStringi").copied().unwrap_or(0)
 }
 
 /// a NUL-terminated host string, copied into guest memory (once)
@@ -132,7 +149,7 @@ fn proc_trap(name: &str) -> u32 {
         _ => match host_proc(name) {
             Some(e) => {
                 let t = host_fn(name, dispatch, stack_bytes(e.1));
-                TRAPS.lock().unwrap().get_or_insert_with(HashMap::default).insert(t, e);
+                crate::api::set_tag(t, gl_tag(name, e.1), e.0);
                 t
             }
             // one kura does not have: does nothing (as on Wine's winebrowser.drv)
@@ -330,5 +347,28 @@ pub fn init() {
         ("SwapBuffers", SwapBuffers),
     ] {
         implement("gdi32", n, f);
+    }
+}
+
+/// A GL trap carries kura's function and its signature (dispatch reads them without a lock:
+/// review C-2); glGetString's says its result is a string to copy out.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn traps_carry_function_and_signature() {
+        let _g = crate::test_guest::enter();
+        for name in ["glClear", "glGetString", "glGetStringi", "glTexImage2D", "glClearColor", "glBindBufferARB"] {
+            let Some((f, sig)) = host_proc(name) else { continue };
+            let t = proc_trap(name);
+            assert_ne!(t, 0, "{name}");
+            let (tag, data) = crate::api::tag_of(t);
+            assert_eq!(tag & !RET_STR, SIG_SET | sig as u32, "{name}");
+            assert_eq!(tag & RET_STR != 0, name.starts_with("glGetString"), "{name}");
+            assert_eq!(data, f, "{name}");
+            assert_eq!(crate::api::args_of(t), (false, stack_bytes(sig)));
+        }
+        assert!(host_proc("glClear").is_some(), "kura has glClear");
     }
 }

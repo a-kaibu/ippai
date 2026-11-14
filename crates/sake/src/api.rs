@@ -3,6 +3,7 @@
 //! arguments still on the guest stack and returns to the caller as stdcall/cdecl would.
 
 use crate::{HashMap, HashSet};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use koji::{Cpu, EAX, EDX, ESP};
@@ -175,6 +176,99 @@ fn yields(name: &str) -> u8 {
 }
 
 static ENTRIES: RwLock<Vec<Entry>> = RwLock::new(Vec::new());
+
+/// Entries at most: their traps stay below RET_TRAP (the traps past it are the run loop's own).
+const MAX_ENTRIES: usize = ((RET_TRAP - TRAP_LO) / 4) as usize;
+
+/// What `dispatch` reads of an entry, without a lock (review C-1: the RwLock's reader count,
+/// one cache line written by every call of every guest thread). Slots in chunks of
+/// HOT_CHUNK made on first use and never freed (a trap's index never changes), written
+/// only under ENTRIES' write lock (`publish`), read with Acquire. `tag` and `data` are the
+/// handler's own (`set_tag`: a COM method's id, a GL function), 0 when none.
+struct Hot {
+    f: AtomicUsize,
+    meta: AtomicU32,
+    tag: AtomicU32,
+    data: AtomicUsize,
+}
+
+const HOT_CHUNK: usize = 4096;
+static HOT: [AtomicPtr<Hot>; MAX_ENTRIES.div_ceil(HOT_CHUNK)] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_ENTRIES.div_ceil(HOT_CHUNK)];
+
+/// An entry's flags as one word (Hot::meta)
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Meta {
+    bytes: u32,
+    cdecl: bool,
+    known: bool,
+    this_arg: bool,
+    yields: u8,
+}
+
+const META_SET: u32 = 1 << 31;
+const META_BYTES: u32 = (1 << 20) - 1;
+
+impl Meta {
+    fn of(e: &Entry) -> Meta {
+        Meta { bytes: e.bytes, cdecl: e.cdecl, known: e.known, this_arg: e.this_arg, yields: e.yields }
+    }
+    /// (bytes: 20 bits, a stdcall function's arguments are far fewer; more is cut to META_BYTES)
+    fn pack(self) -> u32 {
+        META_SET | self.bytes.min(META_BYTES) | (self.cdecl as u32) << 20 | (self.known as u32) << 21 | (self.this_arg as u32) << 22 | (self.yields as u32 & 3) << 23
+    }
+    fn unpack(w: u32) -> Option<Meta> {
+        (w & META_SET != 0).then_some(Meta { bytes: w & META_BYTES, cdecl: w >> 20 & 1 != 0, known: w >> 21 & 1 != 0, this_arg: w >> 22 & 1 != 0, yields: (w >> 23 & 3) as u8 })
+    }
+}
+
+/// Slot `i` of the hot table (made when `make`: callers hold ENTRIES' write lock).
+fn hot_slot(i: usize, make: bool) -> Option<&'static Hot> {
+    let c = HOT.get(i / HOT_CHUNK)?;
+    let mut p = c.load(Ordering::Acquire);
+    if p.is_null() {
+        if !make {
+            return None;
+        }
+        let chunk: Box<[Hot]> = (0..HOT_CHUNK).map(|_| Hot { f: AtomicUsize::new(0), meta: AtomicU32::new(0), tag: AtomicU32::new(0), data: AtomicUsize::new(0) }).collect();
+        p = Box::leak(chunk).as_mut_ptr();
+        c.store(p, Ordering::Release);
+    }
+    Some(unsafe { &*p.add(i % HOT_CHUNK) })
+}
+
+/// Entry `i` (of `e`, ENTRIES write-locked) into the hot table.
+fn publish(i: usize, e: &Entry) {
+    let s = hot_slot(i, true).expect("trap index in range");
+    s.f.store(e.f.map_or(0, |f| f as usize), Ordering::Relaxed);
+    s.meta.store(Meta::of(e).pack(), Ordering::Release);
+}
+
+/// Entry `i`'s handler and flags, None when there is no entry `i`.
+fn hot(i: usize) -> Option<(Option<Handler>, Meta)> {
+    let s = hot_slot(i, false)?;
+    let m = Meta::unpack(s.meta.load(Ordering::Acquire))?;
+    let f = s.f.load(Ordering::Relaxed);
+    // (only ever stored from a Handler)
+    let f = (f != 0).then(|| unsafe { std::mem::transmute::<usize, Handler>(f) });
+    Some((f, m))
+}
+
+/// Gives the trap at `addr` the handler's own `tag` (not 0) and `data`, read back without a
+/// lock by [`tag_of`]: what a handler shared by many traps tells them apart by (it was a
+/// locked HashMap by trap address: review C-2).
+pub fn set_tag(addr: u32, tag: u32, data: usize) {
+    debug_assert!(tag != 0);
+    let Some(s) = addr.checked_sub(TRAP_LO).and_then(|o| hot_slot(o as usize / 4, false)) else { return };
+    s.data.store(data, Ordering::Relaxed);
+    s.tag.store(tag, Ordering::Release);
+}
+
+/// The trap's [`set_tag`] tag and data; tag 0 when it has none.
+pub fn tag_of(addr: u32) -> (u32, usize) {
+    let Some(s) = addr.checked_sub(TRAP_LO).and_then(|o| hot_slot(o as usize / 4, false)) else { return (0, 0) };
+    let t = s.tag.load(Ordering::Acquire);
+    (t, if t != 0 { s.data.load(Ordering::Relaxed) } else { 0 })
+}
 static INDEX: Mutex<Option<HashMap<(String, String), u32>>> = Mutex::new(None);
 static IMPLS: RwLock<Option<HashMap<String, Handler>>> = RwLock::new(None);
 
@@ -352,6 +446,7 @@ pub fn export(dll: &str, name: &str) -> u32 {
     let f = find_impl(&d, name);
     let mut e = ENTRIES.write().unwrap();
     let i = e.len() as u32;
+    assert!((i as usize) < MAX_ENTRIES, "sake: more than {MAX_ENTRIES} distinct imports ({dll}!{name})");
     let this_arg = spec.is_some_and(|s| s.2) && THIS_ARG0.contains(&d.as_str());
     e.push(Entry {
         dll: d,
@@ -363,6 +458,7 @@ pub fn export(dll: &str, name: &str) -> u32 {
         this_arg,
         yields: yields(name),
     });
+    publish(i as usize, &e[i as usize]);
     idx.insert(key, i);
     TRAP_LO + 4 * i
 }
@@ -380,7 +476,7 @@ pub fn name_of(addr: u32) -> Option<String> {
 /// Whether the function at a trap address is cdecl, and its stdcall argument bytes.
 pub fn args_of(addr: u32) -> (bool, u32) {
     let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
-    ENTRIES.read().unwrap().get(i).map_or((true, 0), |e| (e.cdecl, e.bytes))
+    hot(i).map_or((true, 0), |(_, m)| (m.cdecl, m.bytes))
 }
 
 /// The DLL key ("ucrtbase", "msvcrt"...) of a trap address.
@@ -393,17 +489,17 @@ pub fn dll_of(addr: u32) -> Option<String> {
 /// The trap is a function of the DLL's spec (implemented or not).
 pub fn is_known(addr: u32) -> bool {
     let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
-    ENTRIES.read().unwrap().get(i).is_some_and(|e| e.known)
+    hot(i).is_some_and(|(_, m)| m.known)
 }
 /// The handler of a trap address.
 pub fn handler_of(addr: u32) -> Option<Handler> {
     let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
-    ENTRIES.read().unwrap().get(i).and_then(|e| e.f)
+    hot(i).and_then(|(f, _)| f)
 }
 
 pub fn implemented(addr: u32) -> bool {
     let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
-    ENTRIES.read().unwrap().get(i).is_some_and(|e| e.f.is_some())
+    hot(i).is_some_and(|(f, _)| f.is_some())
 }
 
 pub fn trace() -> u32 {
@@ -558,63 +654,13 @@ fn usage(i: u32) {
 pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     crate::comrpc::pump(cpu, false);
     let i = (addr - TRAP_LO) / 4;
-    let (f, bytes, cdecl, known, this_arg, yields) = {
-        let e = ENTRIES.read().unwrap();
-        let Some(e) = e.get(i as usize) else {
-            crate::fatal(cpu, &format!("jump to unknown trap address {addr:#x}"));
-        };
-        (e.f, e.bytes, e.cdecl, e.known, e.this_arg, e.yields)
+    let Some((f, Meta { bytes, cdecl, known, this_arg, yields })) = hot(i as usize) else {
+        crate::fatal(cpu, &format!("jump to unknown trap address {addr:#x}"));
     };
-    if kura::usage::on() {
-        usage(i);
-    }
-    if stats_on() {
-        *COUNTS.lock().unwrap().get_or_insert_with(HashMap::default).entry(i).or_default() += 1;
-    }
     let esp = cpu.regs[ESP];
-    if threads_on() {
-        if let Some(k) = recent_slot(crate::cur().tid) {
-            use std::sync::atomic::Ordering::Relaxed;
-            let n = RECENT_POS[k].load(Relaxed) as usize;
-            let r = [i, r32(esp + 4), r32(esp + 8), r32(esp + 12), r32(esp), crate::k32::ticks_ms() - 60_000];
-            for (x, v) in RECENT[k][n % RECENT_N].iter().zip(r) {
-                x.store(v, Relaxed);
-            }
-            RECENT_POS[k].store(n as u32 + 1, Relaxed);
-        }
-    }
-    {
-        static W: OnceLock<u32> = OnceLock::new();
-        static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let w = *W.get_or_init(|| std::env::var("SAKE_WATCH").ok().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok()).unwrap_or(0));
-        if w != 0 {
-            let v = r32(w);
-            if LAST.swap(v, std::sync::atomic::Ordering::Relaxed) != v {
-                eprintln!("sake watch {w:#x} = {v:#x} before {}, from {:x}", name_of(addr).unwrap_or_default(), r32(esp));
-            }
-        }
-    }
-    let tr = trace();
-    if tr > 0 && trace_match(i) {
-        let n = name_of(addr).unwrap_or_default();
-        let x64 = crate::mem::x64();
-        let nargs = if x64 { 4.max(bytes / 4).min(8) } else { (bytes / 4).min(8) };
-        let args: Vec<String> = (0..nargs)
-            .map(|k| if x64 { format!("{:x}", Ctx { cpu: &mut *cpu, esp, edx: None, jumped: false, st0: None, trap: addr, this: None }.a64(k)) } else { format!("{:x}", r32(esp + 4 + 4 * k)) })
-            .collect();
-        let from = if x64 { crate::mem::r64(esp) } else { r32(esp) as u64 };
-        let line = format!("sake {:04x} {}: {n}({}) from {:x}", crate::cur().tid, crate::k32::ticks_ms() - 60_000, args.join(","), from);
-        if tr == 3 {
-            RING.with(|r| {
-                let mut r = r.borrow_mut();
-                if r.len() >= 300 {
-                    r.pop_front();
-                }
-                r.push_back(line);
-            });
-        } else {
-            eprintln!("{line}");
-        }
+    let sw = switches();
+    if sw & SW_DEBUG != 0 {
+        debug_enter(cpu, addr, i, esp, bytes, sw);
     }
     crate::k32::check_terminate();
     let top = crate::snap::api_enter(addr, esp);
@@ -628,9 +674,9 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     if yields == 0 || (yields == 2 && c.a(0) != 0) {
         crate::obj::HANDOFF.worked(tid);
     }
-    let t0 = stats_on().then(std::time::Instant::now);
+    let t0 = (sw & SW_STATS != 0).then(std::time::Instant::now);
     // (SAKE_SHIRUSU=1: the call for a shirusu Trace, crates/sake/src/shirusu.rs)
-    let shirusu = if crate::shirusu::on() {
+    let shirusu = if sw & SW_SHIRUSU != 0 {
         let x64 = crate::mem::x64();
         let n = if x64 { 12 } else { (bytes / 4).min(12) };
         let args: Vec<u64> = (0..n).map(|k| if x64 { c.a64(k) } else { c.a(k) as u64 }).collect();
@@ -640,18 +686,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     };
     let r = match f {
         Some(f) => f(&mut c),
-        None => {
-            let n = name_of(addr).unwrap_or_default();
-            if !known {
-                crate::fatal(c.cpu, &format!("call to {n}, which we neither implement nor know the arguments of"));
-            }
-            static SEEN: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
-            let r = unimplemented_result(&n);
-            if SEEN.lock().unwrap().get_or_insert_with(HashSet::default).insert(i) {
-                eprintln!("sake: unimplemented {n} (returns {r:#x}), from {:#x}", r32(esp));
-            }
-            r
-        }
+        None => unimplemented_call(&mut c, i, known),
     };
     if let Some(t0) = t0 {
         *TIMES.lock().unwrap().get_or_insert_with(HashMap::default).entry(i).or_default() += t0.elapsed().as_micros() as u64;
@@ -674,9 +709,121 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         return;
     }
     let (edx, st0) = (c.edx, c.st0);
-    if tr == 2 {
+    if sw & SW_TRACE2 != 0 {
         eprintln!("sake {:04x}:   -> {r:x}", crate::cur().tid);
     }
+    finish(cpu, esp, r, edx, st0, cdecl, bytes);
+}
+
+/// The debug switches, read once (they are environment variables): one word for `dispatch`
+/// instead of a OnceLock each (review C-1).
+const SW_SET: u32 = 1 << 31;
+const SW_USAGE: u32 = 1;
+const SW_STATS: u32 = 2;
+const SW_THREADS: u32 = 4;
+const SW_WATCH: u32 = 8;
+const SW_TRACE: u32 = 16;
+const SW_TRACE2: u32 = 32;
+const SW_SHIRUSU: u32 = 64;
+/// (what `debug_enter` looks at)
+const SW_DEBUG: u32 = SW_USAGE | SW_STATS | SW_THREADS | SW_WATCH | SW_TRACE;
+
+fn switches() -> u32 {
+    static SW: AtomicU32 = AtomicU32::new(0);
+    let s = SW.load(Ordering::Relaxed);
+    if s != 0 {
+        return s;
+    }
+    let tr = trace();
+    let s = SW_SET
+        | if kura::usage::on() { SW_USAGE } else { 0 }
+        | if stats_on() { SW_STATS } else { 0 }
+        | if threads_on() { SW_THREADS } else { 0 }
+        | if watch_addr() != 0 { SW_WATCH } else { 0 }
+        | if tr > 0 { SW_TRACE } else { 0 }
+        | if tr == 2 { SW_TRACE2 } else { 0 }
+        | if crate::shirusu::on() { SW_SHIRUSU } else { 0 };
+    SW.store(s, Ordering::Relaxed);
+    s
+}
+
+/// SAKE_WATCH=<hex address>: its value printed whenever it changed before an API call
+fn watch_addr() -> u32 {
+    static W: OnceLock<u32> = OnceLock::new();
+    *W.get_or_init(|| std::env::var("SAKE_WATCH").ok().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok()).unwrap_or(0))
+}
+
+/// What the debug switches `sw` do before a call (out of `dispatch`'s way when none is on)
+#[cold]
+#[inline(never)]
+fn debug_enter(cpu: &mut Cpu, addr: u32, i: u32, esp: u32, bytes: u32, sw: u32) {
+    if sw & SW_USAGE != 0 {
+        usage(i);
+    }
+    if sw & SW_STATS != 0 {
+        *COUNTS.lock().unwrap().get_or_insert_with(HashMap::default).entry(i).or_default() += 1;
+    }
+    if sw & SW_THREADS != 0 {
+        if let Some(k) = recent_slot(crate::cur().tid) {
+            use std::sync::atomic::Ordering::Relaxed;
+            let n = RECENT_POS[k].load(Relaxed) as usize;
+            let r = [i, r32(esp + 4), r32(esp + 8), r32(esp + 12), r32(esp), crate::k32::ticks_ms() - 60_000];
+            for (x, v) in RECENT[k][n % RECENT_N].iter().zip(r) {
+                x.store(v, Relaxed);
+            }
+            RECENT_POS[k].store(n as u32 + 1, Relaxed);
+        }
+    }
+    if sw & SW_WATCH != 0 {
+        static LAST: AtomicU32 = AtomicU32::new(0);
+        let w = watch_addr();
+        let v = r32(w);
+        if LAST.swap(v, Ordering::Relaxed) != v {
+            eprintln!("sake watch {w:#x} = {v:#x} before {}, from {:x}", name_of(addr).unwrap_or_default(), r32(esp));
+        }
+    }
+    let tr = trace();
+    if sw & SW_TRACE != 0 && trace_match(i) {
+        let n = name_of(addr).unwrap_or_default();
+        let x64 = crate::mem::x64();
+        let nargs = if x64 { 4.max(bytes / 4).min(8) } else { (bytes / 4).min(8) };
+        let args: Vec<String> = (0..nargs)
+            .map(|k| if x64 { format!("{:x}", Ctx { cpu: &mut *cpu, esp, edx: None, jumped: false, st0: None, trap: addr, this: None }.a64(k)) } else { format!("{:x}", r32(esp + 4 + 4 * k)) })
+            .collect();
+        let from = if x64 { crate::mem::r64(esp) } else { r32(esp) as u64 };
+        let line = format!("sake {:04x} {}: {n}({}) from {:x}", crate::cur().tid, crate::k32::ticks_ms() - 60_000, args.join(","), from);
+        if tr == 3 {
+            RING.with(|r| {
+                let mut r = r.borrow_mut();
+                if r.len() >= 300 {
+                    r.pop_front();
+                }
+                r.push_back(line);
+            });
+        } else {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// A call to a function sake has no implementation of: its spec's result, said once.
+#[cold]
+#[inline(never)]
+fn unimplemented_call(c: &mut Ctx, i: u32, known: bool) -> u32 {
+    let n = name_of(c.trap).unwrap_or_default();
+    if !known {
+        crate::fatal(c.cpu, &format!("call to {n}, which we neither implement nor know the arguments of"));
+    }
+    static SEEN: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
+    let r = unimplemented_result(&n);
+    if SEEN.lock().unwrap().get_or_insert_with(HashSet::default).insert(i) {
+        eprintln!("sake: unimplemented {n} (returns {r:#x}), from {:#x}", r32(c.esp));
+    }
+    r
+}
+
+/// Returns from an API call to its caller with result `r` (+ EDX, ST0), popping what stdcall pops.
+fn finish(cpu: &mut Cpu, esp: u32, r: u32, edx: Option<u32>, st0: Option<f64>, cdecl: bool, bytes: u32) {
     if crate::mem::x64() {
         // RAX: a 64-bit result (ret64), a small negative one (INVALID_HANDLE_VALUE,
         // pseudo-handles) sign-extended, an address in an image above 4G widened
@@ -733,6 +880,7 @@ pub fn host_fn(name: &str, f: Handler, bytes: u32) -> u32 {
     let mut e = ENTRIES.write().unwrap();
     e[i as usize].bytes = bytes;
     e[i as usize].known = true;
+    publish(i as usize, &e[i as usize]);
     let _ = w32;
     a
 }
@@ -741,7 +889,10 @@ pub fn host_fn(name: &str, f: Handler, bytes: u32) -> u32 {
 /// the callee pops `bytes` of stack arguments; x64: the plain convention).
 pub fn host_fn_this(name: &str, f: Handler, bytes: u32) -> u32 {
     let a = host_fn(name, f, bytes);
-    ENTRIES.write().unwrap()[((a - TRAP_LO) / 4) as usize].this_arg = true;
+    let i = ((a - TRAP_LO) / 4) as usize;
+    let mut e = ENTRIES.write().unwrap();
+    e[i].this_arg = true;
+    publish(i, &e[i]);
     a
 }
 
@@ -986,5 +1137,118 @@ mod ordinal_tests {
             }
         }
         assert!(missing.is_empty(), "imports by ordinal without a name: {missing:?}");
+    }
+}
+
+/// The lock-free table `dispatch` reads (review C-1) says what ENTRIES says, whatever is
+/// exported meanwhile on other threads.
+#[cfg(test)]
+mod hot_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn meta_round_trips(bytes in 0u32..=META_BYTES, cdecl in any::<bool>(), known in any::<bool>(), this_arg in any::<bool>(), yields in 0u8..3) {
+            let m = Meta { bytes, cdecl, known, this_arg, yields };
+            prop_assert_eq!(Meta::unpack(m.pack()), Some(m));
+        }
+    }
+
+    #[test]
+    fn unset_slot_is_none() {
+        assert_eq!(Meta::unpack(0), None);
+        assert!(hot(MAX_ENTRIES).is_none());
+        assert!(hot(MAX_ENTRIES - 1).is_none());
+        assert_eq!(tag_of(TRAP_LO - 4), (0, 0));
+        assert_eq!(tag_of(TRAP_LO + 4 * MAX_ENTRIES as u32), (0, 0));
+    }
+
+    fn h1(_: &mut Ctx) -> u32 {
+        1
+    }
+    fn h2(_: &mut Ctx) -> u32 {
+        2
+    }
+
+    /// Every entry's hot slot against the entry itself
+    fn check_all() {
+        let e = ENTRIES.read().unwrap();
+        for (i, x) in e.iter().enumerate() {
+            let (f, m) = hot(i).expect("published");
+            assert_eq!(m, Meta::of(x), "{}!{}", x.dll, x.name);
+            assert_eq!(f.map(|f| f as usize), x.f.map(|f| f as usize), "{}!{}", x.dll, x.name);
+        }
+        // (nothing past them: an entry is published under the write lock)
+        assert!(hot(e.len()).is_none());
+    }
+
+    #[test]
+    fn host_fns_and_tags() {
+        let a = host_fn("hot_tests_a", h1, 12);
+        let b = host_fn_this("hot_tests_b", h2, 8);
+        assert_eq!(args_of(a), (false, 12));
+        assert!(is_known(a) && implemented(a));
+        assert_eq!(handler_of(b).map(|f| f as usize), Some(h2 as usize));
+        let (_, m) = hot(((b - TRAP_LO) / 4) as usize).unwrap();
+        assert!(m.this_arg);
+        // (made again: the same trap, its bytes updated)
+        assert_eq!(host_fn("hot_tests_a", h1, 16), a);
+        assert_eq!(args_of(a), (false, 16));
+        assert_eq!(tag_of(a), (0, 0));
+        set_tag(a, 0x1234, 77);
+        assert_eq!(tag_of(a), (0x1234, 77));
+        assert_eq!(tag_of(b), (0, 0));
+        // a function of a DLL's spec sake does not implement: known, no handler
+        let s = export("kernel32", "hot_tests_no_such_function");
+        assert!(!implemented(s) && !is_known(s));
+        check_all();
+    }
+
+    /// Threads export new names while others read every published slot: a slot is either not
+    /// there yet or whole (its handler and flags as the entry has them).
+    #[test]
+    fn concurrent_exports() {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut seen = 0usize;
+                    while !stop.load(Ordering::Relaxed) {
+                        // (a slot is published whole: its flags say it is set, its handler one
+                        // of the program's or none)
+                        for i in 0..MAX_ENTRIES {
+                            let Some((_, m)) = hot(i) else { break };
+                            assert!(m.bytes <= META_BYTES && m.yields < 3);
+                            seen = seen.max(i);
+                        }
+                    }
+                    seen
+                })
+            })
+            .collect();
+        let writers: Vec<_> = (0..2)
+            .map(|w| {
+                std::thread::spawn(move || {
+                    for k in 0..3000 {
+                        let a = host_fn(&format!("hot_tests_c{w}_{k}"), if k % 2 == 0 { h1 } else { h2 }, 4 * (k % 9));
+                        let (f, m) = hot(((a - TRAP_LO) / 4) as usize).unwrap();
+                        assert_eq!(m.bytes, 4 * (k % 9));
+                        assert_eq!(f.map(|f| f as usize), Some(if k % 2 == 0 { h1 as usize } else { h2 as usize }));
+                        set_tag(a, k + 1, k as usize);
+                        assert_eq!(tag_of(a), (k + 1, k as usize));
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        for r in readers {
+            r.join().unwrap();
+        }
+        check_all();
     }
 }

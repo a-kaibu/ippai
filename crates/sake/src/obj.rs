@@ -425,13 +425,55 @@ fn self_process() -> u32 {
 }
 pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
     let me = crate::cur().obj;
-    let handles: Vec<u32> = handles.iter().map(|&h| match h {
+    let tid = crate::cur().tid;
+    let n = |h: u32| match h {
         CURRENT_THREAD => me,
         CURRENT_PROCESS => self_process(),
         h => norm(h),
-    }).collect();
-    // (a handle without SYNCHRONIZE cannot be waited on)
-    if with(|t| handles.iter().any(|h| t.objs.access.get(h).is_some_and(|a| a & 0x0010_0000 == 0))) {
+    };
+    // (on the stack for the usual few handles: a poll allocated three Vecs, review C-5)
+    let mut small = [0u32; 8];
+    let many: Vec<u32>;
+    let handles: &[u32] = if handles.len() <= small.len() {
+        for (d, &h) in small.iter_mut().zip(handles) {
+            *d = n(h);
+        }
+        &small[..handles.len()]
+    } else {
+        many = handles.iter().map(|&h| n(h)).collect();
+        &many
+    };
+    // One lock for what most waits are: a poll (0 ms), or an object signaled already. The
+    // access check and the first try, as wait_held's first round would (it took the table's lock
+    // four times). (Not while a save state or TerminateThread waits for this thread: those
+    // stop it in wait_held.)
+    if !kura::snap::pausing() && !crate::k32::terminating() {
+        let first = with(|t| {
+            // (a handle without SYNCHRONIZE cannot be waited on)
+            if handles.iter().any(|h| t.objs.access.get(h).is_some_and(|a| a & 0x0010_0000 == 0)) {
+                return Some(Err(5));
+            }
+            if let Some(x) = extra {
+                if x() {
+                    return Some(Ok(handles.len() as u32));
+                }
+            }
+            match attempt(t, handles, all, tid, false) {
+                Attempt::Done(r, _) => Some(Ok(r)),
+                Attempt::Failed => Some(Err(6)),
+                Attempt::Wait if ms == 0 => Some(Ok(WAIT_TIMEOUT)),
+                Attempt::Wait => None,
+            }
+        });
+        match first {
+            Some(Ok(r)) => return r,
+            Some(Err(e)) => {
+                crate::k32::last_error(e);
+                return WAIT_FAILED;
+            }
+            None => {}
+        }
+    } else if with(|t| handles.iter().any(|h| t.objs.access.get(h).is_some_and(|a| a & 0x0010_0000 == 0))) {
         crate::k32::last_error(5);
         return WAIT_FAILED;
     }
@@ -451,6 +493,51 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
         gone_object(k, Some(o));
     }
     r
+}
+
+/// One try at a wait on `handles` (`all` of them, else the first signaled one).
+enum Attempt {
+    /// the result (WAIT_OBJECT_0 + i, WAIT_ABANDONED + i), and the signalers to defer to
+    /// (only when `blocked`: a waiter that was woken defers to its signaler)
+    Done(u32, Vec<waits::handoff::Mark>),
+    /// a handle is not a waitable object (ERROR_INVALID_HANDLE)
+    Failed,
+    /// nothing to take yet
+    Wait,
+}
+
+fn attempt(t: &mut Table, handles: &[u32], all: bool, tid: u32, blocked: bool) -> Attempt {
+    if all {
+        let mut ready = true;
+        for &h in handles {
+            match try_take(t, h, tid, false) {
+                None => return Attempt::Failed,
+                Some(b) => ready &= b,
+            }
+        }
+        if !ready {
+            return Attempt::Wait;
+        }
+        let ab = handles.iter().position(|&h| abandoned(t, h));
+        for &h in handles {
+            try_take(t, h, tid, true);
+        }
+        let marks: Vec<_> = if blocked { handles.iter().filter_map(|&h| signal_of(t, h)).collect() } else { Vec::new() };
+        return Attempt::Done(ab.map_or(0, |_| 0x80), marks);
+    }
+    for (i, &h) in handles.iter().enumerate() {
+        let ab = abandoned(t, h);
+        match try_take(t, h, tid, true) {
+            None => return Attempt::Failed,
+            Some(true) => {
+                // (woken by another thread's SetEvent: it runs on to its next call first)
+                let m = if blocked { signal_of(t, h) } else { None };
+                return Attempt::Done(i as u32 + if ab { 0x80 } else { 0 }, m.into_iter().collect());
+            }
+            Some(false) => {}
+        }
+    }
+    Attempt::Wait
 }
 
 fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
@@ -484,45 +571,13 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
                 break (handles.len() as u32, Vec::new());
             }
         }
-        if all {
-            let ok: Option<Vec<bool>> = handles.iter().map(|&h| try_take(t, h, tid, false)).collect();
-            match ok {
-                None => {
-                    crate::k32::last_error(6);
-                    break (WAIT_FAILED, Vec::new());
-                }
-                Some(v) if v.iter().all(|&b| b) => {
-                    let ab = handles.iter().position(|&h| abandoned(t, h));
-                    for &h in handles {
-                        try_take(t, h, tid, true);
-                    }
-                    let marks: Vec<_> = if blocked { handles.iter().filter_map(|&h| signal_of(t, h)).collect() } else { Vec::new() };
-                    break (ab.map_or(0, |_| 0x80), marks);
-                }
-                _ => {}
+        match attempt(t, handles, all, tid, blocked) {
+            Attempt::Failed => {
+                crate::k32::last_error(6);
+                break (WAIT_FAILED, Vec::new());
             }
-        } else {
-            let mut done = None;
-            for (i, &h) in handles.iter().enumerate() {
-                let ab = abandoned(t, h);
-                match try_take(t, h, tid, true) {
-                    None => {
-                        crate::k32::last_error(6);
-                        done = Some((WAIT_FAILED, Vec::new()));
-                        break;
-                    }
-                    Some(true) => {
-                        // (woken by another thread's SetEvent: it runs on to its next call first)
-                        let m = if blocked { signal_of(t, h) } else { None };
-                        done = Some((i as u32 + if ab { 0x80 } else { 0 }, m.into_iter().collect()));
-                        break;
-                    }
-                    Some(false) => {}
-                }
-            }
-            if let Some(d) = done {
-                break d;
-            }
+            Attempt::Done(r, marks) => break (r, marks),
+            Attempt::Wait => {}
         }
         // (timers turn set by themselves: wake when the first one is due)
         let timer = handles
@@ -580,4 +635,151 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
         defer_to(m, tid);
     }
     r
+}
+
+/// `wait`'s one-lock first try (review C-5) against the way it waited before: the access check,
+/// then wait_held's rounds. Same result, same last error, same objects after, for any mix of
+/// events, mutexes, semaphores, bad handles and handles without SYNCHRONIZE.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod wait_tests {
+    use super::*;
+    use crate::test_guest::{enter, guest_thread};
+    use proptest::prelude::*;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Spec {
+        Event { manual: bool, set: bool },
+        /// 0 none, 1 this thread (count 1), 2 another thread, 3 abandoned
+        Mutex(u8),
+        Sem(i32),
+        Bad,
+        NoSync,
+    }
+
+    fn spec() -> impl Strategy<Value = Spec> {
+        prop_oneof![
+            4 => (any::<bool>(), any::<bool>()).prop_map(|(manual, set)| Spec::Event { manual, set }),
+            3 => (0u8..4).prop_map(Spec::Mutex),
+            2 => (0i32..3).prop_map(Spec::Sem),
+            1 => Just(Spec::Bad),
+            1 => Just(Spec::NoSync),
+        ]
+    }
+
+    fn make(specs: &[Spec]) -> Vec<u32> {
+        let me = crate::cur().tid;
+        specs
+            .iter()
+            .map(|s| match *s {
+                Spec::Event { manual, set } => add(Obj::Event { manual, set }),
+                Spec::Mutex(k) => add(Obj::Mutex { owner: [0, me, me + 0x1000, ABANDONED][k as usize], count: (k == 1) as u32 }),
+                Spec::Sem(count) => add(Obj::Semaphore { count, max: 4 }),
+                Spec::Bad => 0x7ff0_0000,
+                Spec::NoSync => {
+                    let h = add(Obj::Event { manual: true, set: true });
+                    set_access(h, 0x0002);
+                    h
+                }
+            })
+            .collect()
+    }
+
+    fn state(hs: &[u32]) -> Vec<String> {
+        with(|t| {
+            hs.iter()
+                .map(|h| match t.objs.get(h) {
+                    Some((Obj::Event { manual, set }, _)) => format!("event {manual} {set}"),
+                    Some((Obj::Mutex { owner, count }, _)) => format!("mutex {owner:#x} {count}"),
+                    Some((Obj::Semaphore { count, .. }, _)) => format!("sem {count}"),
+                    Some(_) => "other".into(),
+                    None => "none".into(),
+                })
+                .collect()
+        })
+    }
+
+    /// The wait as it was: access check, then wait_held
+    fn reference(hs: &[u32], all: bool, ms: u32) -> u32 {
+        if with(|t| hs.iter().any(|h| t.objs.access.get(h).is_some_and(|a| a & 0x0010_0000 == 0))) {
+            crate::k32::last_error(5);
+            return WAIT_FAILED;
+        }
+        wait_held(hs, all, ms, None)
+    }
+
+    fn run(specs: &[Spec], all: bool, new: bool) -> (u32, u32, Vec<String>) {
+        let hs = make(specs);
+        crate::k32::last_error(0);
+        let r = if new { wait(&hs, all, 0, None) } else { reference(&hs, all, 0) };
+        let e = crate::k32::get_last_error();
+        let st = state(&hs);
+        for &h in &hs {
+            close(h);
+        }
+        (r, if r == WAIT_FAILED { e } else { 0 }, st)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 400, ..ProptestConfig::default() })]
+        #[test]
+        fn poll_same_as_before(specs in proptest::collection::vec(spec(), 1..12), all in any::<bool>()) {
+            let _g = enter();
+            guest_thread();
+            let new = run(&specs, all, true);
+            let old = run(&specs, all, false);
+            // (a mutex this thread owns counts up once more: the same either way)
+            prop_assert_eq!(new, old, "{:?} all={}", specs, all);
+        }
+    }
+
+    #[test]
+    fn poll_results() {
+        let _g = enter();
+        guest_thread();
+        let e = add(Obj::Event { manual: false, set: false });
+        assert_eq!(wait(&[e], false, 0, None), WAIT_TIMEOUT);
+        with(|t| if let Some((Obj::Event { set, .. }, _)) = t.objs.get_mut(&e) { *set = true });
+        assert_eq!(wait(&[e], false, 0, None), 0);
+        // (auto-reset: taken)
+        assert_eq!(wait(&[e], false, 0, None), WAIT_TIMEOUT);
+        let m = add(Obj::Mutex { owner: ABANDONED, count: 0 });
+        assert_eq!(wait(&[e, m], false, 0, None), 0x81);
+        // an extra condition answers before the objects (the message queue)
+        assert_eq!(wait(&[e], false, 0, Some(&|| true)), 1);
+        // more handles than the stack's room
+        let many: Vec<u32> = (0..20).map(|_| add(Obj::Event { manual: true, set: true })).collect();
+        assert_eq!(wait(&many, true, 0, None), 0);
+        let mut more = many.clone();
+        more.push(e);
+        assert_eq!(wait(&more, true, 0, None), WAIT_TIMEOUT);
+        assert_eq!(wait(&more, false, 0, None), 0);
+        assert_eq!(wait(&[0x7ff0_0004], false, 0, None), WAIT_FAILED);
+        assert_eq!(crate::k32::get_last_error(), 6);
+        for h in many.into_iter().chain([e, m]) {
+            close(h);
+        }
+    }
+
+    /// A wait that does not find its object signaled still blocks until another thread sets it
+    /// (and holds the object meanwhile: closing its handle does not lose the wake).
+    #[test]
+    fn blocking_wait_wakes() {
+        let _g = enter();
+        guest_thread();
+        let e = add(Obj::Event { manual: false, set: false });
+        let d = dup(e);
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            with(|t| if let Some((Obj::Event { set, .. }, _)) = t.objs.get_mut(&d) { *set = true });
+            signal();
+        });
+        let start = Instant::now();
+        assert_eq!(wait(&[e], false, 5000, None), 0);
+        assert!(start.elapsed() >= Duration::from_millis(40));
+        t.join().unwrap();
+        // timed out, not signaled
+        assert_eq!(wait(&[e], false, 30, None), WAIT_TIMEOUT);
+        close(e);
+        close(d);
+    }
 }
