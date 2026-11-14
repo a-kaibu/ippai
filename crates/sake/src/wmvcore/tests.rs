@@ -34,7 +34,7 @@ fn streams() -> Vec<asf::Stream> {
 fn reader(samples: &[(u8, bool, u32, Vec<u8>)]) -> Reader {
     let m = Mux { packet_size: 600, preroll: 0, streams: streams(), attributes: vec![("WM/VideoWidth".into(), asf::Value::U32(4))], compress_small: false };
     let f = m.write(samples, 1000);
-    let mut r = Reader { r: None, stream: 0, outputs: Vec::new(), pending: VecDeque::new(), range: (0, 0), ended: false };
+    let mut r = Reader { r: None, stream: 0, outputs: Vec::new(), pending: VecDeque::new(), range: (0, 0), ended: false, attrs: Default::default() };
     assert_eq!(open_src(&mut r, Box::new(f)), 0);
     r
 }
@@ -170,5 +170,67 @@ proptest! {
             }
         }
         prop_assert!(left.is_empty());
+    }
+}
+
+/// Pulling the video only: the audio left behind is capped at MAX_PENDING (the oldest goes),
+/// and every video sample still comes, in order
+#[test]
+fn backlog_of_other_streams_is_capped() {
+    let n = MAX_PENDING as u32 + 600;
+    let mut s: Vec<_> = (0..n).map(|k| (1u8, true, k, vec![(k % 251) as u8; 4])).collect();
+    s.extend((0..10u32).map(|k| (2u8, true, n + k, vec![k as u8; 4])));
+    let mut r = reader(&s);
+    for o in &mut r.outputs {
+        o.compressed = true;
+    }
+    let v: Vec<u8> = std::iter::from_fn(|| next_sample(&mut r, 2)).map(|x| x.3[0]).collect();
+    assert_eq!(v, (0..10).collect::<Vec<u8>>());
+    assert!(r.pending.len() <= MAX_PENDING, "{}", r.pending.len());
+    // what is left is the newest audio, in order
+    let a: Vec<u64> = std::iter::from_fn(|| next_sample(&mut r, 1)).map(|x| x.1).collect();
+    // (the last video sample took one place of the backlog)
+    assert!((MAX_PENDING - 1..=MAX_PENDING).contains(&a.len()), "{}", a.len());
+    assert!(a.windows(2).all(|w| w[0] < w[1]));
+    assert_eq!(*a.last().unwrap(), (n as u64 - 1) * 10_000);
+}
+
+/// SetOutputProps: the program picks RGB24 or RGB32, the format block stays the offered one
+#[test]
+fn chosen_format_keeps_our_header() {
+    let st = &streams()[1];
+    let offered = crate::wmdec::formats(st);
+    for f in &offered {
+        let mut edited = f.clone();
+        // a scaled size, 16 bits, a short block: all ignored
+        edited.format.truncate(70);
+        let got = chosen_format(offered.clone(), &edited).unwrap();
+        assert_eq!(&got, f);
+    }
+    let mut other = offered[0].clone();
+    other.sub = [0x55; 16];
+    assert_eq!(chosen_format(offered, &other), None);
+}
+
+proptest! {
+    /// any edit of the program's type: the chosen type is one of the offered ones, and
+    /// decoding into it never panics
+    #[test]
+    fn any_program_type_is_safe(pick in 0usize..2, cut in 0usize..120, junk in prop::collection::vec(any::<u8>(), 0..120)) {
+        let st = &streams()[1];
+        let offered = crate::wmdec::formats(st);
+        let mut t = offered[pick].clone();
+        t.format.truncate(cut);
+        for (i, b) in junk.iter().enumerate() {
+            if let Some(x) = t.format.get_mut(i) {
+                *x ^= b;
+            }
+        }
+        let got = chosen_format(offered.clone(), &t).unwrap();
+        prop_assert!(offered.contains(&got));
+        let mut d = crate::wmdec::decoder(st, &got).unwrap();
+        let x = asf::Sample { stream: 2, time: 0, key: true, data: picture(3) };
+        let out = d.decode(&x);
+        prop_assert_eq!(out.len(), 1);
     }
 }

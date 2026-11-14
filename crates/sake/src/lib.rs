@@ -115,6 +115,8 @@ mod asfmovie;
 pub mod dshow_mpeg;
 mod wmvcore;
 mod wmdec;
+#[doc(hidden)]
+pub use wmdec::fuzz as wmdec_fuzz;
 pub mod mf;
 pub mod usp;
 pub mod ole;

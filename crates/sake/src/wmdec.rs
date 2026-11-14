@@ -6,6 +6,7 @@
 //! Uncompressed streams (BI_RGB pictures, WAVE_FORMAT_PCM) pass through here; compressed
 //! ones go to the codec backend (`backend`).
 
+use std::sync::Arc;
 use crate::wmvcore::{MediaType, FORMAT_VIDEO_INFO, FORMAT_WAVE_FORMAT_EX, MEDIATYPE_AUDIO, MEDIATYPE_VIDEO, SUBTYPE_PCM, SUBTYPE_RGB24, SUBTYPE_RGB32};
 
 /// What a codec is given of a stream.
@@ -21,6 +22,10 @@ pub enum Info {
 impl Info {
     /// From a BITMAPINFOHEADER and what follows it.
     pub fn from_bih(bih: &[u8]) -> Option<Info> {
+        // (a header shorter than BITMAPINFOHEADER's 40 bytes is no picture format)
+        if bih.len() < 40 {
+            return None;
+        }
         let r32 = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(bih.get(o..o + 4)?.try_into().ok()?)) };
         let size = r32(0)?;
         let width = r32(4)?;
@@ -28,7 +33,7 @@ impl Info {
         let bits = u16::from_le_bytes(bih.get(14..16)?.try_into().ok()?);
         let fourcc = r32(16)?;
         // biSize counts the 40-byte header and the codec data after it.
-        let extra = bih.get(40..(size as usize).clamp(40, bih.len())).unwrap_or(&[]).to_vec();
+        let extra = bih.get(40..(size as usize).max(40).min(bih.len())).unwrap_or(&[]).to_vec();
         Some(Info::Video { fourcc, width, height, bits, extra })
     }
     /// From a WAVEFORMATEX and what follows it.
@@ -63,7 +68,8 @@ impl Info {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Frame {
     /// a picture `w` x `h`, B G R A bytes, top row first; its time (100 ns)
-    Picture { time: u64, w: u32, h: u32, bgra: Vec<u8> },
+    /// (shared: a repeated picture is the same bytes, not a copy)
+    Picture { time: u64, w: u32, h: u32, bgra: Arc<Vec<u8>> },
     /// interleaved 16-bit samples; the time of the first
     Sound { time: u64, channels: u16, rate: u32, pcm: Vec<i16> },
 }
@@ -92,20 +98,24 @@ impl Codec for RawVideo {
         if bpp != 3 && bpp != 4 {
             return Vec::new();
         }
-        let stride = (self.w as usize * bpp).next_multiple_of(4);
-        if data.len() < stride * self.h as usize {
+        let (w, h) = (self.w as usize, self.h as usize);
+        // (the sizes come from the file: products are checked, a picture is at most MAX_SIDE)
+        if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
             return Vec::new();
         }
-        let mut bgra = vec![0u8; self.w as usize * self.h as usize * 4];
-        for y in 0..self.h as usize {
-            let src = &data[(self.h as usize - 1 - y) * stride..];
-            for x in 0..self.w as usize {
-                let d = &mut bgra[(y * self.w as usize + x) * 4..][..4];
-                d[..3].copy_from_slice(&src[x * bpp..x * bpp + 3]);
+        let stride = (w * bpp).next_multiple_of(4);
+        if data.len() < stride * h {
+            return Vec::new();
+        }
+        let mut bgra = vec![0u8; w * h * 4];
+        for (y, row) in bgra.chunks_exact_mut(w * 4).enumerate() {
+            let src = &data[(h - 1 - y) * stride..][..w * bpp];
+            for (d, s) in row.chunks_exact_mut(4).zip(src.chunks_exact(bpp)) {
+                d[..3].copy_from_slice(&s[..3]);
                 d[3] = 255;
             }
         }
-        vec![Frame::Picture { time, w: self.w, h: self.h, bgra }]
+        vec![Frame::Picture { time, w: self.w, h: self.h, bgra: Arc::new(bgra) }]
     }
 }
 
@@ -164,14 +174,14 @@ impl Codec for Wma {
 struct MsMpeg4 {
     d: wmcodec::msmpeg4::Decoder,
     /// the last picture (a WMV2 "skipped" picture repeats it)
-    last: Option<Vec<u8>>,
+    last: Option<Arc<Vec<u8>>>,
 }
 
 impl Codec for MsMpeg4 {
     fn decode(&mut self, data: &[u8], time: u64, _key: bool) -> Vec<Frame> {
         let (w, h) = match self.d.decode(data) {
             Ok(Some(p)) => {
-                self.last = Some(yuv_to_bgra(&p));
+                self.last = Some(Arc::new(yuv_to_bgra(&p)));
                 (p.width as u32, p.height as u32)
             }
             // (a skipped picture, or a damaged one: the last again)
@@ -191,7 +201,7 @@ struct Wmv3 {
     w: usize,
     h: usize,
     extra: Vec<u8>,
-    last: Option<Vec<u8>>,
+    last: Option<Arc<Vec<u8>>>,
     /// the time of the I / P picture the decoder holds
     held: Option<u64>,
 }
@@ -202,7 +212,7 @@ impl Codec for Wmv3 {
         let (w, h) = (self.w as u32, self.h as u32);
         if !self.d.delayed() {
             match got {
-                Ok(Some(p)) => self.last = Some(yuv_to_bgra(&p)),
+                Ok(Some(p)) => self.last = Some(Arc::new(yuv_to_bgra(&p))),
                 // (a damaged picture: the last again)
                 _ if self.last.is_some() => {}
                 _ => return Vec::new(),
@@ -212,13 +222,13 @@ impl Codec for Wmv3 {
         let Ok(got) = got else { return Vec::new() };
         let shown = if self.d.last_was_b() { Some(time) } else { self.held.replace(time) };
         match (got, shown) {
-            (Some(p), Some(t)) => vec![Frame::Picture { time: t, w, h, bgra: yuv_to_bgra(&p) }],
+            (Some(p), Some(t)) => vec![Frame::Picture { time: t, w, h, bgra: Arc::new(yuv_to_bgra(&p)) }],
             _ => Vec::new(),
         }
     }
     fn drain(&mut self) -> Vec<Frame> {
         match (self.d.flush(), self.held.take()) {
-            (Some(p), Some(t)) => vec![Frame::Picture { time: t, w: self.w as u32, h: self.h as u32, bgra: yuv_to_bgra(&p) }],
+            (Some(p), Some(t)) => vec![Frame::Picture { time: t, w: self.w as u32, h: self.h as u32, bgra: Arc::new(yuv_to_bgra(&p)) }],
             _ => Vec::new(),
         }
     }
@@ -348,40 +358,54 @@ struct Out {
     time_per_frame: u64,
 }
 
-/// A picture as `bits`-bit RGB, bottom-up, of the output's size (cut or padded).
+/// The widest / tallest picture decoded or given (a file's or a program's sizes past it are
+/// refused rather than allocated)
+pub const MAX_SIDE: usize = 16384;
+
+/// A picture as `bits`-bit RGB (32: B G R 0, else 24: B G R), bottom-up, of the output's size
+/// (cut or padded). A `bgra` shorter than `w` x `h` pictures is cut to the rows it holds;
+/// an output past MAX_SIDE is empty.
 pub fn to_rgb(bgra: &[u8], w: u32, h: u32, ow: u32, oh: u32, bits: u16) -> Vec<u8> {
+    if ow as usize > MAX_SIDE || oh as usize > MAX_SIDE {
+        return Vec::new();
+    }
     let mut out = vec![0u8; rgb_size(ow, oh, bits)];
     to_rgb_into(bgra, w, h, ow, oh, bits, &mut out);
     out
 }
 /// The bytes of `to_rgb`'s picture.
 pub fn rgb_size(ow: u32, oh: u32, bits: u16) -> usize {
-    (ow as usize * (bits / 8) as usize).next_multiple_of(4) * oh as usize
+    let bpp = if bits == 32 { 4 } else { 3 };
+    (ow as usize * bpp).next_multiple_of(4) * oh as usize
 }
 /// `to_rgb` into `out` (a sample's buffer, written straight: no picture-sized Vec on the way),
-/// all of it written (what the picture does not cover 0). False (nothing written) when `out` or
-/// `bgra` is shorter than their sizes say.
+/// all of it written (what the picture does not cover 0; a `bgra` short of `w` x `h` is cut to
+/// the rows it holds). False (nothing written) when `out` is shorter than the output, or the
+/// output is past MAX_SIDE.
 pub fn to_rgb_into(bgra: &[u8], w: u32, h: u32, ow: u32, oh: u32, bits: u16, out: &mut [u8]) -> bool {
-    let bpp = (bits / 8) as usize;
-    let stride = (ow as usize * bpp).next_multiple_of(4);
-    if out.len() < stride * oh as usize || bgra.len() < 4 * w as usize * h as usize {
+    let bpp = if bits == 32 { 4 } else { 3 };
+    let (w, ow, oh) = (w as usize, ow as usize, oh as usize);
+    if ow > MAX_SIDE || oh > MAX_SIDE {
         return false;
     }
-    for y in 0..oh as usize {
-        let dst = &mut out[(oh as usize - 1 - y) * stride..][..stride];
-        if y >= h as usize {
+    let stride = (ow * bpp).next_multiple_of(4);
+    let Some(out) = out.get_mut(..stride * oh) else { return false };
+    let cols = ow.min(w);
+    let rows = if w == 0 { 0 } else { oh.min(h as usize).min(bgra.len() / (w * 4)) };
+    for y in 0..oh {
+        let dst = &mut out[(oh - 1 - y) * stride..][..stride];
+        if y >= rows {
             dst.fill(0);
             continue;
         }
-        let cw = ow.min(w) as usize;
-        for x in 0..cw {
-            let s = &bgra[(y * w as usize + x) * 4..][..4];
-            dst[x * bpp..x * bpp + 3].copy_from_slice(&s[..3]);
+        let src = &bgra[y * w * 4..][..cols * 4];
+        for (d, s) in dst.chunks_exact_mut(bpp).zip(src.chunks_exact(4)) {
+            d[..3].copy_from_slice(&s[..3]);
             if bpp == 4 {
-                dst[x * bpp + 3] = 0;
+                d[3] = 0;
             }
         }
-        dst[cw * bpp..].fill(0);
+        dst[cols * bpp..].fill(0);
     }
     true
 }
@@ -390,6 +414,8 @@ impl Out {
     fn put(&self, f: Frame) -> Option<(u64, u64, Vec<u8>)> {
         match (f, Info::of_type(&self.ty)?) {
             (Frame::Picture { time, w, h, bgra }, Info::Video { width, height, bits, .. }) => Some((time, self.time_per_frame, to_rgb(&bgra, w, h, width, height, bits))),
+            // (a codec that says 0 channels gives no sound)
+            (Frame::Sound { channels: 0, .. }, _) => None,
             (Frame::Sound { time, channels, rate, pcm }, Info::Audio { channels: oc, .. }) => {
                 let frames = pcm.len() / channels.max(1) as usize;
                 let mut out = Vec::with_capacity(frames * oc as usize * 2);
@@ -424,6 +450,45 @@ impl Decoder for Out {
 pub fn decoder(s: &asf::Stream, ty: &MediaType) -> Option<Box<dyn Decoder>> {
     let codec = codec(&Info::of_stream(s)?)?;
     Some(Box::new(Out { codec, ty: ty.clone(), time_per_frame: s.avg_time_per_frame }))
+}
+
+/// Any bytes as a stream's format and its compressed objects, decoded into an output type
+/// whose sizes come from the bytes too (fuzz/fuzz_targets/wmdec.rs): no panic, and every
+/// picture the right size for its output.
+#[doc(hidden)]
+pub fn fuzz(data: &[u8]) {
+    let (&sel, rest) = match data.split_first() {
+        Some(x) => x,
+        None => return,
+    };
+    let hl = (sel as usize % 96).min(rest.len());
+    let (head, body) = rest.split_at(hl);
+    let info = if sel & 0x80 == 0 { Info::from_bih(head) } else { Info::from_wave(head) };
+    let Some(info) = info else { return };
+    // (decoders of real sizes only: a fuzzed 65536 x 65536 is refused by the codecs' own checks)
+    if let Info::Video { width, height, .. } = info {
+        if width as usize > 512 || height as usize > 512 {
+            return;
+        }
+    }
+    let Some(codec) = codec(&info) else { return };
+    let (ow, oh) = (u32::from(body.first().copied().unwrap_or(0) % 64), u32::from(body.get(1).copied().unwrap_or(0) % 64));
+    let bits = if sel & 0x40 == 0 { 24 } else { 32 };
+    let ty = match info {
+        Info::Video { .. } => rgb_type(ow, oh, bits, 0),
+        Info::Audio { .. } => pcm_type(u16::from(sel & 3), 8000),
+    };
+    let mut out = Out { codec, ty, time_per_frame: 0 };
+    let stride = (ow as usize * (bits as usize / 8)).next_multiple_of(4);
+    for (i, chunk) in body.chunks(97).enumerate() {
+        let x = asf::Sample { stream: 1, key: i == 0, time: i as u64 * 1000, data: chunk.to_vec() };
+        for (_, _, b) in out.decode(&x) {
+            if matches!(info, Info::Video { .. }) {
+                assert_eq!(b.len(), stride * oh as usize);
+            }
+        }
+    }
+    let _ = out.drain();
 }
 
 #[cfg(test)]
@@ -484,7 +549,7 @@ mod tests {
             assert_eq!(Info::of_type(&t), Some(info.clone()), "{codec}");
             let mut d = codec_for(&info).unwrap_or_else(|| panic!("{codec}: no decoder"));
             let mut n = 0;
-            let mut last = Vec::new();
+            let mut last = Arc::new(Vec::new());
             while let Some(x) = r.next_sample() {
                 if x.stream != s.number {
                     continue;
@@ -498,6 +563,8 @@ mod tests {
             assert_eq!(n, 30, "{codec}");
             let [Frame::Picture { bgra, .. }] = &d.decode(&[0xff; 7], n, false)[..] else { panic!("{codec}: damaged") };
             assert_eq!(bgra, &last, "{codec}");
+            // (the repeat is the same bytes, not a copy)
+            assert!(Arc::ptr_eq(bgra, &last), "{codec}");
         }
     }
 
@@ -589,6 +656,75 @@ mod tests {
             }
         }
     }
+
+    proptest! {
+        /// any header bytes: a format or none, never a panic (20..39 bytes used to abort)
+        #[test]
+        fn any_header_is_safe(b in proptest::collection::vec(any::<u8>(), 0..120)) {
+            let i = Info::from_bih(&b);
+            prop_assert_eq!(i.is_some(), b.len() >= 40);
+            if let Some(Info::Video { extra, .. }) = &i {
+                prop_assert!(extra.len() <= b.len() - 40);
+            }
+            let _ = Info::from_wave(&b);
+            if let Some(i) = i {
+                if let Some(mut c) = codec_for(&i) {
+                    let _ = c.decode(&b, 0, true);
+                }
+            }
+        }
+
+        /// to_rgb for any sizes, depth and (short) picture: the output's shape, the copied
+        /// pixels where both pictures have them, never a panic
+        #[test]
+        fn to_rgb_any_shape(w in 0u32..9, h in 0u32..9, ow in 0u32..9, oh in 0u32..9, bits in prop_oneof![Just(8u16), Just(16), Just(24), Just(32), any::<u16>()], short in 0usize..40, seed in any::<u8>()) {
+            let full = (w * h * 4) as usize;
+            let px: Vec<u8> = (0..full.saturating_sub(short)).map(|i| (i as u8).wrapping_mul(31) ^ seed).collect();
+            let out = to_rgb(&px, w, h, ow, oh, bits);
+            let bpp = if bits == 32 { 4 } else { 3 };
+            let stride = (ow as usize * bpp).next_multiple_of(4);
+            prop_assert_eq!(out.len(), stride * oh as usize);
+            let rows = if w == 0 { 0 } else { px.len() / (w as usize * 4) };
+            for y in 0..oh.min(h) as usize {
+                for x in 0..ow.min(w) as usize {
+                    let d = &out[(oh as usize - 1 - y) * stride + x * bpp..][..3];
+                    if y < rows {
+                        prop_assert_eq!(d, &px[(y * w as usize + x) * 4..][..3]);
+                    } else {
+                        prop_assert_eq!(d, &[0u8; 3][..]);
+                    }
+                }
+            }
+        }
+
+        /// sound into a PCM output: 0 channels from a codec give nothing (used to underflow),
+        /// otherwise frames x output channels samples
+        #[test]
+        fn sound_into_any_channels(ch in 0u16..4, oc in 0u16..4, pcm in proptest::collection::vec(any::<i16>(), 0..40)) {
+            let o = Out { codec: Box::new(RawAudio { channels: 1, rate: 8000 }), ty: pcm_type(oc, 8000), time_per_frame: 0 };
+            let got = o.put(Frame::Sound { time: 0, channels: ch, rate: 8000, pcm: pcm.clone() });
+            if ch == 0 {
+                prop_assert!(got.is_none());
+            } else {
+                let (_, _, b) = got.unwrap();
+                prop_assert_eq!(b.len(), pcm.len() / ch as usize * oc as usize * 2);
+            }
+        }
+    }
+
+    #[test]
+    fn huge_outputs_are_refused() {
+        assert!(to_rgb(&[0; 16], 2, 2, MAX_SIDE as u32 + 1, 2, 32).is_empty());
+        assert!(to_rgb(&[0; 16], 2, 2, 2, u32::MAX, 24).is_empty());
+        // a raw picture whose header says 65536 x 65536 is not decoded
+        let mut c = RawVideo { w: 65536, h: 65536, bits: 32 };
+        assert!(c.decode(&[0; 64], 0, true).is_empty());
+        // short BITMAPINFOHEADERs (20..39 bytes) are no format
+        for n in 0..40 {
+            assert_eq!(Info::from_bih(&vec![0x28; n]), None, "{n}");
+        }
+    }
+
 }
 
 #[cfg(test)]

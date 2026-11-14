@@ -212,6 +212,10 @@ impl GuestStream {
         }
         let c = unsafe { &mut *(p as *mut Ctx) };
         let buf = mem::heap_alloc(n as u32 + 8, false);
+        // (the guest heap is full: nothing read, not a read into address 0)
+        if buf == 0 {
+            return Vec::new();
+        }
         let got = buf + n as u32;
         // IStream::Seek(off, STREAM_SEEK_SET, NULL), Read(buf, n, &got)
         let hr = if mem::x64() {
@@ -300,6 +304,8 @@ pub struct Reader {
     pub pending: VecDeque<asf::Sample>,
     pub range: (u64, u64),
     pub ended: bool,
+    /// the attribute lists asked for, by stream (built once per file, not per call)
+    pub attrs: HashMap<u16, Arc<Vec<(String, asf::Value)>>>,
 }
 
 impl Reader {
@@ -519,10 +525,13 @@ fn notimpl(_: &mut Ctx) -> u32 {
 pub fn new_sync_reader() -> u32 {
     let v = vts();
     let b = mem::heap_alloc(WORDS * ps(), true);
+    if b == 0 {
+        return 0;
+    }
     wp(b + ps() * W_SYNC, v.sync);
     wp(b + ps() * W_PROFILE, v.profile);
     wp(b + ps() * W_HEADER, v.header);
-    let r = Reader { r: None, stream: 0, outputs: Vec::new(), pending: VecDeque::new(), range: (0, 0), ended: false };
+    let r = Reader { r: None, stream: 0, outputs: Vec::new(), pending: VecDeque::new(), range: (0, 0), ended: false, attrs: HashMap::new() };
     table(|m| m.insert(b, Obj { refs: 1, r: Arc::new(Mutex::new(r)), a: None }));
     b
 }
@@ -578,6 +587,12 @@ fn release(c: &mut Ctx) -> u32 {
         }
         (0, m.remove(&b).map(|o| o.r))
     });
+    // (the reader's block goes with its last reference; its delivery thread, if any, wakes to
+    // find it gone)
+    if r.is_some() {
+        mem::heap_free(b);
+        asyncr::wake();
+    }
     if let Some(r) = r {
         close(c, &mut lock(&r));
     }
@@ -588,6 +603,7 @@ fn release(c: &mut Ctx) -> u32 {
 fn close(c: &mut Ctx, r: &mut Reader) {
     let held: Vec<u32> = r.outputs.iter().flat_map(|o| [o.alloc_stream, o.alloc_output]).chain([r.stream]).filter(|&p| p != 0).collect();
     r.r = None;
+    r.attrs.clear();
     r.stream = 0;
     r.outputs.clear();
     r.pending.clear();
@@ -614,6 +630,7 @@ fn open_src(r: &mut Reader, src: Src) -> u32 {
         })
         .collect();
     r.r = Some(a);
+    r.attrs.clear();
     r.pending.clear();
     r.range = (0, 0);
     r.ended = false;
@@ -723,7 +740,8 @@ fn sr_set_range_by_frame(c: &mut Ctx) -> u32 {
     };
     let mut r = lock(&rr);
     let r = &mut *r;
-    let a = r.r.as_mut().unwrap();
+    // (closed on another thread between the two locks)
+    let Some(a) = r.r.as_mut() else { return NS_E_INVALID_REQUEST };
     with_ctx(c, || a.seek(t.0));
     r.pending.clear();
     r.range = t;
@@ -769,8 +787,7 @@ fn hand_out(c: &mut Ctx, alloc: (u32, bool, u32), data: &[u8], time: u64, dur: u
         putp(out, b);
         return 0;
     }
-    putp(out, new_buffer(data));
-    0
+    give(out, new_buffer(data))
 }
 
 /// GetNextSample(WORD stream, INSSBuffer **, QWORD *time, QWORD *duration, DWORD *flags,
@@ -831,6 +848,9 @@ fn sr_get_next_sample(c: &mut Ctx) -> u32 {
 
 /// The next sample of stream `want` (0: of any selected stream): output, time, duration,
 /// bytes, key.
+/// The most compressed samples held for the streams not being pulled
+pub const MAX_PENDING: usize = 4096;
+
 pub fn next_sample(r: &mut Reader, want: u8) -> Option<(usize, u64, u64, Vec<u8>, bool)> {
     let end = if r.range.1 != 0 { r.range.0.saturating_add(r.range.1) } else { u64::MAX };
     loop {
@@ -857,11 +877,12 @@ pub fn next_sample(r: &mut Reader, want: u8) -> Option<(usize, u64, u64, Vec<u8>
                 return Some((k, s.time, dur, s.data, s.key));
             }
             // decode it; what it gives comes out by time
-            let h = r.r.as_ref()?.header.clone();
-            let o = &mut r.outputs[k];
-            if o.dec.is_none() {
-                o.dec = h.stream(s.stream).and_then(|st| crate::wmdec::decoder(st, &o.ty));
+            // (the header is only looked at for a new decoder, and borrowed, not copied)
+            if r.outputs[k].dec.is_none() {
+                let dec = r.r.as_ref()?.header.stream(s.stream).and_then(|st| crate::wmdec::decoder(st, &r.outputs[k].ty));
+                r.outputs[k].dec = dec;
             }
+            let o = &mut r.outputs[k];
             let Some(d) = o.dec.as_mut() else { continue };
             let start = r.range.0;
             for (t, dur, data) in d.decode(&s) {
@@ -881,6 +902,12 @@ pub fn next_sample(r: &mut Reader, want: u8) -> Option<(usize, u64, u64, Vec<u8>
             Some(s) => {
                 let sel = r.outputs.iter().any(|o| o.stream == s.stream && o.selected);
                 if sel {
+                    // (a program pulling one stream leaves the others' samples here: past
+                    // MAX_PENDING the oldest of another stream goes, not the whole track kept)
+                    if r.pending.len() >= MAX_PENDING {
+                        let i = r.pending.iter().position(|x| want != 0 && x.stream != want).unwrap_or(0);
+                        r.pending.remove(i);
+                    }
                     r.pending.push_back(s);
                 }
             }
@@ -1003,8 +1030,12 @@ fn sr_get_output_props(c: &mut Ctx) -> u32 {
         return NS_E_INVALID_REQUEST;
     }
     let Some(o) = r.outputs.get(k) else { return E_INVALIDARG };
-    putp(out, new_props(Props::Output(o.ty.clone())));
-    0
+    give(out, new_props(Props::Output(o.ty.clone())))
+}
+
+/// The offered format with the type's major and sub type
+pub(crate) fn chosen_format(offered: Vec<MediaType>, ty: &MediaType) -> Option<MediaType> {
+    offered.into_iter().find(|f| f.major == ty.major && f.sub == ty.sub)
 }
 
 /// SetOutputProps(DWORD output, IWMOutputMediaProps *): the type it holds, when the output can
@@ -1020,12 +1051,20 @@ fn sr_set_output_props(c: &mut Ctx) -> u32 {
         Some(t) => t,
         None => {
             let n = mem::heap_alloc(4, true);
+            if n == 0 {
+                return E_OUTOFMEMORY;
+            }
             crate::dshow::com(c, p, 4, &[0, n]);
             let size = r32(n);
-            let buf = mem::heap_alloc(size.max(mt_size()), true);
-            w32(n, size);
-            let hr = crate::dshow::com(c, p, 4, &[buf, n]);
-            let t = if hr == 0 { MediaType::read(buf) } else { None };
+            // (a type is a few hundred bytes: a size past 1 MB is no type)
+            let buf = if size > 1 << 20 { 0 } else { mem::heap_alloc(size.max(mt_size()), true) };
+            let t = if buf == 0 {
+                None
+            } else {
+                w32(n, size);
+                let hr = crate::dshow::com(c, p, 4, &[buf, n]);
+                if hr == 0 { MediaType::read(buf) } else { None }
+            };
             mem::heap_free(buf);
             mem::heap_free(n);
             match t {
@@ -1036,13 +1075,14 @@ fn sr_set_output_props(c: &mut Ctx) -> u32 {
     };
     let mut g = lock(&rr);
     let r = &mut *g;
-    let Some(h) = r.header().cloned() else { return NS_E_INVALID_REQUEST };
-    let Some(o) = r.outputs.get_mut(k) else { return E_INVALIDARG };
-    let Some(s) = h.stream(o.stream) else { return E_INVALIDARG };
-    if !crate::wmdec::formats(s).iter().any(|f| f.major == ty.major && f.sub == ty.sub) {
-        return NS_E_INVALID_OUTPUT_FORMAT;
-    }
-    o.ty = ty;
+    let Some(h) = r.header() else { return NS_E_INVALID_REQUEST };
+    let Some(n) = r.outputs.get(k).map(|o| o.stream) else { return E_INVALIDARG };
+    let Some(s) = h.stream(n) else { return E_INVALIDARG };
+    // (only the choice among the formats offered is the program's: the format block stays
+    // ours, a program's edited or short VIDEOINFOHEADER is not what pictures are cut to)
+    let Some(f) = chosen_format(crate::wmdec::formats(s), &ty) else { return NS_E_INVALID_OUTPUT_FORMAT };
+    let o = &mut r.outputs[k];
+    o.ty = f;
     o.dec = None;
     o.ready.clear();
     0
@@ -1071,8 +1111,7 @@ fn sr_get_output_format(c: &mut Ctx) -> u32 {
     let Some(h) = r.header() else { return NS_E_INVALID_REQUEST };
     let Some(s) = r.outputs.get(k).and_then(|o| h.stream(o.stream)) else { return E_INVALIDARG };
     let Some(f) = crate::wmdec::formats(s).into_iter().nth(i) else { return E_INVALIDARG };
-    putp(out, new_props(Props::Output(f)));
-    0
+    give(out, new_props(Props::Output(f)))
 }
 
 fn sr_get_output_number_for_stream(c: &mut Ctx) -> u32 {
@@ -1234,8 +1273,7 @@ fn pr_get_stream(c: &mut Ctx) -> u32 {
     let r = lock(&rr);
     let Some(h) = r.header() else { return NS_E_INVALID_REQUEST };
     let Some(s) = h.streams.get(i) else { return E_INVALIDARG };
-    putp(out, new_props(Props::Stream(s.clone())));
-    0
+    give(out, new_props(Props::Stream(s.clone())))
 }
 
 fn pr_get_stream_by_number(c: &mut Ctx) -> u32 {
@@ -1250,8 +1288,7 @@ fn pr_get_stream_by_number(c: &mut Ctx) -> u32 {
         putp(out, 0);
         return NS_E_UNRECOGNIZED_STREAM_TYPE;
     };
-    putp(out, new_props(Props::Stream(s.clone())));
-    0
+    give(out, new_props(Props::Stream(s.clone())))
 }
 
 // ---- IWMHeaderInfo
@@ -1303,11 +1340,12 @@ pub fn attributes(h: &asf::Header, stream: u16) -> Vec<(String, asf::Value)> {
     v
 }
 
-fn hi_attrs(c: &Ctx, stream: u16) -> Result<Vec<(String, asf::Value)>, u32> {
+fn hi_attrs(c: &Ctx, stream: u16) -> Result<Arc<Vec<(String, asf::Value)>>, u32> {
     let rr = reader(c.a(0)).ok_or(E_UNEXPECTED)?;
-    let r = lock(&rr);
-    let h = r.header().ok_or(NS_E_INVALID_REQUEST)?;
-    Ok(attributes(h, stream))
+    let mut g = lock(&rr);
+    let r = &mut *g;
+    let h = r.r.as_ref().map(|a| &a.header).ok_or(NS_E_INVALID_REQUEST)?;
+    Ok(r.attrs.entry(stream).or_insert_with(|| Arc::new(attributes(h, stream))).clone())
 }
 
 /// GetAttributeCount(WORD stream, WORD *count)
@@ -1422,6 +1460,9 @@ fn props<R>(f: impl FnOnce(&mut HashMap<u32, PropsObj>) -> R) -> R {
 fn new_props(p: Props) -> u32 {
     let v = vts();
     let b = mem::heap_alloc(2 * ps(), true);
+    if b == 0 {
+        return 0;
+    }
     match p {
         Props::Stream(_) => {
             wp(b, v.config);
@@ -1490,6 +1531,7 @@ fn sc_release(c: &mut Ctx) -> u32 {
         o.refs = o.refs.saturating_sub(1);
         if o.refs == 0 {
             m.remove(&b);
+            mem::heap_free(b);
             return 0;
         }
         o.refs
@@ -1631,11 +1673,22 @@ fn bufs<R>(f: impl FnOnce(&mut HashMap<u32, Buf>) -> R) -> R {
     f(BUFS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new))
 }
 
+/// Puts a new object `o` into `out`: S_OK, or E_OUTOFMEMORY when there is none (0)
+fn give(out: u32, o: u32) -> u32 {
+    putp(out, o);
+    if o == 0 { E_OUTOFMEMORY } else { 0 }
+}
+
 pub fn new_buffer(data: &[u8]) -> u32 {
-    let b = mem::heap_alloc(2 * ps(), true);
-    wp(b, vts().buffer);
     let n = data.len() as u32;
-    let d = mem::heap_alloc(n.max(1), false);
+    let b = mem::heap_alloc(2 * ps(), true);
+    let d = if b == 0 { 0 } else { mem::heap_alloc(n.max(1), false) };
+    // (the guest heap is full: no buffer, not a write to address 0)
+    if d == 0 {
+        mem::heap_free(b);
+        return 0;
+    }
+    wp(b, vts().buffer);
     mem::write(d, data);
     bufs(|m| m.insert(b, Buf { refs: 1, data: d, len: n, max: n }));
     b
@@ -1739,8 +1792,7 @@ pub fn init() {
         if out == 0 {
             return E_INVALIDARG;
         }
-        putp(out, new_sync_reader());
-        0
+        give(out, new_sync_reader())
     });
     // WMCreateReader(IUnknown *cert, DWORD rights, IWMReader **)
     implement("wmvcore", "WMCreateReader", |c| {
@@ -1748,12 +1800,14 @@ pub fn init() {
         if out == 0 {
             return E_INVALIDARG;
         }
-        putp(out, asyncr::new_reader());
-        0
+        give(out, asyncr::new_reader())
     });
 }
 
 mod asyncr;
+pub fn asyncr_snap_wake() {
+    asyncr::snap_wake();
+}
 
 #[cfg(test)]
 mod tests;

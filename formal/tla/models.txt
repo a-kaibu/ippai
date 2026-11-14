@@ -33,3 +33,8 @@ RegShare RegShareOverwrite.cfg violation
 ObjWake ObjWake.cfg ok
 ObjWake ObjWakeSpurious.cfg ok
 ObjWake ObjWakeNoHandoff.cfg violation
+SendEnd SendEnd.cfg ok
+SendEnd SendEndOld.cfg violation
+WmStart WmStart.cfg ok
+WmStart WmStartOld.cfg violation
+WmStart WmStartOldKey.cfg violation

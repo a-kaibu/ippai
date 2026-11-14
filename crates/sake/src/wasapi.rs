@@ -37,6 +37,7 @@ const NOT_STOPPED: u32 = 0x8889_0005;
 const BUFFER_TOO_LARGE: u32 = 0x8889_0006;
 const OUT_OF_ORDER: u32 = 0x8889_0007;
 const UNSUPPORTED_FORMAT: u32 = 0x8889_0008;
+const E_OUTOFMEMORY: u32 = 0x8007_000e;
 const INVALID_SIZE: u32 = 0x8889_0009;
 const BUFFER_OPERATION_PENDING: u32 = 0x8889_000b;
 const EXCLUSIVE_MODE_NOT_ALLOWED: u32 = 0x8889_000e;
@@ -131,6 +132,9 @@ pub(crate) fn check(w: &Wave, compatible: bool) -> Result<Fmt, u32> {
         }
         (Some(float), w.bits)
     };
+    if w.channels as usize > MAX_CHANNELS {
+        return Err(UNSUPPORTED_FORMAT);
+    }
     if w.channels == 0 || w.rate == 0 || w.block as u32 != w.channels as u32 * w.bits as u32 / 8 || w.avg != w.block as u32 * w.rate || valid == 0 || valid > w.bits {
         return Err(E_INVALIDARG);
     }
@@ -196,6 +200,14 @@ fn mix_format() -> u32 {
 
 /// The buffer a shared-mode stream of `rate` gets for a requested duration (100 ns): the
 /// duration in frames (rounded as MulDiv does), at least two device periods.
+/// The most channels a stream's volumes are kept for (IAudioStreamVolume): a stream may have
+/// any count (WAVE_FORMAT_EXTENSIBLE with AUTOCONVERTPCM); more than this is refused at
+/// Initialize, where SetAllVolumes(n) of a 9-channel stream indexed past [f32; 8] before.
+pub(crate) const MAX_CHANNELS: usize = 32;
+/// The longest shared-mode buffer Initialize takes (20 s; Wine's exclusive-mode limit is 2 s).
+const MAX_DURATION: u64 = 200_000_000;
+const AUDCLNT_E_BUFFER_SIZE_ERROR: u32 = 0x8889_0016;
+
 pub(crate) fn buffer_frames(rate: u32, duration: u64) -> u32 {
     let frames = |d: u64| ((d as u128 * rate as u128 + 5_000_000) / 10_000_000) as u32;
     frames(duration).max(frames(2 * PERIOD))
@@ -225,7 +237,7 @@ struct Client {
     taken: Option<u32>,
     /// where GetBuffer's frames are written (the buffer, in guest memory)
     mem: u32,
-    channel: [f32; 8],
+    channel: [f32; MAX_CHANNELS],
     session: usize,
     /// its IAudioSessionControl (GetService hands out the same one)
     ctl: u32,
@@ -470,8 +482,17 @@ fn svc_release(c: &mut Ctx) -> u32 {
     let (this, r) = (c.a(0), c.a(0) + 2 * ps());
     let n = r32(r).saturating_sub(1);
     w32(r, n);
-    if n == 0 && owner(this) != 0 {
-        release_client(owner(this));
+    if n == 0 {
+        let o = owner(this);
+        // (a client's service: its block goes, but not the session control GetService hands
+        // out again, nor the session-wide ones without an owner)
+        let cached = o == 0 || client(o, |cl| cl.ctl == this).unwrap_or(true);
+        if o != 0 {
+            release_client(o);
+        }
+        if !cached {
+            mem::heap_free(this);
+        }
     }
     n
 }
@@ -491,16 +512,27 @@ fn svc_qi(c: &mut Ctx, own: &[Iid]) -> u32 {
     }
 }
 
+/// The last reference to a client: its buffer (frames * block bytes: up to seconds of audio)
+/// and its object go back to the guest heap (an engine re-creating its IAudioClient on every
+/// device change or focus leaked one buffer per cycle). The mixer reads the buffer under the
+/// same lock, so nothing reads it once it is out of the table.
 fn release_client(this: u32) -> u32 {
-    with(|e| {
-        let Some(c) = e.clients.get_mut(&this) else { return 0 };
+    let (n, gone) = with(|e| {
+        let Some(c) = e.clients.get_mut(&this) else { return (0, None) };
         c.refs = c.refs.saturating_sub(1);
         let n = c.refs;
         if n == 0 {
-            e.clients.remove(&this);
+            return (0, e.clients.remove(&this).map(|c| c.mem));
         }
-        n
-    })
+        (n, None)
+    });
+    if let Some(m) = gone {
+        if m != 0 {
+            mem::heap_free(m);
+        }
+        mem::heap_free(this);
+    }
+    n
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -538,7 +570,7 @@ pub(crate) fn new_client() -> u32 {
         let session = session_of(e, [0; 4]);
         e.clients.insert(
             o,
-            Client { refs: 1, fmt: None, flags: 0, frames: 0, event: 0, running: false, started: false, queue: VecDeque::new(), frac: 0.0, rate: 0.0, played: 0, taken: None, mem: 0, channel: [1.0; 8], session, ctl: 0 },
+            Client { refs: 1, fmt: None, flags: 0, frames: 0, event: 0, running: false, started: false, queue: VecDeque::new(), frac: 0.0, rate: 0.0, played: 0, taken: None, mem: 0, channel: [1.0; MAX_CHANNELS], session, ctl: 0 },
         )
     });
     o
@@ -638,10 +670,21 @@ fn ac_initialize(c: &mut Ctx) -> u32 {
         };
         let session = session_of(e, guid);
         let cl = e.clients.get_mut(&this).unwrap();
+        // (a guest-chosen duration: frames * block wrapped in u32 to a small buffer that
+        // GetBuffer then handed out in full; and no buffer is no S_OK)
+        if duration > MAX_DURATION {
+            return AUDCLNT_E_BUFFER_SIZE_ERROR;
+        }
+        let frames = buffer_frames(f.rate, duration);
+        let Some(bytes) = frames.checked_mul(f.block()) else { return E_OUTOFMEMORY };
+        let m = mem::heap_alloc(bytes, true);
+        if m == 0 {
+            return E_OUTOFMEMORY;
+        }
         cl.fmt = Some(f);
         cl.flags = flags;
-        cl.frames = buffer_frames(f.rate, duration);
-        cl.mem = mem::heap_alloc(cl.frames * f.block(), true);
+        cl.frames = frames;
+        cl.mem = m;
         cl.session = session;
         S_OK
     });
@@ -1026,7 +1069,7 @@ fn st_get_all(c: &mut Ctx) -> u32 {
     if n != channels_of(this) {
         return E_INVALIDARG;
     }
-    let v = client(owner(this), |cl| cl.channel).unwrap_or([1.0; 8]);
+    let v = client(owner(this), |cl| cl.channel).unwrap_or([1.0; MAX_CHANNELS]);
     for i in 0..n {
         put_f32(p + 4 * i, v[i as usize]);
     }
@@ -1715,7 +1758,7 @@ mod tests {
             played: 0,
             taken: None,
             mem: 0,
-            channel: [1.0; 8],
+            channel: [1.0; MAX_CHANNELS],
             session: 0,
             ctl: 0,
         }

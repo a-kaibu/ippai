@@ -127,8 +127,9 @@ impl Image<'_> {
         self.code.iter().any(|&(s, e)| (s..e).contains(&o))
     }
 
+    /// The 4 bytes at `o` (0 past the image's end: a damaged or packed module, not an abort).
     fn u32_at(&self, o: usize) -> u32 {
-        u32::from_le_bytes(self.img[o..o + 4].try_into().unwrap())
+        self.img.get(o..o.saturating_add(4)).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
     }
 
     /// Addresses in `sections` holding the 4 bytes of `v` (any alignment).
@@ -138,7 +139,7 @@ impl Image<'_> {
         for &(s, e) in sections {
             let mut o = s;
             while o + 4 <= e {
-                match self.img[o..e].windows(4).position(|w| w == k) {
+                match find_at(&self.img[o..e], &k) {
                     Some(p) => {
                         out.push(self.base + (o + p) as u32);
                         o += p + 1;
@@ -155,7 +156,7 @@ impl Image<'_> {
         for &(s, e) in sections {
             let mut o = s;
             while o + bytes.len() <= e {
-                match self.img[o..e].windows(bytes.len()).position(|w| w == bytes) {
+                match find_at(&self.img[o..e], bytes) {
                     Some(p) => {
                         out.push(self.base + (o + p) as u32);
                         o += p + 1;
@@ -166,6 +167,28 @@ impl Image<'_> {
         }
         out
     }
+}
+
+/// Where `n` first is in `h`: windows().position with a scan for the first byte before each
+/// compare (a 30-60 MB exe is scanned for the 1 KB dB table at every module load)
+pub(crate) fn find_at(h: &[u8], n: &[u8]) -> Option<usize> {
+    let (&first, _) = n.split_first()?;
+    let last = h.len().checked_sub(n.len())?;
+    let mut i = 0;
+    while i <= last {
+        let p = h[i..=last].iter().position(|&b| b == first)?;
+        if &h[i + p..i + p + n.len()] == n {
+            return Some(i + p);
+        }
+        i += p + 1;
+    }
+    None
+}
+
+/// `locate` on a module image mapped at `base` (fuzz/fuzz_targets/vorbis_hook.rs).
+#[doc(hidden)]
+pub fn locate_in(base: u32, img: &[u8]) -> Option<(Vec<u32>, u32)> {
+    Image::of(base, img).and_then(|m| locate(&m))
 }
 
 /// The functions to patch in a module: (headerin candidates, mapping0_inverse).
@@ -240,7 +263,7 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     let mut floor1 = Vec::new();
     for &r in &lut_refs {
         for f in funcs_of(r) {
-            for &loc in &ptrs[&f] {
+            for &loc in ptrs.get(&f).map_or(&[][..], |v| v.as_slice()) {
                 if table_at(loc - 24, 7).is_some_and(|t| t[6] == f) {
                     floor1.push(loc - 24);
                 }
@@ -294,7 +317,7 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
                     if !(uses(f, floor_p) || uses(f, p)) || !residue_p.iter().any(|&r| uses(f, r)) {
                         continue;
                     }
-                    for &loc in &ptrs[&f] {
+                    for &loc in ptrs.get(&f).map_or(&[][..], |v| v.as_slice()) {
                         // (pack and forward null without the encoder)
                         if table_or_null(loc - 16, 5, 0b1001).is_some_and(|t| t[4] == f) {
                             mapping.push(f);
@@ -316,7 +339,16 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     mapping.sort_unstable();
     mapping.dedup();
     // a build with the encoder: mapping0_forward (entry 3, just before inverse) passes too
-    let next_is_candidate = |f: &u32| ptrs[f].iter().any(|&loc| m.img.get((loc + 4 - m.base) as usize..).is_some_and(|_| mapping.contains(&m.u32_at((loc + 4 - m.base) as usize))));
+    // (a beta table's entry need not be a key of `ptrs`, nor have 4 bytes after it in the image:
+    // a HashMap index or a read past the image aborted the load)
+    let next_is_candidate = |f: &u32| {
+        ptrs.get(f).is_some_and(|locs| {
+            locs.iter().any(|&loc| {
+                let x = loc.wrapping_add(4).wrapping_sub(m.base) as usize;
+                m.img.get(x..x.saturating_add(4)).is_some_and(|b| b.len() == 4 && mapping.contains(&m.u32_at(x)))
+            })
+        })
+    };
     let forward: Vec<u32> = mapping.iter().copied().filter(next_is_candidate).collect();
     mapping.retain(|f| !forward.contains(f));
     if mapping.len() != 1 {
@@ -427,7 +459,9 @@ fn on_to(c: &mut Ctx, t: u32) -> u32 {
 
 fn handler(c: &mut Ctx) -> u32 {
     let Some((kind, t)) = HOOKS.lock().unwrap().as_ref().and_then(|h| h.get(&c.trap).copied()) else {
-        panic!("vorbis hook without an entry");
+        // (cannot happen: every trap is registered with its entry)
+        eprintln!("sake: vorbis hook without an entry at trap {:#x}", c.trap);
+        return 0;
     };
     match kind {
         Kind::Headerin { ecx, edx } => {
@@ -827,6 +861,68 @@ mod tests {
             let (base, img) = map(&std::fs::read(path).unwrap());
             let found = Image::of(base, &img).and_then(|m| locate(&m));
             eprintln!("{path}: {found:x?}");
+        }
+    }
+
+    /// A mapped image: PE header, a code section at 0x1000 and a data section at 0x2000.
+    pub(super) fn image(code: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut img = vec![0u8; 0x1000 + 0x1000 + data.len().max(0x1000)];
+        img[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        img[0x80..0x84].copy_from_slice(b"PE\0\0");
+        img[0x86..0x88].copy_from_slice(&2u16.to_le_bytes());
+        img[0x94..0x96].copy_from_slice(&0xe0u16.to_le_bytes());
+        for (i, (va, n, ch)) in [(0x1000u32, 0x1000u32, 0x6000_0020u32), (0x2000, data.len().max(0x1000) as u32, 0xc000_0040)].into_iter().enumerate() {
+            let s = 0x80 + 24 + 0xe0 + 40 * i;
+            img[s + 8..s + 12].copy_from_slice(&n.to_le_bytes());
+            img[s + 12..s + 16].copy_from_slice(&va.to_le_bytes());
+            img[s + 16..s + 20].copy_from_slice(&n.to_le_bytes());
+            img[s + 36..s + 40].copy_from_slice(&ch.to_le_bytes());
+        }
+        let c = code.len().min(0x1000);
+        img[0x1000..0x1000 + c].copy_from_slice(&code[..c]);
+        img[0x2000..0x2000 + data.len()].copy_from_slice(data);
+        img
+    }
+
+    proptest::proptest! {
+        /// find_at is windows().position, on small alphabets (many near matches)
+        #[test]
+        fn find_at_is_position(h in proptest::collection::vec(0u8..3, 0..300), n in proptest::collection::vec(0u8..3, 0..6)) {
+            let want = if n.is_empty() { None } else { h.windows(n.len()).position(|w| w == &n[..]) };
+            proptest::prop_assert_eq!(super::find_at(&h, &n), want);
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 300, ..Default::default() })]
+        /// Any code and data around libvorbis's dB table and its "vorbis" string, with function
+        /// tables pointing anywhere (into code, past the image, at the image's last bytes): the
+        /// search never panics (a HashMap index and a read past the image aborted a load), and
+        /// what it finds is in the code section.
+        #[test]
+        fn locate_never_panics(code in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..0x1000),
+                               ptrs in proptest::collection::vec((0usize..0x400, 0u32..0x2400), 0..200),
+                               at in 0usize..0x200, string_at in 0usize..0x40) {
+            let table: Vec<u8> = vorbis::floor1_table::INVERSE_DB.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let mut data = vec![0u8; 0x1000];
+            let t = at * 4;
+            if t + table.len() <= data.len() {
+                data[t..t + table.len()].copy_from_slice(&table);
+            }
+            let s0 = 0xf00 + string_at;
+            data[s0..s0 + 7].copy_from_slice(b"vorbis\0");
+            for (k, (slot, target)) in ptrs.into_iter().enumerate() {
+                let o = (slot * 4) % 0xffc;
+                let v = if k % 7 == 0 { 0x40_0000 + 0x2ffe } else { 0x40_0000 + 0x1000 + target };
+                data[o..o + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            let img = image(&code, &data);
+            if let Some((heads, inv)) = locate_in(0x40_0000, &img) {
+                proptest::prop_assert!((0x40_1000..0x40_2000).contains(&inv));
+                for h in heads {
+                    proptest::prop_assert!((0x40_1000..0x40_2000).contains(&h));
+                }
+            }
         }
     }
 }

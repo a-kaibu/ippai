@@ -261,6 +261,7 @@ pub fn init() {
     kura::snap::on_pause(crate::sound::snap_wake);
     kura::snap::on_pause(crate::xaudio2::snap_wake);
     kura::snap::on_pause(crate::wasapi::snap_wake);
+    kura::snap::on_pause(crate::wmvcore::asyncr_snap_wake);
     kura::snap::on_pause(crate::dshow_play::snap_wake);
     kura::snap::on_pause(crate::mf::snap_wake);
     kura::snap::set_ranges(crate::mem::snap_ranges);

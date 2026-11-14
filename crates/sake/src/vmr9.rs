@@ -23,6 +23,7 @@ use crate::mem::{self, ps, put32, r32, rp, w32, wp};
 const S_FALSE: u32 = 1;
 const E_NOTIMPL: u32 = 0x8000_4001;
 const E_NOINTERFACE: u32 = 0x8000_4002;
+const E_OUTOFMEMORY: u32 = 0x8007_000e;
 const E_POINTER: u32 = 0x8000_4003;
 const E_FAIL: u32 = 0x8000_4005;
 const E_UNEXPECTED: u32 = 0x8000_ffff;
@@ -160,8 +161,12 @@ impl MediaType {
         mem::write(p, &self.head);
         wp(p + mt_unk(), 0);
         let pb = if self.format.is_empty() { 0 } else { mem::heap_alloc(self.format.len() as u32, false) };
-        mem::write(pb, &self.format);
-        w32(p + mt_cb(), self.format.len() as u32);
+        // (no block for it: no format rather than a write at address 0)
+        let cb = if pb == 0 { 0 } else { self.format.len() as u32 };
+        if pb != 0 {
+            mem::write(pb, &self.format);
+        }
+        w32(p + mt_cb(), cb);
         wp(p + mt_pb(), pb);
     }
     /// the picture size its VIDEOINFOHEADER(2) gives
@@ -331,6 +336,11 @@ fn inner_release(c: &mut Ctx, b: u32) -> u32 {
             PINS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&p);
         }
         guest_release(c, clock);
+        // (the presenter's device reference SetD3DDevice took: the game's device dies with it)
+        let dev = vmr_with(b, |v| std::mem::take(&mut v.device)).unwrap_or(0);
+        if dev != 0 {
+            com_call(c, dev, 2, &[]);
+        }
         VMRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
     }
     n
@@ -1298,7 +1308,52 @@ fn sample_with<R>(s: u32, f: impl FnOnce(&mut Sample) -> R) -> Option<R> {
     SAMPLES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get_mut(&s).map(f)
 }
 fn alloc_release(a: u32) {
-    alloc_with(a, |x| x.refs = x.refs.saturating_sub(1));
+    let n = alloc_with(a, |x| {
+        x.refs = x.refs.saturating_sub(1);
+        x.refs
+    });
+    if n == Some(0) {
+        alloc_gone(a);
+    }
+}
+
+/// The most buffers one allocator makes (SetProperties' cBuffers is any u32: 0x7fffffff looped
+/// until the heap died). DirectShow graphs ask for 1 to a few dozen.
+const MAX_BUFFERS: u32 = 256;
+
+/// A sample's guest memory goes back to the heap (its frame data; the small object block stays,
+/// as every COM block here, so a stale pointer still finds a vtable) and its entry goes.
+fn sample_free(s: u32) {
+    let gone = SAMPLES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&s);
+    if let Some(x) = gone {
+        if x.data != 0 {
+            mem::heap_free(x.data);
+        }
+    }
+}
+
+/// What a sample whose last reference went does: back to its allocator's free list while that is
+/// committed and alive, else freed (Decommit and the allocator's end free the free ones; the
+/// ones still out are freed as they come back). Before, no sample was ever freed: a graph
+/// built into the VMR-9 leaked its whole frame pool (8 MB per 1080p buffer) per movie.
+pub(crate) fn sample_back(committed: bool, alive: bool) -> bool {
+    committed && alive
+}
+
+/// Decommit, or the allocator's last reference: its free samples are freed.
+fn free_unused(a: u32) {
+    let free = alloc_with(a, |x| std::mem::take(&mut x.free)).unwrap_or_default();
+    for s in free {
+        sample_free(s);
+    }
+}
+
+fn alloc_gone(a: u32) {
+    free_unused(a);
+    let out = alloc_with(a, |x| x.out).unwrap_or(0);
+    if out == 0 {
+        ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&a);
+    }
 }
 
 fn alloc_new() -> u32 {
@@ -1327,11 +1382,15 @@ fn alloc_new() -> u32 {
             .unwrap_or(1)
         }
         fn rel(c: &mut Ctx) -> u32 {
-            alloc_with(c.a(0), |x| {
+            let n = alloc_with(c.a(0), |x| {
                 x.refs = x.refs.saturating_sub(1);
                 x.refs
             })
-            .unwrap_or(0)
+            .unwrap_or(0);
+            if n == 0 {
+                alloc_gone(c.a(0));
+            }
+            n
         }
         /// SetProperties(&request, &actual)
         fn set_props(c: &mut Ctx) -> u32 {
@@ -1381,7 +1440,18 @@ fn alloc_new() -> u32 {
             if props[0] == 0 || props[1] == 0 {
                 return VFW_E_SIZENOTSET;
             }
-            let new: Vec<u32> = (have..props[0]).map(|_| sample_new(a, props[1] + props[3])).collect();
+            let Some(size) = props[1].checked_add(props[3]) else { return E_OUTOFMEMORY };
+            let mut new = Vec::new();
+            for _ in have..props[0].min(MAX_BUFFERS) {
+                let s = sample_new(a, size);
+                if s == 0 {
+                    for s in new {
+                        sample_free(s);
+                    }
+                    return E_OUTOFMEMORY;
+                }
+                new.push(s);
+            }
             alloc_with(a, |x| {
                 x.committed = true;
                 x.free.extend(new);
@@ -1390,6 +1460,7 @@ fn alloc_new() -> u32 {
         }
         fn decommit(c: &mut Ctx) -> u32 {
             alloc_with(c.a(0), |x| x.committed = false);
+            free_unused(c.a(0));
             0
         }
         /// GetBuffer(&sample, start, end, flags)
@@ -1472,12 +1543,24 @@ fn sample_new(alloc: u32, size: u32) -> u32 {
             })
             .unwrap_or((0, 0));
             if n == 0 {
-                alloc_with(a, |x| {
+                let back = alloc_with(a, |x| {
                     x.out = x.out.saturating_sub(1);
-                    if !x.free.contains(&s) {
+                    let back = sample_back(x.committed, x.refs > 0);
+                    if back && !x.free.contains(&s) {
                         x.free.push(s);
                     }
+                    (back, x.refs == 0 && x.out == 0)
                 });
+                match back {
+                    Some((true, _)) => {}
+                    Some((false, last)) => {
+                        sample_free(s);
+                        if last {
+                            alloc_gone(a);
+                        }
+                    }
+                    None => sample_free(s),
+                }
             }
             n
         }
@@ -1623,9 +1706,16 @@ fn sample_new(alloc: u32, size: u32) -> u32 {
             ],
         )
     });
-    let s = mem::heap_alloc(ps(), true);
-    wp(s, v);
     let data = mem::heap_alloc(size.max(1), true);
+    if data == 0 {
+        return 0;
+    }
+    let s = mem::heap_alloc(ps(), true);
+    if s == 0 {
+        mem::heap_free(data);
+        return 0;
+    }
+    wp(s, v);
     SAMPLES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(
         s,
         Sample { alloc, refs: 0, data, size, len: 0, time: None, media_time: None, sync: false, preroll: false, discontinuity: false, mt: None },

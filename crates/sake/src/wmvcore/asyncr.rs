@@ -51,6 +51,8 @@ pub struct Async {
     /// (SetAllocateForOutput / SetAllocateForStream TRUE)
     alloc_out: Vec<u32>,
     alloc_stream: Vec<u32>,
+    /// Start's count: a read the thread began before a Start's seek is thrown away
+    epoch: u32,
 }
 
 impl Async {
@@ -105,9 +107,9 @@ impl Async {
             return Step::Status(self.cb, s, hr, self.ctx);
         }
         if !self.running || self.cb == 0 {
-            return Step::Wait;
+            return Step::Wait(None);
         }
-        let Some(h) = self.held.as_ref() else { return Step::Read };
+        let Some(h) = self.held.as_ref() else { return Step::Read(self.epoch) };
         let limit = if self.user_clock { self.deliver } else { self.clock(now) + LEAD };
         if h.1 <= limit {
             return Step::Sample(self.cb, self.ctx, self.held.take().unwrap());
@@ -116,13 +118,65 @@ impl Async {
             self.told = true;
             return Step::Time(self.adv, self.deliver, self.ctx);
         }
-        Step::Wait
+        // (a clock of the program's: until DeliverTime; ours: until the held one is due)
+        Step::Wait(if self.user_clock || self.paused { None } else { Some(h.1 - limit) })
+    }
+    /// Before a Start's seek: nothing read from before it is kept
+    fn seeking(&mut self) {
+        self.running = false;
+        self.held = None;
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+    /// The thread's read of epoch `e`: kept only if no Start came since
+    fn read(&mut self, e: u32, got: Option<Option<(usize, u64, u64, Vec<u8>, bool)>>) {
+        if e != self.epoch || !self.running {
+            return;
+        }
+        match got {
+            Some(Some(s)) => self.held = Some(s),
+            // the end
+            _ => self.ended(),
+        }
     }
 }
+
+/// The delivery threads' wakeup: what the program does (Start, Stop, DeliverTime, Close, the
+/// last Release...) bumps the count; a thread with nothing due sleeps until then.
+static WAKE: (std::sync::Mutex<u64>, std::sync::Condvar) = (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+pub fn wake() {
+    *WAKE.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    WAKE.1.notify_all();
+}
+/// (a save state's pause: the sleepers come out to park)
+pub fn snap_wake() {
+    wake();
+}
+fn wake_count() -> u64 {
+    *WAKE.0.lock().unwrap_or_else(|e| e.into_inner())
+}
+/// Sleeps until a wake after `seen`, or `d` (100 ns) at most
+fn sleep_from(seen: u64, d: u64) {
+    let g = WAKE.0.lock().unwrap_or_else(|e| e.into_inner());
+    if *g != seen || kura::snap::pausing() {
+        return;
+    }
+    drop(WAKE.1.wait_timeout(g, std::time::Duration::from_micros(d / 10)));
+}
+/// The longest sleep with nothing due (a wake ends it sooner)
+const IDLE: u64 = 10_000_000;
+/// The shortest sleep for a sample that is due soon
+const MIN_SLEEP: u64 = 10_000;
 
 fn asy<R>(p: u32, f: impl FnOnce(&mut Async) -> R) -> Option<R> {
     let b = block(p)?;
     table(|m| m.get_mut(&b).and_then(|o| o.a.as_mut()).map(f))
+}
+/// asy for the program's calls: the delivery thread then looks again
+fn asy_wake<R>(p: u32, f: impl FnOnce(&mut Async) -> R) -> Option<R> {
+    let r = asy(p, f);
+    wake();
+    r
 }
 
 struct Vt {
@@ -318,6 +372,9 @@ fn get_time(c: &mut Ctx) -> u32 {
 /// A new async reader: its IWMReader.
 pub fn new_reader() -> u32 {
     let b = new_sync_reader();
+    if b == 0 {
+        return 0;
+    }
     let v = vts();
     wp(b + ps() * W_SYNC, v.reader);
     wp(b + ps() * W_ADV, v.adv);
@@ -335,7 +392,7 @@ fn opened(c: &mut Ctx, b: u32, cb: u32, ctx: u32, hr: u32) {
     let hr_qi = crate::dshow::com(c, cb, 0, &[iid, iid + 16]);
     let adv = if hr_qi == 0 { rp(iid + 16) } else { 0 };
     mem::heap_free(iid);
-    let (old, old_adv, spawn) = asy(b, |a| {
+    let (old, old_adv, spawn) = asy_wake(b, |a| {
         let old = (std::mem::replace(&mut a.cb, cb), std::mem::replace(&mut a.adv, adv));
         a.ctx = ctx;
         a.events.push_back((WMT_OPENED, hr));
@@ -350,7 +407,8 @@ fn opened(c: &mut Ctx, b: u32, cb: u32, ctx: u32, hr: u32) {
     if spawn {
         static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
         let entry = *ENTRY.get_or_init(|| crate::api::host_fn("wm_reader_thread", thread, 4));
-        crate::spawn_gated(entry, b, 0x10000, crate::obj::new_thread_obj(0), false);
+        // (the program's OnSample / OnStatus run on this thread: Windows' 1 MB stack, not 64 KB)
+        crate::spawn_gated(entry, b, 0x10_0000, crate::obj::new_thread_obj(0), false);
     }
 }
 
@@ -394,7 +452,7 @@ fn r_close(c: &mut Ctx) -> u32 {
         }
         close(c, &mut r);
     }
-    asy(this, |a| {
+    asy_wake(this, |a| {
         a.running = false;
         a.held = None;
         a.events.push_back((WMT_CLOSED, 0));
@@ -408,6 +466,8 @@ fn start(c: &mut Ctx) -> u32 {
     let (from, dur) = (q(c, 1, 1), q(c, 3, 2));
     let ctx = if mem::x64() { c.a64(4) as u32 } else { c.a(6) };
     let Some(rr) = reader(this) else { return E_UNEXPECTED };
+    // (first: a read the thread has begun is thrown away, it is of before the seek)
+    asy(this, Async::seeking);
     {
         let mut r = lock(&rr);
         if r.r.is_none() {
@@ -416,26 +476,26 @@ fn start(c: &mut Ctx) -> u32 {
         // (0: on from where it is, as Windows' "resume")
         seek(c, &mut r, from, if dur as i64 > 0 { dur } else { 0 });
     }
-    asy(this, |a| a.start(from, ctx, now()));
+    asy_wake(this, |a| a.start(from, ctx, now()));
     0
 }
 
 fn stop(c: &mut Ctx) -> u32 {
-    asy(c.a(0), Async::stop).map_or(E_UNEXPECTED, |_| 0)
+    asy_wake(c.a(0), Async::stop).map_or(E_UNEXPECTED, |_| 0)
 }
 
 fn pause(c: &mut Ctx) -> u32 {
-    asy(c.a(0), |a| a.pause(now())).map_or(E_UNEXPECTED, |_| 0)
+    asy_wake(c.a(0), |a| a.pause(now())).map_or(E_UNEXPECTED, |_| 0)
 }
 
 fn resume(c: &mut Ctx) -> u32 {
-    asy(c.a(0), |a| a.resume(now())).map_or(E_UNEXPECTED, |_| 0)
+    asy_wake(c.a(0), |a| a.resume(now())).map_or(E_UNEXPECTED, |_| 0)
 }
 
 /// SetUserProvidedClock(BOOL)
 fn set_user_clock(c: &mut Ctx) -> u32 {
     let on = c.a(1) != 0;
-    asy(c.a(0), |a| a.user_clock = on).map_or(E_UNEXPECTED, |_| 0)
+    asy_wake(c.a(0), |a| a.user_clock = on).map_or(E_UNEXPECTED, |_| 0)
 }
 
 fn get_user_clock(c: &mut Ctx) -> u32 {
@@ -450,7 +510,7 @@ fn get_user_clock(c: &mut Ctx) -> u32 {
 /// DeliverTime(QWORD): samples up to this time go out, then OnTime
 fn deliver_time(c: &mut Ctx) -> u32 {
     let t = q(c, 1, 1);
-    asy(c.a(0), |a| if a.deliver_to(t) { 0 } else { NS_E_INVALID_REQUEST }).unwrap_or(E_UNEXPECTED)
+    asy_wake(c.a(0), |a| if a.deliver_to(t) { 0 } else { NS_E_INVALID_REQUEST }).unwrap_or(E_UNEXPECTED)
 }
 
 /// What the delivery thread does next.
@@ -459,9 +519,10 @@ enum Step {
     /// a sample to hand out: callback, context, (output, time, duration, bytes, key)
     Sample(u32, u32, (usize, u64, u64, Vec<u8>, bool)),
     Time(u32, u64, u32),
-    /// a sample is wanted from the file
-    Read,
-    Wait,
+    /// a sample is wanted from the file (Start's epoch)
+    Read(u32),
+    /// nothing to do: until the held sample is due (100 ns), or a wake
+    Wait(Option<u64>),
     Gone,
 }
 
@@ -476,6 +537,7 @@ fn thread(c: &mut Ctx) -> u32 {
     // (the callback held, let go when the reader is gone)
     let mut held = (0u32, 0u32);
     loop {
+        let seen = wake_count();
         let step = next_step(b);
         if let Some(x) = asy(b, |a| (a.cb, a.adv)) {
             held = x;
@@ -530,20 +592,20 @@ fn thread(c: &mut Ctx) -> u32 {
                 // IWMReaderCallbackAdvanced::OnTime(QWORD, void *context)
                 crate::dshow::com(c, adv, 4, &[t as u32, (t >> 32) as u32, ctx]);
             }
-            Step::Read => {
+            Step::Read(e) => {
                 let Some(rr) = reader(b) else { continue };
                 let got = {
                     let mut r = lock(&rr);
+                    // (a Start came while waiting for the lock: its seek goes first)
+                    if asy(b, |a| a.epoch) != Some(e) {
+                        continue;
+                    }
                     if r.r.is_none() { None } else { Some(with_ctx(c, || next_sample(&mut r, 0))) }
                 };
-                asy(b, |a| match got {
-                    Some(Some(s)) => a.held = Some(s),
-                    // the end
-                    _ => a.ended(),
-                });
+                asy(b, |a| a.read(e, got));
             }
-            Step::Wait => {
-                kura::snap::sleep(std::time::Duration::from_millis(5));
+            Step::Wait(due) => {
+                sleep_from(seen, due.unwrap_or(IDLE).clamp(MIN_SLEEP, IDLE));
                 crate::snap::point();
             }
             Step::Gone => break,
@@ -567,11 +629,11 @@ mod tests {
         // (to the first Wait: what the thread does at once)
         for _ in 0..1000 {
             match a.step(now) {
-                Step::Read => match file.pop_front() {
+                Step::Read(_) => match file.pop_front() {
                     Some(t) => a.held = Some((0, t, 1, vec![], true)),
                     None => a.ended(),
                 },
-                Step::Wait => return,
+                Step::Wait(_) => return,
                 s => out.push(s),
             }
         }
@@ -642,6 +704,73 @@ mod tests {
         run(&mut a, &mut file, 0, &mut out);
         assert!(out.is_empty(), "OnTime once");
         assert!(!reader(false).deliver_to(1));
+    }
+
+    /// A read the thread began before Start's seek (the file's old position) is dropped, and
+    /// one begun after the seek but finished before Start's own a.start() is not lost either:
+    /// Start's seeking() runs before the seek, a.start() after it
+    #[test]
+    fn a_read_racing_start_is_dropped() {
+        let mut a = reader(false);
+        a.start(0, 0, 0);
+        let Step::Status(..) = a.step(0) else { panic!() };
+        let Step::Read(e) = a.step(0) else { panic!() };
+        // (Start: seeking, then the seek, then start)
+        a.seeking();
+        a.read(e, Some(Some((0, 5_000_000, 1, vec![], false))));
+        assert!(a.held.is_none(), "a pre-seek sample kept");
+        a.start(9_000_000, 0, 0);
+        let Step::Status(..) = a.step(0) else { panic!() };
+        let Step::Read(e2) = a.step(0) else { panic!() };
+        assert_ne!(e, e2);
+        a.read(e2, Some(Some((0, 9_000_000, 1, vec![], true))));
+        assert!(matches!(a.step(0), Step::Sample(_, _, (0, 9_000_000, _, _, true))));
+        // (a read finishing after a Stop is dropped too)
+        let Step::Read(e3) = a.step(0) else { panic!() };
+        a.stop();
+        a.read(e3, Some(None));
+        assert_eq!(statuses(&std::iter::from_fn(|| match a.step(0) { Step::Wait(_) => None, s => Some(s) }).collect::<Vec<_>>()), [WMT_STOPPED]);
+    }
+
+    /// Waits say how long: none when nothing can come without the program (stopped, paused,
+    /// a clock of the program's), else until the held sample is due
+    #[test]
+    fn waits_say_how_long() {
+        let mut a = reader(false);
+        assert!(matches!(a.step(0), Step::Wait(None)));
+        a.start(0, 0, 0);
+        let _ = a.step(0);
+        a.held = Some((0, LEAD + 3_000_000, 1, vec![], true));
+        assert!(matches!(a.step(0), Step::Wait(Some(3_000_000))));
+        assert!(matches!(a.step(1_000_000), Step::Wait(Some(2_000_000))));
+        a.pause(1_000_000);
+        assert!(matches!(a.step(50_000_000), Step::Wait(None)));
+        let mut u = reader(true);
+        u.start(0, 0, 0);
+        let _ = u.step(0);
+        u.held = Some((0, 7, 1, vec![], true));
+        u.told = true;
+        assert!(matches!(u.step(0), Step::Wait(None)));
+    }
+
+    /// A wake between the thread's look and its sleep is not lost: the sleep returns at once
+    #[test]
+    fn a_wake_before_the_sleep_is_not_lost() {
+        let seen = wake_count();
+        wake();
+        let t = std::time::Instant::now();
+        sleep_from(seen, IDLE);
+        assert!(t.elapsed() < std::time::Duration::from_millis(500));
+        // and a sleeper is woken by a later wake
+        let seen = wake_count();
+        let h = std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            sleep_from(seen, 50 * IDLE);
+            t.elapsed()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        wake();
+        assert!(h.join().unwrap() < std::time::Duration::from_secs(4));
     }
 
     #[test]

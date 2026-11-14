@@ -21,9 +21,9 @@ struct Video {
     codec: Box<dyn Codec>,
     rate: (u32, u32),
     /// pictures decoded and not shown yet (time, B G R A), in time order
-    pending: VecDeque<(u64, Vec<u8>)>,
+    pending: VecDeque<(u64, std::sync::Arc<Vec<u8>>)>,
     /// the picture of the last time asked for
-    shown: Option<(u64, Vec<u8>)>,
+    shown: Option<(u64, std::sync::Arc<Vec<u8>>)>,
     ended: bool,
 }
 

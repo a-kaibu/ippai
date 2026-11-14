@@ -12,6 +12,8 @@
 | The rule of `repeats()` (when a batch may be skipped) | TLA+ `tla/RepeatSkip.tla`: for every batch of up to 3 commands (clears, draws with and without blending, writes, copies, fills; partial boxes, an array texture) from any contents, "repeats" implies running it twice leaves what once did | `formal/run.sh` |
 | An IMFMediaEngine's life (`sake/src/mf.rs`: en_release, en_shutdown, its events thread asleep on EVENTS_CV, `retire`) | TLA+ `tla/MfEngineLife.tla`: the block is freed once, only when the game let go and the thread ended, and always then; a thread asleep at the shutdown wakes | `formal/run.sh`; proptest `mf::tests::engines_go_once_and_only_when_unheld` |
 | A streaming thread's calls into the game's objects and a Stop (`waits/src/calls.rs`, the MPEG-1 splitter in `sake/src/dshow_mpeg.rs`, #230) | TLA+ `tla/StopCalls.tla`: once Stop returned (and the game destroyed the object) no call into it is in flight; loom `waits/tests/loom.rs` (`calls_*`) the same over the Rust code | `formal/run.sh`, `formal/loom.sh` |
+| SendMessage to a window of another thread while that thread ends (`sake/src/user.rs` send_other_thread, process_sent, thread_gone; `k32::exit_thread`) | TLA+ `tla/SendEnd.tla`: every SendMessage returns (0 once the thread is gone); a waiting sender is queued or answered; after the end nothing stays queued | 〃 |
+| The async Windows Media reader's delivery thread against Start / Stop (`sake/src/wmvcore/asyncr.rs`: seeking, the epoch of a read, sleep_from / wake) | TLA+ `tla/WmStart.tla`: after Start what is held is of its seek (no stale sample), its key frame is handed out, and a wake between the thread's look and its sleep is not lost | 〃 |
 | Direct3D 9 and 11 object lifetimes (`d3d9/mod.rs`, `d3d11/mod.rs`): reference counts, what the device state, state blocks, views and swap chains hold, Reset, ResizeBuffers, ClearState | TLA+ `tla/ComRefs.tla`, the API's rules (an object lives while the application, a live holder or a live binding reaches it; AddRef/Release return the public count); `d3d9/trace_tests.rs` and `d3d11/trace_tests.rs` make random calls through the real entry points and write each run as a trace; TLC checks every call's result, returned object and the set of live objects against ComRefs (`tla/ComRefsTrace.tla`) | `formal/trace.sh` |
 | Direct3D 9 surface locks and copies (`d3d9/surface.rs`, `device.rs`): LockRect/UnlockRect (read-only, discard, partial rects), ColorFill, UpdateSurface, StretchRect, GetRenderTargetData, and what the page reads back | TLA+ `tla/Locks.tla`: which writes each 4x4 cell shows (a lock sees the last write, fill or GPU copy; the page sees what was uploaded); `d3d9/lock_tests.rs` drives the real entry points with the page's executor on the WebGPU model in the same thread and writes each run as a trace (`tla/LocksTrace.tla`) | `formal/trace.sh` |
 | Direct3D 11 Map/Unmap (`d3d11/mod.rs`): map types per usage (staging read/write, dynamic discard/no-overwrite), UpdateSubresource, ClearRenderTargetView, CopyResource, CopySubresourceRegion, readbacks | TLA+ `tla/Maps.tla`: what a Map shows, which map types each resource takes; `d3d11/map_tests.rs` traces (`tla/MapsTrace.tla`) | 〃 |
@@ -31,7 +33,7 @@
 | The parsers of guest-supplied data with a 32-bit usize as in sake (`asf`, `mpeg1`, `msidb`, `apitrace`, `dxwgsl`, `hlslc`, `crt`): lengths, offsets and counts from the file never wrap, nesting stays within the 1 MiB stack | their whole test suites (unit, proptest) on wasm32-wasip1 under node WASI with overflow checks on in release | `formal/wasm32.sh` |
 | Shader translation (HLSL → DXBC / D3D9 bytecode, D3D9 assembly, GLSL → WGSL): what the shaders compute on a real WebGPU (Chromium's Dawn) against the D3D11.3 functional spec, the D3D9 instruction reference, HLSL constant packing, GLSL 1.20 and std140 | `crates/shaderconf` writes the cases (shader, uniform data per pixel, expected pixel), `tests/shaders.mjs` draws them | `cargo run -q -p shaderconf > c.json && node tests/shaders.mjs c.json` |
 
-`tla/models.txt` lists the configurations. Seventeen of them must fail, as records of known limits:
+`tla/models.txt` lists the configurations. The ones marked `violation` must fail, as records of known limits and of bugs fixed:
 
 - `GpuQueueTimeouts.cfg`: when `wait_done` gives up (its 1 s deadline, or a page that has not
   polled for 3 s) the guest may change pixels the page is still uploading: a torn texture for a
@@ -50,6 +52,11 @@
 - `RepeatSkipUseful.cfg`: the rule does skip some batches (it is not vacuously safe).
 - `MfEngineLifeOld.cfg`: the engine as it was (the block and its state stayed after the last Release): Freed is violated. `MfEngineLifeNoWake.cfg`: a notify on events only, no timeout: the thread asleep at the shutdown never ends.
 - `RegShareOld.cfg`: the registry's reload as it was (the file's keys replaced this process's): a batch's change not yet written is lost when another process writes. `RegShareOverwrite.cfg`: writing without taking in the file first loses the other process's change.
+- `SendEndOld.cfg`: sake before the b10 review: a message was queued for a thread whether its
+  window was there or not and nothing answered it when the thread ended: a sender waited for ever.
+- `WmStartOld.cfg`, `WmStartOldKey.cfg`: Start as it was (seek, then clear `held`, no epoch): a
+  read begun before the seek lands after it (a stale sample), or the key frame read between the
+  seek and the clear is thrown away (the decoder starts on delta frames).
 - `StopCallsOld.cfg`: the splitter thread as it was (no enter, Stop not waiting): a SyncRead into krmovie's reader after the game freed it. `StopCallsGiveUp.cfg`: Stop's timeout (a call that never comes back) allows the same: the price of not hanging.
 
 Found and fixed by the WebGPU model: `repeats()` skipped a batch that sampled a texture and then
