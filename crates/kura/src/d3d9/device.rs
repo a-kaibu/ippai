@@ -509,6 +509,19 @@ impl Device {
             d.release(decl);
         }
         d.guest_free(self.strip_buf.0);
+        // (its pipelines and shader modules: the page kept every one of every device, and a
+        // game that makes its device again compiled them all again beside the old)
+        let mut shaders: Vec<u32> = self.shaders.values().chain(self.modules.values()).copied().collect();
+        shaders.sort_unstable();
+        shaders.dedup();
+        gpu::record(|b| {
+            for &p in self.pipelines.values() {
+                b.cmd(&[gpu::DESTROY_PIPELINE, p]);
+            }
+            for &s in &shaders {
+                b.cmd(&[gpu::DESTROY_SHADER, s]);
+            }
+        });
         // (the reference CreateDevice took on the IDirect3D9)
         d.release(self.d3d);
     }

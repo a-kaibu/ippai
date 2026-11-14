@@ -193,3 +193,70 @@ fn second_device_released_while_the_first_draws() {
     let r = run(&[Create, Set(0, 7), Begin(0), End(0), Create, Set(1, 9), Begin(1), End(1), Release(1), Get(0), Begin(0), End(0), Begin(0), End(0), Get(0)]);
     assert!(r.is_ok(), "{r:?}");
 }
+
+/// A device made, drawn with (several pipelines and shader modules: blending, culling, fog,
+/// textured or not) and released, again and again (a game that makes its device again on a
+/// fullscreen toggle): the page holds no more shader modules and pipelines after each round
+/// than before the first; it kept every one of every device. And nothing the page was told
+/// breaks a WebGPU rule.
+#[test]
+fn a_released_device_takes_its_pipelines_along() {
+    use super::draw_tests::{out, put_bytes};
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    super::trace_tests::attach_page();
+    let settle = || {
+        gpu::flush();
+        gpu::pump();
+    };
+    settle();
+    let base = crate::render::model::with(|m| m.live_programs());
+    // (XYZRHW | DIFFUSE | TEX1 quad)
+    let up = unsafe { alloc(4 * 28) as u32 };
+    let mut b = Vec::new();
+    for (x, y, u, v) in [(0.0f32, 0.0, 0.0f32, 0.0f32), (8.0, 0.0, 1.0, 0.0), (0.0, 8.0, 0.0, 1.0), (8.0, 8.0, 1.0, 1.0)] {
+        for f in [x, y, 0.0, 1.0] {
+            b.extend_from_slice(&f.to_le_bytes());
+        }
+        b.extend_from_slice(&0xff80_8080u32.to_le_bytes());
+        b.extend_from_slice(&u.to_le_bytes());
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    put_bytes(up, &b);
+    for round in 0..4 {
+        let o = out();
+        unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
+        let d3d = rd(o);
+        let pp = mem(14);
+        for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+            wr(pp, i as u32, x);
+        }
+        assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
+        let dev = rd(o);
+        assert_eq!(call(IF_DEVICE, 23, &[dev, 16, 16, 1, 0, 21, 1, o, 0]), 0);
+        let tex = rd(o);
+        call(IF_DEVICE, 89, &[dev, 0x144]);
+        call(IF_DEVICE, 41, &[dev]);
+        for (k, (rs, v)) in [(27, 1), (22, 1), (22, 3), (28, 1), (27, 0), (137, 0)].into_iter().enumerate() {
+            call(IF_DEVICE, 57, &[dev, rs, v]);
+            call(IF_DEVICE, 65, &[dev, 0, if k % 2 == 0 { tex } else { 0 }]);
+            assert_eq!(call(IF_DEVICE, 83, &[dev, 5, 2, up, 28]), 0, "round {round} draw {k}");
+        }
+        call(IF_DEVICE, 42, &[dev]);
+        call(IF_DEVICE, 17, &[dev, 0, 0, 0, 0]);
+        settle();
+        let during = crate::render::model::with(|m| m.live_programs());
+        assert!(during.0 > base.0 && during.1 > base.1, "round {round}: drew with nothing new? {during:?}");
+        call(IF_TEXTURE, 2, &[tex]);
+        assert_eq!(call(IF_DEVICE, 2, &[dev]), 0);
+        call(IF_D3D9, 2, &[d3d]);
+        settle();
+        assert_eq!(crate::render::model::with(|m| m.live_programs()), base, "round {round}: left on the page");
+    }
+    let errors = crate::render::model::with(|m| std::mem::take(&mut m.errors));
+    assert!(errors.is_empty(), "WebGPU errors {errors:?}");
+    gpu::set_pump(None);
+}

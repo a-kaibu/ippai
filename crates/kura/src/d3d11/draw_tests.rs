@@ -262,6 +262,26 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
         drawn += 1;
     }
     assert!(drawn > 50, "seed {seed}: {drawn} draws checked");
+    // (the shaders released: their translations and the pipelines made of them go from the
+    // page, nothing else)
+    let (mods, pipes) = {
+        let g = D11S.lock().unwrap();
+        let d = g.as_ref().unwrap();
+        let ours = [d.id_of(vsh), d.id_of(psh)];
+        let mods: Vec<u32> = ours.iter().filter_map(|id| match d.objs.get(id).map(|o| &o.data) { Some(Data::Shader(s)) => Some(s), _ => None }).flat_map(|s| s.wgsl.values().flatten().map(|r| r.0)).collect();
+        let pipes = d.pipelines.keys().filter(|k| mods.contains(&k[0]) || mods.contains(&k[1])).count();
+        (mods.len(), pipes)
+    };
+    gpu::flush();
+    gpu::pump();
+    let live = model::with(|m| m.live_programs());
+    assert!(mods >= 2 && pipes >= 1, "seed {seed}: {mods} translations, {pipes} pipelines");
+    cc(110, &[ctx]);
+    assert_eq!(call1(m(if ten { IF10_VS } else { IF_VS }, 2), &[vsh]), 0);
+    assert_eq!(call1(m(if ten { IF10_PS } else { IF_PS }, 2), &[psh]), 0);
+    gpu::flush();
+    gpu::pump();
+    assert_eq!(model::with(|m| m.live_programs()), (live.0 - mods, live.1 - pipes), "seed {seed}: left on the page");
     gpu::set_pump(None);
     let errors = model::with(|m| std::mem::take(&mut m.errors));
     assert!(errors.is_empty(), "seed {seed}: WebGPU errors {:?}", &errors[..errors.len().min(10)]);
@@ -275,8 +295,6 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
     for (iface, object) in [
         (if ten { IF10_RTV } else { IF_RTV }, rtv),
         (if ten { IF10_TEX2D } else { IF_TEX2D }, rt),
-        (if ten { IF10_VS } else { IF_VS }, vsh),
-        (if ten { IF10_PS } else { IF_PS }, psh),
         (IF_SWAPCHAIN, sc),
     ] {
         assert_eq!(call1(m(iface, 2), &[object]), 0);

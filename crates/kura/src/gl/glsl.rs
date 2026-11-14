@@ -126,11 +126,34 @@ impl Gl {
         let used: HashSet<u32> = self.ctxs.values().map(|c| c.program).chain(self.ctxs_program_hint).collect();
         let gone: Vec<u32> = self.programs.iter().filter(|(id, p)| p.deleted && !used.contains(id)).map(|(id, _)| *id).collect();
         for id in gone {
-            self.programs.remove(&id);
+            if let Some(l) = self.programs.remove(&id).and_then(|p| p.linked) {
+                forget_linked(self, &l);
+            }
         }
         let attached: HashSet<u32> = self.programs.values().flat_map(|p| p.shaders.iter().copied()).collect();
         self.shaders.retain(|id, s| !s.deleted || attached.contains(id));
     }
+}
+
+/// A link that is no more (the program linked again or deleted): its two page shaders and the
+/// pipelines made of them go from the page (each link made two new ones, kept for the session).
+fn forget_linked(g: &mut Gl, l: &Linked) {
+    let (vs, ps) = (l.vs.shader, l.ps.shader);
+    let mut gone = Vec::new();
+    g.pipelines.retain(|k, &mut id| {
+        let keep = k[0] != vs && k[1] != ps;
+        if !keep {
+            gone.push(id);
+        }
+        keep
+    });
+    gpu::record(|q| {
+        for id in gone {
+            q.cmd(&[gpu::DESTROY_PIPELINE, id]);
+        }
+        q.cmd(&[gpu::DESTROY_SHADER, vs]);
+        q.cmd(&[gpu::DESTROY_SHADER, ps]);
+    });
 }
 
 extern "C" fn glCreateShader(ty: u32) -> u32 {
@@ -307,16 +330,19 @@ extern "C" fn glLinkProgram(p: u32) {
     }
     let g = g.as_mut().unwrap();
     let Some(mut x) = g.programs.remove(&p) else { return };
-    match link(g, &mut x) {
+    let old = match link(g, &mut x) {
         Ok(l) => {
-            x.linked = Some(l);
             x.log.clear();
+            x.linked.replace(l)
         }
         Err(e) => {
             eprintln!("gl: program {p} does not link: {e}");
-            x.linked = None;
             x.log = e;
+            x.linked.take()
         }
+    };
+    if let Some(old) = old {
+        forget_linked(g, &old);
     }
     x.locations.clear();
     g.programs.insert(p, x);

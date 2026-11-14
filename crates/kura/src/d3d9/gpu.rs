@@ -45,6 +45,10 @@ pub const WRITE_TEXTURE2: u32 = 29; // id level layer_or_z x y w h bytes_per_row
 pub const PRESENT_FLIP: u32 = 30; // as PRESENT, the texture bottom row first (OpenGL)
 pub const DISPATCH: u32 = 31; // shader x y z n entries[n*8] (see d3d11::dispatch)
 pub const RESOLVE: u32 = 32; // dst dst_level dst_layer src src_layer: ResolveSubresource (src multisampled, its level 0)
+/// The page forgets a shader module (CREATE_SHADER's) and the compute pipelines made of it;
+/// the render pipelines made of it go first (DESTROY_PIPELINE).
+pub const DESTROY_SHADER: u32 = 33; // id
+pub const DESTROY_PIPELINE: u32 = 34; // id (CREATE_PIPELINE's or CREATE_PIPELINE2's)
 
 /// Texture formats on the page.
 pub const FMT_BGRA8: u32 = 0;

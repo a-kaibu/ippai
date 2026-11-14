@@ -1171,6 +1171,35 @@ impl D3d {
                     self.gen_mips(a(1));
                     i += 2;
                 }
+                DESTROY_SHADER => {
+                    let id = a(1);
+                    if let Some(m) = self.shaders.remove(&id) {
+                        gpu::drop(m);
+                    }
+                    self.computes.retain(|k, &mut (p, l)| {
+                        let keep = k[0] != id;
+                        if !keep {
+                            gpu::drop(p);
+                            gpu::drop(l);
+                        }
+                        keep
+                    });
+                    self.shader_dims.remove(&id);
+                    self.shader_src.remove(&id);
+                    i += 2;
+                }
+                DESTROY_PIPELINE => {
+                    let id = a(1);
+                    if let Some(p) = self.pipelines.remove(&id) {
+                        gpu::drop(p.pipeline);
+                    }
+                    self.pipe_keys.remove(&id);
+                    if let Some(p) = self.pipelines2.remove(&id) {
+                        gpu::drop(p.pipeline);
+                        p.layouts.iter().for_each(|&l| gpu::drop(l));
+                    }
+                    i += 2;
+                }
                 RESOLVE => {
                     self.resolve(a(1), a(2), a(3), a(4), a(5));
                     i += 6;

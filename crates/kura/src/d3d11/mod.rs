@@ -710,6 +710,29 @@ impl D11 {
             Data::Deferred(x) => deferred::drop_deferred(self, *x),
             Data::CmdList(l) => deferred::drop_list(self, *l),
             Data::CtxState(Some(s)) => unbind_state(self, &s),
+            Data::Shader(s) => {
+                // (its translations and the pipelines made of them go from the page: kept for
+                // the session before, a game making shaders per scene piled them up)
+                let mods: Vec<u32> = s.wgsl.values().flatten().map(|r| r.0).collect();
+                if !mods.is_empty() {
+                    let mut gone = Vec::new();
+                    self.pipelines.retain(|k, &mut id| {
+                        let keep = !mods.contains(&k[0]) && !mods.contains(&k[1]);
+                        if !keep {
+                            gone.push(id);
+                        }
+                        keep
+                    });
+                    gpu::record(|q| {
+                        for id in gone {
+                            q.cmd(&[gpu::DESTROY_PIPELINE, id]);
+                        }
+                        for m in mods {
+                            q.cmd(&[gpu::DESTROY_SHADER, m]);
+                        }
+                    });
+                }
+            }
             Data::SwapChain(s) => {
                 self.release(s.buffer);
                 // (the reference new_swapchain took)

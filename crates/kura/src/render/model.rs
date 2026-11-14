@@ -1541,6 +1541,12 @@ impl Model {
         }
     }
 
+    /// The shader modules and render pipelines the page holds now (not dropped).
+    pub fn live_programs(&self) -> (usize, usize) {
+        let live = || self.table.iter().flatten().map(|&k| &self.objs[k]);
+        (live().filter(|o| matches!(o, Obj::Shader(..))).count(), live().filter(|o| matches!(o, Obj::Pipeline(..))).count())
+    }
+
     pub fn drop_obj(&mut self, i: u32) {
         if i == 0 {
             return;

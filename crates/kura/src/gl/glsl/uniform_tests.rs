@@ -8,6 +8,7 @@
 use super::*;
 use crate::d3d9::trace_tests::{alloc, SERIAL};
 use proptest::prelude::*;
+use crate::d3d9::gpu;
 
 const VS: &str = "uniform vec4 a[3];\nuniform mat4 m[2];\nuniform float s;\nattribute vec4 extra;\n\
 void main() { gl_Position = gl_Vertex + a[0] + a[1] + a[2] + m[0][0] + m[1][1] + vec4(s) + extra; }";
@@ -130,4 +131,77 @@ fn attribute_indices_past_the_limit_are_refused() {
     let l = g.as_ref().unwrap().programs[&p].linked.as_ref().expect("links");
     assert_eq!(l.attribs.iter().find(|a| a.0 == "extra").map(|a| a.1), Some(15));
     assert!(l.attribs.iter().all(|a| a.1 < MAX_ATTRIBS), "{:?}", l.attribs);
+}
+
+/// Programs linked again and again (an engine that links one per effect), drawn with and
+/// deleted: the page holds no more shader modules and pipelines after each round than before
+/// the first (each link's two modules and their pipelines were kept for the session), and the
+/// program that stays draws on.
+#[test]
+fn relinked_and_deleted_programs_leave_nothing_on_the_page() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    crate::d3d9::trace_tests::attach_page();
+    *GL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let ctx = vngl_context_create(0);
+    vngl_make_current(ctx, 0x1234, 32, 32);
+    let settle = || {
+        gpu::flush();
+        gpu::pump();
+    };
+    let draw = || {
+        glBegin(4);
+        for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)] {
+            glVertex3f(x, y, 0.0);
+        }
+        glEnd();
+    };
+    let make = || {
+        let (vs, fs) = (glCreateShader(GL_VERTEX_SHADER), glCreateShader(0x8B30));
+        unsafe {
+            glShaderSource(vs, 1, guest(VS), std::ptr::null());
+            glShaderSource(fs, 1, guest(FS), std::ptr::null());
+        }
+        glCompileShader(vs);
+        glCompileShader(fs);
+        let p = glCreateProgram();
+        glAttachShader(p, vs);
+        glAttachShader(p, fs);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        glLinkProgram(p);
+        p
+    };
+    settle();
+    let base = crate::render::model::with(|m| m.live_programs());
+    let keep = make();
+    glUseProgram(keep);
+    draw();
+    settle();
+    let one = crate::render::model::with(|m| m.live_programs());
+    assert!(one.0 >= base.0 + 2 && one.1 > base.1, "{one:?}");
+    for round in 0..5 {
+        let p = make();
+        glUseProgram(p);
+        draw();
+        glEnable(0x0B44);
+        draw();
+        glDisable(0x0B44);
+        // (linked again: the first link's modules go; then deleted while current, gone when
+        // another is used)
+        glLinkProgram(p);
+        draw();
+        glDeleteProgram(p);
+        glUseProgram(keep);
+        draw();
+        settle();
+        assert_eq!(crate::render::model::with(|m| m.live_programs()), one, "round {round}");
+    }
+    // (the program kept: linked again, its old modules go, the new ones stay)
+    glLinkProgram(keep);
+    draw();
+    settle();
+    assert_eq!(crate::render::model::with(|m| m.live_programs()).0, one.0);
+    let errors = crate::render::model::with(|m| std::mem::take(&mut m.errors));
+    assert!(errors.is_empty(), "WebGPU errors {errors:?}");
+    gpu::set_pump(None);
 }
