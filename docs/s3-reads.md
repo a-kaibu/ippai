@@ -102,6 +102,22 @@ ippai storage unpack --all
 ippai storage gc --grace-days 0     # then delete them from the bucket
 ```
 
+worker2's uplink is slow (about 100 KB/s, measured 2026-11-14: a 64 MiB pack did not get up in
+10 minutes, and the upload slowed the players), so packs are made on a machine with a faster
+line and merged in: `storage merge` takes another store's pack spans for the objects both
+stores name, and retires the packs no row names.
+
+```sh
+# on the server: a backup of its database
+ippai storage backup                                   # prints <uuid>
+# on the PC (same storage config; the server's read-order lists copied to <jit>)
+ippai --store <dir> storage merge <uuid>               # the server's objects, same UUIDs
+ippai --store <dir> storage packs --jit <jit>
+ippai --store <dir> storage backup                     # prints <uuid2>
+# on the server
+ippai storage merge <uuid2>
+```
+
 The user uploads the packs (this needs the bucket's write credentials):
 
 ```sh
