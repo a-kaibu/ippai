@@ -85,7 +85,7 @@ pub async fn build(trees: &Trees, tree: &str) -> String {
 
 /// An archive's script members' lines (`members` in the archive's order; `script`: whether one
 /// is a script, by its name or its first bytes).
-async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<foresee::Member>, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>, by_bytes: fn(&[u8]) -> bool) -> String {
+async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<foresee::Member>, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>, by_bytes: Option<fn(&[u8]) -> bool>) -> String {
     let mut out = String::new();
     // (in the archive's order: the chunks they lie in read once)
     members.sort_by_key(|m| m.segments[0].0);
