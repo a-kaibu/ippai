@@ -629,6 +629,8 @@ fn ensure_surface(w: &mut Window) {
     }
     let (cw, ch) = surface_size(w);
     match &w.surface {
+        // (this thread is drawing on it: resized at its next draw, not locked twice)
+        Some(s) if crate::gdi::holds(Arc::as_ptr(s) as *const () as usize) => {}
         Some(s) => {
             let mut g = s.lock().unwrap();
             if g.w != cw || g.h != ch {

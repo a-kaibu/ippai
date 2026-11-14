@@ -970,6 +970,11 @@ thread_local! {
     /// The 1-pixel buffer of DCs with nothing to read (one per thread, not one leaked a call).
     static NOTHING: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(vec![0]);
 }
+/// Whether this thread's draw holds the window surface at `p` (`Arc::as_ptr`) locked: user32
+/// must not lock it again (resizing it while finding a source DC's target hung the thread).
+pub(crate) fn holds(p: usize) -> bool {
+    HELD.with(|h| h.borrow().as_ref().is_some_and(|x| x.0 == p))
+}
 /// HELD for the time of a draw on a window surface.
 struct Held;
 impl Held {
