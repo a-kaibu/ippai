@@ -33,25 +33,49 @@ fn blob_add_ref(c: &mut Ctx) -> u32 {
     n
 }
 fn blob_release(c: &mut Ctx) -> u32 {
-    let n = r32(c.a(0) + 8).saturating_sub(1);
-    w32(c.a(0) + 8, n);
+    let o = c.a(0);
+    let before = r32(o + 8);
+    let n = before.saturating_sub(1);
+    w32(o + 8, n);
+    // (the last reference: the bytecode and the object go, the object after com.rs's quarantine
+    // of freed objects; every compiled shader, part and error text stayed for the session)
+    if before == 1 {
+        mem::heap_free(r32(o + 12));
+        w32(o + 12, 0);
+        crate::com::free_later(o);
+    }
     n
+}
+
+fn blob_vtbl() -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| crate::api::vtable("ID3DBlob", &[(blob_qi, 12), (blob_add_ref, 4), (blob_release, 4), (blob_ptr, 4), (blob_size, 4)]))
 }
 
 /// A new ID3DBlob holding `data`.
 pub fn blob(data: &[u8]) -> u32 {
-    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let vt = *V.get_or_init(|| {
-        crate::api::vtable("ID3DBlob", &[(blob_qi, 12), (blob_add_ref, 4), (blob_release, 4), (blob_ptr, 4), (blob_size, 4)])
-    });
+    let vt = blob_vtbl();
+    new_blob(vt, data.len() as u32, |p| mem::write(p, data)).unwrap_or(0)
+}
+
+/// An ID3DBlob of `n` bytes that `fill` writes; None when the guest heap has no room for it
+fn new_blob(vt: u32, n: u32, fill: impl FnOnce(u32)) -> Option<u32> {
+    let data_len = n;
+    let p = mem::heap_alloc(n.max(4), true);
+    if p == 0 {
+        return None;
+    }
     let o = mem::heap_alloc(24, true);
-    let p = mem::heap_alloc((data.len() as u32).max(4), true);
-    mem::write(p, data);
+    if o == 0 {
+        mem::heap_free(p);
+        return None;
+    }
+    fill(p);
     mem::wp(o, vt);
     w32(o + 8, 1);
     w32(o + 12, p);
-    w32(o + 16, data.len() as u32);
-    o
+    w32(o + 16, data_len);
+    Some(o)
 }
 
 fn text_blob(s: &str) -> u32 {
@@ -111,12 +135,14 @@ pub(crate) fn open_include(c: &mut Ctx, inc: u32, base: &str, name: &str, system
     let close = mem::rp(mem::rp(inc) + k);
     let hr = c.call(open, &[inc, system as u32, scratch + 2 * k, 0, scratch, scratch + k]);
     if hr & 0x8000_0000 != 0 {
+        mem::heap_free(scratch);
         return None;
     }
     let data = mem::rp(scratch);
     let n = r32(scratch + k);
     let text = String::from_utf8_lossy(mem::slice(data, n)).into_owned();
     c.call(close, &[inc, data]);
+    mem::heap_free(scratch);
     Some(text)
 }
 
@@ -232,8 +258,18 @@ fn D3DPreprocess(c: &mut Ctx) -> u32 {
 }
 
 fn D3DCreateBlob(c: &mut Ctx) -> u32 {
-    mem::putp(c.a(1), blob(&vec![0; c.a(0) as usize]));
-    0
+    // (the guest heap's block directly, zeroed: a host Vec of the guest's size first aborted
+    // on a huge one; no room is E_OUTOFMEMORY)
+    match new_blob(blob_vtbl(), c.a(0), |_| ()) {
+        Some(o) => {
+            mem::putp(c.a(1), o);
+            0
+        }
+        None => {
+            mem::putp(c.a(1), 0);
+            0x8007_000e
+        }
+    }
 }
 
 /// A DXBC container of the chunks `tags` of `code`.
@@ -394,5 +430,49 @@ pub fn init() {
         for (n, f) in fns {
             implement(&dll, n, *f);
         }
+    }
+}
+
+/// ID3DBlob lifetimes and sizes (review b05)
+#[cfg(test)]
+mod blob_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// n AddRefs, n + 1 Releases: the data goes at the last one, which answers 0
+        #[test]
+        fn blobs_free_their_data(len in 0usize..5000, n in 0u32..4) {
+            let _g = enter();
+            let o = blob(&vec![3; len]);
+            let data = r32(o + 12);
+            prop_assert_eq!(mem::slice(data, len as u32), &vec![3; len][..]);
+            for k in 0..n {
+                prop_assert_eq!(call(blob_add_ref, &[o]), k + 2);
+            }
+            for k in (0..=n).rev() {
+                prop_assert!(mem::heap_owns(data));
+                prop_assert_eq!(call(blob_release, &[o]), k);
+            }
+            prop_assert!(!mem::heap_owns(data));
+        }
+    }
+
+    #[test]
+    fn create_blob_of_a_size_the_heap_cannot_give_fails() {
+        let _g = enter();
+        let out = mem::heap_alloc(4, true);
+        for n in [0xffff_fff0u32, 0x8000_0000] {
+            w32(out, 0x1234);
+            assert_eq!(call(D3DCreateBlob, &[n, out]), 0x8007_000e, "{n:#x}");
+            assert_eq!(r32(out), 0);
+        }
+        assert_eq!(call(D3DCreateBlob, &[100, out]), 0);
+        let o = r32(out);
+        assert_eq!(r32(o + 16), 100);
+        assert!(mem::slice(r32(o + 12), 100).iter().all(|&b| b == 0));
+        assert_eq!(call(blob_release, &[o]), 0);
+        mem::heap_free(out);
     }
 }

@@ -637,6 +637,8 @@ fn B_Release(c: &mut Ctx) -> u32 {
     if n == 0 {
         if let Some((m, ..)) = d3d(|d| d.vbs.remove(&b)) {
             mem::heap_free(m);
+            // (the object's block too, after a while: com.rs's quarantine of freed objects)
+            crate::com::free_later(b);
         }
     }
     n
@@ -747,6 +749,7 @@ fn V_Release(c: &mut Ctx) -> u32 {
             if d.d3d_held != 0 {
                 dd_release(c, d.d3d_held);
             }
+            crate::com::free_later(b);
         }
     }
     n
@@ -1572,6 +1575,14 @@ struct Raster {
     copy: bool,
 }
 
+/// The box drawing stays in: the viewport (x, y, w, h) inside the target and, when there is
+/// one, inside the z-buffer (one smaller than the target, which AddAttachedSurface lets
+/// through: its rows past its end are other guest memory)
+fn raster_box(vp: [i32; 4], rt: (i32, i32), z: Option<(i32, i32)>) -> [i32; 4] {
+    let (zw, zh) = z.unwrap_or(rt);
+    [vp[0].max(0), vp[1].max(0), vp[0].saturating_add(vp[2]).min(rt.0).min(zw), vp[1].saturating_add(vp[3]).min(rt.1).min(zh)]
+}
+
 fn cmp(f: u32, a: f32, b: f32) -> bool {
     match f {
         1 => false,
@@ -1675,12 +1686,15 @@ impl Raster {
             return None;
         }
         let pal_of = |s: &Surf| with(|st| st.palettes.get(&s.palette).map(|p| Box::new(*p)));
-        let z = (d.rs[RS_ZENABLE] != 0).then(|| surf(rt.zbuf)).flatten().map(|z| {
+        let zs = (d.rs[RS_ZENABLE] != 0).then(|| surf(rt.zbuf)).flatten();
+        let z = zs.as_ref().map(|z| {
             let bytes = (z.bpp as usize / 8).max(2);
             let mask = if z.pf[2] != 0 { z.pf[2] } else if bytes == 2 { 0xffff } else { 0xff_ffff };
             (mem::slice_mut(z.bits, z.pitch * z.h as u32).as_mut_ptr(), z.pitch as usize, bytes, mask as f32)
         });
-        let vp = [d.vp[0].max(0), d.vp[1].max(0), (d.vp[0] + d.vp[2]).min(rt.w), (d.vp[1] + d.vp[3]).min(rt.h)];
+        // (a z-buffer smaller than the target, which AddAttachedSurface lets through: drawing
+        // stays inside it, as its rows past its end are other guest memory)
+        let vp = raster_box(d.vp, (rt.w, rt.h), zs.as_ref().map(|z| (z.w, z.h)));
         let mut stages = Vec::new();
         let mut ntc = 0;
         for i in 0..8 {
@@ -2284,6 +2298,10 @@ fn write_desc3(p: u32, size: u32, dev: usize, empty: bool) {
 fn desc3_size_ok(n: u32) -> bool {
     matches!(n, 172 | 204 | 252)
 }
+/// D3DFINDDEVICERESULT's sizes: dwSize, the GUID, two descriptions of one of desc3's sizes
+fn find_result_size_ok(n: u32) -> bool {
+    n >= 20 && (n - 20) % 2 == 0 && desc3_size_ok((n - 20) / 2)
+}
 
 /// EnumDevices(callback, context): the RGB (software: an empty hardware description) and HAL
 /// devices, callback(guid, description, name, hardware desc, software desc, context)
@@ -2318,7 +2336,9 @@ fn T_EnumDevices(c: &mut Ctx) -> u32 {
 /// (D3DFDS_GUID), else the HAL one; the result's guid and descriptions
 fn T_FindDevice(c: &mut Ctx) -> u32 {
     let (s, r) = (c.a(1), c.a(2));
-    if s == 0 || r == 0 || r32(r) < 4 + 16 + 2 * 172 {
+    // (only the three D3DFINDDEVICERESULT sizes, as Windows: a larger dwSize had the two
+    // descriptions zeroed and written past the structure)
+    if s == 0 || r == 0 || !find_result_size_ok(r32(r)) {
         return DDERR_INVALIDPARAMS;
     }
     let mut i = 1;
@@ -2804,8 +2824,8 @@ fn vp_release(v: u32) -> u32 {
         let Some(x) = d.vps.get_mut(&v) else { return 0 };
         x.refs = x.refs.saturating_sub(1);
         let n = x.refs;
-        if n == 0 {
-            d.vps.remove(&v);
+        if n == 0 && d.vps.remove(&v).is_some() {
+            crate::com::free_later(v);
         }
         n
     })
@@ -3080,8 +3100,8 @@ fn M_Release(c: &mut Ctx) -> u32 {
     let b = c.a(0);
     let n = r32(b + 8).saturating_sub(1);
     w32(b + 8, n);
-    if n == 0 {
-        d3d(|d| d.mats.remove(&b));
+    if n == 0 && d3d(|d| d.mats.remove(&b)).is_some() {
+        crate::com::free_later(b);
     }
     n
 }
@@ -3137,8 +3157,8 @@ fn L_QueryInterface(c: &mut Ctx) -> u32 {
 fn light_release(b: u32) -> u32 {
     let n = r32(b + 8).saturating_sub(1);
     w32(b + 8, n);
-    if n == 0 {
-        d3d(|d| d.lights3.remove(&b));
+    if n == 0 && d3d(|d| d.lights3.remove(&b)).is_some() {
+        crate::com::free_later(b);
     }
     n
 }
@@ -3957,5 +3977,63 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// Guest sizes and object blocks (review b05)
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    #[test]
+    fn find_device_takes_only_its_sizes() {
+        for n in [20 + 2 * 172, 20 + 2 * 204, 20 + 2 * 252] {
+            assert!(find_result_size_ok(n), "{n}");
+        }
+        for n in [0, 19, 20, 20 + 2 * 172 + 1, 20 + 2 * 172 + 2, 20 + 2 * 252 + 2, 4096, u32::MAX] {
+            assert!(!find_result_size_ok(n), "{n}");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(5000))]
+        /// Every pixel drawn is inside the viewport, the target and the z-buffer, and a z-buffer
+        /// the target's size changes nothing
+        #[test]
+        fn drawing_stays_inside_the_z_buffer(vp in proptest::array::uniform4(-100i32..3000), rw in 1i32..2048, rh in 1i32..2048, zw in 1i32..2048, zh in 1i32..2048) {
+            let b = raster_box(vp, (rw, rh), Some((zw, zh)));
+            prop_assert!(b[0] >= 0 && b[1] >= 0 && b[2] <= rw.min(zw) && b[3] <= rh.min(zh));
+            prop_assert!(b[0] >= vp[0] && b[1] >= vp[1] && b[2] <= vp[0] + vp[2] && b[3] <= vp[1] + vp[3]);
+            prop_assert_eq!(raster_box(vp, (rw, rh), Some((rw, rh))), raster_box(vp, (rw, rh), None));
+        }
+    }
+
+    /// A vertex buffer's block is given back (after com.rs's quarantine) with its vertices
+    #[test]
+    fn vertex_buffer_blocks_are_freed() {
+        let _g = enter();
+        let (desc, out) = (mem::heap_alloc(16, true), mem::heap_alloc(4, true));
+        w32(desc, 16);
+        w32(desc + 8, 0x2);
+        w32(desc + 12, 8);
+        assert_eq!(call(Q_CreateVertexBuffer, &[0, desc, out, 0]), D3D_OK);
+        let b = r32(out);
+        let m = d3d(|d| d.vbs.get(&b).unwrap().0);
+        assert_eq!(call(B_AddRef, &[b]), 2);
+        assert_eq!(call(B_Release, &[b]), 1);
+        assert_eq!(call(B_Release, &[b]), 0);
+        assert!(!mem::heap_owns(m));
+        // (it goes within the quarantine's length of later frees; its block may be handed out
+        // again right after)
+        let mut gone = false;
+        for _ in 0..=256 {
+            crate::com::free_later(mem::heap_alloc(64, true));
+            gone |= !mem::heap_owns(b);
+        }
+        assert!(gone);
+        mem::heap_free(desc);
+        mem::heap_free(out);
     }
 }

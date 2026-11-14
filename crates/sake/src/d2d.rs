@@ -698,9 +698,25 @@ fn CreateBitmap(c: &mut Ctx) -> u32 {
     if w == 0 || h == 0 || w > 16384 || h > 16384 {
         return 0x8007_0057; // E_INVALIDARG
     }
-    let px = (data != 0).then(|| mem::slice(data, pitch * (h - 1) + w * 4).to_vec());
-    mem::putp(out, new_image(w, h, px.as_deref().map(|p| (p, pitch)), alpha_ignored(props)));
+    let px = if data != 0 {
+        let Some(px) = pixels(data, pitch, w, h) else { return 0x8007_0057 };
+        Some(px)
+    } else {
+        None
+    };
+    mem::putp(out, new_image(w, h, px.map(|p| (p, pitch)), alpha_ignored(props)));
     0
+}
+
+/// The guest's pixel rows (w x h of 4 bytes, `pitch` apart) as one slice, read in place (no
+/// copy of a whole frame per upload); None when the pitch is less than a row or the rows are
+/// not readable memory (the size, from the guest's pitch, was u32 arithmetic that could wrap)
+pub fn pixels<'a>(data: u32, pitch: u32, w: u32, h: u32) -> Option<&'a [u8]> {
+    let len = pitch as u64 * (h as u64 - 1) + w as u64 * 4;
+    if h == 0 || (pitch as u64) < w as u64 * 4 || len > u32::MAX as u64 || mem::accessible(data, len as u32, false, false) < len as u32 {
+        return None;
+    }
+    Some(mem::slice(data, len as u32))
 }
 
 /// ID2D1DeviceContext::CreateBitmap (D2D1_BITMAP_PROPERTIES1): one made to be drawn into
@@ -720,7 +736,8 @@ fn CreateBitmap1(c: &mut Ctx) -> u32 {
     let Some(tex) = gpu2d::target_texture(w, h) else { return CreateBitmap(c) };
     if data != 0 {
         if let Some(gpu) = gpu2d::texture_gpu(tex) {
-            gpu2d::bitmap_write(gpu, (0, 0, w, h), mem::slice(data, pitch * (h - 1) + w * 4), pitch);
+            let Some(px) = pixels(data, pitch, w, h) else { return 0x8007_0057 };
+            gpu2d::bitmap_write(gpu, (0, 0, w, h), px, pitch);
         }
     } else {
         gpu2d::clear(tex, [0.0; 4]);
@@ -763,8 +780,8 @@ fn CopyFromMemory(c: &mut Ctx) -> u32 {
         return 0x8007_0057;
     }
     let (w, h) = (r - x, b - y);
-    let px = mem::slice(data, pitch * (h - 1) + w * 4).to_vec();
-    gpu2d::bitmap_write(im.gpu, (x, y, w, h), &px, pitch);
+    let Some(px) = pixels(data, pitch, w, h) else { return 0x8007_0057 };
+    gpu2d::bitmap_write(im.gpu, (x, y, w, h), px, pitch);
     0
 }
 
@@ -1174,8 +1191,10 @@ fn brush(dc: u32, b: u32) -> Paint {
         })
     })
     .unwrap_or_else(|| {
+        // (once: a stub brush is drawn with every frame)
+        static ONCE: std::sync::Once = std::sync::Once::new();
         if b != 0 {
-            eprintln!("sake: d2d brush {b:#x} is not one of ours");
+            ONCE.call_once(|| eprintln!("sake: d2d brush {b:#x} is not one of ours (drawn black; said once)"));
         }
         Paint::Solid([0.0, 0.0, 0.0, 1.0])
     })
@@ -1184,6 +1203,8 @@ fn brush(dc: u32, b: u32) -> Paint {
 fn CreateGradientStopCollection(c: &mut Ctx) -> u32 {
     // (this, stops, count, gamma, extend mode, out)
     let (p, n) = (c.a(1), c.a(2));
+    // (as many as the guest's memory holds: the count is the guest's)
+    let n = n.min(mem::accessible(p, n.saturating_mul(20), false, false) / 20);
     let stops: Vec<(f32, [f32; 4])> = (0..n).map(|i| {
         let q = p + 20 * i;
         (rf(q, 0), [rf(q, 1), rf(q, 2), rf(q, 3), rf(q, 4)])
@@ -1396,6 +1417,9 @@ fn draw_text(dc: u32, text: &[u16], fmt: &dwrite::Format, w: f32, h: f32, x: f32
     }
 }
 
+/// The most glyphs DrawGlyphRun draws of a run
+pub const MAX_RUN: u32 = 1 << 16;
+
 /// ID2D1RenderTarget::DrawGlyphRun (this, baseline origin, DWRITE_GLYPH_RUN *, brush,
 /// measuring mode) and ID2D1DeviceContext's (a glyph run description before the brush).
 fn DrawGlyphRun(c: &mut Ctx) -> u32 {
@@ -1408,7 +1432,8 @@ fn DrawGlyphRun(c: &mut Ctx) -> u32 {
     let ps = mem::ps();
     let face = dwrite::face_index(mem::rp(run));
     let em = f32::from_bits(r32(run + ps));
-    let n = r32(run + ps + 4);
+    // (the count is the guest's: a garbage one is not 4 G glyphs; no run of text is this long)
+    let n = r32(run + ps + 4).min(MAX_RUN);
     let (idx, adv, off) = (mem::rp(run + ps + 8), mem::rp(run + 2 * ps + 8), mem::rp(run + 3 * ps + 8));
     let mut pen = 0.0;
     let mut glyphs = Vec::with_capacity(n as usize);
@@ -1432,15 +1457,12 @@ fn draw_glyphs(dc: u32, face: usize, em: f32, glyphs: &[(u16, f32, f32)], b: u32
     for &(gi, gx0, gy0) in glyphs {
         let (px, py) = apply(xf, gx0, gy0);
         let (px, py) = (px.round() as i32, py.round() as i32);
-        font.index_glyph(gi, |gx, top, gw, gh, cov| {
-            let r = grow * scale / 2.0;
-            let (gx, top, gw, gh, cov) = if r > 0.0 {
-                let (w2, h2, d) = dilate(cov, gw, gh, r);
-                let k = r.ceil() as i32;
-                (gx - k, top + k, w2, h2, std::borrow::Cow::Owned(d))
-            } else {
-                (gx, top, gw, gh, std::borrow::Cow::Borrowed(cov))
-            };
+        font.index_glyph(gi, |gx, top, gw0, gh0, cov| {
+            let r = stroke_radius(grow * scale / 2.0);
+            // (the dilated size is known up front; the dilation itself only runs when the atlas
+            // does not have the glyph yet: it ran on every draw of every outlined glyph)
+            let k = r.ceil() as i32;
+            let (gx, top, gw, gh) = (gx - k, top + k, gw0 + 2 * k, gh0 + 2 * k);
             let (ox, oy) = (px + gx, py - top);
             let (x0, y0) = (ox.max(lim[0].ceil() as i32), oy.max(lim[1].ceil() as i32));
             let (x1, y1) = ((ox + gw).min(lim[2].floor() as i32), (oy + gh).min(lim[3].floor() as i32));
@@ -1448,7 +1470,7 @@ fn draw_glyphs(dc: u32, face: usize, em: f32, glyphs: &[(u16, f32, f32)], b: u32
                 return;
             }
             let key = font.index_key(gi) ^ (r.to_bits() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-            let at = room(dc, || gpu2d::glyph(key, gw as u32, gh as u32, || cov.to_vec()));
+            let at = room(dc, || gpu2d::glyph(key, gw as u32, gh as u32, || if r > 0.0 { dilate(cov, gw0, gh0, r).2 } else { cov.to_vec() }));
             let shape = [at[0] as f32 - ox as f32, at[1] as f32 - oy as f32, 0.0, 0.0];
             push(dc, gpu2d::GLYPH, [x0 as f32, y0 as f32, x1 as f32, y1 as f32], shape, [0.0; 4], &paint);
         });
@@ -1458,7 +1480,16 @@ fn draw_glyphs(dc: u32, face: usize, em: f32, glyphs: &[(u16, f32, f32)], b: u32
 /// A coverage bitmap grown by `r` pixels all round (a round pen): each pixel the most of its
 /// neighbours' coverage within `r`, fading over the last pixel. The bitmap gets ceil(r) more
 /// on each side.
+/// The widest a stroke dilates a glyph by, in pixels each side: a guest stroke width (1e9, inf)
+/// times the transform's scale made a kernel of billions of pixels (an allocation abort or
+/// minutes of work)
+pub const MAX_STROKE_RADIUS: f32 = 64.0;
+/// A stroke's dilation radius, NaN and negatives as none, clamped to MAX_STROKE_RADIUS
+pub fn stroke_radius(r: f32) -> f32 {
+    if r > 0.0 { r.min(MAX_STROKE_RADIUS) } else { 0.0 }
+}
 pub fn dilate(cov: &[u8], w: i32, h: i32, r: f32) -> (i32, i32, Vec<u8>) {
+    let r = stroke_radius(r);
     let k = r.ceil() as i32;
     let (w2, h2) = (w + 2 * k, h + 2 * k);
     let mut out = vec![0u8; (w2 * h2) as usize];
@@ -1908,6 +1939,51 @@ mod geom_tests {
             let (x2, y2) = ap(b, x1, y1);
             let (x3, y3) = ap(mul(a, b), x, y);
             proptest::prop_assert!((x2 - x3).abs() < 1e-2 && (y2 - y3).abs() < 1e-2);
+        }
+    }
+}
+
+/// Guest-sized strokes and pixel rows (review b05)
+#[cfg(test)]
+mod guest_size_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// DrawGeometry(width 1e9) / inf / NaN: the kernel is at most 2 * 64 + 1 wide, at once
+    #[test]
+    fn huge_strokes_dilate_by_the_cap() {
+        for r in [1e9f32, f32::INFINITY, f32::MAX, 64.5, 300.0] {
+            let t = std::time::Instant::now();
+            let (w, h, d) = dilate(&[255; 4], 2, 2, r);
+            assert_eq!((w, h), (2 + 128, 2 + 128), "{r}");
+            assert_eq!(d.len(), (w * h) as usize);
+            assert!(t.elapsed().as_secs() < 2);
+        }
+        for r in [f32::NAN, -1.0, 0.0, f32::NEG_INFINITY] {
+            assert_eq!(stroke_radius(r), 0.0);
+            assert_eq!(dilate(&[7; 4], 2, 2, r), (2, 2, vec![7; 4]));
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4000))]
+        /// The rows' slice is exactly pitch * (h - 1) + w * 4 bytes, counted without wrapping;
+        /// a pitch short of a row, an empty height or a size past 4 GB is refused
+        #[test]
+        fn pixel_rows_are_sized_without_wrapping(w in 1u32..20000, h in 0u32..20000, pitch in any::<u32>(), small in any::<bool>()) {
+            let _g = crate::test_guest::enter();
+            let pitch = if small { pitch % (w * 4 + 64) } else { pitch };
+            let data = mem::heap_alloc(64, true);
+            let len = pitch as u64 * (h.max(1) as u64 - 1) + w as u64 * 4;
+            match pixels(data, pitch, w, h) {
+                Some(s) => {
+                    prop_assert!(h > 0 && pitch >= w * 4);
+                    prop_assert_eq!(s.len() as u64, len);
+                    prop_assert!(len <= 64);
+                }
+                None => prop_assert!(h == 0 || (pitch as u64) < w as u64 * 4 || len > 64),
+            }
+            mem::heap_free(data);
         }
     }
 }

@@ -660,10 +660,14 @@ fn S_AddAttachedSurface(c: &mut Ctx) -> u32 {
     let Some((x, _)) = sid(c.a(1)) else { return DDERR_INVALIDPARAMS };
     let (Some(s), Some(xs)) = (surf(id), surf(x)) else { return DDERR_INVALIDPARAMS };
     if xs.caps & CAPS_ZBUFFER != 0 {
-        with(|st| {
+        let old = with(|st| {
             st.surfs.get_mut(&x).map(|v| v.refs += 1);
-            st.surfs.get_mut(&id).map(|v| v.zbuf = x)
+            st.surfs.get_mut(&id).map_or(0, |v| std::mem::replace(&mut v.zbuf, x))
         });
+        // (the z-buffer it replaces is let go: its reference was kept for good)
+        if old != 0 && old != x {
+            release_surface(c, old);
+        }
         return DD_OK;
     }
     if x == id || xs.implicit {

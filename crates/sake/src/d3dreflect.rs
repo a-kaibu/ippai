@@ -98,9 +98,57 @@ enum Obj {
     Cb(CbR),
     Var(VarR, u32),
     Type(TypeR),
+    /// a slot freed with its reflection (or an id that was never one: a stale or foreign
+    /// `this` reads as this, and its methods fail, instead of an index panic)
+    Dead,
 }
 
-static OBJS: Mutex<Vec<Obj>> = Mutex::new(Vec::new());
+/// The objects by id (the id is in the guest object at +12); a reflection's are freed with it
+struct Objs {
+    v: Vec<Option<Obj>>,
+    free: Vec<usize>,
+}
+static DEAD: Obj = Obj::Dead;
+impl std::ops::Index<usize> for Objs {
+    type Output = Obj;
+    fn index(&self, i: usize) -> &Obj {
+        self.v.get(i).and_then(Option::as_ref).unwrap_or(&DEAD)
+    }
+}
+impl Objs {
+    fn add(&mut self, o: Obj) -> usize {
+        match self.free.pop() {
+            Some(i) => {
+                self.v[i] = Some(o);
+                i
+            }
+            None => {
+                self.v.push(Some(o));
+                self.v.len() - 1
+            }
+        }
+    }
+    fn get_mut(&mut self, i: usize) -> Option<&mut Obj> {
+        self.v.get_mut(i).and_then(Option::as_mut)
+    }
+    fn take(&mut self, i: usize) -> Option<Obj> {
+        let o = self.v.get_mut(i)?.take()?;
+        self.free.push(i);
+        Some(o)
+    }
+    #[cfg(test)]
+    fn live(&self) -> usize {
+        self.v.iter().filter(|o| o.is_some()).count()
+    }
+}
+
+static OBJS: Mutex<Objs> = Mutex::new(Objs { v: Vec::new(), free: Vec::new() });
+
+/// The most type objects one reflection makes (members of members, each its own object) and
+/// how deep it follows them: a type record whose member is itself recursed until the host
+/// stack overflowed, a wide deep one made 256^depth objects
+const MAX_TYPES: u32 = 4096;
+const MAX_TYPE_DEPTH: u32 = 16;
 
 fn rd(b: &[u8], at: usize) -> u32 {
     b.get(at..at + 4).map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
@@ -189,10 +237,7 @@ fn vt(which: u8) -> u32 {
 
 /// A guest object {vtable, refs, index}.
 fn new_obj(which: u8, o: Obj) -> u32 {
-    let mut g = OBJS.lock().unwrap();
-    g.push(o);
-    let id = g.len() as u32 - 1;
-    drop(g);
+    let id = OBJS.lock().unwrap().add(o) as u32;
     let p = mem::heap_alloc(24, true);
     mem::wp(p, vt(which));
     w32(p + 8, 1);
@@ -230,7 +275,8 @@ fn put(at: u32, fields: &[(bool, u32)]) {
     }
 }
 
-fn parse_type(b: &[u8], at: usize, sm5: bool, fl: u8) -> u32 {
+fn parse_type(b: &[u8], at: usize, sm5: bool, fl: u8, depth: u32, budget: &mut u32) -> u32 {
+    *budget = budget.saturating_sub(1);
     let mut t = TypeR {
         class: rd16(b, at),
         ty: rd16(b, at + 2),
@@ -248,11 +294,14 @@ fn parse_type(b: &[u8], at: usize, sm5: bool, fl: u8) -> u32 {
         }
     }
     for i in 0..nm.min(256) {
+        if depth >= MAX_TYPE_DEPTH || *budget == 0 {
+            break;
+        }
         let m = moff + 12 * i;
         let name = gstr(&cstr_at(b, rd(b, m) as usize));
-        let mt = parse_type(b, rd(b, m + 4) as usize, sm5, fl);
+        let mt = parse_type(b, rd(b, m + 4) as usize, sm5, fl, depth + 1, budget);
         let off = rd(b, m + 8);
-        if let Obj::Type(x) = &mut OBJS.lock().unwrap()[r32(mt + 12) as usize] {
+        if let Some(Obj::Type(x)) = OBJS.lock().unwrap().get_mut(r32(mt + 12) as usize) {
             x.offset = off;
         }
         t.members.push((name, mt));
@@ -318,6 +367,7 @@ fn parse(code: &[u8], fl: u8) -> Option<Refl> {
         r.creator = gstr(&cstr_at(b, rd(b, 24) as usize));
         let sm5 = (rd(b, 16) & 0xff00) >= 0x500;
         let vsize = if sm5 { 40 } else { 24 };
+        let mut budget = MAX_TYPES;
         for (name, vals, space, _uid) in bind_entries(b) {
             r.binds.push(BindR { name_p: gstr(&name), name, vals, space });
         }
@@ -331,11 +381,13 @@ fn parse(code: &[u8], fl: u8) -> Option<Refl> {
             for k in 0..nv.min(1024) {
                 let va = voff + vsize * k;
                 let vname = cstr_at(b, rd(b, va) as usize);
-                let ty = parse_type(b, rd(b, va + 16) as usize, sm5, fl);
+                let ty = parse_type(b, rd(b, va + 16) as usize, sm5, fl, 0, &mut budget);
                 let v = VarR { name_p: gstr(&vname), name: vname, offset: rd(b, va + 4), size: rd(b, va + 8), flags: rd(b, va + 12), ty };
                 cb.vars.push(new_obj(2 + fl, Obj::Var(v, cb_obj)));
             }
-            OBJS.lock().unwrap()[r32(cb_obj + 12) as usize] = Obj::Cb(cb);
+            if let Some(o) = OBJS.lock().unwrap().get_mut(r32(cb_obj + 12) as usize) {
+                *o = Obj::Cb(cb);
+            }
             r.cbs.push(cb_obj);
         }
     }
@@ -385,9 +437,62 @@ fn refl_add_ref(c: &mut Ctx) -> u32 {
     n
 }
 fn refl_release(c: &mut Ctx) -> u32 {
-    let n = r32(c.a(0) + 8).saturating_sub(1);
-    w32(c.a(0) + 8, n);
+    let o = c.a(0);
+    let before = r32(o + 8);
+    let n = before.saturating_sub(1);
+    w32(o + 8, n);
+    if before == 1 && matches!(OBJS.lock().unwrap()[id(c)], Obj::Refl(_)) {
+        free_tree(o);
+    }
     n
+}
+
+/// Frees a reflection with everything only it reaches: its constant buffers, their variables,
+/// their types (members of members), their objects and the guest strings they hand out (all
+/// stayed for the session: an engine reflecting each shader it makes grew them for good).
+/// Object blocks and strings go through com.rs's quarantine, as a caller may still read a
+/// name it was given just before.
+fn free_tree(root: u32) {
+    let mut todo = vec![root];
+    let mut strs = vec![];
+    let mut blocks = vec![];
+    {
+        let mut g = OBJS.lock().unwrap();
+        while let Some(o) = todo.pop() {
+            if o == 0 || blocks.contains(&o) {
+                continue;
+            }
+            let Some(obj) = g.take(r32(o + 12) as usize) else { continue };
+            blocks.push(o);
+            match obj {
+                Obj::Refl(r) => {
+                    strs.push(r.creator);
+                    strs.extend(r.binds.iter().map(|b| b.name_p));
+                    strs.extend(r.ins.iter().chain(&r.outs).map(|s| s.name_p));
+                    todo.extend(r.cbs);
+                }
+                Obj::Cb(cb) => {
+                    strs.push(cb.name_p);
+                    todo.extend(cb.vars);
+                }
+                Obj::Var(v, _) => {
+                    strs.push(v.name_p);
+                    todo.push(v.ty);
+                }
+                Obj::Type(t) => {
+                    strs.push(t.name);
+                    for (name, mt) in t.members {
+                        strs.push(name);
+                        todo.push(mt);
+                    }
+                }
+                Obj::Dead => {}
+            }
+        }
+    }
+    for p in strs.into_iter().filter(|&p| p != 0).chain(blocks) {
+        crate::com::free_later(p);
+    }
 }
 
 fn refl_desc(c: &mut Ctx) -> u32 {
@@ -847,4 +952,79 @@ mod tests {
         }
     }
 
+}
+
+/// Reflection lifetimes and hostile type records (review b05)
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+
+    fn compiled() -> Vec<u8> {
+        let src = "struct In { float a; float2 b; }; struct L { float3 dir; float power; float4 color[2]; In inner; };\n\
+                   cbuffer S { L light; float4 more; };\n\
+                   float4 main() : SV_Target { return light.color[1] * light.power + light.inner.b.x + more; }";
+        let mut inc = |_: &str, _: bool| None;
+        hlslc::compile(src, &[], &mut inc, "main", "ps_5_0", 0).unwrap()
+    }
+    /// The byte offset of chunk `tag`'s data in a container
+    fn chunk_at(code: &[u8], tag: &[u8; 4]) -> usize {
+        let n = rd(code, 28) as usize;
+        (0..n).map(|i| rd(code, 32 + 4 * i) as usize).find(|&o| &code[o..o + 4] == tag).unwrap() + 8
+    }
+
+    /// A reflection's last Release frees its objects (constant buffers, variables, types), so
+    /// reflecting shaders over and over does not grow the table
+    #[test]
+    fn released_reflections_leave_nothing() {
+        let _g = enter();
+        let code = compiled();
+        let out = mem::heap_alloc(8, true);
+        let before = OBJS.lock().unwrap().live();
+        for _ in 0..20 {
+            assert_eq!(reflect(&code, 0, out), 0);
+            let r = r32(out);
+            assert!(OBJS.lock().unwrap().live() > before + 4);
+            assert_eq!(call(refl_add_ref, &[r]), 2);
+            assert_eq!(call(refl_release, &[r]), 1);
+            assert_eq!(call(refl_release, &[r]), 0);
+            assert_eq!(OBJS.lock().unwrap().live(), before);
+        }
+        mem::heap_free(out);
+    }
+
+    /// A struct member whose type is the struct itself: no recursion past the depth limit,
+    /// no more than MAX_TYPES objects; a method on a freed or foreign object fails, no panic
+    #[test]
+    fn self_referencing_types_stop() {
+        let _g = enter();
+        let mut code = compiled();
+        let r = chunk_at(&code, b"RDEF");
+        let cb = r + rd(&code[r..], 4) as usize;
+        let var = r + rd(&code[r..], cb - r + 8) as usize;
+        let t = rd(&code[r..], var - r + 16) as usize;
+        let m = rd(&code[r..], t + 12) as usize;
+        // every member of L is L
+        for i in 0..4 {
+            code[r + m + 12 * i + 4..r + m + 12 * i + 8].copy_from_slice(&(t as u32).to_le_bytes());
+        }
+        let out = mem::heap_alloc(8, true);
+        let before = OBJS.lock().unwrap().live();
+        let t0 = std::time::Instant::now();
+        assert_eq!(reflect(&code, 0, out), 0);
+        assert!(t0.elapsed().as_secs() < 5);
+        let made = OBJS.lock().unwrap().live() - before;
+        assert!(made <= MAX_TYPES as usize + 16, "{made} objects");
+        let refl = r32(out);
+        assert_eq!(call(refl_release, &[refl]), 0);
+        assert_eq!(OBJS.lock().unwrap().live(), before);
+        // (the freed object's id now names nothing: its methods answer E_FAIL / nothing)
+        let fake = mem::heap_alloc(24, true);
+        w32(fake + 12, 0x00ff_ffff);
+        let desc = mem::heap_alloc(256, true);
+        let _ = call(refl_desc, &[fake, desc]);
+        mem::heap_free(fake);
+        mem::heap_free(desc);
+        mem::heap_free(out);
+    }
 }
