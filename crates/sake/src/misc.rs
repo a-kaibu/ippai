@@ -5166,7 +5166,7 @@ fn wts_init() {
     let outs: [(Handler, &[&str]); 3] = [
         (|c| not_made(c, 0), &["WMCreateEditor", "WMCreateProfileManager", "WMCreateIndexer", "WMCreateWriterFileSink", "WMCreateWriterNetworkSink", "WMCreateWriterPushSink"]),
         (|c| not_made(c, 1), &["WMCreateWriter", "WMCreateBackupRestorer"]),
-        (|c| not_made(c, 2), &["WMCreateReader"]),
+        (|c| not_made(c, 2), &[]),
     ];
     for (f, names) in outs {
         for n in names {

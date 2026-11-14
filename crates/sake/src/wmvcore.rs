@@ -314,6 +314,8 @@ impl Reader {
 struct Obj {
     refs: u32,
     r: Arc<Mutex<Reader>>,
+    /// an async reader's (WMCreateReader) delivery state
+    a: Option<asyncr::Async>,
 }
 
 static READERS: Mutex<Option<HashMap<u32, Obj>>> = Mutex::new(None);
@@ -322,7 +324,11 @@ static READERS: Mutex<Option<HashMap<u32, Obj>>> = Mutex::new(None);
 const W_SYNC: u32 = 0;
 const W_PROFILE: u32 = 1;
 const W_HEADER: u32 = 2;
-const WORDS: u32 = 3;
+/// (an async reader's IWMReaderAdvanced2; nothing in a sync reader's)
+const W_ADV: u32 = 3;
+/// (an async reader's IReferenceClock)
+const W_CLOCK: u32 = 4;
+const WORDS: u32 = 5;
 
 fn table<R>(f: impl FnOnce(&mut HashMap<u32, Obj>) -> R) -> R {
     f(READERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new))
@@ -517,7 +523,7 @@ pub fn new_sync_reader() -> u32 {
     wp(b + ps() * W_PROFILE, v.profile);
     wp(b + ps() * W_HEADER, v.header);
     let r = Reader { r: None, stream: 0, outputs: Vec::new(), pending: VecDeque::new(), range: (0, 0), ended: false };
-    table(|m| m.insert(b, Obj { refs: 1, r: Arc::new(Mutex::new(r)) }));
+    table(|m| m.insert(b, Obj { refs: 1, r: Arc::new(Mutex::new(r)), a: None }));
     b
 }
 
@@ -528,13 +534,23 @@ fn qi(c: &mut Ctx) -> u32 {
     }
     let Some(b) = block(this) else { return E_NOINTERFACE };
     let want = guid_at(riid).unwrap_or([0xff; 16]);
-    let w = if [IID_IUNKNOWN, IID_SYNC_READER, IID_SYNC_READER2].contains(&want) {
+    let asy = table(|m| m.get(&b).is_some_and(|o| o.a.is_some()));
+    let w = if asy && [IID_IUNKNOWN, asyncr::IID_READER].contains(&want) {
+        W_SYNC
+    } else if asy && asyncr::IID_ADVANCED.contains(&want) {
+        W_ADV
+    } else if asy && want == asyncr::IID_REFERENCE_CLOCK {
+        W_CLOCK
+    } else if !asy && [IID_IUNKNOWN, IID_SYNC_READER, IID_SYNC_READER2].contains(&want) {
         W_SYNC
     } else if [IID_PROFILE, IID_PROFILE2, IID_PROFILE3].contains(&want) {
         W_PROFILE
     } else if [IID_HEADER_INFO, IID_HEADER_INFO2, IID_HEADER_INFO3].contains(&want) {
         W_HEADER
     } else {
+        if crate::env_on!("SAKE_TRACE_COM") {
+            eprintln!("sake: wmvcore reader QueryInterface {:02x?}: no", want);
+        }
         putp(out, 0);
         return E_NOINTERFACE;
     };
@@ -667,11 +683,21 @@ fn sr_set_range(c: &mut Ctx) -> u32 {
     let (start, dur) = (q(c, 1, 1), q(c, 3, 2));
     let mut r = lock(&rr);
     let r = &mut *r;
-    let Some(a) = r.r.as_mut() else { return NS_E_INVALID_REQUEST };
+    if r.r.is_none() {
+        return NS_E_INVALID_REQUEST;
+    }
     if (dur as i64) < 0 {
         return E_INVALIDARG;
     }
-    with_ctx(c, || a.seek(start));
+    seek(c, r, start, dur);
+    0
+}
+
+/// Reads from `start` on, `dur` long (0: to the end).
+fn seek(c: &mut Ctx, r: &mut Reader, start: u64, dur: u64) {
+    if let Some(a) = r.r.as_mut() {
+        with_ctx(c, || a.seek(start));
+    }
     r.pending.clear();
     r.range = (start, dur);
     r.ended = false;
@@ -682,7 +708,6 @@ fn sr_set_range(c: &mut Ctx) -> u32 {
             d.flush();
         }
     }
-    0
 }
 
 /// SetRangeByFrame(WORD stream, QWORD frame, LONGLONG frames): by the stream's frame rate
@@ -1716,7 +1741,18 @@ pub fn init() {
         putp(out, new_sync_reader());
         0
     });
+    // WMCreateReader(IUnknown *cert, DWORD rights, IWMReader **)
+    implement("wmvcore", "WMCreateReader", |c| {
+        let out = c.a(2);
+        if out == 0 {
+            return E_INVALIDARG;
+        }
+        putp(out, asyncr::new_reader());
+        0
+    });
 }
+
+mod asyncr;
 
 #[cfg(test)]
 mod tests;

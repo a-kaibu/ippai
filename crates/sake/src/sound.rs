@@ -795,7 +795,7 @@ fn spawn_mixer(id: i32) {
                 kura::snap::register("dsound mixer", false, 0);
                 let mut out = vec![0f32; STEP * 2];
                 let stats = crate::env_on!("SAKE_MIX_STATS");
-                let (mut t_mix, mut t_q, mut t_w, mut t_all, mut n) = (0f64, 0f64, 0f64, std::time::Instant::now(), 0);
+                let (mut t_mix, mut t_q, mut t_w, mut t_all, mut n, mut peak) = (0f64, 0f64, 0f64, std::time::Instant::now(), 0, 0f32);
                 // (a condvar's timed wait, not thread::sleep: in the browser emscripten's sleep
                 // cost the thread about 0.15 cores)
                 let (lock, cv) = (Mutex::new(()), std::sync::Condvar::new());
@@ -818,14 +818,17 @@ fn spawn_mixer(id: i32) {
                         }
                         t_mix += t0.elapsed().as_secs_f64();
                         let t0 = std::time::Instant::now();
+                        if stats {
+                            peak = out.iter().fold(peak, |m, x| m.max(x.abs()));
+                        }
                         kura::audio::write(id, &out);
                         t_w += t0.elapsed().as_secs_f64();
                         n += 1;
                     }
                     if stats && t_all.elapsed().as_secs() >= 5 {
                         let s = t_all.elapsed().as_secs_f64();
-                        eprintln!("sake mixer: {n} chunks/{s:.1}s, mix {:.1} ms/s, queued {:.1} ms/s, write {:.1} ms/s", t_mix * 1e3 / s, t_q * 1e3 / s, t_w * 1e3 / s);
-                        (t_mix, t_q, t_w, t_all, n) = (0.0, 0.0, 0.0, std::time::Instant::now(), 0);
+                        eprintln!("sake mixer: {n} chunks/{s:.1}s, mix {:.1} ms/s, queued {:.1} ms/s, write {:.1} ms/s, peak {peak:.3}", t_mix * 1e3 / s, t_q * 1e3 / s, t_w * 1e3 / s);
+                        (t_mix, t_q, t_w, t_all, n, peak) = (0.0, 0.0, 0.0, std::time::Instant::now(), 0, 0.0);
                     }
                 }
             })
