@@ -1352,7 +1352,7 @@ fn insert(hash: &mut [[u32; 2]], eip: u32, idx: u32) -> bool {
 
 /// Compiles `module` and points the hash table at its region's blocks.
 fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)], code: &[(u32, u32)]) -> bool {
-    if let Some(dir) = std::env::var_os("IPPAI_JIT_DUMP") {
+    if let Some(dir) = jit_dump() {
         let name = format!("{:08x}-{}.wasm", roots[0], roots.len());
         let _ = std::fs::write(std::path::Path::new(&dir).join(name), bytes);
     }
@@ -1744,11 +1744,53 @@ fn take_acks(book: &mut SaveBook) {
     }
 }
 
+/// Whether `every` has passed since `last` (and if so, `last` is now).
+fn due(last: &mut Option<Instant>, now: Instant, every: Duration) -> bool {
+    if last.is_some_and(|t| now.saturating_duration_since(t) < every) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
+#[cfg(test)]
+mod due_tests {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        /// Over any increasing times: true at the first, then exactly at the first time at
+        /// least `every` after the last true.
+        #[test]
+        fn once_per_interval(steps in proptest::collection::vec(0u64..3000, 1..100), every in 1u64..2000) {
+            let t0 = Instant::now();
+            let (mut last, mut at, mut prev): (Option<Instant>, u64, Option<u64>) = (None, 0, None);
+            for d in steps {
+                at += d;
+                let got = due(&mut last, t0 + Duration::from_millis(at), Duration::from_millis(every));
+                let want = prev.is_none_or(|p| at - p >= every);
+                prop_assert_eq!(got, want);
+                if want {
+                    prev = Some(at);
+                }
+            }
+        }
+    }
+}
+
+/// IPPAI_JIT_DUMP, read once (it was read from the environment at every module load).
+fn jit_dump() -> Option<&'static std::ffi::OsString> {
+    static DIR: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| std::env::var_os("IPPAI_JIT_DUMP")).as_ref()
+}
+
 fn maybe_save() {
     const SAVE_AFTER: Duration = Duration::from_secs(20);
     const SAVE_MIN: usize = 32;
     static URL: std::sync::OnceLock<Option<std::ffi::CString>> = std::sync::OnceLock::new();
     static SAVE: Mutex<(Option<Instant>, Option<Instant>, Option<SaveBook>)> = Mutex::new((None, None, None));
+    // (looked at once a second at most: called after every compile, each look walked all of
+    // SHARED and copied the chunk list, on the game's thread, for the whole long tail of a run)
+    static LOOKED: Mutex<Option<Instant>> = Mutex::new(None);
     let Some(url) = URL.get_or_init(|| std::env::var("IPPAI_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
         return;
     };
@@ -1756,9 +1798,12 @@ fn maybe_save() {
         return; // the counters' addresses are only this run's (and saved regions are loaded
                 // only without the MXCSR flag checks, find_saved)
     }
+    let now = Instant::now();
+    if !due(&mut LOOKED.lock().unwrap_or_else(|e| e.into_inner()), now, Duration::from_secs(1)) {
+        return;
+    }
     let Ok(mut guard) = SAVE.try_lock() else { return };
     let g = &mut *guard;
-    let now = Instant::now();
     let start = *g.0.get_or_insert(now);
     let book = g.2.get_or_insert_with(SaveBook::default);
     take_acks(book);
@@ -2662,7 +2707,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
         eprintln!("vnjit fn {eip:#x} build {build}: {} instructions", region.instructions);
     }
     let bytes = m.finish();
-    if let Some(dir) = std::env::var_os("IPPAI_JIT_DUMP") {
+    if let Some(dir) = jit_dump() {
         let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
     }
     if crate::env_on!("IPPAI_JIT_TIME") {
