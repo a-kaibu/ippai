@@ -5,7 +5,7 @@ usage: gen-specs.py <wine-src> > specs.txt"""
 import re, sys, os
 DLLS = """kernel32 kernelbase ntdll user32 gdi32 advapi32 ole32 oleaut32 comctl32 comdlg32 shell32 shlwapi version
 winmm imm32 dsound ddraw msvcrt msvcp60 ws2_32 wsock32 d3d8 d3d9 dinput dinput8 msacm32 msvfw32 avifil32
-quartz uxtheme msimg32 winspool.drv rpcrt4 setupapi mpr wininet urlmon dwmapi psapi powrprof crypt32 secur32 hid
+quartz uxtheme msimg32 winspool.drv rpcrt4 setupapi cfgmgr32 mpr wininet urlmon dwmapi psapi powrprof crypt32 secur32 hid
 iphlpapi userenv winhttp gdiplus usp10 dbghelp xinput1_3 vorbisfile
 oleacc imagehlp shfolder compstui uiautomationcore atl cabinet propsys mfreadwrite msi
 xaudio2_7 xaudio2_8 xaudio2_9 x3daudio1_7 olepro32 windowscodecs crtdll glu32 dhcpcsvc dnsapi ncrypt tbs dxva2

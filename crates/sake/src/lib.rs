@@ -146,6 +146,7 @@ pub mod gl;
 pub mod glu;
 pub mod cryptstr;
 pub mod diskspace;
+pub mod cfgmgr;
 pub mod resupdate;
 pub mod shelllink;
 mod webbrowser;
@@ -797,6 +798,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     smalldlls::init();
     cryptstr::init();
     diskspace::init();
+    cfgmgr::init();
     resupdate::init();
     icu::init();
     eventlog::init();
