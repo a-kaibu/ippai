@@ -683,6 +683,8 @@ fn sm_times(c: &mut Ctx) -> u32 {
 }
 
 /// `rgb` (0x00rrggbb) as a pixel of a format with these red, green and blue masks.
+/// (the tests' oracle for `Packer`)
+#[cfg(test)]
 pub fn pack(rgb: u32, masks: [u32; 3]) -> u32 {
     let mut v = 0;
     for (i, &m) in masks.iter().enumerate() {
