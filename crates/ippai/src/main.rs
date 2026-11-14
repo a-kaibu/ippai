@@ -197,8 +197,8 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
             StorageCmd::Merge { backup } => {
                 let m = storage.merge(backup, store).await?;
                 println!(
-                    "merged: {} objects added, {} catalog files taken, {} kept as here, {} the same; {} saves, {} records",
-                    m.added, m.replaced, m.kept, m.same, m.saves, m.records
+                    "merged: {} objects added, {} catalog files taken, {} kept as here, {} the same; {} saves, {} records, {} pack spans",
+                    m.added, m.replaced, m.kept, m.same, m.saves, m.records, m.packs
                 );
                 Ok(())
             }

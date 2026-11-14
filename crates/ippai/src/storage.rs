@@ -728,9 +728,33 @@ pub(crate) mod gc_tests {
         let a_chunks: Vec<String> = s.db.connect().unwrap().prepare("SELECT logical FROM objects WHERE logical LIKE 'chunks/%'").unwrap()
             .query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         let before: Vec<String> = a_chunks.iter().map(|l| server_a_chunk(l)).collect();
+        // (the other machine packed both games: a's chunks are other objects here, b's the same)
+        let pc_chunks: Vec<String> = pc_db.connect().unwrap().prepare("SELECT logical FROM objects WHERE logical LIKE 'chunks/%' ORDER BY logical").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert!(pc.pack_objects("ab", &pc_chunks, 1).await.unwrap().packs >= 2);
         let backup = pc.backup().await.unwrap();
 
         let m = s.merge(backup, &server_store).await.unwrap();
+        // (spans taken for objects the server names as the other did, none for a's own copies)
+        {
+            let c = s.db.connect().unwrap();
+            let taken: i64 = c.query_row("SELECT COUNT(*) FROM packs", [], |r| r.get(0)).unwrap();
+            assert_eq!(taken as usize, m.packs);
+            let same: i64 = c.query_row("SELECT COUNT(*) FROM packs p JOIN objects o USING(logical) WHERE instr(o.envelope,p.object) > 0", [], |r| r.get(0)).unwrap();
+            assert_eq!(same, taken, "every span taken is of the object named here");
+            let pc_c = pc_db.connect().unwrap();
+            let same_objects = pc_chunks.iter().filter(|l| {
+                let theirs: String = pc_c.query_row("SELECT envelope FROM objects WHERE logical=?", [l], |r| r.get(0)).unwrap();
+                let ours: Option<String> = c.query_row("SELECT envelope FROM objects WHERE logical=?", [l], |r| r.get(0)).optional().unwrap();
+                ours.is_some_and(|o| serde_json::from_str::<Envelope>(&o).unwrap().object == serde_json::from_str::<Envelope>(&theirs).unwrap().object)
+            }).count();
+            assert_eq!(m.packs, same_objects);
+            assert!(m.packs > 0 && m.packs < pc_chunks.len(), "{m:?}");
+            for l in a_chunks.iter() {
+                assert!(s.direct(l, 60).await.unwrap().unwrap().pack.is_none(), "a's chunk {l}: the server's own object, in no pack");
+            }
+        }
+        check_packs(&f, &s);
         assert!(m.added > 0 && m.replaced >= 2 && m.kept >= a_chunks.len(), "{m:?}");
         assert_eq!((m.saves, m.records), (1, 1), "{m:?}");
         assert!(server_store.join("games/b.json").exists() && server_store.join("trees/b.tsv").exists());
@@ -753,9 +777,14 @@ pub(crate) mod gc_tests {
             let snapshot: String = pc_db.connect().unwrap().query_row("SELECT snapshot FROM backups", [], |r| r.get(0)).unwrap();
             [backup.to_string(), snapshot].into()
         };
-        assert_eq!(names(&f), named(&s).union(&pc_backup).cloned().collect(), "the bucket: what the server names, and the other's backup");
+        let packs: std::collections::BTreeSet<String> = s.db.connect().unwrap().prepare("SELECT DISTINCT pack FROM packs").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let mut want: std::collections::BTreeSet<String> = named(&s).union(&pc_backup).cloned().collect();
+        want.extend(packs);
+        assert_eq!(names(&f), want, "the bucket: what the server names, its packs, and the other's backup");
+        check_packs(&f, &s);
         let again = s.merge(backup, &server_store).await.unwrap();
-        assert_eq!(again.added, 0, "{again:?}");
+        assert_eq!((again.added, again.packs), (0, 0), "{again:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1534,6 +1563,8 @@ pub struct Merged {
     pub saves: usize,
     /// profiles, play sessions and game settings added
     pub records: usize,
+    /// delivery pack spans taken: the other's packs of objects this store names as well
+    pub packs: usize,
 }
 
 /// What [`Storage::gc`] did.
@@ -1917,6 +1948,7 @@ impl Storage {
     /// game again packs only what was added. A pack whose objects all went to newer packs is
     /// retired ([`Storage::gc`] deletes it).
     /// Each pack is marked as `game`'s ([`Storage::usage`], [`Storage::unpack`]).
+    #[cfg(test)]
     pub async fn pack_objects(&self, game: &str, logicals: &[String], target: usize) -> Result<Packed> {
         self.pack_objects_paced(game, logicals, target, None).await
     }
@@ -2343,6 +2375,31 @@ impl Storage {
                      ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data WHERE excluded.revision>main.saves.revision",
                     [],
                 )?;
+            }
+            // (packs made elsewhere, of the objects named here: taken; a pack no row names then,
+            // here or the other's, is retired)
+            if has("packs")? {
+                let ids = |q: &str| -> rusqlite::Result<std::collections::HashSet<String>> {
+                    let mut q = tx.prepare(q)?;
+                    let r = q.query_map([], |r| r.get(0))?.collect();
+                    r
+                };
+                let mut before = ids("SELECT DISTINCT pack FROM main.packs")?;
+                before.extend(ids("SELECT DISTINCT pack FROM other.packs")?);
+                out.packs = tx.execute(
+                    "INSERT INTO main.packs(logical,object,pack,offset,len) SELECT p.logical,p.object,p.pack,p.offset,p.len FROM other.packs p JOIN main.objects m ON m.logical=p.logical
+                     WHERE instr(m.envelope,p.object) > 0 AND NOT EXISTS(SELECT 1 FROM main.packs q WHERE q.logical=p.logical AND q.object=p.object)
+                     ON CONFLICT(logical) DO UPDATE SET object=excluded.object,pack=excluded.pack,offset=excluded.offset,len=excluded.len",
+                    [],
+                )?;
+                if has("pack_games")? {
+                    tx.execute("INSERT OR IGNORE INTO main.pack_games(pack,game,made_ms) SELECT pack,game,made_ms FROM other.pack_games WHERE pack IN (SELECT pack FROM main.packs)", [])?;
+                }
+                let now = ids("SELECT DISTINCT pack FROM main.packs")?;
+                for p in before.difference(&now) {
+                    tx.execute("DELETE FROM main.pack_games WHERE pack=?", [p])?;
+                    retire(&tx, Uuid::parse_str(p)?)?;
+                }
             }
             for t in ["profiles", "sessions", "game_settings"] {
                 if has(t)? {
