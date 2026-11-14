@@ -24,6 +24,18 @@ pub const RESUME: u32 = 9;
 pub const CREATE_THREAD: u32 = 10;
 /// DuplicateHandle into it: the encoded crate::kern::KRef -> its handle there
 pub const ADD_HANDLE: u32 = 11;
+/// a debugger attached / detached (crate::dbg), DebugBreakProcess
+pub const DEBUG_ATTACH: u32 = 12;
+pub const DEBUG_DETACH: u32 = 13;
+pub const DEBUG_BREAK: u32 = 14;
+/// Get/SetThreadContext of one of its threads: (tid, ContextFlags) [, the CONTEXT's bytes]
+pub const GET_CONTEXT: u32 = 15;
+pub const SET_CONTEXT: u32 = 16;
+/// NtSuspendProcess / NtResumeProcess: each of its threads
+pub const SUSPEND_PROCESS: u32 = 17;
+pub const RESUME_PROCESS: u32 = 18;
+/// GetMappedFileName: (address) -> the Windows path of the file mapped there
+pub const MAPPED_FILE: u32 = 19;
 
 /// Which process a handle names, for these calls
 #[derive(Debug, PartialEq, Eq)]
@@ -96,6 +108,34 @@ pub fn exec(op: u32, a: &[u32], data: &[u8]) -> VmReply {
                 None => err(87),
             }
         }
+        DEBUG_ATTACH => {
+            crate::dbg::attached();
+            ok(vec![])
+        }
+        DEBUG_DETACH => {
+            crate::dbg::detached();
+            ok(vec![])
+        }
+        GET_CONTEXT => match crate::tctx::context_of(arg(0)) {
+            Some(bytes) => VmReply { status: 0, vals: vec![], data: bytes },
+            None => err(6),
+        },
+        SET_CONTEXT => {
+            crate::tctx::set_context_of(arg(0), arg(1), data);
+            ok(vec![])
+        }
+        MAPPED_FILE => match crate::k32::mapped_file(arg(0)) {
+            Ok(p) => VmReply { status: 0, vals: vec![], data: p.into_bytes() },
+            Err(e) => err(e),
+        },
+        SUSPEND_PROCESS | RESUME_PROCESS => {
+            crate::k32::suspend_process(op == SUSPEND_PROCESS, 0);
+            ok(vec![])
+        }
+        DEBUG_BREAK => {
+            crate::dbg::break_in();
+            ok(vec![])
+        }
         _ => err(87),
     }
 }
@@ -104,6 +144,10 @@ pub fn exec(op: u32, a: &[u32], data: &[u8]) -> VmReply {
 pub fn call(pid: u32, op: u32, args: Vec<u32>, data: Vec<u8>) -> Option<VmReply> {
     let id = kern::with(|k| k.put_vm(VmReq { id: 0, to: pid, op, args, data })).0;
     let r = kern::block(None, &|| false, |k| k.take_vm_reply(id)).ok()?;
+    if r.status == VM_GONE && crate::env_on!("SAKE_TRACE_DBG") {
+        let st = kern::with(|k| (k.exit_code(pid), k.procs.contains_key(&pid))).0;
+        eprintln!("sake: xmem op {op} to {pid:#x}: gone {st:?}");
+    }
     (r.status != VM_GONE).then_some(r)
 }
 

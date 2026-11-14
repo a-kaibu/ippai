@@ -233,6 +233,7 @@ fn unload(cpu: &mut Cpu, base: u32) {
         v.remove(i).deps
     };
     ldr_remove(base);
+    crate::dbg::dll_unloaded(base);
     mem::release(base);
     if crate::env_on!("SAKE_TRACE_LOAD") {
         eprintln!("sake: unloaded {base:#x}");
@@ -269,6 +270,33 @@ pub fn add_reference(base: u32, pin: bool) {
         } else {
             m.refs += 1;
         }
+    }
+}
+
+/// FreeLibrary of one of our DLLs: its last reference gone, it counts as unloaded (a debugger
+/// gets UNLOAD_DLL; LoadLibrary loads it again: LOAD_DLL). Its image stays mapped, as
+/// pointers into it (its exports' thunks) stay good.
+pub fn free_hle(base: u32) {
+    let mut v = MODULES.write().unwrap();
+    let Some(m) = v.iter_mut().find(|m| m.base == base && m.hle && m.dll) else { return };
+    if m.refs == 0 {
+        return;
+    }
+    m.refs -= 1;
+    let gone = m.refs == 0;
+    drop(v);
+    if gone {
+        crate::dbg::dll_unloaded(base);
+    }
+}
+/// A module counted as unloaded (free_hle) is loaded again
+fn reload_if_freed(i: usize) {
+    let mut v = MODULES.write().unwrap();
+    v[i].refs += 1;
+    let (again, base) = (v[i].refs == 1 && v[i].hle, v[i].base);
+    drop(v);
+    if again {
+        crate::dbg::dll_loaded(base);
     }
 }
 
@@ -1011,6 +1039,15 @@ fn ustr_at(at: u32, s: &str) {
     mem::wp(at + mem::ps(), b);
 }
 
+/// The program's own image
+pub fn exe_base() -> u32 {
+    MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base).unwrap_or(0)
+}
+/// The modules on the loader's lists, in load order
+pub fn ldr_bases() -> Vec<u32> {
+    LDR.lock().unwrap().1.iter().map(|x| x.0).collect()
+}
+
 /// Lists module `base` (just added to MODULES) at the end of the loader's lists.
 fn ldr_add(base: u32) {
     let d = ldr_data();
@@ -1038,6 +1075,7 @@ fn ldr_add(base: u32) {
     w32(e + flags, 0x4 | if redirected { LDR_REDIRECTED } else { 0 });
     w16(e + count, 1);
     LDR.lock().unwrap().1.push((base, e));
+    crate::dbg::dll_loaded(base);
 }
 
 /// Takes module `base` out of the loader's three lists.
@@ -1219,6 +1257,9 @@ fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
     if let Some(d) = hle_data(&name, &n) {
         return Some(d);
     }
+    if let Some(d) = crate::dbg::export(&name, &n) {
+        return Some(d);
+    }
     if let Some(g) = crate::guest::lookup(&api::dll_key(&name), &n) {
         return Some(g);
     }
@@ -1305,7 +1346,7 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
     };
     if let Some(b) = loaded {
         if let Some(i) = by_base(b) {
-            MODULES.write().unwrap()[i].refs += 1;
+            reload_if_freed(i);
         }
         return b;
     }

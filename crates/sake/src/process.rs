@@ -162,9 +162,22 @@ pub fn spawn(prog: &str, app: bool, args: &str, cmd: Option<String>, dir: Option
         Some(d) => files::full_path(&d),
         None => files::cwd(),
     };
-    let list: Vec<(u32, KRef)> = if inherit { obj::with(|t| t.inheritable().filter_map(|(h, o)| Some((h, kref(o)?))).collect()) } else { Vec::new() };
+    // (an unnamed event, mutex or semaphore becomes the kernel's, to be the child's too)
+    let list: Vec<(u32, KRef)> = if inherit {
+        let hs: Vec<u32> = obj::with(|t| t.inheritable().map(|(h, _)| h).collect());
+        hs.into_iter().filter_map(|h| Some((h, share_handle(h)?))).collect()
+    } else {
+        Vec::new()
+    };
     let p = Proc { parent: crate::pid(), image: win.clone(), cmdline, cwd, suspend: (flags & 4 != 0) as u32, inherit: list, std, ..Proc::default() };
-    let pid = kern::with(|k| k.new_process(p)).0;
+    // (DEBUG_PROCESS, DEBUG_ONLY_THIS_PROCESS: the creating thread's debug object, made if
+    // it has none; a debuggee's children: crate::dbg)
+    let port = if flags & 3 != 0 { crate::dbg::connect() } else { None };
+    let pid = kern::with(|k| {
+        let pid = k.new_process(p);
+        k.dbg.spawned(port, crate::pid(), pid, flags);
+        pid
+    }).0;
     if crate::env_on!("SAKE_TRACE_EXIT") {
         eprintln!("sake: CreateProcess {win} -> process {pid:#x}");
     }
@@ -310,6 +323,7 @@ pub fn watch() {
             unsafe { libc::exit(code as i32) }
         }
         obj::signal();
+        crate::dbg::watch_attach();
         crate::xmem::serve();
         crate::pipe::pump();
         crate::user::deliver_remote();

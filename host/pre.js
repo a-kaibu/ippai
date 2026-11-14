@@ -134,6 +134,11 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     const h = new Int32Array(vnvmKernel, 0, 256);
     if (!Atomics.load(h, 2)) return;
     const pid = Number((Module.vnvmEnv && Module.vnvmEnv.SAKE_PID) || (ENVIRONMENT_IS_NODE && process.env.SAKE_PID) || 0x10);
+    // (the kernel's lock, if a thread of this one had it: host/vnkern.js)
+    if (Atomics.compareExchange(h, 5, pid, 0) === pid) {
+      Atomics.store(h, 0, 0);
+      Atomics.notify(h, 0);
+    }
     const i = Atomics.load(h, 4) >>> 0;
     Atomics.store(h, 16 + 2 * (i % 64), pid);
     Atomics.store(h, 17 + 2 * (i % 64), code | 0);

@@ -17,6 +17,7 @@ pub mod enc;
 pub mod host;
 pub mod services;
 pub mod com;
+pub mod debug;
 use enc::Enc;
 
 pub const SUCCESS: u32 = 0;
@@ -276,6 +277,8 @@ pub struct Kern {
     /// the threads started for other processes (CreateRemoteThread): their exit codes once
     /// they ended
     rthreads: BTreeMap<u32, Option<u32>>,
+    /// which process debugs which, and the debug events (crate::dbg)
+    pub dbg: debug::Debugs,
 }
 
 /// A request for process `to`'s memory (crate::xmem's operation `op` on `args`, `data`)
@@ -746,6 +749,11 @@ impl Kern {
         for s in self.services.values_mut() { s.exited(pid); }
         self.services.retain(|_, s| !s.removable());
         self.com.exited(pid);
+        // (a debugger's debuggees end with it unless it said otherwise)
+        let code = self.procs[&pid].exit.unwrap_or(code);
+        for p in self.dbg.exited(pid, pid + 0x10, code) {
+            self.terminate(p, debug::STATUS_DEBUGGER_INACTIVE);
+        }
         self.release_process(pid);
         // (its threads' mutexes are abandoned, its handles of named objects close)
         for o in self.sync.values_mut() {
@@ -1305,7 +1313,7 @@ crate::enc_struct!(KWin { hwnd, pid, tid, class, title });
 crate::enc_struct!(XMsg { id, to, hwnd, msg, w, l, data, send });
 crate::enc_struct!(VmReq { id, to, op, args, data });
 crate::enc_struct!(VmReply { status, vals, data });
-crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, next_msg, services, com, vm, vm_replies, rthreads });
+crate::enc_struct!(Kern { gen, next, ends, pipes, procs, next_pid, sync, sync_names, dead_seen, wins, xmsgs, replies, next_msg, services, com, vm, vm_replies, rthreads, dbg });
 
 #[cfg(test)]
 mod tests;

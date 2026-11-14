@@ -270,7 +270,9 @@ pub(crate) fn shell_folder_unexpanded(path: &str) -> Option<String> {
     None
 }
 
-const SYSTEM_KEYS: [&str; 7] = [
+const SYSTEM_KEYS: [&str; 8] = [
+    // (the post-mortem debugger's key: crate::dbg)
+    "hklm\\software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug",
     "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
     "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
     "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\Run",

@@ -188,6 +188,11 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
             eprintln!("sake:   object {}", w.join(" "));
         }
     }
+    // (a debugger's first chance: it may handle it)
+    let wide: Vec<u64> = params.iter().map(|&p| p as u64).collect();
+    if crate::dbg::first_chance(cpu, code, flags, addr as u64, &wide).is_some() {
+        return;
+    }
     let mut sp = (cpu.regs[ESP] - 0x100) & !15;
     sp -= CONTEXT_SIZE;
     let ctx = sp & !15;
@@ -301,6 +306,14 @@ pub fn handler_done(cpu: &mut Cpu) {
             }
         }
         let code = r32(rec);
+        // (the debugger's second chance, or AeDebug's debugger's)
+        let n = r32(rec + 16).min(15);
+        let params: Vec<u64> = (0..n).map(|i| r32(rec + 20 + 4 * i) as u64).collect();
+        load_context(cpu, ctx);
+        if crate::dbg::last_chance(cpu, code, r32(rec + 4), r32(rec + 12) as u64, &params).is_some() {
+            return;
+        }
+        crate::EXIT_CODE.store(code, Ordering::Relaxed);
         let msg = format!(
             "unhandled exception {code:08x} at {:#x} (params {:x} {:x}), eip {:#x} esp {:#x}",
             r32(rec + 12),

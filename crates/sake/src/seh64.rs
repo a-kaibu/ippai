@@ -359,6 +359,10 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u64]) {
     for (i, p) in params.iter().take(15).enumerate() {
         w64(rec + 0x20 + 8 * i as u32, *p);
     }
+    // (a debugger's first chance: it may handle it)
+    if crate::dbg::first_chance(cpu, code, flags, a, params).is_some() {
+        return;
+    }
     let orig = (rec - CONTEXT_SIZE) & !15;
     save_context(cpu, orig);
     dispatch(cpu, rec, orig);
@@ -529,6 +533,14 @@ fn unhandled(cpu: &mut Cpu, d: Dispatch) {
             return;
         }
     }
+    // (the debugger's second chance, or AeDebug's debugger's)
+    let n = r32(d.rec + 0x18).min(15);
+    let params: Vec<u64> = (0..n).map(|i| r64(d.rec + 0x20 + 8 * i)).collect();
+    load_context(cpu, d.orig);
+    if crate::dbg::last_chance(cpu, r32(d.rec), r32(d.rec + 4), r64(d.rec + 0x10), &params).is_some() {
+        return;
+    }
+    crate::EXIT_CODE.store(r32(d.rec), std::sync::atomic::Ordering::Relaxed);
     let msg = format!(
         "unhandled x64 exception {:08x} at {:#x} (params {:x} {:x}), rsp {:#x}",
         r32(d.rec),

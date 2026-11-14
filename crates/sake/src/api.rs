@@ -655,7 +655,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         cpu.eip = ret as u32;
         cpu.rip_hi = (ret >> 32) as u32;
         cpu.set_gpr(ESP, esp as u64 + 8);
-        crate::tctx::apply_pending(cpu);
+        crate::tctx::apply_pending_after_call(cpu);
         return;
     }
     cpu.regs[EAX] = r;
@@ -667,7 +667,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     }
     cpu.eip = r32(esp);
     cpu.regs[ESP] = esp + 4 + if cdecl { 0 } else { bytes };
-    crate::tctx::apply_pending(cpu);
+    crate::tctx::apply_pending_after_call(cpu);
 }
 
 /// Writes a small x86 stub `code` into guest memory; returns its address.

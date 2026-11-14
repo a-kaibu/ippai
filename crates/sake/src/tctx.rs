@@ -96,12 +96,12 @@ static PENDING: Mutex<Option<HashMap<u32, (u32, Vec<u8>)>>> = Mutex::new(None);
 
 /// The calling thread goes on: a context another thread set for it is loaded now (`esp`: its
 /// stack pointer, for the scratch)
-pub fn apply_pending(cpu: &mut koji::Cpu) {
+pub fn apply_pending(cpu: &mut koji::Cpu) -> bool {
     if !ANY.load(Ordering::Acquire) {
-        return;
+        return false;
     }
     let tid = crate::cur().tid;
-    let Some((flags, bytes)) = PENDING.lock().unwrap().get_or_insert_with(HashMap::default).remove(&tid) else { return };
+    let Some((flags, bytes)) = PENDING.lock().unwrap().get_or_insert_with(HashMap::default).remove(&tid) else { return false };
     let esp = cpu.gpr(4) as u32;
     let base = scratch(esp);
     let given = base - size(mem::x64()) - 16;
@@ -109,14 +109,68 @@ pub fn apply_pending(cpu: &mut koji::Cpu) {
     mem::write(given, &bytes);
     overlay(base, given, flags);
     load(cpu, base);
+    true
+}
+
+/// An API call returned with `rax`: a context set meanwhile is loaded, but for the result
+/// (as the system call's return value replaces EAX on Windows)
+pub fn apply_pending_after_call(cpu: &mut koji::Cpu) {
+    let rax = cpu.gpr(0);
+    if apply_pending(cpu) {
+        cpu.set_gpr(0, rax);
+    }
+}
+
+/// A context set for thread `tid` that it has not taken yet, over `at` (GetThreadContext
+/// sees what SetThreadContext set)
+fn overlay_pending(tid: u32, at: u32) {
+    let p = PENDING.lock().unwrap().get_or_insert_with(HashMap::default).get(&tid).cloned();
+    if let Some((flags, bytes)) = p {
+        let n = size(mem::x64());
+        let tmp = mem::heap_alloc(n + 16, true);
+        let t = (tmp + 15) & !15;
+        mem::write(t, &bytes[..bytes.len().min(n as usize)]);
+        overlay(at, t, flags);
+        mem::heap_free(tmp);
+    }
 }
 
 fn thread_of(h: u32) -> Option<u32> {
     crate::k32::any_thread_tid(h)
 }
 
+/// crate::xmem's GET_CONTEXT: the whole context of thread `tid` of this process (another
+/// process asks), as GetThreadContext of it here sees it
+pub fn context_of(tid: u32) -> Option<Vec<u8>> {
+    let (cpu, api) = crate::k32::thread_cpu(tid)?;
+    let base = mem::heap_alloc(size(mem::x64()) + 16, true);
+    let at = (base + 15) & !15;
+    capture(unsafe { &mut *cpu }, api, at);
+    overlay_pending(tid, at);
+    let v = mem::slice(at, size(mem::x64())).to_vec();
+    mem::heap_free(base);
+    Some(v)
+}
+/// crate::xmem's SET_CONTEXT: the parts `flags` names of `bytes` for thread `tid`, as
+/// SetThreadContext of it here
+pub fn set_context_of(tid: u32, flags: u32, bytes: &[u8]) {
+    PENDING.lock().unwrap().get_or_insert_with(HashMap::default).insert(tid, (flags, bytes.to_vec()));
+    ANY.store(true, Ordering::Release);
+}
+
 fn GetThreadContext(c: &mut Ctx) -> u32 {
     let (h, ctx) = (c.a(0), c.a(1));
+    if let Some((pid, tid)) = crate::k32::remote_thread_of(h) {
+        let flags = r32(ctx + flags_at(mem::x64()));
+        let Some(r) = crate::xmem::call(pid, crate::xmem::GET_CONTEXT, vec![tid], vec![]).filter(|r| r.status == 0) else {
+            crate::k32::last_error(6);
+            return 0;
+        };
+        let base = scratch(c.esp);
+        mem::write(base, &r.data);
+        overlay(ctx, base, flags);
+        return 1;
+    }
     let Some(tid) = thread_of(h) else {
         crate::k32::last_error(6);
         return 0;
@@ -134,6 +188,7 @@ fn GetThreadContext(c: &mut Ctx) -> u32 {
             return 0;
         };
         capture(unsafe { &mut *cpu }, api, base);
+        overlay_pending(tid, base);
     }
     overlay(ctx, base, flags);
     1
@@ -141,6 +196,15 @@ fn GetThreadContext(c: &mut Ctx) -> u32 {
 
 fn SetThreadContext(c: &mut Ctx) -> u32 {
     let (h, ctx) = (c.a(0), c.a(1));
+    if let Some((pid, tid)) = crate::k32::remote_thread_of(h) {
+        let flags = r32(ctx + flags_at(mem::x64()));
+        let bytes = mem::slice(ctx, size(mem::x64())).to_vec();
+        if crate::xmem::call(pid, crate::xmem::SET_CONTEXT, vec![tid, flags], bytes).is_none() {
+            crate::k32::last_error(6);
+            return 0;
+        }
+        return 1;
+    }
     let Some(tid) = thread_of(h) else {
         crate::k32::last_error(6);
         return 0;

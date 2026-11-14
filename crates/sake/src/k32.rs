@@ -401,6 +401,8 @@ pub fn exit_thread(code: u32) -> ! {
     if let Some(m) = held {
         crate::pe::free_library(unsafe { &mut *crate::cur().cpu }, m);
     }
+    crate::dbg::thread_exiting(code);
+    crate::dbg::thread_port_closes();
     kura::snap::unregister();
     crate::fiber::thread_exit(None);
     let t = crate::cur();
@@ -886,6 +888,15 @@ pub(crate) fn thread_for_other(start: u32, param: u32, stack: u32, flags: u32) -
 }
 /// crate::xmem's SUSPEND / RESUME here, of thread `tid`: its count before
 pub(crate) fn suspend_for_other(tid: u32, suspend: bool) -> Result<u32, u32> {
+    let r = suspend_count(tid, suspend);
+    // (a suspended debuggee thread's debug events wait for it)
+    if let Ok(old) = r {
+        crate::dbg::hold(tid, if suspend { true } else { old > 1 });
+    }
+    r
+}
+/// Thread `tid`'s suspend count one up or down: the count before
+pub(crate) fn suspend_count(tid: u32, suspend: bool) -> Result<u32, u32> {
     let h = obj::with(|t| t.objs.iter().find(|(_, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid)).map(|(&h, _)| h));
     if let Some(h) = h {
         let mut g = GATE.lock().unwrap();
@@ -901,11 +912,7 @@ pub(crate) fn suspend_for_other(tid: u32, suspend: bool) -> Result<u32, u32> {
             return Ok(old);
         }
     }
-    if suspend {
-        SUSPENDS.suspend(tid).ok_or(298)
-    } else {
-        Ok(SUSPENDS.resume(tid))
-    }
+    if suspend { SUSPENDS.suspend(tid).ok_or(298) } else { Ok(SUSPENDS.resume(tid)) }
 }
 
 /// Blocks a new thread created suspended until ResumeThread.
@@ -971,6 +978,84 @@ fn thread_tid(h: u32) -> Option<u32> {
     })
 }
 
+/// NtSuspendThread / NtResumeThread(thread, &previous count): NTSTATUS
+fn nt_suspend_resume(c: &mut Ctx, suspend: bool) -> u32 {
+    let out = c.a(1);
+    let n = if suspend { SuspendThread(c) } else { ResumeThread(c) };
+    if n == u32::MAX {
+        return match get_last_error() {
+            5 => 0xC000_0022,
+            298 => 0xC000_004A, // STATUS_SUSPEND_COUNT_EXCEEDED
+            _ => 0xC000_0008,
+        };
+    }
+    if out != 0 {
+        w32(out, n);
+    }
+    0
+}
+fn NtSuspendThread(c: &mut Ctx) -> u32 {
+    nt_suspend_resume(c, true)
+}
+fn NtResumeThread(c: &mut Ctx) -> u32 {
+    nt_suspend_resume(c, false)
+}
+/// Each thread of this process but `but` suspended (`on`) or resumed once (NtSuspendProcess)
+pub(crate) fn suspend_process(on: bool, but: u32) {
+    for (tid, _, _) in thread_list() {
+        if tid != but {
+            let _ = suspend_for_other(tid, on);
+        }
+    }
+}
+/// NtSuspendProcess / NtResumeProcess(process): NTSTATUS (this process's: its other threads)
+fn nt_suspend_resume_process(c: &mut Ctx, on: bool) -> u32 {
+    let op = if on { xmem::SUSPEND_PROCESS } else { xmem::RESUME_PROCESS };
+    match remote(c.a(0), op, vec![], vec![]) {
+        None => {
+            suspend_process(on, crate::cur().tid);
+            0
+        }
+        Some(Ok(_)) => 0,
+        Some(Err(6)) => 0xC000_0008,
+        Some(Err(_)) => 0xC000_0022,
+    }
+}
+fn NtSuspendProcess(c: &mut Ctx) -> u32 {
+    nt_suspend_resume_process(c, true)
+}
+fn NtResumeProcess(c: &mut Ctx) -> u32 {
+    nt_suspend_resume_process(c, false)
+}
+/// NtReadVirtualMemory / NtWriteVirtualMemory(process, address, buffer, size, &done):
+/// STATUS_PARTIAL_COPY for part of it, STATUS_ACCESS_VIOLATION for none
+fn nt_rw_memory(c: &mut Ctx, write: bool) -> u32 {
+    let done_at = c.a(4);
+    let tmp = mem::heap_alloc(8, true);
+    // (the count goes to `tmp` for the moment: argument 4's slot)
+    let slot = if mem::x64() { c.esp + 40 } else { c.esp + 20 };
+    let saved = mem::rp(slot);
+    mem::wp(slot, tmp);
+    let ok = if write { WriteProcessMemory(c) } else { ReadProcessMemory(c) } != 0;
+    mem::wp(slot, saved);
+    let done = mem::rp(tmp);
+    mem::heap_free(tmp);
+    if done_at != 0 {
+        mem::putp(done_at, done);
+    }
+    match (ok, done) {
+        (true, _) => 0,
+        (false, 0) if get_last_error() == 6 => 0xC000_0008,
+        (false, 0) => 0x8000_000D,
+        _ => 0x8000_000D,
+    }
+}
+fn NtReadVirtualMemory(c: &mut Ctx) -> u32 {
+    nt_rw_memory(c, false)
+}
+fn NtWriteVirtualMemory(c: &mut Ctx) -> u32 {
+    nt_rw_memory(c, true)
+}
 fn ResumeThread(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     if thread_denied(h, 2) {
@@ -1193,6 +1278,13 @@ pub(crate) fn boost_off(tid: u32) -> bool {
     m.get(&tid).copied().unwrap_or(*proc)
 }
 /// The thread id of a thread handle (running or ended)
+/// Another process's thread handle `h`: (process, thread)
+pub(crate) fn remote_thread_of(h: u32) -> Option<(u32, u32)> {
+    obj::with(|t| match t.objs.get(&obj::norm(h)) {
+        Some((Obj::RemoteThread { pid, tid }, _)) => Some((*pid, *tid)),
+        _ => None,
+    })
+}
 pub(crate) fn any_thread_tid(h: u32) -> Option<u32> {
     if h == obj::CURRENT_THREAD {
         return Some(crate::cur().tid);
@@ -1539,26 +1631,33 @@ pub(crate) fn open_sync(n: String, want: u8) -> u32 {
         }
     }
 }
+/// SECURITY_ATTRIBUTES `sa`'s bInheritHandle for new handle `h` (CreateEvent and the like)
+fn sa_inherit(sa: u32, h: u32) -> u32 {
+    if h != 0 && sa != 0 && r32(sa + 2 * mem::ps()) != 0 {
+        obj::set_inherit(h, true);
+    }
+    h
+}
 fn CreateEventA(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(3), false), Obj::Event { manual: c.a(1) != 0, set: c.a(2) != 0 })
+    sa_inherit(c.a(0), create_named(named(c.a(3), false), Obj::Event { manual: c.a(1) != 0, set: c.a(2) != 0 }))
 }
 fn CreateEventW(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(3), true), Obj::Event { manual: c.a(1) != 0, set: c.a(2) != 0 })
+    sa_inherit(c.a(0), create_named(named(c.a(3), true), Obj::Event { manual: c.a(1) != 0, set: c.a(2) != 0 }))
 }
 fn CreateEventExW(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(1), true), Obj::Event { manual: c.a(2) & 1 != 0, set: c.a(2) & 2 != 0 })
+    sa_inherit(c.a(0), create_named(named(c.a(1), true), Obj::Event { manual: c.a(2) & 1 != 0, set: c.a(2) & 2 != 0 }))
 }
 fn new_timer(manual: bool) -> Obj {
     Obj::Timer { manual, set: false, due: None, period: std::time::Duration::ZERO }
 }
 fn CreateWaitableTimerA(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(2), false), new_timer(c.a(1) != 0))
+    sa_inherit(c.a(0), create_named(named(c.a(2), false), new_timer(c.a(1) != 0)))
 }
 fn CreateWaitableTimerW(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(2), true), new_timer(c.a(1) != 0))
+    sa_inherit(c.a(0), create_named(named(c.a(2), true), new_timer(c.a(1) != 0)))
 }
 fn CreateWaitableTimerExW(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(1), true), new_timer(c.a(2) & 1 != 0))
+    sa_inherit(c.a(0), create_named(named(c.a(1), true), new_timer(c.a(2) & 1 != 0)))
 }
 fn OpenWaitableTimerA(c: &mut Ctx) -> u32 {
     open_named(c, false, 4)
@@ -1710,12 +1809,12 @@ fn PulseEvent(c: &mut Ctx) -> u32 {
 fn CreateMutexA(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
     let own = c.a(1) != 0;
-    create_named(named(c.a(2), false), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 })
+    sa_inherit(c.a(0), create_named(named(c.a(2), false), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 }))
 }
 fn CreateMutexW(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
     let own = c.a(1) != 0;
-    create_named(named(c.a(2), true), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 })
+    sa_inherit(c.a(0), create_named(named(c.a(2), true), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 }))
 }
 fn OpenSemaphoreA(c: &mut Ctx) -> u32 {
     open_named(c, false, 3)
@@ -1771,7 +1870,7 @@ fn CreateSemaphoreA(c: &mut Ctx) -> u32 {
     if !semaphore_counts(c.i(1), c.i(2)) {
         return 0;
     }
-    create_named(named(c.a(3), false), Obj::Semaphore { count: c.i(1), max: c.i(2) })
+    sa_inherit(c.a(0), create_named(named(c.a(3), false), Obj::Semaphore { count: c.i(1), max: c.i(2) }))
 }
 /// CreateSemaphore's counts: 0 <= initial <= maximum, maximum > 0 (else ERROR_INVALID_PARAMETER).
 fn semaphore_counts(init: i32, max: i32) -> bool {
@@ -1785,7 +1884,7 @@ fn CreateSemaphoreW(c: &mut Ctx) -> u32 {
     if !semaphore_counts(c.i(1), c.i(2)) {
         return 0;
     }
-    create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
+    sa_inherit(c.a(0), create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) }))
 }
 fn ReleaseSemaphore(c: &mut Ctx) -> u32 {
     match release_semaphore(c.a(0), c.i(1)) {
@@ -2357,6 +2456,10 @@ pub fn tls_thread_init(teb: u32) {
 fn tls_thread_exit(teb: u32) {
     TEBS.lock().unwrap_or_else(|e| e.into_inner()).retain(|&(_, t, _)| t != teb);
 }
+/// The running threads: (tid, TEB, crate::Thread)
+pub(crate) fn thread_list() -> Vec<(u32, u32, usize)> {
+    TEBS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
 /// The TEB of running thread `tid`
 pub(crate) fn teb_of(tid: u32) -> Option<u32> {
     TEBS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.0 == tid).map(|e| e.1)
@@ -2538,32 +2641,58 @@ fn SetUnhandledExceptionFilter(c: &mut Ctx) -> u32 {
 }
 /// UnhandledExceptionFilter(EXCEPTION_POINTERS*): the program's top-level filter decides (the
 /// CRT's _XcptFilter reaches here); none: execute the handler (terminate)
+/// UnhandledExceptionFilter(pointers): EXCEPTION_CONTINUE_SEARCH (0) for a nested call
+/// (EXCEPTION_NESTED_CALL: a filter's own exception) and in a
+/// debugged process (the debugger's turn); else the top-level filter's answer, or
+/// EXCEPTION_EXECUTE_HANDLER (1) when it has none or it searches on
 fn UnhandledExceptionFilter(c: &mut Ctx) -> u32 {
-    match crate::seh::TOP_FILTER.load(Ordering::Relaxed) {
-        0 => 1,
-        f => c.call(f, &[c.a(0)]),
+    let rec = mem::rp(c.a(0));
+    if rec != 0 && r32(rec + 4) & 0x10 != 0 {
+        return 0;
     }
+    if crate::dbg::debugged() {
+        return 0;
+    }
+    let f = crate::seh::TOP_FILTER.load(Ordering::Relaxed);
+    if f != 0 {
+        let r = c.call(f, &[c.a(0)]);
+        if r != 0 {
+            return r;
+        }
+    }
+    1
 }
-fn IsDebuggerPresent(_: &mut Ctx) -> u32 {
-    0
+/// OutputDebugStringA/W: to the debugger (as ANSI, with its NUL), and to stderr with
+/// SAKE_DEBUGSTR
+fn output_debug_string(p: u32, wide: bool) {
+    if p == 0 {
+        return;
+    }
+    let s = arg_str(p, wide);
+    if crate::env_on!("SAKE_DEBUGSTR") {
+        eprintln!("sake: debug: {}", s.trim_end());
+    }
+    if wide {
+        let w: Vec<u16> = s.encode_utf16().collect();
+        let a = crate::text::w2mb(0, &w);
+        let b = mem::heap_alloc(a.len() as u32 + 1, true);
+        mem::write(b, &a);
+        crate::dbg::output(b, a.len() as u32 + 1);
+        mem::heap_free(b);
+    } else {
+        crate::dbg::output(p, mem::cstr(p).len() as u32 + 1);
+    }
 }
 fn OutputDebugStringA(c: &mut Ctx) -> u32 {
-    if crate::env_on!("SAKE_DEBUGSTR") {
-        eprintln!("sake: debug: {}", arg_str(c.a(0), false).trim_end());
-    }
+    output_debug_string(c.a(0), false);
     0
 }
 fn OutputDebugStringW(c: &mut Ctx) -> u32 {
-    if crate::env_on!("SAKE_DEBUGSTR") {
-        eprintln!("sake: debug: {}", arg_str(c.a(0), true).trim_end());
-    }
+    output_debug_string(c.a(0), true);
     0
 }
 fn SetConsoleCtrlHandler(_: &mut Ctx) -> u32 {
     1
-}
-fn DebugBreak(_: &mut Ctx) -> u32 {
-    0
 }
 fn EncodePointer(c: &mut Ctx) -> u32 {
     c.a(0)
@@ -4353,7 +4482,7 @@ fn FreeLibraryWhenCallbackReturns(_: &mut Ctx) -> u32 {
     0
 }
 fn CreateSemaphoreExW(c: &mut Ctx) -> u32 {
-    create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
+    sa_inherit(c.a(0), create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) }))
 }
 /// SetThreadStackGuarantee(&size): the stack kept for a stack overflow's handler, in TEB
 /// GuaranteedStackBytes; whole pages, at least 4 KB (8 KB on x64), never less than before;
@@ -6346,6 +6475,8 @@ fn FreeLibrary(c: &mut Ctx) -> u32 {
         crate::pe::free_datafile(c.a(0) & !3);
         return 1;
     }
+    // (ours: counted as unloaded; a DLL file: unloaded)
+    crate::pe::free_hle(c.a(0));
     crate::pe::free_library(c.cpu, c.a(0));
     1
 }
@@ -8108,7 +8239,7 @@ fn create_file_mapping(c: &mut Ctx, wide: bool) -> u32 {
             let _ = f.f.lock().unwrap().set_len(want);
         }
     }
-    create_named(named(c.a(5), wide), Obj::Mapping { file: f, size, view: 0, write })
+    sa_inherit(c.a(1), create_named(named(c.a(5), wide), Obj::Mapping { file: f, size, view: 0, write }))
 }
 fn CreateFileMappingA(c: &mut Ctx) -> u32 {
     create_file_mapping(c, false)
@@ -8228,7 +8359,7 @@ fn device_path(win: &str) -> String {
 }
 /// The file behind an address (a module's image or a file view), as GetMappedFileName finds it:
 /// Err(ERROR_FILE_INVALID) for a pagefile view, Err(ERROR_UNEXP_NET_ERR) for no mapping
-fn mapped_file(a: u32) -> Result<String, u32> {
+pub(crate) fn mapped_file(a: u32) -> Result<String, u32> {
     if let Some(b) = crate::pe::containing(a) {
         return Ok(crate::pe::with(b, |m| m.path.clone()).unwrap());
     }
@@ -8252,7 +8383,12 @@ fn mapped_file_name(c: &mut Ctx, wide: bool) -> u32 {
         last_error(87);
         return 0;
     }
-    match mapped_file(a) {
+    // (another process's: crate::xmem asks it)
+    let found = match remote_bytes(h, xmem::MAPPED_FILE, vec![a], vec![]) {
+        None => mapped_file(a),
+        Some(r) => r.map(|(_, d)| String::from_utf8_lossy(&d).into_owned()),
+    };
+    match found {
         Ok(p) => {
             let p = device_path(&p);
             let n = if wide { p.encode_utf16().count() } else { crate::text::s2a(&p).len() } as u32;
@@ -8420,8 +8556,18 @@ fn OpenThread(c: &mut Ctx) -> u32 {
             n
         }
         None => {
-            last_error(87);
-            0
+            // (another process's thread: ids are unique across processes, each process's from
+            // its own id up)
+            let pid = (tid & !(crate::kern::PID_STEP - 1)) | crate::kern::ROOT_PID;
+            let alive = tid != 0 && !crate::process::is_self(pid) && crate::kern::with(|k| k.known(pid) && k.exit_code(pid).is_none()).0;
+            if !alive {
+                last_error(87);
+                return 0;
+            }
+            let n = obj::add(Obj::RemoteThread { pid, tid });
+            let want = c.a(0);
+            obj::set_access(n, if want & 0x0200_0000 != 0 { 0x001f_ffff } else { want & 0x001f_ffff });
+            n
         }
     }
 }
@@ -8913,6 +9059,9 @@ pub fn init() {
         implement("kernel32", &format!("K32{n}"), f);
         implement("kernelbase", &format!("K32{n}"), f);
     }
+    // (kernelbase exports these two under their plain names too)
+    implement("kernelbase", "GetMappedFileNameA", K32GetMappedFileNameA);
+    implement("kernelbase", "GetMappedFileNameW", K32GetMappedFileNameW);
     implement("kernel32", "ResolveDelayLoadedAPI", ResolveDelayLoadedAPI);
     implement("kernel32", "IsBadStringPtrW", IsBadStringPtrW);
     reg!("ntdll"; RtlWow64EnableFsRedirection, RtlWow64EnableFsRedirectionEx);
@@ -8968,8 +9117,8 @@ pub fn init() {
         InterlockedIncrement, InterlockedDecrement, InterlockedExchange, InterlockedExchangeAdd, InterlockedCompareExchange,
         TlsAlloc, TlsFree, TlsGetValue, TlsSetValue,
         GetLastError, SetLastError, SetErrorMode, GetErrorMode, SetThreadErrorMode, GetThreadErrorMode, RtlUnwind, RaiseException, SetUnhandledExceptionFilter,
-        UnhandledExceptionFilter, IsDebuggerPresent, OutputDebugStringA, OutputDebugStringW, SetConsoleCtrlHandler,
-        DebugBreak, EncodePointer, DecodePointer,
+        UnhandledExceptionFilter, OutputDebugStringA, OutputDebugStringW, SetConsoleCtrlHandler,
+        EncodePointer, DecodePointer,
         VirtualAlloc, VirtualFree, VirtualQuery, VirtualProtect, VirtualLock, VirtualUnlock, FlushInstructionCache,
         IsBadReadPtr, ReadProcessMemory, WriteProcessMemory, IsBadWritePtr, IsBadCodePtr, IsBadStringPtrA, GetProcessHeap, HeapCreate, HeapDestroy, HeapAlloc,
         HeapFree, HeapReAlloc, HeapSize, HeapValidate, HeapCompact, HeapSetInformation, HeapLock, HeapUnlock,
@@ -9099,6 +9248,10 @@ pub fn init() {
     implement("ntdll", "TpReleasePool", CloseThreadpool);
     implement("ntdll", "TpSetPoolMaxThreads", SetThreadpoolThreadMaximum);
     implement("ntdll", "TpSetPoolMinThreads", TpSetPoolMinThreads);
+    for (n, f) in [("SuspendThread", NtSuspendThread as crate::api::Handler), ("ResumeThread", NtResumeThread), ("SuspendProcess", NtSuspendProcess), ("ResumeProcess", NtResumeProcess), ("ReadVirtualMemory", NtReadVirtualMemory), ("WriteVirtualMemory", NtWriteVirtualMemory)] {
+        implement("ntdll", &format!("Nt{n}"), f);
+        implement("ntdll", &format!("Zw{n}"), f);
+    }
     reg!("ntdll"; RtlGetCurrentPeb, RtlAcquirePebLock, RtlReleasePebLock, RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlCreateUnicodeStringFromAsciiz, RtlAnsiStringToUnicodeString,
         RtlUnicodeStringToAnsiString, RtlDosPathNameToNtPathName_U, RtlFormatCurrentUserKeyPath, LdrGetProcedureAddress,
         NtProtectVirtualMemory);

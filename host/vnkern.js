@@ -13,20 +13,24 @@ addToLibrary({
   vnhost_kern_start_sharing__deps: ['$vnkernH'],
   vnhost_kern_start_sharing: () => Atomics.store(vnkernH(), 2, 1),
   vnhost_kern_lock__deps: ['$vnkernH'],
-  vnhost_kern_lock: () => {
-    // (Drepper's futex mutex)
+  vnhost_kern_lock: (pid) => {
+    // (Drepper's futex mutex; its holder's process in [5], so that the lock goes when that
+    // process ends holding it: host/pre.js)
     const h = vnkernH();
     let c = Atomics.compareExchange(h, 0, 0, 1);
-    if (c === 0) return;
-    if (c !== 2) c = Atomics.exchange(h, 0, 2);
-    while (c !== 0) {
-      Atomics.wait(h, 0, 2);
-      c = Atomics.exchange(h, 0, 2);
+    if (c !== 0) {
+      if (c !== 2) c = Atomics.exchange(h, 0, 2);
+      while (c !== 0) {
+        Atomics.wait(h, 0, 2);
+        c = Atomics.exchange(h, 0, 2);
+      }
     }
+    Atomics.store(h, 5, pid);
   },
   vnhost_kern_unlock__deps: ['$vnkernH'],
   vnhost_kern_unlock: () => {
     const h = vnkernH();
+    Atomics.store(h, 5, 0);
     if (Atomics.sub(h, 0, 1) !== 1) {
       Atomics.store(h, 0, 0);
       Atomics.notify(h, 0, 1);

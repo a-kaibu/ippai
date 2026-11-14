@@ -1,0 +1,10 @@
+no debug object: 1
+wait without one: 0 error 6
+kill 0: started 1 first create process breakpoint 1 object 1 ended 1 code c0000354
+kill 1: started 1 first create process breakpoint 1 object 1 ended 1 code c0000354
+kill 2: started 1 first create process breakpoint 1 object 1 ended 1 code c0000354
+kill 3: started 1 first create process breakpoint 1 object 1 ended 1 code c0000354
+no kill: breakpoint 1 set 1 alive 1 ended 1 code 7
+attach: started 1 attached 1 first create process suspended 1 then 0 detached 1 ended 1 code 7
+bad flags: c000000d
+own object: created 00000000 breakpoint 1 alive 1 ended 1 code 7

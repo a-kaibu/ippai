@@ -164,6 +164,7 @@ pub mod actctx;
 pub mod fiber;
 pub mod timerq;
 pub mod xmem;
+pub mod dbg;
 pub mod barrier;
 pub mod affinity;
 pub mod tctx;
@@ -225,6 +226,11 @@ pub fn on_guest_thread() -> bool {
     CUR.with(|c| !c.get().is_null())
 }
 
+/// The guest thread this host thread runs, if any (the watcher runs none)
+pub fn cur_opt() -> Option<&'static mut Thread> {
+    let p = CUR.with(|c| c.get());
+    (!p.is_null()).then(|| unsafe { &mut *p })
+}
 pub fn cur() -> &'static mut Thread {
     let p = CUR.with(|c| c.get());
     assert!(!p.is_null(), "sake: not a guest thread");
@@ -427,6 +433,7 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                     // int3 / int 3: at the byte before EIP, and the context there too
                     3 => {
                         cpu.eip = e - 1;
+                        dbg::int3_hit();
                         raise(cpu, 0x8000_0003, e - 1, &[0])
                     }
                     // INTO with OF: STATUS_INTEGER_OVERFLOW at the INTO, the context after it
@@ -708,8 +715,12 @@ pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
         ebp = n;
     }
     eprintln!("  frames:{chain}");
-    unsafe { libc::exit(3) }
+    unsafe { libc::exit(EXIT_CODE.load(Ordering::Relaxed) as i32) }
 }
+
+/// What the process exits with on a fatal error: 3, or the code of the exception nobody
+/// handled (as on Windows)
+pub static EXIT_CODE: AtomicU32 = AtomicU32::new(3);
 
 /// Starts a guest thread at `start(param)`; returns its tid. `gated`: it waits for
 /// ResumeThread first.
@@ -741,6 +752,7 @@ pub(crate) fn thread_start(t: &mut Thread, start: u32, param: u32) {
     if !mem::x64() && !w16::on() {
         seh::top_frame(t.teb);
     }
+    dbg::thread_created(cpu, start);
     pe::thread_attach(cpu);
     if mem::x64() {
         return setup64(cpu, start, param);
@@ -860,6 +872,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     actctx::init();
     fiber::init();
     barrier::init();
+    dbg::init();
     affinity::init();
     tctx::init();
     timerq::init();
@@ -998,6 +1011,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     if !x64 {
         seh::top_frame(cur().teb);
     }
+    dbg::process_start(cpu, base, entry);
     pe::init_dlls(cpu);
     if x64 {
         start64(cpu, entry, peb);

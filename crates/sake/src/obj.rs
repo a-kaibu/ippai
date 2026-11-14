@@ -30,6 +30,8 @@ pub enum Obj {
     /// and whether its views may write the file (PAGE_READWRITE / PAGE_EXECUTE_READWRITE)
     Mapping { file: Option<Arc<crate::files::File>>, size: u32, view: u32, write: bool },
     Key(crate::misc::Key),
+    /// a debug object (NtCreateDebugObject): crate::kern's debug port
+    DebugObject(u32),
     Other(&'static str),
 }
 
@@ -231,6 +233,7 @@ fn gone_object(h: u32, gone: Option<Obj>) {
         Some(Obj::Shared(id)) => {
             crate::kern::with(|k| k.release_sync(id, crate::pid()));
         }
+        Some(Obj::DebugObject(port)) => crate::dbg::port_closed(port),
         _ => {}
     }
 }

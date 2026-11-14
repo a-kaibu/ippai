@@ -1064,11 +1064,14 @@ fn nt_query_information_thread(c: &mut Ctx) -> u32 {
 /// NtQueryInformationProcess(h, class, buf, len, &retlen)
 fn nt_query_information_process(c: &mut Ctx) -> u32 {
     let (class, out, len, ret) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    let ps = mem::ps();
+    // (whether a debugger debugs the process: crate::dbg)
+    let debugged = || crate::process::of_handle(c.a(0)).is_some_and(|(pid, _)| crate::dbg::debugged_pid(pid));
     let (need, st) = match class {
         0 => (24, 0),            // ProcessBasicInformation
-        7 => (4, 0),             // ProcessDebugPort: none
-        0x1e => (4, 0xc000_0353), // ProcessDebugObjectHandle: STATUS_PORT_NOT_SET
-        0x1f => (4, 0),          // ProcessDebugFlags: not debugged
+        7 => (ps, 0),            // ProcessDebugPort
+        0x1e => (ps, if debugged() { 0 } else { 0xc000_0353 }), // ProcessDebugObjectHandle: STATUS_PORT_NOT_SET
+        0x1f => (4, 0),          // ProcessDebugFlags (NoDebugInherit)
         0x1a => (mem::ps(), 0),  // ProcessWow64Information: ULONG_PTR
         _ => return 0xc000_0003,
     };
@@ -1083,7 +1086,9 @@ fn nt_query_information_process(c: &mut Ctx) -> u32 {
             w32(out + 12, 8);
             w32(out + 16, 0x20);
         }
-        0x1f => w32(out, 1),
+        7 if debugged() => mem::wp(out, u32::MAX),
+        0x1e if debugged() => mem::wp(out, crate::obj::add(crate::obj::Obj::Event { manual: true, set: false })),
+        0x1f => w32(out, !debugged() as u32),
         // (a 32-bit process is a WoW64 one, k32::is_wow64: its 32-bit PEB's address; a 64-bit
         // one 0)
         0x1a if crate::k32::is_wow64(c.a(0)) == Some(true) => w32(out, crate::PEB.load(std::sync::atomic::Ordering::Relaxed)),
@@ -1358,6 +1363,7 @@ fn type_name(o: &crate::obj::Obj) -> &'static str {
         Obj::File(_) | Obj::Pipe(_) | Obj::Find(_) => "File",
         Obj::Mapping { .. } => "Section",
         Obj::Key(_) => "Key",
+        Obj::DebugObject(_) => "DebugObject",
         Obj::Other(n) => n,
     }
 }
