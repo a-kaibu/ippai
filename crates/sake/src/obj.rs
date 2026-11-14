@@ -119,6 +119,37 @@ pub struct Table {
 }
 
 pub static TABLE: Mutex<Option<Table>> = Mutex::new(None);
+
+/// The guest threads' API counters (waits::handoff: a waiter woken by another thread's
+/// SetEvent lets that thread reach its next API call first, as on Windows; api.rs counts)
+pub static HANDOFF: std::sync::LazyLock<waits::handoff::Handoff> = std::sync::LazyLock::new(|| waits::handoff::Handoff::new(1024));
+/// The last SetEvent of each event (object key) by a guest thread
+static SIGNALS: Mutex<Option<HashMap<u32, waits::handoff::Mark>>> = Mutex::new(None);
+
+/// Thread `cur()` signals handle `h` (called under the table's lock)
+pub fn note_signal(t: &Table, h: u32) {
+    if !crate::on_guest_thread() {
+        return;
+    }
+    if let Some(k) = t.objs.key(&h) {
+        let m = HANDOFF.mark(crate::cur().tid);
+        SIGNALS.lock().unwrap().get_or_insert_with(HashMap::default).insert(k, m);
+    }
+}
+/// A woken waiter lets its signaler reach its next API call (SAKE_TRACE_HANDOFF: the waits
+/// longer than 1 ms, and the ones that ran out)
+fn defer_to(m: waits::handoff::Mark, tid: u32) {
+    let t = Instant::now();
+    let passed = HANDOFF.wait_passed(m, tid);
+    if crate::env_on!("SAKE_TRACE_HANDOFF") && (!passed || t.elapsed() >= Duration::from_millis(1)) {
+        eprintln!("sake: thread {tid:04x} woke by {:04x}'s signal waited {:?}{}", m.tid, t.elapsed(), if passed { "" } else { " (ran out)" });
+    }
+}
+/// The signal that left handle `h` signaled (by a guest thread)
+fn signal_of(t: &Table, h: u32) -> Option<waits::handoff::Mark> {
+    let k = t.objs.key(&h)?;
+    SIGNALS.lock().unwrap().as_ref()?.get(&k).copied()
+}
 pub static WAKE: Condvar = Condvar::new();
 
 pub fn lock() -> MutexGuard<'static, Option<Table>> {
@@ -179,6 +210,9 @@ fn unref(t: &mut Table, k: u32) -> Option<Obj> {
     *rc -= 1;
     if *rc == 0 {
         t.names.retain(|_, v| *v != k);
+        if let Some(m) = SIGNALS.lock().unwrap().as_mut() {
+            m.remove(&k);
+        }
         return t.objs.map.remove(&k).map(|o| o.0);
     }
     None
@@ -360,6 +394,8 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
     let tid = crate::cur().tid;
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
     let mut g = lock();
+    // (whether it waited: only a waiter that was woken defers to its signaler)
+    let mut blocked = false;
     loop {
         // (a save state: the wait stands still here, holding nothing; see snap.rs)
         if kura::snap::pausing() {
@@ -391,6 +427,11 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
                     for &h in handles {
                         try_take(t, h, tid, true);
                     }
+                    let marks: Vec<_> = if blocked { handles.iter().filter_map(|&h| signal_of(t, h)).collect() } else { Vec::new() };
+                    drop(g);
+                    for m in marks {
+                        defer_to(m, tid);
+                    }
                     return ab.map_or(0, |_| 0x80);
                 }
                 _ => {}
@@ -403,7 +444,15 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
                         crate::k32::last_error(6);
                         return WAIT_FAILED;
                     }
-                    Some(true) => return i as u32 + if ab { 0x80 } else { 0 },
+                    Some(true) => {
+                        // (woken by another thread's SetEvent: it runs on to its next call first)
+                        let m = if blocked { signal_of(t, h) } else { None };
+                        drop(g);
+                        if let Some(m) = m {
+                            defer_to(m, tid);
+                        }
+                        return i as u32 + if ab { 0x80 } else { 0 };
+                    }
                     Some(false) => {}
                 }
             }
@@ -421,6 +470,7 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+        blocked = true;
         match deadline {
             None => {
                 while g.as_ref().unwrap().gen == gen {

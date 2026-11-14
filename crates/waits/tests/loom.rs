@@ -687,3 +687,36 @@ mod calls {
         });
     }
 }
+
+/// handoff.rs: what a signaler stores between SetEvent and its next API call is what the waiter
+/// it woke reads once `wait_passed` returns (EntisGLS #158: `SetEvent(done); this->signaled = 1`
+/// on the poster's stack). The store is a plain cell: an unordered read is a race loom reports.
+#[test]
+fn a_woken_waiter_reads_what_its_signaler_stored_before_its_next_call() {
+    use waits::handoff::{Handoff, Mark};
+    struct S {
+        h: Handoff,
+        mark: loom::sync::Mutex<Option<Mark>>,
+        flag: UnsafeCell<u32>,
+    }
+    unsafe impl Sync for S {}
+    model(|| {
+        let s = Arc::new(S { h: Handoff::new(4), mark: loom::sync::Mutex::new(None), flag: UnsafeCell::new(0) });
+        let s2 = s.clone();
+        let t = thread::spawn(move || {
+            s2.h.entered(0x24); // SetEvent
+            *s2.mark.lock().unwrap() = Some(s2.h.mark(0x24));
+            s2.flag.with_mut(|f| unsafe { *f = 1 });
+            s2.h.entered(0x24); // the next call
+        });
+        let m = loop {
+            if let Some(m) = *s.mark.lock().unwrap() {
+                break m;
+            }
+            thread::yield_now();
+        };
+        assert!(s.h.wait_passed(m, 0x20));
+        assert_eq!(s.flag.with(|f| unsafe { *f }), 1);
+        t.join().unwrap();
+    });
+}

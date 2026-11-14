@@ -1691,6 +1691,7 @@ pub fn event_set(h: u32, v: bool) -> u32 {
         _ => false,
     });
     if r && v {
+        obj::with(|t| obj::note_signal(t, h));
         obj::signal();
     }
     ok(r)

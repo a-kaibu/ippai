@@ -15,6 +15,7 @@
 
 
 pub mod calls;
+pub mod handoff;
 pub mod suspend;
 
 #[cfg(loom)]

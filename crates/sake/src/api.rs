@@ -540,6 +540,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     crate::k32::check_terminate();
     let top = crate::snap::api_enter(addr, esp);
     let me = crate::cur();
+    crate::obj::HANDOFF.entered(me.tid);
     let outer = me.api;
     me.api = (esp, if crate::mem::x64() { 8 } else { 4 + if cdecl { 0 } else { bytes } });
     let this = (this_arg && !crate::mem::x64()).then(|| cpu.regs[koji::ECX]);
