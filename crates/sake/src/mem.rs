@@ -721,6 +721,22 @@ fn slab_class(size: u32) -> u32 {
     ((size + 15) / 16).max(1)
 }
 
+/// A small block's class for good (at p-12, tagged): its size word changes with in-place
+/// reallocations, and a 512-byte block shrunk to 8 went back to the 16-byte list when freed,
+/// for ever (the big classes kept being refilled from the heap). crt.c and fast.rs read it too.
+pub const SLAB_CAP: u32 = 0x5ca9_0000;
+
+/// The class of small block `p`: its tagged word, or (a block from before the word, a state
+/// saved earlier) its size's.
+fn slab_cap(p: u32) -> u32 {
+    let k = r32(p - 12).wrapping_sub(SLAB_CAP);
+    if (1..=SLAB_MAX / 16).contains(&k) { k } else { slab_class(r32(p - 8)) }
+}
+
+/// (tests: blocks made for the class lists)
+#[cfg(test)]
+pub(crate) static SLAB_MADE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn slab_lock(t: u32) -> &'static std::sync::atomic::AtomicU32 {
     unsafe { std::sync::atomic::AtomicU32::from_ptr(slice_mut(t, 4).as_mut_ptr() as *mut u32) }
 }
@@ -751,6 +767,9 @@ pub fn heap_alloc_small(size: u32, zero: bool) -> u32 {
             if b == 0 {
                 break;
             }
+            w32(b - 12, SLAB_CAP | k);
+            #[cfg(test)]
+            SLAB_MADE.fetch_add(1, Ordering::Relaxed);
             if i == 0 {
                 first = b;
             } else {
@@ -779,7 +798,7 @@ pub fn heap_free_small(p: u32) -> bool {
         return heap_free(p);
     }
     use std::sync::atomic::Ordering;
-    let k = slab_class(r32(p - 8));
+    let k = slab_cap(p);
     let t = slab_table();
     let lock = slab_lock(t);
     while lock.swap(1, Ordering::Acquire) != 0 {
@@ -838,7 +857,7 @@ pub fn heap_fits(p: u32, size: u32) -> bool {
         return false;
     }
     let old = heap_size(p);
-    if r32(p - 4) == SLAB { size <= SLAB_MAX && slab_class(size) <= slab_class(old) } else { size <= old }
+    if r32(p - 4) == SLAB { size <= SLAB_MAX && slab_class(size) <= slab_cap(p) } else { size <= old }
 }
 
 pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {

@@ -21,7 +21,15 @@ void *(*host_malloc)(size_t);
 void (*host_free)(void *);
 void *(*host_realloc)(void *, size_t);
 #define SLAB 0x6e697777u /* mem.rs: a small block's header word before it (its size before that) */
+#define SLAB_CAP 0x5ca90000u /* mem.rs: its class for good, tagged, before the size */
 #define SLAB_MAX 512
+/* the class of small block h (mem.rs slab_cap): the tagged word, else its size's */
+static unsigned slab_cap(const unsigned *h) {
+    unsigned k = h[-3] - SLAB_CAP;
+    if (k >= 1 && k <= SLAB_MAX / 16) return k;
+    k = (h[-2] + 15) >> 4;
+    return k ? k : 1;
+}
 
 void *memmove(void *d, const void *s, size_t n) {
     if (n >= BIG) return host_memmove(d, s, n);
@@ -251,8 +259,7 @@ void *realloc(void *p, size_t n) {
     if (!p) return small_malloc(n);
     unsigned *h = (unsigned *)p;
     if (h[-1] != SLAB || !n) return host_realloc(p, n);
-    unsigned old = h[-2], cap = (old + 15) >> 4;
-    if (!cap) cap = 1;
+    unsigned old = h[-2], cap = slab_cap(h);
     if (n <= SLAB_MAX && ((n + 15) >> 4) <= cap) {
         h[-2] = n;
         return p;
@@ -348,8 +355,7 @@ static void *slab_pop(size_t n) {
 static int slab_push(void *p) {
     u32 *h = p;
     if (h[-1] != SLAB) return 0;
-    u32 k = (h[-2] + 15) >> 4;
-    if (!k) k = 1;
+    u32 k = slab_cap(h);
     slab_lock();
     h[-1] = SLAB + 1; /* SLAB_FREE */
     h[0] = slab_table[k];

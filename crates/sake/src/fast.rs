@@ -348,11 +348,15 @@ fn slab_free(trap: u32, p_at: u8, ret: u16) -> u32 {
         .x(&[0x81, 0x78, 0xfc])
         .u32(mem::SLAB) // cmp dword [eax-4],SLAB
         .j8(0x75, "slow")
-        .x(&[0x8b, 0x48, 0xf8]) // mov ecx,[eax-8]
-        .x(&[0x83, 0xc1, 0x0f, 0xc1, 0xe9, 0x04]) // add ecx,15; shr ecx,4
-        .j8(0x75, "class")
-        .x(&[0x41])
-        .label("class");
+        // (its class for good: mem::slab_cap's word, else the trap; the size word changes with
+        // in-place reallocations)
+        .x(&[0x8b, 0x48, 0xf4]) // mov ecx,[eax-12]
+        .x(&[0x81, 0xe9])
+        .u32(mem::SLAB_CAP) // sub ecx,SLAB_CAP
+        .x(&[0x49, 0x83, 0xf9]) // dec ecx; cmp ecx,MAX/16-1
+        .x(&[(mem::SLAB_MAX / 16 - 1) as u8])
+        .j8(0x77, "slow") // ja
+        .x(&[0x41]); // inc ecx
     spin_lock(&mut a, t, true);
     a.x(&[0xc7, 0x40, 0xfc])
         .u32(mem::SLAB_FREE) // mov dword [eax-4],SLAB_FREE
@@ -381,10 +385,13 @@ fn slab_realloc(trap: u32) -> u32 {
         .u32(mem::SLAB_MAX)
         .j8(0x77, "slow")
         .x(&[0x8d, 0x4a, 0x0f, 0xc1, 0xe9, 0x04]) // lea ecx,[edx+15]; shr ecx,4
-        .x(&[0x8b, 0x50, 0xf8, 0x83, 0xc2, 0x0f, 0xc1, 0xea, 0x04]) // mov edx,[eax-8]; add edx,15; shr edx,4
-        .j8(0x75, "k")
+        .x(&[0x8b, 0x50, 0xf4]) // mov edx,[eax-12] (the class for good, as slab_free)
+        .x(&[0x81, 0xea])
+        .u32(mem::SLAB_CAP) // sub edx,SLAB_CAP
+        .x(&[0x4a, 0x83, 0xfa]) // dec edx; cmp edx,MAX/16-1
+        .x(&[(mem::SLAB_MAX / 16 - 1) as u8])
+        .j8(0x77, "slow") // ja
         .x(&[0x42]) // inc edx
-        .label("k")
         .x(&[0x39, 0xd1]) // cmp ecx,edx
         .j8(0x77, "slow") // ja
         .x(&[0x8b, 0x54, 0x24, 0x10]) // mov edx,[esp+16]
@@ -455,4 +462,176 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
     };
     m.insert(name.to_string(), a);
     a
+}
+
+/// The heap stubs run by koji's interpreter against mem.rs's small-block lists, mixed with
+/// the Rust paths (the trap's handlers) as a program mixes them.
+#[cfg(test)]
+mod slab_tests {
+    use super::{slab_alloc, slab_free, slab_realloc};
+    use crate::mem;
+    use proptest::prelude::*;
+
+    const SLOW: u32 = 0xffff_0100;
+    const RET: u32 = 0xffff_0200;
+
+    struct Stubs {
+        alloc: u32,
+        free: u32,
+        realloc: u32,
+        stack: u32,
+    }
+
+    fn stubs() -> &'static Stubs {
+        static S: std::sync::OnceLock<Stubs> = std::sync::OnceLock::new();
+        S.get_or_init(|| Stubs { alloc: slab_alloc(SLOW, 12, Some(8), 12), free: slab_free(SLOW, 12, 12), realloc: slab_realloc(SLOW), stack: mem::heap_alloc(0x1000, true) })
+    }
+
+    /// Runs stdcall stub `at` with `args`: Some(eax) when it returned, None when it went to
+    /// the trap (the caller then does what the handler does).
+    fn run(at: u32, args: &[u32]) -> Option<u32> {
+        let mut cpu = koji::Cpu::default();
+        let mut sp = stubs().stack + 0xf00;
+        for &a in args.iter().rev() {
+            sp -= 4;
+            mem::w32(sp, a);
+        }
+        sp -= 4;
+        mem::w32(sp, RET);
+        cpu.regs[koji::ESP] = sp;
+        cpu.eip = at;
+        cpu.trap_lo = 0xffff_0000;
+        cpu.trap_hi = 0xffff_ffff;
+        for _ in 0..10_000 {
+            match koji::step(&mut cpu, &mut crate::seh::Guest) {
+                koji::Exit::Continue => {}
+                koji::Exit::Trap(RET) => return Some(cpu.regs[koji::EAX]),
+                koji::Exit::Trap(SLOW) => return None,
+                e => panic!("stub at {at:#x}: {e:?} at {:#x}", cpu.eip),
+            }
+        }
+        panic!("stub at {at:#x} did not return");
+    }
+
+    fn alloc(n: u32, stub: bool) -> u32 {
+        if stub {
+            if let Some(p) = run(stubs().alloc, &[0, 0, n]) {
+                return p;
+            }
+        }
+        mem::heap_alloc_small(n, false)
+    }
+    fn free(p: u32, stub: bool) {
+        if !(stub && run(stubs().free, &[0, 0, p]) == Some(1)) {
+            assert!(mem::heap_free_small(p));
+        }
+    }
+    /// HeapReAlloc; `in_place`: HEAP_REALLOC_IN_PLACE_ONLY (0 when the block cannot stay)
+    fn realloc(p: u32, n: u32, stub: bool, in_place: bool) -> u32 {
+        let flags = if in_place { 0x10 } else { 0 };
+        if stub {
+            if let Some(q) = run(stubs().realloc, &[0, flags, p, n]) {
+                return q;
+            }
+        }
+        if in_place && !mem::heap_fits(p, n) { 0 } else { mem::heap_realloc(p, n, false) }
+    }
+
+    /// Big blocks shrunk in place and freed, over and over: they go back to their own class
+    /// (the size word gave the class: a 512-byte block shrunk to 8 went to the 16-byte list for
+    /// good and every round took a new block for the 512-byte list).
+    #[test]
+    fn shrunk_blocks_keep_their_class() {
+        let _g = crate::test_guest::enter();
+        for (stub_r, stub_f) in [(false, false), (true, true), (true, false), (false, true)] {
+            let before = mem::SLAB_MADE.load(std::sync::atomic::Ordering::Relaxed);
+            for _ in 0..2000 {
+                let p = alloc(500, stub_r);
+                let q = realloc(p, 8, stub_r, true);
+                assert_eq!(q, p, "shrunk in place");
+                assert_eq!(mem::r32(p - 8), 8, "HeapSize is the new size");
+                // (and back up within the block: still in place)
+                assert_eq!(realloc(p, 300, stub_r, true), p);
+                assert_eq!(realloc(p, 8, stub_r, true), p);
+                free(p, stub_f);
+            }
+            let made = mem::SLAB_MADE.load(std::sync::atomic::Ordering::Relaxed) - before;
+            assert!(made <= 64, "{made} blocks made for 2000 rounds (stub realloc {stub_r}, stub free {stub_f})");
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Alloc(u32, bool),
+        Realloc(usize, u32, bool, bool),
+        Free(usize, bool),
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        let size = prop_oneof![1u32..=32, 1u32..=512, 500u32..=700];
+        prop_oneof![
+            (size.clone(), any::<bool>()).prop_map(|(n, s)| Op::Alloc(n, s)),
+            (any::<usize>(), size, any::<bool>(), any::<bool>()).prop_map(|(i, n, s, ip)| Op::Realloc(i, n, s, ip)),
+            (any::<usize>(), any::<bool>()).prop_map(|(i, s)| Op::Free(i, s)),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+        /// Any mix of the stubs and the Rust paths: every live block keeps its bytes and its
+        /// size, no two live blocks share a byte of their capacity, and an in-place reallocation
+        /// keeps the address or fails as Windows' does.
+        #[test]
+        fn stubs_and_handlers_as_the_model(ops in prop::collection::vec(op(), 1..200)) {
+            let _g = crate::test_guest::enter();
+            // (address, size, fill byte)
+            let mut live: Vec<(u32, u32, u8)> = Vec::new();
+            let mut tag = 0u8;
+            let fill = |p: u32, n: u32, b: u8| (0..n).for_each(|i| mem::w8(p + i, b));
+            for op in ops {
+                tag = tag.wrapping_add(1);
+                match op {
+                    Op::Alloc(n, s) => {
+                        let p = alloc(n, s);
+                        prop_assert!(p != 0);
+                        fill(p, n, tag);
+                        live.push((p, n, tag));
+                    }
+                    Op::Realloc(i, n, s, ip) if !live.is_empty() => {
+                        let i = i % live.len();
+                        let (p, old, b) = live[i];
+                        let q = realloc(p, n, s, ip);
+                        if q == 0 {
+                            prop_assert!(ip, "only an in-place reallocation fails");
+                        } else {
+                            if ip {
+                                prop_assert_eq!(q, p);
+                            }
+                            for j in 0..old.min(n) {
+                                prop_assert_eq!(mem::r8(q + j), b, "byte {} kept", j);
+                            }
+                            fill(q, n, b);
+                            live[i] = (q, n, b);
+                        }
+                    }
+                    Op::Free(i, s) if !live.is_empty() => {
+                        let (p, _, _) = live.swap_remove(i % live.len());
+                        free(p, s);
+                    }
+                    _ => {}
+                }
+                for &(p, n, b) in &live {
+                    prop_assert_eq!(mem::heap_size(p), n);
+                    prop_assert!((0..n).all(|j| mem::r8(p + j) == b), "block {:#x} overwritten", p);
+                }
+                let mut spans: Vec<(u32, u32)> = live.iter().map(|&(p, n, _)| (p, p + n.max(1))).collect();
+                spans.sort();
+                prop_assert!(spans.windows(2).all(|w| w[0].1 <= w[1].0), "blocks overlap: {:x?}", spans);
+            }
+            for (p, _, _) in live {
+                free(p, false);
+            }
+        }
+    }
 }
