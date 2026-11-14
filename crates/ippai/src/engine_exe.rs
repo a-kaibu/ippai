@@ -55,6 +55,7 @@ pub fn tree_files(tsv: &str) -> Vec<String> {
 /// /ippai/game other than its Siglus engine: the entry with `run` that engine, no arguments (the
 /// launcher's are its own), and `launcher` the program it named (the page reads saves made
 /// under it: play.ts). None for anything else. `tree` reads a tree's list by name.
+#[cfg(test)]
 pub fn engine_entry(game: &serde_json::Value, tree: impl Fn(&str) -> Option<std::sync::Arc<Vec<String>>>) -> Option<serde_json::Value> {
     entry_of(game, |name| siglus_engine(tree(name)?.iter().map(String::as_str)))
 }
