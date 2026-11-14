@@ -222,7 +222,7 @@ fn dxt_textures() {
 /// length up to 40 (the tails left to the scalar code).
 #[test]
 fn idec_every_ycc() {
-    let mut row = |n: usize, base: u32| {
+    let row = |n: usize, base: u32| {
         let px = |i: usize| ((base + i as u32) & 0xff_ffff).to_le_bytes();
         let (y, u, v): (Vec<u8>, Vec<u8>, Vec<u8>) = (0..n).map(|i| px(i)).map(|p| (p[0], p[1], p[2])).fold((vec![], vec![], vec![]), |mut a, p| {
             a.0.push(p.0);
