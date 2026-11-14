@@ -1066,6 +1066,8 @@ async fn headers(mut req: Request<axum::body::Body>, next: Next) -> Response {
     if !same_origin_write(&req) {
         return (StatusCode::FORBIDDEN, "writes come from this server's own pages").into_response();
     }
+    // (a write is waited for by a restart after an update: update.rs restart_soon)
+    let _writing = (!matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD)).then(|| crate::update::Writing::new(&crate::update::WRITES));
     // Build identity must not be revalidated by mtime: extracted artifacts and
     // rollbacks can have equal/older timestamps but incompatible Wasm contents.
     // These tiny manifests are read at startup only; keep compiled Wasm caching.

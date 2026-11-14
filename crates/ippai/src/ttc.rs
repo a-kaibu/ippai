@@ -15,27 +15,38 @@ struct Font {
     tables: Vec<([u8; 4], Vec<u8>)>,
 }
 
-fn be16(d: &[u8], o: usize) -> u16 {
-    u16::from_be_bytes([d[o], d[o + 1]])
+// (by `get`: a font cut short or damaged is an error, not a panic; review b01)
+fn be16(d: &[u8], o: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(d.get(o..o.checked_add(2)?)?.try_into().ok()?))
 }
-fn be32(d: &[u8], o: usize) -> u32 {
-    u32::from_be_bytes(d[o..o + 4].try_into().unwrap())
+fn be32(d: &[u8], o: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(d.get(o..o.checked_add(4)?)?.try_into().ok()?))
 }
 
 fn parse(p: &Path) -> Result<Font> {
     let d = std::fs::read(p).with_context(|| format!("{}", p.display()))?;
+    parse_bytes(&d).with_context(|| format!("{}", p.display()))
+}
+
+fn parse_bytes(d: &[u8]) -> Result<Font> {
     if d.len() < 12 || &d[..4] == b"ttcf" {
-        bail!("{}: not a single TrueType font", p.display());
+        bail!("not a single TrueType font");
     }
-    let n = be16(&d, 4) as usize;
+    let cut = || anyhow::anyhow!("its table directory is cut short");
+    let n = be16(d, 4).ok_or_else(cut)? as usize;
+    // (a directory's fields are 16-bit: n x 16 must fit; real fonts have a few dozen tables)
+    if n == 0 || n > 4095 {
+        bail!("{n} tables");
+    }
     let mut tables = Vec::new();
     for i in 0..n {
         let r = 12 + 16 * i;
-        let (off, len) = (be32(&d, r + 8) as usize, be32(&d, r + 12) as usize);
-        let data = d.get(off..off + len).with_context(|| format!("{}: table {i} out of the file", p.display()))?;
-        tables.push((d[r..r + 4].try_into().unwrap(), data.to_vec()));
+        let (off, len) = (be32(d, r + 8).ok_or_else(cut)? as usize, be32(d, r + 12).ok_or_else(cut)? as usize);
+        let data = off.checked_add(len).and_then(|end| d.get(off..end)).with_context(|| format!("table {i} out of the file"))?;
+        let tag: [u8; 4] = d.get(r..r + 4).ok_or_else(cut)?.try_into()?;
+        tables.push((tag, data.to_vec()));
     }
-    Ok(Font { version: be32(&d, 0), tables })
+    Ok(Font { version: be32(d, 0).ok_or_else(cut)?, tables })
 }
 
 fn table<'a>(f: &'a Font, tag: &[u8; 4]) -> Option<&'a Vec<u8>> {
@@ -57,7 +68,10 @@ fn glyphs(f: &Font) -> Result<Vec<&[u8]>> {
         table(f, b"glyf").context("no glyf")?,
         table(f, b"loca").context("no loca")?,
     );
-    let offs: Vec<usize> = if be16(head, 50) == 1 {
+    if head.len() < 54 {
+        bail!("head cut short");
+    }
+    let offs: Vec<usize> = if be16(head, 50).context("head cut short")? == 1 {
         loca.chunks_exact(4).map(|c| u32::from_be_bytes(c.try_into().unwrap()) as usize).collect()
     } else {
         loca.chunks_exact(2).map(|c| u16::from_be_bytes(c.try_into().unwrap()) as usize * 2).collect()
@@ -75,8 +89,8 @@ fn unhinted(g: &[u8]) -> Option<Vec<u8>> {
     if nc >= 0 {
         // header, endPtsOfContours, instructionLength, instructions, the rest
         let at = 10 + 2 * nc as usize;
-        let n = be16(g, at) as usize;
-        let mut out = g[..at].to_vec();
+        let n = be16(g, at)? as usize;
+        let mut out = g.get(..at)?.to_vec();
         out.extend_from_slice(&[0, 0]);
         out.extend_from_slice(g.get(at + 2 + n..)?);
         return Some(out);
@@ -85,7 +99,7 @@ fn unhinted(g: &[u8]) -> Option<Vec<u8>> {
     let mut at = 10;
     let mut instr = false;
     loop {
-        let flags = be16(g, at);
+        let flags = be16(g, at)?;
         at += 4 + if flags & 1 != 0 { 4 } else { 2 };
         at += if flags & 8 != 0 { 2 } else if flags & 0x40 != 0 { 4 } else if flags & 0x80 != 0 { 8 } else { 0 };
         instr |= flags & 0x100 != 0;
@@ -157,7 +171,24 @@ fn merge_glyphs(fonts: &[Font]) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
 
 /// Writes the collection of `inputs` to `out`.
 pub fn run(out: &Path, inputs: &[PathBuf]) -> Result<()> {
-    let mut fonts: Vec<Font> = inputs.iter().map(|p| parse(p)).collect::<Result<_>>()?;
+    let fonts: Vec<Font> = inputs.iter().map(|p| parse(p)).collect::<Result<_>>()?;
+    let o = build(fonts)?;
+    std::fs::write(out, &o)?;
+    let was: u64 = inputs.iter().map(|p| std::fs::metadata(p).map_or(0, |m| m.len())).sum();
+    eprintln!("{}: {} fonts, {} bytes (the files: {was})", out.display(), inputs.len(), o.len());
+    Ok(())
+}
+
+/// The collection of the fonts in `files` (each a whole .ttf), in memory (fuzz/fuzz_targets/ttc.rs).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn collection(files: &[&[u8]]) -> Result<Vec<u8>> {
+    build(files.iter().map(|d| parse_bytes(d)).collect::<Result<_>>()?)
+}
+
+fn build(mut fonts: Vec<Font>) -> Result<Vec<u8>> {
+    if fonts.is_empty() {
+        bail!("no fonts");
+    }
     let (glyf, locas) = merge_glyphs(&fonts)?;
     for (f, loca) in fonts.iter_mut().zip(locas) {
         for (tag, data) in f.tables.iter_mut() {
@@ -166,6 +197,10 @@ pub fn run(out: &Path, inputs: &[PathBuf]) -> Result<()> {
                 b"loca" => *data = loca.clone(),
                 // long loca; the checksum adjustment of a whole file means nothing in a collection
                 b"head" => {
+                    // (a font may list a table twice: each head is checked, not only the first; found by fuzz/ttc)
+                    if data.len() < 54 {
+                        bail!("head cut short");
+                    }
                     data[50..52].copy_from_slice(&1u16.to_be_bytes());
                     data[8..12].fill(0);
                 }
@@ -219,8 +254,87 @@ pub fn run(out: &Path, inputs: &[PathBuf]) -> Result<()> {
             o.push(0);
         }
     }
-    std::fs::write(out, &o)?;
-    let was: u64 = inputs.iter().map(|p| std::fs::metadata(p).map_or(0, |m| m.len())).sum();
-    eprintln!("{}: {} fonts, {} bytes (the files: {was})", out.display(), fonts.len(), o.len());
-    Ok(())
+    Ok(o)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A TrueType font of `tables` (tag, data), as a file.
+    fn font(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut o = 0x0001_0000u32.to_be_bytes().to_vec();
+        o.extend_from_slice(&(tables.len() as u16).to_be_bytes());
+        o.extend_from_slice(&[0; 6]);
+        let mut at = 12 + 16 * tables.len();
+        let mut data = Vec::new();
+        for (tag, d) in tables {
+            o.extend_from_slice(*tag);
+            o.extend_from_slice(&checksum(d).to_be_bytes());
+            o.extend_from_slice(&(at as u32).to_be_bytes());
+            o.extend_from_slice(&(d.len() as u32).to_be_bytes());
+            data.extend_from_slice(d);
+            while data.len() % 4 != 0 {
+                data.push(0);
+            }
+            at = 12 + 16 * tables.len() + data.len();
+        }
+        o.extend(data);
+        o
+    }
+
+    /// A font of two glyphs (one simple glyph with `hint` bytes of instructions, one empty).
+    pub(crate) fn sample(hint: &[u8]) -> Vec<u8> {
+        let mut g = vec![0, 1, 0, 0, 0, 0, 0, 10, 0, 10, 0, 0];
+        g.extend_from_slice(&(hint.len() as u16).to_be_bytes());
+        g.extend_from_slice(hint);
+        g.extend_from_slice(&[1, 0, 0]);
+        while g.len() % 4 != 0 {
+            g.push(0);
+        }
+        let loca: Vec<u8> = [0u16, (g.len() / 2) as u16, (g.len() / 2) as u16].iter().flat_map(|v| v.to_be_bytes()).collect();
+        font(&[(b"head", vec![0; 54]), (b"glyf", g), (b"loca", loca), (b"name", b"same in both".to_vec())])
+    }
+
+    /// Two fonts that differ in their hinting only: one glyph stored, the shared table once.
+    #[test]
+    fn collects_two_fonts() {
+        let (a, b) = (sample(b"\x01\x02"), sample(b"\x03\x04\x05\x06"));
+        let c = collection(&[&a, &b]).unwrap();
+        assert_eq!(&c[..4], b"ttcf");
+        assert_eq!(be32(&c, 8), Some(2));
+        assert!(c.len() < a.len() + b.len());
+        assert_eq!(c.windows(12).filter(|w| *w == b"same in both").count(), 1);
+    }
+
+    /// Review b01: a font cut short anywhere, or with a damaged directory, is an error.
+    #[test]
+    fn a_font_cut_short_is_an_error() {
+        let a = sample(b"\x01");
+        for n in 0..a.len() {
+            let _ = collection(&[&a[..n]]);
+        }
+        // (found by fuzz/ttc: a second head, cut short)
+        assert!(collection(&[&font(&[(b"head", vec![0; 54]), (b"glyf", vec![]), (b"loca", vec![0, 0]), (b"head", vec![0; 10])])]).is_err());
+        let mut many = a.clone();
+        many[4..6].copy_from_slice(&5000u16.to_be_bytes());
+        assert!(collection(&[&many]).is_err());
+        assert!(collection(&[]).is_err());
+    }
+
+    proptest::proptest! {
+        /// Any bytes changed in the fonts: an answer or an error, never a panic.
+        #[test]
+        fn damaged_fonts_never_panic(edits in proptest::collection::vec((0usize..400, proptest::prelude::any::<u8>()), 0..12), cut in 0usize..400, two in proptest::bool::ANY) {
+            let mut a = sample(b"\x01\x02\x03");
+            for (at, v) in edits {
+                if let Some(b) = a.get_mut(at) {
+                    *b = v;
+                }
+            }
+            a.truncate(cut.max(12));
+            let b = sample(b"");
+            let _ = if two { collection(&[&a, &b]) } else { collection(&[&a]) };
+        }
+    }
 }

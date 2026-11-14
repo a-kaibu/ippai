@@ -125,7 +125,7 @@ struct Decoded {
     order: std::collections::VecDeque<String>,
     bytes: usize,
     /// being decoded (the first asking decodes it, the others wait for that)
-    decoding: std::collections::HashMap<String, Arc<tokio::sync::OnceCell<Option<Arc<[u8]>>>>>,
+    decoding: std::collections::HashMap<String, Arc<tokio::sync::OnceCell<Result<Arc<[u8]>, StatusCode>>>>,
 }
 
 const DECODED_MAX: usize = 256 << 20;
@@ -178,53 +178,67 @@ async fn file(State(s): State<Store>, Path(path): Path<String>, headers: HeaderM
     let want = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).filter(|_| path.starts_with("chunks/"));
     // (decoded lately: not read again; 32 MiB read from the disk per 256 KiB asked for made
     // big chunks slow)
-    if let Some(want) = want {
-        if let Some(d) = s.decoded.lock().unwrap_or_else(|e| e.into_inner()).get(&path) {
-            return ranged(d, want);
-        }
-    }
-    let res = whole(&s, &path).await;
-    if res.status() != StatusCode::OK {
-        return res;
-    }
-    let Some(want) = want else { return res };
-    let raw = match axum::body::to_bytes(res.into_body(), usize::MAX).await {
-        Ok(b) => b,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    // (decoded once: the fetcher threads ask for several ranges of a new chunk at once)
+    let Some(want) = want else { return whole(&s, &path).await };
+    // (decoded once: the fetcher threads ask for several ranges of a new chunk at once; the
+    // cell is taken before the chunk is read, so it is read once too: review b01, each asker
+    // read the whole stored chunk first)
     let cell = {
         let mut g = s.decoded.lock().unwrap_or_else(|e| e.into_inner());
         match g.get(&path) {
-            Some(d) => Ok(d),
-            None => Err(g.decoding.entry(path.clone()).or_default().clone()),
+            Some(d) => return ranged(d, want),
+            None => g.decoding.entry(path.clone()).or_default().clone(),
         }
     };
-    let data = match cell {
-        Ok(d) => d,
-        Err(cell) => {
-            let d = cell
-                .get_or_init(|| async move {
-                    tokio::task::spawn_blocking(move || {
-                        use std::io::Read;
-                        let mut out = Vec::new();
-                        zstd::stream::Decoder::new(&raw[..]).ok()?.take(CHUNK_MAX + 1).read_to_end(&mut out).ok()?;
-                        ((out.len() as u64) <= CHUNK_MAX).then(|| Arc::<[u8]>::from(out))
-                    })
-                    .await
-                    .ok()
-                    .flatten()
-                })
-                .await
-                .clone();
-            let mut g = s.decoded.lock().unwrap_or_else(|e| e.into_inner());
-            g.decoding.remove(&path);
-            let Some(d) = d else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
-            g.put(&path, d.clone());
-            d
+    let hold = Decoding { s: &s, path: &path, cell };
+    let got = hold
+        .cell
+        .get_or_init(|| async {
+            let res = whole(&s, &path).await;
+            if res.status() != StatusCode::OK {
+                return Err(res.status());
+            }
+            let raw = axum::body::to_bytes(res.into_body(), usize::MAX).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            tokio::task::spawn_blocking(move || {
+                use std::io::Read;
+                let mut out = Vec::new();
+                zstd::stream::Decoder::new(&raw[..]).ok()?.take(CHUNK_MAX + 1).read_to_end(&mut out).ok()?;
+                ((out.len() as u64) <= CHUNK_MAX).then(|| Arc::<[u8]>::from(out))
+            })
+            .await
+            .ok()
+            .flatten()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
+        })
+        .await
+        .clone();
+    match got {
+        Ok(d) => {
+            s.decoded.lock().unwrap_or_else(|e| e.into_inner()).put(&path, d.clone());
+            drop(hold);
+            ranged(d, want)
         }
-    };
-    ranged(data, want)
+        Err(st) => {
+            drop(hold);
+            st.into_response()
+        }
+    }
+}
+
+/// A hold of a chunk's decoding cell: the last holder to go (done, or dropped mid-way with its
+/// request) takes the cell out of `decoding` (review b01: a request cancelled meanwhile left it).
+struct Decoding<'a> {
+    s: &'a Store,
+    path: &'a str,
+    cell: Arc<tokio::sync::OnceCell<Result<Arc<[u8]>, StatusCode>>>,
+}
+
+impl Drop for Decoding<'_> {
+    fn drop(&mut self) {
+        let mut g = self.s.decoded.lock().unwrap_or_else(|e| e.into_inner());
+        if g.decoding.get(self.path).is_some_and(|c| Arc::ptr_eq(c, &self.cell) && Arc::strong_count(c) == 2) {
+            g.decoding.remove(self.path);
+        }
+    }
 }
 
 /// Range `want` of decoded chunk `data`.
@@ -341,13 +355,16 @@ async fn direct_many(State(s): State<Store>, axum::Json(paths): axum::Json<Vec<S
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }
     let mut out = serde_json::Map::new();
-    for path in paths.iter().filter(|p| chunk_path(p)) {
-        match remote.direct(path, DIRECT_EXPIRY).await {
-            Ok(Some(d)) => {
-                out.insert(path.clone(), direct_json(&d));
+    let paths: Vec<String> = paths.into_iter().filter(|p| chunk_path(p)).collect();
+    match remote.direct_many(paths, DIRECT_EXPIRY).await {
+        Ok(all) => {
+            for (path, d) in all {
+                out.insert(path, direct_json(&d));
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("store-direct {path}: {e}"),
+        }
+        Err(e) => {
+            eprintln!("store-direct: {e:#}");
+            return StatusCode::BAD_GATEWAY.into_response();
         }
     }
     let mut r = axum::Json(serde_json::Value::Object(out)).into_response();
@@ -702,6 +719,55 @@ mod tests {
         tsv += &line("big.dat", 7, &[(&h, 7)]);
         std::fs::write(dir.join("trees/big.tsv"), &tsv).unwrap();
         assert!(warm_ahead(&state, "big", 2).await);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Review b01: ranges of a chunk not yet decoded asked for at once (the page's fetcher
+    /// threads) read the stored chunk once, decode it once, and each gets its own range; a
+    /// request dropped mid-way leaves no decoding entry behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ranges_asked_at_once_read_the_chunk_once() {
+        let (fake, remote, dir) = crate::storage::gc_tests::serve(30).await;
+        // (2 MiB that does not compress: past the plaintext cache's item size, as real chunks)
+        let raw: Vec<u8> = (0..(2u32 << 20)).map(|i| (i.wrapping_mul(2654435761).rotate_left(i % 13) >> 7) as u8).collect();
+        let h = "ab".to_string() + &"7".repeat(30);
+        remote.put(&format!("chunks/ab/{h}"), &zstd::encode_all(&raw[..], 1).unwrap()).await.unwrap();
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
+        let app = Router::new().route("/store/{*path}", get(file)).with_state(state.clone());
+        let before = fake.gets();
+        let mut tasks = vec![];
+        for k in 0..8u64 {
+            let (app, h) = (app.clone(), h.clone());
+            tasks.push(tokio::spawn(async move {
+                let (a, b) = (k * 200_000, k * 200_000 + 999);
+                let (st, _, body) = get_(&app, &format!("/store/chunks/ab/{h}"), Some(&format!("bytes={a}-{b}"))).await;
+                (st, a, body)
+            }));
+        }
+        for t in tasks {
+            let (st, a, body) = t.await.unwrap();
+            assert_eq!(st, StatusCode::PARTIAL_CONTENT);
+            assert_eq!(&body[..], &raw[a as usize..a as usize + 1000]);
+        }
+        assert_eq!(fake.gets() - before, 1, "one read of the stored chunk");
+        assert!(state.decoded.lock().unwrap().decoding.is_empty());
+        // (dropped while the chunk is being read: nothing left)
+        let h2 = "ab".to_string() + &"8".repeat(30);
+        (*state.remote).as_ref().unwrap().put(&format!("chunks/ab/{h2}"), &zstd::encode_all(&raw[..], 1).unwrap()).await.unwrap();
+        for after in [0u64, 5, 15, 40] {
+            let t = tokio::spawn({
+                let (app, h2) = (app.clone(), h2.clone());
+                async move { get_(&app, &format!("/store/chunks/ab/{h2}"), Some("bytes=0-9")).await }
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(after)).await;
+            t.abort();
+            let _ = t.await;
+            assert!(state.decoded.lock().unwrap().decoding.is_empty(), "after {after} ms");
+        }
+        // (a chunk that is not there: every asker gets 404, nothing kept)
+        let (st, _, _) = get_(&app, &format!("/store/chunks/ab/{}", "9".repeat(32)), Some("bytes=0-9")).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        assert!(state.decoded.lock().unwrap().decoding.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

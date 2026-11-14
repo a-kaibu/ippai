@@ -53,3 +53,10 @@ path = "fuzz_targets/evb.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ttc"
+path = "fuzz_targets/ttc.rs"
+test = false
+doc = false
+bench = false

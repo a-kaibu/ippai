@@ -21,8 +21,9 @@ pub struct Config {
     active_key: String,
     /// Hex encoded 256-bit keys. This file must be backed up separately from S3.
     keys: BTreeMap<String, String>,
-    /// Uploads at once in `push` [default: PUTS]. Each object is a 256 KiB chunk: with a far
-    /// gateway a round trip, not the line, bounds one upload, so more at once go faster.
+    /// Uploads at once in `push` [default: PUTS]. Each object is a chunk (4 MiB on average,
+    /// pack.rs DEFAULT_CHUNK_KIB): with a far gateway a round trip, not the line, bounds one
+    /// upload, so more at once go faster.
     #[serde(default)]
     uploads: Option<usize>,
     /// Where objects read from the bucket are kept on this machine [default: <cache>/s3, e.g.
@@ -116,7 +117,7 @@ mod tests {
             config,
             cache: Default::default(),
             inflight: Default::default(),
-            requests: tokio::sync::Semaphore::new(8),
+            requests: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
             disk: None,
         };
         s.put("chunks/test", b"game bytes").await.unwrap();
@@ -262,7 +263,7 @@ pub(crate) mod gc_tests {
             cache_gib: None,
         };
         let bucket = Bucket::new("test", Region::Custom { region: "us-east-1".into(), endpoint }, Credentials::new(Some("t"), Some("t"), None, None, None).unwrap()).unwrap().with_path_style();
-        let s = Storage { db: Library::new(&dir).unwrap(), bucket, config, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8), disk: None };
+        let s = Storage { db: Library::new(&dir).unwrap(), bucket, config, cache: Default::default(), inflight: Default::default(), requests: std::sync::Arc::new(tokio::sync::Semaphore::new(8)), disk: None };
         (f, s, dir)
     }
 
@@ -335,7 +336,7 @@ pub(crate) mod gc_tests {
         for (i, (b, then)) in backups.iter().enumerate() {
             let out = dir.join(format!("restored{i}.db"));
             s.restore(*b, &out).await.unwrap();
-            let r = Storage { db: Library(out), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None, cache: None, cache_gib: None }, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8), disk: None };
+            let r = Storage { db: Library(out), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None, cache: None, cache_gib: None }, cache: Default::default(), inflight: Default::default(), requests: std::sync::Arc::new(tokio::sync::Semaphore::new(8)), disk: None };
             for (l, v) in then {
                 assert_eq!(&*r.get(l).await.unwrap().unwrap(), &v[..], "backup {i} {l}");
             }
@@ -770,7 +771,7 @@ pub(crate) mod gc_tests {
         let app = Router::new().route("/{*path}", get(read)).with_state(slow);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let bucket = Bucket::new("test", Region::Custom { region: "us-east-1".into(), endpoint }, Credentials::new(Some("t"), Some("t"), None, None, None).unwrap()).unwrap().with_path_style();
-        let s = Storage { bucket, requests: tokio::sync::Semaphore::new(1), ..s };
+        let s = Storage { bucket, requests: std::sync::Arc::new(tokio::sync::Semaphore::new(1)), ..s };
         let t0 = std::time::Instant::now();
         let e = s.get("chunks/b").await.unwrap_err();
         let took = t0.elapsed();
@@ -817,6 +818,88 @@ pub(crate) mod gc_tests {
         assert_eq!(saves.read("game").await.unwrap().unwrap(), (last, format!("save {}", last - 1).into_bytes()));
         assert!(!saves.write("game", last - 1, b"stale").await.unwrap(), "the revision check still holds");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Review b01: every Storage the server opens on one configuration (saves, store API,
+    /// tree files) shares one disk cache (walked once, one byte count), one plaintext cache,
+    /// one download gate and one request cap; another database or configuration has its own.
+    #[tokio::test]
+    async fn storages_on_one_configuration_share_their_caches() {
+        let dir = std::env::temp_dir().join(format!("ippai-shared-storage-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = |name: &str, cache: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, format!("bucket = \"b\"\nregion = \"us-east-1\"\nendpoint = \"http://127.0.0.1:9\"\nprefix = \"\"\nactive_key = \"k\"\ncache = {:?}\ncache_gib = 1\n[keys]\nk = \"{}\"\n", dir.join(cache), "03".repeat(32))).unwrap();
+            p
+        };
+        let (c1, c2) = (cfg("a.toml", "s3a"), cfg("b.toml", "s3b"));
+        let lib = |n: &str| Library::new(&dir.join(n)).unwrap();
+        let a = Storage::open(lib("store"), &c1).unwrap();
+        let b = Storage::open(lib("store"), &c1).unwrap();
+        let other_db = Storage::open(lib("store2"), &c1).unwrap();
+        let other_cfg = Storage::open(lib("store"), &c2).unwrap();
+        assert!(Arc::ptr_eq(a.disk.as_ref().unwrap(), b.disk.as_ref().unwrap()));
+        assert!(Arc::ptr_eq(&a.cache, &b.cache) && Arc::ptr_eq(&a.inflight, &b.inflight) && Arc::ptr_eq(&a.requests, &b.requests));
+        assert!(!Arc::ptr_eq(&a.requests, &other_db.requests) && !Arc::ptr_eq(&a.requests, &other_cfg.requests));
+        assert!(!Arc::ptr_eq(a.disk.as_ref().unwrap(), other_cfg.disk.as_ref().unwrap()));
+        // (the cap is one: what one holds, the other cannot take)
+        let held: Vec<_> = (0..16).map(|_| a.requests.try_acquire().unwrap()).collect();
+        assert!(b.requests.try_acquire().is_err());
+        assert!(other_db.requests.try_acquire().is_ok());
+        drop(held);
+        assert!(b.requests.try_acquire().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review b01: a read dropped at any point (its client went away: axum drops the handler)
+    /// leaves no download gate behind; reads that finish leave none either.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_dropped_read_lets_go_of_its_gate() {
+        let (_f, s, dir) = serve(40).await;
+        for i in 0..6 {
+            s.put(&format!("chunks/ab/{i}"), format!("object {i}").as_bytes()).await.unwrap();
+        }
+        let s = Arc::new(s);
+        for (i, after) in [0u64, 2, 5, 15, 30, 60].into_iter().enumerate() {
+            let task = tokio::spawn({
+                let s = s.clone();
+                async move { s.get(&format!("chunks/ab/{i}")).await }
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(after)).await;
+            task.abort();
+            let _ = task.await;
+            assert_eq!(s.gates(), 0, "dropped after {after} ms");
+        }
+        assert_eq!(&*s.get("chunks/ab/0").await.unwrap().unwrap(), b"object 0");
+        assert_eq!(s.gates(), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 32, ..Default::default() })]
+        /// direct_many answers, in the order asked, for the names the store has (duplicates
+        /// too), exactly what direct answers for each alone.
+        #[test]
+        fn direct_many_is_direct_of_each(ask in proptest::collection::vec(0usize..8, 0..20)) {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_f, s, dir) = serve(0).await;
+                let names: Vec<String> = (0..8).map(|i| format!("chunks/ab/{i:032x}")).collect();
+                for n in &names[..5] {
+                    s.put(n, n.as_bytes()).await.unwrap();
+                }
+                s.pack_objects("g", &names[..2], 1 << 20).await.unwrap();
+                let asked: Vec<String> = ask.iter().map(|&i| names[i].clone()).collect();
+                let many = s.direct_many(asked.clone(), 60).await.unwrap();
+                let want: Vec<&String> = asked.iter().filter(|n| names[..5].contains(n)).collect();
+                assert_eq!(many.iter().map(|m| &m.0).collect::<Vec<_>>(), want);
+                for (n, d) in &many {
+                    let one = s.direct(n, 60).await.unwrap().unwrap();
+                    assert_eq!((d.object, d.key, d.pack.as_ref().map(|p| (p.id, p.offset, p.len))), (one.object, one.key, one.pack.as_ref().map(|p| (p.id, p.offset, p.len))));
+                }
+                let _ = std::fs::remove_dir_all(dir);
+            });
+        }
     }
 
     /// A store with one game ("sample", one tree) and its save written, in the Storage's dir.
@@ -1000,7 +1083,7 @@ pub(crate) mod gc_tests {
             config: Config { keys: s.config.keys.clone(), active_key: s.config.active_key.clone(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None, cache: None, cache_gib: None },
             cache: Default::default(),
             inflight: Default::default(),
-            requests: tokio::sync::Semaphore::new(8),
+            requests: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
             disk: None,
         };
         let shared: Vec<u8> = (0..600_000u32).map(|i| (i * 13 % 251) as u8).collect();
@@ -1261,7 +1344,7 @@ pub(crate) mod gc_tests {
         }
         assert_eq!(f.gets.load(SeqCst), 2, "the big chunk once, the small once");
         // a new server on the same disk: nothing from the bucket
-        let mut again = Storage { db: s.db.clone(), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None, cache: None, cache_gib: None }, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8), disk: None };
+        let mut again = Storage { db: s.db.clone(), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None, cache: None, cache_gib: None }, cache: Default::default(), inflight: Default::default(), requests: std::sync::Arc::new(tokio::sync::Semaphore::new(8)), disk: None };
         again.disk = Some(Arc::new(Disk::open(disk.clone(), 64 << 20).unwrap()));
         assert_eq!(&*again.get("chunks/big").await.unwrap().unwrap(), &big[..]);
         assert_eq!(&*again.get("chunks/small").await.unwrap().unwrap(), b"small");
@@ -1554,13 +1637,36 @@ pub struct Storage {
     pub db: Library,
     bucket: Box<Bucket>,
     config: Config,
-    cache: std::sync::Mutex<Cache>,
+    /// (this and the three below are shared by every Storage the process opened on the same
+    /// configuration and database: `Storage::open`)
+    cache: std::sync::Arc<std::sync::Mutex<Cache>>,
     /// one download per object at a time (the others wait for it and take it from the cache)
-    inflight: std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>>,
-    requests: tokio::sync::Semaphore,
+    inflight: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>>>,
+    requests: std::sync::Arc<tokio::sync::Semaphore>,
     /// objects downloaded, kept on the disk (None: storage.toml's cache_gib = 0)
     disk: Option<std::sync::Arc<Disk>>,
 }
+
+/// [`Storage::gate`]'s hold.
+struct Gate<'a>(&'a Storage, std::sync::Arc<tokio::sync::Mutex<()>>, Uuid);
+
+impl Drop for Gate<'_> {
+    fn drop(&mut self) {
+        self.0.ungate(self.2, &self.1);
+    }
+}
+
+/// What the Storages opened on one configuration share (`Storage::open`).
+#[derive(Clone)]
+struct Shared {
+    cache: std::sync::Arc<std::sync::Mutex<Cache>>,
+    inflight: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>>>,
+    requests: std::sync::Arc<tokio::sync::Semaphore>,
+    disk: Option<std::sync::Arc<Disk>>,
+}
+
+/// By (configuration file, database).
+static SHARED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, std::path::PathBuf), Shared>>> = std::sync::LazyLock::new(Default::default);
 
 /// Objects as the bucket has them (encrypted: [`Storage::get`] decrypts, so checks, them each
 /// time), in `<dir>/<2 hex>/<uuid>`, the least lately read dropped once past `limit` bytes.
@@ -1647,9 +1753,13 @@ impl Disk {
     /// Object `id` when kept (and marked as just read).
     pub(crate) fn read(&self, id: Uuid) -> Option<std::sync::Arc<Vec<u8>>> {
         if let Some(data) = self.pending(id) { return Some(data); }
+        use std::io::Read;
         let p = self.path(id);
-        let data = std::fs::read(&p).ok()?;
-        let _ = std::fs::File::options().write(true).open(&p).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        // (one open to read it and mark it read: review b01, each read opened the file twice)
+        let mut f = std::fs::File::options().read(true).write(true).open(&p).or_else(|_| std::fs::File::open(&p)).ok()?;
+        let mut data = Vec::new();
+        f.read_to_end(&mut data).ok()?;
+        let _ = f.set_modified(std::time::SystemTime::now());
         Some(std::sync::Arc::new(data))
     }
 
@@ -1774,6 +1884,9 @@ struct Cache {
     bytes: usize,
 }
 
+/// The plaintext cache's largest item: small objects (the catalog, saves, small chunks). The
+/// chunks of today's packs (4 MiB on average) stay out: their decoded data is kept by
+/// store_api's `Decoded` and their ciphertext by the `Disk` (review b01 asked).
 const CACHE_ITEM: usize = 1 << 20;
 const CACHE_BYTES: usize = 64 << 20;
 
@@ -1953,23 +2066,38 @@ impl Storage {
         let gib = config.cache_gib.unwrap_or(64);
         // (review b01: gib << 30 wrapped for a typo'd huge value, to a tiny or zero limit)
         anyhow::ensure!(gib <= 1 << 30, "storage.toml: cache_gib {gib} is more than any disk");
-        let disk = if gib == 0 {
-            None
-        } else {
-            let dir = match &config.cache {
-                Some(d) => d.clone(),
-                None => directories::ProjectDirs::from("", "", "ippai").context("no home directory")?.cache_dir().join("s3"),
-            };
-            Some(std::sync::Arc::new(Disk::open(dir, gib << 30)?))
+        // One disk cache, plaintext cache, download gate and request cap per configuration
+        // (review b01: the server opened three Storages, each walking the whole disk cache at
+        // start, each with its own byte count, caches and 16 requests).
+        let key = (path.canonicalize().unwrap_or_else(|_| path.to_path_buf()), db.0.clone());
+        let shared = {
+            let mut all = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+            match all.get(&key) {
+                Some(s) => s.clone(),
+                None => {
+                    let disk = if gib == 0 {
+                        None
+                    } else {
+                        let dir = match &config.cache {
+                            Some(d) => d.clone(),
+                            None => directories::ProjectDirs::from("", "", "ippai").context("no home directory")?.cache_dir().join("s3"),
+                        };
+                        Some(std::sync::Arc::new(Disk::open(dir, gib << 30)?))
+                    };
+                    let s = Shared { cache: Default::default(), inflight: Default::default(), requests: std::sync::Arc::new(tokio::sync::Semaphore::new(16)), disk };
+                    all.insert(key, s.clone());
+                    s
+                }
+            }
         };
         let s = Self {
             db,
             bucket,
             config,
-            cache: Default::default(),
-            inflight: Default::default(),
-            requests: tokio::sync::Semaphore::new(16),
-            disk,
+            cache: shared.cache,
+            inflight: shared.inflight,
+            requests: shared.requests,
+            disk: shared.disk,
         };
         s.key(&s.config.active_key)?;
         Ok(s)
@@ -2172,9 +2300,9 @@ impl Storage {
         }
         // the same object asked for at once (a file's chunks fetched ahead, two clients):
         // one download
-        let gate = self.inflight.lock().unwrap().entry(e.object).or_default().clone();
+        let gate = self.gate(e.object);
         let data = async {
-            let _one = gate.lock().await;
+            let _one = gate.1.lock().await;
             if let Some(data) = self.cache.lock().unwrap().get(&e.object) {
                 return Ok(data);
             }
@@ -2213,7 +2341,7 @@ impl Storage {
             Ok::<_, anyhow::Error>(data)
         }
         .await;
-        self.ungate(e.object, &gate);
+        drop(gate);
         Ok(Some(data?))
     }
 
@@ -2221,6 +2349,19 @@ impl Storage {
     #[cfg(test)]
     pub(crate) fn set_disk(&mut self, dir: std::path::PathBuf, limit: u64) {
         self.disk = Some(std::sync::Arc::new(Disk::open(dir, limit).unwrap()));
+    }
+
+    /// Object `id`'s download gate, let go when dropped: also when the future holding it is
+    /// dropped mid-download (a client gone away; review b01: its entry stayed).
+    fn gate(&self, id: Uuid) -> Gate<'_> {
+        let g = self.inflight.lock().unwrap().entry(id).or_default().clone();
+        Gate(self, g, id)
+    }
+
+    /// Downloads waiting or running now (tests).
+    #[cfg(test)]
+    pub(crate) fn gates(&self) -> usize {
+        self.inflight.lock().unwrap().len()
     }
 
     fn ungate(&self, id: Uuid, gate: &std::sync::Arc<tokio::sync::Mutex<()>>) {
@@ -2256,6 +2397,43 @@ impl Storage {
             None => None,
         };
         Ok(Some(Direct { url, key, object: e.object, pack }))
+    }
+
+    /// [`Storage::direct`] of each of `logicals` (those the store names), the database read
+    /// once for them all on a blocking thread (review b01: a game start's 4096 answers opened
+    /// two connections each, inline on a request thread).
+    pub async fn direct_many(&self, logicals: Vec<String>, expiry: u32) -> Result<Vec<(String, Direct)>> {
+        type Row = (String, String, Option<(String, i64, i64)>);
+        let db = self.db.clone();
+        let rows: Vec<Row> = tokio::task::spawn_blocking(move || -> Result<Vec<Row>> {
+            let c = db.connect()?;
+            let mut env = c.prepare_cached("SELECT envelope FROM objects WHERE logical=?")?;
+            let mut pack = c.prepare_cached("SELECT pack,offset,len FROM packs WHERE logical=? AND object=?")?;
+            let mut out = Vec::new();
+            for l in logicals {
+                let Some(entry): Option<String> = env.query_row([&l], |r| r.get(0)).optional()? else { continue };
+                let e: Envelope = serde_json::from_str(&entry)?;
+                let span = pack.query_row(rusqlite::params![l, e.object.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+                out.push((l, entry, span));
+            }
+            Ok(out)
+        })
+        .await??;
+        let mut out = Vec::with_capacity(rows.len());
+        for (l, entry, span) in rows {
+            let e: Envelope = serde_json::from_str(&entry)?;
+            let key = e.data_key(&self.key(&e.key_id)?)?;
+            let url = self.bucket.presign_get(self.path(e.object), expiry, None).await?;
+            let pack = match span {
+                Some((id, offset, len)) => {
+                    let id = Uuid::parse_str(&id)?;
+                    Some(PackSpan { url: self.bucket.presign_get(self.path(id), expiry, None).await?, id, offset: offset as u64, len: len as u64 })
+                }
+                None => None,
+            };
+            out.push((l, Direct { url, key, object: e.object, pack }));
+        }
+        Ok(out)
     }
 
     /// Whether the store names `logical`.
@@ -2477,9 +2655,9 @@ impl Storage {
         if disk.has(e.object) {
             return Ok(false);
         }
-        let gate = self.inflight.lock().unwrap().entry(e.object).or_default().clone();
+        let gate = self.gate(e.object);
         let r = async {
-            let _one = gate.lock().await;
+            let _one = gate.1.lock().await;
             if disk.has(e.object) {
                 return Ok(false);
             }
@@ -2489,7 +2667,7 @@ impl Storage {
             Ok::<_, anyhow::Error>(true)
         }
         .await;
-        self.ungate(e.object, &gate);
+        drop(gate);
         r
     }
 

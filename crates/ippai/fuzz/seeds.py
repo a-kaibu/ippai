@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Writes the unpack target's starting inputs to seeds/unpack/ (not in git): small zips (one
+"""Writes the unpack target's starting inputs to seeds/unpack/ (not in git), and the ttc
+target's (one and two small TrueType fonts) to seeds/ttc/: small zips (one
 self-extracting, one holding a setup), InstallShield setups (ISSetupStream 2 and 4, the old
 header, the plain one) and a zlib-stream setup, as unpack.rs reads them. The first byte picks
 the file's extension (even: .zip, odd: .exe).
@@ -100,6 +101,29 @@ def main():
     }
     for k, v in seeds.items():
         open(os.path.join(ROOT, k), "wb").write(v)
+
+    ttc_root = os.path.join(os.path.dirname(ROOT), "ttc")
+    os.makedirs(ttc_root, exist_ok=True)
+    a, b = font(b"\x01\x02"), font(b"\x03\x04\x05\x06")
+    # (first byte: how many fonts, minus one; then the fonts, cut in equal parts)
+    open(os.path.join(ttc_root, "one"), "wb").write(b"\0" + a)
+    pad = max(len(a), len(b))
+    open(os.path.join(ttc_root, "two"), "wb").write(b"\1" + a.ljust(pad, b"\0") + b.ljust(pad, b"\0"))
+
+
+def font(hint):
+    """A TrueType font of two glyphs (as crates/ippai/src/ttc.rs tests::sample)."""
+    g = bytes([0, 1, 0, 0, 0, 0, 0, 10, 0, 10, 0, 0]) + struct.pack(">H", len(hint)) + hint + b"\1\0\0"
+    g += b"\0" * (-len(g) % 4)
+    loca = struct.pack(">HHH", 0, len(g) // 2, len(g) // 2)
+    tables = [(b"head", bytes(54)), (b"glyf", g), (b"loca", loca), (b"name", b"same in both")]
+    head = struct.pack(">IHHHH", 0x10000, len(tables), 0, 0, 0)
+    at, data, dir_ = 12 + 16 * len(tables), b"", b""
+    for tag, d in tables:
+        dir_ += tag + struct.pack(">III", 0, at, len(d))
+        data += d + b"\0" * (-len(d) % 4)
+        at = 12 + 16 * len(tables) + len(data)
+    return head + dir_ + data
 
 
 main()

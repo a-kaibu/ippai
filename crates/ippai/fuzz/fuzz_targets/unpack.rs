@@ -7,6 +7,9 @@
 #[allow(dead_code)]
 #[path = "../../src/unpack.rs"]
 mod unpack;
+#[allow(dead_code)]
+#[path = "../../src/engine_exe.rs"]
+mod engine_exe;
 
 use libfuzzer_sys::fuzz_target;
 use std::alloc::{GlobalAlloc, Layout, System};

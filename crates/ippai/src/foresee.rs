@@ -85,7 +85,7 @@ pub async fn build(trees: &Trees, tree: &str) -> String {
 
 /// An archive's script members' lines (`members` in the archive's order; `script`: whether one
 /// is a script, by its name or its first bytes).
-async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<foresee::Member>, cache: &mut HashMap<u64, Vec<u8>>, by_bytes: fn(&[u8]) -> bool) -> String {
+async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<foresee::Member>, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>, by_bytes: fn(&[u8]) -> bool) -> String {
     let mut out = String::new();
     // (in the archive's order: the chunks they lie in read once)
     members.sort_by_key(|m| m.segments[0].0);
@@ -121,18 +121,18 @@ async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<f
     out
 }
 
-async fn xp3(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> String {
+async fn xp3(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> String {
     let members = xp3_members(trees, tree, path, cache).await;
     members_lines(trees, tree, path, members, cache, |_| false).await
 }
 
-async fn bgi(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> String {
+async fn bgi(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> String {
     let members = bgi_members(trees, tree, path, cache).await;
     members_lines(trees, tree, path, members, cache, foresee::is_bgi_script).await
 }
 
 /// An .xp3's members, from its index.
-async fn xp3_members(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> Vec<foresee::Member> {
+async fn xp3_members(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> Vec<foresee::Member> {
     let Some(head) = trees.read(tree, path, 0, 0x28, cache).await else { return Vec::new() };
     let Some(at) = foresee::xp3_index_at(&head) else { return Vec::new() };
     let Some(len) = trees.read(tree, path, at, 17, cache).await.as_deref().and_then(foresee::xp3_index_len) else { return Vec::new() };
@@ -144,7 +144,7 @@ async fn xp3_members(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<
 }
 
 /// A BGI .arc's members, from its index.
-async fn bgi_members(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> Vec<foresee::Member> {
+async fn bgi_members(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> Vec<foresee::Member> {
     let Some(len) = trees.read(tree, path, 0, 16, cache).await.as_deref().and_then(foresee::bgi_index_len) else { return Vec::new() };
     if len > foresee::INDEX_MAX as u64 {
         return Vec::new();

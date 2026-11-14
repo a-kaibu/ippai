@@ -555,7 +555,83 @@ fn is_plain(job: &Job, f: &mut File, end: u64, size: u64, out: &Path) -> Result<
 
 // --- zlib-stream setups (tests/zsfx.py) ---
 
-/// The next offset at or after `pos` where `pat` starts.
+/// A window of the file read once and searched in place for the starts of zlib streams (review
+/// b01: each "\x78\xda" of a multi-GB installer that is no zsfx cost a seek, a 1 MiB read and
+/// a 1 MiB buffer, and another 1 MiB read to try inflating it).
+struct Scan {
+    buf: Vec<u8>,
+    /// the file offset of buf[0]
+    at: u64,
+    /// buf runs to the end of the file
+    end: bool,
+}
+
+/// What a window holds (and how far past a hit it looks to tell a stream).
+const SCAN_WINDOW: usize = 1 << 20;
+const SCAN_LOOK: usize = 4096;
+
+impl Scan {
+    fn new() -> Self {
+        Scan { buf: Vec::new(), at: 0, end: false }
+    }
+
+    /// The bytes from `pos` on (at least SCAN_LOOK of them unless the file ends first).
+    fn view(&mut self, f: &mut File, pos: u64) -> Result<&[u8]> {
+        let inside = pos >= self.at && pos - self.at <= self.buf.len() as u64;
+        if !inside || (self.buf.len() as u64 - (pos - self.at)) < SCAN_LOOK as u64 && !self.end {
+            f.seek(SeekFrom::Start(pos))?;
+            self.buf.clear();
+            Read::by_ref(f).take(SCAN_WINDOW as u64).read_to_end(&mut self.buf)?;
+            self.at = pos;
+            self.end = self.buf.len() < SCAN_WINDOW;
+        }
+        Ok(&self.buf[(pos - self.at) as usize..])
+    }
+
+    /// The next offset at or after `pos` where `ZLIB9` starts and what follows could be a zlib
+    /// stream (its first bytes inflate without an error).
+    fn next_stream(&mut self, f: &mut File, mut pos: u64) -> Result<Option<u64>> {
+        loop {
+            let v = self.view(f, pos)?;
+            if v.len() < ZLIB9.len() {
+                return Ok(None);
+            }
+            let Some(i) = v.windows(ZLIB9.len()).position(|w| w == ZLIB9) else {
+                pos += (v.len() - ZLIB9.len() + 1) as u64;
+                continue;
+            };
+            let v = self.view(f, pos + i as u64)?;
+            if plausible_zlib(&v[..v.len().min(SCAN_LOOK)]) {
+                return Ok(Some(pos + i as u64));
+            }
+            pos += i as u64 + 1;
+        }
+    }
+}
+
+/// Whether `head` (a zlib header and what follows) inflates without an error as far as it goes.
+fn plausible_zlib(head: &[u8]) -> bool {
+    let mut d = flate2::Decompress::new(true);
+    let mut out = vec![0u8; 64 << 10];
+    let mut input = head;
+    loop {
+        let (i0, o0) = (d.total_in(), d.total_out());
+        match d.decompress(input, &mut out, flate2::FlushDecompress::None) {
+            Err(_) => return false,
+            Ok(flate2::Status::StreamEnd) => return true,
+            Ok(_) => {
+                let used = (d.total_in() - i0) as usize;
+                input = &input[used..];
+                if input.is_empty() || (used == 0 && d.total_out() == o0) {
+                    return true;
+                }
+            }
+        }
+    }
+}
+
+/// The next offset at or after `pos` where `pat` starts (tests: the scanner finds no less).
+#[cfg(test)]
 fn find_from(f: &mut File, mut pos: u64, pat: &[u8]) -> Result<Option<u64>> {
     let mut b = vec![0; 1 << 20];
     loop {
@@ -607,9 +683,10 @@ const ZLIB9: &[u8] = b"\x78\xda";
 /// as the header says.
 fn zsfx(job: &Job, src: &Path, out: &Path) -> Result<bool> {
     let mut f = File::open(src)?;
+    let mut scan = Scan::new();
     let mut pos = 0;
     let ini = loop {
-        let Some(i) = find_from(&mut f, pos, ZLIB9)? else { return Ok(false) };
+        let Some(i) = scan.next_stream(&mut f, pos)? else { return Ok(false) };
         let mut h = Head { buf: vec![], cap: 1 << 20 };
         // (streams before the header are skipped whole; one inflating to more than 64 MiB is
         // looked into further as if it were none)
@@ -645,7 +722,7 @@ fn zsfx(job: &Job, src: &Path, out: &Path) -> Result<bool> {
         }
         fs::create_dir_all(p.parent().unwrap())?;
         loop {
-            let Some(i) = find_from(&mut f, pos, ZLIB9)? else { bail!("{name}: no stream left") };
+            let Some(i) = scan.next_stream(&mut f, pos)? else { bail!("{name}: no stream left") };
             let m = job.mark();
             let mut w = Capped { w: io::BufWriter::new(File::create(&p)?), job, n: 0, name };
             match inflate_at(&mut f, i, &mut w, *size)? {
@@ -1801,6 +1878,66 @@ mod tests {
         fs::create_dir_all(d.join("many")).unwrap();
         limit_err(zsfx(&Job::new(small()), &d.join("many.exe"), &d.join("many")));
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Review b01: the scanner of zlib streams finds every real stream a byte-by-byte search
+    /// finds, in the same file, past any number of stray "\x78\xda" (each hit no longer a
+    /// seek and 1 MiB reads), across its window's edges too.
+    #[test]
+    fn scanner_finds_the_streams() {
+        let mut seed = 0x243f6a8885a308d3u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let dir = std::env::temp_dir().join(format!("ippai-scan-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for round in 0..12 {
+            // junk with stray headers, and real streams at random places (two across the 1 MiB edge)
+            let len = if round < 4 { 3 << 20 } else { 200_000 };
+            let mut data: Vec<u8> = (0..len).map(|_| rnd() as u8).collect();
+            for _ in 0..2000 {
+                let at = rnd() as usize % (len - 2);
+                data[at..at + 2].copy_from_slice(ZLIB9);
+            }
+            let mut real = vec![];
+            let places: Vec<usize> = if round < 4 { vec![SCAN_WINDOW - 3, SCAN_WINDOW + SCAN_WINDOW / 2, 2 * SCAN_WINDOW - 100] } else { (0..3).map(|_| rnd() as usize % (len - 5000)).collect() };
+            for at in places {
+                let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+                z.write_all(format!("stream at {at} {}", "x".repeat(rnd() as usize % 3000)).as_bytes()).unwrap();
+                let z = z.finish().unwrap();
+                assert_eq!(&z[..2], ZLIB9);
+                let at = at.min(data.len() - z.len());
+                data[at..at + z.len()].copy_from_slice(&z);
+                real.push(at as u64);
+            }
+            let p = dir.join("f.bin");
+            fs::write(&p, &data).unwrap();
+            let mut f = File::open(&p).unwrap();
+            let mut scan = Scan::new();
+            let (mut pos, mut hits) = (0u64, vec![]);
+            while let Some(h) = scan.next_stream(&mut f, pos).unwrap() {
+                hits.push(h);
+                pos = h + 1;
+            }
+            let mut pos = 0;
+            let mut all = vec![];
+            while let Some(h) = find_from(&mut f, pos, ZLIB9).unwrap() {
+                all.push(h);
+                pos = h + 1;
+            }
+            for r in &real {
+                // (a stream written over by a later one is no stream any more)
+                if inflate_at(&mut f, *r, &mut io::sink(), 1 << 20).unwrap().is_some() {
+                    assert!(hits.contains(r), "round {round}: the stream at {r} not found");
+                }
+            }
+            assert!(hits.iter().all(|h| all.contains(h)), "round {round}: a hit that is no header");
+            assert!(hits.len() * 4 < all.len(), "round {round}: {} of {} stray headers taken", hits.len(), all.len());
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

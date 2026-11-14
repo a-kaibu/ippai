@@ -78,6 +78,30 @@ pub fn latest() -> Result<String> {
     Ok(v.to_string())
 }
 
+/// Downloads `url` into the file `to` (at most 512 MiB, not held in memory: review b01); its
+/// SHA-256 in hex.
+fn download_to(url: &str, to: &Path) -> Result<String> {
+    use std::io::Write as _;
+    let r = get_url(url).with_context(|| url.to_string())?;
+    let mut rd = r.into_reader().take((512 << 20) + 1);
+    let mut f = std::io::BufWriter::new(std::fs::File::create(to)?);
+    let mut h = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buf = vec![0u8; 256 << 10];
+    let mut n = 0u64;
+    loop {
+        let k = rd.read(&mut buf)?;
+        if k == 0 {
+            break;
+        }
+        n += k as u64;
+        ensure!(n <= 512 << 20, "{url}: more than 512 MiB");
+        h.update(&buf[..k]);
+        f.write_all(&buf[..k])?;
+    }
+    f.flush()?;
+    Ok(h.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn download(url: &str) -> Result<Vec<u8>> {
     let r = get_url(url).with_context(|| url.to_string())?;
     let mut b = Vec::new();
@@ -91,17 +115,17 @@ pub fn install(version: &str, exe: &Path, fonts: &Path) -> Result<()> {
     let (os, arch) = target().context("there are Linux builds only")?;
     let file = format!("ippai_{version}_{os}_{arch}.tar.gz");
     let dir = format!("{}/download/v{version}", base());
-    let tgz = download(&format!("{dir}/{file}"))?;
-    let want = checksum(&dir, version, &file)?;
-    let got: String = ring::digest::digest(&ring::digest::SHA256, &tgz).as_ref().iter().map(|b| format!("{b:02x}")).collect();
-    ensure!(want.eq_ignore_ascii_case(&got), "checksum mismatch for {file}");
     // (unpacked beside the binary: the renames stay on one file system)
     let parent = exe.parent().context("no directory")?;
     let tmp = parent.join(format!(".ippai-update-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp)?;
     let r = (|| {
-        let mut a = tar::Archive::new(flate2::read::GzDecoder::new(&tgz[..]));
+        let archive = tmp.join(".archive.tar.gz");
+        let got = download_to(&format!("{dir}/{file}"), &archive)?;
+        let want = checksum(&dir, version, &file)?;
+        ensure!(want.eq_ignore_ascii_case(&got), "checksum mismatch for {file}");
+        let mut a = tar::Archive::new(flate2::read::GzDecoder::new(std::io::BufReader::new(std::fs::File::open(&archive)?)));
         for e in a.entries()? {
             let mut e = e?;
             let p = e.path()?.into_owned();
@@ -186,12 +210,36 @@ struct Up {
     busy: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// What [`latest`] said lately, and when: GitHub asked at most every CHECK_OK (CHECK_ERR after
+/// a failure) however often the page asks (review b01: each GET asked, up to 300 s each).
+/// (with the releases' address it is for)
+static LATEST: std::sync::Mutex<Option<(String, std::time::Instant, std::result::Result<String, String>)>> = std::sync::Mutex::new(None);
+const CHECK_OK: Duration = Duration::from_secs(600);
+const CHECK_ERR: Duration = Duration::from_secs(60);
+
+/// Whether an answer of `age` is still good (`ok`: it was a version).
+fn fresh(age: Duration, ok: bool) -> bool {
+    age < if ok { CHECK_OK } else { CHECK_ERR }
+}
+
+fn latest_kept() -> std::result::Result<String, String> {
+    let at = base();
+    if let Some((u, t, r)) = LATEST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if *u == at && fresh(t.elapsed(), r.is_ok()) {
+            return r.clone();
+        }
+    }
+    let r = latest().map_err(|e| format!("{e:#}"));
+    *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = Some((at, std::time::Instant::now(), r.clone()));
+    r
+}
+
 async fn check() -> Json<serde_json::Value> {
     let current = env!("IPPAI_VERSION");
-    let l = tokio::task::spawn_blocking(latest).await;
+    let l = tokio::task::spawn_blocking(latest_kept).await;
     let (latest, error) = match l {
         Ok(Ok(v)) => (Some(v), None),
-        Ok(Err(e)) => (None, Some(format!("{e:#}"))),
+        Ok(Err(e)) => (None, Some(e)),
         Err(e) => (None, Some(e.to_string())),
     };
     Json(serde_json::json!({
@@ -237,6 +285,10 @@ async fn update(State(u): State<Up>) -> axum::response::Response {
 fn restart_soon(exe: PathBuf) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(500));
+        // (writes going on finish first: saves, regions, uploads; review b01, exec cut them)
+        if !wait_idle(&WRITES, DRAIN) {
+            eprintln!("ippai: restarting with {} writes still going on", WRITES.load(std::sync::atomic::Ordering::SeqCst));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -248,6 +300,40 @@ fn restart_soon(exe: PathBuf) {
         drop(exe);
         std::process::exit(1);
     });
+}
+
+/// Requests that write (any but GET and HEAD) going on now: [`Writing`].
+pub static WRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How long a restart waits for them at most.
+const DRAIN: Duration = Duration::from_secs(30);
+
+/// A write request's mark in [`WRITES`], for as long as it is handled (serve.rs `headers`).
+pub struct Writing(&'static std::sync::atomic::AtomicUsize);
+
+impl Writing {
+    pub fn new(n: &'static std::sync::atomic::AtomicUsize) -> Self {
+        n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Writing(n)
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Waits until `n` is 0 or `deadline` passed: whether it got to 0.
+fn wait_idle(n: &std::sync::atomic::AtomicUsize, deadline: Duration) -> bool {
+    let t0 = std::time::Instant::now();
+    while n.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        if t0.elapsed() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
 }
 
 /// The routes; `exe` is this binary's path (taken at the start: once replaced, /proc/self/exe
@@ -466,5 +552,86 @@ mod tests {
         assert!(v["latest"].is_null() && v["error"].is_string() && v["newer"] == false);
         std::env::remove_var("IPPAI_UPDATE_URL");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    proptest! {
+        /// A version is kept longer than a failure, and nothing is kept past CHECK_OK.
+        #[test]
+        fn answers_kept_as_long_as_they_are_good(ms in 0u64..2_000_000, ok: bool) {
+            let age = Duration::from_millis(ms);
+            prop_assert_eq!(fresh(age, ok), age < if ok { CHECK_OK } else { CHECK_ERR });
+            prop_assert!(!fresh(age, false) || fresh(age, true));
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// However the write requests start and end on other threads, wait_idle says true only
+        /// once none is left, and false when one is held past the deadline.
+        #[test]
+        fn a_restart_waits_for_writes(holds in proptest::collection::vec(0u64..40, 0..6), stuck: bool) {
+            static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let ts: Vec<_> = holds.iter().map(|&ms| { let w = Writing::new(&N); std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(ms)); drop(w) }) }).collect();
+            let held = stuck.then(|| { let w = Writing::new(&N); std::thread::spawn(move || { let _ = rx.recv(); drop(w) }) });
+            let ok = wait_idle(&N, Duration::from_millis(300));
+            prop_assert_eq!(ok, !stuck);
+            if ok { prop_assert_eq!(N.load(std::sync::atomic::Ordering::SeqCst), 0); }
+            drop(tx);
+            for t in ts { t.join().unwrap(); }
+            if let Some(t) = held { t.join().unwrap(); }
+            prop_assert_eq!(N.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+    }
+
+    /// The archive goes to the file as it comes, its SHA-256 the file's; more than 512 MiB is
+    /// refused (the body is never read whole into memory).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn downloads_go_to_a_file() {
+        let data: Vec<u8> = (0..3_000_000u32).map(|i| (i * 31 % 251) as u8).collect();
+        let d2 = data.clone();
+        let app = Router::new().route("/a", get(move || async move { d2.clone() })).route("/big", get(|| async { axum::body::Body::from_stream(futures_util::stream::iter((0..513).map(|_| Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![7u8; 1 << 20]))))) }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let at = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let dir = std::env::temp_dir().join(format!("ippai-dl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, g) = (dir.join("a"), dir.join("big"));
+        let (sum, big) = tokio::task::spawn_blocking(move || (download_to(&format!("http://{at}/a"), &f).map(|s| (s, std::fs::read(&f).unwrap())), download_to(&format!("http://{at}/big"), &g))).await.unwrap();
+        let (sum, got) = sum.unwrap();
+        assert_eq!(got, data);
+        let want: String = ring::digest::digest(&ring::digest::SHA256, &data).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(sum, want);
+        assert!(format!("{:#}", big.unwrap_err()).contains("512 MiB"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Checks asked often reach the releases once while the answer is fresh; a new releases
+    /// address is asked again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn checks_are_kept() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        let app = Router::new()
+            .route("/r/latest", get(move || { h.fetch_add(1, std::sync::atomic::Ordering::SeqCst); async { axum::response::Redirect::temporary("/r/tag/v5.4.3") } }))
+            .route("/r/tag/{t}", get(|| async { "page" }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let at = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        std::env::set_var("IPPAI_UPDATE_URL", format!("http://{at}/r"));
+        let rs = tokio::task::spawn_blocking(|| (0..20).map(|_| latest_kept()).collect::<Vec<_>>()).await.unwrap();
+        assert!(rs.iter().all(|r| r.as_deref() == Ok("5.4.3")), "{rs:?}");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::env::set_var("IPPAI_UPDATE_URL", format!("http://{at}/r/"));
+        tokio::task::spawn_blocking(latest_kept).await.unwrap().unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "the same address, written with a slash");
+        std::env::set_var("IPPAI_UPDATE_URL", format!("http://localhost:{}/r", at.port()));
+        tokio::task::spawn_blocking(latest_kept).await.unwrap().unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+        std::env::remove_var("IPPAI_UPDATE_URL");
     }
 }
