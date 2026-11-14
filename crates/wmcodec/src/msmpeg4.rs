@@ -335,6 +335,11 @@ impl Decoder {
                 return Err(Error::Params("WMV2 slices"));
             }
             d.slice_height = mb_h / code;
+            // (more slices than macroblock rows: no slice would decode; an error, not a
+            // picture left as it was)
+            if d.slice_height == 0 {
+                return Err(Error::Params("WMV2 slices"));
+            }
         }
         tables();
         Ok(d)
@@ -413,6 +418,9 @@ impl Decoder {
                 return Err(Error::Data("slice code"));
             }
             self.slice_height = self.mb_h / (code - 0x16);
+            if self.slice_height == 0 {
+                return Err(Error::Data("slice code"));
+            }
             match self.ver {
                 Version::V3 => {
                     self.rl_chroma_table_index = decode012(r) as usize;
@@ -635,7 +643,15 @@ impl Decoder {
         let res = self.decode_picture(&mut r, buf.len());
         // (a damaged picture is still the reference for the next, as FFmpeg's concealed one)
         let out = self.picture();
-        self.last = Some(self.cur.clone());
+        // (into the reference's own buffers: no new frame-sized allocations per picture)
+        match &mut self.last {
+            Some(l) => {
+                l.y.clone_from(&self.cur.y);
+                l.u.clone_from(&self.cur.u);
+                l.v.clone_from(&self.cur.v);
+            }
+            None => self.last = Some(self.cur.clone()),
+        }
         res.map(|_| Some(out))
     }
 

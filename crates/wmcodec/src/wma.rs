@@ -651,8 +651,8 @@ impl Decoder {
         for ch in 0..channels {
             let n4 = self.block_len / 2;
             if self.channel_coded[ch] {
-                let input = self.coefs[ch];
-                self.mdct[bsize].calc(&mut self.output[..2 * self.block_len], &input[..self.block_len]);
+                // (disjoint fields: no copy of the 8 KiB coefficient array per block)
+                self.mdct[bsize].calc(&mut self.output[..2 * self.block_len], &self.coefs[ch][..self.block_len]);
             } else if !(self.ms_stereo && ch == 1) {
                 self.output.iter_mut().for_each(|v| *v = 0.0);
             }
@@ -751,8 +751,8 @@ impl Decoder {
             mult *= mdct_norm;
             let mut ci = 0usize; // into coefs
             let mut c1 = 0usize; // into coefs1
-            let exps = self.exponents[ch];
-            let coefs1 = self.coefs1[ch];
+            let exps = &self.exponents[ch];
+            let coefs1 = &self.coefs1[ch];
             let out = &mut self.coefs[ch];
             if self.use_noise_coding {
                 let mult1 = mult;

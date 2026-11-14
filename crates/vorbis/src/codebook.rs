@@ -138,7 +138,7 @@ impl Codebook {
                 book.slow.push((r, len, e as u32));
             }
         }
-        book.slow.sort_by_key(|s| s.1);
+        book.slow.sort_by_key(|s| (s.1, s.0));
         Ok(book)
     }
 
@@ -153,6 +153,46 @@ impl Codebook {
         }
         if self.used == 0 {
             return None;
+        }
+        let (bits, have) = b.peek(FAST);
+        let (e, len) = self.fast[bits as usize];
+        if len != 0 {
+            if (len as u32) > have {
+                b.skip(have);
+                return None;
+            }
+            b.skip(len as u32);
+            return Some(e);
+        }
+        let (bits, have) = b.peek(32);
+        // (one binary search per codeword length past FAST, shortest first: the slow entries
+        // are sorted by (length, reversed codeword); a linear scan of a big residue book cost
+        // O(entries) per long symbol)
+        let mut i = 0;
+        while i < self.slow.len() {
+            let len = self.slow[i].1;
+            let n = self.slow[i..].partition_point(|s| s.1 == len);
+            let l32 = len as u32;
+            if l32 > have {
+                break;
+            }
+            let mask = if l32 == 32 { u32::MAX } else { (1 << l32) - 1 };
+            let group = &self.slow[i..i + n];
+            if let Ok(k) = group.binary_search_by_key(&(bits & mask), |s| s.0) {
+                b.skip(l32);
+                return Some(group[k].2);
+            }
+            i += n;
+        }
+        b.skip(have);
+        None
+    }
+
+    /// [`Codebook::decode`]'s slow part as a scan of every long entry (the reference).
+    #[cfg(test)]
+    pub fn decode_scan(&self, b: &mut Bits) -> Option<u32> {
+        if self.single.is_some() || self.used == 0 {
+            return self.decode(b);
         }
         let (bits, have) = b.peek(FAST);
         let (e, len) = self.fast[bits as usize];
@@ -361,6 +401,33 @@ mod tests {
                 prop_assert_eq!(book.decode(&mut b), Some(e as u32));
             }
             prop_assert_eq!(b.pos(), seq.iter().map(|&e| lengths[e] as usize).sum::<usize>());
+        }
+
+        /// review b11: the per-length binary search finds what the scan of every long entry
+        /// found, at the same position, on encoded and on random bits (also underfull trees).
+        #[test]
+        fn search_matches_the_scan(splits in prop::collection::vec(0usize..1000, 1..400), drop in prop::collection::vec(0usize..1000, 0..3), picks in prop::collection::vec(0usize..10000, 1..100), noise in prop::collection::vec(any::<u8>(), 0..60)) {
+            let mut lengths = full_tree(splits);
+            for d in drop {
+                if lengths.len() > 2 {
+                    lengths.remove(d % lengths.len());
+                }
+            }
+            let Ok(book) = Codebook::new(1, &lengths, vec![0.0; lengths.len()]) else { return Ok(()) };
+            let words = make_words(&lengths).unwrap();
+            let used: Vec<usize> = (0..lengths.len()).filter(|&i| lengths[i] > 0).collect();
+            let seq: Vec<usize> = picks.iter().map(|p| used[p % used.len()]).collect();
+            let mut data = encode(&lengths, &words, &seq);
+            data.extend(noise);
+            let (mut a, mut b) = (Bits::new(&data), Bits::new(&data));
+            loop {
+                let (x, y) = (book.decode(&mut a), book.decode_scan(&mut b));
+                prop_assert_eq!(x, y);
+                prop_assert_eq!(a.pos(), b.pos());
+                if x.is_none() {
+                    break;
+                }
+            }
         }
 
         /// Never panics and never reads past the packet, whatever the bits.

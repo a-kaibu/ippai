@@ -1279,11 +1279,11 @@ impl Decoder {
         // ff_mpv_frame_end: the picture is the next reference
         std::mem::swap(&mut self.motion1, &mut self.next_motion);
         let shown = if self.low_delay { Some(self.picture()) } else { self.last.as_ref().map(|p| self.shown(p, self.last_key)) };
-        let old = self.prev.take();
-        self.prev = self.last.replace(self.cur.clone());
-        if let Some(o) = old {
-            self.cur = o;
-        }
+        // (the three pictures rotate: the one decoded is the newest reference, the oldest
+        // the next to decode into; a copy only while there are fewer than three)
+        let next = self.prev.take().unwrap_or_else(|| self.cur.clone());
+        let done = std::mem::replace(&mut self.cur, next);
+        self.prev = self.last.replace(done);
         self.last_key = self.pict == Type::I;
         self.pending = !self.low_delay;
         Ok(shown)
@@ -3066,7 +3066,12 @@ impl Decoder {
     /// `dir` 0: the forward reference (a P picture's, or a B one's older), 1: a B one's backward
     fn fetch<'a>(&'a self, dir: usize, k: usize, x: i32, y: i32, w: usize, h: usize, buf: &'a mut [u8]) -> (&'a [u8], usize) {
         let last = if dir == 0 && self.pict == Type::B { self.prev.as_ref() } else { self.last.as_ref() };
-        let last = last.expect("reference");
+        // (decode keeps a reference for every P and B picture; if that ever changes, a gray
+        // window, not a panic: panic=abort takes the whole VM)
+        let Some(last) = last else {
+            buf[..w * h].fill(0x80);
+            return (buf, w);
+        };
         let (p, stride, pw, ph) = match k {
             0 => (&last.y, self.ls, self.ls as i32, (self.mb_h * 16) as i32),
             1 => (&last.u, self.uvls, self.uvls as i32, (self.mb_h * 8) as i32),

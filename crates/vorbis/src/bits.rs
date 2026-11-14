@@ -34,13 +34,19 @@ impl<'a> Bits<'a> {
         let have = (self.left() as u32).min(n);
         let byte = self.pos / 8;
         let shift = (self.pos % 8) as u32;
-        let mut v: u64 = 0;
-        // (up to 5 bytes hold 32 bits at any shift)
-        for k in 0..5 {
-            if let Some(&b) = self.data.get(byte + k) {
-                v |= (b as u64) << (8 * k);
+        // (up to 5 bytes hold 32 bits at any shift: one 8-byte load away from the end)
+        let v = match self.data.get(byte..byte + 8) {
+            Some(w) => u64::from_le_bytes(w.try_into().unwrap()),
+            None => {
+                let mut v: u64 = 0;
+                for k in 0..5 {
+                    if let Some(&b) = self.data.get(byte + k) {
+                        v |= (b as u64) << (8 * k);
+                    }
+                }
+                v
             }
-        }
+        };
         let v = (v >> shift) as u32;
         let mask = if have == 32 { u32::MAX } else { (1u32 << have) - 1 };
         (v & mask, have)
@@ -101,6 +107,30 @@ mod tests {
         assert_eq!(b.pos(), 40);
     }
 
+    /// the byte-at-a-time peek (before the 8-byte load)
+    fn peek_bytes(data: &[u8], pos: usize, n: u32) -> (u32, u32) {
+        let have = ((data.len() * 8 - pos) as u32).min(n);
+        let mut v: u64 = 0;
+        for k in 0..5 {
+            if let Some(&b) = data.get(pos / 8 + k) {
+                v |= (b as u64) << (8 * k);
+            }
+        }
+        let v = (v >> (pos % 8)) as u32;
+        let mask = if have == 32 { u32::MAX } else { (1u32 << have) - 1 };
+        (v & mask, have)
+    }
+
+    proptest::proptest! {
+        /// review b11: the 8-byte load gives what five byte loads gave, near the end too
+        #[test]
+        fn wide_peek_matches_bytes(data in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..40), pos in 0usize..400, n in 0u32..=32) {
+            let pos = pos.min(data.len() * 8);
+            let b = Bits::at(&data, pos);
+            proptest::prop_assert_eq!(b.peek(n), peek_bytes(&data, pos, n));
+        }
+    }
+
     #[test]
     fn ilog_values() {
         assert_eq!([0, 1, 2, 3, 4, 7, 8, 0x7fff_ffff].map(ilog), [0, 1, 2, 2, 3, 3, 4, 31]);
@@ -131,5 +161,26 @@ mod proofs {
             assert!(r.is_none());
             assert_eq!(b.pos(), len * 8);
         }
+    }
+
+    /// The 8-byte load (packets of 8 bytes or more) gives the bits LSB first as five byte
+    /// loads do, at any position.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn wide_peek_is_the_bytes() {
+        let data: [u8; 9] = kani::any();
+        let pos: usize = kani::any();
+        kani::assume(pos <= 8);
+        let n: u32 = kani::any();
+        kani::assume(n <= 32);
+        let (v, have) = Bits::at(&data, pos).peek(n);
+        assert_eq!(have, n);
+        let mut want: u64 = 0;
+        for k in 0..5 {
+            want |= (data[k] as u64) << (8 * k);
+        }
+        let want = (want >> pos) as u32;
+        let mask = if n == 32 { u32::MAX } else { (1u32 << n) - 1 };
+        assert_eq!(v, want & mask);
     }
 }

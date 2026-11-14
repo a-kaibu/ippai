@@ -38,6 +38,8 @@ struct Xapo {
     params: Vec<u8>,
     channels: u32,
     locked: bool,
+    /// LockForProcess's MaxFrameCount: what a Process may give at most
+    max_frames: u32,
     /// FXEcho's FXECHO_INITDATA.MaxDelay (ms; 0: the largest)
     max_delay: f32,
     peak: Vec<f32>,
@@ -339,8 +341,13 @@ fn LockForProcess(c: &mut Ctx) -> u32 {
         return XAPO_E_FORMAT_UNSUPPORTED;
     }
     let (ch, rate) = (r16(fi + 2) as u32, r32(fi + 4));
+    let max_frames = r32(pin + ps());
+    if ch == 0 || ch > XAPO_MAX_CHANNELS || max_frames == 0 {
+        return XAPO_E_FORMAT_UNSUPPORTED;
+    }
     with(obj(this), |x| {
         x.channels = ch;
+        x.max_frames = max_frames;
         x.rate = rate.max(1);
         x.dsp = Dsp::None;
         x.locked = true;
@@ -382,17 +389,24 @@ fn Process(c: &mut Ctx) -> u32 {
     let k = ps();
     let (ib, flags, frames) = (rp(pin), r32(pin + k), r32(pin + k + 4));
     let o = obj(this);
-    let Some((ch, rate)) = with(o, |x| (x.channels, x.rate)) else { return 0 };
-    let bytes = frames.saturating_mul(ch).saturating_mul(4);
+    let Some((ch, rate, max, locked)) = with(o, |x| (x.channels, x.rate, x.max_frames, x.locked)) else { return 0 };
+    if !locked {
+        return 0;
+    }
+    let frames = process_frames(frames, max);
+    let n = frames as usize * ch as usize;
     let ob = rp(pout);
     let mut s: Vec<f32> = if flags == 1 && ib != 0 {
-        mem::slice(ib, bytes).chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()
+        mem::slice(ib, n as u32 * 4).chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()
     } else {
-        vec![0.0; (frames * ch) as usize]
+        vec![0.0; n]
     };
     process_builtin(o, &mut s, ch.max(1) as usize, rate, enabled);
     if ob != 0 {
-        let v: Vec<u8> = s.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let mut v = Vec::with_capacity(n * 4);
+        for x in &s {
+            v.extend_from_slice(&x.to_le_bytes());
+        }
         mem::write(ob, &v);
     }
     // (the output holds audio now)
@@ -400,6 +414,15 @@ fn Process(c: &mut Ctx) -> u32 {
     w32(pout + k + 4, frames);
     0
 }
+/// XAPO_MAX_CHANNELS
+pub const XAPO_MAX_CHANNELS: u32 = 64;
+
+/// The frames a Process runs: the ValidFrameCount given, at most the MaxFrameCount the lock
+/// allowed (a garbage count made a buffer of up to 2^32 x 64 samples: an allocation abort)
+pub fn process_frames(valid: u32, max: u32) -> u32 {
+    valid.min(max)
+}
+
 fn CalcFrames(c: &mut Ctx) -> u32 {
     c.a(1)
 }
@@ -473,7 +496,7 @@ pub fn create(g: &[u8; 16]) -> Option<u32> {
     let o = mem::heap_alloc(2 * k, true);
     wp(o, vx);
     wp(o + k, vp);
-    XAPOS.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, Xapo { kind, clsid: *g, refs: 1, params: Vec::new(), channels: 0, locked: false, max_delay: 0.0, peak: Vec::new(), rms: Vec::new(), rate: 48000, dsp: Dsp::None });
+    XAPOS.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, Xapo { kind, clsid: *g, refs: 1, params: Vec::new(), channels: 0, locked: false, max_frames: 0, max_delay: 0.0, peak: Vec::new(), rms: Vec::new(), rate: 48000, dsp: Dsp::None });
     Some(o)
 }
 
@@ -557,5 +580,30 @@ mod tests {
         assert_eq!(r, vec![0.5, (0.5f64).sqrt() as f32]);
         let (p, r) = levels(&[], 2);
         assert_eq!((p, r), (vec![0.0, 0.0], vec![0.0, 0.0]));
+    }
+
+    /// review b11: a ValidFrameCount past the lock's MaxFrameCount (an uninitialised field)
+    /// runs only MaxFrameCount frames: the samples are bounded by what the lock allowed
+    #[test]
+    fn process_frames_are_bounded() {
+        assert_eq!(process_frames(0xcccc_cccc, 480), 480);
+        assert_eq!(process_frames(100, 480), 100);
+        assert_eq!(process_frames(5, 0), 0);
+    }
+
+    mod proptests {
+        use super::super::*;
+        use proptest::prelude::*;
+        proptest! {
+            #[test]
+            fn process_samples_within_the_lock(valid in any::<u32>(), max in 1u32..1 << 20, ch in 1u32..=XAPO_MAX_CHANNELS) {
+                let f = process_frames(valid, max);
+                prop_assert!(f <= max && f <= valid);
+                prop_assert!((f as u64) * (ch as u64) * 4 <= (max as u64) * (XAPO_MAX_CHANNELS as u64) * 4);
+                if valid <= max {
+                    prop_assert_eq!(f, valid);
+                }
+            }
+        }
     }
 }
