@@ -224,16 +224,15 @@ pub fn c_ctype(b: u8) -> u16 {
 
 /// msvcrt's ctype table (257 shorts, for EOF first).
 fn ctype_table() -> u32 {
-    static T: Mutex<u32> = Mutex::new(0);
-    let mut g = T.lock().unwrap();
-    if *g == 0 {
+    // (made once; isalpha and friends read it without a lock)
+    static T: OnceLock<u32> = OnceLock::new();
+    *T.get_or_init(|| {
         let t = mem::heap_alloc(2 * 257, true);
         for c in 0..256u32 {
             w16(t + 2 + 2 * c, c_ctype(c as u8));
         }
-        *g = t;
-    }
-    *g
+        t
+    })
 }
 
 /// A user locale's ctype table entry for byte `b` of code page `cp` (_create_locale(LC_ALL, "")
@@ -683,14 +682,25 @@ fn memchr(c: &mut Ctx) -> u32 {
     let (p, ch, n) = (c.a(0), c.a(1) as u8, c.a(2));
     mem::slice(p, n).iter().position(|&b| b == ch).map_or(0, |i| p + i as u32)
 }
+/// The length of the NUL-terminated string at `a` (0 for NULL), read in place: these string
+/// functions looked at copies of whole strings (an allocation per call) before deciding
+fn clen(a: u32) -> u32 {
+    if a == 0 {
+        return 0;
+    }
+    let mut n = 0;
+    while r8(a + n) != 0 {
+        n += 1;
+    }
+    n
+}
 fn strlen(c: &mut Ctx) -> u32 {
-    cstr(c.a(0)).len() as u32
+    clen(c.a(0))
 }
 fn strcpy(c: &mut Ctx) -> u32 {
-    let s = cstr(c.a(1));
-    mem::write(c.a(0), &s);
-    w8(c.a(0) + s.len() as u32, 0);
-    c.a(0)
+    let (d, s) = (c.a(0), c.a(1));
+    mem::copy(d, s, clen(s) + 1);
+    d
 }
 fn strncpy(c: &mut Ctx) -> u32 {
     let (d, n) = (c.a(0), c.a(2));
@@ -700,35 +710,50 @@ fn strncpy(c: &mut Ctx) -> u32 {
     d
 }
 fn strcat(c: &mut Ctx) -> u32 {
-    let d = c.a(0);
-    let at = d + cstr(d).len() as u32;
-    let s = cstr(c.a(1));
-    mem::write(at, &s);
-    w8(at + s.len() as u32, 0);
+    let (d, s) = (c.a(0), c.a(1));
+    let n = clen(s);
+    mem::copy(d + clen(d), s, n + 1);
     d
 }
 fn strncat(c: &mut Ctx) -> u32 {
     let d = c.a(0);
-    let at = d + cstr(d).len() as u32;
+    let at = d + clen(d);
     let s = mem::cstrn(c.a(1), c.a(2));
     mem::write(at, &s);
     w8(at + s.len() as u32, 0);
     d
 }
+#[cfg(test)]
 fn cmp(a: &[u8], b: &[u8]) -> u32 {
     a.cmp(b) as i32 as u32
 }
+#[cfg(test)]
 fn lower(s: Vec<u8>) -> Vec<u8> {
     s.to_ascii_lowercase()
 }
+/// The first place where the strings at `a` and `b` differ (or both end) within `n` bytes,
+/// read in place, bytes mapped through `f`: (byte of a, byte of b) there, (0, 0) when equal
+fn first_diff(a: u32, b: u32, n: u32, f: impl Fn(u8) -> u8) -> (u8, u8) {
+    for i in 0..n {
+        let (x, y) = (f(r8(a + i)), f(r8(b + i)));
+        if x != y || x == 0 {
+            return (x, y);
+        }
+    }
+    (0, 0)
+}
 fn strcmp(c: &mut Ctx) -> u32 {
-    cmp(&cstr(c.a(0)), &cstr(c.a(1)))
+    let (x, y) = first_diff(c.a(0), c.a(1), u32::MAX, |b| b);
+    x.cmp(&y) as i32 as u32
 }
 fn strncmp(c: &mut Ctx) -> u32 {
-    cmp(&mem::cstrn(c.a(0), c.a(2)), &mem::cstrn(c.a(1), c.a(2)))
+    let (x, y) = first_diff(c.a(0), c.a(1), c.a(2), |b| b);
+    x.cmp(&y) as i32 as u32
 }
 /// Case-insensitive compare: Windows' x86 msvcrt gives -1/0/1, its x64 one the difference of
-/// the first lowercased bytes that differ (_stricmp("a_", "A[") is 1 and 4)
+/// the first lowercased bytes that differ (_stricmp("a_", "A[") is 1 and 4); on copies (the
+/// definition icmp_at is tested against)
+#[cfg(test)]
 fn icmp(a: &[u8], b: &[u8]) -> u32 {
     let (a, b) = (lower(a.to_vec()), lower(b.to_vec()));
     if !mem::x64() {
@@ -738,27 +763,49 @@ fn icmp(a: &[u8], b: &[u8]) -> u32 {
     let k = (0..n).find(|&k| a[k] != b[k]).unwrap_or(n);
     (*a.get(k).unwrap_or(&0) as i32 - *b.get(k).unwrap_or(&0) as i32) as u32
 }
+/// icmp's answer read in place (x86: -1/0/1, x64: the difference of the lowercased bytes)
+fn icmp_at(a: u32, b: u32, n: u32) -> u32 {
+    let (x, y) = first_diff(a, b, n, |b| b.to_ascii_lowercase());
+    if mem::x64() { (x as i32 - y as i32) as u32 } else { x.cmp(&y) as i32 as u32 }
+}
 fn _stricmp(c: &mut Ctx) -> u32 {
-    icmp(&cstr(c.a(0)), &cstr(c.a(1)))
+    icmp_at(c.a(0), c.a(1), u32::MAX)
 }
 fn _strnicmp(c: &mut Ctx) -> u32 {
-    icmp(&mem::cstrn(c.a(0), c.a(2)), &mem::cstrn(c.a(1), c.a(2)))
+    icmp_at(c.a(0), c.a(1), c.a(2))
 }
 fn strchr(c: &mut Ctx) -> u32 {
-    let (p, ch) = (c.a(0), c.a(1) as u8);
-    let s = cstr(p);
-    if ch == 0 {
-        return p + s.len() as u32;
+    let (mut p, ch) = (c.a(0), c.a(1) as u8);
+    if p == 0 {
+        return 0;
     }
-    s.iter().position(|&b| b == ch).map_or(0, |i| p + i as u32)
+    loop {
+        let b = r8(p);
+        if b == ch {
+            return p;
+        }
+        if b == 0 {
+            return 0;
+        }
+        p += 1;
+    }
 }
 fn strrchr(c: &mut Ctx) -> u32 {
-    let (p, ch) = (c.a(0), c.a(1) as u8);
-    let s = cstr(p);
-    if ch == 0 {
-        return p + s.len() as u32;
+    let (mut p, ch) = (c.a(0), c.a(1) as u8);
+    if p == 0 {
+        return 0;
     }
-    s.iter().rposition(|&b| b == ch).map_or(0, |i| p + i as u32)
+    let mut last = 0;
+    loop {
+        let b = r8(p);
+        if b == ch {
+            last = p;
+        }
+        if b == 0 {
+            return last;
+        }
+        p += 1;
+    }
 }
 /// strspn / strcspn: the length of the prefix made of (not made of) `set`'s bytes
 fn span(c: &mut Ctx, inside: bool) -> u32 {
@@ -856,10 +903,23 @@ fn tok(w: u32, s: u32, delim: u32, ctx: u32) -> u32 {
     wp(ctx, p);
     start
 }
-static TOK_CTX: OnceLock<u32> = OnceLock::new();
-fn tok_ctx() -> u32 {
-    *TOK_CTX.get_or_init(|| mem::heap_alloc(16, true))
+/// A guest block of `size` bytes per guest thread, made on its first use (msvcrt keeps strtok's
+/// context, localtime's tm, _ecvt's digits and rand's seed per thread: two threads at it at
+/// once do not step on each other)
+macro_rules! per_thread_block {
+    ($name:ident, $size:expr) => {
+        fn $name() -> u32 {
+            thread_local!(static B: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+            B.with(|b| {
+                if b.get() == 0 {
+                    b.set(mem::heap_alloc($size, true));
+                }
+                b.get()
+            })
+        }
+    };
 }
+per_thread_block!(tok_ctx, 16);
 fn strtok(c: &mut Ctx) -> u32 {
     tok(1, c.a(0), c.a(1), tok_ctx())
 }
@@ -1301,15 +1361,18 @@ fn bsearch(c: &mut Ctx) -> u32 {
     0
 }
 
-static RAND: Mutex<u32> = Mutex::new(1);
+thread_local!(static RAND: std::cell::Cell<u32> = const { std::cell::Cell::new(1) });
 fn srand(c: &mut Ctx) -> u32 {
-    *RAND.lock().unwrap() = c.a(0);
+    RAND.with(|r| r.set(c.a(0)));
     0
 }
+/// msvcrt's rand: its seed is the thread's (a new thread starts at 1, as on Windows)
 fn rand(_: &mut Ctx) -> u32 {
-    let mut g = RAND.lock().unwrap();
-    *g = g.wrapping_mul(214013).wrapping_add(2531011);
-    (*g >> 16) & 0x7fff
+    RAND.with(|r| {
+        let g = r.get().wrapping_mul(214013).wrapping_add(2531011);
+        r.set(g);
+        (g >> 16) & 0x7fff
+    })
 }
 /// time / _time32 (x86 msvcrt's time_t) and _time64 (x64's time)
 fn now() -> i64 {
@@ -1997,7 +2060,17 @@ struct Stream {
     /// text mode, reading: where msvcrt's 4096-byte buffers started (since the open or the last
     /// seek), for its ftell (msvcrt_text_tell)
     chunk: Option<u64>,
+    /// getc's read-ahead (raw file bytes; the file is `rbuf.len() - rpos` bytes past the
+    /// stream's position while it holds some): one file read per 4 KB instead of a Vec, a lock
+    /// and a vfs read per character. Everything else gives it back first (`sync`).
+    rbuf: Vec<u8>,
+    rpos: usize,
+    /// ftell's last text buffer: (chunk, the start of the buffer it ended in)
+    tell_from: Option<(u64, u64)>,
 }
+
+/// getc's read-ahead (msvcrt's own buffer size)
+const RBUF: usize = 4096;
 
 /// msvcrt's ftell of a text stream it reads through 4096-byte buffers starting at `b0`, the
 /// file at raw position `p`: within a buffer it takes the position after that buffer's read
@@ -2005,10 +2078,17 @@ struct Stream {
 /// one for a Ctrl+Z; else 4096), plus what was read of it, one more per LF; an emptied buffer
 /// says the position after its read (past a Ctrl+Z: the file's end). So "a\r\nb\rc\n\r\r\nd^Z.."
 /// (17 bytes) tells 7 after fgets "a\n" and 17 at its end (winref textmode).
+#[cfg(test)]
 fn msvcrt_text_tell(raw_at: impl Fn(u64, usize) -> Vec<u8>, size: u64, b0: u64, p: u64) -> u64 {
+    text_tell_from(raw_at, size, b0, p).0
+}
+/// msvcrt_text_tell starting from `from`, the start of one of the buffers after b0 (they do not
+/// depend on `p`), and the start of the buffer `p` is in, to start from next time: an ftell
+/// after each fgets walked the file from b0 every time (quadratic)
+fn text_tell_from(raw_at: impl Fn(u64, usize) -> Vec<u8>, size: u64, from: u64, p: u64) -> (u64, u64) {
     const BUF: u64 = 4096;
     // (the buffers in turn: one that ends in CR takes the LF after it too)
-    let mut b = b0;
+    let mut b = from;
     let mut crlf;
     let rawlen = loop {
         let mut n = BUF.min(size.saturating_sub(b));
@@ -2020,7 +2100,7 @@ fn msvcrt_text_tell(raw_at: impl Fn(u64, usize) -> Vec<u8>, size: u64, b0: u64, 
         b += n;
     };
     if p <= b {
-        return p;
+        return (p, b);
     }
     let raw = raw_at(b, rawlen as usize);
     let (mut t, mut nl, mut ctrlz, mut used, mut used_nl) = (0u64, 0u64, false, 0u64, 0u64);
@@ -2050,10 +2130,10 @@ fn msvcrt_text_tell(raw_at: impl Fn(u64, usize) -> Vec<u8>, size: u64, b0: u64, 
     }
     let filepos = b + rawlen;
     if used >= t {
-        return filepos;
+        return (filepos, b);
     }
     let held = if filepos >= size { t + nl + ctrlz as u64 } else { BUF + crlf as u64 };
-    (filepos - held.min(filepos)) + used + used_nl
+    ((filepos - held.min(filepos)) + used + used_nl, b)
 }
 
 // msvcrt FILE._flag bits (mingw's and old MSVC's feof / ferror / fileno macros read the FILE)
@@ -2069,7 +2149,32 @@ impl Stream {
     fn new(at: u32, f: Option<Arc<File>>, fd: u32, flag: u32, eof: bool) -> Stream {
         w32(at + flag_off(), flag);
         w32(at + flag_off() + 4, fd);
-        Stream { at, f, fd, eof, unget: None, text: false, chunk: None }
+        Stream { at, f, fd, eof, unget: None, text: false, chunk: None, rbuf: Vec::new(), rpos: 0, tell_from: None }
+    }
+    /// Gives back getc's read-ahead: the file is at the stream's position again
+    fn sync(&mut self) {
+        let left = self.rbuf.len() - self.rpos;
+        if left > 0 {
+            if let Some(f) = &self.f {
+                f.seek(SeekFrom::Current(-(left as i64)));
+            }
+        }
+        self.rbuf.clear();
+        self.rpos = 0;
+    }
+    /// The next raw byte through the read-ahead
+    fn raw(&mut self, f: &File) -> Option<u8> {
+        if self.rpos == self.rbuf.len() {
+            self.rbuf = f.read_vec(RBUF);
+            self.rpos = 0;
+        }
+        let b = *self.rbuf.get(self.rpos)?;
+        self.rpos += 1;
+        Some(b)
+    }
+    /// The stream's position (the file's less the read-ahead)
+    fn pos(&self, f: &File) -> Option<u64> {
+        Some(f.seek(SeekFrom::Current(0))? - (self.rbuf.len() - self.rpos) as u64)
     }
     /// One character: the ungot one, else the file's (text mode translated); None at the end
     fn getc(&mut self) -> Option<u8> {
@@ -2078,21 +2183,22 @@ impl Stream {
         }
         let f = self.f.clone()?;
         if self.text && self.chunk.is_none() {
-            self.chunk = f.seek(SeekFrom::Current(0));
+            self.chunk = self.pos(&f);
         }
-        let b = *f.read_vec(1).first()?;
+        let b = self.raw(&f)?;
         if !self.text {
             return Some(b);
         }
+        // (a byte given back: the read-ahead still holds it, also when it was just refilled)
         match b {
             0x1a => {
-                f.seek(SeekFrom::Current(-1));
+                self.rpos -= 1;
                 None
             }
-            b'\r' => match f.read_vec(1).first() {
+            b'\r' => match self.raw(&f) {
                 Some(b'\n') => Some(b'\n'),
                 Some(_) => {
-                    f.seek(SeekFrom::Current(-1));
+                    self.rpos -= 1;
                     Some(b'\r')
                 }
                 None => Some(b'\r'),
@@ -2104,6 +2210,7 @@ impl Stream {
     /// what is asked past the end of the file ("read it all": 0x7fffffff) costs nothing.
     /// None: no file.
     fn read_guest(&mut self, buf: u32, n: u32) -> Option<u32> {
+        self.sync();
         let f = self.f.clone()?;
         let mut got = 0;
         if let Some(b) = self.unget.take() {
@@ -2119,6 +2226,7 @@ impl Stream {
     }
     /// Up to `n` characters (fread): chunks of the file, translated in text mode
     fn read(&mut self, n: usize) -> Vec<u8> {
+        self.sync();
         let mut out = Vec::with_capacity(n.min(1 << 20));
         if let Some(b) = self.unget.take() {
             out.push(b);
@@ -2172,7 +2280,9 @@ impl Stream {
         out
     }
     /// Writes `b` (LF as CR LF in text mode); whether all of it went
-    fn write(&self, b: &[u8]) -> bool {
+    fn write(&mut self, b: &[u8]) -> bool {
+        self.sync();
+        self.tell_from = None;
         let Some(f) = &self.f else {
             eprint!("{}", a2s(b));
             return true;
@@ -2207,7 +2317,9 @@ fn mode_flag(mode: &[u8]) -> u32 {
     }
 }
 
-static FILES: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
+/// The streams by FILE. Each has its own lock, so a stream's I/O (a large fread that waits for
+/// the vfs) does not hold up the other streams (stdout, another file) of other threads.
+static FILES: Mutex<Option<HashMap<u32, Arc<Mutex<Stream>>>>> = Mutex::new(None);
 
 fn iob() -> u32 {
     let p = mem::heap_alloc(file_size() * 20, true);
@@ -2216,13 +2328,15 @@ fn iob() -> u32 {
     for i in 0..3 {
         // (sake's stdin reads nothing: at its end, but feof says so only once read)
         let st = Stream::new(p + file_size() * i, None, i, if i == 0 { IOREAD } else { IOWRT }, false);
-        m.insert(p + file_size() * i, Stream { eof: true, ..st });
+        m.insert(p + file_size() * i, Arc::new(Mutex::new(Stream { eof: true, ..st })));
     }
     p
 }
 
 fn with_file<R>(fp: u32, f: impl FnOnce(&mut Stream) -> R) -> Option<R> {
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&fp).map(f)
+    let s = FILES.lock().unwrap().get_or_insert_with(HashMap::default).get(&fp).cloned()?;
+    let mut g = s.lock().unwrap_or_else(|e| e.into_inner());
+    Some(f(&mut g))
 }
 
 fn fopen_mode(path: &str, mode: &[u8]) -> Option<File> {
@@ -2242,6 +2356,11 @@ fn fopen_mode(path: &str, mode: &[u8]) -> Option<File> {
 fn new_stream(f: File, mode: &[u8]) -> u32 {
     let f = Arc::new(f);
     let fd = io::fd_of_file(f.clone());
+    // (no descriptor left: fopen fails, errno EMFILE, rather than a stream with fd -1 that
+    // fclose cannot give back)
+    if fd == u32::MAX {
+        return 0;
+    }
     new_stream_of(f, fd, mode)
 }
 /// Whether fopen's mode opens in text mode: "t", or no "b" while _fmode is not _O_BINARY
@@ -2253,7 +2372,7 @@ fn new_stream_of(f: Arc<File>, fd: u32, mode: &[u8]) -> u32 {
     let fp = mem::heap_alloc(file_size(), true);
     let mut st = Stream::new(fp, Some(f), fd, mode_flag(mode), false);
     st.text = text_mode(mode);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, st);
+    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, Arc::new(Mutex::new(st)));
     fp
 }
 /// _get_stream_buffer_pointers(stream, &base, &ptr, &cnt): the FILE's buffer fields (UCRT
@@ -2311,8 +2430,9 @@ fn fclose(c: &mut Ctx) -> u32 {
     let fp = c.a(0);
     let had = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&fp);
     if let Some(s) = had {
-        if s.fd > 2 {
-            io::close_fd(s.fd);
+        let fd = s.lock().unwrap_or_else(|e| e.into_inner()).fd;
+        if fd > 2 {
+            io::close_fd(fd);
         }
         mem::heap_free(fp);
         0
@@ -2372,6 +2492,7 @@ fn seek(fp: u32, off: i64, whence: u32) -> u32 {
         return u32::MAX;
     }
     with_file(fp, |s| {
+        s.sync();
         let Some(f) = &s.f else { return u32::MAX };
         let pos = match whence {
             0 => SeekFrom::Start(off as u64),
@@ -2392,6 +2513,7 @@ fn seek(fp: u32, off: i64, whence: u32) -> u32 {
 }
 fn ftell(c: &mut Ctx) -> u32 {
     with_file(c.a(0), |s| {
+        s.sync();
         let Some(f) = &s.f else { return u32::MAX };
         let p = f.seek(SeekFrom::Current(0)).unwrap_or(0) as u32;
         if let (true, Some(b0), None) = (s.text, s.chunk, s.unget) {
@@ -2401,9 +2523,16 @@ fn ftell(c: &mut Ctx) -> u32 {
                 f.seek(SeekFrom::Start(p as u64));
                 v
             };
-            return msvcrt_text_tell(raw_at, f.size(), b0, p as u64) as u32;
+            let from = match s.tell_from {
+                Some((c, b)) if c == b0 && b <= p as u64 => b,
+                _ => b0,
+            };
+            let (t, b) = text_tell_from(raw_at, f.size(), from, p as u64);
+            s.tell_from = Some((b0, b));
+            return t as u32;
         }
-        p - s.unget.is_some() as u32
+        // (an ungetc at offset 0: -1, as msvcrt's position less its one buffered byte)
+        p.wrapping_sub(s.unget.is_some() as u32)
     })
     .unwrap_or(u32::MAX)
 }
@@ -2429,6 +2558,7 @@ fn _fseeki64(c: &mut Ctx) -> u32 {
 fn fsetpos(c: &mut Ctx) -> u32 {
     let (fp, off) = (c.a(0), mem::r64(c.a(1)));
     with_file(fp, |s| {
+        s.sync();
         let Some(f) = s.f.clone() else { return u32::MAX };
         s.unget = None;
         s.set_eof(false);
@@ -2524,6 +2654,7 @@ finds! {
 
 fn rewind(c: &mut Ctx) -> u32 {
     with_file(c.a(0), |s| {
+        s.sync();
         s.unget = None;
         s.chunk = None;
         s.set_eof(false);
@@ -2543,19 +2674,20 @@ fn fflush(_: &mut Ctx) -> u32 {
     0
 }
 fn getc_of(fp: u32) -> u32 {
-    with_file(fp, |s| {
-        if s.f.is_none() && s.unget.is_none() {
-            return u32::MAX;
+    with_file(fp, getc_in).unwrap_or(u32::MAX)
+}
+/// fgetc on a stream whose lock is held: the character, or u32::MAX (EOF) setting feof
+fn getc_in(s: &mut Stream) -> u32 {
+    if s.f.is_none() && s.unget.is_none() {
+        return u32::MAX;
+    }
+    match s.getc() {
+        Some(b) => b as u32,
+        None => {
+            s.set_eof(true);
+            u32::MAX
         }
-        match s.getc() {
-            Some(b) => b as u32,
-            None => {
-                s.set_eof(true);
-                u32::MAX
-            }
-        }
-    })
-    .unwrap_or(u32::MAX)
+    }
 }
 fn fgetc(c: &mut Ctx) -> u32 {
     getc_of(c.a(0))
@@ -2577,18 +2709,23 @@ fn fgets(c: &mut Ctx) -> u32 {
     if n == 0 {
         return 0;
     }
-    let mut i = 0;
-    while i + 1 < n {
-        let ch = getc_of(fp);
-        if ch == u32::MAX {
-            break;
+    // (one lock for the line, not one per character)
+    let i = with_file(fp, |s| {
+        let mut i = 0;
+        while i + 1 < n {
+            let ch = getc_in(s);
+            if ch == u32::MAX {
+                break;
+            }
+            w8(buf + i, ch as u8);
+            i += 1;
+            if ch == b'\n' as u32 {
+                break;
+            }
         }
-        w8(buf + i, ch as u8);
-        i += 1;
-        if ch == b'\n' as u32 {
-            break;
-        }
-    }
+        i
+    })
+    .unwrap_or(0);
     if i == 0 {
         return 0;
     }
@@ -2639,7 +2776,7 @@ fn wcsncmp(c: &mut Ctx) -> u32 {
     let b: Vec<u16> = wstr(c.a(1)).into_iter().chain([0]).take(n).collect();
     a.cmp(&b) as i32 as u32
 }
-fn getenv(c: &mut Ctx) -> u32 {
+pub(crate) fn getenv(c: &mut Ctx) -> u32 {
     // the CRT's environment (io::env_get), kept in a guest buffer per name
     static VALS: Mutex<Option<HashMap<Vec<u8>, u32>>> = Mutex::new(None);
     let name = cstr(c.a(0));
@@ -2647,7 +2784,11 @@ fn getenv(c: &mut Ctx) -> u32 {
     let bytes = crate::text::s2a(&v);
     let mut g = VALS.lock().unwrap();
     let m = g.get_or_insert_with(HashMap::default);
+    // (an unchanged value keeps its pointer: two libraries reading TEMP both keep theirs)
     if let Some(&p) = m.get(&name.to_ascii_uppercase()) {
+        if cstr(p) == bytes {
+            return p;
+        }
         mem::heap_free(p);
     }
     let p = mem::heap_alloc(bytes.len() as u32 + 1, true);
@@ -3280,7 +3421,8 @@ fn _register_onexit_function(c: &mut Ctx) -> u32 {
     let s = ps();
     let (first, last, end) = (rp(t), rp(t + s), rp(t + 2 * s));
     if first == 0 || last >= end {
-        let n = if first == 0 { 32 } else { (end - first) / s * 2 };
+        // (a table a module set up with no room, end == first: 32 too, not 0)
+        let n = if first == 0 { 32 } else { ((end - first) / s * 2).max(32) };
         let p = mem::heap_alloc(n * s, true);
         if first != 0 {
             mem::copy(p, first, last - first);
@@ -3400,17 +3542,8 @@ fn write_tm(p: u32, tm: &[i32; 9]) {
         w32(p + 4 * i as u32, *v as u32);
     }
 }
-/// localtime/gmtime's buffer (one, as msvcrt's per-thread one)
-fn tm_buf() -> u32 {
-    static B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let b = B.load(std::sync::atomic::Ordering::Relaxed);
-    if b != 0 {
-        return b;
-    }
-    let p = mem::heap_alloc(36, true);
-    B.store(p, std::sync::atomic::Ordering::Relaxed);
-    p
-}
+// localtime/gmtime's buffer (per thread, as msvcrt's)
+per_thread_block!(tm_buf, 36);
 /// the time_t at `p`: 64-bit or 32-bit
 fn read_time(p: u32, t64: bool) -> i64 {
     if t64 { mem::r64(p) as i64 } else { r32(p) as i32 as i64 }
@@ -3706,17 +3839,8 @@ fn _hypot(c: &mut Ctx) -> u32 {
     let (x, y) = (c.f64(0), c.f64(2));
     ret(c, x.hypot(y))
 }
-/// _ecvt/_fcvt's buffer (one, as msvcrt's per-thread one)
-fn cvt_buf() -> u32 {
-    static B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let b = B.load(std::sync::atomic::Ordering::Relaxed);
-    if b != 0 {
-        return b;
-    }
-    let p = mem::heap_alloc(352, true);
-    B.store(p, std::sync::atomic::Ordering::Relaxed);
-    p
-}
+// _ecvt/_fcvt's buffer (per thread, as msvcrt's)
+per_thread_block!(cvt_buf, 352);
 /// (digits, decimal point position) of |v| with `n` significant digits
 fn ecvt_digits(v: f64, n: usize) -> (Vec<u8>, i32) {
     let n = n.clamp(1, 340);
@@ -4354,6 +4478,25 @@ mod tests {
             msvcrt_text_tell(at, data.len() as u64, b0, p)
         }
 
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(400))]
+            /// ftell after ftell (as after each fgets), starting from the buffer the last one
+            /// ended in: the same answers as walking from b0 each time (review b05: quadratic)
+            #[test]
+            fn resumed_tell_is_the_walk_from_b0(data in prop::collection::vec(prop_oneof![5 => any::<u8>(), 2 => Just(b'\r'), 2 => Just(b'\n'), 1 => Just(0x1au8)], 0..20000), b0 in 0u64..300, steps in prop::collection::vec(0u64..3000, 1..20)) {
+                let at = |a: u64, n: usize| data[(a as usize).min(data.len())..(a as usize + n).min(data.len())].to_vec();
+                let b0 = b0.min(data.len() as u64);
+                let (mut p, mut from) = (b0, b0);
+                for d in steps {
+                    p = (p + d).min(data.len() as u64);
+                    let (t, b) = super::super::text_tell_from(at, data.len() as u64, from, p);
+                    prop_assert_eq!(t, tell(&data, b0, p));
+                    prop_assert!(b >= from && b <= p.max(from));
+                    from = b;
+                }
+            }
+        }
+
         #[test]
         fn windows_answers() {
             let d = b"a\r\nb\rc\n\r\r\nd\x1aafter";
@@ -4643,6 +4786,303 @@ mod fread_tests {
             close(fp);
             mem::heap_free(buf);
             let _ = std::fs::remove_dir_all(&root);
+        }
+
+        /// getc's read-ahead (review b05: one Vec, lock and vfs read per character) is never seen:
+        /// any mix of fgetc, fgets, ungetc, fread, fseek and ftell answers as a model reading the
+        /// raw file one byte at a time (text mode: CR LF as LF, Ctrl-Z as the end, ftell as
+        /// msvcrt_text_tell of the raw position), across 4 KB read-ahead boundaries.
+        #[test]
+        fn getc_read_ahead_is_invisible(
+            data in prop::collection::vec(prop_oneof![6 => any::<u8>(), 2 => Just(b'\r'), 2 => Just(b'\n'), 1 => Just(0x1au8)], 0..9000),
+            ops in prop::collection::vec((0u8..7, any::<u32>()), 1..60),
+            text_mode in any::<bool>(),
+        ) {
+            use crate::test_guest::call;
+            let _g = crate::test_guest::enter();
+            let (root, w) = file("getc", &data);
+            let fp = stream(&w, if text_mode { b"rt" } else { b"rb" });
+            let buf = mem::heap_alloc(9000, true);
+            // the model: raw position, ungot byte, where text reading started (ftell's buffers)
+            let (mut rp, mut unget, mut chunk): (usize, Option<u8>, Option<u64>) = (0, None, None);
+            let mgetc = |rp: &mut usize, unget: &mut Option<u8>, chunk: &mut Option<u64>| -> Option<u8> {
+                if let Some(b) = unget.take() { return Some(b); }
+                if text_mode && chunk.is_none() { *chunk = Some(*rp as u64); }
+                let b = *data.get(*rp)?;
+                if !text_mode { *rp += 1; return Some(b); }
+                match b {
+                    0x1a => None,
+                    b'\r' if data.get(*rp + 1) == Some(&b'\n') => { *rp += 2; Some(b'\n') }
+                    b => { *rp += 1; Some(b) }
+                }
+            };
+            for (op, arg) in ops {
+                match op {
+                    0 | 1 => {
+                        for _ in 0..1 + arg % if op == 0 { 3 } else { 700 } {
+                            let want = mgetc(&mut rp, &mut unget, &mut chunk).map_or(u32::MAX, |b| b as u32);
+                            prop_assert_eq!(super::getc_of(fp), want);
+                        }
+                    }
+                    2 => {
+                        let n = 1 + arg % 300;
+                        let r = call(super::fgets, &[buf, n, fp]);
+                        let mut line = vec![];
+                        while line.len() + 1 < n as usize {
+                            let Some(b) = mgetc(&mut rp, &mut unget, &mut chunk) else { break };
+                            line.push(b);
+                            if b == b'\n' { break; }
+                        }
+                        prop_assert_eq!(r, if line.is_empty() { 0 } else { buf });
+                        if !line.is_empty() {
+                            prop_assert_eq!(mem::slice(buf, line.len() as u32 + 1), &[&line[..], &[0]].concat()[..]);
+                        }
+                    }
+                    3 => {
+                        let b = arg as u8;
+                        prop_assert_eq!(call(super::ungetc, &[b as u32, fp]), b as u32);
+                        unget = Some(b);
+                    }
+                    4 if !text_mode => {
+                        let n = arg % 5000;
+                        let got = fread_to(buf, 1, n, fp);
+                        let mut want = vec![];
+                        if let Some(b) = unget.take() { if n > 0 { want.push(b) } else { unget = Some(b) } }
+                        let k = (n as usize - want.len().min(n as usize)).min(data.len().saturating_sub(rp));
+                        want.extend_from_slice(&data[rp..rp + k]);
+                        rp += k;
+                        prop_assert_eq!(got as usize, want.len());
+                        prop_assert_eq!(mem::slice(buf, got), &want[..]);
+                    }
+                    5 => {
+                        let to = arg as usize % (data.len() + 1);
+                        prop_assert_eq!(super::seek(fp, to as i64, 0), 0);
+                        (rp, unget, chunk) = (to, None, None);
+                    }
+                    _ => {
+                        let want = match (text_mode, chunk, unget) {
+                            (true, Some(b0), None) => super::msvcrt_text_tell(|at: u64, n: usize| data[(at as usize).min(data.len())..(at as usize + n).min(data.len())].to_vec(), data.len() as u64, b0, rp as u64) as u32,
+                            _ => (rp as u32).wrapping_sub(unget.is_some() as u32),
+                        };
+                        prop_assert_eq!(call(super::ftell, &[fp]), want);
+                    }
+                }
+            }
+            close(fp);
+            mem::heap_free(buf);
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    /// A 1 MB text file through fgets: lines as the file has them, in far fewer file reads than
+    /// characters (it was one per character)
+    #[test]
+    fn fgets_reads_the_file_in_blocks() {
+        use crate::test_guest::call;
+        let _g = crate::test_guest::enter();
+        let mut data = Vec::new();
+        for i in 0..40000 {
+            data.extend_from_slice(format!("line {i} of the script\r\n").as_bytes());
+        }
+        let (root, w) = file("fgets", &data);
+        let fp = stream(&w, b"rt");
+        let buf = mem::heap_alloc(256, true);
+        let t = std::time::Instant::now();
+        for i in 0..40000 {
+            assert_eq!(call(super::fgets, &[buf, 256, fp]), buf);
+            assert_eq!(mem::cstr(buf), format!("line {i} of the script\n").as_bytes());
+        }
+        assert_eq!(call(super::fgets, &[buf, 256, fp]), 0);
+        assert_eq!(with_file(fp, |s| s.eof), Some(true));
+        eprintln!("fgets of {} lines: {:?}", 40000, t.elapsed());
+        close(fp);
+        mem::heap_free(buf);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// strtok's context and rand's seed are each guest thread's (review b05: one for all threads)
+#[cfg(test)]
+mod per_thread_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use std::sync::mpsc::channel;
+
+    fn cs(s: &str) -> u32 {
+        let p = mem::heap_alloc(s.len() as u32 + 1, true);
+        mem::write(p, s.as_bytes());
+        p
+    }
+
+    #[test]
+    fn two_threads_tokenise_and_draw_apart() {
+        let _g = enter();
+        guest_thread();
+        let (a, sp) = (cs("a b c"), cs(" "));
+        assert_eq!(mem::cstr(call(strtok, &[a, sp])), b"a");
+        call(srand, &[5]);
+        let first = call(rand, &[]);
+        // another thread: its own context (a NULL first argument has nothing to go on) and seed 1
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            guest_thread();
+            let x = cs("x y");
+            let none = call(strtok, &[0, sp]);
+            let t1 = mem::cstr(call(strtok, &[x, sp]));
+            let t2 = mem::cstr(call(strtok, &[0, sp]));
+            let r = [call(rand, &[]), call(rand, &[])];
+            tx.send((none, t1, t2, r)).unwrap();
+        })
+        .join()
+        .unwrap();
+        let (none, t1, t2, r) = rx.recv().unwrap();
+        assert_eq!((none, t1.as_slice(), t2.as_slice()), (0, &b"x"[..], &b"y"[..]));
+        // (msvcrt's first two draws from seed 1)
+        assert_eq!(r, [41, 18467]);
+        // this thread goes on where it was
+        assert_eq!(mem::cstr(call(strtok, &[0, sp])), b"b");
+        assert_eq!(mem::cstr(call(strtok, &[0, sp])), b"c");
+        call(srand, &[5]);
+        assert_eq!(call(rand, &[]), first);
+    }
+}
+
+/// The string functions that now read guest memory in place, against their definitions on
+/// copies (review b05)
+#[cfg(test)]
+mod in_place_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    fn put(s: &[u8]) -> u32 {
+        let p = mem::heap_alloc(s.len() as u32 + 8, true);
+        mem::write(p, s);
+        p
+    }
+    fn bytes() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(prop_oneof![4 => b'a'..=b'e', 2 => b'A'..=b'E', 1 => Just(b'_'), 1 => Just(b'['), 1 => any::<u8>().prop_filter("no NUL", |&b| b != 0)], 0..12)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(3000))]
+        #[test]
+        fn string_functions_answer_as_on_copies(a in bytes(), b in bytes(), n in 0u32..14, ch in prop_oneof![Just(0u8), b'a'..=b'e', any::<u8>()]) {
+            let _g = enter();
+            let (pa, pb) = (put(&a), put(&b));
+            let lo = |v: &[u8]| v.to_ascii_lowercase();
+            prop_assert_eq!(call(strlen, &[pa]), a.len() as u32);
+            prop_assert_eq!(call(strcmp, &[pa, pb]), cmp(&a, &b));
+            let an = &a[..a.len().min(n as usize)];
+            let bn = &b[..b.len().min(n as usize)];
+            prop_assert_eq!(call(strncmp, &[pa, pb, n]), cmp(an, bn));
+            prop_assert_eq!(call(_stricmp, &[pa, pb]), icmp(&a, &b));
+            prop_assert_eq!(call(_strnicmp, &[pa, pb, n]), icmp(an, bn));
+            let _ = lo;
+            let at = |i: Option<usize>| i.map_or(0, |i| pa + i as u32);
+            prop_assert_eq!(call(strchr, &[pa, ch as u32]), if ch == 0 { pa + a.len() as u32 } else { at(a.iter().position(|&x| x == ch)) });
+            prop_assert_eq!(call(strrchr, &[pa, ch as u32]), if ch == 0 { pa + a.len() as u32 } else { at(a.iter().rposition(|&x| x == ch)) });
+            // strcpy / strcat into a fresh block
+            let d = mem::heap_alloc(64, true);
+            prop_assert_eq!(call(strcpy, &[d, pa]), d);
+            prop_assert_eq!(mem::cstr(d), a.clone());
+            prop_assert_eq!(call(strcat, &[d, pb]), d);
+            prop_assert_eq!(mem::cstr(d), [&a[..], &b[..]].concat());
+            prop_assert_eq!(mem::r8(d + (a.len() + b.len()) as u32), 0);
+            for p in [pa, pb, d] {
+                mem::heap_free(p);
+            }
+        }
+    }
+}
+
+/// fopen past the descriptor limit, _register_onexit_function with a table of no room,
+/// _memicmp in place, strerror per thread (review b05)
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use proptest::prelude::*;
+
+    #[test]
+    fn fopen_fails_when_no_descriptor_is_left() {
+        let _g = enter();
+        guest_thread();
+        let root = std::env::temp_dir().join(format!("sake-emfile-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("f.txt"), b"x").unwrap();
+        let path = format!("Z:{}\\f.txt\0", root.to_string_lossy().replace('/', "\\"));
+        let (p, m) = (mem::heap_alloc(path.len() as u32, true), mem::heap_alloc(4, true));
+        mem::write(p, path.as_bytes());
+        mem::write(m, b"rb\0");
+        let mut open = vec![];
+        loop {
+            let fp = call(fopen, &[p, m]);
+            if fp == 0 {
+                break;
+            }
+            open.push(fp);
+            assert!(open.len() <= 2048, "descriptors never run out");
+        }
+        assert_eq!(r32(crate::cur().teb + ERRNO_TEB), 24, "EMFILE");
+        // (every stream that opened has a real descriptor; one closed makes room again)
+        assert!(open.iter().all(|&fp| with_file(fp, |s| s.fd != u32::MAX) == Some(true)));
+        assert_eq!(call(fclose, &[open.pop().unwrap()]), 0);
+        let fp = call(fopen, &[p, m]);
+        assert_ne!(fp, 0);
+        open.push(fp);
+        for fp in open {
+            assert_eq!(call(fclose, &[fp]), 0);
+        }
+        mem::heap_free(p);
+        mem::heap_free(m);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A zero-capacity table (first == last == end): the function lands in a block that holds it
+    #[test]
+    fn onexit_table_with_no_room_grows() {
+        let _g = enter();
+        let t = mem::heap_alloc(12, true);
+        let first = mem::heap_alloc(16, true);
+        for o in [0, 4, 8] {
+            w32(t + o, first);
+        }
+        assert_eq!(call(_register_onexit_function, &[t, 0x1234]), 0);
+        let (f, l, e) = (r32(t), r32(t + 4), r32(t + 8));
+        assert!(e - f >= 32 * 4 && l == f + 4 && r32(f) == 0x1234 && mem::heap_owns(f));
+        assert!(mem::heap_size(f) >= e - f);
+    }
+
+    #[test]
+    fn strerror_buffers_are_per_thread() {
+        let _g = enter();
+        guest_thread();
+        let a = call(io::strerror, &[2]);
+        let b = std::thread::spawn(|| {
+            guest_thread();
+            call(io::strerror, &[13])
+        })
+        .join()
+        .unwrap();
+        assert_ne!(a, b);
+        assert_eq!(mem::cstr(a), b"No such file or directory");
+        assert_eq!(call(io::strerror, &[2]), a);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #[test]
+        fn memicmp_is_the_compare_of_lowered_copies(a in prop::collection::vec(prop_oneof![b'a'..=b'f', b'A'..=b'F', any::<u8>()], 0..16), b in prop::collection::vec(prop_oneof![b'a'..=b'f', b'A'..=b'F', any::<u8>()], 0..16)) {
+            let _g = enter();
+            let n = a.len().min(b.len()) as u32;
+            let (pa, pb) = (mem::heap_alloc(16, true), mem::heap_alloc(16, true));
+            mem::write(pa, &a);
+            mem::write(pb, &b);
+            let want = a[..n as usize].to_ascii_lowercase().cmp(&b[..n as usize].to_ascii_lowercase()) as i32 as u32;
+            prop_assert_eq!(call(io::_memicmp, &[pa, pb, n]), want);
+            mem::heap_free(pa);
+            mem::heap_free(pb);
         }
     }
 }

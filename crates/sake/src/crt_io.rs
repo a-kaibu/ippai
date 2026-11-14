@@ -940,8 +940,22 @@ fn env_put(name: &str, value: Option<&str>) {
     crate::k32::env_set(name, value);
 }
 
-/// The strings of the environment, NAME=value, in a NULL-terminated guest array.
-fn env_array(wide: bool) -> u32 {
+/// The guest copies of the environment's strings and arrays. A string unchanged by a putenv
+/// keeps its block (programs keep pointers into environ, as into Windows' environment); the
+/// arrays and strings putenv replaced are freed (each putenv leaked two copies of the whole
+/// environment), except those of the first environ, which main's envp holds.
+#[derive(Default)]
+struct EnvCopies {
+    /// "NAME=value" (and width) -> (block, made for the first environ)
+    strs: HashMap<(bool, Vec<u8>), (u32, bool)>,
+    /// the arrays of the first environ (never freed)
+    pinned: Vec<u32>,
+}
+static ENV_COPIES: Mutex<Option<EnvCopies>> = Mutex::new(None);
+
+/// The strings of the environment, NAME=value, in a NULL-terminated guest array (`pin`: for the
+/// first environ, kept for good)
+fn env_array(wide: bool, pin: bool) -> u32 {
     let words: Vec<Vec<u8>> = with_crt_env(|e| e.clone())
         .into_iter()
         .map(|(k, v)| {
@@ -949,17 +963,55 @@ fn env_array(wide: bool) -> u32 {
             if wide { s.encode_utf16().flat_map(u16::to_le_bytes).collect() } else { crate::text::s2a(&s) }
         })
         .collect();
-    string_array(words, if wide { 2 } else { 1 })
+    let unit = if wide { 2 } else { 1 };
+    let mut g = ENV_COPIES.lock().unwrap();
+    let c = g.get_or_insert_with(EnvCopies::default);
+    let argv = mem::heap_alloc(ps() * (words.len() as u32 + 1), true);
+    for (i, w) in words.into_iter().enumerate() {
+        let p = c.strs.entry((wide, w)).or_insert_with_key(|(_, w)| {
+            let s = mem::heap_alloc(w.len() as u32 + unit, true);
+            mem::write(s, w);
+            (s, pin)
+        });
+        wp(argv + ps() * i as u32, p.0);
+    }
+    if pin {
+        c.pinned.push(argv);
+    }
+    argv
 }
 /// _environ / _wenviron: made again after each change (the CRT's are kept up to date as well)
 pub(super) fn refresh_environ() {
     for (name, wide) in [("_environ", false), ("_wenviron", true)] {
         let var = data(name).unwrap();
-        wp(var, env_array(wide));
+        let old = rp(var);
+        wp(var, env_array(wide, false));
+        let mut g = ENV_COPIES.lock().unwrap();
+        let c = g.get_or_insert_with(EnvCopies::default);
+        if old != 0 && !c.pinned.contains(&old) {
+            mem::heap_free(old);
+        }
     }
+    // (strings no environ has any more)
+    let now: std::collections::HashSet<(bool, Vec<u8>)> = with_crt_env(|e| e.clone())
+        .into_iter()
+        .flat_map(|(k, v)| {
+            let s = format!("{k}={v}");
+            [(true, s.encode_utf16().flat_map(u16::to_le_bytes).collect()), (false, crate::text::s2a(&s))]
+        })
+        .collect();
+    let mut g = ENV_COPIES.lock().unwrap();
+    let c = g.get_or_insert_with(EnvCopies::default);
+    c.strs.retain(|k, &mut (p, pinned)| {
+        let keep = pinned || now.contains(k);
+        if !keep {
+            mem::heap_free(p);
+        }
+        keep
+    });
 }
 pub(super) fn environ(wide: bool) -> u32 {
-    env_array(wide)
+    env_array(wide, true)
 }
 
 /// _wgetenv(name): the value, kept in a guest buffer per name (as getenv's)
@@ -971,7 +1023,12 @@ fn _wgetenv(c: &mut Ctx) -> u32 {
     let mut g = VALS.lock().unwrap();
     let m = g.get_or_insert_with(HashMap::default);
     let key = name.to_ascii_uppercase();
+    // (the same value: the same pointer, which a caller may still hold, as Windows' points
+    // into the environment; a changed value gets a new block)
     if let Some(&p) = m.get(&key) {
+        if mem::wstr(p) == w {
+            return p;
+        }
         mem::heap_free(p);
     }
     let p = put_or_alloc::<u16>(0, 0, &w);
@@ -1183,7 +1240,7 @@ fn locale_name(cat: u32) -> String {
 /// setlocale(category, locale) / _wsetlocale: the locale's name in a static buffer per category,
 /// NULL (unchanged) for a locale it does not know
 fn set_locale(c: &mut Ctx, wide: bool) -> u32 {
-    static BUF: Mutex<[u32; 6]> = Mutex::new([0; 6]);
+    static BUF: Mutex<Option<HashMap<Vec<u8>, u32>>> = Mutex::new(None);
     let (cat, p) = (c.a(0), c.a(1));
     if cat > 5 {
         set_errno(EINVAL);
@@ -1209,14 +1266,16 @@ fn set_locale(c: &mut Ctx, wide: bool) -> u32 {
     } else {
         name.bytes().chain([0]).collect()
     };
+    // (one block per name, kept: `old = setlocale(LC_ALL, NULL); setlocale(LC_ALL, "C"); ...;
+    // setlocale(LC_ALL, old)` reads the first answer after the second call, and the names a
+    // program uses are few)
     let mut b = BUF.lock().unwrap();
-    let slot = &mut b[cat as usize];
-    if *slot != 0 {
-        mem::heap_free(*slot);
-    }
-    *slot = mem::heap_alloc(units.len() as u32, true);
-    mem::write(*slot, &units);
-    *slot
+    let m = b.get_or_insert_with(HashMap::default);
+    *m.entry(units).or_insert_with_key(|u| {
+        let p = mem::heap_alloc(u.len() as u32, true);
+        mem::write(p, u);
+        p
+    })
 }
 fn setlocale(c: &mut Ctx) -> u32 {
     set_locale(c, false)
@@ -1657,25 +1716,23 @@ pub(super) fn message(e: u32) -> &'static str {
 /// that the next call overwrites, as Windows: strerror(2) and strerror(200) evaluated for one
 /// printf both show the later message
 fn errmsg(e: u32, wide: bool) -> u32 {
-    static BUFS: Mutex<Vec<(u32, bool, u32)>> = Mutex::new(Vec::new());
-    let tid = crate::cur().tid;
-    let p = {
-        let mut b = BUFS.lock().unwrap();
-        match b.iter().find(|x| x.0 == tid && x.1 == wide) {
-            Some(&(_, _, p)) => p,
-            None => {
-                let p = mem::heap_alloc(256, true);
-                b.push((tid, wide, p));
-                p
-            }
+    // (the thread's own buffers, narrow and wide: a list of every thread's that was never
+    // pruned, searched per call)
+    thread_local!(static BUFS: std::cell::Cell<[u32; 2]> = const { std::cell::Cell::new([0; 2]) });
+    let p = BUFS.with(|b| {
+        let mut v = b.get();
+        if v[wide as usize] == 0 {
+            v[wide as usize] = mem::heap_alloc(256, true);
+            b.set(v);
         }
-    };
+        v[wide as usize]
+    });
     let m = message(e);
     let bytes: Vec<u8> = if wide { m.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect() } else { m.bytes().chain([0]).collect() };
     mem::write(p, &bytes);
     p
 }
-fn strerror(c: &mut Ctx) -> u32 {
+pub(super) fn strerror(c: &mut Ctx) -> u32 {
     errmsg(c.a(0), false)
 }
 fn _wcserror(c: &mut Ctx) -> u32 {
@@ -1736,8 +1793,9 @@ fn rand_s(c: &mut Ctx) -> u32 {
     0
 }
 fn getrandom_bytes(b: &mut [u8]) -> bool {
-    use std::io::Read;
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(b)).is_ok() || {
+    // (getentropy, as cng's: /dev/urandom was opened, read and closed through emscripten's FS
+    // for each rand_s)
+    b.chunks_mut(256).all(|c| unsafe { libc::getentropy(c.as_mut_ptr().cast(), c.len()) } == 0) || {
         // (no /dev/urandom: the clock, mixed)
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         let mut x = t ^ 0x9e37_79b9_7f4a_7c15;
@@ -1882,14 +1940,7 @@ fn fputwc(c: &mut Ctx) -> u32 {
 }
 /// fputws(s, stream): as fputwc for each character, EOF at one the locale lacks
 fn fputws(c: &mut Ctx) -> u32 {
-    for u in wstr(c.a(0)) {
-        let Some(b) = wc_bytes(u) else {
-            set_errno(42);
-            return u32::MAX;
-        };
-        write_stream(c.a(1), &b);
-    }
-    0
+    if write_wide(c.a(1), &wstr(c.a(0))) { 0 } else { u32::MAX }
 }
 /// fgetwc(stream): one character from the locale's bytes (as mbtowc); WEOF at the end
 fn fgetwc(c: &mut Ctx) -> u32 {
@@ -1931,14 +1982,22 @@ fn putc(c: &mut Ctx) -> u32 {
 /// Writes wide text to a stream as fputws does (the locale's bytes); false at a character the
 /// locale lacks (errno EILSEQ).
 fn write_wide(fp: u32, s: &[u16]) -> bool {
+    // (the whole text in one write, not one stream write per character; what comes before a
+    // character the locale lacks is still written)
+    let mut out = Vec::with_capacity(s.len() * 2);
+    let mut ok = true;
     for &u in s {
         let Some(b) = wc_bytes(u) else {
             set_errno(42);
-            return false;
+            ok = false;
+            break;
         };
-        write_stream(fp, &b);
+        out.extend_from_slice(&b);
     }
-    true
+    if !out.is_empty() {
+        write_stream(fp, &out);
+    }
+    ok
 }
 fn fwprintf_of(c: &mut Ctx, fp: u32, fmt: u32, mut va: VaArgs) -> u32 {
     let _ = c;
@@ -2205,11 +2264,10 @@ fn _mbstrlen(c: &mut Ctx) -> u32 {
     n
 }
 /// _memicmp(a, b, n): ASCII letters without case
-fn _memicmp(c: &mut Ctx) -> u32 {
-    let n = c.a(2);
-    let a = mem::slice(c.a(0), n).to_ascii_lowercase();
-    let b = mem::slice(c.a(1), n).to_ascii_lowercase();
-    a.cmp(&b) as i32 as u32
+pub(super) fn _memicmp(c: &mut Ctx) -> u32 {
+    // (in place: n is the guest's, and two lowered copies of it were made first)
+    let (n, a, b) = (c.a(2), c.a(0), c.a(1));
+    (0..n).map(|i| (mem::r8(a + i).to_ascii_lowercase(), mem::r8(b + i).to_ascii_lowercase())).find(|(x, y)| x != y).map_or(0, |(x, y)| x.cmp(&y) as i32 as u32)
 }
 /// _wmakepath_s(path, size, drive, dir, fname, ext): errno
 fn makepath_value(c: &Ctx, wide: bool, start: u32) -> Vec<u16> {

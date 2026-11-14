@@ -318,3 +318,100 @@ proptest! {
         prop_assert_eq!(args.split(' ').filter(|s| !s.is_empty()).count(), argv.len() - 1);
     }
 }
+
+/// The environment's guest copies (review b05): getenv keeps its pointer while the value is
+/// the same, putenv frees what it replaced but not the first environ (main's envp), and
+/// setlocale's answers stay readable after later calls.
+mod env_copies {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+
+    fn strings(arr: u32) -> Vec<Vec<u8>> {
+        let mut v = vec![];
+        for i in 0.. {
+            let p = rp(arr + 4 * i);
+            if p == 0 {
+                break;
+            }
+            v.push(mem::cstr(p));
+        }
+        v
+    }
+    fn put(s: &str) {
+        let p = mem::heap_alloc(s.len() as u32 + 1, true);
+        mem::write(p, s.as_bytes());
+        assert_eq!(call(_putenv, &[p]), 0);
+        mem::heap_free(p);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        /// Any putenv sequence: environ always says the environment, every string in it is a
+        /// live block, the replaced arrays are freed, and the first environ is intact
+        #[test]
+        fn putenv_frees_what_it_replaced(ops in prop::collection::vec((0usize..4, 0usize..4), 1..40)) {
+            let _g = enter();
+            guest_thread();
+            // (the first environ, as main's envp and __initenv hold it)
+            let init = rp(crate::crt::data("__initenv").unwrap());
+            let init_strs = strings(init);
+            let mut prev: Option<u32> = None;
+            for (n, v) in ops {
+                let name = ["SAKE_A", "SAKE_B", "SAKE_C", "SAKE_D"][n];
+                put(&format!("{name}={}", ["", "1", "two", "three3"][v]));
+                let arr = rp(crate::crt::data("_environ").unwrap());
+                let warr = rp(crate::crt::data("_wenviron").unwrap());
+                let got = strings(arr);
+                let want: Vec<Vec<u8>> = with_crt_env(|e| e.clone()).iter().map(|(k, v)| format!("{k}={v}").into_bytes()).collect();
+                prop_assert_eq!(&got, &want);
+                let mut live = vec![arr, warr];
+                for a in [arr, warr] {
+                    for i in 0..got.len() as u32 {
+                        prop_assert!(mem::heap_owns(rp(a + 4 * i)));
+                        live.push(rp(a + 4 * i));
+                    }
+                }
+                // (the array this put replaced is free, or its block went to what is live now)
+                if let Some(p) = prev {
+                    prop_assert!(!mem::heap_owns(p) || live.contains(&p), "a replaced environ array stays");
+                }
+                prev = Some(arr);
+            }
+            prop_assert_eq!(strings(init), init_strs);
+            for n in ["SAKE_A", "SAKE_B", "SAKE_C", "SAKE_D"] {
+                put(&format!("{n}="));
+            }
+        }
+    }
+
+    #[test]
+    fn getenv_and_setlocale_pointers_stay() {
+        let _g = enter();
+        guest_thread();
+        put("SAKE_GETENV=x1");
+        let name = mem::heap_alloc(32, true);
+        mem::write(name, b"SAKE_GETENV");
+        let a = call(crate::crt::getenv, &[name]);
+        let b = call(crate::crt::getenv, &[name]);
+        assert_eq!(a, b, "getenv of an unchanged value: the pointer the first caller kept");
+        assert_eq!(mem::cstr(a), b"x1");
+        let wname = mem::heap_alloc(64, true);
+        mem::write(wname, &"SAKE_GETENV".encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>());
+        assert_eq!(call(_wgetenv, &[wname]), call(_wgetenv, &[wname]));
+        put("SAKE_GETENV=y22");
+        assert_eq!(mem::cstr(call(crate::crt::getenv, &[name])), b"y22");
+        put("SAKE_GETENV=");
+        // old = setlocale(LC_ALL, NULL); setlocale(LC_ALL, "C"); ...; setlocale(LC_ALL, old)
+        let old = call(setlocale, &[0, 0]);
+        let text = mem::cstr(old);
+        let c = mem::heap_alloc(4, true);
+        mem::write(c, b"C");
+        call(setlocale, &[0, c]);
+        call(setlocale, &[0, 0]);
+        assert!(mem::heap_owns(old));
+        assert_eq!(mem::cstr(old), text);
+        mem::heap_free(name);
+        mem::heap_free(wname);
+        mem::heap_free(c);
+    }
+}
