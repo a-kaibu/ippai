@@ -66,7 +66,7 @@ pub fn border_fn(x: &Addr, tex: &str, name: &str) -> String {
     };
     let b = x.border.map(|v| {
         let f = f32::from_bits(v);
-        format!("{:?}", if f.is_finite() { f } else { 0.0 })
+        crate::f32_text(if f.is_finite() { f } else { 0.0 })
     });
     format!("fn {name}(c: vec4f, uv: vec2f) -> vec4f {{\n  {k}\n  return mix(vec4f({}), c, k);\n}}\n", b.join(", "))
 }

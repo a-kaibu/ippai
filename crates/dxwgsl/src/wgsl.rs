@@ -504,7 +504,7 @@ impl W {
             K::F => {
                 let f = f32::from_bits(v);
                 if f.is_finite() {
-                    let s = format!("{f:?}");
+                    let s = crate::f32_text(f);
                     if f < 0.0 || (f == 0.0 && f.is_sign_negative()) { format!("({s}f)") } else { format!("{s}f") }
                 } else {
                     // (no infinity or NaN literals in WGSL: from a value it cannot fold)
@@ -1842,7 +1842,7 @@ fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f3
                 .map_or("1.0f".to_string(), |e| format!("bitcast<f32>(o{}.{})", e.reg, XYZW[bits(e.mask)[0] as usize]));
             // (the geometry shader's strip 0 1 2 3 as triangles 0 1 2, 2 1 3)
             post.push("var sp_c = array<vec2<f32>, 6>(vec2<f32>(0.5f, -0.5f), vec2<f32>(0.5f, 0.5f), vec2<f32>(-0.5f, -0.5f), vec2<f32>(-0.5f, -0.5f), vec2<f32>(0.5f, 0.5f), vec2<f32>(-0.5f, 0.5f));".into());
-            post.push(format!("let sp_s = clamp({size}, 1.0f, {max:?}f);"));
+            post.push(format!("let sp_s = clamp({size}, 1.0f, {}f);", crate::f32_text(max)));
             post.push("out.pos = out.pos + vec4<f32>(sp_c[sp_vid % 6u] * sp_s * out.pos.w / sp_view.xy, 0.0f, 0.0f);".into());
         }
         match ps.map(varyings) {

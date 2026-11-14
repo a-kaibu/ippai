@@ -594,7 +594,7 @@ fn const_index(p: &Param) -> u32 {
 fn f(bits: u32) -> String {
     let v = f32::from_bits(bits);
     if v.is_finite() {
-        format!("{:?}", v)
+        crate::f32_text(v)
     } else if v.is_nan() {
         "0.0".into()
     } else if v > 0.0 {
