@@ -10,6 +10,7 @@
 use super::{Fail, Res};
 use crate::case::{color, num, Op};
 use crate::rng::XorShift32;
+use crate::spec::hit;
 
 /// ternary raster operation on whole words: each result bit is bit (p<<2|s<<1|d) of `idx`
 pub fn rop3(idx: u8, p: u32, s: u32, d: u32) -> u32 {
@@ -103,6 +104,9 @@ impl Surf {
     }
     /// a pixel value as a color (0xRRGGBB)
     pub fn to_rgb(&self, v: u32) -> u32 {
+        if self.bpp == 16 {
+            hit("GDI.FMT.EXPAND");
+        }
         let x5 = |c: u32| c << 3 | c >> 2;
         match self.bpp {
             1 | 4 | 8 => self.pal[v as usize],
@@ -116,6 +120,7 @@ impl Surf {
     /// GetDIBits in tests/winref of masu)
     pub fn from_rgb(&self, c: u32) -> u32 {
         let (r, g, b) = (c >> 16 & 255, c >> 8 & 255, c & 255);
+        hit(if self.bpp <= 8 { "GDI.FMT.NEAREST" } else { "GDI.FMT.NARROW" });
         match self.bpp {
             1 | 4 | 8 => {
                 let mut best = (u32::MAX, 0);
@@ -203,7 +208,7 @@ impl Gdi {
                     i += 1;
                 }
                 if !matches!(bpp, 1 | 4 | 8 | 16 | 24 | 32) || !(1..=256).contains(&w) || !(1..=256).contains(&h) || (f565 && bpp != 16) {
-                    return Err(Fail::Unmodeled("dib parameters"));
+                    return Err(Fail::Unmodeled("GDI.DIB.PARAMS"));
                 }
                 let mut pal = default_palette(bpp as u32);
                 for (j, t) in op.tok[i..].iter().enumerate().take(pal.len()) {
@@ -270,8 +275,9 @@ impl Gdi {
             }
             "clip" => {
                 let r = (n(op, 2)? as i32, n(op, 3)? as i32, n(op, 4)? as i32, n(op, 5)? as i32);
+                hit("GDI.CLIP.INTERSECT");
                 if r.0 > r.2 || r.1 > r.3 {
-                    return Err(Fail::Unmodeled("clip rectangle not ordered"));
+                    return Err(Fail::Unmodeled("GDI.CLIP.UNORDERED"));
                 }
                 let sl = self.slot(op, 1)?;
                 let c = match sl.clip {
@@ -292,6 +298,7 @@ impl Gdi {
                 let (x, y, w, h, sx, sy, sw, sh, rop) = (v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8] as u32);
                 if w == sw && h == sh {
                     // (an unscaled StretchBlt is BitBlt)
+                    hit("GDI.STRETCH.SAME");
                     let r = self.blt(k, x, y, w, h, Some((ks, sx, sy)), rop, false)?;
                     out.push(format!("ret {}", r as u8));
                 } else {
@@ -304,11 +311,12 @@ impl Gdi {
                 let c = if t0 == "setpixel" { Some(c(op, 4)?) } else { None };
                 let sl = self.slot(op, 1)?;
                 let inside = x >= 0 && y >= 0 && x < sl.s.w && y < sl.s.h && sl.clip.is_none_or(|r| x >= r.0 && x < r.2 && y >= r.1 && y < r.3);
+                hit(if c.is_some() { "GDI.PIXEL.SET" } else { "GDI.PIXEL.GET" });
                 if !inside {
                     out.push("pixel invalid".into());
                 } else if let Some(c) = c {
                     if sl.s.bpp == 1 {
-                        return Err(Fail::Unmodeled("SetPixel on a monochrome DIB"));
+                        return Err(Fail::Unmodeled("GDI.PIXEL.SETMONO"));
                     }
                     let v = sl.s.from_rgb(c);
                     sl.s.set(x, y, v);
@@ -325,11 +333,12 @@ impl Gdi {
                 let (w, h) = (sl.s.w, sl.s.h);
                 let mut o = Surf::new(w, h, bpp, f565, true, default_palette(bpp));
                 if bpp <= 8 && t0 == "getdibits" {
-                    return Err(Fail::Unmodeled("GetDIBits to a color table format"));
+                    return Err(Fail::Unmodeled("GDI.DIBITS.GETPAL"));
                 }
                 if (bpp == 1) != (sl.s.bpp == 1) {
-                    return Err(Fail::Unmodeled("monochrome conversion"));
+                    return Err(Fail::Unmodeled("GDI.BLT.MONO"));
                 }
+                hit(if t0 == "getdibits" { "GDI.DIBITS.GET" } else { "GDI.DIBITS.SET" });
                 if t0 == "getdibits" {
                     for y in 0..h {
                         for x in 0..w {
@@ -387,19 +396,20 @@ impl Gdi {
     #[allow(clippy::too_many_arguments)]
     pub fn stretch(&mut self, k: usize, x: i32, y: i32, w: i32, h: i32, ks: usize, sx: i32, sy: i32, sw: i32, sh: i32, rop: u32) -> Res<bool> {
         if w <= 0 || h <= 0 || sw <= 0 || sh <= 0 {
-            return Err(Fail::Unmodeled("StretchBlt with an extent not positive (mirroring)"));
+            return Err(Fail::Unmodeled("GDI.STRETCH.MIRROR"));
         }
         if k == 7 || ks == 7 {
-            return Err(Fail::Unmodeled("StretchBlt with slot 7 (the model's scratch)"));
+            return Err(Fail::Unmodeled("GDI.DIB.PARAMS"));
         }
         let mode = self.slots[k].as_ref().unwrap().mode;
         if (sw > w || sh > h) && mode != 3 {
-            return Err(Fail::Unmodeled("StretchBlt shrinking in a mode that combines pixels"));
+            return Err(Fail::Unmodeled("GDI.STRETCH.COMBINE"));
         }
         let src = self.slots[ks].as_ref().unwrap();
         if sx < 0 || sy < 0 || sx + sw > src.s.w || sy + sh > src.s.h {
-            return Err(Fail::Unmodeled("scaled StretchBlt from outside the source"));
+            return Err(Fail::Unmodeled("GDI.STRETCH.SRCOUT"));
         }
+        hit("GDI.STRETCH.SAMPLE");
         // the sampled source as a picture of the destination's size, then an unscaled blit
         let mut tmp = Surf::new(w, h, src.s.bpp, src.s.f565, true, src.s.pal.clone());
         for j in 0..h {
@@ -421,31 +431,45 @@ impl Gdi {
     pub fn blt(&mut self, k: usize, x: i32, y: i32, w: i32, h: i32, src: Option<(usize, i32, i32)>, rop: u32, pat: bool) -> Res<bool> {
         let idx = (rop >> 16) as u8;
         if w < 0 || h < 0 {
-            return Err(Fail::Unmodeled("negative extent"));
+            return Err(Fail::Unmodeled("GDI.BLT.NEGATIVE"));
         }
         if rop & 0xff00_0000 != 0 {
-            return Err(Fail::Unmodeled("CAPTUREBLT / NOMIRRORBITMAP"));
+            return Err(Fail::Unmodeled("GDI.ROP3.FLAGS"));
         }
         if pat && uses_s(idx) {
             // PatBlt documents only operations without a source
-            return Err(Fail::Unmodeled("PatBlt with a source operation"));
+            return Err(Fail::Unmodeled("GDI.PATBLT.SRCOP"));
+        }
+        hit("GDI.ROP3.TRUTH");
+        if rop & 0xffff != 0 {
+            hit("GDI.ROP3.LOWWORD");
+        }
+        hit(if pat { "GDI.PATBLT.ROPS" } else if uses_s(idx) { "GDI.BLT.CONVERT" } else { "GDI.ROP3.NOSRC" });
+        if src.is_some_and(|(ks, ..)| ks == k) && uses_s(idx) {
+            hit("GDI.BLT.OVERLAP");
         }
         let d = self.slots[k].as_ref().unwrap();
         let sp = if uses_s(idx) { src.map(|(ks, sx, sy)| (self.slots[ks].as_ref().unwrap().clone(), sx, sy)) } else { None };
         if uses_p(idx) {
             match &d.brush {
-                Brush::Null => return Err(Fail::Unmodeled("null brush")),
-                Brush::Hatch(..) => return Err(Fail::Unmodeled("hatch brush")),
-                Brush::Pattern(p) if p.bpp == 1 => return Err(Fail::Unmodeled("monochrome pattern brush")),
-                _ => {}
+                Brush::Null => return Err(Fail::Unmodeled("GDI.BRUSH.NULL")),
+                Brush::Hatch(..) => return Err(Fail::Unmodeled("GDI.BRUSH.HATCH")),
+                Brush::Pattern(p) if p.bpp == 1 => return Err(Fail::Unmodeled("GDI.BRUSH.MONOPATTERN")),
+                Brush::Solid(_) => hit(if d.s.bpp <= 8 { "GDI.BRUSH.SOLIDPAL" } else { "GDI.BRUSH.SOLID" }),
+                Brush::Pattern(_) => {
+                    hit("GDI.BRUSH.DIBPATTERN");
+                    hit("GDI.BRUSH.ORIGIN");
+                }
             }
         }
         if let Some((s, ..)) = &sp {
             if (s.s.bpp == 1) != (d.s.bpp == 1) {
-                return Err(Fail::Unmodeled("monochrome conversion"));
+                return Err(Fail::Unmodeled("GDI.BLT.MONO"));
             }
         }
         let d = self.slots[k].as_mut().unwrap();
+        hit("GDI.FMT.LAYOUT");
+        hit("GDI.BLT.CLIP");
         let (mut x0, mut y0, mut x1, mut y1) = (x.max(0), y.max(0), (x + w).min(d.s.w), (y + h).min(d.s.h));
         if let Some(c) = d.clip {
             x0 = x0.max(c.0);
@@ -466,10 +490,16 @@ impl Gdi {
                         let (qx, qy) = (sx + px - x, sy + py - y);
                         if qx < 0 || qy < 0 || qx >= s.s.w || qy >= s.s.h {
                             // source pixels outside the source bitmap draw nothing
+                            hit("GDI.BLT.SRCOUT");
                             continue;
                         }
                         let v = s.s.get(qx, qy);
-                        if s.s.same_format(&d.s) { v } else { d.s.from_rgb(s.s.to_rgb(v)) }
+                        if s.s.same_format(&d.s) {
+                            hit("GDI.FMT.RAW");
+                            v
+                        } else {
+                            d.s.from_rgb(s.s.to_rgb(v))
+                        }
                     }
                 };
                 let pv = match &d.brush {

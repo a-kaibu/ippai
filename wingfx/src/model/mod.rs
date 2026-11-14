@@ -11,7 +11,7 @@ use crate::case::Case;
 pub enum Fail {
     /// a line the executor would print "bad line N" for (the generators never write one)
     Bad,
-    /// the specification does not settle what Windows does here
+    /// the clause (spec/*.txt, status open) that does not settle what Windows does here
     Unmodeled(&'static str),
 }
 
@@ -19,6 +19,14 @@ pub type Res<T> = Result<T, Fail>;
 
 /// one case's lines, or why the model has none
 pub fn run_case(case: &Case) -> Res<Vec<String>> {
+    let r = run_ops(case);
+    if let Err(Fail::Unmodeled(id)) = &r {
+        crate::spec::hit(id);
+    }
+    r
+}
+
+fn run_ops(case: &Case) -> Res<Vec<String>> {
     let mut out = Vec::new();
     let mut g = gdi::Gdi::new();
     let mut d = d3d9::D3d9::default();

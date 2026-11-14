@@ -1,0 +1,42 @@
+# GDI clauses (wingfx/spec/README.md): <id> <status> | <source> | <what it says>
+# status: doc = the documentation says it, modelled; measured = Windows' answers showed it,
+# modelled; assumed = modelled, neither documented nor measured yet; open = not modelled
+# (the cases that reach it print "unmodeled <id>" and are checked against Windows only).
+GDI.ROP3.TRUTH doc | Ternary Raster Operations | bits 16..23 of the code are the operation index; each result bit is bit (P<<2|S<<1|D) of the index (P=F0 S=CC D=AA)
+GDI.ROP3.LOWWORD assumed | Ternary Raster Operations | the low word ("operation code" for drivers) does not change the result
+GDI.ROP3.FLAGS open | BitBlt (CAPTUREBLT, NOMIRRORBITMAP) | the high flag bits of the code
+GDI.ROP3.NOSRC doc | BitBlt | an operation that does not use the source ignores it
+GDI.FMT.LAYOUT doc | BITMAPINFOHEADER, Bitmap Storage | pixel layout: 1/4 bpp MSB first, 16 bpp 5-5-5 (BI_RGB) or masks (BI_BITFIELDS), 24 bpp B G R, 32 bpp B G R x; rows padded to 4 bytes; height < 0 top-down
+GDI.FMT.RAW assumed | BitBlt | between surfaces of the same format the operation works on the pixel values (palette indices, all 32 bits)
+GDI.FMT.EXPAND assumed | (none) | 5 and 6 bit channels widen by bit replication (c<<3|c>>2, c<<2|c>>4)
+GDI.FMT.NARROW assumed | (none) | 8 bit channels narrow to 5 / 6 bits by truncation; 32 bpp written from a color has x = 0
+GDI.FMT.NEAREST assumed | (none) | a color into a color table format: the nearest entry by squared RGB distance, a tie to the later entry
+GDI.BLT.CONVERT doc | BitBlt | "If the color formats of the source and destination device contexts do not match, the BitBlt function converts the source color format to match the destination format"
+GDI.BLT.MONO open | BitBlt, Bitmaps: monochrome to color | monochrome <-> color: 1 bits to the background color, 0 bits to the text color; color pixels equal to the background color to 1 (how a DIB section's color table takes part is not said)
+GDI.BLT.CLIP doc | BitBlt, Clipping | only pixels in the destination bitmap and in the clipping region change
+GDI.BLT.SRCOUT assumed | (none) | destination pixels whose source pixel lies outside the source bitmap are left as they are
+GDI.BLT.NEGATIVE open | (none) | BitBlt / PatBlt with a negative width or height
+GDI.BLT.OVERLAP assumed | (none) | source and destination in the same bitmap: as if the source were copied first
+GDI.PATBLT.ROPS doc | PatBlt | PATCOPY, PATINVERT, DSTINVERT, BLACKNESS, WHITENESS (and any operation of P and D) on the rectangle
+GDI.PATBLT.SRCOP open | PatBlt | PatBlt with an operation that uses a source
+GDI.BRUSH.SOLID doc | CreateSolidBrush | a solid brush draws its color
+GDI.BRUSH.SOLIDPAL assumed | (none) | a solid brush on a color table format: the nearest entry (no dithering in a DIB section)
+GDI.BRUSH.ORIGIN doc | Brush Origin, SetBrushOrgEx | pattern pixel (0,0) lies at the brush origin; the pattern repeats from there
+GDI.BRUSH.DIBPATTERN doc | CreateDIBPatternBrushPt | the pattern is the packed DIB's picture, its colors from its color table (DIB_RGB_COLORS)
+GDI.BRUSH.MONOPATTERN open | CreateDIBPatternBrushPt | a 1 bpp pattern (text / background colors or its table?)
+GDI.BRUSH.HATCH open | CreateHatchBrush | hatch patterns: which pixels, and the background
+GDI.BRUSH.NULL open | GetStockObject(NULL_BRUSH) | what an operation that uses the pattern does with the null brush
+GDI.CLIP.INTERSECT doc | IntersectClipRect | the clip region becomes its intersection with the rectangle; returns NULLREGION (1) / SIMPLEREGION (2) / COMPLEXREGION (3)
+GDI.CLIP.UNORDERED open | IntersectClipRect | a rectangle with left > right or top > bottom
+GDI.DIB.PARAMS open | CreateDIBSection | other bit counts and sizes
+GDI.STRETCH.SAME doc | StretchBlt | equal extents: BitBlt
+GDI.STRETCH.SAMPLE assumed | StretchBlt, SetStretchBltMode (COLORONCOLOR) | stretching / COLORONCOLOR deleting: the source pixel under each destination pixel's center
+GDI.STRETCH.COMBINE open | SetStretchBltMode (BLACKONWHITE, WHITEONBLACK, HALFTONE) | shrinking ANDs / ORs / averages the eliminated pixels (the exact rule is not said)
+GDI.STRETCH.MIRROR open | StretchBlt | "StretchBlt creates a mirror image of a bitmap if the signs of the nSrcWidth and nWidthDest parameters or ... differ"
+GDI.STRETCH.SRCOUT open | (none) | scaled from outside the source bitmap
+GDI.PIXEL.GET doc | GetPixel | the RGB value of the pixel; CLR_INVALID outside the clipping region
+GDI.PIXEL.SET doc | SetPixel | sets the pixel to the closest approximation of the color, returns the color it set; -1 when it fails
+GDI.PIXEL.SETMONO open | SetPixel | SetPixel on a 1 bpp DIB section
+GDI.DIBITS.GET doc | GetDIBits | the bitmap's pixels converted into the requested format; returns the scan lines copied
+GDI.DIBITS.GETPAL open | GetDIBits | the color table it writes for a 1/4/8 bpp request, and the mapping into it
+GDI.DIBITS.SET doc | SetDIBits | the DIB's pixels converted into the bitmap's format; returns the scan lines copied

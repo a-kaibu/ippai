@@ -13,6 +13,7 @@
 
 use super::{Fail, Res};
 use crate::case::{num, Op};
+use crate::spec::hit;
 use std::collections::BTreeMap;
 
 pub const INVALIDCALL: u32 = 0x8876_086c;
@@ -225,6 +226,11 @@ pub struct D3d9 {
     blocks: BTreeMap<i64, BTreeMap<Key, u32>>,
 }
 
+fn hit_ret(id: &'static str) -> bool {
+    hit(id);
+    true
+}
+
 fn n(op: &Op, i: usize) -> Result<i64, Fail> {
     op.tok.get(i).and_then(|t| num(t)).ok_or(Fail::Bad)
 }
@@ -260,13 +266,14 @@ impl D3d9 {
                     "rs" if a < 256 => Key::Rs(a),
                     "tss" if a < 8 && b < 34 => Key::Tss(a, b),
                     "ss" if sampler_ok(a) && b < 14 => Key::Ss(a, b),
-                    _ => return Err(Fail::Unmodeled("state index past Windows' arrays")),
+                    _ => return Err(Fail::Unmodeled("D3D9.INDEX.RANGE")),
                 };
                 let what = if two { format!("{} {} {}", t[0], a, t[3]) } else { format!("rs {a}") };
                 let documented = self.state.contains_key(&key);
                 if set {
+                    hit("D3D9.SETGET");
                     if !documented {
-                        return Err(Fail::Unmodeled("Set of an undocumented state"));
+                        return Err(Fail::Unmodeled("D3D9.SET.UNDOC"));
                     }
                     match &mut self.recording {
                         Some(r) => {
@@ -277,6 +284,14 @@ impl D3d9 {
                         }
                     }
                 } else {
+                    hit(match (key, documented) {
+                        (Key::Rs(166), _) => "D3D9.RS.POINTSIZEMAX",
+                        (Key::Rs(_), true) => "D3D9.RS.DEFAULT",
+                        (Key::Rs(_), false) => "D3D9.RS.UNDOC",
+                        (Key::Tss(..), true) => "D3D9.TSS.DEFAULT",
+                        (Key::Tss(..), false) => "D3D9.TSS.UNDOC",
+                        (Key::Ss(..), _) => "D3D9.SS.DEFAULT",
+                    });
                     match self.state.get(&key).copied().or_else(|| undocumented_read(key)) {
                         Some(v) => out.push(format!("{what} = {v:08x}")),
                         None => out.push(format!("{what} hr {INVALIDCALL:08x}")),
@@ -288,8 +303,9 @@ impl D3d9 {
                 let verb = t.get(1).ok_or(Fail::Bad)?.as_str();
                 if verb == "begin" {
                     if self.recording.is_some() {
-                        return Err(Fail::Unmodeled("BeginStateBlock while recording"));
+                        return Err(Fail::Unmodeled("D3D9.SB.MISUSE"));
                     }
+                    hit("D3D9.SB.RECORD");
                     self.recording = Some(BTreeMap::new());
                     return Ok(true);
                 }
@@ -298,11 +314,11 @@ impl D3d9 {
                     return Err(Fail::Bad);
                 }
                 if self.recording.is_some() && verb != "end" {
-                    return Err(Fail::Unmodeled("state block call while recording"));
+                    return Err(Fail::Unmodeled("D3D9.SB.MISUSE"));
                 }
                 match verb {
                     "end" => {
-                        let r = self.recording.take().ok_or(Fail::Unmodeled("EndStateBlock without BeginStateBlock"))?;
+                        let r = self.recording.take().ok_or(Fail::Unmodeled("D3D9.SB.MISUSE"))?;
                         self.blocks.insert(i, r);
                     }
                     "create" => {
@@ -311,8 +327,10 @@ impl D3d9 {
                             1 => |g| g != Nowhere,
                             2 => |g| matches!(g, Pixel | Both),
                             3 => |g| matches!(g, Vertex | Both),
-                            _ => return Err(Fail::Unmodeled("state block type")),
+                            _ => return Err(Fail::Unmodeled("D3D9.SB.BADTYPE")),
                         };
+                        hit("D3D9.SB.TYPES");
+                        hit("D3D9.SB.GROUPS");
                         let b = all_states().into_iter().filter(|s| want(s.2)).map(|(k, ..)| (k, self.state[&k])).collect();
                         self.blocks.insert(i, b);
                     }
@@ -322,8 +340,8 @@ impl D3d9 {
                             return Ok(true);
                         };
                         match verb {
-                            "capture" => b.iter_mut().for_each(|(k, v)| *v = self.state[k]),
-                            "apply" => b.iter().for_each(|(k, v)| {
+                            "capture" if hit_ret("D3D9.SB.CAPTURE") => b.iter_mut().for_each(|(k, v)| *v = self.state[k]),
+                            "apply" if hit_ret("D3D9.SB.APPLY") => b.iter().for_each(|(k, v)| {
                                 self.state.insert(*k, *v);
                             }),
                             _ => {

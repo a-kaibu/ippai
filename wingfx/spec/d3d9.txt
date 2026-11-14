@@ -1,0 +1,17 @@
+# Direct3D 9 clauses (wingfx/spec/README.md): <id> <status> | <source> | <what it says>
+D3D9.RS.DEFAULT doc | D3DRENDERSTATETYPE | the default of each documented render state (ZENABLE TRUE with an automatic depth stencil)
+D3D9.RS.POINTSIZEMAX measured | D3DRENDERSTATETYPE (says 64.0) | POINTSIZE_MAX starts at 8192.0 (d3d9state golden)
+D3D9.RS.UNDOC measured | (none) | Get of an undocumented render state: 0xbaadcafe for some, INVALIDCALL for the rest (d3d9state golden)
+D3D9.TSS.DEFAULT doc | D3DTEXTURESTAGESTATETYPE | the defaults; COLOROP MODULATE and ALPHAOP SELECTARG1 on stage 0, DISABLE after; TEXCOORDINDEX = stage
+D3D9.TSS.UNDOC measured | (none) | undocumented stage state types read 0xbaadcafe, 33 reads 0 (d3d9state golden)
+D3D9.SS.DEFAULT doc | D3DSAMPLERSTATETYPE | the defaults; type 0 reads 0xbaadcafe (measured)
+D3D9.SETGET doc | SetRenderState, GetRenderState (and stage, sampler) | Get returns what Set stored; no value is validated
+D3D9.SET.UNDOC open | (none) | Set of an undocumented state and what Get reads after it
+D3D9.INDEX.RANGE excluded | (none) | stages past 7, samplers past 15 other than 256..260, sampler types past 13 (Windows reads past its arrays)
+D3D9.SB.TYPES doc | State Blocks Save and Restore State, D3DSTATEBLOCKTYPE | D3DSBT_ALL / PIXELSTATE / VERTEXSTATE capture the listed states
+D3D9.SB.GROUPS measured | (none) | the lists' exceptions: rs 40 pixel; TEXCOORDINDEX / TEXTURETRANSFORMFLAGS also pixel; CONSTANT in none; DMAPOFFSET in ALL only (d3d9sb golden)
+D3D9.SB.RECORD assumed | BeginStateBlock, EndStateBlock | calls between Begin and End are recorded into the block and not applied to the device
+D3D9.SB.CAPTURE doc | IDirect3DStateBlock9::Capture | the block's states take the device's current values
+D3D9.SB.APPLY doc | IDirect3DStateBlock9::Apply | the device's states take the block's values
+D3D9.SB.MISUSE open | BeginStateBlock, EndStateBlock | Begin while recording, End without Begin, other calls while recording
+D3D9.SB.BADTYPE open | CreateStateBlock | a type other than 1..3

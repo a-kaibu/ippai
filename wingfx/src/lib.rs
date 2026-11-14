@@ -14,3 +14,4 @@ pub mod compare;
 pub mod gen;
 pub mod model;
 pub mod rng;
+pub mod spec;

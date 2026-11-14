@@ -2,6 +2,7 @@
 //!   wingfx gen <suite>                  the suite's case file (cases/<suite>.txt)
 //!   wingfx model <suite> [cases file]   what Windows prints for them, by the model
 //!   wingfx compare <want> <got>         two outputs, case by case (exit 1 on a difference)
+//!   wingfx spec                         each clause (spec/), its status and how many cases reach it
 use std::process::exit;
 use wingfx::{case, compare, gen, model};
 
@@ -26,6 +27,12 @@ fn main() {
             };
             print!("{}", model::run(suite, &case::parse_cases(&text)));
         }
+        ["spec"] => {
+            let cov = wingfx::spec::coverage();
+            for c in wingfx::spec::clauses() {
+                println!("{:24} {:9} {:5}  {}", c.id, c.status, cov.get(&c.id).map_or(0, |v| v.len()), c.text);
+            }
+        }
         ["compare", want, got] => {
             let r = compare::compare_text(&read(want), &read(got));
             for d in &r.differ {
@@ -35,7 +42,7 @@ fn main() {
             exit(if r.differ.is_empty() { 0 } else { 1 })
         }
         _ => {
-            eprintln!("usage: wingfx gen <suite> | model <suite> [cases] | compare <want> <got>");
+            eprintln!("usage: wingfx gen <suite> | model <suite> [cases] | compare <want> <got> | spec");
             exit(2)
         }
     }

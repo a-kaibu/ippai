@@ -198,6 +198,9 @@ pub fn gdi() -> String {
     for (i, op) in [0x00CC0020u32, 0x00660046, 0x40F00021, 0x80F00021, 0x405A0049].iter().enumerate() {
         writeln!(s, "case edge-patblt-{i}\ndib 0 6 3 32\nfill 0 {}\nbrush 0 solid #12ab34\npatblt 0 1 0 4 3 {op:#x}\ndump 0\nend", 77 + i).unwrap();
     }
+    // IntersectClipRect with a rectangle not ordered; CreateDIBSection of a bit count GDI lacks
+    writeln!(s, "case edge-clip-unordered\ndib 0 6 4 32\nfill 0 5\nclip 0 5 3 1 1\nbrush 0 solid #00ff00\npatblt 0 0 0 6 4 0xf00021\ndump 0\nend").unwrap();
+    writeln!(s, "case edge-dib-2bpp\ndib 0 4 2 2\nend").unwrap();
     // negative extents (mirroring or normalizing?)
     for (i, (w, h)) in [(-3i32, 2i32), (3, -2), (-3, -2)].iter().enumerate() {
         writeln!(s, "case edge-negative-{i}\ndib 0 8 4 32\nfill 0 {}\ndib 1 8 4 32\nfill 1 {}\nbitblt 0 4 2 {w} {h} 1 4 2 0xcc0020\ndump 0\npatblt 0 4 2 {w} {h} 0x550009\ndump 0\nend", 90 + i, 95 + i).unwrap();
