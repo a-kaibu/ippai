@@ -17,6 +17,7 @@ let stopPlay: (() => void) | undefined;
 //   &bench                          bench.html: the program's output as "vnvm-print" events (all its threads')
 //   &warm=0                         don't fetch the rest of the game's files onto the device while it plays (warm.ts)
 
+import { chunkCacheMb } from "./chunkcache";
 import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { memGate } from "./memgate";
 import { startWebGame } from "./html";
@@ -462,6 +463,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // (headless Chromium destroys a device that draws to a canvas: tests take shots instead)
       ...(params.has("headless") ? { IPPAI_HEADLESS: "1" } : {}),
       ...(params.has("d3dstats") ? { IPPAI_D3DSTATS: "1" } : {}),
+      // (a small chunk cache on a device with little memory, chunkcache.ts; &env= overrides it)
+      ...((mb) => (mb ? { IPPAI_CHUNK_CACHE_MB: String(mb) } : {}))(
+        chunkCacheMb((navigator as Navigator & { deviceMemory?: number }).deviceMemory),
+      ),
       // the game starts in its own folder (as from Explorer): many open their data relatively
       ...(/^z:\\/i.test(run)
         ? { IPPAI_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" }

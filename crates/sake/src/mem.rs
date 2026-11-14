@@ -194,6 +194,45 @@ pub fn fill(a: u32, n: u32, v: u8) {
         unsafe { std::ptr::write_bytes(a as usize as *mut u8, v, n as usize) }
     }
 }
+/// Zeroes [a, a+n) without writing to the pages in it that are zero already. The browser backs
+/// a page of the wasm memory with RAM at its first write and never takes it back (wasm cannot
+/// give memory back), while a read of a page never written costs nothing (the kernel's shared
+/// zero page). Zeroing what the program reserved but never used (a 256 MB block of which it
+/// committed a few pages, a HEAP_ZERO_MEMORY block it never fills) would make all of it RAM.
+/// Short ranges are filled plainly.
+pub fn zero(a: u32, n: u32) {
+    if n < ZERO_SKIP_MIN {
+        return fill(a, n, 0);
+    }
+    if !guest(a, n) {
+        return;
+    }
+    let end = a as u64 + n as u64;
+    let mut p = a as u64;
+    while p < end {
+        let next = ((p | (PAGE as u64 - 1)) + 1).min(end);
+        let s = slice_mut(p as u32, (next - p) as u32);
+        if !is_zero(s) {
+            s.fill(0);
+        }
+        p = next;
+    }
+}
+/// (below this zero() fills: one or two pages)
+const ZERO_SKIP_MIN: u32 = 2 * PAGE;
+
+/// Whether every byte of `s` is 0 (stops at the first 256-byte block that is not; within a
+/// block, no early exit, so that it is vectorized).
+pub fn is_zero(s: &[u8]) -> bool {
+    let mut c = s.chunks_exact(256);
+    for b in &mut c {
+        if b.iter().fold(0u8, |x, &y| x | y) != 0 {
+            return false;
+        }
+    }
+    c.remainder().iter().all(|&b| b == 0)
+}
+
 pub fn copy(dst: u32, src: u32, n: u32) {
     if guest(dst, n) {
         unsafe { std::ptr::copy(src as usize as *const u8, dst as usize as *mut u8, n as usize) }
@@ -454,7 +493,9 @@ pub fn decommit_range(a: u32, n: u32) -> bool {
     if let Some(p) = g.get_mut(&b) {
         for i in first..last {
             if p[i as usize] != 0 {
-                fill(b + i * PAGE, PAGE, 0);
+                if !is_zero(slice(b + i * PAGE, PAGE)) {
+                    fill(b + i * PAGE, PAGE, 0);
+                }
                 p[i as usize] = 0;
             }
         }
@@ -575,7 +616,7 @@ pub fn release(base: u32) -> bool {
     let Some(r) = sp.get(&base).copied() else { return false };
     kura::jit::code_changed(base as usize, r.size as usize);
     jit_prot(base, r.size, 0);
-    fill(base, r.size, 0);
+    zero(base, r.size);
     if r.hi != 0 {
         HIGH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -751,7 +792,7 @@ pub fn heap_alloc(size: u32, zero: bool) -> u32 {
     w32(p + HDR - 8, size);
     w32(p + HDR - 4, MAGIC);
     if zero {
-        fill(p + HDR, size, 0);
+        crate::mem::zero(p + HDR, size);
     }
     p + HDR
 }
@@ -798,7 +839,7 @@ pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
     let old = heap_size(p);
     if heap_fits(p, size) {
         if zero && size > old {
-            fill(p + old, size - old, 0);
+            crate::mem::zero(p + old, size - old);
         }
         w32(p - 8, size);
         return p;
@@ -809,7 +850,7 @@ pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
     }
     copy(n, p, old.min(size));
     if zero && size > old {
-        fill(n + old, size - old, 0);
+        crate::mem::zero(n + old, size - old);
     }
     heap_free_small(p);
     n
@@ -966,6 +1007,104 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// mem::zero: the range ends up zero and nothing outside it changes, whatever was there
+    /// (pages that were zero, pages with one byte set anywhere, ranges cut at any byte); and it
+    /// leaves pages that were zero unwritten, so that they never become RAM (the RSS tests).
+    mod zeroing {
+        use super::super::{is_zero, release, reserve, commit, decommit_range, heap_alloc, heap_free, slice, slice_mut, w8, zero, PAGE};
+        use proptest::prelude::*;
+
+        #[test]
+        fn is_zero_finds_any_byte() {
+            for len in [0usize, 1, 255, 256, 257, 4095, 4096, 8191] {
+                let mut v = vec![0u8; len];
+                assert!(is_zero(&v));
+                for i in 0..len {
+                    v[i] = 1;
+                    assert!(!is_zero(&v), "len {len} byte {i}");
+                    v[i] = 0;
+                }
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(200))]
+            #[test]
+            fn zero_is_fill(start in 0u32..3 * PAGE, len in 0u32..6 * PAGE, dirty in prop::collection::vec((0u32..9 * PAGE, 1u8..=255), 0..40)) {
+                let _g = crate::test_guest::enter();
+                let b = reserve(0, 10 * PAGE, 4, 0x20000, false).unwrap();
+                commit(b, 4);
+                for &(at, v) in &dirty {
+                    w8(b + at, v);
+                }
+                let before = slice(b, 10 * PAGE).to_vec();
+                zero(b + start, len);
+                let after = slice(b, 10 * PAGE);
+                for i in 0..10 * PAGE {
+                    let inside = i >= start && i < start + len;
+                    prop_assert_eq!(after[i as usize], if inside { 0 } else { before[i as usize] }, "byte {:#x}", i);
+                }
+                release(b);
+            }
+        }
+
+        /// This process's resident memory (smaps Rss of the guest range: the kernel's zero page,
+        /// which reads of never-written pages map, is not counted), KiB
+        fn guest_rss_kib() -> u64 {
+            let (lo, hi) = (super::super::LO as u64, super::super::HI as u64);
+            let mut rss = 0;
+            let mut inside = false;
+            for l in std::fs::read_to_string("/proc/self/smaps").unwrap().lines() {
+                if let Some((range, _)) = l.split_once(' ') {
+                    if let Some((a, b)) = range.split_once('-') {
+                        if let (Ok(a), Ok(b)) = (u64::from_str_radix(a, 16), u64::from_str_radix(b, 16)) {
+                            inside = a < hi && b > lo;
+                            continue;
+                        }
+                    }
+                }
+                if inside {
+                    if let Some(v) = l.strip_prefix("Rss:") {
+                        rss += v.trim().trim_end_matches(" kB").trim().parse::<u64>().unwrap();
+                    }
+                }
+            }
+            rss
+        }
+
+        /// Releasing a big reservation the program used one page of, decommitting pages it
+        /// committed and never wrote, a zeroed heap block it never writes: none of it becomes
+        /// RAM (each used to write zeros over all of it: 64 MB of RAM for a page used).
+        #[test]
+        fn unused_pages_stay_out_of_ram() {
+            let _g = crate::test_guest::enter();
+            const BIG: u32 = 64 << 20;
+            let slack = |d: u64| assert!(d < 1024, "{d} KiB became resident");
+            // reserve, commit all, write one page, release
+            let before = guest_rss_kib();
+            let b = reserve(0, BIG, 4, 0x20000, false).unwrap();
+            commit(b, 4);
+            slice_mut(b + 0x123_4000, 16).fill(7);
+            release(b);
+            slack(guest_rss_kib().saturating_sub(before));
+            // the page written is zero again for whoever gets the block next
+            let b2 = reserve(b, BIG, 4, 0x20000, false).unwrap();
+            assert!(is_zero(slice(b2 + 0x123_4000, PAGE)));
+            // commit and decommit without writing
+            commit(b2, 4);
+            decommit_range(b2, 0);
+            release(b2);
+            slack(guest_rss_kib().saturating_sub(before));
+            // HEAP_ZERO_MEMORY / calloc of fresh memory
+            let h = heap_alloc(BIG / 2, true);
+            assert_ne!(h, 0);
+            assert!(is_zero(slice(h, PAGE)) && is_zero(slice(h + BIG / 2 - PAGE, PAGE)));
+            slack(guest_rss_kib().saturating_sub(before));
+            heap_free(h);
+            slack(guest_rss_kib().saturating_sub(before));
         }
     }
 

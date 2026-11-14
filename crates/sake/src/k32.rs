@@ -8739,7 +8739,7 @@ fn PdhGetFormattedCounterValue(c: &mut Ctx) -> u32 {
     0
 }
 fn RtlZeroMemory(c: &mut Ctx) -> u32 {
-    mem::fill(c.a(0), c.a(1), 0);
+    mem::zero(c.a(0), c.a(1));
     0
 }
 fn RtlMoveMemory(c: &mut Ctx) -> u32 {

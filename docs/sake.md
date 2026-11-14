@@ -77,6 +77,25 @@
   名前付きの sake.wasm は `SAKE_LDEXTRA=--profiling-funcs bash crates/sake/build.sh`。
   game.html の CPU (コア) は待ちの外の時間で、`secs` が違うと場面が違うので比べられない。
 
+## メモリ (2026-11-14)
+
+- wasm32 の線形メモリは 4GB まで。下位 2GB がゲーム (Windows の 32 ビットプロセスと同じ広さ)、上位が sake。
+  ブラウザは一度書いたページを RAM にし、wasm からは返せない (読んだだけのページはカーネルのゼロページで RAM を使わない)。
+  なので効くのは「使わないページに書かない」こと。memory64 は全アクセスが i64 と上限比較になって遅いので採らない。
+- `mem::zero`: ゼロのページには書かずに飛ばす。解放 (release)、デコミット、HEAP_ZERO_MEMORY / calloc / _recalloc の伸び、
+  memset(0)、RtlZeroMemory が使う。前は予約全体をゼロで書いていて、256MB 予約して数ページ使っただけでも 256MB が RAM になった
+  (Unity 6 の 256MB 単位の予約など)。書かれたページの消去は 1 割ほど遅くなるが、ゼロのページは同じ速さ。
+  mem.rs の `zeroing` テスト (smaps の Rss で RAM にならないことを確認、旧動作では 64MB 増えて落ちる、PBT で fill と同じ結果)、
+  host/tests/zeromem.c (32/64 ビット、JIT とインタプリタ、Windows でも同じ出力のはず)。
+- チャンクキャッシュ (kura vfs、既定 128MB): navigator.deviceMemory が 8 未満の端末 (6GB の Android は 4 と答える) では
+  32MB (web/src/chunkcache.ts)。ゲームのファイルは先読みで端末にあるので、落としたブロックはそこから読み直す。
+- ドーナドーナ 体験版、Chromium (SwiftShader)、タイトルと本編 100 秒、ピーク (PSS):
+  ページ 1.34GB (wasm のゲーム側 約330MB、sake 側 約250MB のうちチャンクキャッシュが 128MB まで、残りは V8 のコードなど)、
+  GPU プロセス 0.5〜0.7GB。deviceMemory=4 のふりでページ 1343MB → 1253MB、ファイル待ちの合計は 4.93s → 4.84s。
+- node 22 (V8 12.4) で 2GB になるのは V8 の古い作り (table を import して call_indirect する instance ごとに
+  table の写しを持つ: JIT のモジュール約 3000 個で 1.3GB)。node 24 (V8 13.6) や今の Chrome では起きない (同じ実行で 910MB)。
+  JIT のモジュール 1 個の固定費は約 8KB で、数を減らしても効かない (V8 の分はコード量に比例)。
+
 ## 64 ビット (PE32+、2026-11-02)
 
 - sake.wasm は 1 つのまま。exe が PE32+ なら起動時に `mem::set_x64()` で x64 モードにし、koji を

@@ -675,7 +675,12 @@ fn memmove(c: &mut Ctx) -> u32 {
     memcpy(c)
 }
 fn memset(c: &mut Ctx) -> u32 {
-    mem::fill(c.a(0), c.a(2), c.a(1) as u8);
+    // (zeroing: pages already zero are not written, mem::zero)
+    if c.a(1) as u8 == 0 {
+        mem::zero(c.a(0), c.a(2));
+    } else {
+        mem::fill(c.a(0), c.a(2), c.a(1) as u8);
+    }
     c.a(0)
 }
 fn memcmp(c: &mut Ctx) -> u32 {
