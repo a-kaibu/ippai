@@ -170,6 +170,12 @@ pub fn call(pid: u32, op: u32, args: Vec<u32>, data: Vec<u8>) -> Option<VmReply>
 /// The watcher's part: does what other processes asked of this one.
 pub fn serve() {
     let reqs = kern::with(|k| k.take_vm(crate::pid())).0;
+    // (a debugger that continued an attach event and then asks, SuspendThread, must see the
+    // thread let go: the watcher's watch_attach this turn may have run before that continue,
+    // but every request taken here was sent after it; debugkill's attach)
+    if !reqs.is_empty() {
+        crate::dbg::watch_attach();
+    }
     for r in reqs {
         let reply = exec(r.op, &r.args, &r.data);
         kern::with(|k| k.vm_reply(r.id, reply));
