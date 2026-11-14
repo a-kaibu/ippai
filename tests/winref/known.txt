@@ -16,8 +16,10 @@ host_fileseek-32 ^(want|got) +(negative|origin)
 # COMPLEXREGION match)
 gdi-* ^image (shapes|fills_nullpen|polyline_bezier|regions|pens|stretch_halftone|clip):
 gdi-* ^(want|got) +GetClipBox 3 8 (9|8) 55 (54|55)$
-# 8 and 1 bpp GetDIBits of a 32 bpp bitmap: Windows' nearest-color choice into its default table
-gdi-* ^(want|got) +GetDIBits (8|1) 
+# 8 bpp GetDIBits of a 32 bpp bitmap: sake maps to the nearest entry of Windows' default
+# table (ties to the later entry, as Windows does), but Windows sends most pure-blue (b=255,
+# g>0) pixels to entry 0 or odd entries no distance rule gives. 1 bpp is exact.
+gdi-* ^(want|got) +GetDIBits 8 
 # sake's console goes out as UTF-8 text (node's stderr): a lone byte >= 0x80 can't come through
 crt_printf-* ^(want|got) +%c (-1|-42|255|2147483647) 
 # x87 extended precision: msvcrt's sin/cos/tan reduce big arguments its own way (sin(pi) is

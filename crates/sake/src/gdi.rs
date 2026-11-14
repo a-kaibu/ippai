@@ -2963,7 +2963,7 @@ fn GetDIBits(c: &mut Ctx) -> u32 {
         } else if bpp == 1 {
             vec![0, 0xffffff]
         } else if bpp == 8 {
-            halftone_palette()
+            default_dib_palette8()
         } else {
             default_palette()[..16].to_vec()
         }
@@ -2987,7 +2987,59 @@ fn GetDIBits(c: &mut Ctx) -> u32 {
     }
     let Some(mut i) = dib_info(bmi, 0, &pal) else { return 0 };
     i.pal = pal;
+    if bpp <= 8 && b.bpp > 8 {
+        return dib_quantize(&b, start, lines, bits, &i);
+    }
     dib_copy(&b, start, lines, bits, &i, true)
+}
+
+/// The colour table GetDIBits gives an 8-bit DIB of a deeper bitmap: the 20 system colours
+/// at 0-9 and 246-255, and between them r = (i & 7) << 5, g = (i & 0x38) << 2, b = i & 0xc0
+/// (Windows, tests/winref gdi "GetDIBits 8"; Wine's GetDIBits test)
+fn default_dib_palette8() -> Vec<u32> {
+    let sys = default_palette();
+    (0..256u32)
+        .map(|i| match i {
+            0..=9 => sys[i as usize],
+            246..=255 => sys[i as usize - 236],
+            _ => ((i & 7) << 5) << 16 | ((i & 0x38) << 2) << 8 | (i & 0xc0),
+        })
+        .collect()
+}
+
+/// The palette entry nearest to an 0xRRGGBB colour (squared distance, the first of equals)
+fn nearest_entry(pal: &[u32], c: u32) -> u32 {
+    let d = |p: u32| (0..3).map(|k| ((c >> (8 * k) & 255) as i32 - (p >> (8 * k) & 255) as i32).pow(2) as u32).sum::<u32>();
+    let mut best = (u32::MAX, 0);
+    for (i, &p) in pal.iter().enumerate() {
+        // Windows breaks ties towards the later entry
+        let e = d(p);
+        if e <= best.0 {
+            best = (e, i as u32);
+        }
+    }
+    best.1
+}
+
+/// GetDIBits of a bitmap deeper than 8 bits into a palette DIB: each pixel the nearest entry
+/// of the table (also for 1 bit: Windows maps a dark pixel to black, not every non-black one to
+/// white as a blit to a monochrome bitmap does), the rows' padding zeroed
+fn dib_quantize(b: &Bitmap, start: u32, lines: u32, bits: u32, i: &DibInfo) -> u32 {
+    let bv = View::of(b);
+    let dv = dib_view(i, bits);
+    let lines = lines.min(i.h as u32 - start.min(i.h as u32)).min(b.h as u32);
+    let w = i.w.min(b.w);
+    for k in 0..lines as i32 {
+        let drow = if i.top_down { start as i32 + k } else { i.h - 1 - (start as i32 + k) };
+        if drow < 0 || drow >= b.h || drow >= i.h {
+            continue;
+        }
+        unsafe { std::ptr::write_bytes(dv.row(drow), 0, i.stride as usize) };
+        for x in 0..w {
+            dv.set_raw(x, drow, nearest_entry(&i.pal, bv.get(x, drow) & 0xffffff));
+        }
+    }
+    lines
 }
 
 fn SetDIBits(c: &mut Ctx) -> u32 {
@@ -5189,7 +5241,43 @@ mod load_tests {
         assert!(!dib_monochrome(&info(8, vec![0, 0xffffff])));
     }
 
+    // Windows' table (tests/winref/golden/gdi-32 "GetDIBits 8": p000000 p800000 p008000 p808000)
+    #[test]
+    fn the_8_bit_table_is_windows() {
+        let p = default_dib_palette8();
+        assert_eq!(p.len(), 256);
+        assert_eq!(&p[..4], &[0, 0x800000, 0x008000, 0x808000]);
+        assert_eq!(p[10], 0x402000);
+        assert_eq!(p[0x51], 0x204040);
+        assert_eq!(p[245], 0xa0c0c0);
+        assert_eq!(p[255], 0xffffff);
+        assert_eq!(p[246], 0xfffbf0);
+    }
+
+    // GetDIBits into the default 8-bit table, as Windows 11 maps these (gdi probe)
+    #[test]
+    fn eight_bit_mapping_matches_windows() {
+        let p = default_dib_palette8();
+        let rgb = |r: u32, g: u32, b: u32| r << 16 | g << 8 | b;
+        assert_eq!(nearest_entry(&p, rgb(16, 48, 32)), 0x51);
+        assert_eq!(nearest_entry(&p, rgb(0, 32, 32)), 0x48);
+        assert_eq!(nearest_entry(&p, rgb(16, 0, 255)), 0xfc);
+        assert_eq!(nearest_entry(&p, rgb(208, 0, 255)), 0xfd);
+        assert_eq!(nearest_entry(&p, 0xffffff), 255);
+        assert_eq!(nearest_entry(&p, 0), 0);
+    }
+
     proptest::proptest! {
+        // the nearest entry is never farther than another, and the first of equals
+        #[test]
+        fn nearest_entry_is_nearest(c in 0u32..0x1000000, pal in proptest::collection::vec(0u32..0x1000000, 1..20)) {
+            let d = |p: u32| (0..3).map(|k| ((c >> (8 * k) & 255) as i64 - (p >> (8 * k) & 255) as i64).pow(2)).sum::<i64>();
+            let i = nearest_entry(&pal, c) as usize;
+            for (j, &p) in pal.iter().enumerate() {
+                proptest::prop_assert!(d(pal[i]) < d(p) || (d(pal[i]) == d(p) && i >= j));
+            }
+        }
+
         // any colour table but black, white is not monochrome
         #[test]
         fn monochrome_needs_exactly_black_then_white(a in 0u32..0x1000000, b in 0u32..0x1000000, more in proptest::collection::vec(0u32..0x1000000, 0..3)) {
