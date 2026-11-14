@@ -1,0 +1,21 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0400607585906982,
+ "leftTitle": true,
+ "manifests": [
+  "lyrical.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 2,
+ "title": 5.172107458114624,
+ "titleStill": 45.62035870552063
+}
