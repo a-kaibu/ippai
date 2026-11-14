@@ -92,6 +92,9 @@ fn RegisterRawInputDevices(c: &mut Ctx) -> u32 {
     for i in 0..n {
         let d = p + i * size;
         let (page, usage, flags, hwnd) = (r16(d), r16(d + 2), r32(d + 4), mem::rp(d + 8));
+        if crate::env_on!("SAKE_TRACE_INPUT") {
+            eprintln!("sake input: raw registration page {page:x} usage {usage:x} flags {flags:x} window {hwnd:x}");
+        }
         regs.retain(|r| (r.0, r.1) != (page, usage));
         if flags & RIDEV_REMOVE == 0 {
             regs.push((page, usage, flags, hwnd));
@@ -218,6 +221,9 @@ fn GetRawInputData(c: &mut Ctx) -> u32 {
         return u32::MAX;
     }
     let g = EVENTS.lock().unwrap();
+    if crate::env_on!("SAKE_TRACE_INPUT") {
+        eprintln!("sake input: GetRawInputData {h:x} {cmd:x} known {}", g.1.iter().any(|(x, _)| *x == h));
+    }
     let Some((_, b)) = g.1.iter().find(|(x, _)| *x == h) else {
         last_error(6);
         return u32::MAX;
@@ -238,6 +244,9 @@ fn GetRawInputData(c: &mut Ctx) -> u32 {
 
 /// GetRawInputBuffer: events come one WM_INPUT at a time here, none are buffered
 fn GetRawInputBuffer(c: &mut Ctx) -> u32 {
+    if crate::env_on!("SAKE_TRACE_INPUT") {
+        eprintln!("sake input: GetRawInputBuffer {:x}", c.a(0));
+    }
     if c.a(1) == 0 || c.a(2) != header_size() {
         last_error(87);
         return u32::MAX;

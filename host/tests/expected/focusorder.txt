@@ -1,0 +1,14 @@
+created: (none)
+SetFocus(hidden one): act1:1 set1 
+  previous none 0, active one 1, focus one 1
+ShowWindow(one): (none)
+  active one 1, focus one 1
+SetFocus(one) again: (none)
+  returns one 1
+SetFocus(child of two): act1:0 act2:1 kill1 set2 kill2 setc 
+  previous one 0, active two 1, focus child 1
+EnableWindow(one, FALSE): (none)
+SetFocus(disabled one): (none)
+  returns NULL 1, focus still child 1, active still two 1
+SetFocus(invalid): NULL 1, error 1400
+  messages: (none)

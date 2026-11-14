@@ -2059,8 +2059,10 @@ fn activate(c: &mut Ctx, h: u32) {
         }
         send(c, h, 0x86, 1, old);
         send(c, h, 0x6, 1, old);
+        // (the focus moves to the window unless it is already inside it, as Wine's
+        // set_active_window: WM_KILLFOCUS at the old one's window, WM_SETFOCUS here)
         let f = with(|s| s.focus);
-        if f == 0 || !is_window(f) {
+        if f == 0 || !is_window(f) || with(|s| root_of(s, f)) != h {
             set_focus(c, h);
         }
     }
@@ -3875,11 +3877,11 @@ fn DispatchMessageA(c: &mut Ctx) -> u32 {
     if h == 0 {
         return 0;
     }
-    if ((0x200..=0x20a).contains(&m) && m != 0x200 || (0x100..=0x109).contains(&m)) && crate::env_on!("SAKE_TRACE_INPUT") {
+    if ((0x200..=0x20a).contains(&m) && m != 0x200 || (0x100..=0x109).contains(&m) || m == 0xff) && crate::env_on!("SAKE_TRACE_INPUT") {
         eprintln!("sake input: dispatch {h:x} msg {m:x} {wp:x} {lp:x}");
     }
     let r = send_to(c.cpu, h, m, wp, lp, false);
-    if ((0x200..=0x20a).contains(&m) && m != 0x200 || (0x100..=0x109).contains(&m)) && crate::env_on!("SAKE_TRACE_INPUT") {
+    if ((0x200..=0x20a).contains(&m) && m != 0x200 || (0x100..=0x109).contains(&m) || m == 0xff) && crate::env_on!("SAKE_TRACE_INPUT") {
         eprintln!("sake input: dispatched {m:x} -> {r:x}");
     }
     if m == 0xf {
@@ -4295,9 +4297,55 @@ fn LockWindowUpdate(_: &mut Ctx) -> u32 {
 }
 
 // focus and the like
+/// SetFocus(window): as Windows (and Wine's NtUserSetFocus): a minimized or disabled window (or
+/// one inside such a parent) takes no focus; a window whose top-level window is not the active
+/// one activates it first, so WM_ACTIVATE comes before WM_SETFOCUS (Unity 6 sets the focus on its
+/// hidden window before showing it: sake sent WM_SETFOCUS alone, the activation at ShowWindow)
 fn SetFocus(c: &mut Ctx) -> u32 {
     let h = c.a(0);
+    if h != 0 {
+        if !is_window(h) {
+            crate::k32::last_error(1400);
+            return 0;
+        }
+        let Some(top) = with(|s| focus_top(s, h)) else { return 0 };
+        if with(|s| s.focus) == h {
+            return h;
+        }
+        if with(|s| s.active) != top {
+            activate(c, top);
+            if !is_window(h) || with(|s| s.active) != top {
+                return 0;
+            }
+        }
+    }
     set_focus(c, h)
+}
+/// The top-level window `h` is in (GetAncestor GA_ROOT)
+fn root_of(s: &State, h: u32) -> u32 {
+    let mut t = h;
+    while let Some(w) = s.wins.get(&t) {
+        if w.parent == 0 || w.parent == DESKTOP || !s.wins.contains_key(&w.parent) {
+            break;
+        }
+        t = w.parent;
+    }
+    t
+}
+/// The top-level window SetFocus(h) activates, or None when h can't take the focus (it or a
+/// parent minimized or disabled)
+fn focus_top(s: &State, h: u32) -> Option<u32> {
+    let mut t = h;
+    loop {
+        let w = s.wins.get(&t)?;
+        if w.style & (0x2000_0000 | 0x0800_0000) != 0 {
+            return None;
+        }
+        if w.parent == 0 || w.parent == DESKTOP || !s.wins.contains_key(&w.parent) {
+            return Some(t);
+        }
+        t = w.parent;
+    }
 }
 fn GetFocus(_: &mut Ctx) -> u32 {
     with(|s| s.focus)
