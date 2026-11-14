@@ -200,9 +200,25 @@ pub fn pump() {
     pump_page();
 }
 
+// (tests) The page is away: it neither polls nor runs anything (`set_away`).
+#[cfg(test)]
+thread_local! {
+    static AWAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// (tests) The page goes away (its last poll long ago, nothing run) or comes back.
+#[cfg(test)]
+pub fn set_away(away: bool) {
+    AWAY.with(|a| a.set(away));
+    with(|q| q.last_poll = Some(if away { now() - 10_000.0 } else { now() }));
+}
+
 /// (tests) The page takes what is closed.
 #[cfg(test)]
 fn pump_page() {
+    if AWAY.with(|a| a.get()) {
+        return;
+    }
     let f = PUMP.with(|p| p.borrow_mut().take());
     if let Some(mut f) = f {
         f();

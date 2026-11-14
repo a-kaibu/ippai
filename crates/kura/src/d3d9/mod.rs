@@ -122,6 +122,8 @@ pub enum Data {
 
 pub struct D3d {
     pub vtbls: Vec<u32>,
+    /// the surface a lock reads back from the page for (the call's After waits for it)
+    pub lock_readback: Option<u32>,
     pub objs: HashMap<u32, Obj, FastHash>,
     next: u32,
     /// free 16-byte object blocks in guest memory
@@ -333,6 +335,7 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
     let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());
     if g.is_none() {
         *g = Some(D3d {
+            lock_readback: None,
             vtbls: v,
             objs: HashMap::default(),
             next: 0,
@@ -422,6 +425,7 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
         let a = |i: usize| *args.add(i);
         let this = d.id_of(a(0));
         let mut after = After::None;
+        d.lock_readback = None;
         if let Some(o) = d.objs.get(&this) {
             let owner = o.owner;
             d.activate(owner);
@@ -454,16 +458,31 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
                 eprintln!("d3d9: {} [{n}] ({nargs}) -> {:#x}", name(iface, method), r);
             }
         }
-        (r, after)
+        (r, (after, d.lock_readback.take()))
+    };
+    let (after, lock_rb) = after;
+    // A lock's readback given up (the page away or stalled): the guest's copy is not the
+    // surface's pixels, so the page keeps them (the next lock reads them back again) and this
+    // lock uploads nothing at its unlock. It uploaded the stale copy over the rendered target.
+    let given_up = |ok: bool| {
+        if let (false, Some(s)) = (ok, lock_rb) {
+            let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(Data::Surface(sf)) = g.as_mut().and_then(|d| d.objs.get_mut(&s)).map(|o| &mut o.data) {
+                sf.gpu_newer = true;
+                if sf.lock.is_some() {
+                    sf.lock = Some([0; 4]);
+                }
+            }
+        }
     };
     match after {
         After::None => {}
         After::Present => gpu::present(),
         After::Readback(req) => {
-            gpu::wait_readback(req);
+            given_up(gpu::wait_readback(req));
         }
         After::ReadbackAs { req, staging, fmt, w, h, dst, pitch } => {
-            gpu::wait_readback(req);
+            given_up(gpu::wait_readback(req));
             let page = format::page_bpp(fmt) as usize;
             let (bpp, _) = format::layout(fmt).unwrap_or((4, 1));
             for y in 0..h as usize {

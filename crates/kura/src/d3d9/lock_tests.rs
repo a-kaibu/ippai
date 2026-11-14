@@ -497,3 +497,54 @@ fn d3d9_lock_trace_with_small_copy_budgets() {
     }
     budget.store(was, std::sync::atomic::Ordering::Relaxed);
 }
+
+/// A lock of a render target whose readback is given up (the page away: a hidden tab) leaves
+/// the target's pixels to the page: what is written through that lock is not uploaded at its
+/// unlock, and the next lock, with the page back, reads the rendered pixels. The stale guest
+/// copy went over the target before. Every kind of lock and write, random fills.
+#[test]
+fn a_readback_given_up_keeps_the_target() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    attach_page();
+    let o = out();
+    unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
+    let d3d = rd(o);
+    let o = out();
+    let pp = unsafe { alloc(56) as u32 };
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+        unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
+    }
+    assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
+    let dev = rd(o);
+    let o = out();
+    assert_eq!(call(IF_DEVICE, 28, &[dev, 16, 16, 21, 0, 0, 1, o, 0]), 0);
+    let rt = rd(o);
+    let mut r = Rng(0x0dd_ba11);
+    let first = |p: u32| unsafe { *(p as *const u32) };
+    for k in 1..=40u32 {
+        // the target rendered (a fill on the page)
+        assert_eq!(call(IF_DEVICE, 35, &[dev, rt, 0, fill_color(k)]), 0);
+        gpu::pump();
+        // a lock while the page is away: its readback is given up
+        gpu::set_away(true);
+        let o = out();
+        let flags = [0, 0x10][r.below(2)];
+        assert_eq!(call(IF_SURFACE, 13, &[rt, o, 0, flags]), 0);
+        let bits = rd(o + 4);
+        // (the program writes garbage there: the old guest copy, or whatever)
+        unsafe { std::ptr::write_bytes(bits as *mut u8, 0x77, 16 * 4 * r.below(17)) };
+        assert_eq!(call(IF_SURFACE, 14, &[rt]), 0);
+        gpu::set_away(false);
+        gpu::pump();
+        // the page back: a lock reads the fill
+        let o = out();
+        assert_eq!(call(IF_SURFACE, 13, &[rt, o, 0, 0x10]), 0);
+        assert_eq!(first(rd(o + 4)), fill_color(k), "round {k}");
+        assert_eq!(call(IF_SURFACE, 14, &[rt]), 0);
+    }
+    gpu::set_pump(None);
+}

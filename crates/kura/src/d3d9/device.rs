@@ -2706,6 +2706,7 @@ unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, aft
         sf.gpu_newer = false;
         let (gpu, level, w, h, pitch, f) = (sf.gpu, sf.level, sf.w, sf.h, sf.pitch, sf.fmt);
         *after = readback_as(d, gpu, level, w, h, f, mem, pitch);
+        d.lock_readback = Some(s);
     }
     S_OK
 }
