@@ -289,6 +289,14 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
                 let cr = random_rect(&mut r);
                 let p = [r.below(5 - (cr[2] - cr[0]) as usize) as u32, r.below(5 - (cr[3] - cr[1]) as usize) as u32];
                 let pt = rect([p[0] * 4, p[1] * 4, 0, 0]);
+                // (now and then first a rectangle reversed or past the source: refused, and
+                // nothing changes, which the steps after check)
+                if r.chance(20) {
+                    let (w, h) = (ss[3].w, ss[3].h);
+                    let bad = [[2, 0, 1, 1], [0, 3, 1, 2], [0, 0, w + 1, 1], [0, 0, 1, h + 1], [u32::MAX, 0, 1, 1], [0, 0, 0, 0]][r.below(6)];
+                    let res = call(IF_DEVICE, 30, &[dev, ss[3].addr, rect(bad), ss[dst].addr, pt]);
+                    assert_eq!(hr(res), hr(D3DERR_INVALIDCALL), "seed {seed}: UpdateSurface of {bad:?}");
+                }
                 let res = call(IF_DEVICE, 30, &[dev, ss[3].addr, rect(px(&ss[3], cr)), ss[dst].addr, pt]);
                 (t.op, t.s, t.d, t.r, t.p, t.ret) = ("Copy", 3, dst as u32, cr, p, hr(res));
             }

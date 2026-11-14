@@ -2980,6 +2980,27 @@ unsafe fn buffer_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usi
     }
 }
 
+/// Whether `r` (left, top, right, bottom) is a rectangle of a `w` x `h` surface.
+fn rect_inside(r: [u32; 4], w: u32, h: u32) -> bool {
+    r[0] < r[2] && r[1] < r[3] && r[2] <= w && r[3] <= h
+}
+
+#[cfg(test)]
+mod rect_inside_tests {
+    use proptest::prelude::*;
+    proptest! {
+        /// A rectangle that passes is non-empty and every pixel of it lies in the surface.
+        #[test]
+        fn inside_means_every_pixel_inside(r in any::<[u32; 4]>(), w in 0u32..5000, h in 0u32..5000) {
+            let ok = super::rect_inside(r, w, h);
+            if ok {
+                prop_assert!(r[2] - r[0] >= 1 && r[3] - r[1] >= 1 && r[2] <= w && r[3] <= h);
+            }
+            prop_assert_eq!(ok, (r[0] as u64) < r[2] as u64 && (r[1] as u64) < r[3] as u64 && r[2] <= w && r[3] <= h);
+        }
+    }
+}
+
 unsafe fn update_surface(d: &mut D3d, src: u32, srect: u32, dst: u32, dpoint: u32) -> u32 {
     let (s, t) = (d.id_of(src), d.id_of(dst));
     let (Some(sm), Some(tm)) = (surface_mem(d, s), surface_mem(d, t)) else { return D3DERR_INVALIDCALL };
@@ -2992,6 +3013,11 @@ unsafe fn update_surface(d: &mut D3d, src: u32, srect: u32, dst: u32, dpoint: u3
         return D3DERR_INVALIDCALL;
     }
     let r = if srect != 0 { [rd(srect, 0), rd(srect, 1), rd(srect, 2), rd(srect, 3)] } else { [0, 0, a.w, a.h] };
+    // (a rectangle reversed or past the source is refused, as Windows: its width wrapped and
+    // rows were read past the source's memory)
+    if !rect_inside(r, a.w, a.h) {
+        return D3DERR_INVALIDCALL;
+    }
     let (dx, dy) = if dpoint != 0 { (rd(dpoint, 0), rd(dpoint, 1)) } else { (0, 0) };
     let (bpb, bs) = fmt::layout(a.fmt).unwrap_or((4, 1));
     let w = (r[2] - r[0]).min(b.w.saturating_sub(dx));
