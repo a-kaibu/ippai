@@ -22,7 +22,7 @@ In order:
   4. Nothing but tools: the biggest .exe (an installer sake runs itself), helpers last.
 Ties go to the shorter, then the smaller path, so the answer never depends on listing order.
 """
-import os, re, sys
+import os, re, shutil, subprocess, sys
 
 TOOL = re.compile(r'unins|setup|install|config|launcher|WindowsInstaller|InstMsi|KB[0-9]{6}|vcredist|vc_redist|redist|directx|dxsetup|tool|設定|update|DXWeb|dotnet|CrashHandler|ffmpeg|zsync|(^|/)inst\.exe$'
                   # (Silky's start.exe: a launcher beside the game, 堕とされた美姉妹's bishimai.exe, #228; a
@@ -85,17 +85,57 @@ NAME_PATCH = re.compile(r'patch', re.I)
 # (hatahani_try_v101.zip: update.exe and the new hatahani_try.exe, no data)
 UPDATER = re.compile(r'^(update|patch|updater|アップデート|パッチ)[^/]*\.exe$', re.I)
 PROGRAM = re.compile(r'\.(exe|dll)$', re.I)
+# programs and readmes only, all of it smaller than this: no game data anywhere, a replacement exe
+# (#198 シールプリンセス sp_trial_exe_for_S3.zip: one 632 KiB exe for S3 cards, the trial's data is
+# another download) or a joiner (ほしフル Hoshiful_Preview.exe, 9 KB). Every mirror trial under
+# 3 MB on 2026-11-14 was one of these, a patch or a song.
+NO_DATA = 2 << 20
+
+
+def is_pe(path):
+    """Whether the file is a Windows program image (MZ, and "PE\\0\\0" at e_lfanew)."""
+    try:
+        with open(path, 'rb') as f:
+            h = f.read(64)
+            if len(h) < 64 or h[:2] != b'MZ': return False
+            f.seek(int.from_bytes(h[60:64], 'little'))
+            return f.read(4) == b'PE\0\0'
+    except OSError:
+        return False
+
+
+def cut_archive(path):
+    """Whether the program carries an archive that ends early (7-Zip: "Unexpected end of
+    archive"): the first piece of a split download, the rest of it elsewhere (#198 SinsAbell
+    sinsabell_bm.exe, FDmerge with an LZH of bm/ cut at 11 MB; .002 to .008 are other files)."""
+    if not shutil.which('7z'): return False
+    try:
+        r = subprocess.run(['7z', 'l', path], capture_output=True, text=True, timeout=60,
+                           env=dict(os.environ, LC_ALL='C.UTF-8'))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return 'Unexpected end of archive' in r.stdout + r.stderr
 
 
 def not_game(root, name=''):
     """Why a tree is not a game (None: it may be one): 'movie' when it holds
     movies and nothing else but readmes and pictures, or its download is named as a sample movie;
     'patch' when the download is named as a patch, or the tree is programs only (with readmes)
-    and one of them is a patch's updater."""
+    and one of them is a patch's updater or all of it is under NO_DATA (with a real program image,
+    is_pe); 'split' when the tree is the downloaded program alone and its archive is cut short
+    (cut_archive)."""
     fs = [os.path.join(d, f) for d, _, n in os.walk(root) for f in n]
     if any(UPDATER.search(os.path.basename(f)) for f in fs) and \
             all(PROGRAM.search(f) or EXTRA.search(f) for f in fs):
         return 'patch'
+    if fs and all(PROGRAM.search(f) or EXTRA.search(f) for f in fs):
+        progs = [f for f in fs if PROGRAM.search(f)]
+        if sum(os.path.getsize(f) for f in fs) < NO_DATA and any(map(is_pe, progs)): return 'patch'
+        # (only the download itself, kept whole because nothing could unpack it: an archive cut
+        # inside a program that came in a zip may be a damaged copy, and a game's own exe can
+        # carry something 7-Zip takes for a broken archive)
+        if len(fs) == 1 and os.path.basename(fs[0]).lower() == os.path.basename(name).lower() \
+                and cut_archive(fs[0]): return 'split'
     if exes(root): return None
     movies = [f for f in fs if MOVIE.search(f)]
     if movies and all(MOVIE.search(f) or EXTRA.search(f) for f in fs): return 'movie'

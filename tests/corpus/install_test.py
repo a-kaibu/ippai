@@ -21,6 +21,10 @@ sys.path.insert(0, HERE)
 import install, pickexe
 
 
+# (the start of a program image: MZ, e_lfanew = 64, "PE\0\0")
+PE = b'MZ' + b'\0' * 58 + (64).to_bytes(4, 'little') + b'PE\0\0'
+
+
 def tree(files, order=None):
     """A temporary folder with `files` ({path: bytes or size})."""
     d = tempfile.mkdtemp()
@@ -29,7 +33,11 @@ def tree(files, order=None):
     for p, v in items:
         full = os.path.join(d, p)
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, 'wb') as f: f.write(v if isinstance(v, bytes) else b'M' * v)
+        with open(full, 'wb') as f:
+            # (a size as a negative number: a Windows program image of that many bytes, its
+            # headers and then a sparse file, for MiB-sized trees)
+            if isinstance(v, int) and v < 0: f.write(PE[:-v]); f.truncate(-v)
+            else: f.write(v if isinstance(v, bytes) else b'M' * v)
     return d
 
 
@@ -157,28 +165,59 @@ class NotGame(unittest.TestCase):
         r = 'hatahani_try_v101/'
         self.assertEqual(self.why({r + 'hatahani_try.exe': 64, r + 'update.exe': 4}, 'hatahani_try_v101.zip'), 'patch')
         self.assertEqual(self.why({'アップデート.exe': 4, 'readme.txt': 1, 'krkr.dll': 3}, 'x.zip'), 'patch')
-        # (a trial with its data beside, or one that ships an updater of its own, is a game)
+        # (a trial with its data beside, or one that ships an updater of its own, is a game; a
+        # program of a few MB alone may be a game too)
         self.assertIsNone(self.why({r + 'hatahani_try.exe': 64, r + 'update.exe': 4, r + 'data.xp3': 900}, 'hatahani_try_v101.zip'))
-        self.assertIsNone(self.why({'game.exe': 64, 'updater_config.ini': 1}, 'x.zip'))
-        self.assertIsNone(self.why({'game.exe': 64, 'notupdate.exe': 1}, 'x.zip'))
+        self.assertIsNone(self.why({'game.exe': -(4 << 20), 'updater_config.ini': 1}, 'x.zip'))
+        self.assertIsNone(self.why({'game.exe': -(4 << 20), 'notupdate.exe': 1}, 'x.zip'))
 
     def test_data_makes_a_game(self):
         """Property: a tree with exes and no download name saying patch or movie is 'patch' exactly
-        when it holds an updater and nothing but programs and readmes; any data file added makes
-        it unknown (None)."""
+        when it holds nothing but programs and readmes and either an updater or under NO_DATA bytes
+        in all; any data file added makes it unknown (None)."""
         rng = random.Random(int(os.environ.get('SEED', '1')))
         progs = ['game.exe', 'update.exe', 'Patch101.exe', 'config.exe', 'a/updater.exe', 'krkr.dll', 'start.exe']
         extras = ['readme.txt', 'icon.ico', 'a/manual.html']
         datas = ['data.xp3', 'a/bgm.ogg', 'arc.pac', 'Game_Data/level0']
-        for _ in range(200):
-            files = {p: rng.randint(1, 50) for p in rng.sample(progs, rng.randint(1, 4))}
+        for _ in range(300):
+            # (sizes around NO_DATA, both sides of it, as sparse files)
+            files = {p: -rng.choice([rng.randint(68, 500), rng.randint(68, 3 * pickexe.NO_DATA)])
+                     for p in rng.sample(progs, rng.randint(1, 4))}
             files.update({p: 1 for p in rng.sample(extras, rng.randint(0, 2))})
-            if not any(p.endswith('.exe') for p in files): files['game.exe'] = 9
+            if not any(p.endswith('.exe') for p in files): files['game.exe'] = -99
             updater = any(pickexe.UPDATER.search(p.rsplit('/', 1)[-1]) for p in files)
-            self.assertEqual(self.why(files, 'trial.zip'), 'patch' if updater else None, files)
+            small = sum(abs(v) for v in files.values()) < pickexe.NO_DATA
+            self.assertEqual(self.why(files, 'trial.zip'), 'patch' if updater or small else None, files)
             more = dict(files)
             more[rng.choice(datas)] = rng.randint(1, 500)
             self.assertIsNone(self.why(more, 'trial.zip'), more)
+
+    def test_a_replacement_exe_or_a_joiner(self):
+        # #198 シールプリンセス: sp_trial_exe_for_S3.zip is the trial's exe for S3 cards (632 KiB),
+        # without the trial's data; ほしフル's Hoshiful_Preview.exe joins split pieces (9 KB)
+        self.assertEqual(self.why({'シールプリンセスの欠片.exe': -647168}, 'sp_trial_exe_for_S3.zip'), 'patch')
+        self.assertEqual(self.why({'Hoshiful_Preview.exe': -9488}, 'Hoshiful_Preview.exe'), 'patch')
+        # (a trial in one big exe, 十六夜の花嫁's 28 MB self-extractor or 巣作りドラゴン's DragonT.exe, is no patch)
+        self.assertIsNone(self.why({'DragonT.exe': -28063952}, 'DragonT.exe'))
+        self.assertIsNone(self.why({'g.exe': -(1 << 20), 'g.dat': -(1 << 20)}, 'g.zip'))
+        # (not a program image, only named .exe: no reason to say patch)
+        self.assertIsNone(self.why({'g.exe': b'MZ' + b'\0' * 510}, 'g.zip'))
+
+    @unittest.skipUnless(shutil.which('7z'), '7z')
+    def test_a_split_download(self):
+        """#198 SinsAbell sinsabell_bm.exe: a joiner with the first 11 MB of an LZH, the rest in
+        .002 to .008. A program whose archive ends early is 'split'; the same one whole is a game."""
+        import io, zipfile
+        b = io.BytesIO()
+        with zipfile.ZipFile(b, 'w', zipfile.ZIP_STORED) as z: z.writestr('bm/battle1.wdt', os.urandom(3 << 20))
+        sfx = b'MZ' + b'\0' * 4094 + b.getvalue()
+        self.assertIsNone(self.why({'sinsabell_bm.exe': sfx}, 'sinsabell_bm.exe'))
+        for cut in (len(sfx) // 2, len(sfx) - 100, 4096 + 1000):
+            if cut < pickexe.NO_DATA: continue
+            self.assertEqual(self.why({'sinsabell_bm.exe': sfx[:cut]}, 'sinsabell_bm.exe'), 'split', cut)
+            # (with data beside it, or inside a download of another name, it is a game whatever its archive)
+            self.assertIsNone(self.why({'sinsabell_bm.exe': sfx[:cut], 'bm/a.wdt': 9}, 'sinsabell_bm.exe'))
+            self.assertIsNone(self.why({'sinsabell_bm.exe': sfx[:cut]}, 'sinsabell.zip'))
 
     def test_prep_says_patch(self):
         """corpus-prep.sh on the はたはに patch's tree ends with exit 5 (not a game)."""

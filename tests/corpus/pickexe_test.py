@@ -159,7 +159,7 @@ class Prep(unittest.TestCase):
         try:
             x = os.path.join(t, 'u', 'x')
             os.makedirs(os.path.join(x, 'G/G_Data/StreamingAssets'))
-            for p, n in (('G/G.exe', 10), ('G/G_Data/StreamingAssets/ffmpeg.exe', 99)):
+            for p, n in (('G/G.exe', 10), ('G/G_Data/StreamingAssets/ffmpeg.exe', 99), ('G/G_Data/data.unity3d', 9)):
                 with open(os.path.join(x, p), 'wb') as f: f.write(b'M' * n)
             r = subprocess.run(['bash', os.path.join(os.path.dirname(HERE), 'corpus-prep.sh'), 'u', 'http://127.0.0.1:9/u.zip', '', ''],
                                env=dict(os.environ, TRIALS=t), capture_output=True, text=True, timeout=60)
