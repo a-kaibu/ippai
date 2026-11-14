@@ -250,7 +250,7 @@ impl asf::Source for GuestStream {
 }
 
 /// A file by name.
-struct HostFile(kura::fs::File);
+pub(crate) struct HostFile(pub kura::fs::File);
 
 impl asf::Source for HostFile {
     fn read_at(&mut self, off: u64, buf: &mut [u8]) -> usize {

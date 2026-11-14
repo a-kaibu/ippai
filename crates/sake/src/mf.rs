@@ -1183,8 +1183,7 @@ fn load(b: u32) {
         return;
     };
     let w = src.as_deref().map(source_path).unwrap_or_default();
-    let vnv = if w.is_empty() { None } else { crate::files::resolve(&format!("{w}.vnv")) };
-    let movie = vnv.and_then(|p| play::Movie::open(&p)).filter(|m| kura::video::decodable(m.stream));
+    let movie = if w.is_empty() { None } else { play::Movie::find(&w) };
     let Some(movie) = movie else {
         let there = !w.is_empty() && crate::files::resolve(&w).is_some();
         if there {
@@ -1519,9 +1518,9 @@ fn en_transfer(c: &mut Ctx) -> u32 {
     // (the page may not have the frame's bytes or picture yet: the movie thread draws it a turn
     // later, the game wants it now)
     let mut tries = 0;
-    while !unsafe { kura::video::frame(stream, n as i32, px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h, kura::video::Out::Rgb601) } {
+    while !unsafe { play::frame(stream, n as i32, px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h) } {
         tries += 1;
-        if tries > FRAME_TRIES || kura::video::failed(stream) {
+        if tries > FRAME_TRIES || play::failed(stream) {
             return E_FAIL;
         }
         kura::snap::sleep(std::time::Duration::from_millis(5));

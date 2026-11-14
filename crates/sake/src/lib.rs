@@ -110,6 +110,7 @@ mod mci;
 mod shiina;
 pub mod dshow;
 pub(crate) mod dshow_play;
+mod asfmovie;
 pub mod dshow_mpeg;
 mod wmvcore;
 mod wmdec;

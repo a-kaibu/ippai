@@ -1463,7 +1463,7 @@ fn vnv_thread(c: &mut Ctx) -> u32 {
                 let (fw, fh) = (mw.min(w), mh.min(h));
                 let mut px = vec![0u8; (4 * w * h) as usize];
                 let mut top = vec![0u8; (4 * fw * fh) as usize];
-                if !unsafe { kura::video::frame(stream, n as i32, top.as_mut_ptr(), 4 * fw as usize, fw, fh, kura::video::Out::Rgb601) } {
+                if !unsafe { crate::dshow_play::frame(stream, n as i32, top.as_mut_ptr(), 4 * fw as usize, fw, fh) } {
                     pause(SEC / 100);
                     continue;
                 }

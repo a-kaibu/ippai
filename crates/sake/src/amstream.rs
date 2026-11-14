@@ -3,8 +3,9 @@
 //! take a movie's frames into a DirectDraw surface of their own and draw it themselves
 //! (ShiinaRio's MDDAVIPlay, #49).
 //!
-//! A movie with a `.vnv` next to it plays as the graph's do (dshow_play.rs, its sound too, with
-//! no picture of its own): a sample's Update writes the frame of the moment into its surface.
+//! A movie with a `.vnv` next to it, or an ASF one sake decodes (asfmovie.rs), plays as the
+//! graph's do (dshow_play.rs, its sound too, with no picture of its own): a sample's Update
+//! writes the frame of the moment into its surface.
 //! Any other comes to its end at once (Update answers MS_S_ENDOFSTREAM), so games go on past
 //! their movie.
 
@@ -425,8 +426,7 @@ fn mms_open_file(c: &mut Ctx) -> u32 {
     }
     let w = String::from_utf16_lossy(&mem::wstr(name));
     play::end(b);
-    let vnv = crate::files::resolve(&format!("{w}.vnv"));
-    let movie = vnv.and_then(|p| play::Movie::open(&p)).filter(|m| kura::video::decodable(m.stream));
+    let movie = play::Movie::find(&w);
     if movie.is_none() && crate::files::resolve(&w).is_none() {
         return VFW_E_NOT_FOUND;
     }
@@ -783,16 +783,18 @@ fn update(c: &mut Ctx, b: u32, m: u32, surf: u32, rect: (i32, i32, i32, i32)) ->
             Next::End => return MS_S_ENDOFSTREAM,
             Next::Wait(d) => kura::snap::sleep(std::time::Duration::from_nanos(d.min(SEC) * 100)),
             Next::Frame(n) => {
+                let t0 = std::time::Instant::now();
                 let mut px = vec![0u32; (w * h) as usize];
                 let mut tries = 0;
-                while !unsafe { kura::video::frame(stream, n as i32, px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h, kura::video::Out::Rgb601) } {
+                while !unsafe { play::frame(stream, n as i32, px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h) } {
                     tries += 1;
-                    if tries > FRAME_TRIES || kura::video::failed(stream) {
+                    if tries > FRAME_TRIES || play::failed(stream) {
                         return E_FAIL;
                     }
                     kura::snap::sleep(std::time::Duration::from_millis(5));
                 }
                 sample(b, |x| x.frame = Some(n));
+                let t1 = std::time::Instant::now();
                 let Some((sw, sh, bpp, pf, pitch, bits)) = crate::ddraw::surface_memory(surf) else { return 0 };
                 if !matches!(bpp, 16 | 24 | 32) {
                     return 0;
@@ -807,6 +809,7 @@ fn update(c: &mut Ctx, b: u32, m: u32, surf: u32, rect: (i32, i32, i32, i32)) ->
                 draw(&rgb, w, h, &mut out, pitch as usize, bpp, [pf[1], pf[2], pf[3]], rect, (sw, sh));
                 mem::write(bits, &out);
                 crate::ddraw::drawn(c, surf, crate::user::Rect { l: rect.0, t: rect.1, r: rect.2, b: rect.3 });
+                play::stats(m, n, [t1 - t0, t1.elapsed(), std::time::Duration::ZERO], px.len());
                 return 0;
             }
         }

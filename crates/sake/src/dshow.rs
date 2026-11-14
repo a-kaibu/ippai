@@ -486,12 +486,12 @@ fn filters_to(c: &mut Ctx, b: u32, slot: u32) {
     }
 }
 
-/// A movie at guest path `w`: its `.vnv` played, or (no `.vnv`, or no page to decode it) none.
+/// A movie at guest path `w`: its `.vnv` played (or the file itself, an ASF one sake decodes),
+/// or (no `.vnv`, or no page to decode it) none.
 /// Err when the movie itself is not there either.
 fn load(b: u32, w: &str) -> Result<(), u32> {
     play::end(b);
-    let vnv = crate::files::resolve(&format!("{w}.vnv"));
-    let movie = vnv.and_then(|p| play::Movie::open(&p)).filter(|m| kura::video::decodable(m.stream));
+    let movie = play::Movie::find(w);
     if movie.is_none() && crate::files::resolve(w).is_none() {
         return Err(NOT_FOUND);
     }
@@ -1577,7 +1577,7 @@ fn put_dib(b: u32, img: u32) -> bool {
         return false;
     };
     let mut px = vec![0u8; (4 * w * h) as usize];
-    if !unsafe { kura::video::frame(stream, n as i32, px.as_mut_ptr(), 4 * w as usize, w, h, kura::video::Out::Rgb601) } {
+    if !unsafe { play::frame(stream, n as i32, px.as_mut_ptr(), 4 * w as usize, w, h) } {
         return false;
     }
     mem::fill(img, 40, 0);
@@ -2453,26 +2453,31 @@ mod completion_tests {
         let mut g = Graph::new(0);
         g.flags = NONOTIFY;
         GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, g);
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let s2 = stop.clone();
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let seen = std::sync::Arc::new(AtomicU32::new(0));
+        let (s2, seen2) = (stop.clone(), seen.clone());
         let watcher = std::thread::spawn(move || {
-            let mut seen = 0u32;
-            while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+            while !s2.load(Relaxed) {
                 let (ended, has) = with(b, |g| (g.ended, g.events.iter().any(|e| e.0 == EC_COMPLETE))).unwrap();
                 assert!(!ended || has, "ended without EC_COMPLETE");
-                seen += ended as u32;
+                seen2.fetch_add(ended as u32, Relaxed);
             }
-            seen
         });
-        for _ in 0..20000 {
+        // (20000 ends at least, and on until the watcher has seen one: a loaded machine may
+        // not run it at all for a while)
+        let mut n = 0u64;
+        while n < 20000 || (seen.load(Relaxed) == 0 && n < 50_000_000) {
             with(b, |g| {
                 g.ended = false;
                 g.events.clear();
             });
             completed(b);
+            n += 1;
         }
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(watcher.join().unwrap() > 0);
+        stop.store(true, Relaxed);
+        watcher.join().unwrap();
+        assert!(seen.load(Relaxed) > 0);
         GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
     }
 }

@@ -558,7 +558,7 @@ fn open(kind: Option<Kind>, element: &str, alias: Option<&str>) -> Result<u32, u
         return Err(MCIERR_DUPLICATE_ALIAS);
     }
     let full = crate::files::full_path(element);
-    let vnv = crate::files::resolve(&format!("{full}.vnv")).and_then(|p| play::Movie::open(&p)).filter(|m| kura::video::decodable(m.stream));
+    let vnv = play::Movie::find(&full);
     let key = mem::heap_alloc(4, true);
     let (media, duration) = if let Some(movie) = vnv.filter(|_| kind != Kind::Wave) {
         let m = Media::Movie { fps: movie.rate, size: (movie.w, movie.h) };

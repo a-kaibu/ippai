@@ -176,9 +176,32 @@ pub type ReadAt = Box<dyn FnMut(u64, &mut [u8]) -> bool + Send>;
 /// Bytes of the sound read at once.
 const SOUND_READ: usize = 64 << 10;
 
+/// A movie's sound: a `.vnv`'s Ogg Vorbis, or an ASF file's (asfmovie.rs).
+pub enum Sound {
+    Vorbis(Vorbis),
+    Asf(crate::asfmovie::Audio),
+}
+
+impl Sound {
+    /// Frames a second.
+    pub fn rate(&self) -> u32 {
+        match self {
+            Sound::Vorbis(v) => v.rate,
+            Sound::Asf(a) => a.rate,
+        }
+    }
+    /// Appends `n` stereo frames from frame `from` to `out` (silence past the end).
+    pub fn take(&mut self, from: u64, n: usize, out: &mut Vec<f32>) {
+        match self {
+            Sound::Vorbis(v) => v.take(from, n, out),
+            Sound::Asf(a) => a.take(from, n, out),
+        }
+    }
+}
+
 /// A movie's sound (Ogg Vorbis), read and decoded as it is wanted: stereo frames from any
 /// position (a position before what is kept decodes again from the start).
-pub struct Sound {
+pub struct Vorbis {
     read: ReadAt,
     len: u64,
     /// bytes read at once (SOUND_READ; small in tests)
@@ -196,13 +219,13 @@ pub struct Sound {
     base: u64,
 }
 
-impl Sound {
+impl Vorbis {
     /// The sound in memory (tests).
     #[cfg(test)]
-    pub fn new(ogg: &[u8]) -> Option<Sound> {
+    pub fn new(ogg: &[u8]) -> Option<Vorbis> {
         let d = ogg.to_vec();
         let len = d.len() as u64;
-        Sound::read(
+        Vorbis::read(
             len,
             Box::new(move |o, b| match d.get(o as usize..o as usize + b.len()) {
                 Some(s) => {
@@ -214,8 +237,8 @@ impl Sound {
         )
     }
     /// The `len` bytes of sound `read` reads.
-    pub fn read(len: u64, read: ReadAt) -> Option<Sound> {
-        let mut s = Sound { read, len, step: SOUND_READ, pos: 0, ogg: Default::default(), heads: Default::default(), dec: None, channels: 0, rate: 0, pcm: VecDeque::new(), base: 0 };
+    pub fn read(len: u64, read: ReadAt) -> Option<Vorbis> {
+        let mut s = Vorbis { read, len, step: SOUND_READ, pos: 0, ogg: Default::default(), heads: Default::default(), dec: None, channels: 0, rate: 0, pcm: VecDeque::new(), base: 0 };
         let id = s.packet()?;
         let _comment = s.packet()?;
         let setup = s.packet()?;
@@ -297,9 +320,9 @@ impl Sound {
 // ---------------------------------------------------------------------------------------------
 // playing
 
-/// A movie's file read (the `.vnv`).
+/// A movie's file read (the `.vnv`, or an ASF file decoded here).
 pub struct Movie {
-    /// kura's stream of its frames
+    /// its frames: kura's stream, or asfmovie's (`frame`)
     pub stream: u32,
     pub w: u32,
     pub h: u32,
@@ -324,7 +347,7 @@ impl Movie {
                     video::close(stream);
                     return None;
                 };
-                Sound::read(l as u64, Box::new(move |at, b| video::read_at(&mut f, o as u64 + at, b)))
+                Vorbis::read(l as u64, Box::new(move |at, b| video::read_at(&mut f, o as u64 + at, b))).map(Sound::Vorbis)
             }
             None => None,
         };
@@ -332,10 +355,38 @@ impl Movie {
     }
 }
 
+impl Movie {
+    /// The movie of the game's file `name`: the `.vnv` next to it that the page can decode,
+    /// else the file itself if it is an ASF one sake decodes (asfmovie.rs).
+    pub fn find(name: &str) -> Option<Movie> {
+        let vnv = crate::files::resolve(&format!("{name}.vnv")).and_then(|p| Movie::open(&p)).filter(|m| video::decodable(m.stream));
+        vnv.or_else(|| {
+            let a = crate::asfmovie::open(&crate::files::resolve(name)?)?;
+            Some(Movie { stream: a.id, w: a.w, h: a.h, frames: a.frames, rate: a.rate, duration: a.duration, sound: a.audio.map(Sound::Asf) })
+        })
+    }
+}
+
 impl Drop for Movie {
     fn drop(&mut self) {
-        video::close(self.stream);
+        if crate::asfmovie::is(self.stream) { crate::asfmovie::close(self.stream) } else { video::close(self.stream) }
     }
+}
+
+/// Frame `n` of a movie's frames `stream` (Movie::stream), as kura::video::frame's Rgb601.
+///
+/// # Safety
+/// As kura::video::frame: `dst` holds `h` rows of `pitch` bytes, each `4 * w` long.
+pub unsafe fn frame(stream: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32) -> bool {
+    // SAFETY: the caller's
+    unsafe {
+        if crate::asfmovie::is(stream) { crate::asfmovie::frame(stream, n, dst, pitch, w, h) } else { video::frame(stream, n, dst, pitch, w, h, video::Out::Rgb601) }
+    }
+}
+
+/// Whether a movie's frames can no longer come (kura::video::failed).
+pub fn failed(stream: u32) -> bool {
+    !crate::asfmovie::is(stream) && video::failed(stream)
 }
 
 /// Where a graph's picture goes.
@@ -519,7 +570,7 @@ fn turn() -> Duration {
         let whole = src == (0, 0, w as i32, h as i32) && dst == view && (dst.2, dst.3) == (w as i32, h as i32);
         let (buf, pitch) = if whole { (&mut out, view.2 as usize) } else { (&mut px, w as usize) };
         buf.resize(pitch * h as usize, 0);
-        let ok = unsafe { video::frame(stream, n as i32, buf.as_mut_ptr() as *mut u8, 4 * pitch, w, h, video::Out::Rgb601) };
+        let ok = unsafe { frame(stream, n as i32, buf.as_mut_ptr() as *mut u8, 4 * pitch, w, h) };
         let t1 = Instant::now();
         if !ok {
             // (nothing yet: drawn again next turn)
@@ -557,10 +608,10 @@ thread_local! {
     static BUFS: std::cell::RefCell<HashMap<u32, (Vec<u32>, Vec<u32>)>> = Default::default();
 }
 
-/// SAKE_MOVIE_STATS: every 5 s, the frames drawn and skipped, and the time per frame to have it
+/// SAKE_MOVIE_STATS: every 5 s, the frames drawn and skipped (here and by amstream's Update), and the time per frame to have it
 /// (WebCodecs' frame: wait and conversion to RGB), to scale it into the window's part and to
 /// hand it to the display, and the pixels handed over.
-fn stats(k: u32, n: u32, t: [Duration; 3], pixels: usize) {
+pub(crate) fn stats(k: u32, n: u32, t: [Duration; 3], pixels: usize) {
     static ON: OnceLock<bool> = OnceLock::new();
     if !*ON.get_or_init(|| std::env::var_os("SAKE_MOVIE_STATS").is_some()) {
         return;
@@ -613,7 +664,7 @@ fn stats(k: u32, n: u32, t: [Duration; 3], pixels: usize) {
 fn sound(p: &mut Play, t: u64) {
     let Some(s) = p.movie.sound.as_mut() else { return };
     let playing = p.tl.running() && p.tl.rate == 1.0 && !p.tl.done;
-    let want = p.tl.position(t) as u128 * s.rate as u128 / SEC as u128;
+    let want = p.tl.position(t) as u128 * s.rate() as u128 / SEC as u128;
     if !playing {
         if let Some((a, _)) = p.audio.take() {
             kura::audio::close(a);
@@ -622,7 +673,7 @@ fn sound(p: &mut Play, t: u64) {
     }
     let (a, next) = match p.audio {
         // (out of step by more than 60 ms, after a seek or a pause: queued again from here)
-        Some((a, next)) if (next as i128 - kura::audio::queued(a) as i128 - want as i128).abs() <= s.rate as i128 * 60 / 1000 => (a, next),
+        Some((a, next)) if (next as i128 - kura::audio::queued(a) as i128 - want as i128).abs() <= s.rate() as i128 * 60 / 1000 => (a, next),
         old => {
             if let Some((a, _)) = old {
                 kura::audio::close(a);
@@ -783,12 +834,12 @@ mod tests {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../vorbis/testdata/");
         for name in ["stereo-q5", "mono-q0"] {
             let ogg = std::fs::read(format!("{dir}{name}.ogg")).unwrap();
-            let mut s = Sound::new(&ogg).unwrap();
+            let mut s = Vorbis::new(&ogg).unwrap();
             let mut whole = Vec::new();
             s.take(0, 200_000, &mut whole);
             // (read in small pieces, as a movie's sound is in 64 KiB ones: the same)
             for step in [1, 97, 4096] {
-                let mut p = Sound::new(&ogg).unwrap();
+                let mut p = Vorbis::new(&ogg).unwrap();
                 p.step = step;
                 p.restart();
                 let mut got = Vec::new();
