@@ -97,6 +97,14 @@ impl Bars {
     pub fn deletable(&self, b: u32) -> bool {
         self.map.get(&b).is_none_or(|bar| bar.deletable == 0)
     }
+    /// DeleteSynchronizationBarrier returns: the barrier goes when nobody is inside its phase
+    /// (an entry per barrier address stayed for good; waiters of finished phases are released
+    /// either way, a missing barrier releasing everyone)
+    pub fn delete(&mut self, b: u32) {
+        if self.map.get(&b).is_some_and(|bar| bar.count == 0) {
+            self.map.remove(&b);
+        }
+    }
 }
 
 static BARS: Mutex<Option<Bars>> = Mutex::new(None);
@@ -153,6 +161,7 @@ fn EnterSynchronizationBarrier(c: &mut Ctx) -> u32 {
 fn DeleteSynchronizationBarrier(c: &mut Ctx) -> u32 {
     let b = c.a(0);
     wait_until(|s| s.deletable(b));
+    with(|s| s.delete(b));
     1
 }
 
@@ -235,6 +244,28 @@ mod tests {
             prop_assert_eq!(trues, phases);
             prop_assert!(waiting.is_empty());
             prop_assert!(s.deletable(0x40));
+            s.delete(0x40);
+            prop_assert!(s.map.is_empty());
+        }
+
+        /// Barriers made, used and deleted on fresh addresses in a loop: none stays; one with a
+        /// waiter inside stays until it is gone (the waiter is not let out by the delete).
+        #[test]
+        fn deleted_barriers_go(addrs in proptest::collection::vec(1u32..1_000_000, 1..200), n in 2u32..5) {
+            let mut s = Bars::default();
+            for &a in &addrs {
+                s.init(a, n);
+                let Enter::Wait(t) = s.enter(a, true) else { panic!() };
+                s.delete(a);
+                prop_assert!(!s.released(a, t), "a waiter inside is not let out");
+                for _ in 1..n {
+                    s.enter(a, true);
+                }
+                prop_assert!(s.released(a, t));
+                s.leave(a, t);
+                s.delete(a);
+            }
+            prop_assert!(s.map.is_empty());
         }
     }
 }
