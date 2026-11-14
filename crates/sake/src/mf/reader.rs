@@ -28,8 +28,14 @@ const FIRST_AUDIO: u32 = 0xffff_fffd;
 const ALL_STREAMS: u32 = 0xffff_fffe;
 const MEDIASOURCE: u32 = 0xffff_ffff;
 const ENDOFSTREAM: u32 = 2;
-/// How long a read waits for the page's decoder.
-const WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a read waits for the page's decoder at a time (tests: less), and how many more
+/// waits a read makes for packets the page has not answered yet before it fails (a slow answer
+/// is late sound, never the end of the stream).
+static WAIT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2000);
+const LATE_WAITS: u32 = 4;
+fn wait_time() -> std::time::Duration {
+    std::time::Duration::from_millis(WAIT_MS.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 fn guid(d1: u32, d2: u16, d3: u16, d4: [u8; 8]) -> Guid {
     let mut g = [0u8; 16];
@@ -400,22 +406,37 @@ impl Stream {
                     self.dec = Some(kura::adec::open(codec, t.rate, t.channels, desc).ok_or(MF_E_INVALIDMEDIATYPE)?);
                 }
                 let dec = self.dec.unwrap();
+                let mut got = Vec::new();
+                // (what a wait that timed out did not see may have come since)
+                kura::adec::take(dec, usize::MAX, &mut got);
+                self.pending.extend(got.drain(..));
                 // decode a few packets ahead of what is wanted
                 while self.pending.len() < per * ch && self.next < t.packets.len() {
                     let end = (self.next + 8).min(t.packets.len());
                     let bufs: Vec<Vec<u8>> = t.packets[self.next..end].iter().map(|&(o, n)| self.data.read(c.as_deref_mut(), o, n as usize)).collect::<Option<_>>().ok_or(E_FAIL)?;
                     let chunks: Vec<&[u8]> = bufs.iter().map(|b| &b[..]).collect();
-                    let mut got = Vec::new();
-                    let ok = kura::adec::decode(dec, chunks, WAIT, &mut got);
-                    self.pending.extend(got);
+                    let ok = kura::adec::decode(dec, chunks, wait_time(), &mut got);
+                    self.pending.extend(got.drain(..));
+                    // (pushed: their samples come, now or later)
                     self.next = end;
                     if ok.is_none() {
                         if kura::adec::failed(dec) {
                             return Err(E_FAIL);
                         }
-                        eprintln!("sake: mf reader: the page's decoder did not answer");
+                        eprintln!("sake: mf reader: the page's decoder did not answer in {:?}", wait_time());
                         break;
                     }
+                }
+                // packets pushed and not answered yet: their samples are late, not the end
+                let mut waits = 0;
+                while self.pending.is_empty() && kura::adec::outstanding(dec) {
+                    if kura::adec::failed(dec) || waits == LATE_WAITS {
+                        return Err(E_FAIL);
+                    }
+                    waits += 1;
+                    kura::adec::wait(dec, wait_time());
+                    kura::adec::take(dec, usize::MAX, &mut got);
+                    self.pending.extend(got.drain(..));
                 }
                 if self.pending.is_empty() {
                     self.ended = true;
@@ -755,8 +776,12 @@ fn MFInitMediaTypeFromWaveFormatEx(c: &mut Ctx) -> u32 {
         return E_POINTER;
     }
     let Some(s) = from_wave_format(mem::slice(w, n.max(16))) else { return E_INVALIDARG };
-    if attrs(t, |a| a.1 = s).is_none() {
-        return E_INVALIDARG;
+    // (what the type held goes, its objects released as DeleteAllItems does)
+    let Some(old) = attrs(t, |a| std::mem::replace(&mut a.1, s)) else { return E_INVALIDARG };
+    for (_, v) in old.items {
+        if let Val::Unk(u) = v {
+            release(c, u);
+        }
     }
     0
 }
@@ -2036,6 +2061,100 @@ mod tests {
             // reads answered in the order they were made
             let reads: Vec<u32> = answered.iter().filter_map(|q| if let Req::Read(k) = q { Some(*k) } else { None }).collect();
             proptest::prop_assert!(reads.windows(2).all(|w| w[0] < w[1]));
+        }
+    }
+
+    /// A page that answers late: before each pass over the streams it sleeps the next of
+    /// `delays` (ms, cycling), packet [k, ...] decoding to 1152 frames of k / 256.
+    fn late_page(delays: Vec<u64>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut i = 0;
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(delays[i % delays.len()]));
+                i += 1;
+                kura::adec::test_page_pass(&mut |b, ch| vec![b[0] as f32 / 256.0; 1152 * ch as usize]);
+            }
+        })
+    }
+    fn aac_track(n: usize) -> (Track, Arc<Vec<u8>>) {
+        let data: Vec<u8> = (0..n).flat_map(|k| vec![k as u8; 10]).collect();
+        let t = Track {
+            codec: Codec::Page { codec: "aac".into(), desc: vec![], subtype: audiofile::AAC },
+            rate: 44100,
+            channels: 2,
+            packets: (0..n as u64).map(|k| (k * 10, 10)).collect(),
+            frames: vec![1152; n],
+            avg: 16000,
+            duration: None,
+        };
+        (t, Arc::new(data))
+    }
+    /// Every sample of a stream read to its end: the first value of each (k * 128 for packet k)
+    /// and how many.
+    fn read_all(s: &mut Stream) -> Result<Vec<i16>, u32> {
+        let mut v = vec![];
+        while let Some(p) = s.read()? {
+            assert_eq!(p.bytes.len(), 1152 * 4);
+            v.push(i16::from_le_bytes([p.bytes[0], p.bytes[1]]));
+        }
+        Ok(v)
+    }
+
+    #[test]
+    fn a_late_decoder_is_late_sound_not_the_end() {
+        let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        WAIT_MS.store(30, Ordering::Relaxed);
+        // the page answers 80 ms after each push: every wait of 30 ms times out (the old read
+        // then said end of stream after the first 8 packets' wait, with nothing decoded)
+        let stop = Arc::new(AtomicBool::new(false));
+        let page = late_page(vec![80], stop.clone());
+        let (t, d) = aac_track(20);
+        let mut s = Stream::new(t, d);
+        s.set_out(Out::pcm(&s.track.clone(), 16, false));
+        let got = read_all(&mut s);
+        stop.store(true, Ordering::Relaxed);
+        page.join().unwrap();
+        WAIT_MS.store(2000, Ordering::Relaxed);
+        assert_eq!(got.unwrap(), (0..20).map(|k| k * 128).collect::<Vec<i16>>());
+    }
+
+    #[test]
+    fn a_page_that_never_answers_fails_the_read() {
+        let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        WAIT_MS.store(10, Ordering::Relaxed);
+        let (t, d) = aac_track(4);
+        let mut s = Stream::new(t, d);
+        s.set_out(Out::pcm(&s.track.clone(), 16, false));
+        let r = s.read();
+        WAIT_MS.store(2000, Ordering::Relaxed);
+        // (an error the game sees, not ENDOFSTREAM: the BGM is not cut short as if it ended)
+        assert_eq!(r, Err(E_FAIL));
+        assert!(!s.ended);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
+        /// Against a page that always answers in time: a page answering at any pace (each
+        /// pass up to twice the read's wait late) gives the same samples, in order, and the
+        /// end only after the last packet.
+        #[test]
+        fn late_pages_give_what_prompt_ones_do(n in 1usize..40, delays in proptest::collection::vec(0u64..40, 1..6)) {
+            let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            kura::adec::test_page_pass(&mut |_, _| Vec::new());
+            WAIT_MS.store(20, Ordering::Relaxed);
+            let stop = Arc::new(AtomicBool::new(false));
+            let page = late_page(delays, stop.clone());
+            let (t, d) = aac_track(n);
+            let mut s = Stream::new(t, d);
+            s.set_out(Out::pcm(&s.track.clone(), 16, false));
+            let got = read_all(&mut s);
+            stop.store(true, Ordering::Relaxed);
+            page.join().unwrap();
+            WAIT_MS.store(2000, Ordering::Relaxed);
+            proptest::prop_assert_eq!(got, Ok((0..n as i16).map(|k| k * 128).collect::<Vec<i16>>()));
+            proptest::prop_assert!(s.ended);
         }
     }
 }

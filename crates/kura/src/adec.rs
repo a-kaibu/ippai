@@ -170,6 +170,11 @@ pub fn wait(id: u32, timeout: Duration) -> bool {
     }
 }
 
+/// Whether chunks pushed to stream `id` are not decoded yet (their samples still to come).
+pub fn outstanding(id: u32) -> bool {
+    with(|m| m.get(&id).is_some_and(|s| !s.failed && !s.closed && s.done < s.pushed))
+}
+
 /// Moves up to `max` decoded samples (interleaved floats) of stream `id` to `out`; how many.
 pub fn take(id: u32, max: usize, out: &mut Vec<f32>) -> usize {
     with(|m| {
