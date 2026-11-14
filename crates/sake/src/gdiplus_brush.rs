@@ -601,7 +601,7 @@ pub(crate) fn main_color(h: u32) -> Option<u32> {
     })
 }
 
-fn GdipCreateSolidFill(c: &mut Ctx) -> u32 {
+pub(crate) fn GdipCreateSolidFill(c: &mut Ctx) -> u32 {
     new_obj(Obj::Brush(Brush::Solid(c.a(0))), c.a(1))
 }
 fn GdipGetSolidFillColor(c: &mut Ctx) -> u32 {

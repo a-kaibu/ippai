@@ -483,6 +483,8 @@ fn GdipSetStringFormatTabStops(c: &mut Ctx) -> u32 {
     if p == 0 { return INVALID_PARAMETER; }
     edit_format(c.a(0), |v| {
         if n <= 0 { return OK; }
+        // (a garbage count: OutOfMemory, not gigabytes of floats)
+        if n > 1 << 16 { return 3; }
         if first < 0.0 { return 6; } // Native GDI+ returns NotImplemented.
         v.tabs = (0..n as u32).map(|i| fl(r32(p + 4*i))).collect();
         v.first_tab = first;
@@ -626,8 +628,10 @@ pub(crate) fn layout(s: &[u16], rect: [f32; 4], em: f32, line: f32, no_wrap: boo
 }
 
 /// The string argument: `len` -1 means zero-terminated.
+/// The longest string read (a garbage length read up to 8 GiB into a Vec).
+const MAX_STRING: u32 = 1 << 20;
 fn string(p: u32, len: u32) -> Vec<u16> {
-    if len as i32 == -1 { mem::wstr(p) } else { (0..len).map(|i| mem::r16(p + 2 * i)).collect() }
+    if len as i32 == -1 { mem::wstr(p) } else { (0..len.min(MAX_STRING)).map(|i| mem::r16(p + 2 * i)).collect() }
 }
 fn rectf(p: u32) -> [f32; 4] {
     if p == 0 { [0.0; 4] } else { [0, 4, 8, 12].map(|o| fl(r32(p + o))) }
@@ -760,7 +764,10 @@ fn fill(c: &mut Ctx, r: [f32; 4]) -> u32 {
         let Some((w, h)) = crate::gdiplus::size_of(img) else { return INVALID_PARAMETER };
         (x0, y0, x1, y1) = (x0.clamp(0, w as i32), y0.clamp(0, h as i32), x1.clamp(0, w as i32), y1.clamp(0, h as i32));
     } else {
-        (x0, y0, x1, y1) = (x0.max(-(1 << 14)), y0.max(-(1 << 14)), x1.min(1 << 14), y1.min(1 << 14));
+        // (the DC's clip first: "clear everything" with FillRectangle(0, 0, 10000, 10000)
+        // sampled 8 bytes of colour per pixel of all of it, gigabytes at the old +-16384 clamp)
+        let Some(b) = crate::gdi::clip_bounds(hdc) else { return INVALID_PARAMETER };
+        (x0, y0, x1, y1) = (x0.max(b.l), y0.max(b.t), x1.min(b.r), y1.min(b.b));
     }
     if x1 <= x0 || y1 <= y0 {
         return OK;
@@ -811,9 +818,14 @@ fn GdipDrawLineI(c: &mut Ctx) -> u32 {
     let [x1, y1, x2, y2] = [2, 3, 4, 5].map(|i| c.a(i) as i32 as f32 * k);
     let half = (width * k).max(1.0) / 2.0;
     crate::gdiplus::with_pixels(img, |w, h, px| {
+        // (a pen wider than the image covers it: a garbage width looped over its square)
+        let half = half.min((w + h) as f32);
         let n = (x2 - x1).abs().max((y2 - y1).abs()).ceil().max(1.0) as i32;
+        // only the steps whose nib can touch the image (a far end point walked billions of
+        // steps outside it); the same steps as all of them would be there
+        let Some((ta, tb)) = line_steps([x1, y1, x2, y2], n, half + 1.0, (w as f32, h as f32)) else { return };
         let mut done = std::collections::HashSet::new();
-        for t in 0..=n {
+        for t in ta..=tb {
             let (cx, cy) = (x1 + (x2 - x1) * t as f32 / n as f32, y1 + (y2 - y1) * t as f32 / n as f32);
             for y in (cy - half).round() as i32..(cy + half).round().max((cy - half).round() + 1.0) as i32 {
                 for x in (cx - half).round() as i32..(cx + half).round().max((cx - half).round() + 1.0) as i32 {
@@ -825,6 +837,34 @@ fn GdipDrawLineI(c: &mut Ctx) -> u32 {
         }
     });
     OK
+}
+
+/// The steps `ta..=tb` of `0..=n` along the line `p` (x1, y1, x2, y2) at which it is within
+/// `pad` of the `w` x `h` image (Liang-Barsky on the parameter), None: none of them.
+fn line_steps(p: [f32; 4], n: i32, pad: f32, (w, h): (f32, f32)) -> Option<(i32, i32)> {
+    let (dx, dy) = (p[2] - p[0], p[3] - p[1]);
+    let (mut t0, mut t1) = (0f64, 1f64);
+    for (q, d) in [(p[0] + pad, -dx), (w + pad - p[0], dx), (p[1] + pad, -dy), (h + pad - p[1], dy)] {
+        let (q, d) = (q as f64, d as f64);
+        if d == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let r = q / d;
+        if d < 0.0 {
+            t0 = t0.max(r);
+        } else {
+            t1 = t1.min(r);
+        }
+    }
+    if !(t0 <= t1) {
+        return None;
+    }
+    let ta = ((t0 * n as f64).floor() as i64 - 1).clamp(0, n as i64) as i32;
+    let tb = ((t1 * n as f64).ceil() as i64 + 1).clamp(0, n as i64) as i32;
+    Some((ta, tb))
 }
 
 pub fn init() {
@@ -903,6 +943,24 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    proptest::proptest! {
+        /// line_steps keeps every step of a line whose nib can touch the image, whatever the
+        /// end points (brute force over all of them)
+        #[test]
+        fn line_steps_keep_every_step_near_the_image(p in proptest::array::uniform4(-3000i32..3000), w in 1u32..200, h in 1u32..200, half in 0.5f32..20.0) {
+            let p = p.map(|v| v as f32);
+            let n = (p[2] - p[0]).abs().max((p[3] - p[1]).abs()).ceil().max(1.0) as i32;
+            let r = line_steps(p, n, half + 1.0, (w as f32, h as f32));
+            for t in 0..=n {
+                let (cx, cy) = (p[0] + (p[2] - p[0]) * t as f32 / n as f32, p[1] + (p[3] - p[1]) * t as f32 / n as f32);
+                let near = (cx + half).round() as i32 >= 0 && (cy + half).round() as i32 >= 0 && (cx - half).round() as i32 <= w as i32 && (cy - half).round() as i32 <= h as i32;
+                if near {
+                    proptest::prop_assert!(r.is_some_and(|(a, b)| a <= t && t <= b), "step {} of {} near the image, kept {:?}", t, n, r);
+                }
+            }
+        }
+    }
     use proptest::prelude::*;
 
     // Tahoma's design metrics: em 2048, win ascent 2049, win descent 423, spacing 2472
@@ -1006,6 +1064,35 @@ mod tests {
 mod format_abi_tests {
     use super::*;
     use crate::test_guest::{call, enter};
+
+    /// FillRectangle on an HDC far past its bitmap (the "clear everything" call): the bitmap
+    /// filled, done in the DC's clip (it sampled 8 bytes of colour per pixel of the whole
+    /// rectangle first: 8 GiB at the old clamp, an abort)
+    #[test]
+    fn huge_fills_on_a_dc_fill_its_bitmap() {
+        let _guard = enter();
+        crate::test_guest::guest_thread();
+        crate::gdi::init();
+        let dc = call(crate::gdi::CreateCompatibleDC, &[0]);
+        let bmp = call(crate::gdi::CreateBitmap, &[8, 6, 1, 32, 0]);
+        call(crate::gdi::SelectObject, &[dc, bmp]);
+        let p = mem::heap_alloc(16, true);
+        assert_eq!(call(GdipCreateFromHDC, &[dc, p]), OK);
+        let g = r32(p);
+        assert_eq!(call(crate::gdiplus_brush::GdipCreateSolidFill, &[0xff11_2233, p + 4]), OK);
+        let b = r32(p + 4);
+        assert_eq!(call(GdipFillRectangleI, &[g, b, (-(1i32 << 30)) as u32, (-(1i32 << 30)) as u32, i32::MAX as u32, i32::MAX as u32]), OK);
+        for y in 0..6 {
+            for x in 0..8 {
+                assert_eq!(call(crate::gdi::GetPixel, &[dc, x, y]), 0x33_2211, "({x}, {y})");
+            }
+        }
+        // (a rectangle off the bitmap: nothing)
+        assert_eq!(call(crate::gdiplus_brush::GdipCreateSolidFill, &[0xff00_0000, p + 8]), OK);
+        assert_eq!(call(GdipFillRectangleI, &[g, r32(p + 8), 100, 100, 1 << 20, 1 << 20]), OK);
+        assert_eq!(call(crate::gdi::GetPixel, &[dc, 7, 5]), 0x33_2211);
+        mem::heap_free(p);
+    }
 
     #[test]
     fn string_format_clone_owns_tabs_and_ranges() {

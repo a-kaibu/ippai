@@ -1250,6 +1250,17 @@ fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat
 /// GDI+ painting into a DC: the w x h straight ARGB colors (None: left alone) from logical
 /// (x0, y0), each source-over onto the pixel there (a 32 bpp pixel gets an opaque alpha byte,
 /// as GDI+ leaves one)
+/// The part of `dc` (logical coordinates) a drawing can change: its clip's bounds on its
+/// bitmap or window (None: no such DC; empty: nothing there to draw on).
+pub fn clip_bounds(dc: u32) -> Option<Rect> {
+    let mut b = Rect::default();
+    draw(dc, |_, _, cv| {
+        b = b.or(&cv.clip.off(-cv.ox, -cv.oy));
+        Rect::default()
+    })
+    .then_some(b)
+}
+
 pub fn blend_argb(dc: u32, x0: i32, y0: i32, w: i32, h: i32, cols: &[Option<u32>]) {
     draw(dc, |_, _, cv| {
         let mut out = Rect::default();
@@ -2368,7 +2379,7 @@ fn GetStockObject(c: &mut Ctx) -> u32 {
     }
 }
 
-fn CreateCompatibleDC(_: &mut Ctx) -> u32 {
+pub(crate) fn CreateCompatibleDC(_: &mut Ctx) -> u32 {
     new_dc(Kind::Mem, None)
 }
 fn CreateDCA(_: &mut Ctx) -> u32 {
@@ -2406,7 +2417,7 @@ fn GetObjectType(c: &mut Ctx) -> u32 {
     })
 }
 
-fn SelectObject(c: &mut Ctx) -> u32 {
+pub(crate) fn SelectObject(c: &mut Ctx) -> u32 {
     let (dc, h) = (c.a(0), c.a(1));
     let region = with(|t| matches!(t.m.get(&h), Some(G::Region(_))));
     if region {
@@ -2826,7 +2837,7 @@ fn CreateCompatibleBitmap(c: &mut Ctx) -> u32 {
 fn CreateDiscardableBitmap(c: &mut Ctx) -> u32 {
     CreateCompatibleBitmap(c)
 }
-fn CreateBitmap(c: &mut Ctx) -> u32 {
+pub(crate) fn CreateBitmap(c: &mut Ctx) -> u32 {
     let (w, h, planes, bpp, bits) = (c.i(0), c.i(1), c.a(2), c.a(3), c.a(4));
     if w <= 0 || h <= 0 {
         return DEFAULT_BITMAP;
@@ -3409,7 +3420,7 @@ fn SetDIBitsToDevice(c: &mut Ctx) -> u32 {
     dib_to_device(c.a(0), (c.i(1), c.i(2), w, h), (c.i(5), c.i(6), w, h), c.a(9), c.a(10), c.a(11), 0xcc0020, Some((c.a(7), c.a(8))))
 }
 
-fn GetPixel(c: &mut Ctx) -> u32 {
+pub(crate) fn GetPixel(c: &mut Ctx) -> u32 {
     let (dc, x, y) = (c.a(0), c.i(1), c.i(2));
     let mut out = 0xffff_ffff;
     with(|t| {
