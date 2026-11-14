@@ -237,23 +237,44 @@ jobs:
       - name: Virtual sound card
         if: steps.meta.outputs.api != 'none'
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 8
         continue-on-error: true
         run: |
           Invoke-WebRequest -Uri https://github.com/duncanthrax/scream/releases/download/4.0/Scream4.0.zip -OutFile Scream4.0.zip
-          "Scream4.0.zip sha256 $((Get-FileHash Scream4.0.zip).Hash)"
+          $h = (Get-FileHash Scream4.0.zip).Hash
+          if ($h -ne 'FA33E25F9A46C61E4E0CD83362C51C3D2A45C6FE4091AAD7507E240E40F1A520') { throw "Scream4.0.zip is $h" }
           Expand-Archive -Path Scream4.0.zip -DestinationPath Scream
           $sys = Get-ChildItem -Recurse Scream -Filter Scream.sys | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
           $cert = (Get-AuthenticodeSignature $sys.FullName).SignerCertificate
-          $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('TrustedPublisher', 'LocalMachine')
-          $store.Open('ReadWrite'); $store.Add($cert); $store.Close()
-          $devcon = Get-ChildItem -Recurse Scream -Filter devcon-x64.exe | Select-Object -First 1
+          # (its author's own certificate: trusted as a root too, or devcon waits on the
+          # "Would you like to install this device software?" prompt nobody answers)
+          foreach ($n in 'Root', 'TrustedPublisher') {
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($n, 'LocalMachine')
+            $store.Open('ReadWrite'); $store.Add($cert); $store.Close()
+          }
+          Set-Service Audiosrv -StartupType Automatic; Start-Service Audiosrv
+          # (the runner is in test mode, but Windows still asks "Windows can't verify the publisher
+          # of this driver software" on the desktop: winplay.py answers it meanwhile. Staged with
+          # pnputil, then devcon makes the device; each part has a time limit and its output here)
+          $ans = Start-Process -FilePath python -ArgumentList "$env:GITHUB_WORKSPACE\tests\corpus\winplay.py", 'accept-driver-prompt', '200' -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\answer.txt"
           Push-Location $sys.DirectoryName
-          $p = Start-Process -FilePath $devcon.FullName -ArgumentList 'install', 'Scream.inf', '*Scream' -PassThru -NoNewWindow
-          if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; throw "devcon did not finish" }
+          $s = Start-Process -FilePath pnputil.exe -ArgumentList '/add-driver', 'Scream.inf', '/install' -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\pnputil.txt"
+          if (-not $s.WaitForExit(120000)) { Stop-Process -Id $s.Id -Force; "pnputil did not finish" }
+          Get-Content "$env:RUNNER_TEMP\pnputil.txt"
+          $devcon = Get-ChildItem -Recurse ..\..\.. -Filter devcon-x64.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $devcon.FullName -ArgumentList 'install', 'Scream.inf', '*Scream' -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\devcon.txt"
+          $done = $p.WaitForExit(120000)
+          Get-Content "$env:RUNNER_TEMP\devcon.txt"
+          if (-not $done) {
+            # (what it waits on: the screen, kept with the title's run)
+            New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\out" | Out-Null
+            python -c "import sys; sys.path.insert(0, r'$env:GITHUB_WORKSPACE\tests\corpus'); import winplay, shots; shots.write(r'$env:GITHUB_WORKSPACE\out\devcon-wait.png', *winplay.grab((0, 0, 1920, 1080)))"
+            Stop-Process -Id $p.Id -Force; Pop-Location; throw "devcon did not finish"
+          }
           Pop-Location
           "devcon exit $($p.ExitCode)"
-          Set-Service Audiosrv -StartupType Automatic; Start-Service Audiosrv
+          Stop-Process -Id $ans.Id -Force -ErrorAction SilentlyContinue
+          Get-Content "$env:RUNNER_TEMP\answer.txt" -ErrorAction SilentlyContinue
           Get-CimInstance Win32_SoundDevice | Select-Object Name, Status
       - name: Windows
         if: steps.meta.outputs.api != 'none'
