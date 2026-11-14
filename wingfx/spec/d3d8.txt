@@ -1,0 +1,12 @@
+# Direct3D 8 clauses (wingfx/spec/README.md): <id> <status> | <source> | <what it says>
+# (state setting, Get after Set, state block capture / apply / recording: the D3D9 clauses, which
+# the DirectX 8 SDK documentation says the same of)
+D3D8.DEVICE doc | Direct3DCreate8, IDirect3D8::CreateDevice | a windowed HAL device, 64x64 X8R8G8B8 with an automatic D24S8 depth stencil
+D3D8.RS.DEFAULT doc | D3DRENDERSTATETYPE (DirectX 8 SDK) | the defaults of the render states Direct3D 8 shares with 9
+D3D8.RS.OWN measured | D3DRENDERSTATETYPE (DirectX 8 SDK) | its own states: LINEPATTERN 0, ZVISIBLE 0, EDGEANTIALIAS 0, ZBIAS 0, PATCHSEGMENTS 1.0, SOFTWAREVERTEXPROCESSING TRUE on a software vertex processing device only, POINTSIZE_MIN 0.0 (d3d8state golden)
+D3D8.RS.UNDOC measured | (none) | Get of an undocumented render state: 0xbaadcafe for 0, 42, 50, 61-63, 96-127, 138, 149, 150, 165, 169, 174-255; INVALIDCALL for the rest (d3d8state golden)
+D3D8.TSS.DEFAULT doc | D3DTEXTURESTAGESTATETYPE (DirectX 8 SDK) | the defaults, the sampler states among them: addresses WRAP, MAG / MIN filters POINT, MIP filter NONE, MAXANISOTROPY 1
+D3D8.TSS.UNDOC measured | (none) | stage state types 0, 12, 29 read 0xbaadcafe (d3d8state golden)
+D3D8.SB.GROUPS assumed | D3DSTATEBLOCKTYPE (DirectX 8 SDK) | the pixel and vertex lists as Direct3D 9 measures them; the sampler stage states pixel; LINEPATTERN, ZVISIBLE, EDGEANTIALIAS, ZBIAS pixel, PATCHSEGMENTS vertex, SOFTWAREVERTEXPROCESSING in D3DSBT_ALL only
+D3D8.SET.UNDOC open | (none) | Set of an undocumented state and what Get reads after it
+D3D8.INDEX.RANGE excluded | (none) | stages past 7, stage state types past 29

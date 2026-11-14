@@ -375,8 +375,10 @@ static void d3d9_reset(void) {
 }
 
 /* device [hwvp|swvp|mixed]: a windowed HAL device, 64x64 X8R8G8B8 back buffer, D24S8 */
+static void d3d8_reset(void);
 static void op_device(void) {
     d3d9_reset();
+    d3d8_reset();
     static IDirect3D9 *(WINAPI *create)(UINT);
     if (!create) {
         HMODULE m = LoadLibraryA("d3d9.dll");
@@ -411,7 +413,11 @@ static void op_device(void) {
 }
 
 /* rs|tss|ss set <args> <value> | get <args>: "<what> <args> = <hex>" or "... hr <hex>" */
+static void op_state8(void);
+static void op_sb8(void);
+static void *dev8;
 static void op_state(void) {
+    if (dev8) { op_state8(); return; }
     if (!dev) { out("nodev\n"); return; }
     int set = is(1, "set");
     if (!set && !is(1, "get")) { bad = 1; return; }
@@ -431,6 +437,7 @@ static void op_state(void) {
 
 /* sb begin | end <id> | create <id> <type 1 all, 2 pixel, 3 vertex> | capture <id> | apply <id> | release <id> */
 static void op_sb(void) {
+    if (dev8) { op_sb8(); return; }
     if (!dev) { out("nodev\n"); return; }
     HRESULT hr;
     if (is(1, "begin")) hr = IDirect3DDevice9_BeginStateBlock(dev);
@@ -455,6 +462,96 @@ static void op_sb(void) {
     if (hr) out("sb %s hr %08lx\n", tok[1], hr);
 }
 
+
+/* ------------------------------------------------------------------------------------------ */
+/* Direct3D 8 (d3d8.dll loaded when a case asks for it; its header clashes with d3d9's, so the
+ * calls go through the vtables by index, d3d8.h's order) */
+
+static void *d3d8;
+#define VT(o, i) ((*(void ***)(o))[i])
+typedef ULONG (WINAPI *Rel8)(void *);
+static DWORD blocks8[BLOCKS];
+
+static void d3d8_reset(void) {
+    if (dev8) {
+        for (int i = 0; i < BLOCKS; i++)
+            if (blocks8[i]) ((HRESULT (WINAPI *)(void *, DWORD))VT(dev8, 56))(dev8, blocks8[i]);
+        ((Rel8)VT(dev8, 2))(dev8);
+    }
+    memset(blocks8, 0, sizeof blocks8);
+    dev8 = NULL;
+    if (d3d8) { ((Rel8)VT(d3d8, 2))(d3d8); d3d8 = NULL; }
+}
+
+/* device8 [hwvp|swvp|mixed]: as device, for Direct3D 8 */
+static void op_device8(void) {
+    d3d9_reset();
+    d3d8_reset();
+    static void *(WINAPI *create)(UINT);
+    if (!create) {
+        HMODULE m = LoadLibraryA("d3d8.dll");
+        if (m) create = (void *)GetProcAddress(m, "Direct3DCreate8");
+    }
+    if (!create || !(d3d8 = create(220))) { out("device8 none\n"); return; }
+    if (!hwnd) {
+        WNDCLASSA wc = { 0, DefWindowProcA, 0, 0, GetModuleHandleA(NULL), 0, 0, 0, 0, "wingfx" };
+        RegisterClassA(&wc);
+        hwnd = CreateWindowA("wingfx", "wingfx", WS_POPUP, 0, 0, 64, 64, 0, 0, wc.hInstance, 0);
+    }
+    DWORD flags = D3DCREATE_HARDWARE_VERTEXPROCESSING;
+    if (is(1, "swvp")) flags = D3DCREATE_SOFTWARE_VERTEXPROCESSING;
+    else if (is(1, "mixed")) flags = D3DCREATE_MIXED_VERTEXPROCESSING;
+    /* D3DPRESENT_PARAMETERS of Direct3D 8: no MultiSampleQuality */
+    struct { UINT w, h; D3DFORMAT fmt; UINT count; DWORD ms, swap; HWND win; BOOL windowed, autods; D3DFORMAT dsfmt; DWORD flags; UINT rate, interval; } pp = { 0 };
+    pp.w = 64; pp.h = 64; pp.fmt = D3DFMT_X8R8G8B8; pp.count = 1; pp.swap = D3DSWAPEFFECT_DISCARD;
+    pp.win = hwnd; pp.windowed = TRUE; pp.autods = TRUE; pp.dsfmt = D3DFMT_D24S8;
+    typedef HRESULT (WINAPI *Create8)(void *, UINT, D3DDEVTYPE, HWND, DWORD, void *, void **);
+    HRESULT hr = ((Create8)VT(d3d8, 15))(d3d8, 0, D3DDEVTYPE_HAL, hwnd, flags, &pp, &dev8);
+    if (FAILED(hr)) hr = ((Create8)VT(d3d8, 15))(d3d8, 0, D3DDEVTYPE_HAL, hwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &dev8);
+    if (FAILED(hr)) { out("device8 failed %08lx\n", hr); dev8 = NULL; return; }
+    out("device8 ok\n");
+}
+
+static void op_state8(void) {
+    int set = is(1, "set");
+    if ((!set && !is(1, "get")) || is(0, "ss")) { bad = 1; return; }
+    int two = is(0, "tss");
+    long a = num(2), b = two ? num(3) : 0;
+    DWORD v = set ? (DWORD)num(two ? 4 : 3) : 0xdeadbeef;
+    if (bad) return;
+    HRESULT hr;
+    if (!two) hr = set ? ((HRESULT (WINAPI *)(void *, DWORD, DWORD))VT(dev8, 50))(dev8, a, v) : ((HRESULT (WINAPI *)(void *, DWORD, DWORD *))VT(dev8, 51))(dev8, a, &v);
+    else hr = set ? ((HRESULT (WINAPI *)(void *, DWORD, DWORD, DWORD))VT(dev8, 63))(dev8, a, b, v) : ((HRESULT (WINAPI *)(void *, DWORD, DWORD, DWORD *))VT(dev8, 62))(dev8, a, b, &v);
+    if (set) {
+        if (hr) out("%s %ld%s%s set hr %08lx\n", tok[0], a, two ? " " : "", two ? tok[3] : "", hr);
+    } else if (hr) out("%s %ld%s%s hr %08lx\n", tok[0], a, two ? " " : "", two ? tok[3] : "", hr);
+    else out("%s %ld%s%s = %08lx\n", tok[0], a, two ? " " : "", two ? tok[3] : "", v);
+}
+
+static void op_sb8(void) {
+    typedef HRESULT (WINAPI *Tok)(void *, DWORD);
+    HRESULT hr;
+    if (is(1, "begin")) hr = ((HRESULT (WINAPI *)(void *))VT(dev8, 52))(dev8);
+    else {
+        long i = num(2);
+        if (bad || i < 0 || i >= BLOCKS) { bad = 1; return; }
+        if (is(1, "end") || is(1, "create")) {
+            if (blocks8[i]) { ((Tok)VT(dev8, 56))(dev8, blocks8[i]); blocks8[i] = 0; }
+            if (is(1, "end")) hr = ((HRESULT (WINAPI *)(void *, DWORD *))VT(dev8, 53))(dev8, &blocks8[i]);
+            else {
+                long t = num(3);
+                if (bad) return;
+                hr = ((HRESULT (WINAPI *)(void *, DWORD, DWORD *))VT(dev8, 57))(dev8, t, &blocks8[i]);
+            }
+            if (FAILED(hr)) blocks8[i] = 0;
+        } else if (!blocks8[i]) { out("sb %ld none\n", i); return; }
+        else if (is(1, "capture")) hr = ((Tok)VT(dev8, 55))(dev8, blocks8[i]);
+        else if (is(1, "apply")) hr = ((Tok)VT(dev8, 54))(dev8, blocks8[i]);
+        else if (is(1, "release")) { hr = ((Tok)VT(dev8, 56))(dev8, blocks8[i]); blocks8[i] = 0; }
+        else { bad = 1; return; }
+    }
+    if (hr) out("sb %s hr %08lx\n", tok[1], hr);
+}
 
 /* ------------------------------------------------------------------------------------------ */
 /* Direct3D 11 state objects (d3d11.dll loaded only when a case asks for a device) */
@@ -547,6 +644,7 @@ static void op_state11(void) {
 static void reset_all(void) {
     gdi_reset();
     d3d9_reset();
+    d3d8_reset();
     d3d11_reset();
 }
 
@@ -584,6 +682,7 @@ static void run(char *text) {
         else if (is(0, "rs") || is(0, "tss") || is(0, "ss")) op_state();
         else if (is(0, "sb")) op_sb();
         else if (is(0, "device11")) op_device11();
+        else if (is(0, "device8")) op_device8();
         else if (is(0, "blend") || is(0, "depth") || is(0, "raster") || is(0, "sampler")) op_state11();
         else bad = 1;
         if (bad) out("bad line %d\n", lineno);

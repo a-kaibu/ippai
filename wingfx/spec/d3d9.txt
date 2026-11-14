@@ -1,4 +1,5 @@
 # Direct3D 9 clauses (wingfx/spec/README.md): <id> <status> | <source> | <what it says>
+D3D9.DEVICE doc | Direct3DCreate9, IDirect3D9::CreateDevice | a windowed HAL device, 64x64 X8R8G8B8 with an automatic D24S8 depth stencil
 D3D9.RS.DEFAULT doc | D3DRENDERSTATETYPE | the default of each documented render state (ZENABLE TRUE with an automatic depth stencil)
 D3D9.RS.POINTSIZEMAX measured | D3DRENDERSTATETYPE (says 64.0) | POINTSIZE_MAX starts at 8192.0 (d3d9state golden)
 D3D9.RS.UNDOC measured | (none) | Get of an undocumented render state: 0xbaadcafe for some, INVALIDCALL for the rest (d3d9state golden)

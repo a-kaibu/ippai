@@ -49,6 +49,8 @@ x ^= x << 5`, the byte is the low 8 bits of x.
 | `rs set <state> <v>`, `tss set <stage> <type> <v>`, `ss set <sampler> <type> <v>` | Set...State | `... set hr <hr>` only on failure |
 | `sb begin`, `sb end <i>`, `sb create <i> <type>`, `sb capture <i>`, `sb apply <i>`, `sb release <i>` | BeginStateBlock, EndStateBlock into block i (0..7), CreateStateBlock, Capture, Apply, Release | `sb <verb> hr <hr>` on failure; `sb <i> none` when block i does not exist |
 
+`device8 [hwvp|swvp|mixed]` makes a Direct3D 8 device the same way (`device8 ok` / `none` / `failed <hr>`); while it is the current device, `rs` and `tss` (stage state types 0..29: Direct3D 8's sampler states are stage states) and `sb` act on it (state blocks are DWORD tokens: Create / End / Capture / Apply / DeleteStateBlock), and `ss` is a bad line.
+
 Without a device the state lines print `nodev`. (Not asked by the generators: stages past 7,
 samplers past 15 other than 256..260, sampler state types past 13: Windows reads past its arrays.)
 

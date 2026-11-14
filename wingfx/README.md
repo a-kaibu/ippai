@@ -72,6 +72,8 @@ sake `node sake.js` (tests/winref/run.sh) and its browser runner for the GPU sui
   pair of formats.
 * `d3d9`: Direct3D 9 render, texture stage and sampler states (defaults, Set/Get of every
   state), state blocks (D3DSBT_ALL / PIXELSTATE / VERTEXSTATE, recording, Capture, Apply).
+* `d3d8`: the same for Direct3D 8 (its own states, sampler states as stage states, state block
+  tokens), on software, hardware and mixed vertex processing devices.
 * `d3d11`: Direct3D 11 blend, depth stencil, rasterizer and sampler state objects: every word of
   each description through its values of interest (every filter value below 0x400), with the
   parts that switch others off on and off; which descriptions are refused, what GetDesc gives

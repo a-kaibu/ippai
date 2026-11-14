@@ -151,3 +151,43 @@ fn d3d11_matches_the_d3d11desc_probe() {
     }
     assert!(n > 100, "{n}");
 }
+
+/// the Direct3D 8 defaults against masu's d3d8state probe (device 0 software, 1 hardware
+/// vertex processing)
+#[test]
+fn d3d8_defaults_match_the_d3d8state_probe() {
+    let Ok(g) = std::fs::read_to_string(root().join("../tests/winref/golden/d3d8state-32/stdout.txt")) else { return };
+    let text = format!("case a\ndevice8 swvp\n{0}end\ncase b\ndevice8 hwvp\n{0}end\n", {
+        let mut s = String::new();
+        for i in 0..256 {
+            s += &format!("rs get {i}\n");
+        }
+        for st in [0, 7] {
+            for t in 0..30 {
+                s += &format!("tss get {st} {t}\n");
+            }
+        }
+        s
+    });
+    let mut n = 0;
+    for (dev, c) in wingfx::case::parse_cases(&text).iter().enumerate() {
+        let out = wingfx::model::run_case(c).unwrap();
+        for l in &out[1..] {
+            // the probe: "0 rs 7 = 0x1", "0 rs 1: Get 0x8876086c", "0 tss 0 1: 0 = 0x4"
+            let t: Vec<&str> = l.split(' ').collect();
+            let v = |h: &str| match u32::from_str_radix(h, 16).unwrap() {
+                0 => "0".to_string(),
+                v => format!("{v:#x}"),
+            };
+            let want = match (t[0], t.len()) {
+                ("rs", 4) if t[2] == "=" => format!("{dev} rs {} = {}", t[1], v(t[3])),
+                ("rs", 4) => format!("{dev} rs {}: Get {}", t[1], v(t[3])),
+                ("tss", 5) if t[3] == "=" => format!("{dev} tss {} {}: 0 = {}", t[1], t[2], v(t[4])),
+                _ => panic!("{l}"),
+            };
+            assert!(g.lines().any(|l| l == want), "Windows does not say {want:?}");
+            n += 1;
+        }
+    }
+    assert_eq!(n, 2 * (256 + 60));
+}

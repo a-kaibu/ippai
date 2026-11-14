@@ -139,6 +139,41 @@ pub const RENDER_STATES: &[(u32, &str, u32, Group)] = &[
     (209, "BLENDOPALPHA", 1, Pixel),
 ];
 
+/// Direct3D 8's documented render states (d3d8types.h, the DirectX 8 SDK's D3DRENDERSTATETYPE):
+/// those it shares with Direct3D 9 (POINTSIZE_MIN aside) and its own
+pub fn render_states8(swvp: bool) -> Vec<(u32, u32, Group)> {
+    let mut v: Vec<(u32, u32, Group)> = RENDER_STATES.iter().filter(|r| r.0 <= 173 && !matches!(r.0, 40 | 155 | 169)).map(|r| (r.0, r.2, r.3)).collect();
+    v.extend([
+        (10, 0, Pixel),  // LINEPATTERN
+        (30, 0, Pixel),  // ZVISIBLE
+        (40, 0, Pixel),  // EDGEANTIALIAS
+        (47, 0, Pixel),  // ZBIAS
+        (155, 0, Vertex), // POINTSIZE_MIN: 0.0 in Direct3D 8
+        (153, swvp as u32, All), // SOFTWAREVERTEXPROCESSING: TRUE on a software vertex processing device
+        (164, 0x3f80_0000, Vertex), // PATCHSEGMENTS 1.0
+    ]);
+    v.sort_by_key(|r| r.0);
+    v
+}
+
+/// MEASURED (d3d8state golden): Direct3D 8's undocumented render states that Get answers
+pub fn rs_legacy8(i: u32) -> bool {
+    matches!(i, 0 | 42 | 50 | 61..=63 | 96..=127 | 138 | 149 | 150 | 165 | 169 | 174..=255)
+}
+
+/// Direct3D 8's texture stage states (the sampler states among them): default of stage `s`
+pub fn tss_doc8(t: u32, s: u32) -> Option<(u32, Group)> {
+    Some(match t {
+        1..=11 | 22..=24 | 26..=28 => return tss_doc(t, s),
+        13 | 14 | 25 => (1, Pixel), // ADDRESSU, V, W: WRAP
+        15 => (0, Pixel),           // BORDERCOLOR
+        16 | 17 => (1, Pixel),      // MAGFILTER, MINFILTER: POINT
+        18..=20 => (0, Pixel),      // MIPFILTER NONE, MIPMAPLODBIAS, MAXMIPLEVEL
+        21 => (1, Pixel),           // MAXANISOTROPY
+        _ => return None,
+    })
+}
+
 /// MEASURED: render states outside the documented ones that Get answers (with 0xbaadcafe)
 pub fn rs_legacy(i: u32) -> bool {
     matches!(i, 0 | 42 | 47 | 50 | 61..=63 | 96..=127 | 138 | 149 | 150 | 165 | 169 | 177 | 210..=255)
@@ -186,6 +221,19 @@ pub enum Key {
     Ss(u32, u32),
 }
 
+/// every documented Direct3D 8 state and its group
+pub fn all_states8(swvp: bool) -> Vec<(Key, u32, Group)> {
+    let mut v: Vec<(Key, u32, Group)> = render_states8(swvp).into_iter().map(|(i, d, g)| (Key::Rs(i), d, g)).collect();
+    for s in 0..8 {
+        for t in 0..30 {
+            if let Some((d, g)) = tss_doc8(t, s) {
+                v.push((Key::Tss(s, t), d, g));
+            }
+        }
+    }
+    v
+}
+
 /// every documented state and its group
 pub fn all_states() -> Vec<(Key, u32, Group)> {
     let mut v: Vec<(Key, u32, Group)> = RENDER_STATES.iter().map(|&(i, _, d, g)| (Key::Rs(i), d, g)).collect();
@@ -221,6 +269,9 @@ fn undocumented_read(k: Key) -> Option<u32> {
 #[derive(Default)]
 pub struct D3d9 {
     dev: bool,
+    /// a Direct3D 8 device (`device8`), and whether it does software vertex processing
+    v8: bool,
+    swvp: bool,
     state: BTreeMap<Key, u32>,
     recording: Option<BTreeMap<Key, u32>>,
     blocks: BTreeMap<i64, BTreeMap<Key, u32>>,
@@ -236,8 +287,44 @@ fn n(op: &Op, i: usize) -> Result<i64, Fail> {
 }
 
 impl D3d9 {
+    fn states(&self) -> Vec<(Key, u32, Group)> {
+        if self.v8 {
+            all_states8(self.swvp)
+        } else {
+            all_states()
+        }
+    }
+
+    /// the clause, Direct3D 8's own where it has one
+    fn c(&self, id: &'static str) -> &'static str {
+        if !self.v8 {
+            return id;
+        }
+        match id {
+            "D3D9.RS.DEFAULT" => "D3D8.RS.DEFAULT",
+            "D3D9.RS.UNDOC" => "D3D8.RS.UNDOC",
+            "D3D9.TSS.DEFAULT" => "D3D8.TSS.DEFAULT",
+            "D3D9.TSS.UNDOC" => "D3D8.TSS.UNDOC",
+            "D3D9.SB.GROUPS" => "D3D8.SB.GROUPS",
+            "D3D9.SET.UNDOC" => "D3D8.SET.UNDOC",
+            "D3D9.INDEX.RANGE" => "D3D8.INDEX.RANGE",
+            _ => id,
+        }
+    }
+
+    fn undocumented_read(&self, k: Key) -> Option<u32> {
+        if !self.v8 {
+            return undocumented_read(k);
+        }
+        match k {
+            Key::Rs(i) if rs_legacy8(i) => Some(LEGACY),
+            Key::Tss(_, 0 | 12 | 29) => Some(LEGACY),
+            _ => None,
+        }
+    }
+
     fn reset(&mut self) {
-        self.state = all_states().into_iter().map(|(k, d, _)| (k, d)).collect();
+        self.state = self.states().into_iter().map(|(k, d, _)| (k, d)).collect();
         self.recording = None;
         self.blocks.clear();
     }
@@ -245,11 +332,15 @@ impl D3d9 {
     pub fn op(&mut self, op: &Op, out: &mut Vec<String>) -> Res<bool> {
         let t = op.tok.as_slice();
         match t[0].as_str() {
-            "device" => {
+            "device" | "device8" => {
+                self.v8 = t[0] == "device8";
+                self.swvp = t.get(1).is_some_and(|m| m == "swvp");
                 self.reset();
                 self.dev = true;
-                out.push("device ok".into());
+                hit(if self.v8 { "D3D8.DEVICE" } else { "D3D9.DEVICE" });
+                out.push(format!("{} ok", t[0]));
             }
+            "ss" if self.v8 => return Err(Fail::Bad),
             "rs" | "tss" | "ss" if !self.dev => out.push("nodev".into()),
             "rs" | "tss" | "ss" => {
                 let set = match t.get(1).map(String::as_str) {
@@ -264,16 +355,16 @@ impl D3d9 {
                 let (a, b) = (a as u32, b as u32);
                 let key = match t[0].as_str() {
                     "rs" if a < 256 => Key::Rs(a),
-                    "tss" if a < 8 && b < 34 => Key::Tss(a, b),
+                    "tss" if a < 8 && b < if self.v8 { 30 } else { 34 } => Key::Tss(a, b),
                     "ss" if sampler_ok(a) && b < 14 => Key::Ss(a, b),
-                    _ => return Err(Fail::Unmodeled("D3D9.INDEX.RANGE")),
+                    _ => return Err(Fail::Unmodeled(self.c("D3D9.INDEX.RANGE"))),
                 };
                 let what = if two { format!("{} {} {}", t[0], a, t[3]) } else { format!("rs {a}") };
                 let documented = self.state.contains_key(&key);
                 if set {
                     hit("D3D9.SETGET");
                     if !documented {
-                        return Err(Fail::Unmodeled("D3D9.SET.UNDOC"));
+                        return Err(Fail::Unmodeled(self.c("D3D9.SET.UNDOC")));
                     }
                     match &mut self.recording {
                         Some(r) => {
@@ -286,13 +377,14 @@ impl D3d9 {
                 } else {
                     hit(match (key, documented) {
                         (Key::Rs(166), _) => "D3D9.RS.POINTSIZEMAX",
-                        (Key::Rs(_), true) => "D3D9.RS.DEFAULT",
-                        (Key::Rs(_), false) => "D3D9.RS.UNDOC",
-                        (Key::Tss(..), true) => "D3D9.TSS.DEFAULT",
-                        (Key::Tss(..), false) => "D3D9.TSS.UNDOC",
+                        (Key::Rs(155 | 153 | 164 | 10 | 30 | 40 | 47), true) if self.v8 => "D3D8.RS.OWN",
+                        (Key::Rs(_), true) => self.c("D3D9.RS.DEFAULT"),
+                        (Key::Rs(_), false) => self.c("D3D9.RS.UNDOC"),
+                        (Key::Tss(..), true) => self.c("D3D9.TSS.DEFAULT"),
+                        (Key::Tss(..), false) => self.c("D3D9.TSS.UNDOC"),
                         (Key::Ss(..), _) => "D3D9.SS.DEFAULT",
                     });
-                    match self.state.get(&key).copied().or_else(|| undocumented_read(key)) {
+                    match self.state.get(&key).copied().or_else(|| self.undocumented_read(key)) {
                         Some(v) => out.push(format!("{what} = {v:08x}")),
                         None => out.push(format!("{what} hr {INVALIDCALL:08x}")),
                     }
@@ -330,8 +422,8 @@ impl D3d9 {
                             _ => return Err(Fail::Unmodeled("D3D9.SB.BADTYPE")),
                         };
                         hit("D3D9.SB.TYPES");
-                        hit("D3D9.SB.GROUPS");
-                        let b = all_states().into_iter().filter(|s| want(s.2)).map(|(k, ..)| (k, self.state[&k])).collect();
+                        hit(self.c("D3D9.SB.GROUPS"));
+                        let b = self.states().into_iter().filter(|s| want(s.2)).map(|(k, ..)| (k, self.state[&k])).collect();
                         self.blocks.insert(i, b);
                     }
                     "capture" | "apply" | "release" => {

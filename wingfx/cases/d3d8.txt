@@ -1,0 +1,8916 @@
+# gpu
+# wingfx suite d3d8: Direct3D 8 device state and state blocks (SPEC.md). Made by `wingfx gen d3d8`.
+case defaults
+device8 swvp
+rs get 0
+rs get 1
+rs get 2
+rs get 3
+rs get 4
+rs get 5
+rs get 6
+rs get 7
+rs get 8
+rs get 9
+rs get 10
+rs get 11
+rs get 12
+rs get 13
+rs get 14
+rs get 15
+rs get 16
+rs get 17
+rs get 18
+rs get 19
+rs get 20
+rs get 21
+rs get 22
+rs get 23
+rs get 24
+rs get 25
+rs get 26
+rs get 27
+rs get 28
+rs get 29
+rs get 30
+rs get 31
+rs get 32
+rs get 33
+rs get 34
+rs get 35
+rs get 36
+rs get 37
+rs get 38
+rs get 39
+rs get 40
+rs get 41
+rs get 42
+rs get 43
+rs get 44
+rs get 45
+rs get 46
+rs get 47
+rs get 48
+rs get 49
+rs get 50
+rs get 51
+rs get 52
+rs get 53
+rs get 54
+rs get 55
+rs get 56
+rs get 57
+rs get 58
+rs get 59
+rs get 60
+rs get 61
+rs get 62
+rs get 63
+rs get 64
+rs get 65
+rs get 66
+rs get 67
+rs get 68
+rs get 69
+rs get 70
+rs get 71
+rs get 72
+rs get 73
+rs get 74
+rs get 75
+rs get 76
+rs get 77
+rs get 78
+rs get 79
+rs get 80
+rs get 81
+rs get 82
+rs get 83
+rs get 84
+rs get 85
+rs get 86
+rs get 87
+rs get 88
+rs get 89
+rs get 90
+rs get 91
+rs get 92
+rs get 93
+rs get 94
+rs get 95
+rs get 96
+rs get 97
+rs get 98
+rs get 99
+rs get 100
+rs get 101
+rs get 102
+rs get 103
+rs get 104
+rs get 105
+rs get 106
+rs get 107
+rs get 108
+rs get 109
+rs get 110
+rs get 111
+rs get 112
+rs get 113
+rs get 114
+rs get 115
+rs get 116
+rs get 117
+rs get 118
+rs get 119
+rs get 120
+rs get 121
+rs get 122
+rs get 123
+rs get 124
+rs get 125
+rs get 126
+rs get 127
+rs get 128
+rs get 129
+rs get 130
+rs get 131
+rs get 132
+rs get 133
+rs get 134
+rs get 135
+rs get 136
+rs get 137
+rs get 138
+rs get 139
+rs get 140
+rs get 141
+rs get 142
+rs get 143
+rs get 144
+rs get 145
+rs get 146
+rs get 147
+rs get 148
+rs get 149
+rs get 150
+rs get 151
+rs get 152
+rs get 153
+rs get 154
+rs get 155
+rs get 156
+rs get 157
+rs get 158
+rs get 159
+rs get 160
+rs get 161
+rs get 162
+rs get 163
+rs get 164
+rs get 165
+rs get 166
+rs get 167
+rs get 168
+rs get 169
+rs get 170
+rs get 171
+rs get 172
+rs get 173
+rs get 174
+rs get 175
+rs get 176
+rs get 177
+rs get 178
+rs get 179
+rs get 180
+rs get 181
+rs get 182
+rs get 183
+rs get 184
+rs get 185
+rs get 186
+rs get 187
+rs get 188
+rs get 189
+rs get 190
+rs get 191
+rs get 192
+rs get 193
+rs get 194
+rs get 195
+rs get 196
+rs get 197
+rs get 198
+rs get 199
+rs get 200
+rs get 201
+rs get 202
+rs get 203
+rs get 204
+rs get 205
+rs get 206
+rs get 207
+rs get 208
+rs get 209
+rs get 210
+rs get 211
+rs get 212
+rs get 213
+rs get 214
+rs get 215
+rs get 216
+rs get 217
+rs get 218
+rs get 219
+rs get 220
+rs get 221
+rs get 222
+rs get 223
+rs get 224
+rs get 225
+rs get 226
+rs get 227
+rs get 228
+rs get 229
+rs get 230
+rs get 231
+rs get 232
+rs get 233
+rs get 234
+rs get 235
+rs get 236
+rs get 237
+rs get 238
+rs get 239
+rs get 240
+rs get 241
+rs get 242
+rs get 243
+rs get 244
+rs get 245
+rs get 246
+rs get 247
+rs get 248
+rs get 249
+rs get 250
+rs get 251
+rs get 252
+rs get 253
+rs get 254
+rs get 255
+tss get 0 0
+tss get 0 1
+tss get 0 2
+tss get 0 3
+tss get 0 4
+tss get 0 5
+tss get 0 6
+tss get 0 7
+tss get 0 8
+tss get 0 9
+tss get 0 10
+tss get 0 11
+tss get 0 12
+tss get 0 13
+tss get 0 14
+tss get 0 15
+tss get 0 16
+tss get 0 17
+tss get 0 18
+tss get 0 19
+tss get 0 20
+tss get 0 21
+tss get 0 22
+tss get 0 23
+tss get 0 24
+tss get 0 25
+tss get 0 26
+tss get 0 27
+tss get 0 28
+tss get 0 29
+tss get 1 0
+tss get 1 1
+tss get 1 2
+tss get 1 3
+tss get 1 4
+tss get 1 5
+tss get 1 6
+tss get 1 7
+tss get 1 8
+tss get 1 9
+tss get 1 10
+tss get 1 11
+tss get 1 12
+tss get 1 13
+tss get 1 14
+tss get 1 15
+tss get 1 16
+tss get 1 17
+tss get 1 18
+tss get 1 19
+tss get 1 20
+tss get 1 21
+tss get 1 22
+tss get 1 23
+tss get 1 24
+tss get 1 25
+tss get 1 26
+tss get 1 27
+tss get 1 28
+tss get 1 29
+tss get 2 0
+tss get 2 1
+tss get 2 2
+tss get 2 3
+tss get 2 4
+tss get 2 5
+tss get 2 6
+tss get 2 7
+tss get 2 8
+tss get 2 9
+tss get 2 10
+tss get 2 11
+tss get 2 12
+tss get 2 13
+tss get 2 14
+tss get 2 15
+tss get 2 16
+tss get 2 17
+tss get 2 18
+tss get 2 19
+tss get 2 20
+tss get 2 21
+tss get 2 22
+tss get 2 23
+tss get 2 24
+tss get 2 25
+tss get 2 26
+tss get 2 27
+tss get 2 28
+tss get 2 29
+tss get 3 0
+tss get 3 1
+tss get 3 2
+tss get 3 3
+tss get 3 4
+tss get 3 5
+tss get 3 6
+tss get 3 7
+tss get 3 8
+tss get 3 9
+tss get 3 10
+tss get 3 11
+tss get 3 12
+tss get 3 13
+tss get 3 14
+tss get 3 15
+tss get 3 16
+tss get 3 17
+tss get 3 18
+tss get 3 19
+tss get 3 20
+tss get 3 21
+tss get 3 22
+tss get 3 23
+tss get 3 24
+tss get 3 25
+tss get 3 26
+tss get 3 27
+tss get 3 28
+tss get 3 29
+tss get 4 0
+tss get 4 1
+tss get 4 2
+tss get 4 3
+tss get 4 4
+tss get 4 5
+tss get 4 6
+tss get 4 7
+tss get 4 8
+tss get 4 9
+tss get 4 10
+tss get 4 11
+tss get 4 12
+tss get 4 13
+tss get 4 14
+tss get 4 15
+tss get 4 16
+tss get 4 17
+tss get 4 18
+tss get 4 19
+tss get 4 20
+tss get 4 21
+tss get 4 22
+tss get 4 23
+tss get 4 24
+tss get 4 25
+tss get 4 26
+tss get 4 27
+tss get 4 28
+tss get 4 29
+tss get 5 0
+tss get 5 1
+tss get 5 2
+tss get 5 3
+tss get 5 4
+tss get 5 5
+tss get 5 6
+tss get 5 7
+tss get 5 8
+tss get 5 9
+tss get 5 10
+tss get 5 11
+tss get 5 12
+tss get 5 13
+tss get 5 14
+tss get 5 15
+tss get 5 16
+tss get 5 17
+tss get 5 18
+tss get 5 19
+tss get 5 20
+tss get 5 21
+tss get 5 22
+tss get 5 23
+tss get 5 24
+tss get 5 25
+tss get 5 26
+tss get 5 27
+tss get 5 28
+tss get 5 29
+tss get 6 0
+tss get 6 1
+tss get 6 2
+tss get 6 3
+tss get 6 4
+tss get 6 5
+tss get 6 6
+tss get 6 7
+tss get 6 8
+tss get 6 9
+tss get 6 10
+tss get 6 11
+tss get 6 12
+tss get 6 13
+tss get 6 14
+tss get 6 15
+tss get 6 16
+tss get 6 17
+tss get 6 18
+tss get 6 19
+tss get 6 20
+tss get 6 21
+tss get 6 22
+tss get 6 23
+tss get 6 24
+tss get 6 25
+tss get 6 26
+tss get 6 27
+tss get 6 28
+tss get 6 29
+tss get 7 0
+tss get 7 1
+tss get 7 2
+tss get 7 3
+tss get 7 4
+tss get 7 5
+tss get 7 6
+tss get 7 7
+tss get 7 8
+tss get 7 9
+tss get 7 10
+tss get 7 11
+tss get 7 12
+tss get 7 13
+tss get 7 14
+tss get 7 15
+tss get 7 16
+tss get 7 17
+tss get 7 18
+tss get 7 19
+tss get 7 20
+tss get 7 21
+tss get 7 22
+tss get 7 23
+tss get 7 24
+tss get 7 25
+tss get 7 26
+tss get 7 27
+tss get 7 28
+tss get 7 29
+end
+case defaults-hwvp
+device8 hwvp
+rs get 0
+rs get 1
+rs get 2
+rs get 3
+rs get 4
+rs get 5
+rs get 6
+rs get 7
+rs get 8
+rs get 9
+rs get 10
+rs get 11
+rs get 12
+rs get 13
+rs get 14
+rs get 15
+rs get 16
+rs get 17
+rs get 18
+rs get 19
+rs get 20
+rs get 21
+rs get 22
+rs get 23
+rs get 24
+rs get 25
+rs get 26
+rs get 27
+rs get 28
+rs get 29
+rs get 30
+rs get 31
+rs get 32
+rs get 33
+rs get 34
+rs get 35
+rs get 36
+rs get 37
+rs get 38
+rs get 39
+rs get 40
+rs get 41
+rs get 42
+rs get 43
+rs get 44
+rs get 45
+rs get 46
+rs get 47
+rs get 48
+rs get 49
+rs get 50
+rs get 51
+rs get 52
+rs get 53
+rs get 54
+rs get 55
+rs get 56
+rs get 57
+rs get 58
+rs get 59
+rs get 60
+rs get 61
+rs get 62
+rs get 63
+rs get 64
+rs get 65
+rs get 66
+rs get 67
+rs get 68
+rs get 69
+rs get 70
+rs get 71
+rs get 72
+rs get 73
+rs get 74
+rs get 75
+rs get 76
+rs get 77
+rs get 78
+rs get 79
+rs get 80
+rs get 81
+rs get 82
+rs get 83
+rs get 84
+rs get 85
+rs get 86
+rs get 87
+rs get 88
+rs get 89
+rs get 90
+rs get 91
+rs get 92
+rs get 93
+rs get 94
+rs get 95
+rs get 96
+rs get 97
+rs get 98
+rs get 99
+rs get 100
+rs get 101
+rs get 102
+rs get 103
+rs get 104
+rs get 105
+rs get 106
+rs get 107
+rs get 108
+rs get 109
+rs get 110
+rs get 111
+rs get 112
+rs get 113
+rs get 114
+rs get 115
+rs get 116
+rs get 117
+rs get 118
+rs get 119
+rs get 120
+rs get 121
+rs get 122
+rs get 123
+rs get 124
+rs get 125
+rs get 126
+rs get 127
+rs get 128
+rs get 129
+rs get 130
+rs get 131
+rs get 132
+rs get 133
+rs get 134
+rs get 135
+rs get 136
+rs get 137
+rs get 138
+rs get 139
+rs get 140
+rs get 141
+rs get 142
+rs get 143
+rs get 144
+rs get 145
+rs get 146
+rs get 147
+rs get 148
+rs get 149
+rs get 150
+rs get 151
+rs get 152
+rs get 153
+rs get 154
+rs get 155
+rs get 156
+rs get 157
+rs get 158
+rs get 159
+rs get 160
+rs get 161
+rs get 162
+rs get 163
+rs get 164
+rs get 165
+rs get 166
+rs get 167
+rs get 168
+rs get 169
+rs get 170
+rs get 171
+rs get 172
+rs get 173
+rs get 174
+rs get 175
+rs get 176
+rs get 177
+rs get 178
+rs get 179
+rs get 180
+rs get 181
+rs get 182
+rs get 183
+rs get 184
+rs get 185
+rs get 186
+rs get 187
+rs get 188
+rs get 189
+rs get 190
+rs get 191
+rs get 192
+rs get 193
+rs get 194
+rs get 195
+rs get 196
+rs get 197
+rs get 198
+rs get 199
+rs get 200
+rs get 201
+rs get 202
+rs get 203
+rs get 204
+rs get 205
+rs get 206
+rs get 207
+rs get 208
+rs get 209
+rs get 210
+rs get 211
+rs get 212
+rs get 213
+rs get 214
+rs get 215
+rs get 216
+rs get 217
+rs get 218
+rs get 219
+rs get 220
+rs get 221
+rs get 222
+rs get 223
+rs get 224
+rs get 225
+rs get 226
+rs get 227
+rs get 228
+rs get 229
+rs get 230
+rs get 231
+rs get 232
+rs get 233
+rs get 234
+rs get 235
+rs get 236
+rs get 237
+rs get 238
+rs get 239
+rs get 240
+rs get 241
+rs get 242
+rs get 243
+rs get 244
+rs get 245
+rs get 246
+rs get 247
+rs get 248
+rs get 249
+rs get 250
+rs get 251
+rs get 252
+rs get 253
+rs get 254
+rs get 255
+tss get 0 0
+tss get 0 1
+tss get 0 2
+tss get 0 3
+tss get 0 4
+tss get 0 5
+tss get 0 6
+tss get 0 7
+tss get 0 8
+tss get 0 9
+tss get 0 10
+tss get 0 11
+tss get 0 12
+tss get 0 13
+tss get 0 14
+tss get 0 15
+tss get 0 16
+tss get 0 17
+tss get 0 18
+tss get 0 19
+tss get 0 20
+tss get 0 21
+tss get 0 22
+tss get 0 23
+tss get 0 24
+tss get 0 25
+tss get 0 26
+tss get 0 27
+tss get 0 28
+tss get 0 29
+tss get 1 0
+tss get 1 1
+tss get 1 2
+tss get 1 3
+tss get 1 4
+tss get 1 5
+tss get 1 6
+tss get 1 7
+tss get 1 8
+tss get 1 9
+tss get 1 10
+tss get 1 11
+tss get 1 12
+tss get 1 13
+tss get 1 14
+tss get 1 15
+tss get 1 16
+tss get 1 17
+tss get 1 18
+tss get 1 19
+tss get 1 20
+tss get 1 21
+tss get 1 22
+tss get 1 23
+tss get 1 24
+tss get 1 25
+tss get 1 26
+tss get 1 27
+tss get 1 28
+tss get 1 29
+tss get 2 0
+tss get 2 1
+tss get 2 2
+tss get 2 3
+tss get 2 4
+tss get 2 5
+tss get 2 6
+tss get 2 7
+tss get 2 8
+tss get 2 9
+tss get 2 10
+tss get 2 11
+tss get 2 12
+tss get 2 13
+tss get 2 14
+tss get 2 15
+tss get 2 16
+tss get 2 17
+tss get 2 18
+tss get 2 19
+tss get 2 20
+tss get 2 21
+tss get 2 22
+tss get 2 23
+tss get 2 24
+tss get 2 25
+tss get 2 26
+tss get 2 27
+tss get 2 28
+tss get 2 29
+tss get 3 0
+tss get 3 1
+tss get 3 2
+tss get 3 3
+tss get 3 4
+tss get 3 5
+tss get 3 6
+tss get 3 7
+tss get 3 8
+tss get 3 9
+tss get 3 10
+tss get 3 11
+tss get 3 12
+tss get 3 13
+tss get 3 14
+tss get 3 15
+tss get 3 16
+tss get 3 17
+tss get 3 18
+tss get 3 19
+tss get 3 20
+tss get 3 21
+tss get 3 22
+tss get 3 23
+tss get 3 24
+tss get 3 25
+tss get 3 26
+tss get 3 27
+tss get 3 28
+tss get 3 29
+tss get 4 0
+tss get 4 1
+tss get 4 2
+tss get 4 3
+tss get 4 4
+tss get 4 5
+tss get 4 6
+tss get 4 7
+tss get 4 8
+tss get 4 9
+tss get 4 10
+tss get 4 11
+tss get 4 12
+tss get 4 13
+tss get 4 14
+tss get 4 15
+tss get 4 16
+tss get 4 17
+tss get 4 18
+tss get 4 19
+tss get 4 20
+tss get 4 21
+tss get 4 22
+tss get 4 23
+tss get 4 24
+tss get 4 25
+tss get 4 26
+tss get 4 27
+tss get 4 28
+tss get 4 29
+tss get 5 0
+tss get 5 1
+tss get 5 2
+tss get 5 3
+tss get 5 4
+tss get 5 5
+tss get 5 6
+tss get 5 7
+tss get 5 8
+tss get 5 9
+tss get 5 10
+tss get 5 11
+tss get 5 12
+tss get 5 13
+tss get 5 14
+tss get 5 15
+tss get 5 16
+tss get 5 17
+tss get 5 18
+tss get 5 19
+tss get 5 20
+tss get 5 21
+tss get 5 22
+tss get 5 23
+tss get 5 24
+tss get 5 25
+tss get 5 26
+tss get 5 27
+tss get 5 28
+tss get 5 29
+tss get 6 0
+tss get 6 1
+tss get 6 2
+tss get 6 3
+tss get 6 4
+tss get 6 5
+tss get 6 6
+tss get 6 7
+tss get 6 8
+tss get 6 9
+tss get 6 10
+tss get 6 11
+tss get 6 12
+tss get 6 13
+tss get 6 14
+tss get 6 15
+tss get 6 16
+tss get 6 17
+tss get 6 18
+tss get 6 19
+tss get 6 20
+tss get 6 21
+tss get 6 22
+tss get 6 23
+tss get 6 24
+tss get 6 25
+tss get 6 26
+tss get 6 27
+tss get 6 28
+tss get 6 29
+tss get 7 0
+tss get 7 1
+tss get 7 2
+tss get 7 3
+tss get 7 4
+tss get 7 5
+tss get 7 6
+tss get 7 7
+tss get 7 8
+tss get 7 9
+tss get 7 10
+tss get 7 11
+tss get 7 12
+tss get 7 13
+tss get 7 14
+tss get 7 15
+tss get 7 16
+tss get 7 17
+tss get 7 18
+tss get 7 19
+tss get 7 20
+tss get 7 21
+tss get 7 22
+tss get 7 23
+tss get 7 24
+tss get 7 25
+tss get 7 26
+tss get 7 27
+tss get 7 28
+tss get 7 29
+end
+case defaults-mixed
+device8 mixed
+rs get 0
+rs get 1
+rs get 2
+rs get 3
+rs get 4
+rs get 5
+rs get 6
+rs get 7
+rs get 8
+rs get 9
+rs get 10
+rs get 11
+rs get 12
+rs get 13
+rs get 14
+rs get 15
+rs get 16
+rs get 17
+rs get 18
+rs get 19
+rs get 20
+rs get 21
+rs get 22
+rs get 23
+rs get 24
+rs get 25
+rs get 26
+rs get 27
+rs get 28
+rs get 29
+rs get 30
+rs get 31
+rs get 32
+rs get 33
+rs get 34
+rs get 35
+rs get 36
+rs get 37
+rs get 38
+rs get 39
+rs get 40
+rs get 41
+rs get 42
+rs get 43
+rs get 44
+rs get 45
+rs get 46
+rs get 47
+rs get 48
+rs get 49
+rs get 50
+rs get 51
+rs get 52
+rs get 53
+rs get 54
+rs get 55
+rs get 56
+rs get 57
+rs get 58
+rs get 59
+rs get 60
+rs get 61
+rs get 62
+rs get 63
+rs get 64
+rs get 65
+rs get 66
+rs get 67
+rs get 68
+rs get 69
+rs get 70
+rs get 71
+rs get 72
+rs get 73
+rs get 74
+rs get 75
+rs get 76
+rs get 77
+rs get 78
+rs get 79
+rs get 80
+rs get 81
+rs get 82
+rs get 83
+rs get 84
+rs get 85
+rs get 86
+rs get 87
+rs get 88
+rs get 89
+rs get 90
+rs get 91
+rs get 92
+rs get 93
+rs get 94
+rs get 95
+rs get 96
+rs get 97
+rs get 98
+rs get 99
+rs get 100
+rs get 101
+rs get 102
+rs get 103
+rs get 104
+rs get 105
+rs get 106
+rs get 107
+rs get 108
+rs get 109
+rs get 110
+rs get 111
+rs get 112
+rs get 113
+rs get 114
+rs get 115
+rs get 116
+rs get 117
+rs get 118
+rs get 119
+rs get 120
+rs get 121
+rs get 122
+rs get 123
+rs get 124
+rs get 125
+rs get 126
+rs get 127
+rs get 128
+rs get 129
+rs get 130
+rs get 131
+rs get 132
+rs get 133
+rs get 134
+rs get 135
+rs get 136
+rs get 137
+rs get 138
+rs get 139
+rs get 140
+rs get 141
+rs get 142
+rs get 143
+rs get 144
+rs get 145
+rs get 146
+rs get 147
+rs get 148
+rs get 149
+rs get 150
+rs get 151
+rs get 152
+rs get 153
+rs get 154
+rs get 155
+rs get 156
+rs get 157
+rs get 158
+rs get 159
+rs get 160
+rs get 161
+rs get 162
+rs get 163
+rs get 164
+rs get 165
+rs get 166
+rs get 167
+rs get 168
+rs get 169
+rs get 170
+rs get 171
+rs get 172
+rs get 173
+rs get 174
+rs get 175
+rs get 176
+rs get 177
+rs get 178
+rs get 179
+rs get 180
+rs get 181
+rs get 182
+rs get 183
+rs get 184
+rs get 185
+rs get 186
+rs get 187
+rs get 188
+rs get 189
+rs get 190
+rs get 191
+rs get 192
+rs get 193
+rs get 194
+rs get 195
+rs get 196
+rs get 197
+rs get 198
+rs get 199
+rs get 200
+rs get 201
+rs get 202
+rs get 203
+rs get 204
+rs get 205
+rs get 206
+rs get 207
+rs get 208
+rs get 209
+rs get 210
+rs get 211
+rs get 212
+rs get 213
+rs get 214
+rs get 215
+rs get 216
+rs get 217
+rs get 218
+rs get 219
+rs get 220
+rs get 221
+rs get 222
+rs get 223
+rs get 224
+rs get 225
+rs get 226
+rs get 227
+rs get 228
+rs get 229
+rs get 230
+rs get 231
+rs get 232
+rs get 233
+rs get 234
+rs get 235
+rs get 236
+rs get 237
+rs get 238
+rs get 239
+rs get 240
+rs get 241
+rs get 242
+rs get 243
+rs get 244
+rs get 245
+rs get 246
+rs get 247
+rs get 248
+rs get 249
+rs get 250
+rs get 251
+rs get 252
+rs get 253
+rs get 254
+rs get 255
+tss get 0 0
+tss get 0 1
+tss get 0 2
+tss get 0 3
+tss get 0 4
+tss get 0 5
+tss get 0 6
+tss get 0 7
+tss get 0 8
+tss get 0 9
+tss get 0 10
+tss get 0 11
+tss get 0 12
+tss get 0 13
+tss get 0 14
+tss get 0 15
+tss get 0 16
+tss get 0 17
+tss get 0 18
+tss get 0 19
+tss get 0 20
+tss get 0 21
+tss get 0 22
+tss get 0 23
+tss get 0 24
+tss get 0 25
+tss get 0 26
+tss get 0 27
+tss get 0 28
+tss get 0 29
+tss get 1 0
+tss get 1 1
+tss get 1 2
+tss get 1 3
+tss get 1 4
+tss get 1 5
+tss get 1 6
+tss get 1 7
+tss get 1 8
+tss get 1 9
+tss get 1 10
+tss get 1 11
+tss get 1 12
+tss get 1 13
+tss get 1 14
+tss get 1 15
+tss get 1 16
+tss get 1 17
+tss get 1 18
+tss get 1 19
+tss get 1 20
+tss get 1 21
+tss get 1 22
+tss get 1 23
+tss get 1 24
+tss get 1 25
+tss get 1 26
+tss get 1 27
+tss get 1 28
+tss get 1 29
+tss get 2 0
+tss get 2 1
+tss get 2 2
+tss get 2 3
+tss get 2 4
+tss get 2 5
+tss get 2 6
+tss get 2 7
+tss get 2 8
+tss get 2 9
+tss get 2 10
+tss get 2 11
+tss get 2 12
+tss get 2 13
+tss get 2 14
+tss get 2 15
+tss get 2 16
+tss get 2 17
+tss get 2 18
+tss get 2 19
+tss get 2 20
+tss get 2 21
+tss get 2 22
+tss get 2 23
+tss get 2 24
+tss get 2 25
+tss get 2 26
+tss get 2 27
+tss get 2 28
+tss get 2 29
+tss get 3 0
+tss get 3 1
+tss get 3 2
+tss get 3 3
+tss get 3 4
+tss get 3 5
+tss get 3 6
+tss get 3 7
+tss get 3 8
+tss get 3 9
+tss get 3 10
+tss get 3 11
+tss get 3 12
+tss get 3 13
+tss get 3 14
+tss get 3 15
+tss get 3 16
+tss get 3 17
+tss get 3 18
+tss get 3 19
+tss get 3 20
+tss get 3 21
+tss get 3 22
+tss get 3 23
+tss get 3 24
+tss get 3 25
+tss get 3 26
+tss get 3 27
+tss get 3 28
+tss get 3 29
+tss get 4 0
+tss get 4 1
+tss get 4 2
+tss get 4 3
+tss get 4 4
+tss get 4 5
+tss get 4 6
+tss get 4 7
+tss get 4 8
+tss get 4 9
+tss get 4 10
+tss get 4 11
+tss get 4 12
+tss get 4 13
+tss get 4 14
+tss get 4 15
+tss get 4 16
+tss get 4 17
+tss get 4 18
+tss get 4 19
+tss get 4 20
+tss get 4 21
+tss get 4 22
+tss get 4 23
+tss get 4 24
+tss get 4 25
+tss get 4 26
+tss get 4 27
+tss get 4 28
+tss get 4 29
+tss get 5 0
+tss get 5 1
+tss get 5 2
+tss get 5 3
+tss get 5 4
+tss get 5 5
+tss get 5 6
+tss get 5 7
+tss get 5 8
+tss get 5 9
+tss get 5 10
+tss get 5 11
+tss get 5 12
+tss get 5 13
+tss get 5 14
+tss get 5 15
+tss get 5 16
+tss get 5 17
+tss get 5 18
+tss get 5 19
+tss get 5 20
+tss get 5 21
+tss get 5 22
+tss get 5 23
+tss get 5 24
+tss get 5 25
+tss get 5 26
+tss get 5 27
+tss get 5 28
+tss get 5 29
+tss get 6 0
+tss get 6 1
+tss get 6 2
+tss get 6 3
+tss get 6 4
+tss get 6 5
+tss get 6 6
+tss get 6 7
+tss get 6 8
+tss get 6 9
+tss get 6 10
+tss get 6 11
+tss get 6 12
+tss get 6 13
+tss get 6 14
+tss get 6 15
+tss get 6 16
+tss get 6 17
+tss get 6 18
+tss get 6 19
+tss get 6 20
+tss get 6 21
+tss get 6 22
+tss get 6 23
+tss get 6 24
+tss get 6 25
+tss get 6 26
+tss get 6 27
+tss get 6 28
+tss get 6 29
+tss get 7 0
+tss get 7 1
+tss get 7 2
+tss get 7 3
+tss get 7 4
+tss get 7 5
+tss get 7 6
+tss get 7 7
+tss get 7 8
+tss get 7 9
+tss get 7 10
+tss get 7 11
+tss get 7 12
+tss get 7 13
+tss get 7 14
+tss get 7 15
+tss get 7 16
+tss get 7 17
+tss get 7 18
+tss get 7 19
+tss get 7 20
+tss get 7 21
+tss get 7 22
+tss get 7 23
+tss get 7 24
+tss get 7 25
+tss get 7 26
+tss get 7 27
+tss get 7 28
+tss get 7 29
+end
+case set-each
+device8 swvp
+rs set 7 0x1000
+rs set 8 0x1001
+rs set 9 0x1002
+rs set 10 0x1003
+rs set 14 0x1004
+rs set 15 0x1005
+rs set 16 0x1006
+rs set 19 0x1007
+rs set 20 0x1008
+rs set 22 0x1009
+rs set 23 0x100a
+rs set 24 0x100b
+rs set 25 0x100c
+rs set 26 0x100d
+rs set 27 0x100e
+rs set 28 0x100f
+rs set 29 0x1010
+rs set 30 0x1011
+rs set 34 0x1012
+rs set 35 0x1013
+rs set 36 0x1014
+rs set 37 0x1015
+rs set 38 0x1016
+rs set 40 0x1017
+rs set 47 0x1018
+rs set 48 0x1019
+rs set 52 0x101a
+rs set 53 0x101b
+rs set 54 0x101c
+rs set 55 0x101d
+rs set 56 0x101e
+rs set 57 0x101f
+rs set 58 0x1020
+rs set 59 0x1021
+rs set 60 0x1022
+rs set 128 0x1023
+rs set 129 0x1024
+rs set 130 0x1025
+rs set 131 0x1026
+rs set 132 0x1027
+rs set 133 0x1028
+rs set 134 0x1029
+rs set 135 0x102a
+rs set 136 0x102b
+rs set 137 0x102c
+rs set 139 0x102d
+rs set 140 0x102e
+rs set 141 0x102f
+rs set 142 0x1030
+rs set 143 0x1031
+rs set 145 0x1032
+rs set 146 0x1033
+rs set 147 0x1034
+rs set 148 0x1035
+rs set 151 0x1036
+rs set 152 0x1037
+rs set 153 0x1038
+rs set 154 0x1039
+rs set 155 0x103a
+rs set 156 0x103b
+rs set 157 0x103c
+rs set 158 0x103d
+rs set 159 0x103e
+rs set 160 0x103f
+rs set 161 0x1040
+rs set 162 0x1041
+rs set 163 0x1042
+rs set 164 0x1043
+rs set 166 0x1044
+rs set 167 0x1045
+rs set 168 0x1046
+rs set 170 0x1047
+rs set 171 0x1048
+rs set 172 0x1049
+rs set 173 0x104a
+tss set 0 1 0x104b
+tss set 0 2 0x104c
+tss set 0 3 0x104d
+tss set 0 4 0x104e
+tss set 0 5 0x104f
+tss set 0 6 0x1050
+tss set 0 7 0x1051
+tss set 0 8 0x1052
+tss set 0 9 0x1053
+tss set 0 10 0x1054
+tss set 0 11 0x1055
+tss set 0 13 0x1056
+tss set 0 14 0x1057
+tss set 0 15 0x1058
+tss set 0 16 0x1059
+tss set 0 17 0x105a
+tss set 0 18 0x105b
+tss set 0 19 0x105c
+tss set 0 20 0x105d
+tss set 0 21 0x105e
+tss set 0 22 0x105f
+tss set 0 23 0x1060
+tss set 0 24 0x1061
+tss set 0 25 0x1062
+tss set 0 26 0x1063
+tss set 0 27 0x1064
+tss set 0 28 0x1065
+tss set 1 1 0x1066
+tss set 1 2 0x1067
+tss set 1 3 0x1068
+tss set 1 4 0x1069
+tss set 1 5 0x106a
+tss set 1 6 0x106b
+tss set 1 7 0x106c
+tss set 1 8 0x106d
+tss set 1 9 0x106e
+tss set 1 10 0x106f
+tss set 1 11 0x1070
+tss set 1 13 0x1071
+tss set 1 14 0x1072
+tss set 1 15 0x1073
+tss set 1 16 0x1074
+tss set 1 17 0x1075
+tss set 1 18 0x1076
+tss set 1 19 0x1077
+tss set 1 20 0x1078
+tss set 1 21 0x1079
+tss set 1 22 0x107a
+tss set 1 23 0x107b
+tss set 1 24 0x107c
+tss set 1 25 0x107d
+tss set 1 26 0x107e
+tss set 1 27 0x107f
+tss set 1 28 0x1080
+tss set 2 1 0x1081
+tss set 2 2 0x1082
+tss set 2 3 0x1083
+tss set 2 4 0x1084
+tss set 2 5 0x1085
+tss set 2 6 0x1086
+tss set 2 7 0x1087
+tss set 2 8 0x1088
+tss set 2 9 0x1089
+tss set 2 10 0x108a
+tss set 2 11 0x108b
+tss set 2 13 0x108c
+tss set 2 14 0x108d
+tss set 2 15 0x108e
+tss set 2 16 0x108f
+tss set 2 17 0x1090
+tss set 2 18 0x1091
+tss set 2 19 0x1092
+tss set 2 20 0x1093
+tss set 2 21 0x1094
+tss set 2 22 0x1095
+tss set 2 23 0x1096
+tss set 2 24 0x1097
+tss set 2 25 0x1098
+tss set 2 26 0x1099
+tss set 2 27 0x109a
+tss set 2 28 0x109b
+tss set 3 1 0x109c
+tss set 3 2 0x109d
+tss set 3 3 0x109e
+tss set 3 4 0x109f
+tss set 3 5 0x10a0
+tss set 3 6 0x10a1
+tss set 3 7 0x10a2
+tss set 3 8 0x10a3
+tss set 3 9 0x10a4
+tss set 3 10 0x10a5
+tss set 3 11 0x10a6
+tss set 3 13 0x10a7
+tss set 3 14 0x10a8
+tss set 3 15 0x10a9
+tss set 3 16 0x10aa
+tss set 3 17 0x10ab
+tss set 3 18 0x10ac
+tss set 3 19 0x10ad
+tss set 3 20 0x10ae
+tss set 3 21 0x10af
+tss set 3 22 0x10b0
+tss set 3 23 0x10b1
+tss set 3 24 0x10b2
+tss set 3 25 0x10b3
+tss set 3 26 0x10b4
+tss set 3 27 0x10b5
+tss set 3 28 0x10b6
+tss set 4 1 0x10b7
+tss set 4 2 0x10b8
+tss set 4 3 0x10b9
+tss set 4 4 0x10ba
+tss set 4 5 0x10bb
+tss set 4 6 0x10bc
+tss set 4 7 0x10bd
+tss set 4 8 0x10be
+tss set 4 9 0x10bf
+tss set 4 10 0x10c0
+tss set 4 11 0x10c1
+tss set 4 13 0x10c2
+tss set 4 14 0x10c3
+tss set 4 15 0x10c4
+tss set 4 16 0x10c5
+tss set 4 17 0x10c6
+tss set 4 18 0x10c7
+tss set 4 19 0x10c8
+tss set 4 20 0x10c9
+tss set 4 21 0x10ca
+tss set 4 22 0x10cb
+tss set 4 23 0x10cc
+tss set 4 24 0x10cd
+tss set 4 25 0x10ce
+tss set 4 26 0x10cf
+tss set 4 27 0x10d0
+tss set 4 28 0x10d1
+tss set 5 1 0x10d2
+tss set 5 2 0x10d3
+tss set 5 3 0x10d4
+tss set 5 4 0x10d5
+tss set 5 5 0x10d6
+tss set 5 6 0x10d7
+tss set 5 7 0x10d8
+tss set 5 8 0x10d9
+tss set 5 9 0x10da
+tss set 5 10 0x10db
+tss set 5 11 0x10dc
+tss set 5 13 0x10dd
+tss set 5 14 0x10de
+tss set 5 15 0x10df
+tss set 5 16 0x10e0
+tss set 5 17 0x10e1
+tss set 5 18 0x10e2
+tss set 5 19 0x10e3
+tss set 5 20 0x10e4
+tss set 5 21 0x10e5
+tss set 5 22 0x10e6
+tss set 5 23 0x10e7
+tss set 5 24 0x10e8
+tss set 5 25 0x10e9
+tss set 5 26 0x10ea
+tss set 5 27 0x10eb
+tss set 5 28 0x10ec
+tss set 6 1 0x10ed
+tss set 6 2 0x10ee
+tss set 6 3 0x10ef
+tss set 6 4 0x10f0
+tss set 6 5 0x10f1
+tss set 6 6 0x10f2
+tss set 6 7 0x10f3
+tss set 6 8 0x10f4
+tss set 6 9 0x10f5
+tss set 6 10 0x10f6
+tss set 6 11 0x10f7
+tss set 6 13 0x10f8
+tss set 6 14 0x10f9
+tss set 6 15 0x10fa
+tss set 6 16 0x10fb
+tss set 6 17 0x10fc
+tss set 6 18 0x10fd
+tss set 6 19 0x10fe
+tss set 6 20 0x10ff
+tss set 6 21 0x1100
+tss set 6 22 0x1101
+tss set 6 23 0x1102
+tss set 6 24 0x1103
+tss set 6 25 0x1104
+tss set 6 26 0x1105
+tss set 6 27 0x1106
+tss set 6 28 0x1107
+tss set 7 1 0x1108
+tss set 7 2 0x1109
+tss set 7 3 0x110a
+tss set 7 4 0x110b
+tss set 7 5 0x110c
+tss set 7 6 0x110d
+tss set 7 7 0x110e
+tss set 7 8 0x110f
+tss set 7 9 0x1110
+tss set 7 10 0x1111
+tss set 7 11 0x1112
+tss set 7 13 0x1113
+tss set 7 14 0x1114
+tss set 7 15 0x1115
+tss set 7 16 0x1116
+tss set 7 17 0x1117
+tss set 7 18 0x1118
+tss set 7 19 0x1119
+tss set 7 20 0x111a
+tss set 7 21 0x111b
+tss set 7 22 0x111c
+tss set 7 23 0x111d
+tss set 7 24 0x111e
+tss set 7 25 0x111f
+tss set 7 26 0x1120
+tss set 7 27 0x1121
+tss set 7 28 0x1122
+rs get 7
+rs get 8
+rs get 9
+rs get 10
+rs get 14
+rs get 15
+rs get 16
+rs get 19
+rs get 20
+rs get 22
+rs get 23
+rs get 24
+rs get 25
+rs get 26
+rs get 27
+rs get 28
+rs get 29
+rs get 30
+rs get 34
+rs get 35
+rs get 36
+rs get 37
+rs get 38
+rs get 40
+rs get 47
+rs get 48
+rs get 52
+rs get 53
+rs get 54
+rs get 55
+rs get 56
+rs get 57
+rs get 58
+rs get 59
+rs get 60
+rs get 128
+rs get 129
+rs get 130
+rs get 131
+rs get 132
+rs get 133
+rs get 134
+rs get 135
+rs get 136
+rs get 137
+rs get 139
+rs get 140
+rs get 141
+rs get 142
+rs get 143
+rs get 145
+rs get 146
+rs get 147
+rs get 148
+rs get 151
+rs get 152
+rs get 153
+rs get 154
+rs get 155
+rs get 156
+rs get 157
+rs get 158
+rs get 159
+rs get 160
+rs get 161
+rs get 162
+rs get 163
+rs get 164
+rs get 166
+rs get 167
+rs get 168
+rs get 170
+rs get 171
+rs get 172
+rs get 173
+tss get 0 1
+tss get 0 2
+tss get 0 3
+tss get 0 4
+tss get 0 5
+tss get 0 6
+tss get 0 7
+tss get 0 8
+tss get 0 9
+tss get 0 10
+tss get 0 11
+tss get 0 13
+tss get 0 14
+tss get 0 15
+tss get 0 16
+tss get 0 17
+tss get 0 18
+tss get 0 19
+tss get 0 20
+tss get 0 21
+tss get 0 22
+tss get 0 23
+tss get 0 24
+tss get 0 25
+tss get 0 26
+tss get 0 27
+tss get 0 28
+tss get 1 1
+tss get 1 2
+tss get 1 3
+tss get 1 4
+tss get 1 5
+tss get 1 6
+tss get 1 7
+tss get 1 8
+tss get 1 9
+tss get 1 10
+tss get 1 11
+tss get 1 13
+tss get 1 14
+tss get 1 15
+tss get 1 16
+tss get 1 17
+tss get 1 18
+tss get 1 19
+tss get 1 20
+tss get 1 21
+tss get 1 22
+tss get 1 23
+tss get 1 24
+tss get 1 25
+tss get 1 26
+tss get 1 27
+tss get 1 28
+tss get 2 1
+tss get 2 2
+tss get 2 3
+tss get 2 4
+tss get 2 5
+tss get 2 6
+tss get 2 7
+tss get 2 8
+tss get 2 9
+tss get 2 10
+tss get 2 11
+tss get 2 13
+tss get 2 14
+tss get 2 15
+tss get 2 16
+tss get 2 17
+tss get 2 18
+tss get 2 19
+tss get 2 20
+tss get 2 21
+tss get 2 22
+tss get 2 23
+tss get 2 24
+tss get 2 25
+tss get 2 26
+tss get 2 27
+tss get 2 28
+tss get 3 1
+tss get 3 2
+tss get 3 3
+tss get 3 4
+tss get 3 5
+tss get 3 6
+tss get 3 7
+tss get 3 8
+tss get 3 9
+tss get 3 10
+tss get 3 11
+tss get 3 13
+tss get 3 14
+tss get 3 15
+tss get 3 16
+tss get 3 17
+tss get 3 18
+tss get 3 19
+tss get 3 20
+tss get 3 21
+tss get 3 22
+tss get 3 23
+tss get 3 24
+tss get 3 25
+tss get 3 26
+tss get 3 27
+tss get 3 28
+tss get 4 1
+tss get 4 2
+tss get 4 3
+tss get 4 4
+tss get 4 5
+tss get 4 6
+tss get 4 7
+tss get 4 8
+tss get 4 9
+tss get 4 10
+tss get 4 11
+tss get 4 13
+tss get 4 14
+tss get 4 15
+tss get 4 16
+tss get 4 17
+tss get 4 18
+tss get 4 19
+tss get 4 20
+tss get 4 21
+tss get 4 22
+tss get 4 23
+tss get 4 24
+tss get 4 25
+tss get 4 26
+tss get 4 27
+tss get 4 28
+tss get 5 1
+tss get 5 2
+tss get 5 3
+tss get 5 4
+tss get 5 5
+tss get 5 6
+tss get 5 7
+tss get 5 8
+tss get 5 9
+tss get 5 10
+tss get 5 11
+tss get 5 13
+tss get 5 14
+tss get 5 15
+tss get 5 16
+tss get 5 17
+tss get 5 18
+tss get 5 19
+tss get 5 20
+tss get 5 21
+tss get 5 22
+tss get 5 23
+tss get 5 24
+tss get 5 25
+tss get 5 26
+tss get 5 27
+tss get 5 28
+tss get 6 1
+tss get 6 2
+tss get 6 3
+tss get 6 4
+tss get 6 5
+tss get 6 6
+tss get 6 7
+tss get 6 8
+tss get 6 9
+tss get 6 10
+tss get 6 11
+tss get 6 13
+tss get 6 14
+tss get 6 15
+tss get 6 16
+tss get 6 17
+tss get 6 18
+tss get 6 19
+tss get 6 20
+tss get 6 21
+tss get 6 22
+tss get 6 23
+tss get 6 24
+tss get 6 25
+tss get 6 26
+tss get 6 27
+tss get 6 28
+tss get 7 1
+tss get 7 2
+tss get 7 3
+tss get 7 4
+tss get 7 5
+tss get 7 6
+tss get 7 7
+tss get 7 8
+tss get 7 9
+tss get 7 10
+tss get 7 11
+tss get 7 13
+tss get 7 14
+tss get 7 15
+tss get 7 16
+tss get 7 17
+tss get 7 18
+tss get 7 19
+tss get 7 20
+tss get 7 21
+tss get 7 22
+tss get 7 23
+tss get 7 24
+tss get 7 25
+tss get 7 26
+tss get 7 27
+tss get 7 28
+end
+case create-1
+device8 swvp
+sb create 0 1
+rs set 7 0x2000
+rs set 8 0x2001
+rs set 9 0x2002
+rs set 10 0x2003
+rs set 14 0x2004
+rs set 15 0x2005
+rs set 16 0x2006
+rs set 19 0x2007
+rs set 20 0x2008
+rs set 22 0x2009
+rs set 23 0x200a
+rs set 24 0x200b
+rs set 25 0x200c
+rs set 26 0x200d
+rs set 27 0x200e
+rs set 28 0x200f
+rs set 29 0x2010
+rs set 30 0x2011
+rs set 34 0x2012
+rs set 35 0x2013
+rs set 36 0x2014
+rs set 37 0x2015
+rs set 38 0x2016
+rs set 40 0x2017
+rs set 47 0x2018
+rs set 48 0x2019
+rs set 52 0x201a
+rs set 53 0x201b
+rs set 54 0x201c
+rs set 55 0x201d
+rs set 56 0x201e
+rs set 57 0x201f
+rs set 58 0x2020
+rs set 59 0x2021
+rs set 60 0x2022
+rs set 128 0x2023
+rs set 129 0x2024
+rs set 130 0x2025
+rs set 131 0x2026
+rs set 132 0x2027
+rs set 133 0x2028
+rs set 134 0x2029
+rs set 135 0x202a
+rs set 136 0x202b
+rs set 137 0x202c
+rs set 139 0x202d
+rs set 140 0x202e
+rs set 141 0x202f
+rs set 142 0x2030
+rs set 143 0x2031
+rs set 145 0x2032
+rs set 146 0x2033
+rs set 147 0x2034
+rs set 148 0x2035
+rs set 151 0x2036
+rs set 152 0x2037
+rs set 153 0x2038
+rs set 154 0x2039
+rs set 155 0x203a
+rs set 156 0x203b
+rs set 157 0x203c
+rs set 158 0x203d
+rs set 159 0x203e
+rs set 160 0x203f
+rs set 161 0x2040
+rs set 162 0x2041
+rs set 163 0x2042
+rs set 164 0x2043
+rs set 166 0x2044
+rs set 167 0x2045
+rs set 168 0x2046
+rs set 170 0x2047
+rs set 171 0x2048
+rs set 172 0x2049
+rs set 173 0x204a
+tss set 0 1 0x204b
+tss set 0 2 0x204c
+tss set 0 3 0x204d
+tss set 0 4 0x204e
+tss set 0 5 0x204f
+tss set 0 6 0x2050
+tss set 0 7 0x2051
+tss set 0 8 0x2052
+tss set 0 9 0x2053
+tss set 0 10 0x2054
+tss set 0 11 0x2055
+tss set 0 13 0x2056
+tss set 0 14 0x2057
+tss set 0 15 0x2058
+tss set 0 16 0x2059
+tss set 0 17 0x205a
+tss set 0 18 0x205b
+tss set 0 19 0x205c
+tss set 0 20 0x205d
+tss set 0 21 0x205e
+tss set 0 22 0x205f
+tss set 0 23 0x2060
+tss set 0 24 0x2061
+tss set 0 25 0x2062
+tss set 0 26 0x2063
+tss set 0 27 0x2064
+tss set 0 28 0x2065
+tss set 1 1 0x2066
+tss set 1 2 0x2067
+tss set 1 3 0x2068
+tss set 1 4 0x2069
+tss set 1 5 0x206a
+tss set 1 6 0x206b
+tss set 1 7 0x206c
+tss set 1 8 0x206d
+tss set 1 9 0x206e
+tss set 1 10 0x206f
+tss set 1 11 0x2070
+tss set 1 13 0x2071
+tss set 1 14 0x2072
+tss set 1 15 0x2073
+tss set 1 16 0x2074
+tss set 1 17 0x2075
+tss set 1 18 0x2076
+tss set 1 19 0x2077
+tss set 1 20 0x2078
+tss set 1 21 0x2079
+tss set 1 22 0x207a
+tss set 1 23 0x207b
+tss set 1 24 0x207c
+tss set 1 25 0x207d
+tss set 1 26 0x207e
+tss set 1 27 0x207f
+tss set 1 28 0x2080
+tss set 2 1 0x2081
+tss set 2 2 0x2082
+tss set 2 3 0x2083
+tss set 2 4 0x2084
+tss set 2 5 0x2085
+tss set 2 6 0x2086
+tss set 2 7 0x2087
+tss set 2 8 0x2088
+tss set 2 9 0x2089
+tss set 2 10 0x208a
+tss set 2 11 0x208b
+tss set 2 13 0x208c
+tss set 2 14 0x208d
+tss set 2 15 0x208e
+tss set 2 16 0x208f
+tss set 2 17 0x2090
+tss set 2 18 0x2091
+tss set 2 19 0x2092
+tss set 2 20 0x2093
+tss set 2 21 0x2094
+tss set 2 22 0x2095
+tss set 2 23 0x2096
+tss set 2 24 0x2097
+tss set 2 25 0x2098
+tss set 2 26 0x2099
+tss set 2 27 0x209a
+tss set 2 28 0x209b
+tss set 3 1 0x209c
+tss set 3 2 0x209d
+tss set 3 3 0x209e
+tss set 3 4 0x209f
+tss set 3 5 0x20a0
+tss set 3 6 0x20a1
+tss set 3 7 0x20a2
+tss set 3 8 0x20a3
+tss set 3 9 0x20a4
+tss set 3 10 0x20a5
+tss set 3 11 0x20a6
+tss set 3 13 0x20a7
+tss set 3 14 0x20a8
+tss set 3 15 0x20a9
+tss set 3 16 0x20aa
+tss set 3 17 0x20ab
+tss set 3 18 0x20ac
+tss set 3 19 0x20ad
+tss set 3 20 0x20ae
+tss set 3 21 0x20af
+tss set 3 22 0x20b0
+tss set 3 23 0x20b1
+tss set 3 24 0x20b2
+tss set 3 25 0x20b3
+tss set 3 26 0x20b4
+tss set 3 27 0x20b5
+tss set 3 28 0x20b6
+tss set 4 1 0x20b7
+tss set 4 2 0x20b8
+tss set 4 3 0x20b9
+tss set 4 4 0x20ba
+tss set 4 5 0x20bb
+tss set 4 6 0x20bc
+tss set 4 7 0x20bd
+tss set 4 8 0x20be
+tss set 4 9 0x20bf
+tss set 4 10 0x20c0
+tss set 4 11 0x20c1
+tss set 4 13 0x20c2
+tss set 4 14 0x20c3
+tss set 4 15 0x20c4
+tss set 4 16 0x20c5
+tss set 4 17 0x20c6
+tss set 4 18 0x20c7
+tss set 4 19 0x20c8
+tss set 4 20 0x20c9
+tss set 4 21 0x20ca
+tss set 4 22 0x20cb
+tss set 4 23 0x20cc
+tss set 4 24 0x20cd
+tss set 4 25 0x20ce
+tss set 4 26 0x20cf
+tss set 4 27 0x20d0
+tss set 4 28 0x20d1
+tss set 5 1 0x20d2
+tss set 5 2 0x20d3
+tss set 5 3 0x20d4
+tss set 5 4 0x20d5
+tss set 5 5 0x20d6
+tss set 5 6 0x20d7
+tss set 5 7 0x20d8
+tss set 5 8 0x20d9
+tss set 5 9 0x20da
+tss set 5 10 0x20db
+tss set 5 11 0x20dc
+tss set 5 13 0x20dd
+tss set 5 14 0x20de
+tss set 5 15 0x20df
+tss set 5 16 0x20e0
+tss set 5 17 0x20e1
+tss set 5 18 0x20e2
+tss set 5 19 0x20e3
+tss set 5 20 0x20e4
+tss set 5 21 0x20e5
+tss set 5 22 0x20e6
+tss set 5 23 0x20e7
+tss set 5 24 0x20e8
+tss set 5 25 0x20e9
+tss set 5 26 0x20ea
+tss set 5 27 0x20eb
+tss set 5 28 0x20ec
+tss set 6 1 0x20ed
+tss set 6 2 0x20ee
+tss set 6 3 0x20ef
+tss set 6 4 0x20f0
+tss set 6 5 0x20f1
+tss set 6 6 0x20f2
+tss set 6 7 0x20f3
+tss set 6 8 0x20f4
+tss set 6 9 0x20f5
+tss set 6 10 0x20f6
+tss set 6 11 0x20f7
+tss set 6 13 0x20f8
+tss set 6 14 0x20f9
+tss set 6 15 0x20fa
+tss set 6 16 0x20fb
+tss set 6 17 0x20fc
+tss set 6 18 0x20fd
+tss set 6 19 0x20fe
+tss set 6 20 0x20ff
+tss set 6 21 0x2100
+tss set 6 22 0x2101
+tss set 6 23 0x2102
+tss set 6 24 0x2103
+tss set 6 25 0x2104
+tss set 6 26 0x2105
+tss set 6 27 0x2106
+tss set 6 28 0x2107
+tss set 7 1 0x2108
+tss set 7 2 0x2109
+tss set 7 3 0x210a
+tss set 7 4 0x210b
+tss set 7 5 0x210c
+tss set 7 6 0x210d
+tss set 7 7 0x210e
+tss set 7 8 0x210f
+tss set 7 9 0x2110
+tss set 7 10 0x2111
+tss set 7 11 0x2112
+tss set 7 13 0x2113
+tss set 7 14 0x2114
+tss set 7 15 0x2115
+tss set 7 16 0x2116
+tss set 7 17 0x2117
+tss set 7 18 0x2118
+tss set 7 19 0x2119
+tss set 7 20 0x211a
+tss set 7 21 0x211b
+tss set 7 22 0x211c
+tss set 7 23 0x211d
+tss set 7 24 0x211e
+tss set 7 25 0x211f
+tss set 7 26 0x2120
+tss set 7 27 0x2121
+tss set 7 28 0x2122
+sb apply 0
+rs get 7
+rs get 8
+rs get 9
+rs get 10
+rs get 14
+rs get 15
+rs get 16
+rs get 19
+rs get 20
+rs get 22
+rs get 23
+rs get 24
+rs get 25
+rs get 26
+rs get 27
+rs get 28
+rs get 29
+rs get 30
+rs get 34
+rs get 35
+rs get 36
+rs get 37
+rs get 38
+rs get 40
+rs get 47
+rs get 48
+rs get 52
+rs get 53
+rs get 54
+rs get 55
+rs get 56
+rs get 57
+rs get 58
+rs get 59
+rs get 60
+rs get 128
+rs get 129
+rs get 130
+rs get 131
+rs get 132
+rs get 133
+rs get 134
+rs get 135
+rs get 136
+rs get 137
+rs get 139
+rs get 140
+rs get 141
+rs get 142
+rs get 143
+rs get 145
+rs get 146
+rs get 147
+rs get 148
+rs get 151
+rs get 152
+rs get 153
+rs get 154
+rs get 155
+rs get 156
+rs get 157
+rs get 158
+rs get 159
+rs get 160
+rs get 161
+rs get 162
+rs get 163
+rs get 164
+rs get 166
+rs get 167
+rs get 168
+rs get 170
+rs get 171
+rs get 172
+rs get 173
+tss get 0 1
+tss get 0 2
+tss get 0 3
+tss get 0 4
+tss get 0 5
+tss get 0 6
+tss get 0 7
+tss get 0 8
+tss get 0 9
+tss get 0 10
+tss get 0 11
+tss get 0 13
+tss get 0 14
+tss get 0 15
+tss get 0 16
+tss get 0 17
+tss get 0 18
+tss get 0 19
+tss get 0 20
+tss get 0 21
+tss get 0 22
+tss get 0 23
+tss get 0 24
+tss get 0 25
+tss get 0 26
+tss get 0 27
+tss get 0 28
+tss get 1 1
+tss get 1 2
+tss get 1 3
+tss get 1 4
+tss get 1 5
+tss get 1 6
+tss get 1 7
+tss get 1 8
+tss get 1 9
+tss get 1 10
+tss get 1 11
+tss get 1 13
+tss get 1 14
+tss get 1 15
+tss get 1 16
+tss get 1 17
+tss get 1 18
+tss get 1 19
+tss get 1 20
+tss get 1 21
+tss get 1 22
+tss get 1 23
+tss get 1 24
+tss get 1 25
+tss get 1 26
+tss get 1 27
+tss get 1 28
+tss get 2 1
+tss get 2 2
+tss get 2 3
+tss get 2 4
+tss get 2 5
+tss get 2 6
+tss get 2 7
+tss get 2 8
+tss get 2 9
+tss get 2 10
+tss get 2 11
+tss get 2 13
+tss get 2 14
+tss get 2 15
+tss get 2 16
+tss get 2 17
+tss get 2 18
+tss get 2 19
+tss get 2 20
+tss get 2 21
+tss get 2 22
+tss get 2 23
+tss get 2 24
+tss get 2 25
+tss get 2 26
+tss get 2 27
+tss get 2 28
+tss get 3 1
+tss get 3 2
+tss get 3 3
+tss get 3 4
+tss get 3 5
+tss get 3 6
+tss get 3 7
+tss get 3 8
+tss get 3 9
+tss get 3 10
+tss get 3 11
+tss get 3 13
+tss get 3 14
+tss get 3 15
+tss get 3 16
+tss get 3 17
+tss get 3 18
+tss get 3 19
+tss get 3 20
+tss get 3 21
+tss get 3 22
+tss get 3 23
+tss get 3 24
+tss get 3 25
+tss get 3 26
+tss get 3 27
+tss get 3 28
+tss get 4 1
+tss get 4 2
+tss get 4 3
+tss get 4 4
+tss get 4 5
+tss get 4 6
+tss get 4 7
+tss get 4 8
+tss get 4 9
+tss get 4 10
+tss get 4 11
+tss get 4 13
+tss get 4 14
+tss get 4 15
+tss get 4 16
+tss get 4 17
+tss get 4 18
+tss get 4 19
+tss get 4 20
+tss get 4 21
+tss get 4 22
+tss get 4 23
+tss get 4 24
+tss get 4 25
+tss get 4 26
+tss get 4 27
+tss get 4 28
+tss get 5 1
+tss get 5 2
+tss get 5 3
+tss get 5 4
+tss get 5 5
+tss get 5 6
+tss get 5 7
+tss get 5 8
+tss get 5 9
+tss get 5 10
+tss get 5 11
+tss get 5 13
+tss get 5 14
+tss get 5 15
+tss get 5 16
+tss get 5 17
+tss get 5 18
+tss get 5 19
+tss get 5 20
+tss get 5 21
+tss get 5 22
+tss get 5 23
+tss get 5 24
+tss get 5 25
+tss get 5 26
+tss get 5 27
+tss get 5 28
+tss get 6 1
+tss get 6 2
+tss get 6 3
+tss get 6 4
+tss get 6 5
+tss get 6 6
+tss get 6 7
+tss get 6 8
+tss get 6 9
+tss get 6 10
+tss get 6 11
+tss get 6 13
+tss get 6 14
+tss get 6 15
+tss get 6 16
+tss get 6 17
+tss get 6 18
+tss get 6 19
+tss get 6 20
+tss get 6 21
+tss get 6 22
+tss get 6 23
+tss get 6 24
+tss get 6 25
+tss get 6 26
+tss get 6 27
+tss get 6 28
+tss get 7 1
+tss get 7 2
+tss get 7 3
+tss get 7 4
+tss get 7 5
+tss get 7 6
+tss get 7 7
+tss get 7 8
+tss get 7 9
+tss get 7 10
+tss get 7 11
+tss get 7 13
+tss get 7 14
+tss get 7 15
+tss get 7 16
+tss get 7 17
+tss get 7 18
+tss get 7 19
+tss get 7 20
+tss get 7 21
+tss get 7 22
+tss get 7 23
+tss get 7 24
+tss get 7 25
+tss get 7 26
+tss get 7 27
+tss get 7 28
+end
+case create-2
+device8 swvp
+sb create 0 2
+rs set 7 0x2000
+rs set 8 0x2001
+rs set 9 0x2002
+rs set 10 0x2003
+rs set 14 0x2004
+rs set 15 0x2005
+rs set 16 0x2006
+rs set 19 0x2007
+rs set 20 0x2008
+rs set 22 0x2009
+rs set 23 0x200a
+rs set 24 0x200b
+rs set 25 0x200c
+rs set 26 0x200d
+rs set 27 0x200e
+rs set 28 0x200f
+rs set 29 0x2010
+rs set 30 0x2011
+rs set 34 0x2012
+rs set 35 0x2013
+rs set 36 0x2014
+rs set 37 0x2015
+rs set 38 0x2016
+rs set 40 0x2017
+rs set 47 0x2018
+rs set 48 0x2019
+rs set 52 0x201a
+rs set 53 0x201b
+rs set 54 0x201c
+rs set 55 0x201d
+rs set 56 0x201e
+rs set 57 0x201f
+rs set 58 0x2020
+rs set 59 0x2021
+rs set 60 0x2022
+rs set 128 0x2023
+rs set 129 0x2024
+rs set 130 0x2025
+rs set 131 0x2026
+rs set 132 0x2027
+rs set 133 0x2028
+rs set 134 0x2029
+rs set 135 0x202a
+rs set 136 0x202b
+rs set 137 0x202c
+rs set 139 0x202d
+rs set 140 0x202e
+rs set 141 0x202f
+rs set 142 0x2030
+rs set 143 0x2031
+rs set 145 0x2032
+rs set 146 0x2033
+rs set 147 0x2034
+rs set 148 0x2035
+rs set 151 0x2036
+rs set 152 0x2037
+rs set 153 0x2038
+rs set 154 0x2039
+rs set 155 0x203a
+rs set 156 0x203b
+rs set 157 0x203c
+rs set 158 0x203d
+rs set 159 0x203e
+rs set 160 0x203f
+rs set 161 0x2040
+rs set 162 0x2041
+rs set 163 0x2042
+rs set 164 0x2043
+rs set 166 0x2044
+rs set 167 0x2045
+rs set 168 0x2046
+rs set 170 0x2047
+rs set 171 0x2048
+rs set 172 0x2049
+rs set 173 0x204a
+tss set 0 1 0x204b
+tss set 0 2 0x204c
+tss set 0 3 0x204d
+tss set 0 4 0x204e
+tss set 0 5 0x204f
+tss set 0 6 0x2050
+tss set 0 7 0x2051
+tss set 0 8 0x2052
+tss set 0 9 0x2053
+tss set 0 10 0x2054
+tss set 0 11 0x2055
+tss set 0 13 0x2056
+tss set 0 14 0x2057
+tss set 0 15 0x2058
+tss set 0 16 0x2059
+tss set 0 17 0x205a
+tss set 0 18 0x205b
+tss set 0 19 0x205c
+tss set 0 20 0x205d
+tss set 0 21 0x205e
+tss set 0 22 0x205f
+tss set 0 23 0x2060
+tss set 0 24 0x2061
+tss set 0 25 0x2062
+tss set 0 26 0x2063
+tss set 0 27 0x2064
+tss set 0 28 0x2065
+tss set 1 1 0x2066
+tss set 1 2 0x2067
+tss set 1 3 0x2068
+tss set 1 4 0x2069
+tss set 1 5 0x206a
+tss set 1 6 0x206b
+tss set 1 7 0x206c
+tss set 1 8 0x206d
+tss set 1 9 0x206e
+tss set 1 10 0x206f
+tss set 1 11 0x2070
+tss set 1 13 0x2071
+tss set 1 14 0x2072
+tss set 1 15 0x2073
+tss set 1 16 0x2074
+tss set 1 17 0x2075
+tss set 1 18 0x2076
+tss set 1 19 0x2077
+tss set 1 20 0x2078
+tss set 1 21 0x2079
+tss set 1 22 0x207a
+tss set 1 23 0x207b
+tss set 1 24 0x207c
+tss set 1 25 0x207d
+tss set 1 26 0x207e
+tss set 1 27 0x207f
+tss set 1 28 0x2080
+tss set 2 1 0x2081
+tss set 2 2 0x2082
+tss set 2 3 0x2083
+tss set 2 4 0x2084
+tss set 2 5 0x2085
+tss set 2 6 0x2086
+tss set 2 7 0x2087
+tss set 2 8 0x2088
+tss set 2 9 0x2089
+tss set 2 10 0x208a
+tss set 2 11 0x208b
+tss set 2 13 0x208c
+tss set 2 14 0x208d
+tss set 2 15 0x208e
+tss set 2 16 0x208f
+tss set 2 17 0x2090
+tss set 2 18 0x2091
+tss set 2 19 0x2092
+tss set 2 20 0x2093
+tss set 2 21 0x2094
+tss set 2 22 0x2095
+tss set 2 23 0x2096
+tss set 2 24 0x2097
+tss set 2 25 0x2098
+tss set 2 26 0x2099
+tss set 2 27 0x209a
+tss set 2 28 0x209b
+tss set 3 1 0x209c
+tss set 3 2 0x209d
+tss set 3 3 0x209e
+tss set 3 4 0x209f
+tss set 3 5 0x20a0
+tss set 3 6 0x20a1
+tss set 3 7 0x20a2
+tss set 3 8 0x20a3
+tss set 3 9 0x20a4
+tss set 3 10 0x20a5
+tss set 3 11 0x20a6
+tss set 3 13 0x20a7
+tss set 3 14 0x20a8
+tss set 3 15 0x20a9
+tss set 3 16 0x20aa
+tss set 3 17 0x20ab
+tss set 3 18 0x20ac
+tss set 3 19 0x20ad
+tss set 3 20 0x20ae
+tss set 3 21 0x20af
+tss set 3 22 0x20b0
+tss set 3 23 0x20b1
+tss set 3 24 0x20b2
+tss set 3 25 0x20b3
+tss set 3 26 0x20b4
+tss set 3 27 0x20b5
+tss set 3 28 0x20b6
+tss set 4 1 0x20b7
+tss set 4 2 0x20b8
+tss set 4 3 0x20b9
+tss set 4 4 0x20ba
+tss set 4 5 0x20bb
+tss set 4 6 0x20bc
+tss set 4 7 0x20bd
+tss set 4 8 0x20be
+tss set 4 9 0x20bf
+tss set 4 10 0x20c0
+tss set 4 11 0x20c1
+tss set 4 13 0x20c2
+tss set 4 14 0x20c3
+tss set 4 15 0x20c4
+tss set 4 16 0x20c5
+tss set 4 17 0x20c6
+tss set 4 18 0x20c7
+tss set 4 19 0x20c8
+tss set 4 20 0x20c9
+tss set 4 21 0x20ca
+tss set 4 22 0x20cb
+tss set 4 23 0x20cc
+tss set 4 24 0x20cd
+tss set 4 25 0x20ce
+tss set 4 26 0x20cf
+tss set 4 27 0x20d0
+tss set 4 28 0x20d1
+tss set 5 1 0x20d2
+tss set 5 2 0x20d3
+tss set 5 3 0x20d4
+tss set 5 4 0x20d5
+tss set 5 5 0x20d6
+tss set 5 6 0x20d7
+tss set 5 7 0x20d8
+tss set 5 8 0x20d9
+tss set 5 9 0x20da
+tss set 5 10 0x20db
+tss set 5 11 0x20dc
+tss set 5 13 0x20dd
+tss set 5 14 0x20de
+tss set 5 15 0x20df
+tss set 5 16 0x20e0
+tss set 5 17 0x20e1
+tss set 5 18 0x20e2
+tss set 5 19 0x20e3
+tss set 5 20 0x20e4
+tss set 5 21 0x20e5
+tss set 5 22 0x20e6
+tss set 5 23 0x20e7
+tss set 5 24 0x20e8
+tss set 5 25 0x20e9
+tss set 5 26 0x20ea
+tss set 5 27 0x20eb
+tss set 5 28 0x20ec
+tss set 6 1 0x20ed
+tss set 6 2 0x20ee
+tss set 6 3 0x20ef
+tss set 6 4 0x20f0
+tss set 6 5 0x20f1
+tss set 6 6 0x20f2
+tss set 6 7 0x20f3
+tss set 6 8 0x20f4
+tss set 6 9 0x20f5
+tss set 6 10 0x20f6
+tss set 6 11 0x20f7
+tss set 6 13 0x20f8
+tss set 6 14 0x20f9
+tss set 6 15 0x20fa
+tss set 6 16 0x20fb
+tss set 6 17 0x20fc
+tss set 6 18 0x20fd
+tss set 6 19 0x20fe
+tss set 6 20 0x20ff
+tss set 6 21 0x2100
+tss set 6 22 0x2101
+tss set 6 23 0x2102
+tss set 6 24 0x2103
+tss set 6 25 0x2104
+tss set 6 26 0x2105
+tss set 6 27 0x2106
+tss set 6 28 0x2107
+tss set 7 1 0x2108
+tss set 7 2 0x2109
+tss set 7 3 0x210a
+tss set 7 4 0x210b
+tss set 7 5 0x210c
+tss set 7 6 0x210d
+tss set 7 7 0x210e
+tss set 7 8 0x210f
+tss set 7 9 0x2110
+tss set 7 10 0x2111
+tss set 7 11 0x2112
+tss set 7 13 0x2113
+tss set 7 14 0x2114
+tss set 7 15 0x2115
+tss set 7 16 0x2116
+tss set 7 17 0x2117
+tss set 7 18 0x2118
+tss set 7 19 0x2119
+tss set 7 20 0x211a
+tss set 7 21 0x211b
+tss set 7 22 0x211c
+tss set 7 23 0x211d
+tss set 7 24 0x211e
+tss set 7 25 0x211f
+tss set 7 26 0x2120
+tss set 7 27 0x2121
+tss set 7 28 0x2122
+sb apply 0
+rs get 7
+rs get 8
+rs get 9
+rs get 10
+rs get 14
+rs get 15
+rs get 16
+rs get 19
+rs get 20
+rs get 22
+rs get 23
+rs get 24
+rs get 25
+rs get 26
+rs get 27
+rs get 28
+rs get 29
+rs get 30
+rs get 34
+rs get 35
+rs get 36
+rs get 37
+rs get 38
+rs get 40
+rs get 47
+rs get 48
+rs get 52
+rs get 53
+rs get 54
+rs get 55
+rs get 56
+rs get 57
+rs get 58
+rs get 59
+rs get 60
+rs get 128
+rs get 129
+rs get 130
+rs get 131
+rs get 132
+rs get 133
+rs get 134
+rs get 135
+rs get 136
+rs get 137
+rs get 139
+rs get 140
+rs get 141
+rs get 142
+rs get 143
+rs get 145
+rs get 146
+rs get 147
+rs get 148
+rs get 151
+rs get 152
+rs get 153
+rs get 154
+rs get 155
+rs get 156
+rs get 157
+rs get 158
+rs get 159
+rs get 160
+rs get 161
+rs get 162
+rs get 163
+rs get 164
+rs get 166
+rs get 167
+rs get 168
+rs get 170
+rs get 171
+rs get 172
+rs get 173
+tss get 0 1
+tss get 0 2
+tss get 0 3
+tss get 0 4
+tss get 0 5
+tss get 0 6
+tss get 0 7
+tss get 0 8
+tss get 0 9
+tss get 0 10
+tss get 0 11
+tss get 0 13
+tss get 0 14
+tss get 0 15
+tss get 0 16
+tss get 0 17
+tss get 0 18
+tss get 0 19
+tss get 0 20
+tss get 0 21
+tss get 0 22
+tss get 0 23
+tss get 0 24
+tss get 0 25
+tss get 0 26
+tss get 0 27
+tss get 0 28
+tss get 1 1
+tss get 1 2
+tss get 1 3
+tss get 1 4
+tss get 1 5
+tss get 1 6
+tss get 1 7
+tss get 1 8
+tss get 1 9
+tss get 1 10
+tss get 1 11
+tss get 1 13
+tss get 1 14
+tss get 1 15
+tss get 1 16
+tss get 1 17
+tss get 1 18
+tss get 1 19
+tss get 1 20
+tss get 1 21
+tss get 1 22
+tss get 1 23
+tss get 1 24
+tss get 1 25
+tss get 1 26
+tss get 1 27
+tss get 1 28
+tss get 2 1
+tss get 2 2
+tss get 2 3
+tss get 2 4
+tss get 2 5
+tss get 2 6
+tss get 2 7
+tss get 2 8
+tss get 2 9
+tss get 2 10
+tss get 2 11
+tss get 2 13
+tss get 2 14
+tss get 2 15
+tss get 2 16
+tss get 2 17
+tss get 2 18
+tss get 2 19
+tss get 2 20
+tss get 2 21
+tss get 2 22
+tss get 2 23
+tss get 2 24
+tss get 2 25
+tss get 2 26
+tss get 2 27
+tss get 2 28
+tss get 3 1
+tss get 3 2
+tss get 3 3
+tss get 3 4
+tss get 3 5
+tss get 3 6
+tss get 3 7
+tss get 3 8
+tss get 3 9
+tss get 3 10
+tss get 3 11
+tss get 3 13
+tss get 3 14
+tss get 3 15
+tss get 3 16
+tss get 3 17
+tss get 3 18
+tss get 3 19
+tss get 3 20
+tss get 3 21
+tss get 3 22
+tss get 3 23
+tss get 3 24
+tss get 3 25
+tss get 3 26
+tss get 3 27
+tss get 3 28
+tss get 4 1
+tss get 4 2
+tss get 4 3
+tss get 4 4
+tss get 4 5
+tss get 4 6
+tss get 4 7
+tss get 4 8
+tss get 4 9
+tss get 4 10
+tss get 4 11
+tss get 4 13
+tss get 4 14
+tss get 4 15
+tss get 4 16
+tss get 4 17
+tss get 4 18
+tss get 4 19
+tss get 4 20
+tss get 4 21
+tss get 4 22
+tss get 4 23
+tss get 4 24
+tss get 4 25
+tss get 4 26
+tss get 4 27
+tss get 4 28
+tss get 5 1
+tss get 5 2
+tss get 5 3
+tss get 5 4
+tss get 5 5
+tss get 5 6
+tss get 5 7
+tss get 5 8
+tss get 5 9
+tss get 5 10
+tss get 5 11
+tss get 5 13
+tss get 5 14
+tss get 5 15
+tss get 5 16
+tss get 5 17
+tss get 5 18
+tss get 5 19
+tss get 5 20
+tss get 5 21
+tss get 5 22
+tss get 5 23
+tss get 5 24
+tss get 5 25
+tss get 5 26
+tss get 5 27
+tss get 5 28
+tss get 6 1
+tss get 6 2
+tss get 6 3
+tss get 6 4
+tss get 6 5
+tss get 6 6
+tss get 6 7
+tss get 6 8
+tss get 6 9
+tss get 6 10
+tss get 6 11
+tss get 6 13
+tss get 6 14
+tss get 6 15
+tss get 6 16
+tss get 6 17
+tss get 6 18
+tss get 6 19
+tss get 6 20
+tss get 6 21
+tss get 6 22
+tss get 6 23
+tss get 6 24
+tss get 6 25
+tss get 6 26
+tss get 6 27
+tss get 6 28
+tss get 7 1
+tss get 7 2
+tss get 7 3
+tss get 7 4
+tss get 7 5
+tss get 7 6
+tss get 7 7
+tss get 7 8
+tss get 7 9
+tss get 7 10
+tss get 7 11
+tss get 7 13
+tss get 7 14
+tss get 7 15
+tss get 7 16
+tss get 7 17
+tss get 7 18
+tss get 7 19
+tss get 7 20
+tss get 7 21
+tss get 7 22
+tss get 7 23
+tss get 7 24
+tss get 7 25
+tss get 7 26
+tss get 7 27
+tss get 7 28
+end
+case create-3
+device8 swvp
+sb create 0 3
+rs set 7 0x2000
+rs set 8 0x2001
+rs set 9 0x2002
+rs set 10 0x2003
+rs set 14 0x2004
+rs set 15 0x2005
+rs set 16 0x2006
+rs set 19 0x2007
+rs set 20 0x2008
+rs set 22 0x2009
+rs set 23 0x200a
+rs set 24 0x200b
+rs set 25 0x200c
+rs set 26 0x200d
+rs set 27 0x200e
+rs set 28 0x200f
+rs set 29 0x2010
+rs set 30 0x2011
+rs set 34 0x2012
+rs set 35 0x2013
+rs set 36 0x2014
+rs set 37 0x2015
+rs set 38 0x2016
+rs set 40 0x2017
+rs set 47 0x2018
+rs set 48 0x2019
+rs set 52 0x201a
+rs set 53 0x201b
+rs set 54 0x201c
+rs set 55 0x201d
+rs set 56 0x201e
+rs set 57 0x201f
+rs set 58 0x2020
+rs set 59 0x2021
+rs set 60 0x2022
+rs set 128 0x2023
+rs set 129 0x2024
+rs set 130 0x2025
+rs set 131 0x2026
+rs set 132 0x2027
+rs set 133 0x2028
+rs set 134 0x2029
+rs set 135 0x202a
+rs set 136 0x202b
+rs set 137 0x202c
+rs set 139 0x202d
+rs set 140 0x202e
+rs set 141 0x202f
+rs set 142 0x2030
+rs set 143 0x2031
+rs set 145 0x2032
+rs set 146 0x2033
+rs set 147 0x2034
+rs set 148 0x2035
+rs set 151 0x2036
+rs set 152 0x2037
+rs set 153 0x2038
+rs set 154 0x2039
+rs set 155 0x203a
+rs set 156 0x203b
+rs set 157 0x203c
+rs set 158 0x203d
+rs set 159 0x203e
+rs set 160 0x203f
+rs set 161 0x2040
+rs set 162 0x2041
+rs set 163 0x2042
+rs set 164 0x2043
+rs set 166 0x2044
+rs set 167 0x2045
+rs set 168 0x2046
+rs set 170 0x2047
+rs set 171 0x2048
+rs set 172 0x2049
+rs set 173 0x204a
+tss set 0 1 0x204b
+tss set 0 2 0x204c
+tss set 0 3 0x204d
+tss set 0 4 0x204e
+tss set 0 5 0x204f
+tss set 0 6 0x2050
+tss set 0 7 0x2051
+tss set 0 8 0x2052
+tss set 0 9 0x2053
+tss set 0 10 0x2054
+tss set 0 11 0x2055
+tss set 0 13 0x2056
+tss set 0 14 0x2057
+tss set 0 15 0x2058
+tss set 0 16 0x2059
+tss set 0 17 0x205a
+tss set 0 18 0x205b
+tss set 0 19 0x205c
+tss set 0 20 0x205d
+tss set 0 21 0x205e
+tss set 0 22 0x205f
+tss set 0 23 0x2060
+tss set 0 24 0x2061
+tss set 0 25 0x2062
+tss set 0 26 0x2063
+tss set 0 27 0x2064
+tss set 0 28 0x2065
+tss set 1 1 0x2066
+tss set 1 2 0x2067
+tss set 1 3 0x2068
+tss set 1 4 0x2069
+tss set 1 5 0x206a
+tss set 1 6 0x206b
+tss set 1 7 0x206c
+tss set 1 8 0x206d
+tss set 1 9 0x206e
+tss set 1 10 0x206f
+tss set 1 11 0x2070
+tss set 1 13 0x2071
+tss set 1 14 0x2072
+tss set 1 15 0x2073
+tss set 1 16 0x2074
+tss set 1 17 0x2075
+tss set 1 18 0x2076
+tss set 1 19 0x2077
+tss set 1 20 0x2078
+tss set 1 21 0x2079
+tss set 1 22 0x207a
+tss set 1 23 0x207b
+tss set 1 24 0x207c
+tss set 1 25 0x207d
+tss set 1 26 0x207e
+tss set 1 27 0x207f
+tss set 1 28 0x2080
+tss set 2 1 0x2081
+tss set 2 2 0x2082
+tss set 2 3 0x2083
+tss set 2 4 0x2084
+tss set 2 5 0x2085
+tss set 2 6 0x2086
+tss set 2 7 0x2087
+tss set 2 8 0x2088
+tss set 2 9 0x2089
+tss set 2 10 0x208a
+tss set 2 11 0x208b
+tss set 2 13 0x208c
+tss set 2 14 0x208d
+tss set 2 15 0x208e
+tss set 2 16 0x208f
+tss set 2 17 0x2090
+tss set 2 18 0x2091
+tss set 2 19 0x2092
+tss set 2 20 0x2093
+tss set 2 21 0x2094
+tss set 2 22 0x2095
+tss set 2 23 0x2096
+tss set 2 24 0x2097
+tss set 2 25 0x2098
+tss set 2 26 0x2099
+tss set 2 27 0x209a
+tss set 2 28 0x209b
+tss set 3 1 0x209c
+tss set 3 2 0x209d
+tss set 3 3 0x209e
+tss set 3 4 0x209f
+tss set 3 5 0x20a0
+tss set 3 6 0x20a1
+tss set 3 7 0x20a2
+tss set 3 8 0x20a3
+tss set 3 9 0x20a4
+tss set 3 10 0x20a5
+tss set 3 11 0x20a6
+tss set 3 13 0x20a7
+tss set 3 14 0x20a8
+tss set 3 15 0x20a9
+tss set 3 16 0x20aa
+tss set 3 17 0x20ab
+tss set 3 18 0x20ac
+tss set 3 19 0x20ad
+tss set 3 20 0x20ae
+tss set 3 21 0x20af
+tss set 3 22 0x20b0
+tss set 3 23 0x20b1
+tss set 3 24 0x20b2
+tss set 3 25 0x20b3
+tss set 3 26 0x20b4
+tss set 3 27 0x20b5
+tss set 3 28 0x20b6
+tss set 4 1 0x20b7
+tss set 4 2 0x20b8
+tss set 4 3 0x20b9
+tss set 4 4 0x20ba
+tss set 4 5 0x20bb
+tss set 4 6 0x20bc
+tss set 4 7 0x20bd
+tss set 4 8 0x20be
+tss set 4 9 0x20bf
+tss set 4 10 0x20c0
+tss set 4 11 0x20c1
+tss set 4 13 0x20c2
+tss set 4 14 0x20c3
+tss set 4 15 0x20c4
+tss set 4 16 0x20c5
+tss set 4 17 0x20c6
+tss set 4 18 0x20c7
+tss set 4 19 0x20c8
+tss set 4 20 0x20c9
+tss set 4 21 0x20ca
+tss set 4 22 0x20cb
+tss set 4 23 0x20cc
+tss set 4 24 0x20cd
+tss set 4 25 0x20ce
+tss set 4 26 0x20cf
+tss set 4 27 0x20d0
+tss set 4 28 0x20d1
+tss set 5 1 0x20d2
+tss set 5 2 0x20d3
+tss set 5 3 0x20d4
+tss set 5 4 0x20d5
+tss set 5 5 0x20d6
+tss set 5 6 0x20d7
+tss set 5 7 0x20d8
+tss set 5 8 0x20d9
+tss set 5 9 0x20da
+tss set 5 10 0x20db
+tss set 5 11 0x20dc
+tss set 5 13 0x20dd
+tss set 5 14 0x20de
+tss set 5 15 0x20df
+tss set 5 16 0x20e0
+tss set 5 17 0x20e1
+tss set 5 18 0x20e2
+tss set 5 19 0x20e3
+tss set 5 20 0x20e4
+tss set 5 21 0x20e5
+tss set 5 22 0x20e6
+tss set 5 23 0x20e7
+tss set 5 24 0x20e8
+tss set 5 25 0x20e9
+tss set 5 26 0x20ea
+tss set 5 27 0x20eb
+tss set 5 28 0x20ec
+tss set 6 1 0x20ed
+tss set 6 2 0x20ee
+tss set 6 3 0x20ef
+tss set 6 4 0x20f0
+tss set 6 5 0x20f1
+tss set 6 6 0x20f2
+tss set 6 7 0x20f3
+tss set 6 8 0x20f4
+tss set 6 9 0x20f5
+tss set 6 10 0x20f6
+tss set 6 11 0x20f7
+tss set 6 13 0x20f8
+tss set 6 14 0x20f9
+tss set 6 15 0x20fa
+tss set 6 16 0x20fb
+tss set 6 17 0x20fc
+tss set 6 18 0x20fd
+tss set 6 19 0x20fe
+tss set 6 20 0x20ff
+tss set 6 21 0x2100
+tss set 6 22 0x2101
+tss set 6 23 0x2102
+tss set 6 24 0x2103
+tss set 6 25 0x2104
+tss set 6 26 0x2105
+tss set 6 27 0x2106
+tss set 6 28 0x2107
+tss set 7 1 0x2108
+tss set 7 2 0x2109
+tss set 7 3 0x210a
+tss set 7 4 0x210b
+tss set 7 5 0x210c
+tss set 7 6 0x210d
+tss set 7 7 0x210e
+tss set 7 8 0x210f
+tss set 7 9 0x2110
+tss set 7 10 0x2111
+tss set 7 11 0x2112
+tss set 7 13 0x2113
+tss set 7 14 0x2114
+tss set 7 15 0x2115
+tss set 7 16 0x2116
+tss set 7 17 0x2117
+tss set 7 18 0x2118
+tss set 7 19 0x2119
+tss set 7 20 0x211a
+tss set 7 21 0x211b
+tss set 7 22 0x211c
+tss set 7 23 0x211d
+tss set 7 24 0x211e
+tss set 7 25 0x211f
+tss set 7 26 0x2120
+tss set 7 27 0x2121
+tss set 7 28 0x2122
+sb apply 0
+rs get 7
+rs get 8
+rs get 9
+rs get 10
+rs get 14
+rs get 15
+rs get 16
+rs get 19
+rs get 20
+rs get 22
+rs get 23
+rs get 24
+rs get 25
+rs get 26
+rs get 27
+rs get 28
+rs get 29
+rs get 30
+rs get 34
+rs get 35
+rs get 36
+rs get 37
+rs get 38
+rs get 40
+rs get 47
+rs get 48
+rs get 52
+rs get 53
+rs get 54
+rs get 55
+rs get 56
+rs get 57
+rs get 58
+rs get 59
+rs get 60
+rs get 128
+rs get 129
+rs get 130
+rs get 131
+rs get 132
+rs get 133
+rs get 134
+rs get 135
+rs get 136
+rs get 137
+rs get 139
+rs get 140
+rs get 141
+rs get 142
+rs get 143
+rs get 145
+rs get 146
+rs get 147
+rs get 148
+rs get 151
+rs get 152
+rs get 153
+rs get 154
+rs get 155
+rs get 156
+rs get 157
+rs get 158
+rs get 159
+rs get 160
+rs get 161
+rs get 162
+rs get 163
+rs get 164
+rs get 166
+rs get 167
+rs get 168
+rs get 170
+rs get 171
+rs get 172
+rs get 173
+tss get 0 1
+tss get 0 2
+tss get 0 3
+tss get 0 4
+tss get 0 5
+tss get 0 6
+tss get 0 7
+tss get 0 8
+tss get 0 9
+tss get 0 10
+tss get 0 11
+tss get 0 13
+tss get 0 14
+tss get 0 15
+tss get 0 16
+tss get 0 17
+tss get 0 18
+tss get 0 19
+tss get 0 20
+tss get 0 21
+tss get 0 22
+tss get 0 23
+tss get 0 24
+tss get 0 25
+tss get 0 26
+tss get 0 27
+tss get 0 28
+tss get 1 1
+tss get 1 2
+tss get 1 3
+tss get 1 4
+tss get 1 5
+tss get 1 6
+tss get 1 7
+tss get 1 8
+tss get 1 9
+tss get 1 10
+tss get 1 11
+tss get 1 13
+tss get 1 14
+tss get 1 15
+tss get 1 16
+tss get 1 17
+tss get 1 18
+tss get 1 19
+tss get 1 20
+tss get 1 21
+tss get 1 22
+tss get 1 23
+tss get 1 24
+tss get 1 25
+tss get 1 26
+tss get 1 27
+tss get 1 28
+tss get 2 1
+tss get 2 2
+tss get 2 3
+tss get 2 4
+tss get 2 5
+tss get 2 6
+tss get 2 7
+tss get 2 8
+tss get 2 9
+tss get 2 10
+tss get 2 11
+tss get 2 13
+tss get 2 14
+tss get 2 15
+tss get 2 16
+tss get 2 17
+tss get 2 18
+tss get 2 19
+tss get 2 20
+tss get 2 21
+tss get 2 22
+tss get 2 23
+tss get 2 24
+tss get 2 25
+tss get 2 26
+tss get 2 27
+tss get 2 28
+tss get 3 1
+tss get 3 2
+tss get 3 3
+tss get 3 4
+tss get 3 5
+tss get 3 6
+tss get 3 7
+tss get 3 8
+tss get 3 9
+tss get 3 10
+tss get 3 11
+tss get 3 13
+tss get 3 14
+tss get 3 15
+tss get 3 16
+tss get 3 17
+tss get 3 18
+tss get 3 19
+tss get 3 20
+tss get 3 21
+tss get 3 22
+tss get 3 23
+tss get 3 24
+tss get 3 25
+tss get 3 26
+tss get 3 27
+tss get 3 28
+tss get 4 1
+tss get 4 2
+tss get 4 3
+tss get 4 4
+tss get 4 5
+tss get 4 6
+tss get 4 7
+tss get 4 8
+tss get 4 9
+tss get 4 10
+tss get 4 11
+tss get 4 13
+tss get 4 14
+tss get 4 15
+tss get 4 16
+tss get 4 17
+tss get 4 18
+tss get 4 19
+tss get 4 20
+tss get 4 21
+tss get 4 22
+tss get 4 23
+tss get 4 24
+tss get 4 25
+tss get 4 26
+tss get 4 27
+tss get 4 28
+tss get 5 1
+tss get 5 2
+tss get 5 3
+tss get 5 4
+tss get 5 5
+tss get 5 6
+tss get 5 7
+tss get 5 8
+tss get 5 9
+tss get 5 10
+tss get 5 11
+tss get 5 13
+tss get 5 14
+tss get 5 15
+tss get 5 16
+tss get 5 17
+tss get 5 18
+tss get 5 19
+tss get 5 20
+tss get 5 21
+tss get 5 22
+tss get 5 23
+tss get 5 24
+tss get 5 25
+tss get 5 26
+tss get 5 27
+tss get 5 28
+tss get 6 1
+tss get 6 2
+tss get 6 3
+tss get 6 4
+tss get 6 5
+tss get 6 6
+tss get 6 7
+tss get 6 8
+tss get 6 9
+tss get 6 10
+tss get 6 11
+tss get 6 13
+tss get 6 14
+tss get 6 15
+tss get 6 16
+tss get 6 17
+tss get 6 18
+tss get 6 19
+tss get 6 20
+tss get 6 21
+tss get 6 22
+tss get 6 23
+tss get 6 24
+tss get 6 25
+tss get 6 26
+tss get 6 27
+tss get 6 28
+tss get 7 1
+tss get 7 2
+tss get 7 3
+tss get 7 4
+tss get 7 5
+tss get 7 6
+tss get 7 7
+tss get 7 8
+tss get 7 9
+tss get 7 10
+tss get 7 11
+tss get 7 13
+tss get 7 14
+tss get 7 15
+tss get 7 16
+tss get 7 17
+tss get 7 18
+tss get 7 19
+tss get 7 20
+tss get 7 21
+tss get 7 22
+tss get 7 23
+tss get 7 24
+tss get 7 25
+tss get 7 26
+tss get 7 27
+tss get 7 28
+end
+case random-0
+device8 swvp
+rs set 25 0x3
+rs set 152 0x64f553a9
+tss set 1 4 0x6
+sb create 3 2
+tss set 7 14 0x3f800000
+sb capture 2
+tss set 4 17 0x80000000
+tss get 3 15
+rs get 132
+tss get 3 27
+sb release 1
+rs set 52 0x9084aa7d
+tss get 3 20
+tss get 5 1
+tss get 2 4
+sb apply 0
+sb apply 1
+rs get 25
+rs get 52
+rs get 152
+tss get 1 4
+tss get 4 17
+tss get 7 14
+end
+case random-1
+device8 swvp
+sb begin
+tss set 3 14 0x163f7468
+rs set 141 0x80000000
+tss set 2 14 0x7be62493
+tss set 1 5 0x8
+tss set 2 20 0x6
+rs set 153 0xf09a8aec
+tss get 0 5
+tss get 6 26
+rs set 19 0xb05397c4
+tss set 0 22 0x80000000
+sb end 2
+tss set 2 23 0x4
+sb apply 2
+sb capture 1
+rs set 170 0x1
+tss set 3 18 0x0
+sb begin
+sb end 2
+sb apply 1
+rs get 19
+rs get 141
+rs get 153
+rs get 170
+tss get 0 22
+tss get 1 5
+tss get 2 14
+tss get 2 20
+tss get 2 23
+tss get 3 14
+tss get 3 18
+end
+case random-2
+device8 swvp
+sb capture 1
+tss get 2 4
+sb begin
+tss get 6 28
+tss set 6 14 0x8d1e6c73
+tss set 1 5 0x4715917c
+sb end 2
+rs get 37
+tss get 1 8
+tss set 6 1 0x1
+tss get 1 27
+sb apply 2
+sb create 1 1
+tss set 3 18 0xe84a5514
+tss set 2 11 0x19eb29d2
+tss get 5 17
+tss set 7 10 0x243c0bb8
+sb begin
+sb end 2
+sb apply 3
+sb capture 2
+tss set 2 14 0xb1bd3bba
+tss get 5 15
+tss set 7 27 0xfd9ff9a1
+tss get 6 23
+tss get 6 4
+tss get 2 19
+tss set 5 11 0x8
+sb apply 1
+sb capture 0
+sb apply 0
+tss get 6 17
+sb apply 3
+tss set 1 2 0x0
+sb release 1
+tss get 1 2
+tss get 1 5
+tss get 2 11
+tss get 2 14
+tss get 3 18
+tss get 5 11
+tss get 6 1
+tss get 6 14
+tss get 7 10
+tss get 7 27
+end
+case random-3
+device8 swvp
+tss set 1 3 0x80000000
+sb apply 1
+tss set 1 28 0x1
+tss set 5 19 0x0
+tss set 6 7 0x1e840a3
+tss set 7 2 0xc5976701
+sb release 0
+rs set 10 0x3f800000
+sb capture 1
+sb begin
+sb end 1
+tss get 3 6
+tss get 7 22
+tss set 3 9 0x80000000
+rs set 29 0x9de2fb8c
+sb create 2 2
+rs get 24
+tss get 0 26
+sb capture 2
+sb apply 0
+sb apply 2
+rs get 10
+rs get 29
+tss get 1 3
+tss get 1 28
+tss get 3 9
+tss get 5 19
+tss get 6 7
+tss get 7 2
+end
+case random-4
+device8 swvp
+tss set 0 16 0xb97be346
+sb apply 3
+tss get 5 28
+rs set 47 0x0
+rs set 148 0xb6db24b4
+tss get 1 15
+tss set 3 26 0xcbfa74d5
+tss set 7 11 0x6
+tss set 6 8 0x253e12bb
+sb apply 0
+tss get 0 25
+tss set 2 19 0x90020d2f
+tss set 3 10 0x8
+tss set 4 18 0xa1ff672b
+tss set 1 9 0x80000000
+sb begin
+tss set 5 17 0x236e8b0c
+tss get 7 22
+tss get 4 4
+rs set 36 0x9
+rs set 151 0xaf848465
+tss set 2 20 0x3f800000
+rs get 52
+tss get 1 16
+tss get 1 17
+rs set 155 0x1
+rs set 141 0x517b8b7
+tss set 0 27 0x8c6e5604
+tss set 5 1 0x7624cf82
+sb end 0
+rs get 36
+rs get 47
+rs get 141
+rs get 148
+rs get 151
+rs get 155
+tss get 0 16
+tss get 0 27
+tss get 1 9
+tss get 2 19
+tss get 2 20
+tss get 3 10
+tss get 3 26
+tss get 4 18
+tss get 5 1
+tss get 5 17
+tss get 6 8
+tss get 7 11
+end
+case random-5
+device8 swvp
+sb begin
+sb end 2
+tss set 0 16 0xeb22c843
+sb begin
+tss set 7 8 0x48c393aa
+rs set 164 0x80000000
+tss set 2 20 0xea029cb7
+tss set 4 7 0xb1ff0d58
+tss set 5 8 0x6
+rs set 20 0x0
+tss get 1 27
+tss set 3 7 0x7
+tss set 3 26 0x3f800000
+rs get 59
+tss set 6 26 0xe8ff1465
+tss set 1 10 0x405d699f
+sb end 0
+sb apply 0
+rs get 20
+rs get 164
+tss get 0 16
+tss get 1 10
+tss get 2 20
+tss get 3 7
+tss get 3 26
+tss get 4 7
+tss get 5 8
+tss get 6 26
+tss get 7 8
+end
+case random-6
+device8 swvp
+sb apply 2
+tss set 4 8 0x1
+tss set 2 9 0xbda7c87a
+tss set 0 16 0xc9421898
+rs set 173 0x3f800000
+tss get 7 3
+tss get 5 8
+tss get 1 19
+tss get 0 18
+tss set 2 27 0xffffffff
+tss get 0 26
+sb release 1
+sb release 0
+tss set 7 20 0x840d5044
+tss get 0 6
+tss set 7 10 0x3
+sb create 2 3
+sb capture 2
+tss get 3 22
+tss set 3 19 0x80000000
+rs set 58 0x5
+rs get 153
+sb create 3 3
+tss set 1 3 0x3f800000
+rs get 146
+rs set 135 0x80000000
+sb apply 1
+rs set 54 0xd8e6f73e
+tss set 6 8 0xffffffff
+tss set 7 13 0x1
+rs set 167 0x3
+sb release 1
+rs get 135
+rs set 30 0x1
+tss get 7 9
+tss get 3 15
+rs set 139 0x1
+tss set 3 9 0x3f800000
+rs get 30
+rs get 54
+rs get 58
+rs get 135
+rs get 139
+rs get 167
+rs get 173
+tss get 0 16
+tss get 1 3
+tss get 2 9
+tss get 2 27
+tss get 3 9
+tss get 3 19
+tss get 4 8
+tss get 6 8
+tss get 7 10
+tss get 7 13
+tss get 7 20
+end
+case random-7
+device8 swvp
+tss set 0 7 0x1500ac04
+tss set 1 28 0x5408a0ba
+sb create 1 1
+sb capture 2
+sb apply 1
+sb apply 1
+tss set 6 19 0x0
+tss get 4 7
+sb begin
+tss set 1 21 0x2
+sb end 3
+tss set 6 27 0x9
+sb create 3 2
+tss set 0 9 0x8
+tss get 0 7
+tss get 0 9
+tss get 1 21
+tss get 1 28
+tss get 6 19
+tss get 6 27
+end
+case random-8
+device8 swvp
+rs set 40 0x3b2adb40
+tss set 2 6 0x7
+tss get 2 14
+tss set 7 28 0x5
+sb apply 3
+tss get 1 19
+rs set 156 0x682f670b
+tss set 1 16 0x7
+sb capture 0
+tss get 2 18
+sb apply 1
+sb apply 0
+tss set 2 13 0x8
+sb apply 2
+tss set 5 15 0x4
+sb apply 3
+sb begin
+sb end 3
+rs get 40
+rs get 156
+tss get 1 16
+tss get 2 6
+tss get 2 13
+tss get 5 15
+tss get 7 28
+end
+case random-9
+device8 swvp
+tss set 7 26 0x61f59776
+rs set 153 0xffffffff
+rs get 38
+rs set 145 0x0
+sb begin
+rs set 160 0x0
+tss set 4 11 0x77918b2
+sb end 1
+sb apply 2
+rs get 145
+rs get 153
+rs get 160
+tss get 4 11
+tss get 7 26
+end
+case random-10
+device8 swvp
+sb apply 3
+sb capture 0
+sb apply 3
+tss set 5 22 0x3f800000
+rs set 27 0xfac2ad69
+tss set 1 11 0x46dc8ba3
+tss get 3 8
+tss set 1 28 0x2d6b47f0
+tss set 6 13 0x8f24e77f
+rs set 57 0x6c19ee64
+tss set 0 6 0x0
+rs set 131 0x95035bb4
+rs get 151
+sb apply 2
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 27
+rs get 57
+rs get 131
+tss get 0 6
+tss get 1 11
+tss get 1 28
+tss get 5 22
+tss get 6 13
+end
+case random-11
+device8 swvp
+tss set 4 17 0x80000000
+tss get 4 23
+sb apply 1
+rs set 161 0x4
+sb begin
+rs set 133 0x0
+tss set 3 28 0x80000000
+rs get 132
+tss set 0 26 0x1
+tss set 0 3 0xc3ab149
+tss set 6 10 0x3
+tss get 6 26
+tss set 0 21 0xcb4c1ec1
+tss set 3 10 0x0
+tss get 1 7
+tss get 5 6
+tss set 4 24 0xad5fcee5
+tss set 1 4 0x741c1cfe
+sb end 3
+sb apply 1
+rs get 133
+rs get 161
+tss get 0 3
+tss get 0 21
+tss get 0 26
+tss get 1 4
+tss get 3 10
+tss get 3 28
+tss get 4 17
+tss get 4 24
+tss get 6 10
+end
+case random-12
+device8 swvp
+sb apply 0
+rs set 134 0x2
+tss set 7 8 0xffffffff
+sb create 3 1
+rs set 148 0x38f13f6d
+tss get 2 22
+rs set 16 0x6ad63bbf
+sb release 1
+tss get 1 14
+rs get 16
+rs get 134
+rs get 148
+tss get 7 8
+end
+case random-13
+device8 swvp
+rs set 35 0x4
+tss set 0 1 0x8
+tss get 3 17
+tss set 2 26 0xd08b9649
+tss get 4 4
+tss set 6 1 0x7
+tss set 3 14 0x5
+sb apply 1
+sb apply 1
+sb apply 2
+rs get 35
+tss get 0 1
+tss get 2 26
+tss get 3 14
+tss get 6 1
+end
+case random-14
+device8 swvp
+sb release 2
+sb capture 1
+sb apply 1
+tss get 5 20
+tss get 4 23
+tss set 0 21 0xc10dcae5
+sb capture 1
+sb begin
+tss set 0 7 0xffffffff
+tss set 0 2 0x6b3231d7
+tss set 7 20 0x0
+tss set 3 22 0x8
+tss set 3 27 0x58ef8e15
+tss set 6 6 0x1
+tss get 5 4
+tss set 7 25 0x3628ba2b
+tss get 5 25
+rs get 57
+tss set 4 17 0x1
+tss set 5 17 0x2b3f1fed
+tss get 3 26
+tss set 3 5 0x6ab6ccbf
+tss get 1 26
+sb end 1
+rs get 137
+sb create 2 2
+sb apply 0
+sb apply 1
+tss get 0 2
+tss get 0 7
+tss get 0 21
+tss get 3 5
+tss get 3 22
+tss get 3 27
+tss get 4 17
+tss get 5 17
+tss get 6 6
+tss get 7 20
+tss get 7 25
+end
+case random-15
+device8 swvp
+tss set 6 8 0x5f3f91a7
+rs get 58
+sb release 1
+sb create 0 3
+tss set 6 3 0xb34a593a
+tss set 6 14 0x7
+tss set 2 19 0x80000000
+tss set 3 6 0xc59540cf
+tss get 6 20
+tss set 5 4 0x9
+tss set 4 25 0x5
+rs get 22
+tss set 0 13 0x9a0284a3
+tss get 4 14
+tss get 4 10
+sb apply 3
+tss get 3 6
+rs set 48 0x60a21e89
+tss set 4 14 0x88450d77
+tss get 5 19
+tss set 5 19 0x4
+sb create 0 3
+tss set 1 26 0x5
+tss set 0 20 0x3
+sb release 2
+tss set 3 6 0x9
+sb capture 0
+rs get 48
+tss get 0 13
+tss get 0 20
+tss get 1 26
+tss get 2 19
+tss get 3 6
+tss get 4 14
+tss get 4 25
+tss get 5 4
+tss get 5 19
+tss get 6 3
+tss get 6 8
+tss get 6 14
+end
+case random-16
+device8 swvp
+sb begin
+tss set 7 23 0x2
+tss set 7 28 0x6
+tss set 0 25 0x915faf8a
+tss get 2 26
+tss get 1 8
+tss set 5 2 0x5
+sb end 0
+sb apply 0
+sb apply 2
+tss get 0 25
+tss get 5 2
+tss get 7 23
+tss get 7 28
+end
+case random-17
+device8 swvp
+sb capture 1
+rs set 171 0xa15dee1d
+sb apply 1
+rs get 131
+tss set 6 14 0xffffffff
+sb release 0
+tss set 6 28 0xf20c005a
+tss get 0 28
+tss get 3 15
+tss get 3 28
+tss set 0 26 0x3f800000
+sb capture 0
+rs set 137 0x1
+tss set 5 15 0xa11c458d
+sb apply 0
+rs get 132
+tss set 6 15 0x6
+sb capture 1
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 137
+rs get 171
+tss get 0 26
+tss get 5 15
+tss get 6 14
+tss get 6 15
+tss get 6 28
+end
+case random-18
+device8 swvp
+tss set 7 21 0x1d89ae05
+tss set 5 26 0x5
+tss get 1 15
+sb release 3
+tss set 5 23 0x3f800000
+sb apply 0
+tss set 0 13 0x4
+sb apply 2
+tss set 0 2 0xd354c49e
+rs get 167
+tss get 2 4
+sb begin
+tss get 7 17
+tss get 7 9
+tss set 0 23 0x1
+tss set 2 27 0x1
+tss set 1 18 0x1
+rs set 140 0x3f800000
+sb end 2
+rs get 140
+tss get 0 2
+tss get 0 13
+tss get 0 23
+tss get 1 18
+tss get 2 27
+tss get 5 23
+tss get 5 26
+tss get 7 21
+end
+case random-19
+device8 swvp
+sb capture 1
+rs set 171 0x0
+rs set 60 0x94ac7d6e
+sb release 0
+tss set 2 23 0x1
+tss set 6 17 0x5ad4b488
+sb release 3
+rs set 15 0x3f800000
+sb apply 2
+tss set 4 8 0x164cc8d0
+tss get 6 6
+tss set 7 26 0xbe2819ef
+tss get 7 19
+tss set 6 1 0xf43f8377
+rs set 133 0xe7fc9f69
+rs get 15
+rs get 60
+rs get 133
+rs get 171
+tss get 2 23
+tss get 4 8
+tss get 6 1
+tss get 6 17
+tss get 7 26
+end
+case random-20
+device8 swvp
+rs set 57 0x9d93606e
+sb create 0 2
+tss set 3 16 0x5
+tss get 2 14
+sb begin
+rs set 154 0x20f13014
+rs set 134 0x80000000
+tss set 3 19 0x5
+rs get 37
+rs get 58
+tss set 6 5 0xea547e36
+tss set 0 11 0x8daf533c
+sb end 1
+sb apply 1
+rs get 57
+rs get 134
+rs get 154
+tss get 0 11
+tss get 3 16
+tss get 3 19
+tss get 6 5
+end
+case random-21
+device8 swvp
+sb create 2 1
+tss set 3 5 0x9a06335f
+tss set 0 3 0x5
+sb release 1
+sb capture 1
+tss set 5 19 0x2
+tss get 6 7
+tss get 4 5
+tss get 1 8
+tss get 6 16
+sb apply 0
+tss get 1 23
+sb apply 1
+tss get 5 11
+tss set 0 11 0xffffffff
+rs set 137 0x17b7dcbb
+sb release 2
+tss get 6 17
+sb create 3 1
+tss set 1 1 0xffffffff
+sb begin
+rs set 167 0x9
+rs get 135
+sb end 1
+sb apply 1
+sb apply 2
+rs get 137
+rs get 167
+tss get 0 3
+tss get 0 11
+tss get 1 1
+tss get 3 5
+tss get 5 19
+end
+case random-22
+device8 swvp
+tss set 2 27 0x898450f4
+rs set 20 0xbbb2ecca
+tss set 6 18 0x1f6ca2b2
+tss set 1 2 0x3f800000
+rs set 141 0x1e6db49d
+rs set 148 0x80000000
+sb begin
+rs set 9 0x1a026a64
+rs set 36 0xcf63bc4
+tss set 7 2 0x5
+tss get 4 6
+sb end 1
+rs set 145 0xffffffff
+tss get 0 6
+tss set 0 1 0x4
+tss set 3 2 0x9ff31e28
+sb release 0
+tss set 1 3 0x3f800000
+rs set 15 0x7f33c70f
+rs set 168 0x3
+sb release 1
+sb release 2
+rs set 143 0xe74a5699
+tss set 0 16 0x3
+tss set 2 24 0xa1046449
+sb capture 2
+tss set 6 14 0xffffffff
+tss set 7 1 0x0
+sb apply 2
+rs set 143 0x65aa2891
+tss get 7 8
+rs set 163 0x1
+sb create 1 3
+sb apply 1
+sb apply 2
+rs get 9
+rs get 15
+rs get 20
+rs get 36
+rs get 141
+rs get 143
+rs get 145
+rs get 148
+rs get 163
+rs get 168
+tss get 0 1
+tss get 0 16
+tss get 1 2
+tss get 1 3
+tss get 2 24
+tss get 2 27
+tss get 3 2
+tss get 6 14
+tss get 6 18
+tss get 7 1
+tss get 7 2
+end
+case random-23
+device8 swvp
+tss set 3 23 0x6844306
+tss set 0 19 0xf65763e0
+tss set 5 26 0x80000000
+tss get 1 2
+tss set 0 3 0x7
+tss set 1 24 0x1
+sb release 2
+tss get 2 26
+tss set 1 20 0x1a065996
+sb apply 3
+sb apply 3
+sb release 0
+tss get 4 20
+tss set 6 13 0x927b594f
+tss get 3 25
+sb begin
+tss get 7 7
+sb end 0
+tss set 0 7 0xf83a80f
+tss set 4 6 0x2
+tss set 0 26 0xbda4fa27
+tss set 4 21 0x0
+tss set 3 19 0x7e6c8379
+tss set 0 26 0x1
+sb capture 2
+tss get 7 2
+tss get 7 20
+sb apply 3
+sb release 3
+tss get 6 25
+tss set 3 10 0xfd104e08
+sb apply 0
+sb apply 2
+tss get 0 3
+tss get 0 7
+tss get 0 19
+tss get 0 26
+tss get 1 20
+tss get 1 24
+tss get 3 10
+tss get 3 19
+tss get 3 23
+tss get 4 6
+tss get 4 21
+tss get 5 26
+tss get 6 13
+end
+case random-24
+device8 swvp
+rs get 160
+sb apply 1
+tss set 7 18 0x35a9ad38
+rs get 132
+tss get 0 1
+tss set 7 2 0x36831448
+sb apply 2
+tss set 3 13 0x2a93c8e
+tss get 7 19
+tss set 3 9 0x8
+sb apply 0
+sb apply 1
+sb apply 2
+tss get 3 9
+tss get 3 13
+tss get 7 2
+tss get 7 18
+end
+case random-25
+device8 swvp
+sb apply 2
+tss set 2 8 0x8
+tss set 4 22 0x36ce8b47
+tss set 4 4 0x309257e5
+sb apply 1
+tss get 3 8
+sb capture 3
+tss set 5 4 0x4
+tss get 0 10
+rs set 155 0xbd302d26
+sb release 2
+rs get 151
+sb begin
+rs set 25 0xfef5d36c
+tss set 7 6 0x3
+tss set 3 19 0xf3bd4fd3
+tss get 4 24
+sb end 2
+tss get 3 25
+sb apply 1
+tss get 5 8
+sb begin
+rs get 154
+tss set 4 13 0xffffffff
+tss set 4 18 0x56f67df
+tss set 4 24 0x8
+tss get 6 8
+tss get 4 8
+tss set 2 1 0x7
+tss set 2 26 0x50bf422e
+tss get 0 7
+tss get 7 7
+tss set 3 8 0x43fe7a9c
+tss set 4 13 0xebe0940d
+sb end 1
+sb apply 0
+sb apply 1
+rs get 25
+rs get 155
+tss get 2 1
+tss get 2 8
+tss get 2 26
+tss get 3 8
+tss get 3 19
+tss get 4 4
+tss get 4 13
+tss get 4 18
+tss get 4 22
+tss get 4 24
+tss get 5 4
+tss get 7 6
+end
+case random-26
+device8 swvp
+sb capture 2
+tss get 0 27
+tss set 4 26 0x7
+sb begin
+sb end 0
+sb create 0 1
+sb release 0
+tss get 7 25
+sb release 0
+sb create 3 2
+tss set 1 21 0x880e601c
+sb begin
+rs set 25 0x431fafaa
+sb end 1
+tss set 2 28 0x27ac408e
+tss get 5 16
+rs set 19 0x3f800000
+tss set 1 5 0x6
+sb create 3 1
+sb apply 0
+rs get 58
+sb apply 0
+sb apply 2
+rs get 19
+rs get 25
+tss get 1 5
+tss get 1 21
+tss get 2 28
+tss get 4 26
+end
+case random-27
+device8 swvp
+tss set 1 11 0xca216e7f
+tss set 6 9 0x3
+tss set 5 28 0xa48b16b6
+tss set 4 18 0x29ae8e40
+sb begin
+tss set 6 28 0x6
+sb end 0
+sb begin
+tss set 4 25 0xcc750a75
+sb end 3
+sb create 3 2
+sb release 3
+tss set 7 3 0x0
+tss set 1 9 0x0
+sb capture 2
+tss set 4 10 0xb28d905b
+tss set 7 3 0x3f800000
+tss get 1 6
+tss set 3 23 0x5
+rs get 136
+tss get 1 13
+sb begin
+tss set 1 23 0xc1e42790
+tss set 7 5 0x4
+rs set 134 0x0
+sb end 3
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 134
+tss get 1 9
+tss get 1 11
+tss get 1 23
+tss get 3 23
+tss get 4 10
+tss get 4 18
+tss get 4 25
+tss get 5 28
+tss get 6 9
+tss get 6 28
+tss get 7 3
+tss get 7 5
+end
+case random-28
+device8 swvp
+sb apply 2
+tss get 1 19
+sb apply 2
+sb begin
+rs set 7 0xcdeed22b
+rs get 56
+sb end 2
+sb apply 2
+sb apply 1
+sb apply 2
+rs get 7
+end
+case random-29
+device8 swvp
+tss set 2 6 0x0
+rs set 23 0x5daa3357
+tss set 6 28 0x5
+tss set 7 15 0x80000000
+sb apply 3
+tss set 4 28 0x875c379
+sb begin
+sb end 3
+sb apply 0
+rs get 23
+tss get 2 6
+tss get 4 28
+tss get 6 28
+tss get 7 15
+end
+case random-30
+device8 swvp
+tss get 2 18
+sb apply 3
+rs set 152 0x8
+tss set 4 19 0x73a83670
+tss set 4 19 0xf0638c88
+tss set 6 16 0x1
+sb begin
+tss set 4 26 0x50c53ef3
+tss set 7 6 0x47a5aab6
+tss set 6 22 0x80000000
+tss set 1 24 0xffffffff
+tss get 2 6
+tss set 1 20 0x3f800000
+rs set 133 0x80000000
+rs set 22 0x3f800000
+sb end 3
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 22
+rs get 133
+rs get 152
+tss get 1 20
+tss get 1 24
+tss get 4 19
+tss get 4 26
+tss get 6 16
+tss get 6 22
+tss get 7 6
+end
+case random-31
+device8 swvp
+rs set 171 0x64b9db75
+tss get 3 23
+sb capture 0
+tss get 0 18
+tss set 0 21 0x7
+tss set 0 15 0xffffffff
+rs set 147 0x9
+sb apply 3
+tss set 6 6 0x0
+sb apply 2
+sb begin
+tss get 5 4
+rs set 27 0x516d4bf7
+tss set 6 21 0x5
+tss set 0 8 0x1
+tss set 5 20 0x3
+sb end 3
+sb capture 3
+rs set 25 0x80000000
+sb apply 1
+sb apply 3
+sb release 2
+sb apply 3
+sb apply 0
+rs set 53 0x9
+tss set 4 3 0x8226de7
+rs set 59 0x3
+sb apply 0
+rs get 25
+rs get 27
+rs get 53
+rs get 59
+rs get 147
+rs get 171
+tss get 0 8
+tss get 0 15
+tss get 0 21
+tss get 4 3
+tss get 5 20
+tss get 6 6
+tss get 6 21
+end
+case random-32
+device8 swvp
+tss set 2 21 0x37ae4513
+sb begin
+tss get 3 19
+tss set 7 8 0x80000000
+tss set 2 24 0x1
+tss set 2 25 0x3193f8ee
+tss get 7 5
+tss set 0 7 0x2
+tss set 7 27 0xb974de24
+tss get 0 25
+rs set 55 0x6
+rs set 154 0x1c8902f6
+rs get 20
+tss set 1 20 0x9
+tss set 6 13 0x0
+tss set 0 10 0x6a4e4552
+sb end 3
+sb apply 0
+sb apply 1
+rs get 55
+rs get 154
+tss get 0 7
+tss get 0 10
+tss get 1 20
+tss get 2 21
+tss get 2 24
+tss get 2 25
+tss get 6 13
+tss get 7 8
+tss get 7 27
+end
+case random-33
+device8 swvp
+sb begin
+tss set 0 8 0x5f725b3a
+tss set 1 15 0x3f800000
+sb end 2
+sb apply 0
+tss get 0 8
+tss get 1 15
+end
+case random-34
+device8 swvp
+tss get 3 25
+sb begin
+rs set 152 0xbf6fde00
+tss set 6 3 0xf0f4d95d
+tss set 3 3 0x1
+tss set 7 19 0x1
+tss set 7 2 0xa70375a3
+tss get 6 23
+tss set 6 13 0x1ab5ba47
+rs set 57 0x36aa725a
+tss set 2 24 0x48c0fa74
+tss set 4 19 0xf5cb8b6b
+tss set 6 6 0x80000000
+tss get 3 24
+sb end 2
+sb create 1 1
+sb apply 1
+rs get 57
+rs get 152
+tss get 2 24
+tss get 3 3
+tss get 4 19
+tss get 6 3
+tss get 6 6
+tss get 6 13
+tss get 7 2
+tss get 7 19
+end
+case random-35
+device8 swvp
+sb create 3 1
+rs set 129 0x3
+sb apply 0
+tss set 6 16 0xeb1603dc
+sb create 3 3
+tss set 2 19 0x6a08d1ca
+sb apply 0
+sb apply 2
+rs get 129
+tss get 2 19
+tss get 6 16
+end
+case random-36
+device8 swvp
+rs get 128
+sb apply 0
+tss set 6 17 0xfe79c216
+tss get 3 11
+rs get 172
+tss set 5 14 0x0
+tss set 1 1 0x3f800000
+rs set 10 0x6
+sb capture 1
+tss set 5 1 0xe4c4294a
+tss get 4 13
+sb capture 0
+sb create 0 1
+tss set 7 15 0x7d5d697a
+tss set 6 23 0x3f800000
+tss set 6 24 0x6
+sb begin
+tss set 7 9 0x7f2267b7
+tss set 7 13 0x1
+sb end 2
+sb create 0 2
+sb apply 2
+rs get 10
+tss get 1 1
+tss get 5 1
+tss get 5 14
+tss get 6 17
+tss get 6 23
+tss get 6 24
+tss get 7 9
+tss get 7 13
+tss get 7 15
+end
+case random-37
+device8 swvp
+rs get 171
+tss set 7 23 0x1
+tss get 5 3
+sb create 3 1
+sb release 0
+rs set 38 0x8
+tss set 0 15 0x64c71c15
+rs get 168
+tss set 0 17 0x3
+sb begin
+tss set 7 8 0x6
+rs set 153 0x80000000
+tss set 7 22 0x73e6d21b
+tss get 3 18
+tss set 6 16 0x7
+rs set 24 0x1
+tss set 0 7 0x2760520c
+tss get 7 4
+rs set 55 0x8
+rs set 167 0x1
+tss set 2 18 0x193a9a2d
+tss set 6 18 0x27b8674c
+tss get 5 6
+rs set 29 0x80000000
+tss set 4 7 0x753d052d
+rs set 161 0x8bd7564b
+tss get 6 9
+tss set 4 1 0xffffffff
+tss set 6 20 0xf821cb5f
+sb end 2
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 24
+rs get 29
+rs get 38
+rs get 55
+rs get 153
+rs get 161
+rs get 167
+tss get 0 7
+tss get 0 15
+tss get 0 17
+tss get 2 18
+tss get 4 1
+tss get 4 7
+tss get 6 16
+tss get 6 18
+tss get 6 20
+tss get 7 8
+tss get 7 22
+tss get 7 23
+end
+case random-38
+device8 swvp
+sb release 0
+tss set 3 1 0xd670e386
+tss set 1 17 0xffffffff
+tss set 5 13 0x3
+sb begin
+sb end 1
+tss set 1 1 0x9961eeaa
+rs set 159 0x9
+tss set 6 19 0xffffffff
+sb create 0 2
+tss get 1 18
+rs set 158 0x53ffd250
+tss set 5 4 0x3f800000
+rs get 146
+tss set 3 8 0x1
+tss set 5 11 0xa6586820
+sb release 3
+rs set 24 0x1
+sb apply 0
+sb apply 1
+tss set 4 13 0x413a4d5a
+rs get 171
+sb release 2
+rs set 140 0x1b320550
+tss set 1 28 0xf0dc5aee
+rs get 60
+sb create 0 3
+tss set 5 15 0x8785cd87
+sb create 1 2
+sb apply 0
+sb apply 2
+rs get 24
+rs get 140
+rs get 158
+rs get 159
+tss get 1 1
+tss get 1 17
+tss get 1 28
+tss get 3 1
+tss get 3 8
+tss get 4 13
+tss get 5 4
+tss get 5 11
+tss get 5 13
+tss get 5 15
+tss get 6 19
+end
+case random-39
+device8 swvp
+tss set 7 26 0x7
+sb capture 0
+tss set 1 23 0x9
+tss get 1 15
+tss set 6 20 0xa096f13
+sb apply 2
+tss get 0 21
+tss set 3 9 0x4
+tss set 4 27 0x1
+tss get 1 15
+tss get 2 24
+sb capture 0
+tss get 7 5
+tss set 7 8 0xbc0a034b
+sb begin
+tss set 4 9 0x90ab5299
+sb end 1
+rs set 24 0x6
+rs set 34 0x181c8221
+sb begin
+sb end 3
+sb begin
+tss set 0 21 0x7f3baae5
+rs set 129 0xffffffff
+tss get 7 3
+rs get 58
+rs set 157 0x1
+tss set 5 19 0x3f800000
+tss get 1 27
+rs get 27
+sb end 0
+sb apply 0
+sb apply 2
+rs get 24
+rs get 34
+rs get 129
+rs get 157
+tss get 0 21
+tss get 1 23
+tss get 3 9
+tss get 4 9
+tss get 4 27
+tss get 5 19
+tss get 6 20
+tss get 7 8
+tss get 7 26
+end
+case random-40
+device8 swvp
+sb capture 2
+sb capture 1
+sb apply 3
+tss get 5 2
+rs get 140
+sb begin
+tss set 1 10 0x3f800000
+tss set 2 4 0x9520dea6
+rs set 158 0xa786954c
+tss set 6 14 0x4
+tss set 5 21 0x8111370c
+rs set 162 0x3f800000
+tss set 6 27 0x40e876af
+tss set 0 2 0x0
+sb end 2
+tss set 3 19 0x1
+rs get 140
+sb apply 0
+sb apply 2
+rs get 158
+rs get 162
+tss get 0 2
+tss get 1 10
+tss get 2 4
+tss get 3 19
+tss get 5 21
+tss get 6 14
+tss get 6 27
+end
+case random-41
+device8 swvp
+tss get 3 8
+sb apply 3
+tss set 0 28 0x1
+tss set 4 18 0x4
+tss get 1 25
+tss get 6 10
+tss set 4 7 0x9
+sb apply 3
+sb create 3 3
+sb release 1
+sb begin
+tss set 3 9 0x1
+rs set 20 0x92b50a34
+sb end 2
+sb apply 0
+sb apply 2
+rs get 20
+tss get 0 28
+tss get 3 9
+tss get 4 7
+tss get 4 18
+end
+case random-42
+device8 swvp
+tss set 4 18 0x4e77f272
+sb create 3 3
+tss get 7 5
+sb create 3 3
+rs set 129 0xfba1d6e7
+sb apply 0
+tss set 7 23 0xf288f129
+tss set 1 9 0x9b20f7d7
+sb apply 3
+tss set 5 23 0x3f800000
+tss set 4 2 0x3
+tss set 0 19 0xf44323a9
+tss set 1 26 0x92db6830
+sb apply 1
+sb apply 2
+tss get 1 25
+tss get 4 5
+tss set 0 4 0x8
+tss set 0 7 0x9aa9faea
+sb begin
+sb end 0
+rs set 173 0x302fd1f9
+sb apply 0
+sb capture 1
+tss set 5 3 0x80000000
+tss get 3 25
+sb apply 2
+rs get 129
+rs get 173
+tss get 0 4
+tss get 0 7
+tss get 0 19
+tss get 1 9
+tss get 1 26
+tss get 4 2
+tss get 4 18
+tss get 5 3
+tss get 5 23
+tss get 7 23
+end
+case random-43
+device8 swvp
+rs set 59 0x5
+rs get 146
+rs get 131
+tss get 5 11
+sb release 2
+tss get 5 9
+rs set 47 0x0
+sb begin
+rs set 48 0x24157b81
+tss set 7 6 0x83b19ee7
+rs set 8 0x0
+tss set 3 25 0x46fe913c
+rs set 30 0x4d7f9fdc
+tss get 6 18
+sb end 1
+sb apply 0
+sb apply 2
+rs get 8
+rs get 30
+rs get 47
+rs get 48
+rs get 59
+tss get 3 25
+tss get 7 6
+end
+case random-44
+device8 swvp
+tss set 3 28 0x1
+tss set 0 7 0xe3c8137e
+tss set 7 21 0xa2ed0b5c
+tss set 6 10 0xa78c3013
+sb capture 2
+sb apply 2
+tss set 7 16 0x84f9e001
+tss set 3 14 0x9257ee3
+tss set 5 6 0xe446a390
+tss set 1 10 0x80000000
+rs get 152
+tss set 6 2 0x80000000
+rs set 130 0x9
+rs get 161
+tss get 7 15
+rs set 54 0xac34c43
+tss set 5 20 0xe757e4ed
+tss set 7 22 0x0
+tss set 3 28 0x6f111f1b
+rs set 56 0x8
+tss set 7 4 0x4
+tss set 3 11 0x64ea7122
+sb capture 2
+tss get 0 15
+rs get 54
+rs get 56
+rs get 130
+tss get 0 7
+tss get 1 10
+tss get 3 11
+tss get 3 14
+tss get 3 28
+tss get 5 6
+tss get 5 20
+tss get 6 2
+tss get 6 10
+tss get 7 4
+tss get 7 16
+tss get 7 21
+tss get 7 22
+end
+case random-45
+device8 swvp
+sb apply 1
+tss get 4 19
+sb apply 0
+rs set 130 0x20d8accb
+tss set 4 23 0x39cb12cd
+tss set 6 5 0xf27df8c8
+tss set 6 7 0xe85ad8e
+tss set 1 10 0x3f800000
+sb apply 0
+tss set 7 5 0xc3ce4c45
+rs set 134 0x8260a8b1
+sb apply 0
+tss get 2 1
+sb create 2 3
+rs get 156
+tss set 3 15 0xffffffff
+rs get 130
+rs get 134
+tss get 1 10
+tss get 3 15
+tss get 4 23
+tss get 6 5
+tss get 6 7
+tss get 7 5
+end
+case random-46
+device8 swvp
+sb create 1 2
+sb begin
+tss get 7 23
+tss get 2 25
+tss set 6 28 0x7619bf63
+tss set 1 1 0x33200276
+tss set 2 4 0x2
+tss get 4 10
+tss set 4 9 0x793d47c9
+rs set 58 0x27b9e67e
+tss set 2 14 0x24d49363
+tss set 4 18 0xa9c88fe5
+tss get 1 10
+rs get 148
+tss set 5 21 0x5df32158
+tss get 2 28
+sb end 1
+rs get 58
+tss get 1 1
+tss get 2 4
+tss get 2 14
+tss get 4 9
+tss get 4 18
+tss get 5 21
+tss get 6 28
+end
+case random-47
+device8 swvp
+sb release 0
+tss set 0 19 0xb42fb96
+rs set 147 0xf5cce36b
+sb begin
+rs set 34 0x80000000
+tss set 2 21 0x747081e0
+tss get 2 15
+tss set 0 21 0x0
+tss set 2 22 0x4
+sb end 2
+sb begin
+rs set 59 0x1be6a042
+tss set 4 4 0x4
+tss get 2 6
+sb end 2
+sb apply 1
+sb apply 2
+rs get 34
+rs get 59
+rs get 147
+tss get 0 19
+tss get 0 21
+tss get 2 21
+tss get 2 22
+tss get 4 4
+end
+case random-48
+device8 swvp
+tss set 2 16 0x8
+sb apply 0
+rs set 55 0x24b49e54
+sb apply 3
+sb release 3
+sb release 1
+sb capture 0
+tss set 7 24 0x3f800000
+rs set 30 0x1
+tss set 0 26 0xe18fb105
+tss get 3 28
+tss set 6 8 0x92210642
+sb apply 0
+tss set 2 18 0x5
+tss get 2 21
+sb release 3
+sb release 3
+tss set 7 11 0x2
+sb apply 0
+rs get 30
+rs get 55
+tss get 0 26
+tss get 2 16
+tss get 2 18
+tss get 6 8
+tss get 7 11
+tss get 7 24
+end
+case random-49
+device8 swvp
+rs get 131
+tss set 4 13 0x3f800000
+sb release 3
+tss set 0 20 0x8f3b6c2a
+tss get 3 22
+rs get 19
+tss set 5 14 0xef976c7d
+tss set 4 20 0x4
+tss set 6 26 0x1
+tss get 3 1
+tss set 1 25 0x8a56852d
+tss set 5 8 0x0
+rs set 30 0x80000000
+sb create 1 3
+rs get 168
+tss get 4 6
+tss set 5 4 0x3f800000
+rs get 147
+tss get 5 10
+rs set 156 0x9907bd6
+tss get 6 11
+tss set 3 26 0x7660d13
+tss get 1 15
+tss get 1 28
+tss set 2 6 0x5
+rs set 25 0x80000000
+tss set 1 6 0x0
+tss set 0 8 0x57c35ed7
+tss get 0 2
+tss set 2 15 0x3f800000
+sb apply 0
+sb apply 2
+rs get 25
+rs get 30
+rs get 156
+tss get 0 8
+tss get 0 20
+tss get 1 6
+tss get 1 25
+tss get 2 6
+tss get 2 15
+tss get 3 26
+tss get 4 13
+tss get 4 20
+tss get 5 4
+tss get 5 8
+tss get 5 14
+tss get 6 26
+end
+case random-50
+device8 swvp
+rs set 170 0x5
+tss set 3 14 0x3f800000
+sb apply 3
+sb release 1
+sb release 2
+tss set 7 2 0x65810ee7
+sb begin
+tss set 0 19 0x97886bad
+sb end 2
+sb apply 3
+tss set 4 28 0x8856b920
+tss set 1 13 0x4e24a6f2
+sb apply 0
+rs get 36
+tss set 7 6 0xffffffff
+tss set 4 19 0x6400ae1a
+sb apply 1
+rs get 170
+tss get 0 19
+tss get 1 13
+tss get 3 14
+tss get 4 19
+tss get 4 28
+tss get 7 2
+tss get 7 6
+end
+case random-51
+device8 swvp
+sb apply 2
+rs set 139 0x7
+tss set 0 20 0x9
+rs get 56
+sb begin
+tss get 5 1
+tss get 2 6
+tss set 4 28 0x1
+tss set 1 19 0x8459850
+sb end 2
+sb apply 1
+rs get 139
+tss get 0 20
+tss get 1 19
+tss get 4 28
+end
+case random-52
+device8 swvp
+tss set 1 17 0x3f800000
+tss set 2 10 0x9ee839ec
+sb create 1 1
+sb create 2 1
+sb release 2
+sb create 1 3
+rs set 142 0x0
+sb apply 3
+tss get 4 7
+rs set 167 0x80000000
+tss get 7 4
+tss set 6 1 0xdeda57be
+sb begin
+tss set 4 28 0x0
+tss set 5 24 0x8f82b3c3
+rs get 54
+tss get 4 13
+tss set 5 14 0x1
+tss set 0 7 0x9996ce0e
+tss set 4 24 0xc3c82ce
+tss set 2 1 0xffffffff
+tss set 7 14 0x0
+tss set 4 3 0x74784941
+tss set 4 24 0x80000000
+tss set 5 21 0x7
+tss set 5 21 0x31a4ed74
+rs set 25 0x4
+tss get 4 10
+sb end 2
+sb apply 0
+sb apply 1
+rs get 25
+rs get 142
+rs get 167
+tss get 0 7
+tss get 1 17
+tss get 2 1
+tss get 2 10
+tss get 4 3
+tss get 4 24
+tss get 4 28
+tss get 5 14
+tss get 5 21
+tss get 5 24
+tss get 6 1
+tss get 7 14
+end
+case random-53
+device8 swvp
+tss get 2 9
+rs set 167 0x2
+rs get 155
+sb create 1 1
+sb release 3
+rs set 28 0x0
+tss set 2 7 0xf781af12
+tss get 0 8
+sb release 1
+sb create 1 1
+sb begin
+rs set 48 0x3fc97ece
+tss set 7 25 0x6b1b2c8a
+rs set 141 0x9c100725
+tss get 4 10
+tss get 6 9
+sb end 2
+rs set 155 0x7
+tss set 1 2 0xdede5b5d
+tss set 3 6 0x3
+sb create 3 2
+tss get 1 27
+tss get 5 1
+tss set 6 9 0x80000000
+tss set 7 14 0x6
+sb apply 1
+tss set 0 17 0x80000000
+tss set 3 4 0x4
+tss set 2 19 0x0
+sb create 3 3
+tss set 3 20 0x8
+tss set 6 24 0xfcf8ebb
+sb apply 2
+rs get 28
+rs get 48
+rs get 141
+rs get 155
+rs get 167
+tss get 0 17
+tss get 1 2
+tss get 2 7
+tss get 2 19
+tss get 3 4
+tss get 3 6
+tss get 3 20
+tss get 6 9
+tss get 6 24
+tss get 7 14
+tss get 7 25
+end
+case random-54
+device8 swvp
+tss set 1 19 0x8
+rs set 171 0x6
+tss set 5 2 0x5429c730
+rs set 28 0x36d7f6c8
+rs set 145 0xe6d0337c
+tss set 6 10 0x476f45d2
+tss get 4 11
+sb create 2 2
+tss set 7 4 0x8
+sb begin
+tss get 6 25
+tss set 2 6 0xce7eed0a
+sb end 1
+sb apply 0
+rs get 28
+rs get 145
+rs get 171
+tss get 1 19
+tss get 2 6
+tss get 5 2
+tss get 6 10
+tss get 7 4
+end
+case random-55
+device8 swvp
+tss set 0 1 0x8
+sb create 0 1
+rs set 60 0xcf77ac86
+tss set 0 22 0x40334432
+tss set 5 28 0x74125227
+tss set 0 22 0x6b4440ce
+sb create 0 3
+tss set 2 15 0x58a400fe
+sb apply 1
+sb apply 2
+rs get 60
+tss get 0 1
+tss get 0 22
+tss get 2 15
+tss get 5 28
+end
+case random-56
+device8 swvp
+tss set 6 24 0x1
+tss set 1 8 0xffffffff
+tss set 4 27 0x2
+tss get 2 7
+sb apply 1
+rs set 130 0x1
+rs set 159 0xa6f0b7dd
+sb apply 2
+tss set 6 1 0x0
+rs get 135
+tss set 7 23 0x6
+sb begin
+tss set 1 17 0xf6e8c1eb
+tss get 3 17
+tss get 0 23
+tss set 2 14 0x1
+rs set 160 0x6
+tss set 1 1 0x3f800000
+tss get 7 14
+tss set 5 10 0x7
+sb end 2
+sb apply 0
+sb apply 2
+rs get 130
+rs get 159
+rs get 160
+tss get 1 1
+tss get 1 8
+tss get 1 17
+tss get 2 14
+tss get 4 27
+tss get 5 10
+tss get 6 1
+tss get 6 24
+tss get 7 23
+end
+case random-57
+device8 swvp
+sb create 1 1
+rs set 30 0xffffffff
+sb release 0
+sb apply 3
+tss get 6 17
+sb begin
+sb end 2
+tss get 4 10
+rs set 141 0xd87e2252
+sb apply 3
+sb capture 2
+sb begin
+rs set 20 0x4
+tss set 5 21 0xffffffff
+tss set 7 23 0x0
+sb end 1
+tss set 2 17 0x84e194e3
+tss get 2 19
+tss set 0 17 0x8701c0a2
+tss set 0 19 0x4
+tss set 5 6 0x500a6dc3
+tss set 6 28 0x1
+sb apply 1
+rs get 156
+tss set 1 9 0x2
+sb apply 3
+tss set 0 16 0x6704412c
+tss set 4 9 0x6697e581
+tss set 0 13 0x45b2cfb0
+tss get 5 16
+tss set 4 4 0x4
+tss set 2 21 0x2c6f6d5f
+rs set 38 0x1
+sb apply 1
+sb apply 0
+sb apply 2
+rs get 20
+rs get 30
+rs get 38
+rs get 141
+tss get 0 13
+tss get 0 16
+tss get 0 17
+tss get 0 19
+tss get 1 9
+tss get 2 17
+tss get 2 21
+tss get 4 4
+tss get 4 9
+tss get 5 6
+tss get 5 21
+tss get 6 28
+tss get 7 23
+end
+case random-58
+device8 swvp
+sb apply 3
+sb apply 0
+sb release 1
+tss get 6 8
+tss set 6 3 0x87baaacf
+tss get 5 27
+tss get 2 18
+tss set 5 23 0x6e6cf5ce
+tss set 1 5 0x9
+tss set 5 28 0x7
+rs get 135
+tss set 3 24 0x1
+tss set 7 16 0xdd73158a
+rs get 27
+rs set 170 0x3f800000
+sb apply 1
+sb apply 2
+rs get 170
+tss get 1 5
+tss get 3 24
+tss get 5 23
+tss get 5 28
+tss get 6 3
+tss get 7 16
+end
+case random-59
+device8 swvp
+sb create 1 3
+tss set 5 21 0x4
+rs get 143
+sb begin
+rs set 35 0x8
+tss set 0 24 0x1
+tss set 7 3 0xa4f18657
+tss get 2 17
+tss set 4 23 0xb2defa8c
+tss set 5 8 0x0
+tss set 7 13 0x3f800000
+tss get 6 14
+tss set 2 7 0x0
+tss get 7 16
+tss set 0 11 0x1374e48c
+tss get 1 19
+tss set 4 14 0x3f800000
+sb end 2
+sb apply 0
+sb apply 1
+rs get 35
+tss get 0 11
+tss get 0 24
+tss get 2 7
+tss get 4 14
+tss get 4 23
+tss get 5 8
+tss get 5 21
+tss get 7 3
+tss get 7 13
+end
+case random-60
+device8 swvp
+rs set 27 0x9a5f0f98
+tss set 5 20 0xb2669095
+tss get 6 11
+sb apply 1
+sb begin
+tss get 3 17
+sb end 1
+tss get 4 18
+sb release 2
+sb apply 3
+tss set 3 14 0x2
+tss set 1 9 0xf90e91c2
+tss get 6 19
+rs set 168 0xfea20d30
+rs get 129
+rs set 29 0xffffffff
+tss set 4 15 0xe4a76344
+tss set 6 7 0x9
+sb apply 1
+sb apply 2
+rs get 27
+rs get 29
+rs get 168
+tss get 1 9
+tss get 3 14
+tss get 4 15
+tss get 5 20
+tss get 6 7
+end
+case random-61
+device8 swvp
+sb begin
+rs get 9
+tss set 0 7 0x2d28d428
+tss get 0 14
+tss set 7 13 0x80000000
+rs set 136 0x2
+sb end 0
+sb begin
+tss set 3 15 0x0
+tss set 3 2 0x900897af
+tss set 1 17 0x83ab0f0a
+tss get 0 28
+tss set 4 25 0xf9d77745
+rs set 172 0x556f56c5
+rs set 23 0xcfbcb0a9
+tss set 1 8 0x3f800000
+tss get 5 13
+sb end 3
+rs get 23
+rs get 136
+rs get 172
+tss get 0 7
+tss get 1 8
+tss get 1 17
+tss get 3 2
+tss get 3 15
+tss get 4 25
+tss get 7 13
+end
+case random-62
+device8 swvp
+sb apply 0
+rs set 7 0x0
+tss set 4 5 0x6ff08e2d
+sb begin
+tss set 7 14 0x6
+tss get 1 26
+tss set 5 18 0x70adc405
+tss get 4 15
+tss set 7 24 0x3f800000
+tss get 4 20
+tss set 5 15 0x6c177099
+tss get 2 27
+tss set 0 25 0x5
+tss set 6 17 0x80000000
+tss get 7 22
+tss get 1 26
+tss get 4 28
+tss set 1 9 0x1
+rs get 14
+rs set 8 0x9
+sb end 1
+sb apply 1
+rs get 7
+rs get 8
+tss get 0 25
+tss get 1 9
+tss get 4 5
+tss get 5 15
+tss get 5 18
+tss get 6 17
+tss get 7 14
+tss get 7 24
+end
+case random-63
+device8 swvp
+sb begin
+rs set 154 0x8a165670
+tss set 7 23 0x1
+tss get 3 8
+tss set 1 20 0x2b78f5bd
+rs set 148 0x1ef62c23
+tss set 7 14 0xb4d71fac
+tss set 1 28 0x2
+tss get 6 1
+rs set 48 0xa97d5dbd
+tss set 7 11 0x80000000
+tss set 7 9 0x1
+tss set 5 5 0x4
+rs set 53 0x5af7cc84
+rs get 157
+tss set 0 25 0x2
+rs set 53 0x80000000
+tss get 5 25
+tss set 1 23 0x6
+rs set 58 0x2
+tss get 6 16
+tss get 6 7
+tss set 6 3 0xbe93d32b
+sb end 0
+sb apply 1
+rs get 48
+rs get 53
+rs get 58
+rs get 148
+rs get 154
+tss get 0 25
+tss get 1 20
+tss get 1 23
+tss get 1 28
+tss get 5 5
+tss get 6 3
+tss get 7 9
+tss get 7 11
+tss get 7 14
+tss get 7 23
+end
+case random-64
+device8 swvp
+sb create 0 2
+tss get 2 6
+sb release 1
+tss set 0 3 0x6585185e
+rs set 130 0x789d9987
+tss set 0 13 0x58d6d40f
+tss set 6 13 0x3
+rs set 172 0x3be638bc
+sb apply 3
+tss get 5 2
+tss get 6 10
+sb capture 2
+sb release 1
+tss set 5 5 0x0
+sb apply 1
+rs set 157 0xd164edae
+tss set 1 25 0xc3432d08
+rs get 154
+sb apply 1
+rs get 130
+rs get 157
+rs get 172
+tss get 0 3
+tss get 0 13
+tss get 1 25
+tss get 5 5
+tss get 6 13
+end
+case random-65
+device8 swvp
+sb create 0 2
+sb begin
+tss get 7 2
+tss get 2 16
+tss set 0 27 0xb508f9d8
+tss get 4 27
+tss get 0 7
+rs set 147 0x181c60d7
+sb end 1
+sb apply 3
+sb release 0
+tss get 6 23
+sb apply 0
+sb apply 1
+rs get 147
+tss get 0 27
+end
+case random-66
+device8 swvp
+sb begin
+tss set 5 25 0xc4b88f00
+tss set 1 1 0xd1080b91
+rs get 156
+tss get 4 19
+tss get 7 5
+tss set 2 4 0xad55524b
+tss get 5 14
+tss set 0 9 0x7176669c
+tss get 7 11
+tss get 6 19
+sb end 0
+rs set 55 0xbf3faefc
+rs set 129 0x17144e8
+sb apply 0
+sb apply 2
+sb capture 3
+sb apply 0
+tss set 7 19 0xffffffff
+tss set 7 16 0x0
+tss set 3 24 0x9e83528
+rs set 142 0x9717bb60
+tss get 4 5
+tss get 4 19
+sb create 1 2
+tss set 7 17 0x79f4fd8f
+tss get 4 21
+sb capture 2
+rs set 8 0x8c04c87f
+rs set 173 0xf4459969
+sb create 2 1
+sb apply 2
+rs get 8
+rs get 55
+rs get 129
+rs get 142
+rs get 173
+tss get 0 9
+tss get 1 1
+tss get 2 4
+tss get 3 24
+tss get 5 25
+tss get 7 16
+tss get 7 17
+tss get 7 19
+end
+case random-67
+device8 swvp
+rs get 154
+sb capture 1
+tss set 2 6 0xb47b510
+tss set 7 11 0x3
+tss get 0 14
+rs set 10 0xfe55465a
+tss set 4 25 0x8
+tss get 3 23
+tss set 2 21 0x7607ec33
+tss set 6 8 0xde56e6e2
+tss set 6 10 0x80000000
+rs get 153
+rs set 55 0x3f800000
+tss set 6 9 0xe047bc37
+rs get 139
+tss set 6 15 0xffffffff
+tss set 0 22 0x8b50db04
+rs set 22 0x0
+tss set 5 26 0xfb7a6a34
+sb begin
+sb end 2
+sb capture 3
+tss set 2 8 0x80000000
+tss set 2 7 0x3ae5a8a8
+tss set 0 14 0xe39a0fa4
+sb capture 1
+tss set 4 21 0x7c9a44f7
+tss get 7 11
+tss set 3 3 0xe611ead5
+rs get 60
+tss set 2 5 0x3
+tss set 1 20 0x5
+tss set 0 24 0x80000000
+sb create 2 3
+tss set 4 23 0x98c3b7a8
+tss set 1 18 0x3f800000
+tss set 7 16 0xffffffff
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 10
+rs get 22
+rs get 55
+tss get 0 14
+tss get 0 22
+tss get 0 24
+tss get 1 18
+tss get 1 20
+tss get 2 5
+tss get 2 6
+tss get 2 7
+tss get 2 8
+tss get 2 21
+tss get 3 3
+tss get 4 21
+tss get 4 23
+tss get 4 25
+tss get 5 26
+tss get 6 8
+tss get 6 9
+tss get 6 10
+tss get 6 15
+tss get 7 11
+tss get 7 16
+end
+case random-68
+device8 swvp
+tss get 7 20
+tss set 4 23 0xb2c6909a
+rs set 155 0xffffffff
+sb release 1
+sb create 3 3
+sb apply 1
+sb release 0
+sb release 1
+sb apply 3
+tss set 4 25 0x8061c40
+tss get 3 8
+tss get 6 17
+tss set 3 26 0x49d3246e
+rs get 22
+tss set 7 15 0xbc0789d6
+tss set 2 22 0x1
+sb create 3 1
+sb begin
+tss get 2 8
+sb end 3
+sb create 0 3
+sb release 2
+rs get 10
+tss get 3 19
+sb capture 1
+rs set 128 0x80000000
+sb apply 3
+tss get 1 26
+tss set 5 22 0x5
+sb apply 2
+tss get 1 11
+tss set 2 27 0x80000000
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 128
+rs get 155
+tss get 2 22
+tss get 2 27
+tss get 3 26
+tss get 4 23
+tss get 4 25
+tss get 5 22
+tss get 7 15
+end
+case random-69
+device8 swvp
+tss set 1 28 0x1
+rs get 60
+tss set 5 15 0x80000000
+tss set 0 15 0x0
+rs get 29
+sb create 3 3
+tss get 1 14
+sb capture 1
+tss set 7 2 0xfe7771ef
+sb capture 1
+tss get 4 10
+tss set 7 3 0xc8e5a8e6
+tss get 0 9
+tss get 1 23
+sb capture 0
+rs set 52 0x9
+tss set 6 13 0x71f45e9f
+sb create 3 3
+rs get 35
+sb apply 3
+rs set 143 0x3f800000
+tss set 3 20 0xd998be2e
+tss set 4 24 0xffffffff
+rs set 147 0x0
+rs set 148 0x915d5c6
+tss set 1 27 0xb45467cf
+tss set 6 17 0xcf72f84
+sb release 0
+rs set 20 0x58b2b881
+rs get 153
+tss get 0 26
+tss set 3 15 0x80000000
+tss set 1 2 0x80000000
+sb capture 1
+tss set 1 14 0x24d0dc7d
+sb apply 0
+sb apply 1
+rs get 20
+rs get 52
+rs get 143
+rs get 147
+rs get 148
+tss get 0 15
+tss get 1 2
+tss get 1 14
+tss get 1 27
+tss get 1 28
+tss get 3 15
+tss get 3 20
+tss get 4 24
+tss get 5 15
+tss get 6 13
+tss get 6 17
+tss get 7 2
+tss get 7 3
+end
+case random-70
+device8 swvp
+tss get 5 15
+sb release 0
+sb release 0
+sb apply 2
+sb apply 2
+tss get 3 23
+tss set 2 26 0x1f599cf7
+tss get 2 24
+tss get 4 7
+sb apply 1
+tss set 4 26 0x3
+sb release 1
+rs set 35 0x1662195
+tss get 1 26
+sb apply 3
+sb begin
+tss set 7 21 0x0
+tss set 1 26 0x1
+tss get 7 4
+tss get 0 14
+tss get 3 13
+tss set 5 1 0x672bd3ff
+tss set 0 8 0x9
+tss get 0 17
+tss set 7 25 0x5629ea74
+sb end 3
+sb apply 1
+sb apply 2
+rs get 35
+tss get 0 8
+tss get 1 26
+tss get 2 26
+tss get 4 26
+tss get 5 1
+tss get 7 21
+tss get 7 25
+end
+case random-71
+device8 swvp
+rs set 145 0xaa4dc62f
+sb begin
+tss set 7 18 0x1
+tss get 3 25
+tss set 2 2 0xfdf9f8ee
+tss get 4 24
+tss set 7 5 0x7
+tss set 1 13 0x1
+tss get 3 7
+rs get 140
+rs get 158
+tss get 3 24
+tss set 5 8 0x3f800000
+tss get 3 20
+tss set 7 14 0xb334acc
+rs get 137
+rs set 155 0xffffffff
+rs set 37 0xb7f7ba82
+tss get 1 25
+rs get 133
+rs get 26
+sb end 1
+sb apply 1
+sb apply 2
+rs get 37
+rs get 145
+rs get 155
+tss get 1 13
+tss get 2 2
+tss get 5 8
+tss get 7 5
+tss get 7 14
+tss get 7 18
+end
+case random-72
+device8 swvp
+tss set 1 2 0x9b903680
+tss set 7 1 0x9d44d91d
+tss set 5 1 0x4c3ba716
+tss set 3 13 0x6
+rs set 142 0xa1622f37
+tss set 1 5 0x54ace17f
+sb capture 2
+tss set 4 21 0xfbd9e411
+tss set 3 26 0x1
+tss set 4 17 0xbc2e8549
+tss set 5 27 0x47500f20
+tss set 1 7 0xd2f78c2b
+sb apply 0
+tss get 0 9
+tss get 2 23
+tss set 4 5 0xffffffff
+tss set 4 9 0x3f800000
+tss set 6 27 0x3f800000
+tss get 5 18
+sb capture 0
+sb create 0 3
+sb apply 3
+sb begin
+tss set 4 9 0x6980e844
+tss set 7 19 0x3
+tss set 5 6 0x7a15b6c2
+rs set 170 0x71c57888
+sb end 2
+rs get 142
+rs get 170
+tss get 1 2
+tss get 1 5
+tss get 1 7
+tss get 3 13
+tss get 3 26
+tss get 4 5
+tss get 4 9
+tss get 4 17
+tss get 4 21
+tss get 5 1
+tss get 5 6
+tss get 5 27
+tss get 6 27
+tss get 7 1
+tss get 7 19
+end
+case random-73
+device8 swvp
+sb apply 3
+rs set 59 0x577e3f1f
+rs get 52
+sb apply 2
+tss get 2 24
+sb create 0 3
+rs set 52 0x3f800000
+rs get 52
+rs get 59
+end
+case random-74
+device8 swvp
+tss get 0 13
+sb release 0
+tss set 4 23 0xe60bd914
+rs set 56 0x1
+tss set 4 4 0x0
+sb apply 2
+rs get 56
+tss get 4 4
+tss get 4 23
+end
+case random-75
+device8 swvp
+tss get 3 20
+rs set 141 0x357e3dd0
+sb create 3 2
+tss set 5 28 0x7
+tss set 6 23 0x8ab7024b
+tss get 1 10
+rs set 22 0xffffffff
+sb apply 1
+rs get 34
+rs get 22
+rs get 141
+tss get 5 28
+tss get 6 23
+end
+case random-76
+device8 swvp
+tss set 4 16 0xc5f279b8
+tss set 0 3 0x0
+tss set 1 21 0x598d5f19
+tss set 2 23 0x3cbf7f6e
+sb begin
+tss set 4 5 0xfc7065b8
+rs get 53
+sb end 0
+tss set 1 20 0x4aeddf26
+sb capture 0
+sb apply 0
+tss get 6 4
+sb capture 1
+sb apply 1
+sb apply 2
+tss get 0 3
+tss get 1 20
+tss get 1 21
+tss get 2 23
+tss get 4 5
+tss get 4 16
+end
+case random-77
+device8 swvp
+tss set 7 8 0x1
+sb capture 3
+tss set 5 26 0xffffffff
+rs set 40 0x6
+tss set 4 11 0x1891ca09
+tss set 7 28 0x3b85a6a9
+sb create 1 2
+rs set 34 0x25827c3
+tss set 3 18 0xa458ba14
+sb apply 1
+rs set 146 0x3f800000
+sb release 0
+tss get 1 23
+tss get 0 4
+tss set 6 9 0x0
+tss set 2 3 0xbef9d4b9
+rs set 162 0x3f800000
+sb capture 0
+tss set 7 7 0x0
+sb create 3 3
+sb apply 0
+sb apply 1
+rs get 34
+rs get 40
+rs get 146
+rs get 162
+tss get 2 3
+tss get 3 18
+tss get 4 11
+tss get 5 26
+tss get 6 9
+tss get 7 7
+tss get 7 8
+tss get 7 28
+end
+case random-78
+device8 swvp
+tss get 1 16
+tss get 2 11
+sb capture 0
+tss set 5 8 0x3f800000
+tss get 5 2
+tss get 0 2
+rs get 173
+tss set 2 2 0x2
+tss set 0 7 0x2
+sb create 3 2
+tss set 1 9 0xfbe1a156
+sb create 0 2
+sb release 1
+sb create 1 2
+sb create 2 3
+tss get 0 7
+tss get 1 9
+tss get 2 2
+tss get 5 8
+end
+case random-79
+device8 swvp
+sb apply 0
+tss get 2 18
+sb begin
+rs get 157
+tss set 6 22 0xab32a0a0
+tss set 1 7 0x8
+rs set 143 0x66bd6704
+sb end 1
+tss set 5 14 0x1e09e35d
+tss set 1 23 0xd6a4a9be
+rs set 8 0x2
+rs get 141
+sb capture 3
+sb begin
+sb end 0
+tss set 2 3 0x0
+rs set 162 0x7
+tss get 2 5
+sb release 3
+tss set 2 26 0x1
+tss set 3 19 0xc35184c8
+tss set 3 21 0x3
+tss set 4 28 0xda43d5ba
+tss set 0 7 0x4
+sb apply 3
+rs set 172 0xd9b135bd
+tss set 2 28 0x171e71ba
+sb begin
+tss set 3 2 0x8faf8f33
+rs set 36 0x987425ae
+tss set 6 15 0x7398f65
+sb end 3
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 8
+rs get 36
+rs get 143
+rs get 162
+rs get 172
+tss get 0 7
+tss get 1 7
+tss get 1 23
+tss get 2 3
+tss get 2 26
+tss get 2 28
+tss get 3 2
+tss get 3 19
+tss get 3 21
+tss get 4 28
+tss get 5 14
+tss get 6 15
+tss get 6 22
+end
+case random-80
+device8 swvp
+tss get 7 23
+sb create 1 2
+rs get 154
+tss set 4 15 0x6a25e780
+tss get 2 6
+rs set 146 0xa3ff288
+sb apply 1
+tss set 5 5 0x5
+tss set 2 16 0x9
+sb apply 0
+sb apply 2
+rs get 146
+tss get 2 16
+tss get 4 15
+tss get 5 5
+end
+case random-81
+device8 swvp
+tss get 3 11
+sb apply 3
+tss get 0 5
+tss set 4 14 0x2
+tss set 3 4 0x80000000
+rs set 134 0x173a2fcc
+rs set 160 0x1f12abdc
+tss set 3 25 0x7
+tss set 2 22 0x58acfa0
+sb begin
+tss get 5 11
+tss set 7 28 0xffffffff
+rs get 57
+tss set 1 16 0x5
+tss set 2 16 0x2adeee68
+tss set 3 25 0x3f800000
+tss set 2 4 0x0
+tss set 0 16 0xffffffff
+rs get 24
+tss get 5 26
+tss set 7 27 0xf84ef55f
+tss set 0 15 0x8d170db2
+tss get 7 18
+rs get 14
+rs set 14 0x620525e4
+sb end 0
+sb apply 1
+rs get 14
+rs get 134
+rs get 160
+tss get 0 15
+tss get 0 16
+tss get 1 16
+tss get 2 4
+tss get 2 16
+tss get 2 22
+tss get 3 4
+tss get 3 25
+tss get 4 14
+tss get 7 27
+tss get 7 28
+end
+case random-82
+device8 swvp
+sb capture 3
+rs set 173 0x80000000
+sb create 3 2
+sb apply 3
+sb capture 0
+tss set 4 16 0x0
+sb apply 2
+tss set 3 13 0x1
+sb create 3 1
+sb apply 2
+sb apply 3
+tss set 4 5 0x1
+sb release 0
+rs set 132 0x1
+rs get 26
+sb apply 1
+rs get 132
+rs get 173
+tss get 3 13
+tss get 4 5
+tss get 4 16
+end
+case random-83
+device8 swvp
+rs set 57 0x99b5c08f
+tss get 6 5
+rs set 29 0x289f7669
+tss get 2 15
+tss set 3 16 0x6e083998
+tss set 1 3 0x3
+tss get 0 21
+rs set 141 0xcd567e77
+tss set 5 6 0x9
+sb capture 2
+sb apply 2
+sb apply 3
+tss set 2 21 0xdac7e36b
+tss set 6 16 0x80000000
+tss set 1 15 0x1
+tss set 1 15 0x7
+tss get 1 1
+rs set 164 0x6
+sb apply 0
+tss get 7 3
+tss set 7 1 0x4
+tss set 0 4 0x1
+sb apply 0
+sb apply 1
+rs get 29
+rs get 57
+rs get 141
+rs get 164
+tss get 0 4
+tss get 1 3
+tss get 1 15
+tss get 2 21
+tss get 3 16
+tss get 5 6
+tss get 6 16
+tss get 7 1
+end
+case random-84
+device8 swvp
+tss set 1 23 0x4
+sb create 2 1
+tss set 6 9 0x1
+tss set 3 3 0x9856be1
+tss set 7 25 0xd23a492f
+sb release 0
+sb create 3 2
+sb release 1
+rs set 151 0x71f6b96e
+tss get 0 21
+sb apply 2
+sb apply 1
+rs get 151
+tss get 1 23
+tss get 3 3
+tss get 6 9
+tss get 7 25
+end
+case random-85
+device8 swvp
+tss get 1 10
+rs get 140
+tss set 5 3 0x2185cede
+sb create 3 3
+sb apply 1
+sb create 0 3
+sb apply 3
+tss set 0 24 0x4
+sb apply 3
+sb release 2
+tss get 2 21
+tss set 6 7 0x0
+tss set 5 10 0xbc49d3c1
+sb apply 2
+tss set 6 22 0xede89c86
+rs set 171 0x9
+tss set 4 17 0xa63102bd
+tss set 0 20 0x1
+rs set 137 0x4a198381
+tss set 5 11 0x3f800000
+rs set 153 0x4279a5f
+rs get 152
+sb create 0 1
+sb begin
+tss set 1 23 0x1
+rs get 30
+tss get 5 14
+tss set 0 8 0x5
+tss get 5 5
+tss set 4 18 0x80000000
+sb end 2
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 137
+rs get 153
+rs get 171
+tss get 0 8
+tss get 0 20
+tss get 0 24
+tss get 1 23
+tss get 4 17
+tss get 4 18
+tss get 5 3
+tss get 5 10
+tss get 5 11
+tss get 6 7
+tss get 6 22
+end
+case random-86
+device8 swvp
+rs set 170 0x921d28d8
+tss set 2 6 0x7d4bd429
+rs get 147
+sb release 0
+sb create 3 2
+tss set 3 28 0x4b3dc74c
+tss set 2 8 0x9df4a190
+rs set 14 0x95df88fa
+sb apply 2
+rs set 24 0x80000000
+rs set 30 0x41ec0bfc
+tss set 1 3 0x23c81ae9
+tss get 5 6
+sb apply 1
+sb apply 1
+rs get 8
+sb capture 3
+sb create 1 1
+sb begin
+rs set 163 0x5
+tss set 4 13 0xf35c225d
+rs get 54
+tss set 4 20 0x80000000
+tss get 1 3
+sb end 2
+sb apply 0
+sb apply 1
+rs get 14
+rs get 24
+rs get 30
+rs get 163
+rs get 170
+tss get 1 3
+tss get 2 6
+tss get 2 8
+tss get 3 28
+tss get 4 13
+tss get 4 20
+end
+case random-87
+device8 swvp
+tss get 4 24
+tss get 1 6
+sb begin
+rs set 156 0x20a629c4
+tss set 2 18 0x80000000
+tss set 0 27 0xffffffff
+tss set 4 23 0xca3d069b
+tss set 6 16 0x864e5996
+tss get 2 7
+tss set 2 5 0xffffffff
+tss get 3 23
+tss get 2 24
+tss set 0 10 0x8b777df
+tss get 5 2
+sb end 1
+sb apply 0
+sb apply 1
+rs get 156
+tss get 0 10
+tss get 0 27
+tss get 2 5
+tss get 2 18
+tss get 4 23
+tss get 6 16
+end
+case random-88
+device8 swvp
+tss set 1 2 0x6cf8a844
+tss set 0 4 0x1759327a
+tss set 7 21 0x55f2921d
+tss set 5 11 0x8
+sb capture 1
+rs set 141 0x80000000
+rs get 168
+tss get 1 18
+tss set 5 14 0x1c0d1671
+sb apply 0
+tss set 7 22 0x1
+tss set 0 14 0x22cbc2f3
+sb capture 0
+sb apply 2
+tss set 1 5 0xe13ecdcc
+rs get 159
+tss set 0 5 0x0
+tss set 2 23 0x5
+tss set 3 3 0x1
+sb begin
+tss set 2 24 0x3f800000
+sb end 2
+rs get 162
+tss set 6 13 0xa0b1efa8
+tss set 3 24 0xffffffff
+sb apply 1
+tss set 6 9 0x1
+sb create 1 3
+sb apply 0
+sb apply 1
+rs get 141
+tss get 0 4
+tss get 0 5
+tss get 0 14
+tss get 1 2
+tss get 1 5
+tss get 2 23
+tss get 2 24
+tss get 3 3
+tss get 3 24
+tss get 5 11
+tss get 5 14
+tss get 6 9
+tss get 6 13
+tss get 7 21
+tss get 7 22
+end
+case random-89
+device8 swvp
+sb create 1 1
+rs get 23
+rs set 170 0xffffffff
+tss get 6 18
+tss set 3 14 0x2df092d
+sb apply 1
+rs get 164
+tss get 7 22
+sb apply 1
+tss set 3 5 0x80000000
+tss set 7 26 0xffffffff
+tss get 2 25
+sb apply 1
+sb create 2 3
+rs set 35 0xd4950f68
+rs get 48
+tss set 0 8 0xd4e991de
+sb apply 2
+sb create 0 1
+tss set 5 25 0x7a1067d7
+sb capture 3
+tss get 1 7
+rs set 15 0x6df2e091
+tss set 7 18 0x98881b3e
+tss get 7 5
+sb apply 0
+sb capture 2
+tss set 6 16 0x80000000
+sb begin
+tss set 7 22 0xda8ce1f1
+sb end 0
+rs get 15
+rs get 35
+rs get 170
+tss get 0 8
+tss get 3 5
+tss get 3 14
+tss get 5 25
+tss get 6 16
+tss get 7 18
+tss get 7 22
+tss get 7 26
+end
+case random-90
+device8 swvp
+tss get 3 9
+tss set 4 23 0x8
+sb begin
+tss set 5 24 0x80000000
+tss set 6 22 0x80bd0045
+tss set 6 9 0xbf1e8979
+rs set 156 0xa09ed0da
+tss set 6 6 0x6
+tss get 6 24
+tss set 4 27 0x3f800000
+tss set 1 28 0xf9d589a7
+sb end 3
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 156
+tss get 1 28
+tss get 4 23
+tss get 4 27
+tss get 5 24
+tss get 6 6
+tss get 6 9
+tss get 6 22
+end
+case random-91
+device8 swvp
+sb apply 2
+tss set 6 6 0x11a48b93
+sb begin
+tss set 4 17 0xdc898efd
+tss set 3 1 0x0
+tss get 2 10
+tss set 1 13 0x308fb24d
+tss get 0 10
+rs set 36 0x46726db6
+tss get 2 17
+sb end 3
+tss get 1 1
+rs set 140 0x86f262e4
+rs set 7 0x1
+tss get 0 17
+tss get 3 25
+tss set 7 18 0xa9339213
+sb capture 0
+sb create 1 3
+tss set 3 24 0x1
+tss set 6 11 0x5
+rs set 134 0xd30d4ff3
+tss set 7 1 0xffffffff
+sb apply 1
+sb apply 2
+rs get 7
+rs get 36
+rs get 134
+rs get 140
+tss get 1 13
+tss get 3 1
+tss get 3 24
+tss get 4 17
+tss get 6 6
+tss get 6 11
+tss get 7 1
+tss get 7 18
+end
+case random-92
+device8 swvp
+tss get 6 27
+sb create 3 1
+rs set 160 0x6
+tss set 5 20 0x3
+sb apply 0
+sb apply 1
+rs get 160
+tss get 5 20
+end
+case random-93
+device8 swvp
+tss get 2 6
+tss set 6 4 0x536f233b
+tss set 6 17 0x9
+tss get 3 26
+tss set 3 2 0x5c8c9ee0
+sb create 3 1
+sb apply 1
+tss get 3 2
+tss get 6 4
+tss get 6 17
+end
+case random-94
+device8 swvp
+tss set 4 1 0x97c4427b
+sb capture 0
+rs get 163
+sb capture 3
+rs get 141
+sb create 2 2
+sb apply 3
+sb apply 0
+sb create 3 2
+tss set 2 10 0xd51ae04f
+sb release 0
+tss set 7 27 0xe0a5f2e3
+sb create 2 3
+tss set 0 5 0x1
+tss set 0 28 0x7
+tss set 7 16 0x0
+tss set 6 7 0x30855875
+tss get 2 10
+sb create 2 1
+sb release 0
+sb create 0 1
+sb release 2
+tss get 2 14
+rs set 142 0x99e2839e
+tss set 0 5 0x10e840d2
+sb apply 0
+sb apply 2
+rs get 142
+tss get 0 5
+tss get 0 28
+tss get 2 10
+tss get 4 1
+tss get 6 7
+tss get 7 16
+tss get 7 27
+end
+case random-95
+device8 swvp
+rs set 53 0x89ca4ce8
+rs set 154 0xffffffff
+tss get 5 26
+tss set 3 13 0x1
+sb release 0
+rs get 139
+sb apply 2
+sb apply 1
+tss set 2 3 0xb5951157
+tss set 6 21 0x0
+rs get 132
+sb begin
+tss set 6 5 0x0
+tss get 1 7
+tss set 3 15 0x8264691b
+tss set 3 1 0xa64ea202
+rs get 142
+rs set 139 0xffffffff
+rs set 130 0xb7d0b167
+tss set 1 18 0x852e23bf
+tss set 1 2 0xd5b90dae
+tss get 2 24
+sb end 3
+sb apply 0
+sb apply 1
+rs get 53
+rs get 130
+rs get 139
+rs get 154
+tss get 1 2
+tss get 1 18
+tss get 2 3
+tss get 3 1
+tss get 3 13
+tss get 3 15
+tss get 6 5
+tss get 6 21
+end
+case random-96
+device8 swvp
+tss set 3 11 0x18e25a0
+rs get 152
+tss set 3 14 0x848ddcaa
+tss set 3 19 0x673dcfed
+tss set 0 25 0x80000000
+rs set 57 0xf5aaaa4
+tss set 2 28 0x0
+tss set 4 6 0x537e4f59
+tss get 5 15
+tss get 3 18
+tss set 2 9 0xa22c374f
+tss get 6 5
+tss set 3 4 0x6d831eb7
+tss set 7 17 0xed299c89
+sb release 2
+tss set 7 28 0xccc57c02
+sb apply 3
+tss set 1 11 0x2fe36a5f
+rs get 57
+tss get 0 25
+tss get 1 11
+tss get 2 9
+tss get 2 28
+tss get 3 4
+tss get 3 11
+tss get 3 14
+tss get 3 19
+tss get 4 6
+tss get 7 17
+tss get 7 28
+end
+case random-97
+device8 swvp
+sb apply 0
+sb apply 2
+tss set 5 4 0x1
+tss set 7 5 0x0
+tss set 1 23 0x30304f90
+rs set 59 0x3
+rs set 166 0x524a8554
+tss set 2 8 0xde27cafb
+rs set 27 0x3f800000
+tss set 1 2 0x6
+sb apply 2
+rs get 27
+rs get 59
+rs get 166
+tss get 1 2
+tss get 1 23
+tss get 2 8
+tss get 5 4
+tss get 7 5
+end
+case random-98
+device8 swvp
+tss get 0 5
+sb capture 3
+tss get 3 3
+tss set 6 16 0x5157d5e
+tss get 5 13
+tss get 0 24
+rs set 36 0x0
+tss set 4 13 0x6836de24
+sb create 0 1
+tss set 1 24 0xc242fa2a
+sb begin
+tss set 5 23 0x1
+tss get 4 19
+rs set 24 0x3f800000
+rs set 156 0x99b50bd7
+tss get 4 5
+rs get 20
+tss get 5 19
+tss set 5 26 0x80000000
+sb end 3
+sb apply 0
+sb apply 1
+rs get 24
+rs get 36
+rs get 156
+tss get 1 24
+tss get 4 13
+tss get 5 23
+tss get 5 26
+tss get 6 16
+end
+case random-99
+device8 swvp
+tss set 6 4 0x0
+tss set 0 27 0x5358d097
+rs set 147 0x39abd4fd
+sb apply 1
+tss set 3 25 0x963996bc
+tss set 5 18 0xffffffff
+sb begin
+sb end 2
+rs set 131 0x80000000
+sb apply 0
+tss set 4 25 0x8
+tss set 6 21 0x3
+tss set 0 5 0x54650943
+rs set 8 0x1
+sb create 2 2
+rs set 147 0x2
+rs set 54 0x435eeffe
+tss set 7 11 0x80000000
+tss set 3 13 0x88eb760e
+sb apply 2
+rs get 8
+rs get 54
+rs get 131
+rs get 147
+tss get 0 5
+tss get 0 27
+tss get 3 13
+tss get 3 25
+tss get 4 25
+tss get 5 18
+tss get 6 4
+tss get 6 21
+tss get 7 11
+end
+case random-100
+device8 swvp
+rs set 23 0x8279051
+sb release 3
+tss set 5 3 0x1
+rs get 131
+sb apply 2
+tss set 0 3 0x9
+sb apply 0
+rs set 47 0x3f800000
+tss set 6 28 0x1
+tss set 2 11 0x0
+sb apply 0
+sb capture 1
+tss get 1 25
+sb apply 1
+rs get 23
+rs get 47
+tss get 0 3
+tss get 2 11
+tss get 5 3
+tss get 6 28
+end
+case random-101
+device8 swvp
+tss set 6 22 0x8a516874
+rs get 145
+tss set 4 10 0x3f800000
+tss get 4 24
+tss set 7 17 0x394ec8c0
+tss set 6 18 0x867af045
+tss get 1 9
+tss set 5 11 0x3
+sb apply 1
+sb capture 2
+rs set 26 0x1
+rs get 143
+rs set 24 0x58d47fca
+tss set 1 15 0x1
+tss set 2 5 0x15a46d94
+sb begin
+rs set 164 0xc15b85ae
+tss set 5 28 0x80000000
+sb end 2
+sb apply 2
+rs get 24
+rs get 26
+rs get 164
+tss get 1 15
+tss get 2 5
+tss get 4 10
+tss get 5 11
+tss get 5 28
+tss get 6 18
+tss get 6 22
+tss get 7 17
+end
+case random-102
+device8 swvp
+tss set 7 25 0xc2bbc4fd
+rs set 155 0x5
+rs get 163
+tss set 7 3 0x80000000
+sb create 3 3
+rs set 60 0xbff23c80
+sb apply 3
+tss set 6 14 0x42a0b09a
+tss set 2 23 0x7051ad8d
+sb apply 1
+rs get 60
+rs get 155
+tss get 2 23
+tss get 6 14
+tss get 7 3
+tss get 7 25
+end
+case random-103
+device8 swvp
+tss get 6 23
+rs set 25 0x1aad7180
+sb capture 1
+sb begin
+tss set 5 20 0x2
+rs set 57 0x19c11c3
+rs set 55 0xa15ecb8
+sb end 3
+sb create 2 3
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 25
+rs get 55
+rs get 57
+tss get 5 20
+end
+case random-104
+device8 swvp
+sb create 3 2
+tss set 2 15 0x7cbb9f00
+sb begin
+tss set 1 11 0x42d6f89d
+tss set 3 14 0x174e60
+tss get 3 21
+rs set 141 0x2
+sb end 3
+rs get 141
+tss get 1 11
+tss get 2 15
+tss get 3 14
+end
+case random-105
+device8 swvp
+sb capture 1
+tss set 7 21 0xc671850f
+tss set 3 26 0xa7492bc6
+tss set 7 14 0x0
+tss set 3 24 0x0
+sb apply 3
+tss get 5 21
+sb create 2 2
+tss get 6 1
+tss get 7 19
+sb create 3 1
+rs get 27
+tss get 1 21
+tss set 5 16 0xbc23c5ff
+rs set 56 0xf4b57cf2
+sb release 3
+sb apply 3
+rs get 40
+tss set 2 13 0x8
+rs set 158 0x3f800000
+sb release 1
+tss set 7 10 0xfe40a8af
+tss get 7 20
+tss get 0 17
+tss set 4 2 0xa92dfca2
+rs set 172 0x563b3509
+tss get 7 14
+tss get 5 20
+tss get 4 21
+sb apply 2
+sb capture 3
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 56
+rs get 158
+rs get 172
+tss get 2 13
+tss get 3 24
+tss get 3 26
+tss get 4 2
+tss get 5 16
+tss get 7 10
+tss get 7 14
+tss get 7 21
+end
+case random-106
+device8 swvp
+tss set 7 7 0x1
+tss set 6 25 0x3989e13c
+tss set 6 25 0xd129c2bd
+rs set 160 0xb434077d
+sb create 1 3
+tss set 6 21 0x4
+sb release 2
+rs get 48
+tss set 5 19 0x0
+tss get 3 15
+tss get 2 9
+tss get 2 27
+rs set 140 0x80000000
+tss set 3 1 0x6
+tss get 3 20
+sb apply 0
+rs get 140
+rs get 160
+tss get 3 1
+tss get 5 19
+tss get 6 21
+tss get 6 25
+tss get 7 7
+end
+case random-107
+device8 swvp
+sb capture 3
+sb create 0 3
+tss set 5 2 0x2
+tss set 3 24 0x0
+sb apply 0
+tss set 0 27 0x162f53c3
+sb apply 3
+rs set 131 0x0
+sb begin
+sb end 2
+tss set 6 14 0x9d287e50
+tss set 4 1 0x4
+sb begin
+tss set 7 15 0xffffffff
+tss get 2 9
+tss get 4 14
+tss get 6 9
+tss get 1 15
+tss set 2 23 0x6
+tss set 6 9 0x4a3a1fb4
+tss get 5 11
+tss set 4 23 0x5d45261c
+tss set 2 20 0x7dedfef7
+sb end 0
+sb apply 1
+sb apply 2
+rs get 131
+tss get 0 27
+tss get 2 20
+tss get 2 23
+tss get 3 24
+tss get 4 1
+tss get 4 23
+tss get 5 2
+tss get 6 9
+tss get 6 14
+tss get 7 15
+end
+case random-108
+device8 swvp
+sb begin
+rs set 140 0xffffffff
+rs set 172 0x1
+tss set 0 8 0x2
+tss set 6 8 0x3
+sb end 2
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 140
+rs get 172
+tss get 0 8
+tss get 6 8
+end
+case random-109
+device8 swvp
+sb capture 2
+rs set 60 0x0
+sb create 1 2
+sb apply 3
+tss set 2 5 0x0
+tss set 4 2 0x10ac8bed
+rs get 53
+tss set 7 23 0x1
+rs set 170 0x8
+tss set 7 18 0x43b2399
+tss set 7 2 0x54f70377
+tss set 4 7 0x7bdbc458
+sb release 0
+tss get 5 11
+tss set 5 25 0x8562c6e3
+tss set 4 5 0x5f45371a
+sb apply 2
+tss get 6 19
+sb release 0
+sb apply 1
+tss get 7 26
+sb begin
+tss set 0 1 0x6
+rs get 10
+rs set 151 0x3a98c216
+sb end 0
+sb apply 2
+rs get 60
+rs get 151
+rs get 170
+tss get 0 1
+tss get 2 5
+tss get 4 2
+tss get 4 5
+tss get 4 7
+tss get 5 25
+tss get 7 2
+tss get 7 18
+tss get 7 23
+end
+case random-110
+device8 swvp
+tss get 2 16
+tss set 4 6 0x80000000
+tss set 2 6 0xe1cbeb5c
+tss get 0 10
+sb capture 0
+sb apply 0
+sb release 1
+sb apply 2
+tss get 3 3
+tss set 5 25 0xf217b73b
+sb apply 0
+tss set 6 7 0x73d8a00a
+rs set 131 0x499eb5d5
+tss get 7 27
+sb create 0 3
+sb begin
+tss set 0 3 0x23a983d0
+rs get 20
+tss set 5 11 0x3
+rs get 22
+rs get 171
+tss set 2 24 0xf11e354e
+sb end 1
+rs get 131
+tss get 0 3
+tss get 2 6
+tss get 2 24
+tss get 4 6
+tss get 5 11
+tss get 5 25
+tss get 6 7
+end
+case random-111
+device8 swvp
+sb apply 2
+sb release 3
+rs set 156 0x1
+tss get 3 5
+rs set 16 0x3
+sb begin
+tss get 7 26
+tss set 7 15 0x1
+tss set 5 13 0xaeaeb659
+tss get 5 22
+rs get 152
+rs set 133 0x0
+tss set 6 17 0x1
+rs set 40 0xffffffff
+tss set 4 3 0xc4adfbde
+tss get 4 21
+tss get 1 17
+rs set 20 0x1
+sb end 2
+tss set 7 1 0x1
+sb apply 2
+rs get 16
+rs get 20
+rs get 40
+rs get 133
+rs get 156
+tss get 4 3
+tss get 5 13
+tss get 6 17
+tss get 7 1
+tss get 7 15
+end
+case random-112
+device8 swvp
+tss get 1 9
+tss set 6 3 0x2
+sb begin
+rs set 162 0x1
+tss set 7 18 0x80000000
+tss set 1 23 0x3
+tss get 4 2
+tss set 1 6 0x3f800000
+sb end 2
+sb apply 2
+rs get 162
+tss get 1 6
+tss get 1 23
+tss get 6 3
+tss get 7 18
+end
+case random-113
+device8 swvp
+tss set 4 27 0x9
+sb apply 2
+tss set 7 11 0x9
+tss set 0 5 0x1
+sb apply 0
+tss get 2 7
+rs set 146 0x0
+rs get 146
+tss set 2 24 0x4
+rs set 24 0x1
+rs set 147 0x3f800000
+tss get 4 21
+sb capture 1
+sb capture 2
+tss set 5 23 0x5
+rs get 170
+sb apply 3
+tss set 1 20 0x0
+tss set 7 14 0x468d47cd
+tss get 1 27
+sb capture 2
+rs get 34
+tss set 6 16 0x10a9513a
+tss get 2 27
+tss set 7 21 0x12995dbf
+sb create 1 3
+sb apply 2
+tss set 2 26 0xe114f7c5
+sb apply 1
+sb apply 2
+rs get 24
+rs get 146
+rs get 147
+tss get 0 5
+tss get 1 20
+tss get 2 24
+tss get 2 26
+tss get 4 27
+tss get 5 23
+tss get 6 16
+tss get 7 11
+tss get 7 14
+tss get 7 21
+end
+case random-114
+device8 swvp
+sb create 0 3
+tss set 3 8 0x3d7a8e93
+tss set 4 25 0xb9dceeb
+tss set 1 21 0x25d9a0cb
+sb create 0 1
+tss get 7 2
+sb release 1
+tss set 1 20 0x1
+tss set 5 28 0x0
+tss set 4 9 0x6643438e
+sb apply 0
+sb create 0 2
+tss set 0 16 0x5
+sb begin
+tss set 6 25 0x42154460
+tss set 7 5 0xca4545f6
+tss set 1 7 0xcbad4738
+tss set 6 7 0x5fe99115
+sb end 1
+tss set 1 21 0xe431063d
+tss set 4 8 0xffffffff
+tss set 7 14 0x3634b184
+rs set 129 0xd1a0e929
+sb create 2 3
+sb release 3
+tss get 3 15
+sb capture 3
+tss set 7 21 0xffffffff
+tss set 2 3 0x80000000
+sb apply 1
+rs get 129
+tss get 0 16
+tss get 1 7
+tss get 1 20
+tss get 1 21
+tss get 2 3
+tss get 3 8
+tss get 4 8
+tss get 4 9
+tss get 4 25
+tss get 5 28
+tss get 6 7
+tss get 6 25
+tss get 7 5
+tss get 7 14
+tss get 7 21
+end
+case random-115
+device8 swvp
+rs set 22 0xffffffff
+tss get 7 2
+tss get 3 9
+sb capture 0
+rs get 133
+sb release 1
+rs set 25 0x3f800000
+tss set 7 15 0x7ba3adad
+sb release 2
+tss set 3 25 0x3
+tss set 1 18 0x8bad47cd
+rs set 171 0xaaaec169
+sb capture 0
+tss set 1 10 0x31c34a4d
+tss set 3 27 0xfb016090
+sb create 0 2
+tss get 7 6
+rs set 143 0x2
+tss set 5 28 0xcf6970b1
+sb release 2
+sb capture 0
+sb apply 3
+tss set 3 21 0x1
+sb apply 3
+tss set 7 15 0xfa41447c
+sb begin
+tss get 0 15
+tss get 5 28
+sb end 2
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 22
+rs get 25
+rs get 143
+rs get 171
+tss get 1 10
+tss get 1 18
+tss get 3 21
+tss get 3 25
+tss get 3 27
+tss get 5 28
+tss get 7 15
+end
+case random-116
+device8 swvp
+sb create 1 3
+tss set 7 26 0x80bee842
+tss set 4 8 0x1
+sb apply 1
+tss set 2 17 0xd08462a9
+sb begin
+tss get 6 3
+tss set 7 16 0x6a2d3c96
+tss set 6 5 0x6
+tss set 4 16 0xcfb7f980
+tss get 3 24
+sb end 2
+sb apply 1
+sb apply 2
+tss get 2 17
+tss get 4 8
+tss get 4 16
+tss get 6 5
+tss get 7 16
+tss get 7 26
+end
+case random-117
+device8 swvp
+rs get 140
+tss set 2 15 0x3f800000
+sb create 3 2
+tss set 7 4 0xffffffff
+sb apply 3
+tss get 7 1
+tss get 6 21
+tss set 1 15 0x2
+tss get 2 13
+sb release 1
+sb release 0
+sb release 0
+tss set 2 25 0x1
+rs set 19 0x2
+tss set 0 28 0x7002b5d2
+tss set 6 18 0x1
+sb begin
+sb end 0
+sb apply 1
+rs get 19
+tss get 0 28
+tss get 1 15
+tss get 2 15
+tss get 2 25
+tss get 6 18
+tss get 7 4
+end
+case random-118
+device8 swvp
+sb capture 2
+sb create 2 2
+sb create 0 1
+tss set 3 16 0x0
+tss get 3 1
+rs get 8
+rs set 16 0x3adf61ce
+sb release 2
+tss set 3 15 0xea2d3809
+tss set 4 6 0xd9831dc4
+tss set 1 3 0xba8b0bdf
+sb release 3
+tss set 4 4 0x3f800000
+tss get 6 1
+sb apply 0
+rs get 16
+tss get 1 3
+tss get 3 15
+tss get 3 16
+tss get 4 4
+tss get 4 6
+end
+case random-119
+device8 swvp
+sb create 0 2
+tss get 4 13
+sb capture 3
+tss get 3 25
+sb capture 1
+sb begin
+tss set 3 28 0xd2fe409b
+rs get 130
+tss set 2 19 0xb6842259
+rs set 136 0x2555282d
+tss set 5 14 0x478bb573
+tss get 4 23
+tss set 3 6 0x1
+tss set 0 22 0xca0ce39e
+sb end 0
+rs get 57
+sb apply 2
+tss get 3 25
+rs get 132
+tss set 7 25 0x9
+sb capture 0
+sb apply 1
+rs get 136
+tss get 0 22
+tss get 2 19
+tss get 3 6
+tss get 3 28
+tss get 5 14
+tss get 7 25
+end
+case random-120
+device8 swvp
+tss set 5 20 0x38491288
+tss get 7 16
+tss get 0 25
+rs set 38 0x0
+sb create 1 2
+sb release 3
+rs get 57
+sb apply 0
+sb apply 1
+rs get 38
+tss get 5 20
+end
+case random-121
+device8 swvp
+tss set 2 11 0x4c18e07a
+tss set 5 13 0xffffffff
+rs set 25 0x2
+tss set 7 7 0x5
+rs set 52 0xcd63b75c
+sb release 2
+sb begin
+tss set 3 3 0xe7ffc773
+tss set 6 17 0x501afe2f
+rs get 54
+tss get 5 9
+tss get 6 6
+rs set 27 0xc34ab6ca
+tss set 4 1 0xae4dd24b
+rs get 26
+tss set 7 7 0xec78fb08
+sb end 0
+sb apply 0
+sb apply 2
+rs get 25
+rs get 27
+rs get 52
+tss get 2 11
+tss get 3 3
+tss get 4 1
+tss get 5 13
+tss get 6 17
+tss get 7 7
+end
+case random-122
+device8 swvp
+tss set 3 17 0x80000000
+sb begin
+tss get 0 25
+tss get 1 19
+tss get 5 6
+rs set 168 0x0
+tss set 2 2 0x4742e7b8
+rs set 128 0x3bc1783
+tss set 6 10 0x2
+tss set 7 24 0xc43029d9
+tss set 5 14 0x3f800000
+sb end 1
+sb apply 1
+rs get 128
+rs get 168
+tss get 2 2
+tss get 3 17
+tss get 5 14
+tss get 6 10
+tss get 7 24
+end
+case random-123
+device8 swvp
+tss set 4 13 0xffffffff
+tss set 3 13 0x1b4e662c
+tss set 2 26 0x5
+tss get 0 6
+sb apply 2
+tss set 7 17 0xffffffff
+rs set 129 0x8
+sb capture 1
+rs set 47 0x40ca6923
+tss get 1 17
+tss get 7 18
+tss set 5 16 0x8bb1c38e
+rs set 16 0xe7f9a3d2
+rs set 146 0x2
+sb apply 3
+tss set 5 3 0x2f03905c
+tss set 2 11 0x9a813ecf
+tss set 6 14 0x1
+tss set 0 20 0x5
+rs set 141 0xffffffff
+rs set 158 0x80000000
+sb apply 1
+tss set 2 6 0xd6ac924a
+sb apply 2
+sb create 2 1
+sb begin
+tss set 4 6 0x80000000
+rs set 145 0x1
+sb end 1
+sb capture 1
+sb create 2 1
+sb capture 1
+tss get 5 27
+sb apply 2
+sb create 3 3
+sb capture 0
+sb apply 2
+rs get 16
+rs get 47
+rs get 129
+rs get 141
+rs get 145
+rs get 146
+rs get 158
+tss get 0 20
+tss get 2 6
+tss get 2 11
+tss get 2 26
+tss get 3 13
+tss get 4 6
+tss get 4 13
+tss get 5 3
+tss get 5 16
+tss get 6 14
+tss get 7 17
+end
+case random-124
+device8 swvp
+rs get 38
+rs get 59
+tss get 4 18
+tss set 0 25 0xa6745425
+rs set 36 0x3f800000
+tss set 3 15 0x2bee024a
+sb create 3 1
+rs set 137 0x3f800000
+rs set 47 0x4b3fcabb
+tss set 3 22 0x1805d33d
+sb create 3 3
+sb apply 3
+sb create 0 1
+tss set 6 26 0x1
+tss set 5 18 0xd66864db
+tss set 0 1 0x0
+sb begin
+tss get 3 15
+rs set 155 0x9
+tss set 7 27 0x80000000
+tss set 7 8 0x0
+rs set 141 0x946cced5
+tss set 7 2 0x0
+tss set 5 7 0xb968f631
+rs set 37 0x3e2782ce
+sb end 1
+sb apply 2
+rs get 36
+rs get 37
+rs get 47
+rs get 137
+rs get 141
+rs get 155
+tss get 0 1
+tss get 0 25
+tss get 3 15
+tss get 3 22
+tss get 5 7
+tss get 5 18
+tss get 6 26
+tss get 7 2
+tss get 7 8
+tss get 7 27
+end
+case random-125
+device8 swvp
+sb release 1
+tss set 7 10 0xdc0e611a
+tss set 7 16 0x5
+tss set 2 20 0x8760a281
+rs get 38
+tss get 1 5
+sb apply 0
+sb apply 1
+tss get 2 20
+tss get 7 10
+tss get 7 16
+end
+case random-126
+device8 swvp
+rs set 55 0x3de8efd8
+tss get 1 21
+sb apply 3
+rs set 57 0xcdb621af
+tss get 2 21
+sb release 1
+tss set 0 22 0xfbdc6ab8
+rs set 14 0x1
+tss set 2 15 0xf7431bbf
+tss get 7 4
+tss set 5 17 0xb94f7892
+tss get 5 13
+sb apply 2
+sb create 0 2
+tss get 5 18
+tss get 1 19
+sb apply 0
+tss set 0 24 0x2
+sb begin
+rs set 59 0xb503357d
+tss set 6 14 0x0
+tss set 3 1 0x9d691863
+tss set 5 24 0x0
+sb end 1
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 14
+rs get 55
+rs get 57
+rs get 59
+tss get 0 22
+tss get 0 24
+tss get 2 15
+tss get 3 1
+tss get 5 17
+tss get 5 24
+tss get 6 14
+end
+case random-127
+device8 swvp
+tss get 2 6
+tss set 5 25 0x1
+tss set 7 10 0x0
+tss get 7 28
+tss get 4 8
+rs get 143
+sb release 2
+tss set 3 27 0x6b230d20
+tss get 3 21
+tss set 6 2 0x6dd52bb0
+tss set 1 13 0x0
+tss get 2 10
+sb apply 0
+tss set 4 9 0x0
+tss get 6 19
+tss get 3 10
+rs set 128 0x3f800000
+sb begin
+rs get 52
+rs set 56 0x6
+sb end 2
+sb apply 2
+rs get 56
+rs get 128
+tss get 1 13
+tss get 3 27
+tss get 4 9
+tss get 5 25
+tss get 6 2
+tss get 7 10
+end
+case random-128
+device8 swvp
+rs set 146 0x3f800000
+tss get 5 27
+tss set 5 19 0xe2236b98
+tss set 2 25 0xffffffff
+tss set 6 27 0x4
+tss set 7 17 0xa6c075d8
+tss get 3 1
+sb begin
+rs set 172 0x80000000
+tss set 3 11 0x0
+tss get 1 25
+tss set 1 14 0x0
+tss set 2 10 0xc99bc7af
+rs get 52
+tss set 5 21 0x3f800000
+tss get 7 20
+tss set 4 28 0x80000000
+sb end 0
+sb apply 0
+sb apply 1
+rs get 146
+rs get 172
+tss get 1 14
+tss get 2 10
+tss get 2 25
+tss get 3 11
+tss get 4 28
+tss get 5 19
+tss get 5 21
+tss get 6 27
+tss get 7 17
+end
+case random-129
+device8 swvp
+tss set 1 20 0x8
+sb apply 3
+tss get 0 6
+sb begin
+sb end 1
+sb apply 0
+sb apply 1
+tss get 1 20
+end
+case random-130
+device8 swvp
+tss set 7 28 0x6d76a469
+tss set 2 11 0x1
+tss set 0 2 0x9
+sb create 0 2
+tss set 4 23 0x1
+tss set 5 11 0x9
+tss set 7 20 0x9
+tss get 3 9
+tss set 4 23 0x97fe4890
+sb apply 1
+tss get 6 4
+sb create 1 1
+tss set 6 2 0x8
+rs get 140
+sb release 2
+rs set 58 0xffffffff
+sb create 3 2
+rs get 35
+sb apply 0
+rs get 58
+tss get 0 2
+tss get 2 11
+tss get 4 23
+tss get 5 11
+tss get 6 2
+tss get 7 20
+tss get 7 28
+end
+case random-131
+device8 swvp
+tss set 6 17 0x3f800000
+tss set 0 19 0x9bc3364b
+sb apply 1
+rs get 37
+sb create 3 1
+sb apply 1
+sb create 1 3
+tss get 1 16
+tss get 1 13
+tss set 5 28 0x5
+tss set 3 5 0x28efea57
+tss get 6 20
+sb apply 1
+tss set 2 16 0x7
+tss set 6 6 0x48185cfd
+rs set 15 0x3
+tss set 4 17 0xeb550739
+tss set 4 7 0x4bdb56a8
+tss set 2 6 0xe529d721
+tss set 2 1 0x24eaa59
+tss set 4 17 0x7
+rs set 167 0x1
+tss set 7 5 0x5
+rs get 15
+rs get 167
+tss get 0 19
+tss get 2 1
+tss get 2 6
+tss get 2 16
+tss get 3 5
+tss get 4 7
+tss get 4 17
+tss get 5 28
+tss get 6 6
+tss get 6 17
+tss get 7 5
+end
+case random-132
+device8 swvp
+tss set 5 2 0xf0cef52f
+sb capture 2
+tss get 4 20
+tss get 6 16
+sb apply 3
+sb capture 2
+tss set 2 18 0x0
+sb create 2 3
+sb create 2 1
+tss set 3 26 0x9
+sb begin
+tss set 0 14 0xa6b15ad2
+tss set 1 7 0xc9e4900a
+tss get 4 6
+tss set 5 23 0xf6eea5cb
+tss set 1 1 0xffffffff
+tss set 5 13 0xffffffff
+tss set 0 16 0x3f800000
+tss set 2 18 0xcce24e37
+rs set 172 0xfe96b8ad
+tss set 7 17 0x1
+rs set 147 0xb0a68fc7
+tss set 0 2 0x8
+rs set 159 0xdda6d3c8
+rs get 38
+tss set 1 10 0xdbd57292
+tss set 1 24 0x61abd71a
+tss get 2 6
+tss set 3 3 0x80000000
+sb end 3
+sb apply 1
+rs get 147
+rs get 159
+rs get 172
+tss get 0 2
+tss get 0 14
+tss get 0 16
+tss get 1 1
+tss get 1 7
+tss get 1 10
+tss get 1 24
+tss get 2 18
+tss get 3 3
+tss get 3 26
+tss get 5 2
+tss get 5 13
+tss get 5 23
+tss get 7 17
+end
+case random-133
+device8 swvp
+sb release 2
+tss set 6 27 0xa223484
+tss set 5 23 0x3
+tss set 0 21 0xd76f609d
+tss get 5 28
+tss set 2 25 0x39f15d65
+tss set 5 2 0x5e347720
+tss get 6 16
+tss set 6 27 0x9
+tss set 2 7 0xc91e4e3b
+sb capture 3
+sb capture 3
+rs set 36 0xe5337917
+tss set 6 27 0x300597d3
+tss get 4 24
+tss set 5 8 0xaf0c1fbd
+tss set 4 24 0x80000000
+rs set 152 0x1
+tss get 4 6
+rs set 27 0xffffffff
+tss set 4 10 0x9
+rs get 130
+tss get 7 10
+tss set 5 13 0x9e2c4890
+tss set 2 10 0x80000000
+tss get 7 27
+rs set 7 0x34487e1b
+rs set 10 0x4709ff36
+tss set 3 19 0x0
+tss set 3 18 0x50130baa
+sb apply 1
+sb apply 2
+rs get 7
+rs get 10
+rs get 27
+rs get 36
+rs get 152
+tss get 0 21
+tss get 2 7
+tss get 2 10
+tss get 2 25
+tss get 3 18
+tss get 3 19
+tss get 4 10
+tss get 4 24
+tss get 5 2
+tss get 5 8
+tss get 5 13
+tss get 5 23
+tss get 6 27
+end
+case random-134
+device8 swvp
+tss set 5 5 0x0
+tss get 2 22
+tss set 6 17 0x12c35b25
+tss set 4 27 0x1
+rs set 48 0x0
+tss set 7 13 0xffffffff
+tss set 0 2 0xa46dd085
+rs get 22
+tss set 7 26 0x80000000
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 48
+tss get 0 2
+tss get 4 27
+tss get 5 5
+tss get 6 17
+tss get 7 13
+tss get 7 26
+end
+case random-135
+device8 swvp
+tss set 0 20 0x80000000
+sb capture 0
+tss set 0 15 0x1
+rs get 48
+tss set 2 22 0x342c679
+tss set 2 9 0x7b5d6334
+tss get 7 9
+sb release 0
+tss set 6 8 0xc57c670b
+sb release 2
+sb release 1
+tss set 4 1 0xffffffff
+sb apply 0
+sb apply 1
+tss get 0 15
+tss get 0 20
+tss get 2 9
+tss get 2 22
+tss get 4 1
+tss get 6 8
+end
+case random-136
+device8 swvp
+tss set 1 14 0x5deb93db
+sb capture 0
+sb apply 2
+tss set 6 22 0x1
+tss set 6 26 0xa07c53c3
+tss set 1 3 0x1
+rs get 38
+sb begin
+tss set 1 21 0x5607e38a
+rs get 47
+rs set 153 0x9478b2e5
+tss set 1 18 0x7
+rs set 53 0x82367277
+rs set 155 0xf2dbd242
+tss set 3 15 0xffffffff
+tss get 5 21
+tss set 1 3 0xaa45c34
+rs set 146 0xbbb2d7ab
+tss set 3 24 0x0
+tss get 4 1
+rs set 168 0x983d96c4
+tss set 1 1 0x9a6aee4a
+sb end 3
+sb apply 1
+rs get 53
+rs get 146
+rs get 153
+rs get 155
+rs get 168
+tss get 1 1
+tss get 1 3
+tss get 1 14
+tss get 1 18
+tss get 1 21
+tss get 3 15
+tss get 3 24
+tss get 6 22
+tss get 6 26
+end
+case random-137
+device8 swvp
+rs set 134 0x809a6783
+rs get 15
+tss set 2 15 0x36535c46
+sb begin
+tss set 4 7 0x453eeab6
+tss set 0 19 0xaf818cfd
+tss set 6 4 0xc46075e3
+sb end 2
+tss set 4 1 0xe9e78b38
+tss set 1 15 0x527bc181
+tss set 0 28 0x1d30e136
+sb apply 2
+tss set 1 16 0x9c140946
+tss get 0 3
+tss set 1 21 0x1
+sb apply 2
+rs get 134
+tss get 0 19
+tss get 0 28
+tss get 1 15
+tss get 1 16
+tss get 1 21
+tss get 2 15
+tss get 4 1
+tss get 4 7
+tss get 6 4
+end
+case random-138
+device8 swvp
+tss get 7 4
+tss get 0 23
+tss set 5 20 0xbb2b8dcb
+rs set 37 0x6
+tss set 2 19 0x0
+tss set 4 9 0x3f800000
+tss set 5 1 0x8a8ef9f0
+sb release 1
+sb release 0
+rs set 23 0x6
+tss get 7 16
+rs set 143 0x2f0ab363
+tss set 5 14 0x0
+sb release 2
+sb apply 0
+tss set 5 18 0x6
+tss get 1 14
+sb apply 0
+sb apply 1
+sb apply 2
+rs get 23
+rs get 37
+rs get 143
+tss get 2 19
+tss get 4 9
+tss get 5 1
+tss get 5 14
+tss get 5 18
+tss get 5 20
+end
+case random-139
+device8 swvp
+sb apply 2
+tss set 6 19 0x3f800000
+tss get 6 16
+rs set 35 0x1
+sb apply 0
+tss get 6 1
+tss get 0 24
+sb apply 3
+sb apply 0
+tss set 1 10 0x4
+tss set 1 20 0x78c239fc
+tss set 3 21 0x70218f04
+rs set 10 0x1
+sb create 0 2
+sb apply 3
+tss set 7 16 0x2
+tss set 7 20 0xe26408ca
+tss get 1 2
+sb release 2
+tss set 5 22 0x0
+sb begin
+tss get 4 24
+sb end 2
+tss set 4 22 0x8
+sb release 1
+tss get 4 18
+tss set 1 17 0xf3a1ac81
+tss set 5 20 0xffffffff
+sb create 2 3
+rs get 47
+sb begin
+sb end 3
+sb apply 1
+sb apply 2
+rs get 10
+rs get 35
+tss get 1 10
+tss get 1 17
+tss get 1 20
+tss get 3 21
+tss get 4 22
+tss get 5 20
+tss get 5 22
+tss get 6 19
+tss get 7 16
+tss get 7 20
+end
+case random-140
+device8 swvp
+rs set 172 0x80000000
+tss set 2 15 0x63129314
+rs get 170
+tss set 6 7 0x8
+sb apply 1
+tss set 1 8 0x2
+sb release 2
+tss set 3 1 0x0
+tss set 5 4 0xffffffff
+sb begin
+tss set 4 8 0xa2b71398
+tss get 4 22
+rs set 148 0x0
+tss set 1 1 0xd7fe419c
+tss get 7 10
+tss set 1 9 0x88fbba00
+tss get 2 5
+tss get 4 24
+sb end 3
+tss get 6 24
+tss set 7 25 0x98144e2e
+sb capture 2
+sb apply 1
+tss get 1 22
+sb capture 2
+sb apply 0
+sb apply 2
+rs get 148
+rs get 172
+tss get 1 1
+tss get 1 8
+tss get 1 9
+tss get 2 15
+tss get 3 1
+tss get 4 8
+tss get 5 4
+tss get 6 7
+tss get 7 25
+end
+case random-141
+device8 swvp
+tss set 5 23 0x27021828
+tss get 2 18
+tss get 5 19
+sb apply 1
+tss set 2 6 0x5
+sb create 3 2
+sb create 3 1
+sb capture 1
+tss set 5 21 0x1
+rs set 56 0x5
+sb create 3 3
+tss get 2 1
+sb create 0 3
+sb apply 0
+rs get 56
+tss get 2 6
+tss get 5 21
+tss get 5 23
+end
+case random-142
+device8 swvp
+tss set 6 22 0x2aa07389
+tss get 6 8
+tss set 0 18 0xeedf8a9a
+sb create 0 3
+sb begin
+tss set 2 5 0x7
+tss get 6 28
+rs get 22
+rs set 8 0x49319cbc
+sb end 0
+sb apply 1
+tss set 3 16 0xc1bd0a25
+tss set 6 13 0x0
+rs get 133
+tss set 4 11 0x8
+rs set 171 0x2648634
+sb apply 1
+sb apply 2
+rs get 8
+rs get 171
+tss get 0 18
+tss get 2 5
+tss get 3 16
+tss get 4 11
+tss get 6 13
+tss get 6 22
+end
+case random-143
+device8 swvp
+tss get 6 13
+tss set 3 23 0x3
+tss get 4 17
+tss get 0 2
+sb apply 0
+sb capture 0
+sb apply 1
+rs set 143 0x2
+tss set 3 26 0x5
+tss set 7 24 0x261c2a93
+rs set 59 0x7
+tss set 5 27 0x7a74852d
+tss set 3 4 0x1
+tss get 5 6
+tss get 3 26
+tss set 2 15 0x3ab37f59
+sb release 0
+rs set 136 0x9673e5a8
+tss set 1 3 0x0
+tss get 1 3
+rs set 36 0xc4e08482
+rs get 143
+tss set 1 16 0x39cd6fc0
+tss get 6 15
+sb apply 1
+sb apply 2
+rs get 36
+rs get 59
+rs get 136
+rs get 143
+tss get 1 3
+tss get 1 16
+tss get 2 15
+tss get 3 4
+tss get 3 23
+tss get 3 26
+tss get 5 27
+tss get 7 24
+end
+case random-144
+device8 swvp
+tss set 1 1 0x0
+sb release 2
+tss get 1 2
+tss get 3 24
+tss set 3 28 0x3f800000
+tss get 2 10
+tss set 1 26 0xbfcf4963
+sb capture 0
+tss set 1 24 0x8
+tss set 4 11 0x658e041b
+tss get 1 1
+tss get 1 24
+tss get 1 26
+tss get 3 28
+tss get 4 11
+end
+case random-145
+device8 swvp
+tss get 5 10
+tss get 0 15
+tss set 3 3 0xdc3b6e0f
+tss get 1 6
+tss set 7 27 0x2
+sb capture 1
+tss get 6 14
+tss get 7 10
+sb release 3
+rs set 171 0x9
+sb capture 0
+tss get 6 9
+tss set 1 27 0x3f800000
+rs set 170 0x2cab2285
+tss set 7 22 0x0
+tss set 7 2 0x80000000
+sb begin
+tss set 4 24 0x80000000
+tss get 4 3
+tss set 3 8 0x9d5467de
+sb end 2
+tss set 6 28 0x80000000
+rs set 131 0x5edb39a7
+sb capture 3
+rs set 137 0x5
+sb release 0
+tss get 7 15
+sb apply 2
+tss get 4 19
+rs set 137 0xcdd59bd2
+tss get 7 25
+tss set 5 28 0x1
+tss set 3 3 0x4a373bfa
+sb apply 0
+tss get 3 15
+sb capture 2
+sb begin
+sb end 0
+sb apply 0
+rs get 131
+rs get 137
+rs get 170
+rs get 171
+tss get 1 27
+tss get 3 3
+tss get 3 8
+tss get 4 24
+tss get 5 28
+tss get 6 28
+tss get 7 2
+tss get 7 22
+tss get 7 27
+end
+case random-146
+device8 swvp
+tss set 1 20 0xffffffff
+tss set 6 17 0x8
+tss get 4 21
+sb create 2 3
+rs get 47
+tss get 5 18
+tss set 3 21 0xffffffff
+tss set 0 4 0x80000000
+sb apply 2
+tss set 4 3 0x1
+rs set 172 0x9a3a2582
+tss set 5 17 0x0
+sb create 0 1
+sb apply 2
+tss set 0 25 0x8
+rs set 146 0x3
+tss get 6 7
+tss set 0 14 0x760d6a83
+sb apply 0
+sb create 1 2
+sb create 1 1
+tss set 2 8 0x0
+sb capture 0
+tss set 5 15 0x6
+rs get 145
+sb apply 3
+tss set 5 26 0x3e8e7a02
+tss set 2 28 0x9
+sb create 1 1
+sb apply 1
+rs get 146
+rs get 172
+tss get 0 4
+tss get 0 14
+tss get 0 25
+tss get 1 20
+tss get 2 8
+tss get 2 28
+tss get 3 21
+tss get 4 3
+tss get 5 15
+tss get 5 17
+tss get 5 26
+tss get 6 17
+end
+case random-147
+device8 swvp
+tss set 3 26 0x5193feba
+sb begin
+rs get 59
+tss set 0 25 0x25e8b620
+tss set 2 24 0x1
+tss set 5 17 0x1
+tss get 3 24
+tss get 5 27
+tss set 7 11 0x7
+tss get 1 28
+tss set 4 5 0x0
+tss get 0 24
+sb end 1
+sb apply 2
+tss get 0 25
+tss get 2 24
+tss get 3 26
+tss get 4 5
+tss get 5 17
+tss get 7 11
+end
+case random-148
+device8 swvp
+tss set 1 4 0x0
+sb release 1
+rs get 137
+tss set 6 1 0x0
+tss get 3 9
+tss set 1 23 0x80000000
+tss set 0 7 0x0
+rs get 14
+tss set 5 8 0x8
+sb apply 0
+sb begin
+tss get 1 25
+tss get 6 20
+tss set 7 22 0x2
+sb end 2
+sb create 2 2
+tss get 1 15
+tss get 2 26
+sb apply 3
+rs get 132
+tss set 3 6 0x72113142
+sb capture 0
+tss set 3 18 0x54308627
+tss set 3 5 0xd823dcc6
+sb apply 2
+sb release 0
+rs get 27
+sb apply 2
+tss get 0 7
+tss get 1 4
+tss get 1 23
+tss get 3 5
+tss get 3 6
+tss get 3 18
+tss get 5 8
+tss get 6 1
+tss get 7 22
+end
+case random-149
+device8 swvp
+rs set 48 0xad319e97
+rs set 161 0x951d29db
+rs get 133
+rs set 134 0x6b6de2a9
+tss set 3 15 0x7
+tss set 3 4 0x3705dd4d
+tss set 1 26 0x4343687f
+tss set 1 21 0x908776d
+sb release 1
+tss set 5 25 0xffffffff
+sb apply 3
+tss set 0 23 0x8a3cb8ac
+tss set 1 11 0x845c6171
+sb begin
+tss set 5 18 0x260b3675
+tss set 1 6 0xffffffff
+sb end 3
+sb apply 0
+rs get 48
+rs get 134
+rs get 161
+tss get 0 23
+tss get 1 6
+tss get 1 11
+tss get 1 21
+tss get 1 26
+tss get 3 4
+tss get 3 15
+tss get 5 18
+tss get 5 25
+end
+case edge-set-legacy-rs
+device8 swvp
+rs set 0 5
+rs get 0
+rs set 42 6
+rs get 42
+rs set 165 7
+rs get 165
+rs set 1 8
+rs get 1
+end
+case edge-set-legacy-tss
+device8 swvp
+tss set 0 0 5
+tss get 0 0
+tss set 1 12 6
+tss get 1 12
+tss set 2 29 7
+tss get 2 29
+end
+case edge-end-without-begin
+device8 swvp
+sb end 0
+sb apply 0
+end
+case edge-begin-twice
+device8 swvp
+sb begin
+sb begin
+rs set 7 0
+sb end 0
+rs get 7
+end
+case edge-calls-while-recording
+device8 swvp
+sb create 1 1
+sb begin
+rs set 7 0
+sb apply 1
+sb capture 1
+sb create 2 2
+sb end 0
+rs get 7
+end
+case edge-type-0
+device8 swvp
+sb create 0 0
+rs set 7 0
+sb apply 0
+rs get 7
+end
+case edge-type-4
+device8 swvp
+sb create 0 4
+rs set 7 0
+sb apply 0
+rs get 7
+end
