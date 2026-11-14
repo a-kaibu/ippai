@@ -272,6 +272,14 @@ fn wmv2_col(b: &mut [i16], c: usize) {
 }
 
 fn wmv2(b: &mut [i16; 64]) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return crate::simd::wmv2(b);
+    #[allow(unreachable_code)]
+    wmv2_c(b)
+}
+
+/// wmv2 in scalar code
+pub(crate) fn wmv2_c(b: &mut [i16; 64]) {
     for i in 0..8 {
         wmv2_row(&mut b[i * 8..i * 8 + 8]);
     }
@@ -282,6 +290,9 @@ fn wmv2(b: &mut [i16; 64]) {
 
 pub fn wmv2_put(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16; 64]) {
     wmv2(b);
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return crate::simd::put8x8(dst, off, stride, b);
+    #[allow(unreachable_code)]
     for y in 0..8 {
         for x in 0..8 {
             dst[off + y * stride + x] = clip(b[y * 8 + x] as i32);
@@ -291,6 +302,9 @@ pub fn wmv2_put(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16; 64]) {
 
 pub fn wmv2_add(dst: &mut [u8], off: usize, stride: usize, b: &mut [i16; 64]) {
     wmv2(b);
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return crate::simd::add8x8(dst, off, stride, b);
+    #[allow(unreachable_code)]
     for y in 0..8 {
         for x in 0..8 {
             let d = &mut dst[off + y * stride + x];

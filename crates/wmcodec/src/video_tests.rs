@@ -278,7 +278,8 @@ mod robust {
         static S: std::sync::OnceLock<(Version, usize, usize, Vec<u8>, Vec<Vec<u8>>)> = std::sync::OnceLock::new();
         S.get_or_init(|| {
             if !have_ffmpeg() {
-                return (Version::Wmv2, 32, 32, vec![0x2c, 0x83, 0x60, 0x02], vec![vec![0x55; 64], vec![0xaa; 64]]);
+                // (25 fps, mspel, loop filter, ABT, J-type, top-left MV, per-MB RL, one slice)
+                return (Version::Wmv2, 32, 32, vec![0xc8, 0x64, 0xfc, 0x80], vec![vec![0x55; 64], vec![0xaa; 64]]);
             }
             let t = Tmp::new("sample");
             let f = t.path("s.wmv");

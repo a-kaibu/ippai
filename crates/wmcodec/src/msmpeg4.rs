@@ -39,6 +39,37 @@ pub struct Picture {
     pub key: bool,
 }
 
+impl Picture {
+    /// BT.601 limited range to B G R A, top row first (what Windows' WMV decoder DMO gives as
+    /// RGB).
+    pub fn bgra(&self) -> Vec<u8> {
+        let (w, h) = (self.width, self.height);
+        let mut out = vec![0u8; w * h * 4];
+        for (y, o) in out.chunks_exact_mut(w * 4).enumerate() {
+            let (yr, ur, vr) = (&self.planes[0][y * self.stride[0]..][..w], &self.planes[1][(y / 2) * self.stride[1]..][..w.div_ceil(2)], &self.planes[2][(y / 2) * self.stride[1]..][..w.div_ceil(2)]);
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            let done = crate::simd::bgra_row(yr, ur, vr, o);
+            #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+            let done = 0;
+            bgra_row_c(&yr[done..], &ur[done / 2..], &vr[done / 2..], &mut o[done * 4..]);
+        }
+        out
+    }
+}
+
+/// One row of Picture::bgra (`y` of an even column first)
+pub(crate) fn bgra_row_c(y: &[u8], u: &[u8], v: &[u8], out: &mut [u8]) {
+    for (x, (&l, o)) in y.iter().zip(out.chunks_exact_mut(4)).enumerate() {
+        let c = (l as i32 - 16) * 298;
+        let d = u[x / 2] as i32 - 128;
+        let e = v[x / 2] as i32 - 128;
+        o[0] = ((c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+        o[1] = ((c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+        o[2] = ((c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+        o[3] = 255;
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // tables
 
@@ -1293,14 +1324,14 @@ impl Decoder {
         let (uvx, uvy) = (src_x >> 1, src_y >> 1);
         let (pw, ph) = ((self.mb_w * 16) as i32, (self.mb_h * 16) as i32);
         let mut win = [0u8; 17 * 17];
-        hpel::window(&last.y, self.ls, pw, ph, src_x, src_y, 17, 17, &mut win);
+        let (s, ss) = hpel::source(&last.y, self.ls, pw, ph, src_x, src_y, 17, 17, &mut win);
         let yo = self.mb_y * 16 * self.ls + self.mb_x * 16;
-        hpel::hpel(&mut self.cur.y, yo, self.ls, &win, 17, 16, 16, dxy, rnd);
+        hpel::hpel(&mut self.cur.y, yo, self.ls, s, ss, 16, 16, dxy, rnd);
         let co = self.mb_y * 8 * self.uvls + self.mb_x * 8;
         for (src, dst) in [(&last.u, &mut self.cur.u), (&last.v, &mut self.cur.v)] {
             let mut w = [0u8; 81];
-            hpel::window(src, self.uvls, pw / 2, ph / 2, uvx, uvy, 9, 9, &mut w);
-            hpel::hpel(dst, co, self.uvls, &w, 9, 8, 8, uvdxy, rnd);
+            let (s, ss) = hpel::source(src, self.uvls, pw / 2, ph / 2, uvx, uvy, 9, 9, &mut w);
+            hpel::hpel(dst, co, self.uvls, s, ss, 8, 8, uvdxy, rnd);
         }
     }
 
@@ -1320,10 +1351,10 @@ impl Decoder {
         }
         let (pw, ph) = ((self.mb_w * 16) as i32, (self.mb_h * 16) as i32);
         let mut win = [0u8; 19 * 19];
-        hpel::window(&last.y, self.ls, pw, ph, src_x - 1, src_y - 1, 19, 19, &mut win);
+        let (s, ss) = hpel::source(&last.y, self.ls, pw, ph, src_x - 1, src_y - 1, 19, 19, &mut win);
         let yo = self.mb_y * 16 * self.ls + self.mb_x * 16;
         for (bx, by) in [(0, 0), (8, 0), (0, 8), (8, 8)] {
-            hpel::mspel8(&mut self.cur.y, yo + by * self.ls + bx, self.ls, &win, 20 + by * 19 + bx, 19, dxy);
+            hpel::mspel8(&mut self.cur.y, yo + by * self.ls + bx, self.ls, s, (1 + by) * ss + 1 + bx, ss, dxy);
         }
         let mut cdxy = 0;
         if mx & 3 != 0 {
@@ -1344,8 +1375,8 @@ impl Decoder {
         let co = self.mb_y * 8 * self.uvls + self.mb_x * 8;
         for (src, dst) in [(&last.u, &mut self.cur.u), (&last.v, &mut self.cur.v)] {
             let mut wn = [0u8; 81];
-            hpel::window(src, self.uvls, pw / 2, ph / 2, ux, uy, 9, 9, &mut wn);
-            hpel::hpel(dst, co, self.uvls, &wn, 9, 8, 8, cdxy, rnd);
+            let (s, ss) = hpel::source(src, self.uvls, pw / 2, ph / 2, ux, uy, 9, 9, &mut wn);
+            hpel::hpel(dst, co, self.uvls, s, ss, 8, 8, cdxy, rnd);
         }
     }
 

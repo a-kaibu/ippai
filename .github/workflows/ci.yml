@@ -579,6 +579,10 @@ jobs:
           key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm-msitools-wixl-nsis-ipafont
       - name: Build
         run: tools/ci/build.sh
+      # (the SIMD128 kernels of the WMV / WMA decoders against their scalar code, and the rest of
+      # wmcodec's tests, as wasm under node)
+      - name: wmcodec as wasm with SIMD128 (crates/wmcodec/wasm-test.sh)
+        run: crates/wmcodec/wasm-test.sh
       # Publish once; the host suites, snapshots, browser and Windows checks below each get
       # their own runner. Four suites on this runner took 11 minutes, after the Windows build;
       # six at once took 17 minutes and raced. No test needs to rebuild sake to check it.

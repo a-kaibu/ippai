@@ -234,22 +234,7 @@ impl Codec for Wmv3 {
 /// BT.601 limited range YUV 4:2:0 to B G R A, top row first (what Windows' WMV decoder DMO
 /// gives as RGB).
 pub fn yuv_to_bgra(p: &wmcodec::msmpeg4::Picture) -> Vec<u8> {
-    let (w, h) = (p.width, p.height);
-    let mut out = vec![0u8; w * h * 4];
-    for y in 0..h {
-        let (yr, ur, vr) = (&p.planes[0][y * p.stride[0]..], &p.planes[1][(y / 2) * p.stride[1]..], &p.planes[2][(y / 2) * p.stride[1]..]);
-        for x in 0..w {
-            let c = (yr[x] as i32 - 16) * 298;
-            let d = ur[x / 2] as i32 - 128;
-            let e = vr[x / 2] as i32 - 128;
-            let o = &mut out[(y * w + x) * 4..][..4];
-            o[0] = ((c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
-            o[1] = ((c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-            o[2] = ((c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-            o[3] = 255;
-        }
-    }
-    out
+    p.bgra()
 }
 
 const fn fcc(s: &[u8; 4]) -> u32 {

@@ -188,6 +188,14 @@ fn clip8(v: i32) -> u8 {
 
 /// vc1_inv_trans_8x8_c: in place, the result in i16 as C stores it
 pub fn inv_trans_8x8(b: &mut [i16; 64]) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return crate::simd::vc1_8x8(b);
+    #[allow(unreachable_code)]
+    inv_trans_8x8_c(b)
+}
+
+/// inv_trans_8x8 in scalar code
+pub(crate) fn inv_trans_8x8_c(b: &mut [i16; 64]) {
     let mut tmp = [0i16; 64];
     for i in 0..8 {
         let s = |k: usize| b[i + k] as i32;
@@ -502,6 +510,15 @@ fn mspel16(g: impl Fn(isize) -> i32, mode: usize) -> i32 {
 
 /// put_vc1_mspel_mc (n 8) / _16: `src` at `so` (stride `ss`), hmode / vmode quarter pels
 pub fn mspel_mc(dst: &mut [u8], doff: usize, ds: usize, src: &[u8], so: usize, ss: usize, n: usize, hmode: usize, vmode: usize, rnd: i32) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if (hmode != 0 || vmode != 0) && (n == 8 || n == 16) {
+        return crate::simd::mspel_mc(dst, doff, ds, src, so, ss, n, hmode, vmode, rnd);
+    }
+    mspel_mc_c(dst, doff, ds, src, so, ss, n, hmode, vmode, rnd)
+}
+
+/// mspel_mc in scalar code
+pub(crate) fn mspel_mc_c(dst: &mut [u8], doff: usize, ds: usize, src: &[u8], so: usize, ss: usize, n: usize, hmode: usize, vmode: usize, rnd: i32) {
     if hmode == 0 && vmode == 0 {
         for y in 0..n {
             dst[doff + y * ds..doff + y * ds + n].copy_from_slice(&src[so + y * ss..so + y * ss + n]);
@@ -549,6 +566,14 @@ pub fn mspel_mc(dst: &mut [u8], doff: usize, ds: usize, src: &[u8], so: usize, s
 
 /// put_h264_chroma_mc8 (`no_rnd` false) / put_no_rnd_vc1_chroma_mc8: 8x8 bilinear, eighth pels
 pub fn chroma_mc8(dst: &mut [u8], doff: usize, ds: usize, src: &[u8], ss: usize, x: i32, y: i32, no_rnd: bool) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return crate::simd::chroma_mc8(dst, doff, ds, src, ss, x, y, no_rnd);
+    #[allow(unreachable_code)]
+    chroma_mc8_c(dst, doff, ds, src, ss, x, y, no_rnd)
+}
+
+/// chroma_mc8 in scalar code
+pub(crate) fn chroma_mc8_c(dst: &mut [u8], doff: usize, ds: usize, src: &[u8], ss: usize, x: i32, y: i32, no_rnd: bool) {
     let (a, b, c, d) = ((8 - x) * (8 - y), x * (8 - y), (8 - x) * y, x * y);
     let r = if no_rnd { 28 } else { 32 };
     for j in 0..8 {
@@ -3035,10 +3060,11 @@ impl Decoder {
         }
     }
 
-    /// The reference's pixels around (x, y): `w` x `h` (clamped to the coded picture, then
+    /// The reference's pixels around (x, y): `w` x `h` as (pixels, stride), clamped to the coded
+    /// picture (straight from the reference when inside it and as it is; else copied to `buf`,
     /// range-reduced / intensity-compensated as FFmpeg does its edge-emulated copies).
     /// `dir` 0: the forward reference (a P picture's, or a B one's older), 1: a B one's backward
-    fn fetch(&self, dir: usize, k: usize, x: i32, y: i32, w: usize, h: usize, out: &mut [u8]) {
+    fn fetch<'a>(&'a self, dir: usize, k: usize, x: i32, y: i32, w: usize, h: usize, buf: &'a mut [u8]) -> (&'a [u8], usize) {
         let last = if dir == 0 && self.pict == Type::B { self.prev.as_ref() } else { self.last.as_ref() };
         let last = last.expect("reference");
         let (p, stride, pw, ph) = match k {
@@ -3046,18 +3072,23 @@ impl Decoder {
             1 => (&last.u, self.uvls, self.uvls as i32, (self.mb_h * 8) as i32),
             _ => (&last.v, self.uvls, self.uvls as i32, (self.mb_h * 8) as i32),
         };
-        hpel::window(p, stride, pw, ph, x, y, w, h, out);
+        let ic = self.use_ic && dir == 0;
+        if !self.rangeredfrm && !ic {
+            return hpel::source(p, stride, pw, ph, x, y, w, h, buf);
+        }
+        hpel::window(p, stride, pw, ph, x, y, w, h, buf);
         if self.rangeredfrm {
-            for v in out[..w * h].iter_mut() {
+            for v in buf[..w * h].iter_mut() {
                 *v = (((*v as i32 - 128) >> 1) + 128) as u8;
             }
         }
-        if self.use_ic && dir == 0 {
+        if ic {
             let lut = if k == 0 { &self.luty } else { &self.lutuv };
-            for v in out[..w * h].iter_mut() {
+            for v in buf[..w * h].iter_mut() {
                 *v = lut[*v as usize];
             }
         }
+        (buf, w)
     }
 
     /// Luma `n` x `n` at dest offset `doff` from the quarter-pel vector (mx, my) at (src_x, src_y)
@@ -3065,21 +3096,23 @@ impl Decoder {
     fn luma_mc(&mut self, dir: usize, doff: usize, src_x: i32, src_y: i32, mx: i32, my: i32, n: usize, avg: bool) {
         let mut win = [0u8; 19 * 19];
         let w = n + 3;
-        self.fetch(dir, 0, src_x - 1, src_y - 1, w, w, &mut win);
         let ls = self.ls;
-        let rnd = self.rnd;
-        let mspel = self.mspel;
+        let (rnd, mspel) = (self.rnd, self.mspel);
+        // (the picture out of self while the reference is read from it)
+        let mut cur = std::mem::take(&mut self.cur.y);
+        let (s, ss) = self.fetch(dir, 0, src_x - 1, src_y - 1, w, w, &mut win);
         let mut tmp = [0u8; 256];
-        let (d, o, ds) = if avg { (&mut tmp[..], 0, n) } else { (&mut self.cur.y[..], doff, ls) };
+        let (d, o, ds) = if avg { (&mut tmp[..], 0, n) } else { (&mut cur[..], doff, ls) };
         if mspel {
-            mspel_mc(d, o, ds, &win, w + 1, w, n, (mx & 3) as usize, (my & 3) as usize, rnd);
+            mspel_mc(d, o, ds, s, ss + 1, ss, n, (mx & 3) as usize, (my & 3) as usize, rnd);
         } else {
             let dxy = ((my & 2) | ((mx & 2) >> 1)) as usize;
-            hpel::hpel(d, o, ds, &win[w + 1..], w, n, n, dxy, rnd == 0);
+            hpel::hpel(d, o, ds, &s[ss + 1..], ss, n, n, dxy, rnd == 0);
         }
         if avg {
-            avg_into(&mut self.cur.y, doff, ls, &tmp, n, n);
+            avg_into(&mut cur, doff, ls, &tmp, n, n);
         }
+        self.cur.y = cur;
     }
 
     /// Chroma 8x8 from the eighth-pel-ish (uvmx, uvmy) at (uvsrc_x, uvsrc_y) of reference `dir`
@@ -3090,14 +3123,16 @@ impl Decoder {
         let uvls = self.uvls;
         for k in 1..3 {
             let mut win = [0u8; 81];
-            self.fetch(dir, k, uvsrc_x, uvsrc_y, 9, 9, &mut win);
+            let mut cur = std::mem::take(self.plane(k));
+            let (s, ss) = self.fetch(dir, k, uvsrc_x, uvsrc_y, 9, 9, &mut win);
             if avg {
                 let mut tmp = [0u8; 64];
-                chroma_mc8(&mut tmp, 0, 8, &win, 9, x, y, no_rnd);
-                avg_into(self.plane(k), doff, uvls, &tmp, 8, 8);
+                chroma_mc8(&mut tmp, 0, 8, s, ss, x, y, no_rnd);
+                avg_into(&mut cur, doff, uvls, &tmp, 8, 8);
             } else {
-                chroma_mc8(self.plane(k), doff, uvls, &win, 9, x, y, no_rnd);
+                chroma_mc8(&mut cur, doff, uvls, s, ss, x, y, no_rnd);
             }
+            *self.plane(k) = cur;
         }
     }
 
