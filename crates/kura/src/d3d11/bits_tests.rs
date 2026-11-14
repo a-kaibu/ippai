@@ -819,3 +819,82 @@ fn a_lost_device_gets_the_kept_bits_and_buffers() {
     dev.release(ht);
     dev.done();
 }
+
+/// Render targets (bound as render target and shader resource, made with initial data) of every
+/// format a render target is made of, the page holding their texels as the guest's bytes or
+/// converted: CopyResource and CopySubresourceRegion to a staging texture give back the bytes
+/// (the review's zeros for B8G8R8X8 / R16G16B16A16_UNORM / B5G6R5 ones, which keep no bytes:
+/// the page's read back and packed again). The X bits of B8G8R8X8: what the page holds, 0xff.
+#[test]
+fn render_targets_read_back_their_bytes() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let mut rng = Rng(0x6a09_e667_f3bc_c908);
+    let s = Shape(2, 4, 4, 1, 1);
+    let mut seen = 0;
+    for f in formats() {
+        let Some(c) = check::format(f) else { continue };
+        // D3D11_FORMAT_SUPPORT_RENDER_TARGET
+        if !c.0 || c.1 & 0x4000 == 0 {
+            continue;
+        }
+        let i = format::info(f).unwrap();
+        let mut data = random_subs(&mut rng, s, f);
+        // (float formats: values a GPU keeps whole, k / 8 below 128, halves' too; NaNs and
+        // denormals need not come back bit for bit)
+        let float = matches!(f, 2 | 6 | 10 | 16 | 34 | 41 | 54);
+        if float {
+            let half = matches!(f, 10 | 34 | 54);
+            let n = data[0].len() / if half { 2 } else { 4 };
+            let mut r = Rng(f as u64 * 77 + 1);
+            let k = r.bytes(n);
+            data[0] = k.iter().enumerate().flat_map(|(j, &k)| {
+                let v = (k as f32 - 128.0) / 8.0 + if j % 3 == 0 { 0.0 } else { 0.5 };
+                if half { format::f16_bits(v).to_le_bytes().to_vec() } else { v.to_le_bytes().to_vec() }
+            }).collect();
+        }
+        let rt = dev.tex_bound(s, f, 0x28, Some(&data));
+        if rt == 0 {
+            continue;
+        }
+        seen += 1;
+        let want: Vec<u8> = if i.no_alpha { data[0].iter().enumerate().map(|(k, &b)| if k % 4 == 3 { 0xff } else { b }).collect() } else { data[0].clone() };
+        let st = dev.tex(s, f, true, None);
+        call1(m(IF_CONTEXT, 47), &[dev.ctx, st, rt]);
+        // (16-bit UNORM / SNORM on a page that keeps 32-bit floats as halves, without
+        // float32-filterable: within a half's steps)
+        let same = |got: &[u8], want: &[u8], what: &str| {
+            if matches!(i.conv, format::U16N | format::S16N) && !crate::render::gpu::has_feature("float32-filterable") {
+                for (k, (a, b)) in got.chunks(2).zip(want.chunks(2)).enumerate() {
+                    let (a, b) = (u16::from_le_bytes([a[0], a[1]]), u16::from_le_bytes([b[0], b[1]]));
+                    let (a, b) = if i.conv == format::S16N { (a as i16 as i32, b as i16 as i32) } else { (a as i32, b as i32) };
+                    assert!((a - b).abs() <= 1 + b.abs() / 1024, "{what} of format {f} channel {k}: {a} for {b}");
+                }
+            } else {
+                assert_eq!(got, want, "{what} of a render target of format {f}");
+            }
+        };
+        same(&dev.read(st, s, f, 0), &want, "CopyResource");
+        // a 2x2 box at (1, 1) to (0, 2)
+        let st2 = dev.tex(s, f, true, None);
+        let bx = mem(24);
+        put(bx, &[1, 1, 0, 3, 3, 1]);
+        call1(m(IF_CONTEXT, 46), &[dev.ctx, st2, 0, 0, 2, 0, rt, 0, bx]);
+        let got = dev.read(st2, s, f, 0);
+        let (pitch, ..) = s.layout(f, 0);
+        let b = i.bpp as usize;
+        let mut w2 = vec![0u8; got.len()];
+        for r in 0..2 {
+            let from = (1 + r) * pitch as usize + b;
+            let to = (2 + r) * pitch as usize;
+            w2[to..to + 2 * b].copy_from_slice(&want[from..from + 2 * b]);
+        }
+        same(&got, &w2, "CopySubresourceRegion");
+        for t in [rt, st, st2] {
+            dev.release(t);
+        }
+    }
+    assert!(seen > 40, "{seen} render target formats");
+    dev.done();
+}

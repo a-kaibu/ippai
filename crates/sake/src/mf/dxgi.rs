@@ -571,9 +571,9 @@ pub fn frame_buffer(c: &mut Ctx, dev: u32, w: u32, h: u32, fmt: u32, bytes: &[u8
     // (the initial data stays the buffer's copy: kura may read it after CreateTexture2D)
     let data = mem::heap_alloc(max, false);
     mem::write(data, &bytes[..max as usize]);
-    // D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE (kura: a render target's initial data
-    // read back through a staging copy right away gives zeros on the page)
-    let tex = new_texture(c, dev, w, h, fmt, 0, 0x8, 0, Some((data, max / rows)));
+    // D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET (the video
+    // processor's output)
+    let tex = new_texture(c, dev, w, h, fmt, 0, 0x28, 0, Some((data, max / rows)));
     let b = if tex != 0 { new_buffer(c, tex, 0, false, true, Some(data)) } else { None };
     if b.is_none() {
         release(c, tex);

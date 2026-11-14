@@ -3563,7 +3563,9 @@ unsafe fn source_bytes(d: &mut D11, id: u32, sub: u32, b: [u32; 6]) -> Option<u3
     let f = format::info(t.fmt)?;
     let [x0, y0, z0, w, h, depth] = b;
     let (keeps, holds, g) = (keeps_bits(t), holds_bits(t), t.gpu);
-    if !keeps && !holds {
+    // (a render target of a format the page converts: its texels read back and packed again)
+    let packs = !keeps && !holds && format::packs_back(t.fmt);
+    if !keeps && !holds && !packs {
         return None;
     }
     let (pitch, rows) = format::pitch_rows(t.fmt, w, h);
@@ -3587,6 +3589,35 @@ unsafe fn source_bytes(d: &mut D11, id: u32, sub: u32, b: [u32; 6]) -> Option<u3
                 }
             }
         }
+        return Some(mem);
+    }
+    if packs {
+        let pp = w * format::page_bpp(t.page);
+        let Some(n) = u32::try_from(pp as u64 * h as u64).ok().filter(|&n| n < 0x8000_0000) else {
+            ((*d.calls).free)(mem as *mut u8);
+            return None;
+        };
+        let tmp = ((*d.calls).alloc)(n.max(16)) as u32;
+        if tmp == 0 {
+            ((*d.calls).free)(mem as *mut u8);
+            return None;
+        }
+        for z in 0..depth {
+            std::ptr::write_bytes(tmp as *mut u8, 0, n as usize);
+            d.next_gpu += 1;
+            let req = 0x4000_0000 | d.next_gpu;
+            let c = [gpu::READBACK, req, g, level | (layer + z0 + z) << 16, x0, y0, w, h, tmp, pp];
+            gpu::record(|q| q.cmd(&c));
+            gpu::wait_readback(req);
+            let page = std::slice::from_raw_parts(tmp as *const u8, n as usize);
+            if let Some(b) = format::from_page(t.fmt, page, w, h) {
+                let row = (w * f.bpp) as usize;
+                for r in 0..rows.min(h) {
+                    std::ptr::copy_nonoverlapping(b.as_ptr().add(r as usize * row), (mem + (z * rows + r) * pitch) as *mut u8, row.min(pitch as usize));
+                }
+            }
+        }
+        ((*d.calls).free)(tmp as *mut u8);
         return Some(mem);
     }
     let mut reqs = Vec::new();

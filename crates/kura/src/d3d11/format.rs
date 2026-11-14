@@ -179,6 +179,76 @@ pub unsafe fn to_floats(conv: u32, n: u32, src: *const u8, pitch: usize, w: u32,
     Some(bytes)
 }
 
+/// Whether from_page takes the format's texels back.
+pub fn packs_back(fmt: u32) -> bool {
+    let Some(f) = info(fmt) else { return false };
+    let pb = page_bpp(f.page);
+    f.block == 1
+        && match f.conv {
+            0 => f.bpp == pb,
+            U16N | S16N => pb == 2 * f.bpp,
+            RGB32F | RGB32I => pb == 16,
+            23 | 25 | 26 | 28 => pb == 4,
+            _ => false,
+        }
+}
+
+/// The page's texels of a w x h box (rows of w texels of `page_bpp`) as the guest's bytes of
+/// DXGI format `fmt` (rows of w * bpp): what a readback of a texture the page does not hold as the
+/// guest's bytes gives back (a render target, which keeps no bytes of its own), as the GPU writes
+/// a texel of the format (UNORM / SNORM rounded, the X bits of B8G8R8X8 what the page has). None:
+/// a format whose texels do not go back (block-compressed, 4:2:2, XR_BIAS).
+pub fn from_page(fmt: u32, page: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+    if !packs_back(fmt) {
+        return None;
+    }
+    let f = info(fmt)?;
+    let pb = page_bpp(f.page) as usize;
+    let n = w as usize * h as usize;
+    if page.len() < n * pb {
+        return None;
+    }
+    let mut out = vec![0u8; n * f.bpp as usize];
+    let fl = |t: usize, c: usize| f32::from_le_bytes(page[t * pb + 4 * c..t * pb + 4 * c + 4].try_into().unwrap());
+    match f.conv {
+        0 if f.bpp as usize == pb => out.copy_from_slice(&page[..n * pb]),
+        U16N | S16N => {
+            let ch = f.bpp as usize / 2;
+            for t in 0..n {
+                for c in 0..ch {
+                    let v = fl(t, c);
+                    let x = if v.is_nan() {
+                        0
+                    } else if f.conv == U16N {
+                        (v.clamp(0.0, 1.0) * 65535.0).round() as u16
+                    } else {
+                        ((v.clamp(-1.0, 1.0) * 32767.0).round() as i16) as u16
+                    };
+                    out[t * 2 * ch + 2 * c..t * 2 * ch + 2 * c + 2].copy_from_slice(&x.to_le_bytes());
+                }
+            }
+        }
+        RGB32F | RGB32I => {
+            for t in 0..n {
+                out[t * 12..t * 12 + 12].copy_from_slice(&page[t * pb..t * pb + 12]);
+            }
+        }
+        // (D3D9 formats on the page as B, G, R, A bytes: packed as a GPU writes them)
+        c @ (23 | 25 | 26 | 28) if pb == 4 => {
+            let b = f.bpp as usize;
+            for t in 0..n {
+                let px = &page[t * 4..t * 4 + 4];
+                let v = [px[2], px[1], px[0], px[3]].map(|x| x as f32 / 255.0);
+                if !crate::d3d9::format::pack(c, v, &mut out[t * b..t * b + b]) {
+                    return None;
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
 /// The 16 values of a BC4 block (BC5 is two of them), as the Direct3D spec interpolates.
 fn bc4_block(b: &[u8], signed: bool) -> [f32; 16] {
     // As WARP (winref d3d11tex, BC4/BC5 UNORM and SNORM): each palette entry, (weights * ends)
