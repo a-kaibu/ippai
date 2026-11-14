@@ -278,7 +278,7 @@ fn emit_stores(c: &mut Code, mask: u16) {
 /// hops among a thousand regions).
 fn splice_regs(code: Code, marks: &[(usize, usize, bool)], all: bool) -> Code {
     let (named, written) = if all { (u16::MAX, u16::MAX) } else { regs_named(&code) };
-    let mut out = Code { b: Vec::with_capacity(code.b.len() + marks.len() * 64), locs: Vec::with_capacity(code.locs.len()) };
+    let mut out = Code { b: Vec::with_capacity(code.b.len() + marks.len() * 64), locs: Vec::with_capacity(code.locs.len()), cpu_at: false };
     let (mut from, mut lfrom) = (0, 0);
     for &(at, li, store) in marks {
         out.b.extend_from_slice(&code.b[from..at]);
@@ -1241,7 +1241,7 @@ impl<'a> Gen<'a> {
             self.c.get(L_A);
             self.get_reg(acc);
             self.c.set(L_FA).get(L_FA).get(b);
-            self.c.op(0xfe).mem(0x48 + sub, align, 0).set(old);
+            self.c.atomic(0x48 + sub, align).set(old);
             // ZF from acc - old; the accumulator gets the old value when they differ
             self.c.get(old).set(L_FB);
             self.c.get(L_FA).get(L_FB).x(I64_SUB);
@@ -1265,7 +1265,7 @@ impl<'a> Gen<'a> {
             Xor => 0x3a,
             _ => 0x41,
         };
-        self.c.get(L_A).get(b).op(0xfe).mem(group + sub, align, 0).set(old);
+        self.c.get(L_A).get(b).atomic(group + sub, align).set(old);
         if m == Xchg || m == Xadd {
             self.set_reg(ins.op_register(1 - mi), old);
         }

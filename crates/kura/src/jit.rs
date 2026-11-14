@@ -764,6 +764,32 @@ fn init_flags() {
                 });
             }
         }
+        // measuring: every load/store the JIT emits counts itself, the top ones printed every
+        // <secs> (Cpu fields by offset, the rest together; koji::jit::wasm::MEMCOUNT)
+        if let Some(secs) = std::env::var("IPPAI_JIT_MEMCOUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
+            use jit::wasm::{MEM_COUNTS, MEM_CPU_SLOTS, MEM_SITES, MEM_SITE_SLOTS};
+            use std::sync::atomic::Ordering::Relaxed;
+            if !jit::wasm::MEMCOUNT.swap(true, Relaxed) {
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(secs.max(1)));
+                    let c: Vec<u64> = MEM_COUNTS.iter().map(|c| c.swap(0, Relaxed) as u64).collect();
+                    let mut lines = Vec::new();
+                    for (k, name) in MEM_SITES.iter().enumerate() {
+                        let c = &c[k * MEM_SITE_SLOTS..(k + 1) * MEM_SITE_SLOTS];
+                        let cpu: u64 = c[..2 * MEM_CPU_SLOTS].iter().sum();
+                        let (ol, os) = (c[2 * MEM_CPU_SLOTS], c[2 * MEM_CPU_SLOTS + 1]);
+                        if cpu + ol + os == 0 {
+                            continue;
+                        }
+                        let mut top: Vec<(usize, u64)> = c[..2 * MEM_CPU_SLOTS].iter().copied().enumerate().filter(|x| x.1 > 0).collect();
+                        top.sort_by(|a, b| b.1.cmp(&a.1));
+                        let t: Vec<String> = top.iter().take(24).map(|&(i, n)| format!("{}{}={}k", if i >= MEM_CPU_SLOTS { "st+" } else { "ld+" }, i % MEM_CPU_SLOTS, n / 1000)).collect();
+                        lines.push(format!("  {name}: cpu {}k other ld {}k st {}k | {}", cpu / 1000, ol / 1000, os / 1000, t.join(" ")));
+                    }
+                    eprintln!("vnjit mem/{secs}s\n{}", lines.join("\n"));
+                });
+            }
+        }
         // CALL/RET as wasm calls: 1 direct calls, 2 indirect ones too
         // debugging the long-mode translator: IPPAI_JIT64_INS / _BLOCKS (limits), IPPAI_JIT64_OFF
         // (mnemonics, as iced names them, left to the interpreter)

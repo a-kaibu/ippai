@@ -1147,6 +1147,119 @@ fn fixed() -> Result<Vec<(&'static str, Vec<Instruction>)>, IcedError> {
         a.jmp(END as u64)?;
         v.push(("log10 helper flags", a.take_instructions()));
     }
+    // A function's calls (koji's T_FN: the registers and the budget as arguments and results,
+    // the status flags out of the Cpu at a RET to a caller that doesn't read them): flags a
+    // callee leaves read after the call (CMP; RET, ADD; RET), a callee's callee writing
+    // registers its caller never names, a RET elsewhere than the call's return address with
+    // flags live there, a tail jump into another function, recursion deeper than the wasm
+    // calls nest (the rest through the dispatcher).
+    for (x, y) in [(5u32, 5u32), (5, 6), (6, 5), (0x8000_0000, 1), (0, 0xffff_ffff)] {
+        let mut a = CodeAssembler::new(32)?;
+        let (mut cmpf, mut addf, mut outer, mut inner, mut away, mut other) = (a.create_label(), a.create_label(), a.create_label(), a.create_label(), a.create_label(), a.create_label());
+        let (mut tail, mut g, mut rec, mut rec_end, mut after) = (a.create_label(), a.create_label(), a.create_label(), a.create_label(), a.create_label());
+        // (each callee calls `leaf`: one with a call is not inlined)
+        let (mut leaf, mut top) = (a.create_label(), a.create_label());
+        // (three rounds: a call's first goes through the dispatcher, the callee then a function)
+        a.mov(dword_ptr(ebx + 0x7f0), 3)?;
+        a.set_label(&mut top)?;
+        a.mov(ecx, x)?;
+        a.mov(edx, y)?;
+        a.call(cmpf)?;
+        a.setz(byte_ptr(ebx + 0x700))?;
+        a.setb(byte_ptr(ebx + 0x701))?;
+        a.setl(byte_ptr(ebx + 0x702))?;
+        a.mov(eax, x)?;
+        a.call(addf)?;
+        a.setc(byte_ptr(ebx + 0x703))?;
+        a.seto(byte_ptr(ebx + 0x704))?;
+        a.sets(byte_ptr(ebx + 0x705))?;
+        a.mov(dword_ptr(ebx + 0x708), eax)?;
+        // (flags dead after these calls: written before they are read)
+        a.mov(esi, 0x11)?;
+        a.mov(edi, 0x22)?;
+        a.mov(ebp, 0x33)?;
+        a.call(outer)?;
+        a.xor(eax, eax)?;
+        a.mov(dword_ptr(ebx + 0x70c), esi)?;
+        a.mov(dword_ptr(ebx + 0x710), edi)?;
+        a.mov(dword_ptr(ebx + 0x714), ebp)?;
+        a.call(g)?;
+        a.add(eax, 1)?;
+        a.call(tail)?;
+        a.setz(byte_ptr(ebx + 0x718))?;
+        a.mov(dword_ptr(ebx + 0x71c), ebp)?;
+        a.call(tail)?;
+        a.xor(edx, edx)?;
+        a.mov(dword_ptr(ebx + 0x720), ebp)?;
+        a.mov(ecx, 300 + (x & 7))?;
+        a.xor(eax, eax)?;
+        a.xor(edi, edi)?;
+        a.call(rec)?;
+        a.mov(dword_ptr(ebx + 0x724), eax)?;
+        a.mov(dword_ptr(ebx + 0x728), edi)?;
+        a.mov(ecx, x)?;
+        a.call(away)?;
+        // RET elsewhere: past this XOR (2 bytes) to `other`, which reads the flags (the call's
+        // own return reads none)
+        a.xor(esi, esi)?;
+        a.set_label(&mut other)?;
+        a.setz(byte_ptr(ebx + 0x72c))?;
+        a.setb(byte_ptr(ebx + 0x72d))?;
+        a.mov(dword_ptr(ebx + 0x730), esi)?;
+        a.dec(dword_ptr(ebx + 0x7f0))?;
+        a.jne(top)?;
+        a.jmp(after)?;
+        a.set_label(&mut away)?;
+        a.call(leaf)?;
+        a.add(dword_ptr(esp), 2)?;
+        a.mov(esi, 0x5a5a)?;
+        a.cmp(ecx, 5)?;
+        a.ret()?;
+        a.set_label(&mut after)?;
+        a.jmp(END as u64)?;
+        a.set_label(&mut cmpf)?;
+        a.call(leaf)?;
+        a.cmp(ecx, edx)?;
+        a.ret()?;
+        a.set_label(&mut addf)?;
+        a.call(leaf)?;
+        a.add(eax, edx)?;
+        a.ret()?;
+        // (outer names no ESI, EDI, EBP; inner writes them)
+        a.set_label(&mut outer)?;
+        a.call(leaf)?;
+        a.add(eax, 2)?;
+        a.call(inner)?;
+        a.sub(eax, 1)?;
+        a.ret()?;
+        a.set_label(&mut inner)?;
+        a.call(leaf)?;
+        a.add(esi, ecx)?;
+        a.xor(edi, edx)?;
+        a.lea(ebp, ptr(ebp + esi * 2 + 1))?;
+        a.ret()?;
+        // a tail jump into g (a function: called above too)
+        a.set_label(&mut tail)?;
+        a.mov(ebp, 3)?;
+        a.jmp(g)?;
+        a.set_label(&mut g)?;
+        a.call(leaf)?;
+        a.add(ebp, ecx)?;
+        a.cmp(ebp, 8)?;
+        a.ret()?;
+        a.set_label(&mut leaf)?;
+        a.ret()?;
+        a.set_label(&mut rec)?;
+        a.test(ecx, ecx)?;
+        a.je(rec_end)?;
+        a.dec(ecx)?;
+        a.add(eax, ecx)?;
+        a.call(rec)?;
+        a.inc(edi)?;
+        a.set_label(&mut rec_end)?;
+        a.ret()?;
+        v.push(("calls: flags, registers, RET elsewhere, tail jump, deep", a.take_instructions()));
+    }
     Ok(v)
 }
 
@@ -1529,6 +1642,9 @@ fn run_case(engine: &Engine, dispatch: &Module, memory: &SharedMemory, base: usi
     let reads = koji::jit::mx_switched();
     let (want_cpu, want_data, want_stack) = snap();
     let mut diffs = Vec::new();
+    if std::env::var("JTRACE").is_ok() {
+        eprintln!("interpreter: {want:?}");
+    }
     if want.as_ref().is_err_and(|e| e == "no end") {
         return (diffs, code);
     }
@@ -1650,6 +1766,11 @@ fn main() {
     for (name, list) in fixed().unwrap() {
         // (JFIXED=<name part>: just those)
         if std::env::var("JFIXED").is_ok_and(|f| !name.contains(f.as_str())) {
+            continue;
+        }
+        if encode(&list, CODE as u64).is_none() {
+            fails += 1;
+            println!("fixed {name}: does not encode");
             continue;
         }
         for fns in [false, true] {

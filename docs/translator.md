@@ -230,3 +230,42 @@ reps=3 in node: 844 modules (8.9 MB) loaded in 505 ms in all, about 0.6 ms each:
 each second while the code warms up (the first 5 s), nothing once the hot code is loaded. Less
 of it means fewer and smaller modules (batches, merges, the saved bundle with
 `compileStreaming`, which the page compiles asynchronously before the program starts).
+
+## Functions take the registers as arguments (2026-11-14)
+
+Android's Chrome has no trap handler for wasm memory, so every load and store the JIT emits
+is bounds-checked; the review of 2026-11-13 asked for less Cpu-struct traffic.
+`IPPAI_JIT_MEMCOUNT=<secs>` (measuring only: slow) makes every load and store the JIT emits
+from then on count itself, by site (code, call, ret, entry, exit, call-rest, reload, flags)
+and, for Cpu fields, by offset. flatbench, one window of 4 s:
+
+| | Cpu loads + stores | guest and tables | Cpu share |
+|---|---|---|---|
+| before | 1 268 M (call 377, entry 255, ret 216, flags 141, code 183, exit 92) | 1 390 M | 48% |
+| after | 168 M (code 83, call 49: the call cache's address, flags 28, call-rest 6) | 2 151 M | 7% |
+
+A call stored the dirty registers and the budget, the callee loaded the ones it names, its
+RET stored the dirty ones, the budget, EIP and the lazy flags, the caller loaded them all
+again. Now `T_FN` is (cpu, ESP, EAX ECX EDX EBX EBP ESI EDI, depth | entry << 16, budget,
+return address) -> (status, EIP, 8 registers, budget): nothing goes through the Cpu but the
+flags, and those only when the caller may read them (the return address passed is 0 then; a
+RET elsewhere stores them too). Inside a function the Cpu's registers are stale, so every
+exit stores all 8.
+
+ESP comes first: V8 passes the first five (x64) or six (arm64) parameters in registers and
+leaves the others in the caller's frame, where it reads them again at each use. With ESP
+eighth, cpu.exe's compose (a blend loop reading its arguments from [esp+n]) was 17% slower
+with explicit bounds checks. Taking the registers through the Cpu at a function's entry
+fixed that but lost the rest (flatbench 5% slower than before), for functions with loops
+only too.
+
+Speed (node, `--wasm-enforce-bounds-checks` as on Android, A/B with the build before, this
+machine's noise is about 5%): flatbench 3-7% faster, cpu.exe script about 5-10%, compose
+within 5%, the other cpu.exe cases the same. Without explicit checks (desktop): the same
+or a little faster. Removing most of the Cpu traffic gave much less than its share of the
+accesses: the bounds checks are not where the time goes.
+
+tools/jit32test's fixed program "calls: flags, registers, RET elsewhere, tail jump, deep"
+covers the convention (six mutants of it fail it: flags left out at a RET to a caller that
+reads them, flags always left out, the state not stored on a RET elsewhere, the adapter not
+storing it, a result dropped, two registers swapped between caller and callee).

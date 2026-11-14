@@ -13,6 +13,56 @@ pub struct Code {
     pub b: Vec<u8>,
     /// where each local.get/set/tee is (its opcode's offset in `b`), for `compact_locals`
     pub locs: Vec<u32>,
+    /// [`MEMCOUNT`]: a `local.get 0` (the Cpu) was emitted since the last memory access or call
+    pub(crate) cpu_at: bool,
+}
+
+/// Measuring (kura: IPPAI_JIT_MEMCOUNT): every load and store the JIT emits from now on counts
+/// itself in [`MEM_COUNTS`], by whether its address came from the Cpu (local 0: a `local.get 0`
+/// since the last access or call, which is how the translators address Cpu fields) and that
+/// field's offset, or not (the guest's memory, tables). wasm32 only (the counters' addresses
+/// are constants in the code; SIMD loads and stores are not counted). The counting itself is
+/// slow; the counts are what to look at.
+pub static MEMCOUNT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Cpu offsets counted one by one (larger ones together in the last slot)
+pub const MEM_CPU_SLOTS: usize = 1024;
+/// Counters per site: [load: offsets.., store: offsets.., other loads, other stores]
+pub const MEM_SITE_SLOTS: usize = 2 * MEM_CPU_SLOTS + 2;
+/// What the translator was emitting ([`MEM_SITE`]), by name
+pub const MEM_SITES: [&str; 8] = ["code", "call", "ret", "entry", "exit", "call-rest", "reload", "flags"];
+#[allow(clippy::declare_interior_mutable_const)]
+pub static MEM_COUNTS: [core::sync::atomic::AtomicU32; MEM_SITES.len() * MEM_SITE_SLOTS] = {
+    const Z: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    [Z; MEM_SITES.len() * MEM_SITE_SLOTS]
+};
+/// [`MEMCOUNT`]: the site (index in [`MEM_SITES`]) the accesses emitted now count under
+pub static MEM_SITE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// Sets [`MEM_SITE`], returning the previous one (to put back).
+pub fn mem_site(s: usize) -> usize {
+    MEM_SITE.swap(s, core::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`MEM_SITE`] while it lives (the previous one back after).
+pub struct MemSite(usize);
+impl MemSite {
+    pub fn new(s: usize) -> Self {
+        MemSite(mem_site(s))
+    }
+}
+impl Drop for MemSite {
+    fn drop(&mut self) {
+        mem_site(self.0);
+    }
+}
+
+/// The counter [`Code::mem`] adds to for an access (`store`) at `off`, from the Cpu or not.
+pub fn mem_count_slot(store: bool, cpu: bool, off: u32) -> usize {
+    let site = MEM_SITE.load(core::sync::atomic::Ordering::Relaxed).min(MEM_SITES.len() - 1) * MEM_SITE_SLOTS;
+    site + if cpu {
+        store as usize * MEM_CPU_SLOTS + (off as usize).min(MEM_CPU_SLOTS - 1)
+    } else {
+        2 * MEM_CPU_SLOTS + store as usize
+    }
 }
 
 /// sake's memory in pages at most (crates/sake/build.sh -sINITIAL_MEMORY / -sMAXIMUM_MEMORY
@@ -116,6 +166,9 @@ impl Code {
         self
     }
     pub fn get(&mut self, l: u32) -> &mut Self {
+        if l == 0 {
+            self.cpu_at = true;
+        }
         self.locs.push(self.b.len() as u32);
         self.b.push(0x20);
         uleb(&mut self.b, l as u64);
@@ -134,6 +187,13 @@ impl Code {
         self
     }
     pub fn mem(&mut self, o: u8, align: u32, off: u32) -> &mut Self {
+        if MEMCOUNT.load(core::sync::atomic::Ordering::Relaxed) {
+            self.count_mem((0x36..=0x3e).contains(&o), off);
+        }
+        self.memarg(o, align, off)
+    }
+    fn memarg(&mut self, o: u8, align: u32, off: u32) -> &mut Self {
+        self.cpu_at = false;
         self.b.push(o);
         uleb(&mut self.b, align as u64);
         uleb(&mut self.b, off as u64);
@@ -142,8 +202,16 @@ impl Code {
     /// i32.atomic.rmw.* (`o`: 0x1e add, 0x25 sub, 0x2c and, 0x33 or, 0x3a xor, 0x41 xchg,
     /// 0x48 cmpxchg) on an aligned address
     pub fn atomic32(&mut self, o: u8) -> &mut Self {
+        self.atomic(o, 2)
+    }
+    /// An atomic access (0xfe prefix: `o` the opcode after it) at offset 0.
+    pub fn atomic(&mut self, o: u8, align: u32) -> &mut Self {
+        // (counted as a store, before the prefix)
+        if MEMCOUNT.load(core::sync::atomic::Ordering::Relaxed) {
+            self.count_mem(true, 0);
+        }
         self.b.push(0xfe);
-        self.mem(o, 2, 0)
+        self.memarg(o, align, 0)
     }
     pub fn load32(&mut self, off: u32) -> &mut Self {
         self.mem(0x28, 0, off)
@@ -229,12 +297,24 @@ impl Code {
     pub fn ret(&mut self) -> &mut Self {
         self.op(0x0f)
     }
+    /// [`MEMCOUNT`]: `MEM_COUNTS[slot] += 1` (balanced: it can go before any instruction).
+    fn count_mem(&mut self, store: bool, off: u32) {
+        let at = &MEM_COUNTS[mem_count_slot(store, self.cpu_at, off)] as *const _ as usize as u32 as i32;
+        self.b.push(0x41);
+        sleb(&mut self.b, at as i64);
+        self.b.push(0x41);
+        sleb(&mut self.b, at as i64);
+        self.b.extend_from_slice(&[0x28, 2, 0, 0x41, 1, 0x6a, 0x36, 2, 0]);
+    }
+
     pub fn call(&mut self, f: u32) -> &mut Self {
+        self.cpu_at = false;
         self.b.push(0x10);
         uleb(&mut self.b, f as u64);
         self
     }
     pub fn call_indirect(&mut self, ty: u32, table: u32) -> &mut Self {
+        self.cpu_at = false;
         self.b.push(0x11);
         uleb(&mut self.b, ty as u64);
         uleb(&mut self.b, table as u64);
@@ -821,15 +901,16 @@ pub fn select(module: &[u8], keep: &[bool]) -> Option<Vec<u8>> {
 /// Liftoff zeroes every declared local on each entry and V8's optimizing compiler makes a phi
 /// for each at every loop: a region declares ~50 (16 of them v128) and uses a few.
 pub fn compact_locals(params: u32, locals: &[u8], code: Code) -> (Vec<u8>, Code) {
-    compact(params, None, locals, code)
+    compact(params, &[], locals, code)
 }
 
-/// [`compact_locals`] with local `param` (an i32) made one more parameter, after the others.
-pub fn compact_locals_param(params: u32, param: u32, locals: &[u8], code: Code) -> (Vec<u8>, Code) {
-    compact(params, Some(param), locals, code)
+/// [`compact_locals`] with locals `extra` (i32s) made more parameters, after the others in
+/// that order.
+pub fn compact_locals_param(params: u32, extra: &[u32], locals: &[u8], code: Code) -> (Vec<u8>, Code) {
+    compact(params, extra, locals, code)
 }
 
-fn compact(params: u32, param: Option<u32>, locals: &[u8], code: Code) -> (Vec<u8>, Code) {
+fn compact(params: u32, extra: &[u32], locals: &[u8], code: Code) -> (Vec<u8>, Code) {
     let read = |b: &[u8], mut at: usize| {
         let (mut v, mut shift) = (0u32, 0);
         loop {
@@ -849,17 +930,17 @@ fn compact(params: u32, param: Option<u32>, locals: &[u8], code: Code) -> (Vec<u
     }
     let mut map: Vec<u32> = (0..n as u32).collect();
     let mut kept = Vec::new();
-    let first = params + param.is_some() as u32;
+    let first = params + extra.len() as u32;
     for (i, &t) in locals.iter().enumerate() {
         let l = params as usize + i;
-        if Some(l as u32) == param {
-            map[l] = params;
+        if let Some(j) = extra.iter().position(|&e| e == l as u32) {
+            map[l] = params + j as u32;
         } else if used[l] {
             map[l] = first + kept.len() as u32;
             kept.push(t);
         }
     }
-    let mut out = Code { b: Vec::with_capacity(code.b.len()), locs: Vec::with_capacity(code.locs.len()) };
+    let mut out = Code { b: Vec::with_capacity(code.b.len()), locs: Vec::with_capacity(code.locs.len()), cpu_at: false };
     let mut from = 0;
     for &p in &code.locs {
         let p = p as usize;
@@ -889,6 +970,14 @@ mod tests {
         assert_eq!(kept, [F64, V128]);
         let mut want = Code::default();
         want.get(0).set(2).i32c(200).get(3).tee(3).get(1);
+        assert_eq!(out.b, want.b);
+        // locals 4 and 2 as parameters 2 and 3 (4 unused: a parameter all the same)
+        let mut c = Code::default();
+        c.get(2).set(3).get(200).get(1);
+        let (kept, out) = compact_locals_param(2, &[4, 2], &locals, c);
+        assert_eq!(kept, [F64, V128]);
+        let mut want = Code::default();
+        want.get(3).set(4).get(5).get(1);
         assert_eq!(out.b, want.b);
     }
 

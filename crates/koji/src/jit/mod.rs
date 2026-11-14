@@ -140,10 +140,10 @@ pub static FN_ENTRIES: core::sync::atomic::AtomicBool = core::sync::atomic::Atom
 /// before them), 0 = none.
 pub static PROBES: [core::sync::atomic::AtomicU32; 8] = [const { core::sync::atomic::AtomicU32::new(0) }; 8];
 /// Function-level translation (IPPAI_JIT_FN=1): a guest function (an address CALLs go to)
-/// becomes one wasm function `(cpu) -> status` with the guest state in the Cpu at its entry
-/// and exits. Its blocks are the ones its own jumps reach (never a call's target); a CALL is a
+/// becomes one wasm function ([`T_FN`]: the registers in and out as arguments and results, the
+/// state in the Cpu at its exits to the dispatcher). Its blocks are the ones its own jumps reach (never a call's target); a CALL is a
 /// wasm call of the callee's function when it has one (found in the hash table, entries
-/// tagged FN_TAG), and RET returns RET_FN with EIP in the Cpu. The caller goes on after the
+/// tagged FN_TAG), and RET returns RET_FN with EIP (see [`T_FN`]). The caller goes on after the
 /// call when EIP is its return address, else passes the status up (longjmp, SEH, too deep, a
 /// callee that left for the dispatcher): the dispatcher continues at EIP. Status flags are
 /// dead across CALL and RET (C calling conventions). Regions stop following calls too.
@@ -153,9 +153,14 @@ fn fn_on() -> bool {
 }
 /// A jump's target that is in L_NEXT (`Gen::push_target`).
 const TARGET_NEXT: u32 = u32::MAX;
-/// The type of functions: (cpu, call depth) -> status.
+/// The type of functions: (cpu, ESP, EAX ECX EDX EBX EBP ESI EDI, call depth | entry << 16,
+/// budget, return address) -> (status, EIP, 8 registers, budget) ([`FN_ARGS`]). The registers and the budget are the caller's
+/// locals, passed on (only a function's exits put them in the Cpu: everything there is stale
+/// inside it); EIP and the rest are of a RET (status RET_FN), else the state is in the Cpu.
+/// The status flags are in the Cpu both ways, but for a RET to the return address passed
+/// (L_RAIN: the caller's flags are dead there; 0 for none), which leaves them out.
 const T_FN: u32 = 4;
-/// A function's RET (EIP in the Cpu).
+/// A function's RET (EIP its second result, see [`T_FN`]).
 pub const RET_FN: i32 = 0x5245_5446;
 /// Hash table entries of functions: the table index of the function's adapter for the
 /// region calling convention (the function itself is at the next index) | FN_TAG.
@@ -206,19 +211,20 @@ const L_XMM: u32 = L_MMX + 8; // 8 v128: the cached XMM registers (see Gen::xmm)
 const L_MXV: u32 = L_XMM + 8; // 2 v128: the operands an MXCSR guard read (see Gen::mx_ops)
 const L_AB: u32 = L_MXV + 2; // i32: the base register of the instruction's memory operand (see Gen::folded)
 const L_SLOT: u32 = L_AB + 1; // N_SLOTS i32: stack slots kept in locals in a loop (see Gen::slots)
-/// functions: ESP as the caller passed it (the third parameter once the locals are compacted)
-const L_ESPIN: u32 = L_SLOT + N_SLOTS;
+/// functions: where the caller goes on after the call with the status flags dead there (0: they
+/// may be live), the last parameter (see [`T_FN`]): a RET there leaves them out of the Cpu
+const L_RAIN: u32 = L_SLOT + N_SLOTS;
 const N_SLOTS: u32 = 6;
-const L_RO: u32 = L_ESPIN + 1; // f64: a result jit::rounding rounds
+const L_RO: u32 = L_RAIN + 1; // f64: a result jit::rounding rounds
 /// jit::rounding's locals: 6 f64, 3 i64, 4 i32
 const ROUND: rounding::Tmp = rounding::Tmp { f: L_RO + 1, i: L_RO + 7, n: L_RO + 10 };
 /// i32: whether x87 arithmetic / an f32 rounding of the x87 isn't the plain wasm op (see
 /// Gen::modes)
-const L_MX: u32 = L_ESPIN + 15;
-const L_MXR: u32 = L_ESPIN + 16;
+const L_MX: u32 = L_RAIN + 15;
+const L_MXR: u32 = L_RAIN + 16;
 /// f64: x87 products and quotients at most this large take the slow path (f64::INFINITY when
 /// L_MX, else the largest subnormal: those are rounded twice)
-const L_MXT: u32 = L_ESPIN + 17;
+const L_MXT: u32 = L_RAIN + 17;
 /// How many slots a loop keeps (at most N_SLOTS; IPPAI_JIT_SLOTS, default 0: slower on x64,
 /// where the extra live locals spill)
 pub static SLOTS_MAX: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -532,17 +538,9 @@ struct Gen<'a> {
     structured: bool,
     /// dispatch nodes of jump tables: (context, table) -> node (after the blocks)
     jnode: BTreeMap<usize, usize>,
-    /// The guest registers the code names (the others stay in the Cpu: never loaded or
-    /// stored) and those it writes (the only ones that can differ from the Cpu's after a load);
-    /// all for regions
+    /// The guest registers the code names (what a reload after the host's code loads; a
+    /// region's: all of them)
     regs: u8,
-    wregs: u8,
-    /// registers written since they were last loaded from the Cpu, in the block so far: what
-    /// a call or RET stores
-    dirty: u8,
-    /// functions: per block, those that can be dirty at its start (see [`dirty_in`]; all of
-    /// `wregs` if absent)
-    dirty_in: Vec<u8>,
     /// per register, the largest value it can have here if known (since an `and r32, imm` or
     /// a movzx in the block): an access to [table + r * scale] then needs no check
     small: [Option<u32>; 8],
@@ -944,6 +942,7 @@ impl<'a> Gen<'a> {
 
     /// Leaves the block: continue at the address on top of the stack with status `st`.
     fn exit_with(&mut self, st: i32) {
+        let _site = wasm::MemSite::new(4);
         self.mmx_flush();
         self.xmm_flush();
         self.x87_flush_out();
@@ -984,10 +983,8 @@ impl<'a> Gen<'a> {
             Hle::Set => self.c.memory_fill(),
             Hle::Sha256 => unreachable!(),
         };
-        // (EAX = dst: stored at the RET like any register the block wrote; in a function only
-        // dirty ones are, and memmove's result was lost there)
+        // (EAX = dst)
         self.c.get(d).set(L_REG);
-        self.dirty |= 1;
         self.temps -= 3;
     }
 
@@ -1051,7 +1048,6 @@ impl<'a> Gen<'a> {
             self.c.get(md).get(md).load32(8 + 4 * j as u32).get(v[r[j]]).add().store32(8 + 4 * j as u32);
         }
         self.c.i32c(0).set(L_REG);
-        self.dirty |= 1;
         self.temps -= 10;
     }
 
@@ -1594,7 +1590,7 @@ impl<'a> Gen<'a> {
     /// interpreter at the loop's first block when one fails (as that block's own check would).
     fn loop_checks(&mut self, x: usize) {
         let Some(&(m, at)) = self.hoist.get(&x) else { return };
-        let saved = (self.flags, self.fc, self.mmx, self.xmm, self.dirty, self.block_index, self.ctx, self.mx_checked, self.mx_seen);
+        let saved = (self.flags, self.fc, self.mmx, self.xmm, self.block_index, self.ctx, self.mx_checked, self.mx_seen);
         self.mx_checked = None;
         self.mx_seen = [[None; 2]; 8];
         // (the state as the block starts)
@@ -1602,7 +1598,6 @@ impl<'a> Gen<'a> {
         self.fc = self.fc_in.get(&x).copied().unwrap_or_default();
         self.mmx = (0, 0);
         self.xmm = (0, 0);
-        self.dirty = self.dirty_in.get(x).copied().unwrap_or(self.wregs);
         self.block_index = x as u32;
         self.ctx = self.ctxs[x];
         for r in (0..8).filter(|r| m & (1 << r) != 0) {
@@ -1613,7 +1608,7 @@ impl<'a> Gen<'a> {
             self.depth -= 1;
             self.c.end();
         }
-        (self.flags, self.fc, self.mmx, self.xmm, self.dirty, self.block_index, self.ctx, self.mx_checked, self.mx_seen) = saved;
+        (self.flags, self.fc, self.mmx, self.xmm, self.block_index, self.ctx, self.mx_checked, self.mx_seen) = saved;
     }
 
     /// Whether [reg + disp, + size) is inside the guest range by what is known of `reg`,
@@ -2240,6 +2235,7 @@ impl<'a> Gen<'a> {
 
     /// The lazy flags into the Cpu if they are live after this instruction (L_OP -1 after).
     fn flags_to_cpu(&mut self) {
+        let _site = wasm::MemSite::new(7);
         if !self.flags_live(STATUS_BITS) {
             return;
         }
@@ -2259,6 +2255,7 @@ impl<'a> Gen<'a> {
 
     /// Writes registers, EIP and the lazy flags back to the Cpu.
     fn spill(&mut self, eip: u32) {
+        let _site = wasm::MemSite::new(4);
         self.store_regs();
         self.c.get(L_CPU).u32c(eip).store32(Off::eip());
         match self.flags {
@@ -2274,41 +2271,21 @@ impl<'a> Gen<'a> {
     }
 
     fn reload(&mut self) {
+        let _site = wasm::MemSite::new(6);
         self.safe = [None; 8];
         self.safe2.clear();
         self.load_regs();
     }
 
-    /// The registers that can differ from the Cpu's into it.
+    /// The registers into the Cpu (all: a function's came as parameters, the Cpu's are stale).
     fn store_regs(&mut self) {
-        for i in (0..8).filter(|i| self.wregs & (1 << i) != 0) {
+        for i in 0..8 {
             self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
-        }
-    }
-
-    /// The registers written since they were loaded into the Cpu (a call's or RET's).
-    fn store_dirty(&mut self) {
-        for i in (0..8).filter(|i| self.wregs & self.dirty & (1 << i) != 0) {
-            self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
-        }
-        self.dirty = 0;
-    }
-
-    /// [`Self::load_regs`] but ESP from local `esp` (a function's call returned it).
-    fn load_regs_esp(&mut self, esp: u32) {
-        self.dirty = 0;
-        for i in (0..8).filter(|i| self.regs & (1 << i) != 0) {
-            if i == 4 {
-                self.c.get(esp).set(L_REG + 4);
-            } else {
-                self.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
-            }
         }
     }
 
     /// The registers the code names from the Cpu.
     fn load_regs(&mut self) {
-        self.dirty = 0;
         for i in (0..8).filter(|i| self.regs & (1 << i) != 0) {
             self.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
         }
@@ -2342,7 +2319,6 @@ impl<'a> Gen<'a> {
                 written |= 1 << u.register().full_register32().number();
             }
         }
-        self.dirty |= written as u8;
         if matches!(ins.mnemonic(), Push | Pop) {
             written &= !(1 << 4);
             if ins.mnemonic() == Pop && ins.op_kind(0) == OpKind::Register && ins.op_register(0).full_register32() == Register::ESP {
@@ -3505,16 +3481,19 @@ impl<'a> Gen<'a> {
                     self.c.end();
                 }
                 if self.fnm {
-                    // the state into the Cpu, back to the wasm caller
+                    // back to the wasm caller: the flags into the Cpu, the rest as results
+                    let _site = wasm::MemSite::new(2);
+                    // (the flags only if the caller may read them: see T_FN)
+                    self.c.get(t).get(L_RAIN).ne().if_();
                     self.flags_to_cpu();
+                    self.c.end();
                     self.mmx_flush();
                     self.xmm_flush();
                     self.x87_flush_out();
                     bump(&mut self.c, 5);
-                    self.store_dirty();
-                    self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
-                    self.c.get(L_CPU).get(t).store32(Off::eip());
-                    self.c.i32c(RET_FN).get(L_REG + 4).ret();
+                    self.c.i32c(RET_FN).get(t);
+                    push_fn_state(&mut self.c);
+                    self.c.ret();
                     return false;
                 }
                 // most returns go back to the latest call in the region (through the dispatch,
@@ -3781,6 +3760,7 @@ impl<'a> Gen<'a> {
     /// when it returned there. Without a function there, nested too deep or out of budget,
     /// the dispatcher's way (leaving for `t`).
     fn call_fn(&mut self, t: u32, next: u32) {
+        let _site = wasm::MemSite::new(1);
         self.modes = false;
         self.mmx_flush();
         self.xmm_flush();
@@ -3799,7 +3779,6 @@ impl<'a> Gen<'a> {
             ring_sample(&mut self.c, h, v, t, site);
         }
         self.flags_to_cpu();
-        self.store_dirty();
         self.c.block(); // slow 0
         self.depth += 1;
         self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
@@ -3811,17 +3790,11 @@ impl<'a> Gen<'a> {
         self.c.get(L_CPU).load32(Off::call_cache()).u32c(slot * 8).add().tee(h).load32(0).get(t).eq();
         self.c.if_i32().get(h).load32(4).else_().get(L_CPU).get(h).get(t).call(F_CALLMISS).end().tee(v).eqz().br_if(0);
         bump(&mut self.c, 0);
-        self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
-        self.c.get(L_CPU).get(L_ARG).i32c(1).add();
-        self.c.get(L_REG + 4);
-        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(v).set(h);
-        // left another way (the state is in the Cpu): pass it on
-        self.c.get(h).i32c(RET_FN).ne().if_().get(h).i32c(0).ret().end();
-        self.c.get(L_CPU).load32(Off::eip()).u32c(next).ne().if_();
-        bump(&mut self.c, 4);
-        self.c.i32c(RET_CONTINUE).i32c(0).ret().end();
-        self.load_regs_esp(v);
-        self.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
+        // (the flags after the call: dead, or the callee's)
+        let ra = if self.flags_live(STATUS_BITS) { 0 } else { next };
+        fn_args(&mut self.c, |c| void(c.get(L_ARG).i32c(1).add()), |c| void(c.u32c(ra)));
+        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0);
+        take_results(&mut self.c, h, v, next);
         self.c.i32c(-1).set(L_OP);
         self.goto(next);
         self.depth -= 1;
@@ -3856,6 +3829,7 @@ impl<'a> Gen<'a> {
     /// this function's caller, which then has to leave too). Without a function there, on
     /// the way out as before.
     fn call_rest(&mut self) {
+        let _site = wasm::MemSite::new(5);
         let r = self.ret_to[self.ctx as usize];
         let (h, v) = (self.temp(), self.temp());
         let hash = offset_of!(Cpu, jit_hash) as u32;
@@ -3875,26 +3849,14 @@ impl<'a> Gen<'a> {
         self.c.get(h).i32c(1).add().get(L_CPU).load32(maskf).and().set(h).br(0);
         self.c.end();
         self.c.end();
-        // the state into the Cpu (all of it: this can be in the middle of a block)
-        for i in (0..8).filter(|i| self.wregs & (1 << i) != 0) {
-            self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
-        }
+        // the flags into the Cpu (this can be in the middle of a block), the rest as arguments
         lazy_to_cpu(&mut self.c);
         self.c.end();
         bump(&mut self.c, 2);
-        self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
-        self.c.get(L_CPU).get(L_ARG).i32c(1).add();
-        self.c.get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
-        self.c.get(L_REG + 4);
-        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(v).set(h);
-        // left another way (the state is in the Cpu): pass it on
-        self.c.get(h).i32c(RET_FN).ne().if_().get(h).i32c(0).ret().end();
-        self.c.get(L_CPU).load32(Off::eip()).u32c(r).ne().if_();
-        bump(&mut self.c, 4);
-        self.c.i32c(RET_CONTINUE).i32c(0).ret().end();
-        let (dirty, fc, flags, mmx, xmm) = (self.dirty, self.fc, self.flags, self.mmx, self.xmm);
-        self.load_regs_esp(v);
-        self.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
+        fn_args(&mut self.c, |c| void(c.get(L_ARG).i32c(1).add().get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or()), |c| void(c.i32c(0)));
+        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0);
+        take_results(&mut self.c, h, v, r);
+        let (fc, flags, mmx, xmm) = (self.fc, self.flags, self.mmx, self.xmm);
         self.c.i32c(-1).set(L_OP);
         self.fc = FCache::default();
         self.flags = Flags::Entry;
@@ -3905,7 +3867,7 @@ impl<'a> Gen<'a> {
         let ctx = core::mem::replace(&mut self.ctx, 0);
         self.goto(r);
         self.ctx = ctx;
-        (self.dirty, self.fc, self.flags, self.mmx, self.xmm) = (dirty, fc, flags, mmx, xmm);
+        (self.fc, self.flags, self.mmx, self.xmm) = (fc, flags, mmx, xmm);
         self.depth -= 1;
         self.c.end(); // slow
         self.temps -= 2;
@@ -3964,7 +3926,6 @@ fn emit_entries<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], entr
     g.block_index = node as u32;
     g.flags = Flags::Entry;
     g.fc = FCache::default();
-    g.dirty = 0;
     g.mm_loop = 0;
     g.mmx = (0, 0);
     g.xm_loop = 0;
@@ -3992,17 +3953,83 @@ fn emit_entries<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], entr
 /// merged with others, see `saved`), and its RET as RET_CONTINUE (on at EIP).
 fn fn_adapter() -> Func {
     let mut c = Code::default();
+    lazy_to_cpu(&mut c);
+    c.end();
+    // (the entry in the depth's high half)
+    fn_args(&mut c, |c| void(c.get(L_CPU).load32(Off::calls()).get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or()), |c| void(c.i32c(0)));
+    c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0);
+    // (L_NEXT: the RET's EIP)
+    c.set(L_BUD);
+    for i in (0..8).rev() {
+        c.set(L_REG + i);
+    }
+    c.set(L_NEXT).tee(L_ST).i32c(RET_FN).eq().if_();
+    // a RET: the state into the Cpu, on at EIP
+    state_to_cpu(&mut c);
+    c.get(L_CPU).get(L_NEXT).store32(Off::eip());
+    c.i32c(RET_CONTINUE).set(L_ST);
+    c.end();
+    c.get(L_ST);
+    Func { ty: 2, locals: alloc::vec![I32; 2], code: c }
+}
+
+/// A function's parameters after the Cpu, in order (see [`T_FN`]): ESP first (named by nearly
+/// every function, and read in its loops: V8 passes the first five or six parameters in
+/// registers and leaves the others in the caller's frame, reading them again at each use),
+/// then EAX ECX EDX EBX EBP ESI EDI, the depth, the budget, the return address.
+const FN_ARGS: [u32; 11] = [L_REG + 4, L_REG, L_REG + 1, L_REG + 2, L_REG + 3, L_REG + 5, L_REG + 6, L_REG + 7, L_ARG, L_BUD, L_RAIN];
+
+/// Pushes a call's arguments (see [`FN_ARGS`]): `depth` and `ra` push the depth (| entry << 16)
+/// and the return address.
+fn fn_args(c: &mut Code, depth: impl FnOnce(&mut Code), ra: impl FnOnce(&mut Code)) {
+    c.get(L_CPU);
+    for &l in &FN_ARGS[..8] {
+        c.get(l);
+    }
+    depth(c);
+    c.get(L_BUD);
+    ra(c);
+}
+
+fn void<T>(_: T) {}
+
+/// What a function returns after (status, EIP) (see [`T_FN`]): the registers and the budget.
+fn push_fn_state(c: &mut Code) {
+    for i in 0..8 {
+        c.get(L_REG + i);
+    }
+    c.get(L_BUD);
+}
+
+/// The registers and the budget into the Cpu.
+fn state_to_cpu(c: &mut Code) {
+    let _site = wasm::MemSite::new(2);
     for i in 0..8 {
         c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
     }
     c.get(L_CPU).get(L_BUD).store32(Off::budget());
-    lazy_to_cpu(&mut c);
-    c.end();
-    // (the entry in the depth's high half)
-    c.get(L_CPU).get(L_CPU).load32(Off::calls()).get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
-    c.get(L_REG + 4);
-    c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(L_REG + 4).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
-    Func { ty: 2, locals: Vec::new(), code: c }
+}
+
+/// After a function's call of a function (its results on the stack): into the locals (status
+/// in `h`, EIP in `v`); a status other than RET_FN passed on (the state is in the Cpu), and a
+/// RET elsewhere than `next` too (longjmp, a return address replaced), the state into the
+/// Cpu first.
+fn take_results(c: &mut Code, h: u32, v: u32, next: u32) {
+    c.set(L_BUD);
+    for i in (0..8).rev() {
+        c.set(L_REG + i);
+    }
+    c.set(v).set(h);
+    c.get(h).i32c(RET_FN).ne().if_().get(h).i32c(0);
+    push_fn_state(c);
+    c.ret().end();
+    c.get(v).u32c(next).ne().if_();
+    bump(c, 4);
+    state_to_cpu(c);
+    c.get(L_CPU).get(v).store32(Off::eip());
+    c.i32c(RET_CONTINUE).i32c(0);
+    push_fn_state(c);
+    c.ret().end();
 }
 
 /// Stores the lazy operation in the locals to the Cpu (L_OP holds it).
@@ -4023,8 +4050,9 @@ fn lazy_to_cpu(c: &mut Code) {
 }
 
 /// Writes registers, EIP (L_NEXT), the budget and lazy flags back to the Cpu.
-fn writeback(c: &mut Code, wregs: u8) {
-    for i in (0..8).filter(|i| wregs & (1 << i) != 0) {
+fn writeback(c: &mut Code) {
+    let _site = wasm::MemSite::new(4);
+    for i in 0..8 {
         c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
     }
     c.get(L_CPU).get(L_NEXT).store32(Off::eip());
@@ -4081,7 +4109,7 @@ fn emit_lookup(c: &mut Code) {
 
 /// [`emit_lookup`] of a function: a function's entry is a tail call of it (`jmp` to another
 /// function), anything else leaves for the dispatcher.
-fn emit_fn_lookup(c: &mut Code, entry: u32, wregs: u8) {
+fn emit_fn_lookup(c: &mut Code, entry: u32) {
     let hash = offset_of!(Cpu, jit_hash) as u32;
     let maskf = offset_of!(Cpu, jit_mask) as u32;
     let (h, e, v) = (L_T, L_T + 1, L_T + 2);
@@ -4097,9 +4125,11 @@ fn emit_fn_lookup(c: &mut Code, entry: u32, wregs: u8) {
     c.get(v).get(L_NEXT).eq().if_();
     c.get(e).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(2);
     bump(c, 7);
-    writeback(c, wregs);
-    c.get(L_CPU).get(L_ARG).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
-    c.get(L_REG + 4);
+    // (the flags into the Cpu, the rest as arguments)
+    lazy_to_cpu(c);
+    c.end();
+    // (returning where this one would: the same return address)
+    fn_args(c, |c| void(c.get(L_ARG).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or()), |c| void(c.get(L_RAIN)));
     c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add();
     c.op(0x13).op(T_FN as u8).op(0); // return_call_indirect, table 0
     c.end();
@@ -4795,7 +4825,6 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.flags = Flags::Entry;
     g.smc = WATCH.get().is_some_and(|w| w(blocks[k].0));
     g.fresh = g.fresh_code[k].as_ref().map(|b| (blocks[k].0, b.len() as u32));
-    g.dirty = g.dirty_in.get(k).copied().unwrap_or(g.wregs);
     g.small = [None; 8];
     if let Some(&m) = g.safe_in.get(k) {
         for r in (0..8).filter(|r| m & (1 << r) != 0) {
@@ -5034,68 +5063,6 @@ fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)], tables: &[structu
         }
         if !changed {
             return (live_in, live_out);
-        }
-    }
-}
-
-/// A function's registers that can be dirty (written since loaded from the Cpu) at each
-/// block's start: its entry loads them all (none), a block passes on what came in and what it
-/// writes, and a call made by [`Gen::call_fn`] none (it loads them after) but into a callee
-/// inlined behind its guard.
-fn dirty_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -> Vec<u8> {
-    let n = blocks.len();
-    let total = l.succ.len();
-    let mut info = iced_x86::InstructionInfoFactory::new();
-    let writes: Vec<u8> = (0..n)
-        .map(|k| {
-            if g.hle.contains_key(&blocks[k].0) {
-                return g.wregs;
-            }
-            let mut w = 0u8;
-            for ins in &blocks[k].1 {
-                for u in info.info(ins).used_registers() {
-                    use iced_x86::OpAccess::*;
-                    if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) && u.register().is_gpr() {
-                        w |= 1 << u.register().full_register32().number();
-                    }
-                }
-            }
-            w & g.wregs
-        })
-        .collect();
-    // blocks ending in a call_fn (and the entry of a callee inlined there)
-    let calls: Vec<Option<Option<usize>>> = (0..n)
-        .map(|k| {
-            let last = blocks[k].1.last().unwrap();
-            if last.mnemonic() != Mnemonic::Call {
-                return None;
-            }
-            let inl = g.inlined.get(&k);
-            if last.op0_kind() == OpKind::NearBranch32 {
-                return if inl.is_some() { None } else { Some(None) };
-            }
-            let ok = op_bits(last, 0) == 32 && (0..last.op_count()).all(|i| simple_operand(last, i)) && !last.has_lock_prefix();
-            ok.then(|| inl.map(|&(e, _)| e))
-        })
-        .collect();
-    let mut din = alloc::vec![0u8; total];
-    loop {
-        let mut changed = false;
-        for v in 0..total {
-            let out = if v < n { din[v] | writes[v] } else { din[v] };
-            for &w in &l.succ[v] {
-                let o = match calls.get(v) {
-                    Some(Some(e)) if *e != Some(w) => 0,
-                    _ => out,
-                };
-                if din[w] | o != din[w] {
-                    din[w] |= o;
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            return din;
         }
     }
 }
@@ -5506,8 +5473,10 @@ fn translate_seen<M: Memory>(
     // (in every module: saved bundles merge regions and functions, which needs the same
     // types and imports)
     if module.types.len() == T_FN as usize {
-        // T_FN: (cpu, depth | entry << 16, esp) -> (status, esp): ESP in V8's registers both ways
-        module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32; 2] });
+        // T_FN: (cpu, ESP, 7 registers, depth | entry << 16, budget, return address) ->
+        // (status, EIP, 8 registers, budget): the state in V8's registers (or its stack) both
+        // ways, not in the Cpu
+        module.types.push(FuncType { params: alloc::vec![I32; 1 + FN_ARGS.len()], results: alloc::vec![I32; 11] });
         module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32] });
         module.imports.push(Import::Func("callmiss", T_CALLMISS));
     }
@@ -5556,21 +5525,18 @@ fn translate_seen<M: Memory>(
         }
     }
     let nodes = n as usize + tables.len() + 1; // (+ a function's node for more entries)
-    let (mut regs, mut wregs) = (0xffu8, 0xffu8);
+    // (a function's registers come as parameters: the Cpu's are stale, its exits store them
+    // all)
+    let mut regs = 0xffu8;
     if fnm {
         // (an HLE'd C function returns in EAX)
-        (regs, wregs) = if hle.is_empty() { (1 << 4, 1 << 4) } else { (0x11, 0x11) };
+        regs = if hle.is_empty() { 1 << 4 } else { 0x11 };
         let mut info = iced_x86::InstructionInfoFactory::new();
         for ins in blocks.iter().flat_map(|b| b.1.iter()) {
             for u in info.info(ins).used_registers() {
-                use iced_x86::OpAccess::*;
                 let r = u.register();
                 if r.is_gpr() {
-                    let b = 1u8 << r.full_register32().number();
-                    regs |= b;
-                    if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) {
-                        wregs |= b;
-                    }
+                    regs |= 1u8 << r.full_register32().number();
                 }
             }
         }
@@ -5590,7 +5556,6 @@ fn translate_seen<M: Memory>(
         structured: fnm,
         jnode,
         regs,
-        wregs,
         depth: 0,
         flags: Flags::Entry,
         targets: &targets,
@@ -5607,8 +5572,6 @@ fn translate_seen<M: Memory>(
         returns: &returns,
         ins: &blocks[0].1[0],
         live_after: 0,
-        dirty: 0xff,
-        dirty_in: Vec::new(),
         small: [None; 8],
         safe_in: Vec::new(),
         hoist: BTreeMap::new(),
@@ -5705,9 +5668,8 @@ fn translate_seen<M: Memory>(
     }
     bump(&mut g.c, 10);
     if fnm {
-        // the state from the Cpu (ESP from the caller); status flags dead (a call's target)
-        g.load_regs_esp(L_ESPIN);
-        g.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
+        // the registers and the budget are parameters; the flags in the Cpu (dead: a call's
+        // target)
         g.c.i32c(-1).set(L_OP);
         if !extra.is_empty() {
             // (the entry: 0 the root, else one past an `extra`)
@@ -5729,7 +5691,6 @@ fn translate_seen<M: Memory>(
     if fnm {
         let entry = starts[0].1 as usize;
         let l = fl.unwrap();
-        g.dirty_in = dirty_in(&g, &blocks, &l);
         (g.safe_in, g.hoist) = safe_in(&g, &blocks, &l);
         g.preds = alloc::vec![Vec::new(); blocks.len()];
         for (v, ws) in l.succ.iter().enumerate().take(blocks.len()) {
@@ -5785,25 +5746,27 @@ fn translate_seen<M: Memory>(
     }
     g.c.end(); // dyn
     if fnm {
-        emit_fn_lookup(&mut g.c, roots[0], g.wregs);
+        emit_fn_lookup(&mut g.c, roots[0]);
     } else {
         emit_lookup(&mut g.c);
     }
     g.c.end(); // top
     g.c.end(); // exit
-    writeback(&mut g.c, g.wregs);
+    writeback(&mut g.c);
     g.c.get(L_ST);
     if fnm {
-        g.c.get(L_REG + 4);
+        // (the state is in the Cpu: the rest of the results is not looked at)
+        g.c.i32c(0);
+        push_fn_state(&mut g.c);
     }
 
-    let mut locals = alloc::vec![I32; if fnm { N_PARAMS as usize - 2 } else { 0 } + N_LOCALS_I32 as usize];
+    let mut locals = alloc::vec![I32; if fnm { N_PARAMS as usize - 1 } else { 0 } + N_LOCALS_I32 as usize];
     locals.extend_from_slice(&[I64, F64, F64, V128, V128, I32]);
     locals.extend_from_slice(&[F64; 8]);
     locals.extend_from_slice(&[V128; 18]);
     locals.push(I32); // L_AB
     locals.extend_from_slice(&[I32; N_SLOTS as usize]);
-    // L_ESPIN (functions only, else unused), L_RO, ROUND
+    // L_RAIN (functions only, else unused), L_RO, ROUND
     locals.push(I32);
     locals.extend_from_slice(&[F64; 7]);
     locals.extend_from_slice(&[I64; 3]);
@@ -5811,14 +5774,14 @@ fn translate_seen<M: Memory>(
     // L_MX, L_MXR, L_MXT
     locals.extend_from_slice(&[I32, I32, F64]);
     if fnm {
-        assert_eq!(2 + locals.len() as u32, L_ESPIN + 18);
-        let (locals, body) = wasm::compact_locals_param(2, L_ESPIN, &locals, core::mem::take(&mut g.c));
+        assert_eq!(1 + locals.len() as u32, L_RAIN + 18);
+        let (locals, body) = wasm::compact_locals_param(1, &FN_ARGS, &locals, core::mem::take(&mut g.c));
         let at = module.funcs.len() as u32;
         module.funcs.push(fn_adapter());
         module.funcs.push(Func { ty: T_FN, locals, code: body });
         module.name_at = at + 1;
     } else {
-        debug_assert_eq!(N_PARAMS + locals.len() as u32, L_ESPIN + 18);
+        debug_assert_eq!(N_PARAMS + locals.len() as u32, L_RAIN + 18);
         let (locals, body) = wasm::compact_locals(N_PARAMS, &locals, core::mem::take(&mut g.c));
         module.funcs.push(Func { ty: 2, locals, code: body });
     }
