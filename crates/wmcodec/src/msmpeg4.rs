@@ -299,6 +299,11 @@ impl Decoder {
         Ok(d)
     }
 
+    /// The visible picture size.
+    pub fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
     fn set_qscale(&mut self, q: i32) {
         let q = q.clamp(1, 31);
         self.qscale = q;

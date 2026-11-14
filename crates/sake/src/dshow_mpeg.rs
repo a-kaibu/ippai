@@ -21,11 +21,15 @@
 //!
 //! Each filter is one guest block: word 0 is its IBaseFilter, word k its pin k (1..=3), word 4
 //! the splitter's IAMStreamSelect (krmovie asks for it after connecting), word 5 a source's
-//! IFileSourceFilter, word 6 the File Source's pin's IAsyncReader. The
+//! IFileSourceFilter, word 6 the File Source's pin's IAsyncReader, words 7 and 8 the DMO
+//! wrapper's IDMOWrapperFilter and its input's IMemInputPin (dshow_mpeg/dmo.rs). The
 //! samples and the allocator the decoder hands the renderer are ours (NotifyAllocator), so no
 //! CLSID_MemoryAllocator is needed.
 
 #![allow(non_snake_case)]
+
+mod dmo;
+pub use dmo::in_graph as dmo_in_graph;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -116,6 +120,9 @@ const SS: u32 = 4;
 const FSF: u32 = 5;
 /// the File Source's pin's IAsyncReader
 const AR: u32 = 6;
+/// the DMO wrapper's IDMOWrapperFilter, its input pin's IMemInputPin (dmo.rs)
+const DW: u32 = 7;
+const MI: u32 = 8;
 
 fn is(p: u32, g: &[u8; 16]) -> bool {
     p != 0 && mem::slice(p, 16) == g
@@ -140,6 +147,8 @@ enum Kind {
     /// the pictures of a movie dshow_play.rs plays (its `.vnv`) as a video decoder's output: a
     /// graph that renders a file into the game's own video renderer hands them to it (#215)
     Vnv,
+    /// the DMO Wrapper Filter (dmo.rs)
+    Dmo,
 }
 
 /// A source filter's file (IFileSourceFilter::Load).
@@ -191,7 +200,7 @@ fn fwith<R>(b: u32, f: impl FnOnce(&mut Filter) -> R) -> Option<R> {
 fn ours(p: u32) -> Option<(u32, usize)> {
     let g = FILTERS.lock().unwrap_or_else(|e| e.into_inner());
     let m = g.as_ref()?;
-    (0..=AR).find_map(|k| p.checked_sub(ps() * k).filter(|b| m.contains_key(b)).map(|b| (b, k as usize)))
+    (0..=MI).find_map(|k| p.checked_sub(ps() * k).filter(|b| m.contains_key(b)).map(|b| (b, k as usize)))
 }
 fn pin_of(p: u32) -> Option<(u32, usize)> {
     ours(p).filter(|x| (1..=3).contains(&x.1))
@@ -212,6 +221,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         (CLSID_DSOUND_RENDER, Kind::Sound),
         (CLSID_ASYNC_READER, Kind::File),
         (CLSID_WMASF_READER, Kind::Asf),
+        (dmo::CLSID_DMO_WRAPPER, Kind::Dmo),
     ]
     .into_iter()
     .find(|(c, _)| is(clsid, c))?
@@ -225,7 +235,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
 
 /// A new filter of kind `k` (one reference), its IBaseFilter.
 fn new_filter(k: Kind) -> u32 {
-    let b = mem::heap_alloc((AR + 1) * 8, true);
+    let b = mem::heap_alloc((MI + 1) * 8, true);
     let v = vtables();
     wp(b, v.filter);
     for i in 1..4 {
@@ -234,6 +244,8 @@ fn new_filter(k: Kind) -> u32 {
     wp(b + ps() * SS, v.stream_select);
     wp(b + ps() * FSF, v.file_source);
     wp(b + ps() * AR, v.async_reader);
+    wp(b + ps() * DW, dmo::vt().wrapper);
+    wp(b + ps() * MI, dmo::vt().mem_input);
     let p = |out: bool, name: &'static str, on: bool| Pin { out, name, on, ..Pin::default() };
     let pins = match k {
         Kind::Split => [p(false, "Input", true), p(true, "Video", false), p(true, "Audio", false)],
@@ -242,7 +254,11 @@ fn new_filter(k: Kind) -> u32 {
         // (a source's pins are there once it has its file)
         Kind::File | Kind::Asf => Default::default(),
         Kind::Vnv => [p(true, "Output", true), Pin::default(), Pin::default()],
+        Kind::Dmo => [p(false, "in0", true), p(true, "out0", true), Pin::default()],
     };
+    if k == Kind::Dmo {
+        dmo::created(b);
+    }
     FILTERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Filter { kind: k, refs: 1, graph: 0, name: Vec::new(), state: 0, pins, src: None, bits: 32 });
     b
 }
@@ -278,6 +294,7 @@ fn release(c: &mut Ctx, b: u32) -> u32 {
             r.dead = true;
         }
         vwith(b, |v| v.dead = true);
+        dmo::gone(b);
         FILTERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
     }
     n
@@ -296,6 +313,11 @@ fn f_qi(c: &mut Ctx) -> u32 {
     if is(iid, &IID_IAMSTREAMSELECT) && kind(b) == Some(Kind::Split) {
         add_ref(b);
         putp(out, b + ps() * SS);
+        return 0;
+    }
+    if is(iid, &dmo::IID_IDMOWRAPPERFILTER) && kind(b) == Some(Kind::Dmo) {
+        add_ref(b);
+        putp(out, b + ps() * DW);
         return 0;
     }
     if is(iid, &IID_IFILESOURCEFILTER) && matches!(kind(b), Some(Kind::File | Kind::Asf)) {
@@ -325,7 +347,7 @@ fn f_class(c: &mut Ctx) -> u32 {
         Some(Kind::File) => CLSID_ASYNC_READER,
         Some(Kind::Asf) => CLSID_WMASF_READER,
         // (Windows' WMVideo Decoder DMO wrapper)
-        Some(Kind::Vnv) => guid(0x94297043, 0xbd82, 0x4dfd, [0xb0, 0xde, 0x81, 0x77, 0x73, 0x9c, 0x6d, 0x20]),
+        Some(Kind::Vnv) | Some(Kind::Dmo) => guid(0x94297043, 0xbd82, 0x4dfd, [0xb0, 0xde, 0x81, 0x77, 0x73, 0x9c, 0x6d, 0x20]),
         _ => CLSID_DSOUND_RENDER,
     };
     put_guid(out, &g);
@@ -344,6 +366,9 @@ fn set_state(c: &mut Ctx, s: u32) -> u32 {
     }
     if k == Kind::Vnv {
         vnv_state(b, s);
+    }
+    if k == Kind::Dmo {
+        dmo::state(b, s);
     }
     0
 }
@@ -448,6 +473,13 @@ fn p_qi(c: &mut Ctx) -> u32 {
         }
         putp(out, p);
         return 0;
+    }
+    if let Some((b, 1)) = pin_of(p).filter(|&(b, _)| kind(b) == Some(Kind::Dmo)) {
+        if is(iid, &IID_IMEMINPUTPIN) {
+            add_ref(b);
+            putp(out, b + ps() * MI);
+            return 0;
+        }
     }
     if let Some((b, 1)) = pin_of(p).filter(|&(b, _)| kind(b) == Some(Kind::File)) {
         if is(iid, &IID_IASYNCREADER) {
@@ -592,6 +624,9 @@ fn wave_format(tag: u16, channels: u16, rate: u32, bits: u16, extra: &[u8]) -> V
 
 /// The media type output pin `k` of filter `b` gives (once its input knows the stream).
 fn out_type(b: u32, k: usize) -> Option<u32> {
+    if kind(b)? == Kind::Dmo {
+        return if k == 2 { dmo::out_type(b) } else { None };
+    }
     let (kind, info) = (kind(b)?, info_of(b)?);
     let (w, h, r) = (info.width as u32, info.height as u32, info.rate);
     Some(match (kind, k) {
@@ -685,7 +720,7 @@ fn p_connect(c: &mut Ctx) -> u32 {
         return connect_ours((b, k), inp);
     }
     // a guest input pin: the video decoder's pictures to a game's renderer
-    if !matches!(kind(b), Some(Kind::VDec | Kind::Vnv)) {
+    if !matches!(kind(b), Some(Kind::VDec | Kind::Vnv | Kind::Dmo)) {
         return VFW_E_NO_ACCEPTABLE_TYPES;
     }
     let dir = mem::heap_alloc(4, true);
@@ -750,6 +785,9 @@ fn p_receive_connection(c: &mut Ctx) -> u32 {
     // (the File Source's pin is read as a game's source is: through its IAsyncReader)
     if let Some(o) = pin_of(from).filter(|o| kind(o.0) != Some(Kind::File)) {
         return connect_ours(o, (b, k));
+    }
+    if kind(b) == Some(Kind::Dmo) {
+        return dmo::receive_connection(c, b, from, mt);
     }
     if kind(b) != Some(Kind::Split) {
         return VFW_E_TYPE_NOT_ACCEPTED;
@@ -1720,7 +1758,7 @@ fn a_get_buffer(c: &mut Ctx) -> u32 {
     }
     let dec = ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).iter().find(|(_, x)| x.0 == a).map(|(&d, _)| d);
     let Some(dec) = dec else { return E_UNEXPECTED };
-    let size = info_of(dec).map_or(4, |i| (i.width * i.height * 4) as u32);
+    let size = dmo::size(dec).or_else(|| info_of(dec).map(|i| (i.width * i.height * 4) as u32)).unwrap_or(4);
     let s = free_sample(dec, size);
     swith(s, |x| x.refs += 1);
     putp(out, s);
@@ -2391,10 +2429,10 @@ fn vtables() -> &'static Vtables {
             (p_accept, 8),
             (notimpl, 8),  // EnumMediaTypes
             (notimpl, 12), // QueryInternalConnections
-            (ok, 4),       // EndOfStream
-            (ok, 4),       // BeginFlush
-            (ok, 4),       // EndFlush
-            (ok, 28),      // NewSegment
+            (p_eos, 4),
+            (p_begin_flush, 4),
+            (p_end_flush, 4),
+            (p_new_segment, 28),
         ];
         let enum_pins: [(Handler, u32); 7] = [(e_qi, 12), (e_add_ref, 4), (e_release, 4), (e_next, 16), (e_skip, 8), (e_reset, 4), (e_clone, 8)];
         let allocator: [(Handler, u32); 9] = [(a_qi, 12), (one, 4), (one, 4), (a_set_props, 12), (a_get_props, 8), (ok, 4), (ok, 4), (a_get_buffer, 20), (ok, 8)];
@@ -2445,6 +2483,26 @@ fn vtables() -> &'static Vtables {
             sample: vtable("MPEG-1 IMediaSample", &sample),
         }
     })
+}
+
+/// EndOfStream / BeginFlush / EndFlush / NewSegment: the DMO wrapper's input passes them on.
+fn flow(c: &mut Ctx, slot: u32) -> u32 {
+    match pin_of(c.a(0)) {
+        Some((b, 1)) if kind(b) == Some(Kind::Dmo) => dmo::downstream(c, b, slot),
+        _ => 0,
+    }
+}
+fn p_eos(c: &mut Ctx) -> u32 {
+    flow(c, 14)
+}
+fn p_begin_flush(c: &mut Ctx) -> u32 {
+    flow(c, 15)
+}
+fn p_end_flush(c: &mut Ctx) -> u32 {
+    flow(c, 16)
+}
+fn p_new_segment(c: &mut Ctx) -> u32 {
+    flow(c, 17)
 }
 
 #[cfg(test)]

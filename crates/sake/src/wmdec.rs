@@ -27,7 +27,8 @@ impl Info {
         let height = (r32(8)? as i32).unsigned_abs();
         let bits = u16::from_le_bytes(bih.get(14..16)?.try_into().ok()?);
         let fourcc = r32(16)?;
-        let extra = bih.get((size as usize).clamp(40, bih.len())..).unwrap_or(&[]).to_vec();
+        // biSize counts the 40-byte header and the codec data after it.
+        let extra = bih.get(40..(size as usize).clamp(40, bih.len())).unwrap_or(&[]).to_vec();
         Some(Info::Video { fourcc, width, height, bits, extra })
     }
     /// From a WAVEFORMATEX and what follows it.
@@ -159,9 +160,69 @@ impl Codec for Wma {
     }
 }
 
-/// The compressed codecs: WMA 1 / 2 (WMV next).
+/// MS-MPEG4 v3 / WMV 1 / WMV 2 (crates/wmcodec): one picture per object.
+struct MsMpeg4 {
+    d: wmcodec::msmpeg4::Decoder,
+    /// the last picture (a WMV2 "skipped" picture repeats it)
+    last: Option<Vec<u8>>,
+}
+
+impl Codec for MsMpeg4 {
+    fn decode(&mut self, data: &[u8], time: u64, _key: bool) -> Vec<Frame> {
+        let (w, h) = match self.d.decode(data) {
+            Ok(Some(p)) => {
+                self.last = Some(yuv_to_bgra(&p));
+                (p.width as u32, p.height as u32)
+            }
+            // (a skipped picture, or a damaged one: the last again)
+            _ => match self.d.size() {
+                (w, h) if self.last.is_some() => (w as u32, h as u32),
+                _ => return Vec::new(),
+            },
+        };
+        vec![Frame::Picture { time, w, h, bgra: self.last.clone().unwrap_or_default() }]
+    }
+}
+
+/// BT.601 limited range YUV 4:2:0 to B G R A, top row first (what Windows' WMV decoder DMO
+/// gives as RGB).
+pub fn yuv_to_bgra(p: &wmcodec::msmpeg4::Picture) -> Vec<u8> {
+    let (w, h) = (p.width, p.height);
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let (yr, ur, vr) = (&p.planes[0][y * p.stride[0]..], &p.planes[1][(y / 2) * p.stride[1]..], &p.planes[2][(y / 2) * p.stride[1]..]);
+        for x in 0..w {
+            let c = (yr[x] as i32 - 16) * 298;
+            let d = ur[x / 2] as i32 - 128;
+            let e = vr[x / 2] as i32 - 128;
+            let o = &mut out[(y * w + x) * 4..][..4];
+            o[0] = ((c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            o[1] = ((c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            o[2] = ((c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            o[3] = 255;
+        }
+    }
+    out
+}
+
+const fn fcc(s: &[u8; 4]) -> u32 {
+    u32::from_le_bytes(*s)
+}
+
+/// The compressed codecs: WMA 1 / 2, MS-MPEG4 v3, WMV 1 / 2.
 fn backend(i: &Info) -> Option<Box<dyn Codec>> {
+    use wmcodec::msmpeg4::Version;
     match i {
+        Info::Video { fourcc, width, height, extra, .. } => {
+            let ver = match u32::from_le_bytes(fourcc.to_le_bytes().map(|b| b.to_ascii_uppercase())) {
+                x if x == fcc(b"WMV1") => Version::Wmv1,
+                x if x == fcc(b"WMV2") => Version::Wmv2,
+                x if x == fcc(b"MP43") || x == fcc(b"DIV3") => Version::V3,
+                _ => return None,
+            };
+            let d = wmcodec::msmpeg4::Decoder::new(ver, *width as usize, (*height as i32).unsigned_abs() as usize, extra).ok()?;
+            Some(Box::new(MsMpeg4 { d, last: None }))
+        }
         Info::Audio { tag: tag @ (0x160 | 0x161), channels, rate, align, bytes_per_sec, extra, .. } => {
             let d = wmcodec::wma::Decoder::new(*tag, *channels, *rate, bytes_per_sec * 8, *align, extra).ok()?;
             Some(Box::new(Wma { d, align: *align as usize, end: 0 }))
@@ -306,4 +367,128 @@ impl Decoder for Out {
 pub fn decoder(s: &asf::Stream, ty: &MediaType) -> Option<Box<dyn Decoder>> {
     let codec = codec(&Info::of_stream(s)?)?;
     Some(Box::new(Out { codec, ty: ty.clone(), time_per_frame: s.avg_time_per_frame }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn bih(size: u32, fourcc: &[u8; 4], tail: &[u8]) -> Vec<u8> {
+        let mut b = vec![0u8; 40];
+        b[0..4].copy_from_slice(&size.to_le_bytes());
+        b[4..8].copy_from_slice(&800u32.to_le_bytes());
+        b[8..12].copy_from_slice(&(-600i32).to_le_bytes());
+        b[14..16].copy_from_slice(&24u16.to_le_bytes());
+        b[16..20].copy_from_slice(fourcc);
+        b.extend_from_slice(tail);
+        b
+    }
+
+    /// 凛 Demo.wmv: biSize 44 = header + the 4 WMV2 extradata bytes (ffprobe: f7ff ad00).
+    #[test]
+    fn wmv2_extradata_is_inside_bisize() {
+        let Some(Info::Video { fourcc, width, height, bits, extra }) = Info::from_bih(&bih(44, b"WMV2", &[0xf7, 0xff, 0xad, 0x00])) else { panic!() };
+        assert_eq!((fourcc, width, height, bits), (u32::from_le_bytes(*b"WMV2"), 800, 600, 24));
+        assert_eq!(extra, [0xf7, 0xff, 0xad, 0x00]);
+        assert!(codec(&Info::from_bih(&bih(44, b"WMV2", &[0xf7, 0xff, 0xad, 0x00])).unwrap()).is_some());
+    }
+
+    /// A WMV file ffmpeg makes (None without ffmpeg).
+    fn encoded(codec: &str, w: u32, h: u32) -> Option<Vec<u8>> {
+        let dir = std::env::temp_dir().join(format!("wmdec-{}-{codec}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let out = dir.join("v.wmv");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc=size={w}x{h}:rate=15:duration=2"), "-c:v", codec, "-q:v", "6", "-g", "10"])
+            .arg(&out)
+            .status()
+            .ok()?
+            .success();
+        let v = ok.then(|| std::fs::read(&out).ok()).flatten();
+        let _ = std::fs::remove_dir_all(&dir);
+        v
+    }
+
+    /// The DMO wrapper's path: the file's stream type picks the decoder, each object gives one
+    /// picture of the stream's size, and a damaged object repeats the last picture.
+    #[test]
+    fn wmv_streams_give_a_picture_per_object() {
+        for codec in ["wmv1", "wmv2", "msmpeg4"] {
+            let Some(file) = encoded(codec, 176, 144) else {
+                eprintln!("no ffmpeg: skipped");
+                return;
+            };
+            let mut r = asf::Reader::new(file).unwrap();
+            let s = r.header.streams.iter().find(|s| matches!(s.kind, asf::Kind::Video { .. })).unwrap().clone();
+            let info = Info::of_stream(&s).unwrap();
+            // (what the DMO wrapper is handed: the type wmvcore builds of the stream)
+            let t = crate::wmvcore::stream_type(&s);
+            assert_eq!(Info::of_type(&t), Some(info.clone()), "{codec}");
+            let mut d = codec_for(&info).unwrap_or_else(|| panic!("{codec}: no decoder"));
+            let mut n = 0;
+            let mut last = Vec::new();
+            while let Some(x) = r.next_sample() {
+                if x.stream != s.number {
+                    continue;
+                }
+                let f = d.decode(&x.data, n, n == 0);
+                let [Frame::Picture { w: 176, h: 144, bgra, .. }] = &f[..] else { panic!("{codec}: object {n}") };
+                assert_eq!(bgra.len(), 176 * 144 * 4);
+                last = bgra.clone();
+                n += 1;
+            }
+            assert_eq!(n, 30, "{codec}");
+            let [Frame::Picture { bgra, .. }] = &d.decode(&[0xff; 7], n, false)[..] else { panic!("{codec}: damaged") };
+            assert_eq!(bgra, &last, "{codec}");
+        }
+    }
+
+    #[test]
+    fn fourccs_are_case_blind() {
+        for f in [b"WMV1", b"wmv1", b"WMV2", b"wmv2", b"MP43", b"mp43", b"DIV3", b"div3"] {
+            assert!(codec_for(&Info::from_bih(&bih(40, f, &[])).unwrap()).is_some() || f.eq_ignore_ascii_case(b"WMV2"), "{f:?}");
+        }
+        // (WMV2 needs its extradata; WMV3 / VC-1 is not ported yet)
+        assert!(codec_for(&Info::from_bih(&bih(40, b"WMV2", &[])).unwrap()).is_none());
+    }
+
+    fn codec_for(i: &Info) -> Option<Box<dyn Codec>> {
+        codec(i)
+    }
+
+    proptest! {
+        /// The extradata is bytes 40..biSize, cut to what is there; trailing bytes past biSize
+        /// (a VIDEOINFOHEADER copied with padding) are not codec data.
+        #[test]
+        fn extra_is_header_tail(size in 0u32..200, tail in proptest::collection::vec(any::<u8>(), 0..100)) {
+            let Some(Info::Video { extra, .. }) = Info::from_bih(&bih(size, b"WMV1", &tail)) else { panic!() };
+            let n = (size as usize).saturating_sub(40).min(tail.len());
+            prop_assert_eq!(&extra[..], &tail[..n]);
+        }
+    }
+    proptest! {
+        /// BT.601 limited range, within one step of the real-number formula.
+        #[test]
+        fn yuv_is_bt601(w in 1usize..9, h in 1usize..9, px in proptest::collection::vec(any::<u8>(), 3 * 81)) {
+            let cw = w.div_ceil(2);
+            let ch = h.div_ceil(2);
+            let planes = [px[..w * h].to_vec(), px[81..81 + cw * ch].to_vec(), px[162..162 + cw * ch].to_vec()];
+            let p = wmcodec::msmpeg4::Picture { width: w, height: h, stride: [w, cw], planes, key: true };
+            let out = yuv_to_bgra(&p);
+            for y in 0..h {
+                for x in 0..w {
+                    let yy = 1.164383 * (p.planes[0][y * w + x] as f64 - 16.0);
+                    let u = p.planes[1][(y / 2) * cw + x / 2] as f64 - 128.0;
+                    let v = p.planes[2][(y / 2) * cw + x / 2] as f64 - 128.0;
+                    let want = [yy + 2.017232 * u, yy - 0.391762 * u - 0.812968 * v, yy + 1.596027 * v];
+                    for k in 0..3 {
+                        let got = out[(y * w + x) * 4 + k] as f64;
+                        prop_assert!((got - want[k].clamp(0.0, 255.0)).abs() <= 1.0, "{x},{y} {k}: {got} vs {}", want[k]);
+                    }
+                    prop_assert_eq!(out[(y * w + x) * 4 + 3], 255);
+                }
+            }
+        }
+    }
 }

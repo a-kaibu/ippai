@@ -702,7 +702,7 @@ fn run(c: &mut Ctx) -> u32 {
     filters_to(c, b, 6);
     let was = set_state(b, 2);
     // (an MPEG-1 stream of dshow_mpeg.rs plays: its own end)
-    let mpeg = crate::dshow_mpeg::movie(b).is_some();
+    let mpeg = crate::dshow_mpeg::movie(b).is_some() || crate::dshow_mpeg::dmo_in_graph(b);
     if is_sound(b) {
         sound_end_check(b);
         return if was == 0 { S_FALSE } else { 0 };
