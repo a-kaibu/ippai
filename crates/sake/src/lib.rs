@@ -437,8 +437,27 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                         cpu.eip = e - 2;
                         raise(cpu, 0xc000_0420, e - 2, &[])
                     }
-                    // int 2d (debug service), int 29 (__fastfail): skipped as before
-                    0x2d | 0x29 => cpu.eip += 2,
+                    // int 2d (debug service) with no debugger: STATUS_BREAKPOINT with the context
+                    // just after it and EAX (the service) its one parameter (Wine's ntdll
+                    // exception.c test_debug_service). A skip
+                    // here is what a debugger does: Enigma Protector takes it for one
+                    0x2d => {
+                        if mem::x64() {
+                            // (x64 serves print and symbols in the kernel and resumes a byte
+                            // further, as a debugger would; 32-bit under WoW64 raises them too)
+                            let rax = cpu.gpr(0);
+                            if matches!(rax as u32, 1 | 3 | 4 | 5) {
+                                cpu.eip = e + 1;
+                                continue;
+                            }
+                            seh64::raise(cpu, 0x8000_0003, 0, e, &[rax]);
+                        } else {
+                            let eax = cpu.regs[0];
+                            seh::raise(cpu, 0x8000_0003, 0, e, &[eax]);
+                        }
+                    }
+                    // int 29 (__fastfail): skipped as before
+                    0x29 => cpu.eip += 2,
                     // a vector user mode may not use: an access violation at the instruction
                     // reading address -1, as the general protection fault reaches the program
                     _ => {

@@ -8626,9 +8626,106 @@ fn InterlockedPushListSList(c: &mut Ctx) -> u32 {
 fn RtlFirstEntrySList(c: &mut Ctx) -> u32 {
     slist_get(c.a(0)).0
 }
-// tool help snapshots: the process list holds this process only (single-instance checks)
-fn CreateToolhelp32Snapshot(_: &mut Ctx) -> u32 {
-    create_named(None, Obj::Semaphore { count: 0, max: 1 })
+// tool help snapshots: the process list holds this process only (single-instance checks); the
+// module list this process's modules, the exe first, then the DLLs as loaded. On Windows a
+// snapshot is a Section object (NtQueryObject's type name), and Module32First of one's own
+// process always has the exe: Enigma Protector (anemoi's SiglusEngine.exe) takes a snapshot of
+// its modules and asks the handle's type, and showed "A debugger is detected" while sake's had
+// no modules and was a Semaphore.
+pub struct Snapshot {
+    /// (base, size, file name, path)
+    modules: Vec<(u32, u32, String, String)>,
+    next_module: usize,
+}
+pub static SNAPSHOTS: Mutex<Option<HashMap<u32, Snapshot>>> = Mutex::new(None);
+
+/// TH32CS_SNAPMODULE / TH32CS_SNAPMODULE32
+const TH32CS_MODULES: u32 = 0x8 | 0x10;
+
+fn CreateToolhelp32Snapshot(c: &mut Ctx) -> u32 {
+    let (flags, pid) = (c.a(0), c.a(1));
+    // (another process's modules: not ours to list)
+    if flags & TH32CS_MODULES != 0 && pid != 0 && pid != crate::pid() {
+        last_error(87);
+        return 0xffff_ffff;
+    }
+    let modules = if flags & TH32CS_MODULES != 0 { snapshot_modules() } else { vec![] };
+    let h = obj::add(Obj::Other("Section"));
+    SNAPSHOTS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Snapshot { modules, next_module: 0 });
+    h
+}
+
+/// This process's modules for a snapshot: the exe, then the DLLs in load order.
+pub fn snapshot_modules() -> Vec<(u32, u32, String, String)> {
+    // (every Windows process has ntdll and kernel32 mapped, a program that imports neither too:
+    // Enigma Protector looks for both)
+    for k in ["ntdll", "kernel32"] {
+        crate::pe::hle_module(k);
+    }
+    let mods = crate::pe::MODULES.read().unwrap();
+    let mut v: Vec<_> = mods.iter().filter(|m| !m.dll).chain(mods.iter().filter(|m| m.dll)).map(|m| (m.base, m.size, m.name.clone(), m.path.clone())).collect();
+    v.dedup_by_key(|m| m.0);
+    v
+}
+
+/// MODULEENTRY32(W) at `p` for the snapshot's next module (`first`: from the start again).
+fn module_entry(c: &mut Ctx, wide: bool, first: bool) -> u32 {
+    let (h, p) = (c.a(0), c.a(1));
+    let x64 = mem::x64();
+    // (offsets of szModule; the whole size: 32-bit A 548 / W 1064, x64 A 568 / W 1080)
+    let (names, size) = match (x64, wide) {
+        (false, false) => (32, 32 + 256 + 260),
+        (false, true) => (32, 32 + 512 + 520),
+        (true, false) => (48, 48 + 256 + 260 + 4),
+        (true, true) => (48, 48 + 512 + 520),
+    };
+    // (a closed snapshot's handle: gone, though its list is kept until the handle is reused)
+    let open = obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Other("Section"), _))));
+    let mut snaps = SNAPSHOTS.lock().unwrap();
+    let Some(s) = snaps.as_mut().filter(|_| open).and_then(|m| m.get_mut(&h)) else {
+        last_error(6);
+        return 0;
+    };
+    if p == 0 || r32(p) < size {
+        last_error(24); // ERROR_BAD_LENGTH
+        return 0;
+    }
+    if first {
+        s.next_module = 0;
+    }
+    let Some((base, msize, name, path)) = s.modules.get(s.next_module).cloned() else {
+        last_error(18);
+        return 0;
+    };
+    s.next_module += 1;
+    drop(snaps);
+    mem::fill(p + 4, size - 4, 0);
+    w32(p + 4, 1); // th32ModuleID
+    w32(p + 8, crate::pid());
+    w32(p + 12, 0xffff); // GlblcntUsage
+    w32(p + 16, 0xffff); // ProccntUsage
+    let (at_base, at_size, at_h) = if x64 { (24, 32, 40) } else { (20, 24, 28) };
+    mem::wp(p + at_base, base);
+    w32(p + at_size, msize);
+    mem::wp(p + at_h, base);
+    let (mod_cap, path_at) = if wide { (256, names + 512) } else { (256, names + 256) };
+    // (the file name as the module has it: the exe's own case from its path)
+    let shown = path.rsplit(['\\', '/']).next().filter(|n| n.eq_ignore_ascii_case(&name)).unwrap_or(&name).to_string();
+    ret_str(p + names, mod_cap, &shown, wide);
+    ret_str(p + path_at, 260, &path, wide);
+    1
+}
+fn Module32First(c: &mut Ctx) -> u32 {
+    module_entry(c, false, true)
+}
+fn Module32FirstW(c: &mut Ctx) -> u32 {
+    module_entry(c, true, true)
+}
+fn Module32Next(c: &mut Ctx) -> u32 {
+    module_entry(c, false, false)
+}
+fn Module32NextW(c: &mut Ctx) -> u32 {
+    module_entry(c, true, false)
 }
 fn process_entry(c: &mut Ctx, wide: bool) -> u32 {
     let p = c.a(1);
@@ -8923,9 +9020,10 @@ pub fn init() {
     }
     implement("avrt", "AvRevertMmThreadCharacteristics", av_true);
     implement("avrt", "AvSetMmThreadPriority", av_true);
-    for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
+    for n in ["Process32Next", "Process32NextW", "Thread32First", "Thread32Next"] {
         implement("kernel32", n, no_more);
     }
+    reg!("kernel32"; Module32First, Module32FirstW, Module32Next, Module32NextW);
     reg!("dbghelp"; MakeSureDirectoryPathExists, SearchTreeForFile);
     reg!("imagehlp"; MakeSureDirectoryPathExists, SearchTreeForFile);
     reg!("mpr"; WNetGetUniversalNameA);

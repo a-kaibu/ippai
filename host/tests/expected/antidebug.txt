@@ -1,0 +1,12 @@
+int 2d service 0: exceptions 1 resumed after it 1 context after it 1 eax param 1
+int 2d service 2: exceptions 1 resumed after it 1 context after it 1 eax param 1
+int 2d service 6: exceptions 1 resumed after it 1 context after it 1 eax param 1
+int 2d, no handler but the filter: 1 resumed after it 1
+snapshot: a handle
+snapshot type: status 00000000 Section
+short dwSize: 0 err 24
+first is the exe: 1 at its base 1
+listed ntdll 1 kernel32 1, more than 2 1, then err 18
+close: 1
+closed type: status c0000008 
+closed first: 0 err 6

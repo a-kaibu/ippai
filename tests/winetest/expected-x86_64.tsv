@@ -165,7 +165,7 @@ kernel32:sync	ok	0	367017
 kernel32:thread	ok	0	1026
 kernel32:time	fail	100	2249
 kernel32:timer	ok	0	4
-kernel32:toolhelp	fail	33	81
+kernel32:toolhelp	fail	29	87
 kernel32:version	fail	64	256
 kernel32:virtual	fail	5	13
 kernel32:volume	crash	164	0
