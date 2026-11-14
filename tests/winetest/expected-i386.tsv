@@ -142,7 +142,7 @@ kernel32:change	fail	104	316
 kernel32:codepage	fail	263134	394741
 kernel32:comm	fail	763	8842
 kernel32:console	fail	2	4
-kernel32:debugger	fail	4	1038
+kernel32:debugger	fail	4	1106
 kernel32:directory	fail	27	104
 kernel32:drive	fail	13	129
 kernel32:environ	fail	96	454

@@ -1,0 +1,2 @@
+child 7 kernel32 1 all named 1
+ole32 loaded 1 unloaded 1

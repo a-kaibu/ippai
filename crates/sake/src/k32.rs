@@ -8376,8 +8376,17 @@ pub(crate) fn mapped_file(a: u32) -> Result<String, u32> {
 /// GetMappedFileName(process, address, buffer, chars): the device path of the file mapped there
 fn mapped_file_name(c: &mut Ctx, wide: bool) -> u32 {
     let (h, a, dst, cap) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    if !psapi_access(h, false) {
-        return 0;
+    // (of any process: QUERY_INFORMATION or its LIMITED form)
+    match crate::process::of_handle(h) {
+        None => {
+            last_error(6);
+            return 0;
+        }
+        Some((_, acc)) if acc & 0x1400 == 0 => {
+            last_error(5);
+            return 0;
+        }
+        Some(_) => {}
     }
     if dst == 0 || cap == 0 {
         last_error(87);
