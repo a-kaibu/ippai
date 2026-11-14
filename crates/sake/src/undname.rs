@@ -1447,7 +1447,6 @@ mod tests {
         assert_eq!(undname("PBD", TYPE_ONLY).unwrap(), "char const *");
     }
 
-    #[test]
     /// review b09: template arguments naming templates naming templates, 200000 levels deep,
     /// are refused (no host stack overflow), and an argument list past OUT_MAX is refused while
     /// a long one below it is undecorated

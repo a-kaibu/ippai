@@ -1202,7 +1202,7 @@ mod hot_tests {
         let b = host_fn_this("hot_tests_b", h2, 8);
         assert_eq!(args_of(a), (false, 12));
         assert!(is_known(a) && implemented(a));
-        assert_eq!(handler_of(b).map(|f| f as usize), Some(h2 as usize));
+        assert_eq!(handler_of(b).map(|f| f as usize), Some(h2 as *const () as usize));
         let (_, m) = hot(((b - TRAP_LO) / 4) as usize).unwrap();
         assert!(m.this_arg);
         // (made again: the same trap, its bytes updated)
@@ -1248,7 +1248,7 @@ mod hot_tests {
                         let a = host_fn(&format!("hot_tests_c{w}_{k}"), if k % 2 == 0 { h1 } else { h2 }, 4 * (k % 9));
                         let (f, m) = hot(((a - TRAP_LO) / 4) as usize).unwrap();
                         assert_eq!(m.bytes, 4 * (k % 9));
-                        assert_eq!(f.map(|f| f as usize), Some(if k % 2 == 0 { h1 as usize } else { h2 as usize }));
+                        assert_eq!(f.map(|f| f as usize), Some(if k % 2 == 0 { h1 as *const () as usize } else { h2 as *const () as usize }));
                         set_tag(a, k + 1, k as usize);
                         assert_eq!(tag_of(a), (k + 1, k as usize));
                     }
