@@ -48,6 +48,8 @@ const MSPID_TAIL: [u8; 12] = [0xda, 0x9f, 0xd0, 0x11, 0x8f, 0xdf, 0x00, 0xc0, 0x
 
 /// How long Update waits at most for a frame the page has not decoded yet.
 const FRAME_TRIES: u32 = 100;
+/// The first frame's: 10 s
+const FIRST_FRAME_TRIES: u32 = 2000;
 
 struct Mms {
     refs: u32,
@@ -696,6 +698,33 @@ pub fn pack(rgb: u32, masks: [u32; 3]) -> u32 {
     v
 }
 
+/// `pack` with the masks' shifts and widths worked out once (per frame, not per pixel).
+struct Packer([(u32, u32, u32, u32); 3]);
+
+impl Packer {
+    fn new(masks: [u32; 3]) -> Packer {
+        Packer(std::array::from_fn(|i| {
+            let m = masks[i];
+            let shift = if m == 0 { 0 } else { m.trailing_zeros() };
+            let bits = if m == 0 { 0 } else { (m >> shift).count_ones().min(32) };
+            (m, shift, bits, 16 - 8 * i as u32)
+        }))
+    }
+    #[inline]
+    fn pack(&self, rgb: u32) -> u32 {
+        let mut v = 0;
+        for &(m, shift, bits, from) in &self.0 {
+            if m == 0 {
+                continue;
+            }
+            let c = (rgb >> from) & 0xff;
+            let c = if bits >= 8 { c << (bits - 8) } else { c >> (8 - bits) };
+            v |= (c << shift) & m;
+        }
+        v
+    }
+}
+
 /// Frame `px` (w x h, 0x00rrggbb) into the `dst` rectangle of a surface (stretched to it,
 /// nearest), as pixels of `bpp` bits with these masks, rows `pitch` bytes apart.
 pub fn draw(px: &[u32], w: u32, h: u32, out: &mut [u8], pitch: usize, bpp: u16, masks: [u32; 3], dst: (i32, i32, i32, i32), surf: (i32, i32)) {
@@ -705,17 +734,18 @@ pub fn draw(px: &[u32], w: u32, h: u32, out: &mut [u8], pitch: usize, bpp: u16, 
         return;
     }
     let bytes = (bpp / 8) as usize;
+    let p = Packer::new(masks);
+    // (the source column of each x once, not two divisions a pixel)
+    let cols: Vec<usize> = (l..r).map(|x| ((x - dst.0) as u64 * w as u64 / dw as u64) as usize).collect();
+    let plain = bytes == 4 && masks == [0xff0000, 0xff00, 0xff];
     for y in t..b {
         let sy = ((y - dst.1) as u64 * h as u64 / dh as u64) as usize;
         let row = &px[sy * w as usize..][..w as usize];
-        let o = y as usize * pitch;
-        for x in l..r {
-            let sx = ((x - dst.0) as u64 * w as u64 / dw as u64) as usize;
-            let v = pack(row[sx], masks);
-            let at = o + x as usize * bytes;
-            if let Some(d) = out.get_mut(at..at + bytes) {
-                d.copy_from_slice(&v.to_le_bytes()[..bytes]);
-            }
+        let o = y as usize * pitch + l as usize * bytes;
+        let Some(line) = out.get_mut(o..) else { break };
+        for (d, &sx) in line.chunks_exact_mut(bytes).zip(&cols) {
+            let v = if plain { row[sx] } else { p.pack(row[sx]) };
+            d.copy_from_slice(&v.to_le_bytes()[..bytes]);
         }
     }
 }
@@ -788,7 +818,16 @@ fn update(c: &mut Ctx, b: u32, m: u32, surf: u32, rect: (i32, i32, i32, i32)) ->
                 let mut tries = 0;
                 while !unsafe { play::frame(stream, n as i32, px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h) } {
                     tries += 1;
-                    if tries > FRAME_TRIES || play::failed(stream) {
+                    if play::failed(stream) {
+                        return E_FAIL;
+                    }
+                    // (a frame late on a slow device, after a seek or while a state is saved: the
+                    // picture shown stays and the next Update asks again; the first frame is
+                    // waited for longer. E_FAIL after 0.5 s made games skip the movie as broken)
+                    if tries > FRAME_TRIES && have.is_some() {
+                        return 0;
+                    }
+                    if tries > FIRST_FRAME_TRIES {
                         return E_FAIL;
                     }
                     kura::snap::sleep(std::time::Duration::from_millis(5));
@@ -799,15 +838,16 @@ fn update(c: &mut Ctx, b: u32, m: u32, surf: u32, rect: (i32, i32, i32, i32)) ->
                 if !matches!(bpp, 16 | 24 | 32) {
                     return 0;
                 }
-                // (kura's Rgb601 frames are bytes r, g, b, a: as 0x00rrggbb)
-                let rgb: Vec<u32> = px.iter().map(|&p| {
+                // (kura's Rgb601 frames are bytes r, g, b, a: as 0x00rrggbb, in place)
+                for p in px.iter_mut() {
                     let [r, g, bl, _] = p.to_le_bytes();
-                    (r as u32) << 16 | (g as u32) << 8 | bl as u32
-                }).collect();
+                    *p = (r as u32) << 16 | (g as u32) << 8 | bl as u32;
+                }
+                // (straight into the surface: it was copied out whole and back per frame)
                 let len = pitch as usize * sh as usize;
-                let mut out = mem::slice(bits, len as u32).to_vec();
-                draw(&rgb, w, h, &mut out, pitch as usize, bpp, [pf[1], pf[2], pf[3]], rect, (sw, sh));
-                mem::write(bits, &out);
+                if let Some(out) = mem::guest_mut(bits, len as u32) {
+                    draw(&px, w, h, out, pitch as usize, bpp, [pf[1], pf[2], pf[3]], rect, (sw, sh));
+                }
                 crate::ddraw::drawn(c, surf, crate::user::Rect { l: rect.0, t: rect.1, r: rect.2, b: rect.3 });
                 play::stats(m, n, [t1 - t0, t1.elapsed(), std::time::Duration::ZERO], px.len());
                 return 0;
@@ -965,6 +1005,38 @@ mod tests {
                 let c = (rgb >> (16 - 8 * i)) & 0xff;
                 prop_assert_eq!((v & m) >> m.trailing_zeros(), c >> (8 - bits));
             }
+        }
+
+        /// draw as it was (pack per pixel, two divisions a pixel) for any frame, format and
+        /// rectangle: the same bytes, nothing outside.
+        #[test]
+        fn draw_as_the_old_one(w in 1u32..12, h in 1u32..12, bpp in prop_oneof![Just(16u16), Just(24), Just(32)], masks in prop_oneof![
+            Just([0xff0000u32, 0xff00, 0xff]), Just([0xff, 0xff00, 0xff0000]), Just([0xf800, 0x07e0, 0x001f]), Just([0x7c00, 0x03e0, 0x001f]), Just([0, 0xff00, 0xff]),
+        ], l in -6i32..14, t in -6i32..14, dw in 1i32..25, dh in 1i32..25, seed: u32, pad in 0usize..9) {
+            let px: Vec<u32> = (0..w * h).map(|i| (i.wrapping_mul(2654435761) ^ seed) & 0xffffff).collect();
+            let (sw, sh) = (13, 11);
+            let pitch = sw as usize * (bpp / 8) as usize + pad;
+            let old = |out: &mut [u8]| {
+                let dst = (l, t, l + dw, t + dh);
+                let (l, t, r, b) = (dst.0.max(0), dst.1.max(0), dst.2.min(sw), dst.3.min(sh));
+                let bytes = (bpp / 8) as usize;
+                for y in t..b {
+                    let sy = ((y - dst.1) as u64 * h as u64 / dh as u64) as usize;
+                    for x in l..r {
+                        let sx = ((x - dst.0) as u64 * w as u64 / dw as u64) as usize;
+                        let v = pack(px[sy * w as usize + sx], masks);
+                        let at = y as usize * pitch + x as usize * bytes;
+                        if let Some(d) = out.get_mut(at..at + bytes) {
+                            d.copy_from_slice(&v.to_le_bytes()[..bytes]);
+                        }
+                    }
+                }
+            };
+            let mut a = vec![0xaau8; pitch * sh as usize];
+            let mut b = a.clone();
+            old(&mut a);
+            draw(&px, w, h, &mut b, pitch, bpp, masks, (l, t, l + dw, t + dh), (sw, sh));
+            prop_assert_eq!(a, b);
         }
 
         /// A frame drawn at its own size into 32-bit pixels is the frame.
