@@ -1071,7 +1071,11 @@ fn run_cut(batches: &[Batch], cut: usize, snap: bool) -> Vec<Vec<Obs>> {
                 d.mapped(token, true);
             }
             assert_eq!(d.snap_ready(), Some(true));
+            // (the reads wrote into the state's blob, which is the one kept: nothing was copied
+            // or moved, so a state takes what the GPU holds once, not twice)
+            let (at, room) = (d.snap_blob.as_ptr(), d.snap_blob.capacity());
             let saved = d.snap_take();
+            assert!(room == 0 || (saved.blob.as_ptr(), saved.blob.capacity()) == (at, room), "the blob moved");
             let targets2 = d.targets2.clone();
             let errors = model::with(|m| std::mem::take(&mut m.errors));
             assert!(errors.is_empty(), "reading back: WebGPU errors {errors:?}");

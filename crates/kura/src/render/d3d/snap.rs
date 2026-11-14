@@ -21,6 +21,13 @@ pub struct Saved {
     overlay: Option<(u32, [i32; 4], bool, u32, [f32; 4])>,
 }
 
+/// Where `n` bytes go in a blob that has `total` given out: at the next multiple of 4.
+fn place(total: &mut usize, n: usize) -> usize {
+    let at = total.div_ceil(4) * 4;
+    *total = at + n;
+    at
+}
+
 /// A multisampled texture's samples read back: per sample, bytes per row and the rows.
 type Samples = Vec<(u32, Vec<u8>)>;
 
@@ -34,7 +41,12 @@ enum What {
 pub(super) struct Read {
     what: What,
     buf: Id,
+    /// what was read: bytes of its own (rows that are changed before they are kept: halves,
+    /// samples), or `len` bytes at `at` of the state's blob (`D3d::snap_blob`), where they
+    /// stay. Every read had a Vec of its own that was then copied into the blob: twice all
+    /// the game's textures in memory while a state was taken.
     data: Vec<u8>,
+    at: Option<(usize, usize)>,
     /// 0 waiting, 1 read, 2 failed
     state: u8,
 }
@@ -49,6 +61,10 @@ impl D3d {
         }
         self.end_pass();
         let mut reads = Vec::new();
+        // (the blob's bytes given out so far)
+        let mut total = 0usize;
+        // (and what the halves take once widened to floats, added after them)
+        let mut widened = 0usize;
         let mut ids: Vec<u32> = self.textures.keys().copied().collect();
         ids.sort_unstable();
         for id in ids {
@@ -71,7 +87,12 @@ impl D3d {
                     let buf = gpu::buffer(bpr * h, usage::COPY_DST | usage::MAP_READ);
                     self.open = true;
                     gpu::copy_layer_to_buffer(t.tex, level, [0, 0, layer], buf, bpr, w, h);
-                    reads.push(Read { what: What::Tex { id, level, layer, w, h, bpr, halved: t.halved }, buf, data: vec![0; (bpr * h) as usize], state: 0 });
+                    let n = bpr as usize * h as usize;
+                    if t.halved {
+                        widened += n * 2 + 4;
+                    }
+                    let (data, at) = if t.halved { (vec![0; n], None) } else { (Vec::new(), Some((place(&mut total, n), n))) };
+                    reads.push(Read { what: What::Tex { id, level, layer, w, h, bpr, halved: t.halved }, buf, data, at, state: 0 });
                 }
             }
         }
@@ -82,15 +103,24 @@ impl D3d {
             let buf = gpu::buffer(size, usage::COPY_DST | usage::MAP_READ);
             self.open = true;
             gpu::copy_buffer(b, buf, size);
-            reads.push(Read { what: What::Buf { id }, buf, data: vec![0; size as usize], state: 0 });
+            reads.push(Read { what: What::Buf { id }, buf, data: Vec::new(), at: Some((place(&mut total, size as usize), size as usize)), state: 0 });
         }
         self.submit();
+        // (room for the shaders' text after them, so that adding it moves nothing)
+        let more: usize = widened + 4 + self.shader_src.values().map(|c| c.len() + 4).sum::<usize>();
+        let mut blob = Vec::new();
+        blob.reserve_exact(total + more);
+        blob.resize(total, 0u8);
         for (k, r) in reads.iter_mut().enumerate() {
             let token = self.next_token;
             self.next_token = self.next_token.wrapping_add(1).max(1);
-            gpu::read_buffer(r.buf, r.data.len() as u32, r.data.as_mut_ptr(), token);
+            match r.at {
+                Some((at, n)) => gpu::read_buffer(r.buf, n as u32, blob[at..at + n].as_mut_ptr(), token),
+                None => gpu::read_buffer(r.buf, r.data.len() as u32, r.data.as_mut_ptr(), token),
+            }
             self.snap_tokens.insert(token, k);
         }
+        self.snap_blob = blob;
         self.snap_reads = Some(reads);
     }
 
@@ -122,7 +152,8 @@ impl D3d {
         let reads = self.snap_reads.take().unwrap_or_default();
         self.snap_tokens.clear();
         let mut c = Vec::new();
-        let mut blob = Vec::new();
+        let mut blob = std::mem::take(&mut self.snap_blob);
+        pad4(&mut blob);
         let mut ids: Vec<u32> = self.textures.keys().copied().collect();
         ids.sort_unstable();
         for &id in &ids {
@@ -162,14 +193,23 @@ impl D3d {
             c.extend_from_slice(&[CREATE_BUFFER, id, size]);
         }
         let mut ms: Vec<(u32, Samples)> = Vec::new();
-        for r in reads.iter().filter(|r| r.state == 1) {
+        for r in reads.into_iter().filter(|r| r.state == 1) {
             match r.what {
                 What::Sample { id, sample, bpr, .. } => {
                     match ms.last_mut() {
-                        Some((i, v)) if *i == id && v.len() == sample as usize => v.push((bpr, r.data.clone())),
-                        _ if sample == 0 => ms.push((id, vec![(bpr, r.data.clone())])),
+                        Some((i, v)) if *i == id && v.len() == sample as usize => v.push((bpr, r.data)),
+                        _ if sample == 0 => ms.push((id, vec![(bpr, r.data)])),
                         _ => {}
                     }
+                    continue;
+                }
+                What::Tex { id, level, layer, w, h, bpr, .. } if r.at.is_some() => {
+                    c.extend_from_slice(&[WRITE_TEXTURE2, id, level, layer, 0, 0, w, h, bpr, r.at.unwrap().0 as u32]);
+                    continue;
+                }
+                What::Buf { id } if r.at.is_some() => {
+                    let (at, n) = r.at.unwrap();
+                    c.extend_from_slice(&[WRITE_BUFFER, id, 0, at as u32, n as u32]);
                     continue;
                 }
                 What::Tex { id, level, layer, w, h, bpr, halved } => {
@@ -341,7 +381,7 @@ impl D3d {
             let buf = gpu::buffer(bpr * h, usage::COPY_DST | usage::MAP_READ);
             gpu::copy_layer_to_buffer(tex, 0, [0, 0, 0], buf, bpr, w, h);
             [group, tv, pipe, layout, module].into_iter().for_each(gpu::drop);
-            reads.push(Read { what: What::Sample { id, sample, bpr, tex }, buf, data: vec![0; (bpr * h) as usize], state: 0 });
+            reads.push(Read { what: What::Sample { id, sample, bpr, tex }, buf, data: vec![0; (bpr * h) as usize], at: None, state: 0 });
         }
         reads
     }

@@ -630,6 +630,8 @@ pub struct D3d {
     pipe_keys: HashMap<u32, Vec<u32>>,
     overlay_tex: u32,
     snap_reads: Option<Vec<snap::Read>>,
+    /// the state's blob while it is read (snap.rs: the reads write into it)
+    snap_blob: Vec<u8>,
     snap_tokens: HashMap<u32, usize>,
     /// the shader resolve (resolve_into): module, pipeline and layout per target format
     resolve_module: Id,
@@ -728,6 +730,7 @@ impl D3d {
             pipe_keys: HashMap::new(),
             overlay_tex: 0,
             snap_reads: None,
+            snap_blob: Vec::new(),
             snap_tokens: HashMap::new(),
             resolve_module: 0,
             resolve_pipes: HashMap::new(),
