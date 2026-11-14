@@ -15,6 +15,12 @@ use std::time::Instant;
 pub const RATE: u32 = 44100;
 /// frames kept for the page at most (older ones are dropped)
 const OUT_CAP: usize = RATE as usize / 4;
+/// frames a stream queues at most (4 s): a writer running ahead of real time (whole buffers at
+/// once, a decoder pre-filling) has the rest refused instead of growing the queue for ever
+pub const QUEUE_CAP: usize = RATE as usize * 4;
+/// frames mixed at most per catch-up (half the ring): after a stall the worklet would otherwise
+/// get more than the ring holds at once, overwriting itself and lapping its read position
+const CATCH_UP: u64 = RING_FRAMES as u64 / 2;
 
 struct Stream {
     /// stereo frames at RATE
@@ -50,8 +56,9 @@ impl Card {
         if self.streams.values().all(|s| s.q.is_empty()) {
             return;
         }
-        // a long stall (a hung page, a debugger) doesn't replay seconds at once
-        let n = n.min(RATE as u64) as usize;
+        // a long stall (a hung page, a debugger, a worker descheduled) doesn't replay seconds at
+        // once, nor more than the ring takes
+        let n = n.min(CATCH_UP) as usize;
         let start = self.out.len();
         self.out.resize(start + n, [0.0; 2]);
         for s in self.streams.values_mut() {
@@ -96,12 +103,13 @@ pub fn queued(id: i32) -> u32 {
     with(|c| c.streams.get(&id).map_or(0, |s| s.q.len() as u32))
 }
 
-/// Queues interleaved stereo frames.
-pub fn write(id: i32, frames: &[f32]) {
+/// Queues interleaved stereo frames; how many it took (up to [`QUEUE_CAP`] queued).
+pub fn write(id: i32, frames: &[f32]) -> usize {
     with(|c| {
-        let Some(s) = c.streams.get_mut(&id) else { return };
+        let Some(s) = c.streams.get_mut(&id) else { return 0 };
         let before = s.q.len();
-        s.q.extend(frames.chunks_exact(2).map(|f| [f[0], f[1]]));
+        let take = (frames.len() / 2).min(QUEUE_CAP.saturating_sub(before));
+        s.q.extend(frames[..take * 2].chunks_exact(2).map(|f| [f[0], f[1]]));
         if stats() {
             let (sum, n) = s.q.range(before..).fold((0f64, 0usize), |(a, n), f| (a + (f[0] * f[0]) as f64, n + 1));
             static ACC: Mutex<(f64, usize)> = Mutex::new((0.0, 0));
@@ -113,6 +121,7 @@ pub fn write(id: i32, frames: &[f32]) {
                 *acc = (0.0, 0);
             }
         }
+        take
     })
 }
 
@@ -160,4 +169,56 @@ pub unsafe extern "C" fn vnhost_audio_ring(frames: *mut u32) -> *const u8 {
     *frames = RING_FRAMES as u32;
     RING_ON.store(true, Ordering::Relaxed);
     &RING as *const Ring as *const u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// (the card is one static)
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        /// Writes of any sizes: a stream never holds more than QUEUE_CAP frames, every write
+        /// takes what fits, and what it took is queued in order.
+        #[test]
+        fn queue_is_bounded(sizes in proptest::collection::vec(0usize..200_000, 1..8)) {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let id = open();
+            for (k, n) in sizes.into_iter().enumerate() {
+                let before = queued(id) as usize;
+                let frames = vec![k as f32; n * 2];
+                let took = write(id, &frames);
+                prop_assert!(took <= n);
+                let after = queued(id) as usize;
+                prop_assert!(after <= QUEUE_CAP);
+                // (the wall clock plays some meanwhile)
+                prop_assert!(after + RATE as usize / 2 >= (before + took).min(QUEUE_CAP));
+                prop_assert!(took == n || before + took >= QUEUE_CAP - RATE as usize / 2);
+            }
+            close(id);
+        }
+    }
+
+    /// After a stall the mix catches up with at most half the ring (it was up to a second, more
+    /// than the ring's 0.74 s: the worklet's read position lapped).
+    #[test]
+    fn catch_up_fits_the_ring() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let id = open();
+        write(id, &vec![0.5; RATE as usize * 2 * 2]);
+        let head0 = RING.head.load(Ordering::Relaxed);
+        RING_ON.store(true, Ordering::Relaxed);
+        with(|c| c.clock -= std::time::Duration::from_secs(3));
+        // (the next call mixes the 3 s)
+        let _ = queued(id);
+        let head1 = RING.head.load(Ordering::Relaxed);
+        RING_ON.store(false, Ordering::Relaxed);
+        let n = head1.wrapping_sub(head0) as u64;
+        eprintln!("caught up {n} frames");
+        assert!(n >= CATCH_UP / 2 && n <= CATCH_UP + RATE as u64 / 100, "{n} frames at once");
+        close(id);
+    }
 }

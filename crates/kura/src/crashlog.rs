@@ -368,7 +368,7 @@ fn make_module(base: u32, size: u32, name: impl Iterator<Item = u8>) -> Module {
 
 /// sake: an image it mapped at `base` from `path`.
 pub fn add_module(base: u32, path: &str) {
-    let size = rd32(base.wrapping_add(rd32(base + 0x3c).unwrap_or(0)).wrapping_add(0x50)).unwrap_or(0x1000);
+    let size = rd32(base.wrapping_add(rd32(base.wrapping_add(0x3c)).unwrap_or(0)).wrapping_add(0x50)).unwrap_or(0x1000);
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
     let m = make_module(base, size, name.bytes().filter(|c| c.is_ascii_graphic()));
     let mut g = EXTRA.lock().unwrap_or_else(|e| e.into_inner());
@@ -411,30 +411,33 @@ fn modules(cpu: &Cpu, out: &mut [Module; MAX_MODULES]) -> usize {
 
 /// The export of `m` nearest below `addr`: (its name's address, offset).
 fn export_near(m: &Module, addr: u32) -> Option<(u32, u32)> {
+    // (all of it read from guest memory: wrapping, as the rest of the file; with overflow
+    // checks a damaged header aborted the process from inside the crash logger)
     let base = m.base;
-    let rva = addr - base;
-    let pe = base.wrapping_add(rd32(base + 0x3c)?);
+    let rva = addr.wrapping_sub(base);
+    let pe = base.wrapping_add(rd32(base.wrapping_add(0x3c))?);
     if rd32(pe)? != 0x4550 {
         return None;
     }
-    let oh = pe + 24;
-    let dir = if rd16(oh)? == 0x20b { oh + 112 } else { oh + 96 };
+    let oh = pe.wrapping_add(24);
+    let dir = if rd16(oh)? == 0x20b { oh.wrapping_add(112) } else { oh.wrapping_add(96) };
     let exp = rd32(dir)?;
     if exp == 0 || exp >= m.size {
         return None;
     }
-    let ed = base + exp;
-    let names = rd32(ed + 0x18)?.min(20000);
-    let (funcs, name_tab, ords) = (base + rd32(ed + 0x1c)?, base + rd32(ed + 0x20)?, base + rd32(ed + 0x24)?);
+    let ed = base.wrapping_add(exp);
+    let names = rd32(ed.wrapping_add(0x18))?.min(20000);
+    let at = |o: u32| -> Option<u32> { Some(base.wrapping_add(rd32(ed.wrapping_add(o))?)) };
+    let (funcs, name_tab, ords) = (at(0x1c)?, at(0x20)?, at(0x24)?);
     let mut best: Option<(u32, u32)> = None;
     for i in 0..names {
-        let ord = rd16(ords + 2 * i)? as u32;
-        let f = rd32(funcs + 4 * ord)?;
+        let ord = rd16(ords.wrapping_add(2 * i))? as u32;
+        let f = rd32(funcs.wrapping_add(ord.wrapping_mul(4)))?;
         if f <= rva && best.is_none_or(|(b, _)| f > b) {
-            best = Some((f, rd32(name_tab + 4 * i)?));
+            best = Some((f, rd32(name_tab.wrapping_add(4 * i))?));
         }
     }
-    best.map(|(f, name)| (base + name, rva - f))
+    best.map(|(f, name)| (base.wrapping_add(name), rva - f))
 }
 
 /// `addr` as "module+rva (export+off)", or nothing outside the modules.
@@ -661,6 +664,20 @@ fn module_list(w: &mut impl Write, mods: &[Module], always: bool) {
 pub fn exception(cpu: &Cpu, what: &str, access: Option<(u32, bool)>, from_jit: bool) {
     let t = CUR.with(|c| c.get());
     let k = t.map_or(0, |t| t.exceptions.fetch_add(1, Relaxed));
+    // all of the first ones of a thread, then one in 100 (programs that use exceptions for
+    // control flow); the others a line without the modules and symbols, decided first: walking
+    // the loader list and the exports was ~10^4-10^5 reads before the guest's SEH started
+    if !(k < 16 || k % 100 == 0) {
+        let mut l = Line::<256>::new();
+        stamp(&mut l);
+        let _ = write!(l, "exception #{} {what} at {:08x} [{}]", k + 1, cpu.eip, if from_jit { "jit" } else { "interpreter" });
+        if let Some((a, wr)) = access {
+            let _ = write!(l, " {} {a:08x}", if wr { "writing" } else { "reading" });
+        }
+        let _ = l.write_str("\n");
+        EV.put(l.bytes());
+        return;
+    }
     let mut l = Line::<12288>::new();
     stamp(&mut l);
     let mods = &mut [Module { base: 0, size: 0, name: [0; 40], len: 0 }; MAX_MODULES];
@@ -672,13 +689,9 @@ pub fn exception(cpu: &Cpu, what: &str, access: Option<(u32, bool)>, from_jit: b
     if let Some((a, wr)) = access {
         let _ = write!(l, " {} {a:08x}", if wr { "writing" } else { "reading" });
     }
-    // all of the first ones of a thread, then one in 100 (programs that use exceptions for
-    // control flow)
-    if k < 16 || k % 100 == 0 {
-        regs(&mut l, cpu);
-        detail(&mut l, cpu, mods, true, NORMAL);
-        module_list(&mut l, mods, false);
-    }
+    regs(&mut l, cpu);
+    detail(&mut l, cpu, mods, true, NORMAL);
+    module_list(&mut l, mods, false);
     let _ = l.write_str("\n");
     EV.put(l.bytes());
 }
@@ -696,7 +709,9 @@ pub extern "C" fn vnhost_crashlog_snapshot() -> u32 {
     let mut count = 0;
     match THREADS.try_lock() {
         Ok(g) => {
-            for (s, t) in list.iter_mut().zip(g.iter()) {
+            // (the newest first: the list keeps every thread ever made, so after enough of them
+            // the first 256 are long dead and the live, crashing ones would not be in it)
+            for (s, t) in list.iter_mut().zip(g.iter().rev()) {
                 *s = Some(*t);
                 count += 1;
             }
@@ -768,5 +783,75 @@ mod snapshot_tests {
         // (again: the snapshot is rewritten, not appended to)
         let u = super::snapshot_text();
         assert_eq!(u.matches("threads now: ").count(), 1, "{u}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// (the rings, the thread list and SNAP are statics)
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn ev_text() -> String {
+        let b = unsafe { &*EV.buf.get() };
+        String::from_utf8_lossy(&b[..(EV.head.load(Relaxed) as usize).min(EV_SIZE)]).into_owned()
+    }
+
+    /// The first 16 exceptions of a thread and every 100th have the registers and modules; the
+    /// others are one line, decided before any of that work.
+    #[test]
+    fn exceptions_past_the_first_are_one_line() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let cpu = Box::leak(Box::new(Cpu { eip: 0x0040_1234, ..Cpu::default() }));
+        register(cpu);
+        let before = EV.head.load(Relaxed);
+        for _ in 0..120 {
+            exception(cpu, "access violation", Some((0x10, false)), true);
+        }
+        let all = ev_text();
+        let ours = &all[before as usize..];
+        let records: Vec<&str> = ours.split("exception #").skip(1).collect();
+        assert_eq!(records.len(), 120);
+        for (k, r) in records.iter().enumerate() {
+            let full = k < 16 || k % 100 == 0;
+            assert_eq!(r.contains("eax "), full, "#{}: {r}", k + 1);
+            if !full {
+                // (its one line, then the next one's time stamp)
+                assert!(r.lines().count() <= 2, "#{}: {r}", k + 1);
+                assert!(r.lines().next().unwrap().contains("at 00401234 [jit] reading 00000010"), "{r}");
+            }
+        }
+        unregister(cpu);
+    }
+
+    /// With more threads made than the snapshot takes (the list keeps every one), the newest
+    /// are in it.
+    #[test]
+    fn snapshot_has_the_newest_threads() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let cpus: Vec<&'static mut Cpu> = (0..300).map(|i| Box::leak(Box::new(Cpu { eip: 0x0050_0000 + i, ..Cpu::default() }))).collect();
+        for c in &cpus {
+            register(*c as *const Cpu as *mut Cpu);
+        }
+        let n = vnhost_crashlog_snapshot() as usize;
+        let snap = String::from_utf8_lossy(&unsafe { &*SNAP.0.get() }[..n]).into_owned();
+        assert!(snap.contains(&format!("at {:08x}", 0x0050_0000 + 299)), "the newest thread is not in the snapshot");
+        for c in cpus {
+            unregister(c);
+        }
+    }
+
+    proptest! {
+        /// Any module and address (a damaged PE header in guest memory, a module at the top
+        /// of the address space): no overflow panic (tests check overflow).
+        #[test]
+        fn export_near_any_module(base: u32, size: u32, addr: u32) {
+            let m = make_module(base, size, b"x.dll".iter().copied());
+            let _ = export_near(&m, addr);
+            let mut l = Line::<256>::new();
+            sym(&mut l, &[m], addr);
+        }
     }
 }

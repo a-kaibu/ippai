@@ -29,8 +29,9 @@ struct Stream {
     channels: u32,
     /// bumped by `reset`: the page's decoder for an older one is thrown away
     gen: u32,
-    /// chunks not taken by the page yet (their sequence numbers follow `taken`)
+    /// chunks not taken by the page yet (their sequence numbers follow `taken`), and their bytes
     queue: VecDeque<Vec<u8>>,
+    queued: usize,
     /// chunks pushed, and chunks the page has decoded (every output of them handed back)
     pushed: u64,
     taken: u64,
@@ -51,6 +52,15 @@ static DOORBELL: AtomicI32 = AtomicI32::new(0);
 /// A page has listed streams: there is a page to decode.
 static PAGE: AtomicBool = AtomicBool::new(false);
 static NEXT: AtomicU32 = AtomicU32::new(1);
+/// Where the page's next list starts (streams in id order from here, wrapping round): with more
+/// open streams than the page's buffer, each is listed in turn.
+static LIST_FROM: AtomicU32 = AtomicU32::new(0);
+
+/// Encoded bytes a stream holds for the page at most, and decoded samples (floats) for the
+/// guest: past either (a page that stopped answering, a guest that stopped taking) the stream
+/// fails (the caller falls back or goes silent) instead of growing without end.
+pub const MAX_QUEUED: usize = 16 << 20;
+pub const MAX_PCM: usize = 16 << 20;
 
 fn with<R>(f: impl FnOnce(&mut HashMap<u32, Stream>) -> R) -> R {
     let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
@@ -88,6 +98,7 @@ pub fn open(codec: &str, rate: u32, channels: u32, desc: &[u8]) -> Option<u32> {
         channels,
         gen: 0,
         queue: VecDeque::new(),
+        queued: 0,
         pushed: 0,
         taken: 0,
         done: 0,
@@ -102,10 +113,15 @@ pub fn open(codec: &str, rate: u32, channels: u32, desc: &[u8]) -> Option<u32> {
 
 pub fn close(id: u32) {
     with(|m| {
-        if let Some(s) = m.get_mut(&id) {
+        // (no page has listed it: none reads its codec or description, it goes now; else on
+        // the page's next list)
+        if !PAGE.load(Ordering::Relaxed) {
+            m.remove(&id);
+        } else if let Some(s) = m.get_mut(&id) {
             s.closed = true;
             s.queue.clear();
-            s.pcm.clear();
+            s.queued = 0;
+            s.pcm = VecDeque::new();
         }
     });
     WAKE.notify_all();
@@ -118,6 +134,7 @@ pub fn reset(id: u32) {
         if let Some(s) = m.get_mut(&id) {
             s.gen = s.gen.wrapping_add(1);
             s.queue.clear();
+            s.queued = 0;
             s.pcm.clear();
             s.pushed = 0;
             s.taken = 0;
@@ -138,10 +155,18 @@ pub fn push<'a>(id: u32, chunks: impl IntoIterator<Item = &'a [u8]>) {
         let Some(s) = m.get_mut(&id).filter(|s| !s.closed && !s.failed) else { return false };
         let n0 = s.pushed;
         for c in chunks {
+            if s.queued + c.len() > MAX_QUEUED {
+                // (the page is not taking them: see MAX_QUEUED)
+                s.failed = true;
+                s.queue.clear();
+                s.queued = 0;
+                break;
+            }
+            s.queued += c.len();
             s.queue.push_back(c.to_vec());
             s.pushed += 1;
         }
-        s.pushed > n0
+        s.pushed > n0 || s.failed
     });
     if any {
         ring();
@@ -205,13 +230,15 @@ pub extern "C" fn vnhost_adec_doorbell() -> u32 {
 
 /// Lists up to `max` open streams into `out`, 10 words each: id, generation, codec string ptr
 /// and bytes, rate, channels, description ptr and bytes, chunks waiting for the page, whether it
-/// failed. Closed streams go first (the page drops its decoders for ids it no longer sees).
+/// failed. Closed streams are not listed (the page drops its decoders for ids it no longer sees);
+/// with more than `max` open, the next list goes on after the last one listed.
 ///
 /// # Safety
 /// `out` must hold `max * 10` words.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_adec_list(out: *mut u32, max: u32) -> u32 {
-    let out = std::slice::from_raw_parts_mut(out, max as usize * 10);
+    let Some(words) = (max as usize).checked_mul(10) else { return 0 };
+    let out = std::slice::from_raw_parts_mut(out, words);
     let rows = rows(max as usize);
     for (n, r) in rows.iter().enumerate() {
         out[n * 10..n * 10 + 10].copy_from_slice(&[
@@ -246,9 +273,19 @@ fn rows(max: usize) -> Vec<Row> {
     PAGE.store(true, Ordering::Relaxed);
     with(|m| {
         m.retain(|_, s| !s.closed);
-        m.iter()
-            .take(max)
-            .map(|(&id, s)| Row {
+        // in id order from where the last list stopped, round
+        let mut ids: Vec<u32> = m.keys().copied().collect();
+        ids.sort_unstable();
+        let from = LIST_FROM.load(Ordering::Relaxed);
+        let at = ids.partition_point(|&id| id < from);
+        ids.rotate_left(at);
+        ids.truncate(max);
+        if let Some(&last) = ids.last() {
+            LIST_FROM.store(if ids.len() < m.len() { last.wrapping_add(1) } else { 0 }, Ordering::Relaxed);
+        }
+        ids.iter()
+            .map(|id| (*id, &m[id]))
+            .map(|(id, s)| Row {
                 id,
                 gen: s.gen,
                 codec: (s.codec.as_ptr() as usize, s.codec.len()),
@@ -286,6 +323,7 @@ fn next_chunk(id: u32, gen: u32) -> Option<(Vec<u8>, u32)> {
     with(|m| {
         let s = m.get_mut(&id).filter(|s| s.gen == gen && !s.closed)?;
         let b = s.queue.pop_front()?;
+        s.queued -= b.len();
         s.taken += 1;
         Some((b, s.taken as u32))
     })
@@ -299,14 +337,23 @@ fn next_chunk(id: u32, gen: u32) -> Option<(Vec<u8>, u32)> {
 /// `pcm` must hold `frames * channels` floats.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_adec_pcm(id: u32, gen: u32, pcm: *const f32, frames: u32, channels: u32) {
-    if channels == 0 {
-        return;
-    }
-    let src = std::slice::from_raw_parts(pcm, frames as usize * channels as usize);
-    with(|m| {
-        let Some(s) = m.get_mut(&id).filter(|s| s.gen == gen && !s.closed) else { return };
-        put(&mut s.pcm, src, channels as usize, s.channels as usize);
+    let Some(n) = (frames as usize).checked_mul(channels as usize).filter(|_| channels != 0 && !pcm.is_null()) else { return };
+    let failed = with(|m| {
+        let Some(s) = m.get_mut(&id).filter(|s| s.gen == gen && !s.closed) else { return false };
+        if s.pcm.len() + (frames as usize).saturating_mul(s.channels as usize) > MAX_PCM {
+            // (the guest is not taking them: see MAX_PCM)
+            s.failed = true;
+            s.queue.clear();
+            s.queued = 0;
+            return true;
+        }
+        // (read only once it fits: a count past MAX_PCM failed above without touching `pcm`)
+        put(&mut s.pcm, std::slice::from_raw_parts(pcm, n), channels as usize, s.channels as usize);
+        false
     });
+    if failed {
+        WAKE.notify_all();
+    }
 }
 
 /// `src` (frames of `from` channels) as frames of `to` channels onto `dst`.
@@ -341,6 +388,7 @@ pub extern "C" fn vnhost_adec_fail(id: u32, gen: u32) {
         if let Some(s) = m.get_mut(&id).filter(|s| s.gen == gen) {
             s.failed = true;
             s.queue.clear();
+            s.queued = 0;
         }
     });
     WAKE.notify_all();
@@ -497,6 +545,88 @@ pub(crate) mod tests {
         vnhost_adec_done(id, 1, 7);
         assert!(!wait(id, Duration::from_millis(10)));
         close(id);
+    }
+
+    /// A page that stopped taking chunks, or a guest that stopped taking samples: the stream
+    /// fails at the cap (its waits end) instead of holding everything (review b02).
+    #[test]
+    fn queues_are_bounded() {
+        let _g = page_on();
+        let id = open("mp3", 44100, 2, &[]).unwrap();
+        let big = vec![0u8; 1 << 20];
+        for _ in 0..MAX_QUEUED >> 20 {
+            push(id, [&big[..]]);
+        }
+        assert!(!failed(id));
+        push(id, [&[1u8][..]]);
+        assert!(failed(id), "past MAX_QUEUED");
+        let t = Instant::now();
+        assert!(!wait(id, Duration::from_secs(5)));
+        assert!(t.elapsed() < Duration::from_secs(1));
+        close(id);
+        let id = open("mp3", 44100, 2, &[]).unwrap();
+        let pcm = vec![0.25f32; 1 << 20];
+        for _ in 0..MAX_PCM >> 20 {
+            unsafe { vnhost_adec_pcm(id, 0, pcm.as_ptr(), (pcm.len() / 2) as u32, 2) };
+        }
+        assert!(!failed(id));
+        unsafe { vnhost_adec_pcm(id, 0, pcm.as_ptr(), 1, 2) };
+        assert!(failed(id), "past MAX_PCM");
+        // (frames * channels past usize, or a NULL: nothing read)
+        unsafe { vnhost_adec_pcm(id, 0, std::ptr::null(), u32::MAX, u32::MAX) };
+        unsafe { vnhost_adec_pcm(id, 0, std::ptr::null(), 4, 2) };
+        close(id);
+        // a count past MAX_PCM on a fresh stream: failed without reading the (dangling) samples
+        let id = open("mp3", 44100, 2, &[]).unwrap();
+        unsafe { vnhost_adec_pcm(id, 0, std::ptr::NonNull::<f32>::dangling().as_ptr(), u32::MAX / 2, 2) };
+        assert!(failed(id), "a count past MAX_PCM");
+        close(id);
+    }
+
+    /// A stream closed while no page ever listed (node; a page gone before its first list) is
+    /// gone at once.
+    #[test]
+    fn closed_without_a_page_goes() {
+        let _g = page_on();
+        let id = open("mp3", 44100, 2, &[]).unwrap();
+        PAGE.store(false, Ordering::Relaxed);
+        close(id);
+        assert!(with(|m| !m.contains_key(&id)));
+        PAGE.store(true, Ordering::Relaxed);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// With more streams open than the page lists at once, every one is listed within
+        /// ceil(n / max) lists, whatever opens and closes in between (it listed an arbitrary
+        /// `max` of a HashMap: some never).
+        #[test]
+        fn every_stream_gets_listed(n in 1usize..24, max in 1usize..6, churn in proptest::collection::vec(any::<bool>(), 0..8)) {
+            let _g = page_on();
+            let mut ids: Vec<u32> = (0..n).map(|_| open("mp3", 44100, 1, &[]).unwrap()).collect();
+            for c in churn {
+                if c {
+                    ids.push(open("mp3", 44100, 1, &[]).unwrap());
+                } else if ids.len() > 1 {
+                    close(ids.remove(0));
+                }
+                let _ = rows(max);
+            }
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..ids.len().div_ceil(max) {
+                for r in rows(max) {
+                    seen.insert(r.id);
+                }
+            }
+            for id in &ids {
+                prop_assert!(seen.contains(id), "stream {} never listed ({} open, {} a list)", id, ids.len(), max);
+            }
+            for id in ids {
+                close(id);
+            }
+            let _ = rows(usize::MAX);
+        }
     }
 
     #[test]
