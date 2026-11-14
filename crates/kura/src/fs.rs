@@ -146,10 +146,35 @@ pub fn write<P: AsRef<Path>, C: AsRef<[u8]>>(p: P, data: C) -> io::Result<()> {
     File::create(p)?.write_all(data.as_ref())
 }
 
+/// The first N bytes of P (fewer when it is shorter): headers, without reading a 200 MB file
+/// whole (#234).
+pub fn read_head<P: AsRef<Path>>(p: P, n: usize) -> io::Result<Vec<u8>> {
+    let mut v = Vec::new();
+    File::open(p)?.take(n as u64).read_to_end(&mut v)?;
+    Ok(v)
+}
+
+/// Copied through a 1 MiB buffer: an installer copies its 200 MB payload (SHFileOperation), and
+/// a whole-file read held it all in the page's memory twice (#234).
 pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<u64> {
-    let d = read(from)?;
-    write(to, &d)?;
-    Ok(d.len() as u64)
+    let mut src = File::open(&from)?;
+    if from.as_ref() == to.as_ref() {
+        // (the read-then-write copy kept such a file; truncating it first would empty it)
+        return Ok(src.metadata()?.len());
+    }
+    let mut dst = File::create(to)?;
+    let mut buf = vec![0u8; 1 << 20];
+    let mut n = 0u64;
+    loop {
+        let got = match src.read(&mut buf) {
+            Ok(0) => return Ok(n),
+            Ok(k) => k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        dst.write_all(&buf[..got])?;
+        n += got as u64;
+    }
 }
 
 pub fn create_dir<P: AsRef<Path>>(p: P) -> io::Result<()> {
@@ -515,5 +540,47 @@ mod stamp_tests {
         remove_file(&a).unwrap();
         assert_eq!(stamp(&a), 0);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod head_copy_tests {
+    use proptest::prelude::*;
+
+    fn dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("kura-fs-copy-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        /// copy gives the same bytes whatever the size (across the 1 MiB buffer's edges), over
+        /// a longer file too; read_head is the file's first N bytes.
+        #[test]
+        fn copy_and_head_match_the_file(len in prop_oneof![0usize..5000, (1usize << 20) - 3..(1 << 20) + 3, 0usize..3 << 20], old in 0usize..5000, n in 0usize..6000, seed in any::<u8>()) {
+            let d = dir();
+            let (a, b) = (d.join(format!("a{seed}-{len}")), d.join(format!("b{seed}-{len}")));
+            let data: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed)).collect();
+            std::fs::write(&a, &data).unwrap();
+            std::fs::write(&b, vec![7u8; old]).unwrap();
+            prop_assert_eq!(super::copy(&a, &b).unwrap(), len as u64);
+            prop_assert!(std::fs::read(&b).unwrap() == data);
+            prop_assert!(super::read_head(&a, n).unwrap() == data[..n.min(len)]);
+            // onto itself: kept
+            prop_assert_eq!(super::copy(&a, &a).unwrap(), len as u64);
+            prop_assert!(std::fs::read(&a).unwrap() == data);
+            std::fs::remove_file(&a).unwrap();
+            std::fs::remove_file(&b).unwrap();
+        }
+    }
+
+    #[test]
+    fn copy_of_a_missing_file_fails_and_makes_nothing() {
+        let d = dir();
+        assert!(super::copy(d.join("none"), d.join("made")).is_err());
+        assert!(!d.join("made").exists());
+        assert!(super::read_head(d.join("none"), 4).is_err());
     }
 }

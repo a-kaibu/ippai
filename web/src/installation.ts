@@ -123,7 +123,7 @@ export function keepInstallation(
     if (current === revision) return;
     pending = true;
     try {
-      const data = selectRecords(exportFiles(module, ["/ippai/prefix/drive_c"]), installationPath)!;
+      const data = exportFiles(module, ["/ippai/prefix/drive_c"], installationPath);
       revision = current;
       if (!data.length) return;
       if (same(previous, data)) return;

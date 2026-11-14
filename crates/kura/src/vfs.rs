@@ -165,8 +165,39 @@ fn before_export_run() {
     }
 }
 
+/// The files written under ROOTS (':'-separated; a root may be one file), as the page's saves
+/// records. Sized first and written straight into the one buffer handed back: an installer's
+/// temp files can be hundreds of MB, and a doubling Vec plus a copy would need 3x that (#234).
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_t) -> *mut u8 {
+    before_export_run();
+    let roots = CStr::from_ptr(roots).to_string_lossy().into_owned();
+    let mut g = FS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(fs) = g.as_mut() else {
+        *len = 0;
+        return libc::malloc(1) as *mut u8;
+    };
+    let _shared = shared::Guard::enter(fs);
+    let roots: Vec<String> = roots.split(':').filter(|r| !r.is_empty()).map(clean).collect();
+    let size: usize = roots.iter().map(|r| fs.export_size(r)).sum();
+    let p = libc::malloc(size.max(1)) as *mut u8;
+    *len = 0;
+    if p.is_null() {
+        return p;
+    }
+    let mut out = Sink { p, at: 0, cap: size };
+    for r in &roots {
+        fs.export_into(r, &mut out);
+    }
+    *len = out.at;
+    p
+}
+
+/// The files written under ROOTS, each as path length (u32), path and size (u64): what the
+/// page picks from before exporting (saves.ts exportFiles), so files it would drop are never
+/// copied out.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_vfs_list(roots: *const c_char, len: *mut size_t) -> *mut u8 {
     before_export_run();
     let roots = CStr::from_ptr(roots).to_string_lossy().into_owned();
     let mut out = Vec::new();
@@ -175,7 +206,7 @@ pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_
         if let Some(fs) = g.as_mut() {
             let _shared = shared::Guard::enter(fs);
             for r in roots.split(':').filter(|r| !r.is_empty()) {
-                fs.export(&clean(r), &mut out);
+                fs.list(&clean(r), &mut out);
             }
         }
     }
@@ -185,6 +216,33 @@ pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_
         std::ptr::copy_nonoverlapping(out.as_ptr(), p, out.len());
     }
     p
+}
+
+/// Bytes written into a buffer of known size (never past it).
+struct Sink {
+    p: *mut u8,
+    at: usize,
+    cap: usize,
+}
+
+impl Out for Sink {
+    fn put(&mut self, b: &[u8]) {
+        let n = b.len().min(self.cap - self.at);
+        // SAFETY: p holds cap bytes and at + n <= cap
+        unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), self.p.add(self.at), n) };
+        self.at += n;
+    }
+}
+
+/// Where export_into writes.
+trait Out {
+    fn put(&mut self, b: &[u8]);
+}
+
+impl Out for Vec<u8> {
+    fn put(&mut self, b: &[u8]) {
+        self.extend_from_slice(b);
+    }
 }
 
 fn with<R>(f: impl FnOnce(&mut Fs) -> R) -> R {
@@ -463,7 +521,8 @@ impl Fs {
 
     /// The files written here (in memory) under `path`, as records: path length (u32), path,
     /// mtime (i64), size (u32), bytes; little-endian.
-    fn export(&self, path: &str, out: &mut Vec<u8>) {
+    /// The written files under PATH (PATH itself when it is one), each once.
+    fn written(&self, path: &str, f: &mut dyn FnMut(&str, i64, &crate::pages::Pages)) {
         let Some((at, rel)) = self.split_mount(path) else { return };
         let Some(ino) = self.walk(at, rel) else { return };
         let mut todo = vec![(ino, path.trim_end_matches('/').to_string())];
@@ -471,16 +530,43 @@ impl Fs {
             let Some(n) = self.node(ino) else { continue };
             match &n.data {
                 Data::Dir(ch) => todo.extend(ch.iter().map(|(name, &i)| (i, format!("{p}/{name}")))),
-                Data::File(Content::Upper(v)) => {
-                    out.extend_from_slice(&(p.len() as u32).to_le_bytes());
-                    out.extend_from_slice(p.as_bytes());
-                    out.extend_from_slice(&n.mtime.to_le_bytes());
-                    out.extend_from_slice(&(v.len() as u32).to_le_bytes());
-                    v.for_each(|b| out.extend_from_slice(b));
-                }
+                Data::File(Content::Upper(v)) => f(&p, n.mtime, v),
                 _ => {}
             }
         }
+    }
+
+    #[cfg(test)]
+    fn export(&self, path: &str, out: &mut Vec<u8>) {
+        self.export_into(path, out);
+    }
+
+    /// The saves records of the written files under PATH: path length (u32), path, mtime (i64),
+    /// data length (u32), data.
+    fn export_into(&self, path: &str, out: &mut dyn Out) {
+        self.written(path, &mut |p, mtime, v| {
+            out.put(&(p.len() as u32).to_le_bytes());
+            out.put(p.as_bytes());
+            out.put(&mtime.to_le_bytes());
+            out.put(&(v.len() as u32).to_le_bytes());
+            v.for_each(|b| out.put(b));
+        });
+    }
+
+    /// export_into's byte count.
+    fn export_size(&self, path: &str) -> usize {
+        let mut n = 0;
+        self.written(path, &mut |p, _, v| n += 16 + p.len() + v.len() as usize);
+        n
+    }
+
+    /// Path length (u32), path and size (u64) of each written file under PATH.
+    fn list(&self, path: &str, out: &mut Vec<u8>) {
+        self.written(path, &mut |p, _, v| {
+            out.extend_from_slice(&(p.len() as u32).to_le_bytes());
+            out.extend_from_slice(p.as_bytes());
+            out.extend_from_slice(&v.len().to_le_bytes());
+        });
     }
 
     fn load_tree(&mut self, root: Ino, tsv: &str) {
@@ -3489,6 +3575,17 @@ mod proptests {
     use proptest::collection::vec;
     use proptest::prelude::*;
 
+    /// vnhost_vfs_list's records.
+    fn parse_list(mut b: &[u8]) -> Vec<(String, u64)> {
+        let mut out = Vec::new();
+        while b.len() >= 4 {
+            let n = u32::from_le_bytes(b[..4].try_into().unwrap()) as usize;
+            out.push((String::from_utf8(b[4..4 + n].to_vec()).unwrap(), u64::from_le_bytes(b[4 + n..12 + n].try_into().unwrap())));
+            b = &b[12 + n..];
+        }
+        out
+    }
+
     proptest! {
         /// upper_end against the sum in 128 bits, for a 32-bit and a 64-bit usize's limit.
         #[test]
@@ -3540,7 +3637,31 @@ mod proptests {
             fs.export("/save", &mut out);
             let got: BTreeMap<String, (Vec<u8>, i64)> = parse_records(&out).into_iter().map(|(p, d, m)| (p, (d, m))).collect();
             prop_assert_eq!(got.len(), parse_records(&out).len(), "a path exported twice");
-            prop_assert_eq!(got, want);
+            prop_assert_eq!(out.len(), fs.export_size("/save"));
+            // the list names the same files with their sizes, and exporting just those paths
+            // gives the same records
+            let mut list = Vec::new();
+            fs.list("/save", &mut list);
+            let listed = parse_list(&list);
+            prop_assert_eq!(listed.iter().map(|(p, n)| (p.clone(), *n)).collect::<BTreeMap<_, _>>(),
+                want.iter().map(|(p, (d, _))| (p.clone(), d.len() as u64)).collect::<BTreeMap<_, _>>());
+            let mut one = Vec::new();
+            for (p, _) in &listed {
+                fs.export(p, &mut one);
+            }
+            let again: BTreeMap<String, (Vec<u8>, i64)> = parse_records(&one).into_iter().map(|(p, d, m)| (p, (d, m))).collect();
+            prop_assert_eq!(again, want);
+            // a buffer of export_size bytes takes it all, and never more
+            let mut buf = vec![0u8; out.len()];
+            let mut sink = Sink { p: buf.as_mut_ptr(), at: 0, cap: buf.len() };
+            fs.export_into("/save", &mut sink);
+            prop_assert_eq!(sink.at, out.len());
+            prop_assert_eq!(&buf, &out);
+            let mut short = vec![0u8; out.len() / 2];
+            let mut sink = Sink { p: short.as_mut_ptr(), at: 0, cap: short.len() };
+            fs.export_into("/save", &mut sink);
+            prop_assert_eq!(sink.at, short.len());
+            prop_assert_eq!(&short[..], &out[..short.len()]);
         }
 
         /// A truncated or corrupt saves blob gives some of its files, never a panic.

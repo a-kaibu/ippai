@@ -1,7 +1,7 @@
 import { SaveConflict, SaveTransport } from "./save-transport";
 import { withRetries } from "./net";
 import { snapping } from "./savestate";
-import { portablePath, same, selectRecords } from "./file-records";
+import { portablePath, same } from "./file-records";
 // Saved games: what the game wrote (in kura's in-memory file system) survives the page.
 // The files written under the game's folders and the prefix's user folders go to the browser's
 // origin private file system (OPFS) as one blob per game, whenever they change (checked every
@@ -14,6 +14,7 @@ export interface SavesModule {
   _malloc(size: number): number;
   _vnhost_free(p: number): void;
   _vnhost_vfs_export(roots: number, len: number): number;
+  _vnhost_vfs_list(roots: number, len: number): number;
   /** changes whenever the file system may have changed */
   _vnhost_vfs_changes?(): number;
 }
@@ -181,15 +182,15 @@ export async function loadSaves(
   return local;
 }
 
-export function exportFiles(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
-  const s = new TextEncoder().encode(`${roots.join(":")}\0`);
+function call(m: SavesModule, f: (s: number, len: number) => number, arg: string): Uint8Array<ArrayBuffer> {
+  const s = new TextEncoder().encode(`${arg}\0`);
   const sp = m._malloc(s.length + 8) >>> 0;
   // (no room in the host heap: not the roots written over the guest's memory at address 0)
   if (!sp) throw new Error("saves: no memory for the export");
   try {
     new Uint8Array(m.wasmMemory.buffer).set(s, sp);
     const lenp = sp + Math.ceil(s.length / 4) * 4;
-    const p = m._vnhost_vfs_export(sp, lenp) >>> 0;
+    const p = f(sp, lenp) >>> 0;
     if (!p) throw new Error("saves: no memory for the export");
     const len = new Uint32Array(m.wasmMemory.buffer, lenp, 1)[0]!;
     const out = new Uint8Array(len);
@@ -201,8 +202,38 @@ export function exportFiles(m: SavesModule, roots: string[]): Uint8Array<ArrayBu
   }
 }
 
+/** The paths of the files written under `roots` (vnhost_vfs_list: path length, path, size). */
+export function listFiles(m: SavesModule, roots: string[]): string[] {
+  const b = call(m, (s, l) => m._vnhost_vfs_list(s, l), roots.join(":"));
+  const view = new DataView(b.buffer);
+  const out: string[] = [];
+  for (let at = 0; at + 4 <= b.length;) {
+    const n = view.getUint32(at, true);
+    out.push(new TextDecoder().decode(b.subarray(at + 4, at + 4 + n)));
+    at += 12 + n;
+  }
+  return out;
+}
+
+/**
+ * The records of the files written under `roots`; with `keep`, only those it keeps, picked
+ * from their list first so the others (an installer's temp files: hundreds of MB) are never
+ * copied out of the module (#234).
+ */
+export function exportFiles(
+  m: SavesModule,
+  roots: string[],
+  keep?: (path: string) => boolean,
+): Uint8Array<ArrayBuffer> {
+  if (keep) {
+    roots = listFiles(m, roots).filter(keep);
+    if (!roots.length) return new Uint8Array(0);
+  }
+  return call(m, (s, l) => m._vnhost_vfs_export(s, l), roots.join(":"));
+}
+
 function exportSaves(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
-  return selectRecords(exportFiles(m, roots), portablePath)!;
+  return exportFiles(m, roots, portablePath);
 }
 
 /** Writes `data` as `name`'s blob: this browser's copy, then the server's (rejects when the

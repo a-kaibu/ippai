@@ -89,7 +89,7 @@ pub fn on() -> bool {
 }
 
 pub fn is_ne(path: &str) -> bool {
-    let Ok(d) = kura::fs::read(path) else { return false };
+    let Ok(d) = kura::fs::read_head(path, 1 << 16) else { return false };
     if d.len() < 0x40 || &d[..2] != b"MZ" {
         return false;
     }
