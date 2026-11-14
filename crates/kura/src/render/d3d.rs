@@ -302,7 +302,10 @@ struct C { o: vec4f };
 }
 "#;
 
-const BLIT_SHADER: &str = r#"
+/// (the first line of BLIT_SHADER: the model samples binding 0 for it, nearest)
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const BLIT: &str = "// ippai: blit\n";
+const BLIT_SHADER: &str = r#"// ippai: blit
 struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 struct R { src: vec4f };
 @group(0) @binding(0) var tex: texture_2d<f32>;

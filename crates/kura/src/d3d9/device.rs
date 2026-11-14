@@ -323,6 +323,31 @@ pub struct Device {
     strip_buf: (u32, u32),
     /// after a strip that could have become a list: the state then (`StripKey`)
     strip_hint: Option<StripKey>,
+    /// what the screen shows of each window presented to, where Windows keeps it: a windowed
+    /// Present with a destination rectangle (`Shown`)
+    pub shown: Vec<Shown>,
+}
+
+/// D3DSWAPEFFECT_COPY (Direct3D 8's COPY_VSYNC is made one: d3d8.rs)
+const SWAPEFFECT_COPY: u32 = 3;
+
+/// What a window shows of its Direct3D frames, kept on the page: a windowed Present with a
+/// destination rectangle smaller than the client area updates only that part of the window,
+/// and the rest keeps what it showed. 果つることなき未来ヨリ (CatSystem2) presents only the
+/// rectangle that changed: the title's button under the mouse, the story's menu corner (#235).
+/// (D3DSWAPEFFECT_COPY: kept from the first Present; other swap effects from the first part
+/// on, the back buffer then taken for what the window showed: one copy a frame less for the
+/// games that present whole frames only.)
+pub struct Shown {
+    pub hwnd: u32,
+    /// the page texture with the client area's pixels (its size), and its format
+    pub gpu: u32,
+    pub w: u32,
+    pub h: u32,
+    pub fmt: u32,
+    /// it has what the window shows: a part was presented into it, and every Present since
+    /// went into it too (until then the screen shows the back buffer itself)
+    pub live: bool,
 }
 
 /// The render states Direct3D 9 has (GetRenderState of the others: D3DERR_INVALIDCALL), as
@@ -472,6 +497,9 @@ impl Device {
         if self.dummy != 0 {
             d.unbind(self.dummy);
             d.release(self.dummy);
+        }
+        for w in &self.shown {
+            gpu::record(|b| b.cmd(&[gpu::DESTROY_TEXTURE, w.gpu]));
         }
         // (the reference CreateDevice took on the IDirect3D9)
         d.release(self.d3d);
@@ -633,8 +661,8 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
             };
             match (m, extra) {
                 (3, None) => present(d, after, a(1), a(2), a(3)),
-                (3, Some(c)) => present_from(d, after, Some((c.bb, c.pp[8] != 0, c.hwnd)), a(1), a(2), a(3)),
-                (4, _) => D3DERR_INVALIDCALL,
+                (3, Some(c)) => present_from(d, after, Some((c.bb, c.pp[8] != 0, c.hwnd, c.pp[6] == SWAPEFFECT_COPY)), a(1), a(2), a(3)),
+                (4, extra) => front_buffer_data(d, after, extra.map(|c| (c.bb, c.pp[8] != 0, c.hwnd, c.pp[6] == SWAPEFFECT_COPY)), a(1)),
                 (5, None) => get_backbuffer(d, a(3)),
                 (5, Some(c)) => {
                     // GetBackBuffer(index, type, out): one back buffer
@@ -1117,6 +1145,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         merge: None,
         strip_buf: (0, 0),
         strip_hint: None,
+        shown: Vec::new(),
     });
     let _ = dev.new_gpu();
     // (another device of the program waits: its calls switch back to it, `D3d::activate`)
@@ -1428,7 +1457,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         30 => update_surface(d, a(1), a(2), a(3), a(4)),
         31 => update_texture(d, a(1), a(2)),
         32 => get_rt_data(d, a(1), a(2), after),
-        33 => D3DERR_INVALIDCALL,
+        33 => if a(1) == 0 { front_buffer_data(d, after, None, a(2)) } else { D3DERR_INVALIDCALL },
         34 => stretch_rect(d, a(1), a(2), a(3), a(4), a(5)),
         35 => color_fill(d, a(1), a(2), a(3)),
         36 => {
@@ -3281,6 +3310,146 @@ pub fn present_src_words(src: Option<[i32; 4]>, w: u32, h: u32) -> (u32, u32) {
     }
 }
 
+/// Where a Present's source rectangle (`present_src_words` of a `w`x`h` back buffer) goes when
+/// the destination `dst` is drawn into (box x0 y0 x1 y1, inside `w`x`h`... or not: clipped to
+/// `bound`, the client area's size): (source box, destination box), None when nothing of it
+/// lands in the client area.
+pub fn present_part(words: (u32, u32), w: u32, h: u32, dst: [i32; 4], bound: (u32, u32)) -> Option<([u32; 4], [u32; 4])> {
+    let src = if words.1 >> 16 == 0 { [0, 0, w, h] } else { [words.0 & 0xffff, words.0 >> 16, words.1 & 0xffff, words.1 >> 16] };
+    let c = [dst[0].max(0), dst[1].max(0), dst[2].min(bound.0 as i32), dst[3].min(bound.1 as i32)];
+    if c[2] <= c[0] || c[3] <= c[1] || src[2] <= src[0] || src[3] <= src[1] {
+        return None;
+    }
+    // (the clipped part's share of the source, rounded out to whole pixels)
+    let (dw, dh) = ((dst[2] - dst[0]) as i64, (dst[3] - dst[1]) as i64);
+    let (sw, sh) = ((src[2] - src[0]) as i64, (src[3] - src[1]) as i64);
+    let map = |v: i32, d0: i32, dn: i64, s0: u32, sn: i64, up: bool| {
+        let num = (v - d0) as i64 * sn;
+        let q = if up { (num + dn - 1).div_euclid(dn) } else { num.div_euclid(dn) };
+        (s0 as i64 + q).clamp(s0 as i64, s0 as i64 + sn) as u32
+    };
+    let mut s = [map(c[0], dst[0], dw, src[0], sw, false), map(c[1], dst[1], dh, src[1], sh, false), map(c[2], dst[0], dw, src[0], sw, true), map(c[3], dst[1], dh, src[1], sh, true)];
+    s[2] = s[2].max(s[0] + 1).min(src[2]);
+    s[3] = s[3].max(s[1] + 1).min(src[3]);
+    if s[2] <= s[0] || s[3] <= s[1] {
+        return None;
+    }
+    Some((s, [c[0] as u32, c[1] as u32, c[2] as u32, c[3] as u32]))
+}
+
+/// Window `hwnd`'s `Shown` for a `cw`x`ch` client area of back buffers of format `f`: its index
+/// in `dev.shown`, made (not live) when there is none of that size and format.
+fn shown_for(dev: &mut Device, hwnd: u32, cw: u32, ch: u32, f: u32) -> usize {
+    if let Some(i) = dev.shown.iter().position(|w| w.hwnd == hwnd) {
+        if (dev.shown[i].w, dev.shown[i].h, dev.shown[i].fmt) == (cw, ch, f) {
+            return i;
+        }
+        // (another size or format: made again)
+        let w = dev.shown.swap_remove(i);
+        gpu::record(|b| b.cmd(&[gpu::DESTROY_TEXTURE, w.gpu]));
+    }
+    let gpu = gpu_texture(cw, ch, 1, f, USAGE_RENDERTARGET);
+    dev.shown.push(Shown { hwnd, gpu, w: cw, h: ch, fmt: f, live: false });
+    dev.shown.len() - 1
+}
+
+/// Copies the part of back buffer `bb` (page texture, level, w, h) that source words `src`
+/// name into box `dst` of page texture `kept` (`cw`x`ch`), as a Present into that part of the
+/// client area shows it.
+fn copy_present(bb: (u32, u32, u32, u32), src: (u32, u32), kept: u32, dst: [i32; 4], cw: u32, ch: u32) {
+    if let Some((s, t)) = present_part(src, bb.2, bb.3, dst, (cw, ch)) {
+        let scaled = (s[2] - s[0], s[3] - s[1]) != (t[2] - t[0], t[3] - t[1]);
+        gpu::record(|b| b.cmd(&[gpu::COPY, bb.0, bb.1, s[0], s[1], s[2] - s[0], s[3] - s[1], kept, 0, t[0], t[1], t[2] - t[0], t[3] - t[1], scaled as u32]));
+    }
+}
+
+fn client_size(client: [i32; 4]) -> Option<(u32, u32)> {
+    let (cw, ch) = ((client[2] - client[0]).max(0) as u32, (client[3] - client[1]).max(0) as u32);
+    (cw > 0 && ch > 0 && cw <= 16384 && ch <= 16384).then_some((cw, ch))
+}
+
+/// The page texture with window `hwnd`'s client area (`Shown`) as a Present leaves it, and its
+/// size, when the screen is to show that rather than the back buffer: `part`, a Present into a
+/// part of the client area (`rect`, client `client`), copies that part over what the window
+/// showed. A Present of the whole client area shows the back buffer itself (no copy), and
+/// goes into the window's pixels too once a part was presented (the next part goes over it).
+/// `bb` the back buffer (page texture, level, w, h, format), `src` the source words. `track`:
+/// the window's pixels kept from every Present (D3DSWAPEFFECT_COPY: a part after whole frames
+/// goes over the last of them, not over the back buffer drawn since); without it, from the
+/// first part on.
+#[allow(clippy::too_many_arguments)]
+fn keep_shown(d: &mut D3d, hwnd: u32, client: [i32; 4], rect: [i32; 4], bb: (u32, u32, u32, u32, u32), src: (u32, u32), part: bool, track: bool) -> Option<(u32, u32, u32)> {
+    let (cw, ch) = client_size(client)?;
+    let dev = d.dev.as_mut()?;
+    let live = dev.shown.iter().any(|w| w.hwnd == hwnd && w.live && (w.w, w.h, w.fmt) == (cw, ch, bb.4));
+    if !part && !live && !track {
+        return None;
+    }
+    let i = shown_for(dev, hwnd, cw, ch, bb.4);
+    let kept = dev.shown[i].gpu;
+    let b4 = (bb.0, bb.1, bb.2, bb.3);
+    // the whole client area: what the window shows from now on (before the first part, all
+    // of the back buffer: what the window showed when the game draws whole frames each time)
+    if !part || !dev.shown[i].live {
+        copy_present(b4, if part { (bb.2, bb.3) } else { src }, kept, [0, 0, cw as i32, ch as i32], cw, ch);
+    }
+    dev.shown[i].live = true;
+    dev.batch_target = None;
+    if !part {
+        return None;
+    }
+    copy_present(b4, src, kept, [rect[0] - client[0], rect[1] - client[1], rect[2] - client[0], rect[3] - client[1]], cw, ch);
+    Some((kept, cw, ch))
+}
+
+/// GetFrontBufferData (IDirect3DDevice9 33, IDirect3DSwapChain9 4): the screen's pixels into
+/// `dst`, a system memory A8R8G8B8 surface: the window's client area where it is on the screen
+/// (`Shown`, or the back buffer as a Present without rectangles shows it), black around it.
+/// `chain` as `present_from`'s.
+unsafe fn front_buffer_data(d: &mut D3d, after: &mut After, chain: Option<(u32, bool, u32, bool)>, dst: u32) -> u32 {
+    let t = d.id_of(dst);
+    let Some(Data::Surface(sf)) = d.objs.get(&t).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
+    if sf.fmt != fmt::A8R8G8B8 || sf.pool != POOL_SYSTEMMEM {
+        return D3DERR_INVALIDCALL;
+    }
+    let (dw, dh) = (sf.w, sf.h);
+    let Some(mem) = surface_mem(d, t) else { return D3DERR_INVALIDCALL };
+    let Some(Data::Surface(sf)) = d.objs.get(&t).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
+    let pitch = sf.pitch;
+    for y in 0..dh {
+        std::slice::from_raw_parts_mut((mem + y * pitch) as *mut u32, dw as usize).fill(0xff00_0000);
+    }
+    let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
+    let (bb, hwnd) = chain.map_or((dev.backbuffer, dev.hwnd), |c| (c.0, c.2));
+    let Some(g) = surface_gpu(d, bb) else { return S_OK };
+    let mut client = [0i32; 4];
+    (d.calls().client_rect)(hwnd, client.as_mut_ptr());
+    let Some((cw, ch)) = client_size(client) else { return S_OK };
+    if !fmt::same_on_page(g.4) || fmt::layout(g.4) != Some((4, 1)) {
+        return S_OK;
+    }
+    let dev = d.dev.as_mut().unwrap();
+    let i = shown_for(dev, hwnd, cw, ch, g.4);
+    let kept = dev.shown[i].gpu;
+    if !dev.shown[i].live {
+        copy_present((g.0, g.1, g.2, g.3), (g.2, g.3), kept, [0, 0, cw as i32, ch as i32], cw, ch);
+    }
+    dev.batch_target = None;
+    // (the part of the client area on the screen)
+    let (x0, y0) = (client[0].max(0), client[1].max(0));
+    let (x1, y1) = (client[2].min(dw as i32), client[3].min(dh as i32));
+    if x1 <= x0 || y1 <= y0 {
+        return S_OK;
+    }
+    dev.readbacks += 1;
+    let req = dev.readbacks;
+    let at = mem + y0 as u32 * pitch + x0 as u32 * 4;
+    let (sx, sy) = ((x0 - client[0]) as u32, (y0 - client[1]) as u32);
+    gpu::record(|b| b.cmd(&[gpu::READBACK, req, kept, 0, sx, sy, (x1 - x0) as u32, (y1 - y0) as u32, at, pitch]));
+    *after = After::Readback(req);
+    S_OK
+}
+
 /// Present (IDirect3DDevice9 and IDirect3DSwapChain9): `src`, `dst` its pSourceRect and
 /// pDestRect (windowed: the part of the back buffer shown, and where in the client area: 俺の姿が､
 /// 透明に! presents (0,0)-(1920,1080) of a bigger back buffer), `over` hDestWindowOverride.
@@ -3290,7 +3459,7 @@ unsafe fn present(d: &mut D3d, after: &mut After, src: u32, dst: u32, over: u32)
 
 /// Present of a swap chain: `chain` (back buffer, windowed, window) for an additional one,
 /// None for the device's own.
-unsafe fn present_from(d: &mut D3d, after: &mut After, chain: Option<(u32, bool, u32)>, src: u32, dst: u32, over: u32) -> u32 {
+unsafe fn present_from(d: &mut D3d, after: &mut After, chain: Option<(u32, bool, u32, bool)>, src: u32, dst: u32, over: u32) -> u32 {
     // IPPAI_D3D_TRACE_EVERY=n: trace one whole frame in n
     static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     let every = *EVERY.get_or_init(|| std::env::var("IPPAI_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
@@ -3298,7 +3467,7 @@ unsafe fn present_from(d: &mut D3d, after: &mut After, chain: Option<(u32, bool,
         d.trace = (dev.frames + 1) % n == 0;
     }
     let Some(dev) = d.dev.as_mut() else { return D3DERR_INVALIDCALL };
-    let (bb, windowed, own) = chain.unwrap_or((dev.backbuffer, dev.pp[8] != 0, dev.hwnd));
+    let (bb, windowed, own, copy) = chain.unwrap_or((dev.backbuffer, dev.pp[8] != 0, dev.hwnd, dev.pp[6] == SWAPEFFECT_COPY));
     let hwnd = if over != 0 && windowed { over } else { own };
     dev.frames += 1;
     if d.trace && dev.frames % 100 == 1 {
@@ -3317,7 +3486,17 @@ unsafe fn present_from(d: &mut D3d, after: &mut After, chain: Option<(u32, bool,
     }
     if let Some(g) = surface_gpu(d, bb) {
         let (s6, s7) = present_src_words(src, g.2, g.3);
-        gpu::record(|b| b.cmd(&[gpu::PRESENT, g.0, rect[0] as u32, rect[1] as u32, rect[2] as u32, rect[3] as u32, s6, s7, hwnd]));
+        // (a multisampled back buffer: the page copies it only whole)
+        let ms = matches!(d.objs.get(&bb).map(|o| &o.data), Some(Data::Surface(sf)) if sf.multisample > 1);
+        let part = windowed && !ms && rect != client;
+        // (D3DSWAPEFFECT_COPY, windowed: the swap effect for presenting parts, the window's
+        // pixels kept from the first Present on)
+        let words = match keep_shown(d, hwnd, client, rect, (g.0, g.1, g.2, g.3, g.4), (s6, s7), part, windowed && copy && !ms) {
+            // (the client area's pixels: the part presented over what it showed)
+            Some((kept, w, h)) => [gpu::PRESENT, kept, client[0] as u32, client[1] as u32, client[2] as u32, client[3] as u32, w, h, hwnd],
+            None => [gpu::PRESENT, g.0, rect[0] as u32, rect[1] as u32, rect[2] as u32, rect[3] as u32, s6, s7, hwnd],
+        };
+        gpu::record(|b| b.cmd(&words));
     }
     let dev = d.dev.as_mut().unwrap();
     dev.batch_target = None;

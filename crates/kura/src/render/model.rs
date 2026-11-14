@@ -471,6 +471,8 @@ pub struct Pipeline {
     pub copy_shader: bool,
     /// d3d.rs's draw_depth (Shader::zwrite)
     pub zwrite_shader: bool,
+    /// d3d.rs's stretching copies (Shader::blit)
+    pub blit_shader: bool,
     /// a stencil test or stencil writes: the draw reads the pass's stencil reference
     pub uses_stencil: bool,
     /// multisample.count
@@ -518,6 +520,9 @@ pub struct Shader {
     /// d3d.rs's draw_depth: writes as depth the bits of binding 0's texel at the fragment's
     /// pixel less binding 1's first two floats
     pub zwrite: bool,
+    /// d3d.rs's copy_rect stretching blit: binding 0's texel at the box of it binding 2 holds
+    /// (uv x, y, w, h) mapped onto the viewport, nearest (the model has no filtering)
+    pub blit: bool,
 }
 
 #[derive(Clone)]
@@ -850,7 +855,7 @@ impl Model {
     }
 
     pub fn shader(&mut self, code: &str) -> u32 {
-        let mut sh = Shader { clear: code == super::d3d::CLEAR_SHADER, copy: code.starts_with(super::d3d::SAMPLE_COPY), zwrite: code.starts_with(super::d3d::ZWRITE), ..Default::default() };
+        let mut sh = Shader { clear: code == super::d3d::CLEAR_SHADER, copy: code.starts_with(super::d3d::SAMPLE_COPY), zwrite: code.starts_with(super::d3d::ZWRITE), blit: code.starts_with(super::d3d::BLIT), ..Default::default() };
         match naga::front::wgsl::parse_str(code) {
             Err(e) => self.err(format!("createShaderModule: {}", e.emit_to_string(code))),
             Ok(m) => {
@@ -996,11 +1001,13 @@ impl Model {
         let mut clear = false;
         let mut copy = false;
         let mut zwrite = false;
+        let mut blit = false;
         if let Some((mh, sh, u)) = &vs {
             h = mix(h, *mh);
             clear = sh.clear;
             copy = sh.copy;
             zwrite = sh.zwrite;
+            blit = sh.blit;
             used.extend(u.iter().cloned());
         }
         if let Some((mh, _, u)) = &fs {
@@ -1238,7 +1245,7 @@ impl Model {
         let uses_stencil = depth.as_ref().is_some_and(|d| {
             ["stencilFront", "stencilBack"].iter().filter_map(|f| d.3.get(f)).any(|s| s.s("compare").unwrap_or("always") != "always" || ["failOp", "depthFailOp", "passOp"].iter().any(|k| s.s(k).unwrap_or("keep") != "keep"))
         });
-        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, copy_shader: copy, zwrite_shader: zwrite, uses_stencil, samples, hash_shape };
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, copy_shader: copy, zwrite_shader: zwrite, blit_shader: blit, uses_stencil, samples, hash_shape };
         self.put(Obj::Pipeline(p))
     }
 
@@ -2125,6 +2132,21 @@ impl Model {
         Some((vw.tex, t.sub(vw.mip, vw.layer), t.size(vw.mip).0))
     }
 
+    /// A stretching blit's source: (texture, subresource, width, height, uv box)
+    fn blit_source(&self, d: &Draw) -> Option<(usize, usize, u32, u32, [f32; 4])> {
+        let (tex, sub, w) = self.copy_source(d)?;
+        let (g, _) = d.st.groups.first()?.as_ref()?;
+        let Obj::Group(_, entries) = &self.objs[*g] else { return None };
+        let (b, off) = entries.iter().find_map(|(k, e)| match e {
+            Entry::Buffer(b, off, _) if *k == 2 => Some((*b, *off as usize)),
+            _ => None,
+        })?;
+        let Obj::Buffer(bf) = &self.objs[b] else { return None };
+        let f = |k: usize| bf.data.get(off + 4 * k..off + 4 * k + 4).map(|x| f32::from_le_bytes(x.try_into().unwrap()));
+        let h = self.tex(tex).texels[sub].len() as u32 / w.max(1);
+        Some((tex, sub, w, h, [f(0)?, f(1)?, f(2)?, f(3)?]))
+    }
+
     /// draw_depth's source: (texture, subresource, width, height, pixel of its texel 0)
     fn zwrite_source(&self, d: &Draw) -> Option<(usize, usize, u32, u32, [i64; 2])> {
         let (tex, sub, w) = self.copy_source(d)?;
@@ -2301,6 +2323,7 @@ impl Model {
             // model keeps of a multisampled one)
             let copy_src = if p.copy_shader { self.copy_source(d) } else { None };
             let zsrc = if p.zwrite_shader { self.zwrite_source(d) } else { None };
+            let bsrc = if p.blit_shader { self.blit_source(d) } else { None };
             for (ci, a) in colors.iter().enumerate() {
                 let (t, si, (w, h, _)) = sub(self, a);
                 let format = self.tex(t).format.clone();
@@ -2314,6 +2337,13 @@ impl Model {
                         let old = self.tex(t).texels[si][at];
                         let oz = zatt.map_or(0, |(zt, zs, _)| self.tex(zt).texels[zs][at]);
                         let new = match clear {
+                            _ if bsrc.is_some() => {
+                                let (st, ss, sw, sh, r) = bsrc.unwrap();
+                                let u = r[0] + (x as f32 + 0.5 - vx) / vw * r[2];
+                                let v = r[1] + (y as f32 + 0.5 - vy) / vh * r[3];
+                                let (sx, sy) = (((u * sw as f32) as i64).clamp(0, sw as i64 - 1), ((v * sh as f32) as i64).clamp(0, sh as i64 - 1));
+                                self.tex(st).texels[ss].get((sy * sw as i64 + sx) as usize).copied().unwrap_or(0)
+                            }
                             _ if copy_src.is_some() => {
                                 let (st, ss, sw) = copy_src.unwrap();
                                 self.tex(st).texels[ss].get((y * sw + x) as usize).copied().unwrap_or(0)
