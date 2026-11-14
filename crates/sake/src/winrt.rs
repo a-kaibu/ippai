@@ -162,11 +162,12 @@ fn class_name(h: u32) -> String {
 }
 
 /// RoGetActivationFactory(class, iid, &factory) / RoActivateInstance(class, &instance): only
-/// Windows.UI.ViewManagement.UISettings (AdvHD x64 reads the theme's colors; C++/WinRT throws,
-/// and the program terminates, when it is missing)
+/// Windows.UI.ViewManagement.UISettings (AdvHD x64 reads the theme's colors) and
+/// AccessibilitySettings (Unity 6's App UI plugin asks for high contrast); C++/WinRT throws, and
+/// the program terminates, when one is missing
 fn RoGetActivationFactory(c: &mut Ctx) -> u32 {
-    if class_name(c.a(0)) == UI_SETTINGS && c.a(2) != 0 {
-        let f = ui::factory();
+    if let (Some(k), true) = (ui::Class::named(&class_name(c.a(0))), c.a(2) != 0) {
+        let f = ui::factory(k);
         return ui::qi_into(f, c.a(1), c.a(2));
     }
     if crate::env_on!("SAKE_TRACE_COM") {
@@ -178,8 +179,8 @@ fn RoGetActivationFactory(c: &mut Ctx) -> u32 {
     REGDB_E_CLASSNOTREG
 }
 fn RoActivateInstance(c: &mut Ctx) -> u32 {
-    if class_name(c.a(0)) == UI_SETTINGS && c.a(1) != 0 {
-        mem::putp(c.a(1), ui::settings());
+    if let (Some(k), true) = (ui::Class::named(&class_name(c.a(0))), c.a(1) != 0) {
+        mem::putp(c.a(1), ui::object(k));
         return S_OK;
     }
     if crate::env_on!("SAKE_TRACE_COM") {
@@ -192,9 +193,10 @@ fn RoActivateInstance(c: &mut Ctx) -> u32 {
 }
 
 const UI_SETTINGS: &str = "Windows.UI.ViewManagement.UISettings";
+const ACCESSIBILITY: &str = "Windows.UI.ViewManagement.AccessibilitySettings";
 
 /// Windows.UI.ViewManagement.UISettings: the light theme, default metrics, 100% text, no change
-/// events ever raised. One block per object: an interface's vtable pointer at word k (the
+/// events ever raised; AccessibilitySettings: no high contrast. One block per object: an interface's vtable pointer at word k (the
 /// interface pointer is block + k * pointer size), then the reference count.
 mod ui {
     use super::*;
@@ -220,9 +222,58 @@ mod ui {
         g(0x5349d588, 0x0cb5, 0x5f05, [0xbd, 0x34, 0x70, 0x6b, 0x32, 0x31, 0xf0, 0xbd]),
     ];
 
-    /// The object's interfaces: the factory has one, a settings object five.
+    /// IAccessibilitySettings
+    const ACCESS: Guid = g(0xfe0e8147, 0xc4c0, 0x4562, [0xb9, 0x62, 0x13, 0x27, 0xb5, 0x2a, 0xd5, 0xb9]);
+
+    /// The runtime classes there are
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    pub enum Class {
+        Settings,
+        Access,
+    }
+    impl Class {
+        pub fn named(s: &str) -> Option<Class> {
+            match s {
+                UI_SETTINGS => Some(Class::Settings),
+                ACCESSIBILITY => Some(Class::Access),
+                _ => None,
+            }
+        }
+        fn name(self) -> &'static str {
+            match self {
+                Class::Settings => UI_SETTINGS,
+                Class::Access => ACCESSIBILITY,
+            }
+        }
+    }
+    /// What an object is: a class's factory or an instance of it
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Kind {
+        Factory(Class),
+        Object(Class),
+    }
+    fn kind(block: u32) -> Kind {
+        let v = rp(block);
+        if v == factory_vtable(Class::Settings) {
+            Kind::Factory(Class::Settings)
+        } else if v == factory_vtable(Class::Access) {
+            Kind::Factory(Class::Access)
+        } else if v == access_vtable() {
+            Kind::Object(Class::Access)
+        } else {
+            Kind::Object(Class::Settings)
+        }
+    }
+    /// An object's interfaces after IInspectable's, by slot
+    fn ifaces(k: Kind) -> &'static [Guid] {
+        match k {
+            Kind::Factory(_) => &[IFACTORY],
+            Kind::Object(Class::Settings) => &SETTINGS,
+            Kind::Object(Class::Access) => &[ACCESS],
+        }
+    }
     fn count(block: u32) -> u32 {
-        if rp(block) == factory_vtable() { 1 } else { SETTINGS.len() as u32 }
+        ifaces(kind(block)).len() as u32
     }
     /// (block, slot) of an interface pointer
     fn split(this: u32) -> (u32, u32) {
@@ -242,16 +293,14 @@ mod ui {
     /// QueryInterface on the object at `block` into `out`
     pub fn qi_into(block: u32, iid: u32, out: u32) -> u32 {
         let want = crate::com::read_guid(iid);
-        let k = if [IUNKNOWN, IINSPECTABLE, IAGILE].contains(&want) || (count(block) == 1 && want == IFACTORY) {
+        let k = if [IUNKNOWN, IINSPECTABLE, IAGILE].contains(&want) {
             Some(0)
-        } else if count(block) > 1 {
-            SETTINGS.iter().position(|s| *s == want).map(|k| k as u32)
         } else {
-            None
+            ifaces(kind(block)).iter().position(|s| *s == want).map(|k| k as u32)
         };
         let Some(k) = k else {
             if crate::env_on!("SAKE_TRACE_COM") {
-                eprintln!("sake: UISettings: no interface {want:x?}");
+                eprintln!("sake: {:?}: no interface {want:x?}", kind(block));
             }
             mem::putp(out, 0);
             return E_NOINTERFACE;
@@ -278,7 +327,8 @@ mod ui {
         S_OK
     }
     fn class_name(c: &mut Ctx) -> u32 {
-        let s: Vec<u16> = UI_SETTINGS.encode_utf16().collect();
+        let (Kind::Factory(k) | Kind::Object(k)) = kind(split(c.a(0)).0);
+        let s: Vec<u16> = k.name().encode_utf16().collect();
         match create(&s) {
             Some(h) => {
                 mem::putp(c.a(1), h);
@@ -304,22 +354,32 @@ mod ui {
         t
     }
 
+    /// IActivationFactory::ActivateInstance(&instance)
     fn activate(c: &mut Ctx) -> u32 {
-        mem::putp(c.a(1), settings());
+        let Kind::Factory(k) = kind(split(c.a(0)).0) else { return E_NOINTERFACE };
+        mem::putp(c.a(1), object(k));
         S_OK
     }
-    fn factory_vtable() -> u32 {
-        static V: OnceLock<u32> = OnceLock::new();
-        *V.get_or_init(|| vtable("UISettingsFactory", 0, &[(activate, 8)]))
+    fn factory_vtable(k: Class) -> u32 {
+        static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
+        *V[k as usize].get_or_init(|| vtable(&format!("{k:?}Factory"), 0, &[(activate, 8)]))
     }
-    pub fn factory() -> u32 {
-        static F: OnceLock<u32> = OnceLock::new();
-        *F.get_or_init(|| {
+    /// The class's factory (one per program)
+    pub fn factory(k: Class) -> u32 {
+        static F: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
+        *F[k as usize].get_or_init(|| {
             let b = mem::heap_alloc(ps() + 4, true);
-            wp(b, factory_vtable());
+            wp(b, factory_vtable(k));
             w32(b + ps(), 1);
             b
         })
+    }
+    /// A new instance (one reference), as its IInspectable
+    pub fn object(k: Class) -> u32 {
+        match k {
+            Class::Settings => settings(),
+            Class::Access => access(),
+        }
     }
 
     fn out32(v: u32) -> impl Fn(&mut Ctx) -> u32 {
@@ -440,8 +500,23 @@ mod ui {
             ]
         })
     }
+    /// HighContrastScheme(&name): none (the empty string)
+    fn scheme(c: &mut Ctx) -> u32 {
+        mem::putp(c.a(1), 0);
+        S_OK
+    }
+    fn access_vtable() -> u32 {
+        static V: OnceLock<u32> = OnceLock::new();
+        *V.get_or_init(|| vtable("IAccessibilitySettings", 0, &[(no, 8), (scheme, 8), (add_event, 12), (remove_event, 12)]))
+    }
+    fn access() -> u32 {
+        let b = mem::heap_alloc(ps() + 4, true);
+        wp(b, access_vtable());
+        w32(b + ps(), 1);
+        b
+    }
     /// A new settings object (one reference), as its IInspectable.
-    pub fn settings() -> u32 {
+    fn settings() -> u32 {
         let v = vtables();
         let b = mem::heap_alloc(ps() * 5 + 4, true);
         for (k, t) in v.iter().enumerate() {
@@ -496,6 +571,31 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::ordinal_cmp;
+    use super::ui::Class;
+    use proptest::prelude::*;
+
+    #[test]
+    fn classes_by_name() {
+        assert_eq!(Class::named("Windows.UI.ViewManagement.UISettings"), Some(Class::Settings));
+        assert_eq!(Class::named("Windows.UI.ViewManagement.AccessibilitySettings"), Some(Class::Access));
+        // names are exact: no case folding, no prefixes
+        assert_eq!(Class::named("windows.ui.viewmanagement.uisettings"), None);
+        assert_eq!(Class::named("Windows.UI.ViewManagement.UISettings2"), None);
+        assert_eq!(Class::named("Windows.Gaming.Input.Gamepad"), None);
+        assert_eq!(Class::named(""), None);
+        for k in [Class::Settings, Class::Access] {
+            assert_eq!(Class::named(k.name()), Some(k));
+        }
+    }
+
+    proptest! {
+        /// only the two class names are registered
+        #[test]
+        fn unknown_names(s in "\\PC{0,60}") {
+            let known = ["Windows.UI.ViewManagement.UISettings", "Windows.UI.ViewManagement.AccessibilitySettings"];
+            prop_assert_eq!(Class::named(&s).is_some(), known.contains(&s.as_str()));
+        }
+    }
 
     #[test]
     fn ordinal_order() {

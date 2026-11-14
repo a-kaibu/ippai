@@ -1,0 +1,25 @@
+RoInitialize: ok
+AccessibilitySettings factory: ok
+ ActivateInstance: ok
+  IAccessibilitySettings: ok, out set
+  HighContrast: ok 0
+  HighContrastScheme: ok
+  IUISettings of an AccessibilitySettings: no interface, out NULL
+ factory's class name: ok 'Windows.UI.ViewManagement.AccessibilitySettings'
+AccessibilitySettings RoActivateInstance: ok
+  IAccessibilitySettings: ok, out set
+  HighContrast: ok 0
+  HighContrastScheme: ok
+  IUISettings of an AccessibilitySettings: no interface, out NULL
+ activated class name: ok 'Windows.UI.ViewManagement.AccessibilitySettings'
+UISettings factory: ok
+ ActivateInstance: ok
+  IUISettings3: ok, out set
+  background: ok alpha 255
+  IAccessibilitySettings of a UISettings: no interface, out NULL
+ factory's class name: ok 'Windows.UI.ViewManagement.UISettings'
+UISettings RoActivateInstance: ok
+  IUISettings3: ok, out set
+  background: ok alpha 255
+  IAccessibilitySettings of a UISettings: no interface, out NULL
+ activated class name: ok 'Windows.UI.ViewManagement.UISettings'
