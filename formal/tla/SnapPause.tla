@@ -25,10 +25,17 @@
    state). NoFence = TRUE is `take` as it was, READY without taking GATE: a thread that said
    PARKED but had not reached its wait held GATE in the copy. GiveUp = TRUE lets resume_all stop waiting for the parked threads to wake (its 2 s):
    one still in its wait when the next pause starts stands as PARKED for that one and wakes
-   while the page copies ("stirred left 3" in the snap test), detected the same way. *)
+   while the page copies ("stirred left 3" in the snap test), detected the same way.
+
+   Hold = TRUE is a hidden tab's (web/src/hidden.ts): after its copy the page keeps the state
+   only if the live count (Ctl::stirs) is what it was at READY, then holds the threads standing
+   ("held", for as long as the tab is out of sight) before RESUME; or it asks for the pause
+   alone (CMD_PAUSE: no copy, held the same). KeptClean: a kept state had no wake while it was
+   copied, also with spurious wakes; HeldStill: nothing runs its work while held (without
+   spurious wakes). *)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Guests, Hosts, Spurious, GiveUp, NoFence, MaxSaves
+CONSTANTS Guests, Hosts, Spurious, GiveUp, NoFence, MaxSaves, Hold
 
 Threads == Guests \cup Hosts
 None == "none"
@@ -43,9 +50,11 @@ VARIABLES
   stirs,     \* STIRS
   coord,     \* the coordinator's step
   stirs0,    \* STIRS when READY was said
-  saves      \* saves begun (bounds the model)
+  saves,     \* saves begun (bounds the model)
+  kept,      \* Hold: the page kept the state of this save
+  dirty      \* a wake came while the page copied (what KeptClean is about)
 
-vars == <<pause, st, pc, gate, sleeping, woken, stirs, coord, stirs0, saves>>
+vars == <<pause, st, pc, gate, sleeping, woken, stirs, coord, stirs0, saves, kept, dirty>>
 
 Init ==
   /\ pause = 0
@@ -53,6 +62,7 @@ Init ==
   /\ pc = [t \in Threads |-> IF t \in Guests THEN "run" ELSE "work"]
   /\ gate = None /\ sleeping = {} /\ woken = {}
   /\ stirs = 0 /\ coord = "rest" /\ stirs0 = 0 /\ saves = 0
+  /\ kept = FALSE /\ dirty = FALSE
 
 \* ---- standing still (park / busy's loop: stand_still) ----
 
@@ -61,7 +71,7 @@ Lock(t, from) ==
   /\ pc[t] = from /\ gate = None
   /\ gate' = t /\ st' = [st EXCEPT ![t] = "PARKED"]
   /\ pc' = [pc EXCEPT ![t] = "stand"]
-  /\ UNCHANGED <<pause, sleeping, woken, stirs, coord, stirs0, saves>>
+  /\ UNCHANGED <<pause, sleeping, woken, stirs, coord, stirs0, saves, kept, dirty>>
 
 \* stand_still: `while pausing() wait`; the pause over: lets go of GATE, says BUSY
 Stand(t) ==
@@ -73,19 +83,20 @@ Stand(t) ==
        ELSE /\ gate' = None /\ UNCHANGED sleeping
             /\ st' = [st EXCEPT ![t] = "BUSY"]
             /\ pc' = [pc EXCEPT ![t] = IF t \in Guests THEN "run" ELSE "check"]
-  /\ UNCHANGED <<pause, woken, stirs, coord, stirs0, saves>>
+  /\ UNCHANGED <<pause, woken, stirs, coord, stirs0, saves, kept, dirty>>
 
 \* out of GATE_CV.wait: GATE again, one more stir
 Wake(t) ==
   /\ pc[t] = "wait" /\ t \in woken /\ gate = None
   /\ gate' = t /\ woken' = woken \ {t} /\ stirs' = stirs + 1
   /\ pc' = [pc EXCEPT ![t] = "stand"]
-  /\ UNCHANGED <<pause, st, sleeping, coord, stirs0, saves>>
+  /\ dirty' = (dirty \/ coord = "ready")
+  /\ UNCHANGED <<pause, st, sleeping, coord, stirs0, saves, kept>>
 
 SpuriousWake(t) ==
   /\ Spurious /\ t \in sleeping
   /\ sleeping' = sleeping \ {t} /\ woken' = woken \cup {t}
-  /\ UNCHANGED <<pause, st, pc, gate, stirs, coord, stirs0, saves>>
+  /\ UNCHANGED <<pause, st, pc, gate, stirs, coord, stirs0, saves, kept, dirty>>
 
 \* ---- guest threads ----
 
@@ -95,7 +106,7 @@ Run(g) ==
   /\ IF pause = 0
        THEN UNCHANGED pc   \* (its work: changes memory)
        ELSE pc' = [pc EXCEPT ![g] = "park"]
-  /\ UNCHANGED <<pause, st, gate, sleeping, woken, stirs, coord, stirs0, saves>>
+  /\ UNCHANGED <<pause, st, gate, sleeping, woken, stirs, coord, stirs0, saves, kept, dirty>>
 
 \* ---- host threads ----
 
@@ -103,13 +114,13 @@ Run(g) ==
 Idle(h) ==
   /\ pc[h] = "work"
   /\ st' = [st EXCEPT ![h] = "IDLE"] /\ pc' = [pc EXCEPT ![h] = "sleep"]
-  /\ UNCHANGED <<pause, gate, sleeping, woken, stirs, coord, stirs0, saves>>
+  /\ UNCHANGED <<pause, gate, sleeping, woken, stirs, coord, stirs0, saves, kept, dirty>>
 
 \* work came (or its wait timed out, or a pause woke it): busy() says BUSY first
 Busy(h) ==
   /\ pc[h] = "sleep"
   /\ st' = [st EXCEPT ![h] = "BUSY"] /\ pc' = [pc EXCEPT ![h] = "check"]
-  /\ UNCHANGED <<pause, gate, sleeping, woken, stirs, coord, stirs0, saves>>
+  /\ UNCHANGED <<pause, gate, sleeping, woken, stirs, coord, stirs0, saves, kept, dirty>>
 
 \* busy()'s look at the pause: work, or a stir and a stand-still
 Check(h) ==
@@ -117,7 +128,8 @@ Check(h) ==
   /\ IF pause = 0
        THEN pc' = [pc EXCEPT ![h] = "work"] /\ UNCHANGED stirs
        ELSE pc' = [pc EXCEPT ![h] = "busylock"] /\ stirs' = stirs + 1
-  /\ UNCHANGED <<pause, st, gate, sleeping, woken, coord, stirs0, saves>>
+  /\ dirty' = (dirty \/ (pause = 1 /\ coord = "ready"))
+  /\ UNCHANGED <<pause, st, gate, sleeping, woken, coord, stirs0, saves, kept>>
 
 \* ---- the coordinator ----
 
@@ -126,21 +138,21 @@ Blockers(idleOk) == {t \in Threads : st[t] /= "PARKED" /\ ~(idleOk /\ st[t] = "I
 Start ==
   /\ coord = "rest" /\ saves < MaxSaves
   /\ pause' = 1 /\ coord' = "stop1" /\ saves' = saves + 1
-  /\ UNCHANGED <<st, pc, gate, sleeping, woken, stirs, stirs0>>
+  /\ UNCHANGED <<st, pc, gate, sleeping, woken, stirs, stirs0, kept, dirty>>
 
 \* every thread but the idle host ones parked (wake_all meanwhile wakes sleepers)
 Stop1 ==
   /\ coord = "stop1" /\ Blockers(TRUE) = {}
   /\ coord' = "stop2"
-  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves>>
+  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves, kept, dirty>>
 
 \* the idle ones too: woken, they come to busy() and stand still there
 Stop2 ==
   /\ coord = "stop2" /\ Blockers(FALSE) = {}
   /\ IF NoFence
-       THEN coord' = "ready" /\ stirs0' = stirs
-       ELSE coord' = "fence" /\ UNCHANGED stirs0
-  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, saves>>
+       THEN coord' = "ready" /\ stirs0' = stirs /\ dirty' = FALSE
+       ELSE coord' = "fence" /\ UNCHANGED <<stirs0, dirty>>
+  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, saves, kept>>
 
 \* GATE taken and let go once: a thread says PARKED holding GATE and lets go of it only in its
 \* wait, so every thread that said PARKED is in its wait now (NoFence: READY at once, and a
@@ -148,8 +160,8 @@ Stop2 ==
 \* module)
 Fence ==
   /\ coord = "fence" /\ gate = None
-  /\ coord' = "ready" /\ stirs0' = stirs
-  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, saves>>
+  /\ coord' = "ready" /\ stirs0' = stirs /\ dirty' = FALSE
+  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, saves, kept>>
 
 \* a host thread waiting for work is woken by wake_all (vfs::snap_wake, display::snap_wake...)
 WakeSleeper(h) ==
@@ -160,27 +172,42 @@ WakeSleeper(h) ==
 Fail ==
   /\ coord \in {"stop1", "stop2"}
   /\ coord' = "resume"
-  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves>>
+  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves, kept, dirty>>
 
 \* the page has its copy: RESUME
 Copied ==
-  /\ coord = "ready"
+  /\ coord = "ready" /\ ~Hold
   /\ coord' = "resume"
-  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves>>
+  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves, kept, dirty>>
+
+\* Hold: the copy taken, the page reads the live count: kept when no thread woke since READY
+\* (or, a pause alone, nothing to keep); then the threads stay standing
+Keep ==
+  /\ coord = "ready" /\ Hold
+  /\ \/ kept' = (stirs = stirs0)
+     \/ kept' = FALSE   \* (CMD_PAUSE: nothing copied)
+  /\ coord' = "held"
+  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves, dirty>>
+
+\* seen again: RESUME
+Seen ==
+  /\ coord = "held"
+  /\ coord' = "resume"
+  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves, kept, dirty>>
 
 \* resume_all: under GATE, pause 0 and notify_all
 Resume ==
   /\ coord = "resume" /\ gate = None
   /\ pause' = 0 /\ woken' = woken \cup sleeping /\ sleeping' = {}
   /\ coord' = "settle"
-  /\ UNCHANGED <<st, pc, gate, stirs, stirs0, saves>>
+  /\ UNCHANGED <<st, pc, gate, stirs, stirs0, saves, kept, dirty>>
 
 \* until no thread is PARKED (or, GiveUp, its 2 s are over)
 Settle ==
   /\ coord = "settle"
   /\ (\A t \in Threads : st[t] /= "PARKED") \/ GiveUp
   /\ coord' = "rest"
-  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves>>
+  /\ UNCHANGED <<pause, st, pc, gate, sleeping, woken, stirs, stirs0, saves, kept, dirty>>
 
 Thread(t) ==
   \/ t \in Guests /\ (Run(t) \/ Lock(t, "park"))
@@ -190,7 +217,7 @@ Thread(t) ==
 Next ==
   \/ \E t \in Threads : Thread(t)
   \/ \E h \in Hosts : WakeSleeper(h)
-  \/ Start \/ Stop1 \/ Stop2 \/ Fence \/ Fail \/ Copied \/ Resume \/ Settle
+  \/ Start \/ Stop1 \/ Stop2 \/ Fence \/ Fail \/ Copied \/ Keep \/ Seen \/ Resume \/ Settle
 
 \* (fair: the threads and the coordinator's steps; not the give-up, not spurious wakes; a host
 \* thread's piece of work ends sometime, and so does its own wait: more work or its timeout)
@@ -198,7 +225,7 @@ Fairness ==
   /\ \A t \in Threads : WF_vars(Stand(t)) /\ WF_vars(Wake(t)) /\ WF_vars(Lock(t, "park")) /\ WF_vars(Lock(t, "busylock"))
   /\ \A g \in Guests : WF_vars(Run(g))
   /\ \A h \in Hosts : WF_vars(Check(h)) /\ WF_vars(WakeSleeper(h)) /\ WF_vars(Busy(h)) /\ WF_vars(Idle(h))
-  /\ WF_vars(Stop1) /\ WF_vars(Stop2) /\ WF_vars(Fence) /\ WF_vars(Copied) /\ WF_vars(Resume) /\ WF_vars(Settle)
+  /\ WF_vars(Stop1) /\ WF_vars(Stop2) /\ WF_vars(Fence) /\ WF_vars(Copied) /\ WF_vars(Keep) /\ WF_vars(Seen) /\ WF_vars(Resume) /\ WF_vars(Settle)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -221,7 +248,19 @@ Unstirred == coord = "ready" => stirs = stirs0
 \* a thread that says PARKED stands still (never runs its work)
 ParkedStands == \A t \in Threads : st[t] = "PARKED" => pc[t] \in {"stand", "wait"}
 
-Safe == TypeOK /\ Still /\ Unstirred /\ ParkedStands
+\* a kept state: no wake while it was copied (the page's look at the live count)
+KeptClean == coord = "held" /\ kept => ~dirty
+
+\* held: everyone still in its wait (as while copied)
+HeldStill == coord = "held" => \A t \in Threads : pc[t] = "wait"
+
+Safe == TypeOK /\ Still /\ Unstirred /\ ParkedStands /\ KeptClean /\ HeldStill
+
+\* with spurious wakes: the state may be dropped, never kept stirred
+SafeKept == TypeOK /\ ParkedStands /\ KeptClean
+
+\* (spurious wakes have no end: their count bounded for TLC, a state CONSTRAINT)
+StirsBound == stirs <= 3
 
 \* every save ends; every thread gets to work again after it
 SavesEnd == coord /= "rest" ~> coord = "rest"

@@ -84,9 +84,13 @@ import {
   stateMemory,
   Stirred,
   takeState,
+  takeHeld,
+  stopAll,
+  AUTO_SLOT,
   type SnapModule,
   type StateInfo,
 } from "./savestate";
+import { keepWhileHidden } from "./hidden";
 import { toast } from "sonner";
 import { lostNotice } from "./gpulost";
 import { accountInput } from "./account-settings";
@@ -284,12 +288,28 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const BASE = sakeBase();
   // a save state to go on from (&state=<slot>: the states dialog starts the page again so), in
   // the build it is of
-  const slot = params.get("state");
+  let slot = params.get("state");
+  // a tab the browser discarded while it was out of sight (hidden.ts): where it was then
+  const autoKey = `ippai.hidden-state.${saveName}`;
+  const autoHash = nosave ? null : sessionGet(autoKey);
+  const discarded = !!(document as { wasDiscarded?: boolean }).wasDiscarded;
+  const fromHidden = slot === null && !!autoHash && discarded;
+  if (fromHidden) {
+    slot = String(AUTO_SLOT);
+    console.log(`hidden: the tab was discarded; from the state ${autoHash}`);
+  }
   const stateFile =
     slot !== null && !nosave
       ? await (async () => {
           log("ステートを読み込み中");
-          const info = (await listStates(saveName)).find((s) => s.slot === Number(slot));
+          const info = (await listStates(saveName)).find(
+            (s) => s.slot === Number(slot) && (!fromHidden || s.hash === autoHash),
+          );
+          // (that state gone: the game from its start, as before)
+          if (!info && fromHidden) {
+            console.log("hidden: that state is gone");
+            return undefined;
+          }
           if (!info) throw new Error("ステートが見つかりません");
           // (of another build: in the web app of its time, which the server keeps)
           if (!loadable(await builds(), info)) {
@@ -300,9 +320,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
               return new Promise<never>(() => {});
             }
           }
-          return getState(saveName, info);
+          return fromHidden
+            ? getState(saveName, info).catch((e: unknown) => {
+                console.log(`hidden: that state can't be read: ${String(e)}`);
+                return undefined;
+              })
+            : getState(saveName, info);
         })()
       : undefined;
+  if (fromHidden && stateFile) toast("画面から離れていた間にタブが閉じられたので、離れたところから続けます");
   const stateWasm = stateFile && stateHeader(stateFile).wasm;
   const build = sakeBuild(stateWasm === "sake-grow" ? "grow" : params.get("memory"));
   const WASM = `${build.name}.wasm`;
@@ -766,6 +792,85 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       build.name,
       () => statesOff || sensitive(vnvmSensitive),
     );
+  // out of sight: the game stands still, kept as a state first (hidden.ts)
+  const snap = sake as unknown as SnapModule;
+  const hideNote = (l: string) => (console.log(l), recorder?.note(l));
+  const keeper = keepWhileHidden({
+    flushSaves: () => saveNow(),
+    canState: () => !nosave && !statesOff && !sensitive(vnvmSensitive) && activeModule === sake,
+    take: async () => {
+      const { state, stopped } = await takeHeld(snap, build.name);
+      if (!state) return { stopped, kept: false };
+      try {
+        const { hash } = await putState(saveName, { ...state.info, slot: AUTO_SLOT }, state.file);
+        sessionSet(autoKey, hash);
+        hideNote(`hidden: state kept (${(state.info.size / 1048576).toFixed(1)} MiB)`);
+        return { stopped, kept: true };
+      } catch (e) {
+        hideNote(`hidden: state not kept: ${String(e)}`);
+        return { stopped, kept: false };
+      }
+    },
+    // (every process: one that runs on waits for the others, or plays on unseen)
+    pause: async () => {
+      const all = await Promise.allSettled(
+        [sake, ...childProcesses].map((m) => stopAll(m as unknown as SnapModule, true)),
+      );
+      const ok = all.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const failed = all.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (failed && !ok.length) throw failed.reason;
+      return {
+        took: Math.max(...ok.map((x) => x.took)),
+        stirred: () => ok.some((x) => x.stirred()),
+        settle: async () => void (await Promise.all(ok.map((x) => x.settle()))),
+        pack: () => Promise.reject(new Error("packing a pause")),
+        resume: async () => void (await Promise.allSettled(ok.map((x) => x.resume()))),
+      };
+    },
+    log: hideNote,
+  });
+  // (a page going away by itself, a reload or the list: no going on from that state)
+  addEventListener("pagehide", () => sessionRemove(autoKey));
+  void keeper;
+  // a run the browser ended otherwise (the whole app closed): the state is still offered
+  if (!fromHidden && autoHash && !stateMem)
+    void listStates(saveName).then((l) => {
+      const s = l.find((x) => x.slot === AUTO_SLOT && x.hash === autoHash);
+      if (!s) return;
+      toast("前回は画面から離れたまま終了しました", {
+        duration: 15000,
+        action: {
+          label: "離れたところから続ける",
+          onClick: () => {
+            params.set("state", String(AUTO_SLOT));
+            location.search = `?${params}`;
+          },
+        },
+      });
+    });
+  if (stateMem) sessionRemove(autoKey);
+}
+
+function sessionGet(k: string): string | null {
+  try {
+    return sessionStorage.getItem(k);
+  } catch {
+    return null;
+  }
+}
+function sessionSet(k: string, v: string): void {
+  try {
+    sessionStorage.setItem(k, v);
+  } catch {
+    // (no storage: a discarded tab starts from the game's saves)
+  }
+}
+function sessionRemove(k: string): void {
+  try {
+    sessionStorage.removeItem(k);
+  } catch {
+    // (none)
+  }
 }
 
 /**
@@ -915,6 +1020,17 @@ function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"], o
               }
             : null;
         }),
+        auto: (() => {
+          const s = slots.find((x) => x.slot === AUTO_SLOT);
+          return s
+            ? {
+                created: s.created,
+                thumb: s.thumb,
+                size: s.size,
+                old: !loadable(ids, s) && !kept.has(s.build),
+              }
+            : null;
+        })(),
         busy,
         open: () => void refresh(),
         save: (n) => void save(n),

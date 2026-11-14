@@ -63,11 +63,17 @@ pub struct Ctl {
     /// RUNNING after a save: nonzero when a thread of the module ran while the page copied
     /// (a lock it took may be held in the copy: the state is not to be kept)
     pub stirred: AtomicU32,
+    /// every wake of a standing thread so far (live: a page that holds the pause after its copy
+    /// compares it with what it was at READY, before it keeps the copy)
+    pub stirs: AtomicU32,
 }
 
 pub const CMD_NONE: u32 = 0;
 pub const CMD_SAVE: u32 = 1;
 pub const CMD_RESUME: u32 = 2;
+/// Every thread standing still, as for a save, but nothing copied: no GPU read back, no list
+/// (a page out of sight: web/src/play.ts); READY, then RESUME as a save's.
+pub const CMD_PAUSE: u32 = 3;
 
 pub const ST_RUNNING: u32 = 0;
 pub const ST_PAUSING: u32 = 1;
@@ -117,6 +123,7 @@ pub static VNHOST_SNAP: Ctl = Ctl {
     saves: AtomicU32::new(0),
     restores: AtomicU32::new(0),
     stirred: AtomicU32::new(0),
+    stirs: AtomicU32::new(0),
 };
 
 /// The page: where [`Ctl`] is.
@@ -311,7 +318,7 @@ static PARK_DELAY_MS: AtomicU32 = AtomicU32::new(0);
 
 /// Every time a standing thread woke, or a thread came to stand still: none may between READY
 /// and RESUME ([`Ctl::stirred`]).
-static STIRS: AtomicU32 = AtomicU32::new(0);
+static STIRS: &AtomicU32 = &VNHOST_SNAP.stirs;
 
 /// Stands still while a state is taken (a guest thread at a safe point; its `resume` says
 /// how it goes on in a restored copy). Returns at once when nothing is asked.
@@ -471,8 +478,8 @@ pub fn start() {
     let _ = std::thread::Builder::new().name("snap".into()).spawn(|| {
         crate::wrap::load_exclude();
         loop {
-            wait_cmd(CMD_SAVE);
-            take();
+            let c = wait_cmds(&[CMD_SAVE, CMD_PAUSE]);
+            take(c == CMD_PAUSE);
         }
     });
 }
@@ -484,12 +491,17 @@ extern "C" {
 }
 
 fn wait_cmd(want: u32) {
+    wait_cmds(&[want]);
+}
+
+/// Waits for one of `want`: which came.
+fn wait_cmds(want: &[u32]) -> u32 {
     let c = &VNHOST_SNAP.cmd;
     loop {
         let v = c.load(SeqCst);
-        if v == want {
+        if want.contains(&v) {
             c.store(CMD_NONE, SeqCst);
-            return;
+            return v;
         }
         #[cfg(target_arch = "wasm32")]
         unsafe {
@@ -585,11 +597,12 @@ fn notify_page() {
     }
 }
 
-/// One save: pause, GPU, the list, READY, wait for RESUME.
-fn take() {
+/// One save: pause, GPU, the list, READY, wait for RESUME. `only_pause`: the pause alone (no
+/// GPU, no list; also in a run that can't be saved: other processes keep running meanwhile).
+fn take(only_pause: bool) {
     let t0 = raw_clocks()[0];
     VNHOST_SNAP.msg_len.store(0, SeqCst);
-    if let Some(why) = REFUSE.lock().unwrap_or_else(|e| e.into_inner()).and_then(|f| f()) {
+    if let Some(why) = REFUSE.lock().unwrap_or_else(|e| e.into_inner()).filter(|_| !only_pause).and_then(|f| f()) {
         VNHOST_SNAP.state.store(ST_PAUSING, SeqCst);
         return fail(why);
     }
@@ -619,7 +632,7 @@ fn take() {
         g = COORD_CV.wait_timeout(g, Duration::from_millis(10)).unwrap_or_else(|e| e.into_inner()).0;
     }
     // the GPU's textures and buffers into memory
-    if GPU_THREAD.load(SeqCst) != 0 {
+    if !only_pause && GPU_THREAD.load(SeqCst) != 0 {
         let n = GPU_SAVE.fetch_add(1, SeqCst).wrapping_add(1) & (u32::MAX >> 2);
         VNHOST_SNAP.gpu.store(gpu_word(n, GPU_DUMP), SeqCst);
         let t = std::time::Instant::now();
@@ -653,15 +666,17 @@ fn take() {
     // only in the wait (one between the two held GATE in the copy, for ever in the restored
     // module: formal/tla/SnapPause.tla, NoFence)
     drop(GATE.lock().unwrap_or_else(|e| e.into_inner()));
-    let list = Box::leak(build_ranges().into_boxed_slice());
+    let list = Box::leak(if only_pause { Vec::new() } else { build_ranges() }.into_boxed_slice());
     VNHOST_SNAP.ranges.store(list.as_ptr() as usize as u32, SeqCst);
     VNHOST_SNAP.nranges.store(list.len() as u32 / 2, SeqCst);
     let c = raw_clocks();
     for (i, &v) in c.iter().enumerate() {
         VNHOST_SNAP.clock[i].store((v + offset(i)).to_bits(), SeqCst);
     }
-    VNHOST_SNAP.saves.fetch_add(1, SeqCst);
-    eprintln!("snap: stopped in {:.0} ms, {} ranges", c[0] - t0, list.len() / 2);
+    if !only_pause {
+        VNHOST_SNAP.saves.fetch_add(1, SeqCst);
+    }
+    eprintln!("snap: stopped in {:.0} ms, {} ranges{}", c[0] - t0, list.len() / 2, if only_pause { " (pause)" } else { "" });
     VNHOST_SNAP.stirred.store(0, SeqCst);
     let stirs = STIRS.load(SeqCst);
     VNHOST_SNAP.state.store(ST_READY, SeqCst);
@@ -842,6 +857,99 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Ctl, msg), 36);
         assert_eq!(std::mem::offset_of!(Ctl, msg_len), 40);
         assert_eq!(std::mem::offset_of!(Ctl, stirred), 88);
+        assert_eq!(std::mem::offset_of!(Ctl, stirs), 92);
+    }
+
+    /// A page out of sight (web/src/play.ts): PAUSE stands every thread still for as long as
+    /// the page holds it, also in a run that can't be saved (REFUSE) and with a drawing thread
+    /// (no GPU read back is asked: none happens in a hidden tab), counts no save, lists
+    /// nothing; the program's clocks do not move for the pause; after RESUME the threads go on.
+    #[test]
+    fn a_pause_alone_holds_every_thread() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        static STOP: AtomicU32 = AtomicU32::new(0);
+        static WORK: AtomicU64 = AtomicU64::new(0);
+        STOP.store(0, SeqCst);
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            threads.push(std::thread::spawn(|| {
+                register("guest", true, 0);
+                while STOP.load(SeqCst) == 0 {
+                    if pausing() {
+                        park();
+                    }
+                    WORK.fetch_add(1, SeqCst);
+                    std::thread::yield_now();
+                }
+                unregister();
+            }));
+        }
+        set_refuse(|| Some("another process".into()));
+        GPU_THREAD.store(1, SeqCst);
+        start();
+        for round in 0..3 {
+            let w = WORK.load(SeqCst);
+            until("work", || WORK.load(SeqCst) > w + 10);
+            let saves = VNHOST_SNAP.saves.load(SeqCst);
+            let off = offset(0);
+            VNHOST_SNAP.cmd.store(CMD_PAUSE, SeqCst);
+            until("READY", || matches!(VNHOST_SNAP.state.load(SeqCst), ST_READY | ST_FAILED));
+            assert_eq!(VNHOST_SNAP.state.load(SeqCst), ST_READY, "round {round}: no pause");
+            assert_eq!(VNHOST_SNAP.gpu.load(SeqCst), GPU_NONE, "round {round}: GPU asked");
+            assert_eq!(VNHOST_SNAP.nranges.load(SeqCst), 0, "round {round}: a list");
+            assert_eq!(VNHOST_SNAP.saves.load(SeqCst), saves, "round {round}: counted as a save");
+            let (w, stirs) = (WORK.load(SeqCst), VNHOST_SNAP.stirs.load(SeqCst));
+            std::thread::sleep(Duration::from_millis(150));
+            assert_eq!(WORK.load(SeqCst), w, "round {round}: a thread ran while paused");
+            assert_eq!(VNHOST_SNAP.stirs.load(SeqCst), stirs, "round {round}: stirred while held");
+            VNHOST_SNAP.cmd.store(CMD_RESUME, SeqCst);
+            until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
+            // (the 150 ms held are not the program's)
+            assert!(offset(0) - off <= -140.0, "round {round}: clock moved on by {}", 150.0 + offset(0) - off);
+            assert_eq!(VNHOST_SNAP.stirred.load(SeqCst), 0, "round {round}: stirred");
+        }
+        let w = WORK.load(SeqCst);
+        until("work after", || WORK.load(SeqCst) > w + 10);
+        STOP.store(1, SeqCst);
+        threads.into_iter().for_each(|t| t.join().unwrap());
+        GPU_THREAD.store(0, SeqCst);
+        *REFUSE.lock().unwrap() = None;
+    }
+
+    /// A save the page holds after its copy (a hidden tab: saved, then out of sight until it is
+    /// seen again): a wake meanwhile shows in the live count at once, before RESUME, so the
+    /// page knows whether its copy can be kept before it keeps it.
+    #[test]
+    fn a_wake_shows_in_the_live_count_before_resume() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        static STOP: AtomicU32 = AtomicU32::new(0);
+        STOP.store(0, SeqCst);
+        let t = std::thread::spawn(|| {
+            register("guest", true, 0);
+            while STOP.load(SeqCst) == 0 {
+                if pausing() {
+                    park();
+                }
+                std::thread::yield_now();
+            }
+            unregister();
+        });
+        start();
+        VNHOST_SNAP.cmd.store(CMD_SAVE, SeqCst);
+        until("READY", || VNHOST_SNAP.state.load(SeqCst) == ST_READY);
+        let at = VNHOST_SNAP.stirs.load(SeqCst);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(VNHOST_SNAP.stirs.load(SeqCst), at);
+        {
+            let _g = GATE.lock().unwrap();
+            GATE_CV.notify_all();
+        }
+        until("a stir", || VNHOST_SNAP.stirs.load(SeqCst) != at);
+        VNHOST_SNAP.cmd.store(CMD_RESUME, SeqCst);
+        until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
+        assert_ne!(VNHOST_SNAP.stirred.load(SeqCst), 0);
+        STOP.store(1, SeqCst);
+        t.join().unwrap();
     }
 
     fn until(what: &str, f: impl Fn() -> bool) {

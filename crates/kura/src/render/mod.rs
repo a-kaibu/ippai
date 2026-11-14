@@ -181,6 +181,16 @@ pub extern "C" fn vnhost_render_frame(t: f64) {
     FRAME_US.fetch_add(((d3d::now() - t0) * 1000.0) as u64, Relaxed);
 }
 
+/// host/vngpu.js: while no animation frame comes (a hidden tab), every 50 ms: a frame only
+/// while a state is taken, so that the GPU is read back then and threads that wait for a frame
+/// while stopping get it; nothing otherwise (a hidden page draws nothing: d3d9's pacing).
+#[no_mangle]
+pub extern "C" fn vnhost_render_snap_tick(t: f64) {
+    if crate::snap::pausing() || crate::snap::restoring() {
+        vnhost_render_frame(t);
+    }
+}
+
 /// host/vngpu.js: the GPU time (timestamp-query) of `passes` render passes of one submit, in µs.
 #[no_mangle]
 pub extern "C" fn vnhost_gpu_time(us: f64, passes: u32) {

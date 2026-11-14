@@ -7,6 +7,7 @@ import { Bookmark, Download, FastForward, Loader2, Square, Upload } from "lucide
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AUTO_INTERVALS, AUTO_MODES, type AutoMode } from "../autoadvance";
+import { AUTO_SLOT } from "../savestate";
 import type { AutoView, StatesView } from "./store";
 
 const MODE_LABEL: Record<AutoMode, string> = {
@@ -165,6 +166,29 @@ export function States({ states, auto }: { states: StatesView | null; auto: Auto
                   </div>
                 </div>
               ))}
+              {states.auto && (
+                <div className="col-span-2 flex items-center gap-3 rounded-lg border border-dashed p-2">
+                  <div className="grid aspect-video w-28 shrink-0 place-items-center overflow-hidden rounded bg-muted text-xs text-muted-foreground">
+                    {states.auto.thumb ? (
+                      <img src={states.auto.thumb} alt="" className="size-full object-contain" />
+                    ) : (
+                      "画面なし"
+                    )}
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">自動（画面から離れたとき）</span>
+                    <span>
+                      {when(states.auto.created)}・{(states.auto.size / 1048576).toFixed(0)} MB・この端末のみ
+                    </span>
+                    {states.auto.old && (
+                      <span className="text-amber-600">更新前のバージョンのステートです</span>
+                    )}
+                  </div>
+                  <Button size="sm" disabled={busy || states.auto.old} onClick={() => states.load(AUTO_SLOT)}>
+                    <Upload /> ロード
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>

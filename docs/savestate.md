@@ -137,6 +137,32 @@ savestate-slots-browser.mjs restarting the server a week later).
 
 A state holds the game's own save files as they were then: loading one goes back to those.
 
+## Out of sight (web/src/hidden.ts)
+
+When the page goes out of sight (another tab or app, the screen off: `visibilitychange`, `freeze`
+in case it did not come), the game stands still until it is seen again, and first a state of it
+is kept in a fifth slot, `AUTO_SLOT` (this browser only: nothing sent each time the player looks
+away). Android discards hidden tabs often; one loaded again (`document.wasDiscarded`, the state's
+hash in the tab's sessionStorage) starts from that state instead of the game's last save. A run
+that ended otherwise (the whole browser closed) offers it in a toast; the dialog lists it too.
+
+* The game's own files are put away first (saves.ts), then the state.
+* The page holds the coordinator at READY after its copy instead of RESUME: the threads stand
+  until the page is seen again, and the copy is kept only if no thread stirred (`Ctl::stirs`, the
+  live count, offset 92). The time it stood is not the program's (clocks continue).
+* A hidden tab has no animation frames: host/vngpu.js then calls `vnhost_render_snap_tick` every
+  50 ms, which draws a frame only while a pause is asked (the GPU read back, threads that wait for
+  a frame while stopping).
+* A run whose states are off (secrets in memory, another process) only stands still:
+  `CMD_PAUSE` (no GPU read back, no list, no refusal), every process of the page.
+* A state again only once the program ran 5 s since the last (switching apps back and forth).
+* pagehide (a reload, the list) keeps no state and forgets the tab's.
+
+Tests: kura snap tests a_pause_alone_holds_every_thread, a_wake_shows_in_the_live_count_before_resume;
+web/src/hidden.test.ts (model, random event orders); tests/hidden-browser.mjs (a real hidden tab:
+no step while hidden, clocks ok, a discarded tab goes on from where it was; Direct3D 11 4x with the
+worker's animation frames held).
+
 ## Limits
 
 * Depth and stencil buffers can't be read back (WebGPU): they come back as last cleared (games

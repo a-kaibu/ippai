@@ -137,12 +137,19 @@ addToLibrary({
       VG.canvas = await vnvmCanvas;
       VG.ctx = VG.canvas.getContext('webgpu');
       if (!(await VG.open())) throw new Error('no WebGPU adapter');
+      let last = performance.now();
       const frame = (t) => {
+        last = performance.now();
         // (no device while a lost one is replaced: the guest's batches wait for the new one)
         if (!VG.lost) VG.call('vnhost_render_frame', t);
         requestAnimationFrame(frame);
       };
       requestAnimationFrame(frame);
+      // (a hidden tab has no animation frames: a state taken then, web/src/play.ts, still
+      // reads the GPU back; the module does nothing here unless one is taken)
+      setInterval(() => {
+        if (performance.now() - last > 200 && !VG.lost) VG.call('vnhost_render_snap_tick', performance.now());
+      }, 50);
     })().catch((e) => err(`render: ${e}`));
   },
 

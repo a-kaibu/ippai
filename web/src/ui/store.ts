@@ -48,6 +48,9 @@ export interface AutoView {
 export interface StatesView {
   /** the slots (null: empty), as the dialog shows them */
   slots: ({ created: string; thumb: string; size: number; old: boolean } | null)[];
+  /** the state kept when the page was last out of sight (web/src/hidden.ts; this browser's
+   * only), loaded with `load(AUTO_SLOT)` */
+  auto: { created: string; thumb: string; size: number; old: boolean } | null;
   /** what is being done ("": nothing) */
   busy: string;
   /** opens the dialog (reads the slots again) */

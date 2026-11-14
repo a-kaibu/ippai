@@ -11,6 +11,8 @@ SnapPause SnapPause.cfg ok
 SnapPause SnapPauseSpurious.cfg violation
 SnapPause SnapPauseGiveUp.cfg violation
 SnapPause SnapPauseNoFence.cfg violation
+SnapPause SnapPauseHold.cfg ok
+SnapPause SnapPauseHoldSpurious.cfg ok
 CacheRead CacheRead.cfg ok
 CacheRead CacheReadNoTimeout.cfg violation
 CacheRead CacheReadShort.cfg violation

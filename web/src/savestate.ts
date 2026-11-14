@@ -44,6 +44,9 @@ export interface StateInfo {
 }
 
 export const SLOTS = 4;
+/** The slot of the state kept when the page went out of sight (web/src/hidden.ts): kept in
+ * this browser only (a state each time the player looks away would be a lot to send). */
+export const AUTO_SLOT = SLOTS;
 const MAGIC = "IPPAISNP";
 const BLOCK = 1 << 20;
 // Ctl's offsets (crates/kura/src/snap.rs)
@@ -54,7 +57,9 @@ const CMD = 8,
   NRANGES = 32,
   MSG = 36,
   MSG_LEN = 40,
-  STIRRED = 88;
+  STIRRED = 88,
+  STIRS = 92;
+const CMD_PAUSE = 3;
 const ST_RUNNING = 0,
   ST_READY = 2,
   ST_FAILED = 3;
@@ -130,12 +135,12 @@ export const loadable = (ids: Map<string, string>, s: { build: string; wasm?: st
   ids.size === 0 || ids.get(s.wasm ?? "sake") === s.build;
 
 /** What the page shows now, small (a JPEG data URL; "" when there is none). */
-async function thumbnail(m: SnapModule): Promise<string> {
+async function thumbnail(m: SnapModule, tries = 25): Promise<string> {
   try {
     const p = m._malloc(12) >>> 0;
     if (!p) return "";
     const first = m._vnhost_render_shot(p);
-    for (let k = 0; k < 25 && m._vnhost_render_shot(p) === first; k++)
+    for (let k = 0; k < tries && m._vnhost_render_shot(p) === first; k++)
       await new Promise((r) => setTimeout(r, 20));
     const [ptr, w, h] = Array.from(new Uint32Array(m.wasmMemory.buffer, p, 3)) as [number, number, number];
     m._free(p);
@@ -170,61 +175,154 @@ export class Stirred extends Error {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Takes a state of the running module: the file and its index entry (slot set by the caller). */
-export async function takeState(
-  m: SnapModule,
-  wasm: SakeName,
-): Promise<{ file: Uint8Array<ArrayBuffer>; info: Omit<StateInfo, "slot"> }> {
-  const thumb = await thumbnail(m);
-  const id = (await builds()).get(wasm) ?? "";
-  // (the worker and its zstd ready before the program is stopped: a slow fetch of snapz.mjs used
-  // to happen with every guest thread parked)
-  await work({ op: "warm", url: snapzUrl() });
+type WaitAsync = (
+  a: Int32Array,
+  i: number,
+  v: number,
+  ms: number,
+) => { async: false; value: string } | { async: true; value: Promise<string> };
+
+/** Waits until the coordinator's state is none of `not` (or `ms` passed): what it is then. Not
+ * timers (a hidden tab runs them once a second at most): the futex the coordinator wakes. */
+async function stateNot(i32: Int32Array, at: number, not: number[], ms: number): Promise<number> {
+  const t0 = performance.now();
+  for (;;) {
+    const st = Atomics.load(i32, at);
+    if (!not.includes(st)) return st;
+    const left = ms - (performance.now() - t0);
+    if (left <= 0) return st;
+    const w = (Atomics as unknown as { waitAsync?: WaitAsync }).waitAsync?.(i32, at, st, Math.min(left, 50));
+    if (!w) await wait(5);
+    else if (w.async) await w.value;
+  }
+}
+
+/** Every thread of the module standing still (a state's copy may be taken now, `pack`) until
+ * `resume`. */
+export interface Stopped {
+  /** The memory, compressed (only of a stop for a state). */
+  pack(): Promise<{ parts: { a: number; n: number; frame: Uint8Array }[]; raw: number }>;
+  /** Whether a thread ran since the stop (a copy taken now is not to be kept). */
+  stirred(): boolean;
+  /** Waits a moment for a wake that is still being counted (resolves early on one). */
+  settle(): Promise<void>;
+  /** The program goes on. Rejects with Stirred when a thread ran while it stood (`check`). */
+  resume(check?: boolean): Promise<void>;
+  /** ms it took to stop */
+  took: number;
+}
+
+/** Stops every thread of `m`: for a state (`pause` false: the GPU read back, the memory
+ * listed; the page's own writes held meanwhile, memgate.ts) or only to stand still (a hidden
+ * tab). Throws when it could not. */
+export async function stopAll(m: SnapModule, pause = false): Promise<Stopped> {
+  // (one stop of a module at a time: a save from the dialog and a hidden tab's)
+  const mine = locks.get(m) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((r) => (release = r));
+  locks.set(
+    m,
+    mine.then(() => next),
+  );
+  await mine;
+  try {
+    return await stopOnce(m, pause, release);
+  } catch (e) {
+    release();
+    throw e;
+  }
+}
+const locks = new WeakMap<SnapModule, Promise<void>>();
+
+async function stopOnce(m: SnapModule, pause: boolean, release: () => void): Promise<Stopped> {
   const ctl = m._vnhost_snap_ctl() >>> 0;
   const i32 = new Int32Array(m.wasmMemory.buffer);
   const word = (off: number) => (ctl + off) >>> 2;
-  // (the page's own writes first: WebCodecs' copies under way end, later ones wait)
-  await memGate.close();
-  let parts: { a: number; n: number; frame: Uint8Array }[];
-  let raw: number;
+  if (!pause) await memGate.close();
   const t0 = performance.now();
-  try {
-    Atomics.store(i32, word(CMD), 1);
+  let resumed = false;
+  const go = () => {
+    if (resumed) return;
+    resumed = true;
+    Atomics.store(i32, word(CMD), 2);
     Atomics.notify(i32, word(CMD));
-    let st;
-    while ((st = Atomics.load(i32, word(STATE))) !== ST_READY && st !== ST_FAILED) {
-      if (performance.now() - t0 > 30000) throw new Error("止まりませんでした");
-      await wait(5);
-    }
+  };
+  try {
+    // (one before this one still ending)
+    await stateNot(i32, word(STATE), [ST_READY, 1], 5000);
+    // (an earlier one that failed: its word is the coordinator's again only once it takes this)
+    Atomics.compareExchange(i32, word(STATE), ST_FAILED, ST_RUNNING);
+    Atomics.store(i32, word(CMD), pause ? CMD_PAUSE : 1);
+    Atomics.notify(i32, word(CMD));
+    const st = await stateNot(i32, word(STATE), [ST_RUNNING, 1], 30000);
     if (st === ST_FAILED) {
       const p = i32[word(MSG)]! >>> 0,
         n = i32[word(MSG_LEN)]!;
       throw new Error(new TextDecoder().decode(new Uint8Array(m.wasmMemory.buffer, p, n).slice()));
     }
-    const rp = i32[word(RANGES)]! >>> 0,
-      rn = i32[word(NRANGES)]!;
-    const ranges = Array.from(new Uint32Array(m.wasmMemory.buffer, rp, rn * 2));
-    const r = await work({
-      op: "pack",
-      url: snapzUrl(),
-      memory: m.wasmMemory.buffer as unknown as SharedArrayBuffer,
-      ranges,
-      block: BLOCK,
-    }).finally(() => {
-      // the program goes on (also when packing failed)
-      Atomics.store(i32, word(CMD), 2);
-      Atomics.notify(i32, word(CMD));
-    });
-    if (!("parts" in r)) throw new Error("packing");
-    ({ parts, raw } = r);
-    // (a thread that ran while copied may have left a lock held in the copy: not kept)
-    const t1 = performance.now();
-    while (Atomics.load(i32, word(STATE)) !== ST_RUNNING && performance.now() - t1 < 5000) await wait(2);
-    if (Atomics.load(i32, word(STIRRED))) throw new Stirred();
-  } finally {
-    memGate.open();
+    if (st !== ST_READY) throw new Error("止まりませんでした");
+  } catch (e) {
+    if (!pause) memGate.open();
+    throw e;
   }
-  const took = Math.round(performance.now() - t0);
+  const stirs = Atomics.load(i32, word(STIRS));
+  let gateOpen = pause;
+  const openGate = () => {
+    if (!gateOpen) {
+      gateOpen = true;
+      memGate.open();
+    }
+  };
+  return {
+    took: performance.now() - t0,
+    stirred: () => Atomics.load(i32, word(STIRS)) !== stirs,
+    settle: async () => {
+      const w = (Atomics as unknown as { waitAsync?: WaitAsync }).waitAsync?.(i32, word(STIRS), stirs, 20);
+      if (w?.async) await w.value;
+    },
+    async pack() {
+      if (pause) throw new Error("packing a pause");
+      try {
+        const rp = i32[word(RANGES)]! >>> 0,
+          rn = i32[word(NRANGES)]!;
+        const ranges = Array.from(new Uint32Array(m.wasmMemory.buffer, rp, rn * 2));
+        const r = await work({
+          op: "pack",
+          url: snapzUrl(),
+          memory: m.wasmMemory.buffer as unknown as SharedArrayBuffer,
+          ranges,
+          block: BLOCK,
+        });
+        if (!("parts" in r)) throw new Error("packing");
+        return r;
+      } finally {
+        // (the copy is taken: the page may write again, the threads still stand)
+        openGate();
+      }
+    },
+    async resume(check = false) {
+      if (resumed) return;
+      go();
+      openGate();
+      // (a thread that ran while copied may have left a lock held in the copy: not kept)
+      await stateNot(i32, word(STATE), [ST_READY, 1], 5000);
+      release();
+      if (check && Atomics.load(i32, word(STIRRED))) throw new Stirred();
+    },
+  };
+}
+
+/** A state's file from its packed memory (host/snap.js's format). */
+function stateFile(
+  m: SnapModule,
+  wasm: SakeName,
+  id: string,
+  thumb: string,
+  parts: { a: number; n: number; frame: Uint8Array }[],
+  raw: number,
+  took: number,
+): { file: Uint8Array<ArrayBuffer>; info: Omit<StateInfo, "slot"> } {
+  const ctl = m._vnhost_snap_ctl() >>> 0;
   const created = new Date().toISOString();
   // (pages: sake-grow's memory may have grown; a state needs as much)
   const pages = m.wasmMemory.buffer.byteLength / 65536;
@@ -254,6 +352,58 @@ export async function takeState(
     `state: ${(raw / 1048576).toFixed(1)} MiB in ${(size / 1048576).toFixed(1)} MiB, the program stood still ${took} ms`,
   );
   return { file, info: { created, size, build: id, wasm, thumb } };
+}
+
+/** Takes a state of the running module: the file and its index entry (slot set by the caller). */
+export async function takeState(
+  m: SnapModule,
+  wasm: SakeName,
+): Promise<{ file: Uint8Array<ArrayBuffer>; info: Omit<StateInfo, "slot"> }> {
+  const thumb = await thumbnail(m);
+  const id = (await builds()).get(wasm) ?? "";
+  // (the worker and its zstd ready before the program is stopped: a slow fetch of snapz.mjs used
+  // to happen with every guest thread parked)
+  await work({ op: "warm", url: snapzUrl() });
+  const t0 = performance.now();
+  const s = await stopAll(m);
+  let packed;
+  try {
+    packed = await s.pack();
+  } finally {
+    // the program goes on (also when packing failed)
+    await s.resume(true);
+  }
+  return stateFile(m, wasm, id, thumb, packed.parts, packed.raw, Math.round(performance.now() - t0));
+}
+
+/** A state taken where the program then keeps standing (a hidden tab: web/src/hidden.ts): the
+ * file, or null when a thread ran while it was copied (none kept; it still stands), and the
+ * stop to resume. Its picture: the frame the drawing thread made while the threads stopped
+ * (asked for first; no waiting for it, a hidden tab has no frames to wait for). */
+export async function takeHeld(
+  m: SnapModule,
+  wasm: SakeName,
+): Promise<{
+  state: { file: Uint8Array<ArrayBuffer>; info: Omit<StateInfo, "slot"> } | null;
+  stopped: Stopped;
+}> {
+  const id = (await builds()).get(wasm) ?? "";
+  const before = await thumbnail(m, 0);
+  await work({ op: "warm", url: snapzUrl() });
+  const t0 = performance.now();
+  const stopped = await stopAll(m);
+  try {
+    const { parts, raw } = await stopped.pack();
+    // (a thread that woke right at the end of the copy counts its wake a moment after: that
+    // moment, on the count itself, not a timer, which a hidden tab runs once a second)
+    await stopped.settle();
+    if (stopped.stirred()) return { state: null, stopped };
+    const thumb = (await thumbnail(m, 0)) || before;
+    return { state: stateFile(m, wasm, id, thumb, parts, raw, Math.round(performance.now() - t0)), stopped };
+  } catch (e) {
+    await stopped.resume();
+    throw e;
+  }
 }
 
 /** The header of a state file (throws when it is none). */
@@ -459,8 +609,10 @@ export async function putState(
   game: string,
   info: StateInfo,
   file: Uint8Array<ArrayBuffer>,
-): Promise<{ uploaded: Promise<void> }> {
+  upload = info.slot !== AUTO_SLOT,
+): Promise<{ uploaded: Promise<void>; hash: string }> {
   info = { ...info, hash: await stateHash(file) };
+  const hash = info.hash!;
   await writeLocal(game, localName(info), file);
   const local = merge(
     parseIndex(await readLocal(game, "index.json")).filter((s) => s.slot !== info.slot),
@@ -468,6 +620,7 @@ export async function putState(
   );
   await writeLocal(game, "index.json", encodeIndex(local));
   await pruneLocal(game, local).catch(() => {});
+  if (!upload) return { uploaded: Promise.resolve(), hash };
   const uploaded = (async () => {
     // (the file once: already there is the same bytes)
     const name = fileName(game, info.hash!);
@@ -479,7 +632,7 @@ export async function putState(
     await serverIndex(game, info);
   })();
   uploaded.catch((e: unknown) => console.warn(`state: not on the server: ${String(e)}`));
-  return { uploaded };
+  return { uploaded, hash };
 }
 
 /** `game`'s state in `slot` as `info` lists it: this browser's copy when it is that one, else the server's. */
