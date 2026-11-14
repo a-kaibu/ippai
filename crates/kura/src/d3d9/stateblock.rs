@@ -50,6 +50,10 @@ pub struct Mask {
     pub psi: u16,
     pub vsb: u16,
     pub psb: u16,
+    /// vertex integer and boolean constants past the first 16 (software vertex processing's
+    /// 2048), register r at bit r - 16
+    pub vsi_more: Vec<u64>,
+    pub vsb_more: Vec<u64>,
     pub transforms: BTreeSet<u32>,
     /// every transform (D3DSBT_ALL: those never set too)
     pub every_transform: bool,
@@ -88,6 +92,7 @@ impl Mask {
         m.vsf = vec![!0; st.vsf.len().div_ceil(64)];
         m.psf = vec![!0; st.psf.len().div_ceil(64)];
         (m.vsi, m.psi, m.vsb, m.psb) = (!0, !0, !0, !0);
+        (m.vsi_more, m.vsb_more) = (vec![!0; st.vsi_more.len().div_ceil(64)], vec![!0; st.vsb_more.len().div_ceil(64)]);
         m.every_transform = true;
         m.lights = st.lights.keys().copied().collect();
         m.clip = !0;
@@ -123,6 +128,7 @@ impl Mask {
         (m.vs, m.decl, m.freq, m.npatch) = (true, true, !0, true);
         m.vsf = vec![!0; st.vsf.len().div_ceil(64)];
         (m.vsi, m.vsb) = (!0, !0);
+        (m.vsi_more, m.vsb_more) = (vec![!0; st.vsi_more.len().div_ceil(64)], vec![!0; st.vsb_more.len().div_ceil(64)]);
         m.lights = st.lights.keys().copied().collect();
         m
     }
@@ -158,12 +164,21 @@ impl Mask {
             92 => self.vs = true,
             107 => self.ps = true,
             94 | 109 => {
-                for r in range(a(1), a(3)).take(256) {
+                // (software vertex processing has 8192 float registers; a range past them is refused)
+                for r in range(a(1), a(3)).take(8192) {
                     set_bit(if m == 94 { &mut self.vsf } else { &mut self.psf }, r as usize);
                 }
             }
             96 | 111 | 98 | 113 => {
-                for r in range(a(1), a(3)).filter(|&r| r < 16) {
+                for r in range(a(1), a(3)).take(2048) {
+                    if r >= 16 {
+                        match m {
+                            96 => set_bit(&mut self.vsi_more, r as usize - 16),
+                            98 => set_bit(&mut self.vsb_more, r as usize - 16),
+                            _ => {}
+                        }
+                        continue;
+                    }
                     *match m {
                         96 => &mut self.vsi,
                         111 => &mut self.psi,
@@ -231,6 +246,16 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
     }
     dst.vsb = dst.vsb & !(m.vsb as u32) | src.vsb & m.vsb as u32;
     dst.psb = dst.psb & !(m.psb as u32) | src.psb & m.psb as u32;
+    for (i, d) in dst.vsi_more.iter_mut().enumerate().take(src.vsi_more.len()) {
+        if bit(&m.vsi_more, i) {
+            *d = src.vsi_more[i];
+        }
+    }
+    for (i, d) in dst.vsb_more.iter_mut().enumerate().take(src.vsb_more.len()) {
+        if bit(&m.vsb_more, i) {
+            *d = src.vsb_more[i];
+        }
+    }
     if m.indices {
         dst.indices = src.indices;
     }
@@ -278,7 +303,16 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
     }
     for l in &m.lights {
         if let Some(x) = src.lights.get(l) {
-            dst.lights.insert(*l, x.clone());
+            // (into the light's own bytes when it has them: no allocation per light per Apply)
+            match dst.lights.get_mut(l) {
+                Some(d) => {
+                    d.0.clone_from(&x.0);
+                    d.1 = x.1;
+                }
+                None => {
+                    dst.lights.insert(*l, x.clone());
+                }
+            }
         }
     }
     for i in 0..6 {

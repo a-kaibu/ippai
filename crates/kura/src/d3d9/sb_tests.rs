@@ -418,3 +418,93 @@ fn d3d9_state_block_constants_as_windows() {
     call(IF_DEVICE, 2, &[dev]);
     call(IF_D3D9, 2, &[d3d]);
 }
+
+/// Recorded blocks on a software vertex processing device (8192 float, 2048 integer and
+/// boolean vertex constants) hold every register their Set* calls named, far ones too: a
+/// model of random recorded ranges (anywhere in the registers, up to the end), then other values
+/// set everywhere, Apply; each register read back is the recorded value where the block holds
+/// it, the later one elsewhere. And a D3DSBT_VERTEXSTATE block captures all of them.
+#[test]
+fn recorded_blocks_hold_far_constants() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    let o = mem(4);
+    unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
+    let d3d = rd(o, 0);
+    let pp = mem(14);
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+        wr(pp, i as u32, x);
+    }
+    assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x20, pp, o]), 0);
+    let dev = rd(o, 0);
+    // (method, registers, words per register)
+    const KINDS: [(u32, u32, u32); 3] = [(94, 8192, 4), (96, 2048, 4), (98, 2048, 1)];
+    let buf = mem(8192 * 4);
+    let set = |m: u32, start: u32, n: u32, per: u32, v: &dyn Fn(u32) -> u32| {
+        for i in 0..n * per {
+            wr(buf, i, v(start * per + i));
+        }
+        assert_eq!(call(IF_DEVICE, m, &[dev, start, buf, n]), 0, "Set {m} {start}+{n}");
+    };
+    let get_all = |m: u32, n: u32, per: u32| -> Vec<u32> {
+        assert_eq!(call(IF_DEVICE, m + 1, &[dev, 0, buf, n]), 0);
+        (0..n * per).map(|i| rd(buf, i)).collect()
+    };
+    // (values: floats and ints any bits; booleans 0 or 1)
+    let val = |m: u32, tag: u32, i: u32| if m == 98 { (tag ^ i) & 1 } else { tag.wrapping_mul(0x9e37_79b9) ^ i.wrapping_mul(0x85eb_ca6b) & 0x3fff_ffff };
+    let mut r = Rng(0xc0_57a7e);
+    for round in 0..12 {
+        let (t1, t2) = (2 * round + 1, 2 * round + 2);
+        let mut held: Vec<Vec<bool>> = KINDS.iter().map(|k| vec![false; k.1 as usize]).collect();
+        assert_eq!(call(IF_DEVICE, 60, &[dev]), 0);
+        for _ in 0..1 + r.below(6) {
+            let k = r.below(3);
+            let (m, n, per) = KINDS[k];
+            let start = match r.below(3) {
+                0 => r.below(16) as u32,
+                1 => n - 1 - r.below(8) as u32,
+                _ => r.below(n as usize) as u32,
+            };
+            let count = (1 + r.below(300) as u32).min(n - start);
+            set(m, start, count, per, &|i| val(m, t1, i));
+            held[k][start as usize..(start + count) as usize].fill(true);
+        }
+        assert_eq!(call(IF_DEVICE, 61, &[dev, o]), 0);
+        let sb = rd(o, 0);
+        for (m, n, per) in KINDS {
+            set(m, 0, n, per, &|i| val(m, t2, i));
+        }
+        assert_eq!(call(IF_STATEBLOCK, 5, &[sb]), 0);
+        for (k, (m, n, per)) in KINDS.into_iter().enumerate() {
+            let got = get_all(m, n, per);
+            for reg in 0..n {
+                let tag = if held[k][reg as usize] { t1 } else { t2 };
+                for w in 0..per {
+                    let i = reg * per + w;
+                    assert_eq!(got[i as usize], val(m, tag, i), "round {round}: method {m} register {reg} (held {})", held[k][reg as usize]);
+                }
+            }
+        }
+        call(IF_STATEBLOCK, 2, &[sb]);
+    }
+    // (D3DSBT_VERTEXSTATE: every vertex constant)
+    for (m, n, per) in KINDS {
+        set(m, 0, n, per, &|i| val(m, 100, i));
+    }
+    assert_eq!(call(IF_DEVICE, 59, &[dev, 3, o]), 0);
+    let sb = rd(o, 0);
+    for (m, n, per) in KINDS {
+        set(m, 0, n, per, &|i| val(m, 101, i));
+    }
+    assert_eq!(call(IF_STATEBLOCK, 5, &[sb]), 0);
+    for (m, n, per) in KINDS {
+        let got = get_all(m, n, per);
+        assert!((0..n * per).all(|i| got[i as usize] == val(m, 100, i)), "method {m}");
+    }
+    call(IF_STATEBLOCK, 2, &[sb]);
+    call(IF_DEVICE, 2, &[dev]);
+    call(IF_D3D9, 2, &[d3d]);
+}
