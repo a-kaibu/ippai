@@ -167,11 +167,25 @@ pub(crate) mod gc_tests {
         fail_every: Arc<AtomicUsize>,
         /// what a refused request gets (0: 503)
         fail_status: Arc<AtomicUsize>,
+        /// PUTs of more bytes than this (0: none) wait for `gate` (a test holds it to stall them)
+        hold_over: Arc<AtomicUsize>,
+        gate: Arc<tokio::sync::RwLock<()>>,
+        /// PUTs waiting for `gate` now
+        holding: Arc<AtomicUsize>,
     }
 
     impl Fake {
         pub(crate) fn gets(&self) -> usize {
             self.gets.load(SeqCst)
+        }
+        /// The most requests on their way at once since the last call (then counted anew).
+        pub(crate) fn take_most(&self) -> usize {
+            self.most.swap(0, SeqCst)
+        }
+        /// Refuse the next `n` requests with `status`.
+        pub(crate) fn refuse_next(&self, n: usize, status: u16) {
+            self.fail_status.store(status as usize, SeqCst);
+            self.fail_next.store(n, SeqCst);
         }
         /// Some(status) when this request is refused.
         fn refuse(&self) -> Option<StatusCode> {
@@ -204,6 +218,12 @@ pub(crate) mod gc_tests {
         async fn put(State(f): State<Fake>, UrlPath(p): UrlPath<String>, b: Bytes) -> StatusCode {
             if let Some(s) = f.refuse() {
                 return s;
+            }
+            let over = f.hold_over.load(SeqCst);
+            if over > 0 && b.len() > over {
+                f.holding.fetch_add(1, SeqCst);
+                let _open = f.gate.read().await;
+                f.holding.fetch_sub(1, SeqCst);
             }
             busy(&f).await;
             f.objects.lock().unwrap().insert(p, b.to_vec());
@@ -587,13 +607,187 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Until `cond`, at most 10 s.
+    async fn until(cond: impl Fn() -> bool) {
+        let t0 = std::time::Instant::now();
+        while !cond() {
+            assert!(t0.elapsed() < std::time::Duration::from_secs(10), "never came");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    fn saves_on(s: Storage) -> Arc<crate::saves::Saves> {
+        let db = s.db.clone();
+        db.connect().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB, written_ms INTEGER);").unwrap();
+        Arc::new(crate::saves::Saves { db, remote: Some(s), lock: Default::default() })
+    }
+
+    /// Review D-1: a big save state stalled on its way to the bucket holds up only its own
+    /// name. Other games' saves (and the same game's other files) go through meanwhile; a
+    /// second writer of the same name waits for the first and then finds the revision moved
+    /// on (412, as before); no name's lock is left behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stalled_save_holds_up_only_its_own_name() {
+        let (f, s, dir) = serve(0).await;
+        let saves = saves_on(s);
+        f.hold_over.store(1 << 20, SeqCst);
+        let gate = f.gate.write().await;
+        let big = tokio::spawn({
+            let saves = saves.clone();
+            async move { saves.write("state.g.big", 0, &vec![7u8; 2 << 20]).await.unwrap() }
+        });
+        until(|| f.holding.load(SeqCst) == 1).await;
+        let same = tokio::spawn({
+            let saves = saves.clone();
+            async move { saves.write("state.g.big", 0, b"other device").await.unwrap() }
+        });
+        for (i, name) in ["game-a", "game-b", "state.g.index", "state.h.big"].iter().enumerate() {
+            let w = tokio::time::timeout(std::time::Duration::from_secs(5), saves.write(name, 0, format!("save {i}").as_bytes())).await;
+            assert!(w.expect("waited for another name's upload").unwrap(), "{name}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!big.is_finished() && !same.is_finished(), "the same name waits for its writer");
+        drop(gate);
+        assert!(big.await.unwrap());
+        assert!(!same.await.unwrap(), "revision 1 now: the second writer's 0 is stale");
+        assert_eq!(saves.read("state.g.big").await.unwrap().unwrap(), (1, vec![7u8; 2 << 20]));
+        assert_eq!(saves.read("game-b").await.unwrap().unwrap(), (1, b"save 1".to_vec()));
+        assert_eq!(saves.lock.held(), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A writer given up while it waits (the page's request dropped) takes nothing with it: the
+    /// name is free once its holder goes, and no lock is left.
+    #[tokio::test]
+    async fn a_dropped_waiter_leaves_no_lock() {
+        let locks = crate::saves::NameLocks::default();
+        let held = locks.lock("a").await;
+        let waiter = locks.lock("a");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), waiter).await.is_err());
+        assert_eq!(locks.held(), 1);
+        drop(held);
+        assert_eq!(locks.held(), 0);
+        let again = tokio::time::timeout(std::time::Duration::from_secs(1), locks.lock("a")).await.unwrap();
+        drop(again);
+        assert_eq!(locks.held(), 0);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
+        /// Writers of a few names at once, each with the revision it last saw, as devices do:
+        /// per name, the writes that succeeded are exactly one per revision (no lost update,
+        /// no two writers of one revision), the save read back is one of them (the last), and
+        /// no lock is left.
+        #[test]
+        fn concurrent_writers_keep_each_name_linear(plan in proptest::collection::vec((0usize..3, 1usize..4), 1..10)) {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_f, s, dir) = serve(1).await;
+                let saves = saves_on(s);
+                let mut jobs = tokio::task::JoinSet::new();
+                for (k, (name, tries)) in plan.iter().copied().enumerate() {
+                    let saves = saves.clone();
+                    jobs.spawn(async move {
+                        let name = format!("game-{name}");
+                        let mut won = Vec::new();
+                        for t in 0..tries {
+                            let seen = saves.read(&name).await.unwrap().map_or(0, |r| r.0);
+                            let data = format!("{k}.{t}");
+                            if saves.write(&name, seen, data.as_bytes()).await.unwrap() {
+                                won.push((name.clone(), seen + 1, data));
+                            }
+                        }
+                        won
+                    });
+                }
+                let mut won: std::collections::BTreeMap<String, Vec<(i64, String)>> = Default::default();
+                while let Some(r) = jobs.join_next().await {
+                    for (n, rev, d) in r.unwrap() {
+                        won.entry(n).or_default().push((rev, d));
+                    }
+                }
+                for (name, mut ws) in won {
+                    ws.sort();
+                    let revs: Vec<i64> = ws.iter().map(|w| w.0).collect();
+                    assert_eq!(revs, (1..=ws.len() as i64).collect::<Vec<_>>(), "{name}");
+                    let last = ws.last().unwrap();
+                    assert_eq!(saves.read(&name).await.unwrap().unwrap(), (last.0, last.1.clone().into_bytes()));
+                }
+                assert_eq!(saves.lock.held(), 0);
+                let _ = std::fs::remove_dir_all(dir);
+            });
+        }
+    }
+
+    /// Pruning state files reads the indexes with no lock held; an index written meanwhile
+    /// (naming a file the old one did not) keeps its game's files, until the next prune.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_index_written_while_pruning_keeps_its_files() {
+        let (_f, s, dir) = serve(30).await;
+        let saves = saves_on(s);
+        let hash = |i: i64| format!("{i:032x}");
+        for i in 0..3 {
+            assert!(saves.write(&format!("state.g.{}", hash(i)), 0, b"state").await.unwrap());
+        }
+        let index = |i: i64| format!(r#"{{"states":[{{"slot":0,"hash":"{}","created":{i}}}]}}"#, hash(i));
+        assert!(saves.write("state.g.index", 0, index(0).as_bytes()).await.unwrap());
+        saves.db.connect().unwrap().execute("UPDATE saves SET written_ms=written_ms-?", [8 * 86_400_000i64]).unwrap();
+        // (the prune reads the index from the bucket, 30 ms a request; the device writes a new
+        // index naming file 1 at once)
+        let prune = tokio::spawn({
+            let saves = saves.clone();
+            async move { saves.prune_states(crate::saves::STATE_GRACE).await.unwrap() }
+        });
+        assert!(saves.write("state.g.index", 1, index(1).as_bytes()).await.unwrap());
+        assert_eq!(prune.await.unwrap(), 0, "the index moved on: nothing of g goes");
+        for i in 0..3 {
+            assert!(saves.read(&format!("state.g.{}", hash(i))).await.unwrap().is_some(), "file {i}");
+        }
+        // next time: what neither kept revision names (file 2) goes
+        assert_eq!(saves.prune_states(crate::saves::STATE_GRACE).await.unwrap(), 1);
+        assert!(saves.read(&format!("state.g.{}", hash(2))).await.unwrap().is_none());
+        assert_eq!(saves.lock.held(), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Review D-1: a bucket that never answers (each request outlasts the budget) gives up
+    /// within GET_BUDGET, not after every try again; the request's permit is free again and a
+    /// later read of something cached answers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_from_a_hung_bucket_gives_up_within_its_budget() {
+        let (f, s, dir) = serve(0).await;
+        s.put("chunks/a", b"first").await.unwrap();
+        s.put("chunks/b", b"second").await.unwrap();
+        assert_eq!(&*s.get("chunks/a").await.unwrap().unwrap(), b"first");
+        // (the same bucket, now 4x the budget per answer)
+        let slow = Fake { delay_ms: 4 * GET_BUDGET.as_millis() as u64, ..f.clone() };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        async fn read(State(f): State<Fake>, UrlPath(p): UrlPath<String>) -> axum::response::Response {
+            tokio::time::sleep(std::time::Duration::from_millis(f.delay_ms)).await;
+            f.objects.lock().unwrap().get(&p).cloned().map(IntoResponse::into_response).unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+        }
+        let app = Router::new().route("/{*path}", get(read)).with_state(slow);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let bucket = Bucket::new("test", Region::Custom { region: "us-east-1".into(), endpoint }, Credentials::new(Some("t"), Some("t"), None, None, None).unwrap()).unwrap().with_path_style();
+        let s = Storage { bucket, requests: tokio::sync::Semaphore::new(1), ..s };
+        let t0 = std::time::Instant::now();
+        let e = s.get("chunks/b").await.unwrap_err();
+        let took = t0.elapsed();
+        assert!(e.to_string().contains("no answer within"), "{e:#}");
+        assert!(took >= GET_BUDGET && took < GET_BUDGET + std::time::Duration::from_secs(2), "{took:?}");
+        assert_eq!(s.requests.available_permits(), 1, "the permit came back");
+        assert_eq!(&*s.get("chunks/a").await.unwrap().unwrap(), b"first", "cached: no request");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Saves keep their last SAVE_REVISIONS revisions in S3.
     #[tokio::test]
     async fn old_save_revisions_are_retired() {
         let (f, s, dir) = serve(0).await;
         let db = s.db.clone();
         db.connect().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB, written_ms INTEGER);").unwrap();
-        let saves = crate::saves::Saves { db, remote: Some(s), lock: tokio::sync::Mutex::new(()) };
+        let saves = crate::saves::Saves { db, remote: Some(s), lock: Default::default() };
         for rev in 0..20 {
             assert!(saves.write("game", rev, format!("save {rev}").as_bytes()).await.unwrap());
         }
@@ -616,7 +810,7 @@ pub(crate) mod gc_tests {
         let (f, s, dir) = serve(0).await;
         let db = s.db.clone();
         db.connect().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB, written_ms INTEGER);").unwrap();
-        let saves = crate::saves::Saves { db, remote: Some(s), lock: tokio::sync::Mutex::new(()) };
+        let saves = crate::saves::Saves { db, remote: Some(s), lock: Default::default() };
         let hash = |i: i64| format!("{i:032x}");
         for i in 0..12 {
             assert!(saves.write(&format!("state.g.{}", hash(i)), 0, format!("state {i}").as_bytes()).await.unwrap());
@@ -1516,6 +1710,15 @@ const RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
 const RETRY_FIRST: std::time::Duration = std::time::Duration::from_millis(1);
 const RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// The longest one object's download may take, its tries again included (review D-1: with
+/// [`RETRIES`] of up to 60 s each and the waits between, a slow or down bucket held each of the
+/// 16 request permits for 10 minutes and more, and every chunk read of every player behind
+/// them). A read that gives up answers 502 and the page asks again.
+#[cfg(not(test))]
+pub(crate) const GET_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+#[cfg(test)]
+pub(crate) const GET_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Whether a request that got `status` may succeed when tried again: throttling (429) and the
 /// server's own errors (5xx). Hugging Face Buckets answer 503 often while uploading many
 /// objects at once; a store of 60k chunks never got through in one push without this.
@@ -1702,15 +1905,19 @@ impl Storage {
         Ok(())
     }
 
+    /// One object's ciphertext, within [`GET_BUDGET`] for all its tries.
     async fn download(&self, id: Uuid) -> Result<Vec<u8>> {
         let path = self.path(id);
-        let r = retrying(|| self.bucket.get_object(&path)).await?;
+        let r = tokio::time::timeout(GET_BUDGET, retrying(|| self.bucket.get_object(&path)))
+            .await
+            .map_err(|_| anyhow::anyhow!("S3 download of {id}: no answer within {GET_BUDGET:?}"))??;
         ensure!(
             r.status_code() == 200,
             "S3 download failed: {}",
             r.status_code()
         );
-        Ok(r.bytes().to_vec())
+        // (the body as it came, not a copy of it: 2x a chunk per download, 48 at once)
+        Ok(Vec::from(r.into_bytes()))
     }
 
     pub async fn put(&self, logical: &str, bytes: &[u8]) -> Result<()> {
@@ -1773,8 +1980,9 @@ impl Storage {
         let prefix = format!("saves/{name}/");
         let old: Vec<String> = {
             let c = self.db.connect()?;
-            let mut q = c.prepare("SELECT logical FROM objects WHERE substr(logical,1,?)=?")?;
-            let rows = q.query_map(rusqlite::params![prefix.len() as i64, prefix], |r| r.get::<_, String>(0))?;
+            // (a range of the primary key, not a scan of every object: once per save written)
+            let mut q = c.prepare("SELECT logical FROM objects WHERE logical >= ?1 AND logical < ?2")?;
+            let rows = q.query_map(rusqlite::params![prefix, format!("saves/{name}0")], |r| r.get::<_, String>(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
                 .into_iter()
                 .filter(|l| l[prefix.len()..].parse::<i64>().is_ok_and(|r| r <= current - SAVE_REVISIONS))
@@ -2131,6 +2339,19 @@ impl Storage {
         }
         tx.commit()?;
         Ok((n, bytes))
+    }
+
+    /// The stored size of each of `logicals` the store names (one query each, one connection).
+    pub fn sizes(&self, logicals: &[String]) -> Result<std::collections::HashMap<String, u64>> {
+        let c = self.db.connect()?;
+        let mut q = c.prepare("SELECT size FROM objects WHERE logical=?")?;
+        let mut out = std::collections::HashMap::new();
+        for l in logicals {
+            if let Some(n) = q.query_row([l], |r| r.get::<_, i64>(0)).optional()? {
+                out.insert(l.clone(), n.max(0) as u64);
+            }
+        }
+        Ok(out)
     }
 
     /// Puts object `logical` on the disk unless it is there (fetched ahead: a game's start).

@@ -192,7 +192,8 @@ pub async fn import(store: &Path, id: &str, bytes: &[u8], saves: &Saves) -> Resu
     }
     let name = save_name(&restored)?;
     // Stage remote blobs first; one SQLite transaction publishes all saves and profile data.
-    let _guard = saves.lock.lock().await;
+    // (the two saves this writes, in name order as everywhere; other saves go on meanwhile)
+    let _guard = (saves.lock.lock(&name).await, saves.lock.lock(&format!("{name}-web")).await);
     let mut staged = Vec::new();
     for (entry, key) in [
         ("saves.bin", name.clone()),
@@ -283,6 +284,10 @@ pub fn router(store: std::path::PathBuf, saves: Arc<Saves>) -> axum::Router {
         UrlPath(id): UrlPath<String>,
         body: Bytes,
     ) -> Response {
+        // (one at a time: an import holds up to ~1.3 GiB while it runs, review B-10; two at
+        // once could take a small home server's memory)
+        static ONE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+        let Ok(_one) = ONE.acquire().await else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
         match import(&store, &id, &body, &saves).await {
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(e) => {

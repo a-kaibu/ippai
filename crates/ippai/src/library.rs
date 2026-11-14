@@ -34,6 +34,26 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
+/// Where [`Library::egs_index`] gets the game list (a stand-in in tests): `empty`, no list yet.
+type EgsFetch = fn(&Library, bool) -> Result<Vec<(u32, String, u32)>>;
+
+/// Stores whose game list is being filled in the background (one fill per store at a time).
+static FILLING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether this call is the one to fill `db`'s list (false: one is under way).
+fn begin_fill(db: &Path) -> bool {
+    let mut f = FILLING.lock().unwrap_or_else(|e| e.into_inner());
+    if f.iter().any(|p| p == db) {
+        return false;
+    }
+    f.push(db.to_path_buf());
+    true
+}
+
+fn end_fill(db: &Path) {
+    FILLING.lock().unwrap_or_else(|e| e.into_inner()).retain(|p| p != db);
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -208,45 +228,88 @@ impl Library {
     }
 
     /// The games to match packages against (egs_match.rs), filled from ErogameScape when the list
-    /// is a day old or empty (launcherg's list when ErogameScape cannot be reached and there is
-    /// none yet); kept in memory while the list stays the same.
+    /// is empty (launcherg's list when ErogameScape cannot be reached and there is none yet), and
+    /// again in the background once a day old (the old list answers meanwhile); kept in memory
+    /// while the list stays the same.
     pub fn egs_index(&self) -> Result<std::sync::Arc<crate::egs_match::Index>> {
+        self.egs_index_with(Self::fetch_egs_games)
+    }
+
+    /// The list from the game database's (gamedb.rs) first, then ErogameScape itself, then
+    /// (`empty`: no list yet) launcherg's. Network: up to minutes when they are slow.
+    fn fetch_egs_games(&self, empty: bool) -> Result<Vec<(u32, String, u32)>> {
+        let fresh = self.pull_gamedb().or_else(|e| {
+            eprintln!("game database: {e:#}");
+            crate::meta::egs_all_games()
+        });
+        fresh.or_else(|e| {
+            eprintln!("game list: {e:#}");
+            if empty { crate::meta::seed_games() } else { Err(e) }
+        })
+    }
+
+    /// [`Library::egs_index`] with the list from `fetch`. No lock is held across `fetch`
+    /// (review D-1: every search waited behind one slow download): a list a day old stays in
+    /// use while one thread fills it again in the background; only a store with no list at
+    /// all waits, and then for one fill (the others wait for that one, then take its list).
+    fn egs_index_with(&self, fetch: EgsFetch) -> Result<std::sync::Arc<crate::egs_match::Index>> {
         use std::sync::{Arc, Mutex};
         static CACHE: Mutex<Option<(PathBuf, i64, Arc<crate::egs_match::Index>)>> = Mutex::new(None);
-        // (one filling at a time: the lock is held through it)
-        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let (mut list, mut at) = self.egs_games()?;
-        if list.is_empty() || now_ms() - at > EGS_GAMES_MAX_AGE_MS {
-            // the game database's (gamedb.rs) first, then ErogameScape itself, then launcherg's
-            let fresh = self.pull_gamedb().or_else(|e| {
-                eprintln!("game database: {e:#}");
-                crate::meta::egs_all_games()
-            });
-            let fresh = fresh.or_else(|e| {
-                eprintln!("game list: {e:#}");
-                if list.is_empty() { crate::meta::seed_games() } else { Err(e) }
-            });
-            match fresh {
-                Ok(f) => {
-                    self.set_egs_games(&f)?;
-                    (list, at) = self.egs_games()?;
+        static FIRST: Mutex<()> = Mutex::new(());
+        let (mut has, mut at) = self.egs_games_at()?;
+        if !has {
+            let _one = FIRST.lock().unwrap_or_else(|e| e.into_inner());
+            (has, at) = self.egs_games_at()?;
+            if !has {
+                self.fill_egs_games(fetch, true)?;
+                (_, at) = self.egs_games_at()?;
+            }
+        } else if now_ms() - at > EGS_GAMES_MAX_AGE_MS && begin_fill(&self.0) {
+            let me = self.clone();
+            let started = std::thread::Builder::new().name("egs list".into()).spawn(move || {
+                if let Err(e) = me.fill_egs_games(fetch, false) {
+                    eprintln!("game list: {e:#}");
                 }
-                // (an old list stays in use; tried again in an hour)
-                Err(e) if !list.is_empty() => {
-                    eprintln!("game list: keeping the one from before: {e:#}");
-                    self.connect()?.execute("UPDATE kv SET value=? WHERE key='egs_games_ms'", [(now_ms() - EGS_GAMES_MAX_AGE_MS + 3_600_000).to_string()])?;
-                }
-                Err(e) => return Err(e),
+                end_fill(&me.0);
+            });
+            if let Err(e) = started {
+                eprintln!("game list: no thread: {e}");
+                end_fill(&self.0);
             }
         }
-        if let Some((p, t, idx)) = cache.as_ref() {
-            if *p == self.0 && *t == at {
-                return Ok(idx.clone());
-            }
+        let hit = |c: &Option<(PathBuf, i64, Arc<crate::egs_match::Index>)>| c.as_ref().filter(|(p, t, _)| *p == self.0 && *t == at).map(|c| c.2.clone());
+        if let Some(idx) = hit(&CACHE.lock().unwrap_or_else(|e| e.into_inner())) {
+            return Ok(idx);
         }
+        // (built outside the lock: tens of thousands of names)
+        let (list, at) = self.egs_games()?;
         let idx = Arc::new(crate::egs_match::Index::new(list));
-        *cache = Some((self.0.clone(), at, idx.clone()));
+        *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.0.clone(), at, idx.clone()));
         Ok(idx)
+    }
+
+    /// Whether any game is kept, and when the list was last filled (ms; 0: never): what
+    /// [`Library::egs_games`] says without reading the list.
+    fn egs_games_at(&self) -> Result<(bool, i64)> {
+        use rusqlite::OptionalExtension;
+        let c = self.connect()?;
+        let has: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM egs_games)", [], |r| r.get(0))?;
+        let at: Option<String> = c.query_row("SELECT value FROM kv WHERE key='egs_games_ms'", [], |r| r.get(0)).optional()?;
+        Ok((has, at.and_then(|s| s.parse().ok()).unwrap_or(0)))
+    }
+
+    /// Fills the list from `fetch`; when that fails and there is a list (`!empty`), the list
+    /// before stays and is tried again within the hour, not on every call.
+    fn fill_egs_games(&self, fetch: EgsFetch, empty: bool) -> Result<()> {
+        match fetch(self, empty) {
+            Ok(f) => self.set_egs_games(&f),
+            Err(e) if !empty => {
+                eprintln!("game list: keeping the one from before: {e:#}");
+                self.connect()?.execute("UPDATE kv SET value=? WHERE key='egs_games_ms'", [(now_ms() - EGS_GAMES_MAX_AGE_MS + 3_600_000).to_string()])?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// The game database's newest copies (gamedb.rs: a file for each part) into
@@ -636,6 +699,12 @@ mod egs_games_tests {
         let db = Library::new(&dir).unwrap();
         let q = |idx: &crate::egs_match::Index, s: &str| idx.best(&[s.to_string()]).map(|h| (h.id, h.votes));
         let stale = || db.connect().unwrap().execute("UPDATE kv SET value='0' WHERE key='egs_games_ms'", []).unwrap();
+        // (a day old: the old list answers and the new one is filled in the background)
+        let refill = || {
+            stale();
+            db.egs_index().unwrap();
+            filled(&db);
+        };
 
         let idx = db.egs_index().unwrap();
         assert_eq!(q(&idx, "終のステラ"), Some((2, 0)), "the seed");
@@ -645,7 +714,7 @@ mod egs_games_tests {
         assert_eq!(st.asked.load(Ordering::SeqCst), n, "not asked again within the day");
 
         st.up.store(true, Ordering::SeqCst);
-        stale();
+        refill();
         let idx = db.egs_index().unwrap();
         assert_eq!(q(&idx, "サクラノ詩"), Some((1, 5000)), "votes from ErogameScape");
         assert_eq!(q(&idx, "アネモイ"), Some((6000, 90)), "the second window");
@@ -653,7 +722,7 @@ mod egs_games_tests {
         assert_eq!(q(&idx, "終のステラ"), Some((2, 0)), "kept from the seed");
 
         st.up.store(false, Ordering::SeqCst);
-        stale();
+        refill();
         let idx = db.egs_index().unwrap();
         assert_eq!(q(&idx, "アネモイ"), Some((6000, 90)), "the list before");
         let n = st.asked.load(Ordering::SeqCst);
@@ -674,8 +743,8 @@ mod egs_games_tests {
         // (built by hand two months ago: still taken)
         rusqlite::Connection::open(&file).unwrap().execute("UPDATE info SET value=? WHERE key='built_ms'", [(now_ms() - 60 * 86_400_000).to_string()]).unwrap();
         *st.gamedb.lock().unwrap() = Some(zstd::encode_all(&std::fs::read(&file).unwrap()[..], 3).unwrap());
-        stale();
         let n = st.asked.load(Ordering::SeqCst);
+        refill();
         let idx = db.egs_index().unwrap();
         assert_eq!(q(&idx, "ゲームデータベースの作品"), Some((777, 42)));
         assert_eq!(st.asked.load(Ordering::SeqCst), n, "ErogameScape not asked");
@@ -683,9 +752,121 @@ mod egs_games_tests {
         assert_eq!((i.title.as_str(), i.brand.as_str()), ("ゲームデータベースの作品", "ブランド"));
         assert!(!dir.join("gamedb-vndb.sqlite").exists(), "no VNDB part published: the list all the same");
         assert_eq!(st.blobs.load(Ordering::SeqCst), 1);
-        stale();
-        db.egs_index().unwrap();
+        refill();
         assert_eq!(st.blobs.load(Ordering::SeqCst), 1, "the same digest: not downloaded again");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Until no fill of `db`'s list is under way.
+    fn filled(db: &Library) {
+        let t0 = std::time::Instant::now();
+        while FILLING.lock().unwrap().iter().any(|p| *p == db.0) {
+            assert!(t0.elapsed() < std::time::Duration::from_secs(20), "the fill never ended");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn store() -> (PathBuf, Library) {
+        let dir = std::env::temp_dir().join(format!("ippai-test-{}", uuid::Uuid::new_v4()));
+        let db = Library::new(&dir).unwrap();
+        (dir, db)
+    }
+
+    fn found(idx: &crate::egs_match::Index, s: &str) -> Option<u32> {
+        idx.best(&[s.to_string()]).map(|h| h.id)
+    }
+
+    /// `n` callers at once; each one's index, or a failure when any takes past `limit` (one
+    /// stuck behind a fill).
+    fn at_once(db: &Library, n: usize, fetch: EgsFetch, limit: std::time::Duration) -> Vec<Arc<crate::egs_match::Index>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..n {
+            let (db, tx) = (db.clone(), tx.clone());
+            std::thread::spawn(move || tx.send(db.egs_index_with(fetch).unwrap()).unwrap());
+        }
+        (0..n).map(|_| rx.recv_timeout(limit).expect("a search waited for the network")).collect()
+    }
+
+    static GATE: (Mutex<bool>, std::sync::Condvar) = (Mutex::new(false), std::sync::Condvar::new());
+    static SLOW_CALLS: AtomicUsize = AtomicUsize::new(0);
+    /// A list source that answers only once GATE opens.
+    fn slow(_: &Library, _: bool) -> Result<Vec<(u32, String, u32)>> {
+        SLOW_CALLS.fetch_add(1, Ordering::SeqCst);
+        let mut open = GATE.0.lock().unwrap();
+        while !*open {
+            open = GATE.1.wait(open).unwrap();
+        }
+        Ok(vec![(2, "新しく出たゲーム".into(), 10)])
+    }
+
+    /// Review D-1: the list a day old, and its source stalled: every search (8 at once, then
+    /// more) still answers at once from the old list; the source is asked once, not per caller;
+    /// once it answers, the new list is the one used.
+    #[test]
+    fn a_stalled_list_source_holds_up_no_search() {
+        let (dir, db) = store();
+        db.set_egs_games(&[(1, "前からあるゲーム".into(), 5)]).unwrap();
+        db.connect().unwrap().execute("UPDATE kv SET value='0' WHERE key='egs_games_ms'", []).unwrap();
+        let limit = std::time::Duration::from_secs(5);
+        for idx in at_once(&db, 8, slow, limit) {
+            assert_eq!(found(&idx, "前からあるゲーム"), Some(1));
+        }
+        for idx in at_once(&db, 8, slow, limit) {
+            assert_eq!(found(&idx, "前からあるゲーム"), Some(1));
+        }
+        assert_eq!(SLOW_CALLS.load(Ordering::SeqCst), 1, "one fill, not one per caller");
+        *GATE.0.lock().unwrap() = true;
+        GATE.1.notify_all();
+        filled(&db);
+        let idx = db.egs_index_with(slow).unwrap();
+        assert_eq!(found(&idx, "新しく出たゲーム"), Some(2));
+        assert_eq!(found(&idx, "前からあるゲーム"), Some(1), "games only the old list had stay");
+        assert_eq!(SLOW_CALLS.load(Ordering::SeqCst), 1, "fresh now: not asked again");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    static FIRST_CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn first(_: &Library, empty: bool) -> Result<Vec<(u32, String, u32)>> {
+        assert!(empty);
+        FIRST_CALLS.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        Ok(vec![(3, "最初の一覧".into(), 1)])
+    }
+
+    /// No list yet: the callers wait (there is nothing to answer from), for one fill.
+    #[test]
+    fn a_store_with_no_list_is_filled_once() {
+        let (dir, db) = store();
+        for idx in at_once(&db, 8, first, std::time::Duration::from_secs(20)) {
+            assert_eq!(found(&idx, "最初の一覧"), Some(3));
+        }
+        assert_eq!(FIRST_CALLS.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    static DOWN_CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn down(_: &Library, empty: bool) -> Result<Vec<(u32, String, u32)>> {
+        DOWN_CALLS.fetch_add(1, Ordering::SeqCst);
+        anyhow::ensure!(!empty, "no list and the source down");
+        anyhow::bail!("down")
+    }
+
+    /// The source down: with no list, the error; with an old one, that one, and the fill is
+    /// tried again within the hour rather than on each call.
+    #[test]
+    fn a_failed_fill_keeps_the_old_list() {
+        let (dir, db) = store();
+        assert!(db.egs_index_with(down).is_err());
+        db.set_egs_games(&[(4, "古い一覧".into(), 1)]).unwrap();
+        db.connect().unwrap().execute("UPDATE kv SET value='0' WHERE key='egs_games_ms'", []).unwrap();
+        let before = DOWN_CALLS.load(Ordering::SeqCst);
+        assert_eq!(found(&db.egs_index_with(down).unwrap(), "古い一覧"), Some(4));
+        filled(&db);
+        assert_eq!(found(&db.egs_index_with(down).unwrap(), "古い一覧"), Some(4));
+        filled(&db);
+        assert_eq!(DOWN_CALLS.load(Ordering::SeqCst), before + 1);
+        let (_, t) = db.egs_games_at().unwrap();
+        assert!(now_ms() - t > EGS_GAMES_MAX_AGE_MS - 3_700_000 && now_ms() - t < EGS_GAMES_MAX_AGE_MS, "tried again within the hour");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

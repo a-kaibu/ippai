@@ -29,6 +29,10 @@ const AHEAD_WHOLE: u64 = 8 << 20;
 /// byte whatever its size, so throughput is a matter of how many at once: 4 gave 3 MB/s, 16
 /// 6 MB/s, 64 10 MB/s (worker2's line).
 const AHEAD_WIDTH: usize = 48;
+/// Bytes fetched ahead in memory at once (MiB; each object is held whole until written to the
+/// disk): 48 at once of chunks up to 16 MiB were up to 0.8 GiB on the machine serving the
+/// player (review B-10). One object bigger than this goes alone.
+const AHEAD_MIB: u32 = 256;
 
 /// What a game's start reads first, from its tree list (`trees/<name>.tsv`): the chunks of its
 /// small files (the exe, DLLs, scripts, small archives), smallest first, then the first and
@@ -61,35 +65,56 @@ pub(crate) fn start_set(tsv: &str) -> Vec<String> {
 
 /// Fetches tree `name`'s [`start_set`] into the disk cache, AHEAD_WIDTH at once.
 async fn fetch_ahead(s: Store, name: String) {
-    if s.remote.is_none() {
-        return;
+    if !warm_ahead(&s, &name, AHEAD_MIB).await {
+        // (tried again when the tree is next asked for, not never)
+        s.ahead.lock().unwrap_or_else(|e| e.into_inner()).remove(&name);
     }
-    let Ok(tsv) = tokio::fs::read_to_string(s.local.join("trees").join(format!("{name}.tsv"))).await else { return };
+}
+
+/// [`fetch_ahead`]'s work, `budget` MiB in memory at once: whether every object came (or was
+/// there).
+async fn warm_ahead(s: &Store, name: &str, budget: u32) -> bool {
+    let Some(r) = (*s.remote).as_ref() else { return true };
+    let Ok(tsv) = tokio::fs::read_to_string(s.local.join("trees").join(format!("{name}.tsv"))).await else { return false };
     let set = start_set(&tsv);
+    let sizes = match r.sizes(&set) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("ahead {name}: {e:#}");
+            return false;
+        }
+    };
     let t0 = std::time::Instant::now();
     let width = Arc::new(tokio::sync::Semaphore::new(AHEAD_WIDTH));
+    let bytes = Arc::new(tokio::sync::Semaphore::new(budget as usize));
     let mut jobs = tokio::task::JoinSet::new();
     for l in set.iter().cloned() {
-        let (remote, width) = (s.remote.clone(), width.clone());
+        let mib = (sizes.get(&l).copied().unwrap_or(0).div_ceil(1 << 20).min(budget as u64) as u32).max(1);
+        let (remote, width, bytes) = (s.remote.clone(), width.clone(), bytes.clone());
         jobs.spawn(async move {
             let _p = width.acquire_owned().await.ok()?;
+            let _b = bytes.acquire_many_owned(mib).await.ok()?;
             let r = (*remote).as_ref()?;
             match r.warm(&l).await {
                 Ok(got) => Some(got),
                 Err(e) => {
-                    eprintln!("ahead {l}: {e}");
+                    eprintln!("ahead {l}: {e:#}");
                     None
                 }
             }
         });
     }
-    let mut fetched = 0;
+    let (mut fetched, mut failed) = (0, 0);
     while let Some(r) = jobs.join_next().await {
-        fetched += matches!(r, Ok(Some(true))) as usize;
+        match r {
+            Ok(Some(got)) => fetched += got as usize,
+            _ => failed += 1,
+        }
     }
-    if fetched > 0 {
-        eprintln!("ahead: {name}: {fetched} of {} start chunks from S3 in {:.1} s", set.len(), t0.elapsed().as_secs_f64());
+    if fetched > 0 || failed > 0 {
+        eprintln!("ahead: {name}: {fetched} of {} start chunks from S3 in {:.1} s, {failed} failed", set.len(), t0.elapsed().as_secs_f64());
     }
+    failed == 0
 }
 
 /// Chunks decoded for ranges lately (a game's read asks for a chunk's blocks one range after
@@ -609,6 +634,74 @@ mod tests {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(fake.gets() - before, 20, "the reads came from the disk");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A start set fetched ahead that failed (the bucket refusing) is fetched again when the
+    /// tree is next asked for, not never in this server run.
+    #[tokio::test]
+    async fn a_failed_fetch_ahead_is_tried_again() {
+        let (fake, mut remote, dir) = crate::storage::gc_tests::serve(0).await;
+        remote.set_disk(dir.join("s3"), 64 << 20);
+        let h = format!("ab{:062x}", 1);
+        remote.put(&format!("chunks/ab/{h}"), &zstd::encode_all(&b"chunk"[..], 3).unwrap()).await.unwrap();
+        std::fs::create_dir_all(dir.join("trees")).unwrap();
+        std::fs::write(dir.join("trees/game.tsv"), format!("vnvm-tree\t2\t64\n{}", line("f.dat", 5, &[(&h, 5)]))).unwrap();
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
+        let app = Router::new().route("/store/{*path}", get(file)).with_state(state.clone());
+        let ahead = || state.ahead.lock().unwrap().contains("game");
+        // (403: not tried again within the request)
+        fake.refuse_next(1, 403);
+        let before = fake.gets();
+        get_(&app, "/store/trees/game.tsv", None).await;
+        for _ in 0..300 {
+            if !ahead() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!ahead(), "failed: free to try again");
+        get_(&app, "/store/trees/game.tsv", None).await;
+        for _ in 0..300 {
+            if fake.gets() > before {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(fake.gets() - before, 1, "fetched the second time");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(ahead(), "done: not again");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Review B-10: what is fetched ahead in memory at once stays within its budget: objects
+    /// of 1.5 MiB with a 2 MiB budget come one at a time (48 at once before), and all come.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fetch_ahead_stays_within_its_memory_budget() {
+        let (fake, mut remote, dir) = crate::storage::gc_tests::serve(20).await;
+        remote.set_disk(dir.join("s3"), 256 << 20);
+        let mut tsv = String::from("vnvm-tree\t2\t64\n");
+        for k in 0..6u32 {
+            let h = format!("cd{k:062x}");
+            let data: Vec<u8> = (0..(3u32 << 19)).map(|i| (i.wrapping_mul(2654435761).wrapping_add(k) >> 13) as u8).collect();
+            remote.put(&format!("chunks/cd/{h}"), &data).await.unwrap();
+            tsv += &line(&format!("f{k}.dat"), 7, &[(&h, 7)]);
+        }
+        std::fs::create_dir_all(dir.join("trees")).unwrap();
+        std::fs::write(dir.join("trees/game.tsv"), &tsv).unwrap();
+        let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default(), wasm: Default::default() };
+        let before = fake.gets();
+        fake.take_most();
+        assert!(warm_ahead(&state, "game", 2).await);
+        assert_eq!(fake.gets() - before, 6);
+        assert_eq!(fake.take_most(), 1, "one 1.5 MiB object at a time in 2 MiB");
+        // (an object past the whole budget still goes, alone)
+        let mut tsv = String::from("vnvm-tree\t2\t64\n");
+        let h = format!("ef{:062x}", 9);
+        (*state.remote).as_ref().unwrap().put(&format!("chunks/ef/{h}"), &vec![1u8; 3 << 20]).await.unwrap();
+        tsv += &line("big.dat", 7, &[(&h, 7)]);
+        std::fs::write(dir.join("trees/big.tsv"), &tsv).unwrap();
+        assert!(warm_ahead(&state, "big", 2).await);
         let _ = std::fs::remove_dir_all(dir);
     }
 

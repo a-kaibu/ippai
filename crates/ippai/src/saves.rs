@@ -18,7 +18,50 @@ pub const STATE_GRACE: std::time::Duration = std::time::Duration::from_secs(7 * 
 pub struct Saves {
     pub db: Library,
     pub remote: Option<Storage>,
-    pub lock: tokio::sync::Mutex<()>,
+    /// One writer per save name (the revision check needs no more): a big state going up to a
+    /// slow bucket holds up only its own name (review D-1: it was one lock for every save of
+    /// every game and device).
+    pub lock: NameLocks,
+}
+
+/// A lock for each name that has a holder or waiters (gone with the last of them).
+#[derive(Default)]
+pub struct NameLocks(std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+
+/// [`NameLocks::lock`]'s hold of one name.
+pub struct NameGuard<'a> {
+    locks: &'a NameLocks,
+    name: String,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl NameLocks {
+    pub async fn lock(&self, name: &str) -> NameGuard<'_> {
+        let m = self.0.lock().unwrap_or_else(|e| e.into_inner()).entry(name.to_string()).or_default().clone();
+        // (dropped while waiting, the guard below is not made: the Arc goes with the future
+        // and the next unlock of the name finds it unused)
+        let mut cleanup = NameGuard { locks: self, name: name.to_string(), guard: None };
+        cleanup.guard = Some(m.lock_owned().await);
+        cleanup
+    }
+
+    /// Names with a lock now (tests: none left once nobody holds or waits).
+    #[cfg(test)]
+    pub fn held(&self) -> usize {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
+impl Drop for NameGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        let mut map = self.locks.0.lock().unwrap_or_else(|e| e.into_inner());
+        // (only the map's own reference left: no holder, no waiter; a new one clones under
+        // this same lock)
+        if map.get(&self.name).is_some_and(|m| Arc::strong_count(m) == 1) {
+            map.remove(&self.name);
+        }
+    }
 }
 impl Saves {
     pub fn new(store: &FsPath) -> anyhow::Result<Arc<Self>> {
@@ -29,7 +72,7 @@ impl Saves {
         Ok(Arc::new(Self {
             db,
             remote,
-            lock: tokio::sync::Mutex::new(()),
+            lock: NameLocks::default(),
         }))
     }
     pub async fn read(&self, name: &str) -> anyhow::Result<Option<(i64, Vec<u8>)>> {
@@ -59,7 +102,7 @@ impl Saves {
         Ok(Some((revision, data)))
     }
     pub async fn write(&self, name: &str, expected: i64, data: &[u8]) -> anyhow::Result<bool> {
-        let _guard = self.lock.lock().await;
+        let _guard = self.lock.lock(name).await;
         let revision: i64 = self
             .db
             .connect()?
@@ -89,8 +132,8 @@ impl Saves {
     /// ([`SAVE_REVISIONS`]: a device may still list a state of one of them). Files of the old
     /// layout (`state.<game>.<slot>`) are left. Returns how many went.
     pub async fn prune_states(&self, grace: std::time::Duration) -> anyhow::Result<usize> {
-        // (one at a time with writes: an index written meanwhile is read before anything goes)
-        let _guard = self.lock.lock().await;
+        // (no lock while the indexes are read from the bucket: each game's files go later under
+        // its index's lock, and only if the index stayed the revision read here)
         written_column(&self.db)?;
         let rows: Vec<(String, i64, i64)> = {
             let c = self.db.connect()?;
@@ -98,11 +141,13 @@ impl Saves {
             let v = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
             v
         };
-        // (None: a game with an index that did not parse, whose files all stay)
-        let mut named: std::collections::HashMap<&str, Option<std::collections::HashSet<String>>> = Default::default();
+        // (None: a game with an index that did not parse, whose files all stay; the revision:
+        // the index's when read, 0 for none)
+        let mut named: std::collections::HashMap<&str, (i64, Option<std::collections::HashSet<String>>)> = Default::default();
         for (name, revision, _) in &rows {
             let Some(("index", game)) = state_name(name) else { continue };
-            let set = named.entry(game).or_insert_with(|| Some(Default::default()));
+            let (seen, set) = named.entry(game).or_insert_with(|| (0, Some(Default::default())));
+            *seen = *revision;
             let revisions = match &self.remote {
                 Some(_) => (revision - SAVE_REVISIONS + 1).max(1)..=*revision,
                 None => *revision..=*revision,
@@ -121,18 +166,39 @@ impl Saves {
             }
         }
         let before = now_ms() - grace.as_millis() as i64;
-        let mut gone = 0;
-        for (name, revision, written) in &rows {
+        let mut doomed: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+        for (name, _, written) in &rows {
             let Some((hash, game)) = state_name(name) else { continue };
-            if !is_hash(hash) || *written >= before || named.get(game).is_some_and(|s| s.as_ref().is_none_or(|s| s.contains(hash))) {
+            if !is_hash(hash) || *written >= before || named.get(game).is_some_and(|(_, s)| s.as_ref().is_none_or(|s| s.contains(hash))) {
                 continue;
             }
-            if let Some(remote) = &self.remote {
-                let revs: Vec<String> = (1..=*revision).map(|r| format!("saves/{name}/{r}")).collect();
-                remote.forget_all(&revs)?;
+            doomed.entry(game).or_default().push(name);
+        }
+        let revision = |name: &str| -> anyhow::Result<Option<(i64, i64)>> {
+            Ok(self.db.connect()?.query_row("SELECT revision,written_ms FROM saves WHERE name=?", [name], |r| Ok((r.get(0)?, r.get(1)?))).optional()?)
+        };
+        let mut gone = 0;
+        for (game, names) in doomed {
+            let index = format!("state.{game}.index");
+            let _index = self.lock.lock(&index).await;
+            // (an index written meanwhile may name any of them: they stay, until the next start)
+            if revision(&index)?.map_or(0, |r| r.0) != named.get(game).map_or(0, |n| n.0) {
+                continue;
             }
-            self.db.connect()?.execute("DELETE FROM saves WHERE name=?", [name])?;
-            gone += 1;
+            for name in names {
+                let _file = self.lock.lock(name).await;
+                // (written again meanwhile: new)
+                let Some((revision, written)) = revision(name)? else { continue };
+                if written >= before {
+                    continue;
+                }
+                if let Some(remote) = &self.remote {
+                    let revs: Vec<String> = (1..=revision).map(|r| format!("saves/{name}/{r}")).collect();
+                    remote.forget_all(&revs)?;
+                }
+                self.db.connect()?.execute("DELETE FROM saves WHERE name=?", [name])?;
+                gone += 1;
+            }
         }
         Ok(gone)
     }

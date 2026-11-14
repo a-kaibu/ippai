@@ -351,29 +351,27 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
     // cache that "other apps can make use of on first launch".
     let (prog, ver) = name.rsplit_once('-').unwrap_or((&name, ""));
     let shared_name = format!("{SHARED}-{ver}");
-    let shared = read_parts(&jit.0, &shared_name).await;
-    let new_idx: Vec<(usize, saved::Entry)> = new_idx.into_iter().enumerate().filter(|(_, e)| !shared.iter().any(|(_, es)| es.iter().any(|s| same(s, e)))).collect();
+    let mut shared = std::collections::HashSet::new();
+    part_keys(&jit.0, &shared_name, &mut shared).await;
+    let new_idx: Vec<(usize, saved::Entry)> = new_idx.into_iter().enumerate().filter(|(_, e)| !shared.contains(&same_key(e))).collect();
     let mut elsewhere = vec![false; new_idx.len()];
     if prog != SHARED && !ver.is_empty() {
-        let mut dir = match tokio::fs::read_dir(&jit.0).await {
-            Ok(d) => Some(d),
-            Err(_) => None,
-        };
-        while let Some(d) = dir.as_mut() {
-            let Ok(Some(f)) = d.next_entry().await else { break };
-            let f = f.file_name().to_string_lossy().into_owned();
-            let Some(other) = f.strip_suffix(".parts") else { continue };
-            if other == name || other == shared_name || other.rsplit_once('-').map(|x| x.1) != Some(ver) {
-                continue;
-            }
-            for (_, es) in read_parts(&jit.0, other).await {
-                for (k, (_, e)) in new_idx.iter().enumerate() {
-                    elsewhere[k] |= es.iter().any(|s| same(s, e));
+        let mut others = std::collections::HashSet::new();
+        if let Ok(mut d) = tokio::fs::read_dir(&jit.0).await {
+            while let Ok(Some(f)) = d.next_entry().await {
+                let f = f.file_name().to_string_lossy().into_owned();
+                let Some(other) = f.strip_suffix(".parts") else { continue };
+                if other == name || other == shared_name || other.rsplit_once('-').map(|x| x.1) != Some(ver) {
+                    continue;
                 }
+                part_keys(&jit.0, other, &mut others).await;
             }
         }
+        for (k, (_, e)) in new_idx.iter().enumerate() {
+            elsewhere[k] = others.contains(&same_key(e));
+        }
     }
-    let pick = |to_shared: bool| -> Option<(Vec<u8>, Vec<saved::Entry>)> {
+    let pick = |to_shared: bool| {
         let mut keep = vec![false; n_funcs];
         let mut idx = Vec::new();
         for (k, (i, e)) in new_idx.iter().enumerate() {
@@ -382,14 +380,22 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
                 idx.push(e.clone());
             }
         }
-        if idx.is_empty() {
-            return None;
+        let (body, all_idx) = (body.clone(), all_idx.clone());
+        async move {
+            if idx.is_empty() {
+                return None;
+            }
+            let w = blocking(move || {
+                let new_wasm = &body[4..4 + n];
+                if keep.iter().all(|&k| k) { Some(new_wasm.to_vec()) } else { wasm::select(new_wasm, &saved::keep_funcs(&all_idx, &keep)) }
+            })
+            .await??;
+            Some((w, idx))
         }
-        Some((if keep.iter().all(|&k| k) { new_wasm.to_vec() } else { wasm::select(new_wasm, &saved::keep_funcs(&all_idx, &keep))? }, idx))
     };
     let mut status = StatusCode::NO_CONTENT;
     for (to_shared, target) in [(true, &shared_name), (false, &name)] {
-        if let Some((w, idx)) = pick(to_shared) {
+        if let Some((w, idx)) = pick(to_shared).await {
             let s = add_part(&jit.0, target, w, idx).await;
             if s != StatusCode::NO_CONTENT {
                 status = s;
@@ -492,8 +498,57 @@ fn find_on_path(names: &[&str]) -> Option<PathBuf> {
 const SHARED: &str = "_shared";
 
 /// Whether two saved regions are the same translation's (any thread could have built either).
+#[cfg(test)]
 fn same(a: &saved::Entry, b: &saved::Entry) -> bool {
     a.roots == b.roots && a.code == b.code && a.text == b.text && (a.build > 0) == (b.build > 0)
+}
+
+/// What [`same`] compares, hashed: two regions with the same key are the same translation's.
+fn same_key(e: &saved::Entry) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(&[(e.build > 0) as u8]).update(&(e.roots.len() as u64).to_le_bytes());
+    for r in &e.roots {
+        h.update(&r.to_le_bytes());
+    }
+    h.update(&(e.code.len() as u64).to_le_bytes());
+    for (a, b) in &e.code {
+        h.update(&a.to_le_bytes()).update(&b.to_le_bytes());
+    }
+    h.update(&e.text);
+    *h.finalize().as_bytes()
+}
+
+/// A whole entry, hashed (what `==` compares).
+fn entry_key(e: &saved::Entry) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(&same_key(e)).update(&e.build.to_le_bytes()).update(&(e.starts.len() as u64).to_le_bytes());
+    for (a, b) in &e.starts {
+        h.update(&a.to_le_bytes()).update(&b.to_le_bytes());
+    }
+    for x in &e.sites {
+        h.update(&x.to_le_bytes());
+    }
+    *h.finalize().as_bytes()
+}
+
+/// The [`same_key`]s of `name`'s parts, read from their indexes alone (review C-10: every save
+/// read every other program's modules too, ~15 MB each, to compare only the indexes).
+async fn part_keys(dir: &std::path::Path, name: &str, into: &mut std::collections::HashSet<[u8; 32]>) {
+    for k in 0..PARTS_MAX {
+        let stem = if k == 0 { String::new() } else { format!("{k}.") };
+        // (a part is its module and its index: an index with no module is not one, as in read_parts)
+        if tokio::fs::metadata(dir.join(format!("{name}.{stem}wasm"))).await.is_err() {
+            break;
+        }
+        let Some(es) = tokio::fs::read(dir.join(format!("{name}.{stem}idx"))).await.ok().and_then(|b| saved::decode(&b)) else { break };
+        into.extend(es.iter().map(same_key));
+    }
+}
+
+/// `f` on a blocking thread (module selections and merges of up to hundreds of MB: not on the
+/// threads that serve requests); None when it panicked.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    tokio::task::spawn_blocking(f).await.ok()
 }
 
 /// The parts of `name` (the base <name>.wasm/.idx, then <name>.<k>.wasm/.idx).
@@ -524,11 +579,17 @@ async fn add_part_within(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, n
     let mut parts = read_parts(dir, name).await;
     let new_wasm = &new_wasm[..];
     // the new module's functions to keep
-    let keep: Vec<bool> = new_idx.iter().map(|e| !parts.iter().any(|(_, es)| es.contains(e))).collect();
+    let have: std::collections::HashSet<[u8; 32]> = parts.iter().flat_map(|(_, es)| es.iter().map(entry_key)).collect();
+    let keep: Vec<bool> = new_idx.iter().map(|e| !have.contains(&entry_key(e))).collect();
     if !keep.iter().any(|&k| k) {
         return StatusCode::NO_CONTENT;
     }
-    let fresh = if keep.iter().all(|&k| k) { Some(new_wasm.to_vec()) } else { wasm::select(new_wasm, &saved::keep_funcs(&new_idx, &keep)) };
+    let fresh = if keep.iter().all(|&k| k) {
+        Some(new_wasm.to_vec())
+    } else {
+        let (w, funcs) = (new_wasm.to_vec(), saved::keep_funcs(&new_idx, &keep));
+        blocking(move || wasm::select(&w, &funcs)).await.flatten()
+    };
     let Some(fresh) = fresh else { return StatusCode::BAD_REQUEST };
     // (a game's regions stop growing once its code paths have run; this only bounds a runaway:
     // all the parts' modules, and on the disk with the optimized copies besides)
@@ -548,8 +609,11 @@ async fn add_part_within(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, n
         let rest = parts.split_off(1);
         let entries: Vec<saved::Entry> = rest.iter().flat_map(|(_, e)| e.iter().cloned()).collect();
         let names = saved::func_names(&entries);
-        let mods: Vec<&[u8]> = rest.iter().map(|(w, _)| &w[..]).collect();
-        let Some(merged) = wasm::merge(&mods, &names) else { return StatusCode::BAD_REQUEST };
+        let merged = blocking(move || {
+            let mods: Vec<&[u8]> = rest.iter().map(|(w, _)| &w[..]).collect();
+            wasm::merge(&mods, &names)
+        });
+        let Some(merged) = merged.await.flatten() else { return StatusCode::BAD_REQUEST };
         parts.push((merged, entries));
     }
     let write = async {
@@ -845,27 +909,37 @@ async fn games(State(p): State<Arc<Prerun>>) -> Response {
         }
     }
     files.sort();
-    let mut body = String::from("[");
+    let mut texts = Vec::new();
     for f in files {
         if let Ok(text) = tokio::fs::read_to_string(&f).await {
-            let text = match serde_json::from_str::<serde_json::Value>(&text) {
-                Ok(mut game) => {
-                    // (a Siglus game registered with its autorun menu: its engine, engine_exe.rs;
-                    // what the user set for the game still wins)
-                    crate::engine_exe::resolve(store, &mut game);
-                    if let Ok(db) = crate::library::Library::new(store) {
-                        if let Err(e) = db.apply_settings(&mut game) { eprintln!("game settings: {e}"); }
-                    }
-                    game.to_string()
-                }
-                Err(_) => continue,
-            };
+            texts.push(text);
+        }
+    }
+    // (file reads and the library's database: on a blocking thread, the database opened once
+    // for all games, not once per game per visit to the list; review C-10)
+    let store = store.clone();
+    let Ok(mut body) = tokio::task::spawn_blocking(move || {
+        let db = crate::library::Library::new(&store).map_err(|e| eprintln!("game settings: {e}")).ok();
+        let mut body = String::from("[");
+        for text in texts {
+            let Ok(mut game) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+            // (a Siglus game registered with its autorun menu: its engine, engine_exe.rs;
+            // what the user set for the game still wins)
+            crate::engine_exe::resolve(&store, &mut game);
+            if let Some(db) = &db {
+                if let Err(e) = db.apply_settings(&mut game) { eprintln!("game settings: {e}"); }
+            }
             if body.len() > 1 {
                 body.push(',');
             }
-            body.push_str(text.trim());
+            body.push_str(game.to_string().trim());
         }
-    }
+        body
+    })
+    .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
     body.push(']');
     Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
@@ -1902,5 +1976,59 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Regions two programs of one build saved go to the build's shared bundle, the rest to
+    /// the program; found from the other programs' indexes alone (review C-10).
+    #[tokio::test]
+    async fn regions_another_program_saved_go_to_the_shared_bundle() {
+        let d = scratch("shared");
+        use axum::extract::{Path, State};
+        let jit: super::Jit = std::sync::Arc::new((d.clone(), Default::default()));
+        let body = |w: Vec<u8>, idx: &[saved::Entry]| {
+            let mut b = (w.len() as u32).to_le_bytes().to_vec();
+            b.extend(w);
+            b.extend(saved::encode(idx));
+            axum::body::Bytes::from(b)
+        };
+        let a = regions(4, 0x1000);
+        let put = |name: &str, b| super::save_jit(State(jit.clone()), Path(name.to_string()), b);
+        assert_eq!(put("sake-a-v1", body(module(4, 1), &a)).await, axum::http::StatusCode::NO_CONTENT);
+        let mut b = vec![a[2].clone(), a[3].clone()];
+        b.extend(regions(2, 0x9000));
+        assert_eq!(put("sake-b-v1", body(module(4, 2), &b)).await, axum::http::StatusCode::NO_CONTENT);
+        let idx = |n: &str| saved::decode(&std::fs::read(d.join(format!("{n}.idx"))).unwrap()).unwrap();
+        assert!(idx("_shared-v1") == b[..2].to_vec(), "the two A saved too");
+        assert!(idx("sake-b-v1") == b[2..].to_vec());
+        // (another build's programs are not compared)
+        assert_eq!(put("sake-c-v2", body(module(4, 3), &b)).await, axum::http::StatusCode::NO_CONTENT);
+        assert!(idx("sake-c-v2") == b);
+        assert!(!d.join("_shared-v2.idx").exists());
+        // the same again: nothing new anywhere
+        assert_eq!(put("sake-b-v1", body(module(4, 2), &b)).await, axum::http::StatusCode::NO_CONTENT);
+        assert!(!d.join("sake-b-v1.1.idx").exists() && !d.join("_shared-v1.1.idx").exists());
+    }
+
+    type Fields = (Vec<u32>, Vec<(u32, u32)>, Vec<(u32, u32)>, Vec<u8>, u32, Vec<u32>);
+    fn entry() -> impl proptest::strategy::Strategy<Value = Fields> {
+        let small = || proptest::collection::vec(0u32..4, 0..3);
+        let pairs = || proptest::collection::vec((0u32..3, 0u32..3), 0..3);
+        (small(), pairs(), pairs(), proptest::collection::vec(0u8..3, 0..3), 0u32..3, small())
+    }
+    fn make((roots, starts, code, text, build, sites): Fields) -> saved::Entry {
+        saved::Entry { roots, starts, code, text, build, sites }
+    }
+
+    proptest::proptest! {
+        /// The hashed keys that replaced the pairwise compares say what they said: same_key
+        /// equal exactly when `same`, entry_key exactly when `==` (small fields: equal ones
+        /// come often).
+        #[test]
+        fn region_keys_compare_as_before(a in entry(), b in entry()) {
+            let (a, b) = (make(a), make(b));
+            proptest::prop_assert_eq!(super::same(&a, &b), super::same_key(&a) == super::same_key(&b));
+            proptest::prop_assert_eq!(a == b, super::entry_key(&a) == super::entry_key(&b));
+            proptest::prop_assert!(super::same(&a, &a.clone()));
+        }
     }
 }
