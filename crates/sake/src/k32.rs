@@ -429,7 +429,9 @@ pub fn exit_thread(code: u32) -> ! {
     obj::close(h);
     crate::apc::forget(t.tid);
     SUSPENDS.forget(t.tid);
-    tls_thread_exit(t.teb);
+    // (out of the running threads and its TLS blocks freed, under the loader lock: a DLL
+    // loading meanwhile gives every running thread a block)
+    crate::pe::thread_tls_exit(t.teb);
     if crate::kern::host::shared() {
         crate::kern::with(|k| k.thread_ended(t.tid, code));
     }
@@ -2312,8 +2314,8 @@ fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
 /// it again (plain functions: a save state taken meanwhile has a restored copy call
 /// `reacquire` and return `woken` from the API, a wake without a signal).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn cv_wait(cv: u32, ms: u32, release: fn(u64, u64), reacquire: fn(u64, u64), a: u64, b: u64, woken: u32) -> bool {
-    struct Return(fn(u64, u64), u64, u64, u32);
+pub(crate) fn cv_wait(cv: u32, ms: u32, release: fn(u64, u64), reacquire: crate::snap::Reacquire, a: u64, b: u64, woken: u32) -> bool {
+    struct Return(crate::snap::Reacquire, u64, u64, u32);
     impl waits::Host for Return {
         fn pausing(&self) -> bool {
             kura::snap::pausing()
@@ -2322,7 +2324,7 @@ pub(crate) fn cv_wait(cv: u32, ms: u32, release: fn(u64, u64), reacquire: fn(u64
             crate::snap::point_return(self.3, self.0, self.1, self.2);
         }
     }
-    let woke = SYNC.cv_wait(cv, ms, || release(a, b), || reacquire(a, b), &Return(reacquire, a, b, woken));
+    let woke = SYNC.cv_wait(cv, ms, || release(a, b), || reacquire.call(a, b), &Return(reacquire, a, b, woken));
     if !woke {
         last_error(1460);
     }
@@ -2333,7 +2335,7 @@ pub(crate) fn cv_wake(cv: u32) {
 }
 fn SleepConditionVariableSRW(c: &mut Ctx) -> u32 {
     let (cv, l, ms, shared) = (c.a(0), c.a(1), c.a(2), c.a(3) & 1 != 0);
-    cv_wait(cv, ms, |l, s| srw_release(l as u32, s != 0), |l, s| srw_acquire(l as u32, s != 0), l as u64, shared as u64, 1) as u32
+    cv_wait(cv, ms, |l, s| srw_release(l as u32, s != 0), crate::snap::Reacquire::Srw, l as u64, shared as u64, 1) as u32
 }
 fn SleepConditionVariableCS(c: &mut Ctx) -> u32 {
     let (cv, cs, ms) = (c.a(0), c.a(1), c.a(2));
@@ -2346,14 +2348,16 @@ fn SleepConditionVariableCS(c: &mut Ctx) -> u32 {
             w32(cs as u32 + cs_off(REC), 1);
             cs_leave(cs as u32)
         },
-        |cs, depth| {
-            cs_enter(cs as u32);
-            w32(cs as u32 + cs_off(REC), depth as u32)
-        },
+        crate::snap::Reacquire::Cs,
         cs as u64,
         depth as u64,
         1,
     ) as u32
+}
+/// SleepConditionVariableCS's lock back: section `cs` entered `depth` times
+pub(crate) fn cs_reacquire(cs: u64, depth: u64) {
+    cs_enter(cs as u32);
+    w32(cs as u32 + cs_off(REC), depth as u32)
 }
 fn WakeConditionVariable(c: &mut Ctx) -> u32 {
     cv_wake(c.a(0));
@@ -2478,7 +2482,7 @@ pub fn tls_thread_init(teb: u32) {
         crate::fiber::thread_start(teb);
     }
 }
-fn tls_thread_exit(teb: u32) {
+pub(crate) fn tls_thread_exit(teb: u32) {
     TEBS.lock().unwrap_or_else(|e| e.into_inner()).retain(|&(_, t, _)| t != teb);
 }
 /// The running threads: (tid, TEB, crate::Thread)

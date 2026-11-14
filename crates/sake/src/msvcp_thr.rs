@@ -228,6 +228,14 @@ fn cnd_init_in_situ(c: &mut Ctx) -> u32 {
     0
 }
 
+/// cnd_wait's lock back: mutex `m` held `n` times
+pub(crate) fn mtx_reacquire(m: u64, n: u64) {
+    let m = m as u32;
+    srw_acquire(m + LOCK(), false);
+    w32(m + OWNER(), tid());
+    w32(m + COUNT(), (n as u32).max(1));
+}
+
 /// Waits on `cv` with `m` (which the thread holds, possibly more than once) released.
 fn cnd_wait(cv: u32, m: u32, ms: u32) -> u32 {
     let n = r32(m + COUNT());
@@ -240,12 +248,7 @@ fn cnd_wait(cv: u32, m: u32, ms: u32) -> u32 {
             w32(m + COUNT(), 0);
             srw_release(m + LOCK(), false);
         },
-        |m, n| {
-            let m = m as u32;
-            srw_acquire(m + LOCK(), false);
-            w32(m + OWNER(), tid());
-            w32(m + COUNT(), (n as u32).max(1));
-        },
+        crate::snap::Reacquire::MsvcpMtx,
         m as u64,
         n as u64,
         SUCCESS,

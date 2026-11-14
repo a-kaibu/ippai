@@ -2,8 +2,8 @@
 //! throw info; __CxxFrameHandler{,2,3} is each C++ function's SEH handler (EAX: the function's
 //! FuncInfo). It finds the try block covering the frame's state whose catch matches the thrown
 //! type, copies the object into the catch's frame, unwinds (other frames, then this one's
-//! destructors), calls the catch funclet and continues where it returns. As Wine's msvcrt
-//! (except_i386.c), without nested-frame bookkeeping; _set_se_translator as MSVC's (below).
+//! destructors), jumps into the catch funclet and continues where it returns (below: the catch
+//! block runs as guest code). As Wine's msvcrt (except_i386.c); _set_se_translator as MSVC's.
 
 use std::cell::RefCell;
 
@@ -250,25 +250,149 @@ fn find_catch(c: &mut Ctx, rec: u32, frame: u32, descr: u32) -> bool {
         }
         // unwind the frames above, this one down to the try block, then call the catch
         let unwind = crate::api::export("kernel32", "RtlUnwind");
+        let before = UNWIND.with(|u| u.replace((frame, t)));
         c.call(unwind, &[frame, 0, rec, 0]);
+        UNWIND.with(|u| u.set(before));
+        relink_kept();
         local_unwind(c, frame, descr, start);
         w32(frame + 8, (end + 1) as u32);
-        let save_esp = r32(frame - 4);
-        CURRENT.with(|v| v.borrow_mut().push((obj, info)));
-        let cont = c.call(stubs()[0], &[handler, frame + 12]);
-        CURRENT.with(|v| v.borrow_mut().pop());
-        w32(frame - 4, save_esp);
-        // the object's destructor (the catch has its own copy)
-        if info != 0 && r32(info + 4) != 0 {
-            c.call(stubs()[1], &[r32(info + 4), obj]);
-        }
-        c.cpu.regs[ESP] = save_esp;
-        c.cpu.regs[EBP] = frame + 12;
-        c.cpu.eip = cont;
-        c.jumped = true;
+        enter_catch(c, handler, frame, t, obj, info);
         return true;
     }
     false
+}
+
+// ---------------------------------------------------------------------------------------------
+// the catch block, run as guest code
+//
+// The catch funclet is entered by a jump, not a nested host call: a catch block that throws
+// or rethrows (`catch (...) { cleanup(); throw; }`) to a handler further out leaves no host
+// frame behind (a nested run that never returned kept find_catch's frame on the host stack,
+// and its exception counted as being handled for good; inside a window procedure, the
+// callback's return later ended that stale run and went on in its old registers). While the
+// catch block runs, a registration of CATCH_GUARD on fs:[0] sees an exception leave it.
+
+/// The catch funclet's frame, below the frame handler's stack: stubs()[0]'s return
+/// (CATCH_RET), its arguments (the funclet, EBP), then at CATCH_REG the registration while the
+/// catch block runs: next, CATCH_GUARD, the function's EH frame, its saved ESP, the object, its
+/// ThrowInfo and the try block's entry (tryLow, tryHigh, catchHigh, ...).
+const CATCH_REG: u32 = 12;
+const CATCH_FRAME: u32 = CATCH_REG + 28;
+
+thread_local! {
+    /// RtlUnwind of find_catch: the EH frame and the try block entry that catch the exception
+    static UNWIND: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+    /// catch guards that unwind passed but whose catch block goes on (find_catch puts them back)
+    static KEPT: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether try block `inner` (an entry of the try map) lies in the catch blocks of try block
+/// `outer` of the same function: a try written inside a catch block has states after the
+/// try's and up to its catch blocks' last.
+fn inside_catch(outer: u32, inner: u32) -> bool {
+    let (hi, catch_hi) = (r32(outer + 4) as i32, r32(outer + 8) as i32);
+    let (lo2, hi2) = (r32(inner) as i32, r32(inner + 4) as i32);
+    hi < lo2 && hi2 <= catch_hi
+}
+
+/// After find_catch's RtlUnwind: the catch guards it passed whose catch block is not left (the
+/// exception is caught inside it) go back on fs:[0], above the catching frame, in their order.
+fn relink_kept() {
+    let kept = KEPT.with(|k| std::mem::take(&mut *k.borrow_mut()));
+    let teb = crate::cur().teb;
+    for reg in kept.into_iter().rev() {
+        w32(reg, r32(teb));
+        w32(teb, reg);
+    }
+}
+
+fn catch_ret_fn() -> u32 {
+    static F: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *F.get_or_init(|| crate::api::host_fn("cxx::catch_ret", catch_ret, 0))
+}
+fn catch_guard_fn() -> u32 {
+    static F: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *F.get_or_init(|| crate::api::host_fn("cxx::catch_guard", catch_guard, 0))
+}
+
+/// Jumps into catch funclet `handler` of EH frame `frame` (registration at `frame`, EBP at
+/// frame + 12) and try block entry `t`, which handles (`obj`, `info`; 0, 0: not a C++
+/// exception).
+fn enter_catch(c: &mut Ctx, handler: u32, frame: u32, t: u32, obj: u32, info: u32) {
+    let teb = crate::cur().teb;
+    let sp = (c.cpu.regs[ESP] - CATCH_FRAME) & !3;
+    let reg = sp + CATCH_REG;
+    w32(sp, catch_ret_fn());
+    w32(sp + 4, handler);
+    w32(sp + 8, frame + 12);
+    for (i, v) in [r32(teb), catch_guard_fn(), frame, r32(frame - 4), obj, info, t].into_iter().enumerate() {
+        w32(reg + 4 * i as u32, v);
+    }
+    w32(teb, reg);
+    CURRENT.with(|v| v.borrow_mut().push((obj, info)));
+    c.cpu.regs[ESP] = sp;
+    c.cpu.eip = stubs()[0];
+    c.jumped = true;
+}
+
+/// Whether an outer catch block still handles `obj` (a `throw;` caught again inside it): its
+/// end destroys it, not this one's.
+fn in_use(obj: u32) -> bool {
+    obj != 0 && CURRENT.with(|v| v.borrow().iter().any(|&(o, _)| o == obj))
+}
+
+/// The catch block is done with the exception (`obj` of `info`): its destructor, unless an
+/// outer catch block still has it (the catch has its own copy).
+fn destroy(c: &mut Ctx, obj: u32, info: u32) {
+    if info != 0 && r32(info + 4) != 0 && !in_use(obj) {
+        c.call(stubs()[1], &[r32(info + 4), obj]);
+    }
+}
+
+/// CATCH_RET: the catch funclet returned where the function goes on (EAX), the stack at its
+/// registration. Off fs:[0], the exception destroyed, then a jump there with the function's
+/// ESP and EBP.
+fn catch_ret(c: &mut Ctx) -> u32 {
+    let reg = c.cpu.regs[ESP];
+    let cont = c.cpu.regs[EAX];
+    let teb = crate::cur().teb;
+    let [next, _, frame, save_esp, obj, info, _] = std::array::from_fn(|i| r32(reg + 4 * i as u32));
+    w32(teb, next);
+    CURRENT.with(|v| v.borrow_mut().pop());
+    w32(frame - 4, save_esp);
+    destroy(c, obj, info);
+    c.cpu.regs[ESP] = save_esp;
+    c.cpu.regs[EBP] = frame + 12;
+    c.cpu.eip = cont;
+    c.jumped = true;
+    0
+}
+
+/// CATCH_GUARD (rec, registration, context, dispatcher): an exception leaves the catch block
+/// (a handler further out unwinds past it): the exception it handled is no longer being
+/// handled, and goes unless the one leaving is that very object (`throw;`). A try block inside
+/// the catch block catching it (its function's frame is below this registration on fs:[0])
+/// leaves the catch block running: the guard stays.
+fn catch_guard(c: &mut Ctx) -> u32 {
+    let (rec, reg) = (c.a(0), c.a(1));
+    if r32(rec + 4) & 6 == 0 {
+        return 1;
+    }
+    let (to, t) = UNWIND.with(|u| u.get());
+    if to != 0 && to == r32(reg + 8) && inside_catch(r32(reg + 24), t) {
+        KEPT.with(|k| k.borrow_mut().push(reg));
+        return 1;
+    }
+    let (obj, info) = (r32(reg + 16), r32(reg + 20));
+    // (the function's saved ESP as before the catch block: its funclet keeps its own there, which
+    // a catch further out in the same function would continue with)
+    w32(r32(reg + 8) - 4, r32(reg + 12));
+    CURRENT.with(|v| v.borrow_mut().pop());
+    let rethrown = r32(rec) == CXX_EXCEPTION && r32(rec + 16) == 3 && r32(rec + 24) == obj && obj != 0;
+    if !rethrown {
+        destroy(c, obj, info);
+    }
+    1
 }
 
 // ---------------------------------------------------------------------------------------------

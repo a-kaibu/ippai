@@ -174,12 +174,40 @@ pub fn point() -> bool {
     true
 }
 
+/// How a restored copy takes a condition variable's lock again (point_return). A state keeps
+/// this number, never a host function pointer: a wasm table index means another function in
+/// any other build of sake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reacquire {
+    /// an SRW lock (a: the lock, b: shared)
+    Srw = 1,
+    /// a critical section entered b times (a: the section)
+    Cs = 2,
+    /// msvcp's _Mtx_t held b times (a: the mutex)
+    MsvcpMtx = 3,
+}
+
+impl Reacquire {
+    pub const ALL: [Reacquire; 3] = [Reacquire::Srw, Reacquire::Cs, Reacquire::MsvcpMtx];
+    /// The routine a state's number names (None: not one of this build's).
+    pub fn from_id(id: u64) -> Option<Reacquire> {
+        Self::ALL.into_iter().find(|r| *r as u64 == id)
+    }
+    pub fn call(self, a: u64, b: u64) {
+        match self {
+            Reacquire::Srw => crate::k32::srw_acquire(a as u32, b != 0),
+            Reacquire::Cs => crate::k32::cs_reacquire(a, b),
+            Reacquire::MsvcpMtx => crate::msvcp_thr::mtx_reacquire(a, b),
+        }
+    }
+}
+
 /// A condition variable's wait (the lock released): stands still if a state is being taken;
 /// a restored copy calls `reacquire(a, b)` and returns `value` from the API.
-pub fn point_return(value: u32, reacquire: fn(u64, u64), a: u64, b: u64) -> bool {
+pub fn point_return(value: u32, reacquire: Reacquire, a: u64, b: u64) -> bool {
     let Some((trap, esp)) = restart_point() else { return false };
     // (the action and its arguments: in the record's extra words)
-    let extra = Box::leak(Box::new([reacquire as usize as u64, a, b]));
+    let extra = Box::leak(Box::new([reacquire as u64, a, b]));
     park_as(RETURN, trap as u64 | (esp as u64) << 32, value as u64, extra.as_ptr() as usize as u64);
     drop(unsafe { Box::from_raw(extra) });
     true
@@ -295,8 +323,10 @@ fn go_on(t: &'static mut Thread, r: [u64; 4]) -> ! {
         RETURN => {
             let (trap, esp) = (r[1] as u32, (r[1] >> 32) as u32);
             let extra = unsafe { *(r[3] as usize as *const [u64; 3]) };
-            let f: fn(u64, u64) = unsafe { std::mem::transmute(extra[0] as usize) };
-            f(extra[1], extra[2]);
+            let Some(f) = Reacquire::from_id(extra[0]) else {
+                crate::fatal(cpu, &format!("save state: thread {:#x} waits to take lock kind {} again, which this build does not know (a state of another build)", t.tid, extra[0]));
+            };
+            f.call(extra[1], extra[2]);
             return_from(cpu, trap, esp, r[2] as u32);
         }
         START => {
@@ -331,4 +361,24 @@ fn return_from(cpu: &mut Cpu, trap: u32, esp: u32, value: u32) {
     cpu.regs[EAX] = value;
     cpu.eip = r32(esp);
     cpu.regs[ESP] = esp + 4 + if cdecl { 0 } else { bytes };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reacquire;
+
+    /// A state names its reacquire routine by number: each number names one routine, and a
+    /// number no routine has (a state of another build, or garbage) names none.
+    #[test]
+    fn reacquire_ids_round_trip() {
+        let mut seen = std::collections::HashSet::new();
+        for r in Reacquire::ALL {
+            assert!(seen.insert(r as u64), "{r:?} shares its number");
+            assert_ne!(r as u64, 0, "0 is what an empty record holds");
+            assert_eq!(Reacquire::from_id(r as u64), Some(r));
+        }
+        for id in [0u64, 4, 0x7fff, u32::MAX as u64, u64::MAX, 0x0000_0001_0000_0001] {
+            assert_eq!(Reacquire::from_id(id), None, "{id:#x}");
+        }
+    }
 }

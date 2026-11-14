@@ -238,11 +238,15 @@ fn unload(cpu: &mut Cpu, base: u32) {
         }
         tls_callbacks(cpu, base, 0);
     }
-    let deps = {
+    let (deps, tls) = {
         let mut v = MODULES.write().unwrap();
         let Some(i) = v.iter().position(|m| m.base == base) else { return };
-        v.remove(i).deps
+        let m = v.remove(i);
+        (m.deps, m.tls)
     };
+    if let Some(t) = tls {
+        tls_unload(&t);
+    }
     ldr_remove(base);
     crate::dbg::dll_unloaded(base);
     mem::release(base);
@@ -855,6 +859,27 @@ use koji::Cpu;
 static PENDING: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// TLS index of the next module with a TLS directory
 static TLS_NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// TLS indexes of unloaded modules, given out again first (lowest first, as Windows)
+static TLS_FREE: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// How many implicit TLS blocks a thread's ThreadLocalStoragePointer array holds (the last
+/// 0x1000 bytes of its TEB's reservation: crate::new_teb).
+fn tls_capacity() -> u32 {
+    0x1000 / mem::ps()
+}
+
+/// An index for a module's implicit TLS: a freed one, else the next (None: the array is full).
+fn tls_index_take(free: &mut Vec<u32>, next: &std::sync::atomic::AtomicU32, cap: u32) -> Option<u32> {
+    if let Some(k) = free.iter().enumerate().min_by_key(|&(_, &v)| v).map(|(k, _)| k) {
+        return Some(free.swap_remove(k));
+    }
+    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if i < cap {
+        return Some(i);
+    }
+    next.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    None
+}
 
 /// Where the exe's entry and threads return: a stub in kernel32's image that goes on to
 /// EXIT_TRAP (0 until kernel32 is made).
@@ -1421,25 +1446,75 @@ pub fn load_exe(_cpu: &mut Cpu, host: &str, win: &str) -> Result<u32, String> {
     Ok(base)
 }
 
-/// Implicit TLS of a module just loaded: its index, and the calling thread's block.
+/// Implicit TLS of a module just loaded: its index (one an unloaded module gave back, else the
+/// next), and a block in every running thread (Windows since Vista: a thread that already ran
+/// gets one too, not only the loading thread and those started later).
 fn tls_module(base: u32) {
-    let Some(i) = by_base(base) else { return };
     let mut mods = MODULES.write().unwrap();
-    let Some(t) = mods[i].tls.as_mut() else { return };
-    t.index = TLS_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let Some(t) = mods.iter_mut().find(|m| m.base == base).and_then(|m| m.tls.as_mut()) else { return };
+    let Some(index) = tls_index_take(&mut TLS_FREE.lock().unwrap(), &TLS_NEXT, tls_capacity()) else {
+        // (more modules with TLS loaded at once than the array holds: none rather than a write
+        // past the TEB; the DLL's thread-local variables fault)
+        eprintln!("sake: no TLS index left for the module at {base:#x} ({} in use)", tls_capacity());
+        mods.iter_mut().find(|m| m.base == base).unwrap().tls = None;
+        return;
+    };
+    t.index = index;
     if t.index_addr != 0 {
         w32(t.index_addr, t.index);
     }
     let t = *t;
     drop(mods);
-    tls_block(crate::cur().teb, &t);
+    for (_, teb, _) in crate::k32::thread_list() {
+        tls_block(teb, &t);
+    }
 }
 
+/// Where thread `teb`'s block of TLS index `index` is pointed to.
+fn tls_slot(teb: u32, index: u32) -> u32 {
+    r32(teb + crate::teb_tls_pointer()) + mem::ps() * index
+}
+
+/// Thread `teb`'s block of module TLS `t`, unless it has one (a thread started while the module
+/// loaded gets it from both tls_module and thread_attach).
 fn tls_block(teb: u32, t: &Tls) {
+    let slot = tls_slot(teb, t.index);
+    if mem::rp(slot) != 0 {
+        return;
+    }
     let n = t.end.saturating_sub(t.start);
     let b = mem::heap_alloc(n + t.zero_fill + 16, true);
     mem::copy(b, t.start, n);
-    mem::wp(r32(teb + crate::teb_tls_pointer()) + mem::ps() * t.index, b);
+    mem::wp(slot, b);
+}
+
+/// Frees thread `teb`'s block of module TLS `t`.
+fn tls_block_free(teb: u32, t: &Tls) {
+    let slot = tls_slot(teb, t.index);
+    let b = mem::rp(slot);
+    if b != 0 {
+        mem::wp(slot, 0);
+        mem::heap_free(b);
+    }
+}
+
+/// A module with TLS unloads: its blocks go in every thread, its index to the next module.
+fn tls_unload(t: &Tls) {
+    for (_, teb, _) in crate::k32::thread_list() {
+        tls_block_free(teb, t);
+    }
+    TLS_FREE.lock().unwrap().push(t.index);
+}
+
+/// A thread ends (k32::exit_thread, before its TEB goes): out of the running threads, and its
+/// TLS blocks freed.
+pub fn thread_tls_exit(teb: u32) {
+    let _g = loader_lock();
+    crate::k32::tls_thread_exit(teb);
+    let tls: Vec<Tls> = MODULES.read().unwrap().iter().filter_map(|m| m.tls).collect();
+    for t in &tls {
+        tls_block_free(teb, t);
+    }
 }
 
 fn tls_callbacks(cpu: &mut Cpu, base: u32, reason: u32) {
@@ -1904,6 +1979,71 @@ mod section_tests {
             // (everything the limits allow is read)
             if ptr != 0 && (ptr as usize) <= len {
                 prop_assert_eq!(n, (raw.min(if vsize != 0 { vsize } else { raw }) as usize).min(len - ptr as usize));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tls_index_tests {
+    use super::tls_index_take;
+    use proptest::prelude::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A plugin with TLS linked and unlinked over and over (KiriKiri's Plugins.link/unlink, a
+    /// codec DLL per movie) keeps getting the same index, never one past the array.
+    #[test]
+    fn unloaded_indexes_are_given_again() {
+        let (mut free, next) = (Vec::new(), AtomicU32::new(0));
+        let exe = tls_index_take(&mut free, &next, 1024).unwrap();
+        assert_eq!(exe, 0);
+        for _ in 0..100_000 {
+            let i = tls_index_take(&mut free, &next, 1024).unwrap();
+            assert_eq!(i, 1);
+            free.push(i);
+        }
+        assert_eq!(next.load(Ordering::Relaxed), 2);
+    }
+
+    /// A full array answers None (and stays full), never an index past it.
+    #[test]
+    fn a_full_array_gives_none() {
+        let (mut free, next) = (Vec::new(), AtomicU32::new(0));
+        for k in 0..4 {
+            assert_eq!(tls_index_take(&mut free, &next, 4), Some(k));
+        }
+        assert_eq!(tls_index_take(&mut free, &next, 4), None);
+        assert_eq!(tls_index_take(&mut free, &next, 4), None);
+        free.push(2);
+        assert_eq!(tls_index_take(&mut free, &next, 4), Some(2));
+        assert_eq!(tls_index_take(&mut free, &next, 4), None);
+    }
+
+    proptest! {
+        /// Any sequence of loads and unloads: the indexes in use are distinct and inside the
+        /// array, a load gets the lowest index not in use (as Windows), and it fails only when
+        /// every index is in use.
+        #[test]
+        fn indexes_stay_distinct_and_bounded(ops in prop::collection::vec((any::<bool>(), 0usize..64), 1..400), cap in 1u32..40) {
+            let (mut free, next) = (Vec::new(), AtomicU32::new(0));
+            let mut used: Vec<u32> = Vec::new();
+            for (load, pick) in ops {
+                if load || used.is_empty() {
+                    let lowest = (0..cap).find(|i| !used.contains(i));
+                    let got = tls_index_take(&mut free, &next, cap);
+                    prop_assert_eq!(got, lowest);
+                    if let Some(i) = got {
+                        used.push(i);
+                    }
+                } else {
+                    let i = used.swap_remove(pick % used.len());
+                    free.push(i);
+                }
+                prop_assert!(used.iter().all(|&i| i < cap));
+                let mut u = used.clone();
+                u.sort_unstable();
+                u.dedup();
+                prop_assert_eq!(u.len(), used.len());
             }
         }
     }

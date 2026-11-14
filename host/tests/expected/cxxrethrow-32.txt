@@ -1,0 +1,9 @@
+rounds 3000
+caught right 1
+objects balanced 1
+cleanups per round 11
+callbacks returned 1
+callbacks caught right 1
+callbacks objects balanced 1
+after callbacks 1
+all balanced 1

@@ -19,10 +19,10 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-changenotify afdpoll callwndhook dllinit dxversion dircase dlgenter bigwindow aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect d3dx9resource struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread d3d12delay mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep apiimage nuldevice virtualex debugkill debugdlls filetitle flatsb propsheet trackmouse keybdevent richedit getmsghook memdccaps msvcp80str xfile mmiobuf dsnotify ltcsha256 x87ext framewalk autoinstall openfile shellfolderkeys gdipcodecs seteventorder tzdynamic overreserve dwmattr rtsettings antidebug focusorder mousepointer codeturns bsszero zeromem}
-X64=" dxversion changenotify afdpoll nuldevice callwndhook dllinit dircase dlgenter dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep virtualex debugkill debugdlls filetitle flatsb propsheet trackmouse keybdevent richedit getmsghook memdccaps xfile mmiobuf dsnotify x87ext autoinstall openfile jitcode shellfolderkeys gdipcodecs seteventorder tzdynamic overreserve dwmattr rtsettings antidebug focusorder mousepointer bsszero zeromem "
+TESTS=${*:-changenotify afdpoll callwndhook dllinit dxversion dircase dlgenter bigwindow aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect d3dx9resource struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread d3d12delay mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep apiimage nuldevice virtualex debugkill debugdlls filetitle flatsb propsheet trackmouse keybdevent richedit getmsghook memdccaps msvcp80str xfile mmiobuf dsnotify ltcsha256 x87ext framewalk autoinstall openfile shellfolderkeys gdipcodecs seteventorder tzdynamic overreserve dwmattr rtsettings antidebug focusorder mousepointer codeturns bsszero zeromem tlscycle}
+X64=" dxversion changenotify afdpoll nuldevice callwndhook dllinit dircase dlgenter dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep virtualex debugkill debugdlls filetitle flatsb propsheet trackmouse keybdevent richedit getmsghook memdccaps xfile mmiobuf dsnotify x87ext autoinstall openfile jitcode shellfolderkeys gdipcodecs seteventorder tzdynamic overreserve dwmattr rtsettings antidebug focusorder mousepointer bsszero zeromem tlscycle "
 CLANG64=${CLANG64-x64seh x64crt msvcpchar msvcpsync msvcstream msvcrtti msvcseh mmdev avx256 highmem}
-CLANG32=${CLANG32-msvcseh mfc42 mfc42u mfc40}
+CLANG32=${CLANG32-msvcseh cxxrethrow mfc42 mfc42u mfc40}
 # CLANG64's MSVC STL programs built for x86 (msvcp140's thiscall members, __int64 in two slots,
 # the i686 layouts): the same expected output as x64
 MSVC32=${MSVC32-msvcpsync msvcstream msvcrtti msvcseh}
@@ -37,6 +37,16 @@ for t in $TESTS; do
   fixture() {
     if [ "$t" = dllinit ]; then
       "$1" -O2 -DBUILD_FIXTURE -shared -Wl,--kill-at "$ROOT/host/tests/dllinit.c" -o "$OUT/dllinit-fixture.dll"
+      return $?
+    fi
+    if [ "$t" = tlscycle ]; then
+      # (native TLS: clang's mingw target; gcc's would be emutls) linked by mingw gcc; x64 at a
+      # base below 4G that sake keeps: GNU ld puts base relocations on the x64 SECREL fields of
+      # the TLS accesses, which moving the image would break (Windows keeps its >4G base)
+      local base=
+      [ "${1%%-*}" = x86_64 ] && base=-Wl,--image-base,0x10000000
+      clang --target="${1%-gcc}" -O2 -DBUILD_FIXTURE -c "$ROOT/host/tests/tlscycle.c" -o "$OUT/tlscycle-fixture.o" &&
+        "$1" -shared $base "$OUT/tlscycle-fixture.o" -o "$OUT/tlscycle-fixture.dll"
       return $?
     fi
     if [ "$t" = d3d12delay ]; then
