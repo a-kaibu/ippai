@@ -59,6 +59,26 @@ pub fn open(b: &[u8]) -> Option<Track> {
     mp3(b, 0, b.len())
 }
 
+/// The first 64 KiB of host file `p`.
+pub(crate) fn head_of(p: impl AsRef<std::path::Path>) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut v = Vec::new();
+    kura::fs::File::open(p).ok()?.take(HEAD).read_to_end(&mut v).ok()?;
+    Some(v)
+}
+pub(crate) const HEAD: u64 = 64 << 10;
+
+/// Whether a file starting with `head` (its first HEAD bytes) can be a sound file that
+/// mci::sound_pcm takes: a WAVE, an MP4 (its sound track), an ID3 tag (an MP3 whose cover art
+/// can fill the head), or MP3 frames already in the head. An AVI, ASF or MPEG movie is not, and
+/// is not read whole just to find that out.
+pub(crate) fn maybe_sound(head: &[u8]) -> bool {
+    head.len() >= 12 && &head[0..4] == b"RIFF" && &head[8..12] == b"WAVE"
+        || head.len() >= 8 && &head[4..8] == b"ftyp"
+        || head.starts_with(b"ID3")
+        || open(head).is_some()
+}
+
 fn u16le(b: &[u8], o: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?))
 }

@@ -569,11 +569,21 @@ fn open(kind: Option<Kind>, element: &str, alias: Option<&str>) -> Result<u32, u
         play::start(key, p);
         (m, d)
     } else {
-        let Some(bytes) = crate::files::resolve(&full).and_then(|h| kura::fs::read(h).ok()) else {
+        let Some(host) = crate::files::resolve(&full) else {
             mem::heap_free(key);
             return Err(MCIERR_FILE_NOT_FOUND);
         };
-        match sound(&bytes) {
+        // (a movie with no .vnv is not read whole to find it is no sound file)
+        let Some(head) = crate::audiofile::head_of(&host) else {
+            mem::heap_free(key);
+            return Err(MCIERR_FILE_NOT_FOUND);
+        };
+        let bytes = if crate::audiofile::maybe_sound(&head) { kura::fs::read(&host).ok() } else { Some(Vec::new()) };
+        let Some(bytes) = bytes else {
+            mem::heap_free(key);
+            return Err(MCIERR_FILE_NOT_FOUND);
+        };
+        match sound(bytes) {
             Some(x) => x,
             None => {
                 mem::heap_free(key);
@@ -605,7 +615,7 @@ fn open(kind: Option<Kind>, element: &str, alias: Option<&str>) -> Result<u32, u
 /// A sound file's PCM for the mixer, as MCI's waveaudio / mpegvideo play it: (the PCM in guest
 /// memory, its size and format, or None when nothing here decodes it), its sample rate, its
 /// duration. DirectShow's graph plays sound-only files with it (dshow.rs).
-pub(crate) fn sound_pcm(b: &[u8]) -> Option<(Option<(u32, u32, crate::sound::Fmt)>, u32, u64)> {
+pub(crate) fn sound_pcm(b: Vec<u8>) -> Option<(Option<(u32, u32, crate::sound::Fmt)>, u32, u64)> {
     let (m, d) = sound(b)?;
     Some(match m {
         Media::Sound { data, size, fmt } => (Some((data, size, fmt)), fmt.rate, d),
@@ -614,9 +624,19 @@ pub(crate) fn sound_pcm(b: &[u8]) -> Option<(Option<(u32, u32, crate::sound::Fmt
     })
 }
 
-fn sound(b: &[u8]) -> Option<(Media, u64)> {
+/// A sound's PCM block goes: its decoding stops, then the block is freed.
+pub(crate) fn free_pcm(data: u32) {
+    crate::sound::fill_drop(data);
+    mem::heap_free(data);
+}
+
+/// The sound file `b` as Media: PCM copied into guest memory, the rest decoded while it plays.
+/// A compressed sound (MP3, AAC, WMA ...) gets its whole block (16-bit, the track's length) at
+/// once and a thread that decodes it there a few seconds ahead of the mixer; the open does not
+/// wait for it, and the file's bytes are dropped when it ends.
+fn sound(b: Vec<u8>) -> Option<(Media, u64)> {
     use crate::audiofile::Codec;
-    let t = crate::audiofile::open(b)?;
+    let t = crate::audiofile::open(&b)?;
     let frames = t.total_frames();
     let duration = frames * SEC / t.rate.max(1) as u64;
     match &t.codec {
@@ -626,27 +646,110 @@ fn sound(b: &[u8]) -> Option<(Media, u64)> {
             let (start, end) = (first.0 as usize, (last.0 + last.1 as u64) as usize);
             let pcm = b.get(start..end.min(b.len()))?;
             let p = mem::heap_alloc(pcm.len() as u32, false);
-            mem::slice_mut(p, pcm.len() as u32).copy_from_slice(pcm);
+            if p == 0 && !pcm.is_empty() {
+                return None;
+            }
+            mem::write(p, pcm);
             let fmt = crate::sound::Fmt { rate: t.rate, channels: t.channels, bits: *bits as u32, float: *float, law: 0 };
             Some((Media::Sound { data: p, size: pcm.len() as u32, fmt }, duration))
         }
         Codec::Page { codec, desc, .. } => {
             let block = t.channels * 2;
             let silent = (Media::Silent { rate: t.rate, block }, duration);
-            let Some(dec) = kura::adec::open(codec, t.rate, t.channels, desc) else { return Some(silent) };
-            let mut pcm = Vec::new();
-            let ok = kura::adec::decode(dec, t.packets.iter().filter_map(|&(o, n)| b.get(o as usize..o as usize + n as usize)), Duration::from_secs(20), &mut pcm).is_some();
-            kura::adec::close(dec);
-            if !ok || pcm.is_empty() {
+            let size = frames.saturating_mul(block as u64);
+            if size == 0 || size >= mem::GUEST_TOP as u64 {
                 return Some(silent);
             }
-            let bytes: Vec<u8> = pcm.iter().flat_map(|x| x.to_le_bytes()).collect();
-            let p = mem::heap_alloc(bytes.len() as u32, false);
-            mem::slice_mut(p, bytes.len() as u32).copy_from_slice(&bytes);
-            let fmt = crate::sound::Fmt { rate: t.rate, channels: t.channels, bits: 32, float: true, law: 0 };
-            Some((Media::Sound { data: p, size: bytes.len() as u32, fmt }, duration))
+            let Some(dec) = kura::adec::open(codec, t.rate, t.channels, desc) else { return Some(silent) };
+            // (zeros until decoded: the mixer waits for them anyway)
+            let p = mem::heap_alloc(size as u32, true);
+            if p == 0 {
+                kura::adec::close(dec);
+                return Some(silent);
+            }
+            let fill = crate::sound::fill_start(p);
+            let job = Decode { dec, data: p, total: frames as u32, channels: t.channels, rate: t.rate, packets: t.packets, frames: t.frames, file: b };
+            let spawned = std::thread::Builder::new().name("mci decode".into()).spawn(move || job.run(&fill));
+            if spawned.is_err() {
+                // (no thread: nothing decodes it, the block plays silent)
+                crate::sound::fill_drop(p);
+            }
+            let fmt = crate::sound::Fmt { rate: t.rate, channels: t.channels, bits: 16, float: false, law: 0 };
+            Some((Media::Sound { data: p, size: size as u32, fmt }, duration))
         }
     }
+}
+
+/// A compressed sound being decoded into its guest block (see `sound`).
+struct Decode {
+    dec: u32,
+    data: u32,
+    total: u32,
+    channels: u32,
+    rate: u32,
+    packets: Vec<(u64, u32)>,
+    frames: Vec<u32>,
+    file: Vec<u8>,
+}
+
+/// How far the packets handed to the decoder are ahead of what is written (seconds)
+const DECODE_AHEAD: u64 = 8;
+/// A decoder that gives nothing for this long has stopped (the rest stays silent)
+const DECODE_STALL: Duration = Duration::from_secs(20);
+
+impl Decode {
+    fn run(self, fill: &crate::sound::Fill) {
+        kura::snap::register("mci decode", false, 0);
+        let ahead = self.rate as u64 * DECODE_AHEAD;
+        let ch = self.channels as usize;
+        let (mut next, mut pushed) = (0usize, 0u64);
+        let mut written = 0u32;
+        let mut pcm: Vec<f32> = Vec::new();
+        let mut last = std::time::Instant::now();
+        loop {
+            // more packets while the decoder is less than DECODE_AHEAD ahead
+            let from = next;
+            while next < self.packets.len() && pushed < written as u64 + ahead {
+                pushed += self.frames[next] as u64;
+                next += 1;
+            }
+            let b = &self.file;
+            kura::adec::push(self.dec, self.packets[from..next].iter().filter_map(|&(o, n)| b.get(o as usize..(o as usize).checked_add(n as usize)?)));
+            kura::snap::idle();
+            let all = kura::adec::wait(self.dec, Duration::from_millis(50));
+            kura::snap::busy();
+            pcm.clear();
+            kura::adec::take(self.dec, usize::MAX, &mut pcm);
+            let n = (pcm.len() / ch.max(1)).min((self.total - written) as usize) as u32;
+            if n > 0 {
+                last = std::time::Instant::now();
+                let at = self.data + written * self.channels * 2;
+                let to = written + n;
+                let live = fill.write(to, || {
+                    let out = mem::slice_mut(at, n * self.channels * 2);
+                    for (o, x) in out.chunks_exact_mut(2).zip(&pcm) {
+                        o.copy_from_slice(&pcm_i16(*x).to_le_bytes());
+                    }
+                });
+                if !live {
+                    break;
+                }
+                written = to;
+            }
+            let ended = all && next == self.packets.len() && n == 0;
+            if written >= self.total || ended || kura::adec::failed(self.dec) || last.elapsed() > DECODE_STALL {
+                break;
+            }
+        }
+        kura::adec::close(self.dec);
+        fill.finish();
+        kura::snap::unregister();
+    }
+}
+
+/// A decoded sample as 16-bit PCM
+fn pcm_i16(x: f32) -> i16 {
+    (x.clamp(-1.0, 1.0) * 32767.0).round() as i16
 }
 
 fn close(id: u32) -> bool {
@@ -656,7 +759,7 @@ fn close(id: u32) -> bool {
         Media::Movie { .. } => play::end(d.key),
         Media::Sound { data, .. } => {
             crate::sound::music_stop(d.key);
-            mem::heap_free(data);
+            free_pcm(data);
         }
         Media::Silent { .. } => {}
     }
@@ -1779,6 +1882,154 @@ mod tests {
                     prop_assert_eq!(w, s.split_whitespace().map(String::from).collect::<Vec<_>>());
                 }
             }
+        }
+    }
+}
+
+/// A compressed sound decoded while it plays: the open returns at once with the whole 16-bit
+/// block, the decoding stays a few seconds ahead, writes what a model of the page gives, stops
+/// at a dropped block, and the mixer waits at what is decoded
+#[cfg(test)]
+mod decode_tests {
+    use super::{pcm_i16, sound, Media, DECODE_AHEAD};
+    use crate::mem;
+    use proptest::prelude::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// MPEG-1 layer III 44.1 kHz 128 kbps stereo frames, the body's first byte k (mod 256)
+    fn mp3(frames: usize) -> Vec<u8> {
+        (0..frames)
+            .flat_map(|k| {
+                let mut f = vec![0xff, 0xfb, 0x90, 0];
+                f.resize(417, 0);
+                f[4] = k as u8;
+                f
+            })
+            .collect()
+    }
+    /// what the test page decodes frame k's channel c to
+    fn value(k: u8, c: usize) -> f32 {
+        (k as f32 - 128.0) / 128.0 + c as f32 / 4096.0
+    }
+    /// A page that decodes each frame to 1152 frames of `value`, counting the frames it took
+    fn page(stop: Arc<AtomicBool>, hold: Arc<AtomicBool>, taken: Arc<AtomicUsize>) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                if !hold.load(Ordering::Relaxed) {
+                    kura::adec::test_page_pass(&mut |b, ch| {
+                        taken.fetch_add(1, Ordering::Relaxed);
+                        (0..1152).flat_map(|_| (0..ch as usize).map(move |c| value(b[4], c))).collect()
+                    });
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        })
+    }
+    fn wait_for(what: impl Fn() -> bool) {
+        let end = Instant::now() + Duration::from_secs(30);
+        while !what() {
+            assert!(Instant::now() < end, "timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    fn block(m: &Media) -> (u32, u32) {
+        match m {
+            Media::Sound { data, size, fmt } => {
+                assert_eq!((fmt.bits, fmt.float, fmt.channels), (16, false, 2));
+                (*data, *size)
+            }
+            _ => panic!("not a sound"),
+        }
+    }
+
+    #[test]
+    fn decoded_while_playing_as_the_page_gives() {
+        let _a = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_guest::enter();
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        let (stop, hold, taken) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)), Arc::new(AtomicUsize::new(0)));
+        let pg = page(stop.clone(), hold.clone(), taken.clone());
+        // 600 frames: 15.7 s, more than DECODE_AHEAD
+        let n = 600usize;
+        let (m, duration) = sound(mp3(n)).unwrap();
+        let (data, size) = block(&m);
+        assert_eq!(size as usize, n * 1152 * 4);
+        assert_eq!(duration, n as u64 * 1152 * 10_000_000 / 44100);
+        let fill = crate::sound::fill_of_for_tests(data).unwrap();
+        assert_eq!(fill.frames(), 0);
+        // the open did not wait: nothing is decoded yet, and only DECODE_AHEAD is handed out
+        std::thread::sleep(Duration::from_millis(100));
+        hold.store(false, Ordering::Relaxed);
+        wait_for(|| fill.done());
+        assert_eq!(fill.frames() as usize, n * 1152);
+        // (pushed ahead of what was written: at most DECODE_AHEAD + one batch, never all at once)
+        assert_eq!(taken.load(Ordering::Relaxed), n);
+        let pcm = mem::slice(data, size);
+        for k in [0usize, 1, 299, 599] {
+            for c in 0..2 {
+                let at = (k * 1152 + 17) * 4 + c * 2;
+                assert_eq!(i16::from_le_bytes([pcm[at], pcm[at + 1]]), pcm_i16(value(k as u8, c)), "frame {k} ch {c}");
+            }
+        }
+        super::free_pcm(data);
+        stop.store(true, Ordering::Relaxed);
+        pg.join().unwrap();
+    }
+
+    #[test]
+    fn only_a_few_seconds_are_handed_to_the_page_ahead() {
+        let _a = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_guest::enter();
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        // a page that takes the chunks but decodes none: the decoder stops pushing at the limit
+        let (m, _) = sound(mp3(2000)).unwrap();
+        let (data, _) = block(&m);
+        std::thread::sleep(Duration::from_millis(200));
+        let mut chunks = 0;
+        kura::adec::test_page_pass(&mut |_, _| {
+            chunks += 1;
+            Vec::new()
+        });
+        let limit = (44100 * DECODE_AHEAD).div_ceil(1152) as usize + 1;
+        assert!(chunks > 0 && chunks <= limit, "{chunks} chunks pushed (limit {limit})");
+        super::free_pcm(data);
+    }
+
+    #[test]
+    fn a_dropped_block_is_not_written() {
+        let _a = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::test_guest::enter();
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        let (stop, hold, taken) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        let pg = page(stop.clone(), hold.clone(), taken.clone());
+        for _ in 0..20 {
+            let (m, _) = sound(mp3(3000)).unwrap();
+            let (data, size) = block(&m);
+            let fill = crate::sound::fill_of_for_tests(data).unwrap();
+            wait_for(|| fill.frames() > 0);
+            crate::sound::fill_drop(data);
+            // (what the guest puts there next stays)
+            mem::fill(data, size, 0x5a);
+            std::thread::sleep(Duration::from_millis(20));
+            assert!(mem::slice(data, size).iter().all(|&b| b == 0x5a));
+            mem::heap_free(data);
+        }
+        stop.store(true, Ordering::Relaxed);
+        pg.join().unwrap();
+    }
+
+    proptest! {
+        /// the 16-bit sample of a decoded float: clamped, rounded, monotonic, exact on the grid
+        #[test]
+        fn i16_of_floats(x in any::<f32>(), y in -1.5f32..1.5, k in -32767i32..=32767) {
+            let v = pcm_i16(x);
+            if x.is_nan() { prop_assert_eq!(v, 0); }
+            if x >= 1.0 { prop_assert_eq!(v, 32767); }
+            if x <= -1.0 { prop_assert_eq!(v, -32767); }
+            if !x.is_nan() && x <= y { prop_assert!(v <= pcm_i16(y)); }
+            prop_assert_eq!(pcm_i16(k as f32 / 32767.0) as i32, k);
         }
     }
 }

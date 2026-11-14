@@ -6,7 +6,8 @@
 #![allow(non_snake_case)]
 
 use crate::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::api::{host_fn, implement, Ctx};
@@ -74,6 +75,8 @@ struct Buf {
     refs: u32,
     /// the buffer owning `data` (duplicates share it)
     owner: u32,
+    /// a sound still being decoded into `data` (fill_start): it is not played past what is there
+    fill: Option<Arc<Fill>>,
 }
 
 struct Dev {
@@ -210,6 +213,12 @@ fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
         if frames == 0 {
             continue;
         }
+        // (a sound being decoded waits at what is there: a pause, not a jump over zeros)
+        if let Some(f) = &b.fill {
+            if !f.done() && (b.pos as usize).saturating_add(2 + STEP * b.freq as usize / RATE as usize) > f.frames() as usize {
+                continue;
+            }
+        }
         let step = b.freq as f64 / RATE as f64;
         let start_byte = (b.pos as u32) * block;
         let (gl, gr) = b.gain;
@@ -298,6 +307,69 @@ fn music_buf(key: u32, data: u32, size: u32, fmt: Fmt, repeats: u32, volume: i32
         notify: Vec::new(),
         refs: 1,
         owner: key,
+        fill: fill_of(data),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// sounds decoded while they play (mci.rs): the PCM block is there at once, its frames are
+// written as they are decoded, and the mixer does not play past them
+
+/// The decoding of one PCM block: how many frames are in, whether it ended, and the lock a
+/// writer holds while it writes (fill_drop takes it: nothing writes after it returns).
+pub(crate) struct Fill {
+    frames: AtomicU32,
+    done: AtomicBool,
+    cancelled: Mutex<bool>,
+}
+impl Fill {
+    pub(crate) fn frames(&self) -> u32 {
+        self.frames.load(Ordering::Acquire)
+    }
+    pub(crate) fn done(&self) -> bool {
+        self.done.load(Ordering::Acquire)
+    }
+    /// Runs `write` (which writes frames up to `to`) unless the block was dropped; false then.
+    pub(crate) fn write(&self, to: u32, write: impl FnOnce()) -> bool {
+        let g = self.cancelled.lock().unwrap_or_else(|e| e.into_inner());
+        if *g {
+            return false;
+        }
+        write();
+        self.frames.store(to, Ordering::Release);
+        true
+    }
+    pub(crate) fn finish(&self) {
+        self.done.store(true, Ordering::Release);
+    }
+}
+
+static FILLS: Mutex<Option<HashMap<u32, Arc<Fill>>>> = Mutex::new(None);
+
+fn fills<R>(f: impl FnOnce(&mut HashMap<u32, Arc<Fill>>) -> R) -> R {
+    f(FILLS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::default))
+}
+
+/// A block at `data` that will be filled: its Fill.
+pub(crate) fn fill_start(data: u32) -> Arc<Fill> {
+    let f = Arc::new(Fill { frames: AtomicU32::new(0), done: AtomicBool::new(false), cancelled: Mutex::new(false) });
+    fills(|m| m.insert(data, f.clone()));
+    f
+}
+
+fn fill_of(data: u32) -> Option<Arc<Fill>> {
+    fills(|m| m.get(&data).cloned())
+}
+#[cfg(test)]
+pub(crate) fn fill_of_for_tests(data: u32) -> Option<Arc<Fill>> {
+    fill_of(data)
+}
+
+/// The block at `data` goes (before it is freed): its decoding stops writing to it.
+pub(crate) fn fill_drop(data: u32) {
+    if let Some(f) = fills(|m| m.remove(&data)) {
+        *f.cancelled.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        f.finish();
     }
 }
 
@@ -1107,6 +1179,7 @@ fn DS_CreateSoundBuffer(c: &mut Ctx) -> u32 {
                 notify: Vec::new(),
                 refs: 1,
                 owner: o,
+                fill: None,
             },
         )
     });
@@ -1148,6 +1221,7 @@ fn DS_DuplicateSoundBuffer(c: &mut Ctx) -> u32 {
             notify: Vec::new(),
             refs: 1,
             owner: s.owner,
+            fill: s.fill.clone(),
         };
         d.bufs.insert(o, b);
         true
@@ -1603,6 +1677,7 @@ fn play_sound(name: u32, module: u32, flags: u32, wide: bool) -> u32 {
                 notify: Vec::new(),
                 refs: 1,
                 owner: p,
+                fill: None,
             },
         )
     });
@@ -1823,6 +1898,43 @@ mod music_tests {
     /// A mixer of its own (not the global one a running mixer thread would also advance).
     fn dev() -> Dev {
         Dev { bufs: HashMap::default(), waves: HashMap::default(), stream: -1 }
+    }
+
+    /// A sound still being decoded is held at what is there (a pause, not zeros played over)
+    /// and goes on once more is written; finished, it plays to its end whatever was written
+    #[test]
+    fn held_at_what_is_decoded() {
+        let _g = enter();
+        let n = 4000u32;
+        let data = mem::heap_alloc(n * 2, true);
+        for i in 0..n { w16(data + 2 * i, 16000); }
+        let fill = fill_start(data);
+        let fmt = Fmt { rate: RATE, channels: 1, bits: 16, float: false, law: 0 };
+        let mut d = dev();
+        d.bufs.insert(1, music_buf(1, data, n * 2, fmt, 0, 0));
+        let mut out = vec![0f32; STEP * 2];
+        mix(&mut d, &mut out);
+        assert!(out.iter().all(|&x| x == 0.0));
+        assert_eq!(d.bufs[&1].pos, 0.0);
+        // 1000 frames in: two steps play, the third waits
+        assert!(fill.write(1000, || {}));
+        let mut played = 0;
+        for _ in 0..4 {
+            out.iter_mut().for_each(|x| *x = 0.0);
+            mix(&mut d, &mut out);
+            played += out.chunks_exact(2).filter(|f| f[0] != 0.0).count();
+        }
+        assert_eq!(played, 2 * STEP);
+        assert!(d.bufs[&1].pos as u32 <= 1000);
+        // finished at 1000 of 4000 frames: the rest plays (as zeros would: what is in the block)
+        fill.finish();
+        for _ in 0..20 {
+            mix(&mut d, &mut out);
+        }
+        assert!(!d.bufs[&1].playing);
+        fill_drop(data);
+        assert!(!fill.write(n, || panic!("written after the drop")));
+        mem::heap_free(data);
     }
 
     proptest! {

@@ -497,8 +497,9 @@ fn load(b: u32, w: &str) -> Result<(), u32> {
     }
     sound_close(b);
     if movie.is_none() {
-        let bytes = crate::files::resolve(w).and_then(|p| kura::fs::read(p).ok());
-        if bytes.is_some_and(|d| sound_open(b, w, &d)) {
+        // (only a file whose start looks like sound is read whole: a movie is not)
+        let bytes = crate::files::resolve(w).filter(|p| crate::audiofile::head_of(p).is_some_and(|h| crate::audiofile::maybe_sound(&h))).and_then(|p| kura::fs::read(p).ok());
+        if bytes.is_some_and(|d| sound_open(b, w, d)) {
             return Ok(());
         }
     }
@@ -974,7 +975,7 @@ fn sounds<R>(f: impl FnOnce(&mut HashMap<u32, SoundGraph>) -> R) -> R {
 }
 
 /// Opens the sound file `bytes` on graph `b` (paused at its start); false when it is not one.
-fn sound_open(b: u32, w: &str, bytes: &[u8]) -> bool {
+fn sound_open(b: u32, w: &str, bytes: Vec<u8>) -> bool {
     let Some((pcm, rate, duration)) = crate::mci::sound_pcm(bytes) else { return false };
     let data = pcm.map(|(data, size, fmt)| {
         crate::sound::music_start(b, data, size, fmt, 0, volume(b));
@@ -999,7 +1000,7 @@ fn sound_close(b: u32) {
     if let Some(s) = sounds(|m| m.remove(&b)) {
         if let Some(p) = s.pcm {
             crate::sound::music_stop(b);
-            mem::heap_free(p);
+            crate::mci::free_pcm(p);
         }
     }
 }
@@ -2523,6 +2524,80 @@ mod filter_list_tests {
                 prop_assert_eq!(&v, &model);
                 prop_assert_eq!(e, renderer);
                 prop_assert!(e == 0 || v.contains(&e));
+            }
+        }
+    }
+}
+
+/// What RenderFile reads of a movie without a .vnv before deciding it is not a sound file:
+/// its head only, while every sound file mci::sound_pcm takes is still taken
+#[cfg(test)]
+mod sniff_tests {
+    use crate::audiofile::{maybe_sound, HEAD};
+    use proptest::prelude::*;
+
+    fn head(b: &[u8]) -> &[u8] {
+        &b[..b.len().min(HEAD as usize)]
+    }
+    /// MPEG-1 layer III 44.1 kHz 128 kbps stereo frames
+    fn mp3(frames: usize, fill: u8) -> Vec<u8> {
+        let mut v = Vec::new();
+        for i in 0..frames {
+            let pad = i % 3 == 0;
+            let mut f = vec![0xff, 0xfb, 0x90 | (pad as u8) << 1, 0];
+            f.resize(417 + pad as usize, fill & 0x7f);
+            v.extend(f);
+        }
+        v
+    }
+    fn id3(size: usize) -> Vec<u8> {
+        // (a syncsafe size: 7 bits a byte)
+        let s = size as u32;
+        let mut v = b"ID3\x03\0\0".to_vec();
+        v.extend([(s >> 21) as u8 & 0x7f, (s >> 14) as u8 & 0x7f, (s >> 7) as u8 & 0x7f, s as u8 & 0x7f]);
+        v.extend(std::iter::repeat_n(0u8, size));
+        v
+    }
+    fn wav(n: usize) -> Vec<u8> {
+        let mut f = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x02\0\x44\xac\0\0\x10\xb1\x02\0\x04\0\x10\0data".to_vec();
+        f.extend((n as u32 * 4).to_le_bytes());
+        f.extend((0..n * 4).map(|i| i as u8));
+        f
+    }
+
+    #[test]
+    fn movies_are_not_sound() {
+        let mut avi = b"RIFF\0\0\x10\0AVI LIST\0\x10\0\0hdrlavih".to_vec();
+        avi.resize(200_000, 0x11);
+        let mut asf = vec![0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0, 0xaa, 0, 0x62, 0xce, 0x6c];
+        asf.resize(200_000, 0x22);
+        let mut mpg = vec![0, 0, 1, 0xba, 0x44, 0, 4, 0, 4, 1, 0x01, 0x89, 0xc3, 0xf8, 0, 0, 1, 0xbb];
+        mpg.resize(200_000, 0x33);
+        for m in [avi, asf, mpg] {
+            assert!(!maybe_sound(head(&m)));
+            assert!(crate::audiofile::open(&m).is_none());
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+        /// every sound file is still taken from its head: WAVEs of any length, MP3s behind an
+        /// ID3 tag larger than the head (cover art), bare MP3s
+        #[test]
+        fn sound_files_are_seen_from_the_head(frames in 2usize..400, tag in prop_oneof![Just(None), (0usize..300_000).prop_map(Some)], pcm in 0usize..100_000, fill in any::<u8>()) {
+            let mut m = tag.map(id3).unwrap_or_default();
+            m.extend(mp3(frames, fill));
+            prop_assert!(crate::audiofile::open(&m).is_some());
+            prop_assert!(maybe_sound(head(&m)));
+            let w = wav(pcm);
+            prop_assert!(maybe_sound(head(&w)));
+        }
+        /// any bytes: what the head turns down, the whole file is not a sound file either
+        /// (for files whose sound would start in the head)
+        #[test]
+        fn turned_down_is_not_sound(b in prop::collection::vec(any::<u8>(), 0..150_000)) {
+            if !maybe_sound(head(&b)) {
+                prop_assert!(crate::audiofile::open(&b).is_none());
             }
         }
     }
