@@ -972,6 +972,8 @@ fn interp(base: usize) -> Result<(), String> {
         }
         let r = koji::step(&mut c, &mut Mem(m));
         if r != Exit::Continue {
+            // (the state where it stopped, as jit32test: before, the one it started with)
+            unsafe { put_cpu(m, &c) };
             return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
         }
     }
@@ -1174,30 +1176,57 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
 /// `exe <file.exe> <lo> <hi> [count] [seed]`: the exe's code in [lo, hi) (low-32 addresses of the
 /// image mapped at its 4 GB alias) from random instruction boundaries and random states
 /// (registers small or pointing into DATA), interpreter against JIT until the code leaves the range.
+/// A PE image's sections at their RVAs: (the image, its base's low and high halves, its size).
+/// Every header field checked against the file: a damaged or cut file is an error, not a panic
+/// (`mapped.len() - va` underflowed for a section past the image).
+fn map_pe(image: &[u8]) -> Result<(Vec<u8>, u32, u32, u32), String> {
+    let u16_at = |o: usize| image.get(o..o + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()) as usize).ok_or(format!("cut at {o:#x}"));
+    let u32_at = |o: usize| image.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).ok_or(format!("cut at {o:#x}"));
+    let pe = u32_at(0x3c)? as usize;
+    if image.get(pe..pe + 4) != Some(b"PE\0\0") {
+        return Err("not a PE file".into());
+    }
+    let nsec = u16_at(pe + 6)?;
+    let opt = u16_at(pe + 20)?;
+    let base64 = image.get(pe + 48..pe + 56).map(|b| u64::from_le_bytes(b.try_into().unwrap())).ok_or("cut in the optional header")?;
+    let size = u32_at(pe + 24 + 56)?;
+    // (a 4 GB address space at most: the image must fit in it)
+    if size == 0 || base64 as u32 as u64 + size as u64 > 1 << 32 {
+        return Err(format!("image size {size:#x} at {base64:#x}"));
+    }
+    let mut mapped = vec![0u8; size as usize];
+    let headers = (u32_at(pe + 24 + 60)? as usize).min(image.len()).min(mapped.len());
+    mapped[..headers].copy_from_slice(&image[..headers]);
+    for i in 0..nsec {
+        let sh = pe + 24 + opt + i * 40;
+        let va = u32_at(sh + 12)? as usize;
+        let raw = u32_at(sh + 16)? as usize;
+        let ptr = u32_at(sh + 20)? as usize;
+        if va >= mapped.len() || ptr >= image.len() {
+            continue;
+        }
+        let n = raw.min(mapped.len() - va).min(image.len() - ptr);
+        mapped[va..va + n].copy_from_slice(&image[ptr..ptr + n]);
+    }
+    Ok((mapped, base64 as u32, (base64 >> 32) as u32, size))
+}
+
 fn exe_mode(args: &[String]) {
     let image = std::fs::read(&args[2]).unwrap();
     let lo = u32::from_str_radix(args[3].trim_start_matches("0x"), 16).unwrap();
     let hi = u32::from_str_radix(args[4].trim_start_matches("0x"), 16).unwrap();
     let count: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(1000);
     let seed: u64 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(1);
-    // PE: sections at their RVAs
-    let pe = u32::from_le_bytes(image[0x3c..0x40].try_into().unwrap()) as usize;
-    let nsec = u16::from_le_bytes(image[pe + 6..pe + 8].try_into().unwrap()) as usize;
-    let opt = u16::from_le_bytes(image[pe + 20..pe + 22].try_into().unwrap()) as usize;
-    let base64 = u64::from_le_bytes(image[pe + 24 + 24..pe + 24 + 32].try_into().unwrap());
-    let size = u32::from_le_bytes(image[pe + 24 + 56..pe + 24 + 60].try_into().unwrap());
-    let alias = base64 as u32;
-    let rip_hi = (base64 >> 32) as u32;
-    let mut mapped = vec![0u8; size as usize];
-    let headers = u32::from_le_bytes(image[pe + 24 + 60..pe + 24 + 64].try_into().unwrap()) as usize;
-    mapped[..headers].copy_from_slice(&image[..headers]);
-    for i in 0..nsec {
-        let sh = pe + 24 + opt + i * 40;
-        let va = u32::from_le_bytes(image[sh + 12..sh + 16].try_into().unwrap()) as usize;
-        let raw = u32::from_le_bytes(image[sh + 16..sh + 20].try_into().unwrap()) as usize;
-        let ptr = u32::from_le_bytes(image[sh + 20..sh + 24].try_into().unwrap()) as usize;
-        let n = raw.min(mapped.len() - va).min(image.len() - ptr);
-        mapped[va..va + n].copy_from_slice(&image[ptr..ptr + n]);
+    let (mapped, alias, rip_hi, size) = match map_pe(&image) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{}: {e}", args[2]);
+            std::process::exit(2);
+        }
+    };
+    if lo < alias || hi <= lo || (hi - alias) as usize > mapped.len() {
+        eprintln!("{:#x}..{:#x} is not inside the image ({:#x}..{:#x})", lo, hi, alias, alias as u64 + size as u64);
+        std::process::exit(2);
     }
     let top = alias as usize + size as usize;
     LIMIT.store(top as u32, std::sync::atomic::Ordering::Relaxed);
@@ -1219,6 +1248,10 @@ fn exe_mode(args: &[String]) {
                 starts.push(ins.ip() as u32);
             }
         }
+    }
+    if starts.is_empty() {
+        eprintln!("no instructions in {lo:#x}..{hi:#x}");
+        std::process::exit(2);
     }
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let (mut fails, mut compared) = (0, 0);
@@ -1629,4 +1662,68 @@ fn non_temporal_stores_stay_translated() {
     let want: Vec<u8> = [cpu.xmm[1], cpu.xmm[2], cpu.xmm8[0], cpu.xmm[3]].iter().flat_map(|x| x.to_le_bytes()).collect();
     assert_eq!(got, &want[..]);
     assert_eq!(STEPS.get(), 0, "no instruction left to the interpreter");
+}
+
+/// A small PE32+ image: two sections, the second's bytes at its RVA.
+#[cfg(test)]
+fn test_pe() -> Vec<u8> {
+    let mut f = vec![0u8; 0x600];
+    f[0..2].copy_from_slice(b"MZ");
+    f[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+    let pe = 0x80;
+    f[pe..pe + 4].copy_from_slice(b"PE\0\0");
+    f[pe + 6..pe + 8].copy_from_slice(&2u16.to_le_bytes());
+    f[pe + 20..pe + 22].copy_from_slice(&0xf0u16.to_le_bytes());
+    f[pe + 48..pe + 56].copy_from_slice(&0x1_4000_0000u64.to_le_bytes());
+    f[pe + 80..pe + 84].copy_from_slice(&0x3000u32.to_le_bytes());
+    f[pe + 84..pe + 88].copy_from_slice(&0x200u32.to_le_bytes());
+    for (i, (va, raw, ptr)) in [(0x1000u32, 0x200u32, 0x200u32), (0x2000, 0x200, 0x400)].into_iter().enumerate() {
+        let sh = pe + 24 + 0xf0 + i * 40;
+        f[sh + 12..sh + 16].copy_from_slice(&va.to_le_bytes());
+        f[sh + 16..sh + 20].copy_from_slice(&raw.to_le_bytes());
+        f[sh + 20..sh + 24].copy_from_slice(&ptr.to_le_bytes());
+    }
+    for (k, b) in f[0x200..0x600].iter_mut().enumerate() {
+        *b = (k * 7 + 1) as u8;
+    }
+    f
+}
+
+#[test]
+fn pe_mapped_at_rvas() {
+    let f = test_pe();
+    let (m, lo, hi, size) = map_pe(&f).unwrap();
+    assert_eq!((lo, hi, size, m.len()), (0x4000_0000, 1, 0x3000, 0x3000));
+    assert_eq!(&m[0x1000..0x1200], &f[0x200..0x400]);
+    assert_eq!(&m[0x2000..0x2200], &f[0x400..0x600]);
+    assert_eq!(&m[..0x200], &f[..0x200]);
+}
+
+/// Cut and damaged images (random bytes over every header field, random lengths): an error or
+/// an image of the size the header says, never a panic (fuzz, seeded).
+#[test]
+fn pe_damaged_never_panics() {
+    let good = test_pe();
+    let mut rng = Rng(0x5eed);
+    let (mut ok, mut bad) = (0, 0);
+    for _ in 0..20_000 {
+        let mut f = good.clone();
+        for _ in 0..1 + rng.below(6) {
+            let at = if rng.below(2) == 0 { 0x80 + rng.below(0x1a0) as usize } else { rng.below(f.len() as u64) as usize };
+            f[at] = rng.next() as u8;
+        }
+        if rng.below(3) == 0 {
+            f.truncate(rng.below(f.len() as u64 + 1) as usize);
+        }
+        match std::panic::catch_unwind(|| map_pe(&f)) {
+            Ok(Ok((m, lo, _, size))) => {
+                assert_eq!(m.len(), size as usize);
+                assert!(lo as u64 + size as u64 <= 1 << 32);
+                ok += 1;
+            }
+            Ok(Err(_)) => bad += 1,
+            Err(_) => panic!("map_pe panicked on {:?}", &f[..f.len().min(0x1c0)]),
+        }
+    }
+    assert!(ok > 1000 && bad > 1000, "{ok} mapped, {bad} refused");
 }

@@ -379,7 +379,7 @@ jobs:
           key: testfloat-${{ runner.os }}-${{ hashFiles('tests/testfloat/build.sh') }}
       - name: Build jit32test
         working-directory: tools/jit32test
-        run: cargo build --release --locked
+        run: cargo build --release --locked && cargo test --release --locked
       - name: 32-bit, JIT against the interpreter, part 1 of 4
         id: jit32-diff0
         background: true

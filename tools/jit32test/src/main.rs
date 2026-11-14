@@ -21,6 +21,9 @@ mod testfloat;
 const CPU: u32 = 0x2000;
 const HASH: u32 = 0x8000;
 const HASH_N: u32 = 2048;
+/** The wasm a case may run (wasmtime's fuel): far above any program's, a loop in one region
+ * traps at it */
+const FUEL: u64 = 100_000_000;
 const RING: u32 = 0xc000;
 const CODE: u32 = 0x10_0000;
 const END: u32 = 0x18_0000;
@@ -1306,9 +1309,14 @@ struct Jit {
     known: std::collections::HashSet<u32>,
 }
 
-fn hash_insert(base: usize, a: u32, v: u32) {
+fn hash_insert(base: usize, a: u32, v: u32) -> Result<(), String> {
     let mut h = koji::jit::dispatch::slot(a, HASH_N - 1);
-    loop {
+    for probe in 0.. {
+        // (a full table: more block starts than it holds, or the program wrote over it; before,
+        // this looked for a free slot for good and the run hung)
+        if probe == HASH_N {
+            return Err(format!("hash table full at {a:#x}"));
+        }
         let e = (base + (HASH + 8 * h) as usize) as *mut u32;
         let key = unsafe { e.read() };
         if key == 0 || key == a {
@@ -1316,15 +1324,19 @@ fn hash_insert(base: usize, a: u32, v: u32) {
                 e.write(a);
                 e.add(1).write(v);
             }
-            return;
+            return Ok(());
         }
         h = (h + 1) & (HASH_N - 1);
     }
+    unreachable!()
 }
 
 impl Jit {
     fn new(engine: &Engine, dispatch: &Module, memory: &SharedMemory, base: usize, mode: Mode) -> Jit {
         let mut store = Store::new(engine, ());
+        // A region can loop (and chain) without coming back to run's step limit: a trap then,
+        // not a CI that hangs (as jit64test)
+        store.set_fuel(FUEL).unwrap();
         let mut linker = Linker::new(engine);
         linker.define(&store, "env", "memory", memory.clone()).unwrap();
         let table = Table::new(&mut store, TableType::new(RefType::FUNCREF, 0, None), Ref::Func(None)).unwrap();
@@ -1373,7 +1385,8 @@ impl Jit {
             .func_wrap("env", "callmiss", move |_cpu: i32, slot: i32, target: i32| -> i32 {
                 let target = target as u32;
                 let mut h = koji::jit::dispatch::slot(target, HASH_N - 1);
-                loop {
+                // (at most the whole table: a full one is a miss, not a hang)
+                for _ in 0..HASH_N {
                     let e = (base + (HASH + 8 * h) as usize) as *const u32;
                     let key = unsafe { e.read() };
                     if key == 0 {
@@ -1449,7 +1462,7 @@ impl Jit {
         for (i, &(a, k)) in region.starts.iter().enumerate() {
             self.known.insert(a);
             let v = if fns { idx | (i as u32) << koji::jit::ENTRY_SHIFT | koji::jit::FN_TAG } else { idx | k << koji::jit::ENTRY_SHIFT };
-            hash_insert(base, a, v);
+            hash_insert(base, a, v)?;
         }
         Ok(())
     }
@@ -1748,7 +1761,7 @@ fn main() {
     let count: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(500);
     let seed: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
     let mut config = Config::new();
-    config.wasm_threads(true);
+    config.wasm_threads(true).consume_fuel(true);
     let engine = Engine::new(&config).unwrap();
     let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages(), koji::jit::wasm::memory_min_pages())).unwrap();
     assert!(memory.data().len() >= SCRATCH_END);
@@ -1838,4 +1851,62 @@ fn main() {
     if fails > 0 {
         std::process::exit(1);
     }
+}
+
+#[cfg(test)]
+fn test_setup() -> (Engine, SharedMemory, Module, usize) {
+    let mut config = Config::new();
+    config.wasm_threads(true).consume_fuel(true);
+    let engine = Engine::new(&config).unwrap();
+    let pages = koji::jit::wasm::memory_min_pages();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(pages, pages)).unwrap();
+    let base = memory.data().as_ptr() as *mut u8 as usize;
+    let dispatch = Module::new(&engine, koji::jit::dispatch::module()).unwrap();
+    (engine, memory, dispatch, base)
+}
+
+#[cfg(test)]
+const TEST_MODE: Mode = Mode { fns: false, blocks: 1, hoist: true, slots: 0, pre: false, exact: true, fresh: false, stale: 0 };
+
+/// A region that jumps to itself never comes back to run's step limit: the fuel ends it, an
+/// error, not a hang.
+#[test]
+fn looping_region_is_bounded() {
+    let (engine, memory, dispatch, base) = test_setup();
+    let mut cpu = Cpu { eip: CODE, ..Cpu::default() };
+    cpu.mxcsr = 0x1f80;
+    unsafe {
+        std::ptr::copy_nonoverlapping([0xeb, 0xfe].as_ptr(), (base + CODE as usize) as *mut u8, 2);
+        put_cpu(base as *mut u8, &cpu);
+    }
+    for fns in [false, true] {
+        let mut jit = Jit::new(&engine, &dispatch, &memory, base, Mode { fns, ..TEST_MODE });
+        jit.store.set_fuel(10_000).unwrap();
+        let error = jit.run(base).unwrap_err();
+        assert!(error.contains("fuel"), "{error}");
+    }
+}
+
+/// More block starts than the table holds: an error, not a search for a free slot for good;
+/// and the dispatcher's miss over a full table returns.
+#[test]
+fn full_hash_table_is_an_error() {
+    let (_engine, _memory, _dispatch, base) = test_setup();
+    unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize) };
+    let mut seen = std::collections::HashSet::new();
+    let mut n = 0u32;
+    let mut a = 0x40_0000u32;
+    // (distinct non-zero keys until every slot holds one)
+    while n < HASH_N {
+        if seen.insert(a) {
+            hash_insert(base, a, 1).unwrap();
+            n += 1;
+        }
+        a = a.wrapping_add(0x10);
+    }
+    // the same key again: found and replaced in place
+    hash_insert(base, 0x40_0000, 2).unwrap();
+    let e = hash_insert(base, 0x7fff_fff0, 3).unwrap_err();
+    assert!(e.contains("full"), "{e}");
+    unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize) };
 }

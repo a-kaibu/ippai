@@ -59,6 +59,8 @@ pub fn run(engine: &Engine, dispatch: &Module, memory: &SharedMemory, base: usiz
         }
         // the dispatcher, with a block function that reports which entry it was entered with
         let mut store = Store::new(engine, ());
+        // (the engine counts fuel: main.rs FUEL)
+        store.set_fuel(u64::MAX).unwrap();
         let mut linker = Linker::new(engine);
         linker.define(&store, "env", "memory", memory.clone()).unwrap();
         let table = Table::new(&mut store, TableType::new(RefType::FUNCREF, 1, None), Ref::Func(None)).unwrap();
