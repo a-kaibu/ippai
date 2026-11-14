@@ -81,14 +81,12 @@ fn wx_page(a: u32) -> bool {
 fn interpreted_page(a: u32) -> bool {
     page_set(&SMC_PAGES, a) || (wx_page(a) && !wx_checked())
 }
-/// Whether code on W|X pages outside the exe is translated (checked on entry): by the 32-bit
-/// translator only (the long-mode one has no such checks: a 64-bit process, [`LONG`], keeps
-/// the interpreter there), and not with IPPAI_JIT_WX=0.
+/// Whether code on W|X pages outside the exe is translated (checked on entry): by both
+/// translators (koji::jit's Gen::fresh_entry, jit::long's: a 64-bit process's Mono code too),
+/// not with IPPAI_JIT_WX=0.
 fn wx_checked() -> bool {
-    !wx_interpreted() && !LONG.load(Ordering::Relaxed)
+    !wx_interpreted()
 }
-/// A thread ran 64-bit code (the process is a 64-bit one).
-static LONG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn wx_interpreted() -> bool {
     static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENV.get_or_init(|| std::env::var("IPPAI_JIT_WX").is_ok_and(|v| v == "0"))
@@ -788,9 +786,6 @@ fn init_flags() {
 
 pub fn run(cpu: &mut Cpu) -> Ran {
     init_flags();
-    if cpu.mode64 != 0 && !LONG.load(Ordering::Relaxed) {
-        LONG.store(true, Ordering::Relaxed);
-    }
     check_generation();
     // (saves come after builds; this covers a run whose builds were all done early)
     thread_local! { static RUNS: Cell<u32> = const { Cell::new(0) }; }

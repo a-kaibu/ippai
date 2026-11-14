@@ -208,6 +208,10 @@ struct Gen<'a> {
     /// the block's code may be rewritten ([`super::WATCH`]): an instruction's store into a
     /// page with translated code leaves at the next instruction with Cpu::jit_smc set
     smc: bool,
+    /// the block's code is checked on entry ([`super::FRESH`]: code on W|X pages outside the
+    /// exe, Mono's): (its start, its length); a store into its own bytes leaves at the next
+    /// instruction with Cpu::jit_smc set (Gen::fresh_store)
+    fresh: Option<(u32, u32)>,
     /// the current instruction's store is checked so (its address kept in L_W by addr/push64)
     watch_store: bool,
     /// the current instruction went to the interpreter (whose stores the host checks)
@@ -1043,13 +1047,18 @@ impl<'a> Gen<'a> {
 
     /// One instruction; false if it ended the block.
     fn emit(&mut self) -> bool {
-        // (a store in a block whose code may be rewritten: see Gen::smc)
-        let size = if self.smc { stored_bytes(&self.ins) } else { 0 };
+        // (a store in a block whose code may be rewritten: see Gen::smc, Gen::fresh)
+        let size = if self.smc || self.fresh.is_some() { stored_bytes(&self.ins) } else { 0 };
         self.watch_store = size != 0;
         self.fell_back = false;
         let open = self.emit_one();
         if self.watch_store && open && !self.fell_back {
-            self.smc_check(size);
+            if self.smc {
+                self.smc_check(size);
+            }
+            if self.fresh.is_some() {
+                self.fresh_store(size);
+            }
         }
         self.watch_store = false;
         open
@@ -1077,6 +1086,64 @@ impl<'a> Gen<'a> {
         self.c.if_();
         self.depth += 1;
         self.c.get(L_CPU).get(L_W).store32(cpu_off!(jit_smc));
+        if !self.hi_swapped.is_empty() {
+            let r = self.hi_swapped.clone();
+            self.swap_hi(&r);
+        }
+        let next = self.ins.next_ip();
+        self.exit_to(next, RET_INTERP);
+        self.depth -= 1;
+        self.c.end();
+    }
+
+    /// The start of a block whose code is checked on entry ([`super::FRESH`]): unless its
+    /// bytes are still `bytes` (those it was translated from), leaves for the interpreter at its
+    /// start with Cpu::jit_stale = its address (kura's stale_hit drops the translations; a page
+    /// that keeps changing goes to the interpreter), as koji::jit's 32-bit Gen::fresh_entry.
+    fn fresh_entry(&mut self, a: u32, bytes: &[u8]) {
+        for (i, (o, w)) in fresh_parts(bytes.len() as u32).into_iter().enumerate() {
+            let mut v = [0u8; 8];
+            v[..w as usize].copy_from_slice(&bytes[o as usize..(o + w) as usize]);
+            let v = u64::from_le_bytes(v);
+            self.c.u32c(a.wrapping_add(o));
+            match w {
+                8 => {
+                    self.c.load64(0).i64c(v as i64).op(0x52); // i64.ne
+                }
+                4 => {
+                    self.c.load32(0).u32c(v as u32).ne();
+                }
+                2 => {
+                    self.c.load16u(0).u32c(v as u32).ne();
+                }
+                _ => {
+                    self.c.load8u(0).u32c(v as u32).ne();
+                }
+            }
+            if i > 0 {
+                self.c.or();
+            }
+        }
+        self.c.if_();
+        self.depth += 1;
+        self.c.get(L_CPU).u32c(a).store32(cpu_off!(jit_stale));
+        let at = self.ins.ip();
+        self.exit_to(at, RET_INTERP);
+        self.depth -= 1;
+        self.c.end();
+    }
+
+    /// After the current instruction's store of `size` bytes at L_W in a block checked on entry:
+    /// if it wrote into the block's own bytes, leaves at the next instruction with
+    /// Cpu::jit_smc = the block's start (the host keeps the page to the interpreter), as the
+    /// 32-bit Gen::fresh_store.
+    fn fresh_store(&mut self, size: u32) {
+        let Some((a, n)) = self.fresh else { return };
+        // a + n > w and w + size > a: (w + size - 1 - a) < n + size - 1
+        self.c.get(L_W).u32c((size - 1).wrapping_sub(a)).add().u32c(n + size - 1).lt_u();
+        self.c.if_();
+        self.depth += 1;
+        self.c.get(L_CPU).u32c(a).store32(cpu_off!(jit_smc));
         if !self.hi_swapped.is_empty() {
             let r = self.hi_swapped.clone();
             self.swap_hi(&r);
@@ -2016,6 +2083,26 @@ impl<'a> Gen<'a> {
     }
 }
 
+/// How a block of `n` bytes is compared on entry (Gen::fresh_entry): (offset, width) pieces of
+/// 8 bytes (the last one ending at the end, overlapping), or one of 4/2/1 for short code. They
+/// cover every byte and stay inside the block.
+fn fresh_parts(n: u32) -> Vec<(u32, u32)> {
+    let w = match n {
+        8.. => 8,
+        4..=7 => 4,
+        2..=3 => 2,
+        _ => 1,
+    };
+    let mut parts = Vec::new();
+    let mut o = 0;
+    while o + w < n {
+        parts.push((o, w));
+        o += w;
+    }
+    parts.push((n - w, w));
+    parts
+}
+
 /// The bytes `ins` writes to memory (0: none), as one store (the widest of them).
 fn stored_bytes(ins: &Instruction) -> u32 {
     use iced_x86::OpAccess;
@@ -2192,7 +2279,13 @@ fn decode<M: Memory>(mem: &mut M, ip: u64, trap: (u32, u32)) -> Vec<Instruction>
 /// Translates the region at `roots` (full RIPs, one 4GB alias: the first's) into `module` as one
 /// function, entered at any of its blocks. `accept`: whether another block (by its low 32 bits)
 /// may join.
-pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), mut accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
+pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
+    // (each page read once: the instructions decoded, the bytes blocks check on entry and the
+    // region's text agree although other threads may rewrite the code meanwhile)
+    translate_seen64(module, &mut super::Snapshot::new(mem), roots, trap, accept)
+}
+
+fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), mut accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
     let exact = super::mx_exact();
     let entry = roots[0];
     // blocks: the entry and what its direct jumps reach (accept(a, false)), and what may run
@@ -2293,7 +2386,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     returns.sort_unstable();
     returns.dedup();
     returns.truncate(MAX_RETURNS);
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, watch_store: false, fell_back: false };
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, fresh: None, watch_store: false, fell_back: false };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();
@@ -2332,6 +2425,17 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
         g.mx_seen = [[None; 2]; 16];
         g.smc = super::WATCH.get().is_some_and(|w| w(blocks[k].start as u32));
         let list = &blocks[k].ins;
+        g.fresh = None;
+        let start = blocks[k].start as u32;
+        if super::fresh_at(start) {
+            let end = list.last().unwrap().next_ip();
+            let mut b = alloc::vec![0u8; end.wrapping_sub(blocks[k].start) as usize];
+            if !b.is_empty() && mem.fetch(start, &mut b) == b.len() {
+                g.ins = list[0];
+                g.fresh_entry(start, &b);
+                g.fresh = Some((start, b.len() as u32));
+            }
+        }
         let mut open = true;
         for ins in list {
             g.ins = *ins;
@@ -2365,11 +2469,13 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     let code = splice_regs(core::mem::take(&mut g.c), &g.marks, DEBUG_ALL_REGS.load(Relaxed));
     module.funcs.push(Func { ty: 2, locals, code });
     let starts = blocks.iter().enumerate().map(|(k, b)| (b.start as u32, k as u32)).collect();
-    let code = blocks.iter().map(|b| {
+    let code: Vec<(u32, u32)> = blocks.iter().map(|b| {
         let end = b.ins.last().unwrap().next_ip();
         (b.start as u32, (end - b.start) as u32)
     }).collect();
-    Some(Region { starts, instructions: count, code, text: None, layout, profile: Vec::new(), sites: Vec::new(), exact })
+    // (the bytes translated, as this translation read them)
+    let text = super::code_text(mem, &code);
+    Some(Region { starts, instructions: count, code, text, layout, profile: Vec::new(), sites: Vec::new(), exact })
 }
 
 #[cfg(test)]

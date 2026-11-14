@@ -118,8 +118,9 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
         mem(rng, rip)
     };
     use Code as C;
-    if rip_hi == 0 && WATCH.load(Relaxed) && rng.below(60) == 0 {
-        // a store into the program's own code (koji::jit::long's Gen::smc): its first bytes,
+    if rip_hi == 0 && (WATCH.load(Relaxed) || FRESH.load(Relaxed)) && rng.below(60) == 0 {
+        // a store into the program's own code (koji::jit::long's Gen::smc, Gen::fresh_store):
+        // its first bytes,
         // often an instruction that already ran or runs next in a loop
         let at = MemoryOperand::new(Register::RIP, Register::None, 1, (CODE as u64 + rng.below(48)) as i64, 8, false, Register::None);
         out.push(Instruction::with2(C::Add_rm8_imm8, at, 1 + rng.below(3) as u32).unwrap());
@@ -705,6 +706,17 @@ fn watch(_: u32) -> bool {
     WATCH.load(Relaxed)
 }
 
+/// Whether translations check their code on entry (koji::jit::set_fresh, as kura for W|X pages
+/// outside the exe: Mono's code in a 64-bit process): a region entered where the code is no
+/// longer what it was made from leaves with Cpu::jit_stale; its stores into its own block
+/// leave with Cpu::jit_smc.
+static FRESH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn fresh(_: u32) -> bool {
+    FRESH.load(Relaxed)
+}
+/// Regions entered and found stale (Cpu::jit_stale) in this run.
+static STALE_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// The translated code's byte ranges (kura's CODE_RANGES), and whether the interpreter wrote
 /// into them since last asked.
 static CODE_RANGES: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
@@ -778,6 +790,7 @@ impl Jit {
         CODE_RANGES.lock().unwrap().clear();
         CODE_WRITTEN.store(false, Relaxed);
         koji::jit::set_watch(watch);
+        koji::jit::set_fresh(fresh);
         Jit { engine: engine.clone(), store, linker, table, entries: HashMap::new(), range: (0, u32::MAX), rewritten: false }
     }
 
@@ -880,6 +893,18 @@ impl Jit {
             f.call(&mut self.store, &params, &mut results).map_err(|e| format!("trap: {e:?}"))?;
             regions += 1;
             let mut c = unsafe { get_cpu(m) };
+            if c.jit_stale != 0 {
+                // (as kura's stale_hit: the code changed since translated; the translations go,
+                // the interpreter runs the block's first instruction, then it is made again)
+                let a = std::mem::take(&mut c.jit_stale);
+                unsafe { put_cpu(m, &c) };
+                if !FRESH.load(Relaxed) || results[0].unwrap_i32() != 1 || c.eip != a {
+                    return Err(format!("stale exit at {a:#x}: fresh {}, status {}, eip {:#x}", FRESH.load(Relaxed), results[0].unwrap_i32(), c.eip));
+                }
+                STALE_HITS.fetch_add(1, Relaxed);
+                unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+                self.entries.clear();
+            }
             if c.jit_smc != 0 {
                 // (a store into a page with translated code, the region left at the next
                 // instruction: into the code itself, or data beside it, which leaves the
@@ -996,7 +1021,9 @@ fn mx_check() -> bool {
     s
 }
 
-fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instruction], data: &[u8], cpu0: &Cpu, rip_hi: u32) -> (Vec<String>, Vec<u8>) {
+/// `pre`: (FRESH) another program run first at the same address by the same Jit, whose
+/// translations the case's program then meets: they must find their code changed.
+fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instruction], data: &[u8], cpu0: &Cpu, rip_hi: u32, pre: Option<(&[Instruction], &Cpu)>) -> (Vec<String>, Vec<u8>) {
     let m = base as *mut u8;
     let rip = CODE as u64 | (rip_hi as u64) << 32;
     let Some(code) = encode(list0, rip) else { return (Vec::new(), Vec::new()) };
@@ -1022,8 +1049,24 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         koji::jit::MX_EXACT.store(exact, Relaxed);
         SWITCHED.store(false, Relaxed);
         let (mut want_cpu, want_data, want_stack) = unsafe { (get_cpu(m), std::slice::from_raw_parts(m.add(DATA as usize), DATA_LEN as usize).to_vec(), std::slice::from_raw_parts(m.add(STACK as usize - 0x1000), 0x1000).to_vec()) };
-        setup(cpu0);
         let mut jit = Jit::new(engine, memory, base);
+        if let Some((pl, pc)) = pre.filter(|_| FRESH.load(Relaxed)) {
+            if let Some(pcode) = encode(pl, rip) {
+                unsafe {
+                    std::ptr::write_bytes(m.add(0x10000), 0, MEM - 0x10000);
+                    std::ptr::copy_nonoverlapping(pcode.as_ptr(), m.add(CODE as usize), pcode.len());
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), m.add(DATA as usize), data.len());
+                    put_cpu(m, pc);
+                }
+                let _ = jit.run(base);
+                // (its translations stay; whatever it found rewritten is forgotten)
+                jit.rewritten = false;
+                CODE_WRITTEN.store(false, Relaxed);
+                koji::jit::MX_EXACT.store(exact, Relaxed);
+                SWITCHED.store(false, Relaxed);
+            }
+        }
+        setup(cpu0);
         if koji::jit::long::DEBUG_BLOCKS.load(std::sync::atomic::Ordering::Relaxed) != 0 {
             // (small regions at every instruction first, in reverse: nearly every exit then
             // chains to another region, or back into its own)
@@ -1288,6 +1331,9 @@ fn main() {
         koji::jit::long::DEBUG_BLOCKS.store(if t % 2 == 1 { 1 + t / 2 % 3 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
         // (every other pair of tests: stores checked against the code, some into it)
         WATCH.store(t / 4 % 2 == 0, Relaxed);
+        // (the other pairs, half of them: code checked on entry, some programs after another
+        // one's translations at the same address)
+        FRESH.store(t / 4 % 2 == 1 && t / 8 % 2 == 0, Relaxed);
         let mut list = Vec::new();
         let n = 5 + rng.below(40) as usize;
         while list.len() < n {
@@ -1303,11 +1349,22 @@ fn main() {
         let mut list = structure(&mut rng, list, sub, rip_hi);
         let data: Vec<u8> = (0..DATA_LEN).map(|_| rng.next() as u8).collect();
         let cpu0 = initial(&mut rng, rip_hi);
+        let pre = if FRESH.load(Relaxed) && rng.below(2) == 0 {
+            let mut other = Vec::new();
+            let n = 5 + rng.below(40) as usize;
+            while other.len() < n {
+                random_ins(&mut rng, &mut other, rip_hi);
+            }
+            Some((structure(&mut rng, other, Vec::new(), rip_hi), initial(&mut rng, rip_hi)))
+        } else {
+            None
+        };
+        let pre = pre.as_ref().map(|(l, c)| (l.as_slice(), c));
         // (JONLY=<test>: that one alone)
         if std::env::var("JONLY").is_ok_and(|o| o != t.to_string()) {
             continue;
         }
-        let (mut diffs, mut code) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi);
+        let (mut diffs, mut code) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi, pre);
         // (JNOSHRINK: the program as generated)
         if !diffs.is_empty() && std::env::var("JNOSHRINK").is_err() {
             // shrink: drop instructions while it still fails
@@ -1319,13 +1376,13 @@ fn main() {
                 }
                 let mut l2 = list.clone();
                 l2.remove(i);
-                if !run_case(&engine, &memory, base, &l2, &data, &cpu0, rip_hi).0.is_empty() {
+                if !run_case(&engine, &memory, base, &l2, &data, &cpu0, rip_hi, pre).0.is_empty() {
                     list = l2;
                 } else {
                     i += 1;
                 }
             }
-            (diffs, code) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi);
+            (diffs, code) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi, pre);
         }
         let rip = CODE as u64 | (rip_hi as u64) << 32;
         if !diffs.is_empty() {
@@ -1344,7 +1401,7 @@ fn main() {
             }
         }
     }
-    println!("{} tests, {fails} failed", count);
+    println!("{} tests, {fails} failed ({} stale regions found)", count, STALE_HITS.load(Relaxed));
     if fails > 0 {
         std::process::exit(1);
     }

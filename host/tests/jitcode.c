@@ -7,7 +7,9 @@
  * the same address; code rewrites its own next instruction. The stores come from functions
  * that ran hot first (as Mono's own code has: translated, not interpreted). Each line prints
  * what the calls returned and "ok" or "STALE". (Each case on its own page: one the
- * interpreter takes over leaves the others translated.) (x86 machine code: 32-bit only.) */
+ * interpreter takes over leaves the others translated.) Built for x86 and x64 (its own machine
+ * code: a 64-bit Unity's Mono emits the same patterns; calls into the exe go through a stub
+ * in the buffer, as rel32 may not reach from there). */
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -43,6 +45,26 @@ static void rel32(unsigned char *call, void *target) /* call: the E8 byte */
 {
     xchg32(call + 1, (unsigned)((unsigned char *)target - (call + 5)));
 }
+
+#ifdef _WIN64
+/* a call from the buffer to `target` in the exe: through a stub at `at` (mov rax, imm64;
+ * jmp rax) */
+static void *via(unsigned char *at, void *target)
+{
+    unsigned char c[] = { 0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xe0 };
+    memcpy(c + 2, &target, 8);
+    put(at, c, sizeof c);
+    return at;
+}
+/* caller: sub rsp, 40; call rel32 t; add rsp, 40; ret (the call's E8 at +4) */
+static const unsigned char caller_code[] = { 0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x48, 0x83, 0xc4, 0x28, 0xc3 };
+#define CALL_AT 4
+#else
+static void *via(unsigned char *at, void *target) { return target; }
+/* caller: call rel32 t; ret */
+static const unsigned char caller_code[] = { 0xe8, 0, 0, 0, 0, 0xc3 };
+#define CALL_AT 0
+#endif
 
 /* mov eax, imm32; ret */
 static void ret_imm(unsigned char *at, unsigned k)
@@ -91,20 +113,20 @@ static void immediates(void)
     line("imm WriteProcessMemory", a, b, k * N);
 }
 
-/* caller: call rel32 t; ret  (t1 returns 1, t2 returns 2) */
+/* caller_code calling t1 (returns 1), then t2 (returns 2) */
 static void call_sites(void)
 {
     unsigned char *caller = buf + 0x1000, *t1 = buf + 0x1040, *t2 = buf + 0x1080;
-    unsigned char c[] = { 0xe8, 0, 0, 0, 0, 0xc3 };
-    put(caller, c, sizeof c);
+    unsigned char *call = caller + CALL_AT;
+    put(caller, caller_code, sizeof caller_code);
     ret_imm(t1, 1);
     ret_imm(t2, 2);
-    rel32(caller, t1);
+    rel32(call, t1);
     unsigned a = run((fn)caller, N);
-    xchg32(caller + 1, (unsigned)(t2 - (caller + 5)));
+    xchg32(call + 1, (unsigned)(t2 - (call + 5)));
     unsigned b = run((fn)caller, N);
     line("call site repointed", a, b, 2 * N);
-    rel32(caller, t1);
+    rel32(call, t1);
     b = run((fn)caller, N);
     line("call site back", a, b, 1 * N);
 }
@@ -123,12 +145,12 @@ static unsigned __cdecl trampoline(void)
 
 static void trampolines(void)
 {
-    unsigned char *caller = buf + 0x2000, *t = buf + 0x2040;
-    unsigned char c[] = { 0xe8, 0, 0, 0, 0, 0xc3 };
-    put(caller, c, sizeof c);
+    unsigned char *caller = buf + 0x2000, *t = buf + 0x2040, *call = caller + CALL_AT;
+    void *tramp = via(buf + 0x2200, (void *)trampoline);
+    put(caller, caller_code, sizeof caller_code);
     ret_imm(t, 3);
     tramp_target = t;
-    rel32(caller, (void *)trampoline);
+    rel32(call, tramp);
     unsigned a = run((fn)caller, N);
     printf("trampoline runs %d\n", tramp_runs);
     for (int round = 0; round < 3; round++) {
@@ -136,7 +158,7 @@ static void trampolines(void)
         unsigned char *t2 = buf + 0x2080 + 0x40 * round;
         ret_imm(t2, 10 + round);
         tramp_target = t2;
-        rel32(caller, (void *)trampoline);
+        rel32(call, tramp);
         unsigned b = run((fn)caller, N);
         printf("trampoline round %d runs %d\n", round, tramp_runs);
         line("trampoline target", a, b, (10 + round) * N);
@@ -155,6 +177,28 @@ static void __cdecl cb(void)
 static void loop_rewrite(void)
 {
     unsigned char *f = buf + 0x3000;
+#ifdef _WIN64
+    /* loop(n in ecx): rbx, rsi kept, the stack aligned for the call */
+    unsigned char c[] = {
+        0x53,                               /* push rbx */
+        0x56,                               /* push rsi */
+        0x48, 0x83, 0xec, 0x28,             /* sub rsp, 40 */
+        0x89, 0xce,                         /* mov esi, ecx */
+        0x31, 0xdb,                         /* xor ebx, ebx */
+        0xe8, 0, 0, 0, 0,                   /* L: call cb */
+        0x81, 0xc3, 1, 0, 0, 0,             /* add ebx, imm32 */
+        0xff, 0xce,                         /* dec esi */
+        0x75, 0xf1,                         /* jnz L */
+        0x89, 0xd8,                         /* mov eax, ebx */
+        0x48, 0x83, 0xc4, 0x28,             /* add rsp, 40 */
+        0x5e,                               /* pop rsi */
+        0x5b,                               /* pop rbx */
+        0xc3,                               /* ret */
+    };
+    put(f, c, sizeof c);
+    rel32(f + 10, via(f + 0x100, (void *)cb));
+    loop_imm = f + 17;
+#else
     unsigned char c[] = {
         0x53,                               /* push ebx */
         0x56,                               /* push esi */
@@ -172,6 +216,7 @@ static void loop_rewrite(void)
     put(f, c, sizeof c);
     rel32(f + 8, (void *)cb);
     loop_imm = f + 15;
+#endif
     fn g = (fn)f;
     unsigned a = 0;
     cb_at = -1;
@@ -202,14 +247,32 @@ static void reuse(void)
     VirtualFree(q, 0, MEM_RELEASE);
 }
 
-/* mov ecx, [esp+4]; mov [next+1], ecx; next: mov eax, imm32; ret: returns its argument */
-static void self_rewrite(void)
+/* mov ecx, [esp+4]; mov [next+1], ecx; next: mov eax, imm32; ret: returns its argument
+ * (x64: mov [rip+1], ecx; next: ...) */
+#ifdef _WIN64
+static unsigned char *own_next(unsigned char *f, unsigned k)
 {
-    unsigned char *f = buf + 0x4000;
+    unsigned char c[] = { 0x89, 0x0d, 1, 0, 0, 0, 0xb8, 0, 0, 0, 0, 0xc3 };
+    memcpy(c + 7, &k, 4);
+    put(f, c, sizeof c);
+    return f + 7;
+}
+#else
+static unsigned char *own_next(unsigned char *f, unsigned k)
+{
     unsigned char c[] = { 0x8b, 0x4c, 0x24, 0x04, 0x89, 0x0d, 0, 0, 0, 0, 0xb8, 0, 0, 0, 0, 0xc3 };
     unsigned char *imm = f + 11;
     memcpy(c + 6, &imm, 4);
+    memcpy(c + 11, &k, 4);
     put(f, c, sizeof c);
+    return imm;
+}
+#endif
+
+static void self_rewrite(void)
+{
+    unsigned char *f = buf + 0x4000;
+    own_next(f, 0);
     unsigned a = 0, b = 0;
     for (int i = 0; i < 20000; i++) a += ((fn)f)(i);
     for (int i = 0; i < 20000; i++) b += ((fn)f)(3 * i);
@@ -220,10 +283,7 @@ static void self_rewrite(void)
 static void self_rewrite_once(void)
 {
     unsigned char *f = buf + 0x5000;
-    unsigned char c[] = { 0x8b, 0x4c, 0x24, 0x04, 0x89, 0x0d, 0, 0, 0, 0, 0xb8, 5, 0, 0, 0, 0xc3 };
-    unsigned char *imm = f + 11;
-    memcpy(c + 6, &imm, 4);
-    put(f, c, sizeof c);
+    own_next(f, 5);
     unsigned a = 0;
     for (int i = 0; i < 200000; i++) a += ((fn)f)(5);
     unsigned b = ((fn)f)(7), d = ((fn)f)(9);
@@ -232,10 +292,6 @@ static void self_rewrite_once(void)
 
 int main(void)
 {
-#ifdef _WIN64
-    printf("skip x86 machine code\n");
-    return 0;
-#endif
     buf = VirtualAlloc(NULL, 65536, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     warm();
     immediates();
