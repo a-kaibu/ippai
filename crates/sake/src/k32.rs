@@ -398,6 +398,7 @@ fn FatalAppExitA(c: &mut Ctx) -> u32 {
 pub fn exit_thread(code: u32) -> ! {
     // (its end lets a sender waiting for it go on: user.rs, #209-5)
     crate::obj::HANDOFF.worked(crate::cur().tid);
+    crate::uni::leave();
     // (a CRT thread's reference to its DLL: FreeLibrary once its code is done)
     let held = CRT_DLLS.lock().unwrap().remove(&crate::cur().tid);
     if let Some(m) = held {
@@ -977,11 +978,17 @@ pub(crate) static SUSPENDS: std::sync::LazyLock<waits::suspend::Suspends> = std:
 
 /// kura's run loop, before every slice: a suspended thread stands still here (true: it did).
 pub fn park_suspended() -> bool {
+    crate::uni::slice();
     if !SUSPENDS.any() {
         return false;
     }
     let t = crate::cur();
+    // (one processor: a suspended thread does not hold it)
+    let held = crate::uni::leave();
     let parked = SUSPENDS.park(t.tid, || kura::snap::pausing() && kura::snap::parkable());
+    if held {
+        crate::uni::enter();
+    }
     if parked {
         // (a context set meanwhile: SetThreadContext)
         crate::tctx::apply_pending(unsafe { &mut *t.cpu });

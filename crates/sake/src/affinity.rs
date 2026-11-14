@@ -6,7 +6,8 @@
 //! - SetThreadGroupAffinity takes any mask of the processors there are (group 0), 0 for the
 //!   process's; one beyond the process's widens the process's to it;
 //! - the ideal processor is below MAXIMUM_PROCESSORS (that value asks for it).
-//! Nothing runs on fewer processors for it: the host schedules the threads.
+//! The host schedules the threads, except that a process that pins itself to a single
+//! processor runs them one at a time (crate::uni).
 
 #![allow(non_snake_case)]
 
@@ -95,7 +96,11 @@ fn SetThreadAffinityMask(c: &mut Ctx) -> u32 {
 
 fn SetProcessAffinityMask(c: &mut Ctx) -> u32 {
     match with(|m| m.set_process(c.a(1))) {
-        Ok(()) => 1,
+        Ok(()) => {
+            // (a single processor: the threads run one at a time, as there; #199)
+            crate::uni::pinned(c.a(1).count_ones() == 1);
+            1
+        }
         Err(e) => fail(e),
     }
 }

@@ -652,6 +652,8 @@ fn usage(i: u32) {
 }
 
 pub fn dispatch(cpu: &mut Cpu, addr: u32) {
+    // (a process on one processor: the call lets it go, the program's code after takes it back)
+    let _uni = crate::uni::Api::new();
     crate::comrpc::pump(cpu, false);
     let i = (addr - TRAP_LO) / 4;
     let Some((f, Meta { bytes, cdecl, known, this_arg, yields })) = hot(i as usize) else {
@@ -711,6 +713,17 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     let (edx, st0) = (c.edx, c.st0);
     if sw & SW_TRACE2 != 0 {
         eprintln!("sake {:04x}:   -> {r:x}", crate::cur().tid);
+    }
+    // (SAKE_TRACE=3: the results too, in the thread's ring)
+    if sw & SW_TRACE != 0 && trace() == 3 && trace_match(i) {
+        RING.with(|q| {
+            if let Ok(mut q) = q.try_borrow_mut() {
+                if q.len() >= 300 {
+                    q.pop_front();
+                }
+                q.push_back(format!("  -> {r:x} ({})", name_of(addr).unwrap_or_default()));
+            }
+        });
     }
     finish(cpu, esp, r, edx, st0, cdecl, bytes);
 }

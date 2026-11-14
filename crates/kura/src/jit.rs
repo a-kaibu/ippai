@@ -344,7 +344,7 @@ fn fn_allowed(a: u32) -> bool {
     r.is_empty() || r.iter().any(|&(lo, hi)| a >= lo && a < hi)
 }
 /// Blocks the dispatcher runs before returning to the run loop.
-const BUDGET: i32 = 1 << 14;
+pub const BUDGET: i32 = 1 << 14;
 /// Most blocks compiled into one module.
 const MAX_BLOCKS: usize = 1024;
 

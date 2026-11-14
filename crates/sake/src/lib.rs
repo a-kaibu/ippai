@@ -169,6 +169,7 @@ pub mod xmem;
 pub mod dbg;
 pub mod barrier;
 pub mod affinity;
+pub mod uni;
 pub mod tctx;
 pub mod cred;
 pub mod propsheet;
@@ -334,9 +335,16 @@ pub(crate) fn adopt(t: *mut Thread) {
 
 /// Runs guest code until it returns to RET_TRAP with ESP at or above `until` (0: forever).
 pub fn run(cpu: &mut Cpu, until: u32) {
+    // (a process on one processor: the thread's code runs holding it; the caller gets back
+    // what it had, the processor or not)
+    let had = uni::held();
+    uni::enter();
     let depth = snap::enter_run(until == 0);
     run_loop(cpu, until, depth);
     snap::leave_run();
+    if !had {
+        uni::leave();
+    }
 }
 
 fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
@@ -345,7 +353,14 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
         snap::before_guest(cpu, depth);
         let stop = kura::cpu::run(cpu);
         match stop {
-            Stop::Pause => snap::park_here(),
+            Stop::Pause => {
+                // (standing still: the others may run meanwhile)
+                let held = uni::leave();
+                snap::park_here();
+                if held {
+                    uni::enter();
+                }
+            }
             Stop::Trap(a) if (w16::TRAP..w16::TRAP + 0x10000).contains(&a) => {
                 if w16::dispatch(cpu, a) {
                     return;

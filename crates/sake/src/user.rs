@@ -4713,6 +4713,8 @@ pub(crate) fn box_answer(style: u32) -> u32 {
 }
 fn show_box(text: &str, cap: &str, style: u32) -> u32 {
     eprintln!("sake: MessageBox [{cap}] {text}");
+    // (SAKE_TRACE=3: what this thread called before it, an engine's error box above all)
+    crate::api::dump_ring("the MessageBox");
     if crate::autopilot::on() {
         if let Some(a) = crate::autopilot::box_answer(text, style) {
             return a;

@@ -785,6 +785,39 @@ fn a_signaler_running_on_without_calls_releases_its_waiter_after_its_store() {
     });
 }
 
+/// uni.rs (#199): two threads of a process pinned to one processor write one shared buffer
+/// without a lock between their API calls (AIMS' LZSS ring buffer); in every interleaving the
+/// code of the two never overlaps (an overlap is a race loom reports on the plain cell) and
+/// each gets its turns (a lost wakeup is a deadlock loom reports).
+#[test]
+fn one_processor_runs_one_thread_at_a_time() {
+    use waits::uni::OneCpu;
+    struct S {
+        cpu: OneCpu,
+        ring: UnsafeCell<u32>,
+    }
+    unsafe impl Sync for S {}
+    model(|| {
+        let s = Arc::new(S { cpu: OneCpu::new(), ring: UnsafeCell::new(0) });
+        let t: Vec<_> = (1..=2u32)
+            .map(|id| {
+                let s = s.clone();
+                thread::spawn(move || {
+                    for _ in 0..2 {
+                        s.cpu.acquire();
+                        s.ring.with_mut(|r| unsafe { *r = id });
+                        assert_eq!(s.ring.with(|r| unsafe { *r }), id);
+                        s.cpu.release();
+                    }
+                })
+            })
+            .collect();
+        for t in t {
+            t.join().unwrap();
+        }
+    });
+}
+
 /// The output queue (outq, #221): two threads write while the page's thread takes, in every
 /// interleaving: every record comes out whole, each writer's in its order, none twice, and no
 /// write waits for the taker (it only tries the lock).

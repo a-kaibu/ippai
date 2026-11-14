@@ -388,6 +388,18 @@ fn unmasked_note(mx: u32) {
     }
 }
 
+thread_local! {
+    /// About how many guest instructions this thread ran (the interpreter's steps, and 8 per
+    /// block the JIT ran): a measure of its work that a loaded host's descheduling does not
+    /// change (sake's uni: a quantum)
+    static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// This thread's guest work so far (see WORK)
+pub fn work() -> u64 {
+    WORK.get()
+}
+
 /// Asked at the top of every slice of the run loop: whether the thread stood still (it is
 /// suspended by another thread: it returns once resumed, or when a save state wants it parked).
 static PARK: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
@@ -448,6 +460,7 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
                 crate::jit::to_linear16(cpu);
             }
             let ran = crate::jit::run(cpu);
+            WORK.set(WORK.get() + 8 * (crate::jit::BUDGET - cpu.jit_budget.max(0)).max(0) as u64);
             let compiled = matches!(ran, crate::jit::Ran::Missed) && {
                 crate::jit::count_miss(cpu.eip);
                 crate::jit::maybe_compile(cpu, &mut mem)
@@ -474,6 +487,7 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
         }
         // the interpreter: up to the next branch with the JIT, a batch of steps without
         for _ in 0..4096 {
+            WORK.set(WORK.get() + 1);
             let (e, branch) = crate::jit::step(cpu, &mut mem);
             stepped += 1;
             if stepped >= INTERP_SLICE {
