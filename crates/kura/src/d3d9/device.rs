@@ -2728,10 +2728,16 @@ unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, aft
         sf.shadow = None;
     }
     if sf.gpu_newer && flags & LOCK_DISCARD == 0 && fmt::layout(sf.fmt).is_some_and(|l| l.1 == 1) {
-        // the page has the pixels: read them back first
-        sf.gpu_newer = false;
-        let (gpu, level, w, h, pitch, f) = (sf.gpu, sf.level, sf.w, sf.h, sf.pitch, sf.fmt);
-        *after = readback_as(d, gpu, level, w, h, f, mem, pitch);
+        // the page has the pixels: read them back first; a part locked, only that part (a
+        // 1-pixel lock of a render target read back the whole level each time), and the rest
+        // is still the page's
+        let whole = r == [0, 0, sf.w, sf.h] || !(r[0] < r[2] && r[1] < r[3] && r[2] <= sf.w && r[3] <= sf.h);
+        let (gpu, level, pitch, f) = (sf.gpu, sf.level, sf.pitch, sf.fmt);
+        let (x, y, w, h, at) = if whole { (0, 0, sf.w, sf.h, mem) } else { (r[0], r[1], r[2] - r[0], r[3] - r[1], bits) };
+        if whole {
+            sf.gpu_newer = false;
+        }
+        *after = readback_as(d, gpu, level, x, y, w, h, f, at, pitch);
         d.lock_readback = Some(s);
     }
     S_OK
@@ -2739,24 +2745,25 @@ unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, aft
 
 /// A readback of a page texture of `f`'s texels to `mem` (rows `pitch` apart): straight when
 /// the page has them as they are, else through a copy of the page's texels (pack).
-fn readback_as(d: &mut D3d, gpu: u32, level: u32, w: u32, h: u32, f: u32, mem: u32, pitch: u32) -> After {
+/// (`x`, `y`, `w`, `h`: the box of the level read, to `mem` as its first texel)
+fn readback_as(d: &mut D3d, gpu: u32, level: u32, x: u32, y: u32, w: u32, h: u32, f: u32, mem: u32, pitch: u32) -> After {
     if fmt::same_on_page(f) || f == fmt::A32B32G32R32F {
-        return After::Readback(readback(d, gpu, level, w, h, mem, pitch));
+        return After::Readback(readback(d, gpu, level, x, y, w, h, mem, pitch));
     }
     let page = fmt::page_bpp(f);
     let staging = d.guest_alloc(w * h * page);
     if staging == 0 {
         return After::None;
     }
-    let req = readback(d, gpu, level, w, h, staging, w * page);
+    let req = readback(d, gpu, level, x, y, w, h, staging, w * page);
     After::ReadbackAs { req, staging, fmt: f, w, h, dst: mem, pitch }
 }
 
-fn readback(d: &mut D3d, gpu: u32, level: u32, w: u32, h: u32, mem: u32, pitch: u32) -> u32 {
+fn readback(d: &mut D3d, gpu: u32, level: u32, x: u32, y: u32, w: u32, h: u32, mem: u32, pitch: u32) -> u32 {
     let dev = d.dev.as_mut().unwrap();
     dev.readbacks += 1;
     let req = dev.readbacks;
-    gpu::record(|b| b.cmd(&[gpu::READBACK, req, gpu, level, 0, 0, w, h, mem, pitch]));
+    gpu::record(|b| b.cmd(&[gpu::READBACK, req, gpu, level, x, y, w, h, mem, pitch]));
     req
 }
 
@@ -3119,7 +3126,7 @@ unsafe fn get_rt_data(d: &mut D3d, rt: u32, dst: u32, after: &mut After) -> u32 
         return D3DERR_INVALIDCALL;
     }
     let (pitch, f) = (b.pitch, b.fmt);
-    *after = readback_as(d, gpu, level, w, h, f, mem, pitch);
+    *after = readback_as(d, gpu, level, 0, 0, w, h, f, mem, pitch);
     S_OK
 }
 

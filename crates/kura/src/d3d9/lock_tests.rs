@@ -548,3 +548,82 @@ fn a_readback_given_up_keeps_the_target() {
     }
     gpu::set_pump(None);
 }
+
+/// A part of a rendered-to target locked reads back that part only (a 1-pixel lock read back
+/// the whole level each time): the guest copy outside it keeps what it had, the rest stays the
+/// page's, so a whole lock after reads the page's pixels there and what was written through
+/// the part inside. Random rects, with and without writes.
+#[test]
+fn a_part_locked_reads_back_only_that_part() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    attach_page();
+    let o = out();
+    unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
+    let d3d = rd(o);
+    let o = out();
+    let pp = unsafe { alloc(56) as u32 };
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+        unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
+    }
+    assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
+    let dev = rd(o);
+    let (w, h) = (32u32, 24u32);
+    let o = out();
+    assert_eq!(call(IF_DEVICE, 28, &[dev, w, h, 21, 0, 0, 1, o, 0]), 0);
+    let rt = rd(o);
+    let id = with(|d| d.id_of(rt));
+    let mem = || with(|d| match &d.objs[&id].data { Data::Surface(s) => (s.mem, s.pitch), _ => unreachable!() });
+    let at = |x: u32, y: u32| {
+        let (m, p) = mem();
+        unsafe { *((m + y * p + 4 * x) as *const u32) }
+    };
+    let mut r = Rng(0x5eed_9a27);
+    for k in 1..=60u32 {
+        // the guest copy all of fill a, the page fill b
+        let (a, b) = (fill_color(2 * k), fill_color(2 * k + 1));
+        assert_eq!(call(IF_DEVICE, 35, &[dev, rt, 0, a]), 0);
+        gpu::pump();
+        let o = out();
+        assert_eq!(call(IF_SURFACE, 13, &[rt, o, 0, 0x10]), 0);
+        assert_eq!(call(IF_SURFACE, 14, &[rt]), 0);
+        assert_eq!(call(IF_DEVICE, 35, &[dev, rt, 0, b]), 0);
+        gpu::pump();
+        let (x0, y0) = (r.below(w as usize) as u32, r.below(h as usize) as u32);
+        let (x1, y1) = (x0 + 1 + r.below((w - x0) as usize) as u32, y0 + 1 + r.below((h - y0) as usize) as u32);
+        let o = out();
+        assert_eq!(call(IF_SURFACE, 13, &[rt, o, rect([x0, y0, x1, y1]), 0]), 0);
+        gpu::pump();
+        let (bits, pitch) = (rd(o + 4), rd(o));
+        let inside = |x: u32, y: u32| (x0..x1).contains(&x) && (y0..y1).contains(&y);
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(at(x, y), if inside(x, y) { b } else { a }, "round {k}: ({x}, {y}) of {x0},{y0}..{x1},{y1}");
+            }
+        }
+        let wrote = r.below(2) == 1;
+        let c = 0x0102_0300 | k;
+        if wrote {
+            for y in 0..y1 - y0 {
+                for x in 0..x1 - x0 {
+                    unsafe { *((bits + y * pitch + 4 * x) as *mut u32) = c };
+                }
+            }
+        }
+        assert_eq!(call(IF_SURFACE, 14, &[rt]), 0);
+        gpu::pump();
+        let o = out();
+        assert_eq!(call(IF_SURFACE, 13, &[rt, o, 0, 0x10]), 0);
+        gpu::pump();
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(at(x, y), if wrote && inside(x, y) { c } else { b }, "round {k} whole: ({x}, {y})");
+            }
+        }
+        assert_eq!(call(IF_SURFACE, 14, &[rt]), 0);
+    }
+    gpu::set_pump(None);
+}
