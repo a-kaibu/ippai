@@ -66,7 +66,7 @@ async function check(mode, vp, mobile, want, size = [640, 360]) {
     if (process.env.VERBOSE) console.log(m.text());
   });
   page.on("pageerror", (e) => lines.push(`pageerror: ${e.message}`));
-  const q = new URLSearchParams({ run: "Z:\\ippai\\game\\screenfit.exe", mount: "/ippai/game=screenfit", args: mode, nosave: "" });
+  const q = new URLSearchParams({ run: "Z:\\masu\\game\\screenfit.exe", mount: "/masu/game=screenfit", args: mode, nosave: "" });
   await page.goto(`${base}play.html?headless&autostart&${q}`);
   await until(/^ready$/);
   // the picture shown, at the screen's pixels, once it is the window's
@@ -135,7 +135,7 @@ try {
     const page = await ctx.newPage();
     const lines = [];
     page.on("console", (m) => lines.push(m.text()));
-    const q = new URLSearchParams({ run: "Z:\\ippai\\game\\screenfit.exe", mount: "/ippai/game=screenfit", args: "gdi", nosave: "" });
+    const q = new URLSearchParams({ run: "Z:\\masu\\game\\screenfit.exe", mount: "/masu/game=screenfit", args: "gdi", nosave: "" });
     if (!warm) q.set("warm", "0");
     await page.goto(`${base}play.html?headless&autostart&${q}`);
     const t = Date.now();
@@ -144,14 +144,14 @@ try {
     const kept = await page.evaluate(async () => {
       const cache = await (async () => {
       // (the device's chunk store: OPFS, web/src/chunkstore.ts; Cache Storage before)
-      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("ippai-chunks", { create: true });
-      const old = await caches.open("ippai-chunks-v1");
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("masu-chunks", { create: true });
+      const old = await caches.open("masu-chunks-v1");
       return {
         async match(u) {
           const name = u.slice(u.lastIndexOf("/") + 1);
           try {
             const f = await (await dir.getFileHandle(name)).getFile();
-            if (f.size) return new Response(f, { headers: { "x-ippai-size": String(f.size) } });
+            if (f.size) return new Response(f, { headers: { "x-masu-size": String(f.size) } });
           } catch {}
           return old.match(u);
         },

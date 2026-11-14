@@ -6,9 +6,9 @@ import { applyGame, listUrl, needsListBelow, nextRunUrl, type GameEntry } from "
 const anemoi: GameEntry = {
   id: "anemoi",
   title: "anemoi",
-  run: "Z:\\ippai\\game\\Start.exe",
+  run: "Z:\\masu\\game\\Start.exe",
   args: [],
-  mounts: ["/ippai/game=anemoi"],
+  mounts: ["/masu/game=anemoi"],
   env: ["SAKE_X=1"],
 };
 
@@ -38,11 +38,11 @@ describe("applyGame launcher", () => {
     const params = new URLSearchParams("game=anemoi");
     applyGame(params, {
       ...anemoi,
-      run: "Z:\\ippai\\game\\StartData\\GameData\\data\\SiglusEngine.exe",
-      launcher: "Z:\\ippai\\game\\Start.exe",
+      run: "Z:\\masu\\game\\StartData\\GameData\\data\\SiglusEngine.exe",
+      launcher: "Z:\\masu\\game\\Start.exe",
     });
-    expect(params.get("run")).toBe("Z:\\ippai\\game\\StartData\\GameData\\data\\SiglusEngine.exe");
-    expect(params.get("launcher")).toBe("Z:\\ippai\\game\\Start.exe");
+    expect(params.get("run")).toBe("Z:\\masu\\game\\StartData\\GameData\\data\\SiglusEngine.exe");
+    expect(params.get("launcher")).toBe("Z:\\masu\\game\\Start.exe");
     applyGame(params, anemoi);
     expect(params.has("launcher")).toBe(false);
   });
@@ -52,15 +52,15 @@ describe("nextRunUrl", () => {
   it("keeps the mounts of a game picked from the list, whose address bar has only ?game=", () => {
     const params = new URLSearchParams("game=anemoi");
     applyGame(params, anemoi);
-    params.set("saves", "Z__ippai_game_Start.exe-c1b96914");
+    params.set("saves", "Z__masu_game_Start.exe-c1b96914");
     const href = "https://w2.example/play.html?game=anemoi";
-    const url = nextRunUrl(href, params, "Z:\\ippai\\game\\StartData\\StartMenu.exe", '/from="autorun"');
+    const url = nextRunUrl(href, params, "Z:\\masu\\game\\StartData\\StartMenu.exe", '/from="autorun"');
     expect(url.origin + url.pathname).toBe("https://w2.example/play.html");
     expect(url.searchParams.get("game")).toBe("anemoi");
-    expect(url.searchParams.getAll("mount")).toEqual(["/ippai/game=anemoi"]);
+    expect(url.searchParams.getAll("mount")).toEqual(["/masu/game=anemoi"]);
     expect(url.searchParams.getAll("env")).toEqual(["SAKE_X=1"]);
-    expect(url.searchParams.get("saves")).toBe("Z__ippai_game_Start.exe-c1b96914");
-    expect(url.searchParams.get("run")).toBe("Z:\\ippai\\game\\StartData\\StartMenu.exe");
+    expect(url.searchParams.get("saves")).toBe("Z__masu_game_Start.exe-c1b96914");
+    expect(url.searchParams.get("run")).toBe("Z:\\masu\\game\\StartData\\StartMenu.exe");
     expect(url.searchParams.get("args")).toBe('/from="autorun"');
     // (the player pressed 起動 for the launcher: the next program starts by itself)
     expect(url.searchParams.has("autostart")).toBe(true);
@@ -69,21 +69,21 @@ describe("nextRunUrl", () => {
     const url2 = nextRunUrl(
       url.href,
       new URLSearchParams(url.search),
-      "Z:\\ippai\\game\\StartData\\GameData\\SiglusEngine.exe",
+      "Z:\\masu\\game\\StartData\\GameData\\SiglusEngine.exe",
       "/fullscreen",
     );
-    expect(url2.searchParams.getAll("mount")).toEqual(["/ippai/game=anemoi"]);
-    expect(url2.searchParams.get("saves")).toBe("Z__ippai_game_Start.exe-c1b96914");
+    expect(url2.searchParams.getAll("mount")).toEqual(["/masu/game=anemoi"]);
+    expect(url2.searchParams.get("saves")).toBe("Z__masu_game_Start.exe-c1b96914");
     expect(url2.searchParams.get("args")).toBe("/fullscreen");
   });
 
   it("drops the arguments when there are none and a memory state of the program before", () => {
-    const params = new URLSearchParams("run=a.exe&args=x,y&state=2&debug&mount=/ippai/game=t");
+    const params = new URLSearchParams("run=a.exe&args=x,y&state=2&debug&mount=/masu/game=t");
     const url = nextRunUrl("http://h/play.html?run=a.exe", params, "b.exe", "  ");
     expect(url.searchParams.has("args")).toBe(false);
     expect(url.searchParams.has("state")).toBe(false);
     expect(url.searchParams.has("debug")).toBe(true);
-    expect(url.searchParams.getAll("mount")).toEqual(["/ippai/game=t"]);
+    expect(url.searchParams.getAll("mount")).toEqual(["/masu/game=t"]);
     // (the page's own params are not changed)
     expect(params.get("run")).toBe("a.exe");
   });
@@ -97,7 +97,7 @@ describe("nextRunUrl", () => {
       const g: GameEntry = {
         id: word(),
         title: word(),
-        run: `Z:\\ippai\\game\\${word()}.exe`,
+        run: `Z:\\masu\\game\\${word()}.exe`,
         args: Array.from({ length: Math.floor(r() * 3) }, word).filter((a) => !/[\s,]/.test(a)),
         mounts: Array.from({ length: Math.floor(r() * 3) }, () => `/masu/${word()}=${word()}`),
         env: Array.from({ length: Math.floor(r() * 3) }, () => `${word()}=${word()}`),
@@ -107,7 +107,7 @@ describe("nextRunUrl", () => {
       params.set("saves", word());
       const before = new URLSearchParams(params);
       const args = Array.from({ length: Math.floor(r() * 4) }, word).join(" ");
-      const run = `Z:\\ippai\\game\\${word()}.exe`;
+      const run = `Z:\\masu\\game\\${word()}.exe`;
       const url = nextRunUrl(`http://h/play.html?game=${encodeURIComponent(g.id)}`, params, run, args);
       const got = url.searchParams;
       expect(params.toString()).toBe(before.toString());

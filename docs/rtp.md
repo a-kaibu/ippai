@@ -59,7 +59,7 @@ five (env `MASU_RTP=0`: not), then puts them in sake's C:\.
 `pack::ensure_prefix(store, fonts, Some(rtp))` (at serve's start, after the background install,
 and `masu prefix FONTS --rtp DIR`) copies the RTP part of `rtp/drive_c` (`pack::RTP_DIRS` and
 the XP RTP's system32 DLLs) into the tree `prefix32`, with a stamp
-`Program Files/ippai-rtp-<hash of those files>`. A tree with another stamp gets its RTP part
+`Program Files/masu-rtp-<hash of those files>`. A tree with another stamp gets its RTP part
 replaced and keeps the rest (fonts, files put in by hand: `merge_rtp`). sake sets each RTP's
 registry value when its folder is there.
 

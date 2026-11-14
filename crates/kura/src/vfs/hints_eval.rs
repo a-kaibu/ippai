@@ -480,12 +480,12 @@ fn replay_counts_what_hints_foresaw() {
     assert_eq!(engine(&names(&["SiglusEngine.exe", "Scene.pck", "koe/z0001.ovk"])), "Siglus");
     assert_eq!(engine(&names(&["g_Data/data.unity3d", "g_Data/sharedassets0.assets"])), "Unity");
     assert_eq!(engine(&names(&["game.exe", "readme.txt"])), "?");
-    assert_eq!(mounts(r#"{"mounts":["/ippai/game=g1","/x="],"engine":"KiriKiri"}"#), vec!["g1"]);
+    assert_eq!(mounts(r#"{"mounts":["/masu/game=g1","/x="],"engine":"KiriKiri"}"#), vec!["g1"]);
     assert_eq!(field(r#"{"id":"a","engine":"KiriKiri Z"}"#, "engine"), Some("KiriKiri Z"));
     // (as masu writes them: pretty, spaces inside strings kept)
-    let pretty = compact("{\n  \"run\": \"Z:\\\\ippai\\\\a b.exe\",\n  \"mounts\": [\n    \"/ippai/game=g 1\"\n  ],\n  \"engine\": \"Siglus \\\"x\\\"\"\n}");
+    let pretty = compact("{\n  \"run\": \"Z:\\\\masu\\\\a b.exe\",\n  \"mounts\": [\n    \"/masu/game=g 1\"\n  ],\n  \"engine\": \"Siglus \\\"x\\\"\"\n}");
     assert_eq!(mounts(&pretty), vec!["g 1"]);
-    assert_eq!(field(&pretty, "run"), Some("Z:\\\\ippai\\\\a b.exe"));
+    assert_eq!(field(&pretty, "run"), Some("Z:\\\\masu\\\\a b.exe"));
     let t = tree("v1\t\t\nf\t0\t0\tvoice/a\\tb.ogg\t3\taa:1,bb:2\nd\t0\t0\tvoice\t0\t\n");
     assert_eq!((t.len(), t[0].path.as_str(), t[0].chunks.len()), (1, "voice/a\tb.ogg", 2));
 }

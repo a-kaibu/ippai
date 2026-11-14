@@ -137,7 +137,7 @@ actual game executable and Vorbis initialization. Browser child processes share
 the live VFS, including the executable created by the official launcher; no
 pre-decrypted executable is distributed or added to the streamed library.
 
-The browser stores installation changes in IndexedDB `ippai-installation`,
+The browser stores installation changes in IndexedDB `masu-installation`,
 AES-GCM encrypted with a non-extractable CryptoKey. Nothing in it is specific to
 SDRT: it is this device's machine state, what the prefix keeps outside the user
 folders (C:\ProgramData, C:\windows, C:\Program Files) plus the CryptoAPI key

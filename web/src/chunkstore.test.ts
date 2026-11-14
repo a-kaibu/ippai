@@ -103,7 +103,7 @@ const url = (i: number, block?: number) =>
   `${BASE}${hex(i).slice(0, 2)}/${hex(i)}${block === undefined ? "" : `?b=${block}&s=262144`}`;
 const resp = (d: Uint8Array, checked = true) =>
   new Response(d.slice(), {
-    headers: checked ? { "x-ippai-checked": "1", "x-ippai-size": String(d.length) } : {},
+    headers: checked ? { "x-masu-checked": "1", "x-masu-size": String(d.length) } : {},
   });
 
 // the network worker's copy, run as the worker runs it
@@ -124,12 +124,12 @@ const bridge = (): BridgeStore =>
 test("file names: a chunk's hex, a block's hex and place; nothing else", () => {
   expect(chunkFileName(url(5))).toBe(hex(5));
   expect(chunkFileName(url(5, 3))).toBe(`${hex(5)}?b=3&s=262144`);
-  expect(chunkFileName(`opfs:/ippai-chunks/${hex(7)}`)).toBe(hex(7));
+  expect(chunkFileName(`opfs:/masu-chunks/${hex(7)}`)).toBe(hex(7));
   expect(chunkFileName(hex(7))).toBe(hex(7));
   // (a folder that is not the name's first two digits: not a chunk's place)
   expect(chunkFileName(`${BASE}cd/${hex(5)}`)).toBe("");
   expect(bridge().masuChunkFile(`${BASE}cd/${hex(5)}`)).toBe("");
-  for (const u of [url(5), url(5, 3), `opfs:/ippai-chunks/${hex(7)}`, hex(7), `${BASE}xx`])
+  for (const u of [url(5), url(5, 3), `opfs:/masu-chunks/${hex(7)}`, hex(7), `${BASE}xx`])
     expect(bridge().masuChunkFile(u), u).toBe(chunkFileName(u));
   for (const bad of [`${BASE}xx`, `${BASE}${hex(1)}.tmp`, `${BASE}../${hex(1)}x`, "https://masu.test/"])
     expect(chunkFileName(bad), bad).toBe("");
@@ -177,8 +177,8 @@ test("the page's and the worker's stores over one folder agree with a model (dif
         if (!want) expect(r, `${run}/${step} ${k}`).toBeUndefined();
         else {
           expect(new Uint8Array(await r!.arrayBuffer()), `${run}/${step} ${k}`).toEqual(want.d);
-          expect(r!.headers.get("x-ippai-checked") === "1").toBe(want.checked);
-          expect(Number(r!.headers.get("x-ippai-size"))).toBe(want.d.length);
+          expect(r!.headers.get("x-masu-checked") === "1").toBe(want.checked);
+          expect(Number(r!.headers.get("x-masu-size"))).toBe(want.d.length);
         }
         // (the worker's quick read, a part)
         const from = rnd(200);

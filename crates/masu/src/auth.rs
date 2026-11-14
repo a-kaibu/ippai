@@ -9,7 +9,7 @@
 //!   `tailscale serve` sets for tailnet users and drops from what clients send; Funnel's
 //!   public requests carry none)
 //! - everyone else (`--listen 0.0.0.0` from another device, another proxy, a tunnel, Funnel)
-//!   needs the server's token, `~/.config/ippai/token` (`masu token` prints it and the URL to
+//!   needs the server's token, `~/.config/masu/token` (`masu token` prints it and the URL to
 //!   sign in with), once per browser: the sign-in page (`/login`, the token typed in or in the
 //!   URL's fragment, `/login#<token>`, which no request or log carries; the page posts it) sets
 //!   a session cookie (HttpOnly, SameSite=Lax, ten years): a session id and its HMAC under the

@@ -72,10 +72,10 @@ pub struct Args {
     /// The web app to serve instead of the one built in.
     #[arg(long)]
     web: Option<PathBuf>,
-    /// Saved x86 regions, per game [default: ~/.cache/ippai/jit]
+    /// Saved x86 regions, per game [default: ~/.cache/masu/jit]
     #[arg(long)]
     jit: Option<PathBuf>,
-    /// The runs' logs the pages send (crash reports) [default: ~/.local/state/ippai/logs]
+    /// The runs' logs the pages send (crash reports) [default: ~/.local/state/masu/logs]
     #[arg(long)]
     pub logs: Option<PathBuf>,
     /// [default: 127.0.0.1:8656, or listen in config.toml]
@@ -222,9 +222,9 @@ fn list_owner(file: &str) -> String {
 /// Traces kept at most (a run's is up to 4 MiB: kura vfs/trace.rs TRACE_MAX).
 const TRACES_MAX: usize = 300;
 
-/// Stores run trace `name` (text starting "ippai-trace "), then drops the oldest past TRACES_MAX.
+/// Stores run trace `name` (text starting "masu-trace "), then drops the oldest past TRACES_MAX.
 async fn save_trace(jit: &Jit, name: &str, body: &[u8]) -> StatusCode {
-    if !body.starts_with(b"ippai-trace ") || body.len() > (4 << 20) + 4096 {
+    if !body.starts_with(b"masu-trace ") || body.len() > (4 << 20) + 4096 {
         return StatusCode::BAD_REQUEST;
     }
     let dir = jit.0.join("traces");
@@ -1917,12 +1917,12 @@ mod tests {
         let d = scratch("traces");
         let jit: super::Jit = std::sync::Arc::new((d.clone(), tokio::sync::Mutex::new(())));
         let put = |name: String, body: &str| super::save_jit(State(jit.clone()), Path(name), body.to_string().into());
-        assert_eq!(put("trace.game.x.1".into(), "ippai-trace 1\nR\t0").await, axum::http::StatusCode::NO_CONTENT);
-        assert_eq!(put("trace.game.x.1".into(), "ippai-trace 1\nR\t0\nR\t5").await, axum::http::StatusCode::NO_CONTENT);
-        assert_eq!(std::fs::read_to_string(d.join("traces/trace.game.x.1")).unwrap(), "ippai-trace 1\nR\t0\nR\t5");
+        assert_eq!(put("trace.game.x.1".into(), "masu-trace 1\nR\t0").await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(put("trace.game.x.1".into(), "masu-trace 1\nR\t0\nR\t5").await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(std::fs::read_to_string(d.join("traces/trace.game.x.1")).unwrap(), "masu-trace 1\nR\t0\nR\t5");
         assert_eq!(put("trace.game.x.2".into(), "not a trace").await, axum::http::StatusCode::BAD_REQUEST);
         for i in 0..super::TRACES_MAX + 5 {
-            assert_eq!(put(format!("trace.game.y.{i}"), "ippai-trace 1\n").await, axum::http::StatusCode::NO_CONTENT);
+            assert_eq!(put(format!("trace.game.y.{i}"), "masu-trace 1\n").await, axum::http::StatusCode::NO_CONTENT);
         }
         let left: Vec<String> = std::fs::read_dir(d.join("traces")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         assert_eq!(left.len(), super::TRACES_MAX);
@@ -1954,7 +1954,7 @@ mod tests {
         assert_eq!(read("game.saga_planets-3.chunks"), [9, 1]);
         assert_eq!(read("_shared.chunks"), [1]);
         assert_eq!(super::list_owner("game.saga_planets-2.chunks"), "game.saga_planets-2.chunks");
-        assert_eq!(super::list_owner("sake-Z__ippai_game_SiglusEngine.exe-24d68ccbg.chunks"), "sake-Z__ippai_game_SiglusEngine.exe");
+        assert_eq!(super::list_owner("sake-Z__masu_game_SiglusEngine.exe-24d68ccbg.chunks"), "sake-Z__masu_game_SiglusEngine.exe");
         assert_eq!(put("game.x.chunks", &[]).await, axum::http::StatusCode::NO_CONTENT);
         assert_eq!(super::save_jit(State(jit.clone()), Path("game.x.chunks".into()), vec![0u8; 15].into()).await, axum::http::StatusCode::BAD_REQUEST);
         assert!(!d.join("game.saga_planets-2.chunks.tmp").exists());

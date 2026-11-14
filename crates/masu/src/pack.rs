@@ -106,7 +106,7 @@ pub enum Cmd {
         /// Shown on the card.
         #[arg(long)]
         title: String,
-        /// The tree with the game folder, mounted at Z:\ippai\game.
+        /// The tree with the game folder, mounted at Z:\masu\game.
         #[arg(long)]
         tree: String,
         /// Executable to start, relative to the game folder.
@@ -537,8 +537,8 @@ fn add_game(
         None => old.as_ref().and_then(|o| o.cover.clone()),
     };
     let mut entry = GameEntry {
-        run: format!("Z:\\ippai\\game\\{}", exe.replace('/', "\\")),
-        mounts: [format!("/ippai/game={tree}")].into_iter().chain(mount).collect(),
+        run: format!("Z:\\masu\\game\\{}", exe.replace('/', "\\")),
+        mounts: [format!("/masu/game={tree}")].into_iter().chain(mount).collect(),
         id: id.clone(),
         title,
         engine,
@@ -755,16 +755,16 @@ static MOVIES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     ok
 });
 
-/// The tree every game mounts as sake's C:\ (web/src/play.ts: `/ippai/prefix=prefix32`).
+/// The tree every game mounts as sake's C:\ (web/src/play.ts: `/masu/prefix=prefix32`).
 pub const PREFIX_TREE: &str = "prefix32";
 
 /// The store's games and saved JIT regions moved from the guest paths of before the rename
-/// (Z:\vnvm\game, /vnvm/game, /vnvm/prefix) to Z:\ippai\..., /ippai/...: each games/*.json
+/// (Z:\vnvm\game, /vnvm/game, /vnvm/prefix) to Z:\masu\..., /masu/...: each games/*.json
 /// whose run, args, mounts or env name them is rewritten (the rest of it as it was), and each
 /// file in `jit` named after such a program (play.ts jitName: sake-Z__vnvm_game_...) renamed.
 /// Done at every start, nothing to do once done; how many it changed.
 pub fn migrate_guest_paths(store: &Path, jit: &Path) -> Result<usize> {
-    let fix = |s: &str| s.replace("Z:\\vnvm\\", "Z:\\ippai\\").replace("/vnvm/game", "/ippai/game").replace("/vnvm/prefix", "/ippai/prefix");
+    let fix = |s: &str| s.replace("Z:\\vnvm\\", "Z:\\masu\\").replace("/vnvm/game", "/masu/game").replace("/vnvm/prefix", "/masu/prefix");
     let mut n = 0;
     if let Ok(dir) = fs::read_dir(store.join("games")) {
         for e in dir.flatten() {
@@ -803,7 +803,7 @@ pub fn migrate_guest_paths(store: &Path, jit: &Path) -> Result<usize> {
         for e in dir.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if let Some(rest) = name.strip_prefix("sake-Z__vnvm_") {
-                let to = jit.join(format!("sake-Z__ippai_{rest}"));
+                let to = jit.join(format!("sake-Z__masu_{rest}"));
                 if !to.exists() && fs::rename(e.path(), &to).is_ok() {
                     n += 1;
                 }
@@ -885,7 +885,7 @@ pub const RTP_DIRS: &[&str] = &[
 const RTP_SYSTEM: &str = "drive_c/windows/system32/RGSS1";
 
 /// The stamp's name in the tree: `drive_c/Program Files/<RTP_STAMP>-<hash>` (an empty file).
-pub const RTP_STAMP: &str = "ippai-rtp";
+pub const RTP_STAMP: &str = "masu-rtp";
 
 fn stamp_path(hash: &str) -> String {
     format!("drive_c/Program Files/{RTP_STAMP}-{hash}")
@@ -991,7 +991,7 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The store tree web/bench.html's programs are in (mounted as Z:\ippai\game).
+/// The store tree web/bench.html's programs are in (mounted as Z:\masu\game).
 pub const BENCH_TREE: &str = "bench";
 
 /// The store's tree "bench" from a release's benchmark programs (`<data>/bench`: bench.exe and
@@ -1239,7 +1239,7 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
 #[cfg(test)]
 mod tests {
     /// Games packed before the rename (Z:\vnvm\game\..., /vnvm/game=...) and their saved
-    /// regions move to Z:\ippai\...; the rest of an entry stays as it was, a game already moved
+    /// regions move to Z:\masu\...; the rest of an entry stays as it was, a game already moved
     /// and other files are left, and a second run changes nothing.
     /// The list a game's packs follow: its own, else its program's newest build's, else none;
     /// another program whose name starts the same is not its.
@@ -1250,9 +1250,9 @@ mod tests {
         let jit = t.join("jit");
         fs::create_dir_all(t.join("games")).unwrap();
         fs::create_dir_all(&jit).unwrap();
-        fs::write(t.join("games/g.json"), r#"{"id":"g","title":"g","run":"Z:\\ippai\\game\\a.exe","args":[],"mounts":[],"env":[]}"#).unwrap();
+        fs::write(t.join("games/g.json"), r#"{"id":"g","title":"g","run":"Z:\\masu\\game\\a.exe","args":[],"mounts":[],"env":[]}"#).unwrap();
         assert!(read_order_list(&t, &jit, "g").is_empty());
-        let prog = "sake-Z__ippai_game_a.exe";
+        let prog = "sake-Z__masu_game_a.exe";
         fs::write(jit.join(format!("{prog}-old.chunks")), [1u8; 16]).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(jit.join(format!("{prog}-new.chunks")), [2u8; 32]).unwrap();
@@ -1325,20 +1325,20 @@ mod tests {
         fs::create_dir_all(store.join("games")).unwrap();
         fs::create_dir_all(&jit).unwrap();
         fs::write(store.join("games/old.json"), r#"{"id":"old","title":"俺の姿","run":"Z:\\vnvm\\game\\不可視の薬と数奇な運命.exe","args":["-x","Z:\\vnvm\\game\\data"],"mounts":["/vnvm/game=hulotte-2","/vnvm/other=t"],"env":["A=/vnvm/prefix/drive_c"],"brand":"Hulotte"}"#).unwrap();
-        let new = r#"{"id":"new","run":"Z:\\ippai\\game\\a.exe","mounts":["/ippai/game=a"]}"#;
+        let new = r#"{"id":"new","run":"Z:\\masu\\game\\a.exe","mounts":["/masu/game=a"]}"#;
         fs::write(store.join("games/new.json"), new).unwrap();
         fs::write(store.join("games/new.jpg"), b"\xff\xd8").unwrap();
         fs::write(jit.join("sake-Z__vnvm_game_a.exe-12.parts"), b"p").unwrap();
         fs::write(jit.join("sake-other-12.parts"), b"q").unwrap();
         assert_eq!(super::migrate_guest_paths(&store, &jit).unwrap(), 2);
         let g: serde_json::Value = serde_json::from_slice(&fs::read(store.join("games/old.json")).unwrap()).unwrap();
-        assert_eq!(g["run"], "Z:\\ippai\\game\\不可視の薬と数奇な運命.exe");
-        assert_eq!(g["args"], serde_json::json!(["-x", "Z:\\ippai\\game\\data"]));
-        assert_eq!(g["mounts"], serde_json::json!(["/ippai/game=hulotte-2", "/vnvm/other=t"]));
-        assert_eq!(g["env"], serde_json::json!(["A=/ippai/prefix/drive_c"]));
+        assert_eq!(g["run"], "Z:\\masu\\game\\不可視の薬と数奇な運命.exe");
+        assert_eq!(g["args"], serde_json::json!(["-x", "Z:\\masu\\game\\data"]));
+        assert_eq!(g["mounts"], serde_json::json!(["/masu/game=hulotte-2", "/vnvm/other=t"]));
+        assert_eq!(g["env"], serde_json::json!(["A=/masu/prefix/drive_c"]));
         assert_eq!((g["title"].as_str(), g["brand"].as_str()), (Some("俺の姿"), Some("Hulotte")));
         assert_eq!(fs::read_to_string(store.join("games/new.json")).unwrap(), new, "untouched");
-        assert_eq!(fs::read(jit.join("sake-Z__ippai_game_a.exe-12.parts")).unwrap(), b"p");
+        assert_eq!(fs::read(jit.join("sake-Z__masu_game_a.exe-12.parts")).unwrap(), b"p");
         assert!(!jit.join("sake-Z__vnvm_game_a.exe-12.parts").exists() && jit.join("sake-other-12.parts").exists());
         assert_eq!(super::migrate_guest_paths(&store, &jit).unwrap(), 0);
         let _ = fs::remove_dir_all(dir);
@@ -1626,7 +1626,7 @@ mod tests {
         assert!(!after.iter().any(|p| p.ends_with("other.dll")));
         let ini = fs::read_to_string(&tsv).unwrap().lines().find(|l| l.split('\t').nth(3) == Some("drive_c/windows/win.ini")).unwrap().to_string();
         assert!(ini.contains("\t3\t"), "the hand-made win.ini stays: {ini}");
-        let stamps = |v: &[String]| v.iter().filter(|p| p.contains("/ippai-rtp-")).count();
+        let stamps = |v: &[String]| v.iter().filter(|p| p.contains("/masu-rtp-")).count();
         assert_eq!(stamps(&after), 1);
         let mut uniq = after.clone();
         uniq.sort();
@@ -1643,7 +1643,7 @@ mod tests {
         assert!(third.contains(&format!("{dir}/Graphics/System/Window.png")));
         assert!(third.contains(&"drive_c/windows/win.ini".to_string()));
         assert_eq!(stamps(&third), 1);
-        assert_ne!(third.iter().find(|p| p.contains("ippai-rtp-")), after.iter().find(|p| p.contains("ippai-rtp-")));
+        assert_ne!(third.iter().find(|p| p.contains("masu-rtp-")), after.iter().find(|p| p.contains("masu-rtp-")));
         // a new store: fonts and RTPs in one tree
         let store2 = t.join("store2");
         assert!(ensure_prefix(&store2, &fonts, Some(&rtp)).unwrap());
@@ -1665,7 +1665,7 @@ mod tests {
             let dirs = ["drive_c/windows", RTP_DIRS[0], "drive_c/Program Files", RTP_DIRS[3], "drive_c/windows/system32"];
             let line = |(k, d, n): &(usize, usize, String)| {
                 let path = match d {
-                    3 => format!("{}/ippai-rtp-{n}", dirs[2]),
+                    3 => format!("{}/masu-rtp-{n}", dirs[2]),
                     4 => dirs[1].to_string(),
                     5 => format!("{}/x/{n}", dirs[3]),
                     6 => format!("{}/RGSS1{n}.dll", dirs[4]),

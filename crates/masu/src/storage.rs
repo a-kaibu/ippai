@@ -27,7 +27,7 @@ pub struct Config {
     #[serde(default)]
     uploads: Option<usize>,
     /// Where objects read from the bucket are kept on this machine [default: <cache>/s3, e.g.
-    /// ~/.cache/ippai/s3], as the bucket has them (encrypted, checked again on every read).
+    /// ~/.cache/masu/s3], as the bucket has them (encrypted, checked again on every read).
     #[serde(default)]
     cache: Option<std::path::PathBuf>,
     /// The most that may be kept there, in GiB [default: 64]; 0 keeps nothing.
@@ -2080,7 +2080,7 @@ impl Storage {
                     } else {
                         let dir = match &config.cache {
                             Some(d) => d.clone(),
-                            None => directories::ProjectDirs::from("", "", "ippai").context("no home directory")?.cache_dir().join("s3"),
+                            None => directories::ProjectDirs::from("", "", "masu").context("no home directory")?.cache_dir().join("s3"),
                         };
                         Some(std::sync::Arc::new(Disk::open(dir, gib << 30)?))
                     };

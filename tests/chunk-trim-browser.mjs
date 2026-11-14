@@ -2,7 +2,7 @@
 // Storage, the origin's quota made small (estimate() made to say so) and other data in
 // OPFS (saves, states): after a trim the chunks are within half the quota and, with the rest,
 // the origin within 80% of it, counted by the chunks' real sizes (also those kept without
-// x-ippai-size, by an older page), the oldest gone first.
+// x-masu-size, by an older page), the oldest gone first.
 //
 //   node tests/chunk-trim-browser.mjs   (web's node_modules installed; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
@@ -35,11 +35,11 @@ try {
   }, 200 * MiB);
   await page.addScriptTag({ content: script });
   const r = await page.evaluate(async (MiB) => {
-    const cache = await caches.open("ippai-chunks-v1");
+    const cache = await caches.open("masu-chunks-v1");
     // 40 chunks of 4 MiB (160 MiB), every 5th one kept without its size
     for (let i = 0; i < 40; i++) {
       const hex = i.toString(16).padStart(32, "0");
-      const headers = i % 5 ? { "x-ippai-size": String(4 * MiB) } : {};
+      const headers = i % 5 ? { "x-masu-size": String(4 * MiB) } : {};
       await cache.put(`${location.origin}/store/chunks/00/${hex}`, new Response(new Uint8Array(4 * MiB).fill(i), { headers }));
     }
     // 30 MiB of states in OPFS
@@ -68,7 +68,7 @@ try {
     await w.write(new Uint8Array(120 * MiB).fill(8));
     await w.close();
     await window.masuNet.trimChunks();
-    const cache = await caches.open("ippai-chunks-v1");
+    const cache = await caches.open("masu-chunks-v1");
     let bytes = 0;
     for (const k of await cache.keys()) bytes += (await (await cache.match(k)).arrayBuffer()).byteLength;
     return { bytes, est: await navigator.storage.estimate() };
@@ -83,8 +83,8 @@ try {
   const r3 = await page.evaluate(async (MiB) => {
     const root = await navigator.storage.getDirectory();
     for (const n of ["states"]) await root.removeEntry(n, { recursive: true }).catch(() => {});
-    await caches.delete("ippai-chunks-v1");
-    const dir = await root.getDirectoryHandle("ippai-chunks", { create: true });
+    await caches.delete("masu-chunks-v1");
+    const dir = await root.getDirectoryHandle("masu-chunks", { create: true });
     const hex = (i) => (99 - i).toString(16).padStart(32, "0");
     for (let i = 0; i < 40; i++) {
       await window.masuNet.storeChunk(

@@ -38,7 +38,7 @@ export function selectRecords(
   }
   return out;
 }
-const prefix = "/ippai/prefix/drive_c/";
+const prefix = "/masu/prefix/drive_c/";
 const users = `${prefix}users/`;
 export const registryPath = `${users}user/sake-registry.tsv`;
 const secret = (p: string) => p.includes("/microsoft/crypto/");
@@ -87,9 +87,9 @@ export function joinRecords(
   out.set(b, a.length);
   return out;
 }
-/** Paths of before the rename (/vnvm/game, /vnvm/prefix) as they are now (/ippai/...). */
+/** Paths of before the rename (/vnvm/game, /vnvm/prefix) as they are now (/masu/...). */
 export function movedPath(path: string): string {
-  return path.replace(/^\/vnvm\/(game|prefix)(?=\/|$)/, "/ippai/$1");
+  return path.replace(/^\/vnvm\/(game|prefix)(?=\/|$)/, "/masu/$1");
 }
 /**
  * The records with their paths moved by `move` (the rest of each record as it was); null for
@@ -142,8 +142,8 @@ export function renameRecords(
 }
 /** The saves' name of before the rename for a program and its mounts (play.ts saveName). */
 export function legacyNames(run: string, mounts: string[]): { run: string; mounts: string[] } | null {
-  const r = run.replace(/^Z:\\ippai\\/i, "Z:\\vnvm\\");
-  const m = mounts.map((x) => x.replace(/^\/ippai\/(game|prefix)(?=[/=]|$)/, "/vnvm/$1"));
+  const r = run.replace(/^Z:\\masu\\/i, "Z:\\vnvm\\");
+  const m = mounts.map((x) => x.replace(/^\/masu\/(game|prefix)(?=[/=]|$)/, "/vnvm/$1"));
   return r === run && m.every((x, i) => x === mounts[i]) ? null : { run: r, mounts: m };
 }
 

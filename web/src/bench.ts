@@ -345,8 +345,8 @@ async function exeStep(step: Step, made: (p: OutputParser) => void): Promise<voi
   addEventListener("vnvm-print", (e) => p.line((e as CustomEvent<string>).detail));
   // (the program ended before its last line: play.ts says so before it leaves for the list)
   addEventListener("vnvm-exit", () => p.end());
-  params.set("run", `Z:\\ippai\\game\\${step.exe}`);
-  params.set("mount", "/ippai/game=bench");
+  params.set("run", `Z:\\masu\\game\\${step.exe}`);
+  params.set("mount", "/masu/game=bench");
   params.set("args", step.args ?? "");
   params.append("env", "MASU_NOPACE=1");
   if (step.env) {

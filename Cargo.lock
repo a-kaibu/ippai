@@ -1994,64 +1994,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
-name = "masu"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.22.1",
- "blake3",
- "cab",
- "clap",
- "directories",
- "encoding_rs",
- "flate2",
- "foresee",
- "form_urlencoded",
- "futures-util",
- "inno",
- "masu-tls",
- "koji",
- "libc",
- "md-5 0.11.0",
- "proptest",
- "rayon",
- "regex",
- "reqwest",
- "ring",
- "rusqlite",
- "rust-embed",
- "rust-s3",
- "sdrs-core",
- "serde",
- "serde_json",
- "siglus_assets",
- "siglus_key_recovery",
- "tar",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "toml",
- "tower",
- "tower-http",
- "unicode-normalization",
- "ureq",
- "uuid",
- "zip",
- "zstd 0.13.3",
-]
-
-[[package]]
-name = "masu-tls"
-version = "0.1.0"
-dependencies = [
- "httparse",
- "proptest",
- "rustls",
- "webpki-roots 1.0.11",
-]
-
-[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2275,6 +2217,64 @@ name = "lzxd"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c17f346186eccb574ba5581acefc514f0c70a642db4f96e245034a0a158a7168"
+
+[[package]]
+name = "masu"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "blake3",
+ "cab",
+ "clap",
+ "directories",
+ "encoding_rs",
+ "flate2",
+ "foresee",
+ "form_urlencoded",
+ "futures-util",
+ "inno",
+ "koji",
+ "libc",
+ "masu-tls",
+ "md-5 0.11.0",
+ "proptest",
+ "rayon",
+ "regex",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "rust-embed",
+ "rust-s3",
+ "sdrs-core",
+ "serde",
+ "serde_json",
+ "siglus_assets",
+ "siglus_key_recovery",
+ "tar",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "toml",
+ "tower",
+ "tower-http",
+ "unicode-normalization",
+ "ureq",
+ "uuid",
+ "zip",
+ "zstd 0.13.3",
+]
+
+[[package]]
+name = "masu-tls"
+version = "0.1.0"
+dependencies = [
+ "httparse",
+ "proptest",
+ "rustls",
+ "webpki-roots 1.0.11",
+]
 
 [[package]]
 name = "matchers"
@@ -3536,13 +3536,13 @@ dependencies = [
  "hmac",
  "icu_segmenter",
  "idna",
- "masu-tls",
  "jpeg-decoder",
  "koji",
  "kura",
  "libc",
  "libm",
  "lzxd",
+ "masu-tls",
  "md-5 0.10.6",
  "md5",
  "miniz_oxide 0.8.9",

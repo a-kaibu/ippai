@@ -163,7 +163,7 @@ pub fn script_key(name: &str) -> String {
 }
 
 /// A table's first line.
-pub const TABLE_HEADER: &str = "ippai-foresee 1";
+pub const TABLE_HEADER: &str = "masu-foresee 1";
 
 /// A table's line for script `name` and the names it mentions (in order): key, tab, names
 /// comma-separated (names with a tab, a comma or a line break in them left out).

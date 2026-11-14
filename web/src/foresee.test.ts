@@ -3,7 +3,7 @@ import { fetchForesee, FORESEE_TRIES, handForesee, mountedTrees } from "./forese
 
 test("the trees the mounts name, each once, not paths or odd names", () => {
   expect(
-    mountedTrees(["/=", "/ippai/prefix=prefix32", "/ippai/game=kinkoi", "/x=kinkoi", "/y=../z", "nomount"]),
+    mountedTrees(["/=", "/masu/prefix=prefix32", "/masu/game=kinkoi", "/x=kinkoi", "/y=../z", "nomount"]),
   ).toEqual(["prefix32", "kinkoi"]);
 });
 
@@ -17,8 +17,8 @@ test("a table goes into the module's memory and to kura, and is freed", () => {
     _vnhost_vfs_foresee: (p: number, n: number) =>
       void calls.push(`foresee ${new TextDecoder().decode(new Uint8Array(memory.buffer, p, n))}`),
   };
-  expect(handForesee(m, new TextEncoder().encode("ippai-foresee 1\na.ks\tb"))).toBe(true);
-  expect(calls).toEqual(["malloc 22", "foresee ippai-foresee 1\na.ks\tb", "free 64"]);
+  expect(handForesee(m, new TextEncoder().encode("masu-foresee 1\na.ks\tb"))).toBe(true);
+  expect(calls).toEqual(["malloc 21", "foresee masu-foresee 1\na.ks\tb", "free 64"]);
   // (an older sake without it, an empty table: nothing)
   expect(handForesee({ ...m, _vnhost_vfs_foresee: undefined }, new Uint8Array(3))).toBe(false);
   expect(handForesee(m, new Uint8Array(0))).toBe(false);

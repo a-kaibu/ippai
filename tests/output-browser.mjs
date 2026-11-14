@@ -61,7 +61,7 @@ try {
     if (process.env.VERBOSE) console.log(m.text());
   });
   page.on("pageerror", (e) => lines.push(`pageerror: ${e.message}`));
-  await page.goto(`${base}play.html?autostart&headless&mount=/ippai/game=flood&run=${encodeURIComponent("Z:\\ippai\\game\\flood.exe")}`);
+  await page.goto(`${base}play.html?autostart&headless&mount=/masu/game=flood&run=${encodeURIComponent("Z:\\masu\\game\\flood.exe")}`);
   await until(/^flood t0 40 /);
   // the page's thread busy for 3 s, as on a slow phone or behind a long task
   const busy = await page.evaluate(() => {

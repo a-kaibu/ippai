@@ -2,20 +2,20 @@
 //!
 //! ```text
 //! Linux                         macOS                                  what
-//! ~/.local/share/ippai/store    ~/Library/Application Support/ippai/store  chunks/ trees/ games/ saves
-//! ~/.local/share/ippai/fonts    ~/Library/Application Support/ippai/fonts  sake's fonts (a release's fonts/, install.sh)
-//! ~/.local/share/ippai/bench    ~/Library/Application Support/ippai/bench  the benchmark's programs (a release's bench/)
-//! ~/.local/share/ippai/rtp      ~/Library/Application Support/ippai/rtp    RPG Maker's RTPs (rtp.rs, from their publisher)
-//! ~/.cache/ippai/rtp            ~/Library/Caches/ippai/rtp             their downloads
-//! ~/.cache/ippai/jit            ~/Library/Caches/ippai/jit             saved x86 regions (wasm)
-//! ~/.cache/ippai/web            ~/Library/Caches/ippai/web             the built-in web app, unpacked
-//! ~/.local/state/ippai/logs     <data>/logs                            server.log, the pages' run logs
-//! ~/.config/ippai/config.toml   ~/Library/Application Support/ippai/config.toml
-//! ~/.config/ippai/token         ~/Library/Application Support/ippai/token  other devices' key (auth.rs)
-//! $XDG_RUNTIME_DIR/ippai        <cache>/run (0700)                     server-<store>.sock
+//! ~/.local/share/masu/store    ~/Library/Application Support/masu/store  chunks/ trees/ games/ saves
+//! ~/.local/share/masu/fonts    ~/Library/Application Support/masu/fonts  sake's fonts (a release's fonts/, install.sh)
+//! ~/.local/share/masu/bench    ~/Library/Application Support/masu/bench  the benchmark's programs (a release's bench/)
+//! ~/.local/share/masu/rtp      ~/Library/Application Support/masu/rtp    RPG Maker's RTPs (rtp.rs, from their publisher)
+//! ~/.cache/masu/rtp            ~/Library/Caches/masu/rtp             their downloads
+//! ~/.cache/masu/jit            ~/Library/Caches/masu/jit             saved x86 regions (wasm)
+//! ~/.cache/masu/web            ~/Library/Caches/masu/web             the built-in web app, unpacked
+//! ~/.local/state/masu/logs     <data>/logs                            server.log, the pages' run logs
+//! ~/.config/masu/config.toml   ~/Library/Application Support/masu/config.toml
+//! ~/.config/masu/token         ~/Library/Application Support/masu/token  other devices' key (auth.rs)
+//! $XDG_RUNTIME_DIR/masu        <cache>/run (0700)                     server-<store>.sock
 //! ```
 //!
-//! config.toml (all optional): `store = "/data/ippai"`, `cache = "..."`, `logs = "..."`,
+//! config.toml (all optional): `store = "/data/masu"`, `cache = "..."`, `logs = "..."`,
 //! `listen = "0.0.0.0:8656"`, `strict_auth = true` (auth.rs). `--store` and serve's flags win over it.
 
 use anyhow::{Context, Result};
@@ -60,7 +60,7 @@ pub const DEFAULT_LISTEN: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::ne
 
 impl Dirs {
     pub fn load(store: Option<PathBuf>) -> Result<Dirs> {
-        let p = directories::ProjectDirs::from("", "", "ippai").context("no home directory")?;
+        let p = directories::ProjectDirs::from("", "", "masu").context("no home directory")?;
         let file = p.config_dir().join("config.toml");
         let cfg: Config = match std::fs::read_to_string(&file) {
             Ok(s) => toml::from_str(&s).with_context(|| file.display().to_string())?,

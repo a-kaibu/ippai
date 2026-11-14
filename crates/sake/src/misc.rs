@@ -5616,7 +5616,7 @@ mod file_title_tests {
         assert_eq!(t("file.txt").as_deref(), Some("file.txt"));
         assert_eq!(t("c:file").as_deref(), Some("file"));
         assert_eq!(t("a/b/c.lzh").as_deref(), Some("c.lzh"));
-        assert_eq!(t("Z:\\ippai\\game\\地っ球.exe").as_deref(), Some("地っ球.exe"));
+        assert_eq!(t("Z:\\masu\\game\\地っ球.exe").as_deref(), Some("地っ球.exe"));
         assert_eq!(t(""), None);
         assert_eq!(t("C:\\dir\\"), None);
         assert_eq!(t("C:"), None);

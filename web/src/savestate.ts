@@ -7,7 +7,7 @@
 //
 // A state is kept in this browser (OPFS: states/<game>/<hash>.snap and index.json) and on the
 // server (masu serve /saves/state.<game>.<hash>, its S3 bucket), so another device goes on
-// from it too. The file is host/snap.js's: "IPPAISNP", u32 version, u32 header length, the
+// from it too. The file is host/snap.js's: "MASUSNP", u32 version, u32 header length, the
 // header (JSON), then blocks (u32 address, u32 length, u32 compressed length, a zstd frame),
 // ended by the address 0xffffffff.
 
@@ -47,7 +47,7 @@ export const SLOTS = 4;
 /** The slot of the state kept when the page went out of sight (web/src/hidden.ts): kept in
  * this browser only (a state each time the player looks away would be a lot to send). */
 export const AUTO_SLOT = SLOTS;
-const MAGIC = "IPPAISNP";
+const MAGIC = "MASUSNP";
 const BLOCK = 1 << 20;
 // Ctl's offsets (crates/kura/src/snap.rs)
 const CMD = 8,

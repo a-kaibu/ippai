@@ -10,11 +10,11 @@ import { blake3Hex } from "./blake3";
 import { drain, gate } from "./budget";
 import { deviceChunks, listChunks, type ChunkStore } from "./chunkstore";
 
-export const CHUNKS = "ippai-chunks-v1";
+export const CHUNKS = "masu-chunks-v1";
 const RETRY = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
-const CHECKED = "x-ippai-checked";
+const CHECKED = "x-masu-checked";
 /** A kept chunk's length (trimChunks; one kept without it, an older page's, is measured). */
-const SIZE = "x-ippai-size";
+const SIZE = "x-masu-size";
 /** Fetches of one chunk that may not match its name before it fails. */
 const BAD_CHUNK = 3;
 
@@ -154,7 +154,7 @@ export async function fetchRetry(
         const { response, data } = await once(String(url), { ...init, signal: opt.signal }, stallMs, request);
         if (data) return data;
         // (sw.ts: offline, and not kept on the device)
-        if (response.headers.has("x-ippai-offline")) throw new HttpError(response.status, true);
+        if (response.headers.has("x-masu-offline")) throw new HttpError(response.status, true);
         if (!RETRY.has(response.status)) throw new HttpError(response.status);
         error = new Error(`HTTP ${response.status}`);
         after = Math.min((Number(response.headers.get("retry-after")) || 0) * 1000, 30000);
@@ -262,7 +262,7 @@ const KEEP_BYTES = 2 * 1024 ** 3;
  * with what else the origin keeps (saves and states in OPFS, the app) the whole under SHARE of the
  * quota, those never going. The oldest chunks go first, but not those `saved()` lists (games saved
  * to the device: offline.ts savedChunks; only asked when something must go). Sizes are the
- * chunks' own (x-ippai-size; FastCDC chunks are 4 MiB on average, 64 MiB at most). Also asks the
+ * chunks' own (x-masu-size; FastCDC chunks are 4 MiB on average, 64 MiB at most). Also asks the
  * browser to keep this origin's data under storage pressure.
  */
 export async function trimChunks(

@@ -51,7 +51,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(about, version = serve::VERSION_LINE)]
 struct Cli {
-    /// The store: packed trees (trees/, chunks/), the game list (games/) [default: ~/.local/share/ippai/store]
+    /// The store: packed trees (trees/, chunks/), the game list (games/) [default: ~/.local/share/masu/store]
     #[arg(long, global = true)]
     store: Option<PathBuf>,
     #[command(subcommand)]
@@ -177,7 +177,7 @@ enum StorageCmd {
     Packs {
         /// Games to pack [default: every game]
         games: Vec<String>,
-        /// masu serve's saved regions and read-order lists [default: ~/.cache/ippai/jit]
+        /// masu serve's saved regions and read-order lists [default: ~/.cache/masu/jit]
         #[arg(long)]
         jit: Option<PathBuf>,
         #[arg(long, default_value_t = (storage::PACK_BYTES >> 20) as u64, value_parser = clap::value_parser!(u64).range(1..=4096))]

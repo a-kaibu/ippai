@@ -20,7 +20,7 @@ export interface SakeBuild {
   jit: "" | "g";
 }
 
-const BUILD_KEY = "ippai-sake-build";
+const BUILD_KEY = "masu-sake-build";
 
 export function sakeBuild(force?: string | null): SakeBuild {
   let build: SakeBuild = { name: "sake-grow", jit: "g" };
@@ -80,7 +80,7 @@ export const jitBase = (run: string) => `sake-${run.replace(/[^A-Za-z0-9_.-]/g, 
 
 /** The name of game `game`'s list of the store chunks its runs read, in order (masu serve
  * /jit/<name>.chunks; the page fetches them ahead). A game's own, not its program's: games start
- * the same program (every SiglusEngine.exe at Z:\ippai\game) and read other chunks. Not per
+ * the same program (every SiglusEngine.exe at Z:\masu\game) and read other chunks. Not per
  * build either: a new sake does not change what the game reads. */
 export const gameChunksName = (game: string) => `game.${game.replace(/[^A-Za-z0-9_-]/g, "_")}`;
 

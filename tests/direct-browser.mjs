@@ -191,7 +191,7 @@ try {
   for (const c of chunks.values()) c.gets = 0;
   const fresh = [make('no s3 a', 50000, 7), make('no s3 b', 60000, 8), make('no s3 c', 70000, 9)];
   const page2 = await open();
-  await page2.evaluate(async () => { await caches.delete('ippai-chunks-v1'); await (await navigator.storage.getDirectory()).removeEntry('ippai-chunks', { recursive: true }).catch(() => {}); });
+  await page2.evaluate(async () => { await caches.delete('masu-chunks-v1'); await (await navigator.storage.getDirectory()).removeEntry('masu-chunks', { recursive: true }).catch(() => {}); });
   [r, d] = await since(() => read(page2, fresh));
   assert.deepEqual(r, fresh.map((p) => expect(p)));
   assert.deepEqual(d, { store: 3, direct: 1, bucket: 0, redirect: 0 }, 'no S3: asked once');
@@ -214,7 +214,7 @@ try {
   noS3 = false;
   const warmed = [make('warm a', 80000, 10), make('warm b', 1500000, 11), make('warm c', 90000, 12, { missing: true }), make('warm d', 70000, 13)];
   const page3 = await open();
-  await page3.evaluate(async () => { await caches.delete('ippai-chunks-v1'); await (await navigator.storage.getDirectory()).removeEntry('ippai-chunks', { recursive: true }).catch(() => {}); });
+  await page3.evaluate(async () => { await caches.delete('masu-chunks-v1'); await (await navigator.storage.getDirectory()).removeEntry('masu-chunks', { recursive: true }).catch(() => {}); });
   await read(page3, [warmed[3]]);
   const warm = (paths, { busyFirst, stopFirst, busyWidth } = {}) =>
     page3.evaluate(
@@ -236,14 +236,14 @@ try {
         await Promise.race([end, new Promise((_, no) => setTimeout(() => no(new Error('fetching ahead stalled')), 30000))]);
         const cache = await (async () => {
       // (the device's chunk store: OPFS, web/src/chunkstore.ts; Cache Storage before)
-      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('ippai-chunks', { create: true });
-      const old = await caches.open('ippai-chunks-v1');
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('masu-chunks', { create: true });
+      const old = await caches.open('masu-chunks-v1');
       return {
         async match(u) {
           const name = u.slice(u.lastIndexOf('/') + 1);
           try {
             const f = await (await dir.getFileHandle(name)).getFile();
-            if (f.size) return new Response(f, { headers: { 'x-ippai-size': String(f.size) } });
+            if (f.size) return new Response(f, { headers: { 'x-masu-size': String(f.size) } });
           } catch {}
           return old.match(u);
         },

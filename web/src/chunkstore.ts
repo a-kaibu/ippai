@@ -46,7 +46,7 @@ async function batched<T, R>(xs: readonly T[], width: number, f: (x: T) => Promi
   return out;
 }
 
-/** The old Cache Storage's entries with their sizes (x-ippai-size, else measured), not `skip`'s. */
+/** The old Cache Storage's entries with their sizes (x-masu-size, else measured), not `skip`'s. */
 async function listOld(old: Cache | null, skip: (k: Key) => boolean = () => false): Promise<Kept[]> {
   const keys = ((await old?.keys().catch(() => [])) ?? []).filter((k) => !skip(k));
   const sized = await batched(keys, LIST_AT_ONCE, async (k): Promise<Kept> => {
@@ -72,9 +72,9 @@ export const EMPTY_STALE_MS = 10 * 60 * 1000;
 /** A URL, or what keys() gave. */
 export type Key = string | URL | { url: string };
 
-export const CHUNK_DIR = "ippai-chunks";
-const CHECKED = "x-ippai-checked";
-const SIZE = "x-ippai-size";
+export const CHUNK_DIR = "masu-chunks";
+const CHECKED = "x-masu-checked";
+const SIZE = "x-masu-size";
 
 const urlOf = (r: Key) => (typeof r === "string" ? r : r instanceof URL ? r.href : r.url);
 /** What Cache Storage takes of a key (none for this store's own keys()). */
@@ -85,9 +85,9 @@ export function chunkFileName(request: Key): string {
   const u = urlOf(request);
   // (chunks/<ab>/<hex>, its folder its first two digits; this store's own keys opfs:/<dir>/<name>)
   const m =
-    /\/([0-9a-f]{2}|ippai-chunks)\/([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u) ??
+    /\/([0-9a-f]{2}|masu-chunks)\/([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u) ??
     /^()([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u);
-  return m && (m[1] === "" || m[1] === "ippai-chunks" || m[2]!.startsWith(m[1]!)) ? m[2]! : "";
+  return m && (m[1] === "" || m[1] === "masu-chunks" || m[2]!.startsWith(m[1]!)) ? m[2]! : "";
 }
 
 const notFound = (e: unknown) =>
@@ -207,7 +207,7 @@ export async function deviceChunks(): Promise<ChunkStore | null> {
   let old: Cache | null = null;
   if (typeof caches !== "undefined") {
     if (oldOpened?.of !== caches)
-      oldOpened = { of: caches, p: caches.open("ippai-chunks-v1").catch(() => null) };
+      oldOpened = { of: caches, p: caches.open("masu-chunks-v1").catch(() => null) };
     old = await oldOpened.p;
     if (!old) oldOpened = undefined;
   }

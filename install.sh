@@ -6,7 +6,7 @@
 # Puts the binary in ~/.local/bin (MASU_INSTALL_DIR to change) after checking it against the
 # release's checksums.txt, and adds that directory to PATH in the shell's rc file when it is not
 # on PATH yet. MASU_VERSION=v0.1.0 installs that release instead of the latest.
-# The release's fonts (sake's C:\) go to ~/.local/share/ippai/fonts, where `masu serve` makes
+# The release's fonts (sake's C:\) go to ~/.local/share/masu/fonts, where `masu serve` makes
 # the store's C:\ from them the first time.
 set -eu
 

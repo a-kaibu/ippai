@@ -18,7 +18,7 @@ const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
 const bin = resolve(process.argv[2] ?? "target/debug/masu");
-const work = mkdtempSync(join(tmpdir(), "ippai-offline-"));
+const work = mkdtempSync(join(tmpdir(), "masu-offline-"));
 // (a copy of web/dist: without a sake build, stand-ins for its files, which 端末に保存 fetches)
 const web = join(work, "web");
 cpSync(resolve("web/dist"), web, { recursive: true });
@@ -79,7 +79,7 @@ browser.on("request", watch("request"));
 browser.on("requestfailed", watch("failed"));
 browser.on("requestfinished", watch("finished"));
 let page;
-/** A file never fetched answers at once as offline (503 + x-ippai-offline); on a miss, what the
+/** A file never fetched answers at once as offline (503 + x-masu-offline); on a miss, what the
  * page, its service worker and the network saw, to tell the worker's fault from the harness's. */
 async function neverFetched(phase) {
   seen.length = 0;
@@ -96,7 +96,7 @@ async function neverFetched(phase) {
       setTimeout(() => resolve("no answer"), 1000);
       sw.postMessage("state", [ch.port2]);
     });
-    return { status: r.status, offline: r.headers.get("x-ippai-offline"), ms, headers, onLine: navigator.onLine, controlled: !!sw, swState: sw?.state, state };
+    return { status: r.status, offline: r.headers.get("x-masu-offline"), ms, headers, onLine: navigator.onLine, controlled: !!sw, swState: sw?.state, state };
   });
   const diag = `${phase}: ${JSON.stringify({ ...missed, network: seen })}`;
   assert.equal(missed.status, 503, diag);
@@ -148,7 +148,7 @@ try {
   await page.getByText("オフラインのゲーム").first().waitFor({ timeout: 10000 });
 
   await page.getByText("オフラインです").waitFor({ timeout: 5000 });
-  // never fetched: offline at once (503, x-ippai-offline), not a network error to retry
+  // never fetched: offline at once (503, x-masu-offline), not a network error to retry
   await neverFetched("offline");
 
   if (full) {

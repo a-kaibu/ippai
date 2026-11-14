@@ -13,12 +13,12 @@
 // times. Kept ones carry MASU_CHECKED; one kept before that (or by an older page) is checked
 // once when read, then kept again with it.
 // Retries are announced on the BroadcastChannel "masu-net" (the page shows that it waits).
-var MASU_CHUNKS = 'ippai-chunks-v1';
+var MASU_CHUNKS = 'masu-chunks-v1';
 var MASU_STALL_MS = 20000;
 var MASU_GIVE_UP_MS = 15 * 60000;
 var MASU_RETRY_STATUS = [0, 408, 425, 429, 500, 502, 503, 504];
 var MASU_BAD_CHUNK = 3;
-var MASU_CHECKED = 'x-ippai-checked';
+var MASU_CHECKED = 'x-masu-checked';
 
 /** A store chunk: content-addressed, the same bytes forever. */
 function masuIsChunk(url) {
@@ -224,7 +224,7 @@ function masuCacheStep(p) {
  * against this one on one folder); Cache Storage alone where there is no OPFS.
  */
 var masuCacheOpen;
-var MASU_CHUNK_DIR = 'ippai-chunks';
+var MASU_CHUNK_DIR = 'masu-chunks';
 function masuCache() {
   return (masuCacheOpen ??= (async () => {
     let old = null;
@@ -243,8 +243,8 @@ function masuCache() {
 /** A key's file name in the chunk folder (chunkstore.ts chunkFileName). */
 function masuChunkFile(u) {
   u = typeof u === 'string' ? u : u.url;
-  const m = /\/([0-9a-f]{2}|ippai-chunks)\/([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u) ?? /^()([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u);
-  return m && (m[1] === '' || m[1] === 'ippai-chunks' || m[2].startsWith(m[1])) ? m[2] : '';
+  const m = /\/([0-9a-f]{2}|masu-chunks)\/([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u) ?? /^()([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u);
+  return m && (m[1] === '' || m[1] === 'masu-chunks' || m[2].startsWith(m[1])) ? m[2] : '';
 }
 
 /**
@@ -323,7 +323,7 @@ function masuOpfsStore(dir, old) {
       const name = masuChunkFile(k);
       const f = name ? await file(name) : null;
       if (f) {
-        const headers = { 'x-ippai-size': String(f.size) };
+        const headers = { 'x-masu-size': String(f.size) };
         if (!name.includes('?')) headers[MASU_CHECKED] = '1';
         return new Response(f, { headers });
       }
@@ -450,7 +450,7 @@ function masuKeep(cache, url, data) {
   masuSavingBytes += data.length;
   let timer;
   const late = new Promise((r) => (timer = setTimeout(r, MASU_PUT_MS)));
-  Promise.race([cache.put(url, new Response(data, { headers: { [MASU_CHECKED]: '1', 'x-ippai-size': String(data.length) } })), late])
+  Promise.race([cache.put(url, new Response(data, { headers: { [MASU_CHECKED]: '1', 'x-masu-size': String(data.length) } })), late])
     .catch(() => {})
     .finally(() => {
       clearTimeout(timer);
@@ -1086,7 +1086,7 @@ async function masuFetchPart(url, from, len, block, cls = 0) {
       const d = r.data.subarray((k - first) * block, (k + 1 - first) * block);
       // (a short block only at the chunk's end)
       if (d.length === block || (r.total !== undefined && k * block + d.length === r.total))
-        cache.put(masuBlockKey(url, k, block), new Response(d.slice(), { headers: { 'x-ippai-size': String(d.length) } })).catch(() => {});
+        cache.put(masuBlockKey(url, k, block), new Response(d.slice(), { headers: { 'x-masu-size': String(d.length) } })).catch(() => {});
     }
   }
   return { ...r, data: r.data.subarray(from - at, from - at + len) };

@@ -12,7 +12,7 @@
 //   while there is a copy (a weak mobile link); covers: the copy at once, refreshed behind
 // - HEAD (play.ts asks sake.js's and sake.wasm's version that way) answers from the headers last
 //   seen, which are kept for it
-// - a file that is not here while offline: 503 with x-ippai-offline, which net.ts does not retry
+// - a file that is not here while offline: 503 with x-masu-offline, which net.ts does not retry
 //
 // Updates: a new build's sw.js installs on the next load online, takes over at once (skipWaiting:
 // the old pages' files stay here until it activates and prunes assets/ to its own) and pwa.ts
@@ -117,7 +117,7 @@ function key(href: string, page = false): string {
 function offline(): Response {
   return new Response("offline: not on this device", {
     status: 503,
-    headers: { "x-ippai-offline": "1", "content-type": "text/plain; charset=utf-8" },
+    headers: { "x-masu-offline": "1", "content-type": "text/plain; charset=utf-8" },
   });
 }
 

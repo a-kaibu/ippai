@@ -136,8 +136,8 @@ MASU_STORAGE_CONFIG=... masu storage packs saga_planets-2
 ## Chunks on the device: OPFS (web/src/chunkstore.ts)
 
 Chunks fetched or saved to the device are kept in the origin private file system, in the folder
-`ippai-chunks`, one file each, named by the chunk's hex name (a block kept alone:
-`<hex>?b=<k>&s=<block>`). Cache Storage (`ippai-chunks-v1`) was used before. It is still read,
+`masu-chunks`, one file each, named by the chunk's hex name (a block kept alone:
+`<hex>?b=<k>&s=<block>`). Cache Storage (`masu-chunks-v1`) was used before. It is still read,
 so games saved before stay saved, and an entry there goes when it is kept or deleted again.
 
 - The network worker reads a block of a whole chunk through a read-only synchronous access
@@ -157,7 +157,7 @@ program's `sake-<prog>-<build>.chunks`) against the games' trees, for the hints 
 them, per engine (guessed from the archives a game packs):
 
 ```sh
-HINTS_STORE=~/.local/share/ippai/store HINTS_JIT=~/.cache/ippai/jit \
+HINTS_STORE=~/.local/share/masu/store HINTS_JIT=~/.cache/masu/jit \
   cargo test -p kura --lib hints_eval -- --ignored --nocapture
 ```
 
@@ -225,7 +225,7 @@ per game and foresight (none, layout, script, next, list and their sums), the re
 waited, the seconds waited, and the chunks fetched for nothing.
 
 ```sh
-REPLAY_TRACES=~/.cache/ippai/jit/traces cargo test -p kura --lib replay_traces -- --ignored --nocapture
+REPLAY_TRACES=~/.cache/masu/jit/traces cargo test -p kura --lib replay_traces -- --ignored --nocapture
 ```
 
 These traces are also what a model of the next reads learns from (candidates from each

@@ -8,7 +8,7 @@
 //!   `P <ino> <path>`                          a file's path, before its first read
 //!   `R <ms> <ino> <offset> <chunk> <hash> <waited ms>`   a chunk's first read (offset: the read's)
 //!   `H <ms> <source> <hash>,<hash>,...`        a hint sent to the page
-//! The first line is `ippai-trace 1`. TRACE_MAX bytes at most (the rest is not kept).
+//! The first line is `masu-trace 1`. TRACE_MAX bytes at most (the rest is not kept).
 
 use super::{hex, Hash, Ino, Layout};
 use std::collections::HashSet;
@@ -37,7 +37,7 @@ fn with(f: impl FnOnce(&mut Trace, u64)) {
     }
     let start = *t.start.get_or_insert_with(Instant::now);
     if t.text.is_empty() {
-        t.text.push_str("ippai-trace 1\n");
+        t.text.push_str("masu-trace 1\n");
     }
     f(t, start.elapsed().as_millis() as u64);
     if t.text.len() > TRACE_MAX {

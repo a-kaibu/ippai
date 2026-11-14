@@ -1,5 +1,5 @@
 //! The page's file system: directory trees packed by `masu pack` (`trees/<name>.tsv` plus
-//! chunks in the store) mounted where `MASU_MOUNTS` says ("/=:/ippai/game=reunion"), read
+//! chunks in the store) mounted where `MASU_MOUNTS` says ("/=:/masu/game=reunion"), read
 //! lazily chunk by chunk. Whatever is written stays in memory. Paths outside the mounts are the
 //! host's (node; the page mounts an empty tree at "/", so there is nothing outside). Rust code
 //! reaches it through crate::fs.
@@ -3438,7 +3438,7 @@ pub(crate) mod tests {
         read("/voice/v001.ogg", 0, 8);
         let ks = read("/first.ks", 0, 4);
         let text = trace::text();
-        assert!(text.starts_with("ippai-trace 1\n"));
+        assert!(text.starts_with("masu-trace 1\n"));
         let lines = trace::parse(&text);
         let reads: Vec<(Ino, u64, u32, String)> = lines.iter().filter_map(|l| match l {
             trace::Line::Read { ino, off, chunk, hash, .. } => Some((*ino, *off, *chunk, hash.clone())),

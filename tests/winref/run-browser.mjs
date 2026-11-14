@@ -100,7 +100,7 @@ for (const n of names) {
   });
   const env = ["MASU_SCREEN=1366x768", ...(process.env.MASU_JIT === "0" ? ["MASU_JIT=0"] : []), ...(process.env.GUEST_ENV ?? "").split(/\s+/).filter(Boolean)].map((e) => `&env=${encodeURIComponent(e)}`).join("");
   const t0 = Date.now();
-  await page.goto(`${base}/play.html?autostart&headless${memory}${env}&mount=/ippai/game=winref&run=Z:\\ippai\\game\\${n}.exe`);
+  await page.goto(`${base}/play.html?autostart&headless${memory}${env}&mount=/masu/game=winref&run=Z:\\masu\\game\\${n}.exe`);
   let timer;
   await Promise.race([done, new Promise((r) => { timer = setTimeout(r, Number(process.env.TIMEOUT ?? 180) * 1000); })]);
   clearTimeout(timer);

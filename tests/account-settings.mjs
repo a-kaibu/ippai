@@ -39,7 +39,7 @@ try {
   assert.equal(await password.getAttribute("type"), "password");
   const encrypted = await page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("ippai-account", 1);
+      const request = indexedDB.open("masu-account", 1);
       request.onsuccess = () => resolve(request.result);
       request.onerror = reject;
     });

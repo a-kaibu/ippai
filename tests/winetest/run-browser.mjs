@@ -72,7 +72,7 @@ async function runOne([dll, exe, test]) {
   });
   const t0 = Date.now();
   const args = encodeURIComponent(test);
-  await page.goto(`${base}/play.html?autostart&headless&nosave${env}&mount=/ippai/game=winetest&args=${args}&run=Z:\\ippai\\game\\${exe}`);
+  await page.goto(`${base}/play.html?autostart&headless&nosave${env}&mount=/masu/game=winetest&args=${args}&run=Z:\\masu\\game\\${exe}`);
   await Promise.race([done, new Promise((r) => setTimeout(r, Number(timeoutS) * 1000))]);
   await ctx.close();
   writeFileSync(join(outDir, `${dll}:${test}.txt`), lines.map((l) => l + "\n").join("") + end + "\n");

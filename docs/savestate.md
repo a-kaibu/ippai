@@ -71,7 +71,7 @@ runs the GPU batch before the guest's batches.
 
 ## The file
 
-`IPPAISNP`, u32 version (1), u32 header length, the header (JSON: `format`, `build`, `wasm`
+`MASUSNP`, u32 version (1), u32 header length, the header (JSON: `format`, `build`, `wasm`
 (sake or sake-grow), `pages` (the memory's size: sake-grow's grows), `ctl`, `raw`, `created`),
 then blocks: u32 address, u32 length, u32 compressed length and a zstd frame
 of 1 MiB at most. Blocks of zeros are left out. An address of 0xffffffff ends it. A state is of one

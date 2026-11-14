@@ -77,7 +77,7 @@ Windows 用の `masu_<版>_windows_amd64.zip` もあります (Releases から�
 `stop` / `status` / `logs` はありません)。
 
 リリースには sake の C:\ のフォント (`fonts/`、IPA フォントを Windows の名前にしたもの) も入っていて、
-install.sh が `~/.local/share/ippai/fonts` に置きます。`masu serve` はストアに C:\ の tree (`prefix32`) が
+install.sh が `~/.local/share/masu/fonts` に置きます。`masu serve` はストアに C:\ の tree (`prefix32`) が
 なければ、起動時にそのフォントから作ります。
 
 ## 使い方
@@ -97,9 +97,9 @@ masu meta sample | masu meta --all
 ```
 
 `masu serve --foreground` は systemd などから動かすとき用です。保存先 (Linux):
-ストア `~/.local/share/ippai/store`、JIT キャッシュ `~/.cache/ippai/jit`、ログ `~/.local/state/ippai/logs`、
-設定 `~/.config/ippai/config.toml` (`store` `cache` `logs` `listen`、どれも任意)、制御用ソケット
-`$XDG_RUNTIME_DIR/ippai/server-<ストア>.sock` (ストアごとに 1 つ。同じストアで 2 つ目のサーバーは起動しません)。
+ストア `~/.local/share/masu/store`、JIT キャッシュ `~/.cache/masu/jit`、ログ `~/.local/state/masu/logs`、
+設定 `~/.config/masu/config.toml` (`store` `cache` `logs` `listen`、どれも任意)、制御用ソケット
+`$XDG_RUNTIME_DIR/masu/server-<ストア>.sock` (ストアごとに 1 つ。同じストアで 2 つ目のサーバーは起動しません)。
 詳しくは `crates/masu/src/dirs.rs`。
 
 Web ゲーム (NW.js / Electron) は管理画面と別オリジンで動かすため、サーバーは `--listen` の次のポート

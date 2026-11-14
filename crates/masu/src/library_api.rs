@@ -524,7 +524,7 @@ mod tests {
     #[tokio::test]
     async fn candidates_from_the_kept_list() {
         let dir = store();
-        std::fs::write(dir.join("games/loopers.json"), r#"{"id":"loopers","title":"LOOPERS DL版","run":"Z:\\ippai\\game\\SiglusEngine.exe","args":[],"mounts":[],"env":[]}"#).unwrap();
+        std::fs::write(dir.join("games/loopers.json"), r#"{"id":"loopers","title":"LOOPERS DL版","run":"Z:\\masu\\game\\SiglusEngine.exe","args":[],"mounts":[],"env":[]}"#).unwrap();
         let db = Library::new(&dir).unwrap();
         db.set_egs_games(&[(1, "LOOPERS".into(), 800), (2, "LOOPERS+".into(), 40), (3, "アネモイ".into(), 500), (4, "サクラノ詩 -櫻の森の上を舞う-".into(), 5000), (5, "サクラノ詩 春ノ雪".into(), 30)]).unwrap();
         let app = router_with(db, Arc::new(|_: &str| anyhow::bail!("not here")));

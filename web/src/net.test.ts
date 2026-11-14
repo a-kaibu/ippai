@@ -100,7 +100,7 @@ test("a chunk is checked against its name: kept marked, fetched again past the H
   expect(r.cached).toBe(false);
   expect(inits.map((i) => i.cache)).toEqual([undefined, "reload"]);
   const kept = m.get(`https://s/store/chunks/${hex.slice(0, 2)}/${hex}`)!;
-  expect(kept.headers.get("x-ippai-checked")).toBe("1");
+  expect(kept.headers.get("x-masu-checked")).toBe("1");
   // next time from the cache, no request
   const again = await getChunk("https://s/store/", hex, { cache, request });
   expect(again.cached).toBe(true);
@@ -125,7 +125,7 @@ test("a chunk that never matches fails; one kept before the check is checked onc
   };
   expect((await getChunk("https://s/store/", hex, { cache, request: none })).cached).toBe(true);
   await new Promise((r) => setTimeout(r, 0));
-  expect(m.get(url)!.headers.get("x-ippai-checked")).toBe("1");
+  expect(m.get(url)!.headers.get("x-masu-checked")).toBe("1");
   // damaged in the cache: dropped, fetched
   m.set(url, new Response(bytes(10)));
   const fine: typeof fetch = async () => new Response(good);
@@ -149,7 +149,7 @@ test("the chunk cache is trimmed by the chunks' real sizes, the saved games' chu
     const put = (i: number, n: number, sized = true) =>
       m.set(
         `https://s/store/chunks/00/${i.toString(16).padStart(32, "0")}`,
-        new Response(new Uint8Array(n), { headers: sized ? { "x-ippai-size": String(n) } : {} }),
+        new Response(new Uint8Array(n), { headers: sized ? { "x-masu-size": String(n) } : {} }),
       );
     for (let i = 0; i < 20; i++) put(i, 64 << 10);
     await trimChunks();
@@ -208,7 +208,7 @@ async function trimmed(
   for (const [i, [said, body]] of chunks.entries())
     m.set(
       `https://s/store/chunks/00/${hex(i)}`,
-      new Response(new Uint8Array(body), { headers: said === null ? {} : { "x-ippai-size": String(said) } }),
+      new Response(new Uint8Array(body), { headers: said === null ? {} : { "x-masu-size": String(said) } }),
     );
   const g = globalThis as unknown as { caches?: unknown };
   const old = g.caches;
@@ -314,7 +314,7 @@ test("a chunk the full device could not take: storeChunk says so, keepChunk lets
   let kept: Response | undefined;
   const room = { put: async (_k: unknown, r: Response) => void (kept = r) } as unknown as ChunkStore;
   await storeChunk(room, "https://s/chunks/ab/abc", data);
-  expect(kept?.headers.get("x-ippai-size")).toBe("3");
+  expect(kept?.headers.get("x-masu-size")).toBe("3");
 });
 
 /**
@@ -330,7 +330,7 @@ test("trim: the oldest written go first, counted only when gone (property, seede
   for (let run = 0; run < 200; run++) {
     const n = 1 + rnd(40);
     const kept = Array.from({ length: n }, (_, i) => ({
-      url: `opfs:/ippai-chunks/${hex(i)}`,
+      url: `opfs:/masu-chunks/${hex(i)}`,
       size: 1 + rnd(1000),
       time: rnd(4) ? 1 + rnd(50) : 0,
     }));

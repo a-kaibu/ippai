@@ -513,7 +513,7 @@ test('Cache Storage that never answers, at any step of any read: every read stil
     const block = 1024;
     // (on the device as a whole chunk, as blocks kept alone, or not at all)
     const where = Math.floor(r() * 3);
-    if (where === 0) kept.set(url(h), { b: data, h: { 'x-ippai-checked': '1' } });
+    if (where === 0) kept.set(url(h), { b: data, h: { 'x-masu-checked': '1' } });
     if (where === 1) for (let k = 0; k * block < data.length; k++) kept.set(ctx.masuBlockKey(url(h), k, block), { b: data.slice(k * block, (k + 1) * block), h: {} });
     const p = r();
     const hung = new Set();

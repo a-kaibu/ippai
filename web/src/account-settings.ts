@@ -15,7 +15,7 @@ interface StoredAccount {
 let sessionAccount: AccountSettings | undefined;
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("ippai-account", 1);
+    const request = indexedDB.open("masu-account", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("settings");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error("設定用のストレージを開けませんでした。"));

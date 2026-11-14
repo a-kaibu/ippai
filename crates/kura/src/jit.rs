@@ -1918,7 +1918,7 @@ fn save((url, id, new, chunks): Save) {
 }
 
 /// Where the chunks list goes: MASU_CHUNKS_URL (the page's, per game: games that start the same
-/// program, all SiglusEngine.exe at Z:\ippai\game, read different chunks), else beside the
+/// program, all SiglusEngine.exe at Z:\masu\game, read different chunks), else beside the
 /// regions (`<url>.chunks`).
 fn chunks_url(url: &std::ffi::CStr) -> std::ffi::CString {
     let u = std::env::var("MASU_CHUNKS_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| format!("{}.chunks", url.to_str().unwrap_or("")));
@@ -3282,7 +3282,7 @@ mod save_tests {
         }
     }
 
-    /// Games that start the same program (every SiglusEngine.exe at Z:\ippai\game) keep lists
+    /// Games that start the same program (every SiglusEngine.exe at Z:\masu\game) keep lists
     /// of their own: the page's MASU_CHUNKS_URL, else beside the regions.
     #[test]
     fn chunks_url_is_the_pages() {

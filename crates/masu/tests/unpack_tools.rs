@@ -45,7 +45,7 @@ fn partly_unpacked_archive_is_added_with_its_issues() {
     assert!(o.status.success(), "{err}");
     assert!(err.contains("unpacked in part"), "{err}");
     let g: serde_json::Value = serde_json::from_slice(&fs::read(store.join("games/trial.json")).unwrap()).unwrap();
-    assert_eq!(g["run"], "Z:\\ippai\\game\\Game.exe");
+    assert_eq!(g["run"], "Z:\\masu\\game\\Game.exe");
     let issues = g["unpack_issues"].as_array().expect("unpack_issues");
     assert_eq!(issues.len(), 1, "{issues:?}");
     let i = issues[0].as_str().unwrap();

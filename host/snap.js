@@ -6,11 +6,11 @@
 //   MASU_SNAP_EXIT=1                   end the process right after the (last) state
 //   MASU_SNAP_LOAD=<file>              start from a state instead of the program's beginning
 //
-// File: "IPPAISNP", u32 version (1), u32 header length, the header (JSON: build, ctl, ...),
+// File: "MASUSNP", u32 version (1), u32 header length, the header (JSON: build, ctl, ...),
 // then blocks (u32 address, u32 length, u32 compressed length, a zstd frame), the end marked
 // by an address of 0xffffffff. Blocks of zeros are left out (a new memory is zero).
 var vnvmSnap = {
-  MAGIC: 'IPPAISNP',
+  MAGIC: 'MASUSNP',
   BLOCK: 1 << 20,
   // Ctl's offsets (crates/kura/src/snap.rs)
   CMD: 8, STATE: 12, RESTORING: 24, RANGES: 28, NRANGES: 32, MSG: 36, MSG_LEN: 40, STIRRED: 88,

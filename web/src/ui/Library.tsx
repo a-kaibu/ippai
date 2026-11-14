@@ -713,7 +713,7 @@ function GameInfo({
   );
 }
 
-const VIEW = "ippai-library-view";
+const VIEW = "masu-library-view";
 const loadView = (): ListView => {
   try {
     return parseView(localStorage.getItem(VIEW));

@@ -34,11 +34,11 @@ self.onmessage = async () => {
   const url = (i) => location.origin + '/store/chunks/' + hex(i).slice(0, 2) + '/' + hex(i);
   const data = (i) => { const d = new Uint8Array(SIZE); for (let k = 0; k < SIZE; k += 4096) d[k] = (i * 31 + k / 4096) & 255; return d; };
   const root = await navigator.storage.getDirectory();
-  await root.removeEntry('ippai-chunks', { recursive: true }).catch(() => {});
-  await caches.delete('ippai-chunks-v1');
-  const old = await caches.open('ippai-chunks-v1');
-  const store = masuOpfsStore(await root.getDirectoryHandle('ippai-chunks', { create: true }), old);
-  const resp = (d) => new Response(d, { headers: { 'x-ippai-checked': '1', 'x-ippai-size': String(d.length) } });
+  await root.removeEntry('masu-chunks', { recursive: true }).catch(() => {});
+  await caches.delete('masu-chunks-v1');
+  const old = await caches.open('masu-chunks-v1');
+  const store = masuOpfsStore(await root.getDirectoryHandle('masu-chunks', { create: true }), old);
+  const resp = (d) => new Response(d, { headers: { 'x-masu-checked': '1', 'x-masu-size': String(d.length) } });
   // N chunks in OPFS (through the store), N others in Cache Storage as an older page kept them
   for (let i = 0; i < N; i++) await store.put(url(i), resp(data(i)));
   for (let i = N; i < 2 * N; i++) await old.put(url(i), resp(data(i)));
@@ -53,7 +53,7 @@ self.onmessage = async () => {
   // (straight through one handle, for comparison: what the store adds)
   let raw = -1, mode = '';
   try {
-    const d = await root.getDirectoryHandle('ippai-chunks');
+    const d = await root.getDirectoryHandle('masu-chunks');
     const hs = [];
     for (let i = 0; i < N; i++) hs.push(await (await d.getFileHandle(hex(i))).createSyncAccessHandle({ mode: 'read-only' }).catch((e) => { mode = String(e); return null; }));
     if (hs.every(Boolean)) {
@@ -76,7 +76,7 @@ self.onmessage = async () => {
   // a page's delete of a chunk the worker holds open: refused until the worker closes its handles
   await store.read(url(0), 0, 10);
   let refused = false;
-  try { await root.getDirectoryHandle('ippai-chunks').then((d) => d.removeEntry(hex(0))); } catch (_) { refused = true; }
+  try { await root.getDirectoryHandle('masu-chunks').then((d) => d.removeEntry(hex(0))); } catch (_) { refused = true; }
   store.closeAll();
   const after = await store.delete(url(0));
   postMessage({ raw, mode, opfs, cache, bad, oldOk, refused, after, gone: (await store.read(url(0), 0, 10)) === null });

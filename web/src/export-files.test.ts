@@ -79,7 +79,7 @@ function fake(files: Files) {
   return { m, exported };
 }
 
-const C = "/ippai/prefix/drive_c";
+const C = "/masu/prefix/drive_c";
 
 test("the installer's temp 7z and the installed exes are not exported with the saves or the installation", () => {
   const files: Files = new Map([

@@ -52,7 +52,7 @@ pub fn tree_files(tsv: &str) -> Vec<String> {
 }
 
 /// For a game entry (store/games/<id>.json) whose `run` is a program in the tree mounted at
-/// /ippai/game other than its Siglus engine: the entry with `run` that engine, no arguments (the
+/// /masu/game other than its Siglus engine: the entry with `run` that engine, no arguments (the
 /// launcher's are its own), and `launcher` the program it named (the page reads saves made
 /// under it: play.ts). None for anything else. `tree` reads a tree's list by name.
 #[cfg(test)]
@@ -62,12 +62,12 @@ pub fn engine_entry(game: &serde_json::Value, tree: impl Fn(&str) -> Option<std:
 
 /// [`engine_entry`] with `engine` giving a tree's Siglus engine by the tree's name
 fn entry_of(game: &serde_json::Value, engine: impl Fn(&str) -> Option<String>) -> Option<serde_json::Value> {
-    const ROOT: &str = "Z:\\ippai\\game\\";
+    const ROOT: &str = "Z:\\masu\\game\\";
     let run = game["run"].as_str()?;
     if run.len() <= ROOT.len() || !run.get(..ROOT.len()).is_some_and(|r| r.eq_ignore_ascii_case(ROOT)) {
         return None;
     }
-    let name = game["mounts"].as_array()?.iter().filter_map(|m| m.as_str()?.strip_prefix("/ippai/game=")).next()?;
+    let name = game["mounts"].as_array()?.iter().filter_map(|m| m.as_str()?.strip_prefix("/masu/game=")).next()?;
     let engine = engine(name)?;
     let rel = run[ROOT.len()..].replace('\\', "/");
     if rel.eq_ignore_ascii_case(&engine) {
@@ -151,30 +151,30 @@ mod tests {
 
     #[test]
     fn launcher_entries_start_the_engine() {
-        for run in ["Z:\\ippai\\game\\Start.exe", "Z:\\ippai\\game\\StartData\\StartMenu.exe", "z:\\IPPAI\\game\\StartData\\GameData\\SiglusEngine.exe"] {
-            let g = engine_entry(&entry(run, &["/ippai/game=anemoi"]), trees).unwrap();
-            assert_eq!(g["run"], "Z:\\ippai\\game\\StartData\\GameData\\data\\SiglusEngine.exe", "{run}");
+        for run in ["Z:\\masu\\game\\Start.exe", "Z:\\masu\\game\\StartData\\StartMenu.exe", "z:\\MASU\\game\\StartData\\GameData\\SiglusEngine.exe"] {
+            let g = engine_entry(&entry(run, &["/masu/game=anemoi"]), trees).unwrap();
+            assert_eq!(g["run"], "Z:\\masu\\game\\StartData\\GameData\\data\\SiglusEngine.exe", "{run}");
             assert_eq!(g["args"], serde_json::json!([]));
             assert_eq!(g["launcher"], run);
             // (the rest as it was)
             assert_eq!(g["env"], serde_json::json!(["A=1"]));
-            assert_eq!(g["mounts"], serde_json::json!(["/ippai/game=anemoi"]));
+            assert_eq!(g["mounts"], serde_json::json!(["/masu/game=anemoi"]));
         }
         // the engine already (any case), another tree, no tree, a program outside the game: as they are
-        assert!(engine_entry(&entry("Z:\\ippai\\game\\StartData\\GameData\\data\\siglusengine.exe", &["/ippai/game=anemoi"]), trees).is_none());
-        assert!(engine_entry(&entry("Z:\\ippai\\game\\Start.exe", &["/ippai/game=other"]), trees).is_none());
-        assert!(engine_entry(&entry("Z:\\ippai\\game\\Start.exe", &[]), trees).is_none());
-        assert!(engine_entry(&entry("C:\\windows\\notepad.exe", &["/ippai/game=anemoi"]), trees).is_none());
+        assert!(engine_entry(&entry("Z:\\masu\\game\\StartData\\GameData\\data\\siglusengine.exe", &["/masu/game=anemoi"]), trees).is_none());
+        assert!(engine_entry(&entry("Z:\\masu\\game\\Start.exe", &["/masu/game=other"]), trees).is_none());
+        assert!(engine_entry(&entry("Z:\\masu\\game\\Start.exe", &[]), trees).is_none());
+        assert!(engine_entry(&entry("C:\\windows\\notepad.exe", &["/masu/game=anemoi"]), trees).is_none());
         assert!(engine_entry(&serde_json::json!({ "id": "x" }), trees).is_none());
         // (the root's length falls inside a character)
-        assert!(engine_entry(&entry("C:\\Games\\さくら\\x.exe", &["/ippai/game=anemoi"]), trees).is_none());
+        assert!(engine_entry(&entry("C:\\Games\\さくら\\x.exe", &["/masu/game=anemoi"]), trees).is_none());
     }
 
     proptest! {
         #[test]
         fn any_run_is_answered(run in "\\PC{0,24}", cut in 0usize..20) {
-            let root: String = "Z:\\ippai\\game\\".chars().take(cut).collect();
-            engine_entry(&entry(&(root + &run), &["/ippai/game=anemoi"]), trees);
+            let root: String = "Z:\\masu\\game\\".chars().take(cut).collect();
+            engine_entry(&entry(&(root + &run), &["/masu/game=anemoi"]), trees);
         }
     }
 
@@ -193,13 +193,13 @@ mod tests {
             tsv.push_str(&format!("f\t644\t0\t{f}\t1\tab:1\n"));
         }
         std::fs::write(dir.join("trees/anemoi-t.tsv"), &tsv).unwrap();
-        let mut g = entry("Z:\\ippai\\game\\Start.exe", &["/ippai/game=anemoi-t"]);
+        let mut g = entry("Z:\\masu\\game\\Start.exe", &["/masu/game=anemoi-t"]);
         resolve(&dir, &mut g);
-        assert_eq!(g["run"], "Z:\\ippai\\game\\StartData\\GameData\\data\\SiglusEngine.exe");
+        assert_eq!(g["run"], "Z:\\masu\\game\\StartData\\GameData\\data\\SiglusEngine.exe");
         // a tree path that would leave trees/: not read
-        let mut bad = entry("Z:\\ippai\\game\\Start.exe", &["/ippai/game=../trees/anemoi-t"]);
+        let mut bad = entry("Z:\\masu\\game\\Start.exe", &["/masu/game=../trees/anemoi-t"]);
         resolve(&dir, &mut bad);
-        assert_eq!(bad["run"], "Z:\\ippai\\game\\Start.exe");
+        assert_eq!(bad["run"], "Z:\\masu\\game\\Start.exe");
         let _ = std::fs::remove_dir_all(dir);
     }
 

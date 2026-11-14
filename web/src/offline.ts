@@ -61,7 +61,7 @@ export interface OfflineState {
 // The games saved to the device (by id: their trees and how far the save got), in this browser:
 // chunks one of them needs stay when another is removed, and when the cache is trimmed (net.ts
 // trimChunks), a save stopped half-way too (until removed).
-const SAVED = "ippai-offline";
+const SAVED = "masu-offline";
 
 export interface Saved {
   trees: string[];

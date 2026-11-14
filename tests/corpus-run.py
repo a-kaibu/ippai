@@ -136,13 +136,13 @@ while True:
                                 '--game-listen', f'127.0.0.1:{PORT + 1000}'],
                                stdout=open(f'{od}/server.log', 'w'), stderr=subprocess.STDOUT)
         wait_port(PORT)
-        # (an installed game: C:\\ is the page's /ippai/prefix/drive_c, and the page's run= takes
+        # (an installed game: C:\\ is the page's /masu/prefix/drive_c, and the page's run= takes
         # a Z:\\ path; sake shows the program its C:\\ path)
-        winexe = 'Z:\\ippai\\prefix\\drive_c' + exe[2:] if installed(exe) else 'Z:\\ippai\\game\\' + exe.replace('/', '\\')
+        winexe = 'Z:\\masu\\prefix\\drive_c' + exe[2:] if installed(exe) else 'Z:\\masu\\game\\' + exe.replace('/', '\\')
         args = titles[tid].get('args', '')
         # (saves on: a fresh browser each title, and a launcher's settings file reaches the game it
         # starts, BISHOP's bsxx.ini)
-        qs = 'autostart&headless&load&mount=/ippai/game=g&run=' + urllib.parse.quote(winexe)
+        qs = 'autostart&headless&load&mount=/masu/game=g&run=' + urllib.parse.quote(winexe)
         if args: qs += '&args=' + urllib.parse.quote(args)
         qs += os.environ.get('CORPUS_QS', '')  # (more page parameters, e.g. &env=NAME%3Dvalue)
         st, at, pre, tat = steps.get(tid, ('key:Return wait:3', '', '', ''))

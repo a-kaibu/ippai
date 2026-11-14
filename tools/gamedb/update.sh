@@ -3,13 +3,13 @@
 # (the user, 2026-11-09: "ghコマンド使う版でupdateするスクリプト"). Uses the public SQLite
 # mirror; Linux or Git Bash on Windows: tools/gamedb/README.md.
 #
-#     tools/gamedb/update.sh [work dir]      (default ~/.cache/ippai/gamedb)
+#     tools/gamedb/update.sh [work dir]      (default ~/.cache/masu/gamedb)
 #
 # masu: $MASU, else `masu` on PATH when it has `gamedb update --mirror`, else the latest release's.
 set -eu
 
 repo=a-kaibu/masu
-dir=${1:-$HOME/.cache/ippai/gamedb}
+dir=${1:-$HOME/.cache/masu/gamedb}
 
 command -v gh >/dev/null 2>&1 || { echo "gh (GitHub CLI) が要ります: https://cli.github.com/" >&2; exit 1; }
 gh auth status -h github.com >/dev/null 2>&1 || gh auth login -h github.com -s write:packages

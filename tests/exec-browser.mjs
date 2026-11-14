@@ -98,7 +98,7 @@ try {
   for (const step of [1, 2]) {
     await page.waitForURL((u) => u.searchParams.get("run")?.endsWith(step === 1 ? "StartMenu.exe" : "SiglusEngine.exe"), { timeout: 60000 });
     const u = new URL(page.url());
-    assert.deepEqual(u.searchParams.getAll("mount"), ["/ippai/game=chain"], `step ${step}: ${u}`);
+    assert.deepEqual(u.searchParams.getAll("mount"), ["/masu/game=chain"], `step ${step}: ${u}`);
     assert.equal(u.searchParams.get("game"), "chain");
     assert.ok(u.searchParams.get("saves"), `step ${step}: the launcher's saves`);
     assert.ok(u.searchParams.has("autostart"), `step ${step}: starts without a click: ${u}`);

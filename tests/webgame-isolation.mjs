@@ -116,7 +116,7 @@ try {
   const big = [];
   page.on("request", (r) => r.url().includes("big.png") && big.push(r.url()));
   const playOf = (id, exe) =>
-    `http://127.0.0.1:${port}/play.html?autostart&game=${id}&mount=/ippai/game=${id}&run=${encodeURIComponent(`Z:\\ippai\\game\\${exe}`)}`;
+    `http://127.0.0.1:${port}/play.html?autostart&game=${id}&mount=/masu/game=${id}&run=${encodeURIComponent(`Z:\\masu\\game\\${exe}`)}`;
   const result = async (play = playOf("sample", "Game.exe"), id = "sample") => {
     await page.goto(play);
     await page.waitForSelector("#frame", { state: "attached", timeout: 20000 });

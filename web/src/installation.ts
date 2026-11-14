@@ -9,7 +9,7 @@ interface State {
 }
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("ippai-installation", 1);
+    const request = indexedDB.open("masu-installation", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("state");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error("インストール状態の保存先を開けませんでした。"));
@@ -53,7 +53,7 @@ function ownInstallation(): Promise<boolean> {
   const p = (lease ??= new Promise((resolve) => {
     if (!navigator.locks) return resolve(false);
     void navigator.locks
-      .request("ippai-installation", { ifAvailable: true }, async (lock) => {
+      .request("masu-installation", { ifAvailable: true }, async (lock) => {
         resolve(!!lock);
         // Browsing-context destruction releases the lease. Keeping it for the
         // page prevents another tab overwriting this one's provider keys.
@@ -86,7 +86,7 @@ export async function loadInstallation(): Promise<{
   files: Uint8Array<ArrayBuffer> | null;
   registry: Uint8Array<ArrayBuffer> | null;
 }> {
-  // (written before the rename: /vnvm/prefix paths read as /ippai/prefix ones)
+  // (written before the rename: /vnvm/prefix paths read as /masu/prefix ones)
   const plain = renameRecords(await decrypt(await read()));
   let registry = selectRecords(plain, legacyRegistry);
   if (registry?.length) {
@@ -123,7 +123,7 @@ export function keepInstallation(
     if (current === revision) return;
     pending = true;
     try {
-      const data = exportFiles(module, ["/ippai/prefix/drive_c"], installationPath);
+      const data = exportFiles(module, ["/masu/prefix/drive_c"], installationPath);
       revision = current;
       if (!data.length) return;
       if (same(previous, data)) return;

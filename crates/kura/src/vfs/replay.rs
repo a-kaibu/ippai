@@ -258,7 +258,7 @@ mod tests {
     use super::*;
 
     fn trace(lines: &[&str]) -> String {
-        format!("ippai-trace 1\n{}\n", lines.join("\n"))
+        format!("masu-trace 1\n{}\n", lines.join("\n"))
     }
 
     #[test]

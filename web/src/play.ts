@@ -9,7 +9,7 @@ let stopPlay: (() => void) | undefined;
 //   /play.html?game=id              a game from the list (its run, mount, args and env)
 //   /play.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
-//   &mount=/ippai/game=tree          also mount a store tree (repeatable; Z:\ippai\game\...)
+//   &mount=/masu/game=tree          also mount a store tree (repeatable; Z:\masu\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. SAKE_TRACE_FILES=1)
 //   &nosave                         no saved games (masu serve's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/play.mjs: headless Chromium
@@ -385,7 +385,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   recorder.note(
     `build: ${WASM} ${version}, translator ${await jitVersion}, memory ${build.memory ? "4 GB fixed" : "growing from 2.06 GB (4 GB refused)"}`,
   );
-  const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/ippai/prefix/drive_c/users"];
+  const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/masu/prefix/drive_c/users"];
   const { files: installation, registry: legacyRegistry } = await loadInstallation();
   const saved = nosave
     ? null
@@ -486,10 +486,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     )),
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
-      MASU_MOUNTS: ["/=", "/ippai/prefix=prefix32", ...params.getAll("mount")].join(":"),
+      MASU_MOUNTS: ["/=", "/masu/prefix=prefix32", ...params.getAll("mount")].join(":"),
       LANG: "ja_JP.UTF-8",
       // sake's C:\ (the prefix's fonts)
-      SAKE_C: "/ippai/prefix/drive_c",
+      SAKE_C: "/masu/prefix/drive_c",
       ...(jitName ? { MASU_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
       // (the chunks list: the game's own, see gameChunksName)
       ...(jitName && game
@@ -1250,7 +1250,7 @@ let pointerAt: [number, number] | null = null;
 /** 自動送り (web/src/autoadvance.ts) of the running game: stopped when the game ends. */
 let auto: AutoAdvance | null = null;
 
-const AUTO_KEY = "ippai.auto";
+const AUTO_KEY = "masu.auto";
 
 function attachAuto(current: () => SakeModule): void {
   let settings: AutoSettings = DEFAULT_SETTINGS;

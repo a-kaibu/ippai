@@ -159,7 +159,7 @@ export function Backup({ game, state }: { game: string; state: ProfileState }) {
       <input
         ref={file}
         type="file"
-        accept=".masu,.ippai"
+        accept=".masu,.masu"
         className="hidden"
         aria-label=".masu から復元"
         onChange={(e) => {

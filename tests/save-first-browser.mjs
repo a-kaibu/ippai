@@ -275,14 +275,14 @@ try {
   const kept = await page.evaluate(async (hashes) => {
     const cache = await (async () => {
       // (the device's chunk store: OPFS, web/src/chunkstore.ts; Cache Storage before)
-      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("ippai-chunks", { create: true });
-      const old = await caches.open("ippai-chunks-v1");
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("masu-chunks", { create: true });
+      const old = await caches.open("masu-chunks-v1");
       return {
         async match(u) {
           const name = u.slice(u.lastIndexOf("/") + 1);
           try {
             const f = await (await dir.getFileHandle(name)).getFile();
-            if (f.size) return new Response(f, { headers: { "x-ippai-size": String(f.size) } });
+            if (f.size) return new Response(f, { headers: { "x-masu-size": String(f.size) } });
           } catch {}
           return old.match(u);
         },
@@ -291,7 +291,7 @@ try {
     const out = {};
     for (const h of hashes) {
       const r = await cache.match(new URL(`store/chunks/${h.slice(0, 2)}/${h}`, location.href).href);
-      out[h] = r ? Array.from(new Uint8Array(await r.arrayBuffer()).subarray(0, 64)).join(",") + `/${r.headers.get("x-ippai-size")}` : null;
+      out[h] = r ? Array.from(new Uint8Array(await r.arrayBuffer()).subarray(0, 64)).join(",") + `/${r.headers.get("x-masu-size")}` : null;
     }
     return out;
   }, [...gChunks]);
@@ -299,7 +299,7 @@ try {
     const d = decoded.get(h);
     assert.equal(kept[h], `${Array.from(d.subarray(0, 64)).join(",")}/${d.length}`, `chunk ${h} on the device as the server has it`);
   }
-  const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem("ippai-offline") ?? "{}"));
+  const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem("masu-offline") ?? "{}"));
   assert.equal((await saved()).g?.status, "done");
   await dialog.getByRole("button", { name: "遊ぶ", exact: true }).click();
   await page.waitForURL((u) => u.searchParams.get("game") === "g");

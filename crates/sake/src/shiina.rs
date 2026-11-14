@@ -83,9 +83,9 @@ mod tests {
 
     #[test]
     fn inis_of_exe() {
-        let (d, i) = inis("Z:\\ippai\\game\\bs\\BITCHES2_TKB.exe").unwrap();
-        assert_eq!(d, "Z:\\ippai\\game\\bs");
-        assert_eq!(i, ["Z:\\ippai\\game\\bs\\BITCHES2_TKB.INI".to_string(), "Z:\\ippai\\game\\bs\\RIO.INI".to_string()]);
+        let (d, i) = inis("Z:\\masu\\game\\bs\\BITCHES2_TKB.exe").unwrap();
+        assert_eq!(d, "Z:\\masu\\game\\bs");
+        assert_eq!(i, ["Z:\\masu\\game\\bs\\BITCHES2_TKB.INI".to_string(), "Z:\\masu\\game\\bs\\RIO.INI".to_string()]);
         assert_eq!(inis("noslash.exe"), None);
     }
 

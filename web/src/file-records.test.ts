@@ -23,12 +23,12 @@ function record(path: string, data: Uint8Array = new Uint8Array([1, 2, 3])) {
 }
 describe("installation and portable saves", () => {
   it("keeps private keys local; the registry and the user folders travel with the game's saves", () => {
-    const save = record("/ippai/game/save/日本語.dat");
-    const key = record("/ippai/prefix/drive_c/users/user/AppData/Roaming/Microsoft/Crypto/RSA/sake/key");
-    const registry = record("/ippai/prefix/drive_c/users/user/sake-registry.tsv");
-    const appdata = record("/ippai/prefix/drive_c/users/user/AppData/Roaming/Maker/save.dat");
-    const machine = record("/ippai/prefix/drive_c/ProgramData/SoftDenchi/state");
-    const exe = record("/ippai/game/MAJOKOI.exe");
+    const save = record("/masu/game/save/日本語.dat");
+    const key = record("/masu/prefix/drive_c/users/user/AppData/Roaming/Microsoft/Crypto/RSA/sake/key");
+    const registry = record("/masu/prefix/drive_c/users/user/sake-registry.tsv");
+    const appdata = record("/masu/prefix/drive_c/users/user/AppData/Roaming/Maker/save.dat");
+    const machine = record("/masu/prefix/drive_c/ProgramData/SoftDenchi/state");
+    const exe = record("/masu/game/MAJOKOI.exe");
     const all = [save, key, registry, appdata, machine, exe].reduce((a, b) => joinRecords(a, b)!);
     expect(selectRecords(all, portablePath)).toEqual(
       [save, registry, appdata, machine].reduce((a, b) => joinRecords(a, b)!),
@@ -50,28 +50,28 @@ describe("installation and portable saves", () => {
     ];
     for (const user of ["user", "Public", "Default"])
       for (const n of names) {
-        const p = `/ippai/prefix/drive_c/users/${user}/${n}`;
+        const p = `/masu/prefix/drive_c/users/${user}/${n}`;
         expect(installationPath(p) && portablePath(p)).toBe(false);
       }
   });
   it("gives the saves an older installation's registry only when they have none", () => {
-    const old = record("/ippai/prefix/drive_c/users/user/sake-registry.tsv", new Uint8Array([9]));
-    const own = record("/ippai/prefix/drive_c/users/user/sake-registry.tsv", new Uint8Array([7]));
-    const save = record("/ippai/game/save/a.dat");
+    const old = record("/masu/prefix/drive_c/users/user/sake-registry.tsv", new Uint8Array([9]));
+    const own = record("/masu/prefix/drive_c/users/user/sake-registry.tsv", new Uint8Array([7]));
+    const save = record("/masu/game/save/a.dat");
     expect(withRegistry(save, old)).toEqual(joinRecords(old, save));
     expect(withRegistry(joinRecords(save, own), old)).toEqual(joinRecords(save, own));
     expect(withRegistry(null, old)).toEqual(old);
     expect(withRegistry(save, null)).toEqual(save);
   });
   it("does not persist runtime helpers or paths outside the installation", () => {
-    expect(installationPath("/ippai/prefix/drive_c/windows/temp/helper.dat")).toBe(false);
-    expect(installationPath("/ippai/prefix/drive_c/../game/state")).toBe(false);
-    expect(installationPath("/ippai/game/config.dat")).toBe(false);
-    expect(installationPath("/ippai/prefix/drive_c/ProgramData/SoftDenchi/state")).toBe(true);
-    expect(installationPath("/ippai/prefix/drive_c/users/user/sake-registry.tsv")).toBe(false);
+    expect(installationPath("/masu/prefix/drive_c/windows/temp/helper.dat")).toBe(false);
+    expect(installationPath("/masu/prefix/drive_c/../game/state")).toBe(false);
+    expect(installationPath("/masu/game/config.dat")).toBe(false);
+    expect(installationPath("/masu/prefix/drive_c/ProgramData/SoftDenchi/state")).toBe(true);
+    expect(installationPath("/masu/prefix/drive_c/users/user/sake-registry.tsv")).toBe(false);
   });
   it("rejects truncation without returning partial installation data", () => {
-    const data = record("/ippai/prefix/drive_c/users/user/sake-registry.tsv");
+    const data = record("/masu/prefix/drive_c/users/user/sake-registry.tsv");
     for (let i = 1; i < data.length; i++)
       expect(() => selectRecords(data.slice(0, i), installationPath)).toThrow();
   });
@@ -87,8 +87,8 @@ describe("saves of before the rename (Z:\\vnvm)", () => {
       record("/vnvm/gamex/y"),
     ].reduce((a, b) => joinRecords(a, b)!);
     const want = [
-      record("/ippai/game/save/日本語.dat", data),
-      record("/ippai/prefix/drive_c/users/user/sake-registry.tsv"),
+      record("/masu/game/save/日本語.dat", data),
+      record("/masu/prefix/drive_c/users/user/sake-registry.tsv"),
       record("/other/x"),
       record("/vnvm/gamex/y"),
     ].reduce((a, b) => joinRecords(a, b)!);
@@ -103,13 +103,13 @@ describe("saves of before the rename (Z:\\vnvm)", () => {
     for (let i = 1; i < data.length; i++) expect(() => renameRecords(data.slice(0, i))).toThrow();
   });
   it("moves paths only at their start", () => {
-    expect(movedPath("/vnvm/game")).toBe("/ippai/game");
-    expect(movedPath("/vnvm/prefix/drive_c")).toBe("/ippai/prefix/drive_c");
+    expect(movedPath("/vnvm/game")).toBe("/masu/game");
+    expect(movedPath("/vnvm/prefix/drive_c")).toBe("/masu/prefix/drive_c");
     expect(movedPath("/a/vnvm/game/x")).toBe("/a/vnvm/game/x");
     expect(movedPath("/vnvm/games/x")).toBe("/vnvm/games/x");
   });
   it("names the old saves of a program from before", () => {
-    expect(legacyNames("Z:\\ippai\\game\\a.exe", ["/ippai/game=t", "/x=y"])).toEqual({
+    expect(legacyNames("Z:\\masu\\game\\a.exe", ["/masu/game=t", "/x=y"])).toEqual({
       run: "Z:\\vnvm\\game\\a.exe",
       mounts: ["/vnvm/game=t", "/x=y"],
     });
@@ -119,7 +119,7 @@ describe("saves of before the rename (Z:\\vnvm)", () => {
   it("holds for any records", () => {
     let seed = 11;
     const r = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-    const parts = ["/vnvm/game", "/vnvm/prefix", "/ippai/game", "/other", "/vnvm/gamey"];
+    const parts = ["/vnvm/game", "/vnvm/prefix", "/masu/game", "/other", "/vnvm/gamey"];
     for (let k = 0; k < 200; k++) {
       const recs = Array.from({ length: Math.floor(r() * 6) }, () => {
         const p = `${parts[Math.floor(r() * parts.length)]}/${Math.floor(r() * 1000)}`;
@@ -152,7 +152,7 @@ test("records whose paths are any bytes (not UTF-8 too): kept byte for byte, nev
   for (let run = 0; run < 300; run++) {
     const recs: Uint8Array[] = [];
     for (let i = rnd(6); i > 0; i--) {
-      const ascii = rnd(2) ? "/vnvm/game/" : "/ippai/prefix/drive_c/ProgramData/";
+      const ascii = rnd(2) ? "/vnvm/game/" : "/masu/prefix/drive_c/ProgramData/";
       const tail = Uint8Array.from({ length: rnd(12) }, () => (rnd(3) ? 0x61 + rnd(26) : 0x80 + rnd(128)));
       const path = new Uint8Array([...new TextEncoder().encode(ascii), ...tail]);
       recs.push(
@@ -193,7 +193,7 @@ test("records whose paths are any bytes (not UTF-8 too): kept byte for byte, nev
         text = null;
       }
       if (text?.startsWith("/vnvm/game/"))
-        back.push(...rec(new TextEncoder().encode(text.replace("/vnvm/", "/ippai/")), r.subarray(16 + n)));
+        back.push(...rec(new TextEncoder().encode(text.replace("/vnvm/", "/masu/")), r.subarray(16 + n)));
       else back.push(...r);
     }
     expect(Array.from(moved)).toEqual(back);
