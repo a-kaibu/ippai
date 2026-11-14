@@ -281,7 +281,11 @@ pub fn flush() {
 }
 
 /// After a Present was recorded: closes the batch, then waits while the page is more than two
-/// frames behind (as a vsync would; without a page, drops what nobody will draw).
+/// frames behind (as a vsync would; without a page, drops what nobody will draw). A page that
+/// polls but is slow holds a frame at most 250 ms; a page that stopped polling (its tab hidden:
+/// no animation frames) holds it until it polls again. Returning then, as before, let a game
+/// in a background tab spin at a whole core and pile up frames nobody drew: 金恋 ran out of
+/// memory after 6 minutes, and showed white for minutes after while the page caught up.
 pub fn present() {
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     {
@@ -292,13 +296,11 @@ pub fn present() {
         b.gen = q.gen;
         q.gen += 1;
         q.closed.push_back(b);
-        if !page_attached(q) {
-            if q.last_poll.is_none() {
-                // node: nobody draws
-                q.closed.clear();
-                q.shown = q.presented;
-                q.done = q.gen;
-            }
+        if q.last_poll.is_none() {
+            // node: nobody draws
+            q.closed.clear();
+            q.shown = q.presented;
+            q.done = q.gen;
             return;
         }
     }
@@ -310,7 +312,8 @@ pub fn present() {
     let deadline = now() + 250.0;
     loop {
         let q = g.as_ref().unwrap();
-        if q.presented <= q.shown + 2 || now() >= deadline {
+        // (a state being taken: the game must reach its pause, not wait here)
+        if q.presented <= q.shown + 2 || (now() >= deadline && page_attached(q)) || crate::snap::pausing() {
             return;
         }
         g = WAKE.wait_timeout(g, Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()).0;
@@ -472,5 +475,66 @@ fn pace() {
     };
     if wait > 0.0 {
         std::thread::sleep(Duration::from_secs_f64(wait / 1000.0));
+    }
+}
+
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+    use std::sync::Arc;
+
+    fn queued() -> (usize, usize) {
+        with(|q| (q.closed.len(), q.closed.iter().map(|b| b.blob.len()).sum()))
+    }
+
+    /// A game presenting 1 MiB frames into a page that stopped polling (a hidden tab) waits
+    /// in Present with at most 3 frames queued, however long the page is away, and goes on
+    /// when it polls again; a page that polls but is slow holds a frame 250 ms at most.
+    #[test]
+    fn a_page_away_holds_the_game_not_its_frames() {
+        let _g = super::super::trace_tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_pump(None);
+        with(|q| q.last_poll = Some(now() - 10_000.0));
+        let done = Arc::new(AtomicU32::new(0));
+        let d = done.clone();
+        let game = std::thread::spawn(move || {
+            for _ in 0..40 {
+                record(|b| {
+                    b.cmd(&[0]);
+                    b.blob.extend(std::iter::repeat_n(7u8, 1 << 20));
+                });
+                present();
+                d.fetch_add(1, SeqCst);
+            }
+        });
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(100));
+            let (n, bytes) = queued();
+            assert!(n <= 3 && bytes <= 3 << 20, "{n} frames, {bytes} bytes queued for a page away");
+        }
+        assert!(done.load(SeqCst) <= 3, "{} presents went through", done.load(SeqCst));
+        // (a state taken meanwhile: the game is let go to reach its pause)
+        let before = done.load(SeqCst);
+        crate::snap::VNHOST_SNAP.pause.store(1, SeqCst);
+        std::thread::sleep(Duration::from_millis(100));
+        crate::snap::VNHOST_SNAP.pause.store(0, SeqCst);
+        assert!(done.load(SeqCst) > before, "a pause did not let the game out of Present");
+        // (the page back: it takes the frames, the game goes on to the end)
+        while !game.is_finished() {
+            while run_next(|_, _, _| {}) {}
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        game.join().unwrap();
+        assert_eq!(done.load(SeqCst), 40);
+        // (a page polling but not keeping up: Present goes on after 250 ms)
+        let t = now();
+        for _ in 0..4 {
+            with(|q| q.last_poll = Some(now()));
+            record(|b| b.cmd(&[0]));
+            present();
+        }
+        assert!(now() - t < 2000.0, "a slow page held the game {} ms", now() - t);
+        set_pump(None);
     }
 }

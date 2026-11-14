@@ -38,6 +38,7 @@ interface Wasm {
   _vnhost_load_slot?(i: number, out: number): number;
   _vnhost_render_info?(out: number): void;
   _vnhost_render_shot?(out: number): number;
+  _vnhost_mem_info?(out: number): void;
   _free?(p: number): void;
 }
 
@@ -478,9 +479,19 @@ export class FlightRecorder {
   private memory(): void {
     const pm = (performance as Performance & { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } })
       .memory;
-    const wasm = this.wasm ? `${(this.wasm.wasmMemory.buffer.byteLength / 2 ** 20).toFixed(0)} MB` : "-";
+    const w = this.wasm;
+    const wasm = w ? `${(w.wasmMemory.buffer.byteLength / 2 ** 20).toFixed(0)} MB` : "-";
+    // (the 4 GB is reserved at the start: what fills is the host heap, malloc's above the guest)
+    let heap = "";
+    if (w?._vnhost_mem_info && w._malloc) {
+      const p = w._malloc(16) >>> 0;
+      w._vnhost_mem_info(p);
+      const [top, used] = new Float64Array(w.wasmMemory.buffer, p, 2);
+      w._free?.(p);
+      heap = `, host heap ${(top! / 2 ** 20).toFixed(0)} MB (${(used! / 2 ** 20).toFixed(0)} MB used)`;
+    }
     this.note(
-      `memory: wasm ${wasm}${pm ? `, js heap ${(pm.usedJSHeapSize / 2 ** 20).toFixed(0)}/${(pm.jsHeapSizeLimit / 2 ** 20).toFixed(0)} MB` : ""}`,
+      `memory: wasm ${wasm}${heap}${pm ? `, js heap ${(pm.usedJSHeapSize / 2 ** 20).toFixed(0)}/${(pm.jsHeapSizeLimit / 2 ** 20).toFixed(0)} MB` : ""}`,
     );
   }
 
