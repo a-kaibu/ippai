@@ -159,7 +159,7 @@ pub(crate) fn struct_hex(b: &[u8]) -> String {
 /// The `size` bytes of a struct value, or the Win32 error: 24 (ERROR_BAD_LENGTH) when the text
 /// is not size+1 bytes of hex, 13 (ERROR_INVALID_DATA) when a digit or the checksum is wrong
 pub(crate) fn struct_bytes(v: &str, size: usize) -> Result<Vec<u8>, u32> {
-    if v.len() != 2 * (size + 1) {
+    if size.checked_add(1).and_then(|n| n.checked_mul(2)) != Some(v.len()) {
         return Err(24);
     }
     let mut b = Vec::with_capacity(size + 1);
@@ -465,13 +465,15 @@ fn arg_list(p: u32, wide: bool) -> Vec<String> {
     let mut v = Vec::new();
     let mut at = p;
     loop {
-        let s = arg_str(at, wide);
-        let n = if wide { s.encode_utf16().count() } else { crate::text::s2a(&s).len() } as u32;
-        if n == 0 {
+        // (stepped by the bytes in guest memory: a line whose bytes do not come back the same
+        // through the code page, a lone lead byte, 0x80, 0xA0, 0xFD..0xFF, is no drift into
+        // what follows the list)
+        let raw = if wide { 2 * crate::mem::wstr(at).len() } else { crate::mem::cstr(at).len() } as u32;
+        if raw == 0 {
             return v;
         }
-        at += (n + 1) * if wide { 2 } else { 1 };
-        v.push(s);
+        v.push(arg_str(at, wide));
+        at = at.wrapping_add(raw + if wide { 2 } else { 1 });
     }
 }
 
@@ -511,6 +513,11 @@ fn get_struct(c: &mut Ctx, wide: bool) -> u32 {
 fn write_struct(c: &mut Ctx, wide: bool) -> u32 {
     let (sec, key, buf, size) = (arg_str(c.a(0), wide), arg_str(c.a(1), wide), c.a(2), c.a(3));
     let file = if c.a(4) != 0 { arg_str(c.a(4), wide) } else { "win.ini".to_string() };
+    // (a size past what the guest can read is its error, not a host allocation of twice it)
+    if buf != 0 && crate::mem::accessible(buf, size, false, true) < size {
+        crate::k32::last_error(998); // ERROR_NOACCESS
+        return 0;
+    }
     let v = (buf != 0).then(|| struct_hex(crate::mem::slice(buf, size)));
     modify(&file, |ini| ini.set(&sec, &key, v.as_deref()))
 }

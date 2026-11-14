@@ -114,7 +114,9 @@ impl Brk {
     }
     /// The first boundary past `off`; DONE (at the last one) when there is none.
     pub fn following(&mut self, off: i32) -> i32 {
-        match self.bounds.iter().position(|&b| b > off) {
+        // (bounds rise: a binary search)
+        let i = self.bounds.partition_point(|&b| b <= off);
+        match (i < self.bounds.len()).then_some(i) {
             Some(i) => {
                 self.at = i;
                 self.current()
@@ -127,7 +129,7 @@ impl Brk {
     }
     /// The last boundary before `off`; DONE (at the first one) when there is none.
     pub fn preceding(&mut self, off: i32) -> i32 {
-        match self.bounds.iter().rposition(|&b| b < off) {
+        match self.bounds.partition_point(|&b| b < off).checked_sub(1) {
             Some(i) => {
                 self.at = i;
                 self.current()
@@ -140,7 +142,7 @@ impl Brk {
     }
     /// Whether `off` is a boundary: there if so, else at the following one.
     pub fn is_boundary(&mut self, off: i32) -> bool {
-        if let Some(i) = self.bounds.iter().position(|&b| b == off) {
+        if let Ok(i) = self.bounds.binary_search(&off) {
             self.at = i;
             return true;
         }
@@ -164,19 +166,33 @@ fn fail(status: u32, code: u32) {
     }
 }
 
-/// UTF-16 text at `p`, `len` units (-1: up to its NUL)
-fn uchars(p: u32, len: i64) -> Vec<u16> {
+/// The longest text sake segments (UTF-16 units): a longer length, or a text with no NUL in
+/// as many units, is a garbage argument (U_ILLEGAL_ARGUMENT_ERROR), not gigabytes read
+pub const MAX_TEXT: i64 = 1 << 24;
+
+/// UTF-16 text at `p`, `len` units (-1: up to its NUL); None past MAX_TEXT or for a length
+/// below -1
+fn uchars(p: u32, len: i64) -> Option<Vec<u16>> {
     if p == 0 {
-        return Vec::new();
+        return Some(Vec::new());
+    }
+    if len > MAX_TEXT || len < -1 {
+        return None;
     }
     if len >= 0 {
-        return (0..len as u32).map(|i| r16(p + 2 * i)).collect();
+        return Some((0..len as u32).map(|i| r16(p.wrapping_add(2 * i))).collect());
     }
     let mut v = Vec::new();
-    while r16(p + 2 * v.len() as u32) != 0 {
-        v.push(r16(p + 2 * v.len() as u32));
+    loop {
+        let u = r16(p.wrapping_add(2 * v.len() as u32));
+        if u == 0 {
+            return Some(v);
+        }
+        if v.len() as i64 >= MAX_TEXT {
+            return None;
+        }
+        v.push(u);
     }
-    v
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -196,7 +212,7 @@ fn utext_text(ut: u32) -> Option<Vec<u16>> {
     if ut == 0 || r32(ut + magic) != UTEXT_MAGIC {
         return None;
     }
-    Some(uchars(mem::rp(ut + context), mem::r64(ut + a) as i64))
+    uchars(mem::rp(ut + context), mem::r64(ut + a) as i64)
 }
 
 /// utext_openUChars(UText *ut, const UChar *s, int64_t length, UErrorCode *status)
@@ -210,7 +226,11 @@ fn utext_openUChars(c: &mut Ctx) -> u32 {
         fail(status, ILLEGAL_ARGUMENT);
         return ut;
     }
-    let n = uchars(s, len).len() as u64;
+    let Some(text) = uchars(s, len) else {
+        fail(status, ILLEGAL_ARGUMENT);
+        return ut;
+    };
+    let n = text.len() as u64;
     let ([magic, flags, size, limit, indexing, chunk_len, contents, context, a], sz) = utext_layout();
     let (ut, heap) = if ut == 0 { (mem::heap_alloc(sz, true), UTEXT_HEAP_ALLOCATED) } else { (ut, r32(ut + flags) & UTEXT_HEAP_ALLOCATED) };
     if heap == 0 && r32(ut + magic) != UTEXT_MAGIC {
@@ -260,11 +280,16 @@ fn ubrk_open(c: &mut Ctx) -> u32 {
     let locale = if c.a(1) == 0 { String::new() } else { String::from_utf8_lossy(&mem::cstr(c.a(1))).into_owned() };
     let (ja, warn) = locale_rules(kind, &locale);
     let mut b = Brk::new(kind, ja);
-    if warn != 0 {
-        w32(status, warn as u32);
-    }
     if text != 0 {
-        b.set_text(&uchars(text, len as i64));
+        let Some(t) = uchars(text, len as i64) else {
+            fail(status, ILLEGAL_ARGUMENT);
+            return 0;
+        };
+        b.set_text(&t);
+    }
+    // (a NULL status is no place to write the warning to)
+    if warn != 0 {
+        fail(status, warn as u32);
     }
     let h = mem::heap_alloc(16, true);
     BRKS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, b);
@@ -276,7 +301,10 @@ fn ubrk_setText(c: &mut Ctx) -> u32 {
     if failed(status) {
         return 0;
     }
-    let t = uchars(text, len as i64);
+    let Some(t) = uchars(text, len as i64) else {
+        fail(status, ILLEGAL_ARGUMENT);
+        return 0;
+    };
     if with(b, |k| k.set_text(&t)).is_none() {
         fail(status, ILLEGAL_ARGUMENT);
     }
@@ -440,7 +468,79 @@ mod tests {
             prop_assert_eq!(&seen, &b.bounds);
             let want = b.bounds.iter().copied().find(|&x| x > off).unwrap_or(DONE);
             prop_assert_eq!(b.following(off), want);
+            // the binary searches against linear scans of the same bounds
+            let at = b.bounds.iter().position(|&x| x > off).unwrap_or(b.bounds.len() - 1);
+            prop_assert_eq!(b.at, at);
+            let want = b.bounds.iter().copied().rev().find(|&x| x < off).unwrap_or(DONE);
+            prop_assert_eq!(b.preceding(off), want);
+            prop_assert_eq!(b.at, b.bounds.iter().rposition(|&x| x < off).unwrap_or(0));
+            let is = b.bounds.contains(&off);
+            prop_assert_eq!(b.is_boundary(off), is);
+            prop_assert_eq!(b.at, b.bounds.iter().position(|&x| x == off).unwrap_or(at));
+        }
+    }
+
+    /// A garbage length (0x7fffffff units, or a UText whose length field was overwritten) is
+    /// U_ILLEGAL_ARGUMENT_ERROR, not a multi-GB read; a NULL status takes no warning (it was
+    /// written at guest address 0)
+    #[test]
+    fn garbage_lengths_and_null_status() {
+        let _g = crate::test_guest::enter();
+        let text = mem::heap_alloc(64, true);
+        for (i, ch) in "あいう。".encode_utf16().enumerate() {
+            mem::w16(text + 2 * i as u32, ch);
+        }
+        let loc = mem::heap_alloc(16, true);
+        mem::write(loc, b"ja_JP\0");
+        let st = mem::heap_alloc(4, true);
+        let b = crate::test_guest::call(ubrk_open, &[LINE, loc, text, 0x7fff_ffff, st]);
+        assert_eq!((b, r32(st)), (0, ILLEGAL_ARGUMENT));
+        // ("ja_JP_x" falls back to ja: a warning, which a NULL status cannot take)
+        mem::write(loc, b"ja_JP_x\0");
+        let b = crate::test_guest::call(ubrk_open, &[LINE, loc, text, 4, 0]);
+        assert_ne!(b, 0);
+        crate::test_guest::call(ubrk_close, &[b]);
+        w32(st, 0);
+        let b = crate::test_guest::call(ubrk_open, &[LINE, loc, text, 4, st]);
+        assert_ne!(b, 0);
+        assert_eq!(r32(st), USING_FALLBACK as u32);
+        w32(st, 0);
+        crate::test_guest::call(ubrk_setText, &[b, text, (-5i32) as u32, st]);
+        assert_eq!(r32(st), ILLEGAL_ARGUMENT);
+        w32(st, 0);
+        crate::test_guest::call(ubrk_setText, &[b, text, 4, st]);
+        assert_eq!(r32(st), 0);
+        crate::test_guest::call(ubrk_close, &[b]);
+        // utext_openUChars with a length past MAX_TEXT (a 64-bit length: low, high)
+        w32(st, 0);
+        let ut = crate::test_guest::call(utext_openUChars, &[0, text, 0x7fff_ffff, 0, st]);
+        assert_eq!((ut, r32(st)), (0, ILLEGAL_ARGUMENT));
+        for p in [text, loc, st] {
+            mem::heap_free(p);
+        }
+    }
+
+    proptest! {
+        /// uchars reads exactly `len` units, or up to the NUL; a length below -1 is none
+        #[test]
+        fn uchars_reads_what_it_is_told(units in proptest::collection::vec(1u16.., 0..40), len in -3i64..60) {
+            let _g = crate::test_guest::enter();
+            let p = mem::heap_alloc(2 * 64, true);
+            for (i, &u) in units.iter().enumerate() {
+                mem::w16(p + 2 * i as u32, u);
+            }
+            let got = uchars(p, len);
+            mem::heap_free(p);
+            match len {
+                ..=-2 => prop_assert!(got.is_none()),
+                -1 => prop_assert_eq!(got.unwrap(), units),
+                n => {
+                    let mut want = units.clone();
+                    want.resize(64, 0);
+                    want.truncate(n as usize);
+                    prop_assert_eq!(got.unwrap(), want);
+                }
+            }
         }
     }
 }
-

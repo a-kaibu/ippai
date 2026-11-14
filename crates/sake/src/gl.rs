@@ -114,11 +114,36 @@ fn dispatch(c: &mut Ctx) -> u32 {
 /// Calls kura's GL function `name` with the stdcall argument words `w` (doubles as two words,
 /// low first; floats as their bits): its integer result, or 0 (none, or no such function).
 pub fn call_gl(name: &str, w: &[u32]) -> u32 {
-    let Some((f, sig)) = host_proc(name) else { return 0 };
-    match unsafe { gl_sigs::call(sig, f as *const (), w) } {
+    call_proc(host_proc(name), w)
+}
+
+/// kura's GL function `name` and its signature, for callers that keep it (glu's per-vertex
+/// calls look a function up once, not per call)
+pub fn gl_proc(name: &str) -> Option<(usize, u16)> {
+    host_proc(name)
+}
+
+/// Calls a function `gl_proc` found with the argument words `w`: missing words are 0 and extra
+/// ones are left out, so a caller's slip is a wrong argument, not an index past the end
+/// (gl_sigs::call reads as many words as the signature has).
+pub fn call_proc(p: Option<(usize, u16)>, w: &[u32]) -> u32 {
+    let Some((f, sig)) = p else { return 0 };
+    let words = fit(sig, w);
+    match unsafe { gl_sigs::call(sig, f as *const (), &words) } {
         Ret::I(v) => v,
         _ => 0,
     }
+}
+
+/// `w` as exactly the words signature `sig` takes (a double: two): cut, or padded with 0
+fn fit(sig: u16, w: &[u32]) -> std::borrow::Cow<'_, [u32]> {
+    let n = gl_sigs::SIGS.get(sig as usize).map_or(0, |_| (stack_bytes(sig) / 4) as usize);
+    if w.len() == n {
+        return std::borrow::Cow::Borrowed(w);
+    }
+    let mut v = w[..w.len().min(n)].to_vec();
+    v.resize(n, 0);
+    std::borrow::Cow::Owned(v)
 }
 
 /// a NUL-terminated host string, copied into guest memory (once)
@@ -384,5 +409,43 @@ mod tag_tests {
             assert_eq!(crate::api::args_of(t), (false, stack_bytes(sig)));
         }
         assert!(host_proc("glClear").is_some(), "kura has glClear");
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::{fit, gl_sigs, stack_bytes};
+    use proptest::prelude::*;
+
+    /// gl_sigs::call's arms index words 0..n-1 of signature n: the highest word an arm reads,
+    /// from its source text, must be below what `fit` hands it
+    #[test]
+    fn every_arm_reads_inside_the_fitted_words() {
+        let src = include_str!("gl_sigs.rs");
+        let body = &src[src.find("pub unsafe fn call(").unwrap()..src.find("/// GL functions kura does not have").unwrap()];
+        let mut seen = 0;
+        for line in body.lines() {
+            let Some((sig, rest)) = line.trim().split_once(" => ") else { continue };
+            let Ok(sig) = sig.parse::<u16>() else { continue };
+            let top = rest.match_indices("w[").filter_map(|(i, _)| rest[i + 2..].split(']').next()?.parse::<usize>().ok()).max();
+            let n = stack_bytes(sig) as usize / 4;
+            if let Some(top) = top {
+                assert!(top < n, "signature {sig} ({}) reads w[{top}] of {n}", gl_sigs::SIGS[sig as usize].0);
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, gl_sigs::SIGS.len(), "an arm per signature");
+    }
+
+    proptest! {
+        #[test]
+        fn fitted_words_are_the_signatures(sig in 0..gl_sigs::SIGS.len() as u16, w in proptest::collection::vec(any::<u32>(), 0..16)) {
+            let n = stack_bytes(sig) as usize / 4;
+            let f = fit(sig, &w);
+            prop_assert_eq!(f.len(), n);
+            let k = n.min(w.len());
+            prop_assert_eq!(&f[..k], &w[..k]);
+            prop_assert!(f[k..].iter().all(|&x| x == 0));
+        }
     }
 }

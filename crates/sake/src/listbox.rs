@@ -213,13 +213,11 @@ fn scroll_to(l: &mut List, st: u32, ch: i32, i: usize) {
         l.top = i;
         return;
     }
-    while l.top < i && {
-        let mut t = 0;
-        for k in l.top..=i {
-            t += height_of(l, st, k);
-        }
-        t > ch
-    } {
+    // (the heights from top to i summed once, then the top's dropped one at a time: not a
+    // new sum per step, quadratic in the distance)
+    let mut t: i64 = (l.top..=i).map(|k| height_of(l, st, k) as i64).sum();
+    while l.top < i && t > ch as i64 {
+        t -= height_of(l, st, l.top) as i64;
         l.top += 1;
     }
 }
@@ -303,16 +301,18 @@ fn find(l: &List, st: u32, from: u32, key: &[u16], data: u32, exact: bool) -> u3
         return LB_ERR;
     }
     let start = if (from as i32) >= 0 && (from as usize) < n { from as usize + 1 } else { 0 };
-    let lower = |v: &[u16]| String::from_utf16_lossy(v).to_lowercase();
-    let want = lower(key);
+    // (the key folded once; each item's text folded as it is compared, no copy per item)
+    let fold = |v: &[u16]| char::decode_utf16(v.iter().copied()).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).flat_map(char::to_lowercase).collect::<Vec<char>>();
+    let want = fold(key);
     (0..n)
         .map(|k| (start + k) % n)
         .find(|&i| {
             if !has_strings(st) {
                 return l.items[i].data == data;
             }
-            let t = lower(&l.items[i].text);
-            if exact { t == want } else { t.starts_with(&want) }
+            let mut t = char::decode_utf16(l.items[i].text.iter().copied()).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).flat_map(char::to_lowercase);
+            let prefix = want.iter().all(|&w| t.next() == Some(w));
+            prefix && (!exact || t.next().is_none())
         })
         .map_or(LB_ERR, |i| i as u32)
 }
@@ -320,7 +320,8 @@ fn find(l: &List, st: u32, from: u32, key: &[u16], data: u32, exact: bool) -> u3
 /// Where a new item goes: LBS_SORT keeps the texts in order (case ignored)
 fn insert_at(l: &List, st: u32, at: Option<usize>, t: &[u16]) -> usize {
     if st & LBS_SORT != 0 && has_strings(st) {
-        return l.items.iter().position(|it| crate::collate::compare(t, &it.text, crate::collate::NORM_IGNORECASE) == std::cmp::Ordering::Less).unwrap_or(l.items.len());
+        // (the texts are in order: a binary search for the first one after `t`)
+        return l.items.partition_point(|it| crate::collate::compare(t, &it.text, crate::collate::NORM_IGNORECASE) != std::cmp::Ordering::Less);
     }
     match at {
         Some(i) if i <= l.items.len() => i,
@@ -382,13 +383,29 @@ fn user_select(c: &mut Ctx, h: u32, i: i32, shift: bool, ctrl: bool, toggle: boo
     }
 }
 
+/// The items a client `ch` high shows from the top index: (index, height, item)
+fn visible(l: &List, st: u32, ch: i32) -> Vec<(usize, i32, Item)> {
+    let mut y = 0;
+    let mut v = Vec::new();
+    for i in l.top..l.items.len() {
+        if y >= ch {
+            break;
+        }
+        let ih = height_of(l, st, i);
+        v.push((i, ih, l.items[i].clone()));
+        y += ih;
+    }
+    v
+}
+
 fn paint(c: &mut Ctx, h: u32) {
     ensure_measured(c, h);
     let st = style(h);
     let (w, ch) = client(h);
     let enabled = with(|s| s.wins.get(&h).is_none_or(|w| w.enabled));
     let focused = with(|s| s.focus == h);
-    let (items, top, sel, caret, item_h, font) = list(h, |l| (l.items.clone(), l.top, l.sel, l.caret, l.item_h, l.font));
+    // only the items that show, with their heights (not the whole list, twice, per paint)
+    let (shown, sel, caret, font) = list(h, |l| (visible(l, st, ch), l.sel, l.caret, l.font));
     let ps = mem::heap_alloc(64 + 16, true);
     let rc = ps + 64;
     let dc = gcall(c, "user32", "BeginPaint", &[h, ps]);
@@ -402,14 +419,9 @@ fn paint(c: &mut Ctx, h: u32) {
         bg = crate::gdi::solid_brush(0xffffff);
     }
     let mut y = 0;
-    let l = List { items: items.clone(), top, item_h, ..List::default() };
-    for i in top..items.len() {
-        if y >= ch {
-            break;
-        }
-        let ih = height_of(&l, st, i);
+    for (i, ih, item) in shown {
         let r = Rect { l: 0, t: y, r: w, b: y + ih };
-        let selected = if multi(st) { items[i].sel } else { sel == i as i32 };
+        let selected = if multi(st) { item.sel } else { sel == i as i32 };
         if owner_drawn(st) && parent != 0 {
             // DRAWITEMSTRUCT { CtlType, CtlID, itemID, itemAction ODA_DRAWENTIRE, itemState,
             // hwndItem, hDC, rcItem, itemData }
@@ -425,7 +437,7 @@ fn paint(c: &mut Ctx, h: u32) {
             mem::wp(d + at, h);
             mem::wp(d + at + pz, dc);
             r.write(d + at + 2 * pz);
-            mem::wp(d + at + 2 * pz + 16, items[i].data);
+            mem::wp(d + at + 2 * pz + 16, item.data);
             send(c, parent, 0x2b, id, d);
             mem::heap_free(d);
         } else {
@@ -440,7 +452,7 @@ fn paint(c: &mut Ctx, h: u32) {
             Rect { l: 2, ..r }.write(rc);
             // DT_SINGLELINE | DT_NOPREFIX (DT_EXPANDTABS with LBS_USETABSTOPS)
             let flags = 0x20 | 0x800 | if st & 0x80 != 0 { 0x40 } else { 0 };
-            crate::gdi::draw_text(dc, &items[i].text, rc, flags);
+            crate::gdi::draw_text(dc, &item.text, rc, flags);
             if focused && caret == i as i32 {
                 r.write(rc);
                 gcall(c, "user32", "DrawFocusRect", &[dc, rc]);
@@ -495,7 +507,12 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             if st & LBS_OWNERDRAWVARIABLE != 0 {
                 let ih = list(h, |l| l.item_h);
                 let hh = measure_item(c, h, i as i32, data, ih);
-                list(h, |l| l.items[i].height = hh);
+                // (the parent may have deleted or reset items while measuring)
+                list(h, |l| {
+                    if let Some(it) = l.items.get_mut(i) {
+                        it.height = hh;
+                    }
+                });
             }
             changed(h);
             i as u32
@@ -952,6 +969,11 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             LISTS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
             def_proc(c, wide)
         }
+        // WM_NCDESTROY: what messages between WM_DESTROY and now made again goes too
+        0x82 => {
+            LISTS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
+            def_proc(c, wide)
+        }
         _ => def_proc(c, wide),
     }
 }
@@ -993,6 +1015,84 @@ mod tests {
             let i = l.top + pick % (n - l.top);
             let r = item_rect(&l, 0, 100, i);
             proptest::prop_assert_eq!(item_at(&l, 0, r.t + 1), (i as i32, true));
+        }
+    }
+
+    fn item(t: &str, h: i32) -> Item {
+        Item { text: t.encode_utf16().collect(), data: t.len() as u32, sel: false, height: h }
+    }
+    fn texts() -> impl proptest::strategy::Strategy<Value = Vec<String>> {
+        proptest::collection::vec("[a-cA-CàÀ0-2 ]{0,4}", 0..24)
+    }
+
+    proptest::proptest! {
+        /// The rows a paint draws are those the old whole-list walk drew
+        #[test]
+        fn visible_rows_are_the_walks(hs in proptest::collection::vec(-3i32..30, 0..40), top in 0usize..45, ch in -5i32..200, var: bool, ih in 1i32..20) {
+            let st = if var { LBS_OWNERDRAWVARIABLE } else { 0 };
+            let l = List { items: hs.iter().map(|&h| item("x", h)).collect(), top, item_h: ih, ..List::default() };
+            let mut want = Vec::new();
+            let mut y = 0;
+            for i in top..l.items.len() {
+                if y >= ch { break; }
+                let h = height_of(&l, st, i);
+                want.push((i, h));
+                y += h;
+            }
+            let got: Vec<(usize, i32)> = visible(&l, st, ch).into_iter().map(|(i, h, _)| (i, h)).collect();
+            proptest::prop_assert_eq!(got, want);
+        }
+
+        /// scroll_to's running sum lands on the top the per-step sums gave
+        #[test]
+        fn scroll_to_is_the_per_step_sum(hs in proptest::collection::vec(-3i32..30, 1..60), top in 0usize..60, i in 0usize..60, ch in -5i32..200, var: bool, ih in 1i32..20) {
+            let st = if var { LBS_OWNERDRAWVARIABLE } else { 0 };
+            let mut l = List { items: hs.iter().map(|&h| item("x", h)).collect(), top: top % hs.len(), item_h: ih, ..List::default() };
+            let i = i % hs.len();
+            let mut old = List { items: l.items.clone(), top: l.top, item_h: ih, ..List::default() };
+            if i < old.top {
+                old.top = i;
+            } else {
+                while old.top < i && (old.top..=i).map(|k| height_of(&old, st, k)).sum::<i32>() > ch {
+                    old.top += 1;
+                }
+            }
+            scroll_to(&mut l, st, ch, i);
+            proptest::prop_assert_eq!(l.top, old.top);
+        }
+
+        /// LB_FINDSTRING(EXACT) as the lower-cased copies found them
+        #[test]
+        fn find_is_the_folded_compare(ts in texts(), key in "[a-cA-CàÀ0-2 ]{0,3}", from in -1i32..30, exact: bool) {
+            let l = List { items: ts.iter().map(|t| item(t, 1)).collect(), ..List::default() };
+            let k: Vec<u16> = key.encode_utf16().collect();
+            let n = ts.len();
+            let want = if n == 0 { LB_ERR } else {
+                let start = if from >= 0 && (from as usize) < n { from as usize + 1 } else { 0 };
+                let w = key.to_lowercase();
+                (0..n).map(|j| (start + j) % n).find(|&j| {
+                    let t = ts[j].to_lowercase();
+                    if exact { t == w } else { t.starts_with(&w) }
+                }).map_or(LB_ERR, |j| j as u32)
+            };
+            proptest::prop_assert_eq!(find(&l, LBS_HASSTRINGS, from as u32, &k, 0, exact), want);
+        }
+
+        /// LBS_SORT: adding one at a time through the binary search keeps the order the linear
+        /// scan made
+        #[test]
+        fn sorted_inserts_are_the_scans(ts in texts()) {
+            let st = LBS_SORT | LBS_HASSTRINGS;
+            let mut l = List::default();
+            let mut old: Vec<Vec<u16>> = Vec::new();
+            for t in &ts {
+                let w: Vec<u16> = t.encode_utf16().collect();
+                let at = insert_at(&l, st, None, &w);
+                let o = old.iter().position(|x| crate::collate::compare(&w, x, crate::collate::NORM_IGNORECASE) == std::cmp::Ordering::Less).unwrap_or(old.len());
+                proptest::prop_assert_eq!(at, o);
+                l.items.insert(at, Item { text: w.clone(), ..Item::default() });
+                old.insert(o, w);
+            }
         }
     }
 }

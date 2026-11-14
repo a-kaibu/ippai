@@ -191,9 +191,23 @@ pub fn components(format: u32) -> Option<usize> {
 }
 
 fn row_bytes(w: usize, comps: usize, align: usize) -> usize {
-    let n = w * comps;
+    let n = w.saturating_mul(comps);
     let a = align.max(1);
-    n.div_ceil(a) * a
+    n.div_ceil(a).saturating_mul(a)
+}
+
+/// The most bytes one image of gluScaleImage / gluBuild*Mipmaps may take (in or out): past it
+/// the call is GLU_OUT_OF_MEMORY, as libGLU's malloc failing would make it, rather than a
+/// size that wraps 32 bits (wasm32's usize) or an allocation that aborts the VM.
+pub const MAX_IMAGE: usize = 256 << 20;
+
+/// The bytes of a `w` x `h` image of `comps` components with `align`-byte rows, if at most
+/// MAX_IMAGE (computed without wrapping)
+pub fn image_bytes(w: usize, h: usize, comps: usize, align: usize) -> Option<usize> {
+    let a = align.max(1) as u64;
+    let row = (w as u64).checked_mul(comps as u64)?.div_ceil(a).checked_mul(a)?;
+    let n = row.checked_mul(h as u64)?;
+    (n <= MAX_IMAGE as u64).then_some(n as usize)
 }
 
 /// gluScaleImage on bytes, as SGI's GLU (Mesa's libGLU) does it: the bytes widened to 16 bits
@@ -203,7 +217,9 @@ fn row_bytes(w: usize, comps: usize, align: usize) -> usize {
 /// `align`-byte aligned in and out (GL_UNPACK/PACK_ALIGNMENT).
 pub fn scale_image(comps: usize, wi: usize, hi: usize, src: &[u8], wo: usize, ho: usize, align: usize) -> Vec<u8> {
     let (si, so) = (row_bytes(wi, comps, align), row_bytes(wo, comps, align));
-    let mut out = vec![0u8; so * ho];
+    // (an image past MAX_IMAGE is none: the guest calls refuse it before)
+    let (Some(_), Some(n)) = (image_bytes(wi, hi, comps, align), image_bytes(wo, ho, comps, align)) else { return Vec::new() };
+    let mut out = vec![0u8; n];
     if wi == 0 || hi == 0 || wo == 0 || ho == 0 {
         return out;
     }
@@ -470,6 +486,14 @@ pub fn scale_ubyte(comps: usize, wi: usize, hi: usize, src: &[u8], si: usize, wo
 /// scale_ubyte) down to 1x1, each level halve_ubyte of the one above. `align` is the input
 /// rows' alignment.
 pub fn mipmaps(comps: usize, w: usize, h: usize, src: &[u8], max: usize, align: usize) -> Vec<(usize, usize, Vec<u8>)> {
+    let mut v = Vec::new();
+    each_mipmap(comps, w, h, src, max, align, |cw, ch, px| v.push((cw, ch, px.to_vec())));
+    v
+}
+
+/// `mipmaps` one level at a time (`level(width, height, pixels)`, level 0 first): only the
+/// level being made and the one before it are held, not the whole chain.
+pub fn each_mipmap(comps: usize, w: usize, h: usize, src: &[u8], max: usize, align: usize, mut level: impl FnMut(usize, usize, &[u8])) {
     let si = row_bytes(w, comps, align);
     let (mut cw, mut ch) = (nearest_pot(w.max(1), max), nearest_pot(h.max(1), max));
     let mut cur = if (cw, ch) == (w, h) {
@@ -477,20 +501,28 @@ pub fn mipmaps(comps: usize, w: usize, h: usize, src: &[u8], max: usize, align: 
     } else {
         scale_ubyte(comps, w, h, src, si, cw, ch)
     };
-    let mut v = Vec::new();
     loop {
-        let next = (cw > 1 || ch > 1).then(|| ((cw / 2).max(1), (ch / 2).max(1), halve_ubyte(comps, cw, ch, &cur, cw * comps)));
-        v.push((cw, ch, std::mem::take(&mut cur)));
-        let Some((nw, nh, n)) = next else { break };
-        (cw, ch, cur) = (nw, nh, n);
+        level(cw, ch, &cur);
+        if cw == 1 && ch == 1 {
+            break;
+        }
+        cur = halve_ubyte(comps, cw, ch, &cur, cw * comps);
+        (cw, ch) = ((cw / 2).max(1), (ch / 2).max(1));
     }
-    v
 }
 
 // ---------------------------------------------------------------------------------------------
 // the guest side
 
 use crate::gl::call_gl;
+
+/// call_gl with the function looked up once per call site (the per-vertex calls)
+macro_rules! gl {
+    ($name:literal, $w:expr) => {{
+        static F: std::sync::OnceLock<Option<(usize, u16)>> = std::sync::OnceLock::new();
+        crate::gl::call_proc(*F.get_or_init(|| crate::gl::gl_proc($name)), $w)
+    }};
+}
 
 fn dbl(v: f64) -> [u32; 2] {
     let b = v.to_bits();
@@ -500,6 +532,9 @@ fn dbl(v: f64) -> [u32; 2] {
 /// glMultMatrixd(m) from a guest copy of `m`
 fn mult(m: &M4) {
     let p = mem::heap_alloc(128, false);
+    if p == 0 {
+        return;
+    }
     for (i, v) in m.iter().enumerate() {
         mem::w64(p + 8 * i as u32, v.to_bits());
     }
@@ -596,10 +631,14 @@ fn gluUnProject(c: &mut Ctx) -> u32 {
 
 const GLU_INVALID_ENUM: u32 = 100900;
 const GLU_INVALID_VALUE: u32 = 100901;
+const GLU_OUT_OF_MEMORY: u32 = 100902;
 const GL_UNSIGNED_BYTE: u32 = 0x1401;
 
 fn gl_int(pname: u32) -> i32 {
     let p = mem::heap_alloc(64, true);
+    if p == 0 {
+        return 0;
+    }
     call_gl("glGetIntegerv", &[pname, p]);
     let v = r32(p) as i32;
     mem::heap_free(p);
@@ -618,9 +657,11 @@ fn gluScaleImage(c: &mut Ctx) -> u32 {
         return GLU_INVALID_VALUE;
     }
     let (ua, pa) = (gl_int(0x0cf5).clamp(1, 8) as usize, gl_int(0x0d05).clamp(1, 8) as usize);
-    let src = mem::slice(a[4], (row_bytes(wi as usize, comps, ua) * hi as usize) as u32).to_vec();
+    let (Some(n), Some(_), Some(_)) = (image_bytes(wi as usize, hi as usize, comps, ua), image_bytes(wo as usize, ho as usize, comps, ua), image_bytes(wo as usize, ho as usize, comps, pa)) else { return GLU_OUT_OF_MEMORY };
+    // (the guest's pixels as they are: no copy)
+    let src = mem::slice(a[4], n as u32);
     // (rows unpacked at the unpack alignment, packed at the pack alignment)
-    let tight = scale_image(comps, wi as usize, hi as usize, &src, wo as usize, ho as usize, ua);
+    let tight = scale_image(comps, wi as usize, hi as usize, src, wo as usize, ho as usize, ua);
     let (si, so) = (row_bytes(wo as usize, comps, ua), row_bytes(wo as usize, comps, pa));
     for y in 0..ho as usize {
         mem::write(a[8] + (y * so) as u32, &tight[y * si..y * si + wo as usize * comps]);
@@ -649,22 +690,31 @@ fn build_mipmaps(target: u32, internal: u32, w: i32, h: i32, format: u32, ty: u3
     }
     let align = gl_int(0x0cf5).clamp(1, 8) as usize;
     let max = gl_int(0x0d33).max(64) as usize; // GL_MAX_TEXTURE_SIZE
-    let src = mem::slice(data, (row_bytes(w as usize, comps, align) * h as usize) as u32).to_vec();
+    let Some(n) = image_bytes(w as usize, h as usize, comps, align) else { return GLU_OUT_OF_MEMORY };
+    // level 0's size (the largest): one guest block every level is written into
+    let (cw, ch) = (nearest_pot(w as usize, max), nearest_pot(h as usize, max));
+    let Some(top) = image_bytes(cw, ch, comps, 1) else { return GLU_OUT_OF_MEMORY };
+    let p = mem::heap_alloc(top.max(4) as u32, false);
+    if p == 0 {
+        return GLU_OUT_OF_MEMORY;
+    }
+    // (the guest's pixels as they are: no copy)
+    let src = mem::slice(data, n as u32);
     // (the levels are tightly packed: unpack them at alignment 1, as libGLU does)
     call_gl("glPixelStorei", &[0x0cf5, 1]);
-    for (level, (lw, lh, px)) in mipmaps(comps, w as usize, h as usize, &src, max, align).into_iter().enumerate() {
-        if one_d && lh > 1 {
-            continue;
+    let mut level = 0u32;
+    each_mipmap(comps, w as usize, h as usize, src, max, align, |lw, lh, px| {
+        if !(one_d && lh > 1) {
+            mem::write(p, px);
+            if one_d {
+                call_gl("glTexImage1D", &[target, level, internal, lw as u32, 0, format, ty, p]);
+            } else {
+                call_gl("glTexImage2D", &[target, level, internal, lw as u32, lh as u32, 0, format, ty, p]);
+            }
         }
-        let p = mem::heap_alloc(px.len().max(4) as u32, false);
-        mem::write(p, &px);
-        if one_d {
-            call_gl("glTexImage1D", &[target, level as u32, internal, lw as u32, 0, format, ty, p]);
-        } else {
-            call_gl("glTexImage2D", &[target, level as u32, internal, lw as u32, lh as u32, 0, format, ty, p]);
-        }
-        mem::heap_free(p);
-    }
+        level += 1;
+    });
+    mem::heap_free(p);
     call_gl("glPixelStorei", &[0x0cf5, align as u32]);
     0
 }
@@ -758,12 +808,12 @@ fn vtx(q: [u32; 4], n: [f64; 3], t: (f64, f64), p: [f64; 3]) {
     let f = |v: f64| (v as f32).to_bits();
     let s = if q[2] == GLU_INSIDE { -1.0 } else { 1.0 };
     if q[1] != GLU_NONE {
-        call_gl("glNormal3f", &[f(n[0] * s), f(n[1] * s), f(n[2] * s)]);
+        gl!("glNormal3f", &[f(n[0] * s), f(n[1] * s), f(n[2] * s)]);
     }
     if q[3] != 0 {
-        call_gl("glTexCoord2f", &[f(t.0), f(t.1)]);
+        gl!("glTexCoord2f", &[f(t.0), f(t.1)]);
     }
-    call_gl("glVertex3f", &[f(p[0]), f(p[1]), f(p[2])]);
+    gl!("glVertex3f", &[f(p[0]), f(p[1]), f(p[2])]);
 }
 fn quad(p: u32) -> [u32; 4] {
     [r32(p), r32(p + 4), r32(p + 8), r32(p + 12)]
@@ -777,6 +827,11 @@ fn strip_mode(style: u32) -> u32 {
     }
 }
 
+/// SGI GLU's quad.c CACHE_SIZE: slices and stacks of CACHE_SIZE or more draw as CACHE_SIZE - 1
+pub const CACHE_SIZE: i32 = 240;
+/// the most loops gluDisk / gluPartialDisk draw
+pub const MAX_LOOPS: i32 = 1 << 12;
+
 /// gluCylinder(q, base, top, height, slices, stacks)
 fn gluCylinder(c: &mut Ctx) -> u32 {
     let qp = c.a(0);
@@ -789,11 +844,12 @@ fn gluCylinder(c: &mut Ctx) -> u32 {
     if slices < 2 || stacks < 1 || base < 0.0 || top < 0.0 || height < 0.0 {
         return 0;
     }
+    let (slices, stacks) = (slices.min(CACHE_SIZE - 1), stacks.min(CACHE_SIZE - 1));
     let nz = (base - top) / height.max(f64::MIN_POSITIVE);
     for j in 0..stacks {
         let (z0, z1) = (height * j as f64 / stacks as f64, height * (j + 1) as f64 / stacks as f64);
         let (r0, r1) = (base + (top - base) * j as f64 / stacks as f64, base + (top - base) * (j + 1) as f64 / stacks as f64);
-        call_gl("glBegin", &[strip_mode(q[0])]);
+        gl!("glBegin", &[strip_mode(q[0])]);
         for i in 0..=slices {
             let a = 2.0 * PI * i as f64 / slices as f64;
             let (s, co) = (a.sin(), a.cos());
@@ -802,7 +858,7 @@ fn gluCylinder(c: &mut Ctx) -> u32 {
             vtx(q, n, (u, j as f64 / stacks as f64), [r0 * s, r0 * co, z0]);
             vtx(q, n, (u, (j + 1) as f64 / stacks as f64), [r1 * s, r1 * co, z1]);
         }
-        call_gl("glEnd", &[]);
+        gl!("glEnd", &[]);
     }
     0
 }
@@ -818,9 +874,10 @@ fn gluSphere(c: &mut Ctx) -> u32 {
     if slices < 2 || stacks < 1 || r < 0.0 {
         return 0;
     }
+    let (slices, stacks) = (slices.min(CACHE_SIZE - 1), stacks.min(CACHE_SIZE - 1));
     for j in 0..stacks {
         let (p0, p1) = (PI * j as f64 / stacks as f64, PI * (j + 1) as f64 / stacks as f64);
-        call_gl("glBegin", &[strip_mode(q[0])]);
+        gl!("glBegin", &[strip_mode(q[0])]);
         for i in 0..=slices {
             let a = 2.0 * PI * i as f64 / slices as f64;
             let u = 1.0 - i as f64 / slices as f64;
@@ -829,7 +886,7 @@ fn gluSphere(c: &mut Ctx) -> u32 {
                 vtx(q, n, (u, 1.0 - p / PI), [n[0] * r, n[1] * r, n[2] * r]);
             }
         }
-        call_gl("glEnd", &[]);
+        gl!("glEnd", &[]);
     }
     0
 }
@@ -838,10 +895,12 @@ fn partial_disk(q: [u32; 4], inner: f64, outer: f64, slices: i32, loops: i32, st
     if slices < 2 || loops < 1 || outer <= 0.0 || inner < 0.0 || inner > outer {
         return;
     }
+    // (libGLU caps slices; loops too here, so a garbage count is no endless host call)
+    let (slices, loops) = (slices.min(CACHE_SIZE - 1), loops.min(MAX_LOOPS));
     let sweep = sweep.clamp(-360.0, 360.0);
     for l in 0..loops {
         let (r0, r1) = (inner + (outer - inner) * l as f64 / loops as f64, inner + (outer - inner) * (l + 1) as f64 / loops as f64);
-        call_gl("glBegin", &[strip_mode(q[0])]);
+        gl!("glBegin", &[strip_mode(q[0])]);
         for i in 0..=slices {
             let a = (start + sweep * i as f64 / slices as f64) * PI / 180.0;
             let (s, co) = (a.sin(), a.cos());
@@ -849,7 +908,7 @@ fn partial_disk(q: [u32; 4], inner: f64, outer: f64, slices: i32, loops: i32, st
                 vtx(q, [0.0, 0.0, 1.0], (0.5 + s * r / outer / 2.0, 0.5 + co * r / outer / 2.0), [r * s, r * co, 0.0]);
             }
         }
-        call_gl("glEnd", &[]);
+        gl!("glEnd", &[]);
     }
 }
 /// gluDisk(q, inner, outer, slices, loops)
@@ -1152,5 +1211,84 @@ mod issue88 {
         }
         assert_eq!(quad(p), [GLU_FILL, 100000 /* GLU_SMOOTH */, 100020 /* GLU_OUTSIDE */, 1]);
         crate::mem::heap_free(p);
+    }
+
+    /// gluScaleImage / gluBuild*Mipmaps with sizes whose byte counts wrap 32 bits or pass
+    /// MAX_IMAGE: GLU_OUT_OF_MEMORY, not an index past a wrapped buffer or an aborting
+    /// allocation (review b07: 0x10000 x 0x10000 RGBA wrapped to 0 bytes on wasm32)
+    #[test]
+    fn huge_images_are_out_of_memory() {
+        let _g = enter();
+        let px = crate::mem::heap_alloc(64, true);
+        for (w, h) in [(0x10000, 0x10000), (0x8000, 0x8000), (20000, 20000), (0x7fff_ffff, 1), (1, 0x7fff_ffff)] {
+            let r = crate::test_guest::call(gluScaleImage, &[0x1908, 2, 2, GL_UNSIGNED_BYTE, px, w, h, GL_UNSIGNED_BYTE, px]);
+            assert_eq!(r, GLU_OUT_OF_MEMORY, "scale to {w}x{h}");
+            let r = crate::test_guest::call(gluScaleImage, &[0x1908, w, h, GL_UNSIGNED_BYTE, px, 2, 2, GL_UNSIGNED_BYTE, px]);
+            assert_eq!(r, GLU_OUT_OF_MEMORY, "scale from {w}x{h}");
+            let r = crate::test_guest::call(gluBuild2DMipmaps, &[0x0de1, 4, w, h, 0x1908, GL_UNSIGNED_BYTE, px]);
+            assert_eq!(r, GLU_OUT_OF_MEMORY, "mipmaps of {w}x{h}");
+        }
+        crate::mem::heap_free(px);
+    }
+
+    /// Garbage slice/stack/loop counts draw at most libGLU's CACHE_SIZE - 1 (MAX_LOOPS loops),
+    /// not 2^31 x 2^31 vertices inside one host call
+    #[test]
+    fn huge_quadric_counts_are_capped() {
+        let _g = enter();
+        let q = crate::test_guest::call(gluNewQuadric, &[]);
+        let one = 1.0f64.to_bits();
+        let (lo, hi) = (one as u32, (one >> 32) as u32);
+        let t = std::time::Instant::now();
+        crate::test_guest::call(gluSphere, &[q, lo, hi, 0x7fff_ffff, 0x7fff_ffff]);
+        crate::test_guest::call(gluCylinder, &[q, lo, hi, lo, hi, lo, hi, 0x7fff_ffff, 0x7fff_ffff]);
+        let zero = 0.0f64.to_bits() as u32;
+        crate::test_guest::call(gluDisk, &[q, zero, zero, lo, hi, 0x7fff_ffff, 0x7fff_ffff]);
+        assert!(t.elapsed() < std::time::Duration::from_secs(20), "{:?}", t.elapsed());
+        crate::test_guest::call(gluDeleteQuadric, &[q]);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(96))]
+        /// image_bytes is the exact u64 size, None past MAX_IMAGE, whatever the inputs (no wrap)
+        #[test]
+        fn image_bytes_never_wraps(w in 0usize..1 << 31, h in 0usize..1 << 31, comps in 1usize..5, align in proptest::sample::select(vec![1usize, 2, 4, 8])) {
+            let row = ((w as u128 * comps as u128).div_ceil(align as u128)) * align as u128;
+            let want = row * h as u128;
+            let got = image_bytes(w, h, comps, align);
+            proptest::prop_assert_eq!(got, (want <= MAX_IMAGE as u128).then_some(want as usize));
+        }
+
+        /// scale_image never indexes past its buffers, whatever the sizes: an image too big is
+        /// none, any other is exactly its size
+        #[test]
+        fn scale_image_is_its_size_or_none(wi in 0usize..40, hi in 0usize..40, wo in proptest::prop_oneof![0usize..40, 1usize << 15..1 << 17], ho in proptest::prop_oneof![0usize..40, 1usize << 15..1 << 17], comps in 1usize..5, align in proptest::sample::select(vec![1usize, 2, 4, 8]), seed in proptest::prelude::any::<u8>()) {
+            let src: Vec<u8> = (0..row_bytes(wi, comps, align) * hi).map(|i| (i as u8).wrapping_mul(seed)).collect();
+            let out = scale_image(comps, wi, hi, &src, wo, ho, align);
+            match image_bytes(wo, ho, comps, align) {
+                Some(n) => proptest::prop_assert_eq!(out.len(), n),
+                None => proptest::prop_assert!(out.is_empty()),
+            }
+        }
+
+        /// each_mipmap hands out the chain mipmaps keeps, level by level, halving to 1x1
+        #[test]
+        fn each_mipmap_is_the_chain(w in 1usize..70, h in 1usize..70, comps in 1usize..5, align in proptest::sample::select(vec![1usize, 4]), max in proptest::sample::select(vec![64usize, 16, 1024])) {
+            let src: Vec<u8> = (0..row_bytes(w, comps, align) * h).map(|i| (i * 31 % 251) as u8).collect();
+            let mut got = Vec::new();
+            each_mipmap(comps, w, h, &src, max, align, |a, b, px| got.push((a, b, px.to_vec())));
+            let (mut cw, mut ch) = (nearest_pot(w, max), nearest_pot(h, max));
+            for (i, (a, b, px)) in got.iter().enumerate() {
+                proptest::prop_assert_eq!((*a, *b), (cw, ch), "level {}", i);
+                proptest::prop_assert_eq!(px.len(), a * b * comps);
+                if i > 0 {
+                    let (pw, ph, prev) = &got[i - 1];
+                    proptest::prop_assert_eq!(px, &halve_ubyte(comps, *pw, *ph, prev, pw * comps));
+                }
+                (cw, ch) = ((cw / 2).max(1), (ch / 2).max(1));
+            }
+            let last = got.last().unwrap();
+            proptest::prop_assert_eq!((last.0, last.1), (1, 1));
+        }
     }
 }

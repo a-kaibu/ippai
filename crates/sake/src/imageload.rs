@@ -85,27 +85,45 @@ fn map_and_load(name: &str, dll_path: &str, li: u32, dot_dll: bool, read_only: b
         crate::k32::last_error(2);
         return false;
     };
-    let data = match crate::files::resolve(&w).map(|h| kura::fs::read(&h)) {
-        Some(Ok(d)) => d,
-        _ => {
-            crate::k32::last_error(2);
-            return false;
-        }
-    };
-    let Some(l) = layout(&data) else {
-        crate::k32::last_error(193);
+    let Some(mut f) = crate::files::resolve(&w).and_then(|h| kura::fs::File::open(&h).ok()) else {
+        crate::k32::last_error(2);
         return false;
     };
-    let view = mem::heap_alloc(data.len().max(1) as u32, false);
+    // (read straight into the view: no host copy of the whole file)
+    let len = f.metadata().map_or(0, |m| m.len());
+    let Ok(n) = u32::try_from(len) else {
+        crate::k32::last_error(8);
+        return false;
+    };
+    let view = mem::heap_alloc(n.max(1), false);
     let path = crate::text::s2a(&w);
     let module = mem::heap_alloc(path.len() as u32 + 1, true);
-    if view == 0 || module == 0 {
+    let free = || {
         mem::heap_free(view);
         mem::heap_free(module);
+    };
+    if view == 0 || module == 0 {
+        free();
         crate::k32::last_error(8);
         return false;
     }
-    mem::write(view, &data);
+    let mut done = 0u32;
+    while done < n {
+        let k = (n - done).min(1 << 20);
+        let mut b = vec![0u8; k as usize];
+        if std::io::Read::read_exact(&mut f, &mut b).is_err() {
+            free();
+            crate::k32::last_error(30); // ERROR_READ_FAULT
+            return false;
+        }
+        mem::write(view + done, &b);
+        done += k;
+    }
+    let Some(l) = layout(mem::slice(view, n)) else {
+        free();
+        crate::k32::last_error(193);
+        return false;
+    };
     mem::write(module, &path);
     let p = ptr();
     mem::fill(li, loaded_image_size(), 0);

@@ -43,6 +43,7 @@ pub enum Use {
     Unknown = 8,
 }
 
+#[derive(Clone)]
 pub struct Account {
     pub sid: Sid,
     pub name: String,
@@ -58,7 +59,11 @@ pub fn machine_sid() -> Sid {
 
 /// Every account the machine knows, as Windows names them in English and Japanese.
 /// (sid, name, domain, use, other names it is found by)
-fn table() -> Vec<(Account, &'static [&'static str])> {
+fn table() -> &'static [(Account, &'static [&'static str])] {
+    static T: std::sync::OnceLock<Vec<(Account, &'static [&'static str])>> = std::sync::OnceLock::new();
+    T.get_or_init(make_table)
+}
+fn make_table() -> Vec<(Account, &'static [&'static str])> {
     let a = |auth: u64, subs: &[u32], name: &str, domain: &str, usage: Use| Account { sid: Sid(auth, subs.to_vec()), name: name.into(), domain: domain.into(), usage };
     let nt = "NT AUTHORITY";
     let m = machine_sid().1;
@@ -123,24 +128,25 @@ fn table() -> Vec<(Account, &'static [&'static str])> {
 }
 
 pub fn by_sid(s: &Sid) -> Option<Account> {
-    table().into_iter().map(|e| e.0).find(|a| a.sid == *s)
+    table().iter().map(|e| &e.0).find(|a| a.sid == *s).cloned()
 }
 
 /// An account by "name" or "domain\name" (case-insensitive). A name alone is looked up as an
 /// account name first, then as a domain's own name (BUILTIN, SAKE).
 pub fn by_name(n: &str) -> Option<Account> {
-    let eq = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
-    let t = table();
+    // (case folded as the characters go: no lower-cased copies per comparison)
+    let eq = |a: &str, b: &str| a.chars().flat_map(char::to_lowercase).eq(b.chars().flat_map(char::to_lowercase));
+    let t = table().iter();
     if let Some((d, n)) = n.split_once('\\') {
         if n.is_empty() {
-            return t.into_iter().map(|e| e.0).find(|a| a.usage == Use::Domain && eq(&a.name, d));
+            return t.map(|e| &e.0).find(|a| a.usage == Use::Domain && eq(&a.name, d)).cloned();
         }
-        return t.into_iter().find(|(a, alt)| eq(&a.domain, d) && (eq(&a.name, n) || alt.iter().any(|x| eq(x, n)))).map(|e| e.0);
+        return t.into_iter().find(|(a, alt)| eq(&a.domain, d) && (eq(&a.name, n) || alt.iter().any(|x| eq(x, n)))).map(|e| e.0.clone());
     }
     if n.is_empty() {
         return None;
     }
-    t.into_iter().find(|(a, alt)| eq(&a.name, n) || alt.iter().any(|x| eq(x, n))).map(|e| e.0)
+    t.into_iter().find(|(a, alt)| eq(&a.name, n) || alt.iter().any(|x| eq(x, n))).map(|e| e.0.clone())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -477,6 +483,12 @@ fn names_in(p: u32, n: u32) -> Vec<String> {
         .collect()
 }
 
+/// The most names or SIDs one lookup takes (LSA's 20480): more is STATUS_TOO_MANY_NAMES /
+/// STATUS_TOO_MANY_SIDS, not a count * entry size that wraps 32 bits or a block of gigabytes
+pub const MAX_LOOKUP: u32 = 20480;
+const STATUS_TOO_MANY_NAMES: u32 = 0xC000_0108;
+const STATUS_TOO_MANY_SIDS: u32 = 0xC000_017E;
+
 /// LsaLookupNames2(policy, flags, count, names, &domains, &sids): LSA_TRANSLATED_SID2
 /// {Use; PSID Sid; LONG DomainIndex; ULONG Flags} per name. LsaLookupNames (v1) gives
 /// LSA_TRANSLATED_SID {Use; ULONG RelativeId; LONG DomainIndex} instead.
@@ -486,6 +498,9 @@ fn lookup_names(h: u32, count: u32, names: u32, domsp: u32, sidsp: u32, v2: bool
     }
     if domsp == 0 || sidsp == 0 || count != 0 && names == 0 {
         return STATUS_INVALID_PARAMETER;
+    }
+    if count > MAX_LOOKUP {
+        return STATUS_TOO_MANY_NAMES;
     }
     let p = ps();
     let found: Vec<Option<Account>> = names_in(names, count).iter().map(|n| by_name(n)).collect();
@@ -540,6 +555,9 @@ fn LsaLookupSids(c: &mut Ctx) -> u32 {
     }
     if domsp == 0 || namesp == 0 || count != 0 && sids == 0 {
         return STATUS_INVALID_PARAMETER;
+    }
+    if count > MAX_LOOKUP {
+        return STATUS_TOO_MANY_SIDS;
     }
     let p = ps();
     let e = if p == 8 { 32 } else { 16 };
@@ -693,6 +711,35 @@ mod tests {
             for b in &t[i + 1..] {
                 assert_ne!(a.0.sid, b.0.sid, "{} {}", a.0.name, b.0.name);
             }
+        }
+    }
+
+    /// A garbage count (2^28 and up wrapped `entry * count` on wasm32; a merely big one asked
+    /// for a block of gigabytes) is STATUS_TOO_MANY_NAMES / _SIDS before anything is read
+    #[test]
+    fn huge_counts_are_refused() {
+        let _g = crate::test_guest::enter();
+        let out = mem::heap_alloc(16, true);
+        let names = mem::heap_alloc(16, true);
+        for count in [MAX_LOOKUP + 1, 1 << 28, 0x4000_0000, u32::MAX] {
+            assert_eq!(crate::test_guest::call(LsaLookupNames2, &[POLICY, 0, count, names, out, out + 8]), STATUS_TOO_MANY_NAMES);
+            assert_eq!(crate::test_guest::call(LsaLookupNames, &[POLICY, count, names, out, out + 8]), STATUS_TOO_MANY_NAMES);
+            assert_eq!(crate::test_guest::call(LsaLookupSids, &[POLICY, count, names, out, out + 8]), STATUS_TOO_MANY_SIDS);
+        }
+        mem::heap_free(out);
+        mem::heap_free(names);
+    }
+
+    proptest! {
+        /// The kept table answers as a freshly made one, by name in any case and by SID
+        #[test]
+        fn kept_table_is_the_made_one(i in 0usize..64, upper: bool) {
+            let fresh = make_table();
+            let (a, _) = &fresh[i % fresh.len()];
+            let case = |s: &str| if upper { s.to_uppercase() } else { s.to_lowercase() };
+            let want = fresh.iter().find(|(x, alt)| x.name.to_lowercase() == case(&a.name).to_lowercase() || alt.iter().any(|y| y.to_lowercase() == case(&a.name).to_lowercase())).map(|e| e.0.sid.clone());
+            prop_assert_eq!(by_name(&case(&a.name)).map(|x| x.sid), want);
+            prop_assert_eq!(by_sid(&a.sid).map(|x| x.name), Some(a.name.clone()));
         }
     }
 }

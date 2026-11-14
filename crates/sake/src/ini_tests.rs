@@ -350,3 +350,61 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    /// WritePrivateProfileSection's list (lines, each NUL-ended, a NUL after the last) is
+    /// walked by the bytes it holds: lines with bytes that do not survive the code page
+    /// (lone SJIS lead bytes, 0x80, 0xA0, 0xFD..0xFF) neither shift the walk nor pull in what
+    /// follows the list (review b07: it stepped by the re-encoded length)
+    #[test]
+    fn section_lists_step_by_their_bytes(lines in proptest::collection::vec(proptest::collection::vec(1u8.., 1..12), 0..8), after in proptest::collection::vec(1u8.., 0..16), wide: bool) {
+        let _g = crate::test_guest::enter();
+        let unit = if wide { 2 } else { 1 };
+        let mut bytes = Vec::new();
+        for l in &lines {
+            for &b in l {
+                bytes.push(b);
+                if wide {
+                    bytes.push(0x30);
+                }
+            }
+            bytes.extend(std::iter::repeat_n(0, unit));
+        }
+        bytes.extend(std::iter::repeat_n(0, unit));
+        // (garbage after the list's end, with no NUL for a while)
+        bytes.extend(after.iter().flat_map(|&b| std::iter::repeat_n(b, unit)));
+        bytes.extend(std::iter::repeat_n(0, 2 * unit));
+        let p = crate::mem::heap_alloc(bytes.len() as u32, true);
+        crate::mem::write(p, &bytes);
+        let got = arg_list(p, wide);
+        let mut at = p;
+        let want: Vec<String> = lines.iter().map(|l| {
+            let s = crate::k32::arg_str(at, wide);
+            at += ((l.len() + 1) * unit) as u32;
+            s
+        }).collect();
+        crate::mem::heap_free(p);
+        prop_assert_eq!(got, want);
+    }
+}
+
+/// WritePrivateProfileStruct with a size past the readable guest memory fails with
+/// ERROR_NOACCESS instead of reading (and hexing) gigabytes
+#[test]
+fn struct_writes_past_memory_fail() {
+    let _g = crate::test_guest::enter();
+    crate::test_guest::guest_thread();
+    let s = |t: &str| {
+        let p = crate::mem::heap_alloc(t.len() as u32 + 1, true);
+        crate::mem::write(p, t.as_bytes());
+        p
+    };
+    let (sec, key, file) = (s("S"), s("k"), s(&format!("{}/sake-ini-struct-{}.ini", std::env::temp_dir().display(), std::process::id())));
+    let buf = crate::mem::heap_alloc(8, true);
+    assert_eq!(crate::test_guest::call(WritePrivateProfileStructA, &[sec, key, buf, 0x7fff_0000, file]), 0);
+    assert_eq!(crate::k32::get_last_error(), 998);
+    assert_eq!(struct_bytes("00", usize::MAX), Err(24));
+    for p in [sec, key, file, buf] {
+        crate::mem::heap_free(p);
+    }
+}
