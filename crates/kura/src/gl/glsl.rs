@@ -684,35 +684,42 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
     let Some((color, level, depth, w, h)) = target(g, c) else { return };
     let Some(p) = g.programs.get(&c.program) else { return };
     let Some(l) = &p.linked else { return };
-    let attribs = l.attribs.clone();
+    // (each attribute's source resolved once per draw, not by its name per vertex: its
+    // built-in, location and, for array elements, the array it reads)
+    let none = [0.0, 0.0, 0.0, 1.0];
+    let attribs: Vec<(Option<usize>, u32, Option<super::Array>)> = l
+        .attribs
+        .iter()
+        .map(|(name, loc)| {
+            let b = builtin(name);
+            let arr = match b {
+                Some(0) => Some(c.vertex),
+                Some(1) => Some(c.colors),
+                Some(10) => Some(c.normals),
+                Some(t) => Some(c.units[t - 2].array),
+                _ => c.attribs.get(*loc as usize).copied(),
+            };
+            (b, *loc, arr.filter(|a| a.on))
+        })
+        .collect();
     let (vs, ps) = (l.vs.shader, l.ps.shader);
     // vertices: every input as 4 floats
     let na = attribs.len().max(1);
     let mut verts: Vec<f32> = Vec::with_capacity(order.len() * na * 4);
     for &o in &order {
-        for (name, loc) in &attribs {
-            let v: [f32; 4] = match (&src, builtin(name)) {
+        for &(b, loc, arr) in &attribs {
+            let v: [f32; 4] = match (&src, b) {
                 (Src::Immediate(v, _), Some(b)) if b < 4 => v[o][b * 4..b * 4 + 4].try_into().unwrap(),
                 (Src::Immediate(_, more), Some(10)) => [more[o][24], more[o][25], more[o][26], 1.0],
                 (Src::Immediate(_, more), Some(b)) => more[o][(b - 4) * 4..(b - 3) * 4].try_into().unwrap(),
-                (Src::Immediate(..), None) => c.attrib_values.get(*loc as usize).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                (Src::Indices(ix), b) => {
-                    let i = ix[o];
-                    let arr = match b {
-                        Some(0) => Some(c.vertex),
-                        Some(1) => Some(c.colors),
-                        Some(10) => Some(c.normals),
-                        Some(t) => Some(c.units[t - 2].array),
-                        _ => c.attribs.get(*loc as usize).copied(),
-                    };
-                    match (arr, b) {
-                        (Some(a), _) if a.on => fetch(g, &a, i, [0.0, 0.0, 0.0, 1.0]),
-                        (_, Some(1)) => c.color,
-                        (_, Some(10)) => [c.normal[0], c.normal[1], c.normal[2], 1.0],
-                        (_, Some(t)) if t >= 2 => c.units[t - 2].coords,
-                        _ => c.attrib_values.get(*loc as usize).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                    }
-                }
+                (Src::Immediate(..), None) => c.attrib_values.get(loc as usize).copied().unwrap_or(none),
+                (Src::Indices(ix), b) => match (arr, b) {
+                    (Some(a), _) => fetch(g, &a, ix[o], none),
+                    (_, Some(1)) => c.color,
+                    (_, Some(10)) => [c.normal[0], c.normal[1], c.normal[2], 1.0],
+                    (_, Some(t)) if t >= 2 => c.units[t - 2].coords,
+                    _ => c.attrib_values.get(loc as usize).copied().unwrap_or(none),
+                },
             };
             verts.extend_from_slice(&v);
         }
@@ -721,8 +728,8 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
         }
     }
     let mut vertex = vec![1, (na * 16) as u32, 0, attribs.len() as u32];
-    for (k, (_, loc)) in attribs.iter().enumerate() {
-        vertex.extend_from_slice(&[3, k as u32 * 16, *loc]);
+    for (k, &(_, loc, _)) in attribs.iter().enumerate() {
+        vertex.extend_from_slice(&[3, k as u32 * 16, loc]);
     }
     let pipe = pipeline(g, pipeline_key(c, vs, ps, topo, depth != 0, &vertex));
     // uniform blocks and textures
@@ -735,8 +742,11 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
         if let Some(b) = &st.block {
             block = vec![0u8; (b.size as usize).max(16)];
             for m in &b.members {
-                if let Some(v) = builtin_value(&m.name).or_else(|| p.values.get(&m.name).cloned()) {
+                // (a uniform's value put from where it is, not cloned)
+                if let Some(v) = builtin_value(&m.name) {
                     m.put(&mut block, &v);
+                } else if let Some(v) = p.values.get(&m.name) {
+                    m.put(&mut block, v);
                 }
             }
         }
