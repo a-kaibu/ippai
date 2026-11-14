@@ -660,7 +660,7 @@ fn get(g: &Gl, c: &Ctx, pname: u32) -> Option<Vec<f64>> {
         0x9126 => vec![2.0],
         0x821E => vec![0.0],
         0x80E8 | 0x80E9 => vec![65536.0],
-        0x0D32 | 0x0D36 => vec![32.0],
+        0x0D32 => vec![32.0],
         0x8B8D => vec![c.program as f64], // GL_CURRENT_PROGRAM
         _ if c.caps.contains(&pname) => vec![1.0],
         0x0BE2 | 0x0B71 | 0x0BC0 | 0x0B44 | 0x0C11 | 0x0B90 | 0x0DE1 => vec![0.0],

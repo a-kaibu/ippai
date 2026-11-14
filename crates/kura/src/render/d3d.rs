@@ -944,17 +944,21 @@ impl D3d {
                 }
                 WRITE_TEXTURE => {
                     let (id, level, x, y, w, h, bpr, off) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8));
-                    if let Some(t) = self.textures.get(&id).filter(|t| t.format != DS) {
+                    if let Some(t) = self.textures.get(&id).filter(|t| t.format != DS && level < t.levels) {
                         let (fmt, tw, th, tex, halved) = (t.format, t.w, t.h, t.tex, t.halved);
                         self.flush_if_used(id);
                         let (lw, lh) = ((tw >> level).max(1), (th >> level).max(1));
                         let (cw, ch) = (w.min(lw.saturating_sub(x)), h.min(lh.saturating_sub(y)));
-                        let len = (bpr * h) as usize;
+                        // (0 rows for a length that is not in the blob: nothing written)
+                        let (len, ch) = match rows_in(off, bpr, h, blob.len()) {
+                            Some(len) => (len, ch),
+                            None => (0, 0),
+                        };
                         // (rows of at least the page's bytes a pixel, also guest rows (gpu.rs
                         // detach_mem); 32-bit floats as they come, halved for a page without
                         // float32-filterable)
                         let src_bpp = if halved { 16 } else { bpp(fmt) };
-                        if cw > 0 && ch > 0 && bpr >= cw * src_bpp && bpr % 4 == 0 && off as usize + len <= blob.len() {
+                        if cw > 0 && ch > 0 && bpr as u64 >= cw as u64 * src_bpp as u64 && bpr % 4 == 0 {
                             STATS[3].fetch_add(len as u64, Relaxed);
                             if halved {
                                 let half = halves(&blob[off as usize..off as usize + len]);
@@ -969,14 +973,14 @@ impl D3d {
                 WRITE_TEXTURE_MEM => {
                     // rows straight from guest memory (the guest leaves them alone until this batch ran)
                     let (id, level, x, y, w, h, pitch, ptr) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8));
-                    if let Some(t) = self.textures.get(&id).filter(|t| t.format != DS) {
+                    if let Some(t) = self.textures.get(&id).filter(|t| t.format != DS && level < t.levels) {
                         let (fmt, tw, th, tex, halved) = (t.format, t.w, t.h, t.tex, t.halved);
                         self.flush_if_used(id);
                         let (lw, lh) = ((tw >> level).max(1), (th >> level).max(1));
                         let (cw, ch) = (w.min(lw.saturating_sub(x)), h.min(lh.saturating_sub(y)));
                         let bpp = if halved { 16 } else { bpp(fmt) };
-                        if cw > 0 && ch > 0 {
-                            let len = (pitch * (ch - 1) + cw * bpp) as usize;
+                        // (rows that would pass the end of the 4 GB: not read)
+                        if let Some(len) = rows_at(ptr, pitch, ch, cw, bpp).filter(|_| cw > 0 && ch > 0) {
                             STATS[3].fetch_add(len as u64, Relaxed);
                             if halved {
                                 let mut half = Vec::with_capacity((cw * 8 * ch) as usize);
@@ -3984,6 +3988,64 @@ mod padded_tests {
 
 mod snap;
 pub use snap::Saved;
+
+/// The bytes of `h` rows of `bpr` bytes at `off` of a blob of `blob` bytes: None when they are
+/// not all in it (the products of two u32 wrapped a 32-bit usize and passed the test).
+fn rows_in(off: u32, bpr: u32, h: u32, blob: usize) -> Option<usize> {
+    let len = bpr as u64 * h as u64;
+    (off as u64 + len <= blob as u64).then_some(len as usize)
+}
+
+/// The bytes of `ch` rows `pitch` apart at guest address `ptr`, the last one `cw` pixels of `bpp`
+/// bytes: None for no rows, rows shorter than their pixels or an end past the 4 GB.
+fn rows_at(ptr: u32, pitch: u32, ch: u32, cw: u32, bpp: u32) -> Option<usize> {
+    let row = cw as u64 * bpp as u64;
+    if ch == 0 || row == 0 || (ch > 1 && (pitch as u64) < row) {
+        return None;
+    }
+    let len = pitch as u64 * (ch as u64 - 1) + row;
+    (ptr as u64 + len <= 1 << 32).then_some(len as usize)
+}
+
+#[cfg(test)]
+mod rows_tests {
+    use super::{rows_at, rows_in};
+    use proptest::prelude::*;
+
+    #[test]
+    fn edges() {
+        assert_eq!(rows_in(0, 4, 4, 16), Some(16));
+        assert_eq!(rows_in(1, 4, 4, 16), None);
+        // (0x10000 * 0x10000 wrapped to 0 and was "in" any blob)
+        assert_eq!(rows_in(0, 0x10000, 0x10000, 64), None);
+        assert_eq!(rows_at(0xffff_fff0, 16, 1, 4, 4), Some(16));
+        assert_eq!(rows_at(0xffff_fff0, 16, 2, 4, 4), None);
+        assert_eq!(rows_at(0x1000, 0x8000_0000, 3, 1, 4), None);
+        assert_eq!(rows_at(0x1000, 8, 2, 4, 4), None);
+    }
+
+    proptest! {
+        #[test]
+        fn rows_in_is_the_wide_test(off in any::<u32>(), bpr in any::<u32>(), h in any::<u32>(), blob in 0usize..1 << 34) {
+            let want = off as u128 + bpr as u128 * h as u128 <= blob as u128;
+            prop_assert_eq!(rows_in(off, bpr, h, blob).is_some(), want);
+            if let Some(len) = rows_in(off, bpr, h, blob) {
+                prop_assert_eq!(len as u128, bpr as u128 * h as u128);
+            }
+        }
+
+        #[test]
+        fn rows_at_stays_below_4g(ptr in any::<u32>(), pitch in any::<u32>(), ch in 0u32..20000, cw in 0u32..20000, bpp in prop::sample::select(vec![1u32, 2, 4, 8, 16])) {
+            if let Some(len) = rows_at(ptr, pitch, ch, cw, bpp) {
+                prop_assert!(ptr as u128 + len as u128 <= 1 << 32);
+                // every row read lies in [ptr, ptr + len)
+                let last = pitch as u128 * (ch as u128 - 1) + cw as u128 * bpp as u128;
+                prop_assert_eq!(len as u128, last);
+                prop_assert!(ch == 1 || pitch as u128 >= cw as u128 * bpp as u128);
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod model_tests;
