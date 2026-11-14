@@ -1900,10 +1900,10 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         94 | 95 | 109 | 110 => {
             let dev = dev!(d);
             let regs = if m < 100 { &mut dev.st.vsf } else { &mut dev.st.psf };
-            let (start, n) = (a(1) as usize, a(3) as usize);
-            if start + n > regs.len() {
+            if !regs_fit(a(1) as u32, a(3) as u32, regs.len()) {
                 return D3DERR_INVALIDCALL;
             }
+            let (start, n) = (a(1) as usize, a(3) as usize);
             let p = a(2) as *mut [f32; 4];
             if m == 94 || m == 109 {
                 std::ptr::copy_nonoverlapping(p, regs[start..].as_mut_ptr(), n);
@@ -3206,6 +3206,108 @@ unsafe fn create_shader(d: &mut D3d, pixel: bool, code: u32, out: u32) -> u32 {
     S_OK
 }
 
+/// The most rectangles one Clear takes from its list.
+const CLEAR_RECTS: u32 = 1 << 16;
+/// The widest vertex a triangle strip is unrolled with (`draw`'s buffer is 3 * 64 of them).
+const STRIP_STRIDE: u32 = 0xffff;
+
+/// Whether registers `start .. start + n` are among `len` (the sum of two u32 wraps a 32-bit usize).
+fn regs_fit(start: u32, n: u32, len: usize) -> bool {
+    start as u64 + n as u64 <= len as u64
+}
+
+/// The viewport (x, y, width, height, ..) as a rectangle, its edges at most i32::MAX.
+fn clear_area(vp: &[u32; 6]) -> [i32; 4] {
+    let edge = |a: u32, b: u32| (a as u64 + b as u64).min(i32::MAX as u64) as i32;
+    [edge(vp[0], 0), edge(vp[1], 0), edge(vp[0], vp[2]), edge(vp[1], vp[3])]
+}
+
+/// As many of `instances` as read inside `room` bytes of a stream of `stride` bytes an element,
+/// one element every `dv` instances (instance i reads element i / dv).
+fn instances_that_fit(instances: u32, dv: u32, stride: u32, room: u32) -> u32 {
+    if stride == 0 {
+        return instances;
+    }
+    instances.min((room / stride).saturating_mul(dv.max(1)))
+}
+
+/// Kani proofs (formal/kani.sh) of the bounds above, for every input.
+#[cfg(kani)]
+mod bounds_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn regs_fit_is_the_wide_sum() {
+        let (start, n): (u32, u32) = (kani::any(), kani::any());
+        let len: usize = kani::any_where(|&l| l <= 8192);
+        let fit = regs_fit(start, n, len);
+        // (what the copy then indexes: both inside the array)
+        assert!(!fit || (start as usize <= len && n as usize <= len - start as usize));
+        assert!(fit || start as u128 + n as u128 > len as u128);
+    }
+
+    #[kani::proof]
+    fn clear_area_is_ordered() {
+        let vp: [u32; 6] = kani::any();
+        let a = clear_area(&vp);
+        assert!(a[0] >= 0 && a[1] >= 0 && a[0] <= a[2] && a[1] <= a[3]);
+    }
+
+    #[kani::proof]
+    fn instances_read_inside_the_room() {
+        let (n, dv, stride, room): (u32, u32, u32, u32) = (kani::any(), kani::any_where(|&d| d >= 1), kani::any_where(|&s| s >= 1), kani::any());
+        let got = instances_that_fit(n, dv, stride, room);
+        assert!(got <= n);
+        // the last instance's element ends inside the room
+        if got > 0 {
+            assert!(((got - 1) / dv) as u64 * stride as u64 + stride as u64 <= room as u64);
+        }
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn edges() {
+        assert!(regs_fit(0, 256, 256) && !regs_fit(1, 256, 256) && !regs_fit(u32::MAX, 2, 256) && !regs_fit(2, u32::MAX, 256));
+        assert_eq!(clear_area(&[u32::MAX, 5, 9, u32::MAX, 0, 0]), [i32::MAX, 5, i32::MAX, i32::MAX]);
+        assert_eq!(clear_area(&[10, 20, 640, 480, 0, 0]), [10, 20, 650, 500]);
+        assert_eq!(instances_that_fit(100, 1, 16, 64), 4);
+        assert_eq!(instances_that_fit(100, 3, 16, 64), 12);
+        assert_eq!(instances_that_fit(0x3fff_ffff, 1, 64, 0), 0);
+        assert_eq!(instances_that_fit(7, 1, 0, 0), 7);
+    }
+
+    proptest! {
+        #[test]
+        fn regs_fit_is_the_wide_sum(start in any::<u32>(), n in any::<u32>(), len in 0usize..10000) {
+            prop_assert_eq!(regs_fit(start, n, len), start as u128 + n as u128 <= len as u128);
+        }
+
+        #[test]
+        fn clear_area_is_ordered(vp in any::<[u32; 6]>()) {
+            let a = clear_area(&vp);
+            prop_assert!(a[0] >= 0 && a[1] >= 0 && a[0] <= a[2] && a[1] <= a[3]);
+        }
+
+        #[test]
+        fn instances_read_inside_the_room(n in any::<u32>(), dv in 1u32.., stride in 1u32..=0xffff, room in any::<u32>()) {
+            let got = instances_that_fit(n, dv, stride, room);
+            prop_assert!(got <= n);
+            if got > 0 {
+                prop_assert!(((got - 1) / dv) as u64 * stride as u64 + stride as u64 <= room as u64);
+            }
+            // and no instance that fits is left out
+            if got < n {
+                prop_assert!((got / dv) as u64 * stride as u64 + stride as u64 > room as u64);
+            }
+        }
+    }
+}
+
 unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: f32, stencil: u32) -> u32 {
     let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
     let rt = dev.rt[0];
@@ -3229,7 +3331,7 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
     let stencil = stencil.min(0xff);
     let (Some(target), dsg) = (surface_gpu(d, rt), surface_gpu(d, ds)) else { return S_OK };
     ensure_target(d, rt, ds);
-    let mut area = [vp[0] as i32, vp[1] as i32, (vp[0] + vp[2]) as i32, (vp[1] + vp[3]) as i32];
+    let mut area = clear_area(&vp);
     if scissor {
         area = [area[0].max(sc[0]), area[1].max(sc[1]), area[2].min(sc[2]), area[3].min(sc[3])];
     }
@@ -3237,7 +3339,8 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
     if rects == 0 {
         list.push(area);
     } else {
-        for i in 0..count as usize {
+        // (no more rectangles than a sane list has: a count of garbage reads no gigabytes)
+        for i in 0..count.min(CLEAR_RECTS) as usize {
             let r = [rd(rects, i * 4) as i32, rd(rects, i * 4 + 1) as i32, rd(rects, i * 4 + 2) as i32, rd(rects, i * 4 + 3) as i32];
             list.push([r[0].max(area[0]), r[1].max(area[1]), r[2].min(area[2]), r[3].min(area[3])]);
         }
@@ -3719,7 +3822,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let eligible = match (prim, &src, d.dev.as_ref()) {
         (5, Src::Up { stride, .. }, Some(dev)) => {
             let st = &dev.st;
-            merging() && prims <= 64 && stride % 4 == 0 && *stride > 0 && st.rs[27] != 0 && st.rs[8] == 3 && st.rs[9] != 1
+            merging() && prims <= 64 && stride % 4 == 0 && *stride > 0 && *stride <= STRIP_STRIDE && st.rs[27] != 0 && st.rs[8] == 3 && st.rs[9] != 1
         }
         _ => false,
     };
@@ -3922,6 +4025,11 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     if count == 0 {
         return S_OK;
     }
+    // (no more instances than the instance streams' buffers hold, nor than the command's 24 bits)
+    let instances = streams.iter().fold(instances.min(0xff_ffff), |n, &(s, _, stride)| match (divider(s), d.objs.get(&st.streams[s as usize & 15].0).map(|o| &o.data)) {
+        (Some(dv), Some(Data::Buffer(b))) => instances_that_fit(n, dv, stride, (b.len as u32).saturating_sub(st.streams[s as usize & 15].1)),
+        _ => n,
+    });
     let elems = &prep.elems;
     let used = &prep.used;
     if d.trace {
