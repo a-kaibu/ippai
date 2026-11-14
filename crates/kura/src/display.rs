@@ -235,7 +235,14 @@ impl Display {
             return false;
         }
         self.ext = e;
-        self.screen = vec![0xff00_0000; (e.w() * e.h()) as usize];
+        // (a window moving over the screen's edge moves the extent each frame: the same size
+        // keeps its buffer)
+        let n = e.w() as usize * e.h() as usize;
+        if self.screen.len() == n {
+            self.screen.fill(0xff00_0000);
+        } else {
+            self.screen = vec![0xff00_0000; n];
+        }
         self.bands.clear();
         self.stale = Rect::default();
         self.compose(e);
@@ -1211,6 +1218,37 @@ mod tests {
         // windows far off are held to MAX_EXTENT around the screen
         d.pos(1, rect(-9000, -9000, 9000, 9000), rect(-9000, -9000, 9000, 9000), true, false, 0);
         assert!(d.ext.w() <= MAX_EXTENT && d.ext.h() <= MAX_EXTENT && d.ext.and(&d.screen_rect()) == d.screen_rect(), "{:?}", d.ext);
+    }
+
+    proptest::proptest! {
+        /// A window shaken over the screen's edge each frame (SetWindowPos effects): the screen
+        /// is what a display that saw only the last position composes, and a move that keeps
+        /// the extent's size keeps its buffer (no allocation per frame).
+        #[test]
+        fn a_window_shaken_over_the_edge_composes_the_same(moves in proptest::collection::vec((-6i32..7, -6i32..7), 1..30)) {
+            let make = |d: &mut Display, at: (i32, i32)| {
+                d.pos(1, rect(0, 0, 40, 30), rect(0, 0, 40, 30), true, false, 0);
+                d.fill(1, 0xff11_2233);
+                d.pos(2, rect(at.0, at.1, at.0 + 20, at.1 + 12), rect(at.0 + 1, at.1 + 1, at.0 + 19, at.1 + 11), true, false, 0);
+                d.fill(2, 0xff44_5566);
+            };
+            let mut d = disp(40, 30);
+            let mut at = (30, 10);
+            make(&mut d, at);
+            for (dx, dy) in moves {
+                // (hanging over the right edge, on the screen's rows)
+                at = ((at.0 + dx).clamp(25, 38), (at.1 + dy).clamp(0, 18));
+                let (ptr, len) = (d.screen.as_ptr(), d.screen.len());
+                d.pos(2, rect(at.0, at.1, at.0 + 20, at.1 + 12), rect(at.0 + 1, at.1 + 1, at.0 + 19, at.1 + 11), true, false, 0);
+                if d.screen.len() == len {
+                    proptest::prop_assert_eq!(d.screen.as_ptr(), ptr, "same size, same buffer");
+                }
+                let mut fresh = disp(40, 30);
+                make(&mut fresh, at);
+                proptest::prop_assert_eq!(d.ext, fresh.ext);
+                proptest::prop_assert!(d.screen == fresh.screen, "composed apart at {:?}", at);
+            }
+        }
     }
 
     /// A game drawing its own surface (sake's shared surfaces) partly off the screen: the page
