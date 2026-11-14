@@ -90,6 +90,9 @@ import { toast } from "sonner";
 import { lostNotice } from "./gpulost";
 import { accountInput } from "./account-settings";
 import { keepInstallation, loadInstallation } from "./installation";
+import { Held } from "./held";
+import { LineLimit } from "./linelimit";
+import { surfaceSize } from "./surface";
 import {
   joinRecords,
   legacyNames,
@@ -244,6 +247,11 @@ async function loadSavesOrOld(
   if (moved?.length) log(`以前のセーブを引き継ぎました (${old})`);
   return moved ?? saves;
 }
+
+/** The guest's lines shown in the console (all of them reach the crash log). */
+const shown = new LineLimit();
+const leftOut = (n: number) =>
+  console.warn(`(${n} lines of the program's output not shown: too many at once)`);
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
   const run = params.get("run") ?? "C:\\wintest.exe";
@@ -483,7 +491,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     vnvmCanvas: canvas.transferControlToOffscreen(),
     vnvmJit: await jit,
     print: (line: string) => {
-      console.log(line);
+      if (shown.allow(Date.now(), leftOut)) console.log(line);
       // bench.html shows the program's output
       dispatchEvent(new CustomEvent("vnvm-print", { detail: line }));
     },
@@ -503,7 +511,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       exited = childProcesses.size === 0 && pendingChildren === 0;
     },
     printErr: (line: string) => {
-      console.warn(line);
+      // (the crash log sees every line: an abort is never left out)
+      if (shown.allow(Date.now(), leftOut)) console.warn(line);
       recorder?.printErr(line);
       if (params.has("bench")) dispatchEvent(new CustomEvent("vnvm-print", { detail: line }));
       // the program started another of the game's programs in its place (sake's k32::exec)
@@ -603,8 +612,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         }
         childProcesses.add(module);
         module._vnhost_render_resize(
-          Math.floor(canvas.clientWidth * devicePixelRatio),
-          Math.floor(canvas.clientHeight * devicePixelRatio),
+          ...surfaceSize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio),
         );
         module._vnhost_render_start();
         rect = module._malloc(16);
@@ -620,8 +628,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
           (window as unknown as { vnvmSake: SakeModule }).vnvmSake = module;
           const resize = () =>
             module._vnhost_render_resize(
-              Math.floor(canvas.clientWidth * devicePixelRatio),
-              Math.floor(canvas.clientHeight * devicePixelRatio),
+              ...surfaceSize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio),
             );
           resize();
           observer = new ResizeObserver(resize);
@@ -723,11 +730,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const resize = () => {
     const dpr = window.devicePixelRatio || 1;
     memGate.run(
-      () =>
-        sake._vnhost_render_resize(
-          Math.floor(canvas.clientWidth * dpr),
-          Math.floor(canvas.clientHeight * dpr),
-        ),
+      () => sake._vnhost_render_resize(...surfaceSize(canvas.clientWidth, canvas.clientHeight, dpr)),
       resize,
     );
   };
@@ -827,20 +830,33 @@ function splitParts<T>(list: T[]): [T[], T[]] {
 
 /** Hands the late parts to the running module (kura's vnhost_jit_late keeps the memory). */
 async function handLate(sake: SakeModule, late: Promise<LatePart[]>): Promise<void> {
-  const parts = await late;
-  for (const p of parts) {
+  const parts: (LatePart | null)[] = await late;
+  const n = parts.length;
+  for (let k = 0; k < n; k++) {
+    const p = parts[k]!;
+    // (each let go here once copied: not every part held in JS and in the heap at once)
+    parts[k] = null;
     // (a save state is being taken: the memory stays as it is)
     while (snapping()) await new Promise((r) => setTimeout(r, 50));
     const w = sake._malloc(p.wasm.length) >>> 0;
     const i = sake._malloc(Math.max(p.idx.length, 1)) >>> 0;
-    if (!w || !i) return;
+    if (!w || !i) {
+      if (w) sake._free(w);
+      if (i) sake._free(i);
+      return;
+    }
     // (a fresh view: the memory may have grown)
     const heap = new Uint8Array(sake.wasmMemory.buffer);
     heap.set(p.wasm, w);
     heap.set(p.idx, i);
-    if (sake._vnhost_jit_late?.(w, p.wasm.length, i, p.idx.length) !== 0) return;
+    if (sake._vnhost_jit_late?.(w, p.wasm.length, i, p.idx.length) !== 0) {
+      // (refused: kura did not take them, so they are not kept)
+      sake._free(w);
+      sake._free(i);
+      return;
+    }
   }
-  if (parts.length) console.log(`saved regions: ${parts.length} more parts after the start`);
+  if (n) console.log(`saved regions: ${n} more parts after the start`);
 }
 
 /**
@@ -982,6 +998,12 @@ function readAhead(
   const put = (w: SakeModule, hash: Uint8Array, data: Uint8Array) => {
     p ||= w._malloc(16) >>> 0;
     const d = w._malloc(Math.max(data.length, 1)) >>> 0;
+    // (no room in the host heap: the chunk is left to the game's own read, not copied over the
+    // guest's memory from address 0; kura owns `d` once it has it, vfs.rs vnhost_vfs_put_chunk)
+    if (!p || !d) {
+      if (d) w._free(d);
+      return;
+    }
     // (a fresh view: the memory may have grown, and HEAPU8 is this thread's old one)
     const heap = new Uint8Array(w.wasmMemory.buffer);
     heap.set(hash, p);
@@ -1174,19 +1196,38 @@ function attachInput(current: () => SakeModule): void {
   };
   // DOM button -> 0 left, 1 right, 2 middle
   const button = (b: number) => [0, 2, 1][b] ?? -1;
+  const held = new Held();
   canvas.addEventListener("pointermove", (e) => {
-    for (const ev of e.getCoalescedEvents?.() ?? [e]) push(MOUSE_MOVE, ...toFrame(ev), 0);
-    pointerAt = toFrame(e);
+    // (the last of the coalesced moves only, one rect read: Win32 coalesces WM_MOUSEMOVE, and a
+    // gaming mouse gave up to 1000 wasm calls a second)
+    const at = toFrame(e);
+    pointerAt = at;
+    push(MOUSE_MOVE, ...at, 0);
   });
   canvas.addEventListener("pointerdown", (e) => {
-    pointerAt = toFrame(e);
+    const at = toFrame(e);
+    pointerAt = at;
     canvas.setPointerCapture(e.pointerId);
-    if (button(e.button) >= 0) push(MOUSE_DOWN, ...toFrame(e), button(e.button));
+    const b = button(e.button);
+    if (b >= 0) {
+      held.button(b, true);
+      push(MOUSE_DOWN, ...at, b);
+    }
     e.preventDefault();
   });
   canvas.addEventListener("pointerup", (e) => {
-    if (button(e.button) >= 0) push(MOUSE_UP, ...toFrame(e), button(e.button));
+    const b = button(e.button);
+    if (b >= 0) {
+      held.button(b, false);
+      push(MOUSE_UP, ...toFrame(e), b);
+    }
   });
+  // (a touch a system gesture took over, the capture lost: the buttons let go where it was)
+  const cancel = () => {
+    for (const b of held.releaseButtons()) push(MOUSE_UP, ...(pointerAt ?? [0, 0]), b);
+  };
+  canvas.addEventListener("pointercancel", cancel);
+  canvas.addEventListener("lostpointercapture", cancel);
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener(
     "wheel",
@@ -1201,11 +1242,22 @@ function attachInput(current: () => SakeModule): void {
     if (!vk) return;
     // PC scan code set 1 matches the Linux keycodes below 89
     const scan = linuxKeycode(e.code);
-    push(kind, 0, 0, vk | ((scan < 89 ? scan : 0) << 16));
+    const data = vk | ((scan < 89 ? scan : 0) << 16);
+    held.key(e.code, kind === KEY_DOWN, data);
+    push(kind, 0, 0, data);
     e.preventDefault();
   };
   window.addEventListener("keydown", key(KEY_DOWN));
   window.addEventListener("keyup", key(KEY_UP));
+  // (the window loses focus or the page is hidden: what was held is let go, as Windows does
+  // for a window that is switched away from)
+  const away = () => {
+    const r = held.release();
+    for (const b of r.buttons) push(MOUSE_UP, ...(pointerAt ?? [0, 0]), b);
+    for (const d of r.keys) push(KEY_UP, 0, 0, d);
+  };
+  window.addEventListener("blur", away);
+  document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && away());
 }
 
 function checkSupport(): string | null {
