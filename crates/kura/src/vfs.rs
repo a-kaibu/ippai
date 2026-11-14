@@ -88,8 +88,11 @@ struct Fs {
     next_handle: u32,
     /// free slots in `nodes`
     free: Vec<Ino>,
+    /// what this process has of the processes' shared namespace (vfs/shared.rs)
     #[allow(dead_code)]
-    shared_generation: u32,
+    shared: shared::Synced,
+    /// the nodes changed since it was last published there
+    dirt: shared::Dirt,
 }
 
 static FS: Mutex<Option<Fs>> = Mutex::new(None);
@@ -514,12 +517,18 @@ impl Fs {
     fn add(&mut self, data: Data, mode: u32, mtime: i64) -> Ino {
         CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let n = Node { nlink: if matches!(data, Data::Dir(_)) { 2 } else { 1 }, data, mode, mtime, open_refs: 0 };
-        if let Some(i) = self.free.pop() {
-            self.nodes[i as usize] = Some(n);
-            return i;
-        }
-        self.nodes.push(Some(n));
-        (self.nodes.len() - 1) as Ino
+        let i = match self.free.pop() {
+            Some(i) => {
+                self.nodes[i as usize] = Some(n);
+                i
+            }
+            None => {
+                self.nodes.push(Some(n));
+                (self.nodes.len() - 1) as Ino
+            }
+        };
+        self.dirt.whole(i);
+        i
     }
 
     fn node(&self, ino: Ino) -> Option<&Node> {
@@ -527,10 +536,24 @@ impl Fs {
     }
     fn node_mut(&mut self, ino: Ino) -> Option<&mut Node> {
         CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.dirt.whole(ino);
+        self.nodes.get_mut(ino as usize)?.as_mut()
+    }
+    /// A node whose counts, times or mode change, not what it holds (a file in memory's bytes
+    /// changed go to `dirt.bytes`): the processes then share only that.
+    fn meta_mut(&mut self, ino: Ino) -> Option<&mut Node> {
+        CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.dirt.meta(ino);
         self.nodes.get_mut(ino as usize)?.as_mut()
     }
     fn data_mut(&mut self, ino: Ino) -> Option<&mut Data> {
         Some(&mut self.node_mut(ino)?.data)
+    }
+    /// What a node holds, for a change that says itself which bytes of a file in memory changed
+    /// (`dirt.bytes`) or that it changed only the size (write_at, set_size).
+    fn upper_mut(&mut self, ino: Ino) -> Option<&mut Data> {
+        CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(&mut self.nodes.get_mut(ino as usize)?.as_mut()?.data)
     }
 
     fn mount_at(&self, path: &str) -> Option<Ino> {
@@ -617,7 +640,7 @@ impl Fs {
         self.handles.insert(id, Handle { ino, pos: 0, flags });
         if let Some(Some(n)) = self.nodes.get_mut(ino as usize) {
             n.open_refs += 1;
-            shared::REFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.dirt.refs(ino);
         }
         id
     }
@@ -625,7 +648,7 @@ impl Fs {
     fn unlink_name(&mut self, parent: Ino, name: &str) {
         let Some(Data::Dir(ch)) = self.data_mut(parent) else { return };
         let Some(ino) = ch.remove(name) else { return };
-        if let Some(n) = self.node_mut(ino) {
+        if let Some(n) = self.meta_mut(ino) {
             n.nlink = n.nlink.saturating_sub(1);
         }
         self.gc(ino);
@@ -638,6 +661,7 @@ impl Fs {
             if let Some(slot @ Some(_)) = self.nodes.get_mut(ino as usize) {
                 *slot = None;
                 self.free.push(ino);
+                self.dirt.whole(ino);
             }
         }
     }
@@ -1630,33 +1654,48 @@ fn grow(v: &mut Vec<u8>, len: usize) -> Result<(), c_int> {
 
 fn write_at(ino: Ino, data: &[u8], off: u64) -> Result<usize, c_int> {
     copy_up(ino, u64::MAX)?;
-    with(|fs| {
-        let Some(Data::File(Content::Upper(v))) = fs.data_mut(ino) else { return Err(libc::EBADF) };
-        let end = upper_end(off, data.len(), UPPER_MAX)?;
-        grow(v, end)?;
-        v[end - data.len()..end].copy_from_slice(data);
-        if let Some(n) = fs.node_mut(ino) {
-            n.mtime = now();
-        }
-        Ok(data.len())
-    })
+    with(|fs| fs.write_upper(ino, data, off))
 }
 
 fn set_size(ino: Ino, size: u64) -> Result<(), c_int> {
     copy_up(ino, size)?;
-    with(|fs| match fs.data_mut(ino) {
-        Some(Data::File(Content::Upper(v))) => {
-            let size = upper_end(size, 0, UPPER_MAX)?;
-            if size > v.len() {
-                grow(v, size)?;
-            } else {
-                v.truncate(size);
-            }
-            Ok(())
+    with(|fs| fs.set_upper_size(ino, size))
+}
+
+impl Fs {
+    /// write_at to a file in memory
+    fn write_upper(&mut self, ino: Ino, data: &[u8], off: u64) -> Result<usize, c_int> {
+        let Some(Data::File(Content::Upper(v))) = self.upper_mut(ino) else { return Err(libc::EBADF) };
+        let end = upper_end(off, data.len(), UPPER_MAX)?;
+        let old = v.len();
+        grow(v, end)?;
+        v[end - data.len()..end].copy_from_slice(data);
+        // (the bytes the other processes need: these, and the zeros a write past the end made)
+        self.dirt.bytes(ino, old.min(end - data.len()), end);
+        if let Some(n) = self.meta_mut(ino) {
+            n.mtime = now();
         }
-        Some(Data::Dir(_)) => Err(libc::EISDIR),
-        _ => Err(libc::EINVAL),
-    })
+        Ok(data.len())
+    }
+    /// set_size of a file in memory
+    fn set_upper_size(&mut self, ino: Ino, size: u64) -> Result<(), c_int> {
+        match self.upper_mut(ino) {
+            Some(Data::File(Content::Upper(v))) => {
+                let size = upper_end(size, 0, UPPER_MAX)?;
+                let old = v.len();
+                if size > v.len() {
+                    grow(v, size)?;
+                } else {
+                    v.truncate(size);
+                }
+                // (cut then grown again before the others look: the zeros between are new)
+                self.dirt.bytes(ino, old.min(size), old.max(size));
+                Ok(())
+            }
+            Some(Data::Dir(_)) => Err(libc::EISDIR),
+            _ => Err(libc::EINVAL),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1797,15 +1836,18 @@ pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
 
 /// Closes a handle.
 pub(crate) fn release(h: u32) {
-    with(|fs| {
-        if let Some(handle) = fs.handles.remove(&h) {
-            if let Some(Some(n)) = fs.nodes.get_mut(handle.ino as usize) {
+    with(|fs| fs.close_handle(h))
+}
+impl Fs {
+    fn close_handle(&mut self, h: u32) {
+        if let Some(handle) = self.handles.remove(&h) {
+            if let Some(Some(n)) = self.nodes.get_mut(handle.ino as usize) {
                 n.open_refs = n.open_refs.saturating_sub(1);
-                shared::REFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dirt.refs(handle.ino);
             }
-            fs.gc(handle.ino);
+            self.gc(handle.ino);
         }
-    })
+    }
 }
 
 pub(crate) fn mkdir_at(p: &str) -> At<()> {

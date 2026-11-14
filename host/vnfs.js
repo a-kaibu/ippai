@@ -29,25 +29,33 @@ addToLibrary({
   vnhost_vfs_shared_enable: () => { const h = vnfsSharedH(); if (!h) return 0; Atomics.store(h, 3, 1); return 1; },
   vnhost_vfs_shared_generation__deps: ['$vnfsSharedH'],
   vnhost_vfs_shared_generation: () => { const h = vnfsSharedH(); return h ? Atomics.load(h, 1) : 0; },
-  vnhost_vfs_shared_get__deps: ['$vnfsSharedH'],
-  vnhost_vfs_shared_get__sig: 'ppp',
-  vnhost_vfs_shared_get: (dst, cap) => {
-    const n = Atomics.load(vnfsSharedH(), 2);
-    if (n && dst && cap >= n) HEAPU8.set(new Uint8Array(vnvmFs, 32, n), dst >>> 0);
-    return n;
+  // (the buffer's bytes from 32 on: kura/src/vfs/shared.rs's snapshot and journal; [2] how
+  // many are in use, [1] their generation)
+  vnhost_vfs_shared_len__deps: ['$vnfsSharedH'],
+  vnhost_vfs_shared_len__sig: 'p',
+  vnhost_vfs_shared_len: () => Atomics.load(vnfsSharedH(), 2),
+  vnhost_vfs_shared_read__sig: 'vppp',
+  vnhost_vfs_shared_read: (dst, off, len) => {
+    HEAPU8.set(new Uint8Array(vnvmFs, 32 + (off >>> 0), len >>> 0), dst >>> 0);
   },
-  vnhost_vfs_shared_put__deps: ['$vnfsSharedH'],
-  vnhost_vfs_shared_put__sig: 'ipp',
-  vnhost_vfs_shared_put: (src, len) => {
-    if (len > vnvmFs.byteLength - 32) {
+  vnhost_vfs_shared_write__sig: 'ippp',
+  vnhost_vfs_shared_write: (src, off, len) => {
+    off >>>= 0; len >>>= 0;
+    const need = 32 + off + len;
+    if (need > vnvmFs.byteLength) {
       // a growable buffer takes what the namespace needs (up to its maximum)
-      const want = Math.min(32 + len + (len >>> 2), vnvmFs.maxByteLength ?? 0);
-      if (!vnvmFs.growable || want < 32 + len) return 0;
+      const want = Math.min(need + (need >>> 2), vnvmFs.maxByteLength ?? 0);
+      if (!vnvmFs.growable || want < need) return 0;
       try { vnvmFs.grow(want); } catch { return 0; }
     }
-    new Uint8Array(vnvmFs, 32, len).set(HEAPU8.subarray(src >>> 0, (src >>> 0) + len));
-    const h = vnfsSharedH(); Atomics.store(h, 2, len); Atomics.add(h, 1, 1);
+    new Uint8Array(vnvmFs, 32 + off, len).set(HEAPU8.subarray(src >>> 0, (src >>> 0) + len));
     return 1;
+  },
+  vnhost_vfs_shared_commit__deps: ['$vnfsSharedH'],
+  vnhost_vfs_shared_commit__sig: 'ip',
+  vnhost_vfs_shared_commit: (len) => {
+    const h = vnfsSharedH(); Atomics.store(h, 2, len >>> 0);
+    return (Atomics.add(h, 1, 1) + 1) | 0;
   },
   vnvm_fetch__deps: ['malloc', '$vnvmLastChunk'],
   // pointers are above 2GB (GLOBAL_BASE): 'p' makes them unsigned
