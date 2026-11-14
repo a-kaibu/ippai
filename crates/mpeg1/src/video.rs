@@ -52,6 +52,10 @@ pub struct Video {
     es: Vec<u8>,
     /// where the next start code is looked for in `es`
     at: usize,
+    /// an incomplete picture's search for its end: (the picture's start code, where to look on)
+    scan: (usize, usize),
+    /// the picture being decoded, with a start code after it (kept: one allocation)
+    pic: Vec<u8>,
     ended: bool,
     header: Option<Header>,
     mb_width: i32,
@@ -83,6 +87,24 @@ pub struct Video {
     pub pictures: u64,
 }
 
+/// The largest picture a sequence header may give (4096x2304; 12-bit sizes reach 4095x4095).
+pub const MAX_PIXELS: usize = 4096 * 2304;
+
+/// The most bytes a picture may take (an intra 4096x2304 picture at a high rate is a few MB).
+pub const MAX_PICTURE: usize = 16 << 20;
+
+/// `n` zero bytes, or None when there is no memory for them.
+fn zeroed(n: usize) -> Option<Vec<u8>> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n).ok()?;
+    v.resize(n, 0);
+    Some(v)
+}
+
+// (tests: steps `find` took)
+#[cfg(test)]
+thread_local!(static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
+
 impl Default for Video {
     fn default() -> Self {
         Self::new()
@@ -94,6 +116,8 @@ impl Video {
         Video {
             es: Vec::new(),
             at: 0,
+            scan: (usize::MAX, 0),
+            pic: Vec::new(),
             ended: false,
             header: None,
             mb_width: 0,
@@ -133,6 +157,9 @@ impl Video {
         // (what was decoded already goes once it is a good part of the buffer)
         if self.at > 1 << 20 && self.at * 2 > self.es.len() {
             self.es.drain(..self.at);
+            if self.scan.0 != usize::MAX {
+                self.scan = (self.scan.0 - self.at, self.scan.1 - self.at);
+            }
             self.at = 0;
         }
         self.es.extend_from_slice(d);
@@ -147,6 +174,7 @@ impl Video {
     pub fn reset(&mut self) {
         self.es.clear();
         self.at = 0;
+        self.scan = (usize::MAX, 0);
         self.ended = false;
         self.has_reference = false;
     }
@@ -156,6 +184,8 @@ impl Video {
         let d = &self.es;
         let mut i = from;
         while i + 3 < d.len() {
+            #[cfg(test)]
+            STEPS.with(|c| c.set(c.get() + 1));
             if d[i + 2] > 1 {
                 i += 3;
             } else if d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1 {
@@ -178,6 +208,9 @@ impl Video {
                     self.pictures += 1;
                     return Some(&self.frames[self.bwd]);
                 }
+                // (no start code in what is here: looked at again only from its last 3 bytes, and
+                // `push` drains the rest; a stream with no start codes kept all of it, rescanned)
+                self.at = self.at.max(self.es.len().saturating_sub(3));
                 return None;
             };
             match code {
@@ -193,7 +226,8 @@ impl Video {
                 }
                 PICTURE if self.header.is_some() => {
                     // the whole picture: up to the next picture / sequence / GOP / end code
-                    let mut q = p + 4;
+                    // (on from where the last call stopped: a picture comes in many packets)
+                    let mut q = if self.scan.0 == p { self.scan.1 } else { p + 4 };
                     let next = loop {
                         match self.find(q) {
                             Some((n, c)) if matches!(c, PICTURE | SEQUENCE | GOP | SEQUENCE_END) => break Some(n),
@@ -204,13 +238,27 @@ impl Video {
                     let end = match next {
                         Some(n) => n,
                         None if self.ended => self.es.len(),
-                        None => return None,
+                        // (a picture that never ends, the stream after it no MPEG-1 video: it is
+                        // dropped, as the bytes after a start code no picture holds)
+                        None if self.es.len() - p > MAX_PICTURE => {
+                            self.scan = (usize::MAX, 0);
+                            self.at = self.es.len().saturating_sub(3);
+                            continue;
+                        }
+                        None => {
+                            self.scan = (p, q.max(self.es.len().saturating_sub(3)));
+                            return None;
+                        }
                     };
+                    self.scan = (usize::MAX, 0);
                     // (with a start code and room after it, as pl_mpeg reads the stream on)
-                    let mut pic = self.es[p + 4..end].to_vec();
+                    let mut pic = std::mem::take(&mut self.pic);
+                    pic.clear();
+                    pic.extend_from_slice(&self.es[p + 4..end]);
                     pic.extend_from_slice(&[0, 0, 1, SEQUENCE_END, 0, 0, 0, 0]);
                     self.at = end;
                     self.picture(&pic);
+                    self.pic = pic;
                     let shown = if self.picture_type == TYPE_B {
                         Some(self.cur)
                     } else if matches!(self.picture_type, TYPE_I | TYPE_P) {
@@ -237,7 +285,8 @@ impl Video {
         let mut b = Bits::new(d);
         let width = b.read(12) as usize;
         let height = b.read(12) as usize;
-        if width == 0 || height == 0 {
+        // (a corrupt header's size: three frames of it are made at once)
+        if width == 0 || height == 0 || width * height > MAX_PIXELS {
             return;
         }
         b.skip(4); // pixel aspect ratio
@@ -272,16 +321,26 @@ impl Video {
         let chroma = self.chroma_width * self.mb_height as usize * 8;
         // (a row and a pixel more, as pl_mpeg's frames sit one after another in memory: a
         // half-pixel motion vector at the bottom edge reads past its plane)
-        let frame = Frame {
-            width,
-            height,
-            y_stride: self.luma_width,
-            c_stride: self.chroma_width,
-            y: vec![0; luma + self.luma_width + 1],
-            cb: vec![0; chroma + self.chroma_width + 1],
-            cr: vec![0; chroma + self.chroma_width + 1],
-        };
-        self.frames = vec![frame.clone(), frame.clone(), frame];
+        // (memory there is not for them: no pictures, as for no header, rather than an abort)
+        self.frames = Vec::new();
+        let made = (0..3).try_for_each(|_| {
+            let f = Frame {
+                width,
+                height,
+                y_stride: self.luma_width,
+                c_stride: self.chroma_width,
+                y: zeroed(luma + self.luma_width + 1)?,
+                cb: zeroed(chroma + self.chroma_width + 1)?,
+                cr: zeroed(chroma + self.chroma_width + 1)?,
+            };
+            self.frames.push(f);
+            Some(())
+        });
+        if made.is_none() {
+            self.frames = Vec::new();
+            self.header = None;
+            return;
+        }
         self.cur = 0;
         self.fwd = 1;
         self.bwd = 2;
@@ -809,6 +868,135 @@ fn bgrx_pairs(f: &Frame, out: &mut [u8], stride: usize, bottom_up: bool, row: us
                 out[o + 2] = clamp(yv + r);
                 out[o + 3] = 0xff;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// testsrc.mpg's video elementary stream.
+    fn es() -> Vec<u8> {
+        let d = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/testsrc.mpg")).unwrap();
+        let mut m = crate::Demux::new();
+        m.push(&d);
+        m.end();
+        let mut es = Vec::new();
+        while let Some(p) = m.next() {
+            if crate::ps::is_video(p.id) {
+                es.extend(p.data);
+            }
+        }
+        es
+    }
+
+    /// A picture coming a byte at a time is searched on from where the last search stopped:
+    /// the bytes looked at grow with the stream, not with its square (each push rescanned the
+    /// picture from its start).
+    #[test]
+    fn picture_searches_go_on_where_they_stopped() {
+        let es = es();
+        let mut v = Video::new();
+        STEPS.with(|c| c.set(0));
+        let mut n = 0;
+        for b in &es {
+            v.push(std::slice::from_ref(b));
+            while v.decode().is_some() {
+                n += 1;
+            }
+        }
+        v.end();
+        while v.decode().is_some() {
+            n += 1;
+        }
+        assert_eq!(n, 30);
+        let steps = STEPS.with(|c| c.get());
+        assert!(steps < 8 * es.len() as u64, "{steps} steps for {} bytes", es.len());
+    }
+
+    /// A header for 4095x4095 pictures (three frames of 25 MB) is not taken.
+    #[test]
+    fn huge_sequence_headers_are_refused() {
+        let mut v = Video::new();
+        // 0xfff wide, 0xfff high, aspect 1, rate 3, then the rest of the header
+        v.push(&[0, 0, 1, SEQUENCE, 0xff, 0xff, 0xff, 0x13, 0xff, 0xff, 0xe0, 0x18]);
+        v.push(&[0; 140]);
+        v.end();
+        assert!(v.decode().is_none());
+        assert!(v.header().is_none());
+        assert!(v.frames.is_empty());
+        // (one in bounds is)
+        let mut v = Video::new();
+        v.push(&[0, 0, 1, SEQUENCE, 0x14, 0x00, 0xf0, 0x13, 0xff, 0xff, 0xe0, 0x18]);
+        v.push(&[0; 140]);
+        v.end();
+        let _ = v.decode();
+        assert_eq!(v.header().map(|h| (h.width, h.height)), Some((320, 240)));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
+
+        /// Bytes with no start code in them, pushed and decoded for as long as they come, are
+        /// kept only as far as their last 3 bytes plus what `push` has not drained yet: they
+        /// grew the buffer without bound, each decode rescanning all of it.
+        #[test]
+        fn no_start_codes_keep_little(chunk in 64usize..200_000, fill in 1u8..=255, start in proptest::bool::ANY) {
+            let mut v = Video::new();
+            let es = es();
+            if start {
+                // (pictures first, then a stream fed as video that is not)
+                v.push(&es);
+                while v.decode().is_some() {}
+            }
+            let junk = vec![fill; chunk];
+            STEPS.with(|c| c.set(0));
+            let mut pushed = 0u64;
+            while pushed < 40 << 20 {
+                v.push(&junk);
+                pushed += chunk as u64;
+                while v.decode().is_some() {}
+                prop_assert!(v.es.len() <= MAX_PICTURE + (2 << 20) + 2 * chunk + es.len(), "{} bytes kept", v.es.len());
+                // (each byte looked at about once: no rescans of what is kept)
+                let steps = STEPS.with(|c| c.get());
+                prop_assert!(steps <= 2 * pushed + 4 * es.len() as u64, "{steps} steps for {pushed} bytes");
+            }
+        }
+
+        /// The stream in any slices decodes to the pictures of the whole (the search left where
+        /// it stopped and the drained buffer move together).
+        #[test]
+        fn any_slices_decode_the_same(cuts in prop::collection::vec(1usize..6000, 1..40)) {
+            let es = es();
+            let whole = {
+                let mut v = Video::new();
+                v.push(&es);
+                v.end();
+                let mut h = vec![];
+                while let Some(f) = v.decode() {
+                    h.push(crate::check::fnv(0xcbf29ce484222325, &f.y));
+                }
+                h
+            };
+            let mut v = Video::new();
+            let mut got = vec![];
+            let (mut at, mut i) = (0, 0);
+            while at < es.len() {
+                let n = cuts[i % cuts.len()].min(es.len() - at);
+                v.push(&es[at..at + n]);
+                at += n;
+                i += 1;
+                while let Some(f) = v.decode() {
+                    got.push(crate::check::fnv(0xcbf29ce484222325, &f.y));
+                }
+            }
+            v.end();
+            while let Some(f) = v.decode() {
+                got.push(crate::check::fnv(0xcbf29ce484222325, &f.y));
+            }
+            prop_assert_eq!(got, whole);
         }
     }
 }

@@ -130,30 +130,46 @@ pub fn probe_stream(len: u64, part: u64, mut read: impl FnMut(u64, usize) -> Opt
 /// that starts in it, so the pictures after the last stamp are placed by their temporal
 /// references (and a GOP after them follows the last picture of the one before).
 fn last_shown(tail: &[u8], rate: f64) -> Option<f64> {
+    let (pts, es) = last_stamped(tail)?;
+    if rate <= 0.0 {
+        return Some(pts);
+    }
+    shown_after(pts, &es, rate)
+}
+
+/// The last video packet of `tail` with a time stamp: its time, and its stream's bytes from
+/// it to the end.
+fn last_stamped(tail: &[u8]) -> Option<(f64, Vec<u8>)> {
     let mut i = tail.len().saturating_sub(4);
-    let (pts, es) = loop {
+    loop {
         if i == 0 {
             return None;
         }
         i -= 1;
         if tail[i] == 0 && tail[i + 1] == 0 && tail[i + 2] == 1 && ps::is_video(tail[i + 3]) {
+            // (this one packet first, its bytes only: demuxing all the tail after every start
+            // code met on the way back, while none had a time, was quadratic in the tail)
+            let len = (tail[i + 4] as usize) << 8 | tail.get(i + 5).copied().unwrap_or(0) as usize;
             let mut m = Demux::new();
-            m.push(&tail[i..]);
+            m.push(&tail[i..(i + 6 + len).min(tail.len())]);
             m.end();
-            if let Some(Packet { pts: Some(t), id, data }) = m.next() {
-                let mut es = data;
+            if let Some(Packet { pts: Some(t), id, .. }) = m.next() {
+                let mut m = Demux::new();
+                m.push(&tail[i..]);
+                m.end();
+                let mut es = Vec::new();
                 while let Some(p) = m.next() {
                     if p.id == id {
                         es.extend(p.data);
                     }
                 }
-                break (t, es);
+                return Some((t, es));
             }
         }
-    };
-    if rate <= 0.0 {
-        return Some(pts);
     }
+}
+
+fn shown_after(pts: f64, es: &[u8], rate: f64) -> Option<f64> {
     // (base: when temporal reference 0 of this GOP is shown, once the first picture is seen)
     let (mut base, mut top, mut last) = (None::<f64>, 0u32, pts);
     for j in 0..es.len().saturating_sub(5) {
@@ -177,4 +193,103 @@ fn last_shown(tail: &[u8], rate: f64) -> Option<f64> {
         }
     }
     Some(last)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// last_stamped as it was (each start code met demuxed all of the tail after it).
+    fn last_stamped_old(tail: &[u8]) -> Option<(f64, Vec<u8>)> {
+        let mut i = tail.len().saturating_sub(4);
+        loop {
+            if i == 0 {
+                return None;
+            }
+            i -= 1;
+            if tail[i] == 0 && tail[i + 1] == 0 && tail[i + 2] == 1 && ps::is_video(tail[i + 3]) {
+                let mut m = Demux::new();
+                m.push(&tail[i..]);
+                m.end();
+                if let Some(Packet { pts: Some(t), id, data }) = m.next() {
+                    let mut es = data;
+                    while let Some(p) = m.next() {
+                        if p.id == id {
+                            es.extend(p.data);
+                        }
+                    }
+                    return Some((t, es));
+                }
+            }
+        }
+    }
+
+    fn pes(id: u8, pts: Option<u64>, data: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        match pts {
+            Some(t) => body.extend([0x21 | ((t >> 29) & 0xe) as u8, (t >> 22) as u8, (t >> 14) as u8 | 1, (t >> 7) as u8, (t << 1) as u8 | 1]),
+            None => body.push(0x0f),
+        }
+        body.extend_from_slice(data);
+        let mut p = vec![0, 0, 1, id, (body.len() >> 8) as u8, body.len() as u8];
+        p.extend(body);
+        p
+    }
+
+    /// Packets: (kind 0 video / 1 audio / 2 padding, a time or none, payload bytes with no
+    /// start code in them).
+    fn stream() -> impl Strategy<Value = Vec<u8>> {
+        let packet = (0u8..3, proptest::option::of(0u64..1 << 32), prop::collection::vec(2u8..=255, 0..300), any::<bool>());
+        (prop::collection::vec(packet, 0..30), prop::collection::vec(any::<u8>(), 0..8)).prop_map(|(ps, lead)| {
+            let mut d = lead;
+            for (k, t, data, pack) in ps {
+                if pack {
+                    d.extend([0, 0, 1, 0xba, 0x21, 0, 1, 0, 1, 0x80, 0, 1]);
+                }
+                match k {
+                    0 => d.extend(pes(0xe0, t, &data)),
+                    1 => d.extend(pes(0xc0, t, &data)),
+                    _ => {
+                        d.extend([0, 0, 1, 0xbe, (data.len() >> 8) as u8, data.len() as u8]);
+                        d.extend(data);
+                    }
+                }
+            }
+            d
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+        /// The last time stamp and the video bytes after it are those the old scan found.
+        #[test]
+        fn last_stamped_as_the_old_scan(d in stream(), cut in any::<prop::sample::Index>()) {
+            for tail in [&d[..], &d[cut.index(d.len() + 1)..]] {
+                prop_assert_eq!(last_stamped(tail), last_stamped_old(tail));
+            }
+        }
+
+        /// Any bytes: no panic.
+        #[test]
+        fn last_shown_any_bytes(d in prop::collection::vec(prop_oneof![Just(0u8), Just(1), Just(0xe0), any::<u8>()], 0..400), rate in prop_oneof![Just(0.0), Just(25.0), Just(29.97)]) {
+            // (exactly the old answer only for packets as streams have them: a packet with a bad
+            // time marker made the old scan take whatever packet came after it, audio too)
+            let _ = last_shown(&d, rate);
+        }
+    }
+
+    /// A tail of many video packets with no time stamp after the last one that has one: the
+    /// scan back reads each packet once (it copied and demuxed all the tail after each).
+    #[test]
+    fn a_long_tail_without_stamps_is_scanned_once() {
+        let mut d = pes(0xe0, Some(90000), &[0x55; 2000]);
+        while d.len() < 16 << 20 {
+            d.extend(pes(0xe0, None, &[0x55; 2000]));
+        }
+        let t = std::time::Instant::now();
+        assert_eq!(last_shown(&d, 0.0), Some(1.0));
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+    }
 }
