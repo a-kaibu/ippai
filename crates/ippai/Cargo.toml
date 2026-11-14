@@ -38,6 +38,10 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 directories = "6"
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 ureq = { version = "2", features = ["json", "native-certs"] }
+# the official RPG Maker RTP installers (rtp.rs): Inno Setup (VX Ace, VX, XP) and the MS cab around 2000/2003
+inno = { version = "=0.7.5", features = ["extract"] }
+cab = "0.6"
+md-5 = "0.11"
 
 [dev-dependencies]
 ippai-tls = { path = "../tls-client" }

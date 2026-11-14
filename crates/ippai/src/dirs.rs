@@ -5,6 +5,8 @@
 //! ~/.local/share/ippai/store    ~/Library/Application Support/ippai/store  chunks/ trees/ games/ saves
 //! ~/.local/share/ippai/fonts    ~/Library/Application Support/ippai/fonts  sake's fonts (a release's fonts/, install.sh)
 //! ~/.local/share/ippai/bench    ~/Library/Application Support/ippai/bench  the benchmark's programs (a release's bench/)
+//! ~/.local/share/ippai/rtp      ~/Library/Application Support/ippai/rtp    RPG Maker's RTPs (rtp.rs, from their publisher)
+//! ~/.cache/ippai/rtp            ~/Library/Caches/ippai/rtp             their downloads
 //! ~/.cache/ippai/jit            ~/Library/Caches/ippai/jit             saved x86 regions (wasm)
 //! ~/.cache/ippai/web            ~/Library/Caches/ippai/web             the built-in web app, unpacked
 //! ~/.local/state/ippai/logs     <data>/logs                            server.log, the pages' run logs
@@ -49,6 +51,9 @@ pub struct Dirs {
     /// a release's benchmark programs (web/bench.html), made into the store's tree "bench"
     /// (pack::ensure_bench)
     pub bench: PathBuf,
+    /// the official RPG Maker RTPs as rtp.rs installed them (`drive_c/...`), put in the store's
+    /// C:\ (pack::ensure_prefix); their downloads go to `<cache>/rtp`
+    pub rtp: PathBuf,
 }
 
 pub const DEFAULT_LISTEN: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 8656));
@@ -72,6 +77,7 @@ impl Dirs {
             strict_auth: cfg.strict_auth.unwrap_or(false),
             fonts: data.join("fonts"),
             bench: data.join("bench"),
+            rtp: data.join("rtp"),
             cache,
             run,
         })

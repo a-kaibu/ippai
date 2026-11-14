@@ -918,8 +918,23 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
         Ok(n) => eprintln!("{n} games and saved regions moved from Z:\\vnvm to Z:\\ippai"),
         Err(e) => eprintln!("moving games from Z:\\vnvm to Z:\\ippai: {e:#}"),
     }
-    if crate::pack::ensure_prefix(&dirs.store, &dirs.fonts)? {
+    if crate::pack::ensure_prefix(&dirs.store, &dirs.fonts, Some(&dirs.rtp))? {
         eprintln!("sake's C:\\ ({}) made from {}", crate::pack::PREFIX_TREE, dirs.fonts.display());
+    }
+    // RPG Maker's RTPs, from their publisher, while the server runs (rtp.rs; IPPAI_RTP=0: not)
+    if !crate::rtp::complete(&dirs.rtp) && std::env::var("IPPAI_RTP").as_deref() != Ok("0") {
+        let (store, fonts, rtp, cache) = (dirs.store.clone(), dirs.fonts.clone(), dirs.rtp.clone(), dirs.cache.join("rtp"));
+        std::thread::spawn(move || match crate::rtp::install_all(&rtp, &cache) {
+            Ok(done) => {
+                eprintln!("RPG Maker RTPs installed: {}", done.join(" "));
+                match crate::pack::ensure_prefix(&store, &fonts, Some(&rtp)) {
+                    Ok(true) => eprintln!("sake's C:\\ ({}) has the RTPs", crate::pack::PREFIX_TREE),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("the RTPs into sake's C:\\: {e:#}"),
+                }
+            }
+            Err(e) => eprintln!("RPG Maker RTPs: {e:#}"),
+        });
     }
     match crate::pack::ensure_bench(&dirs.store, &dirs.bench) {
         Ok(true) => eprintln!("the benchmark's programs ({}) made from {}", crate::pack::BENCH_TREE, dirs.bench.display()),

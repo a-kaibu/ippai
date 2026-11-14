@@ -55,7 +55,7 @@ jobs:
           key: playwright-${{ runner.os }}-1.63.0
       # (the corpus harness: screenshots against Windows' answers, the Windows player's platform-free parts)
       - name: Corpus harness tests
-        run: python3 tests/corpus/shots_test.py && python3 tests/corpus/winplay_test.py && python3 tests/corpus/golden_test.py && python3 tests/corpus/check_test.py && python3 tests/corpus/mirror_test.py && python3 tests/corpus/prep_test.py && python3 tests/corpus/pickexe_test.py && python3 tests/corpus/install_test.py && python3 tests/coverage/usage_test.py && python3 tests/rtp_test.py
+        run: python3 tests/corpus/shots_test.py && python3 tests/corpus/winplay_test.py && python3 tests/corpus/golden_test.py && python3 tests/corpus/check_test.py && python3 tests/corpus/mirror_test.py && python3 tests/corpus/prep_test.py && python3 tests/corpus/pickexe_test.py && python3 tests/corpus/install_test.py && python3 tests/coverage/usage_test.py
       - name: Real browser fetch regression
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
@@ -212,6 +212,23 @@ jobs:
         # once held the job (and every later run, one at a time on main) for an hour)
         timeout-minutes: 25
         run: cargo test --workspace --release
+      # (the official RPG Maker RTPs installed as their setups would, crates/ippai/src/rtp.rs,
+      # byte for byte against innoextract and unshield; the zips are cached, never uploaded)
+      - id: cache-rtp
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.rtp-downloads
+          key: rtp-official-20261114
+      - name: Official RPG Maker RTPs against innoextract and unshield
+        timeout-minutes: 15
+        run: |
+          tools/ci/apt.sh innoextract unshield p7zip-full
+          IPPAI_RTP_TEST=$HOME/.rtp-downloads IPPAI_RTP_ORACLE=1 cargo test --release -p ippai --bin ippai -- rtp::tests::official_packages
+      - if: steps.cache-rtp.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.rtp-downloads
+          key: rtp-official-20261114
       # (the C runtime's property tests once more with overflow checks: fuzzing found an
       # overflow that release builds wrap silently)
       - name: crt tests with overflow checks

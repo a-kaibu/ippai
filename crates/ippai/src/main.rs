@@ -31,7 +31,9 @@ mod gamedb;
 mod movie;
 mod evb;
 mod nwjs;
+mod iscab;
 mod pack;
+mod rtp;
 mod portable;
 mod saves;
 mod serve;
@@ -95,6 +97,16 @@ enum Cmd {
     /// mspmincho.ttf), the first font's glyphs shared by the others where theirs are the same.
     #[command(hide = true)]
     Ttc { out: PathBuf, fonts: Vec<PathBuf> },
+    /// Download RPG Maker's run time packages (VX Ace, VX, XP, 2000, 2003) from their publisher
+    /// and install them for sake's C:\ (rtp.rs; `serve` does it by itself when it starts).
+    Rtp {
+        /// Where to install them (default: the data directory's rtp/).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Where the downloads are kept (default: the cache directory's rtp/).
+        #[arg(long)]
+        cache: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -309,5 +321,14 @@ fn main() -> anyhow::Result<()> {
         Cmd::Gamedb { action: GamedbCmd::Push { file, part } } => gamedb::push(&file, part, &ghcr_token()?).map(|d| println!("{d}")),
         Cmd::Gamedb { action: GamedbCmd::Update { dir, part, source } } => gamedb::update(&dir, part, &ghcr_token()?, &source).map(|d| println!("{d}")),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),
+        Cmd::Rtp { out, cache } => {
+            let out = out.unwrap_or_else(|| dirs.rtp.clone());
+            let done = rtp::install_all(&out, &cache.unwrap_or_else(|| dirs.cache.join("rtp")))?;
+            eprintln!("RTPs installed in {}: {}", out.display(), done.join(" "));
+            if crate::pack::ensure_prefix(&dirs.store, &dirs.fonts, Some(&out))? {
+                eprintln!("sake's C:\\ ({}) has them", crate::pack::PREFIX_TREE);
+            }
+            Ok(())
+        }
     }
 }

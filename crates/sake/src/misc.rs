@@ -280,12 +280,21 @@ const SYSTEM_KEYS: [&str; 7] = [
     "hkcu\\Control Panel\\Desktop",
 ];
 
-/// RPG Maker RTPs: (registry key, value, folder). RGSS3 (VX Ace) reads the folder of the RTP its
-/// Game.ini names (RTP=RPGVXAce) from the key and stops with "RTP が必要です" without it. The
-/// folders are where ippai puts them (crates/ippai/src/pack.rs RTPS) and the official installer
-/// would on a 32-bit Windows.
-pub(crate) const RTPS: &[(&str, &str, &str)] =
-    &[("hklm\\software\\enterbrain\\rgss3\\rtp", "RPGVXAce", "C:\\Program Files\\Common Files\\Enterbrain\\RGSS3\\RPGVXAce")];
+/// RPG Maker RTPs: (registry key, value, folder), as the official setups write them on a 32-bit
+/// Windows (their folders: crates/ippai/src/pack.rs RTP_DIRS, installed by rtp.rs). RGSS1-3 (XP,
+/// VX, VX Ace) read the folder of the RTP their Game.ini names (RTP=RPGVXAce, RTP1=Standard)
+/// from the key and stop with "RTP が必要です" without it; RPG_RT (2000, 2003) reads
+/// RuntimePackagePath (the 2000 setup's script names Software\ASCII\RPG2000; the 2003 one's is
+/// its company and product, Enterbrain\RPG2003), the user's key too.
+pub(crate) const RTPS: &[(&str, &str, &str)] = &[
+    ("hklm\\software\\enterbrain\\rgss3\\rtp", "RPGVXAce", "C:\\Program Files\\Common Files\\Enterbrain\\RGSS3\\RPGVXAce"),
+    ("hklm\\software\\enterbrain\\rgss2\\rtp", "RPGVX", "C:\\Program Files\\Common Files\\Enterbrain\\RGSS2\\RPGVX"),
+    ("hklm\\software\\enterbrain\\rgss\\rtp", "Standard", "C:\\Program Files\\Common Files\\Enterbrain\\RGSS\\Standard"),
+    ("hklm\\software\\ascii\\rpg2000", "RuntimePackagePath", "C:\\Program Files\\ASCII\\RPG2000\\RTP"),
+    ("hkcu\\software\\ascii\\rpg2000", "RuntimePackagePath", "C:\\Program Files\\ASCII\\RPG2000\\RTP"),
+    ("hklm\\software\\enterbrain\\rpg2003", "RuntimePackagePath", "C:\\Program Files\\Enterbrain\\RPG2003\\RTP"),
+    ("hkcu\\software\\enterbrain\\rpg2003", "RuntimePackagePath", "C:\\Program Files\\Enterbrain\\RPG2003\\RTP"),
+];
 
 /// A ShiinaRio game's installed state (shiina.rs), once the game's exe is loaded: the values its
 /// SETUP.exe writes, where its INI's key has no InstPath yet.
@@ -369,7 +378,7 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
                 put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f, 1);
             }
         }
-        // the RPG Maker RTPs in C:\ (ippai's own, tools/ci/sake-rtp.py), as their installers
+        // the RPG Maker RTPs in C:\ (the official ones, crates/ippai/src/rtp.rs), as their setups
         // register them: the engine finds the RTP folder by this value
         for (key, name, dir) in RTPS {
             if crate::files::resolve(&format!("{dir}\\")).is_some() {

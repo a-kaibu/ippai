@@ -288,12 +288,17 @@ fn full_path_trim(p: &str, trim: bool) -> String {
     };
     let mut parts: Vec<&str> = Vec::new();
     let (drive, rest) = abs.split_at(2);
-    for c in rest.split('\\') {
+    let n = rest.split('\\').count();
+    for (i, c) in rest.split('\\').enumerate() {
         match c {
             "" | "." => {}
             ".." => {
                 parts.pop();
             }
+            // (a folder's name that ends in one period loses it, as Windows' normalization does:
+            // "C:\RTP\RPGVX.\RGSS202J.dll" is C:\RTP\RPGVX\RGSS202J.dll, what RGSS2's Game.exe
+            // asks for; "x..\" and "x...\" are names of their own; #232)
+            c if trim && i + 1 < n && c.ends_with('.') && !c.ends_with("..") => parts.push(&c[..c.len() - 1]),
             c => parts.push(c),
         }
     }
@@ -750,6 +755,52 @@ mod tests {
 
     use super::*;
     use proptest::prelude::*;
+
+    /// Folder names that end in one period lose it (RGSS2's Game.exe loads
+    /// "<RTP folder>.\RGSS202J.dll", #232); two or more periods stay; the last component
+    /// loses all its trailing periods and spaces; \\?\ paths keep theirs.
+    #[test]
+    fn folder_names_lose_one_trailing_period() {
+        let rtp = "C:\\Program Files\\Common Files\\Enterbrain\\RGSS2\\RPGVX";
+        assert_eq!(full_path(&format!("{rtp}.\\RGSS202J.dll")), format!("{rtp}\\RGSS202J.dll"));
+        assert_eq!(full_path("C:\\a.\\b.\\c"), "C:\\a\\b\\c");
+        assert_eq!(full_path("C:\\a..\\c"), "C:\\a..\\c");
+        assert_eq!(full_path("C:\\a...\\c"), "C:\\a...\\c");
+        assert_eq!(full_path("C:\\a .\\c"), "C:\\a \\c");
+        assert_eq!(full_path("C:\\a.\\"), "C:\\a\\");
+        assert_eq!(full_path("C:\\d\\a. ."), "C:\\d\\a");
+        assert_eq!(full_path("\\\\?\\C:\\a.\\b"), "C:\\a.\\b");
+    }
+
+    proptest! {
+        /// Windows' normalization as the .NET docs give it, against full_path on random
+        /// absolute paths of names, periods and spaces: "." and ".." are relative parts; a
+        /// folder's name ending in a single period loses it; the last name loses its trailing
+        /// periods and spaces. And taking the full path again changes nothing.
+        #[test]
+        fn trailing_periods_like_windows(mut parts in proptest::collection::vec("[ab]{0,2}[. ]{0,3}", 0..5), last in "[ab]{1,2}[. ]{0,3}") {
+            // (the last name not empty: a path that ends in a separator keeps it)
+            parts.push(last);
+            let p = format!("C:\\{}", parts.join("\\"));
+            let mut want: Vec<String> = Vec::new();
+            for (i, c) in parts.iter().enumerate() {
+                let last = i + 1 == parts.len();
+                match c.as_str() {
+                    "" | "." => {}
+                    ".." => { want.pop(); }
+                    c if last => {
+                        let t = c.trim_end_matches(['.', ' ']);
+                        want.push(if t.is_empty() { c.to_string() } else { t.to_string() });
+                    }
+                    c if c.ends_with('.') && !c.ends_with("..") => want.push(c[..c.len() - 1].to_string()),
+                    c => want.push(c.to_string()),
+                }
+            }
+            let got = full_path(&p);
+            prop_assert_eq!(&got, &format!("C:\\{}", want.join("\\")), "{}", p);
+            prop_assert_eq!(full_path(&got), got.clone());
+        }
+    }
 
     #[test]
     fn names_with_wildcards_are_invalid() {

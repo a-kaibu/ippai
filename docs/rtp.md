@@ -1,4 +1,4 @@
-# RPG Maker RTPs (#155)
+# RPG Maker RTPs (#155, #232)
 
 Games made with RPG Maker leave the engine's shared material (pictures, sounds, fonts and, for
 some versions, the engine DLL) out of their own folder and read it from the run time package
@@ -6,7 +6,7 @@ some versions, the engine DLL) out of their own folder and read it from the run 
 RTP が必要です」 and RGSS2 (VX) with 「RPGVX RTP が見つかりません」 or `RGSS202J.dll could not be
 found`, on Windows as on sake.
 
-## The official RTPs may not be redistributed
+## The official RTPs: downloaded by each server, never redistributed
 
 The official RTPs are free to download (https://rpgmakerofficial.com/support/rtp/, files on
 cdn.tkool.jp), but not to pass on. The page and each package's 利用規約.txt (read 2026-11-13):
@@ -15,52 +15,65 @@ cdn.tkool.jp), but not to pass on. The page and each package's 利用規約.txt 
   や、営利、非営利を問わず２次配布を禁止します」, and the RTP may only be used to make games with
   a registered copy of that RPG Maker or to play games made with it.
 - VX Ace RTP 1.00 (`vxace_rtp100.zip`, license of 2011-12-15): 「ユーザーは、本RTPの全部又は一部を
-  配布、販売、加工・改変等することはできません」; no reverse engineering.
-- VX RTP 2.02 (`vx_rtp202.zip`): no redistribution without Enterbrain's written permission; no
-  reverse engineering.
+  配布、販売、加工・改変等することはできません」.
+- VX RTP 2.02 (`vx_rtp202.zip`): no redistribution without Enterbrain's written permission.
 
-So ippai ships none of the official RTPs' files: not in the repository, not in Releases.
+So no RTP file is in the repository, in Releases or in any CI artifact. Each ippai server
+downloads the packages from the publisher itself, as a player installing them on Windows
+would, and installs them for its own sake (user's call, 2026-11-14: 「サーバーが公式から自動取得」).
+An earlier stand-in (our own generated pictures and tones under the RTP's names) was replaced
+by this.
 
-## ippai's own RTPs
+## crates/ippai/src/rtp.rs
 
-Like sake's fonts (IPA fonts under the names of the Windows fonts), ippai makes its own stand-in
-for each RTP (user's call, 2026-11-13: 「再配布じゃなくて再実装」):
+`rtp::PACKAGES` lists the five official packages with their SHA-256 and size; a download that
+does not match is not used.
 
-- `tools/rtp/<rtp>.tsv`: the paths games ask for, and each picture's width and height (the
-  engine cuts character sheets, faces, icons, tilesets and the window skin by size). Only names
-  and sizes, taken from the official installer's file list.
-- `tools/ci/sake-rtp.py OUT`: makes `OUT/<rtp>/` with files of those names: pictures drawn in the
-  layout the engine reads (8 characters x 3 frames x 4 directions, 96x96 faces, 24x24 icons with
-  icon 0 empty, tileset B's first tile empty, the window skin's back / frame / cursor / pause
-  sign / 32 text colors), and short Ogg Vorbis tones (BGM and BGS loops, ME phrases, SE blips).
-  The same input makes the same bytes. Fonts that are free to redistribute go in as they are
-  (VX Ace: VL Gothic, from Debian's fonts-vlgothic, with its license).
+| package | setup | installed at (sake's C:\) | registry (sake misc.rs RTPS) |
+| --- | --- | --- | --- |
+| VX Ace `vxace_rtp100.zip` | Inno Setup 5.4.2 (Unicode) | `Program Files\Common Files\Enterbrain\RGSS3\RPGVXAce` | `HKLM\Software\Enterbrain\RGSS3\RTP` `RPGVXAce` |
+| VX `vx_rtp202.zip` | Inno Setup 5.3.10 | `...\Enterbrain\RGSS2\RPGVX` (with the engine, RGSS202J.dll) | `HKLM\Software\Enterbrain\RGSS2\RTP` `RPGVX` |
+| XP `xp_rtp103.zip` | Inno Setup | `...\Enterbrain\RGSS\Standard`, RGSS100J/102E/102J/103J.dll in `windows\system32` | `HKLM\Software\Enterbrain\RGSS\RTP` `Standard` |
+| 2000 `2000rtp.zip` (+ `RTP_patchk_190612.zip`) | InstallShield 6 in a cabinet self-extractor | `Program Files\ASCII\RPG2000\RTP` | `HKLM` and `HKCU\Software\ASCII\RPG2000` `RuntimePackagePath` |
+| 2003 `2003rtp.zip` | InstallShield 6 in a cabinet self-extractor | `Program Files\Enterbrain\RPG2003\RTP` | `HKLM` and `HKCU\Software\Enterbrain\RPG2003` `RuntimePackagePath` |
 
-A game that draws or plays RTP material runs, with our pictures and sounds in place of the
-official ones; what the game ships itself is unchanged.
+The setups are read, not run:
 
-## How it gets to sake's C:\
+- Inno Setup: the `inno` crate (0.7.5) gives the setup's default folder and its files with
+  their destinations (`{app}`, `{cf}`, `{sys}`; `rtp::map_path` turns them into drive_c paths
+  for a 32-bit Windows and refuses anything that would leave drive_c).
+- InstallShield: the `cab` crate takes data1.hdr / data1.cab / data2.cab out of the
+  self-extractor, and `iscab.rs` reads the InstallShield 6 cabinet (file table, split volumes,
+  obfuscation, deflate chunks, each file's MD5 checked). The files of the setup's `RTP` folder go
+  to the install folder.
+- 2000: the publisher's fixed pictures (`RTP_patchk_190612.zip`, the support page's
+  instructions) replace the setup's モンスター / 主人公3 / 基本 / ダンジョン / 船 / 内装 / 外観.
 
-- Release (`.github/workflows/release.yml`): `sake-rtp.py fonts/rtp` next to `sake-fonts.py
-  fonts`, so the archives carry `fonts/rtp/<rtp>/` and install.sh / `ippai update` put it with
-  the fonts in the data directory.
-- `ippai serve` (`pack::ensure_prefix`, also `ippai prefix FONTS`): copies each RTP into the
-  tree `prefix32` (sake's C:\) at the folder its official installer uses on a 32-bit Windows,
-  `C:\Program Files\Common Files\Enterbrain\RGSS3\RPGVXAce` for VX Ace (`pack::RTPS`). The tree
-  carries a stamp (`Enterbrain/ippai-rtp-<hash of the RTPs' files>`): a newer release with other
-  RTP files replaces the RTP part of the tree and keeps the rest (fonts, files put in by hand).
-- sake (`crates/sake/src/misc.rs` RTPS): when the folder is there, the registry has what the
-  installer writes, `HKLM\SOFTWARE\Enterbrain\RGSS3\RTP` value `RPGVXAce` = the folder.
-- Corpus (`tests/corpus/ci.sh`): the base store is made by `ippai prefix` from the fonts and the
-  RTPs, as a server makes it.
+`ippai rtp [--out DIR] [--cache DIR]` installs them into DIR (default the data directory's
+`rtp/`) as `drive_c/...` with an `INSTALLED` list; downloads (~280 MB) stay in the cache's
+`rtp/`. `ippai serve` does it in a background thread when the data directory has not got all
+five (env `IPPAI_RTP=0`: not), then puts them in sake's C:\.
 
-## Status
+## Into sake's C:\
 
-| RTP | engine | state |
-| --- | --- | --- |
-| VX Ace (RGSS3) | game ships `System\RGSS301.dll` | ours: 747 files + VL Gothic, ~13 MB. Corpus: dl_RJ260990 story, dl_RJ177152 story text (one still frame), dl_RJ227621 title (its title takes no keys on sake: own issue) |
-| VX (RGSS2) | `RGSS202J.dll` is in the RTP, not in games | not yet: needs our own RGSS2 DLL (Ruby 1.8 + RGSS2) besides the material |
-| XP (RGSS1), 2000, 2003 | XP games ship RGSS10xJ.dll; 2000/2003 have the engine in RPG_RT.exe | not yet: a manifest and the registry keys when a corpus title needs them |
+`pack::ensure_prefix(store, fonts, Some(rtp))` (at serve's start, after the background install,
+and `ippai prefix FONTS --rtp DIR`) copies the RTP part of `rtp/drive_c` (`pack::RTP_DIRS` and
+the XP RTP's system32 DLLs) into the tree `prefix32`, with a stamp
+`Program Files/ippai-rtp-<hash of those files>`. A tree with another stamp gets its RTP part
+replaced and keeps the rest (fonts, files put in by hand: `merge_rtp`). sake sets each RTP's
+registry value when its folder is there.
+
+## Tests
+
+- `rtp::tests::official_packages` (`IPPAI_RTP_TEST=<cache>`; CI caches the zips): all five
+  installed, files where the setups put them; with `IPPAI_RTP_ORACLE=1` every file compared
+  byte for byte with innoextract (Inno) and unshield (InstallShield) output.
+- proptests: `rtp::paths_stay_inside` (setup paths never leave drive_c),
+  `iscab::garbage_is_an_error`, `iscab::deobfuscate_is_one_to_one`,
+  `pack::merge_rtp_replaces_the_rtp_part`; `pack::prefix_with_rtps`.
+- Corpus (`tests/corpus/ci.sh` with `RTP=`, corpus.yml runs `ippai rtp` with the cached zips):
+  VX Ace dl_RJ260990 / dl_RJ177152 / dl_RJ227621, VX dl_RJ106544 (ships its RGSS202J.dll) and
+  dl_RJ170671 (the engine from the RTP).
 
 Found on the way: sake's WriteConsoleA/W took any handle, and Ruby 1.9 tries WriteConsoleW
 with 0 characters on every file before writing it with WriteFile, so RGSS3 games' Marshal.dump
