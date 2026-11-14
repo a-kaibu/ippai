@@ -3005,7 +3005,13 @@ unsafe fn create_shader(d: &mut D3d, pixel: bool, code: u32, out: u32) -> u32 {
     let dev = dev!(d);
     dev.serial += 1;
     let serial = dev.serial;
+    // (IPPAI_D3D_TRACE_CODE=1 with the trace: the tokens too, to translate them again by hand)
+    let dump = d.trace && std::env::var_os("IPPAI_D3D_TRACE_CODE").is_some();
+    let words = if dump { code.iter().map(|t| format!("{t:08x}")).collect::<Vec<_>>().join(" ") } else { String::new() };
     let o = d.new_obj(if pixel { IF_PS } else { IF_VS }, 0, Data::Shader(ShaderObj { code, parsed, serial }));
+    if dump {
+        eprintln!("d3d9:   shader {o} serial {serial}: {words}");
+    }
     wrp(out, 0, o);
     S_OK
 }
