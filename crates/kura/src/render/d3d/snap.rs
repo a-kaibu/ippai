@@ -21,6 +21,19 @@ pub struct Saved {
     overlay: Option<(u32, [i32; 4], bool, u32, [f32; 4])>,
 }
 
+/// How long a state waits for the GPU's reads: past it the state fails (the game goes on)
+/// instead of the page waiting for ever on a read that never comes (a map that never answers).
+pub const SNAP_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A state given up on while reads were on their way: what they write into.
+pub struct Grave {
+    /// (held only: the page writes into it)
+    _blob: Vec<u8>,
+    reads: Vec<Read>,
+    /// token -> read
+    tokens: HashMap<u32, usize>,
+}
+
 /// Where `n` bytes go in a blob that has `total` given out: at the next multiple of 4.
 fn place(total: &mut usize, n: usize) -> usize {
     let at = total.div_ceil(4) * 4;
@@ -122,10 +135,25 @@ impl D3d {
         }
         self.snap_blob = blob;
         self.snap_reads = Some(reads);
+        self.snap_began = Some(std::time::Instant::now());
     }
 
     /// A read `snap_begin` asked for came (`mapped`): whether `token` was one.
     pub(super) fn snap_mapped(&mut self, token: u32, ok: bool) -> bool {
+        if let Some(g) = self.snap_graves.iter().position(|g| g.tokens.contains_key(&token)) {
+            let grave = &mut self.snap_graves[g];
+            let k = grave.tokens.remove(&token).unwrap();
+            if let Some(r) = grave.reads.get(k) {
+                gpu::destroy(r.buf);
+                if let What::Sample { tex, .. } = r.what {
+                    gpu::destroy(tex);
+                }
+            }
+            if grave.tokens.is_empty() {
+                self.snap_graves.swap_remove(g);
+            }
+            return true;
+        }
         let Some(k) = self.snap_tokens.remove(&token) else { return false };
         if let Some(r) = self.snap_reads.as_mut().and_then(|v| v.get_mut(k)) {
             r.state = if ok { 1 } else { 2 };
@@ -139,20 +167,27 @@ impl D3d {
 
     /// Whether everything was read back (and no readback of the guest's is on its way):
     /// Some(all of it read).
+    /// Past SNAP_WAIT: Some(false), the reads not come yet given up (`snap_take`).
     pub fn snap_ready(&self) -> Option<bool> {
         let reads = self.snap_reads.as_ref()?;
         if reads.iter().any(|r| r.state == 0) || !self.readbacks.is_empty() {
-            return None;
+            return self.snap_began.is_some_and(|t| t.elapsed() >= SNAP_WAIT).then_some(false);
         }
         Some(reads.iter().all(|r| r.state == 1))
     }
 
     /// The batch that makes it all again (after `snap_ready`).
     pub fn snap_take(&mut self) -> Saved {
-        let reads = self.snap_reads.take().unwrap_or_default();
-        self.snap_tokens.clear();
-        let mut c = Vec::new();
+        let mut reads = self.snap_reads.take().unwrap_or_default();
+        self.snap_began = None;
         let mut blob = std::mem::take(&mut self.snap_blob);
+        if !self.snap_tokens.is_empty() {
+            // (given up with reads on their way: their memory stays until they come; this
+            // state is a failed one)
+            let tokens = std::mem::take(&mut self.snap_tokens);
+            self.snap_graves.push(Grave { _blob: std::mem::take(&mut blob), reads: std::mem::take(&mut reads), tokens });
+        }
+        let mut c = Vec::new();
         pad4(&mut blob);
         let mut ids: Vec<u32> = self.textures.keys().copied().collect();
         ids.sort_unstable();
@@ -276,6 +311,8 @@ impl D3d {
         self.check_done.clear();
         self.snap_tokens.clear();
         self.snap_reads = None;
+        // (a lost device's maps fail: nothing writes into the graves any more)
+        self.snap_graves.clear();
         self.snap_take()
     }
 

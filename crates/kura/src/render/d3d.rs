@@ -633,6 +633,11 @@ pub struct D3d {
     /// the state's blob while it is read (snap.rs: the reads write into it)
     snap_blob: Vec<u8>,
     snap_tokens: HashMap<u32, usize>,
+    /// when the reads were asked for (snap.rs SNAP_WAIT)
+    pub(crate) snap_began: Option<std::time::Instant>,
+    /// states given up on with reads still on their way: kept until the last comes (the page
+    /// writes into their memory)
+    pub(crate) snap_graves: Vec<snap::Grave>,
     /// the shader resolve (resolve_into): module, pipeline and layout per target format
     resolve_module: Id,
     resolve_pipes: HashMap<&'static str, (Id, Id)>,
@@ -732,6 +737,8 @@ impl D3d {
             snap_reads: None,
             snap_blob: Vec::new(),
             snap_tokens: HashMap::new(),
+            snap_began: None,
+            snap_graves: Vec::new(),
             resolve_module: 0,
             resolve_pipes: HashMap::new(),
             twins: HashMap::new(),

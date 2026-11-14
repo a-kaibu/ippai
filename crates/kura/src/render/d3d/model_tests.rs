@@ -1248,6 +1248,48 @@ fn a_lost_device_ends_readbacks() {
     assert!(d.readbacks.is_empty());
 }
 
+/// A state whose reads do not come (a map that never answers) fails after SNAP_WAIT instead
+/// of holding the page for ever; what the late reads write into is kept until each came (the
+/// model writes into it: freed memory otherwise), and the next state is taken whole.
+#[test]
+fn a_state_whose_reads_do_not_come_fails() {
+    let dst = unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0) };
+    assert!(dst != libc::MAP_FAILED);
+    for seed in 0..4 {
+        model::reset();
+        let mut d = D3d::new();
+        let mut g = Gen::new(seed);
+        for b in [g.setup(), g.frame(dst as usize), g.frame(dst as usize)] {
+            d.run(&b.c, &b.data, &b.blob);
+            for token in model::with(|m| m.finish_maps()) {
+                d.mapped(token, true);
+            }
+        }
+        assert!(!d.textures.is_empty());
+        d.snap_begin();
+        assert_eq!(d.snap_ready(), None, "waits for its reads");
+        // (as if SNAP_WAIT went by)
+        d.snap_began = std::time::Instant::now().checked_sub(snap::SNAP_WAIT);
+        assert_eq!(d.snap_ready(), Some(false), "gives up");
+        let _ = d.snap_take();
+        assert_eq!(d.snap_graves.len(), 1, "the late reads' memory kept");
+        assert_eq!(d.snap_ready(), None, "no state being taken");
+        // (the reads come late: written into the kept memory)
+        for token in model::with(|m| m.finish_maps()) {
+            d.mapped(token, true);
+        }
+        assert!(d.snap_graves.is_empty(), "freed once all came");
+        d.snap_begin();
+        for token in model::with(|m| m.finish_maps()) {
+            d.mapped(token, true);
+        }
+        assert_eq!(d.snap_ready(), Some(true), "the next state is whole");
+        let _ = d.snap_take();
+        let errors = model::with(|m| std::mem::take(&mut m.errors));
+        assert!(errors.is_empty(), "WebGPU errors {errors:?}");
+    }
+}
+
 #[test]
 fn a_state_draws_the_same_d3d9() {
     check_cuts(|seed, dst| {
