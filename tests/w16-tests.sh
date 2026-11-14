@@ -24,8 +24,9 @@ for t in $TESTS; do
   (
     cd "$d" || exit 1
     python3 "$ROOT/tests/w16/gen-bmp.py" "$d"
-    for dll in $(sed -n 's/.*dll: *\([a-z0-9_]*\).*/\1/p' "$src"); do
-      wcl -q -bt=windows -bd -ml -zu -we -l=windows_dll -fe="$d/$dll.dll" "$ROOT/tests/w16/$dll.c" || exit 1
+    for dll in $(sed -n 's/.*dll: *\([a-z0-9_ ]*\).*/\1/p' "$src"); do
+      dlibs=$(sed -n 's/.*libs: *\([a-z0-9_. ]*\).*/\1/p' "$ROOT/tests/w16/$dll.c")
+      wcl -q -bt=windows -bd -ml -zu -we -l=windows_dll -fe="$d/$dll.dll" "$ROOT/tests/w16/$dll.c" $dlibs || exit 1
       wlib -q -n "$d/$dll.lib" +"$d/$dll.dll" || exit 1
     done
     libs=$(sed -n 's/.*libs: *\([a-z0-9_. ]*\).*/\1/p' "$src")

@@ -9,3 +9,12 @@ GetProcAddress LIBADD found -> 11
 GetProcAddress missing none
 still loaded after one FreeLibrary 1
 LoadLibrary missing 2
+LibMulAdd through w16base 1048
+w16dyn loaded, loads 1, by ordinal the same 1
+again the same 1
+one FreeLibrary: loaded 1
+the last FreeLibrary: loaded 0
+w16dyn loaded, loads 1, by ordinal the same 1
+again the same 1
+one FreeLibrary: loaded 1
+the last FreeLibrary: loaded 0

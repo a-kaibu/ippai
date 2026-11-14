@@ -1,6 +1,10 @@
 /* 16-bit DLL of dll16.c: exported functions (by ordinal and by name), its own data segment
- * (a counter, a string, what LibMain was given), a callback into the program. */
+ * (a counter, a string, what LibMain was given), a callback into the program, a call into
+ * another DLL (w16base.c).
+ * libs: w16base.lib */
 #include <windows.h>
+
+int FAR PASCAL BaseMul(int a, int b);
 
 static int calls;
 static WORD init_ds, init_heap;
@@ -37,4 +41,8 @@ long FAR PASCAL __export LibCallBack(long (FAR PASCAL *f)(int), int v) {
 
 int FAR PASCAL __export LibSameDs(void) {
     return init_ds == (WORD)init_inst;
+}
+
+int FAR PASCAL __export LibMulAdd(int a, int b, int c) {
+    return BaseMul(a, b) + c;
 }
