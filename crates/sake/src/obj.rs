@@ -582,6 +582,7 @@ fn attempt(t: &mut Table, handles: &[u32], all: bool, tid: u32, blocked: bool) -
     Attempt::Wait
 }
 
+#[cfg(test)]
 fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
     wait_held_then(handles, all, ms, extra, &|| {})
 }
