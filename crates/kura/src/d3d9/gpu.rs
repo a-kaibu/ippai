@@ -258,6 +258,11 @@ fn page_attached(q: &Queue) -> bool {
     q.last_poll.is_some_and(|t| now() - t < 3000.0)
 }
 
+/// The open batch's generation and how many command words it has (where the next command goes)
+pub fn batch_end() -> (u64, usize) {
+    with(|q| (q.gen, q.open.cmds.len()))
+}
+
 /// Changes whenever a new batch opens (what the page knows of draw state is per batch).
 pub fn batch_gen() -> u64 {
     with(|q| q.gen)

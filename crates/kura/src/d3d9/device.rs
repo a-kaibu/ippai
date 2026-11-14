@@ -316,6 +316,13 @@ pub struct Device {
     /// the last draw's preparation, and its uniform blocks
     prep: Option<Box<Prep>>,
     uni: Option<Box<Uni>>,
+    /// the last command of the open batch when it is a draw later draws may join (#120): where
+    /// it starts in `cmds`, its length, where its vertices end in `data`, its batch
+    merge: Option<(usize, usize, u32, u64)>,
+    /// guest memory the strips that become lists are written to (address, size)
+    strip_buf: (u32, u32),
+    /// after a strip that could have become a list: the state then (`StripKey`)
+    strip_hint: Option<StripKey>,
 }
 
 /// The render states Direct3D 9 has (GetRenderState of the others: D3DERR_INVALIDCALL), as
@@ -1107,6 +1114,9 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         uni_gen: 0,
         prep: None,
         uni: None,
+        merge: None,
+        strip_buf: (0, 0),
+        strip_hint: None,
     });
     let _ = dev.new_gpu();
     // (another device of the program waits: its calls switch back to it, `D3d::activate`)
@@ -3439,7 +3449,69 @@ unsafe fn rect_draw(d: &D3d, elems: &[Elem], streams: &[(u32, u32, u32)], first:
     [flags, f2u(m[0]), f2u(m[1]), f2u(m[2]), f2u(m[3])]
 }
 
+/// (#120) What a strip turned into a list joins: the state since the last draw (the device's
+/// generations, textures, clip) and where the batch is
+type StripKey = (u64, u64, [u32; SAMPLERS], [i32; 4], u64, usize, u32);
+
+unsafe fn strip_key(d: &D3d, stride: u32) -> Option<StripKey> {
+    let dev = d.dev.as_ref()?;
+    let (g, n) = gpu::batch_end();
+    Some((dev.prep_gen, dev.uni_gen, dev.st.textures, dev.st.scissor, g, n, stride))
+}
+
 unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> u32 {
+    // (#120) A short DrawPrimitiveUP strip that blends (sprites, letters, particles: a quad
+    // each) right after one of the same state goes as the list of its triangles, which the next
+    // draws of that state join (each odd triangle's first two vertices swapped, as strips do:
+    // the same facing). The first of a run stays a strip: a lone picture (a layer, a window)
+    // keeps what render/d3d.rs knows of a rectangle (rect_draw: where a texture's change shows).
+    // Not when flat shading (each triangle's color from its first vertex) or wireframe would
+    // show the difference, nor an opaque one (an opaque rectangle starts a segment).
+    let eligible = match (prim, &src, d.dev.as_ref()) {
+        (5, Src::Up { stride, .. }, Some(dev)) => {
+            let st = &dev.st;
+            merging() && prims <= 64 && stride % 4 == 0 && *stride > 0 && st.rs[27] != 0 && st.rs[8] == 3 && st.rs[9] != 1
+        }
+        _ => false,
+    };
+    if !eligible {
+        return draw_one(d, prim, src, prims);
+    }
+    let Src::Up { data, stride } = src else { unreachable!() };
+    let key = strip_key(d, stride);
+    let hint = d.dev.as_ref().and_then(|v| v.strip_hint);
+    let r = if key.is_some() && hint == key {
+        let need = 3 * prims * stride;
+        let (mut buf, cap) = d.dev.as_ref().unwrap().strip_buf;
+        if cap < need {
+            d.guest_free(buf);
+            buf = d.guest_alloc(need.max(4096));
+            d.dev.as_mut().unwrap().strip_buf = (buf, need.max(4096));
+        }
+        if buf == 0 {
+            draw_one(d, prim, src, prims)
+        } else {
+            let mut o = buf;
+            for t in 0..prims {
+                let vs = if t % 2 == 0 { [t, t + 1, t + 2] } else { [t + 1, t, t + 2] };
+                for v in vs {
+                    std::ptr::copy_nonoverlapping((data + v * stride) as *const u8, o as *mut u8, stride as usize);
+                    o += stride;
+                }
+            }
+            draw_one(d, 4, Src::Up { data: buf, stride }, prims)
+        }
+    } else {
+        draw_one(d, prim, src, prims)
+    };
+    let after = if r == S_OK { strip_key(d, stride) } else { None };
+    if let Some(dev) = d.dev.as_mut() {
+        dev.strip_hint = after;
+    }
+    r
+}
+
+unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     if prims == 0 || !(1..=6).contains(&prim) {
         return S_OK;
     }
@@ -4132,7 +4204,15 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // target change since a flush does not write them again)
     let same_batch = dev.uniform_gen == gpu::batch_gen();
     // data: vertices, indices, uniforms
+    // (#120: lists, points and lines of one stream from the data block, not instanced, may join
+    // the last draw)
+    let join = merging() && index.is_none() && matches!(prim, 1 | 2 | 4) && instances == 1 && streams.len() == 1;
+    let merge = dev.merge.map(|(a, l, e, g)| (a, l, e, g));
     let ((cmd, ok), gen) = gpu::record_gen(|b| {
+        // uniforms (the same block as the last draw's when nothing changed; before the vertices, which the next draw's may follow, #120)
+        let (vsu, psu) = (&uni.vsu, &uni.psu);
+        let vso = if dev.last_vs.0 == *vsu && same_batch && !b.data.is_empty() { dev.last_vs.1 } else { b.data(vsu, 256) };
+        let pso = if dev.last_ps.0 == *psu && same_batch && !b.data.is_empty() { dev.last_ps.1 } else { b.data(psu, 256) };
         // (buffer, offset) a stream: the data block (DATA) or a page copy
         let mut offs = Vec::new();
         for (k, &(sn, ptr, stride)) in streams.iter().enumerate() {
@@ -4197,10 +4277,6 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             }
             (None, _) => (0, 0, count, 0),
         };
-        // uniforms (the same block as the last draw's when nothing changed)
-        let (vsu, psu) = (&uni.vsu, &uni.psu);
-        let vso = if dev.last_vs.0 == *vsu && same_batch && !b.data.is_empty() { dev.last_vs.1 } else { b.data(vsu, 256) };
-        let pso = if dev.last_ps.0 == *psu && same_batch && !b.data.is_empty() { dev.last_ps.1 } else { b.data(psu, 256) };
         let mut c = vec![
             gpu::DRAW,
             pipe,
@@ -4231,10 +4307,39 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         c.push(hash);
         c.extend_from_slice(&bbox);
         c.extend_from_slice(&ext);
+        // (#120) A list from the data block right after the last draw's vertices, the same in
+        // all else (state, textures, uniforms, viewport, clip: the same words), the last
+        // command still: joined to it, the primitives in the same order
+        let p = 18 + 3 * texs.len();
+        let joinable = join && offs.len() == 2 && offs[0] == DATA && ifmt == 0 && ext[0] == 0;
+        let vend = offs.get(1).map_or(0, |o| o + count * streams.first().map_or(0, |s| s.2));
+        if let (true, Some((at, len, end, g))) = (joinable && same_batch, merge) {
+            let prev = b.cmds.get(at..at + len).filter(|_| at + len == b.cmds.len() && len == c.len() && g == dev.uniform_gen);
+            if let Some(prev) = prev {
+                let same = prev[..p + 2] == c[..p + 2] && prev[p + 3..p + 5] == c[p + 3..p + 5] && prev[p + 6] == c[p + 6] && prev[p + 12..] == c[p + 12..];
+                if same && end == offs[1] {
+                    let w = &mut b.cmds[at..at + len];
+                    w[p + 5] += count;
+                    w[p + 7] = (w[p + 7].rotate_left(5) ^ hash).wrapping_mul(0x9e37_79b1);
+                    if w[p + 8] == u32::MAX || bbox[0] == u32::MAX {
+                        w[p + 8..p + 12].fill(u32::MAX);
+                    } else {
+                        for k in 0..4 {
+                            w[p + 8 + k] = if k < 2 { w[p + 8 + k].min(bbox[k]) } else { w[p + 8 + k].max(bbox[k]) };
+                        }
+                    }
+                    DRAWS_JOINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    #[cfg(test)]
+                    JOINED_HERE.with(|j| j.set(j.get() + 1));
+                    return ((vso, pso), Some((at, len, vend)));
+                }
+            }
+        }
+        let at = b.cmds.len();
         b.cmd(&c);
-        ((vso, pso), true)
+        ((vso, pso), joinable.then_some((at, c.len(), vend)))
     });
-    let _ = ok;
+    dev.merge = ok.map(|(a, l, e)| (a, l, e, gen));
     for (last, now, off) in [(&mut dev.last_vs, &uni.vsu, cmd.0), (&mut dev.last_ps, &uni.psu, cmd.1)] {
         if last.0 != *now {
             last.0.clear();
@@ -4333,6 +4438,32 @@ fn prep_mode() -> u8 {
 #[cfg(test)]
 pub(crate) fn set_prep_mode(m: u8) {
     PREP_MODE.store(m, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// IPPAI_NOMERGE=1: no draw joins the last one (#120). Tests set it with `set_merge_mode`.
+static MERGE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0xff);
+/// draws joined to the one before them
+pub static DRAWS_JOINED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+thread_local! {
+    /// (tests) the draws joined on this thread
+    pub(crate) static JOINED_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn merging() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut m = MERGE_MODE.load(Relaxed);
+    if m == 0xff {
+        m = std::env::var_os("IPPAI_NOMERGE").is_some_and(|v| v != "0") as u8;
+        MERGE_MODE.store(m, Relaxed);
+    }
+    m == 0
+}
+
+/// 1: no joining, 0: joining, 0xff: as the environment says
+#[cfg(test)]
+pub(crate) fn set_merge_mode(m: u8) {
+    MERGE_MODE.store(m, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn no_prep_cache() -> bool {

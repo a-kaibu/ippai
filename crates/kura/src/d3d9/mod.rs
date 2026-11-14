@@ -47,6 +47,8 @@ mod caps8_tests;
 mod cost_tests;
 #[cfg(test)]
 mod prep_tests;
+#[cfg(test)]
+mod merge_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;

@@ -475,6 +475,9 @@ pub struct Pipeline {
     pub uses_stencil: bool,
     /// multisample.count
     pub samples: u32,
+    /// `hash` but of its primitive topology (tests: a strip drawn as the list of its triangles
+    /// is drawn with the same state)
+    pub hash_shape: u64,
 }
 
 /// A vertex as the shader gets it: (location, the bytes of that attribute; empty when the
@@ -587,6 +590,8 @@ pub struct Model {
     /// Some: each draw submitted adds the primitives it assembles (its vertices in order),
     /// for tests of what draws read
     pub prims: Option<Vec<Vec<Vec<Vertex>>>>,
+    /// Some (with `prims`): each draw's `state_sig`, in the same order
+    pub prim_states: Option<Vec<u64>>,
 }
 
 thread_local! {
@@ -1002,6 +1007,21 @@ impl Model {
             h = mix(h, *mh);
             used.extend(u.iter().cloned());
         }
+        let hash_shape = {
+            let mut s2 = s.to_string();
+            for k in ["\"topology\":", "\"stripIndexFormat\":"] {
+                while let Some(a) = s2.find(k) {
+                    let v = a + k.len();
+                    let end = s2[v + 1..].find('"').map_or(s2.len(), |e| v + 1 + e + 1);
+                    s2.replace_range(a..end, "\"_\":0");
+                }
+            }
+            let mut h2 = parse_json(&s2).map_or(0, |j| hash_desc(&j));
+            for (mh, _, _) in vs.iter().chain(fs.iter()) {
+                h2 = mix(h2, *mh);
+            }
+            h2
+        };
         // the layout: explicit, or what the shaders use ("auto")
         let groups: Vec<usize> = match j.get("layout") {
             Some(J::Str(a)) if a == "auto" => {
@@ -1218,7 +1238,7 @@ impl Model {
         let uses_stencil = depth.as_ref().is_some_and(|d| {
             ["stencilFront", "stencilBack"].iter().filter_map(|f| d.3.get(f)).any(|s| s.s("compare").unwrap_or("always") != "always" || ["failOp", "depthFailOp", "passOp"].iter().any(|k| s.s(k).unwrap_or("keep") != "keep"))
         });
-        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, copy_shader: copy, zwrite_shader: zwrite, uses_stencil, samples };
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, copy_shader: copy, zwrite_shader: zwrite, uses_stencil, samples, hash_shape };
         self.put(Obj::Pipeline(p))
     }
 
@@ -2120,14 +2140,9 @@ impl Model {
         Some((tex, sub, w, h, [f(0)?, f(1)?]))
     }
 
-    /// What a draw reads, hashed (its "signature"), and for the clear shader: the color and
-    /// depth it writes.
-    fn draw_sig(&mut self, d: &Draw) -> (u64, Option<([f32; 4], f32)>) {
-        let p = match &self.objs[d.st.pipeline.unwrap()] {
-            Obj::Pipeline(p) => p.clone(),
-            _ => unreachable!(),
-        };
-        let mut h = mix(0xd7a, p.hash);
+    /// A draw's pipeline and what its bind groups hold (the first part of `draw_sig`)
+    fn groups_sig(&mut self, d: &Draw, p: &Pipeline, pipe: u64) -> (u64, Option<([f32; 4], f32)>) {
+        let mut h = mix(0xd7a, pipe);
         let mut clear = None;
         for (gi, g) in d.st.groups.iter().enumerate().take(p.groups.len()) {
             let Some((g, offs)) = g else { continue };
@@ -2165,6 +2180,37 @@ impl Model {
                 }
             }
         }
+        (h, clear)
+    }
+
+    /// (tests) What a draw draws with but its vertices and how many: its pipeline, its bind
+    /// groups' contents, viewport, clip, blend constant, stencil reference
+    fn state_sig(&mut self, d: &Draw) -> u64 {
+        let Obj::Pipeline(p) = self.objs[d.st.pipeline.unwrap()].clone() else { unreachable!() };
+        let (mut h, _) = self.groups_sig(d, &p, p.hash_shape);
+        for v in d.st.viewport {
+            h = mix(h, v.to_bits() as u64);
+        }
+        for v in d.st.scissor {
+            h = mix(h, v as u64);
+        }
+        for c in d.st.blend {
+            h = mix(h, c.to_bits());
+        }
+        if p.uses_stencil {
+            h = mix(h, d.st.stencil_ref as u64);
+        }
+        h
+    }
+
+    /// What a draw reads, hashed (its "signature"), and for the clear shader: the color and
+    /// depth it writes.
+    fn draw_sig(&mut self, d: &Draw) -> (u64, Option<([f32; 4], f32)>) {
+        let p = match &self.objs[d.st.pipeline.unwrap()] {
+            Obj::Pipeline(p) => p.clone(),
+            _ => unreachable!(),
+        };
+        let (mut h, clear) = self.groups_sig(d, &p, p.hash);
         // vertices and indices: the bytes it reads
         let (n, inst, first, base, first_inst) = (d.args[0], d.args[1], d.args[2], d.args[3] as i32, d.args[4]);
         let mut max_vertex = first as u64 + n as u64;
@@ -2232,6 +2278,10 @@ impl Model {
             if self.prims.is_some() {
                 let p = self.assemble(d);
                 self.prims.as_mut().unwrap().push(p);
+            }
+            if self.prim_states.is_some() {
+                let s = self.state_sig(d);
+                self.prim_states.as_mut().unwrap().push(s);
             }
             let (sig, clear) = self.draw_sig(d);
             if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {

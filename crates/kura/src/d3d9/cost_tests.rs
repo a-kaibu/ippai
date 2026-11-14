@@ -51,13 +51,15 @@ const STRIDE: u32 = 28;
 fn case(name: &str, frames: u32, draws: u32, mut frame: impl FnMut(u32)) {
     // warm-up
     frame(0);
+    device::DRAWS_JOINED.store(0, std::sync::atomic::Ordering::Relaxed);
     let t = Instant::now();
     for f in 1..=frames {
         frame(f);
     }
     let el = t.elapsed();
+    let joined = device::DRAWS_JOINED.swap(0, std::sync::atomic::Ordering::Relaxed);
     let per = el.as_nanos() as f64 / (frames * draws) as f64;
-    println!("cost {name}: {per:.0} ns/draw ({frames} frames of {draws})");
+    println!("cost {name}: {per:.0} ns/draw ({frames} frames of {draws}, {joined} joined to the draw before)");
 }
 
 #[test]
