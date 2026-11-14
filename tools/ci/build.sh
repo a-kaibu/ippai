@@ -29,6 +29,8 @@ mkdir -p "$P"
 cp -r web/dist "$P/web"
 cp target/release/ippai "$P/"
 cp "$EMSDK4/upstream/bin/wasm-opt" "$P/"  # (the server optimizes saved translations with it)
+# (sake for node: the corpus runs setup programs in it before the game, tests/corpus/install.py)
+mkdir -p "$P/sake-node" && cp "$OUT/sake.js" "$OUT/sake.wasm" "$P/sake-node/"
 echo "$VERSION $(git rev-parse HEAD)" > "$P/VERSION"
 tar -C "$STAGE" -cf - "ippai-$VERSION" | zstd -19 -T0 -q -o "$DIST/ippai-$VERSION.tar.zst" -f
 (cd "$DIST" && sha256sum "ippai-$VERSION.tar.zst" > "ippai-$VERSION.tar.zst.sha256")

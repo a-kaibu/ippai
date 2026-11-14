@@ -55,7 +55,7 @@ case ${SCREEN:-1920x1080} in none) SCREEN_QS= ;; *) SCREEN_QS="&env=IPPAI_SCREEN
 # (SAKE_ENV: NAME=value ... more of sake's environment, as a dispatch asks)
 for kv in ${SAKE_ENV:-}; do SCREEN_QS="$SCREEN_QS&env=${kv%%=*}%3D${kv#*=}"; done
 run1() {  # ids file, port
-  IPPAI_DIST=$DIST BASE_STORE=$BASE TRIALS=$WORK/trials STORES=$WORK/stores JIT_DIR=$WORK/jit \
+  IPPAI_DIST=$DIST SAKE_FONTS=$FONTS BASE_STORE=$BASE TRIALS=$WORK/trials STORES=$WORK/stores JIT_DIR=$WORK/jit \
     DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1&env=IPPAI_API_COUNTS%3D1'"$SCREEN_QS" STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-1} PORT=$2 \
     python3 "$ROOT/tests/corpus-run.py" "$TITLES" "$1" "$OUT"
 }

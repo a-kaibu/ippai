@@ -35,6 +35,21 @@ WEB = f'{DIST}/web' if DIST else f'{ROOT}/web/dist'
 JIT_DIR = os.environ.get('JIT_DIR', '/home/user/runs/jit')
 SKIP_X64 = os.environ.get('SKIP_X64', '1') == '1'
 env = dict(os.environ, PATH=f"{BIN}:{os.environ['PATH']}")
+# (sake for node: corpus-prep.sh runs setup programs in it; a release's sake-node/, else the
+# checkout's crates/sake/build.sh output)
+for sake in (f'{BIN}/sake-node/sake.js', f'{ROOT}/target/sake-out/sake.js'):
+    if 'SAKE_NODE' not in env and os.path.exists(sake): env['SAKE_NODE'] = sake
+
+
+def installed(exe):
+    """A game a setup program installed (corpus-prep.sh prints C:\\...)."""
+    return len(exe) > 2 and exe[1] == ':' and exe[0].isalpha()
+
+
+def exe_file(tid, exe):
+    """The exe's file in the prepared trial: the tree's, or the installer's C:\\ ($T/c)."""
+    if installed(exe): return f"{TRIALS}/{tid}/c/" + exe[3:].replace('\\', '/')
+    return f"{TRIALS}/{tid}/x/{exe}"
 
 def prep(tid):
     t = titles[tid]
@@ -68,6 +83,7 @@ ends = 0
 def web_game(store, exe):
     """a package.json next to the exe (NW.js, unpacked by ippai pack) or in resources/app (Electron): the page runs it, x64 or not"""
     d = exe.rsplit('/', 1)[0] + '/' if '/' in exe else ''
+    if installed(exe): return False
     want = {f'{d}package.json'.lower(), f'{d}resources/app/package.json'.lower()}
     try:
         return any(l.split('\t')[3].lower() in want for l in open(f'{store}/trees/g.tsv', encoding='utf-8') if l.startswith('f\t'))
@@ -101,9 +117,11 @@ while True:
     od = f'{out}/{tid}'
     os.makedirs(od, exist_ok=True)
     if not exe:
-        open(f'{od}/result.json', 'w').write('{"prep_error": %s}' % __import__('json').dumps(err))
+        # (corpus-prep.sh's "not a game: movie (...)": a sample movie or a patch, kept apart)
+        ng = err.split('not a game: ', 1)[1].split()[0] if 'not a game: ' in (err or '') else None
+        open(f'{od}/result.json', 'w').write(json.dumps({'prep_error': err, **({'not_game': ng} if ng else {})}, ensure_ascii=False))
         print(tid, 'PREP', err, flush=True)
-    elif SKIP_X64 and not web_game(f'{STORES}/{tid}', exe) and pe_machine(f"{TRIALS}/{tid}/x/{exe}", f'{STORES}/{tid}') == 0x8664:
+    elif SKIP_X64 and not web_game(f'{STORES}/{tid}', exe) and pe_machine(exe_file(tid, exe), f'{STORES}/{tid}') == 0x8664:
         open(f'{od}/result.json', 'w').write('{"x64": true}')
         open(f'{od}/exe.txt', 'w').write(exe + '\n')
         print(tid, 'x64', flush=True)
@@ -116,7 +134,9 @@ while True:
                                 '--game-listen', f'127.0.0.1:{PORT + 1000}'],
                                stdout=open(f'{od}/server.log', 'w'), stderr=subprocess.STDOUT)
         wait_port(PORT)
-        winexe = 'Z:\\ippai\\game\\' + exe.replace('/', '\\')
+        # (an installed game: C:\\ is the page's /ippai/prefix/drive_c, and the page's run= takes
+        # a Z:\\ path; sake shows the program its C:\\ path)
+        winexe = 'Z:\\ippai\\prefix\\drive_c' + exe[2:] if installed(exe) else 'Z:\\ippai\\game\\' + exe.replace('/', '\\')
         args = titles[tid].get('args', '')
         # (saves on: a fresh browser each title, and a launcher's settings file reaches the game it
         # starts, BISHOP's bsxx.ini)

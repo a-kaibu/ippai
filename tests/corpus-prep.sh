@@ -2,7 +2,8 @@
 # Downloads, extracts and packs one vnbox corpus title for tests/corpus.mjs:
 #   tests/corpus-prep.sh ID URL EXE_REL STORE
 # -> TRIALS/ID/x (extracted), STORE (hard-linked copy of BASE_STORE + tree "g"; "": none)
-# prints the exe path inside the tree on success
+# prints the exe path inside the tree on success (C:\...: the game a setup program installed)
+# env: SAKE_NODE (node's sake.js: setup programs run in it, tests/corpus/install.py), SAKE_FONTS
 set -e
 id=$1 url=$2 exe=$3 store=$4
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -66,8 +67,11 @@ if [ ! -d x ]; then
          # (7z exits 2 when an EXEpress CX SFX names a cabinet volume it doesn't carry,
          # helter_taikenban_fubuki.exe's helt_t2.cab, though it wrote every file: kept when each
          # file its listing names is there whole, tests/7z-complete.py)
-         (find . -mindepth 1 -delete; { LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]; } ||
-            python3 -I "$HERE/7z-complete.py" "../$f" . >/dev/null 2>&1) ||
+         # (not a program with nothing in it, which 7-Zip opens as "Type = PE" and unpacks into
+         # its sections: .text, .rsrc/...)
+         (find . -mindepth 1 -delete; ! LC_ALL=C.UTF-8 7z l -slt "../$f" 2>/dev/null | grep -qx 'Type = PE' &&
+            { { LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]; } ||
+              python3 -I "$HERE/7z-complete.py" "../$f" . >/dev/null 2>&1; }) ||
          (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          # an installer nothing here unpacks (michishio_trial_taming2_install.exe: Gentee
          # CreateInstall): the exe itself, under its own name, run in sake as on Windows
@@ -157,18 +161,53 @@ if [ -n "$exe" ] && [ -f "$exe" ]; then e=$exe
 elif [ -n "$exe" ] && e=$(find . -ipath "*/$exe" -printf '%P\n' | head -1) && [ -n "$e" ]; then :
 else
   # (tests/corpus/pickexe.py: Unity's and Ren'Py's own exe, else the biggest that is not a tool)
-  e=$(python3 -I "$HERE/corpus/pickexe.py" .) || e=
+  # (exit 5: not a game, a sample movie or a patch: tests/corpus/pickexe.py not_game)
+  rc=0; e=$(python3 -I "$HERE/corpus/pickexe.py" . "${url%%\?*}") || rc=$?
+  [ "$rc" = 5 ] && exit 5
+  [ "$rc" = 0 ] || e=
 fi
 [ -n "$e" ] || { echo "no exe" >&2; exit 3; }
+# setup programs nothing here unpacks (Gentee CreateInstall, DGCA and YU-RIS self-extractors) and
+# install media whose game only runs installed (autorun.inf beside a setup program: BLUEGALE's
+# setup.exe, CatSystem2's INSTALL.exe): run in sake under node as a person taking the defaults
+# (tests/corpus/install.py, SAKE_AUTO), once per extracted tree. Its C:\ ($T/c: the installed
+# game, the registry) becomes the title's C:\ (the store's prefix32), what it wrote beside
+# itself stays in the tree; the game it made is run (C:\... or a path in the tree).
+if [ -n "${SAKE_NODE:-}" ] && [ ! -e "$T/install.done" ] && s=$(python3 -I "$HERE/corpus/install.py" choose . "$e"); then
+  rm -rf "$T/c"
+  python3 -I "$HERE/corpus/install.py" run . "$s" "$T/c" > "$T/install.done.part" 2>> "$T/install.err" || true
+  mv "$T/install.done.part" "$T/install.done"
+fi
+installed=
+if [ -s "$T/install.done" ]; then
+  IFS=$'\t' read -r where g < "$T/install.done"
+  case $where in
+    Z) e=$g ;;
+    C) e="C:\\${g//\//\\}"; installed=1 ;;
+  esac
+fi
 # launchers that start the game as a second process: run the game exe itself (vnvm's processes
 # share one address space, so the game can't get 0x400000 while the launcher holds it)
 g=$(find . -iname cs2.exe -printf '%P\n' | head -1)
-[ -n "$g" ] && e=$g
+[ -n "$g" ] && [ -z "$installed" ] && e=$g
 # (an empty STORE: only the tree, e.g. for recording on Windows: tests/replay/gametrace.sh)
 if [ -n "$store" ] && [ ! -d "$store" ]; then
   rm -rf "$store.part"
   cp -al "$BASE" "$store.part"
   ippai --store "$store.part" pack . g >/dev/null
+  # (an installed game: the title's own C:\, the installer's with sake's fonts, as prefix32;
+  # the base's tree list is a hard link, removed rather than written through)
+  if [ -d "$T/c" ] && [ -n "${SAKE_FONTS:-}" ] && [ -n "$(find "$T/c" -type f -not -ipath '*/windows/system32/msiexec.exe' -print -quit)" ]; then
+    rm -rf "$T/prefix" && mkdir -p "$T/prefix" && cp -al "$T/c" "$T/prefix/drive_c"
+    w=$(find "$T/prefix/drive_c" -mindepth 1 -maxdepth 1 -iname windows -print -quit)
+    w=${w:-$T/prefix/drive_c/windows}
+    mkdir -p "$w"
+    [ -n "$(find "$w" -mindepth 1 -maxdepth 1 -iname temp -print -quit)" ] || mkdir "$w/temp"
+    [ -n "$(find "$w" -mindepth 1 -maxdepth 1 -iname fonts -print -quit)" ] || cp -r "$SAKE_FONTS" "$w/Fonts"
+    rm -f "$store.part/trees/prefix32.tsv"
+    ippai --store "$store.part" pack "$T/prefix" prefix32 >/dev/null
+    rm -rf "$T/prefix"
+  fi
   mv "$store.part" "$store"
 fi
 echo "$e"
