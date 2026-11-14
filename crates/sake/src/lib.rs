@@ -109,7 +109,7 @@ mod mci;
 mod shiina;
 pub mod dshow;
 pub(crate) mod dshow_play;
-mod dshow_mpeg;
+pub mod dshow_mpeg;
 mod wmvcore;
 mod wmdec;
 pub mod mf;

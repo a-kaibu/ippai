@@ -125,6 +125,9 @@ struct Graph {
     /// pins were connected through it (ConnectDirect): its state changes go to the filters
     /// from then on (a graph a game only renders a file in keeps them to itself)
     wired: bool,
+    /// the Vnv filter (dshow_mpeg.rs) RenderFile connected to the game's own video renderer:
+    /// the movie's pictures go there, no video window shows them (#215)
+    renderer: u32,
 }
 
 static GRAPHS: Mutex<Option<HashMap<u32, Graph>>> = Mutex::new(None);
@@ -148,7 +151,7 @@ fn qi_k(c: &mut Ctx, k: u32) -> u32 {
         Some(s) => {
             let windowless = with(b, |g| {
                 g.refs += 1;
-                g.evr != 0 && evr_with(g.evr, |e| e.windowless).unwrap_or(false)
+                g.renderer != 0 || (g.evr != 0 && evr_with(g.evr, |e| e.windowless).unwrap_or(false))
             })
             .unwrap_or(false);
             let s = match s {
@@ -347,23 +350,45 @@ fn remove_filter_ex(c: &mut Ctx) -> u32 {
 }
 
 fn add_filter(c: &mut Ctx) -> u32 {
-    let f = c.a(1);
+    let (b, f, name) = (base(c, GB), c.a(1), c.a(2));
+    add_filter_at(c, b, f, name)
+}
+fn add_filter_at(c: &mut Ctx, b: u32, f: u32, name: u32) -> u32 {
     if f == 0 {
         return E_POINTER;
     }
-    let b = base(c, GB);
     // (one added again stays added once)
     let is_evr = evr_with(f, |_| ()).is_some();
     if !with(b, |g| put_filter(&mut g.filters, &mut g.evr, f, is_evr)).unwrap_or(false) {
         return 0;
     }
     com(c, f, 1, &[]);
-    if c.a(2) != 0 {
-        let n = mem::wstr(c.a(2));
+    if name != 0 {
+        let n = mem::wstr(name);
         with(b, |g| g.named.push((n, f)));
     }
     // IBaseFilter::JoinFilterGraph(graph, name)
-    com(c, f, 13, &[b + ps() * GB, c.a(2)]);
+    com(c, f, 13, &[b + ps() * GB, name]);
+    0
+}
+
+/// IGraphBuilder::AddSourceFilter(file, name, IBaseFilter **): the source filter Windows picks
+/// for the file (dshow_mpeg.rs: the WM ASF Reader for ASF, else the File Source (Async)),
+/// loaded and added to the graph by `name` (none: by the file name), a reference for the
+/// caller. A file not there: HRESULT_FROM_WIN32 of why, *out NULL. (AdvHD goes on to the
+/// IMediaControl it then asks for, unchecked: #200)
+fn add_source_filter(c: &mut Ctx) -> u32 {
+    let (b, file, name, out) = (base(c, GB), c.a(1), c.a(2), c.a(3));
+    if file == 0 || out == 0 {
+        return E_POINTER;
+    }
+    putp(out, 0);
+    let f = match crate::dshow_mpeg::add_source(file) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    add_filter_at(c, b, f, if name != 0 { name } else { file });
+    putp(out, f);
     0
 }
 
@@ -419,10 +444,20 @@ fn connect(c: &mut Ctx) -> u32 {
     if out == 0 || inp == 0 {
         return E_POINTER;
     }
+    let b = base(c, GB);
+    // (a File Source's stream to the game's renderer: through the MPEG-1 filters)
+    if crate::dshow_mpeg::is_pin(out) && with(b, |g| g.state).unwrap_or(0) != 0 {
+        return VFW_E_NOT_STOPPED;
+    }
+    if let Some(r) = crate::dshow_mpeg::connect_through(c, b + ps() * GB, out, inp) {
+        if r == 0 {
+            with(b, |g| g.wired = true);
+        }
+        return r;
+    }
     if !crate::dshow_mpeg::is_pin(out) && !crate::dshow_mpeg::is_pin(inp) {
         return 0;
     }
-    let b = base(c, GB);
     if with(b, |g| g.state).unwrap_or(0) != 0 {
         return VFW_E_NOT_STOPPED;
     }
@@ -507,10 +542,115 @@ fn render_file(b: u32, name: u32) -> u32 {
     }
 }
 fn render_file_gb(c: &mut Ctx) -> u32 {
-    render_file(base(c, GB), c.a(1))
+    let b = base(c, GB);
+    let r = render_file(b, c.a(1));
+    if r == 0 {
+        to_renderer(c, b);
+    }
+    r
 }
 fn render_file_mc(c: &mut Ctx) -> u32 {
-    render_file(base(c, MC), c.a(1))
+    let b = base(c, MC);
+    let r = render_file(b, c.a(1));
+    if r == 0 {
+        to_renderer(c, b);
+    }
+    r
+}
+
+/// The input pins of the filters the game added to graph `b` that nothing is connected to
+/// (one reference each), in the order the filters were added: where RenderFile renders the
+/// video, as Windows' intelligent connect tries the filters already in the graph before any
+/// other renderer.
+fn free_inputs(c: &mut Ctx, b: u32) -> Vec<u32> {
+    let filters = with(b, |g| g.filters.iter().copied().filter(|&f| f != g.evr && f != g.renderer).collect::<Vec<_>>()).unwrap_or_default();
+    let tmp = mem::heap_alloc(16, true);
+    let mut found = Vec::new();
+    for f in filters {
+        if crate::dshow_mpeg::is_filter(f) || evr_with(f, |_| ()).is_some() {
+            continue;
+        }
+        // IBaseFilter::EnumPins, IEnumPins::Next
+        putp(tmp, 0);
+        if com(c, f, 10, &[tmp]) != 0 || rp(tmp) == 0 {
+            continue;
+        }
+        let e = rp(tmp);
+        loop {
+            putp(tmp, 0);
+            if com(c, e, 3, &[1, tmp, 0]) != 0 || rp(tmp) == 0 {
+                break;
+            }
+            let p = rp(tmp);
+            // QueryDirection (PINDIR_INPUT 0), ConnectedTo (VFW_E_NOT_CONNECTED)
+            w32(tmp + 8, 1);
+            com(c, p, 9, &[tmp + 8]);
+            let input = r32(tmp + 8) == 0;
+            putp(tmp, 0);
+            let free = com(c, p, 6, &[tmp]) != 0;
+            if rp(tmp) != 0 {
+                com(c, rp(tmp), 2, &[]);
+            }
+            if input && free {
+                found.push(p);
+            } else {
+                com(c, p, 2, &[]);
+            }
+        }
+        com(c, e, 2, &[]);
+    }
+    mem::heap_free(tmp);
+    found
+}
+
+/// After RenderFile: the movie's pictures to the game's own video renderer in the graph, when
+/// there is one (AdvHD adds its renderer, then renders the file: its renderer makes its
+/// texture only once connected, #215), through a Vnv filter added as Windows adds its video
+/// decoder.
+fn to_renderer(c: &mut Ctx, b: u32) {
+    let old = with(b, |g| std::mem::take(&mut g.renderer)).unwrap_or(0);
+    if old != 0 {
+        let peer = crate::dshow_mpeg::vnv_peer(old);
+        if peer != 0 {
+            com(c, peer, 5, &[]);
+        }
+        com(c, old + ps(), 5, &[]);
+        remove_filter_at(c, b, old);
+    }
+    let inputs = free_inputs(c, b);
+    if inputs.is_empty() {
+        return;
+    }
+    let (video, rate) = with(b, |g| (g.video, g.rate)).unwrap_or(((1280, 720), (30, 1)));
+    let rate = if rate.0 == 0 || rate.1 == 0 { (30, 1) } else { rate };
+    let v = crate::dshow_mpeg::vnv_new(b, video.0.max(1) as u32, video.1.max(1) as u32, rate);
+    let name: Vec<u16> = "WMVideo Decoder DMO".encode_utf16().chain([0]).collect();
+    let n = mem::heap_alloc(2 * name.len() as u32, false);
+    for (i, w) in name.iter().enumerate() {
+        mem::w16(n + 2 * i as u32, *w);
+    }
+    add_filter_at(c, b, v, n);
+    mem::heap_free(n);
+    // (the graph holds it now)
+    com(c, v, 2, &[]);
+    // IPin::Connect(the game's pin, any type): the first that takes the pictures
+    let mut r = 0x8004_022b;
+    for inp in inputs {
+        if r != 0 {
+            r = com(c, v + ps(), 3, &[inp, 0]);
+        }
+        com(c, inp, 2, &[]);
+    }
+    if r != 0 {
+        eprintln!("sake: movie: the game's renderer in the graph refused the pictures ({r:#x})");
+        remove_filter_at(c, b, v);
+        return;
+    }
+    with(b, |g| {
+        g.renderer = v;
+        g.wired = true;
+    });
+    sync(b);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -670,8 +810,9 @@ fn get_state(c: &mut Ctx) -> u32 {
 
 /// The movie of graph `b` ended: EC_COMPLETE (from the movie thread too).
 pub fn completed(b: u32) {
-    with(b, |g| g.ended = true);
-    queue(b, EC_COMPLETE, 0);
+    // (ended and the event at once: WaitForCompletion in between saw an ended graph without
+    // its EC_COMPLETE and answered VFW_E_WRONG_STATE)
+    queue_with(b, EC_COMPLETE, 0, 0, |g| g.ended = true);
 }
 
 /// Queues an event: the event handle set, the notify window told.
@@ -679,7 +820,12 @@ fn queue(b: u32, code: u32, p1: u32) {
     queue2(b, code, p1, 0)
 }
 fn queue2(b: u32, code: u32, p1: u32, p2: u32) {
+    queue_with(b, code, p1, p2, |_| ())
+}
+/// ... `f` done to the graph under the same lock as the event goes in.
+fn queue_with(b: u32, code: u32, p1: u32, p2: u32, f: impl FnOnce(&mut Graph)) {
     let Some((ev, (hwnd, msg, lp), flags)) = with(b, |g| {
+        f(g);
         g.events.push_back((code, p1, p2));
         (g.event, g.notify, g.flags)
     }) else {
@@ -1191,7 +1337,8 @@ fn sync(b: u32) {
         let d = g.dst.unwrap_or((0, 0, w, h));
         let dst = (x + d.0, y + d.1, d.2, d.3);
         let dst = play::clip(dst, (x, y, w, h));
-        (Place { hwnd: g.owner, dst, src, letterbox: false, visible: g.visible }, g.volume)
+        // (the game's renderer draws the pictures itself)
+        (Place { hwnd: g.owner, dst, src, letterbox: false, visible: g.visible && g.renderer == 0 }, g.volume)
     }) else {
         return;
     };
@@ -1489,7 +1636,7 @@ fn vtables() -> &'static [u32; NI as usize] {
                 (connect, 12),               // Connect
                 (ok, 8),                     // Render
                 (render_file_gb, 12),        // RenderFile
-                (notimpl, 16),               // AddSourceFilter
+                (add_source_filter, 16),     // AddSourceFilter
                 (ok, 8),                     // SetLogFile
                 (ok, 4),                     // Abort
                 (ok, 4),                     // ShouldOperationContinue
@@ -1682,7 +1829,13 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         wp(b + ps() * k as u32, *v);
     }
     let event = crate::obj::add(crate::obj::Obj::Event { manual: true, set: false });
-    let g = Graph {
+    GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Graph::new(event));
+    Some(b + ps() * s)
+}
+
+impl Graph {
+    fn new(event: u32) -> Graph {
+        Graph {
         refs: 1,
         event,
         notify: (0, 0, 0),
@@ -1712,9 +1865,9 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         filters: Vec::new(),
         named: Vec::new(),
         wired: false,
-    };
-    GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, g);
-    Some(b + ps() * s)
+        renderer: 0,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2284,6 +2437,43 @@ mod ends_tests {
             ENDS.lock().unwrap().retain(|e| e.1 != b);
             sounds(|m| m.remove(&b));
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    /// An ended graph always holds its EC_COMPLETE (until GetEvent takes it): WaitForCompletion
+    /// looking from another thread while the movie thread ends it never sees one without the
+    /// other (it answered VFW_E_WRONG_STATE then: the probe dshowsrc's x86 run).
+    #[test]
+    fn ended_comes_with_its_event() {
+        let b = 0x7ead_0000;
+        let mut g = Graph::new(0);
+        g.flags = NONOTIFY;
+        GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, g);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = stop.clone();
+        let watcher = std::thread::spawn(move || {
+            let mut seen = 0u32;
+            while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+                let (ended, has) = with(b, |g| (g.ended, g.events.iter().any(|e| e.0 == EC_COMPLETE))).unwrap();
+                assert!(!ended || has, "ended without EC_COMPLETE");
+                seen += ended as u32;
+            }
+            seen
+        });
+        for _ in 0..20000 {
+            with(b, |g| {
+                g.ended = false;
+                g.events.clear();
+            });
+            completed(b);
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(watcher.join().unwrap() > 0);
+        GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
     }
 }
 
