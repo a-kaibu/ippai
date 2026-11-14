@@ -721,6 +721,35 @@ fn a_woken_waiter_reads_what_its_signaler_stored_before_its_next_call() {
     });
 }
 
+/// handoff.rs, SendMessage (#82, #209-5): the owner answered sender 0x24 and then 0x28; 0x28 goes
+/// on once 0x24 reached a call that does something, so in every interleaving 0x28 reads the
+/// descriptor 0x24 registered without a lock right after its SendMessage (sigcheck.dll's
+/// register_hash; host test sendrace), and a yield (Sleep(0)) in between does not let it go.
+#[test]
+fn the_next_sender_reads_what_the_one_before_registered() {
+    use waits::handoff::{Handoff, WORK_CAP};
+    struct S {
+        h: Handoff,
+        slot0: UnsafeCell<u32>,
+    }
+    unsafe impl Sync for S {}
+    model(|| {
+        let s = Arc::new(S { h: Handoff::new(4), slot0: UnsafeCell::new(0) });
+        // (the owner marks the first sender as it answers it, before letting it go)
+        let m = s.h.work_mark(0x24);
+        let s2 = s.clone();
+        let t = thread::spawn(move || {
+            s2.h.entered(0x24); // Sleep(0)
+            s2.slot0.with_mut(|f| unsafe { *f = 0x24 });
+            s2.h.entered(0x24);
+            s2.h.worked(0x24); // its next call
+        });
+        assert!(s.h.wait_worked(m, 0x28, WORK_CAP));
+        assert_eq!(s.slot0.with(|f| unsafe { *f }), 0x24);
+        t.join().unwrap();
+    });
+}
+
 /// The output queue (outq, #221): two threads write while the page's thread takes, in every
 /// interleaving: every record comes out whole, each writer's in its order, none twice, and no
 /// write waits for the taker (it only tries the lock).

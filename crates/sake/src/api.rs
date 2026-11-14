@@ -161,6 +161,17 @@ struct Entry {
     known: bool,
     /// x86 thiscall with `this` as argument 0 (Ctx::this)
     this_arg: bool,
+    /// a bare yield, not work (waits::handoff::Handoff::worked): 1 always (SwitchToThread),
+    /// 2 when its argument 0 is 0 (Sleep(0), SleepEx(0, ..))
+    yields: u8,
+}
+
+fn yields(name: &str) -> u8 {
+    match name {
+        "SwitchToThread" | "NtYieldExecution" => 1,
+        "Sleep" | "SleepEx" => 2,
+        _ => 0,
+    }
 }
 
 static ENTRIES: RwLock<Vec<Entry>> = RwLock::new(Vec::new());
@@ -350,6 +361,7 @@ pub fn export(dll: &str, name: &str) -> u32 {
         cdecl: spec.is_some_and(|s| s.0),
         known: spec.is_some() || f.is_some(),
         this_arg,
+        yields: yields(name),
     });
     idx.insert(key, i);
     TRAP_LO + 4 * i
@@ -542,12 +554,12 @@ fn usage(i: u32) {
 pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     crate::comrpc::pump(cpu, false);
     let i = (addr - TRAP_LO) / 4;
-    let (f, bytes, cdecl, known, this_arg) = {
+    let (f, bytes, cdecl, known, this_arg, yields) = {
         let e = ENTRIES.read().unwrap();
         let Some(e) = e.get(i as usize) else {
             crate::fatal(cpu, &format!("jump to unknown trap address {addr:#x}"));
         };
-        (e.f, e.bytes, e.cdecl, e.known, e.this_arg)
+        (e.f, e.bytes, e.cdecl, e.known, e.this_arg, e.yields)
     };
     if kura::usage::on() {
         usage(i);
@@ -605,9 +617,13 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     let me = crate::cur();
     crate::obj::HANDOFF.entered(me.tid);
     let outer = me.api;
+    let tid = me.tid;
     me.api = (esp, if crate::mem::x64() { 8 } else { 4 + if cdecl { 0 } else { bytes } });
     let this = (this_arg && !crate::mem::x64()).then(|| cpu.regs[koji::ECX]);
     let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None, trap: addr, this };
+    if yields == 0 || (yields == 2 && c.a(0) != 0) {
+        crate::obj::HANDOFF.worked(tid);
+    }
     let t0 = stats_on().then(std::time::Instant::now);
     let r = match f {
         Some(f) => f(&mut c),

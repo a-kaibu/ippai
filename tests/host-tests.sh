@@ -237,6 +237,21 @@ for t in $TESTS; do
   else
     echo "ok   $t"
   fi
+  # LOADED: run again as LOADED copies at once on one core (a loaded machine: the races that
+  # native timing hides and an idle one rarely shows, #209-5); each must print the same
+  if [[ " ${LOADED_TESTS-sendrace} " == *" $t "* ]] && command -v taskset > /dev/null; then
+    lfail=0
+    for k in $(seq 1 "${LOADED:-4}"); do
+      (cd "$(dirname "$SAKE")" && timeout 900 taskset -c 0 node "$SAKE" "$OUT/$t.exe" 2>&1 | grep -v '^sake:' > "$OUT/$t-loaded-$k.txt") &
+    done
+    wait
+    for k in $(seq 1 "${LOADED:-4}"); do
+      if [ "$(cat "$OUT/$t-loaded-$k.txt")" != "$(cat "$want")" ]; then
+        echo "FAIL $t (loaded, copy $k):"; diff "$OUT/$t-loaded-$k.txt" "$want" | head -10; lfail=1; fail=1
+      fi
+    done
+    [ $lfail = 0 ] && echo "ok   $t (${LOADED:-4} at once on one core)"
+  fi
   if [[ "$VEX" == *" $t "* ]]; then
     if ! i686-w64-mingw32-gcc -O2 -mavx "$ROOT/host/tests/$t.c" -o "$OUT/$t-vex.exe" $libs; then
       echo "FAIL $t (VEX): build"; fail=1; continue

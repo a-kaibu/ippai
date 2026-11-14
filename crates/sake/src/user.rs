@@ -240,7 +240,9 @@ struct Timer {
 /// A SendMessage from another thread, waiting for its result (and the moment it may go on).
 struct Sent {
     msg: Msg,
-    result: Arc<(Mutex<Option<(u32, Instant)>>, std::sync::Condvar)>,
+    /// the answer, when the sender goes on, and the sender let go before it that it waits for
+    /// (release_gate)
+    result: Arc<(Mutex<Option<(u32, Instant, Option<waits::handoff::Mark>)>>, std::sync::Condvar)>,
     /// the sending thread (0: another process)
     from: u32,
     /// from another process: its message's id and the copy of WM_COPYDATA's data (freed after)
@@ -1543,10 +1545,16 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
             if g.is_none() {
                 g = result.1.wait_timeout(g, Duration::from_millis(5)).unwrap().0;
             }
-            if let Some((v, at)) = *g {
+            if let Some((v, at, gate)) = *g {
                 drop(g);
                 if let Some(d) = at.checked_duration_since(Instant::now()) {
                     std::thread::sleep(d);
+                }
+                if let Some(m) = gate {
+                    let passed = crate::obj::HANDOFF.wait_worked(m, crate::cur().tid, waits::handoff::WORK_CAP);
+                    if crate::env_on!("SAKE_TRACE_HANDOFF") {
+                        eprintln!("sake: SendMessage of {:04x} waited for {:04x}{}", crate::cur().tid, m.tid, if passed { "" } else { " (ran out)" });
+                    }
                 }
                 return v;
             }
@@ -1571,6 +1579,18 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
 /// failed 1-2 rounds in 12): the first thread has to be scheduled and run its next few calls.
 const HEAD_START: Duration = Duration::from_millis(25);
 
+/// Whom the sender `from` waits for besides its time: the sender let go before it, `last`
+/// (its work counter as this thread answered it), when that is another thread of this process.
+/// That one has to reach a call that does something first (waits::handoff, #209-5): a head
+/// start alone was not enough on a loaded machine, where the first may not even be scheduled
+/// in 25 ms.
+fn release_gate(last: Option<(u32, Instant, waits::handoff::Mark)>, from: u32) -> Option<waits::handoff::Mark> {
+    match last {
+        Some((t, _, m)) if t != from && t != 0 && from != 0 => Some(m),
+        _ => None,
+    }
+}
+
 /// When the sender `from` of a message answered `now` goes on, `last` being the sender this
 /// thread let go before it (and when): another thread waits a head start after that one.
 fn release_at(last: Option<(u32, Instant)>, from: u32, now: Instant) -> Instant {
@@ -1587,7 +1607,7 @@ thread_local! {
     /// owner that peeks between bits of work (KiriKiri's main loop) answers two waiting senders
     /// in two PeekMessage calls microseconds apart, and a window procedure that pumps answers
     /// the second inside the first one's call; both must still go on a head start apart (#82).
-    static LAST_RELEASE: std::cell::Cell<Option<(u32, Instant)>> = const { std::cell::Cell::new(None) };
+    static LAST_RELEASE: std::cell::Cell<Option<(u32, Instant, waits::handoff::Mark)>> = const { std::cell::Cell::new(None) };
 }
 
 /// Runs messages other threads sent to this one.
@@ -1602,9 +1622,12 @@ fn process_sent(cpu: &mut koji::Cpu) {
             Some(p) => call_sent(cpu, p, m.hwnd, m.msg, m.w, m.l, false),
             None => 0,
         };
-        let at = release_at(LAST_RELEASE.get(), sent.from, Instant::now());
-        LAST_RELEASE.set(Some((sent.from, at)));
-        *sent.result.0.lock().unwrap() = Some((r, at));
+        let last = LAST_RELEASE.get();
+        let at = release_at(last.map(|(t, at, _)| (t, at)), sent.from, Instant::now());
+        let gate = release_gate(last, sent.from);
+        // (marked before it can go on: its next call that does something comes after)
+        LAST_RELEASE.set(Some((sent.from, at, crate::obj::HANDOFF.work_mark(sent.from))));
+        *sent.result.0.lock().unwrap() = Some((r, at, gate));
         sent.result.1.notify_all();
         if let Some((id, buf)) = sent.remote {
             if buf != 0 {
@@ -8151,6 +8174,18 @@ mod tests {
         // (no later than needed: its message took longer than that to handle)
         let late = t0 + HEAD_START * 3;
         assert_eq!(release_at(Some((7, t0)), 8, late), late);
+    }
+
+    #[test]
+    fn release_gate_waits_for_another_sender_only() {
+        let t0 = Instant::now();
+        let m = |tid| waits::handoff::Mark { tid, seq: 3 };
+        assert_eq!(release_gate(None, 8), None);
+        // the same thread again, or another process (0) on either side: no one to wait for
+        assert_eq!(release_gate(Some((8, t0, m(8))), 8), None);
+        assert_eq!(release_gate(Some((0, t0, m(0))), 8), None);
+        assert_eq!(release_gate(Some((8, t0, m(8))), 0), None);
+        assert_eq!(release_gate(Some((8, t0, m(8))), 12), Some(m(8)));
     }
 
     proptest! {

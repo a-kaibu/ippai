@@ -396,6 +396,8 @@ fn FatalAppExitA(c: &mut Ctx) -> u32 {
 
 /// The calling thread ends (from the thread's own code: ExitThread or a return).
 pub fn exit_thread(code: u32) -> ! {
+    // (its end lets a sender waiting for it go on: user.rs, #209-5)
+    crate::obj::HANDOFF.worked(crate::cur().tid);
     // (a CRT thread's reference to its DLL: FreeLibrary once its code is done)
     let held = CRT_DLLS.lock().unwrap().remove(&crate::cur().tid);
     if let Some(m) = held {
