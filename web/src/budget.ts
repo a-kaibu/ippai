@@ -24,10 +24,15 @@ export function netBudget(): SharedArrayBuffer | ArrayBuffer {
   return shared;
 }
 
+/** Tries for the lock before it is taken over: its holder (the network worker) died in its few
+ * instructions inside (terminated, killed for memory), and the page's thread spun forever. The
+ * numbers are a heuristic, so going on is safe; the release at the end frees the word again. */
+export const SPIN_MAX = 1 << 20;
+
 function withBudget<T>(f: (v: Float64Array) => T, buf = netBudget()): T {
   const lock = new Int32Array(buf, 0, 1);
   const v = new Float64Array(buf, 8, 3);
-  while (Atomics.compareExchange(lock, 0, 0, 1) !== 0);
+  for (let n = 0; Atomics.compareExchange(lock, 0, 0, 1) !== 0 && n < SPIN_MAX; n++);
   try {
     return f(v);
   } finally {
@@ -59,11 +64,25 @@ export function drain(ms: number, now = Date.now(), buf?: SharedArrayBuffer | Ar
   }, buf);
 }
 
-/** Waits until a request of class `cls` may go (or `signal` aborts). */
+/** How long until a request of class `cls` may go (ms; 0: now), as the budget stands at `now`. */
+export function waitFor(cls: number, now = Date.now(), buf?: SharedArrayBuffer | ArrayBuffer): number {
+  return withBudget((v) => {
+    // (none goes while the bucket asked to wait; then the tokens refill from the last refill)
+    const from = Math.max(now, v[2]!);
+    const want = (RESERVE[cls] ?? 0) + 1;
+    if (Math.min(BURST, v[0]! + (Math.max(0, from - v[1]!) / 1000) * RATE) >= want) return from - now;
+    return Math.ceil(v[1]! + ((want - v[0]!) / RATE) * 1000 - now);
+  }, buf);
+}
+
+/** Waits until a request of class `cls` may go (or `signal` aborts): a timer for when it may,
+ * not a look every 50 ms per waiter (many waiters during a 429's pause each kept a timer). */
 export async function gate(cls: number, signal?: AbortSignal): Promise<void> {
   while (!take(cls)) {
     signal?.throwIfAborted();
-    await new Promise((r) => setTimeout(r, 50));
+    // (others take tokens too: a look again by then, at most a second away)
+    const ms = Math.min(1000, Math.max(10, waitFor(cls)));
+    await new Promise((r) => setTimeout(r, ms));
   }
 }
 

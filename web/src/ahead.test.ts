@@ -89,3 +89,36 @@ test("property: reservations never pass the limits, and the total is used when t
     expect(b.spent, `run ${run}`).toBe(got.reduce((a, n) => a + n, 0));
   }
 });
+
+test("pool: the first failure rejects it and no job starts after; every failure is observed", async () => {
+  let x = 31;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  for (let run = 0; run < 100; run++) {
+    const n = 1 + rnd(20);
+    const bad = rnd(n + 3);
+    const started: number[] = [];
+    let atFailure = -1;
+    const jobs = Array.from({ length: n }, (_, i) => async () => {
+      started.push(i);
+      await new Promise((r) => setTimeout(r, rnd(3)));
+      if (i === bad) {
+        atFailure = started.length;
+        throw new Error(`job ${i}`);
+      }
+      return i;
+    });
+    const width = 1 + rnd(4);
+    const r = await pool(width, jobs).then(
+      (v) => ({ ok: true as const, v }),
+      (e: Error) => ({ ok: false as const, e }),
+    );
+    if (bad < n) {
+      expect(r.ok, `run ${run}`).toBe(false);
+      // (started after the failure: none, also once those under way at it have ended)
+      await new Promise((r) => setTimeout(r, 10));
+      expect(started.length).toBe(atFailure);
+    } else {
+      expect(r).toEqual({ ok: true, v: Array.from({ length: n }, (_, i) => i) });
+    }
+  }
+});

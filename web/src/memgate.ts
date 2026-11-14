@@ -46,14 +46,17 @@ export class Gate {
     this.shut = true;
     if (!this.active) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let resolver: (() => void) | undefined;
     try {
       await Promise.race([
-        new Promise<void>((r) => this.idle.push(r)),
+        new Promise<void>((r) => this.idle.push((resolver = r))),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("動画・音声のデコード結果の書き込みが終わりません")), ms);
         }),
       ]);
     } catch (e) {
+      // (its waiter not left behind for the next close)
+      this.idle = this.idle.filter((r) => r !== resolver);
       this.open();
       throw e;
     } finally {
@@ -61,12 +64,33 @@ export class Gate {
     }
   }
 
-  /** Opens again: what came meanwhile runs now, in order. */
+  /** Shut while `f` runs (close, then `f`, then open whatever happens): a caller that threw
+   * between the two left the gate shut for good, input and decoder output piling up. */
+  async closeWhile<T>(f: () => Promise<T>, ms?: number): Promise<T> {
+    await this.close(ms);
+    try {
+      return await f();
+    } finally {
+      this.open();
+    }
+  }
+
+  /** Opens again: what came meanwhile runs now, in order (one that throws is reported and the
+   * rest run all the same: before, they stayed queued until the next state, minutes late). */
   open(): void {
     this.shut = false;
     // (one run may shut it again: the rest wait for that one)
-    while (!this.shut && this.later.length) this.later.shift()!();
+    while (!this.shut && this.later.length) {
+      try {
+        this.later.shift()!();
+      } catch (e) {
+        this.failed(e);
+      }
+    }
   }
+
+  /** What a queued run threw (the console; tests set their own). */
+  failed: (e: unknown) => void = (e) => console.warn("memgate: a queued write failed", e);
 
   /** Writes under way (tests). */
   get busy(): number {

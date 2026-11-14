@@ -69,6 +69,8 @@ export class AudioDecode {
   private sizes: number;
   private scratch = 0;
   private scratchLen = 0;
+  /** one channel's samples, for planar outputs (one array kept, not one per output) */
+  private plane = new Float32Array(0);
   private doorbell: number;
   /** outputs that came while a state was taken (memgate.ts), written after in order */
   private held: [Stream, AudioData][] = [];
@@ -224,13 +226,20 @@ export class AudioDecode {
       const bytes = frames * ch * 4;
       if (bytes > this.scratchLen) {
         if (this.scratch) this.wasm._free(this.scratch);
-        this.scratchLen = Math.max(bytes, 2 * this.scratchLen, 1 << 16);
-        this.scratch = this.wasm._malloc(this.scratchLen) >>> 0;
+        const len = Math.max(bytes, 2 * this.scratchLen, 1 << 16);
+        this.scratch = this.wasm._malloc(len) >>> 0;
+        // (no room in the host heap: the stream fails, not PCM written over guest address 0)
+        this.scratchLen = this.scratch ? len : 0;
+        if (!this.scratch) {
+          this.note(`audio ${s.id}: no memory for ${bytes} bytes of samples`);
+          return this.fail(s);
+        }
       }
       const out = new Float32Array(this.wasm.wasmMemory.buffer, this.scratch, frames * ch);
       if (d.format === "f32") d.copyTo(out, { planeIndex: 0, format: "f32" });
       else {
-        const plane = new Float32Array(frames);
+        if (this.plane.length < frames) this.plane = new Float32Array(frames);
+        const plane = this.plane.subarray(0, frames);
         for (let c = 0; c < ch; c++) {
           d.copyTo(plane, { planeIndex: c, format: "f32-planar" });
           for (let i = 0; i < frames; i++) out[i * ch + c] = plane[i]!;
@@ -263,6 +272,10 @@ export class AudioDecode {
     if (s.quiet) clearTimeout(s.quiet);
     s.quiet = null;
     s.said = s.fed;
+    // (the count starts again from what was said done: one chunk that gave nothing, or two
+    // outputs for one, no longer leaves every later chunk to the QUIET path (decoding at about
+    // real time for the rest of the stream) or done before its samples)
+    s.outs = s.fed - s.silent;
     this.wasm._vnhost_adec_done(s.id, s.gen, s.fed);
   }
 

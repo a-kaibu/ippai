@@ -9,11 +9,81 @@ const MAX_QUEUE = RATE / 5;
 /** how far behind it starts, and lands when it skips */
 const TARGET = RATE / 20;
 
-const worklet = `
+/** Frames of a fade in or out where the sound stops or jumps (an underrun, a skip ahead): a
+ * cut there was a click, made periodic by the clocks' drift. */
+const FADE = 32;
+
+/** The worklet's state across blocks. */
+export interface SinkState {
+  /** the ring's frame read next (-1: not started) */
+  read: number;
+  /** the next block starts with a fade in (after silence or a jump) */
+  fadeIn: boolean;
+}
+
+/**
+ * One block of the sink: reads what the ring has from `read` into `l` and `r`, skipping ahead
+ * when it lags more than `max` frames (to `target` behind), a fade out before an underrun's
+ * silence and a fade in after it or a skip. Plain JS on purpose: the worklet's own code is this
+ * function's text (sinkStep.toString()), so the tests run what plays.
+ */
+export function sinkStep(
+  st: SinkState,
+  head: number,
+  d: Float32Array,
+  mask: number,
+  l: Float32Array,
+  r: Float32Array,
+  max: number,
+  target: number,
+  fade: number,
+): void {
+  if (st.read < 0) st.read = (head - target) >>> 0;
+  let avail = (head - st.read) >>> 0;
+  if (avail > max) {
+    st.read = (head - target) >>> 0;
+    avail = target;
+    st.fadeIn = true;
+  }
+  const n = Math.min(avail, l.length);
+  for (let i = 0; i < n; i++) {
+    const at = ((st.read + i) & mask) * 2;
+    l[i] = d[at];
+    r[i] = d[at + 1];
+  }
+  if (st.fadeIn && n) {
+    const k = Math.min(fade, n);
+    for (let i = 0; i < k; i++) {
+      const g = (i + 1) / (k + 1);
+      l[i] *= g;
+      r[i] *= g;
+    }
+    st.fadeIn = false;
+  }
+  if (n < l.length) {
+    // (an underrun: what there is fades out, the rest is silence, the next sound fades in)
+    const k = Math.min(fade, n);
+    for (let i = 0; i < k; i++) {
+      const g = (k - i) / (k + 1);
+      l[n - k + i] *= g;
+      r[n - k + i] *= g;
+    }
+    for (let i = n; i < l.length; i++) {
+      l[i] = 0;
+      r[i] = 0;
+    }
+    st.fadeIn = true;
+  }
+  st.read = (st.read + n) >>> 0;
+}
+
+/** The worklet module (exported for tests/audio-sink-browser.mjs). */
+export const worklet = `
+const sinkStep = ${sinkStep.toString()};
 class Sink extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.read = -1;
+    this.st = { read: -1, fadeIn: true };
     this.port.onmessage = (e) => {
       const { mem, ptr, frames } = e.data;
       this.head = new Uint32Array(mem, ptr, 1);
@@ -24,21 +94,7 @@ class Sink extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const [l, r] = outputs[0];
     if (!this.head) return true;
-    const head = Atomics.load(this.head, 0);
-    if (this.read < 0) this.read = (head - ${TARGET}) >>> 0;
-    let avail = (head - this.read) >>> 0;
-    if (avail > ${MAX_QUEUE}) {
-      this.read = (head - ${TARGET}) >>> 0;
-      avail = ${TARGET};
-    }
-    const n = Math.min(avail, l.length);
-    const d = this.data;
-    for (let i = 0; i < n; i++) {
-      const at = ((this.read + i) & this.mask) * 2;
-      l[i] = d[at];
-      r[i] = d[at + 1];
-    }
-    this.read = (this.read + n) >>> 0;
+    sinkStep(this.st, Atomics.load(this.head, 0), this.data, this.mask, l, r, ${MAX_QUEUE}, ${TARGET}, ${FADE});
     return true;
   }
 }
@@ -81,13 +137,29 @@ export class AudioOut {
   private head: Uint32Array | null = null;
   private lastHead = 0;
 
+  private listening = false;
+
   attach(sake: AudioSource): void {
-    // autoplay: the context can only start on a user gesture
-    for (const ev of ["pointerdown", "keydown"])
-      addEventListener(ev, () => void (this.ctx.state === "suspended" && this.ctx.resume()), true);
+    // autoplay: the context can only start on a user gesture; on a phone it is suspended (or
+    // "interrupted") again by a call, a route change or the background, and stayed silent
+    // until the next tap: resumed when the page is shown again and on any touch too
+    if (!this.listening) {
+      this.listening = true;
+      const resume = () =>
+        void (
+          this.ctx.state !== "running" &&
+          this.ctx.state !== "closed" &&
+          this.ctx.resume().catch(() => {})
+        );
+      for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, resume, true);
+      addEventListener("visibilitychange", () => document.visibilityState === "visible" && resume());
+      this.ctx.addEventListener("statechange", () => document.visibilityState === "visible" && resume());
+    }
     const p = sake._malloc(4) >>> 0;
+    if (!p) return;
     const ptr = sake._vnhost_audio_ring(p) >>> 0;
     const frames = new Uint32Array(sake.wasmMemory.buffer, p, 1)[0]!;
+    (sake as AudioSource & { _free?(p: number): void })._free?.(p);
     this.head = new Uint32Array(sake.wasmMemory.buffer, ptr, 1);
     this.lastHead = Atomics.load(this.head, 0);
     this.node.port.postMessage({ mem: sake.wasmMemory.buffer, ptr, frames });

@@ -368,3 +368,53 @@ test("audio: outputs during a state are written after it, in order, none lost", 
     [4, 4],
   ]);
 });
+
+test("gate: a queued write that throws does not keep the rest queued (property, seeded)", async () => {
+  let x = 13;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  for (let run = 0; run < 200; run++) {
+    const g = new Gate();
+    const errors: unknown[] = [];
+    g.failed = (e) => errors.push(e);
+    await g.close();
+    const want: number[] = [];
+    const ran: number[] = [];
+    let throws = 0;
+    for (let i = 0; i < 1 + rnd(10); i++) {
+      if (rnd(3) === 0) {
+        throws++;
+        g.run(() => {
+          throw new Error(`w${i}`);
+        });
+      } else {
+        want.push(i);
+        g.run(() => ran.push(i));
+      }
+    }
+    g.open();
+    expect(ran, `run ${run}`).toEqual(want);
+    expect(errors.length).toBe(throws);
+    // (open: what comes now runs at once)
+    g.run(() => ran.push(-1));
+    expect(ran.at(-1)).toBe(-1);
+  }
+});
+
+test("gate: closeWhile opens again whatever f does; a close that timed out leaves no waiter", async () => {
+  const g = new Gate();
+  await expect(
+    g.closeWhile(async () => {
+      expect(g.closed).toBe(true);
+      throw new Error("copy failed");
+    }),
+  ).rejects.toThrow("copy failed");
+  expect(g.closed).toBe(false);
+  expect(await g.closeWhile(async () => 7)).toBe(7);
+  expect(g.closed).toBe(false);
+  // (a write under way that does not end: the close gives up, its waiter goes)
+  expect(g.enter()).toBe(true);
+  await expect(g.close(5)).rejects.toThrow();
+  expect(g.closed).toBe(false);
+  expect((g as unknown as { idle: unknown[] }).idle.length).toBe(0);
+  g.leave();
+});

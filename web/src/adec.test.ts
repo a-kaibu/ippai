@@ -277,3 +277,63 @@ test("a tick that throws does not end the watching", async () => {
   expect(made.length).toBe(1);
   a.stop();
 });
+
+test("after a chunk that gave nothing, later chunks are done as their outputs come, not QUIET each", async () => {
+  const k = new FakeKura();
+  const { Kind } = fakeDecoder({ silent: (b) => b[0] === 99 });
+  const a = new AudioDecode(k, () => {}, Kind, chunk, false);
+  k.streams.set(2, { gen: 0, codec: "mp3", rate: 44100, ch: 1, desc: [], queue: [[3], [99], [4]], taken: 0 });
+  a.tick();
+  await tick(QUIET + 15);
+  expect(k.done).toEqual([[2, 0, 3]]);
+  for (let i = 0; i < 5; i++) {
+    k.streams.get(2)!.queue.push([10 + i]);
+    a.tick();
+    await tick(5);
+    expect(k.done.at(-1), `chunk ${4 + i}`).toEqual([2, 0, 4 + i]);
+  }
+});
+
+/**
+ * Random batches of chunks, some of which give nothing (a damaged frame):
+ * every batch is said done with its last seq; never before every output of the batch's chunks
+ * that give one has been written; and a batch whose chunks all give one output each is done
+ * without waiting for QUIET (property, seeded).
+ */
+test("property: done for every batch, never before its samples, quick when nothing was lost", async () => {
+  let x = 77;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  for (let run = 0; run < 12; run++) {
+    const k = new FakeKura();
+    // (byte 99: no output)
+    const { Kind } = fakeDecoder({ silent: (b) => b[0] === 99 });
+    const a = new AudioDecode(k, () => {}, Kind, chunk, false);
+    k.streams.set(1, { gen: 0, codec: "mp3", rate: 44100, ch: 1, desc: [], queue: [], taken: 0 });
+    let seq = 0;
+    let lossyBefore = false;
+    for (let batch = 0; batch < 6; batch++) {
+      const n = 1 + rnd(4);
+      const bytes = Array.from({ length: n }, () => (rnd(5) === 0 ? 99 : 1 + rnd(90)));
+      const lossy = bytes.includes(99);
+      k.streams.get(1)!.queue.push(...bytes.map((b) => [b]));
+      seq += n;
+      const pcmBefore = k.pcm.length;
+      const want = bytes.filter((b) => b !== 99).length;
+      a.tick();
+      await tick(6);
+      if (!lossy) {
+        expect(k.done.at(-1), `run ${run} batch ${batch}: quick (lossy before: ${lossyBefore})`).toEqual([
+          1,
+          0,
+          seq,
+        ]);
+      } else {
+        await tick(QUIET + 15);
+        expect(k.done.at(-1), `run ${run} batch ${batch}`).toEqual([1, 0, seq]);
+      }
+      expect(k.pcm.length - pcmBefore, `run ${run} batch ${batch}: samples before done`).toBe(want);
+      lossyBefore ||= lossy;
+    }
+    a.stop();
+  }
+});

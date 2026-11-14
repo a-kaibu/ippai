@@ -502,7 +502,8 @@ function ippaiBudgetWith(f) {
   const buf = ippaiBudgetInit();
   const lock = new Int32Array(buf, 0, 1);
   const v = new Float64Array(buf, 8, 3);
-  while (Atomics.compareExchange(lock, 0, 0, 1) !== 0);
+  // (bounded, as budget.ts withBudget: a holder that died inside does not hang this thread)
+  for (let n = 0; Atomics.compareExchange(lock, 0, 0, 1) !== 0 && n < 1 << 20; n++);
   try {
     return f(v);
   } finally {

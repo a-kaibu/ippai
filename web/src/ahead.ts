@@ -2,14 +2,22 @@
  * Limits for work the page does ahead of the game: how many at once, and how many bytes.
  */
 
-/** `jobs`, `width` at a time (the next starts as one ends); their results in order. */
+/** `jobs`, `width` at a time (the next starts as one ends); their results in order. The first
+ * failure rejects it and no job starts after (before, the other runners went on and their later
+ * failures went unobserved: an unhandled rejection, a crash report, each). */
 export async function pool<T>(width: number, jobs: (() => Promise<T>)[]): Promise<T[]> {
   const out: T[] = [];
   let next = 0;
+  let failed = false;
   const one = async () => {
-    while (next < jobs.length) {
+    while (next < jobs.length && !failed) {
       const i = next++;
-      out[i] = await jobs[i]!();
+      try {
+        out[i] = await jobs[i]!();
+      } catch (e) {
+        failed = true;
+        throw e;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(width, jobs.length)) }, one));

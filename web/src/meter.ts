@@ -81,7 +81,7 @@ export interface MeterView {
 
 const HISTORY = 61;
 
-class Meter {
+export class Meter {
   private wasm: MeterWasm | null = null;
   private buf = 0;
   private hist: (Totals & { stallMax: number; reqMax: number })[] = [];
@@ -105,11 +105,6 @@ class Meter {
 
   constructor() {
     addEventListener("vnvm-frame", () => this.frames++);
-    const loop = () => {
-      this.raf++;
-      requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
     // the page's own fetches (the game's synchronous requests are counted by the module)
     try {
       new PerformanceObserver((l) => {
@@ -124,9 +119,30 @@ class Meter {
     }
   }
 
+  private looping = false;
+
+  /** The page's own frames counted from here on (a game runs): not from import, where every
+   * page that imported this (the game list too) kept a frame loop going for good, so the
+   * renderer never idled on a phone. */
+  private countFrames(): void {
+    if (this.looping || typeof requestAnimationFrame === "undefined") return;
+    this.looping = true;
+    const loop = () => {
+      if (!this.wasm) {
+        this.looping = false;
+        return;
+      }
+      this.raf++;
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+
   attach(wasm: MeterWasm): void {
+    // (the same module again: its buffer kept, not another malloc'ed per attach)
+    if (wasm !== this.wasm) this.buf = 0;
     this.wasm = wasm;
-    this.buf = 0;
+    this.countFrames();
     if (!this.timer) this.timer = window.setInterval(() => this.poll(), 1000);
     this.poll();
   }

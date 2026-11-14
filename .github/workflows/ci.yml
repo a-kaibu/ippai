@@ -117,6 +117,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/chunk-trim-browser.mjs
+      - name: The sound's worklet fades at underruns and skips (audio.ts sinkStep, minified build)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/audio-sink-browser.mjs
       - name: Save state slots from two devices at once (content-named files, merged index)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
