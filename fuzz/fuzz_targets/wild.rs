@@ -8,7 +8,10 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|d: &[u8]| {
     let s = String::from_utf8_lossy(d);
     let (p, n) = s.split_once('\0').unwrap_or((&s, ""));
-    let (p, n) = (&p[..p.len().min(300)], &n[..n.len().min(300)]);
+    // (at most 300 characters each: MAX_PATH, cut on a character boundary)
+    let cut = |t: &str| t.chars().take(300).collect::<String>();
+    let (p, n) = (cut(p), cut(n));
+    let (p, n) = (p.as_str(), n.as_str());
     let _ = sake::files::wild(p, n);
     assert!(sake::files::wild("*", n));
     assert!(sake::files::wild("*.*", n));
