@@ -956,10 +956,15 @@ fn values_nested_too_deep_are_an_error() {
         w.b.push(0); // (CALL_END)
         w.leave(n, &[], None, false);
         let b = w.b.clone();
-        let r = std::thread::Builder::new().stack_size(256 << 10).spawn(move || {
+        let read = move || {
             let mut p = Parser::new(&b).unwrap();
             p.next_call().map(|c| c.is_some())
-        }).unwrap().join().unwrap();
+        };
+        // (wasm32-wasip1 has no threads: there on the main stack, 1 MiB as a guest thread's)
+        #[cfg(target_os = "wasi")]
+        let r = read();
+        #[cfg(not(target_os = "wasi"))]
+        let r = std::thread::Builder::new().stack_size(256 << 10).spawn(read).unwrap().join().unwrap();
         assert_eq!(r.is_ok(), ok, "{kind} {depth}: {r:?}");
     }
 }

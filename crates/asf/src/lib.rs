@@ -245,11 +245,11 @@ pub fn header(b: &[u8]) -> Result<Header, Error> {
                             if let (Some(names), Some(systems)) = (le16(o, 60), le16(o, 62)) {
                                 let mut at = 64usize;
                                 for _ in 0..names {
-                                    let len = le16(o, at + 2).unwrap_or(0) as usize;
+                                    let len = le16(o, at.saturating_add(2)).unwrap_or(0) as usize;
                                     at = at.saturating_add(4 + len);
                                 }
                                 for _ in 0..systems {
-                                    let len = le32(o, at + 18).unwrap_or(0) as usize;
+                                    let len = le32(o, at.saturating_add(18)).unwrap_or(0) as usize;
                                     at = at.saturating_add(22 + len);
                                 }
                                 if let Some(rest) = o.get(at..) {
@@ -452,7 +452,7 @@ pub fn packet(b: &[u8]) -> Result<Packet, Error> {
     at += 6;
     if len != 0 && len < b.len() {
         // (a shorter packet: the rest is padding)
-        padding += b.len() - len;
+        padding = padding.saturating_add(b.len() - len);
     }
     let end = b.len().saturating_sub(padding).max(at);
     let mut p = Packet { send_time, duration, payloads: Vec::new() };
@@ -493,7 +493,7 @@ pub fn packet(b: &[u8]) -> Result<Packet, Error> {
             }
             continue;
         }
-        let rep = b.get(at..at + rlen).ok_or(Error::Truncated)?;
+        let rep = b.get(at..at.checked_add(rlen).ok_or(Error::Truncated)?).ok_or(Error::Truncated)?;
         at += rlen;
         let (object_size, time) = if rlen >= 8 { (le32(rep, 0).unwrap_or(0), le32(rep, 4).unwrap_or(0)) } else { (0, 0) };
         let plen = if multiple { field(b, &mut at, ptype).ok_or(Error::Truncated)? as usize } else { end.saturating_sub(at) };
@@ -523,8 +523,10 @@ struct Partial {
     object: u32,
     key: bool,
     time: u32,
+    /// the object's size (its first payload's word)
+    size: usize,
+    /// what of it came, in order (fragments of an object come in order: a gap is a lost packet)
     data: Vec<u8>,
-    got: usize,
 }
 
 /// Puts media objects back together from payloads.
@@ -533,6 +535,8 @@ pub struct Assembler {
     parts: HashMap<u8, Partial>,
     spread: HashMap<u8, Spread>,
     preroll: u64,
+    /// the header's streams (None: any, an assembler made without one)
+    streams: Option<std::collections::HashSet<u8>>,
 }
 
 /// Objects are never larger than this (a damaged size must not allocate gigabytes).
@@ -540,14 +544,30 @@ pub const MAX_OBJECT: u32 = 64 << 20;
 
 impl Assembler {
     pub fn new(h: &Header) -> Assembler {
-        Assembler { parts: HashMap::new(), spread: h.streams.iter().filter_map(|s| Some((s.number, s.spread?))).collect(), preroll: h.preroll }
+        Assembler {
+            parts: HashMap::new(),
+            spread: h.streams.iter().filter_map(|s| Some((s.number, s.spread?))).collect(),
+            preroll: h.preroll,
+            streams: Some(h.streams.iter().map(|s| s.number).collect()),
+        }
+    }
+    /// The bytes the unfinished objects hold (their buffers' capacity)
+    pub fn held(&self) -> usize {
+        self.parts.values().map(|p| p.data.capacity()).sum()
     }
     /// Drops the objects begun (after a seek).
     pub fn reset(&mut self) {
         self.parts.clear();
     }
-    /// Takes a payload; a media object it completes comes out.
+    /// Takes a payload; a media object it completes comes out. A payload of a stream the header
+    /// does not have is dropped; an object takes memory as its bytes come, not its declared size
+    /// at once (127 streams of damaged 64 MiB sizes pinned 8 GiB, and each new object was 64 MiB
+    /// of zeros); a payload overlapping what came is counted once (it completed objects with
+    /// holes of zeros), one after a gap drops the object (a lost packet).
     pub fn push(&mut self, p: Payload) -> Option<Sample> {
+        if self.streams.as_ref().is_some_and(|s| !s.contains(&p.stream)) {
+            return None;
+        }
         let size = p.object_size.min(MAX_OBJECT) as usize;
         let off = p.offset as usize;
         let fresh = !matches!(self.parts.get(&p.stream), Some(q) if q.object == p.object);
@@ -557,15 +577,25 @@ impl Assembler {
                 self.parts.remove(&p.stream);
                 return None;
             }
-            self.parts.insert(p.stream, Partial { object: p.object, key: p.key, time: p.time, data: vec![0; size], got: 0 });
+            let first = p.data.len().min(size);
+            let mut data = Vec::with_capacity(if first >= size { size } else { first.max(4096).min(size) });
+            data.extend_from_slice(&p.data[..first]);
+            self.parts.insert(p.stream, Partial { object: p.object, key: p.key, time: p.time, size, data });
+        } else {
+            let q = self.parts.get_mut(&p.stream)?;
+            let have = q.data.len();
+            if off > have {
+                self.parts.remove(&p.stream);
+                return None;
+            }
+            // (what of it is new: past what came, within the object)
+            let end = off.saturating_add(p.data.len()).min(q.size);
+            if end > have {
+                q.data.extend_from_slice(&p.data[have - off..end - off]);
+            }
         }
-        let q = self.parts.get_mut(&p.stream)?;
-        let end = off.saturating_add(p.data.len()).min(q.data.len());
-        if off < end {
-            q.data[off..end].copy_from_slice(&p.data[..end - off]);
-            q.got += end - off;
-        }
-        if q.got < q.data.len() {
+        let q = self.parts.get(&p.stream)?;
+        if q.data.len() < q.size {
             return None;
         }
         let q = self.parts.remove(&p.stream)?;

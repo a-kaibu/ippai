@@ -11,4 +11,5 @@ encoding_rs = "0.8"
 uuid = "1"
 
 [dev-dependencies]
-proptest = "1"
+# (no fork or timeout: the tests also run on wasm32, formal/wasm32.sh)
+proptest = { version = "1", default-features = false, features = ["std"] }

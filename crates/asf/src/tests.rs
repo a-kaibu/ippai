@@ -235,3 +235,73 @@ fn huge_packet_sizes_are_refused() {
         }
     }
 }
+
+fn header_of(streams: Vec<Stream>) -> Header {
+    Header { streams, duration: 0, preroll: 0, flags: 2, packet_size: 1024, max_bitrate: 0, data_offset: 0, packets: 0, ..Default::default() }
+}
+
+/// review b00: objects cut into fragments of any sizes, some sent again whole or in part
+/// (overlapping what came): every object comes out as it was, no hole of zeros counted as
+/// data; payloads of a stream the header has not are dropped
+#[test]
+fn reassembly_of_overlapping_fragments() {
+    proptest!(ProptestConfig { cases: 300, ..ProptestConfig::default() }, |(objs in prop::collection::vec((1u8..3, prop::collection::vec(any::<u8>(), 0..400)), 1..8), cuts in prop::collection::vec(1usize..90, 1..40), again in prop::collection::vec((any::<prop::sample::Index>(), 1usize..120), 0..8), stray in any::<bool>())| {
+        let mut a = Assembler::new(&header_of(two_streams(None)));
+        let mut got = vec![];
+        let mut want = vec![];
+        for (no, (stream, data)) in objs.iter().enumerate() {
+            want.push((*stream, data.clone()));
+            let mut frags: Vec<(usize, usize)> = vec![];
+            let mut at = 0;
+            let mut k = 0;
+            while at < data.len() || frags.is_empty() {
+                let n = cuts[k % cuts.len()].min(data.len() - at);
+                frags.push((at, n));
+                at += n;
+                k += 1;
+                if n == 0 { break }
+            }
+            // (each fragment but the last possibly followed by a resend of an earlier stretch;
+            // after the last the object is whole and gone: a payload at 0 is a new object of
+            // the same number, as muxers that number every object 0 write them)
+            let mut sends = vec![];
+            for (i, &(off, n)) in frags.iter().enumerate() {
+                sends.push((off, n));
+                if let Some((ix, len)) = again.get(i).filter(|_| i + 1 < frags.len()) {
+                    let end = off + n;
+                    let start = ix.index(end + 1);
+                    sends.push((start, (end - start).min(*len)));
+                }
+            }
+            for (off, n) in sends {
+                if stray {
+                    // (stream 9: not in the header)
+                    got.extend(a.push(Payload { stream: 9, key: true, object: no as u32, offset: off as u32, object_size: data.len() as u32, time: 0, data: data[off..off + n].to_vec() }));
+                }
+                got.extend(a.push(Payload { stream: *stream, key: true, object: no as u32, offset: off as u32, object_size: data.len() as u32, time: 0, data: data[off..off + n].to_vec() }));
+            }
+        }
+        let got: Vec<_> = got.into_iter().map(|s| (s.stream, s.data)).collect();
+        prop_assert_eq!(got, want);
+    });
+}
+
+/// review b00: an object whose size word says 64 MiB takes memory as its bytes arrive (it was
+/// 64 MiB of zeros at once, per stream, per new object); a gap drops it
+#[test]
+fn objects_take_memory_as_they_come() {
+    let mut a = Assembler::new(&header_of(two_streams(None)));
+    for obj in 0..200u32 {
+        for s in [1u8, 2] {
+            assert!(a.push(Payload { stream: s, key: true, object: obj, offset: 0, object_size: u32::MAX, time: 0, data: vec![1; 10] }).is_none());
+        }
+    }
+    let held: usize = a.held();
+    assert!(held < 1 << 20, "{held}");
+    a.reset();
+    // (a gap: the object is dropped; the next payload in order would have completed it)
+    assert!(a.push(Payload { stream: 1, key: true, object: 7, offset: 0, object_size: 8, time: 0, data: vec![1; 4] }).is_none());
+    assert!(a.push(Payload { stream: 1, key: true, object: 7, offset: 6, object_size: 8, time: 0, data: vec![1; 2] }).is_none());
+    assert!(a.push(Payload { stream: 1, key: true, object: 7, offset: 4, object_size: 8, time: 0, data: vec![1; 2] }).is_none());
+    assert_eq!(a.held(), 0);
+}

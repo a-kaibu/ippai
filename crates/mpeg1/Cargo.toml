@@ -8,7 +8,8 @@ description = "MPEG-1 system streams (ISO/IEC 11172-1), video (11172-2) and audi
 [dependencies]
 
 [dev-dependencies]
-proptest = "1"
+# (no fork or timeout: the tests also run on wasm32, formal/wasm32.sh)
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

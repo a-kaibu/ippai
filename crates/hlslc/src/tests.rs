@@ -901,6 +901,10 @@ fn mismatched_conditions_are_errors_not_panics() {
 /// Each on a thread with the guest threads' 1 MiB stack (release; debug frames are bigger):
 /// nesting up to the parser's limit compiles, past it is an error, never a stack overflow.
 fn on_guest_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    // (wasm32-wasip1 has no threads: there on the main stack, which is 1 MiB as well)
+    if cfg!(target_os = "wasi") {
+        return f();
+    }
     let stack = if cfg!(debug_assertions) { 64 << 20 } else { 1 << 20 };
     std::thread::Builder::new().stack_size(stack).spawn(f).unwrap().join().unwrap()
 }
