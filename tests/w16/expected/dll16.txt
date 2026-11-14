@@ -1,0 +1,11 @@
+LibAdd(2, 40) 42
+LibCount after LibMain 101 102
+LibHello "from the DLL's data"
+LibCallBack 41
+LibMain had its instance as its data 1
+GetModuleHandle found
+LoadLibrary ok
+GetProcAddress LIBADD found -> 11
+GetProcAddress missing none
+still loaded after one FreeLibrary 1
+LoadLibrary missing 2

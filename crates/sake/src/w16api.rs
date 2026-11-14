@@ -292,7 +292,13 @@ pub fn init() {
         let s = crate::text::s2a(&task().path);
         crate::mem::put_cstr(c.a(1), c.s(2).max(0) as u32, &s)
     });
-    reg("KERNEL.GetModuleHandle", |_| task().hinst as u32);
+    reg("KERNEL.GetModuleHandle", |c| {
+        let p = c.a(0);
+        if p >> 16 == 0 {
+            return if p == 0 { task().hinst as u32 } else { p & 0xffff };
+        }
+        w16::module_handle(&crate::text::a2s(&cstr(lin(p)))) as u32
+    });
     reg("KERNEL.GetModuleUsage", |_| 1);
     reg("KERNEL.GetInstanceData", |_| 0);
     reg("KERNEL.FatalAppExit", |c| {
@@ -363,9 +369,24 @@ pub fn init() {
     reg("KERNEL.GetWindowsDirectory", |c| crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS"));
     reg("KERNEL.GetSystemDirectory", |c| crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS\\SYSTEM"));
     reg("KERNEL.SetErrorMode", |_| 0);
-    reg("KERNEL.GetProcAddress", |_| 0);
-    reg("KERNEL.LoadLibrary", |_| 2);
-    reg("KERNEL.FreeLibrary", |_| 0);
+    reg("KERNEL.GetProcAddress", |c| {
+        let (h, p) = (c.w(0), c.a(1));
+        let h = if h == 0 { task().hinst } else { h };
+        let e = if p < 0x10000 { None } else { Some(crate::text::a2s(&cstr(p))) };
+        let e = match &e {
+            None => w16::Export::Ordinal(p as u16),
+            Some(n) => w16::Export::Name(n),
+        };
+        w16::proc_address(h, e).unwrap_or(0)
+    });
+    reg("KERNEL.LoadLibrary", |c| {
+        let n = crate::text::a2s(&cstr(c.a(0)));
+        w16::load_library(c.cpu, &n) as u32
+    });
+    reg("KERNEL.FreeLibrary", |c| {
+        w16::free_library(c.cpu, c.w(0));
+        0
+    });
     reg("KERNEL.AnsiUpper", |c| ansi_case(c, true));
     reg("KERNEL.AnsiLower", |c| ansi_case(c, false));
     reg("USER.AnsiUpper", |c| ansi_case(c, true));

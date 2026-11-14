@@ -618,6 +618,11 @@ pub enum A {
 /// Calls the 16-bit far function `f` (pascal: arguments pushed in order) with DS = the
 /// program's data segment; returns DX:AX. Everything else comes back as it was.
 pub fn call16(cpu: &mut Cpu, f: u32, args: &[A]) -> u32 {
+    call16_in(cpu, f, args, task().hinst, |_| ())
+}
+
+/// call16 with DS (and AX, ES) = `ds`, then `setup` on the registers (a DLL's entry: DI, CX...).
+pub fn call16_in(cpu: &mut Cpu, f: u32, args: &[A], ds: u16, setup: impl FnOnce(&mut Cpu)) -> u32 {
     let saved = (cpu.regs, cpu.eip, cpu.sreg, cpu.sbase, cpu.mode16);
     cpu.materialize();
     let eflags = cpu.eflags;
@@ -644,10 +649,10 @@ pub fn call16(cpu: &mut Cpu, f: u32, args: &[A]) -> u32 {
     w16(ss + sp, RET_OFF as u16);
     w16(ss + sp + 2, thunk);
     cpu.regs[ESP] = (cpu.regs[ESP] & 0xffff_0000) | sp;
-    let ds = task().hinst;
     set_seg(cpu, 3, ds);
     set_seg(cpu, 0, ds);
     cpu.regs[EAX] = ds as u32;
+    setup(cpu);
     set_seg(cpu, 1, (f >> 16) as u16);
     cpu.eip = f & 0xffff;
     crate::run(cpu, 0);
@@ -725,93 +730,93 @@ fn entry_point(d: &[u8], ne: usize, segs: &[u16], ord: u16) -> Option<u32> {
     }
 }
 
-/// Loads the program and starts it.
-pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
-    ON.store(true, std::sync::atomic::Ordering::Relaxed);
-    let ldt = crate::mem::alloc(4 * NSEL).expect("w16 ldt");
-    let thunk_base = TRAP;
-    {
-        let mut segs = Vec::with_capacity(NSEL as usize);
-        segs.resize_with(NSEL as usize, || None);
-        *ST.lock().unwrap() = Some(St { ldt, segs, thunk: 0, by_ord: HashMap::default(), entries: vec![], heaps: HashMap::default() });
-    }
-    let thunk = sel_alloc(thunk_base, 0x10000);
-    with(|s| s.thunk = thunk);
-    cpu.ldt = ldt;
-    // scratch areas
-    let s32 = crate::mem::alloc(0x40000).expect("w16 scratch");
-    SCR32.with(|s| s.set(s32 + 0x40000));
-    let s16 = crate::mem::alloc(0x10000).expect("w16 scratch16");
-    let s16sel = sel_alloc(s16, 0x10000);
-    SCR16.with(|s| s.set((s16sel, s16, 0xfff0)));
-    crate::w16api::init();
+/// An NE image's segments in memory: their selectors, and per segment (file offset, length in
+/// the file, flags, size to allocate).
+struct Image {
+    segs: Vec<u16>,
+    info: Vec<(usize, usize, u16, u32)>,
+}
 
-    let d = kura::fs::read(exe).expect("read exe");
-    let ne = u32::from_le_bytes(d[0x3c..0x40].try_into().unwrap()) as usize;
-    let h = |o: usize| u16at(&d, ne + o);
-    let (autodata, heap, mut stack) = (h(0x0e), h(0x10), h(0x12));
-    let (ip, cs, mut sp, ss) = (h(0x14), h(0x16), h(0x18), h(0x1a));
-    let (nseg, nmod, segtab, modref, impnam, align) = (h(0x1c), h(0x1e), h(0x22), h(0x28), h(0x2a), h(0x32));
-    if stack < 0x1400 {
-        stack = 0x1400;
-    }
-    let modname = |i: u16| -> String {
-        let r = u16at(&d, ne + modref as usize + 2 * (i as usize - 1)) as usize;
-        let p = ne + impnam as usize + r;
-        String::from_utf8_lossy(&d[p + 1..p + 1 + d[p] as usize]).into_owned()
-    };
-    // segments
+/// Maps the segments of the NE file `d` (header at `ne`).
+fn map_segments(d: &[u8], ne: usize) -> Image {
+    let h = |o: usize| u16at(d, ne + o);
+    let (nseg, segtab, align) = (h(0x1c), h(0x22), h(0x32));
     let mut segs = vec![];
     let mut info = vec![];
     for k in 0..nseg as usize {
         let e = ne + segtab as usize + 8 * k;
-        let (off, len, flags, min) = (u16at(&d, e), u16at(&d, e + 2), u16at(&d, e + 4), u16at(&d, e + 6));
-        let fofs = (off as usize) << align;
+        let (off, len, flags, min) = (u16at(d, e), u16at(d, e + 2), u16at(d, e + 4), u16at(d, e + 6));
+        let fofs = (off as usize) << if align == 0 { 9 } else { align };
         let flen = if len == 0 && off != 0 { 0x10000 } else { len as usize };
         let b = crate::mem::alloc(0x10000).expect("segment");
         if off != 0 {
-            crate::mem::write(b, &d[fofs..(fofs + flen).min(d.len())]);
+            crate::mem::write(b, &d[fofs.min(d.len())..(fofs + flen).min(d.len())]);
         }
         segs.push(sel_alloc(b, 0x10000));
         info.push((fofs, flen, flags, if min == 0 { 0x10000u32 } else { min as u32 }));
     }
-    // relocations
-    for k in 0..nseg as usize {
-        let (fofs, flen, flags, _) = info[k];
+    Image { segs, info }
+}
+
+/// The name a module's imports call module `i` (1-based) of its module reference table.
+fn mod_ref(d: &[u8], ne: usize, i: u16) -> String {
+    let (modref, impnam) = (u16at(d, ne + 0x28), u16at(d, ne + 0x2a));
+    let r = u16at(d, ne + modref as usize + 2 * (i as usize - 1)) as usize;
+    let p = ne + impnam as usize + r;
+    String::from_utf8_lossy(&d[p + 1..p + 1 + d[p] as usize]).into_owned()
+}
+
+/// Applies the relocations of every segment of `img`.
+fn relocate(d: &[u8], ne: usize, img: &Image) {
+    let impnam = u16at(d, ne + 0x2a);
+    let segs = &img.segs;
+    for k in 0..segs.len() {
+        let (fofs, flen, flags, _) = img.info[k];
         if flags & 0x100 == 0 || fofs == 0 {
             continue;
         }
         let base = sel_base(segs[k]).unwrap().0;
         let mut p = fofs + flen;
-        let n = u16at(&d, p);
+        let n = u16at(d, p);
         p += 2;
         for _ in 0..n {
-            let (st, fl, so, a, b) = (d[p], d[p + 1], u16at(&d, p + 2), u16at(&d, p + 4), u16at(&d, p + 6));
+            let (st, fl, so, a, b) = (d[p], d[p + 1], u16at(d, p + 2), u16at(d, p + 4), u16at(d, p + 6));
             p += 8;
             let target: u32 = match fl & 3 {
                 0 => {
                     if a & 0xff == 0xff {
-                        entry_point(&d, ne, &segs, b).unwrap_or(0)
+                        entry_point(d, ne, segs, b).unwrap_or(0)
                     } else {
                         (segs[(a & 0xff) as usize - 1] as u32) << 16 | b as u32
                     }
                 }
-                1 => match import(&modname(a), b) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("sake w16: {e}");
-                        0
+                1 => {
+                    let m = mod_ref(d, ne, a);
+                    if is_system(&m) {
+                        match import(&m, b) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("sake w16: {e}");
+                                0
+                            }
+                        }
+                    } else {
+                        dll_entry(&m, Export::Ordinal(b))
                     }
-                },
+                }
                 2 => {
                     let q = ne + impnam as usize + b as usize;
                     let name = String::from_utf8_lossy(&d[q + 1..q + 1 + d[q] as usize]).into_owned();
-                    let m = modname(a);
-                    match spec_ordinal(&m.to_ascii_uppercase(), &name).map(|o| import(&m, o)) {
-                        Some(Ok(v)) => v,
-                        _ => {
-                            eprintln!("sake w16: unknown import {m}.{name}");
-                            0
+                    let m = mod_ref(d, ne, a);
+                    if !is_system(&m) {
+                        dll_entry(&m, Export::Name(&name))
+                    } else {
+                        match spec_ordinal(&m.to_ascii_uppercase(), &name).map(|o| import(&m, o)) {
+                            Some(Ok(v)) => v,
+                            _ => {
+                                eprintln!("sake w16: unknown import {m}.{name}");
+                                0
+                            }
                         }
                     }
                 }
@@ -843,6 +848,310 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 16-bit DLLs: the program's own (a file beside it or in the search path), not the system's
+// (those are the specs' and ours)
+
+/// A loaded DLL: its module name (upper case), file, segments, data segment (its instance
+/// handle and module handle both), references.
+pub struct Mod16 {
+    pub name: String,
+    pub path: String,
+    pub file: Vec<u8>,
+    pub ne: usize,
+    pub segs: Vec<u16>,
+    pub dgroup: u16,
+    pub refs: u32,
+}
+
+pub static MODS: Mutex<Vec<Mod16>> = Mutex::new(Vec::new());
+/// DLLs loaded whose LibEntry has not run yet: (instance, entry cs:ip, heap size)
+static PENDING: Mutex<Vec<(u16, u32, u16)>> = Mutex::new(Vec::new());
+/// the program's folder (Windows path, with the backslash)
+static EXE_DIR: Mutex<String> = Mutex::new(String::new());
+
+#[derive(Clone, Copy)]
+pub enum Export<'a> {
+    Ordinal(u16),
+    Name(&'a str),
+}
+
+/// Whether `module` is one of the system's (specs16.txt): imports from it are ours.
+pub fn is_system(module: &str) -> bool {
+    static SYS: OnceLock<crate::HashSet<String>> = OnceLock::new();
+    let m = module.to_ascii_uppercase();
+    let m = m.trim_end_matches(".DLL").trim_end_matches(".EXE").trim_end_matches(".DRV");
+    SYS.get_or_init(|| include_str!("specs16.txt").lines().filter_map(|l| l.split_whitespace().next()).map(String::from).collect()).contains(m)
+}
+
+/// A module's own name (the first entry of its resident names table), upper case.
+fn module_name(d: &[u8], ne: usize) -> String {
+    let p = ne + u16at(d, ne + 0x26) as usize;
+    String::from_utf8_lossy(&d[p + 1..p + 1 + d[p] as usize]).to_ascii_uppercase()
+}
+
+/// The ordinal of export `name` (resident then nonresident names table, any case).
+pub fn export_ordinal(d: &[u8], ne: usize, name: &str) -> Option<u16> {
+    let scan = |mut p: usize, skip_first: bool| -> Option<u16> {
+        let mut first = skip_first;
+        while p < d.len() && d[p] != 0 {
+            let n = d[p] as usize;
+            let s = d.get(p + 1..p + 1 + n)?;
+            let ord = u16at(d, p + 1 + n);
+            if !first && s.eq_ignore_ascii_case(name.as_bytes()) {
+                return Some(ord);
+            }
+            first = false;
+            p += n + 3;
+        }
+        None
+    };
+    let res = ne + u16at(d, ne + 0x26) as usize;
+    let nonres = u32::from_le_bytes(d[ne + 0x2c..ne + 0x30].try_into().unwrap()) as usize;
+    scan(res, true).or_else(|| if nonres != 0 { scan(nonres, true) } else { None })
+}
+
+/// The far address of export `e` of the module whose instance is `h` (a DLL or the program).
+pub fn proc_address(h: u16, e: Export) -> Option<u32> {
+    let find = |d: &[u8], ne: usize, segs: &[u16]| {
+        let ord = match e {
+            Export::Ordinal(o) => o,
+            Export::Name(n) => export_ordinal(d, ne, n)?,
+        };
+        entry_point(d, ne, segs, ord)
+    };
+    if let Some(r) = MODS.lock().unwrap().iter().find(|m| m.dgroup == h).map(|m| find(&m.file, m.ne, &m.segs)) {
+        return r;
+    }
+    let t = task();
+    if h == t.hinst {
+        return find(&t.file, t.ne as usize, &t.segs);
+    }
+    None
+}
+
+/// Entry `e` of DLL `module`, loading it first (0 if it or the entry is missing).
+fn dll_entry(module: &str, e: Export) -> u32 {
+    let h = match find_module(module) {
+        Some(h) => h,
+        None => match load_dll(module) {
+            Ok(h) => h,
+            Err(_) => {
+                eprintln!("sake w16: {module}: no such 16-bit DLL");
+                return 0;
+            }
+        },
+    };
+    proc_address(h, e).unwrap_or_else(|| {
+        match e {
+            Export::Ordinal(o) => eprintln!("sake w16: {module} has no export {o}"),
+            Export::Name(n) => eprintln!("sake w16: {module} has no export {n}"),
+        }
+        0
+    })
+}
+
+/// "C:\X\Lib.dll", "LIB.DLL", "lib" -> "LIB"
+fn base_module(name: &str) -> String {
+    let b = name.rsplit(['\\', '/', ':']).next().unwrap_or(name).to_ascii_uppercase();
+    match b.rsplit_once('.') {
+        Some((n, _)) => n.to_string(),
+        None => b,
+    }
+}
+
+/// The instance of loaded DLL `name` (a module name or a file's).
+pub fn find_module(name: &str) -> Option<u16> {
+    let n = base_module(name);
+    MODS.lock().unwrap().iter().find(|m| m.name == n || base_module(&m.path) == n).map(|m| m.dgroup)
+}
+
+/// Loads DLL `name` (and the DLLs it imports from), its entries' prologues set to load its
+/// data segment; its LibEntry runs at `init_dlls`. Its instance, or Windows' LoadLibrary error
+/// (2 not found, 11 not a 16-bit module).
+pub fn load_dll(name: &str) -> Result<u16, u16> {
+    let file = if name.contains('.') { name.to_string() } else { format!("{name}.DLL") };
+    let dirs = if file.contains(['\\', '/', ':']) {
+        vec![String::new()]
+    } else {
+        vec![EXE_DIR.lock().unwrap().clone(), crate::files::cwd(), "C:\\WINDOWS\\SYSTEM\\".into(), "C:\\WINDOWS\\".into()]
+    };
+    let Some((path, host)) = dirs.iter().find_map(|d| {
+        let w = crate::files::full_path(&format!("{d}{file}"));
+        crate::files::resolve(&w).filter(|h| !crate::files::is_dir(h)).map(|h| (w, h))
+    }) else {
+        return Err(2);
+    };
+    let Ok(d) = kura::fs::read(&host) else { return Err(2) };
+    if d.len() < 0x40 || &d[..2] != b"MZ" {
+        return Err(11);
+    }
+    let ne = u32::from_le_bytes(d[0x3c..0x40].try_into().unwrap()) as usize;
+    if d.get(ne..ne + 2) != Some(b"NE") {
+        return Err(11);
+    }
+    let h = |o: usize| u16at(&d, ne + o);
+    let (autodata, heap, ip, cs) = (h(0x0e), h(0x10), h(0x14), h(0x16));
+    let img = map_segments(&d, ne);
+    let dgroup = if autodata == 0 { img.segs[0] } else { img.segs[autodata as usize - 1] };
+    let dmin = if autodata == 0 { 0 } else { img.info[autodata as usize - 1].3 };
+    MODS.lock().unwrap().push(Mod16 { name: module_name(&d, ne), path, file: d.clone(), ne, segs: img.segs.clone(), dgroup, refs: 1 });
+    relocate(&d, ne, &img);
+    fix_prologues(&d, ne, &img.segs, dgroup);
+    // its local heap: after its data
+    with(|s| {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(0u16, ((dmin + 15) & !15).min(0xff00) as u16);
+        s.heaps.insert(dgroup, m);
+    });
+    if cs != 0 {
+        PENDING.lock().unwrap().push((dgroup, (img.segs[cs as usize - 1] as u32) << 16 | ip as u32, heap));
+    }
+    Ok(dgroup)
+}
+
+/// A DLL's exported functions start "push ds; pop ax; nop" (or "mov ax, ds; nop") for code
+/// that may run with another DS: the loader makes it "mov ax, <its data segment>", as Windows
+/// does for a module with one data segment.
+fn fix_prologues(d: &[u8], ne: usize, segs: &[u16], dgroup: u16) {
+    let mut p = ne + u16at(d, ne + 4) as usize;
+    loop {
+        let count = d[p] as usize;
+        if count == 0 {
+            return;
+        }
+        let ty = d[p + 1];
+        p += 2;
+        if ty == 0 {
+            continue;
+        }
+        let sz = if ty == 0xff { 6 } else { 3 };
+        for k in 0..count {
+            let e = p + sz * k;
+            let flags = d[e];
+            let (seg, off) = if ty == 0xff { (d[e + 3], u16at(d, e + 4)) } else { (ty, u16at(d, e + 1)) };
+            if flags & 1 == 0 || seg == 0 || seg as usize > segs.len() {
+                continue;
+            }
+            let Some((b, _)) = sel_base(segs[seg as usize - 1]) else { continue };
+            let a = b + off as u32;
+            let code = crate::mem::slice(a, 3).to_vec();
+            if code == [0x1e, 0x58, 0x90] || code == [0x8c, 0xd8, 0x90] {
+                crate::mem::write(a, &[0xb8, dgroup as u8, (dgroup >> 8) as u8]);
+            }
+        }
+        p += sz * count;
+    }
+}
+
+/// Runs the LibEntry of the DLLs loaded since (DI = instance, DS = its data, CX = its heap's
+/// size, ES:SI = no command line); those whose entry fails (AX 0) are unloaded. False if
+/// any failed.
+pub fn init_dlls(cpu: &mut Cpu) -> bool {
+    let mut ok = true;
+    loop {
+        let next = {
+            let mut p = PENDING.lock().unwrap();
+            if p.is_empty() { None } else { Some(p.remove(0)) }
+        };
+        let Some((h, entry, heap)) = next else { return ok };
+        let r = call16_in(cpu, entry, &[], h, |cpu| {
+            cpu.regs[7] = h as u32;
+            cpu.regs[ECX] = heap as u32;
+            cpu.regs[6] = 0;
+            set_seg(cpu, 0, 0);
+        });
+        if r & 0xffff == 0 {
+            eprintln!("sake w16: the LibEntry of {h:#x} failed");
+            MODS.lock().unwrap().retain(|m| m.dgroup != h);
+            ok = false;
+        }
+    }
+}
+
+/// GetModuleHandle: the instance of loaded module `name` (a DLL or the program), else 0.
+pub fn module_handle(name: &str) -> u16 {
+    if let Some(h) = find_module(name) {
+        return h;
+    }
+    let t = task();
+    let n = base_module(name);
+    if n == module_name(&t.file, t.ne as usize) || n == base_module(&t.path) {
+        t.hinst
+    } else {
+        0
+    }
+}
+
+/// LoadLibrary: a loaded DLL's instance (one more reference) or a newly loaded one's, its
+/// LibEntry run; an error below 32.
+pub fn load_library(cpu: &mut Cpu, name: &str) -> u16 {
+    if let Some(h) = find_module(name) {
+        MODS.lock().unwrap().iter_mut().filter(|m| m.dgroup == h).for_each(|m| m.refs += 1);
+        return h;
+    }
+    match load_dll(name) {
+        Ok(h) => {
+            init_dlls(cpu);
+            if find_module(name).is_some() { h } else { 20 } // (ERROR_DLL_INIT_FAILED)
+        }
+        Err(e) => e,
+    }
+}
+
+/// FreeLibrary: one reference less; at the last its WEP(WEP_FREE_DLL) runs and it is gone
+/// (its memory stays: code of it may still be on a stack).
+pub fn free_library(cpu: &mut Cpu, h: u16) {
+    let last = {
+        let mut v = MODS.lock().unwrap();
+        let Some(m) = v.iter_mut().find(|m| m.dgroup == h) else { return };
+        m.refs = m.refs.saturating_sub(1);
+        m.refs == 0
+    };
+    if last {
+        if let Some(wep) = proc_address(h, Export::Name("WEP")) {
+            call16_in(cpu, wep, &[A::W(0)], h, |_| ());
+        }
+        MODS.lock().unwrap().retain(|m| m.dgroup != h);
+    }
+}
+
+/// Loads the program and starts it.
+pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
+    ON.store(true, std::sync::atomic::Ordering::Relaxed);
+    let ldt = crate::mem::alloc(4 * NSEL).expect("w16 ldt");
+    let thunk_base = TRAP;
+    {
+        let mut segs = Vec::with_capacity(NSEL as usize);
+        segs.resize_with(NSEL as usize, || None);
+        *ST.lock().unwrap() = Some(St { ldt, segs, thunk: 0, by_ord: HashMap::default(), entries: vec![], heaps: HashMap::default() });
+    }
+    let thunk = sel_alloc(thunk_base, 0x10000);
+    with(|s| s.thunk = thunk);
+    cpu.ldt = ldt;
+    // scratch areas
+    let s32 = crate::mem::alloc(0x40000).expect("w16 scratch");
+    SCR32.with(|s| s.set(s32 + 0x40000));
+    let s16 = crate::mem::alloc(0x10000).expect("w16 scratch16");
+    let s16sel = sel_alloc(s16, 0x10000);
+    SCR16.with(|s| s.set((s16sel, s16, 0xfff0)));
+    crate::w16api::init();
+    *EXE_DIR.lock().unwrap() = wpath.rsplit_once('\\').map_or(String::new(), |(d, _)| format!("{d}\\"));
+
+    let d = kura::fs::read(exe).expect("read exe");
+    let ne = u32::from_le_bytes(d[0x3c..0x40].try_into().unwrap()) as usize;
+    let h = |o: usize| u16at(&d, ne + o);
+    let (autodata, heap, mut stack) = (h(0x0e), h(0x10), h(0x12));
+    let (ip, cs, mut sp, ss) = (h(0x14), h(0x16), h(0x18), h(0x1a));
+    let (nseg, nmod) = (h(0x1c), h(0x1e));
+    if stack < 0x1400 {
+        stack = 0x1400;
+    }
+    let img = map_segments(&d, ne);
+    relocate(&d, ne, &img);
+    let (segs, info) = (img.segs, img.info);
     let dgroup = if autodata == 0 { 0 } else { segs[autodata as usize - 1] };
     let dmin = if autodata == 0 { 0 } else { info[autodata as usize - 1].3 };
     if sp == 0 {
@@ -887,6 +1196,115 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     cpu.regs[ESP] = sp as u32;
     cpu.eip = ip as u32;
     eprintln!("sake w16: {wpath}: {nseg} segments, {nmod} modules, cs:ip {:04x}:{ip:04x} ss:sp {:04x}:{sp:04x}", cpu.sreg[1], cpu.sreg[2]);
+    // (its DLLs' LibEntry first, on its stack; the registers then as they were)
+    let regs = (cpu.regs, cpu.sreg, cpu.sbase, cpu.eip);
+    init_dlls(cpu);
+    (cpu.regs, cpu.sreg, cpu.sbase, cpu.eip) = regs;
     crate::run(cpu, 0);
     unsafe { libc::exit(0) }
+}
+
+#[cfg(test)]
+mod ne_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// An NE header at 0 with entry `bundles` (count, type: 0 none, 0xff movable, else the
+    /// segment) and the names (name, ordinal) split between the resident and nonresident tables.
+    fn ne(bundles: &[(u8, u8, Vec<u16>)], res: &[(String, u16)], nonres: &[(String, u16)]) -> Vec<u8> {
+        let mut d = vec![0u8; 0x40];
+        let names = |d: &mut Vec<u8>, own: &str, v: &[(String, u16)]| {
+            d.push(own.len() as u8);
+            d.extend(own.as_bytes());
+            d.extend([0, 0]);
+            for (n, o) in v {
+                d.push(n.len() as u8);
+                d.extend(n.as_bytes());
+                d.extend(o.to_le_bytes());
+            }
+            d.push(0);
+        };
+        let l = d.len() as u16;
+        d[0x26..0x28].copy_from_slice(&l.to_le_bytes());
+        names(&mut d, "MODNAME", res);
+        let l = d.len() as u16;
+        d[4..6].copy_from_slice(&l.to_le_bytes());
+        for (count, ty, offs) in bundles {
+            d.extend([*count, *ty]);
+            if *ty == 0 {
+                continue;
+            }
+            for (k, off) in offs.iter().enumerate() {
+                if *ty == 0xff {
+                    d.extend([1, 0xcd, 0x3f, (k % 3 + 1) as u8]);
+                } else {
+                    d.push(1);
+                }
+                d.extend(off.to_le_bytes());
+            }
+        }
+        d.push(0);
+        let nr = d.len() as u32;
+        d[0x2c..0x30].copy_from_slice(&nr.to_le_bytes());
+        names(&mut d, "description", nonres);
+        d
+    }
+
+    fn bundle() -> impl Strategy<Value = (u8, u8, Vec<u16>)> {
+        (1u8..6, prop_oneof![Just(0u8), Just(0xffu8), 1u8..4]).prop_flat_map(|(c, t)| {
+            let n = if t == 0 { 0 } else { c as usize };
+            (Just(c), Just(t), proptest::collection::vec(any::<u16>(), n))
+        })
+    }
+
+    proptest! {
+        /// entry_point finds every ordinal's (segment, offset) as the bundles number them
+        /// (unused bundles skip ordinals), and none past the last.
+        #[test]
+        fn entries_are_their_model(bundles in proptest::collection::vec(bundle(), 0..8)) {
+            let segs = [0x17u16, 0x1f, 0x27];
+            let d = ne(&bundles, &[], &[]);
+            let mut model = vec![];
+            for (c, t, offs) in &bundles {
+                for k in 0..*c as usize {
+                    model.push(match *t {
+                        0 => None,
+                        0xff => Some((segs[k % 3] as u32) << 16 | offs[k] as u32),
+                        s => Some((segs[s as usize - 1] as u32) << 16 | offs[k] as u32),
+                    });
+                }
+            }
+            for (i, m) in model.iter().enumerate() {
+                if m.is_some() {
+                    prop_assert_eq!(entry_point(&d, 0, &segs, i as u16 + 1), *m);
+                }
+            }
+            prop_assert_eq!(entry_point(&d, 0, &segs, model.len() as u16 + 1), None);
+        }
+
+        /// export_ordinal finds names in either table, any case, resident first; never the
+        /// tables' first entries (the module's name and its description).
+        #[test]
+        fn names_are_their_model(names in proptest::collection::vec(("[A-Za-z_]{1,8}", 1u16..500, any::<bool>()), 0..10), probe in "[A-Za-z_]{1,8}") {
+            let res: Vec<_> = names.iter().filter(|n| n.2).map(|n| (n.0.clone(), n.1)).collect();
+            let nonres: Vec<_> = names.iter().filter(|n| !n.2).map(|n| (n.0.clone(), n.1)).collect();
+            let d = ne(&[], &res, &nonres);
+            let model = |p: &str| res.iter().chain(&nonres).find(|n| n.0.eq_ignore_ascii_case(p)).map(|n| n.1);
+            for (n, _, _) in &names {
+                prop_assert_eq!(export_ordinal(&d, 0, &n.to_ascii_lowercase()), model(n));
+            }
+            prop_assert_eq!(export_ordinal(&d, 0, &probe), model(&probe));
+            if model("MODNAME").is_none() {
+                prop_assert_eq!(export_ordinal(&d, 0, "MODNAME"), None);
+            }
+            prop_assert_eq!(module_name(&d, 0), "MODNAME");
+        }
+    }
+
+    #[test]
+    fn module_names() {
+        for (n, m) in [("C:\\GAME\\Lib.dll", "LIB"), ("LIB.DLL", "LIB"), ("lib", "LIB"), ("a/b.v2.drv", "B.V2"), ("D:x.dll", "X")] {
+            assert_eq!(base_module(n), m, "{n}");
+        }
+    }
 }
