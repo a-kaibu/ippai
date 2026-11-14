@@ -266,7 +266,7 @@ impl<'a> Parser<'a> {
     /// A numeric value's size (rows x cols floats), at most the file's size (a value is read
     /// from it).
     fn numeric_bytes(&self, rows: u32, cols: u32) -> Result<u32, String> {
-        let n = 4 * rows as u64 * cols as u64;
+        let n = (rows as u64 * cols as u64).saturating_mul(4);
         if n > self.base.len() as u64 {
             return Err(format!("a {rows}x{cols} parameter is larger than the effect"));
         }
@@ -1913,6 +1913,20 @@ technique T <string Desc = "main";> { pass P0 { ZEnable = false; CullMode = None
         for x in [d, &fx[..]] {
             let _ = check(x);
         }
+    }
+
+    /// fuzz find: a parameter of 2^32 - 1 rows by 2^32 - 1 columns, 4 x rows x cols past u64
+    #[test]
+    fn huge_numeric_sizes_are_refused() {
+        let d: &[u8] = &[0, 0, 0, 0, 25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 80, 0, 0, 255, 0, 0, 255, 255, 255, 0, 0, 0, 0];
+        let mut fx = 0xfeff0901u32.to_le_bytes().to_vec();
+        fx.extend_from_slice(d);
+        for x in [d, &fx[..]] {
+            let _ = check(x);
+        }
+        let p = Parser { base: &[0; 64], params: Vec::new(), obj_ty: HashMap::default(), state_values: Vec::new() };
+        assert!(p.numeric_bytes(u32::MAX, u32::MAX).is_err());
+        assert_eq!(p.numeric_bytes(4, 4), Ok(64));
     }
 
     /// a CTAB whose count is past its own bytes is read as the entries it can hold
