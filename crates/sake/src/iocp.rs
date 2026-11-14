@@ -117,6 +117,10 @@ pub fn forget(h: u32) {
 pub fn mark_overlapped(h: u32) {
     with(|s| s.overlapped.insert(h));
 }
+/// Whether CreateFile made `h` with FILE_FLAG_OVERLAPPED (its IO keeps no file pointer)
+pub fn is_overlapped(h: u32) -> bool {
+    with(|s| s.overlapped.contains(&h))
+}
 
 /// BindIoCompletionCallback(file, callback(error, bytes, overlapped), flags): the file's IO
 /// completes on a pool thread that calls `callback`; the file must be overlapped and not

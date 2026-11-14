@@ -6837,10 +6837,22 @@ fn ReadFile(c: &mut Ctx) -> u32 {
     };
     // OVERLAPPED: Internal, InternalHigh (ULONG_PTRs), Offset, OffsetHigh, hEvent
     let k = mem::ps();
-    if ov != 0 {
-        f.seek(SeekFrom::Start(r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32));
-    }
-    let got = f.read_into(buf, n);
+    let got = if ov != 0 {
+        let start = files::io_start(r32(ov + 2 * k), r32(ov + 2 * k + 4), false);
+        match f.read_at(start, crate::iocp::is_overlapped(h), mem::slice_mut(buf, n)) {
+            Ok(got) => got as u32,
+            Err(()) => {
+                // (at or past the end: STATUS_END_OF_FILE in the OVERLAPPED, its event set,
+                // and FALSE with ERROR_HANDLE_EOF, the handle synchronous or not)
+                put32(pread, 0);
+                crate::iocp::complete(h, ov, 0xc000_0011, 0, true);
+                last_error(38);
+                return 0;
+            }
+        }
+    } else {
+        f.read_into(buf, n)
+    };
     put32(pread, got);
     // (done at once: the OVERLAPPED, its event and the handle's completion port)
     crate::iocp::complete(h, ov, 0, got, true);
@@ -6894,12 +6906,14 @@ fn WriteFile(c: &mut Ctx) -> u32 {
         return 0;
     }
     let ov = c.a(4);
-    if ov != 0 {
-        let k = mem::ps();
-        f.seek(SeekFrom::Start(r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32));
-    }
     echo_write(&f.path, buf, n);
-    let w = f.write_from(buf, n);
+    let w = if ov != 0 {
+        let k = mem::ps();
+        let start = files::io_start(r32(ov + 2 * k), r32(ov + 2 * k + 4), true);
+        f.write_at(start, crate::iocp::is_overlapped(h), mem::slice(buf, n))
+    } else {
+        f.write_from(buf, n)
+    };
     put32(pw, w);
     if w == n {
         crate::iocp::complete(h, ov, 0, w, true);

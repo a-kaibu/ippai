@@ -39,6 +39,20 @@ impl Drop for File {
     }
 }
 
+/// Where ReadFile / WriteFile with an OVERLAPPED start (NtReadFile / NtWriteFile's ByteOffset):
+/// Offset/OffsetHigh from the file's start. Two values are special: all ones, for a write, is
+/// the end of the file (FILE_WRITE_TO_END_OF_FILE: WriteFile's documentation, "functionally
+/// equivalent to ... FILE_APPEND_DATA"), and 0xfffffffe:0xffffffff
+/// (FILE_USE_FILE_POINTER_POSITION) is the file pointer (None). SQLite (CisLugI 体験版's
+/// Description database) reads and writes its pages this way and never moves the pointer.
+pub fn io_start(lo: u32, hi: u32, write: bool) -> Option<SeekFrom> {
+    match (hi, lo) {
+        (0xffff_ffff, 0xffff_ffff) if write => Some(SeekFrom::End(0)),
+        (0xffff_ffff, 0xffff_fffe) => None,
+        _ => Some(SeekFrom::Start(lo as u64 | (hi as u64) << 32)),
+    }
+}
+
 /// The byte-range locks of all files (LockFileEx; kura::filelock).
 pub static LOCKS: Mutex<kura::filelock::Locks> = Mutex::new(kura::filelock::Locks::new());
 
@@ -566,6 +580,49 @@ impl File {
     pub fn seek(&self, pos: SeekFrom) -> Option<u64> {
         self.f.lock().unwrap().seek(pos).ok()
     }
+    /// ReadFile's read with an OVERLAPPED: from `start` (io_start; None: the file pointer),
+    /// under one lock so another thread's seek on the handle can't come between. A handle
+    /// opened with FILE_FLAG_OVERLAPPED (`keep`) has no file pointer to move; a synchronous
+    /// one's ends after what was read, as NtReadFile leaves it. Err(()): a read of some bytes
+    /// that starts at or after the end (STATUS_END_OF_FILE: ReadFile fails with
+    /// ERROR_HANDLE_EOF when it was given an OVERLAPPED).
+    pub fn read_at(&self, start: Option<SeekFrom>, keep: bool, buf: &mut [u8]) -> Result<usize, ()> {
+        let mut f = self.f.lock().unwrap();
+        let was = f.stream_position().unwrap_or(0);
+        if let Some(s) = start {
+            if f.seek(s).is_err() {
+                return Err(());
+            }
+        }
+        let mut got = 0;
+        while got < buf.len() {
+            match f.read(&mut buf[got..]) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => got += k,
+            }
+        }
+        if keep {
+            let _ = f.seek(SeekFrom::Start(was));
+        }
+        if got == 0 && !buf.is_empty() { Err(()) } else { Ok(got) }
+    }
+    /// WriteFile's write with an OVERLAPPED: at `start` (io_start: the end for
+    /// FILE_WRITE_TO_END_OF_FILE; None: the file pointer), under one lock; past the end the
+    /// gap reads as zeros. `keep`: as read_at. The bytes written (0: it failed).
+    pub fn write_at(&self, start: Option<SeekFrom>, keep: bool, b: &[u8]) -> u32 {
+        let mut f = self.f.lock().unwrap();
+        let was = f.stream_position().unwrap_or(0);
+        if let Some(s) = start {
+            if f.seek(s).is_err() {
+                return 0;
+            }
+        }
+        let w = f.write_all(b).map_or(0, |_| b.len() as u32);
+        if keep {
+            let _ = f.seek(SeekFrom::Start(was));
+        }
+        w
+    }
     pub fn size(&self) -> u64 {
         self.f.lock().unwrap().metadata().map_or(0, |m| m.len())
     }
@@ -927,4 +984,174 @@ mod tests {
         }
     }
 
+
+    // ReadFile / WriteFile with an OVERLAPPED (#154: CisLugI 体験版's SQLite database). Before
+    // e43c5ad7 WriteFile wrote at the file pointer whatever Offset said: SQLite's page 1 landed
+    // on page 9, the database was "malformed", and the game stopped using its archives.
+    #[test]
+    fn overlapped_offsets_as_windows() {
+        assert_eq!(io_start(5, 0, false), Some(SeekFrom::Start(5)));
+        assert_eq!(io_start(1, 2, true), Some(SeekFrom::Start(0x2_0000_0001)));
+        // FILE_WRITE_TO_END_OF_FILE: a write's; FILE_USE_FILE_POINTER_POSITION: both
+        assert_eq!(io_start(!0, !0, true), Some(SeekFrom::End(0)));
+        assert_eq!(io_start(!1, !0, true), None);
+        assert_eq!(io_start(!1, !0, false), None);
+
+        let (root, w) = z_root("ovio");
+        let f = open(&w("db"), 0xc000_0000, 2).unwrap();
+        assert_eq!(f.write_bytes(b"0123456789"), 10);
+        f.seek(SeekFrom::Start(2));
+        // a synchronous handle: at Offset, and the pointer after what was written / read
+        assert_eq!(f.write_at(io_start(5, 0, true), false, b"AB"), 2);
+        assert_eq!(f.seek(SeekFrom::Current(0)), Some(7));
+        let mut b = [0u8; 3];
+        assert_eq!(f.read_at(io_start(1, 0, false), false, &mut b), Ok(3));
+        assert_eq!((&b, f.seek(SeekFrom::Current(0))), (b"123", Some(4)));
+        // at or past the end: STATUS_END_OF_FILE, the pointer at Offset; nothing asked: fine
+        assert_eq!(f.read_at(io_start(10, 0, false), false, &mut b), Err(()));
+        assert_eq!(f.read_at(io_start(100, 0, false), false, &mut b), Err(()));
+        assert_eq!(f.seek(SeekFrom::Current(0)), Some(100));
+        assert_eq!(f.read_at(io_start(100, 0, false), false, &mut []), Ok(0));
+        // fewer at the end
+        assert_eq!(f.read_at(io_start(8, 0, false), false, &mut b), Ok(2));
+        // past the end: a gap of zeros; the end; the pointer
+        assert_eq!(f.write_at(io_start(12, 0, true), false, b"x"), 1);
+        assert_eq!(f.write_at(io_start(!0, !0, true), false, b"yz"), 2);
+        assert_eq!(f.seek(SeekFrom::Current(0)), Some(15));
+        f.seek(SeekFrom::Start(0));
+        assert_eq!(f.write_at(io_start(!1, !0, true), false, b"P"), 1);
+        assert_eq!(std::fs::read(root.join("db")).unwrap(), b"P1234AB789\0\0xyz");
+        // a FILE_FLAG_OVERLAPPED handle keeps no pointer: IO at Offset leaves it alone
+        f.seek(SeekFrom::Start(3));
+        assert_eq!(f.write_at(io_start(0, 0, true), true, b"Q"), 1);
+        assert_eq!(f.read_at(io_start(9, 0, false), true, &mut b), Ok(3));
+        assert_eq!(f.read_at(io_start(99, 0, false), true, &mut b), Err(()));
+        assert_eq!(f.seek(SeekFrom::Current(0)), Some(3));
+        drop(f);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Threads writing their own pages at their Offsets while another moves the pointer: each
+    // page is where its Offset says (the seek and the write under one lock).
+    #[test]
+    fn overlapped_writes_from_threads_land_at_their_offsets() {
+        let (root, w) = z_root("ovthreads");
+        let f = std::sync::Arc::new(open(&w("db"), 0xc000_0000, 2).unwrap());
+        const PAGE: usize = 512;
+        let threads: Vec<_> = (0..4u8)
+            .map(|t| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    for round in 0..50u32 {
+                        let page = t as u32 * 50 + round;
+                        if t == 3 && round % 2 == 0 {
+                            f.seek(SeekFrom::Start(round as u64 * 7));
+                        }
+                        let b = [t ^ (round as u8); PAGE];
+                        assert_eq!(f.write_at(io_start(page * PAGE as u32, 0, true), false, &b), PAGE as u32);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let data = std::fs::read(root.join("db")).unwrap();
+        assert_eq!(data.len(), 200 * PAGE);
+        for page in 0..200u32 {
+            let (t, round) = ((page / 50) as u8, page % 50);
+            assert!(data[page as usize * PAGE..][..PAGE].iter().all(|&x| x == t ^ round as u8), "page {page}");
+        }
+        drop(f);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        /// WriteFile with an OVERLAPPED (lo, hi), these bytes
+        WriteAt(u32, u32, Vec<u8>),
+        /// ReadFile with an OVERLAPPED (lo, hi), this many bytes
+        ReadAt(u32, u32, usize),
+        /// WriteFile / ReadFile without one
+        Write(Vec<u8>),
+        Read(usize),
+        Seek(u64),
+    }
+    fn op() -> impl Strategy<Value = Op> {
+        // (offsets near the data, past it, and the two special values)
+        let off = prop_oneof![4 => (0u32..96).prop_map(|o| (o, 0u32)), 1 => Just((!0u32, !0u32)), 1 => Just((!1u32, !0u32))];
+        let bytes = prop::collection::vec(any::<u8>(), 0..24);
+        prop_oneof![
+            (off.clone(), bytes.clone()).prop_map(|((lo, hi), b)| Op::WriteAt(lo, hi, b)),
+            (off, 0usize..24).prop_map(|((lo, hi), n)| Op::ReadAt(lo, hi, n)),
+            bytes.prop_map(Op::Write),
+            (0usize..24).prop_map(Op::Read),
+            (0u64..96).prop_map(Op::Seek),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+        /// Any mix of IO with and without OVERLAPPED gives what a model of Windows' file gives
+        /// (bytes, a pointer that synchronous IO moves and FILE_FLAG_OVERLAPPED IO never does,
+        /// zeros in a gap, the end for all ones, the pointer for 0xfffffffe, EOF for reads at or
+        /// past the end).
+        #[test]
+        fn overlapped_io_matches_a_model(ops in prop::collection::vec(op(), 1..40), keep in any::<bool>()) {
+            let (root, w) = z_root("ovprop");
+            let f = open(&w("db"), 0xc000_0000, 2).unwrap();
+            let (mut data, mut pos) = (Vec::<u8>::new(), 0usize);
+            for o in ops {
+                match o {
+                    Op::WriteAt(lo, hi, b) => {
+                        let at = match (hi, lo) { (0xffff_ffff, 0xffff_ffff) => data.len(), (0xffff_ffff, 0xffff_fffe) => pos, _ => lo as usize };
+                        // (a null write moves nothing on NTFS: no gap either)
+                        if !b.is_empty() && data.len() < at + b.len() { data.resize(at + b.len(), 0); }
+                        if !b.is_empty() { data[at..at + b.len()].copy_from_slice(&b); }
+                        if !keep { pos = at + b.len(); }
+                        prop_assert_eq!(f.write_at(io_start(lo, hi, true), keep, &b), b.len() as u32);
+                    }
+                    Op::ReadAt(lo, hi, n) => {
+                        let at = match (hi, lo) { (0xffff_ffff, 0xffff_fffe) => pos, (0xffff_ffff, _) => usize::MAX, _ => lo as usize };
+                        let mut b = vec![0; n];
+                        let got = f.read_at(io_start(lo, hi, false), keep, &mut b);
+                        if at == usize::MAX {
+                            // (all ones for a read: past any end; where the pointer goes is not
+                            // modelled, so the model's is taken from the file)
+                            prop_assert!(n == 0 || got.is_err());
+                            pos = f.seek(SeekFrom::Current(0)).unwrap() as usize;
+                            continue;
+                        }
+                        let want = &data[at.min(data.len())..(at + n).min(data.len())];
+                        if n > 0 && want.is_empty() {
+                            prop_assert_eq!(got, Err(()));
+                        } else {
+                            prop_assert_eq!(got, Ok(want.len()));
+                            prop_assert_eq!(&b[..want.len()], want);
+                        }
+                        if !keep { pos = at + want.len(); }
+                    }
+                    Op::Write(b) => {
+                        if !b.is_empty() && data.len() < pos + b.len() { data.resize(pos + b.len(), 0); }
+                        if !b.is_empty() { data[pos..pos + b.len()].copy_from_slice(&b); }
+                        pos += b.len();
+                        prop_assert_eq!(f.write_bytes(&b), b.len() as u32);
+                    }
+                    Op::Read(n) => {
+                        let want = data[pos.min(data.len())..(pos + n).min(data.len())].to_vec();
+                        pos += want.len();
+                        prop_assert_eq!(f.read_vec(n), want);
+                    }
+                    Op::Seek(p) => {
+                        pos = p as usize;
+                        prop_assert_eq!(f.seek(SeekFrom::Start(p)), Some(p));
+                    }
+                }
+                prop_assert_eq!(f.seek(SeekFrom::Current(0)), Some(pos as u64));
+            }
+            drop(f);
+            prop_assert_eq!(std::fs::read(root.join("db")).unwrap(), data);
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
 }
