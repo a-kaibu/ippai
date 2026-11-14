@@ -59,6 +59,7 @@ import {
   traceName,
   sakeBase,
   sakeBuild,
+  growRetry,
   type SakeBuild,
   translatorVersion,
   versioned,
@@ -397,6 +398,18 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         legacyRegistry,
       );
   let stateMem: WebAssembly.Memory | undefined;
+  // sake.wasm got its 4 GB and still did not start (runtime.ts growRetry): again on sake-grow
+  let started = false;
+  const startOnGrow = (why: unknown): boolean => {
+    const to = growRetry(location.href, { build, fromState: !!stateFile, started });
+    if (!to) return false;
+    console.log(`sake.wasm did not start with 4 GB (${String(why)}): sake-grow`);
+    recorder?.note(`sake.wasm did not start with 4 GB: ${String(why)}; again on sake-grow`);
+    started = true;
+    log("メモリの少ない設定で起動し直しています");
+    location.replace(to);
+    return true;
+  };
   if (stateFile) {
     // (the file is not needed after: its buffer goes to the worker, not a copy of it)
     stateMem = await stateMemory(stateFile, build.memory, true);
@@ -480,6 +493,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       wasmBytes,
       (l) => recorder?.note(l),
       (e) => {
+        if (startOnGrow(e)) return;
         log(`エラー: ゲームを起動できませんでした（${e instanceof Error ? e.message : String(e)}）`);
         setUi({ back: leave });
       },
@@ -533,6 +547,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     ...(params.has("bench") ? { vnvmPrint: PRINT_CHANNEL } : {}),
     onAbort: (what: unknown) => {
       recorder?.abort(what);
+      if (startOnGrow(what)) return;
       // a crash: the way back to the list
       setUi({ back: leave });
     },
@@ -680,6 +695,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   }
   log(`${run} を起動中`);
   const sake = await factory(moduleArg);
+  // (from here on a failure is the game's, not the start's: no retry on sake-grow)
+  started = true;
   rootModule = sake;
   activeModule ??= sake;
   keepInstallation(sake as unknown as SavesModule, installation, () =>

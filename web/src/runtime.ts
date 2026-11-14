@@ -21,10 +21,26 @@ export interface SakeBuild {
 }
 
 const BUILD_KEY = "masu-sake-build";
+/** When sake.wasm last failed to start on this device with its 4 GB memory (Date.now()). */
+const FAILED_KEY = "masu-sake-4g-failed";
+/** How long a failed start keeps this device on sake-grow (a browser update may fix it). */
+export const FAILED_KEEP_MS = 30 * 24 * 3600_000;
 
-export function sakeBuild(force?: string | null): SakeBuild {
+/** When 4 GB last failed here (0: never, or no storage to say). */
+function failedAt(): number {
+  try {
+    return typeof localStorage === "undefined" ? 0 : Number(localStorage.getItem(FAILED_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** `&memory=`: "grow" forces sake-grow, "full" tries the 4 GB memory even after it failed here. */
+export function sakeBuild(force?: string | null, now = Date.now()): SakeBuild {
   let build: SakeBuild = { name: "sake-grow", jit: "g" };
-  if (force !== "grow") {
+  const failed = failedAt();
+  const stay = force !== "full" && failed > 0 && now - failed < FAILED_KEEP_MS;
+  if (force !== "grow" && !stay) {
     try {
       const memory = new WebAssembly.Memory({ initial: 65535, maximum: 65535, shared: true });
       build = { name: "sake", memory, jit: "" };
@@ -38,6 +54,33 @@ export function sakeBuild(force?: string | null): SakeBuild {
     // (no storage: offline.ts saves sake.wasm then)
   }
   return build;
+}
+
+/**
+ * The memory could be had, and yet sake.wasm did not start with it: the instance could not be
+ * made (a phone that reserved 4 GB but cannot commit what it needs, an import the browser
+ * refuses), or sake aborted before its main ran. For a fresh start of sake.wasm with the
+ * page's 4 GB memory (`build.memory`), not one already on sake-grow, not a saved state (its
+ * memory is the state's, laid out for the build it was taken with: savestate.ts), the page
+ * starts again on sake-grow: the address to go to, with `&memory=grow` (a reload throws the
+ * 4 GB away with everything else of this start), and the device remembers it for
+ * FAILED_KEEP_MS. Otherwise null: the page says it could not start, as before.
+ */
+export function growRetry(
+  href: string,
+  o: { build: SakeBuild; fromState: boolean; started: boolean },
+  now = Date.now(),
+): string | null {
+  if (o.build.name !== "sake" || !o.build.memory || o.fromState || o.started) return null;
+  const url = new URL(href);
+  if (url.searchParams.get("memory") === "grow") return null;
+  url.searchParams.set("memory", "grow");
+  try {
+    localStorage.setItem(FAILED_KEY, String(now));
+  } catch {
+    // (no storage: the next start tries 4 GB again)
+  }
+  return url.href;
 }
 
 /** The build this device ran last (offline.ts saves that one), without trying a memory. */
