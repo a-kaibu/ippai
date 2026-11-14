@@ -4497,8 +4497,9 @@ pub fn key_states() -> [u8; 256] {
 pub fn cursor_pos() -> (i32, i32) {
     with(|s| s.cursor)
 }
+/// The key's scan code (no E0 prefix) in the keyboard layout (keyboard.rs).
 pub fn vk_scan(vk: u32) -> u32 {
-    vk_to_scan(vk)
+    crate::keyboard::vk_scan(crate::keyboard::layout_of(0), vk).0
 }
 fn GetKeyState(c: &mut Ctx) -> u32 {
     let k = c.a(0) as usize & 0xff;
@@ -4534,7 +4535,7 @@ fn GetKeyboardType(c: &mut Ctx) -> u32 {
         _ => 0,
     }
 }
-fn keyboard_layout() -> u32 {
+pub(crate) fn keyboard_layout() -> u32 {
     if crate::text::acp() == 932 { 0x0411_0411 } else { 0x0409_0409 }
 }
 fn GetKeyboardLayout(_: &mut Ctx) -> u32 {
@@ -4556,45 +4557,6 @@ fn ActivateKeyboardLayout(_: &mut Ctx) -> u32 {
 }
 fn LoadKeyboardLayoutA(_: &mut Ctx) -> u32 {
     0x0411_0411
-}
-fn MapVirtualKeyA(c: &mut Ctx) -> u32 {
-    let (code, ty) = (c.a(0), c.a(1));
-    match ty {
-        0 | 3 => vk_to_scan(code),
-        1 | 2 => {
-            if ty == 2 {
-                match code {
-                    0x30..=0x39 | 0x41..=0x5a => code,
-                    _ => 0,
-                }
-            } else {
-                (0..256).find(|&v| vk_to_scan(v) == code).unwrap_or(0)
-            }
-        }
-        _ => 0,
-    }
-}
-fn MapVirtualKeyW(c: &mut Ctx) -> u32 {
-    MapVirtualKeyA(c)
-}
-fn vk_to_scan(vk: u32) -> u32 {
-    const T: &[(u32, u32)] = &[(0x1b, 1), (0x08, 14), (0x09, 15), (0x0d, 28), (0x11, 29), (0x10, 42), (0x12, 56), (0x20, 57), (0x25, 75), (0x26, 72), (0x27, 77), (0x28, 80), (0x2d, 82), (0x2e, 83), (0x24, 71), (0x23, 79), (0x21, 73), (0x22, 81)];
-    if let Some(&(_, s)) = T.iter().find(|(v, _)| *v == vk) {
-        return s;
-    }
-    const ROW: &str = "1234567890";
-    if let Some(i) = ROW.find(char::from_u32(vk).unwrap_or('\0')) {
-        return 2 + i as u32;
-    }
-    const L: &str = "QWERTYUIOPASDFGHJKLZXCVBNM";
-    const S: [u32; 26] = [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 44, 45, 46, 47, 48, 49, 50];
-    if let Some(i) = L.find(char::from_u32(vk).unwrap_or('\0')) {
-        return S[i];
-    }
-    if (0x70..0x7c).contains(&vk) {
-        return 59 + vk - 0x70;
-    }
-    0
 }
 fn GetKeyNameTextA(c: &mut Ctx) -> u32 {
     let s = format!("Key{}", (c.a(0) >> 16) & 0xff);
@@ -6136,6 +6098,53 @@ fn LoadImageW(c: &mut Ctx) -> u32 {
 fn CreateIcon(_: &mut Ctx) -> u32 {
     fake_handle()
 }
+/// CreateIconFromResource(Ex)(bits, size, icon, version, cx, cy, flags): an icon or cursor from
+/// an RT_ICON / RT_CURSOR resource's data (a cursor's starts with its hotspot, two WORDs), a
+/// BITMAPINFOHEADER (or BITMAPCOREHEADER) DIB or a PNG; 0 for anything else (as Windows: a
+/// version outside 2.0..=3.0, data too short for its header). The pictures are not used, as
+/// LoadIcon's are not; a cursor's hotspot is kept for GetIconInfo. (SDL 1.2 sets Ren'Py's window
+/// icon so.)
+pub(crate) fn icon_from_resource(bits: &[u8], icon: bool, version: u32) -> Option<Option<(u16, u16)>> {
+    if !(0x2_0000..=0x3_0000).contains(&version) {
+        return None;
+    }
+    let (hot, dib) = if icon {
+        (None, bits)
+    } else {
+        let w = |o: usize| u16::from_le_bytes([bits[o], bits[o + 1]]);
+        if bits.len() < 4 {
+            return None;
+        }
+        (Some((w(0), w(2))), &bits[4..])
+    };
+    if dib.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some(hot);
+    }
+    let hs = u32::from_le_bytes(dib.get(..4)?.try_into().ok()?) as usize;
+    (matches!(hs, 12 | 40 | 52 | 56 | 108 | 124) && dib.len() >= hs).then_some(hot)
+}
+fn icon_from_resource_call(c: &mut Ctx, version: u32) -> u32 {
+    let (p, size, icon) = (c.a(0), c.a(1), c.a(2) != 0);
+    if p == 0 || size == 0 {
+        crate::k32::last_error(87);
+        return 0;
+    }
+    let bits = mem::slice(p, size.min(1 << 24)).to_vec();
+    let Some(hot) = icon_from_resource(&bits, icon, version) else { return 0 };
+    let h = fake_handle();
+    if let Some(hot) = hot {
+        HOTSPOTS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, hot);
+    }
+    h
+}
+fn CreateIconFromResource(c: &mut Ctx) -> u32 {
+    let v = c.a(3);
+    icon_from_resource_call(c, v)
+}
+fn CreateIconFromResourceEx(c: &mut Ctx) -> u32 {
+    let v = c.a(3);
+    icon_from_resource_call(c, v)
+}
 fn CreateIconIndirect(_: &mut Ctx) -> u32 {
     fake_handle()
 }
@@ -7506,7 +7515,7 @@ pub fn init() {
         GetForegroundWindow, SetForegroundWindow, BringWindowToTop, SetCapture, ReleaseCapture, GetCapture,
         SendInput, keybd_event, mouse_event, TrackMouseEvent, GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
         GetKeyboardState, SetKeyboardState, GetKeyboardType, GetKeyboardLayout, GetKeyboardLayoutList, WaitForInputIdle,
-        ActivateKeyboardLayout, LoadKeyboardLayoutA, MapVirtualKeyA, MapVirtualKeyW, GetKeyNameTextA, GetKeyNameTextW,
+        ActivateKeyboardLayout, LoadKeyboardLayoutA, GetKeyNameTextA, GetKeyNameTextW,
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxExW, MessageBoxIndirectA, MessageBoxIndirectW,
         SetWindowsHookExA, SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, WinHelpA, GetSysColor,
         GetSysColorBrush, GetSystemMetrics, SystemParametersInfoA, SystemParametersInfoW, ChangeDisplaySettingsA,
@@ -7525,7 +7534,7 @@ pub fn init() {
         SetMenu, GetSystemMenu, DrawMenuBar, TrackPopupMenu, TrackPopupMenuEx, GetMenuItemRect,
         SetMenuItemBitmaps, GetMenuCheckMarkDimensions,
         LoadStringA, LoadStringW, LoadCursorA, LoadCursorW, LoadCursorFromFileA, LoadCursorFromFileW, LoadIconA, LoadIconW, LoadImageA,
-        LoadImageW, CreateIcon, CreateIconIndirect, CreateCursor, CopyIcon, DestroyCursor, DestroyIcon,
+        LoadImageW, CreateIcon, CreateIconFromResource, CreateIconFromResourceEx, CreateIconIndirect, CreateCursor, CopyIcon, DestroyCursor, DestroyIcon,
         GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA, LoadMenuW,
         CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharLowerBuffW, CharUpperBuffW, CharNextA, CharNextExA, CharNextW,
         CharPrevA, CharPrevW, CharPrevExA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
@@ -7533,6 +7542,13 @@ pub fn init() {
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, GetUserObjectInformationW, SetWinEventHook, UnhookWinEvent, SetProcessDPIAware,
         IsWindowUnicode, RegisterHotKey, UnregisterHotKey,
     );
+    {
+        use crate::keyboard::*;
+        reg!("user32"; MapVirtualKeyA, MapVirtualKeyExA, ToUnicode, ToUnicodeEx, ToAscii, ToAsciiEx, VkKeyScanA, VkKeyScanW,
+            VkKeyScanExA, VkKeyScanExW);
+        implement("user32", "MapVirtualKeyW", MapVirtualKeyA);
+        implement("user32", "MapVirtualKeyExW", MapVirtualKeyExA);
+    }
     reg!("user32"; DdeInitializeA, DdeCreateStringHandleA, DdeCreateStringHandleW, DdeConnect, DdeGetLastError,
         DdeQueryStringA, DdeQueryStringW, DdeCmpStringHandles);
     implement("user32", "DdeInitializeW", DdeInitializeA);
@@ -8525,6 +8541,44 @@ mod def_button_search {
                 // (found through windows to search into only)
                 let mut p = t[k as usize - 1].0;
                 while let Some(i) = p { prop_assert!(t[i].2); p = t[i].0; }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod icon_resource_tests {
+    use super::icon_from_resource;
+    use proptest::prelude::*;
+
+    fn dib(header: u32, extra: usize) -> Vec<u8> {
+        let mut v = header.to_le_bytes().to_vec();
+        v.resize(header as usize + extra, 0);
+        v
+    }
+
+    #[test]
+    fn icons_and_cursors() {
+        assert_eq!(icon_from_resource(&dib(40, 64), true, 0x3_0000), Some(None));
+        let mut cur = vec![3, 0, 7, 0];
+        cur.extend(dib(40, 64));
+        assert_eq!(icon_from_resource(&cur, false, 0x3_0000), Some(Some((3, 7))), "a cursor: its hotspot first");
+        assert_eq!(icon_from_resource(b"\x89PNG\r\n\x1a\nrest", true, 0x3_0000), Some(None));
+        assert_eq!(icon_from_resource(&dib(40, 64), true, 0x1_0000), None, "version");
+        assert_eq!(icon_from_resource(&dib(40, 64), true, 0x4_0000), None);
+        assert_eq!(icon_from_resource(&dib(40, 0)[..20], true, 0x3_0000), None, "shorter than its header");
+        assert_eq!(icon_from_resource(&[1, 2], false, 0x3_0000), None);
+    }
+
+    proptest! {
+        /// Any bytes: no panic; accepted only with a header (or PNG signature) where one belongs.
+        #[test]
+        fn any_bytes(bits in proptest::collection::vec(any::<u8>(), 0..200), icon in any::<bool>(), v in 0u32..0x5_0000) {
+            if let Some(hot) = icon_from_resource(&bits, icon, v) {
+                prop_assert!((0x2_0000..=0x3_0000).contains(&v));
+                prop_assert_eq!(hot.is_some(), !icon);
+                let d = if icon { &bits[..] } else { &bits[4..] };
+                prop_assert!(d.starts_with(b"\x89PNG\r\n\x1a\n") || d.len() >= 4 && d.len() >= u32::from_le_bytes([d[0], d[1], d[2], d[3]]) as usize);
             }
         }
     }

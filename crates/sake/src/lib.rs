@@ -95,6 +95,7 @@ pub mod fmtmsg;
 pub mod gdi;
 pub mod gdi_geom;
 pub mod k32;
+pub mod keyboard;
 pub mod kern;
 pub mod pipe;
 pub mod process;
