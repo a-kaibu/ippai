@@ -104,6 +104,14 @@ impl VStream {
         mp4::annexb(&self.v, s.key, &b).ok_or(E_FAIL)
     }
 
+    /// Frame `p` (presentation order) of a Decoded stream, wherever the reads were: the page
+    /// decodes from the key frame before it (a movie's frames by number, movie.rs).
+    pub fn frame(&mut self, c: Option<&mut Ctx>, p: usize) -> Result<Option<Piece>, u32> {
+        self.next = p;
+        self.ended = false;
+        self.read(c)
+    }
+
     /// The next sample, or None at the end (Err: it could not be read or decoded).
     pub fn read(&mut self, mut c: Option<&mut Ctx>) -> Result<Option<Piece>, u32> {
         let n = self.v.samples.len();

@@ -156,6 +156,18 @@ pub fn set_done(b: u32, n: u32, status: u32) {
         r.status = status;
     });
 }
+/// Result `b`'s object becomes `o` (its reference handed over; the one before released).
+pub fn set_object(c: &mut Ctx, b: u32, o: u32) {
+    let old = result(b, |r| std::mem::replace(&mut r.object, o));
+    match old {
+        Some(old) => release(c, old),
+        None => release(c, o),
+    }
+}
+/// Result `b`'s object (no reference taken).
+pub fn object_of(b: u32) -> u32 {
+    result(b, |r| r.object).unwrap_or(0)
+}
 pub fn done_of(b: u32) -> Option<(u32, u32)> {
     result(b, |r| (r.done, r.status))
 }

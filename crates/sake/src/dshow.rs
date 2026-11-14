@@ -1389,16 +1389,7 @@ fn sync(b: u32) {
         let src = g.src.unwrap_or((0, 0, video.0, video.1));
         if g.evr != 0 {
             if let Some(e) = evr_with(g.evr, |e| *e).filter(|e| e.windowless) {
-                // (a VMR-9 shows nothing until it is given a destination; the EVR fills the window)
-                let dst = if (e.dst.2 > 0 && e.dst.3 > 0) || e.vmr { e.dst } else { crate::user::client_rect_screen(e.hwnd).map_or((0, 0, 0, 0), |r| (0, 0, r.r - r.l, r.b - r.t)) };
-                // (the EVR's source as fractions of the picture)
-                let s = e.src;
-                let src = if e.vmr {
-                    e.src_px.unwrap_or((0, 0, video.0, video.1))
-                } else {
-                    ((s[0] * video.0 as f32) as i32, (s[1] * video.1 as f32) as i32, ((s[2] - s[0]) * video.0 as f32) as i32, ((s[3] - s[1]) * video.1 as f32) as i32)
-                };
-                return (Place { hwnd: e.hwnd, dst, src, letterbox: e.mode & 1 != 0, visible: e.hwnd != 0 && (g.state != 0 || g.visible) }, g.volume);
+                return (place_of(&e, video, g.state != 0 || g.visible), g.volume);
             }
         }
         // the window's place (in its owner's client area, or on the screen), the picture in it
@@ -1948,6 +1939,60 @@ impl Graph {
     }
 }
 
+/// Where renderer `e`'s settings put a `video` picture (`shown`: it is drawn at all).
+fn place_of(e: &Evr, video: (i32, i32), shown: bool) -> Place {
+    // (a VMR-9 shows nothing until it is given a destination; the EVR fills the window)
+    let dst = if (e.dst.2 > 0 && e.dst.3 > 0) || e.vmr { e.dst } else { crate::user::client_rect_screen(e.hwnd).map_or((0, 0, 0, 0), |r| (0, 0, r.r - r.l, r.b - r.t)) };
+    // (the EVR's source as fractions of the picture)
+    let s = e.src;
+    let src = if e.vmr {
+        e.src_px.unwrap_or((0, 0, video.0, video.1))
+    } else {
+        ((s[0] * video.0 as f32) as i32, (s[1] * video.1 as f32) as i32, ((s[2] - s[0]) * video.0 as f32) as i32, ((s[3] - s[1]) * video.1 as f32) as i32)
+    };
+    Place { hwnd: e.hwnd, dst, src, letterbox: e.mode & 1 != 0, visible: e.hwnd != 0 && shown }
+}
+
+/// A Media Session's EVR (mf/session.rs), drawing into `hwnd`: its block (one reference, the
+/// session's: `evr_drop`); IMFVideoDisplayControl is at word 2.
+pub(crate) fn session_evr(hwnd: u32) -> u32 {
+    // (IMFGetService's iid's first word: any slot gives the block)
+    let iid = mem::heap_alloc(16, true);
+    w32(iid, 0xfa99_3888);
+    let b = evr(iid).map_or(0, |p| p - ps());
+    mem::heap_free(iid);
+    evr_with(b, |e| e.hwnd = hwnd);
+    b
+}
+/// The session's reference to EVR `b` goes.
+pub(crate) fn evr_drop(b: u32) {
+    let mut g = EVRS.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(HashMap::new);
+    let left = match m.get_mut(&b).map(|e| &mut e.refs) {
+        Some(Some(n)) => {
+            *n = n.saturating_sub(1);
+            *n
+        }
+        _ => return,
+    };
+    if left == 0 {
+        m.remove(&b);
+        drop(g);
+        crate::com::free_later(b);
+    }
+}
+/// A reference to EVR `b`'s IMFVideoDisplayControl (0: no such EVR).
+pub(crate) fn evr_display_control(b: u32) -> u32 {
+    match evr_with(b, |e| e.refs.as_mut().map(|n| *n += 1)) {
+        Some(_) => b + 2 * ps(),
+        None => 0,
+    }
+}
+/// Where EVR `b` puts a `video` picture.
+pub(crate) fn evr_place(b: u32, video: (i32, i32), shown: bool) -> Option<Place> {
+    evr_with(b, |e| place_of(e, video, shown))
+}
+
 // ---------------------------------------------------------------------------------------------
 // The EVR: IBaseFilter, IMFGetService and IMFVideoDisplayControl (what GetService hands out),
 // each one word of the block like the graph's interfaces. The display control keeps the
@@ -1987,6 +2032,7 @@ pub(crate) fn evr_changed(e: u32) {
     for b in gs {
         sync(b);
     }
+    crate::mf::session::evr_changed(e);
 }
 
 /// A VMR-9 of vmr9.rs at `key` (its IBaseFilter): drawn as the old ones were; `windowless`
@@ -2106,7 +2152,8 @@ fn dc_block(c: &Ctx) -> u32 {
 }
 /// The picture size of the movie a graph renders into renderer `e` (0x0: none).
 fn native(e: u32) -> (i32, i32) {
-    GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).values().find(|g| g.evr == e && g.playing).map(|g| g.video).unwrap_or((0, 0))
+    let g = GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).values().find(|g| g.evr == e && g.playing).map(|g| g.video);
+    g.or_else(|| crate::mf::session::native(e)).unwrap_or((0, 0))
 }
 /// GetNativeVideoSize(size, aspect): the movie's of a graph it renders for
 fn dc_native(c: &mut Ctx) -> u32 {

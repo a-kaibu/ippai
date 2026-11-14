@@ -6,8 +6,8 @@
 //! A movie with a `.vnv` next to it (`ippai pack`) plays through dshow_play's movie thread
 //! (its clock and sound; no window of its own: the game draws the frames it takes); any other
 //! source fails to load (MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED), so the game goes on past it.
-//! The Media Session is not there (its creators answer E_NOTIMPL: Artemis then plays its movies
-//! with DirectShow). The Source Reader reads sound files (mf/reader.rs).
+//! The Media Session plays MP4 movies (mf/session.rs, mf/topology.rs, mf/movie.rs). The Source
+//! Reader reads sound files and MP4s (mf/reader.rs).
 //!
 //! The engine's state follows the HTML media element it is modelled on (`State`, kept free of
 //! the guest and tested here); winref's mfengine probe has Windows' answers.
@@ -1130,6 +1130,7 @@ static EVENTS_CV: std::sync::Condvar = std::sync::Condvar::new();
 pub(crate) fn snap_wake() {
     drop(ENGINES.lock());
     EVENTS_CV.notify_all();
+    session::snap_wake();
 }
 
 /// The next event of engine `b` for its events thread: Err when it shut down (None: no such
@@ -1952,18 +1953,17 @@ pub fn init() {
     implement("mfplat", "MFShutdown", MFShutdown);
     implement("mfplat", "MFCreateAttributes", MFCreateAttributes);
     implement("mfplat", "MFCreateDXGIDeviceManager", MFCreateDXGIDeviceManager);
-    implement("mf", "MFCreateMediaSession", |c| none(c, 1));
-    implement("mf", "MFCreateTopology", |c| none(c, 0));
-    implement("mf", "MFCreateTopologyNode", |c| none(c, 1));
-    implement("mf", "MFGetService", |c| none(c, 3));
-    implement("mf", "MFCreateVideoRendererActivate", |c| none(c, 1));
-    implement("mf", "MFCreateAudioRendererActivate", |c| none(c, 0));
+    session::init();
+    topology::init();
     reader::init();
     plat::init();
     source::init();
 }
 
 mod mp4;
+pub mod movie;
+pub mod session;
+mod topology;
 mod source;
 mod vstream;
 mod plat;

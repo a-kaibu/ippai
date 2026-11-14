@@ -183,6 +183,8 @@ const SOUND_READ: usize = 64 << 10;
 pub enum Sound {
     Vorbis(Vorbis),
     Asf(crate::asfmovie::Audio),
+    /// an MP4's (mf/movie.rs)
+    Mf(crate::mf::movie::Audio),
 }
 
 impl Sound {
@@ -191,6 +193,7 @@ impl Sound {
         match self {
             Sound::Vorbis(v) => v.rate,
             Sound::Asf(a) => a.rate,
+            Sound::Mf(a) => a.rate,
         }
     }
     /// Appends `n` stereo frames from frame `from` to `out` (silence past the end).
@@ -198,6 +201,7 @@ impl Sound {
         match self {
             Sound::Vorbis(v) => v.take(from, n, out),
             Sound::Asf(a) => a.take(from, n, out),
+            Sound::Mf(a) => a.take(from, n, out),
         }
     }
 }
@@ -392,12 +396,20 @@ impl Movie {
             let a = crate::asfmovie::open(&crate::files::resolve(name)?)?;
             Some(Movie { stream: a.id, w: a.w, h: a.h, frames: a.frames, rate: a.rate, duration: a.duration, sound: a.audio.map(Sound::Asf) })
         })
+        // (an MP4: through Media Foundation's source, mf/movie.rs)
+        .or_else(|| crate::mf::movie::open_path(&crate::files::resolve(name)?))
     }
 }
 
 impl Drop for Movie {
     fn drop(&mut self) {
-        if crate::asfmovie::is(self.stream) { crate::asfmovie::close(self.stream) } else { video::close(self.stream) }
+        if crate::asfmovie::is(self.stream) {
+            crate::asfmovie::close(self.stream)
+        } else if crate::mf::movie::is(self.stream) {
+            crate::mf::movie::close(self.stream)
+        } else {
+            video::close(self.stream)
+        }
     }
 }
 
@@ -408,13 +420,19 @@ impl Drop for Movie {
 pub unsafe fn frame(stream: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32) -> bool {
     // SAFETY: the caller's
     unsafe {
-        if crate::asfmovie::is(stream) { crate::asfmovie::frame(stream, n, dst, pitch, w, h) } else { video::frame(stream, n, dst, pitch, w, h, video::Out::Rgb601) }
+        if crate::asfmovie::is(stream) {
+            crate::asfmovie::frame(stream, n, dst, pitch, w, h)
+        } else if crate::mf::movie::is(stream) {
+            crate::mf::movie::frame(stream, n, dst, pitch, w, h)
+        } else {
+            video::frame(stream, n, dst, pitch, w, h, video::Out::Rgb601)
+        }
     }
 }
 
 /// Whether a movie's frames can no longer come (kura::video::failed).
 pub fn failed(stream: u32) -> bool {
-    !crate::asfmovie::is(stream) && video::failed(stream)
+    if crate::mf::movie::is(stream) { crate::mf::movie::failed(stream) } else { !crate::asfmovie::is(stream) && video::failed(stream) }
 }
 
 /// Where a graph's picture goes.
@@ -664,7 +682,7 @@ fn turn() -> Duration {
     BUFS.with(|b| b.borrow_mut().retain(|k, _| live.contains(k)));
     for k in ended {
         // (a Media Engine's movie, or a graph's)
-        if !crate::mf::ended(k) && !crate::amstream::ended(k) && !crate::mci::ended(k) {
+        if !crate::mf::ended(k) && !crate::mf::session::ended(k) && !crate::amstream::ended(k) && !crate::mci::ended(k) {
             crate::dshow::completed(k);
         }
     }

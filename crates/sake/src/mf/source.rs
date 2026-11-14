@@ -209,7 +209,7 @@ pub const YUY2: u32 = u32::from_le_bytes(*b"YUY2");
 pub const RGB32: u32 = 22;
 pub const ARGB32: u32 = 21;
 
-fn g(s: &str) -> Guid {
+pub fn g(s: &str) -> Guid {
     crate::actctx::parse_guid(s).unwrap()
 }
 fn ratio(a: u32, b: u32) -> Val {
@@ -413,6 +413,10 @@ struct Side {
 static SIDES: Mutex<Option<HashMap<u32, Side>>> = Mutex::new(None);
 fn side(b: u32) -> Option<Side> {
     SIDES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(&b).cloned()
+}
+/// The media and stream index of stream descriptor `b` (one of ours).
+pub fn sd_stream(b: u32) -> Option<(Arc<Media>, usize)> {
+    side(b).map(|s| (s.media, s.stream))
 }
 fn new_attr_object(vt: u32, s: Store, sd: Side) -> u32 {
     let b = object(vt, 1);
@@ -844,4 +848,6 @@ fn MFCreateSourceResolver(c: &mut Ctx) -> u32 {
 
 pub fn init() {
     implement("mfplat", "MFCreateSourceResolver", MFCreateSourceResolver);
+    // (mf.dll has it too: import libraries that name mf for it, mingw's)
+    implement("mf", "MFCreateSourceResolver", MFCreateSourceResolver);
 }
