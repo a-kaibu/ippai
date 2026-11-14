@@ -1318,7 +1318,6 @@ fn main() {
     let engine = Engine::new(&config).unwrap();
     let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages(), koji::jit::wasm::memory_min_pages())).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
-    let m = base as *mut u8;
     let mut fails = 0;
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     for t in 0..count {
@@ -1417,6 +1416,8 @@ fn looping_region_is_bounded() {
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let mut cpu = initial(&mut Rng(1), 0);
     cpu.eip = CODE;
+    // (the JIT's MXCSR: with another one (initial's are random) the interpreter runs the loop)
+    cpu.mxcsr = 0x1f80;
     unsafe {
         // jmp to itself: no END, no return to the host's outer step counter.
         std::ptr::copy_nonoverlapping([0xeb, 0xfe].as_ptr(), (base + CODE as usize) as *mut u8, 2);
@@ -1450,6 +1451,7 @@ fn sse_encodes() {
 
 /// Code that rewrites itself inside one region (issue #80): `mov eax, imm32` whose immediate
 /// the loop's `add byte [rip+...], 1` raises each time around. rdx: the sum of what EAX was.
+#[cfg(test)]
 fn self_modifying(watch: bool) -> u64 {
     let mut config = Config::new();
     config.wasm_threads(true).consume_fuel(true);

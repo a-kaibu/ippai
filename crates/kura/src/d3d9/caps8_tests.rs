@@ -144,11 +144,14 @@ fn d3d8_caps2_is_windows() {
             let mine = if r != 0 {
                 format!("caps2 {} {r:#x}", w[1])
             } else {
+                // (FULLSCREENGAMMA is the adapter's: the winref runner's display adapter has no
+                // gamma ramp and says 0, real GPUs' drivers say 1, as we do; not compared)
+                assert!(c[3] & 0x2_0000 != 0, "FULLSCREENGAMMA");
                 format!(
                     "caps2 {} windowed {} gamma {} dynamic {}",
                     w[1],
                     (c[3] & CAPS2_CANRENDERWINDOWED != 0) as u32,
-                    (c[3] & 0x2_0000 != 0) as u32,
+                    w[5],
                     (c[3] & 0x2000_0000 != 0) as u32
                 )
             };
