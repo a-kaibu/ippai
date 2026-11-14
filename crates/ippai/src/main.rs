@@ -193,12 +193,20 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
             StorageCmd::Packs { games, jit, mib } => {
                 let jit = jit.unwrap_or_else(|| cache.join("jit"));
                 let games = if games.is_empty() { pack::game_ids(store)? } else { games };
+                let mut failed = 0;
                 for id in games {
                     let list = pack::read_order_list(store, &jit, &id);
                     let order = pack::read_order(store, &id, &list)?;
-                    let p = storage.pack_objects(&order, mib << 20).await?;
-                    println!("{id}: {} packs, {} objects, {} MiB ({} chunks in read order first; {} in a pack already)", p.packs, p.objects, p.bytes >> 20, list.len() / 16, p.skipped);
+                    // (one game failing leaves the others: run again to retry, what was packed stays)
+                    match storage.pack_objects(&order, mib << 20).await {
+                        Ok(p) => println!("{id}: {} packs, {} objects, {} MiB ({} chunks in read order first; {} in a pack already)", p.packs, p.objects, p.bytes >> 20, list.len() / 16, p.skipped),
+                        Err(e) => {
+                            eprintln!("{id}: {e:#}");
+                            failed += 1;
+                        }
+                    }
                 }
+                anyhow::ensure!(failed == 0, "{failed} games not packed");
                 Ok(())
             }
             StorageCmd::Gc { grace_days, keep_backups } => {
