@@ -539,6 +539,10 @@ pub struct D3d {
     pipelines: HashMap<u32, Pipe>,
     samplers: HashMap<u32, Id>,
     groups1: HashMap<Vec<u32>, Id>,
+    /// (draw's scratch: the key of its group 1)
+    k1: Vec<u32>,
+    /// (draw2's scratch: a group's key)
+    k2: Vec<u32>,
     groups0: HashMap<(u32, u32), Id>,
     /// Direct3D 11 bind groups by pipeline, group and binding words (cleared when a texture or
     /// buffer comes or goes): layout, group, textures it uses
@@ -680,6 +684,8 @@ impl D3d {
             pipelines: HashMap::new(),
             samplers: HashMap::new(),
             groups1: HashMap::new(),
+            k1: Vec::new(),
+            k2: Vec::new(),
             groups0: HashMap::new(),
             groups2: HashMap::new(),
             layout0,
@@ -2350,7 +2356,8 @@ impl D3d {
         let blend_factor = c[i + 16];
         let ntex = c[i + 17] as usize;
         let mut p = i + 18;
-        let texs: Vec<[u32; 3]> = (0..ntex).map(|t| [c[p + 3 * t], c[p + 3 * t + 1], c[p + 3 * t + 2]]).collect();
+        // (texture triples: slot, texture, sampler key; read from the command, not copied)
+        let texs = &c[p..p + 3 * ntex];
         p += 3 * ntex;
         // (streams: (buffer, offset) pairs, DATA the data block; INDEX_PAIR | buffer: the indices
         // from that buffer, d3d9/device.rs page_buffer)
@@ -2369,7 +2376,7 @@ impl D3d {
         let (tw, th) = if self.targets2.is_some() { self.target_size2() } else { self.target_size() };
         let Some((vpt, sci)) = rects9(tw, th, [vx, vy, vw, vh, minz, maxz], [sx, sy, sw, sh], self.clip) else { return p };
         if !self.clears.is_empty() {
-            for t in &texs {
+            for t in texs.chunks_exact(3) {
                 self.settle(t[1]);
             }
         }
@@ -2390,7 +2397,7 @@ impl D3d {
         }
         // (the pass may have begun before a segment ended: its stamp must not stay)
         self.touch(self.target[0]);
-        for t in &texs {
+        for t in texs.chunks_exact(3) {
             if t[1] != 0 {
                 self.use_tex(t[1]);
             }
@@ -2411,13 +2418,17 @@ impl D3d {
         };
         gpu::set_bind_group(0, g0, &[vso, pso]);
         // (sampling the texture being drawn to is not allowed in WebGPU: it reads as white)
-        let atts: Vec<u32> = match &self.targets2 {
-            Some(tg) => (0..tg[0] as usize).map(|k| tg[1 + k * 3]).collect(),
-            None => vec![self.target[0]],
-        };
+        let mut atts = [0u32; 8];
+        match &self.targets2 {
+            Some(tg) => (0..(tg[0] as usize).min(8)).for_each(|k| atts[k] = tg[1 + k * 3]),
+            None => atts[0] = self.target[0],
+        }
         let drawn_to = |id: u32| id != 0 && atts.contains(&id);
-        let mut k1: Vec<u32> = texs.iter().flatten().copied().collect();
-        for t in texs.iter().filter(|t| drawn_to(t[1])) {
+        // (the group's key in a buffer kept from draw to draw)
+        let mut k1 = std::mem::take(&mut self.k1);
+        k1.clear();
+        k1.extend_from_slice(texs);
+        for t in texs.chunks_exact(3).filter(|t| drawn_to(t[1])) {
             k1.push(u32::MAX);
             k1.push(t[1]);
         }
@@ -2425,12 +2436,12 @@ impl D3d {
             k1.push(u32::MAX - 1);
             k1.push(dims);
         }
-        let g1 = match self.groups1.get(&k1) {
+        let g1 = match self.groups1.get(k1.as_slice()) {
             Some(&g) => g,
             None => {
                 let mut entries = Vec::new();
                 for s in 0..8u32 {
-                    let t = texs.iter().find(|x| x[0] == s);
+                    let t = texs.chunks_exact(3).find(|x| x[0] == s);
                     let dim = dims >> (s * 2) & 3;
                     let id = t.map(|t| t[1]).filter(|&id| !drawn_to(id) && self.textures.get(&id).is_some_and(|tex| tex.format != DS));
                     let view = match id.and_then(|id| self.slot_view(id, dim)) {
@@ -2446,10 +2457,11 @@ impl D3d {
                 if self.groups1.len() > 4096 {
                     drop_all(&mut self.groups1);
                 }
-                self.groups1.insert(k1, g);
+                self.groups1.insert(k1.clone(), g);
                 g
             }
         };
+        self.k1 = k1;
         gpu::set_bind_group(1, g1, &[]);
         let mut index_from = None;
         let mut slot = 0;
@@ -3663,15 +3675,16 @@ impl D3d {
         q_ += 1;
         let nvb = c[q_] as usize;
         q_ += 1;
-        let vbs: Vec<(u32, u32)> = (0..nvb).map(|b| (c[q_ + 2 * b], c[q_ + 2 * b + 1])).collect();
+        // ((buffer, offset) pairs, read from the command)
+        let vbs = &c[q_..q_ + 2 * nvb];
         q_ += 2 * nvb;
         let (ib, ioff, ifmt) = (c[q_], c[q_ + 1], c[q_ + 2]);
         q_ += 3;
-        let mut groups: Vec<&[u32]> = Vec::new();
-        for _ in 0..2 {
+        let mut groups: [&[u32]; 2] = [&[], &[]];
+        for g in &mut groups {
             let n = c[q_] as usize;
             q_ += 1;
-            groups.push(&c[q_..q_ + n * 8]);
+            *g = &c[q_..q_ + n * 8];
             q_ += n * 8;
         }
         let (indexed, count, instances, start, base, first) = (c[q_], c[q_ + 1], c[q_ + 2], c[q_ + 3], c[q_ + 4] as i32, c[q_ + 5]);
@@ -3694,14 +3707,10 @@ impl D3d {
             }
         }
         // (depth textures it reads as floats: their copies, up to date)
-        let depths: Vec<u32> = groups
-            .iter()
-            .flat_map(|g| g.chunks(8))
-            .filter(|e| e[1] == 1 && self.textures.get(&e[2]).is_some_and(|t| is_depth(t.format)))
-            .map(|e| e[2])
-            .collect();
-        for z in depths {
-            self.depth_twin(z);
+        for e in groups.iter().flat_map(|g| g.chunks(8)) {
+            if e[1] == 1 && self.textures.get(&e[2]).is_some_and(|t| is_depth(t.format)) {
+                self.depth_twin(e[2]);
+            }
         }
         // the first draw that uses the depth buffer's depth or stencil: a pass that keeps it
         // (it starts from what the last clear left)
@@ -3743,17 +3752,14 @@ impl D3d {
         }
         let (tw, th) = self.target_size2();
         let Some((vpt, sci)) = rects11(tw, th, [vx, vy, vw, vh, minz, maxz], [sx, sy, sw, sh], s_on != 0) else { return q_ };
-        let (pipeline, layouts) = {
-            let p = &self.pipelines2[&pid];
-            (p.pipeline, p.layouts.clone())
-        };
+        let pipeline = self.pipelines2[&pid].pipeline;
         gpu::set_pipeline(pipeline);
         gpu::set_viewport(vpt[0], vpt[1], vpt[2], vpt[3], vpt[4], vpt[5]);
         gpu::set_scissor(sci[0], sci[1], sci[2], sci[3]);
         gpu::set_blend_constant(blend);
         gpu::set_stencil_ref(stencil_ref);
         for (gi, g) in groups.iter().enumerate() {
-            let layout = layouts[gi];
+            let layout = self.pipelines2[&pid].layouts[gi];
             // (the same resources as an earlier draw: its bind group; not when it binds the
             // batch's data block, whose offsets change every draw)
             for e in g.chunks(8) {
@@ -3762,18 +3768,24 @@ impl D3d {
                 }
             }
             let has_data = g.chunks(8).any(|e| e[1] == 0 && e[2] == DATA);
-            let mut key = Vec::new();
+            // (the key in a buffer kept from draw to draw; the textures a kept group uses taken
+            // out for use_tex and put back, not cloned)
+            let mut key = std::mem::take(&mut self.k2);
+            key.clear();
             if !has_data {
-                key.reserve(g.len() + 2);
                 key.push(pid);
                 key.push(gi as u32);
                 key.extend_from_slice(g);
-                if let Some((l, grp, used)) = self.groups2.get(&key) {
+                if let Some((l, grp, used)) = self.groups2.get_mut(key.as_slice()) {
                     if *l == layout {
-                        let (grp, used) = (*grp, used.clone());
-                        for t in used {
+                        let (grp, used) = (*grp, std::mem::take(used));
+                        for &t in &used {
                             self.use_tex(t);
                         }
+                        if let Some(e) = self.groups2.get_mut(key.as_slice()) {
+                            e.2 = used;
+                        }
+                        self.k2 = key;
                         gpu::set_bind_group(gi as u32, grp, &[]);
                         continue;
                     }
@@ -3835,8 +3847,9 @@ impl D3d {
                 if self.groups2.len() > 4096 {
                     self.clear_groups2();
                 }
-                self.groups2.insert(key, (layout, group, used));
+                self.groups2.insert(key.clone(), (layout, group, used));
             }
+            self.k2 = key;
             gpu::set_bind_group(gi as u32, group, &[]);
             if !has_data {
                 // (kept in the cache)
@@ -3844,7 +3857,7 @@ impl D3d {
                 gpu::drop(group);
             }
         }
-        for (k, &(b, off)) in vbs.iter().enumerate() {
+        for (k, (b, off)) in vbs.chunks_exact(2).map(|v| (v[0], v[1])).enumerate() {
             if b != DATA && !self.bused.contains(&b) {
                 self.bused.push(b);
             }

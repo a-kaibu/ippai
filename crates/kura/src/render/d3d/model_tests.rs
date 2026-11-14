@@ -1350,3 +1350,77 @@ fn commands_naming_gone_textures_do_not_abort() {
         d.resolve_into(id, 0, dv, "rgba8unorm");
     }
 }
+
+impl Gen11 {
+    /// A pass into layer 22 (it may sample the picture 23), the picture made and written again, a pass
+    /// into 21, both read back; `split`: 22 read back before the write too (a readback submits
+    /// what was recorded: the write comes after the pass for sure).
+    fn write_between(&mut self, fseed: u64, dst: u32, split: bool, remake: bool) -> Vec<Batch> {
+        let saved = std::mem::replace(&mut self.r, Rng(fseed | 1));
+        let mut b = Batch::new();
+        let (vb, ib) = (self.next_buf, self.next_buf + 1);
+        self.next_buf += 2;
+        let verts: Vec<u8> = (0..64 * 16).map(|_| self.r.below(3) as u8).collect();
+        let idx: Vec<u8> = (0..64u16).flat_map(|k| (k % 16).to_le_bytes()).collect();
+        b.c.extend_from_slice(&[CREATE_BUFFER, vb, verts.len() as u32]);
+        let off = b.blob(&verts);
+        b.c.extend_from_slice(&[WRITE_BUFFER, vb, 0, off, verts.len() as u32]);
+        b.c.extend_from_slice(&[CREATE_BUFFER, ib, idx.len() as u32]);
+        let off = b.blob(&idx);
+        b.c.extend_from_slice(&[WRITE_BUFFER, ib, 0, off, idx.len() as u32]);
+        self.pass(&mut b, &[(22, 0)], false, vb, ib, &verts, &idx, false);
+        let mut out = Vec::new();
+        if split {
+            b.c.extend_from_slice(&[READBACK, 0x7fff_0000, 22, 0, 0, 0, 16, 16, dst, 64]);
+        }
+        // (made again: a destroyed texture in commands not submitted yet fails the submit)
+        if remake {
+            b.c.extend_from_slice(&[DESTROY_TEXTURE, 23, CREATE_TEXTURE2, 23, 8, 8, 1, 2, 0, 0]);
+            self.picture(&mut b, 1);
+        }
+        self.picture(&mut b, 0);
+        self.pass(&mut b, &[(21, 0)], false, vb, ib, &verts, &idx, false);
+        for t in [22u32, 21] {
+            self.req += 1;
+            b.c.extend_from_slice(&[READBACK, self.req, t, 0, 0, 0, 16, 16, dst, 64]);
+        }
+        b.c.extend_from_slice(&[PRESENT, 21, 0, 0, 16, 16, 0, 0, 0]);
+        out.push(b);
+        self.r = saved;
+        out
+    }
+}
+
+/// A texture destroyed, made again and written after draws that sample it, in the same batch,
+/// goes after them (the page submits what it recorded first), also when those draws reuse a
+/// bind group kept from
+/// earlier frames (their textures are marked used then too): no WebGPU error, and the same
+/// readbacks as with the draws submitted before.
+#[test]
+fn a_write_after_kept_groups_comes_after_their_draws() {
+    let dst = unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0) } as u32;
+    let mut differ = 0;
+    for seed in 0..seeds().min(60) {
+        let make = |split: bool| {
+            let mut g = Gen11::new(seed);
+            let mut v = vec![g.setup()];
+            // (the same frames twice: their bind groups kept, then reused)
+            let fs = g.r.next();
+            for _ in 0..2 {
+                let ws = g.write_between(fs, dst, false, false);
+                v.extend(ws);
+            }
+            v.extend(g.write_between(fs, dst, split, true));
+            v
+        };
+        // (the readbacks of the last frame's end, the extra one left out)
+        let reads = |o: Vec<Obs>| o.into_iter().filter(|x| matches!(x, Obs::Read(_))).rev().take(2).collect::<Vec<_>>();
+        let (a, ea, _) = run(seed, &make(false), true, true);
+        let (b, eb, _) = run(seed, &make(true), true, true);
+        let (a, b) = (reads(a), reads(b));
+        assert!(ea.is_empty() && eb.is_empty(), "seed {seed}: {ea:?} {eb:?}");
+        assert!(a == b, "seed {seed}: one batch and two differ");
+        differ += a.len();
+    }
+    assert!(differ > 0);
+}
