@@ -1,1 +1,2 @@
 stores seen 40 of 40
+a spinning signaler lets its waiter go within 300 ms: yes

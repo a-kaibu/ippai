@@ -397,8 +397,30 @@ pub fn set_park(f: fn() -> bool) {
     let _ = PARK.set(f);
 }
 
+/// Called when the thread has run guest code a while without leaving the run loop (the JIT's
+/// budget ran out, or [`INTERP_SLICE`] instructions interpreted): sake's handoff takes it as the
+/// thread's progress, as its API calls (a SetEvent's waiter need not wait for a signaler that
+/// spins on without calls; waits::handoff).
+static PROGRESS: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// sake's handoff: see PROGRESS.
+pub fn set_progress(f: fn()) {
+    let _ = PROGRESS.set(f);
+}
+
+/// Interpreted instructions that count as a slice of progress (more than the JIT's budget's
+/// worth of a short loop: a few instructions after a call are not progress)
+pub const INTERP_SLICE: u32 = 1 << 16;
+
+fn progressed() {
+    if let Some(f) = PROGRESS.get() {
+        f();
+    }
+}
+
 fn cpu_run(cpu: &mut Cpu) -> Stop {
     let mut mem = Linear;
+    let mut stepped = 0u32;
     // long mode: IPPAI_JIT64=0 leaves it to the interpreter
     let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64()) && (cpu.mode16 == 0 || crate::jit::enabled16());
     crate::jit::count_entry(cpu.eip);
@@ -436,6 +458,7 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
             match ran {
                 crate::jit::Ran::Stopped => {
                     crate::jit::count_entry(cpu.eip | 0x8000_0000);
+                    progressed();
                     continue;
                 }
                 crate::jit::Ran::Exit(e) => match exit_code(cpu, &mut mem, e, true) {
@@ -452,6 +475,11 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
         // the interpreter: up to the next branch with the JIT, a batch of steps without
         for _ in 0..4096 {
             let (e, branch) = crate::jit::step(cpu, &mut mem);
+            stepped += 1;
+            if stepped >= INTERP_SLICE {
+                stepped = 0;
+                progressed();
+            }
             if let Some(code) = exit_code(cpu, &mut mem, e, false) {
                 return code;
             }

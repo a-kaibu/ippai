@@ -6,13 +6,17 @@
 //! and returned, that store lands in its reused stack (a saved ebx = 1, a crash 30 ms later).
 //! Under sake the signaler can stall right there for milliseconds (a block to translate, a
 //! busy host), so a waiter that was blocked and woke because another thread signaled waits for
-//! that thread to make its next API call (it has then passed the stores after SetEvent) or for
-//! [`CAP`], whichever comes first.
+//! that thread to make its next API call or to run on a while without one (it has then passed
+//! the stores after SetEvent), or for [`CAP`], whichever comes first.
 //!
-//! Each guest thread has a counter its API calls advance ([`Handoff::entered`]); signaling
-//! records the signaler's counter ([`Handoff::mark`]); the woken waiter waits until it moves
-//! ([`Handoff::wait_passed`]). Under `--cfg loom` the wait has no cap: `tests/loom.rs` checks
-//! that what the signaler stored before its next call is what the waiter reads.
+//! Each guest thread has a counter its API calls advance ([`Handoff::entered`]), and so does
+//! running a slice of guest code without one ([`Handoff::progressed`]: kura's run loop, when the
+//! JIT's budget runs out); signaling records the signaler's counter ([`Handoff::mark`]); the
+//! woken waiter waits until it moves ([`Handoff::wait_passed`]). The cap is only for a
+//! signaler that does not run at all (a busy host): 30 ms was not enough with three games
+//! starting at once, the signaler stalled 32 ms (up to 220 ms seen) and #158 crashed again.
+//! Under `--cfg loom` the wait has no cap: `tests/loom.rs` checks that what the signaler stored
+//! before its next call or slice is what the waiter reads.
 //!
 //! A second counter per thread counts only the calls that do something ([`Handoff::worked`]:
 //! not a bare yield, Sleep(0) or SwitchToThread, and the thread's end counts too). SendMessage
@@ -28,9 +32,10 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Release};
 use std::time::Duration;
 
-/// The longest a woken waiter waits for its signaler (a signaler spinning without API calls
-/// only delays the waiter this much; in the browser a signaler stalls 2-8 ms now and then)
-pub const CAP: Duration = Duration::from_millis(30);
+/// The longest a woken waiter waits for a signaler that makes no progress at all (in the
+/// browser a signaler stalls 2-8 ms now and then, over 30 ms on a busy machine; one spinning
+/// without API calls progresses: it doesn't hold the waiter this long)
+pub const CAP: Duration = Duration::from_millis(1000);
 
 /// A signal: who signaled, and their API counter then
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +108,11 @@ impl Handoff {
     /// Thread `tid` enters an API call: what it stored before is visible to a waiter that sees
     /// the counter move
     pub fn entered(&self, tid: u32) {
+        self.slot(tid).fetch_add(1, Release);
+    }
+    /// Thread `tid` ran a slice of guest code since its last API call or slice: what it stored
+    /// is visible as after [`Self::entered`]
+    pub fn progressed(&self, tid: u32) {
         self.slot(tid).fetch_add(1, Release);
     }
     /// Thread `tid` signals something (in an API call: its counter already counts that call)
@@ -234,6 +244,48 @@ mod tests {
         }
     }
 
+    /// #158 again: with three games starting at once the signaler stalled 32 ms between
+    /// SetEvent and its store, past the old 30 ms cap, and the game crashed. A stall of 100 ms
+    /// with no progress at all is waited out.
+    #[test]
+    fn a_long_stall_is_waited_out() {
+        let h = Arc::new(Handoff::new(64));
+        let flag = Arc::new(AtomicBool::new(false));
+        h.entered(0x24);
+        let m = h.mark(0x24);
+        let (h2, f2) = (h.clone(), flag.clone());
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            f2.store(true, Relaxed);
+            h2.entered(0x24);
+        });
+        assert!(h.wait_passed(m, 0x20));
+        assert!(flag.load(Relaxed));
+        t.join().unwrap();
+    }
+
+    /// A signaler that runs on without API calls (a long loop after SetEvent) reports slices:
+    /// its waiter goes after the first, not after the cap
+    #[test]
+    fn a_signaler_that_spins_without_calls_does_not_hold_its_waiter() {
+        let h = Arc::new(Handoff::new(64));
+        let stop = Arc::new(AtomicBool::new(false));
+        h.entered(0x24);
+        let m = h.mark(0x24);
+        let (h2, s2) = (h.clone(), stop.clone());
+        let t = std::thread::spawn(move || {
+            while !s2.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(1)); // a slice of guest code
+                h2.progressed(0x24);
+            }
+        });
+        let start = std::time::Instant::now();
+        assert!(h.wait_passed(m, 0x20));
+        assert!(start.elapsed() < CAP / 4, "{:?}", start.elapsed());
+        stop.store(true, Relaxed);
+        t.join().unwrap();
+    }
+
     proptest! {
         /// the work counter moves only with worked(), never with entered(), and per slot
         #[test]
@@ -254,19 +306,24 @@ mod tests {
         }
 
         /// a mark is passed exactly when its thread (or one sharing its slot) has entered a
-        /// call since; other threads' calls don't count
+        /// call or run a slice since; other threads' calls and slices don't count, nor its own
+        /// before the mark
         #[test]
-        fn passed_tracks_the_signalers_calls(slots in 1usize..64, tid in (8u32..4096).prop_map(|t| t * 4), other in (8u32..4096).prop_map(|t| t * 4), calls in 0u32..5) {
+        fn passed_tracks_the_signalers_calls(slots in 1usize..64, tid in (8u32..4096).prop_map(|t| t * 4), other in (8u32..4096).prop_map(|t| t * 4),
+                                             before in proptest::collection::vec(any::<bool>(), 0..5), others in proptest::collection::vec(any::<bool>(), 0..5), slice in any::<bool>()) {
             let h = Handoff::new(slots);
+            for &call in &before {
+                if call { h.entered(tid) } else { h.progressed(tid) }
+            }
             h.entered(tid);
             let m = h.mark(tid);
             prop_assert!(!h.passed(m));
-            for _ in 0..calls {
-                h.entered(other);
+            for &call in &others {
+                if call { h.entered(other) } else { h.progressed(other) }
             }
             let shared = (other as usize >> 2) % slots == (tid as usize >> 2) % slots;
-            prop_assert_eq!(h.passed(m), calls > 0 && shared);
-            h.entered(tid);
+            prop_assert_eq!(h.passed(m), !others.is_empty() && shared);
+            if slice { h.progressed(tid) } else { h.entered(tid) }
             prop_assert!(h.passed(m));
         }
     }

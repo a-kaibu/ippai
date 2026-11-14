@@ -922,6 +922,12 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     }
     kura::crashlog::set_trap_namer(api::name_of);
     kura::cpu::set_park(k32::park_suspended);
+    // (a thread that runs on without API calls has passed what it stored after a SetEvent)
+    kura::cpu::set_progress(|| {
+        if let Some(t) = cur_opt() {
+            obj::HANDOFF.progressed(t.tid);
+        }
+    });
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
     mem::commit(peb, 4);
     PEB.store(peb, Ordering::Relaxed);

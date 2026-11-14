@@ -750,6 +750,41 @@ fn the_next_sender_reads_what_the_one_before_registered() {
     });
 }
 
+/// The same when the signaler makes no API call after its store but runs on (kura's run loop
+/// reports the slice: `progressed`): the waiter goes once that slice is reported, and reads
+/// the store; and a slice reported before the store (one already running when SetEvent came
+/// is not one: the counter only moves after the mark) is never mistaken for it.
+#[test]
+fn a_signaler_running_on_without_calls_releases_its_waiter_after_its_store() {
+    use waits::handoff::{Handoff, Mark};
+    struct S {
+        h: Handoff,
+        mark: loom::sync::Mutex<Option<Mark>>,
+        flag: UnsafeCell<u32>,
+    }
+    unsafe impl Sync for S {}
+    model(|| {
+        let s = Arc::new(S { h: Handoff::new(4), mark: loom::sync::Mutex::new(None), flag: UnsafeCell::new(0) });
+        let s2 = s.clone();
+        let t = thread::spawn(move || {
+            s2.h.progressed(0x24); // a slice before the call
+            s2.h.entered(0x24); // SetEvent
+            *s2.mark.lock().unwrap() = Some(s2.h.mark(0x24));
+            s2.flag.with_mut(|f| unsafe { *f = 1 });
+            s2.h.progressed(0x24); // runs on: the budget runs out
+        });
+        let m = loop {
+            if let Some(m) = *s.mark.lock().unwrap() {
+                break m;
+            }
+            thread::yield_now();
+        };
+        assert!(s.h.wait_passed(m, 0x20));
+        assert_eq!(s.flag.with(|f| unsafe { *f }), 1);
+        t.join().unwrap();
+    });
+}
+
 /// The output queue (outq, #221): two threads write while the page's thread takes, in every
 /// interleaving: every record comes out whole, each writer's in its order, none twice, and no
 /// write waits for the taker (it only tries the lock).
