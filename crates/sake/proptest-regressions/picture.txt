@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc c666d83f67c8810ba0c5861e76676788b981d1b00c91c68cbcf4f45fc875d755 # shrinks to w = 1, h = 1, rect = (0, 0, 1, 1), pad = 0, seed = 0
 cc 8254e2fb565036f3e8d5007e39f80c8265746e7b9743940f0412e338c06523fb # shrinks to bpp = 8, clr = 0, off = 251, core = true, cut = 26, w = 1, h = -1
+cc fc1cbc6f785a05183bb500aaa854929299db1809492d79efc5f5cf979b9c9203 # shrinks to tail = [], segs = []

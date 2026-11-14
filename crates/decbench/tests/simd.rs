@@ -217,3 +217,65 @@ fn dxt_textures() {
         assert!(got == want, "fmt {fmt:x} {w}x{h}");
     }
 }
+
+/// kura::idec's YCbCr rows (SIMD) against its scalar code: every Y, Cb, Cr, in rows of every
+/// length up to 40 (the tails left to the scalar code).
+#[test]
+fn idec_every_ycc() {
+    let mut row = |n: usize, base: u32| {
+        let px = |i: usize| ((base + i as u32) & 0xff_ffff).to_le_bytes();
+        let (y, u, v): (Vec<u8>, Vec<u8>, Vec<u8>) = (0..n).map(|i| px(i)).map(|p| (p[0], p[1], p[2])).fold((vec![], vec![], vec![]), |mut a, p| {
+            a.0.push(p.0);
+            a.1.push(p.1);
+            a.2.push(p.2);
+            a
+        });
+        let (mut a, mut b) = (vec![0; n * 3], vec![0; n * 3]);
+        kura::idec::ycc_row(&y, &u, &v, &mut a);
+        kura::idec::ycc_row_scalar(&y, &u, &v, &mut b);
+        assert_eq!(a, b, "{n} {base:#x}");
+    };
+    let n = 4096;
+    for base in (0..1u32 << 24).step_by(n) {
+        row(n, base);
+    }
+    for n in 0..40 {
+        row(n, 0x123456 * n as u32);
+    }
+}
+
+/// Whole pictures (kura::idec::Picture::bgr24, SIMD rows) against the scalar rows: random
+/// planes of every layout and odd sizes, and the browser fixtures against libjpeg's RGB.
+#[test]
+fn idec_pictures() {
+    use kura::idec::{Layout, Picture};
+    let mut r = Rng(0x1dec);
+    for _ in 0..400 {
+        let (w, h) = (1 + r.below(70) as u32, 1 + r.below(40) as u32);
+        let layout = Layout::from_u32(1 + r.below(5) as u32).unwrap();
+        let bytes = (0..layout.size(w, h)).map(|_| r.next() as u8).collect();
+        let p = Picture { w, h, layout, bytes };
+        assert_eq!(p.bgr24(), p.bgr24_with(kura::idec::ycc_row_scalar), "{w}x{h} {layout:?}");
+    }
+    for (name, p, rgb) in kura::idec::test_cases(include_bytes!("../../kura/testdata/idec/planes.bin")) {
+        let bgr: Vec<u8> = rgb.chunks_exact(3).flat_map(|p| [p[2], p[1], p[0]]).collect();
+        assert_eq!(p.bgr24().unwrap(), bgr, "{name}");
+    }
+}
+
+/// kura::idec's fancy upsampling (SIMD) against its scalar code: random sums (as 2 x 2 and
+/// 2 x 1 planes give them) for rows 3..100 wide.
+#[test]
+fn idec_fancy() {
+    let mut r = Rng(0xfa9c);
+    for _ in 0..3000 {
+        let cw = 3 + r.below(98) as usize;
+        let v2 = r.below(2) == 0;
+        let cs: Vec<u16> = (0..cw + 2).map(|_| r.below(if v2 { 1021 } else { 256 }) as u16).collect();
+        let (e, o, sh) = if v2 { (8, 7, 4) } else { (1, 2, 2) };
+        let (mut a, mut b) = (vec![0; 2 * cw], vec![0; 2 * cw]);
+        kura::idec::fancy(&cs, cw, e, o, sh, &mut a);
+        kura::idec::fancy_scalar(&cs, e, o, sh, &mut b);
+        assert_eq!(a, b, "{cw} {v2}");
+    }
+}

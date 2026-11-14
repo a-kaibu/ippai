@@ -25,6 +25,7 @@ import { AutoAdvance, DEFAULT_SETTINGS, parseSettings, type AutoSettings } from 
 import { AudioOut } from "./audio";
 import { Video } from "./video";
 import { AudioDecode } from "./adec";
+import { ImageDecode } from "./idec";
 import {
   applyGame,
   coverUrl,
@@ -134,6 +135,10 @@ interface SakeModule {
   _vnhost_adec_pcm(id: number, gen: number, pcm: number, frames: number, channels: number): void;
   _vnhost_adec_done(id: number, gen: number, seq: number): void;
   _vnhost_adec_fail(id: number, gen: number): void;
+  _vnhost_idec_doorbell(): number;
+  _vnhost_idec_list(out: number, max: number): number;
+  _vnhost_idec_begin(id: number, w: number, h: number, layout: number): number;
+  _vnhost_idec_done(id: number, ok: number): void;
   _vnhost_crashlog_info?(): number;
   _vnhost_crashlog_snapshot?(): number;
   wasmMemory: WebAssembly.Memory;
@@ -718,7 +723,9 @@ type LatePart = { wasm: Uint8Array; idx: Uint8Array };
  */
 async function loadJit(
   name: string,
-): Promise<{ parts: { module: WebAssembly.Module; idx: Uint8Array }[]; late: Promise<LatePart[]> } | undefined> {
+): Promise<
+  { parts: { module: WebAssembly.Module; idx: Uint8Array }[]; late: Promise<LatePart[]> } | undefined
+> {
   const ok = (r: Response) => (r.ok ? r : Promise.reject(new HttpError(r.status)));
   try {
     // "<module> <index> <version>" per part
@@ -742,14 +749,16 @@ async function loadJit(
     // (a part that fails is left out: its regions get translated)
     const late = pool(
       2,
-      rest.map(([wasm, idx, v]) => () =>
-        Promise.all([
-          fetchRetry(`jit/${wasm}?v=${v}`, {}, { giveUpMs: 60000 }),
-          fetchRetry(`jit/${idx}?v=${v}`, {}, { giveUpMs: 60000 }),
-        ]).then(
-          ([w, i]) => (WebAssembly.validate(w) ? { wasm: w, idx: i } : null),
-          () => null,
-        ),
+      rest.map(
+        ([wasm, idx, v]) =>
+          () =>
+            Promise.all([
+              fetchRetry(`jit/${wasm}?v=${v}`, {}, { giveUpMs: 60000 }),
+              fetchRetry(`jit/${idx}?v=${v}`, {}, { giveUpMs: 60000 }),
+            ]).then(
+              ([w, i]) => (WebAssembly.validate(w) ? { wasm: w, idx: i } : null),
+              () => null,
+            ),
       ),
     ).then((l) => l.filter((x) => x !== null) as LatePart[]);
     return parts.length || rest.length ? { parts, late } : undefined;
@@ -966,6 +975,9 @@ function watch(sake: SakeModule, active: () => boolean = () => true, live: () =>
     typeof VideoDecoder !== "undefined" ? new Video(sake, (l) => (console.log(l), recorder?.note(l))) : null;
   // sound in codecs sake has no decoder of its own for (MP3 through msacm32: web/src/adec.ts)
   if (typeof AudioDecoder !== "undefined") new AudioDecode(sake, (l) => (console.log(l), recorder?.note(l)));
+  // JPEG pictures of WIC / GDI+ / D3DX / OLE: the browser's decoder (web/src/idec.ts)
+  if (typeof ImageDecoder !== "undefined" && globalThis.crypto?.subtle)
+    new ImageDecode(sake, (l) => (console.log(l), recorder?.note(l)));
   const frame = () => {
     if (exited) return closeGame();
     if (!live()) return;

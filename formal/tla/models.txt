@@ -17,3 +17,5 @@ CacheRead CacheReadShort.cfg violation
 StopCalls StopCalls.cfg ok
 StopCalls StopCallsOld.cfg violation
 StopCalls StopCallsGiveUp.cfg violation
+ImageDecode ImageDecode.cfg ok
+ImageDecode ImageDecodeFreeListed.cfg violation

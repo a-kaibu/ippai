@@ -620,8 +620,11 @@ fn jpeg_frame(data: &[u8]) -> Option<Frame> {
     if info.width as u64 * info.height as u64 > PIXELS_MAX {
         return None;
     }
-    let px = d.decode().ok()?;
     let (w, h) = (info.width as u32, info.height as u32);
+    if let Some(f) = jpeg_page(data, w, h, info.pixel_format) {
+        return Some(f);
+    }
+    let px = d.decode().ok()?;
     let (fmt, bits) = match info.pixel_format {
         PixelFormat::L8 => (Fmt::Gray8, px),
         PixelFormat::L16 => (Fmt::Gray8, px.chunks_exact(2).map(|c| c[0]).collect()),
@@ -629,6 +632,56 @@ fn jpeg_frame(data: &[u8]) -> Option<Frame> {
         PixelFormat::CMYK32 => (Fmt::Cmyk, px),
     };
     Some(Frame { w, h, fmt, bits, palette: Vec::new(), dpi: jfif_dpi(data) })
+}
+
+/// A JPEG decoded by the page (kura::idec: the browser's libjpeg-turbo planes, then libjpeg's
+/// upsampling and colors: Windows' own bytes), for gray and YCbCr files big enough
+/// (kura::idec::wants); None to decode it here.
+fn jpeg_page(data: &[u8], w: u32, h: u32, f: jpeg_decoder::PixelFormat) -> Option<Frame> {
+    use jpeg_decoder::PixelFormat;
+    if !matches!(f, PixelFormat::L8 | PixelFormat::RGB24) || !kura::idec::wants(w as u64 * h as u64) {
+        return None;
+    }
+    let file = jpeg_for_page(data)?;
+    let p = kura::idec::jpeg(&file, kura::idec::TIMEOUT)?;
+    if (p.w, p.h) != (w, h) {
+        return None;
+    }
+    let (fmt, bits) = if f == PixelFormat::L8 { (Fmt::Gray8, p.gray()?) } else { (Fmt::Bgr24, p.bgr24()?) };
+    Some(Frame { w, h, fmt, bits, palette: Vec::new(), dpi: jfif_dpi(data) })
+}
+
+/// `data` for the browser to decode as Windows does: without its APP1 (Exif: the browser would
+/// turn the picture by its orientation) and APP2 (ICC: color managed) segments. None for a file
+/// with an Adobe APP14 segment (its color transform: left to jpeg-decoder) or segments past
+/// the end.
+pub fn jpeg_for_page(data: &[u8]) -> Option<Vec<u8>> {
+    let mut out = data.get(..2)?.to_vec();
+    let mut i = 2;
+    loop {
+        if *data.get(i)? != 0xff {
+            return None;
+        }
+        let m = *data.get(i + 1)?;
+        if m == 0xff {
+            // (fill bytes)
+            i += 1;
+            continue;
+        }
+        if m == 0xda {
+            out.extend_from_slice(&data[i..]);
+            return Some(out);
+        }
+        let len = u16::from_be_bytes([*data.get(i + 2)?, *data.get(i + 3)?]) as usize;
+        let seg = data.get(i..i + 2 + len)?;
+        if len < 2 || m == 0xee {
+            return None;
+        }
+        if m != 0xe1 && m != 0xe2 {
+            out.extend_from_slice(seg);
+        }
+        i += 2 + len;
+    }
 }
 
 /// The JFIF APP0 density (units 1: dpi, 2: dots per cm); 96 without one.
@@ -982,6 +1035,161 @@ fn lzw(src: &[u8], min: u8, max: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// kura::idec's page is one a process: one test at a time talks to it.
+    static PAGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The probe's JPEG files (tests/winref/probes/imaging_data.h), by name.
+    fn probe_jpegs() -> Vec<(String, Vec<u8>)> {
+        let h = include_str!("../../../tests/winref/probes/imaging_data.h");
+        let mut out = Vec::new();
+        for part in h.split("static const unsigned char ").skip(1) {
+            let name = part.split('[').next().unwrap().to_string();
+            if !name.starts_with("jpeg_") {
+                continue;
+            }
+            let body = &part[part.find('{').unwrap() + 1..part.find('}').unwrap()];
+            let bytes = body.split(',').map(str::trim).filter(|x| !x.is_empty()).map(|x| u8::from_str_radix(x.trim_start_matches("0x"), 16).unwrap()).collect();
+            out.push((name, bytes));
+        }
+        assert!(out.len() >= 6);
+        out
+    }
+
+    /// A segment (marker, payload) as a JPEG holds it.
+    fn seg(m: u8, payload: &[u8]) -> Vec<u8> {
+        let mut v = vec![0xff, m];
+        v.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        v.extend_from_slice(payload);
+        v
+    }
+
+    /// The file for the page decodes to the same pixels; Exif / ICC segments go (also among fill
+    /// bytes), others stay; an Adobe segment keeps the file here.
+    #[test]
+    fn jpeg_for_the_page() {
+        for (name, f) in probe_jpegs() {
+            let pf = jpeg_for_page(&f);
+            if name == "jpeg_cmyk" {
+                assert!(pf.is_none(), "{name}");
+                continue;
+            }
+            let pf = pf.unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(jpeg_decoder::Decoder::new(&pf[..]).decode().unwrap(), jpeg_decoder::Decoder::new(&f[..]).decode().unwrap(), "{name}");
+            let mut with = f[..2].to_vec();
+            with.extend(seg(0xe1, b"Exif\0\0MM\0*"));
+            with.extend([0xff, 0xff]);
+            with.extend(seg(0xe2, b"ICC_PROFILE\0"));
+            with.extend(seg(0xfe, b"a comment"));
+            with.extend_from_slice(&f[2..]);
+            let got = jpeg_for_page(&with).unwrap();
+            let mut want = f[..2].to_vec();
+            want.extend(seg(0xfe, b"a comment"));
+            want.extend_from_slice(&f[2..]);
+            assert_eq!(got, want, "{name}");
+        }
+        let mut adobe = vec![0xff, 0xd8];
+        adobe.extend(seg(0xee, b"Adobe\0\x64\0\0\0\0\x01"));
+        adobe.extend([0xff, 0xda, 0, 2]);
+        assert_eq!(jpeg_for_page(&adobe), None);
+    }
+
+    proptest::proptest! {
+        /// Any bytes after SOI: no panic, and what goes to the page is the file without some of
+        /// its segments (SOI first, the rest from SOS on as it is).
+        #[test]
+        fn jpeg_for_page_any(tail in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..200), segs in proptest::collection::vec((0xc0u8..=0xfe, proptest::collection::vec(proptest::prelude::any::<u8>(), 0..20)), 0..6)) {
+            let mut f = vec![0xff, 0xd8];
+            for (m, p) in &segs {
+                f.extend(seg(*m, p));
+            }
+            f.extend([0xff, 0xda]);
+            f.extend(&tail);
+            if let Some(out) = jpeg_for_page(&f) {
+                proptest::prop_assert!(out.starts_with(&[0xff, 0xd8]));
+                proptest::prop_assert!(out.len() <= f.len());
+                let sos = out.windows(2).position(|w| w == [0xff, 0xda]).unwrap();
+                proptest::prop_assert!(f.ends_with(&out[sos..]));
+            }
+            let _ = jpeg_for_page(&tail[..tail.len().min(3)].iter().copied().chain([0xff]).collect::<Vec<_>>());
+        }
+    }
+
+    /// Through a page (kura::idec, here a thread decoding with jpeg-decoder, handing over BGRX
+    /// as a browser does for gray files): the same frames as decoded here, gray and YCbCr alike.
+    #[test]
+    fn jpeg_through_the_page() {
+        let _one = PAGE.lock().unwrap_or_else(|e| e.into_inner());
+        let here: Vec<_> = probe_jpegs().into_iter().map(|(n, f)| (n, decode(&f).map(|p| (p.frames[0].fmt, p.frames[0].bits.clone())))).collect();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (s2, n2) = (stop.clone(), served.clone());
+        let page = std::thread::spawn(move || {
+            while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+                kura::idec::test_page_pass(&mut |d| {
+                    n2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let mut j = jpeg_decoder::Decoder::new(d);
+                    let px = j.decode().ok()?;
+                    let i = j.info()?;
+                    let bytes = match i.pixel_format {
+                        jpeg_decoder::PixelFormat::L8 => px.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+                        _ => px.chunks_exact(3).flat_map(|p| [p[2], p[1], p[0], 255]).collect(),
+                    };
+                    Some(kura::idec::Picture { w: i.width as u32, h: i.height as u32, layout: kura::idec::Layout::Bgrx, bytes })
+                });
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        kura::idec::test_page(true);
+        for (name, f) in probe_jpegs() {
+            let got = decode(&f).map(|p| (p.frames[0].fmt, p.frames[0].bits.clone()));
+            assert_eq!(&got, &here.iter().find(|h| h.0 == name).unwrap().1, "{name}");
+        }
+        kura::idec::test_page(false);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        page.join().unwrap();
+        // (every gray and YCbCr one went to the page: not CMYK, not 12-bit)
+        assert!(served.load(std::sync::atomic::Ordering::Relaxed) >= 6, "{}", served.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    /// Through a page that answers with Chrome's own planes of the probe's files
+    /// (crates/kura/testdata/idec): Windows' pixels (tests/winref/golden/imaging-32), where
+    /// jpeg-decoder alone is up to 2 off.
+    #[test]
+    fn jpeg_through_the_page_as_windows() {
+        let _one = PAGE.lock().unwrap_or_else(|e| e.into_inner());
+        let planes = kura::idec::test_cases(include_bytes!("../../kura/testdata/idec/planes.bin"));
+        let files: Vec<_> = probe_jpegs().into_iter().filter(|(n, _)| n != "jpeg_cmyk").collect();
+        let answers: Vec<_> = files.iter().map(|(n, f)| (jpeg_for_page(f).unwrap(), planes.iter().find(|p| &p.0 == n).unwrap().1.clone())).collect();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = stop.clone();
+        let page = std::thread::spawn(move || {
+            while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+                kura::idec::test_page_pass(&mut |d| answers.iter().find(|a| a.0 == d).map(|a| a.1.clone()));
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        kura::idec::test_page(true);
+        let mut off_here = 0;
+        for (name, f) in &files {
+            let png = png::Decoder::new(std::fs::File::open(format!("{}/../../tests/winref/golden/imaging-32/{name}.png", env!("CARGO_MANIFEST_DIR"))).unwrap());
+            let mut r = png::Decoder::read_info(png).unwrap();
+            let mut rgb = vec![0; r.output_buffer_size()];
+            r.next_frame(&mut rgb).unwrap();
+            let want: Vec<u8> = if name == "jpeg_gray" { rgb.chunks_exact(3).map(|p| p[0]).collect() } else { rgb.chunks_exact(3).flat_map(|p| [p[2], p[1], p[0]]).collect() };
+            let got = decode(f).unwrap();
+            assert_eq!(got.frames[0].bits, want, "{name}");
+            kura::idec::test_page(false);
+            off_here += (decode(f).unwrap().frames[0].bits != want) as usize;
+            kura::idec::test_page(true);
+        }
+        kura::idec::test_page(false);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        page.join().unwrap();
+        // (what the page is for: decoded here, some are not Windows' bytes)
+        assert!(off_here > 0);
+    }
 
     #[test]
     fn guids_unique() {

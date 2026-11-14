@@ -50,6 +50,14 @@ fn main() {
             sum(&d.decode().unwrap())
         });
     }
+    if want("idec") {
+        // (what the guest still does for a JPEG the page decoded: its planes -> BGR)
+        let (w, h) = (1280u32, 720u32);
+        let layout = kura::idec::Layout::I420;
+        let bytes = (0..layout.size(w, h)).map(|i| ((i as u32).wrapping_mul(2654435761) >> 13) as u8).collect();
+        let p = kura::idec::Picture { w, h, layout, bytes };
+        time("idec_i420_bgr24_1280x720", reps * 5, || sum(&p.bgr24().unwrap()));
+    }
     if want("mpeg1") {
         let data = std::fs::read(dir.join("movie.mpg")).unwrap();
         let mut frames = 0;
