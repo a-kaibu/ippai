@@ -43,6 +43,9 @@ pub struct Video {
     pub rate: (u32, u32),
     /// bits per second (MF_MT_AVG_BITRATE)
     pub bitrate: u32,
+    /// a Windows Media stream (an ASF file's, decoded by wmdec here, not the page): its
+    /// format; the samples are its objects as they are
+    pub wm: Option<crate::wmdec::Info>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -297,6 +300,7 @@ fn video_track(b: &[u8], ss: usize, se: usize, timescale: u32, shift: i64, file_
         samples,
         rate,
         bitrate: (bytes as u128 * 8 * 10_000_000 / total as u128) as u32,
+        wm: None,
     })
 }
 
@@ -519,7 +523,7 @@ mod tests {
         /// lengths that run past the end: None.
         #[test]
         fn annexb_units(units in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..50), 0..8), nal in prop_oneof![Just(1u8), Just(2), Just(4)], extra in 0usize..3) {
-            let v = Video { codec: String::new(), w: 0, h: 0, profile: 0, level: 0, nal, head: vec![9, 9], samples: vec![], rate: (0, 0), bitrate: 0 };
+            let v = Video { codec: String::new(), w: 0, h: 0, profile: 0, level: 0, nal, head: vec![9, 9], samples: vec![], rate: (0, 0), bitrate: 0, wm: None };
             let mut s = Vec::new();
             let mut want = vec![9, 9];
             for u in &units {

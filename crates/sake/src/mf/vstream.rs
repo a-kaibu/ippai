@@ -39,6 +39,18 @@ pub struct VStream {
     id: Option<u32>,
     pushed: std::ops::Range<usize>,
     pub ended: bool,
+    /// a Windows Media stream's decoder here (wmdec), opened at the first decoded read
+    soft: Option<Soft>,
+}
+
+/// Decoding a Windows Media stream: the codec, the next sample (decode order) to give it, the
+/// pictures it gave not handed out yet (time, B G R A), in time order.
+struct Soft {
+    codec: Box<dyn crate::wmdec::Codec>,
+    next: usize,
+    pics: VecDeque<(u64, Arc<Vec<u8>>)>,
+    /// the time of the last picture handed out
+    last: Option<u64>,
 }
 
 impl Drop for VStream {
@@ -55,7 +67,7 @@ impl VStream {
         for (i, s) in v.samples.iter().enumerate() {
             by_order[s.order as usize] = i;
         }
-        VStream { v, data, out: VOut::Native, next: 0, by_order, id: None, pushed: 0..0, ended: false }
+        VStream { v, data, out: VOut::Native, next: 0, by_order, id: None, pushed: 0..0, ended: false, soft: None }
     }
 
     pub fn duration(&self) -> u64 {
@@ -101,6 +113,9 @@ impl VStream {
     fn sample(&self, c: Option<&mut Ctx>, i: usize) -> Result<Vec<u8>, u32> {
         let s = &self.v.samples[i];
         let b = self.data.read(c, s.off, s.size as usize).ok_or(E_FAIL)?;
+        if self.v.wm.is_some() {
+            return Ok(b);
+        }
         mp4::annexb(&self.v, s.key, &b).ok_or(E_FAIL)
     }
 
@@ -126,6 +141,14 @@ impl VStream {
             self.next += 1;
             return Ok(Some(Piece { time: s.pts.max(0) as u64, dur: s.dur, bytes }));
         };
+        if self.v.wm.is_some() {
+            let p = self.next;
+            let bgra = self.soft_picture(c, p)?;
+            let s = &self.v.samples[self.by_order[p]];
+            let (time, dur) = (s.pts.max(0) as u64, s.dur);
+            self.next += 1;
+            return Ok(Some(Piece { time, dur, bytes: soft_convert(&bgra, self.v.w, self.v.h, sub) }));
+        }
         let first = self.id.is_none();
         let id = match self.id {
             Some(id) => id,
@@ -165,6 +188,90 @@ impl VStream {
         self.next += 1;
         Ok(Some(Piece { time: s.pts.max(0) as u64, dur: s.dur, bytes }))
     }
+}
+
+impl VStream {
+    /// Picture `p` (presentation order) of a Windows Media stream, decoded here: from the key
+    /// frame before it when going back or past a key frame, else on from where decoding is.
+    fn soft_picture(&mut self, mut c: Option<&mut Ctx>, p: usize) -> Result<Arc<Vec<u8>>, u32> {
+        let d = self.by_order[p];
+        let t = self.v.samples[d].pts.max(0) as u64;
+        let key = self.key_before(d);
+        let restart = match &self.soft {
+            None => true,
+            Some(s) => s.last.is_some_and(|l| t < l) || (key > s.next && s.pics.back().is_none_or(|x| x.0 < t)),
+        };
+        if restart {
+            let info = self.v.wm.as_ref().ok_or(E_FAIL)?;
+            let mut codec = match self.soft.take() {
+                Some(s) => s.codec,
+                None => crate::wmdec::codec(info).ok_or(MF_E_INVALIDMEDIATYPE)?,
+            };
+            codec.flush();
+            self.soft = Some(Soft { codec, next: key, pics: VecDeque::new(), last: None });
+        }
+        let n = self.v.samples.len();
+        loop {
+            let s = self.soft.as_mut().unwrap();
+            while s.pics.len() > 1 && s.pics[1].0 <= t {
+                s.pics.pop_front();
+            }
+            if let Some(&(pt, ref b)) = s.pics.front() {
+                // (the picture whose time has come: at `t`, or the last before what comes next)
+                if pt >= t || s.pics.len() > 1 || s.next >= n {
+                    s.last = Some(t);
+                    return Ok(b.clone());
+                }
+            }
+            if s.next >= n {
+                let more = s.codec.drain();
+                let got = push_pictures(s, more);
+                if !got && s.pics.is_empty() {
+                    return Err(E_FAIL);
+                }
+                s.next = n + 1;
+                continue;
+            }
+            let i = s.next;
+            s.next += 1;
+            let smp = &self.v.samples[i];
+            let (time, key) = (smp.pts.max(0) as u64, smp.key);
+            let b = self.data.read(c.as_deref_mut(), smp.off, smp.size as usize).ok_or(E_FAIL)?;
+            let s = self.soft.as_mut().unwrap();
+            let fs = s.codec.decode(&b, time, key);
+            push_pictures(s, fs);
+        }
+    }
+}
+
+/// The pictures of `fs` into `s`'s, in time order; whether there were any.
+fn push_pictures(s: &mut Soft, fs: Vec<crate::wmdec::Frame>) -> bool {
+    let mut any = false;
+    for f in fs {
+        if let crate::wmdec::Frame::Picture { time, bgra, .. } = f {
+            let at = s.pics.iter().position(|x| x.0 > time).unwrap_or(s.pics.len());
+            s.pics.insert(at, (time, bgra));
+            any = true;
+        }
+    }
+    any
+}
+
+/// A B G R A picture (top-down) as a sample of FOURCC `sub`: RGB32 as it is, the YUV formats
+/// by BT.601 video range (convert's RGBA planes).
+fn soft_convert(bgra: &[u8], w: u32, h: u32, sub: u32) -> Vec<u8> {
+    let n = 4 * w as usize * h as usize;
+    let bgra = &bgra[..n.min(bgra.len())];
+    if sub == source::RGB32 || sub == source::ARGB32 {
+        let mut v = bgra.to_vec();
+        v.resize(n, 0);
+        return v;
+    }
+    let mut rgba: Vec<u8> = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
+    rgba.resize(n, 0);
+    let layout = [[2, 0, 4 * w, 0, 0, 0, 0], [0; 7]];
+    // SAFETY: the buffer holds the RGBA plane the layout says
+    unsafe { convert(&layout, rgba.as_ptr(), w, h, sub) }
 }
 
 /// A slot's planes (kura's layout: format, then offset and stride of 3 planes) as a sample of
@@ -346,6 +453,74 @@ mod tests {
             let (r, g, bl) = f(81, 90, 240);
             assert_eq!(&o[..4], &[bl, g, r, 255], "{h}");
             assert_eq!(o.len(), 4 * w * h);
+        }
+    }
+
+    fn wmv() -> VStream {
+        let b = include_bytes!("testdata/colors.wmv").to_vec();
+        let m = source::open_media(None, &Data::mem_arc(Arc::new(b))).unwrap();
+        let mp4::Track::Video(v) = &m.tracks[0] else { panic!() };
+        VStream::new(v.clone(), m.packed.clone().unwrap())
+    }
+    /// The colour of a B G R A picture's middle: 0 red, 1 lime, 2 blue (testdata/colors_gen.sh).
+    fn colour(bgra: &[u8]) -> usize {
+        let o = 4 * (24 * 64 + 32);
+        let (b, g, r) = (bgra[o] as i32, bgra[o + 1] as i32, bgra[o + 2] as i32);
+        let near = |x: [i32; 3]| (x[0] - r).abs() + (x[1] - g).abs() + (x[2] - b).abs();
+        let d = [near([255, 0, 0]), near([0, 255, 0]), near([0, 0, 255])];
+        let k = (0..3).min_by_key(|&k| d[k]).unwrap();
+        assert!(d[k] < 60, "{:?}", (r, g, b));
+        k
+    }
+
+    /// colors.wmv through the MF source: WMV2, its size and frames; decoded here (no page) to
+    /// RGB32 in presentation order, 6 frames of each colour, each at its time.
+    #[test]
+    fn a_wmv_decodes_in_order() {
+        let mut s = wmv();
+        let wm = s.v.wm.clone().unwrap();
+        assert!(matches!(wm, crate::wmdec::Info::Video { fourcc, .. } if fourcc == u32::from_le_bytes(*b"WMV2")));
+        assert_eq!((s.v.codec.as_str(), s.v.w, s.v.h, s.v.samples.len()), ("wmv2", 64, 48, 18));
+        assert!(s.v.samples[0].key && s.v.samples[6].key);
+        assert_eq!(s.v.rate, (24, 1));
+        let t0 = s.v.samples[0].pts as u64;
+        assert!(t0 < 1_000_000 && s.duration() - t0 >= 7_400_000 && s.duration() - t0 <= 7_600_000, "{t0} {}", s.duration());
+        s.set_out(VOut::Decoded(source::RGB32));
+        let mut last = None;
+        for i in 0..18 {
+            let p = s.read(None).unwrap().unwrap();
+            assert_eq!(p.bytes.len(), 64 * 48 * 4);
+            assert_eq!(colour(&p.bytes), i / 6, "frame {i}");
+            assert!(last.is_none_or(|l| l < p.time) && p.dur > 0);
+            assert!((p.time - t0).abs_diff(i as u64 * 416_667) <= 10_000, "time of frame {i}: {}", p.time);
+            last = Some(p.time);
+        }
+        assert!(s.read(None).unwrap().is_none());
+        // native: the bitstream as the file has it
+        s.set_out(VOut::Native);
+        let p = s.read(None).unwrap().unwrap();
+        assert!(!p.bytes.is_empty() && p.bytes.len() < 64 * 48);
+    }
+
+    proptest! {
+        /// Frames of a WMV wanted in any order (seeks back, jumps over key frames) and as any
+        /// 4:2:0 or RGB format: what reading from the start gives.
+        #[test]
+        fn wmv_frames_in_any_order(ps in prop::collection::vec(0usize..18, 1..24), nv12 in any::<bool>()) {
+            let mut s = wmv();
+            s.set_out(VOut::Decoded(source::RGB32));
+            let all: Vec<Vec<u8>> = (0..18).map(|_| s.read(None).unwrap().unwrap().bytes).collect();
+            let mut s = wmv();
+            let sub = if nv12 { source::NV12 } else { source::RGB32 };
+            s.set_out(VOut::Decoded(sub));
+            for p in ps {
+                let got = s.frame(None, p).unwrap().unwrap().bytes;
+                if nv12 {
+                    prop_assert_eq!(got, soft_convert(&all[p], 64, 48, source::NV12), "frame {}", p);
+                } else {
+                    prop_assert_eq!(&got, &all[p], "frame {}", p);
+                }
+            }
         }
     }
 }

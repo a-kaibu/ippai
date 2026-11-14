@@ -703,6 +703,13 @@ pub fn frame_rate(avg: u64) -> (u32, u32) {
     let g = gcd(10_000_000, t);
     ((10_000_000 / g) as u32, (t / g) as u32)
 }
+/// The known rate nearest a frame time measured to within `tol` (100 ns), else frame_rate's.
+pub fn frame_rate_near(avg: u64, tol: u64) -> (u32, u32) {
+    match KNOWN_RATES.iter().filter(|r| r.0.abs_diff(avg) <= tol).min_by_key(|r| r.0.abs_diff(avg)) {
+        Some(&(_, n, d)) => (n, d),
+        None => frame_rate(avg),
+    }
+}
 /// MFFrameRateToAverageTimePerFrame's answer
 pub fn frame_time(n: u32, d: u32) -> u64 {
     if let Some(&(t, _, _)) = KNOWN_RATES.iter().find(|r| r.1 == n && r.2 == d) {

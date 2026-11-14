@@ -127,11 +127,17 @@ pub fn open_media(c: Option<&mut Ctx>, d: &Data) -> Option<Media> {
         let m = mp4::open(d.len, &mut |o, n| d.read(c.as_deref_mut(), o, n))?;
         return Some(Media { tracks: m.tracks, duration: m.duration, mime: "video/mp4", packed: None });
     }
-    // a sound file: read whole (they are small), as audiofile reads them
+    // a sound file: read whole (they are small), as audiofile reads them; an ASF file too
+    // (its objects copied out)
     if d.len > 1 << 30 {
         return None;
     }
     let all = d.read(c, 0, d.len as usize)?;
+    if all.starts_with(&ASF_HEADER) {
+        if let Some(m) = open_asf(&all) {
+            return Some(m);
+        }
+    }
     let (t, packed) = audiofile::open_more(&all)?;
     let mime = match &t.codec {
         _ if head.starts_with(b"RIFF") => "audio/wav",
@@ -143,6 +149,85 @@ pub fn open_media(c: Option<&mut Ctx>, d: &Data) -> Option<Media> {
     let packed = packed.map(|d| Arc::new(Data::mem_arc(Arc::new(d))));
     Some(Media { duration: t.duration, tracks: vec![mp4::Track::Audio(t)], mime, packed })
 }
+
+/// The ASF Header Object's GUID {75b22630-668e-11cf-a6d9-00aa0062ce6c}
+const ASF_HEADER: [u8; 8] = [0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11];
+
+/// An ASF file with a video stream wmdec decodes (WMV 1 / 2 / 3, MS-MPEG4 v3, raw RGB): that
+/// stream and the first audio stream it decodes, their objects copied out (`packed`), as
+/// Windows' ASF source gives them (the video's objects are its samples, its native type the
+/// codec's FOURCC). None for a file of sound only (audiofile's WMA source reads that).
+pub fn open_asf(all: &[u8]) -> Option<Media> {
+    use crate::wmdec::{codec, Info};
+    let mut r = asf::Reader::new(all).ok()?;
+    let h = r.header.clone();
+    let ok = |s: &&asf::Stream| !s.encrypted && Info::of_stream(s).is_some_and(|i| codec(&i).is_some());
+    let vs = h.streams.iter().filter(|s| matches!(s.kind, asf::Kind::Video { .. })).find(ok)?;
+    let au = h.streams.iter().filter(|s| matches!(s.kind, asf::Kind::Audio)).find(ok);
+    let vinfo = Info::of_stream(vs)?;
+    let Info::Video { fourcc, width, height, .. } = vinfo.clone() else { return None };
+    r.only = Some([Some(vs.number), au.map(|a| a.number)].into_iter().flatten().collect());
+    let (mut vo, mut ao) = (Vec::new(), Vec::new());
+    while let Some(x) = r.next_sample() {
+        if x.stream == vs.number { vo.push(x) } else { ao.push(x) }
+    }
+    if vo.is_empty() {
+        return None;
+    }
+    let (mut packed, vat) = audiofile::repack(vo.iter().map(|o| &o.data[..]));
+    // (presentation order by time; each lasts until the next one's time)
+    let mut by_time: Vec<usize> = (0..vo.len()).collect();
+    by_time.sort_by_key(|&i| (vo[i].time, i));
+    let mut order = vec![0u32; vo.len()];
+    let mut dur = vec![0u64; vo.len()];
+    // (the frame time by the samples' times, which ASF has in ms; the header's when one frame)
+    let span = by_time.last().map_or(0, |&l| vo[l].time - vo[by_time[0]].time);
+    let avg = match (vo.len() as u64).checked_sub(1).filter(|&n| n > 0 && span > 0) {
+        Some(n) => (span + n / 2) / n,
+        None if vs.avg_time_per_frame != 0 => vs.avg_time_per_frame,
+        None => SEC_ / 30,
+    };
+    for (k, &i) in by_time.iter().enumerate() {
+        order[i] = k as u32;
+        dur[i] = by_time.get(k + 1).map_or(avg, |&n| vo[n].time.saturating_sub(vo[i].time).max(1));
+    }
+    let samples = vo
+        .iter()
+        .enumerate()
+        .map(|(i, o)| mp4::Sample { off: vat[i].0, size: vat[i].1, pts: o.time as i64, dts: i as i64, dur: dur[i], key: o.key, order: order[i] })
+        .collect();
+    let name: String = fourcc.to_le_bytes().iter().map(|&b| (b as char).to_ascii_lowercase()).collect();
+    let video = mp4::Video {
+        codec: name,
+        w: width,
+        h: height,
+        profile: 0,
+        level: 0,
+        nal: 0,
+        head: Vec::new(),
+        samples,
+        // (ms times: 1 ms over the frames apart)
+        rate: plat::frame_rate_near(avg, 10_000 / (vo.len() as u64).max(1) + 30),
+        bitrate: vs.bitrate,
+        wm: Some(vinfo),
+    };
+    let mut tracks = vec![mp4::Track::Video(video)];
+    if let Some(info) = au.and_then(|a| Info::of_stream(a)).filter(|_| !ao.is_empty()) {
+        let Info::Audio { channels, rate, bytes_per_sec, .. } = info else { return None };
+        if rate > 0 {
+            let at = |t: u64| (t as u128 * rate as u128 / SEC_ as u128) as u64;
+            let end = at(h.duration.max(ao.last()?.time));
+            let frames = (0..ao.len()).map(|i| ao.get(i + 1).map_or(end, |n| at(n.time)).saturating_sub(at(ao[i].time)) as u32).collect();
+            let base = packed.len() as u64;
+            let (d, at2) = audiofile::repack(ao.iter().map(|o| &o.data[..]));
+            packed.extend_from_slice(&d);
+            let packets = at2.into_iter().map(|(o, n)| (o + base, n)).collect();
+            tracks.push(mp4::Track::Audio(audiofile::Track { codec: audiofile::Codec::Wma { info }, rate, channels: channels as u32, packets, frames, avg: bytes_per_sec, duration: Some(h.duration) }));
+        }
+    }
+    Some(Media { tracks, duration: Some(h.duration), mime: "video/x-ms-asf", packed: Some(Arc::new(Data::mem_arc(Arc::new(packed)))) })
+}
+const SEC_: u64 = 10_000_000;
 
 // --- media types of video -----------------------------------------------------------------
 
@@ -219,6 +304,21 @@ fn ratio(a: u32, b: u32) -> Val {
 /// The native type of an H.264 track (Windows' MP4 source: H264, size, rate, aspect,
 /// progressive, profile and level, the sequence header, bit rate).
 pub fn video_native(v: &mp4::Video) -> Store {
+    if let Some(crate::wmdec::Info::Video { fourcc, extra, .. }) = &v.wm {
+        // (Windows' ASF source: the codec's FOURCC, its private data as MF_MT_USER_DATA)
+        let mut s = Store::default();
+        s.set(reader::k_major(), Val::Guid(major_video()));
+        s.set(reader::k_subtype(), Val::Guid(video_format(*fourcc)));
+        s.set(k_frame_size(), ratio(v.w, v.h));
+        s.set(k_frame_rate(), ratio(v.rate.0, v.rate.1));
+        s.set(k_aspect(), ratio(1, 1));
+        s.set(k_interlace(), Val::U32(2));
+        if !extra.is_empty() {
+            s.set(reader::k_user_data(), Val::Blob(extra.clone()));
+        }
+        s.set(k_bitrate(), Val::U32(v.bitrate));
+        return s;
+    }
     let mut s = Store::default();
     s.set(reader::k_major(), Val::Guid(major_video()));
     s.set(reader::k_subtype(), Val::Guid(video_format(H264)));

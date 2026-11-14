@@ -165,7 +165,7 @@ pub fn open(data: Arc<Data>, media: &Media, video: Option<usize>, audio: Option<
         Some(v) => {
             let rate = if v.rate.0 != 0 && v.rate.1 != 0 { v.rate } else { (25, 1) };
             let (w, h, frames) = (v.w, v.h, v.samples.len());
-            let mut s = VStream::new(v, data);
+            let mut s = VStream::new(v, media.packed.clone().unwrap_or(data));
             s.set_out(VOut::Decoded(source::RGB32));
             let len = s.duration();
             videos(|m| m.insert(id, Video { s, frames, shown: None, failed: false }));
@@ -220,6 +220,29 @@ mod tests {
         assert!(!unsafe { frame(id, 0, px.as_mut_ptr(), 256, 64, 48) }, "a closed movie has no frames");
         assert!(open(d.clone(), &m, None, Some(0)).is_none());
         assert!(open(d, &m, None, None).is_none());
+    }
+
+    /// An ASF movie (WMV2 + WMA2) the same way: pictures decoded here, its sound as a track.
+    #[test]
+    fn a_wmv_opens() {
+        let (d, m) = media("colors.wmv");
+        assert_eq!(m.mime, "video/x-ms-asf");
+        let mut mv = open(d, &m, Some(0), Some(1)).unwrap();
+        assert_eq!((mv.w, mv.h, mv.frames, mv.rate), (64, 48, 18, (24, 1)));
+        let mut px = vec![0u8; 64 * 48 * 4];
+        for (n, want) in [(0i32, [255u8, 0, 0]), (8, [0, 255, 0]), (17, [0, 0, 255]), (2, [255, 0, 0])] {
+            // SAFETY: px is 48 rows of 256 bytes
+            assert!(unsafe { frame(mv.stream, n, px.as_mut_ptr(), 256, 64, 48) });
+            let o = 4 * (24 * 64 + 32);
+            let near = (0..3).map(|k| (px[o + k] as i32 - want[k] as i32).abs()).sum::<i32>();
+            assert!(near < 60, "frame {n}: {:?}", &px[o..o + 4]);
+        }
+        let Some(crate::dshow_play::Sound::Mf(a)) = &mut mv.sound else { panic!() };
+        assert_eq!(a.rate, 44100);
+        let mut out = Vec::new();
+        a.take(4410, 4410, &mut out);
+        // (lavfi sine: amplitude 1/8)
+        assert!(out.iter().any(|&v| v.abs() > 0.05), "the tone");
     }
 
     proptest! {

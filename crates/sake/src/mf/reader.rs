@@ -1391,7 +1391,11 @@ fn video_out(v: &mp4::Video, want: &Store, processing: bool) -> Option<(VOut, St
             return None;
         }
     }
-    if d1 == source::H264 {
+    let wm = v.wm.as_ref().and_then(|i| match i {
+        crate::wmdec::Info::Video { fourcc, .. } => Some(*fourcc),
+        _ => None,
+    });
+    if wm.map_or(d1 == source::H264, |f| d1 == f) {
         return Some((VOut::Native, source::video_native(v)));
     }
     if !source::DECODED.contains(&d1) || (matches!(d1, source::RGB32 | source::ARGB32) && !processing) {
@@ -1428,8 +1432,8 @@ fn sr_set_current(c: &mut Ctx) -> u32 {
         Kind::Video(s) => {
             let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
             let Some((out, store)) = video_out(&st.v, &want, processing) else { return MF_E_INVALIDMEDIATYPE };
-            // decoded frames need the page's decoder
-            if out != VOut::Native && !kura::video::available() {
+            // decoded frames need the page's decoder (Windows Media: decoded here)
+            if out != VOut::Native && st.v.wm.is_none() && !kura::video::available() {
                 return MF_E_INVALIDMEDIATYPE;
             }
             st.set_out(out);
@@ -1714,7 +1718,7 @@ fn new_reader(c: &mut Ctx, attributes: u32, data: Arc<Data>, media: &Media, sour
                 Kind::Audio(Arc::new(Mutex::new(s)))
             }
             mp4::Track::Video(v) => {
-                let s = VStream::new(v.clone(), data.clone());
+                let s = VStream::new(v.clone(), sdata.clone());
                 if media.duration.is_none() {
                     duration = duration.max(s.duration());
                 }

@@ -78,7 +78,7 @@ pub fn open_more(b: &[u8]) -> Option<(Track, Option<Vec<u8>>)> {
 }
 
 /// Packets one after another: the buffer and each one's (offset, bytes).
-fn repack<'a>(ps: impl Iterator<Item = &'a [u8]>) -> (Vec<u8>, Vec<(u64, u32)>) {
+pub(crate) fn repack<'a>(ps: impl Iterator<Item = &'a [u8]>) -> (Vec<u8>, Vec<(u64, u32)>) {
     let (mut d, mut at) = (Vec::new(), Vec::new());
     for p in ps {
         at.push((d.len() as u64, p.len() as u32));
