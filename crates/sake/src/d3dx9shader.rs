@@ -886,7 +886,7 @@ pub fn check_ctab(d: &[u8], vals: usize) -> usize {
         layout(&t, k, &v, &mut out, &mut used);
         assert!(used <= v.len());
         let r = runs(&out);
-        assert_eq!(r.iter().map(|x| x.2.len()).sum::<usize>(), out.iter().map(|w| if w.0 == 0 { 4 } else { 16 }).sum::<usize>());
+        assert_eq!(r.iter().map(|x| x.2.len()).sum::<usize>(), out.iter().map(|w| match w.0 { 0 => 4, 1 | 2 => 16, _ => 0 }).sum::<usize>());
     }
     t.ks.len()
 }
@@ -1099,6 +1099,13 @@ mod review_tests {
                 prop_assert!(p[0].0 != p[1].0 || p[1].1 != p[0].1 + (p[0].2.len() / per) as u32);
             }
         }
+    }
+
+    /// fuzz find (ctab target): sampler-set writes are not register runs
+    #[test]
+    fn ctab_fuzz_regression() {
+        let d: &[u8] = &[87, 176, 176, 176, 176, 176, 176, 176, 176, 176, 176, 176, 176, 16, 16, 0, 0, 5, 0, 0, 0];
+        check_ctab(&d[1..], d[0] as usize * 17);
     }
 
     /// a sampler listing makes no guest strings or handles

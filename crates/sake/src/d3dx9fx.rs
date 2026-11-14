@@ -225,8 +225,13 @@ impl<'a> Parser<'a> {
             Some(q) => {
                 let q = &self.params[q];
                 p = Param { name: q.name.clone(), semantic: q.semantic.clone(), class: q.class, ty: q.ty, rows: q.rows, cols: q.cols, flags, ..Default::default() };
-                p.bytes = if q.class == PC_OBJECT && !is_sampler(q.ty) { 4 } else { 4 * q.rows * q.cols };
-                // (q's own size was checked against the file)
+                // (a struct's rows are its member count: its elements' sizes are their members';
+                // a numeric one's rows x cols checked against the file, as at the top level)
+                p.bytes = match p.class {
+                    PC_OBJECT if !is_sampler(p.ty) => 4,
+                    PC_OBJECT | PC_STRUCT => 0,
+                    _ => self.numeric_bytes(p.rows, p.cols)?,
+                };
             }
         }
         // (every value takes at least 4 bytes of the file, a struct's at least 4 per member: more
@@ -1895,6 +1900,18 @@ technique T <string Desc = "main";> { pass P0 { ZEnable = false; CullMode = None
             } else {
                 prop_assert_eq!(got, Some(0.0));
             }
+        }
+    }
+
+    /// fuzz find (effect target): an array of a struct whose member count times columns
+    /// overflowed u32 in its elements' sizes
+    #[test]
+    fn struct_array_element_sizes_do_not_overflow() {
+        let d: &[u8] = &[1, 0, 0, 0, 0, 0, 0, 0, 25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 46, 0, 96, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 45];
+        let mut fx = 0xfeff0901u32.to_le_bytes().to_vec();
+        fx.extend_from_slice(d);
+        for x in [d, &fx[..]] {
+            let _ = check(x);
         }
     }
 
