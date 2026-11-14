@@ -14,6 +14,7 @@ let stopPlay: (() => void) | undefined;
 //   &nosave                         no saved games (ippai serve's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/play.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
+//   &bench                          bench.html: the program's output as "vnvm-print" events (all its threads')
 //   &warm=0                         don't fetch the rest of the game's files onto the device while it plays (warm.ts)
 
 import { keepSaving, loadSaves, type SavesModule } from "./saves";
@@ -459,6 +460,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // bench.html shows the program's output
       dispatchEvent(new CustomEvent("vnvm-print", { detail: line }));
     },
+    // (&bench: and its threads' lines, host/pre.js)
+    ...(params.has("bench") ? { vnvmPrint: PRINT_CHANNEL } : {}),
     onAbort: (what: unknown) => {
       recorder?.abort(what);
       // a crash: the way back to the list
@@ -475,6 +478,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     printErr: (line: string) => {
       console.warn(line);
       recorder?.printErr(line);
+      if (params.has("bench")) dispatchEvent(new CustomEvent("vnvm-print", { detail: line }));
       // the program started another of the game's programs in its place (sake's k32::exec)
       const exec = /^sake: exec (.+)\t(.*)$/.exec(line);
       if (exec) nextRun = { run: exec[1], args: exec[2] };
@@ -990,6 +994,13 @@ function attachAuto(current: () => SakeModule): void {
   show();
 }
 
+/** bench.html: the program's threads' stdout lines (host/pre.js), as "vnvm-print" events. */
+const PRINT_CHANNEL = "ippai-print";
+if (params.has("bench")) {
+  new BroadcastChannel(PRINT_CHANNEL).onmessage = (e: MessageEvent<string>) =>
+    dispatchEvent(new CustomEvent("vnvm-print", { detail: e.data }));
+}
+
 function attachInput(current: () => SakeModule): void {
   // (a key pressed while a state is taken: given to the game after, memgate.ts)
   const push = (kind: number, x: number, y: number, data: number) =>
@@ -1162,6 +1173,8 @@ function closeGame(): void {
     void saveNow().finally(() => location.replace(url));
     return;
   }
+  // (bench.html: a program that ended without its last line)
+  dispatchEvent(new CustomEvent("vnvm-exit"));
   log("ゲームが終了しました。一覧に戻ります");
   void wrapUp().finally(leave);
 }

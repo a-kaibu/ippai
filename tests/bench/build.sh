@@ -6,6 +6,9 @@
 # onscripter/ and onscripter64/ the ONScripter game (pack-onscripter.py), novel16/ and novel16p/ the
 # Win16 games (pack-novel16.py, pack-novel16p.py).
 #
+# PROGRAMS_ONLY=1: tests/bench/src's programs and bench.exe only (no scenario, no fetched
+# engines): what web/bench.html runs on a device, in a release's bench/ (release.yml).
+#
 #   tests/bench/build.sh [OUT]
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -18,6 +21,12 @@ for src in *.c *.cpp; do
   eval "${cmd/ -o / -Wall -Werror -o $OUT/}"
 done
 i686-w64-mingw32-gcc -O2 "$ROOT/host/tests/bench.c" -o "$OUT/bench.exe"
+if [ -n "${PROGRAMS_ONLY:-}" ]; then
+  rm -f "$OUT/scenario.exe"
+  git -C "$ROOT" rev-parse HEAD > "$OUT/VERSION"
+  ls "$OUT"
+  exit 0
+fi
 # (the scenario's game data)
 node "$ROOT/tests/bench/gen-scenario.mjs" "$OUT" >/dev/null
 # (the KiriKiri game: testdata/kirikiri packed, with 吉里吉里Z fetched into KRKRZ_CACHE once)

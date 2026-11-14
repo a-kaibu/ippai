@@ -4,6 +4,7 @@
 //! Linux                         macOS                                  what
 //! ~/.local/share/ippai/store    ~/Library/Application Support/ippai/store  chunks/ trees/ games/ saves
 //! ~/.local/share/ippai/fonts    ~/Library/Application Support/ippai/fonts  sake's fonts (a release's fonts/, install.sh)
+//! ~/.local/share/ippai/bench    ~/Library/Application Support/ippai/bench  the benchmark's programs (a release's bench/)
 //! ~/.cache/ippai/jit            ~/Library/Caches/ippai/jit             saved x86 regions (wasm)
 //! ~/.cache/ippai/web            ~/Library/Caches/ippai/web             the built-in web app, unpacked
 //! ~/.local/state/ippai/logs     <data>/logs                            server.log, the pages' run logs
@@ -45,6 +46,9 @@ pub struct Dirs {
     pub strict_auth: bool,
     /// sake's fonts, made into the store's C:\ when it has none (pack::ensure_prefix)
     pub fonts: PathBuf,
+    /// a release's benchmark programs (web/bench.html), made into the store's tree "bench"
+    /// (pack::ensure_bench)
+    pub bench: PathBuf,
 }
 
 pub const DEFAULT_LISTEN: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 8656));
@@ -67,6 +71,7 @@ impl Dirs {
             token: p.config_dir().join("token"),
             strict_auth: cfg.strict_auth.unwrap_or(false),
             fonts: data.join("fonts"),
+            bench: data.join("bench"),
             cache,
             run,
         })

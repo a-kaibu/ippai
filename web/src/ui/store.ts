@@ -14,6 +14,8 @@ export interface BenchView {
   env: string;
   /** the copy button (bench.html when done) */
   copy?: () => void;
+  /** buttons to pick from (bench.html's profiles) */
+  choices?: { label: string; detail: string; onClick: () => void }[];
 }
 
 export interface UiState {

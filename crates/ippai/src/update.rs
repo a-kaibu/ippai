@@ -86,7 +86,7 @@ fn download(url: &str) -> Result<Vec<u8>> {
 }
 
 /// Release `version` installed: the binary at `exe` (the old one kept as `<exe>.bak`), its fonts
-/// in `fonts`. Nothing changes unless the archive matches checksums.txt and holds `ippai`.
+/// in `fonts` and its benchmark programs (bench/) beside them. Nothing changes unless the archive matches checksums.txt and holds `ippai`.
 pub fn install(version: &str, exe: &Path, fonts: &Path) -> Result<()> {
     let (os, arch) = target().context("there are Linux builds only")?;
     let file = format!("ippai_{version}_{os}_{arch}.tar.gz");
@@ -123,16 +123,20 @@ pub fn install(version: &str, exe: &Path, fonts: &Path) -> Result<()> {
         }
         // (a new file in place of the running one, not written into it)
         std::fs::rename(&new, exe)?;
-        let f = tmp.join("fonts");
-        if f.is_dir() {
-            let next = fonts.with_extension("new");
+        // (and the benchmark's programs beside the fonts: dirs.rs's bench, pack::ensure_bench)
+        for (name, to) in [("fonts", fonts.to_path_buf()), ("bench", fonts.with_file_name("bench"))] {
+            let f = tmp.join(name);
+            if !f.is_dir() {
+                continue;
+            }
+            let next = to.with_extension("new");
             let _ = std::fs::remove_dir_all(&next);
-            if let Some(p) = fonts.parent() {
+            if let Some(p) = to.parent() {
                 std::fs::create_dir_all(p)?;
             }
             std::fs::rename(&f, &next).or_else(|_| copy_dir(&f, &next))?;
-            let _ = std::fs::remove_dir_all(fonts);
-            std::fs::rename(&next, fonts)?;
+            let _ = std::fs::remove_dir_all(&to);
+            std::fs::rename(&next, &to)?;
         }
         Ok(())
     })();
@@ -324,7 +328,9 @@ mod tests {
         let (exe, fonts) = (dir.join("bin/ippai"), dir.join("data/fonts"));
         std::fs::write(&exe, b"old binary").unwrap();
         std::fs::write(fonts.join("old.ttf"), b"old").unwrap();
-        let tgz = archive(&[("ippai", b"new binary"), ("README.md", b"r"), ("fonts/msgothic.ttc", b"font")]);
+        let tgz = archive(&[("ippai", b"new binary"), ("README.md", b"r"), ("fonts/msgothic.ttc", b"font"), ("bench/bench.exe", b"MZ"), ("bench/VERSION", b"v9")]);
+        std::fs::create_dir_all(dir.join("data/bench")).unwrap();
+        std::fs::write(dir.join("data/bench/old.exe"), b"old").unwrap();
         std::env::set_var("IPPAI_UPDATE_URL", releases("9.8.7", tgz.clone(), true).await);
         assert_eq!(tokio::task::spawn_blocking(latest).await.unwrap().unwrap(), "9.8.7");
         let (e2, f2) = (exe.clone(), fonts.clone());
@@ -350,6 +356,8 @@ mod tests {
         assert_eq!(std::fs::read(exe.with_extension("bak")).unwrap(), b"old binary");
         assert_eq!(std::fs::read(fonts.join("msgothic.ttc")).unwrap(), b"font");
         assert!(!fonts.join("old.ttf").exists());
+        assert_eq!(std::fs::read(dir.join("data/bench/bench.exe")).unwrap(), b"MZ");
+        assert!(!dir.join("data/bench/old.exe").exists() && !dir.join("data/bench.new").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -33,8 +33,9 @@
 //!   `<jit>/<name>.prerun` marks it done
 //! - saved regions are optimized on the server after each save (binaryen wasm-opt, when there
 //!   is one: see optimize); `.parts` then lists the optimized copies
-//! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
-//!   `<jit>/bench-results.txt`
+//! - `PUT /bench-log`: a result from web/bench.html: a device run (JSON) appended to
+//!   `<jit>/bench-results.jsonl`, other text to `<jit>/bench-results.txt`
+//! - `GET /bench-results`: the device runs kept, one JSON object per line
 //! - `GET`/`PUT /saves/<name>`: saved games backed up to S3 (see saves.rs)
 //! - `PUT /log-save/<name>`: a run's log from the page (web/src/crashlog.ts: crash reports,
 //!   sessions a killed tab left, ...), kept as `<logs>/<name>.txt`; `GET /log-list` lists them
@@ -543,21 +544,43 @@ fn version(wasm: &[u8], idx: &[u8]) -> String {
     h.finalize().as_bytes()[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Prints a bench.html result and appends it to `<jit>/bench-results.txt`.
+/// A device benchmark run (web/bench.html, web/src/devbench.ts): one JSON object, kept as one
+/// line of `<jit>/bench-results.jsonl` (with the time it came in) for `GET /bench-results`.
+/// Anything else (older pages' text) is printed and appended to `<jit>/bench-results.txt`.
 async fn bench_log(State(jit): State<Jit>, body: Bytes) -> StatusCode {
     use tokio::io::AsyncWriteExt;
-    let text = String::from_utf8_lossy(&body);
-    eprintln!("{text}");
+    let (name, line) = match serde_json::from_slice::<serde_json::Value>(&body) {
+        Ok(serde_json::Value::Object(mut run)) => {
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            run.insert("received".into(), at.into());
+            eprintln!("bench: a device run ({} bytes)", body.len());
+            ("bench-results.jsonl", format!("{}\n", serde_json::Value::Object(run)))
+        }
+        _ => {
+            let text = String::from_utf8_lossy(&body);
+            eprintln!("{text}");
+            ("bench-results.txt", format!("{text}\n\n"))
+        }
+    };
     let _lock = jit.1.lock().await;
-    let path = jit.0.join("bench-results.txt");
-    match tokio::fs::OpenOptions::new().create(true).append(true).open(path).await {
-        Ok(mut f) => match f.write_all(format!("{text}\n\n").as_bytes()).await {
+    match tokio::fs::OpenOptions::new().create(true).append(true).open(jit.0.join(name)).await {
+        Ok(mut f) => match f.write_all(line.as_bytes()).await {
             Ok(()) => StatusCode::NO_CONTENT,
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         },
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
+
+/// The device runs kept (`bench-results.jsonl`), at most the last BENCH_RUNS_MAX, one per line.
+async fn bench_results(State(jit): State<Jit>) -> Response {
+    let text = tokio::fs::read_to_string(jit.0.join("bench-results.jsonl")).await.unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let keep = lines[lines.len().saturating_sub(BENCH_RUNS_MAX)..].join("\n");
+    ([(axum::http::header::CONTENT_TYPE, "application/x-ndjson"), (axum::http::header::CACHE_CONTROL, "no-store")], keep).into_response()
+}
+
+const BENCH_RUNS_MAX: usize = 1000;
 
 /// Logs kept at most (the oldest go).
 const LOGS_MAX: usize = 2000;
@@ -892,6 +915,11 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
     if crate::pack::ensure_prefix(&dirs.store, &dirs.fonts)? {
         eprintln!("sake's C:\\ ({}) made from {}", crate::pack::PREFIX_TREE, dirs.fonts.display());
     }
+    match crate::pack::ensure_bench(&dirs.store, &dirs.bench) {
+        Ok(true) => eprintln!("the benchmark's programs ({}) made from {}", crate::pack::BENCH_TREE, dirs.bench.display()),
+        Ok(false) => {}
+        Err(e) => eprintln!("the benchmark's programs from {}: {e:#}", dirs.bench.display()),
+    }
     serve(dirs, dirs.store.clone(), args)
 }
 
@@ -1133,6 +1161,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .nest_service("/logs", ServeDir::new(&args.logs))
         .route("/jit-save/{name}", put(save_jit).layer(DefaultBodyLimit::max(JIT_SAVE_MAX)))
         .route("/bench-log", put(bench_log).layer(DefaultBodyLimit::max(1 << 20)))
+        .route("/bench-results", get(bench_results))
         .with_state(jit)
         .merge(crate::tls_relay::router())
         .merge(crate::library_api::router(crate::library::Library::new(&store)?))
@@ -1530,6 +1559,45 @@ mod tests {
         assert_eq!(super::save_jit(State(jit.clone()), Path("game.x.chunks".into()), vec![0u8; 15].into()).await, axum::http::StatusCode::BAD_REQUEST);
         assert!(!d.join("game.saga_planets-2.chunks.tmp").exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// PUT /bench-log: a device run (JSON object) becomes one line of bench-results.jsonl with
+    /// the time it came in, given back by GET /bench-results (the last BENCH_RUNS_MAX);
+    /// other text (older pages) goes to bench-results.txt and is not given back.
+    #[tokio::test]
+    async fn device_runs_are_kept_one_per_line() {
+        use axum::extract::State;
+        let d = scratch("benchruns");
+        let jit: super::Jit = std::sync::Arc::new((d.clone(), tokio::sync::Mutex::new(())));
+        let put = |body: &str| super::bench_log(State(jit.clone()), body.to_string().into());
+        assert_eq!(put(r#"{"version":1,"device":{"ua":"a\nb"},"steps":{}}"#).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(put("wasm (step 1 of 11)\ncrc32 12.0 0").await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(put(r#"{"version":1,"device":{},"steps":{"x":{}}}"#).await, axum::http::StatusCode::NO_CONTENT);
+        // (a JSON value that is no object is text)
+        assert_eq!(put("[1,2]").await, axum::http::StatusCode::NO_CONTENT);
+        let body = super::bench_results(State(jit.clone())).await;
+        let text = String::from_utf8(axum::body::to_bytes(body.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        let lines: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert_eq!(lines[0]["device"]["ua"], "a\nb");
+        assert!(lines[0]["received"].as_u64().unwrap() > 1_700_000_000_000);
+        assert!(lines[1]["steps"]["x"].is_object());
+        let txt = std::fs::read_to_string(d.join("bench-results.txt")).unwrap();
+        assert!(txt.contains("crc32 12.0") && txt.contains("[1,2]"), "{txt}");
+        // only the last BENCH_RUNS_MAX
+        let many: String = (0..super::BENCH_RUNS_MAX + 5).map(|i| format!("{{\"i\":{i}}}\n")).collect();
+        std::fs::write(d.join("bench-results.jsonl"), many).unwrap();
+        let body = super::bench_results(State(jit.clone())).await;
+        let text = String::from_utf8(axum::body::to_bytes(body.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        assert_eq!(text.lines().count(), super::BENCH_RUNS_MAX);
+        assert_eq!(text.lines().next().unwrap(), "{\"i\":5}");
+        // nothing kept yet: empty
+        let empty = scratch("benchruns-none");
+        let jit2: super::Jit = std::sync::Arc::new((empty.clone(), tokio::sync::Mutex::new(())));
+        let body = super::bench_results(State(jit2)).await;
+        assert!(axum::body::to_bytes(body.into_body(), usize::MAX).await.unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[tokio::test]

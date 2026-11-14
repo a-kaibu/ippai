@@ -138,3 +138,44 @@ Validation also includes 38 native D3D9 tests and four Windows PE probes (`d3d9`
 `d3d9rtfmt`, `d3d9sb`, `d3d9state`): all 1,853 output lines match the previous runtime
 with fixed-memory JIT, interpreter and growable-memory JIT. Android device FPS has
 not been measured.
+
+## The device benchmark (web/bench.html)
+
+`/bench.html` on ippai serve measures the device it is opened on (an Android phone above all:
+phones differ a lot in cores, GPU, memory and heat, and the CI runners say nothing about them).
+The start screen offers three profiles and shows every device's earlier results:
+
+| profile | about | steps |
+|---|---|---|
+| クイック | 3–5 min | device info, WebGPU, bench.c as plain wasm, bench.exe through the JIT twice (the 2nd from the saved translations), `cpu.exe` script/yuv/compose, `cxx.exe` map/virtual, GDI/D3D9/D3D11 VN scenes and D3D9 sprites |
+| 標準 | 10–20 min | + every `cpu.exe`/`cxx.exe` case, more GDI, DirectDraw, D3D8/9/11, OpenGL, Direct2D cases, OPFS and Cache Storage reads, 60 s of the same wasm kernel (does the phone slow down when hot: `sustain.throttle`) |
+| すべて | 20–30 min | + wasm with shared / 2.1 GB memory, bench.exe on sake-grow.wasm, single kernels x5, memory.copy vs an i64 loop, stack slots |
+
+The programs are the CI suite's own (`tests/bench/src`, `host/tests/bench.c`; the cases are
+`suite.mjs`'s, `web/src/devbench.test.ts` checks that) run the way `run.mjs` runs them
+(`IPPAI_NOPACE`, `BENCH` lines, the GPU time between `BENCH-MARK` and `BENCH-FRAMES` where
+the device has `timestamp-query`). A release carries them as `bench/` (`PROGRAMS_ONLY=1
+tests/bench/build.sh`); `ippai update`/install.sh put them in the data directory and `ippai
+serve` packs them as the store's tree `bench` when it starts (again when they change:
+`<store>/bench.version`). By hand: `ippai pack DIR bench`.
+
+What a run records besides the numbers: the model and Android version (client hints), cores,
+`deviceMemory`, the JS heap limit, screen, devicePixelRatio, the GPU (`adapter.info`, features,
+the texture limit), whether a 4 GB wasm memory could be made (sake.wasm or sake-grow.wasm),
+the storage quota, the connection and the battery (charging or not: a phone on its charger
+keeps its clocks up longer). A step that takes longer than 300 s, or fails, is recorded as
+such and the suite goes on, so a slow phone still finishes.
+
+The page reloads for every step (sake starts once per page), keeping the run in
+sessionStorage; at the end it `PUT`s the run (one JSON object) to `/bench-log`, which keeps it
+as a line of `<jit>/bench-results.jsonl`, and shows this run next to the newest four others
+(`GET /bench-results`). The summary rows: plain wasm and the JIT against native x86 (the
+JIT's goal is 1.2–1.3x), the JIT's cost (JIT ÷ wasm, which should not depend on the device),
+game-like CPU and a frame of drawing as geometric means, WebGPU fill rate (8 blended
+1280x720 layers into 720p, 1080p and the canvas at device pixels; `present_dpr` vs
+`present_1x` frame intervals tell whether drawing at devicePixelRatio costs frames), the
+heat slowdown and OPFS reads.
+
+`?profile=quick|standard|full` starts a profile at once; other parameters pass through to the
+program steps (`&headless` for tests). `tests/devbench-browser.mjs` runs the quick profile
+twice in headless Chromium (CI page-tests; `ANDROID=1` with V8's bounds checks as on Android).

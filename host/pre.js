@@ -26,6 +26,20 @@ var vnvmTlsRelay = null;
 var vnvmAccount = null;
 var vnvmSensitive = null;
 var vnvmFs = null;
+// web/bench.html reads the program's output: the page names a BroadcastChannel (`vnvmPrint`)
+// and its threads' lines go there too (a program's output, sake's console_write on stderr,
+// comes from its thread's worker, not the page)
+var vnvmPrintChannel = null;
+if (ENVIRONMENT_IS_PTHREAD && !ENVIRONMENT_IS_NODE) {
+  Module.print = (line) => {
+    console.log(line);
+    if (vnvmPrintChannel) vnvmPrintChannel.postMessage(line);
+  };
+  Module.printErr = (line) => {
+    console.error(line);
+    if (vnvmPrintChannel) vnvmPrintChannel.postMessage(line);
+  };
+}
 function ippaiSharedFs() {
   try {
     const b = new SharedArrayBuffer(1 << 20, { maxByteLength: 1 << 30 });
@@ -66,7 +80,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     W.prototype.vnvmPost = W.prototype.postMessage;
     W.prototype.postMessage = function (m, ...rest) {
       if (m && m.cmd === 'load') {
-        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay, vnvmAccount, vnvmSensitive, vnvmFs };
+        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay, vnvmAccount, vnvmSensitive, vnvmFs, vnvmPrint: Module.vnvmPrint || null };
         // (what the thread asks of the host: to start a process)
         const ask = (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel, vnvmFs);
         if (ENVIRONMENT_IS_NODE) this.on('message', ask);
@@ -92,6 +106,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
       vnvmSensitive = d.vnvmSensitive || null;
       vnvmFs = d.vnvmFs || null;
       if (d.vnvmTrees) Module.vnvmFiles = d.vnvmTrees;
+      if (d.vnvmPrint && !ENVIRONMENT_IS_NODE && !vnvmPrintChannel) vnvmPrintChannel = new BroadcastChannel(d.vnvmPrint);
       if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;
       if (d.vnvmTlsPort) ippaiTlsPort = d.vnvmTlsPort;
     }

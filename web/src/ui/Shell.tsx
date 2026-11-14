@@ -48,6 +48,16 @@ function BenchPanel({ bench }: { bench: BenchView }) {
           </TableBody>
         </Table>
       )}
+      {bench.choices && (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {bench.choices.map((c) => (
+            <Button key={c.label} size="lg" className="h-auto flex-col items-start py-2" onClick={c.onClick}>
+              <span className="text-base font-semibold">{c.label}</span>
+              {c.detail && <span className="text-xs font-normal opacity-80">{c.detail}</span>}
+            </Button>
+          ))}
+        </div>
+      )}
       <p className="mt-2 text-[11px] break-all text-muted-foreground">{bench.env}</p>
       {bench.copy && (
         <Button size="sm" variant="secondary" className="mt-2" onClick={bench.copy}>

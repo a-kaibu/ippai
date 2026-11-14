@@ -711,7 +711,7 @@ jobs:
       contents: read
       actions: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0
@@ -755,6 +755,9 @@ jobs:
           node tests/screen-browser.mjs target/release/ippai
           node tests/direct-browser.mjs
           node tests/save-first-browser.mjs target/release/ippai
+          # (the device benchmark, web/bench.html: its quick profile twice, the programs as a release has them)
+          PROGRAMS_ONLY=1 tests/bench/build.sh "$RUNNER_TEMP/bench" >/dev/null
+          node tests/devbench-browser.mjs target/release/ippai "$RUNNER_TEMP/bench"
 
       - name: Restore states across two real runtime builds
         env:

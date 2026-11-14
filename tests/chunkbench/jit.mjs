@@ -3,6 +3,8 @@
 // (nothing saved: every region translated as it runs), then RUNS more (the server's saved
 // regions loaded at the start). Prints per run: page start to the program's line, flatbench's
 // first and last round (ms), its average, and the page's whole time. Under tests/android-like.sh for a phone.
+// ANDROID=1: V8 as on Android Chrome (no trap handler: every wasm load and store checked,
+// docs/translator.md "Android"). ENV=K=V,... adds variables for the program (&env=).
 //
 //   tests/android-like.sh node tests/chunkbench/jit.mjs [ippai] [flatbench.exe]
 import { execFileSync, spawn } from "node:child_process";
@@ -31,7 +33,9 @@ for (let k = 0; k < 100; k++) {
   if (await fetch(`${base}play.html`).then((r) => r.ok, () => false)) break;
   await new Promise((r) => setTimeout(r, 300));
 }
-const ctx = await chromium.launchPersistentContext(join(work, "profile"), { args: ["--enable-unsafe-webgpu", "--no-proxy-server"] });
+const ctx = await chromium.launchPersistentContext(join(work, "profile"), {
+  args: ["--enable-unsafe-webgpu", "--no-proxy-server", ...(process.env.ANDROID ? ["--js-flags=--wasm-enforce-bounds-checks"] : [])],
+});
 const runs = 1 + Number(process.env.RUNS ?? 2);
 try {
   for (let i = 0; i < runs; i++) {
@@ -51,7 +55,8 @@ try {
         if (t.startsWith("flatbench ")) resolve(t);
       }),
     );
-    await page.goto(`${base}play.html?game=f&autostart`);
+    const env = (process.env.ENV ?? "").split(",").filter(Boolean).map((e) => `&env=${encodeURIComponent(e)}`).join("");
+    await page.goto(`${base}play.html?game=f&autostart${env}`);
     const out = await Promise.race([line, new Promise((r) => setTimeout(() => r(null), 600000))]);
     const total = out?.match(/total=([\d.]+)/)?.[1];
     console.log(JSON.stringify({ run: i ? "saved" : "first", page_ms: Date.now() - t0, flatbench_avg_ms: Number(total), first_rep_ms: reps[0], last_rep_ms: reps.at(-1), parts: parts || "saved regions loaded" }));

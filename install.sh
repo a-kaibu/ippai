@@ -64,6 +64,16 @@ if [ -d "$tmp/fonts" ]; then
   mv "$data/fonts.new" "$data/fonts"
   echo "installed sake's fonts in $data/fonts"
 fi
+# (the benchmark's programs, web/bench.html: ippai serve makes them its store's tree "bench")
+if [ -d "$tmp/bench" ]; then
+  data=${XDG_DATA_HOME:-$HOME/.local/share}/ippai
+  mkdir -p "$data"
+  rm -rf "$data/bench.new"
+  cp -R "$tmp/bench" "$data/bench.new"
+  rm -rf "$data/bench"
+  mv "$data/bench.new" "$data/bench"
+  echo "installed the benchmark's programs in $data/bench"
+fi
 
 case ":$PATH:" in
   *":$DIR:"*) ;;

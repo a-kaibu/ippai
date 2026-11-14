@@ -939,6 +939,29 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The store tree web/bench.html's programs are in (mounted as Z:\ippai\game).
+pub const BENCH_TREE: &str = "bench";
+
+/// The store's tree "bench" from a release's benchmark programs (`<data>/bench`: bench.exe and
+/// tests/bench/src's, update.rs/install.sh put them there) when the store has none or one from
+/// other programs (their VERSION file, the commit they were built from, against the one the
+/// tree was made from: `<store>/bench.version`). True when it made one.
+pub fn ensure_bench(store: &Path, dir: &Path) -> Result<bool> {
+    if !dir.join("bench.exe").is_file() {
+        return Ok(false);
+    }
+    let want = fs::read_to_string(dir.join("VERSION")).unwrap_or_default();
+    let stamp = store.join(format!("{BENCH_TREE}.version"));
+    let have = store.join("trees").join(format!("{BENCH_TREE}.tsv")).exists();
+    if have && fs::read_to_string(&stamp).ok().as_deref() == Some(want.as_str()) {
+        return Ok(false);
+    }
+    fs::create_dir_all(store)?;
+    tree(store, dir, BENCH_TREE, false, chunking(DEFAULT_CHUNK_KIB))?;
+    fs::write(stamp, want)?;
+    Ok(true)
+}
+
 /// Reads `buf.len()` bytes at `off` (pread; on Windows seek_read, which takes the offset too).
 #[cfg(unix)]
 fn read_exact_at(f: &File, buf: &mut [u8], off: u64) -> std::io::Result<()> {
@@ -1596,6 +1619,36 @@ mod tests {
             all.dedup();
             proptest::prop_assert_eq!(all.len(), len);
         }
+    }
+
+    /// The benchmark's tree from a release's bench/: made when the store has none, left while
+    /// the programs are the ones it was made from (VERSION), made again from newer ones; no
+    /// bench.exe there, nothing.
+    #[test]
+    fn bench_tree_from_the_release() {
+        let t = std::env::temp_dir().join(format!("ippai-benchtree-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, dir) = (t.join("store"), t.join("bench"));
+        assert!(!ensure_bench(&store, &dir).unwrap(), "no folder");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cpu.exe"), b"MZ cpu").unwrap();
+        assert!(!ensure_bench(&store, &dir).unwrap(), "no bench.exe");
+        fs::write(dir.join("bench.exe"), b"MZ bench").unwrap();
+        fs::write(dir.join("VERSION"), "aaa\n").unwrap();
+        assert!(ensure_bench(&store, &dir).unwrap());
+        let tsv = store.join(format!("trees/{BENCH_TREE}.tsv"));
+        let list = fs::read_to_string(&tsv).unwrap();
+        assert!(list.contains("\tbench.exe\t") && list.contains("\tcpu.exe\t"), "{list}");
+        assert!(!ensure_bench(&store, &dir).unwrap(), "the same programs");
+        fs::write(dir.join("d3d9.exe"), b"MZ d3d9").unwrap();
+        fs::write(dir.join("VERSION"), "bbb\n").unwrap();
+        assert!(ensure_bench(&store, &dir).unwrap(), "newer programs");
+        assert!(fs::read_to_string(&tsv).unwrap().contains("\td3d9.exe\t"));
+        assert_eq!(fs::read_to_string(store.join("bench.version")).unwrap(), "bbb\n");
+        // (a tree made by hand, `ippai pack DIR bench`, without the stamp: made from the release's)
+        fs::remove_file(store.join("bench.version")).unwrap();
+        assert!(ensure_bench(&store, &dir).unwrap());
+        let _ = fs::remove_dir_all(&t);
     }
 
     /// Random files of many chunks (zero runs, repeated parts), packed with a file's chunks in

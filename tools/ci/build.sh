@@ -18,7 +18,7 @@ export OUT=${OUT:-$ROOT/target/sake-out}
 cd "$ROOT"
 rm -rf "$DIST"  # (a cached target/ would carry older builds into the artifact)
 WEB_OUT=$ROOT/web/public/sake bash crates/sake/build.sh
-bash host/tests/bench-wasm.sh  # (web/public/benchwasm: bench.html's direct-wasm numbers; not in releases)
+bash host/tests/bench-wasm.sh  # (web/public/benchwasm: bench.html's direct-wasm numbers)
 (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
 cargo build --release -p ippai
 
