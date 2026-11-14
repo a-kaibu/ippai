@@ -887,6 +887,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     usp::init();
     acm::init();
     dinput::init();
+    koji::set_tsc_source(k32::tsc);
     d2d::init();
     wmvcore::init();
     d3dx9::init();

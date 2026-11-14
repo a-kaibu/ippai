@@ -81,6 +81,16 @@ pub fn clock_ns() -> u64 {
     now().saturating_sub(t0) as u64
 }
 
+/// RDTSC's counter (koji::set_tsc_source): 2 GHz from the wall clock, since the same "boot"
+/// as GetTickCount (60 s before the first call), never going back. (Under 2^31 ticks a second:
+/// programs keep the rate they measure in an int.)
+pub const TSC_HZ: u64 = 2_000_000_000;
+pub fn tsc() -> u64 {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let t = (clock_ns() + 60_000_000_000) * (TSC_HZ / 1_000_000_000);
+    LAST.fetch_max(t, Ordering::Relaxed).max(t)
+}
+
 pub fn ticks_ms() -> u32 {
     (clock_ns() / 1_000_000 + 60_000) as u32
 }

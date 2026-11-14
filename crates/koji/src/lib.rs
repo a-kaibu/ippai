@@ -22,6 +22,28 @@ pub use fpu::Fpu;
 /// The MXCSR exception flags of an SSE operation (for tests against the host CPU).
 #[doc(hidden)]
 pub use interp::sse::{flags32, flags64, narrow_flags, FOp};
+/// RDTSC's clock: the embedder's (sake: wall-clock ticks), else [`Cpu::tsc`]. A program timing
+/// itself with RDTSC (十六夜の花嫁's game clock: TSC ticks over a second of timeGetTime, then
+/// TSC / ticks-per-ms) stood still on a constant one.
+static TSC_SOURCE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Sets RDTSC's clock (a function of no arguments that never goes back).
+pub fn set_tsc_source(f: fn() -> u64) {
+    TSC_SOURCE.store(f as usize, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// What RDTSC reads on `cpu`.
+pub fn read_tsc(cpu: &Cpu) -> u64 {
+    match TSC_SOURCE.load(core::sync::atomic::Ordering::Relaxed) {
+        0 => cpu.tsc,
+        // SAFETY: only set_tsc_source stores here, from a `fn() -> u64`
+        p => {
+            let f = unsafe { core::mem::transmute::<usize, fn() -> u64>(p) };
+            f()
+        }
+    }
+}
+
 pub use interp::{cpuid, cpuid_mode, CPUID_AVX, step, step_cached, step_flow, DecodeCache};
 
 impl Cpu {
@@ -201,7 +223,7 @@ pub struct Cpu {
     /// (sake's API trap addresses).
     pub trap_lo: u32,
     pub trap_hi: u32,
-    /// Value returned by RDTSC (the embedder advances it).
+    /// Value returned by RDTSC when the embedder set no clock ([`set_tsc_source`]).
     pub tsc: u64,
     pub fpu: Fpu,
     /// MMX registers (kept apart from the x87 stack: code does not mix them).

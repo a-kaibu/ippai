@@ -1,0 +1,4 @@
+ticks a second: 0.5 to 6 GHz
+rate fits an int: yes
+went back: 0 times
+game clock over 100 ms: moves with timeGetTime

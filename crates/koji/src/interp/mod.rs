@@ -1135,8 +1135,9 @@ impl<'a, M: Memory> X<'a, M> {
                 self.done()
             }
             Rdtsc => {
-                self.set_reg(Register::EAX, self.cpu.tsc as u32 as u64);
-                self.set_reg(Register::EDX, self.cpu.tsc >> 32);
+                let t = crate::read_tsc(self.cpu);
+                self.set_reg(Register::EAX, t as u32 as u64);
+                self.set_reg(Register::EDX, t >> 32);
                 self.done()
             }
             Int3 => {
