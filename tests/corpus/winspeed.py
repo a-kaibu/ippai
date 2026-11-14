@@ -7,6 +7,13 @@ title / steps / story / CPU rules as tests/corpus.mjs on sake), RUNS times.
   python tests/corpus/winspeed.py WORK [ids...]
   env: RUNS (2), STORY (30), IDLE (10), TITLE_MAX (150)
 
+A row's title_sig / story_sig (shots.py sig of a title.png / story shot looked at by a person)
+make the title the screen with that signature, not the first with more than 300 colours (a
+warning page has as many), and say whether the story shots reached the screen expected
+(titleMatch, storyMatch in the summary). tests/corpus/winspeed_check.py compares a Windows run
+with a masu run of the same rows: a row whose two sides stopped at different screens is not a
+speed comparison.
+
 WORK/dl/<file>, WORK/x/<id>/ (unpacked), WORK/out/<id>-<n>/result.json; WORK/summary.tsv.
 """
 import csv, hashlib, json, os, subprocess, sys, urllib.request, zipfile
@@ -97,12 +104,14 @@ def main():
             out = os.path.join(work, 'out', f"{row['id']}-{n}")
             env = dict(os.environ)
             if row.get('pre'): env['PRE'] = row['pre']
+            if row.get('title_sig'): env['TITLE_SIG'] = row['title_sig']
+            if row.get('story_sig'): env['STORY_SIG'] = row['story_sig']
             subprocess.run([sys.executable, os.path.join(C, 'winplay.py'), 'run', os.path.join(d, *exe.split('/')), out,
                             row.get('steps') or 'key:Return wait:3'], env=env)
             try: r = json.load(open(os.path.join(out, 'result.json'), encoding='utf-8'))
             except Exception as e: r = {'errors': [str(e)]}
             line = [row['id'], row['name'], exe, n] + [r.get(k) for k in
-                    ('firstWindow', 'title', 'titleStill', 'titleCores', 'storyCores', 'idleCores', 'leftTitle', 'size', 'crashed')]
+                    ('firstWindow', 'title', 'titleStill', 'titleCores', 'storyCores', 'idleCores', 'leftTitle', 'size', 'crashed', 'titleMatch', 'storyMatch')]
             print(*line, sep='\t', flush=True)
             summ.append(line)
     with open(os.path.join(work, 'summary.tsv'), 'a', encoding='utf-8') as f:

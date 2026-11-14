@@ -4,6 +4,7 @@ with Windows' (tests/corpus/golden). Standard library only (the Windows runner a
 
   shots.py compare WANT.png GOT.png        prints the comparison, exit 1 when it differs
   shots.py half IN.png OUT.png             a golden from a Windows shot (half size)
+  shots.py sig SHOT.png                    the screen's signature (winspeed.tsv title_sig)
 
 Pictures are (w, h, rgb): rgb is w*h*3 bytes, rows top down.
 
@@ -169,12 +170,60 @@ def compare(want, got):
     return {'ok': ok, 'why': why, 'mean': round(mean, 2), 'bad': round(frac, 4)}
 
 
+# A screen's signature: which screen this is, small enough for a column of winspeed.tsv, and
+# the same from Windows' shot and from sake's frame (tests/corpus/sig.mjs computes it alike, in
+# integers: shots_test.py checks both on random pictures). SIG_X x SIG_Y cells, each the mean of
+# SIG_S x SIG_S points spread over it, each channel kept to 4 bits: 144 hex digits. Two
+# signatures are the same screen when the channels differ by SIG_MEAN on average (in 4-bit
+# steps) and by more than SIG_CELL in at most SIG_BAD cells (a blinking cursor, an animated
+# logo, a menu item lit); a warning page, a black screen or the next screen differ in many.
+SIG_X, SIG_Y, SIG_S = 8, 6, 8
+SIG_MEAN, SIG_CELL, SIG_BAD = 1.0, 3, 4
+
+
+def sig(w, h, rgb, bpp=3):
+    """the signature (hex) of a picture of w*h pixels of bpp bytes (rgb first)"""
+    out = []
+    for cy in range(SIG_Y):
+        for cx in range(SIG_X):
+            acc = [0, 0, 0]
+            for sy in range(SIG_S):
+                y = (cy * SIG_S + sy) * h // (SIG_Y * SIG_S) + h // (SIG_Y * SIG_S * 2)
+                row = y * w
+                for sx in range(SIG_S):
+                    x = (cx * SIG_S + sx) * w // (SIG_X * SIG_S) + w // (SIG_X * SIG_S * 2)
+                    i = (row + x) * bpp
+                    acc[0] += rgb[i]; acc[1] += rgb[i + 1]; acc[2] += rgb[i + 2]
+            out += [(a // (SIG_S * SIG_S)) >> 4 for a in acc]
+    return ''.join('%x' % v for v in out)
+
+
+def sig_diff(a, b):
+    """(mean channel difference in 4-bit steps, cells differing by more than SIG_CELL)"""
+    if len(a) != len(b) or len(a) != SIG_X * SIG_Y * 3:
+        return None, None
+    d = [abs(int(x, 16) - int(y, 16)) for x, y in zip(a, b)]
+    bad = sum(max(d[i:i + 3]) > SIG_CELL for i in range(0, len(d), 3))
+    return sum(d) / len(d), bad
+
+
+def sig_same(a, b):
+    """whether signatures a and b are the same screen (False when either is missing)"""
+    if not a or not b:
+        return False
+    mean, bad = sig_diff(a, b)
+    return mean is not None and mean <= SIG_MEAN and bad <= SIG_BAD
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else ''
     if cmd == 'compare' and len(sys.argv) == 4:
         r = compare(read(sys.argv[2]), read(sys.argv[3]))
         print(r)
         sys.exit(0 if r['ok'] else 1)
+    if cmd == 'sig' and len(sys.argv) == 3:
+        print(sig(*read(sys.argv[2])))
+        sys.exit(0)
     if cmd == 'half' and len(sys.argv) == 4:
         write(sys.argv[3], *half(*read(sys.argv[2])))
         sys.exit(0)

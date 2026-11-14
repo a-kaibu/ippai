@@ -6,7 +6,7 @@ pictures with known differences (property tests over random pictures, fixed seed
 
   python3 tests/corpus/shots_test.py
 """
-import os, random, shutil, struct, subprocess, sys, tempfile, unittest, zlib
+import json, os, random, shutil, struct, subprocess, sys, tempfile, unittest, zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shots
@@ -229,6 +229,83 @@ def _double(p):
         row = b''.join(rgb[(y * w + x) * 3:(y * w + x) * 3 + 3] * 2 for x in range(w))
         out += row + row
     return 2 * w, 2 * h, bytes(out)
+
+
+class Sig(unittest.TestCase):
+    """shots.sig / sig_same and tests/corpus/sig.mjs (the same integers, differential over random
+    pictures and sizes, RGB and sake's BGRA), and what "the same screen" means (property,
+    seeded): a picture is its own screen, a little noise or a blinking cursor keeps it, another
+    screen (a warning page, the next screen) is not it."""
+
+    def test_same_screen(self):
+        r = random.Random(41)
+        for run in range(30):
+            w, h = r.choice([(320, 240), (400, 300), (544, 416), (384, 216)])
+            pic = rand_pic(r, w, h, smooth=True)
+            a = shots.sig(*pic)
+            self.assertEqual(len(a), shots.SIG_X * shots.SIG_Y * 3)
+            self.assertTrue(shots.sig_same(a, a))
+            # (noise of a few steps everywhere, and a small box changed: a cursor, a lit item)
+            px = bytearray(pic[2])
+            for i in range(0, len(px), 7):
+                px[i] = max(0, min(255, px[i] + r.randrange(-6, 7)))
+            bx, by = r.randrange(w - w // 12), r.randrange(h - h // 12)
+            for y in range(by, by + h // 12):
+                for x in range(bx, bx + w // 12):
+                    px[3 * (y * w + x):3 * (y * w + x) + 3] = b'\xff\xff\xff'
+            b = shots.sig(w, h, bytes(px))
+            self.assertTrue(shots.sig_same(a, b), (run, shots.sig_diff(a, b)))
+            self.assertEqual(shots.sig_same(a, b), shots.sig_same(b, a))
+            # another screen: a new picture, or a warning page (dark, a few lines of light text)
+            other = shots.sig(*rand_pic(r, w, h, smooth=True))
+            self.assertFalse(shots.sig_same(a, other) and shots.sig_diff(a, other)[1] > shots.SIG_BAD, run)
+            warn = bytearray(w * h * 3)
+            for y in range(h // 3, 2 * h // 3, 12):
+                for x in range(w // 6, 5 * w // 6):
+                    warn[3 * (y * w + x):3 * (y * w + x) + 3] = b'\xe0\xe0\xe0'
+            if shots.sig_diff(a, shots.sig(w, h, bytes(warn)))[0] > 3:
+                self.assertFalse(shots.sig_same(a, shots.sig(w, h, bytes(warn))), run)
+        self.assertFalse(shots.sig_same(None, a))
+        self.assertFalse(shots.sig_same(a, a[:-1]))
+
+    def test_another_screen_is_not_the_same(self):
+        r = random.Random(43)
+        n = 0
+        for _ in range(100):
+            a = shots.sig(*rand_pic(r, 160, 120, smooth=True))
+            b = shots.sig(*rand_pic(r, 160, 120, smooth=True))
+            n += shots.sig_same(a, b)
+        self.assertEqual(n, 0)
+
+    @unittest.skipUnless(shutil.which('node'), 'no node')
+    def test_sig_mjs_is_the_same(self):
+        r = random.Random(42)
+        cases = []
+        for _ in range(40):
+            w, h = r.randrange(48, 330), r.randrange(48, 250)
+            cases.append((w, h, rand_pic(r, w, h, smooth=r.random() < 0.5)[2]))
+        with tempfile.TemporaryDirectory() as d:
+            for i, (w, h, rgb) in enumerate(cases):
+                bgra = bytearray(w * h * 4)
+                bgra[0::4], bgra[1::4], bgra[2::4] = rgb[2::3], rgb[1::3], rgb[0::3]
+                with open(f'{d}/{i}.rgb', 'wb') as f: f.write(rgb)
+                with open(f'{d}/{i}.bgra', 'wb') as f: f.write(bytes(bgra))
+            with open(f'{d}/t.mjs', 'w') as f: f.write(
+                'import { readFileSync } from "node:fs";\n'
+                f'import {{ screenSig, sigSame }} from {json.dumps(os.path.join(HERE, "sig.mjs"))};\n'
+                f'const cases = {json.dumps([[w, h] for w, h, _ in cases])};\n'
+                'const out = cases.map(([w, h], i) => {\n'
+                f'  const a = screenSig(w, h, readFileSync({json.dumps(d)} + `/${{i}}.rgb`), 3, false);\n'
+                f'  const b = screenSig(w, h, readFileSync({json.dumps(d)} + `/${{i}}.bgra`), 4, true);\n'
+                '  return [a, b, sigSame(a, b)];\n'
+                '});\n'
+                'console.log(JSON.stringify(out));\n')
+            got = json.loads(subprocess.run(['node', f'{d}/t.mjs'], check=True, capture_output=True, text=True).stdout)
+        for (w, h, rgb), (a, b, same) in zip(cases, got):
+            want = shots.sig(w, h, rgb)
+            self.assertEqual(a, want, (w, h))
+            self.assertEqual(b, want, (w, h))
+            self.assertTrue(same)
 
 
 if __name__ == '__main__':

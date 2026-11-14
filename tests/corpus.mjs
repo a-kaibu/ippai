@@ -9,12 +9,14 @@
 //   "click:x,y wait:3 key:Return wait:5" (move:x,y: the mouse only) ; default: nothing (story clicks start right away)
 // env: PRE=x,y / PRE_KEYS=0 (see below), TITLE_STILL=2 (seconds the title holds still), STORY=60 (story seconds), TITLE_MAX=120 (give up on the title),
 // TITLE_AT=s (the title from then on even with few colours: 操心術外伝's dark menu on black), STORY_AT=x,y (story clicks,
-// default centre of the bottom fifth), IDLE=s (that long more without a click: idleCores, a still screen's CPU), CHROME_ARGS, PLAYWRIGHT
+// default centre of the bottom fifth), IDLE=s (that long more without a click: idleCores, a still screen's CPU), CHROME_ARGS, PLAYWRIGHT,
+// TITLE_SIG / STORY_SIG (the screens expected: tests/corpus/sig.mjs; titleMatch, storyMatch)
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
 import { storyShot, settled, stillMax } from "./corpus/story.mjs";
+import { screenSig, sigSame } from "./corpus/sig.mjs";
 
 const [url, out, steps = ""] = process.argv.slice(2);
 const STORY = Number(process.env.STORY ?? 60);
@@ -77,7 +79,7 @@ let web = false;
 async function webFrame(full) {
   const b64 = (await page.screenshot().catch(() => null))?.toString("base64");
   if (!b64) return null;
-  return page.evaluate(async ([b64, full]) => {
+  return page.evaluate(async ([b64, full, sigSrc]) => {
     const img = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
     const c = new OffscreenCanvas(img.width, img.height).getContext("2d");
     c.drawImage(img, 0, 0);
@@ -88,7 +90,8 @@ async function webFrame(full) {
       colors.add(d[i] | (d[i + 1] << 8) | (d[i + 2] << 16));
     let hsh = 0;
     for (let i = 0; i < d.length; i += 4093) hsh = (hsh * 31 + d[i]) | 0;
-    const r = { w: ow, h: oh, view: [0, 0, ow, oh], colors: colors.size, hash: hsh, d3d: false, busy: 0 };
+    const sig = new Function(`return ${sigSrc}`)()(ow, oh, d, 4, false);
+    const r = { w: ow, h: oh, view: [0, 0, ow, oh], colors: colors.size, hash: hsh, sig, d3d: false, busy: 0 };
     if (full) {
       // (BGRA, as sake's shots)
       for (let i = 0; i < d.length; i += 4) [d[i], d[i + 2]] = [d[i + 2], d[i]];
@@ -97,13 +100,13 @@ async function webFrame(full) {
       r.data = btoa(s);
     }
     return r;
-  }, [b64, full]).catch((e) => ({ err: String(e) }));
+  }, [b64, full, screenSig.toString()]).catch((e) => ({ err: String(e) }));
 }
 
 // the game window's client area as the page shows it (+ Direct3D overlay); with full=false only stats
 async function frame(full) {
   if (web || (web = await isWeb())) return webFrame(full);
-  return page.evaluate(async (full) => {
+  return page.evaluate(async ([full, sigSrc]) => {
     const m = window.vnvmSake;
     if (!m || !m._vnhost_render_shot) return null;
     // what the page shows (the game window's client area, Direct3D frames included), at the
@@ -130,14 +133,16 @@ async function frame(full) {
     const ncolors = greys > 100 ? Math.max(colors.size, 301) : colors.size;
     let hsh = 0;
     for (let i = 0; i < outp.length; i += 4093) hsh = (hsh * 31 + outp[i]) | 0;
-    const r = { w: ow, h: oh, view: v, colors: ncolors, hash: hsh, d3d: !!o, busy: m._vnhost_load_busy?.() ?? 0 };
+    // (which screen: tests/corpus/sig.mjs, as winplay.py's)
+    const sig = new Function(`return ${sigSrc}`)()(ow, oh, outp, 4, true);
+    const r = { w: ow, h: oh, view: v, colors: ncolors, hash: hsh, sig, d3d: !!o, busy: m._vnhost_load_busy?.() ?? 0 };
     if (full) {
       let s = "";
       for (let i = 0; i < outp.length; i += 0x8000) s += String.fromCharCode(...outp.subarray(i, i + 0x8000));
       r.data = btoa(s);
     }
     return r;
-  }, full).catch((e) => ({ err: String(e) }));
+  }, [full, screenSig.toString()]).catch((e) => ({ err: String(e) }));
 }
 async function shot(name) {
   const f = await frame(true);
@@ -190,6 +195,7 @@ let last = null, firstFrame = null, lastPre = 0;
 const small = (f) => f.w < 540 || f.h < 400;
 const PRE = process.env.PRE?.split(",").map(Number);
 const TITLE_AT = Number(process.env.TITLE_AT ?? 0);
+const TITLE_SIG = process.env.TITLE_SIG || "", STORY_SIG = process.env.STORY_SIG || "";
 while (now() < TITLE_MAX && !crashed) {
   await sleep(1);
   const f = await frame(false);
@@ -201,7 +207,9 @@ while (now() < TITLE_MAX && !crashed) {
   if (firstFrame === null && f.w > 32) firstFrame = now();
   // (a small window with many colours is a launcher or a settings dialog: CatSystem2's
   // フルスクリーン/ウィンドウ bar, AdvHD's 390x453 dialog)
-  if (f.colors > 300 && !small(f)) { res.title = now(); break; }
+  // (TITLE_SIG: the title is the screen with that signature, not any with many colours: a
+  // warning page or a logo has many too; winspeed.tsv title_sig, shots.py sig)
+  if (f.colors > 300 && !small(f) && (!TITLE_SIG || sigSame(TITLE_SIG, f.sig))) { res.title = now(); break; }
   // (TITLE_AT=s: a title with few colours, a dark menu on black: the title from then on)
   if (TITLE_AT && now() >= TITLE_AT && !small(f)) { res.title = now(); break; }
 }
@@ -243,6 +251,9 @@ const tf = await shot("title");
 if (tf?.view) view = tf.view;
 res.d3d = tf?.d3d ?? false;
 res.titleHash = tf?.hash ?? null;
+res.titleSig = tf?.sig ?? null;
+// (whether it is the screen expected: null when none is)
+res.titleMatch = TITLE_SIG ? sigSame(TITLE_SIG, tf?.sig) : null;
 save();
 
 // 2. the title's steps
@@ -261,13 +272,17 @@ await shot("steps");
 const [sx, sy] = (process.env.STORY_AT ?? "").split(",").map(Number);
 const storyAt = sx ? [sx, sy] : [Math.round(view[2] - view[0]) / 2, Math.round((view[3] - view[1]) * 0.85)];
 const b0 = (await frame(false))?.busy ?? 0, s0 = now();
-const hashes = new Set();
+const hashes = new Set(), storySigs = [];
 for (let s = 0; s < STORY && !crashed; s += 2) {
   await click(storyAt[0], storyAt[1]);
   await sleep(2);
   // (every 20 s and at the end: check.py's story wants two screens, which the default 30 s
   // gave only one of when the shots were every 20 s alone)
-  if (storyShot(s, STORY)) { const f = await shot(`story-${s + 2}`); if (f?.hash !== undefined) hashes.add(f.hash); }
+  if (storyShot(s, STORY)) {
+    const f = await shot(`story-${s + 2}`);
+    if (f?.hash !== undefined) hashes.add(f.hash);
+    if (f?.sig) storySigs.push(f.sig);
+  }
 }
 const f1 = await frame(false);
 res.storyCores = f1 && !f1.err ? (f1.busy - b0) / 1000 / (now() - s0) : null;
@@ -283,6 +298,10 @@ if (IDLE > 0 && !crashed && f1 && !f1.err) {
 }
 // the story screens left the title (the steps started the game)
 res.leftTitle = [...hashes].some((h) => h !== res.titleHash);
+// (left for the screen expected after the title, STORY_SIG: a story page, not a menu or the
+// title again; null when none is expected)
+res.storySigs = storySigs;
+res.storyMatch = STORY_SIG ? storySigs.some((g) => sigSame(STORY_SIG, g)) : null;
 res.crashed = crashed;
 res.end = now();
 save();

@@ -12,7 +12,8 @@ Writes OUT/result.json with the fields corpus.mjs writes. Standard library only 
   python winplay.py meta TITLES.tsv ID EXE META.json   (any OS) what `play` needs of titles.tsv
   python winplay.py play GAME OUT                 GAME/meta.json + GAME/x: run with its settings
   python winplay.py run EXE OUT [STEPS]           env: ARGS, PRE=x,y, STORY_AT=x,y, TITLE_STILL (2), STORY (30), IDLE (0),
-                                                  TITLE_MAX (120)
+                                                  TITLE_MAX (120), TITLE_SIG / STORY_SIG (shots.py sig: the screens
+                                                  expected; titleMatch, storyMatch)
 
 Japanese games on an English Windows: `run` gives the game (and every exe beside it) an external
 manifest with activeCodePage ja-JP (code page 932), the embedded manifest's other settings kept
@@ -433,6 +434,7 @@ def run(exe, out, steps):
     d = os.path.dirname(exe)
     os.makedirs(out, exist_ok=True)
     STORY, TITLE_MAX = float(os.environ.get('STORY', 30)), float(os.environ.get('TITLE_MAX', 120))
+    TITLE_SIG, STORY_SIG = os.environ.get('TITLE_SIG', ''), os.environ.get('STORY_SIG', '')
     PRE = [float(v) for v in os.environ['PRE'].split(',')] if os.environ.get('PRE') else None
     res = {'exe': exe, 'steps': steps, 'title': None, 'errors': [], 'shots': [], 'windows': True}
     res['manifests'] = give_codepage(exe)
@@ -504,7 +506,8 @@ def run(exe, out, steps):
                 last_pre = now(); click(*PRE)
             elif not PRE and now() > 12 and now() - last_pre >= 6 and (n <= 300 or small(w, h)):
                 last_pre = now(); key('Return')
-            if n > 300 and not small(w, h):
+            # (TITLE_SIG: the screen expected, not the first with many colours: corpus.mjs)
+            if n > 300 and not small(w, h) and (not TITLE_SIG or shots.sig_same(TITLE_SIG, shots.sig(*f))):
                 res['title'] = now()
                 break
         res['firstWindow'] = first
@@ -527,6 +530,8 @@ def run(exe, out, steps):
         res['titleStill'] = now()
         f = shot('title')
         res['titleHash'] = stats(*f)[1] if f else None
+        res['titleSig'] = shots.sig(*f) if f else None
+        res['titleMatch'] = shots.sig_same(TITLE_SIG, res['titleSig']) if TITLE_SIG else None
         save()
         for op, a in plan:
             if op == 'click': click(*a)
@@ -539,7 +544,7 @@ def run(exe, out, steps):
             elif op == 'shot': shot(a)
         shot('steps')
         at = [float(v) for v in os.environ['STORY_AT'].split(',')] if os.environ.get('STORY_AT') else None
-        hashes, s = set(), 0
+        hashes, s, story_sigs = set(), 0, []
         c0, s0 = sample(), now()
         while s < STORY and alive():
             cw, ch = (win[1][2], win[1][3]) if win[1] else (640, 480)
@@ -547,7 +552,7 @@ def run(exe, out, steps):
             time.sleep(2)
             if story_shot(s, STORY):
                 f = shot(f'story-{s + 2}')
-                if f: hashes.add(stats(*f)[1])
+                if f: hashes.add(stats(*f)[1]); story_sigs.append(shots.sig(*f))
             s += 2
         c1 = sample()
         res['storyCores'] = cores(c0, c1, now() - s0)
@@ -559,6 +564,8 @@ def run(exe, out, steps):
             time.sleep(IDLE)
             res['idleCores'] = cores(c1, sample(), now() - t)
         res['leftTitle'] = any(h != res['titleHash'] for h in hashes)
+        res['storySigs'] = story_sigs
+        res['storyMatch'] = any(shots.sig_same(STORY_SIG, g) for g in story_sigs) if STORY_SIG else None
         res['crashed'] = not alive()
     except Exception as e:
         res['errors'].append(f'winplay: {type(e).__name__}: {e}')

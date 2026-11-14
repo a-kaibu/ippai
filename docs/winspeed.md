@@ -50,3 +50,24 @@
 - **appetite 系 吉里吉里の本編 1 コアは、もう再現しない**: 14 本とも masu の本編/タイトルで 0.02〜0.09 コア (Windows 0.01〜0.04)。以前の 0.95〜1.0 (part 12/14/18/19/22 のメモ) は、その後の main のどこかで解消している (どのコミットかは確かめていない)。
 - **Windows と違う 1 コア張り付き (#122 の候補)**: VenusBlood VBB (Windows 0.26 / masu 0.92)、GEARS of DRAGOON 2 (0.16 / 0.95)、Unity 全般 (僕のメイド 0.06 / 0.81、上倉雛 0.13 / 1.52、艶嬢学園2 0.16 / 1.60、BLACK-MARKET 0.42 / 0.76、妹ちゃん 0.09 / 0.45、ニャンコイ 0.14 / 0.66)。
 - **起動は全部 masu が遅い**: 吉里吉里 (appetite) で 2.7〜7 倍 (Windows 2〜5 秒 / masu 12〜17 秒)。女体汚辱は Windows でも 26 秒 (ロゴの演出) で masu は 2.2 倍 (保存 JIT ありで 1.8 倍)。Unity は 6〜22 倍。純情化憐は保存 JIT で 38 → 14 秒 (Windows 5 秒)。保存 JIT の効果は作品による (女体汚辱・VBB・GoD2・僕のメイドはほぼ変わらない)。
+
+## 同じ画面を測っているか (2026-11-14 のレビューから)
+
+上の表の title は「中央 1/3 が 300 色を超えた最初のフレーム」なので、艶嬢学園2 のように WARNING 画面をタイトルとして測った行がある。また「本編/タイトル」が両側で違う行 (apt087 / apt124 / apt139 / apt285 / 黒ギャル娘 / 娘の親友JK / 妻の母 / 最強の人妻 / こいのす) は、コア数が別の画面のもの。これらの行の倍率とコア比較は、そのままでは使えない。
+
+そのための仕組み:
+- **画面シグネチャ**: `tests/corpus/shots.py sig` と `tests/corpus/sig.mjs` (同じ整数計算。`shots_test.py` が乱数画像で両者の一致を確かめる)。8x6 マスの平均色を 4 ビットずつ、16 進 144 桁。`sig_same` は平均差 1 段以内、3 段を超えて違うマスが 4 個以内なら同じ画面 (点滅カーソルや光るメニュー項目は許し、警告画面や次の画面は別)。
+- **作品ごとの期待画面**: `winspeed.tsv` の `title_sig` / `story_sig` 列 (空欄はまだ未定義)。人が確認した Windows の title.png から `python3 tests/corpus/shots.py sig title.png` で作る。入っている行は、winplay.py と corpus.mjs の両方で「その画面になった最初のフレーム」が title になり、結果に `titleMatch` / `storyMatch` が入る。どの行でも結果に `titleSig` と `storySigs` が残る。
+- **突き合わせ**: `python3 tests/corpus/winspeed_check.py WIN_OUT MASU_OUT` が、両側の title 画面が同じか (と `title_sig`)、両側とも本編に進んだか (と `story_sig`) を行ごとに出し、同じ画面の行だけ倍率を出す。本編の画面が違う行のコアには「(別画面)」が付く。違う行があれば終了コード 1。
+
+次に測り直すときは、まず Windows 側の title.png を見て `title_sig` を埋め、両側をこの判定で流し直す (上の表はまだ旧判定のまま)。
+
+## Windows では暇なのに masu では 1 コア使う作品の内訳
+
+VBB、GoD2、Unity 各作品 (上の「Windows と違う 1 コア張り付き」) は、JIT の最適化より先に、どこで CPU を使っているかを測る (docs/translator.md の記録では CPU 状態のメモリアクセスを大きく減らしても 3〜7% しか速くならなかった)。
+
+- `SAKE_ENV=SAKE_API_STATS=5` を付けて corpus-run.py で流すと、5 秒ごとに API ごとの呼び出し数と中で使った時間が console.log に出る (crates/sake/src/api.rs)。
+- `python3 tests/corpus/cpu_attrib.py console.log --cores <storyCores> --from 30` が、wait (WaitFor* / Sleep / GetMessage)、poll (PeekMessage / timeGetTime / QueryPerformanceCounter / GetAsyncKeyState …)、present (Present / Flip / BitBlt / StretchDIBits / SwapBuffers …)、sound、file、sync、other ごとの毎秒の呼び出し数と ms を出し、残り (ゲーム自身のコードと API 外の sake: 翻訳済み x86、JIT) を出す。短い wait が毎秒 200 回を超えるもの (Sleep(0) 回し) は「poll している wait」として名前を出す。
+- 読み方: poll が多い → ポーリングループ (Windows でも同じループだが 1 回が sake では重い: その API を軽くする)。present が多い → 描画の待ち方。どれも少なく guest が大きい → ゲーム自身の計算か JIT (そこで初めて translator)。
+
+注意: Windows はデスクトップ PC、masu はクラウドの 4 コア VM のヘッドレス Chromium なので、倍率の全部が互換レイヤーの重さではない。Android は実機ではなく Chromium のエミュレーションで測る (プロジェクトの方針)。
