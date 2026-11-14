@@ -445,6 +445,14 @@ enum After {
     Present(u32),
     /// readbacks to wait for
     Readback(Vec<u32>),
+    /// milliseconds to sleep
+    Sleep(u64),
+}
+
+/// IPPAI_D3D_TRACE=2 (the shaders' WGSL, each draw's first vertices): read once, not per draw.
+fn trace2() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2"))
 }
 
 unsafe fn rd(p: u32, i: usize) -> u32 {
@@ -819,6 +827,7 @@ pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
     match after {
         After::None => {}
         After::Present(hwnd) => gpu::present(hwnd),
+        After::Sleep(ms) => std::thread::sleep(std::time::Duration::from_millis(ms)),
         After::Readback(reqs) => {
             for req in reqs {
                 gpu::wait_readback(req);
@@ -1423,7 +1432,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
         IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN | IF_DXGIDEVICE | IF_SURFACE | IF_DXGIRES if (3..=5).contains(&m) => private_data(d, [5, 6, 4][m as usize - 3], this, &a),
         IF_FACTORY => factory_call(d, m, this, &a),
         IF_ADAPTER => adapter_call(d, m, this, &a),
-        IF_OUTPUT => output_call(d, m, &a),
+        IF_OUTPUT => output_call(d, m, &a, after),
         IF_SWAPCHAIN => swapchain_call(d, m, this, &a, after),
         // Enter/Leave: every call already runs under the host's lock
         IF_MULTITHREAD => match m {
@@ -1803,7 +1812,7 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
 
 const MODES: [(u32, u32); 9] = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960), (1280, 1024), (1366, 768), (1600, 900), (1920, 1080)];
 
-unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
+unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
     match m {
         6 => parent(d, d.adapter, a(1), a(2)),
         7 => {
@@ -1856,7 +1865,9 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
             S_OK
         }
         10 => {
-            std::thread::sleep(std::time::Duration::from_millis(16));
+            // WaitForVBlank: a frame's wait, after the device's lock is let go (other threads'
+            // calls go on meanwhile)
+            *after = After::Sleep(16);
             S_OK
         }
         11..=18 => S_OK,
@@ -1882,7 +1893,7 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
         }
         20 => {
             // FindClosestMatchingMode1(mode1, closest1, device)
-            let r = output_call(d, 9, a);
+            let r = output_call(d, 9, a, after);
             wr(a(2), 7, 0);
             r
         }
@@ -1904,7 +1915,7 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
             if a(1) == 0 {
                 return E_INVALIDARG;
             }
-            output_call(d, 7, a);
+            output_call(d, 7, a, after);
             let p = a(1) + 88 + ptr();
             let f = |x: f32| x.to_bits();
             for (k, v) in [8, 0, f(0.64), f(0.33), f(0.30), f(0.60), f(0.15), f(0.06), f(0.3127), f(0.3290), f(0.5), f(270.0), f(270.0)].into_iter().enumerate() {
@@ -2087,6 +2098,15 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 }
             };
             let check::Tex { dim, w, h, layers, fmt, usage, bind, misc, .. } = t;
+            // (sizes its memory cannot hold: before anything multiplies them in u32)
+            let (d3, n, s) = if dim == 3 { (layers, 1, 1) } else { (1, layers, t.samples) };
+            let bytes = format::texture_bytes(fmt, w, h, d3, n, mips, s).max(format::page_texture_bytes(fmt, w, h, d3, n, mips, s));
+            if bytes > format::MAX_TEXTURE_BYTES {
+                if d.trace {
+                    eprintln!("d3d11: texture {t:?} of {bytes} bytes refused");
+                }
+                return E_OUTOFMEMORY;
+            }
             // (initial data with a missing level)
             if a(2) != 0 {
                 let n = mips * if dim == 3 { 1 } else { layers };
@@ -2627,7 +2647,9 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
             }
             S_OK
         }
-        // states: GetDesc (GetDesc1/2: the newer descriptions)
+        // states: GetDesc (GetDesc1/2: the newer descriptions); a NULL one: nothing written (the
+        // guest's address 0 is the host's memory's start, not a fault)
+        (IF_BLEND | IF_DEPTH | IF_RASTER | IF_SAMPLER, 7..=9, _) if a(1) == 0 => 0,
         (IF_BLEND | IF_DEPTH | IF_RASTER | IF_SAMPLER, 7, Some(Data::State(s))) => {
             let n = match iface {
                 IF_BLEND => 66,
@@ -3213,6 +3235,10 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
             } else {
                 let p = (*d.calls).alloc;
                 let mem = p(size.max(16)) as u32;
+                if mem == 0 {
+                    wrp(out, 0, 0);
+                    return E_OUTOFMEMORY;
+                }
                 if t.pristine {
                     std::ptr::write_bytes(mem as *mut u8, 0, size.max(16) as usize);
                 }
@@ -3435,6 +3461,11 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, z: u32, 
 /// nothing between others, nor a box reaching outside either subresource). On the page where both
 /// textures' texels are the guest's bytes, or both are the same conversion of them; else through
 /// the bytes (those kept, or read back), uploaded as the destination converts them.
+/// Whether `n` units from `at` end by `end` (without wrapping: a box at 0xffff_fff0 does not fit).
+fn fits(at: u32, n: u32, end: u32) -> bool {
+    at.checked_add(n).is_some_and(|e| e <= end)
+}
+
 unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub: u32, bx: Option<[u32; 6]>) {
     let (Some(Data::Texture(a)), Some(Data::Texture(b))) = (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) else { return };
     if !format::copy_compatible(a.fmt, b.fmt) || dsub >= a.mips * if a.dim == 3 { 1 } else { a.layers } || ssub >= b.mips * if b.dim == 3 { 1 } else { b.layers } {
@@ -3449,7 +3480,7 @@ unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub:
     // (block-compressed boxes: whole blocks, the last ones past a level's edge)
     let pad = |v: u32, f: &format::Format| v.div_ceil(f.block) * f.block;
     let (w, h, depth) = (x1.saturating_sub(x0), y1.saturating_sub(y0), z1.saturating_sub(z0));
-    if w == 0 || h == 0 || depth == 0 || x1 > pad(sw, &fb) || y1 > pad(sh, &fb) || z1 > sd || at[0] + w > pad(dw, &fa) || at[1] + h > pad(dh, &fa) || dz + depth > dd {
+    if w == 0 || h == 0 || depth == 0 || x1 > pad(sw, &fb) || y1 > pad(sh, &fb) || z1 > sd || !fits(at[0], w, pad(dw, &fa)) || !fits(at[1], h, pad(dh, &fa)) || !fits(dz, depth, dd) {
         return;
     }
     // a depth-stencil or multisampled texture is copied whole subresources only (Windows: winref
@@ -3513,8 +3544,12 @@ unsafe fn source_bytes(d: &mut D11, id: u32, sub: u32, b: [u32; 6]) -> Option<u3
         return None;
     }
     let (pitch, rows) = format::pitch_rows(t.fmt, w, h);
-    let size = pitch * rows * depth;
+    // (in 64 bits; past what the allocator gives, or nothing from it: none)
+    let size = u32::try_from(pitch as u64 * rows as u64 * depth as u64).ok().filter(|&n| n < 0x8000_0000)?;
     let mem = ((*d.calls).alloc)(size.max(16)) as u32;
+    if mem == 0 {
+        return None;
+    }
     // (what nothing wrote, and what a readback leaves alone: zeros)
     std::ptr::write_bytes(mem as *mut u8, 0, size as usize);
     let (level, layer, lw, lh, _) = sub_size(t, sub);
@@ -3562,17 +3597,19 @@ fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>, samplers: &[u3
             }
         }
     }
+    // (point sprite variants of a vertex shader: the pixel shader's id with the top bit set)
+    let Some(Data::Shader(s)) = d.objs.get(&sh).map(|o| &o.data) else { return None };
+    let key = (if s.pixel { 0 } else if sprite.is_some() { ps | 0x8000_0000 } else { ps }, addr);
+    if let Some(r) = s.wgsl.get(&key) {
+        return r.clone();
+    }
+    // (the pixel shader's code copied only for a translation, not on every draw: review b02)
     let ps_code = match d.objs.get(&ps).map(|o| &o.data) {
         Some(Data::Shader(s)) => Some(s.code.clone()),
         _ => None,
     };
     let trace = d.trace;
     let Some(Data::Shader(s)) = d.objs.get_mut(&sh).map(|o| &mut o.data) else { return None };
-    // (point sprite variants of a vertex shader: the pixel shader's id with the top bit set)
-    let key = (if s.pixel { 0 } else if sprite.is_some() { ps | 0x8000_0000 } else { ps }, addr);
-    if let Some(r) = s.wgsl.get(&key) {
-        return r.clone();
-    }
     let w = match sprite {
         Some(max) if !s.pixel => dxwgsl::translate_point_sprite(&s.code, ps_code.as_deref(), max),
         _ => dxwgsl::translate_addr(&s.code, s.pixel, if s.pixel { None } else { ps_code.as_deref() }, &key.1),
@@ -3586,7 +3623,7 @@ fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>, samplers: &[u3
             });
             if trace {
                 eprintln!("d3d11: {} shader {sh} -> {} bindings {:?}", if s.pixel { "pixel" } else { "vertex" }, id, w.bindings);
-                if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
+                if trace2() {
                     eprintln!("{}", w.code);
                 }
             }
@@ -3789,7 +3826,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     let (count, instances, start, first_instance) = if sprite.is_some() { (6, count, 0, start) } else { (count, instances, start, first_instance) };
     let Some((vs, vb)) = shader_for(d, st.vs, st.ps, sprite, &[]) else { return };
     let ps = if st.ps != 0 { shader_for(d, st.ps, 0, None, &st.samplers[1]) } else { None };
-    if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
+    if trace2() {
         // the first vertices and the vertex shader's constants
         let words = |id: u32, from: u32, n: u32| -> Vec<String> {
             match d.objs.get(&id).map(|o| &o.data) {
@@ -4140,7 +4177,7 @@ fn compute_shader_for(d: &mut D11, cs: u32, fmts: &[(u32, u32)]) -> Option<(u32,
             });
             if trace {
                 eprintln!("d3d11: compute shader {cs} -> {id} bindings {:?}", w.bindings);
-                if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
+                if trace2() {
                     eprintln!("{}", w.code);
                 }
             }

@@ -366,15 +366,21 @@ pub(super) unsafe fn execute(d: &mut D11, st: &mut State, list: u32, restore: u3
 unsafe fn replay(d: &mut D11, st: &mut State, r: &Rec, after: &mut After) {
     let mut args = r.args;
     let mut mem = Vec::new();
+    let mut have = true;
     for (i, b) in &r.blobs {
         let p = d.guest_alloc(b.len() as u32);
+        // (nothing from the allocator: the call is dropped, its copies not written to address 0)
+        if p == 0 {
+            have = false;
+            continue;
+        }
         std::ptr::copy_nonoverlapping(b.as_ptr(), p as *mut u8, b.len());
         args[*i] = p;
         mem.push(p);
     }
     // (an update reads no more than was copied for it: its box is the copy's)
     let a = |i: usize| args[i];
-    let fits = !matches!(r.m, 48 | 116) || update_size(d, &a).is_some_and(|n| n <= r.blobs.iter().find(|b| b.0 == 4).map_or(0, |b| b.1.len() as u32));
+    let fits = have && (!matches!(r.m, 48 | 116) || update_size(d, &a).is_some_and(|n| n <= r.blobs.iter().find(|b| b.0 == 4).map_or(0, |b| b.1.len() as u32)));
     if fits {
         context_call2(d, st, r.m, &a, after);
     }
@@ -421,6 +427,9 @@ unsafe fn map(d: &mut D11, this: u32, res: u32, sub: u32, ty: u32, out: u32) -> 
             (_, Some(mem)) => Ok(mem),
             (_, None) => {
                 let mem = d.guest_alloc(size);
+                if mem == 0 {
+                    return Err(E_OUTOFMEMORY);
+                }
                 x.maps.push((id, sub, mem, size, pitch, depth));
                 Ok(mem)
             }

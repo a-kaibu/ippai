@@ -424,6 +424,10 @@ pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn F
             // GetDesc: D3D10_BLEND_DESC from the D3D11 description
             let Some(Data::State(s)) = d.objs.get(&this).map(|o| &o.data) else { return E_FAIL };
             let p = args[1];
+            // (a NULL description: nothing written, as the other GetDescs)
+            if p == 0 {
+                return S_OK;
+            }
             wr(p, 0, s[0]);
             for t in 0..8 {
                 wr(p, 1 + t, s[2 + t * 8]);

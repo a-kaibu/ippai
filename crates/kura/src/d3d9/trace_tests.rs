@@ -41,7 +41,7 @@ pub(crate) unsafe extern "C" fn alloc(n: u32) -> *mut u8 {
     assert!(a.0 <= a.1, "test arena full");
     p as *mut u8
 }
-unsafe extern "C" fn free(_: *mut u8) {}
+pub(crate) unsafe extern "C" fn free(_: *mut u8) {}
 /// Under LeakSanitizer, `p..p+n` (mapped memory, which it does not look through) holds
 /// pointers too: the device objects in the guest arena own Vecs on the real heap, which were
 /// reported as leaked (Sanitize, d3d11::draw_tests: 125896 bytes in 438 allocations, now and
@@ -154,7 +154,7 @@ unsafe impl std::alloc::GlobalAlloc for LowHeap {
 
 #[global_allocator]
 static HEAP: LowHeap = LowHeap;
-unsafe extern "C" fn client_rect(_: u32, r: *mut i32) -> i32 {
+pub(crate) unsafe extern "C" fn client_rect(_: u32, r: *mut i32) -> i32 {
     for (i, v) in [0, 0, 64, 64].into_iter().enumerate() {
         *r.add(i) = v;
     }

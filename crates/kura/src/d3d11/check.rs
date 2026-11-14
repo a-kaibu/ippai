@@ -691,7 +691,7 @@ pub fn view(kind: u32, r: &Res, desc: Option<&[u32]>) -> Result<View, u32> {
     let all = u32::MAX;
     let levels = |first: u32, n: u32| -> Option<u32> {
         let n = if n == all { r.mips.checked_sub(first)? } else { n };
-        (first < r.mips && n > 0 && first + n <= r.mips).then_some(n)
+        (first < r.mips && n > 0 && first.checked_add(n)? <= r.mips).then_some(n)
     };
     let slices = |first: u32, n: u32, total: u32| -> Option<u32> {
         let n = if n == all { total.checked_sub(first)? } else { n };
@@ -721,7 +721,7 @@ pub fn view(kind: u32, r: &Res, desc: Option<&[u32]>) -> Result<View, u32> {
         (SRV, 10) => {
             let cubes = if u[3] == all { r.layers.saturating_sub(u[2]) / 6 } else { u[3] };
             let Some(n) = levels(u[0], u[1]) else { return bad };
-            if cubes == 0 || u[2] + cubes * 6 > r.layers {
+            if cubes == 0 || cubes.checked_mul(6).and_then(|c| c.checked_add(u[2])).is_none_or(|end| end > r.layers) {
                 return bad;
             }
             v(head(&[u[0], n, u[2], cubes], 4), u[0], n, u[2], cubes * 6)
@@ -1099,6 +1099,58 @@ mod input_layout_tests {
             let f = format(fmt).unwrap();
             if bind == 0x48 && quality_levels(fmt, samples) > 0 && f.1 & 0x10_0000 != 0 && f.5 & (winfmt::DS | winfmt::SRV | winfmt::NONE) == winfmt::DS | winfmt::SRV | winfmt::NONE {
                 proptest::prop_assert!(r.is_ok());
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2048))]
+        /// Any view description, words near u32::MAX too: a view taken covers only levels and
+        /// slices the texture has (first + count wrapped: 2 + 0xfffffffe levels passed).
+        #[test]
+        fn views_stay_inside_the_texture(
+            kind in 0u32..4, dim in proptest::sample::select(vec![3u32, 4, 5, 7, 9, 10]), mips in 1u32..8, layers in 1u32..16, cube in proptest::bool::ANY,
+            u in proptest::collection::vec(proptest::prop_oneof![0u32..8, u32::MAX - 8..=u32::MAX, proptest::prelude::any::<u32>()], 4),
+        ) {
+            let r = Res { dim: 2, fmt: 28, mips, layers: if cube { layers.max(1) * 6 } else { layers }, bind: 8 | 0x20 | 0x80, cube, samples: 1, backbuffer: false };
+            let desc = [28, dim, u[0], u[1], u[2], u[3]];
+            let (d, rest) = if kind == 2 { (vec![desc[0], desc[1], 0, desc[2], desc[3], desc[4], desc[5]], ()) } else { (desc.to_vec(), ()) };
+            let _ = rest;
+            if let Ok(v) = view(kind, &r, Some(&d)) {
+                proptest::prop_assert!(v.mips >= 1 && v.mip as u64 + v.mips as u64 <= r.mips as u64, "{:?} of {:?}", v, r);
+                proptest::prop_assert!(v.layer as u64 + v.layers as u64 <= r.layers.max(6) as u64, "{:?} of {:?}", v, r);
+            }
+        }
+
+        /// What a texture takes in bytes: no overflow for any size (saturating), the sum of its
+        /// levels' pitch x rows where those fit u32 (format::pitch_rows), and refused past
+        /// MAX_TEXTURE_BYTES before anything multiplies its sizes in u32.
+        #[test]
+        fn texture_bytes_any_size(fmt in 1u32..133, w in proptest::prelude::any::<u32>(), h in proptest::prelude::any::<u32>(), d in 1u32..4, layers in 1u32..2049, mips in 1u32..33, samples in 1u32..9, small in 1u32..300) {
+            use super::super::format::{pitch_rows, texture_bytes, MAX_TEXTURE_BYTES};
+            let _ = texture_bytes(fmt, w, h, d, layers, mips, samples);
+            let (sw, sh) = (small, small / 2 + 1);
+            let want: u64 = (0..3u32).map(|l| { let (p, r) = pitch_rows(fmt, (sw >> l).max(1), (sh >> l).max(1)); p as u64 * r as u64 }).sum();
+            proptest::prop_assert_eq!(texture_bytes(fmt, sw, sh, 1, 1, 3, 1), want);
+            proptest::prop_assert!(texture_bytes(fmt, 1 << 16, 1 << 16, 1, 1, 1, 1) > MAX_TEXTURE_BYTES || super::super::format::info(fmt).is_some_and(|f| f.block > 1));
+        }
+
+        /// What CreateTexture* takes (both sizes inside MAX_TEXTURE_BYTES) has every level's
+        /// decoded texels (w x h x slices x the page's bytes a texel: what the converters
+        /// allocate in usize, 32 bits on wasm) inside u32, whatever the format; the page's size
+        /// is at least the guest's for the decoded (block) formats' whole blocks.
+        #[test]
+        fn accepted_textures_decode_in_32_bits(fmt in 1u32..133, lw in 0u32..17, lh in 0u32..17, d in 1u32..9, layers in 1u32..2049, mips in 1u32..16) {
+            use super::super::format::{info, page_bpp, page_texture_bytes, texture_bytes, MAX_TEXTURE_BYTES};
+            let (w, h) = (1u32 << lw, 1u32 << lh);
+            let ok = texture_bytes(fmt, w, h, d, layers, mips, 1).max(page_texture_bytes(fmt, w, h, d, layers, mips, 1)) <= MAX_TEXTURE_BYTES;
+            if let (true, Some(f)) = (ok, info(fmt)) {
+                let texel = page_bpp(f.page).max(1) as u64;
+                proptest::prop_assert!(w as u64 * h as u64 * d as u64 * texel * layers as u64 <= u32::MAX as u64);
+            }
+            // (whole blocks at every level: a 1x1 BC level is a block of 8 or 16 bytes)
+            if info(fmt).is_some_and(|f| f.block > 1) && lw >= 2 + mips && lh >= 2 + mips {
+                proptest::prop_assert!(page_texture_bytes(fmt, w, h, d, layers, mips, 1) >= texture_bytes(fmt, w, h, d, layers, mips, 1));
             }
         }
     }

@@ -80,7 +80,13 @@ pub const XR_BIAS: u32 = 0x8901;
 pub unsafe fn widened_texels(conv: u32, src: *const u8, pitch: usize, w: u32, h: u32) -> Option<Vec<u8>> {
     let (w, h) = (w as usize, h as usize);
     let rd = |y: usize, at: usize| u32::from_le_bytes(std::slice::from_raw_parts(src.add(y * pitch + at), 4).try_into().unwrap());
-    let mut out = Vec::new();
+    // (sized once: RGB32 widens to 16 bytes a texel, 4:2:2 to 4, XR_BIAS to 8)
+    let texel = match conv {
+        RGB32F | RGB32I => 16,
+        XR_BIAS => 8,
+        _ => 4,
+    };
+    let mut out = Vec::with_capacity(w * h * texel);
     match conv {
         RGB32F | RGB32I => {
             let one = if conv == RGB32F { 1f32.to_bits() } else { 1 };
@@ -96,7 +102,12 @@ pub unsafe fn widened_texels(conv: u32, src: *const u8, pitch: usize, w: u32, h:
         RGBG | GRGB => {
             for y in 0..h {
                 for x in 0..w {
-                    let b = rd(y, x / 2 * 4).to_le_bytes();
+                    // (an odd width's last pair: only its first half is in the row, w x 2 bytes;
+                    // the rest reads as zeros, not the next row's or past the box)
+                    let at = x / 2 * 4;
+                    let mut b = [0u8; 4];
+                    let n = (w * 2 - at).min(4);
+                    std::ptr::copy_nonoverlapping(src.add(y * pitch + at), b.as_mut_ptr(), n);
                     // R8G8_B8G8: R, G0, B, G1; G8R8_G8B8: G0, R, G1, B
                     let (r, g, bl) = if conv == RGBG { (b[0], b[1 + 2 * (x % 2)], b[2]) } else { (b[1], b[2 * (x % 2)], b[3]) };
                     out.extend([r, g, bl, 255]);
@@ -160,7 +171,12 @@ pub unsafe fn to_floats(conv: u32, n: u32, src: *const u8, pitch: usize, w: u32,
         }
         _ => return None,
     }
-    Some(out.iter().flat_map(|f| f.to_le_bytes()).collect())
+    // (one pre-sized copy, not a byte iterator growing its Vec)
+    let mut bytes = Vec::with_capacity(out.len() * 4);
+    for f in out {
+        bytes.extend_from_slice(&f.to_le_bytes());
+    }
+    Some(bytes)
 }
 
 /// The 16 values of a BC4 block (BC5 is two of them), as the Direct3D spec interpolates.
@@ -474,6 +490,37 @@ pub fn pitch_rows(dxgi: u32, w: u32, h: u32) -> (u32, u32) {
         None => (w * 4, h),
     }
 }
+
+/// Bytes all of a texture's subresources take in the guest's layout (the w x h x d top level,
+/// `mips` levels, `layers` array slices or 1 for 3D, `samples` each), saturating: CreateTexture*
+/// refuses what no 32-bit heap holds before any size is worked out in u32 (review b02).
+pub fn texture_bytes(dxgi: u32, w: u32, h: u32, d: u32, layers: u32, mips: u32, samples: u32) -> u64 {
+    let (block, bpp) = info(dxgi).map_or((1, 4), |f| (f.block.max(1) as u64, f.bpp as u64));
+    let mut total = 0u64;
+    for l in 0..mips.min(32) {
+        let (lw, lh, ld) = ((w >> l).max(1) as u64, (h >> l).max(1) as u64, (d >> l).max(1) as u64);
+        let level = lw.div_ceil(block).saturating_mul(bpp).saturating_mul(lh.div_ceil(block)).saturating_mul(ld);
+        total = total.saturating_add(level);
+    }
+    total.saturating_mul(layers.max(1) as u64).saturating_mul(samples.max(1) as u64)
+}
+
+/// Bytes the page's texture of those takes (block-compressed and converted formats decoded to
+/// their page format's texels, as `texture_bytes` saturating): a BC1 texture a quarter of the
+/// heap in the guest's layout is twice the heap decoded, so CreateTexture* refuses that too.
+pub fn page_texture_bytes(dxgi: u32, w: u32, h: u32, d: u32, layers: u32, mips: u32, samples: u32) -> u64 {
+    let bpp = info(dxgi).map_or(4, |f| page_bpp(f.page).max(1)) as u64;
+    let mut total = 0u64;
+    for l in 0..mips.min(32) {
+        let (lw, lh, ld) = ((w >> l).max(1) as u64, (h >> l).max(1) as u64, (d >> l).max(1) as u64);
+        total = total.saturating_add(lw.saturating_mul(lh).saturating_mul(ld).saturating_mul(bpp));
+    }
+    total.saturating_mul(layers.max(1) as u64).saturating_mul(samples.max(1) as u64)
+}
+
+/// The most a texture may take ([`texture_bytes`]): more is E_OUTOFMEMORY (as Windows answers
+/// a texture its memory cannot hold); every subresource then fits u32 sizes.
+pub const MAX_TEXTURE_BYTES: u64 = 1 << 31;
 
 /// A vertex attribute format: (page code, d3d9.ts VERTEX_FORMATS2 index)
 pub fn vertex_format(dxgi: u32) -> Option<u32> {
@@ -857,6 +904,54 @@ mod widened_tests {
         assert_eq!(&t[4..8], &[0x10, 0x40, 0x30, 255]);
         assert_eq!(&t[8..12], &[0x50, 0x60, 0x70, 255]);
         assert_eq!(&t[12..16], &[0x50, 0x80, 0x70, 255]);
+    }
+
+    /// `bytes` placed so that they end where a page nothing may read starts: a read past them
+    /// faults (the review: an odd-width R8G8_B8G8 row read 2 bytes past its end).
+    #[cfg(unix)]
+    fn at_guard<R>(bytes: &[u8], f: impl FnOnce(*const u8) -> R) -> R {
+        unsafe {
+            let page = 4096usize;
+            let len = bytes.len().div_ceil(page) * page;
+            let p = libc::mmap(std::ptr::null_mut(), len + page, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) as *mut u8;
+            assert!(p as *mut libc::c_void != libc::MAP_FAILED);
+            assert_eq!(libc::mprotect(p.add(len) as *mut libc::c_void, page, libc::PROT_NONE), 0);
+            let at = p.add(len - bytes.len());
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), at, bytes.len());
+            let r = f(at);
+            libc::munmap(p as *mut libc::c_void, len + page);
+            r
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 512, ..Default::default() })]
+
+        /// Every 4:2:2 box (any width, odd ones too, any pitch at least a row) reads only its
+        /// rows' w x 2 bytes, and each texel is its pair's R and B and its own G (a lone last
+        /// texel: the half there, B none).
+        #[cfg(unix)]
+        #[test]
+        fn packed_422_reads_inside_its_rows(grgb: bool, w in 1u32..40, h in 1u32..5, extra in 0usize..6, seed: u64) {
+            let conv = if grgb { GRGB } else { RGBG };
+            let pitch = w as usize * 2 + extra;
+            let mut x = seed | 1;
+            let bytes: Vec<u8> = (0..pitch * (h as usize - 1) + w as usize * 2).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect();
+            at_guard(&bytes, |src| {
+                let t = unsafe { widened_texels(conv, src, pitch, w, h) }.unwrap();
+                proptest::prop_assert_eq!(t.len(), (w * h * 4) as usize);
+                for y in 0..h as usize {
+                    for i in 0..w as usize {
+                        let row = &bytes[y * pitch..y * pitch + w as usize * 2];
+                        let get = |k: usize| row.get(i / 2 * 4 + k).copied().unwrap_or(0);
+                        let want = if conv == RGBG { [get(0), get(1 + 2 * (i % 2)), get(2), 255] } else { [get(1), get(2 * (i % 2)), get(3), 255] };
+                        let o = (y * w as usize + i) * 4;
+                        proptest::prop_assert_eq!(&t[o..o + 4], &want[..], "texel {} row {}", i, y);
+                    }
+                }
+                Ok(())
+            })?;
+        }
     }
 
     #[test]

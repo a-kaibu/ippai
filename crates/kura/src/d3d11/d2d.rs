@@ -356,15 +356,22 @@ pub fn bitmap(w: u32, h: u32) -> u32 {
 /// Writes rows `px` (`pitch` bytes apart) to bitmap `id` at (x, y), `w` x `h`.
 pub fn bitmap_write(id: u32, (x, y, w, h): (u32, u32, u32, u32), px: &[u8], pitch: u32) {
     let row = (w * 4) as usize;
-    let mut rows = Vec::with_capacity(row * h as usize);
-    for k in 0..h as usize {
-        match px.get(k * pitch as usize..k * pitch as usize + row) {
-            Some(r) => rows.extend_from_slice(r),
-            None => return,
+    let all = row * h as usize;
+    // (rows back to back already: the caller's bytes straight into the queue, one copy, not two)
+    let packed = pitch as usize == row && px.len() >= all;
+    let mut rows = Vec::new();
+    if !packed {
+        rows.reserve(all);
+        for k in 0..h as usize {
+            match px.get(k * pitch as usize..k * pitch as usize + row) {
+                Some(r) => rows.extend_from_slice(r),
+                None => return,
+            }
         }
     }
+    let bytes = if packed { &px[..all] } else { &rows[..] };
     gpu::record(|q| {
-        let off = q.blob(&rows);
+        let off = q.blob(bytes);
         q.cmd(&[gpu::WRITE_TEXTURE2, id, 0, 0, x, y, w, h, w * 4, off]);
     });
 }
@@ -445,6 +452,49 @@ pub fn draw(addr: u32, items: &[Item], bitmap: Option<u32>) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 64, ..Default::default() })]
+
+        /// bitmap_write of any box with any pitch (rows back to back go to the queue as they
+        /// are, others row by row) on the model of WebGPU: the bitmap holds the rows, the rest
+        /// stays as it was; a source too short for its rows writes nothing.
+        #[test]
+        fn bitmap_writes_its_rows(x in 0u32..6, y in 0u32..6, w in 1u32..7, h in 1u32..7, extra in proptest::prop_oneof![proptest::strategy::Just(0u32), 1u32..9], short: bool, seed: u64) {
+            let _g = crate::d3d9::trace_tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            crate::d3d9::trace_tests::attach_page();
+            let id = bitmap(12, 12);
+            let pitch = w * 4 + extra;
+            let mut k = seed | 1;
+            let mut px: Vec<u8> = (0..pitch * (h - 1) + w * 4).map(|_| { k ^= k << 13; k ^= k >> 7; k ^= k << 17; k as u8 }).collect();
+            if short {
+                px.pop();
+            }
+            bitmap_write(id, (x, y, w, h), &px, pitch);
+            gpu::pump();
+            // (the readback's memory where 32-bit addresses reach it)
+            let rb_at = unsafe { crate::d3d9::trace_tests::alloc(12 * 12 * 4) };
+            unsafe { std::ptr::write_bytes(rb_at, 0, 12 * 12 * 4) };
+            let req = 0x5300_0000 | (seed as u32 & 0xffff);
+            gpu::record(|q| q.cmd(&[gpu::READBACK, req, id, 0, 0, 0, 12, 12, rb_at as u32, 48]));
+            proptest::prop_assert!(gpu::wait_readback(req));
+            let rb = unsafe { std::slice::from_raw_parts(rb_at, 12 * 12 * 4) };
+            bitmap_free(id);
+            gpu::set_pump(None);
+            for ty in 0..12u32 {
+                for tx in 0..12u32 {
+                    let at = ((ty * 12 + tx) * 4) as usize;
+                    let inside = !short && tx >= x && tx < x + w && ty >= y && ty < y + h;
+                    let want = if inside { let s = ((ty - y) * pitch + (tx - x) * 4) as usize; px[s..s + 4].to_vec() } else { vec![0; 4] };
+                    proptest::prop_assert_eq!(&rb[at..at + 4], &want[..], "texel ({}, {})", tx, ty);
+                }
+            }
+            let errors = crate::render::model::with(|m| std::mem::take(&mut m.errors));
+            proptest::prop_assert!(errors.is_empty(), "WebGPU errors {:?}", errors);
+        }
+    }
+
     #[test]
     fn shaders_validate() {
         let plain = super::plain_ps();

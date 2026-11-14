@@ -96,3 +96,83 @@ fn format_copies() {
     let errors = model::with(|m| std::mem::take(&mut m.errors));
     assert!(errors.is_empty(), "WebGPU errors {:?}", &errors[..errors.len().min(10)]);
 }
+
+/// CopySubresourceRegion to any place with any box (the review's wrapping `at + w`: a place near
+/// 2^32 passed the bounds check and wrote past the destination): the destination is the box
+/// copied where it fits whole, else as it was (Windows drops a box past either texture).
+#[test]
+fn copies_anywhere() {
+    use proptest::prelude::*;
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let vt = mem(256);
+    put(vt, &(1..=256).map(|i| 0x1000 * i).collect::<Vec<_>>());
+    call1(INIT, &[vt, 256]);
+    attach_page();
+    let desc = mem(16);
+    put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
+    let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
+    let (sc, dev, ctx) = (rd1(sc_out), rd1(dev_out), rd1(ctx_out));
+    let tex = |data: &[u32]| -> u32 {
+        let d = mem(11);
+        put(d, &[4, 4, 1, 1, 28, 1, 0, 0, 8, 0, 0]);
+        let p = mem(16);
+        put(p, data);
+        let init = mem(3);
+        put(init, &[p, 16, 0]);
+        let o = mem(2);
+        assert_eq!(call1(m(IF_DEVICE, 5), &[dev, d, init, o]), 0);
+        rd1(o)
+    };
+    let gpu_of = |a: u32| {
+        let g = D11S.lock().unwrap();
+        let d = g.as_ref().unwrap();
+        match &d.objs[&d.id_of(a)].data {
+            Data::Texture(t) => t.gpu,
+            _ => 0,
+        }
+    };
+    let rb = mem(16);
+    let req = std::cell::Cell::new(0x5200_0000u32);
+    let src = tex(&BITS);
+    let edge = prop_oneof![6 => 0u32..4, 1 => (0u32..4).prop_map(|k| u32::MAX - k), 1 => Just(0x8000_0000)];
+    let (copied, wrapped) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig { cases: 512, ..ProptestConfig::default() });
+    runner
+        .run(&(edge.clone(), edge.clone(), edge.clone(), 0u32..5, 0u32..5, 0u32..5, 0u32..5), |(x, y, z, x0, y0, x1, y1)| {
+            let dst = tex(&[0; 16]);
+            let bx = mem(6);
+            put(bx, &[x0, y0, 0, x1, y1, 1]);
+            call1(m(IF_CONTEXT, 46), &[ctx, dst, 0, x, y, z, src, 0, bx]);
+            gpu::pump();
+            req.set(req.get() + 1);
+            let r = req.get();
+            gpu::record(|b| b.cmd(&[gpu::READBACK, r, gpu_of(dst), 0, 0, 0, 4, 4, rb, 16]));
+            prop_assert!(gpu::wait_readback(r));
+            let got: Vec<u32> = (0..16).map(|i| rd1(rb + 4 * i)).collect();
+            let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+            let fit = |a: u32, n: u32| (a as u64) + (n as u64) <= 4;
+            let copies = w > 0 && h > 0 && x1 <= 4 && y1 <= 4 && fit(x, w) && fit(y, h);
+            copied.set(copied.get() + copies as u32);
+            wrapped.set(wrapped.get() + (w > 0 && h > 0 && (x.checked_add(w).is_none() || y.checked_add(h).is_none())) as u32);
+            let want: Vec<u32> = (0..16u32)
+                .map(|j| {
+                    let (jx, jy) = (j % 4, j / 4);
+                    if copies && jx >= x && jx < x + w && jy >= y && jy < y + h { BITS[((jy - y + y0) * 4 + jx - x + x0) as usize] } else { 0 }
+                })
+                .collect();
+            call1(m(IF_TEX2D, 2), &[dst]);
+            prop_assert_eq!(got, want, "at ({}, {}, {}) box {:?}", x, y, z, [x0, y0, x1, y1]);
+            Ok(())
+        })
+        .unwrap();
+    // (both kinds seen: boxes that fit, places whose sums wrap)
+    assert!(copied.get() > 10 && wrapped.get() > 5, "copied {} wrapped {}", copied.get(), wrapped.get());
+    call1(m(IF_TEX2D, 2), &[src]);
+    call1(m(IF_SWAPCHAIN, 2), &[sc]);
+    call1(m(IF_CONTEXT, 2), &[ctx]);
+    call1(m(IF_DEVICE, 2), &[dev]);
+    gpu::set_pump(None);
+    let errors = model::with(|m| std::mem::take(&mut m.errors));
+    assert!(errors.is_empty(), "WebGPU errors {:?}", &errors[..errors.len().min(10)]);
+}

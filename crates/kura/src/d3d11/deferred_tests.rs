@@ -4,7 +4,7 @@
 //! Map's limits on a deferred context and the data its Unmap records, and references.
 
 use super::*;
-use crate::d3d9::trace_tests::{alloc, CALLS, SERIAL};
+use crate::d3d9::trace_tests::{alloc, client_rect, free, CALLS, SERIAL};
 
 fn mem(n: u32) -> u32 {
     unsafe { alloc(4 * n) as u32 }
@@ -719,4 +719,98 @@ fn surface2_of_a_texture() {
         assert_eq!(refs(tex), base);
         release(tex);
     }
+}
+
+/// Allocations of at least this many bytes fail (the guest's heap out) under `SHORT`.
+static SHORT_FROM: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+unsafe extern "C" fn short_alloc(n: u32) -> *mut u8 {
+    if n >= SHORT_FROM.load(std::sync::atomic::Ordering::Relaxed) {
+        return std::ptr::null_mut();
+    }
+    alloc(n)
+}
+static SHORT: crate::d3d9::HostCalls = crate::d3d9::HostCalls { alloc: short_alloc, free, client_rect };
+fn call_short(id: u32, args: &[u32]) -> u32 {
+    unsafe { call(id, args.as_ptr(), &SHORT) }
+}
+
+/// The host's allocator giving nothing (the review: Map, a deferred Map and a deferred list's
+/// replay wrote to address 0): Map fails with E_OUTOFMEMORY and clears pData, a deferred Map
+/// too, a list replayed while it gives nothing drops the update, and every one works again
+/// once it gives memory. Any size that fails, any order: a model of the resource's contents.
+#[test]
+fn allocator_gives_nothing() {
+    use proptest::prelude::*;
+    let _g = setup();
+    let c = Ctx::new();
+    let data: Vec<u32> = (0..16).collect();
+    let dynamic = c.buffer(64, 2, 1, 0x10000, Some(&data));
+    // 16x16 B8G8R8A8 staging
+    let d = mem(11);
+    put(d, &[16, 16, 1, 1, 87, 1, 0, 3, 0, 0x30000, 0]);
+    assert_eq!(call1(m(IF_DEVICE, 5), &[c.dev, d, 0, c.o]), 0);
+    let staging = rd1(c.o);
+    let def = c.deferred();
+    let mut model = data.clone();
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig { cases: 64, ..ProptestConfig::default() });
+    let model_cell = std::cell::RefCell::new(&mut model);
+    // (a staging texture keeps its map memory after Unmap: once mapped, maps take no more)
+    let kept = std::cell::Cell::new(false);
+    runner
+        .run(&(prop_oneof![Just(16u32), Just(64), Just(1024), Just(u32::MAX)], 0u32..1000), |(from, k)| {
+            let mut model = model_cell.borrow_mut();
+            SHORT_FROM.store(from, std::sync::atomic::Ordering::Relaxed);
+            // immediate Map(READ) of the staging texture (1 KiB a map)
+            let out = mem(3);
+            put(out, &[0xdead, 0, 0]);
+            let hr = call_short(m(IF_CONTEXT, 14), &[c.imm, staging, 0, 1, 0, out]);
+            if from <= 1024 && !kept.get() {
+                prop_assert_eq!((hr, rd1(out)), (E_OUTOFMEMORY, 0));
+            } else {
+                kept.set(true);
+                prop_assert_eq!(hr, 0);
+                prop_assert!(rd1(out) != 0);
+                call_short(m(IF_CONTEXT, 15), &[c.imm, staging, 0]);
+            }
+            // a deferred WRITE_DISCARD of the buffer (64 bytes)
+            let out = mem(3);
+            put(out, &[0xdead, 0, 0]);
+            let hr = call_short(m(IF_CONTEXT, 14), &[def, dynamic, 0, 4, 0, out]);
+            SHORT_FROM.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+            if from <= 64 {
+                prop_assert_eq!((hr, rd1(out)), (E_OUTOFMEMORY, 0));
+            } else {
+                prop_assert_eq!(hr, 0);
+                let v: Vec<u32> = (0..16).map(|i| k * 100 + i).collect();
+                put(rd1(out), &v);
+                call1(m(IF_CONTEXT, 15), &[def, dynamic, 0]);
+                if k % 3 != 0 {
+                    **model = v;
+                }
+            }
+            let list = c.finish(def, 0);
+            // replayed while the allocator gives nothing: the update's copy is not made
+            SHORT_FROM.store(if k % 3 == 0 { 16 } else { u32::MAX }, std::sync::atomic::Ordering::Relaxed);
+            unsafe { call(m(IF_CONTEXT, 58), [c.imm, list, 1].as_ptr(), &SHORT) };
+            SHORT_FROM.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+            prop_assert_eq!(release(list), 0);
+            prop_assert_eq!(&contents(dynamic, 16), &**model);
+            Ok(())
+        })
+        .unwrap();
+    // state objects' GetDesc with a NULL description: nothing written
+    let bd = mem(66);
+    put(bd, &[0; 66]);
+    put(bd + 8, &[0, 2, 1, 1, 2, 1, 1, 0xf]);
+    assert_eq!(call1(m(IF_DEVICE, 20), &[c.dev, bd, c.o]), 0);
+    let blend = rd1(c.o);
+    for meth in [7, 8] {
+        call1(m(IF_BLEND, meth), &[blend, 0]);
+    }
+    assert_eq!(release(blend), 0);
+    assert_eq!(release(def), 0);
+    assert_eq!(release(staging), 0);
+    assert_eq!(release(dynamic), 0);
+    release(c.imm);
+    release(c.dev);
 }
