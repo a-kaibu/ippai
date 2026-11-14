@@ -454,6 +454,18 @@ pub extern "C" fn vngl_context_destroy(id: u32) {
     let mut g = lock();
     g.as_mut().unwrap().ctxs.remove(&id);
     g.as_mut().unwrap().collect_programs();
+    // (the buffers of the windows no context draws to any more go with it: two textures of the
+    // window's size a window, kept for good before)
+    let g2 = g.as_mut().unwrap();
+    let drawn: HashSet<u32> = g2.ctxs.values().map(|c| c.draw).collect();
+    let gone: Vec<u32> = g2.drawables.keys().copied().filter(|h| !drawn.contains(h)).collect();
+    for h in gone {
+        let d = g2.drawables.remove(&h).unwrap();
+        gpu::record(|q| {
+            q.cmd(&[gpu::DESTROY_TEXTURE, d.color]);
+            q.cmd(&[gpu::DESTROY_TEXTURE, d.depth]);
+        });
+    }
     CURRENT.with(|c| {
         if c.get() == id {
             c.set(0)
@@ -1734,6 +1746,29 @@ pub(crate) unsafe fn to_rgba(src: *const u8, w: u32, h: u32, format: u32, ty: u3
     let pitch = if s >= a { row } else { row.div_ceil(a) * a };
     let src = src.add(unpack[2].max(0) as usize * pitch + unpack[3].max(0) as usize * group);
     let mut out = vec![0u8; w as usize * h as usize * 4];
+    // Bytes as they are or in another order (what games upload every frame: movies, software
+    // rendering): whole rows, not a pixel at a time through the general path below.
+    let plain = ty == 0x1401 && w > 0;
+    let order: Option<(usize, [usize; 3])> = match (format, base) {
+        (0x1908, 0 | 5) => Some((4, [0, 1, 2])),
+        (0x80E1, 0 | 5) => Some((4, [2, 1, 0])),
+        (0x1907, 0 | 1 | 5) => Some((3, [0, 1, 2])),
+        (0x80E0, 0 | 1 | 5) => Some((3, [2, 1, 0])),
+        _ => None,
+    };
+    if let (true, Some((n, o))) = (plain, order) {
+        for (y, dst) in out.chunks_exact_mut(w as usize * 4).enumerate() {
+            let row = std::slice::from_raw_parts(src.add(y * pitch), w as usize * n);
+            if n == 4 && o == [0, 1, 2] {
+                dst.copy_from_slice(row);
+                continue;
+            }
+            for (d, p) in dst.chunks_exact_mut(4).zip(row.chunks_exact(n)) {
+                *d.first_chunk_mut::<4>().unwrap() = [p[o[0]], p[o[1]], p[o[2]], if n == 4 { p[3] } else { 255 }];
+            }
+        }
+        return out;
+    }
     let mut v = [0u8; 4];
     for y in 0..h as usize {
         let row = src.add(y * pitch);

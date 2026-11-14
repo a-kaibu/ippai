@@ -171,3 +171,48 @@ fn sizes_past_the_limit_are_refused() {
         }
     }
 }
+
+/// Random contexts made, made current on windows and destroyed: every window a context draws
+/// to has its buffers, and after a context is destroyed no other window has (they were kept
+/// for every window ever drawn to).
+#[test]
+fn window_buffers_go_with_their_last_context() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    for seed in 1..=60u64 {
+        *GL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 5);
+        // (the model: each live context's window, 0 for none yet)
+        let mut model: HashMap<u32, u32> = HashMap::new();
+        for step in 0..120 {
+            let live: Vec<u32> = model.keys().copied().collect();
+            let mut destroyed = false;
+            match r.below(5) {
+                0 | 1 => {
+                    model.insert(vngl_context_create(0), 0);
+                }
+                2 | 3 if !live.is_empty() => {
+                    let (c, hwnd) = (live[r.below(live.len())], 100 + r.below(4) as u32);
+                    assert_eq!(vngl_make_current(c, hwnd, 64, 32), 1);
+                    model.insert(c, hwnd);
+                }
+                _ if !live.is_empty() => {
+                    let c = live[r.below(live.len())];
+                    vngl_context_destroy(c);
+                    model.remove(&c);
+                    destroyed = true;
+                }
+                _ => {}
+            }
+            let mut want: Vec<u32> = model.values().copied().filter(|&h| h != 0).collect();
+            want.sort();
+            want.dedup();
+            let mut got: Vec<u32> = GL.lock().unwrap().as_ref().map(|g| g.drawables.keys().copied().collect()).unwrap_or_default();
+            got.sort();
+            assert!(want.iter().all(|h| got.contains(h)), "seed {seed} step {step}: {got:?} {want:?}");
+            if destroyed {
+                assert_eq!(got, want, "seed {seed} step {step}");
+            }
+        }
+        vngl_make_current(0, 0, 0, 0);
+    }
+}
