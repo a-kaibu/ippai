@@ -1,10 +1,11 @@
 //! MS-MPEG4 v3, WMV 7 (WMV1) and WMV 8 (WMV2) video: FFmpeg's msmpeg4dec.c, msmpeg4.c,
 //! wmv2dec.c, wmv2.c and the parts of h263dec.c / mpegvideo*.c they use, ported bit for bit
-//! (IntraX8 pictures of WMV2 are not ported yet: they decode as errors).
+//! (with WMV2's IntraX8 pictures, crate::intrax8).
 
 use crate::bits::Bits;
 use crate::hpel;
 use crate::idct;
+use crate::intrax8::{IntraX8, Plane};
 use crate::msmpeg4_tables as t;
 use crate::vlc::Vlc;
 use std::sync::OnceLock;
@@ -23,7 +24,7 @@ pub enum Version {
 pub enum Error {
     Params(&'static str),
     Data(&'static str),
-    /// a WMV2 IntraX8 picture (not ported)
+    /// a kind of picture that is not ported (WMV3 sprites, Advanced profile)
     Unsupported(&'static str),
 }
 
@@ -195,6 +196,7 @@ pub struct Decoder {
     coded_block: Vec<u8>,
     mbintra: Vec<u8>,
     cur: Pic,
+    x8: Option<IntraX8>,
     last: Option<Pic>,
     // the current picture's
     skip: Vec<bool>,
@@ -267,7 +269,7 @@ impl Decoder {
             ac_val: vec![[0; 16]; yc],
             coded_block: vec![0; y_size],
             mbintra: vec![1; mb_h * mbs],
-            cur: pic,
+            cur: pic, x8: None,
             last: None,
             skip: vec![false; mb_h * mbs],
             motion: vec![[0; 2]; b8 * (2 * mb_h + 2) + 8],
@@ -514,12 +516,28 @@ impl Decoder {
     }
 
     /// ff_wmv2_decode_secondary_picture_header
-    fn wmv2_secondary(&mut self, r: &mut Bits) -> Result<(), Error> {
+    fn wmv2_secondary(&mut self, r: &mut Bits) -> Result<bool, Error> {
         if self.key {
             self.skip.fill(false);
             let j_type = self.j_type_bit && r.get1() != 0;
             if j_type {
-                return Err(Error::Unsupported("WMV2 IntraX8 picture"));
+                // (ff_wmv2_decode_secondary_picture_header returns 1: the whole picture is IntraX8)
+                self.inter_intra_pred = false;
+                self.no_rounding = true;
+                self.esc3_level_length = 0;
+                self.esc3_run_length = 0;
+                let (mb_w, mb_h) = (self.mb_w, self.mb_h);
+                let x8 = self.x8.get_or_insert_with(|| IntraX8::new(mb_w, mb_h));
+                let planes = [
+                    Plane { px: &mut self.cur.y, stride: self.ls },
+                    Plane { px: &mut self.cur.u, stride: self.uvls },
+                    Plane { px: &mut self.cur.v, stride: self.uvls },
+                ];
+                let q = self.qscale;
+                if x8.decode(r, planes, 2 * q, (q - 1) | 1, self.loop_filter) < mb_h * 2 {
+                    return Err(Error::Data("IntraX8 picture"));
+                }
+                return Ok(true);
             }
             self.per_mb_rl_table = self.per_mb_rl_bit && r.get1() != 0;
             if !self.per_mb_rl_table {
@@ -559,7 +577,7 @@ impl Decoder {
         }
         self.esc3_level_length = 0;
         self.esc3_run_length = 0;
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -592,7 +610,9 @@ impl Decoder {
 
     fn decode_picture(&mut self, r: &mut Bits, buf_size: usize) -> Result<(), Error> {
         if self.ver == Version::Wmv2 {
-            self.wmv2_secondary(r)?;
+            if self.wmv2_secondary(r)? {
+                return Ok(());
+            }
         }
         self.mb_x = 0;
         self.mb_y = 0;

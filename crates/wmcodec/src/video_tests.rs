@@ -2,7 +2,7 @@
 //! code, `-cpuflags 0`): streams its encoders make, and real files (WMV_FILE, the WMV3 ones
 //! too), must decode to the same pictures, bit for bit.
 
-use crate::msmpeg4::{Decoder, Picture, Version};
+use crate::msmpeg4::{Decoder, Error, Picture, Version};
 use crate::tests::{have_ffmpeg, run, Tmp};
 use std::path::Path;
 
@@ -29,7 +29,7 @@ impl D {
             Ok(Some(p)) => *last = Some(p),
             Ok(None) => {}
             // (not ported: the rest of the stream can't be compared)
-            Err(e) if format!("{e:?}").contains("IntraX8") => panic!("frame {}: {e:?}", out.len()),
+            Err(e @ Error::Unsupported(_)) => panic!("frame {}: {e:?}", out.len()),
             Err(e) => eprintln!("frame {}: {e:?}", out.len()),
         }
         let conceal = matches!(self, D::V(d) if d.ffmpeg_conceals);
@@ -204,7 +204,7 @@ fn wmv1_odd_size_high_q() {
 }
 
 /// Every .wmv / .rcv file of WMV_DIR (samples.sh fetches FFmpeg's WMV 9 ones): ours against
-/// FFmpeg. A stream of what is not ported (IntraX8 pictures) is told of, not failed.
+/// FFmpeg (all of them: IntraX8 pictures included).
 #[test]
 fn files_from_dir() {
     let Ok(d) = std::env::var("WMV_DIR") else { return };
@@ -212,19 +212,11 @@ fn files_from_dir() {
     files.sort();
     assert!(!files.is_empty(), "no files in {d}");
     let t = Tmp::new("dirv");
-    let (mut all, mut skipped) = (0, Vec::new());
+    let mut all = 0;
     for f in &files {
-        let name = f.display().to_string();
-        match std::panic::catch_unwind(|| check(f, &t, &name)) {
-            Ok((same, _)) => all += same,
-            Err(e) => {
-                let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
-                assert!(msg.contains("IntraX8"), "{name}: {msg}");
-                skipped.push(name);
-            }
-        }
+        all += check(f, &t, &f.display().to_string()).0;
     }
-    eprintln!("{} files, {all} pictures equal; with IntraX8 pictures (not ported): {skipped:?}", files.len());
+    eprintln!("{} files, {all} pictures equal", files.len());
 }
 
 /// A file of one's own (WMV_FILE=path, e.g. a game's .wmv): ours against FFmpeg.

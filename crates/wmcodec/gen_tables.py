@@ -136,3 +136,7 @@ v1 += [('libavcodec/vc1acdata.h', n, n.upper()) for n in [
 v1 += [('libavcodec/vc1data.c', n, n.upper().replace('FF_', '')) for n in [
     'ff_vc1_pquant_table', 'ff_wmv3_dc_scale_table', 'ff_vc1_simple_progressive_4x4_zz', 'ff_vc1_dqscale']]
 gen('vc1_tables.rs', v1, 'VC1')
+
+x8 = [('libavcodec/intrax8huf.h', n, n.upper()) for n in [
+    'x8_orient_lowquant_table', 'x8_orient_highquant_table', 'x8_dc_quant_table', 'x8_ac_quant_table']]
+gen('intrax8_tables.rs', x8, 'IntraX8')

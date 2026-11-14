@@ -1,7 +1,7 @@
 //! WMV 9 (WMV3, VC-1 Simple / Main profile) video: FFmpeg's vc1.c, vc1dec.c, vc1_block.c,
 //! vc1_pred.c, vc1_mc.c, vc1_loopfilter.c and vc1dsp.c (their C code paths), ported bit for bit
-//! for progressive I, P, B and BI pictures, with and without FASTTX (the Complex profile's
-//! simple IDCT). The Advanced profile (WVC1), IntraX8 pictures and sprites (WMVP) are not
+//! for progressive I, P, B, BI and IntraX8 pictures, with and without FASTTX (the Complex profile's
+//! simple IDCT). The Advanced profile (WVC1) and sprites (WMVP) are not
 //! ported: they decode as `Error::Unsupported`.
 //!
 //! Where FFmpeg gives up on a picture whose last MB's raw skip bit is the last bit (its "<= 1 bit
@@ -11,6 +11,7 @@
 use crate::bits::Bits;
 use crate::hpel;
 use crate::idct;
+use crate::intrax8::{IntraX8, Plane};
 use crate::msmpeg4::{dc_vlc, mb_i_vlc, Error, Picture};
 use crate::msmpeg4_tables as m4;
 use crate::vc1_tables as t;
@@ -677,6 +678,7 @@ pub struct Decoder {
     topleft_blk: usize,
     top_blk: usize,
     cur: Pic,
+    x8: Option<IntraX8>,
     /// the newest I / P picture (P's reference, B's backward one) and the one before it (B's
     /// forward one)
     last: Option<Pic>,
@@ -789,7 +791,7 @@ impl Decoder {
             luma_mv: vec![[0; 2]; 3 * mbs],
             blocks: vec![[[0; 64]; 6]; mb_w + 2],
             cur_blk: 0, left_blk: 0, topleft_blk: 0, top_blk: 0,
-            cur: pic,
+            cur: pic, x8: None,
             last: None,
             prev: None,
             pending: false,
@@ -1215,9 +1217,6 @@ impl Decoder {
         self.frame_header(&mut r)?;
         self.ffmpeg_conceals = false;
         self.ffmpeg_drops = false;
-        if self.x8_type {
-            return Err(Error::Unsupported("WMV3 IntraX8 picture"));
-        }
         // (FFmpeg skips B pictures without both references)
         if self.pict == Type::B && self.prev.is_none() {
             return Ok(None);
@@ -1237,6 +1236,7 @@ impl Decoder {
         self.motion.fill([0; 2]);
         self.motion1.fill([0; 2]);
         let res = match self.pict {
+            _ if self.x8_type => self.x8_blocks(&mut r),
             Type::I => self.i_blocks(&mut r),
             Type::P => self.p_blocks(&mut r),
             _ if self.bi_type => self.i_blocks(&mut r),
@@ -1299,6 +1299,23 @@ impl Decoder {
         self.top_blk = inc(self.top_blk);
         self.left_blk = inc(self.left_blk);
         self.cur_blk = inc(self.cur_blk);
+    }
+
+    /// An IntraX8 picture (I / BI with x8_type): ff_intrax8_decode_picture
+    fn x8_blocks(&mut self, r: &mut Bits) -> Result<(), Error> {
+        let (mb_w, mb_h) = (self.mb_w, self.mb_h);
+        let x8 = self.x8.get_or_insert_with(|| IntraX8::new(mb_w, mb_h));
+        let planes = [
+            Plane { px: &mut self.cur.y, stride: self.ls },
+            Plane { px: &mut self.cur.u, stride: self.uvls },
+            Plane { px: &mut self.cur.v, stride: self.uvls },
+        ];
+        let dquant = 2 * self.pq + self.halfpq;
+        let offset = if self.pquantizer { 0 } else { self.pq };
+        if x8.decode(r, planes, dquant, offset, self.loop_filter) < mb_h * 2 {
+            return Err(Error::Data("IntraX8 picture"));
+        }
+        Ok(())
     }
 
     fn i_blocks(&mut self, r: &mut Bits) -> Result<(), Error> {
@@ -3224,10 +3241,19 @@ pub mod synth {
     /// The sequence header: Main profile, FASTTX, RTM, up to one B picture between references
     /// (`b`) or none.
     pub fn extra(b: bool) -> [u8; 4] {
+        seq(b, false)
+    }
+
+    /// The sequence header of `extra(false)` with IntraX8 pictures allowed (res_x8).
+    pub fn extra_x8() -> [u8; 4] {
+        seq(false, true)
+    }
+
+    fn seq(b: bool, x8: bool) -> [u8; 4] {
         let mut w = W(Vec::new(), 0);
         // profile, y411, sprite, frmrtq, bitrtq, loop filter, x8, multires, fasttx, fastuvmc,
         // extended mv, dquant, vstransform, transtab, overlap, resync, rangered
-        for (v, n) in [(1, 2), (0, 1), (0, 1), (0, 3), (0, 5), (0, 1), (0, 1), (0, 1), (1, 1), (0, 1), (0, 1), (0, 2), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1)] {
+        for (v, n) in [(1, 2), (0, 1), (0, 1), (0, 3), (0, 5), (0, 1), (x8 as u32, 1), (0, 1), (1, 1), (0, 1), (0, 1), (0, 2), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1)] {
             w.put(v, n);
         }
         // max B pictures, quantizer, finterp, rtm
@@ -3235,6 +3261,19 @@ pub mod synth {
             w.put(v, n);
         }
         w.0.try_into().unwrap()
+    }
+
+    /// An IntraX8 I picture (of an `extra_x8` stream), PQINDEX 10: its header then `body`, the
+    /// IntraX8 bits (the header is 16 bits).
+    pub fn x8_picture(body: &[u8]) -> Vec<u8> {
+        let mut w = W(Vec::new(), 0);
+        w.put(0, 2); // frame count
+        w.put(0, 1); // I
+        w.put(0, 7); // buffer fullness
+        w.put(10, 5); // PQINDEX
+        w.put(1, 1); // x8_type
+        w.0.extend_from_slice(body);
+        w.0
     }
 
     /// A picture of `mb_h` MB rows, all skipped: 'P' or 'B' (`b`: of a stream with B pictures).
@@ -3379,6 +3418,21 @@ mod tests {
                     }
                 }
                 let _ = d.flush();
+            }
+
+            /// IntraX8 pictures of any bits, each followed by an all-skipped P picture: the P
+            /// picture is the IntraX8 one again (whether or not that was damaged), never a panic.
+            #[test]
+            fn x8_pictures_are_references(w in 1usize..70, h in 1usize..70, bodies in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..600), 1..4)) {
+                let Ok(mut d) = Decoder::new(w, h, &synth::extra_x8()) else { panic!() };
+                for body in &bodies {
+                    let i = d.decode(&synth::x8_picture(body));
+                    let Ok(Some(i)) = i else { panic!("{i:?}") };
+                    prop_assert!(i.key);
+                    let Ok(Some(p)) = d.decode(&synth::picture('P', false, h.div_ceil(16))) else { panic!() };
+                    prop_assert!(!d.ffmpeg_conceals);
+                    prop_assert_eq!(&p.planes, &i.planes);
+                }
             }
 
             /// The hand-made pictures with bits flipped, in any order, of streams with and without

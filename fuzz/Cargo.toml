@@ -255,3 +255,10 @@ path = "fuzz_targets/vc1.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "intrax8"
+path = "fuzz_targets/intrax8.rs"
+test = false
+doc = false
+bench = false
