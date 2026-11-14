@@ -1496,7 +1496,8 @@ static LAST_END: Mutex<Option<HashMap<Ino, u64>>> = Mutex::new(None);
 fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
     let lower = with(|fs| match fs.node(ino).map(|n| &n.data) {
         Some(Data::File(Content::Upper(v))) => {
-            let start = (off as usize).min(v.len());
+            // (an offset past what a usize holds is past the end: not its low 32 bits)
+            let start = usize::try_from(off).map_or(v.len(), |o| o.min(v.len()));
             let n = buf.len().min(v.len() - start);
             buf[..n].copy_from_slice(&v[start..start + n]);
             Ok(Err(n))
@@ -1584,7 +1585,8 @@ fn copy_up(ino: Ino, keep: u64) -> Result<(), c_int> {
     if size >= COPY_UP_NOTE {
         eprintln!("kura: a write copies {} MiB of a file from the store into memory (inode {ino})", size >> 20);
     }
-    let mut v = vec![0; size as usize];
+    let mut v = Vec::new();
+    grow(&mut v, upper_end(size, 0, UPPER_MAX)?)?;
     read_at(ino, &mut v, 0)?;
     with(|fs| {
         if let Some(Data::File(c @ Content::Lower { .. })) = fs.data_mut(ino) {
@@ -1594,15 +1596,33 @@ fn copy_up(ino: Ino, keep: u64) -> Result<(), c_int> {
     Ok(())
 }
 
+/// The most bytes a file in memory holds: what a Vec can (isize::MAX: 2 GiB less one on wasm32).
+const UPPER_MAX: usize = isize::MAX as usize;
+
+/// Where `len` bytes written at `off` of a file in memory end, EFBIG past `max` (the file
+/// offset is 64 bits and a usize 32 on wasm32: `off as usize` wrote at the offset's low half,
+/// and the sum wrapped into a slice range that panicked).
+fn upper_end(off: u64, len: usize, max: usize) -> Result<usize, c_int> {
+    off.checked_add(len as u64).filter(|&e| e <= max as u64).map(|e| e as usize).ok_or(libc::EFBIG)
+}
+
+/// Makes `v` at least `len` bytes, the new ones zero: ENOSPC when the memory is not there (a
+/// SetEndOfFile far out stopped the whole program in the allocator; Windows says the disk is full).
+fn grow(v: &mut Vec<u8>, len: usize) -> Result<(), c_int> {
+    if len > v.len() {
+        v.try_reserve(len - v.len()).map_err(|_| libc::ENOSPC)?;
+        v.resize(len, 0);
+    }
+    Ok(())
+}
+
 fn write_at(ino: Ino, data: &[u8], off: u64) -> Result<usize, c_int> {
     copy_up(ino, u64::MAX)?;
     with(|fs| {
         let Some(Data::File(Content::Upper(v))) = fs.data_mut(ino) else { return Err(libc::EBADF) };
-        let end = off as usize + data.len();
-        if v.len() < end {
-            v.resize(end, 0);
-        }
-        v[off as usize..end].copy_from_slice(data);
+        let end = upper_end(off, data.len(), UPPER_MAX)?;
+        grow(v, end)?;
+        v[end - data.len()..end].copy_from_slice(data);
         if let Some(n) = fs.node_mut(ino) {
             n.mtime = now();
         }
@@ -1614,7 +1634,12 @@ fn set_size(ino: Ino, size: u64) -> Result<(), c_int> {
     copy_up(ino, size)?;
     with(|fs| match fs.data_mut(ino) {
         Some(Data::File(Content::Upper(v))) => {
-            v.resize(size as usize, 0);
+            let size = upper_end(size, 0, UPPER_MAX)?;
+            if size > v.len() {
+                grow(v, size)?;
+            } else {
+                v.truncate(size);
+            }
             Ok(())
         }
         Some(Data::Dir(_)) => Err(libc::EISDIR),
@@ -2598,6 +2623,51 @@ mod tests {
         assert!(AHEAD.lock().is_ok());
     }
 
+    /// A file in memory at offsets a 32-bit usize does not hold (wasm32; `max` stands for its
+    /// isize::MAX here): the end is the 64-bit sum or EFBIG, never the offset's low half.
+    #[test]
+    fn upper_end_does_not_wrap() {
+        const MAX32: usize = i32::MAX as usize;
+        assert_eq!(upper_end(0, 0, MAX32), Ok(0));
+        assert_eq!(upper_end(10, 5, MAX32), Ok(15));
+        assert_eq!(upper_end(MAX32 as u64 - 5, 5, MAX32), Ok(MAX32));
+        assert_eq!(upper_end(MAX32 as u64 - 4, 5, MAX32), Err(libc::EFBIG));
+        // (`off as usize` on wasm32: 0x1_0000_0010 was 0x10, and 0xffff_fff0 + 0x20 wrapped to 0x10)
+        assert_eq!(upper_end(0x1_0000_0010, 4, MAX32), Err(libc::EFBIG));
+        assert_eq!(upper_end(0xffff_fff0, 0x20, MAX32), Err(libc::EFBIG));
+        assert_eq!(upper_end(u64::MAX, 1, MAX32), Err(libc::EFBIG));
+        assert_eq!(upper_end(u64::MAX, 1, usize::MAX), Err(libc::EFBIG));
+    }
+
+    /// A write or a new size the memory has no room for is an error (ENOSPC, EFBIG), the file
+    /// as it was; reads past the end of a file in memory read nothing, whatever the offset.
+    #[test]
+    fn upper_file_too_big_is_an_error() {
+        // (a file with no name: the tests share one file system)
+        let ino = with(|fs| fs.add(Data::File(Content::Upper(b"abc".to_vec())), 0o644, 0));
+        let size = |ino| with(|fs| fs.file_size(ino));
+        // (more than any allocator has: not the whole address space zeroed first)
+        let far = isize::MAX as u64 - 8;
+        assert_eq!(write_at(ino, b"x", far), Err(libc::ENOSPC));
+        assert_eq!(set_size(ino, far), Err(libc::ENOSPC));
+        assert_eq!(write_at(ino, b"x", u64::MAX - 4), Err(libc::EFBIG));
+        assert_eq!(set_size(ino, u64::MAX), Err(libc::EFBIG));
+        assert_eq!(size(ino), 3);
+        let mut b = [0u8; 4];
+        assert_eq!(read_at(ino, &mut b, 1), Ok(2));
+        assert_eq!(&b[..2], b"bc");
+        assert_eq!(read_at(ino, &mut b, 0x1_0000_0001), Ok(0));
+        assert_eq!(read_at(ino, &mut b, u64::MAX), Ok(0));
+        // and the ordinary ones as before
+        assert_eq!(write_at(ino, b"xy", 5), Ok(2));
+        assert_eq!(size(ino), 7);
+        assert_eq!(set_size(ino, 2), Ok(()));
+        assert_eq!(set_size(ino, 4), Ok(()));
+        let mut b = [9u8; 8];
+        assert_eq!(read_at(ino, &mut b, 0), Ok(4));
+        assert_eq!(&b[..4], b"ab\0\0");
+    }
+
     #[test]
     fn cache_pads_in_place() {
         let mut c = Cache::default();
@@ -2618,6 +2688,21 @@ mod proptests {
     use super::*;
     use proptest::collection::vec;
     use proptest::prelude::*;
+
+    proptest! {
+        /// upper_end against the sum in 128 bits, for a 32-bit and a 64-bit usize's limit.
+        #[test]
+        fn upper_end_is_the_wide_sum(off in any::<u64>(), len in 0usize..=u32::MAX as usize, wide in any::<bool>(), near in any::<bool>(), back in 0u64..64) {
+            let max = if wide { isize::MAX as usize } else { i32::MAX as usize };
+            // (half the cases around the limit)
+            let off = if near { (max as u64).saturating_sub(len as u64).wrapping_add(32).wrapping_sub(back) } else { off };
+            let sum = off as u128 + len as u128;
+            match upper_end(off, len, max) {
+                Ok(e) => { prop_assert_eq!(e as u128, sum); prop_assert!(e <= max); }
+                Err(e) => { prop_assert_eq!(e, libc::EFBIG); prop_assert!(sum > max as u128); }
+            }
+        }
+    }
 
     /// `ippai pack`'s escaping for the tree list (crates/ippai/src/pack.rs).
     fn esc(s: &str) -> String {
