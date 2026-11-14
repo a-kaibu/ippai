@@ -169,7 +169,33 @@ fn wait_pass() {
 
 /// Save states: wakes the engine thread's wait.
 pub(crate) fn snap_wake() {
+    // (under the engine's lock: the engine thread is either before its predicate or waiting)
+    drop(ENGINE.lock().unwrap_or_else(|e| e.into_inner()));
     WAKE.notify_all();
+}
+
+/// How long the engine thread sleeps when `queued` frames wait in the stream: until it is
+/// below AHEAD again (review 2026-11-14: it polled every 5 ms, idle or not).
+pub(crate) fn drain_wait(queued: u32) -> Duration {
+    if queued < AHEAD {
+        return Duration::ZERO;
+    }
+    let frames = (queued - AHEAD + 1) as u64;
+    Duration::from_micros((frames * 1_000_000).div_ceil(RATE as u64)).max(Duration::from_millis(1))
+}
+
+/// The most buffers a source voice queues (XAUDIO2_MAX_QUEUED_BUFFERS)
+pub(crate) const MAX_QUEUED: usize = 64;
+
+/// The frames an XAUDIO2_BUFFER plays: (begin, end, loop_begin, loop_end), all within `frames`
+/// (sums saturate: PlayBegin + PlayLength past 4 G frames is not a short region).
+pub(crate) fn buffer_region(frames: u32, play_begin: u32, play_len: u32, loop_begin: u32, loop_len: u32, loops: u32) -> (u32, u32, u32, u32) {
+    let begin = play_begin.min(frames);
+    let end = if play_len == 0 { frames } else { begin.saturating_add(play_len).min(frames) };
+    // the loop region: LoopLength 0 runs to the play region's end
+    let lb = if loops > 0 { loop_begin.min(frames) } else { begin };
+    let le = if loops > 0 && loop_len != 0 { lb.saturating_add(loop_len).min(frames) } else { end };
+    (begin, end, lb, le)
 }
 
 fn with<R>(f: impl FnOnce(&mut Engine) -> R) -> R {
@@ -432,14 +458,28 @@ fn bytes_required(v: &Voice) -> u32 {
     }
 }
 
+/// The engine thread while the engine is stopped: asleep until StartEngine (or a save state's
+/// pause; `cap` as a safety net). The flag is set under ENGINE's lock, the predicate read under
+/// it: no wakeup is lost.
+fn sleep_while_stopped(cap: Duration) {
+    let g = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
+    let idle = |e: &mut Option<Engine>| !e.as_ref().is_some_and(|e| e.running) && !kura::snap::pausing();
+    drop(WAKE.wait_timeout_while(g, cap, idle));
+}
+
 fn engine_thread(c: &mut Ctx) -> u32 {
     ENGINE_THREAD.with(|t| t.set(true));
     let mut out = vec![0f32; STEP * 2];
-    let lock = Mutex::new(());
     loop {
         let (stream, running) = with(|e| (e.stream, e.running));
-        if !running || kura::audio::queued(stream) >= AHEAD {
-            drop(WAKE.wait_timeout(lock.lock().unwrap(), Duration::from_millis(5)).unwrap());
+        if !running {
+            sleep_while_stopped(Duration::from_secs(1));
+            crate::snap::point();
+            continue;
+        }
+        let wait = drain_wait(kura::audio::queued(stream));
+        if !wait.is_zero() {
+            kura::snap::sleep(wait);
             crate::snap::point();
             continue;
         }
@@ -595,6 +635,8 @@ fn X_Release(c: &mut Ctx) -> u32 {
         for ch in chains {
             release_chain(c, ch);
         }
+        // (the voices' own objects stay: a game may still call DestroyVoice through them)
+        mem::heap_free(this);
     }
     n
 }
@@ -741,6 +783,7 @@ fn X_CreateMasteringVoice(c: &mut Ctx) -> u32 {
     putp(pp, o);
     start_thread();
     with(|e| e.running = true);
+    WAKE.notify_all();
     0
 }
 fn X_StartEngine(_: &mut Ctx) -> u32 {
@@ -1116,6 +1159,7 @@ fn V_DestroyVoice(c: &mut Ctx) -> u32 {
         // (the voice is out of the graph: the pass now running is the last that may use it)
         wait_pass();
         release_chain(c, ch);
+        mem::heap_free(this);
     }
     0
 }
@@ -1136,17 +1180,22 @@ fn S_SubmitSourceBuffer(c: &mut Ctx) -> u32 {
     // pack(1): on x64 the fields past the 8-byte pAudioData move by 4
     let k = ps() - 4;
     let r = |o: u32| if o == 8 || o == 32 { rp(p + o + if o == 32 { k } else { 0 }) } else { r32(p + if o <= 8 { o } else { o + k }) };
+    if p == 0 || (r(8) == 0 && r(4) != 0) {
+        return XAUDIO2_E_INVALID_CALL;
+    }
     with_voice(this, |v| {
+        // (XAUDIO2_MAX_QUEUED_BUFFERS: a game that submits without waiting grew the queue
+        // without bound)
+        if v.queue.len() >= MAX_QUEUED {
+            return XAUDIO2_E_INVALID_CALL;
+        }
         let frames = r(4) / v.fmt.block().max(1);
-        let begin = r(12).min(frames);
-        let end = if r(16) == 0 { frames } else { (begin + r(16)).min(frames) };
         let loops = r(28);
-        // the loop region: LoopLength 0 runs to the play region's end
-        let loop_begin = if loops > 0 { r(20).min(frames) } else { begin };
-        let loop_end = if loops > 0 && r(24) != 0 { (loop_begin + r(24)).min(frames) } else { end };
+        let (begin, end, loop_begin, loop_end) = buffer_region(frames, r(12), r(16), r(20), r(24), loops);
         v.queue.push_back(XBuf { flags: r(0), data: r(8), begin, end, loop_begin, loop_end, loops, ctx: r(32) });
+        0
     })
-    .map_or(E_INVALIDARG, |_| 0)
+    .unwrap_or(E_INVALIDARG)
 }
 /// drops the queued buffers (but the one playing, while started); each gets OnBufferEnd
 fn S_FlushSourceBuffers(c: &mut Ctx) -> u32 {
@@ -1214,6 +1263,166 @@ fn S_SetSourceSampleRate(c: &mut Ctx) -> u32 {
         }
     });
     0
+}
+
+/// review 2026-11-14 (b11): SubmitSourceBuffer's limits, the objects DestroyVoice and the last
+/// Release free, and the engine thread's sleep while stopped
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod b11 {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::sync::Arc;
+
+    const FMT: Fmt = Fmt { rate: 44100, channels: 2, bits: 16, float: false, law: 0 };
+
+    /// an XAUDIO2_BUFFER (32-bit layout)
+    fn xbuf(bytes: u32, data: u32, begin: u32, len: u32, loop_begin: u32, loop_len: u32, loops: u32) -> u32 {
+        let p = mem::heap_alloc(36, true);
+        for (o, v) in [(4, bytes), (8, data), (12, begin), (16, len), (20, loop_begin), (24, loop_len), (28, loops)] {
+            w32(p + o, v);
+        }
+        p
+    }
+    fn queued(v: u32) -> usize {
+        with_voice(v, |v| v.queue.len()).unwrap()
+    }
+
+    #[test]
+    fn a_source_voice_queues_at_most_64_buffers() {
+        let _g = enter();
+        let v = new_voice(Kind::Source, FMT, 0, 0);
+        let data = mem::heap_alloc(400, true);
+        let b = xbuf(400, data, 0, 0, 0, 0, 0);
+        for _ in 0..MAX_QUEUED {
+            assert_eq!(call(S_SubmitSourceBuffer, &[v, b]), 0);
+        }
+        assert_eq!(call(S_SubmitSourceBuffer, &[v, b]), XAUDIO2_E_INVALID_CALL);
+        assert_eq!(queued(v), MAX_QUEUED);
+        assert_eq!(call(V_DestroyVoice, &[v]), 0);
+        mem::heap_free(b);
+        mem::heap_free(data);
+    }
+
+    #[test]
+    fn a_buffer_without_data_is_refused() {
+        let _g = enter();
+        let v = new_voice(Kind::Source, FMT, 0, 0);
+        let b = xbuf(400, 0, 0, 0, 0, 0, 0);
+        assert_eq!(call(S_SubmitSourceBuffer, &[v, b]), XAUDIO2_E_INVALID_CALL);
+        assert_eq!(call(S_SubmitSourceBuffer, &[v, 0]), XAUDIO2_E_INVALID_CALL);
+        assert_eq!(queued(v), 0);
+        assert_eq!(call(V_DestroyVoice, &[v]), 0);
+        mem::heap_free(b);
+    }
+
+    /// PlayBegin + PlayLength past 4 G: the region runs to the buffer's end (it wrapped to a
+    /// region ending before it began; debug builds panicked)
+    #[test]
+    fn huge_lengths_saturate() {
+        let _g = enter();
+        let v = new_voice(Kind::Source, FMT, 0, 0);
+        let data = mem::heap_alloc(400, true);
+        let b = xbuf(400, data, 10, u32::MAX, 20, u32::MAX - 5, 2);
+        assert_eq!(call(S_SubmitSourceBuffer, &[v, b]), 0);
+        let (begin, end, lb, le) = with_voice(v, |v| {
+            let x = v.queue.front().unwrap();
+            (x.begin, x.end, x.loop_begin, x.loop_end)
+        })
+        .unwrap();
+        assert_eq!((begin, end, lb, le), (10, 100, 20, 100));
+        assert_eq!(call(V_DestroyVoice, &[v]), 0);
+        mem::heap_free(b);
+        mem::heap_free(data);
+    }
+
+    #[test]
+    fn destroy_voice_frees_the_voice_object() {
+        let _g = enter();
+        let v = new_voice(Kind::Source, FMT, 0, 0);
+        assert!(mem::heap_owns(v));
+        assert_eq!(call(V_DestroyVoice, &[v]), 0);
+        assert!(!mem::heap_owns(v), "the voice's 8 bytes stayed allocated");
+        // (a second DestroyVoice of the same pointer touches nothing)
+        assert_eq!(call(V_DestroyVoice, &[v]), 0);
+    }
+
+    #[test]
+    fn a_voice_others_send_to_is_kept() {
+        let _g = enter();
+        let sub = new_voice(Kind::Submix, FMT, 0, 0);
+        let src = new_voice(Kind::Source, FMT, sub, 0);
+        if dest_of_voice(src) == sub {
+            assert_eq!(call(V_DestroyVoice, &[sub]), 0);
+            assert!(mem::heap_owns(sub));
+        }
+        assert_eq!(call(V_DestroyVoice, &[src]), 0);
+        assert_eq!(call(V_DestroyVoice, &[sub]), 0);
+        assert!(!mem::heap_owns(sub) && !mem::heap_owns(src));
+    }
+    fn dest_of_voice(v: u32) -> u32 {
+        with(|e| dest_of(e, v))
+    }
+
+    #[test]
+    fn the_last_release_frees_the_instance() {
+        let _g = enter();
+        let o = create_instance({
+            let g = mem::heap_alloc(16, true);
+            w32(g, 0x5a50_8685);
+            g
+        })
+        .unwrap();
+        assert_eq!(call(X_AddRef, &[o]), 2);
+        assert_eq!(call(X_Release, &[o]), 1);
+        assert!(mem::heap_owns(o));
+        assert_eq!(call(X_Release, &[o]), 0);
+        assert!(!mem::heap_owns(o), "the instance's 16 bytes stayed allocated");
+    }
+
+    /// stopped: the engine thread sleeps (no 5 ms polling) and StartEngine wakes it at once
+    #[test]
+    fn a_stopped_engine_sleeps_until_started() {
+        let _g = enter();
+        with(|e| e.running = false);
+        let back = Arc::new(AtomicBool::new(false));
+        let t = {
+            let back = back.clone();
+            std::thread::spawn(move || {
+                let t0 = std::time::Instant::now();
+                sleep_while_stopped(Duration::from_secs(20));
+                back.store(true, SeqCst);
+                t0.elapsed()
+            })
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!back.load(SeqCst), "the engine thread woke while stopped");
+        with(|e| e.running = true);
+        WAKE.notify_all();
+        let took = t.join().unwrap();
+        assert!(took < Duration::from_secs(5), "StartEngine's wakeup was lost ({took:?})");
+        with(|e| e.running = false);
+    }
+
+    /// thousands of start/stop races: the sleeper always sees a start (a lost wakeup would
+    /// leave it asleep for the whole cap)
+    #[test]
+    fn starts_racing_the_sleep_are_not_lost() {
+        let _g = enter();
+        for _ in 0..2000 {
+            with(|e| e.running = false);
+            let t = std::thread::spawn(|| {
+                let t0 = std::time::Instant::now();
+                sleep_while_stopped(Duration::from_secs(10));
+                t0.elapsed()
+            });
+            std::hint::spin_loop();
+            with(|e| e.running = true);
+            WAKE.notify_all();
+            assert!(t.join().unwrap() < Duration::from_secs(5));
+        }
+        with(|e| e.running = false);
+    }
 }
 
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
@@ -1325,6 +1534,38 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    proptest! {
+        /// buffer_region against a 64-bit model: every bound within the buffer, the play region
+        /// in order, sums never wrapping
+        #[test]
+        fn buffer_regions_match_the_wide_model(frames in prop_oneof![0u32..300, any::<u32>()], b in any::<u32>(), l in prop_oneof![0u32..300, any::<u32>()], lb in any::<u32>(), ll in prop_oneof![0u32..300, any::<u32>()], loops in prop_oneof![Just(0u32), 1u32..4, Just(LOOP_INFINITE)]) {
+            let (begin, end, lbo, leo) = buffer_region(frames, b, l, lb, ll, loops);
+            let f = frames as u64;
+            let mb = (b as u64).min(f);
+            let me = if l == 0 { f } else { (mb + l as u64).min(f) };
+            let mlb = if loops > 0 { (lb as u64).min(f) } else { mb };
+            let mle = if loops > 0 && ll != 0 { (mlb + ll as u64).min(f) } else { me };
+            prop_assert_eq!((begin as u64, end as u64, lbo as u64, leo as u64), (mb, me, mlb, mle));
+            prop_assert!(begin <= end && end <= frames && lbo <= leo.max(lbo) && leo <= frames);
+        }
+
+        /// drain_wait: none below AHEAD; otherwise long enough that the stream is below AHEAD
+        /// afterwards, and at most a millisecond longer than that; more queued, never shorter
+        #[test]
+        fn drain_waits_are_just_long_enough(q in 0u32..(AHEAD * 4), more in 0u32..1000) {
+            let w = drain_wait(q);
+            if q < AHEAD {
+                prop_assert!(w.is_zero());
+            } else {
+                let played = (w.as_secs_f64() * RATE as f64).floor() as u64;
+                prop_assert!((q as u64).saturating_sub(played) < AHEAD as u64);
+                let exact = (q - AHEAD + 1) as f64 / RATE as f64;
+                prop_assert!(w.as_secs_f64() <= exact.max(0.001) + 1e-6);
+            }
+            prop_assert!(drain_wait(q.saturating_add(more)) >= w);
         }
     }
 
