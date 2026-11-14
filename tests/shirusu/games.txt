@@ -1,7 +1,40 @@
 # Trial games .github/workflows/shirusu.yml plays on Windows under shirusu capture and on sake with
 # SAKE_SHIRUSU=1, comparing the two Traces (docs/shirusu.md): ids of tests/corpus/titles.tsv.
-# First batch: the titles corpus expects to reach their story on sake.
+# The titles corpus expects to reach their story on sake.
 b2019_sukerasparo	# BGI/Ethornell
 s2015_clochette_kokonatsu	# CatSystem2
+b2024_syrup_mm	# EntisGLS
+b2018_mirai	# NonColor (ACV1)
+r1_saku	# PONScripter
+b2007_clochette	# QLIE
+b2009_purplesoftware	# QLIE
+b2014_hadashi_3pl	# RealLive
+s2008_alcot_engagekinks	# ShiinaRio
+b2017_onomatope_raspberry	# ShiinaRio
 b2023_erectlip_yukaku	# Softpal
+dl_VJ01000787	# debonosu
+b2006_pulltop	# livemaker
+dl_RJ01683321	# -
+dl_RJ01710833	# -
+s2011_triangle_mousou	# -
+s2005_ryojokudo_gakuen	# -
 dl_RJ140334	# KiriKiri2
+dcraft_0026t	# LiLiM
+fwing_0013t	# fwing
+RJ093841	# Delphi
+maou_try	# Softpal
+dl_RJ120993	# LiveMaker
+BLDV1019_trial	# LiveMaker
+soushing_t	# Delphi (DirectDraw 7)
+typemoon_genshi_mini	# Delphi
+typemoon_genshi_middle	# KiriKiri
+light_majicomp	# malie
+feng_chiikano	# KiriKiri2
+dl_RJ260990	# RGSS3 (VX Ace RTP)
+dl_RJ106544	# RGSS2 (VX RTP)
+dl_RJ170671	# RGSS2 (VX RTP, its engine from the RTP)
+triangle_sacredlineage	# Triangle
+triangle_yakumo	# Triangle
+cislugi_usagi	# DxLib
+koakumat	# AGS5
+m_zombie2_trial	# EntisGLS

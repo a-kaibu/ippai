@@ -80,12 +80,13 @@ def api_table(cmp):
 def markdown(rows, recurring, sev):
     L = ['# shirusu: Windows capture vs sake', '',
          'Candidates are shirusu-compare\'s: differences in what was recorded, not verdicts.', '',
-         '| title | Windows | sake | Windows calls | sake calls | conformance W/S | high | medium | low | info |',
-         '|---|---|---|---|---|---|---|---|---|---|']
+         'Windows alone / under shirusu / sake: how far each play got (story, title, none).', '',
+         '| title | Windows alone | under shirusu | sake | Windows calls | sake calls | conformance W/S | high | medium | low | info |',
+         '|---|---|---|---|---|---|---|---|---|---|---|']
     for r in rows:
         c = collections.Counter(x.get('severity') for x in r.get('candidates', []))
         conf = '/'.join({True: 'ok', False: 'FAIL', None: '-'}[x] for x in (r['win_conformant'], r['sake_conformant']))
-        L.append(f"| {r['id']} | {r['win_reached']} | {r['sake_reached']} | {r.get('win_calls', '-')} | {r.get('sake_calls', '-')} | {conf} | "
+        L.append(f"| {r['id']} | {r.get('win_plain', '-')} | {r['win_reached']} | {r['sake_reached']} | {r.get('win_calls', '-')} | {r.get('sake_calls', '-')} | {conf} | "
                  f"{c['high']} | {c['medium']} | {c['low']} | {c['info']} |")
     L += ['', f'Candidates by severity: {json.dumps(sev)}', '', '## Differences that recur', '',
           '| kind | API | titles |', '|---|---|---|']
@@ -105,6 +106,7 @@ def one(tid, a):
     wtrace = os.path.join(wdir, 'windows.trace')
     log = os.path.join(a.sake, tid, 'console.log')
     r = {'id': tid, 'notes': [], 'candidates': [],
+         'win_plain': reached(load(os.path.join(wdir, 'plain', 'result.json'))),
          'win_reached': reached(load(os.path.join(wdir, 'shots', 'result.json'))),
          'sake_reached': reached(load(os.path.join(a.sake, tid, 'result.json'))),
          'win_conformant': None, 'sake_conformant': None}
@@ -122,6 +124,13 @@ def one(tid, a):
     else:
         r['notes'].append('sake: no console.log')
         strace = None
+    if os.path.exists(wtrace):
+        # (what shirusu itself says it missed: children it could not inject, losses)
+        _, text = run([os.path.join(a.tools, 'shirusu'), 'inspect', wtrace])
+        for l in text.splitlines():
+            l = l.strip()
+            if l.startswith('note:') and any(k in l for k in ('could not be injected', 'loss events', 'not be recorded', 'failed')):
+                r['notes'].append('Windows trace ' + l[:240])
     if not os.path.exists(wtrace):
         r['notes'].append('Windows: no trace')
         wtrace = None

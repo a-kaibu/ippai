@@ -35,7 +35,7 @@ class Report(unittest.TestCase):
         self.assertEqual(rec[1]['api'], '-')
         self.assertEqual(sev, {'high': 2, 'low': 1, 'info': 1})
         md = report.markdown([dict(r, win_reached='title', sake_reached='story', win_conformant=True, sake_conformant=None, notes=[]) for r in rows], rec, sev)
-        self.assertIn('| a | title | story | - | - | ok/- | 2 | 0 | 0 | 0 |', md)
+        self.assertIn('| a | - | title | story | - | - | ok/- | 2 | 0 | 0 | 0 |', md)
 
     def test_bits(self):
         import tempfile

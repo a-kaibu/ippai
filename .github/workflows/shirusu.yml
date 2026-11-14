@@ -8,17 +8,15 @@
 #   plan     the titles; the newest successful CI build of main (sake)
 #   prep     downloads and unpacks each trial (tests/corpus-prep.sh), its width (gameapi.py)
 #   windows  on windows-2025: shirusu built at SHIRUSU_REV (cached), Japanese fonts, a sound
-#            card, winplay.py play with LAUNCH = shirusu capture
-#   sake     the titles on sake in headless Chromium (tests/corpus/ci.sh, SAKE_ENV=SAKE_SHIRUSU=1)
+#            card; winplay.py play alone (out/plain), then with LAUNCH = shirusu capture
+#   sake     (after windows: a CI build of this push has had time) the titles on sake in headless Chromium (tests/corpus/ci.sh, SAKE_ENV=SAKE_SHIRUSU=1)
 #   compare  tools/shirusu (sake's lines -> Trace), shirusu-conformance, shirusu-compare,
 #            tests/shirusu/report.py
 name: shirusu
 
 on:
   push:
-    # (claude/**: a branch's run before its sake reaches main; its sake job then fails on main's
-    # build if that has no SAKE_SHIRUSU, the Windows side still runs)
-    branches: [main, 'claude/**']
+    branches: [main]
     paths:
       - 'tests/shirusu/games.txt'
       - '.github/workflows/shirusu.yml'
@@ -49,29 +47,17 @@ jobs:
     timeout-minutes: 10
     outputs:
       ids: ${{ steps.p.outputs.ids }}
-      run_id: ${{ steps.p.outputs.run_id }}
-      sha: ${{ steps.p.outputs.sha }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ./.github/actions/mirror-trials
       - id: p
         env:
-          GH_TOKEN: ${{ github.token }}
           ONLY: ${{ inputs.only }}
-          CI_RUN: ${{ inputs.ci_run }}
         run: |
           python3 tests/shirusu/report_test.py
-          if [ -n "$CI_RUN" ]; then
-            RUN_ID=$CI_RUN SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" --jq .head_sha)
-          else
-            read -r RUN_ID SHA < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
-              --limit 1 --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"')
-          fi
           ids=${ONLY:-$(sed -e 's/#.*//' tests/shirusu/games.txt | awk 'NF { print $1 }')}
           echo "ids=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' $ids)" >> "$GITHUB_OUTPUT"
-          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "sake: CI run $RUN_ID ($SHA); titles: $ids"
+          echo "titles: $ids"
 
   prep:
     needs: plan
@@ -231,6 +217,17 @@ jobs:
         if: steps.meta.outputs.ok == '1'
         shell: pwsh
         run: python tests/corpus/winplay.py setup
+      # (first without shirusu: what the game does on this runner by itself, to tell a game
+      # shirusu broke from one that fails here anyway)
+      - name: Play ${{ matrix.id }} alone
+        if: steps.meta.outputs.ok == '1'
+        continue-on-error: true
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          $env:STORY = '30'
+          $env:CLOSE_FIRST = '20'
+          python tests/corpus/winplay.py play game out/plain
       - name: Play ${{ matrix.id }} under shirusu
         if: steps.meta.outputs.ok == '1'
         continue-on-error: true
@@ -257,18 +254,35 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # (after the Windows side, so a CI build of the push that started this run has had time to
+  # finish: the newest successful one of main then)
   sake:
-    needs: plan
+    needs: [plan, windows]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7.0.1
       - run: tools/ci/cache-keys.sh
+      - id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN: ${{ inputs.ci_run }}
+        run: |
+          if [ -n "$CI_RUN" ]; then
+            RUN_ID=$CI_RUN SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" --jq .head_sha)
+          else
+            read -r RUN_ID SHA < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
+              --limit 1 --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"')
+          fi
+          echo "sake: CI run $RUN_ID ($SHA)"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v8.0.2
         with:
           name: ippai
           path: dist
-          run-id: ${{ needs.plan.outputs.run_id }}
+          run-id: ${{ steps.build.outputs.run_id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v8.0.2
         continue-on-error: true
@@ -305,7 +319,7 @@ jobs:
           key: rtp-official-20261114
       - name: Tools
         env:
-          SHA: ${{ needs.plan.outputs.sha }}
+          SHA: ${{ steps.build.outputs.sha }}
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL &
           tools/ci/apt.sh unar unrar innoextract convmv p7zip-full msitools zstd fonts-ipafont-gothic fonts-ipafont-mincho
