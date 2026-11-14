@@ -1,0 +1,18 @@
+copy: 1
+  dst "es3 save data"
+fail if exists: 0, error 80
+overwrite: 1
+missing source: 0, error 2
+cancelled before: 0, error 1235, dst there 0
+  progress: reason 1 total 13 done 0 stream 0/13 number 1 data 1
+  progress: reason 0 total 13 done 13 stream 13/13 number 1 data 1
+progress continue: 1, calls 2, first reason 1, last reason 0
+  dst "es3 save data"
+  progress: reason 1 total 13 done 0 stream 0/13 number 1 data 1
+progress quiet: 1, calls 1, dst there 1
+  progress: reason 1 total 13 done 0 stream 0/13 number 1 data 1
+progress cancel: 0, error 1235, calls 1, dst there 0
+  progress: reason 1 total 13 done 0 stream 0/13 number 1 data 1
+progress stop: 0, error 1235, calls 1
+ansi: 1
+  dst "es3 save data"

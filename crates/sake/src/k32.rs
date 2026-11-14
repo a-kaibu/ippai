@@ -7981,6 +7981,64 @@ fn CopyFileA(c: &mut Ctx) -> u32 {
 fn CopyFileW(c: &mut Ctx) -> u32 {
     copy_file(&arg_str(c.a(0), true), &arg_str(c.a(1), true), c.a(2) != 0)
 }
+/// CopyFileEx(from, to, progress, data, pbCancel, flags): CopyFile, failing with
+/// COPY_FILE_FAIL_IF_EXISTS (1) when `to` exists (Mono's File.Copy, Easy Save 3's backups).
+/// `*pbCancel` TRUE before the copy: ERROR_REQUEST_ABORTED and no copy. The progress routine
+/// gets CALLBACK_STREAM_SWITCH (1) and CALLBACK_CHUNK_FINISHED (0), the file in one chunk;
+/// PROGRESS_CANCEL (1) deletes `to`, PROGRESS_STOP (2) keeps it, both ERROR_REQUEST_ABORTED;
+/// PROGRESS_QUIET (3) ends the calls. (Its file handles are NULL here.)
+fn copy_ex(c: &mut Ctx, wide: bool) -> u32 {
+    let (from, to) = (arg_str(c.a(0), wide), arg_str(c.a(1), wide));
+    let (progress, data, cancel, flags) = (c.a(2), c.a(3), c.a(4), c.a(5));
+    if cancel != 0 && r32(cancel) != 0 {
+        last_error(1235);
+        return 0;
+    }
+    if copy_file(&from, &to, flags & 1 != 0) == 0 {
+        return 0;
+    }
+    if progress == 0 {
+        return 1;
+    }
+    let size = files::resolve(&to).and_then(|h| kura::fs::metadata(h).ok()).map_or(0, |m| m.len());
+    for reason in [1u32, 0] {
+        let done = if reason == 0 { size } else { 0 };
+        // (TotalFileSize, TotalBytesTransferred, StreamSize, StreamBytesTransferred: LARGE_INTEGERs
+        // by value, two slots each on x86; dwStreamNumber 1, the reason, hSource, hDestination)
+        let quads = [size, done, size, done];
+        let mut args: Vec<u32> = Vec::new();
+        for q in quads {
+            args.push(q as u32);
+            if !mem::x64() {
+                args.push((q >> 32) as u32);
+            }
+        }
+        args.extend([1, reason, 0, 0, data]);
+        match c.call(progress, &args) {
+            1 => {
+                if let Some(h) = files::resolve(&to) {
+                    let _ = kura::fs::remove_file(h);
+                }
+                last_error(1235);
+                return 0;
+            }
+            2 => {
+                last_error(1235);
+                return 0;
+            }
+            3 => break,
+            _ => {}
+        }
+    }
+    last_error(0);
+    1
+}
+fn CopyFileExA(c: &mut Ctx) -> u32 {
+    copy_ex(c, false)
+}
+fn CopyFileExW(c: &mut Ctx) -> u32 {
+    copy_ex(c, true)
+}
 fn full_path_name(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
     let full = files::full_path(&name);
@@ -9291,7 +9349,7 @@ pub fn init() {
         FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, FindFirstChangeNotificationA, FindFirstChangeNotificationW, FindNextChangeNotification, FindCloseChangeNotification, GetFileAttributesA,
         GetFileAttributesW, GetFileAttributesExA, GetFileAttributesExW, SetFileAttributesA, SetFileAttributesW,
         CreateDirectoryA, CreateDirectoryW, RemoveDirectoryA, RemoveDirectoryW, DeleteFileA, DeleteFileW, MoveFileA,
-        MoveFileW, MoveFileExA, MoveFileExW, CopyFileA, CopyFileW, CreateHardLinkA, CreateHardLinkW, GetFullPathNameA, GetFullPathNameW,
+        MoveFileW, MoveFileExA, MoveFileExW, CopyFileA, CopyFileW, CopyFileExA, CopyFileExW, CreateHardLinkA, CreateHardLinkW, GetFullPathNameA, GetFullPathNameW,
         GetShortPathNameA, GetShortPathNameW, GetLongPathNameA, GetLongPathNameW, GetCurrentDirectoryA,
         GetCurrentDirectoryW, SetCurrentDirectoryA, SetCurrentDirectoryW, GetTempPathA, GetTempPathW,
         GetTempFileNameA, GetTempFileNameW, GetWindowsDirectoryA, GetWindowsDirectoryW, GetSystemDirectoryA,
