@@ -29,6 +29,10 @@ class Steps(unittest.TestCase):
             n += len(plan)
             for k in ('pre', 'story_at'):
                 if r.get(k): self.assertEqual(len([float(v) for v in r[k].split(',')]), 2, (r['id'], k))
+            # (title_at: seconds, as corpus-run.py hands it to corpus.mjs's TITLE_AT; no row longer
+            # than the header, whose columns DictReader would fold into a None key)
+            if r.get('title_at'): self.assertGreater(float(r['title_at']), 0, r['id'])
+            self.assertNotIn(None, r, r['id'])
         self.assertGreater(n, 50)
 
     def test_grammar(self):
