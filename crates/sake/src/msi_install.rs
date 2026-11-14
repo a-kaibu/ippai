@@ -9,6 +9,7 @@
 //! Actions run at once in sequence order; deferred custom actions run where they are
 //! scheduled, with CustomActionData set (no separate script phase, no rollback).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use msidb::record::{Field, Record};
@@ -168,6 +169,21 @@ pub fn do_action(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, table: Option
     if crate::env_on!("SAKE_TRACE_MSI") {
         eprintln!("msi: action {name}");
     }
+    // (actions within actions: ExecuteAction, MsiDoAction from a custom action; a package
+    // whose action runs itself overflowed the thread's stack)
+    thread_local!(static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+    if DEPTH.with(|d| d.get()) >= MAX_ACTION_DEPTH {
+        eprintln!("msi: action {name}: actions nested {MAX_ACTION_DEPTH} deep");
+        return ERROR_INSTALL_FAILURE;
+    }
+    DEPTH.with(|d| d.set(d.get() + 1));
+    let r = do_action_nested(c, p, name, table);
+    DEPTH.with(|d| d.set(d.get() - 1));
+    r
+}
+/// How deep actions may run inside actions.
+const MAX_ACTION_DEPTH: u32 = 32;
+fn do_action_nested(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, table: Option<&str>) -> u32 {
     action_start(c, p, name);
     let prev = std::mem::replace(&mut p.lock().unwrap().action, name.to_string());
     let r = do_action_inner(c, p, name, table);
@@ -489,6 +505,16 @@ fn extract_set(c: &mut Ctx, p: &Arc<Mutex<Package>>, cab: &str, vols: &[String],
     Ok(())
 }
 
+/// Removes a temporary file when it goes out of scope (every way out of an install step).
+struct TempFile(Option<String>);
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if let Some(h) = self.0.take() {
+            let _ = kura::fs::remove_file(&h);
+        }
+    }
+}
+
 /// A cabinet: "#stream" in the package, or a file beside it (one of a set: `extract_set`).
 fn extract_cab(c: &mut Ctx, p: &Arc<Mutex<Package>>, cab: &str, list: &[(FileRec, String)], cabs: &[String]) -> R<()> {
     if !cab.starts_with('#') && cab_beside(p, cab).and_then(|h| cab_header(&h)).is_some_and(|h| h.has_prev || h.has_next) {
@@ -496,15 +522,16 @@ fn extract_cab(c: &mut Ctx, p: &Arc<Mutex<Package>>, cab: &str, list: &[(FileRec
             return extract_set(c, p, cab, &vols, list);
         }
     }
-    let tmp;
+    let mut tmp = TempFile(None);
     let host = if let Some(stream) = cab.strip_prefix('#') {
         let pk = p.lock().unwrap();
         let d = pk.db.lock().unwrap();
-        tmp = crate::files::resolve_new(&format!("C:\\windows\\temp\\sake-msi-{}.cab", crate::pid()));
+        let t = crate::files::resolve_new(&format!("C:\\windows\\temp\\sake-msi-{}.cab", crate::pid()));
         host_mkdirs("C:\\windows\\temp");
-        let mut f = kura::fs::File::create(&tmp).map_err(|_| ERROR_INSTALL_FAILURE)?;
+        tmp.0 = Some(t.clone());
+        let mut f = kura::fs::File::create(&t).map_err(|_| ERROR_INSTALL_FAILURE)?;
         d.db.copy_stream(stream, &mut f).map_err(|_| ERROR_INSTALL_FAILURE)?;
-        tmp.clone()
+        t
     } else {
         let src = p.lock().unwrap().prop("SourceDir");
         let w = format!("{}{cab}", if src.ends_with('\\') { src } else { format!("{src}\\") });
@@ -517,26 +544,92 @@ fn extract_cab(c: &mut Ctx, p: &Arc<Mutex<Package>>, cab: &str, list: &[(FileRec
         }
     };
     let f = kura::fs::File::open(&host).map_err(|_| ERROR_INSTALL_FAILURE)?;
-    let mut cabinet = cab::Cabinet::new(f).map_err(|e| {
-        eprintln!("msi: cabinet {cab}: {e}");
+    let want: HashMap<String, usize> = list.iter().enumerate().rev().map(|(i, (f, _))| (f.key.clone(), i)).collect();
+    let mut open = |i: usize| {
+        let target = &list[i].1;
+        host_mkdirs(target.rsplit_once('\\').map_or("", |d| d.0));
+        kura::fs::File::create(crate::files::resolve_new(target)).ok()
+    };
+    let mut close = |i: usize, w: kura::fs::File| {
+        drop(w);
+        file_done(c, p, &list[i].0, &list[i].1);
+        true
+    };
+    let got = cab_extract(f, &want, list.len(), &mut open, &mut close).map_err(|e| {
+        eprintln!("msi: cabinet {cab}: FDI error {e}");
         ERROR_INSTALL_FAILURE
     })?;
-    let names: Vec<String> = cabinet.folder_entries().flat_map(|fo| fo.file_entries().map(|e| e.name().to_string()).collect::<Vec<_>>()).collect();
-    for (f, target) in list {
-        if !names.iter().any(|n| *n == f.key) {
-            eprintln!("msi: {} is not in cabinet {cab}", f.key);
-            return Err(ERROR_INSTALL_FAILURE);
-        }
-        let mut r = cabinet.read_file(&f.key).map_err(|_| ERROR_INSTALL_FAILURE)?;
-        host_mkdirs(target.rsplit_once('\\').map_or("", |d| d.0));
-        let mut out = kura::fs::File::create(crate::files::resolve_new(target)).map_err(|_| ERROR_INSTALL_FAILURE)?;
-        std::io::copy(&mut r, &mut out).map_err(|_| ERROR_INSTALL_FAILURE)?;
-        file_done(c, p, f, target);
-    }
-    if cab.starts_with('#') {
-        let _ = kura::fs::remove_file(&host);
+    if let Some(i) = got.iter().position(|g| !g) {
+        eprintln!("msi: {} is not in cabinet {cab}", list[i].0.key);
+        return Err(ERROR_INSTALL_FAILURE);
     }
     Ok(())
+}
+
+/// The files `want` names (a cabinet name -> its index below `n`) out of the cabinet in `src`
+/// in one pass, in the cabinet's order (sake's FDI decoder, crates/sake/src/cabinet.rs): each
+/// written to what `open` gives for its index and handed to `close` after its last byte. Which
+/// indices were found. (`cab::Cabinet::read_file` decompressed its folder from the start for
+/// every file: N files of one folder, as MSI packages have, cost N / 2 folders' work.)
+pub(crate) fn cab_extract<R: std::io::Read + std::io::Seek, W: std::io::Write>(mut src: R, want: &HashMap<String, usize>, n: usize, open: &mut dyn FnMut(usize) -> Option<W>, close: &mut dyn FnMut(usize, W) -> bool) -> Result<Vec<bool>, u32> {
+    use crate::cabinet::{self as fdi, Note, FDINT_CLOSE_FILE_INFO, FDINT_COPY_FILE};
+    use std::io::SeekFrom;
+    struct Out<'a, R, W> {
+        src: R,
+        want: &'a HashMap<String, usize>,
+        open: &'a mut dyn FnMut(usize) -> Option<W>,
+        close: &'a mut dyn FnMut(usize, W) -> bool,
+        outs: Vec<Option<W>>,
+        got: Vec<bool>,
+    }
+    impl<R: std::io::Read + std::io::Seek, W: std::io::Write> fdi::Sink for Out<'_, R, W> {
+        fn notify(&mut self, kind: u32, n: &Note) -> i32 {
+            match kind {
+                FDINT_COPY_FILE => match self.want.get(String::from_utf8_lossy(&n.psz1).as_ref()) {
+                    Some(&i) if !self.got[i] && self.outs[i].is_none() => match (self.open)(i) {
+                        Some(w) => {
+                            self.outs[i] = Some(w);
+                            i as i32 + 1
+                        }
+                        None => -1,
+                    },
+                    _ => 0,
+                },
+                FDINT_CLOSE_FILE_INFO => {
+                    let i = n.hf as usize - 1;
+                    let Some(w) = self.outs.get_mut(i).and_then(Option::take) else { return 0 };
+                    self.got[i] = true;
+                    (self.close)(i, w) as i32
+                }
+                _ => 0,
+            }
+        }
+        fn write(&mut self, hf: u32, data: &[u8]) -> u32 {
+            match self.outs.get_mut(hf as usize - 1).and_then(Option::as_mut).map(|w| w.write_all(data)) {
+                Some(Ok(())) => data.len() as u32,
+                _ => 0,
+            }
+        }
+    }
+    impl<R: std::io::Read + std::io::Seek, W: std::io::Write> fdi::Io for Out<'_, R, W> {
+        fn read_at(&mut self, off: u64, n: usize, out: &mut Vec<u8>) -> bool {
+            out.clear();
+            out.resize(n, 0);
+            self.src.seek(SeekFrom::Start(off)).is_ok() && self.src.read_exact(out).is_ok()
+        }
+    }
+    let len = src.seek(SeekFrom::End(0)).map_err(|_| fdi::FDIERROR_CABINET_NOT_FOUND)?;
+    let mut io = Out { src, want, open, close, outs: (0..n).map(|_| None).collect(), got: vec![false; n] };
+    let mut head = Vec::new();
+    if !fdi::Io::read_at(&mut io, 0, 36.min(len as usize), &mut head) {
+        return Err(fdi::FDIERROR_NOT_A_CABINET);
+    }
+    let mut tables = Vec::new();
+    if !fdi::Io::read_at(&mut io, 0, fdi::tables_len(&head, len) as usize, &mut tables) {
+        return Err(fdi::FDIERROR_CORRUPT_CABINET);
+    }
+    fdi::stream(&tables, &mut io)?;
+    Ok(io.got)
 }
 
 fn root_path(root: i32, all_users: bool) -> &'static str {
@@ -558,7 +651,8 @@ fn wide_bytes(s: &str) -> Vec<u8> {
 /// string, "[~]" separated multi-strings, else a string.
 pub fn reg_value(v: &str) -> (u32, Vec<u8>) {
     if let Some(h) = v.strip_prefix("#x").or_else(|| v.strip_prefix("#X")) {
-        let b = (0..h.len() / 2).filter_map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()).collect();
+        // (by bytes: a non-ASCII character in the value was a slice inside it, a panic)
+        let b = h.as_bytes().chunks_exact(2).filter_map(|d| u8::from_str_radix(std::str::from_utf8(d).ok()?, 16).ok()).collect();
         return (3, b);
     }
     if let Some(s) = v.strip_prefix("#%") {
@@ -650,17 +744,29 @@ fn remove_files(p: &Arc<Mutex<Package>>) -> u32 {
 }
 
 /// A RemoveFile name pattern: * any run, ? one character.
+/// Whether name `n` matches pattern `p` (`*` any run, `?` one character): the greedy match
+/// with one backtrack point, linear in practice (the recursive one was exponential in the
+/// `*`s against a long name).
 fn wildcard(p: &str, n: &str) -> bool {
     let (p, n): (Vec<char>, Vec<char>) = (p.chars().collect(), n.chars().collect());
-    fn m(p: &[char], n: &[char]) -> bool {
-        match p.first() {
-            None => n.is_empty(),
-            Some('*') => (0..=n.len()).any(|i| m(&p[1..], &n[i..])),
-            Some('?') => !n.is_empty() && m(&p[1..], &n[1..]),
-            Some(c) => n.first() == Some(c) && m(&p[1..], &n[1..]),
+    let (mut i, mut j) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while j < n.len() {
+        if i < p.len() && (p[i] == '?' || (p[i] != '*' && p[i] == n[j])) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == '*' {
+            star = Some((i, j));
+            i += 1;
+        } else if let Some((si, sj)) = star {
+            i = si + 1;
+            j = sj + 1;
+            star = Some((si, sj + 1));
+        } else {
+            return false;
         }
     }
-    m(&p, &n)
+    p[i..].iter().all(|&c| c == '*')
 }
 
 /// RemoveRegistryValues: the Registry table's values of components going away (a key
@@ -927,7 +1033,8 @@ pub fn pack_guid(g: &str) -> String {
 
 pub fn unpack_guid(p: &str) -> String {
     let h: Vec<char> = p.chars().collect();
-    if h.len() != 32 {
+    // (hex digits only: a non-ASCII name of 32 characters sliced `b` inside a character)
+    if h.len() != 32 || !p.is_ascii() {
         return String::new();
     }
     let rev = |s: &[char]| s.iter().rev().collect::<String>();
@@ -1955,6 +2062,58 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// The recursive matcher sake had: the model of `wildcard`.
+    fn wildcard_model(p: &str, n: &str) -> bool {
+        let (p, n): (Vec<char>, Vec<char>) = (p.chars().collect(), n.chars().collect());
+        fn m(p: &[char], n: &[char]) -> bool {
+            match p.first() {
+                None => n.is_empty(),
+                Some('*') => (0..=n.len()).any(|i| m(&p[1..], &n[i..])),
+                Some('?') => !n.is_empty() && m(&p[1..], &n[1..]),
+                Some(c) => n.first() == Some(c) && m(&p[1..], &n[1..]),
+            }
+        }
+        m(&p, &n)
+    }
+
+    #[test]
+    fn wildcards_of_many_stars_are_quick() {
+        // (2^20-ish steps for the recursive one: minutes)
+        let p = "*a*a*a*a*a*a*a*a*a*a*a*a*b";
+        let n = "a".repeat(200);
+        let t = std::time::Instant::now();
+        assert!(!wildcard(p, &n));
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+        assert!(wildcard("*.t?t", "readme.txt"));
+        assert!(!wildcard("*.t?t", "readme.tx"));
+        assert!(wildcard("*", ""));
+    }
+
+    #[test]
+    fn non_ascii_registry_values_and_guids() {
+        // (byte slices inside a character: panics)
+        assert_eq!(reg_value("#xa\u{e9}0b"), (3, vec![]));
+        assert_eq!(reg_value("#x0a0b"), (3, vec![10, 11]));
+        assert_eq!(unpack_guid(&"\u{e9}".repeat(32)), "");
+    }
+
+    proptest! {
+        /// Patterns and names over a small alphabet: the same answers as the recursive matcher.
+        #[test]
+        fn wildcard_is_the_model(p in "[ab*?]{0,8}", n in "[ab]{0,10}") {
+            prop_assert_eq!(wildcard(&p, &n), wildcard_model(&p, &n));
+        }
+
+        /// Any text as a Registry value or a packed GUID: no panic.
+        #[test]
+        fn any_registry_text(v in "\\PC{0,40}") {
+            let _ = reg_value(&v);
+            let _ = reg_value(&format!("#x{v}"));
+            let _ = unpack_guid(&v);
+        }
+    }
 
     #[test]
     fn descriptors() {
@@ -2015,5 +2174,115 @@ mod tests {
     #[test]
     fn command_line() {
         assert_eq!(parse_props(r#"INSTALLDIR="C:\Game Dir\" ALLUSERS=1 /qb"#), [("INSTALLDIR".to_string(), "C:\\Game Dir\\".to_string()), ("ALLUSERS".into(), "1".into())]);
+    }
+
+    /// A cabinet the `cab` crate writes: folders (MSZIP or stored) of named files.
+    fn cabinet(folders: &[(bool, Vec<(String, Vec<u8>)>)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut b = cab::CabinetBuilder::new();
+        for (zip, files) in folders {
+            let f = b.add_folder(if *zip { cab::CompressionType::MsZip } else { cab::CompressionType::None });
+            for (n, _) in files {
+                f.add_file(n.clone());
+            }
+        }
+        let mut w = b.build(std::io::Cursor::new(Vec::new())).unwrap();
+        let all: Vec<&Vec<u8>> = folders.iter().flat_map(|f| f.1.iter().map(|x| &x.1)).collect();
+        let mut i = 0;
+        while let Some(mut fw) = w.next_file().unwrap() {
+            fw.write_all(all[i]).unwrap();
+            i += 1;
+        }
+        w.finish().unwrap().into_inner()
+    }
+    /// A reader that counts the bytes read through it.
+    struct Counting<'a>(std::io::Cursor<&'a [u8]>, std::rc::Rc<std::cell::Cell<u64>>);
+    impl std::io::Read for Counting<'_> {
+        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.0.read(b)?;
+            self.1.set(self.1.get() + n as u64);
+            Ok(n)
+        }
+    }
+    impl std::io::Seek for Counting<'_> {
+        fn seek(&mut self, p: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.0.seek(p)
+        }
+    }
+
+    fn arb_folders() -> impl Strategy<Value = Vec<(bool, Vec<(String, Vec<u8>)>)>> {
+        prop::collection::vec((any::<bool>(), prop::collection::vec(prop::collection::vec(any::<u8>(), 0..3000), 1..8)), 1..4).prop_map(|fs| {
+            let mut k = 0;
+            fs.into_iter()
+                .map(|(z, files)| {
+                    (z, files.into_iter().map(|d| {
+                        k += 1;
+                        (format!("F{k}.x"), d)
+                    }).collect())
+                })
+                .collect()
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// Any cabinet and any files wanted of it (and a name it lacks): every wanted file has
+        /// the bytes the `cab` crate reads for it, opened and closed once each, the missing one
+        /// not found; and the cabinet is read about once (not a folder per file).
+        #[test]
+        fn one_pass_gives_what_read_file_does(folders in arb_folders(), mask in any::<u64>(), missing in any::<bool>()) {
+            let data = cabinet(&folders);
+            let names: Vec<String> = folders.iter().flat_map(|f| f.1.iter().map(|x| x.0.clone())).collect();
+            let mut list: Vec<String> = names.iter().enumerate().filter(|(i, _)| mask >> (i % 64) & 1 != 0).map(|(_, n)| n.clone()).collect();
+            if missing {
+                list.push("NOT.HERE".into());
+            }
+            let want: HashMap<String, usize> = list.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
+            let read = std::rc::Rc::new(std::cell::Cell::new(0));
+            let outs = std::cell::RefCell::new(vec![Vec::new(); list.len()]);
+            let (mut opened, mut closed) = (vec![0; list.len()], vec![0; list.len()]);
+            let got = cab_extract(Counting(std::io::Cursor::new(&data[..]), read.clone()), &want, list.len(), &mut |i| {
+                opened[i] += 1;
+                Some(Vec::new())
+            }, &mut |i, w| {
+                closed[i] += 1;
+                outs.borrow_mut()[i] = w;
+                true
+            });
+            let got = got.unwrap();
+            let mut cab = cab::Cabinet::new(std::io::Cursor::new(&data[..])).unwrap();
+            for (i, n) in list.iter().enumerate() {
+                if n == "NOT.HERE" {
+                    prop_assert!(!got[i]);
+                    prop_assert_eq!(opened[i], 0);
+                    continue;
+                }
+                let mut want_bytes = Vec::new();
+                std::io::Read::read_to_end(&mut cab.read_file(n).unwrap(), &mut want_bytes).unwrap();
+                prop_assert!(got[i]);
+                prop_assert_eq!((opened[i], closed[i]), (1, 1));
+                prop_assert_eq!(&outs.borrow()[i], &want_bytes);
+            }
+            // (the tables, then each data block once: a folder per file read N / 2 of them)
+            prop_assert!(read.get() <= 2 * data.len() as u64 + 0x1_0000, "{} read of {}", read.get(), data.len());
+        }
+
+        /// Damaged cabinets: an error or some files, never a panic, never a file opened twice.
+        #[test]
+        fn damaged_cabinets_fail_cleanly(folders in arb_folders(), damage in prop::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 1..8)) {
+            let mut data = cabinet(&folders);
+            for (i, b) in damage {
+                let k = i.index(data.len());
+                data[k] = b;
+            }
+            let names: Vec<String> = folders.iter().flat_map(|f| f.1.iter().map(|x| x.0.clone())).collect();
+            let want: HashMap<String, usize> = names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
+            let mut opened = vec![0; names.len()];
+            let _ = cab_extract(std::io::Cursor::new(&data[..]), &want, names.len(), &mut |i| {
+                opened[i] += 1;
+                Some(Vec::new())
+            }, &mut |_, _: Vec<u8>| true);
+            prop_assert!(opened.iter().all(|&n| n <= 1));
+        }
     }
 }

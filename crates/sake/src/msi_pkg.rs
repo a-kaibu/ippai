@@ -100,6 +100,8 @@ pub struct Package {
     pub uses: Vec<(String, String)>,
     /// InstallValidate ran: costs are known (MsiEnumComponentCosts)
     pub validated: bool,
+    /// the properties as sync_props last put them into _Property
+    pub synced: HashMap<String, String>,
 }
 
 /// The package handle's package.
@@ -276,6 +278,7 @@ impl Package {
             cost_started: false,
             uses: Vec::new(),
             validated: false,
+            synced: HashMap::new(),
         };
         p.load_tables();
         p.sync_props();
@@ -341,11 +344,14 @@ impl Package {
     }
 
     /// Every property into _Property (after actions that set many).
-    pub fn sync_props(&self) {
-        let names: Vec<String> = self.props.keys().cloned().collect();
-        for n in names {
+    /// (only what changed since the last time: after every action every property was deleted
+    /// and inserted again, hundreds of actions times hundreds of properties)
+    pub fn sync_props(&mut self) {
+        let changed: Vec<String> = self.props.iter().filter(|&(k, v)| self.synced.get(k) != Some(v)).map(|(k, _)| k.clone()).chain(self.synced.keys().filter(|k| !self.props.contains_key(*k)).cloned()).collect();
+        for n in changed {
             self.sync_prop(&n);
         }
+        self.synced.clone_from(&self.props);
     }
 
     /// The target path of every directory, from TARGETDIR down (CostFinalize).
@@ -1081,14 +1087,7 @@ fn get_feature_cost(c: &mut Ctx, wide: bool) -> u32 {
     }
     let mut feats = vec![name.clone()];
     match tree {
-        1 => {
-            let mut i = 0;
-            while i < feats.len() {
-                let parent = feats[i].clone();
-                feats.extend(p.features.iter().filter(|f| f.parent == parent && f.name != parent).map(|f| f.name.clone()));
-                i += 1;
-            }
-        }
+        1 => feats = feature_subtree(p.features.iter().map(|f| (f.name.as_str(), f.parent.as_str())), &name),
         2 => {
             let mut cur = name.clone();
             while let Some(f) = p.features.iter().find(|f| f.name == cur && !f.parent.is_empty() && f.parent != cur) {
@@ -1112,6 +1111,24 @@ fn get_feature_cost(c: &mut Ctx, wide: bool) -> u32 {
     w32(pcost, cost as u32);
     ERROR_SUCCESS
 }
+/// `root` and every feature under it (breadth first), each once: a Feature table whose parents
+/// make a cycle (A under B, B under A) grew the list for ever.
+fn feature_subtree<'a>(features: impl Iterator<Item = (&'a str, &'a str)> + Clone, root: &str) -> Vec<String> {
+    let mut feats = vec![root.to_string()];
+    let mut seen: std::collections::HashSet<String> = feats.iter().cloned().collect();
+    let mut i = 0;
+    while i < feats.len() {
+        let parent = feats[i].clone();
+        for (n, _) in features.clone().filter(|&(n, par)| par == parent && n != parent) {
+            if seen.insert(n.to_string()) {
+                feats.push(n.to_string());
+            }
+        }
+        i += 1;
+    }
+    feats
+}
+
 fn MsiGetFeatureCostA(c: &mut Ctx) -> u32 {
     get_feature_cost(c, false)
 }
@@ -1143,6 +1160,36 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn a_cycle_of_parents_ends() {
+        let f = [("A", "B"), ("B", "A"), ("C", "A"), ("D", "D")];
+        assert_eq!(feature_subtree(f.iter().copied(), "A"), ["A", "B", "C"]);
+        assert_eq!(feature_subtree(f.iter().copied(), "D"), ["D"]);
+    }
+
+    proptest! {
+        /// Any Feature table (parents anything, cycles and self-parents included): the subtree
+        /// ends, has each feature once, and is exactly what the parent relation reaches.
+        #[test]
+        fn subtrees_are_the_reachable_set(rows in prop::collection::vec((0u8..8, 0u8..8), 0..16), root in 0u8..8) {
+            let names: Vec<(String, String)> = rows.iter().map(|&(n, p)| (format!("F{n}"), format!("F{p}"))).collect();
+            let got = feature_subtree(names.iter().map(|(n, p)| (n.as_str(), p.as_str())), &format!("F{root}"));
+            let set: std::collections::HashSet<&String> = got.iter().collect();
+            prop_assert_eq!(set.len(), got.len());
+            // the closure, the slow way
+            let mut want = std::collections::HashSet::from([format!("F{root}")]);
+            loop {
+                let more: Vec<String> = names.iter().filter(|(n, p)| want.contains(p) && n != p && !want.contains(n)).map(|(n, _)| n.clone()).collect();
+                if more.is_empty() {
+                    break;
+                }
+                want.extend(more);
+            }
+            prop_assert_eq!(set, want.iter().collect());
+        }
+    }
 
     #[test]
     fn target_paths() {
