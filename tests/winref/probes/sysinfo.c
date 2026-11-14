@@ -59,6 +59,21 @@ int main(void) {
         st = q(0x67, ci, 4, &ret);
         printf("code integrity, 4 bytes: status %08lx\n", (unsigned long)st);
     }
+    {
+        /* GetSystemTimes: class 8 summed over the processors (each pointer optional) */
+        FILETIME fi, fk, fu, gi, gk, gu;
+        SetLastError(0xdead);
+        BOOL ok = GetSystemTimes(&fi, &fk, &fu);
+        ULONGLONG i0 = ((ULONGLONG)fi.dwHighDateTime << 32) | fi.dwLowDateTime, k0 = ((ULONGLONG)fk.dwHighDateTime << 32) | fk.dwLowDateTime;
+        ULONGLONG u0 = ((ULONGLONG)fu.dwHighDateTime << 32) | fu.dwLowDateTime;
+        printf("GetSystemTimes: %d kernel includes idle %d nonzero %d\n", ok, k0 >= i0, k0 + u0 > 0);
+        Sleep(20);
+        GetSystemTimes(&gi, &gk, &gu);
+        ULONGLONG i1 = ((ULONGLONG)gi.dwHighDateTime << 32) | gi.dwLowDateTime, k1 = ((ULONGLONG)gk.dwHighDateTime << 32) | gk.dwLowDateTime;
+        ULONGLONG u1 = ((ULONGLONG)gu.dwHighDateTime << 32) | gu.dwLowDateTime;
+        printf("GetSystemTimes later: idle, kernel, user not less %d %d %d\n", i1 >= i0, k1 >= k0, u1 >= u0);
+        printf("GetSystemTimes with NULLs: %d %d\n", GetSystemTimes(NULL, NULL, NULL), GetSystemTimes(NULL, &fk, NULL));
+    }
     printf("class 0x7fff: status %08lx\n", (unsigned long)q(0x7fff, buf, sizeof buf, &ret));
 
     /* firmware tables */

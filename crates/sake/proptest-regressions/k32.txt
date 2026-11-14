@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 5e56a0c3b3b4e268374ab1725d45cfc23efa73c2506d1012afc6ef0cfed19aa0 # shrinks to cur = 0, want = 0, c = 0, field = 0
+cc 78fdefcde95305bd99b109aced5e7cb56ac3ff7b6c181bb1a44578195599ef6a # shrinks to len = 4096, off_pages = 1, writes = [(0, 0)]

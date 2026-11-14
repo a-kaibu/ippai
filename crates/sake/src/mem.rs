@@ -360,19 +360,30 @@ fn insert(sp: &mut BTreeMap<u32, Region>, base: u32, size: u32, prot: u32, kind:
 }
 
 /// Reserves `size` bytes at an `align`-aligned address (a power of two, at least GRAN), the
-/// lowest one free.
+/// lowest one free; None when no free range holds all of them. (Never fewer: the program
+/// takes the whole block as its own. A smaller block it once got at the top of a full address
+/// space ran on over the TEBs, stacks and DLL images above, お仕置きLesson 体験版, Unity
+/// 6000.4.)
 pub fn reserve_aligned(size: u32, align: u32, prot: u32, kind: u32) -> Option<u32> {
     let size = align_up(size.max(1), PAGE);
     let mut sp = SPACE.lock().unwrap();
-    let fit = |min: u32| {
-        holes(&sp, min).into_iter().find_map(|(lo, hi)| {
-            let b = (lo as u64 + align as u64 - 1) & !(align as u64 - 1);
-            (b + min as u64 <= hi as u64).then(|| (b as u32, (hi as u64 - b).min(size as u64) as u32))
-        })
-    };
-    let (base, size) = fit(size).or_else(|| fit(size / 4))?;
+    let base = aligned_fit(&holes(&sp, size), size, align)?;
     insert(&mut sp, base, size, prot, kind);
     Some(base)
+}
+
+/// The lowest `align`-aligned address with `size` bytes free in one of `holes` ([lo, hi))
+fn aligned_fit(holes: &[(u32, u32)], size: u32, align: u32) -> Option<u32> {
+    holes.iter().find_map(|&(lo, hi)| {
+        let b = (lo as u64 + align as u64 - 1) & !(align as u64 - 1);
+        (b + size as u64 <= hi as u64).then_some(b as u32)
+    })
+}
+
+/// Whether [a, a+n) lies inside one allocation (VirtualAlloc's MEM_COMMIT of a range that runs
+/// past its reservation's end fails on Windows, ERROR_INVALID_ADDRESS)
+pub fn in_one_allocation(a: u32, n: u32) -> bool {
+    find(a).is_some_and(|(b, r)| a as u64 + n.max(1) as u64 <= b as u64 + r.size as u64)
 }
 
 /// The size a program reserves to find an aligned block inside (twice the block less a page,
@@ -907,6 +918,72 @@ mod tests {
         assert_eq!(GUEST_TOP, koji::jit::GUEST_HI);
         let build = include_str!("../build.sh");
         assert!(build.contains(&format!("-sGLOBAL_BASE={}", GUEST_TOP)), "build.sh GLOBAL_BASE");
+    }
+
+    /// An aligned block is all there or not given: the lowest aligned address whose whole
+    /// block lies in one hole (a smaller block at the top of the space once ran Unity 6 over
+    /// the TEBs above it)
+    mod aligned {
+        use super::super::aligned_fit;
+        use proptest::prelude::*;
+
+        #[test]
+        fn top_of_a_full_space() {
+            // (お仕置きLesson: 30 regions of 64 MB taken, 28 MB left under the TEBs)
+            let holes = [(0x7c00_0000, 0x7dc1_0000)];
+            assert_eq!(aligned_fit(&holes, 0x400_0000, 0x400_0000), None);
+            assert_eq!(aligned_fit(&holes, 0x100_0000, 0x100_0000), Some(0x7c00_0000));
+            assert_eq!(aligned_fit(&[(0x3_0000, 0x900_0000)], 0x400_0000, 0x400_0000), Some(0x400_0000));
+        }
+
+        proptest! {
+            #[test]
+            fn whole_lowest_aligned(mut cuts in prop::collection::vec(0x3u32..0x7ff0, 0..24), size_pages in 1u32..0x8000, shift in 16u32..28) {
+                // holes from sorted cut points (in 64 KB units), every other gap a hole
+                cuts.sort();
+                cuts.dedup();
+                let holes: Vec<(u32, u32)> = cuts.chunks(2).filter(|c| c.len() == 2).map(|c| (c[0] << 16, c[1] << 16)).collect();
+                let (size, align) = (size_pages << 12, 1u32 << shift);
+                let got = aligned_fit(&holes, size, align);
+                let fits = |b: u64| holes.iter().any(|&(lo, hi)| b >= lo as u64 && b + size as u64 <= hi as u64);
+                match got {
+                    Some(b) => {
+                        prop_assert_eq!(b % align, 0);
+                        prop_assert!(fits(b as u64));
+                        // nothing lower
+                        let mut x = 0u64;
+                        while x < b as u64 {
+                            prop_assert!(!fits(x));
+                            x += align as u64;
+                        }
+                    }
+                    None => {
+                        let mut x = 0u64;
+                        while x < 0x8000_0000 {
+                            prop_assert!(!fits(x));
+                            x += align as u64;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A commit is inside one allocation or refused: not cut at its end
+    #[test]
+    fn commit_stays_in_one_allocation() {
+        use super::{in_one_allocation, reserve, PAGES, SPACE};
+        // (bookkeeping only, then forgotten: other tests own 0x5000_0000..0x7000_0000)
+        let b = reserve(0, 0x2_0000, 4, 0x20000, false).unwrap();
+        assert!(in_one_allocation(b, 0x2_0000));
+        assert!(in_one_allocation(b + 0x1_f000, 0x1000));
+        assert!(in_one_allocation(b + 0x1_fffc, 4));
+        assert!(!in_one_allocation(b + 0x1_f000, 0x1001));
+        assert!(!in_one_allocation(b + 0x1_fffc, 5));
+        assert!(!in_one_allocation(b + 0x2_0000, 1));
+        assert!(!in_one_allocation(b - 1, 2));
+        SPACE.lock().unwrap().remove(&b);
+        PAGES.lock().unwrap().remove(&b);
     }
 
     #[test]

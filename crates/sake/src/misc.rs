@@ -4807,6 +4807,11 @@ pub fn init() {
         w32(p, 0);
         0
     });
+    // (hwnd, attribute, out, size): with composition off (DwmIsCompositionEnabled above, as on
+    // Windows 7 with the basic theme) every attribute is DWM_E_COMPOSITIONDISABLED and `out` is
+    // left alone. Answering S_OK without writing gave Unity 6 a garbage
+    // DWMWA_EXTENDED_FRAME_BOUNDS and its window a client area at x -1037 (逆討伐 体験版).
+    implement("dwmapi", "DwmGetWindowAttribute", |_| 0x8026_3001);
     implement("user32", "DisableProcessWindowsGhosting", |_| 0);
     for n in ["ShutdownBlockReasonCreate", "ShutdownBlockReasonDestroy"] {
         implement("user32", n, |_| 1);

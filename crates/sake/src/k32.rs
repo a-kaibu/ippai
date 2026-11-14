@@ -2673,7 +2673,7 @@ pub(crate) fn alloc_r(addr: u32, size: u32, ty: u32, prot: u32) -> Result<u32, u
     let commit = ty & 0x1000 != 0;
     if addr != 0 && !reserve {
         // commit inside an existing reservation
-        if commit && mem::commit_range(addr, size, prot) {
+        if commit && mem::in_one_allocation(addr, size) && mem::commit_range(addr, size, prot) {
             return Ok(addr & !(mem::PAGE - 1));
         }
         if ty & 0x80000 != 0 && mem::find(addr).is_some() {
@@ -6089,8 +6089,43 @@ fn FileTimeToDosDateTime(c: &mut Ctx) -> u32 {
 fn CompareFileTime(c: &mut Ctx) -> u32 {
     get64(c.a(0)).cmp(&get64(c.a(1))) as i32 as u32
 }
-fn GetTimeZoneInformation(c: &mut Ctx) -> u32 {
+/// DYNAMIC_TIME_ZONE_INFORMATION's TimeZoneKeyName: the zone's key under HKLM\SOFTWARE\
+/// Microsoft\Windows NT\CurrentVersion\Time Zones (the zone tz_bias gives: Tokyo or UTC)
+pub(crate) fn tz_key_name(bias: i64) -> &'static str {
+    if bias == 9 * 3600 { "Tokyo Standard Time" } else { "UTC" }
+}
+/// GetDynamicTimeZoneInformation(DYNAMIC_TIME_ZONE_INFORMATION*): GetTimeZoneInformation's
+/// 172 bytes, the key name (WCHAR[128] at 172) and DynamicDaylightTimeDisabled (at 428), 432
+/// bytes. .NET's TimeZoneInfo.Local (Mono in Unity 6000.3: ダイスレギオン read its xlsx tables
+/// through ZipArchive, which dates entries in local time) has no fallback without it.
+fn GetDynamicTimeZoneInformation(c: &mut Ctx) -> u32 {
     let p = c.a(0);
+    mem::fill(p, 432, 0);
+    let r = GetTimeZoneInformation(c);
+    let w: Vec<u16> = tz_key_name(tz_bias()).encode_utf16().collect();
+    mem::put_wstr(p + 172, 128, &w);
+    r
+}
+/// GetTimeZoneInformationForYear(year, DYNAMIC_TIME_ZONE_INFORMATION* or NULL for the
+/// current zone, TIME_ZONE_INFORMATION*): neither zone has rules that change by year
+fn GetTimeZoneInformationForYear(c: &mut Ctx) -> u32 {
+    let dtzi = c.a(1);
+    if dtzi != 0 {
+        let key = String::from_utf16_lossy(&mem::wstrn(dtzi + 172, 128));
+        if !key.is_empty() && !key.eq_ignore_ascii_case(tz_key_name(tz_bias())) {
+            last_error(2);
+            return 0;
+        }
+    }
+    write_tzi(c.a(2));
+    1
+}
+fn GetTimeZoneInformation(c: &mut Ctx) -> u32 {
+    write_tzi(c.a(0));
+    0
+}
+/// TIME_ZONE_INFORMATION of the zone (TIME_ZONE_ID_UNKNOWN: no daylight saving)
+fn write_tzi(p: u32) {
     mem::fill(p, 172, 0);
     w32(p, (-tz_bias() / 60) as i32 as u32);
     // (Japanese Windows' names: RealLive and Siglus refuse to run elsewhere)
@@ -6100,7 +6135,6 @@ fn GetTimeZoneInformation(c: &mut Ctx) -> u32 {
             mem::put_wstr(p + off, 32, &w);
         }
     }
-    0
 }
 fn GetTickCount(_: &mut Ctx) -> u32 {
     ticks_ms()
@@ -8819,7 +8853,7 @@ pub fn init() {
         GetSystemTime, GetLocalTime, GetSystemTimeAsFileTime, GetSystemTimePreciseAsFileTime, FileTimeToSystemTime,
         SystemTimeToFileTime, FileTimeToLocalFileTime, LocalFileTimeToFileTime, FileTimeToDosDateTime, DosDateTimeToFileTime, SystemTimeToTzSpecificLocalTime,
         TzSpecificLocalTimeToSystemTime, CompareFileTime,
-        GetTimeZoneInformation, GetTickCount, GetTickCount64, QueryPerformanceCounter, QueryPerformanceFrequency,
+        GetTimeZoneInformation, GetDynamicTimeZoneInformation, GetTimeZoneInformationForYear, GetTickCount, GetTickCount64, QueryPerformanceCounter, QueryPerformanceFrequency,
         GetProcessTimes, GetThreadTimes,
         GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA, GetModuleHandleW, GetModuleHandleExA,
         GetModuleHandleExW, LoadLibraryA, LoadLibraryW, LoadLibraryExA, LoadLibraryExW, FreeLibrary,
@@ -9350,7 +9384,8 @@ mod mapping_names {
             let (path, name) = host_file(&init);
             let f = open_file(name);
             let m = call(CreateFileMappingA, &[f, 0, RW, 0, 0, 0]);
-            let off = (off_pages * 0x1000).min(len as u32 & !0xfff);
+            // (an offset inside the file: a view at its end would have nothing to write)
+            let off = (off_pages * 0x1000).min((len as u32 - 1) & !0xfff);
             let v = call(MapViewOfFile, &[m, 2, 0, off, 0]);
             prop_assert_ne!(v, 0);
             let mut want = init.clone();
@@ -9610,7 +9645,11 @@ mod virtual_ex {
                     0 => {
                         last_error(0); ra = call(VirtualAlloc, &[a + off, len, 0x1000, PROTS[p]]); ea = get_last_error();
                         last_error(0); rb = call(VirtualAllocEx, &[h, b + off, len, 0x1000, PROTS[p]]); eb = get_last_error();
-                        prop_assert_eq!(ra.wrapping_sub(a), rb.wrapping_sub(b));
+                        // (both 0 when the pages run past the reservation's end)
+                        prop_assert_eq!(ra != 0, rb != 0);
+                        if ra != 0 {
+                            prop_assert_eq!(ra.wrapping_sub(a), rb.wrapping_sub(b));
+                        }
                     }
                     1 => {
                         w32(buf + 40, 0xdead); w32(buf + 44, 0xdead);

@@ -1,5 +1,8 @@
 delay-load D3D12CreateDevice: failed, device null
 support check: failed
 debug interface: failed, null
+by ordinal 101: failed, device null
+by ordinal 102: failed, null
 LoadLibrary: ok, GetProcAddress: ok
+ordinal 101 is D3D12CreateDevice: 1, 102 is D3D12GetDebugInterface: 1
 then D3D11CreateDevice: ok

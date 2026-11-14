@@ -368,6 +368,12 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
             Stop::Fault { addr, write } => {
                 if crate::env_on!("SAKE_TRACE_FAULT") {
                     eprintln!("sake: fault at {:#x} reading {addr:#x} (write {write})", cpu.eip);
+                    // (the allocation the address is in, and the one just below it)
+                    for a in [addr, addr.wrapping_sub(1)] {
+                        if let Some((b, r, run, n, state, prot)) = mem::query(a) {
+                            eprintln!("  {a:#x}: allocation {b:#x}+{:#x} kind {:x}, run {run:#x}+{n:#x} state {state:#x} protect {prot:#x}", r.size, r.kind);
+                        }
+                    }
                 }
                 if addr >= api::TRAP_LO && cpu.eip == addr {
                     fatal(cpu, "fault at a trap address");

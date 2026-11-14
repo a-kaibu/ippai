@@ -775,3 +775,111 @@ mod unimplemented_tests {
         assert_eq!(unimplemented_result("comdlg32!GetFileTitleA"), 0);
     }
 }
+
+#[cfg(test)]
+mod ordinal_tests {
+    use super::{dll_key, ordinal_name, specs};
+    use proptest::prelude::*;
+
+    /// d3d12.dll's two numbered exports as Windows numbers them: UnityPlayer.dll 6000.3/6000.4
+    /// delay-loads both by ordinal only, and a missing one is the helper's c06d007f, the
+    /// player's crash at "Discovering subsystems" (dl_RJ01610703, dl_RJ01684055, dl_RJ01690707)
+    #[test]
+    fn d3d12_ordinals() {
+        assert_eq!(ordinal_name("d3d12.dll", 101).as_deref(), Some("D3D12CreateDevice"));
+        assert_eq!(ordinal_name("D3D12", 102).as_deref(), Some("D3D12GetDebugInterface"));
+        assert_eq!(ordinal_name("d3d12", 103), None);
+    }
+
+    /// One ordinal names one export per DLL (a duplicate in specs.txt would make
+    /// GetProcAddress by number depend on line order). One name may have several (MFC's do).
+    #[test]
+    fn ordinals_are_unique() {
+        let mut by_ord = std::collections::HashMap::new();
+        for l in include_str!("specs.txt").lines() {
+            let v: Vec<&str> = l.split(' ').collect();
+            let Some(o) = v.get(4).and_then(|o| o.parse::<u32>().ok()) else { continue };
+            if let Some(prev) = by_ord.insert((v[0], o), v[1]) {
+                assert_eq!(prev, v[1], "{}: ordinal {o} twice", v[0]);
+            }
+        }
+    }
+
+    fn numbered() -> Vec<(String, u32, String)> {
+        let mut v: Vec<_> = specs().by_ord.iter().map(|((d, o), n)| (d.clone(), *o, n.clone())).collect();
+        v.sort();
+        v
+    }
+
+    proptest! {
+        /// Any numbered export, asked for by number under any spelling of its DLL's name (case,
+        /// .dll, a path), is the export of that name that the spec has
+        #[test]
+        fn ordinal_round_trip(i in any::<prop::sample::Index>(), upper in any::<bool>(), suffix in any::<bool>(), path in any::<bool>()) {
+            let all = numbered();
+            let (d, o, n) = &all[i.index(all.len())];
+            let mut name = if upper { d.to_uppercase() } else { d.clone() };
+            if suffix { name.push_str(".dll"); }
+            if path { name = format!("C:\\Windows\\System32\\{name}"); }
+            prop_assume!(dll_key(&name) == *d);
+            let got = ordinal_name(&name, *o);
+            prop_assert_eq!(got.as_deref(), Some(n.as_str()));
+            prop_assert!(specs().by_name.contains_key(&(d.clone(), n.clone())));
+        }
+    }
+
+    /// The imports by ordinal of real game DLLs (the import and the delay-load directories),
+    /// from system DLLs sake has a spec for, all have a name: SAKE_IMPORT_DLLS=a.dll:b.dll
+    /// (UnityPlayer.dll of 6000.0..6000.5 builds)
+    #[test]
+    #[ignore]
+    fn real_imports_by_ordinal() {
+        let Ok(list) = std::env::var("SAKE_IMPORT_DLLS") else { return };
+        let mut missing = Vec::new();
+        for path in list.split(':') {
+            let f = std::fs::read(path).unwrap();
+            let u32at = |o: usize| u32::from_le_bytes(f[o..o + 4].try_into().unwrap()) as usize;
+            let u64at = |o: usize| u64::from_le_bytes(f[o..o + 8].try_into().unwrap());
+            let pe = u32at(0x3c);
+            let wide = u16::from_le_bytes([f[pe + 24], f[pe + 25]]) == 0x20b;
+            let (n, opt) = (u16::from_le_bytes([f[pe + 6], f[pe + 7]]) as usize, u16::from_le_bytes([f[pe + 20], f[pe + 21]]) as usize);
+            let dirs = pe + 24 + if wide { 112 } else { 96 };
+            let off = |rva: usize| {
+                (0..n).map(|k| pe + 24 + opt + 40 * k).find_map(|s| {
+                    let (va, size, ptr) = (u32at(s + 12), u32at(s + 16).max(u32at(s + 8)), u32at(s + 20));
+                    (rva >= va && rva < va + size).then(|| rva - va + ptr)
+                })
+            };
+            let cstr = |o: usize| String::from_utf8_lossy(&f[o..o + f[o..].iter().position(|&b| b == 0).unwrap()]).into_owned();
+            // (import descriptor: 20 bytes, name at 12, thunks at 0 or 16; delay: 32 bytes,
+            // name at 4, names table at 16)
+            for (dir, size, name_at, thunks_at) in [(1usize, 20usize, 12usize, 0usize), (13, 32, 4, 16)] {
+                let rva = u32at(dirs + 8 * dir);
+                let Some(mut d) = (rva != 0).then(|| off(rva)).flatten() else { continue };
+                loop {
+                    let (name, mut t) = (u32at(d + name_at), u32at(d + thunks_at));
+                    if name == 0 {
+                        break;
+                    }
+                    if t == 0 {
+                        t = u32at(d + 16);
+                    }
+                    let dll = cstr(off(name).unwrap());
+                    let mut p = off(t).unwrap();
+                    loop {
+                        let (v, flag) = if wide { (u64at(p), 1u64 << 63) } else { (u32at(p) as u64, 1 << 31) };
+                        if v == 0 {
+                            break;
+                        }
+                        if v & flag != 0 && specs().dlls.contains(&dll_key(&dll)) && ordinal_name(&dll, (v & 0xffff) as u32).is_none() {
+                            missing.push(format!("{path}: {dll} #{}", v & 0xffff));
+                        }
+                        p += if wide { 8 } else { 4 };
+                    }
+                    d += size;
+                }
+            }
+        }
+        assert!(missing.is_empty(), "imports by ordinal without a name: {missing:?}");
+    }
+}
