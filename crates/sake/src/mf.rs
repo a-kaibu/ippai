@@ -1182,7 +1182,7 @@ fn start_events(b: u32) {
     }
     static ENTRY: OnceLock<u32> = OnceLock::new();
     let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mf_events_thread", events_thread, 4));
-    crate::spawn_gated(entry, b, 0x10000, crate::obj::new_thread_obj(0), false);
+    crate::spawn_service(entry, b);
 }
 
 fn en_qi(c: &mut Ctx) -> u32 {

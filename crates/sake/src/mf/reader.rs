@@ -1597,8 +1597,7 @@ fn request(this: u32, q: Req) {
     if reader(this, |r| enqueue(r, q)).unwrap_or(false) {
         static ENTRY: OnceLock<u32> = OnceLock::new();
         let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mf_reader_worker", worker, 4));
-        let h = crate::obj::new_thread_obj(0);
-        crate::spawn_gated(entry, this, 0x10000, h, false);
+        crate::spawn_service(entry, this);
     }
 }
 

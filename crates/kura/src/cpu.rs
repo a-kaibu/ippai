@@ -262,20 +262,40 @@ pub fn create(trap_lo: u32, trap_hi: u32) -> *mut Cpu {
     UPPER_OPEN.store(crate::env_on!("MASU_UPPER_OPEN"), Ordering::Relaxed);
     TRAP_LO.store(trap_lo, Ordering::Relaxed);
     TRAP_HI.store(trap_hi, Ordering::Relaxed);
-    let mut cpu = Box::new(Cpu::default());
-    cpu.trap_lo = trap_lo;
-    cpu.trap_hi = trap_hi;
-    cpu.fpu.cw = 0x27f;
-    let cpu = Box::into_raw(cpu);
+    let reused = RETIRED.lock().unwrap_or_else(|e| e.into_inner()).pop();
+    let cpu = match reused {
+        Some(p) => {
+            let p = p as *mut Cpu;
+            unsafe { *p = Cpu::default() };
+            p
+        }
+        None => Box::into_raw(Box::new(Cpu::default())),
+    };
+    unsafe {
+        (*cpu).trap_lo = trap_lo;
+        (*cpu).trap_hi = trap_hi;
+        (*cpu).fpu.cw = 0x27f;
+    }
     crate::crashlog::register(cpu);
     cpu
 }
+
+/// The Cpus of threads that ended, for the next threads: kept, not freed, as the crash log's
+/// snapshot and MASU_TRACE_EIP read another thread's Cpu without a lock (one that ended
+/// meanwhile reads as a stale state, never as freed memory). A program that starts and ends
+/// threads all the time keeps as many as it had threads at once.
+static RETIRED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 /// # Safety
 /// `cpu` came from [`create`] and is not used after this.
 pub unsafe fn destroy(cpu: *mut Cpu) {
     crate::crashlog::unregister(cpu);
-    drop(Box::from_raw(cpu));
+    RETIRED.lock().unwrap_or_else(|e| e.into_inner()).push(cpu as usize);
+}
+
+/// (tests: Cpus waiting for reuse)
+pub fn retired() -> usize {
+    RETIRED.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 
 /// What an [`Exit`] means for the caller of [`run`]; None to keep running.
@@ -675,5 +695,40 @@ mod proofs {
         if allowed(addr, len, end, lo, hi, true) && addr as u64 + len as u64 <= GUEST_END {
             assert!(allowed(addr, len, end, lo, hi, false));
         }
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+
+    /// Threads that come and go one after the other (a game starting one per file or sound):
+    /// their Cpus and crash-log records are used again, not left behind one per thread
+    /// (review P2-1), and a reused Cpu starts as a new one.
+    #[test]
+    fn cpus_and_their_records_are_used_again() {
+        let mut seen = std::collections::HashSet::new();
+        for round in 0..200u32 {
+            std::thread::spawn(move || {
+                let c = create(0x1000, 0x2000);
+                unsafe {
+                    assert_eq!((*c).eip, 0, "round {round}: a reused Cpu starts clean");
+                    assert_eq!(((*c).trap_lo, (*c).trap_hi, (*c).fpu.cw), (0x1000, 0x2000, 0x27f));
+                    (*c).eip = 0xdead_0000 + round;
+                    (*c).regs[0] = round;
+                }
+                let p = c as usize;
+                unsafe { destroy(c) };
+                p
+            })
+            .join()
+            .map(|p| seen.insert(p))
+            .unwrap();
+        }
+        // (other tests' threads may hold a few at once)
+        assert!(seen.len() <= 16, "{} Cpus for 200 threads one after the other", seen.len());
+        let (retired, _) = crate::crashlog::counts();
+        assert!(retired >= 1 && retired <= 16, "{retired} crash-log records waiting");
+        assert!(super::retired() >= 1 && super::retired() <= 16, "{} Cpus waiting", super::retired());
     }
 }

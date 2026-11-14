@@ -313,7 +313,11 @@ fn dispatcher(c: &mut Ctx, wide: bool) -> u32 {
     if !connected { *ACTIVE.lock().unwrap() = None; return fail(1063); }
     let entry = crate::api::host_fn("service main thread", main_thread, 4);
     let thread = obj::new_thread_obj(0);
-    crate::spawn_gated(entry, 0, 0x100000, thread, false);
+    if crate::spawn_gated(entry, 0, 0x100000, thread, false) == 0 {
+        obj::close(thread);
+        *ACTIVE.lock().unwrap() = None;
+        return fail(8);
+    }
     loop {
         let (work, generation) = kern::with(|k| {
             let Some(s) = k.services.get_mut(&name) else { return (true, None) };

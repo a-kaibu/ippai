@@ -168,6 +168,7 @@ pub mod lsa;
 pub mod actctx;
 pub mod fiber;
 pub mod timerq;
+pub mod pool;
 pub mod xmem;
 pub mod dbg;
 pub mod barrier;
@@ -217,8 +218,6 @@ pub struct Thread {
     pub stack: u32,
     /// save states: the host's thread-local state of this thread when it stood still (snap.rs)
     pub tls: [u32; 8],
-    /// a thread pool thread's arguments (k32 tp_take), kept for its start over
-    pub tp: Option<(u32, (u32, u32, u32))>,
     /// the API call it is in: the stack pointer at its return address and what returning
     /// pops (0 outside one; GetThreadContext from another thread, crate::tctx)
     pub api: (u32, u32),
@@ -323,10 +322,24 @@ fn enter(stack: u32) -> Option<&'static mut Thread> {
             (*cpu).fpu.cw = 0x27f;
         }
     }
-    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st, tls: [0; 8], tp: None, api: (0, 0) }));
+    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st, tls: [0; 8], api: (0, 0) }));
     adopt(t as *mut Thread);
     k32::tls_thread_init(teb);
     Some(t)
+}
+
+/// The calling guest thread's records go (it ends now, running no more guest code).
+pub(crate) fn forget_thread(t: &'static mut Thread) {
+    let t = t as *mut Thread;
+    CUR.with(|c| {
+        if c.get() == t {
+            c.set(std::ptr::null_mut())
+        }
+    });
+    unsafe {
+        kura::cpu::destroy((*t).cpu);
+        drop(Box::from_raw(t));
+    }
 }
 
 /// Makes the calling host thread run guest thread `t` (a new one, or one a restored save
@@ -769,7 +782,7 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
             // (the thread's own reference: the creator closing its handle doesn't end the
             // object while the thread runs; GetCurrentThread duplicates it, mono's GC does)
             t.obj = obj::dup(obj);
-            tx.send(t.tid).unwrap();
+            let _ = tx.send(t.tid);
             crate::actctx::adopt(obj);
             if gated {
                 k32::wait_gate_start(obj, start, param);
@@ -783,6 +796,16 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
         return 0;
     }
     rx.recv().unwrap_or(0)
+}
+
+/// One of sake's own guest threads (behind a pool, a device, a timer...) at `start(param)`:
+/// its tid (None: it could not be made). The creator's handle to it is closed (the thread
+/// holds its own).
+pub fn spawn_service(start: u32, param: u32) -> Option<u32> {
+    let h = obj::new_thread_obj(0);
+    let tid = spawn_gated(start, param, 0x10000, h, false);
+    obj::close(h);
+    (tid != 0).then_some(tid)
 }
 
 /// Tests: the next this many spawn_gated calls fail as when no host thread can be made.

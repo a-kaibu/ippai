@@ -510,7 +510,7 @@ fn start_thread() {
     if spawn {
         static ENTRY: OnceLock<u32> = OnceLock::new();
         let entry = *ENTRY.get_or_init(|| host_fn("xaudio2_thread", engine_thread, 4));
-        crate::spawn_gated(entry, 0, 0x10000, crate::obj::new_thread_obj(0), false);
+        crate::spawn_service(entry, 0);
     }
 }
 

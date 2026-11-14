@@ -202,7 +202,7 @@ fn read_format_check(p: u32, direct: bool) -> u32 {
 fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
     let mut events = Vec::new();
     if mix_waves(d, out) {
-        WAVE_CV.notify_all();
+        wave_wake();
     }
     for b in d.bufs.values_mut() {
         if !b.playing || b.primary || b.size == 0 {
@@ -526,33 +526,52 @@ fn wave_notify(c: &mut Ctx, hwo: u32, (kind, cb, inst): (u32, u32, u32), msg: u3
     }
 }
 
-/// The device's guest thread: delivers WOM_DONE for finished headers until the device closes.
+/// The waveOut devices' thread (one for all of them, as winmm has it; each device used to have
+/// one, polling every 20 ms): delivers WOM_DONE for finished headers, drops closed devices.
 fn wave_thread(c: &mut Ctx) -> u32 {
-    let hwo = c.a(0);
     loop {
-        let (done, cb, closing) = with(|d| match d.waves.get_mut(&hwo) {
-            Some(w) => {
+        let (work, gone) = with(|d| {
+            let mut work = Vec::new();
+            let mut gone = Vec::new();
+            for (&hwo, w) in d.waves.iter_mut() {
                 let mut done = std::mem::take(&mut w.done);
                 if let Some(m) = &w.w16 {
                     done.iter_mut().for_each(|h| *h = m.get(h).copied().unwrap_or(*h));
                 }
-                (done, w.cb, w.closing)
+                if !done.is_empty() {
+                    work.push((hwo, w.cb, done));
+                }
+                if w.closing {
+                    gone.push(hwo);
+                }
             }
-            None => (Vec::new(), (0, 0, 0), true),
+            (work, gone)
         });
-        for h in &done {
-            wave_notify(c, hwo, cb, WOM_DONE, *h);
+        for (hwo, cb, done) in &work {
+            for h in done {
+                wave_notify(c, *hwo, *cb, WOM_DONE, *h);
+            }
         }
-        if closing {
-            with(|d| d.waves.remove(&hwo));
-            break;
+        if !gone.is_empty() {
+            with(|d| gone.iter().for_each(|h| drop(d.waves.remove(h))));
         }
-        if done.is_empty() {
-            drop(WAVE_CV.wait_timeout(WAVE_LOCK.lock().unwrap(), Duration::from_millis(20)).unwrap());
+        if work.is_empty() && gone.is_empty() {
+            let g = WAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            if !WAVE_DIRTY.swap(false, std::sync::atomic::Ordering::SeqCst) && !kura::snap::pausing() {
+                // (woken by wave_wake; the timeout is only a safety net)
+                drop(WAVE_CV.wait_timeout(g, Duration::from_secs(1)));
+            }
             crate::snap::point();
         }
     }
-    crate::k32::exit_thread(0)
+}
+
+/// Something for the waveOut thread (a header done, a device closing).
+static WAVE_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn wave_wake() {
+    WAVE_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(WAVE_LOCK.lock());
+    WAVE_CV.notify_all();
 }
 
 /// Makes `hwo` a 16-bit program's device (see Wave::w16).
@@ -713,8 +732,16 @@ fn waveOutOpen(c: &mut Ctx) -> u32 {
     });
     put32(ph, hwo);
     static ENTRY: OnceLock<u32> = OnceLock::new();
-    let entry = *ENTRY.get_or_init(|| host_fn("wave_thread", wave_thread, 4));
-    crate::spawn_gated(entry, hwo, 0x10000, crate::obj::new_thread_obj(0), false);
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let entry = *ENTRY.get_or_init(|| host_fn("wave_thread", wave_thread, 4));
+        if crate::spawn_service(entry, 0).is_none() {
+            STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+            with(|d| d.waves.remove(&hwo));
+            put32(ph, 0);
+            return 7; // MMSYSERR_NOMEM
+        }
+    }
     wave_notify(c, hwo, cbk, WOM_OPEN, 0);
     0
 }
@@ -733,7 +760,7 @@ fn waveOutClose(c: &mut Ctx) -> u32 {
         Ok(cb) => cb,
         Err(e) => return e,
     };
-    WAVE_CV.notify_all();
+    wave_wake();
     wave_notify(c, hwo, cb, WOM_CLOSE, 0);
     // (the device thread drops it on its next look)
     0
@@ -805,7 +832,7 @@ fn waveOutReset(c: &mut Ctx) -> u32 {
             w.paused = false;
         }
     });
-    WAVE_CV.notify_all();
+    wave_wake();
     0
 }
 fn waveOutPause(c: &mut Ctx) -> u32 {

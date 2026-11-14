@@ -3949,41 +3949,32 @@ struct MmTimer {
 static TIMERS: Mutex<Vec<(u32, Arc<MmTimer>)>> = Mutex::new(Vec::new());
 static NEXT_TIMER: AtomicU32 = AtomicU32::new(1);
 
-/// The thread of one multimedia timer (its start "function" is this trap).
-fn mm_timer_thread(c: &mut Ctx) -> u32 {
-    let id = c.a(0);
-    let Some(t) = TIMERS.lock().unwrap().iter().find(|x| x.0 == id).map(|x| x.1.clone()) else { return 0 };
-    let period = Duration::from_millis(t.delay.max(1) as u64);
-    let mut next = std::time::Instant::now() + period;
-    loop {
-        let now = std::time::Instant::now();
-        if next > now {
-            kura::snap::sleep(next - now);
-            if crate::snap::point() || std::time::Instant::now() < next {
-                continue;
-            }
-        }
-        if t.stop.load(Ordering::Relaxed) {
-            break;
-        }
-        if t.flags & 0x10 != 0 {
-            crate::k32::set_event(t.proc_);
-        } else if t.flags & 0x20 != 0 {
-            crate::k32::pulse_event(t.proc_);
-        } else {
-            c.call(t.proc_, &[id, 0, t.user, 0, 0]);
-        }
-        if t.flags & 1 == 0 {
-            break;
-        }
-        next += period;
-        let now = std::time::Instant::now();
-        if next + period * 4 < now {
-            next = now + period;
-        }
+/// Multimedia timer `id` due at `at`: on winmm's timer thread (pool::MM_TIMERS, one for all of
+/// them, as Windows has it; each timer used to have a guest thread of its own).
+fn mm_arm(id: u32, at: std::time::Instant) {
+    crate::pool::MM_TIMERS.set(crate::pool::key::MM | id as u64, at, Box::new(move |c| mm_fire(c, id, at)));
+}
+
+fn mm_fire(c: &mut Ctx, id: u32, at: std::time::Instant) {
+    let Some(t) = TIMERS.lock().unwrap().iter().find(|x| x.0 == id).map(|x| x.1.clone()) else { return };
+    let gone = || TIMERS.lock().unwrap().retain(|x| x.0 != id);
+    if t.stop.load(Ordering::Relaxed) {
+        return gone();
     }
-    TIMERS.lock().unwrap().retain(|x| x.0 != id);
-    crate::k32::exit_thread(0)
+    if t.flags & 0x10 != 0 {
+        crate::k32::set_event(t.proc_);
+    } else if t.flags & 0x20 != 0 {
+        crate::k32::pulse_event(t.proc_);
+    } else {
+        c.call(t.proc_, &[id, 0, t.user, 0, 0]);
+    }
+    if t.flags & 1 == 0 || t.stop.load(Ordering::Relaxed) {
+        return gone();
+    }
+    let period = Duration::from_millis(t.delay.max(1) as u64);
+    let now = std::time::Instant::now();
+    let next = if at + period * 5 < now { now + period } else { at + period };
+    mm_arm(id, next);
 }
 
 fn timeSetEvent(c: &mut Ctx) -> u32 {
@@ -3991,10 +3982,7 @@ fn timeSetEvent(c: &mut Ctx) -> u32 {
     let id = NEXT_TIMER.fetch_add(1, Ordering::Relaxed);
     let t = Arc::new(MmTimer { delay, proc_, user, flags, stop: AtomicBool::new(false) });
     TIMERS.lock().unwrap().push((id, t));
-    static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mm_timer_thread", mm_timer_thread, 4));
-    let h = obj::new_thread_obj(0);
-    crate::spawn_gated(entry, id, 0x10000, h, false);
+    mm_arm(id, std::time::Instant::now() + Duration::from_millis(delay.max(1) as u64));
     id
 }
 fn timeKillEvent(c: &mut Ctx) -> u32 {
@@ -4002,10 +3990,14 @@ fn timeKillEvent(c: &mut Ctx) -> u32 {
     match TIMERS.lock().unwrap().iter().find(|x| x.0 == id) {
         Some((_, t)) => {
             t.stop.store(true, Ordering::Relaxed);
-            0
         }
-        None => 97,
+        None => return 97,
     }
+    // (not running now: it goes at once; a callback running drops it when it returns)
+    if crate::pool::MM_TIMERS.cancel(crate::pool::key::MM | id as u64) {
+        TIMERS.lock().unwrap().retain(|x| x.0 != id);
+    }
+    0
 }
 fn joyGetNumDevs(_: &mut Ctx) -> u32 {
     0

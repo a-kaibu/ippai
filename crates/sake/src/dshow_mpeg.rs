@@ -1467,7 +1467,7 @@ fn vnv_state(b: u32, s: u32) {
     if start {
         static ENTRY: OnceLock<u32> = OnceLock::new();
         let entry = *ENTRY.get_or_init(|| crate::api::host_fn("vnv_feed_thread", vnv_thread, 4));
-        crate::spawn_gated(entry, b, 0x10000, crate::obj::new_thread_obj(0), false);
+        crate::spawn_service(entry, b);
     }
 }
 
@@ -2141,7 +2141,7 @@ fn streaming(b: u32, s: u32) {
     if start == Some(true) {
         static ENTRY: OnceLock<u32> = OnceLock::new();
         let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mpeg1_stream_thread", stream_thread, 4));
-        crate::spawn_gated(entry, b, 0x10000, crate::obj::new_thread_obj(0), false);
+        crate::spawn_service(entry, b);
     }
 }
 

@@ -407,8 +407,11 @@ fn opened(c: &mut Ctx, b: u32, cb: u32, ctx: u32, hr: u32) {
     if spawn {
         static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
         let entry = *ENTRY.get_or_init(|| crate::api::host_fn("wm_reader_thread", thread, 4));
-        // (the program's OnSample / OnStatus run on this thread: Windows' 1 MB stack, not 64 KB)
-        crate::spawn_gated(entry, b, 0x10_0000, crate::obj::new_thread_obj(0), false);
+        // (the program's OnSample / OnStatus run on this thread: Windows' 1 MB stack, not 64 KB;
+        // its handle closed, the thread holds its own)
+        let h = crate::obj::new_thread_obj(0);
+        crate::spawn_gated(entry, b, 0x10_0000, h, false);
+        crate::obj::close(h);
     }
 }
 

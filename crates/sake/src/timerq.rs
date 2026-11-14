@@ -6,8 +6,9 @@
 //! waits for it (INVALID_HANDLE_VALUE); an event given is set once no callback runs. A NULL
 //! event always pends, and a timer already due then still fires that once.
 //!
-//! The rules live in `Timer` (host-only state, tested below); each timer has a guest thread
-//! that sleeps until it is due and makes the calls.
+//! The rules live in `Timer` (host-only state, tested below). The timers are due on the pool's
+//! one timer thread (crate::pool::TIMERS), which hands each call to a pool worker
+//! (WT_EXECUTEINTIMERTHREAD: makes it itself); each timer used to have a guest thread of its own.
 
 #![allow(non_snake_case)]
 
@@ -134,6 +135,8 @@ struct State {
     timers: HashMap<u32, Timer>,
     /// queue -> (deleted, event to set once its timers are idle)
     queues: HashMap<u32, (bool, Vec<u32>)>,
+    /// CreateTimerQueueTimer's flags
+    flags: HashMap<u32, u32>,
 }
 static ST: Mutex<Option<State>> = Mutex::new(None);
 static CV: Condvar = Condvar::new();
@@ -174,48 +177,83 @@ fn CreateTimerQueueTimer(c: &mut Ctx) -> u32 {
         return 0;
     }
     let t = mem::heap_alloc(16, true);
-    with(|s| s.timers.insert(t, Timer::new(q, cb, param, Instant::now(), due, period)));
+    let flags = c.a(6);
+    with(|s| {
+        s.timers.insert(t, Timer::new(q, cb, param, Instant::now(), due, period));
+        s.flags.insert(t, flags);
+    });
     mem::putp(out, t);
-    static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let entry = *ENTRY.get_or_init(|| crate::api::host_fn("timer_queue_thread", timer_thread, 4));
-    crate::spawn_gated(entry, t, 0x10000, crate::obj::new_thread_obj(0), false);
+    settle(t);
     1
 }
 
-/// A timer's pool thread: sleeps until it is due, calls it, until it is deleted and idle
-fn timer_thread(c: &mut Ctx) -> u32 {
-    let t = c.a(0);
-    loop {
-        let mut g = lock();
-        let s = g.get_or_insert_with(State::default);
-        let Some(tm) = s.timers.get_mut(&t) else { break };
-        let now = Instant::now();
-        if tm.fire(now) {
-            let (cb, param) = (tm.cb, tm.param);
-            drop(g);
-            c.call(cb, &[param, 1]);
-            let evs = with(|s| s.timers.get_mut(&t).map(|tm| tm.done()).unwrap_or_default());
-            set_events(evs);
-            CV.notify_all();
-            continue;
-        }
+const WT_EXECUTEINTIMERTHREAD: u32 = 0x20;
+
+fn key(t: u32) -> u64 {
+    crate::pool::key::TIMERQ | t as u64
+}
+
+/// After a change of timer `t`: on the timer thread when it is due next, or gone (deleted with
+/// no callback left: its queue's events, its handle block).
+fn settle(t: u32) {
+    enum Next {
+        Due(Instant),
+        Gone(Vec<u32>),
+        Nothing,
+    }
+    let next = with(|s| {
+        let Some(tm) = s.timers.get(&t) else { return Next::Nothing };
         if tm.deleted && tm.idle() {
             let q = tm.queue;
             s.timers.remove(&t);
-            let qevs = queue_done(s, q);
-            drop(g);
-            set_events(qevs);
+            s.flags.remove(&t);
+            return Next::Gone(queue_done(s, q));
+        }
+        match tm.due {
+            Some(d) if !tm.deleted || tm.grace => Next::Due(d),
+            _ => Next::Nothing,
+        }
+    });
+    match next {
+        Next::Due(at) => crate::pool::TIMERS.set(key(t), at, Box::new(move |c| fire(c, t))),
+        Next::Gone(evs) => {
+            crate::pool::TIMERS.cancel(key(t));
+            set_events(evs);
             CV.notify_all();
             mem::heap_free(t);
-            break;
         }
-        // (asleep until due, a change or a deletion; in short steps for save states and
-        // TerminateThread)
-        let wait = tm.due.map_or(Duration::from_millis(50), |d| d.saturating_duration_since(now)).min(Duration::from_millis(50));
-        let _ = CV.wait_timeout(g, wait);
-        crate::snap::point();
+        Next::Nothing => {
+            crate::pool::TIMERS.cancel(key(t));
+        }
     }
-    crate::k32::exit_thread(0)
+}
+
+/// Timer `t` is due (on the timer thread): its callback(param, TRUE), on a worker.
+fn fire(c: &mut Ctx, t: u32) {
+    let go = with(|s| {
+        let f = s.flags.get(&t).copied().unwrap_or(0);
+        s.timers.get_mut(&t).and_then(|tm| tm.fire(Instant::now()).then_some((tm.cb, tm.param, f)))
+    });
+    if let Some((cb, param, flags)) = go {
+        let call = move |c: &mut Ctx| {
+            c.call(cb, &[param, 1]);
+            returned(t);
+        };
+        if flags & WT_EXECUTEINTIMERTHREAD != 0 {
+            call(c);
+        } else if !crate::pool::submit(Box::new(call)) {
+            returned(t);
+        }
+    }
+    settle(t);
+}
+
+/// A callback of timer `t` returned.
+fn returned(t: u32) {
+    let evs = with(|s| s.timers.get_mut(&t).map(|tm| tm.done()).unwrap_or_default());
+    set_events(evs);
+    CV.notify_all();
+    settle(t);
 }
 
 /// The events of a deleted queue whose timers have all gone
@@ -224,7 +262,11 @@ fn queue_done(s: &mut State, q: u32) -> Vec<u32> {
         return Vec::new();
     }
     match s.queues.get(&q) {
-        Some((true, _)) => s.queues.remove(&q).map(|x| x.1).unwrap_or_default(),
+        Some((true, _)) => {
+            // (its handle block goes with it)
+            mem::heap_free(q);
+            s.queues.remove(&q).map(|x| x.1).unwrap_or_default()
+        }
         _ => Vec::new(),
     }
 }
@@ -233,6 +275,7 @@ fn queue_done(s: &mut State, q: u32) -> Vec<u32> {
 fn ChangeTimerQueueTimer(c: &mut Ctx) -> u32 {
     let (t, due, period) = (c.a(1), c.a(2), c.a(3));
     let r = with(|s| s.timers.get_mut(&t).map(|tm| tm.change(Instant::now(), due, period)));
+    settle(t);
     CV.notify_all();
     match r {
         Some(true) => 1,
@@ -268,6 +311,7 @@ fn DeleteTimerQueueTimer(c: &mut Ctx) -> u32 {
     let (t, ev) = (c.a(1), c.a(2));
     let how = completion(ev);
     let r = with(|s| s.timers.get_mut(&t).map(|tm| tm.delete(Instant::now(), how)));
+    settle(t);
     CV.notify_all();
     match r {
         None => {
@@ -315,6 +359,9 @@ fn DeleteTimerQueueEx(c: &mut Ctx) -> u32 {
         evs.extend(queue_done(s, q));
         (ts, evs)
     });
+    for &t in &ts {
+        settle(t);
+    }
     CV.notify_all();
     if how == Completion::Wait {
         for t in ts {
@@ -332,16 +379,22 @@ fn DeleteTimerQueue(c: &mut Ctx) -> u32 {
         return 0;
     }
     // (as DeleteTimerQueueEx(queue, NULL))
-    with(|s| {
+    let ts = with(|s| {
         let now = Instant::now();
-        for t in s.timers.values_mut().filter(|t| t.queue == q) {
+        let mut ts = Vec::new();
+        for (&h, t) in s.timers.iter_mut().filter(|(_, t)| t.queue == q) {
             let _ = t.delete(now, Completion::Wait);
+            ts.push(h);
         }
         if let Some(e) = s.queues.get_mut(&q) {
             e.0 = true;
         }
         queue_done(s, q);
+        ts
     });
+    for t in ts {
+        settle(t);
+    }
     CV.notify_all();
     1
 }

@@ -147,41 +147,52 @@ fn BindIoCompletionCallback(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    let port = new_port();
+    // (one port for every bound file, its key the file: one IO thread for all of them hands
+    // each completion to a pool worker; each file used to have a port and a guest thread of
+    // its own, waking once a second)
+    let port = bind_port();
+    if port == 0 {
+        last_error(8);
+        return 0;
+    }
     with(|s| {
-        s.assoc.insert(h, (port, 0));
+        s.assoc.insert(h, (port, h as u64));
         s.bound.insert(h, f);
     });
-    static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let entry = *ENTRY.get_or_init(|| crate::api::host_fn("bind_io_thread", bind_io_thread, 4));
-    BIND_ARGS.lock().unwrap().push((port, f));
-    crate::spawn_gated(entry, port, 0x10000, obj::new_thread_obj(0), false);
     1
 }
-static BIND_ARGS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 
-/// A BindIoCompletionCallback pool thread: callback(Win32 error, bytes, overlapped) for each
-/// packet of its port, until the port goes
+/// The port of BindIoCompletionCallback's files, its IO thread started (0: no thread).
+fn bind_port() -> u32 {
+    static PORT: Mutex<u32> = Mutex::new(0);
+    static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let mut p = PORT.lock().unwrap();
+    if *p == 0 {
+        let port = new_port();
+        let entry = *ENTRY.get_or_init(|| crate::api::host_fn("pool_io_thread", bind_io_thread, 4));
+        if crate::spawn_service(entry, port).is_none() {
+            obj::close(port);
+            return 0;
+        }
+        *p = port;
+    }
+    *p
+}
+
+/// BindIoCompletionCallback's IO thread: callback(Win32 error, bytes, overlapped) of each
+/// packet's file, on a pool worker
 fn bind_io_thread(c: &mut Ctx) -> u32 {
     let port = c.a(0);
-    let f = {
-        let mut v = BIND_ARGS.lock().unwrap();
-        let Some(i) = v.iter().position(|x| x.0 == port) else { return 0 };
-        v.remove(i).1
-    };
     loop {
-        match wait_packet(c, port, 1000, false) {
-            Ok((bytes, _, ov, status)) => {
-                c.call(f, &[nt_to_win32(status), bytes, ov]);
+        match wait_packet(c, port, u32::MAX, false) {
+            Ok((bytes, key, ov, status)) => {
+                let Some(f) = with(|s| s.bound.get(&(key as u32)).copied()) else { continue };
+                let err = nt_to_win32(status);
+                crate::pool::submit(Box::new(move |c| {
+                    c.call(f, &[err, bytes, ov]);
+                }));
             }
-            Err(258) => {
-                // (its file closed: the port and the thread go)
-                if !with(|s| s.assoc.values().any(|a| a.0 == port)) {
-                    with(|s| s.ports.remove(&port));
-                    obj::close(port);
-                    return 0;
-                }
-            }
+            Err(258) => {}
             Err(_) => return 0,
         }
     }

@@ -1280,3 +1280,57 @@ mod later {
     }
 }
 
+
+/// The thread pool's queue (pool.rs): `n` threads queue a job each and start a worker when told
+/// to. In every interleaving each job is taken exactly once, no job waits with no worker to take
+/// it (a lost wakeup would leave a worker asleep for ever, a deadlock loom reports) and there
+/// are never more workers than jobs.
+fn pool_case(n: u32) {
+    use waits::pool::{Need, Take, Workers};
+    #[derive(Debug)]
+    enum J {
+        Work(u32),
+        Stop,
+    }
+    model(move || {
+        let w = Arc::new(Workers::<J>::new());
+        let got = Arc::new(loom::sync::Mutex::new(Vec::new()));
+        let worker = |w: Arc<Workers<J>>, got: Arc<loom::sync::Mutex<Vec<u32>>>| {
+            thread::spawn(move || loop {
+                match w.take(&NoPause, 0, std::time::Duration::from_secs(1)) {
+                    Take::Job(J::Work(n)) => got.lock().unwrap().push(n),
+                    Take::Job(J::Stop) | Take::Retire => return,
+                }
+            })
+        };
+        let subs: Vec<_> = (1..=n)
+            .map(|k| {
+                let (w, got) = (w.clone(), got.clone());
+                thread::spawn(move || if w.submit(J::Work(k), 8) == Need::Worker { Some(worker(w, got)) } else { None })
+            })
+            .collect();
+        let workers: Vec<_> = subs.into_iter().filter_map(|s| s.join().unwrap()).collect();
+        assert!(!workers.is_empty() && workers.len() <= n as usize);
+        for _ in &workers {
+            if w.submit(J::Stop, 8) == Need::Worker {
+                assert!(w.not_started().is_empty());
+            }
+        }
+        for t in workers {
+            t.join().unwrap();
+        }
+        let mut g = got.lock().unwrap().clone();
+        g.sort();
+        assert_eq!(g, (1..=n).collect::<Vec<_>>());
+    });
+}
+
+#[test]
+fn pool_one_job_gets_a_worker() {
+    pool_case(1);
+}
+
+#[test]
+fn pool_jobs_are_taken_once_and_never_left_waiting() {
+    pool_case(2);
+}

@@ -27,7 +27,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -468,8 +468,9 @@ fn sync_movie(id: u32) {
     });
 }
 
-/// Starts the waiter of device `id`'s end: a guest thread that sleeps until then and, if
-/// nothing changed it meanwhile, reports it (notify, repeat, MCIWnd's mode).
+/// Arms the wait for device `id`'s end: on the pool's timer thread, which (if nothing changed
+/// the device meanwhile) reports it (notify, repeat, MCIWnd's mode). Each play used to start a
+/// guest thread of its own (and leave its handle open).
 fn arm(id: u32) {
     let Some(gen) = dev(id, |d| {
         d.gen = (d.gen + 1) & 0x7fff_ffff;
@@ -477,48 +478,35 @@ fn arm(id: u32) {
     }) else {
         return;
     };
-    static ENTRY: OnceLock<u32> = OnceLock::new();
-    let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mci_waiter", waiter, 4));
-    let h = crate::obj::new_thread_obj(0);
-    // (the device and generation by a token: packed as id << 16 | gen, a device id past
-    // 0xffff, after 65536 opens, watched another device or none)
-    crate::spawn_gated(entry, waiter_token(id, gen), 0x10000, h, false);
+    end_check(id, gen);
 }
-fn waiter_token(id: u32, gen: u32) -> u32 {
-    let mut w = WAITERS.lock().unwrap();
-    let (next, m) = &mut *w;
-    *next = next.wrapping_add(1);
-    m.insert(*next, (id, gen));
-    *next
-}
-/// The waiters started: token -> (device, generation)
-static WAITERS: Mutex<(u32, BTreeMap<u32, (u32, u32)>)> = Mutex::new((0, BTreeMap::new()));
 
-/// Bumps the generation (a waiter in flight gives up), keeping the paused flag.
+/// Bumps the generation (a wait in flight gives up), keeping the paused flag.
 fn disarm(id: u32) {
     dev(id, |d| d.gen = (d.gen & 0x8000_0000) | ((d.gen + 1) & 0x7fff_ffff));
+    crate::pool::TIMERS.cancel(crate::pool::key::MCI | id as u64);
 }
 
-fn waiter(c: &mut Ctx) -> u32 {
-    let Some((id, gen)) = WAITERS.lock().unwrap().1.remove(&c.a(0)) else { return 0 };
+/// Device `id` under generation `gen`: its end now, or a look again when it is due (in 250 ms
+/// at most: the timeline may change under it).
+fn end_check(id: u32, gen: u32) {
     loop {
         let live = dev(id, |d| d.gen & 0x7fff_ffff == gen && !d.paused()).unwrap_or(false);
         if !live {
-            return 0;
+            return;
         }
-        let left = timeline(id, |tl, t| tl.until_end(t)).flatten();
-        let Some(left) = left else { return 0 };
+        let Some(left) = timeline(id, |tl, t| tl.until_end(t)).flatten() else { return };
         if left > 0 {
-            kura::snap::sleep(Duration::from_nanos(left * 100).min(Duration::from_millis(250)));
-            crate::snap::point();
-            continue;
+            let d = Duration::from_nanos(left * 100).min(Duration::from_millis(250));
+            crate::pool::TIMERS.after(crate::pool::key::MCI | id as u64, d, Box::new(move |_| end_check(id, gen)));
+            return;
         }
         // the end: once (a movie's may come from the movie thread first: `ended`)
         if !timeline(id, |tl, t| tl.complete(t)).unwrap_or(false) {
-            return 0;
+            return;
         }
         if !finished(id) {
-            return 0;
+            return;
         }
     }
 }
@@ -1796,18 +1784,13 @@ mod tests {
     }
 
     proptest! {
-        /// A waiter finds its device and generation for any device id (ids past 0xffff were
-        /// cut by the packing), once
+        /// Each device's end check is a timer of its own for any device id (ids past 0xffff
+        /// were cut when the waiter got id << 16 | gen), inside the MCI keys
         #[test]
-        fn waiter_tokens_carry_any_device(ids in proptest::collection::vec((any::<u32>(), 0u32..0x7fff_ffff), 1..50)) {
-            let mut tokens = vec![];
-            for &(id, gen) in &ids {
-                tokens.push(waiter_token(id, gen));
-            }
-            for (t, want) in tokens.iter().zip(&ids) {
-                prop_assert_eq!(WAITERS.lock().unwrap().1.remove(t), Some(*want));
-                prop_assert_eq!(WAITERS.lock().unwrap().1.remove(t), None);
-            }
+        fn end_checks_are_keyed_by_any_device(a in any::<u32>(), b in any::<u32>()) {
+            let (ka, kb) = (crate::pool::key::MCI | a as u64, crate::pool::key::MCI | b as u64);
+            prop_assert_eq!(ka == kb, a == b);
+            prop_assert_eq!(ka >> 32, crate::pool::key::MCI >> 32);
         }
     }
 

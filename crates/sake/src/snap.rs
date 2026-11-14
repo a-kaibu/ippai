@@ -74,8 +74,10 @@ pub const RESTARTABLE: &[&str] = &[
     // the threads behind timers, sound devices and thread pools: their trap is the thread's
     // whole life, a loop that starts over as well as it goes on
     "sake!mm_timer_thread",
-    "sake!tp_timer_thread",
-    "sake!tp_wait_thread",
+    "sake!pool_worker",
+    "sake!pool_timer_thread",
+    "sake!pool_wait_thread",
+    "sake!pool_io_thread",
     "sake!wave_thread",
     "sake!xaudio2_thread",
 ];
@@ -258,6 +260,7 @@ fn load_tls(t: &Thread) {
 pub fn init() {
     kura::snap::on_pause(crate::obj::signal);
     kura::snap::on_pause(crate::k32::snap_wake);
+    kura::snap::on_pause(crate::pool::snap_wake);
     kura::snap::on_pause(crate::sound::snap_wake);
     kura::snap::on_pause(crate::xaudio2::snap_wake);
     kura::snap::on_pause(crate::wasapi::snap_wake);

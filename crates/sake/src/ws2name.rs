@@ -1314,37 +1314,19 @@ fn GetAddrInfoExW(c: &mut Ctx) -> u32 {
     fail(997) // WSA_IO_PENDING
 }
 
-type Job = (u32, Vec<u32>, Box<dyn FnOnce() + Send>);
-static JOBS: Mutex<Vec<(u32, Job)>> = Mutex::new(Vec::new());
-
-/// Runs `before()` and then the guest's `f(args)` on a new guest thread
+/// Runs `before()` and then the guest's `f(args)` on a pool worker, a moment later (as a
+/// lookup's answer comes: the caller has returned from the call by then). Each used to start a
+/// guest thread of its own.
 pub fn on_thread(f: u32, args: Vec<u32>, before: impl FnOnce() + Send + 'static) {
-    static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    JOBS.lock().unwrap().push((id, (f, args, Box::new(before))));
-    let entry = *ENTRY.get_or_init(|| {
-        crate::api::host_fn(
-            "ws2_job_thread",
-            |c| {
-                let id = c.a(0);
-                let job = {
-                    let mut v = JOBS.lock().unwrap();
-                    v.iter().position(|j| j.0 == id).map(|i| v.remove(i).1)
-                };
-                if let Some((f, args, before)) = job {
-                    // (the answer comes a moment later, as a lookup's does: the caller has
-                    // returned from the call by then)
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    before();
-                    c.call(f, &args);
-                }
-                0
-            },
-            4,
-        )
+    let job: crate::pool::Job = Box::new(move |c| {
+        before();
+        c.call(f, &args);
     });
-    crate::spawn_gated(entry, id, 0x10000, crate::obj::new_thread_obj(0), false);
+    crate::pool::TIMERS.after(crate::pool::key::WS2 | id as u64, std::time::Duration::from_millis(20), Box::new(move |_| {
+        crate::pool::submit(job);
+    }));
 }
 
 /// getnameinfo(sa, salen, host, hostlen, serv, servlen, flags) / GetNameInfoW

@@ -484,6 +484,10 @@ pub fn exit_thread(code: u32) -> ! {
     // (a thread ending on a fiber: that fiber's stack; fiber.rs)
     mem::release(crate::fiber::exit_stack(t.stack));
     mem::release(t.teb);
+    // and its records: the x86 state and sake's (a game that starts a thread per file or per
+    // sound kept ~4 KB of them per thread for ever; review P2-1). Nothing else holds them:
+    // its save-state part went above, the crash log's entry goes with the Cpu.
+    crate::forget_thread(t);
     unsafe { libc::pthread_exit(std::ptr::null_mut()) }
 }
 fn ExitThread(c: &mut Ctx) -> u32 {
@@ -501,6 +505,10 @@ fn _beginthreadex(c: &mut Ctx) -> u32 {
     let (stack, flags, ptid) = (c.a(1), c.a(4), c.a(5));
     let (start, param) = crt_start(c.a(2), c.a(3));
     let (h, tid) = create_thread(start, param, stack, flags, true);
+    if h == 0 {
+        crate::crt::set_errno(11); // EAGAIN
+        return 0;
+    }
     put32(ptid, tid);
     h
 }
@@ -4300,38 +4308,65 @@ fn GetMaximumProcessorGroupCount(_: &mut Ctx) -> u32 {
     1
 }
 // ---------------------------------------------------------------------------------------------
-// thread pool timers and waits (the MSVC concurrency runtime looks them up and calls them
-// unchecked): each Set starts a guest thread that runs the callback once due / signalled
+// the thread pool: work, timers and waits (the MSVC concurrency runtime looks them up and calls
+// them unchecked). Their callbacks run on crate::pool's workers, timers are due on its timer
+// thread and waits wait in its wait thread (each used to start a guest thread of its own).
 
 struct Tp {
     cb: u32,
     ctx: u32,
     /// callbacks started and not finished (WaitForThreadpoolWorkCallbacks)
     running: u32,
-    /// bumped by every Set / cancel / close: a thread whose generation is stale calls nothing
+    /// callbacks queued for a worker under the current generation
+    queued: u32,
+    /// set by every Set / cancel (from one counter for all): a callback queued or a timer or
+    /// wait armed under another generation calls nothing
     gen: u32,
 }
 static TPS: Mutex<Option<HashMap<u32, Tp>>> = Mutex::new(None);
+/// told when a callback ends or a queued one is dropped (WaitForThreadpoolWorkCallbacks)
+static TP_CV: Condvar = Condvar::new();
+static TP_GEN: AtomicU32 = AtomicU32::new(1);
 
+fn tp_lock() -> std::sync::MutexGuard<'static, Option<HashMap<u32, Tp>>> {
+    TPS.lock().unwrap_or_else(|e| e.into_inner())
+}
 fn tp_with<R>(f: impl FnOnce(&mut HashMap<u32, Tp>) -> R) -> R {
-    f(TPS.lock().unwrap().get_or_insert_with(HashMap::default))
+    f(tp_lock().get_or_insert_with(HashMap::default))
+}
+fn tp_insert(h: u32, cb: u32, ctx: u32) {
+    let gen = TP_GEN.fetch_add(1, Ordering::Relaxed);
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen, running: 0, queued: 0 }));
 }
 fn tp_new(c: &mut Ctx) -> u32 {
     let h = mem::heap_alloc(16, true);
-    let (cb, ctx) = (c.a(0), c.a(1));
-    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
+    tp_insert(h, c.a(0), c.a(1));
     h
 }
-fn tp_bump(h: u32) -> Option<(u32, u32, u32)> {
-    tp_with(|m| {
+/// A new generation for `h` (what was queued or armed before calls nothing); it.
+fn tp_bump(h: u32) -> Option<u32> {
+    let gen = TP_GEN.fetch_add(1, Ordering::Relaxed);
+    let r = tp_with(|m| {
         m.get_mut(&h).map(|t| {
-            t.gen = t.gen.wrapping_add(1);
-            (t.cb, t.ctx, t.gen)
+            t.gen = gen;
+            t.queued = 0;
+            gen
         })
-    })
+    });
+    TP_CV.notify_all();
+    r
 }
 fn tp_current(h: u32, gen: u32) -> bool {
     tp_with(|m| m.get(&h).is_some_and(|t| t.gen == gen))
+}
+/// Close*: the object goes (its handle block too; a callback queued for it calls nothing).
+fn tp_close(h: u32) {
+    if tp_with(|m| m.remove(&h)).is_some() {
+        crate::pool::TIMERS.cancel(crate::pool::key::TP | h as u64);
+        crate::pool::wait_cancel(h as u64);
+        mem::heap_free(h);
+        TP_CV.notify_all();
+    }
 }
 /// FILETIME* due time -> ms from now (negative: relative 100 ns units)
 fn due_ms(p: u32) -> u64 {
@@ -4343,118 +4378,120 @@ fn due_ms(p: u32) -> u64 {
         ((v - now).max(0) / 10_000) as u64
     }
 }
-fn tp_spawn(timer: bool, h: u32, gen: u32, arg: (u32, u32, u32)) {
-    static T: OnceLock<u32> = OnceLock::new();
-    static W: OnceLock<u32> = OnceLock::new();
-    TP_ARGS.lock().unwrap().push((h, gen, arg));
-    let entry = if timer {
-        *T.get_or_init(|| crate::api::host_fn("tp_timer_thread", tp_timer_thread, 4))
-    } else {
-        *W.get_or_init(|| crate::api::host_fn("tp_wait_thread", tp_wait_thread, 4))
-    };
-    crate::spawn_gated(entry, h, 0x10000, obj::new_thread_obj(0), false);
+
+/// How a callback is called.
+#[derive(Clone, Copy, PartialEq)]
+enum TpCall {
+    /// work and timers: (instance, ctx, object)
+    Object,
+    /// QueueUserWorkItem: (ctx); its entry goes after
+    Item,
+    /// TrySubmitThreadpoolCallback: (instance, ctx); its entry goes after
+    Simple,
+    /// a thread pool wait: (instance, ctx, wait, result)
+    Wait(u32),
 }
-static TP_ARGS: Mutex<Vec<(u32, u32, (u32, u32, u32))>> = Mutex::new(Vec::new());
-/// A pool thread's arguments: taken the first time, then kept in its record (a thread started
-/// over by a restored save state finds them there).
-fn tp_args(h: u32) -> Option<(u32, (u32, u32, u32))> {
-    let t = crate::cur();
-    if t.tp.is_none() {
-        t.tp = tp_take(h);
+
+/// `h`'s callback for a worker, under generation `gen`. False: no worker (nothing queued).
+fn tp_queue(h: u32, gen: u32, call: TpCall) -> bool {
+    tp_with(|m| m.get_mut(&h).map(|t| t.queued += 1));
+    if crate::pool::submit(Box::new(move |c| tp_run(c, h, gen, call))) {
+        return true;
     }
-    t.tp
+    tp_with(|m| m.get_mut(&h).map(|t| t.queued = t.queued.saturating_sub(1)));
+    false
 }
-fn tp_take(h: u32) -> Option<(u32, (u32, u32, u32))> {
-    let mut v = TP_ARGS.lock().unwrap();
-    let i = v.iter().position(|x| x.0 == h)?;
-    let (_, gen, a) = v.remove(i);
-    Some((gen, a))
+fn tp_run(c: &mut Ctx, h: u32, gen: u32, call: TpCall) {
+    let go = tp_with(|m| {
+        let t = m.get_mut(&h)?;
+        if t.gen != gen {
+            return None;
+        }
+        t.queued = t.queued.saturating_sub(1);
+        t.running += 1;
+        Some((t.cb, t.ctx))
+    });
+    if let Some((cb, ctx)) = go {
+        match call {
+            TpCall::Object => c.call(cb, &[0, ctx, h]),
+            TpCall::Item => c.call(cb, &[ctx]),
+            TpCall::Simple => c.call(cb, &[0, ctx]),
+            TpCall::Wait(r) => c.call(cb, &[0, ctx, h, if r == 0 { 0 } else { 0x102 }]),
+        };
+        tp_with(|m| {
+            if let Some(t) = m.get_mut(&h) {
+                t.running -= 1;
+            }
+            if matches!(call, TpCall::Item | TpCall::Simple) {
+                m.remove(&h);
+            }
+        });
+    }
+    TP_CV.notify_all();
 }
-fn tp_timer_thread(c: &mut Ctx) -> u32 {
-    let h = c.a(0);
-    if let Some((gen, (delay, period, mode))) = tp_args(h) {
-        let mut next = std::time::Instant::now() + std::time::Duration::from_millis(delay as u64);
-        loop {
-            let now = std::time::Instant::now();
-            if next > now {
-                kura::snap::sleep((next - now).min(std::time::Duration::from_millis(50)));
-                crate::snap::point();
-                if tp_current(h, gen) {
-                    continue;
+/// The keys of QueueUserWorkItem's and TrySubmitThreadpoolCallback's one-off entries: odd
+/// numbers, never a heap block's address (no guest memory for them)
+static ONE_OFF: AtomicU32 = AtomicU32::new(1);
+fn one_off(cb: u32, ctx: u32, call: TpCall) -> u32 {
+    let h = ONE_OFF.fetch_add(2, Ordering::Relaxed) | 1;
+    tp_insert(h, cb, ctx);
+    let gen = tp_with(|m| m[&h].gen);
+    if tp_queue(h, gen, call) {
+        return 1;
+    }
+    tp_with(|m| m.remove(&h));
+    last_error(8);
+    0
+}
+
+/// RegisterWaitForSingleObject's callbacks running: (wait handle, the thread running it)
+static WAIT_RUNNING: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+/// RegisterWaitForSingleObject's wait `h` (generation `gen`) armed again: callback(ctx, timed
+/// out) once `obj` is signaled or `ms` passed; again after the callback returns unless
+/// WT_EXECUTEONLYONCE (8); in the wait thread itself with WT_EXECUTEINWAITTHREAD (4), as
+/// Windows runs those, one after the other.
+fn rw_arm(h: u32, gen: u32, obj_h: u32, ms: u32, flags: u32) {
+    crate::pool::wait_add(
+        h as u64,
+        obj_h,
+        ms,
+        Box::new(move |c, r| {
+            if !tp_current(h, gen) {
+                return;
+            }
+            let run = move |c: &mut Ctx| {
+                let Some((cb, ctx)) = tp_with(|m| m.get(&h).filter(|t| t.gen == gen).map(|t| (t.cb, t.ctx))) else { return };
+                WAIT_RUNNING.lock().unwrap().push((h, crate::cur().tid));
+                c.call(cb, &[ctx, (r != 0) as u32]);
+                WAIT_RUNNING.lock().unwrap().retain(|x| x.0 != h);
+                if flags & 8 == 0 && tp_current(h, gen) {
+                    rw_arm(h, gen, obj_h, ms, flags);
                 }
-            }
-            if !tp_current(h, gen) {
-                break;
-            }
-            let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else { break };
-            tp_with(|m| m.get_mut(&h).map(|t| t.running += 1));
-            match mode {
-                0 => c.call(cb, &[0, ctx, h]),
-                1 => c.call(cb, &[ctx, 1]),
-                3 => c.call(cb, &[0, ctx]),
-                _ => c.call(cb, &[ctx]),
             };
-            tp_with(|m| m.get_mut(&h).map(|t| t.running -= 1));
-            if mode >= 2 {
-                // QueueUserWorkItem's one-off entry
-                tp_with(|m| m.remove(&h));
+            if flags & 4 != 0 {
+                run(c);
+            } else {
+                crate::pool::submit(Box::new(run));
             }
-            if period == 0 {
-                break;
-            }
-            next += std::time::Duration::from_millis(period as u64);
-        }
-    }
-    exit_thread(0)
-}
-/// mode 0: a thread pool wait (one call: instance, ctx, wait, result); otherwise
-/// RegisterWaitForSingleObject's flags (callback(ctx, timed out), again unless WT_EXECUTEONLYONCE)
-fn tp_wait_thread(c: &mut Ctx) -> u32 {
-    let h = c.a(0);
-    if let Some((gen, (obj_h, ms, mode))) = tp_args(h) {
-        loop {
-            let r = obj::wait(&[obj_h], false, ms, None);
-            if !tp_current(h, gen) {
-                break;
-            }
-            let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else { break };
-            if mode == 0 {
-                c.call(cb, &[0, ctx, h, if r == 0 { 0 } else { 0x102 }]);
-                break;
-            }
-            // (WT_EXECUTEINWAITTHREAD: Windows runs those callbacks on one wait thread, one
-            // after the other)
-            let serial = (mode & 4 != 0).then(|| WAIT_THREAD.lock().unwrap_or_else(|e| e.into_inner()));
-            WAIT_RUNNING.lock().unwrap().push((h, crate::cur().tid));
-            c.call(cb, &[ctx, (r != 0) as u32]);
-            WAIT_RUNNING.lock().unwrap().retain(|x| x.0 != h);
-            drop(serial);
-            if mode & 8 != 0 {
-                break;
-            }
-        }
-    }
-    exit_thread(0)
+        }),
+    );
 }
 /// RegisterWaitForSingleObject(phandle*, object, callback, ctx, ms, flags)
 fn RegisterWaitForSingleObject(c: &mut Ctx) -> u32 {
     let (out, obj_h, cb, ctx, ms, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
     let h = mem::heap_alloc(16, true);
-    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
+    tp_insert(h, cb, ctx);
     mem::putp(out, h);
-    tp_spawn(false, h, 0, (obj_h, ms, flags | 0x8000_0000));
+    let gen = tp_with(|m| m[&h].gen);
+    rw_arm(h, gen, obj_h, ms, flags);
     1
 }
-/// QueueUserWorkItem(function, context, flags): function(context) on a new guest thread
+/// QueueUserWorkItem(function, context, flags): function(context) on a pool worker
 fn QueueUserWorkItem(c: &mut Ctx) -> u32 {
-    let (cb, ctx) = (c.a(0), c.a(1));
-    let h = mem::heap_alloc(16, true);
-    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
-    tp_spawn(true, h, 0, (0, 0, 2));
-    1
+    one_off(c.a(0), c.a(1), TpCall::Item)
 }
-/// CreateThreadpool: a pool of its own (the work of every pool runs on threads of its own all
-/// the same, so a pool is only its handle and limits)
+/// CreateThreadpool: a pool of its own (the work of every pool runs on the same workers, so
+/// a pool is only its handle and limits)
 fn CreateThreadpool(_: &mut Ctx) -> u32 {
     mem::heap_alloc(16, true)
 }
@@ -4488,37 +4525,31 @@ fn CreateThreadpoolWork(c: &mut Ctx) -> u32 {
 fn SubmitThreadpoolWork(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     if let Some(gen) = tp_with(|m| m.get(&h).map(|t| t.gen)) {
-        tp_spawn(true, h, gen, (0, 0, 0));
+        tp_queue(h, gen, TpCall::Object);
     }
     0
 }
 /// TrySubmitThreadpoolCallback(callback(instance, ctx), ctx, env)
 fn TrySubmitThreadpoolCallback(c: &mut Ctx) -> u32 {
-    let (cb, ctx) = (c.a(0), c.a(1));
-    let h = mem::heap_alloc(16, true);
-    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
-    tp_spawn(true, h, 0, (0, 0, 3));
-    1
+    one_off(c.a(0), c.a(1), TpCall::Simple)
 }
-/// WaitForThreadpoolWorkCallbacks(work, cancel pending)
+/// WaitForThreadpoolWorkCallbacks(work, cancel pending): the queued callbacks dropped (cancel)
+/// or waited for, and the running ones
 fn WaitForThreadpoolWorkCallbacks(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     if c.a(1) != 0 {
-        TP_ARGS.lock().unwrap().retain(|x| x.0 != h);
+        tp_bump(h);
     }
-    while TP_ARGS.lock().unwrap().iter().any(|x| x.0 == h) || tp_with(|m| m.get(&h).is_some_and(|t| t.running > 0)) {
-        std::thread::sleep(std::time::Duration::from_millis(1));
+    let mut g = tp_lock();
+    while g.as_ref().and_then(|m| m.get(&h)).is_some_and(|t| t.queued > 0 || t.running > 0) {
+        g = TP_CV.wait_timeout(g, std::time::Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
     }
     0
 }
 fn CloseThreadpoolWork(c: &mut Ctx) -> u32 {
-    tp_with(|m| m.remove(&c.a(0)));
+    tp_close(c.a(0));
     0
 }
-/// RegisterWaitForSingleObject's callbacks running: (wait handle, the thread running it)
-static WAIT_RUNNING: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
-/// held while a WT_EXECUTEINWAITTHREAD callback runs
-static WAIT_THREAD: Mutex<()> = Mutex::new(());
 /// UnregisterWait(wait): no more callbacks; one running on another thread meanwhile makes it
 /// ERROR_IO_PENDING (the wait is gone all the same), from the callback itself it succeeds;
 /// NULL is ERROR_INVALID_HANDLE.
@@ -4528,13 +4559,18 @@ fn UnregisterWait(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0;
     }
-    tp_with(|m| m.remove(&h));
+    rw_forget(h);
     let me = crate::cur().tid;
     if WAIT_RUNNING.lock().unwrap().iter().any(|&(x, t)| x == h && t != me) {
         last_error(997);
         return 0;
     }
     1
+}
+/// A registered wait goes: no more callbacks
+fn rw_forget(h: u32) {
+    tp_with(|m| m.remove(&h));
+    crate::pool::wait_cancel(h as u64);
 }
 /// UnregisterWaitEx(wait, event): event INVALID_HANDLE_VALUE waits for a running callback,
 /// another event is set once it is done
@@ -4544,7 +4580,7 @@ fn UnregisterWaitEx(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0;
     }
-    tp_with(|m| m.remove(&h));
+    rw_forget(h);
     let me = crate::cur().tid;
     let busy = || WAIT_RUNNING.lock().unwrap().iter().any(|&(x, t)| x == h && t != me);
     if ev == u32::MAX {
@@ -4572,26 +4608,50 @@ fn UnregisterWaitEx(c: &mut Ctx) -> u32 {
 fn CreateThreadpoolTimer(c: &mut Ctx) -> u32 {
     tp_new(c)
 }
+/// Timer `h` (generation `gen`) due at `at`: its callback for a worker then, and every
+/// `period` ms after (a period missed by far starts over from now).
+fn tp_timer_arm(h: u32, gen: u32, at: std::time::Instant, period: u32) {
+    crate::pool::TIMERS.set(
+        crate::pool::key::TP | h as u64,
+        at,
+        Box::new(move |_| {
+            if !tp_current(h, gen) {
+                return;
+            }
+            tp_queue(h, gen, TpCall::Object);
+            if period != 0 {
+                let p = std::time::Duration::from_millis(period as u64);
+                let now = std::time::Instant::now();
+                let next = if at + p * 4 < now { now + p } else { at + p };
+                tp_timer_arm(h, gen, next, period);
+            }
+        }),
+    );
+}
 /// SetThreadpoolTimer(timer, due FILETIME* or NULL (cancel), period ms, window)
 fn SetThreadpoolTimer(c: &mut Ctx) -> u32 {
     let (h, due, period) = (c.a(0), c.a(1), c.a(2));
-    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
+    let Some(gen) = tp_bump(h) else { return 0 };
     if due != 0 {
-        tp_spawn(true, h, gen, (due_ms(due) as u32, period, 0));
+        let at = std::time::Instant::now() + std::time::Duration::from_millis(due_ms(due));
+        tp_timer_arm(h, gen, at, period);
+    } else {
+        crate::pool::TIMERS.cancel(crate::pool::key::TP | h as u64);
     }
     0
 }
 fn IsThreadpoolTimerSet(c: &mut Ctx) -> u32 {
-    TP_ARGS.lock().unwrap().iter().any(|x| x.0 == c.a(0)) as u32
+    crate::pool::TIMERS.pending(crate::pool::key::TP | c.a(0) as u64) as u32
 }
 fn WaitForThreadpoolTimerCallbacks(c: &mut Ctx) -> u32 {
     if c.a(1) != 0 {
         tp_bump(c.a(0));
+        crate::pool::TIMERS.cancel(crate::pool::key::TP | c.a(0) as u64);
     }
     0
 }
 fn CloseThreadpoolTimer(c: &mut Ctx) -> u32 {
-    tp_with(|m| m.remove(&c.a(0)));
+    tp_close(c.a(0));
     0
 }
 fn CreateThreadpoolWait(c: &mut Ctx) -> u32 {
@@ -4600,21 +4660,33 @@ fn CreateThreadpoolWait(c: &mut Ctx) -> u32 {
 /// SetThreadpoolWait(wait, handle or NULL (cancel), timeout FILETIME* or NULL (infinite))
 fn SetThreadpoolWait(c: &mut Ctx) -> u32 {
     let (h, obj_h, due) = (c.a(0), c.a(1), c.a(2));
-    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
+    let Some(gen) = tp_bump(h) else { return 0 };
     if obj_h != 0 {
         let ms = if due == 0 { u32::MAX } else { due_ms(due).min(u32::MAX as u64 - 1) as u32 };
-        tp_spawn(false, h, gen, (obj_h, ms, 0));
+        crate::pool::wait_add(
+            h as u64,
+            obj_h,
+            ms,
+            Box::new(move |_, r| {
+                if tp_current(h, gen) {
+                    tp_queue(h, gen, TpCall::Wait(r));
+                }
+            }),
+        );
+    } else {
+        crate::pool::wait_cancel(h as u64);
     }
     0
 }
 fn WaitForThreadpoolWaitCallbacks(c: &mut Ctx) -> u32 {
     if c.a(1) != 0 {
         tp_bump(c.a(0));
+        crate::pool::wait_cancel(c.a(0) as u64);
     }
     0
 }
 fn CloseThreadpoolWait(c: &mut Ctx) -> u32 {
-    tp_with(|m| m.remove(&c.a(0)));
+    tp_close(c.a(0));
     0
 }
 fn FreeLibraryWhenCallbackReturns(_: &mut Ctx) -> u32 {

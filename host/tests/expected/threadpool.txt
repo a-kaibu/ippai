@@ -1,0 +1,16 @@
+QueueUserWorkItem: 1, few threads 1
+TrySubmitThreadpoolCallback: 1, few threads 1
+SubmitThreadpoolWork: 300 after the wait, few threads 1
+timer set: 1
+timer ticked: 1, set after cancel: 0
+timer still after cancel: 0
+timer queue: 1, few threads 1
+DeleteTimerQueueEx: 1
+DeleteTimerQueueTimer: 1
+periodic queue timer ran: 1
+ran after its deletion: 0
+registered waits: 1, timed out 1, few threads 1
+repeated wait: 1
+thread pool waits: 1
+huge stacks: a thread failed 1 with 8, some made 1
+a thread again: 1
