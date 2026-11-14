@@ -51,3 +51,4 @@ ippai-tls = { path = "../tls-client" }
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
 proptest = "1"
+idna_ref = { package = "idna", version = "1" }

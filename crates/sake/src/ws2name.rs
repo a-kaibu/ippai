@@ -194,12 +194,40 @@ fn inet_addr(c: &mut Ctx) -> u32 {
     }
 }
 
+static BUFS: Mutex<Option<HashMap<(u32, u8), u32>>> = Mutex::new(None);
+
 /// a per-thread buffer that a function returns (inet_ntoa's, hostent, ...), `size` bytes
 fn thread_buf(kind: u8, size: u32) -> u32 {
-    static BUFS: Mutex<Option<HashMap<(u32, u8), u32>>> = Mutex::new(None);
     let tid = crate::cur().tid;
     let mut g = BUFS.lock().unwrap();
     *g.get_or_insert_with(HashMap::default).entry((tid, kind)).or_insert_with(|| mem::heap_alloc(size, true))
+}
+
+/// A thread ends (k32::exit_thread): its buffers go back to the heap
+pub fn thread_exit(tid: u32) {
+    let gone: Vec<u32> = match BUFS.lock().unwrap().as_mut() {
+        Some(m) => {
+            let keys: Vec<_> = m.keys().filter(|k| k.0 == tid).copied().collect();
+            keys.iter().filter_map(|k| m.remove(k)).collect()
+        }
+        None => return,
+    };
+    for b in gone {
+        mem::heap_free(b);
+    }
+}
+
+thread_local! {
+    /// the bytes the last protoent / servent / hostent of this thread filled in its buffer
+    /// (kind 1, 2, 3): what a WSAAsyncGet* reply needs of the caller's buffer
+    static USED: std::cell::Cell<[u32; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+fn used(kind: u8, n: u32) {
+    USED.with(|u| {
+        let mut v = u.get();
+        v[kind as usize & 3] = n;
+        u.set(v);
+    });
 }
 
 fn inet_ntoa(c: &mut Ctx) -> u32 {
@@ -688,6 +716,7 @@ fn protoent(e: &(u32, &str, &str)) -> u32 {
     w16(b + 2 * k, e.0 as u16);
     wp(al, a0);
     wp(al + k, 0);
+    used(1, p.at - b);
     b
 }
 fn getprotobyname(c: &mut Ctx) -> u32 {
@@ -739,6 +768,7 @@ fn servent(e: &(&str, u16, &str, &[&str])) -> u32 {
         w16(b + 8, e.1.to_be());
         wp(b + 12, proto);
     }
+    used(2, p.at - b);
     b
 }
 fn service_by_name(name: &str, proto: Option<&str>) -> Option<&'static (&'static str, u16, &'static str, &'static [&'static str])> {
@@ -804,14 +834,23 @@ const AI_DISABLE_IDN_ENCODING: u32 = 0x80000;
 
 /// A host name's ASCII form: each label with non-ASCII characters becomes "xn--" + its
 /// Punycode (RFC 3492), lower-cased first
+/// A label of more than 63 characters (not a DNS label) is left as it is: no hosts line names
+/// it, so the lookup fails as on Windows, and the encoding stays linear in the name.
 pub fn idna(name: &str) -> String {
     name.split('.')
-        .map(|l| if l.is_ascii() { l.to_string() } else { format!("xn--{}", punycode(&l.to_lowercase())) })
+        .map(|l| match l.is_ascii() {
+            true => l.to_string(),
+            false => punycode(&l.to_lowercase()).map_or_else(|| l.to_string(), |p| format!("xn--{p}")),
+        })
         .collect::<Vec<_>>()
         .join(".")
 }
 
-fn punycode(label: &str) -> String {
+/// RFC 3492 Punycode of a label, None past 63 characters or on overflow (RFC 3492 6.4)
+pub fn punycode(label: &str) -> Option<String> {
+    if label.chars().count() > 63 {
+        return None;
+    }
     const BASE: u32 = 36;
     let digit = |d: u32| (if d < 26 { b'a' + d as u8 } else { b'0' + (d - 26) as u8 }) as char;
     let adapt = |mut delta: u32, n: u32, first: bool| {
@@ -833,11 +872,11 @@ fn punycode(label: &str) -> String {
     let (mut n, mut delta, mut bias, mut h) = (128u32, 0u32, 72u32, basic);
     while (h as usize) < cps.len() {
         let m = *cps.iter().filter(|&&c| c >= n).min().unwrap();
-        delta += (m - n) * (h + 1);
+        delta = delta.checked_add((m - n).checked_mul(h + 1)?)?;
         n = m;
         for &c in &cps {
             if c < n {
-                delta += 1;
+                delta = delta.checked_add(1)?;
             }
             if c == n {
                 let mut q = delta;
@@ -857,10 +896,10 @@ fn punycode(label: &str) -> String {
                 h += 1;
             }
         }
-        delta += 1;
+        delta = delta.checked_add(1)?;
         n += 1;
     }
-    out
+    Some(out)
 }
 
 /// an IPv4 / IPv6 address written as text
@@ -881,35 +920,83 @@ fn literal(name: &str) -> Option<Addr> {
 }
 
 /// There is no DNS: a name resolves only through the hosts file (drivers\etc\hosts, lines of
-/// "address name [aliases] # comment"), every matching line in order
+/// "address name [aliases] # comment"), every matching line in order. The file is read once
+/// and kept while its stamp (kura::fs::stamp) stays the same: a game polling a server name
+/// does not read and parse it per lookup.
 fn hosts(name: &str) -> Option<Vec<Addr>> {
-    let text = std::fs::read(crate::files::to_host("C:\\windows\\system32\\drivers\\etc\\hosts")).ok()?;
-    let found: Vec<Addr> = String::from_utf8_lossy(&text)
+    static CACHE: Mutex<Option<(u64, std::sync::Arc<Vec<(Addr, Vec<String>)>>)>> = Mutex::new(None);
+    let path = crate::files::to_host("C:\\windows\\system32\\drivers\\etc\\hosts");
+    let stamp = kura::fs::stamp(&path);
+    let cached = CACHE.lock().unwrap().as_ref().filter(|c| stamp != 0 && c.0 == stamp).map(|c| c.1.clone());
+    let table = match cached {
+        Some(t) => t,
+        None => {
+            let t = std::sync::Arc::new(std::fs::read(&path).map(|b| hosts_parse(&b)).unwrap_or_default());
+            *CACHE.lock().unwrap() = Some((stamp, t.clone()));
+            t
+        }
+    };
+    hosts_find(&table, name)
+}
+
+/// a hosts file's lines: (address, its names)
+pub fn hosts_parse(text: &[u8]) -> Vec<(Addr, Vec<String>)> {
+    String::from_utf8_lossy(text)
         .lines()
         .filter_map(|l| {
             let mut w = l.split('#').next()?.split_whitespace();
             let a = literal(w.next()?)?;
-            w.any(|n| n.eq_ignore_ascii_case(name.trim_end_matches('.'))).then_some(a)
+            Some((a, w.map(str::to_string).collect()))
         })
-        .collect();
+        .collect()
+}
+
+/// the addresses of every line naming `name`, in order
+pub fn hosts_find(table: &[(Addr, Vec<String>)], name: &str) -> Option<Vec<Addr>> {
+    let name = name.trim_end_matches('.');
+    let found: Vec<Addr> = table.iter().filter(|(_, ns)| ns.iter().any(|n| n.eq_ignore_ascii_case(name))).map(|(a, _)| a.clone()).collect();
     (!found.is_empty()).then_some(found)
 }
 
+/// MAXGETHOSTSTRUCT: what a hostent may take (the per-thread buffer, a WSAAsyncGetHostBy*
+/// caller's buffer)
+pub const HOSTENT_MAX: u32 = 1024;
+
+/// What of a hostent fits in HOSTENT_MAX (`k` the pointer size, `len` an address's): the
+/// name's bytes (a DNS name is at most 255) and how many addresses (Windows gives at most 35)
+pub fn hostent_fit(k: u32, len: u32, name: usize, addrs: usize) -> (usize, usize) {
+    let name = name.min(255);
+    // header (4 pointers' room), the empty alias list, the address list's NULL, the name's NUL
+    let fixed = 4 * k + k + k + name as u32 + 1;
+    let room = (HOSTENT_MAX - fixed) / (k + len);
+    (name, addrs.min(35).min(room as usize))
+}
+
 /// hostent { h_name, h_aliases, h_addrtype (short), h_length (short), h_addr_list }, then the
-/// aliases array, the address list array, the addresses and the strings, in that order
+/// aliases array, the address list array, the addresses and the strings, in that order; at
+/// most what fits in HOSTENT_MAX (a long hosts file's list is cut, a long name too)
 fn hostent(name: &str, af: u32, addrs: &[Vec<u8>]) -> u32 {
-    let b = thread_buf(3, 1024);
+    let b = thread_buf(3, HOSTENT_MAX);
     let k = ps();
     let len = if af == AF_INET6 { 16 } else { 4 };
+    let mut cut = name.len().min(255);
+    while !name.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let (nl, na) = hostent_fit(k, len as u32, cut, addrs.len());
+    let name = &name[..nl.min(cut)];
+    let addrs = &addrs[..na];
     let mut p = Pack { at: b + 4 * k };
     let al = p.ptrs(0);
     let list = p.ptrs(addrs.len());
     for (i, a) in addrs.iter().enumerate() {
-        let x = p.bytes(a);
+        let x = p.bytes(&a[..a.len().min(len as usize)]);
         wp(list + k * i as u32, x);
     }
     wp(list + k * addrs.len() as u32, 0);
     let n = p.str(name);
+    debug_assert!(p.at - b <= HOSTENT_MAX);
+    used(3, p.at - b);
     wp(al, 0);
     wp(b, n);
     wp(b + k, al);
@@ -1336,12 +1423,15 @@ fn async_reply(hwnd: u32, msg: u32, buf: u32, blen: u32, r: u32, kind: u8) -> u3
         let size = match kind {
             1 => 256,
             2 => 512,
-            _ => 1024,
+            _ => HOSTENT_MAX,
         };
-        if blen < size.min(blen.max(1)) {
-            (WSAENOBUFS << 16 | size, false)
+        // (what the struct and its data took; a caller's buffer short of it gets WSAENOBUFS
+        // and the size it needs, not a part with pointers past its end)
+        let need = USED.with(|u| u.get()[kind as usize & 3]).clamp(1, size);
+        if blen < need {
+            (WSAENOBUFS << 16 | need, false)
         } else {
-            let n = size.min(blen);
+            let n = need;
             mem::copy(buf, r, n);
             let delta = buf.wrapping_sub(r);
             let fix = |p: u32| {
@@ -1628,8 +1718,8 @@ mod tests {
     fn punycode() {
         // RFC 3492 7.1 samples and the Wine test's name
         assert_eq!(super::idna("\u{30c6}\u{30b9}\u{30c8}.winehq.org"), "xn--zckzah.winehq.org");
-        assert_eq!(super::punycode("\u{4ed6}\u{4eec}\u{4e3a}\u{4ec0}\u{4e48}\u{4e0d}\u{8bf4}\u{4e2d}\u{6587}"), "ihqwcrb4cv8a8dqg056pqjye");
-        assert_eq!(super::punycode("b\u{fc}cher"), "bcher-kva");
+        assert_eq!(super::punycode("\u{4ed6}\u{4eec}\u{4e3a}\u{4ec0}\u{4e48}\u{4e0d}\u{8bf4}\u{4e2d}\u{6587}").unwrap(), "ihqwcrb4cv8a8dqg056pqjye");
+        assert_eq!(super::punycode("b\u{fc}cher").unwrap(), "bcher-kva");
         assert_eq!(super::idna("example.com"), "example.com");
     }
     #[test]
@@ -1651,5 +1741,86 @@ mod tests {
         assert!(a.loopback());
         assert_eq!(a.as_v4(), Some([127, 0, 0, 1]));
         assert_eq!(Addr::v4([1, 2, 3, 4], 80).text(), "1.2.3.4:80");
+    }
+    #[test]
+    fn long_labels() {
+        // (review b11: a label of thousands of non-ASCII characters wrapped delta and took
+        // O(n^2); a label past 63 characters is not a DNS label and stays as it is)
+        let long: String = std::iter::repeat('\u{10ffff}').take(5000).collect();
+        assert_eq!(super::punycode(&long), None);
+        assert_eq!(super::idna(&format!("{long}.example")), format!("{long}.example"));
+        let max: String = std::iter::repeat('\u{10ffff}').take(63).collect();
+        assert!(super::punycode(&max).is_some());
+    }
+    #[test]
+    fn hostent_bound() {
+        // (review b11: hundreds of hosts lines for one name or a long name ran past the 1024
+        // bytes of the thread's buffer)
+        assert_eq!(hostent_fit(4, 4, 9, 1000), (9, 35));
+        assert_eq!(hostent_fit(8, 16, 4000, 1000).0, 255);
+        let (n, a) = hostent_fit(8, 16, 4000, 1000);
+        assert!(4 * 8 + 8 + 8 * (a as u32 + 1) + 16 * a as u32 + n as u32 + 1 <= HOSTENT_MAX);
+    }
+    #[test]
+    fn hosts_file() {
+        let t = hosts_parse(b"# c\n127.0.0.1 a.test b.test # x\n::1 a.test\nbad a.test\n10.0.0.1\tB.TEST\n");
+        let v = hosts_find(&t, "a.test.").unwrap();
+        assert_eq!(v.len(), 2);
+        assert!(v[1].is_v6());
+        assert_eq!(hosts_find(&t, "b.test").unwrap().len(), 2);
+        assert_eq!(hosts_find(&t, "c.test"), None);
+    }
+
+    mod proptests {
+        use super::super::*;
+        use proptest::prelude::*;
+
+        /// the hosts lookup before the cache: each line parsed for each lookup
+        fn hosts_old(text: &[u8], name: &str) -> Option<Vec<Addr>> {
+            let found: Vec<Addr> = String::from_utf8_lossy(text)
+                .lines()
+                .filter_map(|l| {
+                    let mut w = l.split('#').next()?.split_whitespace();
+                    let a = literal(w.next()?)?;
+                    w.any(|n| n.eq_ignore_ascii_case(name.trim_end_matches('.'))).then_some(a)
+                })
+                .collect();
+            (!found.is_empty()).then_some(found)
+        }
+
+        proptest! {
+            #[test]
+            fn hostent_always_fits(k in prop::sample::select(vec![4u32, 8]), len in prop::sample::select(vec![4u32, 16]), name in 0usize..100_000, addrs in 0usize..100_000) {
+                let (n, a) = hostent_fit(k, len, name, addrs);
+                prop_assert!(n <= name && n <= 255 && a <= addrs && a <= 35);
+                prop_assert!(4 * k + k + k * (a as u32 + 1) + len * a as u32 + n as u32 + 1 <= HOSTENT_MAX);
+                // (all of a short list is kept)
+                if name <= 255 && addrs <= 35 && len == 4 {
+                    prop_assert_eq!((n, a), (name, addrs));
+                }
+            }
+            #[test]
+            fn punycode_total(label in "\\PC{0,200}") {
+                let lo = label.to_lowercase();
+                let p = punycode(&lo);
+                prop_assert_eq!(p.is_some(), lo.chars().count() <= 63);
+                if let Some(p) = p {
+                    prop_assert!(p.is_ascii());
+                }
+                let _ = idna(&label);
+            }
+            #[test]
+            fn punycode_matches_idna_crate(label in "[a-z0-9\u{80}-\u{3000}]{1,40}") {
+                // differential: the idna crate's Punycode (RFC 3492) for the same label
+                prop_assume!(!label.is_ascii());
+                let want = idna_ref::punycode::encode_str(&label);
+                prop_assert_eq!(punycode(&label), want);
+            }
+            #[test]
+            fn hosts_cache_same_answers(lines in prop::collection::vec(("(127\\.0\\.0\\.[0-9]|::1|10\\.1\\.2\\.3|x)", prop::collection::vec("[a-cA-C.]{1,3}", 0..4), "( # c)?"), 0..20), name in "[a-cA-C.]{0,4}") {
+                let text: String = lines.iter().map(|(a, ns, c)| format!("{a} {}{c}\n", ns.join(" "))).collect();
+                prop_assert_eq!(hosts_find(&hosts_parse(text.as_bytes()), &name), hosts_old(text.as_bytes(), &name));
+            }
+        }
     }
 }

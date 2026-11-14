@@ -579,3 +579,78 @@ Frame Bip01 {\n FrameTransformMatrix {\n  1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.
     assert_eq!(f.nodes[fr].children[2], Child::Ref { name: Some(b"st0030000_010arm_R".to_vec()), guid: None });
     assert_eq!(f.find(&mut r, Some(b"st0030000_010arm_R"), None), Some(m));
 }
+
+/// review b11: an array sized by a member whose name a later member of another type reuses
+/// read the data of that later member (empty here) as the size: a panic, the VM gone
+#[test]
+fn array_size_by_reused_name() {
+    let mut r = reg(b"template T {\n<00000000-0000-0000-0000-00000000AA01>\nDWORD n;\narray CHAR n[n];\narray DWORD x[n];\n}\n");
+    assert_eq!(first(&mut r, &txt(b"T {\n0;\n;\n;\n}\n")).err(), Some(PARSEERROR));
+    let mut r = reg(b"template U {\n<00000000-0000-0000-0000-00000000AA02>\nWORD n;\nDWORD n;\narray DWORD x[n];\n}\n");
+    // (the latest n, a DWORD, sizes the array, as before)
+    let n = first(&mut r, &txt(b"U {\n7;\n2;\n5; 6;\n}\n")).unwrap();
+    assert_eq!(n.data, [7, 0, 2, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0]);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Templates whose members reuse a few names (scalars, arrays sized by any of them, of
+    /// any type), and any values: no panic, whatever reads is whole members.
+    #[test]
+    fn reused_member_names(members in proptest::collection::vec((0usize..6, 0usize..3, proptest::option::of(0usize..3)), 1..6), vals in proptest::collection::vec(0u32..4, 0..24), kind in 0usize..2) {
+        let tys = ["WORD", "DWORD", "CHAR", "FLOAT", "UCHAR", "SDWORD"];
+        let names = ["a", "b", "c"];
+        let mut t = String::from("template R {\n<00000000-0000-0000-0000-00000000AA03>\n");
+        for (ty, n, dim) in &members {
+            match dim {
+                Some(d) => t += &format!("array {} {}[{}];\n", tys[*ty], names[*n], names[*d]),
+                None => t += &format!("{} {};\n", tys[*ty], names[*n]),
+            }
+        }
+        t += "}\n";
+        let mut r = Templates::default();
+        if register(&txt(t.as_bytes()), &mut r).is_err() {
+            return Ok(());
+        }
+        let file = if kind == 0 {
+            let body: String = vals.iter().map(|v| format!("{v};\n")).collect();
+            txt(format!("R {{\n{body}}}\n").as_bytes())
+        } else {
+            // binary: TOKEN_NAME "R", {, an integer list of the values, }
+            let mut b = vec![1, 0, 1, 0, 0, 0, b'R', 10, 0];
+            b.extend_from_slice(&6u16.to_le_bytes());
+            b.extend_from_slice(&(vals.len() as u32).to_le_bytes());
+            for v in &vals {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+            b.extend_from_slice(&[11, 0]);
+            bin(&b)
+        };
+        if let Ok(n) = first(&mut r, &file) {
+            prop_assert!(n.members.iter().all(|(_, o, s)| o + s <= n.data.len()));
+        }
+    }
+
+    /// find by name or GUID gives the first object read with it, as a scan of every object did.
+    #[test]
+    fn find_is_the_first_match(objs in proptest::collection::vec((0usize..5, proptest::option::of(0u8..3)), 1..30), look in 0usize..6, g in proptest::option::of(0u8..3)) {
+        let names = ["n0", "n1", "n2", "n3", "n4", "none"];
+        let mut body = String::new();
+        for (n, guid) in &objs {
+            let gs = guid.map_or(String::new(), |g| format!("<00000000-0000-0000-0000-0000000000{g:02X}>"));
+            body += &format!("Header {} {{ {gs} 1; 2; 3; }}\n", names[*n]);
+        }
+        let mut r = reg(HEADER);
+        let file = txt(body.as_bytes());
+        let mut f = XFile::open(&file, &mut r, 4).unwrap();
+        let gid = g.map(|g| { let mut x = [0u8; 16]; x[15] = g; x });
+        let got = f.find(&mut r, Some(names[look].as_bytes()), gid.as_ref());
+        while matches!(f.read_top(&mut r), Ok(Some(_))) {}
+        let want = f.nodes.iter().position(|n| n.name.as_deref() == Some(names[look].as_bytes()) && gid.as_ref().is_none_or(|g| n.guid.as_ref() == Some(g)));
+        prop_assert_eq!(got, want);
+        let got = f.find(&mut r, None, gid.as_ref());
+        let want = gid.and_then(|g| f.nodes.iter().position(|n| n.guid == Some(g)));
+        prop_assert_eq!(got, want);
+    }
+}

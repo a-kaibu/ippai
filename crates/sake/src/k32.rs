@@ -428,6 +428,7 @@ pub fn exit_thread(code: u32) -> ! {
     obj::signal();
     obj::close(h);
     crate::apc::forget(t.tid);
+    crate::ws2name::thread_exit(t.tid);
     SUSPENDS.forget(t.tid);
     // (out of the running threads and its TLS blocks freed, under the loader lock: a DLL
     // loading meanwhile gives every running thread a block)

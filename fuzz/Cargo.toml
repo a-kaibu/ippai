@@ -262,3 +262,10 @@ path = "fuzz_targets/intrax8.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ws2name"
+path = "fuzz_targets/ws2name.rs"
+test = false
+doc = false
+bench = false

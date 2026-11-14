@@ -493,6 +493,10 @@ pub struct XFile {
     tail: Option<u32>,
     /// top-level objects GetNextDataObject handed out (find reads ahead of it)
     handed: usize,
+    /// the objects read so far by name and by GUID, in reading order: a reference is found
+    /// without a scan of every object (`find`)
+    by_name: std::collections::HashMap<B, Vec<usize>>,
+    by_guid: std::collections::HashMap<Guid, Vec<usize>>,
 }
 
 impl XFile {
@@ -550,7 +554,12 @@ impl XFile {
             return None;
         }
         loop {
-            if let Some(i) = self.nodes.iter().position(hit) {
+            let cands = match (name, guid) {
+                (Some(n), _) => self.by_name.get(n),
+                (None, Some(g)) => self.by_guid.get(g),
+                _ => None,
+            };
+            if let Some(&i) = cands.and_then(|c| c.iter().find(|&&i| hit(&self.nodes[i]))) {
                 return Some(i);
             }
             match self.read_top(reg) {
@@ -695,6 +704,12 @@ impl XFile {
         self.members(reg, &t, &mut node, Some(&mut top), 0)?;
         node.members = top;
         let at = self.nodes.len();
+        if let Some(n) = &node.name {
+            self.by_name.entry(n.clone()).or_default().push(at);
+        }
+        if let Some(g) = node.guid {
+            self.by_guid.entry(g).or_default().push(at);
+        }
         self.nodes.push(node);
         loop {
             match self.peek().ok_or(PARSEERROR)? {
@@ -743,20 +758,30 @@ impl XFile {
             return Err(PARSEERROR);
         }
         // (this level's members so far: name, offset, type, for array sizes)
-        let mut seen: Vec<(Option<B>, usize, Ty)> = Vec::new();
+        let mut seen: Vec<(Option<B>, usize, Ty, usize)> = Vec::new();
         for m in &t.members {
             let mut count: u64 = 1;
             for d in &m.dims {
                 let n = match d {
                     Dim::Fixed(n) => *n as u64,
                     Dim::Member(name) => {
-                        let (_, off, ty) = seen.iter().rev().find(|s| s.0.as_ref() == Some(name)).ok_or(PARSEERROR)?;
-                        let b = &node.data[*off..];
-                        match ty {
-                            Ty::Prim(Prim::Word | Prim::Sword) => u16::from_le_bytes([b[0], b[1]]) as u64,
-                            Ty::Prim(Prim::Char | Prim::Uchar) => b[0] as u64,
-                            _ => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64,
+                        // (the latest member of that name; the template only checked that
+                        // some earlier one is an integer, so a later same-named array, VOID or
+                        // empty member is a parse error, not a read past the data)
+                        let (_, off, ty, size) = seen.iter().rev().find(|s| s.0.as_ref() == Some(name)).ok_or(PARSEERROR)?;
+                        let width = match ty {
+                            Ty::Prim(Prim::Word | Prim::Sword) => 2,
+                            Ty::Prim(Prim::Char | Prim::Uchar) => 1,
+                            Ty::Prim(Prim::Dword | Prim::Sdword) => 4,
+                            _ => return Err(PARSEERROR),
+                        };
+                        if *size != width {
+                            return Err(PARSEERROR);
                         }
+                        let b = node.data.get(*off..*off + width).ok_or(PARSEERROR)?;
+                        let mut v = [0u8; 4];
+                        v[..width].copy_from_slice(b);
+                        u32::from_le_bytes(v) as u64
                     }
                 };
                 count = count.checked_mul(n).ok_or(PARSEERROR)?;
@@ -780,7 +805,7 @@ impl XFile {
                     return Err(PARSEERROR);
                 }
             }
-            seen.push((m.name.clone(), off, m.ty.clone()));
+            seen.push((m.name.clone(), off, m.ty.clone(), node.data.len() - off));
             if let Some(top) = top.as_deref_mut() {
                 top.push((m.name.clone().unwrap_or_default(), off, node.data.len() - off));
             }
