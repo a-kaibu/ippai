@@ -1,0 +1,23 @@
+1 (8 bits): loaded 4x2 planes 1 bits colour
+   0000ff 00ff00 ff0000 00ffff
+   1e140a 00ffff ff0000 00ff00
+LOGO (4 bits): loaded 3x3 planes 1 bits colour
+   000080 008000 800000
+   800000 008000 000080
+   000000 000080 000000
+logo, any case: loaded 3x3 planes 1 bits colour
+   000080
+MONO (1 bit): loaded 9x2 planes 1 bits 1
+   ffffff 000000 ffffff 000000 ffffff 000000 ffffff 000000 ffffff
+   000000 000000 000000 000000 000000 000000 000000 000000 000000
+RGB (24 bits): loaded 2x2 planes 1 bits colour
+   030201 0780fa
+   000000 ffffff
+7 (core header): loaded 5x1 planes 1 bits colour
+   00ff00 05af50 0a5fa0 0f0ff0 078f70
+missing: none
+missing number: none
+LoadString 17: 9 "seventeen"
+LoadString 1 into 3: 2 "on"
+LoadString 2 (none): 0
+OBM_CHECK loaded

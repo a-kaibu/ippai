@@ -663,6 +663,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/api-counts" "$OUT"
           if [ "$SAKE_BUILD" = sake-grow ]; then export IPPAI_JIT_RECLAIM=1; fi
           IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_C=$RUNNER_TEMP/sake-c SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/$SAKE_BUILD.js tests/host-tests.sh
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ippai-watcom
+          key: watcom-${{ hashFiles('tests/bench/build-novel16.sh') }}
+      - name: Win16 programs on ${{ matrix.build }}
+        if: ${{ !cancelled() }}
+        env:
+          SAKE_BUILD: ${{ matrix.build }}
+        run: SAKE=$PWD/target/sake-out/$SAKE_BUILD.js OUT=$RUNNER_TEMP/w16-tests tests/w16-tests.sh
       - uses: actions/upload-artifact@v7.0.2
         if: ${{ !cancelled() && matrix.build == 'sake' }}
         with:

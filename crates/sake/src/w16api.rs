@@ -130,6 +130,11 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("GDI.GetNearestColor", "gdi32!GetNearestColor", "hl", "l"),
     ("GDI.CreateFontIndirect", "gdi32!CreateFontIndirectA", "F", "h"),
     ("KERNEL.lstrlen", "kernel32!lstrlenA", "p", "i"),
+    ("KERNEL.IsDBCSLeadByte", "kernel32!IsDBCSLeadByte", "w", "i"),
+    ("KEYBOARD.GetKBCodePage", "kernel32!GetACP", "", "i"),
+    ("KEYBOARD.GetKeyboardType", "user32!GetKeyboardType", "s", "i"),
+    ("KEYBOARD.MapVirtualKey", "user32!MapVirtualKeyA", "ww", "i"),
+    ("KEYBOARD.VkKeyScan", "user32!VkKeyScanA", "w", "i"),
     ("KERNEL.GetTickCount", "kernel32!GetTickCount", "", "l"),
     ("KERNEL.GetCurrentTime", "kernel32!GetTickCount", "", "l"),
     ("KERNEL.GetPrivateProfileInt", "kernel32!GetPrivateProfileIntA", "ppsp", "i"),
@@ -440,6 +445,22 @@ pub fn init() {
     reg("USER.LoadIcon", |c| {
         let id = if c.w(0) == 0 { c.a(1) } else { 32512 };
         h16(call32(c.cpu, "user32!LoadIconA", &[0, id])) as u32
+    });
+    reg("USER.LoadBitmap", |c| {
+        let name = c.a(1);
+        if c.w(0) == 0 {
+            // (the system's: OBM_*)
+            return h16(call32(c.cpu, "user32!LoadBitmapA", &[0, name & 0xffff])) as u32;
+        }
+        let Some((d, len)) = find_resource(2, if name < 0x10000 { name | 0x8000_0000 } else { name }) else {
+            return 0;
+        };
+        let h = bitmap_from_dib(c.cpu, d, len);
+        if h == 0 {
+            eprintln!("sake w16: LoadBitmap: not a bitmap ({len} bytes: {:02x?})", crate::mem::slice(d, len.min(16)));
+        }
+        crate::mem::heap_free(d);
+        h16(h) as u32
     });
     reg("USER.LoadMenu", |c| {
         let p = c.a(1);
@@ -1260,8 +1281,9 @@ pub fn find_resource(ty: u32, id: u32) -> Option<(u32, u32)> {
         let p = rt + o as usize;
         d[p + 1..p + 1 + d[p] as usize].to_vec()
     };
+    // (an integer id: with 0x8000_0000, or below 0x10000 as MAKEINTRESOURCE and RT_* are)
     let matches = |v: u16, want: u32| -> bool {
-        if want & 0x8000_0000 != 0 {
+        if want & 0x8000_0000 != 0 || want < 0x10000 {
             v == (want as u16) | 0x8000
         } else {
             v & 0x8000 == 0 && name_at(v).eq_ignore_ascii_case(&cstr(want))
@@ -1289,6 +1311,95 @@ pub fn find_resource(ty: u32, id: u32) -> Option<(u32, u32)> {
         }
         p += 12 * n;
     }
+}
+
+/// A device-dependent bitmap of the packed DIB at `d` (`len` bytes: a BITMAP resource, a
+/// BITMAPINFOHEADER or OS/2's BITMAPCOREHEADER, its colours, its bits), as LoadBitmap makes: a
+/// monochrome one for two colours black and white, else one like the screen's. 0 if it is
+/// not one.
+pub fn bitmap_from_dib(cpu: &mut Cpu, d: u32, len: u32) -> u32 {
+    let Some(info) = dib_info(crate::mem::slice(d, len)) else { return 0 };
+    let bmi = crate::mem::heap_alloc(info.header.len() as u32, true);
+    crate::mem::write(bmi, &info.header);
+    let bits = d + info.bits;
+    let (w, h) = (info.width, info.height);
+    let hbm = if info.mono {
+        let b = call32(cpu, "gdi32!CreateBitmap", &[w as u32, h.unsigned_abs(), 1, 1, 0]);
+        let dc = call32(cpu, "user32!GetDC", &[0]);
+        call32(cpu, "gdi32!SetDIBits", &[dc, b, 0, h.unsigned_abs(), bits, bmi, 0]);
+        call32(cpu, "user32!ReleaseDC", &[0, dc]);
+        b
+    } else {
+        let dc = call32(cpu, "user32!GetDC", &[0]);
+        // CBM_INIT, DIB_RGB_COLORS
+        let b = call32(cpu, "gdi32!CreateDIBitmap", &[dc, bmi, 4, bits, bmi, 0]);
+        call32(cpu, "user32!ReleaseDC", &[0, dc]);
+        b
+    };
+    crate::mem::heap_free(bmi);
+    hbm
+}
+
+/// A packed DIB's BITMAPINFO (a core header made an info header, its RGBTRIPLEs RGBQUADs) and
+/// where its bits start in it.
+#[derive(Debug, PartialEq)]
+pub struct DibInfo {
+    pub header: Vec<u8>,
+    pub bits: u32,
+    pub width: i32,
+    pub height: i32,
+    pub mono: bool,
+}
+
+pub fn dib_info(b: &[u8]) -> Option<DibInfo> {
+    let u16at = |o: usize| b.get(o..o + 2).map(|x| u16::from_le_bytes([x[0], x[1]]));
+    let u32at = |o: usize| b.get(o..o + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]));
+    let size = u32at(0)?;
+    let (mut header, ncol, entry, width, height, bpp);
+    if size == 12 {
+        // BITMAPCOREHEADER: WORD width, height, planes, bit count
+        width = u16at(4)? as i32;
+        height = u16at(6)? as i16 as i32;
+        bpp = u16at(10)?;
+        ncol = if bpp <= 8 { 1usize << bpp } else { 0 };
+        entry = 3;
+        header = vec![0u8; 40];
+        header[0..4].copy_from_slice(&40u32.to_le_bytes());
+        header[4..8].copy_from_slice(&width.to_le_bytes());
+        header[8..12].copy_from_slice(&height.to_le_bytes());
+        header[12..14].copy_from_slice(&1u16.to_le_bytes());
+        header[14..16].copy_from_slice(&bpp.to_le_bytes());
+    } else if (40..=124).contains(&size) {
+        width = u32at(4)? as i32;
+        height = u32at(8)? as i32;
+        bpp = u16at(14)?;
+        let compression = u32at(16)?;
+        let used = u32at(32)? as usize;
+        ncol = if used != 0 { used.min(256) } else if bpp <= 8 { 1 << bpp } else { 0 };
+        // (BI_BITFIELDS in a 40-byte header: three masks follow it)
+        let masks = if size == 40 && compression == 3 { 12 } else { 0 };
+        entry = 4;
+        header = b.get(..size as usize + masks)?.to_vec();
+    } else {
+        return None;
+    }
+    if !(1..=32).contains(&bpp) || width <= 0 || height == 0 {
+        return None;
+    }
+    let start = if size == 12 { 12 } else { header.len() };
+    let mut colors = Vec::with_capacity(ncol * 4);
+    for k in 0..ncol {
+        let e = b.get(start + entry * k..start + entry * k + 3)?;
+        colors.extend_from_slice(&[e[0], e[1], e[2], 0]);
+    }
+    let mono = bpp == 1 && ncol == 2 && colors[0..3] == [0, 0, 0] && colors[4..7] == [255, 255, 255];
+    header.extend_from_slice(&colors);
+    let bits = (start + entry * ncol) as u32;
+    let row = ((width as u64 * bpp as u64 + 31) / 32 * 4) as u32;
+    if bits as u64 + row as u64 * height.unsigned_abs() as u64 > b.len() as u64 {
+        return None;
+    }
+    Some(DibInfo { header, bits, width, height, mono })
 }
 
 /// A resource name argument (far pointer or MAKEINTRESOURCE) as `find_resource` takes it.
@@ -1752,4 +1863,71 @@ pub fn date(cpu: &mut Cpu) -> (u32, u32, u32, u32) {
     let r = (r16(st) as u32, r16(st + 2) as u32, r16(st + 6) as u32, r16(st + 4) as u32);
     crate::mem::heap_free(st);
     r
+}
+
+#[cfg(test)]
+mod dib_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn info_dib(w: i32, h: i32, bpp: u16, colors: &[[u8; 4]], used: u32) -> Vec<u8> {
+        let mut b = vec![0u8; 40];
+        b[0..4].copy_from_slice(&40u32.to_le_bytes());
+        b[4..8].copy_from_slice(&w.to_le_bytes());
+        b[8..12].copy_from_slice(&h.to_le_bytes());
+        b[12..14].copy_from_slice(&1u16.to_le_bytes());
+        b[14..16].copy_from_slice(&bpp.to_le_bytes());
+        b[32..36].copy_from_slice(&used.to_le_bytes());
+        for c in colors {
+            b.extend_from_slice(c);
+        }
+        let row = ((w as usize * bpp as usize + 31) / 32) * 4;
+        b.extend(std::iter::repeat(0x5a).take(row * h.unsigned_abs() as usize));
+        b
+    }
+
+    #[test]
+    fn headers_colours_and_bits() {
+        // 1 bpp black and white: monochrome; bits after the two colours
+        let d = info_dib(8, 2, 1, &[[0, 0, 0, 0], [255, 255, 255, 0]], 0);
+        let i = dib_info(&d).unwrap();
+        assert_eq!((i.bits, i.mono, i.header.len()), (48, true, 48));
+        // two other colours: not monochrome
+        assert!(!dib_info(&info_dib(8, 2, 1, &[[0, 0, 255, 0], [255, 255, 255, 0]], 0)).unwrap().mono);
+        // 4 bpp with biClrUsed 3
+        let d = info_dib(3, -2, 4, &[[1, 2, 3, 0], [4, 5, 6, 0], [7, 8, 9, 0]], 3);
+        let i = dib_info(&d).unwrap();
+        assert_eq!((i.bits, i.height), (52, -2));
+        // 24 bpp: no colours
+        assert_eq!(dib_info(&info_dib(5, 5, 24, &[], 0)).unwrap().bits, 40);
+        // a core header: RGBTRIPLEs made RGBQUADs, an info header
+        let mut c = vec![12, 0, 0, 0, 2, 0, 1, 0, 1, 0, 8, 0];
+        for k in 0..256u32 {
+            c.extend_from_slice(&[k as u8, 1, 2]);
+        }
+        c.extend_from_slice(&[0; 4]);
+        let i = dib_info(&c).unwrap();
+        assert_eq!((i.bits, i.header.len(), i.width, i.height), (12 + 768, 40 + 1024, 2, 1));
+        assert_eq!(&i.header[40 + 4 * 7..40 + 4 * 8], &[7, 1, 2, 0]);
+        // too short, a bad size, no width
+        assert!(dib_info(&d[..d.len() - 1]).is_none());
+        assert!(dib_info(&[20, 0, 0, 0]).is_none());
+        assert!(dib_info(&info_dib(0, 1, 8, &[[0; 4]; 256], 0)).is_none());
+    }
+
+    proptest! {
+        /// Any well-formed info DIB: the bits start after header and colours, the header keeps
+        /// the colours, and one byte less of bits is refused
+        #[test]
+        fn bits_follow_the_colours(w in 1i32..64, h in -16i32..16, bpp in proptest::sample::select(vec![1u16, 4, 8, 16, 24, 32]), used in 0u32..4) {
+            prop_assume!(h != 0);
+            let n = if bpp <= 8 { if used != 0 { used as usize } else { 1 << bpp } } else { used as usize };
+            let colors: Vec<[u8; 4]> = (0..n).map(|k| [k as u8, 2, 3, 0]).collect();
+            let d = info_dib(w, h, bpp, &colors, used);
+            let i = dib_info(&d).unwrap();
+            prop_assert_eq!(i.bits as usize, 40 + 4 * n);
+            prop_assert_eq!(&i.header[40..], &d[40..40 + 4 * n]);
+            prop_assert!(dib_info(&d[..d.len() - 1]).is_none());
+        }
+    }
 }

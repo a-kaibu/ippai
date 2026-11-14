@@ -1,0 +1,10 @@
+1 BITMAP pal8.bmp
+LOGO BITMAP pal4.bmp
+MONO BITMAP mono.bmp
+RGB BITMAP rgb.bmp
+7 BITMAP core.bmp
+STRINGTABLE
+BEGIN
+    1, "one"
+    17, "seventeen"
+END

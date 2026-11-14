@@ -474,6 +474,28 @@ KERNEL 1990 __wine_vxd_timerapi register -
 KERNEL 2000 __wine_call_int_handler register w
 KERNEL 2001 __wine_snoop_entry register -
 KERNEL 2002 __wine_snoop_return register -
+KEYBOARD 1 Inquire pascal p
+KEYBOARD 2 Enable pascal gp
+KEYBOARD 3 Disable pascal -
+KEYBOARD 4 ToAscii pascal wwppw
+KEYBOARD 5 AnsiToOem pascal pp
+KEYBOARD 6 OemToAnsi pascal pp
+KEYBOARD 7 SetSpeed pascal w
+KEYBOARD 9 INQUIREEX stub
+KEYBOARD 10 TOASCIIEX stub
+KEYBOARD 11 VKKEYSCANEX stub
+KEYBOARD 12 MAPVIRTUALKEYEX stub
+KEYBOARD 13 NEWTABLEEX stub
+KEYBOARD 14 __EXPORTEDSTUB stub
+KEYBOARD 100 ScreenSwitchEnable pascal w
+KEYBOARD 128 OemKeyScan pascal w
+KEYBOARD 129 VkKeyScan pascal w
+KEYBOARD 130 GetKeyboardType pascal w
+KEYBOARD 131 MapVirtualKey pascal ww
+KEYBOARD 132 GetKBCodePage pascal -
+KEYBOARD 133 GetKeyNameText pascal lpw
+KEYBOARD 134 AnsiToOemBuff pascal ppw
+KEYBOARD 135 OemToAnsiBuff pascal ppw
 USER 1 MessageBox pascal wppw
 USER 2 OldExitWindows pascal -
 USER 3 EnableOEMLayer stub
