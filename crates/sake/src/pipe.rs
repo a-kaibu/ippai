@@ -129,7 +129,8 @@ pub fn crt_write(p: Handle, buf: u32, n: u32) -> Result<u32, u32> {
         return Err(kern::ACCESS_DENIED);
     }
     let (e, data) = (p.end, mem::slice(buf, n).to_vec());
-    let r = kern::block(None, &|| false, move |k: &mut Kern| k.write(e, &data));
+    let mut w = kern::Write::default();
+    let r = kern::block(None, &|| false, move |k: &mut Kern| k.write(e, &data, &mut w));
     pump();
     r
 }
@@ -376,7 +377,11 @@ pub fn nt_write(h: u32, p: Handle, nt: NtIo, buf: u32, n: u32) -> u32 {
         return kern::ACCESS_DENIED;
     }
     let (e, data) = (p.end, mem::slice(buf, n).to_vec());
-    nt_io(h, p, nt, Box::new(move |k| k.write(e, &data).map(|n| (n, SUCCESS))))
+    nt_io(h, p, nt, {
+        // (the write's progress through the reader's buffer, kept between its tries)
+        let mut w = kern::Write::default();
+        Box::new(move |k| k.write(e, &data, &mut w).map(|n| (n, SUCCESS)))
+    })
 }
 
 /// ReadFile on a pipe handle
@@ -408,7 +413,11 @@ pub fn write(c: &mut Ctx, h: u32, p: Handle) -> u32 {
         return fail(kern::ACCESS_DENIED);
     }
     let (e, data) = (p.end, mem::slice(buf, n).to_vec());
-    io(h, p, ov, out, Box::new(move |k| k.write(e, &data).map(|n| (n, SUCCESS))))
+    io(h, p, ov, out, {
+        // (the write's progress through the reader's buffer, kept between its tries)
+        let mut w = kern::Write::default();
+        Box::new(move |k| k.write(e, &data, &mut w).map(|n| (n, SUCCESS)))
+    })
 }
 
 fn with_pipe(c: &Ctx, f: impl FnOnce(u32, Handle) -> u32) -> u32 {

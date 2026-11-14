@@ -6,6 +6,13 @@ use proptest::prelude::*;
 
 const PID: u32 = 7;
 
+impl Kern {
+    /// One WriteFile asked once (PENDING: it waits for the reader)
+    fn write1(&mut self, e: u32, data: &[u8]) -> Result<u32, u32> {
+        self.write(e, data, &mut Write::default())
+    }
+}
+
 fn named(k: &mut Kern, name: &str, access: u32, msg: bool, max: u32) -> Result<u32, u32> {
     let p = NewPipe { access, msg_type: msg, msg_read: msg, nonblock: false, max, outsize: 512, insize: 512, timeout: 0, first: false };
     k.create(name, &p, PID)
@@ -31,11 +38,11 @@ fn names() {
 fn anonymous() {
     let mut k = Kern::default();
     let (r, w) = k.create_anon(0, PID);
-    assert_eq!(k.write(w, b"abc"), Ok(3));
+    assert_eq!(k.write1(w, b"abc"), Ok(3));
     assert_eq!(k.peek(r, 4), Ok(Peek { data: b"abc".to_vec(), avail: 3, msg_len: 0 }));
     assert_eq!(rd(&mut k, r, 2), ok("ab", false));
     assert_eq!(rd(&mut k, r, 10), ok("c", false));
-    assert_eq!(k.write(w, b""), Ok(0));
+    assert_eq!(k.write1(w, b""), Ok(0));
     assert_eq!(k.peek(r, 4), Ok(Peek { data: vec![], avail: 0, msg_len: 0 }));
     assert_eq!(k.read(r, 4), Err(PENDING));
     k.release(w, PID);
@@ -45,11 +52,11 @@ fn anonymous() {
     assert!(k.ends.is_empty() && k.pipes.is_empty());
     let (r, w) = k.create_anon(0, PID);
     k.release(r, PID);
-    assert_eq!(k.write(w, b"q"), Err(PIPE_CLOSING));
+    assert_eq!(k.write1(w, b"q"), Err(PIPE_CLOSING));
     assert_eq!(win32(PIPE_CLOSING), 232);
     // what the reader has not read yet stays after the writer closed
     let (r, w) = k.create_anon(0, PID);
-    k.write(w, b"left").unwrap();
+    k.write1(w, b"left").unwrap();
     k.release(w, PID);
     assert_eq!(rd(&mut k, r, 10), ok("left", false));
     assert_eq!(k.read(r, 10), Err(PIPE_BROKEN));
@@ -78,13 +85,13 @@ fn byte_mode() {
     assert_eq!(k.open("byte", true, true, PID), Err(PIPE_NOT_AVAILABLE));
     assert_eq!(k.wait_named("byte"), Ok(Some(50)));
     assert_eq!(k.listen(s), PIPE_CONNECTED);
-    k.write(c, b"hello").unwrap();
-    k.write(c, b"world").unwrap();
+    k.write1(c, b"hello").unwrap();
+    k.write1(c, b"world").unwrap();
     let p = k.peek(s, 4).unwrap();
     assert_eq!((p.data.as_slice(), p.avail, p.msg_len), (&b"hell"[..], 10, 0));
     assert_eq!(rd(&mut k, s, 3), ok("hel", false));
     assert_eq!(rd(&mut k, s, 100), ok("loworld", false));
-    k.write(s, b"reply").unwrap();
+    k.write1(s, b"reply").unwrap();
     assert_eq!(rd(&mut k, c, 100), ok("reply", false));
     let i = k.info(s).unwrap();
     assert_eq!((i.server, i.msg_type, i.outsize, i.insize, i.max, i.instances), (true, false, 512, 512, 1, Some(1)));
@@ -93,7 +100,7 @@ fn byte_mode() {
     k.release(c, PID);
     assert_eq!(k.read(s, 10), Err(PIPE_BROKEN));
     assert_eq!(k.peek(s, 4), Err(PIPE_BROKEN));
-    assert_eq!(k.write(s, b"late"), Err(PIPE_CLOSING));
+    assert_eq!(k.write1(s, b"late"), Err(PIPE_CLOSING));
     assert_eq!(k.listen(s), PIPE_CLOSING);
     assert_eq!(k.disconnect(s), SUCCESS);
     assert_eq!(k.disconnect(s), PIPE_DISCONNECTED);
@@ -115,16 +122,16 @@ fn disconnect_cuts_the_client_off() {
     let mut k = Kern::default();
     let s = named(&mut k, "d", 3, false, 1).unwrap();
     let c = k.open("d", true, true, PID).unwrap();
-    k.write(s, b"lost").unwrap();
+    k.write1(s, b"lost").unwrap();
     assert_eq!(k.disconnect(s), SUCCESS);
     assert_eq!(k.read(c, 10), Err(PIPE_DISCONNECTED));
-    assert_eq!(k.write(c, b"x"), Err(PIPE_DISCONNECTED));
+    assert_eq!(k.write1(c, b"x"), Err(PIPE_DISCONNECTED));
     assert_eq!(k.peek(c, 4), Err(PIPE_DISCONNECTED));
     assert_eq!(k.info(c).unwrap().instances, None);
     // a new client of the same instance is not the old one
     assert_eq!(k.listen(s), PENDING);
     let c2 = k.open("d", true, true, PID).unwrap();
-    k.write(s, b"new").unwrap();
+    k.write1(s, b"new").unwrap();
     assert_eq!(rd(&mut k, c2, 10), ok("new", false));
     assert_eq!(k.read(c, 10), Err(PIPE_DISCONNECTED));
     assert_eq!(k.listen(s), PIPE_CONNECTED);
@@ -141,9 +148,9 @@ fn message_mode() {
     let c1 = k.open("msg", true, true, PID).unwrap();
     let c2 = k.open("msg", true, true, PID).unwrap();
     assert_eq!(k.open("msg", true, true, PID), Err(PIPE_NOT_AVAILABLE));
-    k.write(c1, b"first message").unwrap();
-    k.write(c1, b"second").unwrap();
-    k.write(c2, b"to two").unwrap();
+    k.write1(c1, b"first message").unwrap();
+    k.write1(c1, b"second").unwrap();
+    k.write1(c2, b"to two").unwrap();
     let p = k.peek(m1, 4).unwrap();
     assert_eq!((p.data.as_slice(), p.avail, p.msg_len), (&b"firs"[..], 19, 13));
     assert_eq!(rd(&mut k, m1, 5), ok("first", true));
@@ -157,29 +164,29 @@ fn message_mode() {
     let i = k.info(c1).unwrap();
     assert_eq!((i.msg_read, i.instances), (false, Some(2)));
     assert_eq!(k.set_mode(c1, Some(true), None), SUCCESS);
-    k.write(m1, b"ab").unwrap();
-    k.write(m1, b"cd").unwrap();
+    k.write1(m1, b"ab").unwrap();
+    k.write1(m1, b"cd").unwrap();
     assert_eq!(rd(&mut k, c1, 1), ok("a", true));
     assert_eq!(rd(&mut k, c1, 10), ok("b", false));
     assert_eq!(rd(&mut k, c1, 10), ok("cd", false));
     assert_eq!(k.set_mode(m2, Some(false), None), SUCCESS);
-    k.write(c2, b"xy").unwrap();
-    k.write(c2, b"zw").unwrap();
+    k.write1(c2, b"xy").unwrap();
+    k.write1(c2, b"zw").unwrap();
     assert_eq!(rd(&mut k, m2, 10), ok("xyzw", false));
-    k.write(m1, b"pending").unwrap();
+    k.write1(m1, b"pending").unwrap();
     assert_eq!(k.transact(c1, b"q"), PIPE_BUSY);
     assert_eq!(rd(&mut k, c1, 100), ok("pending", false));
     assert_eq!(k.transact(c1, b"q"), SUCCESS);
     assert_eq!(rd(&mut k, m1, 100), ok("q", false));
     assert_eq!(k.transact(m2, b"q"), INVALID_READ_MODE);
     // an empty message is a message
-    k.write(m1, b"").unwrap();
+    k.write1(m1, b"").unwrap();
     assert_eq!(rd(&mut k, c1, 100), ok("", false));
     assert_eq!(k.read(c1, 100), Err(PENDING));
     k.release(c1, PID);
     k.release(c2, PID);
     assert_eq!(k.read(m1, 10), Err(PIPE_BROKEN));
-    assert_eq!(k.write(m1, b"x"), Err(PIPE_CLOSING));
+    assert_eq!(k.write1(m1, b"x"), Err(PIPE_CLOSING));
 }
 
 #[test]
@@ -188,7 +195,7 @@ fn one_way() {
     let s = named(&mut k, "in", 1, false, 1).unwrap();
     assert_eq!(k.open("in", true, true, PID), Err(ACCESS_DENIED));
     let c = k.open("in", false, true, PID).unwrap();
-    k.write(c, b"up").unwrap();
+    k.write1(c, b"up").unwrap();
     assert_eq!(rd(&mut k, s, 10), ok("up", false));
     let s = named(&mut k, "out", 2, false, 1).unwrap();
     assert_eq!(k.open("out", false, true, PID), Err(ACCESS_DENIED));
@@ -222,7 +229,7 @@ fn processes() {
     // the write end inherited by process 2, then closed by process 1
     k.add_ref(w, 2);
     k.release(w, 1);
-    k.write(w, b"from 2").unwrap();
+    k.write1(w, b"from 2").unwrap();
     assert_eq!(rd(&mut k, r, 10), ok("from 2", false));
     k.release_process(2);
     assert_eq!(k.read(r, 10), Err(PIPE_BROKEN));
@@ -250,7 +257,7 @@ proptest! {
         let (mut written, mut read) = (Vec::new(), Vec::new());
         for op in ops {
             match op {
-                Op::Write(d) => { prop_assert_eq!(k.write(w, &d), Ok(d.len() as u32)); written.extend(d); }
+                Op::Write(d) => { prop_assert_eq!(k.write1(w, &d), Ok(d.len() as u32)); written.extend(d); }
                 Op::Read(n) => match k.read(r, n) {
                     Ok((d, more)) => { prop_assert!(!more); prop_assert!(d.len() <= n as usize); prop_assert!(!d.is_empty() || n == 0); read.extend(d); }
                     Err(e) => { prop_assert_eq!(e, PENDING); prop_assert_eq!(read.len(), written.len()); }
@@ -279,7 +286,14 @@ proptest! {
         let mut part = Vec::new();
         for op in ops {
             match op {
-                Op::Write(d) => { k.write(c, &d).unwrap(); sent.push_back(d); }
+                Op::Write(d) => {
+                    // (done at once while the messages waiting fit the server's 512 bytes, as on
+                    // Windows; the message is in the queue either way)
+                    let waiting: usize = sent.iter().map(Vec::len).sum::<usize>() - part.len() + d.len();
+                    let want = if waiting <= 512 || d.is_empty() { Ok(d.len() as u32) } else { Err(PENDING) };
+                    prop_assert_eq!(k.write1(c, &d), want);
+                    sent.push_back(d);
+                }
                 Op::Read(n) => match k.read(s, n) {
                     Ok((d, more)) => {
                         part.extend(d);
@@ -362,7 +376,7 @@ fn process_records() {
     assert_eq!(k.resume(pid), 0);
     // the parent's write end closes; the child's (inherited) keeps the pipe open
     k.release(w, ROOT_PID);
-    k.write(w, b"x").unwrap();
+    k.write1(w, b"x").unwrap();
     assert!(k.terminate(pid, 9));
     k.exited(pid, 0);
     assert_eq!(k.exit_code(pid), Some(9));
@@ -434,7 +448,7 @@ proptest! {
         k.new_process(Proc { parent: PID, image: "C:\\a.exe".into(), cmdline: "a b".into(), cwd: "C:\\".into(), std: Some((1, 2, 3)), inherit: vec![(8, KRef::Sync { id: ev }), (12, KRef::Process { pid: 5, access: 1 })], ..Proc::default() });
         for op in ops {
             match op {
-                Op::Write(d) => { let _ = k.write(w, &d); let _ = k.write(c, &d); }
+                Op::Write(d) => { let _ = k.write1(w, &d); let _ = k.write1(c, &d); }
                 Op::Read(n) => { let _ = k.read(r, n); let _ = k.read(s, n); }
                 Op::Peek(n) => { k.set_event(ev, n % 2 == 0); }
             }
@@ -464,7 +478,7 @@ proptest! {
                 // _close of one of the write descriptors
                 1 if refs > 0 => { k.release(w, PID); refs -= 1; }
                 // _write through any of them
-                2 if refs > 0 => { prop_assert_eq!(k.write(w, &d), Ok(d.len() as u32)); written.extend(d); }
+                2 if refs > 0 => { prop_assert_eq!(k.write1(w, &d), Ok(d.len() as u32)); written.extend(d); }
                 // _read
                 _ => match k.read(r, 4) {
                     Ok((got, _)) => { prop_assert!(!got.is_empty()); read.extend(got); }
@@ -541,4 +555,195 @@ proptest! {
             prop_assert_eq!(back.take_vm_reply(id), k.take_vm_reply(id));
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// bounded pipes: a writer waits for the reader to make room (review P1-4)
+
+fn anon(k: &mut Kern, size: u32) -> (u32, u32) {
+    k.create_anon(size, PID)
+}
+
+#[test]
+fn a_write_past_the_buffer_waits_until_it_fits() {
+    let mut k = Kern::default();
+    let (r, w) = anon(&mut k, 16);
+    let mut st = Write::default();
+    // (100 bytes go in whole, PIPE_PIECE at a time, and the write waits while more than 16 wait)
+    assert_eq!(k.write(w, &[7; 100], &mut st), Err(PENDING));
+    assert_eq!(k.avail(r), 100);
+    assert_eq!(k.write(w, &[7; 100], &mut st), Err(PENDING));
+    assert_eq!(k.read(r, 83).map(|d| d.0.len()), Ok(83));
+    assert_eq!(k.write(w, &[7; 100], &mut st), Err(PENDING));
+    assert_eq!(k.read(r, 1).map(|d| d.0.len()), Ok(1));
+    assert_eq!(k.write(w, &[7; 100], &mut st), Ok(100));
+    // what fits is done at once
+    assert_eq!(k.write1(w, &[1; 10]), Err(PENDING));
+    assert_eq!(k.read(r, 100).map(|d| d.0.len()), Ok(26));
+    assert_eq!(k.write1(w, &[1; 16]), Ok(16));
+}
+
+#[test]
+fn a_long_write_goes_through_a_buffer_at_a_time() {
+    let mut k = Kern::default();
+    let (r, w) = anon(&mut k, 0);
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 + i / 251) as u8).collect();
+    let mut st = Write::default();
+    let mut got = Vec::new();
+    let mut done = false;
+    while !done {
+        match k.write(w, &data, &mut st) {
+            Ok(n) => { assert_eq!(n as usize, data.len()); done = true; }
+            Err(e) => assert_eq!(e, PENDING),
+        }
+        // (never more than the buffer's worth waits)
+        assert!(k.avail(r) <= 4096, "{} waiting", k.avail(r));
+        if let Ok((d, _)) = k.read(r, 1000) { got.extend(d); }
+    }
+    while let Ok((d, _)) = k.read(r, 5000) { got.extend(d); }
+    assert_eq!(got, data);
+}
+
+#[test]
+fn a_waiting_write_ends_with_the_reader() {
+    let mut k = Kern::default();
+    let (r, w) = anon(&mut k, 8);
+    let mut st = Write::default();
+    assert_eq!(k.write(w, &[1; 20], &mut st), Err(PENDING));
+    k.release(r, PID);
+    assert_eq!(k.write(w, &[1; 20], &mut st), Err(PIPE_BROKEN));
+    // read to the end before the reader closes: done
+    let (r, w) = anon(&mut k, 8);
+    let mut st = Write::default();
+    assert_eq!(k.write(w, &[1; 20], &mut st), Err(PENDING));
+    assert_eq!(k.read(r, 20).map(|d| d.0.len()), Ok(20));
+    k.release(r, PID);
+    assert_eq!(k.write(w, &[1; 20], &mut st), Ok(20));
+}
+
+#[test]
+fn messages_wait_whole_and_nonblocking_ends_do_not() {
+    let mut k = Kern::default();
+    let s = named(&mut k, "q", 3, true, 1).unwrap();
+    let c = k.open("q", true, true, PID).unwrap();
+    let mut st = Write::default();
+    assert_eq!(k.write(c, &[2; 600], &mut st), Err(PENDING));
+    assert_eq!(k.avail(s), 600);
+    // (an empty message is done at once)
+    assert_eq!(k.write1(c, b""), Ok(0));
+    assert_eq!(k.read(s, 100).map(|d| (d.0.len(), d.1)), Ok((100, true)));
+    assert_eq!(k.write(c, &[2; 600], &mut st), Ok(600));
+    assert_eq!(k.set_mode(c, None, Some(true)), SUCCESS);
+    assert_eq!(k.write1(c, &[3; 2000]), Ok(2000));
+}
+
+#[test]
+fn what_waits_in_pipes_is_bounded() {
+    let mut k = Kern::default();
+    let s = named(&mut k, "big", 3, true, 1).unwrap();
+    let c = k.open("big", true, true, PID).unwrap();
+    // a writer that never waits (overlapped writes left pending) fills only up to the quota
+    let mut n = 0;
+    loop {
+        match k.write1(c, &[0; 1 << 20]) {
+            Err(PENDING) => n += 1,
+            Err(e) => { assert_eq!(e, QUOTA_EXCEEDED); break; }
+            Ok(_) => unreachable!(),
+        }
+    }
+    assert_eq!(n, PIPE_QUOTA >> 20);
+    assert_eq!(win32(QUOTA_EXCEEDED), 1816);
+    // the kernel's state fits the processes' shared buffer (host/pre.js IPPAI_KERNEL_BYTES)
+    assert!(bytes(&k).len() < 32 << 20);
+    // reading makes room again
+    assert!(k.read(s, 1 << 20).is_ok());
+    assert_eq!(k.write1(c, &[0; 1 << 20]), Err(PENDING));
+}
+
+proptest! {
+    /// A writer and a reader taking turns at random, any buffer size: the bytes come out in
+    /// order and whole, at most the buffer's worth (or PIPE_PIECE) waits, a write is done only
+    /// once what waits fits the buffer, and every write ends once the reader keeps reading.
+    #[test]
+    fn bounded_byte_stream(size in prop_oneof![Just(0u32), 1u32..64, Just(4096), 5000u32..20000], writes in prop::collection::vec(0usize..30000, 1..8), reads in prop::collection::vec(1u32..9000, 1..40), seed in any::<u64>()) {
+        let mut k = Kern::default();
+        let (r, w) = anon(&mut k, size);
+        // (CreatePipe's 0 is 4096)
+        let room = if size == 0 { 4096 } else { size as usize };
+        let mut rng = seed;
+        let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+        let (mut written, mut got) = (Vec::new(), Vec::new());
+        let mut ri = 0;
+        for (i, len) in writes.iter().enumerate() {
+            let data: Vec<u8> = (0..*len).map(|j| (i * 31 + j) as u8).collect();
+            let mut st = Write::default();
+            let mut steps = 0;
+            loop {
+                steps += 1;
+                prop_assert!(steps < 100_000);
+                let tries = (next() % 3) as usize;
+                let mut res = Err(PENDING);
+                for _ in 0..=tries {
+                    res = k.write(w, &data, &mut st);
+                    if res != Err(PENDING) { break; }
+                }
+                prop_assert!(k.avail(r) as usize <= room.max(4096));
+                match res {
+                    Ok(n) => {
+                        prop_assert_eq!(n as usize, data.len());
+                        prop_assert!(k.avail(r) as usize <= room || data.is_empty());
+                        break;
+                    }
+                    Err(e) => prop_assert_eq!(e, PENDING),
+                }
+                let n = reads[ri % reads.len()]; ri += 1;
+                if let Ok((d, _)) = k.read(r, n) { got.extend(d); }
+            }
+            written.extend(data);
+        }
+        while let Ok((d, _)) = k.read(r, 7000) { got.extend(d); }
+        prop_assert_eq!(got, written);
+        // and through the state's bytes (what another process reads back) mid-write
+        let mut st = Write::default();
+        let _ = k.write(w, &[9; 9000], &mut st);
+        let mut b = bytes(&k);
+        let mut back = Kern::get(&mut b.as_slice()).unwrap();
+        let mut out = Vec::new();
+        loop {
+            match back.write(w, &[9; 9000], &mut st) {
+                Ok(_) => break,
+                Err(e) => prop_assert_eq!(e, PENDING),
+            }
+            if let Ok((d, _)) = back.read(r, 3000) { out.extend(d); }
+        }
+        while let Ok((d, _)) = back.read(r, 9000) { out.extend(d); }
+        prop_assert_eq!(out, vec![9; 9000]);
+        b.clear();
+    }
+}
+
+/// The real thing between two threads (kern::with / kern::block and their waits): 4 MiB through
+/// a 4 KiB pipe arrives whole, and the writer never gets more than the buffer ahead.
+#[test]
+fn threads_stream_through_a_small_pipe() {
+    let (r, w) = with(|k| k.create_anon(4096, PID)).0;
+    let data: std::sync::Arc<Vec<u8>> = std::sync::Arc::new((0..4u32 << 20).map(|i| (i ^ (i >> 9)) as u8).collect());
+    let d = data.clone();
+    let writer = std::thread::spawn(move || {
+        for part in d.chunks(100_000) {
+            let mut st = Write::default();
+            assert_eq!(block(None, &|| false, |k| k.write(w, part, &mut st)), Ok(part.len() as u32));
+        }
+        with(|k| k.release(w, PID));
+    });
+    let mut got = Vec::new();
+    loop {
+        match block(None, &|| false, |k| { let a = k.avail(r); k.read(r, 3000).map(|x| (x.0, a)) }) {
+            Ok((d, avail)) => { assert!(avail <= 4096); got.extend(d); }
+            Err(e) => { assert_eq!(e, PIPE_BROKEN); break; }
+        }
+    }
+    writer.join().unwrap();
+    with(|k| k.release(r, PID));
+    assert!(got == *data);
 }

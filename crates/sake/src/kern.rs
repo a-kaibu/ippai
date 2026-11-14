@@ -41,6 +41,7 @@ pub const INVALID_READ_MODE: u32 = 0xc000_00b4;
 pub const IO_TIMEOUT: u32 = 0xc000_00b5;
 pub const PIPE_EMPTY: u32 = 0xc000_00d9;
 pub const CANCELLED: u32 = 0xc000_0120;
+pub const QUOTA_EXCEEDED: u32 = 0xc000_0044;
 pub const PIPE_BROKEN: u32 = 0xc000_014b;
 
 /// The Win32 error for an NTSTATUS (RtlNtStatusToDosError, for the ones used here).
@@ -64,6 +65,7 @@ pub fn win32(status: u32) -> u32 {
         IO_TIMEOUT => 121,
         CANCELLED => 995,
         PIPE_BROKEN => 109,
+        QUOTA_EXCEEDED => 1816,
         _ => 317,
     }
 }
@@ -80,6 +82,9 @@ pub enum State {
 struct Msg {
     data: Vec<u8>,
     pos: usize,
+    /// the write it came from (its writer end's count): the write is done once the messages up
+    /// to it fit the reader's buffer (End::done)
+    id: u64,
 }
 impl Msg {
     fn left(&self) -> usize {
@@ -105,6 +110,9 @@ pub struct End {
     pub nonblock: bool,
     /// handle objects of each process that refer to it: (process id, count)
     refs: Vec<(u32, u32)>,
+    /// the writes to the connected end: the last one's id, and the last one that is done
+    sent: u64,
+    done: u64,
 }
 
 struct Pipe {
@@ -308,6 +316,18 @@ pub fn pipe_name(path: &str) -> Option<String> {
 
 /// PIPE_UNLIMITED_INSTANCES
 pub const UNLIMITED: u32 = 255;
+/// What may wait in all pipes together (Kern::write)
+pub const PIPE_QUOTA: usize = 8 << 20;
+/// The least of a byte-mode write that goes into the reader's queue at once, whatever its buffer
+const PIPE_PIECE: usize = 4096;
+
+/// A WriteFile's progress (Kern::write): its bytes in the reader's queue so far, and its last
+/// message's id there (0: nothing yet)
+#[derive(Default, Clone, Copy, Debug)]
+pub struct Write {
+    queued: usize,
+    id: u64,
+}
 
 pub struct NewPipe {
     /// PIPE_ACCESS_INBOUND (1: the server reads), OUTBOUND (2), DUPLEX (3)
@@ -374,6 +394,8 @@ impl Kern {
             msg_read: p.msg_read,
             nonblock: p.nonblock,
             refs: vec![(pid, 1)],
+            sent: 0,
+            done: 0,
         };
         let id = self.new_end(e);
         let pipe = self.pipes.get_mut(name).unwrap();
@@ -402,6 +424,8 @@ impl Kern {
             msg_read: false,
             nonblock: false,
             refs: vec![(pid, 1)],
+            sent: 0,
+            done: 0,
         };
         let id = self.new_end(e);
         self.pipes.get_mut(name).unwrap().listeners.remove(0);
@@ -536,26 +560,115 @@ impl Kern {
                 }
             }
         }
+        self.settle(e);
         self.changed();
         Ok((out, more))
     }
 
-    /// WriteFile: all of `data` (writes don't wait for the reader here).
-    pub fn write(&mut self, e: u32, data: &[u8]) -> Result<u32, u32> {
+    /// The buffer of reader end `e`: what may wait for it before its writer waits (Wine's
+    /// buffer_size: the server's in size, a client's out size).
+    fn room(end: &End) -> usize {
+        (if end.server { end.insize } else { end.outsize }) as usize
+    }
+
+    /// The bytes waiting in every pipe (bounded by PIPE_QUOTA).
+    fn queued(&self) -> usize {
+        self.ends.values().map(|e| e.queue.iter().map(Msg::left).sum::<usize>()).sum()
+    }
+
+    /// Reader end `e`'s queue changed: the writes of its writer that now fit its buffer are done
+    /// (Wine's reselect_write_queue: a message is done once what is left of it and of the ones
+    /// before it fits, or it was read; an empty one is done when it is written).
+    fn settle(&mut self, e: u32) {
+        let Some(end) = self.ends.get(&e) else { return };
+        let room = Self::room(end);
+        let mut done = 0;
+        let mut avail = 0;
+        for m in &end.queue {
+            avail += m.left();
+            if avail > room {
+                break;
+            }
+            done = m.id;
+        }
+        // (and everything before the first message still there: read)
+        let first = end.queue.front().map(|m| m.id.saturating_sub(1));
+        let Some(w) = end.conn else { return };
+        if let Some(we) = self.ends.get_mut(&w) {
+            let read = first.unwrap_or(we.sent);
+            we.done = we.done.max(done).max(read);
+        }
+    }
+
+    /// WriteFile of `data`: Ok(bytes) once it is done, PENDING while it waits for the reader
+    /// to make room, as on Windows (the reader's buffer, `room`). `w` is the write's own state:
+    /// ask again with the same `w` until it is no longer PENDING.
+    ///
+    /// A byte-mode write goes into the reader's queue a buffer's worth at a time; a message goes
+    /// whole and the write waits until it fits. A PIPE_NOWAIT end's writes are done at once.
+    /// What waits in all pipes together is at most PIPE_QUOTA (beyond: QUOTA_EXCEEDED), so the
+    /// kernel's state (the processes' shared buffer) stays small.
+    pub fn write(&mut self, e: u32, data: &[u8], w: &mut Write) -> Result<u32, u32> {
         let end = self.end(e)?;
-        match end.state {
-            State::Connected => {}
-            State::Disconnected => return Err(PIPE_DISCONNECTED),
-            State::Listening => return Err(PIPE_LISTENING),
-            State::Closing => return Err(PIPE_CLOSING),
+        if w.queued == 0 && w.id == 0 {
+            match end.state {
+                State::Connected => {}
+                State::Disconnected => return Err(PIPE_DISCONNECTED),
+                State::Listening => return Err(PIPE_LISTENING),
+                State::Closing => return Err(PIPE_CLOSING),
+            }
+            if !end.msg_type && data.is_empty() {
+                return Ok(0);
+            }
         }
-        if !end.msg_type && data.is_empty() {
-            return Ok(0);
+        let (msg_type, nonblock, conn, state) = (end.msg_type, end.nonblock, end.conn, end.state);
+        if w.queued < data.len() || w.id == 0 {
+            let Some(c) = conn.filter(|_| state == State::Connected) else { return Err(PIPE_BROKEN) };
+            let reader = &self.ends[&c];
+            let room = Self::room(reader).max(PIPE_PIECE);
+            let avail: usize = reader.queue.iter().map(Msg::left).sum();
+            let whole = msg_type || nonblock;
+            let n = if whole {
+                data.len()
+            } else {
+                // (a buffer of 0 bytes still passes PIPE_PIECE at a time: the write then waits
+                // for it to be read)
+                (data.len() - w.queued).min(room.saturating_sub(avail)).min(PIPE_QUOTA / 8)
+            };
+            if n == 0 && !whole {
+                return Err(PENDING);
+            }
+            if self.queued() + n > PIPE_QUOTA {
+                if w.id == 0 {
+                    return Err(QUOTA_EXCEEDED);
+                }
+                return Err(PENDING);
+            }
+            let end = self.ends.get_mut(&e).unwrap();
+            end.sent += 1;
+            w.id = end.sent;
+            let piece = data[w.queued..w.queued + n].to_vec();
+            w.queued += n;
+            self.ends.get_mut(&c).unwrap().queue.push_back(Msg { data: piece, pos: 0, id: w.id });
+            self.settle(c);
+            self.changed();
+            // (an empty message is done at once, wherever it is in the queue)
+            if nonblock || data.is_empty() {
+                return Ok(data.len() as u32);
+            }
         }
-        let c = end.conn.expect("a connected end");
-        self.ends.get_mut(&c).unwrap().queue.push_back(Msg { data: data.to_vec(), pos: 0 });
-        self.changed();
-        Ok(data.len() as u32)
+        let end = &self.ends[&e];
+        if end.done >= w.id && w.queued == data.len() {
+            return Ok(data.len() as u32);
+        }
+        if end.done >= w.id {
+            // (that piece fits: the next one goes in)
+            return self.write(e, data, w);
+        }
+        if end.state != State::Connected {
+            return Err(PIPE_BROKEN);
+        }
+        Err(PENDING)
     }
 
     /// PeekNamedPipe of up to `max` bytes.
@@ -653,7 +766,14 @@ impl Kern {
         if !end.queue.is_empty() {
             return PIPE_BUSY;
         }
-        self.ends.get_mut(&c).unwrap().queue.push_back(Msg { data: data.to_vec(), pos: 0 });
+        if self.queued() + data.len() > PIPE_QUOTA {
+            return QUOTA_EXCEEDED;
+        }
+        let end = self.ends.get_mut(&e).unwrap();
+        end.sent += 1;
+        let id = end.sent;
+        self.ends.get_mut(&c).unwrap().queue.push_back(Msg { data: data.to_vec(), pos: 0, id });
+        self.settle(c);
         self.changed();
         SUCCESS
     }
@@ -1111,9 +1231,16 @@ pub fn with<R>(f: impl FnOnce(&mut Kern) -> R) -> (R, u64) {
     let changed = l.k.gen != before;
     let gen = if shared {
         if changed {
-            host::store(&l.k);
-            now = host::bump();
-            l.loaded = Some(now);
+            if host::store(&l.k) {
+                now = host::bump();
+                l.loaded = Some(now);
+            } else {
+                // (the others keep the state as it was, and so does this process: read again)
+                l.loaded = None;
+                if let Some(k) = host::load() {
+                    l.k = k;
+                }
+            }
         }
         host::unlock();
         now as u64
@@ -1144,7 +1271,10 @@ pub fn share() -> bool {
     l.k.procs.entry(crate::pid()).or_default();
     l.k.changed();
     host::lock();
-    host::store(&l.k);
+    if !host::store(&l.k) {
+        host::unlock();
+        return false;
+    }
     l.loaded = Some(host::bump());
     host::start_sharing();
     host::unlock();
@@ -1278,8 +1408,8 @@ impl Enc for (u32, u32, u32) {
         Some((a, b, c))
     }
 }
-crate::enc_struct!(Msg { data, pos });
-crate::enc_struct!(End { server, pipe, state, conn, queue, msg_type, outsize, insize, max, msg_read, nonblock, refs });
+crate::enc_struct!(Msg { data, pos, id });
+crate::enc_struct!(End { server, pipe, state, conn, queue, msg_type, outsize, insize, max, msg_read, nonblock, refs, sent, done });
 crate::enc_struct!(Pipe { max, instances, sharing, msg_type, outsize, insize, timeout, listeners });
 crate::enc_struct!(Proc { parent, image, cmdline, cwd, exit, kill, suspend, inherit, std, service });
 impl Enc for Sync {

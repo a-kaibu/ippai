@@ -100,13 +100,26 @@ pub fn load() -> Option<Kern> {
     #[cfg(not(target_os = "emscripten"))]
     None
 }
-pub fn store(k: &Kern) {
+/// Writes the state into the shared buffer: false (and the buffer as it was) when it does not
+/// fit, which the pipes' quota (kern::PIPE_QUOTA) keeps from happening.
+pub fn store(k: &Kern) -> bool {
     let mut v = Vec::new();
     k.put(&mut v);
     #[cfg(target_os = "emscripten")]
     {
-        let ok = unsafe { sys::vnhost_kern_put(v.as_ptr(), v.len()) };
-        assert!(ok != 0, "sake: the shared kernel state outgrew its buffer ({} bytes)", v.len());
+        let ok = unsafe { sys::vnhost_kern_put(v.as_ptr(), v.len()) } != 0;
+        if !ok {
+            static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("sake: the shared kernel state ({} bytes) does not fit its buffer; the change is dropped", v.len());
+            }
+        }
+        return ok;
+    }
+    #[cfg(not(target_os = "emscripten"))]
+    {
+        let _ = v;
+        true
     }
 }
 /// The host's `i`th ended process: (id, exit code).
