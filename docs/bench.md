@@ -46,6 +46,14 @@ frame (`bench_frames` prints `BENCH-MARK` and `BENCH-FRAMES` around them and pau
 each, so the times of other frames stay out), and the scenario's `gpu_busy` the GPU time per
 second of play. On SwiftShader it is the software rasterizer's time.
 
+To see where the time goes in a scenario, `BENCH_PROFILE=DIR` (`tests/bench/profile.mjs`) traces
+the cold play with V8's sampler on every renderer thread (the page, the game's pthreads, the
+network worker, the audio worklet): `DIR/<build>-<time>/trace.json` for Perfetto or DevTools and
+`summary.txt`, each thread's time on the CPU (from `/proc`: a sampled thread blocked in
+`Atomics.wait` inside wasm still looks busy there) with its busiest scripts and functions. Build
+sake with `SAKE_LDEXTRA=--profiling-funcs` for wasm function names. `node tests/bench/profile.mjs
+trace.json` summarizes a trace again.
+
 The report (job summary, artifact `bench-report`) lists every metric with the change against the
 previous commit; a change is marked when it is over 3% and every round of one build beat every
 round of the other. The run fails when the results can't be trusted or something broke: a case

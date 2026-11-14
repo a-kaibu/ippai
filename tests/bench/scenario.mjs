@@ -29,6 +29,7 @@
 // plus the game's own numbers (boot_to_title, frame_p50/p95/p99, fade_ms, movie_p95, movie_late).
 import { readdirSync, readFileSync } from "node:fs";
 import { shots } from "./shots.mjs";
+import { profile } from "./profile.mjs";
 
 const linux = process.platform === "linux";
 // (BENCH_VERBOSE=1: the page's lines as they come; BENCH_URL_EXTRA="&d3dstats" and the like: more
@@ -210,6 +211,8 @@ export async function runScenario(browser, build, c, timeout) {
     let peak = rssMb();
     const sampler = setInterval(() => (peak = Math.max(peak, rssMb())), 250);
     const t0 = Date.now();
+    // (BENCH_PROFILE=DIR: CPU profiles of the page and its workers for the cold play, profile.mjs)
+    const stopProfile = process.env.BENCH_PROFILE ? await profile(browser, page, `${process.env.BENCH_PROFILE}/${build.name}-${Date.now()}`) : null;
     await page.goto(url(c.args));
     const title = await next((e) => e.kind === "state" && e.what === "title", "the title");
     metrics["cold.startup"] = title.t - t0;
@@ -287,6 +290,7 @@ export async function runScenario(browser, build, c, timeout) {
     metrics.chunks = chunks;
     metrics.chunk_mb = chunkBytes / 1048576;
     if (!ended.v) await next(() => false, "the end").catch(() => {});
+    await stopProfile?.();
     await shot.settle();
     await page.close();
 
