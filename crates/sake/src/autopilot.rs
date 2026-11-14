@@ -12,7 +12,8 @@
 //!   4. else the default push button, else (a dialog with no buttons it knows) Enter.
 //! A click is the mouse's: move, down and up at the control's centre, through the input queue
 //! as the page's clicks come. The same action on the same unchanged windows at most
-//! SAKE_AUTO_REPEAT (5) times. SAKE_AUTO_LOG prints each action ("sake auto: ...").
+//! SAKE_AUTO_REPEAT (5) times. SAKE_AUTO_LOG prints each action ("sake auto: ..."), =2 the
+//! windows and their controls too, whenever they change.
 //! Message boxes need nothing: sake answers them itself (user::box_answer).
 
 /// A control as decide() sees it.
@@ -166,7 +167,13 @@ fn snapshot() -> Vec<Top> {
             }
             let mut ctrls = Vec::new();
             let mut todo = w.children.clone();
+            // (each window once: a child list that leads back up must not loop)
+            let mut seen = std::collections::HashSet::new();
             while let Some(k) = todo.pop() {
+                if !seen.insert(k) {
+                    eprintln!("sake auto: window {k:#x} reached twice under {h:#x}");
+                    continue;
+                }
                 let Some(c) = s.wins.get(&k) else { continue };
                 todo.extend(c.children.iter().copied());
                 if !shown(k) {
@@ -250,11 +257,23 @@ pub fn start() {
     let ms: u64 = std::env::var("SAKE_AUTO_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
     let repeat: u32 = std::env::var("SAKE_AUTO_REPEAT").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
     let log = std::env::var_os("SAKE_AUTO_LOG").is_some();
+    // (SAKE_AUTO_LOG=2: also the windows, each time they change)
+    let windows = std::env::var("SAKE_AUTO_LOG").is_ok_and(|v| v == "2");
+    let mut shown: Option<Vec<Top>> = None;
     std::thread::spawn(move || {
         let mut pilot = Pilot::new(repeat);
         loop {
             std::thread::sleep(std::time::Duration::from_millis(ms));
             let tops = snapshot();
+            if windows && shown.as_deref() != Some(&tops) {
+                for t in &tops {
+                    eprintln!("sake auto: window {:#x} {:?} dialog {} enabled {} active {}", t.h, t.text, t.dialog, t.enabled, t.active);
+                    for c in &t.ctrls {
+                        eprintln!("sake auto:   {:#x} {:?} {:?} checked {} enabled {} at {:?}", c.h, c.kind, c.text, c.checked, c.enabled, c.at);
+                    }
+                }
+                shown = Some(tops.clone());
+            }
             if let Some(a) = pilot.step(&tops) {
                 if log {
                     let w = front(&tops).map(|t| t.text.clone()).unwrap_or_default();

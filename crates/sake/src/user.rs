@@ -260,6 +260,10 @@ struct Queue {
     quit: Option<u32>,
     /// QS_* bits of messages that came since the last GetQueueStatus (posted, sent)
     fresh: u32,
+    /// how many posted and input messages (and whether WM_QUIT) were there when the thread last
+    /// looked at its queue with PeekMessage / GetMessage: MsgWaitForMultipleObjects without
+    /// MWMO_INPUTAVAILABLE wakes only for input that came since (tests/winref/probes/msgwait.c)
+    seen: (usize, usize, bool),
 }
 
 pub struct Menu {
@@ -1731,6 +1735,44 @@ pub fn deliver_remote() {
     }
 }
 
+/// CREATESTRUCT's lpszName and lpszClass for the window procedure: as given when it takes the
+/// same character set as the CreateWindowEx called (or is sake's own), else copies converted
+/// to its set (heap blocks, `tmp`, freed once WM_CREATE returned). Atoms stay as they are.
+fn cs_strings(name: u32, cls: u32, wide: bool, class_wide: bool, class_proc: u32) -> (u32, u32, Vec<u32>) {
+    if wide == class_wide || crate::api::name_of(class_proc).is_some() {
+        return (name, cls, Vec::new());
+    }
+    let mut tmp = Vec::new();
+    let mut conv = |p: u32| {
+        if p < 0x10000 {
+            return p;
+        }
+        let q = if wide {
+            let a = crate::text::w2a(&wstr(p));
+            let q = mem::heap_alloc(a.len() as u32 + 1, true);
+            mem::write(q, &a);
+            q
+        } else {
+            let w = a2w(&cstr(p));
+            let q = mem::heap_alloc(2 * (w.len() as u32 + 1), true);
+            for (i, u) in w.iter().enumerate() {
+                w16(q + 2 * i as u32, *u);
+            }
+            q
+        };
+        tmp.push(q);
+        q
+    };
+    let (n, c) = (conv(name), conv(cls));
+    (n, c, tmp)
+}
+
+fn free_all(blocks: &[u32]) {
+    for &b in blocks {
+        mem::heap_free(b);
+    }
+}
+
 fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     let (ex, cls_p, name_p, mut style) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let (mut x, mut y, mut cx, mut cy) = (c.i(4), c.i(5), c.i(6), c.i(7));
@@ -1812,9 +1854,9 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
             }
         }
         resize_surface(s.wins.get_mut(&h).unwrap());
-        Some((h, s.classes[ci].name.clone()))
+        Some((h, s.classes[ci].name.clone(), s.classes[ci].unicode, s.classes[ci].proc_))
     });
-    let Some((h, cname)) = made else {
+    let Some((h, cname, class_wide, class_proc)) = made else {
         eprintln!("sake: CreateWindowEx: no class {}", if cls_p < 0x10000 { format!("#{cls_p}") } else { arg_str(cls_p, wide) });
         w32(crate::cur().teb + crate::teb_last_error(), 1407);
         return 0;
@@ -1830,7 +1872,11 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     let x64 = mem::x64();
     let cs = (save - if x64 { 0x100 } else { 0x80 }) & !15;
     c.cpu.regs[koji::ESP] = cs - 16;
-    let fields = [param, inst, menu, parent, cy as u32, cx as u32, y as u32, x as u32, style, name_p, cls_p, ex];
+    // (the strings in the window procedure's own character set: a class registered with
+    // RegisterClassA gets ANSI ones from CreateWindowExW, as Windows converts them; InstallShield
+    // 12's is_gif_class control, made by the dialog manager, finds its GIF by its name)
+    let (cs_name, cs_cls, cs_tmp) = cs_strings(name_p, cls_p, wide, class_wide, class_proc);
+    let fields = [param, inst, menu, parent, cy as u32, cx as u32, y as u32, x as u32, style, cs_name, cs_cls, ex];
     if x64 {
         // (lpCreateParams, hInstance, hMenu, hwndParent: 8 bytes; cy cx y x style; name and
         // class: 8 bytes; dwExStyle)
@@ -1847,6 +1893,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     mem::wp(cbtw, cs);
     mem::wp(cbtw + mem::ps(), 0);
     if cbt(c, 3, h, cbtw) {
+        free_all(&cs_tmp);
         c.cpu.regs[koji::ESP] = save;
         destroy(c, h);
         return 0;
@@ -1885,6 +1932,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     }
     let ok = send(c, h, 0x81, 0, cs);
     if ok == 0 {
+        free_all(&cs_tmp);
         c.cpu.regs[koji::ESP] = save;
         destroy(c, h);
         return 0;
@@ -1895,10 +1943,12 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     wr.write(rc);
     send(c, h, 0x83, 0, rc);
     if send(c, h, 0x1, 0, cs) == 0xffff_ffff {
+        free_all(&cs_tmp);
         c.cpu.regs[koji::ESP] = save;
         destroy(c, h);
         return 0;
     }
+    free_all(&cs_tmp);
     c.cpu.regs[koji::ESP] = save;
     if !is_window(h) {
         return 0;
@@ -3604,6 +3654,14 @@ fn matches(m: &Msg, hwnd: u32, lo: u32, hi: u32) -> bool {
 
 /// The next message for this thread (PeekMessage); `remove` takes it off the queue.
 fn next_msg(hwnd: u32, lo: u32, hi: u32, remove: bool) -> Option<Msg> {
+    let m = take_msg(hwnd, lo, hi, remove);
+    let me = crate::cur().tid;
+    with(|s| {
+        s.queues.entry(me).or_default().looked();
+    });
+    m
+}
+fn take_msg(hwnd: u32, lo: u32, hi: u32, remove: bool) -> Option<Msg> {
     let me = crate::cur().tid;
     with(|s| {
         let q = s.queues.entry(me).or_default();
@@ -3689,6 +3747,23 @@ fn queued(s: &State, me: u32, mask: u32) -> bool {
             || mask & 0x40 != 0 && !q.sent.is_empty()
     }) || mask & 0x20 != 0 && s.wins.iter().any(|(&h, w)| w.tid == me && !w.update.empty() && shown_tree(s, h))
 }
+/// `queued`, counting posted and input messages only when more came since the thread last
+/// looked (`Queue::seen`); sent messages, paint and timers as `queued`
+fn queued_new(s: &State, me: u32, mask: u32) -> bool {
+    s.queues.get(&me).is_some_and(|q| q.came_since_looked(mask)) || queued(s, me, mask & !0x50f)
+}
+impl Queue {
+    /// PeekMessage / GetMessage looked at the queue
+    fn looked(&mut self) {
+        self.seen = (self.posted.len(), self.input.len(), self.quit.is_some());
+    }
+    /// posted (QS_POSTMESSAGE, QS_ALLPOSTMESSAGE) or input (QS_INPUT) messages that came since
+    fn came_since_looked(&self, mask: u32) -> bool {
+        let (posted, input, quit) = self.seen;
+        mask & 0x108 != 0 && (self.posted.len() > posted || self.quit.is_some() && !quit)
+            || mask & 0x407 != 0 && self.input.len() > input
+    }
+}
 fn has_work_of(mask: u32) -> bool {
     let me = crate::cur().tid;
     with(|s| queued(s, me, mask))
@@ -3696,10 +3771,11 @@ fn has_work_of(mask: u32) -> bool {
 
 /// Blocks until this thread has a message, a handle is signaled or `ms` passes.
 fn wait_msgs(handles: &[u32], all: bool, ms: u32) -> u32 {
-    wait_msgs_of(handles, all, ms, QS_ALL, false)
+    wait_msgs_of(handles, all, ms, QS_ALL, false, false)
 }
-/// (`apc`: an APC queued for the thread ends the wait too)
-fn wait_msgs_of(handles: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -> u32 {
+/// (`apc`: an APC queued for the thread ends the wait too; `new`: only input that came since
+/// the thread last looked, `queued_new`)
+fn wait_msgs_of(handles: &[u32], all: bool, ms: u32, mask: u32, apc: bool, new: bool) -> u32 {
     start_input();
     let timer = next_timer();
     let ms = match timer {
@@ -3712,7 +3788,7 @@ fn wait_msgs_of(handles: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -> u3
         let s = STATE.try_lock();
         apc && crate::apc::pending(me)
             || match s {
-                Ok(g) => g.as_ref().is_some_and(|s| queued(s, me, mask)),
+                Ok(g) => g.as_ref().is_some_and(|s| if new { queued_new(s, me, mask) } else { queued(s, me, mask) }),
                 Err(_) => true,
             }
     };
@@ -3790,7 +3866,7 @@ fn WaitMessage(_: &mut Ctx) -> u32 {
 fn MsgWaitForMultipleObjects(c: &mut Ctx) -> u32 {
     let (n, hs, all, ms, mask) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3), c.a(4));
     let hs: Vec<u32> = (0..n.min(64)).map(|i| mem::rp(hs + mem::ps() * i)).collect();
-    msg_wait(c, &hs, all, ms, mask, false)
+    msg_wait(c, &hs, all, ms, mask, false, false)
 }
 fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     let (n, hs, ms, mask, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
@@ -3799,7 +3875,7 @@ fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     if alertable && crate::apc::run(c) {
         return crate::apc::WAIT_IO_COMPLETION;
     }
-    let r = msg_wait(c, &hs, flags & 1 != 0, ms, mask, alertable);
+    let r = msg_wait(c, &hs, flags & 1 != 0, ms, mask, alertable, flags & 4 != 0);
     if alertable && r == n && crate::apc::run(c) { crate::apc::WAIT_IO_COMPLETION } else { r }
 }
 /// A due timer of this thread's (QS_TIMER: its WM_TIMER is as good as posted)
@@ -3811,8 +3887,11 @@ fn timer_due() -> bool {
 /// MsgWaitForMultipleObjects(Ex): input of the `mask` kinds (a message ends the wait before a
 /// signaled handle, as on Windows) or a handle; with `all` (MWMO_WAITALL), every handle AND
 /// input, the handles taken only then (tests/winref/probes/msgwait.c). WAIT_OBJECT_0 + n for
-/// input; an APC (`apc`) also answers n, for the caller to run it.
-fn msg_wait(c: &mut Ctx, hs: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -> u32 {
+/// input; an APC (`apc`) also answers n, for the caller to run it. Without `available`
+/// (MWMO_INPUTAVAILABLE) posted and input messages already there when the thread last peeked
+/// do not count: InstallShield's launcher waits for msiexec with PeekMessage(PM_NOREMOVE) between
+/// waits and a message nobody removes.
+fn msg_wait(c: &mut Ctx, hs: &[u32], all: bool, ms: u32, mask: u32, apc: bool, available: bool) -> u32 {
     const TIMEOUT: u32 = 0x102;
     let n = hs.len() as u32;
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
@@ -3826,7 +3905,7 @@ fn msg_wait(c: &mut Ctx, hs: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -
         if apc && crate::apc::pending(me) {
             return n;
         }
-        let input = has_work_of(mask) || mask & 0x10 != 0 && timer_due();
+        let input = with(|s| if available { queued(s, me, mask) } else { queued_new(s, me, mask) }) || mask & 0x10 != 0 && timer_due();
         if input {
             if !all {
                 return n;
@@ -3843,7 +3922,7 @@ fn msg_wait(c: &mut Ctx, hs: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -
             return TIMEOUT;
         }
         // (with `all` the handles are looked at between short waits for input)
-        let r = if all { wait_msgs_of(&[], false, left.min(10), mask, apc) } else { wait_msgs_of(hs, false, left, mask, apc) };
+        let r = if all { wait_msgs_of(&[], false, left.min(10), mask, apc, !available) } else { wait_msgs_of(hs, false, left, mask, apc, !available) };
         if !all && r != TIMEOUT && r != n {
             return r;
         }
@@ -6758,6 +6837,14 @@ pub fn wsprintf_format(f: &[u16]) -> Vec<u16> {
             None => {
                 out.extend_from_slice(&f[start..]);
             }
+            // "%#04x": wsprintf's width is the digits' alone, the 0x before them (InstallShield
+            // 12's launcher names its strings file "%#04x.ini" of 0x411: 0x0411.ini, not the
+            // C runtime's 0x411)
+            Some(&t) if (t == b'x' as u16 || t == b'X' as u16) && hex_prefix_apart(&f[start + 1..i]) => {
+                out.extend([b'0' as u16, t]);
+                out.push(b'%' as u16);
+                out.extend(f[start + 1..=i].iter().copied().filter(|&ch| ch != b'#' as u16));
+            }
             Some(&t) if t < 0x80 && b"%cCdisSuxXp".contains(&(t as u8)) => out.extend_from_slice(&f[start..=i]),
             Some(&t) => out.push(t),
         }
@@ -6765,6 +6852,16 @@ pub fn wsprintf_format(f: &[u16]) -> Vec<u16> {
     }
     out
 }
+/// Whether a %x conversion's flags and width (`spec`, between '%' and the type) have '#' with a
+/// width that pads with zeros or on the right: there the "0x" goes before the padded digits.
+/// (Right-aligned with spaces, or no width, is left to the C runtime's rule.)
+fn hex_prefix_apart(spec: &[u16]) -> bool {
+    let flags: Vec<u16> = spec.iter().copied().take_while(|&ch| b"-#0 +".iter().any(|&b| b as u16 == ch)).collect();
+    let has = |b: u8| flags.contains(&(b as u16));
+    let width = spec.get(flags.len()).is_some_and(|&ch| (b'1' as u16..=b'9' as u16).contains(&ch));
+    has(b'#') && width && (has(b'0') || has(b'-'))
+}
+
 /// The output: 1024 characters at most, and a NUL
 const WSPRINTF_MAX: usize = 1024;
 fn wsprintf_a(dst: u32, fmt: u32, va: &mut crate::misc::VaArgs) -> u32 {
@@ -7139,6 +7236,9 @@ fn set_extra32(h: u32, off: usize, v: u32) {
     });
 }
 
+/// The property a dialog keeps its font in (WM_SETFONT, WM_GETFONT), as PASSWORD_CHAR
+const DLG_FONT: &str = "sake:dialogfont";
+
 fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let p = extra32(h, dwlp_dlgproc());
@@ -7152,6 +7252,13 @@ fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
     match m {
         0x14 => DefDlgProcA(c),
         0x110 => 1,
+        // WM_SETFONT / WM_GETFONT: the dialog keeps its font (the template's, DS_SETFONT), as
+        // DefDlgProc does; InstallShield 12's launcher makes its own from GetObject of it
+        0x30 => {
+            set_prop(h, DLG_FONT, Some(wp));
+            0
+        }
+        0x31 => prop(h, DLG_FONT).unwrap_or(0),
         // DM_GETDEFID: MAKELONG(id, DC_HASDEFID) of the BS_DEFPUSHBUTTON child, also one in a
         // visible, enabled WS_EX_CONTROLPARENT child (a wizard's page dialog holding the
         // buttons: 姦淫特急『松葉』体験版's installer; Wine's DEFDLG_FindDefButton)
@@ -7383,7 +7490,10 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
                 _ => "ComboBox",
             }),
         };
-        let ctl = gcall(c, "user32", "CreateWindowExW", &[ex2, cls, 0, st | 0x4000_0000, ix as u32, iy as u32, iw as u32, ih as u32, dlg, id, inst, if extra != 0 { r3 + 2 } else { 0 }]);
+        // (the title as the window name: its WM_NCCREATE / WM_CREATE see it, as on Windows; an
+        // ordinal one, a picture static's, is loaded below)
+        let name = ts.filter(|&t| r16(t) != 0).unwrap_or(0);
+        let ctl = gcall(c, "user32", "CreateWindowExW", &[ex2, cls, name, st | 0x4000_0000, ix as u32, iy as u32, iw as u32, ih as u32, dlg, id, inst, if extra != 0 { r3 + 2 } else { 0 }]);
         if ctl == 0 {
             continue;
         }
@@ -8155,6 +8265,56 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    fn msg(n: u32) -> Msg {
+        Msg { hwnd: 0, msg: 0x400 + n, w: 0, l: 0, time: 0, x: 0, y: 0 }
+    }
+
+    #[test]
+    fn peeked_messages_do_not_wake_again() {
+        let mut q = Queue::default();
+        assert!(!q.came_since_looked(0x4ff));
+        q.posted.push_back(msg(0));
+        assert!(q.came_since_looked(0x8) && q.came_since_looked(0x100) && !q.came_since_looked(0x7), "a post wakes the post kinds only");
+        assert!(q.came_since_looked(0x8), "waiting is not looking (msgwait.c)");
+        q.looked();
+        assert!(!q.came_since_looked(0x4ff), "peeked with PM_NOREMOVE: the launcher's wait for msiexec");
+        q.input.push_back(msg(1));
+        assert!(q.came_since_looked(0x4) && !q.came_since_looked(0x8));
+        q.looked();
+        q.quit = Some(3);
+        assert!(q.came_since_looked(0x8));
+        q.looked();
+        assert!(!q.came_since_looked(0x4ff));
+    }
+
+    proptest! {
+        /// Any run of posts, input, quits, removals and looks: the wait wakes for a kind exactly
+        /// when a message of that kind arrived after the last look and the queue holds more of it
+        /// than then (a model that counts arrivals since the look minus removals).
+        #[test]
+        fn wakes_for_what_came_since_the_look(ops in proptest::collection::vec(0u8..6, 0..60)) {
+            let mut q = Queue::default();
+            // (arrivals since the last look, kept against the queue's length then)
+            let (mut posted_then, mut input_then, mut quit_then) = (0usize, 0usize, false);
+            for op in ops {
+                match op {
+                    0 => q.posted.push_back(msg(0)),
+                    1 => q.input.push_back(msg(1)),
+                    2 => q.quit = Some(1),
+                    // removals happen in PeekMessage / GetMessage, which look too
+                    3 => { q.posted.pop_front(); q.looked(); posted_then = q.posted.len(); input_then = q.input.len(); quit_then = q.quit.is_some(); }
+                    4 => { q.input.pop_front(); q.looked(); posted_then = q.posted.len(); input_then = q.input.len(); quit_then = q.quit.is_some(); }
+                    _ => { q.looked(); posted_then = q.posted.len(); input_then = q.input.len(); quit_then = q.quit.is_some(); }
+                }
+                let post = q.posted.len() > posted_then || q.quit.is_some() && !quit_then;
+                prop_assert_eq!(q.came_since_looked(0x8), post);
+                prop_assert_eq!(q.came_since_looked(0x7), q.input.len() > input_then);
+                prop_assert_eq!(q.came_since_looked(0x4ff), post || q.input.len() > input_then);
+                prop_assert!(!q.came_since_looked(0x40 | 0x20 | 0x10), "sent, paint and timers are not counted here");
+            }
+        }
+    }
+
     #[test]
     fn shown_chain_cases() {
         // 1 top-level visible, 2 its visible child, 3 a hidden top-level, 4 a visible child of 3
@@ -8386,6 +8546,10 @@ mod tests {
         assert_eq!(wsprintf_format(&u("%5.2g%n%q")), u("gnq"));
         assert_eq!(wsprintf_format(&u("tail %")), u("tail %"));
         assert_eq!(wsprintf_format(&u("%05")), u("%05"));
+        // ("0x" apart from the zero-padded or left-aligned digits; the rest as it was)
+        assert_eq!(wsprintf_format(&u("%#04x.ini")), u("0x%04x.ini"));
+        assert_eq!(wsprintf_format(&u("%#08X|%-#6x|%#x|%#6x|%04x")), u("0X%08X|0x%-6x|%#x|%#6x|%04x"));
+        assert_eq!(wsprintf_format(&u("%#04lx")), u("0x%04lx"));
     }
 
     #[test]
@@ -8851,6 +9015,69 @@ mod client_edge_tests {
                     if in_ring && w - 2 * off >= 4 && h - 2 * off >= 4 { prop_assert!(drawn, "ring pixel {},{} not drawn", x, y); }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod create_struct_tests {
+    use super::*;
+    use crate::test_guest::enter;
+    use proptest::prelude::*;
+
+    fn put_w(s: &str) -> u32 {
+        let w: Vec<u16> = s.encode_utf16().collect();
+        let p = mem::heap_alloc(2 * (w.len() as u32 + 1), true);
+        for (i, u) in w.iter().enumerate() {
+            w16(p + 2 * i as u32, *u);
+        }
+        p
+    }
+    fn put_a(s: &str) -> u32 {
+        let a = crate::text::s2a(s);
+        let p = mem::heap_alloc(a.len() as u32 + 1, true);
+        mem::write(p, &a);
+        p
+    }
+
+    /// A procedure of the guest's (no trap of sake's)
+    const GUEST_PROC: u32 = 0x40_1000;
+
+    #[test]
+    fn strings_for_the_procedure() {
+        let _g = enter();
+        let (n, c) = (put_w("IDR_GIF1"), put_w("is_gif_class"));
+        // W create, A class: ANSI copies (InstallShield 12's is_gif_class)
+        let (n2, c2, tmp) = cs_strings(n, c, true, false, GUEST_PROC);
+        assert_eq!((cstr(n2), cstr(c2), tmp.len()), (b"IDR_GIF1".to_vec(), b"is_gif_class".to_vec(), 2));
+        free_all(&tmp);
+        // the same set, or sake's own procedure: as given
+        assert_eq!(cs_strings(n, c, true, true, GUEST_PROC), (n, c, vec![]));
+        let trap = crate::api::export("user32", "DefWindowProcW");
+        assert_eq!(cs_strings(n, c, true, false, trap), (n, c, vec![]));
+        // atoms and no name stay
+        let (n3, c3, tmp) = cs_strings(0, 0xc003, true, false, GUEST_PROC);
+        assert_eq!((n3, c3, tmp.len()), (0, 0xc003, 0));
+        // A create, W class: UTF-16 copies
+        let a = put_a("ゲーム");
+        let (n4, _, tmp) = cs_strings(a, 0xc003, false, true, GUEST_PROC);
+        assert_eq!(String::from_utf16_lossy(&wstr(n4)), "ゲーム");
+        assert_eq!(tmp.len(), 1);
+        free_all(&tmp);
+    }
+
+    proptest! {
+        /// Converted names say what they said, in the procedure's set.
+        #[test]
+        fn converted_names_say_the_same(t in "[A-Za-z0-9_ あ-んア-ン漢字]{1,16}", from_wide in any::<bool>()) {
+            let _g = enter();
+            let p = if from_wide { put_w(&t) } else { put_a(&t) };
+            let (q, _, tmp) = cs_strings(p, 0xc003, from_wide, !from_wide, GUEST_PROC);
+            let back = if from_wide { crate::text::a2s(&cstr(q)) } else { String::from_utf16_lossy(&wstr(q)) };
+            prop_assert_eq!(back, t);
+            prop_assert_eq!(tmp.len(), 1);
+            free_all(&tmp);
+            mem::heap_free(p);
         }
     }
 }

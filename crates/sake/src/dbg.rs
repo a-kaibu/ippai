@@ -354,7 +354,7 @@ fn ae_debug() -> bool {
     let mut args = [crate::pid() as u64, ev as u64].into_iter();
     let cmd = fill_ld(&cmd, &mut args);
     let (prog, rest) = crate::process::split_command(&cmd);
-    let Ok(dpid) = crate::process::spawn(&prog, false, &rest, Some(cmd.clone()), None, true, 0, None) else { return false };
+    let Ok(dpid) = crate::process::spawn(&prog, false, &rest, Some(cmd.clone()), None, true, 0, None, None) else { return false };
     kern::with(|k| {
         k.changed();
         k.dbg.ae.insert(dpid, true)

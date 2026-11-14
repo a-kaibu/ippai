@@ -24,6 +24,96 @@ pub fn is_self(pid: u32) -> bool {
     pid == crate::pid()
 }
 
+/// The arguments of a command line by CommandLineToArgvW's rules. The first one, the program, is
+/// taken as it is: up to the next quote when it starts with one, else up to the first space or
+/// tab, so a line that starts with a space has an empty program (" /i x.msi", which Visual
+/// Studio's MSI loader passes to msiexec with lpApplicationName). The others: spaces and tabs
+/// outside quotes separate, 2n backslashes before a quote are n and the quote opens or closes,
+/// 2n+1 are n and a literal quote, other backslashes are themselves, and "" inside quotes is
+/// a literal quote that closes them.
+pub fn argv(cmd: &str) -> Vec<String> {
+    let s: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+    let mut prog = String::new();
+    if s.first() == Some(&'"') {
+        i = 1;
+        while i < s.len() && s[i] != '"' {
+            prog.push(s[i]);
+            i += 1;
+        }
+        i += 1;
+    } else {
+        while i < s.len() && s[i] != ' ' && s[i] != '\t' {
+            prog.push(s[i]);
+            i += 1;
+        }
+    }
+    arguments(&s, i, prog)
+}
+
+/// The arguments as the C runtime (msvcrt's __getmainargs, __argv) splits them: as argv, but
+/// the program's quotes open and close anywhere in it ("a b"c is one program, a bc).
+pub fn crt_argv(cmd: &str) -> Vec<String> {
+    let s: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+    let mut prog = String::new();
+    let mut quoted = false;
+    while i < s.len() && (quoted || (s[i] != ' ' && s[i] != '\t')) {
+        if s[i] == '"' {
+            quoted = !quoted;
+        } else {
+            prog.push(s[i]);
+        }
+        i += 1;
+    }
+    arguments(&s, i, prog)
+}
+
+/// The program, then the arguments of s[i..].
+fn arguments(s: &[char], mut i: usize, prog: String) -> Vec<String> {
+    let mut out = vec![prog];
+    loop {
+        while i < s.len() && (s[i] == ' ' || s[i] == '\t') {
+            i += 1;
+        }
+        if i >= s.len() {
+            break;
+        }
+        let mut cur = String::new();
+        let mut quoted = false;
+        while i < s.len() {
+            match s[i] {
+                ' ' | '\t' if !quoted => break,
+                '\\' => {
+                    let n = s[i..].iter().take_while(|&&c| c == '\\').count();
+                    i += n;
+                    if s.get(i) == Some(&'"') {
+                        cur.extend(std::iter::repeat_n('\\', n / 2));
+                        if n % 2 == 1 {
+                            cur.push('"');
+                            i += 1;
+                        }
+                    } else {
+                        cur.extend(std::iter::repeat_n('\\', n));
+                    }
+                    continue;
+                }
+                '"' if quoted && s.get(i + 1) == Some(&'"') => {
+                    cur.push('"');
+                    quoted = false;
+                    i += 2;
+                    continue;
+                }
+                '"' => quoted = !quoted,
+                c => cur.push(c),
+            }
+            i += 1;
+        }
+        out.push(cur);
+    }
+    out
+}
+
 /// Splits a command line into the program and the rest.
 pub fn split_command(cmd: &str) -> (String, String) {
     let cmd = cmd.trim_start();
@@ -142,7 +232,9 @@ fn startup_std(si: u32) -> Option<(u32, u32, u32)> {
 /// (crate::k32::exec) and the answer is ERROR_FILE_NOT_FOUND. CreateProcess and the C runtime's
 /// _spawn / _exec functions start processes here.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn(prog: &str, app: bool, args: &str, cmd: Option<String>, dir: Option<String>, inherit: bool, flags: u32, std: Option<(u32, u32, u32)>) -> Result<u32, u32> {
+/// `env`: the child's environment, None: this process's as it is now (Windows passes the
+/// parent's current environment when lpEnvironment is NULL).
+pub fn spawn(prog: &str, app: bool, args: &str, cmd: Option<String>, dir: Option<String>, inherit: bool, flags: u32, std: Option<(u32, u32, u32)>, env: Option<Vec<(String, String)>>) -> Result<u32, u32> {
     // (SAKE_NO_EXEC: tests/winetest, whose programs start copies of themselves as children)
     if std::env::var_os("SAKE_NO_EXEC").is_some() {
         eprintln!("sake: CreateProcess({prog}, {args}) refused");
@@ -169,7 +261,8 @@ pub fn spawn(prog: &str, app: bool, args: &str, cmd: Option<String>, dir: Option
     } else {
         Vec::new()
     };
-    let p = Proc { parent: crate::pid(), image: win.clone(), cmdline, cwd, suspend: (flags & 4 != 0) as u32, inherit: list, std, ..Proc::default() };
+    let env = Some(env.unwrap_or_else(crate::k32::env_vars));
+    let p = Proc { parent: crate::pid(), image: win.clone(), cmdline, cwd, suspend: (flags & 4 != 0) as u32, inherit: list, std, env, ..Proc::default() };
     // (DEBUG_PROCESS, DEBUG_ONLY_THIS_PROCESS: the creating thread's debug object, made if
     // it has none; a debuggee's children: crate::dbg)
     let port = if flags & 3 != 0 { crate::dbg::connect() } else { None };
@@ -193,6 +286,31 @@ pub fn process_handle(pid: u32) -> u32 {
     obj::add(Obj::Process { access: PROCESS_ALL_ACCESS, pid })
 }
 
+/// The variables of an environment block at `p` ("NAME=value\0" each, then "\0"; a name may
+/// start with "=", as the "=C:=C:\dir" entries of the drives' current folders do).
+pub fn env_block_vars(p: u32, wide: bool) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut at = p;
+    loop {
+        let s = arg_str(at, wide);
+        if s.is_empty() {
+            break;
+        }
+        let units = if wide { 2 * (s.encode_utf16().count() as u32 + 1) } else { crate::text::s2a(&s).len() as u32 + 1 };
+        at += units;
+        out.push(split_env_entry(&s));
+    }
+    out
+}
+
+/// "NAME=value" -> (NAME, value); the "=" a name starts with is the name's.
+pub fn split_env_entry(s: &str) -> (String, String) {
+    match s.char_indices().skip(1).find(|&(_, c)| c == '=') {
+        Some((i, _)) => (s[..i].to_string(), s[i + 1..].to_string()),
+        None => (s.to_string(), String::new()),
+    }
+}
+
 /// Waits for process `pid` to end: its exit code.
 pub fn wait_exit(pid: u32) -> u32 {
     kern::block(None, &|| false, |k| k.exit_code(pid).ok_or(kern::PENDING)).unwrap_or(1)
@@ -214,7 +332,9 @@ pub fn create_process(c: &mut Ctx, wide: bool) -> u32 {
         }
     };
     let dir = (dir != 0).then(|| arg_str(dir, wide));
-    let pid = match spawn(&prog, app.is_some(), &args, cmd, dir, inherit, flags, startup_std(si)) {
+    // (CREATE_UNICODE_ENVIRONMENT: a block of UTF-16 strings)
+    let env = (c.a(6) != 0).then(|| env_block_vars(c.a(6), flags & 0x400 != 0));
+    let pid = match spawn(&prog, app.is_some(), &args, cmd, dir, inherit, flags, startup_std(si), env) {
         Ok(pid) => pid,
         Err(e) => {
             last_error(e);
@@ -378,4 +498,113 @@ pub fn running() -> Vec<u32> {
     let mut v = vec![me];
     v.extend(kern::with(|k| k.procs.iter().filter(|(&p, r)| p != me && r.exit.is_none()).map(|(&p, _)| p).collect::<Vec<_>>()).0);
     v
+}
+
+#[cfg(test)]
+mod argv_tests {
+    use super::{argv, split_env_entry};
+    use proptest::prelude::*;
+
+    fn v(s: &[&str]) -> Vec<String> {
+        s.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The cases of tests/winref/probes/argv.c (CommandLineToArgvW on Windows)
+    #[test]
+    fn windows_rules() {
+        assert_eq!(argv("p a b"), v(&["p", "a", "b"]));
+        // (no program: msiloadr's " /i x.msi" to msiexec)
+        assert_eq!(argv(" /i x.msi"), v(&["", "/i", "x.msi"]));
+        assert_eq!(argv("\t/i x.msi"), v(&["", "/i", "x.msi"]));
+        assert_eq!(argv("\"C:\\a b\\p.exe\" one \"two three\""), v(&["C:\\a b\\p.exe", "one", "two three"]));
+        assert_eq!(argv("\"C:\\a b\\p.exe\"tail x"), v(&["C:\\a b\\p.exe", "tail", "x"]));
+        assert_eq!(argv("p a\\\\b \"c\\\\\" d"), v(&["p", "a\\\\b", "c\\", "d"]));
+        assert_eq!(argv("p a\\\"b c"), v(&["p", "a\"b", "c"]));
+        assert_eq!(argv("p a\\\\\\\"b c"), v(&["p", "a\\\"b", "c"]));
+        assert_eq!(argv("p a\\\\\"b c\" d"), v(&["p", "a\\b c", "d"]));
+        assert_eq!(argv("p \"\" x"), v(&["p", "", "x"]));
+        assert_eq!(argv("p \"a\"\"b\" c"), v(&["p", "a\"b c"]));
+        assert_eq!(argv("p \"a\"\"\"b c"), v(&["p", "a\"b c"]));
+        assert_eq!(argv("p a\"b\"c"), v(&["p", "abc"]));
+        assert_eq!(argv("p    a\t\tb   "), v(&["p", "a", "b"]));
+        assert_eq!(argv("p \"unterminated arg"), v(&["p", "unterminated arg"]));
+        assert_eq!(argv("p NAME=\"C:\\My Game\" X=1"), v(&["p", "NAME=C:\\My Game", "X=1"]));
+        assert_eq!(argv(""), v(&[""]));
+    }
+
+    #[test]
+    fn env_entries() {
+        assert_eq!(split_env_entry("PATH=C:\\w;C:\\x"), ("PATH".into(), "C:\\w;C:\\x".into()));
+        assert_eq!(split_env_entry("=C:=C:\\dir"), ("=C:".into(), "C:\\dir".into()));
+        assert_eq!(split_env_entry("A=b=c"), ("A".into(), "b=c".into()));
+        assert_eq!(split_env_entry("A="), ("A".into(), "".into()));
+    }
+
+    /// An argument quoted the way programs build command lines for CommandLineToArgvW (quotes
+    /// only when needed; backslashes doubled before a quote and at the end of a quoted one).
+    fn quote(a: &str) -> String {
+        if !a.is_empty() && !a.contains([' ', '\t', '"']) {
+            return a.to_string();
+        }
+        let mut out = String::from("\"");
+        let mut slashes = 0;
+        for ch in a.chars() {
+            match ch {
+                '\\' => slashes += 1,
+                '"' => {
+                    // (the n already written, n more and one for the quote)
+                    out.extend(std::iter::repeat_n('\\', slashes + 1));
+                    out.push('"');
+                    slashes = 0;
+                    continue;
+                }
+                _ => slashes = 0,
+            }
+            out.push(ch);
+        }
+        out.extend(std::iter::repeat_n('\\', slashes));
+        out.push('"');
+        out
+    }
+
+    proptest! {
+        /// Arguments quoted as programs quote them come back as they went in.
+        #[test]
+        fn quoted_arguments_come_back(args in prop::collection::vec("[a-z\\\\\" \t=]{0,8}", 0..6), lead in any::<bool>()) {
+            let prog = if lead { String::new() } else { "\"C:\\a b\\p.exe\"".to_string() };
+            let line = std::iter::once(prog.clone()).chain(args.iter().map(|a| quote(a))).collect::<Vec<_>>().join(" ");
+            let got = argv(&line);
+            prop_assert_eq!(&got[0], if lead { "" } else { "C:\\a b\\p.exe" });
+            prop_assert_eq!(&got[1..], &args[..]);
+        }
+
+        /// Without quotes or backslashes, the arguments are the words between spaces and tabs.
+        #[test]
+        fn plain_words(line in "[a-z/= \t]{0,40}") {
+            let got = argv(&line);
+            let mut want: Vec<String> = Vec::new();
+            let first_end = line.find([' ', '\t']).unwrap_or(line.len());
+            want.push(line[..first_end].to_string());
+            want.extend(line[first_end..].split([' ', '\t']).filter(|w| !w.is_empty()).map(String::from));
+            prop_assert_eq!(got, want);
+        }
+
+        /// Any line splits without panicking, and no argument holds a space or tab that was
+        /// outside quotes (each one is nonempty or came from quotes).
+        #[test]
+        fn any_line(line in "[a-z\\\\\" \t]{0,40}") {
+            let got = argv(&line);
+            prop_assert!(!got.is_empty());
+            if !line.contains('"') {
+                prop_assert!(got.iter().all(|a| !a.contains([' ', '\t'])));
+            }
+        }
+
+        /// "NAME=value" splits back for names without "=" (or with one leading "=").
+        #[test]
+        fn env_entry_back(lead in any::<bool>(), name in "[A-Za-z_:]{1,8}", value in "[A-Za-z=:;\\\\]{0,12}") {
+            let n = if lead { format!("={name}") } else { name };
+            prop_assert_eq!(split_env_entry(&format!("{n}={value}")), (n, value));
+        }
+    }
 }

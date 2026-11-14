@@ -242,6 +242,11 @@ fn FreeEnvironmentStringsW(c: &mut Ctx) -> u32 {
 pub(crate) fn env_set(name: &str, value: Option<&str>) {
     with_env(|e| env_put(e, name, value));
 }
+/// The whole environment replaced (a child's, from its parent), kept in Windows' order.
+pub(crate) fn env_replace(mut vars: Vec<(String, String)>) {
+    vars.sort_by_key(|(k, _)| k.to_ascii_uppercase());
+    *ENV.lock().unwrap() = Some(vars);
+}
 pub(crate) fn env_vars() -> Vec<(String, String)> {
     with_env(|e| e.clone())
 }
@@ -8160,15 +8165,36 @@ fn GetLogicalDriveStringsA(c: &mut Ctx) -> u32 {
 fn GetLogicalDriveStringsW(c: &mut Ctx) -> u32 {
     logical_drive_strings(c, true)
 }
+/// The disk sake reports (GetDiskFreeSpace, GetDiskFreeSpaceEx): 4 KiB clusters, about 62 GiB
+/// free of 128 GiB. Not a multiple of 4 GiB: setups of the 2000s that keep only the low
+/// 32 bits of the free bytes (InstallShield 12's launcher, マスクド上海: "Error writing to the
+/// temporary location" with exactly 8 GiB free, low part 0) see 1.9 GiB, as on a real disk.
+pub(crate) const DISK_SECTORS_PER_CLUSTER: u32 = 8;
+pub(crate) const DISK_BYTES_PER_SECTOR: u32 = 512;
+pub(crate) const DISK_FREE_CLUSTERS: u32 = 0x00F7_A3C1;
+pub(crate) const DISK_TOTAL_CLUSTERS: u32 = 0x0200_0000;
+
+/// (free bytes, total bytes) of the disk sake reports
+pub(crate) fn disk_bytes() -> (u64, u64) {
+    let cluster = (DISK_SECTORS_PER_CLUSTER * DISK_BYTES_PER_SECTOR) as u64;
+    (DISK_FREE_CLUSTERS as u64 * cluster, DISK_TOTAL_CLUSTERS as u64 * cluster)
+}
+
 fn GetDiskFreeSpaceA(c: &mut Ctx) -> u32 {
-    if is_empty_cd(c.a(0), false) {
+    disk_free(c, false)
+}
+fn GetDiskFreeSpaceW(c: &mut Ctx) -> u32 {
+    disk_free(c, true)
+}
+fn disk_free(c: &mut Ctx, wide: bool) -> u32 {
+    if is_empty_cd(c.a(0), wide) {
         last_error(21);
         return 0;
     }
-    put32(c.a(1), 8);
-    put32(c.a(2), 512);
-    put32(c.a(3), 0x0100_0000);
-    put32(c.a(4), 0x0200_0000);
+    put32(c.a(1), DISK_SECTORS_PER_CLUSTER);
+    put32(c.a(2), DISK_BYTES_PER_SECTOR);
+    put32(c.a(3), DISK_FREE_CLUSTERS);
+    put32(c.a(4), DISK_TOTAL_CLUSTERS);
     1
 }
 fn GetDiskFreeSpaceExA(c: &mut Ctx) -> u32 {
@@ -8179,9 +8205,11 @@ fn disk_free_ex(c: &mut Ctx, wide: bool) -> u32 {
         last_error(21);
         return 0;
     }
-    for i in 1..4 {
+    // (available to the caller, total, free)
+    let (free, total) = disk_bytes();
+    for (i, v) in [(1, free), (2, total), (3, free)] {
         if c.a(i) != 0 {
-            put64(c.a(i), 8 << 30);
+            put64(c.a(i), v);
         }
     }
     1
@@ -9228,7 +9256,7 @@ pub fn init() {
         GetCurrentDirectoryW, SetCurrentDirectoryA, SetCurrentDirectoryW, GetTempPathA, GetTempPathW,
         GetTempFileNameA, GetTempFileNameW, GetWindowsDirectoryA, GetWindowsDirectoryW, GetSystemDirectoryA,
         GetSystemDirectoryW, GetSystemWindowsDirectoryA, GetDriveTypeA, GetDriveTypeW, GetLogicalDrives,
-        GetDiskFreeSpaceA, GetDiskFreeSpaceExA, GetDiskFreeSpaceExW, GetVolumeInformationA, GetVolumeInformationW,
+        GetDiskFreeSpaceA, GetDiskFreeSpaceW, GetDiskFreeSpaceExA, GetDiskFreeSpaceExW, GetVolumeInformationA, GetVolumeInformationW,
         SearchPathA, SearchPathW, CreateIoCompletionPort, PostQueuedCompletionStatus, GetQueuedCompletionStatus,
         CreateFileMappingA, CreateFileMappingW, OpenFileMappingA, OpenFileMappingW, FlushViewOfFile, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile,
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, OpenThread, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
@@ -10111,6 +10139,19 @@ mod drive_tests {
             }
             let got = crate::test_guest::call(GetDiskFreeSpaceExA, &[r, 0, 0, 0]);
             assert_eq!(got != 0, ok);
+            if ok {
+                // (the bytes agree with the clusters, and the free ones are no multiple of 4 GiB)
+                let b = mem::heap_alloc(40, true);
+                assert_eq!(crate::test_guest::call(GetDiskFreeSpaceExA, &[r, b, b + 8, b + 16]), 1);
+                assert_eq!(crate::test_guest::call(GetDiskFreeSpaceA, &[r, b + 24, b + 28, b + 32, b + 36]), 1);
+                let q = |o: u32| r32(b + o) as u64 | (r32(b + o + 4) as u64) << 32;
+                let cluster = r32(b + 24) as u64 * r32(b + 28) as u64;
+                assert_eq!(q(0), r32(b + 32) as u64 * cluster);
+                assert_eq!(q(16), q(0));
+                assert_eq!(q(8), r32(b + 36) as u64 * cluster);
+                assert!(q(0) as u32 > 1 << 30 && (q(0) as u32) < 1 << 31, "low part positive and big");
+                mem::heap_free(b);
+            }
             assert_eq!(crate::test_guest::call(GetDriveTypeA, &[r]), if ok { DRIVE_FIXED } else { DRIVE_CDROM });
             mem::heap_free(label);
             mem::heap_free(r);

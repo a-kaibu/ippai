@@ -80,6 +80,37 @@ class Choose(unittest.TestCase):
         # (only an uninstaller on the media)
         self.assertIsNone(self.choose({'autorun.inf': b'', 'uninstall.exe': 5, 'game.exe': 9}, 'game.exe'))
 
+    def test_msi_launchers(self):
+        # 天極姫: InstallShield's Setup Launcher beside its .msi and Data1.cab; pickexe falls back
+        # to a Windows Installer redistributable (nothing else but tools)
+        r = '天極姫【体験版第二弾】/インストールデータ/'
+        isl = MZ + b'x' * 300 + b'I\0n\0' + b'InstallShieldMSIDelete10' + b'y' * 40
+        self.assertEqual(self.choose({r + 'setup.exe': isl, r + 'instmsiw.exe': 900, r + 'instmsia.exe': 800,
+                                      r + 'Data1.cab': 500, r + 'x.msi': 400}, r + 'instmsiw.exe'), r + 'setup.exe')
+        # マスクド上海: one exe, the package inside it (picked as the biggest)
+        self.assertEqual(self.choose({'MShanghai_trial080111.exe': isl}, 'MShanghai_trial080111.exe'), 'MShanghai_trial080111.exe')
+        # 揺れるバスガイド: Visual Studio's MSI loader
+        r = '揺れるバスガイド（体験版）/'
+        self.assertEqual(self.choose({r + 'setup.exe': MZ + b'MSILoader' + b'z' * 30, r + 'InstMsiW.Exe': 900,
+                                      r + 'Setup.Ini': b'[MSILoader]\r\n', r + 'x.msi': 300}, r + 'InstMsiW.Exe'), r + 'setup.exe')
+        # (the shallowest of two)
+        self.assertEqual(self.choose({'a/b/setup.exe': isl, 'a/setup.exe': isl, 'a/g.exe': 99}, 'a/g.exe'), 'a/setup.exe')
+
+    def test_keep(self):
+        isl = MZ + b'InstallShieldMSIDelete10'
+        d = tree({'is/setup.exe': isl, 'is/x.msi': 10, 'vs/setup.exe': MZ + b'MSILoader', 'vs/y.MSI': 10,
+                  'plain/setup.exe': MZ + b'Inno Setup', 'plain/z.msi': 10, 'alone.msi': 10, 'is/sub/w.msi': 10})
+        try:
+            k = lambda p: install.keep(os.path.join(d, p))
+            self.assertTrue(k('is/setup.exe') and k('is/x.msi') and k('vs/setup.exe') and k('vs/y.MSI'))
+            self.assertFalse(k('plain/setup.exe') or k('plain/z.msi') or k('alone.msi') or k('is/sub/w.msi'))
+            self.assertFalse(k('missing/q.msi') or k('missing.exe'))
+            self.assertEqual(subprocess.run([sys.executable, '-I', os.path.join(HERE, 'install.py'), 'keep',
+                                             os.path.join(d, 'is/x.msi')]).returncode, 0)
+            self.assertEqual(subprocess.run([sys.executable, '-I', os.path.join(HERE, 'install.py'), 'keep',
+                                             os.path.join(d, 'alone.msi')]).returncode, 1)
+        finally: shutil.rmtree(d)
+
     def test_installer_named_kept_whole(self):
         # an installer nothing unpacks, kept under its own name and picked (nothing but tools)
         self.assertEqual(self.choose({'anetea_trial_install.exe': MZ}, 'anetea_trial_install.exe'), 'anetea_trial_install.exe')

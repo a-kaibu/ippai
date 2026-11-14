@@ -3595,27 +3595,8 @@ fn DragQueryFileW(_: &mut Ctx) -> u32 {
 }
 fn CommandLineToArgvW(c: &mut Ctx) -> u32 {
     let s = String::from_utf16_lossy(&wstr(c.a(0)));
-    let mut args: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let (mut q, mut any) = (false, false);
-    for ch in s.chars() {
-        match ch {
-            '"' => {
-                q = !q;
-                any = true;
-            }
-            ' ' | '\t' if !q => {
-                if any || !cur.is_empty() {
-                    args.push(std::mem::take(&mut cur));
-                }
-                any = false;
-            }
-            _ => cur.push(ch),
-        }
-    }
-    if any || !cur.is_empty() {
-        args.push(cur);
-    }
+    // (an empty line: the program's own path)
+    let args = if s.is_empty() { vec![crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default()] } else { crate::process::argv(&s) };
     let n = args.len() as u32;
     let size: u32 = 4 * (n + 1) + args.iter().map(|a| 2 * (a.encode_utf16().count() as u32 + 1)).sum::<u32>();
     let p = mem::heap_alloc(size, true);

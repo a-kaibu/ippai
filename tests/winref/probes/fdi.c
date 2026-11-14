@@ -110,11 +110,14 @@ static void run(const char *label, const unsigned char *cab, long size, int skip
     files[1].p = cab; files[1].size = size; files[1].pos = 0;
     FDICABINETINFO ci;
     memset(&ci, 0x55, sizeof ci);
+    /* (a file that is not a cabinet leaves the ERF alone: 天極姫's InstallShield launcher asks
+     * about its .msi with the ERF of a returned function's frame) */
+    memset(&erf, 0x55, sizeof erf);
     BOOL is = FDIIsCabinet(h, 1, &ci);
     printf("iscabinet %d", is);
     if (is) printf(" cb %ld folders %u files %u set %u icab %u reserve %d prev %d next %d", ci.cbCabinet, ci.cFolders, ci.cFiles,
                    ci.setID, ci.iCabinet, ci.fReserve, ci.hasprev, ci.hasnext);
-    else printf(" erf %d %d", erf.erfOper, erf.fError);
+    else printf(" erf %d %d %d", erf.erfOper, erf.erfType, erf.fError);
     printf("\n");
     memset(&erf, 0x55, sizeof erf);
     char name[] = "trial.cab", path[] = "C:\\probe\\";

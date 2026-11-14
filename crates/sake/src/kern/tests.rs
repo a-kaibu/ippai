@@ -445,7 +445,7 @@ proptest! {
         let c = k.open("m", true, true, PID).unwrap();
         let (ev, _) = k.create_sync("ev", Sync::Event { manual: true, set: false }, PID).unwrap();
         k.create_sync("mx", Sync::Mutex { owner: 0x20, pid: PID, count: 1, abandoned: false }, PID).unwrap();
-        k.new_process(Proc { parent: PID, image: "C:\\a.exe".into(), cmdline: "a b".into(), cwd: "C:\\".into(), std: Some((1, 2, 3)), inherit: vec![(8, KRef::Sync { id: ev }), (12, KRef::Process { pid: 5, access: 1 })], ..Proc::default() });
+        k.new_process(Proc { parent: PID, image: "C:\\a.exe".into(), cmdline: "a b".into(), cwd: "C:\\".into(), std: Some((1, 2, 3)), env: Some(vec![("=C:".into(), "C:\\x".into()), ("PATH".into(), "C:\\w".into())]), inherit: vec![(8, KRef::Sync { id: ev }), (12, KRef::Process { pid: 5, access: 1 })], ..Proc::default() });
         for op in ops {
             match op {
                 Op::Write(d) => { let _ = k.write1(w, &d); let _ = k.write1(c, &d); }

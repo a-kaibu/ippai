@@ -183,19 +183,20 @@ struct Decoder<'a> {
     raw: Vec<u8>,
 }
 
-enum Kind {
+pub(crate) enum Kind {
     Stored,
     MsZip,
     Lzx(Box<lzxd::Lzxd>),
 }
 
-impl<'a> Decoder<'a> {
-    fn new(folder: &'a Folder, data_reserve: u8) -> Result<Decoder<'a>, u32> {
-        let kind = match folder.comp & 0xf {
+impl Kind {
+    /// The decompressor of a CFFOLDER's typeCompress (Quantum and others: FDIERROR_BAD_COMPR_TYPE).
+    pub(crate) fn of(comp: u16) -> Result<Kind, u32> {
+        Ok(match comp & 0xf {
             0 => Kind::Stored,
             1 => Kind::MsZip,
             3 => {
-                let w = match (folder.comp >> 8) & 0x1f {
+                let w = match (comp >> 8) & 0x1f {
                     15 => lzxd::WindowSize::KB32,
                     16 => lzxd::WindowSize::KB64,
                     17 => lzxd::WindowSize::KB128,
@@ -208,7 +209,59 @@ impl<'a> Decoder<'a> {
                 Kind::Lzx(Box::new(lzxd::Lzxd::new(w)))
             }
             _ => return Err(FDIERROR_BAD_COMPR_TYPE),
-        };
+        })
+    }
+
+    /// One CFDATA block's `src` (its parts in a cabinet set joined) to its `un` bytes in `out`
+    /// (cleared first); `hist`: MSZIP's last 32 KB of output, which a block's back references reach.
+    pub(crate) fn unpack(&mut self, hist: &mut Vec<u8>, src: &[u8], un: usize, out: &mut Vec<u8>) -> Result<(), u32> {
+        const BAD: u32 = FDIERROR_CORRUPT_CABINET;
+        // (0 uncompressed bytes: the block continues in the next cabinet)
+        if un == 0 || un > 0x8000 + 6144 {
+            return Err(BAD);
+        }
+        out.clear();
+        match self {
+            Kind::Stored => {
+                if src.len() != un {
+                    return Err(BAD);
+                }
+                out.extend_from_slice(src);
+            }
+            Kind::MsZip => {
+                use miniz_oxide::inflate::core::{decompress, inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF, DecompressorOxide};
+                use miniz_oxide::inflate::TINFLStatus;
+                if src.len() < 2 || &src[..2] != b"CK" {
+                    return Err(FDIERROR_MDI_FAIL);
+                }
+                let h = hist.len();
+                let mut o = std::mem::take(hist);
+                o.resize(h + un, 0);
+                let mut r = DecompressorOxide::new();
+                let (st, _, n) = decompress(&mut r, &src[2..], &mut o, h, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+                if st != TINFLStatus::Done || n != un {
+                    return Err(FDIERROR_MDI_FAIL);
+                }
+                out.extend_from_slice(&o[h..h + un]);
+                let keep = o.len().saturating_sub(0x8000);
+                o.drain(..keep);
+                *hist = o;
+            }
+            Kind::Lzx(l) => {
+                let o = l.decompress_next(src, un).map_err(|_| FDIERROR_MDI_FAIL)?;
+                if o.len() != un {
+                    return Err(FDIERROR_MDI_FAIL);
+                }
+                out.extend_from_slice(o);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> Decoder<'a> {
+    fn new(folder: &'a Folder, data_reserve: u8) -> Result<Decoder<'a>, u32> {
+        let kind = Kind::of(folder.comp)?;
         Ok(Decoder { folder, data_reserve: data_reserve as usize, kind, at: folder.data as usize, block: 0, buf: Vec::new(), used: 0, base: 0, hist: Vec::new(), raw: Vec::new() })
     }
 
@@ -243,50 +296,12 @@ impl<'a> Decoder<'a> {
 
     /// One CFDATA's bytes `src`, `un` once decompressed, into buf.
     fn decode(&mut self, src: &[u8], un: usize) -> Result<(), u32> {
-        const BAD: u32 = FDIERROR_CORRUPT_CABINET;
-        let cb = src.len();
-        // (0 uncompressed bytes: the block continues in the next cabinet)
-        if un == 0 || un > 0x8000 + 6144 {
-            return Err(BAD);
-        }
         self.base += self.buf.len() as u64;
-        self.buf.clear();
         self.used = 0;
-        match &mut self.kind {
-            Kind::Stored => {
-                if cb != un {
-                    return Err(BAD);
-                }
-                self.buf.extend_from_slice(src);
-            }
-            Kind::MsZip => {
-                use miniz_oxide::inflate::core::{decompress, inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF, DecompressorOxide};
-                use miniz_oxide::inflate::TINFLStatus;
-                if src.len() < 2 || &src[..2] != b"CK" {
-                    return Err(FDIERROR_MDI_FAIL);
-                }
-                let h = self.hist.len();
-                let mut out = std::mem::take(&mut self.hist);
-                out.resize(h + un, 0);
-                let mut r = DecompressorOxide::new();
-                let (st, _, n) = decompress(&mut r, &src[2..], &mut out, h, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-                if st != TINFLStatus::Done || n != un {
-                    return Err(FDIERROR_MDI_FAIL);
-                }
-                self.buf.extend_from_slice(&out[h..h + un]);
-                let keep = out.len().saturating_sub(0x8000);
-                out.drain(..keep);
-                self.hist = out;
-            }
-            Kind::Lzx(l) => {
-                let o = l.decompress_next(src, un).map_err(|_| FDIERROR_MDI_FAIL)?;
-                if o.len() != un {
-                    return Err(FDIERROR_MDI_FAIL);
-                }
-                self.buf.extend_from_slice(o);
-            }
-        }
-        Ok(())
+        let mut buf = std::mem::take(&mut self.buf);
+        let r = self.kind.unpack(&mut self.hist, src, un, &mut buf);
+        self.buf = if r.is_ok() { buf } else { Vec::new() };
+        r
     }
 
     /// Up to `max` bytes at pos() (an empty slice never: a folder ending early is an error).
@@ -546,11 +561,9 @@ fn FDIIsCabinet(c: &mut Ctx) -> u32 {
     let (h, hf, info) = (c.a(0), c.a(1), c.a(2));
     let Some(f) = fdi(h) else { return 0 };
     let mut d = Vec::new();
-    if !guest_read(c, &f, hf, CFHEADER, &mut d) {
-        set_erf(f.erf, FDIERROR_NOT_A_CABINET);
-        return 0;
-    }
-    match header(&d) {
+    let read = guest_read(c, &f, hf, CFHEADER, &mut d);
+    match is_cabinet(read.then_some(&d[..])) {
+        Err(None) => 0,
         Ok(hd) => {
             if info != 0 {
                 w32(info, hd.cb_cabinet);
@@ -564,10 +577,23 @@ fn FDIIsCabinet(c: &mut Ctx) -> u32 {
             }
             1
         }
-        Err(e) => {
+        Err(Some(e)) => {
             set_erf(f.erf, e);
             0
         }
+    }
+}
+
+/// FDIIsCabinet's answer for the header read (None: the read came short): the header, or the
+/// ERF error to set. A file that is not a cabinet (short, no "MSCF") is FALSE with the ERF left
+/// alone, as on Windows (tests/winref/probes/fdi.c): 天極姫's InstallShield launcher asks about
+/// its .msi with FDICreate's ERF in a frame that has returned, and an fError there was the
+/// launcher's saved ebp.
+pub fn is_cabinet(d: Option<&[u8]>) -> Result<Header, Option<u32>> {
+    match header(d.ok_or(None)?) {
+        Ok(h) => Ok(h),
+        Err(FDIERROR_NOT_A_CABINET) => Err(None),
+        Err(e) => Err(Some(e)),
     }
 }
 

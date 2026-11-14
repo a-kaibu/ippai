@@ -1521,7 +1521,7 @@ fn spawn_crt(mode: u32, path: u32, argv: u32, wide: bool) -> u32 {
     }
     let prog = path_arg(path, wide);
     let (cmd, args) = spawn_command_line(&argv_strings(argv, wide));
-    match crate::process::spawn(&prog, false, &args, Some(cmd), None, true, 0, None) {
+    match crate::process::spawn(&prog, false, &args, Some(cmd), None, true, 0, None, None) {
         Err(_) => {
             set_errno(ENOENT);
             u32::MAX

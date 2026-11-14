@@ -129,9 +129,13 @@ pub fn words(s: &str) -> Vec<String> {
     out
 }
 
-/// What a command line asks for: (remove, package or product code, UI level, properties).
+/// What a command line's arguments ask for: (remove, package or product code, UI level, properties).
 pub fn parse(args: &str) -> Option<(bool, String, u32, String)> {
-    let w = words(args);
+    parse_words(&words(args))
+}
+
+/// parse, of the arguments as words.
+pub fn parse_words(w: &[String]) -> Option<(bool, String, u32, String)> {
     let mut remove = false;
     let mut target = None;
     let mut level = INSTALLUILEVEL_FULL;
@@ -174,8 +178,9 @@ pub fn parse(args: &str) -> Option<(bool, String, u32, String)> {
 /// msi!ippai_msiexec: the command line run; its result is the exit code.
 fn ippai_msiexec(c: &mut Ctx) -> u32 {
     let line = crate::k32::arg_str(crate::k32::cmdline().1, true);
-    let args = crate::process::split_command(&line).1;
-    let Some((remove, target, level, props)) = parse(&args) else { return 1639 }; // ERROR_INVALID_COMMAND_LINE
+    // (by argv's rules: " /i x.msi", with the program left out, is an install)
+    let w = crate::process::argv(&line);
+    let Some((remove, target, level, props)) = parse_words(&w[1..]) else { return 1639 }; // ERROR_INVALID_COMMAND_LINE
     set_ui_level(level);
     if remove {
         if target.starts_with('{') {
@@ -204,6 +209,9 @@ mod tests {
         assert_eq!(parse("/x x.msi /qb!- /norestart"), Some((true, "x.msi".into(), INSTALLUILEVEL_BASIC, String::new())));
         assert_eq!(parse("/package x.msi /passive /l*v log.txt INSTALLDIR=\"C:\\My Game\""), Some((false, "x.msi".into(), INSTALLUILEVEL_BASIC, "INSTALLDIR=\"C:\\My Game\"".into())));
         assert_eq!(parse("/qn"), None);
+        // (the whole line by argv's rules, the program left out: msiloadr's " /i \"x.msi\"")
+        let w = crate::process::argv(" /i \"C:\\a b\\x.msi\" /qb");
+        assert_eq!(parse_words(&w[1..]), Some((false, "C:\\a b\\x.msi".into(), INSTALLUILEVEL_BASIC, String::new())));
         assert_eq!(parse("/i"), None);
     }
 

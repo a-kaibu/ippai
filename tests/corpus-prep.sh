@@ -60,7 +60,10 @@ if [ ! -d x ]; then
       # way leaves files behind (unar on Front Wing's LHa self-extractor canary_game_preview.exe:
       # a SYSTEM.PAK cut at 1.75 MB, an empty IMAGE.PAK), and the next one's whole copy under
       # Shift-JIS names then sat beside them while the game ran from the broken one
-      (cd x.part && (python3 -I "$HERE/isextract.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+      # (not a setup program that runs an .msi, InstallShield's Setup Launcher: it runs in sake,
+      # tests/corpus/install.py keep)
+      (cd x.part && { python3 -I "$HERE/corpus/install.py" keep "../$f" && n=${url##*/} && n=${n%%\?*} && cp "../$f" "./${n:-setup.exe}"; } ||
+         (python3 -I "$HERE/isextract.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (find . -mindepth 1 -delete; python3 -I "$HERE/zsfx.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
          (find . -mindepth 1 -delete; LC_ALL=C.UTF-8 unar -q -e cp932 -o . "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
@@ -101,7 +104,9 @@ if [ ! -d x ]; then
   for round in 1 2 3; do
   before=$(find x.part -type f -iname '*.exe' | sort | md5sum)
   find x.part -type f -iname '*.exe' -print0 | while IFS= read -r -d '' s; do
-    if python3 -I "$HERE/isextract.py" "$s" "$s.is" >/dev/null 2>&1; then rm -f "$s"
+    # (a setup program that runs an .msi stays, for sake: tests/corpus/install.py keep)
+    if python3 -I "$HERE/corpus/install.py" keep "$s"; then :
+    elif python3 -I "$HERE/isextract.py" "$s" "$s.is" >/dev/null 2>&1; then rm -f "$s"
     elif LC_ALL=C.UTF-8 innoextract -s -q -e -d "$s.inno" "$s" >/dev/null 2>&1 && [ -n "$(ls "$s.inno")" ]; then rm -f "$s"
     # a self-extracting zip of the game (kaguya's sperman_trial.exe); not a program that only
     # carries a zip of its own data (NW.js): the zip has to hold an .exe
@@ -145,7 +150,9 @@ if [ ! -d x ]; then
   done
   find x.part -type f -iname '*.msi' -print0 | while IFS= read -r -d '' m; do
     # (msiextract can't do packages split over several cabinets: tests/msiunpack.py)
-    if mkdir -p "$m.x" && { (cd "$m.x" && LC_ALL=C.UTF-8 msiextract "$OLDPWD/$m" >/dev/null 2>&1) ||
+    # (a package its setup program installs is left to it: tests/corpus/install.py keep)
+    if python3 -I "$HERE/corpus/install.py" keep "$m"; then :
+    elif mkdir -p "$m.x" && { (cd "$m.x" && LC_ALL=C.UTF-8 msiextract "$OLDPWD/$m" >/dev/null 2>&1) ||
         { rm -rf "$m.x" && mkdir "$m.x" && python3 -I "$HERE/msiunpack.py" "$m" "$m.x" >/dev/null 2>&1; }; }; then
       rm -f "$m"
     else rm -rf "$m.x"
@@ -166,7 +173,6 @@ else
   [ "$rc" = 5 ] && exit 5
   [ "$rc" = 0 ] || e=
 fi
-[ -n "$e" ] || { echo "no exe" >&2; exit 3; }
 # setup programs nothing here unpacks (Gentee CreateInstall, DGCA and YU-RIS self-extractors) and
 # install media whose game only runs installed (autorun.inf beside a setup program: BLUEGALE's
 # setup.exe, CatSystem2's INSTALL.exe): run in sake under node as a person taking the defaults
@@ -179,6 +185,7 @@ if [ -n "${SAKE_NODE:-}" ] && [ ! -e "$T/install.done" ] && s=$(python3 -I "$HER
   mv "$T/install.done.part" "$T/install.done"
 fi
 installed=
+[ -n "$e" ] || [ -s "$T/install.done" ] || { echo "no exe" >&2; exit 3; }
 if [ -s "$T/install.done" ]; then
   IFS=$'\t' read -r where g < "$T/install.done"
   case $where in

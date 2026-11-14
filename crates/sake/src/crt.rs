@@ -285,24 +285,16 @@ fn user_ctype_table(cp: u32) -> u32 {
     t
 }
 
-/// The command line split into words, as the CRT does (quotes group and are dropped).
-fn split_words<T: Copy + PartialEq + From<u8>>(line: &[T]) -> Vec<Vec<T>> {
-    let (quote, space, tab) = (T::from(b'"'), T::from(b' '), T::from(b'\t'));
-    let mut words = Vec::new();
-    let mut cur: Option<Vec<T>> = None;
-    let mut quoted = false;
-    for &b in line {
-        if b == quote {
-            quoted = !quoted;
-            cur.get_or_insert_with(Vec::new);
-        } else if (b == space || b == tab) && !quoted {
-            words.extend(cur.take());
-        } else {
-            cur.get_or_insert_with(Vec::new).push(b);
-        }
-    }
-    words.extend(cur);
-    words
+/// The words of a command line as msvcrt splits it (crate::process::crt_argv: backslashes
+/// before quotes, "" inside quotes, an empty program before a leading space), in the
+/// program's code page (a Shift-JIS trail byte 0x5C is not a backslash).
+fn split_words(line: &[u8]) -> Vec<Vec<u8>> {
+    crate::process::crt_argv(&crate::text::a2s(line)).iter().map(|w| crate::text::s2a(w)).collect()
+}
+
+/// split_words of the wide command line (UTF-16 units).
+fn split_wwords(line: &[u16]) -> Vec<Vec<u16>> {
+    crate::process::crt_argv(&String::from_utf16_lossy(line)).iter().map(|w| w.encode_utf16().collect()).collect()
 }
 
 /// A NULL-terminated pointer array of the strings, each `unit` bytes per char.
@@ -332,7 +324,7 @@ fn wargs() -> (u32, u32) {
     static A: Mutex<(u32, u32)> = Mutex::new((0, 0));
     let mut g = A.lock().unwrap();
     if g.1 == 0 {
-        let words = split_words(&mem::wstr(crate::k32::cmdline().1));
+        let words = split_wwords(&mem::wstr(crate::k32::cmdline().1));
         let n = words.len() as u32;
         let bytes = words.into_iter().map(|w| w.iter().flat_map(|c| c.to_le_bytes()).collect()).collect();
         *g = (n, string_array(bytes, 2));
@@ -4394,13 +4386,21 @@ mod tests {
             }
         }
     }
-    use super::split_words;
+    use super::{split_words, split_wwords};
     use proptest::prelude::*;
 
     #[test]
     fn split_like_crt() {
         let w = split_words(br#"a.exe  "b c"  d"e"f """#);
         assert_eq!(w, [b"a.exe".to_vec(), b"b c".to_vec(), b"def".to_vec(), b"".to_vec()]);
+        // (a leading space: an empty program, then the arguments; msiloadr's msiexec line)
+        assert_eq!(split_words(b" /i \"x y.msi\" /qb"), [b"".to_vec(), b"/i".to_vec(), b"x y.msi".to_vec(), b"/qb".to_vec()]);
+        // (backslashes before a quote)
+        assert_eq!(split_words(br#"p a\"b "c\\" d"#), [b"p".to_vec(), br#"a"b"#.to_vec(), br#"c\"#.to_vec(), b"d".to_vec()]);
+        // (the program's quotes anywhere in it)
+        assert_eq!(split_words(br#""a b"c d"#), [b"a bc".to_vec(), b"d".to_vec()]);
+        // (Shift-JIS: ソ is 83 5C, its trail byte no backslash before the closing quote)
+        assert_eq!(split_words(b"p \"C:\\\x83\x5c\" x"), [b"p".to_vec(), b"C:\\\x83\x5c".to_vec(), b"x".to_vec()]);
     }
 
     proptest! {
@@ -4409,7 +4409,7 @@ mod tests {
         fn wide_matches_narrow(line in "[ a-z\"\t]{0,40}") {
             let n = split_words(line.as_bytes());
             let w: Vec<u16> = line.encode_utf16().collect();
-            let w = split_words(&w);
+            let w = split_wwords(&w);
             let back: Vec<Vec<u8>> = w.iter().map(|s| s.iter().map(|&c| c as u8).collect()).collect();
             prop_assert_eq!(n, back);
         }

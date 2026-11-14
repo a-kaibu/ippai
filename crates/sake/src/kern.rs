@@ -228,6 +228,8 @@ pub struct Proc {
     pub std: Option<(u32, u32, u32)>,
     /// SCM-launched process: the service's canonical name.
     pub service: Option<String>,
+    /// its environment (CreateProcess's lpEnvironment, else its parent's), None: sake's own
+    pub env: Option<Vec<(String, String)>>,
 }
 
 /// A top-level window of a process, for the others (FindWindow, messages to it)
@@ -1413,7 +1415,7 @@ impl Enc for (u32, u32, u32) {
 crate::enc_struct!(Msg { data, pos, id });
 crate::enc_struct!(End { server, pipe, state, conn, queue, msg_type, outsize, insize, max, msg_read, nonblock, refs, sent, done });
 crate::enc_struct!(Pipe { max, instances, sharing, msg_type, outsize, insize, timeout, listeners });
-crate::enc_struct!(Proc { parent, image, cmdline, cwd, exit, kill, suspend, inherit, std, service });
+crate::enc_struct!(Proc { parent, image, cmdline, cwd, exit, kill, suspend, inherit, std, service, env });
 impl Enc for Sync {
     fn put(&self, w: &mut Vec<u8>) {
         match *self {

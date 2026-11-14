@@ -395,8 +395,9 @@ fn install_files(c: &mut Ctx, p: &Arc<Mutex<Package>>) -> u32 {
         }
         file_done(c, p, &f, &target);
     }
+    let cabs: Vec<String> = media.iter().map(|m| m.1.clone()).collect();
     for (cab, list) in by_cab {
-        if let Err(e) = extract_cab(c, p, &cab, &list) {
+        if let Err(e) = extract_cab(c, p, &cab, &list, &cabs) {
             return e;
         }
     }
@@ -425,8 +426,76 @@ fn file_done(c: &mut Ctx, p: &Arc<Mutex<Package>>, f: &FileRec, target: &str) {
     send(c, Some(p), INSTALLMESSAGE_PROGRESS, &pr);
 }
 
-/// A cabinet: "#stream" in the package, or a file beside it.
-fn extract_cab(c: &mut Ctx, p: &Arc<Mutex<Package>>, cab: &str, list: &[(FileRec, String)]) -> R<()> {
+/// A cabinet beside the package (None: missing).
+fn cab_beside(p: &Arc<Mutex<Package>>, cab: &str) -> Option<String> {
+    let src = p.lock().unwrap().prop("SourceDir");
+    let w = format!("{}{cab}", if src.ends_with('\\') { src } else { format!("{src}\\") });
+    crate::files::resolve(&w)
+}
+
+/// The header of the cabinet file at `host` (None: not one, or unreadable).
+fn cab_header(host: &str) -> Option<crate::cabinet::Header> {
+    let mut h = [0u8; 36];
+    let mut f = kura::fs::File::open(host).ok()?;
+    std::io::Read::read_exact(&mut f, &mut h).ok()?;
+    crate::cabinet::header(&h).ok()
+}
+
+/// The volumes of the set `cab` is in, by the Media table's order (`cabs`): the external ones
+/// before it while each goes on into the next, and after it while it goes on.
+fn set_volumes(p: &Arc<Mutex<Package>>, cab: &str, cabs: &[String]) -> Option<Vec<String>> {
+    let host = |k: usize| cabs.get(k).filter(|c| !c.starts_with('#')).and_then(|c| cab_beside(p, c));
+    let head = |k: usize| host(k).and_then(|h| cab_header(&h));
+    let i = cabs.iter().position(|c| c == cab)?;
+    let (mut lo, mut hi) = (i, i);
+    while lo > 0 && head(lo).is_some_and(|h| h.has_prev) && head(lo - 1).is_some_and(|h| h.has_next) {
+        lo -= 1;
+    }
+    while head(hi).is_some_and(|h| h.has_next) && head(hi + 1).is_some_and(|h| h.has_prev) {
+        hi += 1;
+    }
+    (lo..=hi).map(host).collect()
+}
+
+/// Files of a cabinet set (cabset.rs: the cab crate refuses a file that crosses volumes).
+fn extract_set(c: &mut Ctx, p: &Arc<Mutex<Package>>, cab: &str, vols: &[String], list: &[(FileRec, String)]) -> R<()> {
+    let mut fs = Vec::new();
+    for v in vols {
+        fs.push(kura::fs::File::open(v).map_err(|_| ERROR_INSTALL_FAILURE)?);
+    }
+    let mut set = crate::cabset::Set::new(fs).map_err(|e| {
+        eprintln!("msi: cabinet set of {cab}: FDI error {e}");
+        ERROR_INSTALL_FAILURE
+    })?;
+    let mut todo: Vec<(usize, &(FileRec, String))> = Vec::new();
+    for x in list {
+        let Some(i) = set.files.iter().position(|e| e.name == x.0.key.as_bytes()) else {
+            eprintln!("msi: {} is not in cabinet set of {cab}", x.0.key);
+            return Err(ERROR_INSTALL_FAILURE);
+        };
+        todo.push((i, x));
+    }
+    // (in folder order: each folder decoded once)
+    todo.sort_by_key(|t| (set.files[t.0].folder, set.files[t.0].offset));
+    for (i, (f, target)) in todo {
+        host_mkdirs(target.rsplit_once('\\').map_or("", |d| d.0));
+        let mut out = kura::fs::File::create(crate::files::resolve_new(target)).map_err(|_| ERROR_INSTALL_FAILURE)?;
+        set.read_file(i, &mut out).map_err(|e| {
+            eprintln!("msi: {} from cabinet set of {cab}: FDI error {e}", f.key);
+            ERROR_INSTALL_FAILURE
+        })?;
+        file_done(c, p, f, target);
+    }
+    Ok(())
+}
+
+/// A cabinet: "#stream" in the package, or a file beside it (one of a set: `extract_set`).
+fn extract_cab(c: &mut Ctx, p: &Arc<Mutex<Package>>, cab: &str, list: &[(FileRec, String)], cabs: &[String]) -> R<()> {
+    if !cab.starts_with('#') && cab_beside(p, cab).and_then(|h| cab_header(&h)).is_some_and(|h| h.has_prev || h.has_next) {
+        if let Some(vols) = set_volumes(p, cab, cabs) {
+            return extract_set(c, p, cab, &vols, list);
+        }
+    }
     let tmp;
     let host = if let Some(stream) = cab.strip_prefix('#') {
         let pk = p.lock().unwrap();

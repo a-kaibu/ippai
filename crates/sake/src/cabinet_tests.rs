@@ -332,3 +332,39 @@ proptest! {
         prop_assert!(p.biggest <= 0xffff);
     }
 }
+
+#[test]
+fn not_a_cabinet_leaves_the_erf() {
+    // 天極姫's InstallShield launcher: FDIIsCabinet on the .msi (a compound file)
+    let mut msi = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+    msi.resize(CFHEADER, 0);
+    assert!(matches!(is_cabinet(Some(&msi)), Err(None)));
+    assert!(matches!(is_cabinet(Some(b"MSCF")), Err(None)), "short header");
+    assert!(matches!(is_cabinet(None), Err(None)), "short read");
+    let cab = build(&[(false, vec![("a.txt".into(), b"hi".to_vec(), false)])]);
+    assert!(is_cabinet(Some(&cab[..CFHEADER])).is_ok());
+    let mut newer = cab[..CFHEADER].to_vec();
+    newer[25] = 1;
+    newer[24] = 4;
+    assert!(matches!(is_cabinet(Some(&newer)), Err(Some(FDIERROR_UNKNOWN_CABINET_VERSION))), "version 1.4 sets the ERF (fdi.c)");
+}
+
+proptest! {
+    /// Any header bytes: the ERF is set only for a cabinet signature with a version past 1.3;
+    /// everything without "MSCF" is FALSE with the ERF untouched, and never a panic.
+    #[test]
+    fn is_cabinet_sets_the_erf_only_for_versions(mut d in proptest::collection::vec(any::<u8>(), 0..48), mscf in any::<bool>()) {
+        if mscf && d.len() >= 4 {
+            d[..4].copy_from_slice(b"MSCF");
+        }
+        let signed = d.len() >= 4 && &d[..4] == b"MSCF";
+        match is_cabinet(Some(&d)) {
+            Ok(_) => prop_assert!(signed && d.len() >= CFHEADER),
+            Err(None) => prop_assert!(!signed || d.len() < CFHEADER),
+            Err(Some(e)) => {
+                prop_assert_eq!(e, FDIERROR_UNKNOWN_CABINET_VERSION);
+                prop_assert!(signed && d.len() >= CFHEADER && (d[25] > 1 || d[25] == 1 && d[24] > 3));
+            }
+        }
+    }
+}

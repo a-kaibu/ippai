@@ -79,6 +79,7 @@ pub mod ini;
 pub mod rtf;
 pub mod msi;
 pub mod cabinet;
+pub mod cabset;
 pub mod msi_pkg;
 pub mod msi_search;
 pub mod msi_install;
@@ -986,6 +987,9 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     let mut suspended = false;
     if let Some(r) = process::record() {
         k32::set_command_line_raw(&r.cmdline);
+        if let Some(e) = &r.env {
+            k32::env_replace(e.clone());
+        }
         files::set_cwd(&r.cwd);
         k32::set_std_handles(r.std);
         process::start_child(&r);

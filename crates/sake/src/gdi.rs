@@ -1813,6 +1813,9 @@ fn lenient_outline(f: &FontVec, id: ab_glyph::GlyphId) -> Option<ab_glyph::Outli
     Some(ab_glyph::Outline { bounds: ab_glyph::Rect { min: ab_glyph::point(x0, y1), max: ab_glyph::point(x1, y0) }, curves: b.curves })
 }
 
+/// The most pixels raster draws one glyph with (16384 x 16384)
+const MAX_GLYPH_PIXELS: i64 = 1 << 28;
+
 fn raster(r: &Real, ch: u32) -> Glyph {
     let f = &*r.font;
     let upem = f.units_per_em().unwrap_or(1000.0);
@@ -1829,7 +1832,9 @@ fn raster(r: &Real, ch: u32) -> Glyph {
     if let Some(o) = outlined {
         let b = o.px_bounds();
         let (w, h) = (b.width() as i32, b.height() as i32);
-        if w > 0 && h > 0 {
+        // (a glyph bigger than any screen, from a font of a height no one draws with — a
+        // LOGFONT left uninitialized: none, as no pixels of it could show)
+        if w > 0 && h > 0 && (w as i64) * (h as i64) <= MAX_GLYPH_PIXELS {
             let mut cov = vec![0u8; (w * h) as usize];
             o.draw(|x, y, v| {
                 let i = (y as i32 * w + x as i32) as usize;
@@ -4217,7 +4222,11 @@ fn SetSystemPaletteUse(_: &mut Ctx) -> u32 {
 // --- fonts and text
 
 fn CreateFontIndirectA(c: &mut Ctx) -> u32 {
-    add(G::Font(read_logfont(c.a(0), false)))
+    let lf = read_logfont(c.a(0), false);
+    if crate::env_on!("SAKE_TRACE_FONT") {
+        eprintln!("sake font: {} h {} w {} weight {} q {}", lf.face, lf.height, lf.width, lf.weight, lf.quality);
+    }
+    add(G::Font(lf))
 }
 fn CreateFontIndirectW(c: &mut Ctx) -> u32 {
     let lf = read_logfont(c.a(0), true);
@@ -4292,10 +4301,85 @@ fn GetTextCharset(_: &mut Ctx) -> u32 {
 }
 fn GetTextCharsetInfo(c: &mut Ctx) -> u32 {
     if c.a(1) != 0 {
+        // (FONTSIGNATURE: fsUsb[4], then fsCsb[2]; Shift-JIS is code page bit 17)
         mem::fill(c.a(1), 24, 0);
-        w32(c.a(1), 1 << 17);
+        w32(c.a(1) + 16, 1 << 17);
     }
     128
+}
+
+/// The character sets Windows knows: (charset, code page, its bit in FONTSIGNATURE.fsCsb[0]).
+pub const CHARSETS: [(u32, u32, u32); 16] = [
+    (0, 1252, 0),     // ANSI
+    (238, 1250, 1),   // EASTEUROPE
+    (204, 1251, 2),   // RUSSIAN
+    (161, 1253, 3),   // GREEK
+    (162, 1254, 4),   // TURKISH
+    (177, 1255, 5),   // HEBREW
+    (178, 1256, 6),   // ARABIC
+    (186, 1257, 7),   // BALTIC
+    (163, 1258, 8),   // VIETNAMESE
+    (222, 874, 16),   // THAI
+    (128, 932, 17),   // SHIFTJIS
+    (134, 936, 18),   // GB2312
+    (129, 949, 19),   // HANGEUL
+    (136, 950, 20),   // CHINESEBIG5
+    (130, 1361, 21),  // JOHAB
+    (2, 42, 31),      // SYMBOL (CP_SYMBOL)
+];
+
+/// TranslateCharsetInfo's lookup: the entry whose charset (TCI_SRCCHARSET, 1), code page
+/// (TCI_SRCCODEPAGE, 2) or lowest fsCsb[0] bit (TCI_SRCFONTSIG, 3) is `src`; a locale's
+/// (TCI_SRCLOCALE, 0x1000) is its ANSI code page's.
+pub fn charset_info(src: u32, flags: u32) -> Option<(u32, u32, u32)> {
+    match flags {
+        1 => CHARSETS.iter().find(|e| e.0 == src).copied(),
+        2 => CHARSETS.iter().find(|e| e.1 == src).copied(),
+        3 => CHARSETS.iter().find(|e| src & (1 << e.2) != 0).copied(),
+        0x1000 => {
+            let cp = match src & 0x3ff {
+                0x11 => 932,
+                0x04 if src & 0xffff == 0x0404 || src & 0xffff == 0x0c04 || src & 0xffff == 0x1404 => 950,
+                0x04 => 936,
+                0x12 => 949,
+                0x1e => 874,
+                0x19 | 0x22 | 0x23 | 0x02 | 0x2f => 1251,
+                0x05 | 0x0e | 0x15 | 0x18 | 0x1b | 0x24 | 0x1c => 1250,
+                0x08 => 1253,
+                0x1f => 1254,
+                0x0d => 1255,
+                0x01 | 0x20 | 0x29 => 1256,
+                0x25 | 0x26 | 0x27 => 1257,
+                0x2a => 1258,
+                _ => 1252,
+            };
+            CHARSETS.iter().find(|e| e.1 == cp).copied()
+        }
+        _ => None,
+    }
+}
+
+/// TranslateCharsetInfo(src, CHARSETINFO*, flags): ciCharset, ciACP, FONTSIGNATURE (fsUsb
+/// zero, the set's bit in fsCsb[0]). TCI_SRCFONTSIG's src points to the fsCsb DWORDs.
+fn TranslateCharsetInfo(c: &mut Ctx) -> u32 {
+    let (src, out, flags) = (c.a(0), c.a(1), c.a(2));
+    if out == 0 {
+        return 0;
+    }
+    let key = if flags == 3 {
+        if src == 0 {
+            return 0;
+        }
+        mem::r32(src)
+    } else {
+        src
+    };
+    let Some((cs, cp, bit)) = charset_info(key, flags) else { return 0 };
+    w32(out, cs);
+    w32(out + 4, cp);
+    mem::fill(out + 8, 24, 0);
+    w32(out + 8 + 16, 1 << bit);
+    1
 }
 
 /// A negative character count: the text functions fail (ERROR_INVALID_PARAMETER)
@@ -4992,7 +5076,7 @@ fn register() {
         AnimatePalette, GetSystemPaletteEntries, GetNearestPaletteIndex, GetNearestColor, GetSystemPaletteUse,
         SetSystemPaletteUse,
         CreateFontIndirectA, CreateFontIndirectW, CreateFontIndirectExW, CreateFontA, CreateFontW,
-        GetTextMetricsA, GetTextMetricsW, GetTextFaceA, GetTextFaceW, GetTextCharset, GetTextCharsetInfo,
+        GetTextMetricsA, GetTextMetricsW, GetTextFaceA, GetTextFaceW, GetTextCharset, GetTextCharsetInfo, TranslateCharsetInfo,
         GetTextExtentPoint32A, GetTextExtentPointA, GetTextExtentPoint32W, GetTextExtentPointW,
         GetTextExtentExPointA, GetTextExtentExPointW, GetCharWidthA, GetCharWidthW, GetCharWidth32A,
         GetCharWidth32W, GetCharABCWidthsA, GetCharABCWidthsW, GetCharABCWidthsFloatA, GetCharABCWidthsFloatW, GetCharABCWidthsI, GetCharWidthI, GetFontUnicodeRanges, GetCharWidthFloatA, GetCharWidthFloatW, GetGlyphOutlineA, GetGlyphOutlineW,
@@ -5284,6 +5368,65 @@ mod load_tests {
             let mut pal = vec![a, b];
             pal.extend(more);
             proptest::prop_assert_eq!(dib_monochrome(&info(1, pal)), a == 0 && b == 0xffffff);
+        }
+    }
+}
+
+#[cfg(test)]
+mod charset_tests {
+    use super::{charset_info, CHARSETS};
+    use proptest::prelude::*;
+
+    #[test]
+    fn lookups() {
+        assert_eq!(charset_info(128, 1), Some((128, 932, 17)));
+        assert_eq!(charset_info(932, 2), Some((128, 932, 17)));
+        assert_eq!(charset_info(1 << 17, 3), Some((128, 932, 17)));
+        assert_eq!(charset_info(0x0411, 0x1000), Some((128, 932, 17)));
+        assert_eq!(charset_info(0x0409, 0x1000), Some((0, 1252, 0)));
+        assert_eq!(charset_info(0x0404, 0x1000), Some((136, 950, 20)));
+        assert_eq!(charset_info(0x0804, 0x1000), Some((134, 936, 18)));
+        assert_eq!(charset_info(1, 1), None);
+        assert_eq!(charset_info(65001, 2), None);
+        assert_eq!(charset_info(0, 3), None);
+        assert_eq!(charset_info(128, 7), None);
+    }
+
+    proptest! {
+        /// Each set found by its charset, its code page and its bit is the same entry; a font
+        /// signature with more bits gives its lowest known one.
+        #[test]
+        fn three_keys_agree(i in 0..CHARSETS.len(), extra in any::<u32>()) {
+            let e = CHARSETS[i];
+            prop_assert_eq!(charset_info(e.0, 1), Some(e));
+            prop_assert_eq!(charset_info(e.1, 2), Some(e));
+            prop_assert_eq!(charset_info(1 << e.2, 3), Some(e));
+            let sig = (1u32 << e.2) | (extra & !((1u32 << e.2) - 1));
+            let lowest = CHARSETS.iter().filter(|c| sig & (1 << c.2) != 0).map(|c| c.2).min().unwrap();
+            prop_assert_eq!(charset_info(sig, 3).unwrap().2, lowest);
+        }
+    }
+}
+
+#[cfg(test)]
+mod raster_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Any height a LOGFONT can hold rasterizes without panicking (InstallShield 12's
+        /// launcher made a font from an uninitialized LOGFONT once WM_GETFONT gave it none),
+        /// and no glyph has more pixels than MAX_GLYPH_PIXELS.
+        #[test]
+        fn any_height(height in any::<i32>(), ch in prop::sample::select(vec!['A', 'g', '漢', 'あ', ' '])) {
+            // (fonts from SAKE_FONTS, tools/ci/sake-fonts.py: without them nothing to draw)
+            let Some(r) = realize(&stock_font(SYS_FACE, height)) else {
+                prop_assert!(std::env::var_os("SAKE_FONTS").is_none());
+                return Ok(());
+            };
+            let g = raster(&r, ch as u32);
+            prop_assert!((g.w as i64) * (g.h as i64) <= MAX_GLYPH_PIXELS);
+            prop_assert_eq!(g.cov.len() as i64, (g.w as i64) * (g.h as i64));
         }
     }
 }

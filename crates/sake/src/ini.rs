@@ -376,7 +376,12 @@ fn get_string(c: &mut Ctx, wide: bool, file: &str) -> u32 {
     if key == 0 {
         return list_result(put_list(buf, cap, &ini.keys(&s).unwrap_or_default(), wide));
     }
-    match ini.value(&s, &arg_str(key, wide)) {
+    let k = arg_str(key, wide);
+    let got = ini.value(&s, &k);
+    if crate::env_on!("SAKE_TRACE_INI") {
+        eprintln!("sake ini: {file} [{s}] {k} = {got:?}");
+    }
+    match got {
         Some(v) => {
             let (n, cut) = put(buf, cap, &v, wide);
             crate::k32::last_error(if cut { 234 } else { 0 });

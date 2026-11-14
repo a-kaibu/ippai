@@ -623,11 +623,12 @@ fn nt_device_io_control_file(c: &mut Ctx) -> u32 {
 
 /// NtQueryVolumeInformationFile's answer for FsInformationClass `class` on a handle whose
 /// GetFileType is `ty`, the volume kernel32's GetVolumeInformation / GetDiskFreeSpace describe
-/// (label SAKE, serial 12345678, NTFS, 8 sectors of 512 bytes a cluster, 0x200_0000 clusters of
-/// which 0x100_0000 free). Err: the NTSTATUS for a class answered nowhere here.
+/// (label SAKE, serial 12345678, NTFS, the clusters of crate::k32::DISK_*: 8 sectors of 512 bytes
+/// a cluster, 0x200_0000 clusters of which 0xf7_a3c1 free). Err: the NTSTATUS for a class answered nowhere here.
 pub fn fs_info(class: u32, ty: u32) -> Result<Vec<u8>, u32> {
     let w = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
-    let (sec, bps, total, free) = (8u32, 512u32, 0x200_0000u64, 0x100_0000u64);
+    use crate::k32::{DISK_BYTES_PER_SECTOR, DISK_FREE_CLUSTERS, DISK_SECTORS_PER_CLUSTER, DISK_TOTAL_CLUSTERS};
+    let (sec, bps, total, free) = (DISK_SECTORS_PER_CLUSTER, DISK_BYTES_PER_SECTOR, DISK_TOTAL_CLUSTERS as u64, DISK_FREE_CLUSTERS as u64);
     let mut v = Vec::new();
     match class {
         // FileFsVolumeInformation: creation time, serial, label length, supports objects, label
@@ -1673,7 +1674,7 @@ mod fs_info_tests {
     }
     proptest! {
         // every answered class is at least its fixed part, a name's length field matches the
-        // bytes after it, and the sizes agree with GetDiskFreeSpace's (8 x 512, 0x200_0000 / 0x100_0000)
+        // bytes after it, and the sizes agree with GetDiskFreeSpace's (8 x 512, 0x200_0000 / 0xf7_a3c1)
         #[test]
         fn consistent(class in 0u32..12, ty in 0u32..4) {
             match fs_info(class, ty) {
@@ -1684,8 +1685,8 @@ mod fs_info_tests {
                     match class {
                         1 => prop_assert_eq!(u32at(12) as usize, v.len() - 18),
                         5 => prop_assert_eq!(u32at(8) as usize, v.len() - 12),
-                        3 => prop_assert_eq!((u64at(0), u64at(8), u32at(16), u32at(20)), (0x200_0000, 0x100_0000, 8, 512)),
-                        7 => prop_assert_eq!((u64at(0), u64at(8), u64at(16), u32at(24), u32at(28)), (0x200_0000, 0x100_0000, 0x100_0000, 8, 512)),
+                        3 => prop_assert_eq!((u64at(0), u64at(8), u32at(16), u32at(20)), (0x200_0000, 0xf7_a3c1, 8, 512)),
+                        7 => prop_assert_eq!((u64at(0), u64at(8), u64at(16), u32at(24), u32at(28)), (0x200_0000, 0xf7_a3c1, 0xf7_a3c1, 8, 512)),
                         _ => {}
                     }
                 }
