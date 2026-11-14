@@ -198,6 +198,76 @@ pub extern "C" fn vnhost_gpu_total() -> f64 {
     GPU_NS.load(Relaxed) as f64 / 1e6
 }
 
+/// Lost devices (host/vngpu.js): the ones the drawing came back from << 2, | 1 while it is
+/// stopped (no new device yet), | 2 when no new device was had (it stays stopped). The guest's Direct3D compares the count with the one
+/// it last saw and uploads again what it still has (`lost_gen`); the page tells the player.
+static LOST: AtomicU32 = AtomicU32::new(0);
+
+/// How many times the drawing thread's device was lost and made again.
+#[cfg(not(test))]
+pub fn lost_gen() -> u32 {
+    LOST.load(SeqCst) >> 2
+}
+
+// (tests: per thread, so that one test's loss is not another's)
+#[cfg(test)]
+thread_local! {
+    static TEST_LOST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+pub fn lost_gen() -> u32 {
+    TEST_LOST.with(|c| c.get())
+}
+/// Tests: the page's device was lost and made again (as `vnhost_render_lost` counts it).
+#[cfg(test)]
+pub fn set_lost_gen(n: u32) {
+    TEST_LOST.with(|c| c.set(n))
+}
+
+/// host/vngpu.js: the device was lost (`device.lost`); the drawing stops until a new one
+/// comes (`vnhost_render_lost`, or `vnhost_render_lost_for_good` when none does).
+#[no_mangle]
+pub extern "C" fn vnhost_render_losing() {
+    LOST.fetch_or(1, SeqCst);
+}
+
+/// host/vngpu.js: no new device after a lost one: the drawing stays stopped (the page asks for
+/// a reload).
+#[no_mangle]
+pub extern "C" fn vnhost_render_lost_for_good() {
+    LOST.fetch_or(3, SeqCst);
+}
+
+/// The page: `LOST` (losses come back from << 2 | 2 for good | 1 stopped now).
+#[no_mangle]
+pub extern "C" fn vnhost_render_lost_state() -> u32 {
+    LOST.load(SeqCst)
+}
+
+/// host/vngpu.js: a new device replaced a lost one (the table of objects is the old device's
+/// still). Every object of the old one is made again on it, empty, from what made it (as a
+/// save state restores, d3d/snap.rs `lose`); the screen is uploaded again whole; Direct3D's
+/// clears not done yet stay; readbacks on their way end without pixels and a save state being
+/// read back fails. Then the guest uploads again what it has (`lost_gen`).
+#[no_mangle]
+pub extern "C" fn vnhost_render_lost() {
+    R.with(|r| {
+        let mut r = r.borrow_mut();
+        // (the screen's objects are the old table's: forgotten with it, made again by the new
+        // Render, which uploads the whole screen)
+        let Some(old) = r.take() else { return gpu::reset() };
+        if old.snapping {
+            crate::snap::VNHOST_SNAP.gpu.store(crate::snap::GPU_FAILED, SeqCst);
+        }
+        let d3d = old.d3d.renew();
+        let mut new = Render::new_with(d3d);
+        new.d3d_frames = u64::MAX;
+        *r = Some(new);
+    });
+    // (one more come back from, not stopped)
+    let _ = LOST.fetch_update(SeqCst, SeqCst, |v| Some(((v >> 2) + 1) << 2));
+}
+
 /// host/vngpu.js: the GPU finished the work submitted before `on_done(token)`.
 #[no_mangle]
 pub extern "C" fn vnhost_render_done(token: u32, ms: f64) {
@@ -259,7 +329,8 @@ struct Pipe {
 struct Render {
     d3d: d3d::D3d,
     headless: bool,
-    /// per target format
+    /// the shader of `pipes` (0: not made yet), and per target format
+    module: Id,
     pipes: Vec<(&'static str, Pipe)>,
     nearest: Id,
     linear: Id,
@@ -303,11 +374,16 @@ struct Stats {
 
 impl Render {
     fn new() -> Render {
+        Render::new_with(d3d::D3d::new())
+    }
+
+    fn new_with(d3d: d3d::D3d) -> Render {
         let headless = crate::env_on!("IPPAI_HEADLESS");
         let uv = (0..10).map(|_| gpu::buffer(16, usage::UNIFORM | usage::COPY_DST)).collect();
         Render {
-            d3d: d3d::D3d::new(),
+            d3d,
             headless,
+            module: 0,
             pipes: Vec::new(),
             nearest: gpu::sampler(r#"{"magFilter":"nearest","minFilter":"nearest"}"#),
             linear: gpu::sampler(r#"{"magFilter":"linear","minFilter":"linear"}"#),
@@ -377,10 +453,10 @@ impl Render {
         if let Some(i) = self.pipes.iter().position(|p| p.0 == format) {
             return &self.pipes[i].1;
         }
-        thread_local! {
-            static MODULE: Id = gpu::shader(SHADER);
+        if self.module == 0 {
+            self.module = gpu::shader(SHADER);
         }
-        let module = MODULE.with(|m| *m);
+        let module = self.module;
         let pipeline = gpu::render_pipeline(&format!(
             r#"{{"layout":"auto","vertex":{{"module":{module},"entryPoint":"vs"}},"fragment":{{"module":{module},"entryPoint":"fs","targets":[{{"format":{}}}]}},"primitive":{{"topology":"triangle-list"}}}}"#,
             q(format)

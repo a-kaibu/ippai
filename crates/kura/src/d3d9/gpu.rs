@@ -169,6 +169,12 @@ fn with<R>(f: impl FnOnce(&mut Queue) -> R) -> R {
     }))
 }
 
+/// Tests: whether readback `id` was said to be done (and not taken by its waiter yet).
+#[cfg(test)]
+pub fn readback_is_done(id: u32) -> bool {
+    with(|q| q.readbacks_done.contains(&id))
+}
+
 // Tests: the page's executor in the same thread, run where the guest would wait for it.
 #[cfg(test)]
 thread_local! {

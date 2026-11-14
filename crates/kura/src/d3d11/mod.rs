@@ -430,6 +430,8 @@ pub struct D11 {
     /// page targets set in this batch generation
     targets: Option<(u64, Vec<u32>)>,
     next_gpu: u32,
+    /// the page's lost devices seen (render::lost_gen, see `after_lost`)
+    lost_seen: u32,
 }
 
 unsafe impl Send for D11 {}
@@ -741,6 +743,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
                 sprite_view: (0, [0.0; 2]),
                 targets: None,
                 next_gpu: 0,
+                lost_seen: crate::render::lost_gen(),
             })
         }
     }
@@ -774,6 +777,7 @@ pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
         let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());
         let Some(d) = g.as_mut() else { return E_FAIL };
         d.calls = calls;
+        after_lost(d);
         let a = |i: usize| *args.add(i);
         let mut after = After::None;
         let r = match id {
@@ -1279,7 +1283,7 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
 
 /// Uploads a subresource (a box of it) from guest memory (`pitch` bytes per row, `slice` per 3D
 /// slice) to the page texture, and keeps the bytes for formats the page converts.
-unsafe fn upload_texture(t: &mut Texture, sub: u32, mem: u32, pitch: u32, slice: u32, bx: Option<[u32; 6]>) {
+unsafe fn upload_texture(t: &mut Texture, sub: u32, mem: usize, pitch: u32, slice: u32, bx: Option<[u32; 6]>) {
     // (of depth only 16-bit: WebGPU writes into no other; copies into 32-bit float depth are
     // drawn, see render/d3d.rs draw_depth)
     if t.gpu == 0 || matches!(t.page, format::P_D24S8 | format::P_D32F) || mem == 0 {
@@ -1307,9 +1311,43 @@ unsafe fn upload_texture(t: &mut Texture, sub: u32, mem: u32, pitch: u32, slice:
     }
 }
 
+/// The page's device was lost and everything on it made again empty (render/mod.rs
+/// `vnhost_render_lost`): what the guest still has goes up again. Every buffer from its guest
+/// memory (the next use uploads it whole), every texture whose bytes are kept (`keeps_bits`)
+/// from those. The rest (render targets, textures in formats the page holds as they are) is
+/// zeros until the game writes it again.
+fn after_lost(d: &mut D11) {
+    let g = crate::render::lost_gen();
+    if g == d.lost_seen {
+        return;
+    }
+    d.lost_seen = g;
+    let mut ids: Vec<u32> = d.objs.keys().copied().collect();
+    ids.sort_unstable();
+    for id in ids {
+        match d.objs.get_mut(&id).map(|o| &mut o.data) {
+            Some(Data::Buffer(b)) if b.gpu != 0 => {
+                b.dirty = true;
+                b.stream = false;
+            }
+            Some(Data::Texture(t)) if t.gpu != 0 && !t.bits.is_empty() => {
+                let mut subs: Vec<(u32, Vec<u8>)> = t.bits.iter().map(|(&k, v)| (k, v.clone())).collect();
+                subs.sort_unstable_by_key(|s| s.0);
+                for (sub, bytes) in subs {
+                    let (_, _, lw, lh, _) = sub_size(t, sub);
+                    let (pitch, rows) = format::pitch_rows(t.fmt, lw, lh);
+                    unsafe { upload_texture(t, sub, bytes.as_ptr() as usize, pitch, pitch * rows, None) };
+                }
+                t.clean.clear();
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Keeps the bytes of a box (x, y, z, width, height, end z, inside the subresource, x and y on
 /// blocks) of guest texels for a format the page converts (see `keeps_bits`).
-unsafe fn keep_bits(t: &mut Texture, sub: u32, mem: u32, pitch: u32, slice: u32, b: [u32; 6]) {
+unsafe fn keep_bits(t: &mut Texture, sub: u32, mem: usize, pitch: u32, slice: u32, b: [u32; 6]) {
     let Some(f) = format::info(t.fmt).filter(|_| keeps_bits(t)) else { return };
     let [x0, y0, z0, w, h, z1] = b;
     let (_, _, lw, lh, ld) = sub_size(t, sub);
@@ -2059,7 +2097,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 for sub in 0..t.mips * if dim == 3 { 1 } else { t.layers } {
                     // D3D11_SUBRESOURCE_DATA { pSysMem, SysMemPitch, SysMemSlicePitch }
                     let init = a(2) + sub * (ptr() + 8);
-                    upload_texture(t, sub, rdp(init, 0), rd(init + ptr(), 0), rd(init + ptr(), 1), None);
+                    upload_texture(t, sub, rdp(init, 0) as usize, rd(init + ptr(), 0), rd(init + ptr(), 1), None);
                 }
             }
             wrp(a(3), 0, o);
@@ -2516,7 +2554,7 @@ fn buffer_view_sync(d: &mut D11, view: u32) {
     }
     let (res, bytes) = (v.res, b.bytes);
     if let Some(Data::Texture(t)) = d.objs.get_mut(&res).map(|o| &mut o.data) {
-        unsafe { upload_texture(t, 0, now.as_ptr() as u32, bytes, 0, None) };
+        unsafe { upload_texture(t, 0, now.as_ptr() as usize, bytes, 0, None) };
     }
     if let Some(Data::View(v)) = d.objs.get_mut(&view).map(|o| &mut o.data) {
         if let Some(b) = v.buf.as_mut() {
@@ -3220,7 +3258,7 @@ unsafe fn unmap(d: &mut D11, res: u32, sub: u32) {
             if write {
                 let (_, _, lw, lh, _) = sub_size(t, sub);
                 let rows = format::pitch_rows(t.fmt, lw, lh).1;
-                upload_texture(t, sub, mem, pitch, pitch * rows, None);
+                upload_texture(t, sub, mem as usize, pitch, pitch * rows, None);
             }
             // (the memory holds what the texture has now: read back or kept at the Map, or sent
             // up here)
@@ -3272,8 +3310,8 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
             t.pristine = false;
             match b {
                 // (upload_texture reads the box's rows from `data` on: the box's first texel)
-                Some(bb) => upload_texture(t, sub, data, pitch, slice, Some(bb)),
-                None => upload_texture(t, sub, data, pitch, slice, None),
+                Some(bb) => upload_texture(t, sub, data as usize, pitch, slice, Some(bb)),
+                None => upload_texture(t, sub, data as usize, pitch, slice, None),
             }
         }
         _ => {}
@@ -3300,7 +3338,7 @@ pub unsafe fn write_texture(res: u32, data: u32, pitch: u32, bx: [u32; 4]) -> bo
     let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) else { return false };
     t.clean.clear();
     t.pristine = false;
-    upload_texture(t, 0, data, pitch, pitch * (bx[3] - bx[1]), Some([bx[0], bx[1], 0, bx[2], bx[3], 1]));
+    upload_texture(t, 0, data as usize, pitch, pitch * (bx[3] - bx[1]), Some([bx[0], bx[1], 0, bx[2], bx[3], 1]));
     true
 }
 
@@ -3437,9 +3475,9 @@ unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub:
     };
     if let Some(Data::Texture(a)) = d.objs.get_mut(&di).map(|o| &mut o.data) {
         if on_page {
-            keep_bits(a, dsub, mem, pitch, pitch * rows, [at[0], at[1], dz, w, h, dz + depth]);
+            keep_bits(a, dsub, mem as usize, pitch, pitch * rows, [at[0], at[1], dz, w, h, dz + depth]);
         } else {
-            upload_texture(a, dsub, mem, pitch, pitch * rows, Some([at[0], at[1], dz, at[0] + w, at[1] + h, dz + depth]));
+            upload_texture(a, dsub, mem as usize, pitch, pitch * rows, Some([at[0], at[1], dz, at[0] + w, at[1] + h, dz + depth]));
         }
     }
     ((*d.calls).free)(mem as *mut u8);

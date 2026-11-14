@@ -442,7 +442,7 @@ pub fn present_src(a6: u32, a7: u32, w: u32, h: u32) -> [f32; 4] {
 /// A clear of a whole view (flags 1 color, 2 depth, 4 stencil) not done yet: the next pass that
 /// draws to the view does it as its loadOp (see `D3d::clears`).
 #[derive(Clone, Copy)]
-struct Clear {
+pub(crate) struct Clear {
     level: u32,
     layer: u32,
     flags: u32,

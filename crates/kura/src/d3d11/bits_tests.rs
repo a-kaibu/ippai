@@ -754,3 +754,68 @@ fn subresources_hash_as_windows() {
     assert!(n > 300, "{n} hashes");
     assert!(bad.is_empty(), "{} of {n} differ from Windows (not in the golden):\n{}", bad.len(), bad.join("\n"));
 }
+
+/// A lost page device (render/mod.rs `vnhost_render_lost`, everything on the new one empty):
+/// the guest's next call uploads again the textures whose bytes it keeps (a format the page
+/// converts) and marks every buffer to go up again from guest memory (`after_lost`); a texture
+/// the page holds as the guest's bytes has no copy here and stays zeros.
+#[test]
+fn a_lost_device_gets_the_kept_bits_and_buffers() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let mut rng = Rng(0x0dd_ba11_5eed);
+    let s = Shape(2, 8, 8, 1, 1);
+    let (kept, held) = (85, 28);
+    let kd = random_subs(&mut rng, s, kept);
+    let hd = random_subs(&mut rng, s, held);
+    let (kt, ht) = (dev.tex(s, kept, false, Some(&kd)), dev.tex(s, held, false, Some(&hd)));
+    assert!(kt != 0 && ht != 0);
+    let bd = mem(24);
+    put(bd, &[64, 0, 1, 0, 0, 0]);
+    let bytes = mem(64);
+    put(bytes, &(0..16).collect::<Vec<u32>>());
+    let init = mem(12);
+    put(init, &[bytes, 0, 0]);
+    let o = mem(8);
+    assert_eq!(call1(m(IF_DEVICE, 3), &[dev.dev, bd, init, o]), 0);
+    let buf = rd1(o);
+    // (a draw would make its page buffer: here as one would)
+    {
+        let mut g = D11S.lock().unwrap();
+        let d = g.as_mut().unwrap();
+        let id = d.id_of(buf);
+        assert_ne!(buffer_gpu(d, id), 0);
+    }
+    gpu::pump();
+    let before = (page_read(gpu_of(kt), 0, 8, 8, 0x1105_0001).unwrap(), page_read(gpu_of(ht), 0, 8, 8, 0x1105_0002).unwrap());
+    assert!(before.1.iter().any(|&b| b != 0));
+    // the device is lost: what was on it is zeros on the new one
+    model::with(|m| {
+        for o in m.objs.iter_mut() {
+            match o {
+                model::Obj::Texture(t) => t.texels.iter_mut().for_each(|v| v.fill(0)),
+                model::Obj::Buffer(b) => b.data.fill(0),
+                _ => {}
+            }
+        }
+    });
+    let gen = crate::render::lost_gen();
+    crate::render::set_lost_gen(gen + 1);
+    // (the guest's next call, whatever it is)
+    call1(m(IF_DEVICE, 1), &[dev.dev]);
+    call1(m(IF_DEVICE, 2), &[dev.dev]);
+    assert_eq!(page_read(gpu_of(kt), 0, 8, 8, 0x1105_0003).unwrap(), before.0, "a converted format's kept bits");
+    assert!(page_read(gpu_of(ht), 0, 8, 8, 0x1105_0004).unwrap().iter().all(|&b| b == 0), "a texture of the guest's bytes: not kept");
+    {
+        let g = D11S.lock().unwrap();
+        let d = g.as_ref().unwrap();
+        assert!(matches!(&d.objs[&d.id_of(buf)].data, Data::Buffer(b) if b.dirty), "the buffer goes up again");
+    }
+    crate::render::set_lost_gen(gen);
+    D11S.lock().unwrap().as_mut().unwrap().lost_seen = gen;
+    call1(m(IF_BUFFER, 2), &[buf]);
+    dev.release(kt);
+    dev.release(ht);
+    dev.done();
+}

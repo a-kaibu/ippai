@@ -166,3 +166,32 @@ host/snap.js (the node build's pre-js):
   bits after the state; it fails without the sample copies), a state from the dialog, loaded,
   and loaded in a browser with nothing of its own (the server's copy); again on sake-grow with
   its memory grown by 512 MiB before the state, loaded without `&memory=grow`.
+
+## A lost GPU device
+
+The same batch brings the drawing back when the WebGPU device is lost (the GPU process
+restarted, memory ran short, Android took the GPU from a page in the background):
+
+* host/vngpu.js awaits `device.lost`: the frames stop, a new adapter and device are asked for
+  (six tries, waiting longer each time) and the canvas configured for it. Then
+  `vnhost_render_lost` (crates/kura/src/render/mod.rs): the old device's object table is
+  forgotten (`vngpu_reset`), and `D3d::renew` (render/d3d/snap.rs) makes every texture, buffer,
+  shader and pipeline again on the new one from the commands that made them, as a restored state
+  does, but empty: nothing can be read back from a lost device. Clears not done yet stay; the
+  screen is uploaded whole; readbacks on their way end without pixels; a state being taken
+  fails. The old device's late answers are dropped (they name tokens of the old D3d).
+* The guest's Direct3D then uploads again what it keeps, at its next call (`render::lost_gen`):
+  Direct3D 9 every surface and volume with a guest copy nothing rendered over, and every buffer
+  (device.rs `after_lost`, as Windows keeps managed resources over a lost device); Direct3D 11
+  every buffer, and the textures whose bytes it keeps (formats the page converts). Render
+  targets, and Direct3D 11 textures the page holds as the guest's bytes, are zeros until the
+  game draws or writes them again.
+* No new device, or two in a row lost within 5 s of coming: the drawing stays stopped. The page
+  (web/src/gpulost.ts) says the drawing was made again, or asks for a reload.
+* Tests: `a_lost_device_draws_on_d3d9/11` and `a_lost_device_ends_readbacks`
+  (render/d3d/model_tests.rs: after a random batch, the device made again must draw every later
+  frame as the same device with every texture and buffer zeroed would), d3d9/lost_tests.rs and
+  d3d11/bits_tests.rs `a_lost_device_gets_the_kept_bits_and_buffers` (what goes up again, what
+  stays zeros), web/src/gpulost.test.ts, and `tests/gpulost-browser.mjs` (real Chromium:
+  `device.destroy()` in a worker with an OffscreenCanvas, the order of the calls, the new
+  device draws without errors, late answers of the old one, giving up).

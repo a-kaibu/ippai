@@ -220,6 +220,57 @@ impl D3d {
     }
 }
 
+impl D3d {
+    /// The GPU was lost (host/vngpu.js, render/mod.rs `vnhost_render_lost`): nothing on it can be
+    /// read back any more. The guest's readbacks on their way end without pixels (it stops
+    /// waiting), and the batch returned makes every object again on a new device as `snap_take`
+    /// does, empty: textures as zeros, depth as last cleared, multisampled ones as zeros. The
+    /// guest uploads again what it still has (d3d9, d3d11: `render::lost_gen`).
+    pub fn lose(&mut self) -> Saved {
+        let mut reqs: Vec<u32> = self.readbacks.drain().map(|(_, r)| r.req).collect();
+        reqs.sort_unstable();
+        for req in reqs {
+            vnhost_d3d9_readback_done(req);
+        }
+        self.checks.clear();
+        self.check_done.clear();
+        self.snap_tokens.clear();
+        self.snap_reads = None;
+        self.snap_take()
+    }
+
+    /// The D3d that goes on on a new device after this one's was lost (`lose`): every object
+    /// made again, empty, the clears not done yet kept. The old table of objects is forgotten
+    /// (gpu::reset) before anything is made on the new device.
+    pub fn renew(mut self) -> D3d {
+        let saved = self.lose();
+        let clears = self.take_clears();
+        let frames = self.frames;
+        // (its objects are the old device's: forgotten with the table, not dropped one by one)
+        drop(self);
+        gpu::reset();
+        let mut d = D3d::new();
+        d.snap_restore(&saved);
+        d.keep_clears(clears);
+        d.frames = frames;
+        d
+    }
+
+    /// The clears not done yet (by texture: they name no GPU object), for the D3d that goes on
+    /// after a lost device: what they clear comes back as they would leave it.
+    fn take_clears(&mut self) -> HashMap<u32, Clear> {
+        std::mem::take(&mut self.clears)
+    }
+    /// (over the depth clears `lose`'s batch made: a clear not done yet is newer)
+    fn keep_clears(&mut self, c: HashMap<u32, Clear>) {
+        for (id, c) in c {
+            if self.textures.contains_key(&id) {
+                self.clears.insert(id, c);
+            }
+        }
+    }
+}
+
 /// The sample type of a color format: WGSL's and the bind group layout's.
 fn sample_kind(format: &str) -> (&'static str, &'static str) {
     if format.ends_with("uint") {

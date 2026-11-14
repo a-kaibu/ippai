@@ -9,6 +9,7 @@ mod ffi {
     extern "C" {
         pub fn vngpu_attach(thread: usize) -> i32;
         pub fn vngpu_start();
+        pub fn vngpu_reset();
         pub fn vngpu_canvas_format() -> u32;
         pub fn vngpu_canvas_size(w: u32, h: u32);
         pub fn vngpu_canvas_view() -> Id;
@@ -75,6 +76,12 @@ pub fn attach(thread: usize) -> bool {
 }
 pub fn start() {
     unsafe { ffi::vngpu_start() }
+}
+/// A new device (the old one was lost): every object of the table is forgotten, the indexes
+/// start again (what was made before is not on this device).
+pub fn reset() {
+    forget_set();
+    unsafe { ffi::vngpu_reset() }
 }
 /// The canvas's format: "bgra8unorm" or "rgba8unorm".
 pub fn canvas_format() -> &'static str {

@@ -31,6 +31,80 @@ addToLibrary({
     // end; a submit resolves them and, once read, hands the sum to vnhost_gpu_time (kura keeps
     // the total, the benchmarks read it)
     ts: null,
+    // a device lost (`device.lost`): set while a new one is asked for, waiting retryMs, twice
+    // that, ... between tries
+    lost: false,
+    retryMs: 250,
+    // A device (and the canvas configured for it), as the one before had: false without an
+    // adapter. When it is lost the drawing stops, a new one is asked for (a few times, waiting
+    // longer each time: the GPU process may be restarting) and render/mod.rs makes everything
+    // again on it (`vnhost_render_lost`); none: `vnhost_render_lost_for_good` (the page says so).
+    async open() {
+      const adapter = await navigator.gpu?.requestAdapter();
+      if (!adapter) return false;
+      const features = ['rg11b10ufloat-renderable', 'timestamp-query', 'float32-filterable', 'float32-blendable', 'depth-clip-control', 'bgra8unorm-storage'].filter((f) => adapter.features.has(f));
+      // (Direct3D 11 compute shaders have 32 KB of groupshared memory and 1024 threads per group;
+      // WebGPU's defaults are 16 KB and 256: what the adapter has, up to those)
+      const L = adapter.limits;
+      const requiredLimits = {
+        maxComputeWorkgroupStorageSize: Math.min(L.maxComputeWorkgroupStorageSize, 32768),
+        maxComputeInvocationsPerWorkgroup: Math.min(L.maxComputeInvocationsPerWorkgroup, 1024),
+        maxComputeWorkgroupSizeX: Math.min(L.maxComputeWorkgroupSizeX, 1024),
+        maxComputeWorkgroupSizeY: Math.min(L.maxComputeWorkgroupSizeY, 1024),
+        maxComputeWorkgroupSizeZ: Math.min(L.maxComputeWorkgroupSizeZ, 64),
+      };
+      const device = await adapter.requestDevice({ requiredFeatures: features, requiredLimits });
+      // (a new device may lack a feature the old one had: render/ asks has_feature again only
+      // for new objects, so the ones made again are made as before; WebGPU says which fail)
+      VG.device = device;
+      VG.ts = null;
+      if (device.features.has('timestamp-query')) {
+        const PASSES = 256;
+        VG.ts = {
+          max: PASSES,
+          n: 0,
+          set: device.createQuerySet({ type: 'timestamp', count: PASSES * 2 }),
+          resolve: device.createBuffer({ size: PASSES * 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }),
+          // (buffers to read the times back with; one per submit still being read)
+          idle: [],
+        };
+      }
+      device.addEventListener('uncapturederror', (e) => {
+        if (VG.device === device) err(`webgpu: ${e.error.message}`);
+      });
+      device.lost.then((info) => VG.onLost(device, info));
+      VG.ctx.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
+      return true;
+    },
+    // when a new device last came, and how many in a row were lost within quickMs of coming
+    renewedAt: -Infinity,
+    quick: 0,
+    quickMs: 5000,
+    async onLost(device, info) {
+      if (VG.device !== device) return;
+      VG.lost = true;
+      VG.call('vnhost_render_losing');
+      err(`webgpu: device lost (${info.reason}): ${info.message}`);
+      // (a device lost again and again as soon as it comes: given up on the second in a row,
+      // not made forever)
+      VG.quick = performance.now() - VG.renewedAt < VG.quickMs ? VG.quick + 1 : 0;
+      for (let k = 0; k < 6 && VG.quick < 2; k++) {
+        if (k) await new Promise((r) => setTimeout(r, VG.retryMs * 2 ** (k - 1)));
+        try {
+          if (await VG.open()) {
+            VG.call('vnhost_render_lost');
+            VG.renewedAt = performance.now();
+            VG.lost = false;
+            err('webgpu: a new device: drawing goes on');
+            return;
+          }
+        } catch (e) {
+          err(`webgpu: no new device yet: ${e}`);
+        }
+      }
+      VG.call('vnhost_render_lost_for_good');
+      err('webgpu: no new device: drawing stopped');
+    },
     heap: () => new Uint8Array(wasmMemory.buffer),
     call: (name, ...a) => wasmExports[name](...a),
   },
@@ -50,42 +124,24 @@ addToLibrary({
   vngpu_start__deps: ['$VG'],
   vngpu_start: () => {
     (async () => {
-      const canvas = await vnvmCanvas;
-      const adapter = await navigator.gpu?.requestAdapter();
-      if (!adapter) throw new Error('no WebGPU adapter');
-      const features = ['rg11b10ufloat-renderable', 'timestamp-query', 'float32-filterable', 'float32-blendable', 'depth-clip-control', 'bgra8unorm-storage'].filter((f) => adapter.features.has(f));
-      // (Direct3D 11 compute shaders have 32 KB of groupshared memory and 1024 threads per group;
-      // WebGPU's defaults are 16 KB and 256: what the adapter has, up to those)
-      const L = adapter.limits;
-      const requiredLimits = {
-        maxComputeWorkgroupStorageSize: Math.min(L.maxComputeWorkgroupStorageSize, 32768),
-        maxComputeInvocationsPerWorkgroup: Math.min(L.maxComputeInvocationsPerWorkgroup, 1024),
-        maxComputeWorkgroupSizeX: Math.min(L.maxComputeWorkgroupSizeX, 1024),
-        maxComputeWorkgroupSizeY: Math.min(L.maxComputeWorkgroupSizeY, 1024),
-        maxComputeWorkgroupSizeZ: Math.min(L.maxComputeWorkgroupSizeZ, 64),
-      };
-      VG.device = await adapter.requestDevice({ requiredFeatures: features, requiredLimits });
-      if (VG.device.features.has('timestamp-query')) {
-        const PASSES = 256;
-        VG.ts = {
-          max: PASSES,
-          n: 0,
-          set: VG.device.createQuerySet({ type: 'timestamp', count: PASSES * 2 }),
-          resolve: VG.device.createBuffer({ size: PASSES * 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }),
-          // (buffers to read the times back with; one per submit still being read)
-          idle: [],
-        };
-      }
-      VG.device.addEventListener('uncapturederror', (e) => err(`webgpu: ${e.error.message}`));
-      VG.canvas = canvas;
-      VG.ctx = canvas.getContext('webgpu');
-      VG.ctx.configure({ device: VG.device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
+      VG.canvas = await vnvmCanvas;
+      VG.ctx = VG.canvas.getContext('webgpu');
+      if (!(await VG.open())) throw new Error('no WebGPU adapter');
       const frame = (t) => {
-        VG.call('vnhost_render_frame', t);
+        // (no device while a lost one is replaced: the guest's batches wait for the new one)
+        if (!VG.lost) VG.call('vnhost_render_frame', t);
         requestAnimationFrame(frame);
       };
       requestAnimationFrame(frame);
     })().catch((e) => err(`render: ${e}`));
+  },
+
+  // (render/mod.rs `vnhost_render_lost`) a new device after a lost one: the table starts again
+  vngpu_reset: () => {
+    VG.objs = [null];
+    VG.free = [];
+    VG.enc = null;
+    VG.pass = null;
   },
 
   // the canvas's preferred format: 0 bgra8unorm, 1 rgba8unorm
@@ -177,7 +233,7 @@ addToLibrary({
           for (let i = 0; i < n * 2; i += 2) if (t[i + 1] > t[i]) ns += t[i + 1] - t[i];
           read.unmap();
           ts.idle.push(read);
-          VG.call('vnhost_gpu_time', Number(ns) / 1000, n);
+          if (VG.ts === ts) VG.call('vnhost_gpu_time', Number(ns) / 1000, n);
         },
         () => ts.idle.push(read),
       );
@@ -185,18 +241,22 @@ addToLibrary({
   // vnhost_render_done(token) once the GPU finished what was submitted
   vngpu_on_done: (token) => {
     const t0 = performance.now();
-    VG.device.queue.onSubmittedWorkDone().then(() => VG.call('vnhost_render_done', token, performance.now() - t0));
+    const device = VG.device;
+    // (not for a lost device's: its tokens are not the new one's)
+    device.queue.onSubmittedWorkDone().then(() => VG.device === device && VG.call('vnhost_render_done', token, performance.now() - t0));
   },
   // copies buffer `buf` (mapped for reading) to `dst`, then vnhost_render_mapped(token, ok)
   vngpu_read_buffer: (buf, size, dst, token) => {
-    const b = VG.objs[buf];
+    const b = VG.objs[buf], device = VG.device;
     b.mapAsync(GPUMapMode.READ).then(
       () => {
+        if (VG.device !== device) return;
         new Uint8Array(wasmMemory.buffer).set(new Uint8Array(b.getMappedRange(0, size)), dst >>> 0);
         b.unmap();
         VG.call('vnhost_render_mapped', token, 1);
       },
-      () => VG.call('vnhost_render_mapped', token, 0),
+      // (a lost device's readbacks ended when it was replaced: render/d3d/snap.rs lose)
+      () => VG.device === device && VG.call('vnhost_render_mapped', token, 0),
     );
   },
 

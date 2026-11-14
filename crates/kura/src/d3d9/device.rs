@@ -2443,6 +2443,47 @@ unsafe fn upload_changed(d: &mut D3d, s: u32) {
     }
 }
 
+/// The page's device was lost and everything on it made again empty (render/mod.rs
+/// `vnhost_render_lost`): what the guest still has goes up again, as Windows keeps managed
+/// resources over a lost device. Every surface and volume with a guest copy that nothing
+/// rendered over since (`gpu_newer`), not locked now (its unlock uploads it), and every buffer
+/// with a page copy (it is zeros there now: `shadow` says so, the next draw sends what differs).
+/// Render targets come back as zeros until the game draws them again.
+pub(crate) fn after_lost(d: &mut D3d) {
+    let g = crate::render::lost_gen();
+    if g == d.lost_seen {
+        return;
+    }
+    d.lost_seen = g;
+    let mut surfaces = Vec::new();
+    let mut volumes = Vec::new();
+    for (&id, o) in d.objs.iter_mut() {
+        match &mut o.data {
+            Data::Surface(sf) if sf.gpu != 0 && sf.mem != 0 && !sf.gpu_newer && sf.lock.is_none() => {
+                sf.pending = None;
+                surfaces.push((id, sf.w, sf.h));
+            }
+            Data::Volume(v) if v.gpu != 0 && v.mem != 0 && v.lock.is_none() => volumes.push((id, v.w, v.h, v.depth)),
+            Data::Buffer(b) if b.gpu != 0 => {
+                b.shadow.fill(0);
+                b.dirty = Some((0, b.len));
+            }
+            _ => {}
+        }
+    }
+    surfaces.sort_unstable();
+    volumes.sort_unstable();
+    for (s, w, h) in surfaces {
+        unsafe { upload(d, s, [0, 0, w, h]) };
+    }
+    for (v, w, h, depth) in volumes {
+        upload_volume(d, v, [0, 0, 0, w, h, depth]);
+    }
+    if let Some(dev) = d.dev.as_mut() {
+        dev.stale_all();
+    }
+}
+
 /// Uploads rect `r` of a surface's guest copy to its page texture.
 unsafe fn upload(d: &mut D3d, s: u32, r: [u32; 4]) {
     if let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) {

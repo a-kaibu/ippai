@@ -68,6 +68,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/opfs-read-browser.mjs
+      - name: A lost WebGPU device is replaced and the drawing goes on (host/vngpu.js)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/gpulost-browser.mjs
       - name: Unstable link (drops, stalls, offline, chunks kept on the device)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs

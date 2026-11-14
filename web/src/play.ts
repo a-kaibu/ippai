@@ -85,6 +85,7 @@ import {
   type StateInfo,
 } from "./savestate";
 import { toast } from "sonner";
+import { lostNotice } from "./gpulost";
 import { accountInput } from "./account-settings";
 import { keepInstallation, loadInstallation } from "./installation";
 import {
@@ -111,6 +112,8 @@ interface SakeModule {
   _vnhost_render_resize(w: number, h: number): void;
   _vnhost_render_input(kind: number, x: number, y: number, data: number): number;
   _vnhost_render_info(out: number): void;
+  /** render/mod.rs: the drawing's lost devices (web/src/gpulost.ts) */
+  _vnhost_render_lost_state?(): number;
   _vnhost_net_busy?(): number;
   _vnhost_jit_late?(wasm: number, wasmLen: number, idx: number, idxLen: number): number;
   /** host/fetch-bridge.js: the game's chunks fetched onto the device (warm.ts) */
@@ -1000,11 +1003,28 @@ function watch(sake: SakeModule, active: () => boolean = () => true, live: () =>
   // JPEG pictures of WIC / GDI+ / D3DX / OLE: the browser's decoder (web/src/idec.ts)
   if (typeof ImageDecoder !== "undefined" && globalThis.crypto?.subtle)
     new ImageDecode(sake, (l) => (console.log(l), recorder?.note(l)));
+  // the drawing's WebGPU device lost and made again, or not (host/vngpu.js)
+  let lost = 0;
   const frame = () => {
     if (exited) return closeGame();
     if (!live()) return;
     // (a state is being taken: the memory stays as it is)
     if (memGate.closed) return void requestAnimationFrame(frame);
+    const l = sake._vnhost_render_lost_state?.() ?? 0;
+    if (l !== lost) {
+      const n = lostNotice(lost, l);
+      lost = l;
+      if (n) {
+        console.log(`webgpu: ${n.text}`);
+        recorder?.note(`webgpu: device lost state ${l}`);
+        if (n.kind === "error")
+          toast.error(n.text, {
+            duration: Infinity,
+            action: { label: "再読み込み", onClick: () => location.reload() },
+          });
+        else toast(n.text);
+      }
+    }
     video?.tick();
     sake._vnhost_render_info(info);
     const [s, bits, width, height] = Array.from(new Uint32Array(sake.wasmMemory.buffer, info, 4));

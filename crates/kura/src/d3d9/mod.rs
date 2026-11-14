@@ -18,6 +18,8 @@ pub(crate) mod trace_tests;
 #[cfg(test)]
 pub(crate) mod lock_tests;
 #[cfg(test)]
+mod lost_tests;
+#[cfg(test)]
 mod draw_tests;
 #[cfg(test)]
 mod target_tests;
@@ -136,6 +138,9 @@ pub struct D3d {
     /// the call being run is a Direct3D 8 one: new objects get the Direct3D 8 vtables
     pub v8: bool,
     pub d8: d3d8::State,
+    /// the page's lost devices seen (render::lost_gen): one more, and what is kept here goes up
+    /// again (device::after_lost)
+    pub lost_seen: u32,
 }
 
 unsafe impl Send for D3d {}
@@ -340,6 +345,7 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
             counts: HashMap::new(),
             v8: false,
             d8: Default::default(),
+            lost_seen: crate::render::lost_gen(),
         });
     } else if let Some(d) = g.as_mut() {
         // (d3d8.dll registers its own after d3d9.dll's: keep both)
@@ -409,6 +415,7 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
                 d.guest_free(mem);
             }
         }
+        device::after_lost(d);
         let iface = id >> 8;
         let method = id & 0xff;
         d.v8 = iface > 16;

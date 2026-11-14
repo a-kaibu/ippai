@@ -1116,6 +1116,132 @@ fn check_cuts(make: impl Fn(u64, u32) -> Vec<Batch>) {
     unsafe { libc::munmap(dst, 4096) };
 }
 
+// ---- a lost device (d3d/snap.rs lose, render/mod.rs vnhost_render_lost) ----
+
+/// Runs `batches` with the device lost after batch `cut`: made again on a new device (`lost`),
+/// or (the meaning that must come out) the same device with every texture and buffer zeroed,
+/// depth and multisampled textures as `lose` says, and nothing remembered of what was drawn.
+/// Returns what each batch after `cut` was observed to do.
+fn run_lost(batches: &[Batch], cut: usize, lost: bool) -> Vec<Vec<Obs>> {
+    model::reset();
+    let mut d = D3d::new();
+    d.skip_check = false;
+    let mut out = Vec::new();
+    for (k, b) in batches.iter().enumerate() {
+        d.run(&b.c, &b.data, &b.blob);
+        for token in model::with(|m| m.finish_maps()) {
+            d.mapped(token, true);
+        }
+        let mut obs = model::with(|m| std::mem::take(&mut m.obs));
+        if let Some(o) = &d.overlay {
+            obs.push(Obs::Frame(format!("after batch {k}"), model::with(|m| m.view_values(o.view))));
+        }
+        if k > cut {
+            out.push(obs);
+        }
+        if k != cut {
+            continue;
+        }
+        if lost {
+            d = d.renew();
+            // (a new device: nothing of the old one was left)
+            assert_eq!(model::with(|m| m.calls.get("reset").copied()), Some(1));
+            d.skip_check = false;
+            let errors = model::with(|m| std::mem::take(&mut m.errors));
+            assert!(errors.is_empty(), "making again: WebGPU errors {errors:?}");
+        } else {
+            let mut c = Vec::new();
+            let mut ids: Vec<u32> = d.textures.keys().copied().collect();
+            ids.sort_unstable();
+            for id in ids {
+                let t = &d.textures[&id];
+                model::with(|m| m.zero(t.tex));
+                if is_depth(t.format) && !d.clears.contains_key(&id) {
+                    c.extend(snap::depth_clears(id, t));
+                } else if t.samples > 1 && !d.clears.contains_key(&id) {
+                    c.extend(snap::ms_clears(id));
+                }
+            }
+            for &(buf, _) in d.buffers.values() {
+                model::with(|m| m.zero(buf));
+            }
+            d.run_batch(&c, &[], &[]);
+            if d.overlay.is_some() && d.textures.get(&d.overlay_tex).is_some_and(|t| t.samples > 1) {
+                let view = d.present_view(d.overlay_tex);
+                d.overlay.as_mut().unwrap().view = view;
+            }
+            d.last = None;
+            d.segs.clear();
+            d.seg_open = None;
+            d.twins.clear();
+        }
+        model::with(|m| m.obs.clear());
+        out.push(d.overlay.iter().map(|o| Obs::Frame("after the loss".into(), model::with(|m| m.view_values(o.view)))).collect());
+    }
+    let errors = model::with(|m| std::mem::take(&mut m.errors));
+    assert!(errors.is_empty(), "WebGPU errors {errors:?}");
+    out
+}
+
+fn check_lost(make: impl Fn(u64, u32) -> Vec<Batch>) {
+    let dst = unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0) };
+    assert!(dst != libc::MAP_FAILED);
+    for seed in 0..seeds() / 4 {
+        let batches = make(seed, dst as usize as u32);
+        let cut = (seed as usize * 5) % (batches.len() - 1);
+        let want = run_lost(&batches, cut, false);
+        let got = run_lost(&batches, cut, true);
+        assert_eq!(want.len(), got.len());
+        for (k, (w, g)) in want.iter().zip(&got).enumerate() {
+            assert!(w == g, "seed {seed}, device lost after batch {cut}: batch {k} (0: right after) observed differently ({} vs {} observations)", w.len(), g.len());
+        }
+    }
+    unsafe { libc::munmap(dst, 4096) };
+}
+
+#[test]
+fn a_lost_device_draws_on_d3d9() {
+    check_lost(|seed, dst| {
+        let mut g = Gen::new(seed);
+        let mut v = vec![g.setup()];
+        for _ in 0..12 {
+            v.push(g.frame(dst as usize));
+        }
+        v
+    });
+}
+
+#[test]
+fn a_lost_device_draws_on_d3d11() {
+    check_lost(|seed, dst| {
+        let mut g = Gen11::new(seed);
+        let mut v = vec![g.setup()];
+        for _ in 0..12 {
+            let fs = g.r.next();
+            g.frames.push(fs);
+            v.push(g.frame(fs, false, dst));
+        }
+        v
+    });
+}
+
+/// A readback on its way when the device is lost ends (the guest stops waiting) without
+/// pixels, and the old device's late answer to it does nothing to the new one.
+#[test]
+fn a_lost_device_ends_readbacks() {
+    model::reset();
+    let mut d = D3d::new();
+    // (an id no other test's waiter has)
+    let req = 0x7e57_0042;
+    d.readbacks.insert(7, Readback { req, buf: 0, data: Vec::new(), bpr: 0, row: 0, h: 0, dst: 0, pitch: 0, halved: false });
+    let _ = d.lose();
+    assert!(d.readbacks.is_empty());
+    assert!(crate::d3d9::gpu::readback_is_done(req));
+    // (said once: a late answer for the token finds nothing)
+    d.mapped(7, false);
+    assert!(d.readbacks.is_empty());
+}
+
 #[test]
 fn a_state_draws_the_same_d3d9() {
     check_cuts(|seed, dst| {

@@ -608,6 +608,19 @@ pub fn reset() {
     M.with(|m| *m.borrow_mut() = Model { table: vec![None], ..Default::default() });
 }
 
+impl Model {
+    /// Tests of a lost device: what object `id` of the table holds becomes zeros (a texture's
+    /// texels and stencil, a buffer's bytes), as a new one's.
+    pub fn zero(&mut self, id: u32) {
+        let Some(Some(k)) = self.table.get(id as usize).copied() else { return };
+        match &mut self.objs[k] {
+            Obj::Texture(t) => t.texels.iter_mut().chain(t.stencil.iter_mut()).for_each(|v| v.fill(0)),
+            Obj::Buffer(b) => b.data.fill(0),
+            _ => {}
+        }
+    }
+}
+
 pub fn with<R>(f: impl FnOnce(&mut Model) -> R) -> R {
     M.with(|m| f(&mut m.borrow_mut()))
 }
@@ -2712,6 +2725,15 @@ pub extern "C" fn vngpu_attach(_t: usize) -> i32 {
 }
 #[no_mangle]
 pub extern "C" fn vngpu_start() {}
+/// A new device: nothing of the old one is left (its objects, what was encoded, maps on their
+/// way); the calls counted go on.
+#[no_mangle]
+pub extern "C" fn vngpu_reset() {
+    let calls = with(|m| std::mem::take(&mut m.calls));
+    reset();
+    with(|m| m.calls = calls);
+    count("reset");
+}
 #[no_mangle]
 pub extern "C" fn vngpu_canvas_format() -> u32 {
     0
