@@ -268,3 +268,59 @@ test("tls-bridge: a socket that answers keeps working", () => {
   for (let i = 0; i < 3; i++) assert.equal(lib.sake_tls_read(8, 100, 65536, 50), 3);
   assert.deepEqual([...HEAPU8.slice(100, 103)], [1, 2, 3]);
 });
+
+// ---- review b11: host/vnkern.js's ring of ended processes, host/vngpu.js's error reports
+
+test("vnkern: an ended process's entry overwritten by 64 later ones is reported lost, not as another's", () => {
+  const kernel = new SharedArrayBuffer(4096);
+  const HEAPU32 = new Uint32Array(64);
+  const { lib } = library("vnkern.js", { vnvmKernel: kernel, vnvmKernelI32: undefined, Atomics, Int32Array, Uint8Array, HEAPU32 });
+  const h = new Int32Array(kernel, 0, 256);
+  // (as host/pre.js's exit writes them)
+  const end = (pid, code) => {
+    const i = Atomics.load(h, 4) >>> 0;
+    Atomics.store(h, 16 + 2 * (i % 64), pid);
+    Atomics.store(h, 17 + 2 * (i % 64), code);
+    Atomics.store(h, 4, i + 1);
+  };
+  for (let i = 0; i < 70; i++) end(0x100 + 4 * i, i);
+  const seen = [];
+  for (let i = 0; ; i++) {
+    const r = lib.vnhost_kern_dead(i, 0);
+    if (r === 0) break;
+    seen.push(r === 1 ? [HEAPU32[0], HEAPU32[1]] : null);
+  }
+  assert.equal(seen.length, 70);
+  assert.deepEqual(seen.slice(0, 6), [null, null, null, null, null, null]);
+  for (let i = 6; i < 70; i++) assert.deepEqual(seen[i], [0x100 + 4 * i, i]);
+  // (a random walk of ends and reads: every entry read is the one it names, or lost)
+  let read = 70;
+  let x = 1;
+  for (let step = 0; step < 5000; step++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    if (x & 0x10000) {
+      const n = Atomics.load(h, 4);
+      end(0x10000 + n, n);
+    } else {
+      const r = lib.vnhost_kern_dead(read, 0);
+      if (r === 0) continue;
+      if (r === 1) assert.deepEqual([HEAPU32[0], HEAPU32[1]], [0x10000 + read, read]);
+      else assert.ok(Atomics.load(h, 4) - read > 64);
+      read++;
+    }
+  }
+});
+
+test("vngpu: a validation error repeated every draw prints its first five and then each 1000th", () => {
+  const printed = [];
+  const { lib } = library("vngpu.js", { err: (m) => printed.push(m), performance, navigator: {} });
+  const VG = lib.$VG;
+  for (let i = 0; i < 5000; i++) VG.report("bad bind group");
+  VG.report("another");
+  assert.equal(printed.length, 5 + 5 + 1);
+  assert.equal(printed[5], "webgpu: bad bind group (1000 times)");
+  assert.equal(printed.at(-1), "webgpu: another");
+  // (many distinct messages: the counts stay bounded)
+  for (let i = 0; i < 10000; i++) VG.report(`m${i}`);
+  assert.ok(VG.errs.size <= 256);
+});

@@ -39,7 +39,17 @@ else
 fi
 ./ippai stop >/dev/null 2>&1 || true
 pkill -f '(^|/)(vnvm|ippai) serve' || true  # (older servers, and ones started without the socket)
-for _ in $(seq 50); do pgrep -f '(^|/)(vnvm|ippai) serve' >/dev/null || break; sleep 0.1; done
+gone() { ! pgrep -f '(^|/)(vnvm|ippai) serve' >/dev/null; }
+for _ in $(seq 50); do gone && break; sleep 0.1; done
+# (a server still flushing after 5 s: 25 s more, then killed; the new one never starts beside it on
+# the same store and address)
+for _ in $(seq 250); do gone && break; sleep 0.1; done
+if ! gone; then
+  echo "the old server is still running: killed"
+  pkill -9 -f '(^|/)(vnvm|ippai) serve' || true
+  for _ in $(seq 50); do gone && break; sleep 0.1; done
+  gone || { echo "the old server did not go"; exit 1; }
+fi
 grep -q -- '--web' run-server.sh && echo "note: run-server.sh passes --web: the built-in web app is not used"
 ./run-server.sh
 sleep 1

@@ -27,3 +27,16 @@ test('untrusted HTTPS certificates are rejected',async()=>{
  const response=await fetch(`http://127.0.0.1:${relay.address().port}/request`,{method:'POST',headers:{Authorization:'Bearer '+token},body:JSON.stringify({url:`https://127.0.0.1:${upstream.address().port}/`,method:'GET',session:'tls',body:[]})});assert.equal(response.status,502);assert.equal((await response.json()).error,12045);
  }finally{if(relay)await close(relay);if(upstream)await close(upstream);rmSync(dir,{recursive:true,force:true});}
 });
+
+// review b11: the 129th session no longer fails every request; the one unused longest goes
+test('sessions past 128 evict the one unused longest',async()=>{
+ const upstream=http.createServer((req,res)=>res.end(req.headers.cookie||'none'));
+ let jars;const token='d'.repeat(64);const relay=createRelay({token,hosts:['127.0.0.1'],allowHttpForTests:true,onJars:j=>jars=j});await listen(upstream);await listen(relay);
+ const call=(session)=>fetch(`http://127.0.0.1:${relay.address().port}/request`,{method:'POST',headers:{Authorization:'Bearer '+token},body:JSON.stringify({url:`http://127.0.0.1:${upstream.address().port}/`,method:'GET',session,body:[]})});
+ try{
+  for(let i=0;i<300;i++){const r=await call('s'+(i%200));assert.equal(r.status,200);await r.json();assert.ok(jars.size<=128);}
+  // (the last 128 used are the ones kept, in use order)
+  assert.deepEqual([...jars.keys()].slice(-3),['s97','s98','s99']);
+  assert.ok(!jars.has('s100'));
+ }finally{await close(relay);await close(upstream);}
+});

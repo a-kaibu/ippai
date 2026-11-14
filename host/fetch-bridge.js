@@ -441,14 +441,19 @@ function ippaiKeepRecent(url, data) {
 var IPPAI_SAVING_BYTES = 64 << 20;
 var ippaiSaving = new Map();
 var ippaiSavingBytes = 0;
+/** How long a chunk waits here for its put (Cache Storage can leave one pending for good under
+ * load: its bytes stayed here, and past IPPAI_SAVING_BYTES every fetch ahead stopped). */
+var IPPAI_PUT_MS = 30000;
 function ippaiKeep(cache, url, data) {
   if (!cache || ippaiSaving.has(url)) return;
   ippaiSaving.set(url, data);
   ippaiSavingBytes += data.length;
-  cache
-    .put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } }))
+  let timer;
+  const late = new Promise((r) => (timer = setTimeout(r, IPPAI_PUT_MS)));
+  Promise.race([cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })), late])
     .catch(() => {})
     .finally(() => {
+      clearTimeout(timer);
       if (ippaiSaving.get(url) !== data) return;
       ippaiSaving.delete(url);
       ippaiSavingBytes -= data.length;
@@ -556,8 +561,9 @@ var IPPAI_LOCK_WAIT_MS = 1000;
 function ippaiWhole(url, { cls = 0, size, want = true, directOnly = false } = {}) {
   const mem = ippaiHeld(url);
   if (mem) return Promise.resolve({ data: mem, wire: 0, cached: 1 });
-  // (null: not from the bucket; the server then, as the asker wants it)
-  const rest = (r) => r ?? (directOnly ? null : ippaiFetchRobust(url, cls ? { giveUpMs: 60000 } : {}));
+  // (null: not from the bucket; the server then, as the asker wants it: once for every waiter
+  // of the same chunk, not a download each)
+  const rest = (r) => r ?? (directOnly ? null : ippaiRobustOnce(url, cls ? { giveUpMs: 60000 } : {}));
   const again = (r) => (r && want && !r.data ? ippaiWhole(url, { cls, size, want, directOnly }) : rest(r));
   const going = ippaiInflight.get(url);
   if (going) {
@@ -580,6 +586,19 @@ function ippaiWhole(url, { cls = 0, size, want = true, directOnly = false } = {}
   return ippaiStartWhole(url, cls, size, want, cls > 0).then(rest);
 }
 ippaiWhole.LATE = {};
+
+/** ippaiFetchRobust of `url` shared by everyone asking while it runs. */
+var ippaiRobustInflight = new Map();
+function ippaiRobustOnce(url, opt) {
+  let p = ippaiRobustInflight.get(url);
+  if (!p) {
+    p = ippaiFetchRobust(url, opt).finally(() => {
+      if (ippaiRobustInflight.get(url) === p) ippaiRobustInflight.delete(url);
+    });
+    ippaiRobustInflight.set(url, p);
+  }
+  return p;
+}
 
 /** ippaiWhole's fetch of `url`, registered in ippaiInflight; `lock`: under the chunk's Web Lock. */
 function ippaiStartWhole(url, cls, size, want, lock) {
@@ -951,11 +970,34 @@ function ippaiHex(h) {
 }
 
 /** Object `cipher` (nonce, ciphertext and tag, as crates/ippai/src/envelope.rs seals it) opened with `info`'s key. */
+/** The AES keys imported so far, by their hex (a game's chunks share one: not imported per chunk). */
+var ippaiKeys = new Map();
 async function ippaiOpen(info, cipher) {
   if (cipher.length < 28) throw new Error('short');
-  const key = await crypto.subtle.importKey('raw', ippaiHex(info.key), 'AES-GCM', false, ['decrypt']);
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: cipher.slice(0, 12), additionalData: ippaiHex(info.object.replace(/-/g, '')), tagLength: 128 }, key, cipher.slice(12));
+  let key = ippaiKeys.get(info.key);
+  if (!key) {
+    key = crypto.subtle.importKey('raw', ippaiHex(info.key), 'AES-GCM', false, ['decrypt']);
+    if (ippaiKeys.size >= 64) ippaiKeys.clear();
+    ippaiKeys.set(info.key, key);
+    key.catch(() => ippaiKeys.get(info.key) === key && ippaiKeys.delete(info.key));
+  }
+  // (views, not copies, of the IV and the ciphertext)
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: cipher.subarray(0, 12), additionalData: ippaiHex(info.object.replace(/-/g, '')), tagLength: 128 }, await key, cipher.subarray(12));
   return new Uint8Array(plain);
+}
+
+/** A zstd frame's decoded size from its header (Frame_Content_Size, RFC 8878 3.1.1.1), 0 when
+ * the header does not say (or is not a zstd frame's). */
+function ippaiZstdSize(f) {
+  if (!f || f.length < 6 || f[0] !== 0x28 || f[1] !== 0xb5 || f[2] !== 0x2f || f[3] !== 0xfd) return 0;
+  const fhd = f[4];
+  const single = (fhd >> 5) & 1;
+  const at = 5 + (single ? 0 : 1) + [0, 1, 2, 4][fhd & 3];
+  const n = [single ? 1 : 0, 2, 4, 8][fhd >> 6];
+  if (n === 0 || at + n > f.length) return 0;
+  let v = 0;
+  for (let i = n - 1; i >= 0; i--) v = v * 256 + f[at + i];
+  return n === 2 ? v + 256 : v;
 }
 
 /** zstd frame `frame` decoded by sake's snapz (sake/snapz.mjs beside the store): `size` bytes when known, else a chunk is 16 MiB at most (4x FastCDC's 4 MiB average), 64 MiB tried once more. */
@@ -964,7 +1006,10 @@ async function ippaiUnzstd(base, frame, size) {
   const z = await ippaiZstd;
   // (the length when known, from the trees' lists: no 16 MiB buffer for every chunk at once,
   // which several side by side on a phone add up to)
-  for (const cap of size > 0 ? [size] : [16 << 20, 64 << 20]) {
+  // (else the frame's own header's size when it gives one, 64 MiB at most: a right-sized
+  // buffer, not 16 MiB then 64 MiB that the zstd heap keeps committed for the session)
+  const said = ippaiZstdSize(frame);
+  for (const cap of size > 0 ? [size] : said > 0 && said <= 64 << 20 ? [said, 16 << 20, 64 << 20] : [16 << 20, 64 << 20]) {
     const src = z._malloc(frame.length) >>> 0;
     const dst = z._malloc(cap) >>> 0;
     try {
@@ -1191,13 +1236,13 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function ippaiFetchWorkerSource(main, more = []) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX, IPPAI_CHUNK_DIR, IPPAI_HANDLE_MS, IPPAI_HANDLES, IPPAI_BUDGET_BYTES, IPPAI_SAVING_BYTES, IPPAI_LOCK_WAIT_MS, IPPAI_FOLLOW };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiChunkFile, ippaiOpfsStore, ippaiRange, ippaiKeepRecent, ippaiKeep, ippaiHeld, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiStartWhole, ippaiHint, ippaiHintPump, ippaiNextAdd, ippaiFollow, ippaiReadStart, ippaiReadEnd, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX, IPPAI_CHUNK_DIR, IPPAI_HANDLE_MS, IPPAI_HANDLES, IPPAI_BUDGET_BYTES, IPPAI_SAVING_BYTES, IPPAI_LOCK_WAIT_MS, IPPAI_FOLLOW, IPPAI_PUT_MS };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiChunkFile, ippaiOpfsStore, ippaiRange, ippaiKeepRecent, ippaiKeep, ippaiHeld, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiRobustOnce, ippaiStartWhole, ippaiHint, ippaiHintPump, ippaiNextAdd, ippaiFollow, ippaiReadStart, ippaiReadEnd, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiZstdSize, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
     'var ippaiCacheOpen, ippaiRecent = new Map(), ippaiDirectInfo = new Map(), ippaiDirectOff = false, ippaiZstd;',
-    'var ippaiDirectAsking = new Map(), ippaiDirectManyOff = false, ippaiBudgetBuf, ippaiGameWaiting = 0, ippaiInflight = new Map();',
+    'var ippaiDirectAsking = new Map(), ippaiDirectManyOff = false, ippaiBudgetBuf, ippaiGameWaiting = 0, ippaiInflight = new Map(), ippaiRobustInflight = new Map(), ippaiKeys = new Map();',
     'var ippaiHints = [], ippaiHintsSeen = new Set(), ippaiHintsGoing = 0, ippaiPacks = new Map(), ippaiSaving = new Map(), ippaiSavingBytes = 0;',
     "var ippaiNext = new Map(), ippaiReadSeen = new Set(), ippaiReads = { device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0, hinted: 0 };",
     'ippaiWhole.LATE = {};',

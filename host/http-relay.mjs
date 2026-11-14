@@ -6,11 +6,12 @@ import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {writeFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 const MAX = 4 * 1024 * 1024;
-export function createRelay({token, origins = [], hosts = [], allowHttpForTests = false}) {
+export function createRelay({token, origins = [], hosts = [], allowHttpForTests = false, onJars}) {
   if (!token || token.length < 32) throw new Error('A random relay token is required');
   const allowed = new Set(hosts.map(h => h.toLowerCase()));
   // Cookies belong to one InternetOpen session and are never exposed to the UI.
   const jars = new Map();
+  onJars?.(jars);
   function target(value) {
     const u = new URL(value);
     if ((!allowHttpForTests && u.protocol !== 'https:') || !['http:','https:'].includes(u.protocol) || u.username || u.password || !allowed.has(u.hostname.toLowerCase())) throw new Error('destination refused');
@@ -20,7 +21,9 @@ export function createRelay({token, origins = [], hosts = [], allowHttpForTests 
     let u=target(r.url); const method=String(r.method||'GET').toUpperCase();
     if (!/^[A-Z]+$/.test(method) || !Array.isArray(r.body) || r.body.length>MAX || !r.body.every(b=>Number.isInteger(b)&&b>=0&&b<=255)) throw new Error('invalid request');
     const body=Buffer.from(r.body);let session=String(r.session||'');if(!/^[a-zA-Z0-9:-]{1,100}$/.test(session))throw new Error('invalid session');
-    if(!jars.has(session)){if(jars.size>=128)throw new Error('too many sessions');jars.set(session,[]);}
+    // (the 128 sessions used last: a new one past them evicts the one unused longest, instead of
+    // every request failing from the 129th InternetOpen on)
+    const held=jars.get(session)??[];jars.delete(session);jars.set(session,held);if(jars.size>128)jars.delete(jars.keys().next().value);
     for(let redirects=0;;redirects++) {
       const headers={};for(const pair of r.headers||[]){if(!Array.isArray(pair)||pair.length!==2)throw new Error('invalid header');const[k,v]=pair;if(!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(k)||/[\r\n\0]/.test(v))throw new Error('invalid header');if(!['host','connection','content-length','transfer-encoding','proxy-authorization'].includes(k.toLowerCase()))headers[k]=v;}
       if(r.agent)headers['User-Agent']=String(r.agent);

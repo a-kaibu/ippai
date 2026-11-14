@@ -61,9 +61,13 @@ addToLibrary({
   vnhost_kern_wait: (seen, ms) => (Atomics.wait(vnkernH(), 1, seen, ms) === 'timed-out' ? 0 : 1),
   vnhost_kern_dead__deps: ['$vnkernH'],
   vnhost_kern_dead__sig: 'iip',
+  // (1: the ith ended process; 0: none yet; -1: that entry was overwritten, more than 64
+  // processes ended since: the reader goes past it, not on with another process's pid)
   vnhost_kern_dead: (i, out) => {
     const h = vnkernH();
-    if ((i >>> 0) >= (Atomics.load(h, 4) >>> 0)) return 0;
+    const n = Atomics.load(h, 4) >>> 0;
+    if ((i >>> 0) >= n) return 0;
+    if (n - (i >>> 0) > 64) return -1;
     const at = 16 + 2 * (i % 64);
     HEAPU32[(out >>> 2)] = Atomics.load(h, at);
     HEAPU32[(out >>> 2) + 1] = Atomics.load(h, at + 1);

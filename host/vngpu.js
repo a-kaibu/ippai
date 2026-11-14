@@ -70,11 +70,21 @@ addToLibrary({
         };
       }
       device.addEventListener('uncapturederror', (e) => {
-        if (VG.device === device) err(`webgpu: ${e.error.message}`);
+        if (VG.device === device) VG.report(e.error.message);
       });
       device.lost.then((info) => VG.onLost(device, info));
       VG.ctx.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
       return true;
+    },
+    // validation errors by message: the first 5 of each printed, then each 1000th with its
+    // count (a bad state bound every draw printed hundreds of lines a second for the session)
+    errs: new Map(),
+    report(msg) {
+      const n = (VG.errs.get(msg) ?? 0) + 1;
+      if (VG.errs.size >= 256 && n === 1) VG.errs.clear();
+      VG.errs.set(msg, n);
+      if (n <= 5 || n % 1000 === 0) err(`webgpu: ${msg}${n > 1 ? ` (${n} times)` : ''}`);
+      return n;
     },
     // when a new device last came, and how many in a row were lost within quickMs of coming
     renewedAt: -Infinity,

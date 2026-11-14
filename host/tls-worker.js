@@ -1,6 +1,9 @@
 // This independent worker owns the WebSocket event loop while a guest pthread
 // blocks. It sees only TLS records, never HTTP requests or account credentials.
 function ippaiTlsSocketWorker(channel) {
+  // (what may wait for the guest's reads: 64 KiB a read, the relay does not wait for them, so a
+  // fast download to a busy guest thread failed at 1 MiB; 16 MiB per socket)
+  const IPPAI_TLS_QUEUE=16*1024*1024;
   const node=typeof process==='object'&&!!process.versions?.node;
   const port=channel||(node?require('worker_threads').parentPort:self);
   let ws,ctl,rx,tx,pending=false,opening=true,closed=false,failed=false,queue=[],queued=0;
@@ -17,7 +20,7 @@ function ippaiTlsSocketWorker(channel) {
         const options=node?{protocols:['ippai.tls.v1'],headers:{Origin:d.origin,...(d.token?{Authorization:'Bearer '+d.token}:{})}}:['ippai.tls.v1'];
         ws=new WebSocket(d.url,options);ws.binaryType='arraybuffer';
         ws.onopen=()=>{opening=false;if(ws.protocol!=='ippai.tls.v1'){failed=true;ws.close();complete(-1);return;}complete(1);};
-        ws.onmessage=e=>{if(!(e.data instanceof ArrayBuffer)){failed=true;ws.close();return;}const b=new Uint8Array(e.data);if(queued+b.length>1024*1024){failed=true;ws.close();return;}if(b.length){queue.push(b);queued+=b.length;}receive();};
+        ws.onmessage=e=>{if(!(e.data instanceof ArrayBuffer)){failed=true;ws.close();return;}const b=new Uint8Array(e.data);if(queued+b.length>IPPAI_TLS_QUEUE){failed=true;ws.close();return;}if(b.length){queue.push(b);queued+=b.length;}receive();};
         ws.onerror=()=>{failed=true;};ws.onclose=()=>{closed=true;if(opening){opening=false;complete(-1);}else receive();};
       }catch{failed=closed=true;complete(-1);}return;
     }

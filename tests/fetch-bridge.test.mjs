@@ -223,3 +223,82 @@ test('ranges parse only at the end of a name', () => {
   assert.deepEqual(ippaiRange('trees/a#b.tsv'), ['trees/a#b.tsv']);
   assert.deepEqual(ippaiRange('chunks/ab/x#12+'), ['chunks/ab/x#12+']);
 });
+
+// ---- review b11 ----
+
+/** The bridge's functions in a scope of their own, with `extra` run after them (it can replace
+ * any of them) and `ret` returned. */
+const scope = (extra, ret) => new Function(`${source}; ${extra}; return ${ret};`)();
+
+test('a zstd frame header gives its decoded size, every field layout (RFC 8878)', () => {
+  const size = scope('', 'ippaiZstdSize');
+  // (single segment, 1-byte FCS; 2-byte FCS (+256); 4- and 8-byte; with a window byte and dict ids)
+  const head = (fhd, mid, fcs) => Uint8Array.from([0x28, 0xb5, 0x2f, 0xfd, fhd, ...mid, ...fcs, 0, 0, 0]);
+  assert.equal(size(head(0x20, [], [200])), 200);
+  assert.equal(size(head(0x60, [], [0x10, 0x01])), 0x0110 + 256);
+  assert.equal(size(head(0x80, [0x58], [1, 2, 3, 4])), 0x04030201);
+  assert.equal(size(head(0xc0 | 0x02, [0x58, 7, 7], [0, 0, 0, 0, 4, 0, 0, 0])), 2 ** 34);
+  assert.equal(size(head(0x00, [0x58], [])), 0, 'no FCS field: unknown');
+  assert.equal(size(Uint8Array.from([1, 2, 3, 4, 5, 6, 7])), 0, 'not zstd');
+  assert.equal(size(head(0x80, [0x58], [1, 2]).subarray(0, 8)), 0, 'cut short');
+  // generated: every FHD with every FCS value width, the size written as the spec says
+  let x = 7;
+  for (let i = 0; i < 4000; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    const flag = x & 3, single = (x >> 2) & 1, did = (x >> 3) & 3;
+    const n = [single ? 1 : 0, 2, 4, 8][flag];
+    if (!n) continue;
+    const raw = ((x >>> 5) * 2654435761) % { 1: 256, 2: 65536, 4: 2 ** 32, 8: 2 ** 40 }[n];
+    const v = raw + (n === 2 ? 256 : 0);
+    const fcs = Array.from({ length: n }, (_, k) => Math.floor(raw / 256 ** k) % 256);
+    const mid = [...(single ? [] : [0x50]), ...Array([0, 1, 2, 4][did]).fill(9)];
+    assert.equal(size(head((flag << 6) | (single << 5) | did, mid, fcs)), v);
+  }
+});
+
+test('the zstd CLI\'s frames say the sizes they hold (differential, when zstd is on PATH)', async () => {
+  const { execFileSync } = await import('node:child_process');
+  try { execFileSync('zstd', ['--version']); } catch { return; }
+  const size = scope('', 'ippaiZstdSize');
+  for (const n of [0, 1, 255, 256, 65791, 70000, 1 << 20]) {
+    const z = execFileSync('zstd', ['-c', '-q'], { input: Buffer.alloc(n, 3) });
+    assert.equal(size(new Uint8Array(z)), n || 0);
+  }
+});
+
+test('a chunk whose put never settles leaves after IPPAI_PUT_MS, and the fetches ahead go on', async () => {
+  const s = scope('IPPAI_PUT_MS = 30', '{ keep: ippaiKeep, held: ippaiHeld, bytes: () => ippaiSavingBytes, saving: () => ippaiSaving.size }');
+  const stuck = { put: () => new Promise(() => {}) };
+  globalThis.Response ??= class { constructor(b, o) { this.b = b; this.o = o; } };
+  for (let i = 0; i < 8; i++) s.keep(stuck, `u${i}`, new Uint8Array(1000));
+  assert.equal(s.bytes(), 8000);
+  assert.ok(s.held('u3'));
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(s.bytes(), 0);
+  assert.equal(s.saving(), 0);
+  // (a put that settles first still ends it at once)
+  s.keep({ put: async () => {} }, 'v', new Uint8Array(10));
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(s.bytes(), 0);
+});
+
+test('waiters of one chunk the bucket did not give share one fallback download', async () => {
+  const s = scope(`
+    var robust = 0;
+    ippaiCache = async () => undefined;
+    ippaiDirect = async () => null;
+    ippaiFetchRobust = async (url) => { robust++; await new Promise((r) => setTimeout(r, 20)); return { data: new Uint8Array([1, 2, 3]), wire: 3 }; };
+  `, '{ whole: ippaiWhole, robust: () => robust }');
+  const got = await Promise.all([0, 0, 2, 1, 0].map((cls) => s.whole('chunks/ab/x', { cls })));
+  assert.equal(s.robust(), 1);
+  for (const g of got) assert.deepEqual(Array.from(g.data), [1, 2, 3]);
+  await s.whole('chunks/ab/x');
+  assert.equal(s.robust(), 2, 'a later read fetches again (nothing is kept here past the download)');
+});
+
+test('the network worker\'s script has every function and variable the bridge uses', () => {
+  const src = scope('', 'ippaiFetchWorkerSource("")');
+  for (const name of ['ippaiRobustOnce', 'ippaiZstdSize', 'IPPAI_PUT_MS', 'ippaiRobustInflight', 'ippaiKeys']) assert.ok(src.includes(name), name);
+  // (it runs: every name it mentions is defined in it)
+  assert.doesNotThrow(() => new Function(`${src}; ippaiZstdSize(new Uint8Array(8)); ippaiRobustOnce;`)());
+});

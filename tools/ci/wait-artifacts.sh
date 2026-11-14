@@ -11,7 +11,11 @@ api=repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 names=()
 for a in "$@"; do names+=("${a%%=*}"); done
 start=$SECONDS
+# (a deadline of its own: WAIT_MAX seconds in all (default 2 h), and 10 minutes for the job to be
+# listed at all: a renamed job never shows and never uploads)
+max=${WAIT_MAX:-7200}
 while :; do
+  if [ $((SECONDS - start)) -ge "$max" ]; then echo "no artifacts after $max s" >&2; exit 1; fi
   have=$(gh api "$api/artifacts?per_page=100" --jq '.artifacts[].name' || true)
   missing=0
   for n in "${names[@]}"; do grep -qxF "$n" <<<"$have" || missing=1; done
@@ -19,6 +23,7 @@ while :; do
   # (the uploading job's state: read after the artifacts, so one that uploaded and ended is seen
   # with them)
   state=$(gh api "$api/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$job\") | .status + \" \" + (.conclusion // \"\")" || true)
+  if [ -z "$state" ] && [ $((SECONDS - start)) -ge 600 ]; then echo "no job named $job in this run" >&2; exit 1; fi
   case $state in
     completed\ *)
       have=$(gh api "$api/artifacts?per_page=100" --jq '.artifacts[].name' || true)

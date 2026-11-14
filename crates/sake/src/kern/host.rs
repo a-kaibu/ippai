@@ -122,13 +122,22 @@ pub fn store(k: &Kern) -> bool {
         true
     }
 }
-/// The host's `i`th ended process: (id, exit code).
-pub fn dead(i: u32) -> Option<(u32, u32)> {
+/// The host's `i`th ended process: Some(Some((id, exit code))), Some(None) when its entry was
+/// overwritten (more than 64 ended since: skipped), None when no more have ended.
+pub fn dead(i: u32) -> Option<Option<(u32, u32)>> {
     #[cfg(target_os = "emscripten")]
     {
         let mut out = [0u32; 2];
-        if unsafe { sys::vnhost_kern_dead(i, out.as_mut_ptr()) } != 0 {
-            return Some((out[0], out[1]));
+        match unsafe { sys::vnhost_kern_dead(i, out.as_mut_ptr()) } {
+            0 => {}
+            -1 => {
+                static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("sake: more than 64 processes ended between two looks at the list; the oldest are skipped");
+                }
+                return Some(None);
+            }
+            _ => return Some(Some((out[0], out[1]))),
         }
     }
     let _ = i;

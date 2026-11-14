@@ -1224,9 +1224,11 @@ pub fn with<R>(f: impl FnOnce(&mut Kern) -> R) -> (R, u64) {
     let before = l.k.gen;
     if shared {
         // (the processes that ended since: the host lists them)
-        while let Some((pid, code)) = host::dead(l.k.dead_seen) {
+        while let Some(d) = host::dead(l.k.dead_seen) {
             l.k.dead_seen += 1;
-            l.k.exited(pid, code);
+            if let Some((pid, code)) = d {
+                l.k.exited(pid, code);
+            }
         }
     }
     let r = f(&mut l.k);

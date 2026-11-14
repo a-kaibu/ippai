@@ -4,13 +4,14 @@
 # audio workers). The unsafe code these catch: guest memory through raw pointers, MAP_32BIT
 # arenas, ring buffers, the C runtime's own heap.
 #   tools/ci/sanitize.sh address|thread [cargo test args...]
-# (default packages: everything with native tests; TSan builds std instrumented, -Zbuild-std)
+# (default packages: everything with native tests, the lock words (waits), wmcodec's SIMD and the TLS
+# client too; TSan builds std instrumented, -Zbuild-std)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 kind=${1:-address}
 shift || true
 pkgs=("$@")
-[ ${#pkgs[@]} -gt 0 ] || pkgs=(-p koji -p kura -p sake -p crt -p vorbis -p hlslc -p dxwgsl -p glwgsl -p shaderconf -p ippai)
+[ ${#pkgs[@]} -gt 0 ] || pkgs=(-p koji -p kura -p sake -p crt -p vorbis -p hlslc -p dxwgsl -p glwgsl -p shaderconf -p ippai -p waits -p wmcodec -p ippai-tls)
 export RUSTFLAGS="-Zsanitizer=$kind" RUSTDOCFLAGS="-Zsanitizer=$kind"
 if [ "$kind" = address ]; then
   # Guest test arenas are mmap'd and hold pointers into the normal heap. Their
