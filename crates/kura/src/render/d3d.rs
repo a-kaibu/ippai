@@ -3889,15 +3889,29 @@ pub(crate) fn now() -> f64 {
     unsafe { emscripten_get_now() }
 }
 
-/// The longest run of draws `a` and `b` share in order: which of each are in it.
 /// The flags of the Direct3D 9 draw at `c[i]` (d3d9/device.rs rect_draw).
 fn draw_flags(c: &[u32], i: usize) -> u32 {
     let p = i + 18 + 3 * c[i + 17] as usize;
     c[p + 1 + c[p] as usize + 4 + 5]
 }
 
+/// The longest run of draws `a` and `b` share in order: which of each are in it. A common
+/// start and end are in it as they are (a still frame's lists are the same: no table then).
 fn common<T: PartialEq>(a: &[T], b: &[T]) -> (Vec<bool>, Vec<bool>) {
+    let pre = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let post = a[pre..].iter().rev().zip(b[pre..].iter().rev()).take_while(|(x, y)| x == y).count();
+    let (mut ka, mut kb) = (vec![true; a.len()], vec![true; b.len()]);
+    let (ma, mb) = common_table(&a[pre..a.len() - post], &b[pre..b.len() - post]);
+    ka[pre..a.len() - post].copy_from_slice(&ma);
+    kb[pre..b.len() - post].copy_from_slice(&mb);
+    (ka, kb)
+}
+
+fn common_table<T: PartialEq>(a: &[T], b: &[T]) -> (Vec<bool>, Vec<bool>) {
     let (n, m) = (a.len(), b.len());
+    if n == 0 || m == 0 {
+        return (vec![false; n], vec![false; m]);
+    }
     // l[i][j]: length for a[i..], b[j..]
     let mut l = vec![0u16; (n + 1) * (m + 1)];
     for i in (0..n).rev() {
@@ -4185,5 +4199,67 @@ mod q24_tests {
                 assert_eq!(super::q24(exact).to_bits(), exact.to_bits(), "q24 keeps k {k}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod common_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The longest common subsequence's length, by the whole table (the reference)
+    fn lcs(a: &[u8], b: &[u8]) -> usize {
+        let mut l = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+        for i in (0..a.len()).rev() {
+            for j in (0..b.len()).rev() {
+                l[i][j] = if a[i] == b[j] { l[i + 1][j + 1] + 1 } else { l[i + 1][j].max(l[i][j + 1]) };
+            }
+        }
+        l[0][0]
+    }
+
+    fn lists() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
+        // (a frame's draws and the next one's: mostly the same, some removed, added or changed,
+        // from a few kinds so that repeats are common)
+        (prop::collection::vec(0u8..6, 0..60), prop::collection::vec((0usize..60, 0u8..4, 0u8..6), 0..8)).prop_map(|(a, edits)| {
+            let mut b = a.clone();
+            for (at, op, v) in edits {
+                let at = at.min(b.len());
+                match op {
+                    0 if at < b.len() => drop(b.remove(at)),
+                    1 => b.insert(at, v),
+                    2 if at < b.len() => b[at] = v,
+                    _ => {}
+                }
+            }
+            (a, b)
+        })
+    }
+
+    proptest! {
+        /// What `common` keeps is a common subsequence (the kept ones pair up equal, in order)
+        /// as long as the longest one.
+        #[test]
+        fn common_keeps_a_longest_shared_run((a, b) in lists()) {
+            let (ka, kb) = common(&a, &b);
+            prop_assert_eq!((ka.len(), kb.len()), (a.len(), b.len()));
+            let xa: Vec<u8> = a.iter().zip(&ka).filter(|x| *x.1).map(|x| *x.0).collect();
+            let xb: Vec<u8> = b.iter().zip(&kb).filter(|x| *x.1).map(|x| *x.0).collect();
+            prop_assert_eq!(&xa, &xb);
+            prop_assert_eq!(xa.len(), lcs(&a, &b));
+        }
+    }
+
+    /// Two same lists of 1024 draws: all kept, at once (no table of a million cells).
+    #[test]
+    fn same_lists_need_no_table() {
+        let a: Vec<u32> = (0..1024).collect();
+        let t = std::time::Instant::now();
+        for _ in 0..1000 {
+            let (ka, kb) = common(&a, &a);
+            assert!(ka.iter().chain(&kb).all(|&k| k));
+        }
+        // (the table took ~1 ms each)
+        assert!(t.elapsed() < std::time::Duration::from_millis(300), "{:?}", t.elapsed());
     }
 }
