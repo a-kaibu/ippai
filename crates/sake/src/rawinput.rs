@@ -88,10 +88,21 @@ fn RegisterRawInputDevices(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
+    // the array is read before the lock is taken, and only as far as it is mapped: a garbage
+    // count fails with ERROR_NOACCESS instead of holding REGS for 2^32 reads
+    let total = n as u64 * size as u64;
+    if total > u32::MAX as u64 || (mem::accessible(p, total as u32, false, false) as u64) < total {
+        last_error(998);
+        return 0;
+    }
+    let entries: Vec<_> = (0..n)
+        .map(|i| {
+            let d = p + i * size;
+            (r16(d), r16(d + 2), r32(d + 4), mem::rp(d + 8))
+        })
+        .collect();
     let mut regs = REGS.lock().unwrap();
-    for i in 0..n {
-        let d = p + i * size;
-        let (page, usage, flags, hwnd) = (r16(d), r16(d + 2), r32(d + 4), mem::rp(d + 8));
+    for (page, usage, flags, hwnd) in entries {
         if crate::env_on!("SAKE_TRACE_INPUT") {
             eprintln!("sake input: raw registration page {page:x} usage {usage:x} flags {flags:x} window {hwnd:x}");
         }
@@ -224,7 +235,8 @@ fn GetRawInputData(c: &mut Ctx) -> u32 {
     if crate::env_on!("SAKE_TRACE_INPUT") {
         eprintln!("sake input: GetRawInputData {h:x} {cmd:x} known {}", g.1.iter().any(|(x, _)| *x == h));
     }
-    let Some((_, b)) = g.1.iter().find(|(x, _)| *x == h) else {
+    // newest first: the event asked about is almost always the one just posted
+    let Some((_, b)) = g.1.iter().rev().find(|(x, _)| *x == h) else {
         last_error(6);
         return u32::MAX;
     };
@@ -268,5 +280,60 @@ pub fn init() {
         ("GetRawInputBuffer", GetRawInputBuffer),
     ] {
         implement("user32", n, f);
+    }
+}
+
+#[cfg(test)]
+mod review_b09_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use proptest::prelude::*;
+
+    /// review b09: a garbage device count is refused without reading 2^32 entries under REGS
+    #[test]
+    fn garbage_count_is_refused_quickly() {
+        let _g = enter();
+        guest_thread();
+        let size = 8 + mem::ps();
+        let p = mem::heap_alloc(size, true);
+        w32(p, 0x0002_0001); // page 1, usage 2
+        let t = std::time::Instant::now();
+        assert_eq!(call(RegisterRawInputDevices, &[p, u32::MAX, size]), 0);
+        assert_eq!(crate::k32::get_last_error(), 998);
+        assert!(t.elapsed().as_secs() < 2);
+        assert_eq!(call(RegisterRawInputDevices, &[p, 1, size]), 1);
+        assert!(REGS.lock().unwrap().iter().any(|r| (r.0, r.1) == (1, 2)));
+        w32(p + 4, RIDEV_REMOVE);
+        assert_eq!(call(RegisterRawInputDevices, &[p, 1, size]), 1);
+        assert!(!REGS.lock().unwrap().iter().any(|r| (r.0, r.1) == (1, 2)));
+        mem::heap_free(p);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+        /// Model: of the events posted, exactly the newest KEPT can be read back, each with its
+        /// own bytes, whichever end of the queue it sits at
+        #[test]
+        fn kept_events_are_found(dx in proptest::collection::vec(any::<i32>(), 1..KEPT + 40)) {
+            let _g = enter();
+            guest_thread();
+            let hs = header_size();
+            let hs_ = mem::heap_alloc(4, true);
+            let buf = mem::heap_alloc(256, true);
+            let hs_list: Vec<u32> = dx.iter().map(|&d| mouse_event(0, 0, d, 0)).collect();
+            let kept = hs_list.len().saturating_sub(KEPT);
+            for (i, (&h, &d)) in hs_list.iter().zip(&dx).enumerate() {
+                w32(hs_, 256);
+                let n = call(GetRawInputData, &[h, 0x1000_0003, buf, hs_, hs]);
+                if i < kept {
+                    prop_assert_eq!(n, u32::MAX);
+                } else {
+                    prop_assert_eq!(n, hs + 24);
+                    prop_assert_eq!(r32(buf + hs + 12) as i32, d);
+                }
+            }
+            mem::heap_free(hs_);
+            mem::heap_free(buf);
+        }
     }
 }

@@ -110,29 +110,38 @@ static DYNAMIC: std::sync::Mutex<Vec<(u32, u32, u32)>> = std::sync::Mutex::new(V
 
 /// The RUNTIME_FUNCTION covering `pc` and its image's base: (entry, base).
 pub fn lookup(pc: u32) -> Option<(u32, u32)> {
+    // (the image's table, then the dynamic ones under their lock: no copies; this runs for
+    // every frame of every dispatch and unwind)
     let found = crate::pe::MODULES.read().unwrap().iter().find(|m| pc.wrapping_sub(m.base) < m.size).map(|m| (m.base, m.pdata));
-    let mut tables: Vec<(u32, u32, u32)> = Vec::new();
     if let Some((base, (t, n))) = found {
-        tables.push((t, n, base));
+        if let Some(e) = search(t, n, pc.wrapping_sub(base), |a| r32(a)) {
+            return Some((e, base));
+        }
     }
-    tables.extend(DYNAMIC.lock().unwrap().iter().copied());
-    for (t, n, base) in tables {
-        let rva = pc.wrapping_sub(base);
-        let (mut lo, mut hi) = (0u32, n);
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            let e = t + 12 * mid;
-            if rva < r32(e) {
-                hi = mid;
-            } else if rva >= r32(e + 4) {
-                lo = mid + 1;
-            } else {
-                return Some((e, base));
-            }
+    DYNAMIC.lock().unwrap().iter().find_map(|&(t, n, base)| search(t, n, pc.wrapping_sub(base), |a| r32(a)).map(|e| (e, base)))
+}
+
+/// The entry of a RUNTIME_FUNCTION table (`n` of {begin, end, unwind info} at `t`, sorted)
+/// whose [begin, end) holds `rva`
+pub fn search(t: u32, n: u32, rva: u32, rd: impl Fn(u32) -> u32) -> Option<u32> {
+    let (mut lo, mut hi) = (0u32, n);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let e = t.wrapping_add(12u32.wrapping_mul(mid));
+        if rva < rd(e) {
+            hi = mid;
+        } else if rva >= rd(e.wrapping_add(4)) {
+            lo = mid + 1;
+        } else {
+            return Some(e);
         }
     }
     None
 }
+
+/// The most UNW_FLAG_CHAININFO links one unwind follows (compilers chain one or two; a table
+/// that chains to itself would hold the thread in here for ever)
+pub const CHAIN_MAX: u32 = 32;
 
 /// RtlVirtualUnwind: undoes the prolog of the function `f` (at `pc`) in `ctx`. Returns the
 /// language handler of kind `kind` (UNW_FLAG_E/UHANDLER) if it has one, with its data, and
@@ -144,8 +153,9 @@ fn virtual_unwind(kind: u32, base: u32, pc: u64, f: u32, ctx: u32) -> (u64, u32,
     let mut first = true;
     let mut mach = false;
     let mut handler = (0u64, 0u32);
+    let mut links = 0;
     loop {
-        let info = base + r32(f + 8);
+        let info = base.wrapping_add(r32(f + 8));
         let (vf, prolog, count, fr) = (r8(info) as u32, r8(info + 1) as u32, r8(info + 2) as u32, r8(info + 3) as u32);
         let flags = vf >> 3;
         let (freg, foff) = ((fr & 15) as usize, fr >> 4);
@@ -215,9 +225,10 @@ fn virtual_unwind(kind: u32, base: u32, pc: u64, f: u32, ctx: u32) -> (u64, u32,
             let h = info + 4 + 2 * ((count + 1) & !1);
             handler = (crate::mem::widen(base + r32(h)), h + 4);
         }
-        if flags & UNW_FLAG_CHAININFO == 0 {
+        if flags & UNW_FLAG_CHAININFO == 0 || links == CHAIN_MAX {
             break;
         }
+        links += 1;
         f = info + 4 + 2 * ((count + 1) & !1);
         first = false;
     }
@@ -350,6 +361,7 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u64]) {
     let a = cpu.eip as u64 | (cpu.rip_hi as u64) << 32;
     let a = if a as u32 == addr { a } else { crate::mem::widen(addr) };
     let sp = cpu.gpr(4) as u32;
+    no_room_ends(cpu, sp, code, a);
     let rec = ((sp - 0x200) & !15) - RECORD_SIZE;
     crate::mem::fill(rec, RECORD_SIZE, 0);
     w32(rec, code);
@@ -366,6 +378,27 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u64]) {
     let orig = (rec - CONTEXT_SIZE) & !15;
     save_context(cpu, orig);
     dispatch(cpu, rec, orig);
+}
+
+/// What a dispatch or unwind carves below RSP: 0x200 skipped, the record, three contexts, the
+/// dispatcher context, and the first handler calls' frames
+const DISPATCH_ROOM: u32 = 0x200 + RECORD_SIZE + 3 * CONTEXT_SIZE + DISP_SIZE + 0x400;
+
+/// A stack overflow with no room left for the dispatch (RSP on the thread's stack, or just
+/// below it): Windows ends the process; going on would write the record and contexts below
+/// the stack into whatever is mapped there
+fn no_room_ends(cpu: &mut Cpu, sp: u32, code: u32, at: u64) {
+    let teb = crate::cur().teb;
+    let (hi, lo) = (r64(teb + 8), r64(teb + 0x10));
+    if hi >> 32 != 0 || lo >> 32 != 0 {
+        return;
+    }
+    let (lo, hi) = (lo as u32, hi as u32);
+    if crate::seh::short_of(sp, lo, hi, DISPATCH_ROOM) {
+        crate::EXIT_CODE.store(0xc000_00fd, std::sync::atomic::Ordering::Relaxed);
+        let msg = format!("stack overflow: exception {code:08x} at {at:#x} with rsp {sp:#x}, stack {lo:#x}..{hi:#x}");
+        crate::fatal(cpu, &msg);
+    }
 }
 
 /// Dispatches the exception `rec` that happened in context `orig` (both in guest memory, which
@@ -682,6 +715,7 @@ struct Unwind {
 pub fn unwind(c: &mut Ctx, target: u64, ip: u64, rec_in: u32, retval: u64, ctx_in: u32) {
     // scratch below the caller's stack
     let sp = c.esp;
+    no_room_ends(c.cpu, sp, STATUS_UNWIND, ip);
     let ctx = ((sp - 0x200) & !15) - CONTEXT_SIZE;
     let next = ctx - CONTEXT_SIZE;
     let disp = (next - DISP_SIZE) & !15;
@@ -885,6 +919,7 @@ pub fn raise_exception(c: &mut Ctx) -> u32 {
 fn RtlRaiseException(c: &mut Ctx) -> u32 {
     let r = c.a(0);
     let sp = c.esp;
+    no_room_ends(c.cpu, sp, r32(r), r64(r + 0x10));
     let rec = ((sp - 0x200) & !15) - RECORD_SIZE;
     crate::mem::copy(rec, r, RECORD_SIZE);
     let orig = (rec - CONTEXT_SIZE) & !15;
@@ -978,6 +1013,55 @@ pub fn register() {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    proptest! {
+        /// review b09: the table search (now without copies) agrees with a linear scan over any
+        /// sorted, non-overlapping table, for any rva
+        #[test]
+        fn table_search_matches_a_scan(mut cuts in proptest::collection::vec(any::<u16>(), 0..80), probes in proptest::collection::vec(any::<u16>(), 1..40)) {
+            cuts.sort();
+            cuts.dedup();
+            // entries [cuts[2k], cuts[2k+1])
+            let entries: Vec<(u32, u32)> = cuts.chunks_exact(2).map(|p| (p[0] as u32, p[1] as u32)).collect();
+            let rd = |a: u32| {
+                let (i, k) = ((a - 0x1000) / 12, (a - 0x1000) % 12);
+                if k == 0 { entries[i as usize].0 } else { entries[i as usize].1 }
+            };
+            for rva in probes {
+                let rva = rva as u32;
+                let want = entries.iter().position(|&(b, e)| rva >= b && rva < e).map(|i| 0x1000 + 12 * i as u32);
+                prop_assert_eq!(search(0x1000, entries.len() as u32, rva, rd), want);
+            }
+        }
+    }
+
+    /// review b09: an unwind entry chained to itself ends after CHAIN_MAX links instead of
+    /// holding the thread in the host for ever
+    #[test]
+    fn self_chained_unwind_info_ends() {
+        let _g = crate::test_guest::enter();
+        let base = crate::mem::heap_alloc(0x1000, true);
+        let f = base + 0x100;
+        w32(f, 0);
+        w32(f + 4, 0x10);
+        w32(f + 8, 0x200);
+        // UNWIND_INFO: version 1, UNW_FLAG_CHAININFO, no codes; its chained entry is f's twin
+        // pointing at the same info
+        let info = base + 0x200;
+        crate::mem::w8(info, 1 | (UNW_FLAG_CHAININFO << 3) as u8);
+        w32(info + 4, 0);
+        w32(info + 8, 0x10);
+        w32(info + 12, 0x200);
+        let ctx = crate::mem::heap_alloc(CONTEXT_SIZE, true);
+        w64(ctx + 0x98, (base + 0x800) as u64);
+        w64(base + 0x800, 0x1234_5678);
+        let t = std::time::Instant::now();
+        let _ = virtual_unwind(0, base, base as u64, f, ctx);
+        assert!(t.elapsed().as_secs() < 2);
+        assert_eq!(r64(ctx + 0xf8), 0x1234_5678, "the return address popped once");
+        crate::mem::heap_free(ctx);
+        crate::mem::heap_free(base);
+    }
 
     // An SE translator's C++ exception is looked for in the translating frame alone (Windows'
     // answers: host/tests/expected/msvcseh.txt, one translator call per frame with try blocks)

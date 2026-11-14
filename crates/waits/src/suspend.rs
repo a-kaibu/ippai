@@ -23,11 +23,28 @@ use std::sync::atomic::Ordering;
 pub const MAX_COUNT: u32 = 127;
 
 pub struct Suspends {
-    /// (thread id, suspend count), counts above 0 only
-    list: Mutex<Vec<(u32, u32)>>,
+    /// (thread id, suspend count), counts above 0 only; and the threads waiting in park
+    list: Mutex<State>,
     cv: Condvar,
     /// list.len(), read without the lock by every run loop
     any: AtomicU32,
+}
+
+#[derive(Default)]
+struct State {
+    counts: Vec<(u32, u32)>,
+    parked: Vec<u32>,
+}
+impl std::ops::Deref for State {
+    type Target = Vec<(u32, u32)>;
+    fn deref(&self) -> &Self::Target {
+        &self.counts
+    }
+}
+impl std::ops::DerefMut for State {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.counts
+    }
 }
 
 impl Default for Suspends {
@@ -38,7 +55,7 @@ impl Default for Suspends {
 
 impl Suspends {
     pub fn new() -> Self {
-        Suspends { list: Mutex::new(Vec::new()), cv: Condvar::new(), any: AtomicU32::new(0) }
+        Suspends { list: Mutex::new(State { counts: Vec::new(), parked: Vec::new() }), cv: Condvar::new(), any: AtomicU32::new(0) }
     }
 
     /// SuspendThread: the previous count, None when it is already MAX_COUNT.
@@ -94,10 +111,45 @@ impl Suspends {
             if leave() {
                 break;
             }
+            if !waited {
+                // (stopped: GetThreadContext's wait_stopped may read its registers now)
+                l.parked.push(tid);
+                self.cv.notify_all();
+            }
             waited = true;
             l = self.cv.wait(l).unwrap();
         }
+        if waited {
+            if let Some(i) = l.parked.iter().position(|&t| t == tid) {
+                l.parked.swap_remove(i);
+            }
+        }
         waited
+    }
+
+    /// GetThreadContext of a suspended thread: waits until `tid` has stopped at its safe point
+    /// (park), or `settled` says its registers keep still anyway (it is inside an API call), or
+    /// `left` (ms to go; None: no limit) runs out. True: stopped or settled. A thread that is not
+    /// suspended is not waited for.
+    pub fn wait_stopped(&self, tid: u32, settled: impl Fn() -> bool, left: impl Fn() -> Option<u64>) -> bool {
+        let mut l = self.list.lock().unwrap();
+        loop {
+            if l.parked.contains(&tid) || settled() {
+                return true;
+            }
+            if !l.iter().any(|e| e.0 == tid) {
+                return false;
+            }
+            match left() {
+                Some(0) => return false,
+                // (settled changes without a notify: looked at again every 5 ms)
+                #[cfg(not(loom))]
+                Some(ms) => l = self.cv.wait_timeout(l, std::time::Duration::from_millis(ms.min(5))).unwrap().0,
+                #[cfg(loom)]
+                Some(_) => l = self.cv.wait(l).unwrap(),
+                None => l = self.cv.wait(l).unwrap(),
+            }
+        }
     }
 
     /// Wakes every parked thread to ask its `leave` again.

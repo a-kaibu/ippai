@@ -449,6 +449,8 @@ pub fn exit_thread(code: u32) -> ! {
     // (what modules keep by thread id: a later thread with the id starts clean)
     crate::msvcp_thr::thread_gone(t.tid);
     crate::nt::thread_gone(t.tid);
+    crate::security::thread_gone(t.tid);
+    crate::tctx::thread_gone(t.tid);
     // (out of the running threads and its TLS blocks freed, under the loader lock: a DLL
     // loading meanwhile gives every running thread a block)
     crate::pe::thread_tls_exit(t.teb);

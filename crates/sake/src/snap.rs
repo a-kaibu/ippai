@@ -273,6 +273,9 @@ pub fn init() {
 // ---------------------------------------------------------------------------------------------
 // restoring
 
+/// The exit code of a restore that could not bring every thread back
+pub const RESTORE_FAILED: i32 = 70;
+
 /// sake's main in a restored module: every guest thread starts again where it stood.
 pub fn restore() -> ! {
     let parts = kura::snap::restore_begin();
@@ -294,11 +297,13 @@ pub fn restore() -> ! {
             main = Some((t, resume));
             continue;
         }
-        let (tt, r) = (t as *mut Thread as usize, resume);
-        std::thread::Builder::new()
-            .stack_size(1 << 20)
-            .spawn(move || go_on(unsafe { &mut *(tt as *mut Thread) }, r))
-            .expect("thread");
+        let (tt, r, tid) = (t as *mut Thread as usize, resume, t.tid);
+        // (a worker the browser refuses, out of memory: the restore fails with its reason and
+        // an exit code the page reports, not an abort)
+        if let Err(e) = std::thread::Builder::new().stack_size(1 << 20).spawn(move || go_on(unsafe { &mut *(tt as *mut Thread) }, r)) {
+            eprintln!("snap: restore failed: thread {tid:#x} could not start again: {e}");
+            std::process::exit(RESTORE_FAILED);
+        }
     }
     match main {
         Some((t, r)) => go_on(t, r),

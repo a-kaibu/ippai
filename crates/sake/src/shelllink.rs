@@ -231,7 +231,9 @@ fn release(c: &mut Ctx) -> u32 {
             s.refs
         }
         Some(_) => {
+            // (the object's vtable pointers go with its state)
             m.remove(&b);
+            mem::heap_free(b);
             0
         }
         None => 0,
@@ -396,9 +398,19 @@ fn GetClassID(c: &mut Ctx) -> u32 {
 fn IsDirty(c: &mut Ctx) -> u32 {
     if with(c.a(0), |s| s.dirty).unwrap_or(false) { 0 } else { 1 }
 }
+/// The most of a file IPersistFile::Load reads
+const LOAD_MAX: u64 = 256 * 1024;
+
 fn Load(c: &mut Ctx) -> u32 {
     let name = crate::files::full_path(&arg_str(c.a(1), true));
-    let Some(bytes) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
+    // (the start only: a link is a few KiB, and a program that points Load at some big
+    // file of another kind gets its error without the file read into memory)
+    let Some(bytes) = crate::files::resolve(&name).and_then(|h| {
+        use std::io::Read;
+        let mut v = Vec::new();
+        kura::fs::File::open(h).ok()?.take(LOAD_MAX).read_to_end(&mut v).ok()?;
+        Some(v)
+    }) else {
         return 0x8007_0002;
     };
     let Some(link) = decode(&bytes) else {
@@ -528,6 +540,34 @@ mod tests {
             icon_index: -3,
             show: 7,
             hotkey: 0x0641,
+        }
+    }
+
+    /// review b09: the last Release frees the object's block with its state, earlier ones
+    /// neither
+    #[test]
+    fn last_release_frees_the_object() {
+        let _g = crate::test_guest::enter();
+        let guid = |d1: u32| {
+            let g = mem::heap_alloc(16, true);
+            mem::w32(g, d1);
+            mem::write(g + 8, &[0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
+            g
+        };
+        let (clsid, iid, out) = (guid(0x0002_1401), guid(0), mem::heap_alloc(8, true));
+        for _ in 0..3 {
+            assert_eq!(create_instance(clsid, iid, out), Some(0));
+            let o = mem::rp(out);
+            assert!(mem::heap_owns(o) && links(|m| m.contains_key(&o)));
+            assert_eq!(crate::test_guest::call(add_ref, &[o]), 2);
+            assert_eq!(crate::test_guest::call(release, &[o]), 1);
+            assert!(links(|m| m.contains_key(&o)));
+            assert_eq!(crate::test_guest::call(release, &[o]), 0);
+            assert!(!links(|m| m.contains_key(&o)), "state gone");
+            assert!(!mem::heap_free(o), "block already freed");
+        }
+        for p in [clsid, iid, out] {
+            mem::heap_free(p);
         }
     }
 

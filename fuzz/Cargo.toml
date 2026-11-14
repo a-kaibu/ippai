@@ -337,3 +337,10 @@ path = "fuzz_targets/vfs_pages.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "resupdate"
+path = "fuzz_targets/resupdate.rs"
+test = false
+doc = false
+bench = false

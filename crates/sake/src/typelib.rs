@@ -55,13 +55,36 @@ pub enum Var {
     Error(u32),
 }
 
+/// How deep aliases (USERDEFINED to USERDEFINED) and VT_BYREF|VT_VARIANT chains are followed
+pub const DEPTH_MAX: u32 = 16;
+
+/// A BSTR's characters (its length prefix in bytes before it), as far as they are mapped: a
+/// pointer that is no BSTR (a char* from script glue) reads what is there, not 2 GiB
+pub fn bstr(b: u32) -> Vec<u16> {
+    if b < 4 {
+        return Vec::new();
+    }
+    let n = (r32(b - 4) / 2).min(mem::accessible(b, u32::MAX - b, false, false) / 2);
+    (0..n).map(|i| r16(b + 2 * i)).collect()
+}
+
 /// Reads the VARIANT at `p` (through VT_BYREF).
 pub fn read_var(p: u32) -> Var {
-    let vt = r16(p);
-    let (base, at) = if vt & VT_BYREF != 0 { (vt & !VT_BYREF, r32(p + 8)) } else { (vt, p + 8) };
-    if vt & VT_BYREF != 0 && base == VT_VARIANT {
-        return read_var(at);
+    // (VT_BYREF|VT_VARIANT chains followed a bounded number of times: one that points at
+    // itself is no recursion without end)
+    let mut p = p;
+    for _ in 0..DEPTH_MAX {
+        let vt = r16(p);
+        if vt != VT_BYREF | VT_VARIANT {
+            break;
+        }
+        p = r32(p + 8);
     }
+    let vt = r16(p);
+    if vt == VT_BYREF | VT_VARIANT {
+        return Var::Empty;
+    }
+    let (base, at) = if vt & VT_BYREF != 0 { (vt & !VT_BYREF, r32(p + 8)) } else { (vt, p + 8) };
     let f64_at = |a: u32| f64::from_bits(r32(a) as u64 | (r32(a + 4) as u64) << 32);
     match base {
         VT_EMPTY => Var::Empty,
@@ -81,10 +104,7 @@ pub fn read_var(p: u32) -> Var {
         6 => Var::R8((r32(at) as u64 | (r32(at + 4) as u64) << 32) as i64 as f64 / 10000.),
         VT_BOOL => Var::Bool(r16(at) != 0),
         VT_ERROR => Var::Error(r32(at)),
-        VT_BSTR => {
-            let b = r32(at);
-            Var::Str(if b == 0 { Vec::new() } else { (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect() })
-        }
+        VT_BSTR => Var::Str(bstr(r32(at))),
         VT_DISPATCH => Var::Obj(r32(at), true),
         VT_UNKNOWN => Var::Obj(r32(at), false),
         _ => Var::Empty,
@@ -150,7 +170,7 @@ impl Var {
 // ---------------------------------------------------------------------------------------------
 // the MSFT format
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Td {
     Base(u16),
     Ptr(Box<Td>),
@@ -359,7 +379,14 @@ struct Loaded {
     infos: Vec<u32>,
 }
 
-static LIBS: Mutex<Vec<Loaded>> = Mutex::new(Vec::new());
+// (shared: a call borrows its library's functions and infos without copying them and without
+// holding the lock across the call into the program)
+static LIBS: Mutex<Vec<std::sync::Arc<Loaded>>> = Mutex::new(Vec::new());
+
+/// Library `li`
+fn lib(li: usize) -> Option<std::sync::Arc<Loaded>> {
+    LIBS.lock().unwrap().get(li).cloned()
+}
 
 fn lib_vtbl() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
@@ -450,7 +477,7 @@ pub fn add(lib: Lib) -> u32 {
             b
         })
         .collect();
-    libs.push(Loaded { lib, block, infos });
+    libs.push(std::sync::Arc::new(Loaded { lib, block, infos }));
     block
 }
 
@@ -462,8 +489,7 @@ fn info_of(c: &Ctx) -> (usize, usize) {
     (r32(c.a(0) + 4) as usize, r32(c.a(0) + 8) as usize)
 }
 fn with_info<R>(li: usize, ii: usize, f: impl FnOnce(&Lib, &Info) -> R) -> Option<R> {
-    let libs = LIBS.lock().unwrap();
-    let l = libs.get(li)?;
+    let l = lib(li)?;
     l.lib.infos.get(ii).map(|i| f(&l.lib, i))
 }
 fn info_block(li: usize, ii: usize) -> Option<u32> {
@@ -580,7 +606,8 @@ fn I_QueryInterface(c: &mut Ctx) -> u32 {
 /// TYPEATTR
 fn I_GetTypeAttr(c: &mut Ctx) -> u32 {
     let (li, ii) = info_of(c);
-    let Some(i) = with_info(li, ii, |_, i| i.clone()) else { return E_INVALIDARG };
+    let Some(l) = lib(li) else { return E_INVALIDARG };
+    let Some(i) = l.lib.infos.get(ii) else { return E_INVALIDARG };
     let p = mem::heap_alloc(76, true);
     mem::write(p, &i.guid);
     w32(p + 16, 0);
@@ -611,8 +638,17 @@ fn write_tdesc(p: u32, t: &Td) {
             w16(p + 4, *vt);
         }
         Td::Ptr(inner) => {
-            let q = mem::heap_alloc(8, true);
-            write_tdesc(q, inner);
+            // (one guest copy per distinct pointed-to description, kept: ReleaseFuncDesc and
+            // ReleaseTypeAttr free only the block, so a fresh one per call would leak 8 bytes per
+            // pointer parameter per GetFuncDesc)
+            static KEPT: Mutex<Option<std::collections::HashMap<Td, u32>>> = Mutex::new(None);
+            let known = KEPT.lock().unwrap().get_or_insert_with(Default::default).get(&**inner).copied();
+            let q = known.unwrap_or_else(|| {
+                let q = mem::heap_alloc(8, true);
+                write_tdesc(q, inner);
+                KEPT.lock().unwrap().get_or_insert_with(Default::default).insert((**inner).clone(), q);
+                q
+            });
             w32(p, q);
             w16(p + 4, 26);
         }
@@ -655,17 +691,20 @@ fn free_func_desc(c: &mut Ctx) -> u32 {
 /// The function named `name` (any case) and the library index of the info it is in, searching
 /// base interfaces of this library too.
 fn find<R>(li: usize, ii: usize, f: &mut dyn FnMut(usize, &Info) -> Option<R>) -> Option<R> {
-    let libs = LIBS.lock().unwrap();
-    let l = libs.get(li)?;
+    let l = lib(li)?;
+    find_in(&l.lib, ii, f)
+}
+/// find() in a library at hand: what `f` gives may borrow from it
+fn find_in<'a, R>(lib: &'a Lib, ii: usize, f: &mut dyn FnMut(usize, &'a Info) -> Option<R>) -> Option<R> {
     let mut at = ii;
     for _ in 0..16 {
-        let info = l.lib.infos.get(at)?;
+        let info = lib.infos.get(at)?;
         if let Some(r) = f(at, info) {
             return Some(r);
         }
         // the base interface, if it is in this library
         match info.impls.first() {
-            Some(&h) if h & 1 == 0 && (h as usize) / 100 < l.lib.infos.len() && info.kind != 5 => at = h as usize / 100,
+            Some(&h) if h & 1 == 0 && (h as usize) / 100 < lib.infos.len() && info.kind != 5 => at = h as usize / 100,
             _ => return None,
         }
     }
@@ -801,6 +840,14 @@ fn user_kind(li: usize, h: u32) -> (u32, Option<Td>) {
 
 /// The stack dwords for passing `v` as type `t` (temporaries to free after the call).
 fn to_arg(li: usize, t: &Td, v: &Var, src: u32, temps: &mut Vec<u32>, bstrs: &mut Vec<u32>) -> Result<Vec<u32>, u32> {
+    to_arg_at(li, t, v, src, temps, bstrs, 0)
+}
+#[allow(clippy::too_many_arguments)]
+fn to_arg_at(li: usize, t: &Td, v: &Var, src: u32, temps: &mut Vec<u32>, bstrs: &mut Vec<u32>, depth: u32) -> Result<Vec<u32>, u32> {
+    // (an alias that leads back to itself, or pointers nested past any real interface)
+    if depth > DEPTH_MAX {
+        return Err(DISP_E_TYPEMISMATCH);
+    }
     Ok(match t {
         Td::Base(vt) | Td::Other(vt) => match *vt {
             VT_R8 | 7 => {
@@ -844,7 +891,7 @@ fn to_arg(li: usize, t: &Td, v: &Var, src: u32, temps: &mut Vec<u32>, bstrs: &mu
             _ => vec![v.int() as u32],
         },
         Td::User(h) => match user_kind(li, *h) {
-            (6, Some(a)) => return to_arg(li, &a, v, src, temps, bstrs),
+            (6, Some(a)) => return to_arg_at(li, &a, v, src, temps, bstrs, depth + 1),
             (0, _) => vec![v.int() as u32],
             _ => match v {
                 Var::Obj(o, _) => vec![*o],
@@ -861,7 +908,7 @@ fn to_arg(li: usize, t: &Td, v: &Var, src: u32, temps: &mut Vec<u32>, bstrs: &mu
             }
             let p = mem::heap_alloc(16, true);
             temps.push(p);
-            let d = to_arg(li, inner, v, src, temps, bstrs)?;
+            let d = to_arg_at(li, inner, v, src, temps, bstrs, depth + 1)?;
             for (k, x) in d.iter().enumerate() {
                 w32(p + 4 * k as u32, *x);
             }
@@ -872,14 +919,17 @@ fn to_arg(li: usize, t: &Td, v: &Var, src: u32, temps: &mut Vec<u32>, bstrs: &mu
 
 /// The value an out parameter of type `t` (pointed to by `p`) holds after the call.
 fn from_out(li: usize, t: &Td, p: u32) -> Var {
+    from_out_at(li, t, p, 0)
+}
+fn from_out_at(li: usize, t: &Td, p: u32, depth: u32) -> Var {
+    if depth > DEPTH_MAX {
+        return Var::Empty;
+    }
     match t {
         Td::Base(vt) | Td::Other(vt) => match *vt {
             VT_VARIANT => read_var(p),
             VT_BOOL => Var::Bool(r16(p) != 0),
-            VT_BSTR => {
-                let b = r32(p);
-                Var::Str(if b == 0 { Vec::new() } else { (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect() })
-            }
+            VT_BSTR => Var::Str(bstr(r32(p))),
             VT_DISPATCH => Var::Obj(r32(p), true),
             VT_UNKNOWN => Var::Obj(r32(p), false),
             VT_R8 | 7 => Var::R8(f64::from_bits(r32(p) as u64 | (r32(p + 4) as u64) << 32)),
@@ -892,7 +942,7 @@ fn from_out(li: usize, t: &Td, p: u32) -> Var {
             _ => Var::I4(r32(p) as i32),
         },
         Td::User(h) => match user_kind(li, *h) {
-            (6, Some(a)) => from_out(li, &a, p),
+            (6, Some(a)) => from_out_at(li, &a, p, depth + 1),
             (0, _) => Var::I4(r32(p) as i32),
             _ => Var::Empty,
         },
@@ -910,7 +960,8 @@ fn from_out(li: usize, t: &Td, p: u32) -> Var {
 fn I_Invoke(c: &mut Ctx) -> u32 {
     let (li, ii) = info_of(c);
     let (obj, memid, flags, dp, result, excep) = (c.a(1), c.a(2) as i32, c.a(3) & 0xf, c.a(4), c.a(5), c.a(6));
-    let Some(f) = find(li, ii, &mut |_, i| i.funcs.iter().find(|f| f.memid == memid && f.invkind & flags != 0).cloned()) else {
+    let Some(l) = lib(li) else { return DISP_E_MEMBERNOTFOUND };
+    let Some(f) = find_in(&l.lib, ii, &mut |_, i| i.funcs.iter().find(|f| f.memid == memid && f.invkind & flags != 0)) else {
         return DISP_E_MEMBERNOTFOUND;
     };
     if f.funckind > 1 || obj == 0 {
@@ -1047,6 +1098,13 @@ fn load(path: &str) -> Option<Lib> {
 
 fn load_arg(c: &mut Ctx, out: u32) -> u32 {
     let path = String::from_utf16_lossy(&mem::wstr(c.a(0)));
+    // (the objects here are laid out for x86: 4-byte pointers, x86 VARIANT arrays and vtable
+    // calls; a 64-bit program gets the error, not an ITypeLib it would crash in)
+    if mem::x64() {
+        crate::com::warn_once("sake: LoadTypeLib in a 64-bit program: not supported (TYPE_E_CANTLOADLIBRARY)");
+        mem::putp(out, 0);
+        return TYPE_E_CANTLOADLIBRARY;
+    }
     match load(&path) {
         Some(l) => {
             put32(out, add(l));
@@ -1214,6 +1272,106 @@ mod tests {
             }
         }
         assert!(l.infos.iter().all(|i| i.funcs.iter().all(|f| !f.name.is_empty())));
+    }
+
+    /// review b09: a library whose alias names itself (directly or in a ring of two) is a
+    /// type mismatch on Invoke, not a host stack overflow; reading the out value neither
+    #[test]
+    fn alias_rings_end() {
+        let _g = crate::test_guest::enter();
+        let info = |alias: u32| Info {
+            kind: 6,
+            flags: 0,
+            guid: [0; 16],
+            name: "A".into(),
+            funcs: vec![],
+            vars: vec![],
+            impls: vec![],
+            cb_vft: 0,
+            size: 4,
+            align: 4,
+            version: 0,
+            alias: Some(Td::User(alias)),
+        };
+        // info 0 -> itself; info 1 -> 2 -> 1 (hrefs are index * 100)
+        let lib = Lib { name: "L".into(), guid: [0; 16], lcid: 0, version: 0, flags: 0, infos: vec![info(0), info(200), info(100)] };
+        let li = r32(add(lib) + 4) as usize;
+        let p = mem::heap_alloc(16, true);
+        for h in [0, 100, 200] {
+            let (mut temps, mut bstrs) = (vec![], vec![]);
+            assert_eq!(to_arg(li, &Td::User(h), &Var::I4(1), 0, &mut temps, &mut bstrs), Err(DISP_E_TYPEMISMATCH));
+            assert_eq!(from_out(li, &Td::User(h), p), Var::Empty);
+            // a pointer to it too
+            let t = Td::Ptr(Box::new(Td::User(h)));
+            assert!(to_arg(li, &t, &Var::I4(1), 0, &mut temps, &mut bstrs).is_err());
+            for t in temps {
+                mem::heap_free(t);
+            }
+        }
+        mem::heap_free(p);
+    }
+
+    /// review b09: a VT_BYREF|VT_VARIANT that points at itself, and a VT_BSTR whose pointer is
+    /// no BSTR (a huge length before it), read without recursion or a 2 GiB vector
+    #[test]
+    fn variants_that_loop_or_lie() {
+        let _g = crate::test_guest::enter();
+        let v = mem::heap_alloc(16, true);
+        w16(v, VT_BYREF | VT_VARIANT);
+        w32(v + 8, v);
+        assert_eq!(read_var(v), Var::Empty);
+        // a ring of two
+        let w = mem::heap_alloc(16, true);
+        w16(w, VT_BYREF | VT_VARIANT);
+        w32(w + 8, v);
+        w32(v + 8, w);
+        assert_eq!(read_var(v), Var::Empty);
+        // a chain of a few ends at a value
+        w16(w, VT_I4);
+        w32(w + 8, 77);
+        assert_eq!(read_var(v), Var::I4(77));
+        let s = mem::heap_alloc(16, true);
+        w32(s, 0x7fff_fff0);
+        w16(v, VT_BSTR);
+        w32(v + 8, s + 4);
+        let t = std::time::Instant::now();
+        let Var::Str(got) = read_var(v) else { panic!("a string") };
+        assert!(got.len() < 0x1000_0000 && t.elapsed().as_secs() < 10);
+        for x in [v, w, s] {
+            mem::heap_free(x);
+        }
+    }
+
+    use proptest::prelude::*;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// A real BSTR of any text reads back as that text, through any short VT_BYREF chain
+        #[test]
+        fn bstrs_read_back(text in proptest::collection::vec(any::<u16>(), 0..64), hops in 0u32..DEPTH_MAX) {
+            let _g = crate::test_guest::enter();
+            let b = mem::heap_alloc(4 + 2 * text.len() as u32 + 2, true);
+            w32(b, 2 * text.len() as u32);
+            for (i, &u) in text.iter().enumerate() {
+                w16(b + 4 + 2 * i as u32, u);
+            }
+            let end = mem::heap_alloc(16, true);
+            w16(end, VT_BSTR);
+            w32(end + 8, b + 4);
+            let mut all = vec![end];
+            let mut at = end;
+            for _ in 0..hops {
+                let h = mem::heap_alloc(16, true);
+                w16(h, VT_BYREF | VT_VARIANT);
+                w32(h + 8, at);
+                all.push(h);
+                at = h;
+            }
+            prop_assert_eq!(read_var(at), Var::Str(text.clone()));
+            for x in all {
+                mem::heap_free(x);
+            }
+            mem::heap_free(b);
+        }
     }
 
     #[test]

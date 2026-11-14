@@ -85,9 +85,44 @@ fn load(cpu: &mut koji::Cpu, ctx: u32) {
     }
 }
 
-/// Room for a context below `esp` (the guest's stack below its pointer is free)
-fn scratch(esp: u32) -> u32 {
-    ((esp - 0x400) & !15) - size(mem::x64())
+/// `n` contexts' room (16-byte aligned) on the guest heap for `f`, freed after: not below the
+/// guest's stack pointer, where a thread near the end of its stack has no room (and a write
+/// there lands in whatever is mapped below it)
+fn with_scratch<R>(n: u32, f: impl FnOnce(u32) -> R) -> R {
+    let b = mem::heap_alloc(n * (size(mem::x64()) + 16) + 16, true);
+    assert!(b != 0, "sake: out of guest memory for a thread context");
+    let r = f((b + 15) & !15);
+    mem::heap_free(b);
+    r
+}
+
+/// A thread's exit: a context set for it that it never took goes
+pub fn thread_gone(tid: u32) {
+    if ANY.load(Ordering::Acquire) {
+        if let Some(m) = PENDING.lock().unwrap().as_mut() {
+            m.remove(&tid);
+        }
+    }
+}
+
+/// GetThreadContext of suspended thread `tid`: Windows waits until the thread has really
+/// stopped (SuspendThread is asynchronous). Here: until it parks at its safe point, or is
+/// inside an API call (its registers are saved and keep still), at most a second.
+fn wait_stopped(tid: u32) {
+    if crate::k32::SUSPENDS.count(tid) == 0 {
+        return;
+    }
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    // (one processor: the target needs it to get to its safe point)
+    let held = crate::uni::leave();
+    crate::k32::SUSPENDS.wait_stopped(
+        tid,
+        || crate::k32::thread_cpu(tid).is_none_or(|(_, api)| api != (0, 0)),
+        || Some(end.saturating_duration_since(std::time::Instant::now()).as_millis() as u64),
+    );
+    if held {
+        crate::uni::enter();
+    }
 }
 
 static ANY: AtomicBool = AtomicBool::new(false);
@@ -102,13 +137,13 @@ pub fn apply_pending(cpu: &mut koji::Cpu) -> bool {
     }
     let tid = crate::cur().tid;
     let Some((flags, bytes)) = PENDING.lock().unwrap().get_or_insert_with(HashMap::default).remove(&tid) else { return false };
-    let esp = cpu.gpr(4) as u32;
-    let base = scratch(esp);
-    let given = base - size(mem::x64()) - 16;
-    capture(cpu, (0, 0), base);
-    mem::write(given, &bytes);
-    overlay(base, given, flags);
-    load(cpu, base);
+    with_scratch(2, |base| {
+        let given = base + size(mem::x64()) + 16;
+        capture(cpu, (0, 0), base);
+        mem::write(given, &bytes[..bytes.len().min(size(mem::x64()) as usize)]);
+        overlay(base, given, flags);
+        load(cpu, base);
+    });
     true
 }
 
@@ -166,9 +201,10 @@ fn GetThreadContext(c: &mut Ctx) -> u32 {
             crate::k32::last_error(6);
             return 0;
         };
-        let base = scratch(c.esp);
-        mem::write(base, &r.data);
-        overlay(ctx, base, flags);
+        with_scratch(1, |base| {
+            mem::write(base, &r.data[..r.data.len().min(size(mem::x64()) as usize)]);
+            overlay(ctx, base, flags);
+        });
         return 1;
     }
     let Some(tid) = thread_of(h) else {
@@ -177,21 +213,25 @@ fn GetThreadContext(c: &mut Ctx) -> u32 {
     };
     let x64 = mem::x64();
     let flags = r32(ctx + flags_at(x64));
-    let base = scratch(c.esp);
-    if tid == crate::cur().tid {
-        let pop = if x64 { 8 } else { 12 };
-        let esp = c.esp;
-        capture(c.cpu, (esp, pop), base);
-    } else {
-        let Some((cpu, api)) = crate::k32::thread_cpu(tid) else {
-            crate::k32::last_error(6);
-            return 0;
-        };
-        capture(unsafe { &mut *cpu }, api, base);
-        overlay_pending(tid, base);
+    if tid != crate::cur().tid {
+        wait_stopped(tid);
     }
-    overlay(ctx, base, flags);
-    1
+    with_scratch(1, |base| {
+        if tid == crate::cur().tid {
+            let pop = if x64 { 8 } else { 12 };
+            let esp = c.esp;
+            capture(c.cpu, (esp, pop), base);
+        } else {
+            let Some((cpu, api)) = crate::k32::thread_cpu(tid) else {
+                crate::k32::last_error(6);
+                return 0;
+            };
+            capture(unsafe { &mut *cpu }, api, base);
+            overlay_pending(tid, base);
+        }
+        overlay(ctx, base, flags);
+        1
+    })
 }
 
 fn SetThreadContext(c: &mut Ctx) -> u32 {
@@ -213,12 +253,13 @@ fn SetThreadContext(c: &mut Ctx) -> u32 {
     let flags = r32(ctx + flags_at(x64));
     if tid == crate::cur().tid {
         // (the caller goes on in the context: as if the call had returned there)
-        let base = scratch(c.esp);
         let pop = if x64 { 8 } else { 12 };
         let esp = c.esp;
-        capture(c.cpu, (esp, pop), base);
-        overlay(base, ctx, flags);
-        load(c.cpu, base);
+        with_scratch(1, |base| {
+            capture(c.cpu, (esp, pop), base);
+            overlay(base, ctx, flags);
+            load(c.cpu, base);
+        });
         c.jumped = true;
         return 1;
     }
@@ -311,6 +352,42 @@ mod tests {
         assert_eq!(selector_entry(3, 0), Ok([0; 8]));
         assert_eq!(selector_entry(0xdeadbeef, 0), Err(1444));
         assert_eq!(selector_entry(0x12b, 0), Err(998));
+    }
+
+    /// review b09: a context set for a thread that exits before taking it goes with the thread
+    #[test]
+    fn pending_contexts_go_with_their_thread() {
+        set_context_of(0x7123, 0x1003f, &[1, 2, 3]);
+        set_context_of(0x7124, 0x1003f, &[4]);
+        thread_gone(0x7123);
+        let g = PENDING.lock().unwrap();
+        let m = g.as_ref().unwrap();
+        assert!(!m.contains_key(&0x7123) && m.contains_key(&0x7124));
+        drop(g);
+        thread_gone(0x7124);
+    }
+
+    /// review b09: the context a thread takes is built on the guest heap, not below its
+    /// stack pointer: a thread at the very bottom of its stack (ESP just above unmapped memory)
+    /// takes a context set for it and nothing is written under ESP
+    #[test]
+    fn a_pending_context_needs_no_room_under_esp() {
+        let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+        let tid = crate::cur().tid;
+        let mut cpu = koji::Cpu::default();
+        let low = mem::heap_alloc(0x2000, true);
+        mem::fill(low, 0x2000, 0xee);
+        cpu.set_gpr(4, (low + 0x2000) as u64);
+        // a context that sets EAX (CONTEXT_INTEGER) to 0x1234
+        let n = size(false) as usize;
+        let mut bytes = vec![0u8; n];
+        bytes[0xb0..0xb4].copy_from_slice(&0x1234u32.to_le_bytes());
+        set_context_of(tid, 0x1_0002, &bytes);
+        assert!(apply_pending(&mut cpu));
+        assert_eq!(cpu.gpr(0), 0x1234);
+        assert!(mem::slice(low, 0x2000).iter().all(|&b| b == 0xee), "nothing written below ESP");
+        mem::heap_free(low);
     }
 
     /// The parts never overlap, stay inside the CONTEXT, and all of them leave out only

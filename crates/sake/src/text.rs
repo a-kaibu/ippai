@@ -57,6 +57,11 @@ pub const DEFAULT_932: u16 = 0x30fb;
 ///   of an encoded surrogate) is one.
 pub fn mb2w_checked(cp: u32, s: &[u8]) -> (Vec<u16>, bool) {
     let real = if matches!(cp, 0 | 1 | 3) { acp() } else { cp };
+    // (ASCII is itself in UTF-8, 932 and every ASCII-compatible code page: the common case of
+    // file names, class names, registry keys and format strings, widened in one pass)
+    if s.is_ascii() && (real == 65001 || real == 932 || enc(cp).is_ascii_compatible()) {
+        return (s.iter().map(|&b| b as u16).collect(), false);
+    }
     if real == 65001 {
         return utf8_to_w(s);
     }
@@ -284,13 +289,24 @@ pub fn upper_a(s: &mut [u8]) {
     }
 }
 
+/// The 932 lead bytes of the double-byte characters that have a case
+const SJIS_CASED_LEADS: [u8; 6] = [0x82, 0x83, 0x84, 0x87, 0xee, 0xfa];
+
 /// Case-maps ANSI text as user32's CharUpperA/CharLowerA and LCMapStringA do: through
 /// Unicode, double-byte characters too (932 ａ 82 81 -> Ａ 82 60), where the mapped character
 /// keeps its length.
 pub fn case_a(s: &mut [u8], upper: bool) {
+    let sjis = acp() == 932;
     let mut i = 0;
     while i < s.len() {
         let n = if is_lead(s[i]) && i + 1 < s.len() { 2 } else { 1 };
+        // (932: only the rows with letters that have a case can change, the full-width Latin,
+        // Greek and Cyrillic ones and the Roman numerals; kana, kanji and the half-width
+        // katakana are skipped without converting: tests check every pair)
+        if sjis && (n == 1 && s[i] >= 0x80 || n == 2 && !SJIS_CASED_LEADS.contains(&s[i])) {
+            i += n;
+            continue;
+        }
         if n == 1 && s[i] < 0x80 {
             s[i] = if upper { s[i].to_ascii_uppercase() } else { s[i].to_ascii_lowercase() };
         } else if let [w] = a2w(&s[i..i + n])[..] {
@@ -413,6 +429,81 @@ pub fn map_kana_width(w: &[u16], flags: u32) -> Vec<u16> {
         v = to_half(&v);
     }
     v
+}
+
+#[cfg(test)]
+mod review_b09_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// case_a before its 932 shortcut: through Unicode for every non-ASCII character
+    fn case_a_reference(s: &mut [u8], upper: bool) {
+        let mut i = 0;
+        while i < s.len() {
+            let n = if is_lead(s[i]) && i + 1 < s.len() { 2 } else { 1 };
+            if n == 1 && s[i] < 0x80 {
+                s[i] = if upper { s[i].to_ascii_uppercase() } else { s[i].to_ascii_lowercase() };
+            } else if let [w] = a2w(&s[i..i + n])[..] {
+                let m = if upper { upper16(w) } else { lower16(w) };
+                let b = w2a(&[m]);
+                if m != w && b.len() == n {
+                    s[i..i + n].copy_from_slice(&b);
+                }
+            }
+            i += n;
+        }
+    }
+
+    /// Exhaustive: every single byte and every 932 double-byte pair maps as the conversion
+    /// through Unicode maps it (the skipped rows really have nothing with a case)
+    #[test]
+    fn case_shortcut_matches_every_pair() {
+        if acp() != 932 {
+            return;
+        }
+        for upper in [false, true] {
+            for b in 0..=255u8 {
+                let (mut x, mut y) = ([b], [b]);
+                case_a(&mut x, upper);
+                case_a_reference(&mut y, upper);
+                assert_eq!(x, y, "{b:#x}");
+            }
+            for lead in (0x81..=0x9fu8).chain(0xe0..=0xfc) {
+                for trail in 0x40..=0xfcu8 {
+                    let (mut x, mut y) = ([lead, trail], [lead, trail]);
+                    case_a(&mut x, upper);
+                    case_a_reference(&mut y, upper);
+                    assert_eq!(x, y, "{lead:#x} {trail:#x} upper {upper}");
+                }
+            }
+        }
+    }
+
+    proptest! {
+        /// Any bytes case-map as through Unicode
+        #[test]
+        fn case_a_matches_the_reference(v in proptest::collection::vec(any::<u8>(), 0..64), upper in any::<bool>()) {
+            let (mut x, mut y) = (v.clone(), v);
+            case_a(&mut x, upper);
+            case_a_reference(&mut y, upper);
+            prop_assert_eq!(x, y);
+        }
+
+        /// ASCII decodes as the code page's own decoder decodes it, in every code page sake has
+        #[test]
+        fn ascii_shortcut_matches_the_decoders(v in proptest::collection::vec(0u8..0x80, 0..64), cp in prop::sample::select(vec![0u32, 932, 936, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 874, 65001, 20127, 28591, 50220, 51932, 54936, 10000])) {
+            let real = if cp == 0 { acp() } else { cp };
+            let (got, bad) = mb2w_checked(cp, &v);
+            let want: Vec<u16> = if real == 65001 || real == 932 || enc(cp).is_ascii_compatible() {
+                let (c, _) = enc(cp).decode_without_bom_handling(&v);
+                c.encode_utf16().collect()
+            } else {
+                got.clone()
+            };
+            prop_assert_eq!(got, want);
+            prop_assert!(!bad);
+        }
+    }
 }
 
 #[cfg(test)]

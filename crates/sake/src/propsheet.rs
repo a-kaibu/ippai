@@ -179,9 +179,9 @@ fn res_str(c: &mut Ctx, inst: u32, p: u32, wide_: bool) -> Vec<u16> {
         return s;
     }
     if wide_ {
-        mem::wstr(p)
+        mem::wstrn(p, TEXT_MAX)
     } else {
-        crate::text::a2w(&mem::cstr(p))
+        crate::text::a2w(&mem::cstrn(p, 2 * TEXT_MAX))
     }
 }
 
@@ -297,8 +297,11 @@ fn template_title(t: u32) -> Vec<u16> {
             0 => p + 2,
             0xffff => p + 4,
             _ => {
-                while r16(p) != 0 {
+                // (bounded: a damaged template's name runs to the first zero word, wherever)
+                let mut k = 0;
+                while r16(p) != 0 && k < TEXT_MAX {
                     p += 2;
+                    k += 1;
                 }
                 p + 2
             }
@@ -307,8 +310,12 @@ fn template_title(t: u32) -> Vec<u16> {
     if r16(p) == 0xffff {
         return Vec::new();
     }
-    mem::wstr(p)
+    mem::wstrn(p, TEXT_MAX)
 }
+
+/// The longest caption or title read from a template or a page (a window caption is far
+/// shorter; a damaged resource would otherwise be copied up to the next zero word)
+const TEXT_MAX: u32 = 0x8000;
 
 fn page_title(c: &mut Ctx, psp: u32) -> Vec<u16> {
     if r32(psp + 4) & PSP_USETITLE != 0 {
@@ -417,7 +424,9 @@ fn property_sheet(c: &mut Ctx, h: u32, wide_: bool) -> u32 {
         g(c, "user32", "DialogBoxIndirectParamW", &[inst, t, parent, proc_addr(), key])
     };
     mem::heap_free(t);
-    if !modeless {
+    // a modeless sheet whose window never came up gets no WM_NCDESTROY to free it (a second
+    // end_sheet after one is a no-op)
+    if !modeless || r == 0 {
         end_sheet(c, key);
     }
     r
@@ -1169,6 +1178,26 @@ pub fn init() {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// review b09: a template's caption is read up to its terminator, and a damaged one (no
+    /// terminator for 128 KiB) only up to TEXT_MAX
+    #[test]
+    fn template_captions_are_bounded() {
+        let _g = crate::test_guest::enter();
+        let t = mem::heap_alloc(0x30000, true);
+        // DLGTEMPLATE (18 bytes), no menu, no class, the caption "Ab"
+        for (i, u) in [0u16, 0, 0x41, 0x62, 0].iter().enumerate() {
+            w16(t + 18 + 2 * i as u32, *u);
+        }
+        assert_eq!(template_title(t), vec![0x41, 0x62]);
+        // a menu name with no end
+        for i in 0..0x10000 {
+            w16(t + 18 + 2 * i, 0x41);
+        }
+        let got = template_title(t);
+        assert!(got.len() as u32 <= TEXT_MAX);
+        mem::heap_free(t);
+    }
 
     #[test]
     fn a_page_that_takes_it_stays() {

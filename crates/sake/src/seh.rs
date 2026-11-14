@@ -193,6 +193,14 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
     if crate::dbg::first_chance(cpu, code, flags, addr as u64, &wide).is_some() {
         return;
     }
+    // (no room left on the thread's stack for the dispatch: Windows ends the process; going
+    // on would write the record and context below the stack into whatever is mapped there)
+    let (lo, hi) = stack_bounds(crate::cur().teb);
+    if no_room(cpu.regs[ESP], lo, hi) {
+        crate::EXIT_CODE.store(0xc000_00fd, Ordering::Relaxed);
+        let msg = format!("stack overflow: exception {code:08x} at {addr:#x} with esp {:#x}, stack {lo:#x}..{hi:#x}", cpu.regs[ESP]);
+        crate::fatal(cpu, &msg);
+    }
     let mut sp = (cpu.regs[ESP] - 0x100) & !15;
     sp -= CONTEXT_SIZE;
     let ctx = sp & !15;
@@ -209,7 +217,8 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
     }
     w32(block, rec);
     w32(block + 4, ctx);
-    w32(block + 8, r32(crate::cur().teb));
+    let first = r32(crate::cur().teb);
+    w32(block + 8, dispatch_frame(rec, first, lo, hi));
     w32(block + 12, 0);
     cpu.regs[EBX] = block;
     cpu.regs[ESP] = block - 16;
@@ -331,10 +340,57 @@ pub fn handler_done(cpu: &mut Cpu) {
     match verdict {
         0 => load_context(cpu, ctx),
         _ => {
-            w32(block + 8, r32(frame));
+            let (lo, hi) = stack_bounds(crate::cur().teb);
+            w32(block + 8, dispatch_frame(rec, r32(frame), lo, hi));
             ret(cpu);
         }
     }
+}
+
+/// The thread's stack as its TEB gives it: (StackLimit, StackBase); (0, 0) when they do not
+/// make a stack (then nothing is checked)
+fn stack_bounds(teb: u32) -> (u32, u32) {
+    let (hi, lo) = (r32(teb + 4), r32(teb + 8));
+    if lo < hi { (lo, hi) } else { (0, 0) }
+}
+
+/// Room the dispatch needs below ESP: 0x100 skipped, the CONTEXT, the record, the block, and
+/// the first handler calls' frames
+const DISPATCH_ROOM: u32 = 0x100 + CONTEXT_SIZE + RECORD_SIZE + 0x200;
+
+/// Whether ESP is on (or just off the bottom of) the thread's stack without the room for a
+/// dispatch: a stack overflow
+pub fn no_room(esp: u32, lo: u32, hi: u32) -> bool {
+    short_of(esp, lo, hi, DISPATCH_ROOM)
+}
+/// no_room for a dispatch that needs `room` bytes below ESP (x64's)
+pub fn short_of(esp: u32, lo: u32, hi: u32, room: u32) -> bool {
+    lo < hi && esp < hi && esp >= lo.saturating_sub(0x10000) && (esp as u64) < lo as u64 + room as u64
+}
+
+/// Whether a registration may be used: Windows' RtlDispatchException / RtlUnwind check that it
+/// lies inside the thread's stack and is 4-byte aligned (no stack known: any)
+pub fn frame_ok(f: u32, lo: u32, hi: u32) -> bool {
+    lo >= hi || (f & 3 == 0 && f >= lo && f as u64 + 8 <= hi as u64)
+}
+
+/// The next frame for the dispatch stub: `f`, or -1 (the end, so the exception is unhandled)
+/// with EXCEPTION_STACK_INVALID in the record when it is not a frame on this stack
+fn dispatch_frame(rec: u32, f: u32, lo: u32, hi: u32) -> u32 {
+    if f == 0xffff_ffff || frame_ok(f, lo, hi) {
+        return f;
+    }
+    if crate::env_on!("SAKE_TRACE_SEH") {
+        eprintln!("sake: SEH frame {f:#x} is not on the stack {lo:#x}..{hi:#x}");
+    }
+    w32(rec + 4, r32(rec + 4) | 8);
+    0xffff_ffff
+}
+
+/// The most frames an unwind can pass on a stack lo..hi: each takes 8 bytes of it (a chain
+/// that comes back to a frame it passed is a loop; no stack known: 2^16)
+pub fn unwind_cap(lo: u32, hi: u32) -> u32 {
+    if lo < hi { (hi - lo) / 8 + 1 } else { 0x1_0000 }
 }
 
 /// RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue)
@@ -360,7 +416,24 @@ pub fn rtl_unwind(c: &mut Ctx) -> u32 {
     save_context(c.cpu, ctx);
     c.cpu.regs[ESP] = scratch - 16;
     let mut frame = r32(teb);
+    let (lo, hi) = stack_bounds(teb);
+    let mut left = unwind_cap(lo, hi);
     while frame != 0xffff_ffff && frame != 0 && frame != target {
+        // a frame off the stack (or a chain that loops): STATUS_BAD_STACK to the program, as
+        // RtlUnwind raises it, instead of calling handlers for ever
+        if !frame_ok(frame, lo, hi) || left == 0 {
+            c.cpu.regs[ESP] = save_esp;
+            if crate::env_on!("SAKE_TRACE_SEH") {
+                eprintln!("sake: RtlUnwind: bad frame {frame:#x} (stack {lo:#x}..{hi:#x})");
+            }
+            let ret = r32(c.esp);
+            c.cpu.eip = ret;
+            c.cpu.regs[ESP] = c.esp + 4 + 16;
+            raise(c.cpu, 0xc000_0028, 1, ret, &[]);
+            c.jumped = true;
+            return 0;
+        }
+        left -= 1;
         let handler = r32(frame + 4);
         let disp = scratch - 4;
         w32(disp, 0);
@@ -496,6 +569,50 @@ pub fn except_handler4(c: &mut Ctx) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// review b09: what may be a frame, and when the stack has no room for a dispatch
+    #[test]
+    fn frames_and_room_on_a_stack() {
+        let (lo, hi) = (0x10_0000, 0x20_0000);
+        assert!(frame_ok(hi - 8, lo, hi) && frame_ok(lo, lo, hi));
+        assert!(!frame_ok(hi - 4, lo, hi) && !frame_ok(lo - 4, lo, hi) && !frame_ok(lo + 2, lo, hi));
+        assert!(!frame_ok(0x4000_0000, lo, hi) && !frame_ok(0xffff_fff8, lo, hi));
+        // no stack known: anything
+        assert!(frame_ok(0x1234_5671, 0, 0));
+        assert!(no_room(lo + 0x100, lo, hi) && no_room(lo - 0x20, lo, hi));
+        assert!(!no_room(lo + DISPATCH_ROOM, lo, hi) && !no_room(hi - 0x100, lo, hi));
+        // ESP on another stack (a fiber or a hand-made one, far away) is not this stack's overflow
+        assert!(!no_room(0x8000_0000, lo, hi) && !no_room(lo - 0x2_0000, lo, hi) && !no_room(hi, lo, hi));
+        assert!(!no_room(0x100, 0, 0));
+    }
+
+    proptest! {
+        /// Model of RtlUnwind's walk over any chain (frames anywhere, links anywhere, loops):
+        /// it stops after at most unwind_cap frames, and every frame it calls a handler for is a
+        /// frame on the stack
+        #[test]
+        fn unwind_walk_ends_on_any_chain(lo_pages in 1u32..64, pages in 1u32..16, links in proptest::collection::vec((any::<u32>(), any::<bool>()), 1..64), first in any::<prop::sample::Index>()) {
+            let lo = lo_pages * 0x1000;
+            let hi = lo + pages * 0x1000;
+            // frame i at a fixed place on (or off) the stack, linked to another one or the end
+            let at: Vec<u32> = links.iter().enumerate().map(|(i, &(r, on))| if on { lo + (r % (hi - lo - 8)) & !3 } else { r ^ i as u32 }).collect();
+            let next = |f: u32| at.iter().position(|&a| a == f).map_or(0xffff_ffff, |i| at[(links[i].0 as usize) % (at.len() + 1)..].first().copied().unwrap_or(0xffff_ffff));
+            let mut frame = at[first.index(at.len())];
+            let mut left = unwind_cap(lo, hi);
+            let mut called = 0u32;
+            while frame != 0xffff_ffff && frame != 0 {
+                if !frame_ok(frame, lo, hi) || left == 0 {
+                    break;
+                }
+                prop_assert!(frame >= lo && frame + 8 <= hi);
+                left -= 1;
+                called += 1;
+                frame = next(frame);
+            }
+            prop_assert!(called <= unwind_cap(lo, hi));
+        }
+    }
 
     /// A thread's chain starts at a frame at the top of its stack (Next -1, a handler in
     /// ntdll's image that continues the search), not at -1 (#167; winref sehtop)

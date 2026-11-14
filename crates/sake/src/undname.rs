@@ -27,6 +27,9 @@ pub const NAME_ONLY: u32 = 0x1000;
 /// as type_info::name asks)
 pub const TYPE_ONLY: u32 = 0x2000;
 
+/// The longest argument list (template or function) an undecoration builds, in bytes
+pub const OUT_MAX: usize = 0x1_0000;
+
 /// `mangled` undecorated as `flags` ask, or None when it is not a decorated name this knows.
 pub fn undname(mangled: &str, flags: u32) -> Option<String> {
     let mut p = P { s: mangled.as_bytes(), i: 0, flags, names: Vec::new(), params: Vec::new(), depth: 0 };
@@ -308,6 +311,17 @@ impl<'a> P<'a> {
 
     /// `<args>` of a template, its name `base` the first name its own table refers back to
     fn template_args(&mut self, base: Option<&str>) -> Option<String> {
+        // (a template argument naming a template naming a template...: counted with the types,
+        // as nothing else on that path is)
+        self.depth += 1;
+        if self.depth > 64 {
+            return None;
+        }
+        let r = self.template_args_inner(base);
+        self.depth -= 1;
+        r
+    }
+    fn template_args_inner(&mut self, base: Option<&str>) -> Option<String> {
         let names = std::mem::take(&mut self.names);
         let params = std::mem::take(&mut self.params);
         if let Some(b) = base {
@@ -332,6 +346,11 @@ impl<'a> P<'a> {
             }
             if let Some(a) = self.template_arg()? {
                 out.push(a);
+            }
+            // (back-references to whole template names double the text per level: a few
+            // hundred bytes could ask for gigabytes; Windows' undecorator has a bounded buffer)
+            if out.iter().map(|a| a.len() + 1).sum::<usize>() > OUT_MAX {
+                return None;
             }
         }
         Some(out.join(","))
@@ -375,6 +394,15 @@ impl<'a> P<'a> {
     }
     /// a whole decorated name used as a template argument: its qualified name
     fn nested_name(&mut self) -> Option<String> {
+        self.depth += 1;
+        if self.depth > 64 {
+            return None;
+        }
+        let r = self.nested_name_inner();
+        self.depth -= 1;
+        r
+    }
+    fn nested_name_inner(&mut self) -> Option<String> {
         self.expect(b'?')?;
         let (unq, quals) = self.full_name(false)?;
         let name = self.qualified(&unq, &quals);
@@ -823,6 +851,9 @@ impl<'a> P<'a> {
                     out.push(self.render(&t, ""));
                 }
             }
+            if out.iter().map(|a| a.len() + 1).sum::<usize>() > OUT_MAX {
+                return None;
+            }
         }
         Some(out.join(","))
     }
@@ -1266,8 +1297,28 @@ fn type_info_raw_name(c: &mut Ctx) -> u32 {
 }
 /// before, ==, != compare the decorated names past their first character
 fn cmp(c: &Ctx) -> std::cmp::Ordering {
-    let (a, b) = (decorated(this(c)), decorated(arg(c, 0)));
-    a.get(1..).unwrap_or(&[]).cmp(b.get(1..).unwrap_or(&[]))
+    cmp_names(this(c) + 2 * ps(), arg(c, 0) + 2 * ps())
+}
+/// Two decorated names compared past their first character, in guest memory (no copies: C++
+/// code compares typeids in loops), as their byte strings compare
+pub fn cmp_names(a: u32, b: u32) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    if a == b {
+        return Equal;
+    }
+    let (sa, sb) = (if mem::r8(a) == 0 { None } else { Some(a + 1) }, if mem::r8(b) == 0 { None } else { Some(b + 1) });
+    let byte = |s: Option<u32>, i: u32| s.map_or(0, |s| mem::r8(s.wrapping_add(i)));
+    for i in 0..1 << 20 {
+        let (x, y) = (byte(sa, i), byte(sb, i));
+        match (x, y) {
+            (0, 0) => return Equal,
+            (0, _) => return Less,
+            (_, 0) => return Greater,
+            _ if x != y => return x.cmp(&y),
+            _ => {}
+        }
+    }
+    Equal
 }
 fn type_info_before(c: &mut Ctx) -> u32 {
     cmp(c).is_lt() as u32
@@ -1397,6 +1448,22 @@ mod tests {
     }
 
     #[test]
+    /// review b09: template arguments naming templates naming templates, 200000 levels deep,
+    /// are refused (no host stack overflow), and an argument list past OUT_MAX is refused while
+    /// a long one below it is undecorated
+    #[test]
+    fn deep_and_long_names_are_refused() {
+        let deep = format!("?x@@3V{}@A", "?$A@$1?".repeat(200_000));
+        let t = std::thread::Builder::new().stack_size(256 << 10).spawn(move || undname(&deep, 0)).unwrap();
+        assert_eq!(t.join().unwrap(), None);
+        let long = format!("?x@@3V?$A@{}@@A", "H".repeat(20_000));
+        assert_eq!(undname(&long, 0), None);
+        let fine = format!("?x@@3V?$A@{}@@A", "H".repeat(1000));
+        let out = undname(&fine, 0).expect("1000 arguments");
+        assert!(out.contains(&"int,".repeat(999)));
+    }
+
+    #[test]
     fn rejects() {
         for m in ["", "?", "?f@@", "f", "?f@@YAXXZjunk", "?f.g@@YAXXZ", "?f@@3H", "?0@@YAXXZ"] {
             assert_eq!(undname(m, 0), None, "{m}");
@@ -1488,6 +1555,25 @@ mod tests {
         }
 
         #[test]
+        /// review b09: type_info comparisons in guest memory order names as their copies did
+        #[test]
+        fn names_compare_in_place_as_copies(a in proptest::collection::vec(1u8..=255, 0..12), b in proptest::collection::vec(1u8..=255, 0..12), same in any::<bool>()) {
+            let _g = crate::test_guest::enter();
+            let b = if same { a.clone() } else { b };
+            let put = |v: &[u8]| {
+                let p = mem::heap_alloc(v.len() as u32 + 1, true);
+                mem::write(p, v);
+                mem::w8(p + v.len() as u32, 0);
+                p
+            };
+            let (pa, pb) = (put(&a), put(&b));
+            let want = a.get(1..).unwrap_or(&[]).cmp(b.get(1..).unwrap_or(&[]));
+            prop_assert_eq!(cmp_names(pa, pb), want);
+            prop_assert_eq!(cmp_names(pb, pa), want.reverse());
+            mem::heap_free(pa);
+            mem::heap_free(pb);
+        }
+
         fn never_panics_near_names(base in prop::sample::select(vec![
             "??0?$basic_filebuf@DU?$char_traits@D@std@@@std@@QAE@ABV01@@Z",
             "?Qux@Bar@@0PAPAP6AHPAV1@AAH1PAH@ZA",

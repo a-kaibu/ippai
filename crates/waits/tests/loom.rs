@@ -619,6 +619,31 @@ mod suspend {
         });
     }
 
+    /// GetThreadContext's wait (review b09): once the target is suspended, wait_stopped returns
+    /// only after the target has reached its safe point, and in every interleaving it does
+    /// return (no lost wake-up); the target then stays there until ResumeThread
+    #[test]
+    fn get_context_waits_for_the_safe_point() {
+        model(|| {
+            let s = Arc::new(Suspends::new());
+            let at = Arc::new(AtomicU32::new(0));
+            assert_eq!(s.suspend(T), Some(0));
+            let (s2, a2) = (s.clone(), at.clone());
+            let target = thread::spawn(move || {
+                a2.store(1, SeqCst);
+                s2.park(T, || false);
+                a2.store(2, SeqCst);
+            });
+            assert!(s.wait_stopped(T, || false, || None));
+            assert_eq!(at.load(SeqCst), 1, "stopped at the safe point, not past it");
+            assert_eq!(s.resume(T), 1);
+            target.join().unwrap();
+            assert_eq!(at.load(SeqCst), 2);
+            // not suspended: no wait
+            assert!(!s.wait_stopped(T, || false, || None));
+        });
+    }
+
     /// Two threads suspend and resume the same target at once: the counts each call returns are
     /// those of some order of the calls (every previous count once), and the target, parked in
     /// between, goes on at the end.

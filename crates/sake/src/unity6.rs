@@ -100,16 +100,22 @@ fn anchor(code: &[u8], ip: u64) -> Option<usize> {
         .find(|&o| matches!(code[o], 0x48 | 0x49) && code[o + 1] == 0xc1 && (0xe8..=0xef).contains(&code[o + 2]) && code[o + 3] == OLD as u8 && is_anchor(&decode(code, ip, o, o + 0x200)))
 }
 
-/// Where linear decoding can start at or before `o`: after a run of int3 padding.
-fn sync_point(code: &[u8], o: usize) -> usize {
-    let mut p = o;
-    while p >= 2 {
+/// How far before the window a sync point is looked for (MSVC pads every function with int3)
+pub const SYNC_MAX: usize = 0x1_0000;
+
+/// Where linear decoding can start at or before `o`: after a run of int3 padding, at most
+/// SYNC_MAX before it (a build without padding decodes from there, not from the start of a
+/// section that may be tens of MB long: millions of instructions held at once)
+pub fn sync_point(code: &[u8], o: usize) -> usize {
+    let floor = o.saturating_sub(SYNC_MAX);
+    let mut p = o.min(code.len());
+    while p >= 2 && p > floor {
         if code[p - 1] == 0xcc && code[p - 2] == 0xcc {
             return p;
         }
         p -= 1;
     }
-    0
+    floor
 }
 
 /// The changes for a module's code section `code` mapped at `ip`. None: not Unity 6's
@@ -242,7 +248,7 @@ fn image_plan(img: &[u8], ip: u64) -> Option<(Vec<Edit>, Found)> {
 }
 
 /// [start, end) of a mapped image's code sections.
-fn code_sections(img: &[u8]) -> Vec<(usize, usize)> {
+pub fn code_sections(img: &[u8]) -> Vec<(usize, usize)> {
     let rd32 = |o: usize| img.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
     let rd16 = |o: usize| img.get(o..o + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()) as usize);
     let (Some(pe), mut v) = (rd32(0x3c), Vec::new()) else { return Vec::new() };
@@ -250,8 +256,9 @@ fn code_sections(img: &[u8]) -> Vec<(usize, usize)> {
     for k in 0..n {
         let s = pe + 24 + opt + 40 * k;
         let (Some(vsize), Some(va), Some(ch)) = (rd32(s + 8), rd32(s + 12), rd32(s + 36)) else { break };
+        // (saturating: a VirtualSize near 2^32 wraps on wasm32 and the end fell below the start)
         if ch & 0x20 != 0 && va < img.len() {
-            v.push((va, (va + vsize).min(img.len())));
+            v.push((va, va.saturating_add(vsize).min(img.len())));
         }
     }
     v
@@ -282,6 +289,41 @@ pub mod samples {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// review b09: a code section whose VirtualSize runs past the image ends at the image
+    #[test]
+    fn huge_virtual_sizes_end_at_the_image() {
+        let mut img = vec![0u8; 0x400];
+        img[0x3c] = 0x80;
+        img[0x86] = 1; // one section
+        img[0x94] = 0xe0; // optional header size
+        let s = 0x80 + 24 + 0xe0;
+        img[s + 8..s + 12].copy_from_slice(&0xffff_ff00u32.to_le_bytes());
+        img[s + 12..s + 16].copy_from_slice(&0x200u32.to_le_bytes());
+        img[s + 36..s + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        assert_eq!(code_sections(&img), vec![(0x200, 0x400)]);
+        let _ = image_plan(&img, 0x1_8000_0000);
+    }
+
+    proptest::proptest! {
+        /// review b09: the sync point is the end of the last int3 pair at or before `o` within
+        /// SYNC_MAX, else SYNC_MAX before `o` (never the section start far away)
+        #[test]
+        fn sync_points_stay_near(len in 1usize..0x3_0000, pads in proptest::collection::vec(proptest::prelude::any::<proptest::sample::Index>(), 0..6), o in proptest::prelude::any::<proptest::sample::Index>()) {
+            let mut code = vec![0x90u8; len];
+            for p in &pads {
+                let i = p.index(len);
+                code[i] = 0xcc;
+                if i + 1 < len {
+                    code[i + 1] = 0xcc;
+                }
+            }
+            let o = o.index(len + 1);
+            let floor = o.saturating_sub(SYNC_MAX);
+            let want = (floor.max(2)..=o).rev().find(|&p| code[p - 1] == 0xcc && code[p - 2] == 0xcc).unwrap_or(floor);
+            proptest::prop_assert_eq!(sync_point(&code, o), want);
+        }
+    }
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()

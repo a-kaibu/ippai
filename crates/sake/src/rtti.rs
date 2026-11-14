@@ -15,9 +15,8 @@ use crate::mem::{self, r32};
 /// A class hierarchy as the locator gives it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Base {
-    /// the type descriptor's address and its decorated name
+    /// the type descriptor's address (its decorated name is compared in place: `same_type`)
     pub td: u32,
-    pub name: Vec<u8>,
     /// the bases this one contains (itself included)
     pub contained: u32,
     /// PMD: member displacement, vbtable displacement (-1: not virtual), offset in the vbtable
@@ -58,7 +57,6 @@ fn locate(obj: u32) -> Option<(u32, u32, u32, Vec<Base>)> {
         let td = at(r32(bcd));
         bases.push(Base {
             td,
-            name: name_of(td),
             contained: r32(bcd + 4),
             mdisp: r32(bcd + 8) as i32,
             pdisp: r32(bcd + 12) as i32,
@@ -69,18 +67,25 @@ fn locate(obj: u32) -> Option<(u32, u32, u32, Vec<Base>)> {
     Some((complete, td, attrs, bases))
 }
 
-/// A type descriptor's decorated name (after its vtable pointer and spare pointer).
-fn name_of(td: u32) -> Vec<u8> {
-    let p = td + 2 * mem::ps();
-    let mut v = Vec::new();
-    for i in 0..1024 {
-        let b = mem::r8(p + i);
-        if b == 0 {
-            break;
-        }
-        v.push(b);
+/// Whether two type descriptors name the same type: the same descriptor, or the same decorated
+/// name (after each one's vtable pointer and spare pointer; one class's descriptor is in every
+/// module that uses it). MSVC's order: the pointers first, the names only when they differ, and
+/// those in place, byte by byte up to 1024, with no copy.
+pub fn same_type(a: u32, b: u32) -> bool {
+    if a == b {
+        return true;
     }
-    v
+    let (p, q) = (a.wrapping_add(2 * mem::ps()), b.wrapping_add(2 * mem::ps()));
+    for i in 0..1024 {
+        let (x, y) = (mem::r8(p.wrapping_add(i)), mem::r8(q.wrapping_add(i)));
+        if x != y {
+            return false;
+        }
+        if x == 0 {
+            return true;
+        }
+    }
+    true
 }
 
 /// The address of base `b` in the complete object `obj` (PMD adjustment; a virtual base
@@ -134,14 +139,14 @@ fn __RTDynamicCast(c: &mut Ctx) -> u32 {
         return ret_ptr(c, 0);
     }
     let r = locate(obj).and_then(|(complete, _, attrs, bases)| {
-        let (tname, sname) = (name_of(target), name_of(source));
-        let same = |b: &Base| b.td == target || b.name == tname;
+        let same = |b: &Base| same_type(b.td, target);
         let src = obj.wrapping_sub(vf_delta);
-        let is_src = |b: &Base| (b.td == source || b.name == sname) && adjust(complete, b) == src;
+        let is_src = |b: &Base| adjust(complete, b) == src && same_type(b.td, source);
         pick(&bases, attrs, &same, &is_src).map(|i| adjust(complete, &bases[i]))
     });
     if r.is_none() && is_ref != 0 {
-        crate::com::warn_once("sake: __RTDynamicCast of a reference failed (std::bad_cast not thrown)");
+        // dynamic_cast<T&> that fails throws std::bad_cast (a reference cannot be null)
+        return crate::msvcp::throw_bad_cast(c);
     }
     ret_ptr(c, r.unwrap_or(0))
 }
@@ -172,13 +177,56 @@ pub fn init() {
 mod tests {
     use super::*;
 
+    /// (a type stands for its descriptor by a hash of its name here)
+    fn id(name: &str) -> u32 {
+        name.bytes().fold(2166136261u32, |h, c| (h ^ c as u32).wrapping_mul(16777619))
+    }
     fn b(name: &str, contained: u32, mdisp: i32, attrs: u32) -> Base {
-        Base { td: 0, name: name.as_bytes().to_vec(), contained, mdisp, pdisp: -1, vdisp: 0, attrs }
+        Base { td: id(name), contained, mdisp, pdisp: -1, vdisp: 0, attrs }
     }
     /// a cast from the subobject of type `src` at offset `off`
     fn run(bases: &[Base], attrs: u32, src: (&str, i32), target: &str) -> Option<usize> {
-        let (t, s) = (target.as_bytes().to_vec(), src.0.as_bytes().to_vec());
-        pick(bases, attrs, &|x: &Base| x.name == t, &|x: &Base| x.name == s && x.mdisp == src.1)
+        let (t, s) = (id(target), id(src.0));
+        pick(bases, attrs, &|x: &Base| x.td == t, &|x: &Base| x.td == s && x.mdisp == src.1)
+    }
+
+    /// review b09: descriptors compare by pointer, then by name in place (two modules' copies
+    /// of one class), and never past 1024 bytes
+    #[test]
+    fn same_type_by_pointer_then_name() {
+        let _g = crate::test_guest::enter();
+        let td = |name: &[u8]| {
+            let p = mem::heap_alloc(2 * mem::ps() + name.len() as u32 + 1, true);
+            mem::write(p + 2 * mem::ps(), name);
+            p
+        };
+        let (a, a2, bb) = (td(b".?AVDog@@"), td(b".?AVDog@@"), td(b".?AVDogs@@"));
+        assert!(same_type(a, a) && same_type(a, a2) && same_type(a2, a));
+        assert!(!same_type(a, bb) && !same_type(bb, a));
+        let (l1, l2) = (td(&[b'x'; 3000]), td(&[b'x'; 3000]));
+        assert!(same_type(l1, l2));
+        for p in [a, a2, bb, l1, l2] {
+            mem::heap_free(p);
+        }
+    }
+
+    use proptest::prelude::*;
+    proptest! {
+        /// same_type agrees with comparing the two names (cut at 1024 bytes) as copies
+        #[test]
+        fn same_type_is_name_equality(x in proptest::collection::vec(1u8..=255, 0..40), y in proptest::collection::vec(1u8..=255, 0..40), share in any::<bool>()) {
+            let _g = crate::test_guest::enter();
+            let td = |name: &[u8]| {
+                let p = mem::heap_alloc(2 * mem::ps() + name.len() as u32 + 1, true);
+                mem::write(p + 2 * mem::ps(), name);
+                p
+            };
+            let y = if share { x.clone() } else { y };
+            let (a, b) = (td(&x), td(&y));
+            prop_assert_eq!(same_type(a, b), x == y);
+            mem::heap_free(a);
+            mem::heap_free(b);
+        }
     }
 
     #[test]

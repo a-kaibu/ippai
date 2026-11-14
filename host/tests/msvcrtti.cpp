@@ -6,6 +6,16 @@
 // (no SDK headers: std::type_info as vcruntime's, a TypeDescriptor: vftable, spare, the
 // decorated name)
 namespace std {
+// (vcruntime's exception and bad_cast, enough to catch one by reference)
+class exception {
+public:
+    virtual ~exception();
+    virtual const char *what() const;
+private:
+    const char *what_;
+    bool do_free_;
+};
+class bad_cast : public exception {};
 class type_info {
 public:
     virtual ~type_info();
@@ -111,6 +121,26 @@ int main() {
     num("ambiguous Animal from Dog", dynamic_cast<Animal *>(opaque<Cat>(&dc)) != nullptr);
     num("Dog to Cat across", dynamic_cast<Cat *>(dd) == static_cast<Cat *>(&dc));
     num("DogCat from Dog", dynamic_cast<DogCat *>(dd) == &dc);
+
+    // a reference cast: the same answers, a failure is std::bad_cast ("Bad dynamic_cast!")
+    num("reference down to Dog", &dynamic_cast<Dog &>(*a) == static_cast<Dog *>(&puppy));
+    int caught = 0;
+    try {
+        dynamic_cast<Cat &>(*opaque<Animal>(&puppy)).meow = 0;
+    } catch (std::bad_cast &e) {
+        const char *w = e.what(), *m = "Bad dynamic_cast!";
+        while (*w && *w == *m) w++, m++;
+        caught = *w == *m ? 1 : 2;
+    } catch (...) {
+        caught = 3;
+    }
+    num("reference to Cat throws bad_cast", caught);
+    try {
+        caught = dynamic_cast<Right &>(*opaque<Left>(&both)).r;
+    } catch (...) {
+        caught = -1;
+    }
+    num("reference across to Right", caught);
 
     num("typeid Puppy", typeid(*a) == typeid(Puppy));
     num("typeid not Dog", typeid(*a) == typeid(Dog));

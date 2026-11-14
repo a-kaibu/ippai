@@ -905,6 +905,14 @@ const LENGTH_ERROR: Class = Class { names: &[".?AVlength_error@std@@", ".?AVlogi
 const OUT_OF_RANGE: Class = Class { names: &[".?AVout_of_range@std@@", ".?AVlogic_error@std@@", ".?AVexception@std@@"], size: 24 };
 const REGEX_ERROR: Class = Class { names: &[".?AVregex_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"], size: 32 };
 
+const BAD_CAST: Class = Class { names: &[".?AVbad_cast@std@@", ".?AVexception@std@@"], size: 24 };
+/// Throws std::bad_cast("Bad dynamic_cast!") from this trap: a failed dynamic_cast of a reference
+pub fn throw_bad_cast(c: &mut Ctx) -> u32 {
+    static W: OnceLock<u32> = OnceLock::new();
+    let w = *W.get_or_init(|| static_str("Bad dynamic_cast!"));
+    throw(c, &BAD_CAST, w, 0)
+}
+
 /// ?_Xbad_alloc@std@@YAXXZ
 fn x_bad_alloc(c: &mut Ctx) -> u32 {
     static W: OnceLock<u32> = OnceLock::new();

@@ -458,10 +458,16 @@ fn AddAce(c: &mut Ctx) -> u32 {
         return 0;
     }
     let count = r16(acl + 4) as u32;
+    // (walked as used() walks: an ACE size that runs past the ACL ends the list, so the
+    // insertion point never passes its end and the move below never underflows)
     let mut at = 8;
     for _ in 0..start.min(count) {
+        if at >= end {
+            break;
+        }
         at += (r16(acl + at + 2) as u32).max(8);
     }
+    let at = at.min(end);
     mem::copy(acl + at + len, acl + at, end - at);
     mem::copy(acl + at, list, len);
     w16(acl + 4, (count + n) as u16);
@@ -484,7 +490,7 @@ fn GetAclInformation(c: &mut Ctx) -> u32 {
             let u = used(acl);
             w32(out, r16(acl + 4) as u32);
             w32(out + 4, u);
-            w32(out + 8, r16(acl + 2) as u32 - u);
+            w32(out + 8, (r16(acl + 2) as u32).saturating_sub(u));
         }
         _ => {
             last_error(ERROR_INVALID_PARAMETER);
@@ -760,6 +766,12 @@ fn OpenThreadToken(c: &mut Ctx) -> u32 {
 fn ImpersonateSelf(_: &mut Ctx) -> u32 {
     IMPERSONATING.lock().unwrap().get_or_insert_with(HashSet::new).insert(crate::cur().tid);
     1
+}
+/// A thread's exit: it impersonates no more (a later thread with its id starts as itself)
+pub fn thread_gone(tid: u32) {
+    if let Some(s) = IMPERSONATING.lock().unwrap().as_mut() {
+        s.remove(&tid);
+    }
 }
 fn RevertToSelf(_: &mut Ctx) -> u32 {
     if let Some(s) = IMPERSONATING.lock().unwrap().as_mut() {
@@ -1402,6 +1414,61 @@ pub fn init() {
         ConvertSidToStringSidA, ConvertSidToStringSidW,
         ConvertStringSidToSidA, ConvertStringSidToSidW,
     );
+}
+
+#[cfg(test)]
+mod review_b09_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// review b09: AddAce into an ACL whose header disagrees with its ACEs (any count, any
+        /// ACE sizes) writes only inside the ACL, and a success holds the inserted ACE whole
+        #[test]
+        fn add_ace_stays_inside_any_acl(size in 8u16..256, count in any::<u16>(), body in proptest::collection::vec(any::<u8>(), 248), start in any::<u32>(), ace_len in 1u16..5) {
+            let _g = enter();
+            guest_thread();
+            let room = 512u32;
+            let acl = mem::heap_alloc(room, true);
+            mem::write(acl + 8, &body);
+            for o in size as u32..room {
+                w8(acl + o, 0xcd);
+            }
+            w8(acl, 2);
+            w16(acl + 2, size);
+            w16(acl + 4, count);
+            // one ACE of ace_len * 8 bytes
+            let len = 8 * ace_len as u32;
+            let list = mem::heap_alloc(len, true);
+            w8(list, 0);
+            w16(list + 2, len as u16);
+            for i in 4..len {
+                w8(list + i, 0x5a);
+            }
+            let ok = call(AddAce, &[acl, 2, start, list, len]);
+            for o in size as u32..room {
+                prop_assert_eq!(r8(acl + o), 0xcd, "byte {} past the ACL", o);
+            }
+            if ok == 1 {
+                prop_assert_eq!(r16(acl + 4), count.wrapping_add(1));
+                prop_assert!(used(acl) <= size as u32 || count == u16::MAX);
+            }
+            mem::heap_free(list);
+            mem::heap_free(acl);
+        }
+    }
+
+    #[test]
+    fn impersonation_ends_with_the_thread() {
+        let _g = enter();
+        guest_thread();
+        let tid = crate::cur().tid;
+        call(ImpersonateSelf, &[]);
+        assert!(IMPERSONATING.lock().unwrap().as_ref().unwrap().contains(&tid));
+        thread_gone(tid);
+        assert!(!IMPERSONATING.lock().unwrap().as_ref().unwrap().contains(&tid));
+    }
 }
 
 #[cfg(test)]

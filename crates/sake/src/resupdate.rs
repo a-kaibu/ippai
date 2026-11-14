@@ -37,11 +37,17 @@ fn r16(b: &[u8], o: usize) -> Option<u16> {
 fn r32(b: &[u8], o: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
 }
+// (writes past the end are dropped rather than panicking: write() refuses the layouts that
+// would need one, this is the second line)
 fn w16(b: &mut [u8], o: usize, v: u16) {
-    b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+    if let Some(d) = b.get_mut(o..o.saturating_add(2)) {
+        d.copy_from_slice(&v.to_le_bytes());
+    }
 }
 fn w32(b: &mut [u8], o: usize, v: u32) {
-    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    if let Some(d) = b.get_mut(o..o.saturating_add(4)) {
+        d.copy_from_slice(&v.to_le_bytes());
+    }
 }
 fn align(v: u32, a: u32) -> u32 {
     if a <= 1 { v } else { ((v as u64).div_ceil(a as u64) * a as u64).min(u32::MAX as u64) as u32 }
@@ -119,8 +125,9 @@ impl Pe {
             let size = s.vsize.max(s.raw_size) as u64;
             let (rva, len, va) = (rva as u64, len as u64, s.va as u64);
             if rva >= va && rva + len <= va + size && rva - va + len <= s.raw_size as u64 {
-                let o = (s.raw as u64 + rva - va) as usize;
-                b.get(o..o + len as usize)?;
+                // (checked: past 4 GiB on wasm32 the offset would wrap to other bytes)
+                let o = usize::try_from(s.raw as u64 + rva - va).ok()?;
+                b.get(o..o.checked_add(len as usize)?)?;
                 return Some(o);
             }
         }
@@ -138,8 +145,15 @@ pub fn read(b: &[u8]) -> Option<Tree> {
         return Some(tree);
     }
     let base = pe.offset(b, rva, 16)?;
-    // (offsets in the directory are from its start; a directory reached twice is a loop)
+    // (offsets in the directory are from its start; a directory reached twice is a loop, or
+    // shared to multiply the work: a real file never does either. The data copied is held to
+    // the file's size for the same reason: leaves sharing one blob.)
+    let seen = std::cell::RefCell::new(std::collections::HashSet::new());
+    let copied = std::cell::Cell::new(0usize);
     let entries = |dir: usize| -> Option<Vec<(Id, u32)>> {
+        if !seen.borrow_mut().insert(dir) {
+            return None;
+        }
         let n = r16(b, dir + 12)? as usize + r16(b, dir + 14)? as usize;
         let mut v = Vec::with_capacity(n.min(4096));
         for i in 0..n {
@@ -174,6 +188,10 @@ pub fn read(b: &[u8]) -> Option<Tree> {
                 let d = base.checked_add(l as usize)?;
                 let (drva, dsize, cp) = (r32(b, d)?, r32(b, d + 4)?, r32(b, d + 8)?);
                 let o = if dsize == 0 { 0 } else { pe.offset(b, drva, dsize)? };
+                copied.set(copied.get().checked_add(dsize as usize)?);
+                if copied.get() > b.len() {
+                    return None;
+                }
                 langs.insert(lang, (cp, b.get(o..o + dsize as usize)?.to_vec()));
             }
         }
@@ -304,6 +322,11 @@ pub fn write(file: &[u8], tree: &Tree) -> Option<Vec<u8>> {
     if s.raw_size == 0 {
         s.raw = align(b.len() as u32, fa);
     } else if (s.raw as u64 + s.raw_size as u64) > b.len() as u64 {
+        return None;
+    }
+    // raw data inside the headers would be cut away with them below (and the section table
+    // then written past the end): damage, as is a section table past the file
+    if (s.raw as usize) < pe.secs + 40 * pe.nsecs || pe.secs + 40 * pe.nsecs > b.len() {
         return None;
     }
     let data = build(tree, s.va);
@@ -471,6 +494,9 @@ fn update(c: &mut Ctx, wide: bool) -> u32 {
         None
     } else if data == 0 {
         last_error(87);
+        return 0;
+    } else if mem::accessible(data, size, false, false) < size {
+        last_error(998);
         return 0;
     } else {
         Some(mem::slice(data, size).to_vec())
@@ -765,7 +791,62 @@ mod tests {
         }
     }
 
+    /// review b09: one name directory shared by every type entry (and so on down) is refused
+    /// instead of walked 65535^3 times
+    #[test]
+    fn shared_directories_are_refused() {
+        let mut t = Tree::new();
+        t.entry(Id::Int(10)).or_default().entry(Id::Int(1)).or_default().insert(0x411, (0, vec![1, 2, 3]));
+        let b = image(&[(b".rsrc", 0, 0x4000_0040)], Some(&t));
+        let pe = Pe::parse(&b).unwrap();
+        let base = pe.offset(&b, pe.dir(&b, 2).0, 16).unwrap();
+        // the type directory: one id entry pointing at the name directory; make it 2 entries
+        // both pointing at it (the second over the name directory's own header is enough to
+        // show the shape: the bytes after are the name directory itself)
+        let mut d = b.clone();
+        let names = r32(&d, base + 16 + 4).unwrap();
+        w16(&mut d, base + 14, 2);
+        w32(&mut d, base + 24, 11);
+        w32(&mut d, base + 28, names);
+        assert_eq!(read(&d), None);
+        assert_eq!(read(&b).unwrap(), t);
+    }
+
+    /// review b09: a resource section whose raw data sits inside the headers is refused, not a
+    /// panic writing the section table past a truncated file
+    #[test]
+    fn section_inside_headers_is_refused() {
+        let t = sample();
+        let b = image(&[(b".rsrc", 0, 0x4000_0040)], Some(&t));
+        let pe = Pe::parse(&b).unwrap();
+        for raw in [0u32, 0x40, (pe.secs + 40 * pe.nsecs) as u32 - 1] {
+            let mut d = b.clone();
+            let i = (0..pe.nsecs).find(|&i| pe.section(&d, i).va == pe.dir(&d, 2).0).unwrap();
+            let mut s = pe.section(&d, i);
+            s.raw = raw;
+            s.raw_size = 0x200.min(d.len() as u32 - raw);
+            pe.put_section(&mut d, i, &s);
+            assert!(write(&d, &t).is_none(), "raw {raw:#x}");
+        }
+    }
+
     proptest! {
+        /// Any number of damaged bytes anywhere (headers, section table, directory): reading and
+        /// writing never panic, and the data read is never more than the file
+        #[test]
+        fn many_damaged_bytes_do_not_panic(t in tree(), hits in proptest::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 1..24)) {
+            let mut b = image(&[(b".data", 0x10, 0xc000_0040), (b".rsrc", 0, 0x4000_0040)], Some(&t));
+            for (at, v) in hits {
+                let i = at.index(b.len());
+                b[i] = v;
+            }
+            if let Some(r) = read(&b) {
+                let total: usize = r.values().flat_map(|n| n.values()).flat_map(|l| l.values()).map(|(_, d)| d.len()).sum();
+                prop_assert!(total <= b.len());
+            }
+            let _ = write(&b, &t);
+        }
+
         /// Any tree written into any of the layouts reads back the same, the section table stays
         /// valid, and the other sections' bytes are untouched
         #[test]

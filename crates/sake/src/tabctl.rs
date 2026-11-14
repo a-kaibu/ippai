@@ -35,6 +35,9 @@ struct Tab {
     width: i32,
     height: i32,
     extra: usize,
+    /// the last measure(): (font, texts) and what it gave. layout() runs for every paint, hit
+    /// test and TCM_ADJUSTRECT; the GDI calls are only needed when the font or a text changed
+    measured: Option<(u32, Vec<Option<Vec<u16>>>, (i32, i32, Vec<i32>))>,
     ex_style: u32,
     images: u32,
     tooltips: u32,
@@ -43,9 +46,12 @@ struct Tab {
 impl Default for Tab {
     fn default() -> Tab {
         // (the width of a fixed-width tab before TCM_SETITEMSIZE is LOGPIXELSX)
-        Tab { items: Vec::new(), sel: -1, focus: -1, font: 0, pad: (6, 3), pad_set: (6, 3), dirty: false, min_width: -1, width: 96, height: 0, extra: 4, ex_style: 0, images: 0, tooltips: 0 }
+        Tab { items: Vec::new(), sel: -1, focus: -1, font: 0, pad: (6, 3), pad_set: (6, 3), dirty: false, min_width: -1, width: 96, height: 0, extra: 4, measured: None, ex_style: 0, images: 0, tooltips: 0 }
     }
 }
+
+/// The most extra bytes per item TCM_SETITEMEXTRA takes
+pub const EXTRA_MAX: u32 = 0x1_0000;
 
 static TABS: Mutex<Option<HashMap<u32, Tab>>> = Mutex::new(None);
 
@@ -108,7 +114,15 @@ pub(super) fn layout(c: &mut Ctx, h: u32) -> Layout {
         }
         (t.font, t.items.iter().map(|i| i.text.clone()).collect::<Vec<_>>(), t.pad, t.min_width, t.width, t.height, t.sel)
     });
-    let (tm_h, ave, text_w) = measure(c, h, font, &texts);
+    let cached = tab(h, |t| t.measured.as_ref().filter(|m| m.0 == font && m.1 == texts).map(|m| m.2.clone()));
+    let (tm_h, ave, text_w) = match cached {
+        Some(m) => m,
+        None => {
+            let m = measure(c, h, font, &texts);
+            tab(h, |t| t.measured = Some((font, texts.clone(), m.clone())));
+            m
+        }
+    };
     let buttons = style & TCS_BUTTONS != 0;
     let multi = style & (TCS_MULTILINE | TCS_VERTICAL) != 0;
     let default_min = ave * 6 + pad.0 * 2;
@@ -410,6 +424,11 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let wide = msg_wide();
     let style = with(|s| s.wins.get(&h).map_or(0, |w| w.style));
+    // (a destroyed control's state goes at WM_NCDESTROY, and no message after it makes it again)
+    if m == 0x2 || m == 0x82 {
+        TABS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
+        return def_proc(c, wide);
+    }
     let n = tab(h, |t| t.items.len() as u32);
     // TCM_SETITEM, TCM_INSERTITEM, TCM_DELETEITEM, TCM_DELETEALLITEMS lay the tabs out again
     if matches!(m, 0x1306 | 0x133d | 0x1307 | 0x133e | 0x1308 | 0x1309) {
@@ -552,7 +571,9 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
         }
         // TCM_SETITEMEXTRA: only while there are no items
         0x130e => {
-            if n != 0 || (wp as i32) < 0 {
+            // (bounded: each item's extra bytes are copied one by one, a wild count would be
+            // gigabytes per TCM_INSERTITEM)
+            if n != 0 || wp > EXTRA_MAX {
                 return 0;
             }
             tab(h, |t| t.extra = (wp as usize).max(4));
@@ -716,10 +737,6 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
         }
         0x7 | 0x8 => {
             invalidate(h, None, true);
-            def_proc(c, wide)
-        }
-        0x2 => {
-            TABS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
             def_proc(c, wide)
         }
         _ => def_proc(c, wide),

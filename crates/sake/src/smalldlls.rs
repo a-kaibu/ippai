@@ -354,9 +354,17 @@ fn svc_off() -> (u32, u32, u32, u32) {
     (4 * k, 4 * k + 8, keys, (keys + 2 * k + 4).next_multiple_of(k))
 }
 
+/// The most properties a service instance takes here
+const SERVICE_PROPS_MAX: u32 = 0x1000;
+
 /// DnsServiceConstructInstance(name, host, ip4, ip6, port, priority, weight, count, keys, values)
 fn service_construct(c: &mut Ctx) -> u32 {
     let k = ps();
+    // (a wild property count: k * n wrapped and the loop below ran for ever)
+    if c.a(7) > SERVICE_PROPS_MAX {
+        crate::k32::last_error(87);
+        return 0;
+    }
     let (port, count, keys, size) = svc_off();
     let o = mem::heap_alloc(size, true);
     wp(o, dup_wstr(c.a(0)));
@@ -477,7 +485,12 @@ fn DM_Release(c: &mut Ctx) -> u32 {
     })
     .unwrap_or((0, 0, 0));
     if n == 0 {
+        // (the state blocks UnlockDevice kept are the device's objects: released, not dropped)
+        let saved = with_mgr(this, |m| std::mem::take(&mut m.saved)).unwrap_or_default();
         MANAGERS.lock().unwrap().retain(|m| m.obj != this);
+        for (_, sb) in saved {
+            release(c, sb);
+        }
         if svc != 0 {
             mem::heap_free(svc);
         }
@@ -1423,6 +1436,19 @@ fn call_method(c: &mut Ctx, obj: u32, iface: &str, method: &str, args: &[u32]) -
 /// IWICxxx_Method_Proxy(this, ...): the method through the object's vtable (the proxies the
 /// DLL exports for C callers)
 fn wic_proxy(c: &mut Ctx) -> u32 {
+    // (what each proxy calls, found once per export: (vtable slot, argument count))
+    static RESOLVED: Mutex<Option<std::collections::HashMap<u32, (u32, u32)>>> = Mutex::new(None);
+    let hit = RESOLVED.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied());
+    if let Some((i, n)) = hit {
+        let this = c.a(0);
+        if this == 0 {
+            return E_INVALIDARG;
+        }
+        let mut a: Vec<u32> = (0..n).map(|k| c.a(k)).collect();
+        a[0] = this;
+        let f = rp(rp(this) + ps() * i);
+        return c.call(f, &a);
+    }
     let Some(full) = crate::api::name_of(c.trap) else { return E_FAIL };
     let name = full.split('!').nth(1).unwrap_or("");
     let Some(stem) = name.strip_suffix("_Proxy") else { return E_FAIL };
@@ -1448,6 +1474,9 @@ fn wic_proxy(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     if this == 0 {
         return E_INVALIDARG;
+    }
+    if let Some((i, _)) = slot(iface, method) {
+        RESOLVED.lock().unwrap().get_or_insert_with(Default::default).insert(c.trap, (i, n.max(1)));
     }
     let args: Vec<u32> = (1..n).map(|i| c.a(i)).collect();
     call_method(c, this, iface, method, &args)
@@ -1678,6 +1707,39 @@ mod tests {
 
     fn w(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+
+    /// review b09: a wild property count is refused at once; counts up to the limit copy every
+    /// key and value and free again
+    #[test]
+    fn service_instances_bound_their_properties() {
+        let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+        let name = mem::heap_alloc(16, true);
+        mem::write(name, &[b'a', 0, b'b', 0, 0, 0]);
+        let t = std::time::Instant::now();
+        for n in [SERVICE_PROPS_MAX + 1, 0x4000_0000, u32::MAX] {
+            assert_eq!(crate::test_guest::call(service_construct, &[name, name, 0, 0, 80, 1, 2, n, name, name]), 0);
+        }
+        assert!(t.elapsed().as_secs() < 2);
+        let k = ps();
+        for n in [0u32, 1, 7] {
+            let arr = mem::heap_alloc(k * n.max(1), true);
+            for i in 0..n {
+                wp(arr + k * i, name);
+            }
+            let o = crate::test_guest::call(service_construct, &[name, name, 0, 0, 80, 1, 2, n, arr, arr]);
+            assert_ne!(o, 0);
+            let (_, count, keys, _) = svc_off();
+            assert_eq!(r32(o + count), n);
+            for i in 0..n {
+                let kp = rp(rp(o + keys) + k * i);
+                assert_eq!(mem::wstr(kp), w("ab"));
+            }
+            crate::test_guest::call(service_free, &[o]);
+            mem::heap_free(arr);
+        }
+        mem::heap_free(name);
     }
 
     /// Wine's dlls/dnsapi/tests/name.c table (what Windows answers; where it lists an older

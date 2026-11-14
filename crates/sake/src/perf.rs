@@ -127,7 +127,8 @@ fn PerfSetCounterSetInfo(c: &mut Ctx) -> u32 {
         return ERROR_INVALID_PARAMETER;
     }
     let n = r32(t + 32);
-    if n == 0 || size < SET_INFO + COUNTER_INFO * n {
+    // in 64 bits: a guest count of 2^27 or more wraps the 32-bit product past the size check
+    if n == 0 || (size as u64) < SET_INFO as u64 + COUNTER_INFO as u64 * n as u64 {
         return ERROR_INVALID_PARAMETER;
     }
     let counters: Vec<Counter> = (0..n)
@@ -164,6 +165,10 @@ fn PerfCreateInstance(c: &mut Ctx) -> u32 {
     let name_bytes = 2 * w.len() as u32 + 2;
     let size = instance_size(n, name_bytes);
     let b = mem::heap_alloc(size, true);
+    if b == 0 {
+        last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
     mem::write(b, &g);
     w32(b + 16, size);
     w32(b + 20, id);
@@ -318,7 +323,38 @@ mod tests {
         assert_eq!(instance_size(2, 6), 56);
     }
 
+    /// review b09: a counter count whose 32-byte entries wrap 32 bits is refused before
+    /// anything is read or collected
+    #[test]
+    fn counter_count_that_wraps_is_refused() {
+        let _g = crate::test_guest::enter();
+        {
+            let h = mem::heap_alloc(4, true);
+            with(|m| m.insert(h, Default::default()));
+            let t = mem::heap_alloc(SET_INFO + COUNTER_INFO, true);
+            for n in [1u32 << 27, (1 << 27) + 1, u32::MAX, 0x0800_0002] {
+                w32(t + 32, n);
+                let r = crate::test_guest::call(PerfSetCounterSetInfo, &[h, t, SET_INFO + COUNTER_INFO]);
+                assert_eq!(r, ERROR_INVALID_PARAMETER, "n {n:#x}");
+            }
+            w32(t + 32, 1);
+            assert_eq!(crate::test_guest::call(PerfSetCounterSetInfo, &[h, t, SET_INFO + COUNTER_INFO]), 0);
+            with(|m| m.remove(&h));
+        }
+    }
+
     proptest! {
+        /// The size check agrees with exact arithmetic for every count and size
+        #[test]
+        fn set_info_size_check_is_exact(n in any::<u32>(), size in any::<u32>()) {
+            let ok = n != 0 && (size as u64) >= SET_INFO as u64 + COUNTER_INFO as u64 * n as u64;
+            prop_assert_eq!(ok, n != 0 && (size as u128) >= 40 + 32 * n as u128);
+            if ok {
+                // every entry read stays inside the declared buffer
+                prop_assert!(SET_INFO as u64 + COUNTER_INFO as u64 * (n as u64 - 1) + 16 <= size as u64);
+            }
+        }
+
         /// An instance block holds its header, every slot and the name, 8-byte aligned
         #[test]
         fn instance_sizes(n in 0u32..64, chars in 0u32..256) {
