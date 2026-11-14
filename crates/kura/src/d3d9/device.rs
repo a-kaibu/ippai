@@ -53,6 +53,8 @@ pub struct Surface {
     /// unlock then uploads only the box that changed (see changed_box)
     pub full_locks: u32,
     pub shadow: Option<Box<[u8]>>,
+    /// when `shadow` was last compared with (`SHADOW_TICK`): the oldest go first
+    pub shadow_used: u64,
     /// a cube texture's face (D3DCUBEMAP_FACES): its layer of the cube's page texture, which
     /// gets the pixels with gpu::WRITE_TEXTURE2
     pub face: Option<u32>,
@@ -1074,6 +1076,7 @@ fn new_surface(d: &mut D3d, w: u32, h: u32, f: u32, pool: u32, usage: u32, conta
         pending: None,
         full_locks: 0,
         shadow: None,
+        shadow_used: 0,
         face: None,
         pal_gen: 0,
     };
@@ -2413,6 +2416,60 @@ fn changed_box(rows: &[u8], pitch: usize, row: usize, h: usize, bpp: usize, shad
     b.map(|b| [(b[0] / bpp) as u32, b[1] as u32, b[2].div_ceil(bpp) as u32, b[3] as u32])
 }
 
+/// The most bytes of whole-lock copies (`Surface::shadow`) kept at a time. Each surface locked
+/// whole twice kept a copy of itself for good: a game that fills 60 1024x1024 textures again
+/// now and then held 240 MB of them on top of its own copies and the GPU's.
+pub(crate) static SHADOW_BUDGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(64 << 20);
+static SHADOW_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The copies (when last used, surface, bytes) that go so that `need` more bytes stay within
+/// `budget`: those used longest ago, no more of them than it takes (none when `need` alone is
+/// over it: that surface gets no copy).
+fn shadows_to_drop(mut kept: Vec<(u64, u32, usize)>, need: usize, budget: usize) -> Vec<u32> {
+    if need > budget {
+        return Vec::new();
+    }
+    let mut total: usize = kept.iter().map(|k| k.2).sum();
+    kept.sort_unstable();
+    let mut out = Vec::new();
+    for (_, id, bytes) in kept {
+        if total + need <= budget {
+            break;
+        }
+        total -= bytes;
+        out.push(id);
+    }
+    out
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    use proptest::prelude::*;
+    proptest! {
+        /// What stays fits with the new copy, what goes was used before everything that stays,
+        /// and nothing goes that did not have to.
+        #[test]
+        fn the_oldest_copies_go(sizes in proptest::collection::vec(1usize..5000, 0..12), need in 0usize..6000, budget in 0usize..20000) {
+            let kept: Vec<(u64, u32, usize)> = sizes.iter().enumerate().map(|(i, &b)| ((i as u64 * 7919) % 13 * 100 + i as u64, i as u32, b)).collect();
+            let gone = super::shadows_to_drop(kept.clone(), need, budget);
+            if need > budget {
+                prop_assert!(gone.is_empty());
+                return Ok(());
+            }
+            let stay: Vec<&(u64, u32, usize)> = kept.iter().filter(|k| !gone.contains(&k.1)).collect();
+            let left: usize = stay.iter().map(|k| k.2).sum();
+            prop_assert!(left + need <= budget);
+            let newest_gone = kept.iter().filter(|k| gone.contains(&k.1)).map(|k| k.0).max();
+            if let Some(n) = newest_gone {
+                prop_assert!(stay.iter().all(|k| k.0 > n));
+                // (with the newest of those that went still here, it would not fit)
+                let back = kept.iter().find(|k| k.0 == n).unwrap().2;
+                prop_assert!(left + back + need > budget);
+            }
+        }
+    }
+}
+
 /// After a whole-surface lock: uploads only what changed since the last upload (a movie frame
 /// written into the corner of a bigger texture: ANEMOI's 1920x1080 frames in 2048x2048, every
 /// frame). From the second such lock on (the first makes the copy); big surfaces only.
@@ -2425,11 +2482,27 @@ unsafe fn upload_changed(d: &mut D3d, s: u32) {
         return upload(d, s, [0, 0, w, h]);
     }
     sf.full_locks += 1;
+    let tick = SHADOW_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // (room for a copy of this one: the copies compared with longest ago go)
+    if sf.shadow.is_none() && sf.full_locks >= 2 {
+        let kept: Vec<(u64, u32, usize)> = d.objs.iter().filter_map(|(&id, o)| match &o.data {
+            Data::Surface(x) if id != s => x.shadow.as_ref().map(|sh| (x.shadow_used, id, sh.len())),
+            _ => None,
+        }).collect();
+        for id in shadows_to_drop(kept, row * h as usize, SHADOW_BUDGET.load(std::sync::atomic::Ordering::Relaxed)) {
+            if let Some(Data::Surface(x)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+                x.shadow = None;
+            }
+        }
+    }
+    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return };
+    sf.shadow_used = tick;
+    let fits = row * h as usize <= SHADOW_BUDGET.load(std::sync::atomic::Ordering::Relaxed);
     let rows = std::slice::from_raw_parts(sf.mem as *const u8, sf.pitch as usize * (h as usize - 1) + row);
     let r = match sf.shadow.as_mut() {
         Some(sh) => changed_box(rows, sf.pitch as usize, row, h as usize, bpb as usize, sh),
         None => {
-            if sf.full_locks >= 2 {
+            if sf.full_locks >= 2 && fits {
                 let mut sh = vec![0u8; row * h as usize].into_boxed_slice();
                 for y in 0..h as usize {
                     sh[y * row..(y + 1) * row].copy_from_slice(&rows[y * sf.pitch as usize..][..row]);

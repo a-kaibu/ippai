@@ -455,3 +455,37 @@ fn d3d9_lock_changed_rows_after_part() {
         (9, 1, all, 0),
     ]));
 }
+
+/// The lock traces again with no room for whole-lock copies, and with room for none but the
+/// smallest: what a lock reads and what the page holds are checked as before (a surface whose
+/// copy went is uploaded whole).
+#[test]
+fn d3d9_lock_trace_with_small_copy_budgets() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    let budget = &device::SHADOW_BUDGET;
+    let was = budget.load(std::sync::atomic::Ordering::Relaxed);
+    for b in [0, 1 << 18, 2 << 20] {
+        budget.store(b, std::sync::atomic::Ordering::Relaxed);
+        // (copies made under another budget, by the runs before: gone)
+        with(|d| {
+            for o in d.objs.values_mut() {
+                if let Data::Surface(s) = &mut o.data {
+                    s.shadow = None;
+                }
+            }
+        });
+        for seed in 0..seeds().min(12) {
+            run(seed, None);
+        }
+        let all = [0; 4];
+        run(0, Some(&[(0, 1, all, 0), (3, 1, all, 0), (2, 1, all, 0), (0, 1, all, 0), (3, 1, all, 1), (2, 1, all, 0), (0, 1, all, 0), (3, 1, all, 0), (2, 1, all, 0), (9, 1, all, 0)]));
+        // (what is kept is within the budget)
+        let kept: usize = with(|d| d.objs.values().filter_map(|o| match &o.data { Data::Surface(s) => s.shadow.as_ref().map(|x| x.len()), _ => None }).sum());
+        assert!(kept <= b, "{kept} bytes of copies with a budget of {b}");
+    }
+    budget.store(was, std::sync::atomic::Ordering::Relaxed);
+}
