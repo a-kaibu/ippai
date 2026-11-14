@@ -7,8 +7,16 @@
 //! - MP4 / M4A / 3GP: the first sound track's AAC (`mp4a`, its esds' AudioSpecificConfig as the
 //!   decoder's description) or MP3 (`.mp3`, object type 0x6b)
 //!
-//! What Windows' own sources also open (WMA, FLAC, ADTS) is not here: they fail to open
-//! (MF_E_UNSUPPORTED_BYTESTREAM_TYPE), as on a Windows without that source.
+//! For Media Foundation only (`open_more`, #85), as Windows 10's own FLAC and ASF sources, and
+//! Ogg as with the Web Media Extensions installed:
+//! - FLAC: its frames, for the page's AudioDecoder ("flac", the STREAMINFO as description)
+//! - Ogg Vorbis: its packets, decoded here (crates/vorbis)
+//! - ASF (.wma): the first sound stream's media objects, decoded here (crates/wmcodec)
+//!
+//! Ogg and ASF packets are not where the file has them (pages, payloads): they are copied, one
+//! after another, into a buffer of their own, which the track's offsets are into.
+//!
+//! ADTS is not here: it fails to open (MF_E_UNSUPPORTED_BYTESTREAM_TYPE).
 
 /// How a track's packets become samples.
 #[derive(Clone, Debug, PartialEq)]
@@ -17,6 +25,10 @@ pub enum Codec {
     Pcm { bits: u16, float: bool },
     /// for the page's AudioDecoder: WebCodecs' codec string and description
     Page { codec: String, desc: Vec<u8>, subtype: u32 },
+    /// Vorbis, decoded here: the identification and setup headers
+    Vorbis { ident: Vec<u8>, setup: Vec<u8> },
+    /// a Windows Media sound stream (WMA 1 / 2), decoded here: its WAVEFORMATEX
+    Wma { info: crate::wmdec::Info },
 }
 
 /// A file's sound: its packets (offset, bytes) and how many frames each holds.
@@ -47,6 +59,222 @@ pub const PCM: u32 = 1;
 pub const FLOAT: u32 = 3;
 pub const MP3: u32 = 0x55;
 pub const AAC: u32 = 0x1610;
+/// MFAudioFormat_FLAC
+pub const FLAC: u32 = 0xf1ac;
+
+/// `open`, and for Media Foundation also FLAC, Ogg Vorbis and WMA; with the buffer the track's
+/// packets are in when they are not in `b` (Ogg, ASF).
+pub fn open_more(b: &[u8]) -> Option<(Track, Option<Vec<u8>>)> {
+    if b.starts_with(b"fLaC") {
+        return flac(b).map(|t| (t, None));
+    }
+    if b.starts_with(b"OggS") {
+        return ogg_vorbis(b).map(|(t, d)| (t, Some(d)));
+    }
+    if asf::header_size(b).is_some() {
+        return wma(b).map(|(t, d)| (t, Some(d)));
+    }
+    open(b).map(|t| (t, None))
+}
+
+/// Packets one after another: the buffer and each one's (offset, bytes).
+fn repack<'a>(ps: impl Iterator<Item = &'a [u8]>) -> (Vec<u8>, Vec<(u64, u32)>) {
+    let (mut d, mut at) = (Vec::new(), Vec::new());
+    for p in ps {
+        at.push((d.len() as u64, p.len() as u32));
+        d.extend_from_slice(p);
+    }
+    (d, at)
+}
+
+/// Ogg Vorbis: every audio packet's frames from its block size and the one before (the first
+/// gives none), the last cut to the stream's final granule position.
+fn ogg_vorbis(b: &[u8]) -> Option<(Track, Vec<u8>)> {
+    let (ps, granule) = vorbis::ogg::packets(b);
+    if ps.len() < 3 {
+        return None;
+    }
+    let ident = vorbis::Ident::read(&ps[0]).ok()?;
+    let (rate, channels) = (ident.rate, ident.channels as u32);
+    let setup = vorbis::Setup::read(vorbis::Ident::read(&ps[0]).ok()?, &ps[2]).ok()?;
+    let audio = &ps[3..];
+    let mut frames = Vec::with_capacity(audio.len());
+    let mut prev = 0usize;
+    let mut total = 0u64;
+    for p in audio {
+        let mut bits = vorbis::Bits::new(p);
+        let n = match vorbis::decode::packet_header(&setup, &mut bits) {
+            Some((mode, _, _)) => setup.ident.blocksize[setup.modes[mode].blockflag as usize],
+            None => {
+                frames.push(0);
+                continue;
+            }
+        };
+        let f = if prev > 0 { (prev / 4 + n / 4) as u64 } else { 0 };
+        prev = n;
+        // (the end: no further than the last granule position)
+        let f = if granule > 0 { f.min(granule.saturating_sub(total)) } else { f };
+        total += f;
+        frames.push(f as u32);
+    }
+    if rate == 0 || channels == 0 || total == 0 {
+        return None;
+    }
+    let (d, packets) = repack(audio.iter().map(|p| &p[..]));
+    let avg = (d.len() as u128 * rate as u128 / total as u128) as u32;
+    let codec = Codec::Vorbis { ident: ps[0].clone(), setup: ps[2].clone() };
+    Some((Track { codec, rate, channels, packets, frames, avg, duration: None }, d))
+}
+
+/// CRC-8 (poly 7) of a FLAC frame header.
+fn crc8(b: &[u8]) -> u8 {
+    let mut c = 0u8;
+    for &x in b {
+        c ^= x;
+        for _ in 0..8 {
+            c = if c & 0x80 != 0 { c << 1 ^ 7 } else { c << 1 };
+        }
+    }
+    c
+}
+
+/// A FLAC frame header at `b[o..]`: its block size (frames) and number, if it is one (sync,
+/// no reserved values, its CRC-8).
+pub fn flac_frame(b: &[u8], o: usize) -> Option<(u32, u64)> {
+    let h = b.get(o..)?;
+    if h.len() < 6 || h[0] != 0xff || h[1] & 0xfe != 0xf8 {
+        return None;
+    }
+    let (bs, sr) = (h[2] >> 4, h[2] & 15);
+    let (ch, ss) = (h[3] >> 4, h[3] >> 1 & 7);
+    if bs == 0 || sr == 15 || ch > 10 || ss == 3 || h[3] & 1 != 0 {
+        return None;
+    }
+    // the frame (or sample) number, UTF-8 coded
+    let lead = h[4].leading_ones() as usize;
+    let len = match lead {
+        0 => 1,
+        2..=7 => lead,
+        _ => return None,
+    };
+    let mut num = (h[4] & (0xff >> (lead + 1))) as u64;
+    for i in 1..len {
+        let x = *h.get(4 + i)?;
+        if x & 0xc0 != 0x80 {
+            return None;
+        }
+        num = num << 6 | (x & 0x3f) as u64;
+    }
+    let mut at = 4 + len;
+    let size = match bs {
+        1 => 192,
+        2..=5 => 576 << (bs - 2),
+        6 => {
+            at += 1;
+            *h.get(at - 1)? as u32 + 1
+        }
+        7 => {
+            at += 2;
+            u16::from_be_bytes([*h.get(at - 2)?, *h.get(at - 1)?]) as u32 + 1
+        }
+        _ => 256 << (bs - 8),
+    };
+    at += match sr {
+        12 => 1,
+        13 | 14 => 2,
+        _ => 0,
+    };
+    (crc8(h.get(..at)?) == *h.get(at)?).then_some((size, num))
+}
+
+/// FLAC: STREAMINFO, then the frames (each found by its header: the next valid header numbered
+/// one on ends it).
+fn flac(b: &[u8]) -> Option<Track> {
+    let mut o = 4;
+    let mut info = None;
+    loop {
+        let h = *b.get(o)?;
+        let len = u32::from_be_bytes([0, *b.get(o + 1)?, *b.get(o + 2)?, *b.get(o + 3)?]) as usize;
+        if h & 0x7f == 0 && len >= 34 {
+            info = Some(o);
+        }
+        o = o.checked_add(4 + len)?;
+        if h & 0x80 != 0 {
+            break;
+        }
+    }
+    let si = info?;
+    let s = &b[si + 4..si + 4 + 34];
+    let rate = (s[10] as u32) << 12 | (s[11] as u32) << 4 | (s[12] as u32) >> 4;
+    let channels = (s[12] >> 1 & 7) as u32 + 1;
+    let total = ((s[13] & 15) as u64) << 32 | u32::from_be_bytes([s[14], s[15], s[16], s[17]]) as u64;
+    if rate == 0 {
+        return None;
+    }
+    // "fLaC" and STREAMINFO alone, marked the last block (WebCodecs' description)
+    let mut desc = b"fLaC".to_vec();
+    desc.push(0x80);
+    desc.extend_from_slice(&b[si + 1..si + 4 + 34]);
+    let (mut packets, mut frames) = (Vec::new(), Vec::new());
+    let mut cur = flac_frame(b, o).map(|f| (o, f));
+    while let Some((at, (size, num))) = cur {
+        let mut q = at + 6;
+        cur = None;
+        while q + 6 <= b.len() {
+            if b[q] == 0xff {
+                if let Some(f) = flac_frame(b, q).filter(|f| f.1 == num + 1 || f.1 == num + size as u64) {
+                    cur = Some((q, f));
+                    break;
+                }
+            }
+            q += 1;
+        }
+        let end = cur.map_or(b.len(), |c| c.0);
+        packets.push((at as u64, (end - at) as u32));
+        frames.push(size);
+    }
+    // (the last frame is shorter than its block size says only through STREAMINFO's total)
+    let sum: u64 = frames.iter().map(|&f| f as u64).sum();
+    if total > 0 && sum > total {
+        if let Some(l) = frames.last_mut() {
+            *l = l.saturating_sub((sum - total).min(*l as u64) as u32);
+        }
+    }
+    let n = total.max(1).min(sum.max(1));
+    let bytes: u64 = packets.iter().map(|p| p.1 as u64).sum();
+    if packets.is_empty() {
+        return None;
+    }
+    let avg = (bytes as u128 * rate as u128 / n as u128) as u32;
+    Some(Track { codec: Codec::Page { codec: "flac".into(), desc, subtype: FLAC }, rate, channels, packets, frames, avg, duration: None })
+}
+
+/// ASF: the first sound stream sake's Windows Media decoders take, its media objects; each
+/// one's frames from the presentation times (the last to the file's play duration).
+fn wma(b: &[u8]) -> Option<(Track, Vec<u8>)> {
+    let mut r = asf::Reader::new(b.to_vec()).ok()?;
+    let st = r.header.streams.iter().find(|s| matches!(s.kind, asf::Kind::Audio) && !s.encrypted && crate::wmdec::Info::from_wave(&s.format).is_some_and(|i| crate::wmdec::codec(&i).is_some()))?;
+    let (number, info) = (st.number, crate::wmdec::Info::from_wave(&st.format)?);
+    let crate::wmdec::Info::Audio { channels, rate, bytes_per_sec, .. } = info else { return None };
+    let duration = r.header.duration;
+    r.only = Some(vec![number]);
+    let mut objs = Vec::new();
+    while let Some(s) = r.next_sample() {
+        objs.push(s);
+    }
+    if objs.is_empty() || rate == 0 {
+        return None;
+    }
+    let at = |t: u64| (t as u128 * rate as u128 / 10_000_000) as u64;
+    let end = at(duration.max(objs.last()?.time));
+    let mut frames = Vec::with_capacity(objs.len());
+    for (i, o) in objs.iter().enumerate() {
+        let next = objs.get(i + 1).map_or(end, |n| at(n.time));
+        frames.push(next.saturating_sub(at(o.time)) as u32);
+    }
+    let (d, packets) = repack(objs.iter().map(|o| &o.data[..]));
+    Some((Track { codec: Codec::Wma { info }, rate, channels: channels as u32, packets, frames, avg: bytes_per_sec, duration: Some(duration) }, d))
+}
 
 /// Reads the file whose bytes are `b`; None when it is none of these.
 pub fn open(b: &[u8]) -> Option<Track> {

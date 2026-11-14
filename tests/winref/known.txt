@@ -234,3 +234,7 @@ eventlog-* ^got +backup: has a record 1 same number 1 same length 1 same bytes 1
 # Japanese Windows 7 desktop (OS_WIN2000PRO, OS_PROFESSIONAL, OS_PERSONALTERMINALSERVER)
 host_shfileinfo-* ^(want|got) +windows folder: ok "(Windows|windows)" folder 1 filesystem 1$
 host_shfileinfo-* ^(want|got) +IsOS: 
+# Ogg Vorbis through the Source Reader: Windows has no Ogg source without the Web Media
+# Extensions (MF_E_UNSUPPORTED_BYTESTREAM_TYPE on the runner); sake opens it and decodes the
+# Vorbis itself (#85), as with the extensions installed
+mfmore-* ^(want|got) +(ogg: |  ogg )

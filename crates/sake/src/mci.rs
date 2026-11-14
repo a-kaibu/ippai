@@ -677,6 +677,8 @@ fn sound(b: Vec<u8>) -> Option<(Media, u64)> {
             let fmt = crate::sound::Fmt { rate: t.rate, channels: t.channels, bits: 16, float: false, law: 0 };
             Some((Media::Sound { data: p, size: size as u32, fmt }, duration))
         }
+        // (`open` gives neither: they are Media Foundation's, `open_more`)
+        Codec::Vorbis { .. } | Codec::Wma { .. } => None,
     }
 }
 

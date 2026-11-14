@@ -20,8 +20,7 @@ const MF_E_INVALIDMEDIATYPE_: u32 = 0xc00d_36b4;
 
 /// Where a file's bytes are.
 pub enum Src {
-    /// (tests)
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// bytes of ours (tests; Ogg / ASF packets copied out of the file)
     Mem(Arc<Vec<u8>>),
     Host(Mutex<kura::fs::File>),
     /// the program's IMFByteStream (a reference held by whoever holds the Data: `release_guest`)
@@ -36,7 +35,6 @@ pub struct Data {
 }
 
 impl Data {
-    #[cfg(test)]
     pub fn mem_arc(v: Arc<Vec<u8>>) -> Data {
         Data { len: v.len() as u64, src: Src::Mem(v), lock: Mutex::new(()) }
     }
@@ -117,6 +115,8 @@ pub struct Media {
     pub duration: Option<u64>,
     /// "video/mp4", "audio/mpeg", ... (MF_PD_MIME_TYPE)
     pub mime: &'static str,
+    /// the packets copied out of the file, when the tracks are in these (Ogg, ASF)
+    pub packed: Option<Arc<Data>>,
 }
 
 /// Reads what the file in `d` holds; None when no source of ours opens it.
@@ -125,16 +125,23 @@ pub fn open_media(c: Option<&mut Ctx>, d: &Data) -> Option<Media> {
     let head = d.read(c.as_deref_mut(), 0, 12)?;
     if head.len() >= 8 && &head[4..8] == b"ftyp" {
         let m = mp4::open(d.len, &mut |o, n| d.read(c.as_deref_mut(), o, n))?;
-        return Some(Media { tracks: m.tracks, duration: m.duration, mime: "video/mp4" });
+        return Some(Media { tracks: m.tracks, duration: m.duration, mime: "video/mp4", packed: None });
     }
     // a sound file: read whole (they are small), as audiofile reads them
     if d.len > 1 << 30 {
         return None;
     }
     let all = d.read(c, 0, d.len as usize)?;
-    let t = audiofile::open(&all)?;
-    let mime = if head.starts_with(b"RIFF") { "audio/wav" } else { "audio/mpeg" };
-    Some(Media { duration: t.duration, tracks: vec![mp4::Track::Audio(t)], mime })
+    let (t, packed) = audiofile::open_more(&all)?;
+    let mime = match &t.codec {
+        _ if head.starts_with(b"RIFF") => "audio/wav",
+        audiofile::Codec::Vorbis { .. } => "audio/ogg",
+        audiofile::Codec::Wma { .. } => "audio/x-ms-wma",
+        audiofile::Codec::Page { subtype: audiofile::FLAC, .. } => "audio/flac",
+        _ => "audio/mpeg",
+    };
+    let packed = packed.map(|d| Arc::new(Data::mem_arc(Arc::new(d))));
+    Some(Media { duration: t.duration, tracks: vec![mp4::Track::Audio(t)], mime, packed })
 }
 
 // --- media types of video -----------------------------------------------------------------

@@ -109,21 +109,63 @@ fn guid_of(s: &Store, k: &Guid) -> Option<Guid> {
     }
 }
 
+/// MFAudioFormat_Vorbis {8D2FD10B-5841-4a6b-8905-588FEC1ADED9}
+fn vorbis_format() -> Guid {
+    guid(0x8d2f_d10b, 0x5841, 0x4a6b, [0x89, 0x05, 0x58, 0x8f, 0xec, 0x1a, 0xde, 0xd9])
+}
+
+/// The subtype of a track's native type.
+fn native_subtype(c: &Codec) -> Guid {
+    match c {
+        Codec::Pcm { float: true, .. } => audio_format(audiofile::FLOAT),
+        Codec::Pcm { .. } => audio_format(audiofile::PCM),
+        Codec::Page { subtype, .. } => audio_format(*subtype),
+        Codec::Vorbis { .. } => vorbis_format(),
+        Codec::Wma { info: crate::wmdec::Info::Audio { tag, .. } } => audio_format(*tag as u32),
+        Codec::Wma { .. } => audio_format(0),
+    }
+}
+
+/// A decoder of ours (the codecs `audiofile` marks so): packets in, interleaved samples out.
+enum Native {
+    Vorbis(Box<vorbis::Decoder>),
+    Wma(Box<dyn crate::wmdec::Codec>),
+}
+
+impl Native {
+    fn open(c: &Codec) -> Option<Native> {
+        match c {
+            Codec::Vorbis { ident, setup } => Some(Native::Vorbis(Box::new(vorbis::Decoder::new(ident, setup).ok()?))),
+            Codec::Wma { info } => Some(Native::Wma(crate::wmdec::codec(info)?)),
+            _ => None,
+        }
+    }
+    fn decode(&mut self, p: &[u8], out: &mut Vec<f32>) {
+        match self {
+            Native::Vorbis(d) => d.packet(p, out),
+            Native::Wma(d) => Native::sound(d.decode(p, 0, true), out),
+        }
+    }
+    /// What the decoder holds back, after the last packet (WMA's overlap).
+    fn finish(&mut self, out: &mut Vec<f32>) {
+        if let Native::Wma(d) = self {
+            Native::sound(d.drain(), out);
+        }
+    }
+    fn sound(fs: Vec<crate::wmdec::Frame>, out: &mut Vec<f32>) {
+        for f in fs {
+            if let crate::wmdec::Frame::Sound { pcm, .. } = f {
+                out.extend(pcm.iter().map(|&v| v as f32 / 32768.0));
+            }
+        }
+    }
+}
+
 /// The native type of a track: what the file holds.
 pub fn native_type(t: &Track) -> Store {
     let mut s = Store::default();
     s.set(k_major(), Val::Guid(major_audio()));
-    let tag = match &t.codec {
-        Codec::Pcm { float, .. } => {
-            if *float {
-                audiofile::FLOAT
-            } else {
-                audiofile::PCM
-            }
-        }
-        Codec::Page { subtype, .. } => *subtype,
-    };
-    s.set(k_subtype(), Val::Guid(audio_format(tag)));
+    s.set(k_subtype(), Val::Guid(native_subtype(&t.codec)));
     s.set(k_channels(), Val::U32(t.channels));
     s.set(k_rate(), Val::U32(t.rate));
     match &t.codec {
@@ -133,6 +175,19 @@ pub fn native_type(t: &Track) -> Store {
             s.set(k_align(), Val::U32(align));
             s.set(k_avg(), Val::U32(align * t.rate));
             s.set(k_independent(), Val::U32(1));
+        }
+        Codec::Vorbis { .. } => {
+            s.set(k_avg(), Val::U32(t.avg));
+            s.set(k_align(), Val::U32(1));
+        }
+        Codec::Wma { info } => {
+            // (Windows' ASF source: the WAVEFORMATEX's block align and the codec data after it)
+            if let crate::wmdec::Info::Audio { align, bits, extra, .. } = info {
+                s.set(k_avg(), Val::U32(t.avg));
+                s.set(k_align(), Val::U32(*align as u32));
+                s.set(k_bits(), Val::U32(*bits as u32));
+                s.set(k_user_data(), Val::Blob(extra.clone()));
+            }
         }
         Codec::Page { desc, subtype, .. } => {
             s.set(k_avg(), Val::U32(t.avg));
@@ -261,6 +316,8 @@ pub struct Stream {
     next: usize,
     /// the page's decoder (opened at the first read of a Page codec)
     dec: Option<u32>,
+    /// ours (Vorbis, WMA), opened at the first read
+    native: Option<Native>,
     /// decoded samples not handed out, interleaved; the frame the first of them is
     pending: VecDeque<f32>,
     at: u64,
@@ -299,6 +356,7 @@ impl Stream {
             out: Out::Native,
             next: 0,
             dec: None,
+            native: None,
             pending: VecDeque::new(),
             at: 0,
             into: 0,
@@ -344,6 +402,12 @@ impl Stream {
         self.next = k;
         self.at = f;
         self.into = 0;
+        // (Vorbis: a block's samples come with the next one's; decoding from the packet before,
+        // which a fresh decoder gives nothing of, gives packet k's whole)
+        self.native = None;
+        if matches!(self.track.codec, Codec::Vorbis { .. }) && k > 0 {
+            self.next = k - 1;
+        }
         if pcm && k < self.track.frames.len() {
             self.into = want - f;
             self.at = want;
@@ -397,6 +461,47 @@ impl Stream {
                     bytes,
                 };
                 self.next += 1;
+                self.at += frames;
+                Ok(Some(p))
+            }
+            (Out::Pcm { bits, float, .. }, Codec::Vorbis { .. } | Codec::Wma { .. }) => {
+                let per = t.frames.iter().copied().max().unwrap_or(1024).max(1) as usize;
+                let mut nat = match self.native.take() {
+                    Some(n) => n,
+                    None => Native::open(&t.codec).ok_or(MF_E_INVALIDMEDIATYPE)?,
+                };
+                let mut got = Vec::new();
+                while self.pending.len() < per * ch && self.next < t.packets.len() {
+                    let (o, n) = t.packets[self.next];
+                    let b = self.data.read(c.as_deref_mut(), o, n as usize).ok_or(E_FAIL)?;
+                    nat.decode(&b, &mut got);
+                    if self.next + 1 == t.packets.len() {
+                        nat.finish(&mut got);
+                    }
+                    // (Vorbis: the last packet ends at the final granule position)
+                    if matches!(t.codec, Codec::Vorbis { .. }) {
+                        got.truncate(t.frames[self.next] as usize * ch);
+                    }
+                    self.pending.extend(got.drain(..));
+                    self.next += 1;
+                }
+                self.native = Some(nat);
+                if self.pending.is_empty() {
+                    self.ended = true;
+                    return Ok(None);
+                }
+                let n = (per * ch).min(self.pending.len()) / ch * ch;
+                let n = if n == 0 { self.pending.len() } else { n };
+                let mut v: Vec<f32> = self.pending.drain(..n).collect();
+                let frames = (n / ch) as u64;
+                if let Some(r) = &mut self.rs {
+                    v = r.run(&v);
+                }
+                let p = Piece {
+                    time: self.time(self.at),
+                    dur: self.time(self.at + frames) - self.time(self.at),
+                    bytes: encode(&v, bits, float),
+                };
                 self.at += frames;
                 Ok(Some(p))
             }
@@ -1587,6 +1692,8 @@ fn k_processing() -> [Guid; 2] {
 
 /// A reader of `media` (whose bytes are `data`), made of media source `source` (0: none).
 fn new_reader(c: &mut Ctx, attributes: u32, data: Arc<Data>, media: &Media, source: u32, out: u32) -> u32 {
+    // (Ogg / ASF: the streams read the packets copied out of the file)
+    let sdata = media.packed.clone().unwrap_or_else(|| data.clone());
     let at = store_of(attributes);
     let callback = match at.as_ref().and_then(|s| s.get(&k_async()).cloned()) {
         Some(Val::Unk(u)) => u,
@@ -1600,7 +1707,7 @@ fn new_reader(c: &mut Ctx, attributes: u32, data: Arc<Data>, media: &Media, sour
         let native = source::native_of(t);
         let kind = match t {
             mp4::Track::Audio(a) => {
-                let s = Stream::with_data(a.clone(), data.clone());
+                let s = Stream::with_data(a.clone(), sdata.clone());
                 if media.duration.is_none() {
                     duration = duration.max(s.duration());
                 }
@@ -1735,6 +1842,159 @@ mod tests {
         }
         assert_eq!(out_frames("aac", 1024), 1024);
         assert_eq!(out_frames("aac", 0), 1);
+    }
+
+    /// A test file (testdata/, made with FFmpeg: 440 Hz left at 0.5, 660 Hz right at 0.25)
+    /// opened as Media Foundation opens it: the track and the bytes its packets are in.
+    fn more(name: &str) -> (Track, Arc<Vec<u8>>) {
+        let b = std::fs::read(format!("{}/src/mf/testdata/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let (t, packed) = audiofile::open_more(&b).unwrap();
+        (t, Arc::new(packed.unwrap_or(b)))
+    }
+
+    /// Per channel: Hz from zero crossings, RMS (of the middle half).
+    fn tone(v: &[f32], ch: usize, rate: u32) -> Vec<(f64, f64)> {
+        let n = v.len() / ch;
+        (0..ch)
+            .map(|c| {
+                let (from, to) = (n / 4, n * 3 / 4);
+                let mut cross = 0;
+                let mut sq = 0.0;
+                for i in from..to {
+                    let x = v[i * ch + c] as f64;
+                    if i > from && (v[(i - 1) * ch + c] < 0.0) != (x < 0.0) {
+                        cross += 1;
+                    }
+                    sq += x * x;
+                }
+                (cross as f64 / 2.0 * rate as f64 / (to - from) as f64, (sq / (to - from) as f64).sqrt())
+            })
+            .collect()
+    }
+
+    fn read_f32(s: &mut Stream) -> (Vec<f32>, Vec<(u64, u64)>) {
+        let (mut all, mut times) = (Vec::new(), Vec::new());
+        while let Some(p) = s.read().unwrap() {
+            times.push((p.time, p.dur));
+            all.extend(p.bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())));
+        }
+        (all, times)
+    }
+
+    /// Ogg Vorbis and WMA (ours, decoded here, #85): the native type, float PCM of the whole
+    /// tone (its length to the granule position / the play duration), samples back to back in
+    /// time, a seek into the middle lands on a packet's start and goes on with the same sound.
+    #[test]
+    fn ogg_and_wma_decode_here() {
+        // (WMA: the frames FFmpeg's decoder gives too, 10 blocks of 2048: the encoder's last
+        // block is not in the file)
+        for (name, sub, len_ms, want_frames) in [("tone.ogg", vorbis_format(), 500u64, 22050u64), ("tone.wma", audio_format(0x161), 500, 20480)] {
+            let (t, d) = more(name);
+            assert_eq!((t.rate, t.channels), (44100, 2), "{name}");
+            let nt = native_type(&t);
+            assert_eq!(guid_of(&nt, &k_subtype()), Some(sub), "{name}");
+            let mut s = Stream::new(t.clone(), d.clone());
+            assert_eq!(s.duration() / 10_000, len_ms, "{name}");
+            let want = pcm_type_at(t.rate, t.channels, 32, true);
+            s.set_out(out_for(&t, &want).unwrap());
+            let (all, times) = read_f32(&mut s);
+            let frames = all.len() as u64 / 2;
+            assert_eq!(frames, want_frames, "{name}");
+            for w in times.windows(2) {
+                assert_eq!(w[0].0 + w[0].1, w[1].0, "{name}");
+            }
+            let tn = tone(&all, 2, 44100);
+            assert!((tn[0].0 - 440.0).abs() < 15.0 && (tn[1].0 - 660.0).abs() < 15.0, "{name}: {tn:?}");
+            assert!((tn[0].1 - 0.5 / 2f64.sqrt()).abs() < 0.05 && (tn[1].1 - 0.25 / 2f64.sqrt()).abs() < 0.05, "{name}: {tn:?}");
+            // a seek: at or before 250 ms, the same tone after it
+            s.seek(2_500_000);
+            let p = s.read().unwrap().unwrap();
+            assert!(p.time <= 2_500_000 && p.time + 1_000_000 > 2_500_000, "{name}: {}", p.time);
+            let (rest, _) = read_f32(&mut s);
+            let total = rest.len() as u64 / 2 + p.bytes.len() as u64 / 8;
+            assert!((p.time * 44100 / 10_000_000 + total).abs_diff(frames) <= 2048, "{name}");
+        }
+    }
+
+    /// The same Vorbis packets decoded from the start and after a seek to each packet give the
+    /// same samples (the packet before is decoded first, its output dropped by construction).
+    #[test]
+    fn vorbis_seek_is_exact() {
+        let (t, d) = more("tone.ogg");
+        let mut s = Stream::new(t.clone(), d.clone());
+        s.set_out(out_for(&t, &pcm_type_at(t.rate, t.channels, 32, true)).unwrap());
+        let (all, _) = read_f32(&mut s);
+        for k in 0..t.frames.len() {
+            let f = t.frames[..k].iter().map(|&x| x as u64).sum::<u64>();
+            if t.frames[k] == 0 {
+                continue;
+            }
+            // (the time of the packet's first frame, rounded up: it falls in that packet)
+            s.seek((f * 10_000_000).div_ceil(44100));
+            let (rest, _) = read_f32(&mut s);
+            let tail = &all[f as usize * 2..];
+            assert_eq!(rest.len(), tail.len(), "packet {k}");
+            assert!(rest.iter().zip(tail).all(|(a, b)| (a - b).abs() < 1e-6), "packet {k}");
+        }
+    }
+
+    /// FLAC (the page's decoder): frames found by their headers cover the file from the first
+    /// one to the end, numbered in order, summing to STREAMINFO's total; the description is
+    /// "fLaC" and STREAMINFO marked last.
+    #[test]
+    fn flac_frames() {
+        let b = std::fs::read(format!("{}/src/mf/testdata/tone.flac", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let (t, packed) = audiofile::open_more(&b).unwrap();
+        assert!(packed.is_none());
+        assert_eq!((t.rate, t.channels), (22050, 2));
+        let Codec::Page { codec, desc, subtype } = &t.codec else { panic!() };
+        assert_eq!((codec.as_str(), *subtype), ("flac", audiofile::FLAC));
+        assert_eq!(&desc[..5], b"fLaC\x80");
+        assert_eq!(desc.len(), 4 + 4 + 34);
+        assert_eq!(t.total_frames(), 8820);
+        for (i, w) in t.packets.windows(2).enumerate() {
+            assert_eq!(w[0].0 + w[0].1 as u64, w[1].0, "frame {i}");
+        }
+        let last = t.packets.last().unwrap();
+        assert_eq!(last.0 + last.1 as u64, b.len() as u64);
+        for (i, &(o, _)) in t.packets.iter().enumerate() {
+            assert_eq!(audiofile::flac_frame(&b, o as usize).map(|f| f.1), Some(i as u64));
+        }
+        assert_eq!(guid_of(&native_type(&t), &k_subtype()), Some(audio_format(0xf1ac)));
+    }
+
+    proptest::proptest! {
+        /// Any cut or damage of the three files: opening and reading them never panics, and
+        /// what opens has packets inside its buffer.
+        #[test]
+        fn more_files_never_panic(which in 0usize..3, cut in 0usize..70_000, flips in proptest::collection::vec((0usize..70_000, proptest::prelude::any::<u8>()), 0..8)) {
+            let name = ["tone.ogg", "tone.flac", "tone.wma"][which];
+            let mut b = std::fs::read(format!("{}/src/mf/testdata/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            for (o, x) in flips {
+                let n = b.len();
+                b[o % n] ^= x;
+            }
+            b.truncate(cut.min(b.len()));
+            if let Some((t, packed)) = audiofile::open_more(&b) {
+                let d = packed.unwrap_or(b);
+                for &(o, n) in &t.packets {
+                    proptest::prop_assert!(o + n as u64 <= d.len() as u64);
+                }
+                proptest::prop_assert_eq!(t.packets.len(), t.frames.len());
+                if !matches!(t.codec, Codec::Page { .. }) {
+                    let mut s = Stream::new(t.clone(), Arc::new(d));
+                    if let Some(o) = out_for(&t, &pcm_type_at(t.rate, t.channels, 16, false)) {
+                        s.set_out(o);
+                        for _ in 0..200 {
+                            match s.read() {
+                                Ok(Some(_)) => {}
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn pcm_track(frames: u32, ch: u32) -> (Track, Arc<Vec<u8>>) {
