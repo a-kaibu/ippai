@@ -12,7 +12,7 @@ use crate::api::{self, Ctx, Handler};
 use crate::mem::{r16, r32, w16, w32, w8};
 use crate::HashMap;
 use std::cell::Cell;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use koji::{Cpu, EAX, ECX, EDX, ESP};
 
 /// Base of the thunk segment (in the CPU's trap range): import i is at offset 4*i.
@@ -41,11 +41,13 @@ struct St {
 
 pub type H16 = fn(&mut C16) -> u32;
 
+/// (shared: every call hands them to its C16 without copying, they were two Strings and a Vec
+/// cloned per 16-bit API call under the global lock)
 struct Api {
-    module: String,
-    name: String,
+    module: Arc<str>,
+    name: Arc<str>,
     conv: Conv,
-    args: Vec<u8>,
+    args: Arc<[u8]>,
     f: Option<H16>,
 }
 
@@ -88,13 +90,18 @@ pub fn on() -> bool {
     ON.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether the file is an NE program: its MZ header and the 2 bytes at e_lfanew (read alone:
+/// the whole file was read for these 66 bytes, and the PE path read it again).
 pub fn is_ne(path: &str) -> bool {
-    let Ok(d) = kura::fs::read_head(path, 1 << 16) else { return false };
-    if d.len() < 0x40 || &d[..2] != b"MZ" {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = kura::fs::File::open(path) else { return false };
+    let mut h = [0u8; 0x40];
+    if f.read_exact(&mut h).is_err() || &h[..2] != b"MZ" {
         return false;
     }
-    let o = u32::from_le_bytes(d[0x3c..0x40].try_into().unwrap()) as usize;
-    d.get(o..o + 2) == Some(b"NE")
+    let o = u32::from_le_bytes(h[0x3c..0x40].try_into().unwrap()) as u64;
+    let mut sig = [0u8; 2];
+    f.seek(SeekFrom::Start(o)).is_ok() && f.read_exact(&mut sig).is_ok() && &sig == b"NE"
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -114,8 +121,9 @@ pub fn sel_alloc_n(base: u32, size: u32, n: u32) -> u16 {
     with(|s| {
         let mut i = 1u32;
         'find: loop {
+            // (none left: 0, GlobalAlloc's NULL, instead of aborting the VM)
             if i + n > NSEL {
-                panic!("w16: out of selectors");
+                return 0;
             }
             for k in 0..n {
                 if s.segs[(i + k) as usize].is_some() {
@@ -180,24 +188,70 @@ struct HMap {
 
 static HM: Mutex<Option<HMap>> = Mutex::new(None);
 
+/// The 16-bit aliases there are: 0x8000..=0xfff8 in steps of 4.
+const ALIASES: usize = (0xfff8 - 0x8000) / 4 + 1;
+
+impl HMap {
+    /// A free alias for `h` (None: all of them are in use). Each alias is looked at once at
+    /// most: with every one taken this used to spin for ever holding HM.
+    fn take(&mut self, h: u32) -> Option<u16> {
+        for _ in 0..ALIASES {
+            let v = self.next;
+            self.next = if self.next >= 0xfff8 { 0x8000 } else { self.next + 4 };
+            if !self.to32.contains_key(&v) {
+                self.to16.insert(h, v);
+                self.to32.insert(v, h);
+                return Some(v);
+            }
+        }
+        None
+    }
+}
+
+/// Whether a 32-bit handle 16-bit code got an alias for still names something: a window, a
+/// GDI object or DC, a menu. Handles of other kinds count as alive.
+fn handle_alive(h: u32) -> bool {
+    crate::user::is_window(h) || crate::gdi::is_object(h) || crate::user::is_menu(h) || !(0x10000..0x0100_0000).contains(&h)
+}
+
+/// The 16-bit alias of a 32-bit handle (the same one while it is mapped). When all aliases are
+/// taken, those of handles that are gone (a window destroyed with its parent, a DC its window
+/// took along: no 16-bit call released them) are swept; 0 when none is.
 pub fn h16(h: u32) -> u16 {
+    h16_in(&HM, h, handle_alive)
+}
+
+fn h16_in(hm: &Mutex<Option<HMap>>, h: u32, alive: impl Fn(u32) -> bool) -> u16 {
     if h < 0x10000 {
         return h as u16;
     }
-    let mut g = HM.lock().unwrap();
-    let m = g.get_or_insert_with(|| HMap { to16: HashMap::default(), to32: HashMap::default(), next: 0x8000 });
-    if let Some(&v) = m.to16.get(&h) {
-        return v;
-    }
-    loop {
-        let v = m.next;
-        m.next = if m.next >= 0xfff8 { 0x8000 } else { m.next + 4 };
-        if !m.to32.contains_key(&v) {
-            m.to16.insert(h, v);
-            m.to32.insert(v, h);
+    for sweep in [false, true] {
+        let mut g = hm.lock().unwrap();
+        let m = g.get_or_insert_with(|| HMap { to16: HashMap::default(), to32: HashMap::default(), next: 0x8000 });
+        if let Some(&v) = m.to16.get(&h) {
             return v;
         }
+        if let Some(v) = m.take(h) {
+            return v;
+        }
+        if sweep {
+            break;
+        }
+        // (liveness asks USER and GDI: not under HM)
+        let all: Vec<(u16, u32)> = m.to32.iter().map(|(&a, &b)| (a, b)).collect();
+        drop(g);
+        let dead: Vec<(u16, u32)> = all.into_iter().filter(|&(_, b)| !alive(b)).collect();
+        let mut g = hm.lock().unwrap();
+        if let Some(m) = g.as_mut() {
+            for (a, b) in dead {
+                if m.to32.get(&a) == Some(&b) {
+                    m.to32.remove(&a);
+                    m.to16.remove(&b);
+                }
+            }
+        }
     }
+    0
 }
 
 pub fn h32(h: u16) -> u32 {
@@ -226,7 +280,11 @@ pub fn global_alloc(size: u32, zero: bool) -> u16 {
     if b == 0 {
         return 0;
     }
-    sel_alloc_n(b, size, n)
+    let sel = sel_alloc_n(b, size, n);
+    if sel == 0 {
+        crate::mem::heap_free(b);
+    }
+    sel
 }
 
 pub fn global_size(sel: u16) -> u32 {
@@ -266,6 +324,11 @@ pub fn global_realloc(sel: u16, size: u32, zero: bool) -> u16 {
 
 /// LocalAlloc in the data segment `ds`: first fit between the stack and the segment's end.
 pub fn local_alloc(ds: u16, size: u16, zero: bool) -> u16 {
+    // (no 64 KB block fits in a 64 KB segment with the heap's header: NULL, as Windows; the
+    // rounding wrapped to a 0-4 byte block for it)
+    if size > 0xffe0 {
+        return 0;
+    }
     let size = (size.max(2) + 3) & !3;
     let r = with(|s| {
         let heap = s.heaps.get_mut(&ds)?;
@@ -329,8 +392,29 @@ thread_local! {
     static SCR16: Cell<(u16, u32, u16)> = const { Cell::new((0, 0, 0)) };
 }
 
+/// The calling thread's scratch areas, made the first time a thread needs them: `start` sets up
+/// the first thread's, but a callback thread (a multimedia timer, waveOut, an async socket)
+/// that reaches a 16-bit callback had none, and its first frame went to the top of the 4 GB
+/// memory, inside sake's own heap.
+fn ensure_scratch() {
+    if SCR32.with(|s| s.get()) == 0 {
+        if let Some(b) = crate::mem::alloc(0x40000) {
+            SCR32.with(|s| s.set(b + 0x40000));
+        }
+    }
+    if SCR16.with(|s| s.get().0) == 0 {
+        if let Some(b) = crate::mem::alloc(0x10000) {
+            let sel = sel_alloc(b, 0x10000);
+            if sel != 0 {
+                SCR16.with(|s| s.set((sel, b, 0xfff0)));
+            }
+        }
+    }
+}
+
 /// Calls a 32-bit handler with `args` as its stack arguments; returns (EAX, EDX).
 pub fn call32_with(cpu: &mut Cpu, f: Handler, args: &[u32], trap: u32) -> (u32, u32) {
+    ensure_scratch();
     let top = SCR32.with(|s| s.get());
     let sp = (top - 4 * (args.len() as u32 + 1) - 64) & !15;
     w32(sp, 0);
@@ -364,15 +448,28 @@ pub fn call_trap(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
 }
 
 /// 16-bit scratch memory: (far pointer, linear address) of `n` bytes; free with `scratch_reset`.
+/// (At most the 64 KB block: a bigger request is cut to it, and one that no longer fits below
+/// the nested conversions' takes the block's bottom again, instead of wrapping into the next
+/// guest allocation or aborting.)
 pub fn scratch(n: u32) -> (u32, u32) {
+    ensure_scratch();
     SCR16.with(|s| {
         let (sel, base, top) = s.get();
-        let n = ((n + 3) & !3) as u16;
-        let at = top.checked_sub(n).expect("w16 scratch");
-        s.set((sel, base, at));
-        crate::mem::fill(base + at as u32, n as u32, 0);
+        let (at, next) = scratch_place(top, n);
+        s.set((sel, base, next));
+        crate::mem::fill(base + at as u32, (n.min(0xfff0) + 3) & !3, 0);
         ((sel as u32) << 16 | at as u32, base + at as u32)
     })
+}
+
+/// Where `n` scratch bytes go below `top`, and the new top: 4-aligned, within [0, 0xfff0).
+pub(crate) fn scratch_place(top: u16, n: u32) -> (u16, u16) {
+    let n = (n.min(0xfff0) + 3) & !3;
+    match (top as u32).checked_sub(n) {
+        Some(at) => (at as u16, at as u16),
+        // (no room left: the bottom of the block, the top unchanged)
+        None => (0, top),
+    }
 }
 
 pub fn scratch_mark() -> u16 {
@@ -392,8 +489,11 @@ pub fn scratch_str(p: u32) -> u32 {
         return p;
     }
     let s = crate::mem::cstr(p);
+    // (a 16-bit string is at most a segment: longer ones are cut, NUL-terminated)
+    let s = &s[..s.len().min(0xffe0)];
     let (fp, l) = scratch(s.len() as u32 + 1);
-    crate::mem::write(l, &s);
+    crate::mem::write(l, s);
+    crate::mem::write(l + s.len() as u32, &[0]);
     fp
 }
 
@@ -409,10 +509,10 @@ pub struct C16<'a> {
     pub sp: u32,
     /// for varargs functions: linear address of the first variable argument
     pub va: u32,
-    pub module: String,
-    pub name: String,
+    pub module: Arc<str>,
+    pub name: Arc<str>,
     /// specs16.txt's argument types
-    pub types: Vec<u8>,
+    pub types: Arc<[u8]>,
     /// the arguments as pushed
     pub raw: Vec<u32>,
 }
@@ -503,7 +603,7 @@ fn import(module: &str, ord: u16) -> Result<u32, String> {
             Some(&i) => i,
             None => {
                 let i = s.entries.len() as u32;
-                s.entries.push(Api { module: module.clone(), name, conv, args, f });
+                s.entries.push(Api { module: module.as_str().into(), name: name.into(), conv, args: args.into(), f });
                 s.by_ord.insert((module.clone(), ord), i);
                 i
             }
@@ -518,7 +618,7 @@ pub fn host16(module: &str, name: String, args: &str, f: H16) -> u32 {
     with(|s| {
         let i = s.entries.len() as u32;
         assert!(4 * i < RET_OFF, "w16: thunk segment full");
-        s.entries.push(Api { module: module.into(), name, conv: Conv::Pascal, args: args.bytes().collect(), f: Some(f) });
+        s.entries.push(Api { module: module.into(), name: name.into(), conv: Conv::Pascal, args: args.bytes().collect(), f: Some(f) });
         (s.thunk as u32) << 16 | 4 * i
     })
 }
@@ -535,10 +635,14 @@ pub fn dispatch(cpu: &mut Cpu, a: u32) -> bool {
         return true;
     }
     let i = off / 4;
-    let (module, name, conv, types, f) = with(|s| {
-        let e = &s.entries[i as usize];
-        (e.module.clone(), e.name.clone(), e.conv, e.args.clone(), e.f)
-    });
+    // (a wild far pointer into the thunk segment past its entries: the program's fault, not an
+    // index panic)
+    let Some((module, name, conv, types, f)) = with(|s| {
+        let e = s.entries.get(i as usize)?;
+        Some((e.module.clone(), e.name.clone(), e.conv, e.args.clone(), e.f))
+    }) else {
+        fatal16(cpu, &format!("w16: call into the thunk segment at {off:#x}, not an import"));
+    };
     let sp = cpu.sbase[2].wrapping_add(cpu.regs[ESP] & 0xffff);
     let size = |t: u8| if matches!(t, b'w' | b's') { 2 } else if t == b'd' { 8 } else { 4 };
     let total: u32 = types.iter().map(|&t| size(t)).sum();
@@ -711,20 +815,37 @@ pub fn exception(cpu: &mut Cpu, stop: kura::cpu::Stop) {
 // ---------------------------------------------------------------------------------------------
 // the NE loader
 
+// The NE loader reads a file that may be truncated or damaged (a partial download through the
+// vfs counts): every read is bounded, 0 past the end, and a bad index is "not a valid module"
+// (error 11) rather than an index panic = the VM's abort.
 fn u16at(d: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([d[o], d[o + 1]])
+    d.get(o..o.saturating_add(2)).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]))
+}
+fn b8(d: &[u8], o: usize) -> u8 {
+    d.get(o).copied().unwrap_or(0)
+}
+/// The Pascal string (length byte, bytes) at `p` (cut at the file's end).
+fn pstr(d: &[u8], p: usize) -> String {
+    let n = b8(d, p) as usize;
+    let s = d.get(p.saturating_add(1)..).unwrap_or(&[]);
+    String::from_utf8_lossy(&s[..n.min(s.len())]).into_owned()
+}
+/// The selector of 1-based segment `i` (None: 0 or past the table).
+fn seg_n(segs: &[u16], i: usize) -> Option<u16> {
+    segs.get(i.checked_sub(1)?).copied()
 }
 
 /// Far pointer of an entry (by ordinal) of the program.
 fn entry_point(d: &[u8], ne: usize, segs: &[u16], ord: u16) -> Option<u32> {
     let mut p = ne + u16at(d, ne + 4) as usize;
-    let mut n = 1u16;
+    let mut n = 1u32;
+    let ord = ord as u32;
     loop {
-        let count = d[p] as u16;
-        if count == 0 {
+        let count = b8(d, p) as u32;
+        if count == 0 || ord < n {
             return None;
         }
-        let ty = d[p + 1];
+        let ty = b8(d, p + 1);
         p += 2;
         if ty == 0 {
             n += count;
@@ -733,12 +854,35 @@ fn entry_point(d: &[u8], ne: usize, segs: &[u16], ord: u16) -> Option<u32> {
         let sz = if ty == 0xff { 6 } else { 3 };
         if ord < n + count {
             let e = p + sz * (ord - n) as usize;
-            let (seg, off) = if ty == 0xff { (d[e + 3], u16at(d, e + 4)) } else { (ty, u16at(d, e + 1)) };
-            return Some((segs[seg as usize - 1] as u32) << 16 | off as u32);
+            let (seg, off) = if ty == 0xff { (b8(d, e + 3), u16at(d, e + 4)) } else { (ty, u16at(d, e + 1)) };
+            return Some((seg_n(segs, seg as usize)? as u32) << 16 | off as u32);
         }
         n += count;
         p += sz * count as usize;
     }
+}
+
+/// The NE header readers that touch no guest memory, over any bytes (fuzz/fuzz_targets/
+/// ne_header.rs): the module name, every entry point, the imported modules' names and an export
+/// lookup. None when the bytes are no NE file.
+#[doc(hidden)]
+pub fn check_ne(d: &[u8]) -> Option<(String, Vec<u32>)> {
+    if u16at(d, 0) != 0x5a4d {
+        return None;
+    }
+    let ne = u32::from_le_bytes(d.get(0x3c..0x40)?.try_into().ok()?) as usize;
+    if u16at(d, ne) != 0x454e {
+        return None;
+    }
+    let nseg = u16at(d, ne + 0x1c) as usize;
+    let segs: Vec<u16> = (0..nseg.min(254)).map(|i| 0x100 + 8 * i as u16).collect();
+    let name = module_name(d, ne);
+    let entries = (1..=512u16).filter_map(|o| entry_point(d, ne, &segs, o)).collect();
+    for i in 0..=u16at(d, ne + 0x1e).min(64) {
+        let _ = mod_ref(d, ne, i);
+    }
+    let _ = export_ordinal(d, ne, &name);
+    Some((name, entries))
 }
 
 /// An NE image's segments in memory: their selectors, and per segment (file offset, length in
@@ -748,33 +892,42 @@ struct Image {
     info: Vec<(usize, usize, u16, u32)>,
 }
 
-/// Maps the segments of the NE file `d` (header at `ne`).
-fn map_segments(d: &[u8], ne: usize) -> Image {
+/// Maps the segments of the NE file `d` (header at `ne`). None: a header no loader takes (an
+/// alignment shift past 16, a segment table past the file) or no memory or selectors left.
+fn map_segments(d: &[u8], ne: usize) -> Option<Image> {
     let h = |o: usize| u16at(d, ne + o);
     let (nseg, segtab, align) = (h(0x1c), h(0x22), h(0x32));
+    let shift = if align == 0 { 9 } else { align as u32 };
+    if shift > 16 || ne + segtab as usize + 8 * nseg as usize > d.len() {
+        return None;
+    }
     let mut segs = vec![];
     let mut info = vec![];
     for k in 0..nseg as usize {
         let e = ne + segtab as usize + 8 * k;
         let (off, len, flags, min) = (u16at(d, e), u16at(d, e + 2), u16at(d, e + 4), u16at(d, e + 6));
-        let fofs = (off as usize) << if align == 0 { 9 } else { align };
+        let fofs = (off as usize) << shift;
         let flen = if len == 0 && off != 0 { 0x10000 } else { len as usize };
-        let b = crate::mem::alloc(0x10000).expect("segment");
+        let b = crate::mem::alloc(0x10000)?;
         if off != 0 {
             crate::mem::write(b, &d[fofs.min(d.len())..(fofs + flen).min(d.len())]);
         }
-        segs.push(sel_alloc(b, 0x10000));
+        let sel = sel_alloc(b, 0x10000);
+        if sel == 0 {
+            return None;
+        }
+        segs.push(sel);
         info.push((fofs, flen, flags, if min == 0 { 0x10000u32 } else { min as u32 }));
     }
-    Image { segs, info }
+    Some(Image { segs, info })
 }
 
 /// The name a module's imports call module `i` (1-based) of its module reference table.
 fn mod_ref(d: &[u8], ne: usize, i: u16) -> String {
     let (modref, impnam) = (u16at(d, ne + 0x28), u16at(d, ne + 0x2a));
-    let r = u16at(d, ne + modref as usize + 2 * (i as usize - 1)) as usize;
-    let p = ne + impnam as usize + r;
-    String::from_utf8_lossy(&d[p + 1..p + 1 + d[p] as usize]).into_owned()
+    let Some(k) = (i as usize).checked_sub(1) else { return String::new() };
+    let r = u16at(d, ne + modref as usize + 2 * k) as usize;
+    pstr(d, ne + impnam as usize + r)
 }
 
 /// Applies the relocations of every segment of `img`.
@@ -786,19 +939,23 @@ fn relocate(d: &[u8], ne: usize, img: &Image) {
         if flags & 0x100 == 0 || fofs == 0 {
             continue;
         }
-        let base = sel_base(segs[k]).unwrap().0;
+        let Some((base, _)) = sel_base(segs[k]) else { continue };
         let mut p = fofs + flen;
         let n = u16at(d, p);
         p += 2;
         for _ in 0..n {
-            let (st, fl, so, a, b) = (d[p], d[p + 1], u16at(d, p + 2), u16at(d, p + 4), u16at(d, p + 6));
+            if p + 8 > d.len() {
+                break;
+            }
+            let (st, fl, so, a, b) = (b8(d, p), b8(d, p + 1), u16at(d, p + 2), u16at(d, p + 4), u16at(d, p + 6));
             p += 8;
             let target: u32 = match fl & 3 {
                 0 => {
                     if a & 0xff == 0xff {
                         entry_point(d, ne, segs, b).unwrap_or(0)
                     } else {
-                        (segs[(a & 0xff) as usize - 1] as u32) << 16 | b as u32
+                        let Some(sel) = seg_n(segs, (a & 0xff) as usize) else { continue };
+                        (sel as u32) << 16 | b as u32
                     }
                 }
                 1 => {
@@ -816,8 +973,7 @@ fn relocate(d: &[u8], ne: usize, img: &Image) {
                     }
                 }
                 2 => {
-                    let q = ne + impnam as usize + b as usize;
-                    let name = String::from_utf8_lossy(&d[q + 1..q + 1 + d[q] as usize]).into_owned();
+                    let name = pstr(d, ne + impnam as usize + b as usize);
                     let m = mod_ref(d, ne, a);
                     if !is_system(&m) {
                         dll_entry(&m, Export::Name(&name))
@@ -835,7 +991,13 @@ fn relocate(d: &[u8], ne: usize, img: &Image) {
             };
             let additive = fl & 4 != 0;
             let mut at = so as u32;
-            loop {
+            // (a chain ends at 0xffff or a self-link; a damaged one may loop A -> B -> A: at most
+            // one visit per word of the segment)
+            for _ in 0..0x8000 {
+                // (a fixup reaching past its 64 KB segment: left alone)
+                if at + 4 > 0x10000 {
+                    break;
+                }
                 let a = base + at;
                 let next = r16(a);
                 match st {
@@ -899,8 +1061,7 @@ pub fn is_system(module: &str) -> bool {
 
 /// A module's own name (the first entry of its resident names table), upper case.
 fn module_name(d: &[u8], ne: usize) -> String {
-    let p = ne + u16at(d, ne + 0x26) as usize;
-    String::from_utf8_lossy(&d[p + 1..p + 1 + d[p] as usize]).to_ascii_uppercase()
+    pstr(d, ne + u16at(d, ne + 0x26) as usize).to_ascii_uppercase()
 }
 
 /// The ordinal of export `name` (resident then nonresident names table, any case).
@@ -910,6 +1071,7 @@ pub fn export_ordinal(d: &[u8], ne: usize, name: &str) -> Option<u16> {
         while p < d.len() && d[p] != 0 {
             let n = d[p] as usize;
             let s = d.get(p + 1..p + 1 + n)?;
+            d.get(p + 1 + n..p + 3 + n)?;
             let ord = u16at(d, p + 1 + n);
             if !first && s.eq_ignore_ascii_case(name.as_bytes()) {
                 return Some(ord);
@@ -920,7 +1082,7 @@ pub fn export_ordinal(d: &[u8], ne: usize, name: &str) -> Option<u16> {
         None
     };
     let res = ne + u16at(d, ne + 0x26) as usize;
-    let nonres = u32::from_le_bytes(d[ne + 0x2c..ne + 0x30].try_into().unwrap()) as usize;
+    let nonres = u32::from_le_bytes(d.get(ne + 0x2c..ne + 0x30)?.try_into().unwrap()) as usize;
     scan(res, true).or_else(|| if nonres != 0 { scan(nonres, true) } else { None })
 }
 
@@ -1005,8 +1167,8 @@ pub fn load_dll(name: &str) -> Result<u16, u16> {
     }
     let h = |o: usize| u16at(&d, ne + o);
     let (autodata, heap, ip, cs) = (h(0x0e), h(0x10), h(0x14), h(0x16));
-    let img = map_segments(&d, ne);
-    let dgroup = if autodata == 0 { img.segs[0] } else { img.segs[autodata as usize - 1] };
+    let Some(img) = map_segments(&d, ne) else { return Err(11) };
+    let Some(dgroup) = (if autodata == 0 { img.segs.first().copied() } else { seg_n(&img.segs, autodata as usize) }) else { return Err(11) };
     let dmin = if autodata == 0 { 0 } else { img.info[autodata as usize - 1].3 };
     MODS.lock().unwrap().push(Mod16 { name: module_name(&d, ne), path, file: d.clone(), ne, segs: img.segs.clone(), dgroup, refs: 1 });
     relocate(&d, ne, &img);
@@ -1017,8 +1179,8 @@ pub fn load_dll(name: &str) -> Result<u16, u16> {
         m.insert(0u16, ((dmin + 15) & !15).min(0xff00) as u16);
         s.heaps.insert(dgroup, m);
     });
-    if cs != 0 {
-        PENDING.lock().unwrap().push((dgroup, (img.segs[cs as usize - 1] as u32) << 16 | ip as u32, heap));
+    if let Some(sel) = (cs != 0).then(|| seg_n(&img.segs, cs as usize)).flatten() {
+        PENDING.lock().unwrap().push((dgroup, (sel as u32) << 16 | ip as u32, heap));
     }
     Ok(dgroup)
 }
@@ -1029,11 +1191,11 @@ pub fn load_dll(name: &str) -> Result<u16, u16> {
 fn fix_prologues(d: &[u8], ne: usize, segs: &[u16], dgroup: u16) {
     let mut p = ne + u16at(d, ne + 4) as usize;
     loop {
-        let count = d[p] as usize;
+        let count = b8(d, p) as usize;
         if count == 0 {
             return;
         }
-        let ty = d[p + 1];
+        let ty = b8(d, p + 1);
         p += 2;
         if ty == 0 {
             continue;
@@ -1041,8 +1203,8 @@ fn fix_prologues(d: &[u8], ne: usize, segs: &[u16], dgroup: u16) {
         let sz = if ty == 0xff { 6 } else { 3 };
         for k in 0..count {
             let e = p + sz * k;
-            let flags = d[e];
-            let (seg, off) = if ty == 0xff { (d[e + 3], u16at(d, e + 4)) } else { (ty, u16at(d, e + 1)) };
+            let flags = b8(d, e);
+            let (seg, off) = if ty == 0xff { (b8(d, e + 3), u16at(d, e + 4)) } else { (ty, u16at(d, e + 1)) };
             if flags & 1 == 0 || seg == 0 || seg as usize > segs.len() {
                 continue;
             }
@@ -1151,8 +1313,8 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     crate::w16api::init();
     *EXE_DIR.lock().unwrap() = wpath.rsplit_once('\\').map_or(String::new(), |(d, _)| format!("{d}\\"));
 
-    let d = kura::fs::read(exe).expect("read exe");
-    let ne = u32::from_le_bytes(d[0x3c..0x40].try_into().unwrap()) as usize;
+    let d = kura::fs::read(exe).unwrap_or_default();
+    let ne = d.get(0x3c..0x40).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
     let h = |o: usize| u16at(&d, ne + o);
     let (autodata, heap, mut stack) = (h(0x0e), h(0x10), h(0x12));
     let (ip, cs, mut sp, ss) = (h(0x14), h(0x16), h(0x18), h(0x1a));
@@ -1160,7 +1322,9 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     if stack < 0x1400 {
         stack = 0x1400;
     }
-    let img = map_segments(&d, ne);
+    let Some(img) = map_segments(&d, ne).filter(|i| cs != 0 && seg_n(&i.segs, cs as usize).is_some() && (autodata == 0 || seg_n(&i.segs, autodata as usize).is_some()) && (ss == 0 || seg_n(&i.segs, ss as usize).is_some())) else {
+        crate::fatal(cpu, &format!("w16: {wpath} is not a valid 16-bit program"));
+    };
     relocate(&d, ne, &img);
     let (segs, info) = (img.segs, img.info);
     let dgroup = if autodata == 0 { 0 } else { segs[autodata as usize - 1] };
@@ -1316,6 +1480,75 @@ mod ne_tests {
     fn module_names() {
         for (n, m) in [("C:\\GAME\\Lib.dll", "LIB"), ("LIB.DLL", "LIB"), ("lib", "LIB"), ("a/b.v2.drv", "B.V2"), ("D:x.dll", "X")] {
             assert_eq!(base_module(n), m, "{n}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::{h16_in, HMap, ALIASES};
+    use proptest::prelude::*;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    /// A Win16 program that LoadCursor()s per mouse move (or leaks DCs) takes every alias: the
+    /// next handle used to spin for ever holding the map's lock. Now it is 0 when every handle
+    /// is alive, and the aliases of handles that are gone are swept and reused.
+    #[test]
+    fn full_alias_table_does_not_hang() {
+        let hm: Mutex<Option<HMap>> = Mutex::new(None);
+        let mut seen = HashSet::new();
+        for i in 0..ALIASES as u32 {
+            let a = h16_in(&hm, 0x10000 + i, |_| true);
+            assert!(a >= 0x8000 && a % 4 == 0 && seen.insert(a), "alias {a:x} of handle {i}");
+        }
+        // (the same handle: the same alias, even when full)
+        assert_eq!(h16_in(&hm, 0x10000, |_| true), 0x8000);
+        assert_eq!(h16_in(&hm, 0x900000, |_| true), 0);
+        // the odd handles are gone: the next one gets one of their aliases
+        let a = h16_in(&hm, 0x900000, |h| h % 2 == 0);
+        assert!(a != 0);
+        let m = hm.lock().unwrap();
+        let m = m.as_ref().unwrap();
+        assert_eq!(m.to32[&a], 0x900000);
+        assert!(m.to16.keys().all(|&h| h % 2 == 0 || h == 0x900000));
+        assert_eq!(m.to16.len(), m.to32.len());
+    }
+
+    proptest! {
+        /// Any mix of new handles, repeats and handles dying: the map stays a bijection between
+        /// live-or-unswept handles and aliases, an alive handle keeps its alias, and a handle
+        /// only gets 0 when every alias belongs to a live handle.
+        #[test]
+        fn aliases_stay_a_bijection(ops in proptest::collection::vec((0u32..12000, any::<bool>()), 1..3000)) {
+            let hm: Mutex<Option<HMap>> = Mutex::new(None);
+            let mut dead: HashSet<u32> = HashSet::new();
+            let mut kept: std::collections::HashMap<u32, u16> = Default::default();
+            for (k, die) in ops {
+                let h = 0x10000 + k;
+                if die {
+                    dead.insert(h);
+                    kept.remove(&h);
+                    continue;
+                }
+                dead.remove(&h);
+                let a = h16_in(&hm, h, |x| !dead.contains(&x));
+                let g = hm.lock().unwrap();
+                let m = g.as_ref().unwrap();
+                prop_assert_eq!(m.to16.len(), m.to32.len());
+                for (&x, &y) in &m.to16 {
+                    prop_assert_eq!(m.to32.get(&y), Some(&x));
+                }
+                if a == 0 {
+                    prop_assert_eq!(m.to32.len(), ALIASES);
+                    prop_assert!(m.to16.keys().all(|x| !dead.contains(x)));
+                } else {
+                    if let Some(&old) = kept.get(&h) {
+                        prop_assert_eq!(old, a);
+                    }
+                    kept.insert(h, a);
+                }
+            }
         }
     }
 }

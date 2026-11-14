@@ -5,7 +5,7 @@
 use crate::mem::{cstr, r16, r32, w16, w32, w8};
 use crate::w16::{self, call16, call32, h16, h32, lin, task, C16, A};
 use crate::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use koji::{Cpu, EAX, ECX, EDX, ESP};
 
 /// (module.name, 32-bit dll!function, argument conversions, result conversion).
@@ -157,9 +157,26 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("MMSYSTEM.waveOutGetVolume", "winmm!waveOutGetVolume", "wp", "i"),
 ];
 
+/// SIMPLE by module, then name: a lookup with the call's own strings (each call used to format
+/// "MODULE.name" and compare it with every entry).
+fn simple_entry(module: &str, name: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str)> {
+    static BY: OnceLock<HashMap<&'static str, HashMap<&'static str, usize>>> = OnceLock::new();
+    let by = BY.get_or_init(|| {
+        let mut m: HashMap<&'static str, HashMap<&'static str, usize>> = HashMap::default();
+        for (i, e) in SIMPLE.iter().enumerate() {
+            if let Some((md, n)) = e.0.split_once('.') {
+                m.entry(md).or_default().entry(n).or_insert(i);
+            }
+        }
+        m
+    });
+    by.get(module).and_then(|m| m.get(name)).map(|&i| &SIMPLE[i])
+}
+
 fn simple(c: &mut C16) -> u32 {
-    let key = format!("{}.{}", c.module, c.name);
-    let &(_, func, conv, ret) = SIMPLE.iter().find(|e| e.0 == key).unwrap();
+    let Some(&(_, func, conv, ret)) = simple_entry(&c.module, &c.name) else {
+        crate::w16::fatal16(c.cpu, &format!("w16: {}.{} has no 32-bit counterpart", c.module, c.name));
+    };
     let mut args = vec![];
     let mut outs: Vec<(u8, u32, u32)> = vec![];
     let mut k = 0;
@@ -439,14 +456,14 @@ pub fn init() {
     reg("USER.PeekMessage", peek_message);
     reg("USER.TranslateMessage", |c| {
         let m = msg_in(c.a(0));
-        let r = call32(c.cpu, "user32!TranslateMessage", &[m]);
-        crate::mem::heap_free(m);
+        let r = call32(c.cpu, "user32!TranslateMessage", &[m.0]);
+        msg_done(m);
         r
     });
     reg("USER.DispatchMessage", |c| {
         let m = msg_in(c.a(0));
-        let r = call32(c.cpu, "user32!DispatchMessageA", &[m]);
-        crate::mem::heap_free(m);
+        let r = call32(c.cpu, "user32!DispatchMessageA", &[m.0]);
+        msg_done(m);
         r
     });
     reg("USER.BeginPaint", |c| {
@@ -1017,7 +1034,8 @@ pub enum Back {
     MinMax(u32, u32),
     CalcSize(u32, u32, bool),
     WinPos(u32, u32),
-    Text(u32, u32),
+    /// (the 32-bit buffer, the scratch copy, the buffer's size in characters)
+    Text(u32, u32, u32),
 }
 
 /// 32 -> 16: (message, wParam, lParam) for a 16-bit procedure (structs in scratch memory).
@@ -1074,7 +1092,7 @@ pub fn to16(msg: u32, wp: u32, lp: u32) -> (u16, u16, u32, Back) {
         0x0d if lp != 0 => {
             let n = wp.min(0x4000);
             let (fp, l) = w16::scratch(n + 1);
-            (0x0d, n as u16, fp, Back::Text(lp, l))
+            (0x0d, n as u16, fp, Back::Text(lp, l, n))
         }
         // WM_COMMAND: (id, MAKELONG(hwnd, code))
         0x111 => (0x111, lo(wp) as u16, (h16(lp) as u32) | hi(wp) << 16, Back::None),
@@ -1112,10 +1130,14 @@ pub fn from16_done(back: Back, r: u32, kind: Kind) -> u32 {
                 w32(lp + 8 + 4 * i, r16(l + 4 + 2 * i) as i16 as i32 as u32);
             }
         }
-        Back::Text(lp, l) => {
-            let s = cstr(l);
-            crate::mem::write(lp, &s);
-            w8(lp + s.len() as u32, 0);
+        Back::Text(lp, l, cap) => {
+            // (at most the caller's buffer, wParam characters with the NUL)
+            if cap > 0 {
+                let s = cstr(l);
+                let n = s.len().min(cap as usize - 1);
+                crate::mem::write(lp, &s[..n]);
+                w8(lp + n as u32, 0);
+            }
         }
         Back::None => {}
     }
@@ -1250,9 +1272,11 @@ fn call_window_proc(c: &mut C16) -> u32 {
 }
 
 /// MSG16 at `p` (linear) -> a new 32-bit MSG (free it with heap_free).
-fn msg_in(p: u32) -> u32 {
+/// A 16-bit MSG as a 32-bit one (a new block) and the blocks its lParam's conversion made:
+/// msg_done frees them all (to32's blocks were dropped and leaked).
+fn msg_in(p: u32) -> (u32, Vec<(u32, u32, u8)>) {
     let m = crate::mem::heap_alloc(28, true);
-    let (msg, wp, lp, _) = to32(r16(p + 2), r16(p + 4), r32(p + 6));
+    let (msg, wp, lp, tmp) = to32(r16(p + 2), r16(p + 4), r32(p + 6));
     w32(m, h32(r16(p)));
     w32(m + 4, msg);
     w32(m + 8, wp);
@@ -1264,7 +1288,11 @@ fn msg_in(p: u32) -> u32 {
     if msg == 0x113 && r32(p + 6) != 0 {
         w32(m + 12, proc_thunk(r32(p + 6), Kind::Timer));
     }
-    m
+    (m, tmp)
+}
+fn msg_done((m, tmp): (u32, Vec<(u32, u32, u8)>)) {
+    to32_done(tmp);
+    crate::mem::heap_free(m);
 }
 
 fn msg_out(m: u32, p: u32) {
@@ -1425,11 +1453,18 @@ pub fn find_resource(ty: u32, id: u32) -> Option<(u32, u32)> {
     let t = task();
     let d = &t.file;
     let ne = t.ne as usize;
-    let rt = ne + u16::from_le_bytes([d[ne + 0x24], d[ne + 0x25]]) as usize;
-    let shift = u16::from_le_bytes([d[rt], d[rt + 1]]);
+    // (the program's resource table, read bounded: 0 past the file's end, a damaged or packed
+    // table ends the search instead of aborting the VM)
+    let u16at = |o: usize| d.get(o..o.saturating_add(2)).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+    let rt = ne + u16at(ne + 0x24) as usize;
+    let shift = u16at(rt) as u32;
+    if shift > 16 {
+        return None;
+    }
     let name_at = |o: u16| -> Vec<u8> {
         let p = rt + o as usize;
-        d[p + 1..p + 1 + d[p] as usize].to_vec()
+        let n = d.get(p).copied().unwrap_or(0) as usize;
+        d.get(p + 1..).map_or(Vec::new(), |s| s[..n.min(s.len())].to_vec())
     };
     // (an integer id: with 0x8000_0000, or below 0x10000 as MAKEINTRESOURCE and RT_* are)
     let matches = |v: u16, want: u32| -> bool {
@@ -1441,20 +1476,23 @@ pub fn find_resource(ty: u32, id: u32) -> Option<(u32, u32)> {
     };
     let mut p = rt + 2;
     loop {
-        let tid = u16::from_le_bytes([d[p], d[p + 1]]);
-        if tid == 0 {
+        let tid = u16at(p);
+        if tid == 0 || p >= d.len() {
             return None;
         }
-        let n = u16::from_le_bytes([d[p + 2], d[p + 3]]) as usize;
+        let n = u16at(p + 2) as usize;
         p += 8;
         let hit = matches(tid, ty);
         for k in 0..n {
             let e = p + 12 * k;
-            let (off, len, rid) = (u16::from_le_bytes([d[e], d[e + 1]]), u16::from_le_bytes([d[e + 2], d[e + 3]]), u16::from_le_bytes([d[e + 6], d[e + 7]]));
+            let (off, len, rid) = (u16at(e), u16at(e + 2), u16at(e + 6));
             if hit && matches(rid, id) {
                 let (o, l) = ((off as usize) << shift, (len as usize) << shift);
-                let data = &d[o..(o + l).min(d.len())];
+                let data = d.get(o.min(d.len())..(o + l).min(d.len())).unwrap_or(&[]);
                 let a = crate::mem::heap_alloc(data.len() as u32 + 16, true);
+                if a == 0 {
+                    return None;
+                }
                 crate::mem::write(a, data);
                 return Some((a, data.len() as u32));
             }
@@ -1567,7 +1605,16 @@ fn load_menu(cpu: &mut Cpu, name: u32) -> u32 {
 }
 
 fn menu_items(cpu: &mut Cpu, menu: u32, p: &mut u32) {
-    loop {
+    menu_items_at(cpu, menu, p, 0)
+}
+
+/// (popups nested at most 16 deep and at most 4096 items, as user.rs's MENU_DEPTH bounds the
+/// 32-bit side: a damaged resource used to recurse or read on without end)
+fn menu_items_at(cpu: &mut Cpu, menu: u32, p: &mut u32, depth: u32) {
+    if depth > 16 {
+        return;
+    }
+    for _ in 0..4096 {
         let flags = r16(*p) as u32;
         *p += 2;
         let popup = flags & 0x10 != 0;
@@ -1583,7 +1630,7 @@ fn menu_items(cpu: &mut Cpu, menu: u32, p: &mut u32) {
         let f = flags & !0x80;
         if popup {
             let sub = call32(cpu, "user32!CreatePopupMenu", &[]);
-            menu_items(cpu, sub, p);
+            menu_items_at(cpu, sub, p, depth + 1);
             call32(cpu, "user32!AppendMenuA", &[menu, f, sub, text]);
         } else {
             let t = if crate::mem::r8(text) == 0 && id == 0 { 0 } else { text };
@@ -1951,7 +1998,12 @@ pub fn dos(cpu: &mut Cpu) {
             let dta = if dos.dta == 0 { w16::sel_base(task().psp).unwrap().0 + 0x80 } else { dos.dta };
             let fd = crate::mem::heap_alloc(320, true);
             let (h, r) = if ah == 0x4e {
+                // (a new search at this DTA ends the one before: its find handle is closed)
+                let old = dos.finds.remove(&dta);
                 drop(g);
+                if let Some(o) = old {
+                    crate::w16::call32(cpu, "kernel32!FindClose", &[o]);
+                }
                 let h = crate::w16::call32(cpu, "kernel32!FindFirstFileA", &[ds_dx(cpu), fd]);
                 (h, h != u32::MAX)
             } else {
@@ -1959,6 +2011,11 @@ pub fn dos(cpu: &mut Cpu) {
                 drop(g);
                 (h, h != u32::MAX && crate::w16::call32(cpu, "kernel32!FindNextFileA", &[h, fd]) != 0)
             };
+            // (no more files: the search is over and its handle closed, as DOS has none to keep)
+            if !r && h != u32::MAX {
+                DOS.lock().unwrap().as_mut().unwrap().finds.remove(&dta);
+                crate::w16::call32(cpu, "kernel32!FindClose", &[h]);
+            }
             if r {
                 DOS.lock().unwrap().as_mut().unwrap().finds.insert(dta, h);
                 w8(dta + 0x15, r32(fd) as u8);
