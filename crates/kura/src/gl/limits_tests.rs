@@ -216,3 +216,111 @@ fn window_buffers_go_with_their_last_context() {
         vngl_make_current(0, 0, 0, 0);
     }
 }
+
+/// glMapBuffer's blocks, as the test's guest allocator hands them out: live ones by address.
+static BLOCKS: std::sync::Mutex<Option<HashMap<usize, usize>>> = std::sync::Mutex::new(None);
+unsafe extern "C" fn block_alloc(n: u32) -> *mut u8 {
+    let p = libc::malloc(n as usize) as *mut u8;
+    BLOCKS.lock().unwrap().get_or_insert_with(HashMap::new).insert(p as usize, n as usize);
+    p
+}
+unsafe extern "C" fn block_free(p: *mut u8) {
+    let n = BLOCKS.lock().unwrap().as_mut().unwrap().remove(&(p as usize)).expect("freed twice, or never given");
+    // (whoever still reads it finds this)
+    std::ptr::write_bytes(p, 0xdd, n);
+    libc::free(p as *mut libc::c_void);
+}
+
+/// Random glBufferData / glBufferSubData / glMapBuffer / writes through the mapping /
+/// glUnmapBuffer / draws / glDeleteBuffers on a few buffers against a model: a mapping is a block of the
+/// guest allocator's (never this side's Vec), as long as the buffer; what is written through it
+/// is the buffer's contents at the unmap and at a draw before it; new storage, a delete and
+/// the unmap give the block back exactly once, and at the end none is left.
+#[test]
+fn mapped_buffers_live_in_guest_memory() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    vngl_set_alloc(block_alloc, block_free);
+    for seed in 1..=60u64 {
+        fresh();
+        let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 9);
+        const T: u32 = 0x8892; // GL_ARRAY_BUFFER
+        // (the model: a buffer's contents, and its mapping's address when mapped)
+        let mut model: HashMap<u32, (Vec<u8>, usize)> = HashMap::new();
+        for step in 0..300 {
+            let ids: Vec<u32> = model.keys().copied().collect();
+            let at = format!("seed {seed} step {step}");
+            if ids.is_empty() || r.below(12) == 0 {
+                let mut id = 0;
+                unsafe { glGenBuffers(1, &mut id) };
+                glBindBuffer(T, id);
+                model.insert(id, (Vec::new(), 0));
+                continue;
+            }
+            let id = ids[r.below(ids.len())];
+            glBindBuffer(T, id);
+            let (data, mapped) = model.get_mut(&id).unwrap();
+            match r.below(9) {
+                0 => {
+                    let n = r.below(40);
+                    let src: Vec<u8> = (0..n).map(|_| r.next() as u8).collect();
+                    unsafe { glBufferData(T, n as isize, if r.chance(30) { std::ptr::null() } else { src.as_ptr() }, 0x88E4) };
+                    // (glBufferData(NULL) is zeros here; the mapping, if any, is gone)
+                    *data = GL.lock().unwrap().as_ref().unwrap().buffers[&id].data.clone();
+                    assert_eq!(data.len(), n, "{at}");
+                    *mapped = 0;
+                }
+                1 if !data.is_empty() => {
+                    let o = r.below(data.len());
+                    let n = r.below(data.len() - o + 1);
+                    let src: Vec<u8> = (0..n).map(|_| r.next() as u8).collect();
+                    unsafe { glBufferSubData(T, o as isize, n as isize, src.as_ptr()) };
+                    data[o..o + n].copy_from_slice(&src);
+                }
+                2 | 3 => {
+                    let p = glMapBuffer(T, 0x88BA) as usize;
+                    if *mapped != 0 {
+                        assert_eq!((p, glGetError()), (0, GL_INVALID_OPERATION), "{at}: mapped twice");
+                    } else {
+                        let blocks = BLOCKS.lock().unwrap();
+                        assert!(blocks.as_ref().unwrap().get(&p).is_some_and(|&n| n >= data.len()), "{at}: not a guest block of the buffer's size");
+                        assert_eq!(unsafe { std::slice::from_raw_parts(p as *const u8, data.len()) }, &data[..], "{at}");
+                        *mapped = p;
+                    }
+                }
+                4 | 5 if *mapped != 0 && !data.is_empty() => {
+                    // the program writes through the pointer
+                    let o = r.below(data.len());
+                    let v = r.next() as u8;
+                    unsafe { *((*mapped + o) as *mut u8) = v };
+                    data[o] = v;
+                }
+                6 => {
+                    assert_eq!(glUnmapBuffer(T), 1);
+                    *mapped = 0;
+                    assert_eq!(GL.lock().unwrap().as_ref().unwrap().buffers[&id].data, *data, "{at}: after the unmap");
+                }
+                7 => {
+                    // (a draw of nothing: buffers still mapped are read as they are now)
+                    glDrawArrays(4, 0, 0);
+                    assert_eq!(GL.lock().unwrap().as_ref().unwrap().buffers[&id].data, *data, "{at}: at a draw");
+                }
+                8 if r.chance(40) => {
+                    unsafe { glDeleteBuffers(1, &id) };
+                    model.remove(&id);
+                }
+                _ => {}
+            }
+            // the live blocks are the mappings, no more and no fewer
+            let mut want: Vec<usize> = model.values().map(|m| m.1).filter(|&p| p != 0).collect();
+            let mut got: Vec<usize> = BLOCKS.lock().unwrap().as_ref().map(|b| b.keys().copied().collect()).unwrap_or_default();
+            want.sort();
+            got.sort();
+            assert_eq!(got, want, "{at}");
+        }
+        for id in model.keys() {
+            unsafe { glDeleteBuffers(1, id) };
+        }
+        assert!(BLOCKS.lock().unwrap().as_ref().is_none_or(|b| b.is_empty()), "seed {seed}: blocks left");
+    }
+    *GUEST.lock().unwrap() = None;
+}

@@ -147,6 +147,43 @@ pub(crate) struct Texture {
 #[derive(Default)]
 pub(crate) struct Buffer {
     data: Vec<u8>,
+    /// glMapBuffer's copy in guest memory while it is mapped (0: not): `data.len()` bytes
+    mapped: usize,
+}
+
+/// Guest memory for mapped buffers (sake's allocator, `vngl_set_alloc`).
+type GuestAlloc = (unsafe extern "C" fn(u32) -> *mut u8, unsafe extern "C" fn(*mut u8));
+static GUEST: Mutex<Option<GuestAlloc>> = Mutex::new(None);
+
+/// sake: where glMapBuffer's memory comes from. The program gets a block of its own memory, not
+/// a pointer into this side's Vec (which glBufferData and glDeleteBuffers free under it, and
+/// which lies outside the memory a guest may touch).
+pub fn vngl_set_alloc(alloc: unsafe extern "C" fn(u32) -> *mut u8, free: unsafe extern "C" fn(*mut u8)) {
+    *GUEST.lock().unwrap_or_else(|e| e.into_inner()) = Some((alloc, free));
+}
+
+impl Buffer {
+    /// What the program wrote to the mapping so far, into `data` (draws read it: games draw
+    /// from buffers they never unmap).
+    fn sync(&mut self) {
+        if self.mapped != 0 {
+            unsafe { std::ptr::copy_nonoverlapping(self.mapped as *const u8, self.data.as_mut_ptr(), self.data.len()) };
+        }
+    }
+
+    /// The mapping ends (`keep`: with what was written to it).
+    fn unmap(&mut self, keep: bool) {
+        if self.mapped == 0 {
+            return;
+        }
+        if keep {
+            self.sync();
+        }
+        if let Some((_, free)) = *GUEST.lock().unwrap_or_else(|e| e.into_inner()) {
+            unsafe { free(self.mapped as *mut u8) };
+        }
+        self.mapped = 0;
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -342,6 +379,8 @@ pub(crate) struct Gl {
     next_ctx: u32,
     textures: HashMap<u32, Texture>,
     buffers: HashMap<u32, Buffer>,
+    /// the buffers that are mapped
+    mapped: HashSet<u32>,
     fbos: HashMap<u32, Fbo>,
     rbs: HashMap<u32, Renderbuffer>,
     next_name: u32,
@@ -382,6 +421,7 @@ fn lock() -> std::sync::MutexGuard<'static, Option<Gl>> {
             next_ctx: 1,
             textures: HashMap::new(),
             buffers: HashMap::new(),
+            mapped: HashSet::new(),
             fbos: HashMap::new(),
             rbs: HashMap::new(),
             next_name: 1,
@@ -1209,6 +1249,7 @@ pub(crate) fn indices(g: &Gl, c: &Ctx, count: i32, ty: u32, ptr: u32) -> Vec<u32
 
 extern "C" fn glDrawArrays(mode: u32, first: i32, count: i32) {
     with(|g, c| {
+        sync_mapped(g);
         if c.program != 0 {
             let idx: Vec<u32> = (first.max(0) as u32..(first + count).max(0) as u32).collect();
             return glsl::draw(g, c, mode, &idx);
@@ -1217,8 +1258,18 @@ extern "C" fn glDrawArrays(mode: u32, first: i32, count: i32) {
         draw(g, c, mode, v);
     })
 }
+/// Buffers still mapped give the draw what was written to them so far.
+fn sync_mapped(g: &mut Gl) {
+    for id in &g.mapped {
+        if let Some(b) = g.buffers.get_mut(id) {
+            b.sync();
+        }
+    }
+}
+
 extern "C" fn glDrawElements(mode: u32, count: i32, ty: u32, ptr: u32) {
     with(|g, c| {
+        sync_mapped(g);
         let idx = indices(g, c, count, ty, ptr);
         if c.program != 0 {
             return glsl::draw(g, c, mode, &idx);
@@ -2137,7 +2188,9 @@ unsafe extern "C" fn glDeleteBuffers(n: i32, names: *const u32) {
     with(|g, c| {
         for id in ids {
             g.reserved.remove(&(K_BUF, id));
-            if g.buffers.remove(&id).is_some() {
+            g.mapped.remove(&id);
+            if let Some(mut b) = g.buffers.remove(&id) {
+                b.unmap(false);
                 for b in [&mut c.array_buffer, &mut c.element_buffer] {
                     if *b == id {
                         *b = 0;
@@ -2175,7 +2228,11 @@ fn bound_buffer(c: &Ctx, target: u32) -> u32 {
 }
 unsafe extern "C" fn glBufferData(target: u32, size: isize, data: *const u8, _usage: u32) {
     with(|g, c| {
-        let Some(b) = g.buffers.get_mut(&bound_buffer(c, target)) else { return c.err(GL_INVALID_OPERATION) };
+        let id = bound_buffer(c, target);
+        let Some(b) = g.buffers.get_mut(&id) else { return c.err(GL_INVALID_OPERATION) };
+        // (new storage: a mapping of the old one ends, as GL has it)
+        b.unmap(false);
+        g.mapped.remove(&id);
         b.data = if data.is_null() { vec![0; size.max(0) as usize] } else { std::slice::from_raw_parts(data, size.max(0) as usize).to_vec() };
     })
 }
@@ -2183,18 +2240,49 @@ unsafe extern "C" fn glBufferSubData(target: u32, off: isize, size: isize, data:
     with(|g, c| {
         let Some(b) = g.buffers.get_mut(&bound_buffer(c, target)) else { return };
         let (o, n) = (off.max(0) as usize, size.max(0) as usize);
-        if !data.is_null() && o + n <= b.data.len() {
+        if !data.is_null() && o.saturating_add(n) <= b.data.len() {
             b.data[o..o + n].copy_from_slice(std::slice::from_raw_parts(data, n));
+            // (and into a mapping, which the unmap reads back)
+            if b.mapped != 0 {
+                std::ptr::copy_nonoverlapping(data, (b.mapped + o) as *mut u8, n);
+            }
         } else {
             c.err(GL_INVALID_VALUE);
         }
     })
 }
-/// The buffer's own memory: draws read it as they are made, after the unmap.
+/// A copy of the buffer in guest memory, read back at glUnmapBuffer and by the draws made
+/// while it is mapped. (Without sake's allocator, in tests of other things: the buffer's own
+/// memory.)
 extern "C" fn glMapBuffer(target: u32, _access: u32) -> *mut u8 {
-    with(|g, c| g.buffers.get_mut(&bound_buffer(c, target)).map_or(0, |b| b.data.as_mut_ptr() as usize)) as *mut u8
+    with(|g, c| {
+        let id = bound_buffer(c, target);
+        let Some(b) = g.buffers.get_mut(&id) else { return 0 };
+        let Some((alloc, _)) = *GUEST.lock().unwrap_or_else(|e| e.into_inner()) else { return b.data.as_mut_ptr() as usize };
+        // (mapped already: GL_INVALID_OPERATION and no pointer)
+        if b.mapped != 0 {
+            c.err(GL_INVALID_OPERATION);
+            return 0;
+        }
+        let p = unsafe { alloc(b.data.len().max(1) as u32) } as usize;
+        if p == 0 {
+            c.err(0x0505);
+            return 0;
+        }
+        unsafe { std::ptr::copy_nonoverlapping(b.data.as_ptr(), p as *mut u8, b.data.len()) };
+        b.mapped = p;
+        g.mapped.insert(id);
+        p
+    }) as *mut u8
 }
-extern "C" fn glUnmapBuffer(_target: u32) -> u8 {
+extern "C" fn glUnmapBuffer(target: u32) -> u8 {
+    with(|g, c| {
+        let id = bound_buffer(c, target);
+        if let Some(b) = g.buffers.get_mut(&id) {
+            b.unmap(true);
+        }
+        g.mapped.remove(&id);
+    });
     1
 }
 

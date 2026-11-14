@@ -178,10 +178,24 @@ pub(crate) fn set_current_pair(v: (u32, u32)) {
     CUR.with(|c| c.set(v))
 }
 
+/// glMapBuffer's memory is the program's own (kura copies the buffer there and back).
+fn guest_alloc() {
+    unsafe extern "C" fn alloc(size: u32) -> *mut u8 {
+        mem::alloc(size).unwrap_or(0) as usize as *mut u8
+    }
+    unsafe extern "C" fn free(p: *mut u8) {
+        mem::release(p as usize as u32);
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| kura::gl::vngl_set_alloc(alloc, free));
+}
+
 fn wglCreateContext(_: &mut Ctx) -> u32 {
+    guest_alloc();
     kura::gl::vngl_context_create(0)
 }
 fn wglCreateContextAttribsARB(c: &mut Ctx) -> u32 {
+    guest_alloc();
     kura::gl::vngl_context_create(c.a(1))
 }
 fn wglDeleteContext(c: &mut Ctx) -> u32 {
