@@ -330,6 +330,8 @@ fn _Winerror_message(c: &mut Ctx) -> u32 {
 fn _Thrd_create(c: &mut Ctx) -> u32 {
     let (t, f, arg) = (c.a(0), c.a(1), c.a(2));
     let id = Scratch::new(4);
+    // (holding the DLL f is in, as the UCRT's _beginthreadex does)
+    let (f, arg) = crate::k32::crt_start(f, arg);
     let h = k32(c, "CreateThread", &[0, 0, f, arg, 0, id.0]);
     if h == 0 {
         // _Thrd_error

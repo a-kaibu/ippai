@@ -26,6 +26,10 @@ pub struct Module {
     /// loaded from a side-by-side assembly (LDR_REDIRECTED): its name finds it only while
     /// that activation context is active
     pub redirected: bool,
+    /// the DLL files its imports hold a reference of (released when it is unloaded)
+    pub deps: Vec<u32>,
+    /// GetModuleHandleEx(PIN): never unloaded
+    pub pinned: bool,
 }
 
 /// The 64-bit address an image mapped at `base` (preferring `pref`) has.
@@ -154,6 +158,8 @@ pub fn load_datafile(data: &[u8], path: &str) -> Option<u32> {
         hle: false,
         pdata: (0, 0),
         redirected: false,
+        deps: Vec::new(),
+        pinned: false,
     });
     Some(base)
 }
@@ -167,6 +173,95 @@ pub fn free_datafile(base: u32) {
         v.remove(i);
         drop(v);
         mem::release(base);
+    }
+}
+
+/// FreeLibrary of a DLL file loaded as code: false if `base` is no module. Its last reference
+/// going unloads it: DllMain(PROCESS_DETACH, NULL) and its TLS callbacks, out of the loader's
+/// lists, unmapped, then the references of the DLLs it imported go the same way (an exe
+/// LoadLibrary mapped too). Ours, the process's exe and a pinned DLL stay.
+pub fn free_library(cpu: &mut Cpu, base: u32) -> bool {
+    let _g = loader_lock();
+    let Some(i) = by_base(base) else { return false };
+    let gone = {
+        let mut v = MODULES.write().unwrap();
+        // (the process's exe is the first image that is no DLL; another exe LoadLibrary
+        // mapped goes like a DLL)
+        let main = v.iter().position(|m| !m.dll && !m.hle);
+        let m = &mut v[i];
+        if main == Some(i) || m.hle || m.pinned || m.name.is_empty() {
+            return true;
+        }
+        m.refs = m.refs.saturating_sub(1);
+        m.refs == 0
+    };
+    if gone {
+        unload(cpu, base);
+    }
+    true
+}
+
+fn unload(cpu: &mut Cpu, base: u32) {
+    // (not yet initialized: no DllMain to tell)
+    let fresh = {
+        let mut p = PENDING.lock().unwrap();
+        let had = p.contains(&base);
+        p.retain(|&b| b != base);
+        had
+    };
+    // (an exe's entry point is no DllMain)
+    let entry = with(base, |m| if m.dll { m.entry } else { 0 }).unwrap_or(0);
+    if !fresh {
+        if entry != 0 {
+            if crate::env_on!("SAKE_TRACE_LOAD") {
+                eprintln!("sake: DllMain(PROCESS_DETACH) of {base:#x}");
+            }
+            crate::call(cpu, entry, &[base, 0, 0]);
+        }
+        tls_callbacks(cpu, base, 0);
+    }
+    let deps = {
+        let mut v = MODULES.write().unwrap();
+        let Some(i) = v.iter().position(|m| m.base == base) else { return };
+        v.remove(i).deps
+    };
+    ldr_remove(base);
+    mem::release(base);
+    if crate::env_on!("SAKE_TRACE_LOAD") {
+        eprintln!("sake: unloaded {base:#x}");
+    }
+    for d in deps {
+        let last = {
+            let mut v = MODULES.write().unwrap();
+            match v.iter_mut().find(|m| m.base == d && !m.pinned) {
+                Some(m) => {
+                    m.refs = m.refs.saturating_sub(1);
+                    m.refs == 0
+                }
+                None => false,
+            }
+        };
+        if last {
+            unload(cpu, d);
+        }
+    }
+}
+
+/// Whether `base` is a DLL file loaded as code (not ours, not the exe, not a data file).
+pub fn is_file_dll(base: u32) -> bool {
+    with(base, |m| m.dll && !m.hle && !m.name.is_empty()).unwrap_or(false)
+}
+
+/// GetModuleHandleEx without GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: a reference more
+/// (or, PIN, never unloaded).
+pub fn add_reference(base: u32, pin: bool) {
+    let mut v = MODULES.write().unwrap();
+    if let Some(m) = v.iter_mut().find(|m| m.base == base & !3) {
+        if pin {
+            m.pinned = true;
+        } else {
+            m.refs += 1;
+        }
     }
 }
 
@@ -391,6 +486,8 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     // exports
     let mut exports = HashMap::default();
     let mut ordinals = HashMap::default();
+    // (the DLLs its forwarders and imports name: references of its own)
+    let mut deps: Vec<u32> = Vec::new();
     let (erva, esize) = dir(0);
     // (a table outside the image is a packer's leftover: ASProtect's AGE.EXE (Eushully) has
     // 0x48000000 functions, which Windows never reads because nothing looks them up)
@@ -408,11 +505,16 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
                 // forwarder "dll.name": resolved like an import
                 let s = String::from_utf8_lossy(&mem::cstr(base + rva)).into_owned();
                 let (d, n) = s.split_once('.').unwrap_or((&s, ""));
-                if let Some(o) = n.strip_prefix('#') {
-                    resolve(&format!("{d}.dll"), Import::Ordinal(o.parse::<u32>().unwrap_or(0)))
+                let dll = format!("{d}.dll");
+                let a = if let Some(o) = n.strip_prefix('#') {
+                    resolve(&dll, Import::Ordinal(o.parse::<u32>().unwrap_or(0)))
                 } else {
-                    resolve(&format!("{d}.dll"), Import::Name(n))
+                    resolve(&dll, Import::Name(n))
+                };
+                if let Some(b) = by_name(&dll).filter(|&b| b != base && !deps.contains(&b)) {
+                    deps.push(b);
                 }
+                a
             } else {
                 base + rva
             }
@@ -454,6 +556,8 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         hle: false,
         pdata: if dir(3).0 != 0 { (base + dir(3).0, dir(3).1 / 12) } else { (0, 0) },
         redirected: false,
+        deps: Vec::new(),
+        pinned: false,
     });
     ldr_add(base);
     // imports (after the module is listed: a DLL importing from itself, or a cycle)
@@ -488,7 +592,21 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
                 }
                 k += 1;
             }
+            if let Some(b) = by_name(&dll_name).filter(|&b| b != base && !deps.contains(&b)) {
+                deps.push(b);
+            }
             d += 20;
+        }
+    }
+    // (each DLL file imported from holds a reference of this module's)
+    {
+        let mut v = MODULES.write().unwrap();
+        deps.retain(|&b| v.iter().any(|m| m.base == b && m.dll && !m.hle));
+        for m in v.iter_mut().filter(|m| deps.contains(&m.base)) {
+            m.refs += 1;
+        }
+        if let Some(m) = v.iter_mut().find(|m| m.base == base) {
+            m.deps = deps;
         }
     }
     // each section's protection from its characteristics (the image was mapped read-write-execute
@@ -837,6 +955,8 @@ pub fn hle_module(dll: &str) -> u32 {
         hle: true,
         pdata: (0, 0),
         redirected: false,
+        deps: Vec::new(),
+        pinned: false,
     });
     ldr_add(base);
     base
@@ -911,6 +1031,23 @@ fn ldr_add(base: u32) {
     w32(e + flags, 0x4 | if redirected { LDR_REDIRECTED } else { 0 });
     w16(e + count, 1);
     LDR.lock().unwrap().1.push((base, e));
+}
+
+/// Takes module `base` out of the loader's three lists.
+fn ldr_remove(base: u32) {
+    let e = {
+        let mut l = LDR.lock().unwrap();
+        let Some(i) = l.1.iter().position(|x| x.0 == base) else { return };
+        l.1.remove(i).1
+    };
+    let ps = mem::ps();
+    for k in 0..3 {
+        let link = e + 2 * ps * k;
+        let (next, prev) = (mem::rp(link), mem::rp(link + ps));
+        mem::wp(prev, next);
+        mem::wp(next + ps, prev);
+    }
+    mem::heap_free(e);
 }
 
 /// A module's flags or path changed after it was listed.
@@ -1022,7 +1159,13 @@ fn resolve_import(dll: &str, imp: Import) -> u32 {
     let base = match by_name(dll) {
         Some(b) => b,
         None => match load_dll_file(dll) {
-            Ok(b) => b,
+            Ok(b) => {
+                // (its one reference is the importer's, counted once the importer is loaded)
+                if let Some(i) = by_base(b) {
+                    MODULES.write().unwrap()[i].refs = 0;
+                }
+                b
+            }
             Err(e) => {
                 eprintln!("sake: import from {dll}: {e}");
                 let name = match imp {
@@ -1286,6 +1429,113 @@ pub fn thread_attach(cpu: &mut Cpu) {
         tls_callbacks(cpu, base, 2);
         if dll && entry != 0 {
             crate::call(cpu, entry, &[base, 2, 0]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod unload_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn fake(base: u32, refs: u32, deps: Vec<u32>) {
+        MODULES.write().unwrap().push(Module {
+            base,
+            size: 0x1000,
+            entry: 0,
+            name: format!("unload{base:x}.dll"),
+            path: String::new(),
+            exports: HashMap::default(),
+            ordinals: HashMap::default(),
+            dll: true,
+            tls: None,
+            resources: 0,
+            refs,
+            hle: false,
+            pdata: (0, 0),
+            redirected: false,
+            deps,
+            pinned: false,
+        });
+    }
+    fn refs(b: u32) -> Option<u32> {
+        with(b, |m| m.refs)
+    }
+
+    /// A DLL (refs 1) importing from B (1 from it, 1 from a LoadLibrary): FreeLibrary of A
+    /// unloads A and leaves B at 1; of B then unloads it; a pinned DLL stays; a gone one is
+    /// no module.
+    #[test]
+    fn last_reference_unloads_and_releases_imports() {
+        let mut cpu = koji::Cpu::default();
+        let (a, b, p) = (0x7a01_0000, 0x7a02_0000, 0x7a03_0000);
+        fake(b, 2, vec![]);
+        fake(a, 1, vec![b]);
+        fake(p, 1, vec![]);
+        assert!(free_library(&mut cpu, a));
+        assert_eq!((refs(a), refs(b)), (None, Some(1)));
+        assert!(!free_library(&mut cpu, a));
+        assert!(free_library(&mut cpu, b));
+        assert_eq!(refs(b), None);
+        add_reference(p, true);
+        assert!(free_library(&mut cpu, p) && free_library(&mut cpu, p));
+        assert_eq!(refs(p), Some(1));
+        MODULES.write().unwrap().retain(|m| m.base != p);
+    }
+
+    proptest! {
+        /// Against a model of references (a DAG of imports over 5 DLLs, LoadLibrary and
+        /// FreeLibrary in any order): each DLL's count and whether it is loaded are the
+        /// model's, its last reference releasing those of the DLLs it imports.
+        #[test]
+        fn loaded_while_referenced(edges in proptest::collection::vec((0usize..5, 0usize..5), 0..8), ops in proptest::collection::vec((any::<bool>(), 0usize..5), 0..40), salt in 0u32..0x100) {
+            let mut cpu = koji::Cpu::default();
+            let base = |i: usize| 0x7b00_0000 + (salt << 16) + (i as u32) * 0x1000;
+            // (i imports j only for j > i: no cycles)
+            let mut deps = vec![vec![]; 5];
+            for (i, j) in edges {
+                if j > i && !deps[i].contains(&j) {
+                    deps[i].push(j);
+                }
+            }
+            // (a failed case before may have left its modules)
+            MODULES.write().unwrap().retain(|m| m.base >> 24 != 0x7b || (m.base >> 16) & 0xff != salt);
+            // all loaded once by the program, their imports counted: one count per DLL, as
+            // Windows keeps (a FreeLibrary too many takes an importer's reference)
+            let mut n = [0u32; 5];
+            for i in 0..5 {
+                n[i] = 1 + (0..5).filter(|&k| deps[k].contains(&i)).count() as u32;
+                fake(base(i), n[i], deps[i].iter().map(|&j| base(j)).collect());
+            }
+            let mut live = [true; 5];
+            fn drop_ref(i: usize, n: &mut [u32; 5], live: &mut [bool; 5], deps: &[Vec<usize>]) {
+                n[i] -= 1;
+                if n[i] == 0 {
+                    live[i] = false;
+                    for &j in &deps[i] {
+                        if live[j] {
+                            drop_ref(j, n, live, deps);
+                        }
+                    }
+                }
+            }
+            for (load, i) in ops {
+                if load {
+                    if live[i] {
+                        n[i] += 1;
+                        add_reference(base(i), false);
+                    }
+                } else if live[i] {
+                    prop_assert!(free_library(&mut cpu, base(i)));
+                    drop_ref(i, &mut n, &mut live, &deps);
+                } else {
+                    prop_assert!(!free_library(&mut cpu, base(i)));
+                }
+                for k in 0..5 {
+                    prop_assert_eq!(refs(base(k)), live[k].then_some(n[k]), "dll {} after {:?}", k, (load, i));
+                }
+            }
+            MODULES.write().unwrap().retain(|m| m.base >> 24 != 0x7b || (m.base >> 16) & 0xff != salt);
         }
     }
 }

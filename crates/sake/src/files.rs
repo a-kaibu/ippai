@@ -226,11 +226,20 @@ pub fn full_path(p: &str) -> String {
 /// full_path; `trim` false for a \\?\ path, whose last component keeps trailing dots and
 /// spaces (CreateFile of \\?\C:\d\a. makes "a."): such a path stays \\?\-prefixed so that
 /// taking its full path again keeps them
+/// "C:x" (or "C:"): relative to the current directory `cwd` when that is on the same drive,
+/// else to the drive's root (no per-drive directories here)
+fn drive_relative(p: &str, cwd: &str) -> String {
+    if cwd.get(..2).is_some_and(|d| d.eq_ignore_ascii_case(&p[..2])) {
+        format!("{}\\{}", cwd.trim_end_matches('\\'), &p[2..])
+    } else {
+        format!("{}\\{}", &p[..2], &p[2..])
+    }
+}
 fn full_path_trim(p: &str, trim: bool) -> String {
     let p = p.replace('/', "\\");
     let abs = if p.len() >= 2 && p.as_bytes()[1] == b':' && p.is_char_boundary(2) {
         if p.len() == 2 || p.as_bytes()[2] != b'\\' {
-            format!("{}\\{}", &p[..2], &p[2..])
+            drive_relative(&p, &cwd())
         } else {
             p
         }
@@ -636,6 +645,31 @@ pub fn find(w: &str) -> Option<Find> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn drive_relative_paths() {
+        assert_eq!(drive_relative("C:1\\a.dll", "C:\\game\\"), "C:\\game\\1\\a.dll");
+        assert_eq!(drive_relative("c:a", "C:\\game"), "C:\\game\\a");
+        assert_eq!(drive_relative("C:", "C:\\game\\"), "C:\\game\\");
+        assert_eq!(drive_relative("D:a", "C:\\game\\"), "D:\\a");
+        assert_eq!(drive_relative("C:a", "C:\\"), "C:\\a");
+    }
+    proptest::proptest! {
+        /// On the current drive the path is the current directory's and ends with what came
+        /// after the colon; elsewhere the drive's root's
+        #[test]
+        fn drive_relative_is_under_cwd(dir in "[a-z]{1,8}(\\\\[a-z]{1,8}){0,3}", rest in "[a-z.]{0,12}", d in proptest::sample::select(vec!["C:", "c:", "D:"])) {
+            let cwd = format!("C:\\{dir}\\");
+            let p = format!("{d}{rest}");
+            let out = drive_relative(&p, &cwd);
+            proptest::prop_assert!(out.ends_with(&rest));
+            if d.eq_ignore_ascii_case("C:") {
+                proptest::prop_assert_eq!(out, format!("C:\\{dir}\\{rest}"));
+            } else {
+                proptest::prop_assert_eq!(out, format!("D:\\{rest}"));
+            }
+        }
+    }
+
     use super::*;
     use proptest::prelude::*;
 

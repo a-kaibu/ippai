@@ -27,6 +27,20 @@ for src in "$HERE"/probes/*.c; do
     r32=$OUT/$n-32.res r64=$OUT/$n-64.res
     (cd "$HERE" && i686-w64-mingw32-windres "probes/$n.rc" -O coff -o "$r32" && x86_64-w64-mingw32-windres "probes/$n.rc" -O coff -o "$r64")
   fi
+  # ("dlls: a b": the source also builds $n-a-NN.dll with -DPROBE_A, importing from the ones
+  # named after it, beside the exe)
+  dlls=$(sed -n 's/.*dlls: *\([a-z0-9 ]*\).*/\1/p' "$src" | head -1)
+  for arch in 32 64; do
+    [ "$arch" = 64 ] && grep -q 'arch: 32' "$src" && continue
+    cc=i686-w64-mingw32-gcc; [ "$arch" = 64 ] && cc=x86_64-w64-mingw32-gcc
+    rest=
+    for dl in $(echo $dlls | tr ' ' '\n' | tac); do
+      up=$(echo "$dl" | tr a-z A-Z)
+      $cc -O2 -Wall -Wno-format -Wno-unused -shared -DPROBE_$up -o "$OUT/$n-$dl-$arch.dll" "$src" $rest -Wl,--out-implib,"$OUT/lib$n-$dl-$arch.a" $l
+      rest="-L$OUT -l$n-$dl-$arch $rest"
+    done
+    rm -f "$OUT"/lib$n-*-$arch.a
+  done
   i686-w64-mingw32-gcc -O2 -msse2 -Wall -Wno-format -Wno-unused -o "$OUT/$n-32.exe" "$src" "$r32" "$HERE/fpu53.c" $l
   if ! grep -q 'arch: 32' "$src"; then
     x86_64-w64-mingw32-gcc -O2 -Wall -Wno-format -Wno-unused -o "$OUT/$n-64.exe" "$src" "$r64" $l

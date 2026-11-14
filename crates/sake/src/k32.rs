@@ -372,6 +372,11 @@ fn FatalAppExitA(c: &mut Ctx) -> u32 {
 
 /// The calling thread ends (from the thread's own code: ExitThread or a return).
 pub fn exit_thread(code: u32) -> ! {
+    // (a CRT thread's reference to its DLL: FreeLibrary once its code is done)
+    let held = CRT_DLLS.lock().unwrap().remove(&crate::cur().tid);
+    if let Some(m) = held {
+        crate::pe::free_library(unsafe { &mut *crate::cur().cpu }, m);
+    }
     kura::snap::unregister();
     crate::fiber::thread_exit(None);
     let t = crate::cur();
@@ -426,7 +431,35 @@ fn _beginthreadex(c: &mut Ctx) -> u32 {
         crate::crt::set_errno(22); // EINVAL
         return 0;
     }
-    CreateThread(c)
+    let (stack, flags, ptid) = (c.a(1), c.a(4), c.a(5));
+    let (start, param) = crt_start(c.a(2), c.a(3));
+    let (h, tid) = create_thread(start, param, stack, flags, true);
+    put32(ptid, tid);
+    h
+}
+
+/// The CRT's threads (_beginthread(ex), msvcp's _Thrd_start) hold a reference to the DLL file
+/// their start routine is in until they end, as the UCRT does (GetModuleHandleEx
+/// FROM_ADDRESS, FreeLibraryAndExitThread): a FreeLibrary meanwhile leaves the DLL loaded and
+/// its DllMain(PROCESS_DETACH) comes when the thread ends (Wine's msvcp140
+/// test_thread_library_reference). The thread starts at a trampoline then; (start, param)
+/// as they are for anything else.
+pub fn crt_start(start: u32, param: u32) -> (u32, u32) {
+    let Some(m) = crate::pe::containing(start).filter(|&b| crate::pe::is_file_dll(b)) else { return (start, param) };
+    crate::pe::add_reference(m, false);
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    CRT_STARTS.lock().unwrap().insert(id, (start, param, m));
+    static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    (*ENTRY.get_or_init(|| crate::api::host_fn("crt_thread", crt_thread, 4)), id)
+}
+static CRT_STARTS: Mutex<std::collections::BTreeMap<u32, (u32, u32, u32)>> = Mutex::new(std::collections::BTreeMap::new());
+/// thread id -> the DLL its CRT thread holds
+static CRT_DLLS: Mutex<std::collections::BTreeMap<u32, u32>> = Mutex::new(std::collections::BTreeMap::new());
+fn crt_thread(c: &mut Ctx) -> u32 {
+    let Some((start, param, m)) = CRT_STARTS.lock().unwrap().remove(&c.a(0)) else { return 0 };
+    CRT_DLLS.lock().unwrap().insert(crate::cur().tid, m);
+    c.call(start, &[param])
 }
 /// _beginthread(start, stack, arg): no start routine is EINVAL and -1
 fn _beginthread(c: &mut Ctx) -> u32 {
@@ -436,6 +469,7 @@ fn _beginthread(c: &mut Ctx) -> u32 {
         return u32::MAX;
     }
     let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
+    let (start, arg) = crt_start(start, arg);
     let tid = crate::spawn_gated(start, arg, thread_stack(stack, 0), h, false);
     obj::with(|t| {
         if let Some((Obj::Thread { tid: x, .. }, _)) = t.objs.get_mut(&h) {
@@ -6074,12 +6108,20 @@ fn GetModuleHandleExW(c: &mut Ctx) -> u32 {
     let flags = c.a(0);
     let h = if flags & 4 != 0 { crate::pe::containing(c.a(1)).unwrap_or(0) } else { module_handle(c.a(1), true) };
     mem::put_addr(c.a(2), h);
+    // (a reference unless UNCHANGED_REFCOUNT; PIN keeps it loaded)
+    if h != 0 && flags & 2 == 0 {
+        crate::pe::add_reference(h, flags & 1 != 0);
+    }
     ok(h != 0)
 }
 fn GetModuleHandleExA(c: &mut Ctx) -> u32 {
     let flags = c.a(0);
     let h = if flags & 4 != 0 { crate::pe::containing(c.a(1)).unwrap_or(0) } else { module_handle(c.a(1), false) };
     mem::put_addr(c.a(2), h);
+    // (a reference unless UNCHANGED_REFCOUNT; PIN keeps it loaded)
+    if h != 0 && flags & 2 == 0 {
+        crate::pe::add_reference(h, flags & 1 != 0);
+    }
     ok(h != 0)
 }
 /// LoadLibrary: "" is ERROR_INVALID_PARAMETER, a module not found ERROR_MOD_NOT_FOUND (winref fmt)
@@ -6120,6 +6162,8 @@ fn load_library_ex(c: &mut Ctx, wide: bool) -> u32 {
     if flags & 0x40 == 0 {
         let loaded = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.name.is_empty() && m.path.eq_ignore_ascii_case(&full)).map(|m| m.base);
         if let Some(b) = loaded {
+            // (a reference of the code module's: its FreeLibrary is this one's)
+            crate::pe::add_reference(b, false);
             return b;
         }
     }
@@ -6172,7 +6216,9 @@ fn FreeLibrary(c: &mut Ctx) -> u32 {
     }
     if c.a(0) & 3 != 0 {
         crate::pe::free_datafile(c.a(0) & !3);
+        return 1;
     }
+    crate::pe::free_library(c.cpu, c.a(0));
     1
 }
 fn DisableThreadLibraryCalls(_: &mut Ctx) -> u32 {
