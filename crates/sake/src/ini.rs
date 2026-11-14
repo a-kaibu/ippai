@@ -630,6 +630,52 @@ pub fn init() {
     }
 }
 
+/// For fuzz/fuzz_targets/profile_cache.rs: any mix of profile writes, writes of the file by
+/// anything else and removals, on one file in `dir`; every profile read answers what a fresh
+/// read of the file says (the cache never answers from an old file).
+#[doc(hidden)]
+pub fn fuzz_cache(dir: &std::path::Path, data: &[u8]) {
+    let f = dir.join("fuzz.ini").to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&f);
+    let mut back = 10_000u64;
+    let key = |b: u8| format!("k{}", b % 4);
+    let mut i = 0;
+    while i + 2 < data.len() {
+        let (op, a, b) = (data[i], data[i + 1], data[i + 2]);
+        i += 3;
+        match op % 6 {
+            0 => assert!(modify_host(&f, |ini| ini.set("S", &key(a), Some(&b.to_string())))),
+            1 => assert!(modify_host(&f, |ini| ini.set("S", &key(a), None))),
+            2 | 3 => {
+                // (the game writes the file itself: raw bytes, any text; `old` with a time far
+                // enough back for the stamp to trust it, else just now)
+                let n = (b as usize % 24).min(data.len() - i);
+                let mut bytes = b"[S]\r\n".to_vec();
+                bytes.extend(&data[i..i + n]);
+                i += n;
+                std::fs::write(&f, &bytes).unwrap();
+                if op % 6 == 3 {
+                    back -= 1;
+                    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(back);
+                    std::fs::File::options().write(true).open(&f).unwrap().set_modified(t).unwrap();
+                }
+            }
+            4 => {
+                let _ = std::fs::remove_file(&f);
+            }
+            _ => {
+                let fresh = std::fs::read(&f).ok().map(|b| decode(&b));
+                let got = {
+                    let _r = PROFILE.read().unwrap_or_else(|e| e.into_inner());
+                    read_host(&f)
+                };
+                assert_eq!(got.as_deref().map(|x| x.text()), fresh.as_ref().map(|x| x.text()));
+                assert_eq!(got.and_then(|x| x.value("S", &key(a))), fresh.and_then(|x| x.value("S", &key(a))));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "ini_tests.rs"]
 mod tests;

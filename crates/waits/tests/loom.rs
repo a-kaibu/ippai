@@ -1175,3 +1175,83 @@ fn srw_timed_writer_with_no_time_takes_only_a_free_lock() {
         assert_eq!(l.word.load(SeqCst), 0);
     });
 }
+/// Write-behind (`later.rs`): transactions changing the value, the page's flush_soon (which
+/// never waits) and its last look
+mod later {
+    use super::*;
+    use std::time::Duration;
+    use waits::later::{Later, Store};
+
+    /// The value: a count of changes, and the count each write wrote (the file's versions)
+    #[derive(Default)]
+    struct File {
+        value: u32,
+        written: Vec<u32>,
+    }
+    impl Store for File {
+        fn write(&mut self) -> bool {
+            self.written.push(self.value);
+            true
+        }
+    }
+
+    fn change(l: &Later<File>) {
+        l.with(File::default, false, Duration::MAX, |h| {
+            h.value.value += 1;
+            ((), true)
+        })
+    }
+
+    /// Two threads change the value (they say so after each change); the page reads how many
+    /// changes were done, then flush_soon. Once everyone is done the file holds at least those:
+    /// a change made before the page looked is never left unwritten. Writes never go back and
+    /// none is made twice for one version.
+    #[test]
+    fn a_change_before_the_page_looks_is_written() {
+        model(|| {
+            let l = Arc::new(Later::<File>::new());
+            let done = Arc::new(AtomicU32::new(0));
+            let t: Vec<_> = (0..2)
+                .map(|_| {
+                    let (l, done) = (l.clone(), done.clone());
+                    thread::spawn(move || {
+                        change(&l);
+                        done.fetch_add(1, SeqCst);
+                    })
+                })
+                .collect();
+            let seen = done.load(SeqCst);
+            l.flush_soon();
+            t.into_iter().for_each(|t| t.join().unwrap());
+            l.peek(|h| {
+                let w = h.map(|h| h.value.written.clone()).unwrap_or_default();
+                assert!(w.last().copied().unwrap_or(0) >= seen, "{seen} changes before the look, file {w:?}");
+                assert!(w.windows(2).all(|p| p[0] < p[1]), "{w:?}");
+            });
+        });
+    }
+
+    /// The page looks twice while a thread changes the value twice: after the thread is done
+    /// and the page's second look began, everything is in the file
+    #[test]
+    fn the_last_look_after_the_changes_writes_them_all() {
+        model(|| {
+            let l = Arc::new(Later::<File>::new());
+            let done = Arc::new(AtomicU32::new(0));
+            let (l2, d2) = (l.clone(), done.clone());
+            let t = thread::spawn(move || {
+                change(&l2);
+                change(&l2);
+                d2.store(1, SeqCst);
+            });
+            l.flush_soon();
+            let finished = done.load(SeqCst) == 1;
+            l.flush_soon();
+            t.join().unwrap();
+            if finished {
+                l.peek(|h| assert_eq!(h.unwrap().value.written.last(), Some(&2)));
+            }
+        });
+    }
+}
+

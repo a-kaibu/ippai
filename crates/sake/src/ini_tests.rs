@@ -408,3 +408,14 @@ fn struct_writes_past_memory_fail() {
         crate::mem::heap_free(p);
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// The fuzz target's checks (fuzz_cache) on random bytes
+    #[test]
+    fn fuzz_cache_checks(data in prop::collection::vec(any::<u8>(), 0..300)) {
+        let d = std::path::PathBuf::from(temp_file("fz")).parent().unwrap().to_path_buf();
+        fuzz_cache(&d, &data);
+    }
+}

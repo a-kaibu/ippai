@@ -138,7 +138,7 @@ pub struct Key {
     pub view64: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, PartialEq, Debug)]
 struct KeyData {
     /// value name (lower case) -> (name, type, data)
     values: Vec<(String, u32, Vec<u8>)>,
@@ -174,6 +174,9 @@ fn parse_reg(t: &str, m: &mut HashMap<String, KeyData>) {
     for l in t.lines() {
         if l.is_empty() { continue; }
         let f: Vec<&str> = l.split('\t').collect();
+        if f[0].is_empty() {
+            continue;
+        }
         let k = m.entry(f[0].to_string()).or_default();
         k.ours = true;
         if let [_, name] = f[..] {
@@ -194,8 +197,8 @@ fn format_reg(m: &HashMap<String, KeyData>) -> String {
     keys.sort();
     let mut t = String::new();
     for p in keys {
-        // (names with tabs or line breaks: not kept)
-        if p.contains(['\t', '\n']) {
+        // (names with tabs or line breaks, and the empty one: not kept)
+        if p.is_empty() || p.contains(['\t', '\n', '\r']) {
             continue;
         }
         let name = &m[p].name;
@@ -225,14 +228,14 @@ fn write_reg(t: &str) -> bool {
 }
 
 /// A change to the registry (called inside `with_reg`): written to the file when the
-/// transaction ends, at once while other processes share the registry, a little later
-/// otherwise (`Reg::flush`).
+/// transaction ends while other processes share the registry (unless in a `reg_batch`), a
+/// little later otherwise (waits::later).
 fn save_reg(_: &HashMap<String, KeyData>) -> bool {
     REG_CHANGED.store(true, Ordering::Relaxed);
     true
 }
 
-/// Set by `save_reg` inside a transaction (REG is held meanwhile)
+/// Set by `save_reg` inside a transaction (one transaction at a time: REG)
 static REG_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// How long a change of a process of its own waits for more before it is written (one file
@@ -240,34 +243,125 @@ static REG_CHANGED: AtomicBool = AtomicBool::new(false);
 /// RegFlushKey, RegCloseKey, starting another process and the process's end write it sooner.
 const REG_LATER: Duration = Duration::from_millis(500);
 
-/// The registry of this process: the keys, and how far they are from the file
+/// The registry of this process: the keys, and how they stand to the file
 struct Reg {
     m: HashMap<String, KeyData>,
-    /// changed since written: since when
-    dirty: Option<std::time::Instant>,
     /// the file's stamp (kura::fs::stamp) when last read or written: another process's change
     /// shows as a new one
     stamp: u64,
     /// what was written last (a write that changes nothing is not made)
     written: u64,
+    /// the saved keys as the file had them when last read or written: what another process
+    /// changed since is what differs from it in the file, what this one changed what differs
+    /// from it here (`merge_reg`)
+    base: HashMap<String, KeyData>,
 }
 
-impl Reg {
-    /// Writes the changes to the file (when there are any)
-    fn flush(&mut self) {
-        let Some(since) = self.dirty.take() else { return };
+impl waits::later::Store for Reg {
+    fn write(&mut self) -> bool {
         let t = format_reg(&self.m);
         let sum = text_sum(&t);
         if sum != self.written {
             if !write_reg(&t) {
-                // (kept: the next flush tries again)
-                self.dirty = Some(since);
-                return;
+                return false;
             }
             self.written = sum;
         }
         self.stamp = kura::fs::stamp(crate::files::resolve_new(REG_FILE));
+        self.base = saved_keys(&self.m);
+        true
     }
+}
+
+/// The keys the file keeps
+fn saved_keys(m: &HashMap<String, KeyData>) -> HashMap<String, KeyData> {
+    m.iter().filter(|(_, k)| k.ours).map(|(p, k)| (p.clone(), k.clone())).collect()
+}
+
+/// Another process's changes (`file`, read now) with this one's not yet written, as Windows
+/// keeps two processes' writes: what this process changed since `base` (a key made or deleted,
+/// a value set or deleted, a key's spelling) stays as it is here, everything else becomes what
+/// the file says; the built-in keys stay. Values are the unit: two processes setting different
+/// values of one key both keep theirs, the same value is this process's (it writes last).
+fn merge_reg(m: &mut HashMap<String, KeyData>, base: &HashMap<String, KeyData>, file: HashMap<String, KeyData>) {
+    let mut paths: Vec<String> = file.keys().chain(base.keys()).cloned().collect();
+    paths.extend(m.iter().filter(|(_, k)| k.ours).map(|(p, _)| p.clone()));
+    paths.sort();
+    paths.dedup();
+    for p in paths {
+        // (keys alike when their spelling and values are, in any order: a value set again
+        // moves to the end in some paths)
+        let here = m.get(&p).filter(|k| k.ours).cloned().map(|h| match base.get(&p) {
+            Some(b) if same_key(&h, b) => b.clone(),
+            _ => h,
+        });
+        let (b, f) = (base.get(&p), file.get(&p));
+        let merged = match (here, b, f) {
+            // (made there)
+            (None, None, f) => f.cloned(),
+            // (made here, perhaps there too)
+            (Some(h), None, f) => Some(f.map_or(h.clone(), |f| merge_key(&h, &KeyData::default(), f))),
+            // (deleted here)
+            (None, Some(_), _) => None,
+            // (deleted there: made again here only with values this process set, as a key
+            // created again after another deleted it; deleting values of it changes nothing)
+            (Some(h), Some(b), None) => Some(merge_key(&h, b, &KeyData { name: h.name.clone(), ..KeyData::default() })).filter(|k| !k.values.is_empty()),
+            (Some(h), Some(b), Some(f)) => Some(merge_key(&h, b, f)),
+        };
+        match merged {
+            Some(k) => {
+                m.insert(p, k);
+            }
+            None => {
+                if m.get(&p).is_some_and(|k| k.ours) {
+                    m.remove(&p);
+                }
+            }
+        }
+    }
+}
+
+fn same_key(a: &KeyData, b: &KeyData) -> bool {
+    fn sorted(k: &KeyData) -> Vec<(String, u32, &[u8])> {
+        let mut v: Vec<(String, u32, &[u8])> = k.values.iter().map(|v| (v.0.to_lowercase(), v.1, v.2.as_slice())).collect();
+        v.sort();
+        v
+    }
+    a.name == b.name && sorted(a) == sorted(b)
+}
+
+/// One key both have: its values merged one by one (names without case), in this process's
+/// order with the file's new ones after
+fn merge_key(here: &KeyData, base: &KeyData, file: &KeyData) -> KeyData {
+    let find = |k: &KeyData, n: &str| k.values.iter().find(|v| v.0.eq_ignore_ascii_case(n)).cloned();
+    let mut names: Vec<String> = here.values.iter().chain(&file.values).chain(&base.values).map(|v| v.0.clone()).collect();
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|n| seen.insert(n.to_lowercase()));
+    let values = names
+        .iter()
+        .filter_map(|n| {
+            let (h, b) = (find(here, n), find(base, n));
+            if h != b { h } else { find(file, n) }
+        })
+        .collect();
+    let name = if here.name != base.name { here.name.clone() } else { file.name.clone() };
+    KeyData { values, ours: true, name }
+}
+
+/// While shared: what other processes wrote since this one last looked (`merge_reg`)
+fn reg_sync(r: &mut waits::later::Held<Reg>) {
+    let stamp = kura::fs::stamp(crate::files::resolve_new(REG_FILE));
+    // (0: a file just changed or not there: nothing tells, so it is read)
+    if stamp != 0 && stamp == r.value.stamp {
+        return;
+    }
+    let mut file = HashMap::default();
+    if load_reg(&mut file) {
+        let reg = &mut r.value;
+        merge_reg(&mut reg.m, &reg.base, file.clone());
+        reg.base = file;
+    }
+    r.value.stamp = stamp;
 }
 
 fn text_sum(t: &str) -> u64 {
@@ -277,31 +371,50 @@ fn text_sum(t: &str) -> u64 {
     h.finish()
 }
 
-static REG: Mutex<Option<Reg>> = Mutex::new(None);
+static REG: waits::later::Later<Reg> = waits::later::Later::new();
 
-fn reg_lock() -> std::sync::MutexGuard<'static, Option<Reg>> {
-    REG.lock().unwrap_or_else(|e| e.into_inner())
+thread_local! {
+    /// reg_batch levels of this thread
+    static BATCH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Writes the registry's changes now (RegFlushKey; before another process starts; at exit).
-pub(crate) fn reg_flush() {
-    if let Some(r) = reg_lock().as_mut() {
-        r.flush();
+/// Runs `f` with the registry's changes written once at its end even while shared (msi's
+/// standard actions: a package's thousand Registry rows are one file write, not a thousand).
+/// Other processes see them at the end; this one at once.
+pub(crate) fn reg_batch<R>(f: impl FnOnce() -> R) -> R {
+    BATCH.with(|b| b.set(b.get() + 1));
+    let r = f();
+    if BATCH.with(|b| {
+        b.set(b.get() - 1);
+        b.get() == 0
+    }) {
+        reg_flush();
     }
+    r
+}
+
+/// Writes the registry's changes now (RegFlushKey, RegCloseKey; before another process starts;
+/// a batch's end). While shared: merged with other processes' first, under the kernel's lock.
+pub(crate) fn reg_flush() {
+    with_reg_eager(true, |_| ((), false));
 }
 
 /// The page looks at the saves: what waits is written first. Never waits for a guest thread
-/// (the page's main thread runs it): a transaction going on writes it itself in a moment.
+/// (the page's main thread runs it): a transaction going on writes it as it ends. While shared
+/// nothing waits but a batch's changes, written at its end (and they can't be written here,
+/// outside the kernel's lock).
 fn reg_flush_for_page() {
-    if let Ok(mut g) = REG.try_lock() {
-        if let Some(r) = g.as_mut() {
-            r.flush();
-        }
+    if !crate::kern::host::shared() {
+        REG.flush_soon();
     }
 }
 
 extern "C" fn reg_flush_at_exit() {
-    reg_flush_for_page();
+    if crate::kern::host::shared() {
+        reg_flush();
+    } else {
+        REG.flush_soon();
+    }
 }
 
 /// Keys every Windows has, even empty (setup programs open them to tell whether they may
@@ -481,62 +594,51 @@ fn reg_builtin() -> HashMap<String, KeyData> {
 m
 }
 
+fn reg_init() -> Reg {
+    let mut m = reg_builtin();
+    let stamp = kura::fs::stamp(crate::files::resolve_new(REG_FILE));
+    load_reg(&mut m);
+    static HOOKS: std::sync::Once = std::sync::Once::new();
+    HOOKS.call_once(|| {
+        kura::vfs::before_export(reg_flush_for_page);
+        unsafe {
+            libc::atexit(reg_flush_at_exit);
+        }
+    });
+    let base = saved_keys(&m);
+    Reg { m, stamp, written: 0, base }
+}
+
 /// Runs `f` on the registry: a transaction (other threads, and other processes once they
 /// share the registry, wait meanwhile). The file is read once; read again only when another
 /// process changed it (its stamp is new), which only happens while the registry is shared.
 fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
-    if crate::kern::host::shared() {
+    with_reg_eager(false, |m| {
+        REG_CHANGED.store(false, Ordering::Relaxed);
+        let r = f(m);
+        (r, REG_CHANGED.swap(false, Ordering::Relaxed))
+    })
+}
+
+/// A transaction written at its end when `now`, or while shared and not in a batch
+fn with_reg_eager<R>(now: bool, f: impl FnOnce(&mut HashMap<String, KeyData>) -> (R, bool)) -> R {
+    let shared = crate::kern::host::shared();
+    let eager = now || shared && BATCH.with(|b| b.get()) == 0;
+    let run = || {
+        REG.with(reg_init, eager, REG_LATER, |h| {
+            if shared {
+                reg_sync(h);
+            }
+            f(&mut h.value.m)
+        })
+    };
+    if shared {
         // (the read/modify/write transaction across the game, SCM and helper processes, not
         // just across this process's Rust threads)
-        crate::kern::with(|_| reg_transaction(true, f)).0
+        crate::kern::with(|_| run()).0
     } else {
-        reg_transaction(false, f)
+        run()
     }
-}
-
-fn reg_transaction<R>(shared: bool, f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
-    let mut g = reg_lock();
-    let r = g.get_or_insert_with(|| {
-        let mut m = reg_builtin();
-        let stamp = kura::fs::stamp(crate::files::resolve_new(REG_FILE));
-        load_reg(&mut m);
-        static HOOKS: std::sync::Once = std::sync::Once::new();
-        HOOKS.call_once(|| {
-            kura::vfs::before_export(reg_flush_for_page);
-            unsafe {
-                libc::atexit(reg_flush_at_exit);
-            }
-        });
-        Reg { m, dirty: None, stamp, written: 0 }
-    });
-    transact(r, shared, f)
-}
-
-fn transact<R>(r: &mut Reg, shared: bool, f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
-    if shared {
-        // (a change made before the registry was shared: written before another's is read)
-        r.flush();
-        let stamp = kura::fs::stamp(crate::files::resolve_new(REG_FILE));
-        // (0: a file just changed or not there: nothing tells, so it is read)
-        if stamp == 0 || stamp != r.stamp {
-            let mut saved = HashMap::default();
-            if load_reg(&mut saved) {
-                r.m.retain(|_, k| !k.ours);
-                r.m.extend(saved);
-            }
-            r.stamp = stamp;
-        }
-    }
-    REG_CHANGED.store(false, Ordering::Relaxed);
-    let out = f(&mut r.m);
-    if REG_CHANGED.swap(false, Ordering::Relaxed) {
-        let now = std::time::Instant::now();
-        r.dirty.get_or_insert(now);
-    }
-    if r.dirty.is_some_and(|t| shared || t.elapsed() >= REG_LATER) {
-        r.flush();
-    }
-    out
 }
 
 /// Internal SCM / COM access to the same registry as guest Reg* calls. Refresh
@@ -5502,6 +5604,67 @@ mod file_title_tests {
     }
 }
 
+/// For fuzz/fuzz_targets/registry.rs: the registry file's text and the merge of two
+/// processes' changes on any bytes.
+#[doc(hidden)]
+pub mod reg_fuzz {
+    use super::*;
+
+    fn parsed(t: &str) -> HashMap<String, KeyData> {
+        let mut m = HashMap::default();
+        parse_reg(t, &mut m);
+        m
+    }
+
+    /// `data`: up to three texts split at 0xff bytes (base, here, file). Parsing never panics
+    /// and writing what was read reads back the same; the merge keeps the keys this process did
+    /// not change as the file has them, leaves this process's alone when the file did not
+    /// change, and with nothing changed here is the file.
+    pub fn run(data: &[u8]) {
+        let mut parts = data.splitn(3, |&b| b == 0xff).map(|p| String::from_utf8_lossy(p).into_owned());
+        let (b, h, f) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+        let (base, here, file) = (parsed(&b), parsed(&h), parsed(&f));
+        for m in [&base, &here, &file] {
+            let t = format_reg(m);
+            assert_eq!(format_reg(&parsed(&t)), t, "written text reads back");
+        }
+        // (round trips first: what the file can hold)
+        let (base, here, file) = (parsed(&format_reg(&base)), parsed(&format_reg(&here)), parsed(&format_reg(&file)));
+        let mut m = here.clone();
+        merge_reg(&mut m, &base, file.clone());
+        for (p, k) in &file {
+            let mine = here.get(p);
+            let unchanged = match (mine, base.get(p)) {
+                (Some(a), Some(b)) => same_key(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            if unchanged {
+                assert!(m.get(p).is_some_and(|x| same_key(x, k)), "{p}: not changed here, the file's");
+            }
+        }
+        if same_saved(&file, &base) {
+            assert!(same_saved(&m, &here), "the file did not change: ours as they are");
+        }
+        if same_saved(&here, &base) {
+            assert!(same_saved(&m, &file), "nothing changed here: the file");
+        }
+        // (merging again with what came out changes nothing)
+        let mut again = m.clone();
+        merge_reg(&mut again, &file, file.clone());
+        assert!(same_saved(&again, &m));
+    }
+
+    fn same_saved(a: &HashMap<String, KeyData>, b: &HashMap<String, KeyData>) -> bool {
+        fn keys(m: &HashMap<String, KeyData>) -> Vec<&String> {
+            let mut v: Vec<&String> = m.iter().filter(|(_, k)| k.ours).map(|(p, _)| p).collect();
+            v.sort();
+            v
+        }
+        keys(a) == keys(b) && keys(a).iter().all(|p| same_key(&a[*p], &b[*p]))
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod reg_cache_tests {
     //! The registry kept in memory and written later (with_reg / Reg::flush). The tests that
@@ -5565,21 +5728,29 @@ pub(crate) mod reg_cache_tests {
         std::thread::sleep(REG_LATER + Duration::from_millis(50));
         let _ = reg_get(&me, "late");
         assert!(file().contains(&line(&me, "late", b"l")));
-        // shared: another process's change to the file is seen, ours reach the file at once
-        {
-            let mut g = reg_lock();
-            let r = g.as_mut().unwrap();
-            r.flush();
-            let other = format!("{}{}", file(), line(&me, "other", b"o"));
+        // shared: another process's change to the file is seen and merged with ours not yet
+        // written (a batch's): a key it made stays, the key we changed stays ours
+        reg_flush();
+        let theirs = format!("{me}\\theirs");
+        REG.with(reg_init, false, Duration::MAX, |h| {
+            h.value.m.get_mut(&me).unwrap().values.push(("mine".into(), 3, b"m".to_vec()));
+            let other = format!("{}{}{}", file(), line(&me, "lost", b"x"), line(&theirs, "t", b"t"));
+            // (the same value set here and there: ours, written last)
+            h.value.m.get_mut(&me).unwrap().values.retain(|v| v.0 != "v0");
+            h.value.m.get_mut(&me).unwrap().values.push(("v0".into(), 3, b"ours".to_vec()));
+            let other = format!("{other}{}", line(&me, "v0", b"theirs"));
             assert!(write_reg(&other));
-            let seen = transact(r, true, |m| m.get(&me).and_then(|k| k.values.iter().find(|v| v.0 == "other").map(|v| v.2.clone())));
-            assert_eq!(seen, Some(b"o".to_vec()));
-            transact(r, true, |m| {
-                m.get_mut(&me).unwrap().values.push(("mine".into(), 3, b"m".to_vec()));
-                save_reg(m)
-            });
-            assert!(r.dirty.is_none());
-        }
+            reg_sync(h);
+            let m = &h.value.m;
+            assert!(m[&me].values.iter().any(|v| v.0 == "mine"));
+            assert!(m[&me].values.iter().any(|v| v.0 == "lost"), "another value of the same key: both kept");
+            assert_eq!(m[&theirs].values, vec![("t".to_string(), 3, b"t".to_vec())]);
+            ((), true)
+        });
+        reg_flush();
+        let t = file();
+        assert!(t.contains(&line(&theirs, "t", b"t")) && t.contains(&line(&me, "lost", b"x")) && t.contains(&line(&me, "mine", b"m")));
+        assert!(t.contains(&line(&me, "v0", b"ours")) && !t.contains(&line(&me, "v0", b"theirs")));
         assert!(file().contains(&line(&me, "mine", b"m")));
         // threads writing while the page looks: every value reaches the file
         let ts: Vec<_> = (0..6)
@@ -5602,7 +5773,7 @@ pub(crate) mod reg_cache_tests {
             t.join().unwrap();
         }
         page.join().unwrap();
-        reg_flush_at_exit();
+        REG.flush_soon();
         let t = file();
         for th in 0..6 {
             for i in 0..40u32 {
@@ -5612,6 +5783,28 @@ pub(crate) mod reg_cache_tests {
         reg_delete_tree(&me);
         reg_flush();
         assert!(!file().contains(&me));
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum RegOp {
+        Set(u8, u8, u8),
+        DelValue(u8, u8),
+        DelKey(u8),
+        Sync,
+        Write,
+    }
+
+    fn reg_op() -> impl Strategy<Value = (usize, RegOp)> {
+        (
+            0usize..2,
+            prop_oneof![
+                3 => (0u8..3, 0u8..3, 0u8..4).prop_map(|(k, n, d)| RegOp::Set(k, n, d)),
+                1 => (0u8..3, 0u8..3).prop_map(|(k, n)| RegOp::DelValue(k, n)),
+                1 => (0u8..3).prop_map(RegOp::DelKey),
+                1 => Just(RegOp::Sync),
+                2 => Just(RegOp::Write),
+            ],
+        )
     }
 
     proptest! {
@@ -5642,6 +5835,91 @@ pub(crate) mod reg_cache_tests {
                 prop_assert_eq!(&back[p].values, &k.values);
             }
             prop_assert_eq!(back.len(), m.len());
+        }
+
+        /// Differential: two processes sharing the file, each changing its copy (values set and
+        /// deleted, keys deleted) and syncing or writing in any order. After each write the file
+        /// is what a reference of single cells says: every key's existence and every value is
+        /// the one written last by a process that changed it since it last looked (a value set
+        /// makes its key exist; a deleted key has no values). No process's change is lost.
+        #[test]
+        fn two_processes_lose_no_change(ops in prop::collection::vec(reg_op(), 1..40)) {
+            type Cells = std::collections::BTreeMap<(u8, Option<u8>), Option<u8>>;
+            let cells = |m: &HashMap<String, KeyData>| -> Cells {
+                let mut c = Cells::new();
+                for k in 0..3u8 {
+                    let key = m.get(&format!("k{k}")).filter(|x| x.ours);
+                    c.insert((k, None), key.map(|_| 1));
+                    for n in 0..3u8 {
+                        c.insert((k, Some(n)), key.and_then(|x| x.values.iter().find(|v| v.0 == format!("v{n}"))).map(|v| v.2[0]));
+                    }
+                }
+                c
+            };
+            let mut file: HashMap<String, KeyData> = HashMap::default();
+            let mut procs: Vec<(HashMap<String, KeyData>, HashMap<String, KeyData>)> = vec![(HashMap::default(), HashMap::default()); 2];
+            let mut want = cells(&file);
+            for op in ops {
+                let (i, what) = op;
+                let (m, base) = &mut procs[i];
+                match what {
+                    RegOp::Set(k, n, d) => {
+                        let key = m.entry(format!("k{k}")).or_default();
+                        key.ours = true;
+                        key.name = format!("k{k}");
+                        key.values.retain(|v| v.0 != format!("v{n}"));
+                        key.values.push((format!("v{n}"), 3, vec![d]));
+                    }
+                    RegOp::DelValue(k, n) => {
+                        if let Some(key) = m.get_mut(&format!("k{k}")) {
+                            key.values.retain(|v| v.0 != format!("v{n}"));
+                        }
+                    }
+                    RegOp::DelKey(k) => {
+                        m.remove(&format!("k{k}"));
+                    }
+                    RegOp::Sync | RegOp::Write => {
+                        let (mine, before) = (cells(m), cells(base));
+                        merge_reg(m, base, file.clone());
+                        *base = file.clone();
+                        if what == RegOp::Write {
+                            for (c, v) in &mine {
+                                if before[c] != *v {
+                                    want.insert(*c, *v);
+                                }
+                            }
+                            for k in 0..3u8 {
+                                let set_here = (0..3u8).any(|n| mine[&(k, Some(n))].is_some() && before[&(k, Some(n))] != mine[&(k, Some(n))]);
+                                if set_here {
+                                    want.insert((k, None), Some(1));
+                                }
+                                if want[&(k, None)].is_none() {
+                                    for n in 0..3u8 {
+                                        want.insert((k, Some(n)), None);
+                                    }
+                                }
+                            }
+                            // (the file holds what the process writes: its saved keys)
+                            let mut text = HashMap::default();
+                            parse_reg(&format_reg(m), &mut text);
+                            file = text;
+                            *base = file.clone();
+                            prop_assert_eq!(cells(&file), want.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        /// The fuzz target's checks (reg_fuzz) on random registry texts
+        #[test]
+        fn reg_fuzz_checks(b in "[a-z\\\\\t0-9\n]{0,80}", h in "[a-z\\\\\t0-9\n]{0,80}", f in "[a-z\\\\\t0-9\n]{0,80}") {
+            let mut data = b.into_bytes();
+            data.push(0xff);
+            data.extend(h.bytes());
+            data.push(0xff);
+            data.extend(f.bytes());
+            reg_fuzz::run(&data);
         }
 
         #[test]

@@ -25,3 +25,6 @@ MfEngineLife MfEngineLifeOld.cfg violation
 MfEngineLife MfEngineLifeNoWake.cfg violation
 SnapGpu SnapGpu.cfg ok
 SnapGpu SnapGpuOld.cfg violation
+RegShare RegShare.cfg ok
+RegShare RegShareOld.cfg violation
+RegShare RegShareOverwrite.cfg violation

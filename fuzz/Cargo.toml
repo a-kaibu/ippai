@@ -301,3 +301,17 @@ path = "fuzz_targets/cng_blobs.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "registry"
+path = "fuzz_targets/registry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "profile_cache"
+path = "fuzz_targets/profile_cache.rs"
+test = false
+doc = false
+bench = false

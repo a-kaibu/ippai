@@ -194,7 +194,8 @@ fn do_action_nested(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, table: Opt
 }
 
 fn do_action_inner(c: &mut Ctx, p: &Arc<Mutex<Package>>, name: &str, table: Option<&str>) -> u32 {
-    let r = match standard(c, p, name, table) {
+    // (a standard action's registry rows are written to the file once, at its end)
+    let r = match crate::misc::reg_batch(|| standard(c, p, name, table)) {
         Some(r) => r,
         None => {
             let ca = crate::msi_pkg::query(&p.lock().unwrap().db, &format!("SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction` WHERE `Action` = '{}'", name.replace('\'', "")));
