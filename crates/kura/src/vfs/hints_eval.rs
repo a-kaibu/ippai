@@ -6,6 +6,11 @@
 //!
 //!   HINTS_STORE=<store> HINTS_JIT=<jit> cargo test -p kura --lib hints_eval -- --ignored --nocapture
 //!
+//! With HINTS_FORESEE=<dir> (`ippai foresee --out <dir>`: each tree's table and archive members)
+//! also what the static foresight (vfs.rs `predicted` with a table) adds: each read reaches the
+//! members (or the loose file) its chunk holds, and those hint what the table says they name or
+//! what follows them in their scenes, as kura does.
+//!
 //! A list is the order of first reads, not their times: a chunk hinted just before its read
 //! still waits a little. The misses are a floor, the waste is as it would be.
 
@@ -68,11 +73,131 @@ fn mounts(json: &str) -> Vec<String> {
     rest[..end].split(',').filter_map(|m| m.trim().trim_matches('"').split_once('=').map(|(_, t)| t.to_string())).filter(|t| !t.is_empty()).collect()
 }
 
-/// A variant of the hints: the policy of a file, and the whole-archive limit.
+/// A variant of the hints: the policy of a file, and the whole-archive limit; and whether the
+/// static foresight hints too.
 struct Variant {
     name: &'static str,
     pol: fn(&str) -> Policy,
     whole_max: u64,
+    foresee: bool,
+}
+
+/// What a game's trees' tables foresee (`ippai foresee`), over its files.
+#[derive(Default)]
+struct Foresight {
+    table: HashMap<String, Vec<String>>,
+    stems: HashMap<String, String>,
+    places: HashMap<String, Vec<(String, usize)>>,
+    /// Archives' members (name, start, bytes), by file, sorted by start.
+    members: HashMap<usize, Vec<(String, u64, u64)>>,
+    /// Names (and stems) -> (file, start, bytes): a loose file whole, or a member.
+    names: HashMap<String, Vec<(usize, u64, u64)>>,
+}
+
+impl Foresight {
+    /// From the tables' texts and members' lines (`<tree>.tsv`, `<tree>.members`).
+    fn new(files: &[File], tables: &[String], members: &[String]) -> Foresight {
+        let mut f = Foresight::default();
+        for t in tables {
+            for (k, v) in foresee::parse_table(t) {
+                let e = f.table.entry(k).or_default();
+                for n in v {
+                    if !e.contains(&n) {
+                        e.push(n);
+                    }
+                }
+            }
+        }
+        f.stems = foresee::table_stems(&f.table);
+        f.places = foresee::table_places(&f.table, crate::vfs::PLACES_COMMON);
+        let by_path: HashMap<String, usize> = files.iter().enumerate().map(|(i, x)| (x.path.to_lowercase(), i)).collect();
+        let add = |names: &mut HashMap<String, Vec<(usize, u64, u64)>>, name: &str, t: (usize, u64, u64)| {
+            let (full, stem) = foresee::keys(name.rsplit(['/', '\\']).next().unwrap_or(name));
+            for k in std::iter::once(full).chain(stem) {
+                let v = names.entry(k).or_default();
+                if v.len() < 8 {
+                    v.push(t);
+                }
+            }
+        };
+        for (i, x) in files.iter().enumerate() {
+            add(&mut f.names, &x.path, (i, 0, x.size));
+        }
+        for text in members {
+            for l in text.lines() {
+                let c: Vec<&str> = l.split('\t').collect();
+                let [path, name, start, n] = c[..] else { continue };
+                let (Some(&i), Ok(start), Ok(n)) = (by_path.get(path), start.parse::<u64>(), n.parse::<u64>()) else { continue };
+                f.members.entry(i).or_default().push((name.to_string(), start, n));
+                add(&mut f.names, name, (i, start, n));
+            }
+        }
+        for v in f.members.values_mut() {
+            v.sort_by_key(|m| m.1);
+        }
+        f
+    }
+
+    /// The chunks (file, chunk) a first read of `files[f]`'s chunk `c` foresees, as vfs.rs
+    /// `predicted` would; `scanned`: members (file, start) looked at already.
+    fn hints(&self, files: &[File], f: usize, c: usize, scanned: &mut HashSet<(usize, u64)>) -> Vec<(usize, usize)> {
+        let file = &files[f];
+        let start: u64 = file.chunks[..c].iter().map(|x| x.1).sum();
+        let end = start + file.chunks[c].1;
+        let mut lists = Vec::new();
+        let look = |name: &str| -> Vec<String> {
+            let k = foresee::script_key(name);
+            if self.table.contains_key(&k) {
+                foresee::foreseen(&self.table, &self.stems, &k, crate::vfs::FORESEE_DEPTH, foresee::MENTIONS_MAX)
+            } else {
+                foresee::following(&self.table, &self.places, &k, crate::vfs::FOLLOWING)
+            }
+        };
+        match self.members.get(&f) {
+            Some(ms) => {
+                for m in ms.iter().filter(|m| m.1 < end && start < m.1 + m.2.max(1)) {
+                    if scanned.insert((f, m.1)) {
+                        lists.push(look(&m.0));
+                    }
+                }
+            }
+            None => {
+                if scanned.insert((f, 0)) {
+                    lists.push(look(file.path.rsplit('/').next().unwrap_or(&file.path)));
+                }
+            }
+        }
+        // (the targets' chunks, in the order named: SIBLING_MAX each, PREDICT_BYTES in all)
+        let span = |g: usize, a: u64, n: u64| {
+            let mut at = 0u64;
+            let mut v = Vec::new();
+            for (j, x) in files[g].chunks.iter().enumerate() {
+                if at < a + n.max(1) && a < at + x.1 {
+                    v.push((g, j));
+                }
+                at += x.1;
+            }
+            v
+        };
+        let (mut out, mut bytes) = (Vec::new(), 0u64);
+        for names in lists {
+            for n in names {
+                let (full, stem) = foresee::keys(&n);
+                let Some(ts) = self.names.get(&full).or_else(|| stem.and_then(|s| self.names.get(&s))) else { continue };
+                for &(g, a, n) in ts {
+                    if n > super::SIBLING_MAX || n == 0 {
+                        continue;
+                    }
+                    if bytes + n > crate::vfs::PREDICT_BYTES {
+                        return out;
+                    }
+                    bytes += n;
+                    out.extend(span(g, a, n));
+                }
+            }
+        }
+        out
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -83,16 +208,26 @@ struct Score {
     wasted: u64,
 }
 
-/// Replays `seq` (file, chunk) against `files` with variant `v`.
-fn replay(files: &[File], dirs: &HashMap<String, Vec<usize>>, seq: &[(usize, usize)], v: &Variant) -> Score {
+/// Replays `seq` (file, chunk) against `files` with variant `v` (and `fs` the foresight).
+fn replay(files: &[File], dirs: &HashMap<String, Vec<usize>>, seq: &[(usize, usize)], v: &Variant, fs: Option<&Foresight>) -> Score {
     let mut have: HashSet<(usize, usize)> = HashSet::new();
     let mut touched: HashSet<usize> = HashSet::new();
     let mut hinted: HashSet<(usize, usize)> = HashSet::new();
+    let mut scanned = HashSet::new();
     let mut s = Score::default();
     for &(f, c) in seq {
         s.reads += 1;
         let first = touched.insert(f);
-        if have.contains(&(f, c)) {
+        let hit = have.contains(&(f, c));
+        // (every read asks the foresight, as kura does: what it reaches names)
+        if let Some(fs) = fs.filter(|_| v.foresee) {
+            for k in fs.hints(files, f, c, &mut scanned) {
+                if k != (f, c) && have.insert(k) {
+                    hinted.insert(k);
+                }
+            }
+        }
+        if hit {
             continue;
         }
         s.misses += 1;
@@ -174,20 +309,23 @@ fn hints_eval() {
         return;
     };
     let variants = [
-        Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX },
-        Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0 },
-        Variant { name: "siblings x0", pol: |n| scale(policy(n), 0.0, 1.0), whole_max: WHOLE_MAX },
-        Variant { name: "siblings x2", pol: |n| scale(policy(n), 2.0, 1.0), whole_max: WHOLE_MAX },
-        Variant { name: "siblings x4", pol: |n| scale(policy(n), 4.0, 1.0), whole_max: WHOLE_MAX },
-        Variant { name: "chunks x0", pol: |n| scale(policy(n), 1.0, 0.0), whole_max: WHOLE_MAX },
-        Variant { name: "chunks x2", pol: |n| scale(policy(n), 1.0, 2.0), whole_max: WHOLE_MAX },
-        Variant { name: "chunks x4", pol: |n| scale(policy(n), 1.0, 4.0), whole_max: WHOLE_MAX },
-        Variant { name: "whole 64 MiB", pol: policy, whole_max: 64 << 20 },
-        Variant { name: "whole none", pol: policy, whole_max: 0 },
+        Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX, foresee: false },
+        Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false },
+        Variant { name: "foresee only", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: true },
+        Variant { name: "as is + foresee", pol: policy, whole_max: WHOLE_MAX, foresee: true },
+        Variant { name: "siblings x0", pol: |n| scale(policy(n), 0.0, 1.0), whole_max: WHOLE_MAX, foresee: false },
+        Variant { name: "siblings x2", pol: |n| scale(policy(n), 2.0, 1.0), whole_max: WHOLE_MAX, foresee: false },
+        Variant { name: "siblings x4", pol: |n| scale(policy(n), 4.0, 1.0), whole_max: WHOLE_MAX, foresee: false },
+        Variant { name: "chunks x0", pol: |n| scale(policy(n), 1.0, 0.0), whole_max: WHOLE_MAX, foresee: false },
+        Variant { name: "chunks x2", pol: |n| scale(policy(n), 1.0, 2.0), whole_max: WHOLE_MAX, foresee: false },
+        Variant { name: "chunks x4", pol: |n| scale(policy(n), 1.0, 4.0), whole_max: WHOLE_MAX, foresee: false },
+        Variant { name: "whole 64 MiB", pol: policy, whole_max: 64 << 20, foresee: false },
+        Variant { name: "whole none", pol: policy, whole_max: 0, foresee: false },
     ];
     // engine -> variant -> score; and by kind of what was missed with the hints as they are
     let mut by: BTreeMap<String, Vec<Score>> = BTreeMap::new();
     let mut missed_kind: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    let foresee_dir = std::env::var("HINTS_FORESEE").ok();
     let mut games: Vec<_> = std::fs::read_dir(format!("{store}/games")).unwrap().filter_map(|e| e.ok()).collect();
     games.sort_by_key(|e| e.file_name());
     for e in games {
@@ -212,11 +350,17 @@ fn hints_eval() {
         });
         let Some(list) = list else { continue };
         let mut files = Vec::new();
+        let (mut tables, mut members) = (Vec::new(), Vec::new());
         for t in mounts(&json) {
             if let Ok(text) = std::fs::read_to_string(format!("{store}/trees/{t}.tsv")) {
                 files.extend(tree(&text));
             }
+            if let Some(d) = &foresee_dir {
+                tables.extend(std::fs::read_to_string(format!("{d}/{t}.tsv")));
+                members.extend(std::fs::read_to_string(format!("{d}/{t}.members")));
+            }
         }
+        let fs = foresee_dir.as_ref().map(|_| Foresight::new(&files, &tables, &members));
         let engine = field(&json, "engine").unwrap_or(engine(&files)).to_string();
         let mut at: HashMap<&str, (usize, usize)> = HashMap::new();
         let mut dirs: HashMap<String, Vec<usize>> = HashMap::new();
@@ -235,8 +379,9 @@ fn hints_eval() {
         if seq.is_empty() {
             continue;
         }
-        let scores: Vec<Score> = variants.iter().map(|v| replay(&files, &dirs, &seq, v)).collect();
-        eprintln!("{id} ({engine}): {} reads, misses {} -> {} as is, {} MiB hinted for nothing", seq.len(), scores[1].misses, scores[0].misses, scores[0].wasted >> 20);
+        let scores: Vec<Score> = variants.iter().map(|v| replay(&files, &dirs, &seq, v, fs.as_ref())).collect();
+        let scripts = fs.as_ref().map_or(0, |f| f.table.len());
+        eprintln!("{id} ({engine}): {} reads, misses {} -> {} as is -> {} with foresee ({scripts} scripts in its tables), {} MiB / {} MiB hinted for nothing", seq.len(), scores[1].misses, scores[0].misses, scores[3].misses, scores[0].wasted >> 20, scores[3].wasted >> 20);
         let e = by.entry(engine.clone()).or_insert_with(|| vec![Score::default(); variants.len()]);
         for (a, b) in e.iter_mut().zip(&scores) {
             a.reads += b.reads;
@@ -293,14 +438,14 @@ fn replay_counts_what_hints_foresaw() {
         dirs.entry(f.path.rsplit_once('/').map_or("", |d| d.0).to_string()).or_default().push(i);
     }
     let seq: Vec<(usize, usize)> = (0..20).map(|i| (i, 0)).chain((0..3).map(|c| (20, c))).collect();
-    let as_is = Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX };
-    let none = Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0 };
-    let s = replay(&files, &dirs, &seq, &as_is);
+    let as_is = Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX, foresee: false };
+    let none = Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false };
+    let s = replay(&files, &dirs, &seq, &as_is, None);
     // (v000 waits and hints 001..019; the movie's 3 chunks wait)
     assert_eq!((s.reads, s.misses, s.wasted), (23, 4, 0));
-    assert_eq!(replay(&files, &dirs, &seq, &none).misses, 23);
+    assert_eq!(replay(&files, &dirs, &seq, &none, None).misses, 23);
     // (read only the first: 19 hinted for nothing)
-    let s = replay(&files, &dirs, &[(0, 0)], &as_is);
+    let s = replay(&files, &dirs, &[(0, 0)], &as_is, None);
     assert_eq!((s.misses, s.wasted), (1, 19_000));
     let names = |ps: &[&str]| ps.iter().map(|p| File { path: p.to_string(), size: 1, chunks: vec![] }).collect::<Vec<_>>();
     assert_eq!(engine(&names(&["game.exe", "data.xp3", "voice.xp3"])), "KiriKiri");
@@ -315,4 +460,31 @@ fn replay_counts_what_hints_foresaw() {
     assert_eq!(field(&pretty, "run"), Some("Z:\\\\ippai\\\\a b.exe"));
     let t = tree("v1\t\t\nf\t0\t0\tvoice/a\\tb.ogg\t3\taa:1,bb:2\nd\t0\t0\tvoice\t0\t\n");
     assert_eq!((t.len(), t[0].path.as_str(), t[0].chunks.len()), (1, "voice/a\tb.ogg", 2));
+}
+
+#[test]
+fn replay_counts_what_the_tables_foresaw() {
+    // (data.arc: a script in its first chunk, a picture in its second; loose voices; a far file)
+    let files = vec![
+        File { path: "data.arc".into(), size: 2000, chunks: vec![("a0".into(), 1000), ("a1".into(), 1000)] },
+        File { path: "voice/v001.ogg".into(), size: 10, chunks: vec![("v1".into(), 10)] },
+        File { path: "voice/v002.ogg".into(), size: 10, chunks: vec![("v2".into(), 10)] },
+        File { path: "bgm/far.ogg".into(), size: 10, chunks: vec![("f".into(), 10)] },
+    ];
+    let table = format!("{}\n{}{}", foresee::TABLE_HEADER, foresee::table_line("01_start", &["bg01a".into(), "v001".into()]), foresee::table_line("02_next", &["v001".into(), "v002".into(), "far".into()]));
+    let members = "data.arc\t01_start\t16\t500\ndata.arc\tbg01a\t1200\t300\n".to_string();
+    let fs = Foresight::new(&files, &[table], &[members]);
+    let dirs = HashMap::new();
+    let seq = [(0, 0), (0, 1), (1, 0), (2, 0), (3, 0)];
+    let none = Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false };
+    let only = Variant { name: "foresee only", pol: none.pol, whole_max: 0, foresee: true };
+    assert_eq!(replay(&files, &dirs, &seq, &none, Some(&fs)).misses, 5, "not asked: as none");
+    // (01_start's chunk names bg01a's chunk and v001; v001, read, is followed by v002 and far
+    // in 02_next)
+    let s = replay(&files, &dirs, &seq, &only, Some(&fs));
+    assert_eq!((s.reads, s.misses, s.wasted), (5, 1, 0));
+    // (none read: all hinted for nothing; a table-less game: nothing foreseen)
+    let s = replay(&files, &dirs, &[(0, 0)], &only, Some(&fs));
+    assert_eq!((s.misses, s.wasted), (1, 1010));
+    assert_eq!(replay(&files, &dirs, &seq, &only, Some(&Foresight::new(&files, &[], &[]))).misses, 5);
 }

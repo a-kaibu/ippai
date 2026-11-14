@@ -122,23 +122,81 @@ async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<f
 }
 
 async fn xp3(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> String {
-    let Some(head) = trees.read(tree, path, 0, 0x28, cache).await else { return String::new() };
-    let Some(at) = foresee::xp3_index_at(&head) else { return String::new() };
-    let Some(len) = trees.read(tree, path, at, 17, cache).await.as_deref().and_then(foresee::xp3_index_len) else { return String::new() };
-    if len > foresee::INDEX_MAX as u64 {
-        return String::new();
-    }
-    let Some(index) = trees.read(tree, path, at, len, cache).await.as_deref().and_then(foresee::xp3_index_bytes) else { return String::new() };
-    members_lines(trees, tree, path, foresee::xp3_index(&index), cache, |_| false).await
+    let members = xp3_members(trees, tree, path, cache).await;
+    members_lines(trees, tree, path, members, cache, |_| false).await
 }
 
 async fn bgi(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> String {
-    let Some(len) = trees.read(tree, path, 0, 16, cache).await.as_deref().and_then(foresee::bgi_index_len) else { return String::new() };
+    let members = bgi_members(trees, tree, path, cache).await;
+    members_lines(trees, tree, path, members, cache, foresee::is_bgi_script).await
+}
+
+/// An .xp3's members, from its index.
+async fn xp3_members(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> Vec<foresee::Member> {
+    let Some(head) = trees.read(tree, path, 0, 0x28, cache).await else { return Vec::new() };
+    let Some(at) = foresee::xp3_index_at(&head) else { return Vec::new() };
+    let Some(len) = trees.read(tree, path, at, 17, cache).await.as_deref().and_then(foresee::xp3_index_len) else { return Vec::new() };
     if len > foresee::INDEX_MAX as u64 {
-        return String::new();
+        return Vec::new();
     }
-    let Some(head) = trees.read(tree, path, 0, len, cache).await else { return String::new() };
-    members_lines(trees, tree, path, foresee::bgi_index(&head), cache, foresee::is_bgi_script).await
+    let Some(index) = trees.read(tree, path, at, len, cache).await.as_deref().and_then(foresee::xp3_index_bytes) else { return Vec::new() };
+    foresee::xp3_index(&index)
+}
+
+/// A BGI .arc's members, from its index.
+async fn bgi_members(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> Vec<foresee::Member> {
+    let Some(len) = trees.read(tree, path, 0, 16, cache).await.as_deref().and_then(foresee::bgi_index_len) else { return Vec::new() };
+    if len > foresee::INDEX_MAX as u64 {
+        return Vec::new();
+    }
+    let Some(head) = trees.read(tree, path, 0, len, cache).await else { return Vec::new() };
+    foresee::bgi_index(&head)
+}
+
+/// Tree `tree`'s archive members, a line each: `<archive path>\t<member name>\t<start>\t<bytes>`
+/// (their first segment; hints_eval.rs maps a list's chunk reads to the members they read).
+pub async fn members(trees: &Trees, tree: &str) -> String {
+    let mut out = String::new();
+    let mut files = trees.list(tree).unwrap_or_default();
+    files.sort();
+    for (path, _) in &files {
+        let mut cache = HashMap::new();
+        let ms = if path.ends_with(".xp3") {
+            xp3_members(trees, tree, path, &mut cache).await
+        } else if path.ends_with(".arc") {
+            bgi_members(trees, tree, path, &mut cache).await
+        } else {
+            continue;
+        };
+        for m in ms {
+            let (start, n) = (m.segments[0].0, m.segments.iter().map(|s| s.1).sum::<u64>());
+            out += &format!("{path}\t{}\t{start}\t{n}\n", m.name.replace(['\t', '\n'], " "));
+        }
+    }
+    out
+}
+
+/// `ippai foresee <trees> --out <dir>`: each tree's table (`<tree>.tsv`, as GET /foresee
+/// serves it) and its archives' members (`<tree>.members`), for hints_eval.rs.
+pub fn write_all(store: &std::path::Path, names: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    let trees = Trees::new(store.to_path_buf())?;
+    std::fs::create_dir_all(out)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    let names: Vec<String> = if names.is_empty() {
+        let mut v: Vec<String> = std::fs::read_dir(store.join("trees"))?.flatten().filter_map(|e| e.file_name().to_str()?.strip_suffix(".tsv").map(String::from)).collect();
+        v.sort();
+        v
+    } else {
+        names.to_vec()
+    };
+    for (k, n) in names.iter().enumerate() {
+        let t0 = std::time::Instant::now();
+        let (table, ms) = rt.block_on(async { (build(&trees, n).await, members(&trees, n).await) });
+        std::fs::write(out.join(format!("{n}.tsv")), &table)?;
+        std::fs::write(out.join(format!("{n}.members")), &ms)?;
+        eprintln!("{}/{} {n}: {} scripts, {} members, {:.1} s", k + 1, names.len(), table.lines().count().saturating_sub(1), ms.lines().count(), t0.elapsed().as_secs_f64());
+    }
+    Ok(())
 }
 
 /// Siglus' Scene.pck: each scene's names (its string table), the pack decrypted with the key
@@ -200,7 +258,7 @@ mod tests {
     /// scenario; a plain one; the picture), a loose script, a picture; chunks of 64 bytes.
     fn store() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ippai-foresee-{}", uuid::Uuid::new_v4()));
-        let mut line = |name: &str, data: &[u8]| {
+        let line = |name: &str, data: &[u8]| {
             let mut field = Vec::new();
             for c in data.chunks(64) {
                 let h = blake3::hash(c).to_hex()[..32].to_string();
@@ -249,6 +307,10 @@ mod tests {
         assert_eq!(t["scene.ks"], v(&["image", "storage", "cg01"]));
         assert!(t["02_route"].ends_with(&v(&["bg02a", "ch_03b"])), "{text}");
         assert_eq!(t.len(), 4, "{text}");
+        let ms = members(&trees, "g").await;
+        let ls: Vec<&str> = ms.lines().collect();
+        assert_eq!(ls.len(), 5, "{ms}");
+        assert!(ls[0].starts_with("data.xp3\tscenario/first.ks\t") && ls[3].starts_with("data01000.arc\t02_route\t80\t49"), "{ms}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

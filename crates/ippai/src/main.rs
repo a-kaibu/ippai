@@ -96,6 +96,14 @@ enum Cmd {
     /// One TrueType collection from fonts that share their glyphs (sake's MS-named fonts:
     /// msgothic.ttc from msgothic, msuigothic, mspgothic.ttf (Windows' order); msmincho.ttc from msmincho,
     /// mspmincho.ttf), the first font's glyphs shared by the others where theirs are the same.
+    /// Each tree's foresee table and archive members into a folder (hints_eval.rs).
+    #[command(hide = true)]
+    Foresee {
+        /// Trees [default: every tree]
+        trees: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
     #[command(hide = true)]
     Ttc { out: PathBuf, fonts: Vec<PathBuf> },
     /// Download RPG Maker's run time packages (VX Ace, VX, XP, 2000, 2003) from their publisher
@@ -331,6 +339,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Gamedb { action: GamedbCmd::Check { file, part } } => gamedb::check(&file, part),
         Cmd::Gamedb { action: GamedbCmd::Push { file, part } } => gamedb::push(&file, part, &ghcr_token()?).map(|d| println!("{d}")),
         Cmd::Gamedb { action: GamedbCmd::Update { dir, part, source } } => gamedb::update(&dir, part, &ghcr_token()?, &source).map(|d| println!("{d}")),
+        Cmd::Foresee { trees, out } => foresee::write_all(&dirs.store, &trees, &out),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),
         Cmd::Rtp { out, cache } => {
             let out = out.unwrap_or_else(|| dirs.rtp.clone());
