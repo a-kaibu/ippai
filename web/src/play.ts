@@ -254,8 +254,9 @@ async function loadSavesOrOld(
   return moved ?? saves;
 }
 
-/** The guest's lines shown in the console (all of them reach the crash log). */
-const shown = new LineLimit();
+/** The guest's lines shown in the console (all of them reach the crash log); &alllines: every
+ * one (a test program whose output is its result: tests/winref/run-browser.mjs) */
+const shown = params.has("alllines") ? { allow: () => true } : new LineLimit();
 const leftOut = (n: number) =>
   console.warn(`(${n} lines of the program's output not shown: too many at once)`);
 

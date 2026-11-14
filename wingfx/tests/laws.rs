@@ -199,9 +199,12 @@ fn state_block_groups_partition() {
     let vertex = s.iter().filter(|x| matches!(x.2, Group::Vertex | Group::Both)).count();
     let both = s.iter().filter(|x| x.2 == Group::Both).count();
     let only_all = s.iter().filter(|x| x.2 == Group::All).count();
-    assert_eq!(pixel + vertex - both + only_all, all);
-    // SHADEMODE, FOGSTART, FOGEND, FOGDENSITY
-    assert_eq!(both, 4);
+    let nowhere = s.iter().filter(|x| x.2 == Group::Nowhere).count();
+    assert_eq!(pixel + vertex - both + only_all + nowhere, all);
+    // SHADEMODE, FOGSTART, FOGEND, FOGDENSITY; TEXCOORDINDEX, TEXTURETRANSFORMFLAGS of 8 stages
+    assert_eq!(both, 4 + 16);
+    // D3DTSS_CONSTANT of 8 stages
+    assert_eq!(nowhere, 8);
     // DMAPOFFSET of 21 samplers
     assert_eq!(only_all, 21);
 }

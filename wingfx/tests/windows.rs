@@ -64,3 +64,34 @@ fn d3d9_defaults_match_the_d3d9state_probe() {
     }
     assert!(n > 200);
 }
+
+/// the state block groups against masu's d3d9sb probe (which block types bring each state back)
+#[test]
+fn d3d9_groups_match_the_d3d9sb_probe() {
+    let p = root().join("../tests/winref/golden/d3d9sb-32/stdout.txt");
+    let Ok(g) = std::fs::read_to_string(p) else { return };
+    use wingfx::model::d3d9::{all_states, Group, Key};
+    let mut n = 0;
+    for (k, _, grp) in all_states() {
+        // (the probe's names: rs i, tss t (stage 0) / 700+t (stage 7), ss t (sampler 0) / 1500+t ...)
+        let name = match k {
+            Key::Rs(i) => format!("rs {i}"),
+            Key::Tss(0, t) => format!("tss {t}"),
+            Key::Tss(7, t) => format!("tss {}", 700 + t),
+            Key::Ss(0, t) => format!("ss {t}"),
+            Key::Ss(15, t) => format!("ss {}", 1500 + t),
+            _ => continue,
+        };
+        let (a, p, v) = match grp {
+            Group::Pixel => (1, 1, 0),
+            Group::Vertex => (1, 0, 1),
+            Group::Both => (1, 1, 1),
+            Group::All => (1, 0, 0),
+            Group::Nowhere => (0, 0, 0),
+        };
+        let want = format!("{name} all {a} pixel {p} vertex {v}");
+        assert!(g.lines().any(|l| l == want), "Windows does not say {want:?}");
+        n += 1;
+    }
+    assert!(n > 150);
+}

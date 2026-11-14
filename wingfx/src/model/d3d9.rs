@@ -8,7 +8,8 @@
 //! "IDirect3DDevice9::BeginStateBlock" (calls while recording are recorded, not applied).
 //! MEASURED: what the documentation does not say, taken from Windows' answers (masu's
 //! tests/winref/golden/d3d9state-32 and d3d9sb-32): which undocumented states can be read and
-//! what they read, rs 40 being a pixel state, DMAPOFFSET belonging to D3DSBT_ALL only.
+//! what they read, rs 40 being a pixel state, DMAPOFFSET belonging to D3DSBT_ALL only,
+//! TEXCOORDINDEX / TEXTURETRANSFORMFLAGS in pixel blocks too, D3DTSS_CONSTANT in none.
 
 use super::{Fail, Res};
 use crate::case::{num, Op};
@@ -25,6 +26,8 @@ pub enum Group {
     Both,
     /// D3DSBT_ALL only
     All,
+    /// in no state block (MEASURED: D3DTSS_CONSTANT)
+    Nowhere,
 }
 use Group::*;
 
@@ -150,11 +153,13 @@ pub fn tss_doc(t: u32, s: u32) -> Option<(u32, Group)> {
         5 => (2, Pixel),
         6 => (1, Pixel),
         7..=10 => (0, Pixel), // BUMPENVMAT00..11
-        11 => (s, Vertex),    // TEXCOORDINDEX: the stage's own index
+        // TEXCOORDINDEX (the stage's own index) and TEXTURETRANSFORMFLAGS: the documentation
+        // lists them as vertex states; MEASURED: pixel state blocks hold them too
+        11 => (s, Both),
         22 | 23 => (0, Pixel), // BUMPENVLSCALE, BUMPENVLOFFSET
-        24 => (0, Vertex),    // TEXTURETRANSFORMFLAGS
+        24 => (0, Both),
         26..=28 => (1, Pixel), // COLORARG0, ALPHAARG0, RESULTARG: CURRENT
-        32 => (0, Pixel),     // CONSTANT
+        32 => (0, Nowhere),   // CONSTANT: MEASURED, no state block holds it
         _ => return None,
     })
 }
@@ -303,7 +308,7 @@ impl D3d9 {
                     "create" => {
                         let ty = n(op, 3)?;
                         let want: fn(Group) -> bool = match ty {
-                            1 => |_| true,
+                            1 => |g| g != Nowhere,
                             2 => |g| matches!(g, Pixel | Both),
                             3 => |g| matches!(g, Vertex | Both),
                             _ => return Err(Fail::Unmodeled("state block type")),
