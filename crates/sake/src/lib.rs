@@ -198,6 +198,7 @@ pub mod user;
 pub mod w16;
 pub mod w16api;
 pub mod snap;
+pub mod shirusu;
 
 use mem::{r32, w32};
 

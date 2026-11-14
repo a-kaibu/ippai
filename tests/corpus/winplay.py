@@ -418,6 +418,16 @@ def end(pids, grace, close, confirm, kill, alive, sleep=time.sleep, clock=time.t
     return ended
 
 
+def wait_launcher(p, secs):
+    """the LAUNCH command once the game has ended: its exit code when it ended within secs, else
+    'killed' (what it had not written out is lost)"""
+    try:
+        return p.wait(timeout=secs)
+    except subprocess.TimeoutExpired:
+        subprocess.run(['taskkill', '/F', '/T', '/PID', str(p.pid)], capture_output=True)
+        return 'killed'
+
+
 def run(exe, out, steps):
     exe = os.path.abspath(exe)
     d = os.path.dirname(exe)
@@ -430,7 +440,11 @@ def run(exe, out, steps):
     t0 = time.time()
     now = lambda: time.time() - t0
     save = lambda: open(os.path.join(out, 'result.json'), 'w', encoding='utf-8').write(json.dumps(res, ensure_ascii=False, indent=1))
-    p = subprocess.Popen(f'"{exe}" {os.environ.get("ARGS", "")}'.strip(), cwd=d)
+    # (LAUNCH: a command the game is started under, a tracer that waits for it: shirusu capture,
+    # .github/workflows/shirusu.yml. It is left running when the game is ended, LAUNCH_WAIT
+    # seconds at most, to write out its trace)
+    launch = os.environ.get('LAUNCH', '')
+    p = subprocess.Popen(f'{launch} "{exe}" {os.environ.get("ARGS", "")}'.strip(), cwd=d)
     win = [None, None]  # hwnd, rect
     cpu = {}  # (every game process seen: its last CPU seconds, for cores())
 
@@ -552,12 +566,14 @@ def run(exe, out, steps):
         res['end'] = now()
         # (CLOSE_FIRST seconds: asked to close first, so a tracer in it writes out what it holds:
         # tests/replay/record-game.ps1; then killed)
-        res['closed'] = end(lambda: pids_under(d) | ({p.pid} if p.poll() is None else set()),
+        res['closed'] = end(lambda: pids_under(d) | ({p.pid} if p.poll() is None and not launch else set()),
                             float(os.environ.get('CLOSE_FIRST', 0)),
                             lambda pid: subprocess.run(['taskkill', '/T', '/PID', str(pid)], capture_output=True),
                             lambda: key('Return'),
                             lambda pid: subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)], capture_output=True),
                             alive)
+        if launch:
+            res['launcher'] = wait_launcher(p, float(os.environ.get('LAUNCH_WAIT', 60)))
         save()
 
 

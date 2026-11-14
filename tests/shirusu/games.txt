@@ -1,0 +1,7 @@
+# Trial games .github/workflows/shirusu.yml plays on Windows under shirusu capture and on sake with
+# SAKE_SHIRUSU=1, comparing the two Traces (docs/shirusu.md): ids of tests/corpus/titles.tsv.
+# First batch: the titles corpus expects to reach their story on sake.
+b2019_sukerasparo	# BGI/Ethornell
+s2015_clochette_kokonatsu	# CatSystem2
+b2023_erectlip_yukaku	# Softpal
+dl_RJ140334	# KiriKiri2

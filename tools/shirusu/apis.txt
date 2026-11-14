@@ -1,0 +1,47 @@
+# The APIs sake records for shirusu (SAKE_SHIRUSU=1, crates/sake/src/shirusu.rs) and the
+# Windows capture records (--mode filtered --api: .github/workflows/shirusu.yml): shirusu's
+# catalog names. File and registry calls, named objects, the window and Direct3D's start.
+kernel32!CreateFileW
+kernel32!CreateFileA
+kernel32!ReadFile
+kernel32!WriteFile
+kernel32!CloseHandle
+kernel32!GetFileSize
+kernel32!GetFileSizeEx
+kernel32!SetFilePointerEx
+kernel32!GetFileType
+kernel32!GetFileAttributesW
+kernel32!GetFileAttributesA
+kernel32!FindFirstFileW
+kernel32!FindFirstFileA
+kernel32!FindNextFileW
+kernel32!FindNextFileA
+kernel32!FindClose
+kernel32!CreateDirectoryW
+kernel32!CreateDirectoryA
+kernel32!DeleteFileW
+kernel32!DeleteFileA
+kernel32!GetCurrentDirectoryW
+kernel32!GetCurrentDirectoryA
+kernel32!GetFullPathNameW
+kernel32!GetFullPathNameA
+kernel32!GetDriveTypeW
+kernel32!GetDriveTypeA
+kernel32!GetDiskFreeSpaceExW
+kernel32!GetDiskFreeSpaceExA
+kernel32!GetLogicalDrives
+kernel32!CreateMutexW
+kernel32!CreateEventW
+advapi32!RegOpenKeyExW
+advapi32!RegOpenKeyExA
+advapi32!RegCreateKeyExW
+advapi32!RegCreateKeyExA
+advapi32!RegQueryValueExW
+advapi32!RegQueryValueExA
+advapi32!RegSetValueExW
+advapi32!RegSetValueExA
+advapi32!RegCloseKey
+user32!CreateWindowExW
+user32!ShowWindow
+gdi32!GetDeviceCaps
+d3d9!Direct3DCreate9

@@ -1,0 +1,26 @@
+[package]
+name = "sake-shirusu"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Builds a shirusu Trace from sake's SAKE_SHIRUSU=1 lines (crates/sake/src/shirusu.rs)"
+
+# (outside ippai's workspace: shirusu's crates are a test tool's, not the release's)
+[workspace]
+
+[[bin]]
+name = "sake-shirusu"
+path = "src/main.rs"
+
+# github.com/a-kaibu/shirusu-poc, pinned: the same commit .github/workflows/shirusu.yml builds
+# the Windows capture from (SHIRUSU_REV there), so both sides' Schemas hash alike
+[dependencies]
+shirusu-emit = { git = "https://github.com/a-kaibu/shirusu-poc", rev = "996762742e92f10c6ef171dda529e8a132b4f102" }
+shirusu-trace = { git = "https://github.com/a-kaibu/shirusu-poc", rev = "996762742e92f10c6ef171dda529e8a132b4f102" }
+shirusu-api-catalog = { git = "https://github.com/a-kaibu/shirusu-poc", rev = "996762742e92f10c6ef171dda529e8a132b4f102" }
+shirusu-hook = { git = "https://github.com/a-kaibu/shirusu-poc", rev = "996762742e92f10c6ef171dda529e8a132b4f102" }
+
+[dev-dependencies]
+shirusu-conformance = { git = "https://github.com/a-kaibu/shirusu-poc", rev = "996762742e92f10c6ef171dda529e8a132b4f102" }
+shirusu-compare = { git = "https://github.com/a-kaibu/shirusu-poc", rev = "996762742e92f10c6ef171dda529e8a132b4f102" }
+proptest = "1"

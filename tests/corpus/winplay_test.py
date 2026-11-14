@@ -156,6 +156,21 @@ class Manifest(unittest.TestCase):
             self.assertEqual(acps(winplay.with_codepage(once))[1], ['ja-JP'], name)
 
 
+class WaitLauncher(unittest.TestCase):
+    """wait_launcher(): a LAUNCH command (shirusu capture) gets its time to write its trace out"""
+    def test_exit_code(self):
+        import subprocess
+        p = subprocess.Popen([sys.executable, '-c', 'import sys; sys.exit(3)'])
+        self.assertEqual(winplay.wait_launcher(p, 30), 3)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'taskkill')
+    def test_killed(self):
+        import subprocess
+        p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+        self.assertEqual(winplay.wait_launcher(p, 0.5), 'killed')
+        self.assertIsNotNone(p.wait(10))
+
+
 class End(unittest.TestCase):
     """end(): closed first when asked, a "quit?" box answered once, the rest killed"""
     def run_end(self, grace, exits_after=None, exits_on_confirm=False):

@@ -1,0 +1,402 @@
+# shirusu (github.com/a-kaibu/shirusu-poc, a Win32 API tracer) against sake on trial games
+# (tests/shirusu/games.txt, docs/shirusu.md): each game played on real Windows under
+# `shirusu capture` and on sake with SAKE_SHIRUSU=1, the same way (tests/corpus/winplay.py and
+# tests/corpus.mjs: title screen, the title's steps, story clicks), recording the same APIs
+# (tools/shirusu/apis.txt); then both Traces through shirusu-conformance and shirusu-compare.
+# The report (artifact shirusu-report) lists per game what each side called and the differences
+# compare found: candidates, not verdicts. Nothing is committed.
+#   plan     the titles; the newest successful CI build of main (sake)
+#   prep     downloads and unpacks each trial (tests/corpus-prep.sh), its width (gameapi.py)
+#   windows  on windows-2025: shirusu built at SHIRUSU_REV (cached), Japanese fonts, a sound
+#            card, winplay.py play with LAUNCH = shirusu capture
+#   sake     the titles on sake in headless Chromium (tests/corpus/ci.sh, SAKE_ENV=SAKE_SHIRUSU=1)
+#   compare  tools/shirusu (sake's lines -> Trace), shirusu-conformance, shirusu-compare,
+#            tests/shirusu/report.py
+name: shirusu
+
+on:
+  push:
+    # (claude/**: a branch's run before its sake reaches main; its sake job then fails on main's
+    # build if that has no SAKE_SHIRUSU, the Windows side still runs)
+    branches: [main, 'claude/**']
+    paths:
+      - 'tests/shirusu/games.txt'
+      - '.github/workflows/shirusu.yml'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "only these title ids (space-separated; default tests/shirusu/games.txt)"
+        default: ""
+      ci_run:
+        description: "the CI run whose sake is tested (default the newest successful one of main)"
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: shirusu
+  cancel-in-progress: false
+
+env:
+  # (tools/shirusu/Cargo.toml pins the same commit)
+  SHIRUSU_REV: 996762742e92f10c6ef171dda529e8a132b4f102
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      ids: ${{ steps.p.outputs.ids }}
+      run_id: ${{ steps.p.outputs.run_id }}
+      sha: ${{ steps.p.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/mirror-trials
+      - id: p
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ONLY: ${{ inputs.only }}
+          CI_RUN: ${{ inputs.ci_run }}
+        run: |
+          python3 tests/shirusu/report_test.py
+          if [ -n "$CI_RUN" ]; then
+            RUN_ID=$CI_RUN SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" --jq .head_sha)
+          else
+            read -r RUN_ID SHA < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
+              --limit 1 --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"')
+          fi
+          ids=${ONLY:-$(sed -e 's/#.*//' tests/shirusu/games.txt | awk 'NF { print $1 }')}
+          echo "ids=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' $ids)" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "sake: CI run $RUN_ID ($SHA); titles: $ids"
+
+  prep:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        id: ${{ fromJSON(needs.plan.outputs.ids) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
+      - id: cache-1
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools
+      - run: tools/ci/apt.sh unar unrar innoextract convmv p7zip-full msitools
+      - if: steps.cache-1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools
+      - uses: actions/download-artifact@v8.0.2
+        continue-on-error: true
+        with:
+          name: mirror-trials
+          path: mirror
+      - name: Download ${{ matrix.id }}
+        env:
+          ID: ${{ matrix.id }}
+        run: |
+          [ -f mirror/mirror-trials.json ] && export MIRROR=$PWD/mirror/mirror-trials.json
+          IFS=$'\t' read -r url exe < <(awk -F'\t' -v i="$ID" '$1 == i { print $5 "\t" $6 }' tests/corpus/titles.tsv)
+          export TRIALS=$RUNNER_TEMP/trials DL_TRIES=3
+          e=$(bash tests/corpus-prep.sh "$ID" "$url" "$exe" "")
+          g=$TRIALS/$ID/x
+          read -r api bits < <(python3 -I tests/replay/gameapi.py "$g" "$e")
+          echo "$ID: $e: $api, $bits-bit"
+          mkdir -p game && mv "$g" game/x
+          printf '%s\n%s\n%s\n' "$api" "$bits" "$e" > game/meta.txt
+          python3 tests/corpus/winplay.py meta tests/corpus/titles.tsv "$ID" "$e" game/meta.json
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: game-${{ matrix.id }}
+          path: game
+          retention-days: 2
+
+  # (shirusu for both widths, once per SHIRUSU_REV: the CLI and its Agent DLL side by side)
+  build-shirusu:
+    needs: plan
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - id: c
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/shirusu-bin
+          key: shirusu-bin-${{ env.SHIRUSU_REV }}
+      - if: steps.c.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git init -q "$RUNNER_TEMP/shirusu" && cd "$RUNNER_TEMP/shirusu"
+          git fetch -q --depth 1 https://github.com/a-kaibu/shirusu-poc "$SHIRUSU_REV" && git checkout -q FETCH_HEAD
+          rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
+          for t in i686-pc-windows-msvc x86_64-pc-windows-msvc; do
+            cargo build -q --release --locked -p shirusu-cli -p shirusu-agent-dll --target $t
+            mkdir -p ~/shirusu-bin/$t
+            cp target/$t/release/shirusu.exe target/$t/release/shirusu_agent_dll.dll ~/shirusu-bin/$t/
+          done
+          ls -lR ~/shirusu-bin
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: shirusu-bin
+          path: ~/shirusu-bin
+          retention-days: 3
+
+  windows:
+    needs: [plan, prep, build-shirusu]
+    if: ${{ !cancelled() }}
+    runs-on: windows-2025
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        id: ${{ fromJSON(needs.plan.outputs.ids) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: game
+        uses: actions/download-artifact@v8.0.2
+        continue-on-error: true
+        with:
+          name: game-${{ matrix.id }}
+          path: game
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: shirusu-bin
+          path: shirusu-bin
+      - id: meta
+        shell: bash
+        run: |
+          [ -f game/meta.txt ] || { echo "no game (its download failed)"; echo "ok=0" >> "$GITHUB_OUTPUT"; exit 0; }
+          { read -r api; read -r bits; read -r exe; } < game/meta.txt
+          echo "${{ matrix.id }}: $api $bits-bit $exe"
+          t=i686-pc-windows-msvc; [ "$bits" = 64 ] && t=x86_64-pc-windows-msvc
+          echo "ok=1" >> "$GITHUB_OUTPUT"
+          echo "SHIRUSU=$(cygpath -w "$PWD/shirusu-bin/$t/shirusu.exe")" >> "$GITHUB_ENV"
+      # (as gametrace.yml: the DirectX 9 runtime, Japanese fonts, a sound card)
+      - if: steps.meta.outputs.ok == '1'
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/dxredist.exe
+          key: directx-jun2010-redist
+      - name: DirectX runtime
+        if: steps.meta.outputs.ok == '1'
+        shell: pwsh
+        timeout-minutes: 10
+        continue-on-error: true
+        run: |
+          if (-not (Test-Path ~/dxredist.exe)) { Invoke-WebRequest -Uri https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe -OutFile ~/dxredist.exe }
+          $x = Start-Process -FilePath (Resolve-Path ~/dxredist.exe) -ArgumentList '/Q', '/T:C:\dxredist' -PassThru
+          if (-not $x.WaitForExit(180000)) { Stop-Process -Id $x.Id -Force; throw "the redistributable did not unpack" }
+          $d = Start-Process -FilePath C:\dxredist\DXSETUP.exe -ArgumentList '/silent' -PassThru
+          if (-not $d.WaitForExit(300000)) { Stop-Process -Id $d.Id -Force; throw "DXSETUP did not finish" }
+          "DXSETUP exit $($d.ExitCode)"
+      - name: Japanese fonts
+        if: steps.meta.outputs.ok == '1'
+        shell: pwsh
+        timeout-minutes: 12
+        continue-on-error: true
+        run: |
+          if (Test-Path C:\Windows\Fonts\msgothic.ttc) { "MS Gothic is there"; exit 0 }
+          $j = Start-Job { Add-WindowsCapability -Online -Name 'Language.Fonts.Jpan~~~und-JPAN~0.0.1.0' }
+          if (-not (Wait-Job $j -Timeout 600)) { Stop-Job $j; throw "the Japanese fonts did not install in 10 minutes" }
+          Receive-Job $j
+      - name: Virtual sound card
+        if: steps.meta.outputs.ok == '1'
+        shell: pwsh
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          Invoke-WebRequest -Uri https://github.com/duncanthrax/scream/releases/download/4.0/Scream4.0.zip -OutFile Scream4.0.zip
+          Expand-Archive -Path Scream4.0.zip -DestinationPath Scream
+          $sys = Get-ChildItem -Recurse Scream -Filter Scream.sys | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          $cert = (Get-AuthenticodeSignature $sys.FullName).SignerCertificate
+          $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('TrustedPublisher', 'LocalMachine')
+          $store.Open('ReadWrite'); $store.Add($cert); $store.Close()
+          $devcon = Get-ChildItem -Recurse Scream -Filter devcon-x64.exe | Select-Object -First 1
+          Push-Location $sys.DirectoryName
+          $p = Start-Process -FilePath $devcon.FullName -ArgumentList 'install', 'Scream.inf', '*Scream' -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; throw "devcon did not finish" }
+          Pop-Location
+          Set-Service Audiosrv -StartupType Automatic; Start-Service Audiosrv
+      - name: Windows
+        if: steps.meta.outputs.ok == '1'
+        shell: pwsh
+        run: python tests/corpus/winplay.py setup
+      - name: Play ${{ matrix.id }} under shirusu
+        if: steps.meta.outputs.ok == '1'
+        continue-on-error: true
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $trace = [IO.Path]::GetFullPath('out/windows.trace')
+          $apis = (Get-Content tools/shirusu/apis.txt | Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { "--api $(($_ -split '!')[1])" }) -join ' '
+          $env:LAUNCH = "`"$env:SHIRUSU`" capture --output `"$trace`" --mode filtered --follow-children $apis --"
+          $env:STORY = '30'
+          $env:CLOSE_FIRST = '20'
+          "LAUNCH=$env:LAUNCH"
+          python tests/corpus/winplay.py play game out/shots
+          if (Test-Path $trace) { & $env:SHIRUSU inspect $trace; "inspect exit $LASTEXITCODE" } else { "no trace" }
+      - if: ${{ !cancelled() && steps.meta.outputs.ok == '1' }}
+        shell: bash
+        run: cp game/meta.txt out/ 2>/dev/null; ls -lR out | head -40
+      - if: ${{ !cancelled() && steps.meta.outputs.ok == '1' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: windows-${{ matrix.id }}
+          path: out
+          retention-days: 14
+          if-no-files-found: ignore
+
+  sake:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: ippai
+          path: dist
+          run-id: ${{ needs.plan.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v8.0.2
+        continue-on-error: true
+        with:
+          name: mirror-trials
+          path: mirror
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-corpus-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-corpus-
+      - run: tools/ci/pnpm.sh
+      - id: cache-1
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.56.1
+      - id: cache-2
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools-zstd-fonts-ipafont-gothic-fonts-ipafont-mincho
+      - id: cache-3
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.pip-wheels
+          key: pip-${{ runner.os }}-fonttools==4.59.0
+      - id: cache-rtp
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.rtp-downloads
+          key: rtp-official-20261114
+      - name: Tools
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL &
+          tools/ci/apt.sh unar unrar innoextract convmv p7zip-full msitools zstd fonts-ipafont-gothic fonts-ipafont-mincho
+          tools/ci/pip.sh fonttools==4.59.0
+          mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
+          mkdir -p "$RUNNER_TEMP/dist"
+          TARS=(dist/ippai-*.tar.zst)
+          [ ${#TARS[@]} = 1 ] && [ -f "${TARS[0]}" ] || { echo "want one build in the artifact: ${TARS[*]}"; ls -la dist; exit 1; }
+          tar -I zstd -xf "${TARS[0]}" -C "$RUNNER_TEMP/dist" --strip-components=1
+          read -r V BUILT < "$RUNNER_TEMP/dist/VERSION"
+          [ "$BUILT" = "$SHA" ] || { echo "artifact is $V ($BUILT), CI run was $SHA"; exit 1; }
+          # (a build before SAKE_SHIRUSU writes nothing to compare)
+          grep -qa 'shirusu E ' "$RUNNER_TEMP/dist/sake-node/sake.wasm" || { echo "build $V has no SAKE_SHIRUSU"; exit 1; }
+          echo "build $V ($BUILT)"
+          python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
+          "$RUNNER_TEMP/dist/ippai" --store "$RUNNER_TEMP/rtp-store" rtp --out "$RUNNER_TEMP/rtp" --cache ~/.rtp-downloads
+          wait
+      - if: steps.cache-1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.56.1
+      - if: steps.cache-2.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools-zstd-fonts-ipafont-gothic-fonts-ipafont-mincho
+      - name: The titles on sake
+        env:
+          IDS: ${{ join(fromJSON(needs.plan.outputs.ids), ' ') }}
+        run: |
+          export PLAYWRIGHT="$RUNNER_TEMP/pw/node_modules/playwright/index.js"
+          [ -f mirror/mirror-trials.json ] && export MIRROR=$PWD/mirror/mirror-trials.json
+          ONLY="$IDS" SAKE_ENV="SAKE_SHIRUSU=1" STORY=30 RTP="$RUNNER_TEMP/rtp" tests/corpus/ci.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/fonts" results || true
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: sake-results
+          path: |
+            results/**/*.json
+            results/**/console.log
+            results/**/title.png
+            results/**/last.png
+          retention-days: 14
+          if-no-files-found: ignore
+
+  compare:
+    needs: [plan, windows, sake]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/shirusu/target
+            ~/shirusu-cli
+          key: shirusu-tools-${{ env.SHIRUSU_REV }}-${{ hashFiles('tools/shirusu/Cargo.lock', 'tools/shirusu/src/**') }}
+          restore-keys: shirusu-tools-${{ env.SHIRUSU_REV }}-
+      - name: Tools (tools/shirusu; shirusu's compare and conformance CLIs)
+        run: |
+          (cd tools/shirusu && cargo test -q --locked && cargo build -q --release --locked)
+          if [ ! -x ~/shirusu-cli/shirusu-compare ]; then
+            git init -q "$RUNNER_TEMP/shirusu" && cd "$RUNNER_TEMP/shirusu"
+            git fetch -q --depth 1 https://github.com/a-kaibu/shirusu-poc "$SHIRUSU_REV" && git checkout -q FETCH_HEAD
+            cargo build -q --release --locked -p shirusu-compare -p shirusu-conformance -p shirusu-cli
+            mkdir -p ~/shirusu-cli && cp target/release/shirusu-compare target/release/shirusu-conformance target/release/shirusu ~/shirusu-cli/
+          fi
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: windows-*
+          path: windows
+      - uses: actions/download-artifact@v8.0.2
+        continue-on-error: true
+        with:
+          name: sake-results
+          path: sake
+      - name: Compare
+        env:
+          IDS: ${{ join(fromJSON(needs.plan.outputs.ids), ' ') }}
+        run: |
+          python3 tests/shirusu/report.py --tools ~/shirusu-cli --convert tools/shirusu/target/release/sake-shirusu \
+            --windows windows --sake sake --out report $IDS
+          cat report/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: shirusu-report
+          path: report
+          retention-days: 30

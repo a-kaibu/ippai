@@ -625,6 +625,15 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         crate::obj::HANDOFF.worked(tid);
     }
     let t0 = stats_on().then(std::time::Instant::now);
+    // (SAKE_SHIRUSU=1: the call for a shirusu Trace, crates/sake/src/shirusu.rs)
+    let shirusu = if crate::shirusu::on() {
+        let x64 = crate::mem::x64();
+        let n = if x64 { 12 } else { (bytes / 4).min(12) };
+        let args: Vec<u64> = (0..n).map(|k| if x64 { c.a64(k) } else { c.a(k) as u64 }).collect();
+        crate::shirusu::enter(i, &args)
+    } else {
+        None
+    };
     let r = match f {
         Some(f) => f(&mut c),
         None => {
@@ -647,6 +656,15 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         crate::snap::api_leave();
     }
     crate::cur().api = outer;
+    if let Some(o) = shirusu.filter(|_| !c.jumped) {
+        let ret = match c.edx {
+            Some(d) => (d as u64) << 32 | r as u64,
+            None if crate::mem::x64() && r >= 0xffff_f000 => r as i32 as i64 as u64,
+            None if crate::mem::x64() => crate::mem::widen(r),
+            None => r as u64,
+        };
+        crate::shirusu::leave(o, ret);
+    }
     if c.jumped {
         crate::tctx::apply_pending(c.cpu);
         return;
