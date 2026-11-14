@@ -391,14 +391,9 @@ fn pull_from(name: &str, part: Part, dest: &Path, have: Option<&str>) -> Result<
     if have == Some(digest.as_str()) && dest.is_file() {
         return Ok(digest);
     }
-    let mut z = vec![];
-    reg.call("GET", &format!("blobs/{digest}"), &[], &[("Accept", "*/*")])?.into_reader().take(1 << 30).read_to_end(&mut z)?;
-    let sum = format!("sha256:{}", hex(ring::digest::digest(&ring::digest::SHA256, &z)));
-    if sum != digest {
-        bail!("{r}: the blob is not {digest}");
-    }
+    let blob = reg.call("GET", &format!("blobs/{digest}"), &[], &[("Accept", "*/*")])?.into_reader().take(1 << 30);
     let tmp = dest.with_extension("sqlite.tmp");
-    std::fs::write(&tmp, zstd::decode_all(&z[..])?)?;
+    unpack(blob, &digest, &tmp, MAX_DB).with_context(|| format!("{r}: {digest}"))?;
     // (a copy it would not publish is not taken)
     if let Err(e) = check(&tmp, part) {
         let _ = std::fs::remove_file(&tmp);
@@ -409,6 +404,49 @@ fn pull_from(name: &str, part: Part, dest: &Path, have: Option<&str>) -> Result<
 }
 
 const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+
+/// The largest database a pull writes (the parts are a few hundred MB)
+const MAX_DB: u64 = 8 << 30;
+
+/// Reads through to a SHA-256 of what it read.
+struct Hashing<R> {
+    inner: R,
+    sum: ring::digest::Context,
+}
+impl<R: Read> Read for Hashing<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.sum.update(&buf[..n]);
+        Ok(n)
+    }
+}
+
+/// A zstd layer `blob` decompressed into `tmp` as it arrives (not held in memory, neither
+/// compressed nor whole), at most `limit` bytes of it: Ok when every byte read is the layer
+/// `digest` names; otherwise `tmp` is gone.
+fn unpack(blob: impl Read, digest: &str, tmp: &Path, limit: u64) -> Result<()> {
+    let r = (|| -> Result<()> {
+        let mut h = Hashing { inner: blob, sum: ring::digest::Context::new(&ring::digest::SHA256) };
+        let mut out = std::io::BufWriter::new(std::fs::File::create(tmp)?);
+        let mut z = zstd::stream::read::Decoder::new(&mut h)?;
+        if std::io::copy(&mut (&mut z).take(limit + 1), &mut out)? > limit {
+            bail!("more than {limit} bytes once decompressed");
+        }
+        drop(z);
+        // (what the decoder left of the blob is in the digest too)
+        std::io::copy(&mut h, &mut std::io::sink())?;
+        let sum = format!("sha256:{}", hex(h.sum.finish()));
+        if sum != digest {
+            bail!("the blob is not {digest}");
+        }
+        std::io::Write::flush(&mut out)?;
+        Ok(())
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    r
+}
 
 /// A built copy of `part` onto the package (GHCR_TOKEN: a token with write:packages),
 /// zstd-compressed, as an OCI artifact tagged with the part and the part and day (UTC: egs-20261109),
@@ -567,6 +605,77 @@ mod tests {
         assert_eq!(meta::vndb_info_json(full).unwrap().tags, meta::vndb_info_json(pruned.clone()).unwrap().tags);
         assert!(pruned["tags"].as_array().unwrap().len() <= 10);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A pulled layer is decompressed as it arrives: the bytes zstd gives, or an error and no
+    /// file when the digest differs, the layer is no zstd, or it expands past the limit (a
+    /// zstd bomb from whatever IPPAI_GAMEDB_REF points at)
+    mod unpack_tests {
+        use super::super::{hex, unpack};
+        use proptest::prelude::*;
+        use std::path::PathBuf;
+
+        fn sum(b: &[u8]) -> String {
+            format!("sha256:{}", hex(ring::digest::digest(&ring::digest::SHA256, b)))
+        }
+        fn tmp() -> PathBuf {
+            std::env::temp_dir().join(format!("ippai-unpack-{}.tmp", uuid::Uuid::new_v4()))
+        }
+
+        #[test]
+        fn layers_and_bombs() {
+            let db: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8 ^ (i >> 13) as u8).collect();
+            let z = zstd::encode_all(&db[..], 3).unwrap();
+            let t = tmp();
+            unpack(&z[..], &sum(&z), &t, 1 << 30).unwrap();
+            assert_eq!(std::fs::read(&t).unwrap(), db);
+            std::fs::remove_file(&t).unwrap();
+            // the right bytes under another digest; past the limit; not zstd
+            assert!(unpack(&z[..], &sum(b"x"), &t, 1 << 30).is_err());
+            assert!(!t.exists());
+            let bomb = zstd::encode_all(&vec![0u8; 64 << 20][..], 19).unwrap();
+            assert!(bomb.len() < 64 << 10);
+            let e = format!("{:#}", unpack(&bomb[..], &sum(&bomb), &t, 1 << 20).unwrap_err());
+            assert!(e.contains("more than"), "{e}");
+            assert!(!t.exists());
+            assert!(unpack(&b"not zstd"[..], &sum(b"not zstd"), &t, 1 << 20).is_err());
+            assert!(!t.exists());
+            // two frames, and bytes after the frame: all in the digest
+            let mut two = zstd::encode_all(&b"abc"[..], 1).unwrap();
+            two.extend(zstd::encode_all(&b"def"[..], 1).unwrap());
+            unpack(&two[..], &sum(&two), &t, 100).unwrap();
+            assert_eq!(std::fs::read(&t).unwrap(), b"abcdef");
+            let mut cut = two.clone();
+            cut.pop();
+            assert!(unpack(&cut[..], &sum(&two), &t, 100).is_err());
+            let _ = std::fs::remove_file(&t);
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+            /// as decode_all over the whole blob, for any data and any damage
+            #[test]
+            fn as_decode_all(data in prop::collection::vec(any::<u8>(), 0..20_000), flip in proptest::option::of((any::<prop::sample::Index>(), 1u8..)), limit in prop_oneof![Just(1u64 << 30), 0u64..30_000]) {
+                let mut z = zstd::encode_all(&data[..], 1).unwrap();
+                if let Some((i, x)) = flip {
+                    let i = i.index(z.len());
+                    z[i] ^= x;
+                }
+                let t = tmp();
+                let got = unpack(&z[..], &sum(&z), &t, limit);
+                match zstd::decode_all(&z[..]) {
+                    Ok(want) if want.len() as u64 <= limit => {
+                        prop_assert!(got.is_ok(), "{:?}", got);
+                        prop_assert_eq!(std::fs::read(&t).unwrap(), want);
+                    }
+                    _ => {
+                        prop_assert!(got.is_err());
+                        prop_assert!(!t.exists());
+                    }
+                }
+                let _ = std::fs::remove_file(&t);
+            }
+        }
     }
 
     /// A package registry as ghcr.io answers (the OCI distribution API): tokens from /token (a

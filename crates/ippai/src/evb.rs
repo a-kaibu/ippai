@@ -39,6 +39,9 @@ const MAX_TABLE: u64 = 64 << 20;
 const RATIO: u64 = 8;
 const MIN_OUT: u64 = 256 << 20;
 const MAX_OUT: u64 = 16 << 30;
+/// Bytes one compressed chunk may unpack to (real boxes' chunks are far smaller): a damaged
+/// gamma that asks for 2^31 bytes is an error before it is built in memory.
+const MAX_CHUNK: usize = 64 << 20;
 
 /// A file of the box: its bytes at `offset..offset + stored` of the exe, `size` once unpacked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +219,12 @@ pub fn parse<R: Read + Seek>(r: &mut R, at: u64, len: u64) -> Result<Vec<(PathBu
 
 /// Writes `p`'s bytes (unpacked) to `w`, at most `left` of them; returns how many.
 pub fn extract<R: Read + Seek, W: Write>(r: &mut R, p: &Packed, w: &mut W, left: u64) -> Result<u64> {
+    extract_chunked(r, p, w, left, MAX_CHUNK)
+}
+
+/// `extract`, each compressed chunk unpacking to at most `chunk_max` bytes (streamed to `w`
+/// chunk by chunk).
+fn extract_chunked<R: Read + Seek, W: Write>(r: &mut R, p: &Packed, w: &mut W, left: u64, chunk_max: usize) -> Result<u64> {
     if p.size > left {
         bail!("unpacks to more than allowed");
     }
@@ -248,7 +257,7 @@ pub fn extract<R: Read + Seek, W: Write>(r: &mut R, p: &Packed, w: &mut W, left:
         buf.resize(c as usize, 0);
         r.read_exact(&mut buf)?;
         rest -= c;
-        let un = depack(&buf, (p.size - n) as usize)?;
+        let un = depack(&buf, ((p.size - n) as usize).min(chunk_max))?;
         w.write_all(&un)?;
         n += un.len() as u64;
     }
@@ -884,6 +893,28 @@ pub(crate) mod tests {
             let _ = fs::remove_dir_all(&d);
             prop_assert!(outside.is_empty(), "{:?}", outside);
         }
+    }
+
+    /// A chunk that unpacks to more than one chunk may is an error (a damaged box's gamma can
+    /// ask for 2^31 bytes, built byte by byte in memory before); one within it unpacks
+    #[test]
+    fn chunks_are_capped() {
+        let big: Vec<u8> = (0..20_000u32).map(|i| (i % 7) as u8).collect();
+        let files: &[(&str, &[u8])] = &[("big.bin", &big)];
+        let e = exe(&Spec { files, legacy: false, chunk: Some(20_000), other: false });
+        let at = locate(&e[..e.len().min(4096)], &mut |o, l| Ok(e[o as usize..(o as usize + l).min(e.len())].to_vec())).unwrap().unwrap();
+        let mut c = Cursor::new(&e);
+        let list = parse(&mut c, at, e.len() as u64).unwrap();
+        let (_, p) = list.iter().find(|f| f.0.as_os_str() == "big.bin").unwrap();
+        let p = p.as_ref().unwrap();
+        assert!(p.stored < p.size, "compressed");
+        let mut out = Vec::new();
+        assert!(extract_chunked(&mut c, p, &mut out, 1 << 30, 10_000).is_err());
+        out.clear();
+        assert_eq!(extract_chunked(&mut c, p, &mut out, 1 << 30, 20_000).unwrap(), 20_000);
+        assert_eq!(out, big);
+        out.clear();
+        assert_eq!(extract(&mut c, p, &mut out, 1 << 30).unwrap(), 20_000);
     }
 
     /// The boxes Enigma Virtual Box itself made, when a folder of them is given (EVB_SAMPLES: a
