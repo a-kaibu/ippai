@@ -367,6 +367,48 @@ function withChunkLock(hex: string, f: () => Promise<void>): Promise<void> {
   return locks ? locks.request(`ippai-chunk:${hex}`, f) : f();
 }
 
+/**
+ * `f(mine)` holding the Web Locks of those of `hexes` nobody else holds now (`mine`): a pack's
+ * run of chunks fetched with one GET leaves out those the network worker is fetching (the page
+ * then takes them alone, waiting for their lock as one chunk does), as withChunkLock does for
+ * one chunk. The locks are taken one after another, none waited for: no deadlock with the
+ * worker, which holds one at a time.
+ */
+export function withFreeChunkLocks<T>(hexes: string[], f: (mine: string[]) => Promise<T>): Promise<T> {
+  const locks = (navigator as { locks?: LockManager }).locks;
+  if (!locks) return f(hexes);
+  const mine: string[] = [];
+  const take = (i: number): Promise<T> =>
+    i === hexes.length
+      ? f(mine)
+      : locks.request(`ippai-chunk:${hexes[i]}`, { ifAvailable: true }, async (lock) => {
+          if (lock) mine.push(hexes[i]!);
+          return take(i + 1);
+        });
+  return take(0);
+}
+
+/** Bytes a save holds at once for its runs from packs (the ranges and their chunks decoded):
+ * 16 runs of 32 MiB would be 512 MiB, more than a phone has to spare beside the game. */
+export const SAVE_RUN_BYTES =
+  ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 4 ? 64 << 20 : 128 << 20;
+
+/** Runs `f` once `n` more bytes fit in `max` (one alone always does). */
+export function byteLimit(max: number): <T>(n: number, f: () => Promise<T>) => Promise<T> {
+  let used = 0;
+  const waiting: (() => void)[] = [];
+  return async (n, f) => {
+    while (used > 0 && used + n > max) await new Promise<void>((r) => waiting.push(r));
+    used += n;
+    try {
+      return await f();
+    } finally {
+      used -= n;
+      waiting.splice(0).forEach((r) => r());
+    }
+  };
+}
+
 /** What saveOffline may be given in place of the real ones (tests). */
 export interface SaveOptions {
   request?: typeof fetch;
@@ -454,6 +496,7 @@ export async function saveOffline(
     const base = store();
     const direct = directFetcher(base, opt);
     const server = limit(SERVER_AT_ONCE);
+    const held = byteLimit(SAVE_RUN_BYTES);
     let next = 0;
     const primed = new Map<number, Promise<void>>();
     const window = (w: number) => {
@@ -508,14 +551,30 @@ export async function saveOffline(
           continue;
         }
         const url = (h: string) => new URL(chunkPath(h), base).href;
-        const todo: string[] = [];
-        for (const h of run) if (!(await cache.match(url(h)).catch(() => undefined))) todo.push(h);
-        const got = todo.length ? await direct.getRun(todo, { signal, request: opt.request }) : new Map();
-        for (const h of run) {
-          const data = got.get(h);
-          if (data) await keepChunk(cache, url(h), data);
-          // (not in the GET's answer, or not what its name says: alone)
-          else if (todo.includes(h)) await alone(h);
+        // (those the network worker is fetching now left out of the GET: taken alone after)
+        const later = await withFreeChunkLocks(run, async (mine) => {
+          const todo: string[] = [];
+          for (const h of mine) if (!(await cache.match(url(h)).catch(() => undefined))) todo.push(h);
+          // (the range and its chunks decoded: about twice their bytes, held at once)
+          const bytes = 2 * todo.reduce((a, h) => a + (sizes.get(h) ?? chunk), 0);
+          const got = todo.length
+            ? await held(bytes, () => direct.getRun(todo, { signal, request: opt.request }))
+            : new Map<string, Uint8Array<ArrayBuffer>>();
+          const left: string[] = [];
+          for (const h of run) {
+            const data = got.get(h);
+            if (data) await keepChunk(cache, url(h), data);
+            // (not in the GET's answer, not what its name says, or the worker's: alone)
+            else if (todo.includes(h) || !mine.includes(h)) {
+              left.push(h);
+              continue;
+            }
+            finished(h);
+          }
+          return left;
+        });
+        for (const h of later) {
+          await alone(h);
           finished(h);
         }
       }

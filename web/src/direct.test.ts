@@ -497,3 +497,89 @@ describe("delivery packs", () => {
     expect(isPackSpan({ id, url: "u", offset: 0, len: 28 })).toBe(true);
   });
 });
+
+describe("the page's share of the fixes of the 2026-11-14 review", () => {
+  it("fetchRetry takes from the budget for every try of a bucket request, and a 429 stops every class", async () => {
+    const { netBudget, CLASS, take } = await import("./budget");
+    const { fetchRetry } = await import("./net");
+    const v = new Float64Array(netBudget(), 8, 3);
+    // (no refill meanwhile: the refill clock far ahead)
+    v.set([40, Date.now() + 1e9, 0]);
+    let n = 0;
+    const request = (async () =>
+      ++n < 3 ? new Response(null, { status: 503 }) : new Response("ok")) as typeof fetch;
+    await fetchRetry("https://bucket.example/x", {}, { request, budget: CLASS.save, stallMs: 1000 });
+    expect(n).toBe(3);
+    expect(v[0]).toBe(37);
+    // (a 429: nobody, the game neither, until its wait is over)
+    v.set([40, Date.now(), 0]);
+    let first = true;
+    const r429 = (async () =>
+      first
+        ? ((first = false), new Response(null, { status: 429, headers: { "retry-after": "1" } }))
+        : new Response("ok")) as typeof fetch;
+    const going = fetchRetry("https://bucket.example/y", {}, { request: r429, budget: CLASS.save });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(take(CLASS.game)).toBe(false);
+    expect(v[2]!).toBeGreaterThan(Date.now() + 500);
+    await going;
+    v.set([40, Date.now(), 0]);
+  }, 20000);
+
+  it("a run of a pack holds the locks nobody else holds, and leaves the others out", async () => {
+    const { withFreeChunkLocks } = await import("./offline");
+    const held = new Set(["ippai-chunk:b", "ippai-chunk:d"]);
+    const locks = {
+      async request(name: string, o: { ifAvailable?: boolean }, f: (l: object | null) => Promise<unknown>) {
+        if (held.has(name)) return f(o.ifAvailable ? null : {});
+        held.add(name);
+        try {
+          return await f({});
+        } finally {
+          held.delete(name);
+        }
+      },
+    };
+    const nav = globalThis.navigator as unknown as { locks?: unknown };
+    const had = Object.getOwnPropertyDescriptor(nav, "locks");
+    Object.defineProperty(nav, "locks", { value: locks, configurable: true });
+    try {
+      const got = await withFreeChunkLocks(["a", "b", "c", "d", "e"], async (mine) => {
+        // (while the run goes: its locks held)
+        expect([...held].sort()).toEqual(["a", "b", "c", "d", "e"].map((h) => `ippai-chunk:${h}`));
+        return mine;
+      });
+      expect(got).toEqual(["a", "c", "e"]);
+      expect([...held].sort()).toEqual(["ippai-chunk:b", "ippai-chunk:d"]);
+    } finally {
+      if (had) Object.defineProperty(nav, "locks", had);
+      else delete nav.locks;
+    }
+  });
+
+  it("byteLimit never holds more than its bytes at once, one alone always goes (seeded)", async () => {
+    const { byteLimit } = await import("./offline");
+    let x = 7;
+    const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+    for (let run = 0; run < 20; run++) {
+      const max = 1 + rnd(100);
+      const held = byteLimit(max);
+      let now = 0;
+      let peak = 0;
+      const sizes = Array.from({ length: 30 }, () => 1 + rnd(150));
+      await Promise.all(
+        sizes.map((n) =>
+          held(n, async () => {
+            now += n;
+            expect(now <= max || now === n, `run ${run}: ${now} of ${max}`).toBe(true);
+            peak = Math.max(peak, now);
+            await new Promise((r) => setTimeout(r, rnd(3)));
+            now -= n;
+          }),
+        ),
+      );
+      expect(now).toBe(0);
+      expect(peak).toBeGreaterThan(0);
+    }
+  });
+});

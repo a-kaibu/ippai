@@ -7,7 +7,7 @@
 // (offline.ts) goes many at a time this way instead of through the server's own line.
 
 import { blake3Hex } from "./blake3";
-import { CLASS, gate } from "./budget";
+import { CLASS } from "./budget";
 import { fetchRetry, HttpError, type RetryOptions } from "./net";
 import { sakeBase } from "./runtime";
 
@@ -217,11 +217,10 @@ export function directFetcher(
       const to = Math.max(...infos.map(([, i]) => i.pack.offset + i.pack.len));
       let bytes: Uint8Array;
       try {
-        await gate(opt.cls ?? CLASS.save, retry.signal);
         bytes = await fetchRetry(
           pack.url,
           { cache: "no-store", headers: { range: `bytes=${from}-${to - 1}` } },
-          { giveUpMs: 60000, ...retry, request },
+          { giveUpMs: 60000, ...retry, request, budget: opt.cls ?? CLASS.save },
         );
       } catch (e) {
         if (retry.signal?.aborted) throw e;
@@ -269,9 +268,12 @@ export function directFetcher(
       for (let bad = 0; bad < BAD; bad++) {
         let cipher: Uint8Array;
         try {
-          // (the bucket's budget of requests, shared with the game's: budget.ts)
-          await gate(opt.cls ?? CLASS.save, retry.signal);
-          cipher = await fetchRetry(info.url, { cache: "no-store" }, { giveUpMs: 60000, ...retry, request });
+          // (the bucket's budget of requests, shared with the game's: budget.ts; each try)
+          cipher = await fetchRetry(
+            info.url,
+            { cache: "no-store" },
+            { giveUpMs: 60000, ...retry, request, budget: opt.cls ?? CLASS.save },
+          );
         } catch (e) {
           if (retry.signal?.aborted) throw e;
           // (an expired URL and the like: the server)

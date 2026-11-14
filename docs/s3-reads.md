@@ -40,7 +40,15 @@ Every request to the bucket goes through the network worker:
   | warm  | the read-order list, fetched while the game plays | 16 |
   | save  | the whole game saved to the device | 16 |
 
-  A 429 empties the budget for a while, for everyone.
+  Every HTTP try takes from it, a retry too. A 429 stops every class, the game's too, for the
+  wait the bucket asks (5 s when it names none), and the budget refills from none after it.
+- **Who waits.** A pack's GET and the chunks it brings share one job: a game read of any of them
+  makes the GET the game's. A game read that joins a fetch ahead still waiting for the chunk's
+  Web Lock (held by the page's save) waits 1 s for it, then fetches the chunk itself.
+- **Held until written.** A chunk checked but not yet on the device (its write to OPFS still
+  going) is answered from the worker's memory, not fetched again; 64 MiB of them at most before
+  the fetches past the game's wait. The page's save holds 128 MiB of pack runs at once (64 MiB
+  on a phone of 4 GB or less), and leaves out of a run the chunks whose lock the worker holds.
 - **Batch presign.** `POST /store-direct` with a JSON list of chunk paths answers each as
   `GET /store-direct/<path>` would, up to 4096 at once. The warm and the save ask for 256 at a
   time ahead of fetching them, so most bucket GETs need no round trip to ippai serve first.

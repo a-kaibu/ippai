@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { blake3Hex } from "./blake3";
-import type { ChunkStore } from "./chunkstore";
+import { chunkFileName, opfsStore, type ChunkStore } from "./chunkstore";
 import { sakeWasmBytes, wasmModuleArg, type WasmFrom } from "./wasmsource";
 
 type B = Uint8Array<ArrayBuffer>;
@@ -150,6 +150,57 @@ describe("sakeWasmBytes", () => {
     });
     expect(again.from).toBe("device");
     expect(again.bytes).toEqual(w.wasm);
+    expect(w2.seen.some((s) => s.includes("bucket.example"))).toBe(false);
+  });
+
+  it("keeps the checked wasm in OPFS (not the old Cache Storage): the next start reads it with that emptied (2026-11-14 review)", async () => {
+    const files = new Map<string, B>();
+    const dir = {
+      async getFileHandle(name: string, o: { create?: boolean } = {}) {
+        if (!files.has(name)) {
+          if (!o.create) throw new DOMException("no", "NotFoundError");
+          files.set(name, new Uint8Array(0));
+        }
+        return {
+          getFile: async () => new File([files.get(name)!.slice()], name),
+          createWritable: async () => {
+            let d = new Uint8Array(0);
+            return {
+              write: async (x: B) => void (d = x.slice()),
+              close: async () => void files.set(name, d),
+              abort: async () => {},
+            };
+          },
+        };
+      },
+      async removeEntry(name: string) {
+        files.delete(name);
+      },
+      async *keys() {
+        yield* files.keys();
+      },
+    };
+    const old = memoryStore();
+    const device = opfsStore(dir as unknown as FileSystemDirectoryHandle, old as unknown as Cache);
+    const w = world({});
+    const r = await sakeWasmBytes("sake.wasm", URL_, STORE, {
+      request: w.request,
+      unzstd: identity,
+      device: async () => device,
+    });
+    expect(r.from).toBe("bucket");
+    await new Promise((r) => setTimeout(r, 10));
+    const key = `${STORE}chunks/${w.hex.slice(0, 2)}/${w.hex}`;
+    expect(files.get(chunkFileName(key))).toEqual(w.wasm);
+    expect(old.files.size).toBe(0);
+    old.files.clear();
+    const w2 = world({});
+    const again = await sakeWasmBytes("sake.wasm", URL_, STORE, {
+      request: async (i, n) => (urlOf(i).includes("sake-direct") ? w.request(i, n) : w2.request(i, n)),
+      unzstd: identity,
+      device: async () => opfsStore(dir as unknown as FileSystemDirectoryHandle, null),
+    });
+    expect(again.from).toBe("device");
     expect(w2.seen.some((s) => s.includes("bucket.example"))).toBe(false);
   });
 

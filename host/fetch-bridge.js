@@ -424,6 +424,32 @@ function ippaiKeepRecent(url, data) {
     bytes -= d.length;
   }
 }
+/**
+ * Whole chunks checked and on their way onto the device, their put not done yet (a pack's
+ * neighbours, a chunk past IPPAI_RECENT_BYTES): answered from here meanwhile, so a read of one
+ * in that time does not fetch it again. IPPAI_SAVING_BYTES of them at most before the fetches
+ * past the game's wait for the device to catch up (ippaiGate).
+ */
+var IPPAI_SAVING_BYTES = 64 << 20;
+var ippaiSaving = new Map();
+var ippaiSavingBytes = 0;
+function ippaiKeep(cache, url, data) {
+  if (!cache || ippaiSaving.has(url)) return;
+  ippaiSaving.set(url, data);
+  ippaiSavingBytes += data.length;
+  cache
+    .put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } }))
+    .catch(() => {})
+    .finally(() => {
+      if (ippaiSaving.get(url) !== data) return;
+      ippaiSaving.delete(url);
+      ippaiSavingBytes -= data.length;
+    });
+}
+/** Chunk `url` whole if this worker holds it: fetched lately, or on its way onto the device. */
+function ippaiHeld(url) {
+  return ippaiRecent.get(url) ?? ippaiSaving.get(url);
+}
 /** Cache Storage's key for block `k` (of `block` bytes) of chunk `url`, kept alone. */
 function ippaiBlockKey(url, k, block) {
   return `${url}?b=${k}&s=${block}`;
@@ -449,15 +475,16 @@ var IPPAI_BURST = 40;
 var IPPAI_RESERVE = [-IPPAI_RATE * 5, 0, 8, 16, 16];
 
 /**
- * The shared budget: an Int32 lock word, then [tokens, last refill (Date.now())] as Float64,
- * over a SharedArrayBuffer the page makes (web/src/net.ts netBudget: its own save uses it too)
- * or this worker's own.
+ * The shared budget: an Int32 lock word, then [tokens, last refill (Date.now()), blocked until
+ * (Date.now())] as Float64, over a SharedArrayBuffer the page makes (web/src/net.ts netBudget:
+ * its own save uses it too) or this worker's own.
  */
+var IPPAI_BUDGET_BYTES = 32;
 var ippaiBudgetBuf;
 function ippaiBudgetInit(buf) {
   ippaiBudgetBuf = buf ?? ippaiBudgetBuf ?? (() => {
-    const b = new (typeof SharedArrayBuffer === 'undefined' ? ArrayBuffer : SharedArrayBuffer)(24);
-    new Float64Array(b, 8, 2).set([IPPAI_BURST, Date.now()]);
+    const b = new (typeof SharedArrayBuffer === 'undefined' ? ArrayBuffer : SharedArrayBuffer)(IPPAI_BUDGET_BYTES);
+    new Float64Array(b, 8, 3).set([IPPAI_BURST, Date.now(), 0]);
     return b;
   })();
   return ippaiBudgetBuf;
@@ -466,7 +493,7 @@ function ippaiBudgetInit(buf) {
 function ippaiBudgetWith(f) {
   const buf = ippaiBudgetInit();
   const lock = new Int32Array(buf, 0, 1);
-  const v = new Float64Array(buf, 8, 2);
+  const v = new Float64Array(buf, 8, 3);
   while (Atomics.compareExchange(lock, 0, 0, 1) !== 0);
   try {
     return f(v);
@@ -474,9 +501,11 @@ function ippaiBudgetWith(f) {
     Atomics.store(lock, 0, 0);
   }
 }
-/** Takes one request of class `cls` from the budget (refilled to `now`): whether it may go. */
+/** Takes one request of class `cls` from the budget (refilled to `now`): whether it may go.
+ * While the bucket asked to wait (a 429), no class goes, the game's neither. */
 function ippaiTake(cls, now = Date.now()) {
   return ippaiBudgetWith((v) => {
+    if (now < v[2]) return false;
     const dt = Math.max(0, now - v[1]) / 1000;
     v[0] = Math.min(IPPAI_BURST, v[0] + dt * IPPAI_RATE);
     v[1] = Math.max(v[1], now);
@@ -485,15 +514,20 @@ function ippaiTake(cls, now = Date.now()) {
     return true;
   });
 }
-/** The bucket said 429: nobody goes for `ms` (the budget into debt by that much). */
-function ippaiDrain(ms) {
+/** The bucket said 429: nobody goes for `ms`, and the budget refills only from then on, from
+ * none (not a burst of every class at once when the wait ends). */
+function ippaiDrain(ms, now = Date.now()) {
   ippaiBudgetWith((v) => {
-    v[0] = Math.min(v[0], -(IPPAI_RATE * ms) / 1000);
+    const until = now + ms;
+    v[2] = Math.max(v[2], until);
+    v[0] = Math.min(v[0], 0);
+    v[1] = Math.max(v[1], until);
   });
 }
-/** Waits until `job` (its class read again each time) may make a request of the bucket. */
+/** Waits until `job` (its class read again each time) may make a request of the bucket; past
+ * the game's, also until the chunks on their way onto the device are under IPPAI_SAVING_BYTES. */
 async function ippaiGate(job) {
-  while (!ippaiTake(job.cls)) await new Promise((r) => setTimeout(r, 50));
+  while ((job.cls > 0 && ippaiSavingBytes > IPPAI_SAVING_BYTES) || !ippaiTake(job.cls)) await new Promise((r) => setTimeout(r, 50));
 }
 
 /** The game's reads waiting in this worker now (fetches ahead give way while there are any). */
@@ -509,18 +543,44 @@ var ippaiInflight = new Map();
  * when known. Classes past the game's hold the chunk's Web Lock while they fetch, so the page's
  * own save does not fetch it again meanwhile (the game's do not wait for a lock).
  */
+var IPPAI_LOCK_WAIT_MS = 1000;
 function ippaiWhole(url, { cls = 0, size, want = true, directOnly = false } = {}) {
-  const mem = ippaiRecent.get(url);
+  const mem = ippaiHeld(url);
   if (mem) return Promise.resolve({ data: mem, wire: 0, cached: 1 });
   // (null: not from the bucket; the server then, as the asker wants it)
   const rest = (r) => r ?? (directOnly ? null : ippaiFetchRobust(url, cls ? { giveUpMs: 60000 } : {}));
+  const again = (r) => (r && want && !r.data ? ippaiWhole(url, { cls, size, want, directOnly }) : rest(r));
   const going = ippaiInflight.get(url);
   if (going) {
     going.job.cls = Math.min(going.job.cls, cls);
-    return going.promise.then((r) => (r && want && !r.data ? ippaiWhole(url, { cls, size, want, directOnly }) : rest(r)));
+    // (a fetch ahead still waiting for the chunk's lock, held by another fetcher of it, the
+    // page's save most likely: the game waits for no lock. A little for that fetch, then its own.)
+    if (cls === 0 && going.locking) {
+      let late;
+      const timer = new Promise((r) => (late = setTimeout(() => r(ippaiWhole.LATE), IPPAI_LOCK_WAIT_MS)));
+      return Promise.race([going.promise, timer]).then((r) => {
+        clearTimeout(late);
+        if (r !== ippaiWhole.LATE) return again(r);
+        const now = ippaiInflight.get(url);
+        if (now && !now.locking) return now.promise.then(again);
+        return ippaiStartWhole(url, cls, size, want, false).then(again);
+      });
+    }
+    return going.promise.then(again);
   }
+  return ippaiStartWhole(url, cls, size, want, cls > 0).then(rest);
+}
+ippaiWhole.LATE = {};
+
+/** ippaiWhole's fetch of `url`, registered in ippaiInflight; `lock`: under the chunk's Web Lock. */
+function ippaiStartWhole(url, cls, size, want, lock) {
   const job = { cls };
+  const entry = { promise: undefined, job, locking: false };
   const run = async () => {
+    entry.locking = false;
+    // (fetched meanwhile, by the game's own fetch while this one waited for the lock)
+    const mem = ippaiHeld(url);
+    if (mem) return { data: want ? mem : null, wire: 0, cached: 1 };
     const cache = await ippaiCache();
     const hit = cache && (await ippaiCacheStep(cache.match(url)).catch(() => undefined));
     if (hit && hit.headers.get(IPPAI_CHECKED) === '1') {
@@ -531,12 +591,14 @@ function ippaiWhole(url, { cls = 0, size, want = true, directOnly = false } = {}
     }
     return ippaiDirect(url, job, size);
   };
-  const locks = cls > 0 ? globalThis.navigator?.locks : undefined;
+  const locks = lock ? globalThis.navigator?.locks : undefined;
+  entry.locking = !!locks;
   const promise = (locks ? locks.request(`ippai-chunk:${url.slice(-32)}`, run) : run()).finally(() => {
-    if (ippaiInflight.get(url)?.promise === promise) ippaiInflight.delete(url);
+    if (ippaiInflight.get(url) === entry) ippaiInflight.delete(url);
   });
-  ippaiInflight.set(url, { promise, job });
-  return promise.then(rest);
+  entry.promise = promise;
+  ippaiInflight.set(url, entry);
+  return promise;
 }
 
 /**
@@ -553,7 +615,7 @@ var ippaiHintsSeen = new Set();
 var ippaiHintsGoing = 0;
 function ippaiHint(urls) {
   for (const u of urls.slice(0, IPPAI_HINT_MAX).reverse()) {
-    if (ippaiHintsSeen.has(u) || ippaiInflight.has(u) || ippaiRecent.has(u)) continue;
+    if (ippaiHintsSeen.has(u) || ippaiInflight.has(u) || ippaiHeld(u)) continue;
     ippaiHintsSeen.add(u);
     ippaiHints.push(u);
   }
@@ -711,8 +773,7 @@ async function ippaiDirect(url, job = { cls: 0 }, size, alone = false) {
   for (let bad = 0; bad < IPPAI_BAD_CHUNK; bad++) {
     let got;
     try {
-      await ippaiGate(job);
-      got = await ippaiFetchRobust(info.url, { giveUpMs: 60000 });
+      got = await ippaiFetchRobust(info.url, { giveUpMs: 60000, job });
     } catch (_) {
       ippaiDirectInfo.delete(url);
       return null;
@@ -721,8 +782,7 @@ async function ippaiDirect(url, job = { cls: 0 }, size, alone = false) {
     const data = plain && (await ippaiUnzstd(base, plain, size).catch(() => null));
     if (data && ippaiChunkOk(url, data)) {
       ippaiKeepRecent(url, data);
-      const cache = await ippaiCache();
-      if (cache) cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })).catch(() => {});
+      ippaiKeep(await ippaiCache(), url, data);
       return { data, wire: got.wire, cached: got.cached };
     }
   }
@@ -768,7 +828,7 @@ async function ippaiPackRun(url, info, job, size, base) {
     if (!n || !ippaiDirectFresh(n) || n.pack?.id !== p.id || end + n.pack.len - p.offset > span) break;
     end += n.pack.len;
     // (here or coming already: its bytes only if a later one is taken)
-    if (ippaiInflight.has(u) || ippaiRecent.has(u)) continue;
+    if (ippaiInflight.has(u) || ippaiHeld(u)) continue;
     const hit = cache && (await ippaiCacheStep(cache.match(u)).catch(() => undefined));
     if (hit && hit.headers.get(IPPAI_CHECKED) === '1') continue;
     run.push({ url: u, info: n });
@@ -777,19 +837,20 @@ async function ippaiPackRun(url, info, job, size, base) {
   // (the neighbours are coming: a read of one of them joins this GET)
   let done;
   const all = new Promise((r) => (done = r));
+  // (one job for the GET and every chunk of it: a game read joining a neighbour makes the GET
+  // the game's; one that failed then comes alone, as urgent)
   for (const n of run.slice(1)) {
-    const job2 = { cls: job.cls };
-    const promise = all
-      .then((m) => m.get(n.url) ?? ippaiDirect(n.url, job2, undefined, true))
+    const entry = { promise: undefined, job, locking: false };
+    entry.promise = all
+      .then((m) => m.get(n.url) ?? ippaiDirect(n.url, job, undefined, true))
       .finally(() => {
-        if (ippaiInflight.get(n.url)?.promise === promise) ippaiInflight.delete(n.url);
+        if (ippaiInflight.get(n.url) === entry) ippaiInflight.delete(n.url);
       });
-    ippaiInflight.set(n.url, { promise, job: job2 });
+    ippaiInflight.set(n.url, entry);
   }
   const out = new Map();
   try {
-    await ippaiGate(job);
-    const got = await ippaiFetchRobust(p.url, { giveUpMs: 60000, range: [p.offset, last - p.offset] });
+    const got = await ippaiFetchRobust(p.url, { giveUpMs: 60000, range: [p.offset, last - p.offset], job });
     // (a bucket that sends the whole pack for a range: the range from it)
     const bytes = got.partial ? got.data : got.data.subarray(p.offset, last);
     if (bytes.length === last - p.offset)
@@ -799,7 +860,8 @@ async function ippaiPackRun(url, info, job, size, base) {
         const data = plain && (await ippaiUnzstd(base, plain, n.url === url ? size : undefined).catch(() => null));
         if (!data || !ippaiChunkOk(n.url, data)) continue;
         out.set(n.url, { data, wire: n.url === url ? got.wire : 0, cached: got.cached });
-        if (cache) cache.put(n.url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })).catch(() => {});
+        // (held until it is on the device: a read of it meanwhile does not fetch it again)
+        ippaiKeep(cache, n.url, data);
       }
   } catch (_) {}
   done(out);
@@ -855,7 +917,7 @@ async function ippaiUnzstd(base, frame, size) {
 async function ippaiFetchPart(url, from, len, block, cls = 0) {
   if (from === undefined) return ippaiIsChunk(url) ? ippaiWhole(url, { cls }) : ippaiFetchRobust(url);
   const part = (d) => d.subarray(Math.min(from, d.length), Math.min(from + len, d.length));
-  const mem = ippaiRecent.get(url);
+  const mem = ippaiHeld(url);
   if (mem) return { data: part(mem), wire: 0, cached: 1 };
   if (!ippaiIsChunk(url)) return ippaiFetchPart(url).then((r) => ({ ...r, data: part(r.data) }));
   const cache = await ippaiCache();
@@ -929,7 +991,7 @@ async function ippaiFetchRobust(url, opt = {}) {
       const data = new Uint8Array(await ippaiCacheStep(hit.arrayBuffer()));
       if (hit.headers.get(IPPAI_CHECKED) === '1') return { data, wire: 0, cached: 1 };
       if (ippaiChunkOk(url, data)) {
-        cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })).catch(() => {});
+        ippaiKeep(cache, url, data);
         return { data, wire: 0, cached: 1 };
       }
       await cache.delete(url).catch(() => {});
@@ -943,6 +1005,9 @@ async function ippaiFetchRobust(url, opt = {}) {
     for (let attempt = 0; ; attempt++) {
       let error;
       try {
+        // (the bucket's budget, for each request made: a retry is one more; opt.job's class
+        // read again each time)
+        if (opt.job) await ippaiGate(opt.job);
         // (after a chunk that did not match, past the browser's HTTP cache: it keeps chunks for good)
         const { response, data } = await ippaiFetchOnce(url, stallMs, bad > 0, range && { range: `bytes=${range[0]}-${range[0] + range[1] - 1}` });
         if (data && range && response.status === 206) {
@@ -966,7 +1031,7 @@ async function ippaiFetchRobust(url, opt = {}) {
           const timing = t && (t.transferSize > 0 || t.decodedBodySize > 0) ? t : undefined;
           const wire = timing ? timing.transferSize : +(response.headers?.get?.('content-length') || data.length);
           const cached = timing && timing.transferSize === 0 && timing.decodedBodySize > 0 ? 1 : 0;
-          if (cache) cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })).catch(() => {});
+          ippaiKeep(cache, url, data);
           return { data, wire, cached };
         }
         if (!IPPAI_RETRY_STATUS.includes(response.status)) throw Object.assign(new Error(`HTTP ${response.status}`), { final: true });
@@ -1049,14 +1114,15 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function ippaiFetchWorkerSource(main, more = []) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX, IPPAI_CHUNK_DIR, IPPAI_HANDLE_MS, IPPAI_HANDLES };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiChunkFile, ippaiOpfsStore, ippaiRange, ippaiKeepRecent, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiHint, ippaiHintPump, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX, IPPAI_CHUNK_DIR, IPPAI_HANDLE_MS, IPPAI_HANDLES, IPPAI_BUDGET_BYTES, IPPAI_SAVING_BYTES, IPPAI_LOCK_WAIT_MS };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiChunkFile, ippaiOpfsStore, ippaiRange, ippaiKeepRecent, ippaiKeep, ippaiHeld, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiStartWhole, ippaiHint, ippaiHintPump, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
     'var ippaiCacheOpen, ippaiRecent = new Map(), ippaiDirectInfo = new Map(), ippaiDirectOff = false, ippaiZstd;',
     'var ippaiDirectAsking = new Map(), ippaiDirectManyOff = false, ippaiBudgetBuf, ippaiGameWaiting = 0, ippaiInflight = new Map();',
-    'var ippaiHints = [], ippaiHintsSeen = new Set(), ippaiHintsGoing = 0, ippaiPacks = new Map();',
+    'var ippaiHints = [], ippaiHintsSeen = new Set(), ippaiHintsGoing = 0, ippaiPacks = new Map(), ippaiSaving = new Map(), ippaiSavingBytes = 0;',
+    'ippaiWhole.LATE = {};',
     ...[...fns, ...more].map(String),
     main,
   ].join('\n');

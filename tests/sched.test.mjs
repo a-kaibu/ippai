@@ -122,7 +122,12 @@ async function bridge(opt = {}) {
         const d = kept.get(u);
         return d && { headers: { get: (n) => d.h[n] ?? null }, arrayBuffer: async () => d.b.slice().buffer };
       },
-      put: async (u, r) => void kept.set(u, { b: new Uint8Array(await r.arrayBuffer()), h: Object.fromEntries(r.headers) }),
+      put: async (u, r) => {
+        const b = new Uint8Array(await r.arrayBuffer());
+        // (opt.putGate: the device's write held until it resolves)
+        if (opt.putGate) await opt.putGate;
+        kept.set(u, { b, h: Object.fromEntries(r.headers) });
+      },
     }),
   };
   const ctx = vm.createContext({
@@ -574,4 +579,117 @@ test("every range goes past the browser's HTTP cache (its bodies of one chunk wa
     for (const s of store) assert.equal(s.cache === 'no-store', !!s.range, `seed ${seed}: ${JSON.stringify(s)}`);
     if (ctx.ippaiDirectOff) assert.ok(store.some((s) => s.range), `seed ${seed}: ranges asked for`);
   }
+});
+
+// ---- the 2026-11-14 review of fe191e3c
+const until = async (f, ms = 3000) => {
+  for (const t0 = Date.now(); !f() && Date.now() - t0 < ms; ) await new Promise((r) => setTimeout(r, 5));
+  return f();
+};
+
+test("a game read of a pack neighbour makes the pack's GET the game's (one job, not a copy)", async () => {
+  const order = HASHES.slice(0, 6);
+  const { ctx, log } = await bridge({ packs: order });
+  await ctx.ippaiDirectMany(order.map(url));
+  // (the budget spent: the warm read of the first waits at its reserve, its neighbours with it)
+  ctx.ippaiBudgetWith((v) => void ((v[0] = 0), (v[1] = Date.now() + 60000)));
+  const warm = ctx.ippaiWhole(url(order[0]), { cls: ctx.IPPAI_CLASS.warm });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(log.bucket.length, 0, 'warm waits for the budget');
+  assert.ok(ctx.ippaiInflight.has(url(order[3])), 'the neighbour is coming with it');
+  const t0 = Date.now();
+  const game = await Promise.race([ctx.ippaiWhole(url(order[3]), { cls: 0 }), new Promise((r) => setTimeout(() => r({ late: true }), 2000))]);
+  assert.ok(!game.late, `the game waited ${Date.now() - t0} ms behind the warm class's budget`);
+  assert.deepEqual(game.data, CHUNKS.get(order[3]));
+  assert.equal(log.bucket.length, 1, 'the one GET, gone at the game\'s class');
+  assert.deepEqual((await warm).data, CHUNKS.get(order[0]));
+});
+
+test("a game read joining a fetch ahead that waits for the chunk's lock fetches it itself after a while", async () => {
+  // (another fetcher holds the chunk's lock: the page's save, slow)
+  let release;
+  const held = new Promise((r) => (release = r));
+  const locks = { request: async (name, f) => (await held, f()) };
+  const { ctx, log } = await bridge({ locks });
+  ctx.IPPAI_LOCK_WAIT_MS = 50;
+  const h = HASHES[4];
+  const ahead = ctx.ippaiWhole(url(h), { cls: ctx.IPPAI_CLASS.hint });
+  const t0 = Date.now();
+  const game = await Promise.race([ctx.ippaiWhole(url(h), { cls: 0 }), new Promise((r) => setTimeout(() => r({ late: true }), 2000))]);
+  assert.ok(!game.late, 'the game waited for the lock');
+  assert.deepEqual(game.data, CHUNKS.get(h));
+  assert.ok(Date.now() - t0 < 1000, `the game waited ${Date.now() - t0} ms for a lock`);
+  assert.equal(log.bucket.length, 1);
+  // (the lock let go: the fetch ahead finds the game's, nothing fetched again)
+  release();
+  assert.deepEqual((await ahead).data, CHUNKS.get(h));
+  assert.equal(log.bucket.length, 1);
+});
+
+test('a pack neighbour checked but not yet on the device is read from memory, not fetched again', async () => {
+  const order = HASHES.slice(0, 6);
+  let write;
+  const putGate = new Promise((r) => (write = r));
+  const { ctx, log, kept } = await bridge({ packs: order, putGate });
+  await ctx.ippaiDirectMany(order.map(url));
+  await ctx.ippaiWhole(url(order[0]), { cls: 0 });
+  await settle(ctx);
+  assert.equal(log.bucket.length, 1);
+  ctx.ippaiRecent.clear();
+  assert.equal(kept.size, 0, 'the device has none of them yet');
+  for (const h of order.slice(1)) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+  assert.equal(log.bucket.length, 1, 'none fetched again while being written');
+  assert.ok(ctx.ippaiSavingBytes > 0);
+  write();
+  assert.ok(await until(() => ctx.ippaiSaving.size === 0 && kept.size >= order.length), 'written, then let go');
+  assert.equal(ctx.ippaiSavingBytes, 0);
+});
+
+test('chunks waiting to be written past the cap hold fetches ahead, not the game', async () => {
+  let write;
+  const putGate = new Promise((r) => (write = r));
+  const { ctx, log } = await bridge({ putGate });
+  ctx.IPPAI_SAVING_BYTES = 1;
+  ctx.IPPAI_RECENT_BYTES = 0;
+  await ctx.ippaiWhole(url(HASHES[1]), { cls: 0 });
+  assert.ok(ctx.ippaiSavingBytes > 1);
+  const warm = ctx.ippaiWhole(url(HASHES[2]), { cls: ctx.IPPAI_CLASS.warm });
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(log.bucket.length, 1, 'warm waits for the device to catch up');
+  await ctx.ippaiWhole(url(HASHES[3]), { cls: 0 });
+  assert.equal(log.bucket.length, 2, 'the game does not');
+  write();
+  await warm;
+  assert.equal(log.bucket.length, 3);
+});
+
+test('each request to the bucket takes from the budget, retries too', async () => {
+  const { ctx, log } = await bridge({ fail429: 2 });
+  vm.runInContext('ippaiPause = async () => {}; ippaiDrain = () => {};', ctx);
+  let takes = 0;
+  const take = ctx.ippaiTake;
+  ctx.ippaiTake = (cls, now) => (takes++, take(cls, now));
+  await ctx.ippaiWhole(url(HASHES[6]), { cls: 0 });
+  assert.equal(log.bucket.length, 3);
+  assert.equal(takes, 3, 'one per request made');
+});
+
+test('a 429 stops every class for its whole wait, the game\'s too, then the budget refills from none', () => {
+  const ctx = vm.createContext({ SharedArrayBuffer, Atomics, Int32Array, Float64Array, Math, Date });
+  vm.runInContext(source, ctx);
+  const C = ctx.IPPAI_CLASS;
+  const now = 7_000_000;
+  ctx.ippaiBudgetWith((v) => void ((v[0] = ctx.IPPAI_BURST), (v[1] = now), (v[2] = 0)));
+  ctx.ippaiDrain(5000, now);
+  for (const dt of [0, 112, 1000, 4999]) for (const cls of Object.values(C)) assert.equal(ctx.ippaiTake(cls, now + dt), false, `class ${cls} at +${dt} ms`);
+  // (after it: the game first; the others when the budget is back over their reserve)
+  assert.equal(ctx.ippaiTake(C.ahead, now + 5000), false);
+  assert.equal(ctx.ippaiTake(C.game, now + 5000), true);
+  assert.equal(ctx.ippaiTake(C.warm, now + 5000 + 1000), false);
+  assert.equal(ctx.ippaiTake(C.warm, now + 5000 + 4000), true);
+  // (a shorter 429 meanwhile does not shorten it)
+  ctx.ippaiDrain(10000, now + 6000);
+  ctx.ippaiDrain(1000, now + 6000);
+  assert.equal(ctx.ippaiTake(C.game, now + 15000), false);
+  assert.equal(ctx.ippaiTake(C.game, now + 16000), true);
 });

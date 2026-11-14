@@ -17,6 +17,7 @@
 import { CLASS } from "./budget";
 import { directFetcher, isDirectInfo, type Unzstd } from "./direct";
 import type { ChunkStore } from "./chunkstore";
+import { keepChunk } from "./net";
 
 export interface WasmSourceDeps {
   request?: typeof fetch;
@@ -92,10 +93,8 @@ export async function sakeWasmBytes(
   note(
     `${name}: ${(bytes.length / 2 ** 20).toFixed(1)} MiB from the bucket in ${((Date.now() - t0) / 1000).toFixed(1)} s`,
   );
-  const copy = new Uint8Array(bytes);
-  void device
-    ?.put(key, new Response(copy, { headers: { "content-type": "application/wasm" } }))
-    .catch(() => {});
+  // (as every checked chunk is kept: marked so, it goes to OPFS, not the old Cache Storage)
+  if (device) void keepChunk(device, key, new Uint8Array(bytes));
   return { bytes: new Uint8Array(bytes), from: "bucket" };
 }
 

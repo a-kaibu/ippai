@@ -7,6 +7,7 @@
 // carry CHECKED, one kept without it (an older page's) is checked once when read.
 
 import { blake3Hex } from "./blake3";
+import { drain, gate } from "./budget";
 import { deviceChunks, type ChunkStore } from "./chunkstore";
 
 export const CHUNKS = "ippai-chunks-v1";
@@ -25,6 +26,9 @@ export interface RetryOptions {
   /** stop retrying (the request is aborted too) */
   signal?: AbortSignal;
   request?: typeof fetch;
+  /** a request of the bucket: its budget class (budget.ts), taken before every try (a retry is
+   * one more request), and a 429 stops every class for its wait */
+  budget?: number;
 }
 
 /** Waits `ms`; while the browser reports no network, until it reports one again (at most 30 s). */
@@ -138,6 +142,7 @@ export async function fetchRetry(
       let error: unknown;
       let after = 0;
       try {
+        if (opt.budget !== undefined) await gate(opt.budget, opt.signal);
         const { response, data } = await once(String(url), { ...init, signal: opt.signal }, stallMs, request);
         if (data) return data;
         // (sw.ts: offline, and not kept on the device)
@@ -145,6 +150,7 @@ export async function fetchRetry(
         if (!RETRY.has(response.status)) throw new HttpError(response.status);
         error = new Error(`HTTP ${response.status}`);
         after = Math.min((Number(response.headers.get("retry-after")) || 0) * 1000, 30000);
+        if (response.status === 429 && opt.budget !== undefined) drain(after || 5000);
       } catch (e) {
         if (e instanceof HttpError || opt.signal?.aborted) throw e;
         error = e;
