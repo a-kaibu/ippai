@@ -1353,6 +1353,8 @@ fn kern_sync(o: &Obj) -> Option<crate::kern::Sync> {
     })
 }
 pub(crate) fn create_named(name: Option<String>, o: Obj) -> u32 {
+    // ("" is no name, as NULL: a new unnamed object each time. Delphi passes PChar('').)
+    let name = name.filter(|n| !n.is_empty());
     if let Some(n) = &name {
         if !name_ok(n) {
             last_error(3);
@@ -9460,6 +9462,60 @@ mod access_tests {
                     prop_assert_eq!(g, all);
                 }
             }
+        }
+    }
+}
+
+/// Kernel object names: "" is no name (Delphi's TEvent passes PChar('')), a new object each
+/// time as NULL gives; the same non-empty name opens the one object (winref probe emptyname).
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod empty_name_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use proptest::prelude::*;
+
+    fn guest_str(s: &str) -> u32 {
+        let p = mem::heap_alloc(s.len() as u32 + 1, true);
+        for (i, b) in s.bytes().enumerate() {
+            mem::w8(p + i as u32, b);
+        }
+        p
+    }
+
+    /// (kind 0 event, 1 mutex, 2 semaphore, 3 waitable timer) -> the handle and GetLastError
+    fn create(kind: u8, name: u32) -> (u32, u32) {
+        let h = match kind {
+            0 => call(CreateEventA, &[0, 0, 0, name]),
+            1 => call(CreateMutexA, &[0, 0, name]),
+            2 => call(CreateSemaphoreA, &[0, 0, 1, name]),
+            _ => call(CreateWaitableTimerA, &[0, 1, name]),
+        };
+        (h, get_last_error())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// two creations under one name share the object exactly when the name is not empty:
+        /// an auto-reset event set through the first handle is seen through the second only then
+        #[test]
+        fn empty_names_make_new_objects(kind in 0u8..4, name in "(|[a-z]{1,8})", tag in any::<u32>()) {
+            let _g = enter();
+            guest_thread();
+            // (a unique name per case: the table outlives the case)
+            let name = if name.is_empty() { name } else { format!("ippai-pbt-{name}-{tag:08x}") };
+            let p = guest_str(&name);
+            let (a, ea) = create(kind, p);
+            let (b, eb) = create(kind, p);
+            prop_assert!(a != 0 && b != 0 && a != b);
+            prop_assert_eq!(ea, 0);
+            prop_assert_eq!(eb, if name.is_empty() { 0 } else { files::ERROR_ALREADY_EXISTS });
+            if kind == 0 {
+                prop_assert_eq!(call(SetEvent, &[a]), 1);
+                let seen = call(WaitForSingleObject, &[b, 0]);
+                prop_assert_eq!(seen, if name.is_empty() { 0x102 } else { 0 });
+            }
+            prop_assert!(obj::close(a) && obj::close(b));
+            mem::heap_free(p);
         }
     }
 }
