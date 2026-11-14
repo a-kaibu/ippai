@@ -441,6 +441,10 @@ pub fn exit_thread(code: u32) -> ! {
         }
     });
     crate::kern::with(|k| k.abandon(t.tid));
+    // (its windows, queue and hooks: a SendMessage waiting for it returns)
+    if t.tid != crate::process::first_tid(crate::pid()) {
+        crate::user::thread_gone(t.tid);
+    }
     obj::signal();
     obj::close(h);
     crate::apc::forget(t.tid);

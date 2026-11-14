@@ -535,7 +535,9 @@ pub struct Target {
 pub fn target(h: u32) -> Option<Target> {
     with(|s| {
         let (top, x, y) = toplevel_offset(s, h)?;
-        let surface = s.wins.get(&top)?.surface.clone()?;
+        let tw = s.wins.get_mut(&top)?;
+        ensure_surface(tw);
+        let surface = tw.surface.clone()?;
         let w = s.wins.get(&h)?;
         let mut clip = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() }.off(x, y);
         // a CS_PARENTDC child draws anywhere in its parent's client area
@@ -601,12 +603,31 @@ fn update_display(s: &State, h: u32) {
     }
 }
 
+/// The size of a top-level window's surface: its client area, at most its first 8192x8192
+/// (drawing is clipped to the surface).
+fn surface_size(w: &Window) -> (i32, i32) {
+    (w.client.w().clamp(1, 8192), w.client.h().clamp(1, 8192))
+}
+
+/// A top-level window's surface follows its client area's size. A window has none until
+/// something draws in it (`target`): engines make several top-level windows that are never
+/// shown or drawn in (Delphi's TApplication, timer, IME, OLE, DirectSound/DirectInput
+/// cooperative windows, message-only ones), and each used to hold a surface of its client
+/// size from CreateWindowEx on (CW_USEDEFAULT: 3/4 of the screen; a popup up to 8192x8192 =
+/// 256 MB, an out-of-memory on a phone).
 fn resize_surface(w: &mut Window) {
+    if w.surface.is_none() {
+        return;
+    }
+    ensure_surface(w);
+}
+
+/// The surface of a top-level window, made now if it has none yet, at its client size.
+fn ensure_surface(w: &mut Window) {
     if w.parent != 0 && w.parent != DESKTOP {
         return;
     }
-    // (the pixels of a huge window: its first 8192x8192, drawing is clipped to the surface)
-    let (cw, ch) = (w.client.w().clamp(1, 8192), w.client.h().clamp(1, 8192));
+    let (cw, ch) = surface_size(w);
     match &w.surface {
         Some(s) => {
             let mut g = s.lock().unwrap();
@@ -630,8 +651,17 @@ fn class_index(s: &State, name: u32, wide: bool) -> Option<usize> {
     if name < 0x10000 {
         return s.classes.iter().position(|c| c.atom == name && !c.unregistered);
     }
-    let n = arg_str(name, wide).to_lowercase();
-    s.classes.iter().position(|c| c.name.to_lowercase() == n && !c.unregistered)
+    let n = arg_str(name, wide);
+    s.classes.iter().position(|c| same_name(&c.name, &n) && !c.unregistered)
+}
+/// Class names compared as Windows does (any case), without a lowercase String per class per
+/// lookup when both are ASCII (they nearly always are)
+pub(crate) fn same_name(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a.to_lowercase() == b.to_lowercase()
+    }
 }
 
 #[path = "animate.rs"]
@@ -928,10 +958,13 @@ fn gcall(c: &mut Ctx, dll: &str, name: &str, args: &[u32]) -> u32 {
 }
 
 fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
-    let (style, text, id, parent, (w, hh), enabled) = with(|s| {
-        let w = &s.wins[&h];
-        (w.style, w.text.clone(), w.id, w.parent, (w.client.w(), w.client.h()), w.enabled)
-    });
+    // (not a window: a bogus handle given to the class's proc, or one destroyed meanwhile)
+    let Some((style, text, id, parent, (w, hh), enabled)) = with(|s| {
+        let w = s.wins.get(&h)?;
+        Some((w.style, w.text.clone(), w.id, w.parent, (w.client.w(), w.client.h()), w.enabled))
+    }) else {
+        return;
+    };
     let st = ctl(h);
     let ps = mem::heap_alloc(64 + 16, true);
     let rc = ps + 64;
@@ -1793,8 +1826,30 @@ fn wndclass_offsets(ex: bool) -> [u32; 11] {
     }
 }
 
+/// The largest cbClsExtra / cbWndExtra sake takes. Windows refuses negative ones
+/// (ERROR_INVALID_PARAMETER, as Wine's RegisterClassExW) and fails what its desktop heap cannot
+/// hold (ERROR_NOT_ENOUGH_MEMORY); uninitialised stack garbage in a WNDCLASS used to make sake
+/// allocate up to 4 GB here, once for the class and again for every window of it.
+const MAX_EXTRA: u32 = 1 << 20;
+
+/// RegisterClass's answer to a class's cbClsExtra and cbWndExtra: None to go on, or the error
+/// it fails with.
+fn extra_error(cls_extra: u32, wnd_extra: u32) -> Option<u32> {
+    if (cls_extra as i32) < 0 || (wnd_extra as i32) < 0 {
+        Some(87)
+    } else if cls_extra > MAX_EXTRA || wnd_extra > MAX_EXTRA {
+        Some(8)
+    } else {
+        None
+    }
+}
+
 fn register_class(c: &mut Ctx, p: u32, wide: bool, ex: bool) -> u32 {
     let f = wndclass_offsets(ex);
+    if let Some(e) = extra_error(r32(p + f[2]), r32(p + f[3])) {
+        w32(crate::cur().teb + crate::teb_last_error(), e);
+        return 0;
+    }
     let name_p = r32(p + f[9]);
     let name = if name_p < 0x10000 { format!("#{name_p}") } else { arg_str(name_p, wide) };
     let atom = crate::k32::atom(&name);
@@ -1960,11 +2015,21 @@ fn trace_msgs() -> bool {
 
 fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
     let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
-    with(|s| {
+    // (only while the window is there: thread_gone takes a thread's windows and answers what
+    // was sent to it under the same lock, so a message is either answered there or never
+    // queued)
+    let queued = with(|s| {
+        if !s.wins.get(&msg.hwnd).is_some_and(|w| w.tid == tid) {
+            return false;
+        }
         let q = s.queues.entry(tid).or_default();
         q.sent.push_back(Sent { msg, result: result.clone(), from: crate::cur().tid, remote: None });
         q.fresh |= 0x40;
+        true
     });
+    if !queued {
+        return 0;
+    }
     crate::obj::signal();
     // wait, handling messages sent to us meanwhile
     loop {
@@ -1991,6 +2056,108 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
         if !with(|s| s.wins.values().any(|w| w.tid == tid)) && !with(|s| s.queues.contains_key(&tid)) {
             return 0;
         }
+    }
+}
+
+/// The windows thread `tid` leaves when it ends: its own and every descendant of them (a
+/// child of another thread goes with its parent), each once (`tids`: each window and its
+/// thread, `kids`: a window's children).
+fn windows_left<'a>(tids: impl Iterator<Item = (u32, u32)>, kids: impl Fn(u32) -> Option<&'a [u32]>, tid: u32) -> Vec<u32> {
+    let mut out: Vec<u32> = tids.filter(|&(_, t)| t == tid).map(|(h, _)| h).collect();
+    out.sort_unstable();
+    let mut seen: std::collections::HashSet<u32> = out.iter().copied().collect();
+    let mut i = 0;
+    while i < out.len() {
+        if let Some(children) = kids(out[i]) {
+            for &ch in children {
+                if seen.insert(ch) {
+                    out.push(ch);
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Thread `tid` ended (k32::exit_thread). As on Windows its windows are destroyed (without
+/// messages: nothing runs them any more), a SendMessage waiting for it gets 0, and its queue,
+/// timers and hooks go. Before, a SendMessage to the window of a thread that had ended without
+/// DestroyWindow never returned, and every thread that ever touched a queue left one behind.
+pub fn thread_gone(tid: u32) {
+    // (a process that never used USER has nothing to drop)
+    if st().is_none() {
+        return;
+    }
+    let (gone, answered) = with(|s| {
+        let gone = windows_left(s.wins.iter().map(|(&h, w)| (h, w.tid)), |h| s.wins.get(&h).map(|w| w.children.as_slice()), tid);
+        for &h in &gone {
+            s.normal.remove(&h);
+            let Some(w) = s.wins.remove(&h) else { continue };
+            if w.parent == 0 && w.style & 0x4000_0000 == 0 && w.menu != 0 {
+                destroy_menu(&mut s.menus, w.menu);
+            }
+            if let Some(p) = s.wins.get_mut(&w.parent) {
+                p.children.retain(|&x| x != h);
+            }
+            if let Some(q) = s.queues.get_mut(&w.tid) {
+                q.timers.retain(|t| t.hwnd != h);
+                q.posted.retain(|m| m.hwnd != h);
+            }
+            if w.surface.is_some() || w.parent == 0 || w.parent == DESKTOP {
+                kura::display::vnhost_window_destroy(h);
+            }
+            for f in [&mut s.focus, &mut s.active, &mut s.capture] {
+                if *f == h {
+                    *f = 0;
+                }
+            }
+        }
+        // (what was sent to it and to its windows from other threads: 0)
+        let mut answered = Vec::new();
+        if let Some(q) = s.queues.remove(&tid) {
+            answered.extend(q.sent);
+        }
+        for q in s.queues.values_mut() {
+            let (dead, keep): (VecDeque<Sent>, VecDeque<Sent>) = std::mem::take(&mut q.sent).into_iter().partition(|m| gone.contains(&m.msg.hwnd));
+            q.sent = keep;
+            answered.extend(dead);
+        }
+        (gone, answered)
+    });
+    for sent in answered {
+        *sent.result.0.lock().unwrap() = Some((0, Instant::now(), None));
+        sent.result.1.notify_all();
+        if let Some((id, buf)) = sent.remote {
+            if buf != 0 {
+                mem::heap_free(buf);
+            }
+            crate::kern::with(|k| k.reply(id, 0));
+        }
+    }
+    let mut g = HOOKS.lock().unwrap();
+    g.retain(|x| {
+        if x.3 != tid {
+            return true;
+        }
+        match x.1 {
+            WH_CBT => {}
+            WH_GETMESSAGE => {
+                GETMSG_HOOKS.fetch_sub(1, Ordering::Relaxed);
+            }
+            _ => {
+                SEND_HOOKS.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        false
+    });
+    drop(g);
+    for h in &gone {
+        crate::gdi::window_destroyed(*h);
+    }
+    forget_controls(&gone);
+    if !gone.is_empty() {
+        publish();
     }
 }
 
@@ -2069,6 +2236,35 @@ fn process_sent(cpu: &mut koji::Cpu) {
 // ---------------------------------------------------------------------------------------------
 // windows of other processes (crate::kern has their top-level windows and the messages to them)
 
+/// A new window handle: the next of this process's range not in use; past its end it starts
+/// over at the range's start (it used to run into the next process's range after 65 536)
+fn next_hwnd(s: &mut State) -> u32 {
+    let (lo, hi) = hwnd_range(first_hwnd());
+    let wins = &s.wins;
+    take_hwnd(&mut s.next, lo, hi, |h| wins.contains_key(&h))
+}
+/// The handles a process whose first is `first` numbers its windows with
+pub(crate) fn hwnd_range(first: u32) -> (u32, u32) {
+    (first, first + 0x10_0000 - 0x20)
+}
+/// The next free handle from `next` in [lo, hi) (steps of 0x10), `next` moved past it; with
+/// every handle in use, the one at `next` (a handle reused: Windows has the same 16-bit limit)
+pub(crate) fn take_hwnd(next: &mut u32, lo: u32, hi: u32, used: impl Fn(u32) -> bool) -> u32 {
+    if *next < lo || *next >= hi {
+        *next = lo;
+    }
+    let n = (hi - lo) / 0x10;
+    let start = *next;
+    for _ in 0..n {
+        let h = *next;
+        *next = if h + 0x10 >= hi { lo } else { h + 0x10 };
+        if !used(h) {
+            return h;
+        }
+    }
+    start
+}
+
 /// This process's first window handle (the processes number their windows apart).
 fn first_hwnd() -> u32 {
     0x10020 + crate::pid().saturating_sub(crate::kern::ROOT_PID) / crate::kern::PID_STEP * 0x10_0000
@@ -2099,14 +2295,30 @@ fn remote(hwnd: u32) -> Option<crate::kern::KWin> {
     crate::kern::with(|k| k.win(hwnd).filter(|w| w.pid != crate::pid()).cloned()).0
 }
 
+/// The most bytes WM_COPYDATA takes to another process
+const MAX_COPYDATA: u32 = 64 << 20;
+
 /// PostMessage / SendMessage to another process's window: SendMessage waits for its result
 /// (0 if that process ends first). WM_COPYDATA's COPYDATASTRUCT and data go along.
 fn to_remote(w: &crate::kern::KWin, msg: u32, wp: u32, lp: u32, send: bool) -> u32 {
-    let data = (msg == 0x4a && lp != 0).then(|| {
+    if msg == 0x4a && !send {
+        // (WM_COPYDATA only goes sent: its data must live until the answer)
+        crate::k32::last_error(1159); // ERROR_MESSAGE_SYNC_ONLY
+        return 0;
+    }
+    let data = if msg == 0x4a && lp != 0 {
         let ps = mem::ps();
         let d = if mem::x64() { mem::r64(lp) } else { r32(lp) as u64 };
-        (d, mem::slice(mem::rp(lp + 2 * ps), r32(lp + ps)).to_vec())
-    });
+        let (p, n) = (mem::rp(lp + 2 * ps), r32(lp + ps));
+        // (the data is copied into the shared kernel: guest memory only, MAX_COPYDATA at most)
+        if n > MAX_COPYDATA || n != 0 && !mem::in_guest(p, n) {
+            crate::k32::last_error(87);
+            return 0;
+        }
+        Some((d, if n == 0 { Vec::new() } else { mem::slice(p, n).to_vec() }))
+    } else {
+        None
+    };
     let to = w.pid;
     let id = crate::kern::with(|k| k.put_msg(crate::kern::XMsg { to, hwnd: w.hwnd, msg, w: wp, l: lp, data, send, ..Default::default() })).0;
     if !send {
@@ -2134,6 +2346,13 @@ pub fn deliver_remote() {
         if let Some((d, bytes)) = &x.data {
             let ps = mem::ps();
             buf = mem::heap_alloc(3 * ps + bytes.len() as u32, true);
+            // (the guest heap is full: the message fails, nothing is written at address 0)
+            if buf == 0 {
+                if x.send {
+                    crate::kern::with(|k| k.reply(x.id, 0));
+                }
+                continue;
+            }
             if mem::x64() {
                 mem::w64(buf, *d);
             } else {
@@ -2239,9 +2458,8 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     let made = with(|s| {
         system_classes(s);
         let ci = class_index(s, cls_p, wide)?;
+        let h = next_hwnd(s);
         let k = &s.classes[ci];
-        let h = s.next;
-        s.next += 0x10;
         let has_menu = !child && menu_bar(&s.menus, menu, 0);
         let rect = Rect { l: x, t: y, r: x + cx, b: y + cy };
         let w = Window {
@@ -2424,7 +2642,7 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
         if let Some(w) = s.wins.remove(&h) {
             // (a top-level window's menu goes with it, as DestroyWindow does on Windows)
             if w.parent == 0 && w.style & 0x4000_0000 == 0 && w.menu != 0 {
-                s.menus.remove(&w.menu);
+                destroy_menu(&mut s.menus, w.menu);
             }
             if let Some(p) = s.wins.get_mut(&w.parent) {
                 p.children.retain(|&x| x != h);
@@ -2433,7 +2651,7 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
                 q.timers.retain(|t| t.hwnd != h);
                 q.posted.retain(|m| m.hwnd != h);
             }
-            if w.surface.is_some() {
+            if w.surface.is_some() || w.parent == 0 || w.parent == DESKTOP {
                 kura::display::vnhost_window_destroy(h);
             }
         }
@@ -2448,7 +2666,18 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
         }
     });
     crate::gdi::window_destroyed(h);
+    forget_controls(&[h]);
     true
+}
+/// A destroyed window's built-in control state goes too (only its own proc's WM_DESTROY used
+/// to drop it: a subclass that swallows WM_DESTROY leaked it)
+fn forget_controls(hs: &[u32]) {
+    if let Some(m) = CTLS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        hs.iter().for_each(|h| { m.remove(h); });
+    }
+    if let Some(m) = COMBOS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        hs.iter().for_each(|h| { m.remove(h); });
+    }
 }
 fn DestroyWindow(c: &mut Ctx) -> u32 {
     let h = c.a(0);
@@ -3046,9 +3275,40 @@ fn GetAncestor(c: &mut Ctx) -> u32 {
         }
     })
 }
+/// Whether making `p` the parent of `h` would put `h` among its own ancestors (`get`: a
+/// window's parent, None for no such window): p is h, or h is one of p's ancestors. Windows
+/// refuses that SetParent (ERROR_INVALID_PARAMETER); allowed, it made every parent walk
+/// (toplevel_offset, IsChild, GetAncestor, window_origin's recursion...) loop or overflow the
+/// stack while holding the USER lock. At most 4096 levels are walked (a cycle already there
+/// counts as one).
+fn makes_cycle(get: impl Fn(u32) -> Option<u32>, h: u32, mut p: u32) -> bool {
+    for _ in 0..4096 {
+        if p == h {
+            return true;
+        }
+        match get(p) {
+            Some(q) if q != 0 && q != DESKTOP => p = q,
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn SetParent(c: &mut Ctx) -> u32 {
     let (h, p) = (c.a(0), c.a(1));
     with(|s| {
+        if !s.wins.contains_key(&h) {
+            w32(crate::cur().teb + crate::teb_last_error(), 1400);
+            return 0;
+        }
+        if p != 0 && p != DESKTOP && p != HWND_MESSAGE && !s.wins.contains_key(&p) {
+            w32(crate::cur().teb + crate::teb_last_error(), 1400);
+            return 0;
+        }
+        if makes_cycle(|x| s.wins.get(&x).map(|w| w.parent), h, p) {
+            w32(crate::cur().teb + crate::teb_last_error(), 87);
+            return 0;
+        }
         let Some(w) = s.wins.get_mut(&h) else { return 0 };
         let old = w.parent;
         w.parent = if p == DESKTOP { 0 } else { p };
@@ -3202,8 +3462,8 @@ fn find_window(parent: u32, after: u32, cls: u32, title: u32, wide: bool) -> u32
             .iter()
             .copied()
             .find(|h| {
-                let w = &s.wins[h];
-                cls_name.as_ref().is_none_or(|n| s.classes[w.class].name.to_lowercase() == *n) && t.as_ref().is_none_or(|t| String::from_utf16_lossy(&w.text) == *t)
+                let Some(w) = s.wins.get(h) else { return false };
+                cls_name.as_ref().is_none_or(|n| same_name(&s.classes[w.class].name, n)) && t.as_ref().is_none_or(|t| String::from_utf16_lossy(&w.text) == *t)
             }))
     });
     let found = match found {
@@ -3239,10 +3499,11 @@ fn window_at(s: &State, x: i32, y: i32) -> u32 {
     // the most recently activated first (with the windows it owns), owned windows above their
     // owner, then newest
     let owners = |h: u32| std::iter::successors(Some(h), |o| s.wins.get(o).map(|w| w.owner).filter(|&o| o != 0)).take(8);
-    tops.sort_by_key(|&h| (owners(h).any(|o| o == s.active), owners(h).count(), h));
+    // (the key walks the owner chain: computed once per window, not per comparison)
+    tops.sort_by_cached_key(|&h| (owners(h).any(|o| o == s.active), owners(h).count(), h));
     let Some(&top) = tops.iter().rev().find(|&&h| {
         let (ox, oy) = window_origin(s, h);
-        let w = &s.wins[&h];
+        let Some(w) = s.wins.get(&h) else { return false };
         Rect { l: ox, t: oy, r: ox + w.rect.w(), b: oy + w.rect.h() }.has(x, y)
     }) else {
         return DESKTOP;
@@ -3894,18 +4155,31 @@ pub fn post(hwnd: u32, msg: u32, w: u32, l: u32) -> bool {
             None => return remote(hwnd).is_some_and(|rw| to_remote(&rw, msg, w, l, false) != 0),
         }
     };
-    post_thread(tid, Msg { hwnd, msg, w, l, time: now_ms(), x: 0, y: 0 });
-    true
+    post_thread(tid, Msg { hwnd, msg, w, l, time: now_ms(), x: 0, y: 0 })
 }
-fn post_thread(tid: u32, mut m: Msg) {
-    with(|s| {
+/// The most messages a queue holds posted (Windows' USERPostMessageLimit)
+pub(crate) const POST_LIMIT: usize = 10_000;
+
+/// Posts `m` to thread `tid`'s queue: false (ERROR_NOT_ENOUGH_QUOTA) when it holds POST_LIMIT
+/// already (a thread that does not pump no longer grows its queue without end)
+fn post_thread(tid: u32, mut m: Msg) -> bool {
+    let ok = with(|s| {
         m.x = s.cursor.0;
         m.y = s.cursor.1;
         let q = s.queues.entry(tid).or_default();
+        if q.posted.len() >= POST_LIMIT {
+            return false;
+        }
         q.posted.push_back(m);
         q.fresh |= 0x8;
+        true
     });
+    if !ok {
+        crate::k32::last_error(1816); // ERROR_NOT_ENOUGH_QUOTA
+        return false;
+    }
     crate::obj::signal();
+    true
 }
 fn PostMessageA(c: &mut Ctx) -> u32 {
     let h = c.a(0);
@@ -3992,8 +4266,7 @@ pub fn post_thread_msg(tid: u32, msg: u32, w: u32, l: u32) {
     post_thread(tid, Msg { hwnd: 0, msg, w, l, time: now_ms(), x: 0, y: 0 });
 }
 fn PostThreadMessageA(c: &mut Ctx) -> u32 {
-    post_thread(c.a(0), Msg { hwnd: 0, msg: c.a(1), w: c.a(2), l: c.a(3), time: now_ms(), x: 0, y: 0 });
-    1
+    post_thread(c.a(0), Msg { hwnd: 0, msg: c.a(1), w: c.a(2), l: c.a(3), time: now_ms(), x: 0, y: 0 }) as u32
 }
 fn PostThreadMessageW(c: &mut Ctx) -> u32 {
     PostThreadMessageA(c)
@@ -5353,10 +5626,16 @@ fn call_sent(cpu: &mut koji::Cpu, proc_: u32, hwnd: u32, msg: u32, wp: u32, lp: 
         return call_proc(cpu, proc_, hwnd, msg, wp, lp);
     }
     let tid = crate::cur().tid;
-    let (before, after) = (hooks_of(WH_CALLWNDPROC, tid), hooks_of(WH_CALLWNDPROCRET, tid));
+    // (both lists under one lock)
+    let (before, after) = {
+        let g = HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+        let of = |id: u32| g.iter().rev().filter(|x| x.1 == id && (x.3 == tid || x.3 == 0)).map(|x| x.2).collect::<Vec<u32>>();
+        (of(WH_CALLWNDPROC), of(WH_CALLWNDPROCRET))
+    };
     let ps = if mem::x64() { 8 } else { 4 };
-    if !before.is_empty() {
-        let cwp = mem::heap_alloc(4 * ps, true);
+    // (the guest heap full: the hooks are skipped, the message still goes)
+    let cwp = if before.is_empty() { 0 } else { mem::heap_alloc(4 * ps, true) };
+    if cwp != 0 {
         mem::wp(cwp, lp);
         mem::wp(cwp + ps, wp);
         w32(cwp + 2 * ps, msg);
@@ -5367,8 +5646,8 @@ fn call_sent(cpu: &mut koji::Cpu, proc_: u32, hwnd: u32, msg: u32, wp: u32, lp: 
         mem::heap_free(cwp);
     }
     let r = call_proc(cpu, proc_, hwnd, msg, wp, lp);
-    if !after.is_empty() {
-        let cwp = mem::heap_alloc(5 * ps, true);
+    let cwp = if after.is_empty() { 0 } else { mem::heap_alloc(5 * ps, true) };
+    if cwp != 0 {
         mem::wp(cwp, r);
         mem::wp(cwp + ps, lp);
         mem::wp(cwp + 2 * ps, wp);
@@ -6261,12 +6540,26 @@ fn CreateMenu(_: &mut Ctx) -> u32 {
 fn CreatePopupMenu(_: &mut Ctx) -> u32 {
     new_menu()
 }
+pub fn is_menu(h: u32) -> bool {
+    with(|s| s.menus.contains_key(&h))
+}
 fn IsMenu(c: &mut Ctx) -> u32 {
     with(|s| s.menus.contains_key(&c.a(0))) as u32
 }
 fn DestroyMenu(c: &mut Ctx) -> u32 {
-    with(|s| s.menus.remove(&c.a(0)));
+    with(|s| destroy_menu(&mut s.menus, c.a(0)));
     1
+}
+/// Destroys menu `h` and its popups, as Windows' DestroyMenu does (only the top one used to
+/// go: a loaded menu's popups stayed for the session). A popup reached twice (shared) goes once.
+pub(crate) fn destroy_menu(menus: &mut HashMap<u32, Menu>, h: u32) {
+    let mut todo = vec![(h, 0u32)];
+    while let Some((h, depth)) = todo.pop() {
+        let Some(m) = menus.remove(&h) else { continue };
+        if depth < MENU_DEPTH {
+            todo.extend(m.items.iter().filter(|it| it.sub != 0).map(|it| (it.sub, depth + 1)));
+        }
+    }
 }
 /// The menu and index of `item` in menu `h`: by position, or by command in `h` and then in
 /// its popups, depth first (as Windows: GetMenuState(menu bar, id in a popup) finds it).
@@ -6674,18 +6967,37 @@ static NEXT_ICON: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::n
 fn fake_handle() -> u32 {
     NEXT_ICON.fetch_add(4, std::sync::atomic::Ordering::Relaxed)
 }
-fn LoadCursorA(_: &mut Ctx) -> u32 {
-    fake_handle()
+/// LoadCursor / LoadIcon / LoadImage(LR_SHARED)'s handles: one per (module, kind, name), as
+/// Windows shares them (a program's `SetCursor(LoadCursor(NULL, IDC_ARROW))` per WM_SETCURSOR
+/// got a new handle per mouse move: a Win16 program ran out of 16-bit aliases and hung, w16.rs).
+static SHARED_ICONS: Mutex<Option<HashMap<(u32, u32, String), u32>>> = Mutex::new(None);
+fn shared_handle(inst: u32, kind: u32, name: u32, wide: bool) -> u32 {
+    let key = if name < 0x10000 { format!("#{name}") } else { arg_str(name, wide).to_uppercase() };
+    *SHARED_ICONS.lock().unwrap().get_or_insert_with(HashMap::default).entry((inst, kind, key)).or_insert_with(fake_handle)
 }
-fn LoadCursorW(_: &mut Ctx) -> u32 {
-    fake_handle()
+fn LoadCursorA(c: &mut Ctx) -> u32 {
+    shared_handle(c.a(0), 2, c.a(1), false)
+}
+fn LoadCursorW(c: &mut Ctx) -> u32 {
+    shared_handle(c.a(0), 2, c.a(1), true)
 }
 /// LoadCursorFromFile(name): a cursor when the file is there (its pictures are not used)
 /// Cursors' hotspots (from a .cur file's first entry; GetIconInfo gives them back)
 static HOTSPOTS: Mutex<Option<HashMap<u32, (u16, u16)>>> = Mutex::new(None);
 fn cursor_from_file(name: u32, wide: bool) -> u32 {
     let n = arg_str(name, wide);
-    let data = if name == 0 { None } else { crate::files::resolve(&n).and_then(|h| kura::fs::read(h).ok()) };
+    // (only the header and first entry: the hotspot; the whole file was read for 4 bytes)
+    let data = if name == 0 {
+        None
+    } else {
+        crate::files::resolve(&n).and_then(|h| {
+            use std::io::Read;
+            let mut f = kura::fs::File::open(h).ok()?;
+            let mut d = Vec::new();
+            f.by_ref().take(22).read_to_end(&mut d).ok()?;
+            Some(d)
+        })
+    };
     let Some(data) = data else {
         crate::k32::last_error(if name == 0 { 87 } else { crate::files::missing(&n) });
         return 0;
@@ -6709,11 +7021,11 @@ fn LoadCursorFromFileA(c: &mut Ctx) -> u32 {
 fn LoadCursorFromFileW(c: &mut Ctx) -> u32 {
     cursor_from_file(c.a(0), true)
 }
-fn LoadIconA(_: &mut Ctx) -> u32 {
-    fake_handle()
+fn LoadIconA(c: &mut Ctx) -> u32 {
+    shared_handle(c.a(0), 1, c.a(1), false)
 }
-fn LoadIconW(_: &mut Ctx) -> u32 {
-    fake_handle()
+fn LoadIconW(c: &mut Ctx) -> u32 {
+    shared_handle(c.a(0), 1, c.a(1), true)
 }
 /// LoadImage(inst, name, type, cx, cy, flags). LR_LOADFROMFILE (0x10): `name` is a file and
 /// `inst` is not looked at (Key's StartMenu.exe passes its module); a bitmap is read from it
@@ -6734,6 +7046,10 @@ fn load_image(c: &mut Ctx, wide: bool) -> u32 {
     }
     if kind == 0 {
         return crate::gdi::load_bitmap(inst, name, wide);
+    }
+    // (LR_SHARED: the one handle of that resource)
+    if flags & 0x8000 != 0 {
+        return shared_handle(inst, kind, name, wide);
     }
     fake_handle()
 }
@@ -7477,7 +7793,19 @@ fn raw_post(s: &mut State, hwnd: u32, h: u32, t: u32) {
     let hwnd = if hwnd != 0 { hwnd } else if s.focus != 0 { s.focus } else { s.active };
     let Some(tid) = s.wins.get(&hwnd).map(|w| w.tid) else { return };
     let (x, y) = s.cursor;
-    s.queues.entry(tid).or_default().input.push_back(Msg { hwnd, msg: crate::rawinput::WM_INPUT, w: 0, l: h, time: t, x, y });
+    let q = s.queues.entry(tid).or_default();
+    raw_cap(&mut q.input);
+    q.input.push_back(Msg { hwnd, msg: crate::rawinput::WM_INPUT, w: 0, l: h, time: t, x, y });
+}
+/// The most WM_INPUT a queue holds (rawinput keeps the records of that many): a thread that
+/// does not pump while the pointer moves loses the oldest, not grows its queue at the event rate
+pub(crate) const RAW_KEPT: usize = 1024;
+pub(crate) fn raw_cap(input: &mut std::collections::VecDeque<Msg>) {
+    if input.iter().filter(|m| m.msg == crate::rawinput::WM_INPUT).count() >= RAW_KEPT {
+        if let Some(i) = input.iter().position(|m| m.msg == crate::rawinput::WM_INPUT) {
+            input.remove(i);
+        }
+    }
 }
 
 fn input(kind: u32, x: i32, y: i32, data: u32) {
@@ -9675,4 +10003,187 @@ mod create_struct_tests {
             mem::heap_free(p);
         }
     }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::{same_name, destroy_menu, extra_error, makes_cycle, raw_cap, take_hwnd, windows_left, Menu, MenuItem, Msg, DESKTOP, MAX_EXTRA, RAW_KEPT};
+    use proptest::prelude::*;
+    use std::collections::{HashMap, HashSet};
+
+    /// RegisterClass with stack garbage in cbClsExtra / cbWndExtra: negative values are
+    /// ERROR_INVALID_PARAMETER, what no desktop heap holds ERROR_NOT_ENOUGH_MEMORY; the extra
+    /// bytes Windows programs use (up to a few KB) go on.
+    #[test]
+    fn class_extra_bytes_are_bounded() {
+        assert_eq!(extra_error(0, 0), None);
+        assert_eq!(extra_error(40, 4096), None);
+        assert_eq!(extra_error(MAX_EXTRA, MAX_EXTRA), None);
+        assert_eq!(extra_error(u32::MAX, 0), Some(87));
+        assert_eq!(extra_error(0, 0x8000_0000), Some(87));
+        assert_eq!(extra_error(0xcccc_cccc, 0xcccc_cccc), Some(87));
+        assert_eq!(extra_error(MAX_EXTRA + 1, 0), Some(8));
+        assert_eq!(extra_error(0, 0x7fff_ffff), Some(8));
+    }
+
+    /// SetParent(h, h) and SetParent(parent, its child or grandchild) are cycles; anything else,
+    /// the desktop and no parent are not.
+    #[test]
+    fn set_parent_cycles() {
+        // 1 <- 2 <- 3 (3's parent is 2, 2's is 1), 4 alone
+        let parents: HashMap<u32, u32> = [(1, 0), (2, 1), (3, 2), (4, DESKTOP)].into_iter().collect();
+        let get = |h: u32| parents.get(&h).copied();
+        assert!(makes_cycle(get, 1, 1));
+        assert!(makes_cycle(get, 1, 3));
+        assert!(makes_cycle(get, 2, 3));
+        assert!(!makes_cycle(get, 3, 1));
+        assert!(!makes_cycle(get, 1, 4));
+        assert!(!makes_cycle(get, 1, 0));
+        assert!(!makes_cycle(get, 1, DESKTOP));
+        // (a window sake does not know as the parent: no cycle; SetParent refuses it before)
+        assert!(!makes_cycle(get, 1, 99));
+    }
+
+    proptest! {
+        /// Any sequence of SetParent calls that makes_cycle lets through keeps the windows a
+        /// forest: every parent walk from any window ends at a top-level window within as many
+        /// steps as there are windows, and the refused ones are exactly those that would have
+        /// put a window among its ancestors.
+        #[test]
+        fn set_parent_keeps_a_forest(n in 1u32..24, calls in proptest::collection::vec((0u32..24, 0u32..26), 0..80)) {
+            // windows 1..=n, all top-level; parent 0 = none, n+1 = the desktop
+            let mut parent: HashMap<u32, u32> = (1..=n).map(|h| (h, 0)).collect();
+            for (h, p) in calls {
+                let h = h % n + 1;
+                let p = match p % (n + 2) { 0 => 0, x if x == n + 1 => DESKTOP, x => x };
+                let refused = makes_cycle(|x| parent.get(&x).copied(), h, p);
+                // the slow way: is h p itself or one of p's ancestors?
+                let mut anc = HashSet::new();
+                let mut q = p;
+                while q != 0 && q != DESKTOP && anc.insert(q) {
+                    q = parent[&q];
+                }
+                prop_assert_eq!(refused, anc.contains(&h));
+                if !refused {
+                    parent.insert(h, if p == DESKTOP { 0 } else { p });
+                }
+                for &w in parent.keys() {
+                    let (mut q, mut steps) = (w, 0);
+                    while parent[&q] != 0 {
+                        q = parent[&q];
+                        steps += 1;
+                        prop_assert!(steps <= n, "a parent cycle through {}", w);
+                    }
+                }
+            }
+        }
+
+        /// A thread's end takes exactly its windows and everything below them, each once.
+        #[test]
+        fn thread_end_takes_its_subtrees(spec in proptest::collection::vec((0u32..4, 0usize..30), 1..30), tid in 0u32..4) {
+            // window i+1 of thread spec[i].0, child of an earlier window (or top-level)
+            let mut parent: HashMap<u32, u32> = HashMap::new();
+            let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
+            let mut tids = Vec::new();
+            for (i, &(t, p)) in spec.iter().enumerate() {
+                let h = i as u32 + 1;
+                let p = if p < i && p % 3 != 0 { p as u32 + 1 } else { 0 };
+                parent.insert(h, p);
+                kids.entry(h).or_default();
+                if p != 0 {
+                    kids.get_mut(&p).unwrap().push(h);
+                }
+                tids.push((h, t));
+            }
+            let got = windows_left(tids.iter().copied(), |h| kids.get(&h).map(|v| v.as_slice()), tid);
+            let set: HashSet<u32> = got.iter().copied().collect();
+            prop_assert_eq!(set.len(), got.len());
+            for &(h, t) in &tids {
+                // in the list exactly when it or an ancestor is the thread's
+                let (mut q, mut mine) = (h, false);
+                while q != 0 {
+                    mine |= tids[q as usize - 1].1 == tid;
+                    q = parent[&q];
+                }
+                prop_assert_eq!(set.contains(&h), mine, "window {} of thread {}", h, t);
+            }
+        }
+    }
+
+    proptest! {
+        /// New handles: in the range, on the 0x10 grid, never one in use while a free one is
+        /// left, and they go round (a long session no longer runs into the next process's range)
+        #[test]
+        fn handles_stay_in_range(used in proptest::collection::hash_set(0u32..64, 0..64), start in 0u32..200, takes in 1usize..300) {
+            let (lo, hi) = (0x10020u32, 0x10020 + 64 * 0x10);
+            let mut live: HashSet<u32> = used.iter().map(|i| lo + i * 0x10).collect();
+            let mut next = lo + start * 0x10;
+            for _ in 0..takes {
+                let full = live.len() == 64;
+                let h = take_hwnd(&mut next, lo, hi, |h| live.contains(&h));
+                prop_assert!(h >= lo && h < hi && (h - lo) % 0x10 == 0);
+                prop_assert!(full || !live.contains(&h));
+                prop_assert!(next >= lo && next < hi);
+                live.insert(h);
+                // (some windows go)
+                if live.len() > 40 {
+                    let x = *live.iter().min().unwrap();
+                    live.remove(&x);
+                }
+            }
+        }
+
+        /// DestroyMenu takes the menu and every popup under it (shared or cyclic ones once),
+        /// and nothing else
+        #[test]
+        fn destroy_menu_takes_the_tree(edges in proptest::collection::vec((1u32..30, 1u32..30), 0..60), top in 1u32..30) {
+            let mut menus: super::HashMap<u32, Menu> = (1..30).map(|h| (h, Menu { items: Vec::new() })).collect();
+            for &(a, b) in &edges {
+                menus.get_mut(&a).unwrap().items.push(MenuItem { sub: b, ..Default::default() });
+            }
+            // what is reachable from `top`
+            let mut seen = HashSet::from([top]);
+            let mut todo = vec![top];
+            while let Some(h) = todo.pop() {
+                for &(a, b) in &edges {
+                    if a == h && seen.insert(b) {
+                        todo.push(b);
+                    }
+                }
+            }
+            destroy_menu(&mut menus, top);
+            for h in 1..30 {
+                prop_assert_eq!(menus.contains_key(&h), !seen.contains(&h), "menu {}", h);
+            }
+        }
+
+        /// Raw mouse input to a thread that does not pump: at most RAW_KEPT WM_INPUT queued,
+        /// the newest kept, other input untouched
+        #[test]
+        fn raw_input_is_capped(n in 0usize..3000, keys in 0usize..50) {
+            let mut q = std::collections::VecDeque::new();
+            for i in 0..keys {
+                q.push_back(Msg { msg: 0x100, l: i as u32, ..Default::default() });
+            }
+            for i in 0..n {
+                raw_cap(&mut q);
+                q.push_back(Msg { msg: crate::rawinput::WM_INPUT, l: i as u32, ..Default::default() });
+            }
+            let raw: Vec<u32> = q.iter().filter(|m| m.msg == crate::rawinput::WM_INPUT).map(|m| m.l).collect();
+            prop_assert_eq!(raw.len(), n.min(RAW_KEPT));
+            prop_assert!(raw.iter().copied().eq((n.saturating_sub(RAW_KEPT) as u32)..n as u32));
+            prop_assert_eq!(q.iter().filter(|m| m.msg == 0x100).count(), keys);
+        }
+    }
+
+
+    proptest! {
+        /// same_name is the any-case comparison it replaces (lowercase both)
+        #[test]
+        fn same_name_is_any_case(a in "[a-zA-Z0-9_ÄäÖöİıß#32770]{0,12}", b in "[a-zA-Z0-9_ÄäÖöİıß#32770]{0,12}", flip in any::<bool>()) {
+            let b = if flip { a.to_uppercase() } else { b };
+            prop_assert_eq!(same_name(&a, &b), a.to_lowercase() == b.to_lowercase());
+        }
+    }
+
 }

@@ -2528,6 +2528,11 @@ fn DeleteDC(c: &mut Ctx) -> u32 {
     }) as u32
 }
 
+/// Whether `h` is a GDI object or DC.
+pub fn is_object(h: u32) -> bool {
+    with(|t| t.m.contains_key(&h))
+}
+
 fn GetObjectType(c: &mut Ctx) -> u32 {
     with(|t| match t.m.get(&c.a(0)) {
         Some(G::Pen(_)) => 1,
