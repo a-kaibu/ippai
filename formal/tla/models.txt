@@ -23,3 +23,5 @@ MfEngineLife MfEngineLife.cfg ok
 MfEngineLife MfEngineLifeTimeout.cfg ok
 MfEngineLife MfEngineLifeOld.cfg violation
 MfEngineLife MfEngineLifeNoWake.cfg violation
+SnapGpu SnapGpu.cfg ok
+SnapGpu SnapGpuOld.cfg violation

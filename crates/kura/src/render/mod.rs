@@ -257,7 +257,7 @@ pub extern "C" fn vnhost_render_lost() {
         // Render, which uploads the whole screen)
         let Some(old) = r.take() else { return gpu::reset() };
         if old.snapping {
-            crate::snap::VNHOST_SNAP.gpu.store(crate::snap::GPU_FAILED, SeqCst);
+            crate::snap::gpu_answer(old.snap_for, false);
         }
         let d3d = old.d3d.renew();
         let mut new = Render::new_with(d3d);
@@ -361,6 +361,8 @@ struct Render {
     shot_done: u32,
     /// a state's GPU part being read back
     snapping: bool,
+    /// the request (`Ctl::gpu`, DUMP of a save) the read-back is for
+    snap_for: u32,
 }
 
 struct Stats {
@@ -406,6 +408,7 @@ impl Render {
             shot: None,
             shot_done: 0,
             snapping: false,
+            snap_for: 0,
         }
     }
 
@@ -428,18 +431,25 @@ impl Render {
             }
             return false;
         }
-        match VNHOST_SNAP.gpu.load(SeqCst) {
+        let word = VNHOST_SNAP.gpu.load(SeqCst);
+        match snap::gpu_state(word) {
             snap::GPU_DUMP => {
                 if !self.snapping {
                     self.d3d.snap_begin();
                     self.snapping = true;
+                    self.snap_for = word;
                 } else if let Some(ok) = self.d3d.snap_ready() {
                     self.snapping = false;
                     let s = self.d3d.snap_take();
-                    if ok {
-                        *SNAP_GPU.lock().unwrap_or_else(|e| e.into_inner()) = Some((snap::epoch(), s));
+                    // (published and answered only for the request it was made for: a dump an
+                    // earlier save gave up on is dropped, and the next look starts this one's)
+                    let mut g = SNAP_GPU.lock().unwrap_or_else(|e| e.into_inner());
+                    if self.snap_for == word && ok {
+                        *g = Some((snap::epoch(), s));
                     }
-                    VNHOST_SNAP.gpu.store(if ok { snap::GPU_DONE } else { snap::GPU_FAILED }, SeqCst);
+                    if !snap::gpu_answer(self.snap_for, ok) && self.snap_for == word {
+                        *g = None;
+                    }
                 }
                 true
             }

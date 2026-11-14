@@ -100,23 +100,30 @@ pub fn siblings(names: &[(&str, u64)], cur: &str) -> Vec<usize> {
 
 /// [`siblings`] with policy `pol` instead of `cur`'s (examples/hints_eval.rs tries others).
 pub fn siblings_with(names: &[(&str, u64)], cur: &str, pol: Policy) -> Vec<usize> {
+    let Some(at) = names.iter().position(|(n, _)| *n == cur) else { return Vec::new() };
+    siblings_after(names[at + 1..].iter().enumerate().map(|(i, &(n, size))| (n, size, at + 1 + i)), cur, pol)
+}
+
+/// [`siblings_with`] over the files after `cur` as they come (name, size, what to give back
+/// for it): a caller with the folder in a sorted map starts right after `cur` and reads no
+/// further than the hints go, without a list of the whole folder.
+pub fn siblings_after<'a, T>(after: impl Iterator<Item = (&'a str, u64, T)>, cur: &str, pol: Policy) -> Vec<T> {
     let (k, e) = (kind(cur), ext(cur));
     let same = |n: &str| if k == Kind::Other { ext(n) == e } else { kind(n) == k };
-    let Some(at) = names.iter().position(|(n, _)| *n == cur) else { return Vec::new() };
     let mut out = Vec::new();
     let mut bytes = 0u64;
-    for (i, (n, size)) in names.iter().enumerate().skip(at + 1) {
+    for (n, size, t) in after {
         if out.len() >= pol.siblings {
             break;
         }
-        if !same(n) || *size == 0 || *size > SIBLING_MAX {
+        if !same(n) || size == 0 || size > SIBLING_MAX {
             continue;
         }
         if bytes + size > SIBLING_BYTES {
             break;
         }
         bytes += size;
-        out.push(i);
+        out.push(t);
     }
     out
 }

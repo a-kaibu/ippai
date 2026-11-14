@@ -103,13 +103,14 @@ fn parse_records(mut b: &[u8]) -> Vec<(String, Vec<u8>, i64)> {
     let u32_at = |b: &[u8]| u32::from_le_bytes(b[..4].try_into().unwrap()) as usize;
     while b.len() >= 4 {
         let n = u32_at(b);
-        if b.len() < 16 + n {
+        // (in u64: on wasm32 16 + n wrapped for n near 4 GiB, passed the check and panicked)
+        if (b.len() as u64) < 16 + n as u64 {
             break;
         }
         let path = String::from_utf8_lossy(&b[4..4 + n]).into_owned();
         let mtime = i64::from_le_bytes(b[4 + n..12 + n].try_into().unwrap());
         let size = u32_at(&b[12 + n..]);
-        if b.len() < 16 + n + size {
+        if (b.len() as u64) < 16 + n as u64 + size as u64 {
             break;
         }
         files.push((path, b[16 + n..16 + n + size].to_vec(), mtime));
@@ -683,6 +684,20 @@ impl Fs {
         self.gc(ino);
     }
 
+    /// Whether `ino` is `dir` or under it.
+    fn within(&self, ino: Ino, dir: Ino) -> bool {
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            if d == ino {
+                return true;
+            }
+            if let Some(Data::Dir(ch)) = self.node(d).map(|n| &n.data) {
+                stack.extend(ch.values().copied().filter(|&c| matches!(self.node(c).map(|n| &n.data), Some(Data::Dir(_)))));
+            }
+        }
+        false
+    }
+
     /// Frees a node once no name or open handle refers to it.
     fn gc(&mut self, ino: Ino) {
         let linked = self.node(ino).is_some_and(|n| n.nlink > 0 && !(matches!(n.data, Data::Dir(_)) && n.nlink < 2));
@@ -1128,6 +1143,9 @@ pub(crate) fn snap_restore() {
 
 /// A state is being taken: the fetchers stand still (crate::snap::busy).
 pub(crate) fn snap_wake() {
+    // (under AHEAD: a fetcher that saw no pause under it is in its wait by now, so this wakes
+    // it; it waits without a short timeout for this)
+    drop(AHEAD.lock().unwrap_or_else(|e| e.into_inner()));
     AHEAD_WORK.notify_all();
 }
 
@@ -1146,7 +1164,9 @@ fn fetcher() {
                 if let Some(p) = g.as_mut().and_then(|a| a.queue.pop_front()) {
                     break Some(p);
                 }
-                g = AHEAD_WORK.wait_timeout(g, std::time::Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0;
+                // (woken for work and for a pause, both under AHEAD: the timeout only a backstop;
+                // a 100 ms one woke three threads 30 times a second on an idle game)
+                g = AHEAD_WORK.wait_timeout(g, FETCHER_IDLE).unwrap_or_else(|e| e.into_inner()).0;
             };
             drop(g);
             // (while a state is taken: stands still there, the lock let go)
@@ -1155,28 +1175,55 @@ fn fetcher() {
                 break p;
             }
         };
-        let b = block();
-        let from = p.first as u64 * b;
-        let len = (p.clen - from).min(p.n as u64 * b);
-        if let Some(data) = fetch_range(&p.h, from, len, true) {
-            put_blocks(&p.h, p.clen, p.first, p.n, data, false, |_| true);
-        }
-        if let Some(a) = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            for k in p.first..p.first + p.n {
-                a.busy.remove(&(p.h, k));
-            }
-        }
-        AHEAD_DONE.notify_all();
+        fetch_piece(&p, true);
     }
 }
 
-/// Waits while a fetcher has block `k` (queued or on its way).
+/// How long an idle fetcher waits before it looks again by itself.
+const FETCHER_IDLE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Fetches a queued piece's blocks into the cache (`ahead`: at the page's low priority) and
+/// says they are no longer busy.
+fn fetch_piece(p: &Piece, ahead: bool) {
+    let b = block();
+    let from = p.first as u64 * b;
+    let len = (p.clen - from).min(p.n as u64 * b);
+    if let Some(data) = fetch_range(&p.h, from, len, ahead) {
+        put_blocks(&p.h, p.clen, p.first, p.n, data, false, |_| true);
+    }
+    if let Some(a) = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        for k in p.first..p.first + p.n {
+            a.busy.remove(&(p.h, k));
+        }
+    }
+    AHEAD_DONE.notify_all();
+}
+
+/// Waits while a fetcher has block `k` on its way. A block still queued (no fetcher took it
+/// yet) is taken out of the queue and fetched here, at the read's priority: a read waited
+/// behind every piece queued before it (another file's read-ahead: a movie's 8 MiB), and,
+/// while a save state had the fetchers stand still, for ever (the save failed: the reading
+/// thread could not stop).
 fn wait_ahead(k: &Key) {
     let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
     while g.as_ref().is_some_and(|a| a.busy.contains(k)) {
+        let a = g.as_mut().unwrap();
+        if let Some(i) = a.queue.iter().position(|p| p.h == k.0 && p.first <= k.1 && k.1 < p.first + p.n) {
+            let p = a.queue.remove(i).unwrap();
+            drop(g);
+            #[cfg(test)]
+            TAKEN_BACK.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            fetch_piece(&p, false);
+            g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
+            continue;
+        }
         g = AHEAD_DONE.wait(g).unwrap_or_else(|e| e.into_inner());
     }
 }
+
+/// (tests: queued pieces a read fetched itself)
+#[cfg(test)]
+static TAKEN_BACK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Blocks `b0..=b1` of chunk `h` (`clen` bytes long) for a read: from the cache, else (each run
 /// of missing ones) in one request.
@@ -1232,6 +1279,11 @@ fn cached(k: &Key) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_vfs_put_chunk(hash: *const u8, data: *mut u8, len: size_t) {
     let h: Hash = std::slice::from_raw_parts(hash, 16).try_into().unwrap();
+    if len == 0 {
+        // (a Vec of capacity 0 never frees: the page's malloc'ed block leaked per empty chunk)
+        libc::free(data as *mut libc::c_void);
+        return;
+    }
     let data = Vec::from_raw_parts(data, len, len);
     let n = (len as u64).div_ceil(block()) as u32;
     if n > 0 {
@@ -1291,15 +1343,17 @@ fn hinted(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) 
         let near: Vec<Hash> = with(|fs| {
             let Ok(Found::Node { ino: d, .. }) = fs.resolve(dir, true) else { return Vec::new() };
             let Some(Data::Dir(ch)) = fs.node(d).map(|n| &n.data) else { return Vec::new() };
-            let files: Vec<(&str, u64, &Arc<Vec<Option<Hash>>>)> = ch
-                .iter()
-                .filter_map(|(n, &f)| match fs.node(f).map(|n| &n.data) {
-                    Some(Data::File(Content::Lower { size, chunks, .. })) => Some((n.as_str(), *size, chunks)),
-                    _ => None,
-                })
-                .collect();
-            let names: Vec<(&str, u64)> = files.iter().map(|f| (f.0, f.1)).collect();
-            hints::siblings(&names, name).into_iter().flat_map(|k| files[k].2.iter().flatten().copied()).collect()
+            let lower = |f: Ino| match fs.node(f).map(|n| &n.data) {
+                Some(Data::File(Content::Lower { size, chunks, .. })) => Some((*size, chunks)),
+                _ => None,
+            };
+            // (the folder is sorted by name: the files after this one, as far as the hints
+            // go; not a list of every entry per first read of each loose file)
+            if ch.get(name).and_then(|&f| lower(f)).is_none() {
+                return Vec::new();
+            }
+            let after = ch.range::<str, _>((std::ops::Bound::Excluded(name), std::ops::Bound::Unbounded)).filter_map(|(n, &f)| lower(f).map(|(size, c)| (n.as_str(), size, c)));
+            hints::siblings_after(after, name, hints::policy(name)).into_iter().flat_map(|c| c.iter().flatten().copied()).collect()
         });
         out.extend(near);
     }
@@ -1970,56 +2024,63 @@ fn same_nocase(k: &str, name: &str, lc: &str) -> bool {
     k.chars().flat_map(char::to_lowercase).eq(lc.chars())
 }
 
-/// Opens `p` as a handle (released with [`release`]).
+/// Opens `p` as a handle (released with [`release`]). Resolving, creating, checking the kind and
+/// taking the handle are one critical section: two threads creating one missing name both made
+/// a node (the second replaced the first in the folder, which then stayed for ever with its
+/// writes nowhere), and a file unlinked between the look-up and the handle left a handle on a
+/// freed, maybe reused, inode.
 pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
     let follow = flags & libc::O_NOFOLLOW == 0;
-    let found = with(|fs| fs.resolve(p, follow));
-    let opened = match &found {
-        Ok(Found::Node { path, .. }) => Some(path.clone()),
-        _ => None,
-    };
-    let ino = match found {
-        Err(e) => return At::Ours(Err(e)),
-        Ok(Found::Outside(p)) => return At::Outside(p),
-        Ok(Found::Node { ino, .. }) => {
-            if flags & libc::O_CREAT != 0 && flags & libc::O_EXCL != 0 {
-                return At::Ours(Err(libc::EEXIST));
+    let opened = with(|fs| {
+        let (ino, path) = match fs.resolve(p, follow) {
+            Err(e) => return At::Ours(Err(e)),
+            Ok(Found::Outside(p)) => return At::Outside(p),
+            Ok(Found::Node { ino, path }) => {
+                if flags & libc::O_CREAT != 0 && flags & libc::O_EXCL != 0 {
+                    return At::Ours(Err(libc::EEXIST));
+                }
+                (ino, Some(path))
             }
-            ino
-        }
-        Ok(Found::Missing { parent, name, .. }) => {
-            if flags & libc::O_CREAT == 0 {
-                return At::Ours(Err(libc::ENOENT));
-            }
-            with(|fs| {
+            Ok(Found::Missing { parent, name, .. }) => {
+                if flags & libc::O_CREAT == 0 {
+                    return At::Ours(Err(libc::ENOENT));
+                }
                 let ino = fs.add(Data::File(Content::Upper(Vec::new())), mode & 0o7777, now());
                 if let Some(Data::Dir(ch)) = fs.data_mut(parent) {
                     ch.insert(name, ino);
                 }
-                ino
-            })
+                (ino, None)
+            }
+        };
+        let kind = fs.node(ino).map(|n| match n.data {
+            Data::Dir(_) => 0,
+            Data::File(_) => 1,
+            Data::Link(_) => 2,
+        });
+        match kind {
+            Some(0) if flags & libc::O_ACCMODE != libc::O_RDONLY => return At::Ours(Err(libc::EISDIR)),
+            Some(2) => return At::Ours(Err(libc::ELOOP)),
+            None => return At::Ours(Err(libc::ENOENT)),
+            _ => {}
         }
+        At::Ours(Ok((fs.new_handle(ino, flags), ino, kind == Some(1), path)))
+    });
+    let (h, ino, file, path) = match opened {
+        At::Ours(Ok(o)) => o,
+        At::Ours(Err(e)) => return At::Ours(Err(e)),
+        At::Outside(p) => return At::Outside(p),
     };
-    let kind = with(|fs| fs.node(ino).map(|n| match n.data {
-        Data::Dir(_) => 0,
-        Data::File(_) => 1,
-        Data::Link(_) => 2,
-    }));
-    match kind {
-        Some(0) if flags & libc::O_ACCMODE != libc::O_RDONLY => return At::Ours(Err(libc::EISDIR)),
-        Some(2) => return At::Ours(Err(libc::ELOOP)),
-        None => return At::Ours(Err(libc::ENOENT)),
-        _ => {}
-    }
-    if kind == Some(1) && flags & libc::O_TRUNC != 0 && flags & libc::O_ACCMODE != libc::O_RDONLY {
+    // (truncating may copy from the store: outside the lock, the handle holds the node)
+    if file && flags & libc::O_TRUNC != 0 && flags & libc::O_ACCMODE != libc::O_RDONLY {
         if let Err(e) = set_size(ino, 0) {
+            release(h);
             return At::Ours(Err(e));
         }
     }
-    if let (Some(1), Some(path)) = (kind, &opened) {
+    if let (true, Some(path)) = (file, &path) {
         note_name(ino, path);
     }
-    At::Ours(Ok(with(|fs| fs.new_handle(ino, flags))))
+    At::Ours(Ok(h))
 }
 
 /// Closes a handle.
@@ -2078,7 +2139,7 @@ pub(crate) fn remove_at(p: &str, dir: bool) -> At<()> {
                     n.nlink = 0;
                 }
                 if let Some(n) = fs.node_mut(parent) {
-                    n.nlink -= 1;
+                    n.nlink = n.nlink.saturating_sub(1);
                 }
             }
             (Data::Dir(_), false) => return At::Ours(Err(libc::EISDIR)),
@@ -2113,32 +2174,67 @@ pub(crate) fn rename_at(a: &str, b: &str) -> At<()> {
                 (ino, parent, n.to_string())
             }
         };
-        let (dp, dn) = match dst {
+        let src_dir = matches!(fs.node(src_ino).map(|n| &n.data), Some(Data::Dir(_)));
+        // (a mount's root stays where it is mounted, as a mount point does: EBUSY)
+        if fs.mounts.iter().any(|m| m.1 == src_ino) {
+            return At::Ours(Err(libc::EBUSY));
+        }
+        let (dp, dn, replaced) = match dst {
             Err(e) => return At::Ours(Err(e)),
             Ok(Found::Outside(_)) => return At::Ours(Err(libc::EXDEV)),
-            Ok(Found::Missing { parent, name, .. }) => (parent, name),
+            Ok(Found::Missing { parent, name, .. }) => (parent, name, None),
             Ok(Found::Node { ino, path }) => {
                 if ino == src_ino {
                     return At::Ours(Ok(()));
                 }
-                if let Some(Data::Dir(c)) = fs.node(ino).map(|n| &n.data) {
-                    if !c.is_empty() {
-                        return At::Ours(Err(libc::ENOTEMPTY));
-                    }
+                match (fs.node(ino).map(|n| &n.data), src_dir) {
+                    (Some(Data::Dir(c)), true) if !c.is_empty() => return At::Ours(Err(libc::ENOTEMPTY)),
+                    (Some(Data::Dir(_)), false) => return At::Ours(Err(libc::EISDIR)),
+                    (Some(Data::Dir(_)), true) => {}
+                    (_, true) => return At::Ours(Err(libc::ENOTDIR)),
+                    _ => {}
+                }
+                if fs.mounts.iter().any(|m| m.1 == ino) {
+                    return At::Ours(Err(libc::EBUSY));
                 }
                 let (d, n) = path.rsplit_once('/').unwrap();
                 let Ok(Found::Node { ino: parent, .. }) = fs.resolve(if d.is_empty() { "/" } else { d }, true) else {
                     return At::Ours(Err(libc::EXDEV));
                 };
-                fs.unlink_name(parent, n);
-                (parent, n.to_string())
+                (parent, n.to_string(), Some(ino))
             }
         };
+        // (a directory cannot go inside itself: its subtree would hang from no name)
+        if src_dir && fs.within(dp, src_ino) {
+            return At::Ours(Err(libc::EINVAL));
+        }
+        if let Some(old) = replaced {
+            // (an empty directory replaced goes as rmdir takes it: its own links and its
+            // parent's ".." link)
+            if src_dir {
+                if let Some(n) = fs.node_mut(old) {
+                    n.nlink = 0;
+                }
+                if let Some(n) = fs.node_mut(dp) {
+                    n.nlink = n.nlink.saturating_sub(1);
+                }
+            }
+            fs.unlink_name(dp, &dn);
+        }
         if let Some(Data::Dir(ch)) = fs.data_mut(sp) {
             ch.remove(&sn);
         }
         if let Some(Data::Dir(ch)) = fs.data_mut(dp) {
             ch.insert(dn, src_ino);
+        }
+        // (a directory's ".." moves to its new parent)
+        if src_dir && sp != dp {
+            if let Some(n) = fs.node_mut(sp) {
+                n.nlink = n.nlink.saturating_sub(1);
+            }
+            if let Some(n) = fs.node_mut(dp) {
+                n.nlink += 1;
+            }
         }
         At::Ours(Ok(()))
     })
@@ -2392,7 +2488,7 @@ pub(crate) mod tests {
     }
 
     /// The tests that mount files in the one file system (FS) and store, one at a time.
-    static TEST_FS: Mutex<()> = Mutex::new(());
+    pub(super) static TEST_FS: Mutex<()> = Mutex::new(());
 
     /// For tests of other modules that open the host's files (video's temporary .vnv): none of
     /// these tests' mounts meanwhile (most mount "/", and leave it mounted), held while the guard
@@ -3267,6 +3363,41 @@ pub(crate) mod tests {
         rx.recv_timeout(std::time::Duration::from_secs(5)).expect("wait_ahead waited for ever");
     }
 
+    /// A block still queued when a read needs it is fetched by the read itself: while a save
+    /// state has the fetchers stand still (the read waited for ever: the save failed, the
+    /// thread could not stop), or behind another file's read-ahead (review b04).
+    #[test]
+    fn a_read_takes_its_queued_block_back() {
+        let _fs = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        // (the fetchers up (fetch_ahead takes ONE to bring them up), then standing still)
+        fetch_ahead(Piece { h: *b"queued-back-up!!", clen: 10, first: 0, n: 1 });
+        let _one = crate::snap::ONE.lock().unwrap_or_else(|e| e.into_inner());
+        crate::snap::test_pause(true);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let h: Hash = *b"queued-back-blk!";
+        let hx = hex(&h);
+        STORE.lock().unwrap().get_or_insert_with(Default::default).0.insert(format!("chunks/{}/{hx}", &hx[..2]), vec![7u8; 100]);
+        {
+            let mut g = AHEAD.lock().unwrap();
+            let a = g.as_mut().unwrap();
+            a.busy.insert((h, 0));
+            a.queue.push_back(Piece { h, clen: 100, first: 0, n: 1 });
+        }
+        let before = TAKEN_BACK.load(std::sync::atomic::Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            wait_ahead(&(h, 0));
+            let _ = tx.send(());
+        });
+        let r = rx.recv_timeout(std::time::Duration::from_secs(5));
+        crate::snap::test_pause(false);
+        r.expect("a read waited for a block no fetcher could take");
+        assert_eq!(TAKEN_BACK.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+        assert!(cached(&(h, 0)));
+        let name = STORE.lock().unwrap().as_ref().unwrap().1.iter().rev().find(|n| n.contains(&hx)).cloned().unwrap();
+        assert!(!name.ends_with("!a"), "fetched at the read's priority: {name}");
+    }
+
     #[test]
     fn fetcher_start_check_releases_ahead_before_snap_lock() {
         let _ = needs_fetchers();
@@ -3451,5 +3582,258 @@ mod proptests {
             let (mut fs, root) = mounted();
             fs.load_tree(root, &t);
         }
+    }
+
+    /// The one file system for the namespace tests: "/" empty, and a mount at "/m".
+    fn fresh_tree() -> std::sync::MutexGuard<'static, ()> {
+        let g = super::tests::TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        let m = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        if let Some(Data::Dir(ch)) = fs.data_mut(root) {
+            ch.insert("m".into(), m);
+        }
+        if let Some(n) = fs.node_mut(root) {
+            n.nlink += 1;
+        }
+        fs.mounts.push(("/".into(), root));
+        fs.mounts.push(("/m".into(), m));
+        *FS.lock().unwrap_or_else(|e| e.into_inner()) = Some(fs);
+        g
+    }
+
+    /// The tree's own rules: each directory's links are 2 and one per directory in it, every
+    /// name leads to a live node, no node has two names, and every live node is named (or
+    /// open, or a mount's root): no leak, no name reaching a freed or reused inode.
+    fn tree_holds() -> Result<(), String> {
+        with(|fs| {
+            let roots: Vec<Ino> = fs.mounts.iter().map(|m| m.1).collect();
+            let mut seen = std::collections::HashSet::new();
+            let mut stack = vec![(roots[0], "/".to_string())];
+            while let Some((d, path)) = stack.pop() {
+                if !seen.insert(d) {
+                    return Err(format!("{path}: inode {d} has two names"));
+                }
+                let Some(n) = fs.node(d) else { return Err(format!("{path}: inode {d} was freed")) };
+                if let Data::Dir(ch) = &n.data {
+                    let subdirs = ch.values().filter(|&&c| matches!(fs.node(c).map(|n| &n.data), Some(Data::Dir(_)))).count() as u32;
+                    if n.nlink != 2 + subdirs {
+                        return Err(format!("{path}: nlink {} with {subdirs} directories in it", n.nlink));
+                    }
+                    for (name, &c) in ch {
+                        stack.push((c, format!("{}/{name}", path.trim_end_matches('/'))));
+                    }
+                }
+            }
+            for (i, n) in fs.nodes.iter().enumerate() {
+                if let Some(n) = n {
+                    if !seen.contains(&(i as Ino)) && n.open_refs == 0 && !roots.contains(&(i as Ino)) {
+                        return Err(format!("inode {i} is live, unnamed and not open"));
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// MoveFile of a directory, RemoveDirectory of it, then a handle on its old parent closed:
+    /// the parent was freed while still named (its links were not moved) and the next node
+    /// took its inode (review b04).
+    #[test]
+    fn moved_directories_keep_their_parents() {
+        let _g = fresh_tree();
+        for p in ["/tmp", "/tmp/d", "/b"] {
+            assert!(matches!(mkdir_at(p), At::Ours(Ok(()))), "{p}");
+        }
+        assert!(matches!(rename_at("/tmp/d", "/b/d"), At::Ours(Ok(()))));
+        assert!(matches!(remove_at("/b/d", true), At::Ours(Ok(()))));
+        let At::Ours(Ok(h)) = open_handle("/b", libc::O_RDONLY, 0) else { panic!() };
+        release(h);
+        tree_holds().unwrap();
+        assert!(matches!(mkdir_at("/c"), At::Ours(Ok(()))));
+        assert!(matches!(info_at("/b", true), At::Ours(Ok(i)) if i.dir));
+        assert_eq!(list_at("/b").ok().map(|v| v.len()), Some(0));
+        // (into itself: refused; a mount's root stays)
+        assert!(matches!(mkdir_at("/b/e"), At::Ours(Ok(()))));
+        assert!(matches!(rename_at("/b", "/b/e/x"), At::Ours(Err(libc::EINVAL))));
+        assert!(matches!(rename_at("/m", "/n"), At::Ours(Err(libc::EBUSY))));
+        assert!(matches!(rename_at("/c", "/m"), At::Ours(Err(libc::EBUSY))));
+        // (a file onto a directory, a directory onto a file)
+        let At::Ours(Ok(h)) = open_handle("/f", libc::O_CREAT | libc::O_RDWR, 0o644) else { panic!() };
+        release(h);
+        assert!(matches!(rename_at("/f", "/c"), At::Ours(Err(libc::EISDIR))));
+        assert!(matches!(rename_at("/c", "/f"), At::Ours(Err(libc::ENOTDIR))));
+        tree_holds().unwrap();
+    }
+
+    impl<T> At<T> {
+        fn ok(self) -> Option<T> {
+            match self {
+                At::Ours(Ok(t)) => Some(t),
+                _ => None,
+            }
+        }
+    }
+
+    /// Threads creating one missing file at once: one node, every handle on it, what each
+    /// wrote in it (two nodes were made, the first named nowhere for ever).
+    #[test]
+    fn concurrent_creates_make_one_file() {
+        let _g = fresh_tree();
+        for round in 0..50 {
+            let p = format!("/log{round}");
+            let hs: Vec<u32> = std::thread::scope(|s| {
+                let t: Vec<_> = (0..4).map(|_| s.spawn(|| open_handle(&p, libc::O_CREAT | libc::O_RDWR, 0o644).ok().unwrap())).collect();
+                t.into_iter().map(|t| t.join().unwrap()).collect()
+            });
+            let inos: std::collections::HashSet<Ino> = hs.iter().map(|&h| h_info(h).unwrap().ino).collect();
+            assert_eq!(inos.len(), 1, "round {round}: {} nodes", inos.len());
+            hs.iter().for_each(|&h| release(h));
+        }
+        tree_holds().unwrap();
+    }
+
+    mod namespace_model {
+        use super::*;
+
+        #[derive(Clone, Debug)]
+        enum Op {
+            Mkdir(String),
+            Rmdir(String),
+            Create(String),
+            Unlink(String),
+            Rename(String, String),
+            Hold(String),
+            Drop(usize),
+        }
+
+        fn path() -> impl Strategy<Value = String> {
+            prop::collection::vec(prop::sample::select(vec!["a", "b", "c"]), 1..4).prop_map(|v| format!("/{}", v.join("/")))
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                path().prop_map(Op::Mkdir),
+                path().prop_map(Op::Rmdir),
+                path().prop_map(Op::Create),
+                path().prop_map(Op::Unlink),
+                (path(), path()).prop_map(|(a, b)| Op::Rename(a, b)),
+                path().prop_map(Op::Hold),
+                (0usize..4).prop_map(Op::Drop),
+            ]
+        }
+
+        fn parent(p: &str) -> String {
+            match p.rsplit_once('/') {
+                Some(("", _)) | None => "/".into(),
+                Some((d, _)) => d.into(),
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(300))]
+            /// Any sequence of mkdir, rmdir, create, unlink, rename and handles held across them:
+            /// the same successes and the same names as a model of the tree, and the tree's own
+            /// rules (links, live names, no leak) after every step.
+            #[test]
+            fn as_the_model(ops in prop::collection::vec(op(), 1..40)) {
+                let _g = fresh_tree();
+                // (path -> is a directory; "/" and the mount "/m" are there from the start)
+                let mut m: BTreeMap<String, bool> = BTreeMap::from([("/".to_string(), true), ("/m".to_string(), true)]);
+                let mut held: Vec<u32> = Vec::new();
+                for o in &ops {
+                    let is_dir = |m: &BTreeMap<String, bool>, p: &str| m.get(p) == Some(&true);
+                    let empty = |m: &BTreeMap<String, bool>, p: &str| !m.keys().any(|k| k.len() > p.len() && k.starts_with(p) && k.as_bytes()[p.len()] == b'/');
+                    let (want, got) = match o {
+                        Op::Mkdir(p) => {
+                            let w = is_dir(&m, &parent(p)) && !m.contains_key(p);
+                            if w { m.insert(p.clone(), true); }
+                            (w, mkdir_at(p).ok().is_some())
+                        }
+                        Op::Rmdir(p) => {
+                            let w = is_dir(&m, p) && empty(&m, p) && p != "/m";
+                            if w { m.remove(p); }
+                            (w, if p == "/m" { w } else { remove_at(p, true).ok().is_some() })
+                        }
+                        Op::Create(p) => {
+                            let w = is_dir(&m, &parent(p)) && m.get(p) != Some(&true);
+                            if w { m.insert(p.clone(), false); }
+                            let h = open_handle(p, libc::O_CREAT | libc::O_RDWR, 0o644).ok();
+                            if let Some(h) = h { release(h); }
+                            (w, h.is_some())
+                        }
+                        Op::Unlink(p) => {
+                            let w = m.get(p) == Some(&false);
+                            if w { m.remove(p); }
+                            (w, remove_at(p, false).ok().is_some())
+                        }
+                        Op::Rename(a, b) => {
+                            let w = match (m.get(a.as_str()).copied(), m.get(b.as_str()).copied()) {
+                                _ if a == "/m" || b == "/m" => false,
+                                (None, _) => false,
+                                _ if a == b => true,
+                                (Some(true), _) if b.starts_with(&format!("{a}/")) => false,
+                                (Some(ad), bt) => is_dir(&m, &parent(b)) && match bt {
+                                    None => true,
+                                    Some(true) => ad && empty(&m, b),
+                                    Some(false) => !ad,
+                                },
+                            };
+                            if w && a != b {
+                                let moved: Vec<(String, bool)> = m.iter().filter(|(k, _)| *k == a || k.starts_with(&format!("{a}/"))).map(|(k, &d)| (k.clone(), d)).collect();
+                                m.remove(b.as_str());
+                                for (k, d) in moved {
+                                    m.remove(&k);
+                                    m.insert(format!("{b}{}", &k[a.len()..]), d);
+                                }
+                            }
+                            (w, rename_at(a, b).ok().is_some())
+                        }
+                        Op::Hold(p) => {
+                            let w = m.contains_key(p);
+                            let h = open_handle(p, libc::O_RDONLY, 0).ok();
+                            if let Some(h) = h { held.push(h); }
+                            (w, h.is_some())
+                        }
+                        Op::Drop(i) => {
+                            if *i < held.len() { release(held.remove(*i)); }
+                            (true, true)
+                        }
+                    };
+                    prop_assert_eq!(got, want, "{:?}", o);
+                    if let Err(e) = tree_holds() { prop_assert!(false, "after {:?}: {}", o, e); }
+                    // (every name of the model, nothing else)
+                    let mut names = BTreeMap::new();
+                    let mut stack = vec!["/".to_string()];
+                    while let Some(d) = stack.pop() {
+                        names.insert(d.clone(), true);
+                        for (n, i) in list_at(&d).ok().unwrap() {
+                            let p = format!("{}/{n}", d.trim_end_matches('/'));
+                            if i.dir { stack.push(p); } else { names.insert(p, false); }
+                        }
+                    }
+                    prop_assert_eq!(&names, &m, "after {:?}", o);
+                }
+                held.into_iter().for_each(release);
+                if let Err(e) = tree_holds() { prop_assert!(false, "at the end: {}", e); }
+            }
+        }
+    }
+
+    /// Saved-game records whose name length is near 4 GiB stop the parse, never index past the
+    /// blob (16 + n wrapped on wasm32 and passed the length check).
+    #[test]
+    fn records_with_huge_lengths() {
+        for n in [u32::MAX, u32::MAX - 15, u32::MAX - 3, 0x8000_0000] {
+            let mut b = n.to_le_bytes().to_vec();
+            b.extend([0u8; 40]);
+            assert!(parse_records(&b).is_empty());
+        }
+        let mut b = 1u32.to_le_bytes().to_vec();
+        b.push(b'x');
+        b.extend(0i64.to_le_bytes());
+        b.extend((u32::MAX - 20).to_le_bytes());
+        b.extend([0u8; 30]);
+        assert!(parse_records(&b).is_empty());
     }
 }

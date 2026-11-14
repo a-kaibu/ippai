@@ -126,12 +126,27 @@ struct Load {
     woke: AtomicU64,
     /// waits so far
     waits: AtomicU64,
+    /// the thread that had it ended (`retire`): a new thread may take it
+    free: AtomicBool,
 }
 const LOAD_THREADS: usize = 256;
 static LOAD: [Load; LOAD_THREADS] = [const {
-    Load { busy: AtomicU64::new(0), woke: AtomicU64::new(0), waits: AtomicU64::new(0) }
+    Load { busy: AtomicU64::new(0), woke: AtomicU64::new(0), waits: AtomicU64::new(0), free: AtomicBool::new(false) }
 }; LOAD_THREADS];
 static LOAD_N: AtomicUsize = AtomicUsize::new(0);
+
+/// A slot for a new thread: the next never used, or once all `free.len()` were, one whose
+/// thread ended (a game making a thread per sound or file had none left after 256 threads
+/// and its later threads were not counted). Lock-free: it runs in the futex wait wrapper.
+fn take_slot<'a>(n: &AtomicUsize, free: impl Fn(usize) -> &'a AtomicBool, len: usize) -> Option<usize> {
+    let i = n.fetch_add(1, Ordering::Relaxed);
+    if i < len {
+        return Some(i);
+    }
+    // (keep the count from running on past `len` for ever)
+    n.store(len, Ordering::Relaxed);
+    (0..len).find(|&k| free(k).compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed).is_ok())
+}
 /// Longest run between waits counted (ms): some thread (in the page) blocks somewhere other
 /// than emscripten_futex_wait and would otherwise look busy for good.
 const LOAD_RUN_MAX: f64 = 3000.0;
@@ -167,6 +182,7 @@ fn load_key() -> libc::pthread_key_t {
             busy += emscripten_date_now() - woke;
         }
         add_f64(&LOAD_RETIRED, busy);
+        l.free.store(true, Ordering::Release);
     }
     *KEY.get_or_init(|| {
         let mut k = 0;
@@ -208,8 +224,9 @@ pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u3
     impl Drop for Reentry { fn drop(&mut self) { let _ = IN_FUTEX_WRAP.try_with(|flag| flag.set(false)); } }
     let _reentry = Reentry;
     thread_local!(static SLOT: LoadSlot = {
-        let i = LOAD_N.fetch_add(1, Ordering::Relaxed);
-        let l = LOAD.get(i);
+        let i = take_slot(&LOAD_N, |k| &LOAD[k].free, LOAD_THREADS);
+        let l = i.map(|i| &LOAD[i]);
+        let i = i.unwrap_or(0);
         if let Some(l) = l {
             l.woke.store(unsafe { emscripten_date_now() }.to_bits(), Ordering::Relaxed);
             // some threads end without running Rust's thread-local destructors; pthread key
@@ -337,4 +354,68 @@ pub unsafe extern "C" fn vnhost_mem_info(out: *mut f64) {
     let out = std::slice::from_raw_parts_mut(out, 2);
     out[0] = top.saturating_sub(base) as f64;
     out[1] = m.uordblks as u32 as f64;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Threads coming and going far past the slots' number: every live thread has a slot of
+    /// its own while any is free, and none is handed out twice (review b04: slots were never
+    /// reused, threads after the 256th went uncounted).
+    #[test]
+    fn slots_are_reused() {
+        const N: usize = 8;
+        let n = AtomicUsize::new(0);
+        let free: Vec<AtomicBool> = (0..N).map(|_| AtomicBool::new(false)).collect();
+        let used: Vec<AtomicBool> = (0..N).map(|_| AtomicBool::new(false)).collect();
+        let missed = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..6 {
+                s.spawn(|| {
+                    for _ in 0..2000 {
+                        match take_slot(&n, |k| &free[k], N) {
+                            Some(k) => {
+                                assert!(!used[k].swap(true, Ordering::AcqRel), "slot {k} handed out twice");
+                                std::hint::spin_loop();
+                                used[k].store(false, Ordering::Release);
+                                free[k].store(true, Ordering::Release);
+                            }
+                            // (6 threads, 8 slots: never all taken)
+                            None => {
+                                missed.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(missed.load(Ordering::Relaxed), 0);
+        assert_eq!(n.load(Ordering::Relaxed), N);
+    }
+
+    proptest::proptest! {
+        /// Any order of threads starting and ending: a start gets a slot exactly when fewer
+        /// than all are held, and the slots held are distinct (a model of who holds what).
+        #[test]
+        fn slots_as_the_model(ops in proptest::collection::vec(proptest::prelude::any::<(bool, u8)>(), 0..200)) {
+            const N: usize = 5;
+            let n = AtomicUsize::new(0);
+            let free: Vec<AtomicBool> = (0..N).map(|_| AtomicBool::new(false)).collect();
+            let mut held: Vec<usize> = Vec::new();
+            for (start, which) in ops {
+                if start || held.is_empty() {
+                    let got = take_slot(&n, |k| &free[k], N);
+                    proptest::prop_assert_eq!(got.is_some(), held.len() < N);
+                    if let Some(k) = got {
+                        proptest::prop_assert!(!held.contains(&k));
+                        held.push(k);
+                    }
+                } else {
+                    let k = held.remove(which as usize % held.len());
+                    free[k].store(true, Ordering::Release);
+                }
+            }
+        }
+    }
 }

@@ -79,6 +79,25 @@ pub const GPU_DUMP: u32 = 1;
 pub const GPU_DONE: u32 = 2;
 pub const GPU_FAILED: u32 = 3;
 
+/// `Ctl::gpu`: the save it is for (its number, above the two bits) and its state, so that a
+/// dump a save gave up on cannot answer the next save (formal/tla/SnapGpu.tla).
+pub const fn gpu_word(save: u32, state: u32) -> u32 {
+    (save << 2) | state
+}
+/// The state of `Ctl::gpu` (GPU_NONE ..).
+pub fn gpu_state(word: u32) -> u32 {
+    word & 3
+}
+/// Number of the save whose GPU read-back `take` asks for now.
+static GPU_SAVE: AtomicU32 = AtomicU32::new(0);
+
+/// The drawing thread is done with the dump for the request `word` (DUMP of some save): DONE or
+/// FAILED, only while that request still stands. False: the coordinator gave up on it.
+pub fn gpu_answer(word: u32, ok: bool) -> bool {
+    let to = (word & !3) | if ok { GPU_DONE } else { GPU_FAILED };
+    gpu_state(word) == GPU_DUMP && VNHOST_SNAP.gpu.compare_exchange(word, to, SeqCst, SeqCst).is_ok()
+}
+
 #[no_mangle]
 pub static VNHOST_SNAP: Ctl = Ctl {
     magic: u32::from_le_bytes(*b"SNAP"),
@@ -260,6 +279,17 @@ pub fn parkable() -> bool {
 #[cfg(test)]
 pub(crate) static ONE: Mutex<()> = Mutex::new(());
 
+/// (tests of other modules: threads asked to stand still as for a save, and let go again)
+#[cfg(test)]
+pub(crate) fn test_pause(on: bool) {
+    if on {
+        VNHOST_SNAP.pause.store(1, SeqCst);
+        wake_all();
+    } else {
+        resume_all(None);
+    }
+}
+
 static GATE: Mutex<()> = Mutex::new(());
 static GATE_CV: Condvar = Condvar::new();
 static COORD_CV: Condvar = Condvar::new();
@@ -417,7 +447,8 @@ pub fn merge_ranges(mut v: Vec<(u32, u32)>) -> Vec<u32> {
             _ => out.push((lo, hi)),
         }
     }
-    out.iter().flat_map(|&(lo, hi)| [lo as u32, (hi - lo).min(u32::MAX as u64) as u32]).collect()
+    // (a length is 32 bits: all 4 GiB in one range is two halves)
+    out.iter().flat_map(|&(lo, hi)| if hi - lo > u32::MAX as u64 { vec![lo as u32, 0x8000_0000, (lo + 0x8000_0000) as u32, (hi - lo - 0x8000_0000) as u32] } else { vec![lo as u32, (hi - lo) as u32] }).collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -510,11 +541,17 @@ fn blockers(idle: bool) -> Vec<String> {
     v
 }
 
+/// The last failure's message, where `Ctl::msg` points (the page reads it before it asks for
+/// the next save, which is the only one that writes it again).
+static MSG: Mutex<String> = Mutex::new(String::new());
+
 fn fail(msg: String) {
     eprintln!("snap: no state: {msg}");
-    let b = Box::leak(msg.into_boxed_str());
-    VNHOST_SNAP.msg.store(b.as_ptr() as usize as u32, SeqCst);
-    VNHOST_SNAP.msg_len.store(b.len() as u32, SeqCst);
+    let mut m = MSG.lock().unwrap_or_else(|e| e.into_inner());
+    *m = msg;
+    VNHOST_SNAP.msg.store(m.as_ptr() as usize as u32, SeqCst);
+    VNHOST_SNAP.msg_len.store(m.len() as u32, SeqCst);
+    drop(m);
     resume_all(None);
     VNHOST_SNAP.state.store(ST_FAILED, SeqCst);
     notify_page();
@@ -583,12 +620,13 @@ fn take() {
     }
     // the GPU's textures and buffers into memory
     if GPU_THREAD.load(SeqCst) != 0 {
-        VNHOST_SNAP.gpu.store(GPU_DUMP, SeqCst);
+        let n = GPU_SAVE.fetch_add(1, SeqCst).wrapping_add(1) & (u32::MAX >> 2);
+        VNHOST_SNAP.gpu.store(gpu_word(n, GPU_DUMP), SeqCst);
         let t = std::time::Instant::now();
         loop {
             match VNHOST_SNAP.gpu.load(SeqCst) {
-                GPU_DONE => break,
-                GPU_FAILED => return fail("the GPU could not be read back".into()),
+                w if w == gpu_word(n, GPU_DONE) => break,
+                w if w == gpu_word(n, GPU_FAILED) => return fail("the GPU could not be read back".into()),
                 _ if t.elapsed() > GPU_TIMEOUT => return fail("the GPU took too long to read back".into()),
                 _ => std::thread::sleep(Duration::from_millis(2)),
             }
@@ -705,6 +743,90 @@ mod tests {
                 prop_assert!(pairs.iter().any(|&(lo, hi)| lo <= a && e <= hi), "{a:x}+{n:x} in {pairs:x?}");
             }
         });
+    }
+
+    /// All 4 GiB in one merged range: two halves, each length exact (a 32-bit length of the
+    /// whole was one byte short and no longer 64 KiB aligned; review b04).
+    #[test]
+    fn whole_address_space() {
+        assert_eq!(merge_ranges(vec![(0, 0x8000_0000), (0x8000_0000, 0x8000_0000)]), vec![0, 0x8000_0000, 0x8000_0000, 0x8000_0000]);
+        assert_eq!(merge_ranges(vec![(0x10000, u32::MAX), (0, 0x10000)]), vec![0, 0x8000_0000, 0x8000_0000, 0x8000_0000]);
+        assert_eq!(merge_ranges(vec![(0x10000, 0xfffe_0000)]), vec![0x10000, 0xfffe_0000]);
+    }
+
+    /// The ranges are exactly the union of the inputs, 64 KiB-aligned, whatever their sizes
+    /// (up to the whole address space): every byte of the list is one of a 64 KiB page an
+    /// input touched, and the lengths add up to the number of such pages.
+    #[test]
+    fn ranges_are_the_touched_pages() {
+        use proptest::prelude::*;
+        proptest!(|(v in proptest::collection::vec((any::<u32>(), prop_oneof![0u32..0x40000, any::<u32>()]), 0..8))| {
+            let r = merge_ranges(v.clone());
+            let mut pages = std::collections::BTreeSet::new();
+            for &(a, n) in &v {
+                if n == 0 { continue; }
+                let e = (a as u64 + n as u64).min(1 << 32);
+                let mut p = a as u64 >> 16;
+                while p << 16 < e {
+                    pages.insert(p);
+                    p += 1;
+                }
+            }
+            let mut total = 0u64;
+            for c in r.chunks(2) {
+                prop_assert!(c[1] > 0 && c[0] % 0x10000 == 0 && c[1] % 0x10000 == 0, "{c:x?}");
+                let (lo, hi) = (c[0] as u64 >> 16, (c[0] as u64 + c[1] as u64) >> 16);
+                for p in [lo, hi - 1] {
+                    prop_assert!(pages.contains(&p));
+                }
+                total += hi - lo;
+            }
+            prop_assert_eq!(total, pages.len() as u64);
+        });
+    }
+
+    /// A GPU answer for a request the coordinator gave up on (or for an earlier save) cannot
+    /// answer the current one (formal/tla/SnapGpu.tla).
+    #[test]
+    fn gpu_answers_only_their_request() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        let g = &VNHOST_SNAP.gpu;
+        let first = gpu_word(7, GPU_DUMP);
+        g.store(first, SeqCst);
+        // (given up: NONE, then the next save's request)
+        g.store(GPU_NONE, SeqCst);
+        assert!(!gpu_answer(first, true));
+        let second = gpu_word(8, GPU_DUMP);
+        g.store(second, SeqCst);
+        assert!(!gpu_answer(first, true), "an old dump answers the new request");
+        assert_eq!(g.load(SeqCst), second);
+        assert!(gpu_answer(second, true));
+        assert_eq!(g.load(SeqCst), gpu_word(8, GPU_DONE));
+        assert!(!gpu_answer(second, false), "answered once");
+        assert!(!gpu_answer(gpu_word(8, GPU_DONE), true), "only a DUMP is answered");
+        g.store(GPU_NONE, SeqCst);
+    }
+
+    /// A failed save's message no longer leaks: it lives in one buffer, rewritten per failure.
+    #[test]
+    fn fail_messages_share_one_buffer() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        let read = || unsafe { std::str::from_utf8(std::slice::from_raw_parts(VNHOST_SNAP.msg.load(SeqCst) as usize as *const u8, VNHOST_SNAP.msg_len.load(SeqCst) as usize)).unwrap().to_string() };
+        if cfg!(target_pointer_width = "64") {
+            // (the Ctl holds 32-bit addresses: only meaningful in the wasm32 module; here the
+            // buffer is checked by its contents)
+            fail("first".into());
+            assert_eq!(*MSG.lock().unwrap(), "first");
+            fail("second, longer".into());
+            assert_eq!(*MSG.lock().unwrap(), "second, longer");
+            assert_eq!(VNHOST_SNAP.msg_len.load(SeqCst), 14);
+        } else {
+            fail("first".into());
+            assert_eq!(read(), "first");
+            fail("second, longer".into());
+            assert_eq!(read(), "second, longer");
+        }
+        VNHOST_SNAP.state.store(ST_RUNNING, SeqCst);
     }
 
     use super::ONE;
