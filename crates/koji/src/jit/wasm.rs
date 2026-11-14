@@ -393,6 +393,9 @@ impl Code {
     pub fn rotr(&mut self) -> &mut Self {
         self.op(0x78)
     }
+    pub fn clz(&mut self) -> &mut Self {
+        self.op(0x67)
+    }
     pub fn extend8_s(&mut self) -> &mut Self {
         self.op(0xc0)
     }

@@ -3839,7 +3839,10 @@ impl<'a> Gen<'a> {
         self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
         self.c.get(L_ARG).u32c(MAX_DEPTH).ge_u().or().br_if(0);
         // the hash table entry of L_NEXT (as emit_fn_lookup), a function's
-        self.c.get(L_NEXT).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
+        // (h holds the mask first: dispatch::slot)
+        self.c.get(L_CPU).load32(maskf).set(h).get(L_NEXT);
+        dispatch::probe_slot(&mut self.c, h);
+        self.c.set(h);
         self.c.block(); // found 0, slow 1
         self.c.loop_(); // probe 0, found 1, slow 2
         self.c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(v).load32(0).get(L_NEXT).eq().if_();
@@ -4075,7 +4078,10 @@ fn emit_lookup(c: &mut Code) {
     // address 0 is the key of an empty slot: never a block (a call through a null pointer
     // goes to the dispatcher, whose interpreter faults)
     c.get(L_NEXT).eqz().if_().i32c(RET_CONTINUE).set(L_ST).br(2).end();
-    c.get(L_NEXT).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
+    // (h holds the mask first: dispatch::slot)
+    c.get(L_CPU).load32(maskf).set(h).get(L_NEXT);
+    dispatch::probe_slot(c, h);
+    c.set(h);
     c.block(); // miss: miss 0, top 1, exit 2
     c.loop_(); // probe 0, miss 1, top 2, exit 3
     c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(e).load32(0).set(v);
@@ -4118,7 +4124,10 @@ fn emit_fn_lookup(c: &mut Code, entry: u32) {
     c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
     c.if_().i32c(RET_CONTINUE).set(L_ST).br(2).end();
     c.get(L_NEXT).eqz().if_().i32c(RET_CONTINUE).set(L_ST).br(2).end();
-    c.get(L_NEXT).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
+    // (h holds the mask first: dispatch::slot)
+    c.get(L_CPU).load32(maskf).set(h).get(L_NEXT);
+    dispatch::probe_slot(c, h);
+    c.set(h);
     c.block(); // miss: miss 0, top 1, exit 2
     c.loop_(); // probe 0, miss 1, top 2, exit 3
     c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(e).load32(0).set(v);

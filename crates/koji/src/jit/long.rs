@@ -947,7 +947,10 @@ impl<'a> Gen<'a> {
         c.get(L_CPU).load32(b).i32c(0).gt_s();
         // (address 0 is the key of an empty slot: never a region)
         c.get(L_NT).x(I32_WRAP).i32c(0).ne().and().if_(); // loop 2
-        c.get(L_NT).x(I32_WRAP).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(L_H);
+        // (L_H holds the mask first: dispatch::slot)
+        c.get(L_CPU).load32(maskf).set(L_H).get(L_NT).x(I32_WRAP);
+        super::dispatch::probe_slot(c, L_H);
+        c.set(L_H);
         c.block(); // miss: loop 3
         c.loop_(); // probe: miss 1, loop 4
         c.get(L_CPU).load32(hash).get(L_H).i32c(3).shl().add().tee(L_E).load32(0).set(L_DBG);

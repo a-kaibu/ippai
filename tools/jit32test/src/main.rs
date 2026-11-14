@@ -13,6 +13,7 @@ use iced_x86::{BlockEncoder, BlockEncoderOptions, Code, Instruction, Instruction
 use koji::{Cpu, Exit, Fault};
 use std::sync::atomic::Ordering::Relaxed;
 use wasmtime::*;
+mod bigtable;
 mod native;
 mod sweep;
 mod testfloat;
@@ -1760,7 +1761,8 @@ fn main() {
         }
         return;
     }
-    let mut fails = 0;
+    // the dispatcher's hash against dispatch::slot with tables past 2^17 entries
+    let mut fails = bigtable::run(&engine, &dispatch, &memory, base);
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     // fixed programs first, in every mode
     for (name, list) in fixed().unwrap() {
