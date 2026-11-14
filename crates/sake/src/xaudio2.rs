@@ -99,6 +99,74 @@ struct Engine {
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 static WAKE: Condvar = Condvar::new();
 
+/// The engine thread's processing passes (the callbacks, the mix, a game's XAPOs): DestroyVoice,
+/// SetEffectChain, UnregisterForCallbacks and the last Release wait for the pass running when
+/// they are called, as XAudio2's do (review 2026-11-14: they returned at once, and a game that
+/// then deleted its IXAudio2VoiceCallback had the engine thread call through a freed vtable, or
+/// had its XAPO buffer freed while Process wrote into it).
+pub(crate) struct PassGate {
+    /// (a pass running, passes finished)
+    state: Mutex<(bool, u64)>,
+    done: Condvar,
+}
+
+impl PassGate {
+    pub(crate) const fn new() -> PassGate {
+        PassGate { state: Mutex::new((false, 0)), done: Condvar::new() }
+    }
+    pub(crate) fn begin(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).0 = true;
+    }
+    pub(crate) fn end(&self) {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        *g = (false, g.1 + 1);
+        drop(g);
+        self.done.notify_all();
+    }
+    /// Waits until the pass running now (if any) is over; `idle` is called between waits
+    /// without the lock (save-state points). False when it took longer than `limit` (a game
+    /// that blocks its own callbacks: Windows would hang for good).
+    pub(crate) fn wait(&self, limit: Duration, mut idle: impl FnMut()) -> bool {
+        let start = std::time::Instant::now();
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !g.0 {
+            return true;
+        }
+        let target = g.1 + 1;
+        while g.1 < target {
+            if start.elapsed() >= limit {
+                return false;
+            }
+            g = self.done.wait_timeout(g, Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()).0;
+            if g.1 < target {
+                drop(g);
+                idle();
+                g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            }
+        }
+        true
+    }
+}
+
+static PASS: PassGate = PassGate::new();
+
+thread_local! {
+    /// whether this is the engine thread (its own callbacks may destroy voices: no waiting)
+    static ENGINE_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Before a voice, its callback or its effects go away: the running pass is over.
+fn wait_pass() {
+    if ENGINE_THREAD.with(|t| t.get()) {
+        return;
+    }
+    if !PASS.wait(Duration::from_secs(2), || {
+        crate::snap::point();
+    }) {
+        eprintln!("sake: xaudio2: a processing pass took over 2 s (the game's callback waits on this thread?)");
+    }
+}
+
 /// Save states: wakes the engine thread's wait.
 pub(crate) fn snap_wake() {
     WAKE.notify_all();
@@ -161,43 +229,66 @@ fn render(v: &mut Voice, out: &mut [f32]) -> Vec<(u32, u32, u32)> {
         }
         let i = v.pos as u32;
         let t = (v.pos - i as f64) as f32;
-        let (l0, r0) = sample_at(b.data, &v.fmt, i as usize);
-        let (l1, r1) = if i + 1 < b.end { sample_at(b.data, &v.fmt, i as usize + 1) } else { (l0, r0) };
-        o[0] += l0 + (l1 - l0) * t;
-        o[1] += r0 + (r1 - r0) * t;
+        // (only frames of the buffer: AudioBytes bounds both regions; review 2026-11-14: a
+        // zero-length buffer still read its first frame, or address 0)
+        let last = if b.looping() { b.end.max(b.loop_end) } else { b.end };
+        if i < last && b.data != 0 {
+            let (l0, r0) = sample_at(b.data, &v.fmt, i as usize);
+            let (l1, r1) = if i + 1 < last { sample_at(b.data, &v.fmt, i as usize + 1) } else { (l0, r0) };
+            o[0] += l0 + (l1 - l0) * t;
+            o[1] += r0 + (r1 - r0) * t;
+        }
         v.pos += step;
         v.played += step;
         // while loops remain the loop's end is where the buffer turns back (even past the
         // play region's end, as 2.7 does); a loop region that ends before the play region
-        // begins is never taken
+        // begins is never taken. A step longer than the loop turns back as many times as it
+        // passes the loop's end (review 2026-11-14: once per sample, so the position ran on
+        // past the buffer into whatever memory follows it)
         if b.looping() && v.pos >= b.loop_end as f64 {
-            v.pos -= (b.loop_end - b.loop_begin).max(1) as f64;
+            let len = (b.loop_end - b.loop_begin) as f64;
+            let mut wraps = ((v.pos - b.loop_begin as f64) / len).floor().max(1.0);
             if b.loops != LOOP_INFINITE {
-                b.loops -= 1;
+                wraps = wraps.min(b.loops as f64);
+                b.loops -= wraps as u32;
             }
+            v.pos -= wraps * len;
+            if !v.pos.is_finite() {
+                v.pos = b.loop_begin as f64;
+            }
+            // (one OnLoopEnd a turn; more than a few a sample is a broken format, not music)
             if v.cb != 0 {
-                ev.push((v.cb, ON_LOOP_END, b.ctx));
-            }
-        } else if !b.looping() && v.pos >= b.end as f64 {
-            let over = v.pos - b.end as f64;
-            let b = v.queue.pop_front().unwrap();
-            if v.cb != 0 {
-                ev.push((v.cb, ON_BUFFER_END, b.ctx));
-            }
-            if b.flags & END_OF_STREAM != 0 {
-                // (SamplesPlayed starts over after the end of a stream)
-                v.played = 0.0;
-                if v.cb != 0 {
-                    ev.push((v.cb, ON_STREAM_END, u32::MAX));
+                for _ in 0..(wraps as u32).min(4) {
+                    ev.push((v.cb, ON_LOOP_END, b.ctx));
                 }
             }
-            v.began = false;
-            if let Some(n) = v.queue.front() {
+        }
+        if !b.looping() && v.pos >= b.end as f64 {
+            // the buffer is done, and so is any next one the step passes over whole
+            let mut over = v.pos - b.end as f64;
+            loop {
+                let b = v.queue.pop_front().unwrap();
+                if v.cb != 0 {
+                    ev.push((v.cb, ON_BUFFER_END, b.ctx));
+                }
+                if b.flags & END_OF_STREAM != 0 {
+                    // (SamplesPlayed starts over after the end of a stream)
+                    v.played = 0.0;
+                    if v.cb != 0 {
+                        ev.push((v.cb, ON_STREAM_END, u32::MAX));
+                    }
+                }
+                v.began = false;
+                let Some(n) = v.queue.front() else { break };
                 v.began = true;
                 v.pos = n.begin as f64 + over;
                 if v.cb != 0 {
                     ev.push((v.cb, ON_BUFFER_START, n.ctx));
                 }
+                if n.looping() || v.pos < n.end as f64 {
+                    break;
+                }
+                over = v.pos - n.end as f64;
             }
         }
     }
@@ -342,6 +433,7 @@ fn bytes_required(v: &Voice) -> u32 {
 }
 
 fn engine_thread(c: &mut Ctx) -> u32 {
+    ENGINE_THREAD.with(|t| t.set(true));
     let mut out = vec![0f32; STEP * 2];
     let lock = Mutex::new(());
     loop {
@@ -351,6 +443,7 @@ fn engine_thread(c: &mut Ctx) -> u32 {
             crate::snap::point();
             continue;
         }
+        PASS.begin();
         let engine_cbs = with(|e| e.callbacks.clone());
         for &cb in &engine_cbs {
             callback(c, cb, 0, None);
@@ -360,6 +453,7 @@ fn engine_thread(c: &mut Ctx) -> u32 {
         for &cb in &engine_cbs {
             callback(c, cb, 1, None);
         }
+        PASS.end();
         kura::audio::write(stream, &out);
     }
 }
@@ -496,6 +590,8 @@ fn X_Release(c: &mut Ctx) -> u32 {
             e.master = 0;
             e.voices.drain().map(|(_, v)| v.chain).collect()
         });
+        // (the graph is empty: the pass now running is the last that may use any of it)
+        wait_pass();
         for ch in chains {
             release_chain(c, ch);
         }
@@ -551,6 +647,7 @@ fn X_RegisterForCallbacks(c: &mut Ctx) -> u32 {
 fn X_UnregisterForCallbacks(c: &mut Ctx) -> u32 {
     let cb = c.a(1);
     with(|e| e.callbacks.retain(|&x| x != cb));
+    wait_pass();
     0
 }
 
@@ -887,6 +984,7 @@ fn V_SetEffectChain(c: &mut Ctx) -> u32 {
     };
     let old = with_voice(this, |v| std::mem::replace(&mut v.chain, chain));
     if let Some(old) = old {
+        wait_pass();
         release_chain(c, old);
     }
     0
@@ -1015,6 +1113,8 @@ fn V_DestroyVoice(c: &mut Ctx) -> u32 {
         Some(v.chain)
     });
     if let Some(ch) = chain {
+        // (the voice is out of the graph: the pass now running is the last that may use it)
+        wait_pass();
         release_chain(c, ch);
     }
     0
@@ -1130,5 +1230,166 @@ mod issue88 {
         assert_eq!(mem::slice(p + 4, 16), &[0; 16]);
         assert_eq!(mem::r32(p + 20), 0xcccccccc);
         mem::heap_free(p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::SeqCst};
+    use std::sync::Arc;
+
+    /// a source voice of a format whose samples are never read (bits 0: sample_at gives 0)
+    fn voice(rate: u32, ratio: f32) -> Voice {
+        Voice {
+            kind: Kind::Source,
+            fmt: Fmt { rate, channels: 2, bits: 0, float: false, law: 0 },
+            volume: 1.0,
+            dest: 0,
+            cb: 0,
+            started: true,
+            queue: VecDeque::new(),
+            pos: 0.0,
+            began: false,
+            ratio,
+            played: 0.0,
+            pending: Vec::new(),
+            chain: Vec::new(),
+            seq: 0,
+        }
+    }
+    fn buf(begin: u32, end: u32, loop_begin: u32, loop_end: u32, loops: u32) -> XBuf {
+        XBuf { flags: 0, data: 0, begin, end, loop_begin, loop_end, loops, ctx: 0 }
+    }
+
+    /// review 2026-11-14: a step longer than the loop turned back once per sample, so the position
+    /// ran on past the buffer (reading whatever memory follows it as audio)
+    #[test]
+    fn short_loops_stay_in_the_buffer() {
+        let mut v = voice(200_000, 1024.0);
+        v.queue.push_back(buf(0, 100, 10, 12, LOOP_INFINITE));
+        let mut out = vec![0f32; STEP * 2];
+        for _ in 0..50 {
+            render(&mut v, &mut out);
+            assert!(v.pos >= 10.0 && v.pos < 12.0, "{}", v.pos);
+        }
+        // a counted loop: as many turns as it has, then on to the end of the play region
+        let mut v = voice(48_000, 1.0);
+        v.queue.push_back(buf(0, 20, 2, 4, 3));
+        v.cb = 1;
+        let ev = render(&mut v, &mut vec![0f32; 2 * 30]);
+        assert_eq!(ev.iter().filter(|e| e.1 == ON_LOOP_END).count(), 3);
+        assert_eq!(ev.iter().filter(|e| e.1 == ON_BUFFER_END).count(), 1);
+    }
+
+    /// a step longer than the next buffer passes over it whole (it ends too), not past its end
+    #[test]
+    fn long_steps_pass_short_buffers() {
+        let mut v = voice(RATE * 8, 1.0);
+        v.cb = 1;
+        for _ in 0..4 {
+            v.queue.push_back(buf(0, 3, 0, 3, 0));
+        }
+        v.queue.push_back(buf(0, 100, 0, 100, 0));
+        // (8 frames a sample: 3 + 3 + 2 into the third buffer)
+        let ev = render(&mut v, &mut vec![0f32; 2]);
+        assert_eq!(ev.iter().filter(|e| e.1 == ON_BUFFER_END).count(), 2);
+        assert_eq!(v.pos, 2.0);
+        assert_eq!(v.queue.len(), 3);
+    }
+
+    proptest! {
+        /// after any pass the position is inside the front buffer's play/loop region
+        #[test]
+        fn position_stays_in_the_buffer(
+            rate in 1000u32..=200_000, ratio in 0.001f32..=1024.0,
+            bufs in proptest::collection::vec((0u32..64, 0u32..64, 0u32..64, 0u32..64, prop_oneof![Just(0u32), 1u32..5, Just(LOOP_INFINITE)]), 1..6),
+            passes in 1usize..4,
+        ) {
+            let mut v = voice(rate, ratio);
+            for (a, b, c, d, loops) in bufs {
+                let (begin, end) = (a.min(b), a.max(b));
+                let (lb, le) = (c.min(d), c.max(d));
+                v.queue.push_back(buf(begin, end, lb, le, loops));
+            }
+            let mut out = vec![0f32; 2 * 64];
+            for _ in 0..passes {
+                render(&mut v, &mut out);
+                if let (Some(b), true) = (v.queue.front(), v.began) {
+                    let last = if b.looping() { b.end.max(b.loop_end) } else { b.end };
+                    prop_assert!(v.pos.is_finite());
+                    prop_assert!(v.pos < last as f64 || b.looping(), "pos {} last {}", v.pos, last);
+                    if b.looping() && b.loops == LOOP_INFINITE {
+                        prop_assert!(v.pos < b.loop_end.max(b.end) as f64);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gate_without_a_pass_does_not_wait() {
+        let g = PassGate::new();
+        assert!(g.wait(Duration::from_millis(1), || {}));
+        g.begin();
+        g.end();
+        assert!(g.wait(Duration::from_millis(1), || {}));
+    }
+
+    #[test]
+    fn gate_gives_up_on_a_pass_that_never_ends() {
+        let g = PassGate::new();
+        g.begin();
+        let t = std::time::Instant::now();
+        assert!(!g.wait(Duration::from_millis(100), || {}));
+        assert!(t.elapsed() >= Duration::from_millis(100));
+    }
+
+    /// DestroyVoice's order: the voice leaves the graph, then the caller waits for the running
+    /// pass, then frees the callback. The engine thread must never use a callback after it was
+    /// freed (thousands of interleavings, passes and destroys racing).
+    #[test]
+    fn destroyed_callbacks_are_not_called() {
+        struct World {
+            gate: PassGate,
+            /// the voice's callback in the graph (0: destroyed)
+            in_graph: AtomicU32,
+            freed: AtomicBool,
+            stop: AtomicBool,
+            calls: AtomicU32,
+        }
+        for round in 0..200 {
+            let w = Arc::new(World { gate: PassGate::new(), in_graph: AtomicU32::new(7), freed: AtomicBool::new(false), stop: AtomicBool::new(false), calls: AtomicU32::new(0) });
+            let e = {
+                let w = w.clone();
+                std::thread::spawn(move || {
+                    while !w.stop.load(SeqCst) {
+                        w.gate.begin();
+                        // (the pass snapshots the graph, then calls out with no lock held)
+                        let cb = w.in_graph.load(SeqCst);
+                        for _ in 0..3 {
+                            if cb != 0 {
+                                assert!(!w.freed.load(SeqCst), "callback used after it was freed");
+                                w.calls.fetch_add(1, SeqCst);
+                            }
+                            std::hint::spin_loop();
+                        }
+                        w.gate.end();
+                    }
+                })
+            };
+            while w.calls.load(SeqCst) < (round % 7) {
+                std::hint::spin_loop();
+            }
+            w.in_graph.store(0, SeqCst);
+            assert!(w.gate.wait(Duration::from_secs(5), || {}));
+            w.freed.store(true, SeqCst);
+            for _ in 0..50 {
+                std::hint::spin_loop();
+            }
+            w.stop.store(true, SeqCst);
+            e.join().expect("engine thread");
+        }
     }
 }

@@ -1730,7 +1730,7 @@ fn play_sound(name: u32, module: u32, flags: u32, wide: bool) -> u32 {
     if p == 0 {
         return 0;
     }
-    mem::slice_mut(p, image.len() as u32).copy_from_slice(&image);
+    mem::write(p, &image);
     let f = Fmt::read(p + fmt as u32);
     if f.bits == 0 || f.rate == 0 {
         mem::heap_free(p);

@@ -128,7 +128,7 @@ fn is(p: u32, g: &[u8; 16]) -> bool {
     p != 0 && mem::slice(p, 16) == g
 }
 fn put_guid(p: u32, g: &[u8; 16]) {
-    mem::slice_mut(p, 16).copy_from_slice(g);
+    mem::write(p, g);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -527,7 +527,7 @@ fn new_mt(major: &[u8; 16], sub: &[u8; 16], fixed: bool, sample: u32, fmt_type: 
     put_guid(p + 44, fmt_type);
     let (cb, pb) = mt_fmt_at();
     let f = mem::heap_alloc(fmt.len().max(1) as u32, true);
-    mem::slice_mut(f, fmt.len() as u32).copy_from_slice(fmt);
+    mem::write(f, fmt);
     w32(p + cb, fmt.len() as u32);
     wp(p + pb, f);
     p
@@ -553,14 +553,14 @@ fn dup_mt(src: u32) -> u32 {
 fn copy_mt(src: u32, dst: u32) {
     let n = mt_size();
     let bytes = mem::slice(src, n).to_vec();
-    mem::slice_mut(dst, n).copy_from_slice(&bytes);
+    mem::write(dst, &bytes);
     let (cb, pb) = mt_fmt_at();
     let len = r32(src + cb);
     let f = mem::heap_alloc(len.max(1), false);
     let from = rp(src + pb);
     if from != 0 && len != 0 {
         let b = mem::slice(from, len).to_vec();
-        mem::slice_mut(f, len).copy_from_slice(&b);
+        mem::write(f, &b);
     }
     wp(dst + pb, f);
 }
@@ -1305,7 +1305,8 @@ fn ar_sync_read(c: &mut Ctx) -> u32 {
     // thread behind FILTERS; seek and read are one step under the file's own lock)
     let Some((file, len)) = fwith(b, |f| f.src.as_ref().map(|s| (s.file.clone(), s.len))).flatten() else { return E_UNEXPECTED };
     let (at, k) = read_span(pos, n, len);
-    let got = match file.read_at(Some(std::io::SeekFrom::Start(at)), false, mem::slice_mut(buf, k)) {
+    let Some(dst) = mem::guest_mut(buf, k) else { return E_POINTER };
+    let got = match file.read_at(Some(std::io::SeekFrom::Start(at)), false, dst) {
         Ok(g) => Some(g as u32),
         Err(()) => Some(0),
     };
@@ -1542,11 +1543,9 @@ fn vnv_thread(c: &mut Ctx) -> u32 {
                     x.buf
                 })
                 .unwrap_or(0);
-                if buf == 0 {
-                    break;
-                }
+                let Some(dst) = mem::guest_mut(buf, size).filter(|_| buf != 0) else { break };
                 // (bottom-up rows, as RGB32 with a positive height is: straight into the sample)
-                pack_into(&top, (fw, fh), true, (w, h, bits), mem::slice_mut(buf, size));
+                pack_into(&top, (fw, fh), true, (w, h, bits), dst);
                 let sent = call_out(&calls, epoch, || com(c, out.mem, 6, &[sample])).is_some();
                 unref(sample);
                 if sent {
@@ -2370,7 +2369,7 @@ fn stream_thread(c: &mut Ctx) -> u32 {
                     .unwrap_or(0);
                     // (the picture's own size, clipped to the type's: a later sequence header
                     // of another size indexed past the rows)
-                    if buf != 0 && pack_into(&px, (pw, ph), false, (w, h, bits), mem::slice_mut(buf, size)) {
+                    if buf != 0 && mem::guest_mut(buf, size).is_some_and(|dst| pack_into(&px, (pw, ph), false, (w, h, bits), dst)) {
                         com(c, mem_pin, 6, &[sample]);
                     }
                     unref(sample);

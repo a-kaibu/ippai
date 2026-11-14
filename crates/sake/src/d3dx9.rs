@@ -863,7 +863,7 @@ fn dds_info(p: u32, d: &crate::dds::Dds) {
 fn put_rows(src: &[u8], row: u32, rows: u32, bits: u32, pitch: u32) {
     for y in 0..rows {
         let s = &src[(y * row) as usize..((y + 1) * row) as usize];
-        mem::slice_mut(bits + y * pitch, row).copy_from_slice(s);
+        mem::write(bits + y * pitch, s);
     }
 }
 /// The levels of a DDS file into a texture (`cube`: an IDirect3DCubeTexture9, every face the

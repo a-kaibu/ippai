@@ -346,8 +346,9 @@ fn chain_len(s: &Surf) -> u32 {
     })
 }
 
+/// (0 for a size that does not fit: new_surface_pf refuses it)
 fn stride(w: i32, bpp: u16) -> u32 {
-    ((w as u32 * bpp as u32 / 8) + 3) & !3
+    crate::gdi::image_size(w, 1, bpp as u32, 4).map_or(0, |(s, _)| s)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -357,8 +358,9 @@ fn new_surface(w: i32, h: i32, bpp: u16, r565: bool, caps: u32) -> Option<u32> {
     new_surface_pf(w, h, bpp, r565, plain_pf(bpp, r565), caps)
 }
 fn new_surface_pf(w: i32, h: i32, bpp: u16, r565: bool, pf: [u32; 5], caps: u32) -> Option<u32> {
-    let pitch = stride(w, bpp);
-    let bits = mem::alloc((pitch * h as u32).max(4))?;
+    // (review 2026-11-14: a guest DDSURFACEDESC of 65536 x 65536 wrapped to a 4-byte surface)
+    let (pitch, size) = crate::gdi::image_size(w, h, bpp as u32, 4)?;
+    let bits = mem::alloc(size.max(4))?;
     let hbm = crate::gdi::bitmap_over(w, h, bpp, bits, pitch, r565);
     Some(with(|s| {
         let id = s.next;
@@ -1189,8 +1191,12 @@ fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>, mir
     if dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 {
         return;
     }
-    let base_d = mem::slice_mut(dst.bits, dst.pitch * dst.h as u32).as_mut_ptr();
-    let base_s = mem::slice(src.bits, src.pitch * src.h as u32).as_ptr();
+    let Some(d) = surf_bytes(dst) else { return };
+    let base_d = d.as_mut_ptr();
+    if surf_bytes(src).is_none() {
+        return;
+    }
+    let base_s = src.bits as usize as *const u8;
     let mask = px_mask(bpp);
     let same = dw == sw && dh == sh && !mirror.0 && !mirror.1;
     // overlapping copies within one surface go bottom-up / right-to-left as needed
@@ -1252,12 +1258,19 @@ fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>, mir
     }
 }
 
+/// A surface's bytes (pitch x height) when they are all guest memory.
+fn surf_bytes(s: &Surf) -> Option<&'static mut [u8]> {
+    let n = s.pitch.checked_mul(s.h.max(0) as u32)?;
+    mem::guest_mut(s.bits, n)
+}
+
 fn fill(dst: &Surf, r: Rect, color: u32) {
     let r = clip_rect(r, dst.w, dst.h);
     let bpp = dst.bpp as u32 / 8;
+    let Some(all) = surf_bytes(dst) else { return };
+    let base = all.as_mut_ptr();
     for y in r.t..r.b {
-        let row = dst.bits + y as u32 * dst.pitch;
-        let p = mem::slice_mut(row, dst.pitch).as_mut_ptr();
+        let p = unsafe { base.add((y as u32 * dst.pitch) as usize) };
         for x in r.l..r.r {
             write_px(unsafe { p.add((x as u32 * bpp) as usize) }, bpp, color);
         }

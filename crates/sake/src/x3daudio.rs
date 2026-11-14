@@ -252,9 +252,19 @@ pub fn pan(az: f32, spk: &[f32]) -> Vec<f32> {
     g
 }
 
+/// XAUDIO2_MAX_AUDIO_CHANNELS: the most channels an emitter or an output has.
+pub const MAX_CHANNELS: u32 = 64;
+
+/// The emitter's ChannelCount and the DSP settings' DstChannelCount as X3DAudioCalculate uses
+/// them: 1 to 64 each (review 2026-11-14: a garbage count, such as an uninitialised 0xCCCCCCCC,
+/// sized the matrix and the write-back loops: an allocation abort or zeros written across memory).
+pub fn counts(channels: u32, dst: u32) -> (usize, usize) {
+    (channels.clamp(1, MAX_CHANNELS) as usize, dst.clamp(1, MAX_CHANNELS) as usize)
+}
+
 /// X3DAudioCalculate
 pub fn calculate(mask: u32, speed: f32, l: &Listener, e: &Emitter, flags: u32, dst: usize) -> Dsp {
-    let src = e.channels.max(1) as usize;
+    let (src, dst) = counts(e.channels, dst.min(MAX_CHANNELS as usize) as u32);
     let scaler = if e.curve_scaler > 0.0 { e.curve_scaler } else { 1.0 };
     let to_e = sub(e.pos, l.pos);
     let dist = len(to_e);
@@ -449,7 +459,7 @@ fn X3DAudioCalculate(c: &mut Ctx) -> u32 {
     let paz = r.ptr();
     let curves: Vec<u32> = (0..5).map(|_| r.ptr()).collect();
     let (curve_scaler, doppler_scaler) = (r.f(), r.f());
-    let azimuths = if paz != 0 { (0..channels.min(64)).map(|i| f32::from_bits(r32(paz + 4 * i))).collect() } else { Vec::new() };
+    let azimuths = if paz != 0 { (0..channels.min(MAX_CHANNELS)).map(|i| f32::from_bits(r32(paz + 4 * i))).collect() } else { Vec::new() };
     let e = Emitter {
         cone,
         front,
@@ -472,10 +482,9 @@ fn X3DAudioCalculate(c: &mut Ctx) -> u32 {
     // X3DAUDIO_DSP_SETTINGS { pMatrixCoefficients, pDelayTimes, SrcChannelCount, DstChannelCount, ... }
     let (pm, pd) = (rp(dp), rp(dp + ps()));
     let f = dp + 2 * ps();
-    let dst = r32(f + 4) as usize;
+    let (src, dst) = counts(channels, r32(f + 4));
     let d = calculate(mask, speed, &l, &e, flags, dst);
     if flags & MATRIX != 0 && pm != 0 {
-        let src = channels.max(1) as usize;
         for i in 0..dst * src {
             w32(pm + 4 * i as u32, d.matrix.get(i).copied().unwrap_or(0.0).to_bits());
         }
@@ -535,6 +544,36 @@ mod tests {
             self.0 ^= self.0 >> 7;
             self.0 ^= self.0 << 17;
             lo + (hi - lo) * ((self.0 >> 40) as f32 / (1u64 << 24) as f32)
+        }
+    }
+
+    /// review 2026-11-14: garbage channel counts (uninitialised 0xCCCCCCCC structures) sized the
+    /// matrix, the delays and the write-back loops
+    #[test]
+    fn garbage_counts_stay_bounded() {
+        let mut e = emitter([1.0, 0.0, 2.0]);
+        for (ch, dst) in [(0xcccc_cccc, 0xcccc_cccc), (0, 0), (u32::MAX, 2), (2, u32::MAX), (65, 65)] {
+            e.channels = ch;
+            let (src, d) = counts(ch, dst);
+            assert!((1..=64).contains(&src) && (1..=64).contains(&d));
+            let out = calculate(0x3f, 343.5, &listener(), &e, MATRIX | DELAY, dst as usize);
+            assert!(out.matrix.len() <= 64 * 64 && out.delays.len() <= 64, "{ch:#x} {dst:#x}");
+        }
+        // sane counts are kept as they are
+        assert_eq!(counts(2, 6), (2, 6));
+        assert_eq!(counts(64, 64), (64, 64));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn counts_clamp(ch in proptest::prelude::any::<u32>(), dst in proptest::prelude::any::<u32>(), mask in proptest::prelude::any::<u32>(), flags in 0u32..0x80) {
+            let (s, d) = counts(ch, dst);
+            proptest::prop_assert_eq!(s, ch.clamp(1, 64) as usize);
+            proptest::prop_assert_eq!(d, dst.clamp(1, 64) as usize);
+            let mut e = emitter([0.5, 0.25, 1.0]);
+            e.channels = ch;
+            let out = calculate(mask, 343.5, &listener(), &e, flags, dst as usize);
+            proptest::prop_assert!(out.matrix.len() <= s * d && out.delays.len() <= d);
         }
     }
 

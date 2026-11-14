@@ -293,7 +293,7 @@ fn show(c: &mut Ctx, b: u32, gen: u32, time: u64, w: u32, h: u32, bgra: &[u8]) -
     })
     .unwrap_or(0);
     // (straight into the sample: a picture-sized Vec and a copy of it a picture before)
-    if buf != 0 && wmdec::to_rgb_into(bgra, w, h, ow, oh, 32, mem::slice_mut(buf, size)) {
+    if buf != 0 && mem::guest_mut(buf, size).is_some_and(|dst| wmdec::to_rgb_into(bgra, w, h, ow, oh, 32, dst)) {
         dwith(b, |d| d.shown = true);
         com(c, mem_pin, 6, &[s]);
         stats(Stat::Shown);

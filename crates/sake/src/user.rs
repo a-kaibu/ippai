@@ -7121,13 +7121,13 @@ fn CharUpperW(c: &mut Ctx) -> u32 {
 }
 fn CharLowerBuffA(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
-    let s = mem::slice_mut(p, n);
+    let Some(s) = mem::guest_mut(p, n) else { return 0 };
     crate::text::case_a(s, false);
     n
 }
 fn CharUpperBuffA(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
-    let s = mem::slice_mut(p, n);
+    let Some(s) = mem::guest_mut(p, n) else { return 0 };
     crate::text::case_a(s, true);
     n
 }

@@ -186,9 +186,28 @@ pub fn put32(a: u32, v: u32) {
 pub fn slice<'a>(a: u32, n: u32) -> &'a [u8] {
     unsafe { std::slice::from_raw_parts(a as usize as *const u8, n as usize) }
 }
-pub fn slice_mut<'a>(a: u32, n: u32) -> &'a mut [u8] {
-    unsafe { std::slice::from_raw_parts_mut(a as usize as *mut u8, n as usize) }
+/// Guest memory `a..a + n` for sake to write into, or None where that is not the guest's: in
+/// the NULL pages (a failed allocation, a NULL pointer with a length) or reaching past
+/// GUEST_TOP into sake's own memory (review 2026-11-14: the unchecked slice_mut wrote there).
+pub fn guest_mut<'a>(a: u32, n: u32) -> Option<&'a mut [u8]> {
+    if n == 0 {
+        return Some(&mut []);
+    }
+    if !guest_range(a, n) {
+        if a >= NULL_TOP {
+            refused(a, n);
+        }
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts_mut(a as usize as *mut u8, n as usize) })
 }
+/// Whether `a..a + n` is guest memory sake may write for the program (guest_mut's rule).
+#[inline]
+pub fn guest_range(a: u32, n: u32) -> bool {
+    n == 0 || (a >= NULL_TOP && a as u64 + n as u64 <= GUEST_TOP as u64)
+}
+/// The guest's first 64 KiB: never handed out (NULL pointers fault on Windows too).
+pub const NULL_TOP: u32 = 0x1_0000;
 pub fn fill(a: u32, n: u32, v: u8) {
     if guest(a, n) {
         unsafe { std::ptr::write_bytes(a as usize as *mut u8, v, n as usize) }
@@ -211,7 +230,8 @@ pub fn zero(a: u32, n: u32) {
     let mut p = a as u64;
     while p < end {
         let next = ((p | (PAGE as u64 - 1)) + 1).min(end);
-        let s = slice_mut(p as u32, (next - p) as u32);
+        // (inside guest memory: checked above)
+        let s = unsafe { std::slice::from_raw_parts_mut(p as usize as *mut u8, (next - p) as usize) };
         if !is_zero(s) {
             s.fill(0);
         }
@@ -738,7 +758,7 @@ fn slab_cap(p: u32) -> u32 {
 pub(crate) static SLAB_MADE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn slab_lock(t: u32) -> &'static std::sync::atomic::AtomicU32 {
-    unsafe { std::sync::atomic::AtomicU32::from_ptr(slice_mut(t, 4).as_mut_ptr() as *mut u32) }
+    unsafe { std::sync::atomic::AtomicU32::from_ptr(t as usize as *mut u32) }
 }
 
 /// heap_alloc for HeapAlloc/malloc: small sizes come from the class lists (refilled here when
@@ -966,6 +986,34 @@ mod tests {
         }
     }
 
+    /// review 2026-11-14: sake wrote program-given (pointer, length) pairs through an unchecked
+    /// slice: into the NULL pages after a failed allocation, or past 2 GB into its own heap
+    #[test]
+    fn guest_mut_refuses_what_is_not_the_guests() {
+        use super::{guest_mut, guest_range, NULL_TOP};
+        assert!(guest_mut(0, 0).is_some_and(|s| s.is_empty()));
+        assert!(guest_mut(0, 16).is_none());
+        assert!(guest_mut(NULL_TOP - 1, 1).is_none());
+        assert!(guest_mut(GUEST_TOP, 1).is_none());
+        assert!(guest_mut(GUEST_TOP - 4, 5).is_none());
+        assert!(guest_mut(0x40_0000, u32::MAX).is_none());
+        assert!(guest_mut(0xffff_fff0, 0x20).is_none());
+        assert!(guest_range(NULL_TOP, 1) && guest_range(GUEST_TOP - 4, 4) && guest_range(0x40_0000, GUEST_TOP - 0x40_0000));
+    }
+
+    proptest::proptest! {
+        /// guest_range: empty, or wholly in [64 KiB, 2 GB), no wrapping
+        #[test]
+        fn guest_range_is_the_guests_half(a in proptest::prelude::any::<u32>(), n in proptest::prelude::any::<u32>()) {
+            use super::{guest_range, NULL_TOP};
+            let want = n == 0 || (a >= NULL_TOP && (a as u64 + n as u64) <= GUEST_TOP as u64);
+            proptest::prop_assert_eq!(guest_range(a, n), want);
+            if guest_range(a, n) && n != 0 {
+                proptest::prop_assert!(a.checked_add(n).is_some_and(|e| e <= GUEST_TOP));
+            }
+        }
+    }
+
     /// Blocks standing for addresses above 4G (#62), as VirtualAlloc and the loader make them:
     /// reserved at the low half, `set_high`; every address inside widens to the high one,
     /// those outside don't; a request whose low half meets a block already there is refused
@@ -1084,7 +1132,7 @@ mod tests {
     /// (pages that were zero, pages with one byte set anywhere, ranges cut at any byte); and it
     /// leaves pages that were zero unwritten, so that they never become RAM (the RSS tests).
     mod zeroing {
-        use super::super::{is_zero, release, reserve, commit, decommit_range, heap_alloc, heap_free, slice, slice_mut, w8, zero, PAGE};
+        use super::super::{is_zero, release, reserve, commit, decommit_range, heap_alloc, heap_free, slice, guest_mut, w8, zero, PAGE};
         use proptest::prelude::*;
 
         #[test]
@@ -1157,7 +1205,7 @@ mod tests {
             let before = guest_rss_kib();
             let b = reserve(0, BIG, 4, 0x20000, false).unwrap();
             commit(b, 4);
-            slice_mut(b + 0x123_4000, 16).fill(7);
+            guest_mut(b + 0x123_4000, 16).unwrap().fill(7);
             release(b);
             slack(guest_rss_kib().saturating_sub(before));
             // the page written is zero again for whoever gets the block next

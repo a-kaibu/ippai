@@ -1687,10 +1687,10 @@ impl Raster {
         }
         let pal_of = |s: &Surf| with(|st| st.palettes.get(&s.palette).map(|p| Box::new(*p)));
         let zs = (d.rs[RS_ZENABLE] != 0).then(|| surf(rt.zbuf)).flatten();
-        let z = zs.as_ref().map(|z| {
+        let z = zs.as_ref().and_then(|z| {
             let bytes = (z.bpp as usize / 8).max(2);
             let mask = if z.pf[2] != 0 { z.pf[2] } else if bytes == 2 { 0xffff } else { 0xff_ffff };
-            (mem::slice_mut(z.bits, z.pitch * z.h as u32).as_mut_ptr(), z.pitch as usize, bytes, mask as f32)
+            Some((mem::guest_mut(z.bits, z.pitch.checked_mul(z.h.max(0) as u32)?)?.as_mut_ptr(), z.pitch as usize, bytes, mask as f32))
         });
         // (a z-buffer smaller than the target, which AddAttachedSurface lets through: drawing
         // stays inside it, as its rows past its end are other guest memory)
@@ -1727,7 +1727,7 @@ impl Raster {
             });
         }
         Some(Raster {
-            rt: mem::slice_mut(rt.bits, rt.pitch * rt.h as u32).as_mut_ptr(),
+            rt: mem::guest_mut(rt.bits, rt.pitch.checked_mul(rt.h.max(0) as u32)?)?.as_mut_ptr(),
             pitch: rt.pitch as usize,
             bpp: rt.bpp as usize / 8,
             fmt: Fmt::of(&rt),

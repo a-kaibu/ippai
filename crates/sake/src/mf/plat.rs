@@ -369,7 +369,7 @@ fn read_into(b: u32, p: u32, n: u32) -> Result2 {
         let pos = s.pos;
         let Some(f) = s.file.as_mut() else { return Err(CLOSED) };
         f.seek(SeekFrom::Start(pos)).map_err(|_| E_FAIL)?;
-        let buf = mem::slice_mut(p, n);
+        let Some(buf) = mem::guest_mut(p, n) else { return Err(E_FAIL) };
         let mut got = 0usize;
         while got < buf.len() {
             match f.read(&mut buf[got..]) {

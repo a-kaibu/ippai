@@ -49,9 +49,60 @@ fn mem_end() -> u64 {
     }
 }
 
+/// The guest's half of the linear memory ends here: sake's own statics, heap and stacks are
+/// above it (crates/sake/build.sh GLOBAL_BASE). The one upper range the guest may touch is the
+/// trap range ([`create`]'s: API entry points, which programs read and patch like code).
+const GUEST_END: u64 = koji::jit::GUEST_HI as u64;
+
+/// [`create`]'s trap range, for [`check`]'s slow path.
+static TRAP_LO: AtomicU32 = AtomicU32::new(0);
+static TRAP_HI: AtomicU32 = AtomicU32::new(0);
+/// IPPAI_UPPER_OPEN: the old rule (anything up to the end of the memory), as an off-switch.
+static UPPER_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the guest may access `addr..addr + len` (`end`: the memory's size): below
+/// [`GUEST_END`] and above the NULL pages, or inside the trap range `[lo, hi)` (or anywhere up
+/// to `end` with `open`, the old rule); never past `end`.
+#[inline(always)]
+pub(crate) fn allowed(addr: u32, len: u32, end: u64, lo: u32, hi: u32, open: bool) -> bool {
+    let top = addr as u64 + len as u64;
+    if addr >= NULL_PAGES && top <= GUEST_END {
+        return top <= end;
+    }
+    upper_allowed(addr, top, end, lo, hi, open)
+}
+
+#[cold]
+#[inline(never)]
+fn upper_allowed(addr: u32, top: u64, end: u64, lo: u32, hi: u32, open: bool) -> bool {
+    addr >= NULL_PAGES && top <= end && (open || (addr >= lo && top <= hi as u64))
+}
+
+#[cold]
+#[inline(never)]
+fn upper_ok(addr: u32, len: u32) -> bool {
+    allowed(addr, len, mem_end(), TRAP_LO.load(Ordering::Relaxed), TRAP_HI.load(Ordering::Relaxed), UPPER_OPEN.load(Ordering::Relaxed))
+}
+
+/// (once: a guest access to sake's own memory is an access violation; the log says where)
+#[cold]
+#[inline(never)]
+fn refused(addr: u32, len: u32) -> Fault {
+    if addr as u64 + len as u64 > GUEST_END && addr >= NULL_PAGES {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| eprintln!("kura: guest access to {addr:#x} (+{len}) is in sake's memory, not the guest's: access violation (IPPAI_UPPER_OPEN=1 allows it)"));
+    }
+    Fault { addr, write: false }
+}
+
 #[inline(always)]
 fn check(addr: u32, len: u32, write: bool) -> Result<*mut u8, Fault> {
-    if addr < NULL_PAGES || addr as u64 + len as u64 > mem_end() || crate::jit::faults(addr, len, write) {
+    // (the fast path is allowed()'s first test; the statics are read on the slow one only)
+    let top = addr as u64 + len as u64;
+    if !(addr >= NULL_PAGES && top <= GUEST_END && top <= mem_end()) && !upper_ok(addr, len) {
+        return Err(Fault { write, ..refused(addr, len) });
+    }
+    if crate::jit::faults(addr, len, write) {
         return Err(Fault { addr, write });
     }
     if write {
@@ -171,7 +222,8 @@ impl Memory for Linear {
         check(addr, len, true).ok()
     }
     fn fetch(&mut self, addr: u32, buf: &mut [u8]) -> usize {
-        let end = mem_end();
+        // (code runs from the guest's half only: the trap range is caught before a fetch)
+        let end = if UPPER_OPEN.load(Ordering::Relaxed) { mem_end() } else { mem_end().min(GUEST_END) };
         if addr < NULL_PAGES || addr as u64 >= end {
             return 0;
         }
@@ -204,6 +256,9 @@ pub fn create(trap_lo: u32, trap_hi: u32) -> *mut Cpu {
     koji::CPUID_AVX.store(crate::env_on!("IPPAI_CPUID_AVX"), Ordering::Relaxed);
     // IPPAI_X87_80: the x87 in its 80-bit format (koji::fpu::X87_80: interpreted, slower)
     koji::fpu::X87_80.store(crate::env_on!("IPPAI_X87_80"), Ordering::Relaxed);
+    UPPER_OPEN.store(crate::env_on!("IPPAI_UPPER_OPEN"), Ordering::Relaxed);
+    TRAP_LO.store(trap_lo, Ordering::Relaxed);
+    TRAP_HI.store(trap_hi, Ordering::Relaxed);
     let mut cpu = Box::new(Cpu::default());
     cpu.trap_lo = trap_lo;
     cpu.trap_hi = trap_hi;
@@ -532,4 +587,90 @@ fn trace_call(cpu: &Cpu) {
     let ret = if ok(r[4]) { unsafe { *(r[4] as usize as *const u32) } } else { 0 };
     eprintln!("call {k} prev-dst-hash {h:08x} code {c:08x} | eax {:08x} ecx {:08x} edx {:08x} esi {:08x} edi {:08x} esp {:08x} [esp] {ret:08x} r8 {:x} r9 {:x}", r[0], r[1], r[2], r[6], r[7], r[4], cpu.r8[0], cpu.r8[1]);
     PREV.with(|p| p.set((k + 1, r[2], r[1])));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{allowed, GUEST_END, NULL_PAGES};
+    use proptest::prelude::*;
+
+    /// sake's trap range (crates/sake/src/api.rs TRAP_LO/TRAP_HI) and memory sizes
+    const LO: u32 = 0xfe00_0000;
+    const HI: u32 = 0xffff_1000;
+    const FIXED: u64 = 4_294_901_760;
+    const GROW: u64 = 0x8400_0000;
+
+    /// review 2026-11-14 A-1: a guest pointer into sake's own memory above 2 GB was used as is
+    #[test]
+    fn upper_half_is_not_the_guests() {
+        for end in [FIXED, GROW] {
+            assert!(allowed(0x0040_1000, 4, end, LO, HI, false));
+            assert!(allowed(0x7fff_fffc, 4, end, LO, HI, false));
+            // crossing 2 GB, sake's first byte, its heap, a negative index off a small base
+            assert!(!allowed(0x7fff_fffd, 4, end, LO, HI, false));
+            assert!(!allowed(0x8000_0000, 1, end, LO, HI, false));
+            assert!(!allowed(0x9000_0000, 4, end, LO, HI, false));
+            assert!(!allowed(0x10u32.wrapping_sub(0x7ff0_0000), 4, end, LO, HI, false));
+            // NULL pages
+            assert!(!allowed(0, 1, end, LO, HI, false));
+            assert!(!allowed(NULL_PAGES - 1, 1, end, LO, HI, false));
+            assert!(allowed(NULL_PAGES, 1, end, LO, HI, false));
+            // the old rule, for IPPAI_UPPER_OPEN
+            assert!(allowed(0x8100_0000, 4, end, LO, HI, true));
+        }
+        // API entry points: read and patched like code (where the memory reaches them)
+        assert!(allowed(LO, 4, FIXED, LO, HI, false));
+        assert!(allowed(0xfe00_1234, 5, FIXED, LO, HI, false));
+        assert!(!allowed(LO - 1, 4, FIXED, LO, HI, false));
+        assert!(!allowed(LO, 4, GROW, LO, HI, false));
+        assert!(!allowed(0xffff_0000 - 2, 4, FIXED, LO, HI, false));
+    }
+
+    proptest! {
+        /// allowed is exactly: inside the memory, not in the NULL pages, and wholly below 2 GB
+        /// or wholly inside the trap range (or the old rule when open)
+        #[test]
+        fn allowed_is_the_rule(addr in any::<u32>(), len in prop_oneof![1u32..=16, any::<u32>()], lo in any::<u32>(), span in any::<u32>(), open in any::<bool>(), grow in any::<bool>()) {
+            let end = if grow { GROW } else { FIXED };
+            let hi = lo.saturating_add(span);
+            let top = addr as u64 + len as u64;
+            let inside = addr >= NULL_PAGES && top <= end;
+            let guest = top <= GUEST_END;
+            let trap = addr >= lo && top <= hi as u64;
+            prop_assert_eq!(allowed(addr, len, end, lo, hi, open), inside && (guest || trap || open));
+        }
+
+        /// boundary addresses near 2 GB, the NULL pages and the trap range
+        #[test]
+        fn allowed_edges(d in -64i64..64, len in 1u32..=16, base in prop_oneof![Just(0x8000_0000i64), Just(NULL_PAGES as i64), Just(LO as i64), Just(0xffff_0000i64)]) {
+            let addr = (base + d).clamp(0, u32::MAX as i64) as u32;
+            let top = addr as u64 + len as u64;
+            let want = addr >= NULL_PAGES && top <= FIXED && (top <= GUEST_END || (addr >= LO && top <= HI as u64));
+            prop_assert_eq!(allowed(addr, len, FIXED, LO, HI, false), want);
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::{allowed, GUEST_END, NULL_PAGES};
+
+    /// For every address, length, memory size and trap range: an allowed access lies inside the
+    /// memory, above the NULL pages, and either wholly below 2 GB (the guest's half) or wholly in
+    /// the trap range, unless the old rule is on. sake's own memory (2 GB up to the trap range)
+    /// is never reached.
+    #[kani::proof]
+    fn allowed_never_reaches_sake() {
+        let (addr, len, end, lo, hi): (u32, u32, u64, u32, u32) = (kani::any(), kani::any(), kani::any(), kani::any(), kani::any());
+        kani::assume(end <= 1 << 32);
+        if allowed(addr, len, end, lo, hi, false) {
+            let top = addr as u64 + len as u64;
+            assert!(addr >= NULL_PAGES && top <= end);
+            assert!(top <= GUEST_END || (addr >= lo && top <= hi as u64));
+        }
+        // and nothing below 2 GB that the old rule allowed is lost
+        if allowed(addr, len, end, lo, hi, true) && addr as u64 + len as u64 <= GUEST_END {
+            assert!(allowed(addr, len, end, lo, hi, false));
+        }
+    }
 }

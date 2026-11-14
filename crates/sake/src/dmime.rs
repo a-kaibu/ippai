@@ -1128,7 +1128,7 @@ fn segment_of_pcm(b: &[u8], pcm: Option<(u32, u32, u32, u32, u32, bool)>) -> u32
                 eprintln!("sake: dmime: no guest memory for a wave of {size} bytes (a silent segment)");
                 return new_segment(None, 0);
             }
-            mem::slice_mut(file, size).copy_from_slice(&b[off as usize..(off + size) as usize]);
+            mem::write(file, &b[off as usize..(off + size) as usize]);
             new_segment(Some(Sound { data: file, size, rate, channels, bits, float }), file)
         }
         None => new_segment(None, 0),

@@ -482,7 +482,12 @@ fn GdipBitmapLockBits(c: &mut Ctx) -> u32 {
         }
         let bits = lock_bits(fmt);
         let stride = ((w * bits).div_ceil(8) + 3) & !3;
-        let buf = mem::heap_alloc(stride * h.max(1), true);
+        // (no room on the guest heap: OutOfMemory, not rows written from address 0)
+        let size = (stride as u64 * h.max(1) as u64).min(u32::MAX as u64) as u32;
+        let buf = mem::heap_alloc(size, true);
+        if buf == 0 {
+            return Err(3);
+        }
         let mut row = vec![0u8; stride as usize];
         for j in 0..h {
             row.fill(0);

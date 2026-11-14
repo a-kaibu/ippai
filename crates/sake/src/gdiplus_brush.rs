@@ -602,7 +602,7 @@ fn GdipGetPathTypes(c: &mut Ctx) -> u32 {
     if n < t.len() as i32 {
         return INSUFFICIENT_BUFFER;
     }
-    mem::slice_mut(out, t.len() as u32).copy_from_slice(&t);
+    mem::write(out, &t);
     OK
 }
 fn GdipGetPathFillMode(c: &mut Ctx) -> u32 {

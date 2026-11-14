@@ -7127,11 +7127,17 @@ fn ReadFile(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0;
     };
+    // (a buffer that is not the guest's: the NULL pages, or past 2 GB into sake's memory)
+    let Some(dst) = mem::guest_mut(buf, n) else {
+        put32(pread, 0); // (Windows clears the count first)
+        last_error(998); // ERROR_NOACCESS
+        return 0;
+    };
     // OVERLAPPED: Internal, InternalHigh (ULONG_PTRs), Offset, OffsetHigh, hEvent
     let k = mem::ps();
     let got = if ov != 0 {
         let start = files::io_start(r32(ov + 2 * k), r32(ov + 2 * k + 4), false);
-        match f.read_at(start, crate::iocp::is_overlapped(h), mem::slice_mut(buf, n)) {
+        match f.read_at(start, crate::iocp::is_overlapped(h), dst) {
             Ok(got) => got as u32,
             Err(()) => {
                 // (at or past the end: STATUS_END_OF_FILE in the OVERLAPPED, its event set,

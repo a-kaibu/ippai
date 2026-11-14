@@ -555,7 +555,7 @@ fn left(f: &mut kura::fs::File) -> usize {
 
 impl File {
     pub fn read_into(&self, dst: u32, n: u32) -> u32 {
-        let buf = crate::mem::slice_mut(dst, n);
+        let Some(buf) = crate::mem::guest_mut(dst, n) else { return 0 };
         let mut f = self.f.lock().unwrap();
         let mut got = 0;
         while got < buf.len() {

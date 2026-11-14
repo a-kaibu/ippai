@@ -728,7 +728,7 @@ impl Decode {
                 let at = self.data + written * self.channels * 2;
                 let to = written + n;
                 let live = fill.write(to, || {
-                    let out = mem::slice_mut(at, n * self.channels * 2);
+                    let Some(out) = mem::guest_mut(at, n * self.channels * 2) else { return };
                     for (o, x) in out.chunks_exact_mut(2).zip(&pcm) {
                         o.copy_from_slice(&pcm_i16(*x).to_le_bytes());
                     }

@@ -158,7 +158,7 @@ fn guest_guid(s: &'static str) -> u32 {
     static AT: Mutex<Option<HashMap<&'static str, u32>>> = Mutex::new(None);
     *AT.lock().unwrap().get_or_insert_with(HashMap::default).entry(s).or_insert_with(|| {
         let p = mem::heap_alloc(16, false);
-        mem::slice_mut(p, 16).copy_from_slice(&guid(s));
+        mem::write(p, &guid(s));
         p
     })
 }
@@ -375,7 +375,7 @@ fn get_ReadyState(c: &mut Ctx) -> u32 {
 fn GetProperty(c: &mut Ctx) -> u32 {
     // (no properties put: VT_EMPTY)
     if c.a(2) != 0 {
-        mem::slice_mut(c.a(2), 16).fill(0);
+        mem::fill(c.a(2), 16, 0);
     }
     S_OK
 }
@@ -450,7 +450,7 @@ fn GetUserClassID(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    mem::slice_mut(c.a(1), 16).copy_from_slice(&guid(CLSID_WEBBROWSER));
+    mem::write(c.a(1), &guid(CLSID_WEBBROWSER));
     S_OK
 }
 fn SetExtent(c: &mut Ctx) -> u32 {
@@ -733,7 +733,7 @@ fn GetConnectionInterface(c: &mut Ctx) -> u32 {
         return E_POINTER;
     }
     let Some(k) = points(|m| m.get(&this).map(|p| p.which)) else { return E_FAIL };
-    mem::slice_mut(out, 16).copy_from_slice(&guid(EVENTS[k]));
+    mem::write(out, &guid(EVENTS[k]));
     S_OK
 }
 fn GetConnectionPointContainer(c: &mut Ctx) -> u32 {

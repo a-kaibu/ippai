@@ -253,7 +253,7 @@ pub fn init() {
         for (i, o) in stock.into_iter().enumerate() {
             t.m.insert(STOCK + 4 * i as u32, o);
         }
-        t.m.insert(DEFAULT_BITMAP, G::Bitmap(new_bitmap_raw(1, 1, 1, 0)));
+        t.m.insert(DEFAULT_BITMAP, G::Bitmap(new_bitmap_raw(1, 1, 1, 0).expect("the 1x1 default bitmap")));
     });
     register();
 }
@@ -283,16 +283,33 @@ fn halftone_palette() -> Vec<u32> {
     p
 }
 
-/// A bitmap with fresh (zeroed) bits on the guest heap; DDB rows are WORD-aligned.
-fn new_bitmap_raw(w: i32, h: i32, bpp: u16, init: u32) -> Bitmap {
-    let stride = (((w as u32 * bpp as u32) + 15) / 16) * 2;
-    let size = (stride * h as u32).max(4);
+/// The row stride and whole size of a `w` x `h` image of `bpp` bits per pixel, rows padded to
+/// `align` bytes (2: DDB, 4: DIB and DirectDraw), or None when it is empty or does not fit the
+/// guest's memory (review 2026-11-14: 65536 x 65536 wrapped to 0 in u32, 4 bytes were
+/// allocated, and the first draw wrote far past them).
+pub fn image_size(w: i32, h: i32, bpp: u32, align: u32) -> Option<(u32, u32)> {
+    if w <= 0 || h <= 0 || bpp == 0 || align == 0 {
+        return None;
+    }
+    let row = (w as u64 * bpp as u64).div_ceil(8 * align as u64) * align as u64;
+    let size = row * h as u64;
+    (size < mem::GUEST_TOP as u64).then_some((row as u32, size as u32))
+}
+
+/// A bitmap with fresh (zeroed) bits on the guest heap; DDB rows are WORD-aligned. None when
+/// the size does not fit or the heap has no room (Windows: the Create* call fails).
+fn new_bitmap_raw(w: i32, h: i32, bpp: u16, init: u32) -> Option<Bitmap> {
+    let (stride, size) = image_size(w, h, bpp as u32, 2)?;
+    let size = size.max(4);
     let bits = mem::heap_alloc(size, true);
+    if bits == 0 {
+        return None;
+    }
     if init != 0 {
         mem::copy(bits, init, size);
     }
     let pal = if bpp == 1 { vec![0, 0xffffff] } else { Vec::new() };
-    Bitmap { w, h, bpp, bits, stride, bottom_up: false, pal, r565: false, dib: false, own: 1 }
+    Some(Bitmap { w, h, bpp, bits, stride, bottom_up: false, pal, r565: false, dib: false, own: 1 })
 }
 
 /// A top-down bitmap over pixels someone else owns (ddraw surfaces).
@@ -312,7 +329,7 @@ pub fn set_bitmap_palette(h: u32, pal: &[u32]) {
 
 /// A new zeroed DDB (for user32: icon and cursor masks).
 pub fn new_bitmap(w: i32, h: i32, bpp: u16) -> u32 {
-    add(G::Bitmap(new_bitmap_raw(w, h, bpp, 0)))
+    new_bitmap_raw(w, h, bpp, 0).map_or(0, |b| add(G::Bitmap(b)))
 }
 
 fn free_bitmap(b: &Bitmap) {
@@ -1359,8 +1376,9 @@ fn dib_info(bmi: u32, usage: u32, dc_pal: &[u32]) -> Option<DibInfo> {
         let gmask = if size >= 52 { r32(bmi + 44) } else { r32(bmi + size + 4) };
         r565 = gmask == 0x7e0;
     }
-    let stride = ((w as u32 * bpp as u32 + 31) / 32) * 4;
-    Some(DibInfo { w, h: h.abs(), bpp, compression: comp, stride, pal, r565, top_down: h < 0 })
+    // (the whole image must fit: the size is stride * height everywhere it is used)
+    let (stride, _) = image_size(w, h.saturating_abs(), bpp as u32, 4)?;
+    Some(DibInfo { w, h: h.saturating_abs(), bpp, compression: comp, stride, pal, r565, top_down: h < 0 })
 }
 
 fn dib_view(i: &DibInfo, bits: u32) -> View {
@@ -2293,7 +2311,7 @@ pub fn load_bitmap(inst: u32, name: u32, wide: bool) -> u32 {
             crate::k32::last_error(1814);
             return 0;
         }
-        return add(G::Bitmap(new_bitmap_raw(1, 1, 1, 0)));
+        return new_bitmap_raw(1, 1, 1, 0).map_or(0, |b| add(G::Bitmap(b)));
     };
     let (data, _) = crate::pe::resource_data(module, e);
     let Some(info) = dib_info(data, 0, &default_palette()) else { return 0 };
@@ -2391,7 +2409,7 @@ fn dib_monochrome(info: &DibInfo) -> bool {
 fn ddb_of(info: &DibInfo, bits: u32) -> u32 {
     let src = dib_view(info, bits);
     let bpp = if dib_monochrome(info) { 1 } else { 32 };
-    let b = new_bitmap_raw(info.w, info.h, bpp, 0);
+    let Some(b) = new_bitmap_raw(info.w, info.h, bpp, 0) else { return 0 };
     let dst = View::of(&b);
     for y in 0..info.h {
         for x in 0..info.w {
@@ -2870,7 +2888,7 @@ fn CreateCompatibleBitmap(c: &mut Ctx) -> u32 {
         let Some(G::Dc(d)) = t.m.get(&dc) else { return false };
         d.kind == Kind::Mem && matches!(t.m.get(&d.s.bitmap), Some(G::Bitmap(b)) if b.bpp == 1)
     });
-    add(G::Bitmap(new_bitmap_raw(w, h, if mono { 1 } else { 32 }, 0)))
+    new_bitmap_raw(w, h, if mono { 1 } else { 32 }, 0).map_or(0, |b| add(G::Bitmap(b)))
 }
 fn CreateDiscardableBitmap(c: &mut Ctx) -> u32 {
     CreateCompatibleBitmap(c)
@@ -2889,7 +2907,7 @@ pub(crate) fn CreateBitmap(c: &mut Ctx) -> u32 {
         17..=24 => 24,
         _ => 32,
     };
-    let mut b = new_bitmap_raw(w, h, bpp, bits);
+    let Some(mut b) = new_bitmap_raw(w, h, bpp, bits) else { return 0 };
     if bpp == 8 {
         b.pal = default_palette();
         b.pal.resize(256, 0);
@@ -2902,7 +2920,7 @@ fn CreateBitmapIndirect(c: &mut Ctx) -> u32 {
     if w <= 0 || h <= 0 {
         return DEFAULT_BITMAP;
     }
-    add(G::Bitmap(new_bitmap_raw(w, h, if bpp == 1 { 1 } else { 32 }, bits)))
+    new_bitmap_raw(w, h, if bpp == 1 { 1 } else { 32 }, bits).map_or(0, |b| add(G::Bitmap(b)))
 }
 
 fn CreateDIBSection(c: &mut Ctx) -> u32 {
@@ -2939,8 +2957,12 @@ fn CreateDIBSection(c: &mut Ctx) -> u32 {
 
 /// A 32-bit top-down DIB section holding `px` (BGRA rows): GDI+'s HBITMAP of a bitmap.
 pub(crate) fn dib_section_bgra(w: u32, h: u32, px: &[u8]) -> u32 {
-    let Some(bits) = mem::alloc((w * h * 4).max(4)) else { return 0 };
-    mem::write(bits, &px[..(w * h * 4) as usize]);
+    let Some((_, size)) = image_size(w.min(i32::MAX as u32) as i32, h.min(i32::MAX as u32) as i32, 32, 4) else { return 0 };
+    if px.len() < size as usize {
+        return 0;
+    }
+    let Some(bits) = mem::alloc(size.max(4)) else { return 0 };
+    mem::write(bits, &px[..size as usize]);
     add(G::Bitmap(Bitmap { w: w as i32, h: h as i32, bpp: 32, bits, stride: w * 4, bottom_up: false, pal: Vec::new(), r565: false, dib: true, own: 2 }))
 }
 
@@ -3120,7 +3142,7 @@ fn CreateDIBitmap(c: &mut Ctx) -> u32 {
     }
     let bpp = if r32(bih) == 12 { r16(bih + 10) } else { r16(bih + 14) };
     let mono = bpp == 1 && dc == 0;
-    let b = new_bitmap_raw(w, h.abs(), if mono { 1 } else { 32 }, 0);
+    let Some(b) = new_bitmap_raw(w, h.saturating_abs(), if mono { 1 } else { 32 }, 0) else { return 0 };
     if init & 4 != 0 && bits != 0 && bmi != 0 {
         let pal = with(|t| match t.m.get(&dc) {
             Some(G::Dc(d)) => dc_palette(t, &d.s),
@@ -4650,7 +4672,7 @@ fn glyph_outline(c: &mut Ctx, wide: bool) -> u32 {
     if size < need {
         return 0xffff_ffff;
     }
-    let out = mem::slice_mut(buf, need);
+    let Some(out) = mem::guest_mut(buf, need) else { return 0xffff_ffff };
     out.fill(0);
     for y in 0..g.h {
         for x in 0..g.w {
@@ -5631,5 +5653,55 @@ mod far_shape_tests {
         call(Polygon, &[dc, pts, 3]);
         assert_eq!(call(GetPixel, &[dc, 4, 4]), 0x00_00ff);
         assert!(t0.elapsed() < std::time::Duration::from_secs(10), "{:?}", t0.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// review 2026-11-14 A-4: CreateCompatibleBitmap(65536, 65536) and DDSURFACEDESC sizes like it
+    /// wrapped to a 4-byte block in u32
+    #[test]
+    fn huge_images_are_refused() {
+        assert_eq!(image_size(65536, 65536, 32, 2), None);
+        assert_eq!(image_size(65536, 65536, 32, 4), None);
+        assert_eq!(image_size(i32::MAX, i32::MAX, 32, 4), None);
+        assert_eq!(image_size(0x4000_0000, 1, 32, 4), None);
+        assert_eq!(image_size(0, 10, 32, 4), None);
+        assert_eq!(image_size(10, 0, 32, 4), None);
+        assert_eq!(image_size(-1, 10, 32, 4), None);
+        assert_eq!(image_size(1920, 1080, 32, 4), Some((7680, 7680 * 1080)));
+        assert_eq!(image_size(3, 2, 1, 2), Some((2, 4)));
+        assert_eq!(image_size(3, 2, 24, 4), Some((12, 24)));
+    }
+
+    proptest! {
+        /// in range, the strides are the ones GDI always used (DDB WORD rows, DIB DWORD rows);
+        /// a size is given only when stride * height fits below 2 GB
+        #[test]
+        fn image_size_matches_gdi(w in 1i32..=40000, h in 1i32..=40000, bpp in prop_oneof![Just(1u32), Just(4), Just(8), Just(16), Just(24), Just(32)]) {
+            let ddb = ((w as u64 * bpp as u64 + 15) / 16) * 2;
+            let dib = ((w as u64 * bpp as u64 + 31) / 32) * 4;
+            for (align, row) in [(2, ddb), (4, dib)] {
+                let got = image_size(w, h, bpp, align);
+                if row * h as u64 >= mem::GUEST_TOP as u64 {
+                    prop_assert_eq!(got, None);
+                } else {
+                    prop_assert_eq!(got, Some((row as u32, (row * h as u64) as u32)));
+                }
+            }
+        }
+
+        #[test]
+        fn image_size_never_wraps(w in any::<i32>(), h in any::<i32>(), bpp in 0u32..=64, align in 0u32..=8) {
+            if let Some((row, size)) = image_size(w, h, bpp, align) {
+                prop_assert!(w > 0 && h > 0);
+                prop_assert!(row as u64 * 8 >= w as u64 * bpp as u64);
+                prop_assert_eq!(size as u64, row as u64 * h as u64);
+                prop_assert!(size < mem::GUEST_TOP);
+            }
+        }
     }
 }

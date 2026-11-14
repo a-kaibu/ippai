@@ -658,7 +658,7 @@ fn _msize(c: &mut Ctx) -> u32 {
 fn memcpy(c: &mut Ctx) -> u32 {
     let (d, s, n) = (c.a(0), c.a(1), c.a(2));
     if n != 0 {
-        unsafe { std::ptr::copy(mem::slice(s, n).as_ptr(), mem::slice_mut(d, n).as_mut_ptr(), n as usize) };
+        mem::copy(d, s, n);
     }
     d
 }
@@ -2810,10 +2810,10 @@ fn memmove_s(c: &mut Ctx) -> u32 {
 }
 fn mem_s(c: &mut Ctx, f: fn(Option<&mut [u8]>, Option<&[u8]>, usize) -> i32) -> u32 {
     let (d, dn, s, n) = (c.a(0), size(c, 1), c.a(2), size(c, 3));
-    let dn = dn.min(0u32.wrapping_sub(d.max(1)));
+    let dn = dn.min(mem::GUEST_TOP.saturating_sub(d));
     // (the source as a copy: memmove_s's overlap is then no matter)
     let src = (s != 0).then(|| mem::slice(s, n.min(dn.saturating_add(1)).min(0u32.wrapping_sub(s))).to_vec());
-    let e = f((d != 0).then(|| mem::slice_mut(d, dn)), src.as_deref(), n as usize);
+    let e = f((d != 0).then(|| mem::guest_mut(d, dn)).flatten(), src.as_deref(), n as usize);
     errno_of(e);
     e as u32
 }
