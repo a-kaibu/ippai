@@ -50,6 +50,10 @@ fn fl(c: &Ctx, i: u32) -> f32 {
     c.f(i)
 }
 
+/// The most code units or glyphs one call takes (a garbage count is E_INVALIDARG, not a
+/// multi-GB loop or allocation)
+const MAX_COUNT: u32 = 1 << 22;
+
 fn wstr(p: u32, n: Option<u32>) -> Vec<u16> {
     let mut v = Vec::new();
     if p == 0 {
@@ -288,10 +292,16 @@ fn new_layout(text: Vec<u16>, fmt: u32, w: f32, h: f32, out: u32) -> u32 {
 
 fn CreateTextLayout(c: &mut Ctx) -> u32 {
     // (this, string, length, format, max width, max height, out)
+    if c.a(2) > MAX_COUNT {
+        return E_INVALIDARG;
+    }
     new_layout(wstr(c.a(1), Some(c.a(2))), c.a(3), fl(c, 4), fl(c, 5), c.a(6))
 }
 fn CreateGdiCompatibleTextLayout(c: &mut Ctx) -> u32 {
     // (this, string, length, format, width, height, pixels per dip, transform, natural, out)
+    if c.a(2) > MAX_COUNT {
+        return E_INVALIDARG;
+    }
     new_layout(wstr(c.a(1), Some(c.a(2))), c.a(3), fl(c, 4), fl(c, 5), c.a(9))
 }
 
@@ -811,6 +821,9 @@ fn FontGetMetrics(c: &mut Ctx) -> u32 {
 fn GetGlyphIndices(c: &mut Ctx) -> u32 {
     // (this, code points, count, out glyph indices)
     let (cp, n, out) = (c.a(1), c.a(2), c.a(3));
+    if n > MAX_COUNT {
+        return E_INVALIDARG;
+    }
     let Some(f) = crate::gdi::face_font(value(c.a(0)) as usize, 16.0) else { return E_INVALIDARG };
     for i in 0..n {
         mem::w16(out + 2 * i, f.glyph_index(mem::r32(cp + 4 * i)));
@@ -823,6 +836,9 @@ fn GetGlyphIndices(c: &mut Ctx) -> u32 {
 fn GetGlyphRunOutline(c: &mut Ctx) -> u32 {
     let (face, em) = (value(c.a(0)) as usize, fl(c, 1));
     let (idx, adv, off, n, rtl, sink) = (c.a(2), c.a(3), c.a(4), c.a(5), c.a(7), c.a(8));
+    if n > MAX_COUNT {
+        return E_INVALIDARG;
+    }
     let font = if adv == 0 { crate::gdi::face_font(face, em) } else { None };
     let mut pen = 0f32;
     let mut v = Vec::with_capacity(n as usize);
@@ -1384,4 +1400,40 @@ mod fallback_tests {
 
 pub fn init() {
     implement("dwrite", "DWriteCreateFactory", DWriteCreateFactory);
+}
+
+#[cfg(test)]
+mod review_b06_tests {
+    use super::*;
+
+    /// Garbage counts (0xffffffff, just past the cap) are E_INVALIDARG before any guest memory
+    /// is walked: the string and glyph pointers here are 0x10, in the unmapped null page, so a
+    /// walk would fault
+    #[test]
+    fn huge_counts_are_invalid_arguments() {
+        let _g = crate::test_guest::enter();
+        // (a face object whose value is face 0)
+        let face = mem::heap_alloc(8, true);
+        for n in [MAX_COUNT + 1, 0x8000_0000, u32::MAX] {
+            assert_eq!(crate::test_guest::call(CreateTextLayout, &[0, 0x10, n, 0, 0, 0, 0]), E_INVALIDARG);
+            assert_eq!(crate::test_guest::call(CreateGdiCompatibleTextLayout, &[0, 0x10, n, 0, 0, 0, 0, 0, 0, 0]), E_INVALIDARG);
+            assert_eq!(crate::test_guest::call(GetGlyphIndices, &[face, 0x10, n, 0x10]), E_INVALIDARG);
+            assert_eq!(crate::test_guest::call(GetGlyphRunOutline, &[face, 0, 0x10, 0, 0, n, 0, 0, 0]), E_INVALIDARG);
+        }
+        mem::heap_free(face);
+    }
+
+    proptest::proptest! {
+        /// wstr with a count reads exactly that many units (no NUL stop) for any count up to the cap
+        #[test]
+        fn wstr_with_a_count_reads_that_many(units in proptest::collection::vec(proptest::prelude::any::<u16>(), 0..64)) {
+            let _g = crate::test_guest::enter();
+            let p = mem::heap_alloc(2 * units.len() as u32 + 2, true);
+            for (i, &u) in units.iter().enumerate() {
+                mem::w16(p + 2 * i as u32, u);
+            }
+            proptest::prop_assert_eq!(wstr(p, Some(units.len() as u32)), units.clone());
+            mem::heap_free(p);
+        }
+    }
 }
