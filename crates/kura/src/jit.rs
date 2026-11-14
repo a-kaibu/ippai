@@ -20,7 +20,7 @@ use crate::cpu::Linear;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use koji::jit::{self, wasm::Module};
 use koji::{Cpu, Exit};
@@ -272,6 +272,9 @@ struct State {
     /// table index of the saved regions' first function on this thread, once instantiated
     #[cfg(target_os = "emscripten")]
     saved: Option<i32>,
+    /// the same for each part that came after the start (see [`late_part`]; -1: it failed)
+    #[cfg(target_os = "emscripten")]
+    late: HashMap<u16, i32>,
     /// entries of functions (jit::FN): regions never take their hash entry
     fns: HashSet<u32>,
     /// times each function was built
@@ -686,6 +689,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 merges: 0,
                 #[cfg(target_os = "emscripten")]
                 saved: None,
+                #[cfg(target_os = "emscripten")]
+                late: HashMap::new(),
                 fns: HashSet::new(),
                 fn_builds: HashMap::new(),
                 site_fn: HashMap::new(),
@@ -1026,37 +1031,128 @@ fn enter(st: &mut State, base: u32, roots: Vec<u32>, starts: &[(u32, u32)]) {
     st.roots.insert(base, roots);
 }
 
-/// The saved regions (empty without any).
+/// The saved regions (empty without any): the bundle the page started the module with (part
+/// 0), then the parts it hands over once the program runs ([`vnhost_jit_late`]: the page waits
+/// only for the first part, the regions runs saved first, #123).
+#[derive(Default)]
 struct Saved {
     entries: Vec<jit::saved::Entry>,
-    /// each entry's table index past the bundle's first
+    /// each entry's part, and its table index past the part's first function
+    part: Vec<u16>,
     offsets: Vec<u32>,
     /// regions by their first root
     by_root: HashMap<u32, Vec<usize>>,
     /// functions by their entry (all builds)
     by_fn: HashMap<u32, Vec<usize>>,
+    /// late parts in: (module bytes, its function count), part k at k - 1
+    late: Vec<(&'static [u8], u32)>,
 }
 
-fn saved_regions() -> &'static Saved {
-    static S: std::sync::OnceLock<Saved> = std::sync::OnceLock::new();
-    S.get_or_init(|| {
-        #[cfg(target_os = "emscripten")]
-        let entries = unsafe {
-            let n = vnvm_jit_bundle_idx(std::ptr::null_mut(), 0);
-            let mut b = vec![0u8; n.max(0) as usize];
-            if n > 0 {
-                vnvm_jit_bundle_idx(b.as_mut_ptr(), b.len());
-            }
-            jit::saved::decode_all(&b).unwrap_or_default()
-        };
-        #[cfg(not(target_os = "emscripten"))]
-        let entries: Vec<jit::saved::Entry> = Vec::new();
-        let (mut by_root, mut by_fn): (HashMap<u32, Vec<usize>>, HashMap<u32, Vec<usize>>) = (HashMap::new(), HashMap::new());
-        for (i, e) in entries.iter().enumerate() {
-            if e.build > 0 { &mut by_fn } else { &mut by_root }.entry(e.roots[0]).or_default().push(i);
+impl Saved {
+    /// Adds part `part`'s entries (its module's functions in their order).
+    fn add(&mut self, part: u16, entries: Vec<jit::saved::Entry>) {
+        let offsets = jit::saved::offsets(&entries);
+        for (e, o) in entries.into_iter().zip(offsets) {
+            let i = self.entries.len();
+            if e.build > 0 { &mut self.by_fn } else { &mut self.by_root }.entry(e.roots[0]).or_default().push(i);
+            self.entries.push(e);
+            self.part.push(part);
+            self.offsets.push(o);
         }
-        Saved { offsets: jit::saved::offsets(&entries), entries, by_root, by_fn }
-    })
+    }
+}
+
+/// Parts the page handed over after the start: (module address, length, index address,
+/// length). The page writes a slot, then the count (one writer: the page's main thread, which
+/// must not block); threads take them in at their next look for a saved region (saved_regions).
+const LATE_MAX: usize = 64;
+struct Inbox {
+    slots: [[AtomicUsize; 4]; LATE_MAX],
+    count: AtomicUsize,
+}
+
+impl Inbox {
+    const fn new() -> Self {
+        Inbox { slots: [const { [const { AtomicUsize::new(0) }; 4] }; LATE_MAX], count: AtomicUsize::new(0) }
+    }
+    /// (one writer)
+    fn push(&self, v: [usize; 4]) -> bool {
+        let k = self.count.load(Ordering::Relaxed);
+        if k >= LATE_MAX {
+            return false;
+        }
+        for (a, v) in self.slots[k].iter().zip(v) {
+            a.store(v, Ordering::Relaxed);
+        }
+        self.count.store(k + 1, Ordering::Release);
+        true
+    }
+    fn len(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+    /// slot `k` < [`len`] (that call's Acquire saw its stores)
+    fn get(&self, k: usize) -> [usize; 4] {
+        self.slots[k].each_ref().map(|a| a.load(Ordering::Relaxed))
+    }
+}
+
+static LATE: Inbox = Inbox::new();
+
+/// The page: a saved part that came after the module started, its module and index in memory
+/// from malloc, kura's from now on (never freed). 0 taken, -1 refused (no room).
+#[no_mangle]
+pub extern "C" fn vnhost_jit_late(wasm: *const u8, wasm_len: u32, idx: *const u8, idx_len: u32) -> i32 {
+    if wasm.is_null() || idx.is_null() || !LATE.push([wasm as usize, wasm_len as usize, idx as usize, idx_len as usize]) {
+        return -1;
+    }
+    0
+}
+
+static SAVED: std::sync::LazyLock<std::sync::RwLock<Saved>> = std::sync::LazyLock::new(|| {
+    #[cfg(target_os = "emscripten")]
+    let entries = unsafe {
+        let n = vnvm_jit_bundle_idx(std::ptr::null_mut(), 0);
+        let mut b = vec![0u8; n.max(0) as usize];
+        if n > 0 {
+            vnvm_jit_bundle_idx(b.as_mut_ptr(), b.len());
+        }
+        jit::saved::decode_all(&b).unwrap_or_default()
+    };
+    #[cfg(not(target_os = "emscripten"))]
+    let entries: Vec<jit::saved::Entry> = Vec::new();
+    let mut s = Saved::default();
+    s.add(0, entries);
+    std::sync::RwLock::new(s)
+});
+
+/// The saved regions, with the parts the page has handed over since the last look.
+fn saved_regions() -> std::sync::RwLockReadGuard<'static, Saved> {
+    let n = LATE.len();
+    {
+        let s = SAVED.read().unwrap();
+        if s.late.len() >= n {
+            return s;
+        }
+    }
+    let mut s = SAVED.write().unwrap();
+    take_late(&mut s, &LATE, n);
+    drop(s);
+    SAVED.read().unwrap()
+}
+
+/// Puts `inbox`'s parts below `n` into `s` (those not in yet), as parts 1 up. A part whose
+/// index does not decode counts with no regions (its module is then never loaded).
+fn take_late(s: &mut Saved, inbox: &Inbox, n: usize) {
+    while s.late.len() < n {
+        let k = s.late.len();
+        let [w, wl, i, il] = inbox.get(k);
+        // SAFETY: the page gave both to kura for good (vnhost_jit_late), written before the count
+        let (wasm, idx): (&'static [u8], &[u8]) = unsafe { (std::slice::from_raw_parts(w as *const u8, wl), std::slice::from_raw_parts(i as *const u8, il)) };
+        let entries = jit::saved::decode_all(idx).unwrap_or_default();
+        let funcs = entries.iter().map(|e| e.width()).sum();
+        s.late.push((wasm, funcs));
+        s.add(k as u16 + 1, entries);
+    }
 }
 
 /// A saved region for `roots` (any built from `roots[0]` when `exact` is off: the one with most
@@ -1076,16 +1172,40 @@ fn find_saved(mem: &mut Linear, roots: &[u32], exact: bool, trap: (u32, u32)) ->
         .max_by_key(|&i| s.entries[i].roots.len())
 }
 
-/// Puts saved region `i` in (instantiating the saved module on this thread first).
+/// The table index on this thread of the first function of part `part` (instantiated on this
+/// thread first: the bundle the page compiled, or a late part's module compiled here), or -1.
+#[cfg(target_os = "emscripten")]
+fn part_base(st: &mut State, s: &Saved, part: u16) -> i32 {
+    if part == 0 {
+        return *st.saved.get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
+    }
+    *st.late.entry(part).or_insert_with(|| {
+        let (wasm, n) = s.late[part as usize - 1];
+        // (not in st.loads: kept for good, as the bundle)
+        let t0 = Instant::now();
+        let base = unsafe { vnvm_jit_load(wasm.as_ptr(), wasm.len(), n) };
+        MODULES[5].fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
+        // (the first thread to load each part says so: the run log shows the late parts used)
+        static SAID: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+        let mut said = SAID.lock().unwrap();
+        if base < 0 || !said.contains(&part) {
+            said.push(part);
+            eprintln!("vnjit: saved part {part} loaded: {n} functions, {} KiB, {} ms{}", wasm.len() >> 10, t0.elapsed().as_millis(), if base < 0 { " (failed)" } else { "" });
+        }
+        base
+    })
+}
+
+/// Puts saved region `i` in (instantiating its part on this thread first).
 fn load_saved(st: &mut State, i: usize) -> bool {
+    let s = saved_regions();
     #[cfg(target_os = "emscripten")]
-    let base = *st.saved.get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
+    let base = part_base(st, &s, s.part[i]);
     #[cfg(not(target_os = "emscripten"))]
     let base = -1;
     if base < 0 {
         return false;
     }
-    let s = saved_regions();
     let e = &s.entries[i];
     mark_code(&e.code);
     enter(st, base as u32 + s.offsets[i], e.roots.clone(), &e.starts);
@@ -1108,14 +1228,14 @@ fn find_saved_fn(mem: &mut Linear, eip: u32) -> Option<usize> {
 
 /// Puts saved function `i` in.
 fn load_saved_fn(st: &mut State, i: usize) -> bool {
+    let s = saved_regions();
     #[cfg(target_os = "emscripten")]
-    let base = *st.saved.get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
+    let base = part_base(st, &s, s.part[i]);
     #[cfg(not(target_os = "emscripten"))]
     let base = -1;
     if base < 0 {
         return false;
     }
-    let s = saved_regions();
     let e = &s.entries[i];
     st.fn_builds.insert(e.roots[0], e.build);
     enter_fn(st, base as u32 + s.offsets[i], e.roots[0], &e.starts, &e.sites, &e.code);
@@ -2608,5 +2728,104 @@ mod merge_tests {
             w < limit
         });
         assert!(rings.count() < 40, "merged within a few hundred thousand hops");
+    }
+}
+
+#[cfg(test)]
+mod late_tests {
+    use super::*;
+    use jit::saved::Entry;
+    use proptest::prelude::*;
+
+    fn entry(root: u32, build: u32) -> Entry {
+        Entry { roots: vec![root], starts: vec![(root, 0)], code: vec![(root, 4)], text: vec![0x90; 4], build, sites: vec![] }
+    }
+
+    /// A part as the page hands it over: its bytes kept for good (as kura keeps the page's).
+    fn hand(inbox: &Inbox, entries: &[Entry]) -> bool {
+        let idx: &'static [u8] = Vec::leak(jit::saved::encode(entries));
+        let wasm: &'static [u8] = Vec::leak(vec![0u8, 0x61, 0x73, 0x6d]);
+        inbox.push([wasm.as_ptr() as usize, wasm.len(), idx.as_ptr() as usize, idx.len()])
+    }
+
+    proptest! {
+        /// However the saved regions come in parts (the first at the start, the others taken
+        /// in at any later looks), each region's part and its index in that part's module are
+        /// those of the part's own list, and the lookups find every region and function.
+        #[test]
+        fn late_parts_keep_each_part_s_offsets(
+            parts in prop::collection::vec(prop::collection::vec((0u32..64, 0u32..3), 0..12), 1..6),
+            looks in prop::collection::vec(0usize..6, 0..6),
+        ) {
+            let parts: Vec<Vec<Entry>> = parts.iter().map(|p| p.iter().map(|&(r, b)| entry(0x40_0000 + r * 16, b)).collect()).collect();
+            let inbox = Inbox::new();
+            let mut s = Saved::default();
+            s.add(0, parts[0].clone());
+            for p in &parts[1..] {
+                prop_assert!(hand(&inbox, p));
+            }
+            // (looks in any order of counts: never backwards, the inbox only grows)
+            let mut seen = 0;
+            for l in looks.iter().map(|&l| l.min(inbox.len())) {
+                seen = seen.max(l);
+                take_late(&mut s, &inbox, seen);
+            }
+            take_late(&mut s, &inbox, inbox.len());
+            prop_assert_eq!(s.late.len(), parts.len() - 1);
+            let mut i = 0;
+            for (k, p) in parts.iter().enumerate() {
+                let offs = jit::saved::offsets(p);
+                for (e, o) in p.iter().zip(offs) {
+                    prop_assert!(s.entries[i] == *e);
+                    prop_assert_eq!(s.part[i], k as u16);
+                    prop_assert_eq!(s.offsets[i], o);
+                    let by = if e.build > 0 { &s.by_fn } else { &s.by_root };
+                    prop_assert!(by[&e.roots[0]].contains(&i));
+                    i += 1;
+                }
+                if k > 0 {
+                    prop_assert_eq!(s.late[k - 1].1, p.iter().map(|e| e.width()).sum::<u32>());
+                }
+            }
+            prop_assert_eq!(i, s.entries.len());
+        }
+    }
+
+    /// The page's main thread hands parts over while threads look (each taking in what it
+    /// sees under the write lock): every part comes in once, in order, none lost or torn.
+    #[test]
+    fn parts_handed_over_while_threads_look() {
+        for _ in 0..50 {
+            let inbox: &'static Inbox = Box::leak(Box::new(Inbox::new()));
+            let saved = std::sync::RwLock::new(Saved::default());
+            std::thread::scope(|sc| {
+                sc.spawn(|| {
+                    for k in 0..LATE_MAX as u32 {
+                        assert!(hand(inbox, &[entry(0x1000 * (k + 1), 0), entry(0x1000 * (k + 1) + 8, 1)]));
+                        std::thread::yield_now();
+                    }
+                    assert!(!hand(inbox, &[entry(1, 0)]), "past LATE_MAX: refused");
+                });
+                for _ in 0..3 {
+                    sc.spawn(|| {
+                        while saved.read().unwrap().late.len() < LATE_MAX {
+                            let n = inbox.len();
+                            if saved.read().unwrap().late.len() < n {
+                                take_late(&mut saved.write().unwrap(), inbox, n);
+                            }
+                        }
+                    });
+                }
+            });
+            let s = saved.into_inner().unwrap();
+            assert_eq!(s.late.len(), LATE_MAX);
+            assert_eq!(s.entries.len(), 2 * LATE_MAX);
+            for (i, e) in s.entries.iter().enumerate() {
+                let k = i / 2;
+                assert_eq!(s.part[i] as usize, k + 1);
+                assert_eq!(e.roots[0], 0x1000 * (k as u32 + 1) + if i % 2 == 1 { 8 } else { 0 });
+                assert_eq!(s.offsets[i], if i % 2 == 1 { 1 } else { 0 });
+            }
+        }
     }
 }

@@ -457,16 +457,19 @@ async fn add_part_within(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, n
     }
     let fresh_idx: Vec<saved::Entry> = new_idx.into_iter().zip(&keep).filter(|x| *x.1).map(|x| x.0).collect();
     // A save goes in a part of its own: the parts the browser has already compiled stay as
-    // they are (and their compiled code in its cache). Past PARTS_MAX they become one again.
+    // they are (and their compiled code in its cache). Past PARTS_MAX all but the first become
+    // one again: the first is what runs saved first, their start, which the page waits for
+    // alone (web/src/play.ts loadJit; the others it hands over once the game runs).
     let old_parts = parts.len();
     parts.push((fresh, fresh_idx));
     let merged = parts.len() > PARTS_MAX;
     if merged {
-        let entries: Vec<saved::Entry> = parts.iter().flat_map(|(_, e)| e.iter().cloned()).collect();
+        let rest = parts.split_off(1);
+        let entries: Vec<saved::Entry> = rest.iter().flat_map(|(_, e)| e.iter().cloned()).collect();
         let names = saved::func_names(&entries);
-        let mods: Vec<&[u8]> = parts.iter().map(|(w, _)| &w[..]).collect();
+        let mods: Vec<&[u8]> = rest.iter().map(|(w, _)| &w[..]).collect();
         let Some(merged) = wasm::merge(&mods, &names) else { return StatusCode::BAD_REQUEST };
-        parts = vec![(merged, entries)];
+        parts.push((merged, entries));
     }
     let write = async {
         tokio::fs::create_dir_all(dir).await?;
@@ -476,7 +479,7 @@ async fn add_part_within(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, n
             let idx = saved::encode(e);
             // parts already on the disk stay as they are (the browser has compiled them): only
             // the new one is written, or the one they were merged into
-            if merged || k >= old_parts {
+            if (merged && k > 0) || k >= old_parts {
                 let (tw, ti) = (path(&format!("{stem}wasm.tmp")), path(&format!("{stem}idx.tmp")));
                 tokio::fs::write(&tw, w).await?;
                 tokio::fs::write(&ti, &idx).await?;
@@ -1489,16 +1492,31 @@ mod tests {
         // the same regions again: nothing
         assert_eq!(add(2).await, axum::http::StatusCode::NO_CONTENT);
         assert!(!d.join(format!("{n}.3.wasm")).exists());
-        // past PARTS_MAX they become one, the others' files gone
+        // past PARTS_MAX all but the first become one, the others' files gone; the first (the
+        // start, which the page waits for alone) is not written again
+        let first = [ino(d.join(format!("{n}.wasm"))), ino(d.join(format!("{n}.idx")))];
+        let first_bytes = std::fs::read(d.join(format!("{n}.wasm"))).unwrap();
         for k in 3..=super::PARTS_MAX as u32 {
             assert_eq!(add(k).await, axum::http::StatusCode::NO_CONTENT);
         }
         let parts = super::read_parts(&d, n).await;
-        assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0].1.len(), 4 * (super::PARTS_MAX + 1));
-        assert!(wasm::check(&parts[0].0, 4 * (super::PARTS_MAX + 1)));
-        assert!(!d.join(format!("{n}.1.wasm")).exists() && !d.join(format!("{n}.1.idx")).exists());
-        assert_eq!(std::fs::read_to_string(d.join(format!("{n}.parts"))).unwrap().lines().count(), 1);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].0, first_bytes);
+        assert!(parts[0].1 == regions(4, 0x1000));
+        assert_eq!([ino(d.join(format!("{n}.wasm"))), ino(d.join(format!("{n}.idx")))], first);
+        assert_eq!(parts[1].1.len(), 4 * super::PARTS_MAX);
+        assert!(wasm::check(&parts[1].0, 4 * super::PARTS_MAX));
+        assert!(!d.join(format!("{n}.2.wasm")).exists() && !d.join(format!("{n}.2.idx")).exists());
+        let list = std::fs::read_to_string(d.join(format!("{n}.parts"))).unwrap();
+        assert_eq!(list.lines().count(), 2, "{list}");
+        // and once more past PARTS_MAX: still the first apart
+        for k in super::PARTS_MAX as u32 + 1..2 * super::PARTS_MAX as u32 {
+            assert_eq!(add(k).await, axum::http::StatusCode::NO_CONTENT);
+        }
+        let parts = super::read_parts(&d, n).await;
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].1 == regions(4, 0x1000));
+        assert_eq!(parts[1].1.len(), 4 * (2 * super::PARTS_MAX - 1));
         let _ = std::fs::remove_dir_all(&d);
     }
 

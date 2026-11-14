@@ -110,6 +110,7 @@ interface SakeModule {
   _vnhost_render_input(kind: number, x: number, y: number, data: number): number;
   _vnhost_render_info(out: number): void;
   _vnhost_net_busy?(): number;
+  _vnhost_jit_late?(wasm: number, wasmLen: number, idx: number, idxLen: number): number;
   /** host/fetch-bridge.js: the game's chunks fetched onto the device (warm.ts) */
   ippaiWarm?: Warm;
   _vnhost_display_view(out: number): void;
@@ -299,12 +300,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const jitBase = params.get("jit") ?? jitBaseOf(run);
   const jitVersion = translatorVersion(wasmVersion).then((v) => v + build.jit);
   const jitName = jitBase === "0" ? undefined : jitVersion.then((v) => `${jitBase}-${v}`);
-  const jit = jitName
-    ? jitName.then(async (name) => {
-        const parts = (await loadJit(name))?.parts ?? [];
-        return parts.length ? { parts } : undefined;
-      })
-    : Promise.resolve(undefined);
+  // (the first part before the start; the others once the program runs: lateJit)
+  const loaded = jitName ? jitName.then(loadJit) : Promise.resolve(undefined);
+  const jit = loaded.then((l) => (l?.parts.length ? { parts: l.parts } : undefined));
   // (the trees' chunk lengths, once their lists are here: the read-ahead's reservations)
   let treesRead!: (sizes: Map<string, number>) => void;
   const chunkSizes = new Promise<Map<string, number>>((r) => (treesRead = r));
@@ -641,6 +639,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     console.log(`sake memory: ${mib(before)} -> ${mib(sake.wasmMemory.buffer.byteLength)} MiB`);
   }
   ahead?.(sake);
+  // (a restored state has the late parts it had in its memory already)
+  if (!stateMem) void loaded.then((l) => l && handLate(sake, l.late));
   // (a save to the device going on meanwhile gives way while the game waits: offline.ts)
   setGameBusy(() => !!sake._vnhost_net_busy?.());
   // the rest of the game's files onto the device while it plays: what earlier runs read first,
@@ -704,24 +704,33 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
  */
 const JIT_LOADS = 4;
 
+/** A saved part fetched after the start: its module's bytes and its index (lateJit). */
+type LatePart = { wasm: Uint8Array; idx: Uint8Array };
+
 /**
- * The saved regions `name`, its parts compiled while they download (the browser caches each
- * part's code: a run's save adds a part, the others stay the same), if any.
+ * The saved regions `name`: the parts the start waits for, compiled while they download (the
+ * browser caches each part's code: a run's save adds a part, the others stay the same), and the
+ * rest, fetched once those are here. The first part is the regions runs saved first (their
+ * start: ippai serve keeps it apart when it merges parts); the others are what later play
+ * reached, which a thread takes in when it first misses one of their regions (kura jit.rs
+ * vnhost_jit_late; meanwhile it translates as without them). #123: a game whose parts are big
+ * started only once all were downloaded and compiled.
  */
 async function loadJit(
   name: string,
-): Promise<{ parts: { module: WebAssembly.Module; idx: Uint8Array }[] } | undefined> {
+): Promise<{ parts: { module: WebAssembly.Module; idx: Uint8Array }[]; late: Promise<LatePart[]> } | undefined> {
   const ok = (r: Response) => (r.ok ? r : Promise.reject(new HttpError(r.status)));
   try {
     // "<module> <index> <version>" per part
     const list = new TextDecoder()
       .decode(await fetchRetry(`jit/${name}.parts`, {}, { giveUpMs: 60000 }))
       .split("\n")
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((line) => line.split(" ") as [string, string, string]);
+    const [first, rest] = splitParts(list);
     const parts = await pool(
       JIT_LOADS,
-      list.map((line) => async () => {
-        const [wasm, idx, v] = line.split(" ");
+      first.map(([wasm, idx, v]) => async () => {
         const [module, bytes] = await Promise.all([
           // (streamed: the browser keeps the compiled code of a ?v= URL; tried again as a whole)
           withRetries(() => WebAssembly.compileStreaming(fetch(`jit/${wasm}?v=${v}`).then(ok))),
@@ -730,11 +739,49 @@ async function loadJit(
         return { module, idx: bytes };
       }),
     );
-    return parts.length ? { parts } : undefined;
+    // (a part that fails is left out: its regions get translated)
+    const late = pool(
+      2,
+      rest.map(([wasm, idx, v]) => () =>
+        Promise.all([
+          fetchRetry(`jit/${wasm}?v=${v}`, {}, { giveUpMs: 60000 }),
+          fetchRetry(`jit/${idx}?v=${v}`, {}, { giveUpMs: 60000 }),
+        ]).then(
+          ([w, i]) => (WebAssembly.validate(w) ? { wasm: w, idx: i } : null),
+          () => null,
+        ),
+      ),
+    ).then((l) => l.filter((x) => x !== null) as LatePart[]);
+    return parts.length || rest.length ? { parts, late } : undefined;
   } catch (e) {
     console.log(`no saved regions for ${name}: ${String(e)}`);
     return undefined;
   }
+}
+
+/** The parts (`.parts` lines, oldest first) the start waits for, and the rest: the first
+ * (&jitall: all of them, as before #123). */
+function splitParts<T>(list: T[]): [T[], T[]] {
+  const n = params.has("jitall") ? list.length : 1;
+  return [list.slice(0, n), list.slice(n)];
+}
+
+/** Hands the late parts to the running module (kura's vnhost_jit_late keeps the memory). */
+async function handLate(sake: SakeModule, late: Promise<LatePart[]>): Promise<void> {
+  const parts = await late;
+  for (const p of parts) {
+    // (a save state is being taken: the memory stays as it is)
+    while (snapping()) await new Promise((r) => setTimeout(r, 50));
+    const w = sake._malloc(p.wasm.length) >>> 0;
+    const i = sake._malloc(Math.max(p.idx.length, 1)) >>> 0;
+    if (!w || !i) return;
+    // (a fresh view: the memory may have grown)
+    const heap = new Uint8Array(sake.wasmMemory.buffer);
+    heap.set(p.wasm, w);
+    heap.set(p.idx, i);
+    if (sake._vnhost_jit_late?.(w, p.wasm.length, i, p.idx.length) !== 0) return;
+  }
+  if (parts.length) console.log(`saved regions: ${parts.length} more parts after the start`);
 }
 
 /**
