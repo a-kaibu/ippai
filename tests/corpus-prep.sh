@@ -135,7 +135,12 @@ if [ ! -d x ]; then
     elif LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | grep -qx 'Type = Lzh' &&
         LC_ALL=C.UTF-8 7z l -slt "$s" 2>/dev/null | sed '1,/^----------$/d' | grep -qiE '^Path = .*\.exe$' &&
         mkdir -p "$s.lzh" && (cd "$s.lzh" && LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$s" >/dev/null 2>&1) && [ -n "$(ls "$s.lzh")" ]; then rm -f "$s"
-    else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx" "$s.cab" "$s.lzh"
+    # an electron-builder NSIS installer (あにまるめいど!'s animal_maid-1.0.0-x64.exe): the app is
+    # $PLUGINSDIR/app-64.7z (or app-32.7z), what the installer would put in its folder. Unpacked
+    # here, the page runs its resources/app.asar as a web game (ippai pack: asar.rs) instead of
+    # sake running the installer (#234: 914 MB in the page) and then Electron's x64 Chromium
+    elif a=$(python3 -I "$HERE/corpus/electron_nsis.py" "$s" "$s.app" 2>/dev/null) && [ -n "$(ls "$s.app")" ]; then rm -f "$s"
+    else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx" "$s.cab" "$s.lzh" "$s.app"
     fi
   done
   [ "$(find x.part -type f -iname '*.exe' | sort | md5sum)" = "$before" ] && break
