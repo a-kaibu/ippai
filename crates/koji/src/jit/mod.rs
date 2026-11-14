@@ -308,12 +308,96 @@ fn seg16() -> Option<u32> {
     SEG16_ON.load(core::sync::atomic::Ordering::Relaxed).then(|| SEG16.load(core::sync::atomic::Ordering::Relaxed))
 }
 
+/// The types and imports every translated module starts with (a 32-bit module's, or a
+/// long-mode one's: `long`), added to `module` if it has none yet. The server keeps only
+/// modules with exactly these ([`wasm::check`]).
+pub fn module_head(module: &mut Module, long: bool) {
+    if module.types.is_empty() {
+        module.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
+        module.types.push(FuncType { params: alloc::vec![I32; 5], results: alloc::vec![I32] });
+        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32] });
+        module.imports.push(Import::Memory);
+        module.imports.push(Import::Func("step", 0));
+        module.imports.push(Import::Func("eflags", 0));
+        module.imports.push(Import::Func("status", 1));
+        let mut x87 = alloc::vec![I32; 3];
+        x87.extend_from_slice(&[F64; 8]);
+        module.types.push(FuncType { params: x87, results: alloc::vec![] });
+        module.imports.push(Import::Func("x87", 3));
+        module.imports.push(Import::Table("table"));
+    }
+    // (in every 32-bit module: saved bundles merge regions and functions, which needs the same
+    // types and imports)
+    if !long && module.types.len() == T_FN as usize {
+        // T_FN: (cpu, ESP, 7 registers, depth | entry << 16, budget, return address) ->
+        // (status, EIP, 8 registers, budget): the state in V8's registers (or its stack) both
+        // ways, not in the Cpu
+        module.types.push(FuncType { params: alloc::vec![I32; 1 + FN_ARGS.len()], results: alloc::vec![I32; 11] });
+        module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32] });
+        module.imports.push(Import::Func("callmiss", T_CALLMISS));
+    }
+}
+
+/// Who translates now ([`SEG16`] is one static every translation reads, and translations run
+/// on several threads at once): the number of 32-bit translations, [`GATE_WANT`] while a
+/// 16-bit one waits for them to end (none start meanwhile), [`GATE_EXCL`] while it runs
+/// (alone). formal/tla/TranslateGate.tla checks the protocol.
+static GATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+const GATE_WANT: u32 = 1 << 30;
+const GATE_EXCL: u32 = 1 << 31;
+
+/// A 32-bit translation's place in [`GATE`] (left when dropped).
+struct Shared;
+impl Shared {
+    fn enter() -> Shared {
+        use core::sync::atomic::Ordering::*;
+        loop {
+            let s = GATE.load(Relaxed);
+            if s & (GATE_WANT | GATE_EXCL) == 0 && GATE.compare_exchange_weak(s, s + 1, Acquire, Relaxed).is_ok() {
+                return Shared;
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+impl Drop for Shared {
+    fn drop(&mut self) {
+        GATE.fetch_sub(1, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// A 16-bit translation's hold on [`GATE`]: alone (left when dropped).
+struct Excl;
+impl Excl {
+    fn enter() -> Excl {
+        use core::sync::atomic::Ordering::*;
+        // (one waiter at a time: the others wait for its WANT to go)
+        loop {
+            let s = GATE.load(Relaxed);
+            if s & (GATE_WANT | GATE_EXCL) == 0 && GATE.compare_exchange_weak(s, s | GATE_WANT, Relaxed, Relaxed).is_ok() {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        while GATE.compare_exchange_weak(GATE_WANT, GATE_EXCL, Acquire, Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        Excl
+    }
+}
+impl Drop for Excl {
+    fn drop(&mut self) {
+        GATE.store(0, core::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Translates the 16-bit code at linear `root` (CS base `cs_base`): see [`SEG16`]. One root, no
 /// merges (regions of other code segments would need their own base).
 pub fn translate_region16<M: Memory>(module: &mut Module, mem: &mut M, root: u32, cs_base: u32, max_blocks: usize, accept: impl FnMut(u32) -> bool) -> Option<Region> {
+    let _alone = Excl::enter();
     SEG16.store(cs_base, core::sync::atomic::Ordering::Relaxed);
     SEG16_ON.store(true, core::sync::atomic::Ordering::Relaxed);
-    let r = translate(module, mem, &[root], max_blocks, MAX_REGION_INS, accept, None, &|_| None, &|_| false);
+    let r = translate_seen(module, Snapshot::new(mem), &[root], max_blocks, MAX_REGION_INS, accept, None, &|_| None, &|_| false);
     SEG16_ON.store(false, core::sync::atomic::Ordering::Relaxed);
     r
 }
@@ -560,6 +644,9 @@ struct Gen<'a> {
     /// per register, the largest value it can have here if known (since an `and r32, imm` or
     /// a movzx in the block): an access to [table + r * scale] then needs no check
     small: [Option<u32>; 8],
+    /// (one for the whole translation: each `new` allocates, and every pass of every
+    /// instruction asks)
+    info: iced_x86::InstructionInfoFactory,
     /// functions: per block, the registers checked to be in the guest range on every way in
     /// (see [`safe_in`])
     safe_in: Vec<u8>,
@@ -579,6 +666,10 @@ struct Gen<'a> {
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
+    /// the current instruction's store went through write_op / packed's `stored`, which test
+    /// it in a block whose code may be rewritten (Gen::smc, Gen::fresh); for the others
+    /// Gen::emit tests what iced says it wrote
+    store_seen: bool,
     /// whether L_MX, L_MXR and L_MXT hold the x87's modes, loaded at depth modes_depth (see
     /// Gen::modes)
     modes: bool,
@@ -1762,6 +1853,7 @@ impl<'a> Gen<'a> {
                 } else if self.slots.is_some() {
                     self.slots_reload_if(addr.unwrap(), op_bits(ins, i) / 8);
                 }
+                self.store_seen = true;
                 if self.smc {
                     let off = self.mem_at(addr.unwrap());
                     let e = self.temp();
@@ -2328,13 +2420,7 @@ impl<'a> Gen<'a> {
         let next = ins.next_ip32();
         // registers this instruction writes lose what was known about them (push/pop keep
         // ESP's track themselves)
-        let mut written = 0u32;
-        for u in iced_x86::InstructionInfoFactory::new().info(ins).used_registers() {
-            use iced_x86::OpAccess::*;
-            if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) && u.register().is_gpr() {
-                written |= 1 << u.register().full_register32().number();
-            }
-        }
+        let (mut written, xmm_written) = reg_writes(&mut self.info, ins);
         if matches!(ins.mnemonic(), Push | Pop) {
             written &= !(1 << 4);
             if ins.mnemonic() == Pop && ins.op_kind(0) == OpKind::Register && ins.op_register(0).full_register32() == Register::ESP {
@@ -2353,14 +2439,17 @@ impl<'a> Gen<'a> {
             self.xmm_flush();
             self.xmm = (0, 0);
         }
+        self.store_seen = false;
         let r = self.emit_ins(last, next, simple);
+        // (a store that went its own way, not through write_op: PUSH, FST/FIST, FNSTCW, the
+        // 64-bit and cached 128-bit vector moves, ...; review b02)
+        if (self.smc || self.fresh.is_some()) && r && !self.fell_back && !self.store_seen && ins.flow_control() == FlowControl::Next && seg16().is_none() {
+            self.watch_after();
+        }
         if self.mx_seen.iter().any(|s| s[1].is_some()) {
             // (what the instruction writes: checked no more)
-            use iced_x86::OpAccess;
-            for u in iced_x86::InstructionInfoFactory::new().info(ins).used_registers() {
-                if u.register().is_xmm() && !matches!(u.access(), OpAccess::Read | OpAccess::CondRead | OpAccess::None) {
-                    self.mx_seen[u.register() as usize - Register::XMM0 as usize] = [None; 2];
-                }
+            for x in (0..self.mx_seen.len()).filter(|x| xmm_written & (1 << x) != 0) {
+                self.mx_seen[x] = [None; 2];
             }
         }
         for i in 0..8 {
@@ -2386,6 +2475,75 @@ impl<'a> Gen<'a> {
             }
         }
         r
+    }
+
+    /// After the current instruction (it ran, it goes on to the next): for each memory
+    /// location iced says it writes, the self-modifying code checks of a store there
+    /// ([`Gen::smc_check`], [`Gen::fresh_store`]), its address worked out again from the
+    /// registers now (`written`: those it changed; a stack pointer it moved is moved back).
+    fn watch_after(&mut self) {
+        use iced_x86::OpAccess;
+        let ins = self.ins;
+        // (the instruction's code is done: its temporaries are free, as at the next one)
+        self.temps = 0;
+        let (written, _) = reg_writes(&mut self.info, ins);
+        let spi = ins.stack_pointer_increment();
+        let stores: Vec<(Register, Register, u32, u32, Register, u32)> = self
+            .info
+            .info(ins)
+            .used_memory()
+            .iter()
+            .filter(|u| matches!(u.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite))
+            .map(|u| (u.base(), u.index(), u.scale(), u.displacement() as u32, u.segment(), u.memory_size().size() as u32))
+            .collect();
+        for (base, index, scale, mut disp, seg, size) in stores {
+            let ok = |r: Register| r == Register::None || r.is_gpr32();
+            if !ok(base) || !ok(index) || size == 0 {
+                continue;
+            }
+            let moved = |r: Register| r != Register::None && written & (1 << r.number()) != 0;
+            if moved(index) {
+                continue;
+            }
+            if moved(base) {
+                // the stack pointer a PUSH moved: as it was before; a POP to [esp+d] has its
+                // address from ESP after (SDM), the rest are not worked out
+                match (base, ins.mnemonic()) {
+                    (Register::ESP, _) if spi < 0 => disp = disp.wrapping_sub(spi as u32),
+                    (Register::ESP, Mnemonic::Pop) => {}
+                    _ => continue,
+                }
+            }
+            let e = self.temp();
+            self.c.u32c(disp);
+            if base != Register::None {
+                self.c.get(L_REG + base.number() as u32).add();
+            }
+            if index != Register::None {
+                self.c.get(L_REG + index.number() as u32);
+                if scale > 1 {
+                    self.c.i32c(scale.trailing_zeros() as i32).shl();
+                }
+                self.c.add();
+            }
+            match seg {
+                Register::FS => {
+                    self.c.get(L_CPU).load32(Off::fs()).add();
+                }
+                Register::GS => {
+                    self.c.get(L_CPU).load32(Off::gs()).add();
+                }
+                _ => {}
+            }
+            self.c.set(e);
+            if self.smc {
+                self.smc_check(e);
+            }
+            if self.fresh.is_some() {
+                self.fresh_store(e, 0, size);
+            }
+            self.temps -= 1;
+        }
     }
 
     /// Leaves the block for the interpreter at `eip` (the state is that before `eip`) unless
@@ -3404,7 +3562,8 @@ impl<'a> Gen<'a> {
                     let t = self.temp();
                     match self.thunks.get(&ins.near_branch32()) {
                         // an import thunk's: to where its slot points
-                        Some(&slot) if (GUEST_LO..GUEST_HI).contains(&slot) => self.c.u32c(slot).load32(0).set(t),
+                        // (all four bytes of it inside the guest's range)
+                        Some(&slot) if (GUEST_LO..=GUEST_HI - 4).contains(&slot) => self.c.u32c(slot).load32(0).set(t),
                         _ => self.c.u32c(ins.near_branch32()).set(t),
                     };
                     self.call_fn(t, next);
@@ -4737,15 +4896,29 @@ fn slot_operand(ins: &Instruction, i: u32, base: Register) -> Option<i32> {
 /// The stack slots a loop keeps in locals (Gen::slots): the most used 32-bit [EBP + d] (or
 /// [ESP + d]) of a loop of plain integer instructions that doesn't write that register (so
 /// every store goes through Gen::write_op, and nothing outside the loop's code runs).
+/// SETcc, CMOVcc (and SETSSBSY: the mnemonics named Set*/Cmov*, as the loop cache took them).
+fn setcc_cmovcc(m: Mnemonic) -> bool {
+    use Mnemonic::*;
+    matches!(
+        m,
+        Seta | Setae | Setb | Setbe | Sete | Setg | Setge | Setl | Setle | Setne | Setno | Setnp | Setns | Seto | Setp | Sets | Setssbsy
+            | Cmova | Cmovae | Cmovb | Cmovbe | Cmove | Cmovg | Cmovge | Cmovl | Cmovle | Cmovne | Cmovno | Cmovnp | Cmovns | Cmovo | Cmovp | Cmovs
+    )
+}
+
 fn slot_loop(blocks: &[(u32, Vec<Instruction>)]) -> Option<(Register, Vec<i32>)> {
     use Mnemonic::*;
+    // (off by default: then nothing below is worth its cost, run for every outer loop)
+    let max = SLOTS_MAX.load(core::sync::atomic::Ordering::Relaxed) as usize;
+    if max == 0 {
+        return None;
+    }
     let all = || blocks.iter().flat_map(|b| b.1.iter());
     for ins in all() {
         let plain = matches!(
             ins.mnemonic(),
             Mov | Movzx | Movsx | Add | Sub | Adc | Sbb | And | Or | Xor | Cmp | Test | Inc | Dec | Neg | Not | Lea | Shl | Shr | Sar | Rol | Ror | Imul | Mul | Div | Idiv | Cdq | Nop
-        ) || alloc::format!("{:?}", ins.mnemonic()).starts_with("Set")
-            || alloc::format!("{:?}", ins.mnemonic()).starts_with("Cmov")
+        ) || setcc_cmovcc(ins.mnemonic())
             || matches!(ins.flow_control(), FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch) && ins.op0_kind() == OpKind::NearBranch32;
         if !plain || ins.has_lock_prefix() || ins.has_rep_prefix() || ins.has_repne_prefix() {
             return None;
@@ -4763,7 +4936,7 @@ fn slot_loop(blocks: &[(u32, Vec<Instruction>)]) -> Option<(Register, Vec<i32>)>
     }
     let mut list: Vec<(i32, u32)> = uses.into_iter().filter(|u| u.1 >= 2).collect();
     list.sort_by_key(|u| core::cmp::Reverse(u.1));
-    list.truncate(SLOTS_MAX.load(core::sync::atomic::Ordering::Relaxed) as usize);
+    list.truncate(max);
     (!list.is_empty()).then(|| (base, list.into_iter().map(|u| u.0).collect()))
 }
 
@@ -4815,14 +4988,29 @@ fn mm_names(list: &[Instruction]) -> u8 {
     m
 }
 
-/// What `ins` leaves in [`Gen::small`].
-fn small_after(small: &mut [Option<u32>; 8], ins: &Instruction) {
-    let mut info = iced_x86::InstructionInfoFactory::new();
+/// The general registers (by number, 32-bit) and the XMM registers `ins` may write (iced's
+/// register usage).
+fn reg_writes(info: &mut iced_x86::InstructionInfoFactory, ins: &Instruction) -> (u32, u32) {
+    use iced_x86::OpAccess::*;
+    let (mut gpr, mut xmm) = (0u32, 0u32);
     for u in info.info(ins).used_registers() {
-        use iced_x86::OpAccess::*;
-        if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) && u.register().is_gpr() {
-            small[u.register().full_register32().number()] = Option::None;
+        let r = u.register();
+        if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) && r.is_gpr() {
+            gpr |= 1 << r.full_register32().number();
         }
+        // (what the instruction writes: anything but a read)
+        if r.is_xmm() && !matches!(u.access(), Read | CondRead | None) {
+            xmm |= 1 << (r as u32 - Register::XMM0 as u32);
+        }
+    }
+    (gpr, xmm)
+}
+
+/// What `ins` leaves in [`Gen::small`].
+fn small_after(info: &mut iced_x86::InstructionInfoFactory, small: &mut [Option<u32>; 8], ins: &Instruction) {
+    let (gpr, _) = reg_writes(info, ins);
+    for r in (0..8).filter(|r| gpr & (1 << r) != 0) {
+        small[r] = Option::None;
     }
     if ins.op_count() == 2 && ins.op_kind(0) == OpKind::Register && ins.op_register(0).is_gpr32() {
         let r = ins.op_register(0).number();
@@ -4841,6 +5029,9 @@ fn small_after(small: &mut [Option<u32>; 8], ins: &Instruction) {
 fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usize, count: &mut usize) {
     let list = &blocks[k].1;
     g.block_index = k as u32;
+    // (the temporaries of the block before are not this one's: the HLE and fresh-code entries
+    // below run before the first Gen::emit resets them)
+    g.temps = 0;
     g.ctx = g.ctxs[k];
     g.mx_checked = None;
     g.mx_seen = [[None; 2]; 8];
@@ -4892,7 +5083,7 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     let mut skip = false;
     for (i, ins) in list.iter().enumerate() {
         if i > 0 {
-            small_after(&mut g.small, &list[i - 1]);
+            small_after(&mut g.info, &mut g.small, &list[i - 1]);
         }
         if core::mem::take(&mut skip) {
             continue;
@@ -5313,6 +5504,7 @@ fn translate<M: Memory>(
     hints: &dyn Fn(u32) -> Option<u32>,
     ran: &dyn Fn(u32) -> bool,
 ) -> Option<Region> {
+    let _shared = Shared::enter();
     translate_seen(module, Snapshot::new(mem), roots, max_blocks, max_ins, accept, fn_trap, hints, ran)
 }
 
@@ -5481,30 +5673,7 @@ fn translate_seen<M: Memory>(
         }
     }
     let blocks: Vec<(u32, Vec<Instruction>)> = order.iter().map(|&b| blocks[b].clone()).collect();
-    if module.types.is_empty() {
-        module.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
-        module.types.push(FuncType { params: alloc::vec![I32; 5], results: alloc::vec![I32] });
-        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32] });
-        module.imports.push(Import::Memory);
-        module.imports.push(Import::Func("step", 0));
-        module.imports.push(Import::Func("eflags", 0));
-        module.imports.push(Import::Func("status", 1));
-        let mut x87 = alloc::vec![I32; 3];
-        x87.extend_from_slice(&[F64; 8]);
-        module.types.push(FuncType { params: x87, results: alloc::vec![] });
-        module.imports.push(Import::Func("x87", 3));
-        module.imports.push(Import::Table("table"));
-    }
-    // (in every module: saved bundles merge regions and functions, which needs the same
-    // types and imports)
-    if module.types.len() == T_FN as usize {
-        // T_FN: (cpu, ESP, 7 registers, depth | entry << 16, budget, return address) ->
-        // (status, EIP, 8 registers, budget): the state in V8's registers (or its stack) both
-        // ways, not in the Cpu
-        module.types.push(FuncType { params: alloc::vec![I32; 1 + FN_ARGS.len()], results: alloc::vec![I32; 11] });
-        module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32] });
-        module.imports.push(Import::Func("callmiss", T_CALLMISS));
-    }
+    module_head(module, false);
 
     let n = blocks.len() as u32;
     let mut returns: Vec<u32> = blocks
@@ -5598,6 +5767,7 @@ fn translate_seen<M: Memory>(
         ins: &blocks[0].1[0],
         live_after: 0,
         small: [None; 8],
+        info: iced_x86::InstructionInfoFactory::new(),
         safe_in: Vec::new(),
         hoist: BTreeMap::new(),
         preds: Vec::new(),
@@ -5630,6 +5800,7 @@ fn translate_seen<M: Memory>(
         notes: String::new(),
         fuse_zx: false,
         fell_back: false,
+        store_seen: false,
         modes: false,
         modes_depth: 0,
         sizes: Default::default(),
@@ -5881,6 +6052,57 @@ mod tests {
         assert_eq!(hle_len(Hle::Move), 48);
     }
 
+    /// A HLE block emitted after another block of the region (sigcheck.dll's sha256_compress
+    /// joining its caller's region): the temporaries the block before left counted (a RET's,
+    /// a direct CALL's, a Jcc's flags) are not its own; sha256 takes all ten (it asserted).
+    #[test]
+    fn hle_block_after_other_blocks() {
+        const AT: u32 = 0x400;
+        // blocks before it ending in what leaves temporaries: ret, call rel32, jz, ret imm16
+        let lead: [&[u8]; 4] = [&[0xc3], &[0xe8, 0, 0, 0, 0], &[0x85, 0xc0, 0x74, 0x00], &[0xc2, 0x04, 0x00]];
+        for l in lead {
+            let mut v = l.to_vec();
+            v.resize(AT as usize, 0xcc);
+            v.extend_from_slice(SHA256);
+            let mut m = Module::default();
+            let r = translate_region(&mut m, &mut Code(v.clone()), &[0x10_0000, 0x10_0000 + AT], 16, |_| true).unwrap();
+            assert!(r.code.contains(&(0x10_0000 + AT, SHA256.len() as u32)), "{l:x?}: {:x?}", r.code);
+            valid(m);
+        }
+    }
+
+    /// The wasm the JIT made is valid (threads, tail calls, SIMD).
+    fn valid(m: Module) {
+        let bytes = m.finish();
+        let mut f = wasmparser::WasmFeatures::default();
+        f.insert(wasmparser::WasmFeatures::THREADS | wasmparser::WasmFeatures::TAIL_CALL);
+        wasmparser::Validator::new_with_features(f).validate_all(&bytes).expect("valid wasm");
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(400))]
+        /// Any code ahead of sha256_compress in its region (any bytes, decoded as they come,
+        /// a RET after them): the translation keeps the HLE block and is valid wasm.
+        #[test]
+        fn hle_after_any_code(lead in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..48), fnm: bool) {
+            const AT: u32 = 0x400;
+            let mut v = lead.clone();
+            v.push(0xc3);
+            v.resize(AT as usize, 0xcc);
+            v.extend_from_slice(SHA256);
+            let mut m = Module::default();
+            let r = if fnm {
+                translate_function(&mut m, &mut Code(v), 0x10_0000, 64, MAX_REGION_INS, (0, 0), &|_| None, &|_| true, |_| true)
+            } else {
+                translate_region(&mut m, &mut Code(v), &[0x10_0000, 0x10_0000 + AT], 64, |_| true)
+            };
+            if let Some(r) = r {
+                proptest::prop_assert!(fnm || r.code.contains(&(0x10_0000 + AT, SHA256.len() as u32)), "{:x?}", r.code);
+                valid(m);
+            }
+        }
+    }
+
     fn function_size(max_ins: usize) -> usize {
         let mut m = Module::default();
         let r = translate_function(&mut m, &mut code(), 0x10_0000, MAX_BLOCKS, max_ins, (0, 0), &|_| None, &|_| true, |_| true).unwrap();
@@ -5906,6 +6128,44 @@ mod tests {
             }
         });
     }
+    /// 32-bit translations while another thread translates 16-bit code (a Win16 task next to
+    /// a 32-bit one): the same module as alone (the 16-bit mode was a static they read too).
+    #[test]
+    fn mode16_is_per_translation() {
+        let small = || {
+            let mut v: Vec<u8> = core::iter::repeat_n([0x40u8, 0x01, 0xc8, 0xeb, 0x00], 40).flatten().collect();
+            v.push(0xc3);
+            Code(v)
+        };
+        let one = || {
+            let mut m = Module::default();
+            translate_region(&mut m, &mut small(), &[0x10_0000], 64, |_| true).unwrap();
+            m.finish()
+        };
+        let alone = one();
+        let stop = core::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while !stop.load(core::sync::atomic::Ordering::Relaxed) {
+                    let mut m = Module::default();
+                    let _ = translate_region16(&mut m, &mut small(), 0x10_0000, 0x10_0000, 64, |_| true);
+                }
+            });
+            let ts: Vec<_> = (0..3).map(|_| s.spawn(|| (0..300).all(|_| one() == alone))).collect();
+            let ok = ts.into_iter().all(|t| t.join().unwrap());
+            stop.store(true, core::sync::atomic::Ordering::Relaxed);
+            assert!(ok, "a 32-bit translation came out different next to a 16-bit one");
+        });
+    }
+    /// The loop cache's SETcc/CMOVcc test is what its names said (every mnemonic iced has).
+    #[test]
+    fn setcc_cmovcc_by_name() {
+        for m in Mnemonic::values() {
+            let n = alloc::format!("{m:?}");
+            assert_eq!(setcc_cmovcc(m), n.starts_with("Set") || n.starts_with("Cmov"), "{n}");
+        }
+    }
+
     /// What a callee reads of the flags at its call (see callee_reads), from its code.
     #[test]
     fn callee_flag_reads() {

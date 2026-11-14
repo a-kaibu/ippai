@@ -330,28 +330,28 @@ pub fn fxsave<M: Memory + ?Sized>(cpu: &Cpu, mem: &mut M, a: u32) -> Result<(), 
     let f = &cpu.fpu;
     let tw = !f.empty; // abridged: 1 = valid
     mem.write16(a, f.cw)?;
-    mem.write16(a + 2, f.status())?;
-    mem.write8(a + 4, tw)?;
-    mem.write8(a + 5, 0)?;
+    mem.write16(a.wrapping_add(2), f.status())?;
+    mem.write8(a.wrapping_add(4), tw)?;
+    mem.write8(a.wrapping_add(5), 0)?;
     for o in (6..24).step_by(2) {
-        mem.write16(a + o, 0)?;
+        mem.write16(a.wrapping_add(o), 0)?;
     }
-    mem.write32(a + 24, cpu.mxcsr)?;
-    mem.write32(a + 28, 0xffff)?;
+    mem.write32(a.wrapping_add(24), cpu.mxcsr)?;
+    mem.write32(a.wrapping_add(28), 0xffff)?;
     for i in 0..8u32 {
         // (an 80-bit value as it is: the precise mode's, or an exact FILD integer)
         let b = cpu.fpu.st80(i).to_bytes();
         for (k, x) in b.iter().enumerate() {
-            mem.write8(a + 32 + 16 * i + k as u32, *x)?;
+            mem.write8(a.wrapping_add(32 + 16 * i + k as u32), *x)?;
         }
         for k in 10..16 {
-            mem.write8(a + 32 + 16 * i + k, 0)?;
+            mem.write8(a.wrapping_add(32 + 16 * i + k), 0)?;
         }
     }
     for i in 0..if cpu.mode64 != 0 { 16 } else { 8 } {
         let x = cpu.xmm(i as usize);
-        mem.write64(a + 160 + 16 * i, x as u64)?;
-        mem.write64(a + 168 + 16 * i, (x >> 64) as u64)?;
+        mem.write64(a.wrapping_add(160 + 16 * i), x as u64)?;
+        mem.write64(a.wrapping_add(168 + 16 * i), (x >> 64) as u64)?;
     }
     Ok(())
 }
@@ -359,21 +359,21 @@ pub fn fxsave<M: Memory + ?Sized>(cpu: &Cpu, mem: &mut M, a: u32) -> Result<(), 
 /// Loads the x87/SSE state from an FXSAVE image at `a`.
 pub fn fxrstor<M: Memory + ?Sized>(cpu: &mut Cpu, mem: &mut M, a: u32) -> Result<(), Fault> {
     let cw = mem.read16(a)?;
-    let sw = mem.read16(a + 2)?;
-    let tw = mem.read8(a + 4)?;
-    let mxcsr = mem.read32(a + 24)?;
+    let sw = mem.read16(a.wrapping_add(2))?;
+    let tw = mem.read8(a.wrapping_add(4))?;
+    let mxcsr = mem.read32(a.wrapping_add(24))?;
     let mut regs = [f80::F80::default(); 8];
     for (i, r) in regs.iter_mut().enumerate() {
         let mut b = [0u8; 10];
         for (k, x) in b.iter_mut().enumerate() {
-            *x = mem.read8(a + 32 + 16 * i as u32 + k as u32)?;
+            *x = mem.read8(a.wrapping_add(32 + 16 * i as u32 + k as u32))?;
         }
         *r = f80::F80::from_bytes(&b);
     }
     let mut xmm = [0u128; 16];
     for (i, x) in xmm.iter_mut().enumerate().take(if cpu.mode64 != 0 { 16 } else { 8 }) {
-        let lo = mem.read64(a + 160 + 16 * i as u32)?;
-        let hi = mem.read64(a + 168 + 16 * i as u32)?;
+        let lo = mem.read64(a.wrapping_add(160 + 16 * i as u32))?;
+        let hi = mem.read64(a.wrapping_add(168 + 16 * i as u32))?;
         *x = lo as u128 | (hi as u128) << 64;
     }
     let f = &mut cpu.fpu;
@@ -391,4 +391,56 @@ pub fn fxrstor<M: Memory + ?Sized>(cpu: &mut Cpu, mem: &mut M, a: u32) -> Result
         cpu.set_xmm(i, *x);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod fx_tests {
+    extern crate std;
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Memory up to `top` (exclusive), faulting above; a write log for what landed where.
+    struct Top(u64, alloc::collections::BTreeMap<u32, u8>);
+    impl Memory for Top {
+        fn read8(&mut self, a: u32) -> Result<u8, Fault> {
+            if u64::from(a) < self.0 { Ok(self.1.get(&a).copied().unwrap_or(0)) } else { Err(Fault { addr: a, write: false }) }
+        }
+        fn write8(&mut self, a: u32, v: u8) -> Result<(), Fault> {
+            if u64::from(a) < self.0 {
+                self.1.insert(a, v);
+                Ok(())
+            } else {
+                Err(Fault { addr: a, write: true })
+            }
+        }
+    }
+
+    proptest! {
+        /// FXSAVE / FXRSTOR with the image anywhere, past the top of the address space too:
+        /// a fault (never an overflow panic: tests and debug builds check), and with all of it
+        /// mapped a round trip of the state.
+        #[test]
+        fn fx_image_anywhere(a in prop_oneof![u32::MAX - 600..=u32::MAX, 0xffff_fc00u32..=u32::MAX, 0x1000u32..0x2000], top_gap in prop_oneof![Just(0u32), 0u32..1024], xmm: [u128; 8], cw in 0u16..0x1000) {
+            let mut cpu = Cpu::default();
+            for (i, x) in xmm.iter().enumerate() {
+                cpu.set_xmm(i, *x);
+            }
+            cpu.fpu.cw = cw | 0x40;
+            let top = (1u64 << 32) - u64::from(top_gap);
+            let mut m = Top(top, Default::default());
+            let r = fxsave(&cpu, &mut m, a);
+            let fits = u64::from(a) + 512 <= top;
+            if fits {
+                prop_assert!(r.is_ok());
+                let mut back = Cpu::default();
+                prop_assert!(fxrstor(&mut back, &mut m, a).is_ok());
+                for i in 0..8 {
+                    prop_assert_eq!(back.xmm(i), cpu.xmm(i));
+                }
+            } else {
+                // (a wrapped image is not one the tests ask for: only that nothing panics)
+                let _ = fxrstor(&mut Cpu::default(), &mut m, a);
+            }
+        }
+    }
 }

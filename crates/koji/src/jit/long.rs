@@ -17,7 +17,7 @@
 //! 32-bit lazy record, or computed EFLAGS for 64-bit operations). Instructions the
 //! translator does not handle run through the `step` import.
 
-use super::wasm::{Code, Func, FuncType, Import, Module, F64, I32, I64, V128};
+use super::wasm::{Code, Func, Module, I32, I64, V128};
 
 #[path = "long/avx.rs"]
 mod avx;
@@ -2723,20 +2723,7 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
         b.flags_in = live.unwrap_or(true);
     }
 
-    if module.types.is_empty() {
-        module.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
-        module.types.push(FuncType { params: alloc::vec![I32; 5], results: alloc::vec![I32] });
-        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32] });
-        module.imports.push(Import::Memory);
-        module.imports.push(Import::Func("step", 0));
-        module.imports.push(Import::Func("eflags", 0));
-        module.imports.push(Import::Func("status", 1));
-        let mut x87 = alloc::vec![I32; 3];
-        x87.extend_from_slice(&[F64; 8]);
-        module.types.push(FuncType { params: x87, results: alloc::vec![] });
-        module.imports.push(Import::Func("x87", 3));
-        module.imports.push(Import::Table("table"));
-    }
+    super::module_head(module, true);
 
     let n = blocks.len() as u32;
     let mut returns: Vec<u64> = blocks

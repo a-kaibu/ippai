@@ -43,15 +43,19 @@ pub fn mem_site(s: usize) -> usize {
 }
 
 /// [`MEM_SITE`] while it lives (the previous one back after).
-pub struct MemSite(usize);
+/// (Nothing while not measuring: no atomic swap on a static all translating threads share,
+/// for every exit, spill and reload.)
+pub struct MemSite(Option<usize>);
 impl MemSite {
     pub fn new(s: usize) -> Self {
-        MemSite(mem_site(s))
+        MemSite(MEMCOUNT.load(core::sync::atomic::Ordering::Relaxed).then(|| mem_site(s)))
     }
 }
 impl Drop for MemSite {
     fn drop(&mut self) {
-        mem_site(self.0);
+        if let Some(s) = self.0 {
+            mem_site(s);
+        }
     }
 }
 
@@ -648,6 +652,11 @@ fn read_uleb(b: &[u8], p: &mut usize) -> Option<u64> {
     loop {
         let x = *b.get(*p)?;
         *p += 1;
+        // (a u64 takes 10 bytes at most, the last with 1 bit: anything longer, or bits past
+        // 64, is no number wasm has; `<< 64` would panic with overflow checks)
+        if s > 63 || (s == 63 && x & 0x7e != 0) {
+            return None;
+        }
         v |= ((x & 0x7f) as u64) << s;
         if x < 0x80 {
             return Some(v);
@@ -769,7 +778,12 @@ fn check_(m: &[u8], funcs: usize) -> Option<()> {
         }
         last = order;
     }
-    let imports = sec(&s, 2)?;
+    // the types and imports the translators write, byte for byte (an import of another type
+    // links nowhere: every page's instantiate of the bundle would throw)
+    let (types, imports) = (sec(&s, 1)?, sec(&s, 2)?);
+    if !heads().iter().any(|h| h.0 == types && h.1 == imports) {
+        return None;
+    }
     let mut p = 0;
     for _ in 0..read_uleb(imports, &mut p)? {
         let mut names = [&b""[..]; 2];
@@ -833,6 +847,18 @@ fn check_(m: &[u8], funcs: usize) -> Option<()> {
         }
     }
     Some(())
+}
+
+/// The types and imports sections of the translators' modules ([`super::module_head`]): 32-bit,
+/// long mode.
+fn heads() -> [(Vec<u8>, Vec<u8>); 2] {
+    [false, true].map(|long| {
+        let mut m = Module::default();
+        super::module_head(&mut m, long);
+        let b = m.finish();
+        let s = sections(&b).expect("our own module");
+        (sec(&s, 1).unwrap().to_vec(), sec(&s, 2).unwrap().to_vec())
+    })
 }
 
 /// A module of `funcs` (exported as "f0", "f1", ... and named `names` if there is one each).
@@ -986,10 +1012,7 @@ mod tests {
 
     fn sample(nfuncs: usize) -> Vec<u8> {
         let mut m = Module::default();
-        m.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
-        m.imports.push(Import::Memory);
-        m.imports.push(Import::Func("step", 0));
-        m.imports.push(Import::Table("table"));
+        super::super::module_head(&mut m, false);
         for k in 0..nfuncs {
             let mut code = Code::default();
             code.get(0).i32c(k as i32).op(0x6a);
@@ -1009,6 +1032,90 @@ mod tests {
         assert!(check(&m, 5));
         let s = select(&m, &[true, false, true, false, false]).unwrap();
         assert!(check(&s, 2));
+    }
+
+    /// What the translators really make passes, a 32-bit and a long-mode module; the same with
+    /// one import's type changed (it would not link) does not.
+    #[test]
+    fn check_takes_translated_modules_only_with_their_types() {
+        let code: alloc::vec::Vec<u8> = [0x40, 0x01, 0xc8, 0xc3].to_vec();
+        struct Mem(alloc::vec::Vec<u8>);
+        impl crate::Memory for Mem {
+            fn read8(&mut self, a: u32) -> Result<u8, crate::Fault> {
+                a.checked_sub(0x10_0000).and_then(|i| self.0.get(i as usize).copied()).ok_or(crate::Fault { addr: a, write: false })
+            }
+            fn write8(&mut self, a: u32, _: u8) -> Result<(), crate::Fault> {
+                Err(crate::Fault { addr: a, write: true })
+            }
+        }
+        let made = |tweak: &dyn Fn(&mut Module)| {
+            let mut m = Module::default();
+            super::super::module_head(&mut m, false);
+            tweak(&mut m);
+            super::super::translate_region(&mut m, &mut Mem(code.clone()), &[0x10_0000], 16, |_| true).unwrap();
+            (m.finish(), m.funcs.len())
+        };
+        let (a, n) = made(&|_| {});
+        assert!(check(&a, n));
+        let mut l = Module::default();
+        super::super::module_head(&mut l, true);
+        let mut c = Code::default();
+        c.get(0).op(0x6a);
+        l.funcs.push(Func { ty: 0, locals: alloc::vec![], code: c });
+        assert!(check(&l.finish(), 1));
+        // "status" imported as type 0 instead of 1
+        let (bad, n) = made(&|m| {
+            for i in &mut m.imports {
+                if let Import::Func("status", t) = i {
+                    *t = 0;
+                }
+            }
+        });
+        assert!(!check(&bad, n));
+        // a type changed
+        let (bad, n) = made(&|m| {
+            m.types[1].params.pop();
+        });
+        assert!(!check(&bad, n));
+    }
+
+    /// LEB128 numbers longer than a u64 or with bits past it are refused (it shifted by 64:
+    /// a panic with overflow checks), the rest read back as written.
+    #[test]
+    fn uleb_bounds() {
+        let mut p = 0;
+        assert_eq!(read_uleb(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01], &mut p), Some(u64::MAX));
+        p = 0;
+        assert_eq!(read_uleb(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x03], &mut p), None);
+        p = 0;
+        assert_eq!(read_uleb(&[0x80; 11], &mut p), None);
+        p = 0;
+        assert_eq!(read_uleb(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00], &mut p), None);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn uleb_round_trip(v: u64, tail in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..4)) {
+            let mut b = alloc::vec::Vec::new();
+            uleb(&mut b, v);
+            let n = b.len();
+            b.extend_from_slice(&tail);
+            let mut p = 0;
+            proptest::prop_assert_eq!(read_uleb(&b, &mut p), Some(v));
+            proptest::prop_assert_eq!(p, n);
+        }
+
+        /// Any bytes: no panic in any reader of modules.
+        #[test]
+        fn any_module_bytes(b in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..300), funcs in 0usize..4) {
+            let mut m = alloc::vec::Vec::from(&b"\0asm\x01\0\0\0"[..]);
+            m.extend_from_slice(&b);
+            let _ = check(&m, funcs);
+            let _ = select(&m, &alloc::vec![true; funcs]);
+            let _ = merge(&[&m, &m], &[]);
+            let mut p = 0;
+            let _ = read_uleb(&b, &mut p);
+        }
     }
 
     #[test]

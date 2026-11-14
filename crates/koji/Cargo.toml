@@ -12,6 +12,8 @@ libm = "0.2"
 [dev-dependencies]
 flate2 = "1"
 proptest = "1"
+# (the JIT's modules validated in the property tests)
+wasmparser = "0.263"
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux"))'.dev-dependencies]
 libc = "0.2"

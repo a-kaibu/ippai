@@ -1703,10 +1703,8 @@ mod tests {
     /// A module shaped like the translators' with `n` functions (`seed` makes it another).
     fn module(n: usize, seed: i32) -> Vec<u8> {
         let mut m = wasm::Module::default();
-        m.types.push(wasm::FuncType { params: vec![wasm::I32], results: vec![wasm::I32] });
-        m.imports.push(wasm::Import::Memory);
-        m.imports.push(wasm::Import::Func("step", 0));
-        m.imports.push(wasm::Import::Table("table"));
+        // (the translators' types and imports: the server keeps no other, wasm::check)
+        koji::jit::module_head(&mut m, false);
         for k in 0..n {
             let mut code = wasm::Code::default();
             code.get(0).i32c(seed * 1000 + k as i32).op(0x6a);

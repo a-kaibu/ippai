@@ -371,3 +371,10 @@ path = "fuzz_targets/dib_pack.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "jit_wasm_check"
+path = "fuzz_targets/jit_wasm_check.rs"
+test = false
+doc = false
+bench = false

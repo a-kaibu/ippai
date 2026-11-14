@@ -631,6 +631,7 @@ impl Gen<'_> {
     /// After a store of `size` bytes at local `a` (+ offset `off`): kept stack slots, and
     /// the check for code written in a self-modifying block (as write_op).
     fn stored(&mut self, a: u32, size: u32) {
+        self.store_seen = true;
         if self.slots.is_some() {
             self.slots_reload_if(a, size);
         }

@@ -11,7 +11,7 @@
 
 use alloc::vec::Vec;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     pub roots: Vec<u32>,
     pub starts: Vec<(u32, u32)>,
@@ -31,6 +31,12 @@ impl Entry {
             return alloc::format!("x86_{:08x}_fn", self.roots[0]);
         }
         alloc::format!("x86_{:08x}_{}", self.roots[0], self.roots.len())
+    }
+
+    /// What every entry the JIT makes is (an index from the network or a damaged file may say
+    /// anything): a root (its name), and the code bytes of all its ranges.
+    pub fn consistent(&self) -> bool {
+        !self.roots.is_empty() && self.code.iter().map(|&(_, n)| u64::from(n)).sum::<u64>() == self.text.len() as u64
     }
 
     /// Module functions (table entries) it takes.
@@ -113,10 +119,11 @@ fn decode_one(b: &[u8]) -> Option<(Vec<Entry>, usize)> {
             }
             let (starts, code) = (r.pairs()?, r.pairs()?);
             let n = r.u()? as usize;
-            let text = b.get(r.1..r.1 + n)?.to_vec();
+            let text = b.get(r.1..r.1.checked_add(n)?)?.to_vec();
             r.1 += n;
             let (build, sites) = if v2 { (r.u()?, (0..r.u()?).map(|_| r.u()).collect::<Option<Vec<_>>>()?) } else { (0, Vec::new()) };
-            Some(Entry { roots, starts, code, text, build, sites })
+            let e = Entry { roots, starts, code, text, build, sites };
+            e.consistent().then_some(e)
         })
         .collect::<Option<Vec<_>>>()?;
     Some((e, r.1))
@@ -176,12 +183,12 @@ mod decode_tests {
         /// read (if anything) has a root in every entry and can be named.
         #[test]
         fn damaged_indexes_have_roots_or_are_refused(es in prop::collection::vec(entry(), 0..5), flips in prop::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 0..6), cut in proptest::option::of(any::<prop::sample::Index>())) {
-            let es: Vec<Entry> = es.into_iter().map(|(roots, starts, text, build, sites)| Entry { roots, code: starts.clone(), starts, text, build, sites }).collect();
+            let es: Vec<Entry> = es.into_iter().map(|(roots, starts, text, build, sites)| Entry { roots, code: alloc::vec![(starts.first().map_or(0, |s| s.0), text.len() as u32)], starts, text, build, sites }).collect();
             let mut b = encode(&es);
             let back = decode(&b).unwrap();
             prop_assert_eq!(back.len(), es.len());
             for (a, e) in back.iter().zip(&es) {
-                prop_assert!(a.roots == e.roots && a.starts == e.starts && a.text == e.text && a.build == e.build && a.sites == e.sites);
+                prop_assert!(a.roots == e.roots && a.starts == e.starts && a.code == e.code && a.text == e.text && a.build == e.build && a.sites == e.sites);
             }
             for (at, v) in flips {
                 let i = at.index(b.len());
@@ -195,5 +202,66 @@ mod decode_tests {
                 let _ = (e.name(), e.width());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn entry() -> impl Strategy<Value = Entry> {
+        let words = || proptest::collection::vec(any::<u32>(), 0..4);
+        (words(), proptest::collection::vec((any::<u32>(), any::<u32>()), 0..3), proptest::collection::vec((any::<u32>(), 0u32..8), 0..3), 0u32..3, words(), any::<u8>(), 0u32..4).prop_map(|(roots, starts, code, build, sites, fill, skew)| {
+            // (one time in four the text is a byte off)
+            let n: u32 = code.iter().map(|c| c.1).sum::<u32>() + u32::from(skew == 0);
+            Entry { roots, starts, code, text: alloc::vec![fill; n as usize], build, sites }
+        })
+    }
+
+    proptest! {
+        /// An index of consistent entries reads back as written, alone and in a bundle; one
+        /// whose entry has no root or the wrong amount of code is refused (its name indexed
+        /// roots[0]: a panic, an abort in wasm).
+        #[test]
+        fn decode_takes_what_encode_wrote(es in proptest::collection::vec(entry(), 0..4), extra in 0usize..3, cut in any::<prop::sample::Index>()) {
+            let ok = es.iter().all(Entry::consistent);
+            let b = encode(&es);
+            let d = decode(&b);
+            prop_assert_eq!(d.is_some(), ok);
+            if let Some(d) = d {
+                prop_assert!(d == es);
+                let names = func_names(&d);
+                prop_assert_eq!(names.len() as u32, d.iter().map(Entry::width).sum::<u32>());
+                let two = [b.clone(), b.clone()].concat();
+                prop_assert_eq!(decode_all(&two).map(|a| a.len()), Some(2 * es.len()));
+            }
+            // (a cut index never reads)
+            if !b.is_empty() {
+                let at = cut.index(b.len());
+                prop_assert!(decode(&b[..at]).is_none());
+            }
+            let _ = extra;
+        }
+
+        /// Any bytes: no panic; what reads is consistent (the names can be made).
+        #[test]
+        fn any_bytes(b in proptest::collection::vec(any::<u8>(), 0..200), head in 0u8..3) {
+            let mut v = [b"VNJ1".to_vec(), b"VNJ2".to_vec(), Vec::new()][head as usize].clone();
+            v.extend_from_slice(&b);
+            if let Some(es) = decode_all(&v) {
+                prop_assert!(es.iter().all(Entry::consistent));
+                let _ = func_names(&es);
+            }
+        }
+    }
+
+    /// The review's case: an entry with no roots.
+    #[test]
+    fn no_roots_refused() {
+        let e = Entry { roots: Vec::new(), starts: Vec::new(), code: Vec::new(), text: Vec::new(), build: 1, sites: Vec::new() };
+        assert!(decode(&encode(&[e])).is_none());
+        let e = Entry { roots: alloc::vec![1], starts: Vec::new(), code: alloc::vec![(0x1000, 4)], text: alloc::vec![0; 3], build: 0, sites: Vec::new() };
+        assert!(decode(&encode(&[e])).is_none());
     }
 }
