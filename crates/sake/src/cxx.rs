@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 
 use crate::api::{implement, Ctx};
-use crate::mem::{cstr, r32, w32};
+use crate::mem::{r32, w32};
 use koji::{EAX, EBP, ESP};
 
 const CXX_EXCEPTION: u32 = 0xe06d_7363;
@@ -120,13 +120,13 @@ fn this_ptr(pmd: u32, obj: u32) -> u32 {
 /// `catch_flags` takes.
 fn caught_type(info: u32, catch_ti: u32, catch_flags: u32) -> Option<u32> {
     let table = r32(info + 12);
-    for i in 0..r32(table) {
+    for i in 0..r32(table).min(MAX_ENTRIES) {
         let ty = r32(table + 4 + 4 * i);
         let ti = r32(ty + 4);
         if catch_ti == 0 {
             return Some(ty);
         }
-        if catch_ti != ti && cstr(catch_ti + 8) != cstr(ti + 8) {
+        if catch_ti != ti && !same_name(catch_ti + 8, ti + 8) {
             continue;
         }
         let f = r32(info);
@@ -136,6 +136,26 @@ fn caught_type(info: u32, catch_ti: u32, catch_flags: u32) -> Option<u32> {
         return Some(ty);
     }
     None
+}
+
+/// Entries read from a table of the guest's FuncInfo / ThrowInfo at most (try blocks, catch
+/// blocks of one, catchable types): compilers emit a handful, a damaged table must not loop for
+/// 2^32 steps.
+const MAX_ENTRIES: u32 = 4096;
+
+/// Whether the decorated type names at `a` and `b` are the same, compared in place (no copy per
+/// candidate type per catch clause); at most 4 KB of a name.
+fn same_name(a: u32, b: u32) -> bool {
+    for i in 0..4096 {
+        let (x, y) = (crate::mem::r8(a.wrapping_add(i)), crate::mem::r8(b.wrapping_add(i)));
+        if x != y {
+            return false;
+        }
+        if x == 0 {
+            return true;
+        }
+    }
+    true
 }
 
 /// copies the thrown object to `dest` as the catch declares it
@@ -165,10 +185,13 @@ fn copy_object(c: &mut Ctx, obj: u32, dest: u32, catch_flags: u32, ty: u32) {
 fn local_unwind(c: &mut Ctx, frame: u32, descr: u32, last: i32) {
     let (count, table) = (r32(descr + 4) as i32, r32(descr + 8));
     let mut level = r32(frame + 8) as i32;
+    // (each step takes an entry: more steps than entries is a cycle in a damaged table)
+    let mut steps = count.max(0);
     while level != last {
-        if level < 0 || level >= count {
+        if level < 0 || level >= count || steps == 0 {
             break;
         }
+        steps -= 1;
         let e = table + 8 * level as u32;
         let f = r32(e + 4);
         // (the state first: a throw from a destructor must not run it again)
@@ -220,16 +243,16 @@ fn find_catch(c: &mut Ctx, rec: u32, frame: u32, descr: u32) -> bool {
     let (tries, try_table) = (r32(descr + 12), r32(descr + 16));
     let (obj, info) = if cxx { (r32(rec + 24), r32(rec + 28)) } else { (0, 0) };
     let level = r32(frame + 8) as i32;
-    for i in 0..tries {
-        let t = try_table + 20 * i;
+    for i in 0..tries.min(MAX_ENTRIES) {
+        let t = try_table.wrapping_add(20 * i);
         let (start, end) = (r32(t) as i32, r32(t + 4) as i32);
         if level < start || level > end {
             continue;
         }
         let (n, blocks) = (r32(t + 12), r32(t + 16));
         let mut handler = 0;
-        for k in 0..n {
-            let b = blocks + 16 * k;
+        for k in 0..n.min(MAX_ENTRIES) {
+            let b = blocks.wrapping_add(16 * k);
             let (cflags, cti, off, h) = (r32(b), r32(b + 4), r32(b + 8), r32(b + 12));
             if cxx && info != 0 {
                 let Some(ty) = caught_type(info, cti, cflags) else { continue };
@@ -533,5 +556,75 @@ pub fn init() {
     }
     for d in ["ucrtbase", "vcruntime140"] {
         implement(d, "_set_se_translator", _set_se_translator);
+    }
+}
+
+/// Review b05: tables of the guest's FuncInfo / ThrowInfo are read within bounds (a damaged
+/// count or a cycle in the unwind map ends), and type names compare in place.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::mem;
+    use crate::test_guest::enter;
+    use proptest::prelude::*;
+
+    fn with_ctx<R>(f: impl FnOnce(&mut Ctx) -> R) -> R {
+        let mut cpu = koji::Cpu::default();
+        f(&mut Ctx { cpu: &mut cpu, esp: 0, edx: None, jumped: false, st0: None, trap: 0, this: None })
+    }
+
+    proptest! {
+        /// same_name is equality of the NUL-terminated names
+        #[test]
+        fn names_compare_as_strings(a in prop::collection::vec(1u8..=255, 0..40), b in prop::collection::vec(1u8..=255, 0..40), same in any::<bool>()) {
+            let _g = enter();
+            let b = if same { a.clone() } else { b };
+            let (pa, pb) = (mem::heap_alloc(64, true), mem::heap_alloc(64, true));
+            mem::write(pa, &a);
+            mem::write(pb, &b);
+            prop_assert_eq!(same_name(pa, pb), a == b);
+            prop_assert_eq!(same_name(pa, pb), mem::cstr(pa) == mem::cstr(pb));
+            mem::heap_free(pa);
+            mem::heap_free(pb);
+        }
+
+        /// an unwind map whose entries lead back into themselves (any table of next states)
+        /// stops after at most `count` steps, at state `last`
+        #[test]
+        fn unwind_cycles_end(next in prop::collection::vec(-1i32..6, 1..6), start in 0i32..6) {
+            let _g = enter();
+            let n = next.len() as u32;
+            let (descr, table, frame) = (mem::heap_alloc(16, true), mem::heap_alloc(8 * n, true), mem::heap_alloc(16, true));
+            w32(descr + 4, n);
+            w32(descr + 8, table);
+            for (i, s) in next.iter().enumerate() {
+                w32(table + 8 * i as u32, *s as u32);
+            }
+            w32(frame + 8, start as u32);
+            with_ctx(|c| local_unwind(c, frame, descr, -1));
+            prop_assert_eq!(r32(frame + 8) as i32, -1);
+            for p in [descr, table, frame] { mem::heap_free(p); }
+        }
+    }
+
+    /// a ThrowInfo claiming 2^32 catchable types of garbage is searched MAX_ENTRIES deep
+    #[test]
+    fn catchable_types_are_bounded() {
+        let _g = enter();
+        let (info, table, ti) = (mem::heap_alloc(16, true), mem::heap_alloc(4 + 4 * MAX_ENTRIES + 64, true), mem::heap_alloc(32, true));
+        let (ty, other) = (mem::heap_alloc(32, true), mem::heap_alloc(32, true));
+        w32(info + 12, table);
+        w32(table, u32::MAX);
+        mem::write(ti + 8, b".?AVnone@@\0");
+        mem::write(other + 8, b".?AVother@@\0");
+        w32(ty + 4, other);
+        // (every entry a type of another name, and readable past the bound too)
+        for i in 0..MAX_ENTRIES + 16 {
+            w32(table + 4 + 4 * i, ty);
+        }
+        let t0 = std::time::Instant::now();
+        assert_eq!(caught_type(info, ti, 0), None);
+        assert!(t0.elapsed().as_secs() < 5);
+        for p in [info, table, ti, ty, other] { mem::heap_free(p); }
     }
 }

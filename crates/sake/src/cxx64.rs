@@ -142,8 +142,26 @@ pub fn image_base_of(addr: u32) -> u64 {
     crate::pe::MODULES.read().unwrap().iter().find(|m| addr.wrapping_sub(m.base) < m.size).map_or(0, |m| crate::mem::widen(m.base))
 }
 
-fn mangled(ti: u32) -> Vec<u8> {
-    crate::mem::cstr(ti + 16)
+/// Entries read from one table of a function's FuncInfo (try blocks, catch blocks, unwind
+/// entries, catchable types) at most, and IP-to-state entries: compilers emit far fewer, and a
+/// damaged table must not loop for 2^32 steps.
+const MAX_ENTRIES: u32 = 1 << 16;
+const MAX_IP_ENTRIES: u32 = 1 << 20;
+
+/// Whether type_infos `a` and `b` have the same decorated name, compared in place (no copy per
+/// candidate type per catch clause); at most 4 KB of a name.
+fn same_mangled(a: u32, b: u32) -> bool {
+    let (a, b) = (a.wrapping_add(16), b.wrapping_add(16));
+    for i in 0..4096 {
+        let (x, y) = (crate::mem::r8(a.wrapping_add(i)), crate::mem::r8(b.wrapping_add(i)));
+        if x != y {
+            return false;
+        }
+        if x == 0 {
+            return true;
+        }
+    }
+    true
 }
 
 /// The this pointer of a base class at `type`'s offsets within `object`.
@@ -166,13 +184,13 @@ fn this_ptr(ty: u32, object: u64) -> u64 {
 fn find_caught_type(exc_type: u32, exc_base: u64, catch_ti: u32, catch_flags: u32) -> Option<u32> {
     let rva = |r: u32| (exc_base as u32).wrapping_add(r);
     let table = rva(r32(exc_type + 12));
-    for i in 0..r32(table) {
-        let ty = rva(r32(table + 4 + 4 * i));
+    for i in 0..r32(table).min(MAX_ENTRIES) {
+        let ty = rva(r32(table.wrapping_add(4 + 4 * i)));
         let ti = rva(r32(ty + 4));
         if catch_ti == 0 {
             return Some(ty);
         }
-        if catch_ti != ti && mangled(catch_ti) != mangled(ti) {
+        if catch_ti != ti && !same_mangled(catch_ti, ti) {
             continue;
         }
         let ef = r32(exc_type);
@@ -281,6 +299,16 @@ fn end_catch(cpu: &mut koji::Cpu, a: Active) {
     set_current();
 }
 
+/// A catch block begins: catches whose funclets return deeper than it are gone (left by longjmp
+/// or a fiber switch: kept, the thread would never look idle again for save states).
+fn push_catch(a: Active) {
+    ACTIVE.with(|l| {
+        let mut l = l.borrow_mut();
+        l.retain(|x| x.key >= a.key);
+        l.push(a);
+    });
+}
+
 /// CATCH: the consolidation callback (RCX: the record; the return address is seh64's
 /// CONSOLIDATE_TRAP with the target context after it). Enters the catch funclet
 /// (RDX: the frame).
@@ -297,7 +325,9 @@ fn catch_entry(c: &mut Ctx) -> u32 {
     if trace() {
         eprintln!("sake: x64 C++: catch block {handler:#x} frame {frame:#x}");
     }
-    ACTIVE.with(|a| a.borrow_mut().push(Active { key: c.esp + 8, rec: prev, ctx, rethrown: false, kind }));
+    // (a catch whose funclet returns deeper on the stack than this one's can't still be running:
+    // it was left by longjmp or a fiber switch, and would keep the thread from ever looking idle)
+    push_catch(Active { key: c.esp + 8, rec: prev, ctx, rethrown: false, kind });
     set_current();
     // (the funclet as Wine's call_exc_handler calls it: RCX the handler, RDX the frame)
     c.cpu.set_gpr(1, handler);
@@ -450,8 +480,8 @@ impl Fh3 {
     }
     fn ip_to_state(&self, d: &Disp, ip: u64) -> i32 {
         let mut ret = -1;
-        for i in 0..self.ip_count {
-            let e = self.ipmap + 8 * i;
+        for i in 0..self.ip_count.min(MAX_IP_ENTRIES) {
+            let e = self.ipmap.wrapping_add(8 * i);
             if d.code(r32(e)) > ip {
                 break;
             }
@@ -461,7 +491,7 @@ impl Fh3 {
     }
     /// try block i: (start, end, catch level, catch count, catch blocks)
     fn tryblock(&self, d: &Disp, i: u32) -> (i32, i32, i32, u32, u32) {
-        let t = self.tryblocks + 20 * i;
+        let t = self.tryblocks.wrapping_add(20 * i);
         (r32(t) as i32, r32(t + 4) as i32, r32(t + 8) as i32, r32(t + 12), d.rva(r32(t + 16)))
     }
 }
@@ -472,11 +502,14 @@ fn local_unwind3(c: &mut Ctx, frame: u64, d: &Disp, f: &Fh3, last: i32) {
     if level == -2 {
         level = f.ip_to_state(d, d.pc);
     }
+    // (each step takes an entry: more steps than entries is a cycle in a damaged table)
+    let mut steps = f.unwind_count;
     while level > last {
-        if level < 0 || level as u32 >= f.unwind_count {
+        if level < 0 || level as u32 >= f.unwind_count || steps == 0 {
             crate::fatal(c.cpu, &format!("C++ unwind: invalid state {level} (terminate)"));
         }
-        let e = f.unwind_table + 8 * level as u32;
+        steps -= 1;
+        let e = f.unwind_table.wrapping_add(8 * level as u32);
         let h = r32(e + 4);
         if h != 0 {
             crate::call64(c.cpu, d.code(h), &[d.code(h), frame, 0x100]);
@@ -491,7 +524,7 @@ fn find_catch3(c: &mut Ctx, rec: u32, ctx: u32, frame: u64, d: &Disp, f: &Fh3, d
     let object = info(rec, 1);
     let mut level = f.ip_to_state(d, d.pc);
     let mut in_catch = None;
-    for i in (0..f.try_count).rev() {
+    for i in (0..f.try_count.min(MAX_ENTRIES)).rev() {
         let t = f.tryblock(d, i);
         if level > t.1 && level <= t.2 {
             in_catch = Some(t);
@@ -505,7 +538,7 @@ fn find_catch3(c: &mut Ctx, rec: u32, ctx: u32, frame: u64, d: &Disp, f: &Fh3, d
     } else {
         level = r32(help + 4) as i32;
     }
-    for i in 0..f.try_count {
+    for i in 0..f.try_count.min(MAX_ENTRIES) {
         let (start, end, _, count, blocks) = f.tryblock(d, i);
         if level < start || level > end {
             continue;
@@ -515,8 +548,8 @@ fn find_catch3(c: &mut Ctx, rec: u32, ctx: u32, frame: u64, d: &Disp, f: &Fh3, d
                 continue;
             }
         }
-        for j in 0..count {
-            let cb = blocks + 20 * j;
+        for j in 0..count.min(MAX_ENTRIES) {
+            let cb = blocks.wrapping_add(20 * j);
             let (cflags, cti, offset, handler) = (r32(cb), r32(cb + 4), r32(cb + 8) as i32, r32(cb + 12));
             let catch_ti = if cti != 0 { d.rva(cti) } else { 0 };
             if exc_type != 0 {
@@ -567,7 +600,7 @@ fn frame_handler3(c: &mut Ctx) -> u32 {
     let mut unwind_level = -1;
     // a nested exception (from a catch funclet): the frame of the function it belongs to
     let mut throw_func = None;
-    for i in (0..f.try_count).rev() {
+    for i in (0..f.try_count.min(MAX_ENTRIES)).rev() {
         let (_, end, catch_level, count, blocks) = f.tryblock(&d, i);
         if level > end && level <= catch_level {
             let tf = *throw_func.get_or_insert_with(|| crate::seh64::lookup(d.pc as u32).map(|(e, b)| b.wrapping_add(r32(e))));
@@ -624,20 +657,20 @@ const FH4_NO_EXCEPT: u8 = 0x40;
 
 /// FuncInfo4's compressed unsigned integers (1 to 4 bytes, the low bits say how many).
 fn decode_uint(p: &mut u32) -> u32 {
-    let b = |i: u32| crate::mem::r8(*p + i) as u32;
+    let b = |i: u32| crate::mem::r8(p.wrapping_add(i)) as u32;
     let (v, n) = match b(0) {
         x if x & 1 == 0 => (x >> 1, 1),
         x if x & 3 == 1 => ((x >> 2) + (b(1) << 6), 2),
         x if x & 7 == 3 => ((x >> 3) + (b(1) << 5) + (b(2) << 13), 3),
         x if x & 15 == 7 => ((x >> 4) + (b(1) << 4) + (b(2) << 12) + (b(3) << 20), 4),
-        _ => (r32(*p + 1), 5),
+        _ => (r32(p.wrapping_add(1)), 5),
     };
-    *p += n;
+    *p = p.wrapping_add(n);
     v
 }
 fn read_rva(p: &mut u32) -> u32 {
     let v = r32(*p);
-    *p += 4;
+    *p = p.wrapping_add(4);
     v
 }
 
@@ -683,7 +716,7 @@ fn read_try4(p: &mut u32, d: &Disp) -> (i32, i32, i32, u32, u32) {
 /// A catch block: (flags, type_info, offset, handler, continuations); None: a form not known
 fn read_catch4(p: &mut u32, func_rva: u32) -> Option<(u32, u32, u32, u32, [u32; 2])> {
     let h = crate::mem::r8(*p);
-    *p += 1;
+    *p = p.wrapping_add(1);
     if h & !0x3f != 0 || h & 0x30 == 0x30 {
         return None;
     }
@@ -728,7 +761,7 @@ impl Fh4 {
             let n = decode_uint(&mut q);
             let begin = d.func_begin();
             let mut found = None;
-            for _ in 0..n {
+            for _ in 0..n.min(MAX_ENTRIES) {
                 let func = read_rva(&mut q);
                 let map = read_rva(&mut q);
                 if func == begin {
@@ -750,8 +783,8 @@ impl Fh4 {
         let mut p = self.ip_map;
         let mut at = d.code(d.func_begin());
         let mut ret = -1;
-        for _ in 0..self.ip_count {
-            at += decode_uint(&mut p) as u64;
+        for _ in 0..self.ip_count.min(MAX_IP_ENTRIES) {
+            at = at.wrapping_add(decode_uint(&mut p) as u64);
             let state = decode_uint(&mut p) as i32 - 1;
             if ip < at {
                 break;
@@ -764,7 +797,7 @@ impl Fh4 {
 
 fn local_unwind4(c: &mut Ctx, frame: u64, d: &Disp, f: &Fh4, level: i32, last: i32) {
     let level = if level == -2 { f.ip_to_state(d, d.pc) } else { level };
-    if level < -1 || level >= f.unwind_count as i32 {
+    if level < -1 || level >= f.unwind_count as i32 || level > MAX_ENTRIES as i32 {
         crate::fatal(c.cpu, &format!("C++ unwind (FH4): invalid state {level} (terminate)"));
     }
     if level <= last {
@@ -772,6 +805,9 @@ fn local_unwind4(c: &mut Ctx, frame: u64, d: &Disp, f: &Fh4, level: i32, last: i
     }
     let mut p = f.unwind_map;
     let mut stop = p.wrapping_sub(1);
+    // (level < unwind_count; the walk back takes at most as many entries: an entry whose
+    // previous one is itself would never end)
+    let mut steps = f.unwind_count.min(MAX_ENTRIES);
     for i in 0..level {
         let at = p;
         read_unwind4(&mut p);
@@ -779,7 +815,8 @@ fn local_unwind4(c: &mut Ctx, frame: u64, d: &Disp, f: &Fh4, level: i32, last: i
             stop = at;
         }
     }
-    while p > stop {
+    while p > stop && steps > 0 {
+        steps -= 1;
         let mut q = p;
         let (kind, prev, handler, object) = read_unwind4(&mut q);
         p = prev;
@@ -797,13 +834,13 @@ fn find_catch4(c: &mut Ctx, rec: u32, ctx: u32, frame: u64, d: &Disp, f: &Fh4, e
     let exc_base = if nparams(rec) == 4 { info(rec, 3) } else { 0 };
     let level = if level == -2 { f.ip_to_state(d, d.pc) } else { level };
     let mut tp = f.try_map;
-    for _ in 0..f.try_count {
+    for _ in 0..f.try_count.min(MAX_ENTRIES) {
         let (start, end, catch_level, count, blocks) = read_try4(&mut tp, d);
         if level < start || level > end {
             continue;
         }
         let mut cp = blocks;
-        for _ in 0..count {
+        for _ in 0..count.min(MAX_ENTRIES) {
             let Some((cflags, cti, offset, handler, ret)) = read_catch4(&mut cp, d.func_begin()) else { return };
             let catch_ti = if cti != 0 { d.rva(cti) } else { 0 };
             if exc_type != 0 {
@@ -1024,4 +1061,62 @@ pub fn register() {
     }
     implement("ntdll", "__C_specific_handler", C_specific_handler);
     let _ = catch_trap();
+}
+
+/// Review b05: FuncInfo tables read within bounds (an unwind entry whose previous one is itself
+/// ends), type names compared in place, stale catches pruned when a new one begins.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::mem;
+    use crate::test_guest::enter;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// same_mangled is equality of the names at +16
+        #[test]
+        fn mangled_names_compare_as_strings(a in prop::collection::vec(1u8..=255, 0..40), b in prop::collection::vec(1u8..=255, 0..40), same in any::<bool>()) {
+            let _g = enter();
+            let b = if same { a.clone() } else { b };
+            let (pa, pb) = (mem::heap_alloc(80, true), mem::heap_alloc(80, true));
+            mem::write(pa + 16, &a);
+            mem::write(pb + 16, &b);
+            prop_assert_eq!(same_mangled(pa, pb), mem::cstr(pa + 16) == mem::cstr(pb + 16));
+            mem::heap_free(pa);
+            mem::heap_free(pb);
+        }
+
+        /// whatever the order catches begin in, the list keeps only those at or above the
+        /// newest (stack keys), newest last
+        #[test]
+        fn stale_catches_go(keys in prop::collection::vec(0u32..1000, 1..20)) {
+            ACTIVE.with(|l| l.borrow_mut().clear());
+            for &k in &keys {
+                push_catch(Active { key: k, rec: 0, ctx: 0, rethrown: false, kind: Kind::Fh4 { search: 0, unwind: 0, ret: [0, 0] } });
+                let l: Vec<u32> = ACTIVE.with(|l| l.borrow().iter().map(|a| a.key).collect());
+                prop_assert_eq!(*l.last().unwrap(), k);
+                prop_assert!(l.iter().all(|&x| x >= k));
+                prop_assert!(l.windows(2).all(|w| w[0] >= w[1]));
+            }
+            ACTIVE.with(|l| l.borrow_mut().clear());
+        }
+    }
+
+    /// an FH4 unwind map of entries that each name themselves as previous: the walk back from
+    /// any level ends (it looped for ever)
+    #[test]
+    fn unwind4_self_entries_end() {
+        let _g = enter();
+        let map = mem::heap_alloc(64, true); // zero bytes: type 0, previous = itself
+        let func = mem::heap_alloc(8, true);
+        let d = Disp { pc: 0, base: 0, func, target_ip: 0, ctx: 0, data: 0, at: 0 };
+        let f = Fh4 { header: 0, unwind_count: 16, unwind_map: map, try_count: 0, try_map: 0, ip_count: 0, ip_map: 0, frame: 0 };
+        let mut cpu = koji::Cpu::default();
+        let mut c = Ctx { cpu: &mut cpu, esp: 0, edx: None, jumped: false, st0: None, trap: 0, this: None };
+        for level in 0..16 {
+            local_unwind4(&mut c, 0, &d, &f, level, -1);
+        }
+        mem::heap_free(map);
+        mem::heap_free(func);
+    }
 }
