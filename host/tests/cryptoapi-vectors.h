@@ -1,5 +1,5 @@
 /* OpenSSL-generated 1024-bit RSA test key and SHA-1 signature.
- * Message: "masu CryptoAPI signature regression" (no newline).
+ * Message: "ippai CryptoAPI signature regression" (no newline; the name before masu).
  * Public material only; bytes are in CryptoAPI little-endian order. */
 static const unsigned char public_blob[] = {
     0x06, 0x02, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x52, 0x53, 0x41, 0x31, 0x00, 0x04, 0x00, 0x00,

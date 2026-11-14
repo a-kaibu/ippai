@@ -7,7 +7,9 @@
 #include <string.h>
 #include "cryptoapi-vectors.h"
 
-static const BYTE message[] = "masu CryptoAPI signature regression";
+/* (the bytes the vector's signature was made over: it predates the masu rename, and without
+ * the private key it cannot be signed again) */
+static const BYTE message[] = "ippai CryptoAPI signature regression";
 static HCRYPTPROV provider;
 static HCRYPTKEY key;
 static int failed;
