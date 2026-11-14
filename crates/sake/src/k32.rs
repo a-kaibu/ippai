@@ -6403,15 +6403,38 @@ fn GetConsoleCP(_: &mut Ctx) -> u32 {
 fn GetConsoleOutputCP(_: &mut Ctx) -> u32 {
     crate::text::acp()
 }
-/// WriteConsoleA/W(h, buf, n, &written, _): to stderr (no console; the CRT imports them)
+/// WriteConsoleA/W(h, buf, n, &written, _): to stderr (no console; the CRT imports them). Only
+/// on the console's output handles (standard output and error, CONOUT$): Windows fails others
+/// with ERROR_INVALID_HANDLE, and programs try it to tell a console from a file. Ruby 1.9
+/// (RPG Maker VX Ace's RGSS301.dll) writes 0 characters with it on every file it writes; with
+/// that taken, a game's Marshal.dump went to the log and left the file empty (#155).
 fn WriteConsoleA(c: &mut Ctx) -> u32 {
     let (buf, n) = (c.a(1), c.a(2).min(0x10000));
+    if !is_console_out(c.a(0)) {
+        return console_fail(c.a(3));
+    }
     console_write(&String::from_utf8_lossy(mem::slice(buf, n)));
     put32(c.a(3), n);
     1
 }
+/// Whether `h` is one of the console's output handles (what WriteConsole takes).
+pub(crate) fn is_console_out(h: u32) -> bool {
+    obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Other(k), _)) if console_out_kind(k)))
+}
+/// The kinds of `Obj::Other` that are the console's output: standard output and error, CONOUT$.
+pub(crate) fn console_out_kind(k: &str) -> bool {
+    matches!(k, "stdout" | "stderr" | "console")
+}
+fn console_fail(written: u32) -> u32 {
+    put32(written, 0);
+    last_error(6);
+    0
+}
 fn WriteConsoleW(c: &mut Ctx) -> u32 {
     let (buf, n) = (c.a(1), c.a(2).min(0x10000));
+    if !is_console_out(c.a(0)) {
+        return console_fail(c.a(3));
+    }
     let w: Vec<u16> = (0..n).map(|i| mem::r16(buf + 2 * i)).collect();
     console_write(&String::from_utf16_lossy(&w));
     put32(c.a(3), n);
