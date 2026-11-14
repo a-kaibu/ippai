@@ -31,30 +31,29 @@ fn crypt_key(key: &[u8]) -> Result<aead::LessSafeKey> {
     ))
 }
 
+/// nonce, ciphertext and tag in one buffer, the plaintext copied once
 fn seal(key: &[u8], aad: &[u8], plain: &[u8]) -> Result<Vec<u8>> {
     let nonce = random::<12>()?;
-    let mut data = plain.to_vec();
-    crypt_key(key)?
-        .seal_in_place_append_tag(
-            aead::Nonce::assume_unique_for_key(nonce),
-            aead::Aad::from(aad),
-            &mut data,
-        )
+    let mut out = Vec::with_capacity(12 + plain.len() + aead::AES_256_GCM.tag_len());
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(plain);
+    let tag = crypt_key(key)?
+        .seal_in_place_separate_tag(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::from(aad), &mut out[12..])
         .map_err(|_| anyhow!("encryption failed"))?;
-    Ok([nonce.as_slice(), &data].concat())
+    out.extend_from_slice(tag.as_ref());
+    Ok(out)
 }
 
+/// the plaintext in the one copy of the ciphertext made (not copied again out of it)
 fn open(key: &[u8], aad: &[u8], cipher: &[u8]) -> Result<Vec<u8>> {
     ensure!(cipher.len() >= 28, "truncated ciphertext");
     let mut data = cipher[12..].to_vec();
-    let plain = crypt_key(key)?
-        .open_in_place(
-            aead::Nonce::assume_unique_for_key(cipher[..12].try_into()?),
-            aead::Aad::from(aad),
-            &mut data,
-        )
-        .map_err(|_| anyhow!("authentication failed"))?;
-    Ok(plain.to_vec())
+    let n = crypt_key(key)?
+        .open_in_place(aead::Nonce::assume_unique_for_key(cipher[..12].try_into()?), aead::Aad::from(aad), &mut data)
+        .map_err(|_| anyhow!("authentication failed"))?
+        .len();
+    data.truncate(n);
+    Ok(data)
 }
 
 impl Envelope {
@@ -158,6 +157,19 @@ mod tests {
                 prop_assert!(r.decrypt(&a, &c).is_err());
                 prop_assert!(e.decrypt(&b, &c).is_err());
             }
+        }
+
+        /// review b00 (one copy less each way): the stored form is what it was, nonce then
+        /// ring's seal_in_place_append_tag of the plaintext, so objects sealed before open
+        /// and the other way round
+        #[test]
+        fn same_bytes_as_append_tag(plain in proptest::collection::vec(any::<u8>(), 0..3000), key in any::<[u8; 32]>(), aad in proptest::collection::vec(any::<u8>(), 0..40)) {
+            let c = seal(&key, &aad, &plain).unwrap();
+            prop_assert_eq!(c.len(), 12 + plain.len() + 16);
+            let mut want = plain.clone();
+            crypt_key(&key).unwrap().seal_in_place_append_tag(aead::Nonce::assume_unique_for_key(c[..12].try_into().unwrap()), aead::Aad::from(&aad[..]), &mut want).unwrap();
+            prop_assert_eq!(&c[12..], &want[..]);
+            prop_assert_eq!(open(&key, &aad, &c).unwrap(), plain);
         }
 
         /// One flipped bit anywhere (ciphertext, wrapped key, key id) or a cut: refused.

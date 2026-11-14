@@ -106,12 +106,27 @@ impl Cutter {
 
 /// The lengths of the chunks of `r`'s bytes (the last one what is left; none for nothing).
 pub fn lengths(r: &mut impl Read, p: Params) -> std::io::Result<Vec<u64>> {
+    // (one 8 MiB buffer per thread, not one per file chunked: a tree of many small files paid an
+    // allocation and its release for each)
+    thread_local!(static BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) });
+    BUF.with(|b| match b.try_borrow_mut() {
+        Ok(mut buf) => {
+            if buf.is_empty() {
+                buf.resize(8 << 20, 0);
+            }
+            lengths_with(r, p, &mut buf)
+        }
+        // (a reader that chunks from inside its read: a buffer of its own)
+        Err(_) => lengths_with(r, p, &mut vec![0u8; 8 << 20]),
+    })
+}
+
+fn lengths_with(r: &mut impl Read, p: Params, buf: &mut [u8]) -> std::io::Result<Vec<u64>> {
     let mut out = Vec::new();
     let mut c = Cutter::new(p);
-    let mut buf = vec![0u8; 8 << 20];
     let mut cur = 0u64;
     loop {
-        let n = match r.read(&mut buf) {
+        let n = match r.read(buf) {
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -230,6 +245,28 @@ mod tests {
         assert_eq!(lengths(&mut &[7u8; 100][..], p).unwrap(), vec![100]);
         let zero = lengths(&mut &vec![0u8; 1 << 20][..], p).unwrap();
         assert_eq!(zero.iter().sum::<u64>(), 1 << 20);
+    }
+
+    /// review b00: the buffer is the thread's, kept between calls (the proptest below runs
+    /// many calls on one thread against a byte-by-byte cutter); a reader that chunks from
+    /// inside its own read gets its own buffer and the same lengths
+    #[test]
+    fn a_reader_chunking_inside_its_read() {
+        let p = Params { min: 16, avg: 64, max: 256 };
+        let data = bytes(5000, 3);
+        let want = lengths(&mut &data[..], p).unwrap();
+        struct Nested<'a>(&'a [u8], Params, Vec<u64>);
+        impl std::io::Read for Nested<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.2.is_empty() {
+                    self.2 = lengths(&mut &self.0[..], self.1)?;
+                }
+                (&mut self.0).read(buf)
+            }
+        }
+        let mut n = Nested(&data, p, vec![]);
+        assert_eq!(lengths(&mut n, p).unwrap(), want);
+        assert_eq!(n.2, want);
     }
 
     /// Any bytes, any small parameters, fed in reads of any sizes: lengths add up, each but the

@@ -81,6 +81,9 @@ pub fn builds(apps: &FsPath) -> BTreeMap<String, String> {
 }
 
 /// Removes the kept apps no build in `used` is of, but the newest KEEP_NEWEST and `current`.
+/// a temporary copy older than this was left by a server that died copying
+const STALE_COPY: std::time::Duration = std::time::Duration::from_secs(3600);
+
 pub fn prune(apps: &FsPath, used: &HashSet<String>, current: Option<&str>) {
     let builds = builds(apps);
     let wanted: HashSet<&String> = builds.iter().filter(|(id, _)| used.contains(*id)).map(|(_, k)| k).collect();
@@ -94,6 +97,15 @@ pub fn prune(apps: &FsPath, used: &HashSet<String>, current: Option<&str>) {
             (!key.starts_with('.')).then_some((t, key))
         })
         .collect();
+    // (a `.key.pid` copy a killed server left: one whole copy of the app per crash in the
+    // first start's copy; none takes an hour)
+    for e in std::fs::read_dir(apps).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let stale = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|d| d > STALE_COPY));
+        if name.starts_with('.') && name.len() > 1 && stale && e.path().is_dir() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
     all.sort_by(|a, b| b.cmp(a));
     for (i, (_, key)) in all.iter().enumerate() {
         if i < KEEP_NEWEST || wanted.contains(key) || Some(key.as_str()) == current {
@@ -121,7 +133,12 @@ pub struct Apps {
 }
 
 pub async fn list(State(a): State<Apps>) -> Response {
-    axum::Json(builds(&a.dir)).into_response()
+    // (a directory and a file per app: off the runtime's threads)
+    let dir = a.dir.clone();
+    match tokio::task::spawn_blocking(move || builds(&dir)).await {
+        Ok(b) => axum::Json(b).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// `/apps/<key>/<path>`: the kept app's file, else `/<path>` as the server answers it.
@@ -225,6 +242,28 @@ mod tests {
         let left: HashSet<String> = std::fs::read_dir(&apps).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
         let want: HashSet<String> = [0, 2, 4, 5].iter().map(|&i| keys[i].clone()).collect();
         assert_eq!(left, want);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// review b00: a copy a killed server left (`.key.pid`, an hour old) goes at the next prune;
+    /// one being copied now stays, and so do the kept apps
+    #[test]
+    fn copies_left_by_a_crash_are_removed() {
+        let root = scratch("stale");
+        let apps = root.join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        let key = keep(&apps, &web(&root, "w", "sake 0000000000000001\n")).unwrap().unwrap();
+        let (old, new) = (apps.join(format!(".{key}.4242")), apps.join(format!(".{key}.4343")));
+        for d in [&old, &new] {
+            std::fs::create_dir_all(d.join("sake")).unwrap();
+            std::fs::write(d.join("sake/sake.wasm"), "partial").unwrap();
+        }
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+        std::fs::File::open(&old).unwrap().set_modified(t).unwrap();
+        prune(&apps, &HashSet::new(), None);
+        assert!(!old.exists());
+        assert!(new.exists());
+        assert!(apps.join(&key).join(".done").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

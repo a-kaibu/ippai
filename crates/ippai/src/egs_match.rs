@@ -26,6 +26,17 @@ pub fn normalize(s: &str) -> Vec<char> {
     EDITION.replace_all(&f, " ").chars().filter(|c| c.is_alphanumeric() || *c == 'ー').collect()
 }
 
+/// The longest query compared (a typed name or a title; 8 KB of distinct characters passed the
+/// prefilter for almost every game, seconds of CPU per request)
+pub const MAX_QUERY: usize = 128;
+
+/// A query normalized, at most MAX_QUERY characters
+fn query(s: &str) -> Vec<char> {
+    let mut q = normalize(s);
+    q.truncate(MAX_QUERY);
+    q
+}
+
 /// Longest common subsequence length (two rows).
 fn lcs(a: &[char], b: &[char]) -> usize {
     let mut prev = vec![0usize; b.len() + 1];
@@ -127,7 +138,7 @@ impl Index {
     /// The `n` games most like any of `queries` (each game's best), most alike first; equal
     /// scores go to the older entry (the original release before its re-releases).
     pub fn candidates(&self, queries: &[String], n: usize) -> Vec<Hit> {
-        let qs: Vec<Vec<char>> = queries.iter().map(|q| normalize(q)).filter(|q| q.len() >= 2).collect();
+        let qs: Vec<Vec<char>> = queries.iter().map(|q| query(q)).filter(|q| q.len() >= 2).collect();
         if qs.is_empty() {
             return vec![];
         }
@@ -171,7 +182,7 @@ impl Index {
     /// The games a typed name finds: those whose name has it in it (most voted first), then the
     /// most alike of the rest.
     pub fn search(&self, q: &str, n: usize) -> Vec<Hit> {
-        let k = normalize(q);
+        let k = query(q);
         if k.is_empty() {
             return vec![];
         }
@@ -396,6 +407,40 @@ mod corpus {
         }
         assert!(bad.is_empty(), "{}", bad.join("\n"));
         assert!(right >= 110 && wrong <= 8, "{right} right, {none} none, {wrong} wrong");
+    }
+
+    /// review b00: an 8 KB typed name of many distinct characters against the whole list is
+    /// answered in a moment (seconds of CPU per request before: it passed the prefilter for
+    /// almost every game); what a long query finds is what its first MAX_QUERY characters find
+    #[test]
+    fn long_queries_are_cheap() {
+        let idx = games();
+        let long: String = (0..8192u32).map(|i| char::from_u32(0x4e00 + i % 20000).unwrap()).collect();
+        let t = std::time::Instant::now();
+        let a = idx.search(&long, 20);
+        let b = idx.candidates(&[long.clone()], 20);
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+        let short: String = normalize(&long).into_iter().take(MAX_QUERY).collect();
+        assert_eq!(a.iter().map(|h| h.id).collect::<Vec<_>>(), idx.search(&short, 20).iter().map(|h| h.id).collect::<Vec<_>>());
+        assert_eq!(b.iter().map(|h| h.id).collect::<Vec<_>>(), idx.candidates(&[short], 20).iter().map(|h| h.id).collect::<Vec<_>>());
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 24, ..Default::default() })]
+        /// any query, any length (real names repeated, random text): bounded work, and the
+        /// same answer as its first MAX_QUERY normalized characters
+        #[test]
+        fn any_query_is_its_prefix(names in proptest::collection::vec(0usize..30000, 1..6), noise in "[あ-んア-ンa-z0-9一-龠 ]{0,400}") {
+            thread_local!(static IDX: Index = games());
+            IDX.with(|idx| {
+                let q: String = names.iter().map(|&i| idx.games[i % idx.games.len()].name.clone()).collect::<Vec<_>>().join(" ") + &noise;
+                let short: String = normalize(&q).into_iter().take(MAX_QUERY).collect();
+                let ids = |h: Vec<Hit>| h.into_iter().map(|h| h.id).collect::<Vec<_>>();
+                proptest::prop_assert_eq!(ids(idx.candidates(&[q.clone()], 10)), ids(idx.candidates(&[short.clone()], 10)));
+                proptest::prop_assert_eq!(ids(idx.search(&q, 10)), ids(idx.search(&short, 10)));
+                Ok(())
+            })?;
+        }
     }
 
     /// (prints what a folder list matches: EGS_CORPUS_IN=<folder\texe lines>)
