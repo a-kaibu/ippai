@@ -284,6 +284,21 @@ pub fn pack(fmt: u32, c: [f32; 4], out: &mut [u8]) -> bool {
     let h = |v: f32| crate::d3d11::format::f16_bits(v);
     let [r, g, b, a] = c;
     let mut put = |bytes: &[u8]| out[..bytes.len()].copy_from_slice(bytes);
+    // (four 16-bit channels, on the stack: a readback packs millions of texels)
+    let four16 = |f: &dyn Fn(f32) -> u16| {
+        let mut x = [0u8; 8];
+        for (k, v) in [r, g, b, a].into_iter().enumerate() {
+            x[2 * k..2 * k + 2].copy_from_slice(&f(v).to_le_bytes());
+        }
+        x
+    };
+    let floats = |v: [f32; 4]| {
+        let mut x = [0u8; 16];
+        for (k, v) in v.into_iter().enumerate() {
+            x[4 * k..4 * k + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        x
+    };
     match fmt {
         A8R8G8B8 | X8R8G8B8 => put(&[u(b, 8) as u8, u(g, 8) as u8, u(r, 8) as u8, u(a, 8) as u8]),
         A8B8G8R8 | X8B8G8R8 => put(&[u(r, 8) as u8, u(g, 8) as u8, u(b, 8) as u8, u(a, 8) as u8]),
@@ -298,18 +313,18 @@ pub fn pack(fmt: u32, c: [f32; 4], out: &mut [u8]) -> bool {
         A2R10G10B10 => put(&(u(a, 2) << 30 | u(r, 10) << 20 | u(g, 10) << 10 | u(b, 10)).to_le_bytes()),
         A2B10G10R10 => put(&(u(a, 2) << 30 | u(b, 10) << 20 | u(g, 10) << 10 | u(r, 10)).to_le_bytes()),
         G16R16 => put(&(u(g, 16) << 16 | u(r, 16)).to_le_bytes()),
-        A16B16G16R16 => put(&[r, g, b, a].iter().flat_map(|&v| (u(v, 16) as u16).to_le_bytes()).collect::<Vec<u8>>()),
+        A16B16G16R16 => put(&four16(&|v| u(v, 16) as u16)),
         L16 => put(&(u(r, 16) as u16).to_le_bytes()),
         V8U8 => put(&[s(r, 8) as u8, s(g, 8) as u8]),
         Q8W8V8U8 => put(&[s(r, 8) as u8, s(g, 8) as u8, s(b, 8) as u8, s(a, 8) as u8]),
         V16U16 => put(&(s(g, 16) << 16 | s(r, 16)).to_le_bytes()),
-        Q16W16V16U16 => put(&[r, g, b, a].iter().flat_map(|&v| (s(v, 16) as u16).to_le_bytes()).collect::<Vec<u8>>()),
+        Q16W16V16U16 => put(&four16(&|v| s(v, 16) as u16)),
         R16F => put(&h(r).to_le_bytes()),
         G16R16F => put(&((h(g) as u32) << 16 | h(r) as u32).to_le_bytes()),
-        A16B16G16R16F => put(&[r, g, b, a].iter().flat_map(|&v| h(v).to_le_bytes()).collect::<Vec<u8>>()),
+        A16B16G16R16F => put(&four16(&h)),
         R32F => put(&r.to_le_bytes()),
-        G32R32F => put(&[r, g].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()),
-        A32B32G32R32F => put(&[r, g, b, a].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()),
+        G32R32F => put(&floats(c)[..8]),
+        A32B32G32R32F => put(&floats(c)),
         _ => return false,
     }
     true
@@ -634,6 +649,41 @@ mod tests {
     /// is the texel again (what a format does not keep as pack writes it: X bits set, the most
     /// negative SNORM value as -1's), for random texels of every format pack knows (random
     /// floats: numbers only).
+    #[test]
+    fn wide_formats_pack_as_the_byte_lists_did() {
+        // (the per-texel Vec form these replaced, as the reference; random channels, NaN and
+        // out-of-range ones too)
+        let mut x = 0x5eed_f00d_u64;
+        for _ in 0..20000 {
+            let mut f = || {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                match x % 8 {
+                    0 => f32::NAN,
+                    1 => (x >> 8) as f32 - 3.0e9,
+                    _ => ((x >> 11) as f64 / (1u64 << 53) as f64 * 3.0 - 1.5) as f32,
+                }
+            };
+            let c = [f(), f(), f(), f()];
+            let u = |v: f32| if v.is_nan() { 0 } else { (v.clamp(0.0, 1.0) * 65535.0).round() as u16 };
+            let s = |v: f32| if v.is_nan() { 0 } else { (v.clamp(-1.0, 1.0) * 32767.0).round() as i32 as u16 };
+            let h = crate::d3d11::format::f16_bits;
+            for (fmt, want) in [
+                (A16B16G16R16, c.iter().flat_map(|&v| u(v).to_le_bytes()).collect::<Vec<u8>>()),
+                (Q16W16V16U16, c.iter().flat_map(|&v| s(v).to_le_bytes()).collect()),
+                (A16B16G16R16F, c.iter().flat_map(|&v| h(v).to_le_bytes()).collect()),
+                (G32R32F, c[..2].iter().flat_map(|v| v.to_le_bytes()).collect()),
+                (A32B32G32R32F, c.iter().flat_map(|v| v.to_le_bytes()).collect()),
+            ] {
+                let mut out = [0xaau8; 20];
+                assert!(pack(fmt, c, &mut out));
+                assert_eq!(&out[..want.len()], &want[..], "{fmt} {c:?}");
+                assert!(out[want.len()..].iter().all(|&b| b == 0xaa), "{fmt}: wrote past the texel");
+            }
+        }
+    }
+
     #[test]
     fn pack_undoes_the_page() {
         let mut x = 0x9e37_79b9_7f4a_7c15u64;
