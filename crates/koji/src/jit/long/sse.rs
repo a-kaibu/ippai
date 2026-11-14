@@ -416,7 +416,9 @@ impl Gen<'_> {
 
     /// Pushes the first source (`src1`: the destination register of a legacy form).
     fn vfirst(&mut self, src1: Option<Register>) {
-        self.xget(src1.unwrap());
+        // (None: refused before emitting; else the translation is dropped, Gen::bad)
+        self.bad |= src1.is_none();
+        self.xget(src1.unwrap_or(Register::XMM0));
     }
 
     /// Stores the v128 in L_V0 to the destination register.
@@ -981,7 +983,11 @@ impl Gen<'_> {
                         self.c.simd(s);
                     }
                 }
-                _ => unreachable!("{m:?}"),
+                _ => {
+                    // (refused before emitting: dropped, Gen::bad)
+                    self.bad = true;
+                    self.c.get(b);
+                }
             }
         }
         self.c.set(L_V0);

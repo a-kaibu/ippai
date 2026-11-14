@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 mod sst;
 use wasmtime::*;
 
+/// A `step` import that left EIP at a REP it stopped part way (koji::REP_STEP_MAX): the
+/// region's status 2 means "go on from EIP", as in kura.
+static PARTWAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const CPU: u32 = 0x2000;
 const CS: u16 = 0x1003;
 const DS: u16 = 0x3000;
@@ -389,11 +392,17 @@ impl Jit {
                 let m = base as *mut u8;
                 assert_eq!(cpu as u32, CPU);
                 let mut c = unsafe { get_cpu(m) };
+                let ip = c.eip;
                 from_linear(&mut c);
                 let r = koji::step(&mut c, &mut Mem(m));
                 to_linear(&mut c);
                 unsafe { put_cpu(m, &c) };
                 match r {
+                    // (as kura: a REP stopped part way leaves the region)
+                    Exit::Continue if c.eip == ip => {
+                        PARTWAY.store(true, std::sync::atomic::Ordering::Relaxed);
+                        2
+                    }
                     Exit::Continue => 0,
                     e => {
                         *LAST_EXIT.lock().unwrap() = Some(e);
@@ -589,6 +598,7 @@ impl Jit {
                 }
                 // (the hlt at END)
                 2 if unsafe { get_cpu(m) }.eip == END => return Ok(regions),
+                2 if PARTWAY.swap(false, std::sync::atomic::Ordering::Relaxed) => {}
                 s => return Err(format!("status {s} at {:#x}", unsafe { get_cpu(m) }.eip)),
             }
         }

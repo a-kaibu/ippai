@@ -18,6 +18,9 @@ mod native;
 mod sweep;
 mod testfloat;
 
+/// A `step` import that left EIP at a REP it stopped part way (koji::REP_STEP_MAX): the
+/// region's status 2 means "go on from EIP", as in kura.
+static PARTWAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const CPU: u32 = 0x2000;
 const HASH: u32 = 0x8000;
 const HASH_N: u32 = 2048;
@@ -436,12 +439,20 @@ fn random_ins(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
             a.lea(esi, ebx + rng.below(0x400) as i32)?;
             a.lea(edi, ebx + 0x800 + rng.below(0x400) as i32)?;
             a.mov(ecx, rng.below(20) as u32)?;
-            match rng.below(6) {
+            match rng.below(7) {
                 0 => a.rep().movsd()?,
                 1 => a.rep().stosd()?,
                 2 => a.rep().movsb()?,
                 3 => a.rep().stosb()?,
                 4 => a.repe().cmpsb()?,
+                5 => {
+                    // (longer than one step runs, koji::REP_STEP_MAX: over the zeros past DATA,
+                    // so the interpreter stops part way and the region must leave there)
+                    a.lea(edi, ebx + 0x1000)?;
+                    a.mov(ecx, koji::REP_STEP_MAX as u32 + rng.below(300) as u32)?;
+                    a.mov(al, 0)?;
+                    a.repe().scasb()?
+                }
                 _ => a.lodsd()?,
             }
         }
@@ -1346,9 +1357,15 @@ impl Jit {
                 let m = base as *mut u8;
                 assert_eq!(cpu as u32, CPU);
                 let mut c = unsafe { get_cpu(m) };
+                let ip = (c.eip, c.rip_hi);
                 let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
                 match r {
+                    // (as kura: a REP stopped part way leaves the region)
+                    Exit::Continue if (c.eip, c.rip_hi) == ip => {
+                        PARTWAY.store(true, std::sync::atomic::Ordering::Relaxed);
+                        2
+                    }
                     // (as kura: another MXCSR mode leaves the region, and so does the first
                     // read of its flags)
                     Exit::Continue if !koji::jit::sse_ok(c.mxcsr) => 2,
@@ -1531,6 +1548,7 @@ impl Jit {
                 }
                 koji::jit::RET_FN => {}
                 // (a step that changed MXCSR: on in the interpreter; one that read its flags)
+                2 if PARTWAY.swap(false, Relaxed) => {}
                 2 if !koji::jit::sse_ok(c.mxcsr) || SWITCHED.load(Relaxed) => {}
                 s => return Err(format!("status {s} at {:#x}", c.eip)),
             }

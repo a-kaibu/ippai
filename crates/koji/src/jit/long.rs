@@ -216,6 +216,12 @@ struct Gen<'a> {
     watch_store: bool,
     /// the current instruction went to the interpreter (whose stores the host checks)
     fell_back: bool,
+    /// something the checks before emitting should have refused (a register with no local, more
+    /// temps than there are): the code made is not run, the region is not made (review b01:
+    /// these aborted the VM by assert/unwrap; the interpreter runs the code instead)
+    bad: bool,
+    /// iced's operand info, made once per translation (review b01: two Vecs per instruction)
+    info: iced_x86::InstructionInfoFactory,
     /// blocks laid out as nested wasm blocks and loops (structure.rs): a jump is a `br` to
     /// its target's open label (`fwd`/`back`, by node), not a dispatch on L_BLK
     structured: bool,
@@ -324,9 +330,12 @@ fn splice_regs(code: Code, marks: &[(usize, usize, bool)], all: bool) -> Code {
 
 impl<'a> Gen<'a> {
     fn temp(&mut self) -> u32 {
+        if self.temps >= N_T {
+            self.bad = true;
+            return L_T + N_T - 1;
+        }
         let t = L_T + self.temps;
         self.temps += 1;
-        assert!(self.temps <= N_T);
         t
     }
 
@@ -343,6 +352,15 @@ impl<'a> Gen<'a> {
     /// writes (see [`splice_regs`]).
     fn store_regs(&mut self) {
         self.marks.push((self.c.b.len(), self.c.locs.len(), true));
+    }
+
+    /// [`Self::reg`] of a register the checks let through: one with no local marks the
+    /// translation [`Gen::bad`] (and stands for RAX meanwhile).
+    fn reg_ok(&mut self, r: Register) -> (u32, u32, bool) {
+        Self::reg(r).unwrap_or_else(|| {
+            self.bad = true;
+            (L_R, 64, false)
+        })
     }
 
     /// (register local, bits, high byte)
@@ -366,7 +384,7 @@ impl<'a> Gen<'a> {
 
     /// Pushes the register's value (i64, zero-extended).
     fn get_reg(&mut self, r: Register) {
-        let (l, bits, high) = Self::reg(r).unwrap();
+        let (l, bits, high) = self.reg_ok(r);
         self.c.get(l);
         if high {
             self.c.i64c(8).x(I64_SHR_U);
@@ -381,7 +399,7 @@ impl<'a> Gen<'a> {
     /// Sets the register from local `v` (i64; bits above the register's ignored). 32-bit
     /// writes clear the upper half.
     fn set_reg(&mut self, r: Register, v: u32) {
-        let (l, bits, high) = Self::reg(r).unwrap();
+        let (l, bits, high) = self.reg_ok(r);
         match (bits, high) {
             (64, _) => {
                 self.c.get(v).set(l);
@@ -428,7 +446,7 @@ impl<'a> Gen<'a> {
                 if r == Register::None {
                     continue;
                 }
-                let (l, _, _) = Self::reg(r).unwrap();
+                let (l, _, _) = self.reg_ok(r);
                 // (only the low 32 bits matter modulo 4GB)
                 self.c.get(l).x(I32_WRAP);
                 if scale > 1 {
@@ -1103,7 +1121,7 @@ impl<'a> Gen<'a> {
     /// One instruction; false if it ended the block.
     fn emit(&mut self) -> bool {
         // (a store in a block whose code may be rewritten: see Gen::smc, Gen::fresh)
-        let size = if self.smc || self.fresh.is_some() { stored_bytes(&self.ins) } else { 0 };
+        let size = if self.smc || self.fresh.is_some() { stored_bytes(&mut self.info, &self.ins) } else { 0 };
         self.watch_store = size != 0;
         self.fell_back = false;
         let open = self.emit_one();
@@ -1232,7 +1250,7 @@ impl<'a> Gen<'a> {
             if self.mx_seen.iter().any(|s| s[0].is_some()) {
                 // (what the instruction writes: checked no more)
                 use iced_x86::OpAccess;
-                for u in iced_x86::InstructionInfoFactory::new().info(&ins).used_registers() {
+                for u in self.info.info(&ins).used_registers() {
                     // (a YMM register's lower half is the XMM register)
                     if (u.register().is_xmm() || u.register().is_ymm()) && !matches!(u.access(), OpAccess::Read | OpAccess::CondRead | OpAccess::None) {
                         self.mx_seen[u.register().number()] = [None; 2];
@@ -2011,6 +2029,25 @@ impl<'a> Gen<'a> {
                 self.set_reg(ins.op_register(0), t);
                 true
             }
+            // (review b01: it went to the interpreter, in every x64 function epilogue. [RBP]
+            // checked before RSP changes: a LEAVE that faults leaves RSP as it was, fuzz
+            // regressions/x86_jit64/leave-faults)
+            Leave if ins.code() == iced_x86::Code::Leaveq => {
+                let (rsp, rbp) = (L_R + 4, L_R + 5);
+                self.c.get(rbp).x(I32_WRAP).tee(L_A);
+                let span = GUEST_HI - GUEST_LO;
+                self.c.u32c(GUEST_LO).sub().u32c(span - 8).gt_u().if_();
+                self.depth += 1;
+                self.bail();
+                self.depth -= 1;
+                self.c.end();
+                let t = self.temp();
+                self.load(64);
+                self.c.set(t);
+                self.c.get(rbp).i64c(8).x(I64_ADD).set(rsp);
+                self.c.get(t).set(rbp);
+                true
+            }
             Jmp if ins.op0_kind() == OpKind::NearBranch64 => {
                 self.goto(ins.near_branch64());
                 true
@@ -2106,7 +2143,7 @@ impl<'a> Gen<'a> {
             if r == Register::None {
                 continue;
             }
-            let (l, bits, _) = Self::reg(r).unwrap();
+            let (l, bits, _) = self.reg_ok(r);
             self.c.get(l);
             if w32 {
                 self.c.x(I32_WRAP);
@@ -2167,10 +2204,9 @@ fn fresh_parts(n: u32) -> Vec<(u32, u32)> {
 }
 
 /// The bytes `ins` writes to memory (0: none), as one store (the widest of them).
-fn stored_bytes(ins: &Instruction) -> u32 {
+fn stored_bytes(info: &mut iced_x86::InstructionInfoFactory, ins: &Instruction) -> u32 {
     use iced_x86::OpAccess;
-    iced_x86::InstructionInfoFactory::new()
-        .info(ins)
+    info.info(ins)
         .used_memory()
         .iter()
         .filter(|u| matches!(u.access(), OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite))
@@ -2737,7 +2773,7 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
     returns.truncate(MAX_RETURNS);
     let lay = if !STRUCTURED.load(Relaxed) { None } else { structure64(&blocks, &index, &returns, &tables, roots) };
     let nodes = blocks.len() + tables.len() + 1;
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, fresh: None, watch_store: false, fell_back: false, structured: lay.is_some(), fwd: alloc::vec![None; nodes], back: alloc::vec![None; nodes], cur: 0, table_node: BTreeMap::new(), side: BTreeMap::new() };
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, fresh: None, watch_store: false, fell_back: false, bad: false, info: iced_x86::InstructionInfoFactory::new(), structured: lay.is_some(), fwd: alloc::vec![None; nodes], back: alloc::vec![None; nodes], cur: 0, table_node: BTreeMap::new(), side: BTreeMap::new() };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();
@@ -2798,6 +2834,9 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
             g.depth = n - 1 - k as u32;
             emit_block64(&mut g, mem, k, &mut count, &mut layout);
         }
+    }
+    if g.bad {
+        return None;
     }
     g.c.end(); // exit: L_NT, L_ST (every block leaves by a branch)
     g.chain((entry >> 32) as u32);

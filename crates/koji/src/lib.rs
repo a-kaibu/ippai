@@ -44,7 +44,7 @@ pub fn read_tsc(cpu: &Cpu) -> u64 {
     }
 }
 
-pub use interp::{cpuid, cpuid_mode, CPUID_AVX, step, step_cached, step_flow, DecodeCache};
+pub use interp::{cpuid, cpuid_mode, CPUID_AVX, REP_STEP_MAX, step, step_cached, step_flow, DecodeCache};
 
 impl Cpu {
     /// EFLAGS with the lazy status flags worked out.

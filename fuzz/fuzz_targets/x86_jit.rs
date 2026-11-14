@@ -227,6 +227,7 @@ fuzz_target!(|data: &[u8]| {
             let mem = c.data().mem.clone();
             let d = mem.data();
             let cpu = cpu_in(d, at);
+            let ip = (cpu.eip, cpu.rip_hi);
             match koji::step(cpu, &mut Wasm(d)) {
                 // (as kura's vnhost_jit_step: POPF setting TF or another MXCSR mode leaves
                 // the region, and so does the first read of the MXCSR flags)
@@ -235,6 +236,8 @@ fuzz_target!(|data: &[u8]| {
                     c.data_mut().read_flags = true;
                     2
                 }
+                // (a REP stopped part way: EIP unmoved, the region leaves)
+                Exit::Continue if (cpu.eip, cpu.rip_hi) == ip => 2,
                 Exit::Continue => 0,
                 e => {
                     c.data_mut().exit = Some(e);

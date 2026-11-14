@@ -123,11 +123,14 @@ impl<'a, M: Memory> X<'a, M> {
         }
     }
 
-    fn swap_halves(&mut self) {
+    /// Swaps the lower and upper halves of the registers in the bit mask `m`.
+    fn swap_halves_of(&mut self, m: u32) {
         for i in 0..17 {
-            let x = self.cpu.xmm(i);
-            self.cpu.set_xmm(i, self.cpu.ymmh[i]);
-            self.cpu.ymmh[i] = x;
+            if m & 1 << i != 0 {
+                let x = self.cpu.xmm(i);
+                self.cpu.set_xmm(i, self.cpu.ymmh[i]);
+                self.cpu.ymmh[i] = x;
+            }
         }
     }
 
@@ -328,10 +331,12 @@ impl<'a, M: Memory> X<'a, M> {
         if let Some(v) = imm_hi {
             hi.set_immediate8(v);
         }
-        self.swap_halves();
+        // (only the registers it names change halves: the upper lane runs on their upper
+        // halves; review b01, swapping all 17 twice per instruction)
+        let used: u32 = (0..ins.op_count()).filter(|&i| ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_vector_register()).fold(0, |m, i| m | 1 << vi(ins.op_register(i)));
+        self.swap_halves_of(used);
         // a shared XMM operand goes in a register the instruction doesn't name (its number may
         // also be a YMM operand's, whose upper half is in that register now)
-        let used: u32 = (0..ins.op_count()).filter(|&i| ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_vector_register()).fold(0, |m, i| m | 1 << vi(ins.op_register(i)));
         let mut free = (0..16).filter(|f| used & 1 << f == 0);
         let mut moved: [Option<(usize, u128)>; 4] = [None; 4];
         for (i, r) in shared.iter().enumerate() {
@@ -346,7 +351,7 @@ impl<'a, M: Memory> X<'a, M> {
         for (f, v) in moved.iter().flatten() {
             self.cpu.set_xmm(*f, *v);
         }
-        self.swap_halves();
+        self.swap_halves_of(used);
         if e != Exit::Continue {
             self.restore(&snap);
         }

@@ -2858,6 +2858,7 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
         eprintln!("vnjit probe {:#x}: regs {:x?} xmm0 {:?} xmm1 {:?} xmm2 {:?} xmm3 {:?} stack {:x?} str {s:?}", c.eip, c.regs, f(c.xmm[0]), f(c.xmm[1]), f(c.xmm[2]), f(c.xmm[3]), stack);
     }
     let g = GENERATION.load(Ordering::Relaxed);
+    let at = ((*cpu).eip, (*cpu).rip_hi);
     let m16 = (*cpu).mode16 != 0;
     if m16 {
         from_linear16(&mut *cpu);
@@ -2874,6 +2875,9 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
         Exit::Continue if (*cpu).eflags & koji::flags::TF != 0 || !jit::sse_ok((*cpu).mxcsr) => 2,
         // (it read the MXCSR flags first: the region, made without their checks, leaves)
         Exit::Continue if mx_check() => 2,
+        // (a REP stopped part way, koji::REP_STEP_MAX: the region leaves, the instruction goes
+        // on at the next run; a block would else go past it)
+        Exit::Continue if ((*cpu).eip, (*cpu).rip_hi) == at => 2,
         Exit::Continue => 0,
         e => {
             EXIT.with(|x| x.set(Some(e)));

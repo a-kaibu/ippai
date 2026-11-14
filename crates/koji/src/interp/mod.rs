@@ -1514,7 +1514,9 @@ impl<'a, M: Memory> X<'a, M> {
     fn bulk(&mut self, mn: Mnemonic, bits: u32, step: u64, src_seg: u64) -> bool {
         use Mnemonic::*;
         let (rc, rs, rd) = self.string_regs();
-        if rc == Register::CX {
+        // (16-bit code: ES:DI has a segment base the host range below does not add, review b01;
+        // an address-size prefix gives ECX/EDI there too)
+        if rc == Register::CX || self.m16() {
             return false;
         }
         let n = self.get_reg(rc);
@@ -1571,6 +1573,8 @@ impl<'a, M: Memory> X<'a, M> {
         true
     }
 
+    /// MOVS/STOS/LODS/CMPS/SCAS, REP or not. A REP runs at most [`REP_STEP_MAX`] iterations
+    /// here (hundreds of MB of `repne scasb` kept one `step` for seconds, review b01).
     fn string_op(&mut self) -> Exit {
         use Mnemonic::*;
         let ins = self.ins;
@@ -1596,6 +1600,7 @@ impl<'a, M: Memory> X<'a, M> {
         let am = flags::mask64(reg_info(rc).1);
         let m64 = self.m64();
         let acc = match bits { 8 => Register::AL, 16 => Register::AX, 32 => Register::EAX, _ => Register::RAX };
+        let mut left = REP_STEP_MAX;
         loop {
             if (rep || repne) && self.get_reg(rc) == 0 {
                 break;
@@ -1653,10 +1658,23 @@ impl<'a, M: Memory> X<'a, M> {
                 }
                 break;
             }
+            // (as an interrupt would: the instruction stops part way, EIP still at it, and the
+            // next step goes on; the caller's budget, timers and code checks run in between)
+            left -= 1;
+            if left == 0 && c != 0 {
+                return Exit::Continue;
+            }
         }
         self.done()
     }
 }
+
+/// The iterations of a REP string instruction one [`step`] runs at most when it does not go in
+/// one copy (compares, scans, LODS, overlapping copies, 16-bit code). The rest runs at the next
+/// step, with EIP still at the instruction and the registers as far as it got, as the CPU leaves
+/// them for an interrupt; a JIT's `step` import sees EIP unmoved and leaves its region. (Above
+/// 0xFFFF so a 16-bit CX count always runs in one step.)
+pub const REP_STEP_MAX: u64 = 1 << 16;
 
 /// One byte of CRC-32C (polynomial 0x1EDC6F41, reflected 0x82F63B78), no pre/post inversion
 pub(crate) fn crc32c_byte(c: u32, b: u8) -> u32 {

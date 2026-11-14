@@ -11,6 +11,9 @@ use std::sync::atomic::Ordering::Relaxed;
 use koji::{Cpu, Exit, Fault};
 use wasmtime::*;
 
+/// A `step` import that left EIP at a REP it stopped part way (koji::REP_STEP_MAX): the
+/// region's status 2 means "go on from EIP", as in kura.
+static PARTWAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const CPU: u32 = 0x2000;
 const CODE: u32 = 0x10_0000;
 const END: u32 = 0x18_0000;
@@ -124,6 +127,20 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
         // often an instruction that already ran or runs next in a loop
         let at = MemoryOperand::new(Register::RIP, Register::None, 1, (CODE as u64 + rng.below(48)) as i64, 8, false, Register::None);
         out.push(Instruction::with2(C::Add_rm8_imm8, at, 1 + rng.below(3) as u32).unwrap());
+        return;
+    }
+    if rng.below(60) == 0 {
+        // a frame and its LEAVE (koji::jit::long translates LEAVE; it went to the interpreter):
+        // push rbp; mov rbp, rsp; a push or a sub rsp; something in the frame; leave
+        out.push(Instruction::with1(C::Push_r64, Register::RBP).unwrap());
+        out.push(Instruction::with2(C::Mov_r64_rm64, Register::RBP, Register::RSP).unwrap());
+        if rng.below(2) == 0 {
+            out.push(Instruction::with1(C::Push_r64, r(rng)).unwrap());
+        } else {
+            out.push(Instruction::with2(C::Sub_rm64_imm8, Register::RSP, 8 * rng.below(8) as i32).unwrap());
+        }
+        out.push(Instruction::with2(C::Mov_rm64_r64, MemoryOperand::with_base_displ(Register::RBP, -8), r(rng)).unwrap());
+        out.push(Instruction::with(C::Leaveq));
         return;
     }
     let k = rng.below(40);
@@ -772,9 +789,15 @@ impl Jit {
                 assert_eq!(cpu as u32, CPU);
                 STEPS.set(STEPS.get() + 1);
                 let mut c = unsafe { get_cpu(m) };
+                let ip = (c.eip, c.rip_hi);
                 let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
                 match r {
+                    // (as kura: a REP stopped part way leaves the region)
+                    Exit::Continue if (c.eip, c.rip_hi) == ip => {
+                        PARTWAY.store(true, std::sync::atomic::Ordering::Relaxed);
+                        2
+                    }
                     // (as kura: it rewrote translated code, the region leaves)
                     Exit::Continue if CODE_WRITTEN.load(Relaxed) => 2,
                     // (as kura: another MXCSR mode leaves the region, and so does the first
@@ -954,6 +977,7 @@ impl Jit {
                     }
                 }
                 // (a step that changed MXCSR: on in the interpreter; one that read its flags)
+                2 if PARTWAY.swap(false, Relaxed) => {}
                 2 if !koji::jit::sse_ok(unsafe { get_cpu(m) }.mxcsr) || SWITCHED.load(Relaxed) || self.rewritten => {}
                 s => return Err(format!("status {s} at {:#x}", unsafe { get_cpu(m) }.eip)),
             }
