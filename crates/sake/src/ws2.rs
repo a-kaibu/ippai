@@ -3181,7 +3181,8 @@ fn TransmitFile(c: &mut Ctx) -> u32 {
     // (sent piece by piece as it is read, as sends that wait for room: the file is not read
     // whole into memory first)
     let r = (|| -> Result<u32, u32> {
-        if !on(h, |st, id, _| Ok(st.socks[&id].stream()))? {
+        // (a stream socket that is connected: else WSAENOTCONN, as before anything is read)
+        if !on(h, |st, id, _| Ok(st.socks[&id].stream() && (st.socks[&id].conn.is_some() || st.socks[&id].peer_gone)))? {
             return Err(WSAENOTCONN);
         }
         let mut sent = 0u32;
