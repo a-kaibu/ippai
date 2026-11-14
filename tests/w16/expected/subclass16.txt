@@ -1,0 +1,14 @@
+subclassed edit 1
+GetWindowLong is ours 1
+EditSub WM_SETTEXT "hello"
+text "hello" seen 1
+old called directly: length 5
+old called directly: WM_GETTEXT 5 "hello"
+old called directly: WM_SETTEXT 1 "direct" seen 1
+class procedure: length 6
+restored: returned ours 1, now the old 1
+own old is OwnProc 1
+own WM_USER 3007
+own old directly 1008
+SetClassLong returned OwnProc 1, GetClassLong ClassProc 1
+new window WM_USER 3009, subclassed one 3007

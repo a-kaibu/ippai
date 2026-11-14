@@ -512,6 +512,17 @@ fn import(module: &str, ord: u16) -> Result<u32, String> {
     })
 }
 
+/// A new 16-bit callable far pointer (a pascal function with argument types `args` as in
+/// specs16.txt) that runs `f`; `name` is C16::name for it.
+pub fn host16(module: &str, name: String, args: &str, f: H16) -> u32 {
+    with(|s| {
+        let i = s.entries.len() as u32;
+        assert!(4 * i < RET_OFF, "w16: thunk segment full");
+        s.entries.push(Api { module: module.into(), name, conv: Conv::Pascal, args: args.bytes().collect(), f: Some(f) });
+        (s.thunk as u32) << 16 | 4 * i
+    })
+}
+
 fn trace() -> u32 {
     static T: OnceLock<u32> = OnceLock::new();
     *T.get_or_init(|| std::env::var("SAKE_TRACE").ok().and_then(|s| s.parse().ok()).unwrap_or(0))

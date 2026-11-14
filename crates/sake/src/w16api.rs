@@ -562,7 +562,17 @@ pub fn init() {
         if i == -4 { proc_back(r) } else { r }
     });
     reg("USER.GetClassWord", |c| call32(c.cpu, "user32!GetClassLongA", &[c.h(0), c.s(1) as u32]) & 0xffff);
-    reg("USER.GetClassLong", |c| call32(c.cpu, "user32!GetClassLongA", &[c.h(0), c.s(1) as u32]));
+    reg("USER.GetClassLong", |c| {
+        let i = c.s(1);
+        let r = call32(c.cpu, "user32!GetClassLongA", &[c.h(0), i as u32]);
+        if i == -24 { proc_back(r) } else { r } // GCL_WNDPROC
+    });
+    reg("USER.SetClassLong", |c| {
+        let i = c.s(1);
+        let v = if i == -24 { proc_thunk(c.a(2), Kind::Wnd) } else { c.a(2) };
+        let r = call32(c.cpu, "user32!SetClassLongA", &[c.h(0), i as u32, v]);
+        if i == -24 { proc_back(r) } else { r }
+    });
     reg("USER.GetDesktopWindow", |c| h16(call32(c.cpu, "user32!GetDesktopWindow", &[])) as u32);
     reg("USER.DrawText", |c| {
         let r = crate::mem::heap_alloc(16, true);
@@ -958,19 +968,27 @@ pub fn proc_back(p32: u32) -> u32 {
 
 static P32: Mutex<Option<(HashMap<u32, u32>, HashMap<u32, u32>)>> = Mutex::new(None);
 
-/// A far pointer that calls the 32-bit procedure `p32` (CallWindowProc recognizes it).
+/// A far pointer that calls the 32-bit procedure `p32`: CallWindowProc recognizes it, and a
+/// program calling it itself (an old window procedure kept from a subclassing) reaches it too.
 fn proc16_of(p32: u32) -> u32 {
     let mut g = P32.lock().unwrap();
     let m = g.get_or_insert_with(Default::default);
     if let Some(&fp) = m.0.get(&p32) {
         return fp;
     }
-    // (a unique far pointer into the thunk segment: never executed, CallWindowProc16 and
-    // the 32-bit side map it back)
-    let fp = 0xffff_0000 | (0xff00 - 4 * m.0.len() as u32);
+    let fp = w16::host16("USER", format!("{p32:08x}"), "wwwl", call_proc32);
     m.0.insert(p32, fp);
     m.1.insert(fp, p32);
     fp
+}
+
+/// A program's call of a 32-bit window procedure (proc16_of): its message made 32-bit.
+fn call_proc32(c: &mut C16) -> u32 {
+    let p32 = u32::from_str_radix(&c.name, 16).unwrap();
+    let (m, w, l, tmp) = to32(c.w(1), c.w(2), c.a(3));
+    let r = crate::call(c.cpu, p32, &[c.h(0), m, w, l]);
+    to32_done(tmp);
+    r
 }
 
 fn proc32_of(fp: u32) -> Option<u32> {
