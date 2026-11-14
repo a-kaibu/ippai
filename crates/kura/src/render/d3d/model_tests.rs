@@ -1315,3 +1315,38 @@ fn a_state_draws_the_same_d3d11() {
         v
     });
 }
+
+/// Commands that name textures already destroyed (a producer that frees a texture still bound,
+/// a save state restored without it) draw with stand-ins instead of aborting the page: the
+/// Direct3D 11 scenarios with random textures destroyed between frames, and the
+/// page's own lookups (views, presents, resolves) asked about ids it does not have.
+#[test]
+fn commands_naming_gone_textures_do_not_abort() {
+    let dst = unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0) } as u32;
+    for seed in 0..seeds().min(40) {
+        let mut g = Gen11::new(seed);
+        let mut v = vec![g.setup()];
+        for _ in 0..8 {
+            let fs = g.r.next();
+            g.frames.push(fs);
+            let mut b = g.frame(fs, false, dst);
+            // a texture gone before the frame
+            if g.r.chance(60) {
+                let id = g.r.pick(&TEXTURES11).0;
+                b.c.splice(0..0, [DESTROY_TEXTURE, id]);
+            }
+            v.push(b);
+        }
+        run(seed, &v, true, true);
+        run(seed, &v, false, false);
+    }
+    model::reset();
+    let mut d = D3d::new();
+    for id in [0, 7, 0xdead, u32::MAX] {
+        assert_ne!(d.view2(id, 1, 0, 1, 0, 1, false), 0);
+        assert_ne!(d.view2(id, 3, 2, 4, 1, 6, true), 0);
+        assert_ne!(d.present_view(id), 0);
+        let dv = d.dummy(1, 1);
+        d.resolve_into(id, 0, dv, "rgba8unorm");
+    }
+}

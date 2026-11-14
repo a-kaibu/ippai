@@ -353,6 +353,10 @@ struct Tex {
     /// Direct3D's 24-bit UNORM depth (D24_UNORM_S8_UINT, R24G8_TYPELESS): read as floats, its
     /// depth is rounded to the 24-bit value Windows holds (see `depth_twin`)
     d24: bool,
+    /// typed UAVs read by dispatches: per mip, a copy of that mip (texture, the stamp it was
+    /// copied at, its views by (dimension, first layer, layers)), kept rather than made per
+    /// dispatch
+    reads: HashMap<u32, (Id, u64, HashMap<(u32, u32, u32), Id>)>,
 }
 
 impl Tex {
@@ -374,6 +378,10 @@ impl Tex {
             if v != keep {
                 gpu::drop(v);
             }
+        }
+        for (t, _, vs) in self.reads.values() {
+            gpu::destroy(*t);
+            vs.values().for_each(|&v| gpu::drop(v));
         }
     }
 }
@@ -937,7 +945,7 @@ impl D3d {
                     self.clear_groups2();
                     self.created.set(self.created.get() + 1);
                     let view = gpu::view(tex, "");
-                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false, make: c[i..i + 7].to_vec(), samples: 1, shown: None, d24: false });
+                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false, make: c[i..i + 7].to_vec(), samples: 1, shown: None, d24: false, reads: HashMap::new() });
                     i += 7;
                 }
                 DESTROY_TEXTURE => {
@@ -2715,7 +2723,7 @@ impl D3d {
     /// The view the screen shows of texture `id`: its own, or for a multisampled one what it
     /// resolves to now (a texture kept for that).
     fn present_view(&mut self, id: u32) -> Id {
-        let t = &self.textures[&id];
+        let Some(t) = self.textures.get(&id) else { return self.dummy(1, 1) };
         if t.samples == 1 {
             return t.view;
         }
@@ -2768,7 +2776,7 @@ impl D3d {
     /// formats are the same, else a shader that averages the samples (an sRGB twin, another
     /// format of the typeless group). Clears not done yet must be done.
     fn resolve_into(&mut self, src: u32, sly: u32, dv: Id, fmt: &'static str) {
-        let s = &self.textures[&src];
+        let Some(s) = self.textures.get(&src) else { return };
         let (sfmt, sview) = (s.format, s.view);
         let _ = sly;
         self.end_pass();
@@ -2954,7 +2962,7 @@ impl D3d {
         );
         let mut make = vec![CREATE_TEXTURE2];
         make.extend_from_slice(&a);
-        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage, make, samples, shown: None, d24 });
+        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage, make, samples, shown: None, d24, reads: HashMap::new() });
         // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
         // every LESS test), and the passes that clear rather than load an aspect no draw used
         // yet (see `zused`) start from that too.
@@ -2970,13 +2978,14 @@ impl D3d {
     /// A view of texture `id` for binding or rendering (cached on the texture).
     #[allow(clippy::too_many_arguments)]
     fn view2(&mut self, id: u32, dim: u8, mip: u32, mips: u32, layer: u32, layers: u32, depth_only: bool) -> Id {
-        let t = self.textures.get_mut(&id).unwrap();
+        // (a texture gone: a 1x1 of zeros, not an abort of the page)
+        let Some(t) = self.textures.get_mut(&id) else { return self.dummy(dim as u32, 1) };
         let k = (dim, mip, mips, layer, layers, depth_only);
         if let Some(&v) = t.views.get(&k) {
             return v;
         }
         let dname = VIEW_DIM.get(dim as usize).copied().unwrap_or("2d");
-        let all = t.layers;
+        let all = t.layers.max(1);
         let base = layer.min(all - 1);
         let mut count = if matches!(dname, "2d" | "1d" | "3d") { 1 } else { layers.min(all - base).max(1) };
         if dname == "cube" {
@@ -2985,7 +2994,7 @@ impl D3d {
         if dname == "cube-array" {
             count = (count / 6 * 6).max(6);
         }
-        let m = mip.min(t.levels - 1);
+        let m = mip.min(t.levels.max(1) - 1);
         let v = gpu::view(
             t.tex,
             &format!(
@@ -3536,7 +3545,6 @@ impl D3d {
             }
         };
         let mut entries = Vec::new();
-        let mut views = Vec::new();
         for e in es.chunks(8) {
             let (binding, kind, a, b, cc, dd, ee, ff) = (e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
             match kind {
@@ -3564,29 +3572,33 @@ impl D3d {
                     entries.push((binding, Res::Obj(v)));
                 }
                 8 => {
-                    // (what it held: a copy of that mip)
+                    // (what it held: a copy of that mip, made again only when it changed)
                     let v = match self.textures.get(&a).filter(|t| t.dim != "3d" || b == 5) {
                         Some(t) => {
-                            let m = cc.min(t.levels - 1);
-                            let (w, h, layers) = ((t.w >> m).max(1), (t.h >> m).max(1), if t.dim == "3d" { (t.layers >> m).max(1) } else { t.layers });
+                            let m = cc.min(t.levels.max(1) - 1);
+                            let (w, h, layers) = ((t.w >> m).max(1), (t.h >> m).max(1), if t.dim == "3d" { (t.layers >> m).max(1) } else { t.layers.max(1) });
                             let (src, dim, format) = (t.tex, t.dim, t.format);
+                            let stamp = self.stamp_of(a);
                             self.use_tex(a);
-                            let copy = gpu::texture(&format!(
-                                r#"{{"size":[{w},{h},{layers}],"dimension":{},"format":{},"usage":{}}}"#,
-                                q(dim),
-                                q(format),
-                                usage::T_BINDING | usage::T_COPY_DST
-                            ));
-                            gpu::copy_texture(src, m, [0, 0, 0], copy, 0, [0, 0, 0], [w, h, layers]);
-                            self.doomed.push(copy);
+                            let t = self.textures.get_mut(&a).unwrap();
+                            let r = t.reads.entry(m).or_insert_with(|| {
+                                let copy = gpu::texture(&format!(
+                                    r#"{{"size":[{w},{h},{layers}],"dimension":{},"format":{},"usage":{}}}"#,
+                                    q(dim),
+                                    q(format),
+                                    usage::T_BINDING | usage::T_COPY_DST
+                                ));
+                                (copy, u64::MAX, HashMap::new())
+                            });
+                            if r.1 != stamp {
+                                r.1 = stamp;
+                                gpu::copy_texture(src, m, [0, 0, 0], r.0, 0, [0, 0, 0], [w, h, layers]);
+                            }
                             let dname = pick(&VIEW_DIM, b, "2d");
-                            let count = if matches!(dname, "2d" | "3d") { 1 } else { ff.max(1).min(layers - ee.min(layers - 1)) };
-                            let v = gpu::view(
-                                copy,
-                                &format!(r#"{{"dimension":{},"baseArrayLayer":{},"arrayLayerCount":{count}}}"#, q(dname), if dname == "3d" { 0 } else { ee.min(layers - 1) }),
-                            );
-                            views.push(v);
-                            v
+                            let base = if dname == "3d" { 0 } else { ee.min(layers - 1) };
+                            let count = if matches!(dname, "2d" | "3d") { 1 } else { ff.max(1).min(layers - base) };
+                            let copy = r.0;
+                            *r.2.entry((b, base, count)).or_insert_with(|| gpu::view(copy, &format!(r#"{{"dimension":{},"baseArrayLayer":{base},"arrayLayerCount":{count}}}"#, q(dname))))
                         }
                         None => self.dummy(b, match dd { 1 => 4, 2 => 5, _ => 1 }),
                     };
@@ -3623,7 +3635,10 @@ impl D3d {
         let group = gpu::bind_group(layout, &entries);
         gpu::dispatch(pipe, group, x, y, z);
         gpu::drop(group);
-        views.into_iter().for_each(gpu::drop);
+        // (what it wrote: copies of those taken before are old now)
+        for &a in &stored {
+            self.touch(a);
+        }
         self.open = true;
         next
     }

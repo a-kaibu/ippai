@@ -1553,6 +1553,11 @@ impl Model {
         self.pass.as_ref()?.3.ibuf
     }
 
+    /// Tests: textures the page made so far (destroyed ones too).
+    pub fn textures_made(&self) -> usize {
+        self.objs.iter().filter(|o| matches!(o, Obj::Texture(..))).count()
+    }
+
     /// The shader modules and render pipelines the page holds now (not dropped).
     pub fn live_programs(&self) -> (usize, usize) {
         let live = || self.table.iter().flatten().map(|&k| &self.objs[k]);
@@ -2595,11 +2600,13 @@ impl Model {
         }
         for v in out {
             let Obj::Texture(t) = &mut self.objs[v.tex] else { continue };
+            // (no more bits than the format's texels: what is read back is what it holds)
+            let format = t.format.clone();
             for l in v.layer..v.layer + v.layers {
                 let si = t.sub(v.mip, l);
                 if let Some(s) = t.texels.get_mut(si) {
                     for (k, val) in s.iter_mut().enumerate() {
-                        *val = mix(mix(x, *val), (si as u64) << 32 | k as u64);
+                        *val = fit(&format, mix(mix(x, *val), (si as u64) << 32 | k as u64));
                     }
                 }
             }

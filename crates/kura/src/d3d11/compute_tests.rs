@@ -263,3 +263,71 @@ fn a_uav_unbinds_the_compute_shaders_srv_of_it() {
     d.set(68, 0, 0);
     d.done();
 }
+
+/// A UAV a dispatch reads (ld_uav_typed) is read from a copy of its mip the page keeps, made
+/// again only when the texture changed (a copy texture was made per dispatch). Differential:
+/// in random runs of read-modify-write dispatches on two textures mixed with UpdateSubresource
+/// and CopyResource, what a dispatch leaves is what the same dispatch leaves in a fresh texture
+/// holding what the texture held before it (a copy taken before a change would differ), and
+/// the page makes no texture per dispatch.
+#[test]
+fn a_uav_read_keeps_its_copy_and_sees_every_change() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut d = Dev::new();
+    let rmw = d.cs(RMW);
+    d.set(69, 0, rmw);
+    let run = |d: &mut Dev, u: u32| {
+        d.set(68, 0, u);
+        d.cc(41, &[8, 8, 1]);
+        d.set(68, 0, 0);
+    };
+    let mut r = crate::d3d9::trace_tests::Rng(0xc0_9e5);
+    let mut checked = 0;
+    for round in 0..8 {
+        let texs = [d.tex(RGBA8, 0x88, &PATTERN(10 + round)), d.tex(RGBA8, 0x88, &PATTERN(20 + round))];
+        let uavs = [d.uav(texs[0]), d.uav(texs[1])];
+        let (mut dispatches, mut by_dispatches) = (0, 0);
+        for step in 0..40 {
+            let k = r.below(2);
+            match r.below(6) {
+                0 => {
+                    // UpdateSubresource of a box
+                    let (x0, y0) = (r.below(8) as u32, r.below(8) as u32);
+                    let (x1, y1) = (x0 + 1 + r.below(8 - x0 as usize) as u32, y0 + 1 + r.below(8 - y0 as usize) as u32);
+                    let bx = mem(6);
+                    put(bx, &[x0, y0, 0, x1, y1, 1]);
+                    let p = mem(64);
+                    put(p, &(0..64).map(|_| r.next() as u32).collect::<Vec<_>>());
+                    d.cc(48, &[texs[k], 0, bx, p, 32, 0]);
+                }
+                1 => {
+                    d.cc(47, &[texs[k], texs[1 - k]]);
+                }
+                op => {
+                    // (some dispatches compared, some run back to back)
+                    let check = op == 2;
+                    let before = check.then(|| d.read(texs[k]));
+                    // (what was sent before made first)
+                    gpu::pump();
+                    let m0 = model::with(|m| m.textures_made());
+                    run(&mut d, uavs[k]);
+                    gpu::pump();
+                    by_dispatches += model::with(|m| m.textures_made()) - m0;
+                    dispatches += 1;
+                    if let Some(before) = before {
+                        let after = d.read(texs[k]);
+                        let c = d.tex(RGBA8, 0x88, &before);
+                        let uc = d.uav(c);
+                        run(&mut d, uc);
+                        checked += 1;
+                        assert_eq!(after, d.read(c), "round {round} step {step}: the dispatch read what texture {k} held before a change");
+                    }
+                }
+            }
+        }
+        // (a copy per texture read through its UAV)
+        assert!(by_dispatches <= 2, "{by_dispatches} textures made by {dispatches} dispatches");
+    }
+    assert!(checked > 20, "{checked}");
+    d.done();
+}
