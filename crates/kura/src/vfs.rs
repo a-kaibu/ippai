@@ -1357,6 +1357,22 @@ struct Predict {
     /// (vnhost_vfs_foresee; crates/ippai/src/foresee.rs), and those keys without extension.
     table: HashMap<String, Vec<String>>,
     stems: HashMap<String, String>,
+    /// Where the table's scripts name each name (foresee::table_places).
+    places: HashMap<String, Vec<(String, usize)>>,
+}
+
+/// Whether a table came (then every file's first read asks what follows it).
+static HAS_TABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Names after a file in each script that names it, and in how many scripts at most a name may
+/// stand to say where the game is.
+const FOLLOWING: usize = 12;
+const PLACES_COMMON: usize = 4;
+
+/// The archives looked into.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pack {
+    Xp3,
+    Bgi,
 }
 
 /// A table's levels of scripts named by a script read (its own names, then the next scripts').
@@ -1384,6 +1400,8 @@ fn foresee_table(text: &str) {
         }
     }
     p.stems = predict::table_stems(&p.table);
+    p.places = predict::table_places(&p.table, PLACES_COMMON);
+    HAS_TABLE.store(!p.table.is_empty(), std::sync::atomic::Ordering::Relaxed);
 }
 static PREDICT: Mutex<Option<Predict>> = Mutex::new(None);
 /// Bytes a script's names fetch ahead at most, and each file or member at most.
@@ -1422,6 +1440,15 @@ fn xp3_members(ino: Ino) -> Vec<predict::Member> {
     read_bytes(ino, at, len).as_deref().and_then(predict::xp3_index_bytes).map(|i| predict::xp3_index(&i)).unwrap_or_default()
 }
 
+/// A BGI .arc's members, from its index (read here, as the game reads it at its start).
+fn bgi_members(ino: Ino) -> Vec<predict::Member> {
+    let Some(len) = read_bytes(ino, 0, 16).as_deref().and_then(predict::bgi_index_len) else { return Vec::new() };
+    if len > predict::INDEX_MAX as u64 {
+        return Vec::new();
+    }
+    read_bytes(ino, 0, len).map(|h| predict::bgi_index(&h)).unwrap_or_default()
+}
+
 /// After a read of `ino` at `off..off + len` (the game's): a script read the first time is
 /// looked into, and what it names goes to the page as hints.
 fn predict_read(ino: Ino, off: u64, len: u64) {
@@ -1440,15 +1467,18 @@ fn predict_read(ino: Ino, off: u64, len: u64) {
 /// order named, PREDICT_BYTES at most.
 fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
     // (every read comes here: the name looked at in place, nothing copied for most)
-    let archive = {
+    let (archive, script, key) = {
         let g = NAMES.lock().unwrap_or_else(|e| e.into_inner());
         let Some(path) = g.as_ref().and_then(|m| m.get(&ino)) else { return Vec::new() };
         let name = path.rsplit('/').next().unwrap_or(path);
-        let archive = name.len() > 4 && name.as_bytes()[name.len() - 4..].eq_ignore_ascii_case(b".xp3");
-        if !archive && !predict::is_script(name) {
+        let ext = |e: &[u8]| name.len() > 4 && name.as_bytes()[name.len() - 4..].eq_ignore_ascii_case(e);
+        let archive = if ext(b".xp3") { Some(Pack::Xp3) } else if ext(b".arc") { Some(Pack::Bgi) } else { None };
+        let script = predict::is_script(name);
+        // (another file: only when a table says what follows it)
+        if archive.is_none() && !script && !HAS_TABLE.load(std::sync::atomic::Ordering::Relaxed) {
             return Vec::new();
         }
-        archive
+        (archive, script, predict::script_key(name))
     };
     // the store's files by name, once (the trees do not change)
     let (files, first) = {
@@ -1475,28 +1505,33 @@ fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
             p.names.entry(k).or_default().extend(v);
         }
     }
-    // what to look into: a loose script whole; an archive's script members this read reaches
-    // what the scripts this read reaches name: from the table when it has them, else read here
+    // what the scripts this read reaches name: from the table when it has them, else read here;
+    // what follows a file that is no script, by where the table's scripts name it
     let from_table = |key: &str| -> Option<Vec<String>> {
         let g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
         let p = g.as_ref()?;
         p.table.contains_key(key).then(|| predict::foreseen(&p.table, &p.stems, key, FORESEE_DEPTH, predict::MENTIONS_MAX))
     };
+    let after = |key: &str| -> Vec<String> {
+        let g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
+        g.as_ref().map_or(Vec::new(), |p| predict::following(&p.table, &p.places, key, FOLLOWING))
+    };
     let mut lists: Vec<Vec<String>> = Vec::new();
-    if archive {
+    if let Some(kind) = archive {
         if first {
-            let members = xp3_members(ino);
+            let members = match kind {
+                Pack::Xp3 => xp3_members(ino),
+                Pack::Bgi => bgi_members(ino),
+            };
             let mut g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
             let p = g.get_or_insert_with(Predict::default);
-            let mut scripts = Vec::new();
+            let mut all = Vec::with_capacity(members.len());
             for m in members {
                 add_name(&mut p.names, &m.name, Target::Member(ino, m.segments.iter().map(|s| (s.0, s.1)).collect()));
-                if predict::is_script(&m.name) {
-                    scripts.push(m);
-                }
+                all.push(m);
             }
-            scripts.sort_by_key(|m| m.segments[0].0);
-            p.archives.insert(ino, scripts);
+            all.sort_by_key(|m| m.segments[0].0);
+            p.archives.insert(ino, all);
         }
         let reached: Vec<predict::Member> = {
             let mut g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
@@ -1509,8 +1544,13 @@ fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
             ms.into_iter().filter(|m| p.scanned.insert((ino, m.segments[0].0))).collect()
         };
         for m in reached {
-            if let Some(l) = from_table(&predict::script_key(&m.name)) {
+            let k = predict::script_key(&m.name);
+            if let Some(l) = from_table(&k) {
                 lists.push(l);
+                continue;
+            }
+            if !predict::is_script(&m.name) || kind != Pack::Xp3 {
+                lists.push(after(&k));
                 continue;
             }
             if m.segments.iter().map(|s| s.1).sum::<u64>() > predict::SCRIPT_MAX as u64 {
@@ -1523,11 +1563,10 @@ fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
         }
     } else {
         let fresh = PREDICT.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Predict::default).scanned.insert((ino, 0));
-        let path = NAMES.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&ino).cloned()).unwrap_or_default();
         if fresh {
-            if let Some(l) = from_table(&predict::script_key(&path)) {
+            if let Some(l) = from_table(&key) {
                 lists.push(l);
-            } else {
+            } else if script {
                 let size = with(|fs| match fs.node(ino).map(|n| &n.data) {
                     Some(Data::File(Content::Lower { size, .. })) => *size,
                     _ => 0,
@@ -1535,6 +1574,8 @@ fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
                 if size <= predict::SCRIPT_MAX as u64 {
                     lists.extend(read_bytes(ino, 0, size).map(|b| predict::names_in(&b)));
                 }
+            } else {
+                lists.push(after(&key));
             }
         }
     }
@@ -2965,7 +3006,7 @@ pub(crate) mod tests {
         // (the game reads the header: the index is read, nothing named yet)
         assert!(predicted(data, 0, 32).is_empty());
         // (the game reads first.ks: bg01's member, v002, second.ks; in that order)
-        let starts: Vec<usize> = { let p = PREDICT.lock().unwrap(); let ms = &p.as_ref().unwrap().archives[&data]; ms.iter().map(|m| m.segments[0].0 as usize).collect() };
+        let starts: Vec<usize> = { let p = PREDICT.lock().unwrap(); let ms = &p.as_ref().unwrap().archives[&data]; ms.iter().filter(|m| predict::is_script(&m.name)).map(|m| m.segments[0].0 as usize).collect() };
         assert_eq!(starts.len(), 2, "two scripts in the archive");
         let got = predicted(data, starts[0] as u64, first.len() as u64);
         let v = |k: usize| hash(1000 + k);
@@ -3044,6 +3085,98 @@ pub(crate) mod tests {
         *CACHE.lock().unwrap() = None;
         *PREDICT.lock().unwrap() = None;
         // (no tree at "/" left for the tests of host files)
+        *FS.lock().unwrap() = None;
+    }
+
+    /// A BGI .arc with a table (its scripts are bytecode, named without extension): a script
+    /// member read foresees what the table says; a picture read mid-scene, what its scene
+    /// names after it; a loose voice the same.
+    #[test]
+    fn bgi_archives_and_what_follows_a_file() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        // PackFile: 4 members of 64 bytes each after the index
+        let names = ["01_start", "bg01a", "ch01", "ch02"];
+        let mut arc = b"PackFile    ".to_vec();
+        arc.extend((names.len() as u32).to_le_bytes());
+        for (k, n) in names.iter().enumerate() {
+            let mut e = vec![0u8; 32];
+            e[..n.len()].copy_from_slice(n.as_bytes());
+            e[16..20].copy_from_slice(&(k as u32 * 64).to_le_bytes());
+            e[20..24].copy_from_slice(&64u32.to_le_bytes());
+            arc.extend(e);
+        }
+        arc.resize(16 + 32 * 4, 0);
+        let base = arc.len();
+        for k in 0..names.len() {
+            arc.extend(std::iter::repeat_n(k as u8 + 1, 64));
+        }
+        let h = |i: usize| format!("{:032x}", 0xb610_0000u128 + i as u128);
+        let mut m = HashMap::new();
+        let mut list = Vec::new();
+        for (i, c) in arc.chunks(64).enumerate() {
+            m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), c.to_vec());
+            list.push(format!("{}:{}", h(i), c.len()));
+        }
+        let mut tsv = format!("vnvm-tree\t2\t64\nf\t644\t0\tdata01000.arc\t{}\t{}\n", arc.len(), list.join(","));
+        for v in 1..=2usize {
+            tsv += &format!("f\t644\t0\tv{v:03}.ogg\t48\t{}:48\n", h(900 + v));
+            m.insert(format!("chunks/{}/{}", &h(900 + v)[..2], h(900 + v)), vec![v as u8; 48]);
+        }
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        fs.mounts.push(("/".into(), root));
+        fs.load_tree(root, &tsv);
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        *CACHE.lock().unwrap() = None;
+        *PREDICT.lock().unwrap() = None;
+        let ino = |p: &str| {
+            let At::Ours(Ok(fd)) = open_handle(p, libc::O_RDONLY, 0) else { panic!("open {p}") };
+            let i = handle(fd).unwrap().0;
+            release(fd);
+            i
+        };
+        let (data, v1) = (ino("/data01000.arc"), ino("/v001.ogg"));
+        let hash = |i: usize| {
+            let x = h(i);
+            let mut b = [0u8; 16];
+            for (k, c) in b.iter_mut().enumerate() {
+                *c = u8::from_str_radix(&x[2 * k..2 * k + 2], 16).unwrap();
+            }
+            b
+        };
+        // (a member's chunks: the index ends mid-chunk, so each member spans two)
+        let member = |k: usize| ((base + 64 * k) / 64..=(base + 64 * k + 63) / 64).map(hash).collect::<Vec<Hash>>();
+        let named = |parts: Vec<Vec<Hash>>| {
+            let mut out: Vec<Hash> = Vec::new();
+            for x in parts.into_iter().flatten() {
+                if !out.contains(&x) {
+                    out.push(x);
+                }
+            }
+            out
+        };
+        let on = |x: &Hash| CACHE.lock().unwrap().as_ref().is_some_and(|c| c.contains(&(*x, 0)));
+        let same = |got: Vec<Hash>, want: Vec<Hash>| {
+            let left: Vec<Hash> = want.iter().copied().filter(|x| got.contains(x) || !on(x)).collect();
+            assert_eq!(got, left);
+        };
+        foresee_table(&format!("{}\n{}", predict::TABLE_HEADER, predict::table_line("01_start", &["bg01a".into(), "v001".into(), "ch01".into(), "v002".into(), "ch02".into()])));
+        // (the index read with the header; the script: all it names)
+        assert!(predicted(data, 0, 16).is_empty());
+        same(predicted(data, base as u64, 64), named(vec![member(1), vec![hash(901)], member(2), vec![hash(902)], member(3)]));
+        // (a picture read: what its scene names after it)
+        *PREDICT.lock().unwrap() = None;
+        foresee_table(&format!("{}\n{}", predict::TABLE_HEADER, predict::table_line("01_start", &["bg01a".into(), "v001".into(), "ch01".into(), "v002".into(), "ch02".into()])));
+        predicted(data, 0, 16);
+        same(predicted(data, base as u64 + 64, 64), named(vec![vec![hash(901)], member(2), vec![hash(902)], member(3)]));
+        // (a loose voice: what comes after it)
+        same(predicted(v1, 0, 8), named(vec![member(2), vec![hash(902)], member(3)]));
+        // (no table: a file that is no script says nothing)
+        *PREDICT.lock().unwrap() = None;
+        HAS_TABLE.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(predicted(v1, 0, 8).is_empty());
+        *CACHE.lock().unwrap() = None;
         *FS.lock().unwrap() = None;
     }
 

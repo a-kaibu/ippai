@@ -57,55 +57,134 @@ async fn table(State(f): State<Foresee>, Path(tree): Path<String>) -> Response {
     StatusCode::ACCEPTED.into_response()
 }
 
-/// Tree `tree`'s table (foresee::table_line for each script it has, loose or in an .xp3).
+/// Tree `tree`'s table (foresee::table_line for each script it has: loose, in a KiriKiri .xp3,
+/// in a BGI .arc, a Siglus Scene.pck's scenes).
 pub async fn build(trees: &Trees, tree: &str) -> String {
     let mut out = format!("{}\n", foresee::TABLE_HEADER);
     let mut files = trees.list(tree).unwrap_or_default();
     files.sort();
-    for (path, size) in files {
+    for (path, size) in &files {
         let mut cache = HashMap::new();
-        if foresee::is_script(&path) {
-            if size as usize <= foresee::SCRIPT_MAX {
-                if let Some(b) = trees.read(tree, &path, 0, size, &mut cache).await {
-                    out += &foresee::table_line(&path, &foresee::names_in(&b));
+        let base = path.rsplit('/').next().unwrap_or(path);
+        if base == "scene.pck" {
+            out += &siglus(trees, tree, path, *size, &files).await;
+        } else if foresee::is_script(path) {
+            if *size as usize <= foresee::SCRIPT_MAX {
+                if let Some(b) = trees.read(tree, path, 0, *size, &mut cache).await {
+                    out += &foresee::table_line(path, &foresee::names_in(&b));
                 }
             }
+        } else if path.ends_with(".xp3") {
+            out += &xp3(trees, tree, path, &mut cache).await;
+        } else if path.ends_with(".arc") {
+            out += &bgi(trees, tree, path, &mut cache).await;
+        }
+    }
+    out
+}
+
+/// An archive's script members' lines (`members` in the archive's order; `script`: whether one
+/// is a script, by its name or its first bytes).
+async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<foresee::Member>, cache: &mut HashMap<u64, Vec<u8>>, by_bytes: fn(&[u8]) -> bool) -> String {
+    let mut out = String::new();
+    // (in the archive's order: the chunks they lie in read once)
+    members.sort_by_key(|m| m.segments[0].0);
+    for m in members {
+        if m.segments.iter().map(|s| s.1).sum::<u64>() > foresee::SCRIPT_MAX as u64 {
             continue;
         }
-        if !path.ends_with(".xp3") {
-            continue;
-        }
-        let Some(head) = trees.read(tree, &path, 0, 0x28, &mut cache).await else { continue };
-        let Some(at) = foresee::xp3_index_at(&head) else { continue };
-        let Some(len) = trees.read(tree, &path, at, 17, &mut cache).await.as_deref().and_then(foresee::xp3_index_len) else { continue };
-        if len > foresee::INDEX_MAX as u64 {
-            continue;
-        }
-        let Some(index) = trees.read(tree, &path, at, len, &mut cache).await.as_deref().and_then(foresee::xp3_index_bytes) else { continue };
-        let mut members: Vec<foresee::Member> = foresee::xp3_index(&index).into_iter().filter(|m| foresee::is_script(&m.name)).collect();
-        // (in the archive's order: the chunks they lie in read once)
-        members.sort_by_key(|m| m.segments[0].0);
-        for m in members {
-            if m.segments.iter().map(|s| s.1).sum::<u64>() > foresee::SCRIPT_MAX as u64 {
+        if !foresee::is_script(&m.name) {
+            // (named without a script's extension, as BGI's are: by its first bytes)
+            let s = m.segments[0];
+            if s.2 || !trees.read(tree, path, s.0, 64.min(s.1), cache).await.is_some_and(|h| by_bytes(&h)) {
                 continue;
             }
-            let mut parts = Vec::new();
-            for s in &m.segments {
-                match trees.read(tree, &path, s.0, s.1, &mut cache).await {
-                    Some(b) => parts.push((b, s.2)),
-                    None => break,
-                }
+        }
+        let mut parts = Vec::new();
+        for s in &m.segments {
+            match trees.read(tree, path, s.0, s.1, cache).await {
+                Some(b) => parts.push((b, s.2)),
+                None => break,
             }
-            if parts.len() != m.segments.len() {
-                continue;
+        }
+        if parts.len() != m.segments.len() {
+            continue;
+        }
+        let refs: Vec<(&[u8], bool)> = parts.iter().map(|(b, z)| (&b[..], *z)).collect();
+        if let Some(b) = foresee::member_bytes(&refs) {
+            let names = foresee::names_in(&b);
+            if !names.is_empty() {
+                out += &foresee::table_line(&m.name, &names);
             }
-            let refs: Vec<(&[u8], bool)> = parts.iter().map(|(b, z)| (&b[..], *z)).collect();
-            if let Some(b) = foresee::member_bytes(&refs) {
-                let names = foresee::names_in(&b);
-                if !names.is_empty() {
-                    out += &foresee::table_line(&m.name, &names);
-                }
+        }
+    }
+    out
+}
+
+async fn xp3(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> String {
+    let Some(head) = trees.read(tree, path, 0, 0x28, cache).await else { return String::new() };
+    let Some(at) = foresee::xp3_index_at(&head) else { return String::new() };
+    let Some(len) = trees.read(tree, path, at, 17, cache).await.as_deref().and_then(foresee::xp3_index_len) else { return String::new() };
+    if len > foresee::INDEX_MAX as u64 {
+        return String::new();
+    }
+    let Some(index) = trees.read(tree, path, at, len, cache).await.as_deref().and_then(foresee::xp3_index_bytes) else { return String::new() };
+    members_lines(trees, tree, path, foresee::xp3_index(&index), cache, |_| false).await
+}
+
+async fn bgi(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, Vec<u8>>) -> String {
+    let Some(len) = trees.read(tree, path, 0, 16, cache).await.as_deref().and_then(foresee::bgi_index_len) else { return String::new() };
+    if len > foresee::INDEX_MAX as u64 {
+        return String::new();
+    }
+    let Some(head) = trees.read(tree, path, 0, len, cache).await else { return String::new() };
+    members_lines(trees, tree, path, foresee::bgi_index(&head), cache, foresee::is_bgi_script).await
+}
+
+/// Siglus' Scene.pck: each scene's names (its string table), the pack decrypted with the key
+/// its game's Gameexe.dat and the pack itself give (siglus_key_recovery) when it needs one.
+async fn siglus(trees: &Trees, tree: &str, path: &str, size: u64, files: &[(String, u64)]) -> String {
+    if size > 512 << 20 {
+        return String::new();
+    }
+    let dir = path.rsplit_once('/').map_or("", |d| d.0);
+    let gameexe = if dir.is_empty() { "gameexe.dat".to_string() } else { format!("{dir}/gameexe.dat") };
+    let mut cache = HashMap::new();
+    let Some(scene) = trees.read(tree, path, 0, size, &mut cache).await else { return String::new() };
+    let game = match files.iter().find(|f| f.0 == gameexe) {
+        Some((p, n)) => trees.read(tree, p, 0, *n, &mut HashMap::new()).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    tokio::task::spawn_blocking(move || siglus_lines(scene, &game)).await.unwrap_or_default()
+}
+
+pub fn siglus_lines(scene: Vec<u8>, game: &[u8]) -> String {
+    use siglus_assets::scene_pck::{ScenePck, ScenePckDecodeOptions, SceneStringCodec};
+    let mut opt = ScenePckDecodeOptions { easy_angou_code: Some(siglus_assets::keys::SCENE_KEY.to_vec()), ..Default::default() };
+    if !game.is_empty() && siglus_key_recovery::resources_require_exe_key(game, &scene).unwrap_or(false) {
+        match siglus_key_recovery::recover_key_from_resources(game, &scene) {
+            Ok(k) => opt.exe_angou_element = Some(k.to_vec()),
+            Err(e) => {
+                eprintln!("foresee: Scene.pck key: {e}");
+                return String::new();
             }
+        }
+    }
+    let pck = match ScenePck::load_and_rebuild_from_bytes(scene, &opt) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("foresee: Scene.pck: {e}");
+            return String::new();
+        }
+    };
+    let xor = pck.string_codec == SceneStringCodec::Xor;
+    let mut out = String::new();
+    let n = pck.header.scn_data_cnt.max(pck.header.scn_data_index_cnt).max(0) as usize;
+    for no in 0..n {
+        let (Some(name), Ok(data)) = (pck.find_scene_name(no), pck.scn_data_slice(no)) else { continue };
+        let names = foresee::names_in_strings(&foresee::siglus_strings(&data, xor));
+        if !names.is_empty() {
+            out += &foresee::table_line(name, &names);
         }
     }
     out
@@ -139,6 +218,20 @@ mod tests {
         tsv += &line("data.xp3", &arc);
         tsv += &line("Scene.ks", b"[image storage=cg01]");
         tsv += &line("cg01.png", &[1; 10]);
+        // (a BGI .arc: a compiled script, known by its first bytes, and a picture)
+        let script = b"BurikoCompiledScriptVer1.00\0\x10\0\0\0....bg02a\0ch_03b\0";
+        let mut bgi = b"PackFile    ".to_vec();
+        bgi.extend(2u32.to_le_bytes());
+        for (name, off, size) in [("02_route", 0u32, script.len() as u32), ("bg02a", script.len() as u32, 7)] {
+            let mut e = vec![0u8; 32];
+            e[..name.len()].copy_from_slice(name.as_bytes());
+            e[16..20].copy_from_slice(&off.to_le_bytes());
+            e[20..24].copy_from_slice(&size.to_le_bytes());
+            bgi.extend(e);
+        }
+        bgi.extend(script);
+        bgi.extend([9; 7]);
+        tsv += &line("data01000.arc", &bgi);
         std::fs::create_dir_all(dir.join("trees")).unwrap();
         std::fs::write(dir.join("trees/g.tsv"), tsv).unwrap();
         dir
@@ -154,7 +247,8 @@ mod tests {
         assert_eq!(t["first.ks"], v(&["storage", "bg01", "jump", "second.ks"]));
         assert_eq!(t["second.ks"], v(&["voice", "v_0002"]));
         assert_eq!(t["scene.ks"], v(&["image", "storage", "cg01"]));
-        assert_eq!(t.len(), 3, "{text}");
+        assert!(t["02_route"].ends_with(&v(&["bg02a", "ch_03b"])), "{text}");
+        assert_eq!(t.len(), 4, "{text}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -7,6 +7,10 @@ description = "ippai: play visual novels in the browser. The server (web app bui
 
 [dependencies]
 foresee = { path = "../foresee" }
+# Siglus' Scene.pck (decrypting, unpacking, its key from the game's own files): what each scene
+# names, for foresee.rs. MPL-2.0.
+siglus_assets = { git = "https://github.com/xmoezzz/siglus_rs", rev = "19066ea7f36b92fdecaea240a223c9bef14efd2c" }
+siglus_key_recovery = { git = "https://github.com/xmoezzz/siglus_rs", rev = "19066ea7f36b92fdecaea240a223c9bef14efd2c" }
 libc = "0.2"
 anyhow = "1"
 # sdrs v1.0.0 (core only; no CLI or GUI).

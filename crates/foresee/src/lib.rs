@@ -233,6 +233,127 @@ pub fn table_stems(table: &std::collections::HashMap<String, Vec<String>>) -> st
     table.keys().filter_map(|k| keys(k).1.map(|s| (s, k.clone()))).collect()
 }
 
+/// Where each name stands in the table's scripts: name -> (script, position), the first place
+/// in each script, for [`following`]. Names in more than `common` scripts are left out (a
+/// window frame, a click sound: they say nothing of where the game is).
+pub fn table_places(table: &std::collections::HashMap<String, Vec<String>>, common: usize) -> std::collections::HashMap<String, Vec<(String, usize)>> {
+    let mut out: std::collections::HashMap<String, Vec<(String, usize)>> = Default::default();
+    let mut scripts: Vec<&String> = table.keys().collect();
+    scripts.sort();
+    for s in scripts {
+        for (i, n) in table[s].iter().enumerate() {
+            let e = out.entry(n.clone()).or_default();
+            if !e.iter().any(|x| &x.0 == s) {
+                e.push((s.clone(), i));
+            }
+        }
+    }
+    out.retain(|_, v| v.len() <= common);
+    out
+}
+
+/// What the game reads next after file `name` (a picture, a sound: what a script names), by
+/// where it stands in the scripts that name it (`places`, [`table_places`]): the names after it
+/// in each, `ahead` of each at most, taken in turn from each script.
+pub fn following(table: &std::collections::HashMap<String, Vec<String>>, places: &std::collections::HashMap<String, Vec<(String, usize)>>, name: &str, ahead: usize) -> Vec<String> {
+    let (full, stem) = keys(name);
+    let Some(at) = places.get(&full).or_else(|| stem.as_ref().and_then(|s| places.get(s))) else { return Vec::new() };
+    let lists: Vec<&[String]> = at.iter().filter_map(|(s, i)| table.get(s).map(|l| &l[(i + 1).min(l.len())..(i + 1 + ahead).min(l.len())])).collect();
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for k in 0..ahead {
+        for l in &lists {
+            if let Some(n) = l.get(k) {
+                if seen.insert(n.clone()) {
+                    out.push(n.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A BGI (Ethornell) .arc's members: "PackFile    " (names of 16 bytes) or "BURIKO ARC20" (96),
+/// from its first bytes `head` (the index: 16 + count * entry bytes). Each member's segment is
+/// (its place in the archive, its size, not zlib'd).
+pub fn bgi_index(head: &[u8]) -> Vec<Member> {
+    let (name_len, entry) = match head.get(..12) {
+        Some(b"PackFile    ") => (16, 32),
+        Some(b"BURIKO ARC20") => (96, 128),
+        _ => return Vec::new(),
+    };
+    let Some(n) = head.get(12..16).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize) else { return Vec::new() };
+    let base = 16 + n.saturating_mul(entry);
+    let mut out = Vec::new();
+    for k in 0..n.min(1 << 20) {
+        let Some(e) = head.get(16 + k * entry..16 + (k + 1) * entry) else { break };
+        let raw = &e[..name_len];
+        let end = raw.iter().position(|&b| b == 0).unwrap_or(name_len);
+        // (names are Shift_JIS; the ASCII ones are what scripts name)
+        let name: String = raw[..end].iter().map(|&b| if b < 0x80 { b as char } else { '_' }).collect();
+        let off = u32::from_le_bytes(e[name_len..name_len + 4].try_into().unwrap()) as u64;
+        let size = u32::from_le_bytes(e[name_len + 4..name_len + 8].try_into().unwrap()) as u64;
+        if !name.is_empty() {
+            out.push(Member { name, segments: vec![(base as u64 + off, size, false)] });
+        }
+    }
+    out
+}
+
+/// The bytes a BGI .arc's index takes (from its first 16).
+pub fn bgi_index_len(head: &[u8]) -> Option<u64> {
+    let entry = match head.get(..12)? {
+        b"PackFile    " => 32,
+        b"BURIKO ARC20" => 128,
+        _ => return None,
+    };
+    Some(16 + u32::from_le_bytes(head.get(12..16)?.try_into().ok()?) as u64 * entry)
+}
+
+/// Whether a member's bytes are a BGI compiled script ("BurikoCompiledScriptVer1.00").
+pub fn is_bgi_script(head: &[u8]) -> bool {
+    head.starts_with(b"BurikoCompiledScriptVer1.00")
+}
+
+/// A Siglus scene's strings (`scene`: one scene of Scene.pck, decrypted and unpacked: header
+/// i32s, the string index (offset, length in UTF-16 units) at 12, its count at 16, the strings
+/// at 20), in order; string k XORed with 28807 * k when `xor` (as most games keep them); a
+/// malformed one gives what it has.
+pub fn siglus_strings(scene: &[u8], xor: bool) -> Vec<String> {
+    let rd = |o: usize| scene.get(o..o + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+    let (Some(idx), Some(cnt), Some(list)) = (rd(12), rd(16), rd(20)) else { return Vec::new() };
+    if idx < 0 || cnt < 0 || list < 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for k in 0..(cnt as usize).min(1 << 20) {
+        let (Some(o), Some(n)) = (rd(idx as usize + k * 8), rd(idx as usize + k * 8 + 4)) else { break };
+        if o < 0 || n < 0 {
+            continue;
+        }
+        let start = list as usize + o as usize * 2;
+        let Some(b) = scene.get(start..start + n as usize * 2) else { continue };
+        let key = if xor { 28807u32.wrapping_mul(k as u32) as u16 } else { 0 };
+        out.push(String::from_utf16_lossy(&b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) ^ key).collect::<Vec<u16>>()));
+    }
+    out
+}
+
+/// The names in a list of strings (each one's [`mentions`]), in order, each once.
+pub fn names_in_strings(strings: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for s in strings {
+        let units: Vec<u16> = s.encode_utf16().collect();
+        for n in mentions(&units, true) {
+            if seen.insert(n.clone()) {
+                out.push(n);
+            }
+        }
+    }
+    out
+}
+
 /// An .xp3 index chunk (tag, length, body).
 pub fn xp3_chunk(tag: &[u8], body: &[u8]) -> Vec<u8> {
     let mut v = tag.to_vec();
@@ -486,6 +607,80 @@ mod tests {
         assert_eq!(names_in(&body), v(&["storage", "bg09"]));
     }
 
+    /// A picture read mid-scene: what the scenes that name it name after it, in turn; names
+    /// in too many scenes say nothing.
+    #[test]
+    fn what_comes_after_a_file_in_its_scenes() {
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let mut t = std::collections::HashMap::new();
+        t.insert("a.ks".to_string(), v(&["frame", "bg01", "ch01", "ch02", "bg02"]));
+        t.insert("b.ks".to_string(), v(&["frame", "bg09", "ch01", "ch07"]));
+        t.insert("c.ks".to_string(), v(&["frame", "ev01"]));
+        let p = table_places(&t, 2);
+        assert!(!p.contains_key("frame"), "in all three");
+        assert_eq!(following(&t, &p, "bg01.png", 2), v(&["ch01", "ch02"]));
+        assert_eq!(following(&t, &p, "ch01", 3), v(&["ch02", "ch07", "bg02"]));
+        assert_eq!(following(&t, &p, "bg02", 3), Vec::<String>::new());
+        assert!(following(&t, &p, "nothing", 3).is_empty());
+    }
+
+    #[test]
+    fn bgi_archives_and_scripts() {
+        for (magic, name_len, entry) in [(&b"PackFile    "[..], 16usize, 32usize), (b"BURIKO ARC20", 96, 128)] {
+            let mut a = magic.to_vec();
+            a.extend(2u32.to_le_bytes());
+            for (name, off, size) in [("01_start", 0u32, 40u32), ("bg01a", 40, 7)] {
+                let mut e = vec![0u8; entry];
+                e[..name.len()].copy_from_slice(name.as_bytes());
+                e[name_len..name_len + 4].copy_from_slice(&off.to_le_bytes());
+                e[name_len + 4..name_len + 8].copy_from_slice(&size.to_le_bytes());
+                a.extend(e);
+            }
+            assert_eq!(bgi_index_len(&a), Some(a.len() as u64));
+            let base = a.len() as u64;
+            let ms = bgi_index(&a);
+            assert_eq!(ms, vec![Member { name: "01_start".into(), segments: vec![(base, 40, false)] }, Member { name: "bg01a".into(), segments: vec![(base + 40, 7, false)] }]);
+            // (a truncated index: what it has)
+            assert_eq!(bgi_index(&a[..a.len() - 1]).len(), 1);
+        }
+        assert!(bgi_index(b"XP3\r\n").is_empty() && bgi_index_len(b"nope").is_none());
+        let script = b"BurikoCompiledScriptVer1.00\0\x10\0\0\0....bg01a\0ch_03b\0\x82\xa0\0";
+        assert!(is_bgi_script(script));
+        assert!(names_in(script).ends_with(&["bg01a".to_string(), "ch_03b".to_string()]));
+    }
+
+    /// A Siglus scene's string table, read back.
+    #[test]
+    fn siglus_scene_strings() {
+        let strs = ["bg_01a", "\u{3053}\u{3093}", "se_door"];
+        let mut s = vec![0u8; 32];
+        let units: Vec<Vec<u16>> = strs.iter().map(|x| x.encode_utf16().collect()).collect();
+        let idx = 32;
+        let list = idx + 8 * strs.len();
+        s[12..16].copy_from_slice(&(idx as i32).to_le_bytes());
+        s[16..20].copy_from_slice(&(strs.len() as i32).to_le_bytes());
+        s[20..24].copy_from_slice(&(list as i32).to_le_bytes());
+        let mut at = 0i32;
+        for u in &units {
+            s.extend(at.to_le_bytes());
+            s.extend((u.len() as i32).to_le_bytes());
+            at += u.len() as i32;
+        }
+        let plain = s.clone();
+        for u in &units {
+            s.extend(u.iter().flat_map(|c| c.to_le_bytes()));
+        }
+        let mut x = plain;
+        for (k, u) in units.iter().enumerate() {
+            x.extend(u.iter().flat_map(|c| (c ^ 28807u32.wrapping_mul(k as u32) as u16).to_le_bytes()));
+        }
+        assert_eq!(siglus_strings(&s, false), strs);
+        assert_eq!(siglus_strings(&x, true), strs);
+        assert_eq!(names_in_strings(&siglus_strings(&s, false)), ["bg_01a", "se_door"]);
+        assert!(siglus_strings(&s[..20], false).is_empty());
+        assert_eq!(siglus_strings(&s[..s.len() - 2], false).len(), 2, "the last one cut: left out");
+    }
+
     proptest! {
         /// Any bytes: no panic, names of 3 or more characters, each once, none all digits, none
         /// with a delimiter in it.
@@ -504,6 +699,9 @@ mod tests {
             let _ = xp3_index_bytes(&b);
             let _ = xp3_index_at(&b);
             let _ = member_bytes(&[(&b, true), (&b, false)]);
+            let _ = bgi_index(&b);
+            let _ = bgi_index_len(&b);
+            let _ = siglus_strings(&b, true);
         }
 
         /// A name between delimiters is found, in its place among others.

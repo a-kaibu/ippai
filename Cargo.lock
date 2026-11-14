@@ -208,7 +208,7 @@ dependencies = [
  "quick-xml",
  "rust-ini",
  "serde",
- "thiserror",
+ "thiserror 2.0.21",
  "time",
  "url",
 ]
@@ -242,7 +242,7 @@ version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f38493193e45cb4788ee7d479ee94a0a56721ccd28de79bbd0227bb8c11fee3"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -476,7 +476,7 @@ dependencies = [
  "tag_ptr",
  "tap",
  "thin-vec",
- "thiserror",
+ "thiserror 2.0.21",
  "time",
 ]
 
@@ -760,6 +760,12 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "unicode-width",
 ]
+
+[[package]]
+name = "color_quant"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "colorchoice"
@@ -1926,6 +1932,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "image"
+version = "0.24.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5690139d2f55868e080017335e4b94cb7414274c74f1669c84fb5feba2c9f69d"
+dependencies = [
+ "bytemuck",
+ "byteorder",
+ "color_quant",
+ "jpeg-decoder",
+ "num-traits",
+ "png",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1953,7 +1973,7 @@ dependencies = [
  "sha1 0.11.0",
  "sha2 0.11.1",
  "simd-adler32",
- "thiserror",
+ "thiserror 2.0.21",
  "zerocopy",
 ]
 
@@ -2001,6 +2021,8 @@ dependencies = [
  "sdrs-core",
  "serde",
  "serde_json",
+ "siglus_assets",
+ "siglus_key_recovery",
  "tar",
  "tokio",
  "tokio-rustls",
@@ -2146,6 +2168,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 dependencies = [
  "spin",
+]
+
+[[package]]
+name = "lewton"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777b48df9aaab155475a83a7df3070395ea1ac6902f5cd062b8f2b028075c030"
+dependencies = [
+ "byteorder",
+ "ogg",
+ "tinyvec",
 ]
 
 [[package]]
@@ -2367,6 +2400,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
+name = "na_mpeg2_decoder"
+version = "0.1.0"
+source = "git+https://github.com/xmoezzz/siglus_rs?rev=19066ea7f36b92fdecaea240a223c9bef14efd2c#19066ea7f36b92fdecaea240a223c9bef14efd2c"
+dependencies = [
+ "bytemuck",
+ "byteorder",
+ "log",
+ "oxideav-ac3",
+ "oxideav-core",
+ "symphonia",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "naga"
 version = "30.0.1"
 dependencies = [
@@ -2386,7 +2433,7 @@ dependencies = [
  "once_cell",
  "pp-rs",
  "rustc-hash 1.1.0",
- "thiserror",
+ "thiserror 2.0.21",
  "unicode-ident",
 ]
 
@@ -2399,7 +2446,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "rustc-hash 1.1.0",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2546,6 +2593,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogg"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6951b4e8bf21c8193da321bcce9c9dd2e13c858fe078bf9054a288b419ae5d6e"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2592,6 +2648,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "oxideav-ac3"
+version = "0.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c60744c9688507efb6849b1bff197fb17e742b56f8a7f914129464bc86197ad"
+dependencies = [
+ "oxideav-core",
+]
+
+[[package]]
+name = "oxideav-core"
+version = "0.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90f122ec5ab9940f06ac87f34ffd165412aaf42017bcaf8e61f592d9cca838ce"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2903,7 +2979,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "rustls",
  "socket2",
- "thiserror",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "web-time",
@@ -2925,7 +3001,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror",
+ "thiserror 2.0.21",
  "tinyvec",
  "tracing",
  "web-time",
@@ -3095,7 +3171,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60dc65c0ff1a7ae1294b0c67b9f14baf70b644404010370171787bfac1038fc0"
 dependencies = [
  "libredox",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3226,7 +3302,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
 dependencies = [
  "hashbrown 0.16.1",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3317,7 +3393,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sysinfo",
- "thiserror",
+ "thiserror 2.0.21",
  "time",
  "tokio",
  "tokio-stream",
@@ -3704,6 +3780,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "siglus_assets"
+version = "0.1.0"
+source = "git+https://github.com/xmoezzz/siglus_rs?rev=19066ea7f36b92fdecaea240a223c9bef14efd2c#19066ea7f36b92fdecaea240a223c9bef14efd2c"
+dependencies = [
+ "anyhow",
+ "encoding_rs",
+ "flate2",
+ "hex",
+ "image",
+ "lewton",
+ "na_mpeg2_decoder",
+]
+
+[[package]]
+name = "siglus_key_recovery"
+version = "0.1.0"
+source = "git+https://github.com/xmoezzz/siglus_rs?rev=19066ea7f36b92fdecaea240a223c9bef14efd2c#19066ea7f36b92fdecaea240a223c9bef14efd2c"
+dependencies = [
+ "siglus_assets",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3846,6 +3944,55 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "symphonia"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039"
+dependencies = [
+ "lazy_static",
+ "symphonia-bundle-mp3",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-bundle-mp3"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4872dd6bb56bf5eac799e3e957aa1981086c3e613b27e0ac23b176054f7c57ed"
+dependencies = [
+ "lazy_static",
+ "log",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-core"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea00cc4f79b7f6bb7ff87eddc065a1066f3a43fe1875979056672c9ef948c2af"
+dependencies = [
+ "arrayvec",
+ "bitflags 1.3.2",
+ "bytemuck",
+ "lazy_static",
+ "log",
+]
+
+[[package]]
+name = "symphonia-metadata"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36306ff42b9ffe6e5afc99d49e121e0bd62fe79b9db7b9681d48e29fa19e6b16"
+dependencies = [
+ "encoding_rs",
+ "lazy_static",
+ "log",
+ "symphonia-core",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3954,11 +4101,31 @@ checksum = "d6a4b9ba8738cb4a4f399d37e266becfd475e75eb73425b87a05a2f2039ba63e"
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.21",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -4295,7 +4462,7 @@ dependencies = [
  "log",
  "rand 0.9.5",
  "sha1 0.10.7",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
