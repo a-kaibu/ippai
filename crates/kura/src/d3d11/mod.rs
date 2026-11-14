@@ -441,7 +441,8 @@ static D11S: Mutex<Option<D11>> = Mutex::new(None);
 /// What a call does after the lock is dropped.
 enum After {
     None,
-    Present,
+    /// (to window `.0`)
+    Present(u32),
     /// readbacks to wait for
     Readback(Vec<u32>),
 }
@@ -817,7 +818,7 @@ pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
     };
     match after {
         After::None => {}
-        After::Present => gpu::present(),
+        After::Present(hwnd) => gpu::present(hwnd),
         After::Readback(reqs) => {
             for req in reqs {
                 gpu::wait_readback(req);
@@ -1950,7 +1951,7 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
                     eprintln!("sake: d3d11 present {} of {w}x{h} to window {hwnd:#x} client {:?}", sc.presents, rect);
                 }
             }
-            *after = After::Present;
+            *after = After::Present(hwnd);
             S_OK
         }
         9 => {

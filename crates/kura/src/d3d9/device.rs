@@ -3785,7 +3785,7 @@ unsafe fn present_from(d: &mut D3d, after: &mut After, chain: Option<(u32, bool,
     dev.batch_target = None;
     dev.last_vs = (Vec::new(), 0);
     dev.last_ps = (Vec::new(), 0);
-    *after = After::Present;
+    *after = After::Present(hwnd);
     S_OK
 }
 

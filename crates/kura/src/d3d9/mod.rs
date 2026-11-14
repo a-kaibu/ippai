@@ -152,7 +152,8 @@ pub static D3D: Mutex<Option<D3d>> = Mutex::new(None);
 /// What a call does once the lock is dropped.
 pub enum After {
     None,
-    Present,
+    /// (to window `.0`)
+    Present(u32),
     Readback(u32),
     /// a readback into `staging` (the page's texels) that becomes `fmt`'s at `dst`
     ReadbackAs { req: u32, staging: u32, fmt: u32, w: u32, h: u32, dst: u32, pitch: u32 },
@@ -483,7 +484,7 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
     };
     match after {
         After::None => {}
-        After::Present => gpu::present(),
+        After::Present(hwnd) => gpu::present(hwnd),
         After::Readback(req) => {
             given_up(gpu::wait_readback(req));
         }

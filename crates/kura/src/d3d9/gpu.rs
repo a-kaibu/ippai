@@ -7,7 +7,7 @@
 //!
 //! Without a page (node) nothing ever polls, and batches are dropped at each Present.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -362,7 +362,8 @@ fn flush_now() {
 /// no animation frames) holds it until it polls again. Returning then, as before, let a game
 /// in a background tab spin at a whole core and pile up frames nobody drew: 金恋 ran out of
 /// memory after 6 minutes, and showed white for minutes after while the page caught up.
-pub fn present() {
+/// (`hwnd`: the window presented to; each window is paced on its own)
+pub fn present(hwnd: u32) {
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     {
         let q = queue(&mut g);
@@ -383,7 +384,7 @@ pub fn present() {
     // a display's rate at most (games that present in a busy loop would spend the CPU on
     // frames nobody sees)
     drop(g);
-    pace();
+    pace(hwnd);
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     let deadline = now() + 250.0;
     loop {
@@ -535,14 +536,16 @@ pub extern "C" fn vnhost_d3d9_readback_begin(id: u32) -> u32 {
     })
 }
 
-fn pace() {
+fn pace(hwnd: u32) {
     if crate::nopace() {
         return; // (benchmarks: the page's rate only, tests/bench)
     }
-    static NEXT: Mutex<f64> = Mutex::new(0.0);
+    // (per window: a game with two windows, or two devices, presents each at 60 a second;
+    // one clock for all gave them 30 each)
+    static NEXT: Mutex<Option<HashMap<u32, f64>>> = Mutex::new(None);
     const FRAME: f64 = 1000.0 / 60.0;
     let t = now();
-    let wait = pace_wait(&mut NEXT.lock().unwrap_or_else(|e| e.into_inner()), t, FRAME);
+    let wait = pace_window(NEXT.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new), hwnd, t, FRAME);
     if wait > 0.0 {
         std::thread::sleep(Duration::from_secs_f64(wait / 1000.0));
     }
@@ -552,6 +555,15 @@ fn pace() {
 /// frames don't make the next ones early, and no wait is longer than a frame. The clock is
 /// the wall clock: stepped back (NTP, a phone waking) by a minute, the next Present slept a
 /// minute.
+/// `pace_wait` for window `hwnd` of `next`'s; windows not presented to for a second are
+/// forgotten (a game making and closing windows).
+fn pace_window(next: &mut HashMap<u32, f64>, hwnd: u32, t: f64, frame: f64) -> f64 {
+    if next.len() >= 16 {
+        next.retain(|_, n| *n + 1000.0 > t);
+    }
+    pace_wait(next.entry(hwnd).or_insert(0.0), t, frame)
+}
+
 fn pace_wait(next: &mut f64, t: f64, frame: f64) -> f64 {
     let at = if *next + frame < t || *next > t + frame { t } else { next.max(t) };
     *next = at + frame;
@@ -577,6 +589,30 @@ mod pace_tests {
                 prop_assert_eq!(super::pace_wait(&mut next, t, 16.0), 0.0);
             }
         }
+
+        /// Windows are paced apart: `n` windows each presenting once a frame, each at its own
+        /// time in the frame, never wait (one clock for all made each wait for the others); a
+        /// window presenting twice in a frame waits; the table stays small however many
+        /// windows come and go.
+        #[test]
+        fn windows_are_paced_apart(n in 1usize..6, frames in 2usize..40, offsets in proptest::collection::vec(0.0f64..16.0, 6), others in proptest::collection::vec(1000u32..100_000, 0..200)) {
+            let mut next = std::collections::HashMap::new();
+            let mut t = 1e9;
+            for f in 0..frames {
+                for w in 1..=n as u32 {
+                    let at = t + offsets[w as usize - 1];
+                    let wait = super::pace_window(&mut next, w, at, 16.0);
+                    prop_assert!(f == 0 || wait == 0.0, "frame {} window {} waited {}", f, w, wait);
+                }
+                t += 16.0;
+            }
+            // (window 1 again at once: a second present in the frame waits)
+            prop_assert!(super::pace_window(&mut next, 1, t - 16.0 + offsets[0] + 1.0, 16.0) > 0.0);
+            for (k, w) in others.into_iter().enumerate() {
+                super::pace_window(&mut next, w, t + k as f64 * 100.0, 16.0);
+                prop_assert!(next.len() <= 16 + 1, "{} windows kept", next.len());
+            }
+        }
     }
 }
 
@@ -599,11 +635,11 @@ mod hidden_tests {
             set_pump(None);
             assert!(QUEUE.lock().unwrap().is_none());
             match first {
-                0 => present(),
+                0 => present(1),
                 1 => wait_done(3),
                 _ => assert!(!wait_readback(7)),
             }
-            present();
+            present(1);
             wait_done(0);
             assert!(is_done(0));
             assert_eq!(with(|q| q.presented), 1 + (first == 0) as u64);
@@ -626,7 +662,7 @@ mod hidden_tests {
                     b.cmd(&[0]);
                     b.blob.extend(std::iter::repeat_n(7u8, 1 << 20));
                 });
-                present();
+                present(1);
                 d.fetch_add(1, SeqCst);
             }
         });
@@ -654,7 +690,7 @@ mod hidden_tests {
         for _ in 0..4 {
             with(|q| q.last_poll = Some(now()));
             record(|b| b.cmd(&[0]));
-            present();
+            present(1);
         }
         assert!(now() - t < 2000.0, "a slow page held the game {} ms", now() - t);
         set_pump(None);

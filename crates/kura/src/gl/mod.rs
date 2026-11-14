@@ -589,7 +589,7 @@ pub unsafe extern "C" fn vngl_swap(hwnd: u32, rect: *const i32) {
     };
     let r = std::slice::from_raw_parts(rect, 4);
     gpu::record(|q| q.cmd(&[gpu::PRESENT_FLIP, tex.0, r[0] as u32, r[1] as u32, r[2] as u32, r[3] as u32, tex.1, tex.2, hwnd]));
-    gpu::present();
+    gpu::present(hwnd);
 }
 
 /// A GL function by name (null: not ours; the driver has a do-nothing one).
