@@ -3072,6 +3072,10 @@ unsafe fn create_decl(d: &mut D3d, elems: u32, out: u32) -> u32 {
         if stream == 0xff {
             break;
         }
+        // (Windows refuses a stream past MaxStreams (16): a draw would index the 16 streams)
+        if stream >= 16 {
+            return D3DERR_INVALIDCALL;
+        }
         // { WORD stream, offset; BYTE type, method, usage, usage index }
         el.push(Elem { stream, offset: w0 >> 16, ty: w1 & 0xff, usage: (w1 >> 16) & 0xff, index: w1 >> 24 });
         p += 8;
@@ -3082,6 +3086,31 @@ unsafe fn create_decl(d: &mut D3d, elems: u32, out: u32) -> u32 {
     let o = d.new_obj(IF_DECL, 0, Data::Decl(Decl { elems: el, raw, fvf: 0 }));
     wrp(out, 0, o);
     S_OK
+}
+
+/// Most bytes of vertices one UP draw (DrawPrimitiveUP, DrawIndexedPrimitiveUP) reads.
+pub(crate) const UP_MAX: u64 = 64 << 20;
+
+/// `count` vertices from `first`, cut to what every stream (not stepped by instances) holds
+/// past `first`: to the end of its vertex buffer, or for UP data to UP_MAX bytes and the end of
+/// the 4 GB. (stream number, guest pointer of vertex 0, stride) as `draw_one` has them.
+fn clamp_count(d: &D3d, slots: &[(u32, u32, u32); 16], src: &Src, streams: &[(u32, u32, u32)], first: u32, count: u32, divider: impl Fn(u32) -> Option<u32>) -> u32 {
+    let mut n = count as u64;
+    for &(s, ptr, stride) in streams {
+        if stride == 0 || divider(s).is_some() {
+            continue;
+        }
+        let end = match src {
+            Src::Up { .. } | Src::UpIndexed { .. } => (ptr as u64 + UP_MAX).min(1 << 32),
+            _ => match slots.get(s as usize).and_then(|&(vb, _, _)| d.objs.get(&vb)).map(|o| &o.data) {
+                Some(Data::Buffer(b)) => b.mem as u64 + b.len as u64,
+                _ => continue,
+            },
+        };
+        let start = ptr as u64 + first as u64 * stride as u64;
+        n = n.min(end.saturating_sub(start) / stride as u64);
+    }
+    n as u32
 }
 
 /// The vertex declaration of an FVF.
@@ -3755,7 +3784,8 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
             lo = lo.min(v);
             hi = hi.max(v);
         }
-        (lo.min(hi), hi.saturating_sub(lo.min(hi)) + 1)
+        // (0 to 0xffffffff is 2^32 vertices: u32::MAX, cut to the buffers below)
+        (lo.min(hi), hi.saturating_sub(lo.min(hi)).saturating_add(1))
     };
     let (first, count, index): (u32, u32, Option<(u32, u32, u32)>) = match &src {
         Src::Streams(start) => (*start, nverts, None),
@@ -3763,14 +3793,15 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
             let Some(Data::Buffer(ib)) = d.objs.get(&st.indices).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
             let isize = if ib.fmt == fmt::INDEX32 { 4 } else { 2 };
             let iptr = ib.mem + start * isize;
-            if (start + nverts) * isize > ib.len {
+            if (*start as u64 + nverts as u64) * isize as u64 > ib.len as u64 {
                 return D3DERR_INVALIDCALL;
             }
             let (lo, n) = range(iptr, isize);
-            if *base + (lo as i32) < 0 {
+            let first = *base as i64 + lo as i64;
+            if !(0..=u32::MAX as i64).contains(&first) {
                 return D3DERR_INVALIDCALL;
             }
-            ((*base + lo as i32) as u32, n, Some((iptr, isize, lo)))
+            (first as u32, n, Some((iptr, isize, lo)))
         }
         Src::Up { .. } => (0, nverts, None),
         Src::UpIndexed { idx, isize, .. } => {
@@ -3868,7 +3899,7 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
                 (*data, *stride)
             }
             _ => {
-                let (vb, off, stride) = st.streams[s as usize];
+                let Some(&(vb, off, stride)) = st.streams.get(s as usize) else { return D3DERR_INVALIDCALL };
                 let Some(Data::Buffer(b)) = d.objs.get(&vb).map(|o| &o.data) else {
                     if d.trace {
                         eprintln!("d3d9: draw without stream {s}");
@@ -3881,6 +3912,15 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
             }
         };
         streams.push((s, ptr, stride));
+    }
+    // The vertices read stop at the end of each stream's buffer (UP data: at a cap, inside the
+    // 4 GB): an indexed draw's range is its smallest to its largest index, and one stray index
+    // (0xffffffff, an index buffer not written yet) made it billions of vertices long, whose
+    // `count * stride` wrapped and was copied out of guest memory (review A-5). A GPU reads
+    // a garbage vertex for such an index; here it is past the copy, the page's robust access.
+    let count = clamp_count(d, &st.streams, &src, &streams, first, count, divider);
+    if count == 0 {
+        return S_OK;
     }
     let elems = &prep.elems;
     let used = &prep.used;
@@ -4346,7 +4386,7 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     let stream_res: Vec<Option<(u32, u32)>> = streams
         .iter()
         .map(|&(sn, _, stride)| {
-            let (vb, off, _) = st.streams[sn as usize];
+            let (vb, off, _) = st.streams.get(sn as usize).copied()?;
             let Some(Data::Buffer(b)) = d.objs.get(&vb).map(|o| &o.data) else { return None };
             let at = off as u64 + first as u64 * stride as u64;
             let fits = at % 4 == 0 && stride % 4 == 0 && at + count as u64 * stride as u64 <= b.len as u64;

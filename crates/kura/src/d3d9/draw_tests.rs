@@ -341,3 +341,84 @@ fn d3d9_draws_read_what_direct3d_reads() {
     assert!(device::RESIDENT_READ.load(std::sync::atomic::Ordering::Relaxed) > read);
     assert!(device::RESIDENT_SENT.load(std::sync::atomic::Ordering::Relaxed) > sent);
 }
+
+/// Review A-5: a vertex declaration naming stream 16 or more is refused (as Windows does,
+/// MaxStreams 16) instead of panicking at the first draw on the 16 streams; and an indexed draw
+/// whose index buffer holds a stray index (0xffffffff, 0xffff in a 16-bit list) reads its
+/// vertices only up to the end of the vertex buffer: the draw goes through, the triangles of
+/// good indices are drawn as Direct3D draws them, and the bytes sent stay inside the buffer
+/// (they were `count * stride` with `count` about 4e9, wrapped, out of guest memory).
+#[test]
+fn d3d9_stray_indices_and_streams_past_16() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    attach_page();
+    model::with(|m| m.prims = Some(Vec::new()));
+    let o = out();
+    unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
+    let d3d = rd(o);
+    let pp = unsafe { alloc(56) as u32 };
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+        unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
+    }
+    let o = out();
+    assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
+    let dev = rd(o);
+    // declarations: stream 16, stream 0xfe (D3DDECL_END is 0xff only), stream 15 (allowed)
+    for (stream, want) in [(16u32, D3DERR_INVALIDCALL), (0xfe, D3DERR_INVALIDCALL), (0x100, D3DERR_INVALIDCALL), (15, 0)] {
+        let p = unsafe { alloc(16) as u32 };
+        put_bytes(p, &[(stream).to_le_bytes(), 2u32.to_le_bytes(), 0xffu32.to_le_bytes(), 17u32.to_le_bytes()].concat());
+        let o = out();
+        assert_eq!(call(IF_DEVICE, 86, &[dev, p, o]), want, "stream {stream}");
+    }
+    // a vertex buffer of 64 vertices, XYZ | DIFFUSE (16 bytes)
+    const N: u32 = 64;
+    let o = out();
+    assert_eq!(call(IF_DEVICE, 26, &[dev, N * 16, 0, 0, 1, o, 0]), 0);
+    let vb = rd(o);
+    let p = out();
+    assert_eq!(call(IF_VB, 11, &[vb, 0, 0, p, 0]), 0);
+    let bytes: Vec<u8> = (0..N).flat_map(|i| [(i as f32).to_le_bytes(), 1f32.to_le_bytes(), 0.5f32.to_le_bytes(), (0xff00_0000 | i).to_le_bytes()].concat()).collect();
+    put_bytes(rd(p), &bytes);
+    assert_eq!(call(IF_VB, 12, &[vb]), 0);
+    for (rs, v) in [(22, 1), (137, 0), (7, 0)] {
+        call(IF_DEVICE, 57, &[dev, rs, v]);
+    }
+    call(IF_DEVICE, 89, &[dev, 0x42]);
+    call(IF_DEVICE, 100, &[dev, 0, vb, 0, 16]);
+    call(IF_DEVICE, 41, &[dev]);
+    for (fmt, isz, stray) in [(102u32, 4u32, 0xffff_ffffu32), (102, 4, 0x8000_0000), (101, 2, 0xffff)] {
+        let o = out();
+        assert_eq!(call(IF_DEVICE, 27, &[dev, 64, 0, fmt, 1, o, 0]), 0);
+        let ib = rd(o);
+        let ix = [0u32, 1, 2, 3, 4, stray, 5, 6, 7];
+        let p = out();
+        assert_eq!(call(IF_IB, 11, &[ib, 0, 0, p, 0]), 0);
+        let b: Vec<u8> = ix.iter().flat_map(|&v| if isz == 4 { v.to_le_bytes().to_vec() } else { (v as u16).to_le_bytes().to_vec() }).collect();
+        put_bytes(rd(p), &b);
+        call(IF_IB, 12, &[ib]);
+        call(IF_DEVICE, 104, &[dev, ib]);
+        assert_eq!(call(IF_DEVICE, 82, &[dev, 4, 0, 0, 8, 0, 3]), 0, "stray {stray:#x}");
+        gpu::flush();
+        gpu::pump();
+        let got = model::with(|m| m.prims.as_mut().unwrap().drain(..).collect::<Vec<_>>());
+        assert_eq!(got.len(), 1, "stray {stray:#x}: one draw");
+        // the triangles of good indices, vertex for vertex (the x coordinate is the vertex number)
+        let xs: Vec<Vec<f32>> = got[0].iter().map(|t| t.iter().map(|v| v.iter().find(|a| a.1.len() == 12).map(|a| f32::from_le_bytes(a.1[..4].try_into().unwrap())).unwrap_or(-1.0)).collect()).collect();
+        assert!(xs.contains(&vec![0.0, 1.0, 2.0]), "stray {stray:#x}: {xs:?}");
+        assert!(xs.contains(&vec![5.0, 6.0, 7.0]), "stray {stray:#x}: {xs:?}");
+        call(IF_DEVICE, 104, &[dev, 0]);
+        call(IF_IB, 2, &[ib]);
+    }
+    // DrawPrimitive from past the end of the buffer: nothing read, nothing drawn
+    assert_eq!(call(IF_DEVICE, 81, &[dev, 4, N + 10, 1]), 0);
+    assert_eq!(call(IF_DEVICE, 81, &[dev, 4, 0xffff_fff0, 4]), 0);
+    gpu::flush();
+    gpu::pump();
+    call(IF_DEVICE, 42, &[dev]);
+    gpu::set_pump(None);
+    model::with(|m| m.prims = None);
+}
