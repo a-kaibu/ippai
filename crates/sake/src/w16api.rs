@@ -147,6 +147,14 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("MMSYSTEM.mciSendString", "winmm!mciSendStringA", "ppwh", "l"),
     ("MMSYSTEM.sndPlaySound", "winmm!sndPlaySoundA", "pw", "i"),
     ("MMSYSTEM.timeGetTime", "winmm!timeGetTime", "", "l"),
+    ("MMSYSTEM.waveOutGetNumDevs", "winmm!waveOutGetNumDevs", "", "i"),
+    ("MMSYSTEM.waveOutGetErrorText", "winmm!waveOutGetErrorTextA", "wpw", "i"),
+    ("MMSYSTEM.waveOutClose", "winmm!waveOutClose", "w", "i"),
+    ("MMSYSTEM.waveOutPause", "winmm!waveOutPause", "w", "i"),
+    ("MMSYSTEM.waveOutRestart", "winmm!waveOutRestart", "w", "i"),
+    ("MMSYSTEM.waveOutReset", "winmm!waveOutReset", "w", "i"),
+    ("MMSYSTEM.waveOutSetVolume", "winmm!waveOutSetVolume", "wl", "i"),
+    ("MMSYSTEM.waveOutGetVolume", "winmm!waveOutGetVolume", "wp", "i"),
 ];
 
 fn simple(c: &mut C16) -> u32 {
@@ -370,6 +378,12 @@ pub fn init() {
     reg("KERNEL.GetSystemDirectory", |c| crate::mem::put_cstr(c.a(0), c.a(1) & 0xffff, b"C:\\WINDOWS\\SYSTEM"));
     reg("KERNEL.SetErrorMode", |_| 0);
     reg("WIN87EM.__fpMath", fp_math);
+    reg("MMSYSTEM.waveOutOpen", wave_open);
+    reg("MMSYSTEM.waveOutGetDevCaps", wave_caps);
+    reg("MMSYSTEM.waveOutGetPosition", wave_position);
+    reg("MMSYSTEM.waveOutPrepareHeader", |c| wave_header(c, "winmm!waveOutPrepareHeader"));
+    reg("MMSYSTEM.waveOutUnprepareHeader", |c| wave_header(c, "winmm!waveOutUnprepareHeader"));
+    reg("MMSYSTEM.waveOutWrite", |c| wave_header(c, "winmm!waveOutWrite"));
     reg("KERNEL.GetProcAddress", |c| {
         let (h, p) = (c.w(0), c.a(1));
         let h = if h == 0 { task().hinst } else { h };
@@ -718,6 +732,83 @@ fn open_file(c: &mut C16) -> u32 {
 thread_local! {
     /// Catch/Throw's registers for after the return: [ip, cs, sp, bp, si, di, ds, ss, ax]
     static JUMP: std::cell::Cell<[u16; 9]> = const { std::cell::Cell::new([0; 9]) };
+}
+
+/// waveOutOpen(&hwo, device, format, callback, instance, flags) on winmm's: WAVE_MAPPER is
+/// 0xffff here, a window callback a 16-bit window, a task's the program's thread; function
+/// callbacks (called at interrupt time on Windows 3.1) are not delivered.
+fn wave_open(c: &mut C16) -> u32 {
+    let (ph, dev, fmt, cb, inst, flags) = (c.a(0), c.w(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    let dev = if dev == 0xffff { u32::MAX } else { dev as u32 };
+    let (flags, cb) = match flags & 0x70000 {
+        0x10000 => (flags, h32(cb as u16)),
+        0x20000 => (flags, call32(c.cpu, "kernel32!GetCurrentThreadId", &[])),
+        0 => (flags, cb),
+        k => {
+            eprintln!("sake w16: waveOutOpen callback kind {k:x} not delivered");
+            (flags & !0x70000, 0)
+        }
+    };
+    let m = w16::scratch_mark();
+    let (_, tmp) = w16::scratch(4);
+    let r = call32(c.cpu, "winmm!waveOutOpen", &[if ph == 0 { 0 } else { tmp }, dev, fmt, cb, inst, flags]);
+    let h = r32(tmp);
+    w16::scratch_reset(m);
+    if r == 0 && h != 0 {
+        crate::sound::wave16(h);
+    }
+    if ph != 0 && flags & 1 == 0 {
+        w16(ph, h as u16);
+    }
+    r
+}
+
+/// waveOutPrepareHeader / UnprepareHeader / Write(hwo, WAVEHDR far*, size): the 16-bit
+/// WAVEHDR is the 32-bit one but for lpData (far), which the device reads as such.
+fn wave_header(c: &mut C16, f: &str) -> u32 {
+    let (hwo, far) = (c.w(0) as u32, c.a(1));
+    let l = lin(far);
+    if l != 0 {
+        crate::sound::wave16_header(hwo, l, far);
+    }
+    call32(c.cpu, f, &[hwo, l, 32])
+}
+
+/// waveOutGetDevCaps(device, WAVEOUTCAPS16*, size): 16-bit vDriverVersion, no wReserved1.
+fn wave_caps(c: &mut C16) -> u32 {
+    let (dev, p, size) = (c.w(0), c.a(1), c.w(2) as u32);
+    let dev = if dev == 0xffff { u32::MAX } else { dev as u32 };
+    let m = w16::scratch_mark();
+    let (_, t) = w16::scratch(52);
+    let r = call32(c.cpu, "winmm!waveOutGetDevCapsA", &[dev, t, 52]);
+    if r == 0 && p != 0 {
+        let s = crate::mem::slice(t, 52).to_vec();
+        let mut o = Vec::with_capacity(48);
+        o.extend(&s[0..6]); // wMid, wPid, vDriverVersion (low word)
+        o.extend(&s[8..46]); // szPname, dwFormats, wChannels
+        o.extend(&s[48..52]); // dwSupport
+        crate::mem::write(p, &o[..size.min(48) as usize]);
+    }
+    w16::scratch_reset(m);
+    r
+}
+
+/// waveOutGetPosition(hwo, MMTIME16*, size): a 16-bit wType, the union after it.
+fn wave_position(c: &mut C16) -> u32 {
+    let (hwo, p, size) = (c.w(0) as u32, c.a(1), c.w(2) as u32);
+    if p == 0 || size < 6 {
+        return 11; // MMSYSERR_INVALPARAM
+    }
+    let m = w16::scratch_mark();
+    let (_, t) = w16::scratch(12);
+    w32(t, r16(p) as u32);
+    let r = call32(c.cpu, "winmm!waveOutGetPosition", &[hwo, t, 12]);
+    if r == 0 {
+        w16(p, r32(t) as u16);
+        crate::mem::write(p + 2, &crate::mem::slice(t + 4, 8).to_vec()[..(size - 2).min(8) as usize]);
+    }
+    w16::scratch_reset(m);
+    r
 }
 
 /// WIN87EM's __fpMath (a register function, BX the request). There is a coprocessor

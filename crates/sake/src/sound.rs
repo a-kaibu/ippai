@@ -363,6 +363,9 @@ struct Wave {
     volume: u32,
     /// the device id it was opened on (WAVE_MAPPER -1)
     device: u32,
+    /// a 16-bit program's (MMSYSTEM): its headers' lpData are far pointers, and WOM_DONE
+    /// reports a header by its far pointer (linear -> far)
+    w16: Option<HashMap<u32, u32>>,
 }
 
 static WAVE_CV: std::sync::Condvar = std::sync::Condvar::new();
@@ -407,7 +410,8 @@ fn mix_waves(d: &mut Dev, out: &mut [f32]) -> bool {
                 finished = true;
                 continue;
             }
-            let (l, r) = sample_at(mem::rp(h), &w.fmt, i);
+            let data = if w.w16.is_some() { crate::w16::lin(r32(h)) } else { mem::rp(h) };
+            let (l, r) = sample_at(data, &w.fmt, i);
             o[0] += l * gl;
             o[1] += r * gr;
             w.pos += step;
@@ -446,7 +450,13 @@ fn wave_thread(c: &mut Ctx) -> u32 {
     let hwo = c.a(0);
     loop {
         let (done, cb, closing) = with(|d| match d.waves.get_mut(&hwo) {
-            Some(w) => (std::mem::take(&mut w.done), w.cb, w.closing),
+            Some(w) => {
+                let mut done = std::mem::take(&mut w.done);
+                if let Some(m) = &w.w16 {
+                    done.iter_mut().for_each(|h| *h = m.get(h).copied().unwrap_or(*h));
+                }
+                (done, w.cb, w.closing)
+            }
             None => (Vec::new(), (0, 0, 0), true),
         });
         for h in &done {
@@ -462,6 +472,16 @@ fn wave_thread(c: &mut Ctx) -> u32 {
         }
     }
     crate::k32::exit_thread(0)
+}
+
+/// Makes `hwo` a 16-bit program's device (see Wave::w16).
+pub(crate) fn wave16(hwo: u32) {
+    with(|d| d.waves.get_mut(&hwo).map(|w| w.w16.get_or_insert_with(HashMap::default).clear()));
+}
+
+/// A 16-bit program's header: linear `lin`, far `far`.
+pub(crate) fn wave16_header(hwo: u32, lin: u32, far: u32) {
+    with(|d| d.waves.get_mut(&hwo).and_then(|w| w.w16.as_mut()).map(|m| m.insert(lin, far)));
 }
 
 /// Whether `h` is an open waveOut handle (mixer.rs: MIXER_OBJECTF_HWAVEOUT)
@@ -608,7 +628,7 @@ fn waveOutOpen(c: &mut Ctx) -> u32 {
     let hwo = NEXT_WAVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let cbk = (flags & 0x70000, cb, inst);
     with(|d| {
-        d.waves.insert(hwo, Wave { fmt, queue: Default::default(), pos: 0.0, done: Vec::new(), paused: false, closing: false, played: 0, cb: cbk, volume: 0xffff_ffff, device })
+        d.waves.insert(hwo, Wave { fmt, queue: Default::default(), pos: 0.0, done: Vec::new(), paused: false, closing: false, played: 0, cb: cbk, volume: 0xffff_ffff, device, w16: None })
     });
     put32(ph, hwo);
     static ENTRY: OnceLock<u32> = OnceLock::new();

@@ -1,0 +1,17 @@
+devices 1
+caps 0 name 1 channels 2
+query 0
+bad format 32
+error text 1
+open 0 handle 1
+write unprepared 34
+prepare 0 0 flags 2
+write 0 0 flags 12
+write again 33
+MM_WOM_OPEN same handle 1
+MM_WOM_DONE h1 flags 3
+MM_WOM_DONE h2 flags 3
+position 0 type 4 bytes 2204
+unprepare 0 0 flags 1
+close 0
+MM_WOM_CLOSE
