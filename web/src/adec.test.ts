@@ -1,5 +1,5 @@
 import { expect, test } from "vite-plus/test";
-import { AudioDecode, QUIET, type AdecWasm, type DecoderKind } from "./adec";
+import { AudioDecode, FIRST_QUIET, QUIET, type AdecWasm, type DecoderKind } from "./adec";
 
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -76,7 +76,7 @@ class FakeKura implements AdecWasm {
  * not supported.
  */
 function fakeDecoder(
-  opts: { silent?: (b: Uint8Array) => boolean; refused?: string[]; failOn?: number } = {},
+  opts: { silent?: (b: Uint8Array) => boolean; refused?: string[]; failOn?: number; firstLate?: number } = {},
 ) {
   const made: { config: AudioDecoderConfig | null; closed: boolean; fed: number[][] }[] = [];
   const Kind = class {
@@ -97,8 +97,12 @@ function fakeDecoder(
       const b = c.data;
       this.rec.fed.push(Array.from(b));
       this.decodeQueueSize++;
+      // (firstLate: as Chrome's, the first chunk leaves the queue at once and its output comes
+      // that many ms later, while the decoder starts)
+      const late = opts.firstLate !== undefined && this.rec.fed.length === 1 ? opts.firstLate : 0;
+      if (late) setTimeout(() => this.decodeQueueSize--, 0);
       setTimeout(() => {
-        this.decodeQueueSize--;
+        if (!late) this.decodeQueueSize--;
         if (this.state === "closed") return;
         if (opts.failOn !== undefined && b[0] === opts.failOn) return this.init.error(new Error("bad"));
         if (opts.silent?.(b)) return;
@@ -111,7 +115,7 @@ function fakeDecoder(
           copyTo: (dst: Float32Array, o: { planeIndex: number }) => dst.set(planes[o.planeIndex]!),
           close: () => {},
         } as unknown as AudioData);
-      }, 1);
+      }, 1 + late);
     }
     close() {
       this.state = "closed";
@@ -336,4 +340,19 @@ test("property: done for every batch, never before its samples, quick when nothi
     }
     a.stop();
   }
+}, 60_000);
+
+test("a first output later than QUIET (the decoder starting) is waited for, not said done without it", async () => {
+  const k = new FakeKura();
+  const { Kind } = fakeDecoder({ firstLate: QUIET * 4 });
+  const a = new AudioDecode(k, () => {}, Kind, chunk, false);
+  k.streams.set(3, { gen: 0, codec: "mp3", rate: 44100, ch: 1, desc: [], queue: [[7]], taken: 0 });
+  a.tick();
+  await tick(QUIET * 2);
+  expect(k.done).toEqual([]);
+  await tick(QUIET * 3);
+  expect(k.pcm.length).toBe(1);
+  expect(k.done).toEqual([[3, 0, 1]]);
+  // later chunks: QUIET again for one that gives nothing
+  expect(FIRST_QUIET).toBeGreaterThan(QUIET * 4);
 });

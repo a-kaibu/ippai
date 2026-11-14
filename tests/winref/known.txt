@@ -189,11 +189,6 @@ nls-* ^(want|got) +(CharNextA|IsCharAlphaA 1 0 IsCharAlphaW)
 # a NULL handle with a NULL pointer: Windows Server 2025 checks the handle first (6), older
 # Windows and Wine's tests check the pointer first (87); sake follows the tests
 eventlog-* ^(want|got) +(GetNumberOfEventLogRecords|BackupEventLogA)\(NULL, NULL\): 0 (6|87)$
-# MP3 through ACM in pieces of one frame: l3codecp gives each frame's samples once the next
-# header is in, and sake does too, but Chrome's AudioDecoder can answer a lone frame only with
-# the next one, so a call gives nothing and the stream one frame less; the sound is the same
-# (frequency, loudness, start)
-acmmp3-* ^(want|got) +(call [0-3]: 0 took 208 gave (0|4608) done|took all 1, gave 2[01] frames of 1152)
 # the 64-bit GDI+ works in SSE single precision: a gradient transform's third decimal at a
 # rounding edge
 gdipbrush-64 ^(want|got) +angle 0 271\.5 0: 0: 0 0\.028 -1\.075 0\.978 0\.026 18\.70[56] 103\.990$

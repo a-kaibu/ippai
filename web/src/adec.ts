@@ -43,8 +43,16 @@ type Chunk = (init: {
 
 const MAX = 32;
 const ROW = 10;
-/** ms with nothing queued and no output before the chunks fed count as done */
-export const QUIET = 20;
+/** ms with nothing queued and no output before the chunks fed count as done. Chrome's outputs
+ * can come well after decodeQueueSize is 0 on a busy page (tens of ms); a chunk said done before
+ * its output loses its samples where the guest stops at its end (acmStreamConvert with
+ * ACM_STREAMCONVERTF_END: one MP3 frame short, winref acmmp3). Only a chunk that gives nothing
+ * (a damaged frame) waits this long. */
+export const QUIET = 200;
+/** the same before a stream's first output: Chrome's decoder starts up after taking the first
+ * chunk off its queue, and a first frame said done early comes late as a frame of silence and
+ * a shift (winref acmmp3) */
+export const FIRST_QUIET = 1000;
 
 interface Stream {
   id: number;
@@ -61,6 +69,8 @@ interface Stream {
   outs: number;
   said: number;
   quiet: ReturnType<typeof setTimeout> | null;
+  /** an output came (QUIET from then on, FIRST_QUIET before) */
+  heard: boolean;
 }
 
 export class AudioDecode {
@@ -158,6 +168,7 @@ export class AudioDecode {
       outs: 0,
       said: 0,
       quiet: null,
+      heard: false,
     };
     void this.configure(s, config);
     return s;
@@ -247,6 +258,7 @@ export class AudioDecode {
       }
       this.wasm._vnhost_adec_pcm(s.id, s.gen, this.scratch, frames, ch);
       s.outs++;
+      s.heard = true;
       this.check(s);
     } finally {
       d.close();
@@ -258,14 +270,17 @@ export class AudioDecode {
     if (s.said >= s.fed || s.broken) return;
     if (s.outs >= s.fed - s.silent) return this.done(s);
     if (s.quiet) clearTimeout(s.quiet);
-    s.quiet = setTimeout(() => {
-      s.quiet = null;
-      if (this.streams.get(s.id) !== s || s.broken) return;
-      this.gate.run(() => {
-        if (s.dec && s.dec.decodeQueueSize === 0) this.done(s);
-        else this.check(s);
-      });
-    }, QUIET);
+    s.quiet = setTimeout(
+      () => {
+        s.quiet = null;
+        if (this.streams.get(s.id) !== s || s.broken) return;
+        this.gate.run(() => {
+          if (s.dec && s.dec.decodeQueueSize === 0) this.done(s);
+          else this.check(s);
+        });
+      },
+      s.heard ? QUIET : FIRST_QUIET,
+    );
   }
 
   private done(s: Stream): void {
