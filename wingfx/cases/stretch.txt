@@ -1,0 +1,2967 @@
+# wingfx suite stretch: StretchBlt in each stretch mode (SPEC.md). Made by `wingfx gen stretch`.
+case scale-x
+dib 1 12 1 32
+fill 1 1133897171
+mode 0 3
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 1 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 2 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 2 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 3 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 3 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 4 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 4 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 5 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 5 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 6 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 6 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 7 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 7 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 8 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 8 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 9 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 9 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 10 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 10 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 11 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 11 1 1 0 0 12 1 0xcc0020
+dump 0
+dib 0 12 1 32
+fill 0 7
+stretchblt 0 0 0 12 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 2 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 3 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 4 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 5 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 6 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 7 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 8 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 9 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 10 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 11 1 0xcc0020
+dump 0
+stretchblt 0 0 0 12 1 1 0 0 12 1 0xcc0020
+dump 0
+end
+case scale-y
+dib 1 1 12 32
+fill 1 449884868
+mode 0 3
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 1 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 1 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 2 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 2 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 3 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 3 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 4 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 4 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 5 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 5 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 6 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 6 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 7 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 7 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 8 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 8 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 9 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 9 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 10 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 10 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 11 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 11 1 0 0 1 12 0xcc0020
+dump 0
+dib 0 1 12 32
+fill 0 7
+stretchblt 0 0 0 1 12 1 0 0 1 1 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 2 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 3 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 4 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 5 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 6 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 7 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 8 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 9 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 10 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 11 0xcc0020
+dump 0
+stretchblt 0 0 0 1 12 1 0 0 1 12 0xcc0020
+dump 0
+end
+case random-0
+dib 0 2 7 1 bu
+fill 0 508755755
+dib 1 2 5 16 565
+fill 1 2427565999
+mode 0 2
+stretchblt 0 1 4 4 9 1 0 0 4 5 0xee33b9
+dump 0
+end
+case random-1
+dib 0 3 8 16 565
+fill 0 1078132594
+dib 1 3 1 8 bu
+fill 1 1769018395
+mode 0 3
+stretchblt 0 0 4 2 5 1 0 0 3 1 0xcc0020
+dump 0
+end
+case random-2
+dib 0 9 2 1 bu
+fill 0 3215695923
+dib 1 5 1 1 bu
+fill 1 990841981
+mode 0 2
+brush 0 solid #ca6e46
+stretchblt 0 4 1 4 3 1 4 0 2 2 0xcc0020
+dump 0
+end
+case random-3
+dib 0 4 1 32
+fill 0 1183905688
+dib 1 8 6 1
+fill 1 2029806541
+mode 0 4
+brush 0 solid #a19db7
+stretchblt 0 2 -1 -1 1 1 0 4 3 5 0x9f0cc4
+dump 0
+end
+case random-4
+dib 0 7 1 24 bu
+fill 0 2636733195
+dib 1 12 4 32
+fill 1 2353166865
+mode 0 2
+brush 0 solid #17b1bd
+stretchblt 0 2 0 2 3 1 3 3 2 1 0xcc0020
+dump 0
+end
+case random-5
+dib 0 6 2 16 565
+fill 0 579341341
+dib 1 9 4 8
+fill 1 3057813167
+mode 0 1
+stretchblt 0 1 -1 8 4 1 2 3 6 3 0xcc0020
+dump 0
+end
+case random-6
+dib 0 12 8 8
+fill 0 309846180
+dib 1 5 1 1
+fill 1 3394111142
+mode 0 4
+brush 0 solid #48ec2a
+stretchblt 0 4 7 12 4 1 2 0 3 3 0xe4edeb
+dump 0
+end
+case random-7
+dib 0 1 2 8
+fill 0 3815359353
+dib 1 10 7 8 bu
+fill 1 1843859466
+mode 0 2
+brush 0 solid #3a65d2
+stretchblt 0 0 1 2 3 1 4 6 7 7 0xcc0020
+dump 0
+end
+case random-8
+dib 0 9 6 24
+fill 0 820021746
+dib 1 2 8 8
+fill 1 252906132
+mode 0 1
+brush 0 solid #e2fecc
+stretchblt 0 4 3 9 4 1 0 7 -1 5 0xcc0020
+dump 0
+end
+case random-9
+dib 0 9 7 8
+fill 0 3178098409
+dib 1 3 6 32 bu
+fill 1 2195680204
+mode 0 4
+stretchblt 0 1 3 8 6 1 0 1 2 1 0xcc0020
+dump 0
+end
+case random-10
+dib 0 4 7 8
+fill 0 636493576
+dib 1 3 6 4
+fill 1 1135488472
+mode 0 3
+brush 0 solid #6f9129
+stretchblt 0 0 -1 -3 3 1 2 2 5 -5 0xcc0020
+dump 0
+end
+case random-11
+dib 0 1 2 24 bu
+fill 0 1266805974
+dib 1 11 7 8
+fill 1 2503463244
+mode 0 4
+brush 0 solid #a470fa
+stretchblt 0 0 1 3 4 1 8 5 8 -6 0x42
+dump 0
+end
+case random-12
+dib 0 12 1 4
+fill 0 2482187548
+dib 1 10 7 8 bu
+fill 1 3049872602
+mode 0 4
+brush 0 solid #9c368d
+stretchblt 0 4 -1 11 2 1 8 2 5 3 0xf00021
+dump 0
+end
+case random-13
+dib 0 3 8 1
+fill 0 2806518754
+dib 1 12 1 16
+fill 1 1226229221
+mode 0 1
+stretchblt 0 -1 0 1 10 1 7 0 13 3 0xcc0020
+dump 0
+end
+case random-14
+dib 0 4 8 4
+fill 0 2444532042
+dib 1 2 6 4
+fill 1 3438653055
+mode 0 3
+stretchblt 0 -1 3 3 1 1 0 4 3 8 0xcc0020
+dump 0
+end
+case random-15
+dib 0 5 4 4 bu
+fill 0 2354204074
+dib 1 11 4 4 bu
+fill 1 422815707
+mode 0 4
+stretchblt 0 1 2 5 6 1 2 0 3 6 0xcc0020
+dump 0
+end
+case random-16
+dib 0 5 2 1 bu
+fill 0 1658323970
+dib 1 7 4 1 bu
+fill 1 2586198059
+mode 0 3
+stretchblt 0 4 -1 3 4 1 6 3 6 4 0xbb0226
+dump 0
+end
+case random-17
+dib 0 5 6 4
+fill 0 1777691187
+dib 1 3 5 4 bu
+fill 1 1360406775
+mode 0 4
+stretchblt 0 3 4 2 5 1 2 1 2 3 0xcc0020
+dump 0
+end
+case random-18
+dib 0 11 2 24 bu
+fill 0 2425153258
+dib 1 8 4 24 bu
+fill 1 533325624
+mode 0 4
+stretchblt 0 8 0 6 2 1 4 2 1 4 0xcc0020
+dump 0
+end
+case random-19
+dib 0 5 1 24
+fill 0 451272453
+dib 1 9 1 24 bu
+fill 1 3552721505
+mode 0 3
+stretchblt 0 1 -1 4 2 1 5 0 6 2 0x1100a6
+dump 0
+end
+case random-20
+dib 0 6 1 4 bu
+fill 0 3100273593
+dib 1 10 5 4
+fill 1 349587218
+mode 0 1
+brush 0 solid #491afa
+stretchblt 0 3 0 1 3 1 7 0 9 1 0xcc0020
+dump 0
+end
+case random-21
+dib 0 7 6 8 bu
+fill 0 1637004705
+dib 1 6 6 8
+fill 1 1708897486
+mode 0 4
+brush 0 solid #dee968
+stretchblt 0 -1 1 8 5 1 3 3 2 4 0xcc0020
+dump 0
+end
+case random-22
+dib 0 2 3 24
+fill 0 3140421579
+dib 1 7 1 24
+fill 1 3686180845
+mode 0 1
+stretchblt 0 1 1 2 1 1 5 0 1 1 0xcc0020
+dump 0
+end
+case random-23
+dib 0 9 2 16
+fill 0 2155620442
+dib 1 4 8 16 565
+fill 1 1158573152
+mode 0 2
+brush 0 solid #d611dc
+stretchblt 0 3 0 1 4 1 3 1 2 3 0xcc0020
+dump 0
+end
+case random-24
+dib 0 6 2 16 565
+fill 0 1331900585
+dib 1 1 3 16 bu 565
+fill 1 954798188
+mode 0 3
+brush 0 solid #de4f64
+stretchblt 0 -1 0 8 4 1 0 0 3 1 0xfa7fe0
+dump 0
+end
+case random-25
+dib 0 1 1 32 bu
+fill 0 3599581055
+dib 1 7 6 32
+fill 1 1091419985
+mode 0 3
+stretchblt 0 -1 -1 3 1 1 6 2 8 8 0xcc0020
+dump 0
+end
+case random-26
+dib 0 11 3 16 565
+fill 0 1601292349
+dib 1 6 1 4
+fill 1 4151998628
+mode 0 4
+stretchblt 0 7 1 2 2 1 1 0 8 3 0xee920c
+dump 0
+end
+case random-27
+dib 0 2 8 24
+fill 0 4077074891
+dib 1 3 4 16
+fill 1 3574489435
+mode 0 2
+stretchblt 0 -1 2 1 5 1 0 3 5 3 0xcc0020
+dump 0
+end
+case random-28
+dib 0 9 6 8
+fill 0 4109063752
+dib 1 11 5 8
+fill 1 4192969134
+mode 0 2
+stretchblt 0 6 2 11 2 1 6 4 4 2 0xcc0020
+dump 0
+end
+case random-29
+dib 0 4 8 8
+fill 0 2701263943
+dib 1 1 8 1
+fill 1 3628445858
+mode 0 3
+brush 0 solid #9cf954
+stretchblt 0 1 4 4 9 1 0 6 3 8 0xde4f9f
+dump 0
+end
+case random-30
+dib 0 6 8 8
+fill 0 1787059538
+dib 1 10 7 8
+fill 1 2007654914
+mode 0 4
+brush 0 solid #379e47
+stretchblt 0 2 7 5 7 1 0 3 7 6 0xcc0020
+dump 0
+end
+case random-31
+dib 0 6 5 8 bu
+fill 0 430988771
+dib 1 6 6 32
+fill 1 3603131268
+mode 0 2
+stretchblt 0 -1 2 7 6 1 0 1 2 5 0xcc0020
+dump 0
+end
+case random-32
+dib 0 2 3 16 bu 565
+fill 0 1932269649
+dib 1 7 6 16 565
+fill 1 2150418517
+mode 0 3
+stretchblt 0 1 -1 1 4 1 2 3 9 -2 0xcc0020
+dump 0
+end
+case random-33
+dib 0 4 4 24
+fill 0 3412777194
+dib 1 4 8 24
+fill 1 3719092760
+mode 0 4
+brush 0 solid #5d6ee2
+stretchblt 0 0 2 6 -3 1 0 4 5 1 0xcc0020
+dump 0
+end
+case random-34
+dib 0 6 5 32 bu
+fill 0 3598142239
+dib 1 7 1 32
+fill 1 2984089719
+mode 0 3
+stretchblt 0 4 -1 7 1 1 4 0 7 1 0xf3f52c
+dump 0
+end
+case random-35
+dib 0 2 8 1 bu
+fill 0 3762969737
+dib 1 3 7 1
+fill 1 273887557
+mode 0 1
+stretchblt 0 -1 3 2 6 1 1 3 5 5 0xcc0020
+dump 0
+end
+case random-36
+dib 0 11 1 4
+fill 0 4243414481
+dib 1 9 6 4
+fill 1 3720417431
+mode 0 3
+stretchblt 0 10 0 -3 2 1 3 0 11 7 0xcc0020
+dump 0
+end
+case random-37
+dib 0 12 7 24
+fill 0 1408525420
+dib 1 2 1 24
+fill 1 3761126345
+mode 0 3
+stretchblt 0 2 0 7 1 1 1 0 4 1 0xcc0020
+dump 0
+end
+case random-38
+dib 0 8 5 16
+fill 0 2665832148
+dib 1 1 1 1 bu
+fill 1 387974106
+mode 0 4
+stretchblt 0 7 3 -7 1 1 0 0 1 1 0xcc0020
+dump 0
+end
+case random-39
+dib 0 12 3 16 565
+fill 0 1314748730
+dib 1 10 5 8
+fill 1 2196174056
+mode 0 2
+stretchblt 0 4 2 3 2 1 4 3 7 1 0xcc0020
+dump 0
+end
+case random-40
+dib 0 5 8 1
+fill 0 4175224627
+dib 1 6 3 1 bu
+fill 1 2412982605
+mode 0 1
+stretchblt 0 2 5 -2 7 1 1 2 5 4 0xcc0020
+dump 0
+end
+case random-41
+dib 0 2 4 8
+fill 0 580897581
+dib 1 9 5 8
+fill 1 456444736
+mode 0 3
+brush 0 solid #2830ba
+stretchblt 0 -1 -1 2 5 1 7 0 11 2 0xcc0020
+dump 0
+end
+case random-42
+dib 0 6 7 16 bu
+fill 0 3686184237
+dib 1 10 3 24
+fill 1 4045503278
+mode 0 1
+stretchblt 0 3 -1 3 2 1 7 0 12 5 0xcc0020
+dump 0
+end
+case random-43
+dib 0 8 3 1 bu
+fill 0 1020067273
+dib 1 2 6 8
+fill 1 4249804496
+mode 0 3
+stretchblt 0 1 1 10 5 1 1 5 4 -2 0xcc0020
+dump 0
+end
+case random-44
+dib 0 6 1 8
+fill 0 1969799231
+dib 1 9 6 8
+fill 1 2011401590
+mode 0 1
+stretchblt 0 4 -1 5 1 1 5 0 -7 1 0xcc0020
+dump 0
+end
+case random-45
+dib 0 1 7 4 bu
+fill 0 3889043909
+dib 1 1 4 4 bu
+fill 1 4095994280
+mode 0 4
+stretchblt 0 -1 3 3 7 1 0 1 3 2 0xf00021
+dump 0
+end
+case random-46
+dib 0 7 5 16 565
+fill 0 2391723862
+dib 1 6 8 16 565
+fill 1 828484690
+mode 0 4
+stretchblt 0 -1 4 4 1 1 0 5 7 3 0xcc0020
+dump 0
+end
+case random-47
+dib 0 6 2 32 bu
+fill 0 2226821942
+dib 1 11 8 32 bu
+fill 1 1292039752
+mode 0 2
+stretchblt 0 1 1 2 -1 1 8 7 12 2 0xcc0020
+dump 0
+end
+case random-48
+dib 0 10 5 16
+fill 0 2813483258
+dib 1 9 8 32
+fill 1 2730790878
+mode 0 2
+brush 0 solid #137e79
+stretchblt 0 -1 -1 11 -2 1 5 2 7 5 0x422e10
+dump 0
+end
+case random-49
+dib 0 3 7 32
+fill 0 2042116021
+dib 1 7 4 32
+fill 1 2581785850
+mode 0 1
+brush 0 solid #943803
+stretchblt 0 2 6 3 6 1 4 2 5 6 0xcc0020
+dump 0
+end
+case random-50
+dib 0 6 8 16 bu
+fill 0 3321627124
+dib 1 10 7 16 bu
+fill 1 2444107717
+mode 0 3
+stretchblt 0 5 5 5 -2 1 2 4 11 4 0xcc0020
+dump 0
+end
+case random-51
+dib 0 10 4 8
+fill 0 839393167
+dib 1 11 5 8
+fill 1 1392567008
+mode 0 3
+stretchblt 0 8 2 7 6 1 3 2 2 4 0xcc0020
+dump 0
+end
+case random-52
+dib 0 11 5 32
+fill 0 887075782
+dib 1 2 3 32 bu
+fill 1 4131134868
+mode 0 4
+stretchblt 0 8 3 5 6 1 1 2 2 4 0xcc0020
+dump 0
+end
+case random-53
+dib 0 12 3 16 565
+fill 0 2245235252
+dib 1 11 7 16 565
+fill 1 4027427297
+mode 0 2
+stretchblt 0 4 2 1 2 1 7 4 2 7 0xc2a020
+dump 0
+end
+case random-54
+dib 0 10 4 16
+fill 0 2853586920
+dib 1 3 3 32
+fill 1 4016723244
+mode 0 4
+brush 0 solid #990384
+stretchblt 0 5 3 4 1 1 2 0 4 1 0xcc0020
+dump 0
+end
+case random-55
+dib 0 7 6 16 bu 565
+fill 0 960983652
+dib 1 3 6 16 565
+fill 1 2060583041
+mode 0 1
+stretchblt 0 6 2 6 2 1 1 3 5 4 0xcc0020
+dump 0
+end
+case random-56
+dib 0 5 8 16 565
+fill 0 478108022
+dib 1 12 8 1
+fill 1 3817581337
+mode 0 2
+stretchblt 0 1 0 3 3 1 11 0 5 4 0x440328
+dump 0
+end
+case random-57
+dib 0 10 3 8
+fill 0 3007702035
+dib 1 2 6 16 bu
+fill 1 431410996
+mode 0 1
+brush 0 solid #3d64f2
+stretchblt 0 2 1 10 3 1 0 0 1 2 0xcc0020
+dump 0
+end
+case random-58
+dib 0 12 2 4
+fill 0 1303062302
+dib 1 6 3 4 bu
+fill 1 3388751710
+mode 0 2
+stretchblt 0 1 -1 13 3 1 3 1 1 1 0xe8a330
+dump 0
+end
+case random-59
+dib 0 1 3 4
+fill 0 3547029878
+dib 1 9 6 4
+fill 1 2103775340
+mode 0 1
+stretchblt 0 -1 2 1 -3 1 2 2 10 4 0x90c375
+dump 0
+end
+case random-60
+dib 0 12 7 8 bu
+fill 0 37847
+dib 1 3 7 8
+fill 1 3250811402
+mode 0 4
+stretchblt 0 5 4 8 3 1 1 2 5 6 0xcc0020
+dump 0
+end
+case random-61
+dib 0 6 4 1
+fill 0 1440923852
+dib 1 6 1 1
+fill 1 2427054713
+mode 0 3
+brush 0 solid #6cc7ab
+stretchblt 0 0 -1 4 5 1 1 0 6 3 0xfb0a09
+dump 0
+end
+case random-62
+dib 0 12 5 24
+fill 0 1168228838
+dib 1 12 3 4 bu
+fill 1 982352503
+mode 0 3
+stretchblt 0 1 4 12 6 1 3 1 7 2 0xcc0020
+dump 0
+end
+case random-63
+dib 0 3 6 16 bu 565
+fill 0 378264598
+dib 1 2 8 24
+fill 1 636825705
+mode 0 2
+stretchblt 0 2 4 3 7 1 0 3 3 8 0x12b6b0
+dump 0
+end
+case random-64
+dib 0 3 8 1
+fill 0 629745867
+dib 1 6 2 8 bu
+fill 1 153198593
+mode 0 2
+stretchblt 0 1 0 5 8 1 3 0 6 4 0xcc0020
+dump 0
+end
+case random-65
+dib 0 5 5 32 bu
+fill 0 310485845
+dib 1 4 4 32
+fill 1 4171394150
+mode 0 2
+stretchblt 0 3 2 4 7 1 2 1 4 6 0xcc0020
+dump 0
+end
+case random-66
+dib 0 11 2 1
+fill 0 2729102633
+dib 1 8 5 1
+fill 1 1616533638
+mode 0 4
+stretchblt 0 8 1 11 4 1 0 0 -3 7 0xcc0020
+dump 0
+end
+case random-67
+dib 0 4 2 4
+fill 0 932606244
+dib 1 5 5 16 565
+fill 1 2628786089
+mode 0 4
+stretchblt 0 1 1 6 4 1 3 3 6 4 0xcc0020
+dump 0
+end
+case random-68
+dib 0 1 4 16 bu
+fill 0 1978241296
+dib 1 6 4 16
+fill 1 1709110286
+mode 0 2
+stretchblt 0 0 1 1 6 1 2 3 4 1 0x440328
+dump 0
+end
+case random-69
+dib 0 11 3 32
+fill 0 1254621300
+dib 1 5 6 32
+fill 1 259333793
+mode 0 2
+brush 0 solid #d64c9a
+stretchblt 0 10 0 -10 -1 1 0 0 4 6 0xcc0020
+dump 0
+end
+case random-70
+dib 0 11 7 4
+fill 0 4265848853
+dib 1 9 4 4 bu
+fill 1 3172531881
+mode 0 4
+brush 0 solid #106f7c
+stretchblt 0 5 3 7 3 1 6 1 -2 6 0xcc0020
+dump 0
+end
+case random-71
+dib 0 10 1 16 565
+fill 0 3450314199
+dib 1 4 3 16 565
+fill 1 2336285566
+mode 0 2
+brush 0 solid #253aea
+stretchblt 0 2 -1 4 1 1 2 2 2 -2 0xf75117
+dump 0
+end
+case random-72
+dib 0 10 7 4
+fill 0 1456062375
+dib 1 6 7 4 bu
+fill 1 2783181264
+mode 0 1
+brush 0 solid #340378
+stretchblt 0 4 6 11 6 1 4 3 4 2 0x34f143
+dump 0
+end
+case random-73
+dib 0 1 3 16 565
+fill 0 4014939809
+dib 1 8 6 16 565
+fill 1 1902424132
+mode 0 3
+stretchblt 0 -1 1 2 4 1 1 0 5 8 0x8800c6
+dump 0
+end
+case random-74
+dib 0 10 6 24
+fill 0 4274008687
+dib 1 8 2 24 bu
+fill 1 1870536069
+mode 0 3
+stretchblt 0 9 0 10 4 1 4 0 -5 1 0xcc0020
+dump 0
+end
+case random-75
+dib 0 1 5 16 bu
+fill 0 419564896
+dib 1 7 7 16 bu
+fill 1 3213673215
+mode 0 3
+stretchblt 0 0 2 3 4 1 3 0 1 5 0xb4f448
+dump 0
+end
+case random-76
+dib 0 2 7 1
+fill 0 937777487
+dib 1 7 5 1 bu
+fill 1 2775654784
+mode 0 1
+stretchblt 0 1 3 -2 6 1 6 1 7 2 0xcc0020
+dump 0
+end
+case random-77
+dib 0 4 2 32 bu
+fill 0 872153577
+dib 1 12 2 32 bu
+fill 1 2644521676
+mode 0 1
+stretchblt 0 2 0 -4 4 1 10 1 1 4 0xa74b18
+dump 0
+end
+case random-78
+dib 0 8 2 8
+fill 0 606449847
+dib 1 2 6 1
+fill 1 3933017216
+mode 0 3
+stretchblt 0 0 0 2 3 1 1 4 1 3 0xf00021
+dump 0
+end
+case random-79
+dib 0 3 6 1
+fill 0 2298697122
+dib 1 3 1 32 bu
+fill 1 3995555681
+mode 0 1
+stretchblt 0 0 2 1 3 1 2 0 3 1 0xbb0226
+dump 0
+end
+case random-80
+dib 0 4 6 24
+fill 0 3100624376
+dib 1 7 6 24 bu
+fill 1 2136201834
+mode 0 2
+stretchblt 0 -1 2 6 3 1 2 5 4 -1 0xcc0020
+dump 0
+end
+case random-81
+dib 0 7 6 1 bu
+fill 0 3479636902
+dib 1 1 3 16 bu
+fill 1 1299883535
+mode 0 3
+brush 0 solid #83e2bf
+stretchblt 0 5 2 3 1 1 0 0 1 5 0x311c49
+dump 0
+end
+case random-82
+dib 0 7 3 16 565
+fill 0 3871444512
+dib 1 4 1 24
+fill 1 2905013024
+mode 0 2
+stretchblt 0 4 -1 -5 4 1 2 0 6 1 0xcc0020
+dump 0
+end
+case random-83
+dib 0 7 6 16 bu
+fill 0 2708322350
+dib 1 3 3 16
+fill 1 885440876
+mode 0 2
+stretchblt 0 2 0 7 6 1 0 2 4 -1 0x692aec
+dump 0
+end
+case random-84
+dib 0 12 5 24 bu
+fill 0 1235391910
+dib 1 12 1 24 bu
+fill 1 2684224475
+mode 0 2
+stretchblt 0 8 0 13 3 1 5 0 10 3 0xcc0020
+dump 0
+end
+case random-85
+dib 0 2 6 24 bu
+fill 0 1057286537
+dib 1 1 1 24
+fill 1 2395403263
+mode 0 4
+stretchblt 0 1 0 3 6 1 0 0 3 1 0x3be8b
+dump 0
+end
+case random-86
+dib 0 8 7 1
+fill 0 404748998
+dib 1 10 6 4
+fill 1 2713857422
+mode 0 4
+stretchblt 0 7 6 5 8 1 8 2 5 1 0xee0086
+dump 0
+end
+case random-87
+dib 0 11 4 4 bu
+fill 0 2723135295
+dib 1 5 4 4 bu
+fill 1 255934032
+mode 0 2
+brush 0 solid #e184a0
+stretchblt 0 8 2 3 2 1 0 2 1 6 0xcc0020
+dump 0
+end
+case random-88
+dib 0 9 7 1 bu
+fill 0 706132683
+dib 1 9 2 1
+fill 1 22058191
+mode 0 4
+stretchblt 0 4 3 1 7 1 3 0 5 -2 0x21a016
+dump 0
+end
+case random-89
+dib 0 3 3 1
+fill 0 169880346
+dib 1 10 3 1 bu
+fill 1 853899729
+mode 0 3
+stretchblt 0 0 2 2 3 1 6 0 9 2 0xcc0020
+dump 0
+end
+case random-90
+dib 0 5 6 16
+fill 0 1245027959
+dib 1 8 2 16
+fill 1 816509659
+mode 0 4
+stretchblt 0 2 4 2 7 1 3 1 -4 1 0xcc0020
+dump 0
+end
+case random-91
+dib 0 4 7 4
+fill 0 188756956
+dib 1 10 3 4
+fill 1 902171569
+mode 0 2
+brush 0 solid #2989d9
+stretchblt 0 -1 3 5 8 1 2 2 11 2 0xcc0020
+dump 0
+end
+case random-92
+dib 0 2 3 1
+fill 0 2190233304
+dib 1 11 6 4
+fill 1 111076413
+mode 0 2
+stretchblt 0 0 2 4 1 1 9 2 6 2 0xcc0020
+dump 0
+end
+case random-93
+dib 0 7 6 8 bu
+fill 0 2350632218
+dib 1 2 4 8
+fill 1 3952564741
+mode 0 3
+brush 0 solid #2dea45
+stretchblt 0 1 3 8 5 1 1 1 1 -4 0xcc0020
+dump 0
+end
+case random-94
+dib 0 11 8 1
+fill 0 1521308493
+dib 1 9 8 32 bu
+fill 1 3825771817
+mode 0 4
+stretchblt 0 6 3 -7 3 1 3 2 10 -2 0xcc0020
+dump 0
+end
+case random-95
+dib 0 11 7 24
+fill 0 2340270287
+dib 1 6 7 24 bu
+fill 1 454039542
+mode 0 2
+stretchblt 0 2 0 7 -2 1 5 0 2 6 0xd45daf
+dump 0
+end
+case random-96
+dib 0 5 2 1
+fill 0 1962215876
+dib 1 4 7 1
+fill 1 3475033260
+mode 0 3
+stretchblt 0 4 0 5 4 1 2 4 5 8 0xcc0020
+dump 0
+end
+case random-97
+dib 0 11 1 4
+fill 0 1657409073
+dib 1 6 6 4
+fill 1 1334289511
+mode 0 3
+stretchblt 0 8 0 11 1 1 1 5 8 2 0x429b28
+dump 0
+end
+case random-98
+dib 0 9 5 4 bu
+fill 0 830394025
+dib 1 10 6 4
+fill 1 1267846951
+mode 0 2
+stretchblt 0 4 1 2 -5 1 5 0 1 8 0xcc0020
+dump 0
+end
+case random-99
+dib 0 3 2 16 565
+fill 0 1991565820
+dib 1 12 8 16 565
+fill 1 4173737172
+mode 0 3
+stretchblt 0 2 -1 4 4 1 2 7 3 3 0xcc0020
+dump 0
+end
+case random-100
+dib 0 8 2 1
+fill 0 48822101
+dib 1 1 7 1
+fill 1 4098290541
+mode 0 1
+brush 0 solid #b9f388
+stretchblt 0 6 -1 1 2 1 0 0 1 1 0xcc0020
+dump 0
+end
+case random-101
+dib 0 2 7 16 565
+fill 0 2760724254
+dib 1 6 3 8
+fill 1 3002619102
+mode 0 4
+brush 0 solid #fdeb3a
+stretchblt 0 1 3 3 2 1 2 2 4 3 0xcc0020
+dump 0
+end
+case random-102
+dib 0 5 6 8 bu
+fill 0 773010800
+dib 1 6 3 8
+fill 1 2312613327
+mode 0 1
+stretchblt 0 0 5 6 6 1 1 2 1 3 0xafd3e1
+dump 0
+end
+case random-103
+dib 0 4 5 4 bu
+fill 0 2501356898
+dib 1 5 3 4
+fill 1 1810855122
+mode 0 1
+stretchblt 0 -1 3 2 1 1 3 1 2 5 0xcd3fde
+dump 0
+end
+case random-104
+dib 0 7 8 24
+fill 0 1296771332
+dib 1 7 7 24
+fill 1 1773366766
+mode 0 2
+stretchblt 0 0 4 4 5 1 1 1 5 1 0xcc0020
+dump 0
+end
+case random-105
+dib 0 3 8 16 565
+fill 0 572534848
+dib 1 8 7 16 565
+fill 1 2867406639
+mode 0 2
+brush 0 solid #cf9bf2
+stretchblt 0 1 4 4 -7 1 5 0 7 9 0xf63f07
+dump 0
+end
+case random-106
+dib 0 2 8 24
+fill 0 446400560
+dib 1 11 2 24
+fill 1 1439706888
+mode 0 1
+stretchblt 0 1 2 2 4 1 6 1 13 3 0xcc0020
+dump 0
+end
+case random-107
+dib 0 6 4 24 bu
+fill 0 1317979709
+dib 1 2 4 24 bu
+fill 1 466805996
+mode 0 4
+stretchblt 0 0 -1 5 2 1 0 2 3 -1 0xcc0020
+dump 0
+end
+case random-108
+dib 0 1 4 8
+fill 0 1302350496
+dib 1 5 3 8
+fill 1 1967356543
+mode 0 2
+stretchblt 0 -1 1 1 2 1 1 0 2 2 0xb6b96f
+dump 0
+end
+case random-109
+dib 0 6 5 4 bu
+fill 0 3899515216
+dib 1 8 5 8 bu
+fill 1 193258173
+mode 0 1
+stretchblt 0 4 1 8 3 1 3 4 9 2 0xcc0020
+dump 0
+end
+case random-110
+dib 0 7 1 1
+fill 0 1976759120
+dib 1 6 8 1
+fill 1 2466160622
+mode 0 4
+stretchblt 0 4 0 1 3 1 1 4 5 4 0xcc0020
+dump 0
+end
+case random-111
+dib 0 7 8 16 565
+fill 0 4016024415
+dib 1 10 2 16 bu 565
+fill 1 1634288373
+mode 0 3
+brush 0 solid #9486af
+stretchblt 0 0 3 9 4 1 7 1 10 4 0xcc0020
+dump 0
+end
+case random-112
+dib 0 4 2 16 565
+fill 0 3263589058
+dib 1 2 8 16 565
+fill 1 608643848
+mode 0 4
+brush 0 solid #253100
+stretchblt 0 0 1 3 3 1 0 1 1 1 0x42
+dump 0
+end
+case random-113
+dib 0 10 8 24
+fill 0 1121097195
+dib 1 8 1 24
+fill 1 3189920465
+mode 0 2
+stretchblt 0 -1 6 11 1 1 1 0 7 1 0xcc0020
+dump 0
+end
+case random-114
+dib 0 7 7 16 565
+fill 0 148464763
+dib 1 12 7 16 565
+fill 1 2529566015
+mode 0 4
+stretchblt 0 3 5 6 2 1 1 2 8 1 0xcc0020
+dump 0
+end
+case random-115
+dib 0 7 3 16 bu
+fill 0 3834325270
+dib 1 9 7 16
+fill 1 4080310356
+mode 0 4
+stretchblt 0 3 1 9 5 1 8 4 7 6 0xcc0020
+dump 0
+end
+case random-116
+dib 0 4 1 16
+fill 0 2035393516
+dib 1 10 2 16
+fill 1 3230747951
+mode 0 2
+stretchblt 0 0 0 1 2 1 1 1 2 4 0xcc0020
+dump 0
+end
+case random-117
+dib 0 3 8 8
+fill 0 1979266808
+dib 1 11 2 8 bu
+fill 1 3174960633
+mode 0 2
+stretchblt 0 -1 5 5 10 1 10 1 3 3 0xcc0020
+dump 0
+end
+case random-118
+dib 0 10 2 1
+fill 0 4135774812
+dib 1 2 1 1
+fill 1 1958766020
+mode 0 1
+stretchblt 0 3 0 10 4 1 1 0 3 3 0xcc0020
+dump 0
+end
+case random-119
+dib 0 11 6 32 bu
+fill 0 654596820
+dib 1 9 2 4
+fill 1 2055093701
+mode 0 3
+stretchblt 0 1 0 6 6 1 8 1 3 3 0xcc0020
+dump 0
+end
+case random-120
+dib 0 11 1 8
+fill 0 2110886156
+dib 1 11 7 1 bu
+fill 1 4092829448
+mode 0 2
+stretchblt 0 10 -1 13 3 1 9 4 7 5 0xcc0020
+dump 0
+end
+case random-121
+dib 0 6 4 16 bu
+fill 0 2889276510
+dib 1 12 7 16
+fill 1 3889747060
+mode 0 4
+stretchblt 0 5 0 4 5 1 5 3 13 6 0xcc0020
+dump 0
+end
+case random-122
+dib 0 1 8 4
+fill 0 3369375437
+dib 1 8 8 16 565
+fill 1 680936342
+mode 0 1
+stretchblt 0 -1 3 1 4 1 7 2 5 3 0xff0062
+dump 0
+end
+case random-123
+dib 0 7 5 16 565
+fill 0 2982366191
+dib 1 5 6 16 bu 565
+fill 1 592877080
+mode 0 3
+stretchblt 0 6 2 8 2 1 0 3 6 3 0xcc0020
+dump 0
+end
+case random-124
+dib 0 6 3 16 bu 565
+fill 0 716326047
+dib 1 7 3 16 bu 565
+fill 1 289554720
+mode 0 4
+brush 0 solid #24bd57
+stretchblt 0 0 1 4 4 1 2 0 3 2 0xcc0020
+dump 0
+end
+case random-125
+dib 0 5 7 1 bu
+fill 0 182440170
+dib 1 12 3 8
+fill 1 3824211322
+mode 0 2
+stretchblt 0 1 5 6 2 1 9 2 2 5 0xcc0020
+dump 0
+end
+case random-126
+dib 0 4 5 8 bu
+fill 0 4025319282
+dib 1 11 3 32 bu
+fill 1 2517989490
+mode 0 4
+brush 0 solid #9fa1c6
+stretchblt 0 -1 4 1 5 1 5 2 6 5 0xcc0020
+dump 0
+end
+case random-127
+dib 0 3 1 32
+fill 0 706114594
+dib 1 3 1 1 bu
+fill 1 3502563862
+mode 0 2
+stretchblt 0 1 0 3 2 1 0 0 5 3 0xcc0020
+dump 0
+end
+case random-128
+dib 0 2 4 8
+fill 0 2349586353
+dib 1 10 3 8
+fill 1 3604855739
+mode 0 3
+brush 0 solid #64101a
+stretchblt 0 -1 3 3 1 1 4 2 10 5 0xcc0020
+dump 0
+end
+case random-129
+dib 0 12 4 16
+fill 0 3221244369
+dib 1 9 1 8 bu
+fill 1 3333381661
+mode 0 4
+stretchblt 0 8 0 1 5 1 0 0 3 2 0x675340
+dump 0
+end
+case random-130
+dib 0 9 8 1 bu
+fill 0 2898617458
+dib 1 1 2 1
+fill 1 1675569579
+mode 0 3
+stretchblt 0 0 5 9 3 1 0 0 1 4 0xcc0020
+dump 0
+end
+case random-131
+dib 0 4 4 16
+fill 0 1991333142
+dib 1 2 6 16
+fill 1 3927462402
+mode 0 3
+stretchblt 0 0 -1 1 2 1 1 4 3 7 0xcc0020
+dump 0
+end
+case random-132
+dib 0 12 8 16 565
+fill 0 3716685510
+dib 1 12 8 16 bu
+fill 1 2108094255
+mode 0 3
+brush 0 solid #17c42a
+stretchblt 0 0 1 9 9 1 10 4 4 6 0x24faa3
+dump 0
+end
+case random-133
+dib 0 4 3 4 bu
+fill 0 2868884976
+dib 1 11 7 4 bu
+fill 1 2170297204
+mode 0 2
+brush 0 solid #224783
+stretchblt 0 2 -1 6 3 1 6 3 6 1 0xcc0020
+dump 0
+end
+case random-134
+dib 0 10 2 32 bu
+fill 0 3825071141
+dib 1 12 3 16 565
+fill 1 3678622505
+mode 0 3
+brush 0 solid #88c308
+stretchblt 0 5 1 5 2 1 11 2 7 -3 0xcc0020
+dump 0
+end
+case random-135
+dib 0 11 4 16
+fill 0 1569532333
+dib 1 2 2 16
+fill 1 4250103647
+mode 0 4
+stretchblt 0 7 0 11 1 1 1 0 1 1 0xcc0020
+dump 0
+end
+case random-136
+dib 0 1 8 16
+fill 0 2306157693
+dib 1 4 1 16
+fill 1 2514112756
+mode 0 3
+brush 0 solid #73f593
+stretchblt 0 -1 -1 3 10 1 1 0 3 2 0x42
+dump 0
+end
+case random-137
+dib 0 6 6 4
+fill 0 2001311382
+dib 1 11 4 4
+fill 1 1799736818
+mode 0 4
+stretchblt 0 5 1 5 8 1 6 0 10 1 0xcc0020
+dump 0
+end
+case random-138
+dib 0 7 7 16 565
+fill 0 3838719761
+dib 1 3 8 16 565
+fill 1 293302975
+mode 0 2
+stretchblt 0 -1 4 3 -2 1 1 5 2 1 0x5a0049
+dump 0
+end
+case random-139
+dib 0 6 3 4
+fill 0 920538643
+dib 1 3 8 4
+fill 1 3403997429
+mode 0 1
+stretchblt 0 0 0 5 -2 1 2 0 2 7 0xcc0020
+dump 0
+end
+case random-140
+dib 0 7 1 1 bu
+fill 0 2719598620
+dib 1 12 3 16 565
+fill 1 2067061767
+mode 0 2
+brush 0 solid #de1068
+stretchblt 0 5 -1 8 3 1 3 0 8 5 0x5a0049
+dump 0
+end
+case random-141
+dib 0 2 1 24
+fill 0 4040645940
+dib 1 10 5 16 565
+fill 1 2686627993
+mode 0 2
+brush 0 solid #149794
+stretchblt 0 1 0 4 3 1 7 0 12 3 0xeb4fd7
+dump 0
+end
+case random-142
+dib 0 3 4 8
+fill 0 923421742
+dib 1 10 3 24 bu
+fill 1 44447281
+mode 0 2
+stretchblt 0 2 2 1 6 1 5 0 5 -1 0xbbdad4
+dump 0
+end
+case random-143
+dib 0 6 5 1 bu
+fill 0 2564606606
+dib 1 3 3 8 bu
+fill 1 2967925290
+mode 0 4
+brush 0 solid #36b0c2
+stretchblt 0 2 4 8 4 1 2 1 1 5 0xe8a178
+dump 0
+end
+case random-144
+dib 0 6 5 32
+fill 0 1049808655
+dib 1 6 6 32
+fill 1 2476658041
+mode 0 2
+stretchblt 0 4 -1 3 4 1 4 0 5 3 0xcc0020
+dump 0
+end
+case random-145
+dib 0 11 4 1
+fill 0 3475441951
+dib 1 6 5 16
+fill 1 2897738827
+mode 0 1
+brush 0 solid #66226a
+stretchblt 0 3 -1 10 6 1 0 4 5 4 0xcc0020
+dump 0
+end
+case random-146
+dib 0 4 1 8
+fill 0 292111942
+dib 1 5 7 8
+fill 1 3348914522
+mode 0 2
+stretchblt 0 -1 0 2 2 1 3 2 1 -7 0x440328
+dump 0
+end
+case random-147
+dib 0 6 6 16
+fill 0 287613469
+dib 1 5 5 16 565
+fill 1 2809948959
+mode 0 1
+stretchblt 0 5 0 4 6 1 1 4 7 6 0xcc0020
+dump 0
+end
+case random-148
+dib 0 2 1 16
+fill 0 1467115825
+dib 1 11 3 16
+fill 1 3461066530
+mode 0 2
+stretchblt 0 -1 -1 4 1 1 0 2 3 4 0xc907ce
+dump 0
+end
+case random-149
+dib 0 4 3 24
+fill 0 1943505514
+dib 1 4 1 24
+fill 1 710435358
+mode 0 4
+stretchblt 0 -1 2 6 3 1 2 0 4 1 0xcc0020
+dump 0
+end
+case random-150
+dib 0 8 1 1
+fill 0 2917787515
+dib 1 4 8 1 bu
+fill 1 2948823064
+mode 0 1
+stretchblt 0 -1 0 3 2 1 1 7 2 1 0x42
+dump 0
+end
+case random-151
+dib 0 8 6 16 bu
+fill 0 3632229419
+dib 1 8 2 16
+fill 1 4101174507
+mode 0 1
+brush 0 solid #5f281c
+stretchblt 0 0 1 3 4 1 3 1 8 4 0xcc0020
+dump 0
+end
+case random-152
+dib 0 4 6 32
+fill 0 2515563827
+dib 1 6 2 32
+fill 1 1159895567
+mode 0 3
+stretchblt 0 1 5 4 6 1 0 1 -4 1 0xcc0020
+dump 0
+end
+case random-153
+dib 0 4 1 1
+fill 0 1905441613
+dib 1 8 6 4 bu
+fill 1 3017150942
+mode 0 1
+stretchblt 0 0 -1 3 3 1 1 0 1 6 0x330008
+dump 0
+end
+case random-154
+dib 0 1 4 16 565
+fill 0 3864754606
+dib 1 6 1 4 bu
+fill 1 1638992322
+mode 0 3
+brush 0 solid #d0cfe9
+stretchblt 0 0 0 1 4 1 0 0 1 3 0xcc0020
+dump 0
+end
+case random-155
+dib 0 10 8 4
+fill 0 3156383322
+dib 1 5 1 4 bu
+fill 1 3946884238
+mode 0 3
+stretchblt 0 3 5 1 2 1 0 0 1 1 0xcc0020
+dump 0
+end
+case random-156
+dib 0 10 8 32 bu
+fill 0 2578346373
+dib 1 10 5 1
+fill 1 3593992538
+mode 0 1
+stretchblt 0 2 7 -5 5 1 5 0 7 2 0xcc0020
+dump 0
+end
+case random-157
+dib 0 10 2 24
+fill 0 3304619393
+dib 1 10 5 1
+fill 1 4264063786
+mode 0 1
+stretchblt 0 8 1 2 2 1 5 3 3 2 0x330008
+dump 0
+end
+case random-158
+dib 0 5 2 4
+fill 0 2445095323
+dib 1 11 3 4
+fill 1 3924741794
+mode 0 4
+brush 0 solid #621a57
+stretchblt 0 -1 1 1 1 1 4 0 4 3 0xcc0020
+dump 0
+end
+case random-159
+dib 0 12 4 16 565
+fill 0 305562900
+dib 1 6 7 16 565
+fill 1 814105611
+mode 0 1
+stretchblt 0 5 1 1 -2 1 0 0 -6 7 0x3dafd1
+dump 0
+end
+case random-160
+dib 0 11 7 16
+fill 0 542214825
+dib 1 7 4 16
+fill 1 2185998103
+mode 0 4
+stretchblt 0 1 2 1 6 1 4 3 1 1 0x660046
+dump 0
+end
+case random-161
+dib 0 3 2 4
+fill 0 3291201463
+dib 1 4 6 4 bu
+fill 1 1267230608
+mode 0 2
+stretchblt 0 1 0 5 3 1 0 3 -3 6 0xcc0020
+dump 0
+end
+case random-162
+dib 0 4 5 24
+fill 0 3373554617
+dib 1 10 2 16
+fill 1 3763899060
+mode 0 4
+brush 0 solid #53264b
+stretchblt 0 2 2 1 7 1 6 0 7 4 0xcc0020
+dump 0
+end
+case random-163
+dib 0 8 3 4
+fill 0 3916959994
+dib 1 7 3 1
+fill 1 936655534
+mode 0 3
+stretchblt 0 1 0 4 3 1 4 1 9 4 0xcc0020
+dump 0
+end
+case random-164
+dib 0 4 3 32 bu
+fill 0 706256284
+dib 1 4 6 32 bu
+fill 1 1359064522
+mode 0 3
+stretchblt 0 1 -1 4 2 1 3 3 -2 4 0xcc0020
+dump 0
+end
+case random-165
+dib 0 2 5 1 bu
+fill 0 2512562310
+dib 1 2 6 1
+fill 1 3194457046
+mode 0 1
+brush 0 solid #cbc29e
+stretchblt 0 0 1 1 4 1 0 3 1 1 0xcc0020
+dump 0
+end
+case random-166
+dib 0 4 2 1 bu
+fill 0 775277581
+dib 1 10 8 1
+fill 1 676728828
+mode 0 1
+brush 0 solid #8ac4cb
+stretchblt 0 1 -1 3 4 1 7 6 5 6 0xcc0020
+dump 0
+end
+case random-167
+dib 0 3 8 32 bu
+fill 0 116288497
+dib 1 1 8 8
+fill 1 2456789762
+mode 0 2
+brush 0 solid #55c4fd
+stretchblt 0 2 5 2 9 1 0 7 1 10 0xcc0020
+dump 0
+end
+case random-168
+dib 0 6 8 24 bu
+fill 0 505581664
+dib 1 7 8 24 bu
+fill 1 464881570
+mode 0 3
+stretchblt 0 0 2 1 2 1 0 6 1 8 0xcc0020
+dump 0
+end
+case random-169
+dib 0 11 8 8
+fill 0 1466533214
+dib 1 6 5 8 bu
+fill 1 2135938316
+mode 0 4
+stretchblt 0 6 7 12 1 1 3 3 5 2 0x21675c
+dump 0
+end
+case random-170
+dib 0 5 3 4
+fill 0 315034993
+dib 1 5 3 4
+fill 1 506261442
+mode 0 1
+stretchblt 0 1 0 5 4 1 0 0 7 2 0x8ddfd1
+dump 0
+end
+case random-171
+dib 0 2 7 8
+fill 0 2879924289
+dib 1 10 1 24 bu
+fill 1 2898193751
+mode 0 2
+stretchblt 0 1 -1 3 5 1 7 0 4 1 0xcc0020
+dump 0
+end
+case random-172
+dib 0 7 1 4
+fill 0 1377723182
+dib 1 10 8 4 bu
+fill 1 96486135
+mode 0 1
+stretchblt 0 3 -1 5 1 1 0 4 9 6 0xcc0020
+dump 0
+end
+case random-173
+dib 0 10 5 8
+fill 0 1761520559
+dib 1 2 5 8 bu
+fill 1 1181769308
+mode 0 2
+brush 0 solid #d230a8
+stretchblt 0 2 2 8 6 1 0 0 4 6 0x550009
+dump 0
+end
+case random-174
+dib 0 3 1 24
+fill 0 2824719384
+dib 1 6 8 24
+fill 1 3386743829
+mode 0 3
+stretchblt 0 1 -1 5 1 1 5 5 8 9 0xcc0020
+dump 0
+end
+case random-175
+dib 0 8 6 8
+fill 0 3223192721
+dib 1 10 1 1 bu
+fill 1 3741710160
+mode 0 4
+stretchblt 0 4 5 2 3 1 2 0 9 2 0xcc0020
+dump 0
+end
+case random-176
+dib 0 12 2 24
+fill 0 4161379398
+dib 1 11 5 24 bu
+fill 1 726692897
+mode 0 4
+stretchblt 0 4 1 3 3 1 0 1 4 2 0xcc0020
+dump 0
+end
+case random-177
+dib 0 8 2 4
+fill 0 4139506638
+dib 1 2 4 4 bu
+fill 1 1486073191
+mode 0 1
+brush 0 solid #3d23cd
+stretchblt 0 5 -1 10 3 1 1 2 4 -4 0xcc0020
+dump 0
+end
+case random-178
+dib 0 8 3 1 bu
+fill 0 1675966538
+dib 1 3 8 1
+fill 1 3922206416
+mode 0 2
+stretchblt 0 3 -1 9 5 1 0 5 5 5 0x672164
+dump 0
+end
+case random-179
+dib 0 7 8 4
+fill 0 3398916322
+dib 1 12 3 4
+fill 1 2133478334
+mode 0 1
+brush 0 solid #24ca50
+stretchblt 0 1 5 5 8 1 9 2 13 5 0xcc0020
+dump 0
+end
+case random-180
+dib 0 3 7 1
+fill 0 2186524287
+dib 1 3 6 8 bu
+fill 1 422560956
+mode 0 1
+brush 0 solid #cf1cd2
+stretchblt 0 2 0 4 9 1 0 5 5 1 0xcc0020
+dump 0
+end
+case random-181
+dib 0 1 4 1
+fill 0 1374547237
+dib 1 2 2 1
+fill 1 1867491492
+mode 0 2
+brush 0 solid #002160
+stretchblt 0 -1 -1 1 5 1 0 0 1 1 0xcc0020
+dump 0
+end
+case random-182
+dib 0 7 8 16 bu 565
+fill 0 127235464
+dib 1 3 6 4 bu
+fill 1 814453071
+mode 0 3
+stretchblt 0 -1 3 -1 5 1 2 3 4 4 0x5a0049
+dump 0
+end
+case random-183
+dib 0 7 1 32
+fill 0 3870994339
+dib 1 7 8 4
+fill 1 1507011298
+mode 0 2
+stretchblt 0 3 -1 -7 1 1 3 1 6 8 0xcc0020
+dump 0
+end
+case random-184
+dib 0 12 4 16 565
+fill 0 1871303874
+dib 1 9 2 16 bu 565
+fill 1 19027657
+mode 0 1
+brush 0 solid #c4d4cb
+stretchblt 0 11 -1 10 6 1 4 0 11 -2 0xcc0020
+dump 0
+end
+case random-185
+dib 0 3 4 24
+fill 0 3553259237
+dib 1 5 8 24
+fill 1 3810789487
+mode 0 4
+stretchblt 0 1 -1 5 5 1 3 7 2 2 0xcc0020
+dump 0
+end
+case random-186
+dib 0 8 7 1 bu
+fill 0 3146681634
+dib 1 6 3 1 bu
+fill 1 2235926144
+mode 0 3
+stretchblt 0 1 -1 3 9 1 2 0 -3 5 0xcc0020
+dump 0
+end
+case random-187
+dib 0 2 7 8
+fill 0 1159434925
+dib 1 9 3 32
+fill 1 1338042091
+mode 0 2
+brush 0 solid #57b28a
+stretchblt 0 -1 4 2 8 1 0 2 4 3 0xcc0020
+dump 0
+end
+case random-188
+dib 0 6 1 8 bu
+fill 0 1551894851
+dib 1 3 7 24
+fill 1 1070294128
+mode 0 3
+brush 0 solid #adf757
+stretchblt 0 0 0 1 1 1 1 5 5 3 0x660046
+dump 0
+end
+case random-189
+dib 0 4 1 4 bu
+fill 0 2715735164
+dib 1 11 7 4
+fill 1 4190455103
+mode 0 3
+stretchblt 0 -1 0 4 2 1 3 6 3 2 0x660046
+dump 0
+end
+case random-190
+dib 0 10 2 16 bu
+fill 0 2369225273
+dib 1 5 1 16 bu 565
+fill 1 3961114266
+mode 0 4
+stretchblt 0 5 0 3 2 1 0 0 3 2 0xcc0020
+dump 0
+end
+case random-191
+dib 0 9 4 32
+fill 0 4117476280
+dib 1 7 3 32 bu
+fill 1 1973014776
+mode 0 4
+brush 0 solid #3a5062
+stretchblt 0 7 -1 1 6 1 5 0 7 1 0x3e7b2d
+dump 0
+end
+case random-192
+dib 0 8 2 1 bu
+fill 0 3362825910
+dib 1 3 7 1 bu
+fill 1 4145268594
+mode 0 1
+stretchblt 0 5 -1 5 2 1 2 1 1 9 0xcc0020
+dump 0
+end
+case random-193
+dib 0 8 3 1 bu
+fill 0 230063815
+dib 1 4 4 1 bu
+fill 1 1583714519
+mode 0 1
+stretchblt 0 5 -1 2 2 1 2 2 1 6 0xcc0020
+dump 0
+end
+case random-194
+dib 0 4 4 24
+fill 0 1371316733
+dib 1 8 2 24
+fill 1 979439104
+mode 0 1
+brush 0 solid #694da7
+stretchblt 0 0 -1 5 3 1 5 1 4 4 0xcc0020
+dump 0
+end
+case random-195
+dib 0 12 2 1 bu
+fill 0 2522652561
+dib 1 12 8 1
+fill 1 3422159010
+mode 0 2
+stretchblt 0 9 1 10 3 1 2 2 11 5 0xcc0020
+dump 0
+end
+case random-196
+dib 0 12 2 16 565
+fill 0 3432438712
+dib 1 9 5 16 565
+fill 1 2392897297
+mode 0 1
+stretchblt 0 5 0 10 4 1 3 3 4 6 0xcc0020
+dump 0
+end
+case random-197
+dib 0 10 1 32 bu
+fill 0 2145416114
+dib 1 10 5 24
+fill 1 1415472471
+mode 0 2
+stretchblt 0 4 0 6 1 1 1 3 -6 1 0xcc0020
+dump 0
+end
+case random-198
+dib 0 11 7 1
+fill 0 4272165611
+dib 1 4 2 1
+fill 1 4225109368
+mode 0 1
+brush 0 solid #feeb89
+stretchblt 0 9 1 3 9 1 2 1 -4 -1 0x42
+dump 0
+end
+case random-199
+dib 0 2 1 8
+fill 0 341251675
+dib 1 3 5 8
+fill 1 2374221760
+mode 0 2
+stretchblt 0 -1 0 2 2 1 2 4 1 1 0xcc0020
+dump 0
+end
+case random-200
+dib 0 8 7 8
+fill 0 3890602546
+dib 1 9 7 8
+fill 1 1441155346
+mode 0 1
+brush 0 solid #5b96e0
+stretchblt 0 7 6 4 7 1 7 2 7 2 0xcc0020
+dump 0
+end
+case random-201
+dib 0 2 1 8
+fill 0 1181057233
+dib 1 4 5 8
+fill 1 90644814
+mode 0 2
+brush 0 solid #498361
+stretchblt 0 1 0 2 2 1 2 4 5 4 0xcc0020
+dump 0
+end
+case random-202
+dib 0 10 6 24 bu
+fill 0 2125553817
+dib 1 11 8 32 bu
+fill 1 1915941075
+mode 0 4
+stretchblt 0 5 -1 6 5 1 10 4 4 6 0xcc0020
+dump 0
+end
+case random-203
+dib 0 6 7 16 bu
+fill 0 1925262987
+dib 1 11 3 16
+fill 1 2611397851
+mode 0 2
+stretchblt 0 1 0 -4 1 1 8 0 -3 -3 0x5a0049
+dump 0
+end
+case random-204
+dib 0 3 7 8 bu
+fill 0 1023994662
+dib 1 7 4 1
+fill 1 2682664180
+mode 0 1
+brush 0 solid #eb6305
+stretchblt 0 -1 5 5 5 1 4 2 -5 2 0xee0086
+dump 0
+end
+case random-205
+dib 0 7 6 8 bu
+fill 0 353597855
+dib 1 8 4 16 565
+fill 1 2879958339
+mode 0 4
+stretchblt 0 4 0 1 8 1 4 1 2 3 0xcc0020
+dump 0
+end
+case random-206
+dib 0 11 7 32 bu
+fill 0 3642247863
+dib 1 7 2 32
+fill 1 2065055506
+mode 0 1
+brush 0 solid #315a0c
+stretchblt 0 1 2 3 5 1 2 0 1 4 0xca5411
+dump 0
+end
+case random-207
+dib 0 8 2 8 bu
+fill 0 1336282102
+dib 1 2 1 1
+fill 1 2961112227
+mode 0 3
+stretchblt 0 3 1 1 1 1 0 0 2 3 0xcc0020
+dump 0
+end
+case random-208
+dib 0 12 3 16
+fill 0 3989493807
+dib 1 4 1 32 bu
+fill 1 3274416861
+mode 0 2
+brush 0 solid #3777b3
+stretchblt 0 5 1 9 -1 1 0 0 6 1 0xd39b9f
+dump 0
+end
+case random-209
+dib 0 6 4 32 bu
+fill 0 2469647359
+dib 1 2 8 32 bu
+fill 1 4232019292
+mode 0 3
+stretchblt 0 0 2 2 1 1 0 5 3 7 0xcc0020
+dump 0
+end
+case random-210
+dib 0 5 2 16 565
+fill 0 3467583542
+dib 1 1 8 32
+fill 1 47791131
+mode 0 3
+stretchblt 0 -1 1 6 4 1 0 3 3 -3 0xc000ca
+dump 0
+end
+case random-211
+dib 0 8 8 1 bu
+fill 0 1069799329
+dib 1 12 5 1
+fill 1 4257252315
+mode 0 3
+stretchblt 0 5 0 2 4 1 5 2 13 6 0xcc0020
+dump 0
+end
+case random-212
+dib 0 2 5 4
+fill 0 1645702511
+dib 1 3 7 4
+fill 1 1690759372
+mode 0 4
+brush 0 solid #9bae01
+stretchblt 0 -1 0 1 3 1 2 5 2 6 0xcc0020
+dump 0
+end
+case random-213
+dib 0 6 2 8 bu
+fill 0 3541841275
+dib 1 3 8 16 565
+fill 1 650028274
+mode 0 3
+stretchblt 0 2 1 8 3 1 0 6 5 4 0xf00021
+dump 0
+end
+case random-214
+dib 0 5 7 1
+fill 0 3965965787
+dib 1 4 3 16 565
+fill 1 2977831441
+mode 0 4
+stretchblt 0 3 1 5 7 1 1 1 5 -3 0xcc0020
+dump 0
+end
+case random-215
+dib 0 2 3 1
+fill 0 3081471682
+dib 1 2 8 4
+fill 1 3234187545
+mode 0 3
+stretchblt 0 -1 0 4 -2 1 0 2 1 4 0xcc0020
+dump 0
+end
+case random-216
+dib 0 10 4 1
+fill 0 1402162708
+dib 1 2 4 8
+fill 1 3648704386
+mode 0 4
+brush 0 solid #179dae
+stretchblt 0 4 1 2 2 1 0 1 1 5 0x11ff86
+dump 0
+end
+case random-217
+dib 0 12 8 32
+fill 0 87777026
+dib 1 9 7 32
+fill 1 1357929480
+mode 0 1
+brush 0 solid #2ece7c
+stretchblt 0 1 6 2 1 1 3 4 7 5 0xcc0020
+dump 0
+end
+case random-218
+dib 0 10 5 1
+fill 0 3924278620
+dib 1 1 6 1 bu
+fill 1 2512605324
+mode 0 2
+brush 0 solid #03033b
+stretchblt 0 2 1 4 3 1 0 0 2 6 0xcc0020
+dump 0
+end
+case random-219
+dib 0 2 8 1 bu
+fill 0 99418006
+dib 1 1 7 1
+fill 1 1628079626
+mode 0 4
+stretchblt 0 1 6 3 5 1 0 6 3 6 0x643d4f
+dump 0
+end
+case random-220
+dib 0 4 4 16
+fill 0 1684593394
+dib 1 7 6 16
+fill 1 3313746876
+mode 0 3
+stretchblt 0 -1 -1 4 4 1 3 1 8 7 0xcc0020
+dump 0
+end
+case random-221
+dib 0 1 8 1
+fill 0 173214853
+dib 1 3 5 1
+fill 1 2760563490
+mode 0 2
+stretchblt 0 -1 2 3 -4 1 0 0 -3 4 0xcc0020
+dump 0
+end
+case random-222
+dib 0 7 6 32
+fill 0 11767036
+dib 1 6 2 32
+fill 1 1920001357
+mode 0 2
+stretchblt 0 0 2 1 8 1 2 0 5 1 0xcc0020
+dump 0
+end
+case random-223
+dib 0 8 1 24
+fill 0 363769869
+dib 1 9 6 1
+fill 1 2103109491
+mode 0 2
+brush 0 solid #231aac
+stretchblt 0 4 0 5 2 1 2 2 7 8 0x330008
+dump 0
+end
+case random-224
+dib 0 10 1 24
+fill 0 1038262800
+dib 1 5 8 24
+fill 1 2569198165
+mode 0 2
+brush 0 solid #ef836b
+stretchblt 0 4 -1 3 2 1 0 5 5 1 0xff0062
+dump 0
+end
+case random-225
+dib 0 5 1 32 bu
+fill 0 2200137643
+dib 1 12 4 1
+fill 1 405599424
+mode 0 3
+brush 0 solid #8b1fce
+stretchblt 0 3 -1 1 -1 1 2 2 2 -3 0xcc0020
+dump 0
+end
+case random-226
+dib 0 9 6 1 bu
+fill 0 2916352344
+dib 1 3 7 1
+fill 1 3772226525
+mode 0 4
+stretchblt 0 1 2 8 -5 1 0 6 3 2 0xcc0020
+dump 0
+end
+case random-227
+dib 0 8 2 8
+fill 0 465328921
+dib 1 2 8 32 bu
+fill 1 2977330129
+mode 0 4
+stretchblt 0 0 1 5 3 1 0 1 1 2 0xcc0020
+dump 0
+end
+case random-228
+dib 0 1 4 1
+fill 0 4241958703
+dib 1 10 5 32
+fill 1 293493660
+mode 0 3
+stretchblt 0 -1 -1 3 5 1 3 1 11 4 0x7aae60
+dump 0
+end
+case random-229
+dib 0 2 1 16
+fill 0 502634662
+dib 1 10 1 16 bu
+fill 1 3760351175
+mode 0 3
+stretchblt 0 1 0 1 2 1 8 0 9 2 0xff0062
+dump 0
+end
+case random-230
+dib 0 4 2 24
+fill 0 1031388348
+dib 1 4 6 24
+fill 1 2427927957
+mode 0 4
+stretchblt 0 0 -1 5 1 1 3 5 1 5 0xcc0020
+dump 0
+end
+case random-231
+dib 0 3 3 16 bu 565
+fill 0 1354367091
+dib 1 9 2 16 565
+fill 1 1486045285
+mode 0 3
+stretchblt 0 2 2 -1 2 1 7 0 7 4 0xcc0020
+dump 0
+end
+case random-232
+dib 0 12 2 8 bu
+fill 0 925344231
+dib 1 3 2 4
+fill 1 4271093543
+mode 0 1
+brush 0 solid #0938c1
+stretchblt 0 1 1 6 2 1 2 0 1 2 0x1100a6
+dump 0
+end
+case random-233
+dib 0 4 7 4
+fill 0 196983875
+dib 1 2 5 16 bu
+fill 1 4143955244
+mode 0 2
+stretchblt 0 3 2 5 8 1 1 2 4 2 0xff0062
+dump 0
+end
+case random-234
+dib 0 10 5 16 565
+fill 0 4010817872
+dib 1 5 7 16 bu 565
+fill 1 3996102234
+mode 0 1
+brush 0 solid #9fb0a9
+stretchblt 0 -1 -1 4 6 1 1 0 5 3 0xcc0020
+dump 0
+end
+case random-235
+dib 0 10 5 1 bu
+fill 0 168646543
+dib 1 11 1 16 565
+fill 1 924227708
+mode 0 1
+stretchblt 0 9 3 5 3 1 4 0 3 3 0x90ffd4
+dump 0
+end
+case random-236
+dib 0 9 2 16 bu 565
+fill 0 3338942503
+dib 1 9 2 16 bu 565
+fill 1 1332683652
+mode 0 4
+stretchblt 0 5 -1 8 2 1 6 0 1 4 0xcc0020
+dump 0
+end
+case random-237
+dib 0 2 6 16 565
+fill 0 3679106800
+dib 1 5 3 16 565
+fill 1 1565881992
+mode 0 3
+stretchblt 0 1 2 4 6 1 0 0 7 5 0xcc0020
+dump 0
+end
+case random-238
+dib 0 10 5 24
+fill 0 2985426289
+dib 1 12 5 24
+fill 1 745583729
+mode 0 3
+brush 0 solid #22a7cb
+stretchblt 0 5 4 9 -4 1 3 0 6 2 0xcc0020
+dump 0
+end
+case random-239
+dib 0 1 5 32 bu
+fill 0 3586630873
+dib 1 6 4 16 bu 565
+fill 1 4195308921
+mode 0 2
+stretchblt 0 -1 -1 3 3 1 4 1 6 2 0xd986c0
+dump 0
+end
+case random-240
+dib 0 1 7 16 565
+fill 0 2888785822
+dib 1 3 3 16 565
+fill 1 2595139890
+mode 0 3
+brush 0 solid #e3529b
+stretchblt 0 0 3 2 7 1 2 0 1 4 0xcc0020
+dump 0
+end
+case random-241
+dib 0 6 7 8
+fill 0 240771980
+dib 1 6 8 1 bu
+fill 1 3499651794
+mode 0 4
+brush 0 solid #68b71c
+stretchblt 0 5 -1 5 5 1 4 5 2 7 0xcc0020
+dump 0
+end
+case random-242
+dib 0 8 7 32
+fill 0 1072598825
+dib 1 6 7 32 bu
+fill 1 2892873230
+mode 0 1
+brush 0 solid #a5aa15
+stretchblt 0 1 1 5 6 1 1 3 5 -7 0xcc0020
+dump 0
+end
+case random-243
+dib 0 12 2 1
+fill 0 1369394600
+dib 1 2 1 8 bu
+fill 1 2362475464
+mode 0 1
+stretchblt 0 0 -1 14 3 1 0 0 3 1 0xcc0020
+dump 0
+end
+case random-244
+dib 0 6 8 1
+fill 0 3196139162
+dib 1 2 6 1 bu
+fill 1 3463278996
+mode 0 4
+stretchblt 0 3 1 4 2 1 0 5 2 6 0xc3f8b5
+dump 0
+end
+case random-245
+dib 0 6 1 8
+fill 0 1260839354
+dib 1 7 4 1 bu
+fill 1 4109441091
+mode 0 4
+stretchblt 0 2 -1 7 1 1 5 1 1 5 0xcc0020
+dump 0
+end
+case random-246
+dib 0 4 2 16
+fill 0 1953165502
+dib 1 11 6 16 565
+fill 1 3126753460
+mode 0 1
+stretchblt 0 -1 0 6 1 1 3 2 4 4 0xcc0020
+dump 0
+end
+case random-247
+dib 0 2 5 16
+fill 0 11688173
+dib 1 6 8 24 bu
+fill 1 2457287703
+mode 0 2
+stretchblt 0 0 0 2 6 1 3 4 1 10 0xcc0020
+dump 0
+end
+case random-248
+dib 0 7 8 32
+fill 0 870805633
+dib 1 6 3 32 bu
+fill 1 3687218049
+mode 0 3
+stretchblt 0 5 5 1 2 1 0 2 2 -1 0xcc0020
+dump 0
+end
+case random-249
+dib 0 12 5 16 565
+fill 0 198063582
+dib 1 10 4 16 565
+fill 1 459083481
+mode 0 3
+stretchblt 0 -1 2 9 7 1 1 0 11 3 0xcc0020
+dump 0
+end

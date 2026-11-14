@@ -66,6 +66,10 @@ sake `node sake.js` (tests/winref/run.sh) and its browser runner for the GPU sui
 * `gdi`: PatBlt and BitBlt into DIB sections of 1, 4, 8, 16 (5-5-5 and 5-6-5), 24 and 32 bpp,
   all 256 ternary raster operations, solid / hatch / DIB pattern / null brushes, brush origin,
   IntersectClipRect, format conversion, overlap, borders.
+* `stretch`: StretchBlt in the four stretch modes, every 1..12 to 1..12 scale of a row and a
+  column, random formats / extents (mirroring) / operations.
+* `pixel`: SetPixel / GetPixel (clipping, out of bounds) and GetDIBits / SetDIBits between every
+  pair of formats.
 * `d3d9`: Direct3D 9 render, texture stage and sampler states (defaults, Set/Get of every
   state), state blocks (D3DSBT_ALL / PIXELSTATE / VERTEXSTATE, recording, Capture, Apply).
 

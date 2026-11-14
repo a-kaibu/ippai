@@ -1,0 +1,708 @@
+# wingfx suite pixel: SetPixel, GetPixel, GetDIBits and SetDIBits between formats (SPEC.md). Made by `wingfx gen pixel`.
+case pixel-1
+dib 0 6 3 1
+fill 0 3990368064
+getpixel 0 0 0
+getpixel 0 1 0
+getpixel 0 2 0
+getpixel 0 3 0
+getpixel 0 4 0
+getpixel 0 5 0
+getpixel 0 0 1
+getpixel 0 1 1
+getpixel 0 2 1
+getpixel 0 3 1
+getpixel 0 4 1
+getpixel 0 5 1
+getpixel 0 0 2
+getpixel 0 1 2
+getpixel 0 2 2
+getpixel 0 3 2
+getpixel 0 4 2
+getpixel 0 5 2
+setpixel 0 -1 -1 #f95672
+setpixel 0 0 3 #000000
+setpixel 0 4 3 #000000
+setpixel 0 5 2 #7f7f7f
+setpixel 0 3 2 #ffffff
+setpixel 0 4 2 #fa5235
+setpixel 0 2 2 #57f13d
+setpixel 0 4 -1 #384a1e
+setpixel 0 2 0 #d99aca
+setpixel 0 1 2 #26dbd5
+setpixel 0 2 0 #a11ccf
+setpixel 0 2 2 #000000
+setpixel 0 4 0 #00e497
+setpixel 0 5 -1 #55d1ee
+setpixel 0 1 -1 #d6e232
+setpixel 0 1 1 #ffffff
+setpixel 0 6 2 #ffffff
+setpixel 0 -1 1 #a9b3e5
+setpixel 0 6 0 #00ff00
+setpixel 0 6 1 #aae1e1
+setpixel 0 1 -1 #715782
+setpixel 0 1 -1 #576e38
+setpixel 0 -1 3 #0af6c6
+setpixel 0 6 -1 #7f7f7f
+clip 0 1 1 4 2
+getpixel 0 0 0
+getpixel 0 2 1
+setpixel 0 0 0 #ffffff
+setpixel 0 3 1 #000000
+dump 0
+end
+case pixel-4
+dib 0 6 3 4
+fill 0 2240660077
+getpixel 0 0 0
+getpixel 0 1 0
+getpixel 0 2 0
+getpixel 0 3 0
+getpixel 0 4 0
+getpixel 0 5 0
+getpixel 0 0 1
+getpixel 0 1 1
+getpixel 0 2 1
+getpixel 0 3 1
+getpixel 0 4 1
+getpixel 0 5 1
+getpixel 0 0 2
+getpixel 0 1 2
+getpixel 0 2 2
+getpixel 0 3 2
+getpixel 0 4 2
+getpixel 0 5 2
+setpixel 0 4 3 #e0c846
+setpixel 0 1 3 #9aec8f
+setpixel 0 1 3 #f1f983
+setpixel 0 2 3 #5a2c75
+setpixel 0 6 2 #a83093
+setpixel 0 5 -1 #bbfd98
+setpixel 0 3 3 #b9b359
+setpixel 0 -1 1 #ffffff
+setpixel 0 3 -1 #9c73b0
+setpixel 0 4 0 #e63d35
+setpixel 0 4 2 #b728e1
+setpixel 0 3 1 #000000
+setpixel 0 2 1 #0000ff
+setpixel 0 5 1 #eeda39
+setpixel 0 4 -1 #00fbf6
+setpixel 0 0 2 #90bff8
+setpixel 0 6 1 #9d03cb
+setpixel 0 0 -1 #8d6589
+setpixel 0 6 3 #ffffff
+setpixel 0 1 2 #000000
+setpixel 0 3 2 #df40fc
+setpixel 0 3 1 #ee24bc
+setpixel 0 -1 1 #ff0000
+setpixel 0 -1 3 #d0bf7b
+clip 0 1 1 4 2
+getpixel 0 0 0
+getpixel 0 2 1
+setpixel 0 0 0 #ffffff
+setpixel 0 3 1 #000000
+dump 0
+end
+case pixel-8
+dib 0 6 3 8 bu
+fill 0 4155946032
+getpixel 0 0 0
+getpixel 0 1 0
+getpixel 0 2 0
+getpixel 0 3 0
+getpixel 0 4 0
+getpixel 0 5 0
+getpixel 0 0 1
+getpixel 0 1 1
+getpixel 0 2 1
+getpixel 0 3 1
+getpixel 0 4 1
+getpixel 0 5 1
+getpixel 0 0 2
+getpixel 0 1 2
+getpixel 0 2 2
+getpixel 0 3 2
+getpixel 0 4 2
+getpixel 0 5 2
+setpixel 0 -1 2 #9191ff
+setpixel 0 3 3 #40cdb4
+setpixel 0 6 0 #c1a19c
+setpixel 0 4 1 #6db6ff
+setpixel 0 3 -1 #82dae9
+setpixel 0 5 1 #808080
+setpixel 0 6 2 #750c62
+setpixel 0 5 2 #000000
+setpixel 0 -1 -1 #1a7b1f
+setpixel 0 2 1 #be4ad5
+setpixel 0 6 3 #4891aa
+setpixel 0 2 0 #2db136
+setpixel 0 2 2 #ffffff
+setpixel 0 1 0 #127553
+setpixel 0 6 -1 #dc64f5
+setpixel 0 3 3 #ffffff
+setpixel 0 3 2 #0000ff
+setpixel 0 4 0 #4a971d
+setpixel 0 0 0 #6c5a08
+setpixel 0 5 0 #808080
+setpixel 0 -1 1 #da9100
+setpixel 0 5 3 #249100
+setpixel 0 0 3 #7f7f7f
+setpixel 0 -1 3 #910000
+clip 0 1 1 4 2
+getpixel 0 0 0
+getpixel 0 2 1
+setpixel 0 0 0 #ffffff
+setpixel 0 3 1 #000000
+dump 0
+end
+case pixel-16
+dib 0 6 3 16
+fill 0 123538479
+getpixel 0 0 0
+getpixel 0 1 0
+getpixel 0 2 0
+getpixel 0 3 0
+getpixel 0 4 0
+getpixel 0 5 0
+getpixel 0 0 1
+getpixel 0 1 1
+getpixel 0 2 1
+getpixel 0 3 1
+getpixel 0 4 1
+getpixel 0 5 1
+getpixel 0 0 2
+getpixel 0 1 2
+getpixel 0 2 2
+getpixel 0 3 2
+getpixel 0 4 2
+getpixel 0 5 2
+setpixel 0 2 3 #40cbca
+setpixel 0 5 0 #fefcc5
+setpixel 0 5 0 #000000
+setpixel 0 6 -1 #2d3156
+setpixel 0 4 2 #685676
+setpixel 0 4 1 #3d8f40
+setpixel 0 1 -1 #2e220f
+setpixel 0 -1 2 #0d36c3
+setpixel 0 0 3 #c44a6c
+setpixel 0 -1 1 #9d85f4
+setpixel 0 4 0 #95f373
+setpixel 0 5 2 #1824f3
+setpixel 0 -1 0 #5bf7da
+setpixel 0 1 2 #c15887
+setpixel 0 6 2 #3a7871
+setpixel 0 2 -1 #157b65
+setpixel 0 0 3 #63650d
+setpixel 0 3 -1 #511a4d
+setpixel 0 0 1 #fc3da2
+setpixel 0 5 0 #163884
+setpixel 0 6 0 #000000
+setpixel 0 6 1 #fc5cef
+setpixel 0 6 2 #1b2039
+setpixel 0 6 2 #54d0d4
+clip 0 1 1 4 2
+getpixel 0 0 0
+getpixel 0 2 1
+setpixel 0 0 0 #ffffff
+setpixel 0 3 1 #000000
+dump 0
+end
+case pixel-16565
+dib 0 6 3 16 565
+fill 0 2590251858
+getpixel 0 0 0
+getpixel 0 1 0
+getpixel 0 2 0
+getpixel 0 3 0
+getpixel 0 4 0
+getpixel 0 5 0
+getpixel 0 0 1
+getpixel 0 1 1
+getpixel 0 2 1
+getpixel 0 3 1
+getpixel 0 4 1
+getpixel 0 5 1
+getpixel 0 0 2
+getpixel 0 1 2
+getpixel 0 2 2
+getpixel 0 3 2
+getpixel 0 4 2
+getpixel 0 5 2
+setpixel 0 4 -1 #a7c9b5
+setpixel 0 4 3 #7f7f7f
+setpixel 0 2 3 #c4ec09
+setpixel 0 2 -1 #52c4cd
+setpixel 0 -1 3 #447dd2
+setpixel 0 4 2 #c424f4
+setpixel 0 0 -1 #53523e
+setpixel 0 3 0 #293efa
+setpixel 0 0 0 #2ff3b2
+setpixel 0 5 1 #45e4a6
+setpixel 0 5 1 #92289c
+setpixel 0 3 0 #8eba5b
+setpixel 0 0 2 #ff0000
+setpixel 0 0 0 #b88fc4
+setpixel 0 3 2 #99cf4c
+setpixel 0 3 -1 #f9b993
+setpixel 0 5 2 #ee1be8
+setpixel 0 0 0 #21db5d
+setpixel 0 -1 2 #000000
+setpixel 0 1 2 #343b1f
+setpixel 0 3 0 #ce9f68
+setpixel 0 0 -1 #808080
+setpixel 0 1 2 #2ab8fe
+setpixel 0 3 3 #033986
+clip 0 1 1 4 2
+getpixel 0 0 0
+getpixel 0 2 1
+setpixel 0 0 0 #ffffff
+setpixel 0 3 1 #000000
+dump 0
+end
+case pixel-24
+dib 0 6 3 24 bu
+fill 0 1244642561
+getpixel 0 0 0
+getpixel 0 1 0
+getpixel 0 2 0
+getpixel 0 3 0
+getpixel 0 4 0
+getpixel 0 5 0
+getpixel 0 0 1
+getpixel 0 1 1
+getpixel 0 2 1
+getpixel 0 3 1
+getpixel 0 4 1
+getpixel 0 5 1
+getpixel 0 0 2
+getpixel 0 1 2
+getpixel 0 2 2
+getpixel 0 3 2
+getpixel 0 4 2
+getpixel 0 5 2
+setpixel 0 5 -1 #00ff00
+setpixel 0 2 2 #41c3dd
+setpixel 0 -1 0 #ef8917
+setpixel 0 0 2 #0000ff
+setpixel 0 1 0 #a2fef1
+setpixel 0 6 3 #62e2d3
+setpixel 0 6 3 #fdacf7
+setpixel 0 5 1 #25b587
+setpixel 0 4 3 #7f7f7f
+setpixel 0 -1 1 #e5b271
+setpixel 0 3 3 #5b0317
+setpixel 0 2 3 #e5d130
+setpixel 0 0 1 #74f7f1
+setpixel 0 3 0 #31b088
+setpixel 0 -1 1 #52a50a
+setpixel 0 2 1 #4b1812
+setpixel 0 5 0 #0000ff
+setpixel 0 5 0 #ff0000
+setpixel 0 4 0 #51043f
+setpixel 0 3 0 #5c1a31
+setpixel 0 3 -1 #ffffff
+setpixel 0 3 1 #1d9f1b
+setpixel 0 3 -1 #9df091
+setpixel 0 5 0 #67ec1f
+clip 0 1 1 4 2
+getpixel 0 0 0
+getpixel 0 2 1
+setpixel 0 0 0 #ffffff
+setpixel 0 3 1 #000000
+dump 0
+end
+case pixel-32
+dib 0 6 3 32 bu
+fill 0 1523576478
+getpixel 0 0 0
+getpixel 0 1 0
+getpixel 0 2 0
+getpixel 0 3 0
+getpixel 0 4 0
+getpixel 0 5 0
+getpixel 0 0 1
+getpixel 0 1 1
+getpixel 0 2 1
+getpixel 0 3 1
+getpixel 0 4 1
+getpixel 0 5 1
+getpixel 0 0 2
+getpixel 0 1 2
+getpixel 0 2 2
+getpixel 0 3 2
+getpixel 0 4 2
+getpixel 0 5 2
+setpixel 0 -1 2 #7f6b6b
+setpixel 0 1 -1 #51320f
+setpixel 0 6 1 #0000ff
+setpixel 0 5 2 #899157
+setpixel 0 5 0 #d49da2
+setpixel 0 1 2 #b1d5a9
+setpixel 0 2 0 #c5532f
+setpixel 0 6 -1 #e7cca9
+setpixel 0 -1 1 #378ef9
+setpixel 0 4 1 #8d0300
+setpixel 0 5 3 #7f7f7f
+setpixel 0 4 2 #ee74b3
+setpixel 0 6 3 #03249a
+setpixel 0 1 -1 #75fa1f
+setpixel 0 3 -1 #deea78
+setpixel 0 -1 1 #0c7142
+setpixel 0 -1 2 #a67ab9
+setpixel 0 0 0 #332ddf
+setpixel 0 2 2 #ff0000
+setpixel 0 5 0 #af013d
+setpixel 0 0 3 #f1a973
+setpixel 0 3 2 #10209c
+setpixel 0 4 2 #bd1cbb
+setpixel 0 5 3 #895284
+clip 0 1 1 4 2
+getpixel 0 0 0
+getpixel 0 2 1
+setpixel 0 0 0 #ffffff
+setpixel 0 3 1 #000000
+dump 0
+end
+case dibits-1-1
+dib 0 7 3 1
+fill 0 2168334198
+getdibits 0 1
+setdibits 0 1 4291327582
+dump 0
+end
+case dibits-1-4
+dib 0 7 3 1
+fill 0 3899270897
+getdibits 0 4
+setdibits 0 4 977159627
+dump 0
+end
+case dibits-1-8
+dib 0 7 3 1
+fill 0 1080548518
+getdibits 0 8
+setdibits 0 8 3315296959
+dump 0
+end
+case dibits-1-16
+dib 0 7 3 1
+fill 0 1827253421
+getdibits 0 16
+setdibits 0 16 1995973235
+dump 0
+end
+case dibits-1-16565
+dib 0 7 3 1
+fill 0 4030702390
+getdibits 0 16 565
+setdibits 0 16 565 2406826586
+dump 0
+end
+case dibits-1-24
+dib 0 7 3 1
+fill 0 4291156525
+getdibits 0 24
+setdibits 0 24 3565901261
+dump 0
+end
+case dibits-1-32
+dib 0 7 3 1
+fill 0 1271619362
+getdibits 0 32
+setdibits 0 32 634317205
+dump 0
+end
+case dibits-4-1
+dib 0 7 3 4
+fill 0 2065548414
+getdibits 0 1
+setdibits 0 1 2984170327
+dump 0
+end
+case dibits-4-4
+dib 0 7 3 4
+fill 0 2113383525
+getdibits 0 4
+setdibits 0 4 2266121048
+dump 0
+end
+case dibits-4-8
+dib 0 7 3 4
+fill 0 2105477708
+getdibits 0 8
+setdibits 0 8 451825335
+dump 0
+end
+case dibits-4-16
+dib 0 7 3 4 bu
+fill 0 3175765407
+getdibits 0 16
+setdibits 0 16 146801155
+dump 0
+end
+case dibits-4-16565
+dib 0 7 3 4
+fill 0 609851495
+getdibits 0 16 565
+setdibits 0 16 565 4261087853
+dump 0
+end
+case dibits-4-24
+dib 0 7 3 4
+fill 0 2158279788
+getdibits 0 24
+setdibits 0 24 4061120760
+dump 0
+end
+case dibits-4-32
+dib 0 7 3 4
+fill 0 3918494115
+getdibits 0 32
+setdibits 0 32 3520611646
+dump 0
+end
+case dibits-8-1
+dib 0 7 3 8
+fill 0 459489338
+getdibits 0 1
+setdibits 0 1 534972552
+dump 0
+end
+case dibits-8-4
+dib 0 7 3 8 bu
+fill 0 139483094
+getdibits 0 4
+setdibits 0 4 1475888867
+dump 0
+end
+case dibits-8-8
+dib 0 7 3 8
+fill 0 4138604086
+getdibits 0 8
+setdibits 0 8 3111210050
+dump 0
+end
+case dibits-8-16
+dib 0 7 3 8 bu
+fill 0 1113939209
+getdibits 0 16
+setdibits 0 16 3510973579
+dump 0
+end
+case dibits-8-16565
+dib 0 7 3 8 bu
+fill 0 453920505
+getdibits 0 16 565
+setdibits 0 16 565 2851138865
+dump 0
+end
+case dibits-8-24
+dib 0 7 3 8
+fill 0 2984437757
+getdibits 0 24
+setdibits 0 24 1320886035
+dump 0
+end
+case dibits-8-32
+dib 0 7 3 8
+fill 0 3125323904
+getdibits 0 32
+setdibits 0 32 1145510572
+dump 0
+end
+case dibits-16-1
+dib 0 7 3 16
+fill 0 663842552
+getdibits 0 1
+setdibits 0 1 1132662847
+dump 0
+end
+case dibits-16-4
+dib 0 7 3 16
+fill 0 3499646116
+getdibits 0 4
+setdibits 0 4 3130692962
+dump 0
+end
+case dibits-16-8
+dib 0 7 3 16
+fill 0 1511508077
+getdibits 0 8
+setdibits 0 8 3227321824
+dump 0
+end
+case dibits-16-16
+dib 0 7 3 16
+fill 0 177074378
+getdibits 0 16
+setdibits 0 16 638171776
+dump 0
+end
+case dibits-16-16565
+dib 0 7 3 16 bu
+fill 0 1473817025
+getdibits 0 16 565
+setdibits 0 16 565 519421585
+dump 0
+end
+case dibits-16-24
+dib 0 7 3 16 bu
+fill 0 3460982057
+getdibits 0 24
+setdibits 0 24 3742338974
+dump 0
+end
+case dibits-16-32
+dib 0 7 3 16
+fill 0 612518581
+getdibits 0 32
+setdibits 0 32 3612301247
+dump 0
+end
+case dibits-16565-1
+dib 0 7 3 16 bu 565
+fill 0 2075326629
+getdibits 0 1
+setdibits 0 1 2960069686
+dump 0
+end
+case dibits-16565-4
+dib 0 7 3 16 565
+fill 0 1807253657
+getdibits 0 4
+setdibits 0 4 249050316
+dump 0
+end
+case dibits-16565-8
+dib 0 7 3 16 565
+fill 0 1318102945
+getdibits 0 8
+setdibits 0 8 384956659
+dump 0
+end
+case dibits-16565-16
+dib 0 7 3 16 565
+fill 0 1683107363
+getdibits 0 16
+setdibits 0 16 324895720
+dump 0
+end
+case dibits-16565-16565
+dib 0 7 3 16 bu 565
+fill 0 103756146
+getdibits 0 16 565
+setdibits 0 16 565 3760271154
+dump 0
+end
+case dibits-16565-24
+dib 0 7 3 16 565
+fill 0 3502277053
+getdibits 0 24
+setdibits 0 24 3726604550
+dump 0
+end
+case dibits-16565-32
+dib 0 7 3 16 565
+fill 0 4144799255
+getdibits 0 32
+setdibits 0 32 4245144176
+dump 0
+end
+case dibits-24-1
+dib 0 7 3 24
+fill 0 1884891369
+getdibits 0 1
+setdibits 0 1 4257245995
+dump 0
+end
+case dibits-24-4
+dib 0 7 3 24
+fill 0 2005896377
+getdibits 0 4
+setdibits 0 4 1157962005
+dump 0
+end
+case dibits-24-8
+dib 0 7 3 24
+fill 0 2202031013
+getdibits 0 8
+setdibits 0 8 2946650335
+dump 0
+end
+case dibits-24-16
+dib 0 7 3 24
+fill 0 997700517
+getdibits 0 16
+setdibits 0 16 1835913636
+dump 0
+end
+case dibits-24-16565
+dib 0 7 3 24
+fill 0 2432651879
+getdibits 0 16 565
+setdibits 0 16 565 750938366
+dump 0
+end
+case dibits-24-24
+dib 0 7 3 24
+fill 0 2897677894
+getdibits 0 24
+setdibits 0 24 3800233945
+dump 0
+end
+case dibits-24-32
+dib 0 7 3 24
+fill 0 2581655829
+getdibits 0 32
+setdibits 0 32 2139114612
+dump 0
+end
+case dibits-32-1
+dib 0 7 3 32 bu
+fill 0 716590634
+getdibits 0 1
+setdibits 0 1 2367458803
+dump 0
+end
+case dibits-32-4
+dib 0 7 3 32
+fill 0 442345091
+getdibits 0 4
+setdibits 0 4 2134878565
+dump 0
+end
+case dibits-32-8
+dib 0 7 3 32
+fill 0 2561028143
+getdibits 0 8
+setdibits 0 8 2329678014
+dump 0
+end
+case dibits-32-16
+dib 0 7 3 32
+fill 0 813711512
+getdibits 0 16
+setdibits 0 16 720946929
+dump 0
+end
+case dibits-32-16565
+dib 0 7 3 32
+fill 0 2267051108
+getdibits 0 16 565
+setdibits 0 16 565 3157960434
+dump 0
+end
+case dibits-32-24
+dib 0 7 3 32 bu
+fill 0 2835105523
+getdibits 0 24
+setdibits 0 24 610593442
+dump 0
+end
+case dibits-32-32
+dib 0 7 3 32
+fill 0 2032853690
+getdibits 0 32
+setdibits 0 32 2328604804
+dump 0
+end

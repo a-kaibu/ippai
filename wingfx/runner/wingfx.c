@@ -251,6 +251,93 @@ static void op_bitblt(void) {
     out("ret %d\n", r ? 1 : 0);
 }
 
+/* stretchblt <d> <x> <y> <w> <h> <s> <sx> <sy> <sw> <sh> <rop> */
+static void op_stretchblt(void) {
+    struct slot *d = slot(1);
+    int x = num(2), y = num(3), w = num(4), h = num(5);
+    struct slot *s = slot(6);
+    int sx = num(7), sy = num(8), sw = num(9), sh = num(10);
+    DWORD rop = (DWORD)num(11);
+    if (bad) return;
+    BOOL r = StretchBlt(d->dc, x, y, w, h, s->dc, sx, sy, sw, sh, rop);
+    out("ret %d\n", r ? 1 : 0);
+}
+
+static void print_color(const char *what, COLORREF c) {
+    if (c == CLR_INVALID) out("%s invalid\n", what);
+    else out("%s %02x%02x%02x\n", what, GetRValue(c), GetGValue(c), GetBValue(c));
+}
+
+/* a top-down BITMAPINFO of w x h at <bpp> [565] (color table: the default one, SPEC.md) */
+typedef struct { BITMAPINFOHEADER h; union { RGBQUAD pal[256]; DWORD masks[3]; } u; } BI;
+static void make_bi(BI *bi, int w, int h, int bpp, int f565) {
+    memset(bi, 0, sizeof(*bi));
+    bi->h.biSize = sizeof(bi->h);
+    bi->h.biWidth = w;
+    bi->h.biHeight = -h;
+    bi->h.biPlanes = 1;
+    bi->h.biBitCount = bpp;
+    bi->h.biCompression = f565 ? BI_BITFIELDS : BI_RGB;
+    if (f565) { bi->u.masks[0] = 0xf800; bi->u.masks[1] = 0x07e0; bi->u.masks[2] = 0x001f; }
+    if (bpp <= 8) { default_palette(bpp, bi->u.pal); bi->h.biClrUsed = 1 << bpp; }
+}
+
+/* getdibits <s> <bpp> [565]: GetDIBits of the slot's bitmap (deselected meanwhile) as a
+ * top-down DIB of that format: "dibits <lines>", for bpp <= 8 "pal" and the table GetDIBits
+ * wrote, then the rows as dump prints them */
+static void op_getdibits(void) {
+    struct slot *s = slot(1);
+    int bpp = num(2), f565 = is(3, "565");
+    if (bad) return;
+    BI bi;
+    make_bi(&bi, s->w, s->h, bpp, f565);
+    int stride = ((s->w * bpp + 31) / 32) * 4;
+    unsigned char *buf = calloc(1, stride * s->h);
+    SelectObject(s->dc, s->oldbmp);
+    int n = GetDIBits(s->dc, s->bmp, 0, s->h, buf, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
+    SelectObject(s->dc, s->bmp);
+    out("dibits %d\n", n);
+    if (bpp <= 8) {
+        out("pal");
+        for (int i = 0; i < (1 << bpp); i++) out(" %02x%02x%02x", bi.u.pal[i].rgbRed, bi.u.pal[i].rgbGreen, bi.u.pal[i].rgbBlue);
+        out("\n");
+    }
+    int bytes = (s->w * bpp + 7) / 8;
+    for (int y = 0; y < s->h && n > 0; y++) {
+        for (int i = 0; i < bytes; i++) out("%02x", buf[y * stride + i]);
+        out("\n");
+    }
+    free(buf);
+}
+
+/* setdibits <s> <bpp> [565] <seed>: SetDIBits of a top-down DIB of that format (default color
+ * table), its bytes from xorshift32 like fill, onto the slot's bitmap (deselected meanwhile) */
+static void op_setdibits(void) {
+    struct slot *s = slot(1);
+    int bpp = num(2), f565 = is(3, "565");
+    unsigned x = (unsigned)num(f565 ? 4 : 3);
+    if (bad) return;
+    BI bi;
+    make_bi(&bi, s->w, s->h, bpp, f565);
+    int stride = ((s->w * bpp + 31) / 32) * 4;
+    unsigned char *buf = calloc(1, stride * s->h);
+    if (!x) x = 0x9e3779b9;
+    for (int i = 0; i < stride * s->h; i++) { x ^= x << 13; x ^= x >> 17; x ^= x << 5; buf[i] = (unsigned char)x; }
+    SelectObject(s->dc, s->oldbmp);
+    int n = SetDIBits(s->dc, s->bmp, 0, s->h, buf, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
+    SelectObject(s->dc, s->bmp);
+    out("setdibits %d\n", n);
+    free(buf);
+}
+
+static void op_pixel(void) {
+    struct slot *s = slot(1);
+    int x = num(2), y = num(3);
+    if (bad) return;
+    if (is(0, "getpixel")) print_color("pixel", GetPixel(s->dc, x, y));
+    else { COLORREF c = color(4); if (!bad) print_color("pixel", SetPixel(s->dc, x, y, c)); }
+}
+
 static void op_dcstate(void) {
     struct slot *s = slot(1);
     if (bad) return;
@@ -262,6 +349,7 @@ static void op_dcstate(void) {
         int a = num(2), b = num(3), c = num(4), d = num(5);
         if (!bad) out("clip %d\n", IntersectClipRect(s->dc, a, b, c, d));
     } else if (is(0, "noclip")) SelectClipRgn(s->dc, NULL);
+    else if (is(0, "mode")) { int m = num(2); if (!bad) SetStretchBltMode(s->dc, m); }
 }
 
 static void gdi_reset(void) {
@@ -398,7 +486,11 @@ static void run(char *text) {
         else if (is(0, "brush")) op_brush();
         else if (is(0, "patblt")) op_patblt();
         else if (is(0, "bitblt")) op_bitblt();
-        else if (is(0, "text") || is(0, "bk") || is(0, "bkmode") || is(0, "org") || is(0, "clip") || is(0, "noclip")) op_dcstate();
+        else if (is(0, "stretchblt")) op_stretchblt();
+        else if (is(0, "getdibits")) op_getdibits();
+        else if (is(0, "setdibits")) op_setdibits();
+        else if (is(0, "getpixel") || is(0, "setpixel")) op_pixel();
+        else if (is(0, "text") || is(0, "bk") || is(0, "bkmode") || is(0, "org") || is(0, "clip") || is(0, "noclip") || is(0, "mode")) op_dcstate();
         else if (is(0, "device")) op_device();
         else if (is(0, "rs") || is(0, "tss") || is(0, "ss")) op_state();
         else if (is(0, "sb")) op_sb();

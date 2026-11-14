@@ -157,6 +157,8 @@ pub struct Slot {
     /// the clip rectangle (x0, y0, x1, y1), None = no clip region
     pub clip: Option<(i32, i32, i32, i32)>,
     pub brush: Brush,
+    /// SetStretchBltMode (a memory DC starts with BLACKONWHITE)
+    pub mode: i64,
 }
 
 #[derive(Default)]
@@ -208,7 +210,7 @@ impl Gdi {
                     pal[j] = color(t).ok_or(Fail::Bad)?;
                 }
                 // (a memory DC's defaults: black text, white background, opaque, the white stock brush)
-                self.slots[k as usize] = Some(Slot { s: Surf::new(w as i32, h as i32, bpp as u32, f565, topdown, pal), text: 0, bk: 0xffffff, bkmode: 2, org: (0, 0), clip: None, brush: Brush::Solid(0xffffff) });
+                self.slots[k as usize] = Some(Slot { s: Surf::new(w as i32, h as i32, bpp as u32, f565, topdown, pal), text: 0, bk: 0xffffff, bkmode: 2, org: (0, 0), clip: None, brush: Brush::Solid(0xffffff), mode: 1 });
             }
             "fill" => {
                 let seed = n(op, 2)? as u32;
@@ -281,6 +283,82 @@ impl Gdi {
                 out.push(format!("clip {}", if c.0 >= c.2 || c.1 >= c.3 { 1 } else { 2 }));
             }
             "noclip" => self.slot(op, 1)?.clip = None,
+            "mode" => self.slot(op, 1)?.mode = n(op, 2)?,
+            "stretchblt" => {
+                let v: Vec<i32> = (2..12).filter(|&i| i != 6).map(|i| n(op, i).map(|v| v as i32)).collect::<Result<_, _>>()?;
+                let (k, ks) = (n(op, 1)? as usize, n(op, 6)? as usize);
+                self.slot(op, 1)?;
+                self.slot(op, 6)?;
+                let (x, y, w, h, sx, sy, sw, sh, rop) = (v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8] as u32);
+                if w == sw && h == sh {
+                    // (an unscaled StretchBlt is BitBlt)
+                    let r = self.blt(k, x, y, w, h, Some((ks, sx, sy)), rop, false)?;
+                    out.push(format!("ret {}", r as u8));
+                } else {
+                    let r = self.stretch(k, x, y, w, h, ks, sx, sy, sw, sh, rop)?;
+                    out.push(format!("ret {}", r as u8));
+                }
+            }
+            "getpixel" | "setpixel" => {
+                let (x, y) = (n(op, 2)? as i32, n(op, 3)? as i32);
+                let c = if t0 == "setpixel" { Some(c(op, 4)?) } else { None };
+                let sl = self.slot(op, 1)?;
+                let inside = x >= 0 && y >= 0 && x < sl.s.w && y < sl.s.h && sl.clip.is_none_or(|r| x >= r.0 && x < r.2 && y >= r.1 && y < r.3);
+                if !inside {
+                    out.push("pixel invalid".into());
+                } else if let Some(c) = c {
+                    if sl.s.bpp == 1 {
+                        return Err(Fail::Unmodeled("SetPixel on a monochrome DIB"));
+                    }
+                    let v = sl.s.from_rgb(c);
+                    sl.s.set(x, y, v);
+                    out.push(format!("pixel {:06x}", sl.s.to_rgb(v)));
+                } else {
+                    out.push(format!("pixel {:06x}", sl.s.to_rgb(sl.s.get(x, y))));
+                }
+            }
+            "getdibits" | "setdibits" => {
+                let bpp = n(op, 2)? as u32;
+                let f565 = op.tok.get(3).is_some_and(|t| t == "565");
+                let seed = if t0 == "setdibits" { n(op, if f565 { 4 } else { 3 })? as u32 } else { 0 };
+                let sl = self.slot(op, 1)?;
+                let (w, h) = (sl.s.w, sl.s.h);
+                let mut o = Surf::new(w, h, bpp, f565, true, default_palette(bpp));
+                if bpp <= 8 && t0 == "getdibits" {
+                    return Err(Fail::Unmodeled("GetDIBits to a color table format"));
+                }
+                if (bpp == 1) != (sl.s.bpp == 1) {
+                    return Err(Fail::Unmodeled("monochrome conversion"));
+                }
+                if t0 == "getdibits" {
+                    for y in 0..h {
+                        for x in 0..w {
+                            let v = sl.s.get(x, y);
+                            o.set(x, y, if o.same_format(&sl.s) { v } else { o.from_rgb(sl.s.to_rgb(v)) });
+                        }
+                    }
+                    out.push(format!("dibits {h}"));
+                    let bytes = (w as usize * bpp as usize + 7) / 8;
+                    for r in &o.rows {
+                        out.push(r[..bytes].iter().map(|b| format!("{b:02x}")).collect());
+                    }
+                } else {
+                    let mut r = XorShift32::new(seed);
+                    for row in o.rows.iter_mut() {
+                        for b in row.iter_mut() {
+                            *b = r.next() as u8;
+                        }
+                    }
+                    for y in 0..h {
+                        for x in 0..w {
+                            let v = o.get(x, y);
+                            let d = if sl.s.same_format(&o) { v } else { sl.s.from_rgb(o.to_rgb(v)) };
+                            sl.s.set(x, y, d);
+                        }
+                    }
+                    out.push(format!("setdibits {h}"));
+                }
+            }
             "patblt" => {
                 let (x, y, w, h, rop) = (n(op, 2)?, n(op, 3)?, n(op, 4)?, n(op, 5)?, n(op, 6)?);
                 let k = n(op, 1)? as usize;
@@ -301,6 +379,41 @@ impl Gdi {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// StretchBlt, scaled: COLORONCOLOR (and any mode when no axis shrinks) samples the source
+    /// pixel under each destination pixel's center, floor((2i + 1) * sw / 2w) (Bresenham-like
+    /// DDA; MEASURED once Windows' answers come)
+    #[allow(clippy::too_many_arguments)]
+    pub fn stretch(&mut self, k: usize, x: i32, y: i32, w: i32, h: i32, ks: usize, sx: i32, sy: i32, sw: i32, sh: i32, rop: u32) -> Res<bool> {
+        if w <= 0 || h <= 0 || sw <= 0 || sh <= 0 {
+            return Err(Fail::Unmodeled("StretchBlt with an extent not positive (mirroring)"));
+        }
+        if k == 7 || ks == 7 {
+            return Err(Fail::Unmodeled("StretchBlt with slot 7 (the model's scratch)"));
+        }
+        let mode = self.slots[k].as_ref().unwrap().mode;
+        if (sw > w || sh > h) && mode != 3 {
+            return Err(Fail::Unmodeled("StretchBlt shrinking in a mode that combines pixels"));
+        }
+        let src = self.slots[ks].as_ref().unwrap();
+        if sx < 0 || sy < 0 || sx + sw > src.s.w || sy + sh > src.s.h {
+            return Err(Fail::Unmodeled("scaled StretchBlt from outside the source"));
+        }
+        // the sampled source as a picture of the destination's size, then an unscaled blit
+        let mut tmp = Surf::new(w, h, src.s.bpp, src.s.f565, true, src.s.pal.clone());
+        for j in 0..h {
+            for i in 0..w {
+                let (qx, qy) = (sx + ((2 * i + 1) * sw) / (2 * w), sy + ((2 * j + 1) * sh) / (2 * h));
+                tmp.set(i, j, src.s.get(qx, qy));
+            }
+        }
+        let mut t = src.clone();
+        t.s = tmp;
+        let saved = self.slots[7].replace(t);
+        let r = self.blt(k, x, y, w, h, Some((7, 0, 0)), rop, false);
+        self.slots[7] = saved;
+        r
     }
 
     /// PatBlt (src None) and BitBlt into slot `k`

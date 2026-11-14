@@ -28,6 +28,10 @@ white stock brush, brush origin 0,0, no clip region).
 | `clip <s> <x0> <y0> <x1> <y1>`, `noclip <s>` | IntersectClipRect, SelectClipRgn(NULL) | `clip <region type>` |
 | `patblt <s> <x> <y> <w> <h> <rop>` | PatBlt | `ret <0\|1>` |
 | `bitblt <d> <x> <y> <w> <h> <s> <sx> <sy> <rop>` | BitBlt | `ret <0\|1>` |
+| `stretchblt <d> <x> <y> <w> <h> <s> <sx> <sy> <sw> <sh> <rop>`, `mode <s> <m>` | StretchBlt, SetStretchBltMode (a memory DC starts with BLACKONWHITE) | `ret <0\|1>` |
+| `getpixel <s> <x> <y>`, `setpixel <s> <x> <y> #c` | GetPixel, SetPixel | `pixel RRGGBB` or `pixel invalid` (CLR_INVALID) |
+| `getdibits <s> <bpp> [565]` | GetDIBits of the slot's bitmap (deselected meanwhile) into a top-down DIB of that format with the default color table | `dibits <lines>`, for bpp <= 8 `pal` and the color table GetDIBits wrote, then the rows as `dump` prints them |
+| `setdibits <s> <bpp> [565] <seed>` | SetDIBits from a top-down DIB of that format (default color table), its bytes from xorshift32 | `setdibits <lines>` |
 
 Default color tables: 1 bpp black, white; 4 bpp the 16 VGA colors (000000 800000 008000
 808000 000080 800080 008080 c0c0c0 808080 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff);

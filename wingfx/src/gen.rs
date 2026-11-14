@@ -8,11 +8,13 @@ use crate::model::gdi::default_palette;
 use crate::rng::XorShift32;
 use std::fmt::Write;
 
-pub const SUITES: &[&str] = &["gdi", "d3d9"];
+pub const SUITES: &[&str] = &["gdi", "stretch", "pixel", "d3d9"];
 
 pub fn suite(name: &str) -> Option<String> {
     match name {
         "gdi" => Some(gdi()),
+        "stretch" => Some(stretch()),
+        "pixel" => Some(pixel()),
         "d3d9" => Some(d3d9()),
         _ => None,
     }
@@ -199,6 +201,73 @@ pub fn gdi() -> String {
     // negative extents (mirroring or normalizing?)
     for (i, (w, h)) in [(-3i32, 2i32), (3, -2), (-3, -2)].iter().enumerate() {
         writeln!(s, "case edge-negative-{i}\ndib 0 8 4 32\nfill 0 {}\ndib 1 8 4 32\nfill 1 {}\nbitblt 0 4 2 {w} {h} 1 4 2 0xcc0020\ndump 0\npatblt 0 4 2 {w} {h} 0x550009\ndump 0\nend", 90 + i, 95 + i).unwrap();
+    }
+    s
+}
+
+pub fn stretch() -> String {
+    let mut s = String::from("# wingfx suite stretch: StretchBlt in each stretch mode (SPEC.md). Made by `wingfx gen stretch`.\n");
+    let mut r = XorShift32::new(0x57e7_c400);
+    // every enlargement and reduction of a row and of a column, 1..12 to 1..12, COLORONCOLOR
+    for (dir, (a, b)) in [("x", (12, 1)), ("y", (1, 12))].iter().enumerate().map(|(i, d)| (i, d.1)) {
+        let axis = if dir == 0 { "x" } else { "y" };
+        writeln!(s, "case scale-{axis}\ndib 1 {a} {b} 32\nfill 1 {}\nmode 0 3", r.next()).unwrap();
+        for dn in 1..=12 {
+            writeln!(s, "dib 0 {a} {b} 32\nfill 0 7").unwrap();
+            for sn in 1..=12 {
+                let (dw, dh, sw, sh) = if dir == 0 { (dn, 1, sn, 1) } else { (1, dn, 1, sn) };
+                writeln!(s, "stretchblt 0 0 0 {dw} {dh} 1 0 0 {sw} {sh} 0xcc0020").unwrap();
+                writeln!(s, "dump 0").unwrap();
+            }
+        }
+        writeln!(s, "end").unwrap();
+    }
+    for i in 0..250 {
+        writeln!(s, "case random-{i}").unwrap();
+        let df = *r.pick(FORMATS);
+        let sf = if r.chance(2) { df } else { *r.pick(FORMATS) };
+        let (w, h, sw, sh) = (r.range(1, 12), r.range(1, 8), r.range(1, 12), r.range(1, 8));
+        let (l, _) = dib_line(&mut r, 0, w, h, &df, false);
+        writeln!(s, "{l}\nfill 0 {}", r.next()).unwrap();
+        let (l, _) = dib_line(&mut r, 1, sw, sh, &sf, false);
+        writeln!(s, "{l}\nfill 1 {}", r.next()).unwrap();
+        writeln!(s, "mode 0 {}", r.range(1, 4)).unwrap();
+        if r.chance(3) {
+            writeln!(s, "brush 0 solid #{:06x}", r.next() & 0xffffff).unwrap();
+        }
+        let ext = |r: &mut XorShift32, n: i64| if r.chance(12) { -r.range(1, n) } else { r.range(1, n + 2) };
+        let (dw, dh) = (ext(&mut r, w), ext(&mut r, h));
+        let (qw, qh) = (ext(&mut r, sw), ext(&mut r, sh));
+        let op = if r.chance(3) { rop(&mut r) } else { 0xcc0020 };
+        writeln!(s, "stretchblt 0 {} {} {dw} {dh} 1 {} {} {qw} {qh} {op:#x}\ndump 0\nend", r.range(-1, w - 1), r.range(-1, h - 1), r.range(0, sw - 1), r.range(0, sh - 1)).unwrap();
+    }
+    s
+}
+
+pub fn pixel() -> String {
+    let mut s = String::from("# wingfx suite pixel: SetPixel, GetPixel, GetDIBits and SetDIBits between formats (SPEC.md). Made by `wingfx gen pixel`.\n");
+    let mut r = XorShift32::new(0x9123_4567);
+    for f in FORMATS {
+        writeln!(s, "case pixel-{}", fmt_name(f)).unwrap();
+        let (l, pal) = dib_line(&mut r, 0, 6, 3, f, false);
+        writeln!(s, "{l}\nfill 0 {}", r.next()).unwrap();
+        for y in 0..3 {
+            for x in 0..6 {
+                writeln!(s, "getpixel 0 {x} {y}").unwrap();
+            }
+        }
+        for _ in 0..24 {
+            writeln!(s, "setpixel 0 {} {} #{:06x}", r.range(-1, 6), r.range(-1, 3), rcolor(&mut r, &pal)).unwrap();
+        }
+        writeln!(s, "clip 0 1 1 4 2\ngetpixel 0 0 0\ngetpixel 0 2 1\nsetpixel 0 0 0 #ffffff\nsetpixel 0 3 1 #000000\ndump 0\nend").unwrap();
+    }
+    for d in FORMATS {
+        for o in FORMATS {
+            let ob = format!("{}{}", o.0, o.1);
+            writeln!(s, "case dibits-{}-{}", fmt_name(d), fmt_name(o)).unwrap();
+            let (l, _) = dib_line(&mut r, 0, 7, 3, d, false);
+            writeln!(s, "{l}\nfill 0 {}\ngetdibits 0 {ob}\nsetdibits 0 {ob} {}\ndump 0\nend", r.next(), r.next()).unwrap();
+        }
     }
     s
 }
