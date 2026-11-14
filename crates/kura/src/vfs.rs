@@ -2853,6 +2853,19 @@ pub(crate) mod tests {
         }
     }
 
+    /// What the read-ahead tests leave behind for the next: the guesses (tables, what came
+    /// next, last ends, hints given), the files' names and the cache. NAMES kept another
+    /// test's "data01000.arc" for this test's inode: its reads were taken for a BGI archive's
+    /// and its index (blocks 0 and 48) read.
+    fn forget_guesses() {
+        *NAMES.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *PREDICT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *HINTED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *LAST_END.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        HAS_TABLE.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// A scattered read of a big chunk fetches its own blocks and the next one, not the chunk
     /// (the reason for blocks: docs/chunk-size.md), and the bytes are the chunk's.
     #[test]
@@ -2872,6 +2885,9 @@ pub(crate) mod tests {
         let mut m = HashMap::new();
         m.insert(format!("chunks/ab/{h}"), data.clone());
         *STORE.lock().unwrap() = Some((m, Vec::new()));
+        // (what the guessing tests learned would fetch more than this read's blocks: a run
+        // after bgi_archives_and_what_follows_a_file fetched blocks 0 and 48 here)
+        forget_guesses();
         let mut seed = 77u64;
         for _ in 0..50 {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -2926,6 +2942,7 @@ pub(crate) mod tests {
         fs.load_tree(root, &tsv);
         *FS.lock().unwrap() = Some(fs);
         *STORE.lock().unwrap() = Some((m, Vec::new()));
+        forget_guesses();
         *CACHE.lock().unwrap() = None;
         *LAST_END.lock().unwrap() = None;
         let At::Ours(Ok(fd)) = open_handle("/vfs-test/index.pck", libc::O_RDONLY, 0) else { panic!("open") };
@@ -3448,14 +3465,23 @@ pub(crate) mod tests {
         *FS.lock().unwrap() = None;
     }
 
-    /// A padded get copies only a chunk someone else holds.
+    /// With no fetcher thread (none could be made) a read-ahead queues nothing, and a wait for
+    /// it does not wait.
     #[test]
     fn no_fetcher_threads_no_wait() {
+        // (the other tests' fetchers kept out: TEST_FS held, and the threads counted as none
+        // while it runs; before, a test's fetchers already up took this block (queued: the
+        // assert failed) and logged its fetch in scattered_read_fetches_blocks' store)
+        let _fs = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
         // (a thread limit, little memory: a read must not wait on a queue no thread takes)
         SPAWN_FAILS.store(true, std::sync::atomic::Ordering::Relaxed);
+        let threads = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|a| std::mem::replace(&mut a.threads, 0));
         let h: Key = (*b"no-fetcher-test!", 0);
         fetch_ahead(Piece { h: h.0, clen: 10, first: 0, n: 1 });
-        let busy = AHEAD.lock().unwrap().as_ref().is_some_and(|a| a.busy.contains(&h));
+        let busy = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|a| a.busy.contains(&h));
+        if let (Some(n), Some(a)) = (threads, AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_mut()) {
+            a.threads = n;
+        }
         SPAWN_FAILS.store(false, std::sync::atomic::Ordering::Relaxed);
         assert!(!busy, "queued with no thread to take it");
         let (tx, rx) = std::sync::mpsc::channel();
