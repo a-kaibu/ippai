@@ -350,20 +350,40 @@ struct Out {
 
 /// A picture as `bits`-bit RGB, bottom-up, of the output's size (cut or padded).
 pub fn to_rgb(bgra: &[u8], w: u32, h: u32, ow: u32, oh: u32, bits: u16) -> Vec<u8> {
+    let mut out = vec![0u8; rgb_size(ow, oh, bits)];
+    to_rgb_into(bgra, w, h, ow, oh, bits, &mut out);
+    out
+}
+/// The bytes of `to_rgb`'s picture.
+pub fn rgb_size(ow: u32, oh: u32, bits: u16) -> usize {
+    (ow as usize * (bits / 8) as usize).next_multiple_of(4) * oh as usize
+}
+/// `to_rgb` into `out` (a sample's buffer, written straight: no picture-sized Vec on the way),
+/// all of it written (what the picture does not cover 0). False (nothing written) when `out` or
+/// `bgra` is shorter than their sizes say.
+pub fn to_rgb_into(bgra: &[u8], w: u32, h: u32, ow: u32, oh: u32, bits: u16, out: &mut [u8]) -> bool {
     let bpp = (bits / 8) as usize;
     let stride = (ow as usize * bpp).next_multiple_of(4);
-    let mut out = vec![0u8; stride * oh as usize];
-    for y in 0..oh.min(h) as usize {
+    if out.len() < stride * oh as usize || bgra.len() < 4 * w as usize * h as usize {
+        return false;
+    }
+    for y in 0..oh as usize {
         let dst = &mut out[(oh as usize - 1 - y) * stride..][..stride];
-        for x in 0..ow.min(w) as usize {
+        if y >= h as usize {
+            dst.fill(0);
+            continue;
+        }
+        let cw = ow.min(w) as usize;
+        for x in 0..cw {
             let s = &bgra[(y * w as usize + x) * 4..][..4];
             dst[x * bpp..x * bpp + 3].copy_from_slice(&s[..3]);
             if bpp == 4 {
                 dst[x * bpp + 3] = 0;
             }
         }
+        dst[cw * bpp..].fill(0);
     }
-    out
+    true
 }
 
 impl Out {
@@ -566,6 +586,49 @@ mod tests {
                     }
                     prop_assert_eq!(out[(y * w + x) * 4 + 3], 255);
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod rgb_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// to_rgb as it was.
+    fn old_to_rgb(bgra: &[u8], w: u32, h: u32, ow: u32, oh: u32, bits: u16) -> Vec<u8> {
+        let bpp = (bits / 8) as usize;
+        let stride = (ow as usize * bpp).next_multiple_of(4);
+        let mut out = vec![0u8; stride * oh as usize];
+        for y in 0..oh.min(h) as usize {
+            let dst = &mut out[(oh as usize - 1 - y) * stride..][..stride];
+            for x in 0..ow.min(w) as usize {
+                let s = &bgra[(y * w as usize + x) * 4..][..4];
+                dst[x * bpp..x * bpp + 3].copy_from_slice(&s[..3]);
+                if bpp == 4 {
+                    dst[x * bpp + 3] = 0;
+                }
+            }
+        }
+        out
+    }
+
+    proptest! {
+        /// A DMO's picture written straight into a sample (whatever its bytes were) is the
+        /// picture to_rgb made; short buffers are left alone
+        #[test]
+        fn rgb_into_a_sample_is_to_rgb(w in 0u32..20, h in 0u32..20, ow in 0u32..24, oh in 0u32..24, bits in prop::sample::select(vec![32u16, 24]), seed in any::<u32>(), junk in any::<u8>()) {
+            let bgra: Vec<u8> = (0..4 * w * h).map(|i| (i.wrapping_mul(2246822519).wrapping_add(seed) >> 11) as u8).collect();
+            let want = old_to_rgb(&bgra, w, h, ow, oh, bits);
+            prop_assert_eq!(rgb_size(ow, oh, bits), want.len());
+            let mut got = vec![junk; want.len()];
+            prop_assert!(to_rgb_into(&bgra, w, h, ow, oh, bits, &mut got));
+            prop_assert_eq!(&got, &want);
+            prop_assert_eq!(to_rgb(&bgra, w, h, ow, oh, bits), want.clone());
+            if !want.is_empty() {
+                let mut short = vec![junk; want.len() - 1];
+                prop_assert!(!to_rgb_into(&bgra, w, h, ow, oh, bits, &mut short));
             }
         }
     }

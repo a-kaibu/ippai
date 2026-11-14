@@ -72,6 +72,10 @@ pub(super) fn receive_connection(c: &mut Ctx, b: u32, from: u32, mt: u32) -> u32
         return VFW_E_TYPE_NOT_ACCEPTED;
     };
     let wmdec::Info::Video { width, height, .. } = info else { return VFW_E_TYPE_NOT_ACCEPTED };
+    // (a size no movie has: the samples' w * h * 4 wrapped in u32 and undersized them)
+    if !(1..=MAX_DIM).contains(&width) || !(1..=MAX_DIM).contains(&(height as i32).unsigned_abs()) {
+        return VFW_E_TYPE_NOT_ACCEPTED;
+    }
     let frame = u64::from_le_bytes(f[40..48].try_into().unwrap());
     let h = (height as i32).unsigned_abs();
     dwith(b, |d| {
@@ -90,6 +94,9 @@ pub(super) fn receive_connection(c: &mut Ctx, b: u32, from: u32, mt: u32) -> u32
     eprintln!("sake: DMO wrapper: {}x{} {:.3} fps", width, h, SEC as f64 / frame.max(1) as f64);
     0
 }
+
+/// The largest picture side taken (8K).
+pub(super) const MAX_DIM: u32 = 8192;
 
 /// The output's type: RGB32 of the input's size.
 pub(super) fn out_type(b: u32) -> Option<u32> {
@@ -230,7 +237,8 @@ fn receive(c: &mut Ctx, b: u32, sample: u32) -> u32 {
     if ptr == 0 {
         return E_POINTER;
     }
-    let data = mem::slice(ptr, len).to_vec();
+    // (the sample's bytes as they are: the caller holds it until Receive returns)
+    let data = mem::slice(ptr, len);
     let Some((mut codec, gen)) = dwith(b, |d| (d.codec.take(), d.gen)) else { return E_UNEXPECTED };
     let t0 = std::time::Instant::now();
     let frames = codec.as_mut().map(|x| x.decode(&data, if time == u64::MAX { 0 } else { time }, key)).unwrap_or_default();
@@ -274,20 +282,23 @@ fn show(c: &mut Ctx, b: u32, gen: u32, time: u64, w: u32, h: u32, bgra: &[u8]) -
     if mem_pin == 0 {
         return true;
     }
-    let px = wmdec::to_rgb(bgra, w, h, ow, oh, 32);
-    let s = free_sample(b, px.len() as u32);
+    let size = wmdec::rgb_size(ow, oh, 32) as u32;
+    let s = free_sample(b, size);
     let buf = swith(s, |x| {
-        x.len = px.len() as u32;
+        x.len = size;
         x.time = Some((time, time + frame));
         x.sync = true;
         x.disc = false;
         x.buf
     })
     .unwrap_or(0);
-    mem::slice_mut(buf, px.len() as u32).copy_from_slice(&px);
-    dwith(b, |d| d.shown = true);
-    com(c, mem_pin, 6, &[s]);
-    stats(Stat::Shown);
+    // (straight into the sample: a picture-sized Vec and a copy of it a picture before)
+    if buf != 0 && wmdec::to_rgb_into(bgra, w, h, ow, oh, 32, mem::slice_mut(buf, size)) {
+        dwith(b, |d| d.shown = true);
+        com(c, mem_pin, 6, &[s]);
+        stats(Stat::Shown);
+    }
+    unref(s);
     true
 }
 

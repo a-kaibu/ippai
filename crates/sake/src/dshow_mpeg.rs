@@ -155,7 +155,8 @@ enum Kind {
 struct Source {
     /// the name as the game gave it
     name: Vec<u16>,
-    file: crate::files::File,
+    /// (shared: SyncRead reads outside FILTERS' lock)
+    file: std::sync::Arc<crate::files::File>,
     len: u64,
     /// the File Source's pin's subtype (MEDIATYPE_Stream)
     sub: [u8; 16],
@@ -283,7 +284,7 @@ fn release(c: &mut Ctx, b: u32) -> u32 {
     if n == 0 {
         // (its connections go, and the splitter's thread with them)
         let pins = fwith(b, |f| std::mem::take(&mut f.pins)).unwrap_or_default();
-        for p in pins {
+        for p in &pins {
             for x in [p.peer, p.mem] {
                 if x != 0 && pin_of(x).is_none() {
                     com(c, x, 2, &[]);
@@ -296,6 +297,13 @@ fn release(c: &mut Ctx, b: u32) -> u32 {
         vwith(b, |v| v.dead = true);
         dmo::gone(b);
         FILTERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
+        // what it had in the guest's heap: its pins' types, its samples (a frame each: a
+        // movie a graph leaked one or more), its block (after the quarantine)
+        for p in pins {
+            free_mt(p.mt);
+        }
+        drop_pool(b);
+        crate::com::free_later(b);
     }
     n
 }
@@ -524,6 +532,23 @@ fn new_mt(major: &[u8; 16], sub: &[u8; 16], fixed: bool, sample: u32, fmt_type: 
     wp(p + pb, f);
     p
 }
+/// A media type of ours (`new_mt`, or a block `copy_mt` filled) freed with its format block.
+fn free_mt(p: u32) {
+    if p == 0 {
+        return;
+    }
+    let f = rp(p + mt_fmt_at().1);
+    if f != 0 {
+        mem::heap_free(f);
+    }
+    mem::heap_free(p);
+}
+/// A new copy of media type `src` (ours, the format too).
+fn dup_mt(src: u32) -> u32 {
+    let m = mem::heap_alloc(mt_size(), true);
+    copy_mt(src, m);
+    m
+}
 /// A copy of media type `src` into `dst` (its format block a new CoTaskMemAlloc one).
 fn copy_mt(src: u32, dst: u32) {
     let n = mt_size();
@@ -588,24 +613,47 @@ fn rgb_type(w: u32, h: u32, bits: u16, rate: f64) -> u32 {
 /// BGRX pixels (`w` x `h`, rows 4w apart, in the order they come) as rows of `bits` per pixel
 /// (`dib_stride` apart, the padding 0).
 pub fn pack_bgrx(src: &[u8], w: u32, h: u32, bits: u16) -> Vec<u8> {
-    if bits == 32 {
-        return src.to_vec();
-    }
+    let mut out = vec![0u8; dib_stride(w, bits) as usize * h as usize];
+    pack_into(src, (w, h), false, (w, h, bits), &mut out);
+    out
+}
+/// BGRX pixels of `sw` x `sh` (rows 4sw apart) into `dst`, a `w` x `h` DIB of `bits` per pixel
+/// (`dib_stride` apart), written once and straight (a sample's buffer: no frame-sized copies
+/// on the way, a picture had three a frame). `flip`: the source's first row is the DIB's last.
+/// What the source does not cover is 0, and a source of another size than the DIB's (a later
+/// sequence header, a probe that disagreed) is clipped to it, not indexed past. False (nothing
+/// written) when `dst` or `src` is shorter than their sizes say.
+pub fn pack_into(src: &[u8], (sw, sh): (u32, u32), flip: bool, (w, h, bits): (u32, u32, u16), dst: &mut [u8]) -> bool {
     let stride = dib_stride(w, bits) as usize;
-    let mut out = vec![0u8; stride * h as usize];
-    for y in 0..h as usize {
-        let row = &src[4 * w as usize * y..][..4 * w as usize];
-        let o = &mut out[stride * y..][..stride];
-        for x in 0..w as usize {
-            let (b, g, r) = (row[4 * x] as u16, row[4 * x + 1] as u16, row[4 * x + 2] as u16);
-            match bits {
-                24 => o[3 * x..3 * x + 3].copy_from_slice(&row[4 * x..4 * x + 3]),
-                16 => o[2 * x..2 * x + 2].copy_from_slice(&((r >> 3) << 11 | (g >> 2) << 5 | b >> 3).to_le_bytes()),
-                _ => o[2 * x..2 * x + 2].copy_from_slice(&((r >> 3) << 10 | (g >> 3) << 5 | b >> 3).to_le_bytes()),
+    let (sw, sh, w, h) = (sw as usize, sh as usize, w as usize, h as usize);
+    if dst.len() < stride * h || src.len() < 4 * sw * sh {
+        return false;
+    }
+    let cw = sw.min(w);
+    let bpp = if bits == 15 { 2 } else { bits as usize / 8 };
+    for y in 0..h {
+        let o = &mut dst[stride * y..][..stride];
+        let sy = if flip { h - 1 - y } else { y };
+        if sy >= sh {
+            o.fill(0);
+            continue;
+        }
+        let row = &src[4 * sw * sy..][..4 * cw];
+        if bits == 32 {
+            o[..4 * cw].copy_from_slice(row);
+        } else {
+            for x in 0..cw {
+                let (b, g, r) = (row[4 * x] as u16, row[4 * x + 1] as u16, row[4 * x + 2] as u16);
+                match bits {
+                    24 => o[3 * x..3 * x + 3].copy_from_slice(&row[4 * x..4 * x + 3]),
+                    16 => o[2 * x..2 * x + 2].copy_from_slice(&((r >> 3) << 11 | (g >> 2) << 5 | b >> 3).to_le_bytes()),
+                    _ => o[2 * x..2 * x + 2].copy_from_slice(&((r >> 3) << 10 | (g >> 3) << 5 | b >> 3).to_le_bytes()),
+                }
             }
         }
+        o[bpp * cw..].fill(0);
     }
-    out
+    true
 }
 /// WAVEFORMATEX (cbSize 0 for PCM)
 fn wave_format(tag: u16, channels: u16, rate: u32, bits: u16, extra: &[u8]) -> Vec<u8> {
@@ -686,9 +734,11 @@ fn connect_ours(out: (u32, usize), inp: (u32, usize)) -> u32 {
         f.pins[out.1 - 1].peer = ip;
         f.pins[out.1 - 1].mt = mt;
     });
+    // (each pin its own copy: each frees its own when it goes)
+    let mt_in = dup_mt(mt);
     fwith(inp.0, |f| {
         f.pins[inp.1 - 1].peer = op;
-        f.pins[inp.1 - 1].mt = mt;
+        f.pins[inp.1 - 1].mt = mt_in;
     });
     // (each holds the other)
     add_ref(out.0);
@@ -741,6 +791,8 @@ fn p_connect(c: &mut Ctx) -> u32 {
             mt = t;
             break;
         }
+        // (the types it did not take: each attempt's was kept for good)
+        free_mt(t);
     }
     if r != 0 {
         fwith(b, |f| f.bits = 32);
@@ -753,6 +805,7 @@ fn p_connect(c: &mut Ctx) -> u32 {
     mem::heap_free(out);
     if r != 0 || mem_pin == 0 {
         com(c, recv, 5, &[]);
+        free_mt(mt);
         return E_NOINTERFACE;
     }
     com(c, recv, 1, &[]);
@@ -878,11 +931,13 @@ fn p_disconnect(c: &mut Ctx) -> u32 {
     if me.peer == 0 {
         return S_FALSE;
     }
-    fwith(b, |f| {
+    let mt = fwith(b, |f| {
         let p = &mut f.pins[k - 1];
         p.peer = 0;
         p.mem = 0;
+        std::mem::take(&mut p.mt)
     });
+    free_mt(mt.unwrap_or(0));
     // (the splitter's source gone: no more reads from it)
     let reader = if kind(b) == Some(Kind::Split) && k == 1 { pwith(b, |p| std::mem::take(&mut p.reader)).unwrap_or(0) } else { 0 };
     if reader != 0 {
@@ -893,9 +948,11 @@ fn p_disconnect(c: &mut Ctx) -> u32 {
     match pin_of(me.peer) {
         // (one of ours lets this one go too)
         Some((pb, pk)) => {
-            fwith(pb, |f| {
+            let mt = fwith(pb, |f| {
                 f.pins[pk - 1].peer = 0;
+                std::mem::take(&mut f.pins[pk - 1].mt)
             });
+            free_mt(mt.unwrap_or(0));
             release(c, pb);
             release(c, b);
         }
@@ -1121,7 +1178,7 @@ fn source_load(b: u32, name: u32, mt: u32) -> u32 {
     file.seek(std::io::SeekFrom::Start(0));
     fwith(b, |f| {
         f.pins = pins;
-        f.src = Some(Source { name: wname, file, len, sub });
+        f.src = Some(Source { name: wname, file: std::sync::Arc::new(file), len, sub });
     });
     0
 }
@@ -1193,6 +1250,7 @@ fn source_connect(c: &mut Ctx, b: u32, recv: u32, want: u32) -> u32 {
     let p = b + ps();
     let r = com(c, recv, 4, &[p, mt]);
     if r != 0 {
+        free_mt(mt);
         return if r == VFW_E_TYPE_NOT_ACCEPTED || r == E_NOINTERFACE { VFW_E_NO_ACCEPTABLE_TYPES } else { r };
     }
     com(c, recv, 1, &[]);
@@ -1243,13 +1301,14 @@ fn ar_sync_read(c: &mut Ctx) -> u32 {
     if buf == 0 {
         return E_POINTER;
     }
-    let got = fwith(b, |f| {
-        let s = f.src.as_ref()?;
-        let (at, k) = read_span(pos, n, s.len);
-        s.file.seek(std::io::SeekFrom::Start(at))?;
-        Some(s.file.read_into(buf, k))
-    })
-    .flatten();
+    // (the file read with no lock of ours held: a slow read held up every filter call of every
+    // thread behind FILTERS; seek and read are one step under the file's own lock)
+    let Some((file, len)) = fwith(b, |f| f.src.as_ref().map(|s| (s.file.clone(), s.len))).flatten() else { return E_UNEXPECTED };
+    let (at, k) = read_span(pos, n, len);
+    let got = match file.read_at(Some(std::io::SeekFrom::Start(at)), false, mem::slice_mut(buf, k)) {
+        Ok(g) => Some(g as u32),
+        Err(()) => Some(0),
+    };
     match got {
         None => E_UNEXPECTED,
         Some(k) if k == n => 0,
@@ -1401,6 +1460,8 @@ fn vnv_state(b: u32, s: u32) {
         calls.stop(STOP_WAIT, &crate::k32::Pause);
     } else {
         calls.run();
+        // (its thread waits long while stopped: woken to run)
+        WAKE.notify_all();
     }
     if start {
         static ENTRY: OnceLock<u32> = OnceLock::new();
@@ -1435,6 +1496,8 @@ fn vnv_thread(c: &mut Ctx) -> u32 {
     let b = c.a(0);
     let mut last: Option<u32> = None;
     let mut eos = false;
+    // (the frame as it comes, kept for the next one: no allocation per frame)
+    let mut top = Vec::new();
     loop {
         let Some((dead, graph, w, h, rate, calls)) = vwith(b, |v| (v.dead, v.graph, v.w, v.h, v.rate, v.calls.clone())) else { break };
         if dead {
@@ -1443,10 +1506,11 @@ fn vnv_thread(c: &mut Ctx) -> u32 {
         let epoch = calls.epoch();
         let out = pin(b, 1);
         if fwith(b, |f| f.state).unwrap_or(0) == 0 || out.mem == 0 {
-            // (stopped: from the start again)
+            // (stopped: from the start again; a run or a release wakes it, so it need not look 50
+            // times a second for a graph the game may never run again)
             last = None;
             eos = false;
-            pause(SEC / 50);
+            pause(SEC / 4);
             continue;
         }
         let t = now();
@@ -1461,30 +1525,31 @@ fn vnv_thread(c: &mut Ctx) -> u32 {
             FeedStep::Frame(n) => {
                 let (_, _, stream, mw, mh) = at.unwrap();
                 let (fw, fh) = (mw.min(w), mh.min(h));
-                let mut px = vec![0u8; (4 * w * h) as usize];
-                let mut top = vec![0u8; (4 * fw * fh) as usize];
+                top.resize((4 * fw * fh) as usize, 0);
                 if !unsafe { crate::dshow_play::frame(stream, n as i32, top.as_mut_ptr(), 4 * fw as usize, fw, fh) } {
                     pause(SEC / 100);
                     continue;
                 }
-                // (bottom-up rows, as RGB32 with a positive height is)
-                for y in 0..fh as usize {
-                    let row = &top[4 * fw as usize * y..][..4 * fw as usize];
-                    px[4 * w as usize * (h as usize - 1 - y)..][..4 * fw as usize].copy_from_slice(row);
-                }
                 let frame = SEC * rate.1.max(1) as u64 / rate.0.max(1) as u64;
-                let px = pack_bgrx(&px, w, h, fwith(b, |f| f.bits).unwrap_or(32));
-                let sample = free_sample(b, px.len() as u32);
+                let bits = fwith(b, |f| f.bits).unwrap_or(32);
+                let size = dib_stride(w, bits) * h;
+                let sample = free_sample(b, size);
                 let buf = swith(sample, |x| {
-                    x.len = px.len() as u32;
+                    x.len = size;
                     x.time = Some((n as u64 * frame, (n as u64 + 1) * frame));
                     x.sync = true;
                     x.disc = last.is_none();
                     x.buf
                 })
                 .unwrap_or(0);
-                mem::slice_mut(buf, px.len() as u32).copy_from_slice(&px);
-                if call_out(&calls, epoch, || com(c, out.mem, 6, &[sample])).is_some() {
+                if buf == 0 {
+                    break;
+                }
+                // (bottom-up rows, as RGB32 with a positive height is: straight into the sample)
+                pack_into(&top, (fw, fh), true, (w, h, bits), mem::slice_mut(buf, size));
+                let sent = call_out(&calls, epoch, || com(c, out.mem, 6, &[sample])).is_some();
+                unref(sample);
+                if sent {
                     last = Some(n);
                 }
             }
@@ -1545,6 +1610,7 @@ fn ss_info(c: &mut Ctx) -> u32 {
         let m = mem::heap_alloc(mt_size(), true);
         if t != 0 {
             copy_mt(t, m);
+            free_mt(t);
         }
         putp(mt, m);
     }
@@ -1670,7 +1736,10 @@ fn e_clone(c: &mut Ctx) -> u32 {
 
 #[derive(Default)]
 struct Sample {
+    /// the references, the pool's among them while `pool`
     refs: u32,
+    /// its decoder's pool holds it (until the decoder goes: then the last reference frees it)
+    pool: bool,
     buf: u32,
     size: u32,
     len: u32,
@@ -1696,21 +1765,82 @@ fn allocator(dec: u32) -> u32 {
         })
         .0
 }
-/// A sample of `size` bytes no one else holds (one more made when the renderer keeps them all).
+/// A sample of `size` bytes no one else holds (one more made when the renderer keeps them all),
+/// with a reference for the caller (given back with `unref` once it is written and handed on:
+/// the decoder released meanwhile does not free it under the writer). 0: the decoder is gone.
 fn free_sample(dec: u32, size: u32) -> u32 {
-    allocator(dec);
-    let mine = ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(&dec).map(|a| a.1.clone()).unwrap_or_default();
-    for s in mine {
-        if swith(s, |x| x.refs == 1 && x.size >= size) == Some(true) {
-            return s;
+    // (ALLOCS, then FILTERS and SAMPLES: the decoder's release takes FILTERS' entry out first,
+    // then its pool; a pool made after that would be there for good)
+    let mut ag = ALLOCS.lock().unwrap_or_else(|e| e.into_inner());
+    if kind(dec).is_none() {
+        return 0;
+    }
+    let a = ag.get_or_insert_with(HashMap::new).entry(dec).or_insert_with(|| {
+        let a = mem::heap_alloc(8, true);
+        wp(a, vtables().allocator);
+        (a, Vec::new())
+    });
+    let mut sg = SAMPLES.lock().unwrap_or_else(|e| e.into_inner());
+    let sm = sg.get_or_insert_with(HashMap::new);
+    for s in &a.1 {
+        if let Some(x) = sm.get_mut(s).filter(|x| x.refs == 1 && x.size >= size) {
+            x.refs = 2;
+            return *s;
         }
     }
     let s = mem::heap_alloc(8, true);
     wp(s, vtables().sample);
     let buf = mem::heap_alloc(size.max(1), true);
-    SAMPLES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(s, Sample { refs: 1, buf, size, ..Sample::default() });
-    ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get_mut(&dec).unwrap().1.push(s);
+    sm.insert(s, Sample { refs: 2, pool: true, buf, size, ..Sample::default() });
+    a.1.push(s);
     s
+}
+/// A reference to sample `s` given back: what is left (the pool's not counted). The last one
+/// of a sample whose decoder went frees it.
+fn unref(s: u32) -> u32 {
+    let r = swith(s, |x| {
+        if x.pool {
+            // (ours keep one reference: the pool's)
+            x.refs = x.refs.saturating_sub(1).max(1);
+            (x.refs - 1, false)
+        } else {
+            x.refs = x.refs.saturating_sub(1);
+            (x.refs, x.refs == 0)
+        }
+    });
+    match r {
+        Some((n, gone)) => {
+            if gone {
+                drop_sample(s);
+            }
+            n
+        }
+        None => 0,
+    }
+}
+fn drop_sample(s: u32) {
+    let x = SAMPLES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&s);
+    if let Some(x) = x {
+        mem::heap_free(x.buf);
+        // (the object's block after the quarantine: a stray call through it finds a vtable)
+        crate::com::free_later(s);
+    }
+}
+/// Decoder `dec` released: its pool lets its samples go (freed now, or by their last holder's
+/// Release: a renderer may keep one). The allocator's 8 bytes stay: it has no reference count
+/// of its own and a renderer may hold it past the decoder.
+fn drop_pool(dec: u32) {
+    let Some((_, samples)) = ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&dec) else { return };
+    for s in samples {
+        let gone = swith(s, |x| {
+            x.pool = false;
+            x.refs = x.refs.saturating_sub(1);
+            x.refs == 0
+        });
+        if gone == Some(true) {
+            drop_sample(s);
+        }
+    }
 }
 
 fn a_qi(c: &mut Ctx) -> u32 {
@@ -1760,7 +1890,9 @@ fn a_get_buffer(c: &mut Ctx) -> u32 {
     let Some(dec) = dec else { return E_UNEXPECTED };
     let size = dmo::size(dec).or_else(|| info_of(dec).map(|i| (i.width * i.height * 4) as u32)).unwrap_or(4);
     let s = free_sample(dec, size);
-    swith(s, |x| x.refs += 1);
+    if s == 0 {
+        return E_UNEXPECTED;
+    }
     putp(out, s);
     0
 }
@@ -1786,12 +1918,7 @@ fn s_add_ref(c: &mut Ctx) -> u32 {
     .unwrap_or(1)
 }
 fn s_release(c: &mut Ctx) -> u32 {
-    // (ours keep one reference: the pool's)
-    swith(c.a(0), |x| {
-        x.refs = x.refs.saturating_sub(1).max(1);
-        x.refs - 1
-    })
-    .unwrap_or(0)
+    unref(c.a(0))
 }
 fn s_pointer(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
@@ -1909,9 +2036,17 @@ fn in_graph(g: u32) -> Option<u32> {
 pub fn timeline<R>(g: u32, f: impl FnOnce(&mut Timeline, u64) -> R) -> Option<R> {
     let b = in_graph(g)?;
     let t = now();
-    let r = pwith(b, |p| f(&mut p.tl, t));
-    WAKE.notify_all();
-    r
+    // (the threads woken only when it changed: a game polling the position every frame woke
+    // every splitter, Vnv and DMO thread each time)
+    let r = pwith(b, |p| {
+        let before = p.tl.clone();
+        let r = f(&mut p.tl, t);
+        (r, p.tl != before)
+    });
+    if r.as_ref().is_some_and(|r| r.1) {
+        WAKE.notify_all();
+    }
+    r.map(|r| r.0)
 }
 
 /// Graph `g` was seeked: the stream again from the new position.
@@ -1944,10 +2079,11 @@ pub fn graph_released(c: &mut Ctx, g: u32) {
         let pins = fwith(b, |f| {
             f.graph = 0;
             f.state = 0;
-            f.pins.iter_mut().map(|p| (std::mem::take(&mut p.peer), std::mem::take(&mut p.mem))).collect::<Vec<_>>()
+            f.pins.iter_mut().map(|p| (std::mem::take(&mut p.peer), std::mem::take(&mut p.mem), std::mem::take(&mut p.mt))).collect::<Vec<_>>()
         })
         .unwrap_or_default();
-        for (peer, mem_pin) in pins {
+        for (peer, mem_pin, mt) in pins {
+            free_mt(mt);
             for x in [peer, mem_pin] {
                 if x != 0 && pin_of(x).is_none() {
                     com(c, x, 2, &[]);
@@ -2023,7 +2159,9 @@ struct Dec {
     video: Option<mpeg1::Video>,
     audio: Option<mpeg1::Audio>,
     /// the next picture, its number, as BGRX bottom-up
-    next: Option<(u64, Vec<u8>)>,
+    next: Option<(u64, Vec<u8>, u32, u32)>,
+    /// the buffer of the picture shown last, for the next one
+    spare: Vec<u8>,
     pictures: u64,
     /// the sound at kura's rate, from frame `pcm_at` on
     pcm: VecDeque<[f32; 2]>,
@@ -2046,6 +2184,7 @@ impl Dec {
             video: video.then(mpeg1::Video::new),
             audio: audio.then(mpeg1::Audio::new),
             next: None,
+            spare: Vec::new(),
             pictures: 0,
             pcm: VecDeque::new(),
             pcm_at: 0,
@@ -2166,7 +2305,8 @@ fn stream_thread(c: &mut Ctx) -> u32 {
                     kura::audio::close(a);
                 }
             }
-            pause(SEC / 50);
+            // (a run, a new reader or a release wakes it)
+            pause(SEC / 4);
             continue;
         }
         let (video, audio) = chain(b);
@@ -2192,7 +2332,7 @@ fn stream_thread(c: &mut Ctx) -> u32 {
         // (the sound keeps half a second decoded ahead, read on while a picture waits)
         let sound_low = s.audio.is_some() && s.pcm_at + (s.pcm.len() as u64) < want + kura::audio::RATE as u64 / 2;
         // the next picture: due, or wait for it
-        if let Some((n, _)) = &s.next {
+        if let Some((n, ..)) = &s.next {
             let at = n * frame;
             if at >= stop && pos >= stop {
                 // (past the stop position: no more pictures)
@@ -2212,34 +2352,49 @@ fn stream_thread(c: &mut Ctx) -> u32 {
                 pause(SEC / 100);
                 continue;
             }
-            let (n, px) = s.next.take().unwrap();
+            let (n, px, pw, ph) = s.next.take().unwrap();
             // (late by more than two pictures: dropped)
             if let Some((dec, mem_pin, _)) = video {
                 if n * frame + 2 * frame >= pos {
-                    let px = pack_bgrx(&px, info.width as u32, info.height as u32, fwith(dec, |f| f.bits).unwrap_or(32));
-                    let sample = free_sample(dec, px.len() as u32);
+                    let (w, h) = (info.width as u32, info.height as u32);
+                    let bits = fwith(dec, |f| f.bits).unwrap_or(32);
+                    let size = dib_stride(w, bits) * h;
+                    let sample = free_sample(dec, size);
                     let buf = swith(sample, |x| {
-                        x.len = px.len() as u32;
+                        x.len = size;
                         x.time = Some((n * frame, (n + 1) * frame));
                         x.sync = true;
                         x.disc = n == 0;
                         x.buf
                     })
                     .unwrap_or(0);
-                    mem::slice_mut(buf, px.len() as u32).copy_from_slice(&px);
-                    com(c, mem_pin, 6, &[sample]);
+                    // (the picture's own size, clipped to the type's: a later sequence header
+                    // of another size indexed past the rows)
+                    if buf != 0 && pack_into(&px, (pw, ph), false, (w, h, bits), mem::slice_mut(buf, size)) {
+                        com(c, mem_pin, 6, &[sample]);
+                    }
+                    unref(sample);
                 }
                 calls.leave();
             }
+            s.spare = px;
             continue;
         }
         // decode: a picture, or more of the stream
         if !s.past_stop {
             if let Some(v) = s.video.as_mut() {
                 if let Some(f) = v.decode() {
-                    let mut px = vec![0u8; f.width * f.height * 4];
-                    mpeg1::video::to_bgrx(f, &mut px, f.width * 4, true);
-                    s.next = Some((s.pictures, px));
+                    let n = s.pictures;
+                    // (a picture that will be dropped as late, on the way to a seek's position:
+                    // not converted; the buffer of the last one is used again)
+                    let mut px = std::mem::take(&mut s.spare);
+                    if n * frame + 2 * frame >= pos {
+                        px.resize(f.width * f.height * 4, 0);
+                        mpeg1::video::to_bgrx(f, &mut px, f.width * 4, true);
+                    } else {
+                        px.clear();
+                    }
+                    s.next = Some((n, px, f.width as u32, f.height as u32));
                     s.pictures += 1;
                     continue;
                 }
@@ -2268,7 +2423,9 @@ fn stream_thread(c: &mut Ctx) -> u32 {
                 crate::dshow::completed(g);
             }
         }
-        pause(SEC / 50);
+        // (at its end, told: a seek, a stop or a release wakes it)
+        let done = s.eos_sent && pwith(b, |p| p.ended).unwrap_or(false);
+        pause(if done { SEC / 4 } else { SEC / 50 });
     }
     if let Some(s) = d {
         s.close();
@@ -2760,5 +2917,142 @@ mod tests {
             }
             prop_assert!(ends <= 1);
         }
+    }
+
+    /// pack_bgrx as it was (the reference for pack_into's rows).
+    fn old_pack_bgrx(src: &[u8], w: u32, h: u32, bits: u16) -> Vec<u8> {
+        if bits == 32 {
+            return src.to_vec();
+        }
+        let stride = dib_stride(w, bits) as usize;
+        let mut out = vec![0u8; stride * h as usize];
+        for y in 0..h as usize {
+            let row = &src[4 * w as usize * y..][..4 * w as usize];
+            let o = &mut out[stride * y..][..stride];
+            for x in 0..w as usize {
+                let (b, g, r) = (row[4 * x] as u16, row[4 * x + 1] as u16, row[4 * x + 2] as u16);
+                match bits {
+                    24 => o[3 * x..3 * x + 3].copy_from_slice(&row[4 * x..4 * x + 3]),
+                    16 => o[2 * x..2 * x + 2].copy_from_slice(&((r >> 3) << 11 | (g >> 2) << 5 | b >> 3).to_le_bytes()),
+                    _ => o[2 * x..2 * x + 2].copy_from_slice(&((r >> 3) << 10 | (g >> 3) << 5 | b >> 3).to_le_bytes()),
+                }
+            }
+        }
+        out
+    }
+
+    proptest! {
+        /// pack_into writes a sample's rows as the old way did (the source placed into a
+        /// w x h picture, flipped for a Vnv's frame, then packed): every byte of the sample,
+        /// whatever was there, and a source of another size than the type's (a later sequence
+        /// header) clipped, not indexed past
+        #[test]
+        fn packing_into_samples_is_the_old_rows(w in 1u32..24, h in 1u32..24, sw in 0u32..30, sh in 0u32..30, flip in any::<bool>(),
+                                                bits in prop::sample::select(vec![32u16, 24, 16, 15]), seed in any::<u32>(), junk in any::<u8>()) {
+            let src: Vec<u8> = (0..4 * sw * sh).map(|i| (i.wrapping_mul(2654435761).wrapping_add(seed) >> 13) as u8).collect();
+            let mut px = vec![0u8; (4 * w * h) as usize];
+            for y in 0..h as usize {
+                let sy = if flip { h as usize - 1 - y } else { y };
+                if sy < sh as usize {
+                    let n = 4 * sw.min(w) as usize;
+                    px[4 * w as usize * y..][..n].copy_from_slice(&src[4 * sw as usize * sy..][..n]);
+                }
+            }
+            let want = old_pack_bgrx(&px, w, h, bits);
+            let mut got = vec![junk; want.len()];
+            prop_assert!(pack_into(&src, (sw, sh), flip, (w, h, bits), &mut got));
+            prop_assert_eq!(&got, &want);
+            // (short buffers: nothing written, no panic)
+            if !want.is_empty() {
+                let mut short = vec![junk; want.len() - 1];
+                prop_assert!(!pack_into(&src, (sw, sh), flip, (w, h, bits), &mut short));
+                prop_assert!(short.iter().all(|&b| b == junk));
+            }
+            if !src.is_empty() {
+                prop_assert!(!pack_into(&src[1..], (sw, sh), flip, (w, h, bits), &mut got));
+            }
+            prop_assert_eq!(pack_bgrx(&px, w, h, bits), want);
+        }
+
+        /// The video decoder's samples as a model: GetBuffer and the threads' writes get one no
+        /// one holds; the decoder released, each goes with its last holder's Release (the frame
+        /// buffers of every movie stayed in the guest's heap for good), never while held (a
+        /// writer still filling it)
+        #[test]
+        fn samples_count_as_a_model(ops in prop::collection::vec((0u8..4, any::<prop::sample::Index>(), 1u32..5000), 1..60)) {
+            let _g = crate::test_guest::enter();
+            let dec = new_filter(Kind::VDec);
+            let mut ext: HashMap<u32, u32> = HashMap::new();
+            let mut held: Vec<u32> = Vec::new();
+            let mut pool = true;
+            let present = |s: u32| SAMPLES.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&s));
+            for (op, i, size) in ops {
+                match op {
+                    0 => {
+                        let s = free_sample(dec, size);
+                        if !pool {
+                            prop_assert_eq!(s, 0);
+                            continue;
+                        }
+                        prop_assert!(s != 0);
+                        prop_assert_eq!(ext.get(&s).copied().unwrap_or(0), 0, "a sample someone holds handed out again");
+                        prop_assert!(swith(s, |x| x.size).unwrap() >= size);
+                        *ext.entry(s).or_default() += 1;
+                        held.push(s);
+                    }
+                    1 if !held.is_empty() => {
+                        let s = held[i.index(held.len())];
+                        swith(s, |x| x.refs += 1);
+                        *ext.get_mut(&s).unwrap() += 1;
+                        held.push(s);
+                    }
+                    2 if !held.is_empty() => {
+                        let s = held.remove(i.index(held.len()));
+                        let left = unref(s);
+                        let e = ext.get_mut(&s).unwrap();
+                        *e -= 1;
+                        prop_assert_eq!(left, *e);
+                    }
+                    3 if pool => {
+                        FILTERS.lock().unwrap().as_mut().unwrap().remove(&dec);
+                        drop_pool(dec);
+                        pool = false;
+                    }
+                    _ => {}
+                }
+                for (&s, &e) in &ext {
+                    prop_assert_eq!(present(s), pool || e > 0, "sample {:#x}: {} held, pool {}", s, e, pool);
+                }
+            }
+            for s in held.drain(..) {
+                unref(s);
+            }
+            if pool {
+                FILTERS.lock().unwrap().as_mut().unwrap().remove(&dec);
+                drop_pool(dec);
+            }
+            for &s in ext.keys() {
+                prop_assert!(!present(s), "sample {:#x} left", s);
+            }
+            prop_assert!(!ALLOCS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&dec)));
+        }
+    }
+
+    /// A pin's media type freed with its format block; two pins never share one (connect_ours
+    /// gave both the same block: freeing each would free it twice)
+    #[test]
+    fn media_types_are_freed_once() {
+        let _g = crate::test_guest::enter();
+        let a = new_mt(&MEDIATYPE_VIDEO, &SUBTYPE_RGB32, true, 16, &FORMAT_VIDEO_INFO, &video_info(2, 2, 32, 0, 30.0));
+        let b = dup_mt(a);
+        assert_ne!(a, b);
+        assert_ne!(rp(a + mt_fmt_at().1), rp(b + mt_fmt_at().1));
+        assert_eq!(mem::slice(a, 44), mem::slice(b, 44));
+        let (fa, fb) = (rp(a + mt_fmt_at().1), rp(b + mt_fmt_at().1));
+        let n = r32(a + mt_fmt_at().0);
+        assert_eq!(mem::slice(fa, n), mem::slice(fb, n));
+        free_mt(a);
+        free_mt(b);
+        free_mt(0);
     }
 }
