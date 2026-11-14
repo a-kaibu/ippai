@@ -94,6 +94,12 @@ impl Pe {
         };
         let secs = opt + opt_size;
         b.get(secs..secs + 40 * nsecs)?;
+        // (the data directories are part of the optional header: an optional header too short
+        // to hold them had them inside the section table, which a new section overwrote)
+        if secs < dirs {
+            return None;
+        }
+        let ndirs = ndirs.min(((secs - dirs) / 8) as u32);
         Some(Pe { opt, dirs, ndirs, secs, nsecs })
     }
     pub fn section(&self, b: &[u8], i: usize) -> Section {
@@ -828,6 +834,26 @@ mod tests {
             pe.put_section(&mut d, i, &s);
             assert!(write(&d, &t).is_none(), "raw {raw:#x}");
         }
+    }
+
+    /// fuzz (resupdate): an optional header too short for its data directories is refused, so
+    /// a file written never reads back differently (a new section used to land on them)
+    #[test]
+    fn short_optional_headers_are_refused() {
+        let t = sample();
+        let b = image(&[(b".rsrc", 0, 0x4000_0040)], Some(&t));
+        let pe = Pe::parse(&b).unwrap();
+        let nt = r32(&b, 0x3c).unwrap() as usize;
+        for size in [0u16, 71, 95] {
+            let mut d = b.clone();
+            w16(&mut d, nt + 20, size);
+            assert!(Pe::parse(&d).is_none(), "optional header {size}");
+            assert!(read(&d).is_none() && write(&d, &t).is_none());
+        }
+        // directories counted past the optional header's end are not read
+        let mut d = b.clone();
+        w32(&mut d, pe.opt + 92, 0x100);
+        assert_eq!(Pe::parse(&d).unwrap().ndirs, ((pe.secs - pe.dirs) / 8) as u32);
     }
 
     proptest! {

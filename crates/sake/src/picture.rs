@@ -281,6 +281,10 @@ fn pixel_to_bgra(f: Fmt, s: &[u8], v: u32, palette: &[u32]) -> [u8; 4] {
 /// `w x h` pixels of `f` in rows of `stride` bytes as straight BGRA (`w * 4` bytes a row).
 pub fn to_bgra(f: Fmt, w: u32, h: u32, stride: u32, data: &[u8], palette: &[u32]) -> Vec<u8> {
     let Some(mut px) = zeroed(w as usize * h as usize * 4) else { return Vec::new() };
+    // (no pixels: nothing to convert, and no zero-sized rows to cut the buffer into)
+    if w == 0 || h == 0 {
+        return px;
+    }
     // (the formats pictures decode to, a row at a time: the per-pixel dispatch below was most
     // of an image load)
     let fast = matches!(f, Fmt::Bgra | Fmt::Bgr32 | Fmt::Bgr24 | Fmt::Rgba | Fmt::Gray8 | Fmt::Idx8);
@@ -1481,6 +1485,16 @@ mod proptests {
 #[cfg(test)]
 mod review_tests {
     use super::*;
+
+    /// fuzz (image): a zero-width picture converts to no pixels in every fast format, not a
+    /// panic on zero-sized rows
+    #[test]
+    fn zero_width_pictures_convert_to_nothing() {
+        for f in [Fmt::Bgra, Fmt::Bgr32, Fmt::Bgr24, Fmt::Rgba, Fmt::Gray8, Fmt::Idx8, Fmt::Rgb24] {
+            assert!(to_bgra(f, 0, 5, 4, &[0; 64], &[0; 256]).is_empty());
+            assert!(to_bgra(f, 5, 0, 20, &[0; 64], &[0; 256]).is_empty());
+        }
+    }
     use proptest::prelude::*;
 
     /// to_bgra without its row fast paths: every pixel through pixel_to_bgra (as it was).

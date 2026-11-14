@@ -2370,14 +2370,46 @@ mod review_b09_tests {
             let mut out = vec![0f32; 2 * 600];
             mix_waves(&mut d, &mut out);
             let step = rate as f64 / RATE as f64;
+            let value = |p: u32| if p < total { (p + 1) as f32 / 32768.0 } else { 0.0 };
             for (k, o) in out.chunks_exact(2).enumerate() {
-                let p = (k as f64 * step) as u32;
-                let want = if p < total { (p + 1) as f32 / 32768.0 } else { 0.0 };
-                prop_assert_eq!(o[0], want, "frame {} (sample {} of {})", k, p, total);
+                let x = k as f64 * step;
+                let p = x as u32;
+                // (on a sample boundary the mixer's running position and k * step may round to
+                // either side: 441 * 8000 / 44100 is 80 here and 79.999... there; both samples
+                // are right)
+                let edge = (x - x.round()).abs() < 1e-6 && x.round() >= 1.0;
+                let ok = o[0] == value(p) || edge && o[0] == value(x.round() as u32 - 1);
+                prop_assert!(ok, "frame {} (sample {} of {}): {} not {}", k, p, total, o[0], value(p));
             }
             let w = &d.waves[&1];
             prop_assert_eq!(&w.done, &hs[..w.done.len()].to_vec());
             if (600.0 * step) as u32 > total + 1 { prop_assert_eq!(w.done.len(), hs.len()); }
+            for h in hs { mem::heap_free(mem::rp(h)); mem::heap_free(h); }
+        }
+
+        /// (the boundary case another run found: 441 * 8000 / 44100 is a whole sample)
+        #[test]
+        fn headers_play_as_one_stream_on_a_sample_boundary(_x in 0u8..1) {
+            let _g = enter();
+            let lens = [26u32, 15, 8, 15, 16];
+            let mut first = 0;
+            let mut hs = Vec::new();
+            for &n in &lens { hs.push(header(first, n)); first += n; }
+            let mut d = dev();
+            d.waves.insert(1, wave(8000, &hs));
+            let mut out = vec![0f32; 2 * 600];
+            mix_waves(&mut d, &mut out);
+            // every sample once, in order, then silence (frame 441 may still be the last one)
+            let step = 8000f64 / RATE as f64;
+            for (k, o) in out.chunks_exact(2).enumerate() {
+                let p = (k as f64 * step) as u32;
+                if k == 441 {
+                    prop_assert!(o[0] == 0.0 || o[0] == 80.0 / 32768.0);
+                } else {
+                    prop_assert_eq!(o[0], if p < 80 { (p + 1) as f32 / 32768.0 } else { 0.0 }, "frame {}", k);
+                }
+            }
+            prop_assert_eq!(d.waves[&1].done.len(), 5);
             for h in hs { mem::heap_free(mem::rp(h)); mem::heap_free(h); }
         }
 
