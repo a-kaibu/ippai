@@ -807,6 +807,16 @@ fn write_f32(buf: Id, v: &[f32]) {
     gpu::write_buffer(buf, 0, &b);
 }
 
+/// (host tests: the drawing thread's main names emscripten's exit, which only the wasm build
+/// links; start_tests' failing creates never run it)
+#[cfg(all(test, not(target_os = "emscripten")))]
+#[no_mangle]
+extern "C" fn emscripten_exit_with_live_runtime() -> ! {
+    loop {
+        std::thread::park();
+    }
+}
+
 #[cfg(test)]
 mod start_tests {
     use super::*;
