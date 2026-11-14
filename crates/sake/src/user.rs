@@ -4795,7 +4795,7 @@ fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
     if m != 0x100 || !(key == 0x0d || key == 0x1b) {
         // the dialog's other messages: translated and dispatched here, as Windows does (the
         // caller's loop skips its own TranslateMessage/DispatchMessage for them)
-        let t = crate::api::export("user32", "TranslateMessage");
+        let t = crate::export_once!("user32", "TranslateMessage");
         c.call(t, &[msg]);
         let d = crate::api::export("user32", if wide { "DispatchMessageW" } else { "DispatchMessageA" });
         c.call(d, &[msg]);
@@ -5891,7 +5891,7 @@ fn set_display(c: &mut Ctx, w: i32, h: i32) {
         std::mem::replace(&mut s.screen, (w, h))
     }) != (w, h)
     {
-        let f = crate::api::export("user32", "SendMessageA");
+        let f = crate::export_once!("user32", "SendMessageA");
         c.call(f, &[0xffff, 0x7e, 32, (h as u32) << 16 | (w as u32 & 0xffff)]);
     }
 }
@@ -9978,7 +9978,7 @@ mod create_struct_tests {
         free_all(&tmp);
         // the same set, or sake's own procedure: as given
         assert_eq!(cs_strings(n, c, true, true, GUEST_PROC), (n, c, vec![]));
-        let trap = crate::api::export("user32", "DefWindowProcW");
+        let trap = crate::export_once!("user32", "DefWindowProcW");
         assert_eq!(cs_strings(n, c, true, false, trap), (n, c, vec![]));
         // atoms and no name stay
         let (n3, c3, tmp) = cs_strings(0, 0xc003, true, false, GUEST_PROC);

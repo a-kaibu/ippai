@@ -255,7 +255,7 @@ pub fn init() {
     implement("ntdll", "NtCancelIoFileEx", |c| {
         let (h, io, st) = (c.a(0), c.a(1), c.a(2));
         let s = if !is_afd(h) {
-            c.call(crate::api::export("kernel32", "CancelIoEx"), &[h, 0]);
+            c.call(crate::export_once!("kernel32", "CancelIoEx"), &[h, 0]);
             0
         } else if cancel(h, io) {
             0
@@ -273,7 +273,7 @@ pub fn init() {
         if is_afd(h) {
             cancel(h, 0);
         } else {
-            c.call(crate::api::export("kernel32", "CancelIo"), &[h]);
+            c.call(crate::export_once!("kernel32", "CancelIo"), &[h]);
         }
         if st != 0 {
             wp(st, 0);

@@ -345,9 +345,9 @@ fn surface_get_dc(c: &mut Ctx) -> u32 {
     }
     let bits = lr[ps() as usize / 4];
     let hbm = crate::gdi::bitmap_over(w as i32, h as i32, bpp, bits, lr[0], r565);
-    let f = crate::api::export("gdi32", "CreateCompatibleDC");
+    let f = crate::export_once!("gdi32", "CreateCompatibleDC");
     let dc = c.call(f, &[0]);
-    let f = crate::api::export("gdi32", "SelectObject");
+    let f = crate::export_once!("gdi32", "SelectObject");
     let old = c.call(f, &[dc, hbm]);
     DCS.lock().unwrap().get_or_insert_with(HashMap::default).insert(dc, (this, hbm, old));
     putp(out, dc);

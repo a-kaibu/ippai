@@ -431,6 +431,17 @@ pub fn ordinal_name(dll: &str, ord: u32) -> Option<String> {
 }
 
 /// The trap address of a system DLL's export (made on first use).
+/// `export` of a literal name, looked up once per call site: handlers that call other APIs at
+/// run time (afd's CancelIoEx, ...) took the INDEX lock and built String keys on every call.
+/// The address of an export never changes once made.
+#[macro_export]
+macro_rules! export_once {
+    ($dll:literal, $name:literal) => {{
+        static A: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *A.get_or_init(|| $crate::api::export($dll, $name))
+    }};
+}
+
 pub fn export(dll: &str, name: &str) -> u32 {
     let d = dll_key(dll);
     let key = (d.clone(), name.to_string());
@@ -1263,5 +1274,37 @@ mod hot_tests {
             r.join().unwrap();
         }
         check_all();
+    }
+}
+
+#[cfg(test)]
+mod export_once_tests {
+    use proptest::prelude::*;
+
+    fn cancel() -> u32 {
+        crate::export_once!("kernel32", "CancelIoEx")
+    }
+
+    /// The address a call site keeps is the one export gives, from any thread, every time,
+    /// whatever was exported in between (spellings of the DLL included).
+    #[test]
+    fn a_kept_address_is_exports() {
+        let a = cancel();
+        assert_eq!(a, super::export("kernel32", "CancelIoEx"));
+        assert_eq!(a, super::export("KERNEL32.DLL", "CancelIoEx"));
+        let got: Vec<u32> = (0..8).map(|_| std::thread::spawn(cancel)).map(|t| t.join().unwrap()).collect();
+        assert!(got.iter().all(|&g| g == a));
+    }
+
+    proptest! {
+        #[test]
+        fn exports_are_stable(names in prop::collection::vec("[A-Z][a-z]{1,8}", 1..20)) {
+            let a = cancel();
+            let first: Vec<u32> = names.iter().map(|n| super::export("sakeprop", n)).collect();
+            prop_assert_eq!(cancel(), a);
+            prop_assert_eq!(super::export("kernel32", "CancelIoEx"), a);
+            let again: Vec<u32> = names.iter().map(|n| super::export("SAKEPROP.dll", n)).collect();
+            prop_assert_eq!(first, again);
+        }
     }
 }

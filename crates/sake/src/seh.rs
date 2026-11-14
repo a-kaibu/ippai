@@ -545,7 +545,7 @@ fn except_handler(c: &mut Ctx, v4: bool) -> u32 {
             }
             if v > 0 {
                 // global unwind of the frames above, ours down to this level, then the handler
-                let unwind = crate::api::export("kernel32", "RtlUnwind");
+                let unwind = crate::export_once!("kernel32", "RtlUnwind");
                 c.call(unwind, &[frame, 0, rec, 0]);
                 local_unwind(c, frame, table, first, none, level);
                 w32(frame + 12, r32(e));

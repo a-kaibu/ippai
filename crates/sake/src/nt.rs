@@ -306,7 +306,7 @@ pub mod via {
     }
 
     fn query(c: &mut Ctx, h: u32, class: u32, len: u32, s: &mut Scratch) -> Result<u32, u32> {
-        let f = hooked("NtQueryInformationFile").unwrap_or(crate::api::export("ntdll", "NtQueryInformationFile"));
+        let f = hooked("NtQueryInformationFile").unwrap_or(crate::export_once!("ntdll", "NtQueryInformationFile"));
         let (io, out) = (s.alloc(8), s.alloc(len));
         let st = c.call(f, &[h, io, out, len, class]);
         if st >= 0xc000_0000 { Err(st) } else { Ok(out) }
@@ -315,7 +315,7 @@ pub mod via {
     /// The new position of a SetFilePointer(Ex): FILE_BEGIN, FILE_CURRENT, FILE_END; Err: the
     /// Win32 error
     fn seek(c: &mut Ctx, h: u32, d: i64, how: u32) -> Result<u64, u32> {
-        let set = hooked("NtSetInformationFile").unwrap_or(crate::api::export("ntdll", "NtSetInformationFile"));
+        let set = hooked("NtSetInformationFile").unwrap_or(crate::export_once!("ntdll", "NtSetInformationFile"));
         let mut s = Scratch::new();
         let base = match how {
             0 => 0,

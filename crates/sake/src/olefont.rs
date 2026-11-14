@@ -98,7 +98,7 @@ fn release(c: &mut Ctx) -> u32 {
     };
     if let Some(f) = removed {
         for h in f.handles.keys() {
-            c.call(api::export("gdi32", "DeleteObject"), &[*h]);
+            c.call(crate::export_once!("gdi32", "DeleteObject"), &[*h]);
         }
         mem::heap_free(base);
     }
@@ -211,14 +211,14 @@ fn hfont(c: &mut Ctx) -> u32 {
     for (i, ch) in p.name.iter().take(31).enumerate() {
         w16(buffer + 28 + 2 * i as u32, *ch)
     }
-    let h = c.call(api::export("gdi32", "CreateFontIndirectW"), &[buffer]);
+    let h = c.call(crate::export_once!("gdi32", "CreateFontIndirectW"), &[buffer]);
     mem::heap_free(buffer);
     if h == 0 {
         return 0x8007000e;
     }
     let stale = with(this, |f| keep_font(f, h)).unwrap_or_default();
     for old in stale {
-        c.call(api::export("gdi32", "DeleteObject"), &[old]);
+        c.call(crate::export_once!("gdi32", "DeleteObject"), &[old]);
     }
     wp(out, h);
     0
@@ -292,11 +292,11 @@ fn metrics(c: &mut Ctx) -> u32 {
     if hr != 0 {
         return hr;
     }
-    let dc = c.call(api::export("gdi32", "CreateCompatibleDC"), &[0]);
-    let old = c.call(api::export("gdi32", "SelectObject"), &[dc, h]);
-    let ok = c.call(api::export("gdi32", "GetTextMetricsW"), &[dc, out]);
-    c.call(api::export("gdi32", "SelectObject"), &[dc, old]);
-    c.call(api::export("gdi32", "DeleteDC"), &[dc]);
+    let dc = c.call(crate::export_once!("gdi32", "CreateCompatibleDC"), &[0]);
+    let old = c.call(crate::export_once!("gdi32", "SelectObject"), &[dc, h]);
+    let ok = c.call(crate::export_once!("gdi32", "GetTextMetricsW"), &[dc, out]);
+    c.call(crate::export_once!("gdi32", "SelectObject"), &[dc, old]);
+    c.call(crate::export_once!("gdi32", "DeleteDC"), &[dc]);
     if ok != 0 { 0 } else { INVALID }
 }
 fn add_hfont(c: &mut Ctx) -> u32 {

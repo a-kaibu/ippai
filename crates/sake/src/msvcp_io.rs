@@ -2944,9 +2944,9 @@ fn fiopen(c: &mut Ctx, wide_name: bool) -> u32 {
         return 0;
     }
     if at_end {
-        let seek = crate::api::export("ucrtbase", "fseek");
+        let seek = crate::export_once!("ucrtbase", "fseek");
         if gcall(c, seek, &[A::P(fp), A::I(0), A::I(2)]) as u32 != 0 {
-            let close = crate::api::export("ucrtbase", "fclose");
+            let close = crate::export_once!("ucrtbase", "fclose");
             gcall(c, close, &[A::P(fp)]);
             return 0;
         }

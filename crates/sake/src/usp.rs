@@ -194,7 +194,7 @@ fn ScriptApplyDigitSubstitution(c: &mut Ctx) -> u32 {
 /// ScriptTextOut: the glyphs are drawn with ExtTextOutW's ETO_GLYPH_INDEX.
 fn ScriptTextOut(c: &mut Ctx) -> u32 {
     let (dc, x, y, opts, rect, glyphs, n, adv) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5), c.a(9), c.a(10), c.a(11));
-    let f = crate::api::export("gdi32", "ExtTextOutW");
+    let f = crate::export_once!("gdi32", "ExtTextOutW");
     c.call(f, &[dc, x, y, opts & 6 | 0x10, rect, glyphs, n, adv]);
     0
 }
@@ -225,7 +225,7 @@ fn ScriptStringAnalyse(c: &mut Ctx) -> u32 {
     w32(blk + 8, total as u32);
     // height: the font's line height
     let tmb = mem::heap_alloc(60, true);
-    let f = crate::api::export("gdi32", "GetTextMetricsW");
+    let f = crate::export_once!("gdi32", "GetTextMetricsW");
     c.call(f, &[dc, tmb]);
     w32(blk + 12, r32(tmb));
     mem::heap_free(tmb);
@@ -253,7 +253,7 @@ fn ScriptStringOut(c: &mut Ctx) -> u32 {
     if blk == 0 {
         return E_INVALIDARG;
     }
-    let f = crate::api::export("gdi32", "ExtTextOutW");
+    let f = crate::export_once!("gdi32", "ExtTextOutW");
     c.call(f, &[r32(blk), x, y, opts & 6, rect, blk + 20, r32(blk + 4), 0]);
     0
 }

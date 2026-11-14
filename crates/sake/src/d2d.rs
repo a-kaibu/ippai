@@ -269,7 +269,7 @@ fn CreateHwndRenderTarget(c: &mut Ctx) -> u32 {
         w32(desc + o, v);
     }
     let (sc_out, dev_out, ctx_out) = (desc + 60, desc + 64, desc + 68);
-    let create = crate::api::export("d3d11", "D3D11CreateDeviceAndSwapChain");
+    let create = crate::export_once!("d3d11", "D3D11CreateDeviceAndSwapChain");
     let hr = c.call(create, &[0, 1, 0, 0x20, 0, 0, 7, desc, sc_out, dev_out, 0, ctx_out]);
     let (sc, d3d, imm) = (r32(sc_out), r32(dev_out), r32(ctx_out));
     mem::heap_free(desc);

@@ -531,7 +531,7 @@ fn window_class(c: &mut Ctx) -> u32 {
     let wc = mem::heap_alloc(80, true);
     w32(wc, 0x8);
     let mut at = ps; // (the pointer after the style dword, aligned)
-    mem::wp(wc + at, crate::api::export("user32", "DefWindowProcW"));
+    mem::wp(wc + at, crate::export_once!("user32", "DefWindowProcW"));
     at += ps + 8;
     // hInstance, hIcon, hCursor, hbrBackground (COLOR_WINDOW + 1), lpszMenuName
     mem::wp(wc + at + 3 * ps, 6);

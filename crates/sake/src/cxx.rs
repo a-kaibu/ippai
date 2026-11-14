@@ -272,7 +272,7 @@ fn find_catch(c: &mut Ctx, rec: u32, frame: u32, descr: u32) -> bool {
             eprintln!("sake: C++ catch in frame {frame:#x} (level {level}, try {start}..{end}) at {handler:#x}");
         }
         // unwind the frames above, this one down to the try block, then call the catch
-        let unwind = crate::api::export("kernel32", "RtlUnwind");
+        let unwind = crate::export_once!("kernel32", "RtlUnwind");
         let before = UNWIND.with(|u| u.replace((frame, t)));
         c.call(unwind, &[frame, 0, rec, 0]);
         UNWIND.with(|u| u.set(before));
@@ -530,7 +530,7 @@ fn guard(c: &mut Ctx) -> u32 {
     if find_catch(c, rec, frame, descr) {
         return 0;
     }
-    let unwind = crate::api::export("kernel32", "RtlUnwind");
+    let unwind = crate::export_once!("kernel32", "RtlUnwind");
     c.call(unwind, &[reg, 0, rec, 0]);
     let info = r32(rec + 28);
     if r32(rec + 16) == 3 && info != 0 && r32(info + 4) != 0 {

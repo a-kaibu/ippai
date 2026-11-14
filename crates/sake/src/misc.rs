@@ -3483,7 +3483,7 @@ fn sh_get_file_info(c: &mut Ctx, wide: bool) -> u32 {
             w32(info + ps, i);
         }
         if flags & ICON != 0 {
-            let load = crate::api::export("user32", "LoadIconW");
+            let load = crate::export_once!("user32", "LoadIconW");
             let h = c.call(load, &[0, 32512]);
             mem::wp(info, h);
         }
@@ -3677,7 +3677,7 @@ fn browse_selchanged(c: &mut Ctx, h: u32) {
 fn browse_dlgproc(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let end = |c: &mut Ctx, r: u32| {
-        let f = crate::api::export("user32", "EndDialog");
+        let f = crate::export_once!("user32", "EndDialog");
         c.call(f, &[h, r]);
         1
     };

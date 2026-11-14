@@ -3345,9 +3345,9 @@ fn LocaleNameToLCID(c: &mut Ctx) -> u32 {
 }
 /// GetLocaleInfoEx(name, type, buffer, count): GetLocaleInfoW of the name's LCID
 fn GetLocaleInfoEx(c: &mut Ctx) -> u32 {
-    let f = crate::api::export("kernel32", "LocaleNameToLCID");
+    let f = crate::export_once!("kernel32", "LocaleNameToLCID");
     let lcid = c.call(f, &[c.a(0), 0]);
-    let f = crate::api::export("kernel32", "GetLocaleInfoW");
+    let f = crate::export_once!("kernel32", "GetLocaleInfoW");
     c.call(f, &[lcid, c.a(1), c.a(2), c.a(3)])
 }
 /// (lcid, name, count, flags)
@@ -3579,7 +3579,7 @@ fn NtQueryVirtualMemory(c: &mut Ctx) -> u32 {
     let (a, class, info, len, ret) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
     match class {
         0 => {
-            let f = crate::api::export("kernel32", "VirtualQuery");
+            let f = crate::export_once!("kernel32", "VirtualQuery");
             let n = c.call(f, &[a, info, len]);
             if ret != 0 {
                 mem::wp(ret, n);
