@@ -1586,14 +1586,17 @@ fn wave_chunks(b: &[u8]) -> Option<(usize, usize, usize)> {
         return None;
     }
     let (mut at, mut fmt, mut data) = (12, None, None);
-    while at + 8 <= b.len() {
-        let n = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap()) as usize;
+    while at < b.len() && b.len() - at >= 8 {
+        let n = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap());
+        // (64-bit sums: on wasm32 `at + 8 + n` with n = 0xFFFFFFF8 wrapped to `at`, an endless
+        // loop on the PlaySound caller's thread, review A-7)
+        let (end, next) = crate::audiofile::riff_chunk(at + 8, n, b.len());
         match &b[at..at + 4] {
             b"fmt " => fmt = Some(at + 8),
-            b"data" => data = Some((at + 8, n.min(b.len() - at - 8))),
+            b"data" => data = Some((at + 8, end - (at + 8))),
             _ => {}
         }
-        at += 8 + n + (n & 1);
+        at = next;
     }
     Some((fmt?, data?.0, data?.1))
 }
@@ -1902,6 +1905,44 @@ mod play_sound_tests {
     fn pcm_stays() {
         let b = riff(1, 2, 4, 0, &[1, 2, 3, 4]);
         assert_eq!(adpcm_to_pcm(b.clone()), b);
+    }
+
+    /// Review A-7: chunk lengths whose sum with the offset passes 2^32 (0xFFFFFFF8 made
+    /// `at += 8 + n` add 0 on wasm32: PlaySound never returned) end the walk; a data chunk of
+    /// length 0xFFFFFFFF (a streamed WAV) is the bytes the file has.
+    #[test]
+    fn huge_chunk_lengths_end() {
+        let good = riff(1, 2, 4, 0, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        for n in [0xffff_fff8u32, 0xffff_fff7, 0xffff_fff0, 0xffff_ffff, 0x8000_0001] {
+            let mut b = b"RIFF\0\0\0\0WAVEjunk".to_vec();
+            b.extend(n.to_le_bytes());
+            b.extend(&good[12..]);
+            assert_eq!(wave_chunks(&b), None, "{n:#x}");
+            assert_eq!(adpcm_to_pcm(b.clone()), b);
+        }
+        let mut b = good.clone();
+        let k = b.len() - 8 - 4;
+        b[k..k + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let (_, data, size) = wave_chunks(&b).unwrap();
+        assert_eq!((data, size), (b.len() - 8, 8));
+    }
+
+    proptest! {
+        /// Any bytes after the RIFF header: the walk ends and the data is inside the file.
+        #[test]
+        fn any_chunks(tail in proptest::collection::vec(any::<u8>(), 0..400), lens in proptest::collection::vec(any::<u32>(), 0..6)) {
+            let mut b = b"RIFF\0\0\0\0WAVE".to_vec();
+            for (i, n) in lens.iter().enumerate() {
+                b.extend([b"fmt ", b"data", b"LIST"][i % 3]);
+                b.extend(n.to_le_bytes());
+                b.extend(&tail[..tail.len().min(i * 13)]);
+            }
+            b.extend(&tail);
+            if let Some((fmt, data, size)) = wave_chunks(&b) {
+                prop_assert!(fmt <= b.len() && data + size <= b.len());
+            }
+            let _ = adpcm_to_pcm(b);
+        }
     }
 
     proptest! {

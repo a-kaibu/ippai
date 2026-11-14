@@ -28,6 +28,7 @@ const STATUS_PENDING: u32 = 0x103;
 const STATUS_CANCELLED: u32 = 0xc000_0120;
 const STATUS_NOT_FOUND: u32 = 0xc000_0225;
 const STATUS_INVALID_PARAMETER: u32 = 0xc000_000d;
+const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xc000_009a;
 
 /// A socket's state as the poll sees it (ws2.rs fills it in)
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -91,9 +92,15 @@ struct Poll {
 static POLLS: Mutex<Vec<Poll>> = Mutex::new(Vec::new());
 
 /// Size of AFD_POLL_INFO with `n` handles (`ptr`: the pointer size)
-pub fn info_size(n: u32, ptr: u32) -> u32 {
-    16 + n * (ptr + 8).next_multiple_of(ptr)
+/// (in 64 bits: `16 + n * 12` in u32 wrapped for a guest's n = 0x55555556 to 24, passed the
+/// buffer check and the handles were then collected for 1.4 billion entries, review A-7)
+pub fn info_size(n: u32, ptr: u32) -> u64 {
+    16 + n as u64 * (ptr as u64 + 8).next_multiple_of(ptr as u64)
 }
+
+/// Most handles one poll takes (mio and libuv ask for one; Windows has no fixed limit, but the
+/// list is held here per pending poll).
+pub const MAX_HANDLES: u32 = 1 << 16;
 
 /// The handles that fired (socket, events true & asked; LOCAL_CLOSE when gone) of `asked`
 pub fn fired(asked: &[(u32, u32)], now: impl Fn(u32) -> u32) -> Vec<(u32, u32)> {
@@ -124,7 +131,7 @@ fn finish(p: &Poll, status: u32, got: &[(u32, u32)]) {
         // (Timeout and Exclusive as they were asked)
         let n = got.len() as u32;
         let size = info_size(n, k);
-        if p.out != 0 && p.out_len >= size {
+        if p.out != 0 && p.out_len as u64 >= size {
             w32(p.out + 8, n);
             let es = (k + 8).next_multiple_of(k);
             for (i, &(h, e)) in got.iter().enumerate() {
@@ -136,7 +143,7 @@ fn finish(p: &Poll, status: u32, got: &[(u32, u32)]) {
                 w32(at + k, e);
                 w32(at + k + 4, 0);
             }
-            info = size;
+            info = size as u32;
         }
     }
     if p.iosb != 0 {
@@ -197,8 +204,11 @@ pub fn ioctl(c: &mut Ctx) -> Option<u32> {
         return Some(STATUS_INVALID_PARAMETER);
     }
     let n = r32(inp + 8);
-    if info_size(n, k) > inlen || n == 0 {
+    if info_size(n, k) > inlen as u64 || n == 0 {
         return Some(STATUS_INVALID_PARAMETER);
+    }
+    if n > MAX_HANDLES {
+        return Some(STATUS_INSUFFICIENT_RESOURCES);
     }
     let es = (k + 8).next_multiple_of(k);
     let handles = (0..n).map(|i| (rp(inp + 16 + i * es), r32(inp + 16 + i * es + k))).collect();
@@ -282,6 +292,9 @@ mod tests {
         assert_eq!(info_size(2, 4), 40);
         assert_eq!(info_size(1, 8), 32);
         assert_eq!(info_size(3, 8), 64);
+        // (wrapped to 24 in u32)
+        assert_eq!(info_size(0x5555_5556, 4), 16 + 0x5555_5556u64 * 12);
+        assert_eq!(info_size(u32::MAX, 8), 16 + u32::MAX as u64 * 16);
     }
 
     #[test]
@@ -347,8 +360,20 @@ mod tests {
         fn entries_fit(n in 1u32..1000, x64 in any::<bool>()) {
             let k = if x64 { 8 } else { 4 };
             let es = (k + 8u32).next_multiple_of(k);
-            prop_assert_eq!(16 + n * es, info_size(n, k));
+            prop_assert_eq!(16 + n as u64 * es as u64, info_size(n, k));
             prop_assert!(es >= k + 8);
+        }
+
+        /// Review A-7: for every count the guest can pass, the size does not wrap: a buffer of
+        /// `inlen` bytes passes the check only when it holds all `n` entries.
+        #[test]
+        fn size_never_wraps(n: u32, inlen: u32, x64 in any::<bool>()) {
+            let k = if x64 { 8 } else { 4 };
+            let size = info_size(n, k);
+            prop_assert!(size >= 16 + n as u64 * 12);
+            if size <= inlen as u64 {
+                prop_assert!(n as u64 * (k as u64 + 8) <= inlen as u64);
+            }
         }
     }
 }

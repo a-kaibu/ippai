@@ -310,8 +310,16 @@ pub fn header(b: &[u8]) -> Result<Header, Error> {
     if h.packet_size == 0 {
         return Err(Error::Bad("packet size 0"));
     }
+    // (each packet is read into a Vec of this size: 0x7fffffff..0xffffffff from a damaged
+    // header asked for 2-4 GiB, an abort on wasm32, review A-7; real files use <= 64 KiB)
+    if h.packet_size > MAX_PACKET {
+        return Err(Error::Bad("packet size past 1 MiB"));
+    }
     Ok(h)
 }
+
+/// The largest data packet a header may declare.
+pub const MAX_PACKET: u32 = 1 << 20;
 
 fn stream_properties(b: &[u8]) -> Option<Stream> {
     let ty = guid_at(b, 0)?;

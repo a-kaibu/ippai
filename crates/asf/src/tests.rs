@@ -214,3 +214,24 @@ fn matches_ffprobe() {
     }
     assert!(r.header.duration >= 29_000_000 && r.header.duration <= 31_000_000, "{}", r.header.duration);
 }
+
+/// Review A-7: a header declaring packets of 1 MiB + 1 to 4 GiB is refused (each packet is read
+/// into a Vec of that size: 2-4 GiB is an abort on wasm32); 1 MiB still opens.
+#[test]
+fn huge_packet_sizes_are_refused() {
+    let m = Mux { packet_size: 1024, preroll: 0, streams: two_streams(None), attributes: vec![], compress_small: false };
+    let f = m.write(&[(2, true, 0, vec![7; 3000])], 1000);
+    // (File Properties: minimum and maximum data packet size, side by side)
+    let pat: Vec<u8> = [1024u32.to_le_bytes(), 1024u32.to_le_bytes()].concat();
+    let at = f.windows(8).position(|w| w == &pat[..]).unwrap();
+    for (size, ok) in [(MAX_PACKET, true), (MAX_PACKET + 1, false), (0x7fff_ffff, false), (0xffff_ffff, false), (0, false)] {
+        let mut g = f.clone();
+        g[at..at + 4].copy_from_slice(&size.to_le_bytes());
+        g[at + 4..at + 8].copy_from_slice(&size.to_le_bytes());
+        let h = read_header(&mut g.as_slice());
+        assert_eq!(h.is_ok(), ok, "{size:#x}");
+        if ok {
+            assert_eq!(h.unwrap().packet_size, size);
+        }
+    }
+}

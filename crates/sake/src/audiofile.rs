@@ -98,12 +98,24 @@ fn pcm_frames(rate: u32) -> u64 {
     (rate as u64 / 10).max(1)
 }
 
+/// Where a RIFF chunk of `len` bytes (from the file) whose body starts at `body` ends inside a
+/// file of `file` bytes, and where the next chunk starts (padded to even): in 64 bits, so that
+/// on wasm32 a length of 0xFFFFFFFF (streamed WAVs: ffmpeg writes it for piped output) or
+/// 0xFFFFFFF8 does not wrap `body + len` to before `body` (an end before the start, or a next
+/// chunk at the same offset: an endless loop, review A-7). The next start is always past `body`.
+pub(crate) fn riff_chunk(body: usize, len: u32, file: usize) -> (usize, usize) {
+    let end = (body as u64 + len as u64).min(file as u64) as usize;
+    let next = (body as u64 + len as u64 + (len & 1) as u64).min(usize::MAX as u64) as usize;
+    (end.max(body.min(file)), next)
+}
+
 fn wave(b: &[u8]) -> Option<Track> {
-    let mut o = 12;
+    let mut o = 12usize;
     let mut fmt: Option<(u16, u16, u32, u32, u16, u16)> = None;
-    while o + 8 <= b.len() {
-        let (id, len) = (&b[o..o + 4], u32le(b, o + 4)? as usize);
+    while o < b.len() && b.len() - o >= 8 {
+        let (id, len32) = (&b[o..o + 4], u32le(b, o + 4)?);
         let body = o + 8;
+        let (end, next) = riff_chunk(body, len32, b.len());
         if id == b"fmt " {
             fmt = Some((
                 u16le(b, body)?,
@@ -120,7 +132,6 @@ fn wave(b: &[u8]) -> Option<Track> {
             }
         } else if id == b"data" {
             let (tag, ch, rate, avg, align, bits) = fmt?;
-            let end = (body + len).min(b.len());
             if ch == 0 || rate == 0 {
                 return None;
             }
@@ -151,7 +162,7 @@ fn wave(b: &[u8]) -> Option<Track> {
                 _ => None,
             };
         }
-        o = body + len + (len & 1);
+        o = next;
     }
     None
 }
@@ -213,10 +224,12 @@ pub fn boxes(b: &[u8], from: usize, to: usize) -> Vec<([u8; 4], usize, usize)> {
         let (body, end) = match size {
             0 => (o + 8, to),
             1 => match u64be(b, o + 8) {
-                Some(s) if s >= 16 => (o + 16, o.saturating_add(s as usize)),
+                // (a size past the address space is past `to`: no `as usize` truncation, whose
+                // low bits 0 made `end == o` and the loop push boxes for ever on wasm32)
+                Some(s) if s >= 16 => (o + 16, usize::try_from(s).ok().and_then(|s| o.checked_add(s)).unwrap_or(usize::MAX)),
                 _ => break,
             },
-            s if s >= 8 => (o + 8, o + s as usize),
+            s if s >= 8 => (o + 8, o.saturating_add(s as usize)),
             _ => break,
         };
         if end > to {
@@ -244,7 +257,7 @@ fn mp4(b: &[u8]) -> Option<Track> {
             continue;
         }
         let (mds, _) = child(b, ds, de, b"mdhd")?;
-        let timescale = if b[mds] == 1 { u32be(b, mds + 20)? } else { u32be(b, mds + 12)? };
+        let timescale = if *b.get(mds)? == 1 { u32be(b, mds + 20)? } else { u32be(b, mds + 12)? };
         let (ns, ne) = child(b, ds, de, b"minf")?;
         let (ss, se) = child(b, ns, ne, b"stbl")?;
         let mut t = sound_track(b, ss, se, timescale, b.len() as u64)?;
@@ -402,11 +415,11 @@ pub fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32, file_len: u64
         for _ in 0..per {
             let Some(&s) = sizes.get(k) else { break };
             packets.push((o, s));
-            o += s as u64;
+            o = o.saturating_add(s as u64);
             k += 1;
         }
     }
-    if packets.len() != count || packets.iter().any(|&(o, s)| o + s as u64 > file_len) {
+    if packets.len() != count || packets.iter().any(|&(o, s)| o.checked_add(s as u64).is_none_or(|e| e > file_len)) {
         return None;
     }
     let (ts, _) = child(b, ss, se, b"stts")?;
@@ -597,8 +610,75 @@ mod tests {
         assert_eq!(open(&f).unwrap().duration, Some(5_000_000));
     }
 
+    /// Review A-7: a streamed WAV (data length 0xFFFFFFFF, as ffmpeg writes for piped output)
+    /// plays the bytes the file has; chunk lengths 0xFFFFFFF8.. (on wasm32 `body + len`
+    /// wrapped to the same offset: an endless loop) end the walk; packets stay in the file.
+    #[test]
+    fn wave_huge_chunk_lengths() {
+        let data: Vec<u8> = (0..4 * 3000).map(|i| i as u8).collect();
+        let mut f = wav(1, 2, 44100, 16, &data);
+        let n = f.len();
+        f[n - data.len() - 4..n - data.len()].copy_from_slice(&u32::MAX.to_le_bytes());
+        let t = open(&f).unwrap();
+        assert_eq!(t.frames.iter().sum::<u32>(), 3000);
+        assert!(t.packets.iter().all(|&(o, s)| o + s as u64 <= f.len() as u64));
+        // an odd last byte past whole frames: not a frame
+        f.push(7);
+        assert_eq!(open(&f).unwrap().frames.iter().sum::<u32>(), 3000);
+        for len in [0xffff_fff8u32, 0xffff_fff7, 0xffff_fffe, 0xffff_ffff, 0x8000_0000] {
+            let mut g = b"RIFF\0\0\0\0WAVEjunk".to_vec();
+            g.extend(len.to_le_bytes());
+            g.extend(&wav(1, 2, 44100, 16, &data)[12..]);
+            assert_eq!(open(&g), None, "{len:#x}");
+        }
+        // an MP3 data chunk of length 0xFFFFFFFF (tag 0x55): the frames up to the end
+        let mut m = wav(0x55, 2, 44100, 0, &[]);
+        let n = m.len();
+        m[n - 4..].copy_from_slice(&u32::MAX.to_le_bytes());
+        for i in 0..4 {
+            m.extend(frame(i % 2 == 0, i as u8));
+        }
+        let t = open(&m).unwrap();
+        assert_eq!(t.packets.len(), 4);
+        assert!(t.packets.iter().all(|&(o, s)| o + s as u64 <= m.len() as u64));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// The chunk arithmetic over the whole wasm32 range (offsets and files up to 4 GB, any
+        /// length): the end is inside [body, file] (or the file's end when the body is past it),
+        /// the next chunk starts past the body: the walk always advances and never slices
+        /// backwards.
+        #[test]
+        fn riff_chunk_in_32_bits(body in 8usize..=u32::MAX as usize, len: u32, file in 0usize..=u32::MAX as usize) {
+            let (end, next) = riff_chunk(body, len, file);
+            prop_assert!(end <= file.max(body.min(file)));
+            prop_assert!(end >= body.min(file));
+            prop_assert!(next > body || len == 0 && next == body);
+            prop_assert_eq!(next as u64, body as u64 + len as u64 + (len & 1) as u64);
+        }
+
+        /// Box sizes near 2^32 and 2^64 (the 64-bit form too): the box walk ends, every box is
+        /// inside what it was given.
+        #[test]
+        fn boxes_with_any_sizes(sizes in proptest::collection::vec(prop_oneof![Just(0u64), Just(1), 8u64..64, Just(0xffff_fff8), Just(0xffff_ffff), Just(1 << 32), Just(u64::MAX), Just(u64::MAX - 7)], 1..8)) {
+            let mut b = Vec::new();
+            for &s in &sizes {
+                if s > u32::MAX as u64 {
+                    b.extend(1u32.to_be_bytes());
+                    b.extend(b"free");
+                    b.extend(s.to_be_bytes());
+                } else {
+                    b.extend((s as u32).to_be_bytes());
+                    b.extend(b"free");
+                    b.resize(b.len() + (s as usize).saturating_sub(8).min(56), 0);
+                }
+            }
+            for (_, body, end) in boxes(&b, 0, b.len()) {
+                prop_assert!(body <= end && end <= b.len());
+            }
+        }
 
         /// Any packet sizes in any chunking, 32- or 64-bit offsets: every packet found where it is.
         #[test]

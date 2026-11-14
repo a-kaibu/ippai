@@ -241,7 +241,9 @@ pub fn decode(chunk: &[u8]) -> Result<Program, String> {
         let op = t & 0x7ff;
         if op == OP_CUSTOMDATA {
             let n = *w.get(p + 1).ok_or("truncated customdata")? as usize;
-            if n < 2 || p + n > len {
+            // (checked: on wasm32 `p + n` with n near 2^32 wrapped below `len` and the slice
+            // below panicked, the VM gone, review A-7)
+            if n < 2 || p.checked_add(n).is_none_or(|e| e > len) {
                 return Err("bad customdata".into());
             }
             insts.push(Inst {
@@ -326,6 +328,33 @@ pub fn decode(chunk: &[u8]) -> Result<Program, String> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
+    fn shdr(words: &[u32]) -> Vec<u8> {
+        let mut w = vec![0x0040_0050u32, words.len() as u32 + 2];
+        w.extend(words);
+        w.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    /// Review A-7: an OP_CUSTOMDATA length near 2^32 is an error (on wasm32 `p + n` wrapped
+    /// below the program's length and the slice panicked); a good one still decodes.
+    #[test]
+    fn customdata_lengths() {
+        for n in [0u32, 1, 5, 0xffff_ffff, 0xffff_fffe, 0xffff_fffd, 0x8000_0000] {
+            assert!(super::decode(&shdr(&[super::OP_CUSTOMDATA, n, 1, 2])).is_err(), "{n:#x}");
+        }
+        let p = super::decode(&shdr(&[super::OP_CUSTOMDATA, 4, 7, 8])).unwrap();
+        assert_eq!(p.insts[0].data, [7, 8]);
+    }
+
+    proptest! {
+        /// Any words: decode returns, no panic.
+        #[test]
+        fn any_words(words in proptest::collection::vec(prop_oneof![any::<u32>(), Just(super::OP_CUSTOMDATA), 0u32..8, Just(u32::MAX)], 0..40)) {
+            let _ = super::decode(&shdr(&words));
+        }
+    }
+
     /// (every compute instruction wgsl translates has its operand count checked: the fuzzer's
     /// ld_structured with 3 operands indexed past them)
     #[test]

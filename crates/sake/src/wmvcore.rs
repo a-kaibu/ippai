@@ -1122,8 +1122,9 @@ fn sr_get_max_stream_sample_size(c: &mut Ctx) -> u32 {
     let Some(st) = h.stream(s) else { return E_INVALIDARG };
     // (the largest object the file can hold: its packets', or a picture's when uncompressed)
     let n = match st.kind {
-        asf::Kind::Video { width, height } => (width * height * 4).max(h.packet_size),
-        _ => h.packet_size * 4,
+        // (saturating: a header's width and height are any u32)
+        asf::Kind::Video { width, height } => width.saturating_mul(height).saturating_mul(4).max(h.packet_size),
+        _ => h.packet_size.saturating_mul(4),
     };
     w32(out, n);
     0

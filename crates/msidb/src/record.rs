@@ -102,7 +102,9 @@ impl Record {
             return Err(ERROR_DATATYPE_MISMATCH);
         };
         let at = self.pos[i].min(d.len());
-        let end = (at + n).min(d.len());
+        // (saturating: a count near usize::MAX after a first read wrapped `end` below `at`
+        // and the slice panicked, review A-7)
+        let end = at.saturating_add(n).min(d.len());
         let out = d[at..end].to_vec();
         self.pos[i] = end;
         Ok(out)
@@ -134,5 +136,33 @@ mod tests {
         assert_eq!(r.read_stream(1, 4).unwrap(), b"ef");
         assert_eq!(r.read_stream(1, 4).unwrap(), b"");
         assert_eq!(r.set(2, Field::Null), Err(ERROR_INVALID_PARAMETER));
+    }
+
+    /// Review A-7: a count near usize::MAX after a first read (`at + n` wrapped below `at`).
+    #[test]
+    fn huge_counts_read_the_rest() {
+        for n in [usize::MAX, usize::MAX - 1, usize::MAX - 5, u32::MAX as usize] {
+            let mut r = Record::new(1);
+            r.set(1, Field::Stream(b"abcdef".to_vec())).unwrap();
+            assert_eq!(r.read_stream(1, 2).unwrap(), b"ab");
+            assert_eq!(r.read_stream(1, n).unwrap(), b"cdef");
+            assert_eq!(r.read_stream(1, n).unwrap(), b"");
+        }
+    }
+
+    proptest::proptest! {
+        /// Any counts in a row: the reads are the stream in order, never past its end.
+        #[test]
+        fn reads_in_order(data in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64), ns in proptest::collection::vec(proptest::prop_oneof![0usize..10, proptest::prelude::Just(usize::MAX), (usize::MAX - 16)..=usize::MAX], 1..12)) {
+            let mut r = Record::new(1);
+            r.set(1, Field::Stream(data.clone())).unwrap();
+            let mut got = Vec::new();
+            for &n in &ns {
+                let b = r.read_stream(1, n).unwrap();
+                proptest::prop_assert!(b.len() <= n);
+                got.extend(b);
+            }
+            proptest::prop_assert_eq!(&got[..], &data[..got.len()]);
+        }
     }
 }
