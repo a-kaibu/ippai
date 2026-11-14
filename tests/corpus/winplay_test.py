@@ -285,3 +285,30 @@ class TitleStill(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Cores(unittest.TestCase):
+    """cores(): CPU of the game's processes between two samples, as corpus.mjs's storyCores"""
+
+    def test_examples(self):
+        self.assertEqual(winplay.cores({1: 1.0}, {1: 3.0}, 2.0), 1.0)
+        # (a process that started in between counts from 0; one that exited keeps its last sample)
+        self.assertEqual(winplay.cores({1: 1.0}, {1: 1.0, 2: 4.0}, 4.0), 1.0)
+        self.assertEqual(winplay.cores({}, {}, 1.0), 0.0)
+        self.assertIsNone(winplay.cores({1: 0.0}, {1: 1.0}, 0))
+
+    def test_split_windows_add_up(self):
+        # (property: for processes whose CPU only grows, and which come and go, the cores of
+        # [a, c] are the time-weighted cores of [a, b] and [b, c], and never negative)
+        rnd = random.Random(89)
+        for _ in range(3000):
+            seen, samples = {}, []
+            for _ in range(3):
+                for pid in rnd.sample(range(8), rnd.randrange(0, 8)):
+                    seen[pid] = seen.get(pid, 0.0) + rnd.random() * 5
+                samples.append(dict(seen))
+            a, b, c = samples
+            t1, t2 = rnd.uniform(0.1, 30), rnd.uniform(0.1, 30)
+            x, y, z = winplay.cores(a, b, t1), winplay.cores(b, c, t2), winplay.cores(a, c, t1 + t2)
+            self.assertGreaterEqual(min(x, y, z), 0)
+            self.assertAlmostEqual(z * (t1 + t2), x * t1 + y * t2, places=6)

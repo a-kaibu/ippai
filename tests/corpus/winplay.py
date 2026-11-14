@@ -11,7 +11,7 @@ Writes OUT/result.json with the fields corpus.mjs writes. Standard library only 
   python winplay.py accept-driver-prompt SECONDS  answers the unsigned-driver prompt meanwhile
   python winplay.py meta TITLES.tsv ID EXE META.json   (any OS) what `play` needs of titles.tsv
   python winplay.py play GAME OUT                 GAME/meta.json + GAME/x: run with its settings
-  python winplay.py run EXE OUT [STEPS]           env: ARGS, PRE=x,y, STORY_AT=x,y, TITLE_STILL (2), STORY (30),
+  python winplay.py run EXE OUT [STEPS]           env: ARGS, PRE=x,y, STORY_AT=x,y, TITLE_STILL (2), STORY (30), IDLE (0),
                                                   TITLE_MAX (120)
 
 Japanese games on an English Windows: `run` gives the game (and every exe beside it) an external
@@ -83,6 +83,14 @@ def stats(w, h, rgb):
     for i in range(0, len(rgb), 3071):
         hsh = (hsh * 31 + rgb[i]) & 0xffffffff
     return n, hsh
+
+
+def cores(before, after, secs):
+    """CPU cores the game's processes used between two samples ({pid: CPU seconds}, kernel and
+    user, of every process seen so far: one that exited keeps its last sample, one that started
+    in between counts from 0), as corpus.mjs's storyCores / idleCores"""
+    if secs <= 0: return None
+    return sum(max(0.0, t - before.get(pid, 0.0)) for pid, t in after.items()) / secs
 
 
 def small(w, h):
@@ -251,6 +259,20 @@ def pids_under(d):
     return out
 
 
+def cpu_times(pids):
+    """{pid: kernel + user CPU seconds} of those processes (GetProcessTimes, 100 ns units)"""
+    out = {}
+    for pid in pids:
+        h = k32.OpenProcess(0x1000, False, pid)  # (PROCESS_QUERY_LIMITED_INFORMATION)
+        if not h: continue
+        c, e, kt, ut = W.FILETIME(), W.FILETIME(), W.FILETIME(), W.FILETIME()
+        if k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(ut)):
+            ft = lambda f: (f.dwHighDateTime << 32 | f.dwLowDateTime) / 1e7
+            out[pid] = ft(kt) + ft(ut)
+        k32.CloseHandle(h)
+    return out
+
+
 def game_window(pids):
     """the biggest visible top-level window of those processes: (hwnd, (sx, sy, w, h)) or None"""
     found = []
@@ -410,9 +432,15 @@ def run(exe, out, steps):
     save = lambda: open(os.path.join(out, 'result.json'), 'w', encoding='utf-8').write(json.dumps(res, ensure_ascii=False, indent=1))
     p = subprocess.Popen(f'"{exe}" {os.environ.get("ARGS", "")}'.strip(), cwd=d)
     win = [None, None]  # hwnd, rect
+    cpu = {}  # (every game process seen: its last CPU seconds, for cores())
+
+    def sample():
+        cpu.update(cpu_times(pids_under(d) | ({p.pid} if p.poll() is None else set())))
+        return dict(cpu)
 
     def look():
         pids = pids_under(d) | ({p.pid} if p.poll() is None else set())
+        cpu.update(cpu_times(pids))
         g = game_window(pids)
         if not g: return None
         win[0], win[1] = g
@@ -466,6 +494,9 @@ def run(exe, out, steps):
                 res['title'] = now()
                 break
         res['firstWindow'] = first
+        # (the start's CPU: cores the game used from launch to the title, for #89/#217-2's
+        # "is it the CPU or a timed logo" question)
+        res['titleCores'] = cores({}, sample(), now()) if res['title'] is not None else None
         if last: res['size'] = [last[0], last[1]]
         if res['title'] is None:
             shot('notitle')
@@ -495,6 +526,7 @@ def run(exe, out, steps):
         shot('steps')
         at = [float(v) for v in os.environ['STORY_AT'].split(',')] if os.environ.get('STORY_AT') else None
         hashes, s = set(), 0
+        c0, s0 = sample(), now()
         while s < STORY and alive():
             cw, ch = (win[1][2], win[1][3]) if win[1] else (640, 480)
             click(*(at or (cw / 2, round(ch * 0.85))))
@@ -503,7 +535,15 @@ def run(exe, out, steps):
                 f = shot(f'story-{s + 2}')
                 if f: hashes.add(stats(*f)[1])
             s += 2
+        c1 = sample()
+        res['storyCores'] = cores(c0, c1, now() - s0)
         res['storyFrames'] = len(hashes)
+        # (IDLE seconds more without a click: CPU on a still screen, as corpus.mjs's idleCores)
+        IDLE = float(os.environ.get('IDLE', 0))
+        if IDLE > 0 and alive():
+            t = now()
+            time.sleep(IDLE)
+            res['idleCores'] = cores(c1, sample(), now() - t)
         res['leftTitle'] = any(h != res['titleHash'] for h in hashes)
         res['crashed'] = not alive()
     except Exception as e:
