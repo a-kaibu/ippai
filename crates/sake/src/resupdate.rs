@@ -857,6 +857,28 @@ mod tests {
     }
 
     proptest! {
+        /// actctx reads a manifest source PE only as far as pe_span says: the resources read from
+        /// that prefix are those of the whole file, an archive appended after the sections is not
+        /// read, and damaged headers never panic.
+        #[test]
+        fn manifest_sources_stop_at_the_sections(t in tree(), layout in 0..3usize, overlay in 0usize..5000, hits in proptest::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 0..4)) {
+            let mut b = match layout {
+                0 => image(&[(b".rsrc", 0, 0x4000_0040)], Some(&t)),
+                1 => image(&[(b".data", 0x10, 0xc000_0040), (b".rsrc", 0, 0x4000_0040)], Some(&t)),
+                _ => image(&[(b".rsrc", 0, 0x4000_0040), (b".reloc", 0x30, 0x4200_0040)], Some(&t)),
+            };
+            let sections = b.len();
+            b.extend((0..overlay).map(|i| (i * 13) as u8));
+            let span = crate::actctx::pe_span(&b[..b.len().min(0x1000)]).unwrap();
+            prop_assert!(span as usize <= sections);
+            prop_assert_eq!(read(&b[..span as usize]), read(&b));
+            for (at, v) in hits {
+                let i = at.index(b.len());
+                b[i] = v;
+            }
+            let _ = crate::actctx::pe_span(&b[..b.len().min(0x1000)]);
+        }
+
         /// Any number of damaged bytes anywhere (headers, section table, directory): reading and
         /// writing never panic, and the data read is never more than the file
         #[test]

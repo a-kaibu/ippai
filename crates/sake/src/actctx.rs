@@ -1016,20 +1016,23 @@ pub fn section_find(sec: &[u8], key: &Key) -> Option<(u32, u32, u32)> {
                 if get32(sec, e)? != h {
                     continue;
                 }
-                let (no, nl) = (get32(sec, e + 4)?, get32(sec, e + 8)?);
-                let name: Vec<u16> = sec.get(no as usize..no.checked_add(nl)? as usize)?.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                // (the section may be the guest's copy, written over: every offset checked, an odd
+                // name length is not a whole last unit)
+                let at = |k: u32| get32(sec, e.checked_add(k)?);
+                let (no, nl) = (at(4)?, at(8)?);
+                let name: Vec<u16> = sec.get(no as usize..no.checked_add(nl)? as usize)?.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
                 if eq_nocase(&name, s) {
-                    return Some((get32(sec, e + 12)?, get32(sec, e + 16)?, get32(sec, e + 20)?));
+                    return Some((at(12)?, at(16)?, at(20)?));
                 }
             }
             None
         }
         Key::Guid(g) if magic == GUIDSECTION_MAGIC => {
             for i in 0..count {
-                let e = index.checked_add(i.checked_mul(28)?)? as usize;
-                if sec.get(e..e + 16)? == g {
-                    let e = e as u32;
-                    return Some((get32(sec, e + 16)?, get32(sec, e + 20)?, get32(sec, e + 24)?));
+                let e = index.checked_add(i.checked_mul(28)?)?;
+                if sec.get(e as usize..(e as usize).checked_add(16)?)? == g {
+                    let at = |k: u32| get32(sec, e.checked_add(k)?);
+                    return Some((at(16)?, at(20)?, at(24)?));
                 }
             }
             None
@@ -1454,6 +1457,33 @@ fn register(a: Actx) -> u32 {
 }
 
 /// The directory part of a Windows path, with its backslash.
+fn read_manifest_source(h: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = kura::fs::File::open(h)?;
+    let mut head = vec![0u8; 0x1000];
+    let mut got = 0;
+    while got < head.len() {
+        let n = f.read(&mut head[got..])?;
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    head.truncate(got);
+    let span = pe_span(&head);
+    f.seek(SeekFrom::Start(0))?;
+    let mut all = Vec::new();
+    match span {
+        Some(n) => {
+            f.take(n).read_to_end(&mut all)?;
+        }
+        None => {
+            f.read_to_end(&mut all)?;
+        }
+    }
+    Ok(all)
+}
+
 fn dir_of(p: &str) -> String {
     match p.rfind('\\') {
         Some(i) => p[..=i].to_string(),
@@ -1461,9 +1491,36 @@ fn dir_of(p: &str) -> String {
     }
 }
 
+/// How many bytes of a PE file hold its headers and sections (`head`: its first bytes): what a
+/// manifest resource is read from. None: not a PE whose section table is in `head`.
+pub(crate) fn pe_span(head: &[u8]) -> Option<u64> {
+    let g16 = |o: usize| Some(u16::from_le_bytes(head.get(o..o.checked_add(2)?)?.try_into().ok()?) as usize);
+    let g32 = |o: usize| Some(u32::from_le_bytes(head.get(o..o.checked_add(4)?)?.try_into().ok()?));
+    if head.get(..2)? != b"MZ" {
+        return None;
+    }
+    let pe = g32(0x3c)? as usize;
+    if head.get(pe..pe.checked_add(4)?)? != b"PE\0\0" {
+        return None;
+    }
+    let n = g16(pe + 6)?;
+    let opt = g16(pe + 20)?;
+    let table = pe + 24 + opt;
+    let mut end = g32(pe + 24 + 60).unwrap_or(0) as u64; // SizeOfHeaders
+    for i in 0..n {
+        let e = table + i * 40;
+        let (size, at) = (g32(e + 16)? as u64, g32(e + 20)? as u64);
+        end = end.max(at + size);
+    }
+    Some(end)
+}
+
+/// A file's bytes for a manifest: a PE file only as far as its sections go (a program's own exe
+/// with a large archive appended after them was read whole, on the guest thread, for its
+/// resource tree).
 fn read_file(w: &str) -> Result<Vec<u8>, u32> {
     match crate::files::resolve(w) {
-        Some(h) if !crate::files::is_dir(&h) => kura::fs::read(&h).map_err(|_| ERROR_FILE_NOT_FOUND),
+        Some(h) if !crate::files::is_dir(&h) => read_manifest_source(&h).map_err(|_| ERROR_FILE_NOT_FOUND),
         _ => {
             let d = dir_of(&crate::files::full_path(w));
             Err(if d.len() <= 3 || crate::files::resolve(&d).is_some() { ERROR_FILE_NOT_FOUND } else { ERROR_PATH_NOT_FOUND })
@@ -1670,7 +1727,13 @@ fn process_default() -> u32 {
         }
     }
     let mut d = DEFAULT.lock().unwrap();
-    *d.get_or_insert(h)
+    // (another thread made it first: ours goes, its guest blocks with it)
+    let won = *d.get_or_insert(h);
+    drop(d);
+    if won != h && h != 0 {
+        release(h);
+    }
+    won
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1833,12 +1896,12 @@ fn guest_section(h: u32, id: u32) -> Option<(u32, u32)> {
     }
     mem::write(p, &bytes);
     let s = (p, bytes.len() as u32);
-    with_ctxs(|m| {
-        if let Some(a) = m.get_mut(&h) {
-            a.sections.insert(id, s);
-        }
-    });
-    Some(s)
+    // (two builders at once: the first's stays, the other's block goes)
+    let kept = with_ctxs(|m| m.get_mut(&h).map(|a| *a.sections.entry(id).or_insert(s)));
+    if kept != Some(s) {
+        mem::heap_free(p);
+    }
+    kept
 }
 
 /// ACTCTX_SECTION_KEYED_DATA field offsets: (lpData, ulLength, lpSectionGlobalData,
@@ -2719,6 +2782,26 @@ mod tests {
     }
 
     proptest! {
+        /// A built string section written over (the guest's copy): its entries' name offsets
+        /// and lengths (odd ones, ones near 4G) and data words anything, every key looked up:
+        /// "not found" or a find, never a panic (an odd length indexed past its last byte).
+        #[test]
+        fn written_over_sections_never_panic(keys in proptest::collection::btree_set(arb_name(), 1..8), over in proptest::collection::vec((0u32..8, 1u32..6, prop_oneof![Just(u32::MAX), Just(u32::MAX - 3), Just(1u32), Just(3), Just(5), any::<u32>()]), 1..10)) {
+            let keys: Vec<String> = keys.into_iter().collect();
+            let ents: Vec<Ent> = keys.iter().map(|k| Ent { keys: vec![Key::Str(w16s(k))], roster: 1, data: Box::new(|_, _| vec![0; 8]) }).collect();
+            let mut sec = build_section(false, &ents, b"");
+            let index = get32(&sec, 24).unwrap();
+            for (i, w, v) in over {
+                let at = (index + i * 24 + w * 4) as usize;
+                if at + 4 <= sec.len() {
+                    sec[at..at + 4].copy_from_slice(&v.to_le_bytes());
+                }
+            }
+            for k in &keys {
+                let _ = section_find(&sec, &Key::Str(w16s(k)));
+            }
+        }
+
         /// Every key of a built string section is found (in any case), with its data and roster
         /// index; a key that is not there is not.
         #[test]
