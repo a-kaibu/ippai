@@ -300,63 +300,52 @@ const DECODERS: [(u32, &str, &str, &str, &str, &[u8]); 4] = [
     (0xb96b3cb0, "Built-in GIF Codec", "GIF", "*.GIF", "image/gif", b"GIF8"),
     (0xb96b3caf, "Built-in PNG Codec", "PNG", "*.PNG", "image/png", b"\x89PNG\r\n\x1a\n"),
 ];
-/// (bytes of the structs, bytes of the strings and signatures after them)
-fn decoders_size() -> (u32, u32) {
-    let ps = mem::ps();
-    let one = 32 + 7 * ps + 16;
-    let extra: u32 = DECODERS.iter().map(|d| 2 * (d.1.len() + 1 + d.2.len() + 1 + d.3.len() + 1 + d.4.len() + 1) as u32 + 2 * d.5.len() as u32 + 2).sum();
-    (one * DECODERS.len() as u32, extra)
+/// The whole GdipGetImageDecoders answer for a buffer at `base` (pointer size `ps`): the
+/// ImageCodecInfo structs, then each codec's five strings and its signature pattern and mask.
+/// GdipGetImageDecodersSize reports its length, so the two can't disagree (#162: the DLL name
+/// was written but not counted, and the 88 bytes past the game's buffer were its next object).
+pub(crate) fn decoders_blob(base: u64, ps: u32) -> Vec<u8> {
+    let one = (32 + 7 * ps + 16) as usize;
+    let mut out = vec![0u8; one * DECODERS.len()];
+    let ptr = |out: &mut Vec<u8>, at: usize, v: u64| out[at..at + ps as usize].copy_from_slice(&v.to_le_bytes()[..ps as usize]);
+    for (i, d) in DECODERS.iter().enumerate() {
+        let p = one * i;
+        // the GUIDs' common tail: {xxxxxxxx-1a04-11d3-9a73-0000f81ef32e} (codec) / formats {b96b3c..-0728-11d3-9d7b-0000f81ef32e}
+        let codec = d.0 - 0xb96b3cab + 0x557cf400;
+        out[p..p + 4].copy_from_slice(&codec.to_le_bytes());
+        out[p + 4..p + 16].copy_from_slice(&[0x04, 0x1a, 0xd3, 0x11, 0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e]);
+        out[p + 16..p + 20].copy_from_slice(&d.0.to_le_bytes());
+        out[p + 20..p + 32].copy_from_slice(&[0x28, 0x07, 0xd3, 0x11, 0x9d, 0x7b, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e]);
+        for (k, s) in [d.1, "gdiplus.dll", d.2, d.3, d.4].into_iter().enumerate() {
+            let at = base + out.len() as u64;
+            ptr(&mut out, p + 32 + ps as usize * k, at);
+            out.extend(s.encode_utf16().chain([0]).flat_map(|c| c.to_le_bytes()));
+        }
+        let q = p + 32 + 5 * ps as usize;
+        // flags: Decoder | SupportBitmap | Builtin; version 1; one signature
+        for (k, v) in [0x0001_0002u32 | 0x0000_0004, 1, 1, d.5.len() as u32].into_iter().enumerate() {
+            out[q + 4 * k..q + 4 * k + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let at = base + out.len() as u64;
+        ptr(&mut out, q + 16, at);
+        ptr(&mut out, q + 16 + ps as usize, at + d.5.len() as u64);
+        out.extend_from_slice(d.5);
+        out.extend(std::iter::repeat_n(0xff, d.5.len()));
+    }
+    out
 }
 fn GdipGetImageDecodersSize(c: &mut Ctx) -> u32 {
-    let (a, b) = decoders_size();
     put32(c.a(0), DECODERS.len() as u32);
-    put32(c.a(1), a + b);
+    put32(c.a(1), decoders_blob(0, mem::ps()).len() as u32);
     OK
 }
 fn GdipGetImageDecoders(c: &mut Ctx) -> u32 {
     let (n, size, out) = (c.a(0), c.a(1), c.a(2));
-    let (a, b) = decoders_size();
-    if n != DECODERS.len() as u32 || size != a + b || out == 0 {
+    let blob = decoders_blob(out as u64, mem::ps());
+    if n != DECODERS.len() as u32 || size != blob.len() as u32 || out == 0 {
         return INVALID_PARAMETER;
     }
-    let ps = mem::ps();
-    let one = 32 + 7 * ps + 16;
-    let mut at = out + a;
-    let mut wstr = |s: &str| {
-        let w: Vec<u16> = s.encode_utf16().collect();
-        crate::mem::put_wstr(at, w.len() as u32 + 1, &w);
-        let p = at;
-        at += 2 * (w.len() as u32 + 1);
-        p
-    };
-    let mut strs = Vec::new();
-    for d in DECODERS {
-        strs.push([wstr(d.1), wstr("gdiplus.dll"), wstr(d.2), wstr(d.3), wstr(d.4)]);
-    }
-    // the GUIDs' common tail: {xxxxxxxx-1a04-11d3-9a73-0000f81ef32e} (codec) / formats {b96b3c..-0728-11d3-9d7b-0000f81ef32e}
-    for (i, d) in DECODERS.iter().enumerate() {
-        let p = out + one * i as u32;
-        let guid = |at: u32, d1: u32, tail: [u8; 12]| {
-            w32(at, d1);
-            mem::write(at + 4, &tail);
-        };
-        let codec = d.0 - 0xb96b3cab + 0x557cf400;
-        guid(p, codec, [0x04, 0x1a, 0xd3, 0x11, 0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e]);
-        guid(p + 16, d.0, [0x28, 0x07, 0xd3, 0x11, 0x9d, 0x7b, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e]);
-        for (k, &sp) in strs[i].iter().enumerate() {
-            mem::wp(p + 32 + ps * k as u32, sp);
-        }
-        let q = p + 32 + 5 * ps;
-        // flags: Decoder | SupportBitmap | Builtin; version 1; one signature
-        for (k, v) in [0x0001_0002 | 0x0000_0004, 1, 1, d.5.len() as u32].into_iter().enumerate() {
-            w32(q + 4 * k as u32, v);
-        }
-        mem::write(at, d.5);
-        mem::fill(at + d.5.len() as u32, d.5.len() as u32, 0xff);
-        mem::wp(q + 16, at);
-        mem::wp(q + 16 + ps, at + d.5.len() as u32);
-        at += 2 * d.5.len() as u32;
-    }
+    mem::write(out, &blob);
     OK
 }
 fn GdipGetImageEncodersSize(c: &mut Ctx) -> u32 {
@@ -728,5 +717,65 @@ mod pack_tests {
         assert_eq!(unpack16(FMT_16RGB565, 0xffff), [255, 255, 255]);
         assert_eq!(unpack16(FMT_16RGB565, 0xf800), [0, 0, 255]);
         assert_eq!(pack16(FMT_16RGB555, [255, 0, 0]), 0x1f);
+    }
+}
+
+#[cfg(test)]
+mod decoder_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn ptr(b: &[u8], at: usize, ps: u32) -> u64 {
+        let mut v = [0u8; 8];
+        v[..ps as usize].copy_from_slice(&b[at..at + ps as usize]);
+        u64::from_le_bytes(v)
+    }
+    fn wstr(b: &[u8], off: usize) -> Option<String> {
+        let w: Vec<u16> = b.get(off..)?.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let end = w.iter().position(|&c| c == 0)?;
+        Some(String::from_utf16_lossy(&w[..end]))
+    }
+
+    /// #162: the size GdipGetImageDecodersSize reports is the bytes GdipGetImageDecoders writes
+    /// (it used to leave the four "gdiplus.dll" names out: 726 reported, 814 written)
+    #[test]
+    fn size_counts_everything_written() {
+        assert_eq!(decoders_blob(0x23aa848, 4).len(), 814);
+        assert_eq!(decoders_blob(0, 8).len(), 814 + 4 * 28);
+    }
+
+    proptest! {
+        /// Wherever the buffer is, its length is the same and every pointer in the structs
+        /// lands inside it, past the structs, on what the codec says.
+        #[test]
+        fn pointers_stay_inside(base in 0u64..0xffff_0000, x64 in any::<bool>()) {
+            let ps = if x64 { 8 } else { 4 };
+            let base = base & !(ps as u64 - 1);
+            let b = decoders_blob(base, ps);
+            prop_assert_eq!(b.len(), decoders_blob(0, ps).len());
+            let one = (32 + 7 * ps + 16) as usize;
+            let structs = one * DECODERS.len();
+            let mut ends = Vec::new();
+            for (i, d) in DECODERS.iter().enumerate() {
+                let p = one * i;
+                for (k, want) in [d.1, "gdiplus.dll", d.2, d.3, d.4].into_iter().enumerate() {
+                    let at = ptr(&b, p + 32 + ps as usize * k, ps);
+                    prop_assert!(at >= base + structs as u64 && at < base + b.len() as u64);
+                    let off = (at - base) as usize;
+                    let got = wstr(&b, off);
+                    prop_assert_eq!(got.as_deref(), Some(want));
+                    ends.push(off + 2 * (want.len() + 1));
+                }
+                let q = p + 32 + 5 * ps as usize;
+                let sig = u32::from_le_bytes(b[q + 12..q + 16].try_into().unwrap()) as usize;
+                prop_assert_eq!(sig, d.5.len());
+                let (pat, mask) = ((ptr(&b, q + 16, ps) - base) as usize, (ptr(&b, q + 16 + ps as usize, ps) - base) as usize);
+                prop_assert_eq!(&b[pat..pat + sig], d.5);
+                prop_assert!(b[mask..mask + sig].iter().all(|&m| m == 0xff));
+                ends.push(mask + sig);
+            }
+            // (nothing past the last string or signature: the size is tight)
+            prop_assert_eq!(ends.into_iter().max(), Some(b.len()));
+        }
     }
 }

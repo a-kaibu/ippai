@@ -221,6 +221,55 @@ static REG: Mutex<Option<HashMap<String, KeyData>>> = Mutex::new(None);
 /// Keys every Windows has, even empty (setup programs open them to tell whether they may
 /// install: EXEpress CX opens ...\Uninstall and says "requires power user" when it can't;
 /// winref regsys has Windows' answers). Their parents exist through them.
+/// The values of Explorer\Shell Folders (HKCU when `true`, HKLM otherwise) with their CSIDL, as
+/// on Windows 7. "User Shell Folders" holds the same names as REG_EXPAND_SZ.
+pub(crate) const SHELL_FOLDERS: &[(&str, u32, bool)] = &[
+    ("AppData", 0x1a, true),
+    ("Cache", 0x20, true),
+    ("Cookies", 0x21, true),
+    ("Desktop", 0x10, true),
+    ("Favorites", 0x06, true),
+    ("History", 0x22, true),
+    ("Local AppData", 0x1c, true),
+    ("My Music", 0x0d, true),
+    ("My Pictures", 0x27, true),
+    ("My Video", 0x0e, true),
+    ("NetHood", 0x13, true),
+    ("Personal", 0x05, true),
+    ("PrintHood", 0x1b, true),
+    ("Programs", 0x02, true),
+    ("Recent", 0x08, true),
+    ("SendTo", 0x09, true),
+    ("Start Menu", 0x0b, true),
+    ("Startup", 0x07, true),
+    ("Templates", 0x15, true),
+    ("Fonts", 0x14, true),
+    ("CD Burning", 0x3b, true),
+    ("Administrative Tools", 0x30, true),
+    ("Common AppData", 0x23, false),
+    ("Common Desktop", 0x19, false),
+    ("Common Documents", 0x2e, false),
+    ("Common Programs", 0x17, false),
+    ("Common Start Menu", 0x16, false),
+    ("Common Startup", 0x18, false),
+    ("Common Templates", 0x2d, false),
+    ("Common Administrative Tools", 0x2f, false),
+    ("CommonMusic", 0x35, false),
+    ("CommonPictures", 0x36, false),
+    ("CommonVideo", 0x37, false),
+];
+
+/// A folder as "User Shell Folders" spells it (%USERPROFILE%\..., %ProgramData%, %PUBLIC%\...);
+/// None for the folders it doesn't list (Fonts lives under %windir%).
+pub(crate) fn shell_folder_unexpanded(path: &str) -> Option<String> {
+    for (pre, var) in [("C:\\users\\user", "%USERPROFILE%"), ("C:\\users\\Public", "%PUBLIC%"), ("C:\\ProgramData", "%ProgramData%")] {
+        if let Some(rest) = path.strip_prefix(pre).filter(|r| r.is_empty() || r.starts_with('\\')) {
+            return Some(format!("{var}{rest}"));
+        }
+    }
+    None
+}
+
 const SYSTEM_KEYS: [&str; 7] = [
     "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
     "hklm\\software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
@@ -275,6 +324,14 @@ fn shiina_installed() {
     });
 }
 
+/// A string value (REG_SZ 1 / REG_EXPAND_SZ 2) in the built-in registry.
+fn put_str(m: &mut HashMap<String, KeyData>, key: &str, name: &str, v: &str, ty: u32) {
+    let e = m.entry(key.to_lowercase()).or_default();
+    let mut data: Vec<u8> = v.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    data.extend([0, 0]);
+    e.values.push((name.to_string(), ty, data));
+}
+
 fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
     // Serialize the read/modify/write transaction across the game, SCM and
     // helper processes, not just across this process's Rust threads.
@@ -282,34 +339,41 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
     let mut g = REG.lock().unwrap();
     let m = g.get_or_insert_with(|| {
         let mut m = HashMap::default();
-        let mut set = |k: &str, n: &str, v: &str| {
-            let e: &mut KeyData = m.entry(k.to_lowercase()).or_default();
-            let mut data: Vec<u8> = v.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
-            data.extend([0, 0]);
-            e.values.push((n.to_string(), 1, data));
-        };
-        set("hklm\\software\\microsoft\\windows nt\\currentversion", "CurrentVersion", "6.1");
-        set("hklm\\software\\microsoft\\windows nt\\currentversion", "ProductName", "Microsoft Windows 7");
+        put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion", "CurrentVersion", "6.1", 1);
+        put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion", "ProductName", "Microsoft Windows 7", 1);
         // (ProgramFilesDir and CommonFilesDir as the key's view has them: wow64_value)
         for (n, v) in [("ProgramFilesDir", "C:\\Program Files"), ("ProgramFilesDir (x86)", "C:\\Program Files (x86)"), ("ProgramW6432Dir", "C:\\Program Files"),
             ("CommonFilesDir", "C:\\Program Files\\Common Files"), ("CommonFilesDir (x86)", "C:\\Program Files (x86)\\Common Files"), ("CommonW6432Dir", "C:\\Program Files\\Common Files")] {
-            set("hklm\\software\\microsoft\\windows\\currentversion", n, v);
+            put_str(&mut m, "hklm\\software\\microsoft\\windows\\currentversion", n, v, 1);
         }
-        set("hklm\\software\\microsoft\\directx", "Version", "4.09.00.0904");
+        put_str(&mut m, "hklm\\software\\microsoft\\directx", "Version", "4.09.00.0904", 1);
+        // Explorer's folder lists (old programs read these instead of SHGetFolderPath)
+        for (key, user) in [("hkcu", true), ("hklm", false)] {
+            for &(name, csidl, for_user) in SHELL_FOLDERS {
+                if for_user != user {
+                    continue;
+                }
+                let Some(path) = special_folder(csidl) else { continue };
+                put_str(&mut m, &format!("{key}\\software\\microsoft\\windows\\currentversion\\explorer\\shell folders"), name, path, 1);
+                if let Some(v) = shell_folder_unexpanded(path) {
+                    put_str(&mut m, &format!("{key}\\software\\microsoft\\windows\\currentversion\\explorer\\user shell folders"), name, &v, 2); // REG_EXPAND_SZ
+                }
+            }
+        }
         // the installed fonts (DirectWrite's system collection reads this list)
         if let Some(dir) = crate::files::resolve("C:\\windows\\Fonts\\") {
             let mut files: Vec<String> = kura::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
             files.sort();
             for f in files.iter().filter(|f| [".ttf", ".ttc", ".otf"].iter().any(|x| f.to_ascii_lowercase().ends_with(x))) {
                 let stem = f.rsplit_once('.').map_or(f.as_str(), |x| x.0);
-                set("hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f);
+                put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f, 1);
             }
         }
         // the RPG Maker RTPs in C:\ (ippai's own, tools/ci/sake-rtp.py), as their installers
         // register them: the engine finds the RTP folder by this value
         for (key, name, dir) in RTPS {
             if crate::files::resolve(&format!("{dir}\\")).is_some() {
-                set(key, name, dir);
+                put_str(&mut m, key, name, dir, 1);
             }
         }
         m.entry("hkcu\\software".into()).or_default();
@@ -6555,5 +6619,33 @@ mod sh_file_op_tests {
             let want = pat == "*.*" || by_def(&p, &n);
             prop_assert_eq!(wild_match(&pat, &name), want);
         }
+    }
+}
+
+#[cfg(test)]
+mod shell_folder_tests {
+    use super::*;
+
+    /// #162: every Explorer\Shell Folders name has a folder, the ones under the profile have a
+    /// "User Shell Folders" spelling that expands back to it, and no name is listed twice
+    #[test]
+    fn shell_folders_table() {
+        let vars = [("%USERPROFILE%", "C:\\users\\user"), ("%PUBLIC%", "C:\\users\\Public"), ("%ProgramData%", "C:\\ProgramData")];
+        let mut seen = std::collections::HashSet::new();
+        for &(name, csidl, user) in SHELL_FOLDERS {
+            assert!(seen.insert((name.to_lowercase(), user)), "{name} twice");
+            let p = special_folder(csidl).unwrap_or_else(|| panic!("{name}: no folder for csidl {csidl:#x}"));
+            match shell_folder_unexpanded(p) {
+                Some(u) => {
+                    let (var, val) = vars.iter().find(|v| u.starts_with(v.0)).unwrap();
+                    assert_eq!(format!("{val}{}", &u[var.len()..]), p);
+                }
+                None => assert_eq!(name, "Fonts"),
+            }
+            // (the user's folders are under the profile, the common ones aren't)
+            assert_eq!(user && name != "Fonts", p.starts_with("C:\\users\\user"), "{name}: {p}");
+        }
+        assert_eq!(shell_folder_unexpanded("C:\\users\\username"), None);
+        assert_eq!(shell_folder_unexpanded("C:\\users\\user").as_deref(), Some("%USERPROFILE%"));
     }
 }

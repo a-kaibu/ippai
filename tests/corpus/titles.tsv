@@ -59,7 +59,7 @@ b2012_trois	MonsterParkⅡ	DxLib (MED)	2012	http://suezou.dyndns.org/dl2012/troi
 b2018_fudegaki_soft	催眠学園１年生体験版	DxLib (MED)	2018	http://suezou.dyndns.org/dl2018/fudegaki-soft/saimin1nen/SG1nensei_trial.zip	催眠学園１年生_体験版/催眠学園１年生体験版.exe					title			
 b2007_marmalade	リリカル♪りりっく体験版	EntisGLS	2007	http://suezou.dyndns.org/dl2007/marmalade/lyric/lyric_trial.zip	リリカル♪りりっく体験版/lyrical.exe					title	title	1	steps	5
 b2009_marmalade	キスと魔王と紅茶（体験版）	EntisGLS	2009	http://suezou.dyndns.org/dl2009/marmalade/kissmao/kissmao_tr.zip	キスと魔王と紅茶_体験版/kisstea.exe					title			
-b2024_syrup_mm	狙われた優等生　身代わりの代償　体験版	EntisGLS	2024	http://suezou.dyndns.org/dl2024/syrup-mm/yutosei/yutosei_taikenban.zip	狙われた優等生体験版/yutosei.exe					title			
+b2024_syrup_mm	狙われた優等生　身代わりの代償　体験版	EntisGLS	2024	http://suezou.dyndns.org/dl2024/syrup-mm/yutosei/yutosei_taikenban.zip	狙われた優等生体験版/yutosei.exe		move:0.139,0.443 wait:1 click:0.139,0.443 wait:8			title	story		
 s2025_marmalade_bakaple	バカップル・サプリメント体験版	EntisGLS	2025	http://suezou.dyndns.org/dl2025/marmalade/bakaple/bakaple-trial.rar	バカップルサプリメント体験版/bakaple.exe					title			
 b2008_escude	ヴェルディア幻奏曲体験版	Escude	2008	http://suezou.dyndns.org/dl2008/escude/verdia/verdia_trial.zip	『ヴェルディア幻奏曲』体験版/verdia.exe		click:400,340 wait:6			title	title	1	
 s2009_escude_prister	乙女恋心プリスター体験版	Escude	2009	http://suezou.dyndns.org/dl2009/escude/prister/prister_trial.zip	乙女恋心プリスター 体験版/Prister.exe					title			
