@@ -344,7 +344,7 @@ typemoon_genshi_mini	幻視同盟 評価版 mini	Delphi	2002	http://mirror.fuzzy
 typemoon_genshi_middle	幻視同盟 評価版 middle	KiriKiri	2002	http://mirror.fuzzy2.com/typemoon/evaluation_middle.exe	evaluation_middle.exe		wait:5				story		
 light_majicomp	まじのコンプレックス 体験版	malie	2010	http://kokoron.madoka.org/mirror/m/majinocomplex/master_maj_trial.zip	program files/light/まじのコンプレックス/malie_t.exe						story	1	
 feng_chiikano	ちいさな彼女の小夜曲 体験版	KiriKiri2	2013	http://kokoron.madoka.org/mirror/c/chiisanakanojonoserenade/chiikano_trial.zip	ちいさな彼女の小夜曲　体験版/ちいさな彼女の小夜曲　体験版.exe		wait:5 click:154,874 wait:5 click:683,530 wait:3 click:683,530				story		
-dl_RJ227621	ヴァンパイア・ノーツ 体験版	RGSS3 (VX Ace RTP)	~2016	https://trial.dlsite.com/doujin/RJ228000/RJ227621_trial.zip	ヴァンパイア・ノーツ 体験版/Game.exe		wait:25 key:Return wait:10				title		
+dl_RJ227621	ヴァンパイア・ノーツ 体験版	RGSS3 (VX Ace RTP)	~2016	https://trial.dlsite.com/doujin/RJ228000/RJ227621_trial.zip	ヴァンパイア・ノーツ 体験版/Game.exe		wait:30 key:Return wait:10				story		
 dl_RJ177152	ふたなり騎士娘のダンジョンRPG1.5 -Trial-	RGSS3 (VX Ace RTP)	~2016	https://trial.dlsite.com/doujin/RJ178000/RJ177152_trial.zip	RJ177152_trial/Game.exe		wait:12 key:Return wait:10				title		
 dl_RJ260990	堕落の淫蕩吸血鬼 体験版	RGSS3 (VX Ace RTP)	~2019	https://trial.dlsite.com/doujin/RJ261000/RJ260990_trial.zip	堕落の淫蕩吸血鬼/Game.exe		wait:12 key:Return wait:10				story	1	
 dl_RJ106544	淫乱迷宮ルイナの冒険!！ 体験版	RGSS2 (VX RTP)	~2012	https://trial.dlsite.com/doujin/RJ107000/RJ106544_trial.zip	RJ106544_trial/Game.exe		wait:12 key:Return wait:10				story			

@@ -80,3 +80,11 @@ with 0 characters on every file before writing it with WriteFile, so RGSS3 games
 (save files, a game's own system data) went to the log and left the files empty
 (堕落の淫蕩吸血鬼: 「EOFError が発生しました」). They now fail with ERROR_INVALID_HANDLE on
 anything but the console's output (tests/winref/probes/writecon.c).
+
+RGSS (1 to 3) draws sprites with blend loops it writes as machine code into one buffer, the
+plain and the zooming one taking turns there many times a frame. The JIT used to give that
+page to the interpreter after 256 rewrites, and ヴァンパイア・ノーツ's title (a zoomed
+background) ran at under 1 frame a second, too slow to see a key pressed for less than a frame
+(#233). Each thread now keeps the translations of the versions it has seen and puts one back
+when its code returns (crates/kura/src/jit/park.rs, host test codeturns): about 13 frames a
+second under node.

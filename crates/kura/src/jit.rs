@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 use koji::jit::{self, wasm::Module};
 use koji::{Cpu, Exit};
 
+mod park;
+
 /// Misses at an address before its block is compiled (IPPAI_JIT_THRESHOLD overrides).
 const THRESHOLD: u32 = 50;
 
@@ -132,8 +134,78 @@ pub(crate) fn smc_hit(a: u32) {
 /// their bytes). A page whose code keeps changing ([`STALE_LIMIT`] times) goes to the
 /// interpreter, as one rewritten by its own code does.
 pub(crate) fn stale_hit(a: u32) {
-    note_stale(a, "since translated");
-    drop_states();
+    // (this thread's translations from the page that changed are parked; one made from the
+    // bytes there now goes back in: park.rs. Other threads find out on their own entries.)
+    let (parked, new, back) = with_state(|st| {
+        let (parked, new) = park_page(st, a);
+        (parked, new, parked && reinstate(st, a))
+    });
+    if !parked {
+        note_stale(a, "since translated");
+        drop_states();
+    } else if new {
+        // (code not seen before: counted, as one that keeps changing goes to the interpreter)
+        note_stale(a, "since translated");
+    } else if stats() {
+        eprintln!("vnjit: code at {a:#x} changed back to a version seen before (translation {})", if back { "put back" } else { "not made yet" });
+    }
+}
+
+/// The bytes of `code` as they are now.
+fn text_now(code: &[(u32, u32)]) -> Option<Vec<u8>> {
+    code_bytes(&mut Linear, code)
+}
+
+/// Keeps a translation made from code on a W|X page checked on entry, for [`park_page`].
+fn track_wx(st: &mut State, base: u32, entries: Vec<(u32, u32)>, roots: Vec<u32>, func: Option<u32>, code: &[(u32, u32)]) {
+    if !wx_checked() || !code.iter().any(|&(a, n)| wx_page(a) || wx_page(a.saturating_add(n.max(1) - 1))) {
+        return;
+    }
+    let Some(text) = text_now(code) else { return };
+    st.park.track(park::Wx { base, entries, roots, func, code: code.to_vec(), text });
+}
+
+/// Takes this thread's translations from `a`'s page whose code changed out of its tables and
+/// parks them: whether there were any, and whether the code there is new (park::Parked::new).
+fn park_page(st: &mut State, a: u32) -> (bool, bool) {
+    let park::Parked { out, new, .. } = st.park.park(a, &mut |c| text_now(c));
+    for w in &out {
+        for &(e, v) in &w.entries {
+            if park::remove(&mut st.hash, e, v, jit::dispatch::slot) {
+                st.used -= 1;
+            }
+            st.known.remove(&e);
+            for c in st.calls.iter_mut().filter(|c| c[1] == v) {
+                *c = [0, 0];
+            }
+        }
+        if let Some(f) = w.func {
+            st.fns.remove(&f);
+        }
+        st.roots.remove(&w.base);
+    }
+    (!out.is_empty(), new)
+}
+
+/// Puts back the newest parked translation with a block at `a` made from the bytes there now;
+/// whether there was one.
+fn reinstate(st: &mut State, a: u32) -> bool {
+    if !st.park.has_parked(a) {
+        return false;
+    }
+    let Some(w) = st.park.reinstate(a, &mut |c| text_now(c)) else { return false };
+    grow(st, w.entries.len());
+    for &(e, v) in &w.entries {
+        if insert(&mut st.hash, e, v) {
+            st.used += 1;
+        }
+        st.known.insert(e);
+    }
+    if let Some(f) = w.func {
+        st.fns.insert(f);
+    }
+    st.roots.insert(w.base, w.roots);
+    true
 }
 
 /// Code at `a` on a W|X page found changed since translated (`how`): counted per page, which
@@ -294,6 +366,8 @@ struct State {
     loads: Vec<(u32, u32, u32)>,
     /// loads since the last reclaim
     since_reclaim: u32,
+    /// translations of code on W|X pages checked on entry, live and parked (park.rs)
+    park: park::Parking,
 }
 
 /// Loads between two looks for modules nothing refers to any more (reclaim); IPPAI_JIT_RECLAIM
@@ -321,6 +395,8 @@ fn reclaim(st: &mut State) {
     };
     st.hash.iter().filter(|e| e[0] != 0).for_each(|e| mark(e[1]));
     st.calls.iter().filter(|c| c[0] != 0).for_each(|c| mark(c[1]));
+    // (and the parked ones: they may come back)
+    st.park.bases().for_each(&mut mark);
     let mut freed = (0u64, 0u64);
     let mut gone = Vec::new();
     st.loads.retain(|&(base, n, bytes)| {
@@ -701,6 +777,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 rehinted: HashSet::new(),
                 loads: Vec::new(),
                 since_reclaim: 0,
+                park: park::Parking::default(),
             }
         });
         f(st)
@@ -1017,7 +1094,7 @@ fn insert(hash: &mut [[u32; 2]], eip: u32, idx: u32) -> bool {
 }
 
 /// Compiles `module` and points the hash table at its region's blocks.
-fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)]) -> bool {
+fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)], code: &[(u32, u32)]) -> bool {
     if let Some(dir) = std::env::var_os("IPPAI_JIT_DUMP") {
         let name = format!("{:08x}-{}.wasm", roots[0], roots.len());
         let _ = std::fs::write(std::path::Path::new(&dir).join(name), bytes);
@@ -1030,8 +1107,22 @@ fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)]) ->
         return false;
     }
     note_load(st, base, 1, bytes.len());
-    enter(st, base as u32, roots, starts);
+    let base = base as u32;
+    let entries: Vec<(u32, u32)> = starts.iter().filter(|s| !st.fns.contains(&s.0)).map(|&(a, i)| (a, base | i << jit::ENTRY_SHIFT)).collect();
+    enter(st, base, roots.clone(), starts);
+    track_wx(st, base, entries, roots, None, code);
     true
+}
+
+/// Makes the hash table big enough for `n` more entries (at most half full).
+fn grow(st: &mut State, n: usize) {
+    while (st.used + n) * 2 > st.hash.len() {
+        let mut bigger = vec![[0u32; 2]; st.hash.len() * 2];
+        for e in st.hash.iter().filter(|e| e[0] != 0) {
+            insert(&mut bigger, e[0], e[1]);
+        }
+        st.hash = bigger;
+    }
 }
 
 /// Points the hash table at the blocks of the region at table index `base`.
@@ -1039,13 +1130,7 @@ fn enter(st: &mut State, base: u32, roots: Vec<u32>, starts: &[(u32, u32)]) {
     for &(a, _) in starts {
         st.known.insert(a);
     }
-    while (st.used + starts.len()) * 2 > st.hash.len() {
-        let mut bigger = vec![[0u32; 2]; st.hash.len() * 2];
-        for e in st.hash.iter().filter(|e| e[0] != 0) {
-            insert(&mut bigger, e[0], e[1]);
-        }
-        st.hash = bigger;
-    }
+    grow(st, starts.len());
     for &(a, i) in starts {
         if st.fns.contains(&a) {
             continue;
@@ -1699,7 +1784,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     if let Some(r) = shared(&mut Linear, &roots) {
         st.merges += 1;
         mark_code(&r.code);
-        load(st, &r.bytes, roots, &r.starts);
+        load(st, &r.bytes, roots, &r.starts, &r.code);
         return;
     }
     if let Some(i) = find_saved(&mut Linear, &roots, true, (cpu.trap_lo, cpu.trap_hi)) {
@@ -1734,7 +1819,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     }
     let bytes = m.finish();
     mark_code(&region.code);
-    if load(st, &bytes, roots.clone(), &region.starts) {
+    if load(st, &bytes, roots.clone(), &region.starts, &region.code) {
         keep_profile(&mut region);
         share(&mut Linear, &roots, bytes, &region);
         maybe_save();
@@ -1789,7 +1874,7 @@ fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64], hops: u32) {
     if let Some(r) = shared(&mut Linear, &roots) {
         st.merges += 1;
         mark_code(&r.code);
-        load(st, &r.bytes, roots, &r.starts);
+        load(st, &r.bytes, roots, &r.starts, &r.code);
         return;
     }
     merge_long(st, cpu, roots, from, to);
@@ -1815,7 +1900,7 @@ fn merge_long(st: &mut State, cpu: &Cpu, roots: Vec<u32>, from: u32, to: u32) {
     }
     let bytes = m.finish();
     mark_code(&region.code);
-    if load(st, &bytes, roots.clone(), &region.starts) {
+    if load(st, &bytes, roots.clone(), &region.starts, &region.code) {
         share(&mut Linear, &roots, bytes, &region);
         maybe_save();
     }
@@ -1833,6 +1918,10 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         if st.known.contains(&eip) {
             return false;
+        }
+        // (code rewritten back to a version this thread translated before)
+        if reinstate(st, eip) {
+            return true;
         }
         // another thread's region from the same code goes in at once
         // (16-bit regions are neither shared nor saved: their code is decoded with a segment base)
@@ -1852,7 +1941,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             }
             if let Some(r) = shared(mem, &[eip]) {
                 mark_code(&r.code);
-                return load(st, &r.bytes, vec![eip], &r.starts);
+                return load(st, &r.bytes, vec![eip], &r.starts, &r.code);
             }
             // (a 64-bit region checks the upper half of RIP itself on entry)
             if let Some(i) = find_saved(mem, &[eip], false, (cpu.trap_lo, cpu.trap_hi)) {
@@ -1910,7 +1999,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         let bytes = m.finish();
         let t1 = std::time::Instant::now();
         mark_code(&region.code);
-        let ok = load(st, &bytes, vec![eip], &region.starts);
+        let ok = load(st, &bytes, vec![eip], &region.starts, &region.code);
         count_compile(0, t0);
         if crate::env_on!("IPPAI_JIT_TIME") {
             eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
@@ -1946,7 +2035,7 @@ fn compile16(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
         eprintln!("vnjit16 region {eip:#x}\n{}", region.layout);
     }
     let bytes = m.finish();
-    let ok = load(st, &bytes, vec![eip], &region.starts);
+    let ok = load(st, &bytes, vec![eip], &region.starts, &region.code);
     count_compile(0, t0);
     if ok {
         mark_code(&region.code);
@@ -1980,7 +2069,7 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     }
     let bytes = m.finish();
     let t1 = std::time::Instant::now();
-    let ok = load(st, &bytes, vec![eip], &region.starts);
+    let ok = load(st, &bytes, vec![eip], &region.starts, &region.code);
     if crate::env_on!("IPPAI_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
     }
@@ -2288,19 +2377,15 @@ fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &
         st.known.insert(a);
     }
     enter(st, base as u32, vec![eip], &[]);
-    while (st.used + starts.len()) * 2 > st.hash.len() {
-        let mut bigger = vec![[0u32; 2]; st.hash.len() * 2];
-        for e in st.hash.iter().filter(|e| e[0] != 0) {
-            insert(&mut bigger, e[0], e[1]);
-        }
-        st.hash = bigger;
-    }
+    grow(st, starts.len());
+    let mut entries = Vec::new();
     for (i, &(a, _)) in starts.iter().enumerate() {
         // (which entry: 0 the root, the first start)
         let v = base as u32 | (i as u32) << jit::ENTRY_SHIFT | jit::FN_TAG;
         if insert(&mut st.hash, a, v) {
             st.used += 1;
         }
+        entries.push((a, v));
         // call sites that cached an earlier build go to this one
         if i == 0 {
             for c in st.calls.iter_mut().filter(|c| c[0] == a) {
@@ -2308,6 +2393,7 @@ fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &
             }
         }
     }
+    track_wx(st, base, entries, vec![eip], Some(eip), code);
 }
 
 thread_local! {
