@@ -104,4 +104,17 @@ addToLibrary({
     const s = UTF8ToString(names >>> 0, len >>> 0);
     ippaiFetchHint(s.split('\n').filter(Boolean).map((n) => store + '/' + n));
   },
+  // kura::fs::hard_link of two host paths (node, NODERAWFS: emscripten's own link answers
+  // EMLINK): 0; -1 the page (no host files), -2 the new name exists, -3 the file is missing,
+  // -4 another error
+  vnhost_hard_link__sig: 'ipp',
+  vnhost_hard_link: (a, b) => {
+    if (!ENVIRONMENT_IS_NODE) return -1;
+    try {
+      require('fs').linkSync(UTF8ToString(a >>> 0), UTF8ToString(b >>> 0));
+      return 0;
+    } catch (e) {
+      return e.code === 'EEXIST' ? -2 : e.code === 'ENOENT' ? -3 : -4;
+    }
+  },
 });

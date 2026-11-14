@@ -25,6 +25,8 @@ pub struct Metadata {
     readonly: bool,
     /// the file's inode number (0: unknown): the same file under any name, kept by renames
     ino: u64,
+    /// its names (hard links; 1 for a directory, as Windows counts)
+    links: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,6 +60,9 @@ impl Metadata {
     pub fn ino(&self) -> u64 {
         self.ino
     }
+    pub fn links(&self) -> u32 {
+        self.links
+    }
 }
 
 impl From<Info> for Metadata {
@@ -68,6 +73,7 @@ impl From<Info> for Metadata {
             modified: UNIX_EPOCH + Duration::from_secs(i.mtime.max(0) as u64),
             readonly: i.mode & 0o200 == 0,
             ino: i.ino as u64 | 1 << 40,
+            links: 1,
         }
     }
 }
@@ -78,7 +84,11 @@ impl From<std::fs::Metadata> for Metadata {
         let ino = std::os::unix::fs::MetadataExt::ino(&m);
         #[cfg(not(unix))]
         let ino = 0;
-        Metadata { dir: m.is_dir(), len: m.len(), modified: m.modified().unwrap_or(UNIX_EPOCH), readonly: m.permissions().readonly(), ino }
+        #[cfg(unix)]
+        let links = if m.is_dir() { 1 } else { std::os::unix::fs::MetadataExt::nlink(&m).clamp(1, u32::MAX as u64) as u32 };
+        #[cfg(not(unix))]
+        let links = 1;
+        Metadata { dir: m.is_dir(), len: m.len(), modified: m.modified().unwrap_or(UNIX_EPOCH), readonly: m.permissions().readonly(), ino, links }
     }
 }
 
@@ -157,8 +167,29 @@ pub fn remove_dir<P: AsRef<Path>>(p: P) -> io::Result<()> {
 pub fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<()> {
     let (a, b) = (path_str(from.as_ref()), path_str(to.as_ref()));
     match (vfs::info_at(&a, true), vfs::info_at(&b, true)) {
-        (At::Outside(ha), At::Outside(hb)) => std::fs::hard_link(ha, hb),
+        (At::Outside(ha), At::Outside(hb)) => host_link(Path::new(&ha), Path::new(&hb)),
         _ => Err(io::ErrorKind::Unsupported.into()),
+    }
+}
+
+#[cfg(not(target_os = "emscripten"))]
+fn host_link(a: &Path, b: &Path) -> io::Result<()> {
+    std::fs::hard_link(a, b)
+}
+/// (node's own fs: NODERAWFS has no link; the page has no host files: Unsupported)
+#[cfg(target_os = "emscripten")]
+fn host_link(a: &Path, b: &Path) -> io::Result<()> {
+    extern "C" {
+        fn vnhost_hard_link(a: *const std::ffi::c_char, b: *const std::ffi::c_char) -> i32;
+    }
+    let c = |p: &Path| std::ffi::CString::new(p.to_string_lossy().into_owned()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
+    let (ca, cb) = (c(a)?, c(b)?);
+    match unsafe { vnhost_hard_link(ca.as_ptr(), cb.as_ptr()) } {
+        0 => Ok(()),
+        -1 => Err(io::ErrorKind::Unsupported.into()),
+        -2 => Err(io::ErrorKind::AlreadyExists.into()),
+        -3 => Err(io::ErrorKind::NotFound.into()),
+        _ => Err(io::ErrorKind::PermissionDenied.into()),
     }
 }
 
@@ -380,5 +411,36 @@ impl Drop for File {
         if let Inner::Vfs(h) = self.0 {
             vfs::release(h);
         }
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    /// A host file's second name: one inode, both names count 2 links, writes seen through
+    /// either, the second kept when the first goes; an existing new name and a missing file
+    /// fail with their kinds
+    #[test]
+    fn hard_links_on_host_files() {
+        let d = std::env::temp_dir().join(format!("kura-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b) = (d.join("a"), d.join("b"));
+        write(&a, b"one").unwrap();
+        assert_eq!(metadata(&a).unwrap().links(), 1);
+        hard_link(&a, &b).unwrap();
+        let (ma, mb) = (metadata(&a).unwrap(), metadata(&b).unwrap());
+        assert_eq!((ma.links(), mb.links()), (2, 2));
+        assert_eq!(ma.ino(), mb.ino());
+        std::fs::OpenOptions::new().append(true).open(&b).unwrap().write_all(b"+b").unwrap();
+        assert_eq!(read(&a).unwrap(), b"one+b");
+        assert_eq!(hard_link(&a, &b).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(hard_link(d.join("none"), d.join("c")).unwrap_err().kind(), io::ErrorKind::NotFound);
+        remove_file(&a).unwrap();
+        assert_eq!(metadata(&b).unwrap().links(), 1);
+        assert_eq!(read(&b).unwrap(), b"one+b");
+        assert_eq!(metadata(&d).unwrap().links(), 1);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

@@ -7121,7 +7121,8 @@ fn GetFileInformationByHandle(c: &mut Ctx) -> u32 {
     w32(p + 28, 0x1234);
     w32(p + 32, (m.len() >> 32) as u32);
     w32(p + 36, m.len() as u32);
-    w32(p + 40, 1);
+    // nNumberOfLinks
+    w32(p + 40, m.links());
     // nFileIndexHigh, nFileIndexLow
     let ix = files::file_index(&f.path, &m);
     w32(p + 44, (ix >> 32) as u32);
@@ -7632,7 +7633,14 @@ fn hard_link(new: &str, existing: &str) -> u32 {
             // (a file system without hard links, as FAT on Windows: ERROR_INVALID_FUNCTION;
             // emscripten's node one answers EMLINK)
             let none = matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::TooManyLinks);
-            last_error(if none { 1 } else { 5 });
+            // (the new name's folder missing: ERROR_PATH_NOT_FOUND)
+            let code = match e.kind() {
+                _ if none => 1,
+                std::io::ErrorKind::NotFound => files::missing(new),
+                std::io::ErrorKind::AlreadyExists => 183,
+                _ => 5,
+            };
+            last_error(code);
             0
         }
     }
