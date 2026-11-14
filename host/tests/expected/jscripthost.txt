@@ -1,0 +1,9 @@
+expression child: hr 1 vt 9 alive 1
+function returns root: hr 1 vt 9 same 1
+root references back: 1
+self 1000 times, root references grew by at most 2: 1
+host error caught: hr 1 vt 8 boom true
+deep recursion: hr 1 vt 8 caught true
+engine still runs: hr 1 vt 8 ab
+syntax error: failed 1 reported 1 scode 1 description 1
+after close: root references 1 children alive 0

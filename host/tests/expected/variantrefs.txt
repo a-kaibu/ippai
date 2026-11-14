@@ -1,0 +1,13 @@
+held by a: 2
+copy: 0 refs 3
+copy over a copy: 0 refs 3
+copy onto itself: 0 refs 3
+clear: 0 refs 2 vt 0
+copy by reference: 0 vt 13 same 1 refs 3
+clear a reference: 0 refs 3
+string over an interface: 0 vt 8 refs 2
+put: 0 refs 3
+put over it: 0 refs 3
+get: 0 refs 4
+destroy: 0 refs 2
+at the end: 1

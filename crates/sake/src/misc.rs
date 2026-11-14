@@ -2693,11 +2693,24 @@ fn VariantClear(c: &mut Ctx) -> u32 {
     if t > 37 && !matches!(t, 64..=72 | 0xfff) {
         return 0x8002_0008;
     }
-    if r16(v) == 8 {
-        bstr_free(r32(v + 8));
+    variant_clear(c, v);
+    0
+}
+/// Frees what VARIANT `v` owns (its BSTR; a reference to its interface) and empties it
+fn variant_clear(c: &mut Ctx, v: u32) {
+    match r16(v) {
+        8 => bstr_free(mem::rp(v + 8)),
+        // VT_DISPATCH, VT_UNKNOWN: the VARIANT's reference goes
+        9 | 13 => {
+            let o = mem::rp(v + 8);
+            if o != 0 {
+                let release = mem::rp(mem::rp(o) + 2 * mem::ps());
+                c.call(release, &[o]);
+            }
+        }
+        _ => {}
     }
     mem::fill(v, 16, 0);
-    0
 }
 /// PropVariantClear: frees what the value owns (CoTaskMem strings, BSTRs, blobs, CLSIDs and
 /// interfaces) and empties it (a PROPVARIANT is 8 bytes of header and two pointers' worth)
@@ -2749,7 +2762,24 @@ fn PropVariantClear(c: &mut Ctx) -> u32 {
     mem::fill(v, 8 + 2 * p, 0);
     0
 }
-fn variant_copy(dst: u32, src: u32) -> u32 {
+/// VariantCopy: `dst` cleared, then `src`'s value in it, with a reference of its own to an
+/// interface (and a copy of a BSTR)
+fn variant_copy(c: &mut Ctx, dst: u32, src: u32) -> u32 {
+    if dst == src {
+        return 0;
+    }
+    variant_clear(c, dst);
+    let r = variant_copy_raw(dst, src);
+    if r == 0 && matches!(r16(dst), 9 | 13) {
+        let o = mem::rp(dst + 8);
+        if o != 0 {
+            let add = mem::rp(mem::rp(o) + mem::ps());
+            c.call(add, &[o]);
+        }
+    }
+    r
+}
+fn variant_copy_raw(dst: u32, src: u32) -> u32 {
     let mut s = src;
     if r16(s) & 0x4000 != 0 {
         // VT_BYREF: copy what it points at
@@ -2780,10 +2810,12 @@ fn variant_copy(dst: u32, src: u32) -> u32 {
     0
 }
 fn VariantCopy(c: &mut Ctx) -> u32 {
-    variant_copy(c.a(0), c.a(1))
+    let (d, s) = (c.a(0), c.a(1));
+    variant_copy(c, d, s)
 }
 fn VariantCopyInd(c: &mut Ctx) -> u32 {
-    variant_copy(c.a(0), c.a(1))
+    let (d, s) = (c.a(0), c.a(1));
+    variant_copy(c, d, s)
 }
 /// What a VARIANT holds, for VariantChangeType.
 enum Val {
@@ -2893,10 +2925,10 @@ fn real_str(f: f64, digits: usize) -> String {
     if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
 }
 /// VariantChangeType(dst, src, flags, vt): the numeric, boolean, date and string conversions.
-fn variant_change(dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
+fn variant_change(c: &mut Ctx, dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
     let sty = r16(src) & !0x4000;
     if sty == vt || vt == 0x0c {
-        return variant_copy(dst, src);
+        return variant_copy(c, dst, src);
     }
     let Some(val) = variant_val(src) else { return 0x8002_0005 };
     let num = |v: &Val| -> Option<f64> {
@@ -2975,10 +3007,12 @@ fn variant_change(dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
     0
 }
 fn VariantChangeTypeEx(c: &mut Ctx) -> u32 {
-    variant_change(c.a(0), c.a(1), c.a(3), c.a(4) as u16)
+    let (d, s, f, t) = (c.a(0), c.a(1), c.a(3), c.a(4) as u16);
+    variant_change(c, d, s, f, t)
 }
 fn VariantChangeType(c: &mut Ctx) -> u32 {
-    variant_change(c.a(0), c.a(1), c.a(2), c.a(3) as u16)
+    let (d, s, f, t) = (c.a(0), c.a(1), c.a(2), c.a(3) as u16);
+    variant_change(c, d, s, f, t)
 }
 fn GetErrorInfo(c: &mut Ctx) -> u32 {
     crate::mem::putp(c.a(1), 0);
@@ -6390,7 +6424,9 @@ mod safearray {
         }
         sa
     }
-    fn free_elems(sa: u32, from: u32) {
+    /// Frees elements `from..` of `sa`: BSTRs, VARIANTs (VariantClear) and interface
+    /// references
+    fn free_elems(c: &mut Ctx, sa: u32, from: u32) {
         let (f, es, n) = (r16(sa + 2), r32(sa + 4), cells(sa));
         let d = mem::rp(data_at(sa));
         if d == 0 {
@@ -6402,10 +6438,14 @@ mod safearray {
                 bstr_free(mem::rp(e));
                 mem::wp(e, 0);
             } else if f & F_VARIANT != 0 {
-                if r16(e) == 8 {
-                    bstr_free(mem::rp(e + 8));
-                }
+                variant_clear(c, e);
                 mem::fill(e, es, 0);
+            } else if f & (F_UNKNOWN | F_DISPATCH) != 0 {
+                let o = mem::rp(e);
+                if o != 0 {
+                    com_call(c, o, 2);
+                }
+                mem::wp(e, 0);
             }
         }
     }
@@ -6618,11 +6658,9 @@ mod safearray {
             let s: Vec<u16> = (0..n).map(|i| r16(v + 2 * i)).collect();
             mem::wp(p, if v == 0 { 0 } else { bstr_alloc(&s) });
         } else if f & F_VARIANT != 0 {
-            if r16(p) == 8 {
-                bstr_free(mem::rp(p + 8));
-            }
+            variant_clear(c, p);
             mem::fill(p, es, 0);
-            variant_copy(p, v);
+            variant_copy(c, p, v);
         } else if f & (F_UNKNOWN | F_DISPATCH) != 0 {
             let old = mem::rp(p);
             if v != 0 {
@@ -6651,7 +6689,7 @@ mod safearray {
             mem::wp(v, if b == 0 { 0 } else { bstr_alloc(&s) });
         } else if f & F_VARIANT != 0 {
             mem::fill(v, es, 0);
-            variant_copy(v, p);
+            variant_copy(c, v, p);
         } else {
             mem::copy(v, p, es);
             if f & (F_UNKNOWN | F_DISPATCH) != 0 && mem::rp(p) != 0 {
@@ -6668,7 +6706,7 @@ mod safearray {
         if r32(sa + 8) != 0 {
             return LOCKED;
         }
-        free_elems(sa, 0);
+        free_elems(c, sa, 0);
         let f = r16(sa + 2);
         if f & F_CREATEVECTOR != 0 {
             mem::fill(bounds(sa) + 8, cells(sa) * r32(sa + 4), 0);
@@ -6723,7 +6761,7 @@ mod safearray {
         let Some(new_size) = data_size(new_cells, es) else { return 0x8007_000e };
         let new_cells = new_cells as u32;
         if new_cells < old_cells {
-            free_elems_from(sa, new_cells);
+            free_elems_from(c, sa, new_cells);
         }
         let old = mem::rp(data_at(sa));
         let nd = mem::heap_alloc(new_size.max(1), true);
@@ -6742,8 +6780,8 @@ mod safearray {
         mem::copy(b, nb, 8);
         0
     }
-    fn free_elems_from(sa: u32, from: u32) {
-        free_elems(sa, from)
+    fn free_elems_from(c: &mut Ctx, sa: u32, from: u32) {
+        free_elems(c, sa, from)
     }
     /// AddRef (1) or Release (2) of an interface pointer, guest or sake object alike.
     fn com_call(c: &mut Ctx, obj: u32, slot: u32) {

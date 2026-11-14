@@ -51,12 +51,19 @@ struct Engine {
     refs: u32,
 }
 
+/// How deep script -> host -> script calls may nest: each level is boa's frames plus a guest
+/// call on the thread's fixed native stack, which runs out long before boa's own limits. Past
+/// it a call into the host throws (JScript's "Out of stack space") instead.
+pub const MAX_DEPTH: u32 = 48;
+/// JScript's "Out of stack space" (800A001C)
+const OUT_OF_STACK: u32 = 0x800a_001c;
+
 #[derive(Default)]
 struct Tables {
     engines: HashMap<u32, Engine>,
     next: u32,
-    /// host IDispatch -> its proxy, and back
-    proxies: HashMap<u32, JsObject>,
+    /// (engine, host IDispatch) -> its proxy (holding one reference to it), and back
+    proxies: HashMap<(u32, u32), JsObject>,
     hosts: HashMap<JsObject, u32>,
     /// script object -> its IDispatch block, and back (block -> (engine, object, refs))
     disps: HashMap<JsObject, u32>,
@@ -72,6 +79,8 @@ thread_local! {
     static T: RefCell<Tables> = RefCell::new(Tables::default());
     /// the Ctx of the sake call script code runs under (for calls into guest code)
     static CUR: Cell<*mut Ctx<'static>> = const { Cell::new(std::ptr::null_mut()) };
+    /// how many `enter`s are running (an engine is freed only outside all of them)
+    static DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
 fn t<R>(f: impl FnOnce(&mut Tables) -> R) -> R {
@@ -81,9 +90,24 @@ fn t<R>(f: impl FnOnce(&mut Tables) -> R) -> R {
 /// Runs `f` with `c` as the Ctx script code calls guest code through.
 fn enter<R>(c: &mut Ctx, f: impl FnOnce() -> R) -> R {
     let prev = CUR.with(|p| p.replace(c as *mut Ctx as *mut Ctx<'static>));
+    DEPTH.with(|d| d.set(d.get() + 1));
     let r = f();
+    let outer = DEPTH.with(|d| {
+        d.set(d.get() - 1);
+        d.get() == 0
+    });
+    // (engines whose last reference went while script ran: freed now that none runs)
+    if outer {
+        let dead: Vec<u32> = t(|t| t.engines.iter().filter(|(_, e)| e.refs == 0).map(|(&id, _)| id).collect());
+        for id in dead {
+            maybe_free(id);
+        }
+    }
     CUR.with(|p| p.set(prev));
     r
+}
+fn depth() -> u32 {
+    DEPTH.with(|d| d.get())
 }
 /// Calls guest code from script code.
 fn gcall(f: u32, args: &[u32]) -> u32 {
@@ -114,7 +138,9 @@ fn wide(s: &str) -> Vec<u16> {
 // ---------------------------------------------------------------------------------------------
 // values
 
-fn to_js(v: &Var, ctx: &mut Context) -> JsValue {
+/// `v` as a script value for engine `engine` (`owned`: the VARIANT's object reference is ours,
+/// as an Invoke result's; else borrowed, as an argument's, and a proxy made for it takes one).
+fn to_js(v: &Var, ctx: &mut Context, engine: u32, owned: bool) -> JsValue {
     match v {
         Var::Empty | Var::Error(_) => JsValue::undefined(),
         Var::Null => JsValue::null(),
@@ -125,9 +151,13 @@ fn to_js(v: &Var, ctx: &mut Context) -> JsValue {
         Var::Obj(0, _) => JsValue::null(),
         Var::Obj(p, _) => {
             if let Some(o) = t(|t| t.objects.get(p).map(|x| x.1.clone())) {
+                // (one of ours back: the reference that came with it is let go)
+                if owned {
+                    unref_disp(*p);
+                }
                 return o.into();
             }
-            host_proxy(*p, ctx).map_or(JsValue::null(), JsValue::from)
+            host_proxy(engine, *p, ctx, owned).map_or(JsValue::null(), JsValue::from)
         }
     }
 }
@@ -180,8 +210,14 @@ fn throw(msg: String) -> JsError {
 
 const DISP_KEY: &str = "\u{1}disp";
 
-fn host_proxy(p: u32, ctx: &mut Context) -> Option<JsObject> {
-    if let Some(o) = t(|t| t.proxies.get(&p).cloned()) {
+/// The proxy of host object `p` in engine `engine`; it holds one reference: a new proxy keeps
+/// the reference that came with `p` if `owned`, else takes one; an existing proxy lets an
+/// owned one go (each Invoke that returns the object AddRefs it: those were never released).
+fn host_proxy(engine: u32, p: u32, ctx: &mut Context, owned: bool) -> Option<JsObject> {
+    if let Some(o) = t(|t| t.proxies.get(&(engine, p)).cloned()) {
+        if owned {
+            com(p, 2, &[]);
+        }
         return Some(o);
     }
     let target = JsObject::with_null_proto();
@@ -190,9 +226,11 @@ fn host_proxy(p: u32, ctx: &mut Context) -> Option<JsObject> {
         .ok()?;
     let proxy = JsProxyBuilder::new(target).get(host_get).set(host_set).build(ctx).ok()?;
     let o: JsObject = proxy.into();
-    // the script holds the reference it was given
+    if !owned {
+        com(p, 1, &[]);
+    }
     t(|t| {
-        t.proxies.insert(p, o.clone());
+        t.proxies.insert((engine, p), o.clone());
         t.hosts.insert(o.clone(), p);
     });
     Some(o)
@@ -263,12 +301,25 @@ fn clear_var(p: u32) {
 
 /// Invoke on a host object with script arguments; the result as a script value.
 fn host_invoke(p: u32, id: u32, flags: u32, args: &[JsValue], named_put: bool, ctx: &mut Context) -> JsResult<JsValue> {
+    if depth() >= MAX_DEPTH {
+        let e = JsNativeError::range().with_message("Out of stack space").into_opaque(ctx);
+        let _ = e.set(js_string!("number"), JsValue::new(OUT_OF_STACK as i32), false, ctx);
+        return Err(JsError::from_opaque(e.into()));
+    }
     let engine = current_engine();
     let n = args.len() as u32;
     let rg = mem::heap_alloc(16 * n.max(1), true);
-    // reversed, as DISPPARAMS wants them
+    // reversed, as DISPPARAMS wants them; script objects passed hold a reference for the call
+    // only (the host AddRefs one it keeps)
+    let mut lent = Vec::new();
     for (i, a) in args.iter().enumerate() {
-        write_var(rg + 16 * (n - 1 - i as u32), &from_js(a, engine, false));
+        let v = from_js(a, engine, false);
+        if let Var::Obj(b, _) = v {
+            if t(|t| t.objects.contains_key(&b)) {
+                lent.push(b);
+            }
+        }
+        write_var(rg + 16 * (n - 1 - i as u32), &v);
     }
     let dp = mem::heap_alloc(16 + 4, true);
     w32(dp, rg);
@@ -282,7 +333,7 @@ fn host_invoke(p: u32, id: u32, flags: u32, args: &[JsValue], named_put: bool, c
     let exc = mem::heap_alloc(32, true);
     let hr = com(p, 6, &[id, iid_null(), 0x411, flags, dp, res, exc, 0]);
     let v = read_var(res);
-    let out = to_js(&v, ctx);
+    let out = to_js(&v, ctx, engine, true);
     // the result's own references: strings are copied, objects are kept by the proxy
     if r16(res) == 8 {
         crate::misc::bstr_free(r32(res + 8));
@@ -295,15 +346,47 @@ fn host_invoke(p: u32, id: u32, flags: u32, args: &[JsValue], named_put: bool, c
     }
     let desc = r32(exc + 8);
     let scode = r32(exc + 28);
+    let msg = if hr != S_OK && desc != 0 { String::from_utf16_lossy(&mem::wstr(desc)) } else { String::new() };
+    // the EXCEPINFO's strings are the caller's to free (bstrSource, bstrDescription,
+    // bstrHelpFile)
+    for o in [4, 8, 12] {
+        let b = r32(exc + o);
+        if b != 0 {
+            crate::misc::bstr_free(b);
+        }
+    }
     mem::heap_free(rg);
     mem::heap_free(dp);
     mem::heap_free(res);
     mem::heap_free(exc);
+    for b in lent {
+        unref_disp(b);
+    }
     if hr != S_OK {
-        let msg = if desc != 0 { String::from_utf16_lossy(&mem::wstr(desc)) } else { String::new() };
-        return Err(throw(format!("host call failed ({hr:#x}, {scode:#x}) {msg}")));
+        return Err(host_error(hr, scode, msg, ctx));
     }
     Ok(out)
+}
+
+/// A host call's failure as JScript shows it: an Error whose message is the EXCEPINFO's
+/// description and whose number is its scode (else the HRESULT)
+fn host_error(hr: u32, scode: u32, msg: String, ctx: &mut Context) -> JsError {
+    let number = if hr == DISP_E_EXCEPTION && scode != 0 { scode } else { hr };
+    let msg = if msg.is_empty() { format!("host call failed ({hr:#x})") } else { msg };
+    let e = JsNativeError::error().with_message(msg).into_opaque(ctx);
+    let _ = e.set(js_string!("number"), JsValue::new(number as i32), false, ctx);
+    JsError::from_opaque(e.into())
+}
+
+/// (description, scode) of a script error for an EXCEPINFO: the Error's message (not its
+/// name) and its number, if it has one
+fn error_info(e: &JsError, ctx: &mut Context) -> (String, u32) {
+    let number = e.as_opaque().and_then(|v| v.as_object()).and_then(|o| o.get(js_string!("number"), ctx).ok()).and_then(|n| n.as_number());
+    let msg = match e.try_native(ctx) {
+        Ok(n) => n.message().to_string(),
+        Err(_) => e.to_string(),
+    };
+    (msg, number.map_or(0x800a_139e, |n| n as i32 as u32))
 }
 
 fn host_get(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
@@ -362,23 +445,53 @@ fn notimpl(_: &mut Ctx) -> u32 {
     E_NOTIMPL
 }
 
-/// The IDispatch of script object `o` (a reference for the receiver if `owned`).
-fn script_disp(engine: u32, o: JsObject, owned: bool) -> u32 {
+/// The IDispatch of script object `o`, with one reference for the receiver: kept by it, or
+/// (an argument lent for a call) let go after the call. The block and the table's hold on the
+/// object go with the last reference, so boa can collect what the host let go of.
+fn script_disp(engine: u32, o: JsObject, _owned: bool) -> u32 {
     if let Some(b) = t(|t| t.disps.get(&o).copied()) {
-        if owned {
-            t(|t| t.objects.get_mut(&b).map(|x| x.2 += 1));
-        }
+        t(|t| t.objects.get_mut(&b).map(|x| x.2 += 1));
         return b;
     }
     let b = mem::heap_alloc(8, true);
+    if b == 0 {
+        return 0;
+    }
     w32(b, disp_vtbl());
     w32(b + 4, engine);
     t(|t| {
         t.disps.insert(o.clone(), b);
-        // the table keeps one reference while the object can be reached from the host
-        t.objects.insert(b, (engine, o, 1 + owned as u32));
+        t.objects.insert(b, (engine, o, 1));
     });
     b
+}
+
+/// One reference of script object block `b` goes: the references left; at 0 the block is
+/// freed (after com.rs's quarantine, so a late call still finds the vtable) and the object
+/// is the script's alone again.
+fn unref_disp(b: u32) -> u32 {
+    let gone = t(|t| {
+        let x = t.objects.get_mut(&b)?;
+        x.2 = x.2.saturating_sub(1);
+        if x.2 > 0 {
+            return Some((x.2, None));
+        }
+        let (engine, o, _) = t.objects.remove(&b)?;
+        t.disps.remove(&o);
+        Some((0, Some(engine)))
+    });
+    match gone {
+        None => 0,
+        Some((n, None)) => n,
+        Some((_, Some(engine))) => {
+            crate::com::free_later(b);
+            // (the host's last hold on the engine may have been this object)
+            if depth() == 0 {
+                maybe_free(engine);
+            }
+            0
+        }
+    }
 }
 
 fn name_id(name: &str) -> u32 {
@@ -419,11 +532,7 @@ fn X_AddRef(c: &mut Ctx) -> u32 {
 }
 fn X_Release(c: &mut Ctx) -> u32 {
     let b = c.a(0);
-    // (the table's own reference stays: scripts hand the same objects out again)
-    t(|t| t.objects.get_mut(&b).map_or(0, |x| {
-        x.2 = x.2.saturating_sub(1).max(1);
-        x.2
-    }))
+    enter(c, || unref_disp(b))
 }
 fn X_GetTypeInfoCount(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
@@ -467,52 +576,72 @@ fn invoke_script(c: &mut Ctx, id: u32, flags: u32, dp: u32, result: u32, excep: 
     let Some((engine, o, _)) = t(|t| t.objects.get(&b).cloned()) else { return E_UNEXPECTED };
     let Some(ctx) = engine_ctx(engine) else { return E_UNEXPECTED };
     let (rg, n) = if dp == 0 { (0, 0) } else { (r32(dp), r32(dp + 8)) };
-    let r = enter(c, || -> JsResult<JsValue> {
+    if depth() >= MAX_DEPTH {
+        return excepinfo_code(excep, "Out of stack space", OUT_OF_STACK);
+    }
+    // (the value turns into a VARIANT inside the call too: a host object in it is AddRef'd
+    // through the guest, which needs the Ctx; after `enter` there was none)
+    let prev = ENGINE_NOW.with(|e| e.replace(engine));
+    let r = enter(c, || -> Result<Var, (String, u32)> {
         if t(|t| t.engines.get(&engine).is_some_and(|e| !e.items.is_empty())) {
             resolve_items(engine);
         }
-        let args: Vec<JsValue> = (0..n).rev().map(|i| to_js(&read_var(rg + 16 * i), ctx)).collect();
-        if id == 0 {
-            if flags & DISPATCH_METHOD != 0 && o.is_callable() {
-                return o.call(&JsValue::undefined(), &args, ctx);
-            }
-            return Ok(o.clone().into());
-        }
-        let Some(name) = id_name(id) else { return Err(throw("unknown member".into())) };
-        let key = JsString::from(name.as_str());
-        if flags & (DISPATCH_PROPERTYPUT | 8) != 0 {
-            o.set(key, args.last().cloned().unwrap_or_default(), true, ctx)?;
-            return Ok(JsValue::undefined());
-        }
-        let v = o.get(key, ctx)?;
-        if flags & DISPATCH_METHOD != 0 {
-            if let Some(f) = v.as_callable() {
-                return f.call(&o.clone().into(), &args, ctx);
-            }
-            if flags & DISPATCH_PROPERTYGET == 0 {
-                return Err(throw(format!("{name} is not a function")));
-            }
-        }
-        Ok(v)
+        let args: Vec<JsValue> = (0..n).rev().map(|i| to_js(&read_var(rg + 16 * i), ctx, engine, false)).collect();
+        let v = call_script(&o, id, flags, &args, ctx).map_err(|e| error_info(&e, ctx))?;
+        Ok(if result != 0 { from_js(&v, engine, true) } else { Var::Empty })
     });
+    ENGINE_NOW.with(|e| e.set(prev));
     match r {
         Ok(v) => {
             if result != 0 {
-                write_var(result, &from_js(&v, engine, true));
+                write_var(result, &v);
             }
             S_OK
         }
-        Err(e) => {
-            let msg = e.to_string();
-            eprintln!("sake: jscript: {msg}");
-            if excep != 0 {
-                mem::fill(excep, 32, 0);
-                w32(excep + 8, crate::misc::bstr_alloc(&wide(&msg)));
-                w32(excep + 28, 0x800a_139e);
+        Err((msg, scode)) => {
+            // (once, from the outermost call: a nested one's error comes back up through it)
+            if depth() == 0 {
+                eprintln!("sake: jscript: {msg}");
             }
-            DISP_E_EXCEPTION
+            excepinfo_code(excep, &msg, scode)
         }
     }
+}
+
+/// DISP_E_EXCEPTION with `msg` and `scode` in the caller's EXCEPINFO (if it gave one)
+fn excepinfo_code(excep: u32, msg: &str, scode: u32) -> u32 {
+    if excep != 0 {
+        mem::fill(excep, 32, 0);
+        w32(excep + 8, crate::misc::bstr_alloc(&wide(msg)));
+        w32(excep + 28, scode);
+    }
+    DISP_E_EXCEPTION
+}
+
+/// Member `id` of script object `o` (0: the object itself) read, written or called
+fn call_script(o: &JsObject, id: u32, flags: u32, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    if id == 0 {
+        if flags & DISPATCH_METHOD != 0 && o.is_callable() {
+            return o.call(&JsValue::undefined(), args, ctx);
+        }
+        return Ok(o.clone().into());
+    }
+    let Some(name) = id_name(id) else { return Err(throw("unknown member".into())) };
+    let key = JsString::from(name.as_str());
+    if flags & (DISPATCH_PROPERTYPUT | 8) != 0 {
+        o.set(key, args.last().cloned().unwrap_or_default(), true, ctx)?;
+        return Ok(JsValue::undefined());
+    }
+    let v = o.get(key, ctx)?;
+    if flags & DISPATCH_METHOD != 0 {
+        if let Some(f) = v.as_callable() {
+            return f.call(&o.clone().into(), args, ctx);
+        }
+        if flags & DISPATCH_PROPERTYGET == 0 {
+            return Err(throw(format!("{name} is not a function")));
+        }
+    }
+    Ok(v)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -632,11 +761,52 @@ fn Q_AddRef(c: &mut Ctx) -> u32 {
 }
 fn Q_Release(c: &mut Ctx) -> u32 {
     let id = engine_of(c);
-    // (the engine stays: host objects and script objects may still point into it)
-    t(|t| t.engines.get_mut(&id).map_or(0, |e| {
+    let n = t(|t| t.engines.get_mut(&id).map_or(0, |e| {
         e.refs = e.refs.saturating_sub(1);
         e.refs
-    }))
+    }));
+    if n == 0 {
+        // (outside any script call: freed as the call returns; inside one, when the
+        // outermost call ends)
+        enter(c, || {});
+    }
+    n
+}
+
+/// Frees engine `id` once nothing holds it: no reference to its interfaces, no script object
+/// of it the host still holds, no script of it running. Its proxies let their host objects go,
+/// its realm (boa's Context, about a MB) and its blocks are freed. A program that made an engine
+/// per script kept every one of them.
+fn maybe_free(id: u32) {
+    if depth() != 0 {
+        return;
+    }
+    let free = t(|t| t.engines.get(&id).is_some_and(|e| e.refs == 0) && !t.objects.values().any(|x| x.0 == id));
+    if !free {
+        return;
+    }
+    let Some(e) = t(|t| t.engines.remove(&id)) else { return };
+    let hosts: Vec<(u32, JsObject)> = t(|t| {
+        let keys: Vec<(u32, u32)> = t.proxies.keys().filter(|k| k.0 == id).copied().collect();
+        keys.into_iter().filter_map(|k| t.proxies.remove(&k).map(|o| (k.1, o))).collect()
+    });
+    for (p, o) in hosts {
+        t(|t| t.hosts.remove(&o));
+        drop(o);
+        // (a guest call: only where a Ctx is current; otherwise the reference stays)
+        if !CUR.with(|c| c.get()).is_null() {
+            com(p, 2, &[]);
+        }
+    }
+    if e.site != 0 && !CUR.with(|c| c.get()).is_null() {
+        com(e.site, 2, &[]);
+    }
+    // SAFETY: the Context was Box::into_raw'd by create_instance, nothing runs in it (depth 0)
+    // and no table refers to it any more
+    drop(unsafe { Box::from_raw(e.ctx) });
+    for b in e.blocks {
+        crate::com::free_later(b);
+    }
 }
 
 fn SetScriptSite(c: &mut Ctx) -> u32 {
@@ -735,13 +905,19 @@ fn resolve_items(id: u32) {
         // its IDispatch {00020400-0000-0000-c000-000000000046}
         let iid = mem::heap_alloc(16, true);
         mem::write(iid, &[0, 4, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
-        let disp = if com(unk, 0, &[iid, out]) == S_OK { r32(out) } else { unk };
+        let qi = com(unk, 0, &[iid, out]) == S_OK && r32(out) != 0;
+        let disp = if qi { r32(out) } else { unk };
         mem::heap_free(iid);
         mem::heap_free(out);
+        // (GetItemInfo's IUnknown is ours too: the IDispatch QueryInterface gave is kept,
+        // and it is a reference of its own even when it is the same pointer)
+        if qi {
+            com(unk, 2, &[]);
+        }
         if flags & 8 != 0 {
             crate::com::warn_once("sake: jscript: SCRIPTITEM_GLOBALMEMBERS is not supported");
         }
-        if let Some(p) = host_proxy(disp, ctx) {
+        if let Some(p) = host_proxy(id, disp, ctx, true) {
             let key = JsString::from(&name[..]);
             let _ = ctx.global_object().define_property_or_throw(key, PropertyDescriptor::builder().value(p).writable(true).enumerable(true).configurable(true), ctx);
         }
@@ -775,28 +951,49 @@ fn report(id: u32, msg: &str) {
     }
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
-        vtable("IActiveScriptError", &[(E_QueryInterface, 12), (one, 4), (one, 4), (E_GetExceptionInfo, 8), (E_GetSourcePosition, 16), (E_GetSourceLineText, 8)])
+        vtable("IActiveScriptError", &[(E_QueryInterface, 12), (E_AddRef, 4), (E_Release, 4), (E_GetExceptionInfo, 8), (E_GetSourcePosition, 16), (E_GetSourceLineText, 8)])
     });
     let w = wide(msg);
-    let e = mem::heap_alloc(8 + 2 * w.len() as u32 + 2, true);
-    w32(e, vt);
-    for (i, &ch) in w.iter().enumerate() {
-        w16(e + 8 + 2 * i as u32, ch);
+    // { vtable, length, references, text }: the site may keep it (AddRef); it goes with its
+    // last Release (it stayed, with its text, per error)
+    let e = mem::heap_alloc(12 + 2 * w.len() as u32 + 2, true);
+    if e == 0 {
+        return;
     }
+    w32(e, vt);
     w32(e + 4, w.len() as u32);
+    w32(e + 8, 1);
+    for (i, &ch) in w.iter().enumerate() {
+        w16(e + 12 + 2 * i as u32, ch);
+    }
     com(site, 8, &[e]);
+    error_release(e);
 }
-fn one(_: &mut Ctx) -> u32 {
-    1
+fn E_AddRef(c: &mut Ctx) -> u32 {
+    let e = c.a(0);
+    w32(e + 8, r32(e + 8) + 1);
+    r32(e + 8)
+}
+fn E_Release(c: &mut Ctx) -> u32 {
+    error_release(c.a(0))
+}
+fn error_release(e: u32) -> u32 {
+    let n = r32(e + 8).saturating_sub(1);
+    w32(e + 8, n);
+    if n == 0 {
+        crate::com::free_later(e);
+    }
+    n
 }
 fn E_QueryInterface(c: &mut Ctx) -> u32 {
     put32(c.a(2), c.a(0));
+    E_AddRef(c);
     S_OK
 }
 fn E_GetExceptionInfo(c: &mut Ctx) -> u32 {
     let (e, p) = (c.a(0), c.a(1));
     let n = r32(e + 4);
-    let msg: Vec<u16> = (0..n).map(|i| r16(e + 8 + 2 * i)).collect();
+    let msg: Vec<u16> = (0..n).map(|i| r16(e + 12 + 2 * i)).collect();
     mem::fill(p, 32, 0);
     w32(p + 4, crate::misc::bstr_alloc(&wide("Microsoft JScript runtime error")));
     w32(p + 8, crate::misc::bstr_alloc(&msg));
@@ -824,10 +1021,11 @@ fn ParseScriptText(c: &mut Ctx) -> u32 {
         t(|t| t.engines.get_mut(&id).map(|e| e.pending.push(code)));
         return S_OK;
     }
-    match enter(c, || run(id, &code, expr)) {
-        Ok(v) => {
+    // (the result becomes a VARIANT inside the call: a host object in it is AddRef'd through
+    // the guest, which needs the Ctx)
+    match enter(c, || run(id, &code, expr).map(|v| if result != 0 { from_js(&v, id, true) } else { Var::Empty })) {
+        Ok(var) => {
             if result != 0 {
-                let var = from_js(&v, id, true);
                 write_var(result, &var);
             }
             S_OK
