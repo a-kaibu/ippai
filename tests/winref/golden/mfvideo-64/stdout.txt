@@ -1,0 +1,43 @@
+stride NV12: 1 3 64 65 1920; size 65x33 0 3267
+stride YV12: 1 3 64 65 1920; size 65x33 0 3267
+stride I420: 1 3 64 65 1920; size 65x33 0 3267
+stride YUY2: 4 8 128 132 3840; size 65x33 0 4356
+stride UYVY: 4 8 128 132 3840; size 65x33 0 4356
+stride RGB32: -4 -12 -256 -260 -7680; size 65x33 0 8580
+stride ARGB32: -4 -12 -256 -260 -7680; size 65x33 0 8580
+stride RGB24: -4 -12 -192 -196 -5760; size 65x33 0 6468
+stride RGB565: -4 -8 -128 -132 -3840; size 65x33 0 4356
+stride L8: -4 -4 -64 -68 -1920; size 65x33 0 2145
+stride junk: 0xc00d36b4 0xc00d36b4 0xc00d36b4 0xc00d36b4 0xc00d36b4; size 65x33 0x80070057 0
+frame rate of: 0=0:0/0 1=0:10000000/1 166833=0:60000/1001 166667=0:60/1 333667=0:30000/1001 333333=0:30/1 400000=0:25/1 416666=0:24/1 416667=0:24/1 417083=0:10000000/417083 200000=0:50/1 1000000=0:10/1 10000000=0:1/1 12345=0:2000000/2469 83333=0:10000000/83333
+time per frame of: 30000/1001=0:333667 24000/1001=0:417188 60000/1001=0:166833 24/1=0:416667 25/1=0:400000 30/1=0:333333 60/1=0:166667 7/3=0:4285714 1/0=0:0 0/1=0:0
+H.264 decoders: 0, any 1
+JUNK decoders: 0, 0, list 0
+async result: 0, status 0
+  no object: 0x80004003 0
+  state object: 1
+  invoke: 0, called 1, on another thread 1, status 0x80004005, state 1
+  work item: 0, called 1, on another thread 1, status 0, state 1
+missing file: 0x80070003
+file: 0
+  length 1, readable 1 seekable 1, read 8: 'ftyp', at 8
+resolver: 0, media source 1
+  descriptor: 0, 1 streams, 750 ms
+  stream 0: selected 1, video 1, types 1
+  handler's: video 1 subtype H264 (0x34363248) 64x48 rate 24/1 stride - 0 aspect 1:1 interlace 7
+reader on the source: 0
+  native: 0
+  native: video 1 subtype H264 (0x34363248) 64x48 rate 24/1 stride - 0 aspect 1:1 interlace 7
+  set NV12: 0
+  current: video 1 subtype NV12 (0x3231564e) 64x48 rate 24/1 stride 64 aspect 1:1 interlace 7
+  nv12: first sample at 0 ms, 41 ms long, stream 0
+  nv12: 18 frames rrrrrrggggggbbbbbb, last at 708 ms, uneven steps 0, short buffers 0, end flags 0x2
+  seek to 400 ms: 0
+  after the seek: first sample at 250 ms, 41 ms long, stream 0
+  after the seek: 12 frames ggggggbbbbbb, last at 708 ms, uneven steps 0, short buffers 0, end flags 0x2
+reader from the URL: 0
+  set RGB32: 0
+  current: video 1 subtype  (0x16) 64x48 rate 24/1 stride 256 aspect 1:1 interlace 2
+  duration 0 vt 21 750 ms
+  rgb32: first sample at 0 ms, 41 ms long, stream 0
+  rgb32: 18 frames rrrrrrggggggbbbbbb, last at 708 ms, uneven steps 0, short buffers 0, end flags 0x2

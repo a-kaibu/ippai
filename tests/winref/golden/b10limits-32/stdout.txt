@@ -1,0 +1,20 @@
+ScriptBreak 3 0
+ScriptBreak -1 0x80070057
+ScriptBreak 0 0x80004005
+ScriptBreak null 0x80070057
+CreateBitmap 65536x65536 fails
+CreateBitmap 4G x 2 fails
+FromMemory short stride 0x80070057
+FromMemory short buffer 0x88982f8c
+FromMemory exact 0
+Lock past 0x80070057
+CopyPixels wide 0x80070216
+Seek far 0x80070216
+Read after 0 4
+create 2 0
+create 0x7fffffff 0x80080011
+create 0xffffffff 0x80080011
+wmi queries 200, AddRef/Release kept 200
+udp sent 3000, kept some 1, dropped some 1
+udp after huge buffers 10
+WSASendTo huge count 1

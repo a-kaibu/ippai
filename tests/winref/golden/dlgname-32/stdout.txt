@@ -1,0 +1,15 @@
+RegisterClassA 1
+RegisterClassW 1
+A class WM_NCCREATE name 49 44 52 5f 47 49 46 31
+A class WM_CREATE name 49 44 52 5f 47 49 46 31
+A class WM_NCCREATE name ff 05
+A class WM_CREATE name ff 05
+item 100 text [IDR_GIF1]
+item 101 text []
+DialogBoxIndirectParam = 7
+W class WM_NCCREATE name 0061 0062 0063
+W class WM_CREATE name 0061 0062 0063
+A class WM_NCCREATE name 78 79 7a
+A class WM_CREATE name 78 79 7a
+A class WM_NCCREATE name NULL
+A class WM_CREATE name NULL

@@ -28,30 +28,30 @@ event 10 seen 1
 event 11 seen 1
 event 14 seen 1
 event 15 seen 1
-event 1009 seen 1
+event 1009 seen 0
 load start before metadata 1, metadata before data 1, data before can play 1
 loaded: ready 4 paused 1 ended 0 seeking 0 time 0.0
 loaded: duration 2.00, size 00000000 64x48, video 1, audio 0, network 1
-loaded: OnVideoStreamTick 00000000 pts 0
-loaded: TransferVideoFrame 00000000 top frame 0 bottom frame 0
+loaded: OnVideoStreamTick 00000001 pts -1
+loaded: TransferVideoFrame 00000000 top frame 0 bottom frame -1
 SetCurrentTime 00000000
 seeked 0, seeking seen 1
 seeked: ready 4 paused 1 ended 0 seeking 1 time 0.8
-seeked: OnVideoStreamTick 00000000 pts within a frame 1
-seeked: TransferVideoFrame 00000000 top frame 7 bottom frame 7
+seeked: OnVideoStreamTick 00000000 pts within a frame 0
+seeked: TransferVideoFrame 00000000 top frame 0 bottom frame 0
 Play 00000000
 play event 1
-playing event 1
-playing: paused 0 ended 0, time moved 1
+playing event 0
+playing: paused 0 ended 0, time moved 0
 ended event 0 after the expected time 0
 pause event at the end 0
-ended: ready 4 paused 0 ended 0 seeking 0 time 7.1
+ended: ready 4 paused 0 ended 0 seeking 1 time 0.8
 ended: TransferVideoFrame 00000000 top frame 7 bottom frame 7
 Play again 00000000
-again: from the start 0, ended 0
+again: from the start 1, ended 0
 Pause 00000000
 pause event 1
-paused: ready 4 paused 1 ended 0 seeking 0 time 10.1
+paused: ready 4 paused 1 ended 0 seeking 1 time 0.8
 Pause again 00000000
 SetVolume 00000000
 volume 0.50

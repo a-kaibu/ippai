@@ -1,0 +1,48 @@
+DirectInput8Create A 0
+keyboard8 CreateDevice 0
+keyboard8 GetDeviceInfo 0x230: 0 dwSize 0x230 type 0x13 first byte past 560 written past end -1
+keyboard8 GetDeviceInfo 0x244: 0 dwSize 0x244 type 0x13 first byte past 580 written past end -1
+keyboard8 GetDeviceInfo 0x438: 0x80070057 dwSize 0x438 type 0 first byte past 4 written past end -1
+keyboard8 GetDeviceInfo 0x44c: 0x80070057 dwSize 0x44c type 0 first byte past 4 written past end -1
+keyboard8 GetDeviceInfo 0: 0x80070057 dwSize 0 type 0 first byte past 4 written past end -1
+keyboard8 GetDeviceInfo 0x4: 0x80070057 dwSize 0x4 type 0 first byte past 4 written past end -1
+keyboard8 GetDeviceInfo 0x200: 0x80070057 dwSize 0x200 type 0 first byte past 4 written past end -1
+keyboard8 GetDeviceInfo 0x240: 0x80070057 dwSize 0x240 type 0 first byte past 4 written past end -1
+keyboard8 GetDeviceInfo 0x248: 0x80070057 dwSize 0x248 type 0 first byte past 4 written past end -1
+keyboard8 GetDeviceInfo 0x500: 0x80070057 dwSize 0x500 type 0 first byte past 4 written past end -1
+keyboard8 AddRef 2 3 Release 2 1 0
+mouse8 CreateDevice 0
+mouse8 GetDeviceInfo 0x230: 0 dwSize 0x230 type 0x12 first byte past 560 written past end -1
+mouse8 GetDeviceInfo 0x244: 0 dwSize 0x244 type 0x12 first byte past 580 written past end -1
+mouse8 GetDeviceInfo 0x438: 0x80070057 dwSize 0x438 type 0 first byte past 4 written past end -1
+mouse8 GetDeviceInfo 0x44c: 0x80070057 dwSize 0x44c type 0 first byte past 4 written past end -1
+mouse8 GetDeviceInfo 0: 0x80070057 dwSize 0 type 0 first byte past 4 written past end -1
+mouse8 GetDeviceInfo 0x4: 0x80070057 dwSize 0x4 type 0 first byte past 4 written past end -1
+mouse8 GetDeviceInfo 0x200: 0x80070057 dwSize 0x200 type 0 first byte past 4 written past end -1
+mouse8 GetDeviceInfo 0x240: 0x80070057 dwSize 0x240 type 0 first byte past 4 written past end -1
+mouse8 GetDeviceInfo 0x248: 0x80070057 dwSize 0x248 type 0 first byte past 4 written past end -1
+mouse8 GetDeviceInfo 0x500: 0x80070057 dwSize 0x500 type 0 first byte past 4 written past end -1
+mouse8 AddRef 2 3 Release 2 1 0
+A8 enum: dwSize 0x244 type 0x12
+A8 enum: dwSize 0x244 type 0x13
+DirectInput8Create W 0
+keyboard8W CreateDevice 0
+keyboard8W GetDeviceInfo 0x230: 0x80070057 dwSize 0x230 type 0 first byte past 4 written past end -1
+keyboard8W GetDeviceInfo 0x244: 0x80070057 dwSize 0x244 type 0 first byte past 4 written past end -1
+keyboard8W GetDeviceInfo 0x438: 0 dwSize 0x438 type 0x13 first byte past 1080 written past end -1
+keyboard8W GetDeviceInfo 0x44c: 0 dwSize 0x44c type 0x13 first byte past 1100 written past end -1
+keyboard8W GetDeviceInfo 0: 0x80070057 dwSize 0 type 0 first byte past 4 written past end -1
+keyboard8W GetDeviceInfo 0x4: 0x80070057 dwSize 0x4 type 0 first byte past 4 written past end -1
+keyboard8W GetDeviceInfo 0x200: 0x80070057 dwSize 0x200 type 0 first byte past 4 written past end -1
+keyboard8W GetDeviceInfo 0x240: 0x80070057 dwSize 0x240 type 0 first byte past 4 written past end -1
+keyboard8W GetDeviceInfo 0x248: 0x80070057 dwSize 0x248 type 0 first byte past 4 written past end -1
+keyboard8W GetDeviceInfo 0x500: 0x80070057 dwSize 0x500 type 0 first byte past 4 written past end -1
+W8 enum: dwSize 0x44c type 0x12
+W8 enum: dwSize 0x44c type 0x13
+dinput.dll DirectInputCreateA found
+DirectInputCreateA 0x300 0
+keyboard3 CreateDevice 0
+keyboard3 GetDeviceInfo 0x230: 0 written past end -1
+keyboard3 GetDeviceInfo 0x244: 0 written past end -1
+keyboard3 GetDeviceInfo 0x100: 0x80070057 written past end -1
+keyboard3 Release 0

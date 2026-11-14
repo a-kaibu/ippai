@@ -1,0 +1,8 @@
+flac: 0
+  flac native: subtype 0000f1ac-0000 compressed 1 ch 2 rate 22050
+  flac set float: 0
+  flac duration 0 00 ms
+  flac first at 0 ms, 400 ms of sound, any samples 1, times not back to back 0
+  flac ch 0: 440 Hz, rms 7/20
+  flac ch 1: 660 Hz, rms 4/20
+  flac seek to 250 ms: 0xc00d36b2

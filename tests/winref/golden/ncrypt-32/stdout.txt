@@ -17,6 +17,12 @@ rsa sign with public: 0x8009000d
 rsa pss sign: 0 128
 rsa pss verify: 0
 rsa pss verify other salt: 0x80090006
+rsa pss salt 0x5e sign: 0 128 verify: 0
+rsa pss salt 0x5f sign: 0x80090027 128 verify: 0x80090006
+rsa pss salt 0x80 sign: 0x80090027 128 verify: 0x80090006
+rsa pss salt 0x81 sign: 0x80090027 128 verify: 0x80090027
+rsa pss salt 0x80000000 sign: 0x80090027 128 verify: 0x80090027
+rsa pss salt 0xffffffff sign: 0x80090027 128 verify: 0x80090027
 rsa oaep encrypt: 0 128
 rsa oaep decrypt: 0 6 secret
 rsa oaep decrypt other label: 0x80090027
@@ -100,3 +106,5 @@ generic ecdsa curve: 0
 generic ecdsa finalize: 0
 generic ecdsa length: 0 size 4 value 384
 generic ecdsa curve name: 0 size 18 nistP384
+rsa import wrapping header 0: 0x80090029
+rsa import wrapping header 1: 0x80090029

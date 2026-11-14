@@ -95,7 +95,7 @@ copy 0 erf 4 1
 destroy 1 live 0
 == version 1.4
 create 1 erf 0 0 0
-iscabinet 0 erf 3 1
+iscabinet 0 erf 3 260 1
 open C:\probe\trial.cab flags 8000 mode 180
 open C:\probe\trial.cab flags 8000 mode 180
 close cabinet
@@ -120,7 +120,7 @@ copy 0 erf 4 1
 destroy 1 live 0
 == not a cabinet
 create 1 erf 0 0 0
-iscabinet 0 erf 0 0
+iscabinet 0 erf 1431655765 1431655765 1431655765
 open C:\probe\trial.cab flags 8000 mode 180
 open C:\probe\trial.cab flags 8000 mode 180
 close cabinet

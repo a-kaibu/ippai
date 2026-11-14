@@ -24,6 +24,7 @@ rgb32_overlap: lock pitch>=row 1 bpp 32
 image rgb32_overlap 24 16 0
 rgb32: GetDC 0
 rgb32: GetPixel 0080ff
+rgb32: GetDC again 0x8876026c same 0
 rgb32_gdi: lock pitch>=row 1 bpp 32
 image rgb32_gdi 24 16 0
 rgb565: desc flags 0x1007 caps 0x840 24x16 bpp 16 masks f800 7e0 1f
@@ -46,6 +47,7 @@ rgb565_overlap: lock pitch>=row 1 bpp 16
 image rgb565_overlap 24 16 0
 rgb565: GetDC 0
 rgb565: GetPixel 0082ff
+rgb565: GetDC again 0x8876026c same 0
 rgb565_gdi: lock pitch>=row 1 bpp 16
 image rgb565_gdi 24 16 0
 rgb555: desc flags 0x1007 caps 0x840 24x16 bpp 16 masks 7c00 3e0 1f
@@ -68,6 +70,7 @@ rgb555_overlap: lock pitch>=row 1 bpp 16
 image rgb555_overlap 24 16 0
 rgb555: GetDC 0
 rgb555: GetPixel 0084ff
+rgb555: GetDC again 0x8876026c same 0
 rgb555_gdi: lock pitch>=row 1 bpp 16
 image rgb555_gdi 24 16 0
 CreatePalette 0

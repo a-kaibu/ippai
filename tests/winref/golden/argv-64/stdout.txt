@@ -1,0 +1,35 @@
+[p a b] -> 3: <p> <a> <b>
+[ /i x.msi] -> 3: <> </i> <x.msi>
+[	/i x.msi] -> 3: <> </i> <x.msi>
+["C:\a b\p.exe" one "two three"] -> 3: <C:\a b\p.exe> <one> <two three>
+["C:\a b\p.exe"tail x] -> 3: <C:\a b\p.exe> <tail> <x>
+[p "a b" c] -> 3: <p> <a b> <c>
+[p a\\b "c\\" d] -> 4: <p> <a\\b> <c\> <d>
+[p a\"b c] -> 3: <p> <a"b> <c>
+[p a\\\"b c] -> 3: <p> <a\"b> <c>
+[p a\\"b c" d] -> 3: <p> <a\b c> <d>
+[p "" x] -> 3: <p> <> <x>
+[p "a""b" c] -> 2: <p> <a"b c>
+[p "a"""b c] -> 2: <p> <a"b c>
+[p a"b"c] -> 2: <p> <abc>
+[p    a		b   ] -> 3: <p> <a> <b>
+[p "unterminated arg] -> 2: <p> <unterminated arg>
+[p NAME="C:\My Game" X=1] -> 3: <p> <NAME=C:\My Game> <X=1>
+CreateProcess(self, [ /i "x y.msi" /qb]) = 1
+exit 0
+child GetCommandLineA [ /i "x y.msi" /qb]
+child CommandLineToArgvW 4: </i> <x y.msi> </qb>
+child argv[0] empty 1
+child __argc 4: </i> <x y.msi> </qb>
+CreateProcess(self, [prog /i x.msi]) = 1
+exit 0
+child GetCommandLineA [prog /i x.msi]
+child CommandLineToArgvW 3: </i> <x.msi>
+child argv[0] empty 0
+child __argc 3: </i> <x.msi>
+CreateProcess(self, ["quoted prog" a "b c"]) = 1
+exit 0
+child GetCommandLineA ["quoted prog" a "b c"]
+child CommandLineToArgvW 3: <a> <b c>
+child argv[0] empty 0
+child __argc 3: <a> <b c>

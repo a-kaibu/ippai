@@ -1,0 +1,40 @@
+StrRStrIA(abcabcABC, -1, abc) = 6
+StrRStrIW(abcabcABC, -1, abc) = 6
+StrRStrIA(abcabcABC, 6, abc) = 3
+StrRStrIW(abcabcABC, 6, abc) = 3
+StrRStrIA(abcabcABC, 4, abc) = 3
+StrRStrIW(abcabcABC, 4, abc) = 3
+StrRStrIA(abcabcABC, 3, abc) = 0
+StrRStrIW(abcabcABC, 3, abc) = 0
+StrRStrIA(abcabcABC, 0, abc) = -1
+StrRStrIW(abcabcABC, 0, abc) = -1
+StrRStrIA(abcabcABC, -1, x) = -1
+StrRStrIW(abcabcABC, -1, x) = -1
+StrRStrIA(abcabcABC, -1, ) = -1
+StrRStrIW(abcabcABC, -1, ) = -1
+StrRStrIA(aXbX, -1, x) = 3
+StrRStrIW(aXbX, -1, x) = 3
+StrRStrIA(アa, -1, A) = 2
+StrRStrIW(アa, -1, A) = 1
+StrRStrIA(アア, -1, ア) = 2
+StrRStrIW(アア, -1, ア) = 1
+StrRStrIA NULLs 00000000 00000000
+IsImmersiveProcess 0
+GetClassDevs(NULL, 0) INVALID_HANDLE_VALUE 87
+GetClassDevs(NULL, ALLCLASSES) a set
+GetClassDevs(none) a set
+Enum(NULL set) 0 6
+Enum(NULL data) 0 259
+Enum(cbSize 0) 0 259
+Enum(0) 0 259
+Destroy 1
+Destroy(NULL) 0 6
+CoInitializeSecurity before COM 800401f0
+CoInitializeSecurity 00000000
+CoInitializeSecurity again 80010119
+CoSetProxyBlanket(in-process) 80004002
+ImmGetDefaultIMEWnd before a window 0
+ImmGetDefaultIMEWnd 1 class IME visible 0 same 1
+shell32 AVI 150: found, RIFF AVI
+shell32 AVI 160: found, RIFF AVI
+shell32 AVI 161: found, RIFF AVI

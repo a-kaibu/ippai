@@ -1,0 +1,7 @@
+in pointer before: 0
+a mouse click before:
+enable: 1
+in pointer: 1
+left click:
+right click:
+wheel:

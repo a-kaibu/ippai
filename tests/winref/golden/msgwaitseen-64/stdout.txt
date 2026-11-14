@@ -1,0 +1,15 @@
+posted: 1
+peek noremove 1 msg 400
+after peek: timeout
+after peek, mask QS_POSTMESSAGE: timeout
+Ex MWMO_INPUTAVAILABLE: 1
+event set: 0
+second post: 1
+peek filtered to WM_USER+5 0
+after filtered peek: timeout
+remove first 1 msg 400
+after remove: timeout
+Ex MWMO_INPUTAVAILABLE: 1
+quit: 1
+peek quit 1 msg 12
+after quit peek: timeout

@@ -1,0 +1,35 @@
+GetClassInfo Button 1 Edit 1
+RegisterClass TCheckBox 1 TEdit 1
+Button BS_PUSHBUTTON: [clicked 100  check 0] [clicked 100  check 0] [clicked 100  check 0]
+  released outside: clicked 100 , capture none 1
+  BM_CLICK: clicked 100  check 0
+Button BS_CHECKBOX: [clicked 101  check 0] [clicked 101  check 0] [clicked 101  check 0]
+  released outside: clicked 101 , capture none 1
+  BM_CLICK: clicked 101  check 0
+Button BS_AUTOCHECKBOX: [clicked 102  check 1] [clicked 102  check 0] [clicked 102  check 1]
+  released outside: clicked 102 , capture none 1
+  BM_CLICK: clicked 102  check 1
+Button BS_3STATE: [clicked 103  check 0] [clicked 103  check 0] [clicked 103  check 0]
+  released outside: clicked 103 , capture none 1
+  BM_CLICK: clicked 103  check 0
+Button BS_AUTO3STATE: [clicked 104  check 1] [clicked 104  check 2] [clicked 104  check 0]
+  released outside: clicked 104 , capture none 1
+  BM_CLICK: clicked 104  check 2
+TCheckBox BS_PUSHBUTTON: [clicked 200  check 0] [clicked 200  check 0] [clicked 200  check 0]
+  released outside: clicked 200 , capture none 1
+  BM_CLICK: clicked 200  check 0
+TCheckBox BS_CHECKBOX: [clicked 201  check 0] [clicked 201  check 0] [clicked 201  check 0]
+  released outside: clicked 201 , capture none 1
+  BM_CLICK: clicked 201  check 0
+TCheckBox BS_AUTOCHECKBOX: [clicked 202  check 1] [clicked 202  check 0] [clicked 202  check 1]
+  released outside: clicked 202 , capture none 1
+  BM_CLICK: clicked 202  check 1
+TCheckBox BS_3STATE: [clicked 203  check 0] [clicked 203  check 0] [clicked 203  check 0]
+  released outside: clicked 203 , capture none 1
+  BM_CLICK: clicked 203  check 0
+TCheckBox BS_AUTO3STATE: [clicked 204  check 1] [clicked 204  check 2] [clicked 204  check 0]
+  released outside: clicked 204 , capture none 1
+  BM_CLICK: clicked 204  check 2
+radio r1: clicked 301  r1 1 r2 0
+radio r2: clicked 302  r1 0 r2 1
+TEdit typed: "ab"

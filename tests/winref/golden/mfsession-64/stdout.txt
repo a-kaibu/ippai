@@ -1,0 +1,98 @@
+MFStartup 0
+MFCreateTopology 0
+node 0: 0 type 0 inputs 0 outputs 0 id 1
+node 1: 0 type 1 inputs 0 outputs 0 id 1
+node 2: 0 type 2 inputs 0 outputs 0 id 1
+node 3: 0 type 3 inputs 0 outputs 0 id 1
+node type 4: 0x80070057
+GetObject of none: 0x80004005 0
+QI topology as node: 0x80004002
+connect source-transform 0
+connect transform-tee 0
+connect tee:1-output 0
+connect output-tee 0x80004005
+connect transform-source 0
+tee outputs 2, output inputs 1
+tee output 0 (none): 0xc00d36d5
+tee output 1: 0 is the output 1 at 0
+output's input: 0 is the tee 1 at 1
+GetOutput 5: 0x80070057
+AddNode 0 0
+AddNode 1 0
+AddNode 2 0
+AddNode 3 0
+AddNode again 0x80070057
+nodes 4
+GetNode 4: 0xc00d36bf
+by id: 0 1
+by id 12345: 0xc00d36d5
+source nodes 1
+output nodes 1, the output 1
+clone 0: nodes 4, node by id new 1
+clone's transform output 0 type 3
+clone's source stream id 7
+disconnect 0 again 0xc00d36d5
+RemoveNode 0 again 0x80070057
+Clear 0
+nodes 0
+MFCreateCollection 0
+collection of NULL: 1, 0x8000ffff 1; element 3 0x80070057
+MFCreateMediaEvent 0
+  event Started 0x80004005 vt 19
+MFCreateMediaSession 0
+caps 0
+GetEvent of none 0xc00d3e80
+Pause before a topology 0
+  event Paused 0xc00d36b2 vt 0
+source 0
+stream 0: video 1 selected 1
+SetTopology 0
+  event TopologySet 0 vt 13 topology 1
+  event 112 0 vt 0
+  event CapabilitiesChanged 0 caps 0x73 delta 0x73 vt 0
+  event TopologyStatus 0 status 100 vt 13 topology 1
+caps 0x73
+display control 0
+  window ours 1, native 0 64x48
+  SetVideoPosition 0
+volume 0x80004002
+unknown service 0x80004002
+GetClock 0
+  presentation clock 1, state 0
+Start 0
+  event TopologyStatus 0 status 200 vt 13 topology 1
+  event CapabilitiesChanged 0 caps 0x77 delta 0x4 vt 0
+  event Started 0 vt 0
+  clock state 1
+  event EndOfPresentation 0 vt 0
+  event TopologyStatus 0 status 400 vt 13 topology 1
+  event CapabilitiesChanged 0 caps 0x73 delta 0x4 vt 0
+  event Ended 0 vt 0
+played for at least 600 ms: 1, less than 5 s: 1
+  time at the end near 750 ms: 0
+Start at 500 ms 0
+  event CapabilitiesChanged 0 caps 0x77 delta 0x4 vt 0
+  event Started 0 vt 0
+Pause 0
+  event CapabilitiesChanged 0 caps 0x73 delta 0x4 vt 0
+  event Paused 0 vt 0
+  paused at or past 500 ms: 1
+Pause again 0
+  event Paused 0xc00d36b2 vt 0
+Stop 0
+  event Stopped 0 vt 0
+  stopped at 0: 1
+Close 0
+  event CapabilitiesChanged 0 caps 0x70 delta 0x3 vt 0
+  event Closed 0 vt 0
+Start after Close 0
+  event Started 0xc00d36b2 vt 0
+Shutdown 0
+after it: Start 0xc00d3e85, GetEvent 0xc00d3e85, caps 0xc00d3e85, Shutdown 0xc00d3e85
+released 0
+BeginGetEvent 0, again 0xd36d8
+GetEvent while waiting 0xc00d36da
+source 0
+stream 0: video 1 selected 1
+async: closed 1, on another thread 1
+async events: TopologySet 112 CapabilitiesChanged TopologyStatus TopologyStatus CapabilitiesChanged Started EndOfPresentation TopologyStatus CapabilitiesChanged Ended CapabilitiesChanged Closed

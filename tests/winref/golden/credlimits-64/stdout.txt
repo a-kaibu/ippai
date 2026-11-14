@@ -1,0 +1,9 @@
+plain: write 1 error 0 read blob 16 attrs 0 first value 0
+largest blob: write 1 error 0 read blob 512 attrs 0 first value 0
+blob one over: write 1 error 0 read blob 513 attrs 0 first value 0
+most attributes: write 1 error 0 read blob 4 attrs 64 first value 4
+attributes one over: write 0 error 1783
+largest value: write 1 error 0 read blob 4 attrs 1 first value 256
+value one over: write 0 error 1783
+attributes 0x7fffffff: write 0 error 534
+blob 0xffffffff: write 0 error 87

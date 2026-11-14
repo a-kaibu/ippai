@@ -1,0 +1,27 @@
+file: 0
+resolver: 0, media source 1
+  descriptor: 0, 2 streams, 790 ms
+  mime: 0xc00d36bd -
+  stream 0: selected 1, video 1, audio 0, types 1
+  handler's: video 1 subtype WMV2 (0x32564d57) 64x48 rate 30/1 stride - 0 aspect 1:1 interlace 2
+  codec data: 0 4 bytes
+  stream 1: selected 1, video 0, audio 1, types 1
+  handler's: audio subtype 0x161 2 ch 44100 Hz 16 bits align 371 avg 8000, user data 10
+reader on the source: 0
+  native: 0
+  native: video 1 subtype WMV2 (0x32564d57) 64x48 rate 30/1 stride - 0 aspect 1:1 interlace 2
+  set NV12: 0
+  current: video 1 subtype NV12 (0x3231564e) 64x48 rate 30/1 stride 64 aspect 1:1 interlace 2
+  nv12: first sample at 46 ms, 0 ms long, stream 0
+  nv12: 18 frames rrrrrrggggggbbbbbb, last at 754 ms, uneven steps 0, short buffers 0, end flags 0x2
+  seek to 400 ms: 0
+  after the seek: first sample at 46 ms, 0 ms long, stream 0
+  after the seek: 18 frames rrrrrrggggggbbbbbb, last at 754 ms, uneven steps 0, short buffers 0, end flags 0x2
+reader from the URL: 0
+  set RGB32: 0
+  current: video 1 subtype  (0x16) 64x48 rate 30/1 stride 256 aspect 1:1 interlace 2
+  rgb32: first sample at 46 ms, 0 ms long, stream 0
+  rgb32: 18 frames rrrrrrggggggbbbbbb, last at 754 ms, uneven steps 0, short buffers 0, end flags 0x2
+  set float: 0
+  current: audio subtype 0x3 2 ch 44100 Hz 32 bits align 8 avg 352800, user data - 0
+  audio: first at 00 ms, ~0 x 50 ms of stereo, tone 0, end flags 0x2

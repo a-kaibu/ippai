@@ -1,0 +1,14 @@
+X8R8G8B8: GetFrontBufferData 0x8876086c
+swap chain 1: GetFrontBufferData 0x8876086c
+whole: Present 0
+image whole 64 64 0
+box: Present 0
+image box 64 64 0
+stretched: Present 0
+image stretched 64 64 0
+past: Present 0
+image past 64 64 0
+whole2: Present 0
+image whole2 64 64 0
+box2: Present 0
+image box2 64 64 0

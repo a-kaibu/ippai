@@ -1,0 +1,47 @@
+register 0 0 ok err 0
+  window ok extra 0
+register 40 40 ok err 0
+  window ok extra 40
+  last long 1234 err 0
+register 4096 4096 ok err 0
+  window ok extra 4096
+  last long 1234 err 0
+register -1 0 fails err 87
+register 0 -1 fails err 87
+register cccccccc fails err 87
+register 0 0x7fffffff ok err 0
+  window ok extra 2147483647
+  last long 1234 err 0
+SetParent itself                   fails err 87
+SetParent child of its child       fails err 87
+SetParent child of its grandchild  fails err 87
+SetParent child under itself       fails err 87
+SetParent not a window             fails err 1400
+SetParent of not a window          fails err 1400
+parents 1 1
+IsChild 1 0 0
+ancestor 1
+SetParent grandchild to other      ok err 0
+moved 1 0 1
+SetParent grandchild back          ok err 0
+origin 0,0
+after destroy 0 0 0 1
+ended thread's windows 0 0
+send after the end 0 err 1400
+post after the end 0 err 1400
+send to an ending thread's window: 0
+ended yes, sender returned, answered 0, windows 0 0
+hidden popup 8000x8000: ok, visible 0, client >= 100 1
+hidden popup 100000x100000: ok, visible 0, client >= 100 1
+hidden overlapped default: ok, visible 0, client >= 100 1
+message-only ok, send 77
+hidden dc 1
+shown pixel 1ec80a
+posted 10000 of 10050, error 1816
+thread post when full 0, error 1816
+taken 10000; post again 1
+menus 1 1 1 1
+after DestroyMenu 0 0 0 1
+bar after DestroyWindow 0 0
+shared cursor 1 icon 1 image 1
+churn bad 0, kept 1

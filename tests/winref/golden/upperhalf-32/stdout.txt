@@ -1,0 +1,9 @@
+write 80000000: hits 1 code c0000005 kind 1 at 80000000
+write 80001000: hits 1 code c0000005 kind 1 at 80001000
+write 80400000: hits 1 code c0000005 kind 1 at 80400000
+write 90000000: hits 1 code c0000005 kind 1 at 90000000
+write c0000000: hits 1 code c0000005 kind 1 at c0000000
+write f0000000: hits 1 code c0000005 kind 1 at f0000000
+ReadFile to 90000000: 0 error 998 got 0
+ReadFile to NULL: 0 error 998
+ReadFile of 0 bytes: 1 got 0

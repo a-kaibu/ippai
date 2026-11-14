@@ -20,6 +20,9 @@ V1 to V2 1
 ambiguous Animal from Dog 1
 Dog to Cat across 1
 DogCat from Dog 1
+reference down to Dog 1
+reference to Cat throws bad_cast 1
+reference across to Right 20
 typeid Puppy 1
 typeid not Dog 0
 typeid through Right 1

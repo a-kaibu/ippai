@@ -1,0 +1,9 @@
+clientedge: window 40x30 client 36x26
+clientedge: WM_PRINT 1
+image clientedge 48 36 0
+clientedge_small: window 6x5 client 2x1
+clientedge_small: WM_PRINT 1
+image clientedge_small 48 36 0
+none: window 40x30 client 40x30
+none: WM_PRINT 1
+image none 48 36 0

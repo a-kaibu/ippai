@@ -1,0 +1,6 @@
+output: "debughandles: hello" length 20 unicode 0
+exception: params 15 first 0 last 100e first chance 1
+threads 4 exits 4 open before continue 4 closed after continue 4
+after exit process: process handle open 0 main thread handle open 0
+guard after DEBUG_EVENT intact 1
+child exit 9

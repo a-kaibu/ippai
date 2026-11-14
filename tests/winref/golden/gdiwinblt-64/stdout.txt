@@ -1,0 +1,11 @@
+two DCs 1
+FillRect 1
+BitBlt other DC 1
+BitBlt child from parent 1
+BitBlt parent from child 1
+StretchBlt other DC 1
+AlphaBlend same DC 1
+AlphaBlend other DC 1
+TransparentBlt same DC 1
+TransparentBlt child 1
+done

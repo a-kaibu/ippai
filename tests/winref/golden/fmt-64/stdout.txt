@@ -5,6 +5,8 @@ fmt [%1!d! %2!5d! %3!-5d!| %4!x! %5!08X!] flags 0 cap 64: 27 err 0 [42     7 3  
 fmt [%1!s! %2!.3s! %3!5s!|] flags 0 cap 64: 14 err 0 [abc abc    ab|] next 00
 fmt [%1!*d!|] flags 0 cap 64: 7 err 0 [    12|] next 00
 fmt [%1!c! %2!u! %3!ld!] flags 0 cap 64: 14 err 0 [Z 4294967295 5] next 00
+fmt [%1!.5u! %2!#.3o! %3!#o! %4!0#11x! %5!.0d!|%6!#X!] flags 0 cap 64: 28 err 0 [00042 001 010 0x000000001 |0] next 00
+fmt [%1!-+8d!|%2! 05d!|%3!+.4i!|%4!*.*d!|] flags 0 cap 64: 31 err 0 [+42     |-0042|+0007|     0003|] next 00
 fmt [line1%nline2%r%t|%0 after zero] flags 0 cap 64: 15 err 0 [line1\r\nline2\r\x09|] next 00
 fmt [percent %% dot %. bang %!] flags 0 cap 64: 22 err 0 [percent % dot . bang !] next 00
 fmt [end\r\n] flags 0 cap 64: 5 err 0 [end\r\n] next 00

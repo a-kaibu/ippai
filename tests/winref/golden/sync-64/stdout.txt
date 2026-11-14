@@ -50,15 +50,15 @@ CreateSemaphoreA(NULL, 0, 0, NULL) != NULL                             = 0 err 8
 GetLastError()                                                         = 57005 err 57005
 n2 != NULL                                                             = 1 err 57005
 WaitForSingleObject(n2, 0)                                             = 258 err 57005
-OpenEventA(EVENT_ALL_ACCESS, FALSE, "masu-winref-ev") != NULL         = 1 err 57005
-OpenEventA(EVENT_ALL_ACCESS, FALSE, "masu-winref-none") != NULL       = 0 err 2
-CreateMutexA(NULL, FALSE, "masu-winref-ev") != NULL                   = 0 err 6
-OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "masu-winref-ev") != NULL         = 0 err 6
-CreateSemaphoreA(NULL, 0, 1, "masu-winref-ev") != NULL                = 0 err 6
-CreateMutexA(NULL, TRUE, "masu-winref-mx") != NULL                    = 1 err 183
+OpenEventA(EVENT_ALL_ACCESS, FALSE, "masu-winref-ev") != NULL          = 1 err 57005
+OpenEventA(EVENT_ALL_ACCESS, FALSE, "masu-winref-none") != NULL        = 0 err 2
+CreateMutexA(NULL, FALSE, "masu-winref-ev") != NULL                    = 0 err 6
+OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "masu-winref-ev") != NULL          = 0 err 6
+CreateSemaphoreA(NULL, 0, 1, "masu-winref-ev") != NULL                 = 0 err 6
+CreateMutexA(NULL, TRUE, "masu-winref-mx") != NULL                     = 1 err 183
 GetLastError()                                                         = 57005 err 57005
-CreateEventA(NULL, TRUE, FALSE, "Local\\masu-winref-ev2") != NULL     = 1 err 0
-CreateEventA(NULL, TRUE, FALSE, "Global\\masu-winref-ev3") != NULL    = 1 err 0
+CreateEventA(NULL, TRUE, FALSE, "Local\\masu-winref-ev2") != NULL      = 1 err 0
+CreateEventA(NULL, TRUE, FALSE, "Global\\masu-winref-ev3") != NULL     = 1 err 0
 CreateEventA(NULL, TRUE, FALSE, "bad\\name") != NULL                   = 0 err 3
 CreateEventA(NULL, TRUE, FALSE, "") != NULL                            = 1 err 0
 CloseHandle(n1)                                                        = 1 err 57005
