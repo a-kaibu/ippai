@@ -294,7 +294,8 @@ pub fn image_size(w: i32, h: i32, bpp: u32, align: u32) -> Option<(u32, u32)> {
         return None;
     }
     let row = (w as u64 * bpp as u64).div_ceil(8 * align as u64) * align as u64;
-    let size = row * h as u64;
+    // (a 2^31 wide 64-bit row times 2^31 rows is past u64: it does not fit either)
+    let size = row.checked_mul(h as u64)?;
     (size < mem::GUEST_TOP as u64).then_some((row as u32, size as u32))
 }
 
