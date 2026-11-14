@@ -520,6 +520,7 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
         }
         // (a thread another one suspended: SuspendThread, sake's suspend.rs)
         if let Some(park) = PARK.get() {
+            crate::crashlog::phase("park");
             if park() {
                 continue;
             }
@@ -537,10 +538,12 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
             if m16 {
                 crate::jit::to_linear16(cpu);
             }
+            crate::crashlog::phase("jit::run");
             let ran = crate::jit::run(cpu);
             WORK.set(WORK.get() + 8 * (crate::jit::BUDGET - cpu.jit_budget.max(0)).max(0) as u64);
             let compiled = matches!(ran, crate::jit::Ran::Missed) && {
                 crate::jit::count_miss(cpu.eip);
+                crate::crashlog::phase("jit::maybe_compile");
                 crate::jit::maybe_compile(cpu, &mut mem)
             };
             if m16 {
@@ -564,6 +567,7 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
             }
         }
         // the interpreter: up to the next branch with the JIT, a batch of steps without
+        crate::crashlog::phase("interpreter");
         for _ in 0..4096 {
             WORK.set(WORK.get() + 1);
             let (e, branch) = crate::jit::step(cpu, &mut mem);

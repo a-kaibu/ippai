@@ -233,6 +233,10 @@ struct ThreadLog {
     traps: UnsafeCell<[[u32; 4]; TRAPS]>,
     n: AtomicU32,
     exceptions: AtomicU32,
+    /// where in the run loop it is (a `&'static str`'s address and length; 0: nowhere marked):
+    /// a thread that stands still outside guest code and outside an API shows what it waits in
+    phase: AtomicUsize,
+    phase_len: AtomicUsize,
 }
 
 unsafe impl Sync for ThreadLog {}
@@ -264,6 +268,7 @@ pub fn register(cpu: *mut Cpu) {
             t.guest.store(0, Relaxed);
             t.n.store(0, Relaxed);
             t.exceptions.store(0, Relaxed);
+            t.phase.store(0, Relaxed);
             t
         }
         None => Box::leak(Box::new(ThreadLog {
@@ -273,6 +278,8 @@ pub fn register(cpu: *mut Cpu) {
             traps: UnsafeCell::new([[0; 4]; TRAPS]),
             n: AtomicU32::new(0),
             exceptions: AtomicU32::new(0),
+            phase: AtomicUsize::new(0),
+            phase_len: AtomicUsize::new(0),
         })),
     };
     CUR.with(|c| c.set(Some(t)));
@@ -306,6 +313,17 @@ pub fn unregister(cpu: *mut Cpu) {
     CUR.with(|c| {
         if c.get().is_some_and(|t| t.cpu.load(Relaxed) == 0) {
             c.set(None)
+        }
+    });
+}
+
+/// Where the calling thread is in the run loop now ("" when done), shown in the snapshot.
+#[inline]
+pub fn phase(what: &'static str) {
+    CUR.with(|c| {
+        if let Some(t) = c.get() {
+            t.phase_len.store(what.len(), Relaxed);
+            t.phase.store(what.as_ptr() as usize, Relaxed);
         }
     });
 }
@@ -762,6 +780,10 @@ pub extern "C" fn vnhost_crashlog_snapshot() -> u32 {
             if t.guest.load(Relaxed) != 0 { "in guest code" } else { "in a syscall/API (host side)" },
             cpu.eip
         );
+        let (pp, pl) = (t.phase.load(Relaxed), t.phase_len.load(Relaxed));
+        if pp != 0 && pl != 0 {
+            let _ = write!(w, " [run loop: {}]", unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(pp as *const u8, pl)) });
+        }
         sym(&mut w, mods, cpu.eip);
         let _ = write!(w, ", exceptions {}", t.exceptions.load(Relaxed));
         regs(&mut w, cpu);

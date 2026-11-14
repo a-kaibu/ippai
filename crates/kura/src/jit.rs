@@ -2230,6 +2230,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
     }
     with_state(|st| {
         if !st.pending.is_empty() {
+            crate::crashlog::phase("jit: take_built");
             take_built(st, mem);
         }
         if st.known.contains(&eip) {
@@ -2243,10 +2244,12 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         // (16-bit regions are neither shared nor saved: their code is decoded with a segment base)
         if st.misses.get(&eip).is_none() && cpu.mode16 == 0 {
             if jit::FN.load(std::sync::atomic::Ordering::Relaxed) {
+                crate::crashlog::phase("jit: shared fn");
                 if let Some(r) = shared(mem, &fn_key(eip)) {
                     st.fn_builds.insert(eip, r.build);
                     return install_fn(st, eip, &r.bytes, &r.starts, &r.sites, &r.code);
                 }
+                crate::crashlog::phase("jit: saved fn");
                 if cpu.mode64 == 0 {
                     if let Some(i) = find_saved_fn(mem, eip) {
                         if load_saved_fn(st, i) {
@@ -2255,11 +2258,13 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
                     }
                 }
             }
+            crate::crashlog::phase("jit: shared");
             if let Some(r) = shared(mem, &[eip]) {
                 mark_code(&r.code);
                 return load(st, &r.bytes, vec![eip], &r.starts, &r.code);
             }
             // (a 64-bit region checks the upper half of RIP itself on entry)
+            crate::crashlog::phase("jit: saved");
             if let Some(i) = find_saved(mem, &[eip], false, (cpu.trap_lo, cpu.trap_hi)) {
                 if load_saved(st, i) {
                     return true;
@@ -2287,6 +2292,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         if cpu.mode16 != 0 {
             return compile16(st, cpu, mem);
         }
+        crate::crashlog::phase("jit: compile");
         if fnm {
             // (part: not a function's entry, as where a function's blocks that had not run yet
             // go on: without the blocks compiled already, which it enters through the dispatcher)
