@@ -396,7 +396,18 @@ unsafe fn device_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, 
             r
         }
         8 => c9(d, dev, 8, this, &[me, 0, a(1)], after),
-        13 => D3DERR_NOTAVAILABLE, // CreateAdditionalSwapChain
+        13 => {
+            // CreateAdditionalSwapChain(params, out)
+            if a(1) == 0 {
+                return D3DERR_INVALIDCALL;
+            }
+            let mut p = pp9(a(1));
+            let r = c9(d, dev, 13, this, &[me, p.as_mut_ptr() as u32, a(2)], after);
+            if r == 0 {
+                pp8(a(1), &p);
+            }
+            r
+        }
         14 => {
             let mut p = pp9(a(1));
             let r = c9(d, dev, 16, this, &[me, p.as_mut_ptr() as u32], after);

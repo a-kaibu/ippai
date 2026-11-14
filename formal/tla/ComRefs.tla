@@ -107,6 +107,10 @@ Do(st, t) ==
             LET a == Buffers(st, t)
                 sl == [NoSlots EXCEPT !["bb"] = t.bb, !["sc"] = t.sc, !["ads"] = t.ads, !["rt0"] = t.bb, !["ds"] = t.ads]
             IN Done([a EXCEPT !.slots[t.dev] = sl], "ok", 0)
+      [] t.op = "CreateSwapChain" ->
+            \* (a D3D9 additional swap chain t.o: it binds its own back buffer t.bb, no depth buffer)
+            LET a == Make(st, <<t.bb>>, "surface", 0, {}, NoSlots)
+            IN Done(GiveApp(Make(a, <<t.o>>, "swapchain", 0, {}, [NoSlots EXCEPT !["bb"] = t.bb]), t.o), "ok", t.o)
       [] t.op = "CreateDevice11" ->
             \* (the device t.dev and its context t.sb; the swap chain t.o holds its buffer t.v and
             \* the device)

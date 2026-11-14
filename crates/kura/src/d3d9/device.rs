@@ -618,20 +618,40 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
     match iface {
         IF_D3D9 => d3d9_call(d, m, this, &a),
         IF_DEVICE => device_call(d, m, &a, after),
-        IF_SWAPCHAIN => match m {
-            3 => present(d, after, a(1), a(2), a(3)),
-            4 => D3DERR_INVALIDCALL,
-            5 => get_backbuffer(d, a(3)),
-            6 => raster_status(d, a(1)),
-            7 => display_mode(a(1)),
-            8 => device_out(d, a(1)),
-            9 => {
-                let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
-                write_pp(a(1), &dev.pp);
-                S_OK
+        IF_SWAPCHAIN => {
+            // (an additional swap chain: its own back buffer, parameters and window)
+            let extra = match d.objs.get(&this).map(|o| &o.data) {
+                Some(Data::SwapChain(Some(c))) => Some(*c),
+                _ => None,
+            };
+            match (m, extra) {
+                (3, None) => present(d, after, a(1), a(2), a(3)),
+                (3, Some(c)) => present_from(d, after, Some((c.bb, c.pp[8] != 0, c.hwnd)), a(1), a(2), a(3)),
+                (4, _) => D3DERR_INVALIDCALL,
+                (5, None) => get_backbuffer(d, a(3)),
+                (5, Some(c)) => {
+                    // GetBackBuffer(index, type, out): one back buffer
+                    if a(1) != 0 || a(3) == 0 {
+                        return D3DERR_INVALIDCALL;
+                    }
+                    d.add_ref(c.bb);
+                    wrp(a(3), 0, d.addr_of(c.bb));
+                    S_OK
+                }
+                (6, _) => raster_status(d, a(1)),
+                (7, _) => display_mode(a(1)),
+                (8, _) => device_out(d, a(1)),
+                (9, extra) => {
+                    let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
+                    if a(1) == 0 {
+                        return D3DERR_INVALIDCALL;
+                    }
+                    write_pp(a(1), &extra.map_or(dev.pp, |c| c.pp));
+                    S_OK
+                }
+                _ => E_NOTIMPL,
             }
-            _ => E_NOTIMPL,
-        },
+        }
         IF_SURFACE => surface_call(d, m, this, &a, after),
         IF_TEXTURE | IF_CUBE | IF_VOLUMETEX => texture_call(d, iface, m, this, &a, after),
         IF_VB | IF_IB => buffer_call(d, iface, m, this, &a),
@@ -1125,7 +1145,7 @@ fn reset_buffers(d: &mut D3d) {
     } else {
         0
     };
-    let sc = d.new_obj(IF_SWAPCHAIN, 0, Data::SwapChain);
+    let sc = d.new_obj(IF_SWAPCHAIN, 0, Data::SwapChain(None));
     let sc = d.id_of(sc);
     d.bind(sc);
     d.release(sc);
@@ -1165,6 +1185,65 @@ fn reset_buffers(d: &mut D3d) {
     if old_dsv != 0 {
         d.unbind(old_dsv);
     }
+}
+
+/// An additional swap chain (CreateAdditionalSwapChain): a back buffer of its own, shown in its
+/// window (hDeviceWindow, else the device's) by its Present. ANGLE (Ren'Py 6/7's libGLESv2)
+/// makes its device on a hidden 1x1 window and draws each EGL window surface through one.
+#[derive(Clone, Copy, Debug)]
+pub struct Chain {
+    pub pp: [u32; 14],
+    pub bb: u32,
+    pub hwnd: u32,
+}
+
+/// CreateAdditionalSwapChain(params, out): windowed only (as Windows: a full screen one is
+/// refused while the device has its implicit one); a size of 0 is the window's client area and
+/// D3DFMT_UNKNOWN the display's format, written back to `params` as CreateDevice does. No
+/// automatic depth buffer (Windows makes none for additional swap chains), no multisampling.
+unsafe fn create_swap_chain(d: &mut D3d, pp: u32, out: u32) -> u32 {
+    let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
+    if pp == 0 || out == 0 {
+        return D3DERR_INVALIDCALL;
+    }
+    let mut p = read_pp(pp);
+    // BackBufferCount up to 3, SwapEffect DISCARD, FLIP or COPY (OVERLAY needs the caps kura
+    // does not give, FLIPEX an Ex device), windowed
+    if p[3] > 3 || !(1..=3).contains(&p[6]) || p[8] == 0 {
+        wrp(out, 0, 0);
+        return D3DERR_INVALIDCALL;
+    }
+    let hwnd = if p[7] != 0 { p[7] } else { dev.hwnd };
+    let mut rect = [0i32; 4];
+    (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
+    if p[0] == 0 {
+        p[0] = (rect[2] - rect[0]).max(1) as u32;
+    }
+    if p[1] == 0 {
+        p[1] = (rect[3] - rect[1]).max(1) as u32;
+    }
+    if p[2] == 0 {
+        p[2] = fmt::X8R8G8B8;
+    }
+    // (the back buffer formats: A2R10G10B10, A8R8G8B8, X8R8G8B8, A1R5G5B5, X1R5G5B5, R5G6B5)
+    if !matches!(p[2], 35 | 21 | 22 | 25 | 24 | 23) {
+        wrp(out, 0, 0);
+        return D3DERR_INVALIDCALL;
+    }
+    p[3] = p[3].max(1);
+    p[4] = 0;
+    p[5] = 0;
+    write_pp(pp, &p);
+    let bb = new_surface(d, p[0], p[1], p[2], POOL_DEFAULT, USAGE_RENDERTARGET, 0, 0, 0);
+    let bb = d.id_of(bb);
+    d.bind(bb);
+    d.release(bb);
+    let addr = d.new_obj(IF_SWAPCHAIN, 0, Data::SwapChain(Some(Chain { pp: p, bb, hwnd })));
+    if d.trace {
+        eprintln!("d3d9: CreateAdditionalSwapChain {}x{} format {:#x} window {hwnd:#x} {rect:?}", p[0], p[1], p[2]);
+    }
+    wrp(out, 0, addr);
+    S_OK
 }
 
 unsafe fn get_backbuffer(d: &mut D3d, out: u32) -> u32 {
@@ -1248,7 +1327,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             dev.cursor = a(1) != 0;
             was as u32
         }
-        13 => D3DERR_NOTAVAILABLE,
+        13 => create_swap_chain(d, a(1), a(2)),
         14 => {
             if a(1) != 0 {
                 return D3DERR_INVALIDCALL;
@@ -3196,6 +3275,12 @@ pub fn present_src_words(src: Option<[i32; 4]>, w: u32, h: u32) -> (u32, u32) {
 /// pDestRect (windowed: the part of the back buffer shown, and where in the client area: 俺の姿が､
 /// 透明に! presents (0,0)-(1920,1080) of a bigger back buffer), `over` hDestWindowOverride.
 unsafe fn present(d: &mut D3d, after: &mut After, src: u32, dst: u32, over: u32) -> u32 {
+    present_from(d, after, None, src, dst, over)
+}
+
+/// Present of a swap chain: `chain` (back buffer, windowed, window) for an additional one,
+/// None for the device's own.
+unsafe fn present_from(d: &mut D3d, after: &mut After, chain: Option<(u32, bool, u32)>, src: u32, dst: u32, over: u32) -> u32 {
     // IPPAI_D3D_TRACE_EVERY=n: trace one whole frame in n
     static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     let every = *EVERY.get_or_init(|| std::env::var("IPPAI_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
@@ -3203,8 +3288,8 @@ unsafe fn present(d: &mut D3d, after: &mut After, src: u32, dst: u32, over: u32)
         d.trace = (dev.frames + 1) % n == 0;
     }
     let Some(dev) = d.dev.as_mut() else { return D3DERR_INVALIDCALL };
-    let windowed = dev.pp[8] != 0;
-    let (bb, hwnd) = (dev.backbuffer, if over != 0 && windowed { over } else { dev.hwnd });
+    let (bb, windowed, own) = chain.unwrap_or((dev.backbuffer, dev.pp[8] != 0, dev.hwnd));
+    let hwnd = if over != 0 && windowed { over } else { own };
     dev.frames += 1;
     if d.trace && dev.frames % 100 == 1 {
         eprintln!("d3d9: present #{} backbuffer {bb} hwnd {hwnd:#x}", dev.frames);

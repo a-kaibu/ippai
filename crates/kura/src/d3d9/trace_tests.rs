@@ -353,7 +353,7 @@ fn run(seed: u64) {
         if id(dev_addr) != dev || !app.held.contains(&dev_addr) {
             break;
         }
-        let k = r.below(15);
+        let k = r.below(17);
         match k {
             0 => {
                 let rt = r.chance(50);
@@ -473,6 +473,32 @@ fn run(seed: u64) {
                     continue;
                 }
                 app.release(a);
+            }
+            15 => {
+                // CreateAdditionalSwapChain (ANGLE's window surfaces): its own back buffer
+                let o = out();
+                let res = call(IF_DEVICE, 13, &[dev_addr, pp(r.chance(50)), o]);
+                let a = rd(o);
+                app.held.push(a);
+                let sc = id(a);
+                let bb = with(|d| match &d.objs[&sc].data {
+                    Data::SwapChain(Some(c)) => c.bb,
+                    _ => unreachable!(),
+                });
+                app.push(Step { op: "CreateSwapChain", o: sc, bb, ret: hr(res), got: sc, ..Default::default() });
+            }
+            16 => {
+                // a swap chain's GetBackBuffer (the implicit one's or an additional one's)
+                let Some(sc) = app.pick(&mut r, |i, _| i == IF_SWAPCHAIN) else { continue };
+                let o = out();
+                let res = call(IF_SWAPCHAIN, 5, &[sc, 0, 0, o]);
+                let got = if res == 0 { app.held.push(rd(o)); id(rd(o)) } else { 0 };
+                let sid = id(sc);
+                let mine = with(|d| match &d.objs[&sid].data {
+                    Data::SwapChain(Some(_)) => sid,
+                    _ => dev,
+                });
+                app.push(Step { op: "Get", dev: mine, slot: "bb", ret: hr(res), got, ..Default::default() });
             }
             _ => {
                 if !r.chance(30) {

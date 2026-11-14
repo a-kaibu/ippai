@@ -30,6 +30,8 @@ mod golden_tests;
 #[cfg(test)]
 mod present_tests;
 #[cfg(test)]
+mod swapchain_tests;
+#[cfg(test)]
 pub(crate) mod sb_tests;
 #[cfg(test)]
 mod devices_tests;
@@ -100,7 +102,8 @@ pub struct Obj {
 pub enum Data {
     D3d,
     Device,
-    SwapChain,
+    /// None: a device's implicit swap chain (its back buffer and parameters are the device's)
+    SwapChain(Option<device::Chain>),
     Surface(device::Surface),
     Texture(device::Texture),
     /// a volume texture's level (IDirect3DVolume9)
@@ -289,6 +292,8 @@ impl D3d {
                 self.guest_free(b.mem)
             }
             Data::Volume(v) => self.guest_free(v.mem),
+            // (an additional swap chain's back buffer goes with it, unless the program holds it)
+            Data::SwapChain(Some(c)) => self.unbind(c.bb),
             Data::Device => {
                 // (the device the calls went to, or one waiting: the others stay as they are,
                 // KiriKiri Z releases a small window's device while its main one draws on)
