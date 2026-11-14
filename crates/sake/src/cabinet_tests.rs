@@ -239,3 +239,96 @@ proptest! {
         }
     }
 }
+
+/// The cabinet as FDICopy reads it through the guest's pfnread/pfnseek: a file pointer, reads
+/// in pieces, seeks only when it has to (counted), and no seek at all when `seek` is false.
+struct Piece<'a> {
+    d: &'a [u8],
+    pos: u64,
+    seek: bool,
+    seeks: usize,
+    bytes: u64,
+    biggest: usize,
+    rec: Rec,
+}
+impl Sink for Piece<'_> {
+    fn notify(&mut self, kind: u32, n: &Note) -> i32 {
+        self.rec.notify(kind, n)
+    }
+    fn write(&mut self, hf: u32, data: &[u8]) -> u32 {
+        self.rec.write(hf, data)
+    }
+}
+impl Io for Piece<'_> {
+    fn read_at(&mut self, off: u64, n: usize, out: &mut Vec<u8>) -> bool {
+        let t = tables_len(self.d, self.d.len() as u64) as usize;
+        let (off, n) = from_tables(&self.d[..t], off, n, out);
+        if n == 0 {
+            return true;
+        }
+        if off != self.pos {
+            if !self.seek && off < self.pos {
+                return false;
+            }
+            self.seeks += 1;
+            self.pos = off;
+        }
+        let Some(s) = self.d.get(off as usize..off as usize + n) else { return false };
+        out.extend_from_slice(s);
+        self.pos += n as u64;
+        self.bytes += n as u64;
+        let n = out.len();
+        self.biggest = self.biggest.max(n);
+        true
+    }
+}
+fn piece(d: &[u8], seek: bool, take: impl FnMut(usize) -> i32 + 'static) -> (Result<(), u32>, Piece<'_>) {
+    let t = tables_len(d, d.len() as u64) as usize;
+    let mut p = Piece { d, pos: t as u64, seek, seeks: 0, bytes: t as u64, biggest: 0, rec: Rec::new(take) };
+    let r = stream(&d[..t], &mut p);
+    (r, p)
+}
+
+/// A large cabinet is not read whole: every read is one CFDATA (at most 64 KB), the data is
+/// read once from front to back when the files are taken in order, and without pfnseek too
+#[test]
+fn large_cabinet_is_read_block_by_block() {
+    let big: Vec<(String, Vec<u8>, bool)> = (0..6).map(|k| (format!("f{k}"), text(700_000 + k * 1111, k as u8), false)).collect();
+    for zip in [false, true] {
+        let d = build(&[(zip, big.clone()), (!zip, big[..2].to_vec())]);
+        for seek in [true, false] {
+            let (r, p) = piece(&d, seek, |i| 1 + i as i32);
+            r.unwrap();
+            assert!(p.biggest <= 0xffff, "biggest read {}", p.biggest);
+            assert!(p.bytes <= d.len() as u64, "read {} of {}", p.bytes, d.len());
+            assert_eq!(p.rec.out.len(), 8);
+            for (o, f) in p.rec.out.iter().zip(big.iter().chain(&big[..2])) {
+                assert_eq!(o.1, f.1);
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+
+    /// Reading block by block through a file pointer gives what the whole cabinet in memory
+    /// gives (files, bytes, notifications, the error), for any files, skips and damage
+    #[test]
+    fn prop_pieces_match_whole(folders in arb_files(), mask in any::<u64>(), cut in any::<prop::sample::Index>(), flip in proptest::option::of((any::<prop::sample::Index>(), 1u8..))) {
+        let mut d = build(&folders);
+        if let Some((at, x)) = flip {
+            let i = at.index(d.len());
+            d[i] ^= x;
+        }
+        let d = &d[..cut.index(d.len() + 1).max(d.len() * 3 / 4)];
+        let take = move |i: usize| if mask >> (i % 64) & 1 == 1 { 10 + i as i32 } else { 0 };
+        let mut whole = Rec::new(take);
+        let want = copy(d, &mut whole);
+        let (got, p) = piece(d, true, take);
+        prop_assert_eq!(got, want);
+        prop_assert_eq!(&p.rec.out, &whole.out);
+        prop_assert_eq!(&p.rec.events, &whole.events);
+        prop_assert!(p.biggest <= 0xffff);
+    }
+}

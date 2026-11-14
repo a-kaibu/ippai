@@ -7,6 +7,8 @@
 //! the cabinet through the guest's pfnread and hand the files back through pfnwrite and the
 //! notify callback, as Windows' FDI does (and Wine's dlls/cabinet/fdi.c, whose order is the
 //! reference: fdintCABINET_INFO once, then per file fdintCOPY_FILE, its data, fdintCLOSE_FILE_INFO).
+//! The cabinet is not read whole: its tables first, then each CFDATA block when a file
+//! needs it (pfnseek between folders), so a self-extractor's 600 MB cabinet costs a block.
 //! MSZIP and LZX folders and stored ones; Quantum is FDIERROR_BAD_COMPR_TYPE. A file continued
 //! in the next cabinet of a set (spanning) is FDIERROR_CORRUPT_CABINET for now.
 #![allow(non_snake_case)]
@@ -161,9 +163,9 @@ impl Cab {
     }
 }
 
-/// One folder's uncompressed bytes, block by block.
+/// One folder's uncompressed bytes, block by block, each CFDATA read from the cabinet when
+/// it is reached (a block is at most 32 KB + 6 KB of compressed bytes).
 struct Decoder<'a> {
-    d: &'a [u8],
     folder: &'a Folder,
     data_reserve: usize,
     kind: Kind,
@@ -177,6 +179,8 @@ struct Decoder<'a> {
     base: u64,
     /// MSZIP: the last 32 KB of output (a block's back references reach into it)
     hist: Vec<u8>,
+    /// the current CFDATA's compressed bytes
+    raw: Vec<u8>,
 }
 
 enum Kind {
@@ -186,7 +190,7 @@ enum Kind {
 }
 
 impl<'a> Decoder<'a> {
-    fn new(d: &'a [u8], folder: &'a Folder, data_reserve: u8) -> Result<Decoder<'a>, u32> {
+    fn new(folder: &'a Folder, data_reserve: u8) -> Result<Decoder<'a>, u32> {
         let kind = match folder.comp & 0xf {
             0 => Kind::Stored,
             1 => Kind::MsZip,
@@ -205,7 +209,7 @@ impl<'a> Decoder<'a> {
             }
             _ => return Err(FDIERROR_BAD_COMPR_TYPE),
         };
-        Ok(Decoder { d, folder, data_reserve: data_reserve as usize, kind, at: folder.data as usize, block: 0, buf: Vec::new(), used: 0, base: 0, hist: Vec::new() })
+        Ok(Decoder { folder, data_reserve: data_reserve as usize, kind, at: folder.data as usize, block: 0, buf: Vec::new(), used: 0, base: 0, hist: Vec::new(), raw: Vec::new() })
     }
 
     /// Uncompressed offset of the next byte `read` returns.
@@ -214,16 +218,33 @@ impl<'a> Decoder<'a> {
     }
 
     /// The next block into buf.
-    fn next_block(&mut self) -> Result<(), u32> {
+    fn next_block(&mut self, io: &mut dyn Io) -> Result<(), u32> {
         const BAD: u32 = FDIERROR_CORRUPT_CABINET;
         if self.block >= self.folder.blocks {
             return Err(BAD);
         }
-        let d = self.d;
-        let cb = u16le(d, self.at + 4).ok_or(BAD)? as usize;
-        let un = u16le(d, self.at + 6).ok_or(BAD)? as usize;
+        let mut raw = std::mem::take(&mut self.raw);
+        if !io.read_at(self.at as u64, 8, &mut raw) {
+            return Err(BAD);
+        }
+        let cb = u16le(&raw, 4).ok_or(BAD)? as usize;
+        let un = u16le(&raw, 6).ok_or(BAD)? as usize;
         let start = self.at + 8 + self.data_reserve;
-        let src = d.get(start..start + cb).ok_or(BAD)?;
+        if !io.read_at(start as u64, cb, &mut raw) {
+            return Err(BAD);
+        }
+        let r = self.decode(&raw, un);
+        self.raw = raw;
+        r?;
+        self.at = start + cb;
+        self.block += 1;
+        Ok(())
+    }
+
+    /// One CFDATA's bytes `src`, `un` once decompressed, into buf.
+    fn decode(&mut self, src: &[u8], un: usize) -> Result<(), u32> {
+        const BAD: u32 = FDIERROR_CORRUPT_CABINET;
+        let cb = src.len();
         // (0 uncompressed bytes: the block continues in the next cabinet)
         if un == 0 || un > 0x8000 + 6144 {
             return Err(BAD);
@@ -265,15 +286,13 @@ impl<'a> Decoder<'a> {
                 self.buf.extend_from_slice(o);
             }
         }
-        self.at = start + cb;
-        self.block += 1;
         Ok(())
     }
 
     /// Up to `max` bytes at pos() (an empty slice never: a folder ending early is an error).
-    fn read(&mut self, max: usize) -> Result<&[u8], u32> {
+    fn read(&mut self, io: &mut dyn Io, max: usize) -> Result<&[u8], u32> {
         if self.used == self.buf.len() {
-            self.next_block()?;
+            self.next_block(io)?;
         }
         let n = max.min(self.buf.len() - self.used);
         let s = &self.buf[self.used..self.used + n];
@@ -304,9 +323,71 @@ pub trait Sink {
     fn write(&mut self, hf: u32, data: &[u8]) -> u32;
 }
 
+/// A Sink that also reads the cabinet (pfnseek + pfnread).
+pub trait Io: Sink {
+    /// Exactly `n` bytes of the cabinet at `off` into `out` (replacing what it held): false
+    /// when they are not all there.
+    fn read_at(&mut self, off: u64, n: usize, out: &mut Vec<u8>) -> bool;
+}
+
+/// A cabinet in memory and the Sink its files go to.
+struct Mem<'a> {
+    d: &'a [u8],
+    sink: &'a mut dyn Sink,
+}
+impl Sink for Mem<'_> {
+    fn notify(&mut self, kind: u32, n: &Note) -> i32 {
+        self.sink.notify(kind, n)
+    }
+    fn write(&mut self, hf: u32, data: &[u8]) -> u32 {
+        self.sink.write(hf, data)
+    }
+}
+impl Io for Mem<'_> {
+    fn read_at(&mut self, off: u64, n: usize, out: &mut Vec<u8>) -> bool {
+        out.clear();
+        let Some(s) = usize::try_from(off).ok().and_then(|o| self.d.get(o..o.checked_add(n)?)) else { return false };
+        out.extend_from_slice(s);
+        true
+    }
+}
+
+/// The bytes of a cabinet of `cb` bytes (at least its header) that hold every table `parse`
+/// reads: the header with its reserve and set names, CFFOLDERs, then the CFFILEs at coffFiles.
+/// The data blocks after them are left in the file.
+pub fn tables_len(head36: &[u8], cb: u64) -> u64 {
+    let Ok(h) = header(head36) else { return cb.min(CFHEADER as u64) };
+    let coff = u32le(head36, 16).unwrap_or(0) as u64;
+    let names = 4 * 257;
+    let folders = h.c_folders as u64 * (8 + 255);
+    let files = h.c_files as u64 * (16 + 257);
+    (CFHEADER as u64 + 4 + 0xffff + names + folders).max(coff + files).min(cb)
+}
+
+/// The part of the cabinet's [off, off + n) that `tables` (its first bytes, already read)
+/// holds, into `out` (cleared first); the offset and the count left to read from the file.
+pub fn from_tables(tables: &[u8], off: u64, n: usize, out: &mut Vec<u8>) -> (u64, usize) {
+    out.clear();
+    let t = tables.len() as u64;
+    if off >= t {
+        return (off, n);
+    }
+    let end = (off + n as u64).min(t);
+    out.extend_from_slice(&tables[off as usize..end as usize]);
+    (end, n - (end - off) as usize)
+}
+
 /// FDICopy's work on a cabinet already in memory: Ok, or the FDIERROR it fails with.
 pub fn copy(d: &[u8], sink: &mut dyn Sink) -> Result<(), u32> {
-    let cab = Cab::parse(d)?;
+    let n = tables_len(d, d.len() as u64) as usize;
+    stream(&d[..n], &mut Mem { d, sink })
+}
+
+/// FDICopy's work: the tables (`tables`, the cabinet's first tables_len bytes) parsed, then
+/// each file's blocks read through `io` as they are reached. Ok, or the FDIERROR.
+pub fn stream(tables: &[u8], io: &mut dyn Io) -> Result<(), u32> {
+    let sink = &mut *io;
+    let cab = Cab::parse(tables)?;
     let info = Note {
         cb: 0,
         psz1: cab.next_cab.clone(),
@@ -346,16 +427,16 @@ pub fn copy(d: &[u8], sink: &mut dyn Sink) -> Result<(), u32> {
             None => true,
         };
         if fresh {
-            dec = Some((f.folder, Decoder::new(d, folder, cab.data_reserve)?));
+            dec = Some((f.folder, Decoder::new(folder, cab.data_reserve)?));
         }
         let dd = &mut dec.as_mut().unwrap().1;
         while dd.pos() < f.offset as u64 {
             let skip = (f.offset as u64 - dd.pos()).min(usize::MAX as u64) as usize;
-            dd.read(skip)?;
+            dd.read(sink, skip)?;
         }
         let mut left = f.size as usize;
         while left > 0 {
-            let s = dd.read(left)?;
+            let s = dd.read(sink, left)?;
             left -= s.len();
             if sink.write(hf as u32, s) != s.len() as u32 {
                 return Err(FDIERROR_TARGET_FILE);
@@ -381,6 +462,7 @@ struct Fdi {
     read: u32,
     write: u32,
     close: u32,
+    seek: u32,
     erf: u32,
 }
 
@@ -400,7 +482,7 @@ fn set_erf(erf: u32, oper: u32) {
 
 /// FDICreate(pfnalloc, pfnfree, pfnopen, pfnread, pfnwrite, pfnclose, pfnseek, cpuType, perf)
 fn FDICreate(c: &mut Ctx) -> u32 {
-    let f = Fdi { alloc: c.a(0), free: c.a(1), open: c.a(2), read: c.a(3), write: c.a(4), close: c.a(5), erf: c.a(8) };
+    let f = Fdi { alloc: c.a(0), free: c.a(1), open: c.a(2), read: c.a(3), write: c.a(4), close: c.a(5), seek: c.a(6), erf: c.a(8) };
     if f.alloc == 0 || f.open == 0 || f.read == 0 {
         set_erf(f.erf, FDIERROR_ALLOC_FAIL);
         return 0;
@@ -498,6 +580,64 @@ struct Guest<'c, 'a> {
     path: Vec<u8>,
     note: u32,
     strs: [u32; 3],
+    /// the cabinet's first bytes (read for the tables), its file, the file's pointer and the
+    /// cabinet's size (cbCabinet), and a 64 KB read buffer
+    tables: Vec<u8>,
+    hf: u32,
+    pos: u64,
+    cb: u64,
+    rbuf: u32,
+}
+
+/// The guest read buffer of FDICopy
+const RBUF: u32 = 0x10000;
+
+impl Io for Guest<'_, '_> {
+    /// pfnseek when the bytes are not next (as Windows' FDI moves between folders), then
+    /// pfnread in 64 KB pieces; nothing past cbCabinet
+    fn read_at(&mut self, off: u64, n: usize, out: &mut Vec<u8>) -> bool {
+        out.clear();
+        if off + n as u64 > self.cb {
+            return false;
+        }
+        let (off, n) = from_tables(&self.tables, off, n, out);
+        if n == 0 {
+            return true;
+        }
+        let n = out.len() + n;
+        if off != self.pos {
+            if self.f.seek != 0 {
+                // (SEEK_SET; a long: cbCabinet is below 2 GB)
+                if self.c.call(self.f.seek, &[self.hf, off as u32, 0]) != off as u32 {
+                    return false;
+                }
+                self.pos = off;
+            } else if off > self.pos {
+                // (no pfnseek: read up to it)
+                let mut skip = Vec::new();
+                while self.pos < off {
+                    let k = (off - self.pos).min(RBUF as u64) as usize;
+                    let at = self.pos;
+                    if !self.read_at(at, k, &mut skip) {
+                        return false;
+                    }
+                }
+            } else {
+                return false;
+            }
+        }
+        out.reserve(n);
+        while out.len() < n {
+            let want = ((n - out.len()) as u32).min(RBUF);
+            let got = self.c.call(self.f.read, &[self.hf, self.rbuf, want]);
+            if got == 0 || got == u32::MAX || got > want {
+                return false;
+            }
+            out.extend_from_slice(mem::slice(self.rbuf, got));
+            self.pos += got as u64;
+        }
+        true
+    }
 }
 
 impl Guest<'_, '_> {
@@ -562,6 +702,10 @@ fn FDICopy(c: &mut Ctx) -> u32 {
     }
     // (_O_RDONLY | _O_BINARY, _S_IREAD | _S_IWRITE, as Windows opens it)
     let sbuf = mem::heap_alloc(full.len() as u32 + 1, true);
+    if sbuf == 0 {
+        set_erf(f.erf, FDIERROR_ALLOC_FAIL);
+        return 0;
+    }
     mem::write(sbuf, &full);
     let hf = c.call(f.open, &[sbuf, 0x8000, 0x180]);
     mem::heap_free(sbuf);
@@ -569,23 +713,27 @@ fn FDICopy(c: &mut Ctx) -> u32 {
         set_erf(f.erf, FDIERROR_CABINET_NOT_FOUND);
         return 0;
     }
+    // the header and the tables are read first; the data blocks one by one as files need them
     let mut d = Vec::new();
     let mut r = if guest_read(c, &f, hf, CFHEADER, &mut d) { header(&d).map(|h| h.cb_cabinet) } else { Err(FDIERROR_NOT_A_CABINET) };
     if let Ok(cb) = r {
-        let rest = (cb as usize).saturating_sub(CFHEADER).min(0x7fff_ffff);
+        let rest = tables_len(&d, cb as u64).saturating_sub(CFHEADER as u64) as usize;
         if !guest_read(c, &f, hf, rest, &mut d) {
             r = Err(FDIERROR_CORRUPT_CABINET);
         }
     }
-    let r = r.and_then(|_| {
-        // the FDINOTIFICATION, its three strings and a write buffer (32 KB) in one block
-        let block = mem::heap_alloc(64 + 3 * 256 + 256 + 0x8000, true);
+    let r = r.and_then(|cb| {
+        // the FDINOTIFICATION, its three strings, a write buffer (32 KB) and the read buffer
+        // (64 KB) in one block
+        let block = mem::heap_alloc(64 + 3 * 256 + 256 + 0x8000 + RBUF, true);
         if block == 0 {
             return Err(FDIERROR_ALLOC_FAIL);
         }
         let strs = [block + 64, block + 64 + 256, block + 64 + 512];
-        let mut g = Guest { c: &mut *c, f, notify, pv, path: path_s, note: block, strs };
-        let r = copy(&d, &mut g);
+        let rbuf = block + 64 + 3 * 256 + 256 + 0x8000;
+        let pos = d.len() as u64;
+        let mut g = Guest { c: &mut *c, f, notify, pv, path: path_s, note: block, strs, tables: d.clone(), hf, pos, cb: cb as u64, rbuf };
+        let r = stream(&d, &mut g);
         mem::heap_free(block);
         r
     });

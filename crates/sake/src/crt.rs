@@ -2103,6 +2103,23 @@ impl Stream {
             b => Some(b),
         }
     }
+    /// A binary fread of up to `n` bytes straight into the guest's `buf`: no host copy, and
+    /// what is asked past the end of the file ("read it all": 0x7fffffff) costs nothing.
+    /// None: no file.
+    fn read_guest(&mut self, buf: u32, n: u32) -> Option<u32> {
+        let f = self.f.clone()?;
+        let mut got = 0;
+        if let Some(b) = self.unget.take() {
+            mem::w8(buf, b);
+            got = 1;
+        }
+        let want = (n - got).min(f.remaining().min(u32::MAX as usize) as u32);
+        if buf as u64 + got as u64 + want as u64 > mem::GUEST_TOP as u64 {
+            // (not guest memory: the bytes are read and dropped, as mem::write does)
+            return Some(got + f.read_vec(want as usize).len() as u32);
+        }
+        Some(got + f.read_into(buf + got, want))
+    }
     /// Up to `n` characters (fread): chunks of the file, translated in text mode
     fn read(&mut self, n: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(n.min(1 << 20));
@@ -2323,10 +2340,13 @@ fn fread_to(buf: u32, size: u32, n: u32, fp: u32) -> u32 {
         return 0;
     }
     with_file(fp, |s| {
-        s.f.as_ref()?;
-        let v = s.read(total as usize);
-        mem::write(buf, &v);
-        let got = v.len() as u32;
+        let got = if s.text {
+            let v = s.read(total as usize);
+            mem::write(buf, &v);
+            v.len() as u32
+        } else {
+            s.read_guest(buf, total)?
+        };
         if got < total {
             s.set_eof(true);
         }
@@ -4517,6 +4537,107 @@ mod libm_sse2_tests {
                 prop_assert_eq!(r as u32, want.to_bits(), "{}", n);
                 prop_assert_eq!((r >> 32) as u32, hi, "{}", n);
             }
+        }
+    }
+}
+
+/// fread straight into guest memory: what a request past the end costs, and the bytes against
+/// a model of msvcrt's fread (binary as is, text with CR LF as LF and Ctrl-Z as the end)
+#[cfg(test)]
+mod fread_tests {
+    use super::{fread_to, new_stream, with_file, File};
+    use crate::mem;
+    use proptest::prelude::*;
+
+    fn file(tag: &str, data: &[u8]) -> (std::path::PathBuf, String) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!("sake-fread-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("f.bin"), data).unwrap();
+        let w = format!("Z:{}\\f.bin", root.to_string_lossy().replace('/', "\\"));
+        (root, w)
+    }
+    fn stream(path: &str, mode: &[u8]) -> u32 {
+        let f: File = super::fopen_mode(path, mode).unwrap();
+        new_stream(f, mode)
+    }
+    fn close(fp: u32) {
+        super::FILES.lock().unwrap().as_mut().unwrap().remove(&fp);
+        mem::heap_free(fp);
+    }
+    /// msvcrt's text-mode translation of a whole file
+    fn text(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < data.len() && data[i] != 0x1a {
+            if data[i] == b'\r' && data.get(i + 1) == Some(&b'\n') {
+                i += 1;
+                continue;
+            }
+            out.push(data[i]);
+            i += 1;
+        }
+        out
+    }
+
+    /// fread(buf, 1, 0x7fffffff, fp) of a small file: the file's bytes, and no 2 GiB host
+    /// buffer (a request past the end once allocated and zeroed all of it, and the host heap
+    /// above the guest has less than 2 GiB: an abort under panic=abort)
+    #[test]
+    fn read_it_all_costs_the_file() {
+        let _g = crate::test_guest::enter();
+        let data: Vec<u8> = (0..5000u32).map(|i| (i * 7 + 3) as u8).collect();
+        let (root, w) = file("all", &data);
+        let fp = stream(&w, b"rb");
+        let buf = mem::heap_alloc(8192, true);
+        assert_eq!(fread_to(buf, 1, 0x7fff_ffff, fp), 5000);
+        assert_eq!(mem::slice(buf, 5000), &data[..]);
+        assert_eq!(with_file(fp, |s| s.eof), Some(true));
+        // size * n saturates: 0xffffffff bytes asked, none left
+        assert_eq!(fread_to(buf, 0x10000, 0x10000, fp), 0);
+        // the host-side read: a size no allocator can give, the bytes the file has
+        let f = super::fopen_mode(&w, b"rb").unwrap();
+        assert_eq!(f.read_vec(isize::MAX as usize), data);
+        assert_eq!(f.read_vec(isize::MAX as usize), Vec::<u8>::new());
+        assert_eq!(f.remaining(), 0);
+        close(fp);
+        mem::heap_free(buf);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        /// Any file read by any sequence of freads (small, large, element sizes, an ungetc'd
+        /// byte first) gives the model's bytes and element counts, in binary and text mode.
+        #[test]
+        fn fread_matches_a_model(
+            data in prop::collection::vec(prop_oneof![4 => any::<u8>(), 1 => Just(b'\r'), 1 => Just(b'\n'), 1 => Just(0x1au8)], 0..3000),
+            reads in prop::collection::vec((prop_oneof![Just(1u32), Just(2), Just(4), 1u32..9], prop_oneof![0u32..64, 64u32..4096, Just(0x7fff_ffff)]), 1..12),
+            text_mode in any::<bool>(), unget in proptest::option::of(any::<u8>()),
+        ) {
+            let _g = crate::test_guest::enter();
+            let (root, w) = file("prop", &data);
+            let fp = stream(&w, if text_mode { b"rt" } else { b"rb" });
+            let mut want: std::collections::VecDeque<u8> = if text_mode { text(&data) } else { data.clone() }.into();
+            if let Some(b) = unget {
+                with_file(fp, |s| s.unget = Some(b));
+                want.push_front(b);
+            }
+            let buf = mem::heap_alloc(8 * 4096 + 16, true);
+            for (size, n) in reads {
+                let total = size.saturating_mul(n).min(8 * 4096);
+                let n = total / size;
+                let got = fread_to(buf, size, n, fp);
+                let bytes = want.len().min((size * n) as usize);
+                let expect: Vec<u8> = want.drain(..bytes).collect();
+                prop_assert_eq!(got as usize, bytes / size as usize);
+                prop_assert_eq!(mem::slice(buf, bytes as u32), &expect[..]);
+            }
+            close(fp);
+            mem::heap_free(buf);
+            let _ = std::fs::remove_dir_all(&root);
         }
     }
 }

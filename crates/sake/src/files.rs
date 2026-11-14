@@ -546,6 +546,13 @@ pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -
     }
 }
 
+/// The bytes after `f`'s pointer
+fn left(f: &mut kura::fs::File) -> usize {
+    let end = f.metadata().map_or(0, |m| m.len());
+    let at = f.stream_position().unwrap_or(end);
+    end.saturating_sub(at).min(usize::MAX as u64) as usize
+}
+
 impl File {
     pub fn read_into(&self, dst: u32, n: u32) -> u32 {
         let buf = crate::mem::slice_mut(dst, n);
@@ -561,18 +568,17 @@ impl File {
         got as u32
     }
     /// Up to `n` bytes into host memory (fewer at the end of the file)
+    /// The buffer grows with what is read, so a large `n` (fread's "the rest of the file"
+    /// 0x7fffffff) costs what the file holds, not `n` bytes of zeros.
     pub fn read_vec(&self, n: usize) -> Vec<u8> {
-        let mut buf = vec![0; n];
         let mut f = self.f.lock().unwrap();
-        let mut got = 0;
-        while got < n {
-            match f.read(&mut buf[got..]) {
-                Ok(0) | Err(_) => break,
-                Ok(k) => got += k,
-            }
-        }
-        buf.truncate(got);
+        let mut buf = Vec::with_capacity(n.min(left(&mut f)));
+        let _ = (&mut *f).take(n as u64).read_to_end(&mut buf);
         buf
+    }
+    /// The bytes from the file pointer to the end (0 past it).
+    pub fn remaining(&self) -> usize {
+        left(&mut self.f.lock().unwrap())
     }
     pub fn write_bytes(&self, b: &[u8]) -> u32 {
         let mut f = self.f.lock().unwrap();
