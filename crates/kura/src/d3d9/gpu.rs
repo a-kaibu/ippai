@@ -196,7 +196,13 @@ pub fn set_pump(f: Option<Box<dyn FnMut()>>) {
 /// (tests) Lets the page run what was recorded so far.
 #[cfg(test)]
 pub fn pump() {
-    flush();
+    flush_now();
+    pump_page();
+}
+
+/// (tests) The page takes what is closed.
+#[cfg(test)]
+fn pump_page() {
     let f = PUMP.with(|p| p.borrow_mut().take());
     if let Some(mut f) = f {
         f();
@@ -227,9 +233,39 @@ pub fn run_next(f: impl FnOnce(&[u32], &[u8], &[u8])) -> bool {
 /// memory).
 const BLOB_MAX: usize = 64 << 20;
 
-fn close_if_big(q: &mut Queue) {
+/// The most bytes of closed batches that wait for the page before the guest waits for it too.
+/// Only a Present waited: a game loading its textures for seconds without one (a loading
+/// screen, with the tab hidden or the page slow) queued 64 MiB batches without end, and what
+/// the BLOB_MAX above kept out of one batch ran the 2 GB heap out through the queue.
+pub(crate) static QUEUE_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(256 << 20);
+
+/// The bytes of the closed batches.
+fn queued(q: &Queue) -> usize {
+    q.closed.iter().map(|b| b.blob.len() + b.data.len() + b.cmds.len() * 4).sum()
+}
+
+/// Waits while more than `QUEUE_MAX` bytes of closed batches wait for a page that has ever
+/// polled (as `present` waits for a page two frames behind). Not while a state is taken.
+fn wait_room() {
+    let max = QUEUE_MAX.load(std::sync::atomic::Ordering::Relaxed);
+    loop {
+        #[cfg(test)]
+        if with(|q| queued(q) > max && q.last_poll.is_some()) {
+            pump_page();
+        }
+        let g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(q) = g.as_ref() else { return };
+        if queued(q) <= max || q.last_poll.is_none() || crate::snap::pausing() {
+            return;
+        }
+        drop(WAKE.wait_timeout(g, Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()));
+    }
+}
+
+/// Whether it closed the open batch.
+fn close_if_big(q: &mut Queue) -> bool {
     if q.open.blob.len() < BLOB_MAX || q.open.cmds.is_empty() {
-        return;
+        return false;
     }
     let mut b = std::mem::take(&mut q.open);
     b.gen = q.gen;
@@ -240,24 +276,31 @@ fn close_if_big(q: &mut Queue) {
     } else {
         q.closed.push_back(b);
     }
+    true
 }
 
 /// Records into the open batch.
 pub fn record<R>(f: impl FnOnce(&mut Batch) -> R) -> R {
-    with(|q| {
+    let (r, closed) = with(|q| {
         let r = f(&mut q.open);
-        close_if_big(q);
-        r
-    })
+        (r, close_if_big(q))
+    });
+    if closed {
+        wait_room();
+    }
+    r
 }
 
 /// Records into the open batch; also returns its generation (see `wait_done`).
 pub fn record_gen<R>(f: impl FnOnce(&mut Batch) -> R) -> (R, u64) {
-    with(|q| {
+    let (r, closed) = with(|q| {
         let r = (f(&mut q.open), q.gen);
-        close_if_big(q);
-        r
-    })
+        (r, close_if_big(q))
+    });
+    if closed {
+        wait_room();
+    }
+    r
 }
 
 fn page_attached(q: &Queue) -> bool {
@@ -274,8 +317,13 @@ pub fn batch_gen() -> u64 {
     with(|q| q.gen)
 }
 
-/// Closes the open batch (if it has anything).
+/// Closes the open batch (if it has anything), and waits for the page when too much is queued.
 pub fn flush() {
+    flush_now();
+    wait_room();
+}
+
+fn flush_now() {
     with(|q| {
         if !q.open.cmds.is_empty() {
             let mut b = std::mem::take(&mut q.open);
@@ -541,6 +589,60 @@ mod hidden_tests {
             present();
         }
         assert!(now() - t < 2000.0, "a slow page held the game {} ms", now() - t);
+        set_pump(None);
+    }
+
+    /// A game loading without a Present (1 MiB of texture, a flush, again and again) into a
+    /// page that is away queues no more than the limit and one batch, waits, and when the page
+    /// polls again every batch comes to it once and in order. With no page at all (node)
+    /// nothing waits.
+    #[test]
+    fn loading_without_a_present_waits_for_the_page_too() {
+        let _g = super::super::trace_tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let was = QUEUE_MAX.swap(8 << 20, SeqCst);
+        let load = |n: u32, done: Arc<AtomicU32>| {
+            for k in 0..n {
+                record(|b| {
+                    b.cmd(&[k]);
+                    b.blob.extend(std::iter::repeat_n(k as u8, 1 << 20));
+                });
+                flush();
+                done.fetch_add(1, SeqCst);
+            }
+        };
+        // (no page: all at once)
+        set_pump(None);
+        let done = Arc::new(AtomicU32::new(0));
+        let t = now();
+        load(30, done.clone());
+        assert!(now() - t < 5000.0 && done.load(SeqCst) == 30);
+        // (a page that is away)
+        set_pump(None);
+        with(|q| q.last_poll = Some(now() - 10_000.0));
+        let done = Arc::new(AtomicU32::new(0));
+        let d = done.clone();
+        let game = std::thread::spawn(move || load(60, d));
+        for _ in 0..8 {
+            std::thread::sleep(Duration::from_millis(50));
+            let (n, bytes) = queued();
+            assert!(bytes <= (8 << 20) + (1 << 20) + 4096, "{n} batches, {bytes} bytes queued for a page away");
+        }
+        let held = done.load(SeqCst);
+        assert!((6..=9).contains(&held), "{held} flushes went through");
+        // (the page back, slowly: the queue stays within the limit, the batches come in order)
+        let mut got = Vec::new();
+        while !game.is_finished() || queued().0 > 0 {
+            let (_, bytes) = queued();
+            assert!(bytes <= (8 << 20) + (1 << 20) + 4096, "{bytes} bytes queued");
+            run_next(|c, _, blob| {
+                assert!(blob.len() == 1 << 20 && blob.iter().all(|&x| x == c[0] as u8));
+                got.push(c[0]);
+            });
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        game.join().unwrap();
+        assert_eq!(got, (0..60).collect::<Vec<u32>>());
+        QUEUE_MAX.store(was, SeqCst);
         set_pump(None);
     }
 }
