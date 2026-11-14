@@ -955,6 +955,10 @@ impl<'a> Gen<'a> {
             self.bail();
             return;
         }
+        if h == Hle::Sha256 {
+            self.hle_sha256();
+            return;
+        }
         let (sp, d, s, n) = (L_REG + 4, self.temp(), self.temp(), self.temp());
         self.check(sp, 16);
         self.c.get(sp).load32(4).set(d).get(sp).load32(8).set(s).get(sp).load32(12).set(n);
@@ -974,9 +978,77 @@ impl<'a> Gen<'a> {
             // wasm's memory.copy is a memmove
             Hle::Move => self.c.memory_copy(),
             Hle::Set => self.c.memory_fill(),
+            Hle::Sha256 => unreachable!(),
         };
+        // (EAX = dst: stored at the RET like any register the block wrote; in a function only
+        // dirty ones are, and memmove's result was lost there)
         self.c.get(d).set(L_REG);
+        self.dirty |= 1;
         self.temps -= 3;
+    }
+
+    /// [`Hle::Sha256`]: one 64-byte block into md's state, all in locals (the rounds unrolled,
+    /// the eight working variables renamed instead of moved). The message schedule goes where
+    /// the guest's code keeps it (W[64] at ESP-0x104, inside the frame it would have made), so
+    /// that nothing outside it changes either; EAX = 0. Out of the guest's range: its own code.
+    fn hle_sha256(&mut self) {
+        const W_BELOW: u32 = 0x104;
+        let sp = L_REG + 4;
+        self.check(sp, 12);
+        // (the eight working variables, consecutive temporaries)
+        let v0 = self.temp();
+        for _ in 1..8 {
+            self.temp();
+        }
+        let v: [u32; 8] = core::array::from_fn(|i| v0 + i as u32);
+        let (md, wb) = (self.temp(), self.temp());
+        let buf = v[0];
+        self.c.get(sp).load32(4).set(md).get(sp).load32(8).set(buf).get(sp).u32c(W_BELOW).sub().set(wb);
+        let span = GUEST_HI - GUEST_LO;
+        self.c.get(md).u32c(GUEST_LO).sub().u32c(span - 40).gt_u();
+        self.c.get(buf).u32c(GUEST_LO).sub().u32c(span - 64).gt_u().or();
+        self.c.get(wb).u32c(GUEST_LO).sub().u32c(span - W_BELOW).gt_u().or();
+        self.c.if_();
+        self.depth += 1;
+        self.bail();
+        self.depth -= 1;
+        self.c.end();
+        // W[0..16]: the block's words, big-endian
+        let x = v[1];
+        for i in 0..16 {
+            self.c.get(wb).get(buf).load32(4 * i).tee(x).i32c(8).rotr().u32c(0xff00_ff00).and();
+            self.c.get(x).i32c(8).rotl().u32c(0x00ff_00ff).and().or().store32(4 * i);
+        }
+        for i in 16..64u32 {
+            self.c.get(wb);
+            // s1(W[i-2]) + W[i-7] + s0(W[i-15]) + W[i-16]
+            self.c.get(wb).load32(4 * (i - 2)).tee(x).i32c(17).rotr().get(x).i32c(19).rotr().xor().get(x).i32c(10).shr_u().xor();
+            self.c.get(wb).load32(4 * (i - 7)).add();
+            self.c.get(wb).load32(4 * (i - 15)).tee(x).i32c(7).rotr().get(x).i32c(18).rotr().xor().get(x).i32c(3).shr_u().xor().add();
+            self.c.get(wb).load32(4 * (i - 16)).add().store32(4 * i);
+        }
+        for (j, &t) in v.iter().enumerate() {
+            self.c.get(md).load32(8 + 4 * j as u32).set(t);
+        }
+        let mut r: [usize; 8] = core::array::from_fn(|i| i);
+        for (i, &k) in SHA256_K.iter().enumerate() {
+            let [a, b, c, d, e, f, g, h] = r.map(|j| v[j]);
+            // h = h + S1(e) + Ch(e, f, g) + K[i] + W[i] (T1)
+            self.c.get(h).get(e).i32c(6).rotr().get(e).i32c(11).rotr().xor().get(e).i32c(25).rotr().xor().add();
+            self.c.get(g).get(e).get(f).get(g).xor().and().xor().add();
+            self.c.u32c(k).add().get(wb).load32(4 * i as u32).add().set(h);
+            self.c.get(d).get(h).add().set(d);
+            // h = T1 + S0(a) + Maj(a, b, c)
+            self.c.get(h).get(a).i32c(2).rotr().get(a).i32c(13).rotr().xor().get(a).i32c(22).rotr().xor().add();
+            self.c.get(a).get(b).and().get(c).get(a).get(b).or().and().or().add().set(h);
+            r.rotate_right(1);
+        }
+        for j in 0..8 {
+            self.c.get(md).get(md).load32(8 + 4 * j as u32).get(v[r[j]]).add().store32(8 + 4 * j as u32);
+        }
+        self.c.i32c(0).set(L_REG);
+        self.dirty |= 1;
+        self.temps -= 10;
     }
 
     /// After a store to `e` (see [`WATCH`]): when its page has translated code, leaves for the
@@ -4129,31 +4201,68 @@ pub fn decode16(bytes: &[u8], ip: u32, cs: u32) -> Option<Instruction> {
     Some(ins)
 }
 
-/// C library functions done in wasm (by [`Gen::hle`]) where the guest has them: the start of
-/// their code in Wine's PE C runtimes (msvcrt, ucrtbase and the msvcr*), "??" for an absolute
-/// address.
+/// Guest functions done in wasm (by [`Gen::hle`]) where the guest has them, known by their
+/// code: the C library's in Wine's PE C runtimes (msvcrt, ucrtbase and the msvcr*), and ones
+/// game engines ship (a function only where all its bytes are the ones listed: [`HLE`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Hle {
+pub enum Hle {
     /// memmove(dst, src, n) (also what memcpy jumps to)
     Move,
     /// memset(dst, c, n)
     Set,
+    /// libtomcrypt's sha256_compress(hash_state *md, unsigned char *buf) built without
+    /// optimization (MSVC /Od, 12365 bytes, every round unrolled), as KiriKiri's sigcheck.dll
+    /// plugin has it: the plugin checks the game's archives (data.xp3 ...) against their .sig
+    /// files when the game starts, hashing them whole (#89: ~10 s of b2023_appetite's start).
+    /// md->sha256.state[8] at md+8; returns 0 (CRYPT_OK).
+    Sha256,
 }
 
-const HLE: &[(Hle, &str)] = &[
-    (Hle::Move, "5589e557565383ec208b45088b750c8945ec8b45108945f0a1????????85c00f85db0000008b45f085c00f84bf000000"),
-    (Hle::Set, "55ba0101010189e5565383e4f083ec100fb6450c8b4d108b5d0869f001010101f7e201f283f90f767789442408895424"),
+/// `(function, its first 48 bytes ("??" for an absolute address), its whole length and the
+/// FNV-1a 64 of all its bytes)`: the length 0 for the C runtimes' (their first bytes alone).
+const HLE: &[(Hle, &str, u32, u64)] = &[
+    (Hle::Move, "5589e557565383ec208b45088b750c8945ec8b45108945f0a1????????85c00f85db0000008b45f085c00f84bf000000", 0, 0),
+    (Hle::Set, "55ba0101010189e5565383e4f083ec100fb6450c8b4d108b5d0869f001010101f7e201f283f90f767789442408895424", 0, 0),
+    (Hle::Sha256, "558bec81ec2c010000c785fcfeffff00000000eb0f8b85fcfeffff83c0018985fcfeffff83bdfcfeffff087d1c8b8dfc", 12365, 0xeff7_795e_b8b7_81ce),
 ];
 
-fn hle_at<M: Memory>(mem: &mut M, a: u32) -> Option<Hle> {
+/// FNV-1a 64 of `b`.
+fn fnv64(b: &[u8]) -> u64 {
+    b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x100_0000_01b3))
+}
+
+/// The function [`Gen::hle`] does at `a`, if the guest's code there is one of [`HLE`].
+pub fn hle_at<M: Memory>(mem: &mut M, a: u32) -> Option<Hle> {
     let mut buf = [0u8; 48];
     if mem.fetch(a, &mut buf) < buf.len() {
         return None;
     }
-    HLE.iter().find(|(_, sig)| {
-        sig.as_bytes().chunks(2).zip(buf).all(|(h, b)| h == b"??" || u8::from_str_radix(core::str::from_utf8(h).unwrap(), 16) == Ok(b))
-    }).map(|&(h, _)| h)
+    HLE.iter()
+        .find(|&&(_, sig, len, hash)| {
+            sig.as_bytes().chunks(2).zip(buf).all(|(h, b)| h == b"??" || u8::from_str_radix(core::str::from_utf8(h).unwrap(), 16) == Ok(b))
+                && (len == 0 || {
+                    let mut all = alloc::vec![0u8; len as usize];
+                    mem.fetch(a, &mut all) == all.len() && fnv64(&all) == hash
+                })
+        })
+        .map(|&(h, ..)| h)
 }
+
+/// The guest bytes at the start of an [`Hle`] function the translation depends on (page
+/// checks, saved regions checked against the guest's code).
+fn hle_len(h: Hle) -> u32 {
+    HLE.iter().find(|x| x.0 == h).map_or(0, |&(_, sig, len, _)| if len == 0 { sig.len() as u32 / 2 } else { len })
+}
+
+/// SHA-256's round constants.
+const SHA256_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be,
+    0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa,
+    0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85,
+    0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f,
+    0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
 
 /// A RET at `a`.
 fn ret_at(a: u32) -> Instruction {
@@ -5306,6 +5415,7 @@ fn translate_seen<M: Memory>(
             (*a, end.wrapping_sub(*a))
         })
         .chain(thunk_code.iter().copied())
+        .chain(hle.iter().map(|(&a, &h)| (a, hle_len(h))))
         .collect();
     // address order: guest loops become contiguous ranges
     blocks.sort_unstable_by_key(|b| b.0);
@@ -5752,6 +5862,31 @@ mod tests {
         let mut v: Vec<u8> = core::iter::repeat_n([0x40u8, 0xeb, 0x00], 3000).flatten().collect();
         v.push(0xc3);
         Code(v)
+    }
+
+    const SHA256: &[u8] = include_bytes!("../../testdata/ltc_sha256_compress_od.bin");
+
+    /// KiriKiri sigcheck.dll's sha256_compress is known only by all its bytes: a change to any
+    /// one of them (every byte, every bit) makes it guest code again, and so does its last
+    /// byte missing; a run of it translated as HLE depends on all of them.
+    #[test]
+    fn sha256_hle_only_for_its_exact_code() {
+        assert_eq!(hle_at(&mut Code(SHA256.to_vec()), 0x10_0000), Some(Hle::Sha256));
+        assert_eq!(hle_len(Hle::Sha256), SHA256.len() as u32);
+        assert_eq!(hle_at(&mut Code(SHA256[..SHA256.len() - 1].to_vec()), 0x10_0000), None);
+        let mut c = Code(SHA256.to_vec());
+        for i in 0..SHA256.len() {
+            for bit in 0..8 {
+                c.0[i] ^= 1 << bit;
+                assert_eq!(hle_at(&mut c, 0x10_0000), None, "byte {i} bit {bit}");
+                c.0[i] ^= 1 << bit;
+            }
+        }
+        let mut m = Module::default();
+        let r = translate_region(&mut m, &mut Code(SHA256.to_vec()), &[0x10_0000], 16, |_| true).unwrap();
+        assert!(r.code.contains(&(0x10_0000, SHA256.len() as u32)), "{:x?}", r.code);
+        // (the C runtimes' are known by their first 48 bytes, as before)
+        assert_eq!(hle_len(Hle::Move), 48);
     }
 
     fn function_size(max_ins: usize) -> usize {

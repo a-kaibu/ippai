@@ -47,6 +47,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "x86_jit_hle"
+path = "fuzz_targets/x86_jit_hle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "x86_jit64"
 path = "fuzz_targets/x86_jit64.rs"
 test = false
