@@ -27,6 +27,24 @@ const E_NOTIMPL: u32 = 0x8000_4001;
 const E_NOINTERFACE: u32 = 0x8000_4002;
 const E_POINTER: u32 = 0x8000_4003;
 const E_INVALIDARG: u32 = 0x8007_0057;
+const E_OUTOFMEMORY: u32 = 0x8007_000e;
+/// The largest blob an attribute store takes (MF itself has no limit but memory: a blob past
+/// this is the guest's bug, and copying gigabytes would end sake).
+const MAX_BLOB: u32 = 64 << 20;
+
+/// A copy of the guest's blob of `n` bytes at `p`: E_OUTOFMEMORY past MAX_BLOB.
+fn blob(p: u32, n: u32) -> Result<Vec<u8>, u32> {
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if n > MAX_BLOB {
+        return Err(E_OUTOFMEMORY);
+    }
+    if p == 0 {
+        return Err(E_POINTER);
+    }
+    Ok(mem::slice(p, n).to_vec())
+}
 const INSUFFICIENT_BUFFER: u32 = 0x8007_007a;
 const MF_E_SHUTDOWN: u32 = 0xc00d_3e85;
 const MF_E_ATTRIBUTENOTFOUND: u32 = 0xc00d_36e6;
@@ -224,7 +242,7 @@ fn get_prop(p: u32) -> Result<Val, u32> {
         5 => Val::F64(f64::from_bits(mem::r64(p + 8))),
         72 => Val::Guid(guid_at(rp(p + 8))),
         31 => Val::Str(mem::wstr(rp(p + 8))),
-        0x1011 => Val::Blob(mem::slice(rp(p + 8 + ps()), r32(p + 8)).to_vec()),
+        0x1011 => Val::Blob(blob(rp(p + 8 + ps()), r32(p + 8))?),
         13 => Val::Unk(rp(p + 8)),
         _ => return Err(MF_E_INVALIDTYPE),
     })
@@ -537,8 +555,10 @@ fn at_set_blob(c: &mut Ctx) -> u32 {
     if p == 0 && n != 0 {
         return E_POINTER;
     }
-    let b = if n == 0 { Vec::new() } else { mem::slice(p, n).to_vec() };
-    set_value(c, Val::Blob(b))
+    match blob(p, n) {
+        Ok(b) => set_value(c, Val::Blob(b)),
+        Err(e) => e,
+    }
 }
 fn at_set_unknown(c: &mut Ctx) -> u32 {
     let u = c.a(2);
@@ -1013,12 +1033,21 @@ struct Engine {
     role: u32,
     /// the events thread runs
     thread: bool,
+    /// TransferVideoFrame's pictures
+    frames: Frames,
 }
 
 static ENGINES: Mutex<Option<HashMap<u32, Engine>>> = Mutex::new(None);
 
 fn engine<R>(b: u32, f: impl FnOnce(&mut Engine) -> R) -> Option<R> {
-    ENGINES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get_mut(&b).map(f)
+    let mut g = ENGINES.lock().unwrap_or_else(|e| e.into_inner());
+    let e = g.get_or_insert_with(HashMap::new).get_mut(&b)?;
+    let r = f(e);
+    // (its events thread sleeps until there is something for it)
+    if e.thread && (e.shut || !e.st.events.is_empty()) {
+        EVENTS_CV.notify_all();
+    }
+    Some(r)
 }
 fn shut(b: u32) -> bool {
     engine(b, |e| e.shut).unwrap_or(true)
@@ -1071,16 +1100,15 @@ pub fn ended(k: u32) -> bool {
 
 /// The thread that tells the game's IMFMediaEngineNotify (EventNotify) the events, in order,
 /// until the engine shuts down. Its start "function" is this trap; the engine block its parameter.
+/// It sleeps until an event comes (EVENTS_CV), not in a poll.
 fn events_thread(c: &mut Ctx) -> u32 {
     let b = c.a(0);
     loop {
-        let next = engine(b, |e| if e.shut { Err(()) } else { Ok((e.notify, e.st.events.pop_front())) });
-        match next {
+        match next_event(b, std::time::Duration::from_millis(250)) {
             Some(Ok((n, Some((code, p1, p2))))) => {
                 com(c, n, 3, &[code, p1, p2]);
             }
             Some(Ok((_, None))) => {
-                kura::snap::sleep(std::time::Duration::from_millis(5));
                 crate::snap::point();
             }
             _ => break,
@@ -1092,8 +1120,61 @@ fn events_thread(c: &mut Ctx) -> u32 {
     })
     .unwrap_or(0);
     release(c, n);
+    retire(b);
     crate::k32::exit_thread(0)
 }
+
+/// Wakes the events threads: an engine's events or its shutdown changed (and a save state
+/// wants them at their safe point).
+static EVENTS_CV: std::sync::Condvar = std::sync::Condvar::new();
+pub(crate) fn snap_wake() {
+    drop(ENGINES.lock());
+    EVENTS_CV.notify_all();
+}
+
+/// The next event of engine `b` for its events thread: Err when it shut down (None: no such
+/// engine), Ok((notify, None)) when none came in `wait` or a save state is being taken.
+fn next_event(b: u32, wait: std::time::Duration) -> Option<Result<(u32, Option<(u32, u32, u32)>), ()>> {
+    let mut g = ENGINES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut waited = false;
+    loop {
+        let e = g.get_or_insert_with(HashMap::new).get_mut(&b)?;
+        if e.shut {
+            return Some(Err(()));
+        }
+        if let Some(ev) = e.st.events.pop_front() {
+            return Some(Ok((e.notify, Some(ev))));
+        }
+        if waited || kura::snap::pausing() {
+            return Some(Ok((e.notify, None)));
+        }
+        g = EVENTS_CV.wait_timeout(g, wait).unwrap_or_else(|e| e.into_inner()).0;
+        waited = true;
+    }
+}
+
+/// Engine `b` goes for good once nothing holds it (released by the game, its events thread
+/// gone): its state and its block. Whether it went.
+fn retire(b: u32) -> bool {
+    let gone = {
+        let mut g = ENGINES.lock().unwrap_or_else(|e| e.into_inner());
+        let m = g.get_or_insert_with(HashMap::new);
+        match m.get(&b) {
+            Some(e) if e.refs == 0 && !e.thread && e.shut => m.remove(&b).is_some(),
+            _ => false,
+        }
+    };
+    if gone {
+        mem::heap_free(b);
+        #[cfg(test)]
+        RETIRED.lock().unwrap_or_else(|e| e.into_inner()).push(b);
+    }
+    gone
+}
+/// (tests: the blocks `retire` let go, in order)
+#[cfg(test)]
+static RETIRED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
 fn start_events(b: u32) {
     if engine(b, |e| !std::mem::replace(&mut e.thread, true)) != Some(true) {
         return;
@@ -1137,7 +1218,8 @@ fn en_release(c: &mut Ctx) -> u32 {
     .unwrap_or(0);
     if n == 0 {
         shutdown(c, b);
-        // (the block stays: the events thread may still look it up)
+        // (with its events thread still on its way out, that thread lets it go)
+        retire(b);
     }
     n
 }
@@ -1472,27 +1554,76 @@ fn src_rect(p: u32, w: u32, h: u32) -> play::R {
 /// The frame shown now, letterboxed onto `dst` (w x h) with `border` around it: rows of
 /// B, G, R, A pixels (`rgba`: R, G, B, A).
 pub fn compose(frame: &[u32], fw: u32, fh: u32, src: play::R, dst: (u32, u32), border: u32, rgba: bool) -> Vec<u32> {
-    let (dw, dh) = (dst.0 as i32, dst.1 as i32);
-    let mut out = vec![border; (dw * dh) as usize];
-    let lb = letterbox((0, 0, dw, dh), src.2, src.3);
-    if lb.2 > 0 && lb.3 > 0 {
-        let mut part = vec![0u32; (lb.2 * lb.3) as usize];
-        play::blit(frame, fw as i32, fh as i32, src, &mut part, lb, lb);
-        for y in 0..lb.3 {
-            let o = ((lb.1 + y) * dw + lb.0) as usize;
-            out[o..o + lb.2 as usize].copy_from_slice(&part[(y * lb.2) as usize..((y + 1) * lb.2) as usize]);
-        }
-    }
-    if rgba {
-        for p in &mut out {
-            *p = (*p & 0xff00_ff00) | (*p & 0xff) << 16 | (*p >> 16) & 0xff;
-        }
-    }
-    out
+    let mut f = Frames::default();
+    f.compose(frame, fw, fh, src, dst, border, rgba);
+    f.out
 }
 
-/// How many times TransferVideoFrame asks for a frame not there yet, 5 ms apart.
+/// Pixels as TransferVideoFrame hands them out: opaque, R and B swapped for an RGBA texture.
+fn texel(p: u32, rgba: bool) -> u32 {
+    let p = p | 0xff00_0000;
+    if rgba { (p & 0xff00_ff00) | (p & 0xff) << 16 | (p >> 16) & 0xff } else { p }
+}
+
+/// What TransferVideoFrame keeps of an engine from one call to the next (no allocation per
+/// frame): the picture decoded last (kura::video leaves the old pixels when no newer frame came
+/// in time, so that one stays), the frame as written and the letterboxed part of it.
+#[derive(Default)]
+struct Frames {
+    px: Vec<u32>,
+    /// the movie size `px` holds a picture of (None: none yet)
+    size: Option<(u32, u32)>,
+    out: Vec<u32>,
+    part: Vec<u32>,
+}
+
+impl Frames {
+    /// The picture (fw x fh, `frame`) letterboxed onto `dst` with `border` around it into `out`.
+    fn compose(&mut self, frame: &[u32], fw: u32, fh: u32, src: play::R, dst: (u32, u32), border: u32, rgba: bool) {
+        let (dw, dh) = (dst.0 as i32, dst.1 as i32);
+        let out = &mut self.out;
+        out.clear();
+        out.resize((dw * dh) as usize, border);
+        let lb = letterbox((0, 0, dw, dh), src.2, src.3);
+        if lb.2 > 0 && lb.3 > 0 {
+            if src == (0, 0, fw as i32, fh as i32) && lb == src && (dw, dh) == (lb.2, lb.3) && frame.len() >= out.len() {
+                // the whole picture at its size: no scaling, straight across
+                for (d, &p) in out.iter_mut().zip(frame) {
+                    *d = texel(p, rgba);
+                }
+                return;
+            }
+            let part = &mut self.part;
+            part.clear();
+            part.resize((lb.2 * lb.3) as usize, 0);
+            play::blit(frame, fw as i32, fh as i32, src, part, lb, lb);
+            for y in 0..lb.3 {
+                let o = ((lb.1 + y) * dw + lb.0) as usize;
+                out[o..o + lb.2 as usize].copy_from_slice(&part[(y * lb.2) as usize..((y + 1) * lb.2) as usize]);
+            }
+        }
+        if rgba {
+            for p in out.iter_mut() {
+                *p = (*p & 0xff00_ff00) | (*p & 0xff) << 16 | (*p >> 16) & 0xff;
+            }
+        }
+    }
+}
+
+/// How many times TransferVideoFrame asks for the first frame of a movie while it is not there
+/// yet, 5 ms apart (each ask waits a little in kura::video too); once there was a picture, the
+/// old one is shown instead after `LATE_TRIES` (the game's render thread is not held up for a
+/// slow decoder: it draws the last frame again, as Windows' does when the next is late).
 const FRAME_TRIES: u32 = 100;
+const LATE_TRIES: u32 = 1;
+/// The largest movie picture taken (16384 x 16384: D3D11's largest texture).
+const MAX_PIXELS: u64 = 16384 * 16384;
+
+/// The pixels of a w x h picture, or None when it is no picture (0, or past `MAX_PIXELS`).
+fn picture_pixels(w: u32, h: u32) -> Option<usize> {
+    let n = w as u64 * h as u64;
+    (n > 0 && n <= MAX_PIXELS).then_some(n as usize)
+}
 
 /// TransferVideoFrame(IUnknown *texture, MFVideoNormalizedRect *src, RECT *dst, MFARGB *border):
 /// the frame shown now into the game's D3D11 texture
@@ -1513,26 +1644,40 @@ fn en_transfer(c: &mut Ctx) -> u32 {
     if r <= l || bt <= t {
         return E_INVALIDARG;
     }
+    let Some(pixels) = picture_pixels(w, h) else { return E_FAIL };
     let n = frame_at(pos, rate, frames);
-    let mut px = vec![0u32; (w * h) as usize];
+    // (taken out of the engine while it decodes: the events thread goes on)
+    let Some(mut f) = engine(b, |e| std::mem::take(&mut e.frames)) else { return NO_FRAME_TO_TRANSFER };
+    if f.size != Some((w, h)) {
+        f.size = None;
+        f.px.clear();
+        f.px.resize(pixels, 0);
+    }
     // (the page may not have the frame's bytes or picture yet: the movie thread draws it a turn
     // later, the game wants it now)
     let mut tries = 0;
-    while !unsafe { play::frame(stream, n as i32, px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h) } {
+    let mut shown = true;
+    while !unsafe { play::frame(stream, n as i32, f.px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h) } {
         tries += 1;
-        if tries > FRAME_TRIES || play::failed(stream) {
-            return E_FAIL;
+        if play::failed(stream) || tries > if f.size.is_some() { LATE_TRIES } else { FRAME_TRIES } {
+            shown = false;
+            break;
         }
         kura::snap::sleep(std::time::Duration::from_millis(5));
     }
-    let border = if border == 0 { 0xff00_0000 } else { r32(border) };
-    let out = compose(&px, w, h, src_rect(src, w, h), ((r - l) as u32, (bt - t) as u32), border, rgba);
-    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(out.as_ptr() as *const u8, out.len() * 4) };
-    let g = mem::heap_alloc(bytes.len() as u32, false);
-    mem::write(g, bytes);
-    let done = unsafe { kura::d3d11::write_texture(surf, g, 4 * (r - l) as u32, [l as u32, t as u32, r as u32, bt as u32]) };
-    mem::heap_free(g);
-    if done { 0 } else { E_INVALIDARG }
+    let done = if !shown && f.size.is_none() {
+        E_FAIL
+    } else {
+        f.size = Some((w, h));
+        let border = if border == 0 { 0xff00_0000 } else { r32(border) };
+        let px = std::mem::take(&mut f.px);
+        f.compose(&px, w, h, src_rect(src, w, h), ((r - l) as u32, (bt - t) as u32), border, rgba);
+        f.px = px;
+        let done = unsafe { kura::d3d11::write_texture_from(surf, f.out.as_ptr() as *const u8, 4 * (r - l) as u32, [l as u32, t as u32, r as u32, bt as u32]) };
+        if done { 0 } else { E_INVALIDARG }
+    };
+    engine(b, |e| e.frames = f);
+    done
 }
 /// GetResourceCharacteristics(DWORD *): it can seek and pause
 fn en_characteristics(c: &mut Ctx) -> u32 {
@@ -1737,7 +1882,7 @@ fn fa_create(c: &mut Ctx) -> u32 {
     add_ref(c, notify);
     static VT: OnceLock<u32> = OnceLock::new();
     let b = object(*VT.get_or_init(|| vtable("IMFMediaEngine", &engine_methods())), 1);
-    let e = Engine { refs: 1, st: State::default(), notify, shut: false, src: None, movie: false, ticked: None, category, role, thread: false };
+    let e = Engine { refs: 1, st: State::default(), notify, shut: false, src: None, movie: false, ticked: None, category, role, thread: false, frames: Frames::default() };
     ENGINES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, e);
     start_events(b);
     putp(out, b);

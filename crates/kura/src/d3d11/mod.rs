@@ -3343,6 +3343,11 @@ pub fn texture_desc(res: u32) -> Option<(u32, u32, u32)> {
 /// Writes guest texels (rows of `pitch` bytes from `data`) into box `bx` (left top right bottom)
 /// of texture `res`'s first subresource, as UpdateSubresource. Whether it is one.
 pub unsafe fn write_texture(res: u32, data: u32, pitch: u32, bx: [u32; 4]) -> bool {
+    write_texture_from(res, data as usize as *const u8, pitch, bx)
+}
+
+/// [`write_texture`] from texels anywhere in memory (sake's own frames: no guest copy).
+pub unsafe fn write_texture_from(res: u32, data: *const u8, pitch: u32, bx: [u32; 4]) -> bool {
     let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());
     let Some(d) = g.as_mut() else { return false };
     let id = d.id_of(res);

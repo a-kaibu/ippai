@@ -359,3 +359,210 @@ proptest! {
         }
     }
 }
+
+/// TransferVideoFrame's letterboxing as it was before the frames were kept (a fresh Vec per
+/// call): the model the kept buffers and the straight copy must match.
+fn compose_model(frame: &[u32], fw: u32, fh: u32, src: play::R, dst: (u32, u32), border: u32, rgba: bool) -> Vec<u32> {
+    let (dw, dh) = (dst.0 as i32, dst.1 as i32);
+    let mut out = vec![border; (dw * dh) as usize];
+    let lb = letterbox((0, 0, dw, dh), src.2, src.3);
+    if lb.2 > 0 && lb.3 > 0 {
+        let mut part = vec![0u32; (lb.2 * lb.3) as usize];
+        play::blit(frame, fw as i32, fh as i32, src, &mut part, lb, lb);
+        for y in 0..lb.3 {
+            let o = ((lb.1 + y) * dw + lb.0) as usize;
+            out[o..o + lb.2 as usize].copy_from_slice(&part[(y * lb.2) as usize..((y + 1) * lb.2) as usize]);
+        }
+    }
+    if rgba {
+        for p in &mut out {
+            *p = (*p & 0xff00_ff00) | (*p & 0xff) << 16 | (*p >> 16) & 0xff;
+        }
+    }
+    out
+}
+
+#[test]
+fn picture_sizes_past_any_texture_are_refused() {
+    assert_eq!(picture_pixels(1920, 1080), Some(1920 * 1080));
+    assert_eq!(picture_pixels(16384, 16384), Some(16384 * 16384));
+    // (65536 x 65536 is 0 in u32: the old vec![0; w * h] was empty and the decoder wrote past it)
+    assert_eq!(picture_pixels(65536, 65536), None);
+    assert_eq!(picture_pixels(0x1_0001, 0xffff), None);
+    assert_eq!(picture_pixels(0, 480), None);
+    assert_eq!(picture_pixels(16385, 16384), None);
+}
+
+#[test]
+fn whole_picture_at_its_size_straight_across() {
+    let f: Vec<u32> = (0..6).map(|i| 0x0010_2030 * i).collect();
+    for rgba in [false, true] {
+        assert_eq!(compose(&f, 3, 2, (0, 0, 3, 2), (3, 2), 0x1234, rgba), compose_model(&f, 3, 2, (0, 0, 3, 2), (3, 2), 0x1234, rgba));
+    }
+    // one column wider than the picture: not the straight copy (the letterbox starts at 0 there)
+    assert_eq!(compose(&f, 3, 2, (0, 0, 3, 2), (4, 2), 9, false), compose_model(&f, 3, 2, (0, 0, 3, 2), (4, 2), 9, false));
+}
+
+fn arb_transfer() -> impl Strategy<Value = (u32, u32, (i32, i32, i32, i32), (u32, u32), u32, bool)> {
+    (1u32..9, 1u32..9).prop_flat_map(|(fw, fh)| {
+        let full = Just((0, 0, fw as i32, fh as i32));
+        let part = (0..fw as i32, 0..fh as i32, 0..=fw as i32, 0..=fh as i32);
+        (Just(fw), Just(fh), prop_oneof![full, part], (1u32..13, 1u32..13), any::<u32>(), any::<bool>())
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(400))]
+    /// One engine's kept buffers across any sequence of transfers (pictures, rectangles and
+    /// formats changing between calls, the buffers left as the last call had them): every frame
+    /// as the model makes it fresh, the straight copy included.
+    #[test]
+    fn kept_frames_match_fresh_ones(calls in prop::collection::vec(arb_transfer(), 1..12)) {
+        let mut kept = Frames::default();
+        for (fw, fh, src, dst, border, rgba) in calls {
+            let f: Vec<u32> = (0..fw * fh).map(|i| i.wrapping_mul(0x9e37_79b9)).collect();
+            kept.compose(&f, fw, fh, src, dst, border, rgba);
+            prop_assert_eq!(&kept.out, &compose_model(&f, fw, fh, src, dst, border, rgba));
+        }
+    }
+}
+
+/// An engine of no movie for the lifetime tests: its block, held once, its events thread
+/// running or not.
+fn test_engine(thread: bool) -> u32 {
+    let b = object(0, 1);
+    // (a block let go by an earlier test may come back)
+    RETIRED.lock().unwrap().retain(|&x| x != b);
+    let e = Engine { refs: 1, st: State::default(), notify: 0, shut: false, src: None, movie: false, ticked: None, category: 0, role: 0, thread, frames: Frames::default() };
+    ENGINES.lock().unwrap().get_or_insert_with(HashMap::new).insert(b, e);
+    b
+}
+fn retired(b: u32) -> usize {
+    RETIRED.lock().unwrap().iter().filter(|&&x| x == b).count()
+}
+fn live(b: u32) -> bool {
+    ENGINES.lock().unwrap().get_or_insert_with(HashMap::new).contains_key(&b)
+}
+
+#[test]
+fn an_engine_goes_with_its_last_release() {
+    let _g = crate::test_guest::enter();
+    // no events thread: at once
+    let b = test_engine(false);
+    assert_eq!(crate::test_guest::call(en_add_ref, &[b]), 2);
+    assert_eq!(crate::test_guest::call(en_release, &[b]), 1);
+    assert!(live(b));
+    assert_eq!(crate::test_guest::call(en_release, &[b]), 0);
+    assert!(!live(b));
+    assert_eq!(retired(b), 1);
+    // a stray Release after that touches nothing
+    assert_eq!(crate::test_guest::call(en_release, &[b]), 0);
+    assert_eq!(retired(b), 1);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Life {
+    AddRef,
+    Release,
+    Shutdown,
+    /// the events thread sees the shutdown and ends (only after one)
+    ThreadEnds,
+}
+
+proptest! {
+    /// Any order of AddRef, Release, Shutdown and the events thread's end (formal/tla/
+    /// MfEngineLife.tla checks the same with the thread racing): the block is let go exactly
+    /// once, only when the game holds it no more and its thread is gone, and always then.
+    #[test]
+    fn engines_go_once_and_only_when_unheld(ops in prop::collection::vec(prop_oneof![Just(Life::AddRef), Just(Life::Release), Just(Life::Shutdown), Just(Life::ThreadEnds)], 0..24)) {
+        let _g = crate::test_guest::enter();
+        let b = test_engine(true);
+        let (mut refs, mut thread, mut shut) = (1u32, true, false);
+        for op in ops {
+            match op {
+                Life::AddRef if refs > 0 => {
+                    refs += 1;
+                    prop_assert_eq!(crate::test_guest::call(en_add_ref, &[b]), refs);
+                }
+                Life::Release if refs > 0 => {
+                    refs -= 1;
+                    shut |= refs == 0;
+                    prop_assert_eq!(crate::test_guest::call(en_release, &[b]), refs);
+                }
+                Life::Shutdown if refs > 0 => {
+                    shut = true;
+                    crate::test_guest::call(en_shutdown, &[b]);
+                }
+                Life::ThreadEnds if thread && shut => {
+                    // (what events_thread does once next_event says Err)
+                    prop_assert_eq!(next_event(b, std::time::Duration::ZERO), Some(Err(())));
+                    engine(b, |e| e.thread = false);
+                    retire(b);
+                    thread = false;
+                }
+                _ => {}
+            }
+            let gone = refs == 0 && !thread;
+            prop_assert_eq!(live(b), !gone);
+            prop_assert_eq!(retired(b), gone as usize);
+        }
+        // (an engine left held: let it go for the next case)
+        if live(b) {
+            engine(b, |e| { e.refs = 0; e.thread = false; e.shut = true; });
+            retire(b);
+        }
+        RETIRED.lock().unwrap().retain(|&x| x != b);
+    }
+}
+
+#[test]
+fn the_events_thread_sleeps_until_an_event() {
+    let _g = crate::test_guest::enter();
+    let b = test_engine(true);
+    // nothing to tell: it waits the whole wait
+    let t = std::time::Instant::now();
+    assert_eq!(next_event(b, std::time::Duration::from_millis(60)), Some(Ok((0, None))));
+    assert!(t.elapsed() >= std::time::Duration::from_millis(55));
+    // an event from another thread wakes it at once (not at the end of a 10 s wait)
+    let poster = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        engine(b, |e| e.st.play());
+    });
+    let t = std::time::Instant::now();
+    let got = next_event(b, std::time::Duration::from_secs(10));
+    assert!(matches!(got, Some(Ok((0, Some(_))))), "{got:?}");
+    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+    poster.join().unwrap();
+    // and so does the shutdown
+    let closer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        engine(b, |e| {
+            e.shut = true;
+            e.refs = 0;
+        });
+    });
+    let t = std::time::Instant::now();
+    loop {
+        match next_event(b, std::time::Duration::from_secs(10)) {
+            Some(Err(())) => break,
+            Some(Ok((_, Some(_)))) => continue,
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+    closer.join().unwrap();
+    engine(b, |e| e.thread = false);
+    assert!(retire(b));
+}
+
+#[test]
+fn blobs_past_the_limit_are_out_of_memory() {
+    let _g = crate::test_guest::enter();
+    assert_eq!(blob(0x1000, MAX_BLOB + 1), Err(E_OUTOFMEMORY));
+    assert_eq!(blob(0, 4), Err(E_POINTER));
+    assert_eq!(blob(0, 0), Ok(Vec::new()));
+    let p = mem::heap_alloc(4, true);
+    mem::write(p, &[1, 2, 3, 4]);
+    assert_eq!(blob(p, 4), Ok(vec![1, 2, 3, 4]));
+    mem::heap_free(p);
+}

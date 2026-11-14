@@ -234,6 +234,7 @@ pub fn init() {
     kura::snap::on_pause(crate::xaudio2::snap_wake);
     kura::snap::on_pause(crate::wasapi::snap_wake);
     kura::snap::on_pause(crate::dshow_play::snap_wake);
+    kura::snap::on_pause(crate::mf::snap_wake);
     kura::snap::set_ranges(crate::mem::snap_ranges);
     // (the kernel other processes share is outside this memory, host/vnkern.js)
     kura::snap::set_refuse(|| crate::kern::host::shared().then(|| "other processes run with this one".into()));
