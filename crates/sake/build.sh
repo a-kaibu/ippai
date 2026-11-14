@@ -15,11 +15,11 @@ HO=$ROOT/host
 . "$EMSDK4/emsdk_env.sh" >/dev/null 2>&1
 mkdir -p "$OUT"
 cd "$ROOT"
-RUSTC_BOOTSTRAP=1 RUSTFLAGS="${RUSTFLAGS:-} -D warnings -C target-feature=+atomics,+bulk-memory,+mutable-globals -C panic=abort" \
+RUSTC_BOOTSTRAP=1 RUSTFLAGS="${RUSTFLAGS:-} -D warnings -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128 -C panic=abort" \
   cargo build --release -p sake --target wasm32-unknown-emscripten -Zbuild-std=std,panic_abort
 LIB=$ROOT/target/wasm32-unknown-emscripten/release/libsake.a
-emcc -O2 -pthread -c "$HERE/c/main.c" -o "$OUT/main.o"
-emcc -O2 -pthread -c "$ROOT/crates/kura/c/shim.c" -o "$OUT/shim.o"
+emcc -O2 -msimd128 -pthread -c "$HERE/c/main.c" -o "$OUT/main.o"
+emcc -O2 -msimd128 -pthread -c "$ROOT/crates/kura/c/shim.c" -o "$OUT/shim.o"
 # the libc entry points kura takes over (crates/kura/src/wrap.rs, c/shim.c)
 WRAP="write writev clock_gettime sched_yield emscripten_futex_wait"
 WRAPFLAGS=$(for w in $WRAP; do printf -- "-Wl,--wrap=%s -Wl,-u,%s " "$w" "$w"; done)
@@ -63,7 +63,7 @@ snapz() {
     tar xzf "$OUT/zstd.tar.gz" -C "$OUT"
   fi
   Z=$OUT/zstd-$ZV/lib
-  emcc -O3 -DZSTD_DISABLE_ASM -DZSTD_MULTITHREAD=0 -DZSTD_LEGACY_SUPPORT=0 -I"$Z" -I"$Z/common" "$HERE/snapz/snapz.c" \
+  emcc -O3 -msimd128 -DZSTD_DISABLE_ASM -DZSTD_MULTITHREAD=0 -DZSTD_LEGACY_SUPPORT=0 -I"$Z" -I"$Z/common" "$HERE/snapz/snapz.c" \
     "$Z"/common/*.c "$Z"/compress/*.c "$Z"/decompress/*.c -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createSnapz \
     -sENVIRONMENT=worker,web,node -sALLOW_MEMORY_GROWTH -sFILESYSTEM=0 -sEXPORTED_FUNCTIONS=_malloc,_free \
     -sEXPORTED_RUNTIME_METHODS=HEAPU8 -o "$WEB_OUT/snapz.mjs"

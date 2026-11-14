@@ -39,7 +39,9 @@ p521 = { version = "0.13", default-features = false, features = ["ecdsa", "ecdh"
 hmac = "0.12"
 md5_rc = { package = "md-5", version = "0.10" }
 rand_core = { version = "0.6", default-features = false }
-jpeg-decoder = { version = "0.3", default-features = false }
+# (platform_independent: its scalar IDCT and color conversion everywhere: closer to Windows than
+# its SIMD ones (tests/winref imaging jpeg_*), and the same bytes in native tests as in the page)
+jpeg-decoder = { version = "0.3", default-features = false, features = ["platform_independent"] }
 png = "0.17"
 icu_segmenter = "2"
 boa_engine = { version = "0.22", default-features = false, features = ["annex-b"] }

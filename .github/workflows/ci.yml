@@ -600,6 +600,9 @@ jobs:
       # wmcodec's tests, as wasm under node)
       - name: wmcodec as wasm with SIMD128 (crates/wmcodec/wasm-test.sh)
         run: crates/wmcodec/wasm-test.sh
+      # (sake.wasm's SIMD128 code byte for byte against its scalar code, in wasm under node)
+      - name: SIMD128 against scalar in wasm (tests/decbench/run.sh test)
+        run: WORK=$RUNNER_TEMP/decbench tests/decbench/run.sh test
       # Publish once; the host suites, snapshots, browser and Windows checks below each get
       # their own runner. Four suites on this runner took 11 minutes, after the Windows build;
       # six at once took 17 minutes and raced. No test needs to rebuild sake to check it.

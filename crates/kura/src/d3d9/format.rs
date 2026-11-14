@@ -375,6 +375,11 @@ pub unsafe fn convert(fmt: u32, src: *const u8, pitch: usize, w: u32, h: u32, ou
                 for bx in 0..w.div_ceil(4) {
                     let size = if fmt == DXT1 { 8 } else { 16 };
                     let b = std::slice::from_raw_parts(row(by).add(bx * size), size);
+                    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+                    if bx * 4 + 4 <= w && by * 4 + 4 <= h {
+                        dxt_block_simd(fmt, b, dst.as_mut_ptr().add((by * 4 * w + bx * 4) * 4), w * 4);
+                        continue;
+                    }
                     let px = decode_dxt(fmt, b);
                     for (i, p) in px.iter().enumerate() {
                         let (x, y) = (bx * 4 + i % 4, by * 4 + i / 4);
@@ -481,7 +486,9 @@ pub unsafe fn convert(fmt: u32, src: *const u8, pitch: usize, w: u32, h: u32, ou
 }
 
 /// 16 BGRA pixels of one DXT block.
-fn decode_dxt(fmt: u32, b: &[u8]) -> [[u8; 4]; 16] {
+/// A DXTn block's color palette (B G R A) and its 2-bit index of each pixel (row by row, 2
+/// bits a pixel from the low ones).
+fn dxt_palette(fmt: u32, b: &[u8]) -> ([[u8; 4]; 4], u32) {
     let col = if fmt == DXT1 { b } else { &b[8..] };
     let c0 = u16::from_le_bytes([col[0], col[1]]);
     let c1 = u16::from_le_bytes([col[2], col[3]]);
@@ -511,16 +518,17 @@ fn decode_dxt(fmt: u32, b: &[u8]) -> [[u8; 4]; 16] {
         pal[2][3] = 255;
         pal[3] = [0, 0, 0, 0];
     }
-    let bits = u32::from_le_bytes([col[4], col[5], col[6], col[7]]);
-    let mut out = [[0u8; 4]; 16];
-    for (i, o) in out.iter_mut().enumerate() {
-        *o = pal[((bits >> (i * 2)) & 3) as usize];
-    }
+    (pal, u32::from_le_bytes([col[4], col[5], col[6], col[7]]))
+}
+
+/// A DXT2-5 block's alpha of each pixel (row by row); None for DXT1 (the palette's).
+fn dxt_alpha(fmt: u32, b: &[u8]) -> Option<[u8; 16]> {
+    let mut out = [0u8; 16];
     match fmt {
         DXT2 | DXT3 => {
             for (i, o) in out.iter_mut().enumerate() {
                 let v = (b[i / 2] >> ((i & 1) * 4)) & 15;
-                o[3] = v * 17;
+                *o = v * 17;
             }
         }
         DXT4 | DXT5 => {
@@ -542,12 +550,56 @@ fn decode_dxt(fmt: u32, b: &[u8]) -> [[u8; 4]; 16] {
             }
             let bits = u64::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], 0, 0]);
             for (i, o) in out.iter_mut().enumerate() {
-                o[3] = ap[((bits >> (i * 3)) & 7) as usize] as u8;
+                *o = ap[((bits >> (i * 3)) & 7) as usize] as u8;
             }
         }
-        _ => {}
+        _ => return None,
+    }
+    Some(out)
+}
+
+/// (public for crates/decbench's tests)
+#[doc(hidden)]
+pub fn decode_dxt(fmt: u32, b: &[u8]) -> [[u8; 4]; 16] {
+    let (pal, bits) = dxt_palette(fmt, b);
+    let mut out = [[0u8; 4]; 16];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = pal[((bits >> (i * 2)) & 3) as usize];
+    }
+    if let Some(a) = dxt_alpha(fmt, b) {
+        for (o, a) in out.iter_mut().zip(a) {
+            o[3] = a;
+        }
     }
     out
+}
+
+/// decode_dxt of a whole block into 4 rows `stride` bytes apart, its palette looked up with
+/// one swizzle a row (wasm SIMD128).
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn dxt_block_simd(fmt: u32, b: &[u8], dst: *mut u8, stride: usize) {
+    use core::arch::wasm32::*;
+    // (a row's index byte -> the swizzle picking each of its 4 pixels' palette bytes)
+    static MASKS: std::sync::OnceLock<[[u8; 16]; 256]> = std::sync::OnceLock::new();
+    let masks = MASKS.get_or_init(|| std::array::from_fn(|r| std::array::from_fn(|i| (((r >> ((i / 4) * 2)) & 3) * 4 + i % 4) as u8)));
+    let (pal, bits) = dxt_palette(fmt, b);
+    let pal = v128_load(pal.as_ptr() as *const v128);
+    let alpha = dxt_alpha(fmt, b).map(|a| v128_load(a.as_ptr() as *const v128));
+    let keep = u32x4_splat(0x00ff_ffff);
+    for r in 0..4 {
+        let mut px = i8x16_swizzle(pal, v128_load(masks[((bits >> (8 * r)) & 0xff) as usize].as_ptr() as *const v128));
+        if let Some(a) = alpha {
+            // (row r's 4 alpha bytes into byte 3 of each pixel)
+            let s = match r {
+                0 => u8x16_shuffle::<16, 16, 16, 0, 16, 16, 16, 1, 16, 16, 16, 2, 16, 16, 16, 3>(a, a),
+                1 => u8x16_shuffle::<16, 16, 16, 4, 16, 16, 16, 5, 16, 16, 16, 6, 16, 16, 16, 7>(a, a),
+                2 => u8x16_shuffle::<16, 16, 16, 8, 16, 16, 16, 9, 16, 16, 16, 10, 16, 16, 16, 11>(a, a),
+                _ => u8x16_shuffle::<16, 16, 16, 12, 16, 16, 16, 13, 16, 16, 16, 14, 16, 16, 16, 15>(a, a),
+            };
+            px = v128_bitselect(px, s, keep);
+        }
+        v128_store(dst.add(r * stride) as *mut v128, px);
+    }
 }
 
 #[cfg(test)]

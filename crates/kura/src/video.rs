@@ -385,11 +385,28 @@ fn stat(waited: Duration, n: i32, late: bool) {
     }
 }
 
+/// (public for crates/decbench)
+#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+pub unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
     let c = &layout[0];
-    if tracks == 1 && matches!(c[0], I420 | NV12) && out == Out::Rgb601 {
+    if matches!(c[0], I420 | NV12) && matches!(out, Out::Rgb601 | Out::Rgb) {
         return to_rgb(buf, c, dst, pitch, w, h, out);
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if matches!(c[0], I420 | NV12) && out == Out::Ycc && (tracks == 1 || matches!(layout[1][0], I420 | NV12)) {
+        return simd::to_ycc(buf, c, (tracks > 1).then_some(&layout[1]), dst, pitch, w, h);
+    }
+    convert_any(buf, layout, tracks, sw, sh, dst, pitch, w, h, out)
+}
+
+/// [`convert`] without SIMD (the reference crates/decbench's wasm tests hold the SIMD lanes to).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn convert_scalar(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+    let c = &layout[0];
+    if matches!(c[0], I420 | NV12) && matches!(out, Out::Rgb601 | Out::Rgb) {
+        return to_rgb_scalar(buf, c, dst, pitch, w, h, out);
     }
     convert_any(buf, layout, tracks, sw, sh, dst, pitch, w, h, out)
 }
@@ -424,16 +441,36 @@ fn terms(out: Out) -> &'static Terms {
     &t[(out == Out::Rgb601) as usize]
 }
 
-/// [`convert_any`] of one I420 / NV12 track to BGRX: the same bytes, in fixed point from
-/// tables (a movie frame's conversion, every frame).
+/// [`convert_any`] of an I420 / NV12 color track to BGRX (Rgb601 / Rgb: alpha is 255 there,
+/// so an alpha track changes nothing): the same bytes, in SIMD128 where the build has it.
 unsafe fn to_rgb(buf: *const u8, c: &[u32; 7], dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return simd::to_rgb(buf, c, dst, pitch, w, h, out);
+    #[allow(unreachable_code)]
+    to_rgb_scalar(buf, c, dst, pitch, w, h, out)
+}
+
+/// One pixel as `convert_any` gives it, B G R: Rgb601 in fixed point from the tables, Rgb by
+/// ycc_to_rgb (truncated f64).
+#[inline]
+fn px_ref(t: &Terms, out: Out, y: u8, u: u8, v: u8) -> [u8; 3] {
+    if out == Out::Rgb601 {
+        let q = |x: i32| ((x + (1 << (FRAC - 1))) >> FRAC).clamp(0, 255) as u8;
+        let yy = t.y[y as usize];
+        let (u, v) = (u as usize, v as usize);
+        [q(yy + t.bu[u]), q(yy - t.gu[u] - t.gv[v]), q(yy + t.rv[v])]
+    } else {
+        let (r, g, b) = ycc_to_rgb(y, u, v);
+        [b, g, r]
+    }
+}
+
+/// The scalar [`to_rgb`], pixel by pixel.
+unsafe fn to_rgb_scalar(buf: *const u8, c: &[u32; 7], dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
     let t = terms(out);
     let p = |i: usize| buf.add(c[1 + 2 * i] as usize);
     let st = |i: usize| c[2 + 2 * i] as usize;
     let nv12 = c[0] == NV12;
-    // (rounding: half added; truncating: none, values below 0 clamp either way)
-    let half = if out == Out::Rgb601 { 1 << (FRAC - 1) } else { 0 };
-    let q = |x: i32| ((x + half) >> FRAC).clamp(0, 255) as u8;
     for y in 0..h as usize {
         let row = dst.add(y * pitch);
         let yr = p(0).add(y * st(0));
@@ -445,13 +482,194 @@ unsafe fn to_rgb(buf: *const u8, c: &[u32; 7], dst: *mut u8, pitch: usize, w: u3
         };
         for x in 0..w as usize {
             let k = (x / 2) * step;
-            let (u, v) = (*ur.add(k) as usize, *vr.add(k) as usize);
-            let yy = t.y[*yr.add(x) as usize];
             let o = row.add(x * 4);
-            *o = q(yy + t.bu[u]);
-            *o.add(1) = q(yy - t.gu[u] - t.gv[v]);
-            *o.add(2) = q(yy + t.rv[v]);
+            let [b, g, r] = px_ref(t, out, *yr.add(x), *ur.add(k), *vr.add(k));
+            *o = b;
+            *o.add(1) = g;
+            *o.add(2) = r;
             *o.add(3) = 255;
+        }
+    }
+}
+
+/// px_ref as one product a term (SIMD lanes have no table lookups): FRAC-bit fixed point
+/// coefficients of Y, Cr in red, Cb and Cr in green, Cb in blue, and what is added before the
+/// shift (Y's offset, Rgb601's half). Such a sum is within LINEAR_ERR of px_ref's exact one
+/// (the tables' rounded terms, or the f64 sum), so where it is NEAR or less from a step the
+/// two can floor apart: those pixels are px_ref's (linear_as_px_ref checks every Y, Cb, Cr).
+#[cfg(any(test, all(target_arch = "wasm32", target_feature = "simd128")))]
+struct Linear {
+    y: i32,
+    rv: i32,
+    gu: i32,
+    gv: i32,
+    bu: i32,
+    base: i32,
+}
+/// (the bound: half a unit off per coefficient times |Y - 16| <= 239, |Cb - 128|, |Cr - 128|
+/// <= 128, plus a half per table term: 249.5 for green)
+#[cfg(test)]
+const LINEAR_ERR: i32 = 250;
+#[cfg(any(test, all(target_arch = "wasm32", target_feature = "simd128")))]
+const NEAR: i32 = 512;
+#[cfg(any(test, all(target_arch = "wasm32", target_feature = "simd128")))]
+const STEP: i32 = (1 << FRAC) - 1;
+#[cfg(any(test, all(target_arch = "wasm32", target_feature = "simd128")))]
+fn linear(out: Out) -> Linear {
+    let video = out == Out::Rgb601;
+    let f = |x: f64| (x * (1 << FRAC) as f64).round() as i32;
+    let (sy, su) = if video { (255.0 / 219.0, 255.0 / 224.0) } else { (1.0, 1.0) };
+    let (gu, gv) = if video { (0.344136, 0.714136) } else { (0.34414, 0.71414) };
+    let y = f(sy);
+    let half = if video { 1 << (FRAC - 1) } else { 0 };
+    Linear { y, rv: f(1.402 * su), gu: f(gu * su), gv: f(gv * su), bu: f(1.772 * su), base: half - if video { 16 * y } else { 0 } }
+}
+
+/// The SIMD lanes' sums for one pixel (B, G, R before the shift), and whether one is NEAR a step.
+#[cfg(test)]
+fn linear_sums(l: &Linear, y: u8, u: u8, v: u8) -> ([i32; 3], bool) {
+    let yt = l.y * y as i32 + l.base;
+    let (u, v) = (u as i32 - 128, v as i32 - 128);
+    let s = [yt + l.bu * u, yt - l.gu * u - l.gv * v, yt + l.rv * v];
+    (s, s.iter().any(|&x| ((x + NEAR) & STEP) < 2 * NEAR))
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod simd {
+    //! to_rgb and the Ycc conversion 8 pixels at a time (wasm SIMD128): the Android page's
+    //! movie frames, every frame.
+    use super::{linear, px_ref, terms, Linear, Out, FRAC, NEAR, NV12, STEP};
+    use core::arch::wasm32::*;
+
+    /// 4 chroma samples (Cb, Cr) of pixels x..x+8 as i32 lanes, each - 128.
+    #[inline(always)]
+    unsafe fn chroma(ur: *const u8, vr: *const u8, nv12: bool, x: usize) -> (v128, v128) {
+        let (u, v) = if nv12 {
+            let uv = v128_load64_zero(ur.add(x) as *const u64);
+            (u8x16_shuffle::<0, 2, 4, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>(uv, uv), u8x16_shuffle::<1, 3, 5, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>(uv, uv))
+        } else {
+            (v128_load32_zero(ur.add(x / 2) as *const u32), v128_load32_zero(vr.add(x / 2) as *const u32))
+        };
+        let wide = |b: v128| i32x4_sub(u32x4_extend_low_u16x8(u16x8_extend_low_u8x16(b)), i32x4_splat(128));
+        (wide(u), wide(v))
+    }
+
+    /// Pixels x..x+8 of a row: false (nothing written) when a sum is NEAR a step.
+    #[inline(always)]
+    unsafe fn rgb8(l: &Linear, yr: *const u8, ur: *const u8, vr: *const u8, nv12: bool, x: usize, o: *mut u8) -> bool {
+        let y16 = u16x8_extend_low_u8x16(v128_load64_zero(yr.add(x) as *const u64));
+        let (ky, base) = (i32x4_splat(l.y), i32x4_splat(l.base));
+        let ylo = i32x4_add(i32x4_mul(u32x4_extend_low_u16x8(y16), ky), base);
+        let yhi = i32x4_add(i32x4_mul(u32x4_extend_high_u16x8(y16), ky), base);
+        let (u, v) = chroma(ur, vr, nv12, x);
+        let bu = i32x4_mul(u, i32x4_splat(l.bu));
+        let g = i32x4_add(i32x4_mul(u, i32x4_splat(l.gu)), i32x4_mul(v, i32x4_splat(l.gv)));
+        let rv = i32x4_mul(v, i32x4_splat(l.rv));
+        let lo = |a: v128| i32x4_shuffle::<0, 0, 1, 1>(a, a);
+        let hi = |a: v128| i32x4_shuffle::<2, 2, 3, 3>(a, a);
+        let s = [i32x4_add(ylo, lo(bu)), i32x4_add(yhi, hi(bu)), i32x4_sub(ylo, lo(g)), i32x4_sub(yhi, hi(g)), i32x4_add(ylo, lo(rv)), i32x4_add(yhi, hi(rv))];
+        let (near, step, two) = (i32x4_splat(NEAR), i32x4_splat(STEP), i32x4_splat(2 * NEAR));
+        let mut m = i32x4_splat(0);
+        for &x in &s {
+            m = v128_or(m, i32x4_lt(v128_and(i32x4_add(x, near), step), two));
+        }
+        if v128_any_true(m) {
+            return false;
+        }
+        let q = |a: v128, b: v128| i16x8_narrow_i32x4(i32x4_shr(a, FRAC), i32x4_shr(b, FRAC));
+        let bg = u8x16_narrow_i16x8(q(s[0], s[1]), q(s[2], s[3]));
+        let ra = u8x16_narrow_i16x8(q(s[4], s[5]), i16x8_splat(255));
+        v128_store(o as *mut v128, u8x16_shuffle::<0, 8, 16, 24, 1, 9, 17, 25, 2, 10, 18, 26, 3, 11, 19, 27>(bg, ra));
+        v128_store(o.add(16) as *mut v128, u8x16_shuffle::<4, 12, 20, 28, 5, 13, 21, 29, 6, 14, 22, 30, 7, 15, 23, 31>(bg, ra));
+        true
+    }
+
+    pub(super) unsafe fn to_rgb(buf: *const u8, c: &[u32; 7], dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+        let (t, l) = (terms(out), linear(out));
+        let p = |i: usize| buf.add(c[1 + 2 * i] as usize);
+        let st = |i: usize| c[2 + 2 * i] as usize;
+        let nv12 = c[0] == NV12;
+        let w = w as usize;
+        for y in 0..h as usize {
+            let row = dst.add(y * pitch);
+            let yr = p(0).add(y * st(0));
+            let (ur, vr) = if nv12 {
+                let uv = p(1).add((y / 2) * st(1));
+                (uv, uv.add(1))
+            } else {
+                (p(1).add((y / 2) * st(1)), p(2).add((y / 2) * st(2)))
+            };
+            let one = |x: usize| {
+                let k = if nv12 { (x / 2) * 2 } else { x / 2 };
+                let [b, g, r] = px_ref(t, out, *yr.add(x), *ur.add(k), *vr.add(k));
+                let o = row.add(x * 4);
+                *o = b;
+                *o.add(1) = g;
+                *o.add(2) = r;
+                *o.add(3) = 255;
+            };
+            let mut x = 0;
+            while x + 8 <= w {
+                if !rgb8(&l, yr, ur, vr, nv12, x, row.add(x * 4)) {
+                    (x..x + 8).for_each(one);
+                }
+                x += 8;
+            }
+            (x..w).for_each(one);
+        }
+    }
+
+    /// convert_any's Ycc of an I420 / NV12 color track, with an I420 / NV12 alpha track's Y
+    /// plane (`a`) or none (255).
+    pub(super) unsafe fn to_ycc(buf: *const u8, c: &[u32; 7], a: Option<&[u32; 7]>, dst: *mut u8, pitch: usize, w: u32, h: u32) {
+        let p = |l: &[u32; 7], i: usize| buf.add(l[1 + 2 * i] as usize);
+        let st = |l: &[u32; 7], i: usize| l[2 + 2 * i] as usize;
+        let nv12 = c[0] == NV12;
+        let w = w as usize;
+        for y in 0..h as usize {
+            let row = dst.add(y * pitch);
+            let yr = p(c, 0).add(y * st(c, 0));
+            let (ur, vr) = if nv12 {
+                let uv = p(c, 1).add((y / 2) * st(c, 1));
+                (uv, uv.add(1))
+            } else {
+                (p(c, 1).add((y / 2) * st(c, 1)), p(c, 2).add((y / 2) * st(c, 2)))
+            };
+            let ar = a.map(|l| p(l, 0).add(y * st(l, 0)));
+            let mut x = 0;
+            while x + 16 <= w {
+                let yv = v128_load(yr.add(x) as *const v128);
+                let (u, v) = if nv12 {
+                    let uv = v128_load(ur.add(x) as *const v128);
+                    (u8x16_shuffle::<0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14>(uv, uv), u8x16_shuffle::<1, 1, 3, 3, 5, 5, 7, 7, 9, 9, 11, 11, 13, 13, 15, 15>(uv, uv))
+                } else {
+                    let (u, v) = (v128_load64_zero(ur.add(x / 2) as *const u64), v128_load64_zero(vr.add(x / 2) as *const u64));
+                    (u8x16_shuffle::<0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7>(u, u), u8x16_shuffle::<0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7>(v, v))
+                };
+                let al = match ar {
+                    Some(r) => v128_load(r.add(x) as *const v128),
+                    None => u8x16_splat(255),
+                };
+                // (Y Cb interleaved, Cr A interleaved, then the two)
+                let yu_lo = u8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(yv, u);
+                let yu_hi = u8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(yv, u);
+                let va_lo = u8x16_shuffle::<0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23>(v, al);
+                let va_hi = u8x16_shuffle::<8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31>(v, al);
+                let o = row.add(x * 4) as *mut v128;
+                v128_store(o, i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(yu_lo, va_lo));
+                v128_store(o.add(1), i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(yu_lo, va_lo));
+                v128_store(o.add(2), i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(yu_hi, va_hi));
+                v128_store(o.add(3), i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(yu_hi, va_hi));
+                x += 16;
+            }
+            for x in x..w {
+                let k = if nv12 { (x / 2) * 2 } else { x / 2 };
+                let o = row.add(x * 4);
+                *o = *yr.add(x);
+                *o.add(1) = *ur.add(k);
+                *o.add(2) = *vr.add(k);
+                *o.add(3) = ar.map_or(255, |r| *r.add(x));
+            }
         }
     }
 }
@@ -1117,6 +1335,44 @@ mod tests {
         }
         eprintln!("{off} of {} bytes off by 1", 3 << 24);
         assert!(off < 3 << 14, "{off}");
+    }
+
+    /// Every Y, Cb, Cr, both RGB outputs: the SIMD lanes' one-product sums (linear_sums) are
+    /// within LINEAR_ERR of px_ref's exact sums, so outside NEAR of a step they floor to
+    /// px_ref's bytes; NEAR ones are left to px_ref. (Proves the scheme simd::rgb8 runs; the
+    /// lanes themselves against to_rgb_scalar: crates/decbench's tests, in wasm.)
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn linear_as_px_ref() {
+        for out in [Out::Rgb601, Out::Rgb] {
+            let (t, l) = (terms(out), linear(out));
+            let (mut near, mut worst) = (0u64, 0i64);
+            for y in 0..=255u8 {
+                for u in 0..=255u8 {
+                    for v in 0..=255u8 {
+                        let (s, n) = linear_sums(&l, y, u, v);
+                        let want = px_ref(t, out, y, u, v);
+                        if out == Out::Rgb601 {
+                            let (yy, u, v) = (t.y[y as usize] as i64, u as usize, v as usize);
+                            let half = 1i64 << (FRAC - 1);
+                            let exact = [yy + t.bu[u] as i64 + half, yy - t.gu[u] as i64 - t.gv[v] as i64 + half, yy + t.rv[v] as i64 + half];
+                            for (a, b) in s.iter().zip(exact) {
+                                worst = worst.max((*a as i64 - b).abs());
+                            }
+                        }
+                        if n {
+                            near += 1;
+                            continue;
+                        }
+                        let got = s.map(|x| (x >> FRAC).clamp(0, 255) as u8);
+                        assert_eq!(got, want, "{out:?} {y} {u} {v}");
+                    }
+                }
+            }
+            eprintln!("{out:?}: {near} of 16M pixels NEAR a step, worst sum {worst} off");
+            assert!(worst <= LINEAR_ERR as i64, "{worst}");
+            assert!(near < 1 << 19, "{near}");
+        }
     }
 
     /// (cargo test -p kura --release -- --ignored --nocapture rgb_speed)

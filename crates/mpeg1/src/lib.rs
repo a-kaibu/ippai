@@ -11,6 +11,9 @@ pub mod bits;
 #[doc(hidden)]
 pub mod check;
 pub mod ps;
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[doc(hidden)]
+pub mod simd;
 pub mod tables;
 pub mod video;
 

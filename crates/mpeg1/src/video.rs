@@ -583,15 +583,7 @@ impl Video {
             }
             s[0] = 0;
         } else {
-            idct(s);
-            for y in 0..8 {
-                for x in 0..8 {
-                    let v = s[y * 8 + x];
-                    d[di + x] = if self.mb_intra { clamp(v) } else { clamp(d[di + x] as i32 + v) };
-                }
-                di += dw;
-            }
-            *s = [0; 64];
+            idct_put(s, d, di, dw, self.mb_intra);
         }
     }
 }
@@ -648,10 +640,20 @@ fn process(s: &[u8], d: &mut [u8], row: i32, col: i32, mb_width: i32, mb_height:
         return;
     }
     let (dw, bs) = (dw as usize, bs as usize);
-    let (mut si, mut di) = (si as usize, di as usize);
+    let (si, di) = (si as usize, di as usize);
     if si + (bs - 1 + odd_v as usize) * dw + bs + odd_h as usize > s.len() || di + (bs - 1) * dw + bs > d.len() {
         return;
     }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return unsafe { crate::simd::process_rows(s, d, si, di, dw, bs, odd_h, odd_v, interp) };
+    #[allow(unreachable_code)]
+    process_rows(s, d, si, di, dw, bs, odd_h, odd_v, interp)
+}
+
+/// process's loop (the scalar code crate::simd's is held to).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn process_rows(s: &[u8], d: &mut [u8], mut si: usize, mut di: usize, dw: usize, bs: usize, odd_h: bool, odd_v: bool, interp: bool) {
     for _ in 0..bs {
         for x in 0..bs {
             let p = match (odd_h, odd_v) {
@@ -733,29 +735,79 @@ pub fn idct(b: &mut [i32; 64]) {
     }
 }
 
+/// [`idct`] of `s`, then added to (intra: written to) `d` at `di`, rows `dw` apart, clamped
+/// to bytes; `s` is left zero. `d` holds the 8 rows.
+#[doc(hidden)]
+pub fn idct_put(s: &mut [i32; 64], d: &mut [u8], di: usize, dw: usize, intra: bool) {
+    assert!(di + 7 * dw + 8 <= d.len());
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return unsafe { crate::simd::idct_put(s, d, di, dw, intra) };
+    #[allow(unreachable_code)]
+    idct_put_scalar(s, d, di, dw, intra)
+}
+
+/// idct_put's scalar code (crate::simd's is held to it).
+#[doc(hidden)]
+pub fn idct_put_scalar(s: &mut [i32; 64], d: &mut [u8], mut di: usize, dw: usize, intra: bool) {
+    idct(s);
+    for y in 0..8 {
+        for x in 0..8 {
+            let v = s[y * 8 + x];
+            d[di + x] = if intra { clamp(v) } else { clamp(d[di + x] as i32 + v) };
+        }
+        di += dw;
+    }
+    *s = [0; 64];
+}
+
 /// A picture as 32-bit BGRX pixels (DirectShow's RGB32), BT.601 as pl_mpeg converts:
 /// `stride` bytes a row, rows from the bottom when `bottom_up` (a DIB with a positive height).
 pub fn to_bgrx(f: &Frame, out: &mut [u8], stride: usize, bottom_up: bool) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        let (w, h) = (f.width & !1, f.height & !1);
+        assert!(f.y.len() >= h * f.y_stride && f.cb.len() >= h / 2 * f.c_stride && f.cr.len() >= h / 2 * f.c_stride && f.c_stride >= w / 2 && f.y_stride >= w);
+        for row in 0..h / 2 {
+            let mut col = 0;
+            while col + 8 <= w / 2 && unsafe { crate::simd::bgrx16(f, out, stride, bottom_up, h, row, col) } {
+                col += 8;
+            }
+            bgrx_pairs(f, out, stride, bottom_up, row, col);
+        }
+        return;
+    }
+    #[allow(unreachable_code)]
+    to_bgrx_scalar(f, out, stride, bottom_up)
+}
+
+/// to_bgrx's scalar code (crate::simd's is held to it).
+#[doc(hidden)]
+pub fn to_bgrx_scalar(f: &Frame, out: &mut [u8], stride: usize, bottom_up: bool) {
+    for row in 0..(f.height & !1) / 2 {
+        bgrx_pairs(f, out, stride, bottom_up, row, 0);
+    }
+}
+
+/// to_bgrx of rows 2 row, 2 row + 1 from chroma column `from` on.
+fn bgrx_pairs(f: &Frame, out: &mut [u8], stride: usize, bottom_up: bool, row: usize, from: usize) {
     let (w, h) = (f.width & !1, f.height & !1);
-    for row in 0..h / 2 {
-        for col in 0..w / 2 {
-            let ci = row * f.c_stride + col;
-            let cr = f.cr[ci] as i32 - 128;
-            let cb = f.cb[ci] as i32 - 128;
-            let r = (cr * 104597) >> 16;
-            let g = (cb * 25674 + cr * 53278) >> 16;
-            let b = (cb * 132201) >> 16;
-            for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                let (x, y) = (col * 2 + dx, row * 2 + dy);
-                let yv = ((f.y[y * f.y_stride + x] as i32 - 16) * 76309) >> 16;
-                let oy = if bottom_up { h - 1 - y } else { y };
-                let o = oy * stride + x * 4;
-                if o + 4 <= out.len() {
-                    out[o] = clamp(yv + b);
-                    out[o + 1] = clamp(yv - g);
-                    out[o + 2] = clamp(yv + r);
-                    out[o + 3] = 0xff;
-                }
+    for col in from..w / 2 {
+        let ci = row * f.c_stride + col;
+        let cr = f.cr[ci] as i32 - 128;
+        let cb = f.cb[ci] as i32 - 128;
+        let r = (cr * 104597) >> 16;
+        let g = (cb * 25674 + cr * 53278) >> 16;
+        let b = (cb * 132201) >> 16;
+        for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+            let (x, y) = (col * 2 + dx, row * 2 + dy);
+            let yv = ((f.y[y * f.y_stride + x] as i32 - 16) * 76309) >> 16;
+            let oy = if bottom_up { h - 1 - y } else { y };
+            let o = oy * stride + x * 4;
+            if o + 4 <= out.len() {
+                out[o] = clamp(yv + b);
+                out[o + 1] = clamp(yv - g);
+                out[o + 2] = clamp(yv + r);
+                out[o + 3] = 0xff;
             }
         }
     }
