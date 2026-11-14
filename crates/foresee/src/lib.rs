@@ -18,11 +18,13 @@
 
 
 /// A member of an archive: its name (as the index has it) and its segments, each
-/// (offset in the archive, bytes there, zlib'd).
+/// (offset in the archive, bytes there, zlib'd); and its hash (an .xp3's "adlr": what the
+/// simple encryptions key on, [`Scheme`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
     pub name: String,
     pub segments: Vec<(u64, u64, bool)>,
+    pub hash: u32,
 }
 
 const XP3_MAGIC: &[u8; 11] = b"XP3\r\n \n\x1a\x8b\x67\x01";
@@ -81,7 +83,7 @@ pub fn xp3_index(index: &[u8]) -> Vec<Member> {
         if tag != b"File" {
             continue;
         }
-        let (mut name, mut segments) = (None, Vec::new());
+        let (mut name, mut segments, mut hash) = (None, Vec::new(), 0);
         for (t, b) in xp3_chunks(body) {
             match t {
                 b"info" if b.len() >= 22 => {
@@ -91,6 +93,7 @@ pub fn xp3_index(index: &[u8]) -> Vec<Member> {
                         name = Some(String::from_utf16_lossy(&units));
                     }
                 }
+                b"adlr" if b.len() >= 4 => hash = u32::from_le_bytes(b[..4].try_into().unwrap()),
                 b"segm" => {
                     for s in b.chunks_exact(28) {
                         let f = u32::from_le_bytes(s[0..4].try_into().unwrap());
@@ -103,7 +106,7 @@ pub fn xp3_index(index: &[u8]) -> Vec<Member> {
             }
         }
         if let Some(name) = name.filter(|_| !segments.is_empty()) {
-            out.push(Member { name, segments });
+            out.push(Member { name, segments, hash });
         }
     }
     out
@@ -294,7 +297,7 @@ pub fn bgi_index(head: &[u8]) -> Vec<Member> {
         let off = u32::from_le_bytes(e[name_len..name_len + 4].try_into().unwrap()) as u64;
         let size = u32::from_le_bytes(e[name_len + 4..name_len + 8].try_into().unwrap()) as u64;
         if !name.is_empty() {
-            out.push(Member { name, segments: vec![(base as u64 + off, size, false)] });
+            out.push(Member { name, segments: vec![(base as u64 + off, size, false)], hash: 0 });
         }
     }
     out
@@ -365,6 +368,11 @@ pub fn xp3_chunk(tag: &[u8], body: &[u8]) -> Vec<u8> {
 /// An .xp3 index entry of `name` with segments (start, packed, zlib), as KiriKiri writes them
 /// (for tests here and in kura and masu).
 pub fn xp3_entry(name: &str, segs: &[(u64, u64, bool)]) -> Vec<u8> {
+    xp3_entry_hashed(name, segs, 0)
+}
+
+/// [`xp3_entry`] with its "adlr" hash (tests).
+pub fn xp3_entry_hashed(name: &str, segs: &[(u64, u64, bool)], hash: u32) -> Vec<u8> {
     let units: Vec<u16> = name.encode_utf16().collect();
     let total: u64 = segs.iter().map(|s| s.1).sum();
     let mut info = 0u32.to_le_bytes().to_vec();
@@ -381,19 +389,28 @@ pub fn xp3_entry(name: &str, segs: &[(u64, u64, bool)]) -> Vec<u8> {
     }
     let mut body = xp3_chunk(b"info", &info);
     body.extend(xp3_chunk(b"segm", &segm));
-    body.extend(xp3_chunk(b"adlr", &[0; 4]));
+    body.extend(xp3_chunk(b"adlr", &hash.to_le_bytes()));
     xp3_chunk(b"File", &body)
 }
 
 /// A whole .xp3 of `members` (name, bytes, zlib'd), its index zlib'd at the end (tests).
 pub fn xp3_archive(members: &[(&str, &[u8], bool)]) -> Vec<u8> {
+    xp3_archive_encrypted(members, Scheme::None)
+}
+
+/// [`xp3_archive`] with its members encrypted by `scheme` (each hashed by its bytes' adler32,
+/// as KiriKiri's are), before they are zlib'd (tests).
+pub fn xp3_archive_encrypted(members: &[(&str, &[u8], bool)], scheme: Scheme) -> Vec<u8> {
     let mut arc = XP3_MAGIC.to_vec();
     arc.extend(0u64.to_le_bytes());
     arc.resize(64, 0);
     let mut idx = Vec::new();
     for (name, body, z) in members {
-        let data = if *z { miniz_oxide::deflate::compress_to_vec_zlib(body, 6) } else { body.to_vec() };
-        idx.extend(xp3_entry(name, &[(arc.len() as u64, data.len() as u64, *z)]));
+        let hash = adler32(body);
+        let mut plain = body.to_vec();
+        encrypt(scheme, hash, 0, &mut plain);
+        let data = if *z { miniz_oxide::deflate::compress_to_vec_zlib(&plain, 6) } else { plain };
+        idx.extend(xp3_entry_hashed(name, &[(arc.len() as u64, data.len() as u64, *z)], hash));
         arc.extend_from_slice(&data);
         arc.resize(arc.len().div_ceil(64) * 64, 0);
     }
@@ -405,6 +422,164 @@ pub fn xp3_archive(members: &[(&str, &[u8], bool)]) -> Vec<u8> {
     arc.extend((idx.len() as u64).to_le_bytes());
     arc.extend(&zi);
     arc
+}
+
+fn adler32(b: &[u8]) -> u32 {
+    let (mut a, mut s) = (1u32, 0u32);
+    for &x in b {
+        a = (a + x as u32) % 65521;
+        s = (s + a) % 65521;
+    }
+    (s << 16) | a
+}
+
+/// The simple encryptions of the TPM plugins that come with many KiriKiri titles, of a member's
+/// bytes as unpacked (after zlib), by their offset in it and the member's hash (vnrun's krkrz
+/// patch 0002 tells them apart the same way: [`detect_scheme`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Scheme {
+    #[default]
+    None,
+    /// Every byte XOR a key.
+    Xor(u8),
+    /// XOR the hash's low byte and a key (xp3dec.tpm, moteyaba.tpm, ...).
+    XorHash(u8),
+    /// XOR bits 12..19 of the hash, after the first 5 bytes (sys.tpm).
+    HashShr12,
+    /// Odd offsets XOR the offset, even ones the hash (an xp3dec.tpm of 2017).
+    Alternate,
+    /// Turned right by the number of bits set (an xp3dec.tpm of 2020: decrypted turning left).
+    Rotate,
+}
+
+/// `p`, the bytes at `offset` of a member hashed `hash`, decrypted from `s`.
+pub fn decrypt(s: Scheme, hash: u32, offset: u64, p: &mut [u8]) {
+    for (i, b) in p.iter_mut().enumerate() {
+        let at = offset + i as u64;
+        match s {
+            Scheme::None => return,
+            Scheme::Xor(k) => *b ^= k,
+            Scheme::XorHash(k) => *b ^= k ^ hash as u8,
+            Scheme::HashShr12 => {
+                if at > 4 {
+                    *b ^= (hash >> 12) as u8
+                }
+            }
+            Scheme::Alternate => *b ^= if at & 1 == 1 { at as u8 } else { hash as u8 },
+            Scheme::Rotate => *b = b.rotate_left(b.count_ones() & 7),
+        }
+    }
+}
+
+/// `p` encrypted by `s` (the other way from [`decrypt`]; tests).
+pub fn encrypt(s: Scheme, hash: u32, offset: u64, p: &mut [u8]) {
+    match s {
+        Scheme::Rotate => p.iter_mut().for_each(|b| *b = b.rotate_right(b.count_ones() & 7)),
+        _ => decrypt(s, hash, offset, p),
+    }
+}
+
+/// The bytes each kind of file starts with (`None`: any byte there).
+const MAGICS: &[(&str, &[Option<u8>])] = {
+    const fn b(c: u8) -> Option<u8> {
+        Some(c)
+    }
+    const N: Option<u8> = None;
+    &[
+        ("png", &[b(0x89), b(b'P'), b(b'N'), b(b'G'), b(b'\r'), b(b'\n'), b(0x1a), b(b'\n'), b(0), b(0), b(0), b(0x0d), b(b'I'), b(b'H'), b(b'D'), b(b'R')]),
+        ("tlg", &[b(b'T'), b(b'L'), b(b'G'), N, b(b'.'), b(b'0'), b(0), N, N, N, b(0x1a)]),
+        ("ogg", &[b(b'O'), b(b'g'), b(b'g'), b(b'S'), b(0), b(2), b(0), b(0), b(0), b(0), b(0), b(0), b(0), b(0)]),
+        ("jpg", &[b(0xff), b(0xd8), b(0xff), b(0xe0), N, N, b(b'J'), b(b'F'), b(b'I'), b(b'F'), b(0)]),
+        ("bmp", &[b(b'B'), b(b'M')]),
+        ("wav", &[b(b'R'), b(b'I'), b(b'F'), b(b'F'), N, N, N, N, b(b'W'), b(b'A'), b(b'V'), b(b'E'), b(b'f'), b(b'm'), b(b't'), b(b' ')]),
+    ]
+};
+
+/// Whether a member named `name` helps [`detect_scheme`]: by its first bytes (an image's or a
+/// sound's), or as text (a script).
+pub fn scheme_sample(name: &str) -> bool {
+    let e = name.rsplit_once('.').map_or(String::new(), |x| x.1.to_ascii_lowercase());
+    MAGICS.iter().any(|m| m.0 == e) || matches!(e.as_str(), "tjs" | "ks" | "txt" | "csv")
+}
+
+/// Members [`detect_scheme`] looks at, at most, of each sort (known first bytes, text).
+pub const SAMPLES_MAGIC: usize = 16;
+pub const SAMPLES_TEXT: usize = 8;
+
+/// How an archive's members are encrypted, from some of them (`samples`: name, hash, their
+/// first bytes unpacked, 256 or so): the scheme under which most images and sounds start as
+/// they do, or failing those, under which scripts read as text; votes over all, a plain key
+/// winning a tie. `Scheme::None` when nothing says otherwise.
+pub fn detect_scheme(samples: &[(&str, u32, &[u8])]) -> Scheme {
+    let fixed = [Scheme::HashShr12, Scheme::Alternate, Scheme::Rotate];
+    let mut votes: std::collections::HashMap<Scheme, u32> = Default::default();
+    let mut order: Vec<Scheme> = Vec::new();
+    let mut vote = |votes: &mut std::collections::HashMap<Scheme, u32>, s: Scheme, n: u32| {
+        if !order.contains(&s) {
+            order.push(s);
+        }
+        *votes.entry(s).or_default() += n;
+    };
+    for &(name, hash, buf) in samples {
+        if buf.len() < 16 {
+            continue;
+        }
+        let e = name.rsplit_once('.').map_or(String::new(), |x| x.1.to_ascii_lowercase());
+        if let Some((_, magic)) = MAGICS.iter().find(|m| m.0 == e) {
+            let key = buf[0] ^ magic[0].unwrap();
+            let tries = [Scheme::Xor(key), Scheme::XorHash(key ^ hash as u8)].into_iter().chain(fixed);
+            for t in tries {
+                let mut d = buf[..magic.len()].to_vec();
+                decrypt(t, hash, 0, &mut d);
+                if magic.iter().zip(&d).all(|(m, x)| m.is_none_or(|m| m == *x)) {
+                    vote(&mut votes, t, 4);
+                }
+            }
+        } else if scheme_sample(name) {
+            // (bytes of text; then, as many keys keep ASCII ASCII, those of a script's own
+            // syntax and line breaks: what a wrong key turns into other letters)
+            let textual = |s: Scheme| {
+                let mut d = buf.to_vec();
+                decrypt(s, hash, 0, &mut d);
+                let text = d.iter().filter(|&&c| c == 0 || c == b'\t' || c == b'\n' || c == b'\r' || (0x20..0x7f).contains(&c)).count();
+                let syntax = d.iter().filter(|c| b" \r\n\t[]@=\";*/(){}.,".contains(c) || **c == 0).count();
+                (text, syntax)
+            };
+            let (mut best, mut bestn) = (Scheme::Xor(0), (0, 0));
+            for k in 0..=255u8 {
+                let n = textual(Scheme::Xor(k));
+                if n > bestn {
+                    (best, bestn) = (Scheme::Xor(k), n);
+                }
+            }
+            for f in fixed {
+                let n = textual(f);
+                if n > bestn {
+                    (best, bestn) = (f, n);
+                }
+            }
+            if bestn.0 * 10 < buf.len() * 9 {
+                continue;
+            }
+            vote(&mut votes, best, 1);
+            if let Scheme::Xor(k) = best {
+                vote(&mut votes, Scheme::XorHash(k ^ hash as u8), 1);
+            }
+        }
+    }
+    // (the most votes; on a tie the one voted first: a plain key before its hash's)
+    let mut out = Scheme::None;
+    let mut most = 0;
+    for s in order {
+        if votes[&s] > most {
+            (out, most) = (s, votes[&s]);
+        }
+    }
+    if out == Scheme::Xor(0) {
+        Scheme::None
+    } else {
+        out
+    }
 }
 
 /// The names a script's bytes (`bytes`, as the file or member holds them unpacked) mention.
@@ -508,8 +683,8 @@ mod tests {
         assert_eq!(
             xp3_index(&idx),
             vec![
-                Member { name: "scenario/first.ks".into(), segments: vec![(0x100, 50, true)] },
-                Member { name: "bgimage/bg01.tlg".into(), segments: vec![(0x200, 10, false), (0x300, 5, false)] },
+                Member { name: "scenario/first.ks".into(), segments: vec![(0x100, 50, true)], hash: 0 },
+                Member { name: "bgimage/bg01.tlg".into(), segments: vec![(0x200, 10, false), (0x300, 5, false)], hash: 0 },
             ]
         );
         // the header and the index's place, plain and zlib'd
@@ -624,6 +799,73 @@ mod tests {
         assert!(following(&t, &p, "nothing", 3).is_empty());
     }
 
+    /// Each simple encryption told apart from an archive's members (images, sounds, scripts),
+    /// and its scripts read back; a plain archive is no encryption.
+    #[test]
+    fn xp3_encryptions_found_and_undone() {
+        let png = [&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R'][..], &[7; 40]].concat();
+        let ogg = [&b"OggS\0\x02\0\0\0\0\0\0\0\0"[..], &[3; 40]].concat();
+        let ks = b"[bg storage=\"bg01\"]\r\n@voice storage=v_0001\r\n[jump storage=\"second.ks\"]\r\n".to_vec();
+        let schemes = [Scheme::None, Scheme::Xor(0x5a), Scheme::XorHash(0x21), Scheme::XorHash(0), Scheme::HashShr12, Scheme::Alternate, Scheme::Rotate];
+        for s in schemes {
+            for with_magic in [true, false] {
+                let mut ms: Vec<(&str, &[u8], bool)> = vec![("scenario/first.ks", &ks, true)];
+                let (p1, p2, p3) = ([png.clone(), vec![1]].concat(), [png.clone(), vec![2, 9]].concat(), [ogg.clone(), vec![5]].concat());
+                if with_magic {
+                    ms.extend([("bg01.png", &p1[..], false), ("bg02.png", &p2[..], false), ("v_0001.ogg", &p3[..], true)]);
+                }
+                let arc = xp3_archive_encrypted(&ms, s);
+                let at = xp3_index_at(&arc).unwrap() as usize;
+                let members = xp3_index(&xp3_index_bytes(&arc[at..]).unwrap());
+                let firsts: Vec<(String, u32, Vec<u8>)> = members
+                    .iter()
+                    .filter(|m| scheme_sample(&m.name))
+                    .map(|m| {
+                        let s = m.segments[0];
+                        let b = member_bytes(&[(&arc[s.0 as usize..(s.0 + s.1) as usize], s.2)]).unwrap();
+                        (m.name.clone(), m.hash, b[..b.len().min(256)].to_vec())
+                    })
+                    .collect();
+                let samples: Vec<(&str, u32, &[u8])> = firsts.iter().map(|x| (x.0.as_str(), x.1, &x.2[..])).collect();
+                let found = detect_scheme(&samples);
+                // (from a script alone: some XOR of each byte that reads as text; the hash's
+                // and a key's are one there)
+                let want = match (s, with_magic) {
+                    (Scheme::XorHash(k), false) => Scheme::Xor(k ^ adler32(&ks) as u8),
+                    (Scheme::XorHash(0), true) => Scheme::XorHash(0),
+                    _ => s,
+                };
+                let want = if want == Scheme::Xor(0) { Scheme::None } else { want };
+                assert_eq!(found, want, "{s:?}, images and sounds: {with_magic}");
+                let m = &members[0];
+                let mut b = member_bytes(&[(&arc[m.segments[0].0 as usize..(m.segments[0].0 + m.segments[0].1) as usize], true)]).unwrap();
+                decrypt(found, m.hash, 0, &mut b);
+                assert_eq!(names_in(&b), names_in(&ks), "{s:?}");
+            }
+        }
+        assert_eq!(detect_scheme(&[]), Scheme::None);
+        // (UTF-16 scripts alone, as KiriKiri Z's are)
+        let wide: Vec<u8> = [&[0xff, 0xfe][..], &"[bg storage=\"bg01\"]\r\n[jump storage=\"s2.ks\"]\r\n".encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>()].concat();
+        for s in [Scheme::Xor(0x13), Scheme::HashShr12, Scheme::Rotate] {
+            let mut a = wide.clone();
+            encrypt(s, 0x4321, 0, &mut a);
+            let mut b = wide.clone();
+            encrypt(s, 0x8765, 0, &mut b);
+            assert_eq!(detect_scheme(&[("a.ks", 0x4321, &a), ("b.tjs", 0x8765, &b)]), s);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn encryptions_undo(bytes in proptest::collection::vec(any::<u8>(), 0..300), hash: u32, off in 0u64..1000, k: u8, which in 0usize..6) {
+            let s = [Scheme::Xor(k), Scheme::XorHash(k), Scheme::HashShr12, Scheme::Alternate, Scheme::Rotate, Scheme::None][which];
+            let mut b = bytes.clone();
+            encrypt(s, hash, off, &mut b);
+            decrypt(s, hash, off, &mut b);
+            prop_assert_eq!(b, bytes);
+        }
+    }
+
     #[test]
     fn bgi_archives_and_scripts() {
         for (magic, name_len, entry) in [(&b"PackFile    "[..], 16usize, 32usize), (b"BURIKO ARC20", 96, 128)] {
@@ -639,7 +881,7 @@ mod tests {
             assert_eq!(bgi_index_len(&a), Some(a.len() as u64));
             let base = a.len() as u64;
             let ms = bgi_index(&a);
-            assert_eq!(ms, vec![Member { name: "01_start".into(), segments: vec![(base, 40, false)] }, Member { name: "bg01a".into(), segments: vec![(base + 40, 7, false)] }]);
+            assert_eq!(ms, vec![Member { name: "01_start".into(), segments: vec![(base, 40, false)], hash: 0 }, Member { name: "bg01a".into(), segments: vec![(base + 40, 7, false)], hash: 0 }]);
             // (a truncated index: what it has)
             assert_eq!(bgi_index(&a[..a.len() - 1]).len(), 1);
         }

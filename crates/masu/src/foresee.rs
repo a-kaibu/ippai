@@ -85,7 +85,7 @@ pub async fn build(trees: &Trees, tree: &str) -> String {
 
 /// An archive's script members' lines (`members` in the archive's order; `script`: whether one
 /// is a script, by its name or its first bytes).
-async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<foresee::Member>, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>, by_bytes: Option<fn(&[u8]) -> bool>) -> String {
+async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<foresee::Member>, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>, by_bytes: Option<fn(&[u8]) -> bool>, scheme: foresee::Scheme) -> String {
     let mut out = String::new();
     // (in the archive's order: the chunks they lie in read once)
     members.sort_by_key(|m| m.segments[0].0);
@@ -113,7 +113,8 @@ async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<f
             continue;
         }
         let refs: Vec<(&[u8], bool)> = parts.iter().map(|(b, z)| (&b[..], *z)).collect();
-        if let Some(b) = foresee::member_bytes(&refs) {
+        if let Some(mut b) = foresee::member_bytes(&refs) {
+            foresee::decrypt(scheme, m.hash, 0, &mut b);
             let names = foresee::names_in(&b);
             if !names.is_empty() {
                 out += &foresee::table_line(&m.name, &names);
@@ -125,12 +126,53 @@ async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<f
 
 async fn xp3(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> String {
     let members = xp3_members(trees, tree, path, cache).await;
-    members_lines(trees, tree, path, members, cache, None).await
+    let scheme = xp3_scheme(trees, tree, path, &members, cache).await;
+    if scheme != foresee::Scheme::None {
+        eprintln!("foresee: {tree}/{path}: encrypted, {scheme:?}");
+    }
+    members_lines(trees, tree, path, members, cache, None, scheme).await
+}
+
+/// How an .xp3's members are encrypted (foresee::detect_scheme), from the first bytes of some
+/// of its images, sounds and scripts (those stored as they are, or small zlib'd ones).
+async fn xp3_scheme(trees: &Trees, tree: &str, path: &str, members: &[foresee::Member], cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> foresee::Scheme {
+    let mut firsts: Vec<(String, u32, Vec<u8>)> = Vec::new();
+    let (mut magic, mut text) = (0, 0);
+    for m in members {
+        if magic >= foresee::SAMPLES_MAGIC && text >= foresee::SAMPLES_TEXT {
+            break;
+        }
+        if !foresee::scheme_sample(&m.name) {
+            continue;
+        }
+        let is_text = foresee::is_script(&m.name);
+        if (is_text && text >= foresee::SAMPLES_TEXT) || (!is_text && magic >= foresee::SAMPLES_MAGIC) {
+            continue;
+        }
+        let s = m.segments[0];
+        let b = if !s.2 {
+            trees.read(tree, path, s.0, 256.min(s.1), cache).await
+        } else if s.1 <= 256 << 10 {
+            trees.read(tree, path, s.0, s.1, cache).await.and_then(|z| foresee::member_bytes(&[(&z, true)]))
+        } else {
+            None
+        };
+        let Some(mut b) = b.filter(|b| b.len() >= 16) else { continue };
+        b.truncate(256);
+        if is_text {
+            text += 1;
+        } else {
+            magic += 1;
+        }
+        firsts.push((m.name.clone(), m.hash, b));
+    }
+    let samples: Vec<(&str, u32, &[u8])> = firsts.iter().map(|x| (x.0.as_str(), x.1, &x.2[..])).collect();
+    foresee::detect_scheme(&samples)
 }
 
 async fn bgi(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> String {
     let members = bgi_members(trees, tree, path, cache).await;
-    members_lines(trees, tree, path, members, cache, Some(foresee::is_bgi_script)).await
+    members_lines(trees, tree, path, members, cache, Some(foresee::is_bgi_script), foresee::Scheme::None).await
 }
 
 /// An .xp3's members, from its index.
@@ -292,6 +334,11 @@ mod tests {
         bgi.extend(script);
         bgi.extend([9; 7]);
         tsv += &line("data01000.arc", &bgi);
+        // (an .xp3 its title's plugin encrypts: XOR the members' hashes)
+        let png = [&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R'][..], &[4; 30]].concat();
+        let png2 = [&png[..], &[5]].concat();
+        let enc = foresee::xp3_archive_encrypted(&[("scenario/third.ks", b"[bg storage=bg03]\r\n[playse storage=se_door]", true), ("bg03.png", &png, false), ("bg04.png", &png2, false)], foresee::Scheme::XorHash(0x3c));
+        tsv += &line("scn.xp3", &enc);
         std::fs::create_dir_all(dir.join("trees")).unwrap();
         std::fs::write(dir.join("trees/g.tsv"), tsv).unwrap();
         dir
@@ -308,10 +355,11 @@ mod tests {
         assert_eq!(t["second.ks"], v(&["voice", "v_0002"]));
         assert_eq!(t["scene.ks"], v(&["image", "storage", "cg01"]));
         assert!(t["02_route"].ends_with(&v(&["bg02a", "ch_03b"])), "{text}");
-        assert_eq!(t.len(), 4, "{text}");
+        assert_eq!(t["third.ks"], v(&["storage", "bg03", "playse", "se_door"]), "{text}");
+        assert_eq!(t.len(), 5, "{text}");
         let ms = members(&trees, "g").await;
         let ls: Vec<&str> = ms.lines().collect();
-        assert_eq!(ls.len(), 5, "{ms}");
+        assert_eq!(ls.len(), 8, "{ms}");
         assert!(ls[0].starts_with("data.xp3\tscenario/first.ks\t") && ls[3].starts_with("data01000.arc\t02_route\t80\t49"), "{ms}");
         let _ = std::fs::remove_dir_all(dir);
     }
