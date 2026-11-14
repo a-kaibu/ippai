@@ -181,6 +181,31 @@ and the whole-archive size stay, since more of them costs far more than it saves
 left are mostly archives' first chunks, pictures, and start-up .dll/.exe/.sig files, which the
 read-order list (the warm) fetches before the game asks.
 
+## Foreseen from what the game reads (crates/kura/src/vfs/predict.rs)
+
+The hints above guess by layout (the next files of a folder, the next chunks of an archive).
+Two more say what comes next whichever way the game goes, on its first run too:
+
+- **What a script names.** When the game reads a script (a loose .ks/.txt/.scn/... file, or a
+  script member of a KiriKiri .xp3: half the store's games), kura reads it as the game does
+  (the .xp3 index names each member and where its bytes lie; zlib'd members unpacked; text
+  plain, UTF-16, or KiriKiri's `FE FE mode FF FE` text encryption, modes 0-2) and takes the
+  names in it (`[bg storage="bg01"]`, `@voice v_0012`, `[jump storage=second.ks]`). Each name
+  that is a store file or an .xp3 member (by name, or without its extension, as KiriKiri names
+  storage) goes to the page as a hint: its chunks, in the order named, 48 MiB at most per
+  script, 8 MiB per file. The gallery's script names the gallery's pictures, a route's its
+  scenes. Scripts a game encrypts its own way (cxdec and the like) read as noise and name
+  nothing; compiled, packed ones (Siglus Scene.pck, BGI) neither (per-engine decoders: later).
+- **What came next before.** ippai serve keeps, beside a game's read-order list, which chunk
+  each chunk led to (`<list>.next`, every branch, the newest 4 per chunk: serve.rs
+  `merge_edges`). At the game's first read of a chunk the network worker queues what followed
+  it, nearest first across branches (fetch-bridge.js `ippaiFollow`, 12 at most).
+
+Each first read of a chunk is counted by where it was then (`ippaiReads`): `device`, `saving`
+(checked, on its way into the cache), `coming` (a fetch ahead on its way), `none` (the game's
+own fetch); with the milliseconds waited. The run log has a line a minute: `game reads, first
+of each chunk: ...`. `coming` + `none` is the real miss rate the 37% above is a floor of.
+
 ## sake's wasm from the bucket (web/src/wasmsource.ts)
 
 sake.wasm is ~23 MB (~5 MB as zstd). From worker2 it came at ~100 KB/s at times (2026-11-14:
@@ -199,3 +224,5 @@ web/src/wasmsource.test.ts, tests/wasmsource-browser.mjs (Chromium, CI).
 ## Still to do
 
 - Run hints_eval again when more games have read-order lists, per engine.
+- Read the play logs' `game reads` lines, per engine; scripts of engines that pack them
+  (Siglus, BGI, CatSystem2) need a decoder each to name what they show.

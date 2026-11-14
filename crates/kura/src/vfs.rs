@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use libc::size_t;
 
 pub mod hints;
+pub mod predict;
 mod shared;
 
 type Ino = u32;
@@ -1251,7 +1252,11 @@ fn hinted(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) 
 
 /// Tells the page what a read of chunk `i` of `ino` says the game reads soon (`hinted`).
 fn hint(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) {
-    let hs = hinted(ino, l, chunks, i, first);
+    send_hint(&hinted(ino, l, chunks, i, first));
+}
+
+/// Tells the page the chunks `hs`, to fetch onto the device (host/fetch-bridge.js ippaiHint).
+fn send_hint(hs: &[Hash]) {
     if hs.is_empty() {
         return;
     }
@@ -1264,6 +1269,223 @@ fn hint(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) {
         eprintln!("vfs: hint {} chunks", names.len());
     }
     unsafe { vnvm_fetch_hint(s.as_ptr() as *const c_char, s.len()) };
+}
+
+// ---------------------------------------------------------------------------------------------
+// predictions: a script the game reads names what it shows and plays next (vfs/predict.rs);
+// those files go to the page to fetch onto the device, as hints do.
+
+/// What a name in a script points at: a store file, or an archive's member (the archive, its
+/// bytes' ranges in it).
+#[derive(Clone)]
+enum Target {
+    File(Ino),
+    Member(Ino, Vec<(u64, u64)>),
+}
+
+#[derive(Default)]
+struct Predict {
+    /// Lower-case names (and names without their extension) -> what they are.
+    names: HashMap<String, Vec<Target>>,
+    /// Whether the store's files are in `names` yet (at the first script read).
+    files: bool,
+    /// Archives looked at: their script members (name, segments), by where they start.
+    archives: HashMap<Ino, Vec<predict::Member>>,
+    /// Scripts looked into: (file, member start; 0 for a loose one).
+    scanned: std::collections::HashSet<(Ino, u64)>,
+}
+static PREDICT: Mutex<Option<Predict>> = Mutex::new(None);
+/// Bytes a script's names fetch ahead at most, and each file or member at most.
+const PREDICT_BYTES: u64 = 48 << 20;
+std::thread_local! {
+    /// In a prediction's own reads (read_at again: no prediction of those).
+    static PREDICTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn add_name(names: &mut HashMap<String, Vec<Target>>, name: &str, t: Target) {
+    let (full, stem) = predict::keys(name.rsplit(['/', '\\']).next().unwrap_or(name));
+    for k in std::iter::once(full).chain(stem) {
+        let v = names.entry(k).or_default();
+        if v.len() < 8 {
+            v.push(t.clone());
+        }
+    }
+}
+
+/// The bytes `off..off + len` of `ino` (a prediction's own read: short at the end).
+fn read_bytes(ino: Ino, off: u64, len: u64) -> Option<Vec<u8>> {
+    let mut b = vec![0u8; len as usize];
+    let n = read_at(ino, &mut b, off).ok()?;
+    b.truncate(n);
+    Some(b)
+}
+
+/// An .xp3's members, from its index (read here, as the game reads it at its start).
+fn xp3_members(ino: Ino) -> Vec<predict::Member> {
+    let Some(head) = read_bytes(ino, 0, 0x28) else { return Vec::new() };
+    let Some(at) = predict::xp3_index_at(&head) else { return Vec::new() };
+    let Some(len) = read_bytes(ino, at, 17).as_deref().and_then(predict::xp3_index_len) else { return Vec::new() };
+    if len > predict::INDEX_MAX as u64 {
+        return Vec::new();
+    }
+    read_bytes(ino, at, len).as_deref().and_then(predict::xp3_index_bytes).map(|i| predict::xp3_index(&i)).unwrap_or_default()
+}
+
+/// After a read of `ino` at `off..off + len` (the game's): a script read the first time is
+/// looked into, and what it names goes to the page as hints.
+fn predict_read(ino: Ino, off: u64, len: u64) {
+    if PREDICTING.with(|p| p.replace(true)) {
+        return;
+    }
+    let hs = predicted(ino, off, len);
+    PREDICTING.with(|p| p.set(false));
+    if trace() && !hs.is_empty() {
+        eprintln!("vfs: a script read names {} chunks", hs.len());
+    }
+    send_hint(&hs);
+}
+
+/// The chunks scripts reached by this read name (`predict_read`), those not on the device, in the
+/// order named, PREDICT_BYTES at most.
+fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
+    // (every read comes here: the name looked at in place, nothing copied for most)
+    let archive = {
+        let g = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(path) = g.as_ref().and_then(|m| m.get(&ino)) else { return Vec::new() };
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let archive = name.len() > 4 && name.as_bytes()[name.len() - 4..].eq_ignore_ascii_case(b".xp3");
+        if !archive && !predict::is_script(name) {
+            return Vec::new();
+        }
+        archive
+    };
+    // the store's files by name, once (the trees do not change)
+    let (files, first) = {
+        let mut g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
+        let p = g.get_or_insert_with(Predict::default);
+        (std::mem::replace(&mut p.files, true), !p.archives.contains_key(&ino))
+    };
+    if !files {
+        let mut names = HashMap::new();
+        with(|fs| {
+            for n in fs.nodes.iter().flatten() {
+                if let Data::Dir(ch) = &n.data {
+                    for (nm, &f) in ch {
+                        if matches!(fs.node(f).map(|x| &x.data), Some(Data::File(Content::Lower { .. }))) {
+                            add_name(&mut names, nm, Target::File(f));
+                        }
+                    }
+                }
+            }
+        });
+        let mut g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
+        let p = g.get_or_insert_with(Predict::default);
+        for (k, v) in names {
+            p.names.entry(k).or_default().extend(v);
+        }
+    }
+    // what to look into: a loose script whole; an archive's script members this read reaches
+    let mut texts: Vec<Vec<u8>> = Vec::new();
+    if archive {
+        if first {
+            let members = xp3_members(ino);
+            let mut g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
+            let p = g.get_or_insert_with(Predict::default);
+            let mut scripts = Vec::new();
+            for m in members {
+                add_name(&mut p.names, &m.name, Target::Member(ino, m.segments.iter().map(|s| (s.0, s.1)).collect()));
+                if predict::is_script(&m.name) {
+                    scripts.push(m);
+                }
+            }
+            scripts.sort_by_key(|m| m.segments[0].0);
+            p.archives.insert(ino, scripts);
+        }
+        let reached: Vec<predict::Member> = {
+            let mut g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
+            let p = g.get_or_insert_with(Predict::default);
+            // (by where they start: those before the read's end, back to one that ends before it)
+            let ms: Vec<predict::Member> = p.archives.get(&ino).map_or(Vec::new(), |ms| {
+                let to = ms.partition_point(|m| m.segments[0].0 < off + len.max(1));
+                ms[..to].iter().rev().take(64).filter(|m| m.segments.iter().any(|s| s.0 < off + len.max(1) && off < s.0 + s.1)).cloned().collect()
+            });
+            ms.into_iter().filter(|m| p.scanned.insert((ino, m.segments[0].0))).collect()
+        };
+        for m in reached {
+            if m.segments.iter().map(|s| s.1).sum::<u64>() > predict::SCRIPT_MAX as u64 {
+                continue;
+            }
+            let parts: Option<Vec<(Vec<u8>, bool)>> = m.segments.iter().map(|s| read_bytes(ino, s.0, s.1).map(|b| (b, s.2))).collect();
+            let Some(parts) = parts else { continue };
+            let refs: Vec<(&[u8], bool)> = parts.iter().map(|(b, z)| (&b[..], *z)).collect();
+            texts.extend(predict::member_bytes(&refs));
+        }
+    } else {
+        let fresh = PREDICT.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Predict::default).scanned.insert((ino, 0));
+        let size = with(|fs| match fs.node(ino).map(|n| &n.data) {
+            Some(Data::File(Content::Lower { size, .. })) => *size,
+            _ => 0,
+        });
+        if fresh && size <= predict::SCRIPT_MAX as u64 {
+            texts.extend(read_bytes(ino, 0, size));
+        }
+    }
+    // what the scripts name -> the chunks of it, in the order named
+    let mut out = Vec::new();
+    let mut bytes = 0u64;
+    let mut seen = std::collections::HashSet::new();
+    for t in texts {
+        let (chars, wide) = predict::text(&t);
+        let names = predict::mentions(&chars, wide);
+        let targets: Vec<Target> = {
+            let g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(p) = g.as_ref() else { break };
+            names.iter().flat_map(|n| {
+                let (full, stem) = predict::keys(n);
+                p.names.get(&full).or_else(|| stem.and_then(|s| p.names.get(&s))).cloned().unwrap_or_default()
+            }).collect()
+        };
+        for t in targets {
+            // (its chunks, and its bytes: nothing past SIBLING_MAX, a voice or a picture)
+            let (hs, n): (Vec<Hash>, u64) = with(|fs| {
+                let lower = |f: Ino| match fs.node(f).map(|n| &n.data) {
+                    Some(Data::File(Content::Lower { size, chunks, starts })) => Some((Layout { size: *size, starts: starts.clone() }, chunks.clone())),
+                    _ => None,
+                };
+                match &t {
+                    Target::File(f) => match lower(*f) {
+                        Some((l, c)) if l.size <= hints::SIBLING_MAX => (c.iter().flatten().copied().collect(), l.size),
+                        _ => (Vec::new(), 0),
+                    },
+                    Target::Member(a, ranges) => {
+                        let n: u64 = ranges.iter().map(|r| r.1).sum();
+                        let Some((l, c)) = lower(*a).filter(|_| n <= hints::SIBLING_MAX) else { return (Vec::new(), 0) };
+                        let mut v = Vec::new();
+                        for &(s, n) in ranges {
+                            if n == 0 || s >= l.size {
+                                continue;
+                            }
+                            for i in l.index(s)..=l.index((s + n - 1).min(l.size - 1)) {
+                                v.extend(c.get(i).copied().flatten());
+                            }
+                        }
+                        (v, n)
+                    }
+                }
+            });
+            if hs.is_empty() {
+                continue;
+            }
+            if bytes + n > PREDICT_BYTES {
+                break;
+            }
+            bytes += n;
+            out.extend(hs.into_iter().filter(|h| seen.insert(*h)));
+        }
+    }
+    let g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    out.retain(|h| g.as_ref().is_none_or(|c| !c.contains(&(*h, 0))));
+    out
 }
 
 /// Where each file's last read ended (a read that starts there reads on: SEQ_AHEAD blocks
@@ -1341,6 +1563,8 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
         }
         at += n;
     }
+    // (a script: what it names, fetched ahead)
+    predict_read(ino, off, end - off);
     Ok((end - off) as usize)
 }
 
@@ -2240,6 +2464,112 @@ mod tests {
         assert!(read("/data.xp3", 48 * 7).is_empty());
         // (a movie: nothing)
         assert!(read("/movie/op.mpg", 0).is_empty());
+    }
+
+    /// A script the game reads names what comes next: a KiriKiri scenario inside an .xp3 (zlib'd,
+    /// UTF-16) names a picture in another member, a voice loose in a folder and the next
+    /// scenario, and those are foreseen, not what it does not name; a loose script the same; a
+    /// script looked into once.
+    #[test]
+    fn scripts_say_what_comes_next() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let z = |b: &[u8]| miniz_oxide::deflate::compress_to_vec_zlib(b, 6);
+        let utf16 = |s: &str| [&[0xff, 0xfe][..], &s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>()].concat();
+        // the archive: header, members, index (zlib'd) at the end
+        let first = z(&utf16("*start\r\n[bg storage=\"bg01\"]\r\n@voice storage=v002\r\n「やあ」[jump storage=\"second.ks\"]"));
+        let second = b"[bg storage=bg02]".to_vec();
+        let (bg01, bg02) = (vec![1u8; 100], vec![2u8; 100]);
+        let mut arc = b"XP3\r\n \n\x1a\x8b\x67\x01".to_vec();
+        arc.extend(0u64.to_le_bytes());
+        arc.resize(64, 0);
+        let mut idx = Vec::new();
+        let mut put = |arc: &mut Vec<u8>, name: &str, body: &[u8], zl: bool| {
+            idx.extend(predict::tests::file_entry(name, &[(arc.len() as u64, body.len() as u64, zl)]));
+            arc.extend_from_slice(body);
+            arc.resize(arc.len().div_ceil(64) * 64, 0);
+        };
+        put(&mut arc, "scenario/first.ks", &first, true);
+        put(&mut arc, "bgimage/bg01.png", &bg01, false);
+        put(&mut arc, "bgimage/bg02.png", &bg02, false);
+        put(&mut arc, "scenario/second.ks", &second, false);
+        let at = arc.len() as u64;
+        arc[11..19].copy_from_slice(&at.to_le_bytes());
+        let zi = z(&idx);
+        arc.push(1);
+        arc.extend((zi.len() as u64).to_le_bytes());
+        arc.extend((idx.len() as u64).to_le_bytes());
+        arc.extend(&zi);
+        // 64-byte chunks, each its own hash
+        let h = |i: usize| format!("{:032x}", 0x5c41_0000u128 + i as u128);
+        let mut m = HashMap::new();
+        let mut list = Vec::new();
+        for (i, c) in arc.chunks(64).enumerate() {
+            m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), c.to_vec());
+            list.push(format!("{}:{}", h(i), c.len()));
+        }
+        let mut tsv = format!("vnvm-tree\t2\t64\nd\t755\t0\tvoice\nf\t644\t0\tdata.xp3\t{}\t{}\n", arc.len(), list.join(","));
+        for v in 1..=3usize {
+            let k = 1000 + v;
+            tsv += &format!("f\t644\t0\tvoice/v{v:03}.ogg\t48\t{}:48\n", h(k));
+            m.insert(format!("chunks/{}/{}", &h(k)[..2], h(k)), vec![v as u8; 48]);
+        }
+        let loose = b"@se storage=v003 ; a loose script".to_vec();
+        tsv += &format!("f\t644\t0\tscene.ks\t{}\t{}:{}\n", loose.len(), h(2000), loose.len());
+        m.insert(format!("chunks/{}/{}", &h(2000)[..2], h(2000)), loose.clone());
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        fs.mounts.push(("/".into(), root));
+        fs.load_tree(root, &tsv);
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        *CACHE.lock().unwrap() = None;
+        *PREDICT.lock().unwrap() = None;
+        let ino = |p: &str| {
+            let At::Ours(Ok(fd)) = open_handle(p, libc::O_RDONLY, 0) else { panic!("open {p}") };
+            let i = handle(fd).unwrap().0;
+            release(fd);
+            i
+        };
+        let (data, scene) = (ino("/data.xp3"), ino("/scene.ks"));
+        // (what is named, in order, but what the reads' fetches ahead put on the device meanwhile)
+        let same = |got: Vec<Hash>, want: Vec<Hash>| {
+            let on = |h: &Hash| CACHE.lock().unwrap().as_ref().is_some_and(|c| c.contains(&(*h, 0)));
+            let left: Vec<Hash> = want.iter().copied().filter(|h| got.contains(h) || !on(h)).collect();
+            assert_eq!(got, left, "named {want:?}");
+        };
+        let chunk_of = |off: usize| {
+            let x = h(off / 64);
+            let mut b = [0u8; 16];
+            for (k, c) in b.iter_mut().enumerate() {
+                *c = u8::from_str_radix(&x[2 * k..2 * k + 2], 16).unwrap();
+            }
+            b
+        };
+        let hash = |i: usize| chunk_of(i * 64);
+        // (the game reads the header: the index is read, nothing named yet)
+        assert!(predicted(data, 0, 32).is_empty());
+        // (the game reads first.ks: bg01's member, v002, second.ks; in that order)
+        let starts: Vec<usize> = { let p = PREDICT.lock().unwrap(); let ms = &p.as_ref().unwrap().archives[&data]; ms.iter().map(|m| m.segments[0].0 as usize).collect() };
+        assert_eq!(starts.len(), 2, "two scripts in the archive");
+        let got = predicted(data, starts[0] as u64, first.len() as u64);
+        let v = |k: usize| hash(1000 + k);
+        let bg01_at = 64 + first.len().div_ceil(64) * 64;
+        same(got.clone(), vec![chunk_of(bg01_at), chunk_of(bg01_at + 64), v(2), chunk_of(starts[1])]);
+        assert!(!got.contains(&v(1)) && !got.contains(&v(3)), "not what it does not name");
+        // (again: looked into once)
+        assert!(predicted(data, starts[0] as u64, 8).is_empty());
+        // (second.ks names bg02)
+        let bg02_at = bg01_at + 128;
+        same(predicted(data, starts[1] as u64, second.len() as u64), vec![chunk_of(bg02_at), chunk_of(bg02_at + 64)]);
+        // (a loose script)
+        same(predicted(scene, 0, 4), vec![v(3)]);
+        // (what is on the device already: not again)
+        *PREDICT.lock().unwrap() = None;
+        let mut c = Cache::default();
+        c.put(&(v(3), 0), Arc::new(vec![3; 48]), false, 1 << 20);
+        *CACHE.lock().unwrap() = Some(c);
+        assert!(predicted(scene, 0, 4).is_empty());
+        *CACHE.lock().unwrap() = None;
     }
 
     /// A padded get copies only a chunk someone else holds.

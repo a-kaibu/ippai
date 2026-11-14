@@ -2121,6 +2121,7 @@ dependencies = [
  "hlslc",
  "koji",
  "libc",
+ "miniz_oxide 0.8.9",
  "naga",
  "proptest",
  "texture2ddecoder",

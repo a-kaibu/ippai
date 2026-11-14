@@ -618,6 +618,7 @@ function ippaiHint(urls) {
     if (ippaiHintsSeen.has(u) || ippaiInflight.has(u) || ippaiHeld(u)) continue;
     ippaiHintsSeen.add(u);
     ippaiHints.push(u);
+    ippaiReads.hinted++;
   }
   if (ippaiHintsSeen.size > 1 << 16) ippaiHintsSeen.clear();
   // (the oldest dropped)
@@ -638,6 +639,71 @@ function ippaiHintPump() {
         ippaiHintPump();
       });
   }
+}
+
+/**
+ * What came next after each chunk in earlier runs of the game (ippai serve's `<list>.next`:
+ * every branch, the newest runs' first, and the list's own order after them): hex -> hexes.
+ * When the game reads a chunk for the first time, the chunks that followed it are fetched ahead
+ * as hints (ippaiFollow), whichever way the game goes from there: one list in one order is the
+ * way one run went (title, then the story), the game may go another (title, then the gallery).
+ */
+var IPPAI_FOLLOW = 12;
+var ippaiNext = new Map();
+/** `bytes`: pairs of 16-byte hashes, the chunk then one that followed it. */
+function ippaiNextAdd(bytes) {
+  const hex = (o) => Array.from(bytes.subarray(o, o + 16), (b) => b.toString(16).padStart(2, '0')).join('');
+  for (let o = 0; o + 32 <= bytes.length; o += 32) {
+    const a = hex(o), b = hex(o + 16);
+    if (a === b) continue;
+    let l = ippaiNext.get(a);
+    if (!l) ippaiNext.set(a, (l = []));
+    if (!l.includes(b)) l.push(b);
+  }
+}
+/** The game read chunk `url` for the first time: what followed it, breadth first (the nearest
+ * of every branch first), IPPAI_FOLLOW at most, fetched ahead as hints. Returns their URLs. */
+function ippaiFollow(url) {
+  const base = url.slice(0, -35);
+  const out = [];
+  const seen = new Set([url.slice(-32)]);
+  let level = [url.slice(-32)];
+  while (level.length && out.length < IPPAI_FOLLOW) {
+    const n = [];
+    for (const a of level) for (const b of ippaiNext.get(a) ?? []) if (!seen.has(b)) seen.add(b), n.push(b);
+    out.push(...n);
+    level = n;
+  }
+  const urls = out.slice(0, IPPAI_FOLLOW).map((h) => `${base}${h.slice(0, 2)}/${h}`);
+  if (urls.length) ippaiHint(urls);
+  return urls;
+}
+
+/**
+ * Where each chunk the game read was when it read it first (counts and milliseconds waited):
+ * `device` (kept already), `saving` (checked, on its way into the cache), `coming` (a fetch
+ * ahead was on its way), `none` (the game's read went to the network itself). The misses that
+ * count are `coming` and `none`: what to fetch ahead earlier. `followed`: chunks queued from
+ * what came next in earlier runs (ippaiFollow); `hinted`: all queued as hints (those, and the
+ * reads' own: a folder's next files, the files a script names, vfs/predict.rs).
+ */
+var ippaiReads = { device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0, hinted: 0 };
+var ippaiReadSeen = new Set();
+/** Before the game's read of `url`: whether it is the chunk's first, and where it is then
+ * (undefined: on the device or nowhere, as the read finds out). Its followers go ahead. */
+function ippaiReadStart(url) {
+  if (!ippaiIsChunk(url) || ippaiReadSeen.has(url)) return null;
+  if (ippaiReadSeen.size > 1 << 16) ippaiReadSeen.clear();
+  ippaiReadSeen.add(url);
+  const where = ippaiRecent.has(url) ? 'device' : ippaiSaving.has(url) ? 'saving' : ippaiInflight.has(url) ? 'coming' : undefined;
+  ippaiReads.followed += ippaiFollow(url).length;
+  return { where, t: Date.now() };
+}
+function ippaiReadEnd(start, cached) {
+  if (!start) return;
+  const r = ippaiReads[start.where ?? (cached ? 'device' : 'none')];
+  r[0]++;
+  r[1] += Date.now() - start.t;
 }
 
 /**
@@ -1084,11 +1150,13 @@ function ippaiFetchWorker(event) {
   // (the pthread waits with a timeout: a wake-up without news tells it this worker is alive)
   const alive = setInterval(() => Atomics.notify(state, 0), 5000);
   if (cls === IPPAI_CLASS.game) ippaiGameWaiting++;
+  const first = cls === IPPAI_CLASS.game ? ippaiReadStart(url) : null;
   (async () => {
     try {
       const { data, wire, cached } = await ippaiFetchPart(url, from, len, block, cls).finally(() => {
         if (cls === IPPAI_CLASS.game) ippaiGameWaiting--;
       });
+      ippaiReadEnd(first, cached);
       Atomics.store(state, 2, wire);
       Atomics.store(state, 3, cached);
       Atomics.store(state, 4, data.length);
@@ -1114,14 +1182,15 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function ippaiFetchWorkerSource(main, more = []) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX, IPPAI_CHUNK_DIR, IPPAI_HANDLE_MS, IPPAI_HANDLES, IPPAI_BUDGET_BYTES, IPPAI_SAVING_BYTES, IPPAI_LOCK_WAIT_MS };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiChunkFile, ippaiOpfsStore, ippaiRange, ippaiKeepRecent, ippaiKeep, ippaiHeld, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiStartWhole, ippaiHint, ippaiHintPump, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX, IPPAI_CHUNK_DIR, IPPAI_HANDLE_MS, IPPAI_HANDLES, IPPAI_BUDGET_BYTES, IPPAI_SAVING_BYTES, IPPAI_LOCK_WAIT_MS, IPPAI_FOLLOW };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiChunkFile, ippaiOpfsStore, ippaiRange, ippaiKeepRecent, ippaiKeep, ippaiHeld, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiStartWhole, ippaiHint, ippaiHintPump, ippaiNextAdd, ippaiFollow, ippaiReadStart, ippaiReadEnd, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
     'var ippaiCacheOpen, ippaiRecent = new Map(), ippaiDirectInfo = new Map(), ippaiDirectOff = false, ippaiZstd;',
     'var ippaiDirectAsking = new Map(), ippaiDirectManyOff = false, ippaiBudgetBuf, ippaiGameWaiting = 0, ippaiInflight = new Map();',
     'var ippaiHints = [], ippaiHintsSeen = new Set(), ippaiHintsGoing = 0, ippaiPacks = new Map(), ippaiSaving = new Map(), ippaiSavingBytes = 0;',
+    "var ippaiNext = new Map(), ippaiReadSeen = new Set(), ippaiReads = { device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0, hinted: 0 };",
     'ippaiWhole.LATE = {};',
     ...[...fns, ...more].map(String),
     main,
@@ -1143,6 +1212,10 @@ function ippaiFetchWorkerSource(main, more = []) {
 async function ippaiWarmRun(msg, report) {
   const flag = new Int32Array(msg.flag);
   const cls = msg.cls ?? IPPAI_CLASS.warm;
+  if (msg.next) ippaiNextAdd(msg.next);
+  // (where the game's reads found their chunks, now and then while it plays: ippaiReads)
+  const copy = () => JSON.parse(JSON.stringify(ippaiReads));
+  const reads = msg.readsMs && setInterval(() => (Atomics.load(flag, 1) ? clearInterval(reads) : report({ reads: copy() })), msg.readsMs);
   const cache = await ippaiCache();
   let next = 0, done = 0, fetched = 0, bytes = 0, failed = 0;
   const stop = () => Atomics.load(flag, 1) !== 0;
@@ -1179,12 +1252,13 @@ async function ippaiWarmRun(msg, report) {
  * Starts ippaiWarmRun in the network worker, beside the game's reads (one scheduler: a chunk the
  * game reads while it is being fetched ahead is fetched once, and the game's go first);
  * `report` gets its reports. `opt.cls`: IPPAI_CLASS.save for a game saved whole, `opt.sizes`
- * the chunks' lengths. Returns the port the reports come on.
+ * the chunks' lengths, `opt.next` what followed each chunk (ippaiNextAdd's pairs), `opt.readsMs`
+ * how often to report { reads } (ippaiReads) while the game plays. Returns the port the reports come on.
  */
 function ippaiWarm(urls, flag, width, report, busyWidth = 0, opt = {}) {
   const port = ippaiFetchConnect();
   port.onmessage = (e) => report(e.data);
-  port.postMessage({ warm: { urls, flag, width, busyWidth, cls: opt.cls, sizes: opt.sizes } });
+  port.postMessage({ warm: { urls, flag, width, busyWidth, cls: opt.cls, sizes: opt.sizes, next: opt.next, readsMs: opt.readsMs } });
   return port;
 }
 if (typeof Module !== 'undefined') Module.ippaiWarm = ippaiWarm;

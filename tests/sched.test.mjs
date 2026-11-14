@@ -693,3 +693,82 @@ test('a 429 stops every class for its whole wait, the game\'s too, then the budg
   assert.equal(ctx.ippaiTake(C.game, now + 15000), false);
   assert.equal(ctx.ippaiTake(C.game, now + 16000), true);
 });
+
+/** The game's read of `u` through the worker's message (as the bridge's pthread asks): its bytes. */
+async function gameRead(ctx, u) {
+  const shared = new SharedArrayBuffer(ctx.IPPAI_BRIDGE_HEADER + ctx.IPPAI_BRIDGE_BYTES);
+  const state = new Int32Array(shared, 0, 8);
+  ctx.ippaiFetchWorker({ data: { url: u, shared, cls: 0 } });
+  const parts = [];
+  for (;;) {
+    while (Atomics.load(state, 0) === 0) await new Promise((r) => setTimeout(r, 2));
+    const s = Atomics.load(state, 0);
+    if (s === -1) throw new Error('read failed');
+    if (s === 2) break;
+    parts.push(new Uint8Array(shared, ctx.IPPAI_BRIDGE_HEADER, Atomics.load(state, 1)).slice());
+    Atomics.store(state, 0, 0);
+    Atomics.notify(state, 0);
+  }
+  return Uint8Array.from(parts.flatMap((p) => [...p]));
+}
+const pairs = (...ps) => Uint8Array.from(ps.flatMap(([a, b]) => [...Buffer.from(HASHES[a], 'hex'), ...Buffer.from(HASHES[b], 'hex')]));
+const hintsDone = async (ctx) => {
+  for (let i = 0; i < 300 && (ctx.ippaiHintsGoing || ctx.ippaiHints.length); i++) await new Promise((r) => setTimeout(r, 10));
+};
+
+test('a first read follows what came next in earlier runs, every branch, nearest first, capped', async () => {
+  const { ctx } = await bridge();
+  // title 0 -> story 1 -> 2 -> 3, title 0 -> gallery 10 -> 11; a loop back 3 -> 0
+  ctx.ippaiNextAdd(pairs([0, 1], [1, 2], [2, 3], [0, 10], [10, 11], [3, 0], [0, 1], [4, 4]));
+  const got = [...ctx.ippaiFollow(url(HASHES[0]))].map((u) => u.slice(-32));
+  assert.deepEqual(got, [1, 10, 2, 11, 3].map((i) => HASHES[i]), 'both ways, by distance, each once');
+  assert.equal(ctx.ippaiFollow(url(HASHES[30])).length, 0, 'nothing known: nothing');
+  assert.deepEqual(ctx.ippaiNext.get(HASHES[4]), undefined, 'a chunk is no follower of itself');
+  // (a long way: IPPAI_FOLLOW of it)
+  const chain = Array.from({ length: 40 }, (_, i) => [20 + i, 21 + i]).filter(([, b]) => b < HASHES.length);
+  ctx.ippaiNextAdd(pairs(...chain));
+  assert.equal(ctx.ippaiFollow(url(HASHES[20])).length, ctx.IPPAI_FOLLOW);
+});
+
+test("the game's first read of a chunk fetches its followers ahead; where each read found its chunk is counted", async () => {
+  const { ctx, log, kept } = await bridge({ delay: 10 });
+  ctx.ippaiNextAdd(pairs([0, 1], [1, 2], [0, 5]));
+  assert.deepEqual(await gameRead(ctx, url(HASHES[0])), CHUNKS.get(HASHES[0]));
+  await hintsDone(ctx);
+  for (const i of [1, 2, 5]) assert.ok(kept.has(url(HASHES[i])), `follower ${i} on the device`);
+  const before = log.bucket.length;
+  // (the gallery way now: on the device, no fetch)
+  assert.deepEqual(await gameRead(ctx, url(HASHES[5])), CHUNKS.get(HASHES[5]));
+  assert.equal(log.bucket.length, before);
+  // (a follower still on its way when the game reads it: coming)
+  ctx.ippaiNextAdd(pairs([6, 7]));
+  const slow = gameRead(ctx, url(HASHES[6]));
+  await new Promise((r) => setTimeout(r, 1));
+  assert.deepEqual(await gameRead(ctx, url(HASHES[7])), CHUNKS.get(HASHES[7]));
+  await slow;
+  // (read again: counted once)
+  await gameRead(ctx, url(HASHES[0]));
+  const r = ctx.ippaiReads;
+  assert.equal(r.none[0], 2, 'the first and 6 went to the network');
+  assert.equal(r.device[0], 1, 'the gallery chunk was on the device');
+  assert.equal(r.coming[0], 1, '7 was coming');
+  assert.equal(r.followed, 4);
+});
+
+test('a warm run takes what followed each chunk, and reports the reads while the game plays', async () => {
+  const { ctx } = await bridge();
+  const flag = new SharedArrayBuffer(8);
+  const reports = [];
+  const run = ctx.ippaiWarmRun({ urls: [], flag, width: 1, next: pairs([8, 9]), readsMs: 20 }, (r) => reports.push(r));
+  await run;
+  assert.deepEqual([...ctx.ippaiNext.get(HASHES[8])], [HASHES[9]]);
+  await gameRead(ctx, url(HASHES[8]));
+  await new Promise((r) => setTimeout(r, 60));
+  const last = reports.filter((r) => r.reads).at(-1);
+  assert.equal(last.reads.none[0], 1);
+  Atomics.store(new Int32Array(flag), 1, 1);
+  await new Promise((r) => setTimeout(r, 50));
+  const n = reports.length;
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(reports.length, n, 'stopped with the run');
+});

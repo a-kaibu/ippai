@@ -317,11 +317,14 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const conn = (navigator as { connection?: { saveData?: boolean; type?: string; downlink?: number } })
     .connection;
   const busyWidth = warmBusyWidth(conn);
-  const listed = jitName
-    ? jitName
-        .then((n) => chunksList([...(game ? [gameChunksName(game)] : []), n]))
-        .catch(() => [] as string[])
+  const listNames = jitName ? jitName.then((n) => [...(game ? [gameChunksName(game)] : []), n]) : undefined;
+  const listed = listNames
+    ? listNames.then(chunksList).catch(() => [] as string[])
     : Promise.resolve([] as string[]);
+  // (what followed each chunk in earlier runs, every branch: warm.ts nextPairs)
+  const edges = listNames
+    ? listNames.then(chunksNext).catch(() => new Uint8Array(0))
+    : Promise.resolve(new Uint8Array(0));
   const ahead = jitName ? readAhead(listed, jit, chunkSizes, busyWidth) : undefined;
   // versioned too: the game's threads past the pool each start a worker from it, and a URL the
   // browser must revalidate fails while the link is down (the game then hangs)
@@ -651,7 +654,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // the rest of the game's files onto the device while it plays: what earlier runs read first,
   // in that order, then the trees' others; fewer at once while it waits for a read (warm.ts)
   if (sake.ippaiWarm && warmAllowed(conn) && params.get("warm") !== "0")
-    void Promise.all([chunkSizes, listed]).then(([sizes, first]) => {
+    void Promise.all([chunkSizes, listed, edges]).then(([sizes, first, next]) => {
       const warm = sake.ippaiWarm!;
       const note = (l: string) => (console.log(l), recorder?.note(l));
       note(
@@ -666,6 +669,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         note,
         first,
         busyWidth,
+        next,
       );
     });
   attachInput(() => activeModule ?? sake);
@@ -903,6 +907,19 @@ async function chunksList(names: string[]): Promise<string[]> {
     }
   }
   return out;
+}
+
+/** What followed each chunk in earlier runs (`names` in turn: the first with any; ippai serve's
+ * `<name>.next`, pairs of hashes). */
+async function chunksNext(names: string[]): Promise<Uint8Array> {
+  for (const n of names) {
+    const b = await fetchRetry(`jit/${n}.next`, {}, { giveUpMs: 60000 }).then(
+      (b) => new Uint8Array(b.buffer),
+      () => new Uint8Array(0),
+    );
+    if (b.length >= 32) return b;
+  }
+  return new Uint8Array(0);
 }
 
 function readAhead(

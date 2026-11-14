@@ -12,7 +12,8 @@
 //! - `/jit/<name>.parts`: the x86 regions runs of a game saved (koji::jit::saved), one line
 //!   per part: module, index, version; `PUT /jit-save/<name>` with (u32 module length, module,
 //!   index) adds a run's new regions as a new part (parts compiled before stay the same); `PUT /jit-save/<name>.chunks` stores the store chunks a
-//!   run read first (16-byte hashes), which the page fetches ahead next time.
+//!   run read first (16-byte hashes), which the page fetches ahead next time, and beside it
+//!   `<name>.next`: which chunk each chunk led to (pairs of hashes, every branch: merge_edges).
 //! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
 //!   programs saved (shared libraries and the like; the chunks only for a program with no list
 //!   of its own yet): every page loads them too, so a
@@ -169,6 +170,42 @@ fn merge_chunks(new: &[u8], old: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Edges a `.next` file holds at most (32 bytes each, 2 MiB), and how many chunks one chunk's
+/// edges name at most (the newest runs' kept: a title screen goes on to the story in one run,
+/// to the gallery or the settings in others).
+const EDGES_MAX: usize = 65536;
+const FANOUT: usize = 4;
+
+/// The chunks read next after each chunk (`<name>.next`: pairs of hashes, `a` then the chunk a
+/// run read first after it) of a run's list `new` (the order of its first reads), with the
+/// earlier runs' `old` after them: each pair once, FANOUT per chunk, EDGES_MAX in all. The page
+/// fetches ahead what came next after the chunk the game reads now, every branch of it
+/// (host/fetch-bridge.js ippaiFollow): one list in one order cannot say that the title screen
+/// leads to the story and to the gallery.
+fn merge_edges(new: &[u8], old: &[u8]) -> Vec<u8> {
+    let list: Vec<&[u8]> = new.chunks_exact(16).collect();
+    let pairs = list.windows(2).filter(|w| w[0] != w[1]).map(|w| [w[0], w[1]].concat());
+    let mut seen = std::collections::HashSet::new();
+    let mut fan: std::collections::HashMap<Vec<u8>, usize> = Default::default();
+    let mut out = Vec::new();
+    for e in pairs.chain(old.chunks_exact(32).map(|e| e.to_vec())) {
+        if out.len() >= 32 * EDGES_MAX {
+            break;
+        }
+        if seen.contains(&e) {
+            continue;
+        }
+        let n = fan.entry(e[..16].to_vec()).or_default();
+        if *n >= FANOUT {
+            continue;
+        }
+        *n += 1;
+        out.extend_from_slice(&e);
+        seen.insert(e);
+    }
+    out
+}
+
 /// Whose list `file` is, for _shared.chunks's count: a game's (`game.<id>.chunks`, the page's
 /// IPPAI_CHUNKS_URL) by its id; a program's (`<program>-<build>.chunks`) by its name without
 /// the build (the newest build's list stands for it).
@@ -196,6 +233,14 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         // the title does not take away what a longer one read)
         let old = tokio::fs::read(jit.0.join(&name)).await.unwrap_or_default();
         let list = merge_chunks(&body, &old);
+        // (what each chunk led to, branches and all: merge_edges)
+        let next = format!("{}.next", name.trim_end_matches(".chunks"));
+        let old_next = tokio::fs::read(jit.0.join(&next)).await.unwrap_or_default();
+        let edges = merge_edges(&body, &old_next);
+        let tmp = jit.0.join(format!("{next}.tmp"));
+        if tokio::fs::write(&tmp, &edges).await.is_err() || tokio::fs::rename(&tmp, jit.0.join(&next)).await.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
         let tmp = jit.0.join(format!("{name}.tmp"));
         if tokio::fs::write(&tmp, &list).await.is_err() || tokio::fs::rename(&tmp, jit.0.join(&name)).await.is_err() {
             return StatusCode::INTERNAL_SERVER_ERROR;
@@ -1570,6 +1615,52 @@ mod tests {
         assert_eq!(super::merge_chunks(&many, &[]).len(), 16 * super::CHUNKS_MAX);
     }
 
+    /// What each chunk led to: a run's pairs first, each once, FANOUT branches per chunk (the
+    /// newest runs'), EDGES_MAX in all; a list cannot say both of a title's ways, this can.
+    #[test]
+    fn edges_keep_every_branch_newest_first() {
+        let l = |ks: &[u8]| ks.iter().flat_map(|&k| [k; 16]).collect::<Vec<u8>>();
+        let pairs = |b: &[u8]| b.chunks_exact(32).map(|e| (e[0], e[16])).collect::<Vec<_>>();
+        // title 1 -> story 2,3 in one run, title 1 -> gallery 7,8 in the next
+        let a = super::merge_edges(&l(&[1, 2, 3]), &[]);
+        assert_eq!(pairs(&a), [(1, 2), (2, 3)]);
+        let b = super::merge_edges(&l(&[1, 7, 8]), &a);
+        assert_eq!(pairs(&b), [(1, 7), (7, 8), (1, 2), (2, 3)]);
+        // (the same run saved again: nothing twice; a chunk read twice in a row is no edge)
+        assert_eq!(super::merge_edges(&l(&[1, 7, 8]), &b), b);
+        assert_eq!(pairs(&super::merge_edges(&l(&[5, 5, 6]), &[])), [(5, 6)]);
+        assert!(super::merge_edges(&l(&[5]), &[]).is_empty());
+        // random runs, against a plain model
+        let mut seed = 7u32;
+        let mut rnd = |n: u32| {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 8) % n
+        };
+        for _ in 0..300 {
+            let mut old = Vec::new();
+            let mut want: Vec<(u8, u8)> = Vec::new();
+            for _ in 0..1 + rnd(4) {
+                let run: Vec<u8> = (0..rnd(20)).map(|_| rnd(8) as u8).collect();
+                let mut model = Vec::new();
+                for w in run.windows(2).filter(|w| w[0] != w[1]).map(|w| (w[0], w[1])).chain(want.iter().copied()) {
+                    if !model.contains(&w) && model.iter().filter(|e: &&(u8, u8)| e.0 == w.0).count() < super::FANOUT {
+                        model.push(w);
+                    }
+                }
+                old = super::merge_edges(&l(&run), &old);
+                want = model;
+                assert_eq!(pairs(&old), want);
+            }
+        }
+        // the cap
+        let many: Vec<u8> = (0..super::EDGES_MAX as u32 + 10).flat_map(|i| {
+            let mut b = [0u8; 16];
+            b[..4].copy_from_slice(&i.to_le_bytes());
+            b
+        }).collect();
+        assert_eq!(super::merge_edges(&many, &[]).len(), 32 * super::EDGES_MAX);
+    }
+
     /// PUT /jit-save/<name>.chunks: merged with what was there; the games' lists
     /// (game.<id>.chunks) count one each for _shared.chunks, as programs' lists do.
     #[tokio::test]
@@ -1585,6 +1676,9 @@ mod tests {
         assert_eq!(put("game.saga_planets-2.chunks", &[1, 2, 3]).await, axum::http::StatusCode::NO_CONTENT);
         assert_eq!(put("game.saga_planets-2.chunks", &[4, 1]).await, axum::http::StatusCode::NO_CONTENT);
         assert_eq!(read("game.saga_planets-2.chunks"), [4, 1, 2, 3]);
+        // (and beside it, what each chunk led to in either run)
+        let next: Vec<(u8, u8)> = std::fs::read(d.join("game.saga_planets-2.next")).unwrap().chunks_exact(32).map(|e| (e[0], e[16])).collect();
+        assert_eq!(next, [(4, 1), (1, 2), (2, 3)]);
         // another game of the same program: a list of its own, and what both read is shared
         assert_eq!(put("game.saga_planets-3.chunks", &[9, 1]).await, axum::http::StatusCode::NO_CONTENT);
         assert_eq!(read("game.saga_planets-3.chunks"), [9, 1]);
@@ -1594,6 +1688,7 @@ mod tests {
         assert_eq!(put("game.x.chunks", &[]).await, axum::http::StatusCode::NO_CONTENT);
         assert_eq!(super::save_jit(State(jit.clone()), Path("game.x.chunks".into()), vec![0u8; 15].into()).await, axum::http::StatusCode::BAD_REQUEST);
         assert!(!d.join("game.saga_planets-2.chunks.tmp").exists());
+        assert!(!d.join("game.saga_planets-2.next.tmp").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

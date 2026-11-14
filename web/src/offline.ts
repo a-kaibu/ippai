@@ -358,13 +358,13 @@ async function readOrder(id: string, request?: typeof fetch): Promise<string[]> 
   return out;
 }
 
-/** `f()` holding chunk `hex`'s Web Lock (the network worker's fetches ahead hold it too), or just `f()`. */
 /** Chunks a save asks the server about at once (direct.ts prime), two windows ahead. */
 export const PRIME_WINDOW = 256;
 
+/** `f()` holding chunk `hex`'s Web Lock (the network worker's fetches ahead hold it too), or just `f()`. */
 function withChunkLock(hex: string, f: () => Promise<void>): Promise<void> {
   const locks = (navigator as { locks?: LockManager }).locks;
-  return locks ? locks.request(`ippai-chunk:${hex}`, f) : f();
+  return locks ? (locks.request(`ippai-chunk:${hex}`, f) as unknown as Promise<void>) : f();
 }
 
 /**
@@ -381,10 +381,11 @@ export function withFreeChunkLocks<T>(hexes: string[], f: (mine: string[]) => Pr
   const take = (i: number): Promise<T> =>
     i === hexes.length
       ? f(mine)
-      : locks.request(`ippai-chunk:${hexes[i]}`, { ifAvailable: true }, async (lock) => {
+      : // (the callback's promise is what request's resolves with, not a promise of it)
+        (locks.request(`ippai-chunk:${hexes[i]}`, { ifAvailable: true }, async (lock) => {
           if (lock) mine.push(hexes[i]!);
           return take(i + 1);
-        });
+        }) as unknown as Promise<T>);
   return take(0);
 }
 

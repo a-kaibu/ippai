@@ -60,6 +60,38 @@ export interface WarmReport {
   bytes: number;
   failed: number;
   end?: boolean;
+  /** Where the game's reads found their chunks (host/fetch-bridge.js ippaiReads): [count, ms]. */
+  reads?: Record<"device" | "saving" | "coming" | "none", [number, number]> & {
+    followed: number;
+    hinted?: number;
+  };
+}
+
+/** How often the reads are reported while the game plays. */
+export const READS_MS = 60000;
+
+const unhex = (h: string) => Uint8Array.from(h.match(/../g)!, (x) => parseInt(x, 16));
+
+/** What followed each chunk (host/fetch-bridge.js ippaiNextAdd's pairs): ippai serve's `.next`
+ * (`edges`: every branch earlier runs took), then the list's own order (`first`: the way the
+ * newest run went, for a list from before there were edges). */
+export function nextPairs(edges: Uint8Array, first: string[]): Uint8Array {
+  const n = Math.floor(edges.length / 32) * 32;
+  const out = new Uint8Array(n + Math.max(0, first.length - 1) * 32);
+  out.set(edges.subarray(0, n));
+  for (let i = 0; i + 1 < first.length; i++) {
+    out.set(unhex(first[i]!), n + i * 32);
+    out.set(unhex(first[i + 1]!), n + i * 32 + 16);
+  }
+  return out;
+}
+
+/** The run log's line of where the game's reads found their chunks (WarmReport.reads). */
+export function readsLine(r: NonNullable<WarmReport["reads"]>): string {
+  const all = r.device[0] + r.saving[0] + r.coming[0] + r.none[0];
+  const p = (k: "device" | "saving" | "coming" | "none") =>
+    `${k} ${r[k][0]} (${all ? Math.round((100 * r[k][0]) / all) : 0}%, ${r[k][0] ? Math.round(r[k][1] / r[k][0]) : 0} ms)`;
+  return `game reads, first of each chunk: ${all}; ${p("device")}, ${p("saving")}, ${p("coming")}, ${p("none")}; fetched ahead as hints ${r.hinted ?? 0}, of them ${r.followed} from what came next in earlier runs`;
 }
 
 export type Warm = (
@@ -68,7 +100,7 @@ export type Warm = (
   width: number,
   report: (r: WarmReport) => void,
   busyWidth?: number,
-  opt?: { cls?: number; sizes?: number[] },
+  opt?: { cls?: number; sizes?: number[]; next?: Uint8Array; readsMs?: number },
 ) => unknown;
 
 /**
@@ -84,6 +116,7 @@ export function startWarm(
   log: (line: string) => void,
   first: string[] = [],
   busyWidth = WARM_BUSY_WIDTH,
+  edges: Uint8Array = new Uint8Array(0),
 ): () => void {
   const list = warmList(sizes, WARM_MAX, first);
   const flag = new SharedArrayBuffer(8);
@@ -96,6 +129,7 @@ export function startWarm(
     flag,
     WARM_WIDTH,
     (r) => {
+      if (r.reads) return log(readsLine(r.reads));
       const s = ((performance.now() - t) / 1000).toFixed(0);
       if (r.end || r.done % 128 === 0)
         log(
@@ -105,7 +139,7 @@ export function startWarm(
     },
     busyWidth,
     // (the lengths: each decoded into a buffer of its size, not 16 MiB)
-    { sizes: list.map((h) => sizes.get(h) ?? 0) },
+    { sizes: list.map((h) => sizes.get(h) ?? 0), next: nextPairs(edges, first), readsMs: READS_MS },
   );
   return () => {
     Atomics.store(f, 1, 1);

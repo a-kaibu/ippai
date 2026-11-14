@@ -1,5 +1,7 @@
 import { expect, test } from "vite-plus/test";
 import {
+  nextPairs,
+  readsLine,
   startWarm,
   warmAllowed,
   warmBusyWidth,
@@ -149,4 +151,53 @@ test("a game's chunks list goes by the game, not its program", () => {
   // (what ippai serve's /jit-save takes: letters, digits, _ - .)
   for (const id of ["x", "日本語", "../x", "a.b"])
     expect(gameChunksName(id)).toMatch(/^game\.[A-Za-z0-9_-]+$/);
+});
+
+test("what followed each chunk: the server's pairs as they are, then the list's own order", () => {
+  const h = (c: string) => c.repeat(32);
+  const bytes = (...hs: string[]) => Uint8Array.from(hs.join("").match(/../g)!, (x) => parseInt(x, 16));
+  const edges = bytes(h("a"), h("b"), h("a"), h("c"));
+  expect([...nextPairs(edges, [h("d"), h("e"), h("f")])]).toEqual([
+    ...bytes(h("a"), h("b"), h("a"), h("c"), h("d"), h("e"), h("e"), h("f")),
+  ]);
+  // (a torn tail of the server's: left out; a list of one: no pairs)
+  expect([...nextPairs(edges.subarray(0, 40), [h("d")])]).toEqual([...bytes(h("a"), h("b"))]);
+  expect(nextPairs(new Uint8Array(0), [])).toHaveLength(0);
+});
+
+test("the pairs and the reads' reports reach the worker and the run log", () => {
+  const h = (c: string) => c.repeat(32);
+  let opt: { next?: Uint8Array; readsMs?: number } | undefined;
+  let report!: (r: WarmReport) => void;
+  const lines: string[] = [];
+  const stop = startWarm(
+    (_u, _f, _w, r, _b, o) => {
+      opt = o;
+      report = r;
+      return {} as Worker;
+    },
+    "https://h/store/",
+    new Map([[h("a"), 1]]),
+    () => false,
+    (l) => lines.push(l),
+    [h("a"), h("b")],
+    1,
+    new Uint8Array(32).fill(7),
+  );
+  expect(opt?.next).toHaveLength(64);
+  expect(opt?.readsMs).toBeGreaterThan(0);
+  report({
+    done: 0,
+    fetched: 0,
+    bytes: 0,
+    failed: 0,
+    reads: { device: [6, 60], saving: [1, 5], coming: [1, 400], none: [2, 3000], followed: 9, hinted: 30 },
+  });
+  expect(lines.at(-1)).toBe(
+    "game reads, first of each chunk: 10; device 6 (60%, 10 ms), saving 1 (10%, 5 ms), coming 1 (10%, 400 ms), none 2 (20%, 1500 ms); fetched ahead as hints 30, of them 9 from what came next in earlier runs",
+  );
+  expect(readsLine({ device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0 })).toMatch(
+    /: 0; device 0 \(0%, 0 ms\)/,
+  );
+  stop();
 });
