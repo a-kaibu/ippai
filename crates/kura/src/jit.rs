@@ -284,6 +284,9 @@ struct State {
     pending: HashSet<u32>,
     done_tx: std::sync::mpsc::Sender<Batch>,
     done_rx: std::sync::mpsc::Receiver<Batch>,
+    /// this state's number (its jobs' [`Job::state`]): a thread's state is made again when code
+    /// changes (check_generation), and the old one's results go nowhere
+    id: u64,
     /// sites whose hint changed (a site going to several targets keeps its second hint)
     rehinted: HashSet<u32>,
     /// modules loaded one by one (not the saved bundle): (first table index, functions, bytes),
@@ -671,10 +674,12 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
             };
             let _ = d;
             let (done_tx, done_rx) = std::sync::mpsc::channel();
+            static STATES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             State {
                 pending: HashSet::new(),
                 done_tx,
                 done_rx,
+                id: STATES.fetch_add(1, Ordering::Relaxed),
                 hash: vec![[0; 2]; 1 << 12],
                 used: 0,
                 misses: HashMap::new(),
@@ -1984,7 +1989,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         // a few ms here, several times that on a phone: a dropped frame each, in the story's
         // scene changes)
         let tc = Instant::now();
-        let job = Job { eip, lo, hi, part, build, misses: st.misses.clone(), known: st.known.clone(), hints: st.hints.clone(), tid: std::thread::current().id(), done: st.done_tx.clone() };
+        let job = Job { eip, lo, hi, part, build, misses: st.misses.clone(), known: st.known.clone(), hints: st.hints.clone(), state: st.id, done: st.done_tx.clone() };
         if crate::env_on!("IPPAI_JIT_TIME") {
             eprintln!("vnjit job {eip:#x}: misses {} known {} hints {}, copied in {:?}", st.misses.len(), st.known.len(), st.hints.len(), tc.elapsed());
         }
@@ -2013,8 +2018,13 @@ struct Job {
     misses: HashMap<u32, u32>,
     known: HashSet<u32>,
     hints: HashMap<u32, u32>,
-    /// the guest thread asking (its jobs that wait together come back as one batch)
-    tid: std::thread::ThreadId,
+    /// the [`State`] asking (its jobs that wait together come back as one batch, to its `done`).
+    /// Not the thread: a thread whose state was made again (check_generation) has jobs of both
+    /// in the queue, and a batch of both went to the old state's channel, which nobody reads:
+    /// the new state's job stayed pending for good, and while one is pending no part of a
+    /// function is built (maybe_compile), so the game ran in the interpreter, 100 to 250 times
+    /// slower (竜翼のメロディア 体験版 stood still twice for 40 s, #214).
+    state: u64,
     done: std::sync::mpsc::Sender<Batch>,
 }
 
@@ -2033,6 +2043,22 @@ struct Batch {
 
 /// Functions one batch takes, at most (one load: a longer pause of its own).
 const BATCH_MAX: usize = 16;
+
+/// `first` and the jobs in `waiting` with its key, in order, up to `max` in all; the rest stay
+/// in `waiting`, in order. All of a batch goes back to the first one's state (its `done`).
+fn take_batch<T, K: PartialEq>(first: T, waiting: &mut std::collections::VecDeque<T>, key: impl Fn(&T) -> K, max: usize) -> Vec<T> {
+    let k = key(&first);
+    let mut jobs = vec![first];
+    let mut i = 0;
+    while i < waiting.len() && jobs.len() < max {
+        if key(&waiting[i]) == k {
+            jobs.extend(waiting.remove(i));
+        } else {
+            i += 1;
+        }
+    }
+    jobs
+}
 
 /// The compiler thread's queue (IPPAI_JIT_ASYNC=0: none, functions are translated where they
 /// are needed).
@@ -2056,15 +2082,7 @@ fn compiler() -> Option<std::sync::mpsc::Sender<Job>> {
                 loop {
                     let Some(j) = waiting.pop_front().or_else(|| rx.recv().ok()) else { break };
                     waiting.extend(rx.try_iter());
-                    let mut jobs = vec![j];
-                    let mut i = 0;
-                    while i < waiting.len() && jobs.len() < BATCH_MAX {
-                        if waiting[i].tid == jobs[0].tid {
-                            jobs.extend(waiting.remove(i));
-                        } else {
-                            i += 1;
-                        }
-                    }
+                    let jobs = take_batch(j, &mut waiting, |j| j.state, BATCH_MAX);
                     let done = jobs[0].done.clone();
                     let checked = jit::page_check();
                     let exact = jit::mx_exact();
@@ -2552,6 +2570,53 @@ pub(crate) fn count_entry(eip: u32) {
     });
 }
 
+
+#[cfg(test)]
+mod batch_tests {
+    use super::take_batch;
+    use proptest::prelude::*;
+    use std::collections::VecDeque;
+
+    /// The queue as #214 had it: a thread's state made again while two of the old state's
+    /// jobs waited; the new state's job must not go back with them.
+    #[test]
+    fn a_new_state_of_the_same_thread_is_its_own_batch() {
+        // (state, eip)
+        let mut waiting: VecDeque<(u64, u32)> = [(0, 0x4727fa), (1, 0x45c8b9)].into();
+        let b = take_batch((0, 0x4727e9), &mut waiting, |j| j.0, 16);
+        assert_eq!(b, vec![(0, 0x4727e9), (0, 0x4727fa)]);
+        assert_eq!(waiting, VecDeque::from([(1, 0x45c8b9)]));
+        let first = waiting.pop_front().unwrap();
+        assert_eq!(take_batch(first, &mut waiting, |j| j.0, 16), vec![(1, 0x45c8b9)]);
+    }
+
+    proptest! {
+        /// Draining a queue batch by batch, as the compiler thread does: every job comes back
+        /// exactly once, each batch to one key only, at most `max`, and each key's jobs in the
+        /// order they were sent.
+        #[test]
+        fn batches_keep_every_job_with_its_own_key(keys in prop::collection::vec(0u8..4, 0..64), max in 1usize..20) {
+            let mut waiting: VecDeque<(u8, usize)> = keys.iter().copied().zip(0..).collect();
+            let mut seen = Vec::new();
+            while let Some(first) = waiting.pop_front() {
+                let b = take_batch(first, &mut waiting, |j| j.0, max);
+                prop_assert!(!b.is_empty() && b.len() <= max);
+                prop_assert!(b.iter().all(|j| j.0 == b[0].0));
+                prop_assert!(b.windows(2).all(|w| w[0].1 < w[1].1));
+                // (what stays behind keeps its order too)
+                prop_assert!(waiting.iter().zip(waiting.iter().skip(1)).all(|(a, c)| a.1 < c.1));
+                seen.extend(b);
+            }
+            let mut ids: Vec<usize> = seen.iter().map(|j| j.1).collect();
+            ids.sort();
+            prop_assert_eq!(ids, (0..keys.len()).collect::<Vec<_>>());
+            for k in 0..4u8 {
+                let order: Vec<usize> = seen.iter().filter(|j| j.0 == k).map(|j| j.1).collect();
+                prop_assert!(order.windows(2).all(|w| w[0] < w[1]));
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod save_tests {
