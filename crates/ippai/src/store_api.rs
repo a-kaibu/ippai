@@ -308,7 +308,7 @@ const DIRECT_MANY: usize = 4096;
 /// those the page may fetch from the bucket itself, as `GET /store-direct/<path>` answers each
 /// (host/fetch-bridge.js ippaiDirectMany: a game's chunks asked for at once, so its first read
 /// of each goes to the bucket without a round trip here first). Those it leaves out are only
-/// here (or this server's disk has them: /store is quicker then). 501 without S3; 413 past
+/// here. 501 without S3; 413 past
 /// DIRECT_MANY paths.
 async fn direct_many(State(s): State<Store>, axum::Json(paths): axum::Json<Vec<String>>) -> Response {
     let Some(remote) = s.remote.as_ref().as_ref() else { return StatusCode::NOT_IMPLEMENTED.into_response() };
@@ -366,7 +366,7 @@ async fn publish_wasm(remote: &Storage, web: &std::path::Path, wasm: &std::sync:
 async fn sake_direct(State(s): State<Store>, Path(name): Path<String>) -> Response {
     let Some(remote) = s.remote.as_ref().as_ref() else { return StatusCode::NOT_IMPLEMENTED.into_response() };
     let Some(h) = s.wasm.read().unwrap().get(&name).cloned() else { return StatusCode::NOT_FOUND.into_response() };
-    match remote.direct_bucket(&format!("chunks/{}/{h}", &h[..2]), DIRECT_EXPIRY).await {
+    match remote.direct(&format!("chunks/{}/{h}", &h[..2]), DIRECT_EXPIRY).await {
         Ok(Some(d)) => {
             let mut v = direct_json(&d);
             v["chunk"] = h.into();

@@ -999,7 +999,8 @@ pub(crate) mod gc_tests {
                 assert_eq!(&*read.unwrap().unwrap(), &big);
             }
             assert!(!s.warm("chunks/big").await.unwrap());
-            assert!(s.direct("chunks/big", 60).await.unwrap().is_none());
+            // (the page is sent to the bucket even so: storage.rs direct)
+            assert!(s.direct("chunks/big", 60).await.unwrap().is_some());
         }).await.expect("readers waited for disk instead of sharing the pending bytes");
         assert_eq!(f.gets.load(SeqCst), 1);
         release_tx.send(()).unwrap();
@@ -1056,8 +1057,8 @@ pub(crate) mod gc_tests {
         w.unwrap();
         assert_eq!(f.gets.load(SeqCst), 2, "one download for both");
         assert!(s.inflight.lock().unwrap().is_empty());
-        // what the disk has is not sent to the bucket (/store-direct); the rest is
-        assert!(s.direct("chunks/a", 60).await.unwrap().is_none());
+        // what the disk has is sent to the bucket too (/store-direct: not through this line)
+        assert!(s.direct("chunks/a", 60).await.unwrap().is_some());
         s.put("chunks/d", b"dddd").await.unwrap();
         assert!(s.direct("chunks/d", 60).await.unwrap().is_some());
         assert!(s.direct("chunks/none", 60).await.unwrap().is_none());
@@ -1913,30 +1914,12 @@ impl Storage {
     /// How a browser fetches object `logical` itself: a presigned GET of it (`expiry` seconds),
     /// its key and its UUID (crypto: [`Envelope::data_key`]). The browser then reads the bucket
     /// as fast as its own line allows, many at once, not through this server's line. None when
-    /// the bucket lacks it, or when this server's disk has it (a game's start fetched ahead:
-    /// here at once, where the bucket takes ~2 s to answer).
+    /// the bucket lacks it. The bucket even when this server's disk has the object (until 2026-11-14 the disk was preferred as quicker to answer, but worker2's uplink
+    /// gave ~160 KB/s under its other jobs and anemoi's chunks then took 95 s each).
     pub async fn direct(&self, logical: &str, expiry: u32) -> Result<Option<Direct>> {
-        self.direct_from(logical, expiry, true).await
-    }
-
-    /// [`Storage::direct`] whether or not this server's disk has the object: for what the page
-    /// should never fetch through this server's line (sake's wasm, `store_api` publish_wasm).
-    pub async fn direct_bucket(&self, logical: &str, expiry: u32) -> Result<Option<Direct>> {
-        self.direct_from(logical, expiry, false).await
-    }
-
-    /// Whether the store names `logical`.
-    pub fn has(&self, logical: &str) -> Result<bool> {
-        Ok(self.db.connect()?.query_row("SELECT 1 FROM objects WHERE logical=?", [logical], |_| Ok(())).optional()?.is_some())
-    }
-
-    async fn direct_from(&self, logical: &str, expiry: u32, disk_first: bool) -> Result<Option<Direct>> {
         let entry: Option<String> = self.db.connect()?.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
         let Some(entry) = entry else { return Ok(None) };
         let e: Envelope = serde_json::from_str(&entry)?;
-        if disk_first && self.disk.as_ref().is_some_and(|d| d.has(e.object)) {
-            return Ok(None);
-        }
         let key = e.data_key(&self.key(&e.key_id)?)?;
         let url = self.bucket.presign_get(self.path(e.object), expiry, None).await?;
         // (a pack made for an object since replaced holds the old one: not that)
@@ -1953,6 +1936,11 @@ impl Storage {
             None => None,
         };
         Ok(Some(Direct { url, key, object: e.object, pack }))
+    }
+
+    /// Whether the store names `logical`.
+    pub fn has(&self, logical: &str) -> Result<bool> {
+        Ok(self.db.connect()?.query_row("SELECT 1 FROM objects WHERE logical=?", [logical], |_| Ok(())).optional()?.is_some())
     }
 
     /// Delivery packs (docs/s3-reads.md): the objects named `logicals` (a game's chunks, in the
