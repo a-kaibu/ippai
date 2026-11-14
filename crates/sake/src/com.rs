@@ -54,6 +54,16 @@ fn table(iface: &str) -> &'static (&'static str, &'static [(&'static str, u8, u8
     methods::IFACES.iter().find(|t| t.0 == iface).unwrap_or_else(|| panic!("com: no interface {iface}"))
 }
 
+/// The IIDs an interface answers QueryInterface for (itself and its bases), worked out once for
+/// all interfaces: QueryInterface did two linear scans of ~270 names per base under the object
+/// lock.
+fn iids_of(iface: &str) -> &'static [Guid] {
+    static M: std::sync::OnceLock<HashMap<&'static str, Vec<Guid>>> = std::sync::OnceLock::new();
+    M.get_or_init(|| methods::IFACES.iter().map(|t| (t.0, t.2.iter().filter_map(|n| iid(n)).collect())).collect())
+        .get(iface)
+        .map_or(&[], |v| v.as_slice())
+}
+
 pub fn iid(iface: &str) -> Option<Guid> {
     methods::IIDS.iter().find(|t| t.0 == iface).map(|t| t.1)
 }
@@ -110,7 +120,7 @@ fn query_interface(c: &mut Ctx) -> u32 {
     let want = read_guid(riid);
     let found = objs(|m| {
         let o = m.get_mut(&this)?;
-        let hit = table(o.iface).2.iter().any(|n| iid(n) == Some(want)).then_some(this);
+        let hit = iids_of(o.iface).contains(&want).then_some(this);
         if hit.is_some() {
             o.refs += 1;
         }
@@ -209,6 +219,13 @@ pub fn is_stub(a: u32) -> bool {
 
 /// The vtable of `iface` with the methods `impls` names; built once per interface.
 pub fn vtable(iface: &'static str, impls: &[(&str, Handler)]) -> u32 {
+    if let Some(&v) = VTBLS.lock().unwrap().get_or_insert_with(HashMap::new).get(iface) {
+        return v;
+    }
+    // (one builder at a time, looking again under it: two threads making the first object of an
+    // interface at once each built a table, and the loser's and its host functions stayed)
+    static BUILD: Mutex<()> = Mutex::new(());
+    let _b = BUILD.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(&v) = VTBLS.lock().unwrap().get_or_insert_with(HashMap::new).get(iface) {
         return v;
     }
@@ -413,6 +430,38 @@ mod lifetime_tests {
                 }
                 prop_assert_eq!(freed(o), 1);
             }
+        }
+    }
+}
+
+/// Review b05: QueryInterface's IID sets are the per-base lookups they replace, for every
+/// interface; the first objects of an interface made on several threads at once share one vtable.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    #[test]
+    fn iid_sets_are_the_base_lookups() {
+        for t in methods::IFACES.iter() {
+            let want: Vec<Guid> = t.2.iter().filter_map(|n| iid(n)).collect();
+            assert_eq!(iids_of(t.0), &want[..], "{}", t.0);
+            for g in &want {
+                assert!(t.2.iter().any(|n| iid(n) == Some(*g)));
+            }
+        }
+        assert!(iids_of("no such interface").is_empty());
+    }
+
+    #[test]
+    fn first_vtables_race_to_one() {
+        let _g = crate::test_guest::enter();
+        // (interfaces from the end of the table: the least likely to be built by other tests)
+        let names: Vec<&'static str> = methods::IFACES.iter().rev().take(6).map(|t| t.0).collect();
+        for name in names {
+            let ts: Vec<_> = (0..8).map(|_| std::thread::spawn(move || vtable(name, &[]))).collect();
+            let vs: Vec<u32> = ts.into_iter().map(|t| t.join().unwrap()).collect();
+            assert!(vs.iter().all(|&v| v == vs[0] && v != 0), "{name}: {vs:x?}");
+            assert_eq!(vtable(name, &[]), vs[0]);
         }
     }
 }

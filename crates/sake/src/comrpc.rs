@@ -208,7 +208,8 @@ fn invoke(cpu: &mut koji::Cpu, object: &Export, method: &Method, bytes: &[u8]) -
     if params.iter().any(|p| matches!(p.kind, Kind::User { .. }) && p.input() && p.output()) {
         return Reply { hr: NOTIMPL, data: vec![] };
     }
-    let mut args = vec![0u64; method.stack as usize / ps() as usize - 1];
+    let Some(n) = stack_args(method.stack as u32) else { return Reply { hr: BAD_DATA, data: vec![] } };
+    let mut args = vec![0u64; n];
     args[0] = object.pointer as u64;
     // Correlated array lengths can refer to any scalar input argument.
     for (p, (_, bytes)) in params.iter().zip(&values) {
@@ -395,13 +396,20 @@ fn proxy_ref(cpu: &mut koji::Cpu, this: u32, add: bool) -> u32 {
     if reply.hr != 0 { 0 } else { remaining }
 }
 fn proxy_addref(c: &mut Ctx) -> u32 { let this = c.a(0); proxy_ref(c.cpu, this, true) }
+/// The argument slots after `this` of a method whose MIDL proc format says `stack` bytes: None
+/// unless it holds `this` and one more slot, in whole slots, at most 4 KB (the proxy DLL is the
+/// guest's: a stack of 0 underflowed to 4 G slots).
+fn stack_args(stack: u32) -> Option<usize> {
+    (stack >= 2 * ps() && stack <= 4096 && stack % ps() == 0).then(|| (stack / ps() - 1) as usize)
+}
 fn proxy_release(c: &mut Ctx) -> u32 { let this = c.a(0); proxy_ref(c.cpu, this, false) }
 fn proxy_method(c: &mut Ctx) -> u32 {
     let Some(proxy) = proxy(c.a(0)) else { return DISCONNECTED };
     let Some(slot) = METHOD_TRAPS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap)).copied() else { return NOTIMPL };
     let Some(method) = proxy.info.methods.get(&slot) else { return NOTIMPL };
+    let Some(n) = stack_args(method.stack as u32) else { return BAD_DATA };
     let mut args = Vec::new();
-    for i in 0..method.stack as u32 / ps() - 1 { args.push(if mem::x64() { c.a64(i) } else { c.a(i) as u64 }); }
+    for i in 0..n as u32 { args.push(if mem::x64() { c.a64(i) } else { c.a(i) as u64 }); }
     let mut data = Vec::new();
     for p in method.params.iter().filter(|p| !p.retval()) {
         let Some(mut arg) = args.get(p.stack as usize / ps() as usize).copied() else { return BAD_DATA };
@@ -554,6 +562,25 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// any stack size from a proxy's proc format gives the argument slots after `this`
+        /// (stack / ps - 1, at least 1) or nothing: never an underflow or a 4 G-slot Vec
+        #[test]
+        fn stack_sizes_are_checked(stack in any::<u16>()) {
+            let _g = crate::test_guest::enter();
+            let st = stack as u32;
+            match stack_args(st) {
+                Some(n) => {
+                    prop_assert!(st >= 2 * ps() && st <= 4096 && st % ps() == 0);
+                    prop_assert_eq!(n as u32, st / ps() - 1);
+                    prop_assert!(n >= 1);
+                }
+                None => prop_assert!(st < 2 * ps() || st > 4096 || st % ps() != 0),
+            }
+        }
+    }
     fn iface(id: u8, count: u32) -> Arc<Interface> {
         Arc::new(Interface { iid: vec![id; 16], count, methods: BTreeMap::new(), abi: BTreeMap::new() })
     }
