@@ -330,3 +330,10 @@ path = "fuzz_targets/profile_cache.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "vfs_pages"
+path = "fuzz_targets/vfs_pages.rs"
+test = false
+doc = false
+bench = false

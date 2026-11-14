@@ -29,7 +29,7 @@ type Hash = [u8; 16];
 enum Content {
     /// From the store; `None` chunks are all zero.
     Lower { size: u64, chunks: Arc<Vec<Option<Hash>>>, starts: Arc<Vec<u64>> },
-    Upper(Vec<u8>),
+    Upper(crate::pages::Pages),
 }
 
 /// Where a store file's chunks lie (cut by content: ippai's cdc.rs): where each starts, and the
@@ -448,12 +448,12 @@ impl Fs {
         };
         match old.and_then(|i| self.node_mut(i).map(|n| (i, n))) {
             Some((_, n)) if matches!(n.data, Data::File(_)) => {
-                n.data = Data::File(Content::Upper(data));
+                n.data = Data::File(Content::Upper(crate::pages::Pages::from_vec(data)));
                 n.mtime = mtime;
             }
             Some(_) => {}
             None => {
-                let i = self.add(Data::File(Content::Upper(data)), 0o644, mtime);
+                let i = self.add(Data::File(Content::Upper(crate::pages::Pages::from_vec(data))), 0o644, mtime);
                 if let Some(Data::Dir(ch)) = self.data_mut(at) {
                     ch.insert(name.to_string(), i);
                 }
@@ -476,7 +476,7 @@ impl Fs {
                     out.extend_from_slice(p.as_bytes());
                     out.extend_from_slice(&n.mtime.to_le_bytes());
                     out.extend_from_slice(&(v.len() as u32).to_le_bytes());
-                    out.extend_from_slice(v);
+                    v.for_each(|b| out.extend_from_slice(b));
                 }
                 _ => {}
             }
@@ -665,7 +665,7 @@ impl Fs {
     fn file_size(&self, ino: Ino) -> u64 {
         match self.node(ino).map(|n| &n.data) {
             Some(Data::File(Content::Lower { size, .. })) => *size,
-            Some(Data::File(Content::Upper(v))) => v.len() as u64,
+            Some(Data::File(Content::Upper(v))) => v.len(),
             _ => 0,
         }
     }
@@ -1733,10 +1733,7 @@ fn lookup(fs: &Fs, ino: Ino, buf: &mut [u8], off: u64) -> Result<Result<(Layout,
     match fs.node(ino).map(|n| &n.data) {
         Some(Data::File(Content::Upper(v))) => {
             // (an offset past what a usize holds is past the end: not its low 32 bits)
-            let start = usize::try_from(off).map_or(v.len(), |o| o.min(v.len()));
-            let n = buf.len().min(v.len() - start);
-            buf[..n].copy_from_slice(&v[start..start + n]);
-            Ok(Err(n))
+            Ok(Err(v.read(off, buf)))
         }
         Some(Data::File(Content::Lower { size, chunks, starts })) => Ok(Ok((Layout { size: *size, starts: starts.clone() }, chunks.clone()))),
         Some(Data::Dir(_)) => Err(libc::EISDIR),
@@ -1856,9 +1853,24 @@ fn copy_up(ino: Ino, keep: u64) -> Result<(), c_int> {
     if size >= COPY_UP_NOTE {
         eprintln!("kura: a write copies {} MiB of a file from the store into memory (inode {ino})", size >> 20);
     }
-    let mut v = Vec::new();
-    grow(&mut v, upper_end(size, 0, UPPER_MAX)?)?;
-    read_at(ino, &mut v, 0)?;
+    upper_end(size, 0, UPPER_MAX)?;
+    let mut v = crate::pages::Pages::new();
+    if !v.room(size) {
+        return Err(libc::ENOSPC);
+    }
+    // a page at a time: a big file never needs one block of its whole size (#234)
+    let mut buf = vec![0; crate::pages::PAGE.min(size as usize)];
+    let mut at = 0u64;
+    while at < size {
+        let k = buf.len().min((size - at) as usize);
+        let n = read_at(ino, &mut buf[..k], at)?;
+        if n == 0 {
+            break;
+        }
+        v.write(at, &buf[..n]);
+        at += n as u64;
+    }
+    v.set_len(size);
     with(|fs| {
         if let Some(Data::File(c @ Content::Lower { .. })) = fs.data_mut(ino) {
             *c = Content::Upper(v);
@@ -1877,16 +1889,6 @@ fn upper_end(off: u64, len: usize, max: usize) -> Result<usize, c_int> {
     off.checked_add(len as u64).filter(|&e| e <= max as u64).map(|e| e as usize).ok_or(libc::EFBIG)
 }
 
-/// Makes `v` at least `len` bytes, the new ones zero: ENOSPC when the memory is not there (a
-/// SetEndOfFile far out stopped the whole program in the allocator; Windows says the disk is full).
-fn grow(v: &mut Vec<u8>, len: usize) -> Result<(), c_int> {
-    if len > v.len() {
-        v.try_reserve(len - v.len()).map_err(|_| libc::ENOSPC)?;
-        v.resize(len, 0);
-    }
-    Ok(())
-}
-
 fn write_at(ino: Ino, data: &[u8], off: u64) -> Result<usize, c_int> {
     copy_up(ino, u64::MAX)?;
     with(|fs| fs.write_upper(ino, data, off))
@@ -1902,9 +1904,15 @@ impl Fs {
     fn write_upper(&mut self, ino: Ino, data: &[u8], off: u64) -> Result<usize, c_int> {
         let Some(Data::File(Content::Upper(v))) = self.upper_mut(ino) else { return Err(libc::EBADF) };
         let end = upper_end(off, data.len(), UPPER_MAX)?;
-        let old = v.len();
-        grow(v, end)?;
-        v[end - data.len()..end].copy_from_slice(data);
+        if data.is_empty() {
+            // (as WriteFile and pwrite: nothing written, the file as it was)
+            return Ok(0);
+        }
+        if !v.room(end as u64) {
+            return Err(libc::ENOSPC);
+        }
+        let old = v.len() as usize;
+        v.write(off, data);
         // (the bytes the other processes need: these, and the zeros a write past the end made)
         self.dirt.bytes(ino, old.min(end - data.len()), end);
         if let Some(n) = self.meta_mut(ino) {
@@ -1917,12 +1925,12 @@ impl Fs {
         match self.upper_mut(ino) {
             Some(Data::File(Content::Upper(v))) => {
                 let size = upper_end(size, 0, UPPER_MAX)?;
-                let old = v.len();
-                if size > v.len() {
-                    grow(v, size)?;
-                } else {
-                    v.truncate(size);
+                if !v.room(size as u64) {
+                    return Err(libc::ENOSPC);
                 }
+                let old = v.len() as usize;
+                // (pages hold what was written: a SetEndOfFile far out costs nothing)
+                v.set_len(size as u64);
                 // (cut then grown again before the others look: the zeros between are new)
                 self.dirt.bytes(ino, old.min(size), old.max(size));
                 Ok(())
@@ -2051,7 +2059,7 @@ pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
                 if flags & libc::O_CREAT == 0 {
                     return At::Ours(Err(libc::ENOENT));
                 }
-                let ino = fs.add(Data::File(Content::Upper(Vec::new())), mode & 0o7777, now());
+                let ino = fs.add(Data::File(Content::Upper(crate::pages::Pages::new())), mode & 0o7777, now());
                 if let Some(Data::Dir(ch)) = fs.data_mut(parent) {
                     ch.insert(name, ino);
                 }
@@ -2635,10 +2643,13 @@ pub(crate) mod tests {
                     let data: Vec<u8> = (0..rnd(150)).map(|_| rnd(256) as u8).collect();
                     assert_eq!(write_at(ino, &data, off), Ok(data.len()));
                     let end = off as usize + data.len();
-                    if m.len() < end {
-                        m.resize(end, 0);
+                    // (writing nothing does not lengthen a file: pwrite, and WriteFile's "null write")
+                    if !data.is_empty() {
+                        if m.len() < end {
+                            m.resize(end, 0);
+                        }
+                        m[off as usize..end].copy_from_slice(&data);
                     }
-                    m[off as usize..end].copy_from_slice(&data);
                 }
                 1 => {
                     let n = rnd(m.len() as u64 + 100);
@@ -3433,7 +3444,7 @@ pub(crate) mod tests {
     #[test]
     fn upper_file_too_big_is_an_error() {
         // (a file with no name: the tests share one file system)
-        let ino = with(|fs| fs.add(Data::File(Content::Upper(b"abc".to_vec())), 0o644, 0));
+        let ino = with(|fs| fs.add(Data::File(Content::Upper(crate::pages::Pages::from_slice(b"abc"))), 0o644, 0));
         let size = |ino| with(|fs| fs.file_size(ino));
         // (more than any allocator has: not the whole address space zeroed first)
         let far = isize::MAX as u64 - 8;

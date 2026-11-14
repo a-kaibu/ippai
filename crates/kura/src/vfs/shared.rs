@@ -34,7 +34,7 @@ fn put_node(out: &mut Vec<u8>, node: Option<&Node>) {
     match &n.data {
         Data::Dir(children) => { u32put(out, children.len() as u32); for (name, ino) in children { bytes(out, name.as_bytes()); u32put(out, *ino); } }
         Data::Link(path) => bytes(out, path.as_bytes()),
-        Data::File(Content::Upper(data)) => bytes(out, data),
+        Data::File(Content::Upper(data)) => { u32put(out, data.len() as u32); data.for_each(|b| out.extend(b)); }
         Data::File(Content::Lower { size, chunks, starts }) => {
             out.extend(size.to_le_bytes()); u32put(out, chunks.len() as u32);
             for (i, hash) in chunks.iter().enumerate() { out.push(hash.is_some() as u8); if let Some(h) = hash { out.extend(h); } out.extend(starts[i + 1].to_le_bytes()); }
@@ -49,7 +49,7 @@ fn get_node(r: &mut Read) -> Option<Option<Node>> {
     let data = match tag {
         1 => { let n = r.u32()?; if n as usize > r.0.len() / 8 { return None; } let mut children = BTreeMap::new(); for _ in 0..n { children.insert(r.string()?, r.u32()?); } Data::Dir(children) }
         2 => Data::Link(r.string()?),
-        3 => Data::File(Content::Upper(r.bytes()?)),
+        3 => { let n = r.u32()? as usize; Data::File(Content::Upper(crate::pages::Pages::from_slice(r.take(n)?))) }
         4 => {
             let size = r.u64()?; let n = r.u32()? as usize;
             if n > r.0.len() / 9 { return None; }
@@ -269,10 +269,14 @@ impl Fs {
                 (Some(n @ Node { data: Data::File(Content::Upper(v)), .. }), Level::Meta) => {
                     out.push(I_UPPER); u32put(&mut out, ino);
                     u32put(&mut out, n.mode); out.extend(n.mtime.to_le_bytes()); u32put(&mut out, n.nlink); u32put(&mut out, n.open_refs);
-                    out.extend((v.len() as u64).to_le_bytes());
-                    let ranges: Vec<_> = mark.bytes.iter().map(|&(a, b)| (a.min(v.len()), b.min(v.len()))).filter(|r| r.0 < r.1).collect();
+                    out.extend(v.len().to_le_bytes());
+                    let len = v.len() as usize;
+                    let ranges: Vec<_> = mark.bytes.iter().map(|&(a, b)| (a.min(len), b.min(len))).filter(|r| r.0 < r.1).collect();
                     u32put(&mut out, ranges.len() as u32);
-                    for (a, b) in ranges { out.extend((a as u64).to_le_bytes()); bytes(&mut out, &v[a..b]); }
+                    for (a, b) in ranges {
+                        out.extend((a as u64).to_le_bytes()); u32put(&mut out, (b - a) as u32);
+                        let at = out.len(); out.resize(at + (b - a), 0); v.read(a as u64, &mut out[at..]);
+                    }
                 }
                 (n, _) => { out.push(I_NODE); u32put(&mut out, ino); put_node(&mut out, n); }
             }
@@ -343,8 +347,8 @@ impl Fs {
                     let Some(Some(n)) = self.nodes.get_mut(ino as usize) else { continue };
                     (n.mode, n.mtime, n.nlink, n.open_refs) = (mode, mtime, nlink, open_refs);
                     if let Data::File(Content::Upper(v)) = &mut n.data {
-                        v.resize(size as usize, 0);
-                        for (at, b) in ranges { v[at as usize..at as usize + b.len()].copy_from_slice(&b); }
+                        v.set_len(size);
+                        for (at, b) in ranges { v.write(at, &b); }
                     }
                 }
             }

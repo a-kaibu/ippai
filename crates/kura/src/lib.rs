@@ -43,6 +43,7 @@ pub mod crashlog;
 pub mod jit;
 pub mod display;
 pub mod render;
+pub mod pages;
 pub mod vfs;
 pub mod fs;
 pub mod filelock;
