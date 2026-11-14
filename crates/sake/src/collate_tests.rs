@@ -39,6 +39,56 @@ fn orders_as_windows() {
     }
 }
 
+/// The level that decides `a` against `b`: 0 primary, 1 diacritic, 2 tertiary, 3 hyphens and
+/// apostrophes, 4 equal
+fn level(a: &[u16], b: &[u16], flags: u32) -> usize {
+    let (ka, kb) = (key(a, flags), key(b, flags));
+    let sp = |k: &(Vec<u32>, Vec<u8>, Vec<u8>, Vec<(usize, u8)>)| k.3.iter().map(|x| x.1).collect::<Vec<u8>>();
+    [ka.0 != kb.0, ka.1 != kb.1, ka.2 != kb.2, sp(&ka) != sp(&kb)].iter().position(|&d| d).unwrap_or(4)
+}
+
+/// Found by the proptest: a later level decides once a higher one is ignored
+#[test]
+fn ignored_level_lets_the_next_decide() {
+    use Ordering::*;
+    // è > Ｅ by the grave; ignoring marks, lower-case narrow e < upper-case wide Ｅ
+    assert_eq!(compare(&[0xe8], &[0xff25], 0), Greater);
+    assert_eq!(compare(&[0xe8], &[0xff25], NORM_IGNORECASE), Greater);
+    assert_eq!(compare(&[0xe8], &[0xff25], NORM_IGNORENONSPACE), Less);
+    assert_eq!(compare(&[0xe8], &[0xff25], NORM_IGNORENONSPACE | NORM_IGNORECASE | NORM_IGNOREWIDTH), Equal);
+    // Z < ž by the caron; ignoring marks, Z > z by case
+    assert_eq!(compare(&[0x5a], &[0x17e], 0), Less);
+    assert_eq!(compare(&[0x5a], &[0x17e], NORM_IGNORENONSPACE), Greater);
+    assert_eq!(compare(&[0x5a], &[0x17e], NORM_IGNORENONSPACE | NORM_IGNORECASE), Equal);
+}
+
+/// Every pair of the collate probe's strings under its eight flag sets, as Windows answered
+/// (tests/winref/probes/collate.c; skipped until the winref workflow has recorded it)
+#[test]
+fn levels_as_windows() {
+    const F: [u32; 8] = [0, NORM_IGNORECASE, NORM_IGNORENONSPACE, NORM_IGNOREWIDTH, NORM_IGNOREKANATYPE, NORM_IGNORECASE | NORM_IGNOREKANATYPE | NORM_IGNOREWIDTH, NORM_IGNORESYMBOLS, SORT_STRINGSORT];
+    let outs: Vec<String> = ["32", "64"].iter().filter_map(|b| std::fs::read_to_string(format!("{}/../../tests/winref/golden/collate-{b}/stdout.txt", env!("CARGO_MANIFEST_DIR"))).ok()).collect();
+    if outs.is_empty() {
+        eprintln!("collate golden not recorded yet");
+        return;
+    }
+    let mut bad = Vec::new();
+    for out in outs {
+        for table in ["one", "two"] {
+            let strs: Vec<Vec<u16>> = out.lines().filter_map(|l| l.strip_prefix(&format!("{table} str "))).map(|l| l.split(':').nth(1).unwrap().split_whitespace().map(|h| u16::from_str_radix(h, 16).unwrap()).collect()).collect();
+            for (i, row) in out.lines().filter_map(|l| l.strip_prefix(&format!("{table} row "))).enumerate() {
+                for (j, cell) in row.split(':').nth(1).unwrap().split_whitespace().enumerate() {
+                    let got: String = F.iter().map(|&f| digit(compare(&strs[i], &strs[j], f)) as char).collect();
+                    if got != cell {
+                        bad.push(format!("{:x?} vs {:x?}: windows {cell} sake {got}", strs[i], strs[j]));
+                    }
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{} differences:\n{}", bad.len(), bad[..bad.len().min(60)].join("\n"));
+}
+
 fn text() -> impl Strategy<Value = Vec<u16>> {
     prop::collection::vec(
         prop_oneof![
@@ -74,17 +124,22 @@ proptest! {
         }
     }
 
-    /// Ignoring a difference can only make strings equal, never reverse them
+    /// Ignoring a difference never touches the levels above it: an answer the primary weights
+    /// decide stays under every flag, one the diacritics decide stays ignoring case, width or
+    /// kana kind. (Below the ignored level a later difference may decide the other way, as on
+    /// Windows: è > Ｅ by the mark, è < Ｅ ignoring it by case; tests/winref/golden/collate-*)
     #[test]
-    fn ignoring_coarsens(a in text(), b in text(), f in flags()) {
+    fn ignoring_keeps_higher_levels(a in text(), b in text(), f in flags()) {
+        let f = f & !SORT_STRINGSORT;
         let fine = compare(&a, &b, 0);
-        let coarse = compare(&a, &b, f & !SORT_STRINGSORT);
-        // (hyphens and apostrophes, full-width ones too, break only the ties case and width leave:
-        // once those are ignored they can decide the other way, as on Windows: a < -a < A, and
-        // -a > A ignoring case; the golden test above holds that)
-        let special = |s: &[u16]| s.iter().any(|&c| matches!(weight(c, 0), Weight::Special(_)));
-        if coarse != Ordering::Equal && f & NORM_IGNORESYMBOLS == 0 && !special(&a) && !special(&b) {
+        let coarse = compare(&a, &b, f);
+        let touched = if f & NORM_IGNORENONSPACE != 0 { 1 } else if f != 0 { 2 } else { 4 };
+        if f & NORM_IGNORESYMBOLS == 0 && level(&a, &b, 0) < touched {
             prop_assert_eq!(coarse, fine);
+        }
+        // and what decides ignoring is never above what decided before
+        if f & NORM_IGNORESYMBOLS == 0 {
+            prop_assert!(level(&a, &b, f) >= level(&a, &b, 0));
         }
     }
 
