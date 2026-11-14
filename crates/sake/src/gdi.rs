@@ -327,6 +327,18 @@ fn free_bitmap(b: &Bitmap) {
     }
 }
 
+/// A solid brush's colour as 0x00RRGGBB (the system colour brushes, COLOR_ + 1, too); None for
+/// other brushes.
+pub fn brush_color(brush: u32) -> Option<u32> {
+    if (1..=31).contains(&brush) {
+        return Some(rgb(sys_color(brush - 1)));
+    }
+    with(|t| match t.m.get(&brush) {
+        Some(G::Brush(b)) if b.style == 0 => Some(rgb(b.color)),
+        _ => None,
+    })
+}
+
 pub fn solid_brush(color: u32) -> u32 {
     if let Some(h) = with(|t| t.solid.get(&color).copied()) {
         return h;
@@ -2163,6 +2175,53 @@ fn blend(d: u32, s: u32, a: u32) -> u32 {
     ch(16) | ch(8) | ch(0)
 }
 
+/// DrawText's lines of `chars` as ranges of it: one line (DT_SINGLELINE), else a line per line
+/// feed, each broken where the next character would pass `maxw` (DT_WORDBREAK; at any
+/// character, at least one a line). A line's range leaves out its line feed and the carriage
+/// return before it; carriage returns count no width. `adv`: a character's advance.
+pub(crate) fn line_ranges(chars: &[u16], flags: u32, maxw: i32, adv: impl Fn(u16) -> i32) -> Vec<(usize, usize)> {
+    if flags & 0x20 != 0 {
+        return vec![(0, chars.len())];
+    }
+    let mut out = Vec::new();
+    let mut a = 0;
+    loop {
+        let b = chars[a..].iter().position(|&c| c == 10).map_or(chars.len(), |k| a + k);
+        let e = if b > a && chars[b - 1] == 13 { b - 1 } else { b };
+        let mut start = a;
+        if flags & 0x10 != 0 && maxw > 0 {
+            let (mut w, mut n) = (0, 0);
+            for i in a..e {
+                if chars[i] == 13 {
+                    continue;
+                }
+                let x = adv(chars[i]);
+                if w + x > maxw && n > 0 {
+                    out.push((start, i));
+                    start = i;
+                    w = 0;
+                    n = 0;
+                }
+                w += x;
+                n += 1;
+            }
+        }
+        out.push((start, e));
+        if b >= chars.len() {
+            break;
+        }
+        a = b + 1;
+    }
+    out
+}
+
+/// The lines DrawText would draw `s` in at width `w` with `flags` (DT_WORDBREAK...), in `dc`'s
+/// font: ranges of `s` (line_ranges). An edit control's lines (user.rs).
+pub fn text_line_ranges(dc: u32, s: &[u16], w: i32, flags: u32) -> Vec<(usize, usize)> {
+    let Some((r, _, st)) = real_of(dc) else { return line_ranges(s, flags, 0, |_| 0) };
+    line_ranges(s, flags, w, |ch| glyph(&r, ch as u32).adv + st.char_extra)
+}
+
 /// DrawText (user32): returns the text height.
 pub fn draw_text(dc: u32, s: &[u16], rp: u32, flags: u32) -> u32 {
     let Some((r, _, st)) = real_of(dc) else { return 0 };
@@ -2178,31 +2237,10 @@ pub fn draw_text(dc: u32, s: &[u16], rp: u32, flags: u32) -> u32 {
         chars.push(s[i]);
         i += 1;
     }
-    let maxw = rc.w();
-    let mut lines: Vec<Vec<u16>> = Vec::new();
-    if flags & 0x20 != 0 {
-        lines.push(chars.iter().copied().filter(|&c| c != 10 && c != 13).collect());
-    } else {
-        for l in chars.split(|&c| c == 10) {
-            let l: Vec<u16> = l.iter().copied().filter(|&c| c != 13).collect();
-            if flags & 0x10 != 0 && maxw > 0 {
-                let mut cur = Vec::new();
-                let mut w = 0;
-                for ch in l {
-                    let a = glyph(&r, ch as u32).adv + st.char_extra;
-                    if w + a > maxw && !cur.is_empty() {
-                        lines.push(std::mem::take(&mut cur));
-                        w = 0;
-                    }
-                    cur.push(ch);
-                    w += a;
-                }
-                lines.push(cur);
-            } else {
-                lines.push(l);
-            }
-        }
-    }
+    let lines: Vec<Vec<u16>> = line_ranges(&chars, flags, rc.w(), |ch| glyph(&r, ch as u32).adv + st.char_extra)
+        .into_iter()
+        .map(|(a, b)| chars[a..b].iter().copied().filter(|&c| c != 10 && c != 13).collect())
+        .collect();
     let height = lh * lines.len() as i32;
     if flags & 0x400 != 0 {
         let w = lines.iter().map(|l| text_width(&r, l, st.char_extra)).max().unwrap_or(0);
@@ -5438,6 +5476,81 @@ mod raster_tests {
             let g = raster(&r, ch as u32);
             prop_assert!((g.w as i64) * (g.h as i64) <= MAX_GLYPH_PIXELS);
             prop_assert_eq!(g.cov.len() as i64, (g.w as i64) * (g.h as i64));
+        }
+    }
+}
+
+#[cfg(test)]
+mod line_breaks {
+    use super::line_ranges;
+    use proptest::prelude::*;
+
+    /// DrawText's line breaking as it was before it gave ranges (the reference): lines of
+    /// characters, carriage returns left out.
+    fn lines_before(chars: &[u16], flags: u32, maxw: i32, adv: impl Fn(u16) -> i32) -> Vec<Vec<u16>> {
+        let mut lines: Vec<Vec<u16>> = Vec::new();
+        if flags & 0x20 != 0 {
+            lines.push(chars.iter().copied().filter(|&c| c != 10 && c != 13).collect());
+            return lines;
+        }
+        for l in chars.split(|&c| c == 10) {
+            let l: Vec<u16> = l.iter().copied().filter(|&c| c != 13).collect();
+            if flags & 0x10 != 0 && maxw > 0 {
+                let mut cur = Vec::new();
+                let mut w = 0;
+                for ch in l {
+                    let a = adv(ch);
+                    if w + a > maxw && !cur.is_empty() {
+                        lines.push(std::mem::take(&mut cur));
+                        w = 0;
+                    }
+                    cur.push(ch);
+                    w += a;
+                }
+                lines.push(cur);
+            } else {
+                lines.push(l);
+            }
+        }
+        lines
+    }
+
+    fn text() -> impl Strategy<Value = Vec<u16>> {
+        prop::collection::vec(prop_oneof![Just(10u16), Just(13u16), Just(0x20u16), 0x41u16..0x48, 0x3042u16..0x3046], 0..80)
+    }
+
+    proptest! {
+        /// The ranges give the lines the old breaking gave (the same text drawn, the same line
+        /// count for the edit control's scroll bar).
+        #[test]
+        fn same_lines_as_before(chars in text(), wrap in any::<bool>(), single in any::<bool>(), maxw in -5i32..120) {
+            let flags = if single { 0x20 } else { 0 } | if wrap { 0x10 } else { 0 };
+            let adv = |c: u16| if c >= 0x3000 { 12 } else { 7 };
+            let got: Vec<Vec<u16>> = line_ranges(&chars, flags, maxw, adv)
+                .into_iter()
+                .map(|(a, b)| chars[a..b].iter().copied().filter(|&c| c != 10 && c != 13).collect())
+                .collect();
+            prop_assert_eq!(got, lines_before(&chars, flags, maxw, adv));
+        }
+
+        /// The ranges are in order, apart, inside the text, hold no line feed, and a line feed
+        /// (with the carriage return before it) is all that lies between two of them that a
+        /// wrap did not split.
+        #[test]
+        fn ranges_cover_the_text(chars in text(), wrap in any::<bool>(), maxw in 1i32..120) {
+            let r = line_ranges(&chars, if wrap { 0x10 } else { 0 }, maxw, |_| 7);
+            prop_assert!(!r.is_empty());
+            prop_assert_eq!(r[0].0, 0);
+            prop_assert_eq!(r.last().unwrap().1, chars.len() - (chars.ends_with(&[13]) as usize));
+            for (k, &(a, b)) in r.iter().enumerate() {
+                prop_assert!(a <= b && b <= chars.len());
+                prop_assert!(!chars[a..b].contains(&10));
+                if let Some(&(na, _)) = r.get(k + 1) {
+                    let gap = &chars[b..na];
+                    prop_assert!(gap.is_empty() || gap == [10] || gap == [13, 10], "gap {:?}", gap);
+                }
+            }
+            prop_assert_eq!(r.len(), 1 + chars.iter().filter(|&&c| c == 10).count() + r.windows(2).filter(|w| w[0].1 == w[1].0).count());
         }
     }
 }

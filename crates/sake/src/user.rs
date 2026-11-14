@@ -168,16 +168,51 @@ pub struct Window {
     pub shown: bool,
     /// SB_HORZ, SB_VERT and SB_CTL's range, page and position
     pub scroll: [Scroll; 3],
+    /// the system control whose window procedure this window runs (its class's when that is a
+    /// system class; else the one a superclass hands its messages to, known from the first
+    /// message that reaches that procedure: Delphi's TButton/TCheckBox, #222)
+    pub base: Base,
 }
 
-/// A scroll bar's state (SCROLLINFO): (min, max, page, pos, track pos)
+/// The system controls whose behaviour sake's control procedure gives (each class has its own
+/// procedure, as on Windows: a superclass registered with GetClassInfo("Button")'s lpfnWndProc
+/// is a button).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub enum Base {
+    #[default]
+    Other,
+    Button,
+    Static,
+    Edit,
+    /// RichEdit20A/W, RICHEDIT50W (drawn as a plain edit)
+    Rich,
+}
+
+impl Base {
+    /// The control a class of that name is (system classes' names, any case).
+    pub fn of_class(name: &str) -> Base {
+        match name.to_ascii_lowercase().as_str() {
+            "button" => Base::Button,
+            "static" => Base::Static,
+            "edit" => Base::Edit,
+            "richedit20a" | "richedit20w" | "richedit50w" => Base::Rich,
+            _ => Base::Other,
+        }
+    }
+    /// an edit control or a rich edit
+    pub fn edit(self) -> bool {
+        matches!(self, Base::Edit | Base::Rich)
+    }
+}
+
+/// A scroll bar's state (SCROLLINFO): (min, max, page, pos). (No thumb is ever dragged in sake:
+/// the track position is the position.)
 #[derive(Clone, Copy, Default)]
 pub struct Scroll {
     pub min: i32,
     pub max: i32,
     pub page: u32,
     pub pos: i32,
-    pub track: i32,
 }
 impl Scroll {
     /// the position within [min, max - max(page - 1, 0)], as Windows keeps it
@@ -599,24 +634,19 @@ fn class_index(s: &State, name: u32, wide: bool) -> Option<usize> {
     s.classes.iter().position(|c| c.name.to_lowercase() == n && !c.unregistered)
 }
 
-/// comctl32's animation control (SysAnimate32), shown still: ACM_OPEN(A/W) of a clip, ACM_PLAY
-/// and ACM_STOP succeed and nothing is drawn; ACM_ISPLAYING is FALSE. (Delphi's TAnimate opens
-/// its clip when created and raises 「AVI を開くことができません」 on FALSE: YU-RIS's installer)
+#[path = "animate.rs"]
+pub(crate) mod animate;
+#[path = "progress.rs"]
+mod progress;
+fn progress_proc() -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| crate::api::host_fn("progress_proc", progress::proc_fn, 16))
+}
+/// comctl32's animation control (SysAnimate32): animate.rs. (Delphi's TAnimate opens its clip
+/// when created and raises 「AVI を開くことができません」 on FALSE: YU-RIS's installer)
 fn animate_proc() -> u32 {
     static P: OnceLock<u32> = OnceLock::new();
-    *P.get_or_init(|| crate::api::host_fn("animate_proc", |c| match animate_answer(c.a(1)) {
-        Some(r) => r,
-        None => def_proc(c, msg_wide()),
-    }, 16))
-}
-pub(crate) fn animate_answer(msg: u32) -> Option<u32> {
-    match msg {
-        // ACM_OPENA, ACM_PLAY, ACM_STOP, ACM_OPENW
-        0x464..=0x467 => Some(1),
-        // ACM_ISPLAYING
-        0x468 => Some(0),
-        _ => None,
-    }
+    *P.get_or_init(|| crate::api::host_fn("animate_proc", animate::proc_fn, 16))
 }
 fn builtin_proc() -> u32 {
     static P: OnceLock<u32> = OnceLock::new();
@@ -647,6 +677,13 @@ struct Ctl {
     pressed: bool,
     /// a static's picture (STM_SETIMAGE / STM_SETICON): SS_BITMAP's HBITMAP, SS_ICON's HICON
     image: u32,
+    /// a multiline edit's first line shown, the caret's line, and the wheel's turn short of a
+    /// notch (WHEEL_DELTA)
+    top: i32,
+    caret: i32,
+    wheel: i32,
+    /// an edit's selection (EM_SETSEL: anchor and active end, UTF-16 positions)
+    sel: (u32, u32),
 }
 
 static CTLS: Mutex<Option<HashMap<u32, Ctl>>> = Mutex::new(None);
@@ -849,9 +886,25 @@ fn combo_paint(c: &mut Ctx, h: u32) {
     mem::heap_free(ps);
 }
 
-fn control_proc() -> u32 {
-    static P: OnceLock<u32> = OnceLock::new();
-    *P.get_or_init(|| crate::api::host_fn("control_proc", control_proc_fn, 16))
+/// The window procedure of a system control class: one per class (a superclass that hands its
+/// messages on to it makes its windows that control).
+fn control_proc(base: Base) -> u32 {
+    fn proc_of(c: &mut Ctx, base: Base) -> u32 {
+        let h = c.a(0);
+        with(|s| {
+            if let Some(w) = s.wins.get_mut(&h) {
+                w.base = base;
+            }
+        });
+        control_proc_fn(c)
+    }
+    static P: [OnceLock<u32>; 4] = [const { OnceLock::new() }; 4];
+    match base {
+        Base::Button => *P[0].get_or_init(|| crate::api::host_fn("button_proc", |c| proc_of(c, Base::Button), 16)),
+        Base::Static => *P[1].get_or_init(|| crate::api::host_fn("static_proc", |c| proc_of(c, Base::Static), 16)),
+        Base::Edit => *P[2].get_or_init(|| crate::api::host_fn("edit_proc", |c| proc_of(c, Base::Edit), 16)),
+        _ => *P[3].get_or_init(|| crate::api::host_fn("richedit_proc", |c| proc_of(c, Base::Rich), 16)),
+    }
 }
 
 #[path = "tabctl.rs"]
@@ -917,11 +970,32 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     }
     let mut tr = full;
     let mut flags;
-    let edit = with(|s| s.wins.get(&h).is_some_and(|w| edit_class(&s.classes[w.class].name)));
+    let edit = is_edit(h);
     if edit {
         fill(full, 0xffffff);
         frame(full, 0x7a7a7a);
         (tr, flags) = edit_text_box(style, w, hh);
+        if style & 4 != 0 {
+            // a multiline edit: from its first line shown, its bar (WS_VSCROLL), the text
+            // clipped to its box
+            let (lines, lh, page, _) = edit_scroll(c, h, None, dc);
+            let top = ctl(h).top;
+            if style & WS_VSCROLL != 0 {
+                let (up, down, thumb) = edit_vbar(w, hh, lines, page, top);
+                fill(Rect { l: up.l, t: up.t, r: up.r, b: down.b }, 0xf0f0f0);
+                fill(thumb, 0xc0c0c0);
+                for (r, dir) in [(up, -1), (down, 1)] {
+                    // a small triangle pointing up or down
+                    let (cx, cy) = ((r.l + r.r) / 2, (r.t + r.b) / 2);
+                    for k in 0..4 {
+                        let y = if dir < 0 { cy - 2 + k } else { cy + 1 - k };
+                        fill(Rect { l: cx - k, t: y, r: cx + k + 1, b: y + 1 }, 0x606060);
+                    }
+                }
+            }
+            gcall(c, "gdi32", "IntersectClipRect", &[dc, tr.l as u32, tr.t as u32, tr.r as u32, tr.b as u32]);
+            tr.t -= top * lh;
+        }
     } else if !button {
         if style & 0x1000 != 0 {
             // SS_SUNKEN: a one-pixel sunken edge (WS_EX_STATICEDGE)
@@ -1079,10 +1153,176 @@ fn edit_text_box(style: u32, w: i32, hh: i32) -> (Rect, u32) {
         _ => 0,
     };
     if style & 4 != 0 {
-        (Rect { l: 4, t: 2, r: w - 4, b: hh - 2 }, align | 0x10 | 0x800 | 0x2000)
+        // (a WS_VSCROLL edit's bar: sake draws it inside the control, at its right: edit_vbar)
+        let bar = if style & WS_VSCROLL != 0 { SB_W } else { 0 };
+        (Rect { l: 4, t: 2, r: w - 4 - bar, b: hh - 2 }, align | 0x10 | 0x800 | 0x2000)
     } else {
         (Rect { l: 4, t: 0, r: w - 4, b: hh }, align | 0x4 | 0x20 | 0x800)
     }
+}
+
+const WS_VSCROLL: u32 = 0x0020_0000;
+/// SM_CXVSCROLL / SM_CYVSCROLL: a scroll bar's width and its arrow buttons' height
+const SB_W: i32 = 17;
+
+/// A multiline edit's layout as it draws it: (its lines, the line height, the whole lines it
+/// shows). `dc`: the one it is painted on (0: its own, with its font).
+fn edit_lines(c: &mut Ctx, h: u32, dc: u32) -> (i32, i32, i32) {
+    let (ranges, lh, page) = edit_measure(c, h, dc);
+    (ranges.len().max(1) as i32, lh, page)
+}
+
+/// A multiline edit's lines as it draws them (ranges of its text, gdi::line_ranges), its line
+/// height and the whole lines it shows.
+fn edit_measure(c: &mut Ctx, h: u32, dc: u32) -> (Vec<(usize, usize)>, i32, i32) {
+    let Some((style, text, w, hh)) = with(|s| s.wins.get(&h).map(|w| (w.style, w.text.clone(), w.client.w(), w.client.h()))) else {
+        return (vec![(0, 0)], 1, 1);
+    };
+    let own = dc == 0;
+    let dc = if own {
+        let d = gcall(c, "user32", "GetDC", &[h]);
+        let f = ctl(h).font;
+        if f != 0 {
+            gcall(c, "gdi32", "SelectObject", &[d, f]);
+        }
+        d
+    } else {
+        dc
+    };
+    let (tr, flags) = edit_text_box(style, w, hh);
+    let text = match password_char(h) {
+        Some(ch) => vec![ch; text.len()],
+        None => text,
+    };
+    let ranges = crate::gdi::text_line_ranges(dc, &text, tr.w(), flags);
+    let rc = mem::heap_alloc(16, true);
+    Rect { l: 0, t: 0, r: 1000, b: 1000 }.write(rc);
+    let mut lh = crate::gdi::draw_text(dc, &[b'A' as u16], rc, 0x20 | 0x400) as i32;
+    mem::heap_free(rc);
+    if lh <= 0 {
+        // (a font with no glyph outlines, sake run without fonts: its metrics' height, else 16)
+        let tm = mem::heap_alloc(64, true);
+        gcall(c, "gdi32", "GetTextMetricsW", &[dc, tm]);
+        lh = r32(tm) as i32;
+        mem::heap_free(tm);
+        if lh <= 0 {
+            lh = 16;
+        }
+    }
+    if own {
+        gcall(c, "user32", "ReleaseDC", &[h, dc]);
+    }
+    (ranges, lh, (tr.h() / lh).max(1))
+}
+
+/// The edit control's line messages on its lines as drawn (`ranges`, of a text `len` long):
+/// EM_LINEINDEX(line; -1 the caret's) the line's first character (-1 past the last line),
+/// EM_LINELENGTH(character; -1 the caret's) its line's length without the line break,
+/// EM_LINEFROMCHAR(character; -1 the caret's) its line. (Wine's edit.c; positions in UTF-16
+/// units, as sake keeps the text.)
+fn edit_line_message(m: u32, arg: u32, ranges: &[(usize, usize)], caret: usize, len: usize) -> u32 {
+    let line_of = |ch: usize| ranges.iter().rposition(|r| r.0 <= ch).unwrap_or(0);
+    let ch = if arg as i32 == -1 { caret } else { (arg as usize).min(len) };
+    match m {
+        0xbb => {
+            let line = if arg as i32 == -1 { line_of(caret) } else { arg as usize };
+            ranges.get(line).map_or(u32::MAX, |r| r.0 as u32)
+        }
+        0xc1 => ranges.get(line_of(ch)).map_or(0, |r| (r.1 - r.0) as u32),
+        _ => line_of(ch) as u32,
+    }
+}
+
+/// EM_REPLACESEL: `text` with the selection [a, b) (either order) replaced by `new`; the caret
+/// (an empty selection) after it.
+fn edit_replace(text: &[u16], a: usize, b: usize, new: &[u16]) -> (Vec<u16>, usize) {
+    let (a, b) = (a.min(b).min(text.len()), a.max(b).min(text.len()));
+    let mut out = text[..a].to_vec();
+    out.extend_from_slice(new);
+    out.extend_from_slice(&text[b..]);
+    (out, a + new.len())
+}
+
+/// The first line a multiline edit may show: none past the last page (Wine's EM_LINESCROLL).
+fn edit_clamp_top(top: i32, lines: i32, page: i32) -> i32 {
+    top.min(lines - page).max(0)
+}
+
+/// Scrolls a multiline edit so that line `top` (None: where it is) is its first one shown,
+/// clamped, and keeps its SB_VERT scroll info as Windows' edit control sets it: range 0 to the
+/// last line, a page of the whole lines it shows, the position its first line shown (the
+/// license pages of Delphi installers (せきさば！, #222) poll GetScrollInfo and enable "I agree"
+/// once that shows the end). Redraws it when it moved (not while painting: `dc`). Returns
+/// (lines, line height, page, lines moved).
+fn edit_scroll(c: &mut Ctx, h: u32, top: Option<i32>, dc: u32) -> (i32, i32, i32, i32) {
+    let (lines, lh, page) = edit_lines(c, h, dc);
+    let old = ctl(h).top;
+    let new = edit_clamp_top(top.unwrap_or(old), lines, page);
+    set_ctl(h, |t| {
+        t.top = new;
+        t.caret = t.caret.clamp(0, lines - 1);
+    });
+    with_scroll(h, 1, |x| {
+        x.min = 0;
+        x.max = lines - 1;
+        x.page = page as u32;
+        x.pos = new;
+        x.clamp();
+    });
+    if new != old && dc == 0 {
+        invalidate(h, None, true);
+    }
+    (lines, lh, page, new - old)
+}
+
+/// Moves a multiline edit's caret to `line` and scrolls it into view (Wine's EM_SCROLLCARET:
+/// just enough lines that it shows).
+fn edit_caret_to(c: &mut Ctx, h: u32, line: i32) {
+    let (lines, _, page) = edit_lines(c, h, 0);
+    let caret = line.clamp(0, lines - 1);
+    set_ctl(h, |t| t.caret = caret);
+    let top = ctl(h).top;
+    let want = if caret < top {
+        caret
+    } else if caret >= top + page {
+        caret - page + 1
+    } else {
+        top
+    };
+    edit_scroll(c, h, Some(want), 0);
+}
+
+/// A scroll request (WM_VSCROLL / EM_SCROLL's SB_ code; `thumb` SB_THUMBPOSITION/TRACK's
+/// position) on a multiline edit at line `top` of `lines` showing `page`: the line to show
+/// first (None: nothing to do).
+fn edit_scroll_target(code: u32, thumb: i32, top: i32, lines: i32, page: i32) -> Option<i32> {
+    match code {
+        0 => Some(top - 1),
+        1 => Some(top + 1),
+        2 => Some(top - page),
+        3 => Some(top + page),
+        4 | 5 => Some(thumb),
+        6 => Some(0),
+        7 => Some(lines),
+        _ => None,
+    }
+}
+
+/// A WS_VSCROLL multiline edit's bar inside its `w` x `hh` client (sake has no non-client scroll
+/// bars): (up arrow, down arrow, thumb). The thumb's length is the page's share of the lines
+/// (at least 8 pixels), its place the first line's share of the lines it can scroll.
+fn edit_vbar(w: i32, hh: i32, lines: i32, page: i32, top: i32) -> (Rect, Rect, Rect) {
+    let (l, r) = (w - 1 - SB_W, w - 1);
+    // a box lower than its frame: an empty bar at the top
+    let hh = hh.max(2);
+    let arrow = SB_W.min((hh - 2) / 2).max(0);
+    let up = Rect { l, t: 1, r, b: 1 + arrow };
+    let down = Rect { l, t: hh - 1 - arrow, r, b: hh - 1 };
+    let track = (down.t - up.b).max(0);
+    let len = if lines <= page { track } else { ((track as i64 * page as i64 / lines as i64) as i32).max(8.min(track)) };
+    let span = (lines - page).max(0);
+    let at = if span == 0 { 0 } else { ((track - len) as i64 * top.clamp(0, span) as i64 / span as i64) as i32 };
+    (up, down, Rect { l, t: up.b + at, r, b: up.b + at + len })
 }
 
 fn rich_stream_in(c: &mut Ctx, h: u32, format: u32, es: u32) -> u32 {
@@ -1137,11 +1377,25 @@ fn rich_stream_in(c: &mut Ctx, h: u32, format: u32, es: u32) -> u32 {
     n
 }
 
+/// A check box's state after a click (BM_GETCHECK's 0 unchecked, 1 checked, 2 indeterminate)
+/// by its style: BS_AUTOCHECKBOX toggles, BS_AUTO3STATE goes unchecked -> checked -> indeterminate
+/// -> unchecked (Wine's button.c); the others keep theirs (auto radio buttons: ctl_click).
+fn clicked_check(style: u32, check: u32) -> u32 {
+    match style & 0xf {
+        3 => (check & 1 == 0) as u32,
+        6 if check & 2 != 0 => 0,
+        6 => (check & 3) + 1,
+        _ => check,
+    }
+}
+
 fn ctl_click(c: &mut Ctx, h: u32) {
     let (style, id, parent) = with(|s| s.wins.get(&h).map_or((0, 0, 0), |w| (w.style, w.id, w.parent)));
     match style & 0xf {
-        3 | 6 => set_ctl(h, |t| t.check = if t.check == 1 { 0 } else { 1 }),
-        5 => set_ctl(h, |t| t.check = (t.check + 1) % 3),
+        // (Wine's button.c: BS_AUTOCHECKBOX toggles, BS_AUTO3STATE goes unchecked -> checked ->
+        // indeterminate -> unchecked; BS_CHECKBOX and BS_3STATE are left to the program: Delphi's
+        // TCheckBox is a BS_3STATE that sets its state on BN_CLICKED)
+        3 | 6 => set_ctl(h, |t| t.check = clicked_check(style, t.check)),
         9 => {
             // auto radio: this one on, its siblings off
             let sibs: Vec<u32> = with(|s| s.wins.get(&parent).map(|p| p.children.clone()).unwrap_or_default());
@@ -1164,7 +1418,7 @@ fn ctl_click(c: &mut Ctx, h: u32) {
 
 fn control_proc_fn(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let button = with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("button")));
+    let button = base_of(h) == Base::Button;
     match m {
         0xf => {
             ctl_paint(c, h, button);
@@ -1190,6 +1444,8 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             0
         }
         0x201 | 0x203 if button => {
+            // (Wine's button.c: the clicked button takes the focus, then the capture)
+            set_focus(c, h);
             set_ctl(h, |t| t.pressed = true);
             with(|s| s.capture = h);
             invalidate(h, None, true);
@@ -1217,8 +1473,163 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
         0x449 if is_rich(h) => rich_stream_in(c, h, wp, lp),
         // EM_EXLIMITTEXT, EM_SETBKGNDCOLOR, EM_SETEVENTMASK, EM_AUTOURLDETECT: taken, nothing to do
         0x435 | 0x443 | 0x445 | 0x45b if is_rich(h) => 0,
+        // the edit's selection and lines: EM_GETSEL, EM_SETSEL, EM_REPLACESEL (Delphi's
+        // TMemo.Lines.Add: EM_LINEINDEX, EM_LINELENGTH, EM_SETSEL, EM_REPLACESEL), EM_LINEINDEX,
+        // EM_LINELENGTH, EM_LINEFROMCHAR, EM_GETLINE
+        0xb0 | 0xb1 | 0xc2 | 0xbb | 0xc1 | 0xc9 | 0xc4 if is_edit(h) => {
+            let text = with(|s| s.wins.get(&h).map(|w| w.text.clone())).unwrap_or_default();
+            let len = text.len() as u32;
+            let st = ctl(h);
+            match m {
+                0xb0 => {
+                    let (a, b) = (st.sel.0.min(st.sel.1).min(len), st.sel.0.max(st.sel.1).min(len));
+                    put32(wp, a);
+                    put32(lp, b);
+                    a.min(0xffff) | b.min(0xffff) << 16
+                }
+                0xb1 => {
+                    // (start -1: no selection, at its end; end -1 or past it: the end of the text)
+                    let e = if lp as i32 == -1 || lp > len { len } else { lp };
+                    let a = if wp as i32 == -1 { st.sel.1.min(len) } else { wp.min(len) };
+                    let e = if wp as i32 == -1 { a } else { e };
+                    set_ctl(h, |t| t.sel = (a, e));
+                    1
+                }
+                0xc2 => {
+                    let new = if lp == 0 { Vec::new() } else if msg_wide() { wstr(lp) } else { a2w(&cstr(lp)) };
+                    let (out, at) = edit_replace(&text, st.sel.0 as usize, st.sel.1 as usize, &new);
+                    with(|s| s.wins.get_mut(&h).map(|w| w.text = out));
+                    set_ctl(h, |t| t.sel = (at as u32, at as u32));
+                    invalidate(h, None, true);
+                    let (id, parent, multi) = with(|s| s.wins.get(&h).map_or((0, 0, false), |w| (w.id, w.parent, w.style & 4 != 0)));
+                    if multi {
+                        // (the caret's line shows)
+                        let ranges = edit_measure(c, h, 0).0;
+                        edit_caret_to(c, h, edit_line_message(0xc9, at as u32, &ranges, at, at) as i32);
+                    }
+                    if parent != 0 {
+                        send(c, parent, 0x111, 0x400 << 16 | (id & 0xffff), h);
+                        send(c, parent, 0x111, 0x300 << 16 | (id & 0xffff), h);
+                    }
+                    0
+                }
+                0xc4 => {
+                    // EM_GETLINE(line, buffer whose first WORD is its size): the line, not
+                    // terminated; the characters copied
+                    let ranges = edit_measure(c, h, 0).0;
+                    let Some(&(a, b)) = ranges.get(wp as usize) else { return 0 };
+                    let size = r16(lp) as usize;
+                    let line = &text[a..b];
+                    let n = line.len().min(size);
+                    if msg_wide() {
+                        for (i, ch) in line[..n].iter().enumerate() {
+                            mem::w16(lp + 2 * i as u32, *ch);
+                        }
+                        n as u32
+                    } else {
+                        let bytes = crate::text::w2mb(0, line);
+                        let n = bytes.len().min(size);
+                        mem::write(lp, &bytes[..n]);
+                        n as u32
+                    }
+                }
+                _ => {
+                    let ranges = edit_measure(c, h, 0).0;
+                    let caret = st.sel.1.min(len) as usize;
+                    edit_line_message(m, wp, &ranges, caret, len as usize)
+                }
+            }
+        }
+        // a multiline edit's scrolling: the caret keys, the wheel, WM_VSCROLL, a click on its bar
+        // (Wine's edit.c), and EM_SCROLL, EM_LINESCROLL, EM_SCROLLCARET, EM_GETLINECOUNT,
+        // EM_GETFIRSTVISIBLELINE
+        0x100 | 0x20a | 0x115 | 0xb5 | 0xb6 | 0xb7 | 0xba | 0xce | 0x201
+            if is_edit(h) && with(|s| s.wins.get(&h).is_some_and(|w| w.style & 4 != 0)) =>
+        {
+            let st = ctl(h);
+            match m {
+                0x100 => {
+                    let ctrl = key_down(0x11);
+                    let page = edit_lines(c, h, 0).2;
+                    let line = match wp {
+                        0x21 => Some(st.caret - page),
+                        0x22 => Some(st.caret + page),
+                        0x26 => Some(st.caret - 1),
+                        0x28 => Some(st.caret + 1),
+                        0x24 if ctrl => Some(0),
+                        0x23 if ctrl => Some(i32::MAX / 2),
+                        _ => None,
+                    };
+                    match line {
+                        Some(l) => {
+                            edit_caret_to(c, h, l);
+                            0
+                        }
+                        None => def_proc(c, msg_wide()),
+                    }
+                }
+                0x20a => {
+                    // (three lines a notch, SPI_GETWHEELSCROLLLINES; a part notch waits for more)
+                    let acc = st.wheel + (wp >> 16) as i16 as i32;
+                    let notches = acc / 120;
+                    set_ctl(h, |t| t.wheel = acc - notches * 120);
+                    if notches != 0 {
+                        edit_scroll(c, h, Some(st.top - 3 * notches), 0);
+                    }
+                    0
+                }
+                0x115 | 0xb5 => {
+                    let (lines, _, page) = edit_lines(c, h, 0);
+                    // (EM_SCROLL takes SB_LINEUP..SB_PAGEDOWN only)
+                    let code = wp & 0xffff;
+                    let target = if m == 0xb5 && code > 3 { None } else { edit_scroll_target(code, (wp >> 16) as i16 as i32, st.top, lines, page) };
+                    let moved = target.map_or(0, |t| edit_scroll(c, h, Some(t), 0).3);
+                    if m == 0xb5 {
+                        // (Wine: MAKELONG(lines moved, TRUE), FALSE when it did not move)
+                        return if moved == 0 { 0 } else { 1 << 16 | (moved as u32 & 0xffff) };
+                    }
+                    0
+                }
+                0xb6 => {
+                    edit_scroll(c, h, Some(st.top + lp as i32), 0);
+                    1
+                }
+                0xb7 => {
+                    edit_caret_to(c, h, st.caret);
+                    1
+                }
+                0xba => edit_lines(c, h, 0).0 as u32,
+                0xce => st.top as u32,
+                _ => {
+                    // a click: on the bar it scrolls (the arrows a line, the track a page), else
+                    // it focuses the edit
+                    let (x, y) = ((lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
+                    let (style, w, hh) = with(|s| s.wins.get(&h).map_or((0, 0, 0), |w| (w.style, w.client.w(), w.client.h())));
+                    set_focus(c, h);
+                    if style & WS_VSCROLL != 0 && x >= w - 1 - SB_W {
+                        let (lines, _, page) = edit_lines(c, h, 0);
+                        let (up, down, thumb) = edit_vbar(w, hh, lines, page, st.top);
+                        let code = if y < up.b {
+                            0
+                        } else if y >= down.t {
+                            1
+                        } else if y < thumb.t {
+                            2
+                        } else if y >= thumb.b {
+                            3
+                        } else {
+                            8
+                        };
+                        if let Some(t) = edit_scroll_target(code, 0, st.top, lines, page) {
+                            edit_scroll(c, h, Some(t), 0);
+                        }
+                    }
+                    0
+                }
+            }
+        }
         // the edit control: typed characters (no caret, no selection)
-        0x7 | 0x8 | 0x102 | 0x201 | 0x87 if with(|s| s.wins.get(&h).is_some_and(|w| edit_class(&s.classes[w.class].name))) => {
+        0x7 | 0x8 | 0x102 | 0x201 | 0x87 if is_edit(h) => {
             match m {
                 // EN_SETFOCUS / EN_KILLFOCUS to the parent (winref msgwait)
                 0x7 | 0x8 => {
@@ -1235,6 +1646,10 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
                 _ => {
                     let changed = with(|s| {
                         let w = s.wins.get_mut(&h).unwrap();
+                        // (ES_READONLY: typing changes nothing)
+                        if w.style & 0x800 != 0 {
+                            return false;
+                        }
                         match wp {
                             8 => w.text.pop().is_some(),
                             0..=0x1f => false,
@@ -1304,6 +1719,14 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
         0xc | 0xa => {
             let r = def_proc(c, msg_wide());
             invalidate(h, None, true);
+            // (a multiline edit's new text shows from its start)
+            if m == 0xc && is_edit(h) {
+                set_ctl(h, |t| t.sel = (0, 0));
+            }
+            if m == 0xc && is_edit(h) && with(|s| s.wins.get(&h).is_some_and(|w| w.style & 4 != 0)) {
+                set_ctl(h, |t| t.caret = 0);
+                edit_scroll(c, h, Some(0), 0);
+            }
             // (a single-line edit tells its parent of a WM_SETTEXT: EN_UPDATE, EN_CHANGE)
             if m == 0xc && is_edit(h) {
                 let (id, parent, style) = with(|s| s.wins.get(&h).map_or((0, 0, 0), |w| (w.id, w.parent, w.style)));
@@ -1333,11 +1756,12 @@ fn system_classes(s: &mut State) {
             name: n.into(),
             style: 0,
             proc_: match n {
-                "Button" | "Static" | "Edit" | "RichEdit20A" | "RichEdit20W" | "RICHEDIT50W" => control_proc(),
+                "Button" | "Static" | "Edit" | "RichEdit20A" | "RichEdit20W" | "RICHEDIT50W" => control_proc(Base::of_class(n)),
                 "SysTabControl32" => tab_proc(),
                 "ComboBox" => combo_proc(),
                 "ListBox" => listbox_proc(),
                 "SysAnimate32" => animate_proc(),
+                "msctls_progress32" => progress_proc(),
                 // (the class's own: a CBT hook subclassing a new dialog keeps it as the super proc)
                 "#32770" => dlg_wndproc(),
                 _ => builtin_proc(),
@@ -1846,6 +2270,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
             children: Vec::new(),
             shown: false,
             scroll: Default::default(),
+            base: Base::of_class(&k.name),
         };
         s.wins.insert(h, w);
         if child {
@@ -3182,14 +3607,14 @@ fn SetWindowRgn(_: &mut Ctx) -> u32 {
 const PASSWORD_CHAR: &str = "sake:passwordchar";
 /// The edit control and the rich edit controls (RichEdit20A/W, RICHEDIT50W): sake draws a rich
 /// edit as a plain edit of its text (EM_STREAMIN's RTF reduced by crate::rtf, #164).
-fn edit_class(name: &str) -> bool {
-    ["edit", "richedit20a", "richedit20w", "richedit50w"].iter().any(|n| name.eq_ignore_ascii_case(n))
+fn base_of(h: u32) -> Base {
+    with(|s| s.wins.get(&h).map_or(Base::Other, |w| w.base))
 }
 fn is_rich(h: u32) -> bool {
-    with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.to_ascii_lowercase().starts_with("richedit")))
+    base_of(h) == Base::Rich
 }
 fn is_edit(h: u32) -> bool {
-    with(|s| s.wins.get(&h).is_some_and(|w| edit_class(&s.classes[w.class].name)))
+    base_of(h).edit()
 }
 /// The character an edit control draws for each one of its text (None: drawn as typed).
 fn password_char(h: u32) -> Option<u16> {
@@ -5730,8 +6155,10 @@ fn GetScrollInfo(c: &mut Ctx) -> u32 {
     if mask & 4 != 0 {
         w32(p + 20, sc.pos as u32);
     }
+    // SIF_TRACKPOS: the position while no thumb is dragged (Wine's scroll.c; せきさば！'s
+    // installer enables "I agree" when nTrackPos + nPage - 1 == nMax, #222)
     if mask & 0x10 != 0 {
-        w32(p + 24, sc.track as u32);
+        w32(p + 24, sc.pos as u32);
     }
     1
 }
@@ -7294,7 +7721,7 @@ fn default_button(c: &mut Ctx, dlg: u32) -> (u32, u32) {
     // DM_GETDEFID's, else IDOK; winref msgwait: a plain push button with the focus is not taken)
     let focused = with(|s| {
         let w = s.wins.get(&s.focus)?;
-        let button = s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button"));
+        let button = w.base == Base::Button;
         (descends(s, dlg, s.focus) && button && w.style & 0xf == 1).then(|| (w.id & 0xffff, s.focus))
     });
     if let Some(f) = focused {
@@ -7312,7 +7739,7 @@ fn def_button(dlg: u32) -> Option<(u32, u32)> {
     with(|s| {
         let kids = s.wins.get(&dlg)?.children.clone();
         kids.into_iter()
-            .find(|k| s.wins.get(k).is_some_and(|w| s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.style & 0xf == 1))
+            .find(|k| s.wins.get(k).is_some_and(|w| w.base == Base::Button && w.style & 0xf == 1))
             .map(|k| (s.wins[&k].id & 0xffff, k))
     })
 }
@@ -7342,7 +7769,7 @@ fn find_def_button(dlg: u32) -> Option<(u32, u32)> {
 fn def_in(s: &State, h: u32, depth: u32) -> Option<(u32, u32)> {
     let node = |k: u32| {
         let w = s.wins.get(&k)?;
-        let button = s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.style & 0xf == 1;
+        let button = w.base == Base::Button && w.style & 0xf == 1;
         let into = w.exstyle & 0x1_0000 != 0 && w.visible && w.style & 0x0800_0000 == 0;
         Some(DefNode { id: w.id & 0xffff, button, into, children: if into { w.children.clone() } else { Vec::new() } })
     };
@@ -7502,7 +7929,7 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
             with(|stt| stt.wins.get_mut(&ctl).map(|w| w.text = s));
         }
         // (a picture static's text is its bitmap or icon: Bishop's startup.exe banner)
-        let is_static = with(|stt| stt.wins.get(&ctl).is_some_and(|w| stt.classes[w.class].name.eq_ignore_ascii_case("static")));
+        let is_static = base_of(ctl) == Base::Static;
         if is_static {
             match sz_or_ord(r2) {
                 (None, o, _) if o != 0 => static_load_picture(c, ctl, inst, o),
@@ -8218,7 +8645,7 @@ mod track_tests {
         #[test]
         fn scroll_clamp_model(min in -300i32..300, len in -50i32..400, page in 0u32..600, pos in -1000i32..1000) {
             let max = min + len;
-            let mut s = Scroll { min, max, page, pos, track: 0 };
+            let mut s = Scroll { min, max, page, pos };
             s.clamp();
             let span = (max as i64 - min as i64 + 1).max(0);
             prop_assert_eq!(s.page as i64, (page as i64).min(span));
@@ -8775,7 +9202,8 @@ mod edit_text_tests {
     #[test]
     fn multiline_edits_break_from_the_top() {
         let (r, f) = edit_text_box(0x50a0_1804, 300, 120);
-        assert_eq!((r.l, r.t, r.r, r.b), (4, 2, 296, 118));
+        // (WS_VSCROLL: its bar on the right, SM_CXVSCROLL wide)
+        assert_eq!((r.l, r.t, r.r, r.b), (4, 2, 296 - 17, 118));
         assert_eq!(f & 0x20, 0, "not DT_SINGLELINE");
         assert_ne!(f & 0x10, 0, "DT_WORDBREAK");
         assert_eq!(f & 0x4, 0, "not DT_VCENTER");
@@ -8786,7 +9214,8 @@ mod edit_text_tests {
 
     proptest! {
         /// Any style: never a prefix, the alignment from ES_CENTER/ES_RIGHT, single-line
-        /// exactly when ES_MULTILINE is clear, and the text box inside the control.
+        /// exactly when ES_MULTILINE is clear, and the text box inside the control (a multiline
+        /// one with WS_VSCROLL left of its bar).
         #[test]
         fn edit_layout_follows_the_style(style in any::<u32>(), w in 0i32..4000, h in 0i32..4000) {
             let (r, f) = edit_text_box(style, w, h);
@@ -8795,7 +9224,8 @@ mod edit_text_tests {
             prop_assert_eq!(f & 0x20 != 0, style & 4 == 0);
             prop_assert_eq!(f & 0x10 != 0, style & 4 != 0);
             prop_assert!(r.l >= 0 && r.t >= 0 && r.r <= w.max(r.l) + 4 && r.b <= h);
-            prop_assert_eq!((r.l, r.r), (4, w - 4));
+            let bar = if style & 4 != 0 && style & 0x0020_0000 != 0 { 17 } else { 0 };
+            prop_assert_eq!((r.l, r.r), (4, w - 4 - bar));
         }
     }
 }
@@ -8889,6 +9319,171 @@ mod user_object_tests {
         assert!(a != 0 && b != 0 && a != b);
         assert_eq!(call(UnhookWinEvent, &[a]), 1);
         assert_eq!(call(UnhookWinEvent, &[0]), 0);
+    }
+}
+
+#[cfg(test)]
+mod edit_scrolling {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The first line shown is never before the start nor past the last page, and a text
+        /// that fits shows from its start.
+        #[test]
+        fn clamp_keeps_the_last_page(top in any::<i32>(), lines in 1i32..10_000, page in 1i32..200) {
+            let t = edit_clamp_top(top, lines, page);
+            prop_assert!(t >= 0);
+            prop_assert!(t <= (lines - page).max(0));
+            if lines <= page { prop_assert_eq!(t, 0); }
+            if (0..=lines - page).contains(&top) { prop_assert_eq!(t, top); }
+        }
+
+        /// The bar's parts stay inside the control and in order; the thumb is in the track,
+        /// moves down as the text scrolls down, and is at the top at line 0 and at the bottom
+        /// at the last page.
+        #[test]
+        fn bar_geometry(w in 20i32..800, hh in 0i32..800, lines in 1i32..5000, page in 1i32..100, top in 0i32..5000, top2 in 0i32..5000) {
+            let (up, down, thumb) = edit_vbar(w, hh, lines, page, top);
+            prop_assert!(up.l >= 0 && up.r <= w && down.b <= hh.max(1));
+            prop_assert!(up.t <= up.b && up.b <= down.t && down.t <= down.b);
+            prop_assert!(thumb.t >= up.b && thumb.b <= down.t && thumb.t <= thumb.b);
+            let (a, b) = (top.min(top2), top.max(top2));
+            let ta = edit_vbar(w, hh, lines, page, a).2;
+            let tb = edit_vbar(w, hh, lines, page, b).2;
+            prop_assert!(ta.t <= tb.t);
+            prop_assert_eq!(edit_vbar(w, hh, lines, page, 0).2.t, up.b);
+            if lines > page {
+                prop_assert_eq!(edit_vbar(w, hh, lines, page, lines - page).2.b, down.t);
+            }
+        }
+
+        /// The scroll codes: line and page steps, the thumb's position, the ends; SB_ENDSCROLL
+        /// and unknown codes do nothing. Clamped, LINEDOWN then LINEUP comes back.
+        #[test]
+        fn scroll_codes(top in 0i32..500, lines in 1i32..1000, page in 1i32..100, thumb in -10i32..1000, code in 0u32..12) {
+            let top = edit_clamp_top(top, lines, page);
+            let t = edit_scroll_target(code, thumb, top, lines, page);
+            match code {
+                0 => prop_assert_eq!(t, Some(top - 1)),
+                1 => prop_assert_eq!(t, Some(top + 1)),
+                2 => prop_assert_eq!(t, Some(top - page)),
+                3 => prop_assert_eq!(t, Some(top + page)),
+                4 | 5 => prop_assert_eq!(t, Some(thumb)),
+                6 => prop_assert_eq!(t.map(|x| edit_clamp_top(x, lines, page)), Some(0)),
+                7 => prop_assert_eq!(t.map(|x| edit_clamp_top(x, lines, page)), Some((lines - page).max(0))),
+                _ => prop_assert_eq!(t, None),
+            }
+            if top + 1 <= lines - page {
+                let down = edit_clamp_top(edit_scroll_target(1, 0, top, lines, page).unwrap(), lines, page);
+                prop_assert_eq!(edit_clamp_top(edit_scroll_target(0, 0, down, lines, page).unwrap(), lines, page), top);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod edit_lines_model {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// On the lines of a text (no wrapping): EM_LINEINDEX is each line's first character
+        /// (-1 past the last), EM_LINEFROMCHAR inverts it for every character of the line,
+        /// EM_LINELENGTH is the line without its break; EM_LINEINDEX(-1) is the caret's line.
+        #[test]
+        fn line_messages(text in prop::collection::vec(prop_oneof![Just(10u16), Just(13u16), 0x61u16..0x64], 0..60), caret in 0usize..70) {
+            let ranges = crate::gdi::line_ranges(&text, 0, 0, |_| 1);
+            let len = text.len();
+            let caret = caret.min(len);
+            for (k, &(a, b)) in ranges.iter().enumerate() {
+                prop_assert_eq!(edit_line_message(0xbb, k as u32, &ranges, caret, len), a as u32);
+                prop_assert_eq!(edit_line_message(0xc1, a as u32, &ranges, caret, len), (b - a) as u32);
+                for ch in a..=b {
+                    prop_assert_eq!(edit_line_message(0xc9, ch as u32, &ranges, caret, len), k as u32);
+                }
+            }
+            prop_assert_eq!(edit_line_message(0xbb, ranges.len() as u32, &ranges, caret, len), u32::MAX);
+            let cl = edit_line_message(0xc9, u32::MAX, &ranges, caret, len) as usize;
+            prop_assert_eq!(edit_line_message(0xbb, u32::MAX, &ranges, caret, len), ranges[cl].0 as u32);
+            prop_assert!(ranges[cl].0 <= caret);
+        }
+
+        /// EM_REPLACESEL: the text outside the selection is kept, the new text is in its place,
+        /// either order of the ends, and the caret is after the new text.
+        #[test]
+        fn replace(text in prop::collection::vec(0x61u16..0x7a, 0..40), new in prop::collection::vec(0x30u16..0x39, 0..10), a in 0usize..50, b in 0usize..50) {
+            let (out, at) = edit_replace(&text, a, b, &new);
+            let (lo, hi) = (a.min(b).min(text.len()), a.max(b).min(text.len()));
+            prop_assert_eq!(&out[..lo], &text[..lo]);
+            prop_assert_eq!(&out[lo..lo + new.len()], &new[..]);
+            prop_assert_eq!(&out[lo + new.len()..], &text[hi..]);
+            prop_assert_eq!(at, lo + new.len());
+            prop_assert_eq!(edit_replace(&text, b, a, &new), (out, at));
+        }
+    }
+}
+
+#[cfg(test)]
+mod check_clicks {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn auto_styles_cycle() {
+        let run = |style, n| (0..n).scan(0, |c, _| { *c = clicked_check(style, *c); Some(*c) }).collect::<Vec<_>>();
+        assert_eq!(run(3, 4), [1, 0, 1, 0]);
+        assert_eq!(run(6, 6), [1, 2, 0, 1, 2, 0]);
+        // BS_CHECKBOX, BS_3STATE (Delphi's TCheckBox) and push buttons: the program's
+        for style in [0, 1, 2, 5, 7] {
+            assert_eq!(run(style, 3), [0, 0, 0], "style {style}");
+        }
+    }
+
+    proptest! {
+        /// Whatever the style bits and the state set by BM_SETCHECK: a state BM_GETCHECK can
+        /// give (0..=2, or the program's own for the styles that leave it alone), auto check
+        /// boxes return in two clicks and auto 3-states in three, and BS_AUTOCHECKBOX never
+        /// becomes indeterminate.
+        #[test]
+        fn states_and_periods(style in any::<u32>(), check in 0u32..3) {
+            let c1 = clicked_check(style, check);
+            match style & 0xf {
+                3 => {
+                    prop_assert!(c1 <= 1);
+                    prop_assert_eq!(clicked_check(style, c1), (check & 1 != 0) as u32);
+                }
+                6 => {
+                    prop_assert!(c1 <= 2 && c1 != check);
+                    let c3 = clicked_check(style, clicked_check(style, c1));
+                    prop_assert_eq!(c3, check);
+                }
+                _ => prop_assert_eq!(c1, check),
+            }
+        }
+
+        /// The control a class name is: the system names in any case, nothing else.
+        #[test]
+        fn base_of_names(name in "[A-Za-z0-9_#]{0,12}", upper in any::<bool>()) {
+            let n = if upper { name.to_ascii_uppercase() } else { name.to_ascii_lowercase() };
+            let want = match name.to_ascii_lowercase().as_str() {
+                "button" => Base::Button,
+                "static" => Base::Static,
+                "edit" => Base::Edit,
+                "richedit20a" | "richedit20w" | "richedit50w" => Base::Rich,
+                _ => Base::Other,
+            };
+            prop_assert_eq!(Base::of_class(&n), want);
+        }
+    }
+
+    #[test]
+    fn system_names() {
+        assert_eq!(Base::of_class("Button"), Base::Button);
+        assert_eq!(Base::of_class("RICHEDIT50W"), Base::Rich);
+        assert!(Base::of_class("RichEdit20A").edit() && Base::of_class("EDIT").edit());
+        // (a superclass's own name says nothing: its base comes from the procedure it calls)
+        assert_eq!(Base::of_class("TCheckBox"), Base::Other);
     }
 }
 

@@ -181,9 +181,9 @@ fn snapshot() -> Vec<Top> {
                 }
                 let r = crate::user::client_screen(s, k);
                 let at = ((r.l + r.r) / 2, (r.t + r.b) / 2);
-                let cls = class(c);
-                let kind = if cls == "button" { c.style & 0xf } else { 0x100 };
-                ctrls.push((k, kind, String::from_utf16_lossy(&c.text), c.enabled, at, cls == "button"));
+                let button = c.base == crate::user::Base::Button;
+                let kind = if button { c.style & 0xf } else { 0x100 };
+                ctrls.push((k, kind, String::from_utf16_lossy(&c.text), c.enabled, at, button));
             }
             out.push((h, ctrls, String::from_utf16_lossy(&w.text), w.enabled, class(w) == "#32770", s.active == h));
         }

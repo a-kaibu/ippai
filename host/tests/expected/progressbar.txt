@@ -1,0 +1,16 @@
+InitCommonControlsEx 1
+created 1
+default: pos 0 low 0 high 100 step 10
+SETPOS 30: old 0 now 30
+DELTAPOS 15: old 30 now 45
+SETSTEP 7: old 10
+STEPIT: old 45 now 52
+SETPOS 500: old 52 now 100
+SETPOS -5: old 100 now 0
+DELTAPOS 1000: old 0 now 100
+SETRANGE 10-50: old 0-100, pos now 50
+GETRANGE: low 10 high 50, struct 10-50
+SETRANGE32 0-200000: old 10-50, high 200000
+SETPOS 150000: old 50 now 150000
+SETBARCOLOR: old ff000000, again 8000
+SETBKCOLOR: old ff000000, again ffffff

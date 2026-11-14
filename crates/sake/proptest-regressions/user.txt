@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 62b34d70abd588330f72f9d269de31696f048fcf4cb477592835e7bea399e040 # shrinks to from = [0, 1, 0, 0], took = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+cc b18fc5592b05932fd2aae2871ecc09e34308d68d9465eae30cf478d05ce03520 # shrinks to style = 561388156, w = 0, h = 0
+cc b65ed2d0c09a3ee400188c43a6e0f68d5d9898bb8b67ed3af8cda2ce55f58935 # shrinks to w = 20, hh = 0, lines = 1, page = 1, top = 0, top2 = 0

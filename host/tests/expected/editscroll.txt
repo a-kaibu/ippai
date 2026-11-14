@@ -1,0 +1,34 @@
+lines 40, min 0, max is last line 1, page some 1 less than lines 1
+SetWindowText          pos as wanted first is pos 1 track pos is pos 1 bottom 0
+EM_LINESCROLL 3: 1
+  after                pos as wanted first is pos 1 track pos is pos 1 bottom 0
+SB_LINEDOWN            pos as wanted first is pos 1 track pos is pos 1 bottom 0
+SB_PAGEDOWN moved a page 1
+SB_THUMBPOSITION 7     pos as wanted first is pos 1 track pos is pos 1 bottom 0
+SB_TOP                 pos as wanted first is pos 1 track pos is pos 1 bottom 0
+EM_SCROLL SB_PAGEDOWN: TRUE 1 moved a page 1 at it 1
+EM_SCROLL SB_LINEUP: TRUE 1 moved -1
+EM_SCROLL SB_LINEUP at the top: 0
+wheel down a notch     pos as wanted first is pos 1 track pos is pos 1 bottom 0
+wheel up two notches   pos as wanted first is pos 1 track pos is pos 1 bottom 0
+SB_BOTTOM              pos as wanted first is pos 1 track pos is pos 1 bottom 1
+EM_LINESCROLL 100: still the last page 1
+EM_LINESCROLL -1000    pos as wanted first is pos 1 track pos is pos 1 bottom 0
+SetWindowText again    pos as wanted first is pos 1 track pos is pos 1 bottom 0
+read-only typed: length 349
+short text: lines 2 max 1 pos 0 whole 1
+  EM_LINESCROLL 3: first 0
+Lines.Add 0: count before 0, at 0, selection 7-7
+Lines.Add 1: count before 1, at 7, selection 15-15
+Lines.Add 2: count before 2, at 15, selection 17-17
+Lines.Add 3: count before 3, at 17, selection 25-25
+memo text: first|/second|/|/fourth|/ (lines 5)
+  line 0: index 0 length 5 EM_GETLINE 5 "first" from char 0
+  line 1: index 7 length 6 EM_GETLINE 6 "second" from char 1
+  line 2: index 15 length 0 EM_GETLINE 0 "" from char 2
+  line 3: index 17 length 6 EM_GETLINE 6 "fourth" from char 3
+  line 4: index 25 length 0 EM_GETLINE 0 "" from char 4
+  line 5: index -1 length 0 EM_GETLINE 0 "" from char 4
+replaced 7-0: "1stsecond" caret 3-3
+select all: 0-21 of 21
+deselect: 21-21
