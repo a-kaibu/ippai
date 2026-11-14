@@ -224,6 +224,11 @@ fn wglCreateContextAttribsARB(c: &mut Ctx) -> u32 {
     kura::gl::vngl_context_create(c.a(1))
 }
 fn wglDeleteContext(c: &mut Ctx) -> u32 {
+    // (the current one: not current any more, as on Windows; CUR kept naming the destroyed
+    // context for SwapBuffers, later calls and save states)
+    if c.a(0) != 0 && CUR.with(|x| x.get().0) == c.a(0) {
+        make_current(0, 0);
+    }
     kura::gl::vngl_context_destroy(c.a(0));
     1
 }

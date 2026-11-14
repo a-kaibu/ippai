@@ -300,11 +300,15 @@ pub fn process(f: u32, flags: u32) -> Vec<(u32, u32)> {
     if flags & 1 != 0 {
         let mut g = FLS.lock().unwrap();
         let g = global(&mut g);
-        // RemoveEntryList (the entry's own links stay)
+        // RemoveEntryList, then the entry linked to itself: a second teardown of the same
+        // block (RtlProcessFlsData, then the thread's exit or DeleteFiber) rewrote its old
+        // neighbours through the stale links, corrupting the list
         let (next, prev) = (rp(f), rp(f + p));
         if next != 0 && prev != 0 {
             wp(prev, next);
             wp(next + p, prev);
+            wp(f, f);
+            wp(f + p, f);
         }
         for j in 0..CHUNKS {
             let (d, c) = (rp(f + (2 + j) * p), cb_chunk(g, j));
@@ -825,6 +829,59 @@ mod tests {
                 mem::heap_free(fibers[f]);
             }
             *FLS.lock().unwrap() = 0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod fls_list_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Fiber data blocks torn down in any order, some more than once (RtlProcessFlsData,
+        /// then the thread's exit or DeleteFiber): the list keeps exactly the others, in
+        /// order, both ways (a second teardown rewrote the old neighbours through stale links)
+        #[test]
+        fn fls_list_survives_repeated_teardown(n in 1usize..6, order in prop::collection::vec(0usize..6, 0..14)) {
+            let _g = crate::test_guest::enter();
+            *FLS.lock().unwrap() = 0;
+            let p = ps();
+            let h = head(global(&mut FLS.lock().unwrap()));
+            let blocks: Vec<u32> = (0..n).map(|_| mem::heap_alloc((2 + CHUNKS) * p, true)).collect();
+            // linked as InsertTailList does
+            for &b in &blocks {
+                let last = rp(h + p);
+                wp(b, h);
+                wp(b + p, last);
+                wp(last, b);
+                wp(h + p, b);
+            }
+            let mut live: Vec<u32> = blocks.clone();
+            for i in order {
+                let Some(&b) = blocks.get(i) else { continue };
+                process(b, 1);
+                live.retain(|&x| x != b);
+                // forward and back from the head: the live ones, in order
+                let mut fwd = Vec::new();
+                let mut x = rp(h);
+                while x != h && fwd.len() <= n {
+                    fwd.push(x);
+                    x = rp(x);
+                }
+                prop_assert_eq!(&fwd, &live);
+                let mut back = Vec::new();
+                let mut x = rp(h + p);
+                while x != h && back.len() <= n {
+                    back.push(x);
+                    x = rp(x + p);
+                }
+                back.reverse();
+                prop_assert_eq!(&back, &live);
+            }
+            for b in blocks {
+                mem::heap_free(b);
+            }
         }
     }
 }

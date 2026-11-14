@@ -24,6 +24,9 @@ const DDERR_INVALIDPARAMS: u32 = 0x8007_0057;
 const DDERR_UNSUPPORTED: u32 = 0x8000_4001;
 const DDERR_NOTFOUND: u32 = 0x8876_00ff;
 const DDERR_OUTOFMEMORY: u32 = 0x8007_000e;
+const DDERR_DCALREADYCREATED: u32 = 0x8876_026c;
+/// The most bytes of private data a surface keeps (a garbage size read gigabytes, an abort).
+const MAX_PRIVATE: u32 = 1 << 24;
 const DDERR_NOCLIPLIST: u32 = 0x8876_00cd;
 const DDERR_NOPALETTEATTACHED: u32 = 0x8876_023c;
 const DDERR_NOCOLORKEY: u32 = 0x8876_00d7;
@@ -859,6 +862,9 @@ fn S_SetPrivateData(c: &mut Ctx) -> u32 {
     }
     let guid: [u8; 16] = mem::slice(c.a(1), 16).try_into().unwrap();
     let unk = flags & DDSPD_IUNKNOWNPOINTER != 0;
+    if !unk && size > MAX_PRIVATE {
+        return DDERR_OUTOFMEMORY;
+    }
     if unk && size != 4 {
         if size != 0 {
             take_private(c, id, guid);
@@ -1029,6 +1035,11 @@ fn S_Unlock(c: &mut Ctx) -> u32 {
 fn S_GetDC(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
+    // (a second GetDC before ReleaseDC: Windows' error; a new DC each time left the first one
+    // for good)
+    if s.dc != 0 {
+        return DDERR_DCALREADYCREATED;
+    }
     apply_palette(id);
     let dc = gcall(c, "gdi32", "CreateCompatibleDC", &[0]);
     gcall(c, "gdi32", "SelectObject", &[dc, s.hbm]);
@@ -1463,7 +1474,12 @@ fn P_SetEntries(c: &mut Ctx) -> u32 {
             }
         }
     });
-    let ids: Vec<u32> = with(|s| s.surfs.keys().copied().collect());
+    // (only the 8-bit surfaces this palette colours: a palette animated every frame walked
+    // every surface there was)
+    let ids: Vec<u32> = with(|s| {
+        let prim = s.surfs.get(&s.primary).map_or(0, |p| p.palette);
+        s.surfs.iter().filter(|(_, x)| x.bpp == 8 && (x.palette == b || x.palette == 0 && prim == b)).map(|(&k, _)| k).collect()
+    });
     for id in ids {
         apply_palette(id);
     }
@@ -1774,8 +1790,12 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     // with it, each with its own mipmap
     let face_bits = if cube { CUBE_ORDER.iter().copied().filter(|f| faces & f != 0).collect() } else { vec![0] };
     let mut tops = vec![id];
+    // (every surface made, for a failure part-way: each attempt's surfaces, the reference on the
+    // DirectDraw object and the primary stayed for good)
+    let mut made = vec![id];
     for _ in 1..face_bits.len() {
-        let Some(f) = new_surface_pf(w, h, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
+        let Some(f) = new_surface_pf(w, h, bpp, r565, pf, caps) else { return undo_create(c, &made) };
+        made.push(f);
         with(|s| {
             s.surfs.get_mut(&f).map(|x| {
                 x.dd = owner;
@@ -1794,7 +1814,8 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
         let mut up = top;
         for i in 1..levels {
             let (lw, lh) = ((w >> i).max(1), (h >> i).max(1));
-            let Some(m) = new_surface_pf(lw, lh, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
+            let Some(m) = new_surface_pf(lw, lh, bpp, r565, pf, caps) else { return undo_create(c, &made) };
+            made.push(m);
             with(|s| {
                 s.surfs.get_mut(&m).map(|x| {
                     x.dd = owner;
@@ -1812,7 +1833,8 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     let mut prev = id;
     for i in 0..backs {
         let bc = (caps & !(CAPS_PRIMARY | CAPS_FRONTBUFFER)) | CAPS_BACKBUFFER * (i == 0) as u32 | CAPS_FLIP | CAPS_COMPLEX;
-        let Some(b) = new_surface(w, h, bpp, r565, bc) else { return DDERR_OUTOFMEMORY };
+        let Some(b) = new_surface(w, h, bpp, r565, bc) else { return undo_create(c, &made) };
+        made.push(b);
         with(|s| {
             s.surfs.get_mut(&b).map(|x| {
                 x.dd = owner;
@@ -1828,6 +1850,15 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     }
     put32(out, block(id, kind));
     DD_OK
+}
+
+/// A CreateSurface that ran out of memory part-way: the surfaces it made go (their pixels,
+/// bitmaps, the DirectDraw reference the first holds, the primary it became).
+fn undo_create(c: &mut Ctx, made: &[u32]) -> u32 {
+    for &m in made.iter().rev() {
+        free_surface(c, m);
+    }
+    DDERR_OUTOFMEMORY
 }
 
 /// The levels of a full mipmap of a w x h top level: halving down to 1x1 (128x32: 8)

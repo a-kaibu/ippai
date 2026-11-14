@@ -344,3 +344,24 @@ path = "fuzz_targets/resupdate.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "gdi_geom"
+path = "fuzz_targets/gdi_geom.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wild"
+path = "fuzz_targets/wild.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dib_pack"
+path = "fuzz_targets/dib_pack.rs"
+test = false
+doc = false
+bench = false

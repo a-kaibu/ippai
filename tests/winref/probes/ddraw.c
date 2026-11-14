@@ -142,6 +142,11 @@ static void blits(const char *tag, int bpp, DWORD r, DWORD g, DWORD b, DWORD key
         MoveToEx(dc, 0, 15, NULL);
         LineTo(dc, 23, 0);
         printf("%s: GetPixel %06lx\n", tag, GetPixel(dc, 5, 5));
+        /* a second GetDC before ReleaseDC (sake made a new DC each time, the first one lost) */
+        HDC dc2 = NULL;
+        HRESULT hr2 = IDirectDrawSurface7_GetDC(dst, &dc2);
+        printf("%s: GetDC again %#lx same %d\n", tag, hr2, dc2 == dc);
+        if (SUCCEEDED(hr2) && dc2 != dc) IDirectDrawSurface7_ReleaseDC(dst, dc2);
         IDirectDrawSurface7_ReleaseDC(dst, dc);
         snprintf(n, sizeof n, "%s_gdi", tag);
         show(n, dst);

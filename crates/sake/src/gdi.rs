@@ -162,6 +162,8 @@ struct Objs {
     m: HashMap<u32, G>,
     next: u32,
     solid: HashMap<u32, u32>,
+    /// solid's brushes, by handle (DeleteObject scanned all of solid each call)
+    solid_h: std::collections::HashSet<u32>,
     dce: DceTable,
 }
 
@@ -173,7 +175,7 @@ fn objs() -> MutexGuard<'static, Option<Objs>> {
 
 fn with<R>(f: impl FnOnce(&mut Objs) -> R) -> R {
     let mut g = objs();
-    f(g.get_or_insert_with(|| Objs { m: HashMap::default(), next: 0x0a00_0100, solid: HashMap::default(), dce: DceTable::default() }))
+    f(g.get_or_insert_with(|| Objs { m: HashMap::default(), next: 0x0a00_0100, solid: HashMap::default(), solid_h: Default::default(), dce: DceTable::default() }))
 }
 
 fn add(o: G) -> u32 {
@@ -361,7 +363,10 @@ pub fn solid_brush(color: u32) -> u32 {
         return h;
     }
     let h = add(G::Brush(Brush { style: 0, color, hatch: 0, pattern: 0 }));
-    with(|t| t.solid.insert(color, h));
+    with(|t| {
+        t.solid.insert(color, h);
+        t.solid_h.insert(h);
+    });
     h
 }
 
@@ -929,6 +934,10 @@ fn draw(dc: u32, mut f: impl FnMut(&Objs, &DcState, &mut Canvas) -> Rect) -> boo
                 let mut sg = surf.lock().unwrap();
                 let (w, h) = (sg.w, sg.h);
                 let v = View::surface(&mut sg.px, w, h);
+                // (a source on this same surface reads it from here: locking it again from
+                // the blit, as a window DC copying from another DC of its own top-level does,
+                // hung this thread with the GDI lock held)
+                let _held = Held::set(std::sync::Arc::as_ptr(&surf) as *const () as usize, v.clone());
                 let (ox, oy) = (org.0 + x, org.1 + y);
                 let clips = canvas_clips(d, &v, ox, oy, clip);
                 let mut c = Canvas { v, ox, oy, clip: Rect::default() };
@@ -954,6 +963,26 @@ thread_local! {
     static WIN_SOURCES: std::cell::RefCell<Vec<Vec<u32>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    /// The window surface this thread's draw holds locked, and its view.
+    static HELD: std::cell::RefCell<Option<(usize, View)>> = const { std::cell::RefCell::new(None) };
+    /// The 1-pixel buffer of DCs with nothing to read (one per thread, not one leaked a call).
+    static NOTHING: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(vec![0]);
+}
+/// HELD for the time of a draw on a window surface.
+struct Held;
+impl Held {
+    fn set(p: usize, v: View) -> Held {
+        HELD.with(|h| *h.borrow_mut() = Some((p, v)));
+        Held
+    }
+}
+impl Drop for Held {
+    fn drop(&mut self) {
+        HELD.with(|h| *h.borrow_mut() = None);
+    }
+}
+
 /// A copy of a DC's pixels in `r` (device coordinates) as a source for blits; with the
 /// offset of the copy. Memory DCs are used in place.
 fn source(t: &Objs, dc: u32) -> Option<(View, i32, i32, DcState)> {
@@ -963,15 +992,31 @@ fn source(t: &Objs, dc: u32) -> Option<(View, i32, i32, DcState)> {
     match target_of(t, d) {
         Tgt::Bmp(v) => Some((v, org.0, org.1, s)),
         Tgt::Win { surf, x, y, .. } => {
-            let g = surf.lock().unwrap();
-            let (w, h) = (g.w, g.h);
+            // (the surface this thread's draw holds: read from its view, not locked again)
+            let p = std::sync::Arc::as_ptr(&surf) as *const () as usize;
+            let held = HELD.with(|h| h.borrow().as_ref().filter(|x| x.0 == p).map(|x| x.1.clone()));
+            let g = if held.is_none() { Some(surf.lock().unwrap()) } else { None };
+            let (w, h) = match (&g, &held) {
+                (Some(g), _) => (g.w, g.h),
+                (None, Some(v)) => (v.w, v.h),
+                _ => unreachable!(),
+            };
             // a copy (the blit may draw into the same surface), kept until this thread's
             // source after next: one blit reads two sources at most
             let v = WIN_SOURCES.with(|k| {
                 let mut k = k.borrow_mut();
                 let mut px = if k.len() >= 2 { k.remove(0) } else { Vec::new() };
                 px.clear();
-                px.extend_from_slice(&g.px);
+                match (&g, &held) {
+                    (Some(g), _) => px.extend_from_slice(&g.px),
+                    (None, Some(hv)) => {
+                        px.resize((w.max(0) * h.max(0)) as usize, 0);
+                        for y in 0..h {
+                            unsafe { std::ptr::copy_nonoverlapping(hv.row(y), px.as_mut_ptr().add((y * w) as usize) as *mut u8, 4 * w as usize) };
+                        }
+                    }
+                    _ => {}
+                }
                 k.push(px);
                 View::surface(k.last_mut().unwrap(), w, h)
             });
@@ -979,9 +1024,7 @@ fn source(t: &Objs, dc: u32) -> Option<(View, i32, i32, DcState)> {
             Some((v, org.0 + x, org.1 + y, s))
         }
         Tgt::None => {
-            let mut px = vec![0u32; 1];
-            let v = View::surface(&mut px, 1, 1);
-            std::mem::forget(px);
+            let v = NOTHING.with(|n| View::surface(&mut n.borrow_mut(), 1, 1));
             Some((View { w: 0, h: 0, ..v }, 0, 0, s))
         }
     }
@@ -1451,7 +1494,7 @@ fn ttc_face(d: &[u8], index: u32) -> Option<Vec<u8>> {
     Some(out)
 }
 
-static FILES: OnceLock<Mutex<HashMap<usize, Option<Arc<FontVec>>>>> = OnceLock::new();
+static FILES: OnceLock<Mutex<HashMap<usize, Arc<FontVec>>>> = OnceLock::new();
 
 /// Fonts the game added (AddFontResource*, AddFontMemResourceEx): (family names, font).
 /// Their face indices follow FACES'.
@@ -1509,25 +1552,36 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
         return ADDED.lock().unwrap().get(i - FACES.len()).map(|(_, f)| f.clone());
     }
     let m = FILES.get_or_init(|| Mutex::new(HashMap::default()));
-    let mut g = m.lock().unwrap();
-    g.entry(i)
-        .or_insert_with(|| {
-            let dirs = [std::env::var("SAKE_FONTS").ok(), crate::files::resolve("C:\\windows\\Fonts\\")];
-            let (ttc, index) = FACES[i].ttc;
-            for d in dirs.into_iter().flatten() {
-                let d = d.trim_end_matches('/');
-                let data = match kura::fs::read(format!("{d}/{ttc}")) {
-                    Ok(c) => ttc_face(&c, ttc_index(&c, FACES[i].names).unwrap_or(index)),
-                    Err(_) => kura::fs::read(format!("{d}/{}", FACES[i].file)).ok(),
-                };
-                if let Some(f) = data.and_then(|v| FontVec::try_from_vec(v).ok()) {
-                    return Some(Arc::new(f));
-                }
-            }
-            eprintln!("sake: font {} not found", FACES[i].file);
-            None
-        })
-        .clone()
+    if let Some(f) = m.lock().unwrap().get(&i) {
+        return Some(f.clone());
+    }
+    // (read with no lock held: a multi-MB file, maybe fetched; and a face not found is looked
+    // for again next time, not cached as none for the session: a font the page had not
+    // fetched yet left that face without text for good)
+    // (looked for again at most every 2 s: a text call each did a failing read)
+    static MISSED: Mutex<Vec<(usize, std::time::Instant)>> = Mutex::new(Vec::new());
+    if MISSED.lock().unwrap().iter().any(|&(k, t)| k == i && t.elapsed() < std::time::Duration::from_secs(2)) {
+        return None;
+    }
+    let dirs = [std::env::var("SAKE_FONTS").ok(), crate::files::resolve("C:\\windows\\Fonts\\")];
+    let (ttc, index) = FACES[i].ttc;
+    for d in dirs.into_iter().flatten() {
+        let d = d.trim_end_matches('/');
+        let data = match kura::fs::read(format!("{d}/{ttc}")) {
+            Ok(c) => ttc_face(&c, ttc_index(&c, FACES[i].names).unwrap_or(index)),
+            Err(_) => kura::fs::read(format!("{d}/{}", FACES[i].file)).ok(),
+        };
+        if let Some(f) = data.and_then(|v| FontVec::try_from_vec(v).ok()) {
+            return Some(m.lock().unwrap().entry(i).or_insert_with(|| Arc::new(f)).clone());
+        }
+    }
+    let mut g = MISSED.lock().unwrap();
+    if !g.iter().any(|x| x.0 == i) {
+        eprintln!("sake: font {} not found", FACES[i].file);
+    }
+    g.retain(|x| x.0 != i);
+    g.push((i, std::time::Instant::now()));
+    None
 }
 
 /// For DirectWrite's system font collection, the built-in faces: their family names (Japanese
@@ -1701,17 +1755,22 @@ fn font_metrics(face: usize, font: &FontVec) -> FontMetrics {
     m
 }
 
+/// The largest em in pixels a font is made at.
+const MAX_EM: f32 = 16384.0;
+
 fn realize(lf: &LogFont) -> Option<Real> {
     let face = face_index(lf);
     let font = font_file(face)?;
     let m = font_metrics(face, &font);
     let em = if lf.height < 0 {
-        -lf.height as f32
+        (lf.height as f32).abs()
     } else if lf.height > 0 {
         lf.height as f32 * m.upem / (m.win_asc + m.win_desc)
     } else {
         12.0
     };
+    // (a LOGFONT left uninitialised: a height no one draws with, kept to what fits a glyph)
+    let em = em.min(MAX_EM);
     let px = |v: f32| (v * em / m.upem).round() as i32;
     let (ascent, descent) = (px(m.win_asc), px(m.win_desc));
     // (Windows: the hhea line gap less what the OS/2 cell already adds over hhea's)
@@ -2451,7 +2510,22 @@ fn CreateICW(_: &mut Ctx) -> u32 {
     screen_dc()
 }
 fn DeleteDC(c: &mut Ctx) -> u32 {
-    with(|t| matches!(t.m.remove(&c.a(0)), Some(G::Dc(_)))) as u32
+    let h = c.a(0);
+    with(|t| match t.m.remove(&h) {
+        Some(G::Dc(d)) => {
+            // (its GetDCEx region and its place among the window DCs go with it)
+            drop_region(t, d.rgn);
+            t.dce.cache.retain(|&x| x != h);
+            t.dce.own.retain(|_, x| *x != h);
+            t.dce.class.retain(|_, x| *x != h);
+            true
+        }
+        Some(other) => {
+            t.m.insert(h, other);
+            false
+        }
+        None => false,
+    }) as u32
 }
 
 fn GetObjectType(c: &mut Ctx) -> u32 {
@@ -2513,7 +2587,7 @@ fn DeleteObject(c: &mut Ctx) -> u32 {
             Some(G::Dc(_)) | None => return 0,
             _ => {}
         }
-        if t.solid.values().any(|&v| v == h) {
+        if t.solid_h.contains(&h) {
             return 1;
         }
         if let Some(G::Bitmap(b)) = t.m.remove(&h) {
@@ -2799,8 +2873,15 @@ fn DPtoLP(_: &mut Ctx) -> u32 {
     1
 }
 
+/// The most states a DC keeps saved (a game saving without restoring each paint grew it for
+/// the whole session).
+const MAX_SAVED: usize = 1 << 16;
+
 fn SaveDC(c: &mut Ctx) -> u32 {
     with_dc(c.a(0), |d| {
+        if d.saved.len() >= MAX_SAVED {
+            return 0;
+        }
         d.saved.push(d.s);
         d.saved.len() as u32
     })
@@ -3370,6 +3451,9 @@ fn alpha_rows(sv: &View, dv: &View, r: &Rect, o: (i32, i32), k: u32, per_pixel: 
 /// interpolated per pixel from the TRIVERTEXes (16-bit channels).
 fn GradientFill(c: &mut Ctx) -> u32 {
     let (dc, pv, nv, pm, nm, mode) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    if nv > MAX_COUNT || nm > MAX_COUNT {
+        return 0;
+    }
     let vert = |i: u32| -> Option<((i32, i32), [f64; 3])> {
         if i >= nv {
             return None;
@@ -3484,6 +3568,20 @@ pub(crate) fn GetPixel(c: &mut Ctx) -> u32 {
     let (dc, x, y) = (c.a(0), c.i(1), c.i(2));
     let mut out = 0xffff_ffff;
     with(|t| {
+        // (a window DC: its one pixel read under the surface's lock; source() copied the whole
+        // top-level surface per GetPixel, a guest loop over a region O(pixels * surface))
+        if let Some(G::Dc(d)) = t.m.get(&dc) {
+            if let Tgt::Win { surf, x: wx, y: wy, .. } = target_of(t, d) {
+                let (ox, oy) = (d.s.vp.0 - d.s.win.0 + wx, d.s.vp.1 - d.s.win.1 + wy);
+                let g = surf.lock().unwrap();
+                let (x, y) = (x + ox, y + oy);
+                if x >= 0 && y >= 0 && x < g.w && y < g.h {
+                    let p = g.px[(y * g.w + x) as usize];
+                    out = (p & 0xff) << 16 | (p & 0xff00) | (p >> 16 & 0xff);
+                }
+                return;
+            }
+        }
         if let Some((v, ox, oy, _)) = source(t, dc) {
             let (x, y) = (x + ox, y + oy);
             if x >= 0 && y >= 0 && x < v.w && y < v.h {
@@ -3680,8 +3778,12 @@ fn LineTo(c: &mut Ctx) -> u32 {
     with_dc(dc, |d| d.s.pos = (x, y));
     1
 }
+/// The most points, rectangles, vertices or glyphs a call takes (a garbage count turned into
+/// gigabytes of Vec, an abort, or billions of glyph rasterisations).
+const MAX_COUNT: u32 = 1 << 22;
+
 fn read_pts(p: u32, n: u32) -> Vec<(i32, i32)> {
-    (0..n).map(|i| (r32(p + 8 * i) as i32, r32(p + 8 * i + 4) as i32)).collect()
+    (0..n.min(MAX_COUNT)).map(|i| (r32(p + 8 * i) as i32, r32(p + 8 * i + 4) as i32)).collect()
 }
 fn polyline(dc: u32, pts: Vec<(i32, i32)>) -> u32 {
     draw(dc, |t, s, cv| match pen_of(t, s) {
@@ -3975,6 +4077,9 @@ fn CreatePolyPolygonRgn(c: &mut Ctx) -> u32 {
 fn ExtCreateRegion(c: &mut Ctx) -> u32 {
     let p = c.a(2);
     let n = r32(p + 8);
+    if n > MAX_COUNT {
+        return 0;
+    }
     let at = p + r32(p);
     add(G::Region((0..n).map(|i| Rect::read(at + 16 * i)).filter(|r| !r.empty()).collect()))
 }
@@ -4032,19 +4137,34 @@ fn GetRegionData(c: &mut Ctx) -> u32 {
     }
     need
 }
+/// The rectangles (logical, in order) filled with `brush` in one drawing pass (one per
+/// rectangle locked and flushed the display hundreds of times for an elliptic region).
+fn fill_rects(dc: u32, rects: &[Rect], brush: u32) {
+    if rects.is_empty() {
+        return;
+    }
+    draw(dc, |t, s, c| {
+        let pat = pattern(t, s, brush);
+        if matches!(pat, Pat::None) {
+            return Rect::default();
+        }
+        let mut d = Rect::default();
+        for &r in rects {
+            let r = c.rect(r);
+            d = d.or(&pat_blt(c, r, &pat, 0xf0));
+        }
+        d
+    });
+}
 fn FillRgn(c: &mut Ctx) -> u32 {
     let (dc, h, b) = (c.a(0), c.a(1), c.a(2));
-    for r in region(h).unwrap_or_default() {
-        fill_rect_brush(dc, r, b);
-    }
+    fill_rects(dc, &region(h).unwrap_or_default(), b);
     1
 }
 fn PaintRgn(c: &mut Ctx) -> u32 {
     let (dc, h) = (c.a(0), c.a(1));
     let b = dc_state(dc).map_or(STOCK, |s| s.brush);
-    for r in region(h).unwrap_or_default() {
-        fill_rect_brush(dc, r, b);
-    }
+    fill_rects(dc, &region(h).unwrap_or_default(), b);
     1
 }
 /// The region's border w x h pixels thick: the region less itself shifted by +-w, +-h.
@@ -4056,9 +4176,7 @@ fn FrameRgn(c: &mut Ctx) -> u32 {
         let moved: Vec<Rect> = r.iter().map(|q| q.off(dx, dy)).collect();
         inner = gdi_geom::combine(&inner, &moved, 1);
     }
-    for q in gdi_geom::combine(&r, &inner, 4) {
-        fill_rect_brush(dc, q, b);
-    }
+    fill_rects(dc, &gdi_geom::combine(&r, &inner, 4), b);
     1
 }
 fn InvertRgn(c: &mut Ctx) -> u32 {
@@ -4562,6 +4680,10 @@ fn char_widths(c: &mut Ctx, wide: bool, abc: bool) -> u32 {
 }
 fn char_widths_as(c: &mut Ctx, wide: bool, abc: bool, float: bool) -> u32 {
     let (dc, first, last, p) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    // (a range past every code point: refused, not 2^32 glyphs made)
+    if last < first || last - first > 0x10_ffff {
+        return 0;
+    }
     let Some((r, _, _)) = real_of(dc) else { return 0 };
     for (i, code) in (first..=last).enumerate() {
         let ch = if wide { code } else { mbcs_char(code) };
@@ -4698,6 +4820,9 @@ fn GetGlyphOutlineW(c: &mut Ctx) -> u32 {
 /// GetCharABCWidthsI / GetCharWidthI: by glyph index (`pgi`, or `first`.. when null)
 fn widths_i(c: &mut Ctx, abc: bool) -> u32 {
     let (dc, first, n, pgi, out) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if n > MAX_COUNT {
+        return 0;
+    }
     let Some((r, _, _)) = real_of(dc) else { return 0 };
     for i in 0..n {
         let gi = if pgi != 0 { r16(pgi + 2 * i) as u32 } else { first + i };
@@ -4734,6 +4859,9 @@ fn GetCharWidthI(c: &mut Ctx) -> u32 {
 }
 fn GetGlyphIndicesW(c: &mut Ctx) -> u32 {
     let (dc, s, n, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if n > MAX_COUNT {
+        return 0xffff_ffff;
+    }
     let Some((r, _, _)) = real_of(dc) else { return 0xffff_ffff };
     for i in 0..n {
         let ch = char::from_u32(r16(s + 2 * i) as u32).unwrap_or('?');
@@ -5653,6 +5781,53 @@ mod far_shape_tests {
         call(Polygon, &[dc, pts, 3]);
         assert_eq!(call(GetPixel, &[dc, 4, 4]), 0x00_00ff);
         assert!(t0.elapsed() < std::time::Duration::from_secs(10), "{:?}", t0.elapsed());
+    }
+
+    /// FillRgn in one pass draws what one FillRect per rectangle drew; SaveDC stops at its
+    /// limit; DeleteDC lets the DC's GetDCEx region go; garbage counts and ranges are refused
+    #[test]
+    fn regions_states_and_counts() {
+        let _g = enter();
+        guest_thread();
+        init();
+        let dc = call(CreateCompatibleDC, &[0]);
+        let (one, two) = (call(CreateBitmap, &[40, 30, 1, 32, 0]), call(CreateBitmap, &[40, 30, 1, 32, 0]));
+        let blue = call(CreateSolidBrush, &[0xff_0000]);
+        let rgn = call(CreateEllipticRgn, &[3, 2, 37, 27]);
+        call(SelectObject, &[dc, one]);
+        assert_eq!(call(FillRgn, &[dc, rgn, blue]), 1);
+        let a: Vec<u32> = (0..30).flat_map(|y| (0..40).map(move |x| (x, y))).map(|(x, y)| call(GetPixel, &[dc, x, y])).collect();
+        call(SelectObject, &[dc, two]);
+        for r in region(rgn).unwrap() {
+            fill_rect_brush(dc, r, blue);
+        }
+        let b: Vec<u32> = (0..30).flat_map(|y| (0..40).map(move |x| (x, y))).map(|(x, y)| call(GetPixel, &[dc, x, y])).collect();
+        assert_eq!(a, b);
+        assert!(a.iter().any(|&p| p == 0xff_0000) && a.iter().any(|&p| p == 0));
+        // SaveDC: a limit, not a Vec for the session
+        for k in 1..=MAX_SAVED as u32 {
+            assert_eq!(call(SaveDC, &[dc]), k);
+        }
+        assert_eq!(call(SaveDC, &[dc]), 0);
+        assert_eq!(call(RestoreDC, &[dc, 1]), 1);
+        assert_eq!(call(SaveDC, &[dc]), 1);
+        // a range past every code point, a count past any: refused at once
+        let p = mem::heap_alloc(64, true);
+        assert_eq!(call(GetCharWidth32W, &[dc, 0, u32::MAX, p]), 0);
+        assert_eq!(call(GetCharWidth32W, &[dc, 10, 5, p]), 0);
+        assert_eq!(call(GetGlyphIndicesW, &[dc, p, MAX_COUNT + 1, p, 0]), 0xffff_ffff);
+        mem::heap_free(p);
+        // DeleteDC of a DC with a region of its own: the region goes too
+        let own = call(CreateRectRgn, &[0, 0, 4, 4]);
+        with(|t| if let Some(G::Dc(d)) = t.m.get_mut(&dc) { d.rgn = Some(own) });
+        assert_eq!(call(DeleteDC, &[dc]), 1);
+        assert!(with(|t| !t.m.contains_key(&own)), "the DC's region was left");
+        assert_eq!(call(DeleteDC, &[blue]), 0, "not a DC");
+        assert!(with(|t| t.m.contains_key(&blue)), "DeleteDC took a brush");
+        // a cached solid brush is not deleted
+        let s = solid_brush(0x12_3456);
+        assert_eq!(call(DeleteObject, &[s]), 1);
+        assert!(with(|t| t.m.contains_key(&s)));
     }
 }
 
